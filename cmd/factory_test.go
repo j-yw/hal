@@ -1696,6 +1696,45 @@ func TestAppendFactoryRunTimelineEventWithRedactorRedactsStructMetadata(t *testi
 	}
 }
 
+func TestRecordFactoryRunVerificationAdvisoryFailedWithRedactorRedactsError(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	runID := "run-advisory-verification-redaction"
+	secret := "ghp_advisory_verification_secret_12345"
+	redactor := factory.NewRunSecretRedactor([]factory.ResolvedRunSecret{{
+		Name:  "GITHUB_TOKEN",
+		Value: secret,
+	}})
+
+	err := recordFactoryRunVerificationAdvisoryFailedWithRedactor(
+		store,
+		runID,
+		time.Date(2026, 6, 21, 10, 5, 0, 0, time.UTC),
+		errors.New("verification failed with token "+secret),
+		redactor,
+	)
+	if err != nil {
+		t.Fatalf("recordFactoryRunVerificationAdvisoryFailedWithRedactor() unexpected error: %v", err)
+	}
+
+	events, err := store.LoadEvents(runID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events length = %d, want 1", len(events))
+	}
+	got, ok := events[0].Metadata["error"].(string)
+	if !ok {
+		t.Fatalf("advisory error metadata = %#v, want string", events[0].Metadata["error"])
+	}
+	if strings.Contains(got, secret) {
+		t.Fatalf("advisory verification error leaked secret: %q", got)
+	}
+	if !strings.Contains(got, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("advisory verification error missing redaction placeholder: %q", got)
+	}
+}
+
 func TestRunFactoryRunWithDepsRecordsMarkdownArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")

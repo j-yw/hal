@@ -1561,7 +1561,7 @@ func recordFactoryRunVerificationOutcome(store factory.Store, dir string, record
 			if err := recordFactoryPolicyDecision(store, record.RunID, finishedAt, decision); err != nil {
 				return record, finishedAt, fmt.Errorf("record factory verification policy decision: %w", err)
 			}
-			if err := recordFactoryRunVerificationAdvisoryFailed(store, record.RunID, finishedAt, newFactoryRunVerificationFailure(result)); err != nil {
+			if err := recordFactoryRunVerificationAdvisoryFailedWithRedactor(store, record.RunID, finishedAt, newFactoryRunVerificationFailure(result), redactor); err != nil {
 				return record, finishedAt, fmt.Errorf("record factory advisory verification failure event: %w", err)
 			}
 			return record, finishedAt, nil
@@ -3340,7 +3340,11 @@ func recordFactoryRunVerificationFailedWithRedactor(store factory.Store, runID s
 }
 
 func recordFactoryRunVerificationAdvisoryFailed(store factory.Store, runID string, now time.Time, verificationErr error) error {
-	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+	return recordFactoryRunVerificationAdvisoryFailedWithRedactor(store, runID, now, verificationErr, factory.RunSecretRedactor{})
+}
+
+func recordFactoryRunVerificationAdvisoryFailedWithRedactor(store factory.Store, runID string, now time.Time, verificationErr error, redactor factory.RunSecretRedactor) error {
+	return appendFactoryRunTimelineEventWithRedactor(store, runID, now, factoryTimelineEvent{
 		EventType: factory.EventTypeStepEnded,
 		Summary:   "Verification failed (advisory)",
 		Metadata: map[string]any{
@@ -3350,7 +3354,7 @@ func recordFactoryRunVerificationAdvisoryFailed(store factory.Store, runID strin
 			"blocking": false,
 			"error":    verificationErr.Error(),
 		},
-	})
+	}, redactor)
 }
 
 func recordFactoryRunFailureClassified(store factory.Store, runID string, now time.Time, failure factory.FailureSummary) error {
