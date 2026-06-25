@@ -1155,9 +1155,14 @@ func TestRunFactoryQueueWorkWithDepsRehydratesRedactedSandboxRemote(t *testing.T
 	deps.resolveProvider = func(string, string) (sandbox.Provider, error) {
 		return fakeFactorySandboxProvider{}, nil
 	}
-	deps.runProviderExec = func(_ context.Context, _ sandbox.Provider, info *sandbox.ConnectInfo, args []string, out io.Writer) error {
+	var gotVerifyEnv map[string]string
+	deps.runProviderExecWithEnv = func(_ context.Context, _ sandbox.Provider, info *sandbox.ConnectInfo, args []string, env map[string]string, out io.Writer) error {
 		if info == nil || info.Name != target.Name || info.IP != target.IP {
 			t.Fatalf("connect info = %#v, want sandbox %q at %q", info, target.Name, target.IP)
+		}
+		gotVerifyEnv = map[string]string{}
+		for key, value := range env {
+			gotVerifyEnv[key] = value
 		}
 		command := strings.Join(args, " ")
 		if !strings.Contains(command, "'hal' 'verify' '--json'") {
@@ -1184,6 +1189,9 @@ func TestRunFactoryQueueWorkWithDepsRehydratesRedactedSandboxRemote(t *testing.T
 	}
 	if gotSandboxReq.RunRecord.RepoRemote != rawRemote {
 		t.Fatalf("sandbox repo remote = %q, want raw remote", gotSandboxReq.RunRecord.RepoRemote)
+	}
+	if gotVerifyEnv["GITHUB_TOKEN"] != secret {
+		t.Fatalf("remote verify GITHUB_TOKEN env = %q, want resolved secret", gotVerifyEnv["GITHUB_TOKEN"])
 	}
 	if strings.Contains(out.String(), secret) {
 		t.Fatalf("queue work JSON leaked secret value: %s", out.String())

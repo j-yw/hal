@@ -32,25 +32,26 @@ type factoryQueueListDeps struct {
 }
 
 type factoryQueueWorkDeps struct {
-	defaultStore    func() (factory.Store, error)
-	now             func() time.Time
-	claim           *factory.QueueClaim
-	lookupEnv       func(string) (string, bool)
-	repoRemote      func(string) (string, error)
-	loadPolicy      func(string) (*factory.FactoryPolicy, error)
-	loadEngine      func(string) (string, error)
-	runPipeline     func(context.Context, factoryRunPipelineRequest) error
-	runSandbox      func(context.Context, factorySandboxExecutorRequest) error
-	loadVerify      func(string) (*verify.Config, error)
-	runVerify       func(context.Context, *verify.Config) (*verify.Result, error)
-	loadSandbox     func(string) (*sandbox.SandboxState, error)
-	resolveProvider func(string, string) (sandbox.Provider, error)
-	runProviderExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
-	cleanupSandbox  func(context.Context, factorySandboxCleanupRequest) error
-	statusSnapshot  func(string) (factorySnapshotArtifact, error)
-	doctorSnapshot  func(string) (factorySnapshotArtifact, error)
-	sandboxCopier   factory.SandboxArtifactCopier
-	sandboxRequests func(string, factory.RunRecord) []factory.SandboxArtifactRequest
+	defaultStore           func() (factory.Store, error)
+	now                    func() time.Time
+	claim                  *factory.QueueClaim
+	lookupEnv              func(string) (string, bool)
+	repoRemote             func(string) (string, error)
+	loadPolicy             func(string) (*factory.FactoryPolicy, error)
+	loadEngine             func(string) (string, error)
+	runPipeline            func(context.Context, factoryRunPipelineRequest) error
+	runSandbox             func(context.Context, factorySandboxExecutorRequest) error
+	loadVerify             func(string) (*verify.Config, error)
+	runVerify              func(context.Context, *verify.Config) (*verify.Result, error)
+	loadSandbox            func(string) (*sandbox.SandboxState, error)
+	resolveProvider        func(string, string) (sandbox.Provider, error)
+	runProviderExec        func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
+	cleanupSandbox         func(context.Context, factorySandboxCleanupRequest) error
+	statusSnapshot         func(string) (factorySnapshotArtifact, error)
+	doctorSnapshot         func(string) (factorySnapshotArtifact, error)
+	sandboxCopier          factory.SandboxArtifactCopier
+	sandboxRequests        func(string, factory.RunRecord) []factory.SandboxArtifactRequest
 }
 
 type factoryQueueAddRequest struct {
@@ -77,23 +78,24 @@ var defaultFactoryQueueListDeps = factoryQueueListDeps{
 }
 
 var defaultFactoryQueueWorkDeps = factoryQueueWorkDeps{
-	defaultStore:    factory.DefaultStore,
-	now:             time.Now,
-	lookupEnv:       os.LookupEnv,
-	repoRemote:      readGitRemoteOptionalInDir,
-	loadPolicy:      factory.LoadPolicyConfig,
-	loadEngine:      compound.LoadDefaultEngine,
-	runPipeline:     runFactoryRunPipeline,
-	runSandbox:      defaultFactoryRunDeps.runSandbox,
-	loadVerify:      defaultFactoryRunDeps.loadVerify,
-	runVerify:       defaultFactoryRunDeps.runVerify,
-	loadSandbox:     defaultFactoryRunDeps.loadSandbox,
-	resolveProvider: defaultFactoryRunDeps.resolveProvider,
-	runProviderExec: defaultFactoryRunDeps.runProviderExec,
-	cleanupSandbox:  defaultFactoryRunDeps.cleanupSandbox,
-	statusSnapshot:  defaultFactoryRunDeps.statusSnapshot,
-	doctorSnapshot:  defaultFactoryRunDeps.doctorSnapshot,
-	sandboxRequests: defaultFactorySandboxArtifactRequests,
+	defaultStore:           factory.DefaultStore,
+	now:                    time.Now,
+	lookupEnv:              os.LookupEnv,
+	repoRemote:             readGitRemoteOptionalInDir,
+	loadPolicy:             factory.LoadPolicyConfig,
+	loadEngine:             compound.LoadDefaultEngine,
+	runPipeline:            runFactoryRunPipeline,
+	runSandbox:             defaultFactoryRunDeps.runSandbox,
+	loadVerify:             defaultFactoryRunDeps.loadVerify,
+	runVerify:              defaultFactoryRunDeps.runVerify,
+	loadSandbox:            defaultFactoryRunDeps.loadSandbox,
+	resolveProvider:        defaultFactoryRunDeps.resolveProvider,
+	runProviderExec:        defaultFactoryRunDeps.runProviderExec,
+	runProviderExecWithEnv: defaultFactoryRunDeps.runProviderExecWithEnv,
+	cleanupSandbox:         defaultFactoryRunDeps.cleanupSandbox,
+	statusSnapshot:         defaultFactoryRunDeps.statusSnapshot,
+	doctorSnapshot:         defaultFactoryRunDeps.doctorSnapshot,
+	sandboxRequests:        defaultFactorySandboxArtifactRequests,
 }
 
 var factoryQueueCmd = &cobra.Command{
@@ -633,6 +635,7 @@ func normalizeFactoryQueueListDeps(deps factoryQueueListDeps) factoryQueueListDe
 }
 
 func normalizeFactoryQueueWorkDeps(deps factoryQueueWorkDeps) factoryQueueWorkDeps {
+	customRunProviderExec := deps.runProviderExec != nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactoryQueueWorkDeps.defaultStore
 	}
@@ -672,6 +675,9 @@ func normalizeFactoryQueueWorkDeps(deps factoryQueueWorkDeps) factoryQueueWorkDe
 	if deps.runProviderExec == nil {
 		deps.runProviderExec = defaultFactoryQueueWorkDeps.runProviderExec
 	}
+	if deps.runProviderExecWithEnv == nil && !customRunProviderExec {
+		deps.runProviderExecWithEnv = defaultFactoryQueueWorkDeps.runProviderExecWithEnv
+	}
 	if deps.cleanupSandbox == nil {
 		deps.cleanupSandbox = defaultFactoryQueueWorkDeps.cleanupSandbox
 	}
@@ -690,24 +696,25 @@ func normalizeFactoryQueueWorkDeps(deps factoryQueueWorkDeps) factoryQueueWorkDe
 func factoryRunDepsFromQueueWorkDeps(store factory.Store, deps factoryQueueWorkDeps) factoryRunDeps {
 	deps = normalizeFactoryQueueWorkDeps(deps)
 	return normalizeFactoryRunDeps(factoryRunDeps{
-		defaultStore:    func() (factory.Store, error) { return store, nil },
-		now:             deps.now,
-		lookupEnv:       deps.lookupEnv,
-		repoRemote:      deps.repoRemote,
-		loadPolicy:      deps.loadPolicy,
-		loadEngine:      deps.loadEngine,
-		runPipeline:     deps.runPipeline,
-		runSandbox:      deps.runSandbox,
-		loadVerify:      deps.loadVerify,
-		runVerify:       deps.runVerify,
-		loadSandbox:     deps.loadSandbox,
-		resolveProvider: deps.resolveProvider,
-		runProviderExec: deps.runProviderExec,
-		cleanupSandbox:  deps.cleanupSandbox,
-		statusSnapshot:  deps.statusSnapshot,
-		doctorSnapshot:  deps.doctorSnapshot,
-		sandboxCopier:   deps.sandboxCopier,
-		sandboxRequests: deps.sandboxRequests,
+		defaultStore:           func() (factory.Store, error) { return store, nil },
+		now:                    deps.now,
+		lookupEnv:              deps.lookupEnv,
+		repoRemote:             deps.repoRemote,
+		loadPolicy:             deps.loadPolicy,
+		loadEngine:             deps.loadEngine,
+		runPipeline:            deps.runPipeline,
+		runSandbox:             deps.runSandbox,
+		loadVerify:             deps.loadVerify,
+		runVerify:              deps.runVerify,
+		loadSandbox:            deps.loadSandbox,
+		resolveProvider:        deps.resolveProvider,
+		runProviderExec:        deps.runProviderExec,
+		runProviderExecWithEnv: deps.runProviderExecWithEnv,
+		cleanupSandbox:         deps.cleanupSandbox,
+		statusSnapshot:         deps.statusSnapshot,
+		doctorSnapshot:         deps.doctorSnapshot,
+		sandboxCopier:          deps.sandboxCopier,
+		sandboxRequests:        deps.sandboxRequests,
 	})
 }
 
