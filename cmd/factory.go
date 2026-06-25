@@ -576,6 +576,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 	req, record, err := resolveFactoryRunExecutionSecrets(req, record, deps)
 	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
 	if err != nil {
+		redactor = factory.NewRunSecretRedactor(resolveFactoryRunRedactionSecrets(req.Secrets, deps.lookupEnv))
 		return failFactoryRunSetup(store, record, deps.now(), err, redactor)
 	}
 	if req.Sandbox && strings.TrimSpace(req.BaseBranch) == "" {
