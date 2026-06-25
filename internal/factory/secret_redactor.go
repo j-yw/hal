@@ -69,18 +69,11 @@ func (r RunSecretRedactor) RedactRunRecord(record RunRecord) RunRecord {
 	if len(r.secretValues) == 0 {
 		return record
 	}
-	record.Status = r.RedactString(record.Status)
-	record.ExecutorMode = r.RedactString(record.ExecutorMode)
-	record.Engine = r.RedactString(record.Engine)
 	record.Source = r.redactSourceMetadata(record.Source)
 	record.RepoPath = r.RedactString(record.RepoPath)
 	record.RepoRemote = r.RedactString(record.RepoRemote)
-	record.BranchName = r.RedactString(record.BranchName)
-	record.BaseBranch = r.RedactString(record.BaseBranch)
 	record.Policy = r.redactFactoryPolicy(record.Policy)
-	record.SandboxName = r.RedactString(record.SandboxName)
 	record.Sandbox = r.redactSandboxMetadata(record.Sandbox)
-	record.CurrentStep = r.RedactString(record.CurrentStep)
 	record.Artifacts = r.redactArtifactReferences(record.Artifacts)
 	record.Verification = r.redactVerificationRecord(record.Verification)
 	record.Telemetry = r.redactRunTelemetry(record.Telemetry)
@@ -90,7 +83,6 @@ func (r RunSecretRedactor) RedactRunRecord(record RunRecord) RunRecord {
 }
 
 func (r RunSecretRedactor) redactSourceMetadata(source SourceMetadata) SourceMetadata {
-	source.Kind = r.RedactString(source.Kind)
 	source.Path = r.RedactString(source.Path)
 	source.ReportPath = r.RedactString(source.ReportPath)
 	source.Title = r.RedactString(source.Title)
@@ -104,11 +96,8 @@ func (r RunSecretRedactor) redactFactoryPolicy(policy *FactoryPolicy) *FactoryPo
 	safe := *policy
 	if policy.AllowedEngines != nil {
 		safe.AllowedEngines = make([]string, len(policy.AllowedEngines))
-		for i, engine := range policy.AllowedEngines {
-			safe.AllowedEngines[i] = r.RedactString(engine)
-		}
+		copy(safe.AllowedEngines, policy.AllowedEngines)
 	}
-	safe.CleanupBehavior = r.RedactString(safe.CleanupBehavior)
 	return &safe
 }
 
@@ -117,9 +106,7 @@ func (r RunSecretRedactor) redactSandboxMetadata(sandbox *SandboxMetadata) *Sand
 		return nil
 	}
 	safe := *sandbox
-	safe.Name = r.RedactString(safe.Name)
-	safe.Provider = r.RedactString(safe.Provider)
-	safe.Status = r.RedactString(safe.Status)
+	safe.Size = r.RedactString(safe.Size)
 	safe.Connection = r.redactSandboxConnectionMetadata(safe.Connection)
 	safe.SSHCommand = r.RedactString(safe.SSHCommand)
 	safe.CleanupCommand = r.RedactString(safe.CleanupCommand)
@@ -159,8 +146,8 @@ func (r RunSecretRedactor) redactVerificationRecord(verification *VerificationRe
 		safe.Artifacts = make([]verify.ArtifactReference, len(verification.Artifacts))
 		for i, artifact := range verification.Artifacts {
 			safe.Artifacts[i] = verify.ArtifactReference{
-				CheckID: r.RedactString(artifact.CheckID),
-				Kind:    r.RedactString(artifact.Kind),
+				CheckID: artifact.CheckID,
+				Kind:    artifact.Kind,
 				Path:    r.RedactString(artifact.Path),
 			}
 		}
@@ -175,26 +162,18 @@ func (r RunSecretRedactor) redactRunTelemetry(telemetry *RunTelemetry) *RunTelem
 	safe := *telemetry
 	if len(telemetry.StepDurations) > 0 {
 		safe.StepDurations = make([]RunStepDuration, len(telemetry.StepDurations))
-		for i, duration := range telemetry.StepDurations {
-			safe.StepDurations[i] = duration
-			safe.StepDurations[i].Step = r.RedactString(duration.Step)
-		}
+		copy(safe.StepDurations, telemetry.StepDurations)
 	}
 	if telemetry.Engine != nil {
 		engine := *telemetry.Engine
-		engine.Name = r.RedactString(engine.Name)
 		engine.Model = r.RedactString(engine.Model)
 		safe.Engine = &engine
 	}
 	if telemetry.Sandbox != nil {
 		sandbox := *telemetry.Sandbox
-		sandbox.Provider = r.RedactString(sandbox.Provider)
 		sandbox.Size = r.RedactString(sandbox.Size)
 		safe.Sandbox = &sandbox
 	}
-	safe.CIOutcome = r.RedactString(safe.CIOutcome)
-	safe.VerificationOutcome = r.RedactString(safe.VerificationOutcome)
-	safe.FailureCategory = r.RedactString(safe.FailureCategory)
 	return &safe
 }
 
@@ -203,8 +182,6 @@ func (r RunSecretRedactor) redactFailureSummary(failure *FailureSummary) *Failur
 		return nil
 	}
 	safe := *failure
-	safe.Step = r.RedactString(safe.Step)
-	safe.Category = r.RedactString(safe.Category)
 	safe.Message = r.RedactString(safe.Message)
 	safe.SuggestedCommand = r.RedactString(safe.SuggestedCommand)
 	return &safe

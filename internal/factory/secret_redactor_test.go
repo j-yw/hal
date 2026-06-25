@@ -145,8 +145,8 @@ func TestRunSecretRedactorPreservesSecretMetadataIdentifiers(t *testing.T) {
 		}},
 	})
 
-	if got.BranchName != "branch-"+RunSecretRedactionPlaceholder {
-		t.Fatalf("BranchName = %q, want redacted secret value", got.BranchName)
+	if got.BranchName != "branch-env" {
+		t.Fatalf("BranchName = %q, want control field preserved", got.BranchName)
 	}
 	wantSecret := RunSecretMetadata{
 		Name:     "env",
@@ -159,66 +159,142 @@ func TestRunSecretRedactorPreservesSecretMetadataIdentifiers(t *testing.T) {
 	}
 }
 
-func TestRunSecretRedactorRedactsRunRecordEnginePolicyAndTelemetry(t *testing.T) {
+func TestRunSecretRedactorPreservesRunRecordControlFields(t *testing.T) {
 	redactor := NewRunSecretRedactor([]ResolvedRunSecret{
-		{Name: "ENGINE_MODEL", Source: RunSecretSourceEnv, Required: true, Value: "secret-model"},
+		{Name: "EXECUTOR_MODE", Source: RunSecretSourceEnv, Required: true, Value: ExecutorModeSandbox},
+		{Name: "STATUS", Source: RunSecretSourceEnv, Required: true, Value: RunStatusRunning},
+		{Name: "ENGINE", Source: RunSecretSourceEnv, Required: true, Value: "codex"},
+		{Name: "BRANCH", Source: RunSecretSourceEnv, Required: true, Value: "hal/factory-secret"},
 	})
 
 	got := redactor.RedactRunRecord(RunRecord{
-		Engine: "codex-secret-model",
+		Status:       RunStatusRunning,
+		ExecutorMode: ExecutorModeSandbox,
+		Engine:       "codex",
+		Source: SourceMetadata{
+			Kind:       "prd",
+			Path:       "/tmp/hal/factory-secret/prd.json",
+			ReportPath: "/tmp/report-codex.json",
+			Title:      "use codex safely",
+		},
+		RepoPath:    "/tmp/work/hal/factory-secret",
+		RepoRemote:  "https://example.invalid/codex/repo.git",
+		BranchName:  "hal/factory-secret",
+		BaseBranch:  "hal/factory-secret",
+		SandboxName: "sandbox",
+		CurrentStep: RunStatusRunning,
 		Policy: &FactoryPolicy{
-			AllowedEngines:  []string{"codex-secret-model"},
-			CleanupBehavior: "preserve-secret-model",
+			AllowedEngines:  []string{"codex"},
+			CleanupBehavior: "sandbox",
+		},
+		Sandbox: &SandboxMetadata{
+			Name:           "sandbox",
+			Provider:       "codex",
+			Size:           "sandbox",
+			Status:         RunStatusRunning,
+			SSHCommand:     "ssh sandbox",
+			CleanupCommand: "delete sandbox",
 		},
 		Telemetry: &RunTelemetry{
 			StepDurations: []RunStepDuration{{
-				Step: "engine-secret-model",
+				Step: RunStatusRunning,
 			}},
 			Engine: &EngineTelemetry{
-				Name:  "codex-secret-model",
-				Model: "gpt-secret-model",
+				Name:  "codex",
+				Model: "codex",
 			},
 			Sandbox: &RunSandboxTelemetry{
-				Provider: "provider-secret-model",
-				Size:     "size-secret-model",
+				Provider: "sandbox",
+				Size:     "sandbox",
 			},
-			CIOutcome:           "ci-secret-model",
-			VerificationOutcome: "verification-secret-model",
-			FailureCategory:     "failure-secret-model",
+			CIOutcome:           RunStatusRunning,
+			VerificationOutcome: RunStatusRunning,
+			FailureCategory:     RunStatusRunning,
+		},
+		Failure: &FailureSummary{
+			Step:             RunStatusRunning,
+			Category:         RunStatusRunning,
+			Message:          "failed with codex",
+			SuggestedCommand: "retry codex",
 		},
 	})
 
-	if got.Engine != "codex-"+RunSecretRedactionPlaceholder {
-		t.Fatalf("Engine = %q, want redacted secret value", got.Engine)
+	if got.Status != RunStatusRunning {
+		t.Fatalf("Status = %q, want control field preserved", got.Status)
 	}
-	if got.Policy.AllowedEngines[0] != "codex-"+RunSecretRedactionPlaceholder {
-		t.Fatalf("Policy.AllowedEngines[0] = %q, want redacted secret value", got.Policy.AllowedEngines[0])
+	if got.ExecutorMode != ExecutorModeSandbox {
+		t.Fatalf("ExecutorMode = %q, want control field preserved", got.ExecutorMode)
 	}
-	if got.Policy.CleanupBehavior != "preserve-"+RunSecretRedactionPlaceholder {
-		t.Fatalf("Policy.CleanupBehavior = %q, want redacted secret value", got.Policy.CleanupBehavior)
+	if got.Engine != "codex" {
+		t.Fatalf("Engine = %q, want control field preserved", got.Engine)
 	}
-	if got.Telemetry.StepDurations[0].Step != "engine-"+RunSecretRedactionPlaceholder {
-		t.Fatalf("Telemetry.StepDurations[0].Step = %q, want redacted secret value", got.Telemetry.StepDurations[0].Step)
+	if got.Source.Kind != "prd" {
+		t.Fatalf("Source.Kind = %q, want control field preserved", got.Source.Kind)
 	}
-	if got.Telemetry.Engine.Name != "codex-"+RunSecretRedactionPlaceholder {
-		t.Fatalf("Telemetry.Engine.Name = %q, want redacted secret value", got.Telemetry.Engine.Name)
+	if got.BranchName != "hal/factory-secret" {
+		t.Fatalf("BranchName = %q, want control field preserved", got.BranchName)
 	}
-	if got.Telemetry.Engine.Model != "gpt-"+RunSecretRedactionPlaceholder {
-		t.Fatalf("Telemetry.Engine.Model = %q, want redacted secret value", got.Telemetry.Engine.Model)
+	if got.BaseBranch != "hal/factory-secret" {
+		t.Fatalf("BaseBranch = %q, want control field preserved", got.BaseBranch)
 	}
-	if got.Telemetry.Sandbox.Provider != "provider-"+RunSecretRedactionPlaceholder {
-		t.Fatalf("Telemetry.Sandbox.Provider = %q, want redacted secret value", got.Telemetry.Sandbox.Provider)
+	if got.SandboxName != "sandbox" {
+		t.Fatalf("SandboxName = %q, want control field preserved", got.SandboxName)
 	}
-	if got.Telemetry.Sandbox.Size != "size-"+RunSecretRedactionPlaceholder {
-		t.Fatalf("Telemetry.Sandbox.Size = %q, want redacted secret value", got.Telemetry.Sandbox.Size)
+	if got.CurrentStep != RunStatusRunning {
+		t.Fatalf("CurrentStep = %q, want control field preserved", got.CurrentStep)
 	}
-	if got.Telemetry.CIOutcome != "ci-"+RunSecretRedactionPlaceholder {
-		t.Fatalf("Telemetry.CIOutcome = %q, want redacted secret value", got.Telemetry.CIOutcome)
+	if got.Source.Path != "/tmp/"+RunSecretRedactionPlaceholder+"/prd.json" {
+		t.Fatalf("Source.Path = %q, want redacted free-form path", got.Source.Path)
 	}
-	if got.Telemetry.VerificationOutcome != "verification-"+RunSecretRedactionPlaceholder {
-		t.Fatalf("Telemetry.VerificationOutcome = %q, want redacted secret value", got.Telemetry.VerificationOutcome)
+	if got.RepoRemote != "https://example.invalid/"+RunSecretRedactionPlaceholder+"/repo.git" {
+		t.Fatalf("RepoRemote = %q, want redacted free-form remote", got.RepoRemote)
 	}
-	if got.Telemetry.FailureCategory != "failure-"+RunSecretRedactionPlaceholder {
-		t.Fatalf("Telemetry.FailureCategory = %q, want redacted secret value", got.Telemetry.FailureCategory)
+	if got.Policy.AllowedEngines[0] != "codex" {
+		t.Fatalf("Policy.AllowedEngines[0] = %q, want control field preserved", got.Policy.AllowedEngines[0])
+	}
+	if got.Policy.CleanupBehavior != "sandbox" {
+		t.Fatalf("Policy.CleanupBehavior = %q, want control field preserved", got.Policy.CleanupBehavior)
+	}
+	if got.Sandbox.Name != "sandbox" {
+		t.Fatalf("Sandbox.Name = %q, want control field preserved", got.Sandbox.Name)
+	}
+	if got.Sandbox.Provider != "codex" {
+		t.Fatalf("Sandbox.Provider = %q, want control field preserved", got.Sandbox.Provider)
+	}
+	if got.Sandbox.Status != RunStatusRunning {
+		t.Fatalf("Sandbox.Status = %q, want control field preserved", got.Sandbox.Status)
+	}
+	if got.Sandbox.Size != RunSecretRedactionPlaceholder {
+		t.Fatalf("Sandbox.Size = %q, want redacted free-form size", got.Sandbox.Size)
+	}
+	if got.Sandbox.SSHCommand != "ssh "+RunSecretRedactionPlaceholder {
+		t.Fatalf("Sandbox.SSHCommand = %q, want redacted command", got.Sandbox.SSHCommand)
+	}
+	if got.Telemetry.StepDurations[0].Step != RunStatusRunning {
+		t.Fatalf("Telemetry.StepDurations[0].Step = %q, want control field preserved", got.Telemetry.StepDurations[0].Step)
+	}
+	if got.Telemetry.Engine.Name != "codex" {
+		t.Fatalf("Telemetry.Engine.Name = %q, want control field preserved", got.Telemetry.Engine.Name)
+	}
+	if got.Telemetry.Engine.Model != RunSecretRedactionPlaceholder {
+		t.Fatalf("Telemetry.Engine.Model = %q, want redacted free-form model", got.Telemetry.Engine.Model)
+	}
+	if got.Telemetry.Sandbox.Provider != "sandbox" {
+		t.Fatalf("Telemetry.Sandbox.Provider = %q, want control field preserved", got.Telemetry.Sandbox.Provider)
+	}
+	if got.Telemetry.Sandbox.Size != RunSecretRedactionPlaceholder {
+		t.Fatalf("Telemetry.Sandbox.Size = %q, want redacted free-form size", got.Telemetry.Sandbox.Size)
+	}
+	if got.Telemetry.FailureCategory != RunStatusRunning {
+		t.Fatalf("Telemetry.FailureCategory = %q, want control field preserved", got.Telemetry.FailureCategory)
+	}
+	if got.Failure.Step != RunStatusRunning {
+		t.Fatalf("Failure.Step = %q, want control field preserved", got.Failure.Step)
+	}
+	if got.Failure.Category != RunStatusRunning {
+		t.Fatalf("Failure.Category = %q, want control field preserved", got.Failure.Category)
+	}
+	if got.Failure.Message != "failed with "+RunSecretRedactionPlaceholder {
+		t.Fatalf("Failure.Message = %q, want redacted output", got.Failure.Message)
 	}
 }
