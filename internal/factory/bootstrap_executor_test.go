@@ -306,6 +306,42 @@ func TestBootstrapSanitizersRedactCredentialedRepositoryURLParameters(t *testing
 	}
 }
 
+func TestBootstrapSanitizersRedactSCPStyleCredentialedRepositoryURL(t *testing.T) {
+	secret := "ghp_scp_repository_secret_12345"
+	userinfo := "x-access-token:" + secret
+	repositoryURL := userinfo + "@github.com:org/repo.git"
+	request := BootstrapRequest{
+		RepositoryURL: repositoryURL,
+	}
+
+	command := SanitizeBootstrapCommand(request, BootstrapCommand{
+		Name: "git",
+		Args: []string{"clone", repositoryURL, "/workspace/repo"},
+	})
+	event := SanitizeBootstrapTimelineEvent(request, BootstrapTimelineEvent{
+		CommandSummary: "git clone " + repositoryURL + " /workspace/repo",
+		OutputSummary:  "fatal: Authentication failed for '" + repositoryURL + "'",
+	})
+
+	commandData, err := json.Marshal(command)
+	if err != nil {
+		t.Fatalf("json.Marshal(command) error = %v", err)
+	}
+	eventData, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("json.Marshal(event) error = %v", err)
+	}
+	for name, data := range map[string][]byte{"command": commandData, "event": eventData} {
+		payload := string(data)
+		if strings.Contains(payload, secret) || strings.Contains(payload, userinfo) {
+			t.Fatalf("%s leaked scp-style repository URL credential: %s", name, payload)
+		}
+		if !strings.Contains(payload, bootstrapRedactedValue) {
+			t.Fatalf("%s = %s, want redaction placeholder", name, payload)
+		}
+	}
+}
+
 func TestBootstrapSanitizersRedactSerializedSecretValues(t *testing.T) {
 	secret := "pa\"ss\\word\t<>&"
 	request := BootstrapRequest{

@@ -67,6 +67,8 @@ func addURLCredentialRedactionTokens(valueSet map[string]struct{}, rawURL string
 		return
 	}
 
+	addSCPStyleURLCredentialRedactionTokens(valueSet, rawURL)
+
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return
@@ -82,6 +84,92 @@ func addURLCredentialRedactionTokens(valueSet map[string]struct{}, rawURL string
 	}
 	addURLCredentialParameterRedactionTokens(valueSet, parsed.RawQuery)
 	addURLCredentialParameterRedactionTokens(valueSet, parsed.Fragment)
+}
+
+func addSCPStyleURLCredentialRedactionTokens(valueSet map[string]struct{}, rawURL string) {
+	if strings.Contains(rawURL, "://") || !strings.Contains(rawURL, "@") {
+		return
+	}
+
+	for i := 0; i < len(rawURL); {
+		atOffset := strings.Index(rawURL[i:], "@")
+		if atOffset < 0 {
+			return
+		}
+		at := i + atOffset
+		start := at
+		for start > 0 && bootstrapSCPStyleUserinfoChar(rawURL[start-1]) {
+			start--
+		}
+		userinfo := rawURL[start:at]
+		hostStart := at + 1
+		hostEnd := hostStart
+		for hostEnd < len(rawURL) && bootstrapSCPStyleHostChar(rawURL[hostEnd]) {
+			hostEnd++
+		}
+		if userinfo == "" || hostEnd == hostStart || hostEnd >= len(rawURL) || rawURL[hostEnd] != ':' {
+			i = at + 1
+			continue
+		}
+		pathStart := hostEnd + 1
+		if pathStart >= len(rawURL) || bootstrapSCPStylePathTerminator(rawURL[pathStart]) {
+			i = at + 1
+			continue
+		}
+		if !bootstrapSCPStyleUserinfoLooksCredentialed(userinfo, rawURL[hostStart:hostEnd]) {
+			i = at + 1
+			continue
+		}
+		addBootstrapRedactionValue(valueSet, userinfo)
+		if separator := strings.LastIndex(userinfo, ":"); separator >= 0 && separator+1 < len(userinfo) {
+			addBootstrapRedactionValue(valueSet, userinfo[separator+1:])
+		}
+		i = at + 1
+	}
+}
+
+func bootstrapSCPStyleUserinfoChar(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') ||
+		(ch >= 'A' && ch <= 'Z') ||
+		(ch >= '0' && ch <= '9') ||
+		ch == '.' || ch == '_' || ch == '-' || ch == '+' || ch == ':' || ch == '%'
+}
+
+func bootstrapSCPStyleHostChar(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') ||
+		(ch >= 'A' && ch <= 'Z') ||
+		(ch >= '0' && ch <= '9') ||
+		ch == '.' || ch == '-' || ch == '_' || ch == '[' || ch == ']'
+}
+
+func bootstrapSCPStylePathTerminator(ch byte) bool {
+	switch ch {
+	case ' ', '\t', '\n', '\r', '"', '\'', '<', '>', '`':
+		return true
+	default:
+		return false
+	}
+}
+
+func bootstrapSCPStyleUserinfoLooksCredentialed(userinfo, host string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(userinfo))
+	if normalized == "" || normalized == "git" {
+		return false
+	}
+	if strings.Contains(normalized, ":") || isSensitiveBootstrapEnvKey(normalized) {
+		return true
+	}
+	for _, marker := range []string{"ghp_", "github_pat_", "glpat", "oauth", "x-access-token", "x-token-auth"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	switch strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]") {
+	case "github.com", "ssh.github.com", "gitlab.com", "bitbucket.org":
+		return true
+	default:
+		return false
+	}
 }
 
 func addURLCredentialParameterRedactionTokens(valueSet map[string]struct{}, rawParameters string) {
