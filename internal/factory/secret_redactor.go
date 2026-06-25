@@ -1,9 +1,11 @@
 package factory
 
 import (
+	"encoding/json"
 	"net/url"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/verify"
@@ -265,10 +267,40 @@ func addRunSecretRedactionCandidate(values map[string]struct{}, value string) {
 	if strings.TrimSpace(value) == "" {
 		return
 	}
+	for _, candidate := range []string{
+		value,
+		url.PathEscape(value),
+		url.QueryEscape(value),
+		runSecretUserinfoEscape(value),
+	} {
+		addRunSecretRedactionLiteral(values, candidate)
+	}
+}
+
+func addRunSecretRedactionLiteral(values map[string]struct{}, value string) {
+	if strings.TrimSpace(value) == "" {
+		return
+	}
 	values[value] = struct{}{}
-	values[url.PathEscape(value)] = struct{}{}
-	values[url.QueryEscape(value)] = struct{}{}
-	values[runSecretUserinfoEscape(value)] = struct{}{}
+	for _, encoded := range runSecretSerializedStringVariants(value) {
+		values[encoded] = struct{}{}
+	}
+}
+
+func runSecretSerializedStringVariants(value string) []string {
+	var variants []string
+	if encoded, err := json.Marshal(value); err == nil {
+		variants = append(variants, trimRunSecretQuotedString(string(encoded)))
+	}
+	variants = append(variants, trimRunSecretQuotedString(strconv.Quote(value)))
+	return variants
+}
+
+func trimRunSecretQuotedString(value string) string {
+	if len(value) >= 2 {
+		return value[1 : len(value)-1]
+	}
+	return value
 }
 
 func runSecretUserinfoEscape(value string) string {

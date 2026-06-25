@@ -1,6 +1,7 @@
 package factory
 
 import (
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -456,6 +457,65 @@ func TestSaveArtifactFileWithRedactorRedactsStoredPayload(t *testing.T) {
 	}
 	if got.SizeBytes == nil || *got.SizeBytes != int64(len(storedData)) {
 		t.Fatalf("SizeBytes = %v, want stored payload size %d", got.SizeBytes, len(storedData))
+	}
+}
+
+func TestSaveArtifactFileWithRedactorRedactsJSONEscapedStoredPayload(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	sourcePath := filepath.Join(t.TempDir(), "status.json")
+	secretValue := "quote\" slash\\ tab\t html<>&"
+	sourceData, err := json.Marshal(map[string]string{
+		"status": "token prefix " + secretValue + " suffix",
+	})
+	if err != nil {
+		t.Fatalf("marshal source artifact: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, sourceData, 0o600); err != nil {
+		t.Fatalf("write source artifact: %v", err)
+	}
+
+	record := testRunRecord("run-artifacts-redacted-json")
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
+	}
+
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{{Name: "JSON_TOKEN", Value: secretValue}})
+	got, err := store.SaveArtifactFileWithRedactor(record.RunID, ArtifactReference{
+		ID:   "status",
+		Name: "status json",
+		Type: "json",
+	}, sourcePath, redactor)
+	if err != nil {
+		t.Fatalf("SaveArtifactFileWithRedactor() unexpected error: %v", err)
+	}
+
+	absoluteStoredPath, err := store.ResolveArtifactPath(record.RunID, got.StoredPath)
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath() unexpected error: %v", err)
+	}
+	storedData, err := os.ReadFile(absoluteStoredPath)
+	if err != nil {
+		t.Fatalf("read stored artifact: %v", err)
+	}
+	escapedSecretData, err := json.Marshal(secretValue)
+	if err != nil {
+		t.Fatalf("marshal secret: %v", err)
+	}
+	escapedSecret := strings.Trim(string(escapedSecretData), `"`)
+	if strings.Contains(string(storedData), escapedSecret) {
+		t.Fatalf("stored artifact payload contains JSON-escaped secret: %q", string(storedData))
+	}
+	if !strings.Contains(string(storedData), RunSecretRedactionPlaceholder) {
+		t.Fatalf("stored artifact payload = %q, want redaction placeholder", string(storedData))
+	}
+	var decoded map[string]string
+	if err := json.Unmarshal(storedData, &decoded); err != nil {
+		t.Fatalf("stored artifact should remain valid JSON: %v", err)
+	}
+	wantStatus := "token prefix " + RunSecretRedactionPlaceholder + " suffix"
+	if decoded["status"] != wantStatus {
+		t.Fatalf("status = %q, want %q", decoded["status"], wantStatus)
 	}
 }
 
