@@ -616,14 +616,61 @@ func (w *factorySandboxTimelineWriter) appendExecutorEventLocked(eventType, summ
 		RunID:     w.runID,
 		EventType: eventType,
 		Timestamp: w.deps.now().UTC(),
-		Summary:   summary,
-		Metadata:  eventMetadata,
+		Summary:   w.redactExecutorEventString(summary),
+		Metadata:  w.redactExecutorEventMetadata(eventMetadata),
 	}
 	if err := w.deps.appendEvent(w.store, &event); err != nil {
 		return err
 	}
 	w.nextSequence++
 	return nil
+}
+
+func (w *factorySandboxTimelineWriter) redactExecutorEventString(value string) string {
+	if w.eventRedact == nil {
+		return value
+	}
+	return w.eventRedact(value)
+}
+
+func (w *factorySandboxTimelineWriter) redactExecutorEventMetadata(metadata map[string]any) map[string]any {
+	if len(metadata) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(metadata))
+	for key, value := range metadata {
+		out[w.redactExecutorEventString(key)] = w.redactExecutorEventValue(value)
+	}
+	return out
+}
+
+func (w *factorySandboxTimelineWriter) redactExecutorEventValue(value any) any {
+	switch v := value.(type) {
+	case string:
+		return w.redactExecutorEventString(v)
+	case []string:
+		out := make([]string, len(v))
+		for i, item := range v {
+			out[i] = w.redactExecutorEventString(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = w.redactExecutorEventValue(item)
+		}
+		return out
+	case map[string]string:
+		out := make(map[string]string, len(v))
+		for key, item := range v {
+			out[w.redactExecutorEventString(key)] = w.redactExecutorEventString(item)
+		}
+		return out
+	case map[string]any:
+		return w.redactExecutorEventMetadata(v)
+	default:
+		return value
+	}
 }
 
 type factorySandboxBootstrapExecutor struct {

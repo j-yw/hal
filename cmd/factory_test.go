@@ -727,6 +727,44 @@ func TestRunFactoryRunWithDepsRedactsCredentialedRemoteWithoutDeclaredSecrets(t 
 	}
 }
 
+func TestSanitizeCredentialedRemoteRedactsCredentialQueryAndFragmentValues(t *testing.T) {
+	placeholder := factory.RunSecretRedactionPlaceholder
+	tests := []struct {
+		name   string
+		remote string
+		want   string
+	}{
+		{
+			name:   "query token",
+			remote: "https://github.com/org/repo.git?token=ghp_secret_123&ref=main",
+			want:   "https://github.com/org/repo.git?token=" + placeholder + "&ref=main",
+		},
+		{
+			name:   "fragment credential",
+			remote: "https://github.com/org/repo.git?ref=main#access_token=ghp_secret_123",
+			want:   "https://github.com/org/repo.git?ref=main#access_token=" + placeholder,
+		},
+		{
+			name:   "userinfo and query credential",
+			remote: "https://x:ghp_secret_123@github.com/org/repo.git?api_key=abc123",
+			want:   "https://" + placeholder + "@github.com/org/repo.git?api_key=" + placeholder,
+		},
+		{
+			name:   "non credential query",
+			remote: "https://github.com/org/repo.git?ref=main#readme",
+			want:   "https://github.com/org/repo.git?ref=main#readme",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sanitizeCredentialedRemote(tt.remote); got != tt.want {
+				t.Fatalf("sanitizeCredentialedRemote() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunFactoryRunWithDepsMissingRequiredEnvSecretFailsBeforeSandbox(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	now := time.Date(2026, 6, 21, 10, 45, 0, 0, time.UTC)

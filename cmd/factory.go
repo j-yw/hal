@@ -4888,25 +4888,44 @@ func sanitizeCredentialedRemote(remote string) string {
 	parsed, err := url.Parse(remote)
 	if err != nil {
 		if sanitized, ok := sanitizeCredentialedRemoteAuthority(remote); ok {
-			return sanitized
+			return sanitizeCredentialedRemoteComponents(sanitized)
 		}
+		return sanitizeCredentialedRemoteComponents(remote)
+	}
+
+	changed := false
+	if parsed.User != nil {
+		userinfo := factory.RunSecretRedactionPlaceholder
+		parsed.User = nil
+		withoutUser := parsed.String()
+		prefix := parsed.Scheme + "://"
+		if parsed.Scheme == "" || !strings.HasPrefix(withoutUser, prefix) {
+			return sanitizeCredentialedRemoteComponents(remote)
+		}
+		remote = prefix + userinfo + "@" + strings.TrimPrefix(withoutUser, prefix)
+		parsed, err = url.Parse(remote)
+		if err != nil {
+			return sanitizeCredentialedRemoteComponents(remote)
+		}
+		changed = true
+	}
+	if sanitizedQuery, ok := sanitizeCredentialedRemoteParameters(parsed.RawQuery); ok {
+		parsed.RawQuery = sanitizedQuery
+		changed = true
+	}
+	if sanitizedFragment, ok := sanitizeCredentialedRemoteParameters(parsed.Fragment); ok {
+		parsed.Fragment = sanitizedFragment
+		parsed.RawFragment = sanitizedFragment
+		changed = true
+	}
+	if !changed {
 		return remote
 	}
-	if parsed.User == nil {
-		return remote
-	}
-	userinfo := factory.RunSecretRedactionPlaceholder
-	parsed.User = nil
-	withoutUser := parsed.String()
-	prefix := parsed.Scheme + "://"
-	if parsed.Scheme == "" || !strings.HasPrefix(withoutUser, prefix) {
-		return remote
-	}
-	return prefix + userinfo + "@" + strings.TrimPrefix(withoutUser, prefix)
+	return parsed.String()
 }
 
 func sanitizeCredentialedRemoteReferences(value string) string {
-	if !strings.Contains(value, "://") || !strings.Contains(value, "@") {
+	if !strings.Contains(value, "://") {
 		return value
 	}
 	var out strings.Builder
@@ -4953,4 +4972,88 @@ func sanitizeCredentialedRemoteAuthority(remote string) (string, bool) {
 		return remote, false
 	}
 	return remote[:authorityStart] + factory.RunSecretRedactionPlaceholder + "@" + remote[authorityStart+atIndex+1:], true
+}
+
+func sanitizeCredentialedRemoteComponents(remote string) string {
+	queryStart := strings.Index(remote, "?")
+	fragmentStart := strings.Index(remote, "#")
+	if queryStart < 0 && fragmentStart < 0 {
+		return remote
+	}
+
+	queryEnd := len(remote)
+	if fragmentStart >= 0 && (queryStart < 0 || fragmentStart > queryStart) {
+		queryEnd = fragmentStart
+	}
+	if queryStart >= 0 {
+		if sanitized, ok := sanitizeCredentialedRemoteParameters(remote[queryStart+1 : queryEnd]); ok {
+			remote = remote[:queryStart+1] + sanitized + remote[queryEnd:]
+			fragmentStart = strings.Index(remote, "#")
+		}
+	}
+	if fragmentStart >= 0 {
+		if sanitized, ok := sanitizeCredentialedRemoteParameters(remote[fragmentStart+1:]); ok {
+			remote = remote[:fragmentStart+1] + sanitized
+		}
+	}
+	return remote
+}
+
+func sanitizeCredentialedRemoteParameters(raw string) (string, bool) {
+	if raw == "" {
+		return raw, false
+	}
+	var out strings.Builder
+	changed := false
+	start := 0
+	for i := 0; i <= len(raw); i++ {
+		if i < len(raw) && raw[i] != '&' && raw[i] != ';' {
+			continue
+		}
+		segment := raw[start:i]
+		if sanitized, ok := sanitizeCredentialedRemoteParameter(segment); ok {
+			out.WriteString(sanitized)
+			changed = true
+		} else {
+			out.WriteString(segment)
+		}
+		if i < len(raw) {
+			out.WriteByte(raw[i])
+		}
+		start = i + 1
+	}
+	if !changed {
+		return raw, false
+	}
+	return out.String(), true
+}
+
+func sanitizeCredentialedRemoteParameter(segment string) (string, bool) {
+	eq := strings.Index(segment, "=")
+	if eq < 0 {
+		return segment, false
+	}
+	key := segment[:eq]
+	decodedKey, err := url.QueryUnescape(key)
+	if err != nil {
+		decodedKey = key
+	}
+	if !isCredentialedRemoteParameterKey(decodedKey) {
+		return segment, false
+	}
+	return key + "=" + factory.RunSecretRedactionPlaceholder, true
+}
+
+func isCredentialedRemoteParameterKey(key string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	normalized = strings.NewReplacer("-", "_", ".", "_").Replace(normalized)
+	switch normalized {
+	case "token", "access_token", "api_key", "apikey", "credential", "credentials", "password", "passwd", "secret", "client_secret", "private_token", "auth_token":
+		return true
+	default:
+		return strings.Contains(normalized, "token") ||
+			strings.Contains(normalized, "secret") ||
+			strings.Contains(normalized, "password") ||
+			strings.Contains(normalized, "credential")
+	}
 }

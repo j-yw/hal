@@ -1763,6 +1763,59 @@ func TestRunFactorySandboxExecutorWithDepsRecordsSanitizedRemoteOutputEvents(t *
 	}
 }
 
+func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromExecutorEvents(t *testing.T) {
+	now := time.Date(2026, 6, 21, 10, 20, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{Name: "factory-remote", Provider: "daytona", Status: sandbox.StatusRunning}
+	secret := "ghp_remote_command_secret_12345"
+
+	var events []factory.EventRecord
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-remote",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-remote-command-secret",
+			Status:     factory.RunStatusRunning,
+			RepoRemote: "git@github.com:example/repo.git",
+		},
+		ResolvedSecrets: []factory.ResolvedRunSecret{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+			Value:    secret,
+		}},
+		RemoteAuto: factoryRunAutoRequest{BaseBranch: "release-" + secret},
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return store, nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+			return nil
+		},
+		saveRun: func(factory.Store, *factory.RunRecord) error { return nil },
+		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
+			events = append(events, *event)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want start/end events: %#v", len(events), events)
+	}
+	eventData, err := json.Marshal(events)
+	if err != nil {
+		t.Fatalf("json.Marshal(events) error: %v", err)
+	}
+	if strings.Contains(string(eventData), secret) {
+		t.Fatalf("executor events leaked resolved secret: %s", string(eventData))
+	}
+	if !strings.Contains(string(eventData), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("executor events missing redaction marker: %s", string(eventData))
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsCanProvisionAndStartWithFakes(t *testing.T) {
 	store := factory.NewStore(t.TempDir())
 	provisioned := &sandbox.SandboxState{
