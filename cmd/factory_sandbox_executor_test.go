@@ -199,6 +199,29 @@ func TestRunFactorySandboxExecutorWithDepsAppliesCleanupPolicy(t *testing.T) {
 			if cleanupCalls != wantCleanupCalls {
 				t.Fatalf("cleanup calls = %d, want %d", cleanupCalls, wantCleanupCalls)
 			}
+			saved, err := store.LoadRun("run-sandbox")
+			if err != nil {
+				t.Fatalf("LoadRun() error: %v", err)
+			}
+			if tt.wantCleanup {
+				if saved.Sandbox == nil {
+					t.Fatal("saved sandbox metadata = nil, want cleaned metadata")
+				}
+				if saved.Sandbox.Status != sandbox.StatusUnknown {
+					t.Fatalf("saved sandbox status = %q, want unknown after cleanup", saved.Sandbox.Status)
+				}
+				if saved.Sandbox.Connection != nil || saved.Sandbox.SSHCommand != "" || saved.Sandbox.CleanupCommand != "" || saved.Sandbox.Handoff != "" {
+					t.Fatalf("saved sandbox handoff metadata = %#v, want cleared after cleanup", saved.Sandbox)
+				}
+				if tt.wantErr {
+					if saved.Failure == nil {
+						t.Fatal("saved failure = nil, want sandbox failure")
+					}
+					if saved.Failure.SuggestedCommand != factoryRunInspectCommand(saved.RunID) {
+						t.Fatalf("failure suggested command = %q, want inspect command", saved.Failure.SuggestedCommand)
+					}
+				}
+			}
 		})
 	}
 }
@@ -213,7 +236,7 @@ func TestCleanupFactorySandboxAfterRunAlwaysAttemptsCleanupAfterBeforeCleanupErr
 	cleanupErr := fmt.Errorf("delete sandbox failed")
 	cleanupCalls := 0
 
-	err := cleanupFactorySandboxAfterRun(context.Background(), factorySandboxExecutorDeps{
+	cleaned, err := cleanupFactorySandboxAfterRun(context.Background(), factorySandboxExecutorDeps{
 		cleanupSandbox: func(_ context.Context, req factorySandboxCleanupRequest) error {
 			cleanupCalls++
 			if req.Target != target {
@@ -232,6 +255,9 @@ func TestCleanupFactorySandboxAfterRunAlwaysAttemptsCleanupAfterBeforeCleanupErr
 
 	if cleanupCalls != 1 {
 		t.Fatalf("cleanup calls = %d, want 1", cleanupCalls)
+	}
+	if cleaned {
+		t.Fatal("cleanupFactorySandboxAfterRun() cleaned = true, want false when cleanup fails")
 	}
 	if err == nil {
 		t.Fatal("cleanupFactorySandboxAfterRun() error = nil, want joined error")
@@ -1498,8 +1524,8 @@ func TestRunFactorySandboxExecutorWithDepsRecordsStartFailureWithSandboxMetadata
 	if err == nil || err.Error() != "start factory sandbox \"factory-stopped\": start failed" {
 		t.Fatalf("error = %v", err)
 	}
-	if len(savedRecords) != 2 {
-		t.Fatalf("saved records = %d, want 2", len(savedRecords))
+	if len(savedRecords) != 3 {
+		t.Fatalf("saved records = %d, want 3", len(savedRecords))
 	}
 	failed := savedRecords[1]
 	if failed.Status != factory.RunStatusFailed || failed.CurrentStep != "start" {
@@ -1510,6 +1536,16 @@ func TestRunFactorySandboxExecutorWithDepsRecordsStartFailureWithSandboxMetadata
 	}
 	if failed.Sandbox.SSHCommand != "hal sandbox ssh factory-stopped" {
 		t.Fatalf("ssh command = %q", failed.Sandbox.SSHCommand)
+	}
+	cleaned := savedRecords[2]
+	if cleaned.SandboxName != "factory-stopped" || cleaned.Sandbox == nil || cleaned.Sandbox.Provider != "hetzner" || cleaned.Sandbox.Status != sandbox.StatusUnknown {
+		t.Fatalf("cleaned sandbox metadata = %#v", cleaned.Sandbox)
+	}
+	if cleaned.Sandbox.SSHCommand != "" || cleaned.Sandbox.CleanupCommand != "" || cleaned.Sandbox.Handoff != "" {
+		t.Fatalf("cleaned sandbox commands not cleared: %#v", cleaned.Sandbox)
+	}
+	if cleaned.Failure == nil || cleaned.Failure.SuggestedCommand != factoryRunInspectCommand("run-start-failure") {
+		t.Fatalf("cleaned failure suggested command = %#v", cleaned.Failure)
 	}
 	if cleanupCalls != 1 {
 		t.Fatalf("cleanup calls = %d, want 1", cleanupCalls)

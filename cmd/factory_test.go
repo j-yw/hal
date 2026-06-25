@@ -2366,7 +2366,15 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 			record := req.RunRecord
 			record.ExecutorMode = factory.ExecutorModeSandbox
 			record.SandboxName = target.Name
-			record.Sandbox = &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status}
+			record.Sandbox = &factory.SandboxMetadata{
+				Name:           target.Name,
+				Provider:       target.Provider,
+				Status:         target.Status,
+				Connection:     &factory.SandboxConnectionMetadata{Address: target.IP, PublicIP: target.IP},
+				SSHCommand:     "hal sandbox ssh " + target.Name,
+				CleanupCommand: "hal sandbox delete " + target.Name,
+				Handoff:        "Inspect sandbox with `hal sandbox ssh " + target.Name + "`.",
+			}
 			return store.SaveRun(&record)
 		},
 		loadVerify: func(string) (*verify.Config, error) {
@@ -2431,6 +2439,15 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 	}
 	if record.Status != factory.RunStatusSucceeded {
 		t.Fatalf("status = %q, want succeeded", record.Status)
+	}
+	if record.Sandbox == nil {
+		t.Fatal("sandbox metadata = nil, want cleaned metadata")
+	}
+	if record.Sandbox.Status != sandbox.StatusUnknown {
+		t.Fatalf("sandbox status = %q, want unknown after cleanup", record.Sandbox.Status)
+	}
+	if record.Sandbox.Connection != nil || record.Sandbox.SSHCommand != "" || record.Sandbox.CleanupCommand != "" || record.Sandbox.Handoff != "" {
+		t.Fatalf("sandbox handoff metadata = %#v, want cleared after cleanup", record.Sandbox)
 	}
 	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/auto-state.json")
 }
