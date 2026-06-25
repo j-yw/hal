@@ -765,11 +765,12 @@ func factorySandboxRemoteRepoExists(ctx context.Context, provider sandbox.Provid
 	if repoPath == "" || repoPath == "." {
 		return false, errFactorySandboxWorkspaceRequired
 	}
+	repoGitPath := filepath.ToSlash(filepath.Join(repoPath, ".git"))
+	quotedRepoPath := shellQuote(repoPath)
 	script := strings.Join([]string{
-		"repo=" + shellQuote(repoPath),
-		"if [ -e \"$repo/.git\" ]; then exit 0; fi",
-		"if [ ! -e \"$repo\" ]; then exit 10; fi",
-		"if [ -d \"$repo\" ] && [ -z \"$(find \"$repo\" -mindepth 1 -maxdepth 1 -print -quit)\" ]; then exit 10; fi",
+		"if [ -e " + shellQuote(repoGitPath) + " ]; then exit 0; fi",
+		"if [ ! -e " + quotedRepoPath + " ]; then exit 10; fi",
+		"if [ -d " + quotedRepoPath + " ] && [ -z \"$(find " + quotedRepoPath + " -mindepth 1 -maxdepth 1 -print -quit)\" ]; then exit 10; fi",
 		"exit 11",
 	}, "\n")
 	err := runProviderExec(ctx, provider, info, []string{"sh", "-lc", script}, io.Discard)

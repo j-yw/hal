@@ -1901,7 +1901,7 @@ func TestFactorySandboxRemoteRepoExistsUsesRemoteExitCodes(t *testing.T) {
 			if got != tt.want {
 				t.Fatalf("exists = %v, want %v", got, tt.want)
 			}
-			if len(gotArgs) != 3 || gotArgs[0] != "sh" || gotArgs[1] != "-lc" || !strings.Contains(gotArgs[2], "repo='/workspace/hal'") {
+			if len(gotArgs) != 3 || gotArgs[0] != "sh" || gotArgs[1] != "-lc" || !strings.Contains(gotArgs[2], "[ -e '/workspace/hal/.git' ]") {
 				t.Fatalf("remote repo check args = %#v", gotArgs)
 			}
 		})
