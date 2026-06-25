@@ -986,17 +986,6 @@ func recordFactoryRunPreExecutionPolicyDecisions(store factory.Store, runID stri
 			errs = append(errs, err)
 		}
 	}
-	if !policy.MergeAllowed {
-		decision := factory.PolicyDecisionMetadata{
-			PolicyField: "factory.policy.mergeAllowed",
-			Decision:    factory.PolicyDecisionBlockedGate,
-			Outcome:     factory.PolicyOutcomeBlocked,
-			Reason:      "merge disabled by policy",
-		}
-		if err := recordFactoryPolicyDecision(store, runID, now(), decision); err != nil {
-			errs = append(errs, err)
-		}
-	}
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
