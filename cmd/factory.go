@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -1110,6 +1111,11 @@ func collectAndStoreFactorySandboxArtifactsWithProviderExec(ctx context.Context,
 	if len(requests) == 0 {
 		return nil
 	}
+	var err error
+	requests, err = factorySandboxRemoteWorkspaceArtifactRequests(record, requests)
+	if err != nil {
+		return err
+	}
 	copier := factoryProviderExecSandboxArtifactCopier{
 		provider:        provider,
 		connectInfo:     sandbox.ConnectInfoFromState(target),
@@ -1119,6 +1125,23 @@ func collectAndStoreFactorySandboxArtifactsWithProviderExec(ctx context.Context,
 		return fmt.Errorf("collect sandbox factory artifacts before cleanup: %w", err)
 	}
 	return nil
+}
+
+func factorySandboxRemoteWorkspaceArtifactRequests(record factory.RunRecord, requests []factory.SandboxArtifactRequest) ([]factory.SandboxArtifactRequest, error) {
+	workspaceDir := strings.TrimSpace(factorySandboxRemoteWorkspaceDir(record))
+	normalized := make([]factory.SandboxArtifactRequest, 0, len(requests))
+	for _, request := range requests {
+		remotePath := strings.TrimSpace(request.RemotePath)
+		if remotePath != "" && !path.IsAbs(remotePath) {
+			if workspaceDir == "" {
+				return nil, errFactorySandboxWorkspaceRequired
+			}
+			remotePath = path.Join(filepath.ToSlash(workspaceDir), filepath.ToSlash(remotePath))
+		}
+		request.RemotePath = remotePath
+		normalized = append(normalized, request)
+	}
+	return normalized, nil
 }
 
 func failFactoryRunAfterArtifactCollectionFailure(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, runningRecord factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, artifactErr error) (factoryRunExecutionResult, error) {

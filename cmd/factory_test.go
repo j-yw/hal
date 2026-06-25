@@ -2864,6 +2864,7 @@ func TestCleanupFactoryRunDeferredSandboxCopiesArtifactsWithProviderExecBeforeCl
 		RunID:        "run-copy-before-cleanup",
 		Status:       factory.RunStatusRunning,
 		ExecutorMode: factory.ExecutorModeSandbox,
+		RepoRemote:   "git@github.com:jywlabs/hal.git",
 		SandboxName:  target.Name,
 		Sandbox:      &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status},
 		CreatedAt:    time.Date(2026, 6, 21, 1, 7, 0, 0, time.UTC),
@@ -2919,7 +2920,7 @@ func TestCleanupFactoryRunDeferredSandboxCopiesArtifactsWithProviderExecBeforeCl
 				ID:         "sandbox-auto-state",
 				Name:       "sandbox-auto-state",
 				Type:       "json",
-				RemotePath: "/workspace/hal/.hal/auto-state.json",
+				RemotePath: ".hal/auto-state.json",
 				Path:       ".hal/auto-state.json",
 			}}
 		},

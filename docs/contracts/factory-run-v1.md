@@ -83,6 +83,7 @@ Known event type values currently include:
 - `verification_result`
 - `ci_state`
 - `artifact_sync`
+- `policy_decision`
 - `failure_classification`
 
 ## Telemetry
