@@ -3031,6 +3031,7 @@ func TestRunFactoryRunWithDepsTreatsVerificationFailureAsAdvisoryByDefault(t *te
 		factory.EventTypeStepStarted,
 		factory.EventTypeVerificationResult,
 		factory.EventTypePolicyDecision,
+		factory.EventTypeStepEnded,
 	})
 	if events[4].Metadata["status"] != verify.StatusFail {
 		t.Fatalf("verification result status = %#v, want %q", events[4].Metadata["status"], verify.StatusFail)
@@ -3041,6 +3042,21 @@ func TestRunFactoryRunWithDepsTreatsVerificationFailureAsAdvisoryByDefault(t *te
 		Outcome:     factory.PolicyOutcomeAllowed,
 		Reason:      "verification not required; advisory failure did not block",
 	})
+	if events[6].Metadata["step"] != factory.RunDurationStepVerification {
+		t.Fatalf("advisory verification failure event step = %#v, want %q", events[6].Metadata["step"], factory.RunDurationStepVerification)
+	}
+	if events[6].Metadata["status"] != factory.RunStatusFailed {
+		t.Fatalf("advisory verification failure event status = %#v, want %q", events[6].Metadata["status"], factory.RunStatusFailed)
+	}
+	if events[6].Metadata["advisory"] != true {
+		t.Fatalf("advisory verification failure event advisory = %#v, want true", events[6].Metadata["advisory"])
+	}
+	if events[6].Metadata["blocking"] != false {
+		t.Fatalf("advisory verification failure event blocking = %#v, want false", events[6].Metadata["blocking"])
+	}
+	if got, ok := events[6].Metadata["error"].(string); !ok || !strings.Contains(got, "verification failed") {
+		t.Fatalf("advisory verification failure event error = %#v, want verification failure", events[6].Metadata["error"])
+	}
 }
 
 func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) {

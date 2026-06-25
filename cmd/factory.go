@@ -1306,6 +1306,9 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 			if err := recordFactoryPolicyDecision(store, record.RunID, finishedAt, decision); err != nil {
 				return record, finishedAt, fmt.Errorf("record factory verification policy decision: %w", err)
 			}
+			if err := recordFactoryRunVerificationAdvisoryFailed(store, record.RunID, finishedAt, newFactoryRunVerificationFailure(result)); err != nil {
+				return record, finishedAt, fmt.Errorf("record factory advisory verification failure event: %w", err)
+			}
 			return record, finishedAt, nil
 		}
 		decision := factory.PolicyDecisionMetadata{
@@ -2713,6 +2716,20 @@ func recordFactoryRunVerificationFailed(store factory.Store, runID string, now t
 			"step":   factory.RunDurationStepVerification,
 			"status": factory.RunStatusFailed,
 			"error":  verificationErr.Error(),
+		},
+	})
+}
+
+func recordFactoryRunVerificationAdvisoryFailed(store factory.Store, runID string, now time.Time, verificationErr error) error {
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepEnded,
+		Summary:   "Verification failed (advisory)",
+		Metadata: map[string]any{
+			"step":     factory.RunDurationStepVerification,
+			"status":   factory.RunStatusFailed,
+			"advisory": true,
+			"blocking": false,
+			"error":    verificationErr.Error(),
 		},
 	})
 }
