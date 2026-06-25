@@ -25,7 +25,7 @@ type FactoryPolicy struct {
 	MaxCIFixAttempts     int      `json:"maxCiFixAttempts" yaml:"maxCiFixAttempts"`
 	VerificationRequired bool     `json:"verificationRequired" yaml:"verificationRequired"`
 	PRCreationAllowed    bool     `json:"prCreationAllowed" yaml:"prCreationAllowed"`
-	MergeAllowed         bool     `json:"mergeAllowed" yaml:"mergeAllowed"`
+	MergeAllowed         bool     `json:"mergeAllowed" yaml:"mergeAllowed"` // gates non-dry-run merge automation
 	CleanupBehavior      string   `json:"cleanupBehavior" yaml:"cleanupBehavior"`
 }
 

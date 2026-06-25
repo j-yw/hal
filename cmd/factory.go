@@ -502,11 +502,11 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	if err := recordFactoryRunStarted(store, record); err != nil {
 		return err
 	}
-	policy, err := loadFactoryRunPolicy(dir, deps)
+	creationPolicy, err := loadFactoryRunPolicy(dir, deps)
 	if err != nil {
 		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), fmt.Errorf("load factory policy: %w", err), nil)
 	}
-	record, err = persistFactoryRunPolicySnapshot(store, record, policy)
+	record, err = persistFactoryRunPolicySnapshot(store, record, creationPolicy)
 	if err != nil {
 		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
 	}
@@ -518,11 +518,11 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	if err != nil {
 		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
 	}
-	if err := enforceFactoryRunCreationPolicy(store, record, out, req.JSON, deps, policy, engineName); err != nil {
+	if err := enforceFactoryRunCreationPolicy(store, record, out, req.JSON, deps, creationPolicy, engineName); err != nil {
 		return err
 	}
 
-	result, execErr := executeFactoryRun(ctx, dir, req, out, store, record, deps, policy, engineName)
+	result, execErr := executeFactoryRun(ctx, dir, req, out, store, record, deps, creationPolicy, engineName)
 	if result.Render {
 		if renderErr := renderFactoryRunResult(out, store, result.Record.RunID, req.JSON); renderErr != nil {
 			if execErr != nil {

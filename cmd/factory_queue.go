@@ -505,9 +505,11 @@ func markFactoryQueueRunFailed(store factory.Store, entry factory.QueueEntry, ca
 }
 
 func factoryRunRequestFromQueueRecord(record factory.RunRecord) factoryRunRequest {
+	baseBranch := strings.TrimSpace(record.BaseBranch)
+	executorMode := strings.TrimSpace(record.ExecutorMode)
 	req := factoryRunRequest{
-		BaseBranch: strings.TrimSpace(record.BaseBranch),
-		Sandbox:    strings.TrimSpace(record.ExecutorMode) == factory.ExecutorModeSandbox,
+		BaseBranch: baseBranch,
+		Sandbox:    executorMode == factory.ExecutorModeSandbox,
 	}
 	switch record.Source.Kind {
 	case factory.SourceKindMarkdown:

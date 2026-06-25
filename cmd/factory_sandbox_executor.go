@@ -305,7 +305,9 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	}); err != nil {
 		return err
 	}
-	cleanupSucceeded = true
+	if !req.DeferSuccessCleanup {
+		cleanupSucceeded = true
+	}
 	return nil
 }
 
