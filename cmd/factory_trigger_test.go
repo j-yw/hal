@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -417,6 +418,77 @@ func TestRunFactoryTriggerWithDepsPersistsSecretRequirementsForQueueWorker(t *te
 	wantSecrets := []factory.RunSecretInput{{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true}}
 	if !reflect.DeepEqual(req.Secrets, wantSecrets) {
 		t.Fatalf("queue request secrets = %#v, want %#v", req.Secrets, wantSecrets)
+	}
+}
+
+func TestRunFactoryTriggerWithDepsRedactsPolicyLoadFailureWithSecret(t *testing.T) {
+	repoDir := t.TempDir()
+	halDir := filepath.Join(repoDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 22, 2, 0, 0, time.UTC)
+	secretValue := "ghp_policy_load_secret_12345"
+	deps := factoryTriggerTestDeps(store, now, "run-trigger-policy-load-secret", "queue-trigger-policy-load-secret")
+	deps.lookupEnv = func(name string) (string, bool) {
+		if name != "GITHUB_TOKEN" {
+			t.Fatalf("lookup env name = %q, want GITHUB_TOKEN", name)
+		}
+		return secretValue, true
+	}
+	deps.loadPolicy = func(string) (*factory.FactoryPolicy, error) {
+		return nil, errors.New("policy read failed: " + secretValue)
+	}
+
+	var out bytes.Buffer
+	err := runFactoryTriggerWithDeps(&out, factoryTriggerRequest{
+		RepoPath:     repoDir,
+		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
+		ExecutorMode: factory.ExecutorModeSandbox,
+		JSON:         true,
+		Secrets: []factory.RunSecretInput{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+		}},
+	}, deps)
+	if err == nil {
+		t.Fatal("runFactoryTriggerWithDeps() error = nil, want policy load failure")
+	}
+	if strings.Contains(err.Error(), secretValue) {
+		t.Fatalf("error leaked secret value: %v", err)
+	}
+	if strings.Contains(out.String(), secretValue) {
+		t.Fatalf("trigger JSON leaked secret value: %s", out.String())
+	}
+
+	var resp FactoryTriggerResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal output error: %v\n%s", err, out.String())
+	}
+	if resp.Run.Failure == nil {
+		t.Fatal("response failure = nil, want redacted policy load failure")
+	}
+	if strings.Contains(resp.Run.Failure.Message, secretValue) {
+		t.Fatalf("response failure leaked secret value: %q", resp.Run.Failure.Message)
+	}
+	if !strings.Contains(resp.Run.Failure.Message, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("response failure = %q, want redaction placeholder", resp.Run.Failure.Message)
+	}
+
+	record, err := store.LoadRun("run-trigger-policy-load-secret")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Failure == nil {
+		t.Fatal("stored failure = nil, want redacted policy load failure")
+	}
+	if strings.Contains(record.Failure.Message, secretValue) {
+		t.Fatalf("stored failure leaked secret value: %q", record.Failure.Message)
 	}
 }
 

@@ -272,33 +272,25 @@ func runFactoryTriggerWithDeps(out io.Writer, req factoryTriggerRequest, deps fa
 		loadPolicy: deps.loadPolicy,
 	})
 	if err != nil {
-		return failFactoryTriggerRunCreation(store, record, out, req.JSON, deps.now(), fmt.Errorf("load factory policy: %w", err), nil)
+		return failFactoryTriggerRunCreationWithRedactor(store, record, out, req.JSON, deps.now(), fmt.Errorf("load factory policy: %w", err), nil, triggerRedactor)
 	}
-	record, err = persistFactoryRunPolicySnapshot(store, record, policy)
+	record, err = persistFactoryRunPolicySnapshotWithRedactor(store, record, policy, triggerRedactor)
 	if err != nil {
-		return failFactoryTriggerRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
-	}
-	record = redactFactoryRunRecordForStorage(record, triggerRedactor)
-	if err := store.SaveRun(&record); err != nil {
-		return failFactoryTriggerRunCreation(store, record, out, req.JSON, deps.now(), fmt.Errorf("sanitize triggered factory policy snapshot: %w", err), nil)
+		return failFactoryTriggerRunCreationWithRedactor(store, record, out, req.JSON, deps.now(), err, nil, triggerRedactor)
 	}
 	engineName, err := resolveFactoryRunEngine(repoPath, factoryRunDeps{
 		loadEngine: deps.loadEngine,
 	})
 	if err != nil {
-		return failFactoryTriggerRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
+		return failFactoryTriggerRunCreationWithRedactor(store, record, out, req.JSON, deps.now(), err, nil, triggerRedactor)
 	}
-	record, err = persistFactoryRunEngineSnapshot(store, record, engineName)
+	record, err = persistFactoryRunEngineSnapshotWithRedactor(store, record, engineName, triggerRedactor)
 	if err != nil {
-		return failFactoryTriggerRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
+		return failFactoryTriggerRunCreationWithRedactor(store, record, out, req.JSON, deps.now(), err, nil, triggerRedactor)
 	}
-	record = redactFactoryRunRecordForStorage(record, triggerRedactor)
-	if err := store.SaveRun(&record); err != nil {
-		return failFactoryTriggerRunCreation(store, record, out, req.JSON, deps.now(), fmt.Errorf("sanitize triggered factory engine snapshot: %w", err), nil)
-	}
-	if err := enforceFactoryTriggerCreationPolicy(store, record, out, req.JSON, factoryRunDeps{
+	if err := enforceFactoryTriggerCreationPolicyWithRedactor(store, record, out, req.JSON, factoryRunDeps{
 		now: deps.now,
-	}, policy, engineName); err != nil {
+	}, policy, engineName, triggerRedactor); err != nil {
 		return err
 	}
 
@@ -310,7 +302,7 @@ func runFactoryTriggerWithDeps(out io.Writer, req factoryTriggerRequest, deps fa
 	})
 	if err != nil {
 		enqueueErr := fmt.Errorf("enqueue triggered factory run %q: %w", record.RunID, err)
-		if failErr := markTriggeredFactoryRunEnqueueFailed(store, safeRecord, enqueueErr, deps.now()); failErr != nil {
+		if failErr := markTriggeredFactoryRunEnqueueFailed(store, record, enqueueErr, deps.now(), triggerRedactor); failErr != nil {
 			return errors.Join(enqueueErr, fmt.Errorf("mark triggered factory run failed after enqueue failure: %w", failErr))
 		}
 		return enqueueErr
@@ -539,21 +531,21 @@ func recordFactoryRunTriggered(store factory.Store, record factory.RunRecord, tr
 	})
 }
 
-func markTriggeredFactoryRunEnqueueFailed(store factory.Store, record factory.RunRecord, enqueueErr error, now time.Time) error {
+func markTriggeredFactoryRunEnqueueFailed(store factory.Store, record factory.RunRecord, enqueueErr error, now time.Time, redactor factory.RunSecretRedactor) error {
 	record.CurrentStep = factory.QueueStatusQueued
-	failedRecord, err := markFactoryRunFailed(store, record, now, enqueueErr)
+	failedRecord, err := markFactoryRunFailedWithRedactor(store, record, now, enqueueErr, redactor)
 	if err != nil {
 		return err
 	}
 
-	if err := appendFactoryRunTimelineEvent(store, failedRecord.RunID, now, factoryTimelineEvent{
+	if err := appendFactoryRunTimelineEventWithRedactor(store, failedRecord.RunID, now, factoryTimelineEvent{
 		EventType: factory.EventTypeCommandOutputSummary,
 		Summary:   "Factory run enqueue failed",
 		Metadata: map[string]any{
 			"status": factory.RunStatusFailed,
 			"error":  strings.TrimSpace(enqueueErr.Error()),
 		},
-	}); err != nil {
+	}, redactor); err != nil {
 		return err
 	}
 	if failedRecord.Failure != nil {
@@ -565,29 +557,37 @@ func markTriggeredFactoryRunEnqueueFailed(store factory.Store, record factory.Ru
 }
 
 func enforceFactoryTriggerCreationPolicy(store factory.Store, record factory.RunRecord, out io.Writer, jsonMode bool, deps factoryRunDeps, policy factory.FactoryPolicy, engineName string) error {
+	return enforceFactoryTriggerCreationPolicyWithRedactor(store, record, out, jsonMode, deps, policy, engineName, factory.RunSecretRedactor{})
+}
+
+func enforceFactoryTriggerCreationPolicyWithRedactor(store factory.Store, record factory.RunRecord, out io.Writer, jsonMode bool, deps factoryRunDeps, policy factory.FactoryPolicy, engineName string, redactor factory.RunSecretRedactor) error {
 	rejection := factoryRunCreationPolicyRejection(policy, record.ExecutorMode, engineName)
 	if rejection == nil {
 		return nil
 	}
 
 	decision := rejection.policyDecisionMetadata()
-	return failFactoryTriggerRunCreation(store, record, out, jsonMode, deps.now(), rejection, &decision)
+	return failFactoryTriggerRunCreationWithRedactor(store, record, out, jsonMode, deps.now(), rejection, &decision, redactor)
 }
 
 func failFactoryTriggerRunCreation(store factory.Store, record factory.RunRecord, out io.Writer, jsonMode bool, failedAt time.Time, cause error, decision *factory.PolicyDecisionMetadata) error {
+	return failFactoryTriggerRunCreationWithRedactor(store, record, out, jsonMode, failedAt, cause, decision, factory.RunSecretRedactor{})
+}
+
+func failFactoryTriggerRunCreationWithRedactor(store factory.Store, record factory.RunRecord, out io.Writer, jsonMode bool, failedAt time.Time, cause error, decision *factory.PolicyDecisionMetadata, redactor factory.RunSecretRedactor) error {
 	failOut := out
 	failJSON := jsonMode
 	if jsonMode {
 		failOut = io.Discard
 		failJSON = false
 	}
-	err := failFactoryRunCreation(store, record, failOut, failJSON, failedAt, cause, decision)
+	err := failFactoryRunCreationWithRedactor(store, record, failOut, failJSON, failedAt, cause, decision, redactor)
 	if jsonMode {
 		if renderErr := renderFactoryTriggerFailureResult(out, store, record.RunID); renderErr != nil {
-			return errors.Join(err, renderErr)
+			return redactFactoryRunError(errors.Join(err, renderErr), redactor)
 		}
 	}
-	return err
+	return redactFactoryRunError(err, redactor)
 }
 
 func renderFactoryTriggerFailureResult(out io.Writer, store factory.Store, runID string) error {
