@@ -1842,6 +1842,28 @@ func TestRunFactorySandboxProviderExecWithEnvUsesStdinScriptWithoutArgSecrets(t 
 	}
 }
 
+func TestFactorySandboxBootstrapExecutorReportsRemoteExitCode(t *testing.T) {
+	provider := &capturingFactorySandboxProvider{
+		cmd: exec.Command("sh", "-c", "exit 7"),
+	}
+	executor := &factorySandboxBootstrapExecutor{
+		provider:               provider,
+		connectInfo:            &sandbox.ConnectInfo{Name: "factory-dev"},
+		runProviderExecWithEnv: runFactorySandboxProviderExecWithEnv,
+	}
+
+	result, err := executor.Run(context.Background(), factory.BootstrapCommand{
+		Name: "git",
+		Args: []string{"show-ref", "--verify", "--quiet", "refs/heads/missing"},
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want remote exit error")
+	}
+	if result.ExitCode != 7 {
+		t.Fatalf("exit code = %d, want 7", result.ExitCode)
+	}
+}
+
 func TestFactorySandboxEnvExecScriptRejectsInvalidEnvNames(t *testing.T) {
 	_, err := factorySandboxEnvExecScript([]string{"hal", "auto"}, map[string]string{
 		"BAD-NAME": "secret",

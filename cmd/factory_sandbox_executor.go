@@ -734,8 +734,22 @@ func (e *factorySandboxBootstrapExecutor) Run(ctx context.Context, command facto
 		}
 	}
 	return factory.BootstrapCommandResult{
+		ExitCode:      factorySandboxExecExitCode(err),
 		OutputSummary: strings.TrimSpace(summary.String()),
 	}, err
+}
+
+func factorySandboxExecExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr interface {
+		ExitCode() int
+	}
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return 0
 }
 
 type factorySandboxBootstrapOutputWriter struct {
