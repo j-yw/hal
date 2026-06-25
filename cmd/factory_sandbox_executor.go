@@ -156,6 +156,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	if err := saveFactorySandboxRunRecordWithRedactor(store, deps, &record, secretRedactor); err != nil {
 		return fmt.Errorf("save sandbox factory run: %w", err)
 	}
+	provisionRepo := redactFactorySandboxProvisionRepo(record, secretRedactor)
 
 	if factorySandboxRemoteWorkspaceDir(record) == "" {
 		_ = recordFactorySandboxFailure(store, deps, &record, nil, "prepare_inputs", errFactorySandboxWorkspaceRequired, secretRedactor)
@@ -174,7 +175,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 				ProjectDir: req.ProjectDir,
 				Name:       name,
 				BranchName: record.BranchName,
-				Repo:       record.RepoRemote,
+				Repo:       provisionRepo,
 				Out:        req.RemoteOutput,
 			})
 			if err != nil {
@@ -199,7 +200,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 					ProjectDir: req.ProjectDir,
 					Name:       name,
 					BranchName: record.BranchName,
-					Repo:       record.RepoRemote,
+					Repo:       provisionRepo,
 					Out:        req.RemoteOutput,
 				})
 				if err != nil {
@@ -1427,6 +1428,10 @@ func saveFactorySandboxRunRecordWithRedactor(store factory.Store, deps factorySa
 	}
 	safeRecord := redactFactoryRunRecordForStorage(*record, redactor)
 	return deps.saveRun(store, &safeRecord)
+}
+
+func redactFactorySandboxProvisionRepo(record factory.RunRecord, redactor factory.RunSecretRedactor) string {
+	return redactFactoryRunRecordForStorage(record, redactor).RepoRemote
 }
 
 func appendFactorySandboxTimelineEvent(store factory.Store, event *factory.EventRecord) error {

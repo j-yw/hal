@@ -1821,6 +1821,9 @@ func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromExecutorEven
 
 func TestRunFactorySandboxExecutorWithDepsCanProvisionAndStartWithFakes(t *testing.T) {
 	store := factory.NewStore(t.TempDir())
+	secret := "ghp_provision_repo_secret_12345"
+	rawRemote := "https://x:" + secret + "@github.com/example/repo.git"
+	redactedRemote := "https://" + factory.RunSecretRedactionPlaceholder + "@github.com/example/repo.git"
 	provisioned := &sandbox.SandboxState{
 		Name:     "factory-new",
 		Provider: "hetzner",
@@ -1837,8 +1840,12 @@ func TestRunFactorySandboxExecutorWithDepsCanProvisionAndStartWithFakes(t *testi
 		SandboxName: "factory-new",
 		RunRecord: factory.RunRecord{
 			RunID:      "run-provision",
-			RepoRemote: "git@github.com:example/repo.git",
+			RepoRemote: rawRemote,
 		},
+		ResolvedSecrets: []factory.ResolvedRunSecret{{
+			Name:  "GITHUB_TOKEN",
+			Value: secret,
+		}},
 	}, factorySandboxExecutorDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
 		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
@@ -1872,8 +1879,11 @@ func TestRunFactorySandboxExecutorWithDepsCanProvisionAndStartWithFakes(t *testi
 	if err != nil {
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
-	if provisionReq.ProjectDir != "/repo" || provisionReq.Name != "factory-new" || provisionReq.Repo != "git@github.com:example/repo.git" {
+	if provisionReq.ProjectDir != "/repo" || provisionReq.Name != "factory-new" || provisionReq.Repo != redactedRemote {
 		t.Fatalf("provision request = %#v", provisionReq)
+	}
+	if strings.Contains(provisionReq.Repo, secret) {
+		t.Fatalf("provision repo label leaked secret: %q", provisionReq.Repo)
 	}
 	if provisionReq.BranchName != "" {
 		t.Fatalf("provision branchName = %q, want empty", provisionReq.BranchName)
