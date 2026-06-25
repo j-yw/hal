@@ -65,6 +65,9 @@ var createArchiveWithOptions = archive.CreateWithOptions
 // workingTreeChangesInDirFn points to WorkingTreeChangesInDir and is overridden in tests.
 var workingTreeChangesInDirFn = WorkingTreeChangesInDir
 
+// workingTreeSnapshotInDirFn points to WorkingTreeSnapshotInDir and is overridden in tests.
+var workingTreeSnapshotInDirFn = WorkingTreeSnapshotInDir
+
 // gitAddAllInDirFn points to defaultGitAddAllInDir and is overridden in tests.
 var gitAddAllInDirFn = defaultGitAddAllInDir
 
@@ -1176,7 +1179,20 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 		var result *ReviewLoopResult
 		var err error
 		if atReviewFixLimit {
+			snapshotBefore, snapshotErr := workingTreeSnapshotInDirFn(p.dir)
+			if snapshotErr != nil {
+				state.Review.Status = "failed"
+				return fmt.Errorf("failed to snapshot working tree before non-mutating review validation: %w", snapshotErr)
+			}
 			result, err = runReviewValidationWithDisplay(ctx, p.engine, p.display, baseBranch)
+			if mutationErr := p.ensureReviewValidationDidNotMutate(snapshotBefore); mutationErr != nil {
+				state.Review.Status = "failed"
+				state.Step = StepReview
+				if saveErr := p.saveState(state); saveErr != nil {
+					return fmt.Errorf("review gate blocked: %w (also failed to save state: %v)", mutationErr, saveErr)
+				}
+				return fmt.Errorf("review gate blocked: %w", mutationErr)
+			}
 		} else {
 			if opts.MaxReviewFixAttempts > 0 {
 				state.Review.FixAttempts++
@@ -1263,6 +1279,22 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 		return fmt.Errorf("review gate blocked: clean streak %d/%d not reached within %d cycle(s); rerun `hal auto --resume` to continue review fixes (last valid issues: %d) (also failed to save state: %v)", cleanStreak, cleanStreakRequired, maxCycles, lastValidIssues, saveErr)
 	}
 	return fmt.Errorf("review gate blocked: clean streak %d/%d not reached within %d cycle(s); rerun `hal auto --resume` to continue review fixes (last valid issues: %d)", cleanStreak, cleanStreakRequired, maxCycles, lastValidIssues)
+}
+
+func (p *Pipeline) ensureReviewValidationDidNotMutate(snapshotBefore string) error {
+	snapshotAfter, err := workingTreeSnapshotInDirFn(p.dir)
+	if err != nil {
+		return fmt.Errorf("inspect working tree after non-mutating review validation: %w", err)
+	}
+	if snapshotAfter == snapshotBefore {
+		return nil
+	}
+
+	paths, pathsErr := workingTreeChangesInDirFn(p.dir)
+	if pathsErr == nil && len(paths) > 0 {
+		return fmt.Errorf("non-mutating review validation changed working tree: %s", strings.Join(paths, ", "))
+	}
+	return fmt.Errorf("non-mutating review validation changed working tree or HEAD")
 }
 
 func reviewFixPolicyLimitError(attempts, limit int) *PolicyLimitError {

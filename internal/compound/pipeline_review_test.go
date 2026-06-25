@@ -606,6 +606,7 @@ func TestRunReviewStep_MaxReviewFixAttemptsAllowsCleanValidationAfterLimit(t *te
 		},
 	}
 	stubCleanReviewFinalVerification(t, pipeline, state.BranchName)
+	stubStableReviewValidationSnapshot(t)
 
 	calls := 0
 	origReviewLoop := runReviewLoopWithDisplay
@@ -640,6 +641,73 @@ func TestRunReviewStep_MaxReviewFixAttemptsAllowsCleanValidationAfterLimit(t *te
 	}
 }
 
+func TestRunReviewStep_MaxReviewFixAttemptsBlocksValidationMutation(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+
+	state := &PipelineState{
+		Step:       StepReview,
+		BaseBranch: "develop",
+		BranchName: "hal/review-policy",
+		StartedAt:  time.Now(),
+		Review: &ReviewState{
+			FixAttempts: 1,
+		},
+	}
+
+	origReviewLoop := runReviewLoopWithDisplay
+	runReviewLoopWithDisplay = func(context.Context, engine.Engine, *engine.Display, string, int) (*ReviewLoopResult, error) {
+		t.Fatal("mutating review loop should not run after max review fix attempts is reached")
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		runReviewLoopWithDisplay = origReviewLoop
+	})
+	origValidation := runReviewValidationWithDisplay
+	runReviewValidationWithDisplay = func(context.Context, engine.Engine, *engine.Display, string) (*ReviewLoopResult, error) {
+		return &ReviewLoopResult{Iterations: []ReviewLoopIteration{{Iteration: 1, ValidIssues: 0, FixesApplied: 0}}}, nil
+	}
+	t.Cleanup(func() {
+		runReviewValidationWithDisplay = origValidation
+	})
+	snapshots := []string{"before", "after"}
+	snapshotCalls := 0
+	origSnapshot := workingTreeSnapshotInDirFn
+	workingTreeSnapshotInDirFn = func(string) (string, error) {
+		if snapshotCalls >= len(snapshots) {
+			return snapshots[len(snapshots)-1], nil
+		}
+		snapshot := snapshots[snapshotCalls]
+		snapshotCalls++
+		return snapshot, nil
+	}
+	t.Cleanup(func() {
+		workingTreeSnapshotInDirFn = origSnapshot
+	})
+	origChanges := workingTreeChangesInDirFn
+	workingTreeChangesInDirFn = func(string) ([]string, error) {
+		return []string{"app/page.tsx"}, nil
+	}
+	t.Cleanup(func() {
+		workingTreeChangesInDirFn = origChanges
+	})
+
+	err := pipeline.runReviewStep(context.Background(), state, RunOptions{MaxReviewFixAttempts: 1})
+	if err == nil {
+		t.Fatal("expected runReviewStep to fail when validation mutates the working tree")
+	}
+	if !strings.Contains(err.Error(), "non-mutating review validation changed working tree") {
+		t.Fatalf("error = %q, want validation mutation error", err.Error())
+	}
+	if state.Review.Status != "failed" || state.Step != StepReview {
+		t.Fatalf("state = %+v, want failed review at review step", state)
+	}
+	if snapshotCalls != 2 {
+		t.Fatalf("snapshot calls = %d, want before and after snapshots", snapshotCalls)
+	}
+}
+
 func TestRunReviewStep_CountsReviewFixAttempts(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultAutoConfig()
@@ -652,6 +720,7 @@ func TestRunReviewStep_CountsReviewFixAttempts(t *testing.T) {
 		StartedAt:  time.Now(),
 	}
 	stubCleanReviewFinalVerification(t, pipeline, state.BranchName)
+	stubStableReviewValidationSnapshot(t)
 
 	calls := 0
 	origReviewLoop := runReviewLoopWithDisplay
@@ -704,6 +773,7 @@ func TestRunReviewStep_MaxReviewFixAttemptsBlocksAdditionalFixCycle(t *testing.T
 			FixAttempts: 1,
 		},
 	}
+	stubStableReviewValidationSnapshot(t)
 
 	calls := 0
 	origReviewLoop := runReviewLoopWithDisplay
@@ -804,4 +874,11 @@ func stubCleanReviewFinalVerification(t *testing.T, pipeline *Pipeline, branch s
 	workingTreeChangesInDirFn = func(string) ([]string, error) { return nil, nil }
 	t.Cleanup(func() { workingTreeChangesInDirFn = origChanges })
 	pipeline.currentBranch = func(string) (string, error) { return branch, nil }
+}
+
+func stubStableReviewValidationSnapshot(t *testing.T) {
+	t.Helper()
+	origSnapshot := workingTreeSnapshotInDirFn
+	workingTreeSnapshotInDirFn = func(string) (string, error) { return "stable", nil }
+	t.Cleanup(func() { workingTreeSnapshotInDirFn = origSnapshot })
 }
