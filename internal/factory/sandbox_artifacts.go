@@ -106,7 +106,7 @@ func collectSandboxArtifact(ctx context.Context, store Store, runID string, copi
 		request.Type = "file"
 	}
 	if request.RemotePath == "" {
-		return nil, nil, fmt.Errorf("sandbox artifact %q remote path is required", request.Name)
+		return nil, nil, redactSandboxArtifactError(fmt.Errorf("sandbox artifact %q remote path is required", request.Name), redactor)
 	}
 	if request.Path == "" {
 		request.Path = sandboxArtifactDisplayPath(request)
@@ -126,7 +126,7 @@ func collectSandboxArtifact(ctx context.Context, store Store, runID string, copi
 		if request.Optional && errors.Is(copyErr, ErrSandboxArtifactNotFound) {
 			return nil, []ArtifactReference{redactor.RedactArtifactReference(missingSandboxArtifact(request))}, nil
 		}
-		return nil, nil, fmt.Errorf("copy sandbox artifact %q: %w", request.Name, copyErr)
+		return nil, nil, redactSandboxArtifactError(fmt.Errorf("copy sandbox artifact %q: %w", request.Name, copyErr), redactor)
 	}
 
 	if request.Directory {
@@ -141,7 +141,7 @@ func collectSandboxArtifact(ctx context.Context, store Store, runID string, copi
 	}
 	stored, err := saveSandboxArtifactFile(store, runID, artifact, localPath, redactor)
 	if err != nil {
-		return nil, nil, fmt.Errorf("store sandbox artifact %q: %w", request.Name, err)
+		return nil, nil, redactSandboxArtifactError(fmt.Errorf("store sandbox artifact %q: %w", request.Name, err), redactor)
 	}
 	return []ArtifactReference{stored}, nil, nil
 }
@@ -149,10 +149,10 @@ func collectSandboxArtifact(ctx context.Context, store Store, runID string, copi
 func storeSandboxArtifactDir(store Store, runID string, request SandboxArtifactRequest, localDir string, redactor RunSecretRedactor) ([]ArtifactReference, []ArtifactReference, error) {
 	info, err := os.Stat(localDir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("stat sandbox artifact directory %q: %w", request.Name, err)
+		return nil, nil, redactSandboxArtifactError(fmt.Errorf("stat sandbox artifact directory %q: %w", request.Name, err), redactor)
 	}
 	if !info.IsDir() {
-		return nil, nil, fmt.Errorf("sandbox artifact %q copied directory destination is not a directory", request.Name)
+		return nil, nil, redactSandboxArtifactError(fmt.Errorf("sandbox artifact %q copied directory destination is not a directory", request.Name), redactor)
 	}
 
 	var stored []ArtifactReference
@@ -187,15 +187,42 @@ func storeSandboxArtifactDir(store Store, runID string, request SandboxArtifactR
 		}
 		saved, err := saveSandboxArtifactFile(store, runID, artifact, filePath, redactor)
 		if err != nil {
-			return fmt.Errorf("store sandbox artifact %q: %w", artifact.Name, err)
+			return redactSandboxArtifactError(fmt.Errorf("store sandbox artifact %q: %w", artifact.Name, err), redactor)
 		}
 		stored = append(stored, saved)
 		return nil
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, redactSandboxArtifactError(err, redactor)
 	}
 	return stored, nil, nil
+}
+
+type sandboxArtifactRedactedError struct {
+	message string
+	cause   error
+}
+
+func (e sandboxArtifactRedactedError) Error() string {
+	return e.message
+}
+
+func (e sandboxArtifactRedactedError) Unwrap() error {
+	return e.cause
+}
+
+func redactSandboxArtifactError(err error, redactor RunSecretRedactor) error {
+	if err == nil {
+		return nil
+	}
+	message := redactor.RedactString(err.Error())
+	if message == err.Error() {
+		return err
+	}
+	return sandboxArtifactRedactedError{
+		message: message,
+		cause:   err,
+	}
 }
 
 func sandboxArtifactPathInsideDir(root, candidate string) bool {

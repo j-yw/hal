@@ -804,6 +804,30 @@ func TestRedactFactoryRunErrorRedactsCredentialedRemoteWithoutDeclaredSecrets(t 
 	}
 }
 
+func TestRedactFactoryRunJoinedErrorRedactsSecondaryErrors(t *testing.T) {
+	secret := "factory-secondary-secret-123"
+	redactor := factory.NewRunSecretRedactor([]factory.ResolvedRunSecret{{
+		Name:  "FACTORY_TOKEN",
+		Value: secret,
+	}})
+	primary := errors.New("pipeline failed")
+	secondary := errors.New("record factory artifacts: failed to save " + secret)
+
+	err := redactFactoryRunJoinedError(primary, []error{secondary}, redactor)
+	if err == nil {
+		t.Fatal("redactFactoryRunJoinedError() = nil, want error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("redactFactoryRunJoinedError() leaked secondary secret: %s", err.Error())
+	}
+	if !strings.Contains(err.Error(), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("redactFactoryRunJoinedError() = %q, want redaction placeholder", err.Error())
+	}
+	if !errors.Is(err, secondary) {
+		t.Fatalf("redactFactoryRunJoinedError() did not preserve secondary cause")
+	}
+}
+
 func TestMarkFactoryRunFailedRedactsCredentialedRemoteWithoutDeclaredSecrets(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	now := time.Date(2026, 6, 21, 10, 40, 0, 0, time.UTC)

@@ -677,7 +677,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		}
 		runErr = redactFactoryRunError(runErr, redactor)
 		if len(recordErrs) > 0 {
-			return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{runErr}, recordErrs...)...)
+			return factoryRunExecutionResult{Record: failedRecord}, redactFactoryRunJoinedError(runErr, recordErrs, redactor)
 		}
 		return factoryRunExecutionResult{Record: failedRecord, Render: true}, runErr
 	}
@@ -720,7 +720,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		}
 		err = redactFactoryRunError(err, redactor)
 		if len(recordErrs) > 0 {
-			return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{err}, recordErrs...)...)
+			return factoryRunExecutionResult{Record: failedRecord}, redactFactoryRunJoinedError(err, recordErrs, redactor)
 		}
 		return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
 	}
@@ -747,7 +747,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		}
 		err = redactFactoryRunError(err, redactor)
 		if len(recordErrs) > 0 {
-			return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{err}, recordErrs...)...)
+			return factoryRunExecutionResult{Record: failedRecord}, redactFactoryRunJoinedError(err, recordErrs, redactor)
 		}
 		return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
 	}
@@ -2367,6 +2367,10 @@ func redactFactoryRunError(err error, redactor factory.RunSecretRedactor) error 
 		message: message,
 		cause:   err,
 	}
+}
+
+func redactFactoryRunJoinedError(primary error, recordErrs []error, redactor factory.RunSecretRedactor) error {
+	return redactFactoryRunError(errors.Join(append([]error{primary}, recordErrs...)...), redactor)
 }
 
 func factoryFailureMessageContains(message string, fragments ...string) bool {
