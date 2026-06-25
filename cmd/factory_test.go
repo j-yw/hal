@@ -760,6 +760,21 @@ func TestSanitizeCredentialedRemoteRedactsCredentialQueryAndFragmentValues(t *te
 			want:   "https://github.com/org/repo.git?token=" + placeholder + "&ref=main",
 		},
 		{
+			name:   "query auth",
+			remote: "https://github.com/org/repo.git?auth=ghp_secret_123&ref=main",
+			want:   "https://github.com/org/repo.git?auth=" + placeholder + "&ref=main",
+		},
+		{
+			name:   "query access key",
+			remote: "https://github.com/org/repo.git?access_key=ghp_secret_123&ref=main",
+			want:   "https://github.com/org/repo.git?access_key=" + placeholder + "&ref=main",
+		},
+		{
+			name:   "query private key",
+			remote: "https://github.com/org/repo.git?private_key=ghp_secret_123&ref=main",
+			want:   "https://github.com/org/repo.git?private_key=" + placeholder + "&ref=main",
+		},
+		{
 			name:   "fragment credential",
 			remote: "https://github.com/org/repo.git?ref=main#access_token=ghp_secret_123",
 			want:   "https://github.com/org/repo.git?ref=main#access_token=" + placeholder,

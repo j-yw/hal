@@ -78,6 +78,9 @@ func addURLCredentialRedactionTokens(valueSet map[string]struct{}, rawURL string
 		if userinfo := parsed.User.String(); userinfo != "" {
 			addBootstrapRedactionValue(valueSet, userinfo)
 		}
+		if username := parsed.User.Username(); bootstrapCredentialTokenLooksSensitive(username) {
+			addBootstrapRedactionValue(valueSet, username)
+		}
 		if password, ok := parsed.User.Password(); ok && password != "" {
 			addBootstrapRedactionValue(valueSet, password)
 		}
@@ -156,13 +159,8 @@ func bootstrapSCPStyleUserinfoLooksCredentialed(userinfo, host string) bool {
 	if normalized == "" || normalized == "git" {
 		return false
 	}
-	if strings.Contains(normalized, ":") || isSensitiveBootstrapEnvKey(normalized) {
+	if strings.Contains(normalized, ":") || bootstrapCredentialTokenLooksSensitive(normalized) {
 		return true
-	}
-	for _, marker := range []string{"ghp_", "github_pat_", "glpat", "oauth", "x-access-token", "x-token-auth"} {
-		if strings.Contains(normalized, marker) {
-			return true
-		}
 	}
 	switch strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]") {
 	case "github.com", "ssh.github.com", "gitlab.com", "bitbucket.org":
@@ -170,6 +168,22 @@ func bootstrapSCPStyleUserinfoLooksCredentialed(userinfo, host string) bool {
 	default:
 		return false
 	}
+}
+
+func bootstrapCredentialTokenLooksSensitive(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if normalized == "" {
+		return false
+	}
+	if isSensitiveBootstrapEnvKey(normalized) {
+		return true
+	}
+	for _, marker := range []string{"ghp_", "github_pat_", "glpat", "oauth", "x-access-token", "x-token-auth"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func addURLCredentialParameterRedactionTokens(valueSet map[string]struct{}, rawParameters string) {

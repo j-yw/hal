@@ -5252,12 +5252,14 @@ func isCredentialedRemoteParameterKey(key string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(key))
 	normalized = strings.NewReplacer("-", "_", ".", "_").Replace(normalized)
 	switch normalized {
-	case "token", "access_token", "api_key", "apikey", "credential", "credentials", "password", "passwd", "secret", "client_secret", "private_token", "auth_token":
+	case "token", "access_token", "access_key", "api_key", "apikey", "auth", "auth_token", "credential", "credentials", "password", "passwd", "secret", "client_secret", "private_key", "private_token":
 		return true
 	default:
 		return strings.Contains(normalized, "token") ||
 			strings.Contains(normalized, "secret") ||
 			strings.Contains(normalized, "password") ||
-			strings.Contains(normalized, "credential")
+			strings.Contains(normalized, "credential") ||
+			strings.Contains(normalized, "private_key") ||
+			strings.Contains(normalized, "access_key")
 	}
 }

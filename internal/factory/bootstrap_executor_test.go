@@ -342,6 +342,35 @@ func TestBootstrapSanitizersRedactSCPStyleCredentialedRepositoryURL(t *testing.T
 	}
 }
 
+func TestBootstrapSanitizersRedactCredentialedRepositoryURLUsername(t *testing.T) {
+	secret := "ghp_repository_username_secret_12345"
+	for _, repositoryURL := range []string{
+		"https://" + secret + ":x-oauth-basic@github.com/org/repo.git",
+		secret + "@github.com:org/repo.git",
+	} {
+		request := BootstrapRequest{
+			RepositoryURL: repositoryURL,
+		}
+
+		event := SanitizeBootstrapTimelineEvent(request, BootstrapTimelineEvent{
+			CommandSummary: "git clone " + repositoryURL + " /workspace/repo",
+			OutputSummary:  "remote rejected username " + secret,
+		})
+
+		eventData, err := json.Marshal(event)
+		if err != nil {
+			t.Fatalf("json.Marshal(event) error = %v", err)
+		}
+		payload := string(eventData)
+		if strings.Contains(payload, secret) {
+			t.Fatalf("event leaked repository URL username: %s", payload)
+		}
+		if !strings.Contains(payload, bootstrapRedactedValue) {
+			t.Fatalf("event = %s, want redaction placeholder", payload)
+		}
+	}
+}
+
 func TestBootstrapSanitizersRedactSerializedSecretValues(t *testing.T) {
 	secret := "pa\"ss\\word\t<>&"
 	request := BootstrapRequest{
