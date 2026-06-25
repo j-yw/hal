@@ -5003,17 +5003,22 @@ func sanitizeCredentialedRemoteReferences(value string) string {
 	}
 	var out strings.Builder
 	for i := 0; i < len(value); {
-		if strings.HasPrefix(value[i:], "https://") || strings.HasPrefix(value[i:], "http://") {
-			end := i
-			for end < len(value) && !factoryCredentialedRemoteReferenceSeparator(value[end]) {
-				end++
-			}
-			out.WriteString(sanitizeCredentialedRemote(value[i:end]))
-			i = end
+		if factoryCredentialedRemoteReferenceSeparator(value[i]) {
+			out.WriteByte(value[i])
+			i++
 			continue
 		}
-		out.WriteByte(value[i])
-		i++
+		end := i
+		for end < len(value) && !factoryCredentialedRemoteReferenceSeparator(value[end]) {
+			end++
+		}
+		segment := value[i:end]
+		if strings.Contains(segment, "://") {
+			out.WriteString(sanitizeCredentialedRemote(segment))
+		} else {
+			out.WriteString(segment)
+		}
+		i = end
 	}
 	return out.String()
 }

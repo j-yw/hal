@@ -1309,18 +1309,46 @@ func TestRunFactoryQueueWorkWithDepsRedactsSecretsWhenSandboxRemoteRefreshFails(
 
 func TestSanitizeFactoryQueueFailureMessageRedactsEmbeddedCredentialedRemoteWithoutSecrets(t *testing.T) {
 	secret := "ghp_queue_failure_no_metadata_789"
-	rawRemote := "https://x:" + secret + "@github.com/example/repo.git"
-
-	got := sanitizeFactoryQueueFailureMessage("refresh failed for "+rawRemote+" before worker secret resolution", factory.RunSecretRedactor{})
-
-	if strings.Contains(got, secret) || strings.Contains(got, rawRemote) {
-		t.Fatalf("sanitized message leaked credentialed remote: %q", got)
+	tests := []struct {
+		name             string
+		rawRemote        string
+		userinfoFragment string
+		wantRemote       string
+	}{
+		{
+			name:             "https",
+			rawRemote:        "https://x:" + secret + "@github.com/example/repo.git",
+			userinfoFragment: "https://x:",
+			wantRemote:       "https://" + factory.RunSecretRedactionPlaceholder + "@github.com/example/repo.git",
+		},
+		{
+			name:             "ssh",
+			rawRemote:        "ssh://x:" + secret + "@github.com/example/repo.git",
+			userinfoFragment: "ssh://x:",
+			wantRemote:       "ssh://" + factory.RunSecretRedactionPlaceholder + "@github.com/example/repo.git",
+		},
+		{
+			name:             "git plus https",
+			rawRemote:        "git+https://x:" + secret + "@github.com/example/repo.git",
+			userinfoFragment: "git+https://x:",
+			wantRemote:       "git+https://" + factory.RunSecretRedactionPlaceholder + "@github.com/example/repo.git",
+		},
 	}
-	if strings.Contains(got, "https://x:") {
-		t.Fatalf("sanitized message retained credentialed userinfo: %q", got)
-	}
-	if !strings.Contains(got, "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/example/repo.git") {
-		t.Fatalf("sanitized message = %q, want redacted remote", got)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeFactoryQueueFailureMessage("refresh failed for "+tt.rawRemote+" before worker secret resolution", factory.RunSecretRedactor{})
+
+			if strings.Contains(got, secret) || strings.Contains(got, tt.rawRemote) {
+				t.Fatalf("sanitized message leaked credentialed remote: %q", got)
+			}
+			if strings.Contains(got, tt.userinfoFragment) {
+				t.Fatalf("sanitized message retained credentialed userinfo: %q", got)
+			}
+			if !strings.Contains(got, tt.wantRemote) {
+				t.Fatalf("sanitized message = %q, want redacted remote", got)
+			}
+		})
 	}
 }
 
