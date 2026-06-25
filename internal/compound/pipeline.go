@@ -1206,6 +1206,10 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 			}
 		} else if opts.MaxReviewFixAttempts > 0 && !atReviewFixLimit {
 			state.Review.FixAttempts = fixAttemptsBeforeCycle
+			state.Step = StepReview
+			if saveErr := p.saveState(state); saveErr != nil {
+				return fmt.Errorf("failed to persist review fix attempt rollback: %w", saveErr)
+			}
 		}
 		if iteration.FixesApplied > 0 {
 			fixesAppliedDuringReview = true
