@@ -561,6 +561,45 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 		requireExactKeys(t, summary, []string{"total", "partial", "warnings"})
 	})
 
+	t.Run("factory logs top-level keys", func(t *testing.T) {
+		store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+		if err := store.SaveRun(&record); err != nil {
+			t.Fatalf("SaveRun() error: %v", err)
+		}
+		if err := store.AppendLogChunk(&factory.LogChunk{
+			RunID:     record.RunID,
+			Stream:    factory.LogStreamStdout,
+			Source:    factory.LogSourceLocalFactory,
+			Text:      "hello",
+			CreatedAt: base,
+		}); err != nil {
+			t.Fatalf("AppendLogChunk() error: %v", err)
+		}
+
+		var buf bytes.Buffer
+		err := runFactoryLogsWithDeps(&buf, record.RunID, true, factoryLogsDeps{
+			defaultStore: func() (factory.Store, error) { return store, nil },
+		})
+		if err != nil {
+			t.Fatalf("runFactoryLogsWithDeps error: %v", err)
+		}
+
+		raw := parseJSON(t, buf.Bytes())
+		requireExactKeys(t, raw, []string{"contractVersion", "runId", "chunks"})
+		if raw["contractVersion"] != FactoryLogsContractVersion {
+			t.Fatalf("factory logs contractVersion = %v, want %q", raw["contractVersion"], FactoryLogsContractVersion)
+		}
+		chunks, ok := raw["chunks"].([]interface{})
+		if !ok || len(chunks) != 1 {
+			t.Fatalf("chunks should be an array of 1, got %T", raw["chunks"])
+		}
+		chunk, ok := chunks[0].(map[string]interface{})
+		if !ok {
+			t.Fatalf("chunks[0] should be object, got %T", chunks[0])
+		}
+		requireExactKeys(t, chunk, []string{"sequence", "runId", "stream", "source", "text", "createdAt"})
+	})
+
 	t.Run("factory open success top-level keys", func(t *testing.T) {
 		handoff := &factory.HandoffSummary{
 			RunID:           record.RunID,
@@ -615,6 +654,18 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 	})
 
 	t.Run("factory run result keys", func(t *testing.T) {
+		totalDurationMs := int64(600000)
+		artifactCount := 1
+		runTelemetry := &factory.RunTelemetry{
+			TotalDurationMs: &totalDurationMs,
+			Engine: &factory.EngineTelemetry{
+				Name:  "codex",
+				Model: "gpt-5",
+			},
+			ArtifactCount:   &artifactCount,
+			FailureCategory: factory.FailureCategoryCI,
+		}
+
 		var buf bytes.Buffer
 		err := renderFactoryRunJSON(&buf, FactoryRunResponse{
 			ContractVersion: FactoryRunContractVersion,
@@ -627,9 +678,10 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 				Description: "Inspect the durable run record and timeline.",
 			},
 			Artifacts:    newFactoryRunArtifactReferences(record.Artifacts),
+			Telemetry:    runTelemetry,
 			EventSummary: newFactoryRunEventSummary(events),
 			Failure: &FactoryRunFailure{
-				Classification:   "ci",
+				Classification:   factory.FailureCategoryCI,
 				ErrorMessage:     "unit tests failed",
 				SuggestedCommand: "hal factory status run-contract --json",
 			},
@@ -639,7 +691,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 		}
 
 		raw := parseJSON(t, buf.Bytes())
-		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "nextAction", "artifacts", "eventSummary", "failure"})
+		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "nextAction", "artifacts", "telemetry", "eventSummary", "failure"})
 		if raw["contractVersion"] != FactoryRunContractVersion {
 			t.Fatalf("factory run contractVersion = %v, want %q", raw["contractVersion"], FactoryRunContractVersion)
 		}
@@ -660,6 +712,12 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 			t.Fatalf("eventSummary should be object, got %T", raw["eventSummary"])
 		}
 		requireExactKeys(t, eventSummary, []string{"total", "byType", "lastEventType", "lastSummary"})
+
+		telemetry, ok := raw["telemetry"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("telemetry should be object, got %T", raw["telemetry"])
+		}
+		requireExactKeys(t, telemetry, []string{"totalDurationMs", "engine", "artifactCount", "failureCategory"})
 
 		failure, ok := raw["failure"].(map[string]interface{})
 		if !ok {

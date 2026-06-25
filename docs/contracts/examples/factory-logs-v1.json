@@ -1,0 +1,32 @@
+{
+  "contractVersion": "factory-logs-v1",
+  "runId": "run-20260620-002",
+  "chunks": [
+    {
+      "sequence": 1,
+      "runId": "run-20260620-002",
+      "stream": "summary",
+      "source": "local_factory",
+      "summary": "Starting local hal auto pipeline",
+      "createdAt": "2026-06-20T16:02:00Z"
+    },
+    {
+      "sequence": 2,
+      "runId": "run-20260620-002",
+      "stream": "stdout",
+      "source": "remote_sandbox",
+      "text": "Running go test ./...",
+      "summary": "Remote sandbox output",
+      "createdAt": "2026-06-20T16:12:00Z"
+    },
+    {
+      "sequence": 3,
+      "runId": "run-20260620-002",
+      "stream": "stderr",
+      "source": "local_factory",
+      "text": "[redacted]",
+      "summary": "Local hal auto pipeline failed",
+      "createdAt": "2026-06-20T16:33:00Z"
+    }
+  ]
+}

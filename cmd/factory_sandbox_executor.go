@@ -47,6 +47,7 @@ type factorySandboxExecutorDeps struct {
 	bootstrap       func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
 	saveRun         func(factory.Store, *factory.RunRecord) error
 	appendEvent     func(factory.Store, *factory.EventRecord) error
+	appendLog       func(factory.Store, *factory.LogChunk) error
 }
 
 var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
@@ -63,6 +64,7 @@ var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
 	bootstrap:       factory.BootstrapWorkspace,
 	saveRun:         saveFactorySandboxRunRecord,
 	appendEvent:     appendFactorySandboxTimelineEvent,
+	appendLog:       appendFactorySandboxLogChunk,
 }
 
 var errFactorySandboxWorkspaceRequired = errors.New("sandbox workspace directory is required; configure remote.origin.url or run from a /workspace/<repo> checkout")
@@ -102,6 +104,9 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 	}
 	if deps.appendEvent == nil {
 		deps.appendEvent = defaultFactorySandboxExecutorDeps.appendEvent
+	}
+	if deps.appendLog == nil {
+		deps.appendLog = defaultFactorySandboxExecutorDeps.appendLog
 	}
 	return deps
 }
@@ -419,6 +424,18 @@ func (w *factorySandboxTimelineWriter) appendLineLocked(line string) error {
 	if err := w.deps.appendEvent(w.store, &event); err != nil {
 		return err
 	}
+	if w.deps.appendLog != nil {
+		if err := w.deps.appendLog(w.store, &factory.LogChunk{
+			RunID:     w.runID,
+			Stream:    factory.LogStreamStdout,
+			Source:    factory.LogSourceRemoteSandbox,
+			Text:      line,
+			Summary:   "Remote sandbox output",
+			CreatedAt: event.Timestamp,
+		}); err != nil {
+			return err
+		}
+	}
 	w.nextSequence++
 	return nil
 }
@@ -426,7 +443,7 @@ func (w *factorySandboxTimelineWriter) appendLineLocked(line string) error {
 func (w *factorySandboxTimelineWriter) appendExecutorEventLocked(eventType, summary string, metadata map[string]any) error {
 	eventMetadata := map[string]any{
 		"source":       "remote_sandbox",
-		"step":         "run",
+		"step":         factory.RunDurationStepEngineRun,
 		"executorMode": factory.ExecutorModeSandbox,
 		"sandboxName":  w.sandboxName,
 		"provider":     w.provider,
@@ -752,7 +769,7 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 	message := factorySandboxSanitizedError(target, failureErr)
 	failure := factory.FailureSummary{
 		Step:             step,
-		Category:         factory.FailureCategoryPipeline,
+		Category:         factory.FailureCategorySandbox,
 		Message:          message,
 		Recoverable:      true,
 		SuggestedCommand: factorySandboxFailureSuggestedCommand(record),
@@ -824,6 +841,7 @@ func factorySandboxMetadataFromState(instance *sandbox.SandboxState) (string, *f
 	metadata := &factory.SandboxMetadata{
 		Name:           instance.Name,
 		Provider:       instance.Provider,
+		Size:           instance.Size,
 		Status:         instance.Status,
 		Connection:     connection,
 		SSHCommand:     fmt.Sprintf("hal sandbox ssh %s", instance.Name),
@@ -929,4 +947,8 @@ func saveFactorySandboxRunRecord(store factory.Store, record *factory.RunRecord)
 
 func appendFactorySandboxTimelineEvent(store factory.Store, event *factory.EventRecord) error {
 	return store.AppendEvent(event)
+}
+
+func appendFactorySandboxLogChunk(store factory.Store, chunk *factory.LogChunk) error {
+	return store.AppendLogChunk(chunk)
 }

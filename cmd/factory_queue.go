@@ -381,13 +381,52 @@ func failClaimedFactoryQueueEntry(store factory.Store, entry factory.QueueEntry,
 	if cause == nil {
 		cause = fmt.Errorf("factory queue work failed")
 	}
+	runErr := markFactoryQueueRunFailed(store, entry, cause, now)
 	failedEntry, markErr := store.MarkQueueEntryFailed(entry.QueueID, cause.Error(), factory.QueueOperationOptions{
 		Now: now,
 	})
 	if markErr != nil {
-		return entry, errors.Join(cause, markErr)
+		return entry, errors.Join(cause, runErr, markErr)
+	}
+	if runErr != nil {
+		return failedEntry, errors.Join(cause, runErr)
 	}
 	return failedEntry, cause
+}
+
+func markFactoryQueueRunFailed(store factory.Store, entry factory.QueueEntry, cause error, now func() time.Time) error {
+	if strings.TrimSpace(entry.RunID) == "" {
+		return nil
+	}
+	record, err := store.LoadRun(entry.RunID)
+	if err != nil {
+		return fmt.Errorf("load factory queue run %q for failure marking: %w", entry.RunID, err)
+	}
+	if record.Status == factory.RunStatusFailed && record.Failure != nil {
+		return nil
+	}
+	if now == nil {
+		now = time.Now
+	}
+	failedAt := now().UTC()
+	record.Status = factory.RunStatusFailed
+	record.CurrentStep = factory.FailureCategoryQueue
+	record.UpdatedAt = failedAt
+	record.FinishedAt = &failedAt
+	record.Failure = &factory.FailureSummary{
+		Step:             factory.FailureCategoryQueue,
+		Category:         factory.FailureCategoryQueue,
+		Message:          strings.TrimSpace(cause.Error()),
+		Recoverable:      true,
+		SuggestedCommand: factoryRunInspectCommand(record.RunID),
+	}
+	if record.Failure.Message == "" {
+		record.Failure.Message = "factory queue work failed"
+	}
+	if err := store.SaveRun(record); err != nil {
+		return err
+	}
+	return recordFactoryRunFailureClassified(store, record.RunID, failedAt, *record.Failure)
 }
 
 func factoryRunRequestFromQueueRecord(record factory.RunRecord) factoryRunRequest {

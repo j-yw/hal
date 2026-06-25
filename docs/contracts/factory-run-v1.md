@@ -21,17 +21,20 @@ This contract does not change the existing `.hal/prd.json`, `.hal/auto-state.jso
 | `status` | string | Final or current run lifecycle status; see status values below |
 | `nextAction` | object or null | Recommended follow-up action |
 | `artifacts` | array | Artifact references captured for this run |
+| `telemetry` | object | Optional compact observability summary including durations, engine, sandbox, outcomes, artifact count, cost estimate, and failure classification |
 | `eventSummary` | object | Summary of timeline events recorded for this run |
 | `failure` | object or null | Failure details when the run failed |
 
 `artifacts` is always present. Empty artifact state is represented as an empty
-array. `eventSummary` is always present.
+array. `eventSummary` is always present. `telemetry` uses `omitempty` and is
+present only when run telemetry can be read or derived.
 
 Sandbox-backed runs do not duplicate full sandbox metadata in this compact
-result surface. Consumers that need the sandbox name, provider, lifecycle
-status, safe connection display fields, SSH command, cleanup command, or
-diagnostic handoff should read the durable `factory-status-v1` run record with
-`hal factory status <run-id> --json`.
+result surface. `telemetry.sandbox` may include provider and size for summary
+purposes, but consumers that need the sandbox name, lifecycle status, safe
+connection display fields, SSH command, cleanup command, or diagnostic handoff
+should follow `nextAction.command` and read the durable `factory-status-v1` run
+record.
 
 ## Next Action
 
@@ -81,6 +84,27 @@ Known event type values currently include:
 - `ci_state`
 - `artifact_sync`
 - `failure_classification`
+
+## Telemetry
+
+When `telemetry` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `totalDurationMs` | integer | no | Derived total run duration in milliseconds |
+| `stepDurations` | array | no | Derived per-step duration records |
+| `engine` | object | no | Engine name and model metadata when available |
+| `sandbox` | object | no | Sandbox provider and size telemetry when available |
+| `estimatedSandboxCost` | object | no | Estimated sandbox cost when provider, size, pricing, and duration are available |
+| `ciOutcome` | string | no | CI outcome when available |
+| `verificationOutcome` | string | no | Verification outcome when available |
+| `artifactCount` | integer | no | Count of artifact metadata records stored on the run |
+| `failureCategory` | string | no | Normalized failure category for failed runs, such as `validation`, `pipeline`, `engine`, `git`, `ci`, or `unknown` |
+
+Each `stepDurations` entry contains `step`, `startedAt`, `finishedAt`, and
+`durationMs`. `engine` contains `name` and `model`. `sandbox` contains
+`provider` and `size`. `estimatedSandboxCost` contains `amountUsd` and
+`estimated`.
 
 ## Failure Details
 

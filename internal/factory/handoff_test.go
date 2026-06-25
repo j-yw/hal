@@ -360,7 +360,7 @@ func TestLoadHandoffSummaryRedactsSSHHostnameFailureReason(t *testing.T) {
 		ExecutorMode: ExecutorModeLocal,
 		Failure: &FailureSummary{
 			Step:        "run",
-			Category:    FailureCategoryPipeline,
+			Category:    FailureCategoryRun,
 			Message:     "remote command failed: ssh ubuntu@sandbox.example.com:22 failed",
 			Recoverable: true,
 		},
@@ -552,7 +552,7 @@ func TestLoadHandoffSummaryRedactsFailureReasonAddressWithPort(t *testing.T) {
 				ExecutorMode: ExecutorModeLocal,
 				Failure: &FailureSummary{
 					Step:        "run",
-					Category:    FailureCategoryPipeline,
+					Category:    FailureCategoryRun,
 					Message:     tt.message,
 					Recoverable: true,
 				},
@@ -722,7 +722,7 @@ func TestLoadHandoffSummaryFailedSandboxRun(t *testing.T) {
 		UpdatedAt:   createdAt.Add(time.Minute),
 		Failure: &FailureSummary{
 			Step:        "run",
-			Category:    FailureCategoryPipeline,
+			Category:    FailureCategoryRun,
 			Message:     "remote execution failed",
 			Recoverable: true,
 		},
@@ -828,7 +828,7 @@ func TestLoadHandoffSummaryFailedSandboxRunNotRunningFallsBackToInspect(t *testi
 				UpdatedAt:   createdAt.Add(time.Minute),
 				Failure: &FailureSummary{
 					Step:        "run",
-					Category:    FailureCategoryPipeline,
+					Category:    FailureCategoryRun,
 					Message:     "remote execution failed",
 					Recoverable: true,
 				},
@@ -875,7 +875,7 @@ func TestLoadHandoffSummaryUnsafeSandboxNameFallsBackToInspect(t *testing.T) {
 		UpdatedAt: createdAt.Add(time.Minute),
 		Failure: &FailureSummary{
 			Step:        "run",
-			Category:    FailureCategoryPipeline,
+			Category:    FailureCategoryRun,
 			Message:     "remote execution failed",
 			Recoverable: true,
 		},

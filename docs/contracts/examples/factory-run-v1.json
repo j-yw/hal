@@ -50,6 +50,33 @@
       "createdAt": "2026-06-20T12:01:00Z"
     }
   ],
+  "telemetry": {
+    "totalDurationMs": 1740000,
+    "stepDurations": [
+      {
+        "step": "ci",
+        "startedAt": "2026-06-20T12:01:00Z",
+        "finishedAt": "2026-06-20T12:04:00Z",
+        "durationMs": 180000
+      }
+    ],
+    "engine": {
+      "name": "codex",
+      "model": "gpt-5"
+    },
+    "sandbox": {
+      "provider": "digitalocean",
+      "size": "s-2vcpu-4gb"
+    },
+    "estimatedSandboxCost": {
+      "amountUsd": 0.04,
+      "estimated": true
+    },
+    "ciOutcome": "failed",
+    "verificationOutcome": "passed",
+    "artifactCount": 3,
+    "failureCategory": "ci"
+  },
   "eventSummary": {
     "total": 6,
     "byType": {
