@@ -1876,8 +1876,9 @@ func TestFactorySandboxRemoteRepoExistsUsesRemoteExitCodes(t *testing.T) {
 		wantError string
 	}{
 		{name: "git checkout exists", want: true},
-		{name: "missing or empty path", err: exitError(1), want: false},
-		{name: "non git non empty path", err: exitError(2), wantError: "repository path exists but is not a git checkout and is not empty"},
+		{name: "missing or empty path", err: exitError(10), want: false},
+		{name: "non git non empty path", err: exitError(11), wantError: "repository path exists but is not a git checkout and is not empty"},
+		{name: "transport style exit one stays fatal", err: exitError(1), wantError: "exit status 1"},
 		{name: "unexpected remote error", err: exitError(127), wantError: "exit status 127"},
 	}
 
