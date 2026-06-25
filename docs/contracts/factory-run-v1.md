@@ -30,8 +30,8 @@ array. `eventSummary` is always present.
 Sandbox-backed runs do not duplicate full sandbox metadata in this compact
 result surface. Consumers that need the sandbox name, provider, lifecycle
 status, safe connection display fields, SSH command, cleanup command, or
-diagnostic handoff should follow `nextAction.command` and read the durable
-`factory-status-v1` run record.
+diagnostic handoff should read the durable `factory-status-v1` run record with
+`hal factory status <run-id> --json`.
 
 ## Next Action
 

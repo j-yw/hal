@@ -146,10 +146,16 @@ func newFactoryRunNextAction(record factory.RunRecord) *FactoryRunNextAction {
 	if command == "" {
 		return nil
 	}
+	actionID := "inspect_factory_run"
+	description := "Inspect the durable run record and timeline."
+	if record.Status == factory.RunStatusSucceeded {
+		description = "Inspect the completed durable run record and timeline."
+	}
+
 	return &FactoryRunNextAction{
-		ID:          "inspect_factory_run",
+		ID:          actionID,
 		Command:     command,
-		Description: "Inspect the durable run record and timeline.",
+		Description: description,
 	}
 }
 
@@ -174,11 +180,7 @@ func newFactoryRunFailure(record factory.RunRecord) *FactoryRunFailure {
 }
 
 func factoryRunInspectCommand(runID string) string {
-	runID = strings.TrimSpace(runID)
-	if runID == "" {
-		return ""
-	}
-	return fmt.Sprintf("hal factory status %s --json", runID)
+	return factory.HandoffInspectCommand(runID)
 }
 
 func normalizeFactoryRunResponse(resp FactoryRunResponse) FactoryRunResponse {

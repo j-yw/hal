@@ -173,6 +173,27 @@ func TestFailureCategoryConstants(t *testing.T) {
 	}
 }
 
+func TestNextActionTypeConstants(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "inspect", got: NextActionTypeInspect, want: "inspect"},
+		{name: "takeover", got: NextActionTypeTakeover, want: "takeover"},
+		{name: "continue", got: NextActionTypeContinue, want: "continue"},
+		{name: "completed", got: NextActionTypeCompleted, want: "completed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("next action type = %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEventTypeConstants(t *testing.T) {
 	tests := []struct {
 		name string
@@ -207,6 +228,9 @@ func TestFactoryTypesHaveJSONTags(t *testing.T) {
 		reflect.TypeOf(ArtifactReference{}),
 		reflect.TypeOf(VerificationRecord{}),
 		reflect.TypeOf(FailureSummary{}),
+		reflect.TypeOf(HandoffSummary{}),
+		reflect.TypeOf(NextAction{}),
+		reflect.TypeOf(NextActionLocation{}),
 		reflect.TypeOf(QueueEntry{}),
 		reflect.TypeOf(QueueClaim{}),
 		reflect.TypeOf(EventRecord{}),
@@ -841,6 +865,111 @@ func TestRunRecordJSONFields(t *testing.T) {
 	if !reflect.DeepEqual(decoded, original) {
 		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", decoded, original)
 	}
+}
+
+func TestNextActionJSONFields(t *testing.T) {
+	original := NextAction{
+		ID:             "inspect_factory_run",
+		Type:           NextActionTypeTakeover,
+		Command:        "hal factory status run-handoff --json",
+		Description:    "Inspect the durable run record and timeline.",
+		RunID:          "run-handoff",
+		SandboxName:    "factory-handoff",
+		RepoPath:       "/workspace/hal",
+		BranchName:     "hal/factory-handoff",
+		PullRequestURL: "https://github.com/jywlabs/hal/pull/42",
+		CurrentStep:    "ci",
+		FailureReason:  "unit tests failed",
+		ArtifactLocations: []NextActionLocation{
+			{
+				Name:       "prd",
+				Path:       ".hal/prd.json",
+				StoredPath: "artifacts/run-handoff/hal-prd.json",
+			},
+		},
+		LogLocations: []NextActionLocation{
+			{
+				Name:       "ci-log",
+				Path:       ".hal/reports/ci-output.log",
+				StoredPath: "artifacts/run-handoff/hal-reports-ci-output.log",
+			},
+		},
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+
+	requireExactJSONKeys(t, raw, []string{
+		"id",
+		"type",
+		"command",
+		"description",
+		"runId",
+		"sandboxName",
+		"repoPath",
+		"branchName",
+		"pullRequestUrl",
+		"currentStep",
+		"failureReason",
+		"artifactLocations",
+		"logLocations",
+	})
+
+	artifactLocations, ok := raw["artifactLocations"].([]any)
+	if !ok || len(artifactLocations) != 1 {
+		t.Fatalf("artifactLocations should be one-item array, got %T", raw["artifactLocations"])
+	}
+	artifactLocation, ok := artifactLocations[0].(map[string]any)
+	if !ok {
+		t.Fatalf("artifactLocations[0] should be object, got %T", artifactLocations[0])
+	}
+	requireExactJSONKeys(t, artifactLocation, []string{"name", "path", "storedPath"})
+
+	logLocations, ok := raw["logLocations"].([]any)
+	if !ok || len(logLocations) != 1 {
+		t.Fatalf("logLocations should be one-item array, got %T", raw["logLocations"])
+	}
+	logLocation, ok := logLocations[0].(map[string]any)
+	if !ok {
+		t.Fatalf("logLocations[0] should be object, got %T", logLocations[0])
+	}
+	requireExactJSONKeys(t, logLocation, []string{"name", "path", "storedPath"})
+
+	var decoded NextAction
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(round-trip) error = %v", err)
+	}
+	if !reflect.DeepEqual(decoded, original) {
+		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", decoded, original)
+	}
+}
+
+func TestNextActionOptionalFieldsOmitted(t *testing.T) {
+	original := NextAction{
+		ID:          "factory_run_completed",
+		Type:        NextActionTypeCompleted,
+		Command:     "hal factory status run-complete --json",
+		Description: "Inspect the completed durable run record and timeline.",
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+
+	requireExactJSONKeys(t, raw, []string{"id", "type", "command", "description"})
 }
 
 func TestQueueEntryJSONFields(t *testing.T) {

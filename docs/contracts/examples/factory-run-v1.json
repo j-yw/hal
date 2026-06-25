@@ -39,6 +39,15 @@
       "summary": {
         "collectionStatus": "stored"
       }
+    },
+    {
+      "id": "hal-reports-ci-output.log",
+      "name": "ci-log",
+      "type": "text",
+      "path": ".hal/reports/ci-output.log",
+      "storedPath": "artifacts/run-20260620-002/hal-reports-ci-output.log",
+      "sizeBytes": 1024,
+      "createdAt": "2026-06-20T12:01:00Z"
     }
   ],
   "eventSummary": {

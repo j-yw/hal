@@ -40,6 +40,7 @@ func TestContractDocsExist(t *testing.T) {
 		{"factory-list-v1", "../docs/contracts/factory-list-v1.md"},
 		{"factory-status-v1", "../docs/contracts/factory-status-v1.md"},
 		{"factory-artifacts-v1", "../docs/contracts/factory-artifacts-v1.md"},
+		{"factory-open-v1", "../docs/contracts/factory-open-v1.md"},
 		{"factory-timeline-v1", "../docs/contracts/factory-timeline-v1.md"},
 		{"factory-trigger-v1", "../docs/contracts/factory-trigger-v1.md"},
 		{"factory-queue-entry-v1", "../docs/contracts/factory-queue-entry-v1.md"},
@@ -483,6 +484,9 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				"missing", "skipped", "warnings", "checkId", "kind", "failure", "suggestedCommand",
 				"name", "provider", "connection", "sshCommand", "cleanupCommand", "handoff",
 				"address", "publicIp", "tailscaleIp", "tailscaleHostname", "tailscaleLockdown",
+				"handoffRequired", "nextAction", "inspectCommand", "resumeCommand", "artifactLocations",
+				"logLocations", "type", "command", "description", "runId", "pullRequestUrl",
+				"failureReason", "storedPath",
 			},
 			requiredValues: []string{
 				factory.RunStatusPending,
@@ -516,6 +520,26 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				"markdown",
 				"text",
 				"[redacted]",
+			},
+		},
+		{
+			name:          "factory-open-v1",
+			path:          "../docs/contracts/factory-open-v1.md",
+			contractValue: FactoryOpenContractVersion,
+			requiredFields: []string{
+				"contractVersion", "runId", "handoff", "error", "summary",
+				"status", "executorMode", "handoffRequired", "nextAction",
+				"inspectCommand", "resumeCommand", "sshCommand", "repoPath",
+				"branchName", "sandboxName", "pullRequestUrl", "currentStep",
+				"failureReason", "artifactLocations", "logLocations", "id",
+				"type", "command", "description", "storedPath",
+			},
+			requiredValues: []string{
+				"factory-open-v1",
+				factory.NextActionTypeInspect,
+				factory.NextActionTypeTakeover,
+				factory.NextActionTypeContinue,
+				factory.NextActionTypeCompleted,
 			},
 		},
 		{
@@ -723,6 +747,12 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		if len(resp.Run.Verification.Artifacts) == 0 {
 			t.Fatal("factory status example should include verification artifact references")
 		}
+		if resp.Run.Handoff == nil {
+			t.Fatal("factory status example should include handoff metadata")
+		}
+		if resp.Run.Handoff.NextAction == nil {
+			t.Fatal("factory status example should include handoff nextAction metadata")
+		}
 	})
 
 	t.Run("factory artifacts example", func(t *testing.T) {
@@ -741,6 +771,28 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		}
 		if resp.Summary.Total != len(resp.Artifacts) {
 			t.Fatalf("summary.total = %d, want artifacts len %d", resp.Summary.Total, len(resp.Artifacts))
+		}
+	})
+
+	t.Run("factory open example", func(t *testing.T) {
+		var resp FactoryOpenResponse
+		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-open-v1.json", &resp)
+
+		requireExactKeys(t, raw, []string{"contractVersion", "runId", "handoff", "summary"})
+		if resp.ContractVersion != FactoryOpenContractVersion {
+			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryOpenContractVersion)
+		}
+		if resp.RunID == "" {
+			t.Fatal("factory open example should include a run ID")
+		}
+		if resp.Handoff == nil {
+			t.Fatal("factory open example should include handoff guidance")
+		}
+		if resp.Handoff.NextAction == nil {
+			t.Fatal("factory open example should include nextAction guidance")
+		}
+		if resp.Handoff.NextAction.Type != factory.NextActionTypeTakeover {
+			t.Fatalf("nextAction.type = %q, want %q", resp.Handoff.NextAction.Type, factory.NextActionTypeTakeover)
 		}
 	})
 
