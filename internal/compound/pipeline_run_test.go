@@ -57,6 +57,48 @@ func TestRunLoopStep_MaxRunAttemptsCapsLoopIterations(t *testing.T) {
 	}
 }
 
+func TestRunLoopStep_MaxRunAttemptsAppliesToLoopExecutionError(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	cfg.MaxIterations = 7
+
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+	state := &PipelineState{Step: StepRun, BaseBranch: "develop"}
+	loopErr := errors.New("agent failed")
+
+	origRunLoopWithConfig := runLoopWithConfig
+	runLoopWithConfig = func(ctx context.Context, cfg loop.Config) (loop.Result, error) {
+		return loop.Result{
+			Success:    false,
+			Complete:   false,
+			Iterations: 2,
+			Error:      loopErr,
+		}, nil
+	}
+	t.Cleanup(func() {
+		runLoopWithConfig = origRunLoopWithConfig
+	})
+
+	err := pipeline.runLoopStep(context.Background(), state, RunOptions{MaxRunAttempts: 2})
+	var limitErr *PolicyLimitError
+	if !errors.As(err, &limitErr) {
+		t.Fatalf("runLoopStep() error = %v, want PolicyLimitError after loop error consumes final attempt", err)
+	}
+	if !errors.Is(err, loopErr) {
+		t.Fatalf("runLoopStep() error = %v, want wrapped loop error", err)
+	}
+	if limitErr.PolicyField != "factory.policy.maxRunAttempts" || limitErr.Step != StepRun || limitErr.Attempts != 2 || limitErr.Limit != 2 {
+		t.Fatalf("limit error = %+v, want consumed maxRunAttempts run limit", limitErr)
+	}
+	saved := pipeline.loadState()
+	if saved == nil || saved.Run == nil {
+		t.Fatalf("saved state = %+v, want run telemetry", saved)
+	}
+	if saved.Run.Iterations != 2 || saved.Run.Complete {
+		t.Fatalf("saved.Run = %+v, want incomplete run with 2 iterations", saved.Run)
+	}
+}
+
 func TestRunLoopStep_MaxRunAttemptsBlocksBeforeLoop(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultAutoConfig()

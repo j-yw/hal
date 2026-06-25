@@ -1061,6 +1061,14 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 		if saveErr := p.saveState(state); saveErr != nil {
 			return fmt.Errorf("loop execution failed: %w (also failed to save run telemetry: %v)", result.Error, saveErr)
 		}
+		if opts.MaxRunAttempts > 0 && totalRunIterations >= opts.MaxRunAttempts {
+			return fmt.Errorf("%w (loop execution failed: %w)", &PolicyLimitError{
+				PolicyField: "factory.policy.maxRunAttempts",
+				Step:        StepRun,
+				Attempts:    totalRunIterations,
+				Limit:       opts.MaxRunAttempts,
+			}, result.Error)
+		}
 		return fmt.Errorf("loop execution failed: %w", result.Error)
 	}
 
