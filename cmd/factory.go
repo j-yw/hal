@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -1063,6 +1064,28 @@ func cleanupFactoryRunDeferredSandbox(ctx context.Context, store factory.Store, 
 	if req.JSON {
 		cleanupOut = io.Discard
 	}
+	if deps.sandboxCopier == nil {
+		if artifactErr := collectAndStoreFactorySandboxArtifactsWithProviderExec(ctx, store, dir, record, deps, target, provider); artifactErr != nil {
+			if !factoryRunCleansSandboxAfterFailure(policy) {
+				return record, false, artifactErr
+			}
+			cleanupErr := deps.cleanupSandbox(ctx, factorySandboxCleanupRequest{
+				Target:   target,
+				Provider: provider,
+				Out:      cleanupOut,
+			})
+			if cleanupErr != nil {
+				return record, false, errors.Join(artifactErr, fmt.Errorf("cleanup factory sandbox after %s: %w", cleanupContext, cleanupErr))
+			}
+			if err := recordFactorySandboxCleanedUp(store, factorySandboxExecutorDeps{
+				now:     deps.now,
+				saveRun: saveFactorySandboxRunRecord,
+			}, &record, target); err != nil {
+				return record, true, errors.Join(artifactErr, err)
+			}
+			return record, true, artifactErr
+		}
+	}
 	if err := deps.cleanupSandbox(ctx, factorySandboxCleanupRequest{
 		Target:   target,
 		Provider: provider,
@@ -1077,6 +1100,22 @@ func cleanupFactoryRunDeferredSandbox(ctx context.Context, store factory.Store, 
 		return record, false, err
 	}
 	return record, true, nil
+}
+
+func collectAndStoreFactorySandboxArtifactsWithProviderExec(ctx context.Context, store factory.Store, dir string, record factory.RunRecord, deps factoryRunDeps, target *sandbox.SandboxState, provider sandbox.Provider) error {
+	requests := deps.sandboxRequests(dir, record)
+	if len(requests) == 0 {
+		return nil
+	}
+	copier := factoryProviderExecSandboxArtifactCopier{
+		provider:        provider,
+		connectInfo:     sandbox.ConnectInfoFromState(target),
+		runProviderExec: deps.runProviderExec,
+	}
+	if _, err := factory.CollectSandboxArtifacts(ctx, store, record.RunID, &copier, requests); err != nil {
+		return fmt.Errorf("collect sandbox factory artifacts before cleanup: %w", err)
+	}
+	return nil
 }
 
 func failFactoryRunAfterArtifactCollectionFailure(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, runningRecord factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, artifactErr error) (factoryRunExecutionResult, error) {
@@ -1565,12 +1604,7 @@ func (c *factoryProviderExecSandboxArtifactCopier) CopyFile(ctx context.Context,
 	if payload == factorySandboxArtifactMissingSentinel {
 		return factory.ErrSandboxArtifactNotFound
 	}
-	data, err := base64.StdEncoding.DecodeString(strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' || r == '\t' || r == ' ' {
-			return -1
-		}
-		return r
-	}, payload))
+	data, err := decodeFactorySandboxBase64Payload(payload)
 	if err != nil {
 		return fmt.Errorf("decode sandbox artifact %q: %w", remotePath, err)
 	}
@@ -1583,8 +1617,79 @@ func (c *factoryProviderExecSandboxArtifactCopier) CopyFile(ctx context.Context,
 	return nil
 }
 
-func (c *factoryProviderExecSandboxArtifactCopier) CopyDir(context.Context, string, string) error {
-	return fmt.Errorf("sandbox verification artifacts only support files")
+func (c *factoryProviderExecSandboxArtifactCopier) CopyDir(ctx context.Context, remotePath, localPath string) error {
+	remotePath = strings.TrimSpace(remotePath)
+	if remotePath == "" {
+		return factory.ErrSandboxArtifactNotFound
+	}
+	var out bytes.Buffer
+	args := []string{"sh", "-lc", "if [ ! -d " + shellQuote(remotePath) + " ]; then printf %s " + shellQuote(factorySandboxArtifactMissingSentinel) + "; exit 0; fi; tar -C " + shellQuote(remotePath) + " -cf - . | base64"}
+	if err := c.runProviderExec(ctx, c.provider, c.connectInfo, args, &out); err != nil {
+		return err
+	}
+	payload := strings.TrimSpace(out.String())
+	if payload == factorySandboxArtifactMissingSentinel {
+		return factory.ErrSandboxArtifactNotFound
+	}
+	data, err := decodeFactorySandboxBase64Payload(payload)
+	if err != nil {
+		return fmt.Errorf("decode sandbox artifact directory %q: %w", remotePath, err)
+	}
+	if err := os.MkdirAll(localPath, 0o700); err != nil {
+		return fmt.Errorf("create sandbox artifact directory destination: %w", err)
+	}
+	reader := tar.NewReader(bytes.NewReader(data))
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read sandbox artifact directory %q: %w", remotePath, err)
+		}
+		name := filepath.Clean(strings.TrimSpace(header.Name))
+		if name == "" || name == "." {
+			continue
+		}
+		if filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("sandbox artifact directory contains unsafe path %q", header.Name)
+		}
+		destination := filepath.Join(localPath, name)
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(destination, 0o700); err != nil {
+				return fmt.Errorf("create sandbox artifact directory %q: %w", name, err)
+			}
+		case tar.TypeReg, tar.TypeRegA:
+			if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+				return fmt.Errorf("create sandbox artifact parent %q: %w", name, err)
+			}
+			file, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+			if err != nil {
+				return fmt.Errorf("create sandbox artifact file %q: %w", name, err)
+			}
+			_, copyErr := io.Copy(file, reader)
+			closeErr := file.Close()
+			if copyErr != nil {
+				return fmt.Errorf("write sandbox artifact file %q: %w", name, copyErr)
+			}
+			if closeErr != nil {
+				return fmt.Errorf("close sandbox artifact file %q: %w", name, closeErr)
+			}
+		default:
+			continue
+		}
+	}
+	return nil
+}
+
+func decodeFactorySandboxBase64Payload(payload string) ([]byte, error) {
+	return base64.StdEncoding.DecodeString(strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' || r == ' ' {
+			return -1
+		}
+		return r
+	}, payload))
 }
 
 func defaultFactoryStatusSnapshot(dir string) (factorySnapshotArtifact, error) {

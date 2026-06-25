@@ -2849,6 +2849,96 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 	}
 }
 
+func TestCleanupFactoryRunDeferredSandboxCopiesArtifactsWithProviderExecBeforeCleanup(t *testing.T) {
+	dir := t.TempDir()
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	policy := factory.DefaultFactoryPolicy()
+	policy.CleanupBehavior = factory.CleanupBehaviorOnSuccess
+	target := &sandbox.SandboxState{
+		Name:     "factory-copy-before-cleanup",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	record := factory.RunRecord{
+		RunID:        "run-copy-before-cleanup",
+		Status:       factory.RunStatusRunning,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		SandboxName:  target.Name,
+		Sandbox:      &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status},
+		CreatedAt:    time.Date(2026, 6, 21, 1, 7, 0, 0, time.UTC),
+		UpdatedAt:    time.Date(2026, 6, 21, 1, 7, 0, 0, time.UTC),
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var copied bool
+	var cleanupCalls int
+	updated, cleaned, err := cleanupFactoryRunDeferredSandbox(context.Background(), store, dir, factoryRunRequest{Sandbox: true}, io.Discard, record, factoryRunDeps{
+		now: func() time.Time {
+			return time.Date(2026, 6, 21, 1, 8, 0, 0, time.UTC)
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, out io.Writer) error {
+			command := strings.Join(args, " ")
+			if !strings.Contains(command, "base64 < '/workspace/hal/.hal/auto-state.json'") {
+				t.Fatalf("provider exec args = %#v, want auto-state copy", args)
+			}
+			copied = true
+			if _, err := io.WriteString(out, base64.StdEncoding.EncodeToString([]byte(`{"step":"done"}`+"\n"))); err != nil {
+				t.Fatalf("write remote artifact error: %v", err)
+			}
+			return nil
+		},
+		cleanupSandbox: func(context.Context, factorySandboxCleanupRequest) error {
+			cleanupCalls++
+			if !copied {
+				t.Fatal("cleanup ran before provider-exec artifact copy")
+			}
+			currentRecord, err := store.LoadRun(record.RunID)
+			if err != nil {
+				t.Fatalf("LoadRun() during cleanup error: %v", err)
+			}
+			artifact := requireStoredFactoryArtifactPath(t, store, currentRecord.RunID, currentRecord.Artifacts, ".hal/auto-state.json")
+			if got := readStoredFactoryArtifact(t, store, currentRecord.RunID, artifact); got != `{"step":"done"}`+"\n" {
+				t.Fatalf("stored auto-state artifact before cleanup = %q", got)
+			}
+			return nil
+		},
+		sandboxRequests: func(string, factory.RunRecord) []factory.SandboxArtifactRequest {
+			return []factory.SandboxArtifactRequest{{
+				ID:         "sandbox-auto-state",
+				Name:       "sandbox-auto-state",
+				Type:       "json",
+				RemotePath: "/workspace/hal/.hal/auto-state.json",
+				Path:       ".hal/auto-state.json",
+			}}
+		},
+	}, policy, "success")
+	if err != nil {
+		t.Fatalf("cleanupFactoryRunDeferredSandbox() unexpected error: %v", err)
+	}
+	if !cleaned || cleanupCalls != 1 {
+		t.Fatalf("cleaned=%v cleanupCalls=%d, want one cleanup", cleaned, cleanupCalls)
+	}
+	if updated.Sandbox == nil || updated.Sandbox.Status != sandbox.StatusUnknown {
+		t.Fatalf("updated sandbox = %#v, want cleaned unknown status", updated.Sandbox)
+	}
+	artifact := requireStoredFactoryArtifactPath(t, store, updated.RunID, updated.Artifacts, ".hal/auto-state.json")
+	if got := readStoredFactoryArtifact(t, store, updated.RunID, artifact); got != `{"step":"done"}`+"\n" {
+		t.Fatalf("stored auto-state artifact = %q", got)
+	}
+}
+
 func TestRunFactoryRunWithDepsCleansOnSuccessSandboxAfterFinalSuccessWithoutVerification(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
