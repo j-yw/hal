@@ -785,6 +785,95 @@ func TestSanitizeCredentialedRemoteRedactsCredentialQueryAndFragmentValues(t *te
 	}
 }
 
+func TestRedactFactoryRunErrorRedactsCredentialedRemoteWithoutDeclaredSecrets(t *testing.T) {
+	credential := "ghp_factory_error_credential_123"
+	err := errors.New("clone failed: https://x:" + credential + "@github.com/jywlabs/hal.git")
+
+	safeErr := redactFactoryRunError(err, factory.RunSecretRedactor{})
+	if safeErr == nil {
+		t.Fatal("redactFactoryRunError() = nil, want redacted error")
+	}
+	if strings.Contains(safeErr.Error(), credential) {
+		t.Fatalf("redactFactoryRunError() leaked credential: %s", safeErr.Error())
+	}
+	if !strings.Contains(safeErr.Error(), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("redactFactoryRunError() = %q, want redaction placeholder", safeErr.Error())
+	}
+	if !errors.Is(safeErr, err) {
+		t.Fatalf("redactFactoryRunError() did not preserve original cause")
+	}
+}
+
+func TestMarkFactoryRunFailedRedactsCredentialedRemoteWithoutDeclaredSecrets(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 10, 40, 0, 0, time.UTC)
+	credential := "ghp_factory_failure_credential_123"
+
+	record, err := markFactoryRunFailedWithRedactor(store, factory.RunRecord{
+		RunID:        "run-credentialed-failure",
+		Status:       factory.RunStatusRunning,
+		ExecutorMode: factory.ExecutorModeLocal,
+		CurrentStep:  "run",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}, now, errors.New("git fetch failed: https://x:"+credential+"@github.com/jywlabs/hal.git"), factory.RunSecretRedactor{})
+	if err != nil {
+		t.Fatalf("markFactoryRunFailedWithRedactor() unexpected error: %v", err)
+	}
+	if record.Failure == nil {
+		t.Fatal("record.Failure = nil, want failure summary")
+	}
+	if strings.Contains(record.Failure.Message, credential) {
+		t.Fatalf("failure message leaked credential: %s", record.Failure.Message)
+	}
+	if !strings.Contains(record.Failure.Message, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("failure message = %q, want redaction placeholder", record.Failure.Message)
+	}
+
+	loaded, err := store.LoadRun("run-credentialed-failure")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	data, err := json.Marshal(loaded)
+	if err != nil {
+		t.Fatalf("json.Marshal(run record) error: %v", err)
+	}
+	if strings.Contains(string(data), credential) {
+		t.Fatalf("stored run record leaked credential: %s", string(data))
+	}
+}
+
+func TestAppendFactoryRunTimelineEventRedactsCredentialedRemoteWithoutDeclaredSecrets(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	credential := "ghp_factory_timeline_credential_123"
+
+	if err := appendFactoryRunTimelineEvent(store, "run-credentialed-timeline", time.Date(2026, 6, 21, 10, 41, 0, 0, time.UTC), factoryTimelineEvent{
+		EventType: factory.EventTypeStepEnded,
+		Summary:   "Factory run failed",
+		Metadata: map[string]any{
+			"error": "clone failed: https://x:" + credential + "@github.com/jywlabs/hal.git",
+		},
+	}); err != nil {
+		t.Fatalf("appendFactoryRunTimelineEvent() unexpected error: %v", err)
+	}
+
+	events, err := store.LoadEvents("run-credentialed-timeline")
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	data, err := json.Marshal(events)
+	if err != nil {
+		t.Fatalf("json.Marshal(events) error: %v", err)
+	}
+	payload := string(data)
+	if strings.Contains(payload, credential) {
+		t.Fatalf("timeline event leaked credential: %s", payload)
+	}
+	if !strings.Contains(payload, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("timeline event missing redaction placeholder: %s", payload)
+	}
+}
+
 func TestRunFactoryRunWithDepsMissingRequiredEnvSecretFailsBeforeSandbox(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	now := time.Date(2026, 6, 21, 10, 45, 0, 0, time.UTC)

@@ -2188,10 +2188,10 @@ func factorySandboxPipelineRecordError(record factory.RunRecord, fallback error)
 }
 
 func redactFactoryRunFailureSummary(failure factory.FailureSummary, redactor factory.RunSecretRedactor) factory.FailureSummary {
-	failure.Step = redactor.RedactString(failure.Step)
-	failure.Category = redactor.RedactString(failure.Category)
-	failure.Message = redactor.RedactString(failure.Message)
-	failure.SuggestedCommand = redactor.RedactString(failure.SuggestedCommand)
+	failure.Step = redactFactoryString(failure.Step, redactor)
+	failure.Category = redactFactoryString(failure.Category, redactor)
+	failure.Message = redactFactoryString(failure.Message, redactor)
+	failure.SuggestedCommand = redactFactoryString(failure.SuggestedCommand, redactor)
 	return failure
 }
 
@@ -2359,7 +2359,7 @@ func redactFactoryRunError(err error, redactor factory.RunSecretRedactor) error 
 	if err == nil {
 		return nil
 	}
-	message := redactor.RedactString(err.Error())
+	message := redactFactoryString(err.Error(), redactor)
 	if message == err.Error() {
 		return err
 	}
@@ -3394,8 +3394,8 @@ func factoryPolicyDecisionSummary(decision factory.PolicyDecisionMetadata) strin
 }
 
 func redactFactoryTimelineEvent(event factoryTimelineEvent, redactor factory.RunSecretRedactor) factoryTimelineEvent {
-	event.Message = redactor.RedactString(event.Message)
-	event.Summary = redactor.RedactString(event.Summary)
+	event.Message = redactFactoryString(event.Message, redactor)
+	event.Summary = redactFactoryString(event.Summary, redactor)
 	event.Metadata = redactFactoryTimelineMetadata(event.Metadata, redactor)
 	return event
 }
@@ -3406,7 +3406,7 @@ func redactFactoryTimelineMetadata(metadata map[string]any, redactor factory.Run
 	}
 	safe := make(map[string]any, len(metadata))
 	for key, value := range metadata {
-		safe[redactor.RedactString(key)] = redactFactoryTimelineValue(value, redactor)
+		safe[redactFactoryString(key, redactor)] = redactFactoryTimelineValue(value, redactor)
 	}
 	return safe
 }
@@ -3444,7 +3444,7 @@ func redactFactoryTimelineReflectValue(value reflect.Value, redactor factory.Run
 		out.Elem().Set(redacted)
 		return out, true
 	case reflect.String:
-		redacted := redactor.RedactString(value.String())
+		redacted := redactFactoryString(value.String(), redactor)
 		if redacted == value.String() {
 			return value, false
 		}
@@ -4948,11 +4948,28 @@ func readGitRemoteOptionalInDir(dir string) (string, error) {
 
 func sanitizeFactoryRunRecordCredentialedRemote(record factory.RunRecord) factory.RunRecord {
 	record.RepoRemote = sanitizeCredentialedRemote(record.RepoRemote)
+	record.Failure = sanitizeFactoryRunFailureCredentialedRemote(record.Failure)
 	return record
 }
 
 func redactFactoryRunRecordForStorage(record factory.RunRecord, redactor factory.RunSecretRedactor) factory.RunRecord {
 	return sanitizeFactoryRunRecordCredentialedRemote(redactor.RedactRunRecord(record))
+}
+
+func sanitizeFactoryRunFailureCredentialedRemote(failure *factory.FailureSummary) *factory.FailureSummary {
+	if failure == nil {
+		return nil
+	}
+	safe := *failure
+	safe.Step = sanitizeCredentialedRemoteReferences(safe.Step)
+	safe.Category = sanitizeCredentialedRemoteReferences(safe.Category)
+	safe.Message = sanitizeCredentialedRemoteReferences(safe.Message)
+	safe.SuggestedCommand = sanitizeCredentialedRemoteReferences(safe.SuggestedCommand)
+	return &safe
+}
+
+func redactFactoryString(value string, redactor factory.RunSecretRedactor) string {
+	return sanitizeCredentialedRemoteReferences(redactor.RedactString(value))
 }
 
 func sanitizeCredentialedRemote(remote string) string {
