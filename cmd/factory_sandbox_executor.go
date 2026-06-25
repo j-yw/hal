@@ -156,6 +156,8 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	if err := saveFactorySandboxRunRecordWithRedactor(store, deps, &record, secretRedactor); err != nil {
 		return fmt.Errorf("save sandbox factory run: %w", err)
 	}
+	// Sandbox create persists Repo as an informational label; bootstrap uses
+	// record.RepoRemote directly for the actual clone.
 	provisionRepo := redactFactorySandboxProvisionRepo(record, secretRedactor)
 
 	if factorySandboxRemoteWorkspaceDir(record) == "" {
