@@ -622,7 +622,7 @@ func (w *factorySandboxTimelineWriter) appendExecutorEventLocked(eventType, summ
 		EventType: eventType,
 		Timestamp: w.deps.now().UTC(),
 		Summary:   w.redactExecutorEventString(summary),
-		Metadata:  w.redactExecutorEventMetadata(eventMetadata),
+		Metadata:  w.redactExecutorEventMetadataWithRaw(eventMetadata),
 	}
 	if err := w.deps.appendEvent(w.store, &event); err != nil {
 		return err
@@ -639,14 +639,39 @@ func (w *factorySandboxTimelineWriter) redactExecutorEventString(value string) s
 }
 
 func (w *factorySandboxTimelineWriter) redactExecutorEventMetadata(metadata map[string]any) map[string]any {
+	return w.redactExecutorEventMetadataWithRaw(metadata)
+}
+
+func (w *factorySandboxTimelineWriter) redactExecutorEventMetadataWithRaw(metadata map[string]any) map[string]any {
 	if len(metadata) == 0 {
 		return nil
 	}
 	out := make(map[string]any, len(metadata))
 	for key, value := range metadata {
-		out[w.redactExecutorEventString(key)] = w.redactExecutorEventValue(value)
+		redactedKey := w.redactExecutorEventString(key)
+		redactedValue := w.redactExecutorEventValue(value)
+		if key == "command" {
+			redactedValue = w.preserveRedactedCommandMarker(value, redactedValue)
+		}
+		out[redactedKey] = redactedValue
 	}
 	return out
+}
+
+func (w *factorySandboxTimelineWriter) preserveRedactedCommandMarker(rawValue any, redactedValue any) any {
+	redactedString, ok := redactedValue.(string)
+	if !ok || redactedString != "[redacted]" || w.outputRedact == nil {
+		return redactedValue
+	}
+	rawString, ok := rawValue.(string)
+	if !ok {
+		return redactedValue
+	}
+	outputRedacted := strings.TrimSpace(w.outputRedact(rawString))
+	if strings.Contains(outputRedacted, factory.RunSecretRedactionPlaceholder) {
+		return outputRedacted
+	}
+	return redactedValue
 }
 
 func (w *factorySandboxTimelineWriter) redactExecutorEventValue(value any) any {
