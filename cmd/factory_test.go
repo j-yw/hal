@@ -5674,6 +5674,46 @@ func TestRunFactoryRunPipelineWithDepsUsesInjectedClockForFailureLogChunk(t *tes
 	}
 }
 
+func TestRunFactoryRunPipelineWithDepsRedactsResolvedSecretsFromFailureLogChunk(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	secretValue := "ghp_local_pipeline_secret_12345"
+	wantErr := errors.New("auto failed with token " + secretValue)
+
+	err := runFactoryRunPipelineWithDeps(context.Background(), factoryRunPipelineRequest{
+		RunID: "run-log-secret-failure",
+		Store: store,
+		Request: factoryRunRequest{
+			ResolvedSecrets: []factory.ResolvedRunSecret{{
+				Name:     "GITHUB_TOKEN",
+				Source:   factory.RunSecretSourceEnv,
+				Required: true,
+				Value:    secretValue,
+			}},
+		},
+	}, factoryRunPipelineDeps{
+		runAuto: func(context.Context, factoryRunAutoRequest) error {
+			return wantErr
+		},
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runFactoryRunPipelineWithDeps() error = %v, want %v", err, wantErr)
+	}
+
+	chunks, err := store.LoadLogChunks("run-log-secret-failure")
+	if err != nil {
+		t.Fatalf("LoadLogChunks() unexpected error: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("log chunks = %d, want 2: %#v", len(chunks), chunks)
+	}
+	if strings.Contains(chunks[1].Text, secretValue) {
+		t.Fatalf("failure log chunk text contains secret: %q", chunks[1].Text)
+	}
+	if !strings.Contains(chunks[1].Text, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("failure log chunk text = %q, want redaction placeholder", chunks[1].Text)
+	}
+}
+
 func TestRunAutoForFactoryRunKeepsDirectAutoBehaviorIsolated(t *testing.T) {
 	chdirTemp(t)
 

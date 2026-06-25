@@ -3662,6 +3662,7 @@ func runFactoryRunPipelineWithDeps(ctx context.Context, req factoryRunPipelineRe
 		return fmt.Errorf("factory run auto dependency is required")
 	}
 
+	redactor := factory.NewRunSecretRedactor(req.Request.ResolvedSecrets)
 	autoReq := factoryRunAutoRequestFromFactoryRequest(req.Request)
 	autoReq.Engine = strings.TrimSpace(req.Engine)
 	autoReq.AttemptPolicy = req.AttemptPolicy
@@ -3677,7 +3678,7 @@ func runFactoryRunPipelineWithDeps(ctx context.Context, req factoryRunPipelineRe
 	err := deps.runAuto(ctx, autoReq)
 	if err != nil {
 		failedAt := now()
-		_ = recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamStderr, factory.LogSourceLocalFactory, err.Error(), "Local hal auto pipeline failed", &failedAt)
+		_ = recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamStderr, factory.LogSourceLocalFactory, redactor.RedactString(err.Error()), "Local hal auto pipeline failed", &failedAt)
 		return err
 	}
 	completedAt := now()
