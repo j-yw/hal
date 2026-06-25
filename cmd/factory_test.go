@@ -381,6 +381,26 @@ func TestFactoryRunRequestFromCommandParsesSecretEnvFlags(t *testing.T) {
 	}
 }
 
+func TestFactoryRunRequestFromCommandRejectsSecretEnvAssignments(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().Bool("sandbox", false, "")
+	cmd.Flags().Bool("json", false, "")
+	if err := cmd.Flags().Set("secret-env", "GITHUB_TOKEN=ghp_secret"); err != nil {
+		t.Fatalf("Set(secret-env) error: %v", err)
+	}
+
+	_, err := factoryRunRequestFromCommand(cmd, []string{".hal/prd-feature.md"})
+	if err == nil {
+		t.Fatal("factoryRunRequestFromCommand() expected error")
+	}
+	if strings.Contains(err.Error(), "ghp_secret") || strings.Contains(err.Error(), "GITHUB_TOKEN=ghp_secret") {
+		t.Fatalf("error should not echo secret-env value: %v", err)
+	}
+}
+
 func TestFactoryRunArgsValidationRejectsReportWithPositionalBeforeExecution(t *testing.T) {
 	cmd := &cobra.Command{Use: "run", Args: validateFactoryRunArgs}
 	cmd.Flags().String("report", "", "")

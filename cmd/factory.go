@@ -3835,6 +3835,9 @@ func parseFactoryRunSecretEnvFlags(values []string) ([]factory.RunSecretInput, e
 		if name == "" {
 			return nil, fmt.Errorf("--secret-env requires a non-empty environment variable name")
 		}
+		if !isFactoryRunSecretEnvName(name) {
+			return nil, fmt.Errorf("invalid --secret-env value: expected an environment variable name like GITHUB_TOKEN")
+		}
 		secrets = append(secrets, factory.RunSecretInput{
 			Name:     name,
 			Source:   factory.RunSecretSourceEnv,
@@ -3842,6 +3845,23 @@ func parseFactoryRunSecretEnvFlags(values []string) ([]factory.RunSecretInput, e
 		})
 	}
 	return secrets, nil
+}
+
+func isFactoryRunSecretEnvName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		ch := name[i]
+		valid := ch == '_' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z'
+		if i > 0 {
+			valid = valid || ch >= '0' && ch <= '9'
+		}
+		if !valid {
+			return false
+		}
+	}
+	return true
 }
 
 func factoryRunSecretMetadataFromInputs(inputs []factory.RunSecretInput) []factory.RunSecretMetadata {

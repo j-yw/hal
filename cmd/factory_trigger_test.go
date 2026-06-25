@@ -349,6 +349,33 @@ func TestFactoryTriggerRequestFromCommandParsesSecretEnvFlags(t *testing.T) {
 	}
 }
 
+func TestFactoryTriggerRequestFromCommandRejectsSecretEnvAssignments(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("repo", ".", "")
+	cmd.Flags().String("prd", "", "")
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().Bool("discover-report", false, "")
+	cmd.Flags().String("reports-dir", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().String("executor", factory.ExecutorModeLocal, "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().Bool("json", false, "")
+	if err := cmd.Flags().Set("prd", ".hal/prd-feature.md"); err != nil {
+		t.Fatalf("Set(prd) error: %v", err)
+	}
+	if err := cmd.Flags().Set("secret-env", "GITHUB_TOKEN=ghp_secret"); err != nil {
+		t.Fatalf("Set(secret-env) error: %v", err)
+	}
+
+	_, err := factoryTriggerRequestFromCommand(cmd)
+	if err == nil {
+		t.Fatal("factoryTriggerRequestFromCommand() expected error")
+	}
+	if strings.Contains(err.Error(), "ghp_secret") || strings.Contains(err.Error(), "GITHUB_TOKEN=ghp_secret") {
+		t.Fatalf("error should not echo secret-env value: %v", err)
+	}
+}
+
 func TestRunFactoryTriggerWithDepsPersistsSecretRequirementsForQueueWorker(t *testing.T) {
 	repoDir := t.TempDir()
 	halDir := filepath.Join(repoDir, ".hal")
