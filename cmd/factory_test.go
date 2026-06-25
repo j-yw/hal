@@ -777,6 +777,7 @@ func TestRunFactoryRunWithDepsMissingRequiredEnvSecretFailsBeforeSandbox(t *test
 		Sandbox:      true,
 		Secrets: []factory.RunSecretInput{
 			{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true},
+			{Name: "NPM_TOKEN", Source: factory.RunSecretSourceEnv, Required: true},
 		},
 	}, io.Discard, factoryRunDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
@@ -790,10 +791,15 @@ func TestRunFactoryRunWithDepsMissingRequiredEnvSecretFailsBeforeSandbox(t *test
 			return "https://" + credential + ":x-oauth-basic@github.com/jywlabs/hal.git", nil
 		},
 		lookupEnv: func(name string) (string, bool) {
-			if name != "GITHUB_TOKEN" {
-				t.Fatalf("lookup env name = %q, want GITHUB_TOKEN", name)
+			switch name {
+			case "GITHUB_TOKEN":
+				return " \t ", true
+			case "NPM_TOKEN":
+				return "npm_factory_secret_value", true
+			default:
+				t.Fatalf("lookup env name = %q, want configured secret env", name)
 			}
-			return " \t ", true
+			return "", false
 		},
 		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
 			return &policy, nil
@@ -831,14 +837,21 @@ func TestRunFactoryRunWithDepsMissingRequiredEnvSecretFailsBeforeSandbox(t *test
 	if marshalErr != nil {
 		t.Fatalf("json.Marshal(run record) error: %v", marshalErr)
 	}
-	if strings.Contains(string(data), credential) {
-		t.Fatalf("run record JSON leaked credentialed remote secret: %s", string(data))
+	for _, leaked := range []string{credential, "npm_factory_secret_value"} {
+		if strings.Contains(string(data), leaked) {
+			t.Fatalf("run record JSON leaked secret %q: %s", leaked, string(data))
+		}
 	}
 	if record.RepoRemote != "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/jywlabs/hal.git" {
 		t.Fatalf("repo remote = %q, want redacted credential", record.RepoRemote)
 	}
 	wantMetadata := []factory.RunSecretMetadata{{
 		Name:     "GITHUB_TOKEN",
+		Source:   factory.RunSecretSourceEnv,
+		Required: true,
+		Present:  false,
+	}, {
+		Name:     "NPM_TOKEN",
 		Source:   factory.RunSecretSourceEnv,
 		Required: true,
 		Present:  false,

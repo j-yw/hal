@@ -844,11 +844,25 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 func resolveFactoryRunExecutionSecrets(req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps) (factoryRunRequest, factory.RunRecord, error) {
 	resolved, metadata, err := factory.ResolveRunSecrets(req.Secrets, deps.lookupEnv)
 	req.ResolvedSecrets = resolved
-	record.Secrets = metadata
 	if err != nil {
+		record.Secrets = factoryRunSecretMetadataWithResolvedPrefix(req.Secrets, metadata)
 		record = sanitizeFactoryRunRecordCredentialedRemote(record)
+		return req, record, err
 	}
-	return req, record, err
+	record.Secrets = metadata
+	return req, record, nil
+}
+
+func factoryRunSecretMetadataWithResolvedPrefix(inputs []factory.RunSecretInput, resolved []factory.RunSecretMetadata) []factory.RunSecretMetadata {
+	metadata := factoryRunSecretMetadataFromInputs(inputs)
+	for i, secret := range resolved {
+		if i >= len(metadata) {
+			metadata = append(metadata, secret)
+			continue
+		}
+		metadata[i] = secret
+	}
+	return metadata
 }
 
 func failFactoryRunSetup(store factory.Store, record factory.RunRecord, now time.Time, setupErr error, redactor factory.RunSecretRedactor) (factoryRunExecutionResult, error) {
