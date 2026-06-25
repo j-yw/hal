@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/verify"
 )
 
 func TestFactoryQueueAddArgsValidationRejectsMissingOperands(t *testing.T) {
@@ -870,6 +871,116 @@ func TestRunFactoryQueueWorkWithDepsUsesStoredPolicySnapshot(t *testing.T) {
 	if loaded.Engine != factory.PolicyEngineCodex {
 		t.Fatalf("loaded engine = %q, want stored snapshot %q", loaded.Engine, factory.PolicyEngineCodex)
 	}
+}
+
+func TestRunFactoryQueueWorkWithDepsRunsPostRunVerificationAndArtifacts(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	projectDir := t.TempDir()
+	createdAt := time.Date(2026, 6, 21, 18, 42, 0, 0, time.UTC)
+	claimedAt := createdAt.Add(5 * time.Minute)
+	claim := factory.QueueClaim{WorkerID: "worker-post-run", PID: 5357, Hostname: "factory-host"}
+	policySnapshot := factory.DefaultFactoryPolicy()
+	policySnapshot.VerificationRequired = true
+	record := testFactoryRunRecord("run-queue-post-run", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.QueueStatusQueued
+	record.Policy = &policySnapshot
+	record.Engine = factory.PolicyEngineCodex
+	record.RepoPath = projectDir
+	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-post-run.md"}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	if err := store.SaveQueue([]factory.QueueEntry{
+		testFactoryQueueEntry("queue-post-run-001", record.RunID, factory.QueueStatusQueued, createdAt),
+	}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	statusSnapshotCalls := 0
+	doctorSnapshotCalls := 0
+	loadVerifyCalls := 0
+	runVerifyCalls := 0
+	deps := queueWorkTestDepsWithExecutor(store, claimedAt, claim, func(context.Context, factoryRunPipelineRequest) error {
+		return nil
+	})
+	deps.statusSnapshot = func(gotDir string) (factorySnapshotArtifact, error) {
+		statusSnapshotCalls++
+		if gotDir != projectDir {
+			t.Fatalf("statusSnapshot dir = %q, want %q", gotDir, projectDir)
+		}
+		return factorySnapshotArtifact{
+			Name: "queue-status-snapshot",
+			Path: "factory/queue-status-snapshot.json",
+			Data: []byte(`{"status":"ok"}`),
+		}, nil
+	}
+	deps.doctorSnapshot = func(gotDir string) (factorySnapshotArtifact, error) {
+		doctorSnapshotCalls++
+		if gotDir != projectDir {
+			t.Fatalf("doctorSnapshot dir = %q, want %q", gotDir, projectDir)
+		}
+		return factorySnapshotArtifact{
+			Name: "queue-doctor-snapshot",
+			Path: "factory/queue-doctor-snapshot.json",
+			Data: []byte(`{"doctor":"ok"}`),
+		}, nil
+	}
+	deps.loadVerify = func(gotDir string) (*verify.Config, error) {
+		loadVerifyCalls++
+		if gotDir != projectDir {
+			t.Fatalf("loadVerify dir = %q, want %q", gotDir, projectDir)
+		}
+		return &verify.Config{
+			ProjectRoot: projectDir,
+			Checks: []verify.ShellCheck{{
+				ID:       "post-run",
+				Name:     "Post-run",
+				Command:  "true",
+				Required: true,
+			}},
+		}, nil
+	}
+	deps.runVerify = func(_ context.Context, cfg *verify.Config) (*verify.Result, error) {
+		runVerifyCalls++
+		if cfg == nil || len(cfg.Checks) != 1 || cfg.Checks[0].ID != "post-run" {
+			t.Fatalf("runVerify config = %#v, want post-run check", cfg)
+		}
+		return &verify.Result{
+			SchemaVersion: verify.SchemaVersion,
+			GeneratedAt:   claimedAt,
+			Status:        verify.StatusPass,
+			Summary:       verify.Summary{Total: 1, Passed: 1},
+		}, nil
+	}
+
+	var out bytes.Buffer
+	if err := runFactoryQueueWorkWithDeps(context.Background(), &out, factoryQueueWorkRequest{JSON: true}, deps); err != nil {
+		t.Fatalf("runFactoryQueueWorkWithDeps() unexpected error: %v", err)
+	}
+	for name, got := range map[string]int{
+		"statusSnapshot": statusSnapshotCalls,
+		"doctorSnapshot": doctorSnapshotCalls,
+		"loadVerify":     loadVerifyCalls,
+		"runVerify":      runVerifyCalls,
+	} {
+		if got != 1 {
+			t.Fatalf("%s calls = %d, want 1", name, got)
+		}
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.Status != factory.RunStatusSucceeded {
+		t.Fatalf("run status = %q, want succeeded", loaded.Status)
+	}
+	if loaded.Verification == nil || loaded.Verification.Summary.Passed != 1 {
+		t.Fatalf("verification = %#v, want passing verification", loaded.Verification)
+	}
+	requireStoredFactoryArtifactPath(t, store, loaded.RunID, loaded.Artifacts, "factory/queue-status-snapshot.json")
+	requireStoredFactoryArtifactPath(t, store, loaded.RunID, loaded.Artifacts, "factory/queue-doctor-snapshot.json")
 }
 
 func TestRunFactoryQueueWorkWithDepsMarksRunFailedWhenPolicyLoadFails(t *testing.T) {
