@@ -619,7 +619,7 @@ func TestRunFactoryRunWithDepsResolvesRequiredEnvSecretsBeforePipeline(t *testin
 			if strings.Contains(string(data), secretValue) {
 				t.Fatalf("run record JSON leaked secret value: %s", string(data))
 			}
-			if loaded.RepoRemote != "https://x:"+factory.RunSecretRedactionPlaceholder+"@github.com/jywlabs/hal.git" {
+			if loaded.RepoRemote != "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/jywlabs/hal.git" {
 				t.Fatalf("stored repo remote = %q, want redacted secret value", loaded.RepoRemote)
 			}
 			return nil
@@ -645,7 +645,7 @@ func TestRunFactoryRunWithDepsResolvesRequiredEnvSecretsBeforePipeline(t *testin
 	if strings.Contains(string(data), secretValue) {
 		t.Fatalf("final run record JSON leaked secret value: %s", string(data))
 	}
-	if record.RepoRemote != "https://x:"+factory.RunSecretRedactionPlaceholder+"@github.com/jywlabs/hal.git" {
+	if record.RepoRemote != "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/jywlabs/hal.git" {
 		t.Fatalf("final repo remote = %q, want redacted secret value", record.RepoRemote)
 	}
 }
@@ -672,7 +672,7 @@ func TestRunFactoryRunWithDepsMissingRequiredEnvSecretFailsBeforeSandbox(t *test
 			return "hal/factory", nil
 		},
 		repoRemote: func(string) (string, error) {
-			return "https://qa-user:" + credential + "@github.com/jywlabs/hal.git", nil
+			return "https://" + credential + ":x-oauth-basic@github.com/jywlabs/hal.git", nil
 		},
 		lookupEnv: func(name string) (string, bool) {
 			if name != "GITHUB_TOKEN" {
@@ -719,7 +719,7 @@ func TestRunFactoryRunWithDepsMissingRequiredEnvSecretFailsBeforeSandbox(t *test
 	if strings.Contains(string(data), credential) {
 		t.Fatalf("run record JSON leaked credentialed remote secret: %s", string(data))
 	}
-	if record.RepoRemote != "https://qa-user:"+factory.RunSecretRedactionPlaceholder+"@github.com/jywlabs/hal.git" {
+	if record.RepoRemote != "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/jywlabs/hal.git" {
 		t.Fatalf("repo remote = %q, want redacted credential", record.RepoRemote)
 	}
 	wantMetadata := []factory.RunSecretMetadata{{

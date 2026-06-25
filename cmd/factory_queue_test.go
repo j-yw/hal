@@ -1083,7 +1083,7 @@ func TestRunFactoryQueueWorkWithDepsRehydratesRedactedSandboxRemote(t *testing.T
 	claim := factory.QueueClaim{WorkerID: "worker-sandbox-remote", PID: 5359, Hostname: "factory-host"}
 	secret := "ghp_factory_secret_value_123"
 	rawRemote := "https://x:" + secret + "@github.com/example/repo.git"
-	redactedRemote := "https://x:" + factory.RunSecretRedactionPlaceholder + "@github.com/example/repo.git"
+	redactedRemote := "https://" + factory.RunSecretRedactionPlaceholder + "@github.com/example/repo.git"
 	record := testFactoryRunRecord("run-queue-sandbox-redacted-remote", createdAt, createdAt)
 	record.Status = factory.RunStatusPending
 	record.CurrentStep = factory.QueueStatusQueued

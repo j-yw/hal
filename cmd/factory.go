@@ -516,8 +516,7 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 		return err
 	}
 	initialRedactor := factory.NewRunSecretRedactor(resolveFactoryRunRedactionSecrets(req.Secrets, deps.lookupEnv))
-	safeInitialRecord := initialRedactor.RedactRunRecord(record)
-	safeInitialRecord = sanitizeFactoryRunRecordCredentialedRemote(safeInitialRecord)
+	safeInitialRecord := redactFactoryRunRecordForStorage(record, initialRedactor)
 	if err := createFactoryRunRecord(store, safeInitialRecord); err != nil {
 		return err
 	}
@@ -1354,7 +1353,7 @@ func markFactoryRunInProgressWithRedactor(store factory.Store, record factory.Ru
 	record.Status = factory.RunStatusRunning
 	record.CurrentStep = "run"
 	record.UpdatedAt = now.UTC()
-	safeRecord := redactor.RedactRunRecord(record)
+	safeRecord := redactFactoryRunRecordForStorage(record, redactor)
 	if err := store.SaveRun(&safeRecord); err != nil {
 		return factory.RunRecord{}, fmt.Errorf("mark factory run in progress: %w", err)
 	}
@@ -1396,7 +1395,7 @@ func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, 
 		return factory.RunRecord{}, fmt.Errorf("reload factory run artifacts: %w", err)
 	}
 	record.UpdatedAt = now.UTC()
-	safeRecord := redactor.RedactRunRecord(*record)
+	safeRecord := redactFactoryRunRecordForStorage(*record, redactor)
 	if err := store.SaveRun(&safeRecord); err != nil {
 		return factory.RunRecord{}, fmt.Errorf("record factory artifacts: %w", err)
 	}
@@ -1407,7 +1406,7 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 	startedAt := deps.now()
 	record.CurrentStep = "verify"
 	record.UpdatedAt = startedAt.UTC()
-	safeRecord := redactor.RedactRunRecord(record)
+	safeRecord := redactFactoryRunRecordForStorage(record, redactor)
 	if err := store.SaveRun(&safeRecord); err != nil {
 		return record, deps.now(), fmt.Errorf("mark factory run verifying: %w", err)
 	}
@@ -1488,7 +1487,7 @@ func recordFactoryRunVerificationOutcome(store factory.Store, dir string, record
 		Artifacts: safeArtifacts,
 	}
 	record.UpdatedAt = finishedAt.UTC()
-	safeRecord := redactor.RedactRunRecord(record)
+	safeRecord := redactFactoryRunRecordForStorage(record, redactor)
 	if err := store.SaveRun(&safeRecord); err != nil {
 		return factory.RunRecord{}, finishedAt, fmt.Errorf("record factory verification: %w", err)
 	}
@@ -2084,7 +2083,7 @@ func markFactoryRunSucceededWithRedactor(store factory.Store, record factory.Run
 	record.UpdatedAt = finishedAt
 	record.FinishedAt = &finishedAt
 	record.Failure = nil
-	safeRecord := redactor.RedactRunRecord(record)
+	safeRecord := redactFactoryRunRecordForStorage(record, redactor)
 	if err := store.SaveRun(&safeRecord); err != nil {
 		return factory.RunRecord{}, fmt.Errorf("mark factory run succeeded: %w", err)
 	}
@@ -2124,7 +2123,7 @@ func markFactoryRunFailedWithRedactor(store factory.Store, record factory.RunRec
 	record.UpdatedAt = finishedAt
 	record.FinishedAt = &finishedAt
 	record.Failure = &failure
-	safeRecord := redactor.RedactRunRecord(record)
+	safeRecord := redactFactoryRunRecordForStorage(record, redactor)
 	if err := store.SaveRun(&safeRecord); err != nil {
 		return factory.RunRecord{}, fmt.Errorf("mark factory run failed: %w", err)
 	}
@@ -4857,20 +4856,26 @@ func sanitizeFactoryRunRecordCredentialedRemote(record factory.RunRecord) factor
 	return record
 }
 
+func redactFactoryRunRecordForStorage(record factory.RunRecord, redactor factory.RunSecretRedactor) factory.RunRecord {
+	return sanitizeFactoryRunRecordCredentialedRemote(redactor.RedactRunRecord(record))
+}
+
 func sanitizeCredentialedRemote(remote string) string {
 	remote = strings.TrimSpace(remote)
 	if remote == "" {
 		return remote
 	}
 	parsed, err := url.Parse(remote)
-	if err != nil || parsed.User == nil {
+	if err != nil {
+		if sanitized, ok := sanitizeCredentialedRemoteAuthority(remote); ok {
+			return sanitized
+		}
 		return remote
 	}
-	username := parsed.User.Username()
-	userinfo := factory.RunSecretRedactionPlaceholder
-	if _, hasPassword := parsed.User.Password(); hasPassword && username != "" {
-		userinfo = username + ":" + factory.RunSecretRedactionPlaceholder
+	if parsed.User == nil {
+		return remote
 	}
+	userinfo := factory.RunSecretRedactionPlaceholder
 	parsed.User = nil
 	withoutUser := parsed.String()
 	prefix := parsed.Scheme + "://"
@@ -4878,4 +4883,24 @@ func sanitizeCredentialedRemote(remote string) string {
 		return remote
 	}
 	return prefix + userinfo + "@" + strings.TrimPrefix(withoutUser, prefix)
+}
+
+func sanitizeCredentialedRemoteAuthority(remote string) (string, bool) {
+	schemeIndex := strings.Index(remote, "://")
+	if schemeIndex < 0 {
+		return remote, false
+	}
+	authorityStart := schemeIndex + len("://")
+	authorityEnd := len(remote)
+	for _, separator := range []string{"/", "?", "#"} {
+		if index := strings.Index(remote[authorityStart:], separator); index >= 0 && authorityStart+index < authorityEnd {
+			authorityEnd = authorityStart + index
+		}
+	}
+	authority := remote[authorityStart:authorityEnd]
+	atIndex := strings.LastIndex(authority, "@")
+	if atIndex < 0 {
+		return remote, false
+	}
+	return remote[:authorityStart] + factory.RunSecretRedactionPlaceholder + "@" + remote[authorityStart+atIndex+1:], true
 }

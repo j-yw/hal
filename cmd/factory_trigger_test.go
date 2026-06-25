@@ -393,7 +393,7 @@ func TestRunFactoryTriggerWithDepsPersistsSecretRequirementsForQueueWorker(t *te
 	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
 		t.Fatalf("json.Unmarshal output error: %v\n%s", err, out.String())
 	}
-	if resp.Run.RepoRemote != "https://x:"+factory.RunSecretRedactionPlaceholder+"@github.com/ReScienceLab/hal.git" {
+	if resp.Run.RepoRemote != "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/ReScienceLab/hal.git" {
 		t.Fatalf("response repo remote = %q, want redacted secret value", resp.Run.RepoRemote)
 	}
 
@@ -401,7 +401,7 @@ func TestRunFactoryTriggerWithDepsPersistsSecretRequirementsForQueueWorker(t *te
 	if err != nil {
 		t.Fatalf("LoadRun() error: %v", err)
 	}
-	if record.RepoRemote != "https://x:"+factory.RunSecretRedactionPlaceholder+"@github.com/ReScienceLab/hal.git" {
+	if record.RepoRemote != "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/ReScienceLab/hal.git" {
 		t.Fatalf("stored repo remote = %q, want redacted secret value", record.RepoRemote)
 	}
 	wantMetadata := []factory.RunSecretMetadata{{
@@ -433,7 +433,7 @@ func TestRunFactoryTriggerWithDepsRedactsCredentialedRemoteWhenSecretValueMissin
 	credential := "factory-secret-12345"
 	deps := factoryTriggerTestDeps(store, now, "run-trigger-missing-secret", "queue-trigger-missing-secret")
 	deps.repoRemote = func(string) (string, error) {
-		return "https://qa-user:" + credential + "@github.com/ReScienceLab/hal.git", nil
+		return "https://" + credential + ":x-oauth-basic@github.com/ReScienceLab/hal.git", nil
 	}
 	deps.lookupEnv = func(name string) (string, bool) {
 		if name != "GITHUB_TOKEN" {
@@ -466,7 +466,7 @@ func TestRunFactoryTriggerWithDepsRedactsCredentialedRemoteWhenSecretValueMissin
 	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
 		t.Fatalf("json.Unmarshal output error: %v\n%s", err, out.String())
 	}
-	wantRemote := "https://qa-user:" + factory.RunSecretRedactionPlaceholder + "@github.com/ReScienceLab/hal.git"
+	wantRemote := "https://" + factory.RunSecretRedactionPlaceholder + "@github.com/ReScienceLab/hal.git"
 	if resp.Run.RepoRemote != wantRemote {
 		t.Fatalf("response repo remote = %q, want %q", resp.Run.RepoRemote, wantRemote)
 	}

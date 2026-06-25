@@ -260,8 +260,7 @@ func runFactoryTriggerWithDeps(out io.Writer, req factoryTriggerRequest, deps fa
 	}
 	record.ExecutorMode = executorMode
 	triggerRedactor := factory.NewRunSecretRedactor(resolveFactoryRunRedactionSecrets(req.Secrets, deps.lookupEnv))
-	safeRecord := triggerRedactor.RedactRunRecord(record)
-	safeRecord = sanitizeFactoryRunRecordCredentialedRemote(safeRecord)
+	safeRecord := redactFactoryRunRecordForStorage(record, triggerRedactor)
 
 	if err := createFactoryRunRecord(store, safeRecord); err != nil {
 		return err
@@ -279,7 +278,7 @@ func runFactoryTriggerWithDeps(out io.Writer, req factoryTriggerRequest, deps fa
 	if err != nil {
 		return failFactoryTriggerRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
 	}
-	record = sanitizeFactoryRunRecordCredentialedRemote(triggerRedactor.RedactRunRecord(record))
+	record = redactFactoryRunRecordForStorage(record, triggerRedactor)
 	if err := store.SaveRun(&record); err != nil {
 		return failFactoryTriggerRunCreation(store, record, out, req.JSON, deps.now(), fmt.Errorf("sanitize triggered factory policy snapshot: %w", err), nil)
 	}
@@ -293,7 +292,7 @@ func runFactoryTriggerWithDeps(out io.Writer, req factoryTriggerRequest, deps fa
 	if err != nil {
 		return failFactoryTriggerRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
 	}
-	record = sanitizeFactoryRunRecordCredentialedRemote(triggerRedactor.RedactRunRecord(record))
+	record = redactFactoryRunRecordForStorage(record, triggerRedactor)
 	if err := store.SaveRun(&record); err != nil {
 		return failFactoryTriggerRunCreation(store, record, out, req.JSON, deps.now(), fmt.Errorf("sanitize triggered factory engine snapshot: %w", err), nil)
 	}

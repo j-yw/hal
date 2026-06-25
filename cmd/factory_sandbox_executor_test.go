@@ -1004,7 +1004,7 @@ func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToBootstrapEnviro
 	if strings.Contains(string(runData), requiredSecret) || strings.Contains(string(runData), optionalSecret) {
 		t.Fatalf("stored run leaked secret values: %s", string(runData))
 	}
-	if storedRun.RepoRemote != "https://x:"+factory.RunSecretRedactionPlaceholder+"@github.com/example/repo.git" {
+	if storedRun.RepoRemote != "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/example/repo.git" {
 		t.Fatalf("stored repo remote = %q, want redacted secret value", storedRun.RepoRemote)
 	}
 	events, loadErr := store.LoadEvents("run-bootstrap-env")

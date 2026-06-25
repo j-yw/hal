@@ -1087,7 +1087,7 @@ func recordFactorySandboxCleanedUp(store factory.Store, deps factorySandboxExecu
 		stored.Failure.SuggestedCommand = factoryRunInspectCommand(stored.RunID)
 	}
 	stored.UpdatedAt = deps.now().UTC()
-	safeRecord := secretRedactor.RedactRunRecord(*stored)
+	safeRecord := redactFactoryRunRecordForStorage(*stored, secretRedactor)
 	if err := deps.saveRun(store, &safeRecord); err != nil {
 		return fmt.Errorf("record factory sandbox cleanup metadata: %w", err)
 	}
@@ -1377,7 +1377,7 @@ func saveFactorySandboxRunRecordWithRedactor(store factory.Store, deps factorySa
 	if record == nil {
 		return deps.saveRun(store, record)
 	}
-	safeRecord := redactor.RedactRunRecord(*record)
+	safeRecord := redactFactoryRunRecordForStorage(*record, redactor)
 	return deps.saveRun(store, &safeRecord)
 }
 
