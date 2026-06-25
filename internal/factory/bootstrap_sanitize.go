@@ -1,8 +1,10 @@
 package factory
 
 import (
+	"encoding/json"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -123,10 +125,40 @@ func addBootstrapRedactionCandidate(values map[string]struct{}, value string) {
 	if strings.TrimSpace(value) == "" {
 		return
 	}
+	for _, candidate := range []string{
+		value,
+		url.PathEscape(value),
+		url.QueryEscape(value),
+		bootstrapUserinfoEscape(value),
+	} {
+		addBootstrapRedactionLiteral(values, candidate)
+	}
+}
+
+func addBootstrapRedactionLiteral(values map[string]struct{}, value string) {
+	if strings.TrimSpace(value) == "" {
+		return
+	}
 	values[value] = struct{}{}
-	values[url.PathEscape(value)] = struct{}{}
-	values[url.QueryEscape(value)] = struct{}{}
-	values[bootstrapUserinfoEscape(value)] = struct{}{}
+	for _, encoded := range bootstrapSerializedStringVariants(value) {
+		values[encoded] = struct{}{}
+	}
+}
+
+func bootstrapSerializedStringVariants(value string) []string {
+	var variants []string
+	if encoded, err := json.Marshal(value); err == nil {
+		variants = append(variants, trimBootstrapQuotedString(string(encoded)))
+	}
+	variants = append(variants, trimBootstrapQuotedString(strconv.Quote(value)))
+	return variants
+}
+
+func trimBootstrapQuotedString(value string) string {
+	if len(value) >= 2 {
+		return value[1 : len(value)-1]
+	}
+	return value
 }
 
 func bootstrapUserinfoEscape(value string) string {

@@ -1191,10 +1191,10 @@ func factorySandboxSanitizedError(target *sandbox.SandboxState, err error, secre
 		message = "sandbox factory executor failed"
 	}
 	if target == nil {
-		return secretRedactor.RedactString(message)
+		return sanitizeCredentialedRemoteReferences(secretRedactor.RedactString(message))
 	}
 	redactor := sandboxRedactor(false, nil, target)
-	return secretRedactor.RedactString(redactor.Redact(message))
+	return sanitizeCredentialedRemoteReferences(secretRedactor.RedactString(redactor.Redact(message)))
 }
 
 func factorySandboxRecordedError(prefix string, target *sandbox.SandboxState, err error, secretRedactor factory.RunSecretRedactor) error {

@@ -306,6 +306,44 @@ func TestBootstrapSanitizersRedactCredentialedRepositoryURLParameters(t *testing
 	}
 }
 
+func TestBootstrapSanitizersRedactSerializedSecretValues(t *testing.T) {
+	secret := "pa\"ss\\word\t<>&"
+	request := BootstrapRequest{
+		Env: map[string]string{
+			"PASSWORD": secret,
+		},
+	}
+	escapedData, err := json.Marshal(secret)
+	if err != nil {
+		t.Fatalf("json.Marshal(secret) error = %v", err)
+	}
+	escapedSecret := strings.Trim(string(escapedData), `"`)
+
+	result := SanitizeBootstrapCommandResult(request, BootstrapCommandResult{
+		OutputSummary: "serialized password " + escapedSecret,
+		Metadata: map[string]string{
+			"json": `{"password":"` + escapedSecret + `"}`,
+		},
+	})
+	event := SanitizeBootstrapTimelineEvent(request, BootstrapTimelineEvent{
+		OutputSummary: "timeline password " + escapedSecret,
+	})
+
+	for name, value := range map[string]any{"result": result, "event": event} {
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("json.Marshal(%s) error = %v", name, err)
+		}
+		payload := string(data)
+		if strings.Contains(payload, escapedSecret) {
+			t.Fatalf("%s leaked serialized secret: %s", name, payload)
+		}
+		if !strings.Contains(payload, bootstrapRedactedValue) {
+			t.Fatalf("%s = %s, want redaction placeholder", name, payload)
+		}
+	}
+}
+
 func TestRunBootstrapStepRedactsResolvedRunSecretValuesFromRecords(t *testing.T) {
 	secret := "ghp_run_scoped_bootstrap_secret_12345"
 	request := BootstrapRequestWithResolvedSecrets(BootstrapRequest{}, []ResolvedRunSecret{{

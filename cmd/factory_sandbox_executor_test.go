@@ -1396,6 +1396,47 @@ func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromFailureRecor
 	}
 }
 
+func TestRecordFactorySandboxFailureRedactsCredentialedRemoteWithoutDeclaredSecrets(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 52, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	credential := "ghp_sandbox_failure_url_12345"
+	record := factory.RunRecord{
+		RunID:  "run-sandbox-credentialed-failure",
+		Status: factory.RunStatusRunning,
+	}
+
+	err := recordFactorySandboxFailure(store, factorySandboxExecutorDeps{
+		now:         func() time.Time { return now },
+		saveRun:     saveFactorySandboxRunRecord,
+		appendEvent: appendFactorySandboxTimelineEvent,
+	}, &record, nil, "provision", fmt.Errorf("provider failed cloning https://x:%s@github.com/example/repo.git", credential), factory.RunSecretRedactor{})
+	if err != nil {
+		t.Fatalf("recordFactorySandboxFailure() unexpected error: %v", err)
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	for name, value := range map[string]any{"run": loaded, "events": events} {
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("json.Marshal(%s) error: %v", name, err)
+		}
+		payload := string(data)
+		if strings.Contains(payload, credential) {
+			t.Fatalf("%s leaked credentialed remote: %s", name, payload)
+		}
+		if !strings.Contains(payload, factory.RunSecretRedactionPlaceholder) {
+			t.Fatalf("%s missing redaction marker: %s", name, payload)
+		}
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsCopiesLocalMarkdownBeforeRemoteExecution(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectDir, ".hal"), 0755); err != nil {
