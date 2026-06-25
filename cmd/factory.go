@@ -3501,6 +3501,31 @@ func redactFactoryTimelineReflectValue(value reflect.Value, redactor factory.Run
 			out.SetMapIndex(redactedKey, item)
 		}
 		return out, changed
+	case reflect.Struct:
+		out := reflect.New(value.Type()).Elem()
+		out.Set(value)
+		changed := false
+		for i := 0; i < value.NumField(); i++ {
+			field := value.Field(i)
+			outField := out.Field(i)
+			if !outField.CanSet() {
+				continue
+			}
+			redacted, ok := redactFactoryTimelineReflectValue(field, redactor)
+			if !ok {
+				continue
+			}
+			if redacted.Type().AssignableTo(outField.Type()) {
+				outField.Set(redacted)
+				changed = true
+				continue
+			}
+			if redacted.Type().ConvertibleTo(outField.Type()) {
+				outField.Set(redacted.Convert(outField.Type()))
+				changed = true
+			}
+		}
+		return out, changed
 	default:
 		return value, false
 	}

@@ -1543,6 +1543,46 @@ func TestRecordFactoryPolicyDecisionRecordsAllowedAndBlockedEvents(t *testing.T)
 	assertPolicyDecisionMetadata(t, events[2].Metadata, blocked)
 }
 
+func TestAppendFactoryRunTimelineEventWithRedactorRedactsStructMetadata(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	runID := "run-struct-redaction"
+	secret := "ghp_struct_timeline_secret_12345"
+	redactor := factory.NewRunSecretRedactor([]factory.ResolvedRunSecret{{
+		Name:  "GITHUB_TOKEN",
+		Value: secret,
+	}})
+
+	if err := appendFactoryRunTimelineEventWithRedactor(store, runID, time.Date(2026, 6, 21, 10, 0, 0, 0, time.UTC), factoryTimelineEvent{
+		EventType: factory.EventTypeVerificationResult,
+		Summary:   "Verification completed",
+		Metadata: map[string]any{
+			"checks": []verify.CheckResult{{
+				ID:      "checkout",
+				Command: "git fetch https://" + secret + "@github.com/example/repo.git",
+				Message: "checkout failed with token " + secret,
+			}},
+		},
+	}, redactor); err != nil {
+		t.Fatalf("appendFactoryRunTimelineEventWithRedactor() unexpected error: %v", err)
+	}
+
+	events, err := store.LoadEvents(runID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	data, err := json.Marshal(events)
+	if err != nil {
+		t.Fatalf("Marshal(events) error: %v", err)
+	}
+	payload := string(data)
+	if strings.Contains(payload, secret) {
+		t.Fatalf("timeline event leaked struct metadata secret: %s", payload)
+	}
+	if !strings.Contains(payload, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("timeline event missing redaction placeholder: %s", payload)
+	}
+}
+
 func TestRunFactoryRunWithDepsRecordsMarkdownArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
