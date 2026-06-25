@@ -654,7 +654,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 	}
 	completedRecord, err := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, pipelineCompletedAt, deps, !sandboxArtifactsCollected)
 	if err != nil {
-		return factoryRunExecutionResult{Record: runningRecord}, err
+		return failFactoryRunAfterArtifactCollectionFailure(ctx, store, dir, req, out, runningRecord, deps, policy, err)
 	}
 	completedRecord, completedAt, err := recordFactoryRunVerification(ctx, store, completedRecord, dir, deps, policy)
 	if err != nil {
@@ -1001,8 +1001,20 @@ func factoryRunDefersSandboxSuccessCleanup(policy factory.FactoryPolicy) bool {
 }
 
 func cleanupFactoryRunSandboxAfterVerifiedSuccess(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy) (factory.RunRecord, bool, error) {
+	return cleanupFactoryRunDeferredSandbox(ctx, store, dir, req, out, record, deps, policy, "success")
+}
+
+func cleanupFactoryRunSandboxAfterArtifactCollectionFailure(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy) (factory.RunRecord, bool, error) {
+	return cleanupFactoryRunDeferredSandbox(ctx, store, dir, req, out, record, deps, policy, "artifact collection failure")
+}
+
+func cleanupFactoryRunDeferredSandbox(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, cleanupContext string) (factory.RunRecord, bool, error) {
 	if !req.Sandbox || !factoryRunDefersSandboxSuccessCleanup(policy) {
 		return record, false, nil
+	}
+	cleanupContext = strings.TrimSpace(cleanupContext)
+	if cleanupContext == "" {
+		cleanupContext = "deferred"
 	}
 	name := strings.TrimSpace(record.SandboxName)
 	if name == "" && record.Sandbox != nil {
@@ -1013,14 +1025,14 @@ func cleanupFactoryRunSandboxAfterVerifiedSuccess(ctx context.Context, store fac
 	}
 	target, err := deps.loadSandbox(name)
 	if err != nil {
-		return record, false, fmt.Errorf("load factory sandbox for success cleanup %q: %w", name, err)
+		return record, false, fmt.Errorf("load factory sandbox for %s cleanup %q: %w", cleanupContext, name, err)
 	}
 	if target == nil {
 		return record, false, nil
 	}
 	provider, err := deps.resolveProvider(dir, target.Provider)
 	if err != nil {
-		return record, false, fmt.Errorf("resolve sandbox provider %q for success cleanup: %w", target.Provider, err)
+		return record, false, fmt.Errorf("resolve sandbox provider %q for %s cleanup: %w", target.Provider, cleanupContext, err)
 	}
 	cleanupOut := out
 	if req.JSON {
@@ -1031,7 +1043,7 @@ func cleanupFactoryRunSandboxAfterVerifiedSuccess(ctx context.Context, store fac
 		Provider: provider,
 		Out:      cleanupOut,
 	}); err != nil {
-		return record, false, fmt.Errorf("cleanup factory sandbox after verified success: %w", err)
+		return record, false, fmt.Errorf("cleanup factory sandbox after %s: %w", cleanupContext, err)
 	}
 	if err := recordFactorySandboxCleanedUp(store, factorySandboxExecutorDeps{
 		now:     deps.now,
@@ -1040,6 +1052,47 @@ func cleanupFactoryRunSandboxAfterVerifiedSuccess(ctx context.Context, store fac
 		return record, false, err
 	}
 	return record, true, nil
+}
+
+func failFactoryRunAfterArtifactCollectionFailure(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, runningRecord factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, artifactErr error) (factoryRunExecutionResult, error) {
+	var recordErrs []error
+	failedRecord := runningRecord
+	if currentRecord, err := store.LoadRun(runningRecord.RunID); err != nil {
+		recordErrs = append(recordErrs, fmt.Errorf("load factory run for artifact failure: %w", err))
+	} else if currentRecord != nil {
+		failedRecord = *currentRecord
+	}
+	failedRecord.CurrentStep = factory.RunDurationStepArtifactCollect
+
+	if cleanupRecord, _, err := cleanupFactoryRunSandboxAfterArtifactCollectionFailure(ctx, store, dir, req, out, failedRecord, deps, policy); err != nil {
+		recordErrs = append(recordErrs, fmt.Errorf("cleanup factory sandbox after artifact collection failure: %w", err))
+	} else {
+		failedRecord = cleanupRecord
+	}
+	failedRecord.CurrentStep = factory.RunDurationStepArtifactCollect
+
+	failedAt := deps.now()
+	failedRecord, failureErr := markFactoryRunFailed(store, failedRecord, failedAt, artifactErr)
+	if failureErr != nil {
+		recordErrs = append(recordErrs, failureErr)
+	}
+	if eventErr := recordFactoryRunArtifactCollectionFailed(store, failedRecord.RunID, failedAt, artifactErr); eventErr != nil {
+		recordErrs = append(recordErrs, fmt.Errorf("record factory artifact collection failure event: %w", eventErr))
+	}
+	if failedRecord.Failure != nil {
+		if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, failedAt, *failedRecord.Failure); eventErr != nil {
+			recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
+		}
+	}
+	if artifactRecord, recordArtifactErr := recordFactoryRunRecordArtifact(store, failedRecord); recordArtifactErr != nil {
+		recordErrs = append(recordErrs, recordArtifactErr)
+	} else {
+		failedRecord = artifactRecord
+	}
+	if len(recordErrs) > 0 {
+		return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{artifactErr}, recordErrs...)...)
+	}
+	return factoryRunExecutionResult{Record: failedRecord, Render: true}, artifactErr
 }
 
 func autoFactoryAttemptPolicyFromFactoryPolicy(policy factory.FactoryPolicy) autoFactoryAttemptPolicy {
@@ -2614,6 +2667,18 @@ func recordFactoryRunPipelineFailed(store factory.Store, runID string, now time.
 			"step":   factory.RunDurationStepEngineRun,
 			"status": factory.RunStatusFailed,
 			"error":  pipelineErr.Error(),
+		},
+	})
+}
+
+func recordFactoryRunArtifactCollectionFailed(store factory.Store, runID string, now time.Time, artifactErr error) error {
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepEnded,
+		Summary:   "Factory artifact collection failed",
+		Metadata: map[string]any{
+			"step":   factory.RunDurationStepArtifactCollect,
+			"status": factory.RunStatusFailed,
+			"error":  artifactErr.Error(),
 		},
 	})
 }

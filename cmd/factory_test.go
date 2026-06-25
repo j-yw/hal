@@ -1948,6 +1948,111 @@ func TestRunFactoryRunWithDepsCollectsStatusAndDoctorSnapshots(t *testing.T) {
 	}
 }
 
+func TestRunFactoryRunWithDepsMarksRunFailedWhenArtifactCollectionFails(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 3, 15, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	pipelineCompletedAt := createdAt.Add(2 * time.Minute)
+	failedAt := createdAt.Add(3 * time.Minute)
+	times := []time.Time{createdAt, startedAt, pipelineCompletedAt, failedAt}
+	artifactErr := errors.New("status snapshot unavailable")
+	var out bytes.Buffer
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		JSON:         true,
+	}, &out, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-artifact-collection-failed", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return failedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			return nil
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) {
+			return factorySnapshotArtifact{}, artifactErr
+		},
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) {
+			t.Fatal("doctor snapshot should not run after status snapshot fails")
+			return factorySnapshotArtifact{}, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), artifactErr.Error()) {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want artifact error", err)
+	}
+	if !strings.Contains(out.String(), `"status": "failed"`) {
+		t.Fatalf("rendered output = %s, want failed status", out.String())
+	}
+
+	record, err := store.LoadRun("run-artifact-collection-failed")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want %q", record.Status, factory.RunStatusFailed)
+	}
+	if record.CurrentStep != factory.RunDurationStepArtifactCollect {
+		t.Fatalf("currentStep = %q, want %q", record.CurrentStep, factory.RunDurationStepArtifactCollect)
+	}
+	if record.FinishedAt == nil || !record.FinishedAt.Equal(failedAt) {
+		t.Fatalf("finishedAt = %v, want %s", record.FinishedAt, failedAt)
+	}
+	if record.Failure == nil || record.Failure.Step != factory.RunDurationStepArtifactCollect {
+		t.Fatalf("failure = %#v, want artifact collection failure", record.Failure)
+	}
+
+	runRecordArtifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, factoryRunRecordArtifactPath(store, record.RunID))
+	var storedRunRecord factory.RunRecord
+	if err := json.Unmarshal([]byte(readStoredFactoryArtifact(t, store, record.RunID, runRecordArtifact)), &storedRunRecord); err != nil {
+		t.Fatalf("Unmarshal(factory run record artifact) error: %v", err)
+	}
+	if storedRunRecord.Status != factory.RunStatusFailed || storedRunRecord.CurrentStep != factory.RunDurationStepArtifactCollect {
+		t.Fatalf("stored run record status/currentStep = %q/%q, want failed/%q", storedRunRecord.Status, storedRunRecord.CurrentStep, factory.RunDurationStepArtifactCollect)
+	}
+
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypeStepStarted,
+		factory.EventTypeStepEnded,
+		factory.EventTypeStepEnded,
+		factory.EventTypeFailureClassification,
+	})
+	if events[3].Metadata["step"] != factory.RunDurationStepArtifactCollect {
+		t.Fatalf("artifact failure event step = %#v, want %q", events[3].Metadata["step"], factory.RunDurationStepArtifactCollect)
+	}
+	if events[3].Metadata["status"] != factory.RunStatusFailed {
+		t.Fatalf("artifact failure event status = %#v, want %q", events[3].Metadata["status"], factory.RunStatusFailed)
+	}
+	if got, ok := events[3].Metadata["error"].(string); !ok || !strings.Contains(got, artifactErr.Error()) {
+		t.Fatalf("artifact failure event error = %#v, want artifact error", events[3].Metadata["error"])
+	}
+}
+
 func TestRunFactoryRunWithDepsRecordsMissingOptionalArtifactWarnings(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
