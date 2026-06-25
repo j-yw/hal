@@ -1842,6 +1842,21 @@ func TestRunFactorySandboxProviderExecWithEnvUsesStdinScriptWithoutArgSecrets(t 
 	}
 }
 
+func TestRunFactorySandboxProviderExecShellQuotesRemoteArgs(t *testing.T) {
+	provider := &capturingFactorySandboxProvider{
+		cmd: exec.Command("true"),
+	}
+
+	err := runFactorySandboxProviderExec(context.Background(), provider, &sandbox.ConnectInfo{Name: "factory-dev"}, []string{"sh", "-lc", "cd '/workspace/hal' && exec hal auto"}, io.Discard)
+	if err != nil {
+		t.Fatalf("runFactorySandboxProviderExec() unexpected error: %v", err)
+	}
+	want := []string{"sh", "-lc", "'sh' '-lc' 'cd '\"'\"'/workspace/hal'\"'\"' && exec hal auto'"}
+	if !reflect.DeepEqual(provider.args, want) {
+		t.Fatalf("provider args = %#v, want %#v", provider.args, want)
+	}
+}
+
 func TestFactorySandboxBootstrapExecutorReportsRemoteExitCode(t *testing.T) {
 	provider := &capturingFactorySandboxProvider{
 		cmd: exec.Command("sh", "-c", "exit 7"),
