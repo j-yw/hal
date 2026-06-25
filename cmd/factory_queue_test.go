@@ -1205,6 +1205,35 @@ func TestRunFactoryQueueWorkWithDepsRehydratesRedactedSandboxRemote(t *testing.T
 	}
 }
 
+func TestRehydrateQueuedSandboxRunRecordRefreshesEscapedRedactedRemote(t *testing.T) {
+	rawRemote := "https://x:ghp_factory_secret_value_123@github.com/example/repo.git"
+	record := factory.RunRecord{
+		RunID:        "run-queue-sandbox-escaped-redacted-remote",
+		ExecutorMode: factory.ExecutorModeSandbox,
+		RepoPath:     "/tmp/example-repo",
+		RepoRemote:   "https://%5BREDACTED%5D@github.com/example/repo.git",
+	}
+	called := false
+	got, err := rehydrateQueuedSandboxRunRecord(record, factoryQueueWorkDeps{
+		repoRemote: func(dir string) (string, error) {
+			called = true
+			if dir != record.RepoPath {
+				t.Fatalf("repoRemote dir = %q, want %q", dir, record.RepoPath)
+			}
+			return rawRemote, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("rehydrateQueuedSandboxRunRecord() error: %v", err)
+	}
+	if !called {
+		t.Fatal("repoRemote was not called")
+	}
+	if got.RepoRemote != rawRemote {
+		t.Fatalf("RepoRemote = %q, want %q", got.RepoRemote, rawRemote)
+	}
+}
+
 func TestRunFactoryQueueWorkWithDepsRedactsSecretsWhenSandboxRemoteRefreshFails(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 21, 18, 55, 0, 0, time.UTC)

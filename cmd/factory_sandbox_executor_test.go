@@ -1250,6 +1250,71 @@ func TestRunFactorySandboxExecutorWithDepsRedactsCredentialedRemoteURLsFromRemot
 	}
 }
 
+func TestRunFactorySandboxExecutorWithDepsRedactsSecretAssignmentsFromRemoteTimeline(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 46, 30, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+
+	var out bytes.Buffer
+	var events []factory.EventRecord
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-dev",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-remote-output-secret-assignment",
+			Status:     factory.RunStatusRunning,
+			RepoRemote: "git@github.com:example/repo.git",
+		},
+		RemoteOutput: &out,
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return store, nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+			_, err := io.WriteString(out, "TOKEN=undeclared_remote_secret\n")
+			return err
+		},
+		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
+			events = append(events, *event)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if !strings.Contains(out.String(), "TOKEN=undeclared_remote_secret") {
+		t.Fatalf("remote output = %q, want unsanitized user-visible output", out.String())
+	}
+	foundRedactedEvent := false
+	for _, event := range events {
+		if strings.Contains(event.Message, "TOKEN=undeclared_remote_secret") {
+			t.Fatalf("remote event leaked secret assignment: %#v", event)
+		}
+		if event.Message == "[redacted]" {
+			foundRedactedEvent = true
+		}
+	}
+	if !foundRedactedEvent {
+		t.Fatalf("remote events missing redacted command output: %#v", events)
+	}
+	chunks, err := store.LoadLogChunks("run-remote-output-secret-assignment")
+	if err != nil {
+		t.Fatalf("LoadLogChunks() error: %v", err)
+	}
+	if len(chunks) == 0 {
+		t.Fatal("LoadLogChunks() returned no remote output chunks")
+	}
+	for _, chunk := range chunks {
+		if strings.Contains(chunk.Text, "TOKEN=undeclared_remote_secret") {
+			t.Fatalf("remote log chunk leaked secret assignment: %#v", chunk)
+		}
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsRedactsMultilineSecretsFromRemoteOutput(t *testing.T) {
 	now := time.Date(2026, 6, 21, 12, 47, 0, 0, time.UTC)
 	store := factory.NewStore(t.TempDir())

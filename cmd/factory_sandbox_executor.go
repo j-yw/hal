@@ -439,6 +439,9 @@ func newFactorySandboxTimelineWriter(store factory.Store, deps factorySandboxExe
 	redactOutput := func(value string) string {
 		return sanitizeCredentialedRemoteReferences(secretRedactor.RedactString(redactor.Redact(value)))
 	}
+	redactEvent := func(value string) string {
+		return sanitizeFactoryLogText(redactOutput(value))
+	}
 	return &factorySandboxTimelineWriter{
 		dst:          dst,
 		store:        store,
@@ -446,7 +449,7 @@ func newFactorySandboxTimelineWriter(store factory.Store, deps factorySandboxExe
 		runID:        runID,
 		sandboxName:  sandboxName,
 		provider:     provider,
-		eventRedact:  redactOutput,
+		eventRedact:  redactEvent,
 		outputRedact: redactOutput,
 		nextSequence: nextSequence,
 	}

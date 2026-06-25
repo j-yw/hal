@@ -463,7 +463,7 @@ func rehydrateQueuedSandboxRunRecord(record factory.RunRecord, deps factoryQueue
 	if record.ExecutorMode != factory.ExecutorModeSandbox {
 		return record, nil
 	}
-	if !strings.Contains(record.RepoRemote, factory.RunSecretRedactionPlaceholder) {
+	if !queuedSandboxRepoRemoteNeedsRefresh(record.RepoRemote) {
 		return record, nil
 	}
 	if deps.repoRemote == nil {
@@ -477,6 +477,14 @@ func rehydrateQueuedSandboxRunRecord(record factory.RunRecord, deps factoryQueue
 		record.RepoRemote = strings.TrimSpace(remote)
 	}
 	return record, nil
+}
+
+func queuedSandboxRepoRemoteNeedsRefresh(remote string) bool {
+	if strings.Contains(remote, factory.RunSecretRedactionPlaceholder) {
+		return true
+	}
+	escapedPlaceholder := strings.NewReplacer("[", "%5B", "]", "%5D").Replace(factory.RunSecretRedactionPlaceholder)
+	return strings.Contains(strings.ToLower(remote), strings.ToLower(escapedPlaceholder))
 }
 
 func failClaimedFactoryQueueEntry(store factory.Store, entry factory.QueueEntry, cause error, deps factoryQueueWorkDeps) (factory.QueueEntry, error) {
