@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -22,6 +25,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/doctor"
+	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/status"
@@ -35,16 +39,22 @@ const (
 	FactoryListContractVersion      = "factory-list-v1"
 	FactoryStatusContractVersion    = "factory-status-v1"
 	FactoryArtifactsContractVersion = "factory-artifacts-v1"
+	FactoryLogsContractVersion      = "factory-logs-v1"
 )
+
+const factorySandboxArtifactMissingSentinel = "__HAL_FACTORY_ARTIFACT_MISSING__"
 
 var factoryListJSONFlag bool
 var factoryStatusJSONFlag bool
 var factoryArtifactsJSONFlag bool
+var factoryLogsJSONFlag bool
 var factoryRunReportFlag string
 var factoryRunBaseFlag string
 var factoryRunSecretEnvFlags []string
 var factoryRunJSONFlag bool
 var factoryRunSandboxFlag bool
+var factoryOpenExecFlag bool
+var factoryOpenJSONFlag bool
 
 var factoryCmd = &cobra.Command{
 	Use:   "factory",
@@ -60,6 +70,8 @@ pending local factory work in the same global store.`,
   hal factory list
   hal factory list --json
   hal factory status <run-id> --json
+  hal factory logs <run-id>
+  hal factory open <run-id>
   hal factory artifacts <run-id>
   hal factory trigger --repo . --prd .hal/prd-feature.md --json
   hal factory queue list --json`,
@@ -132,6 +144,21 @@ output omits raw source paths and remote URLs from artifact records.`,
 	RunE: runFactoryArtifacts,
 }
 
+var factoryLogsCmd = &cobra.Command{
+	Use:   "logs <run-id>",
+	Short: "Inspect stored factory run logs",
+	Args:  exactArgsValidation(1),
+	Long: `Inspect stored stdout, stderr, or summarized output chunks for one
+factory run from the global factory store.
+
+The default output is ordered human-readable log text with stream and source
+metadata. Use --json for machine-readable output following the factory-logs-v1
+contract. Log text is sanitized before display.`,
+	Example: `  hal factory logs run-20260620-001
+  hal factory logs run-20260620-001 --json`,
+	RunE: runFactoryLogs,
+}
+
 func init() {
 	factoryRunCmd.Flags().StringVar(&factoryRunReportFlag, "report", "", "Start from an analysis report path")
 	factoryRunCmd.Flags().StringVar(&factoryRunBaseFlag, "base", "", "Target base branch for follow-up review or CI")
@@ -141,11 +168,16 @@ func init() {
 	factoryListCmd.Flags().BoolVar(&factoryListJSONFlag, "json", false, "Output machine-readable JSON (factory-list-v1 contract)")
 	factoryStatusCmd.Flags().BoolVar(&factoryStatusJSONFlag, "json", false, "Output machine-readable JSON (factory-status-v1 contract)")
 	factoryArtifactsCmd.Flags().BoolVar(&factoryArtifactsJSONFlag, "json", false, "Output machine-readable JSON (factory-artifacts-v1 contract)")
+	factoryLogsCmd.Flags().BoolVar(&factoryLogsJSONFlag, "json", false, "Output machine-readable JSON (factory-logs-v1 contract)")
+	factoryOpenCmd.Flags().BoolVar(&factoryOpenExecFlag, "exec", false, "Execute the suggested inspection or resume command")
+	factoryOpenCmd.Flags().BoolVar(&factoryOpenJSONFlag, "json", false, "Output machine-readable JSON (factory-open-v1 contract)")
 	configureFactoryTriggerCommand()
 	configureFactoryQueueCommands()
 	factoryCmd.AddCommand(factoryRunCmd)
 	factoryCmd.AddCommand(factoryListCmd)
 	factoryCmd.AddCommand(factoryStatusCmd)
+	factoryCmd.AddCommand(factoryLogsCmd)
+	factoryCmd.AddCommand(factoryOpenCmd)
 	factoryCmd.AddCommand(factoryArtifactsCmd)
 	factoryCmd.AddCommand(factoryTriggerCmd)
 	factoryCmd.AddCommand(factoryQueueCmd)
@@ -176,22 +208,37 @@ var defaultFactoryArtifactsDeps = factoryArtifactsDeps{
 	defaultStore: factory.DefaultStore,
 }
 
+type factoryLogsDeps struct {
+	defaultStore func() (factory.Store, error)
+}
+
+var defaultFactoryLogsDeps = factoryLogsDeps{
+	defaultStore: factory.DefaultStore,
+}
+
 type factoryRunDeps struct {
-	defaultStore    func() (factory.Store, error)
-	newRunID        func() (string, error)
-	now             func() time.Time
-	workingDir      func() (string, error)
-	currentBranch   func(string) (string, error)
-	repoRemote      func(string) (string, error)
-	lookupEnv       func(string) (string, bool)
-	runPipeline     func(context.Context, factoryRunPipelineRequest) error
-	runSandbox      func(context.Context, factorySandboxExecutorRequest) error
-	loadVerify      func(string) (*verify.Config, error)
-	runVerify       func(context.Context, *verify.Config) (*verify.Result, error)
-	statusSnapshot  func(string) (factorySnapshotArtifact, error)
-	doctorSnapshot  func(string) (factorySnapshotArtifact, error)
-	sandboxCopier   factory.SandboxArtifactCopier
-	sandboxRequests func(string, factory.RunRecord) []factory.SandboxArtifactRequest
+	defaultStore     func() (factory.Store, error)
+	newRunID         func() (string, error)
+	now              func() time.Time
+	workingDir       func() (string, error)
+	currentBranch    func(string) (string, error)
+	repoRemote       func(string) (string, error)
+	lookupEnv        func(string) (string, bool)
+	loadPolicy       func(string) (*factory.FactoryPolicy, error)
+	loadEngine       func(string) (string, error)
+	loadEngineConfig func(string, string) *engine.EngineConfig
+	runPipeline      func(context.Context, factoryRunPipelineRequest) error
+	runSandbox       func(context.Context, factorySandboxExecutorRequest) error
+	loadVerify       func(string) (*verify.Config, error)
+	runVerify        func(context.Context, *verify.Config) (*verify.Result, error)
+	loadSandbox      func(string) (*sandbox.SandboxState, error)
+	resolveProvider  func(string, string) (sandbox.Provider, error)
+	runProviderExec  func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+	cleanupSandbox   func(context.Context, factorySandboxCleanupRequest) error
+	statusSnapshot   func(string) (factorySnapshotArtifact, error)
+	doctorSnapshot   func(string) (factorySnapshotArtifact, error)
+	sandboxCopier    factory.SandboxArtifactCopier
+	sandboxRequests  func(string, factory.RunRecord) []factory.SandboxArtifactRequest
 }
 
 type factoryRunPipelineRequest struct {
@@ -199,25 +246,36 @@ type factoryRunPipelineRequest struct {
 	Request        factoryRunRequest
 	Record         factory.RunRecord
 	Store          factory.Store
+	Engine         string
+	AttemptPolicy  autoFactoryAttemptPolicy
+	SkipCI         bool
+	Now            func() time.Time
 	RecordProgress func(factoryRunProgressEvent) error
 }
 
 var defaultFactoryRunDeps = factoryRunDeps{
-	defaultStore:  factory.DefaultStore,
-	newRunID:      sandbox.NewV7,
-	now:           time.Now,
-	workingDir:    os.Getwd,
-	currentBranch: compound.CurrentBranchOptionalInDir,
-	repoRemote:    readGitRemoteOptionalInDir,
-	lookupEnv:     os.LookupEnv,
-	runPipeline:   runFactoryRunPipeline,
+	defaultStore:     factory.DefaultStore,
+	newRunID:         sandbox.NewV7,
+	now:              time.Now,
+	workingDir:       os.Getwd,
+	currentBranch:    compound.CurrentBranchOptionalInDir,
+	repoRemote:       readGitRemoteOptionalInDir,
+	lookupEnv:        os.LookupEnv,
+	loadPolicy:       factory.LoadPolicyConfig,
+	loadEngine:       compound.LoadDefaultEngine,
+	loadEngineConfig: compound.LoadEngineConfig,
+	runPipeline:      runFactoryRunPipeline,
 	runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
 		return runFactorySandboxExecutorWithDeps(ctx, req, factorySandboxExecutorDeps{})
 	},
-	loadVerify:     verify.LoadConfig,
-	runVerify:      verify.Run,
-	statusSnapshot: defaultFactoryStatusSnapshot,
-	doctorSnapshot: defaultFactoryDoctorSnapshot,
+	loadVerify:      verify.LoadConfig,
+	runVerify:       verify.Run,
+	loadSandbox:     sandbox.LoadActiveInstance,
+	resolveProvider: resolveProviderWithFallback,
+	runProviderExec: runFactorySandboxProviderExec,
+	cleanupSandbox:  cleanupFactorySandbox,
+	statusSnapshot:  defaultFactoryStatusSnapshot,
+	doctorSnapshot:  defaultFactoryDoctorSnapshot,
 }
 
 type factoryRunRequest struct {
@@ -232,9 +290,12 @@ type factoryRunRequest struct {
 }
 
 type factoryRunAutoRequest struct {
-	Args       []string
-	ReportPath string
-	BaseBranch string
+	Args          []string
+	ReportPath    string
+	BaseBranch    string
+	Engine        string
+	AttemptPolicy autoFactoryAttemptPolicy
+	SkipCI        bool
 }
 
 type factoryRunProgressEvent struct {
@@ -290,6 +351,14 @@ type factoryCIOutcomeArtifact struct {
 	BranchName   string `json:"branchName,omitempty"`
 }
 
+// FactoryLogsResponse is the machine-readable JSON output for
+// hal factory logs <run-id> --json.
+type FactoryLogsResponse struct {
+	ContractVersion string             `json:"contractVersion"`
+	RunID           string             `json:"runId"`
+	Chunks          []factory.LogChunk `json:"chunks"`
+}
+
 // FactoryListResponse is the machine-readable JSON output for hal factory list --json.
 type FactoryListResponse struct {
 	ContractVersion string              `json:"contractVersion"`
@@ -306,24 +375,29 @@ type FactoryStatusResponse struct {
 // FactoryStatusRun is the safe run surface for hal factory status --json. It
 // mirrors factory.RunRecord but uses sanitized artifact summaries.
 type FactoryStatusRun struct {
-	RunID        string                      `json:"runId"`
-	Status       string                      `json:"status"`
-	ExecutorMode string                      `json:"executorMode,omitempty"`
-	Source       factory.SourceMetadata      `json:"source"`
-	RepoPath     string                      `json:"repoPath"`
-	RepoRemote   string                      `json:"repoRemote"`
-	BranchName   string                      `json:"branchName"`
-	BaseBranch   string                      `json:"baseBranch"`
-	SandboxName  string                      `json:"sandboxName,omitempty"`
-	Sandbox      *factory.SandboxMetadata    `json:"sandbox,omitempty"`
-	CurrentStep  string                      `json:"currentStep"`
-	CreatedAt    time.Time                   `json:"createdAt"`
-	UpdatedAt    time.Time                   `json:"updatedAt"`
-	FinishedAt   *time.Time                  `json:"finishedAt,omitempty"`
-	Secrets      []factory.RunSecretMetadata `json:"secrets,omitempty"`
-	Artifacts    []FactoryArtifactSummary    `json:"artifacts,omitempty"`
-	Verification *factory.VerificationRecord `json:"verification,omitempty"`
-	Failure      *factory.FailureSummary     `json:"failure,omitempty"`
+	RunID           string                           `json:"runId"`
+	Status          string                           `json:"status"`
+	ExecutorMode    string                           `json:"executorMode,omitempty"`
+	Engine          string                           `json:"engine,omitempty"`
+	Source          factory.SourceMetadata           `json:"source"`
+	RepoPath        string                           `json:"repoPath"`
+	RepoRemote      string                           `json:"repoRemote"`
+	BranchName      string                           `json:"branchName"`
+	BaseBranch      string                           `json:"baseBranch"`
+	Policy          *factory.FactoryPolicy           `json:"policy,omitempty"`
+	PolicyDecisions []factory.PolicyDecisionMetadata `json:"policyDecisions,omitempty"`
+	SandboxName     string                           `json:"sandboxName,omitempty"`
+	Sandbox         *factory.SandboxMetadata         `json:"sandbox,omitempty"`
+	CurrentStep     string                           `json:"currentStep"`
+	CreatedAt       time.Time                        `json:"createdAt"`
+	UpdatedAt       time.Time                        `json:"updatedAt"`
+	FinishedAt      *time.Time                       `json:"finishedAt,omitempty"`
+	Secrets         []factory.RunSecretMetadata      `json:"secrets,omitempty"`
+	Artifacts       []FactoryArtifactSummary         `json:"artifacts,omitempty"`
+	Verification    *factory.VerificationRecord      `json:"verification,omitempty"`
+	Telemetry       *factory.RunTelemetry            `json:"telemetry,omitempty"`
+	Failure         *factory.FailureSummary          `json:"failure,omitempty"`
+	Handoff         *factory.HandoffSummary          `json:"handoff,omitempty"`
 }
 
 // FactoryArtifactsResponse is the machine-readable JSON output for
@@ -376,6 +450,7 @@ type FactoryRunSummary struct {
 	UpdatedAt     time.Time               `json:"updatedAt"`
 	FinishedAt    *time.Time              `json:"finishedAt,omitempty"`
 	ArtifactCount int                     `json:"artifactCount"`
+	Telemetry     *factory.RunTelemetry   `json:"telemetry,omitempty"`
 	Failure       *factory.FailureSummary `json:"failure,omitempty"`
 }
 
@@ -449,8 +524,27 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	if err := recordFactoryRunStarted(store, safeInitialRecord); err != nil {
 		return err
 	}
+	creationPolicy, err := loadFactoryRunPolicy(dir, deps)
+	if err != nil {
+		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), fmt.Errorf("load factory policy: %w", err), nil)
+	}
+	record, err = persistFactoryRunPolicySnapshot(store, record, creationPolicy)
+	if err != nil {
+		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
+	}
+	engineName, err := resolveFactoryRunEngine(dir, deps)
+	if err != nil {
+		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
+	}
+	record, err = persistFactoryRunEngineSnapshot(store, record, engineName)
+	if err != nil {
+		return failFactoryRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
+	}
+	if err := enforceFactoryRunCreationPolicy(store, record, out, req.JSON, deps, creationPolicy, engineName); err != nil {
+		return err
+	}
 
-	result, execErr := executeFactoryRun(ctx, dir, req, out, store, record, deps)
+	result, execErr := executeFactoryRun(ctx, dir, req, out, store, record, deps, creationPolicy, engineName)
 	if result.Render {
 		if renderErr := renderFactoryRunResult(out, store, result.Record.RunID, req.JSON); renderErr != nil {
 			if execErr != nil {
@@ -462,13 +556,20 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	return execErr
 }
 
-func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, out io.Writer, store factory.Store, record factory.RunRecord, deps factoryRunDeps) (factoryRunExecutionResult, error) {
+func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, out io.Writer, store factory.Store, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, engineName string) (factoryRunExecutionResult, error) {
 	if out == nil {
 		out = io.Discard
 	}
 	deps = normalizeFactoryRunDeps(deps)
 	if deps.runPipeline == nil {
 		return factoryRunExecutionResult{Record: record}, fmt.Errorf("factory run pipeline dependency is required")
+	}
+	if record.Policy == nil {
+		var err error
+		record, err = persistFactoryRunPolicySnapshot(store, record, policy)
+		if err != nil {
+			return factoryRunExecutionResult{Record: record}, err
+		}
 	}
 
 	req, record, err := resolveFactoryRunExecutionSecrets(req, record, deps)
@@ -487,29 +588,52 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 	if err := recordFactoryRunPipelineStarted(store, runningRecord); err != nil {
 		return factoryRunExecutionResult{Record: runningRecord}, err
 	}
+	if err := recordFactoryRunPreExecutionPolicyDecisions(store, runningRecord.RunID, deps.now, policy); err != nil {
+		return factoryRunExecutionResult{Record: runningRecord}, err
+	}
 
 	pipelineReq := factoryRunPipelineRequest{
-		RunID:   runningRecord.RunID,
-		Request: req,
-		Record:  runningRecord,
-		Store:   store,
+		RunID:         runningRecord.RunID,
+		Request:       req,
+		Record:        runningRecord,
+		Store:         store,
+		Engine:        engineName,
+		AttemptPolicy: autoFactoryAttemptPolicyFromFactoryPolicy(policy),
+		SkipCI:        factoryPolicySkipsCI(policy),
+		Now:           deps.now,
 		RecordProgress: func(event factoryRunProgressEvent) error {
 			return recordFactoryRunProgressWithRedactor(store, runningRecord.RunID, deps.now(), event, redactor)
 		},
 	}
 	artifactSnapshot := snapshotFactoryRunArtifacts(dir)
+	sandboxArtifactsCollected := false
 	runErr := error(nil)
 	if req.Sandbox {
 		remoteOutput := out
 		if req.JSON {
 			remoteOutput = io.Discard
 		}
+		remoteAuto := factoryRunAutoRequestFromFactoryRequest(req)
+		remoteAuto.Engine = engineName
+		remoteAuto.AttemptPolicy = autoFactoryAttemptPolicyFromFactoryPolicy(policy)
+		remoteAuto.SkipCI = factoryPolicySkipsCI(policy)
 		runErr = deps.runSandbox(ctx, factorySandboxExecutorRequest{
-			ProjectDir:      dir,
-			RunRecord:       runningRecord,
-			ResolvedSecrets: req.ResolvedSecrets,
-			RemoteAuto:      factoryRunAutoRequestFromFactoryRequest(req),
-			RemoteOutput:    remoteOutput,
+			ProjectDir:          dir,
+			RunRecord:           runningRecord,
+			ResolvedSecrets:     req.ResolvedSecrets,
+			RemoteAuto:          remoteAuto,
+			RemoteOutput:        remoteOutput,
+			DeferSuccessCleanup: factoryRunDefersSandboxSuccessCleanup(policy),
+			BeforeCleanup: func(ctx context.Context, record factory.RunRecord) error {
+				if sandboxArtifactsCollected {
+					return nil
+				}
+				if err := collectAndStoreFactorySandboxArtifacts(ctx, store, dir, req, record, deps); err != nil {
+					return err
+				}
+				sandboxArtifactsCollected = true
+				return nil
+			},
 		})
 	} else {
 		runErr = deps.runPipeline(ctx, pipelineReq)
@@ -518,10 +642,15 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		failedAt := deps.now()
 		failedRecord := runningRecord
 		var recordErrs []error
-		if artifactRecord, artifactErr := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, failedAt, deps, redactor); artifactErr != nil {
+		if artifactRecord, artifactErr := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, failedAt, deps, !sandboxArtifactsCollected, redactor); artifactErr != nil {
 			recordErrs = append(recordErrs, fmt.Errorf("record factory artifacts: %w", artifactErr))
 		} else {
 			failedRecord = artifactRecord
+		}
+		if decision, ok := factoryPolicyDecisionFromAttemptLimit(runErr); ok {
+			if eventErr := recordFactoryPolicyDecision(store, runningRecord.RunID, failedAt, decision); eventErr != nil {
+				recordErrs = append(recordErrs, fmt.Errorf("record factory policy decision: %w", eventErr))
+			}
 		}
 
 		recordErr := runErr
@@ -552,12 +681,15 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		return factoryRunExecutionResult{Record: failedRecord, Render: true}, runErr
 	}
 
-	artifactAt := deps.now()
-	completedRecord, err := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, artifactAt, deps, redactor)
-	if err != nil {
+	pipelineCompletedAt := deps.now()
+	if err := recordFactoryRunPipelineSucceeded(store, runningRecord.RunID, pipelineCompletedAt); err != nil {
 		return factoryRunExecutionResult{Record: runningRecord}, err
 	}
-	completedRecord, completedAt, err := recordFactoryRunVerification(ctx, store, completedRecord, dir, deps, redactor)
+	completedRecord, err := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, pipelineCompletedAt, deps, !sandboxArtifactsCollected, redactor)
+	if err != nil {
+		return failFactoryRunAfterArtifactCollectionFailure(ctx, store, dir, req, out, runningRecord, deps, policy, err)
+	}
+	completedRecord, completedAt, err := recordFactoryRunVerification(ctx, store, completedRecord, dir, deps, policy, redactor)
 	if err != nil {
 		failedRecord, failureErr := markFactoryRunFailedWithRedactor(store, completedRecord, completedAt, err, redactor)
 		var recordErrs []error
@@ -572,6 +704,14 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 				recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
 			}
 		}
+		if cleanupRecord, cleanedUp, cleanupErr := cleanupFactoryRunSandboxAfterFailedRun(ctx, store, dir, req, out, failedRecord, deps, policy, "verification failure"); cleanedUp {
+			failedRecord = cleanupRecord
+			if cleanupErr != nil {
+				recordErrs = append(recordErrs, cleanupErr)
+			}
+		} else if cleanupErr != nil {
+			recordErrs = append(recordErrs, cleanupErr)
+		}
 		if artifactRecord, artifactErr := recordFactoryRunRecordArtifactWithRedactor(store, failedRecord, redactor); artifactErr != nil {
 			recordErrs = append(recordErrs, artifactErr)
 		} else {
@@ -583,11 +723,39 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		}
 		return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
 	}
-	completedRecord, err = markFactoryRunSucceededWithRedactor(store, completedRecord, completedAt, redactor)
+	completedRecord, cleanedUp, err := cleanupFactoryRunSandboxAfterVerifiedSuccess(ctx, store, dir, req, out, completedRecord, deps, policy)
 	if err != nil {
-		return factoryRunExecutionResult{Record: completedRecord}, err
+		failedAt := deps.now()
+		failedRecord, failureErr := markFactoryRunFailedWithRedactor(store, completedRecord, failedAt, err, redactor)
+		var recordErrs []error
+		if failureErr != nil {
+			recordErrs = append(recordErrs, failureErr)
+		}
+		if eventErr := recordFactoryRunPipelineFailedWithRedactor(store, failedRecord.RunID, failedAt, err, redactor); eventErr != nil {
+			recordErrs = append(recordErrs, fmt.Errorf("record factory cleanup failure event: %w", eventErr))
+		}
+		if failedRecord.Failure != nil {
+			if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, failedAt, *failedRecord.Failure); eventErr != nil {
+				recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
+			}
+		}
+		if artifactRecord, artifactErr := recordFactoryRunRecordArtifactWithRedactor(store, failedRecord, redactor); artifactErr != nil {
+			recordErrs = append(recordErrs, artifactErr)
+		} else {
+			failedRecord = artifactRecord
+		}
+		err = redactFactoryRunError(err, redactor)
+		if len(recordErrs) > 0 {
+			return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{err}, recordErrs...)...)
+		}
+		return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
 	}
-	if err := recordFactoryRunPipelineSucceeded(store, completedRecord.RunID, completedAt); err != nil {
+	finishedAt := completedAt
+	if cleanedUp {
+		finishedAt = deps.now()
+	}
+	completedRecord, err = markFactoryRunSucceededWithRedactor(store, completedRecord, finishedAt, redactor)
+	if err != nil {
 		return factoryRunExecutionResult{Record: completedRecord}, err
 	}
 	completedRecord, err = recordFactoryRunRecordArtifactWithRedactor(store, completedRecord, redactor)
@@ -626,6 +794,15 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 	if deps.repoRemote == nil {
 		deps.repoRemote = defaultFactoryRunDeps.repoRemote
 	}
+	if deps.loadPolicy == nil {
+		deps.loadPolicy = defaultFactoryRunDeps.loadPolicy
+	}
+	if deps.loadEngine == nil {
+		deps.loadEngine = defaultFactoryRunDeps.loadEngine
+	}
+	if deps.loadEngineConfig == nil {
+		deps.loadEngineConfig = defaultFactoryRunDeps.loadEngineConfig
+	}
 	if deps.lookupEnv == nil {
 		deps.lookupEnv = defaultFactoryRunDeps.lookupEnv
 	}
@@ -640,6 +817,18 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 	}
 	if deps.runVerify == nil {
 		deps.runVerify = defaultFactoryRunDeps.runVerify
+	}
+	if deps.loadSandbox == nil {
+		deps.loadSandbox = defaultFactoryRunDeps.loadSandbox
+	}
+	if deps.resolveProvider == nil {
+		deps.resolveProvider = defaultFactoryRunDeps.resolveProvider
+	}
+	if deps.runProviderExec == nil {
+		deps.runProviderExec = defaultFactoryRunDeps.runProviderExec
+	}
+	if deps.cleanupSandbox == nil {
+		deps.cleanupSandbox = defaultFactoryRunDeps.cleanupSandbox
 	}
 	if deps.statusSnapshot == nil {
 		deps.statusSnapshot = defaultFactoryRunDeps.statusSnapshot
@@ -721,7 +910,426 @@ func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps)
 		Secrets:      factoryRunSecretMetadataFromInputs(req.Secrets),
 		CreatedAt:    now,
 		UpdatedAt:    now,
+		Telemetry:    factoryRunEngineTelemetry(dir, deps),
 	}, nil
+}
+
+type factoryPolicyRejectionError struct {
+	policyField string
+	decision    string
+	outcome     string
+	reason      string
+}
+
+func (e *factoryPolicyRejectionError) Error() string {
+	return fmt.Sprintf("factory policy rejected run creation: %s %s", e.policyField, e.reason)
+}
+
+func (e *factoryPolicyRejectionError) policyDecisionMetadata() factory.PolicyDecisionMetadata {
+	return factory.PolicyDecisionMetadata{
+		PolicyField: e.policyField,
+		Decision:    e.decision,
+		Outcome:     e.outcome,
+		Reason:      e.reason,
+	}
+}
+
+func loadFactoryRunPolicy(dir string, deps factoryRunDeps) (factory.FactoryPolicy, error) {
+	if deps.loadPolicy == nil {
+		deps.loadPolicy = defaultFactoryRunDeps.loadPolicy
+	}
+	policy, err := deps.loadPolicy(dir)
+	if err != nil {
+		return factory.FactoryPolicy{}, err
+	}
+	if policy == nil {
+		return factory.DefaultFactoryPolicy(), nil
+	}
+	return *policy, nil
+}
+
+func persistFactoryRunPolicySnapshot(store factory.Store, record factory.RunRecord, policy factory.FactoryPolicy) (factory.RunRecord, error) {
+	snapshot := policy
+	if policy.AllowedEngines != nil {
+		snapshot.AllowedEngines = append([]string(nil), policy.AllowedEngines...)
+	}
+	record.Policy = &snapshot
+	if err := store.SaveRun(&record); err != nil {
+		return factory.RunRecord{}, fmt.Errorf("persist factory policy snapshot: %w", err)
+	}
+	return record, nil
+}
+
+func factoryPolicySnapshotFromRecord(record *factory.RunRecord) *factory.FactoryPolicy {
+	if record == nil || record.Policy == nil {
+		return nil
+	}
+	snapshot := *record.Policy
+	if record.Policy.AllowedEngines != nil {
+		snapshot.AllowedEngines = append([]string(nil), record.Policy.AllowedEngines...)
+	}
+	return &snapshot
+}
+
+func persistFactoryRunEngineSnapshot(store factory.Store, record factory.RunRecord, engineName string) (factory.RunRecord, error) {
+	record.Engine = normalizeFactoryRunEngineName(engineName)
+	if err := store.SaveRun(&record); err != nil {
+		return factory.RunRecord{}, fmt.Errorf("persist factory engine snapshot: %w", err)
+	}
+	return record, nil
+}
+
+func resolveFactoryRunEngine(dir string, deps factoryRunDeps) (string, error) {
+	if deps.loadEngine == nil {
+		deps.loadEngine = defaultFactoryRunDeps.loadEngine
+	}
+	engineName, err := deps.loadEngine(dir)
+	if err != nil {
+		return "", fmt.Errorf("load factory engine policy input: %w", err)
+	}
+	return normalizeFactoryRunEngineName(engineName), nil
+}
+
+func normalizeFactoryRunEngineName(engineName string) string {
+	return strings.ToLower(strings.TrimSpace(engineName))
+}
+
+func factoryRunEngineSnapshotFromRecord(record *factory.RunRecord) string {
+	if record == nil {
+		return ""
+	}
+	return normalizeFactoryRunEngineName(record.Engine)
+}
+
+func enforceFactoryRunCreationPolicy(store factory.Store, record factory.RunRecord, out io.Writer, jsonMode bool, deps factoryRunDeps, policy factory.FactoryPolicy, engineName string) error {
+	rejection := factoryRunCreationPolicyRejection(policy, record.ExecutorMode, engineName)
+	if rejection == nil {
+		return nil
+	}
+
+	decision := rejection.policyDecisionMetadata()
+	return failFactoryRunCreation(store, record, out, jsonMode, deps.now(), rejection, &decision)
+}
+
+func factoryRunCreationPolicyRejection(policy factory.FactoryPolicy, executorMode, engineName string) *factoryPolicyRejectionError {
+	executorMode = strings.TrimSpace(executorMode)
+	if policy.SandboxRequired && executorMode != factory.ExecutorModeSandbox {
+		reason := fmt.Sprintf("requires sandbox executor (requested %s)", executorMode)
+		if executorMode == "" {
+			reason = "requires sandbox executor"
+		}
+		return &factoryPolicyRejectionError{
+			policyField: "factory.policy.sandboxRequired",
+			decision:    factory.PolicyDecisionRejectedExecution,
+			outcome:     factory.PolicyOutcomeRejected,
+			reason:      reason,
+		}
+	}
+
+	engineName = strings.ToLower(strings.TrimSpace(engineName))
+	if !factoryPolicyAllowsEngine(policy, engineName) {
+		reason := fmt.Sprintf("does not allow engine %q", engineName)
+		if engineName == "" {
+			reason = "does not allow an empty engine"
+		}
+		return &factoryPolicyRejectionError{
+			policyField: "factory.policy.allowedEngines",
+			decision:    factory.PolicyDecisionRejectedExecution,
+			outcome:     factory.PolicyOutcomeRejected,
+			reason:      reason,
+		}
+	}
+
+	return nil
+}
+
+func factoryPolicyAllowsEngine(policy factory.FactoryPolicy, engineName string) bool {
+	engineName = strings.ToLower(strings.TrimSpace(engineName))
+	if engineName == "" {
+		return false
+	}
+	for _, allowed := range policy.AllowedEngines {
+		if strings.ToLower(strings.TrimSpace(allowed)) == engineName {
+			return true
+		}
+	}
+	return false
+}
+
+func recordFactoryRunPreExecutionPolicyDecisions(store factory.Store, runID string, now func() time.Time, policy factory.FactoryPolicy) error {
+	if now == nil {
+		now = time.Now
+	}
+	var errs []error
+	if !policy.PRCreationAllowed {
+		decision := factory.PolicyDecisionMetadata{
+			PolicyField: "factory.policy.prCreationAllowed",
+			Decision:    factory.PolicyDecisionBlockedGate,
+			Outcome:     factory.PolicyOutcomeBlocked,
+			Reason:      "PR creation disabled; CI/PR step skipped",
+		}
+		if err := recordFactoryPolicyDecision(store, runID, now(), decision); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+func factoryPolicySkipsCI(policy factory.FactoryPolicy) bool {
+	return !policy.PRCreationAllowed
+}
+
+func factoryRunDefersSandboxSuccessCleanup(policy factory.FactoryPolicy) bool {
+	switch strings.TrimSpace(policy.CleanupBehavior) {
+	case factory.CleanupBehaviorOnSuccess, factory.CleanupBehaviorAlways:
+		return true
+	default:
+		return false
+	}
+}
+
+func factoryRunCleansSandboxAfterFailure(policy factory.FactoryPolicy) bool {
+	return strings.TrimSpace(policy.CleanupBehavior) == factory.CleanupBehaviorAlways
+}
+
+func cleanupFactoryRunSandboxAfterVerifiedSuccess(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy) (factory.RunRecord, bool, error) {
+	return cleanupFactoryRunDeferredSandbox(ctx, store, dir, req, out, record, deps, policy, "success")
+}
+
+func cleanupFactoryRunSandboxAfterFailedRun(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, cleanupContext string) (factory.RunRecord, bool, error) {
+	if !factoryRunCleansSandboxAfterFailure(policy) {
+		return record, false, nil
+	}
+	return cleanupFactoryRunDeferredSandbox(ctx, store, dir, req, out, record, deps, policy, cleanupContext)
+}
+
+func cleanupFactoryRunDeferredSandbox(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, cleanupContext string) (factory.RunRecord, bool, error) {
+	if !req.Sandbox || !factoryRunDefersSandboxSuccessCleanup(policy) {
+		return record, false, nil
+	}
+	cleanupContext = strings.TrimSpace(cleanupContext)
+	if cleanupContext == "" {
+		cleanupContext = "deferred"
+	}
+	name := strings.TrimSpace(record.SandboxName)
+	if name == "" && record.Sandbox != nil {
+		name = strings.TrimSpace(record.Sandbox.Name)
+	}
+	if name == "" {
+		return record, false, nil
+	}
+	target, err := deps.loadSandbox(name)
+	if err != nil {
+		return record, false, fmt.Errorf("load factory sandbox for %s cleanup %q: %w", cleanupContext, name, err)
+	}
+	if target == nil {
+		return record, false, nil
+	}
+	provider, err := deps.resolveProvider(dir, target.Provider)
+	if err != nil {
+		return record, false, fmt.Errorf("resolve sandbox provider %q for %s cleanup: %w", target.Provider, cleanupContext, err)
+	}
+	cleanupOut := out
+	if req.JSON {
+		cleanupOut = io.Discard
+	}
+	if deps.sandboxCopier == nil {
+		if artifactErr := collectAndStoreFactorySandboxArtifactsWithProviderExec(ctx, store, dir, record, deps, target, provider); artifactErr != nil {
+			if !factoryRunCleansSandboxAfterFailure(policy) {
+				return record, false, artifactErr
+			}
+			cleanupErr := deps.cleanupSandbox(ctx, factorySandboxCleanupRequest{
+				Target:   target,
+				Provider: provider,
+				Out:      cleanupOut,
+			})
+			if cleanupErr != nil {
+				return record, false, errors.Join(artifactErr, fmt.Errorf("cleanup factory sandbox after %s: %w", cleanupContext, cleanupErr))
+			}
+			secretRedactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
+			if err := recordFactorySandboxCleanedUp(store, factorySandboxExecutorDeps{
+				now:     deps.now,
+				saveRun: saveFactorySandboxRunRecord,
+			}, &record, target, secretRedactor); err != nil {
+				return record, true, errors.Join(artifactErr, err)
+			}
+			return record, true, artifactErr
+		}
+	}
+	if err := deps.cleanupSandbox(ctx, factorySandboxCleanupRequest{
+		Target:   target,
+		Provider: provider,
+		Out:      cleanupOut,
+	}); err != nil {
+		return record, false, fmt.Errorf("cleanup factory sandbox after %s: %w", cleanupContext, err)
+	}
+	secretRedactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
+	if err := recordFactorySandboxCleanedUp(store, factorySandboxExecutorDeps{
+		now:     deps.now,
+		saveRun: saveFactorySandboxRunRecord,
+	}, &record, target, secretRedactor); err != nil {
+		return record, false, err
+	}
+	return record, true, nil
+}
+
+func collectAndStoreFactorySandboxArtifactsWithProviderExec(ctx context.Context, store factory.Store, dir string, record factory.RunRecord, deps factoryRunDeps, target *sandbox.SandboxState, provider sandbox.Provider) error {
+	requests := deps.sandboxRequests(dir, record)
+	if len(requests) == 0 {
+		return nil
+	}
+	var err error
+	requests, err = factorySandboxRemoteWorkspaceArtifactRequests(record, requests)
+	if err != nil {
+		return err
+	}
+	copier := factoryProviderExecSandboxArtifactCopier{
+		provider:        provider,
+		connectInfo:     sandbox.ConnectInfoFromState(target),
+		runProviderExec: deps.runProviderExec,
+	}
+	if _, err := factory.CollectSandboxArtifacts(ctx, store, record.RunID, &copier, requests); err != nil {
+		return fmt.Errorf("collect sandbox factory artifacts before cleanup: %w", err)
+	}
+	return nil
+}
+
+func factorySandboxRemoteWorkspaceArtifactRequests(record factory.RunRecord, requests []factory.SandboxArtifactRequest) ([]factory.SandboxArtifactRequest, error) {
+	workspaceDir := strings.TrimSpace(factorySandboxRemoteWorkspaceDir(record))
+	normalized := make([]factory.SandboxArtifactRequest, 0, len(requests))
+	for _, request := range requests {
+		remotePath := strings.TrimSpace(request.RemotePath)
+		if remotePath != "" && !path.IsAbs(remotePath) {
+			if workspaceDir == "" {
+				return nil, errFactorySandboxWorkspaceRequired
+			}
+			remotePath = path.Join(filepath.ToSlash(workspaceDir), filepath.ToSlash(remotePath))
+		}
+		request.RemotePath = remotePath
+		normalized = append(normalized, request)
+	}
+	return normalized, nil
+}
+
+func failFactoryRunAfterArtifactCollectionFailure(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, runningRecord factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, artifactErr error) (factoryRunExecutionResult, error) {
+	var recordErrs []error
+	failedRecord := runningRecord
+	if currentRecord, err := store.LoadRun(runningRecord.RunID); err != nil {
+		recordErrs = append(recordErrs, fmt.Errorf("load factory run for artifact failure: %w", err))
+	} else if currentRecord != nil {
+		failedRecord = *currentRecord
+	}
+	failedRecord.CurrentStep = factory.RunDurationStepArtifactCollect
+	failedRecord.CurrentStep = factory.RunDurationStepArtifactCollect
+
+	failedAt := deps.now()
+	failedRecord, failureErr := markFactoryRunFailed(store, failedRecord, failedAt, artifactErr)
+	if failureErr != nil {
+		recordErrs = append(recordErrs, failureErr)
+	}
+	if eventErr := recordFactoryRunArtifactCollectionFailed(store, failedRecord.RunID, failedAt, artifactErr); eventErr != nil {
+		recordErrs = append(recordErrs, fmt.Errorf("record factory artifact collection failure event: %w", eventErr))
+	}
+	if failedRecord.Failure != nil {
+		if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, failedAt, *failedRecord.Failure); eventErr != nil {
+			recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
+		}
+	}
+	if cleanupRecord, cleanedUp, cleanupErr := cleanupFactoryRunSandboxAfterFailedRun(ctx, store, dir, req, out, failedRecord, deps, policy, "artifact collection failure"); cleanedUp {
+		failedRecord = cleanupRecord
+		if cleanupErr != nil {
+			recordErrs = append(recordErrs, cleanupErr)
+		}
+	} else if cleanupErr != nil {
+		recordErrs = append(recordErrs, cleanupErr)
+	}
+	if artifactRecord, recordArtifactErr := recordFactoryRunRecordArtifact(store, failedRecord); recordArtifactErr != nil {
+		recordErrs = append(recordErrs, recordArtifactErr)
+	} else {
+		failedRecord = artifactRecord
+	}
+	if len(recordErrs) > 0 {
+		return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{artifactErr}, recordErrs...)...)
+	}
+	return factoryRunExecutionResult{Record: failedRecord, Render: true}, artifactErr
+}
+
+func autoFactoryAttemptPolicyFromFactoryPolicy(policy factory.FactoryPolicy) autoFactoryAttemptPolicy {
+	return autoFactoryAttemptPolicy{
+		MaxRunAttempts:       policy.MaxRunAttempts,
+		MaxReviewFixAttempts: policy.MaxReviewFixAttempts,
+		MaxCIFixAttempts:     policy.MaxCIFixAttempts,
+	}
+}
+
+func factoryPolicyDecisionFromAttemptLimit(err error) (factory.PolicyDecisionMetadata, bool) {
+	var limitErr *compound.PolicyLimitError
+	if !errors.As(err, &limitErr) || limitErr == nil {
+		return factory.PolicyDecisionMetadata{}, false
+	}
+	return factory.PolicyDecisionMetadata{
+		PolicyField: limitErr.PolicyField,
+		Decision:    factory.PolicyDecisionBlockedGate,
+		Outcome:     factory.PolicyOutcomeBlocked,
+		Reason:      limitErr.Reason(),
+	}, true
+}
+
+func failFactoryRunCreation(store factory.Store, record factory.RunRecord, out io.Writer, jsonMode bool, failedAt time.Time, cause error, decision *factory.PolicyDecisionMetadata) error {
+	var recordErrs []error
+	if decision != nil {
+		if err := recordFactoryPolicyDecision(store, record.RunID, failedAt, *decision); err != nil {
+			recordErrs = append(recordErrs, fmt.Errorf("record factory policy rejection: %w", err))
+		}
+	}
+
+	failedRecord, err := markFactoryRunFailed(store, record, failedAt, cause)
+	if err != nil {
+		recordErrs = append(recordErrs, err)
+	} else if failedRecord.Failure != nil {
+		if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, failedAt, *failedRecord.Failure); eventErr != nil {
+			recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
+		}
+	}
+	if renderErr := renderFactoryRunResult(out, store, record.RunID, jsonMode); renderErr != nil {
+		recordErrs = append(recordErrs, renderErr)
+	}
+	if len(recordErrs) > 0 {
+		return errors.Join(append([]error{cause}, recordErrs...)...)
+	}
+	return cause
+}
+
+func factoryRunEngineTelemetry(dir string, deps factoryRunDeps) *factory.RunTelemetry {
+	if deps.loadEngine == nil {
+		return nil
+	}
+
+	engineName, err := deps.loadEngine(dir)
+	if err != nil {
+		return nil
+	}
+	engineName = strings.ToLower(strings.TrimSpace(engineName))
+	if engineName == "" {
+		return nil
+	}
+
+	model := ""
+	if deps.loadEngineConfig != nil {
+		if cfg := deps.loadEngineConfig(dir, engineName); cfg != nil {
+			model = strings.TrimSpace(cfg.Model)
+		}
+	}
+
+	return &factory.RunTelemetry{
+		Engine: &factory.EngineTelemetry{
+			Name:  engineName,
+			Model: model,
+		},
+	}
 }
 
 func factoryExecutorModeFromRequest(req factoryRunRequest) string {
@@ -753,7 +1361,7 @@ func markFactoryRunInProgressWithRedactor(store factory.Store, record factory.Ru
 	return record, nil
 }
 
-func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, dir string, req factoryRunRequest, snapshot factoryArtifactSnapshot, now time.Time, deps factoryRunDeps, redactor factory.RunSecretRedactor) (factory.RunRecord, error) {
+func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, dir string, req factoryRunRequest, snapshot factoryArtifactSnapshot, now time.Time, deps factoryRunDeps, collectSandboxArtifacts bool, redactor factory.RunSecretRedactor) (factory.RunRecord, error) {
 	record, err := store.LoadRun(runID)
 	if err != nil {
 		return factory.RunRecord{}, fmt.Errorf("load factory run for artifacts: %w", err)
@@ -778,8 +1386,10 @@ func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, 
 	if err := collectAndStoreFactoryRunArtifacts(store, dir, req, *record, snapshot, snapshots); err != nil {
 		return factory.RunRecord{}, err
 	}
-	if err := collectAndStoreFactorySandboxArtifacts(ctx, store, dir, req, *record, deps); err != nil {
-		return factory.RunRecord{}, err
+	if collectSandboxArtifacts {
+		if err := collectAndStoreFactorySandboxArtifacts(ctx, store, dir, req, *record, deps); err != nil {
+			return factory.RunRecord{}, err
+		}
 	}
 	record, err = store.LoadRun(runID)
 	if err != nil {
@@ -793,7 +1403,7 @@ func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, 
 	return safeRecord, nil
 }
 
-func recordFactoryRunVerification(ctx context.Context, store factory.Store, record factory.RunRecord, dir string, deps factoryRunDeps, redactor factory.RunSecretRedactor) (factory.RunRecord, time.Time, error) {
+func recordFactoryRunVerification(ctx context.Context, store factory.Store, record factory.RunRecord, dir string, deps factoryRunDeps, policy factory.FactoryPolicy, redactor factory.RunSecretRedactor) (factory.RunRecord, time.Time, error) {
 	startedAt := deps.now()
 	record.CurrentStep = "verify"
 	record.UpdatedAt = startedAt.UTC()
@@ -802,12 +1412,37 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 		return record, deps.now(), fmt.Errorf("mark factory run verifying: %w", err)
 	}
 
+	if factoryRunUsesSandboxVerification(record) {
+		result, updatedRecord, err := runFactorySandboxRemoteVerification(ctx, store, dir, record, deps)
+		finishedAt := deps.now()
+		if err != nil {
+			return record, finishedAt, fmt.Errorf("run remote sandbox verification: %w", err)
+		}
+		return recordFactoryRunVerificationOutcome(store, dir, updatedRecord, startedAt, finishedAt, result, policy, redactor, false)
+	}
+
 	cfg, err := deps.loadVerify(dir)
 	if err != nil {
 		return record, deps.now(), fmt.Errorf("load verification config: %w", err)
 	}
 	if cfg == nil || len(cfg.Checks) == 0 {
+		if policy.VerificationRequired {
+			finishedAt := deps.now()
+			decision := factory.PolicyDecisionMetadata{
+				PolicyField: "factory.policy.verificationRequired",
+				Decision:    factory.PolicyDecisionBlockedGate,
+				Outcome:     factory.PolicyOutcomeBlocked,
+				Reason:      "verification required but no checks configured",
+			}
+			if err := recordFactoryPolicyDecision(store, record.RunID, finishedAt, decision); err != nil {
+				return record, finishedAt, fmt.Errorf("record factory verification policy decision: %w", err)
+			}
+			return record, finishedAt, fmt.Errorf("verification required but no checks configured")
+		}
 		return record, deps.now(), nil
+	}
+	if err := recordFactoryRunVerificationStarted(store, record.RunID, startedAt); err != nil {
+		return record, deps.now(), fmt.Errorf("record factory verification start event: %w", err)
 	}
 
 	result, err := deps.runVerify(ctx, cfg)
@@ -819,13 +1454,41 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 		return record, finishedAt, fmt.Errorf("run verification: no result")
 	}
 
+	return recordFactoryRunVerificationOutcome(store, dir, record, startedAt, finishedAt, result, policy, redactor, true)
+}
+
+func recordFactoryRunVerificationOutcome(store factory.Store, dir string, record factory.RunRecord, startedAt, finishedAt time.Time, result *verify.Result, policy factory.FactoryPolicy, redactor factory.RunSecretRedactor, startedRecorded bool) (factory.RunRecord, time.Time, error) {
+	if result == nil {
+		return record, finishedAt, fmt.Errorf("run verification: no result")
+	}
+	if factoryVerificationResultHasNoChecks(result) {
+		if policy.VerificationRequired {
+			decision := factory.PolicyDecisionMetadata{
+				PolicyField: "factory.policy.verificationRequired",
+				Decision:    factory.PolicyDecisionBlockedGate,
+				Outcome:     factory.PolicyOutcomeBlocked,
+				Reason:      "verification required but no checks configured",
+			}
+			if err := recordFactoryPolicyDecision(store, record.RunID, finishedAt, decision); err != nil {
+				return record, finishedAt, fmt.Errorf("record factory verification policy decision: %w", err)
+			}
+			return record, finishedAt, fmt.Errorf("verification required but no checks configured")
+		}
+		return record, finishedAt, nil
+	}
+	if !startedRecorded {
+		if err := recordFactoryRunVerificationStarted(store, record.RunID, startedAt); err != nil {
+			return record, finishedAt, fmt.Errorf("record factory verification start event: %w", err)
+		}
+	}
+
 	safeArtifacts := redactFactoryVerificationArtifacts(result.Artifacts, redactor)
 	record.Verification = &factory.VerificationRecord{
 		Summary:   result.Summary,
 		Artifacts: safeArtifacts,
 	}
 	record.UpdatedAt = finishedAt.UTC()
-	safeRecord = redactor.RedactRunRecord(record)
+	safeRecord := redactor.RedactRunRecord(record)
 	if err := store.SaveRun(&safeRecord); err != nil {
 		return factory.RunRecord{}, finishedAt, fmt.Errorf("record factory verification: %w", err)
 	}
@@ -841,9 +1504,300 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 		return record, finishedAt, fmt.Errorf("record factory verification event: %w", err)
 	}
 	if result.Status == verify.StatusFail {
+		if !policy.VerificationRequired {
+			decision := factory.PolicyDecisionMetadata{
+				PolicyField: "factory.policy.verificationRequired",
+				Decision:    factory.PolicyDecisionAllowedExecution,
+				Outcome:     factory.PolicyOutcomeAllowed,
+				Reason:      "verification not required; advisory failure did not block",
+			}
+			if err := recordFactoryPolicyDecision(store, record.RunID, finishedAt, decision); err != nil {
+				return record, finishedAt, fmt.Errorf("record factory verification policy decision: %w", err)
+			}
+			if err := recordFactoryRunVerificationAdvisoryFailed(store, record.RunID, finishedAt, newFactoryRunVerificationFailure(result)); err != nil {
+				return record, finishedAt, fmt.Errorf("record factory advisory verification failure event: %w", err)
+			}
+			return record, finishedAt, nil
+		}
+		decision := factory.PolicyDecisionMetadata{
+			PolicyField: "factory.policy.verificationRequired",
+			Decision:    factory.PolicyDecisionBlockedGate,
+			Outcome:     factory.PolicyOutcomeBlocked,
+			Reason:      "verification failed",
+		}
+		if err := recordFactoryPolicyDecision(store, record.RunID, finishedAt, decision); err != nil {
+			return record, finishedAt, fmt.Errorf("record factory verification policy decision: %w", err)
+		}
 		return record, finishedAt, newFactoryRunVerificationFailure(result)
 	}
+	if policy.VerificationRequired {
+		decision := factory.PolicyDecisionMetadata{
+			PolicyField: "factory.policy.verificationRequired",
+			Decision:    factory.PolicyDecisionPassedGate,
+			Outcome:     factory.PolicyOutcomePassed,
+			Reason:      "verification passed",
+		}
+		if err := recordFactoryPolicyDecision(store, record.RunID, finishedAt, decision); err != nil {
+			return record, finishedAt, fmt.Errorf("record factory verification policy decision: %w", err)
+		}
+	}
+	if err := recordFactoryRunVerificationSucceeded(store, record.RunID, finishedAt); err != nil {
+		return record, finishedAt, fmt.Errorf("record factory verification completion event: %w", err)
+	}
 	return record, finishedAt, nil
+}
+
+func factoryVerificationResultHasNoChecks(result *verify.Result) bool {
+	if result == nil {
+		return true
+	}
+	return result.Summary.Total == 0 && len(result.Checks) == 0
+}
+
+func factoryRunUsesSandboxVerification(record factory.RunRecord) bool {
+	return strings.TrimSpace(record.ExecutorMode) == factory.ExecutorModeSandbox
+}
+
+func runFactorySandboxRemoteVerification(ctx context.Context, store factory.Store, dir string, record factory.RunRecord, deps factoryRunDeps) (*verify.Result, factory.RunRecord, error) {
+	sandboxName := factoryRunSandboxName(record)
+	if sandboxName == "" {
+		return nil, record, fmt.Errorf("sandbox verification requires sandbox metadata")
+	}
+	target, err := deps.loadSandbox(sandboxName)
+	if err != nil {
+		return nil, record, fmt.Errorf("load sandbox %q for verification: %w", sandboxName, err)
+	}
+	if target == nil {
+		return nil, record, fmt.Errorf("load sandbox %q for verification: not found", sandboxName)
+	}
+	provider, err := deps.resolveProvider(dir, target.Provider)
+	if err != nil {
+		return nil, record, fmt.Errorf("resolve sandbox provider %q for verification: %w", target.Provider, err)
+	}
+	args, err := factorySandboxRemoteVerifyArgs(record)
+	if err != nil {
+		return nil, record, err
+	}
+	var out bytes.Buffer
+	execErr := deps.runProviderExec(ctx, provider, sandbox.ConnectInfoFromState(target), args, &out)
+	result, parseErr := parseFactorySandboxVerifyResult(out.Bytes())
+	if parseErr != nil {
+		if execErr != nil {
+			return nil, record, fmt.Errorf("remote verify command failed (%w) and output was not valid verify JSON: %v", execErr, parseErr)
+		}
+		return nil, record, parseErr
+	}
+	if err := collectAndStoreFactorySandboxVerificationArtifacts(ctx, store, record, result.Artifacts, target, provider, deps); err != nil {
+		return nil, record, err
+	}
+	updatedRecord, err := store.LoadRun(record.RunID)
+	if err != nil {
+		return nil, record, fmt.Errorf("reload factory run verification artifacts: %w", err)
+	}
+	return result, *updatedRecord, nil
+}
+
+func factoryRunSandboxName(record factory.RunRecord) string {
+	if name := strings.TrimSpace(record.SandboxName); name != "" {
+		return name
+	}
+	if record.Sandbox != nil {
+		return strings.TrimSpace(record.Sandbox.Name)
+	}
+	return ""
+}
+
+func factorySandboxRemoteVerifyArgs(record factory.RunRecord) ([]string, error) {
+	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
+	if workspaceDir == "" {
+		return nil, errFactorySandboxWorkspaceRequired
+	}
+	verifyCommand := shellCommand([]string{"hal", "verify", "--json"}) + " 2>/tmp/hal-factory-verify-stderr"
+	return []string{"sh", "-lc", "cd " + shellQuote(workspaceDir) + " && exec " + verifyCommand}, nil
+}
+
+func parseFactorySandboxVerifyResult(data []byte) (*verify.Result, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("parse remote sandbox verify JSON: empty output")
+	}
+	var result verify.Result
+	if err := json.Unmarshal(trimmed, &result); err != nil {
+		return nil, fmt.Errorf("parse remote sandbox verify JSON: %w", err)
+	}
+	return &result, nil
+}
+
+func collectAndStoreFactorySandboxVerificationArtifacts(ctx context.Context, store factory.Store, record factory.RunRecord, artifacts []verify.ArtifactReference, target *sandbox.SandboxState, provider sandbox.Provider, deps factoryRunDeps) error {
+	if len(artifacts) == 0 {
+		return nil
+	}
+	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
+	if workspaceDir == "" {
+		return errFactorySandboxWorkspaceRequired
+	}
+	requests := make([]factory.SandboxArtifactRequest, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		path := strings.TrimSpace(artifact.Path)
+		if path == "" {
+			continue
+		}
+		remotePath := path
+		if !filepath.IsAbs(remotePath) {
+			remotePath = filepath.ToSlash(filepath.Join(workspaceDir, remotePath))
+		}
+		nameParts := []string{"verification"}
+		if checkID := strings.TrimSpace(artifact.CheckID); checkID != "" {
+			nameParts = append(nameParts, sanitizeFactoryArtifactPathComponent(checkID))
+		}
+		if kind := strings.TrimSpace(artifact.Kind); kind != "" {
+			nameParts = append(nameParts, sanitizeFactoryArtifactPathComponent(kind))
+		}
+		requests = append(requests, factory.SandboxArtifactRequest{
+			ID:         factorySandboxVerificationArtifactID(artifact),
+			Name:       strings.Join(nameParts, "-"),
+			Type:       factoryArtifactTypeForPath(path),
+			RemotePath: filepath.ToSlash(remotePath),
+			Path:       filepath.ToSlash(filepath.Clean(path)),
+			Optional:   true,
+			Summary: map[string]any{
+				"checkId":      artifact.CheckID,
+				"kind":         artifact.Kind,
+				"executorMode": factory.ExecutorModeSandbox,
+				"sandboxName":  record.SandboxName,
+			},
+		})
+	}
+	if len(requests) == 0 {
+		return nil
+	}
+	copier := factoryProviderExecSandboxArtifactCopier{
+		provider:        provider,
+		connectInfo:     sandbox.ConnectInfoFromState(target),
+		runProviderExec: deps.runProviderExec,
+	}
+	if _, err := factory.CollectSandboxArtifacts(ctx, store, record.RunID, &copier, requests); err != nil {
+		return fmt.Errorf("collect sandbox verification artifacts: %w", err)
+	}
+	return nil
+}
+
+func factorySandboxVerificationArtifactID(artifact verify.ArtifactReference) string {
+	parts := []string{"verification"}
+	for _, value := range []string{artifact.CheckID, artifact.Kind, artifact.Path} {
+		if part := sanitizeFactoryArtifactPathComponent(value); part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return strings.Join(parts, "-")
+}
+
+type factoryProviderExecSandboxArtifactCopier struct {
+	provider        sandbox.Provider
+	connectInfo     *sandbox.ConnectInfo
+	runProviderExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+}
+
+func (c *factoryProviderExecSandboxArtifactCopier) CopyFile(ctx context.Context, remotePath, localPath string) error {
+	remotePath = strings.TrimSpace(remotePath)
+	if remotePath == "" {
+		return factory.ErrSandboxArtifactNotFound
+	}
+	var out bytes.Buffer
+	args := []string{"sh", "-lc", "if [ ! -f " + shellQuote(remotePath) + " ]; then printf %s " + shellQuote(factorySandboxArtifactMissingSentinel) + "; exit 0; fi; base64 < " + shellQuote(remotePath)}
+	if err := c.runProviderExec(ctx, c.provider, c.connectInfo, args, &out); err != nil {
+		return err
+	}
+	payload := strings.TrimSpace(out.String())
+	if payload == factorySandboxArtifactMissingSentinel {
+		return factory.ErrSandboxArtifactNotFound
+	}
+	data, err := decodeFactorySandboxBase64Payload(payload)
+	if err != nil {
+		return fmt.Errorf("decode sandbox artifact %q: %w", remotePath, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
+		return fmt.Errorf("create sandbox artifact destination: %w", err)
+	}
+	if err := os.WriteFile(localPath, data, 0o600); err != nil {
+		return fmt.Errorf("write sandbox artifact %q: %w", remotePath, err)
+	}
+	return nil
+}
+
+func (c *factoryProviderExecSandboxArtifactCopier) CopyDir(ctx context.Context, remotePath, localPath string) error {
+	remotePath = strings.TrimSpace(remotePath)
+	if remotePath == "" {
+		return factory.ErrSandboxArtifactNotFound
+	}
+	var out bytes.Buffer
+	args := []string{"sh", "-lc", "if [ ! -d " + shellQuote(remotePath) + " ]; then printf %s " + shellQuote(factorySandboxArtifactMissingSentinel) + "; exit 0; fi; tar -C " + shellQuote(remotePath) + " -cf - . | base64"}
+	if err := c.runProviderExec(ctx, c.provider, c.connectInfo, args, &out); err != nil {
+		return err
+	}
+	payload := strings.TrimSpace(out.String())
+	if payload == factorySandboxArtifactMissingSentinel {
+		return factory.ErrSandboxArtifactNotFound
+	}
+	data, err := decodeFactorySandboxBase64Payload(payload)
+	if err != nil {
+		return fmt.Errorf("decode sandbox artifact directory %q: %w", remotePath, err)
+	}
+	if err := os.MkdirAll(localPath, 0o700); err != nil {
+		return fmt.Errorf("create sandbox artifact directory destination: %w", err)
+	}
+	reader := tar.NewReader(bytes.NewReader(data))
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read sandbox artifact directory %q: %w", remotePath, err)
+		}
+		name := filepath.Clean(strings.TrimSpace(header.Name))
+		if name == "" || name == "." {
+			continue
+		}
+		if filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("sandbox artifact directory contains unsafe path %q", header.Name)
+		}
+		destination := filepath.Join(localPath, name)
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(destination, 0o700); err != nil {
+				return fmt.Errorf("create sandbox artifact directory %q: %w", name, err)
+			}
+		case tar.TypeReg, tar.TypeRegA:
+			if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+				return fmt.Errorf("create sandbox artifact parent %q: %w", name, err)
+			}
+			file, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+			if err != nil {
+				return fmt.Errorf("create sandbox artifact file %q: %w", name, err)
+			}
+			_, copyErr := io.Copy(file, reader)
+			closeErr := file.Close()
+			if copyErr != nil {
+				return fmt.Errorf("write sandbox artifact file %q: %w", name, copyErr)
+			}
+			if closeErr != nil {
+				return fmt.Errorf("close sandbox artifact file %q: %w", name, closeErr)
+			}
+		default:
+			continue
+		}
+	}
+	return nil
+}
+
+func decodeFactorySandboxBase64Payload(payload string) ([]byte, error) {
+	return base64.StdEncoding.DecodeString(strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' || r == ' ' {
+			return -1
+		}
+		return r
+	}, payload))
 }
 
 func defaultFactoryStatusSnapshot(dir string) (factorySnapshotArtifact, error) {
@@ -1223,41 +2177,79 @@ func classifyFactoryRunFailure(err error) string {
 		return factory.FailureCategoryUnknown
 	}
 
+	var policyErr *factoryPolicyRejectionError
+	if errors.As(err, &policyErr) {
+		return factory.FailureCategoryPRD
+	}
+	var policyLimitErr *compound.PolicyLimitError
+	if errors.As(err, &policyLimitErr) && policyLimitErr != nil {
+		if category, ok := factoryFailureCategoryForAutoStep(policyLimitErr.Step); ok {
+			return category
+		}
+		return factory.FailureCategoryPRD
+	}
+
 	var exitErr *ExitCodeError
 	if errors.As(err, &exitErr) && exitErr.Code == ExitCodeValidation {
-		return factory.FailureCategoryValidation
+		return factory.FailureCategoryPRD
 	}
 
 	step := autoFailedStep(err)
-	switch step {
-	case compound.StepValidate:
-		return factory.FailureCategoryValidation
-	case compound.StepCI:
-		return factory.FailureCategoryCI
-	case compound.StepBranch:
-		return factory.FailureCategoryGit
+	if category, ok := factoryFailureCategoryForAutoStep(step); ok {
+		return category
 	}
 
 	message := strings.ToLower(strings.TrimSpace(err.Error()))
 	switch {
-	case factoryFailureMessageContains(message, "validation", "validate", "invalid"):
-		return factory.FailureCategoryValidation
+	case factoryFailureMessageContains(message, "queue", "queued", "claim factory queue", "factory queue"):
+		return factory.FailureCategoryQueue
+	case factoryFailureMessageContains(message, "sandbox", "remote sandbox", "provider exec"):
+		return factory.FailureCategorySandbox
+	case factoryFailureMessageContains(message, "review", "review loop"):
+		return factory.FailureCategoryReview
+	case factoryFailureMessageContains(message, "prd", "planning", "plan ", "convert", "conversion", "validation", "validate", "invalid"):
+		return factory.FailureCategoryPRD
 	case factoryFailureMessageContains(message, "verification", "verify"):
-		return factory.FailureCategoryValidation
+		return factory.FailureCategoryVerification
 	case factoryFailureMessageContains(message, "engine", "codex", "claude"):
 		return factory.FailureCategoryEngine
 	case factoryFailureMessageContains(message, "github", "git ", " git", "merge-base", "commit", "branch"):
-		return factory.FailureCategoryGit
+		return factory.FailureCategorySetup
 	case factoryFailureMessageContains(message, " ci", "ci ", "ci:", "ci-", "ci_", "workflow", "status check", "check run"):
 		return factory.FailureCategoryCI
 	case factoryFailureMessageContains(message, "pipeline") || step != "":
-		return factory.FailureCategoryPipeline
+		return factory.FailureCategoryRun
 	default:
 		return factory.FailureCategoryUnknown
 	}
 }
 
+func factoryFailureCategoryForAutoStep(step string) (string, bool) {
+	switch step {
+	case compound.StepSpec, compound.StepConvert, compound.StepValidate:
+		return factory.FailureCategoryPRD, true
+	case compound.StepRun:
+		return factory.FailureCategoryRun, true
+	case compound.StepReview:
+		return factory.FailureCategoryReview, true
+	case compound.StepCI:
+		return factory.FailureCategoryCI, true
+	case compound.StepBranch:
+		return factory.FailureCategorySetup, true
+	default:
+		return "", false
+	}
+}
+
 func factoryRunFailureStep(currentStep string, err error) string {
+	var policyErr *factoryPolicyRejectionError
+	if errors.As(err, &policyErr) {
+		return "policy"
+	}
+	var policyLimitErr *compound.PolicyLimitError
+	if errors.As(err, &policyLimitErr) {
+		return "policy"
+	}
 	if step := autoFailedStep(err); step != "" {
 		return step
 	}
@@ -1275,12 +2267,16 @@ func factoryRunFailureMessage(err error) string {
 }
 
 func factoryRunFailureRecoverable(category string) bool {
-	switch category {
-	case factory.FailureCategoryValidation,
-		factory.FailureCategoryPipeline,
+	switch factory.NormalizeFailureCategory(category) {
+	case factory.FailureCategorySetup,
 		factory.FailureCategoryEngine,
-		factory.FailureCategoryGit,
-		factory.FailureCategoryCI:
+		factory.FailureCategoryPRD,
+		factory.FailureCategoryRun,
+		factory.FailureCategoryReview,
+		factory.FailureCategoryVerification,
+		factory.FailureCategoryCI,
+		factory.FailureCategorySandbox,
+		factory.FailureCategoryQueue:
 		return true
 	default:
 		return false
@@ -2132,7 +3128,7 @@ func recordFactoryRunPipelineStarted(store factory.Store, record factory.RunReco
 		EventType: factory.EventTypeStepStarted,
 		Summary:   "Local compound pipeline started",
 		Metadata: map[string]any{
-			"step":   record.CurrentStep,
+			"step":   factory.RunDurationStepEngineRun,
 			"status": record.Status,
 		},
 	})
@@ -2143,6 +3139,15 @@ func recordFactoryRunProgress(store factory.Store, runID string, now time.Time, 
 }
 
 func recordFactoryRunProgressWithRedactor(store factory.Store, runID string, now time.Time, event factoryRunProgressEvent, redactor factory.RunSecretRedactor) error {
+	safeEvent := redactFactoryTimelineEvent(factoryTimelineEvent{
+		EventType: factory.EventTypeCommandOutputSummary,
+		Message:   event.Message,
+		Summary:   event.Summary,
+		Metadata:  event.Metadata,
+	}, redactor)
+	if err := recordFactoryRunLogChunk(store, runID, factoryLogStreamFromMetadata(safeEvent.Metadata), factoryLogSourceFromMetadata(safeEvent.Metadata), safeEvent.Message, safeEvent.Summary, &now); err != nil {
+		return err
+	}
 	return appendFactoryRunTimelineEventWithRedactor(store, runID, now, factoryTimelineEvent{
 		EventType: factory.EventTypeCommandOutputSummary,
 		Message:   event.Message,
@@ -2191,7 +3196,7 @@ func recordFactoryRunPipelineSucceeded(store factory.Store, runID string, now ti
 		EventType: factory.EventTypeStepEnded,
 		Summary:   "Local compound pipeline completed",
 		Metadata: map[string]any{
-			"step":   "run",
+			"step":   factory.RunDurationStepEngineRun,
 			"status": factory.RunStatusSucceeded,
 		},
 	})
@@ -2206,11 +3211,45 @@ func recordFactoryRunPipelineFailedWithRedactor(store factory.Store, runID strin
 		EventType: factory.EventTypeStepEnded,
 		Summary:   "Local compound pipeline failed",
 		Metadata: map[string]any{
-			"step":   "run",
+			"step":   factory.RunDurationStepEngineRun,
 			"status": factory.RunStatusFailed,
 			"error":  pipelineErr.Error(),
 		},
 	}, redactor)
+}
+
+func recordFactoryRunArtifactCollectionFailed(store factory.Store, runID string, now time.Time, artifactErr error) error {
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepEnded,
+		Summary:   "Factory artifact collection failed",
+		Metadata: map[string]any{
+			"step":   factory.RunDurationStepArtifactCollect,
+			"status": factory.RunStatusFailed,
+			"error":  artifactErr.Error(),
+		},
+	})
+}
+
+func recordFactoryRunVerificationStarted(store factory.Store, runID string, now time.Time) error {
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepStarted,
+		Summary:   "Verification started",
+		Metadata: map[string]any{
+			"step":   factory.RunDurationStepVerification,
+			"status": factory.RunStatusRunning,
+		},
+	})
+}
+
+func recordFactoryRunVerificationSucceeded(store factory.Store, runID string, now time.Time) error {
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepEnded,
+		Summary:   "Verification completed",
+		Metadata: map[string]any{
+			"step":   factory.RunDurationStepVerification,
+			"status": factory.RunStatusSucceeded,
+		},
+	})
 }
 
 func recordFactoryRunSetupFailed(store factory.Store, runID string, now time.Time, setupErr error) error {
@@ -2238,11 +3277,25 @@ func recordFactoryRunVerificationFailedWithRedactor(store factory.Store, runID s
 		EventType: factory.EventTypeStepEnded,
 		Summary:   "Verification failed",
 		Metadata: map[string]any{
-			"step":   "verify",
+			"step":   factory.RunDurationStepVerification,
 			"status": factory.RunStatusFailed,
 			"error":  verificationErr.Error(),
 		},
 	}, redactor)
+}
+
+func recordFactoryRunVerificationAdvisoryFailed(store factory.Store, runID string, now time.Time, verificationErr error) error {
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepEnded,
+		Summary:   "Verification failed (advisory)",
+		Metadata: map[string]any{
+			"step":     factory.RunDurationStepVerification,
+			"status":   factory.RunStatusFailed,
+			"advisory": true,
+			"blocking": false,
+			"error":    verificationErr.Error(),
+		},
+	})
 }
 
 func recordFactoryRunFailureClassified(store factory.Store, runID string, now time.Time, failure factory.FailureSummary) error {
@@ -2263,6 +3316,30 @@ func recordFactoryRunFailureClassified(store factory.Store, runID string, now ti
 		Summary:   "Failure classified",
 		Metadata:  metadata,
 	})
+}
+
+func recordFactoryPolicyDecision(store factory.Store, runID string, now time.Time, decision factory.PolicyDecisionMetadata) error {
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypePolicyDecision,
+		Summary:   factoryPolicyDecisionSummary(decision),
+		Metadata:  decision.EventMetadata(),
+	})
+}
+
+func factoryPolicyDecisionSummary(decision factory.PolicyDecisionMetadata) string {
+	decisionName := strings.TrimSpace(decision.Decision)
+	outcome := strings.TrimSpace(decision.Outcome)
+
+	switch {
+	case decisionName != "" && outcome != "":
+		return fmt.Sprintf("Policy decision %s: %s", decisionName, outcome)
+	case decisionName != "":
+		return "Policy decision " + decisionName
+	case outcome != "":
+		return "Policy decision: " + outcome
+	default:
+		return "Policy decision recorded"
+	}
 }
 
 func redactFactoryTimelineEvent(event factoryTimelineEvent, redactor factory.RunSecretRedactor) factoryTimelineEvent {
@@ -2421,6 +3498,77 @@ func appendFactoryRunTimelineEventWithRedactor(store factory.Store, runID string
 	return nil
 }
 
+func recordFactoryRunLogChunk(store factory.Store, runID, stream, source, text, summary string, createdAt *time.Time) error {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return nil
+	}
+	if strings.TrimSpace(store.Root()) == "" {
+		return nil
+	}
+	text = sanitizeFactoryLogText(text)
+	summary = sanitizeFactoryLogText(summary)
+	if strings.TrimSpace(text) == "" && strings.TrimSpace(summary) == "" {
+		return nil
+	}
+	timestamp := time.Now().UTC()
+	if createdAt != nil && !createdAt.IsZero() {
+		timestamp = createdAt.UTC()
+	}
+	chunk := factory.LogChunk{
+		RunID:     runID,
+		Stream:    normalizeFactoryLogStream(stream),
+		Source:    normalizeFactoryLogSource(source),
+		Text:      strings.TrimSpace(text),
+		Summary:   strings.TrimSpace(summary),
+		CreatedAt: timestamp,
+	}
+	if err := store.AppendLogChunk(&chunk); err != nil {
+		return fmt.Errorf("append factory log chunk %q: %w", runID, err)
+	}
+	return nil
+}
+
+func factoryLogStreamFromMetadata(metadata map[string]any) string {
+	if metadata != nil {
+		if stream, ok := metadata["stream"].(string); ok {
+			return stream
+		}
+	}
+	return factory.LogStreamSummary
+}
+
+func factoryLogSourceFromMetadata(metadata map[string]any) string {
+	if metadata != nil {
+		if source, ok := metadata["source"].(string); ok {
+			return source
+		}
+	}
+	return factory.LogSourceLocalFactory
+}
+
+func normalizeFactoryLogStream(stream string) string {
+	switch strings.TrimSpace(stream) {
+	case factory.LogStreamStdout:
+		return factory.LogStreamStdout
+	case factory.LogStreamStderr:
+		return factory.LogStreamStderr
+	default:
+		return factory.LogStreamSummary
+	}
+}
+
+func normalizeFactoryLogSource(source string) string {
+	switch strings.TrimSpace(source) {
+	case factory.LogSourceRemoteSandbox:
+		return factory.LogSourceRemoteSandbox
+	case factory.LogSourceEngine:
+		return factory.LogSourceEngine
+	default:
+		return factory.LogSourceLocalFactory
+	}
+}
+
 func nextFactoryRunEventSequence(events []factory.EventRecord) int64 {
 	var maxSequence int64
 	for _, event := range events {
@@ -2465,7 +3613,29 @@ func runFactoryRunPipelineWithDeps(ctx context.Context, req factoryRunPipelineRe
 		return fmt.Errorf("factory run auto dependency is required")
 	}
 
-	return deps.runAuto(ctx, factoryRunAutoRequestFromFactoryRequest(req.Request))
+	autoReq := factoryRunAutoRequestFromFactoryRequest(req.Request)
+	autoReq.Engine = strings.TrimSpace(req.Engine)
+	autoReq.AttemptPolicy = req.AttemptPolicy
+	autoReq.SkipCI = req.SkipCI
+	now := req.Now
+	if now == nil {
+		now = time.Now
+	}
+	startedAt := now()
+	if err := recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamSummary, factory.LogSourceLocalFactory, "", "Starting local hal auto pipeline", &startedAt); err != nil {
+		return err
+	}
+	err := deps.runAuto(ctx, autoReq)
+	if err != nil {
+		failedAt := now()
+		_ = recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamStderr, factory.LogSourceLocalFactory, err.Error(), "Local hal auto pipeline failed", &failedAt)
+		return err
+	}
+	completedAt := now()
+	if err := recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamSummary, factory.LogSourceLocalFactory, "", "Local hal auto pipeline completed", &completedAt); err != nil {
+		return err
+	}
+	return nil
 }
 
 func factoryRunAutoRequestFromFactoryRequest(req factoryRunRequest) factoryRunAutoRequest {
@@ -2483,25 +3653,48 @@ func runAutoForFactoryRun(ctx context.Context, req factoryRunAutoRequest) error 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = contextWithAutoFactoryAttemptPolicy(ctx, req.AttemptPolicy)
 
+	cmd, err := factoryRunAutoCommand(ctx, req)
+	if err != nil {
+		return err
+	}
+	return runAuto(cmd, req.Args)
+}
+
+func factoryRunAutoCommand(ctx context.Context, req factoryRunAutoRequest) (*cobra.Command, error) {
 	cmd := &cobra.Command{Use: "auto"}
 	cmd.SetContext(ctx)
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 	cmd.Flags().Bool("dry-run", false, "")
 	cmd.Flags().Bool("resume", false, "")
-	cmd.Flags().Bool("no-ci", false, "")
+	cmd.Flags().Bool("no-ci", req.SkipCI, "")
 	cmd.Flags().Bool("skip-pr", false, "")
 	cmd.Flags().Bool("no-review", false, "")
 	cmd.Flags().String("mode", "", "")
 	cmd.Flags().Int("review-streak", 0, "")
 	cmd.Flags().Int("review-max", 0, "")
 	cmd.Flags().String("report", strings.TrimSpace(req.ReportPath), "")
-	cmd.Flags().String("engine", "codex", "")
+	engineName := factoryRunAutoEngine(req.Engine)
+	cmd.Flags().String("engine", engineName, "")
+	if strings.TrimSpace(req.Engine) != "" {
+		if err := cmd.Flags().Set("engine", engineName); err != nil {
+			return nil, err
+		}
+	}
 	cmd.Flags().String("base", strings.TrimSpace(req.BaseBranch), "")
 	cmd.Flags().Bool("json", false, "")
 
-	return runAuto(cmd, req.Args)
+	return cmd, nil
+}
+
+func factoryRunAutoEngine(engineName string) string {
+	engineName = normalizeFactoryRunEngineName(engineName)
+	if engineName == "" {
+		return factory.PolicyEngineCodex
+	}
+	return engineName
 }
 
 func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRunRequest, error) {
@@ -2711,12 +3904,20 @@ func runFactoryStatusWithDeps(out io.Writer, runID string, jsonMode bool, deps f
 		events = []factory.EventRecord{}
 	}
 
+	handoff := factory.NewHandoffSummary(store, *record)
 	if jsonMode {
-		return renderFactoryStatusJSON(out, *record, events)
+		return renderFactoryStatusJSON(out, *record, events, factoryStatusJSONHandoff(handoff))
 	}
 
-	renderFactoryStatusTable(out, *record, events)
+	renderFactoryStatusTable(out, *record, events, &handoff)
 	return nil
+}
+
+func factoryStatusJSONHandoff(handoff factory.HandoffSummary) *factory.HandoffSummary {
+	if !handoff.HasActionableData() {
+		return nil
+	}
+	return &handoff
 }
 
 func runFactoryArtifacts(cmd *cobra.Command, args []string) error {
@@ -2735,6 +3936,54 @@ func runFactoryArtifacts(cmd *cobra.Command, args []string) error {
 	}
 
 	return runFactoryArtifactsWithDeps(out, args[0], jsonMode, defaultFactoryArtifactsDeps)
+}
+
+func runFactoryLogs(cmd *cobra.Command, args []string) error {
+	out := io.Writer(os.Stdout)
+	jsonMode := factoryLogsJSONFlag
+
+	if cmd != nil {
+		out = cmd.OutOrStdout()
+		if cmd.Flags().Lookup("json") != nil {
+			value, err := cmd.Flags().GetBool("json")
+			if err != nil {
+				return err
+			}
+			jsonMode = value
+		}
+	}
+
+	return runFactoryLogsWithDeps(out, args[0], jsonMode, defaultFactoryLogsDeps)
+}
+
+func runFactoryLogsWithDeps(out io.Writer, runID string, jsonMode bool, deps factoryLogsDeps) error {
+	if out == nil {
+		out = io.Discard
+	}
+	if deps.defaultStore == nil {
+		return fmt.Errorf("factory store dependency is required")
+	}
+
+	store, err := deps.defaultStore()
+	if err != nil {
+		return fmt.Errorf("open factory store: %w", err)
+	}
+	if _, err := store.LoadRun(runID); errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("factory run %q not found", runID)
+	} else if err != nil {
+		return fmt.Errorf("load factory run %q: %w", runID, err)
+	}
+	chunks, err := store.LoadLogChunks(runID)
+	if err != nil {
+		return fmt.Errorf("load factory logs %q: %w", runID, err)
+	}
+	chunks = sanitizeFactoryLogChunks(chunks)
+
+	if jsonMode {
+		return renderFactoryLogsJSON(out, runID, chunks)
+	}
+	renderFactoryLogsTable(out, runID, chunks)
+	return nil
 }
 
 func runFactoryArtifactsWithDeps(out io.Writer, runID string, jsonMode bool, deps factoryArtifactsDeps) error {
@@ -2782,11 +4031,11 @@ func renderFactoryListJSON(out io.Writer, records []factory.RunRecord) error {
 	return nil
 }
 
-func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []factory.EventRecord) error {
+func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []factory.EventRecord, handoff *factory.HandoffSummary) error {
 	resp := FactoryStatusResponse{
 		ContractVersion: FactoryStatusContractVersion,
-		Run:             newFactoryStatusRun(record),
-		Timeline:        events,
+		Run:             newFactoryStatusRun(record, events, handoff),
+		Timeline:        normalizeFactoryTimelineEventsForContractV1(events),
 	}
 	data, err := json.MarshalIndent(resp, "", "  ")
 	if err != nil {
@@ -2796,27 +4045,97 @@ func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []f
 	return nil
 }
 
-func newFactoryStatusRun(record factory.RunRecord) FactoryStatusRun {
-	return FactoryStatusRun{
-		RunID:        record.RunID,
-		Status:       record.Status,
-		ExecutorMode: record.ExecutorMode,
-		Source:       record.Source,
-		RepoPath:     record.RepoPath,
-		RepoRemote:   record.RepoRemote,
-		BranchName:   record.BranchName,
-		BaseBranch:   record.BaseBranch,
-		SandboxName:  record.SandboxName,
-		Sandbox:      record.Sandbox,
-		CurrentStep:  record.CurrentStep,
-		CreatedAt:    record.CreatedAt,
-		UpdatedAt:    record.UpdatedAt,
-		FinishedAt:   record.FinishedAt,
-		Secrets:      record.Secrets,
-		Artifacts:    newFactoryArtifactSummaries(record.Artifacts),
-		Verification: record.Verification,
-		Failure:      record.Failure,
+func renderFactoryLogsJSON(out io.Writer, runID string, chunks []factory.LogChunk) error {
+	if chunks == nil {
+		chunks = []factory.LogChunk{}
 	}
+	resp := FactoryLogsResponse{
+		ContractVersion: FactoryLogsContractVersion,
+		RunID:           runID,
+		Chunks:          chunks,
+	}
+	data, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal factory logs: %w", err)
+	}
+	fmt.Fprintln(out, string(data))
+	return nil
+}
+
+func newFactoryStatusRun(record factory.RunRecord, events []factory.EventRecord, handoff *factory.HandoffSummary) FactoryStatusRun {
+	return FactoryStatusRun{
+		RunID:           record.RunID,
+		Status:          record.Status,
+		ExecutorMode:    record.ExecutorMode,
+		Engine:          record.Engine,
+		Source:          record.Source,
+		RepoPath:        record.RepoPath,
+		RepoRemote:      record.RepoRemote,
+		BranchName:      record.BranchName,
+		BaseBranch:      record.BaseBranch,
+		Policy:          factoryPolicySnapshotPointer(record.Policy),
+		PolicyDecisions: factoryPolicyDecisionsFromEvents(events),
+		SandboxName:     record.SandboxName,
+		Sandbox:         record.Sandbox,
+		CurrentStep:     record.CurrentStep,
+		CreatedAt:       record.CreatedAt,
+		UpdatedAt:       record.UpdatedAt,
+		FinishedAt:      record.FinishedAt,
+		Secrets:         record.Secrets,
+		Artifacts:       newFactoryArtifactSummaries(record.Artifacts),
+		Verification:    record.Verification,
+		Telemetry:       factory.DeriveRunTelemetry(record, events),
+		Failure:         normalizedFactoryFailureSummary(record.Failure),
+		Handoff:         handoff,
+	}
+}
+
+func factoryPolicySnapshotPointer(policy *factory.FactoryPolicy) *factory.FactoryPolicy {
+	if policy == nil {
+		return nil
+	}
+	snapshot := *policy
+	if policy.AllowedEngines != nil {
+		snapshot.AllowedEngines = append([]string(nil), policy.AllowedEngines...)
+	}
+	return &snapshot
+}
+
+func factoryPolicyDecisionsFromEvents(events []factory.EventRecord) []factory.PolicyDecisionMetadata {
+	decisions := make([]factory.PolicyDecisionMetadata, 0)
+	for _, event := range events {
+		if event.EventType != factory.EventTypePolicyDecision {
+			continue
+		}
+		decision := factoryPolicyDecisionFromMetadata(event.Metadata)
+		if decision.PolicyField == "" && decision.Decision == "" && decision.Outcome == "" && decision.Reason == "" {
+			continue
+		}
+		decisions = append(decisions, decision)
+	}
+	if len(decisions) == 0 {
+		return nil
+	}
+	return decisions
+}
+
+func factoryPolicyDecisionFromMetadata(metadata map[string]any) factory.PolicyDecisionMetadata {
+	return factory.PolicyDecisionMetadata{
+		PolicyField: stringFromFactoryMetadata(metadata, "policyField"),
+		Decision:    stringFromFactoryMetadata(metadata, "decision"),
+		Outcome:     stringFromFactoryMetadata(metadata, "outcome"),
+		Reason:      stringFromFactoryMetadata(metadata, "reason"),
+	}
+}
+
+func stringFromFactoryMetadata(metadata map[string]any, key string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	if value, ok := metadata[key].(string); ok {
+		return strings.TrimSpace(value)
+	}
+	return ""
 }
 
 func renderFactoryArtifactsJSON(out io.Writer, record factory.RunRecord) error {
@@ -2894,6 +4213,9 @@ func sanitizeFactoryArtifactPath(path string) string {
 	if path == "" {
 		return ""
 	}
+	if factoryArtifactPathLooksLikeURL(path) {
+		return "[redacted]"
+	}
 	cleanPath := filepath.Clean(path)
 	if factoryArtifactLooksLikeWindowsAbsolutePath(path) || factoryArtifactLooksLikeWindowsAbsolutePath(cleanPath) {
 		return "[redacted]"
@@ -2909,6 +4231,14 @@ func sanitizeFactoryArtifactPath(path string) string {
 		return "[redacted]"
 	}
 	return filepath.ToSlash(cleanPath)
+}
+
+func factoryArtifactPathLooksLikeURL(path string) bool {
+	parsed, err := url.Parse(path)
+	if err != nil {
+		return true
+	}
+	return parsed.Scheme != "" || parsed.Host != ""
 }
 
 func factoryArtifactPathIsParentRelative(path string) bool {
@@ -2954,8 +4284,42 @@ func summarizeFactoryRun(record factory.RunRecord) FactoryRunSummary {
 		UpdatedAt:     record.UpdatedAt,
 		FinishedAt:    record.FinishedAt,
 		ArtifactCount: len(record.Artifacts),
-		Failure:       record.Failure,
+		Telemetry:     factory.DeriveRunTelemetry(record, nil),
+		Failure:       normalizedFactoryFailureSummary(record.Failure),
 	}
+}
+
+func normalizedFactoryFailureSummary(failure *factory.FailureSummary) *factory.FailureSummary {
+	if failure == nil {
+		return nil
+	}
+	normalizedFailure := *failure
+	normalizedFailure.Category = factory.NormalizeFailureCategoryForContractV1(normalizedFailure.Category)
+	return &normalizedFailure
+}
+
+func normalizeFactoryTimelineEventsForContractV1(events []factory.EventRecord) []factory.EventRecord {
+	if len(events) == 0 {
+		return events
+	}
+	normalized := make([]factory.EventRecord, len(events))
+	copy(normalized, events)
+	for i, event := range normalized {
+		if event.EventType != factory.EventTypeFailureClassification || event.Metadata == nil {
+			continue
+		}
+		category, ok := event.Metadata["category"].(string)
+		if !ok {
+			continue
+		}
+		metadata := make(map[string]any, len(event.Metadata))
+		for key, value := range event.Metadata {
+			metadata[key] = value
+		}
+		metadata["category"] = factory.NormalizeFailureCategoryForContractV1(category)
+		normalized[i].Metadata = metadata
+	}
+	return normalized
 }
 
 func renderFactoryListTable(out io.Writer, records []factory.RunRecord) {
@@ -2978,28 +4342,82 @@ func renderFactoryListTable(out io.Writer, records []factory.RunRecord) {
 	_ = w.Flush()
 }
 
-func renderFactoryStatusTable(out io.Writer, record factory.RunRecord, events []factory.EventRecord) {
+func renderFactoryStatusTable(out io.Writer, record factory.RunRecord, events []factory.EventRecord, handoff *factory.HandoffSummary) {
+	telemetry := factory.DeriveRunTelemetry(record, events)
 	fmt.Fprintf(out, "Run ID: %s\n", record.RunID)
 	fmt.Fprintf(out, "Status: %s\n", record.Status)
 	fmt.Fprintf(out, "Branch: %s\n", record.BranchName)
 	fmt.Fprintf(out, "Step: %s\n", record.CurrentStep)
 	fmt.Fprintf(out, "Updated: %s\n", formatFactoryListTime(record.UpdatedAt))
+	renderFactoryStatusTelemetry(out, record, telemetry)
+	renderFactoryHandoffDetails(out, handoff)
 	fmt.Fprintf(out, "Timeline events: %d\n", len(events))
 	if len(events) == 0 {
 		return
 	}
 
+	fmt.Fprintln(out, "Timeline:")
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SEQUENCE\tTYPE\tTIMESTAMP\tSUMMARY")
+	fmt.Fprintln(w, "SEQUENCE\tSTEP\tSTATUS\tDURATION\tSUMMARY")
+	durations := factoryStepDurationMap(telemetry)
 	for _, event := range events {
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n",
+		step := factoryTimelineStep(event)
+		status := factoryTimelineStatus(event)
+		duration := ""
+		if event.EventType == factory.EventTypeStepEnded && step != "" {
+			duration = durations[step]
+		}
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n",
 			event.Sequence,
-			event.EventType,
-			formatFactoryListTime(event.Timestamp),
+			factoryTimelineLabel(event, step),
+			status,
+			duration,
 			event.Summary,
 		)
 	}
 	_ = w.Flush()
+}
+
+func renderFactoryStatusTelemetry(out io.Writer, record factory.RunRecord, telemetry *factory.RunTelemetry) {
+	if record.Failure != nil {
+		category := factory.NormalizeFailureCategoryForContractV1(record.Failure.Category)
+		if category != "" {
+			fmt.Fprintf(out, "Failure category: %s\n", category)
+		}
+		if message := strings.TrimSpace(record.Failure.Message); message != "" {
+			fmt.Fprintf(out, "Failure: %s\n", message)
+		}
+	}
+	if telemetry == nil {
+		return
+	}
+	if telemetry.TotalDurationMs != nil {
+		fmt.Fprintf(out, "Duration: %s\n", formatFactoryDurationMs(*telemetry.TotalDurationMs))
+	}
+	if telemetry.Engine != nil {
+		parts := compactFactoryParts(telemetry.Engine.Name, telemetry.Engine.Model)
+		if len(parts) > 0 {
+			fmt.Fprintf(out, "Engine: %s\n", strings.Join(parts, " "))
+		}
+	}
+	if telemetry.Sandbox != nil {
+		parts := compactFactoryParts(telemetry.Sandbox.Provider, telemetry.Sandbox.Size)
+		if len(parts) > 0 {
+			fmt.Fprintf(out, "Sandbox: %s\n", strings.Join(parts, " "))
+		}
+	}
+	if telemetry.EstimatedSandboxCost != nil && telemetry.EstimatedSandboxCost.Estimated {
+		fmt.Fprintf(out, "Est. sandbox cost: $%.4f\n", telemetry.EstimatedSandboxCost.AmountUSD)
+	}
+	if outcome := strings.TrimSpace(telemetry.CIOutcome); outcome != "" {
+		fmt.Fprintf(out, "CI: %s\n", outcome)
+	}
+	if outcome := strings.TrimSpace(telemetry.VerificationOutcome); outcome != "" {
+		fmt.Fprintf(out, "Verification: %s\n", outcome)
+	}
+	if telemetry.ArtifactCount != nil {
+		fmt.Fprintf(out, "Artifacts: %d\n", *telemetry.ArtifactCount)
+	}
 }
 
 func renderFactoryArtifactsTable(out io.Writer, record factory.RunRecord) {
@@ -3022,6 +4440,89 @@ func renderFactoryArtifactsTable(out io.Writer, record factory.RunRecord) {
 		)
 	}
 	_ = w.Flush()
+}
+
+func renderFactoryLogsTable(out io.Writer, runID string, chunks []factory.LogChunk) {
+	fmt.Fprintf(out, "Run ID: %s\n", runID)
+	if len(chunks) == 0 {
+		fmt.Fprintf(out, "No logs stored for factory run %s.\n", runID)
+		return
+	}
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SEQUENCE\tSTREAM\tSOURCE\tCREATED\tTEXT")
+	for _, chunk := range chunks {
+		text := strings.TrimSpace(chunk.Text)
+		if text == "" {
+			text = strings.TrimSpace(chunk.Summary)
+		}
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n",
+			chunk.Sequence,
+			chunk.Stream,
+			chunk.Source,
+			formatFactoryListTime(chunk.CreatedAt),
+			text,
+		)
+	}
+	_ = w.Flush()
+}
+
+func factoryStepDurationMap(telemetry *factory.RunTelemetry) map[string]string {
+	durations := map[string]string{}
+	if telemetry == nil {
+		return durations
+	}
+	for _, step := range telemetry.StepDurations {
+		if strings.TrimSpace(step.Step) == "" {
+			continue
+		}
+		durations[step.Step] = formatFactoryDurationMs(step.DurationMs)
+	}
+	return durations
+}
+
+func factoryTimelineStep(event factory.EventRecord) string {
+	if event.Metadata == nil {
+		return ""
+	}
+	step, _ := event.Metadata["step"].(string)
+	return strings.TrimSpace(step)
+}
+
+func factoryTimelineStatus(event factory.EventRecord) string {
+	if event.Metadata == nil {
+		return ""
+	}
+	status, _ := event.Metadata["status"].(string)
+	return strings.TrimSpace(status)
+}
+
+func factoryTimelineLabel(event factory.EventRecord, step string) string {
+	if step != "" {
+		return step
+	}
+	return event.EventType
+}
+
+func compactFactoryParts(values ...string) []string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			parts = append(parts, value)
+		}
+	}
+	return parts
+}
+
+func formatFactoryDurationMs(ms int64) string {
+	if ms < 0 {
+		ms = 0
+	}
+	d := time.Duration(ms) * time.Millisecond
+	if d >= time.Second {
+		return d.Round(time.Second).String()
+	}
+	return d.String()
 }
 
 func factoryArtifactDisplayPath(artifact factory.ArtifactReference) string {
@@ -3101,6 +4602,50 @@ func sanitizeFactoryArtifactWarnings(warnings []string) []string {
 		return nil
 	}
 	return safe
+}
+
+func sanitizeFactoryLogChunks(chunks []factory.LogChunk) []factory.LogChunk {
+	if len(chunks) == 0 {
+		return nil
+	}
+	safe := make([]factory.LogChunk, 0, len(chunks))
+	for _, chunk := range chunks {
+		chunk.Stream = normalizeFactoryLogStream(chunk.Stream)
+		chunk.Source = normalizeFactoryLogSource(chunk.Source)
+		chunk.Text = sanitizeFactoryLogText(chunk.Text)
+		chunk.Summary = sanitizeFactoryLogText(chunk.Summary)
+		safe = append(safe, chunk)
+	}
+	return safe
+}
+
+func sanitizeFactoryLogText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if factoryArtifactStringNeedsRedaction(value) || factoryLogContainsSecretAssignment(value) {
+		return "[redacted]"
+	}
+	return value
+}
+
+func factoryLogContainsSecretAssignment(value string) bool {
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\n' || r == ';' || r == ','
+	})
+	for _, field := range fields {
+		field = strings.Trim(field, `"'`)
+		idx := strings.IndexAny(field, "=:")
+		if idx <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(field[:idx])
+		if factoryArtifactSecretKey(key) {
+			return true
+		}
+	}
+	return false
 }
 
 func sanitizeFactoryArtifactValue(key string, value any) any {

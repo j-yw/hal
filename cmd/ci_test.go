@@ -15,6 +15,7 @@ import (
 
 	ci "github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/factory"
 	"github.com/spf13/cobra"
 )
 
@@ -1478,6 +1479,29 @@ func TestRunCIMergeWithDeps_DryRunRequiresOpenPR(t *testing.T) {
 	}
 	if mergeCalls != 0 {
 		t.Fatalf("mergePR called %d times, want 0 when open pull request is missing", mergeCalls)
+	}
+}
+
+func TestRunCIMergeWithDeps_BlocksWhenMergePolicyDisabled(t *testing.T) {
+	mergeCalls := 0
+
+	var buf bytes.Buffer
+	err := runCIMergeWithDeps(context.Background(), ciMergeRunOptions{Strategy: "merge"}, &buf, ciMergeDeps{
+		mergePR: func(context.Context, ci.MergeOptions) (ci.MergeResult, error) {
+			mergeCalls++
+			return ci.MergeResult{}, nil
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			policy := factory.DefaultFactoryPolicy()
+			policy.MergeAllowed = false
+			return &policy, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "factory.policy.mergeAllowed=false") {
+		t.Fatalf("runCIMergeWithDeps() error = %v, want merge policy block", err)
+	}
+	if mergeCalls != 0 {
+		t.Fatalf("mergePR called %d times, want 0 when merge policy is disabled", mergeCalls)
 	}
 }
 

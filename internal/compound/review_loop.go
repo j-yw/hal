@@ -66,6 +66,16 @@ func RunReviewLoopWithDisplay(ctx context.Context, eng engine.Engine, display *e
 	return runReviewLoop(ctx, baseBranch, requestedIterations, newReviewIterationDeps(eng, display))
 }
 
+// RunReviewValidationWithDisplay executes one non-mutating review pass. It
+// validates candidate findings but deliberately skips autofix.
+func RunReviewValidationWithDisplay(ctx context.Context, eng engine.Engine, display *engine.Display, baseBranch string) (*ReviewLoopResult, error) {
+	if eng == nil {
+		return nil, fmt.Errorf("engine is required")
+	}
+
+	return runReviewValidation(ctx, baseBranch, newReviewIterationDeps(eng, display))
+}
+
 // RunCodexReviewLoop is kept for compatibility with older callers.
 func RunCodexReviewLoop(ctx context.Context, eng engine.Engine, baseBranch string, requestedIterations int) (*ReviewLoopResult, error) {
 	return RunReviewLoop(ctx, eng, baseBranch, requestedIterations)
@@ -316,6 +326,56 @@ func runSingleReviewIteration(ctx context.Context, baseBranch string, requestedI
 	}, nil
 }
 
+func runReviewValidation(ctx context.Context, baseBranch string, deps reviewIterationDeps) (*ReviewLoopResult, error) {
+	const requestedIterations = 1
+	baseBranch, deps, err := normalizeReviewLoopDeps(baseBranch, requestedIterations, deps)
+	if err != nil {
+		return nil, err
+	}
+
+	startedAt := deps.now()
+
+	currentBranch, err := deps.currentBranch()
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine current branch: %w", err)
+	}
+
+	deps.onIterationStart(1, requestedIterations)
+	iteration, err := runReviewValidationIteration(ctx, baseBranch, currentBranch, deps)
+	if err != nil {
+		deps.onIterationComplete(1)
+		return nil, err
+	}
+	iteration.Iteration = 1
+	deps.onIterationComplete(1)
+
+	endedAt := deps.now()
+	stopReason := "max_iterations"
+	if iteration.ValidIssues == 0 {
+		stopReason = "no_valid_issues"
+	}
+
+	return &ReviewLoopResult{
+		Command:             fmt.Sprintf("hal review --base %s --iterations %d", baseBranch, requestedIterations),
+		BaseBranch:          baseBranch,
+		CurrentBranch:       currentBranch,
+		RequestedIterations: requestedIterations,
+		CompletedIterations: 1,
+		StopReason:          stopReason,
+		StartedAt:           startedAt,
+		EndedAt:             endedAt,
+		Duration:            endedAt.Sub(startedAt),
+		Totals: ReviewLoopTotals{
+			IssuesFound:   iteration.IssuesFound,
+			ValidIssues:   iteration.ValidIssues,
+			InvalidIssues: iteration.InvalidIssues,
+			FixesApplied:  iteration.FixesApplied,
+			FilesAffected: collectFilesAffected([]ReviewLoopIteration{iteration}),
+		},
+		Iterations: []ReviewLoopIteration{iteration},
+	}, nil
+}
+
 func runReviewIteration(ctx context.Context, baseBranch, currentBranch string, deps reviewIterationDeps) (ReviewLoopIteration, error) {
 	iterStart := deps.now()
 
@@ -385,6 +445,78 @@ func runReviewIteration(ctx context.Context, baseBranch, currentBranch string, d
 	// Build per-issue detail by merging review findings with fix outcomes.
 	iteration.Issues = buildIssueDetails(parsedReview.Issues, parsedFix.PerIssue)
 
+	iteration.Duration = deps.now().Sub(iterStart)
+	return iteration, nil
+}
+
+func runReviewValidationIteration(ctx context.Context, baseBranch, currentBranch string, deps reviewIterationDeps) (ReviewLoopIteration, error) {
+	iterStart := deps.now()
+
+	branchContext, err := deps.branchContext(baseBranch, currentBranch)
+	if err != nil {
+		return ReviewLoopIteration{}, fmt.Errorf("failed to gather review context against base branch %q: %w", baseBranch, err)
+	}
+
+	reviewPrompt := buildReviewLoopPrompt(branchContext)
+	reviewResponse, err := promptWithRetry(ctx, deps, reviewPrompt)
+	if err != nil {
+		return ReviewLoopIteration{}, fmt.Errorf("review step failed: %w", err)
+	}
+
+	parsedReview, err := parseReviewResponseWithRepair(ctx, deps, reviewResponse)
+	if err != nil {
+		return ReviewLoopIteration{}, fmt.Errorf("failed to parse review output: %w", err)
+	}
+
+	issuesFound := len(parsedReview.Issues)
+	summary := strings.TrimSpace(parsedReview.Summary)
+	if summary == "" {
+		if issuesFound == 0 {
+			summary = "No issues found"
+		} else {
+			summary = fmt.Sprintf("Found %d issues", issuesFound)
+		}
+	}
+
+	iteration := ReviewLoopIteration{
+		IssuesFound:   issuesFound,
+		ValidIssues:   issuesFound,
+		InvalidIssues: 0,
+		FixesApplied:  0,
+		Summary:       summary,
+		Status:        "reviewed",
+	}
+	if issuesFound == 0 {
+		iteration.Duration = deps.now().Sub(iterStart)
+		return iteration, nil
+	}
+
+	validationPrompt, err := buildReviewLoopValidationPrompt(baseBranch, currentBranch, parsedReview.Issues)
+	if err != nil {
+		return ReviewLoopIteration{}, fmt.Errorf("failed to build validation prompt: %w", err)
+	}
+
+	validationResponse, err := promptWithRetry(ctx, deps, validationPrompt)
+	if err != nil {
+		return ReviewLoopIteration{}, fmt.Errorf("validation step failed: %w", err)
+	}
+
+	parsedValidation, err := parseValidationResponseWithRepair(ctx, deps, validationResponse, parsedReview.Issues)
+	if err != nil {
+		return ReviewLoopIteration{}, fmt.Errorf("failed to parse validation output: %w", err)
+	}
+
+	for i := range parsedValidation.PerIssue {
+		parsedValidation.PerIssue[i].Fixed = false
+	}
+	iteration.ValidIssues = parsedValidation.ValidIssues
+	iteration.InvalidIssues = parsedValidation.InvalidIssues
+	iteration.FixesApplied = 0
+	iteration.Status = "validated"
+	if strings.TrimSpace(parsedValidation.Summary) != "" {
+		iteration.Summary = strings.TrimSpace(parsedValidation.Summary)
+	}
+	iteration.Issues = buildIssueDetails(parsedReview.Issues, parsedValidation.PerIssue)
 	iteration.Duration = deps.now().Sub(iterStart)
 	return iteration, nil
 }
@@ -567,6 +699,37 @@ func parseFixResponseWithRepair(ctx context.Context, deps reviewIterationDeps, r
 	return repairedParsed, nil
 }
 
+func parseValidationResponseWithRepair(ctx context.Context, deps reviewIterationDeps, response string, reviewedIssues []reviewLoopIssue) (*reviewLoopFixOutcome, error) {
+	parsed, err := parseReviewLoopFixResponse(response, reviewedIssues)
+	if err == nil {
+		return parsed, nil
+	}
+
+	if isIncompleteReviewOutput(response, err) {
+		return nil, &IncompleteReviewOutputError{Stage: "validation"}
+	}
+
+	repairPrompt, repairPromptErr := buildValidationRepairPrompt(reviewedIssues, response)
+	if repairPromptErr != nil {
+		return nil, fmt.Errorf("initial parse error (%v); failed to build JSON repair prompt: %w", err, repairPromptErr)
+	}
+
+	repaired, repairErr := promptWithRetry(ctx, deps, repairPrompt)
+	if repairErr != nil {
+		return nil, fmt.Errorf("initial parse error (%v); JSON repair failed: %w", err, repairErr)
+	}
+
+	repairedParsed, repairParseErr := parseReviewLoopFixResponse(repaired, reviewedIssues)
+	if repairParseErr != nil {
+		if isIncompleteReviewOutput(repaired, repairParseErr) {
+			return nil, &IncompleteReviewOutputError{Stage: "validation"}
+		}
+		return nil, fmt.Errorf("initial parse error (%v); repaired output parse failed: %w", err, repairParseErr)
+	}
+
+	return repairedParsed, nil
+}
+
 func buildReviewRepairPrompt(rawResponse string) string {
 	return fmt.Sprintf(`The previous response did not match the required JSON schema for review findings.
 
@@ -622,6 +785,39 @@ Return ONLY valid JSON (no markdown fences, no prose) with this exact shape:
 Rules:
 - Include every input issue id exactly once in output issues[]
 - Set fixed=false whenever valid=false`, string(issuesJSON), truncateForPrompt(rawResponse, reviewLoopPromptContextMaxLen)), nil
+}
+
+func buildValidationRepairPrompt(reviewedIssues []reviewLoopIssue, rawResponse string) (string, error) {
+	issuesJSON, err := json.MarshalIndent(reviewedIssues, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal reviewed issues: %w", err)
+	}
+
+	return fmt.Sprintf(`The previous response did not match the required JSON schema for non-mutating review validation.
+
+Input issues (must be preserved by id):
+%s
+
+Previous response:
+%s
+
+Return ONLY valid JSON (no markdown fences, no prose) with this exact shape:
+{
+  "summary": "short summary of validation",
+  "issues": [
+    {
+      "id": "ISSUE-001",
+      "valid": true,
+      "reason": "why this issue is valid or invalid",
+      "fixed": false
+    }
+  ]
+}
+
+Rules:
+- Include every input issue id exactly once in output issues[]
+- Do not edit files or apply fixes
+- Set fixed=false for every issue`, string(issuesJSON), truncateForPrompt(rawResponse, reviewLoopPromptContextMaxLen)), nil
 }
 
 func retryBackoff(base time.Duration, attempt int) time.Duration {
@@ -1153,6 +1349,49 @@ Rules:
 - Include every input issue exactly once in the output "issues" array.
 - Use fixed=false for every issue where valid=false.
 - After all issues are decided/fixed, return final JSON immediately and stop exploring.
+`)
+
+	return sb.String(), nil
+}
+
+func buildReviewLoopValidationPrompt(baseBranch, currentBranch string, issues []reviewLoopIssue) (string, error) {
+	issueJSON, err := json.MarshalIndent(issues, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal review issues: %w", err)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("You previously reviewed this branch and identified candidate issues. Validate each issue without applying fixes.\n\n")
+	sb.WriteString(fmt.Sprintf("Base branch: %s\n", baseBranch))
+	sb.WriteString(fmt.Sprintf("Current branch: %s\n\n", currentBranch))
+	sb.WriteString("Issues to validate:\n")
+	sb.Write(issueJSON)
+	sb.WriteString("\n\n")
+
+	sb.WriteString(`Instructions:
+- Validate each issue against the current repository state.
+- Use repository tools and shell commands as needed to validate or reproduce each issue.
+- Keep validation targeted to files/functions tied to each issue.
+- Do not edit files, write files, apply patches, or run fix commands.
+- Do not run hal commands or go run . commands.
+- Avoid broad or expensive commands (for example: avoid go test ./...).
+- Return ONLY valid JSON (no markdown fences, no prose) with this schema:
+{
+  "summary": "short summary of validation",
+  "issues": [
+    {
+      "id": "ISSUE-001",
+      "valid": true,
+      "reason": "why this issue is valid or invalid",
+      "fixed": false
+    }
+  ]
+}
+
+Rules:
+- Include every input issue exactly once in the output "issues" array.
+- Set fixed=false for every issue.
+- After all issues are decided, return final JSON immediately and stop exploring.
 `)
 
 	return sb.String(), nil

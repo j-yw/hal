@@ -3,9 +3,12 @@ package compound
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -42,6 +45,109 @@ func WorkingTreeChangesInDir(dir string) ([]string, error) {
 		}
 	}
 	return uniqueSortedPaths(paths), nil
+}
+
+// WorkingTreeSnapshotInDir returns a comparable snapshot of HEAD, tracked
+// changes, and untracked file contents for mutation detection.
+func WorkingTreeSnapshotInDir(dir string) (string, error) {
+	head, err := gitCommandOutputInDir(dir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("read git HEAD: %w", err)
+	}
+	status, err := gitCommandOutputInDir(dir, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return "", fmt.Errorf("read git working tree status: %w", err)
+	}
+	diff, err := gitCommandOutputInDir(dir, "diff", "--binary", "HEAD", "--")
+	if err != nil {
+		return "", fmt.Errorf("read git working tree diff: %w", err)
+	}
+	untracked, err := gitCommandOutputInDir(dir, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return "", fmt.Errorf("list untracked files: %w", err)
+	}
+	untrackedHashes, err := hashUntrackedFilesInDir(dir, untracked)
+	if err != nil {
+		return "", err
+	}
+
+	return strings.Join([]string{
+		"HEAD\x00" + head,
+		"STATUS\x00" + status,
+		"DIFF\x00" + diff,
+		"UNTRACKED\x00" + untrackedHashes,
+	}, "\x00SECTION\x00"), nil
+}
+
+func gitCommandOutputInDir(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	if strings.TrimSpace(dir) != "" {
+		cmd.Dir = dir
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git %s failed: %w (stderr: %s)", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
+func hashUntrackedFilesInDir(dir, gitOutput string) (string, error) {
+	paths := splitNULFields(gitOutput)
+	sort.Strings(paths)
+
+	var sb strings.Builder
+	for _, path := range paths {
+		fullPath := path
+		if strings.TrimSpace(dir) != "" {
+			fullPath = filepath.Join(dir, path)
+		}
+		info, err := os.Lstat(fullPath)
+		if err != nil {
+			return "", fmt.Errorf("inspect untracked file %q: %w", path, err)
+		}
+		if info.IsDir() {
+			continue
+		}
+
+		sb.WriteString(path)
+		sb.WriteByte('\x00')
+		sb.WriteString(info.Mode().String())
+		sb.WriteByte('\x00')
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(fullPath)
+			if err != nil {
+				return "", fmt.Errorf("read untracked symlink %q: %w", path, err)
+			}
+			sum := sha256.Sum256([]byte(target))
+			sb.WriteString("symlink:")
+			sb.WriteString(fmt.Sprintf("%x", sum))
+			sb.WriteByte('\x00')
+			continue
+		}
+
+		content, err := os.ReadFile(fullPath)
+		if err != nil {
+			return "", fmt.Errorf("read untracked file %q: %w", path, err)
+		}
+		sum := sha256.Sum256(content)
+		sb.WriteString("file:")
+		sb.WriteString(fmt.Sprintf("%x", sum))
+		sb.WriteByte('\x00')
+	}
+	return sb.String(), nil
+}
+
+func splitNULFields(output string) []string {
+	parts := strings.Split(output, "\x00")
+	fields := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			fields = append(fields, part)
+		}
+	}
+	return fields
 }
 
 func defaultGitAddAllInDir(ctx context.Context, dir string) error {

@@ -36,6 +36,8 @@ type factoryTriggerDeps struct {
 	repoRemote           func(string) (string, error)
 	lookupEnv            func(string) (string, bool)
 	loadConfig           func(string) (*compound.AutoConfig, error)
+	loadPolicy           func(string) (*factory.FactoryPolicy, error)
+	loadEngine           func(string) (string, error)
 	discoverLatestReport func(string, string) (string, bool, error)
 }
 
@@ -54,11 +56,11 @@ type factoryTriggerRequest struct {
 // FactoryTriggerResponse is the machine-readable JSON output for
 // hal factory trigger --json.
 type FactoryTriggerResponse struct {
-	ContractVersion string             `json:"contractVersion"`
-	RunID           string             `json:"runId"`
-	Run             factory.RunRecord  `json:"run"`
-	Entry           factory.QueueEntry `json:"entry"`
-	Summary         string             `json:"summary"`
+	ContractVersion string              `json:"contractVersion"`
+	RunID           string              `json:"runId"`
+	Run             factory.RunRecord   `json:"run"`
+	Entry           *factory.QueueEntry `json:"entry,omitempty"`
+	Summary         string              `json:"summary"`
 }
 
 var defaultFactoryTriggerDeps = factoryTriggerDeps{
@@ -69,6 +71,8 @@ var defaultFactoryTriggerDeps = factoryTriggerDeps{
 	repoRemote:           readGitRemoteOptionalInDir,
 	lookupEnv:            os.LookupEnv,
 	loadConfig:           compound.LoadConfig,
+	loadPolicy:           factory.LoadPolicyConfig,
+	loadEngine:           compound.LoadDefaultEngine,
 	discoverLatestReport: discoverLatestReportCandidate,
 }
 
@@ -83,13 +87,15 @@ Pass exactly one source payload: --prd <path>, --report <path>, or
 --discover-report. Use --repo <path> to target a repository explicitly from
 cron jobs or GitHub Actions workflows. The command creates a pending factory
 run record, enqueues it in the durable factory queue, and exits. A separate
-worker can later process the entry with hal factory queue work. Use
+worker can later process the entry with hal factory queue work. Sandbox
+executor mode requires --base so workers can prepare the remote workspace. Use
 --secret-env to persist required environment variable names that the worker
 must resolve only when it executes the run.`,
 	Example: `  hal factory trigger --repo . --prd .hal/prd-feature.md
   hal factory trigger --repo . --prd .hal/prd-feature.md --secret-env GITHUB_TOKEN
   hal factory trigger --repo /work/hal --report .hal/reports/analysis.md --json
-  hal factory trigger --repo /work/hal --discover-report --json`,
+  hal factory trigger --repo /work/hal --discover-report --json
+  hal factory trigger --repo /work/hal --prd .hal/prd-feature.md --executor sandbox --base main`,
 	RunE: runFactoryTrigger,
 }
 
@@ -263,6 +269,39 @@ func runFactoryTriggerWithDeps(out io.Writer, req factoryTriggerRequest, deps fa
 	if err := recordFactoryRunTriggered(store, safeRecord, factoryTriggerKind(req)); err != nil {
 		return err
 	}
+	policy, err := loadFactoryRunPolicy(repoPath, factoryRunDeps{
+		loadPolicy: deps.loadPolicy,
+	})
+	if err != nil {
+		return failFactoryTriggerRunCreation(store, record, out, req.JSON, deps.now(), fmt.Errorf("load factory policy: %w", err), nil)
+	}
+	record, err = persistFactoryRunPolicySnapshot(store, record, policy)
+	if err != nil {
+		return failFactoryTriggerRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
+	}
+	record = sanitizeFactoryRunRecordCredentialedRemote(triggerRedactor.RedactRunRecord(record))
+	if err := store.SaveRun(&record); err != nil {
+		return failFactoryTriggerRunCreation(store, record, out, req.JSON, deps.now(), fmt.Errorf("sanitize triggered factory policy snapshot: %w", err), nil)
+	}
+	engineName, err := resolveFactoryRunEngine(repoPath, factoryRunDeps{
+		loadEngine: deps.loadEngine,
+	})
+	if err != nil {
+		return failFactoryTriggerRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
+	}
+	record, err = persistFactoryRunEngineSnapshot(store, record, engineName)
+	if err != nil {
+		return failFactoryTriggerRunCreation(store, record, out, req.JSON, deps.now(), err, nil)
+	}
+	record = sanitizeFactoryRunRecordCredentialedRemote(triggerRedactor.RedactRunRecord(record))
+	if err := store.SaveRun(&record); err != nil {
+		return failFactoryTriggerRunCreation(store, record, out, req.JSON, deps.now(), fmt.Errorf("sanitize triggered factory engine snapshot: %w", err), nil)
+	}
+	if err := enforceFactoryTriggerCreationPolicy(store, record, out, req.JSON, factoryRunDeps{
+		now: deps.now,
+	}, policy, engineName); err != nil {
+		return err
+	}
 
 	entry, err := store.EnqueueQueueEntryWithLockedPostSave(record.RunID, executorMode, factory.QueueOperationOptions{
 		Now:        deps.now,
@@ -282,7 +321,7 @@ func runFactoryTriggerWithDeps(out io.Writer, req factoryTriggerRequest, deps fa
 	if err != nil {
 		return fmt.Errorf("load triggered factory run %q: %w", record.RunID, err)
 	}
-	return renderFactoryTriggerResult(out, *queuedRecord, entry, req.JSON)
+	return renderFactoryTriggerResult(out, *queuedRecord, &entry, req.JSON)
 }
 
 func parseFactoryTriggerRequest(req factoryTriggerRequest) (factoryTriggerRequest, error) {
@@ -319,7 +358,7 @@ func parseFactoryTriggerRequest(req factoryTriggerRequest) (factoryTriggerReques
 	if req.ReportsDir != "" && !req.DiscoverReport {
 		return factoryTriggerRequest{}, fmt.Errorf("--reports-dir requires --discover-report")
 	}
-	if req.ExecutorMode == factory.ExecutorModeSandbox && req.BaseBranch == "" {
+	if strings.TrimSpace(req.ExecutorMode) == factory.ExecutorModeSandbox && req.BaseBranch == "" {
 		return factoryTriggerRequest{}, fmt.Errorf("--base is required when --executor sandbox is set")
 	}
 	return req, nil
@@ -346,6 +385,12 @@ func normalizeFactoryTriggerDeps(deps factoryTriggerDeps) factoryTriggerDeps {
 	}
 	if deps.loadConfig == nil {
 		deps.loadConfig = defaultFactoryTriggerDeps.loadConfig
+	}
+	if deps.loadPolicy == nil {
+		deps.loadPolicy = defaultFactoryTriggerDeps.loadPolicy
+	}
+	if deps.loadEngine == nil {
+		deps.loadEngine = defaultFactoryTriggerDeps.loadEngine
 	}
 	if deps.discoverLatestReport == nil {
 		deps.discoverLatestReport = defaultFactoryTriggerDeps.discoverLatestReport
@@ -520,13 +565,47 @@ func markTriggeredFactoryRunEnqueueFailed(store factory.Store, record factory.Ru
 	return nil
 }
 
-func renderFactoryTriggerResult(out io.Writer, record factory.RunRecord, entry factory.QueueEntry, jsonMode bool) error {
+func enforceFactoryTriggerCreationPolicy(store factory.Store, record factory.RunRecord, out io.Writer, jsonMode bool, deps factoryRunDeps, policy factory.FactoryPolicy, engineName string) error {
+	rejection := factoryRunCreationPolicyRejection(policy, record.ExecutorMode, engineName)
+	if rejection == nil {
+		return nil
+	}
+
+	decision := rejection.policyDecisionMetadata()
+	return failFactoryTriggerRunCreation(store, record, out, jsonMode, deps.now(), rejection, &decision)
+}
+
+func failFactoryTriggerRunCreation(store factory.Store, record factory.RunRecord, out io.Writer, jsonMode bool, failedAt time.Time, cause error, decision *factory.PolicyDecisionMetadata) error {
+	failOut := out
+	failJSON := jsonMode
+	if jsonMode {
+		failOut = io.Discard
+		failJSON = false
+	}
+	err := failFactoryRunCreation(store, record, failOut, failJSON, failedAt, cause, decision)
+	if jsonMode {
+		if renderErr := renderFactoryTriggerFailureResult(out, store, record.RunID); renderErr != nil {
+			return errors.Join(err, renderErr)
+		}
+	}
+	return err
+}
+
+func renderFactoryTriggerFailureResult(out io.Writer, store factory.Store, runID string) error {
+	record, err := store.LoadRun(runID)
+	if err != nil {
+		return fmt.Errorf("load failed factory trigger run %q: %w", runID, err)
+	}
+	return renderFactoryTriggerResult(out, *record, nil, true)
+}
+
+func renderFactoryTriggerResult(out io.Writer, record factory.RunRecord, entry *factory.QueueEntry, jsonMode bool) error {
 	resp := FactoryTriggerResponse{
 		ContractVersion: FactoryTriggerContractVersion,
 		RunID:           record.RunID,
 		Run:             record,
 		Entry:           entry,
-		Summary:         factoryTriggerSummary(record.RunID, entry.QueueID),
+		Summary:         factoryTriggerSummary(record.RunID, entry),
 	}
 	if jsonMode {
 		data, err := json.MarshalIndent(resp, "", "  ")
@@ -541,6 +620,9 @@ func renderFactoryTriggerResult(out io.Writer, record factory.RunRecord, entry f
 	return nil
 }
 
-func factoryTriggerSummary(runID, queueID string) string {
-	return fmt.Sprintf("queued triggered run %s as %s", runID, queueID)
+func factoryTriggerSummary(runID string, entry *factory.QueueEntry) string {
+	if entry == nil || strings.TrimSpace(entry.QueueID) == "" {
+		return fmt.Sprintf("triggered run %s failed before enqueue", runID)
+	}
+	return fmt.Sprintf("queued triggered run %s as %s", runID, entry.QueueID)
 }

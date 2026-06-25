@@ -81,6 +81,9 @@ func TestDefaultStorePaths(t *testing.T) {
 	if store.TimelinesDir() != filepath.Join(root, timelinesDirName) {
 		t.Fatalf("TimelinesDir() = %q, want %q", store.TimelinesDir(), filepath.Join(root, timelinesDirName))
 	}
+	if store.LogsDir() != filepath.Join(root, logsDirName) {
+		t.Fatalf("LogsDir() = %q, want %q", store.LogsDir(), filepath.Join(root, logsDirName))
+	}
 	if store.ArtifactsDir() != filepath.Join(root, artifactsDirName) {
 		t.Fatalf("ArtifactsDir() = %q, want %q", store.ArtifactsDir(), filepath.Join(root, artifactsDirName))
 	}
@@ -101,6 +104,7 @@ func TestEnsureStoreDirCreatesRestrictiveDirectories(t *testing.T) {
 		filepath.Join(global, factoryStoreDirName),
 		filepath.Join(global, factoryStoreDirName, runsDirName),
 		filepath.Join(global, factoryStoreDirName, timelinesDirName),
+		filepath.Join(global, factoryStoreDirName, logsDirName),
 		filepath.Join(global, factoryStoreDirName, artifactsDirName),
 	} {
 		assertFactoryDirExists(t, path)
@@ -684,6 +688,66 @@ func TestLoadEventsTreatsMissingTimelineAsEmpty(t *testing.T) {
 	}
 }
 
+func TestAppendLogChunkPersistsInspectableState(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	runID := "run-logs-001"
+	base := time.Date(2026, 6, 20, 16, 0, 0, 0, time.UTC)
+	chunks := []LogChunk{
+		{
+			RunID:     runID,
+			Stream:    LogStreamStdout,
+			Source:    LogSourceLocalFactory,
+			Text:      "first line",
+			CreatedAt: base,
+		},
+		{
+			RunID:     runID,
+			Stream:    LogStreamStderr,
+			Source:    LogSourceEngine,
+			Text:      "second line",
+			Summary:   "engine output",
+			CreatedAt: base.Add(time.Minute),
+		},
+	}
+
+	for i := range chunks {
+		if err := store.AppendLogChunk(&chunks[i]); err != nil {
+			t.Fatalf("AppendLogChunk(%d) unexpected error: %v", i, err)
+		}
+	}
+
+	got, err := store.LoadLogChunks(runID)
+	if err != nil {
+		t.Fatalf("LoadLogChunks() unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("LoadLogChunks() len = %d, want 2", len(got))
+	}
+	for i := range got {
+		if got[i].Sequence != int64(i+1) {
+			t.Fatalf("chunk %d sequence = %d, want %d", i, got[i].Sequence, i+1)
+		}
+		if got[i].Text != chunks[i].Text {
+			t.Fatalf("chunk %d text = %q, want %q", i, got[i].Text, chunks[i].Text)
+		}
+	}
+}
+
+func TestLoadLogChunksTreatsMissingLogsAsEmpty(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+
+	got, err := store.LoadLogChunks("missing-logs")
+	if err != nil {
+		t.Fatalf("LoadLogChunks() unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("LoadLogChunks() = %v, want empty", got)
+	}
+	if _, err := os.Stat(store.Root()); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("LoadLogChunks() should not create store root, stat error = %v", err)
+	}
+}
+
 func TestAppendEventSupportsKnownEventTypes(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	runID := "run-events-002"
@@ -696,6 +760,7 @@ func TestAppendEventSupportsKnownEventTypes(t *testing.T) {
 		EventTypeCIState,
 		EventTypeArtifactSync,
 		EventTypeFailureClassification,
+		EventTypePolicyDecision,
 	}
 
 	for i, eventType := range eventTypes {

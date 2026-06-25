@@ -142,6 +142,7 @@ Stable JSON contracts for agent integration:
 - [`docs/contracts/factory-trigger-v1.md`](docs/contracts/factory-trigger-v1.md) — `hal factory trigger --json` output contract
 - [`docs/contracts/verify-v1.md`](docs/contracts/verify-v1.md) — `hal verify --json` output contract
 - [`docs/contracts/factory-artifacts-v1.md`](docs/contracts/factory-artifacts-v1.md) — `hal factory artifacts <run-id> --json` output contract
+- [`docs/contracts/factory-logs-v1.md`](docs/contracts/factory-logs-v1.md) — `hal factory logs <run-id> --json` output contract
 
 ## Commands
 
@@ -246,6 +247,7 @@ Archive command details:
 | `hal factory queue work [--json]` | Claim and process at most one queued factory run |
 | `hal factory list [--json]` | List stored factory runs |
 | `hal factory status <run-id> [--json]` | Inspect a stored factory run and timeline |
+| `hal factory logs <run-id> [--json]` | Inspect stored stdout, stderr, or summarized log chunks |
 
 ### Utilities
 

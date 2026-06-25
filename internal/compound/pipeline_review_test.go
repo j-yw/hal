@@ -474,6 +474,105 @@ func TestRunReviewStep_CommitsReviewFixesBeforePassing(t *testing.T) {
 	if state.Review == nil || state.Review.Status != "passed" {
 		t.Fatalf("state.Review = %+v, want passed", state.Review)
 	}
+	if state.Review.PendingFixes {
+		t.Fatalf("state.Review.PendingFixes = true, want false after finalize")
+	}
+	saved := pipeline.loadState()
+	if saved == nil || saved.Review == nil || saved.Review.PendingFixes {
+		t.Fatalf("saved review state = %+v, want pending fixes cleared", saved)
+	}
+}
+
+func TestRunReviewStep_FinalizesPendingReviewFixesAfterResume(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+
+	state := &PipelineState{
+		Step:       StepReview,
+		BaseBranch: "develop",
+		BranchName: "hal/review-resume-finalize",
+		StartedAt:  time.Now(),
+		Review: &ReviewState{
+			Status:       "failed",
+			PendingFixes: true,
+		},
+	}
+	pipeline.currentBranch = func(string) (string, error) {
+		return state.BranchName, nil
+	}
+
+	origReviewLoop := runReviewLoopWithDisplay
+	runReviewLoopWithDisplay = func(ctx context.Context, eng engine.Engine, display *engine.Display, baseBranch string, requestedIterations int) (*ReviewLoopResult, error) {
+		return &ReviewLoopResult{Iterations: []ReviewLoopIteration{{Iteration: 1, ValidIssues: 0, FixesApplied: 0}}}, nil
+	}
+	t.Cleanup(func() {
+		runReviewLoopWithDisplay = origReviewLoop
+	})
+
+	origChanges := workingTreeChangesInDirFn
+	changeCalls := 0
+	workingTreeChangesInDirFn = func(string) ([]string, error) {
+		changeCalls++
+		switch changeCalls {
+		case 1:
+			return []string{"app/page.tsx"}, nil
+		default:
+			return nil, nil
+		}
+	}
+	t.Cleanup(func() {
+		workingTreeChangesInDirFn = origChanges
+	})
+
+	addCalled := false
+	origAdd := gitAddAllInDirFn
+	gitAddAllInDirFn = func(ctx context.Context, gotDir string) error {
+		addCalled = true
+		if gotDir != dir {
+			t.Fatalf("git add dir = %q, want %q", gotDir, dir)
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		gitAddAllInDirFn = origAdd
+	})
+
+	commitCalled := false
+	origCommit := gitCommitInDirFn
+	gitCommitInDirFn = func(ctx context.Context, gotDir, message string) error {
+		commitCalled = true
+		if gotDir != dir {
+			t.Fatalf("git commit dir = %q, want %q", gotDir, dir)
+		}
+		if message != reviewFixCommitMessage {
+			t.Fatalf("git commit message = %q, want %q", message, reviewFixCommitMessage)
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		gitCommitInDirFn = origCommit
+	})
+
+	if err := pipeline.runReviewStep(context.Background(), state, RunOptions{}); err != nil {
+		t.Fatalf("runReviewStep returned error: %v", err)
+	}
+	if !addCalled {
+		t.Fatal("expected pending review fixes to be staged after resume")
+	}
+	if !commitCalled {
+		t.Fatal("expected pending review fixes to be committed after resume")
+	}
+	if state.Step != StepCI {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepCI)
+	}
+	if state.Review == nil || state.Review.Status != "passed" || state.Review.PendingFixes {
+		t.Fatalf("state.Review = %+v, want passed with pending fixes cleared", state.Review)
+	}
+	saved := pipeline.loadState()
+	if saved == nil || saved.Review == nil || saved.Review.PendingFixes {
+		t.Fatalf("saved review state = %+v, want pending fixes cleared", saved)
+	}
 }
 
 func TestRunReviewStep_FinalizeReviewFixesFailure_BlocksGate(t *testing.T) {
@@ -591,10 +690,294 @@ func TestRunReviewStep_FinalVerificationFailure_BlocksGate(t *testing.T) {
 	}
 }
 
+func TestRunReviewStep_MaxReviewFixAttemptsAllowsCleanValidationAfterLimit(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+
+	state := &PipelineState{
+		Step:       StepReview,
+		BaseBranch: "develop",
+		BranchName: "hal/review-policy",
+		StartedAt:  time.Now(),
+		Review: &ReviewState{
+			FixAttempts: 1,
+		},
+	}
+	stubCleanReviewFinalVerification(t, pipeline, state.BranchName)
+	stubStableReviewValidationSnapshot(t)
+
+	calls := 0
+	origReviewLoop := runReviewLoopWithDisplay
+	runReviewLoopWithDisplay = func(context.Context, engine.Engine, *engine.Display, string, int) (*ReviewLoopResult, error) {
+		t.Fatal("mutating review loop should not run after max review fix attempts is reached")
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		runReviewLoopWithDisplay = origReviewLoop
+	})
+	origValidation := runReviewValidationWithDisplay
+	runReviewValidationWithDisplay = func(context.Context, engine.Engine, *engine.Display, string) (*ReviewLoopResult, error) {
+		calls++
+		return &ReviewLoopResult{Iterations: []ReviewLoopIteration{{Iteration: 1, ValidIssues: 0, FixesApplied: 0}}}, nil
+	}
+	t.Cleanup(func() {
+		runReviewValidationWithDisplay = origValidation
+	})
+
+	err := pipeline.runReviewStep(context.Background(), state, RunOptions{MaxReviewFixAttempts: 1})
+	if err != nil {
+		t.Fatalf("runReviewStep() unexpected error: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("validation calls = %d, want 1", calls)
+	}
+	if state.Step != StepCI {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepCI)
+	}
+	if state.Review.Status != "passed" || state.Review.FixAttempts != 1 {
+		t.Fatalf("review state = %+v, want passed with one prior fix attempt", state.Review)
+	}
+}
+
+func TestRunReviewStep_MaxReviewFixAttemptsBlocksValidationMutation(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+
+	state := &PipelineState{
+		Step:       StepReview,
+		BaseBranch: "develop",
+		BranchName: "hal/review-policy",
+		StartedAt:  time.Now(),
+		Review: &ReviewState{
+			FixAttempts: 1,
+		},
+	}
+
+	origReviewLoop := runReviewLoopWithDisplay
+	runReviewLoopWithDisplay = func(context.Context, engine.Engine, *engine.Display, string, int) (*ReviewLoopResult, error) {
+		t.Fatal("mutating review loop should not run after max review fix attempts is reached")
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		runReviewLoopWithDisplay = origReviewLoop
+	})
+	origValidation := runReviewValidationWithDisplay
+	runReviewValidationWithDisplay = func(context.Context, engine.Engine, *engine.Display, string) (*ReviewLoopResult, error) {
+		return &ReviewLoopResult{Iterations: []ReviewLoopIteration{{Iteration: 1, ValidIssues: 0, FixesApplied: 0}}}, nil
+	}
+	t.Cleanup(func() {
+		runReviewValidationWithDisplay = origValidation
+	})
+	snapshots := []string{"before", "after"}
+	snapshotCalls := 0
+	origSnapshot := workingTreeSnapshotInDirFn
+	workingTreeSnapshotInDirFn = func(string) (string, error) {
+		if snapshotCalls >= len(snapshots) {
+			return snapshots[len(snapshots)-1], nil
+		}
+		snapshot := snapshots[snapshotCalls]
+		snapshotCalls++
+		return snapshot, nil
+	}
+	t.Cleanup(func() {
+		workingTreeSnapshotInDirFn = origSnapshot
+	})
+	origChanges := workingTreeChangesInDirFn
+	workingTreeChangesInDirFn = func(string) ([]string, error) {
+		return []string{"app/page.tsx"}, nil
+	}
+	t.Cleanup(func() {
+		workingTreeChangesInDirFn = origChanges
+	})
+
+	err := pipeline.runReviewStep(context.Background(), state, RunOptions{MaxReviewFixAttempts: 1})
+	if err == nil {
+		t.Fatal("expected runReviewStep to fail when validation mutates the working tree")
+	}
+	if !strings.Contains(err.Error(), "non-mutating review validation changed working tree") {
+		t.Fatalf("error = %q, want validation mutation error", err.Error())
+	}
+	if state.Review.Status != "failed" || state.Step != StepReview {
+		t.Fatalf("state = %+v, want failed review at review step", state)
+	}
+	if snapshotCalls != 2 {
+		t.Fatalf("snapshot calls = %d, want before and after snapshots", snapshotCalls)
+	}
+}
+
+func TestRunReviewStep_CountsReviewFixAttempts(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+
+	state := &PipelineState{
+		Step:       StepReview,
+		BaseBranch: "develop",
+		BranchName: "hal/review-policy-count",
+		StartedAt:  time.Now(),
+	}
+	stubCleanReviewFinalVerification(t, pipeline, state.BranchName)
+	stubStableReviewValidationSnapshot(t)
+
+	calls := 0
+	origReviewLoop := runReviewLoopWithDisplay
+	runReviewLoopWithDisplay = func(context.Context, engine.Engine, *engine.Display, string, int) (*ReviewLoopResult, error) {
+		calls++
+		if calls == 2 {
+			return &ReviewLoopResult{Iterations: []ReviewLoopIteration{{Iteration: 2, ValidIssues: 0, FixesApplied: 0}}}, nil
+		}
+		saved := pipeline.loadState()
+		if saved == nil || saved.Review == nil || saved.Review.FixAttempts != 1 {
+			t.Fatalf("saved review fix attempts before mutating review = %+v, want 1", saved)
+		}
+		return &ReviewLoopResult{
+			Iterations: []ReviewLoopIteration{{
+				Iteration:    1,
+				IssuesFound:  2,
+				ValidIssues:  1,
+				FixesApplied: 1,
+			}},
+		}, nil
+	}
+	t.Cleanup(func() {
+		runReviewLoopWithDisplay = origReviewLoop
+	})
+
+	err := pipeline.runReviewStep(context.Background(), state, RunOptions{MaxReviewFixAttempts: 2, ReviewMaxCycles: 2})
+	if err != nil {
+		t.Fatalf("runReviewStep() unexpected error: %v", err)
+	}
+	if state.Review == nil || state.Review.FixAttempts != 1 {
+		t.Fatalf("state.Review = %+v, want one fix attempt", state.Review)
+	}
+	saved := pipeline.loadState()
+	if saved == nil || saved.Review == nil || saved.Review.Status != "passed" || saved.Review.FixAttempts != 1 {
+		t.Fatalf("saved state = %+v, want passed review with one fix attempt", saved)
+	}
+}
+
+func TestRunReviewStep_MaxReviewFixAttemptsBlocksAdditionalFixCycle(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+
+	state := &PipelineState{
+		Step:       StepReview,
+		BaseBranch: "develop",
+		BranchName: "hal/review-policy",
+		StartedAt:  time.Now(),
+		Review: &ReviewState{
+			FixAttempts: 1,
+		},
+	}
+	stubStableReviewValidationSnapshot(t)
+
+	calls := 0
+	origReviewLoop := runReviewLoopWithDisplay
+	runReviewLoopWithDisplay = func(context.Context, engine.Engine, *engine.Display, string, int) (*ReviewLoopResult, error) {
+		t.Fatal("mutating review loop should not run after max review fix attempts is reached")
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		runReviewLoopWithDisplay = origReviewLoop
+	})
+	origValidation := runReviewValidationWithDisplay
+	runReviewValidationWithDisplay = func(context.Context, engine.Engine, *engine.Display, string) (*ReviewLoopResult, error) {
+		calls++
+		return &ReviewLoopResult{
+			Iterations: []ReviewLoopIteration{{
+				Iteration:    1,
+				IssuesFound:  1,
+				ValidIssues:  1,
+				FixesApplied: 0,
+			}},
+		}, nil
+	}
+	t.Cleanup(func() {
+		runReviewValidationWithDisplay = origValidation
+	})
+
+	err := pipeline.runReviewStep(context.Background(), state, RunOptions{MaxReviewFixAttempts: 1})
+	var limitErr *PolicyLimitError
+	if !errors.As(err, &limitErr) {
+		t.Fatalf("runReviewStep() error = %v, want PolicyLimitError", err)
+	}
+	if limitErr.PolicyField != "factory.policy.maxReviewFixAttempts" || limitErr.Step != StepReview || limitErr.Attempts != 1 || limitErr.Limit != 1 {
+		t.Fatalf("limit error = %+v, want maxReviewFixAttempts review limit", limitErr)
+	}
+	if calls != 1 {
+		t.Fatalf("validation calls = %d, want 1 validation cycle before limit", calls)
+	}
+	if state.Review.Status != "failed" {
+		t.Fatalf("review status = %q, want failed", state.Review.Status)
+	}
+	if state.Review.FixAttempts != 1 {
+		t.Fatalf("fix attempts = %d, want unchanged at limit", state.Review.FixAttempts)
+	}
+}
+
+func TestRunReviewStep_DoesNotCountInvalidFindingsAsFixAttempts(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+
+	state := &PipelineState{
+		Step:       StepReview,
+		BaseBranch: "develop",
+		BranchName: "hal/review-policy-invalid",
+		StartedAt:  time.Now(),
+	}
+	stubCleanReviewFinalVerification(t, pipeline, state.BranchName)
+
+	cycles := 0
+	origReviewLoop := runReviewLoopWithDisplay
+	runReviewLoopWithDisplay = func(context.Context, engine.Engine, *engine.Display, string, int) (*ReviewLoopResult, error) {
+		cycles++
+		return &ReviewLoopResult{
+			Iterations: []ReviewLoopIteration{{
+				Iteration:    cycles,
+				IssuesFound:  1,
+				ValidIssues:  0,
+				FixesApplied: 0,
+			}},
+		}, nil
+	}
+	t.Cleanup(func() {
+		runReviewLoopWithDisplay = origReviewLoop
+	})
+
+	err := pipeline.runReviewStep(context.Background(), state, RunOptions{
+		MaxReviewFixAttempts: 1,
+		ReviewCleanStreak:    2,
+		ReviewMaxCycles:      2,
+	})
+	if err != nil {
+		t.Fatalf("runReviewStep() unexpected error: %v", err)
+	}
+	if cycles != 2 {
+		t.Fatalf("review cycles = %d, want 2", cycles)
+	}
+	if state.Review == nil || state.Review.FixAttempts != 0 {
+		t.Fatalf("state.Review = %+v, want zero fix attempts", state.Review)
+	}
+	if state.Review.Status != "passed" {
+		t.Fatalf("review status = %q, want passed", state.Review.Status)
+	}
+}
+
 func stubCleanReviewFinalVerification(t *testing.T, pipeline *Pipeline, branch string) {
 	t.Helper()
 	origChanges := workingTreeChangesInDirFn
 	workingTreeChangesInDirFn = func(string) ([]string, error) { return nil, nil }
 	t.Cleanup(func() { workingTreeChangesInDirFn = origChanges })
 	pipeline.currentBranch = func(string) (string, error) { return branch, nil }
+}
+
+func stubStableReviewValidationSnapshot(t *testing.T) {
+	t.Helper()
+	origSnapshot := workingTreeSnapshotInDirFn
+	workingTreeSnapshotInDirFn = func(string) (string, error) { return "stable", nil }
+	t.Cleanup(func() { workingTreeSnapshotInDirFn = origSnapshot })
 }

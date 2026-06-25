@@ -40,6 +40,7 @@ func TestContractDocsExist(t *testing.T) {
 		{"factory-list-v1", "../docs/contracts/factory-list-v1.md"},
 		{"factory-status-v1", "../docs/contracts/factory-status-v1.md"},
 		{"factory-artifacts-v1", "../docs/contracts/factory-artifacts-v1.md"},
+		{"factory-open-v1", "../docs/contracts/factory-open-v1.md"},
 		{"factory-timeline-v1", "../docs/contracts/factory-timeline-v1.md"},
 		{"factory-trigger-v1", "../docs/contracts/factory-trigger-v1.md"},
 		{"factory-queue-entry-v1", "../docs/contracts/factory-queue-entry-v1.md"},
@@ -416,6 +417,14 @@ func TestContractDocsIncludeCIFields(t *testing.T) {
 }
 
 func TestContractDocsIncludeFactoryFields(t *testing.T) {
+	factoryV1FailureCategories := []string{
+		"validation",
+		"pipeline",
+		"engine",
+		"git",
+		"ci",
+		factory.FailureCategoryUnknown,
+	}
 	docs := []struct {
 		name           string
 		path           string
@@ -429,25 +438,23 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			contractValue: FactoryRunContractVersion,
 			requiredFields: []string{
 				"contractVersion", "version", "runId", "status", "nextAction", "artifacts",
-				"eventSummary", "failure", "id", "command", "description", "total", "byType",
-				"lastEventType", "lastSummary", "classification", "errorMessage", "suggestedCommand",
+				"telemetry", "eventSummary", "failure", "id", "command", "description", "total", "byType",
+				"lastEventType", "lastSummary", "totalDurationMs", "stepDurations", "engine", "sandbox",
+				"estimatedSandboxCost", "ciOutcome", "verificationOutcome", "failureCategory",
+				"startedAt", "finishedAt", "durationMs", "provider", "size", "amountUsd", "estimated",
+				"model", "classification", "errorMessage", "suggestedCommand",
 				"name", "type", "sourcePath", "path", "storedPath", "url", "sizeBytes", "createdAt", "partial",
 			},
-			requiredValues: []string{
+			requiredValues: append([]string{
 				factory.RunStatusPending,
 				factory.RunStatusRunning,
 				factory.RunStatusSucceeded,
 				factory.RunStatusFailed,
 				factory.RunStatusCanceled,
 				factory.EventTypeRunCreated,
+				factory.EventTypePolicyDecision,
 				factory.EventTypeFailureClassification,
-				"validation",
-				"pipeline",
-				"engine",
-				"git",
-				"ci",
-				"unknown",
-			},
+			}, factoryV1FailureCategories...),
 		},
 		{
 			name:          "factory-list-v1",
@@ -456,50 +463,58 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			requiredFields: []string{
 				"contractVersion", "runs", "runId", "status", "source", "repoPath", "repoRemote",
 				"branchName", "baseBranch", "sandboxName", "currentStep", "createdAt", "updatedAt",
-				"finishedAt", "artifactCount", "failure", "suggestedCommand",
+				"finishedAt", "artifactCount", "telemetry", "totalDurationMs", "stepDurations", "engine",
+				"sandbox", "estimatedSandboxCost", "ciOutcome", "verificationOutcome", "failureCategory",
+				"startedAt", "durationMs", "provider", "size", "amountUsd", "estimated", "model",
+				"failure", "suggestedCommand",
 			},
-			requiredValues: []string{
+			requiredValues: append([]string{
 				factory.RunStatusPending,
 				factory.RunStatusRunning,
 				factory.RunStatusSucceeded,
 				factory.RunStatusFailed,
 				factory.RunStatusCanceled,
-				factory.FailureCategoryValidation,
-				factory.FailureCategoryPipeline,
-				factory.FailureCategoryEngine,
-				factory.FailureCategoryGit,
-				factory.FailureCategoryCI,
-				factory.FailureCategoryUnknown,
-			},
+			}, factoryV1FailureCategories...),
 		},
 		{
 			name:          "factory-status-v1",
 			path:          "../docs/contracts/factory-status-v1.md",
 			contractValue: FactoryStatusContractVersion,
 			requiredFields: []string{
-				"contractVersion", "run", "timeline", "runId", "status", "executorMode", "source", "repoPath", "repoRemote",
-				"branchName", "baseBranch", "sandboxName", "sandbox", "currentStep", "createdAt", "updatedAt",
+				"contractVersion", "run", "timeline", "runId", "status", "executorMode", "engine", "source", "repoPath", "repoRemote",
+				"branchName", "baseBranch", "policy", "policyDecisions", "sandboxName", "sandbox", "currentStep", "createdAt", "updatedAt",
 				"finishedAt", "artifacts", "verification", "summary", "total", "passed", "failed", "timedOut",
 				"missing", "skipped", "warnings", "checkId", "kind", "failure", "suggestedCommand", "secrets", "present",
 				"name", "provider", "connection", "sshCommand", "cleanupCommand", "handoff",
 				"address", "publicIp", "tailscaleIp", "tailscaleHostname", "tailscaleLockdown",
+				"sandboxRequired", "allowedEngines", "maxRunAttempts", "maxReviewFixAttempts", "maxCiFixAttempts",
+				"verificationRequired", "prCreationAllowed", "mergeAllowed", "cleanupBehavior",
+				"policyField", "decision", "outcome", "reason",
+				"handoffRequired", "nextAction", "inspectCommand", "resumeCommand", "artifactLocations",
+				"logLocations", "type", "command", "description", "runId", "pullRequestUrl",
+				"failureReason", "storedPath",
 			},
-			requiredValues: []string{
+			requiredValues: append([]string{
 				factory.RunStatusPending,
 				factory.RunStatusRunning,
 				factory.RunStatusSucceeded,
 				factory.RunStatusFailed,
 				factory.RunStatusCanceled,
-				factory.FailureCategoryValidation,
-				factory.FailureCategoryPipeline,
-				factory.FailureCategoryEngine,
-				factory.FailureCategoryGit,
-				factory.FailureCategoryCI,
-				factory.FailureCategoryUnknown,
 				verify.ArtifactKindStdout,
 				verify.ArtifactKindStderr,
+				factory.CleanupBehaviorPreserve,
+				factory.CleanupBehaviorOnSuccess,
+				factory.CleanupBehaviorAlways,
+				factory.PolicyDecisionAllowedExecution,
+				factory.PolicyDecisionRejectedExecution,
+				factory.PolicyDecisionPassedGate,
+				factory.PolicyDecisionBlockedGate,
+				factory.PolicyOutcomeAllowed,
+				factory.PolicyOutcomeRejected,
+				factory.PolicyOutcomePassed,
+				factory.PolicyOutcomeBlocked,
 				"sandbox",
-			},
+			}, factoryV1FailureCategories...),
 		},
 		{
 			name:          "factory-artifacts-v1",
@@ -519,6 +534,44 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			},
 		},
 		{
+			name:          "factory-logs-v1",
+			path:          "../docs/contracts/factory-logs-v1.md",
+			contractValue: FactoryLogsContractVersion,
+			requiredFields: []string{
+				"contractVersion", "runId", "chunks", "sequence", "stream",
+				"source", "text", "summary", "createdAt",
+			},
+			requiredValues: []string{
+				factory.LogStreamStdout,
+				factory.LogStreamStderr,
+				factory.LogStreamSummary,
+				factory.LogSourceLocalFactory,
+				factory.LogSourceRemoteSandbox,
+				factory.LogSourceEngine,
+				"[redacted]",
+			},
+		},
+		{
+			name:          "factory-open-v1",
+			path:          "../docs/contracts/factory-open-v1.md",
+			contractValue: FactoryOpenContractVersion,
+			requiredFields: []string{
+				"contractVersion", "runId", "handoff", "error", "summary",
+				"status", "executorMode", "handoffRequired", "nextAction",
+				"inspectCommand", "resumeCommand", "sshCommand", "repoPath",
+				"branchName", "sandboxName", "pullRequestUrl", "currentStep",
+				"failureReason", "artifactLocations", "logLocations", "id",
+				"type", "command", "description", "storedPath",
+			},
+			requiredValues: []string{
+				"factory-open-v1",
+				factory.NextActionTypeInspect,
+				factory.NextActionTypeTakeover,
+				factory.NextActionTypeContinue,
+				factory.NextActionTypeCompleted,
+			},
+		},
+		{
 			name:          "factory-timeline-v1",
 			path:          "../docs/contracts/factory-timeline-v1.md",
 			contractValue: "factory-status-v1",
@@ -533,6 +586,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				factory.EventTypeVerificationResult,
 				factory.EventTypeCIState,
 				factory.EventTypeArtifactSync,
+				factory.EventTypePolicyDecision,
 				factory.EventTypeFailureClassification,
 			},
 		},
@@ -542,7 +596,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			contractValue: FactoryTriggerContractVersion,
 			requiredFields: []string{
 				"contractVersion", "runId", "run", "entry", "summary",
-				"repoPath", "source", "queueId", "executorMode", "factory-queue-entry-v1",
+				"repoPath", "source", "queueId", "executorMode", "engine", "factory-queue-entry-v1",
 			},
 			requiredValues: []string{
 				factory.RunStatusPending,
@@ -692,6 +746,27 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		if len(resp.Runs) == 0 {
 			t.Fatal("factory list example should include at least one run")
 		}
+		runs, ok := raw["runs"].([]interface{})
+		if !ok || len(runs) == 0 {
+			t.Fatalf("factory list runs should be a non-empty array, got %T", raw["runs"])
+		}
+		firstRun, ok := runs[0].(map[string]interface{})
+		if !ok {
+			t.Fatalf("factory list runs[0] should be an object, got %T", runs[0])
+		}
+		requireExactKeys(t, firstRun, []string{
+			"runId", "status", "source", "repoPath", "repoRemote", "branchName",
+			"baseBranch", "sandboxName", "currentStep", "createdAt", "updatedAt",
+			"finishedAt", "artifactCount", "telemetry", "failure",
+		})
+		telemetry, ok := firstRun["telemetry"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("factory list runs[0].telemetry should be an object, got %T", firstRun["telemetry"])
+		}
+		requireExactKeys(t, telemetry, []string{
+			"totalDurationMs", "engine", "sandbox", "estimatedSandboxCost",
+			"ciOutcome", "verificationOutcome", "artifactCount", "failureCategory",
+		})
 	})
 
 	t.Run("factory status example", func(t *testing.T) {
@@ -723,6 +798,12 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		if len(resp.Run.Verification.Artifacts) == 0 {
 			t.Fatal("factory status example should include verification artifact references")
 		}
+		if resp.Run.Handoff == nil {
+			t.Fatal("factory status example should include handoff metadata")
+		}
+		if resp.Run.Handoff.NextAction == nil {
+			t.Fatal("factory status example should include handoff nextAction metadata")
+		}
 	})
 
 	t.Run("factory artifacts example", func(t *testing.T) {
@@ -744,11 +825,49 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		}
 	})
 
+	t.Run("factory logs example", func(t *testing.T) {
+		var resp FactoryLogsResponse
+		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-logs-v1.json", &resp)
+
+		requireExactKeys(t, raw, []string{"contractVersion", "runId", "chunks"})
+		if resp.ContractVersion != FactoryLogsContractVersion {
+			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryLogsContractVersion)
+		}
+		if resp.RunID == "" {
+			t.Fatal("factory logs example should include a run ID")
+		}
+		if len(resp.Chunks) == 0 {
+			t.Fatal("factory logs example should include chunks")
+		}
+	})
+
+	t.Run("factory open example", func(t *testing.T) {
+		var resp FactoryOpenResponse
+		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-open-v1.json", &resp)
+
+		requireExactKeys(t, raw, []string{"contractVersion", "runId", "handoff", "summary"})
+		if resp.ContractVersion != FactoryOpenContractVersion {
+			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryOpenContractVersion)
+		}
+		if resp.RunID == "" {
+			t.Fatal("factory open example should include a run ID")
+		}
+		if resp.Handoff == nil {
+			t.Fatal("factory open example should include handoff guidance")
+		}
+		if resp.Handoff.NextAction == nil {
+			t.Fatal("factory open example should include nextAction guidance")
+		}
+		if resp.Handoff.NextAction.Type != factory.NextActionTypeTakeover {
+			t.Fatalf("nextAction.type = %q, want %q", resp.Handoff.NextAction.Type, factory.NextActionTypeTakeover)
+		}
+	})
+
 	t.Run("factory run example", func(t *testing.T) {
 		var resp FactoryRunResponse
 		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-run-v1.json", &resp)
 
-		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "nextAction", "artifacts", "eventSummary", "failure"})
+		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "nextAction", "artifacts", "telemetry", "eventSummary", "failure"})
 		if resp.ContractVersion != FactoryRunContractVersion {
 			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryRunContractVersion)
 		}
@@ -764,6 +883,18 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		if resp.EventSummary.Total == 0 {
 			t.Fatal("factory run example should include event summary totals")
 		}
+		if resp.Telemetry == nil {
+			t.Fatal("factory run example should include telemetry")
+		}
+		telemetry, ok := raw["telemetry"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("factory run telemetry should be an object, got %T", raw["telemetry"])
+		}
+		requireExactKeys(t, telemetry, []string{
+			"totalDurationMs", "stepDurations", "engine", "sandbox",
+			"estimatedSandboxCost", "ciOutcome", "verificationOutcome",
+			"artifactCount", "failureCategory",
+		})
 		if resp.Failure == nil {
 			t.Fatal("factory run example should include failure details")
 		}
@@ -782,6 +913,9 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		}
 		if resp.RunID == "" || resp.Run.RunID != resp.RunID {
 			t.Fatalf("factory trigger example run IDs = response %q run %q", resp.RunID, resp.Run.RunID)
+		}
+		if resp.Entry == nil {
+			t.Fatal("factory trigger example should include an entry")
 		}
 		if resp.Entry.QueueID == "" {
 			t.Fatal("factory trigger example should include a queue ID")
