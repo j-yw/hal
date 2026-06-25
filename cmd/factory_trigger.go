@@ -255,6 +255,7 @@ func runFactoryTriggerWithDeps(out io.Writer, req factoryTriggerRequest, deps fa
 	record.ExecutorMode = executorMode
 	triggerRedactor := factory.NewRunSecretRedactor(resolveFactoryRunRedactionSecrets(req.Secrets, deps.lookupEnv))
 	safeRecord := triggerRedactor.RedactRunRecord(record)
+	safeRecord = sanitizeFactoryRunRecordCredentialedRemote(safeRecord)
 
 	if err := createFactoryRunRecord(store, safeRecord); err != nil {
 		return err

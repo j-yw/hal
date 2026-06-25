@@ -442,6 +442,7 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	}
 	initialRedactor := factory.NewRunSecretRedactor(resolveFactoryRunRedactionSecrets(req.Secrets, deps.lookupEnv))
 	safeInitialRecord := initialRedactor.RedactRunRecord(record)
+	safeInitialRecord = sanitizeFactoryRunRecordCredentialedRemote(safeInitialRecord)
 	if err := createFactoryRunRecord(store, safeInitialRecord); err != nil {
 		return err
 	}
@@ -656,6 +657,9 @@ func resolveFactoryRunExecutionSecrets(req factoryRunRequest, record factory.Run
 	resolved, metadata, err := factory.ResolveRunSecrets(req.Secrets, deps.lookupEnv)
 	req.ResolvedSecrets = resolved
 	record.Secrets = metadata
+	if err != nil {
+		record = sanitizeFactoryRunRecordCredentialedRemote(record)
+	}
 	return req, record, err
 }
 
@@ -3298,4 +3302,35 @@ func readGitRemoteOptionalInDir(dir string) (string, error) {
 		return "", fmt.Errorf("read git remote origin: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+func sanitizeFactoryRunRecordCredentialedRemote(record factory.RunRecord) factory.RunRecord {
+	if len(record.Secrets) == 0 {
+		return record
+	}
+	record.RepoRemote = sanitizeCredentialedRemote(record.RepoRemote)
+	return record
+}
+
+func sanitizeCredentialedRemote(remote string) string {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return remote
+	}
+	parsed, err := url.Parse(remote)
+	if err != nil || parsed.User == nil {
+		return remote
+	}
+	username := parsed.User.Username()
+	userinfo := factory.RunSecretRedactionPlaceholder
+	if _, hasPassword := parsed.User.Password(); hasPassword && username != "" {
+		userinfo = username + ":" + factory.RunSecretRedactionPlaceholder
+	}
+	parsed.User = nil
+	withoutUser := parsed.String()
+	prefix := parsed.Scheme + "://"
+	if parsed.Scheme == "" || !strings.HasPrefix(withoutUser, prefix) {
+		return remote
+	}
+	return prefix + userinfo + "@" + strings.TrimPrefix(withoutUser, prefix)
 }

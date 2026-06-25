@@ -561,6 +561,7 @@ func TestRunFactoryRunWithDepsResolvesRequiredEnvSecretsBeforePipeline(t *testin
 func TestRunFactoryRunWithDepsMissingRequiredEnvSecretFailsBeforeSandbox(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	now := time.Date(2026, 6, 21, 10, 45, 0, 0, time.UTC)
+	credential := "factory-secret-12345"
 
 	err := runFactoryRunWithDeps(context.Background(), "/workspace/hal", factoryRunRequest{
 		MarkdownPath: ".hal/prd-feature.md",
@@ -578,7 +579,7 @@ func TestRunFactoryRunWithDepsMissingRequiredEnvSecretFailsBeforeSandbox(t *test
 			return "hal/factory", nil
 		},
 		repoRemote: func(string) (string, error) {
-			return "git@github.com:jywlabs/hal.git", nil
+			return "https://qa-user:" + credential + "@github.com/jywlabs/hal.git", nil
 		},
 		lookupEnv: func(name string) (string, bool) {
 			if name != "GITHUB_TOKEN" {
@@ -611,6 +612,16 @@ func TestRunFactoryRunWithDepsMissingRequiredEnvSecretFailsBeforeSandbox(t *test
 	}
 	if record.Failure == nil || record.Failure.Category != factory.FailureCategoryValidation {
 		t.Fatalf("record failure = %#v, want validation failure", record.Failure)
+	}
+	data, marshalErr := json.Marshal(record)
+	if marshalErr != nil {
+		t.Fatalf("json.Marshal(run record) error: %v", marshalErr)
+	}
+	if strings.Contains(string(data), credential) {
+		t.Fatalf("run record JSON leaked credentialed remote secret: %s", string(data))
+	}
+	if record.RepoRemote != "https://qa-user:"+factory.RunSecretRedactionPlaceholder+"@github.com/jywlabs/hal.git" {
+		t.Fatalf("repo remote = %q, want redacted credential", record.RepoRemote)
 	}
 	wantMetadata := []factory.RunSecretMetadata{{
 		Name:     "GITHUB_TOKEN",
