@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -2664,6 +2665,7 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 	}
 	var verificationCalled bool
 	var remoteVerifyArgs []string
+	var remoteArtifactCopied bool
 	var cleanupCalls int
 
 	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
@@ -2729,31 +2731,49 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 			return fakeFactorySandboxProvider{}, nil
 		},
 		runProviderExec: func(_ context.Context, _ sandbox.Provider, info *sandbox.ConnectInfo, args []string, out io.Writer) error {
-			verificationCalled = true
-			remoteVerifyArgs = append([]string(nil), args...)
 			if info == nil || info.Name != target.Name || info.IP != target.IP {
 				t.Fatalf("connect info = %#v, want sandbox %q at %q", info, target.Name, target.IP)
 			}
-			data, err := json.Marshal(verify.Result{
-				SchemaVersion: verify.SchemaVersion,
-				Status:        verify.StatusPass,
-				Summary: verify.Summary{
-					Total:  1,
-					Passed: 1,
-				},
-				Checks: []verify.CheckResult{{
-					ID:       "remote-test",
-					Name:     "Remote tests",
-					Status:   verify.CheckStatusPass,
-					Required: true,
-				}},
-			})
-			if err != nil {
-				t.Fatalf("Marshal(verify result) error: %v", err)
+			command := strings.Join(args, " ")
+			if strings.Contains(command, "'hal' 'verify' '--json'") {
+				verificationCalled = true
+				remoteVerifyArgs = append([]string(nil), args...)
+				data, err := json.Marshal(verify.Result{
+					SchemaVersion: verify.SchemaVersion,
+					Status:        verify.StatusPass,
+					Summary: verify.Summary{
+						Total:  1,
+						Passed: 1,
+					},
+					Checks: []verify.CheckResult{{
+						ID:             "remote-test",
+						Name:           "Remote tests",
+						Status:         verify.CheckStatusPass,
+						Required:       true,
+						StdoutArtifact: ".hal/reports/verify/remote-test-stdout.txt",
+					}},
+					Artifacts: []verify.ArtifactReference{{
+						CheckID: "remote-test",
+						Kind:    verify.ArtifactKindStdout,
+						Path:    ".hal/reports/verify/remote-test-stdout.txt",
+					}},
+				})
+				if err != nil {
+					t.Fatalf("Marshal(verify result) error: %v", err)
+				}
+				if _, err := out.Write(append(data, '\n')); err != nil {
+					t.Fatalf("write remote verify JSON error: %v", err)
+				}
+				return nil
 			}
-			if _, err := out.Write(append(data, '\n')); err != nil {
-				t.Fatalf("write remote verify JSON error: %v", err)
+			if strings.Contains(command, "base64 < '/workspace/hal/.hal/reports/verify/remote-test-stdout.txt'") {
+				remoteArtifactCopied = true
+				if _, err := io.WriteString(out, base64.StdEncoding.EncodeToString([]byte("verification stdout\n"))); err != nil {
+					t.Fatalf("write remote artifact error: %v", err)
+				}
+				return nil
 			}
+			t.Fatalf("unexpected provider exec args = %#v", args)
 			return nil
 		},
 		cleanupSandbox: func(_ context.Context, req factorySandboxCleanupRequest) error {
@@ -2763,6 +2783,17 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 			}
 			if len(copier.fileCalls) != 1 {
 				t.Fatalf("cleanup ran before sandbox artifact collection; fileCalls = %#v", copier.fileCalls)
+			}
+			if !remoteArtifactCopied {
+				t.Fatal("cleanup ran before remote verification artifact copy")
+			}
+			currentRecord, err := store.LoadRun("run-sandbox-deferred-cleanup")
+			if err != nil {
+				t.Fatalf("LoadRun() during cleanup error: %v", err)
+			}
+			artifact := requireStoredFactoryArtifactPath(t, store, currentRecord.RunID, currentRecord.Artifacts, ".hal/reports/verify/remote-test-stdout.txt")
+			if got := readStoredFactoryArtifact(t, store, currentRecord.RunID, artifact); got != "verification stdout\n" {
+				t.Fatalf("stored verification artifact before cleanup = %q", got)
 			}
 			if req.Target == nil || req.Target.Name != target.Name {
 				t.Fatalf("cleanup target = %#v, want %q", req.Target, target.Name)
@@ -2812,6 +2843,10 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 		t.Fatalf("sandbox handoff metadata = %#v, want cleared after cleanup", record.Sandbox)
 	}
 	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/auto-state.json")
+	verificationArtifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/reports/verify/remote-test-stdout.txt")
+	if got := readStoredFactoryArtifact(t, store, record.RunID, verificationArtifact); got != "verification stdout\n" {
+		t.Fatalf("stored verification artifact = %q", got)
+	}
 }
 
 func TestRunFactoryRunWithDepsCleansOnSuccessSandboxAfterFinalSuccessWithoutVerification(t *testing.T) {

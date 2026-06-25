@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +38,8 @@ const (
 	FactoryArtifactsContractVersion = "factory-artifacts-v1"
 	FactoryLogsContractVersion      = "factory-logs-v1"
 )
+
+const factorySandboxArtifactMissingSentinel = "__HAL_FACTORY_ARTIFACT_MISSING__"
 
 var factoryListJSONFlag bool
 var factoryStatusJSONFlag bool
@@ -1265,12 +1268,12 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 	}
 
 	if factoryRunUsesSandboxVerification(record) {
-		result, err := runFactorySandboxRemoteVerification(ctx, dir, record, deps)
+		result, updatedRecord, err := runFactorySandboxRemoteVerification(ctx, store, dir, record, deps)
 		finishedAt := deps.now()
 		if err != nil {
 			return record, finishedAt, fmt.Errorf("run remote sandbox verification: %w", err)
 		}
-		return recordFactoryRunVerificationOutcome(store, dir, record, startedAt, finishedAt, result, policy, false)
+		return recordFactoryRunVerificationOutcome(store, dir, updatedRecord, startedAt, finishedAt, result, policy, false)
 	}
 
 	cfg, err := deps.loadVerify(dir)
@@ -1408,36 +1411,43 @@ func factoryRunUsesSandboxVerification(record factory.RunRecord) bool {
 	return strings.TrimSpace(record.ExecutorMode) == factory.ExecutorModeSandbox
 }
 
-func runFactorySandboxRemoteVerification(ctx context.Context, dir string, record factory.RunRecord, deps factoryRunDeps) (*verify.Result, error) {
+func runFactorySandboxRemoteVerification(ctx context.Context, store factory.Store, dir string, record factory.RunRecord, deps factoryRunDeps) (*verify.Result, factory.RunRecord, error) {
 	sandboxName := factoryRunSandboxName(record)
 	if sandboxName == "" {
-		return nil, fmt.Errorf("sandbox verification requires sandbox metadata")
+		return nil, record, fmt.Errorf("sandbox verification requires sandbox metadata")
 	}
 	target, err := deps.loadSandbox(sandboxName)
 	if err != nil {
-		return nil, fmt.Errorf("load sandbox %q for verification: %w", sandboxName, err)
+		return nil, record, fmt.Errorf("load sandbox %q for verification: %w", sandboxName, err)
 	}
 	if target == nil {
-		return nil, fmt.Errorf("load sandbox %q for verification: not found", sandboxName)
+		return nil, record, fmt.Errorf("load sandbox %q for verification: not found", sandboxName)
 	}
 	provider, err := deps.resolveProvider(dir, target.Provider)
 	if err != nil {
-		return nil, fmt.Errorf("resolve sandbox provider %q for verification: %w", target.Provider, err)
+		return nil, record, fmt.Errorf("resolve sandbox provider %q for verification: %w", target.Provider, err)
 	}
 	args, err := factorySandboxRemoteVerifyArgs(record)
 	if err != nil {
-		return nil, err
+		return nil, record, err
 	}
 	var out bytes.Buffer
 	execErr := deps.runProviderExec(ctx, provider, sandbox.ConnectInfoFromState(target), args, &out)
 	result, parseErr := parseFactorySandboxVerifyResult(out.Bytes())
 	if parseErr != nil {
 		if execErr != nil {
-			return nil, fmt.Errorf("remote verify command failed (%w) and output was not valid verify JSON: %v", execErr, parseErr)
+			return nil, record, fmt.Errorf("remote verify command failed (%w) and output was not valid verify JSON: %v", execErr, parseErr)
 		}
-		return nil, parseErr
+		return nil, record, parseErr
 	}
-	return result, nil
+	if err := collectAndStoreFactorySandboxVerificationArtifacts(ctx, store, record, result.Artifacts, target, provider, deps); err != nil {
+		return nil, record, err
+	}
+	updatedRecord, err := store.LoadRun(record.RunID)
+	if err != nil {
+		return nil, record, fmt.Errorf("reload factory run verification artifacts: %w", err)
+	}
+	return result, *updatedRecord, nil
 }
 
 func factoryRunSandboxName(record factory.RunRecord) string {
@@ -1469,6 +1479,112 @@ func parseFactorySandboxVerifyResult(data []byte) (*verify.Result, error) {
 		return nil, fmt.Errorf("parse remote sandbox verify JSON: %w", err)
 	}
 	return &result, nil
+}
+
+func collectAndStoreFactorySandboxVerificationArtifacts(ctx context.Context, store factory.Store, record factory.RunRecord, artifacts []verify.ArtifactReference, target *sandbox.SandboxState, provider sandbox.Provider, deps factoryRunDeps) error {
+	if len(artifacts) == 0 {
+		return nil
+	}
+	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
+	if workspaceDir == "" {
+		return errFactorySandboxWorkspaceRequired
+	}
+	requests := make([]factory.SandboxArtifactRequest, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		path := strings.TrimSpace(artifact.Path)
+		if path == "" {
+			continue
+		}
+		remotePath := path
+		if !filepath.IsAbs(remotePath) {
+			remotePath = filepath.ToSlash(filepath.Join(workspaceDir, remotePath))
+		}
+		nameParts := []string{"verification"}
+		if checkID := strings.TrimSpace(artifact.CheckID); checkID != "" {
+			nameParts = append(nameParts, sanitizeFactoryArtifactPathComponent(checkID))
+		}
+		if kind := strings.TrimSpace(artifact.Kind); kind != "" {
+			nameParts = append(nameParts, sanitizeFactoryArtifactPathComponent(kind))
+		}
+		requests = append(requests, factory.SandboxArtifactRequest{
+			ID:         factorySandboxVerificationArtifactID(artifact),
+			Name:       strings.Join(nameParts, "-"),
+			Type:       factoryArtifactTypeForPath(path),
+			RemotePath: filepath.ToSlash(remotePath),
+			Path:       filepath.ToSlash(filepath.Clean(path)),
+			Optional:   true,
+			Summary: map[string]any{
+				"checkId":      artifact.CheckID,
+				"kind":         artifact.Kind,
+				"executorMode": factory.ExecutorModeSandbox,
+				"sandboxName":  record.SandboxName,
+			},
+		})
+	}
+	if len(requests) == 0 {
+		return nil
+	}
+	copier := factoryProviderExecSandboxArtifactCopier{
+		provider:        provider,
+		connectInfo:     sandbox.ConnectInfoFromState(target),
+		runProviderExec: deps.runProviderExec,
+	}
+	if _, err := factory.CollectSandboxArtifacts(ctx, store, record.RunID, &copier, requests); err != nil {
+		return fmt.Errorf("collect sandbox verification artifacts: %w", err)
+	}
+	return nil
+}
+
+func factorySandboxVerificationArtifactID(artifact verify.ArtifactReference) string {
+	parts := []string{"verification"}
+	for _, value := range []string{artifact.CheckID, artifact.Kind, artifact.Path} {
+		if part := sanitizeFactoryArtifactPathComponent(value); part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return strings.Join(parts, "-")
+}
+
+type factoryProviderExecSandboxArtifactCopier struct {
+	provider        sandbox.Provider
+	connectInfo     *sandbox.ConnectInfo
+	runProviderExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+}
+
+func (c *factoryProviderExecSandboxArtifactCopier) CopyFile(ctx context.Context, remotePath, localPath string) error {
+	remotePath = strings.TrimSpace(remotePath)
+	if remotePath == "" {
+		return factory.ErrSandboxArtifactNotFound
+	}
+	var out bytes.Buffer
+	args := []string{"sh", "-lc", "if [ ! -f " + shellQuote(remotePath) + " ]; then printf %s " + shellQuote(factorySandboxArtifactMissingSentinel) + "; exit 0; fi; base64 < " + shellQuote(remotePath)}
+	if err := c.runProviderExec(ctx, c.provider, c.connectInfo, args, &out); err != nil {
+		return err
+	}
+	payload := strings.TrimSpace(out.String())
+	if payload == factorySandboxArtifactMissingSentinel {
+		return factory.ErrSandboxArtifactNotFound
+	}
+	data, err := base64.StdEncoding.DecodeString(strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' || r == ' ' {
+			return -1
+		}
+		return r
+	}, payload))
+	if err != nil {
+		return fmt.Errorf("decode sandbox artifact %q: %w", remotePath, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
+		return fmt.Errorf("create sandbox artifact destination: %w", err)
+	}
+	if err := os.WriteFile(localPath, data, 0o600); err != nil {
+		return fmt.Errorf("write sandbox artifact %q: %w", remotePath, err)
+	}
+	return nil
+}
+
+func (c *factoryProviderExecSandboxArtifactCopier) CopyDir(context.Context, string, string) error {
+	return fmt.Errorf("sandbox verification artifacts only support files")
 }
 
 func defaultFactoryStatusSnapshot(dir string) (factorySnapshotArtifact, error) {
