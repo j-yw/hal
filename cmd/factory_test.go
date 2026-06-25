@@ -2562,6 +2562,11 @@ func TestRunFactoryRunWithDepsPreservesOnSuccessSandboxWhenArtifactCollectionFai
 		t.Fatalf("MkdirAll(halDir) error: %v", err)
 	}
 	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+	localVerifyDir := filepath.Join(halDir, "reports", "verify")
+	if err := os.MkdirAll(localVerifyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(localVerifyDir) error: %v", err)
+	}
+	writeFile(t, localVerifyDir, "remote-test-stdout.txt", "local stale verification stdout\n")
 
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 21, 3, 16, 0, 0, time.UTC)
@@ -3255,6 +3260,15 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 	verificationArtifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/reports/verify/remote-test-stdout.txt")
 	if got := readStoredFactoryArtifact(t, store, record.RunID, verificationArtifact); got != "verification stdout\n" {
 		t.Fatalf("stored verification artifact = %q", got)
+	}
+	var verificationArtifactCount int
+	for _, artifact := range record.Artifacts {
+		if artifact.Path == ".hal/reports/verify/remote-test-stdout.txt" {
+			verificationArtifactCount++
+		}
+	}
+	if verificationArtifactCount != 1 {
+		t.Fatalf("verification artifact count = %d, want 1; artifacts = %#v", verificationArtifactCount, record.Artifacts)
 	}
 }
 

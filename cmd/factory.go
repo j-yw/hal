@@ -1537,8 +1537,10 @@ func recordFactoryRunVerificationOutcome(store factory.Store, dir string, record
 	if err := store.SaveRun(&safeRecord); err != nil {
 		return factory.RunRecord{}, finishedAt, fmt.Errorf("record factory verification: %w", err)
 	}
-	if err := collectAndStoreFactoryVerificationArtifacts(store, dir, record.RunID, result.Artifacts, redactor); err != nil {
-		return factory.RunRecord{}, finishedAt, err
+	if !factoryRunUsesSandboxVerification(record) {
+		if err := collectAndStoreFactoryVerificationArtifacts(store, dir, record.RunID, result.Artifacts, redactor); err != nil {
+			return factory.RunRecord{}, finishedAt, err
+		}
 	}
 	updatedRecord, err := store.LoadRun(record.RunID)
 	if err != nil {
