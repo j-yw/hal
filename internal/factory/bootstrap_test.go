@@ -93,7 +93,7 @@ func TestBootstrapWorkspaceRunsDeterministicOrchestration(t *testing.T) {
 		"git fetch --prune origin",
 		"git checkout -B main origin/main",
 		"git checkout -b hal/factory-remote-workspace-bootstrap main",
-		"hal --version",
+		"hal version",
 		"codex --version",
 		"hal init --refresh-templates",
 		"hal links refresh",

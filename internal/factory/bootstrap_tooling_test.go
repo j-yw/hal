@@ -47,7 +47,7 @@ func TestBootstrapVerifyToolingChecksHalAndEngineCommands(t *testing.T) {
 	wantCalls := []BootstrapCommand{
 		{
 			Name: "hal",
-			Args: []string{"--version"},
+			Args: []string{"version"},
 			Dir:  "/workspace/hal",
 		},
 		{

@@ -115,7 +115,7 @@ func bootstrapToolingPlans(request BootstrapRequest, deps BootstrapToolingDeps) 
 	if halCheck.Command.Name == "" {
 		halCheck.Command = BootstrapCommand{
 			Name: "hal",
-			Args: []string{"--version"},
+			Args: []string{"version"},
 			Dir:  workspaceDir,
 		}
 	}
