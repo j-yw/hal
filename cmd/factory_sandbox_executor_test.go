@@ -1183,6 +1183,73 @@ func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromRemoteOutput
 	}
 }
 
+func TestRunFactorySandboxExecutorWithDepsRedactsCredentialedRemoteURLsFromRemoteOutput(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 46, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	credential := "ghp_remote_url_credential_12345"
+
+	var out bytes.Buffer
+	var events []factory.EventRecord
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-dev",
+		RunRecord: factory.RunRecord{
+			RunID:      "run-remote-output-credentialed-url",
+			Status:     factory.RunStatusRunning,
+			RepoRemote: "git@github.com:example/repo.git",
+		},
+		RemoteOutput: &out,
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return store, nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
+			_, err := io.WriteString(out, "fatal: unable to access https://x:"+credential+"@github.com/example/repo.git\n")
+			return err
+		},
+		appendEvent: func(_ factory.Store, event *factory.EventRecord) error {
+			events = append(events, *event)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	for name, text := range map[string]string{
+		"remote output": out.String(),
+		"events":        fmt.Sprintf("%#v", events),
+	} {
+		if strings.Contains(text, credential) {
+			t.Fatalf("%s leaked credentialed remote: %q", name, text)
+		}
+		if !strings.Contains(text, factory.RunSecretRedactionPlaceholder) {
+			t.Fatalf("%s missing redaction marker: %q", name, text)
+		}
+	}
+	chunks, err := store.LoadLogChunks("run-remote-output-credentialed-url")
+	if err != nil {
+		t.Fatalf("LoadLogChunks() error: %v", err)
+	}
+	if len(chunks) == 0 {
+		t.Fatal("LoadLogChunks() returned no remote output chunks")
+	}
+	chunkData, err := json.Marshal(chunks)
+	if err != nil {
+		t.Fatalf("json.Marshal(chunks) error: %v", err)
+	}
+	if strings.Contains(string(chunkData), credential) {
+		t.Fatalf("remote log chunks leaked credentialed remote: %s", string(chunkData))
+	}
+	if !strings.Contains(string(chunkData), factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("remote log chunks missing redaction marker: %s", string(chunkData))
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsRedactsMultilineSecretsFromRemoteOutput(t *testing.T) {
 	now := time.Date(2026, 6, 21, 12, 47, 0, 0, time.UTC)
 	store := factory.NewStore(t.TempDir())
