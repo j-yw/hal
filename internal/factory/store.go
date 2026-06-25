@@ -153,6 +153,7 @@ func (s Store) saveArtifactFile(runID string, artifact ArtifactReference, source
 	if sourcePath == "" {
 		return ArtifactReference{}, fmt.Errorf("artifact source path is required")
 	}
+	redactedSourcePath := redactor.RedactString(sourcePath)
 
 	record, err := s.LoadRun(runID)
 	if err != nil {
@@ -164,16 +165,16 @@ func (s Store) saveArtifactFile(runID string, artifact ArtifactReference, source
 
 	info, err := os.Lstat(sourcePath)
 	if err != nil {
-		return ArtifactReference{}, fmt.Errorf("stat artifact source %q: %w", sourcePath, err)
+		return ArtifactReference{}, fmt.Errorf("stat artifact source %q: %w", redactedSourcePath, redactFactoryPathError(err, redactor))
 	}
 	if info.IsDir() {
-		return ArtifactReference{}, fmt.Errorf("artifact source %q is a directory", sourcePath)
+		return ArtifactReference{}, fmt.Errorf("artifact source %q is a directory", redactedSourcePath)
 	}
 	if info.Mode()&fs.ModeSymlink != 0 {
-		return ArtifactReference{}, fmt.Errorf("artifact source %q is a symlink", sourcePath)
+		return ArtifactReference{}, fmt.Errorf("artifact source %q is a symlink", redactedSourcePath)
 	}
 	if !info.Mode().IsRegular() {
-		return ArtifactReference{}, fmt.Errorf("artifact source %q is not a regular file", sourcePath)
+		return ArtifactReference{}, fmt.Errorf("artifact source %q is not a regular file", redactedSourcePath)
 	}
 
 	artifact.Name = strings.TrimSpace(artifact.Name)
@@ -186,7 +187,6 @@ func (s Store) saveArtifactFile(runID string, artifact ArtifactReference, source
 	}
 	artifact = redactor.RedactArtifactReference(artifact)
 
-	redactedSourcePath := redactor.RedactString(sourcePath)
 	storedPath := filepath.ToSlash(filepath.Join(artifactsDirName, runID, artifactFileName(artifactFileBaseName(artifact), redactedSourcePath)))
 	absoluteStoredPath, err := s.ResolveArtifactPath(runID, storedPath)
 	if err != nil {
@@ -626,20 +626,21 @@ func copyStoreFile(sourcePath, destPath string, mode fs.FileMode, expectedInfo f
 }
 
 func copyStoreFileWithRedactor(sourcePath, destPath string, mode fs.FileMode, expectedInfo fs.FileInfo, redactor RunSecretRedactor) (fs.FileInfo, error) {
+	redactedSourcePath := redactor.RedactString(sourcePath)
 	source, err := os.Open(sourcePath)
 	if err != nil {
-		return nil, err
+		return nil, redactFactoryPathError(err, redactor)
 	}
 	defer source.Close()
 	sourceInfo, err := source.Stat()
 	if err != nil {
-		return nil, err
+		return nil, redactFactoryPathError(err, redactor)
 	}
 	if !sourceInfo.Mode().IsRegular() {
-		return nil, fmt.Errorf("artifact source %q is not a regular file", sourcePath)
+		return nil, fmt.Errorf("artifact source %q is not a regular file", redactedSourcePath)
 	}
 	if expectedInfo != nil && !os.SameFile(expectedInfo, sourceInfo) {
-		return nil, fmt.Errorf("artifact source %q changed during copy", sourcePath)
+		return nil, fmt.Errorf("artifact source %q changed during copy", redactedSourcePath)
 	}
 
 	tmpPath := destPath + storeTempFileExt
@@ -669,6 +670,16 @@ func copyStoreFileWithRedactor(sourcePath, destPath string, mode fs.FileMode, ex
 		return nil, err
 	}
 	return storedInfo, nil
+}
+
+func redactFactoryPathError(err error, redactor RunSecretRedactor) error {
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		safe := *pathErr
+		safe.Path = redactor.RedactString(safe.Path)
+		return &safe
+	}
+	return err
 }
 
 func copyStoreFilePayload(dest *os.File, source *os.File, redactor RunSecretRedactor) error {

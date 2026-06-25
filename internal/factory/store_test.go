@@ -495,6 +495,60 @@ func TestSaveArtifactFileWithRedactorUsesRedactedStoredPath(t *testing.T) {
 	}
 }
 
+func TestSaveArtifactFileWithRedactorRedactsSourcePathErrors(t *testing.T) {
+	secretValue := "artifact_path_secret_123"
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{{Name: "ARTIFACT_PATH", Value: secretValue}})
+
+	tests := []struct {
+		name   string
+		source func(t *testing.T) string
+	}{
+		{
+			name: "missing source",
+			source: func(t *testing.T) string {
+				return filepath.Join(t.TempDir(), "missing-"+secretValue+".json")
+			},
+		},
+		{
+			name: "directory source",
+			source: func(t *testing.T) string {
+				sourceDir := filepath.Join(t.TempDir(), "artifact-"+secretValue)
+				if err := os.MkdirAll(sourceDir, 0o700); err != nil {
+					t.Fatalf("mkdir source dir: %v", err)
+				}
+				return sourceDir
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore(filepath.Join(t.TempDir(), "factory"))
+			record := testRunRecord("run-artifacts-redacted-error")
+			record.Artifacts = nil
+			if err := store.SaveRun(&record); err != nil {
+				t.Fatalf("SaveRun() unexpected error: %v", err)
+			}
+
+			_, err := store.SaveArtifactFileWithRedactor(record.RunID, ArtifactReference{
+				ID:   "verify-stdout",
+				Name: "verification stdout",
+				Type: "text",
+			}, tt.source(t), redactor)
+			if err == nil {
+				t.Fatalf("SaveArtifactFileWithRedactor() expected error")
+			}
+			errText := err.Error()
+			if strings.Contains(errText, secretValue) {
+				t.Fatalf("error contains raw secret: %q", errText)
+			}
+			if !strings.Contains(errText, RunSecretRedactionPlaceholder) {
+				t.Fatalf("error = %q, want redaction placeholder", errText)
+			}
+		})
+	}
+}
+
 func TestSaveArtifactFileWithRedactorRedactsPayloadAcrossCopyBoundaries(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	sourcePath := filepath.Join(t.TempDir(), "large-stdout.txt")
