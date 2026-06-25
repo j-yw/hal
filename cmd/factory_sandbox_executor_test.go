@@ -1720,8 +1720,11 @@ func TestRunFactorySandboxExecutorWithDepsRecordsSanitizedRemoteOutputEvents(t *
 	if err != nil {
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
-	if out.String() != "Step: run\nconnecting to 203.0.113.42\n" {
-		t.Fatalf("remote output writer = %q", out.String())
+	if strings.Contains(out.String(), "203.0.113.42") {
+		t.Fatalf("remote output writer leaked address: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "<address redacted>") {
+		t.Fatalf("remote output writer missing redaction marker: %q", out.String())
 	}
 	if len(events) != 4 {
 		t.Fatalf("events = %d, want 4: %#v", len(events), events)

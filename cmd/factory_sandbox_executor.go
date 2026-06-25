@@ -435,17 +435,18 @@ func newFactorySandboxTimelineWriter(store factory.Store, deps factorySandboxExe
 	}
 	redactor := sandboxRedactor(false, nil, target)
 	secretRedactor := factory.NewRunSecretRedactor(secrets)
+	redactOutput := func(value string) string {
+		return secretRedactor.RedactString(redactor.Redact(value))
+	}
 	return &factorySandboxTimelineWriter{
-		dst:         dst,
-		store:       store,
-		deps:        deps,
-		runID:       runID,
-		sandboxName: sandboxName,
-		provider:    provider,
-		eventRedact: func(value string) string {
-			return secretRedactor.RedactString(redactor.Redact(value))
-		},
-		outputRedact: secretRedactor.RedactString,
+		dst:          dst,
+		store:        store,
+		deps:         deps,
+		runID:        runID,
+		sandboxName:  sandboxName,
+		provider:     provider,
+		eventRedact:  redactOutput,
+		outputRedact: redactOutput,
 		nextSequence: nextSequence,
 	}
 }
