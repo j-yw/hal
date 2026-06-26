@@ -849,6 +849,9 @@ func TestDigitalOceanTailscaleHostnameAttemptsPreferFastFallback(t *testing.T) {
 	if digitalOceanTailscaleHostnameAttempts <= 0 {
 		t.Fatalf("digitalOceanTailscaleHostnameAttempts = %d, want positive", digitalOceanTailscaleHostnameAttempts)
 	}
+	if digitalOceanTailscalePublicAttempts < 36 {
+		t.Fatalf("digitalOceanTailscalePublicAttempts = %d, want enough budget for cloud-init Tailscale setup", digitalOceanTailscalePublicAttempts)
+	}
 	if digitalOceanTailscaleHostnameAttempts > 3 {
 		t.Fatalf("digitalOceanTailscaleHostnameAttempts = %d, want fast fallback to public SSH", digitalOceanTailscaleHostnameAttempts)
 	}

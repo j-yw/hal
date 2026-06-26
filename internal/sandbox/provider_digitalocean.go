@@ -37,7 +37,7 @@ type DigitalOceanProvider struct {
 const digitalOceanLockdownMarker = "/root/.hal-tailscale-lockdown"
 
 const (
-	digitalOceanTailscalePublicAttempts   = 18
+	digitalOceanTailscalePublicAttempts   = 36
 	digitalOceanTailscaleHostnameAttempts = 3
 	digitalOceanLockdownVerifyAttempts    = 18
 )
