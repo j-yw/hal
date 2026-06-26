@@ -276,7 +276,7 @@ func gitPushBranchInDir(ctx context.Context, dir string, branch string) error {
 		return fmt.Errorf("push branch: empty branch name")
 	}
 
-	if _, err := runGitInDir(ctx, dir, "push", "-u", "origin", branch); err != nil {
+	if _, err := runGitInDirWithEnv(ctx, dir, gitHubPushAuthEnv(nil), "push", "-u", "origin", branch); err != nil {
 		return fmt.Errorf("push branch %q: %w", branch, err)
 	}
 	return nil

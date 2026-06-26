@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -535,7 +536,11 @@ func runGit(ctx context.Context, args ...string) (string, error) {
 }
 
 func runGitInDir(ctx context.Context, dir string, args ...string) (string, error) {
-	out, err := runGitRawInDir(ctx, dir, args...)
+	return runGitInDirWithEnv(ctx, dir, nil, args...)
+}
+
+func runGitInDirWithEnv(ctx context.Context, dir string, extraEnv map[string]string, args ...string) (string, error) {
+	out, err := runGitRawInDirWithEnv(ctx, dir, extraEnv, args...)
 	if err != nil {
 		return "", err
 	}
@@ -547,12 +552,23 @@ func runGitRaw(ctx context.Context, args ...string) (string, error) {
 }
 
 func runGitRawInDir(ctx context.Context, dir string, args ...string) (string, error) {
+	return runGitRawInDirWithEnv(ctx, dir, nil, args...)
+}
+
+func runGitRawInDirWithEnv(ctx context.Context, dir string, extraEnv map[string]string, args ...string) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
 	if strings.TrimSpace(dir) != "" {
 		cmd.Dir = dir
+	}
+	if len(extraEnv) > 0 {
+		env := os.Environ()
+		for key, value := range extraEnv {
+			env = append(env, key+"="+value)
+		}
+		cmd.Env = env
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
