@@ -842,6 +842,18 @@ func TestDigitalOceanProvider_Create_LockdownCleansUpWhenTailscaleHostnameVerifi
 	}
 }
 
+func TestDigitalOceanTailscaleHostnameAttemptsPreferFastFallback(t *testing.T) {
+	if digitalOceanTailscaleHostnameAttempts <= 0 {
+		t.Fatalf("digitalOceanTailscaleHostnameAttempts = %d, want positive", digitalOceanTailscaleHostnameAttempts)
+	}
+	if digitalOceanTailscaleHostnameAttempts > 3 {
+		t.Fatalf("digitalOceanTailscaleHostnameAttempts = %d, want fast fallback to public SSH", digitalOceanTailscaleHostnameAttempts)
+	}
+	if digitalOceanTailscaleHostnameAttempts >= digitalOceanTailscalePublicAttempts {
+		t.Fatalf("hostname attempts = %d, public attempts = %d; hostname should be an opportunistic preflight", digitalOceanTailscaleHostnameAttempts, digitalOceanTailscalePublicAttempts)
+	}
+}
+
 func TestDigitalOceanProvider_Create_LockdownFallsBackToPublicIPWhenHostnameUnavailable(t *testing.T) {
 	var publicCatCalls int
 	var hostnameCatCalls int

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const nonInteractiveSSHCommandTimeout = 30 * time.Second
+const nonInteractiveSSHCommandTimeout = 15 * time.Second
 
 func nonInteractiveSSHOptions() []string {
 	return []string{

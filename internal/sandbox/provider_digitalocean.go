@@ -38,7 +38,7 @@ const digitalOceanLockdownMarker = "/root/.hal-tailscale-lockdown"
 
 const (
 	digitalOceanTailscalePublicAttempts   = 18
-	digitalOceanTailscaleHostnameAttempts = 18
+	digitalOceanTailscaleHostnameAttempts = 3
 	digitalOceanLockdownVerifyAttempts    = 18
 )
 
