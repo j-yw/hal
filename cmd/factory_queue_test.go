@@ -1261,7 +1261,7 @@ func TestRunFactoryQueueWorkWithDepsRehydratesRedactedSandboxRemote(t *testing.T
 			gotVerifyEnv[key] = value
 		}
 		command := strings.Join(args, " ")
-		if !strings.Contains(command, "'hal' 'verify' '--json'") {
+		if !strings.Contains(command, `"$HOME/.local/bin/hal" 'verify' '--json'`) {
 			t.Fatalf("remote verify args = %#v, want hal verify command", args)
 		}
 		data, err := json.Marshal(verify.Result{

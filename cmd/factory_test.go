@@ -3449,7 +3449,7 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 				t.Fatalf("connect info = %#v, want sandbox %q at %q", info, target.Name, target.IP)
 			}
 			command := strings.Join(args, " ")
-			if strings.Contains(command, "'hal' 'verify' '--json'") {
+			if strings.Contains(command, `"$HOME/.local/bin/hal" 'verify' '--json'`) {
 				verificationCalled = true
 				remoteVerifyArgs = append([]string(nil), args...)
 				data, err := json.Marshal(verify.Result{
@@ -3533,7 +3533,7 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 	if cleanupCalls != 1 {
 		t.Fatalf("cleanup calls = %d, want 1 after verification passes", cleanupCalls)
 	}
-	wantArgs := []string{"sh", "-lc", "cd " + shellQuote(workspaceDir) + " && exec 'hal' 'verify' '--json' 2>/tmp/hal-factory-verify-stderr"}
+	wantArgs := []string{"sh", "-lc", "set -eu\ncd " + shellQuote(workspaceDir) + "\n" + factorySandboxRemoteHalScript([]string{"verify", "--json"}) + " 2>/tmp/hal-factory-verify-stderr"}
 	if !reflect.DeepEqual(remoteVerifyArgs, wantArgs) {
 		t.Fatalf("remote verify args = %#v, want %#v", remoteVerifyArgs, wantArgs)
 	}
@@ -4136,7 +4136,7 @@ func TestRunFactoryRunWithDepsRecordsAlwaysCleanupWhenFailureArtifactCopyErrors(
 		},
 		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, out io.Writer) error {
 			command := strings.Join(args, " ")
-			if strings.Contains(command, "'hal' 'verify' '--json'") {
+			if strings.Contains(command, `"$HOME/.local/bin/hal" 'verify' '--json'`) {
 				data, err := json.Marshal(verify.Result{
 					SchemaVersion: verify.SchemaVersion,
 					Status:        verify.StatusFail,

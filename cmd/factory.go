@@ -1688,8 +1688,8 @@ func factorySandboxRemoteVerifyArgs(record factory.RunRecord) ([]string, error) 
 	if workspaceDir == "" {
 		return nil, errFactorySandboxWorkspaceRequired
 	}
-	verifyCommand := shellCommand([]string{"hal", "verify", "--json"}) + " 2>/tmp/hal-factory-verify-stderr"
-	return []string{"sh", "-lc", "cd " + shellQuote(workspaceDir) + " && exec " + verifyCommand}, nil
+	verifyScript := "set -eu\ncd " + shellQuote(workspaceDir) + "\n" + factorySandboxRemoteHalScript([]string{"verify", "--json"}) + " 2>/tmp/hal-factory-verify-stderr"
+	return []string{"sh", "-lc", verifyScript}, nil
 }
 
 func parseFactorySandboxVerifyResult(data []byte) (*verify.Result, error) {
