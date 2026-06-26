@@ -3288,6 +3288,9 @@ func TestRunFactoryRunWithDepsRecordsVerificationMetadata(t *testing.T) {
 	if verificationArtifact.Summary["checkId"] != "test" || verificationArtifact.Summary["kind"] != verify.ArtifactKindStdout {
 		t.Fatalf("verification artifact summary = %#v", verificationArtifact.Summary)
 	}
+	if strings.Contains(verificationArtifact.Path, string(filepath.Separator)) && filepath.Separator != '/' {
+		t.Fatalf("stored verification artifact path = %q, want slash separators", verificationArtifact.Path)
+	}
 	if got := readStoredFactoryArtifact(t, store, record.RunID, verificationArtifact); got != "verification stdout\n" {
 		t.Fatalf("stored verification artifact = %q", got)
 	}

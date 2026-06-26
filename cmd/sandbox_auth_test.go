@@ -226,6 +226,7 @@ func TestSandboxAuthRemoteInstallScriptExtractsPrivateArchive(t *testing.T) {
 		"tar -C \"$HOME\" -xzf -",
 		"chmod -R go-rwx",
 		"export HOME=\"$remote_home\"",
+		"refusing to install auth into symlinked target",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("sandboxAuthRemoteInstallScript() missing %q:\n%s", want, script)
@@ -262,6 +263,41 @@ func TestSandboxAuthRemoteInstallScriptExtractsIntoExecUserHome(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected auth file under exec user home %s: %v", path, err)
 		}
+	}
+}
+
+func TestSandboxAuthRemoteInstallScriptRejectsProfileSymlink(t *testing.T) {
+	clearSandboxAuthCodexHome(t)
+	localHome := t.TempDir()
+	writeSandboxAuthTestFile(t, localHome, ".codex/auth.json", "codex-auth")
+
+	files, err := collectSandboxAuthFiles(localHome, sandboxAuthSyncOptions{})
+	if err != nil {
+		t.Fatalf("collectSandboxAuthFiles() error: %v", err)
+	}
+	archive, err := buildSandboxAuthArchive(files)
+	if err != nil {
+		t.Fatalf("buildSandboxAuthArchive() error: %v", err)
+	}
+
+	remoteHome := t.TempDir()
+	redirectedDir := t.TempDir()
+	if err := os.Symlink(redirectedDir, filepath.Join(remoteHome, ".codex")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	cmd := exec.Command("sh", "-lc", sandboxAuthRemoteInstallScript())
+	cmd.Env = append(os.Environ(), "HOME="+remoteHome)
+	cmd.Stdin = bytes.NewReader(archive)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("remote install script succeeded with symlinked target; output:\n%s", output)
+	}
+	if !strings.Contains(string(output), "refusing to install auth into symlinked target: .codex") {
+		t.Fatalf("remote install script output = %q", output)
+	}
+	if _, err := os.Stat(filepath.Join(redirectedDir, "auth.json")); !os.IsNotExist(err) {
+		t.Fatalf("redirected auth file stat error = %v, want not exist", err)
 	}
 }
 

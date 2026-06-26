@@ -2565,7 +2565,7 @@ func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID
 		ref := factory.ArtifactReference{
 			Name: strings.Join(nameParts, "-"),
 			Type: factoryArtifactTypeForPath(path),
-			Path: filepath.Clean(path),
+			Path: filepath.ToSlash(filepath.Clean(path)),
 			Summary: map[string]any{
 				"checkId": artifact.CheckID,
 				"kind":    artifact.Kind,

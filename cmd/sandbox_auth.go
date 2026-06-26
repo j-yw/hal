@@ -391,6 +391,12 @@ func sandboxAuthRemoteInstallScript() string {
 		"if [ -z \"$remote_home\" ]; then remote_home=\"$(pwd)\"; fi",
 		"export HOME=\"$remote_home\"",
 		"mkdir -p \"$HOME\"",
+		"for target in .codex .pi .claude .claude.json; do",
+		"  if [ -L \"$HOME/$target\" ]; then",
+		"    echo \"refusing to install auth into symlinked target: $target\" >&2",
+		"    exit 1",
+		"  fi",
+		"done",
 		"tar -C \"$HOME\" -xzf -",
 		"chmod -R go-rwx \"$HOME/.codex\" \"$HOME/.pi\" \"$HOME/.claude\" \"$HOME/.claude.json\" 2>/dev/null || true",
 	}, "\n")
