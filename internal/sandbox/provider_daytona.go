@@ -333,8 +333,10 @@ func (d *DaytonaProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, err
 	if err != nil {
 		return nil, err
 	}
-	cmdArgs := []string{"exec", name, "--"}
-	cmdArgs = append(cmdArgs, args...)
+	cmdArgs := []string{"exec", name}
+	if len(args) > 0 {
+		cmdArgs = append(cmdArgs, "--", sshRemoteCommand(args))
+	}
 	cmd := exec.Command("daytona", cmdArgs...)
 	d.applyCredentials(cmd)
 	cmd.Stdin = os.Stdin

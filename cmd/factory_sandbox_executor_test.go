@@ -983,7 +983,7 @@ func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToBootstrapEnviro
 	if strings.Contains(argText, requiredSecret) || strings.Contains(argText, optionalSecret) || strings.Contains(argText, "GITHUB_TOKEN=") || strings.Contains(argText, "OPTIONAL_TOKEN=") {
 		t.Fatalf("bootstrap exec args leaked secret env data: %#v", execCalls[0].args)
 	}
-	wantBootstrapArgs := []string{"sh", "-lc", factorySandboxRemoteHalScript([]string{"init"})}
+	wantBootstrapArgs := []string{"sh", "-c", factorySandboxRemoteHalScript([]string{"init"})}
 	if !reflect.DeepEqual(execCalls[0].args, wantBootstrapArgs) {
 		t.Fatalf("bootstrap exec args = %#v, want %#v", execCalls[0].args, wantBootstrapArgs)
 	}
@@ -1093,7 +1093,7 @@ func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToRemoteExecution
 	if strings.Contains(argText, requiredSecret) || strings.Contains(argText, optionalSecret) {
 		t.Fatalf("remote exec args leaked secret values: %#v", gotArgs)
 	}
-	if len(gotArgs) != 3 || gotArgs[0] != "sh" || gotArgs[1] != "-lc" {
+	if len(gotArgs) != 3 || gotArgs[0] != "sh" || gotArgs[1] != "-c" {
 		t.Fatalf("remote exec args = %#v", gotArgs)
 	}
 	command := gotArgs[2]
@@ -1863,7 +1863,7 @@ func TestFactorySandboxBootstrapCommandArgsRunsHalFromRemoteHome(t *testing.T) {
 		Args: []string{"init", "--refresh-templates"},
 		Dir:  "/workspace/hal",
 	})
-	if len(args) != 3 || args[0] != "sh" || args[1] != "-lc" {
+	if len(args) != 3 || args[0] != "sh" || args[1] != "-c" {
 		t.Fatalf("bootstrap args = %#v, want shell wrapper", args)
 	}
 	script := args[2]
@@ -1971,7 +1971,7 @@ func TestFactorySandboxRemoteCommandArgsSelectsWorkspaceDirectory(t *testing.T) 
 		"export HAL_FACTORY_MAX_CI_FIX_ATTEMPTS=0",
 		`exec "$HOME/.local/bin/hal" 'auto' '.hal/prd-feature.md' '--base' 'hal/factory-remote-workspace-bootstrap'`,
 	}, "\n")
-	want := []string{"sh", "-lc", wantScript}
+	want := []string{"sh", "-c", wantScript}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("factorySandboxRemoteCommandArgs() = %#v, want %#v", got, want)
 	}
@@ -2138,7 +2138,7 @@ func TestRunFactorySandboxProviderExecWithEnvUsesStdinScriptWithoutArgSecrets(t 
 	}
 
 	var out bytes.Buffer
-	err := runFactorySandboxProviderExecWithEnv(context.Background(), provider, &sandbox.ConnectInfo{Name: "factory-dev"}, []string{"sh", "-lc", "cd '/workspace/repo' && exec 'hal' 'auto'"}, map[string]string{
+	err := runFactorySandboxProviderExecWithEnv(context.Background(), provider, &sandbox.ConnectInfo{Name: "factory-dev"}, []string{"sh", "-c", "cd '/workspace/repo' && exec 'hal' 'auto'"}, map[string]string{
 		"GITHUB_TOKEN": secret,
 		"EMPTY_TOKEN":  "",
 	}, &out)
@@ -2161,7 +2161,7 @@ func TestRunFactorySandboxProviderExecWithEnvUsesStdinScriptWithoutArgSecrets(t 
 	if strings.Contains(script, "exec 'env'") {
 		t.Fatalf("stdin script used env argv assignment wrapper: %q", script)
 	}
-	if !strings.Contains(script, "exec 'sh' '-lc'") {
+	if !strings.Contains(script, "exec 'sh' '-c'") {
 		t.Fatalf("stdin script did not exec remote command: %q", script)
 	}
 }
@@ -2208,11 +2208,11 @@ func TestRunFactorySandboxProviderExecShellQuotesRemoteArgs(t *testing.T) {
 		cmd: exec.Command("true"),
 	}
 
-	err := runFactorySandboxProviderExec(context.Background(), provider, &sandbox.ConnectInfo{Name: "factory-dev"}, []string{"sh", "-lc", "cd '/workspace/hal' && exec hal auto"}, io.Discard)
+	err := runFactorySandboxProviderExec(context.Background(), provider, &sandbox.ConnectInfo{Name: "factory-dev"}, []string{"sh", "-c", "cd '/workspace/hal' && exec hal auto"}, io.Discard)
 	if err != nil {
 		t.Fatalf("runFactorySandboxProviderExec() unexpected error: %v", err)
 	}
-	want := []string{"sh", "-lc", "'sh' '-lc' 'cd '\"'\"'/workspace/hal'\"'\"' && exec hal auto'"}
+	want := []string{"sh", "-c", "'sh' '-c' 'cd '\"'\"'/workspace/hal'\"'\"' && exec hal auto'"}
 	if !reflect.DeepEqual(provider.args, want) {
 		t.Fatalf("provider args = %#v, want %#v", provider.args, want)
 	}

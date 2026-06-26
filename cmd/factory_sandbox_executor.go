@@ -131,7 +131,7 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 		if customRunProviderExec {
 			runProviderExec := deps.runProviderExec
 			deps.runProviderScript = func(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, script string, out io.Writer) error {
-				return runProviderExec(ctx, provider, info, []string{"sh", "-lc", script}, out)
+				return runProviderExec(ctx, provider, info, []string{"sh", "-c", script}, out)
 			}
 		} else {
 			deps.runProviderScript = defaultFactorySandboxExecutorDeps.runProviderScript
@@ -871,12 +871,12 @@ func factorySandboxBootstrapCommandArgs(command factory.BootstrapCommand) []stri
 	args = append(args, command.Args...)
 	if dir := strings.TrimSpace(command.Dir); dir != "" {
 		if strings.TrimSpace(command.Name) == "hal" {
-			return []string{"sh", "-lc", "set -eu\ncd " + shellQuote(dir) + "\n" + factorySandboxRemoteHalScript(command.Args)}
+			return []string{"sh", "-c", "set -eu\ncd " + shellQuote(dir) + "\n" + factorySandboxRemoteHalScript(command.Args)}
 		}
-		return []string{"sh", "-lc", "cd " + shellQuote(dir) + " && exec " + shellCommand(args)}
+		return []string{"sh", "-c", "cd " + shellQuote(dir) + " && exec " + shellCommand(args)}
 	}
 	if strings.TrimSpace(command.Name) == "hal" {
-		return []string{"sh", "-lc", factorySandboxRemoteHalScript(command.Args)}
+		return []string{"sh", "-c", factorySandboxRemoteHalScript(command.Args)}
 	}
 	return args
 }
@@ -1396,9 +1396,9 @@ func factorySandboxRemoteCommandArgs(record factory.RunRecord, req factoryRunAut
 	script := factorySandboxRemoteAutoScript(req)
 	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
 	if workspaceDir == "" {
-		return []string{"sh", "-lc", script}
+		return []string{"sh", "-c", script}
 	}
-	return []string{"sh", "-lc", "set -eu\ncd " + shellQuote(workspaceDir) + "\n" + script}
+	return []string{"sh", "-c", "set -eu\ncd " + shellQuote(workspaceDir) + "\n" + script}
 }
 
 func factorySandboxRemoteWorkspaceDir(record factory.RunRecord) string {
@@ -1856,7 +1856,7 @@ func factorySandboxProviderExecArgs(args []string) []string {
 	if len(args) == 0 {
 		return args
 	}
-	return []string{"sh", "-lc", shellCommand(args)}
+	return []string{"sh", "-c", shellCommand(args)}
 }
 
 func runFactorySandboxProviderScript(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, script string, out io.Writer) error {
@@ -1864,7 +1864,7 @@ func runFactorySandboxProviderScript(ctx context.Context, provider sandbox.Provi
 		return fmt.Errorf("sandbox provider is required")
 	}
 	if _, ok := provider.(*sandbox.DaytonaProvider); ok {
-		cmd, err := provider.Exec(info, []string{"sh", "-lc", script})
+		cmd, err := provider.Exec(info, []string{"sh", "-c", script})
 		if err != nil {
 			return err
 		}

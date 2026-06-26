@@ -652,7 +652,7 @@ func TestDaytonaProvider_Exec(t *testing.T) {
 		t.Fatalf("Exec() unexpected error: %v", err)
 	}
 
-	wantArgs := []string{"daytona", "exec", "my-sandbox", "--", "ls", "-la"}
+	wantArgs := []string{"daytona", "exec", "my-sandbox", "--", "'ls' '-la'"}
 	if len(cmd.Args) != len(wantArgs) {
 		t.Fatalf("got args %v, want %v", cmd.Args, wantArgs)
 	}
@@ -681,8 +681,7 @@ func TestDaytonaProvider_Exec_EmptyArgs(t *testing.T) {
 		t.Fatalf("Exec() unexpected error: %v", err)
 	}
 
-	// With empty args, should still have the -- separator.
-	wantArgs := []string{"daytona", "exec", "sb", "--"}
+	wantArgs := []string{"daytona", "exec", "sb"}
 	if len(cmd.Args) != len(wantArgs) {
 		t.Fatalf("got args %v, want %v", cmd.Args, wantArgs)
 	}
