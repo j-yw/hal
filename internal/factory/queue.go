@@ -15,10 +15,8 @@ import (
 )
 
 const (
-	queueFileName        = "queue.json"
-	queueLockDirName     = "queue.lock"
-	queueLockWaitTimeout = 5 * time.Second
-	queueLockRetryDelay  = 10 * time.Millisecond
+	queueFileName     = "queue.json"
+	queueLockFileName = "queue.lock"
 )
 
 var saveQueueFile = saveStoreFile
@@ -372,7 +370,7 @@ func (s Store) queueLockPath() string {
 	if s.root == "" {
 		return ""
 	}
-	return filepath.Join(s.root, queueLockDirName)
+	return filepath.Join(s.root, queueLockFileName)
 }
 
 func (s Store) withQueueLock(fn func() error) error {
@@ -397,22 +395,34 @@ func acquireQueueLock(path string) (func(), error) {
 		return nil, errStoreDirUnavailable
 	}
 
-	deadline := time.Now().Add(queueLockWaitTimeout)
-	for {
-		err := os.Mkdir(path, 0o700)
-		if err == nil {
-			return func() {
-				_ = os.Remove(path)
-			}, nil
-		}
-		if !errors.Is(err, fs.ErrExist) {
-			return nil, fmt.Errorf("acquire factory queue lock: %w", err)
-		}
-		if !time.Now().Before(deadline) {
-			return nil, fmt.Errorf("acquire factory queue lock: %w", err)
-		}
-		time.Sleep(queueLockRetryDelay)
+	if err := removeLegacyQueueLockDir(path); err != nil {
+		return nil, err
 	}
+
+	lock, err := lockStoreFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("acquire factory queue lock: %w", err)
+	}
+	return func() {
+		_ = lock.Close()
+	}, nil
+}
+
+func removeLegacyQueueLockDir(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect factory queue lock: %w", err)
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove legacy factory queue lock dir: %w", err)
+	}
+	return nil
 }
 
 func copyQueueEntries(entries []QueueEntry) []QueueEntry {

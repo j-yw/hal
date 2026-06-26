@@ -84,6 +84,37 @@ func TestSaveQueueAndLoadQueueRoundTripWithNewStore(t *testing.T) {
 	}
 }
 
+func TestSaveQueueRecoversLegacyStaleLockDir(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	if err := os.MkdirAll(store.Root(), 0o700); err != nil {
+		t.Fatalf("mkdir store root: %v", err)
+	}
+	if err := os.Mkdir(store.queueLockPath(), 0o700); err != nil {
+		t.Fatalf("mkdir legacy queue lock dir: %v", err)
+	}
+
+	entry := testQueueEntry("queue-001", "run-001", time.Date(2026, 6, 20, 17, 0, 0, 0, time.UTC))
+	if err := store.SaveQueue([]QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() with stale legacy lock dir unexpected error: %v", err)
+	}
+
+	info, err := os.Stat(store.queueLockPath())
+	if err != nil {
+		t.Fatalf("stat queue lock file: %v", err)
+	}
+	if info.IsDir() {
+		t.Fatalf("queue lock should be an OS lock file, not a legacy directory")
+	}
+
+	got, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(got, []QueueEntry{entry}) {
+		t.Fatalf("LoadQueue() = %#v, want %#v", got, []QueueEntry{entry})
+	}
+}
+
 func TestLoadQueueCorruptJSONReturnsErrorAndPreservesFile(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	if err := os.MkdirAll(store.Root(), 0o700); err != nil {

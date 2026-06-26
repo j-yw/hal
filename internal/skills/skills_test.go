@@ -44,10 +44,30 @@ func TestInstallSkillsCreatesManagedSkills(t *testing.T) {
 }
 
 func TestLocalManagedSkillLinkTargetUsesInstalledSkills(t *testing.T) {
-	if got, want := LocalManagedSkillLinkTarget("factory"), filepath.Join("..", "..", template.HalDir, "skills", "factory"); got != want {
+	projectDir := t.TempDir()
+
+	if got, want := LocalManagedSkillLinkTarget(projectDir, "factory"), filepath.Join("..", "..", template.HalDir, "skills", "factory"); got != want {
 		t.Fatalf("LocalManagedSkillLinkTarget(factory) = %q, want %q", got, want)
 	}
-	if got, want := LocalManagedSkillLinkTarget("prd"), filepath.Join("..", "..", template.HalDir, "skills", "prd"); got != want {
+	if got, want := LocalManagedSkillLinkTarget(projectDir, "prd"), filepath.Join("..", "..", template.HalDir, "skills", "prd"); got != want {
+		t.Fatalf("LocalManagedSkillLinkTarget(prd) = %q, want %q", got, want)
+	}
+}
+
+func TestLocalManagedSkillLinkTargetUsesFactorySourceInHalRepo(t *testing.T) {
+	projectDir := t.TempDir()
+	factorySkill := filepath.Join(projectDir, "internal", "skills", "factory")
+	if err := os.MkdirAll(factorySkill, 0755); err != nil {
+		t.Fatalf("failed to create factory skill source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(factorySkill, "SKILL.md"), []byte("factory"), 0644); err != nil {
+		t.Fatalf("failed to write factory skill source: %v", err)
+	}
+
+	if got, want := LocalManagedSkillLinkTarget(projectDir, "factory"), filepath.Join("..", "..", "internal", "skills", "factory"); got != want {
+		t.Fatalf("LocalManagedSkillLinkTarget(factory) = %q, want %q", got, want)
+	}
+	if got, want := LocalManagedSkillLinkTarget(projectDir, "prd"), filepath.Join("..", "..", template.HalDir, "skills", "prd"); got != want {
 		t.Fatalf("LocalManagedSkillLinkTarget(prd) = %q, want %q", got, want)
 	}
 }

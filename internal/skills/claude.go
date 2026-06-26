@@ -52,7 +52,7 @@ func (c *ClaudeLinker) Link(projectDir string, skills []string) error {
 
 	for _, skill := range skills {
 		// Use relative path for symlink (portable across machines)
-		target := LocalManagedSkillLinkTarget(skill)
+		target := LocalManagedSkillLinkTarget(projectDir, skill)
 		link := filepath.Join(skillsDir, skill)
 
 		// Remove existing link/dir if present

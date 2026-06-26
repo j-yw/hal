@@ -75,7 +75,7 @@ func TestCheckLocalSkillLinksAcceptsInstalledFactorySkillTargets(t *testing.T) {
 		if err := os.MkdirAll(skillsDir, 0755); err != nil {
 			t.Fatalf("MkdirAll(%s) error: %v", skillsDir, err)
 		}
-		if err := os.Symlink(skills.LocalManagedSkillLinkTarget("factory"), filepath.Join(skillsDir, "factory")); err != nil {
+		if err := os.Symlink(skills.LocalManagedSkillLinkTarget(dir, "factory"), filepath.Join(skillsDir, "factory")); err != nil {
 			t.Fatalf("Symlink(%s factory) error: %v", engine, err)
 		}
 	}

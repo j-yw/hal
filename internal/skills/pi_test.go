@@ -99,6 +99,32 @@ func TestPiLinkerLinkFactoryTargetsInstalledSkillSource(t *testing.T) {
 	}
 }
 
+func TestPiLinkerLinkFactoryTargetsSourceInHalRepo(t *testing.T) {
+	projectDir := t.TempDir()
+	factorySkill := filepath.Join(projectDir, "internal", "skills", "factory")
+	if err := os.MkdirAll(factorySkill, 0755); err != nil {
+		t.Fatalf("failed to create factory skill source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(factorySkill, "SKILL.md"), []byte("factory"), 0644); err != nil {
+		t.Fatalf("failed to write factory skill source: %v", err)
+	}
+
+	linker := &PiLinker{}
+	if err := linker.Link(projectDir, []string{"factory"}); err != nil {
+		t.Fatalf("Link() error = %v", err)
+	}
+
+	linkPath := filepath.Join(projectDir, ".pi", "skills", "factory")
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("Could not read factory symlink: %v", err)
+	}
+	expected := filepath.Join("..", "..", "internal", "skills", "factory")
+	if target != expected {
+		t.Fatalf("factory symlink target = %q, want %q", target, expected)
+	}
+}
+
 func TestPiLinkerLinkIdempotent(t *testing.T) {
 	projectDir := t.TempDir()
 	halSkillsDir := filepath.Join(projectDir, ".hal", "skills", "testskill")

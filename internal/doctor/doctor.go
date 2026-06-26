@@ -997,7 +997,7 @@ func checkLocalSkillLinks(dir string) Check {
 			if err != nil {
 				continue
 			}
-			expected := skills.LocalManagedSkillLinkTarget(skill)
+			expected := skills.LocalManagedSkillLinkTarget(dir, skill)
 			if target != expected {
 				stale = append(stale, filepath.Join("."+ed.name, "skills", skill))
 			}
