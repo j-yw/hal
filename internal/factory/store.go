@@ -790,7 +790,7 @@ func firstStoreRedactionMatch(data []byte, secrets [][]byte) (int, []byte) {
 		if index < 0 {
 			continue
 		}
-		if bestIndex == -1 || index < bestIndex {
+		if bestIndex == -1 || index < bestIndex || (index == bestIndex && len(secret) > len(bestSecret)) {
 			bestIndex = index
 			bestSecret = secret
 		}

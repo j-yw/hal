@@ -651,6 +651,28 @@ func TestSaveArtifactFileWithRedactorRedactsPayloadAcrossCopyBoundaries(t *testi
 	}
 }
 
+func TestCopyStoreFilePayloadRedactedPrefersLongestOverlappingSecret(t *testing.T) {
+	var dest strings.Builder
+	source := strings.NewReader("checkout token=abcdef complete")
+	secrets := [][]byte{
+		[]byte("abc"),
+		[]byte("abcdef"),
+	}
+
+	if err := copyStoreFilePayloadRedacted(&dest, source, secrets, len("abcdef")); err != nil {
+		t.Fatalf("copyStoreFilePayloadRedacted() unexpected error: %v", err)
+	}
+
+	got := dest.String()
+	want := "checkout token=" + RunSecretRedactionPlaceholder + " complete"
+	if got != want {
+		t.Fatalf("redacted payload = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "def") {
+		t.Fatalf("redacted payload leaked overlapping secret suffix: %q", got)
+	}
+}
+
 func TestSaveArtifactFileUpsertsMetadataByStoredPath(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	record := testRunRecord("run-artifacts-upsert")
