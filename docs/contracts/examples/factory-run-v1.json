@@ -14,7 +14,6 @@
       "name": "run-record",
       "type": "json",
       "path": "factory/runs/run-20260620-002.json",
-      "url": "https://github.com/acme/hal/actions/runs/123",
       "storedPath": "artifacts/run-20260620-002/factory-runs-run-20260620-002.json",
       "sizeBytes": 2048,
       "createdAt": "2026-06-20T12:04:00Z"
@@ -39,8 +38,44 @@
       "summary": {
         "collectionStatus": "stored"
       }
+    },
+    {
+      "id": "hal-reports-ci-output.log",
+      "name": "ci-log",
+      "type": "text",
+      "path": ".hal/reports/ci-output.log",
+      "storedPath": "artifacts/run-20260620-002/hal-reports-ci-output.log",
+      "sizeBytes": 1024,
+      "createdAt": "2026-06-20T12:01:00Z"
     }
   ],
+  "telemetry": {
+    "totalDurationMs": 1740000,
+    "stepDurations": [
+      {
+        "step": "ci",
+        "startedAt": "2026-06-20T12:01:00Z",
+        "finishedAt": "2026-06-20T12:04:00Z",
+        "durationMs": 180000
+      }
+    ],
+    "engine": {
+      "name": "codex",
+      "model": "gpt-5"
+    },
+    "sandbox": {
+      "provider": "digitalocean",
+      "size": "s-2vcpu-4gb"
+    },
+    "estimatedSandboxCost": {
+      "amountUsd": 0.04,
+      "estimated": true
+    },
+    "ciOutcome": "failed",
+    "verificationOutcome": "passed",
+    "artifactCount": 3,
+    "failureCategory": "ci"
+  },
   "eventSummary": {
     "total": 6,
     "byType": {

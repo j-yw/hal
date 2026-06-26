@@ -186,16 +186,115 @@ func TestRunCapturesShellCheckArtifacts(t *testing.T) {
 	}
 
 	check := result.Checks[0]
-	requireVerifyArtifactPath(t, check.StdoutArtifact, "test", ArtifactKindStdout)
-	requireVerifyArtifactPath(t, check.StderrArtifact, "test", ArtifactKindStderr)
-	if artifactRunDir(check.StdoutArtifact) != artifactRunDir(check.StderrArtifact) {
-		t.Fatalf("stdout artifact dir = %q, stderr artifact dir = %q; want same run dir", artifactRunDir(check.StdoutArtifact), artifactRunDir(check.StderrArtifact))
+	if check.StdoutArtifact != ".hal/reports/verify/test-stdout.txt" {
+		t.Errorf("StdoutArtifact = %q, want .hal/reports/verify/test-stdout.txt", check.StdoutArtifact)
+	}
+	if check.StderrArtifact != ".hal/reports/verify/test-stderr.txt" {
+		t.Errorf("StderrArtifact = %q, want .hal/reports/verify/test-stderr.txt", check.StderrArtifact)
 	}
 
-	requireArtifact(t, result.Artifacts, "test", ArtifactKindStdout, check.StdoutArtifact)
-	requireArtifact(t, result.Artifacts, "test", ArtifactKindStderr, check.StderrArtifact)
-	requireFileContent(t, filepath.Join(projectRoot, filepath.FromSlash(check.StdoutArtifact)), "unit stdout")
-	requireFileContent(t, filepath.Join(projectRoot, filepath.FromSlash(check.StderrArtifact)), "unit stderr")
+	requireArtifact(t, result.Artifacts, "test", ArtifactKindStdout, ".hal/reports/verify/test-stdout.txt")
+	requireArtifact(t, result.Artifacts, "test", ArtifactKindStderr, ".hal/reports/verify/test-stderr.txt")
+	requireFileContent(t, filepath.Join(projectRoot, ".hal", "reports", "verify", "test-stdout.txt"), "unit stdout")
+	requireFileContent(t, filepath.Join(projectRoot, ".hal", "reports", "verify", "test-stderr.txt"), "unit stderr")
+}
+
+func TestRunCapturesActualArtifactSourcePathWhenArtifactDirIsOverridden(t *testing.T) {
+	projectRoot := t.TempDir()
+	artifactDir := filepath.Join(t.TempDir(), "verify-artifacts")
+
+	result, err := Run(context.Background(), &Config{
+		ProjectRoot: projectRoot,
+		ArtifactDir: artifactDir,
+		Checks: []ShellCheck{
+			{
+				ID:             "test",
+				Name:           "Unit tests",
+				Command:        helperCommand(t, "write-output", "unit stdout", ""),
+				WorkDir:        projectRoot,
+				TimeoutSeconds: 10,
+				Required:       true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+	if len(result.Artifacts) != 1 {
+		t.Fatalf("Artifacts length = %d, want 1: %#v", len(result.Artifacts), result.Artifacts)
+	}
+
+	artifact := result.Artifacts[0]
+	wantDisplayPath := ".hal/reports/verify/test-stdout.txt"
+	if artifact.Path != wantDisplayPath {
+		t.Fatalf("artifact Path = %q, want %q", artifact.Path, wantDisplayPath)
+	}
+	wantSourcePath := filepath.Join(artifactDir, "test-stdout.txt")
+	if artifact.SourcePath() != wantSourcePath {
+		t.Fatalf("artifact SourcePath = %q, want %q", artifact.SourcePath(), wantSourcePath)
+	}
+	if result.Checks[0].StdoutArtifact != wantDisplayPath {
+		t.Fatalf("StdoutArtifact = %q, want %q", result.Checks[0].StdoutArtifact, wantDisplayPath)
+	}
+	requireFileContent(t, wantSourcePath, "unit stdout")
+	if _, err := os.Stat(filepath.Join(projectRoot, ".hal", "reports", "verify", "test-stdout.txt")); !os.IsNotExist(err) {
+		t.Fatalf("default artifact path exists with overridden ArtifactDir: %v", err)
+	}
+}
+
+func TestRunWritesArtifactsWithRestrictedPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits are not portable on Windows")
+	}
+	projectRoot := t.TempDir()
+
+	_, err := Run(context.Background(), &Config{
+		ProjectRoot: projectRoot,
+		Checks: []ShellCheck{
+			{
+				ID:             "test",
+				Name:           "Unit tests",
+				Command:        helperCommand(t, "write-output", "sensitive stdout", ""),
+				WorkDir:        projectRoot,
+				TimeoutSeconds: 10,
+				Required:       true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+
+	requireFilePerm(t, filepath.Join(projectRoot, ".hal", "reports", "verify"), 0700)
+	requireFilePerm(t, filepath.Join(projectRoot, ".hal", "reports", "verify", "test-stdout.txt"), 0600)
+}
+
+func TestRunReplacesExistingRestrictedArtifact(t *testing.T) {
+	projectRoot := t.TempDir()
+	cfg := func(output string) *Config {
+		return &Config{
+			ProjectRoot: projectRoot,
+			Checks: []ShellCheck{
+				{
+					ID:             "test",
+					Name:           "Unit tests",
+					Command:        helperCommand(t, "write-output", output, ""),
+					WorkDir:        projectRoot,
+					TimeoutSeconds: 10,
+					Required:       true,
+				},
+			},
+		}
+	}
+
+	if _, err := Run(context.Background(), cfg("first stdout")); err != nil {
+		t.Fatalf("first Run() unexpected error: %v", err)
+	}
+	if _, err := Run(context.Background(), cfg("second stdout")); err != nil {
+		t.Fatalf("second Run() unexpected error: %v", err)
+	}
+
+	requireFileContent(t, filepath.Join(projectRoot, ".hal", "reports", "verify", "test-stdout.txt"), "second stdout")
 }
 
 func TestRunDisambiguatesSanitizedArtifactIDs(t *testing.T) {
@@ -229,65 +328,17 @@ func TestRunDisambiguatesSanitizedArtifactIDs(t *testing.T) {
 		t.Fatalf("Checks length = %d, want 2", len(result.Checks))
 	}
 
-	requireVerifyArtifactPath(t, result.Checks[0].StdoutArtifact, "a_b", ArtifactKindStdout)
-	requireVerifyArtifactPath(t, result.Checks[1].StdoutArtifact, "a_b-2", ArtifactKindStdout)
-	if artifactRunDir(result.Checks[0].StdoutArtifact) != artifactRunDir(result.Checks[1].StdoutArtifact) {
-		t.Fatalf("first artifact dir = %q, second artifact dir = %q; want same run dir", artifactRunDir(result.Checks[0].StdoutArtifact), artifactRunDir(result.Checks[1].StdoutArtifact))
+	if result.Checks[0].StdoutArtifact != ".hal/reports/verify/a_b-stdout.txt" {
+		t.Errorf("first StdoutArtifact = %q, want .hal/reports/verify/a_b-stdout.txt", result.Checks[0].StdoutArtifact)
+	}
+	if result.Checks[1].StdoutArtifact != ".hal/reports/verify/a_b-2-stdout.txt" {
+		t.Errorf("second StdoutArtifact = %q, want .hal/reports/verify/a_b-2-stdout.txt", result.Checks[1].StdoutArtifact)
 	}
 
-	requireArtifact(t, result.Artifacts, "a/b", ArtifactKindStdout, result.Checks[0].StdoutArtifact)
-	requireArtifact(t, result.Artifacts, "a_b", ArtifactKindStdout, result.Checks[1].StdoutArtifact)
-	requireFileContent(t, filepath.Join(projectRoot, filepath.FromSlash(result.Checks[0].StdoutArtifact)), "slash stdout")
-	requireFileContent(t, filepath.Join(projectRoot, filepath.FromSlash(result.Checks[1].StdoutArtifact)), "underscore stdout")
-}
-
-func TestRunWritesArtifactsToUniqueRunDirectories(t *testing.T) {
-	projectRoot := t.TempDir()
-	runAt := time.Date(2026, 6, 21, 15, 40, 16, 123, time.UTC)
-
-	first, err := runWithDeps(context.Background(), Config{
-		ProjectRoot: projectRoot,
-		Checks: []ShellCheck{
-			{
-				ID:             "test",
-				Name:           "Unit tests",
-				Command:        helperCommand(t, "write-output", "first stdout", ""),
-				WorkDir:        projectRoot,
-				TimeoutSeconds: 10,
-				Required:       true,
-			},
-		},
-	}, runDeps{now: fixedNow(runAt)})
-	if err != nil {
-		t.Fatalf("first runWithDeps() error = %v", err)
-	}
-
-	second, err := runWithDeps(context.Background(), Config{
-		ProjectRoot: projectRoot,
-		Checks: []ShellCheck{
-			{
-				ID:             "test",
-				Name:           "Unit tests",
-				Command:        helperCommand(t, "write-output", "second stdout", ""),
-				WorkDir:        projectRoot,
-				TimeoutSeconds: 10,
-				Required:       true,
-			},
-		},
-	}, runDeps{now: fixedNow(runAt)})
-	if err != nil {
-		t.Fatalf("second runWithDeps() error = %v", err)
-	}
-
-	firstPath := first.Checks[0].StdoutArtifact
-	secondPath := second.Checks[0].StdoutArtifact
-	if firstPath == secondPath {
-		t.Fatalf("artifact path reused across runs: %q", firstPath)
-	}
-	requireVerifyArtifactPath(t, firstPath, "test", ArtifactKindStdout)
-	requireVerifyArtifactPath(t, secondPath, "test", ArtifactKindStdout)
-	requireFileContent(t, filepath.Join(projectRoot, filepath.FromSlash(firstPath)), "first stdout")
-	requireFileContent(t, filepath.Join(projectRoot, filepath.FromSlash(secondPath)), "second stdout")
+	requireArtifact(t, result.Artifacts, "a/b", ArtifactKindStdout, ".hal/reports/verify/a_b-stdout.txt")
+	requireArtifact(t, result.Artifacts, "a_b", ArtifactKindStdout, ".hal/reports/verify/a_b-2-stdout.txt")
+	requireFileContent(t, filepath.Join(projectRoot, ".hal", "reports", "verify", "a_b-stdout.txt"), "slash stdout")
+	requireFileContent(t, filepath.Join(projectRoot, ".hal", "reports", "verify", "a_b-2-stdout.txt"), "underscore stdout")
 }
 
 func TestRunRequiredShellCheckTimeout(t *testing.T) {
@@ -709,34 +760,6 @@ func joinCommand(parts []string) string {
 	return strings.Join(parts, " ")
 }
 
-func fixedNow(now time.Time) func() time.Time {
-	return func() time.Time {
-		return now
-	}
-}
-
-func requireVerifyArtifactPath(t *testing.T, got, artifactID, kind string) {
-	t.Helper()
-
-	prefix := ".hal/reports/verify/"
-	suffix := "/" + artifactID + "-" + kind + ".txt"
-	if !strings.HasPrefix(got, prefix) || !strings.HasSuffix(got, suffix) {
-		t.Fatalf("artifact path = %q, want %s<run-id>%s", got, prefix, suffix)
-	}
-	runID := strings.TrimSuffix(strings.TrimPrefix(got, prefix), suffix)
-	if runID == "" {
-		t.Fatalf("artifact path = %q, missing run id", got)
-	}
-}
-
-func artifactRunDir(artifactPath string) string {
-	index := strings.LastIndex(artifactPath, "/")
-	if index < 0 {
-		return ""
-	}
-	return artifactPath[:index]
-}
-
 func requireArtifact(t *testing.T, artifacts []ArtifactReference, checkID, kind, wantPath string) {
 	t.Helper()
 
@@ -760,5 +783,17 @@ func requireFileContent(t *testing.T, path, want string) {
 	}
 	if got := string(data); got != want {
 		t.Fatalf("%s content = %q, want %q", path, got, want)
+	}
+}
+
+func requireFilePerm(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s permissions = %#o, want %#o", path, got, want)
 	}
 }

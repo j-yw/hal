@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -44,6 +45,71 @@ func TestFactorySandboxArtifactCopierRejectsTopLevelFileSymlink(t *testing.T) {
 		t.Fatalf("CopyFile() copied symlink target content: %q", data)
 	} else if !os.IsNotExist(readErr) {
 		t.Fatalf("ReadFile(localPath) error = %v, want not exist", readErr)
+	}
+}
+
+func TestFactoryProviderExecSandboxArtifactCopierRejectsTopLevelFileSymlink(t *testing.T) {
+	requireLocalSandboxArtifactCopierRuntime(t)
+
+	remoteRoot := realSandboxArtifactTempDir(t)
+	halDir := filepath.Join(remoteRoot, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	secretPath := filepath.Join(remoteRoot, "secret.txt")
+	if err := os.WriteFile(secretPath, []byte("sandbox-secret"), 0o600); err != nil {
+		t.Fatalf("WriteFile(secret) error = %v", err)
+	}
+	linkPath := filepath.Join(halDir, "progress.txt")
+	if err := os.Symlink(secretPath, linkPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	localPath := filepath.Join(t.TempDir(), "progress.txt")
+	copier := &factoryProviderExecSandboxArtifactCopier{
+		provider:        localExecSandboxArtifactProvider{},
+		connectInfo:     &sandbox.ConnectInfo{Name: "local"},
+		baseDir:         remoteRoot,
+		runProviderExec: runFactorySandboxProviderExec,
+	}
+	err := copier.CopyFile(context.Background(), linkPath, localPath)
+	requireSymlinkSandboxArtifactCopyError(t, err)
+	if data, readErr := os.ReadFile(localPath); readErr == nil {
+		t.Fatalf("CopyFile() copied symlink target content: %q", data)
+	} else if !os.IsNotExist(readErr) {
+		t.Fatalf("ReadFile(localPath) error = %v, want not exist", readErr)
+	}
+}
+
+func TestFactoryProviderExecSandboxArtifactCopierKeepsStderrOutOfFilePayload(t *testing.T) {
+	requireLocalSandboxArtifactCopierRuntime(t)
+
+	remoteRoot := realSandboxArtifactTempDir(t)
+	halDir := filepath.Join(remoteRoot, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	remotePath := filepath.Join(halDir, "progress.txt")
+	if err := os.WriteFile(remotePath, []byte("artifact payload\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(remote) error = %v", err)
+	}
+
+	localPath := filepath.Join(t.TempDir(), "progress.txt")
+	copier := &factoryProviderExecSandboxArtifactCopier{
+		provider:          warningLocalExecSandboxArtifactProvider{},
+		connectInfo:       &sandbox.ConnectInfo{Name: "local"},
+		baseDir:           remoteRoot,
+		runProviderExecIO: runFactorySandboxProviderExecIO,
+	}
+	if err := copier.CopyFile(context.Background(), remotePath, localPath); err != nil {
+		t.Fatalf("CopyFile() unexpected error: %v", err)
+	}
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatalf("ReadFile(localPath) error = %v", err)
+	}
+	if got := string(data); got != "artifact payload\n" {
+		t.Fatalf("stored artifact payload = %q, want stdout without provider stderr", got)
 	}
 }
 
@@ -160,6 +226,15 @@ exec /bin/cat "$@"
 	if string(data) != "safe-progress" {
 		t.Fatalf("CopyFile() copied %q, want original artifact content", data)
 	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(localPath)
+		if err != nil {
+			t.Fatalf("Stat(localPath) error = %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("CopyFile() file mode = %o, want 600", got)
+		}
+	}
 }
 
 func TestFactorySandboxArtifactCopierRejectsTopLevelDirSymlink(t *testing.T) {
@@ -226,6 +301,39 @@ func TestFactorySandboxArtifactCopierRejectsIntermediateDirParentSymlink(t *test
 		t.Fatalf("CopyDir() created local directory for symlinked parent artifact")
 	} else if !os.IsNotExist(statErr) {
 		t.Fatalf("Stat(localPath) error = %v, want not exist", statErr)
+	}
+}
+
+func TestFactoryProviderExecSandboxArtifactCopierRejectsTopLevelDirSymlink(t *testing.T) {
+	requireLocalSandboxArtifactCopierRuntime(t)
+
+	remoteRoot := realSandboxArtifactTempDir(t)
+	outsideDir := realSandboxArtifactTempDir(t)
+	if err := os.WriteFile(filepath.Join(outsideDir, "secret.log"), []byte("sandbox-secret"), 0o600); err != nil {
+		t.Fatalf("WriteFile(secret) error = %v", err)
+	}
+	halDir := filepath.Join(remoteRoot, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	linkPath := filepath.Join(halDir, "reports")
+	if err := os.Symlink(outsideDir, linkPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	localPath := filepath.Join(t.TempDir(), "reports")
+	copier := &factoryProviderExecSandboxArtifactCopier{
+		provider:        localExecSandboxArtifactProvider{},
+		connectInfo:     &sandbox.ConnectInfo{Name: "local"},
+		baseDir:         remoteRoot,
+		runProviderExec: runFactorySandboxProviderExec,
+	}
+	err := copier.CopyDir(context.Background(), linkPath, localPath)
+	requireSymlinkSandboxArtifactCopyError(t, err)
+	if _, readErr := os.ReadFile(filepath.Join(localPath, "secret.log")); readErr == nil {
+		t.Fatal("CopyDir() copied symlink target content")
+	} else if !os.IsNotExist(readErr) {
+		t.Fatalf("ReadFile(localPath/secret.log) error = %v, want not exist", readErr)
 	}
 }
 
@@ -454,6 +562,31 @@ func TestFactorySandboxArtifactCopyErrorSanitizesRemoteDetails(t *testing.T) {
 	}
 
 	err = factorySandboxArtifactCopyError(
+		"/workspace/.hal/reports/private.log",
+		"",
+		errors.New("failed to copy /workspace/.hal/reports/private.log with token=secret"),
+	)
+	if err == nil {
+		t.Fatal("copy error = nil, want sanitized error")
+	}
+	message = err.Error()
+	if strings.Contains(message, "/workspace/") || strings.Contains(message, "token=secret") {
+		t.Fatalf("copy error leaked remote details: %q", message)
+	}
+	if !strings.Contains(message, "error details omitted") {
+		t.Fatalf("copy error = %q, want redacted error detail", message)
+	}
+
+	cause := errors.New("copy sandbox artifact failed")
+	err = factorySandboxArtifactCopyError("/workspace/.hal/auto-state.json", "", cause)
+	if !errors.Is(err, cause) {
+		t.Fatalf("copy error = %v, want wrapped cause", err)
+	}
+	if !strings.Contains(err.Error(), "copy sandbox artifact failed") {
+		t.Fatalf("copy error = %q, want original error detail", err.Error())
+	}
+
+	err = factorySandboxArtifactCopyError(
 		"/workspace/.hal/progress.txt",
 		"sandbox artifact path is a symlink",
 		errors.New("exit status 45"),
@@ -489,6 +622,10 @@ type localExecSandboxArtifactProvider struct {
 	env []string
 }
 
+type warningLocalExecSandboxArtifactProvider struct {
+	localExecSandboxArtifactProvider
+}
+
 func (localExecSandboxArtifactProvider) Create(context.Context, string, map[string]string, io.Writer) (*sandbox.SandboxResult, error) {
 	return nil, nil
 }
@@ -511,6 +648,15 @@ func (localExecSandboxArtifactProvider) SSH(*sandbox.ConnectInfo) (*exec.Cmd, er
 
 func (p localExecSandboxArtifactProvider) Exec(_ *sandbox.ConnectInfo, args []string) (*exec.Cmd, error) {
 	cmd := exec.Command(args[0], args[1:]...)
+	if len(p.env) > 0 {
+		cmd.Env = append(os.Environ(), p.env...)
+	}
+	return cmd, nil
+}
+
+func (p warningLocalExecSandboxArtifactProvider) Exec(_ *sandbox.ConnectInfo, args []string) (*exec.Cmd, error) {
+	cmdArgs := append([]string{"-c", `printf 'provider warning\n' >&2; exec "$@"`, "warning-wrapper"}, args...)
+	cmd := exec.Command("sh", cmdArgs...)
 	if len(p.env) > 0 {
 		cmd.Env = append(os.Environ(), p.env...)
 	}

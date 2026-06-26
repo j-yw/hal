@@ -117,6 +117,13 @@ func TestBootstrapRefreshHalRecordsTimelineForEachStep(t *testing.T) {
 		results: []BootstrapCommandResult{
 			{
 				ExitCode:      0,
+				OutputSummary: "hal installed from checkout",
+				Metadata: map[string]string{
+					"command": "install",
+				},
+			},
+			{
+				ExitCode:      0,
 				OutputSummary: "hal templates refreshed",
 				Metadata: map[string]string{
 					"command": "init",

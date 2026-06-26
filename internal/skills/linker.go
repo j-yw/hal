@@ -12,7 +12,7 @@ type EngineLinker interface {
 	// Returns "" if the engine doesn't support a commands directory.
 	CommandsDir() string
 
-	// Link creates links/copies from .hal/skills/ to engine's skill directory.
+	// Link creates links/copies from managed skill sources to the engine's skill directory.
 	Link(projectDir string, skills []string) error
 
 	// LinkCommands wires .hal/commands/ into the engine-specific prompt/command discovery path.

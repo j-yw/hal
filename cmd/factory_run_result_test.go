@@ -1,59 +1,36 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/factory"
 )
 
-func TestFactoryRunFailureClassificationMapsBootstrapCategories(t *testing.T) {
-	tests := []struct {
-		name     string
-		category string
-		want     string
-	}{
-		{
-			name:     "repo maps to git",
-			category: factory.BootstrapFailureCategoryRepo,
-			want:     factory.FailureCategoryGit,
-		},
-		{
-			name:     "auth maps to validation",
-			category: factory.BootstrapFailureCategoryAuth,
-			want:     factory.FailureCategoryValidation,
-		},
-		{
-			name:     "dependency maps to validation",
-			category: factory.BootstrapFailureCategoryDependency,
-			want:     factory.FailureCategoryValidation,
-		},
-		{
-			name:     "engine setup maps to engine",
-			category: factory.BootstrapFailureCategoryEngineSetup,
-			want:     factory.FailureCategoryEngine,
-		},
-		{
-			name:     "unknown input remains unknown",
-			category: "external",
-			want:     factory.FailureCategoryUnknown,
+func TestNewFactoryRunFailureSanitizesFailureDetails(t *testing.T) {
+	credential := "ghp_factory_result_secret_12345"
+	record := factory.RunRecord{
+		RunID: "run-result-secret",
+		Failure: &factory.FailureSummary{
+			Category:         factory.FailureCategoryRun,
+			Message:          "clone failed for https://x:" + credential + "@github.com/org/repo.git token=" + credential,
+			SuggestedCommand: "retry --remote https://x:" + credential + "@github.com/org/repo.git --token=" + credential,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			record := factory.RunRecord{
-				Failure: &factory.FailureSummary{
-					Category: tt.category,
-					Message:  "failed",
-				},
-			}
-			failure := newFactoryRunFailure(record)
-			if failure == nil {
-				t.Fatal("newFactoryRunFailure() = nil")
-			}
-			if failure.Classification != tt.want {
-				t.Fatalf("classification = %q, want %q", failure.Classification, tt.want)
-			}
-		})
+	failure := newFactoryRunFailure(record)
+	if failure == nil {
+		t.Fatal("newFactoryRunFailure() = nil, want failure")
+	}
+	for name, value := range map[string]string{
+		"errorMessage":     failure.ErrorMessage,
+		"suggestedCommand": failure.SuggestedCommand,
+	} {
+		if strings.Contains(value, credential) || strings.Contains(value, "https://x:") {
+			t.Fatalf("%s leaked credentialed failure text: %q", name, value)
+		}
+		if !strings.Contains(strings.ToLower(value), "redacted") {
+			t.Fatalf("%s = %q, want redaction marker", name, value)
+		}
 	}
 }

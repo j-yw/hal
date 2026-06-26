@@ -120,7 +120,7 @@ func (p *PiLinker) LinkCommands(projectDir string) error {
 	return nil
 }
 
-// Link creates symlinks from .pi/skills/ to .hal/skills/.
+// Link creates symlinks from .pi/skills/ to managed skill sources.
 func (p *PiLinker) Link(projectDir string, skills []string) error {
 	skillsDir := filepath.Join(projectDir, p.SkillsDir())
 	if err := os.MkdirAll(skillsDir, 0755); err != nil {
@@ -129,7 +129,7 @@ func (p *PiLinker) Link(projectDir string, skills []string) error {
 
 	for _, skill := range skills {
 		// Use relative path for symlink (portable across machines)
-		target := filepath.Join("..", "..", template.HalDir, "skills", skill)
+		target := LocalManagedSkillLinkTarget(projectDir, skill)
 		link := filepath.Join(skillsDir, skill)
 
 		// Remove existing link/dir if present

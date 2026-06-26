@@ -9,8 +9,8 @@ Portable dev environment you can spin up anywhere — Daytona, any VPS, GitHub C
 | **Go** | 1.25.7 | Build hal and Go projects |
 | **Node.js** | 22.x | Runtime for JS-based CLI tools |
 | **gh** | latest | GitHub CLI (authenticated via GITHUB_TOKEN) |
-| **Claude Code** | 2.1.42 | AI coding assistant |
-| **Pi** | 0.52.10 | Coding agent harness |
+| **Claude Code** | latest | AI coding assistant |
+| **Pi** | latest | Coding agent harness |
 | **Codex** | latest | OpenAI Codex CLI |
 | **hal** | built from source | This project |
 | **tmux** | latest | Terminal multiplexer (keep sessions alive) |
@@ -84,20 +84,6 @@ cp sandbox/.env.example sandbox/.env
 # Edit sandbox/.env with your values
 ```
 
-## Subscription Auth Sync
-
-If you use Codex or pi through an interactive subscription login instead of API
-keys, sync the small local auth profile files after the sandbox is running:
-
-```bash
-hal sandbox auth sync my-sandbox
-```
-
-This copies selected files from `~/.codex` and `~/.pi` into the remote exec
-user's home over SSH. It does not copy logs, sessions, caches, or GitHub CLI
-credentials. GitHub auth is handled separately through `GITHUB_TOKEN`/`GH_TOKEN`
-and `gh auth setup-git`.
-
 ## SSH from Phone
 
 1. **Create a VPS** or Daytona sandbox
@@ -118,27 +104,22 @@ and `gh auth setup-git`.
 daytona ssh my-dev
 ```
 
-## Version Defaults
+## Version Freshness
 
-Tool versions are set in `setup.sh` and can be overridden via env vars. Codex defaults to `latest` so new sandboxes stay compatible with current OpenAI model support:
-
-```bash
-GO_VERSION=1.25.7 NODE_MAJOR=22 CODEX_VERSION=latest ./sandbox/setup.sh
-```
-
-To build `hal` from a non-default branch during sandbox setup, set `HAL_REPO_REF`:
+AI CLI tools install the latest npm release by default when a sandbox is created.
+Pin versions with env vars only when reproducibility is more important than model
+compatibility:
 
 ```bash
-HAL_REPO_REF=test/factory-remote ./sandbox/setup.sh
+GO_VERSION=1.25.7 NODE_MAJOR=22 CODEX_VERSION=0.142.2 ./sandbox/setup.sh
 ```
 
 The Dockerfile passes these as build args but delegates installation to `setup.sh` — **one source of truth**.
 
 ## Updating Tools
 
-1. Edit the version defaults at the top of `sandbox/setup.sh`
-2. For VPS: re-run `setup.sh` (it's idempotent)
-3. For Daytona: rebuild the snapshot:
+1. For VPS: re-run `setup.sh` to install the latest AI CLIs, or pass explicit version env vars to pin
+2. For Daytona: rebuild the snapshot:
    ```bash
    hal sandbox snapshot delete --id <old-id>
    hal sandbox snapshot create

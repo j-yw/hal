@@ -142,6 +142,7 @@ Stable JSON contracts for agent integration:
 - [`docs/contracts/factory-trigger-v1.md`](docs/contracts/factory-trigger-v1.md) — `hal factory trigger --json` output contract
 - [`docs/contracts/verify-v1.md`](docs/contracts/verify-v1.md) — `hal verify --json` output contract
 - [`docs/contracts/factory-artifacts-v1.md`](docs/contracts/factory-artifacts-v1.md) — `hal factory artifacts <run-id> --json` output contract
+- [`docs/contracts/factory-logs-v1.md`](docs/contracts/factory-logs-v1.md) — `hal factory logs <run-id> --json` output contract
 
 ## Commands
 
@@ -239,13 +240,14 @@ Archive command details:
 
 | Command | Description |
 |---------|-------------|
-| `hal factory run [prd-path] [--report path] [--json]` | Run the local factory executor immediately |
-| `hal factory trigger --repo path (--prd path\|--report path\|--discover-report) [--json]` | Create a queued factory run from a trigger payload |
+| `hal factory run [prd-path] [--report path] [--secret-env NAME] [--json]` | Run the local factory executor immediately |
+| `hal factory trigger --repo path (--prd path\|--report path\|--discover-report) [--secret-env NAME] [--json]` | Create a queued factory run from a trigger payload |
 | `hal factory queue add <run-id> <executor-mode> [--json]` | Add an existing pending factory run to the queue |
 | `hal factory queue list [--json]` | List durable factory queue entries |
 | `hal factory queue work [--json]` | Claim and process at most one queued factory run |
 | `hal factory list [--json]` | List stored factory runs |
 | `hal factory status <run-id> [--json]` | Inspect a stored factory run and timeline |
+| `hal factory logs <run-id> [--json]` | Inspect stored stdout, stderr, or summarized log chunks |
 
 ### Utilities
 

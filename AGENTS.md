@@ -60,6 +60,17 @@
 - Bootstrap callers should record step outcomes through `recordBootstrapStepResult` / `BootstrapTimelineEventFromStep` so `BootstrapResult.Steps` and `BootstrapResult.Timeline` stay one-to-one with sanitized command summaries, output metadata, and failure category metadata.
 - High-level remote workspace setup should enter through `internal/factory.BootstrapWorkspace` with one `BootstrapDeps` value; it composes repository checkout, tooling verification, Hal refresh, and final checks while preserving shared executor, clock, branch probes, env injection, and first-failure stop behavior.
 
+## Patterns from hal/factory-sandbox-executor (2026-06-21)
+
+- Sandbox-backed factory execution side effects belong behind `factorySandboxExecutorDeps` in `cmd/factory_sandbox_executor.go`; extend the normalized dependency struct for registry, provisioning/start, provider exec, clock, and store persistence behavior so tests can fake each boundary without real sandbox providers or remote commands.
+- `hal factory run --sandbox` selection belongs in `factoryRunRequest.Sandbox` and dispatches through `factoryRunDeps.runSandbox`; keep the no-flag path on `runPipeline` and cover both paths with injected-dependency tests.
+- Existing sandbox reuse in `runFactorySandboxExecutorWithDeps` should persist `RunRecord.SandboxName` plus `RunRecord.Sandbox` immediately after target resolution/start, and no-name resolution should preserve `sandbox.ResolveDefault` running-only error strings unless provisioning behavior explicitly handles them.
+- Sandbox provision/start failures should be persisted inside `runFactorySandboxExecutorWithDeps` with `RunStatusFailed`, `FailureCategoryPipeline`, and sandbox handoff metadata before returning the wrapped error to the outer factory runner.
+- Sandbox remote execution should pass a structured `factoryRunAutoRequest` through `factorySandboxExecutorRequest`; build exact provider args with `factorySandboxRemoteAutoArgs` at the sandbox executor boundary and avoid env/config pass-through unless a redaction-safe contract explicitly requires it.
+- Sandbox remote output timeline capture belongs at the sandbox executor boundary: wrap the provider exec writer, tee to user output, split complete lines, sanitize with the sandbox redactor, and persist `command_output_summary` events tagged with `source=remote_sandbox`.
+- Sandbox executor remote lifecycle events should be appended through `factorySandboxTimelineWriter` so start/output/completion events share one sequence counter and consistent `source=remote_sandbox` metadata before the outer factory runner records terminal success/failure.
+- Sandbox remote execution failures should be sanitized and saved inside `runFactorySandboxExecutorWithDeps` before returning to the outer factory runner; `markFactoryRunFailed` should preserve existing sandbox SSH handoff commands while the status inspection command remains available through `nextAction`.
+
 ## Patterns from hal/rename-to-hal (2026-02-04)
 
 - For runtime directory renames, use template.HalDir in Go code but separately sweep hardcoded user-facing strings in cmd/* and prompt templates (e.g., config.go, explode.go) so paths like .hal stay consistent.
@@ -101,6 +112,11 @@
 
 - Factory artifact payloads are stored under the global factory store `artifacts/<run-id>/`; use `factory.Store.SaveArtifactFile` for copying and metadata updates, and `factory.Store.ResolveArtifactPath` before reading stored paths.
 - Artifact persistence must not write payloads into the project `.hal/` directory; tests should use temp store roots and assert project `.hal` remains free of artifact payload state.
+- Local factory artifact collection should preserve legacy display `path` values while also populating store-backed `sourcePath`/`storedPath`; use stable artifact IDs for deterministic filenames when multiple artifacts share a display name.
+- Factory status/doctor snapshots are generated from structured packages (`internal/status.Get`, `internal/doctor.Run`) via injectable `factoryRunDeps` hooks, then materialized as JSON artifacts and saved through `Store.SaveArtifactFile`.
+- PR/CI factory outcome artifacts are derived from `compound.CIState` in `.hal/auto-state.json`; persist safe PR metadata there in `runPRStep`, and materialize stored JSON artifacts plus warning-only partial records when outcome state is unavailable.
+- Sandbox artifact collection should go through `factory.SandboxArtifactCopier` and `factory.CollectSandboxArtifacts`; treat remote paths as copier inputs only, persist safe display `path`/`storedPath` metadata, and represent optional missing remote artifacts as partial warning records.
+- Factory artifact read-only JSON surfaces should use command-specific safe response structs instead of raw `factory.ArtifactReference`; omit `sourcePath`/`url`, keep display `path` plus store-relative `storedPath`, and sanitize summary/warning values that contain secrets or raw IP addresses.
 
 ## Patterns from compound/compound-pipeline-foundations (2026-02-05)
 
@@ -204,15 +220,11 @@
 ## Patterns from autoresearch/hal-ux-machine-readability (2026-03-18)
 
 - New machine-readable surfaces (`--json` flag) must ship with: contract doc in `docs/contracts/`, example JSON payloads, field-locking tests in `cmd/machine_contracts_test.go`, and doc-code sync tests in `cmd/contracts_doc_test.go`.
+- For nested durable contract objects, use reflection-backed JSON tag checks in `cmd/contracts_doc_test.go` so documented field names stay synchronized with implementation structs.
 - Workflow state classification lives in `internal/status` — a pure filesystem package with no engine or config dependencies. The `cmd/status.go` wrapper adds engine from config.
 - Health/readiness checks live in `internal/doctor` — each check has `scope` (repo/engine_local/engine_global/migration) and `applicability` (required/optional/not_applicable) fields. The check order is locked by `TestRun_CheckCount`.
-- Doctor `git_repo` readiness must treat both `.git/` directories and regular `.git` worktree metadata files as valid; keep tests covering directory, file, and missing metadata cases.
 - For doctor checks that depend on GitHub context (`github_auth`), treat non-git directories, missing `origin`, and non-GitHub remotes as `status=skip` + `applicability=not_applicable`; only emit a warning with remediation `gh auth login` (`Safe=false`) when a valid GitHub remote lacks authentication.
-- The Codex linker centralizes global path resolution in `codexHome()`: `$CODEX_HOME` is the Codex root when set, otherwise use `$HOME/.codex`, then `os.UserHomeDir()/.codex`. Tests that assert HOME fallback must clear `CODEX_HOME`.
-- Codex linker tests should cover both path getters and actual symlink creation for skills and commands; command links live under `<codexHome>/commands/hal`.
-- Command tests for `hal links refresh codex` should use `runLinksRefreshFn(projectDir, []string{"codex"}, out)` with temp `CODEX_HOME` roots so multiple project/Codex-home pairs can be validated without cwd coupling.
-- Command tests for `hal links status --json --engine codex` should parse `LinksResult` from `runLinksStatusFn(projectDir, true, "codex", out)` and assert `SkillsDir`/`CommandsDir` under temp `CODEX_HOME` or `HOME/.codex` roots.
-- Doctor tests for `codex_global_links` should create links through `skills.GetLinker("codex").Link` after setting temp `CODEX_HOME`/`HOME`, then inspect the check from `doctor.Run`.
+- The Codex linker uses `codexHome()` which prefers `$HOME` over `os.UserHomeDir()` so tests can isolate global link operations via `t.Setenv("HOME", tmpDir)`. All init tests must use `t.Setenv("HOME", dir)`.
 - Tests that walk the shared global `Root()` Cobra command tree must NOT use `t.Parallel()` (race condition on Cobra command state).
 - The `hal continue` command is the single entry point for "what to do next" — it combines status + doctor, blocks readiness only on doctor failures, and keeps warning-only doctor output advisory.
 - Status auto-state semantics are single-pipeline: emit `state=auto_active` when `.hal/auto-state.json` exists with `step != done`, emit `state=auto_inactive` when `step == done`, and normalize legacy step names (`prd/explode/loop/pr`) to unified step names before rendering status detail.
@@ -466,12 +478,14 @@
 - Factory CLI surfaces live in `cmd/factory.go`; keep command logic behind injectable deps so tests can use isolated `factory.Store` roots instead of global config state.
 - `hal factory list --json` uses `FactoryListContractVersion` (`factory-list-v1`) and emits `runs` as summaries from `Store.ListRuns`; omit full `artifacts` and timeline events from list output, using `artifactCount` for compact history inspection.
 - `hal factory status <run-id> --json` uses `FactoryStatusContractVersion` (`factory-status-v1`) and emits full `run` plus append-ordered `timeline`; load the run before the timeline so missing run IDs return an error without writing a JSON payload.
+- Read-only `hal factory` subcommands should keep command logic behind small deps structs with `defaultStore func() (factory.Store, error)`, so tests can inject `factory.NewStore(t.TempDir())` and avoid global config state.
 - Factory JSON contract changes should update exact top-level key locks in `cmd/machine_contracts_test.go`, docs/example sync in `cmd/contracts_doc_test.go`, and internal DTO round-trip tests in `internal/factory/types_test.go`.
 - Adding a new factory command page requires command metadata coverage plus `make docs-cli`/`make docs-check`, because generated `docs/cli/hal_factory*.md` files are part of CI drift checks.
 
 ## Patterns from hal/local-factory-run-executor-wrapping-hal-auto (2026-06-21)
 
 - `hal factory run` command execution is wired through `factoryRunDeps` in `cmd/factory.go`; keep local pipeline invocation behind `runPipeline` so tests can avoid real engines, git/GitHub CLIs, network calls, and long-running `hal auto` work.
+- Sandbox factory artifact collection is gated by `factory.ExecutorModeSandbox` during `recordFactoryRunArtifacts`; sandbox executors should persist executor mode and sandbox name before finalization, and tests should inject `sandboxCopier`/`sandboxRequests` through `factoryRunDeps`.
 - Create a pending `factory.RunRecord`, persist it through `factory.Store.SaveRun`, then persist the `running` transition before invoking the pipeline dependency; command tests should verify ordering by loading the injected `factory.NewStore(t.TempDir())` inside the pipeline stub.
 - `factory.RunRecord` now includes `executorMode` and source kind constants; when adding or renaming durable run fields, update `internal/factory/types_test.go`, `cmd/factory_test.go`, `cmd/contracts_doc_test.go`, and `docs/contracts/examples/factory-status-v1.json` together.
 - Factory run lifecycle timeline events are recorded in the command-layer wrapper around `factoryRunDeps.runPipeline`; use `factoryRunPipelineRequest.RecordProgress` for injected progress events and keep terminal lifecycle event recording outside the wrapped `hal auto` implementation.

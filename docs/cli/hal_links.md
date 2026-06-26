@@ -4,14 +4,14 @@ Manage engine skill links
 
 ### Synopsis
 
-Inspect and manage skill links between .hal/skills/ and engine directories.
+Inspect and manage skill links between managed skill sources and engine directories.
 
-Hal creates symlinks from engine-specific directories to .hal/skills/ so
-each AI engine can discover project skills. These links are:
+Hal creates symlinks from engine-specific directories to managed skill sources
+so each AI engine can discover project skills. These links are:
 
   Project-local:
-    .claude/skills/  → .hal/skills/   (Claude Code)
-    .pi/skills/      → .hal/skills/   (Pi)
+    .claude/skills/  → .hal/skills/ or tracked internal skills   (Claude Code)
+    .pi/skills/      → .hal/skills/ or tracked internal skills   (Pi)
 
   Global (active Codex home):
     $CODEX_HOME/skills/  → .hal/skills/  (Codex, when CODEX_HOME is set)

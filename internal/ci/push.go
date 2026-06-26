@@ -61,12 +61,12 @@ type createPullRequestOptions struct {
 }
 
 type pushDeps struct {
-	currentBranch func(context.Context) (string, error)
-	pushBranch    func(context.Context, string) error
-	resolveRepo   func(context.Context) (GitHubRepository, error)
+	currentBranch  func(context.Context) (string, error)
+	pushBranch     func(context.Context, string) error
+	resolveRepo    func(context.Context) (GitHubRepository, error)
 	resolveBaseRef func(context.Context, GitHubRepository, string) (string, error)
-	findOpenPR    func(context.Context, GitHubRepository, string, string) (*PullRequest, error)
-	createPR      func(context.Context, createPullRequestOptions) (string, error)
+	findOpenPR     func(context.Context, GitHubRepository, string, string) (*PullRequest, error)
+	createPR       func(context.Context, createPullRequestOptions) (string, error)
 }
 
 // PushAndCreatePR pushes the current branch and creates or reuses an open pull request.
@@ -276,7 +276,7 @@ func gitPushBranchInDir(ctx context.Context, dir string, branch string) error {
 		return fmt.Errorf("push branch: empty branch name")
 	}
 
-	if _, err := runGitInDir(ctx, dir, "push", "-u", "origin", branch); err != nil {
+	if _, err := runGitInDirWithEnv(ctx, dir, gitHubPushAuthEnv(nil), "push", "-u", "origin", branch); err != nil {
 		return fmt.Errorf("push branch %q: %w", branch, err)
 	}
 	return nil

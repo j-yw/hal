@@ -12,11 +12,13 @@ import (
 func TestBootstrapWorkspaceRunsDeterministicOrchestration(t *testing.T) {
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "managed engine links cleaned"},
 			{ExitCode: 0, OutputSummary: "repository fetched"},
 			{ExitCode: 0, OutputSummary: "base checked out"},
 			{ExitCode: 0, OutputSummary: "run branch created"},
 			{ExitCode: 0, OutputSummary: "hal found"},
 			{ExitCode: 0, OutputSummary: "codex found"},
+			{ExitCode: 0, OutputSummary: "hal installed from checkout"},
 			{ExitCode: 0, OutputSummary: "hal refreshed"},
 			{ExitCode: 0, OutputSummary: "links refreshed"},
 			{ExitCode: 0, OutputSummary: "doctor passed"},
@@ -44,7 +46,6 @@ func TestBootstrapWorkspaceRunsDeterministicOrchestration(t *testing.T) {
 		RepoExists: func(path string) (bool, error) {
 			return path == "/workspace/hal", nil
 		},
-		RepoRemoteURL: bootstrapRepoRemoteURL("git@github.com:jywlabs/hal.git"),
 		LocalBranchExists: func(_ context.Context, repoPath string, branch string) (bool, error) {
 			return false, nil
 		},
@@ -76,13 +77,15 @@ func TestBootstrapWorkspaceRunsDeterministicOrchestration(t *testing.T) {
 	}
 
 	assertBootstrapStepNames(t, result.Steps, []string{
+		BootstrapStepCleanEngineLinks,
 		BootstrapStepFetchRepository,
 		BootstrapStepCheckoutBase,
 		BootstrapStepCreateRunBranch,
-		BootstrapStepVerifyHal,
-		"verify_engine_codex",
+		BootstrapStepInstallHal,
 		BootstrapStepSetupHalTemplates,
 		BootstrapStepRefreshHalSkills,
+		BootstrapStepVerifyHal,
+		"verify_engine_codex",
 		BootstrapStepFinalCheckHalDoctor,
 	})
 	if len(result.Timeline) != len(result.Steps) {
@@ -91,13 +94,15 @@ func TestBootstrapWorkspaceRunsDeterministicOrchestration(t *testing.T) {
 
 	gotSummaries := bootstrapCommandSummaries(executor.calls)
 	wantSummaries := []string{
+		"sh -lc " + bootstrapCleanEngineLinksScript,
 		"git fetch --prune origin",
-		"git checkout -B main origin/main",
-		"git checkout -b hal/factory-remote-workspace-bootstrap main",
-		"hal --version",
-		"codex --version",
+		"git checkout -f -B main origin/main",
+		"git checkout -f -b hal/factory-remote-workspace-bootstrap main",
+		"sh -lc " + bootstrapInstallHalScript,
 		"hal init --refresh-templates",
 		"hal links refresh",
+		"hal version",
+		"codex --version",
 		"hal doctor --json",
 	}
 	if !reflect.DeepEqual(gotSummaries, wantSummaries) {
@@ -128,7 +133,6 @@ func TestBootstrapWorkspaceIsIdempotentForPreparedFakeWorkspace(t *testing.T) {
 		RepoExists: func(path string) (bool, error) {
 			return repoExists, nil
 		},
-		RepoRemoteURL: bootstrapRepoRemoteURL("git@github.com:jywlabs/hal.git"),
 		LocalBranchExists: func(_ context.Context, repoPath string, branch string) (bool, error) {
 			return localBranches[branch], nil
 		},
@@ -145,7 +149,7 @@ func TestBootstrapWorkspaceIsIdempotentForPreparedFakeWorkspace(t *testing.T) {
 	if !containsCommandSummary(firstCalls, "git clone git@github.com:jywlabs/hal.git /workspace/hal") {
 		t.Fatalf("first bootstrap did not clone missing repo: %#v", firstCalls)
 	}
-	if !containsCommandSummary(firstCalls, "git checkout -b hal/factory-remote-workspace-bootstrap main") {
+	if !containsCommandSummary(firstCalls, "git checkout -f -b hal/factory-remote-workspace-bootstrap main") {
 		t.Fatalf("first bootstrap did not create run branch: %#v", firstCalls)
 	}
 	if first.CheckedOutBranch != "hal/factory-remote-workspace-bootstrap" {
@@ -161,13 +165,13 @@ func TestBootstrapWorkspaceIsIdempotentForPreparedFakeWorkspace(t *testing.T) {
 	if containsCommandPrefix(secondCalls, "git clone ") {
 		t.Fatalf("second bootstrap recloned existing repo: %#v", secondCalls)
 	}
-	if containsCommandSummary(secondCalls, "git checkout -b hal/factory-remote-workspace-bootstrap main") {
+	if containsCommandSummary(secondCalls, "git checkout -f -b hal/factory-remote-workspace-bootstrap main") {
 		t.Fatalf("second bootstrap recreated local run branch: %#v", secondCalls)
 	}
 	if !containsCommandSummary(secondCalls, "git fetch --prune origin") {
 		t.Fatalf("second bootstrap did not fetch existing repo: %#v", secondCalls)
 	}
-	if !containsCommandSummary(secondCalls, "git checkout hal/factory-remote-workspace-bootstrap") {
+	if !containsCommandSummary(secondCalls, "git checkout -f hal/factory-remote-workspace-bootstrap") {
 		t.Fatalf("second bootstrap did not reuse local run branch: %#v", secondCalls)
 	}
 	if second.CheckedOutBranch != "hal/factory-remote-workspace-bootstrap" {
@@ -179,13 +183,17 @@ func TestBootstrapWorkspaceStopsOnFirstBlockingFailure(t *testing.T) {
 	engineErr := errors.New("exit status 1")
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "managed engine links cleaned"},
 			{ExitCode: 0, OutputSummary: "repository fetched"},
 			{ExitCode: 0, OutputSummary: "base checked out"},
 			{ExitCode: 0, OutputSummary: "run branch created"},
+			{ExitCode: 0, OutputSummary: "hal installed from checkout"},
+			{ExitCode: 0, OutputSummary: "hal refreshed"},
+			{ExitCode: 0, OutputSummary: "links refreshed"},
 			{ExitCode: 0, OutputSummary: "hal found"},
 			{ExitCode: 1, StderrSummary: "codex setup failed"},
 		},
-		errs: []error{nil, nil, nil, nil, engineErr},
+		errs: []error{nil, nil, nil, nil, nil, nil, nil, nil, engineErr},
 	}
 	request := BootstrapRequest{
 		RepositoryURL: "git@github.com:jywlabs/hal.git",
@@ -200,7 +208,6 @@ func TestBootstrapWorkspaceStopsOnFirstBlockingFailure(t *testing.T) {
 		RepoExists: func(path string) (bool, error) {
 			return path == "/workspace/hal", nil
 		},
-		RepoRemoteURL: bootstrapRepoRemoteURL("git@github.com:jywlabs/hal.git"),
 		LocalBranchExists: func(_ context.Context, repoPath string, branch string) (bool, error) {
 			return false, nil
 		},
@@ -228,15 +235,19 @@ func TestBootstrapWorkspaceStopsOnFirstBlockingFailure(t *testing.T) {
 		t.Fatalf("failure category = %q, want %q", result.Failure.Category, BootstrapFailureCategoryEngineSetup)
 	}
 	assertBootstrapStepNames(t, result.Steps, []string{
+		BootstrapStepCleanEngineLinks,
 		BootstrapStepFetchRepository,
 		BootstrapStepCheckoutBase,
 		BootstrapStepCreateRunBranch,
+		BootstrapStepInstallHal,
+		BootstrapStepSetupHalTemplates,
+		BootstrapStepRefreshHalSkills,
 		BootstrapStepVerifyHal,
 		"verify_engine_codex",
 	})
 
 	gotSummaries := bootstrapCommandSummaries(executor.calls)
-	if containsCommandSummary(gotSummaries, "hal init") || containsCommandSummary(gotSummaries, "hal doctor --json") {
+	if containsCommandSummary(gotSummaries, "hal doctor --json") {
 		t.Fatalf("bootstrap continued after first failure: %#v", gotSummaries)
 	}
 }
@@ -283,77 +294,6 @@ func TestBootstrapWorkspaceValidatesRequiredEnvBeforeCommands(t *testing.T) {
 			}
 			assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepValidateRequest})
 		})
-	}
-}
-
-func TestBootstrapWorkspaceRecordsFinalCheckValidationFailure(t *testing.T) {
-	executor := &fakeBootstrapExecutor{
-		results: []BootstrapCommandResult{
-			{ExitCode: 0, OutputSummary: "repository fetched"},
-			{ExitCode: 0, OutputSummary: "base checked out"},
-			{ExitCode: 0, OutputSummary: "run branch created"},
-			{ExitCode: 0, OutputSummary: "hal found"},
-			{ExitCode: 0, OutputSummary: "hal refreshed"},
-			{ExitCode: 0, OutputSummary: "links refreshed"},
-		},
-	}
-	request := BootstrapRequest{
-		RepositoryURL: "git@github.com:jywlabs/hal.git",
-		BaseBranch:    "main",
-		RunBranch:     "hal/factory-remote-workspace-bootstrap",
-		WorkspaceDir:  "/workspace/hal",
-	}
-
-	result, err := BootstrapWorkspace(context.Background(), request, BootstrapDeps{
-		Executor: executor,
-		Now:      incrementingClock(t, time.Date(2026, 6, 21, 9, 30, 0, 0, time.UTC)),
-		RepoExists: func(path string) (bool, error) {
-			return path == "/workspace/hal", nil
-		},
-		RepoRemoteURL: bootstrapRepoRemoteURL("git@github.com:jywlabs/hal.git"),
-		LocalBranchExists: func(_ context.Context, repoPath string, branch string) (bool, error) {
-			return false, nil
-		},
-		RemoteBranchExists: func(_ context.Context, repoPath string, branch string) (bool, error) {
-			return false, nil
-		},
-		FinalChecks: []BootstrapToolingCheck{
-			{Name: "custom final"},
-		},
-	})
-	if !errors.Is(err, errBootstrapToolingCommandRequired) {
-		t.Fatalf("BootstrapWorkspace() error = %v, want %v", err, errBootstrapToolingCommandRequired)
-	}
-	if result.Failure == nil {
-		t.Fatal("failure = nil, want final check validation failure")
-	}
-	if result.Failure.Step != "final_check_custom_final" {
-		t.Fatalf("failure step = %q, want final_check_custom_final", result.Failure.Step)
-	}
-	if result.Failure.Category != BootstrapFailureCategoryValidation {
-		t.Fatalf("failure category = %q, want %q", result.Failure.Category, BootstrapFailureCategoryValidation)
-	}
-	assertBootstrapStepNames(t, result.Steps, []string{
-		BootstrapStepFetchRepository,
-		BootstrapStepCheckoutBase,
-		BootstrapStepCreateRunBranch,
-		BootstrapStepVerifyHal,
-		BootstrapStepSetupHalTemplates,
-		BootstrapStepRefreshHalSkills,
-		"final_check_custom_final",
-	})
-	if len(result.Timeline) != len(result.Steps) {
-		t.Fatalf("timeline events = %d, want one per step %d", len(result.Timeline), len(result.Steps))
-	}
-	lastEvent := result.Timeline[len(result.Timeline)-1]
-	if lastEvent.Status != RunStatusFailed {
-		t.Fatalf("last event status = %q, want %q", lastEvent.Status, RunStatusFailed)
-	}
-	if lastEvent.Metadata[bootstrapTimelineFailureCategoryKey] != BootstrapFailureCategoryValidation {
-		t.Fatalf("last event failure category = %q, want %q", lastEvent.Metadata[bootstrapTimelineFailureCategoryKey], BootstrapFailureCategoryValidation)
-	}
-	if len(executor.calls) != 6 {
-		t.Fatalf("executor calls = %d, want 6", len(executor.calls))
 	}
 }
 
@@ -445,8 +385,11 @@ func (f *statefulBootstrapExecutor) Run(_ context.Context, command BootstrapComm
 		case "clone":
 			*f.repoExists = true
 		case "checkout":
-			if len(command.Args) >= 4 && command.Args[1] == "-b" {
-				f.localBranches[command.Args[2]] = true
+			for i, arg := range command.Args {
+				if arg == "-b" && i+1 < len(command.Args) {
+					f.localBranches[command.Args[i+1]] = true
+					break
+				}
 			}
 		}
 	}

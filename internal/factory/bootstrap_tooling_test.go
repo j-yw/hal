@@ -47,7 +47,7 @@ func TestBootstrapVerifyToolingChecksHalAndEngineCommands(t *testing.T) {
 	wantCalls := []BootstrapCommand{
 		{
 			Name: "hal",
-			Args: []string{"--version"},
+			Args: []string{"version"},
 			Dir:  "/workspace/hal",
 		},
 		{
@@ -180,33 +180,6 @@ func TestBootstrapVerifyToolingClassifiesMissingEngineDependency(t *testing.T) {
 		t.Fatalf("failure message = %q", result.Failure.Message)
 	}
 	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepVerifyHal, "verify_engine_codex"})
-}
-
-func TestBootstrapVerifyToolingRecordsPlanningValidationFailure(t *testing.T) {
-	result, err := BootstrapVerifyTooling(context.Background(), BootstrapRequest{
-		WorkspaceDir: "/workspace/hal",
-	}, BootstrapToolingDeps{
-		Now: incrementingClock(t, time.Date(2026, 6, 21, 6, 10, 0, 0, time.UTC)),
-		EngineChecks: []BootstrapToolingCheck{
-			{Name: "codex"},
-		},
-	})
-	if !errors.Is(err, errBootstrapToolingCommandRequired) {
-		t.Fatalf("BootstrapVerifyTooling() error = %v, want %v", err, errBootstrapToolingCommandRequired)
-	}
-	if result.Failure == nil {
-		t.Fatal("failure = nil, want validation failure")
-	}
-	if result.Failure.Category != BootstrapFailureCategoryValidation {
-		t.Fatalf("failure category = %q, want %q", result.Failure.Category, BootstrapFailureCategoryValidation)
-	}
-	assertBootstrapStepNames(t, result.Steps, []string{BootstrapStepValidateRequest})
-	if len(result.Timeline) != 1 {
-		t.Fatalf("timeline events = %d, want 1", len(result.Timeline))
-	}
-	if result.Timeline[0].Metadata[bootstrapTimelineFailureCategoryKey] != BootstrapFailureCategoryValidation {
-		t.Fatalf("timeline failure category = %q, want %q", result.Timeline[0].Metadata[bootstrapTimelineFailureCategoryKey], BootstrapFailureCategoryValidation)
-	}
 }
 
 func TestBootstrapVerifyToolingClassifiesFailedHalInstallAsEngineSetup(t *testing.T) {

@@ -43,6 +43,58 @@ func TestInstallSkillsCreatesManagedSkills(t *testing.T) {
 	}
 }
 
+func TestLocalManagedSkillLinkTargetUsesInstalledSkills(t *testing.T) {
+	projectDir := t.TempDir()
+
+	if got, want := LocalManagedSkillLinkTarget(projectDir, "factory"), filepath.Join("..", "..", template.HalDir, "skills", "factory"); got != want {
+		t.Fatalf("LocalManagedSkillLinkTarget(factory) = %q, want %q", got, want)
+	}
+	if got, want := LocalManagedSkillLinkTarget(projectDir, "prd"), filepath.Join("..", "..", template.HalDir, "skills", "prd"); got != want {
+		t.Fatalf("LocalManagedSkillLinkTarget(prd) = %q, want %q", got, want)
+	}
+}
+
+func TestLocalManagedSkillLinkTargetIgnoresFactorySourceOutsideHalRepo(t *testing.T) {
+	projectDir := t.TempDir()
+	writeGoMod(t, projectDir, "example.com/project")
+	writeFactorySkillSource(t, projectDir)
+
+	if got, want := LocalManagedSkillLinkTarget(projectDir, "factory"), filepath.Join("..", "..", template.HalDir, "skills", "factory"); got != want {
+		t.Fatalf("LocalManagedSkillLinkTarget(factory) = %q, want %q", got, want)
+	}
+}
+
+func TestLocalManagedSkillLinkTargetUsesFactorySourceInHalRepo(t *testing.T) {
+	projectDir := t.TempDir()
+	writeGoMod(t, projectDir, halModulePath)
+	writeFactorySkillSource(t, projectDir)
+
+	if got, want := LocalManagedSkillLinkTarget(projectDir, "factory"), filepath.Join("..", "..", "internal", "skills", "factory"); got != want {
+		t.Fatalf("LocalManagedSkillLinkTarget(factory) = %q, want %q", got, want)
+	}
+	if got, want := LocalManagedSkillLinkTarget(projectDir, "prd"), filepath.Join("..", "..", template.HalDir, "skills", "prd"); got != want {
+		t.Fatalf("LocalManagedSkillLinkTarget(prd) = %q, want %q", got, want)
+	}
+}
+
+func writeGoMod(t *testing.T, projectDir, modulePath string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(projectDir, "go.mod"), []byte("module "+modulePath+"\n"), 0644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+}
+
+func writeFactorySkillSource(t *testing.T, projectDir string) {
+	t.Helper()
+	factorySkill := filepath.Join(projectDir, "internal", "skills", "factory")
+	if err := os.MkdirAll(factorySkill, 0755); err != nil {
+		t.Fatalf("failed to create factory skill source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(factorySkill, "SKILL.md"), []byte("factory"), 0644); err != nil {
+		t.Fatalf("failed to write factory skill source: %v", err)
+	}
+}
+
 func TestLinkAllEnginesPreservesCustomSkillLink(t *testing.T) {
 	projectDir := t.TempDir()
 

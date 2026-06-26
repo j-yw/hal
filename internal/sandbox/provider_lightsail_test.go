@@ -160,7 +160,7 @@ func TestLightsailProvider_Exec_WithConnectInfoIP(t *testing.T) {
 		t.Fatalf("Exec() error: %v", err)
 	}
 
-	wantArgs := []string{"ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "ubuntu@44.203.78.182", "'ls' '-la'"}
+	wantArgs := []string{"ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "BatchMode=yes", "-o", "NumberOfPasswordPrompts=0", "-o", "LogLevel=ERROR", "ubuntu@44.203.78.182", "'ls' '-la'"}
 	if len(cmd.Args) != len(wantArgs) {
 		t.Fatalf("got args %v, want %v", cmd.Args, wantArgs)
 	}

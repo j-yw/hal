@@ -1,8 +1,10 @@
 package factory
 
 import (
+	"encoding/json"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -32,7 +34,7 @@ func NewBootstrapSanitizer(request BootstrapRequest) BootstrapSanitizer {
 		}
 		keySet[key] = struct{}{}
 		if value := request.Env[key]; value != "" {
-			valueSet[value] = struct{}{}
+			addBootstrapRedactionValue(valueSet, value)
 		}
 	}
 
@@ -42,13 +44,19 @@ func NewBootstrapSanitizer(request BootstrapRequest) BootstrapSanitizer {
 		}
 		keySet[strings.TrimSpace(key)] = struct{}{}
 		if value != "" {
-			valueSet[value] = struct{}{}
+			addBootstrapRedactionValue(valueSet, value)
 		}
 	}
 	for _, key := range request.RequiredEnvKeys {
 		addKey(key)
 	}
+	if credential := bootstrapGitHubBasicAuthCredential(request.Env[bootstrapGitHubTokenEnvKey]); credential != "" {
+		addBootstrapRedactionValue(valueSet, credential)
+	}
 	addURLCredentialRedactionTokens(valueSet, request.RepositoryURL)
+	for _, value := range request.secretValues {
+		addBootstrapRedactionValue(valueSet, value)
+	}
 
 	return BootstrapSanitizer{
 		secretValues: sortedRedactionTokens(valueSet),
@@ -62,27 +70,205 @@ func addURLCredentialRedactionTokens(valueSet map[string]struct{}, rawURL string
 		return
 	}
 
+	addSCPStyleURLCredentialRedactionTokens(valueSet, rawURL)
+
 	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.User == nil {
+	if err != nil {
 		return
 	}
 
-	if userinfo := parsed.User.String(); userinfo != "" {
-		valueSet[userinfo] = struct{}{}
+	if parsed.User != nil {
+		if userinfo := parsed.User.String(); userinfo != "" {
+			addBootstrapRedactionValue(valueSet, userinfo)
+		}
+		if username := parsed.User.Username(); bootstrapCredentialTokenLooksSensitive(username) {
+			addBootstrapRedactionValue(valueSet, username)
+		}
+		if password, ok := parsed.User.Password(); ok && password != "" {
+			addBootstrapRedactionValue(valueSet, password)
+		}
 	}
-	if password, ok := parsed.User.Password(); ok && password != "" {
-		valueSet[password] = struct{}{}
+	addURLCredentialParameterRedactionTokens(valueSet, parsed.RawQuery)
+	addURLCredentialParameterRedactionTokens(valueSet, parsed.Fragment)
+}
+
+func addSCPStyleURLCredentialRedactionTokens(valueSet map[string]struct{}, rawURL string) {
+	if strings.Contains(rawURL, "://") || !strings.Contains(rawURL, "@") {
+		return
+	}
+
+	for i := 0; i < len(rawURL); {
+		atOffset := strings.Index(rawURL[i:], "@")
+		if atOffset < 0 {
+			return
+		}
+		at := i + atOffset
+		start := at
+		for start > 0 && bootstrapSCPStyleUserinfoChar(rawURL[start-1]) {
+			start--
+		}
+		userinfo := rawURL[start:at]
+		hostStart := at + 1
+		hostEnd := hostStart
+		for hostEnd < len(rawURL) && bootstrapSCPStyleHostChar(rawURL[hostEnd]) {
+			hostEnd++
+		}
+		if userinfo == "" || hostEnd == hostStart || hostEnd >= len(rawURL) || rawURL[hostEnd] != ':' {
+			i = at + 1
+			continue
+		}
+		pathStart := hostEnd + 1
+		if pathStart >= len(rawURL) || bootstrapSCPStylePathTerminator(rawURL[pathStart]) {
+			i = at + 1
+			continue
+		}
+		if !bootstrapSCPStyleUserinfoLooksCredentialed(userinfo, rawURL[hostStart:hostEnd]) {
+			i = at + 1
+			continue
+		}
+		addBootstrapRedactionValue(valueSet, userinfo)
+		if separator := strings.LastIndex(userinfo, ":"); separator >= 0 && separator+1 < len(userinfo) {
+			addBootstrapRedactionValue(valueSet, userinfo[separator+1:])
+		}
+		i = at + 1
 	}
 }
 
-func sanitizeBootstrapURLCredentials(value string, rawURLs ...string) string {
-	valueSet := map[string]struct{}{}
-	for _, rawURL := range rawURLs {
-		addURLCredentialRedactionTokens(valueSet, rawURL)
+func bootstrapSCPStyleUserinfoChar(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') ||
+		(ch >= 'A' && ch <= 'Z') ||
+		(ch >= '0' && ch <= '9') ||
+		ch == '.' || ch == '_' || ch == '-' || ch == '+' || ch == ':' || ch == '%'
+}
+
+func bootstrapSCPStyleHostChar(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') ||
+		(ch >= 'A' && ch <= 'Z') ||
+		(ch >= '0' && ch <= '9') ||
+		ch == '.' || ch == '-' || ch == '_' || ch == '[' || ch == ']'
+}
+
+func bootstrapSCPStylePathTerminator(ch byte) bool {
+	switch ch {
+	case ' ', '\t', '\n', '\r', '"', '\'', '<', '>', '`':
+		return true
+	default:
+		return false
 	}
-	return BootstrapSanitizer{
-		secretValues: sortedRedactionTokens(valueSet),
-	}.SanitizeString(value)
+}
+
+func bootstrapSCPStyleUserinfoLooksCredentialed(userinfo, host string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(userinfo))
+	if normalized == "" || normalized == "git" {
+		return false
+	}
+	if strings.Contains(normalized, ":") || bootstrapCredentialTokenLooksSensitive(normalized) {
+		return true
+	}
+	switch strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]") {
+	case "github.com", "ssh.github.com", "gitlab.com", "bitbucket.org":
+		return true
+	default:
+		return false
+	}
+}
+
+func bootstrapCredentialTokenLooksSensitive(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if normalized == "" {
+		return false
+	}
+	if isSensitiveBootstrapEnvKey(normalized) {
+		return true
+	}
+	for _, marker := range []string{"ghp_", "github_pat_", "glpat", "oauth", "x-access-token", "x-token-auth"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func addURLCredentialParameterRedactionTokens(valueSet map[string]struct{}, rawParameters string) {
+	rawParameters = strings.TrimSpace(rawParameters)
+	if rawParameters == "" {
+		return
+	}
+	values, err := url.ParseQuery(rawParameters)
+	if err != nil {
+		return
+	}
+	for key, params := range values {
+		if !isSensitiveBootstrapEnvKey(key) {
+			continue
+		}
+		for _, value := range params {
+			addBootstrapRedactionValue(valueSet, value)
+		}
+	}
+}
+
+func addBootstrapRedactionValue(values map[string]struct{}, value string) {
+	if strings.TrimSpace(value) == "" {
+		return
+	}
+	addBootstrapRedactionCandidate(values, value)
+
+	for _, fragment := range strings.FieldsFunc(value, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	}) {
+		trimmed := strings.TrimSpace(fragment)
+		if trimmed == "" {
+			continue
+		}
+		addBootstrapRedactionCandidate(values, fragment)
+		addBootstrapRedactionCandidate(values, trimmed)
+	}
+}
+
+func addBootstrapRedactionCandidate(values map[string]struct{}, value string) {
+	if strings.TrimSpace(value) == "" {
+		return
+	}
+	for _, candidate := range []string{
+		value,
+		url.PathEscape(value),
+		url.QueryEscape(value),
+		bootstrapUserinfoEscape(value),
+	} {
+		addBootstrapRedactionLiteral(values, candidate)
+	}
+}
+
+func addBootstrapRedactionLiteral(values map[string]struct{}, value string) {
+	if strings.TrimSpace(value) == "" {
+		return
+	}
+	values[value] = struct{}{}
+	for _, encoded := range bootstrapSerializedStringVariants(value) {
+		values[encoded] = struct{}{}
+	}
+}
+
+func bootstrapSerializedStringVariants(value string) []string {
+	var variants []string
+	if encoded, err := json.Marshal(value); err == nil {
+		variants = append(variants, trimBootstrapQuotedString(string(encoded)))
+	}
+	variants = append(variants, trimBootstrapQuotedString(strconv.Quote(value)))
+	return variants
+}
+
+func trimBootstrapQuotedString(value string) string {
+	if len(value) >= 2 {
+		return value[1 : len(value)-1]
+	}
+	return value
+}
+
+func bootstrapUserinfoEscape(value string) string {
+	const userinfoPrefix = "__hal_bootstrap__:"
+	return strings.TrimPrefix(url.UserPassword("__hal_bootstrap__", value).String(), userinfoPrefix)
 }
 
 // SanitizeBootstrapCommand returns a copy of command with sensitive args,
@@ -200,7 +386,7 @@ func isSensitiveBootstrapEnvKey(key string) bool {
 	})
 	for _, part := range parts {
 		switch part {
-		case "AUTH", "CREDENTIAL", "CREDENTIALS", "KEY", "PASS", "PASSWD", "PASSWORD", "PAT", "PRIVATE", "SECRET", "TOKEN":
+		case "AUTH", "CREDENTIAL", "CREDENTIALS", "KEY", "PASS", "PASSWD", "PASSWORD", "PRIVATE", "SECRET", "TOKEN":
 			return true
 		}
 	}

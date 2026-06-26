@@ -124,8 +124,8 @@ Required check failures and timeouts produce a failing gate. A required shell-co
       "finishedAt": "2026-06-20T12:00:02Z",
       "durationMs": 2000,
       "exitCode": 0,
-      "stdoutArtifact": ".hal/reports/verify/20260620T120000.000000000Z/test-stdout.txt",
-      "stderrArtifact": ".hal/reports/verify/20260620T120000.000000000Z/test-stderr.txt",
+      "stdoutArtifact": ".hal/reports/verify/test-stdout.txt",
+      "stderrArtifact": ".hal/reports/verify/test-stderr.txt",
       "message": "check passed"
     },
     {
@@ -157,12 +157,12 @@ Required check failures and timeouts produce a failing gate. A required shell-co
     {
       "checkId": "test",
       "kind": "stdout",
-      "path": ".hal/reports/verify/20260620T120000.000000000Z/test-stdout.txt"
+      "path": ".hal/reports/verify/test-stdout.txt"
     },
     {
       "checkId": "test",
       "kind": "stderr",
-      "path": ".hal/reports/verify/20260620T120000.000000000Z/test-stderr.txt"
+      "path": ".hal/reports/verify/test-stderr.txt"
     }
   ]
 }

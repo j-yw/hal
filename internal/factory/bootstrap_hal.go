@@ -9,6 +9,23 @@ import (
 const (
 	BootstrapStepSetupHalTemplates = "setup_hal_templates"
 	BootstrapStepRefreshHalSkills  = "refresh_hal_skills"
+
+	bootstrapRemoteHomeScript = `set -eu
+remote_home="${HOME:-}"
+if [ -z "$remote_home" ] && command -v getent >/dev/null 2>&1; then
+  remote_home="$(getent passwd "$(id -u)" | cut -d: -f6)"
+fi
+if [ -z "$remote_home" ]; then remote_home="$(pwd)"; fi
+export HOME="$remote_home"`
+
+	bootstrapInstallHalScript = bootstrapRemoteHomeScript + `
+tmp="$(mktemp /tmp/hal-bootstrap.XXXXXX)"
+trap 'rm -f "$tmp"' EXIT
+bin_dir="$HOME/.local/bin"
+mkdir -p "$bin_dir"
+go build -o "$tmp" .
+install -m 0755 "$tmp" "$bin_dir/hal"
+"$bin_dir/hal" version`
 )
 
 // BootstrapHalDeps holds injectable dependencies for refreshing Hal-managed
@@ -23,21 +40,17 @@ type bootstrapHalCommand struct {
 	command  BootstrapCommand
 }
 
-// BootstrapRefreshHal initializes or refreshes Hal templates, managed skills,
-// standards, and engine links in the prepared workspace by delegating to the
-// existing Hal CLI ownership paths.
+// BootstrapRefreshHal installs the checked-out Hal binary, then initializes or
+// refreshes Hal templates, managed skills, standards, and engine links in the
+// prepared workspace by delegating to the existing Hal CLI ownership paths.
 func BootstrapRefreshHal(ctx context.Context, request BootstrapRequest, deps BootstrapHalDeps) (BootstrapResult, error) {
 	repoPath, err := normalizeBootstrapRepoPath(request.WorkspaceDir)
-	result := BootstrapResult{
-		RepoPath: repoPath,
-	}
 	if err != nil {
-		recordBootstrapRequestValidationFailure(&result, request, deps.now, err)
-		return result, err
+		return BootstrapResult{}, err
 	}
 
 	commands := bootstrapHalCommands(request, repoPath)
-	result = BootstrapResult{
+	result := BootstrapResult{
 		RepoPath: repoPath,
 		Steps:    make([]BootstrapStepResult, 0, len(commands)),
 		Timeline: make([]BootstrapTimelineEvent, 0, len(commands)),
@@ -71,6 +84,14 @@ func bootstrapHalCommands(request BootstrapRequest, repoPath string) []bootstrap
 	}
 
 	return []bootstrapHalCommand{
+		{
+			stepName: BootstrapStepInstallHal,
+			command: BootstrapCommand{
+				Name: "sh",
+				Args: []string{"-lc", bootstrapInstallHalScript},
+				Dir:  repoPath,
+			},
+		},
 		{
 			stepName: BootstrapStepSetupHalTemplates,
 			command: BootstrapCommand{

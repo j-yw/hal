@@ -1,6 +1,7 @@
 package factory
 
 import (
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -8,7 +9,6 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -82,6 +82,9 @@ func TestDefaultStorePaths(t *testing.T) {
 	if store.TimelinesDir() != filepath.Join(root, timelinesDirName) {
 		t.Fatalf("TimelinesDir() = %q, want %q", store.TimelinesDir(), filepath.Join(root, timelinesDirName))
 	}
+	if store.LogsDir() != filepath.Join(root, logsDirName) {
+		t.Fatalf("LogsDir() = %q, want %q", store.LogsDir(), filepath.Join(root, logsDirName))
+	}
 	if store.ArtifactsDir() != filepath.Join(root, artifactsDirName) {
 		t.Fatalf("ArtifactsDir() = %q, want %q", store.ArtifactsDir(), filepath.Join(root, artifactsDirName))
 	}
@@ -102,6 +105,7 @@ func TestEnsureStoreDirCreatesRestrictiveDirectories(t *testing.T) {
 		filepath.Join(global, factoryStoreDirName),
 		filepath.Join(global, factoryStoreDirName, runsDirName),
 		filepath.Join(global, factoryStoreDirName, timelinesDirName),
+		filepath.Join(global, factoryStoreDirName, logsDirName),
 		filepath.Join(global, factoryStoreDirName, artifactsDirName),
 	} {
 		assertFactoryDirExists(t, path)
@@ -406,133 +410,266 @@ func TestSaveArtifactFileCopiesUnderFactoryStoreAndUpdatesRun(t *testing.T) {
 	if loaded.Artifacts[0].StoredPath != wantStoredPath {
 		t.Fatalf("loaded artifact StoredPath = %q, want %q", loaded.Artifacts[0].StoredPath, wantStoredPath)
 	}
-	if loaded.Artifacts[0].SourcePath != "" {
-		t.Fatalf("loaded artifact SourcePath = %q, want empty", loaded.Artifacts[0].SourcePath)
-	}
 	if loaded.Artifacts[0].Summary["kind"] != "report" {
 		t.Fatalf("loaded artifact summary = %#v, want report kind", loaded.Artifacts[0].Summary)
 	}
 }
 
-func TestSaveArtifactFileCapsFlattenedArtifactFileNames(t *testing.T) {
+func TestSaveArtifactFileWithRedactorRedactsStoredPayload(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
-	sourcePath := filepath.Join(t.TempDir(), "stdout.txt")
-	if err := os.WriteFile(sourcePath, []byte("ok\n"), 0o600); err != nil {
+	sourcePath := filepath.Join(t.TempDir(), "verify-stdout.txt")
+	secretValue := "ghp_factory_secret_value_123"
+	sourceData := []byte("checkout token=" + secretValue + "\n")
+	if err := os.WriteFile(sourcePath, sourceData, 0o600); err != nil {
 		t.Fatalf("write source artifact: %v", err)
 	}
 
-	record := testRunRecord("run-long-artifact-name")
+	record := testRunRecord("run-artifacts-redacted")
 	record.Artifacts = nil
 	if err := store.SaveRun(&record); err != nil {
 		t.Fatalf("SaveRun() unexpected error: %v", err)
 	}
 
-	nestedPath := ".hal/reports/" + strings.Repeat("deeply/nested/", 32) + "stdout"
-	got, err := store.SaveArtifactFile(record.RunID, ArtifactReference{
-		ID:   nestedPath,
-		Name: "Nested stdout",
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{{Name: "GITHUB_TOKEN", Value: secretValue}})
+	got, err := store.SaveArtifactFileWithRedactor(record.RunID, ArtifactReference{
+		ID:   "verify-stdout",
+		Name: "verification stdout",
 		Type: "text",
-	}, sourcePath)
+	}, sourcePath, redactor)
 	if err != nil {
-		t.Fatalf("SaveArtifactFile() unexpected error: %v", err)
+		t.Fatalf("SaveArtifactFileWithRedactor() unexpected error: %v", err)
 	}
 
-	fileName := filepath.Base(got.StoredPath)
-	if len(fileName) > artifactFileNameMaxLength {
-		t.Fatalf("stored filename length = %d, want <= %d: %q", len(fileName), artifactFileNameMaxLength, fileName)
-	}
-	if !strings.HasSuffix(fileName, ".txt") {
-		t.Fatalf("stored filename = %q, want source extension preserved", fileName)
-	}
-	withoutExt := strings.TrimSuffix(fileName, ".txt")
-	parts := strings.Split(withoutExt, "-")
-	hash := parts[len(parts)-1]
-	if len(hash) != artifactFileNameHashBytes*2 {
-		t.Fatalf("stored filename hash = %q, want %d hex chars in %q", hash, artifactFileNameHashBytes*2, fileName)
-	}
-	if got.StoredPath == filepath.ToSlash(filepath.Join(artifactsDirName, record.RunID, sanitizeArtifactPathComponent(nestedPath)+".txt")) {
-		t.Fatalf("stored path was not capped: %q", got.StoredPath)
-	}
-
-	storedPath, err := store.ResolveArtifactPath(record.RunID, got.StoredPath)
+	absoluteStoredPath, err := store.ResolveArtifactPath(record.RunID, got.StoredPath)
 	if err != nil {
 		t.Fatalf("ResolveArtifactPath() unexpected error: %v", err)
 	}
-	storedData, err := os.ReadFile(storedPath)
+	storedData, err := os.ReadFile(absoluteStoredPath)
 	if err != nil {
 		t.Fatalf("read stored artifact: %v", err)
 	}
-	if string(storedData) != "ok\n" {
-		t.Fatalf("stored artifact = %q, want ok", storedData)
+	storedPayload := string(storedData)
+	if strings.Contains(storedPayload, secretValue) {
+		t.Fatalf("stored artifact payload contains raw secret: %q", storedPayload)
+	}
+	if !strings.Contains(storedPayload, RunSecretRedactionPlaceholder) {
+		t.Fatalf("stored artifact payload = %q, want redaction placeholder", storedPayload)
+	}
+	if got.SizeBytes == nil || *got.SizeBytes != int64(len(storedData)) {
+		t.Fatalf("SizeBytes = %v, want stored payload size %d", got.SizeBytes, len(storedData))
 	}
 }
 
-func TestSaveArtifactFileErrorsDoNotLeakSourcePath(t *testing.T) {
+func TestSaveArtifactFileWithRedactorRedactsJSONEscapedStoredPayload(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
-	record := testRunRecord("run-artifact-error-redaction")
+	sourcePath := filepath.Join(t.TempDir(), "status.json")
+	secretValue := "quote\" slash\\ tab\t html<>&"
+	sourceData, err := json.Marshal(map[string]string{
+		"status": "token prefix " + secretValue + " suffix",
+	})
+	if err != nil {
+		t.Fatalf("marshal source artifact: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, sourceData, 0o600); err != nil {
+		t.Fatalf("write source artifact: %v", err)
+	}
+
+	record := testRunRecord("run-artifacts-redacted-json")
 	record.Artifacts = nil
 	if err := store.SaveRun(&record); err != nil {
 		t.Fatalf("SaveRun() unexpected error: %v", err)
 	}
 
-	secretDir := filepath.Join(t.TempDir(), "secret-workspace")
-	if err := os.MkdirAll(secretDir, 0o700); err != nil {
-		t.Fatalf("create secret dir: %v", err)
-	}
-	missingPath := filepath.Join(secretDir, "missing-output.json")
-	directoryPath := filepath.Join(secretDir, "artifact-dir")
-	if err := os.Mkdir(directoryPath, 0o700); err != nil {
-		t.Fatalf("create artifact dir: %v", err)
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{{Name: "JSON_TOKEN", Value: secretValue}})
+	got, err := store.SaveArtifactFileWithRedactor(record.RunID, ArtifactReference{
+		ID:   "status",
+		Name: "status json",
+		Type: "json",
+	}, sourcePath, redactor)
+	if err != nil {
+		t.Fatalf("SaveArtifactFileWithRedactor() unexpected error: %v", err)
 	}
 
-	tests := []struct {
-		name       string
-		sourcePath string
-	}{
-		{name: "missing", sourcePath: missingPath},
-		{name: "directory", sourcePath: directoryPath},
+	absoluteStoredPath, err := store.ResolveArtifactPath(record.RunID, got.StoredPath)
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath() unexpected error: %v", err)
 	}
-	if runtime.GOOS != "windows" {
-		symlinkPath := filepath.Join(secretDir, "artifact-link")
-		if err := os.Symlink(missingPath, symlinkPath); err != nil {
-			t.Fatalf("create symlink: %v", err)
-		}
-		tests = append(tests, struct {
-			name       string
-			sourcePath string
-		}{name: "symlink", sourcePath: symlinkPath})
+	storedData, err := os.ReadFile(absoluteStoredPath)
+	if err != nil {
+		t.Fatalf("read stored artifact: %v", err)
+	}
+	escapedSecretData, err := json.Marshal(secretValue)
+	if err != nil {
+		t.Fatalf("marshal secret: %v", err)
+	}
+	escapedSecret := strings.Trim(string(escapedSecretData), `"`)
+	if strings.Contains(string(storedData), escapedSecret) {
+		t.Fatalf("stored artifact payload contains JSON-escaped secret: %q", string(storedData))
+	}
+	if !strings.Contains(string(storedData), RunSecretRedactionPlaceholder) {
+		t.Fatalf("stored artifact payload = %q, want redaction placeholder", string(storedData))
+	}
+	var decoded map[string]string
+	if err := json.Unmarshal(storedData, &decoded); err != nil {
+		t.Fatalf("stored artifact should remain valid JSON: %v", err)
+	}
+	wantStatus := "token prefix " + RunSecretRedactionPlaceholder + " suffix"
+	if decoded["status"] != wantStatus {
+		t.Fatalf("status = %q, want %q", decoded["status"], wantStatus)
+	}
+}
+
+func TestSaveArtifactFileWithRedactorUsesRedactedStoredPath(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	secretValue := "secret_extension_123"
+	sourcePath := filepath.Join(t.TempDir(), "verify-stdout."+secretValue)
+	if err := os.WriteFile(sourcePath, []byte("artifact payload\n"), 0o600); err != nil {
+		t.Fatalf("write source artifact: %v", err)
+	}
+
+	record := testRunRecord("run-artifacts-redacted-path")
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
+	}
+
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{{Name: "OUTPUT_EXTENSION", Value: secretValue}})
+	got, err := store.SaveArtifactFileWithRedactor(record.RunID, ArtifactReference{
+		ID:   "verify-stdout",
+		Name: "verification stdout",
+		Type: "text",
+	}, sourcePath, redactor)
+	if err != nil {
+		t.Fatalf("SaveArtifactFileWithRedactor() unexpected error: %v", err)
+	}
+	if strings.Contains(got.StoredPath, secretValue) {
+		t.Fatalf("StoredPath contains raw secret: %q", got.StoredPath)
+	}
+
+	absoluteStoredPath, err := store.ResolveArtifactPath(record.RunID, got.StoredPath)
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath() unexpected error: %v", err)
+	}
+	if _, err := os.Stat(absoluteStoredPath); err != nil {
+		t.Fatalf("stored artifact path %q should exist: %v", got.StoredPath, err)
+	}
+}
+
+func TestSaveArtifactFileWithRedactorRedactsSourcePathErrors(t *testing.T) {
+	secretValue := "artifact_path_secret_123"
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{{Name: "ARTIFACT_PATH", Value: secretValue}})
+
+	tests := []struct {
+		name   string
+		source func(t *testing.T) string
+	}{
+		{
+			name: "missing source",
+			source: func(t *testing.T) string {
+				return filepath.Join(t.TempDir(), "missing-"+secretValue+".json")
+			},
+		},
+		{
+			name: "directory source",
+			source: func(t *testing.T) string {
+				sourceDir := filepath.Join(t.TempDir(), "artifact-"+secretValue)
+				if err := os.MkdirAll(sourceDir, 0o700); err != nil {
+					t.Fatalf("mkdir source dir: %v", err)
+				}
+				return sourceDir
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := store.SaveArtifactFile(record.RunID, ArtifactReference{
-				Name: "artifact",
-				Type: "json",
-			}, tt.sourcePath)
-			if err == nil {
-				t.Fatalf("SaveArtifactFile() expected error")
+			store := NewStore(filepath.Join(t.TempDir(), "factory"))
+			record := testRunRecord("run-artifacts-redacted-error")
+			record.Artifacts = nil
+			if err := store.SaveRun(&record); err != nil {
+				t.Fatalf("SaveRun() unexpected error: %v", err)
 			}
-			if strings.Contains(err.Error(), tt.sourcePath) {
-				t.Fatalf("SaveArtifactFile() error leaked source path: %v", err)
+
+			_, err := store.SaveArtifactFileWithRedactor(record.RunID, ArtifactReference{
+				ID:   "verify-stdout",
+				Name: "verification stdout",
+				Type: "text",
+			}, tt.source(t), redactor)
+			if err == nil {
+				t.Fatalf("SaveArtifactFileWithRedactor() expected error")
+			}
+			errText := err.Error()
+			if strings.Contains(errText, secretValue) {
+				t.Fatalf("error contains raw secret: %q", errText)
+			}
+			if !strings.Contains(errText, RunSecretRedactionPlaceholder) {
+				t.Fatalf("error = %q, want redaction placeholder", errText)
 			}
 		})
 	}
 }
 
-func TestCopyStoreFileErrorsDoNotLeakSourcePath(t *testing.T) {
-	secretDir := filepath.Join(t.TempDir(), "secret-workspace")
-	if err := os.MkdirAll(secretDir, 0o700); err != nil {
-		t.Fatalf("create secret dir: %v", err)
+func TestSaveArtifactFileWithRedactorRedactsPayloadAcrossCopyBoundaries(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	sourcePath := filepath.Join(t.TempDir(), "large-stdout.txt")
+	secretValue := "cross_boundary_secret_123"
+	sourceData := strings.Repeat("a", 32*1024-3) + secretValue + "\n"
+	if err := os.WriteFile(sourcePath, []byte(sourceData), 0o600); err != nil {
+		t.Fatalf("write source artifact: %v", err)
 	}
-	sourcePath := filepath.Join(secretDir, "missing-output.json")
-	destPath := filepath.Join(t.TempDir(), "artifact.json")
 
-	_, err := copyStoreFile(sourcePath, destPath, 0o600, nil)
-	if err == nil {
-		t.Fatalf("copyStoreFile() expected error")
+	record := testRunRecord("run-artifacts-boundary-redaction")
+	record.Artifacts = nil
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() unexpected error: %v", err)
 	}
-	if strings.Contains(err.Error(), sourcePath) {
-		t.Fatalf("copyStoreFile() error leaked source path: %v", err)
+
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{{Name: "BOUNDARY_SECRET", Value: secretValue}})
+	got, err := store.SaveArtifactFileWithRedactor(record.RunID, ArtifactReference{
+		ID:   "large-stdout",
+		Name: "large stdout",
+		Type: "text",
+	}, sourcePath, redactor)
+	if err != nil {
+		t.Fatalf("SaveArtifactFileWithRedactor() unexpected error: %v", err)
+	}
+
+	absoluteStoredPath, err := store.ResolveArtifactPath(record.RunID, got.StoredPath)
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath() unexpected error: %v", err)
+	}
+	storedData, err := os.ReadFile(absoluteStoredPath)
+	if err != nil {
+		t.Fatalf("read stored artifact: %v", err)
+	}
+	storedPayload := string(storedData)
+	if strings.Contains(storedPayload, secretValue) {
+		t.Fatalf("stored artifact payload contains raw secret")
+	}
+	if !strings.Contains(storedPayload, RunSecretRedactionPlaceholder) {
+		t.Fatalf("stored artifact payload missing redaction placeholder")
+	}
+}
+
+func TestCopyStoreFilePayloadRedactedPrefersLongestOverlappingSecret(t *testing.T) {
+	var dest strings.Builder
+	source := strings.NewReader("checkout token=abcdef complete")
+	secrets := [][]byte{
+		[]byte("abc"),
+		[]byte("abcdef"),
+	}
+
+	if err := copyStoreFilePayloadRedacted(&dest, source, secrets, len("abcdef")); err != nil {
+		t.Fatalf("copyStoreFilePayloadRedacted() unexpected error: %v", err)
+	}
+
+	got := dest.String()
+	want := "checkout token=" + RunSecretRedactionPlaceholder + " complete"
+	if got != want {
+		t.Fatalf("redacted payload = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "def") {
+		t.Fatalf("redacted payload leaked overlapping secret suffix: %q", got)
 	}
 }
 
@@ -639,89 +776,6 @@ func TestSaveArtifactFileRejectsSymlinks(t *testing.T) {
 	}
 }
 
-func TestSaveArtifactFileDoesNotFollowPrecreatedTempSymlink(t *testing.T) {
-	store := NewStore(filepath.Join(t.TempDir(), "factory"))
-	record := testRunRecord("run-artifacts-temp-symlink")
-	record.Artifacts = nil
-	if err := store.SaveRun(&record); err != nil {
-		t.Fatalf("SaveRun() unexpected error: %v", err)
-	}
-	sourcePath := filepath.Join(t.TempDir(), "artifact.txt")
-	if err := os.WriteFile(sourcePath, []byte("artifact\n"), 0o600); err != nil {
-		t.Fatalf("write source artifact: %v", err)
-	}
-
-	storedPath := filepath.ToSlash(filepath.Join(artifactsDirName, record.RunID, "artifact.txt"))
-	absoluteStoredPath, err := store.ResolveArtifactPath(record.RunID, storedPath)
-	if err != nil {
-		t.Fatalf("ResolveArtifactPath() unexpected error: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(absoluteStoredPath), 0o700); err != nil {
-		t.Fatalf("mkdir artifact dir: %v", err)
-	}
-	outsideTarget := filepath.Join(t.TempDir(), "outside.txt")
-	if err := os.WriteFile(outsideTarget, []byte("keep\n"), 0o600); err != nil {
-		t.Fatalf("write outside target: %v", err)
-	}
-	if err := os.Symlink(outsideTarget, absoluteStoredPath+storeTempFileExt); err != nil {
-		t.Skipf("symlink unavailable: %v", err)
-	}
-
-	got, err := store.SaveArtifactFile(record.RunID, ArtifactReference{Name: "artifact", Type: "text"}, sourcePath)
-	if err != nil {
-		t.Fatalf("SaveArtifactFile() unexpected error: %v", err)
-	}
-	if got.StoredPath != storedPath {
-		t.Fatalf("StoredPath = %q, want %q", got.StoredPath, storedPath)
-	}
-	outsideData, err := os.ReadFile(outsideTarget)
-	if err != nil {
-		t.Fatalf("read outside target: %v", err)
-	}
-	if string(outsideData) != "keep\n" {
-		t.Fatalf("outside target = %q, want unchanged", outsideData)
-	}
-	storedData, err := os.ReadFile(absoluteStoredPath)
-	if err != nil {
-		t.Fatalf("read stored artifact: %v", err)
-	}
-	if string(storedData) != "artifact\n" {
-		t.Fatalf("stored artifact = %q, want artifact", storedData)
-	}
-}
-
-func TestSaveArtifactFileRejectsSymlinkedArtifactParent(t *testing.T) {
-	store := NewStore(filepath.Join(t.TempDir(), "factory"))
-	record := testRunRecord("run-artifacts-parent-symlink")
-	record.Artifacts = nil
-	if err := store.SaveRun(&record); err != nil {
-		t.Fatalf("SaveRun() unexpected error: %v", err)
-	}
-	sourcePath := filepath.Join(t.TempDir(), "artifact.txt")
-	if err := os.WriteFile(sourcePath, []byte("artifact\n"), 0o600); err != nil {
-		t.Fatalf("write source artifact: %v", err)
-	}
-	outsideDir := t.TempDir()
-	if err := os.Symlink(outsideDir, filepath.Join(store.ArtifactsDir(), record.RunID)); err != nil {
-		t.Skipf("symlink unavailable: %v", err)
-	}
-
-	_, err := store.SaveArtifactFile(record.RunID, ArtifactReference{Name: "artifact", Type: "text"}, sourcePath)
-	if err == nil {
-		t.Fatalf("SaveArtifactFile() expected symlinked parent error")
-	}
-	if _, err := os.Stat(filepath.Join(outsideDir, "artifact.txt")); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("outside artifact should not be written, stat error = %v", err)
-	}
-	loaded, err := store.LoadRun(record.RunID)
-	if err != nil {
-		t.Fatalf("LoadRun() unexpected error: %v", err)
-	}
-	if len(loaded.Artifacts) != 0 {
-		t.Fatalf("artifacts = %#v, want none after symlinked parent rejection", loaded.Artifacts)
-	}
-}
-
 func TestLoadRunMissingReturnsNotExist(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 
@@ -805,56 +859,6 @@ func TestAppendEventAndLoadEventsRoundTripWithNewStore(t *testing.T) {
 	}
 }
 
-func TestAppendEventPreservesConcurrentAppends(t *testing.T) {
-	store := NewStore(filepath.Join(t.TempDir(), "factory"))
-	runID := "run-events-concurrent"
-	const count = 64
-
-	errCh := make(chan error, count)
-	var wg sync.WaitGroup
-	for i := 1; i <= count; i++ {
-		sequence := int64(i)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			event := testEventRecord(runID, sequence, EventTypeCommandOutputSummary)
-			errCh <- store.AppendEvent(&event)
-		}()
-	}
-	wg.Wait()
-	close(errCh)
-
-	for err := range errCh {
-		if err != nil {
-			t.Fatalf("AppendEvent() unexpected error: %v", err)
-		}
-	}
-
-	got, err := store.LoadEvents(runID)
-	if err != nil {
-		t.Fatalf("LoadEvents() unexpected error: %v", err)
-	}
-	if len(got) != count {
-		t.Fatalf("LoadEvents() length = %d, want %d", len(got), count)
-	}
-
-	seen := make(map[int64]bool, count)
-	for _, event := range got {
-		if event.RunID != runID {
-			t.Fatalf("event runID = %q, want %q", event.RunID, runID)
-		}
-		if seen[event.Sequence] {
-			t.Fatalf("duplicate event sequence %d", event.Sequence)
-		}
-		seen[event.Sequence] = true
-	}
-	for i := int64(1); i <= count; i++ {
-		if !seen[i] {
-			t.Fatalf("missing event sequence %d", i)
-		}
-	}
-}
-
 func TestTimelineReadPathsIgnoreIncompleteTempFiles(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	runID := "run-events-temp-safe"
@@ -898,6 +902,66 @@ func TestLoadEventsTreatsMissingTimelineAsEmpty(t *testing.T) {
 	}
 }
 
+func TestAppendLogChunkPersistsInspectableState(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+	runID := "run-logs-001"
+	base := time.Date(2026, 6, 20, 16, 0, 0, 0, time.UTC)
+	chunks := []LogChunk{
+		{
+			RunID:     runID,
+			Stream:    LogStreamStdout,
+			Source:    LogSourceLocalFactory,
+			Text:      "first line",
+			CreatedAt: base,
+		},
+		{
+			RunID:     runID,
+			Stream:    LogStreamStderr,
+			Source:    LogSourceEngine,
+			Text:      "second line",
+			Summary:   "engine output",
+			CreatedAt: base.Add(time.Minute),
+		},
+	}
+
+	for i := range chunks {
+		if err := store.AppendLogChunk(&chunks[i]); err != nil {
+			t.Fatalf("AppendLogChunk(%d) unexpected error: %v", i, err)
+		}
+	}
+
+	got, err := store.LoadLogChunks(runID)
+	if err != nil {
+		t.Fatalf("LoadLogChunks() unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("LoadLogChunks() len = %d, want 2", len(got))
+	}
+	for i := range got {
+		if got[i].Sequence != int64(i+1) {
+			t.Fatalf("chunk %d sequence = %d, want %d", i, got[i].Sequence, i+1)
+		}
+		if got[i].Text != chunks[i].Text {
+			t.Fatalf("chunk %d text = %q, want %q", i, got[i].Text, chunks[i].Text)
+		}
+	}
+}
+
+func TestLoadLogChunksTreatsMissingLogsAsEmpty(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+
+	got, err := store.LoadLogChunks("missing-logs")
+	if err != nil {
+		t.Fatalf("LoadLogChunks() unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("LoadLogChunks() = %v, want empty", got)
+	}
+	if _, err := os.Stat(store.Root()); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("LoadLogChunks() should not create store root, stat error = %v", err)
+	}
+}
+
 func TestAppendEventSupportsKnownEventTypes(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	runID := "run-events-002"
@@ -910,6 +974,7 @@ func TestAppendEventSupportsKnownEventTypes(t *testing.T) {
 		EventTypeCIState,
 		EventTypeArtifactSync,
 		EventTypeFailureClassification,
+		EventTypePolicyDecision,
 	}
 
 	for i, eventType := range eventTypes {

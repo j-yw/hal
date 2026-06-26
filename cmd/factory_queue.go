@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/verify"
 	"github.com/spf13/cobra"
 )
 
@@ -23,6 +25,7 @@ type factoryQueueAddDeps struct {
 	defaultStore func() (factory.Store, error)
 	now          func() time.Time
 	newQueueID   func() (string, error)
+	recordQueued func(factory.Store, factory.QueueEntry, time.Time) error
 }
 
 type factoryQueueListDeps struct {
@@ -30,14 +33,26 @@ type factoryQueueListDeps struct {
 }
 
 type factoryQueueWorkDeps struct {
-	defaultStore    func() (factory.Store, error)
-	now             func() time.Time
-	claim           *factory.QueueClaim
-	currentBranch   func(string) (string, error)
-	runPipeline     func(context.Context, factoryRunPipelineRequest) error
-	runSandbox      func(context.Context, factorySandboxExecutorRequest) error
-	sandboxCopier   factory.SandboxArtifactCopier
-	sandboxRequests func(string, factory.RunRecord) []factory.SandboxArtifactRequest
+	defaultStore           func() (factory.Store, error)
+	now                    func() time.Time
+	claim                  *factory.QueueClaim
+	lookupEnv              func(string) (string, bool)
+	repoRemote             func(string) (string, error)
+	loadPolicy             func(string) (*factory.FactoryPolicy, error)
+	loadEngine             func(string) (string, error)
+	runPipeline            func(context.Context, factoryRunPipelineRequest) error
+	runSandbox             func(context.Context, factorySandboxExecutorRequest) error
+	loadVerify             func(string) (*verify.Config, error)
+	runVerify              func(context.Context, *verify.Config) (*verify.Result, error)
+	loadSandbox            func(string) (*sandbox.SandboxState, error)
+	resolveProvider        func(string, string) (sandbox.Provider, error)
+	runProviderExec        func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
+	cleanupSandbox         func(context.Context, factorySandboxCleanupRequest) error
+	statusSnapshot         func(string) (factorySnapshotArtifact, error)
+	doctorSnapshot         func(string) (factorySnapshotArtifact, error)
+	sandboxCopier          factory.SandboxArtifactCopier
+	sandboxRequests        func(string, factory.RunRecord) []factory.SandboxArtifactRequest
 }
 
 type factoryQueueAddRequest struct {
@@ -57,6 +72,7 @@ type factoryQueueWorkRequest struct {
 var defaultFactoryQueueAddDeps = factoryQueueAddDeps{
 	defaultStore: factory.DefaultStore,
 	now:          time.Now,
+	recordQueued: recordFactoryRunQueued,
 }
 
 var defaultFactoryQueueListDeps = factoryQueueListDeps{
@@ -64,12 +80,24 @@ var defaultFactoryQueueListDeps = factoryQueueListDeps{
 }
 
 var defaultFactoryQueueWorkDeps = factoryQueueWorkDeps{
-	defaultStore:    factory.DefaultStore,
-	now:             time.Now,
-	currentBranch:   defaultFactoryRunDeps.currentBranch,
-	runPipeline:     runFactoryRunPipeline,
-	runSandbox:      defaultFactoryRunDeps.runSandbox,
-	sandboxRequests: defaultFactorySandboxArtifactRequests,
+	defaultStore:           factory.DefaultStore,
+	now:                    time.Now,
+	lookupEnv:              os.LookupEnv,
+	repoRemote:             readGitRemoteOptionalInDir,
+	loadPolicy:             factory.LoadPolicyConfig,
+	loadEngine:             compound.LoadDefaultEngine,
+	runPipeline:            runFactoryRunPipeline,
+	runSandbox:             defaultFactoryRunDeps.runSandbox,
+	loadVerify:             defaultFactoryRunDeps.loadVerify,
+	runVerify:              defaultFactoryRunDeps.runVerify,
+	loadSandbox:            defaultFactoryRunDeps.loadSandbox,
+	resolveProvider:        defaultFactoryRunDeps.resolveProvider,
+	runProviderExec:        defaultFactoryRunDeps.runProviderExec,
+	runProviderExecWithEnv: defaultFactoryRunDeps.runProviderExecWithEnv,
+	cleanupSandbox:         defaultFactoryRunDeps.cleanupSandbox,
+	statusSnapshot:         defaultFactoryRunDeps.statusSnapshot,
+	doctorSnapshot:         defaultFactoryRunDeps.doctorSnapshot,
+	sandboxRequests:        defaultFactorySandboxArtifactRequests,
 }
 
 var factoryQueueCmd = &cobra.Command{
@@ -93,9 +121,11 @@ var factoryQueueAddCmd = &cobra.Command{
 
 Provide the run ID to enqueue and the executor mode that the worker should use
 when processing it. Use --json for machine-readable output following the
-factory-queue-add-v1 contract.`,
+factory-queue-add-v1 contract. Sandbox executor mode requires the run record to
+include a base branch.`,
 	Example: `  hal factory queue add run-20260620-001 local
-  hal factory queue add run-20260620-001 local --json`,
+  hal factory queue add run-20260620-001 local --json
+  hal factory queue add run-20260620-001 sandbox`,
 	RunE: runFactoryQueueAdd,
 }
 
@@ -180,7 +210,9 @@ func runFactoryQueueWork(cmd *cobra.Command, _ []string) error {
 		out = cmd.OutOrStdout()
 	}
 
-	return runFactoryQueueWorkWithDeps(ctx, out, req, defaultFactoryQueueWorkDeps)
+	countingOut := newFactoryCountingWriter(out)
+	err = runFactoryQueueWorkWithDeps(ctx, countingOut, req, defaultFactoryQueueWorkDeps)
+	return suppressFactoryJSONRenderedError(err, req.JSON, countingOut)
 }
 
 func validateFactoryQueueAddArgs(cmd *cobra.Command, args []string) error {
@@ -268,7 +300,7 @@ func runFactoryQueueAddWithDeps(out io.Writer, req factoryQueueAddRequest, deps 
 	if record.Status != factory.RunStatusPending {
 		return fmt.Errorf("factory run %q is %q, want %q", record.RunID, record.Status, factory.RunStatusPending)
 	}
-	if err := validateFactoryQueueExecutorRun(*record, executorMode); err != nil {
+	if err := validateFactoryQueueSandboxBaseBranch(*record, executorMode); err != nil {
 		return err
 	}
 
@@ -276,7 +308,7 @@ func runFactoryQueueAddWithDeps(out io.Writer, req factoryQueueAddRequest, deps 
 		Now:        deps.now,
 		NewQueueID: deps.newQueueID,
 	}, func(entry factory.QueueEntry) error {
-		return recordFactoryRunQueued(store, entry, deps.now())
+		return deps.recordQueued(store, entry, entry.CreatedAt)
 	})
 	if err != nil {
 		return fmt.Errorf("enqueue factory run %q: %w", strings.TrimSpace(req.RunID), err)
@@ -337,15 +369,14 @@ func runFactoryQueueWorkWithDeps(ctx context.Context, out io.Writer, req factory
 			claimedAt = *entry.ClaimedAt
 		}
 		if err := recordFactoryRunClaimed(store, *entry, claimedAt); err != nil {
-			finalEntry, finalErr := failClaimedFactoryQueueEntryAfterClaimError(store, *entry, err, deps.now)
-			if finalErr == nil {
-				entry = &finalEntry
-				return renderFactoryQueueWorkResult(out, entry, req.JSON)
+			finalEntry, failErr := failClaimedFactoryQueueEntry(store, *entry, err, deps)
+			if failErr != nil {
+				return failErr
 			}
 			if renderErr := renderFactoryQueueWorkResult(out, &finalEntry, req.JSON); renderErr != nil {
-				return errors.Join(finalErr, renderErr)
+				return errors.Join(err, renderErr)
 			}
-			return finalErr
+			return err
 		}
 		finalEntry, err := executeClaimedFactoryQueueEntry(ctx, store, *entry, deps)
 		if err != nil {
@@ -361,292 +392,215 @@ func runFactoryQueueWorkWithDeps(ctx context.Context, out io.Writer, req factory
 }
 
 func executeClaimedFactoryQueueEntry(ctx context.Context, store factory.Store, entry factory.QueueEntry, deps factoryQueueWorkDeps) (factory.QueueEntry, error) {
-	record, loadErr := store.LoadRun(entry.RunID)
+	deps = normalizeFactoryQueueWorkDeps(deps)
 	if _, err := factory.ValidateExecutorMode(entry.ExecutorMode); err != nil {
-		if loadErr != nil {
-			return failClaimedFactoryQueueEntry(store, entry, err, deps.now)
-		}
-		return failClaimedFactoryQueueEntryAndRun(store, entry, *record, err, deps.now)
+		return failClaimedFactoryQueueEntry(store, entry, err, deps)
 	}
 
-	if loadErr != nil {
-		return failClaimedFactoryQueueEntry(store, entry, fmt.Errorf("load claimed factory run %q: %w", entry.RunID, loadErr), deps.now)
-	}
-	if err := validateClaimedFactoryRun(*record); err != nil {
-		return failClaimedFactoryQueueEntryAfterRunStateError(store, entry, *record, err, deps.now)
+	record, err := store.LoadRun(entry.RunID)
+	if err != nil {
+		return failClaimedFactoryQueueEntry(store, entry, fmt.Errorf("load claimed factory run %q: %w", entry.RunID, err), deps)
 	}
 	record.ExecutorMode = entry.ExecutorMode
-	if err := validateFactoryQueueExecutorRun(*record, entry.ExecutorMode); err != nil {
-		return failClaimedFactoryQueueEntryAndRun(store, entry, *record, err, deps.now)
+	if err := validateFactoryQueueSandboxBaseBranch(*record, entry.ExecutorMode); err != nil {
+		return failClaimedFactoryQueueEntry(store, entry, err, deps)
 	}
+	redactor := factory.NewRunSecretRedactor(resolveFactoryRunRedactionSecrets(factoryRunSecretInputsFromMetadata(record.Secrets), deps.lookupEnv))
 
-	currentBranch := deps.currentBranch
-	if currentBranch == nil {
-		currentBranch = defaultFactoryRunDeps.currentBranch
-	}
-	runDir, err := factoryQueueRunDir(*record)
-	if err != nil {
-		return failClaimedFactoryQueueEntryAndRun(store, entry, *record, err, deps.now)
-	}
-	if entry.ExecutorMode != factory.ExecutorModeSandbox {
-		if err := validateClaimedFactoryQueueBranch(runDir, *record, currentBranch); err != nil {
-			return failClaimedFactoryQueueEntryAndRun(store, entry, *record, err, deps.now)
+	runDir := factoryQueueRunDir(*record)
+	runDeps := factoryRunDepsFromQueueWorkDeps(store, deps)
+	policy := factoryPolicySnapshotFromRecord(record)
+	if policy == nil {
+		loadedPolicy, err := loadFactoryRunPolicy(runDir, runDeps)
+		if err != nil {
+			runErr := failFactoryRunCreationWithRedactor(store, *record, io.Discard, false, deps.now(), fmt.Errorf("load factory policy: %w", err), nil, redactor)
+			return failClaimedFactoryQueueEntry(store, entry, runErr, deps)
 		}
+		persistedRecord, err := persistFactoryRunPolicySnapshotWithRedactor(store, *record, loadedPolicy, redactor)
+		if err != nil {
+			runErr := failFactoryRunCreationWithRedactor(store, *record, io.Discard, false, deps.now(), err, nil, redactor)
+			return failClaimedFactoryQueueEntry(store, entry, runErr, deps)
+		}
+		record = &persistedRecord
+		policy = factoryPolicySnapshotFromRecord(record)
+	}
+	engineName := factoryRunEngineSnapshotFromRecord(record)
+	if engineName == "" {
+		var err error
+		engineName, err = resolveFactoryRunEngine(runDir, runDeps)
+		if err != nil {
+			runErr := failFactoryRunCreationWithRedactor(store, *record, io.Discard, false, deps.now(), err, nil, redactor)
+			return failClaimedFactoryQueueEntry(store, entry, runErr, deps)
+		}
+		persistedRecord, err := persistFactoryRunEngineSnapshotWithRedactor(store, *record, engineName, redactor)
+		if err != nil {
+			runErr := failFactoryRunCreationWithRedactor(store, *record, io.Discard, false, deps.now(), err, nil, redactor)
+			return failClaimedFactoryQueueEntry(store, entry, runErr, deps)
+		}
+		record = &persistedRecord
+	}
+	if err := enforceFactoryRunCreationPolicyWithRedactor(store, *record, io.Discard, false, runDeps, *policy, engineName, redactor); err != nil {
+		return failClaimedFactoryQueueEntry(store, entry, err, deps)
 	}
 
-	result, execErr := executeFactoryRun(ctx, runDir, factoryRunRequestFromQueueRecord(*record), store, *record, io.Discard, "", factoryRunExecutionDeps{
-		now:             deps.now,
-		currentBranch:   currentBranch,
-		runPipeline:     deps.runPipeline,
-		runSandbox:      deps.runSandbox,
-		sandboxCopier:   deps.sandboxCopier,
-		sandboxRequests: deps.sandboxRequests,
-	})
+	execRecord, err := rehydrateQueuedSandboxRunRecord(*record, deps)
+	if err != nil {
+		return failClaimedFactoryQueueEntry(store, entry, err, deps)
+	}
+
+	_, execErr := executeFactoryRun(ctx, runDir, factoryRunRequestFromQueueRecord(execRecord), io.Discard, store, execRecord, runDeps, *policy, engineName)
 	if execErr != nil {
-		return finalizeClaimedFactoryQueueExecutionError(store, entry, result.Record, execErr, deps.now)
+		return failClaimedFactoryQueueEntry(store, entry, execErr, deps)
 	}
 
-	return succeedClaimedFactoryQueueEntry(store, entry, deps.now)
-}
-
-func validateFactoryQueueExecutorRun(record factory.RunRecord, executorMode string) error {
-	if strings.TrimSpace(executorMode) == factory.ExecutorModeSandbox && strings.TrimSpace(record.BaseBranch) == "" {
-		return fmt.Errorf("sandbox factory run %q requires a base branch", record.RunID)
-	}
-	return nil
-}
-
-func validateClaimedFactoryQueueBranch(dir string, record factory.RunRecord, currentBranch func(string) (string, error)) error {
-	wantBranch := strings.TrimSpace(record.BranchName)
-	if wantBranch == "" {
-		return nil
-	}
-	if currentBranch == nil {
-		currentBranch = defaultFactoryRunDeps.currentBranch
-	}
-	gotBranch, err := currentBranch(dir)
-	if err != nil {
-		return fmt.Errorf("resolve queued factory run branch: %w", err)
-	}
-	gotBranch = strings.TrimSpace(gotBranch)
-	if gotBranch == "" {
-		return fmt.Errorf("queued factory run %q branch is unavailable; want %q", record.RunID, wantBranch)
-	}
-	if gotBranch != wantBranch {
-		return fmt.Errorf("queued factory run %q is on branch %q, want %q", record.RunID, gotBranch, wantBranch)
-	}
-	return nil
-}
-
-func finalizeClaimedFactoryQueueExecutionError(store factory.Store, entry factory.QueueEntry, record factory.RunRecord, cause error, now func() time.Time) (factory.QueueEntry, error) {
-	latest := record
-	if strings.TrimSpace(record.RunID) != "" {
-		if loaded, err := store.LoadRun(record.RunID); err == nil && loaded != nil {
-			latest = *loaded
-		}
-	}
-
-	switch latest.Status {
-	case factory.RunStatusSucceeded:
-		completedEntry, markErr := succeedClaimedFactoryQueueEntry(store, entry, now)
-		if markErr != nil {
-			return entry, errors.Join(cause, markErr)
-		}
-		return completedEntry, cause
-	case factory.RunStatusFailed:
-		return failClaimedFactoryQueueEntryWithRunEvent(store, entry, latest.RunID, cause, now)
-	default:
-		if strings.TrimSpace(latest.RunID) == "" {
-			return failClaimedFactoryQueueEntry(store, entry, cause, now)
-		}
-		return failClaimedFactoryQueueEntryAndRun(store, entry, latest, cause, now)
-	}
-}
-
-func succeedClaimedFactoryQueueEntry(store factory.Store, entry factory.QueueEntry, now func() time.Time) (factory.QueueEntry, error) {
-	completedAt := now()
 	completedEntry, err := store.MarkQueueEntrySucceeded(entry.QueueID, factory.QueueOperationOptions{
-		Now:                  func() time.Time { return completedAt },
-		ExpectedClaimedAt:    entry.ClaimedAt,
-		ExpectedAttemptCount: entry.AttemptCount,
+		Now: deps.now,
 	})
 	if err != nil {
 		return entry, err
 	}
-	if eventErr := recordFactoryRunQueueSucceeded(store, entry.RunID, completedAt, completedEntry); eventErr != nil {
-		return completedEntry, fmt.Errorf("record factory queue success event: %w", eventErr)
-	}
 	return completedEntry, nil
 }
 
-func failClaimedFactoryQueueEntry(store factory.Store, entry factory.QueueEntry, cause error, now func() time.Time) (factory.QueueEntry, error) {
+func rehydrateQueuedSandboxRunRecord(record factory.RunRecord, deps factoryQueueWorkDeps) (factory.RunRecord, error) {
+	if record.ExecutorMode != factory.ExecutorModeSandbox {
+		return record, nil
+	}
+	if !queuedSandboxRepoRemoteNeedsRefresh(record.RepoRemote) {
+		return record, nil
+	}
+	if deps.repoRemote == nil {
+		return record, nil
+	}
+	remote, err := deps.repoRemote(factoryQueueRunDir(record))
+	if err != nil {
+		return record, fmt.Errorf("refresh queued sandbox repository remote: %w", err)
+	}
+	if strings.TrimSpace(remote) != "" {
+		record.RepoRemote = strings.TrimSpace(remote)
+	}
+	return record, nil
+}
+
+func queuedSandboxRepoRemoteNeedsRefresh(remote string) bool {
+	if strings.Contains(remote, factory.RunSecretRedactionPlaceholder) {
+		return true
+	}
+	escapedPlaceholder := strings.NewReplacer("[", "%5B", "]", "%5D").Replace(factory.RunSecretRedactionPlaceholder)
+	return strings.Contains(strings.ToLower(remote), strings.ToLower(escapedPlaceholder))
+}
+
+func failClaimedFactoryQueueEntry(store factory.Store, entry factory.QueueEntry, cause error, deps factoryQueueWorkDeps) (factory.QueueEntry, error) {
+	deps = normalizeFactoryQueueWorkDeps(deps)
 	if cause == nil {
 		cause = fmt.Errorf("factory queue work failed")
 	}
-	failedEntry, markErr := store.MarkQueueEntryFailed(entry.QueueID, cause.Error(), factory.QueueOperationOptions{
-		Now:                  now,
-		ExpectedClaimedAt:    entry.ClaimedAt,
-		ExpectedAttemptCount: entry.AttemptCount,
+	redactor := factoryQueueFailureRedactor(store, entry, deps.lookupEnv)
+	safeCause := redactFactoryQueueFailureCause(cause, redactor)
+	runErr := markFactoryQueueRunFailed(store, entry, safeCause, deps.now, redactor)
+	failedEntry, markErr := store.MarkQueueEntryFailed(entry.QueueID, safeCause.Error(), factory.QueueOperationOptions{
+		Now: deps.now,
 	})
 	if markErr != nil {
-		return entry, errors.Join(cause, markErr)
+		return entry, errors.Join(safeCause, runErr, markErr)
 	}
-	return failedEntry, cause
+	if runErr != nil {
+		return failedEntry, errors.Join(safeCause, runErr)
+	}
+	return failedEntry, safeCause
 }
 
-func failClaimedFactoryQueueEntryWithRunEvent(store factory.Store, entry factory.QueueEntry, runID string, cause error, now func() time.Time) (factory.QueueEntry, error) {
-	if cause == nil {
-		cause = fmt.Errorf("factory queue work failed")
+func validateFactoryQueueSandboxBaseBranch(record factory.RunRecord, executorMode string) error {
+	if executorMode == factory.ExecutorModeSandbox && strings.TrimSpace(record.BaseBranch) == "" {
+		return fmt.Errorf("factory run %q must have baseBranch set before using sandbox executor", record.RunID)
 	}
-	failedAt := now()
-	failedEntry, markErr := store.MarkQueueEntryFailed(entry.QueueID, cause.Error(), factory.QueueOperationOptions{
-		Now:                  func() time.Time { return failedAt },
-		ExpectedClaimedAt:    entry.ClaimedAt,
-		ExpectedAttemptCount: entry.AttemptCount,
-	})
-	if markErr != nil {
-		return entry, errors.Join(cause, markErr)
-	}
-	if strings.TrimSpace(runID) == "" {
-		runID = entry.RunID
-	}
-	if eventErr := recordFactoryRunQueueFailed(store, runID, failedAt, failedEntry, cause); eventErr != nil {
-		return failedEntry, errors.Join(cause, fmt.Errorf("record factory queue failure event: %w", eventErr))
-	}
-	return failedEntry, cause
+	return nil
 }
 
-func requeueClaimedFactoryQueueEntry(store factory.Store, entry factory.QueueEntry, cause error, now func() time.Time) (factory.QueueEntry, error) {
-	if cause == nil {
-		cause = fmt.Errorf("factory queue claim bookkeeping failed")
+func markFactoryQueueRunFailed(store factory.Store, entry factory.QueueEntry, cause error, now func() time.Time, redactor factory.RunSecretRedactor) error {
+	if strings.TrimSpace(entry.RunID) == "" {
+		return nil
 	}
-	requeuedEntry, requeueErr := store.RequeueClaimedQueueEntry(entry.QueueID, cause.Error(), factory.QueueOperationOptions{
-		Now:                  now,
-		ExpectedClaimedAt:    entry.ClaimedAt,
-		ExpectedAttemptCount: entry.AttemptCount,
-	})
-	if requeueErr != nil {
-		return entry, errors.Join(cause, requeueErr)
-	}
-	return requeuedEntry, cause
-}
-
-func failClaimedFactoryQueueEntryAfterClaimError(store factory.Store, entry factory.QueueEntry, cause error, now func() time.Time) (factory.QueueEntry, error) {
 	record, err := store.LoadRun(entry.RunID)
 	if err != nil {
-		return failClaimedFactoryQueueEntry(store, entry, cause, now)
+		return fmt.Errorf("load factory queue run %q for failure marking: %w", entry.RunID, err)
 	}
-	if record.Status == factory.RunStatusPending && strings.TrimSpace(record.CurrentStep) == factory.QueueStatusQueued {
-		return requeueClaimedFactoryQueueEntry(store, entry, cause, now)
-	}
-	return failClaimedFactoryQueueEntryAfterRunStateError(store, entry, *record, cause, now)
-}
-
-func failClaimedFactoryQueueEntryAfterRunStateError(store factory.Store, entry factory.QueueEntry, record factory.RunRecord, cause error, now func() time.Time) (factory.QueueEntry, error) {
-	switch record.Status {
-	case factory.RunStatusSucceeded:
-		return succeedClaimedFactoryQueueEntry(store, entry, now)
-	case factory.RunStatusFailed, factory.RunStatusCanceled:
-		return failClaimedFactoryQueueEntry(store, entry, terminalFactoryRunQueueError(record, cause), now)
-	}
-	if shouldFailReclaimedRunningFactoryRun(record, entry) {
-		return failClaimedFactoryQueueEntryAndRun(store, entry, record, cause, now)
-	}
-	return failClaimedFactoryQueueEntry(store, entry, cause, now)
-}
-
-func terminalFactoryRunQueueError(record factory.RunRecord, fallback error) error {
-	if record.Failure != nil {
-		if message := strings.TrimSpace(record.Failure.Message); message != "" {
-			return errors.New(message)
+	if record.Status == factory.RunStatusFailed && record.Failure != nil {
+		safeRecord := redactFactoryRunRecordForStorage(*record, redactor)
+		if safeRecord.Failure == nil || strings.TrimSpace(safeRecord.Failure.Message) == strings.TrimSpace(record.Failure.Message) {
+			return nil
 		}
+		if err := store.SaveRun(&safeRecord); err != nil {
+			return err
+		}
+		return nil
 	}
-	if status := strings.TrimSpace(record.Status); status != "" {
-		return fmt.Errorf("factory run %q is %q", record.RunID, status)
+	if now == nil {
+		now = time.Now
 	}
-	if fallback != nil {
-		return fallback
+	failedAt := now().UTC()
+	record.Status = factory.RunStatusFailed
+	record.CurrentStep = factory.FailureCategoryQueue
+	record.UpdatedAt = failedAt
+	record.FinishedAt = &failedAt
+	record.Failure = &factory.FailureSummary{
+		Step:             factory.FailureCategoryQueue,
+		Category:         factory.FailureCategoryQueue,
+		Message:          strings.TrimSpace(cause.Error()),
+		Recoverable:      true,
+		SuggestedCommand: factoryRunInspectCommand(record.RunID),
 	}
-	return fmt.Errorf("factory run %q is terminal", record.RunID)
+	if record.Failure.Message == "" {
+		record.Failure.Message = "factory queue work failed"
+	}
+	safeRecord := redactFactoryRunRecordForStorage(*record, redactor)
+	if err := store.SaveRun(&safeRecord); err != nil {
+		return err
+	}
+	return recordFactoryRunFailureClassified(store, safeRecord.RunID, failedAt, *safeRecord.Failure)
 }
 
-func shouldFailReclaimedRunningFactoryRun(record factory.RunRecord, entry factory.QueueEntry) bool {
-	return entry.AttemptCount > 1 && record.Status == factory.RunStatusRunning
+func factoryQueueFailureRedactor(store factory.Store, entry factory.QueueEntry, lookupEnv func(string) (string, bool)) factory.RunSecretRedactor {
+	if strings.TrimSpace(entry.RunID) == "" {
+		return factory.RunSecretRedactor{}
+	}
+	record, err := store.LoadRun(entry.RunID)
+	if err != nil {
+		return factory.RunSecretRedactor{}
+	}
+	return factory.NewRunSecretRedactor(resolveFactoryRunRedactionSecrets(factoryRunSecretInputsFromMetadata(record.Secrets), lookupEnv))
 }
 
-func failClaimedFactoryQueueEntryAndRun(store factory.Store, entry factory.QueueEntry, record factory.RunRecord, cause error, now func() time.Time) (factory.QueueEntry, error) {
+func redactFactoryQueueFailureCause(cause error, redactor factory.RunSecretRedactor) error {
 	if cause == nil {
 		cause = fmt.Errorf("factory queue work failed")
 	}
-	failedAt := now()
-	failedEntry, markErr := store.MarkQueueEntryFailed(entry.QueueID, cause.Error(), factory.QueueOperationOptions{
-		Now:                  func() time.Time { return failedAt },
-		ExpectedClaimedAt:    entry.ClaimedAt,
-		ExpectedAttemptCount: entry.AttemptCount,
-	})
-	if markErr != nil {
-		return entry, errors.Join(cause, markErr)
+	message := sanitizeFactoryQueueFailureMessage(cause.Error(), redactor)
+	if message == strings.TrimSpace(cause.Error()) {
+		return cause
 	}
-
-	failedRecord, recordErr := markFactoryRunFailed(store, record, failedAt, cause)
-	if recordErr != nil {
-		return failedEntry, errors.Join(cause, recordErr)
+	return factoryRunRedactedError{
+		message: message,
+		cause:   cause,
 	}
-	var eventErrs []error
-	if eventErr := recordFactoryRunQueueFailed(store, failedRecord.RunID, failedAt, failedEntry, cause); eventErr != nil {
-		eventErrs = append(eventErrs, fmt.Errorf("record factory queue failure event: %w", eventErr))
-	}
-	if failedRecord.Failure != nil {
-		if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, failedAt, *failedRecord.Failure); eventErr != nil {
-			eventErrs = append(eventErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
-		}
-	}
-	if len(eventErrs) > 0 {
-		return failedEntry, errors.Join(append([]error{cause}, eventErrs...)...)
-	}
-	return failedEntry, cause
 }
 
-func recordFactoryRunQueueFailed(store factory.Store, runID string, now time.Time, entry factory.QueueEntry, cause error) error {
-	metadata := map[string]any{
-		"queueId":      entry.QueueID,
-		"executorMode": entry.ExecutorMode,
-		"status":       factory.QueueStatusFailed,
-		"step":         factory.QueueStatusClaimed,
-		"error":        cause.Error(),
+func sanitizeFactoryQueueFailureMessage(message string, redactor factory.RunSecretRedactor) string {
+	message = strings.TrimSpace(redactor.RedactString(message))
+	message = sanitizeCredentialedRemoteReferences(message)
+	if strings.TrimSpace(message) == "" {
+		return "factory queue work failed"
 	}
-	if entry.AttemptCount != 0 {
-		metadata["attemptCount"] = entry.AttemptCount
-	}
-	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
-		EventType: factory.EventTypeStepEnded,
-		Summary:   "Factory queue work failed",
-		Metadata:  metadata,
-	})
-}
-
-func recordFactoryRunQueueSucceeded(store factory.Store, runID string, now time.Time, entry factory.QueueEntry) error {
-	metadata := map[string]any{
-		"queueId":      entry.QueueID,
-		"executorMode": entry.ExecutorMode,
-		"status":       factory.QueueStatusSucceeded,
-		"step":         factory.QueueStatusClaimed,
-	}
-	if entry.AttemptCount != 0 {
-		metadata["attemptCount"] = entry.AttemptCount
-	}
-	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
-		EventType: factory.EventTypeStepEnded,
-		Summary:   "Factory queue work succeeded",
-		Metadata:  metadata,
-	})
+	return message
 }
 
 func factoryRunRequestFromQueueRecord(record factory.RunRecord) factoryRunRequest {
+	baseBranch := strings.TrimSpace(record.BaseBranch)
+	executorMode := strings.TrimSpace(record.ExecutorMode)
 	req := factoryRunRequest{
-		BaseBranch:  strings.TrimSpace(record.BaseBranch),
-		Sandbox:     strings.TrimSpace(record.ExecutorMode) == factory.ExecutorModeSandbox,
-		SandboxName: strings.TrimSpace(record.SandboxName),
+		BaseBranch: baseBranch,
+		Sandbox:    executorMode == factory.ExecutorModeSandbox,
+		Secrets:    factoryRunSecretInputsFromMetadata(record.Secrets),
 	}
 	switch record.Source.Kind {
 	case factory.SourceKindMarkdown:
@@ -660,14 +614,26 @@ func factoryRunRequestFromQueueRecord(record factory.RunRecord) factoryRunReques
 	return req
 }
 
-func factoryQueueRunDir(record factory.RunRecord) (string, error) {
-	if dir := strings.TrimSpace(record.RepoPath); dir != "" {
-		if !filepath.IsAbs(dir) {
-			return "", fmt.Errorf("queued factory run %q repository path %q is not absolute", record.RunID, dir)
-		}
-		return dir, nil
+func factoryRunSecretInputsFromMetadata(metadata []factory.RunSecretMetadata) []factory.RunSecretInput {
+	if len(metadata) == 0 {
+		return nil
 	}
-	return "", fmt.Errorf("queued factory run %q repository path is unavailable", record.RunID)
+	inputs := make([]factory.RunSecretInput, 0, len(metadata))
+	for _, secret := range metadata {
+		inputs = append(inputs, factory.RunSecretInput{
+			Name:     secret.Name,
+			Source:   secret.Source,
+			Required: secret.Required,
+		})
+	}
+	return inputs
+}
+
+func factoryQueueRunDir(record factory.RunRecord) string {
+	if dir := strings.TrimSpace(record.RepoPath); dir != "" {
+		return dir
+	}
+	return "."
 }
 
 func normalizeFactoryQueueAddDeps(deps factoryQueueAddDeps) factoryQueueAddDeps {
@@ -676,6 +642,9 @@ func normalizeFactoryQueueAddDeps(deps factoryQueueAddDeps) factoryQueueAddDeps 
 	}
 	if deps.now == nil {
 		deps.now = defaultFactoryQueueAddDeps.now
+	}
+	if deps.recordQueued == nil {
+		deps.recordQueued = defaultFactoryQueueAddDeps.recordQueued
 	}
 	return deps
 }
@@ -688,11 +657,25 @@ func normalizeFactoryQueueListDeps(deps factoryQueueListDeps) factoryQueueListDe
 }
 
 func normalizeFactoryQueueWorkDeps(deps factoryQueueWorkDeps) factoryQueueWorkDeps {
+	customRunProviderExec := deps.runProviderExec != nil
+	customProviderExec := deps.runProviderExec != nil || deps.runProviderExecWithEnv != nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactoryQueueWorkDeps.defaultStore
 	}
 	if deps.now == nil {
 		deps.now = defaultFactoryQueueWorkDeps.now
+	}
+	if deps.lookupEnv == nil {
+		deps.lookupEnv = defaultFactoryQueueWorkDeps.lookupEnv
+	}
+	if deps.repoRemote == nil {
+		deps.repoRemote = defaultFactoryQueueWorkDeps.repoRemote
+	}
+	if deps.loadPolicy == nil {
+		deps.loadPolicy = defaultFactoryQueueWorkDeps.loadPolicy
+	}
+	if deps.loadEngine == nil {
+		deps.loadEngine = defaultFactoryQueueWorkDeps.loadEngine
 	}
 	if deps.runPipeline == nil {
 		deps.runPipeline = defaultFactoryQueueWorkDeps.runPipeline
@@ -700,13 +683,66 @@ func normalizeFactoryQueueWorkDeps(deps factoryQueueWorkDeps) factoryQueueWorkDe
 	if deps.runSandbox == nil {
 		deps.runSandbox = defaultFactoryQueueWorkDeps.runSandbox
 	}
-	if deps.currentBranch == nil {
-		deps.currentBranch = defaultFactoryQueueWorkDeps.currentBranch
+	if deps.loadVerify == nil {
+		deps.loadVerify = defaultFactoryQueueWorkDeps.loadVerify
+	}
+	if deps.runVerify == nil {
+		deps.runVerify = defaultFactoryQueueWorkDeps.runVerify
+	}
+	if deps.loadSandbox == nil {
+		deps.loadSandbox = defaultFactoryQueueWorkDeps.loadSandbox
+	}
+	if deps.resolveProvider == nil {
+		deps.resolveProvider = defaultFactoryQueueWorkDeps.resolveProvider
+	}
+	if deps.runProviderExec == nil {
+		deps.runProviderExec = defaultFactoryQueueWorkDeps.runProviderExec
+	}
+	if deps.runProviderExecWithEnv == nil && !customRunProviderExec {
+		deps.runProviderExecWithEnv = defaultFactoryQueueWorkDeps.runProviderExecWithEnv
+	}
+	if deps.cleanupSandbox == nil {
+		deps.cleanupSandbox = defaultFactoryQueueWorkDeps.cleanupSandbox
+	}
+	if deps.statusSnapshot == nil {
+		deps.statusSnapshot = defaultFactoryQueueWorkDeps.statusSnapshot
+	}
+	if deps.doctorSnapshot == nil {
+		deps.doctorSnapshot = defaultFactoryQueueWorkDeps.doctorSnapshot
 	}
 	if deps.sandboxRequests == nil {
-		deps.sandboxRequests = defaultFactoryQueueWorkDeps.sandboxRequests
+		if customProviderExec && deps.sandboxCopier == nil {
+			deps.sandboxRequests = func(string, factory.RunRecord) []factory.SandboxArtifactRequest { return nil }
+		} else {
+			deps.sandboxRequests = defaultFactoryQueueWorkDeps.sandboxRequests
+		}
 	}
 	return deps
+}
+
+func factoryRunDepsFromQueueWorkDeps(store factory.Store, deps factoryQueueWorkDeps) factoryRunDeps {
+	deps = normalizeFactoryQueueWorkDeps(deps)
+	return normalizeFactoryRunDeps(factoryRunDeps{
+		defaultStore:           func() (factory.Store, error) { return store, nil },
+		now:                    deps.now,
+		lookupEnv:              deps.lookupEnv,
+		repoRemote:             deps.repoRemote,
+		loadPolicy:             deps.loadPolicy,
+		loadEngine:             deps.loadEngine,
+		runPipeline:            deps.runPipeline,
+		runSandbox:             deps.runSandbox,
+		loadVerify:             deps.loadVerify,
+		runVerify:              deps.runVerify,
+		loadSandbox:            deps.loadSandbox,
+		resolveProvider:        deps.resolveProvider,
+		runProviderExec:        deps.runProviderExec,
+		runProviderExecWithEnv: deps.runProviderExecWithEnv,
+		cleanupSandbox:         deps.cleanupSandbox,
+		statusSnapshot:         deps.statusSnapshot,
+		doctorSnapshot:         deps.doctorSnapshot,
+		sandboxCopier:          deps.sandboxCopier,
+		sandboxRequests:        deps.sandboxRequests,
+	})
 }
 
 func recordFactoryRunQueued(store factory.Store, entry factory.QueueEntry, now time.Time) error {
@@ -714,14 +750,8 @@ func recordFactoryRunQueued(store factory.Store, entry factory.QueueEntry, now t
 	if err != nil {
 		return fmt.Errorf("load queued factory run %q: %w", entry.RunID, err)
 	}
-	if record.Status != factory.RunStatusPending {
-		return fmt.Errorf("factory run %q is %q, want %q", record.RunID, record.Status, factory.RunStatusPending)
-	}
-	if currentStep := strings.TrimSpace(record.CurrentStep); currentStep != "" && currentStep != factory.RunStatusPending {
-		return fmt.Errorf("factory run %q is at step %q, want %q", record.RunID, record.CurrentStep, factory.RunStatusPending)
-	}
+	original := *record
 
-	previous := *record
 	record.CurrentStep = factory.QueueStatusQueued
 	record.UpdatedAt = now.UTC()
 	if err := store.SaveRun(record); err != nil {
@@ -737,11 +767,15 @@ func recordFactoryRunQueued(store factory.Store, entry factory.QueueEntry, now t
 			"status":       factory.QueueStatusQueued,
 		},
 	}); err != nil {
-		if restoreErr := store.SaveRun(&previous); restoreErr != nil {
-			return errors.Join(err, fmt.Errorf("restore queued factory run %q: %w", entry.RunID, restoreErr))
+		if rollbackErr := store.SaveRun(&original); rollbackErr != nil {
+			return errors.Join(
+				fmt.Errorf("append queued factory run timeline %q: %w", entry.RunID, err),
+				fmt.Errorf("rollback queued factory run %q: %w", entry.RunID, rollbackErr),
+			)
 		}
-		return err
+		return fmt.Errorf("append queued factory run timeline %q: %w", entry.RunID, err)
 	}
+
 	return nil
 }
 
@@ -750,11 +784,7 @@ func recordFactoryRunClaimed(store factory.Store, entry factory.QueueEntry, now 
 	if err != nil {
 		return fmt.Errorf("load claimed factory run %q: %w", entry.RunID, err)
 	}
-	if err := validateClaimableFactoryRun(*record, entry); err != nil {
-		return err
-	}
 
-	previous := *record
 	record.CurrentStep = factory.QueueStatusClaimed
 	record.UpdatedAt = now.UTC()
 	if err := store.SaveRun(record); err != nil {
@@ -779,60 +809,17 @@ func recordFactoryRunClaimed(store factory.Store, entry factory.QueueEntry, now 
 		}
 	}
 
-	if err := appendFactoryRunTimelineEvent(store, entry.RunID, now, factoryTimelineEvent{
+	return appendFactoryRunTimelineEvent(store, entry.RunID, now, factoryTimelineEvent{
 		EventType: factory.EventTypeCommandOutputSummary,
 		Summary:   "Factory run claimed",
 		Metadata:  metadata,
-	}); err != nil {
-		if restoreErr := store.SaveRun(&previous); restoreErr != nil {
-			return errors.Join(err, fmt.Errorf("restore claimed factory run %q: %w", entry.RunID, restoreErr))
-		}
-		return err
-	}
-	return nil
-}
-
-func validateQueuedFactoryRun(record factory.RunRecord) error {
-	if record.Status != factory.RunStatusPending {
-		return fmt.Errorf("factory run %q is %q, want %q", record.RunID, record.Status, factory.RunStatusPending)
-	}
-	if currentStep := strings.TrimSpace(record.CurrentStep); currentStep != factory.QueueStatusQueued {
-		return fmt.Errorf("factory run %q is at step %q, want %q", record.RunID, record.CurrentStep, factory.QueueStatusQueued)
-	}
-	return nil
-}
-
-func validateClaimableFactoryRun(record factory.RunRecord, entry factory.QueueEntry) error {
-	if record.Status != factory.RunStatusPending {
-		return fmt.Errorf("factory run %q is %q, want %q", record.RunID, record.Status, factory.RunStatusPending)
-	}
-	currentStep := strings.TrimSpace(record.CurrentStep)
-	if currentStep == "" || currentStep == factory.RunStatusPending {
-		return nil
-	}
-	if currentStep == factory.QueueStatusQueued {
-		return nil
-	}
-	if currentStep == factory.QueueStatusClaimed && entry.AttemptCount > 1 {
-		return nil
-	}
-	return fmt.Errorf("factory run %q is at step %q, want %q", record.RunID, record.CurrentStep, factory.QueueStatusQueued)
-}
-
-func validateClaimedFactoryRun(record factory.RunRecord) error {
-	if record.Status != factory.RunStatusPending {
-		return fmt.Errorf("factory run %q is %q, want %q", record.RunID, record.Status, factory.RunStatusPending)
-	}
-	if currentStep := strings.TrimSpace(record.CurrentStep); currentStep != factory.QueueStatusClaimed {
-		return fmt.Errorf("factory run %q is at step %q, want %q", record.RunID, record.CurrentStep, factory.QueueStatusClaimed)
-	}
-	return nil
+	})
 }
 
 func renderFactoryQueueAddResult(out io.Writer, entry factory.QueueEntry, jsonMode bool) error {
 	resp := FactoryQueueAddResponse{
 		ContractVersion: FactoryQueueAddContractVersion,
-		Entry:           entry,
+		Entry:           newFactoryQueueEntryResponse(entry),
 		Summary:         factoryQueueAddSummary(entry),
 	}
 	if jsonMode {
@@ -855,7 +842,7 @@ func renderFactoryQueueListResult(out io.Writer, entries []factory.QueueEntry, j
 
 	resp := FactoryQueueListResponse{
 		ContractVersion: FactoryQueueListContractVersion,
-		Entries:         entries,
+		Entries:         newFactoryQueueEntryResponses(entries),
 		Summary:         factoryQueueListSummary(entries),
 	}
 	if jsonMode {
@@ -878,7 +865,7 @@ func renderFactoryQueueWorkResult(out io.Writer, entry *factory.QueueEntry, json
 	resp := FactoryQueueWorkResponse{
 		ContractVersion: FactoryQueueWorkContractVersion,
 		Claimed:         entry != nil,
-		Entry:           entry,
+		Entry:           newFactoryQueueEntryResponsePtr(entry),
 		Summary:         factoryQueueWorkSummary(entry),
 	}
 	if jsonMode {

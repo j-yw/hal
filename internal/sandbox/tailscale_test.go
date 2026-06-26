@@ -30,6 +30,8 @@ func TestFetchTailscaleIP_UsesSudoForNonRootUser(t *testing.T) {
 	want := []string{
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "BatchMode=yes",
+		"-o", "NumberOfPasswordPrompts=0",
 		"-o", "ConnectTimeout=10",
 		"ubuntu@203.0.113.10",
 		"sudo", "cat", "/root/.tailscale-ip",
@@ -62,6 +64,8 @@ func TestFetchTailscaleIP_RootUserReadsWithoutSudo(t *testing.T) {
 	want := []string{
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "BatchMode=yes",
+		"-o", "NumberOfPasswordPrompts=0",
 		"-o", "ConnectTimeout=10",
 		"root@198.51.100.20",
 		"cat", "/root/.tailscale-ip",

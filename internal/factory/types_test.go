@@ -150,17 +150,39 @@ func TestSourceKindConstants(t *testing.T) {
 	}
 }
 
+func TestRunSecretSourceConstants(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "env", got: RunSecretSourceEnv, want: "env"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("run secret source = %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFailureCategoryConstants(t *testing.T) {
 	tests := []struct {
 		name string
 		got  string
 		want string
 	}{
-		{name: "validation", got: FailureCategoryValidation, want: "validation"},
-		{name: "pipeline", got: FailureCategoryPipeline, want: "pipeline"},
+		{name: "setup", got: FailureCategorySetup, want: "setup"},
 		{name: "engine", got: FailureCategoryEngine, want: "engine"},
-		{name: "git", got: FailureCategoryGit, want: "git"},
-		{name: "ci", got: FailureCategoryCI, want: "ci"},
+		{name: "PRD", got: FailureCategoryPRD, want: "PRD"},
+		{name: "run", got: FailureCategoryRun, want: "run"},
+		{name: "review", got: FailureCategoryReview, want: "review"},
+		{name: "verification", got: FailureCategoryVerification, want: "verification"},
+		{name: "CI", got: FailureCategoryCI, want: "CI"},
+		{name: "sandbox", got: FailureCategorySandbox, want: "sandbox"},
+		{name: "queue", got: FailureCategoryQueue, want: "queue"},
 		{name: "unknown", got: FailureCategoryUnknown, want: "unknown"},
 	}
 
@@ -168,6 +190,77 @@ func TestFailureCategoryConstants(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.got != tt.want {
 				t.Fatalf("failure category = %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSupportedFailureCategories(t *testing.T) {
+	want := []string{
+		FailureCategorySetup,
+		FailureCategoryEngine,
+		FailureCategoryPRD,
+		FailureCategoryRun,
+		FailureCategoryReview,
+		FailureCategoryVerification,
+		FailureCategoryCI,
+		FailureCategorySandbox,
+		FailureCategoryQueue,
+		FailureCategoryUnknown,
+	}
+	if got := SupportedFailureCategories(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("SupportedFailureCategories() = %#v, want %#v", got, want)
+	}
+}
+
+func TestNormalizeFailureCategory(t *testing.T) {
+	for _, category := range SupportedFailureCategories() {
+		category := category
+		t.Run(category, func(t *testing.T) {
+			if got := NormalizeFailureCategory(category); got != category {
+				t.Fatalf("NormalizeFailureCategory(%q) = %q, want %q", category, got, category)
+			}
+		})
+	}
+
+	tests := []struct {
+		name     string
+		category string
+	}{
+		{name: "empty", category: ""},
+		{name: "whitespace", category: "   "},
+		{name: "legacy validation", category: "validation"},
+		{name: "legacy pipeline", category: "pipeline"},
+		{name: "legacy lowercase ci", category: "ci"},
+		{name: "unsupported", category: "database"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeFailureCategory(tt.category); got != FailureCategoryUnknown {
+				t.Fatalf("NormalizeFailureCategory(%q) = %q, want %q", tt.category, got, FailureCategoryUnknown)
+			}
+		})
+	}
+}
+
+func TestNextActionTypeConstants(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "inspect", got: NextActionTypeInspect, want: "inspect"},
+		{name: "takeover", got: NextActionTypeTakeover, want: "takeover"},
+		{name: "continue", got: NextActionTypeContinue, want: "continue"},
+		{name: "completed", got: NextActionTypeCompleted, want: "completed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("next action type = %q, want %q", tt.got, tt.want)
 			}
 		})
 	}
@@ -187,6 +280,7 @@ func TestEventTypeConstants(t *testing.T) {
 		{name: "ci_state", got: EventTypeCIState, want: "ci_state"},
 		{name: "artifact_sync", got: EventTypeArtifactSync, want: "artifact_sync"},
 		{name: "failure_classification", got: EventTypeFailureClassification, want: "failure_classification"},
+		{name: "policy_decision", got: EventTypePolicyDecision, want: "policy_decision"},
 	}
 
 	for _, tt := range tests {
@@ -198,18 +292,368 @@ func TestEventTypeConstants(t *testing.T) {
 	}
 }
 
+func TestNormalizeFailureCategoryForContractV1(t *testing.T) {
+	tests := []struct {
+		name     string
+		category string
+		want     string
+	}{
+		{name: "prd", category: FailureCategoryPRD, want: "validation"},
+		{name: "verification", category: FailureCategoryVerification, want: "validation"},
+		{name: "run", category: FailureCategoryRun, want: "pipeline"},
+		{name: "review", category: FailureCategoryReview, want: "pipeline"},
+		{name: "sandbox", category: FailureCategorySandbox, want: "pipeline"},
+		{name: "queue", category: FailureCategoryQueue, want: "pipeline"},
+		{name: "setup", category: FailureCategorySetup, want: "git"},
+		{name: "ci", category: FailureCategoryCI, want: "ci"},
+		{name: "legacy ci", category: "ci", want: "ci"},
+		{name: "unknown", category: "unsupported", want: FailureCategoryUnknown},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeFailureCategoryForContractV1(tt.category); got != tt.want {
+				t.Fatalf("NormalizeFailureCategoryForContractV1(%q) = %q, want %q", tt.category, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSupportedRunDurationSteps(t *testing.T) {
+	want := []string{
+		RunDurationStepSetup,
+		RunDurationStepQueueClaim,
+		RunDurationStepSandboxProvision,
+		RunDurationStepSandboxStart,
+		RunDurationStepEngineRun,
+		RunDurationStepReview,
+		RunDurationStepVerification,
+		RunDurationStepCI,
+		RunDurationStepArtifactCollect,
+		RunDurationStepFinalization,
+	}
+	if got := SupportedRunDurationSteps(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("SupportedRunDurationSteps() = %#v, want %#v", got, want)
+	}
+}
+
+func TestDeriveRunTelemetryCompleteTimingData(t *testing.T) {
+	base := time.Date(2026, 6, 21, 9, 0, 0, 0, time.UTC)
+	finishedAt := base.Add(time.Hour)
+	record := RunRecord{
+		RunID:      "run-derived-complete",
+		CreatedAt:  base,
+		FinishedAt: &finishedAt,
+	}
+
+	steps := SupportedRunDurationSteps()
+	events := make([]EventRecord, 0, len(steps)*2+2)
+	events = append(events, EventRecord{
+		EventType: EventTypeStepStarted,
+		Timestamp: base.Add(30 * time.Second),
+		Metadata:  map[string]any{"step": "run"},
+	})
+	events = append(events, EventRecord{
+		EventType: EventTypeStepEnded,
+		Timestamp: base.Add(45 * time.Second),
+		Metadata:  map[string]any{"step": "run"},
+	})
+	for i, step := range steps {
+		startedAt := base.Add(time.Duration(i+1) * time.Minute)
+		finishedAt := startedAt.Add(time.Duration(i+1) * time.Second)
+		events = append(events,
+			EventRecord{
+				EventType: EventTypeStepStarted,
+				Timestamp: startedAt,
+				Metadata:  map[string]any{"step": step},
+			},
+			EventRecord{
+				EventType: EventTypeStepEnded,
+				Timestamp: finishedAt,
+				Metadata:  map[string]any{"step": step},
+			},
+		)
+	}
+
+	got := DeriveRunTelemetry(record, events)
+	if got == nil || got.TotalDurationMs == nil {
+		t.Fatalf("DeriveRunTelemetry() = %#v, want total duration", got)
+	}
+	if *got.TotalDurationMs != finishedAt.Sub(base).Milliseconds() {
+		t.Fatalf("totalDurationMs = %d, want %d", *got.TotalDurationMs, finishedAt.Sub(base).Milliseconds())
+	}
+	if len(got.StepDurations) != len(steps) {
+		t.Fatalf("stepDurations len = %d, want %d: %#v", len(got.StepDurations), len(steps), got.StepDurations)
+	}
+	for i, step := range steps {
+		duration := got.StepDurations[i]
+		startedAt := base.Add(time.Duration(i+1) * time.Minute)
+		finishedAt := startedAt.Add(time.Duration(i+1) * time.Second)
+		if duration.Step != step {
+			t.Fatalf("stepDurations[%d].step = %q, want %q", i, duration.Step, step)
+		}
+		if !duration.StartedAt.Equal(startedAt) {
+			t.Fatalf("stepDurations[%d].startedAt = %s, want %s", i, duration.StartedAt, startedAt)
+		}
+		if !duration.FinishedAt.Equal(finishedAt) {
+			t.Fatalf("stepDurations[%d].finishedAt = %s, want %s", i, duration.FinishedAt, finishedAt)
+		}
+		if duration.DurationMs != finishedAt.Sub(startedAt).Milliseconds() {
+			t.Fatalf("stepDurations[%d].durationMs = %d, want %d", i, duration.DurationMs, finishedAt.Sub(startedAt).Milliseconds())
+		}
+	}
+}
+
+func TestDeriveRunTelemetryPartialTimingData(t *testing.T) {
+	base := time.Date(2026, 6, 21, 10, 0, 0, 0, time.UTC)
+	finishedAt := base.Add(10 * time.Minute)
+	record := RunRecord{
+		RunID:      "run-derived-partial",
+		CreatedAt:  base,
+		FinishedAt: &finishedAt,
+	}
+	events := []EventRecord{
+		{
+			EventType: EventTypeStepStarted,
+			Timestamp: base.Add(1 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepSetup},
+		},
+		{
+			EventType: EventTypeStepEnded,
+			Timestamp: base.Add(3 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepSetup},
+		},
+		{
+			EventType: EventTypeStepStarted,
+			Timestamp: base.Add(4 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepCI},
+		},
+		{
+			EventType: EventTypeStepEnded,
+			Timestamp: base.Add(5 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepReview},
+		},
+		{
+			EventType: EventTypeStepStarted,
+			Timestamp: time.Time{},
+			Metadata:  map[string]any{"step": RunDurationStepFinalization},
+		},
+	}
+
+	got := DeriveRunTelemetry(record, events)
+	if got == nil || got.TotalDurationMs == nil {
+		t.Fatalf("DeriveRunTelemetry() = %#v, want total duration", got)
+	}
+	if *got.TotalDurationMs != finishedAt.Sub(base).Milliseconds() {
+		t.Fatalf("totalDurationMs = %d, want %d", *got.TotalDurationMs, finishedAt.Sub(base).Milliseconds())
+	}
+	if len(got.StepDurations) != 1 {
+		t.Fatalf("stepDurations len = %d, want 1: %#v", len(got.StepDurations), got.StepDurations)
+	}
+	if got.StepDurations[0].Step != RunDurationStepSetup {
+		t.Fatalf("stepDurations[0].step = %q, want %q", got.StepDurations[0].Step, RunDurationStepSetup)
+	}
+}
+
+func TestDeriveRunTelemetryOutOfOrderTimingData(t *testing.T) {
+	base := time.Date(2026, 6, 21, 11, 0, 0, 0, time.UTC)
+	finishedAt := base.Add(-time.Minute)
+	record := RunRecord{
+		RunID:      "run-derived-out-of-order",
+		CreatedAt:  base,
+		FinishedAt: &finishedAt,
+	}
+	events := []EventRecord{
+		{
+			EventType: EventTypeStepStarted,
+			Timestamp: base.Add(5 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepSetup},
+		},
+		{
+			EventType: EventTypeStepEnded,
+			Timestamp: base.Add(4 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepSetup},
+		},
+		{
+			EventType: EventTypeStepEnded,
+			Timestamp: base.Add(6 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepReview},
+		},
+		{
+			EventType: EventTypeStepStarted,
+			Timestamp: base.Add(7 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepCI},
+		},
+		{
+			EventType: EventTypeStepEnded,
+			Timestamp: base.Add(9 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepCI},
+		},
+	}
+
+	got := DeriveRunTelemetry(record, events)
+	if got == nil {
+		t.Fatal("DeriveRunTelemetry() = nil, want valid step duration")
+	}
+	if got.TotalDurationMs != nil {
+		t.Fatalf("totalDurationMs = %d, want omitted for out-of-order run timestamps", *got.TotalDurationMs)
+	}
+	if len(got.StepDurations) != 1 {
+		t.Fatalf("stepDurations len = %d, want 1: %#v", len(got.StepDurations), got.StepDurations)
+	}
+	if got.StepDurations[0].Step != RunDurationStepCI {
+		t.Fatalf("stepDurations[0].step = %q, want %q", got.StepDurations[0].Step, RunDurationStepCI)
+	}
+	if got.StepDurations[0].DurationMs != 120000 {
+		t.Fatalf("stepDurations[0].durationMs = %d, want 120000", got.StepDurations[0].DurationMs)
+	}
+}
+
+func TestDeriveRunTelemetryPreservesExplicitTimingData(t *testing.T) {
+	base := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	finishedAt := base.Add(20 * time.Minute)
+	storedTotalDurationMs := int64(42)
+	record := RunRecord{
+		RunID:      "run-derived-explicit",
+		CreatedAt:  base,
+		FinishedAt: &finishedAt,
+		Telemetry: &RunTelemetry{
+			TotalDurationMs: &storedTotalDurationMs,
+			StepDurations: []RunStepDuration{
+				{
+					Step:       RunDurationStepSetup,
+					StartedAt:  base.Add(1 * time.Minute),
+					FinishedAt: base.Add(2 * time.Minute),
+					DurationMs: 60000,
+				},
+			},
+		},
+	}
+	events := []EventRecord{
+		{
+			EventType: EventTypeStepStarted,
+			Timestamp: base.Add(3 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepCI},
+		},
+		{
+			EventType: EventTypeStepEnded,
+			Timestamp: base.Add(5 * time.Minute),
+			Metadata:  map[string]any{"step": RunDurationStepCI},
+		},
+	}
+
+	got := DeriveRunTelemetry(record, events)
+	if got == nil || got.TotalDurationMs == nil {
+		t.Fatalf("DeriveRunTelemetry() = %#v, want explicit telemetry", got)
+	}
+	if *got.TotalDurationMs != storedTotalDurationMs {
+		t.Fatalf("totalDurationMs = %d, want explicit %d", *got.TotalDurationMs, storedTotalDurationMs)
+	}
+	if len(got.StepDurations) != 1 || got.StepDurations[0].Step != RunDurationStepSetup {
+		t.Fatalf("stepDurations = %#v, want explicit setup duration only", got.StepDurations)
+	}
+	if got == record.Telemetry {
+		t.Fatal("DeriveRunTelemetry() returned original telemetry pointer, want copy")
+	}
+}
+
+func TestDeriveRunTelemetryNormalizesFailureCategory(t *testing.T) {
+	record := RunRecord{
+		RunID: "run-failed-telemetry-category",
+		Telemetry: &RunTelemetry{
+			FailureCategory: "database",
+		},
+		Failure: &FailureSummary{
+			Category: FailureCategoryCI,
+		},
+	}
+
+	got := DeriveRunTelemetry(record, nil)
+	if got == nil {
+		t.Fatal("DeriveRunTelemetry() = nil, want telemetry")
+	}
+	if got.FailureCategory != "ci" {
+		t.Fatalf("failureCategory = %q, want %q", got.FailureCategory, "ci")
+	}
+
+	record.Failure = nil
+	got = DeriveRunTelemetry(record, nil)
+	if got == nil {
+		t.Fatal("DeriveRunTelemetry() = nil, want telemetry")
+	}
+	if got.FailureCategory != FailureCategoryUnknown {
+		t.Fatalf("failureCategory without record failure = %q, want %q", got.FailureCategory, FailureCategoryUnknown)
+	}
+}
+
+func TestDeriveRunTelemetryPrefersVerificationResultOutcome(t *testing.T) {
+	base := time.Date(2026, 6, 21, 18, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		status     string
+		stepStatus string
+		want       string
+	}{
+		{name: "warn result beats succeeded step", status: verify.StatusWarn, stepStatus: RunStatusSucceeded, want: verify.StatusWarn},
+		{name: "pass result keeps passed vocabulary", status: verify.StatusPass, stepStatus: RunStatusSucceeded, want: "passed"},
+		{name: "fail result keeps failed vocabulary", status: verify.StatusFail, stepStatus: RunStatusFailed, want: "failed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			events := []EventRecord{
+				{
+					EventType: EventTypeVerificationResult,
+					Timestamp: base,
+					Metadata:  map[string]any{"status": tt.status},
+				},
+				{
+					EventType: EventTypeStepEnded,
+					Timestamp: base.Add(time.Second),
+					Metadata: map[string]any{
+						"step":   RunDurationStepVerification,
+						"status": tt.stepStatus,
+					},
+				},
+			}
+
+			got := DeriveRunTelemetry(RunRecord{RunID: "run-verification-outcome"}, events)
+			if got == nil {
+				t.Fatal("DeriveRunTelemetry() = nil, want telemetry")
+			}
+			if got.VerificationOutcome != tt.want {
+				t.Fatalf("verificationOutcome = %q, want %q", got.VerificationOutcome, tt.want)
+			}
+		})
+	}
+}
+
 func TestFactoryTypesHaveJSONTags(t *testing.T) {
 	types := []reflect.Type{
 		reflect.TypeOf(RunRecord{}),
+		reflect.TypeOf(RunSecretInput{}),
+		reflect.TypeOf(RunSecretMetadata{}),
 		reflect.TypeOf(SandboxMetadata{}),
 		reflect.TypeOf(SandboxConnectionMetadata{}),
 		reflect.TypeOf(SourceMetadata{}),
 		reflect.TypeOf(ArtifactReference{}),
 		reflect.TypeOf(VerificationRecord{}),
+		reflect.TypeOf(RunTelemetry{}),
+		reflect.TypeOf(RunStepDuration{}),
+		reflect.TypeOf(EngineTelemetry{}),
+		reflect.TypeOf(RunSandboxTelemetry{}),
+		reflect.TypeOf(SandboxCostEstimate{}),
 		reflect.TypeOf(FailureSummary{}),
+		reflect.TypeOf(HandoffSummary{}),
+		reflect.TypeOf(NextAction{}),
+		reflect.TypeOf(NextActionLocation{}),
 		reflect.TypeOf(QueueEntry{}),
 		reflect.TypeOf(QueueClaim{}),
 		reflect.TypeOf(EventRecord{}),
+		reflect.TypeOf(PolicyDecisionMetadata{}),
+		reflect.TypeOf(FactoryPolicy{}),
+		reflect.TypeOf(LogChunk{}),
 		reflect.TypeOf(BootstrapRequest{}),
 		reflect.TypeOf(BootstrapOptions{}),
 		reflect.TypeOf(BootstrapResult{}),
@@ -444,6 +888,7 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 			RunID:        "01975515-52ad-7f20-8f10-b35c07051b9f",
 			Status:       RunStatusFailed,
 			ExecutorMode: ExecutorModeLocal,
+			Engine:       PolicyEngineCodex,
 			Source: SourceMetadata{
 				Kind:       SourceKindMarkdown,
 				Path:       ".hal/prd-factory.md",
@@ -492,6 +937,33 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 					{CheckID: "test", Kind: verify.ArtifactKindStdout, Path: ".hal/reports/verify/test-stdout.txt"},
 				},
 			},
+			Telemetry: &RunTelemetry{
+				TotalDurationMs: ptrInt64(1200000),
+				StepDurations: []RunStepDuration{
+					{
+						Step:       "run",
+						StartedAt:  createdAt.Add(1 * time.Minute),
+						FinishedAt: updatedAt,
+						DurationMs: 540000,
+					},
+				},
+				Engine: &EngineTelemetry{
+					Name:  "codex",
+					Model: "gpt-5",
+				},
+				Sandbox: &RunSandboxTelemetry{
+					Provider: "hetzner",
+					Size:     "cx22",
+				},
+				EstimatedSandboxCost: &SandboxCostEstimate{
+					AmountUSD: 0.07,
+					Estimated: true,
+				},
+				CIOutcome:           "failed",
+				VerificationOutcome: "passed",
+				ArtifactCount:       ptrInt(2),
+				FailureCategory:     FailureCategoryCI,
+			},
 			Failure: &FailureSummary{
 				Step:             "ci",
 				Category:         FailureCategoryCI,
@@ -500,16 +972,62 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 				SuggestedCommand: "hal factory status 01975515-52ad-7f20-8f10-b35c07051b9f --json",
 				ExitCode:         1,
 			},
+			Secrets: []RunSecretMetadata{
+				{Name: "GITHUB_TOKEN", Source: RunSecretSourceEnv, Required: true, Present: true},
+			},
 		}
 
 		var decoded RunRecord
 		requireJSONRoundTrip(t, original, &decoded)
 	})
 
+	t.Run("empty telemetry", func(t *testing.T) {
+		original := RunRecord{
+			RunID:        "run-empty-telemetry",
+			Status:       RunStatusSucceeded,
+			ExecutorMode: ExecutorModeLocal,
+			Source:       SourceMetadata{Kind: SourceKindMarkdown},
+			RepoPath:     "/work/hal",
+			RepoRemote:   "git@github.com:jywlabs/hal.git",
+			BranchName:   "hal/empty-telemetry",
+			BaseBranch:   "main",
+			CurrentStep:  "done",
+			CreatedAt:    createdAt,
+			UpdatedAt:    updatedAt,
+			Telemetry:    &RunTelemetry{},
+		}
+
+		var decoded RunRecord
+		requireJSONRoundTrip(t, original, &decoded)
+	})
+
+	t.Run("run secret input", func(t *testing.T) {
+		original := RunSecretInput{
+			Name:     "GITHUB_TOKEN",
+			Source:   RunSecretSourceEnv,
+			Required: true,
+		}
+
+		var decoded RunSecretInput
+		requireJSONRoundTrip(t, original, &decoded)
+	})
+
+	t.Run("run secret metadata", func(t *testing.T) {
+		original := RunSecretMetadata{
+			Name:     "GITHUB_TOKEN",
+			Source:   RunSecretSourceEnv,
+			Required: true,
+			Present:  true,
+		}
+
+		var decoded RunSecretMetadata
+		requireJSONRoundTrip(t, original, &decoded)
+	})
+
 	t.Run("failure summary", func(t *testing.T) {
 		original := FailureSummary{
 			Step:             "review",
-			Category:         FailureCategoryValidation,
+			Category:         FailureCategoryReview,
 			Message:          "review found valid issues",
 			Recoverable:      true,
 			SuggestedCommand: "hal factory status run-review --json",
@@ -544,26 +1062,6 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 		requireJSONRoundTrip(t, original, &decoded)
 	})
 
-	t.Run("verification record", func(t *testing.T) {
-		original := VerificationRecord{
-			Summary: verify.Summary{
-				Total:    3,
-				Passed:   1,
-				Failed:   1,
-				TimedOut: 1,
-				Missing:  0,
-				Skipped:  0,
-				Warnings: 1,
-			},
-			Artifacts: []verify.ArtifactReference{
-				{CheckID: "test", Kind: verify.ArtifactKindStdout, Path: ".hal/reports/verify/test-stdout.txt"},
-			},
-		}
-
-		var decoded VerificationRecord
-		requireJSONRoundTrip(t, original, &decoded)
-	})
-
 	t.Run("queue entry", func(t *testing.T) {
 		claimedAt := createdAt.Add(2 * time.Minute)
 		completedAt := createdAt.Add(15 * time.Minute)
@@ -585,6 +1083,26 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 		}
 
 		var decoded QueueEntry
+		requireJSONRoundTrip(t, original, &decoded)
+	})
+
+	t.Run("verification record", func(t *testing.T) {
+		original := VerificationRecord{
+			Summary: verify.Summary{
+				Total:    3,
+				Passed:   1,
+				Failed:   1,
+				TimedOut: 1,
+				Missing:  0,
+				Skipped:  0,
+				Warnings: 1,
+			},
+			Artifacts: []verify.ArtifactReference{
+				{CheckID: "test", Kind: verify.ArtifactKindStdout, Path: ".hal/reports/verify/test-stdout.txt"},
+			},
+		}
+
+		var decoded VerificationRecord
 		requireJSONRoundTrip(t, original, &decoded)
 	})
 
@@ -616,6 +1134,7 @@ func TestRunRecordJSONFields(t *testing.T) {
 		RunID:        "01975515-52ad-7f20-8f10-b35c07051b9f",
 		Status:       RunStatusFailed,
 		ExecutorMode: ExecutorModeLocal,
+		Engine:       PolicyEngineCodex,
 		Source: SourceMetadata{
 			Kind:       SourceKindMarkdown,
 			Path:       ".hal/prd-factory.md",
@@ -683,6 +1202,39 @@ func TestRunRecordJSONFields(t *testing.T) {
 				{CheckID: "test", Kind: verify.ArtifactKindStderr, Path: ".hal/reports/verify/test-stderr.txt"},
 			},
 		},
+		Telemetry: &RunTelemetry{
+			TotalDurationMs: ptrInt64(1500000),
+			StepDurations: []RunStepDuration{
+				{
+					Step:       "setup",
+					StartedAt:  createdAt,
+					FinishedAt: createdAt.Add(5 * time.Minute),
+					DurationMs: 300000,
+				},
+				{
+					Step:       "run",
+					StartedAt:  createdAt.Add(5 * time.Minute),
+					FinishedAt: updatedAt,
+					DurationMs: 300000,
+				},
+			},
+			Engine: &EngineTelemetry{
+				Name:  "codex",
+				Model: "gpt-5",
+			},
+			Sandbox: &RunSandboxTelemetry{
+				Provider: "digitalocean",
+				Size:     "s-2vcpu-4gb",
+			},
+			EstimatedSandboxCost: &SandboxCostEstimate{
+				AmountUSD: 0.12,
+				Estimated: true,
+			},
+			CIOutcome:           "failed",
+			VerificationOutcome: "failed",
+			ArtifactCount:       ptrInt(2),
+			FailureCategory:     FailureCategoryCI,
+		},
 		Failure: &FailureSummary{
 			Step:             "ci",
 			Category:         FailureCategoryCI,
@@ -690,6 +1242,10 @@ func TestRunRecordJSONFields(t *testing.T) {
 			Recoverable:      true,
 			SuggestedCommand: "hal factory status 01975515-52ad-7f20-8f10-b35c07051b9f --json",
 			ExitCode:         1,
+		},
+		Secrets: []RunSecretMetadata{
+			{Name: "GITHUB_TOKEN", Source: RunSecretSourceEnv, Required: true, Present: true},
+			{Name: "NPM_TOKEN", Source: RunSecretSourceEnv, Required: false, Present: false},
 		},
 	}
 
@@ -707,6 +1263,7 @@ func TestRunRecordJSONFields(t *testing.T) {
 		"runId",
 		"status",
 		"executorMode",
+		"engine",
 		"source",
 		"repoPath",
 		"repoRemote",
@@ -720,7 +1277,9 @@ func TestRunRecordJSONFields(t *testing.T) {
 		"finishedAt",
 		"artifacts",
 		"verification",
+		"telemetry",
 		"failure",
+		"secrets",
 	} {
 		if _, ok := raw[key]; !ok {
 			t.Errorf("missing run record JSON field %q", key)
@@ -807,6 +1366,40 @@ func TestRunRecordJSONFields(t *testing.T) {
 		}
 	}
 
+	telemetry, ok := raw["telemetry"].(map[string]any)
+	if !ok {
+		t.Fatalf("telemetry should be an object, got %T", raw["telemetry"])
+	}
+	requireJSONMapKeys(t, telemetry, []string{
+		"totalDurationMs", "stepDurations", "engine", "sandbox",
+		"estimatedSandboxCost", "ciOutcome", "verificationOutcome",
+		"artifactCount", "failureCategory",
+	})
+	stepDurations, ok := telemetry["stepDurations"].([]any)
+	if !ok || len(stepDurations) != 2 {
+		t.Fatalf("telemetry.stepDurations should be an array of 2, got %T len %d", telemetry["stepDurations"], len(stepDurations))
+	}
+	firstStep, ok := stepDurations[0].(map[string]any)
+	if !ok {
+		t.Fatalf("telemetry.stepDurations[0] should be an object, got %T", stepDurations[0])
+	}
+	requireJSONMapKeys(t, firstStep, []string{"step", "startedAt", "finishedAt", "durationMs"})
+	engine, ok := telemetry["engine"].(map[string]any)
+	if !ok {
+		t.Fatalf("telemetry.engine should be an object, got %T", telemetry["engine"])
+	}
+	requireJSONMapKeys(t, engine, []string{"name", "model"})
+	sandboxTelemetry, ok := telemetry["sandbox"].(map[string]any)
+	if !ok {
+		t.Fatalf("telemetry.sandbox should be an object, got %T", telemetry["sandbox"])
+	}
+	requireJSONMapKeys(t, sandboxTelemetry, []string{"provider", "size"})
+	cost, ok := telemetry["estimatedSandboxCost"].(map[string]any)
+	if !ok {
+		t.Fatalf("telemetry.estimatedSandboxCost should be an object, got %T", telemetry["estimatedSandboxCost"])
+	}
+	requireJSONMapKeys(t, cost, []string{"amountUsd", "estimated"})
+
 	sandbox, ok := raw["sandbox"].(map[string]any)
 	if !ok {
 		t.Fatalf("sandbox should be an object, got %T", raw["sandbox"])
@@ -834,6 +1427,39 @@ func TestRunRecordJSONFields(t *testing.T) {
 		}
 	}
 
+	secrets, ok := raw["secrets"].([]any)
+	if !ok {
+		t.Fatalf("secrets should be an array, got %T", raw["secrets"])
+	}
+	if len(secrets) != 2 {
+		t.Fatalf("secrets length = %d, want 2", len(secrets))
+	}
+	firstSecret, ok := secrets[0].(map[string]any)
+	if !ok {
+		t.Fatalf("secrets[0] should be an object, got %T", secrets[0])
+	}
+	requireExactJSONKeys(t, firstSecret, []string{"name", "source", "required", "present"})
+	if firstSecret["name"] != "GITHUB_TOKEN" {
+		t.Fatalf("secret name = %v, want GITHUB_TOKEN", firstSecret["name"])
+	}
+	if firstSecret["source"] != RunSecretSourceEnv {
+		t.Fatalf("secret source = %v, want %s", firstSecret["source"], RunSecretSourceEnv)
+	}
+	if firstSecret["required"] != true {
+		t.Fatalf("secret required = %v, want true", firstSecret["required"])
+	}
+	if firstSecret["present"] != true {
+		t.Fatalf("secret present = %v, want true", firstSecret["present"])
+	}
+	secondSecret, ok := secrets[1].(map[string]any)
+	if !ok {
+		t.Fatalf("secrets[1] should be an object, got %T", secrets[1])
+	}
+	requireExactJSONKeys(t, secondSecret, []string{"name", "source", "required", "present"})
+	if secondSecret["present"] != false {
+		t.Fatalf("optional secret present = %v, want false", secondSecret["present"])
+	}
+
 	var decoded RunRecord
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("json.Unmarshal(round-trip) error = %v", err)
@@ -843,31 +1469,163 @@ func TestRunRecordJSONFields(t *testing.T) {
 	}
 }
 
-func TestRunRecordLoadsWithoutArtifacts(t *testing.T) {
-	payload := []byte(`{
-		"runId": "run-without-artifacts",
-		"status": "succeeded",
-		"executorMode": "local",
-		"source": {"kind": "markdown", "path": ".hal/prd.md"},
-		"repoPath": "/work/hal",
-		"repoRemote": "git@github.com:jywlabs/hal.git",
-		"branchName": "hal/old-run",
-		"baseBranch": "main",
-		"currentStep": "done",
-		"createdAt": "2026-06-20T09:30:00Z",
-		"updatedAt": "2026-06-20T09:45:00Z"
-	}`)
-
-	var decoded RunRecord
-	if err := json.Unmarshal(payload, &decoded); err != nil {
-		t.Fatalf("json.Unmarshal(old run record) error = %v", err)
+func TestNextActionJSONFields(t *testing.T) {
+	original := NextAction{
+		ID:             "inspect_factory_run",
+		Type:           NextActionTypeTakeover,
+		Command:        "hal factory status run-handoff --json",
+		Description:    "Inspect the durable run record and timeline.",
+		RunID:          "run-handoff",
+		SandboxName:    "factory-handoff",
+		RepoPath:       "/workspace/hal",
+		BranchName:     "hal/factory-handoff",
+		PullRequestURL: "https://github.com/jywlabs/hal/pull/42",
+		CurrentStep:    "ci",
+		FailureReason:  "unit tests failed",
+		ArtifactLocations: []NextActionLocation{
+			{
+				Name:       "prd",
+				Path:       ".hal/prd.json",
+				StoredPath: "artifacts/run-handoff/hal-prd.json",
+			},
+		},
+		LogLocations: []NextActionLocation{
+			{
+				Name:       "ci-log",
+				Path:       ".hal/reports/ci-output.log",
+				StoredPath: "artifacts/run-handoff/hal-reports-ci-output.log",
+			},
+		},
 	}
 
-	if decoded.RunID != "run-without-artifacts" {
-		t.Fatalf("runId = %q, want run-without-artifacts", decoded.RunID)
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
 	}
-	if decoded.Artifacts != nil {
-		t.Fatalf("artifacts = %#v, want nil for omitted legacy field", decoded.Artifacts)
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+
+	requireExactJSONKeys(t, raw, []string{
+		"id",
+		"type",
+		"command",
+		"description",
+		"runId",
+		"sandboxName",
+		"repoPath",
+		"branchName",
+		"pullRequestUrl",
+		"currentStep",
+		"failureReason",
+		"artifactLocations",
+		"logLocations",
+	})
+
+	artifactLocations, ok := raw["artifactLocations"].([]any)
+	if !ok || len(artifactLocations) != 1 {
+		t.Fatalf("artifactLocations should be one-item array, got %T", raw["artifactLocations"])
+	}
+	artifactLocation, ok := artifactLocations[0].(map[string]any)
+	if !ok {
+		t.Fatalf("artifactLocations[0] should be object, got %T", artifactLocations[0])
+	}
+	requireExactJSONKeys(t, artifactLocation, []string{"name", "path", "storedPath"})
+
+	logLocations, ok := raw["logLocations"].([]any)
+	if !ok || len(logLocations) != 1 {
+		t.Fatalf("logLocations should be one-item array, got %T", raw["logLocations"])
+	}
+	logLocation, ok := logLocations[0].(map[string]any)
+	if !ok {
+		t.Fatalf("logLocations[0] should be object, got %T", logLocations[0])
+	}
+	requireExactJSONKeys(t, logLocation, []string{"name", "path", "storedPath"})
+
+	var decoded NextAction
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(round-trip) error = %v", err)
+	}
+	if !reflect.DeepEqual(decoded, original) {
+		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", decoded, original)
+	}
+}
+
+func TestNextActionOptionalFieldsOmitted(t *testing.T) {
+	original := NextAction{
+		ID:          "factory_run_completed",
+		Type:        NextActionTypeCompleted,
+		Command:     "hal factory status run-complete --json",
+		Description: "Inspect the completed durable run record and timeline.",
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+
+	requireExactJSONKeys(t, raw, []string{"id", "type", "command", "description"})
+}
+
+func TestRunRecordSecretMetadataDoesNotSerializeSecretValues(t *testing.T) {
+	now := time.Date(2026, 6, 20, 10, 45, 0, 0, time.UTC)
+	secretValue := "ghp_factory_secret_value_123"
+	secret := RunSecretInput{
+		Name:     "GITHUB_TOKEN",
+		Source:   RunSecretSourceEnv,
+		Required: true,
+	}
+	record := RunRecord{
+		RunID:        "run-secret-safe",
+		Status:       RunStatusPending,
+		ExecutorMode: ExecutorModeSandbox,
+		Source:       SourceMetadata{Kind: SourceKindPRD},
+		RepoPath:     "/work/hal",
+		RepoRemote:   "git@github.com:jywlabs/hal.git",
+		BranchName:   "hal/factory-run-secrets",
+		BaseBranch:   "main",
+		CurrentStep:  RunStatusPending,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+		Secrets: []RunSecretMetadata{
+			secret.Metadata(secretValue != ""),
+		},
+	}
+
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	payload := string(data)
+	if strings.Contains(payload, secretValue) {
+		t.Fatalf("run record JSON contains raw secret value: %s", payload)
+	}
+	if strings.Contains(payload, "value") {
+		t.Fatalf("run record JSON contains a value field: %s", payload)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+	secrets, ok := raw["secrets"].([]any)
+	if !ok || len(secrets) != 1 {
+		t.Fatalf("secrets = %#v, want one secret metadata entry", raw["secrets"])
+	}
+	metadata, ok := secrets[0].(map[string]any)
+	if !ok {
+		t.Fatalf("secrets[0] should be an object, got %T", secrets[0])
+	}
+	requireExactJSONKeys(t, metadata, []string{"name", "source", "required", "present"})
+	if metadata["present"] != true {
+		t.Fatalf("secret present = %v, want true", metadata["present"])
 	}
 }
 
@@ -952,6 +1710,40 @@ func TestQueueEntryOptionalFieldsOmitted(t *testing.T) {
 	})
 }
 
+func TestRunRecordLoadsWithoutArtifacts(t *testing.T) {
+	payload := []byte(`{
+		"runId": "run-without-artifacts",
+		"status": "succeeded",
+		"executorMode": "local",
+		"source": {"kind": "markdown", "path": ".hal/prd.md"},
+		"repoPath": "/work/hal",
+		"repoRemote": "git@github.com:jywlabs/hal.git",
+		"branchName": "hal/old-run",
+		"baseBranch": "main",
+		"currentStep": "done",
+		"createdAt": "2026-06-20T09:30:00Z",
+		"updatedAt": "2026-06-20T09:45:00Z"
+	}`)
+
+	var decoded RunRecord
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(old run record) error = %v", err)
+	}
+
+	if decoded.RunID != "run-without-artifacts" {
+		t.Fatalf("runId = %q, want run-without-artifacts", decoded.RunID)
+	}
+	if decoded.Artifacts != nil {
+		t.Fatalf("artifacts = %#v, want nil for omitted legacy field", decoded.Artifacts)
+	}
+	if decoded.Telemetry != nil {
+		t.Fatalf("telemetry = %#v, want nil for omitted legacy field", decoded.Telemetry)
+	}
+	if decoded.Secrets != nil {
+		t.Fatalf("secrets = %#v, want nil for omitted legacy field", decoded.Secrets)
+	}
+}
+
 func requireJSONRoundTrip[T any](t *testing.T, original T, decoded *T) {
 	t.Helper()
 
@@ -967,20 +1759,6 @@ func requireJSONRoundTrip[T any](t *testing.T, original T, decoded *T) {
 	}
 }
 
-func ptrInt64(v int64) *int64 {
-	return &v
-}
-
-func requireJSONMapKeys(t *testing.T, raw map[string]any, keys []string) {
-	t.Helper()
-
-	for _, key := range keys {
-		if _, ok := raw[key]; !ok {
-			t.Errorf("missing JSON field %q", key)
-		}
-	}
-}
-
 func requireExactJSONKeys(t *testing.T, got map[string]any, want []string) {
 	t.Helper()
 
@@ -990,6 +1768,24 @@ func requireExactJSONKeys(t *testing.T, got map[string]any, want []string) {
 	for _, key := range want {
 		if _, ok := got[key]; !ok {
 			t.Fatalf("missing JSON key %q in %v", key, sortedMapKeys(got))
+		}
+	}
+}
+
+func ptrInt64(v int64) *int64 {
+	return &v
+}
+
+func ptrInt(v int) *int {
+	return &v
+}
+
+func requireJSONMapKeys(t *testing.T, raw map[string]any, keys []string) {
+	t.Helper()
+
+	for _, key := range keys {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("missing JSON field %q", key)
 		}
 	}
 }
@@ -1029,7 +1825,7 @@ func TestRunRecordOptionalFieldsOmitted(t *testing.T) {
 		t.Fatalf("json.Unmarshal(payload) error = %v", err)
 	}
 
-	for _, key := range []string{"sandboxName", "sandbox", "finishedAt", "artifacts", "verification", "failure"} {
+	for _, key := range []string{"engine", "sandboxName", "sandbox", "finishedAt", "artifacts", "verification", "telemetry", "failure", "secrets"} {
 		if _, ok := raw[key]; ok {
 			t.Errorf("unexpected optional field %q in %s", key, string(data))
 		}
@@ -1178,6 +1974,51 @@ func TestEventRecordJSONFields(t *testing.T) {
 	}
 
 	var decoded EventRecord
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(round-trip) error = %v", err)
+	}
+	if !reflect.DeepEqual(decoded, original) {
+		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", decoded, original)
+	}
+}
+
+func TestPolicyDecisionMetadataJSONFields(t *testing.T) {
+	original := PolicyDecisionMetadata{
+		PolicyField: "factory.policy.verificationRequired",
+		Decision:    PolicyDecisionBlockedGate,
+		Outcome:     PolicyOutcomeBlocked,
+		Reason:      "latest verification result failed",
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+
+	for _, key := range []string{"policyField", "decision", "outcome", "reason"} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("missing policy decision metadata JSON field %q", key)
+		}
+	}
+	for _, forbidden := range []string{"token", "secret", "credential", "env", "sourcePath", "provider", "apiKey"} {
+		if _, ok := raw[forbidden]; ok {
+			t.Errorf("unsafe policy decision metadata field %q should not be serialized", forbidden)
+		}
+	}
+
+	metadata := original.EventMetadata()
+	for _, key := range []string{"policyField", "decision", "outcome", "reason"} {
+		if _, ok := metadata[key]; !ok {
+			t.Errorf("missing policy decision event metadata key %q", key)
+		}
+	}
+
+	var decoded PolicyDecisionMetadata
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("json.Unmarshal(round-trip) error = %v", err)
 	}

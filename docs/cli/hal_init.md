@@ -17,8 +17,8 @@ Repo-local setup (always safe):
   .hal/standards/        Project standards (committed)
 
 Engine-local links (project-scoped):
-  .claude/skills/        Symlinks to .hal/skills/ for Claude Code
-  .pi/skills/            Symlinks to .hal/skills/ for Pi
+  .claude/skills/        Symlinks to managed skill sources for Claude Code
+  .pi/skills/            Symlinks to managed skill sources for Pi
 
 Global links (active Codex home — only for Codex users):
   $CODEX_HOME/skills/    Symlinks for Codex skill discovery when CODEX_HOME is set

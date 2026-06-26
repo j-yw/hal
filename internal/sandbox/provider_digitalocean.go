@@ -37,9 +37,10 @@ type DigitalOceanProvider struct {
 const digitalOceanLockdownMarker = "/root/.hal-tailscale-lockdown"
 
 const (
-	digitalOceanTailscalePublicAttempts   = 18
-	digitalOceanTailscaleHostnameAttempts = 18
+	digitalOceanTailscalePublicAttempts   = 36
+	digitalOceanTailscaleHostnameAttempts = 3
 	digitalOceanLockdownVerifyAttempts    = 18
+	digitalOceanSSHReadyAttempts          = 36
 )
 
 func digitalOceanFirewallLockdownScript() string {
@@ -62,18 +63,19 @@ func runDigitalOceanSSHCommand(ctx context.Context, sshFn func(context.Context, 
 	if sshFn == nil {
 		sshFn = exec.CommandContext
 	}
-	sshCmd := sshFn(ctx, "ssh",
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "ConnectTimeout=10",
-		fmt.Sprintf("root@%s", target),
-		script,
-	)
+	sshArgs := nonInteractiveSSHOptionsWithConnectTimeout("10")
+	sshArgs = append(sshArgs, fmt.Sprintf("root@%s", target), script)
+	sshCtx, cancel := nonInteractiveSSHContext(ctx)
+	defer cancel()
+	sshCmd := sshFn(sshCtx, "ssh", sshArgs...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	sshCmd.Stdout = &stdout
 	sshCmd.Stderr = &stderr
 	if err := sshCmd.Run(); err != nil {
+		if sshCtx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("ssh command timed out after %s: %w", nonInteractiveSSHCommandTimeout, err)
+		}
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			return fmt.Errorf("%s: %w", msg, err)
 		}
@@ -124,6 +126,34 @@ func verifyDigitalOceanLockdownWithProgress(ctx context.Context, sshFn func(cont
 	}
 
 	return "", fmt.Errorf("lockdown marker not verified after %d attempts: %s", attempts, strings.Join(lastAttemptErrors, "; "))
+}
+
+func waitDigitalOceanSSHReadyWithProgress(ctx context.Context, sshFn func(context.Context, string, ...string) *exec.Cmd, target string, sleepFn func(time.Duration), attempts int, delay time.Duration, out io.Writer) error {
+	if attempts <= 0 {
+		attempts = 1
+	}
+	if sleepFn == nil {
+		sleepFn = time.Sleep
+	}
+
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if err := runDigitalOceanSSHCommand(ctx, sshFn, target, "true", out); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if out != nil {
+			fmt.Fprintf(out, "  SSH readiness attempt %d/%d...\n", i+1, attempts)
+		}
+		if i < attempts-1 {
+			sleepFn(delay)
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("ssh unavailable")
+	}
+	return fmt.Errorf("ssh not ready after %d attempts: %w", attempts, lastErr)
 }
 
 // commandContext returns the configured command builder, defaulting to
@@ -177,8 +207,8 @@ func generateDOCloudInit(env map[string]string, tailscaleLockdown bool) string {
 	b.WriteString("\n")
 
 	// Install and configure Tailscale FIRST (before setup.sh which takes minutes).
-	// When lockdown is requested, apply it from cloud-init as well so startup does
-	// not depend on public SSH remaining reachable after Tailscale joins.
+	// Do not enable UFW here. Hal must keep public SSH available until it reads
+	// /root/.tailscale-ip, then applies and verifies firewall lockdown itself.
 	b.WriteString("runcmd:\n")
 	b.WriteString("  - |\n")
 	b.WriteString("    set -a\n")
@@ -190,17 +220,7 @@ func generateDOCloudInit(env map[string]string, tailscaleLockdown bool) string {
 	b.WriteString("      tailscaled --tun=userspace-networking --statedir=/var/lib/tailscale &\n")
 	b.WriteString("      sleep 3\n")
 	b.WriteString("      if tailscale up --authkey=\"$TAILSCALE_AUTHKEY\" --ssh --hostname=\"${TAILSCALE_HOSTNAME:-hal-sandbox}\" && tailscale ip -4 > /root/.tailscale-ip && [ -s /root/.tailscale-ip ]; then\n")
-	b.WriteString("        if [ \"${TAILSCALE_LOCKDOWN:-false}\" = \"true\" ]; then\n")
-	b.WriteString("          if ! command -v ufw >/dev/null 2>&1; then\n")
-	b.WriteString("            apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ufw\n")
-	b.WriteString("          fi\n")
-	b.WriteString("          ufw allow in on tailscale0 &&\n")
-	b.WriteString("          ufw allow in on tailscale0 proto udp to any port 60000:61000 &&\n")
-	b.WriteString("          ufw allow proto tcp from 100.64.0.0/10 to any port 22 &&\n")
-	b.WriteString("          ufw deny 22/tcp &&\n")
-	b.WriteString("          ufw --force enable &&\n")
-	b.WriteString("          touch " + digitalOceanLockdownMarker + "\n")
-	b.WriteString("        fi\n")
+	b.WriteString("        true\n")
 	b.WriteString("      else\n")
 	b.WriteString("        rm -f /root/.tailscale-ip\n")
 	b.WriteString("        echo \"Tailscale setup failed; leaving public SSH available for recovery\" >&2\n")
@@ -437,7 +457,25 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 			hostnameIP, hostnameErr = fetchTailscaleIPWithProgress(ctx, "root", tailscaleHostname, d.sshContext, d.sleep, digitalOceanTailscaleHostnameAttempts, 10*time.Second, safeOut)
 			if hostnameErr == nil {
 				result.TailscaleIP = hostnameIP
-				if _, verifyErr := verifyDigitalOceanLockdownWithProgress(ctx, d.sshContext, []string{tailscaleHostname, hostnameIP}, d.sleep, digitalOceanLockdownVerifyAttempts, 10*time.Second, safeOut); verifyErr != nil {
+
+				fmt.Fprintf(safeOut, "Applying firewall lockdown on %s via Tailscale hostname...\n", name)
+				verifyTargets := []string{tailscaleHostname, hostnameIP}
+				if err := runDigitalOceanSSHCommand(ctx, d.sshContext, tailscaleHostname, digitalOceanFirewallLockdownScript(), safeOut); err != nil {
+					verifiedTarget, verifyErr := verifyDigitalOceanLockdownWithProgress(ctx, d.sshContext, verifyTargets, d.sleep, digitalOceanLockdownVerifyAttempts, 10*time.Second, safeOut)
+					if verifyErr == nil {
+						if verifiedTarget == hostnameIP {
+							fmt.Fprintf(safeOut, "Verified firewall lockdown via Tailscale after hostname SSH closed.\n")
+						} else {
+							fmt.Fprintf(safeOut, "Verified firewall lockdown via Tailscale hostname after hostname SSH closed.\n")
+						}
+						return result, nil
+					}
+
+					cleanupDroplet("firewall lockdown failed")
+					return nil, fmt.Errorf("failed to apply firewall lockdown in lockdown mode via hostname %q: %w; verification via Tailscale targets failed: %v", tailscaleHostname, err, verifyErr)
+				}
+
+				if _, verifyErr := verifyDigitalOceanLockdownWithProgress(ctx, d.sshContext, verifyTargets, d.sleep, digitalOceanLockdownVerifyAttempts, 10*time.Second, safeOut); verifyErr != nil {
 					cleanupDroplet("firewall lockdown unverified")
 					return nil, fmt.Errorf("failed to verify firewall lockdown in lockdown mode via hostname %q: %w", tailscaleHostname, verifyErr)
 				}
@@ -459,8 +497,8 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 
 		result.TailscaleIP = tailscaleIP
 
-		// Apply firewall lockdown after reading the Tailscale IP as a required
-		// duplicate of cloud-init. If public SSH closes first, verify over Tailscale.
+		// Apply firewall lockdown after reading the Tailscale IP. If public SSH
+		// closes first, verify over Tailscale.
 		fmt.Fprintf(safeOut, "Applying firewall lockdown on %s...\n", name)
 		if err := runDigitalOceanSSHCommand(ctx, d.sshContext, ip, digitalOceanFirewallLockdownScript(), safeOut); err != nil {
 			verifyTargets := []string{tailscaleIP}
@@ -484,6 +522,14 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 
 			cleanupDroplet("firewall lockdown failed")
 			return nil, fmt.Errorf("failed to apply firewall lockdown in lockdown mode: %w; verification via Tailscale IP %q failed: %v", err, tailscaleIP, verifyErr)
+		}
+	}
+
+	if !d.TailscaleLockdown {
+		fmt.Fprintf(safeOut, "Waiting for SSH on %s (cloud-init may still be starting)...\n", name)
+		if err := waitDigitalOceanSSHReadyWithProgress(ctx, d.sshContext, ip, d.sleep, digitalOceanSSHReadyAttempts, 10*time.Second, safeOut); err != nil {
+			cleanupDroplet("ssh unavailable")
+			return nil, fmt.Errorf("failed to verify SSH readiness: %w", err)
 		}
 	}
 
@@ -680,13 +726,9 @@ func (d *DigitalOceanProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd
 		return nil, err
 	}
 
-	cmdArgs := []string{
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "LogLevel=ERROR",
-		"root@" + ip,
-	}
-	cmdArgs = append(cmdArgs, sshRemoteCommand(args))
+	cmdArgs := nonInteractiveSSHOptions()
+	cmdArgs = append(cmdArgs, "-o", "LogLevel=ERROR", "root@"+ip)
+	cmdArgs = appendSSHRemoteCommand(cmdArgs, args)
 	cmd := exec.Command("ssh", cmdArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout

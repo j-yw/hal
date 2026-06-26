@@ -16,6 +16,7 @@ const DefaultTimeoutSeconds = 300
 // Config contains project verification checks from .hal/config.yaml.
 type Config struct {
 	ProjectRoot string       `yaml:"-"`
+	ArtifactDir string       `yaml:"-"`
 	Checks      []ShellCheck `yaml:"checks"`
 }
 

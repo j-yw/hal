@@ -13,7 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	pathpkg "path"
+	"path"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -23,7 +23,9 @@ import (
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/doctor"
+	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/prd"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/status"
 	"github.com/jywlabs/hal/internal/template"
@@ -36,16 +38,20 @@ const (
 	FactoryListContractVersion      = "factory-list-v1"
 	FactoryStatusContractVersion    = "factory-status-v1"
 	FactoryArtifactsContractVersion = "factory-artifacts-v1"
+	FactoryLogsContractVersion      = "factory-logs-v1"
 )
 
 var factoryListJSONFlag bool
 var factoryStatusJSONFlag bool
 var factoryArtifactsJSONFlag bool
+var factoryLogsJSONFlag bool
 var factoryRunReportFlag string
 var factoryRunBaseFlag string
-var factoryRunSandboxNameFlag string
+var factoryRunSecretEnvFlags []string
 var factoryRunJSONFlag bool
 var factoryRunSandboxFlag bool
+var factoryOpenExecFlag bool
+var factoryOpenJSONFlag bool
 
 var factoryCmd = &cobra.Command{
 	Use:   "factory",
@@ -61,6 +67,8 @@ pending local factory work in the same global store.`,
   hal factory list
   hal factory list --json
   hal factory status <run-id> --json
+  hal factory logs <run-id>
+  hal factory open <run-id>
   hal factory artifacts <run-id>
   hal factory trigger --repo . --prd .hal/prd-feature.md --json
   hal factory queue list --json`,
@@ -77,11 +85,13 @@ Provide at most one positional PRD markdown path to start from an existing
 spec, or use --report <path> to start from an analysis report. The positional
 path and --report are mutually exclusive. Use --base <branch> to pass a target
 base branch to the executor. Sandbox mode requires --base so the remote
-workspace can be checked out deterministically. Use --sandbox for remote
-sandbox-backed execution, --sandbox-name <name> to target a specific sandbox,
-and --json for machine-readable factory-run-v1 output.`,
+workspace can be checked out deterministically. Use --secret-env to declare
+required environment variables that should be resolved only for this run. Use
+--sandbox for remote sandbox-backed execution, and --json for machine-readable
+factory-run-v1 output.`,
 	Example: `  hal factory run .hal/prd-feature.md
   hal factory run --report .hal/reports/analysis.md
+  hal factory run .hal/prd-feature.md --secret-env GITHUB_TOKEN
   hal factory run .hal/prd-feature.md --base main --json
   hal factory run .hal/prd-feature.md --sandbox --base main`,
 	RunE: runFactoryRun,
@@ -131,20 +141,40 @@ output omits raw source paths and remote URLs from artifact records.`,
 	RunE: runFactoryArtifacts,
 }
 
+var factoryLogsCmd = &cobra.Command{
+	Use:   "logs <run-id>",
+	Short: "Inspect stored factory run logs",
+	Args:  exactArgsValidation(1),
+	Long: `Inspect stored stdout, stderr, or summarized output chunks for one
+factory run from the global factory store.
+
+The default output is ordered human-readable log text with stream and source
+metadata. Use --json for machine-readable output following the factory-logs-v1
+contract. Log text is sanitized before display.`,
+	Example: `  hal factory logs run-20260620-001
+  hal factory logs run-20260620-001 --json`,
+	RunE: runFactoryLogs,
+}
+
 func init() {
 	factoryRunCmd.Flags().StringVar(&factoryRunReportFlag, "report", "", "Start from an analysis report path")
 	factoryRunCmd.Flags().StringVar(&factoryRunBaseFlag, "base", "", "Target base branch for follow-up review or CI")
-	factoryRunCmd.Flags().StringVar(&factoryRunSandboxNameFlag, "sandbox-name", "", "Target sandbox name for sandbox-backed execution")
+	factoryRunCmd.Flags().StringArrayVar(&factoryRunSecretEnvFlags, "secret-env", nil, "Required environment variable secret for the run (repeatable)")
 	factoryRunCmd.Flags().BoolVar(&factoryRunSandboxFlag, "sandbox", false, "Run the factory executor in a managed sandbox")
 	factoryRunCmd.Flags().BoolVar(&factoryRunJSONFlag, "json", false, "Output machine-readable JSON (factory-run-v1 contract)")
 	factoryListCmd.Flags().BoolVar(&factoryListJSONFlag, "json", false, "Output machine-readable JSON (factory-list-v1 contract)")
 	factoryStatusCmd.Flags().BoolVar(&factoryStatusJSONFlag, "json", false, "Output machine-readable JSON (factory-status-v1 contract)")
 	factoryArtifactsCmd.Flags().BoolVar(&factoryArtifactsJSONFlag, "json", false, "Output machine-readable JSON (factory-artifacts-v1 contract)")
+	factoryLogsCmd.Flags().BoolVar(&factoryLogsJSONFlag, "json", false, "Output machine-readable JSON (factory-logs-v1 contract)")
+	factoryOpenCmd.Flags().BoolVar(&factoryOpenExecFlag, "exec", false, "Execute the suggested inspection or resume command")
+	factoryOpenCmd.Flags().BoolVar(&factoryOpenJSONFlag, "json", false, "Output machine-readable JSON (factory-open-v1 contract)")
 	configureFactoryTriggerCommand()
 	configureFactoryQueueCommands()
 	factoryCmd.AddCommand(factoryRunCmd)
 	factoryCmd.AddCommand(factoryListCmd)
 	factoryCmd.AddCommand(factoryStatusCmd)
+	factoryCmd.AddCommand(factoryLogsCmd)
+	factoryCmd.AddCommand(factoryOpenCmd)
 	factoryCmd.AddCommand(factoryArtifactsCmd)
 	factoryCmd.AddCommand(factoryTriggerCmd)
 	factoryCmd.AddCommand(factoryQueueCmd)
@@ -175,21 +205,39 @@ var defaultFactoryArtifactsDeps = factoryArtifactsDeps{
 	defaultStore: factory.DefaultStore,
 }
 
+type factoryLogsDeps struct {
+	defaultStore func() (factory.Store, error)
+}
+
+var defaultFactoryLogsDeps = factoryLogsDeps{
+	defaultStore: factory.DefaultStore,
+}
+
 type factoryRunDeps struct {
-	defaultStore    func() (factory.Store, error)
-	newRunID        func() (string, error)
-	now             func() time.Time
-	workingDir      func() (string, error)
-	currentBranch   func(string) (string, error)
-	repoRemote      func(string) (string, error)
-	runPipeline     func(context.Context, factoryRunPipelineRequest) error
-	loadVerify      func(string) (*verify.Config, error)
-	runVerify       func(context.Context, *verify.Config) (*verify.Result, error)
-	runSandbox      func(context.Context, factorySandboxExecutorRequest) error
-	statusSnapshot  func(string) (factorySnapshotArtifact, error)
-	doctorSnapshot  func(string) (factorySnapshotArtifact, error)
-	sandboxCopier   factory.SandboxArtifactCopier
-	sandboxRequests func(string, factory.RunRecord) []factory.SandboxArtifactRequest
+	defaultStore           func() (factory.Store, error)
+	newRunID               func() (string, error)
+	now                    func() time.Time
+	workingDir             func() (string, error)
+	currentBranch          func(string) (string, error)
+	repoRemote             func(string) (string, error)
+	lookupEnv              func(string) (string, bool)
+	loadPolicy             func(string) (*factory.FactoryPolicy, error)
+	loadEngine             func(string) (string, error)
+	loadEngineConfig       func(string, string) *engine.EngineConfig
+	runPipeline            func(context.Context, factoryRunPipelineRequest) error
+	runSandbox             func(context.Context, factorySandboxExecutorRequest) error
+	loadVerify             func(string) (*verify.Config, error)
+	runVerify              func(context.Context, *verify.Config) (*verify.Result, error)
+	loadSandbox            func(string) (*sandbox.SandboxState, error)
+	resolveProvider        func(string, string) (sandbox.Provider, error)
+	runProviderExec        func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+	runProviderExecIO      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer, io.Writer) error
+	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
+	cleanupSandbox         func(context.Context, factorySandboxCleanupRequest) error
+	statusSnapshot         func(string) (factorySnapshotArtifact, error)
+	doctorSnapshot         func(string) (factorySnapshotArtifact, error)
+	sandboxCopier          factory.SandboxArtifactCopier
+	sandboxRequests        func(string, factory.RunRecord) []factory.SandboxArtifactRequest
 }
 
 type factoryRunPipelineRequest struct {
@@ -198,41 +246,59 @@ type factoryRunPipelineRequest struct {
 	Request        factoryRunRequest
 	Record         factory.RunRecord
 	Store          factory.Store
+	Engine         string
+	AttemptPolicy  autoFactoryAttemptPolicy
+	SkipCI         bool
+	Now            func() time.Time
 	RecordProgress func(factoryRunProgressEvent) error
 }
 
 var defaultFactoryRunDeps = factoryRunDeps{
-	defaultStore:   factory.DefaultStore,
-	newRunID:       sandbox.NewV7,
-	now:            time.Now,
-	workingDir:     os.Getwd,
-	currentBranch:  compound.CurrentBranchOptionalInDir,
-	repoRemote:     readGitRemoteOptionalInDir,
-	runPipeline:    runFactoryRunPipeline,
-	loadVerify:     verify.LoadConfig,
-	runVerify:      verify.Run,
-	statusSnapshot: defaultFactoryStatusSnapshot,
-	doctorSnapshot: defaultFactoryDoctorSnapshot,
+	defaultStore:     factory.DefaultStore,
+	newRunID:         sandbox.NewV7,
+	now:              time.Now,
+	workingDir:       os.Getwd,
+	currentBranch:    compound.CurrentBranchOptionalInDir,
+	repoRemote:       readGitRemoteOptionalInDir,
+	lookupEnv:        os.LookupEnv,
+	loadPolicy:       factory.LoadPolicyConfig,
+	loadEngine:       compound.LoadDefaultEngine,
+	loadEngineConfig: compound.LoadEngineConfig,
+	runPipeline:      runFactoryRunPipeline,
 	runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
-		return runFactorySandboxExecutorWithDeps(ctx, req, defaultFactorySandboxExecutorDeps)
+		return runFactorySandboxExecutorWithDeps(ctx, req, factorySandboxExecutorDeps{})
 	},
+	loadVerify:             verify.LoadConfig,
+	runVerify:              verify.Run,
+	loadSandbox:            sandbox.LoadActiveInstance,
+	resolveProvider:        resolveProviderWithFallback,
+	runProviderExec:        runFactorySandboxProviderExec,
+	runProviderExecIO:      runFactorySandboxProviderExecIO,
+	runProviderExecWithEnv: runFactorySandboxProviderExecWithEnv,
+	cleanupSandbox:         cleanupFactorySandbox,
+	statusSnapshot:         defaultFactoryStatusSnapshot,
+	doctorSnapshot:         defaultFactoryDoctorSnapshot,
 }
 
 type factoryRunRequest struct {
 	MarkdownPath string
 	ReportPath   string
 	BaseBranch   string
-	SandboxName  string
 	Sandbox      bool
 	JSON         bool
+	Secrets      []factory.RunSecretInput
+
+	ResolvedSecrets []factory.ResolvedRunSecret
 }
 
 type factoryRunAutoRequest struct {
-	Args           []string
-	WorkDir        string
-	ReportPath     string
-	BaseBranch     string
-	RecordProgress func(factoryRunProgressEvent) error
+	WorkDir       string
+	Args          []string
+	ReportPath    string
+	BaseBranch    string
+	Engine        string
+	AttemptPolicy autoFactoryAttemptPolicy
+	SkipCI        bool
 }
 
 type factoryRunProgressEvent struct {
@@ -250,6 +316,16 @@ type factoryTimelineEvent struct {
 
 type factoryRunPipelineDeps struct {
 	runAuto func(context.Context, factoryRunAutoRequest) error
+}
+
+type factoryRunExecutionDeps struct {
+	now         func() time.Time
+	runPipeline func(context.Context, factoryRunPipelineRequest) error
+}
+
+type factoryRunExecutionResult struct {
+	Record factory.RunRecord
+	Render bool
 }
 
 type factorySnapshotArtifact struct {
@@ -278,22 +354,12 @@ type factoryCIOutcomeArtifact struct {
 	BranchName   string `json:"branchName,omitempty"`
 }
 
-type factoryRunExecutionDeps struct {
-	now             func() time.Time
-	currentBranch   func(string) (string, error)
-	runPipeline     func(context.Context, factoryRunPipelineRequest) error
-	loadVerify      func(string) (*verify.Config, error)
-	runVerify       func(context.Context, *verify.Config) (*verify.Result, error)
-	runSandbox      func(context.Context, factorySandboxExecutorRequest) error
-	statusSnapshot  func(string) (factorySnapshotArtifact, error)
-	doctorSnapshot  func(string) (factorySnapshotArtifact, error)
-	sandboxCopier   factory.SandboxArtifactCopier
-	sandboxRequests func(string, factory.RunRecord) []factory.SandboxArtifactRequest
-}
-
-type factoryRunExecutionResult struct {
-	Record factory.RunRecord
-	Render bool
+// FactoryLogsResponse is the machine-readable JSON output for
+// hal factory logs <run-id> --json.
+type FactoryLogsResponse struct {
+	ContractVersion string             `json:"contractVersion"`
+	RunID           string             `json:"runId"`
+	Chunks          []factory.LogChunk `json:"chunks"`
 }
 
 // FactoryListResponse is the machine-readable JSON output for hal factory list --json.
@@ -312,23 +378,29 @@ type FactoryStatusResponse struct {
 // FactoryStatusRun is the safe run surface for hal factory status --json. It
 // mirrors factory.RunRecord but uses sanitized artifact summaries.
 type FactoryStatusRun struct {
-	RunID        string                      `json:"runId"`
-	Status       string                      `json:"status"`
-	ExecutorMode string                      `json:"executorMode,omitempty"`
-	Source       factory.SourceMetadata      `json:"source"`
-	RepoPath     string                      `json:"repoPath"`
-	RepoRemote   string                      `json:"repoRemote"`
-	BranchName   string                      `json:"branchName"`
-	BaseBranch   string                      `json:"baseBranch"`
-	SandboxName  string                      `json:"sandboxName,omitempty"`
-	Sandbox      *factory.SandboxMetadata    `json:"sandbox,omitempty"`
-	CurrentStep  string                      `json:"currentStep"`
-	CreatedAt    time.Time                   `json:"createdAt"`
-	UpdatedAt    time.Time                   `json:"updatedAt"`
-	FinishedAt   *time.Time                  `json:"finishedAt,omitempty"`
-	Artifacts    []FactoryArtifactSummary    `json:"artifacts,omitempty"`
-	Verification *factory.VerificationRecord `json:"verification,omitempty"`
-	Failure      *factory.FailureSummary     `json:"failure,omitempty"`
+	RunID           string                           `json:"runId"`
+	Status          string                           `json:"status"`
+	ExecutorMode    string                           `json:"executorMode,omitempty"`
+	Engine          string                           `json:"engine,omitempty"`
+	Source          factory.SourceMetadata           `json:"source"`
+	RepoPath        string                           `json:"repoPath"`
+	RepoRemote      string                           `json:"repoRemote"`
+	BranchName      string                           `json:"branchName"`
+	BaseBranch      string                           `json:"baseBranch"`
+	Policy          *factory.FactoryPolicy           `json:"policy,omitempty"`
+	PolicyDecisions []factory.PolicyDecisionMetadata `json:"policyDecisions,omitempty"`
+	SandboxName     string                           `json:"sandboxName,omitempty"`
+	Sandbox         *factory.SandboxMetadata         `json:"sandbox,omitempty"`
+	CurrentStep     string                           `json:"currentStep"`
+	CreatedAt       time.Time                        `json:"createdAt"`
+	UpdatedAt       time.Time                        `json:"updatedAt"`
+	FinishedAt      *time.Time                       `json:"finishedAt,omitempty"`
+	Secrets         []factory.RunSecretMetadata      `json:"secrets,omitempty"`
+	Artifacts       []FactoryArtifactSummary         `json:"artifacts,omitempty"`
+	Verification    *factory.VerificationRecord      `json:"verification,omitempty"`
+	Telemetry       *factory.RunTelemetry            `json:"telemetry,omitempty"`
+	Failure         *factory.FailureSummary          `json:"failure,omitempty"`
+	Handoff         *factory.HandoffSummary          `json:"handoff,omitempty"`
 }
 
 // FactoryArtifactsResponse is the machine-readable JSON output for
@@ -342,16 +414,14 @@ type FactoryArtifactsResponse struct {
 }
 
 // FactoryArtifactSummary is the safe artifact list surface for one stored
-// artifact. It intentionally omits sourcePath because it can contain
-// workspace-local paths. URL is only populated by contract surfaces that expose
-// sanitized remote artifact URLs.
+// artifact. It intentionally omits sourcePath and url because those fields can
+// contain workspace-local paths or uncontracted network addresses.
 type FactoryArtifactSummary struct {
 	ID         string         `json:"id,omitempty"`
 	Name       string         `json:"name"`
 	Type       string         `json:"type"`
 	Path       string         `json:"path,omitempty"`
 	StoredPath string         `json:"storedPath,omitempty"`
-	URL        string         `json:"url,omitempty"`
 	SizeBytes  *int64         `json:"sizeBytes,omitempty"`
 	CreatedAt  *time.Time     `json:"createdAt,omitempty"`
 	Summary    map[string]any `json:"summary,omitempty"`
@@ -383,10 +453,15 @@ type FactoryRunSummary struct {
 	UpdatedAt     time.Time               `json:"updatedAt"`
 	FinishedAt    *time.Time              `json:"finishedAt,omitempty"`
 	ArtifactCount int                     `json:"artifactCount"`
+	Telemetry     *factory.RunTelemetry   `json:"telemetry,omitempty"`
 	Failure       *factory.FailureSummary `json:"failure,omitempty"`
 }
 
 func validateFactoryRunArgs(cmd *cobra.Command, args []string) error {
+	if len(args) > 1 {
+		return maxArgsValidation(1)(cmd, args)
+	}
+
 	reportPath := ""
 	if cmd != nil && cmd.Flags().Lookup("report") != nil {
 		value, err := cmd.Flags().GetString("report")
@@ -396,39 +471,15 @@ func validateFactoryRunArgs(cmd *cobra.Command, args []string) error {
 		reportPath = value
 	}
 
-	if _, err := parseFactoryRunRequest(args, reportPath, "", "", false, false); err != nil {
-		return factoryRunArgsValidationError(cmd, err)
+	if _, err := parseFactoryRunRequest(args, reportPath, "", false, false); err != nil {
+		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
 	return nil
-}
-
-func factoryRunArgsValidationError(cmd *cobra.Command, err error) error {
-	if factoryRunJSONRequested(cmd) {
-		out := io.Writer(os.Stdout)
-		if cmd != nil {
-			out = cmd.OutOrStdout()
-		}
-		if renderErr := renderFactoryRunValidationErrorJSON(out, err); renderErr != nil {
-			return renderErr
-		}
-		return exitWithCode(cmd, ExitCodeValidation, nil)
-	}
-	return exitWithCode(cmd, ExitCodeValidation, err)
 }
 
 func runFactoryRun(cmd *cobra.Command, args []string) error {
 	req, err := factoryRunRequestFromCommand(cmd, args)
 	if err != nil {
-		if factoryRunJSONRequested(cmd) {
-			out := io.Writer(os.Stdout)
-			if cmd != nil {
-				out = cmd.OutOrStdout()
-			}
-			if renderErr := renderFactoryRunValidationErrorJSON(out, err); renderErr != nil {
-				return renderErr
-			}
-			return &ExitCodeError{Code: factoryRenderedJSONExitCode(err)}
-		}
 		return err
 	}
 
@@ -444,14 +495,6 @@ func runFactoryRun(cmd *cobra.Command, args []string) error {
 	countingOut := newFactoryCountingWriter(out)
 	err = runFactoryRunWithDeps(ctx, ".", req, countingOut, defaultFactoryRunDeps)
 	return suppressFactoryJSONRenderedError(err, req.JSON, countingOut)
-}
-
-func factoryRunJSONRequested(cmd *cobra.Command) bool {
-	if cmd == nil || cmd.Flags().Lookup("json") == nil {
-		return false
-	}
-	value, err := cmd.Flags().GetBool("json")
-	return err == nil && value
 }
 
 func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunRequest, out io.Writer, deps factoryRunDeps) error {
@@ -473,29 +516,39 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	if err != nil {
 		return fmt.Errorf("open factory store: %w", err)
 	}
-	record, bootstrapRepositoryURL, err := newFactoryRunRecord(dir, req, deps)
+	record, err := newFactoryRunRecord(dir, req, deps)
 	if err != nil {
 		return err
 	}
-	if err := createFactoryRunRecord(store, record); err != nil {
+	initialRedactor := factory.NewRunSecretRedactor(resolveFactoryRunRedactionSecrets(req.Secrets, deps.lookupEnv))
+	safeInitialRecord := redactFactoryRunRecordForStorage(record, initialRedactor)
+	if err := createFactoryRunRecord(store, safeInitialRecord); err != nil {
 		return err
 	}
-	if err := recordFactoryRunStarted(store, record); err != nil {
+	if err := recordFactoryRunStarted(store, safeInitialRecord); err != nil {
+		return err
+	}
+	creationPolicy, err := loadFactoryRunPolicy(dir, deps)
+	if err != nil {
+		return failFactoryRunCreationWithRedactor(store, record, out, req.JSON, deps.now(), fmt.Errorf("load factory policy: %w", err), nil, initialRedactor)
+	}
+	record, err = persistFactoryRunPolicySnapshotWithRedactor(store, record, creationPolicy, initialRedactor)
+	if err != nil {
+		return failFactoryRunCreationWithRedactor(store, record, out, req.JSON, deps.now(), err, nil, initialRedactor)
+	}
+	engineName, err := resolveFactoryRunEngine(dir, deps)
+	if err != nil {
+		return failFactoryRunCreationWithRedactor(store, record, out, req.JSON, deps.now(), err, nil, initialRedactor)
+	}
+	record, err = persistFactoryRunEngineSnapshotWithRedactor(store, record, engineName, initialRedactor)
+	if err != nil {
+		return failFactoryRunCreationWithRedactor(store, record, out, req.JSON, deps.now(), err, nil, initialRedactor)
+	}
+	if err := enforceFactoryRunCreationPolicyWithRedactor(store, record, out, req.JSON, deps, creationPolicy, engineName, initialRedactor); err != nil {
 		return err
 	}
 
-	result, execErr := executeFactoryRun(ctx, dir, req, store, record, out, bootstrapRepositoryURL, factoryRunExecutionDeps{
-		now:             deps.now,
-		currentBranch:   deps.currentBranch,
-		runPipeline:     deps.runPipeline,
-		loadVerify:      deps.loadVerify,
-		runVerify:       deps.runVerify,
-		runSandbox:      deps.runSandbox,
-		statusSnapshot:  deps.statusSnapshot,
-		doctorSnapshot:  deps.doctorSnapshot,
-		sandboxCopier:   deps.sandboxCopier,
-		sandboxRequests: deps.sandboxRequests,
-	})
+	result, execErr := executeFactoryRun(ctx, dir, req, out, store, record, deps, creationPolicy, engineName)
 	if result.Render {
 		if renderErr := renderFactoryRunResult(out, store, result.Record.RunID, req.JSON); renderErr != nil {
 			if execErr != nil {
@@ -507,47 +560,86 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	return execErr
 }
 
-func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, store factory.Store, record factory.RunRecord, out io.Writer, bootstrapRepositoryURL string, deps factoryRunExecutionDeps) (factoryRunExecutionResult, error) {
-	deps = normalizeFactoryRunExecutionDeps(deps)
+func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, out io.Writer, store factory.Store, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, engineName string) (factoryRunExecutionResult, error) {
+	if out == nil {
+		out = io.Discard
+	}
+	deps = normalizeFactoryRunDeps(deps)
 	if deps.runPipeline == nil {
 		return factoryRunExecutionResult{Record: record}, fmt.Errorf("factory run pipeline dependency is required")
 	}
-	if req.Sandbox && deps.runSandbox == nil {
-		return factoryRunExecutionResult{Record: record}, fmt.Errorf("factory sandbox executor dependency is required")
+	if record.Policy == nil {
+		var err error
+		record, err = persistFactoryRunPolicySnapshot(store, record, policy)
+		if err != nil {
+			return factoryRunExecutionResult{Record: record}, err
+		}
 	}
 
-	runningRecord, err := markFactoryRunInProgress(store, record, deps.now())
+	req, record, err := resolveFactoryRunExecutionSecrets(req, record, deps)
+	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
+	if err != nil {
+		redactor = factory.NewRunSecretRedactor(resolveFactoryRunRedactionSecrets(req.Secrets, deps.lookupEnv))
+		return failFactoryRunSetup(store, record, deps.now(), err, redactor)
+	}
+	if req.Sandbox && strings.TrimSpace(req.BaseBranch) == "" {
+		return failFactoryRunSetup(store, record, deps.now(), fmt.Errorf("--base is required when --sandbox is set"), redactor)
+	}
+
+	runningRecord, err := markFactoryRunInProgressWithRedactor(store, record, deps.now(), redactor)
 	if err != nil {
 		return factoryRunExecutionResult{Record: record}, err
 	}
 	if err := recordFactoryRunPipelineStarted(store, runningRecord); err != nil {
 		return factoryRunExecutionResult{Record: runningRecord}, err
 	}
+	if err := recordFactoryRunPreExecutionPolicyDecisions(store, runningRecord.RunID, deps.now, policy); err != nil {
+		return factoryRunExecutionResult{Record: runningRecord}, err
+	}
 
 	pipelineReq := factoryRunPipelineRequest{
-		RunID:   runningRecord.RunID,
-		WorkDir: dir,
-		Request: req,
-		Record:  runningRecord,
-		Store:   store,
+		RunID:         runningRecord.RunID,
+		WorkDir:       dir,
+		Request:       req,
+		Record:        runningRecord,
+		Store:         store,
+		Engine:        engineName,
+		AttemptPolicy: autoFactoryAttemptPolicyFromFactoryPolicy(policy),
+		SkipCI:        factoryPolicySkipsCI(policy),
+		Now:           deps.now,
 		RecordProgress: func(event factoryRunProgressEvent) error {
-			return recordFactoryRunProgress(store, runningRecord.RunID, deps.now(), event)
+			return recordFactoryRunProgressWithRedactor(store, runningRecord.RunID, deps.now(), event, redactor)
 		},
 	}
 	artifactSnapshot := snapshotFactoryRunArtifacts(dir)
+	sandboxArtifactsCollected := false
 	runErr := error(nil)
 	if req.Sandbox {
 		remoteOutput := out
 		if req.JSON {
 			remoteOutput = io.Discard
 		}
+		remoteAuto := factoryRunAutoRequestFromFactoryRequest(req)
+		remoteAuto.Engine = engineName
+		remoteAuto.AttemptPolicy = autoFactoryAttemptPolicyFromFactoryPolicy(policy)
+		remoteAuto.SkipCI = factoryPolicySkipsCI(policy)
 		runErr = deps.runSandbox(ctx, factorySandboxExecutorRequest{
-			ProjectDir:             dir,
-			SandboxName:            req.SandboxName,
-			BootstrapRepositoryURL: bootstrapRepositoryURL,
-			RunRecord:              runningRecord,
-			RemoteAuto:             factoryRunAutoRequestFromFactoryRequest(req),
-			RemoteOutput:           remoteOutput,
+			ProjectDir:          dir,
+			RunRecord:           runningRecord,
+			ResolvedSecrets:     req.ResolvedSecrets,
+			RemoteAuto:          remoteAuto,
+			RemoteOutput:        remoteOutput,
+			DeferSuccessCleanup: factoryRunDefersSandboxSuccessCleanup(policy),
+			BeforeCleanup: func(ctx context.Context, record factory.RunRecord) error {
+				if sandboxArtifactsCollected {
+					return nil
+				}
+				if err := collectAndStoreFactorySandboxArtifacts(ctx, store, dir, req, record, deps); err != nil {
+					return err
+				}
+				sandboxArtifactsCollected = true
+				return nil
+			},
 		})
 	} else {
 		runErr = deps.runPipeline(ctx, pipelineReq)
@@ -556,152 +648,139 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, s
 		failedAt := deps.now()
 		failedRecord := runningRecord
 		var recordErrs []error
-		if refreshedRecord, branchErr := refreshFactoryRunBranchForMode(store, runningRecord.RunID, dir, req, deps.currentBranch, failedAt); branchErr != nil {
-			recordErrs = append(recordErrs, branchErr)
-		} else {
-			failedRecord = refreshedRecord
-		}
-		if artifactRecord, artifactErr := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, failedAt, deps); artifactErr != nil {
+		collectSandboxArtifacts := !sandboxArtifactsCollected && deps.sandboxCopier != nil
+		if artifactRecord, artifactErr := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, failedAt, deps, collectSandboxArtifacts, redactor); artifactErr != nil {
 			recordErrs = append(recordErrs, fmt.Errorf("record factory artifacts: %w", artifactErr))
-			if reloadedRecord, loadErr := store.LoadRun(runningRecord.RunID); loadErr != nil {
-				recordErrs = append(recordErrs, fmt.Errorf("reload factory run after artifact failure: %w", loadErr))
-			} else {
-				failedRecord = *reloadedRecord
-			}
 		} else {
 			failedRecord = artifactRecord
+		}
+		if decision, ok := factoryPolicyDecisionFromAttemptLimit(runErr); ok {
+			if eventErr := recordFactoryPolicyDecision(store, runningRecord.RunID, failedAt, decision); eventErr != nil {
+				recordErrs = append(recordErrs, fmt.Errorf("record factory policy decision: %w", eventErr))
+			}
 		}
 
 		recordErr := runErr
 		if req.Sandbox {
 			recordErr = factorySandboxPipelineRecordError(failedRecord, runErr)
 		}
-		failedRecord, failureErr := markFactoryRunFailed(store, failedRecord, failedAt, recordErr)
+		failedRecord, failureErr := markFactoryRunFailedWithRedactor(store, failedRecord, failedAt, recordErr, redactor)
 		if failureErr != nil {
 			recordErrs = append(recordErrs, failureErr)
 		}
-		if eventErr := recordFactoryRunPipelineFailed(store, runningRecord.RunID, failedAt, recordErr); eventErr != nil {
+		if eventErr := recordFactoryRunPipelineFailedWithRedactor(store, runningRecord.RunID, failedAt, recordErr, redactor); eventErr != nil {
 			recordErrs = append(recordErrs, fmt.Errorf("record factory failure event: %w", eventErr))
 		}
-		skipFailureClassification := false
-		if req.Sandbox {
-			classified, classifyErr := factoryRunHasFailureClassificationEvent(store, failedRecord.RunID)
-			if classifyErr != nil {
-				recordErrs = append(recordErrs, fmt.Errorf("inspect factory failure classification events: %w", classifyErr))
-				skipFailureClassification = true
-			} else {
-				skipFailureClassification = classified
-			}
-		}
-		if failedRecord.Failure != nil && !skipFailureClassification {
+		if failedRecord.Failure != nil {
 			if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, failedAt, *failedRecord.Failure); eventErr != nil {
 				recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
 			}
 		}
-		if artifactRecord, artifactErr := recordFactoryRunRecordArtifact(store, failedRecord); artifactErr != nil {
+		if artifactRecord, artifactErr := recordFactoryRunRecordArtifactWithRedactor(store, failedRecord, redactor); artifactErr != nil {
 			recordErrs = append(recordErrs, artifactErr)
 		} else {
 			failedRecord = artifactRecord
 		}
+		runErr = redactFactoryRunError(runErr, redactor)
 		if len(recordErrs) > 0 {
-			return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{runErr}, recordErrs...)...)
+			return factoryRunExecutionResult{Record: failedRecord}, redactFactoryRunJoinedError(runErr, recordErrs, redactor)
 		}
 		return factoryRunExecutionResult{Record: failedRecord, Render: true}, runErr
 	}
 
-	completedAt := deps.now()
-	completedRecord, err := refreshFactoryRunBranchForMode(store, runningRecord.RunID, dir, req, deps.currentBranch, completedAt)
-	if err != nil {
+	pipelineCompletedAt := deps.now()
+	if err := recordFactoryRunPipelineSucceeded(store, runningRecord.RunID, pipelineCompletedAt); err != nil {
 		return factoryRunExecutionResult{Record: runningRecord}, err
 	}
-	artifactRecord, err := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, completedAt, deps)
+	collectSandboxArtifacts := !sandboxArtifactsCollected && deps.sandboxCopier != nil
+	completedRecord, err := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, pipelineCompletedAt, deps, collectSandboxArtifacts, redactor)
 	if err != nil {
-		artifactErr := fmt.Errorf("record factory artifacts: %w", err)
-		failedRecord := completedRecord
+		return failFactoryRunAfterArtifactCollectionFailure(ctx, store, dir, req, out, runningRecord, deps, policy, err)
+	}
+	completedRecord, completedAt, err := recordFactoryRunVerification(ctx, store, completedRecord, dir, deps, policy, req.ResolvedSecrets, redactor)
+	if err != nil {
+		failedRecord, failureErr := markFactoryRunFailedWithRedactor(store, completedRecord, completedAt, err, redactor)
 		var recordErrs []error
-		if reloadedRecord, loadErr := store.LoadRun(runningRecord.RunID); loadErr != nil {
-			recordErrs = append(recordErrs, fmt.Errorf("reload factory run after artifact failure: %w", loadErr))
-		} else {
-			failedRecord = *reloadedRecord
-		}
-		if markedRecord, failureErr := markFactoryRunFailed(store, failedRecord, completedAt, artifactErr); failureErr != nil {
+		if failureErr != nil {
 			recordErrs = append(recordErrs, failureErr)
-		} else {
-			failedRecord = markedRecord
+		}
+		if eventErr := recordFactoryRunVerificationFailedWithRedactor(store, failedRecord.RunID, completedAt, err, redactor); eventErr != nil {
+			recordErrs = append(recordErrs, fmt.Errorf("record factory verification failure event: %w", eventErr))
 		}
 		if failedRecord.Failure != nil {
 			if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, completedAt, *failedRecord.Failure); eventErr != nil {
 				recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
 			}
 		}
-		if artifactRecord, artifactErr := recordFactoryRunRecordArtifact(store, failedRecord); artifactErr != nil {
+		if cleanupRecord, cleanedUp, cleanupErr := cleanupFactoryRunSandboxAfterFailedRun(ctx, store, dir, req, out, failedRecord, deps, policy, "verification failure"); cleanedUp {
+			failedRecord = cleanupRecord
+			if cleanupErr != nil {
+				recordErrs = append(recordErrs, cleanupErr)
+			}
+		} else if cleanupErr != nil {
+			recordErrs = append(recordErrs, cleanupErr)
+		}
+		if artifactRecord, artifactErr := recordFactoryRunRecordArtifactWithRedactor(store, failedRecord, redactor); artifactErr != nil {
 			recordErrs = append(recordErrs, artifactErr)
 		} else {
 			failedRecord = artifactRecord
 		}
+		err = redactFactoryRunError(err, redactor)
 		if len(recordErrs) > 0 {
-			return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{artifactErr}, recordErrs...)...)
+			return factoryRunExecutionResult{Record: failedRecord}, redactFactoryRunJoinedError(err, recordErrs, redactor)
 		}
-		return factoryRunExecutionResult{Record: failedRecord, Render: true}, artifactErr
+		return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
 	}
-	completedRecord = artifactRecord
-
-	if !req.Sandbox {
-		completedRecord, completedAt, err = recordFactoryRunVerification(ctx, store, completedRecord, dir, deps)
-		if err != nil {
-			failedRecord, failureErr := markFactoryRunFailed(store, completedRecord, completedAt, err)
-			var recordErrs []error
-			if failureErr != nil {
-				recordErrs = append(recordErrs, failureErr)
-			}
-			if eventErr := recordFactoryRunVerificationFailed(store, failedRecord.RunID, completedAt, err); eventErr != nil {
-				recordErrs = append(recordErrs, fmt.Errorf("record factory verification failure event: %w", eventErr))
-			}
-			if failedRecord.Failure != nil {
-				if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, completedAt, *failedRecord.Failure); eventErr != nil {
-					recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
-				}
-			}
-			if artifactRecord, artifactErr := recordFactoryRunRecordArtifact(store, failedRecord); artifactErr != nil {
-				recordErrs = append(recordErrs, artifactErr)
-			} else {
-				failedRecord = artifactRecord
-			}
-			if len(recordErrs) > 0 {
-				return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{err}, recordErrs...)...)
-			}
-			return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
+	if req.Sandbox && !sandboxArtifactsCollected && !factoryRunDefersSandboxSuccessCleanup(policy) {
+		if err := collectAndStoreFactorySandboxArtifacts(ctx, store, dir, req, completedRecord, deps); err != nil {
+			return failFactoryRunAfterArtifactCollectionFailure(ctx, store, dir, req, out, completedRecord, deps, policy, err)
+		}
+		sandboxArtifactsCollected = true
+		if reloadedRecord, loadErr := store.LoadRun(completedRecord.RunID); loadErr != nil {
+			return factoryRunExecutionResult{Record: completedRecord}, fmt.Errorf("reload factory run after sandbox artifact collection: %w", loadErr)
+		} else if reloadedRecord != nil {
+			completedRecord = *reloadedRecord
 		}
 	}
-
-	completedRecord, err = markFactoryRunSucceeded(store, completedRecord, completedAt)
+	completedRecord, cleanedUp, err := cleanupFactoryRunSandboxAfterVerifiedSuccess(ctx, store, dir, req, out, completedRecord, deps, policy)
 	if err != nil {
-		return factoryRunExecutionResult{Record: completedRecord}, err
-	}
-	if err := recordFactoryRunPipelineSucceeded(store, completedRecord.RunID, completedAt); err != nil {
-		return factoryRunExecutionResult{Record: completedRecord}, err
-	}
-	runRecordArtifact, err := recordFactoryRunRecordArtifact(store, completedRecord)
-	if err != nil {
-		artifactErr := fmt.Errorf("record factory run artifact: %w", err)
-		failedRecord := completedRecord
+		failedAt := deps.now()
+		failedRecord, failureErr := markFactoryRunFailedWithRedactor(store, completedRecord, failedAt, err, redactor)
 		var recordErrs []error
-		if markedRecord, failureErr := markFactoryRunFailed(store, failedRecord, completedAt, artifactErr); failureErr != nil {
+		if failureErr != nil {
 			recordErrs = append(recordErrs, failureErr)
-		} else {
-			failedRecord = markedRecord
+		}
+		if eventErr := recordFactoryRunPipelineFailedWithRedactor(store, failedRecord.RunID, failedAt, err, redactor); eventErr != nil {
+			recordErrs = append(recordErrs, fmt.Errorf("record factory cleanup failure event: %w", eventErr))
 		}
 		if failedRecord.Failure != nil {
-			if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, completedAt, *failedRecord.Failure); eventErr != nil {
+			if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, failedAt, *failedRecord.Failure); eventErr != nil {
 				recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
 			}
 		}
-		if len(recordErrs) > 0 {
-			return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{artifactErr}, recordErrs...)...)
+		if artifactRecord, artifactErr := recordFactoryRunRecordArtifactWithRedactor(store, failedRecord, redactor); artifactErr != nil {
+			recordErrs = append(recordErrs, artifactErr)
+		} else {
+			failedRecord = artifactRecord
 		}
-		return factoryRunExecutionResult{Record: failedRecord, Render: true}, artifactErr
+		err = redactFactoryRunError(err, redactor)
+		if len(recordErrs) > 0 {
+			return factoryRunExecutionResult{Record: failedRecord}, redactFactoryRunJoinedError(err, recordErrs, redactor)
+		}
+		return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
 	}
-	completedRecord = runRecordArtifact
+	finishedAt := completedAt
+	if cleanedUp {
+		finishedAt = deps.now()
+	}
+	completedRecord, err = markFactoryRunSucceededWithRedactor(store, completedRecord, finishedAt, redactor)
+	if err != nil {
+		return factoryRunExecutionResult{Record: completedRecord}, err
+	}
+	completedRecord, err = recordFactoryRunRecordArtifactWithRedactor(store, completedRecord, redactor)
+	if err != nil {
+		return factoryRunExecutionResult{Record: completedRecord}, err
+	}
 	return factoryRunExecutionResult{Record: completedRecord, Render: true}, nil
 }
 
@@ -709,34 +788,15 @@ func normalizeFactoryRunExecutionDeps(deps factoryRunExecutionDeps) factoryRunEx
 	if deps.now == nil {
 		deps.now = defaultFactoryRunDeps.now
 	}
-	if deps.currentBranch == nil {
-		deps.currentBranch = defaultFactoryRunDeps.currentBranch
-	}
 	if deps.runPipeline == nil {
 		deps.runPipeline = defaultFactoryRunDeps.runPipeline
-	}
-	if deps.loadVerify == nil {
-		deps.loadVerify = defaultFactoryRunDeps.loadVerify
-	}
-	if deps.runVerify == nil {
-		deps.runVerify = defaultFactoryRunDeps.runVerify
-	}
-	if deps.runSandbox == nil {
-		deps.runSandbox = defaultFactoryRunDeps.runSandbox
-	}
-	if deps.statusSnapshot == nil {
-		deps.statusSnapshot = defaultFactoryRunDeps.statusSnapshot
-	}
-	if deps.doctorSnapshot == nil {
-		deps.doctorSnapshot = defaultFactoryRunDeps.doctorSnapshot
-	}
-	if deps.sandboxRequests == nil {
-		deps.sandboxRequests = defaultFactorySandboxArtifactRequests
 	}
 	return deps
 }
 
 func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
+	customRunProviderExec := deps.runProviderExec != nil
+	customProviderExec := deps.runProviderExec != nil || deps.runProviderExecIO != nil || deps.runProviderExecWithEnv != nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactoryRunDeps.defaultStore
 	}
@@ -755,8 +815,23 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 	if deps.repoRemote == nil {
 		deps.repoRemote = defaultFactoryRunDeps.repoRemote
 	}
+	if deps.loadPolicy == nil {
+		deps.loadPolicy = defaultFactoryRunDeps.loadPolicy
+	}
+	if deps.loadEngine == nil {
+		deps.loadEngine = defaultFactoryRunDeps.loadEngine
+	}
+	if deps.loadEngineConfig == nil {
+		deps.loadEngineConfig = defaultFactoryRunDeps.loadEngineConfig
+	}
+	if deps.lookupEnv == nil {
+		deps.lookupEnv = defaultFactoryRunDeps.lookupEnv
+	}
 	if deps.runPipeline == nil {
 		deps.runPipeline = defaultFactoryRunDeps.runPipeline
+	}
+	if deps.runSandbox == nil {
+		deps.runSandbox = defaultFactoryRunDeps.runSandbox
 	}
 	if deps.loadVerify == nil {
 		deps.loadVerify = defaultFactoryRunDeps.loadVerify
@@ -764,8 +839,37 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 	if deps.runVerify == nil {
 		deps.runVerify = defaultFactoryRunDeps.runVerify
 	}
-	if deps.runSandbox == nil {
-		deps.runSandbox = defaultFactoryRunDeps.runSandbox
+	if deps.loadSandbox == nil {
+		deps.loadSandbox = defaultFactoryRunDeps.loadSandbox
+	}
+	if deps.resolveProvider == nil {
+		deps.resolveProvider = defaultFactoryRunDeps.resolveProvider
+	}
+	if deps.runProviderExec == nil {
+		deps.runProviderExec = defaultFactoryRunDeps.runProviderExec
+	}
+	if deps.runProviderExecIO == nil {
+		if customRunProviderExec {
+			runProviderExec := deps.runProviderExec
+			deps.runProviderExecIO = func(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, args []string, stdout, _ io.Writer) error {
+				return runProviderExec(ctx, provider, info, args, stdout)
+			}
+		} else {
+			deps.runProviderExecIO = defaultFactoryRunDeps.runProviderExecIO
+		}
+	}
+	if deps.runProviderExecWithEnv == nil {
+		if customRunProviderExec {
+			runProviderExec := deps.runProviderExec
+			deps.runProviderExecWithEnv = func(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, args []string, _ map[string]string, out io.Writer) error {
+				return runProviderExec(ctx, provider, info, args, out)
+			}
+		} else {
+			deps.runProviderExecWithEnv = defaultFactoryRunDeps.runProviderExecWithEnv
+		}
+	}
+	if deps.cleanupSandbox == nil {
+		deps.cleanupSandbox = defaultFactoryRunDeps.cleanupSandbox
 	}
 	if deps.statusSnapshot == nil {
 		deps.statusSnapshot = defaultFactoryRunDeps.statusSnapshot
@@ -774,38 +878,83 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 		deps.doctorSnapshot = defaultFactoryRunDeps.doctorSnapshot
 	}
 	if deps.sandboxRequests == nil {
-		deps.sandboxRequests = defaultFactorySandboxArtifactRequests
+		if customProviderExec && deps.sandboxCopier == nil {
+			deps.sandboxRequests = func(string, factory.RunRecord) []factory.SandboxArtifactRequest { return nil }
+		} else {
+			deps.sandboxRequests = defaultFactorySandboxArtifactRequests
+		}
 	}
 	return deps
 }
 
-func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps) (factory.RunRecord, string, error) {
+func resolveFactoryRunExecutionSecrets(req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps) (factoryRunRequest, factory.RunRecord, error) {
+	resolved, metadata, err := factory.ResolveRunSecrets(req.Secrets, deps.lookupEnv)
+	req.ResolvedSecrets = resolved
+	if err != nil {
+		record.Secrets = factoryRunSecretMetadataWithResolvedPrefix(req.Secrets, metadata)
+		record = sanitizeFactoryRunRecordCredentialedRemote(record)
+		return req, record, err
+	}
+	record.Secrets = metadata
+	return req, record, nil
+}
+
+func factoryRunSecretMetadataWithResolvedPrefix(inputs []factory.RunSecretInput, resolved []factory.RunSecretMetadata) []factory.RunSecretMetadata {
+	metadata := factoryRunSecretMetadataFromInputs(inputs)
+	for i, secret := range resolved {
+		if i >= len(metadata) {
+			metadata = append(metadata, secret)
+			continue
+		}
+		metadata[i] = secret
+	}
+	return metadata
+}
+
+func failFactoryRunSetup(store factory.Store, record factory.RunRecord, now time.Time, setupErr error, redactor factory.RunSecretRedactor) (factoryRunExecutionResult, error) {
+	if setupErr == nil {
+		setupErr = fmt.Errorf("factory run setup failed")
+	}
+	validationErr := exitWithCode(nil, ExitCodeValidation, setupErr)
+	safeValidationErr := redactFactoryRunError(validationErr, redactor)
+	record.CurrentStep = "setup"
+	failedRecord, failureErr := markFactoryRunFailedWithRedactor(store, record, now, validationErr, redactor)
+	var recordErrs []error
+	if failureErr != nil {
+		recordErrs = append(recordErrs, failureErr)
+	}
+	if eventErr := recordFactoryRunSetupFailedWithRedactor(store, record.RunID, now, validationErr, redactor); eventErr != nil {
+		recordErrs = append(recordErrs, fmt.Errorf("record factory setup failure event: %w", eventErr))
+	}
+	if failedRecord.Failure != nil {
+		if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, now, *failedRecord.Failure); eventErr != nil {
+			recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
+		}
+	}
+	if len(recordErrs) > 0 {
+		return factoryRunExecutionResult{Record: failedRecord}, errors.Join(append([]error{safeValidationErr}, recordErrs...)...)
+	}
+	return factoryRunExecutionResult{Record: failedRecord, Render: true}, safeValidationErr
+}
+
+func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps) (factory.RunRecord, error) {
 	runID, err := deps.newRunID()
 	if err != nil {
-		return factory.RunRecord{}, "", fmt.Errorf("create factory run ID: %w", err)
+		return factory.RunRecord{}, fmt.Errorf("create factory run ID: %w", err)
 	}
 	now := deps.now().UTC()
 	repoPath, err := deps.workingDir()
 	if err != nil {
-		return factory.RunRecord{}, "", fmt.Errorf("resolve repository path: %w", err)
+		return factory.RunRecord{}, fmt.Errorf("resolve repository path: %w", err)
 	}
-	repoPath, err = filepath.Abs(strings.TrimSpace(repoPath))
+	branchName, err := resolveFactoryRunBranchName(dir, req, deps)
 	if err != nil {
-		return factory.RunRecord{}, "", fmt.Errorf("resolve repository path: %w", err)
-	}
-	branchName, err := deps.currentBranch(dir)
-	if err != nil {
-		return factory.RunRecord{}, "", fmt.Errorf("resolve current branch: %w", err)
-	}
-	baseBranch := strings.TrimSpace(req.BaseBranch)
-	if req.Sandbox && baseBranch == "" {
-		baseBranch = strings.TrimSpace(branchName)
+		return factory.RunRecord{}, err
 	}
 	repoRemote, err := deps.repoRemote(dir)
 	if err != nil {
-		return factory.RunRecord{}, "", fmt.Errorf("resolve repository remote: %w", err)
+		return factory.RunRecord{}, fmt.Errorf("resolve repository remote: %w", err)
 	}
-	persistedRepoRemote := credentialStrippedGitRemote(repoRemote)
 
 	return factory.RunRecord{
 		RunID:        runID,
@@ -813,13 +962,519 @@ func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps)
 		ExecutorMode: factoryExecutorModeFromRequest(req),
 		Source:       factoryRunSourceFromRequest(req),
 		RepoPath:     repoPath,
-		RepoRemote:   persistedRepoRemote,
+		RepoRemote:   repoRemote,
 		BranchName:   branchName,
-		BaseBranch:   baseBranch,
+		BaseBranch:   strings.TrimSpace(req.BaseBranch),
 		CurrentStep:  factory.RunStatusPending,
+		Secrets:      factoryRunSecretMetadataFromInputs(req.Secrets),
 		CreatedAt:    now,
 		UpdatedAt:    now,
-	}, repoRemote, nil
+		Telemetry:    factoryRunEngineTelemetry(dir, deps),
+	}, nil
+}
+
+func resolveFactoryRunBranchName(dir string, req factoryRunRequest, deps factoryRunDeps) (string, error) {
+	if markdownPath := strings.TrimSpace(req.MarkdownPath); markdownPath != "" {
+		resolvedPath := markdownPath
+		if !filepath.IsAbs(resolvedPath) {
+			resolvedPath = filepath.Join(dir, resolvedPath)
+		}
+		absPath, err := filepath.Abs(resolvedPath)
+		if err != nil {
+			return "", fmt.Errorf("resolve markdown PRD path %s: %w", markdownPath, err)
+		}
+		content, err := os.ReadFile(absPath)
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				return "", fmt.Errorf("read markdown PRD %s: %w", markdownPath, err)
+			}
+		} else {
+			branchName := prd.ResolveMarkdownBranchName(string(content), absPath)
+			if branchName != "" {
+				return branchName, nil
+			}
+		}
+	}
+
+	branchName, err := deps.currentBranch(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve current branch: %w", err)
+	}
+	return branchName, nil
+}
+
+type factoryPolicyRejectionError struct {
+	policyField string
+	decision    string
+	outcome     string
+	reason      string
+}
+
+func (e *factoryPolicyRejectionError) Error() string {
+	return fmt.Sprintf("factory policy rejected run creation: %s %s", e.policyField, e.reason)
+}
+
+func (e *factoryPolicyRejectionError) policyDecisionMetadata() factory.PolicyDecisionMetadata {
+	return factory.PolicyDecisionMetadata{
+		PolicyField: e.policyField,
+		Decision:    e.decision,
+		Outcome:     e.outcome,
+		Reason:      e.reason,
+	}
+}
+
+func loadFactoryRunPolicy(dir string, deps factoryRunDeps) (factory.FactoryPolicy, error) {
+	if deps.loadPolicy == nil {
+		deps.loadPolicy = defaultFactoryRunDeps.loadPolicy
+	}
+	policy, err := deps.loadPolicy(dir)
+	if err != nil {
+		return factory.FactoryPolicy{}, err
+	}
+	if policy == nil {
+		return factory.DefaultFactoryPolicy(), nil
+	}
+	return *policy, nil
+}
+
+func persistFactoryRunPolicySnapshot(store factory.Store, record factory.RunRecord, policy factory.FactoryPolicy) (factory.RunRecord, error) {
+	return persistFactoryRunPolicySnapshotWithRedactor(store, record, policy, factory.RunSecretRedactor{})
+}
+
+func persistFactoryRunPolicySnapshotWithRedactor(store factory.Store, record factory.RunRecord, policy factory.FactoryPolicy, redactor factory.RunSecretRedactor) (factory.RunRecord, error) {
+	snapshot := policy
+	if policy.AllowedEngines != nil {
+		snapshot.AllowedEngines = append([]string(nil), policy.AllowedEngines...)
+	}
+	record.Policy = &snapshot
+	safeRecord := redactFactoryRunRecordForStorage(record, redactor)
+	if err := store.SaveRun(&safeRecord); err != nil {
+		return factory.RunRecord{}, fmt.Errorf("persist factory policy snapshot: %w", err)
+	}
+	return record, nil
+}
+
+func factoryPolicySnapshotFromRecord(record *factory.RunRecord) *factory.FactoryPolicy {
+	if record == nil || record.Policy == nil {
+		return nil
+	}
+	snapshot := *record.Policy
+	if record.Policy.AllowedEngines != nil {
+		snapshot.AllowedEngines = append([]string(nil), record.Policy.AllowedEngines...)
+	}
+	return &snapshot
+}
+
+func persistFactoryRunEngineSnapshot(store factory.Store, record factory.RunRecord, engineName string) (factory.RunRecord, error) {
+	return persistFactoryRunEngineSnapshotWithRedactor(store, record, engineName, factory.RunSecretRedactor{})
+}
+
+func persistFactoryRunEngineSnapshotWithRedactor(store factory.Store, record factory.RunRecord, engineName string, redactor factory.RunSecretRedactor) (factory.RunRecord, error) {
+	record.Engine = normalizeFactoryRunEngineName(engineName)
+	safeRecord := redactFactoryRunRecordForStorage(record, redactor)
+	if err := store.SaveRun(&safeRecord); err != nil {
+		return factory.RunRecord{}, fmt.Errorf("persist factory engine snapshot: %w", err)
+	}
+	return record, nil
+}
+
+func resolveFactoryRunEngine(dir string, deps factoryRunDeps) (string, error) {
+	if deps.loadEngine == nil {
+		deps.loadEngine = defaultFactoryRunDeps.loadEngine
+	}
+	engineName, err := deps.loadEngine(dir)
+	if err != nil {
+		return "", fmt.Errorf("load factory engine policy input: %w", err)
+	}
+	return normalizeFactoryRunEngineName(engineName), nil
+}
+
+func normalizeFactoryRunEngineName(engineName string) string {
+	return strings.ToLower(strings.TrimSpace(engineName))
+}
+
+func factoryRunEngineSnapshotFromRecord(record *factory.RunRecord) string {
+	if record == nil {
+		return ""
+	}
+	return normalizeFactoryRunEngineName(record.Engine)
+}
+
+func enforceFactoryRunCreationPolicy(store factory.Store, record factory.RunRecord, out io.Writer, jsonMode bool, deps factoryRunDeps, policy factory.FactoryPolicy, engineName string) error {
+	return enforceFactoryRunCreationPolicyWithRedactor(store, record, out, jsonMode, deps, policy, engineName, factory.RunSecretRedactor{})
+}
+
+func enforceFactoryRunCreationPolicyWithRedactor(store factory.Store, record factory.RunRecord, out io.Writer, jsonMode bool, deps factoryRunDeps, policy factory.FactoryPolicy, engineName string, redactor factory.RunSecretRedactor) error {
+	rejection := factoryRunCreationPolicyRejection(policy, record.ExecutorMode, engineName)
+	if rejection == nil {
+		return nil
+	}
+
+	decision := rejection.policyDecisionMetadata()
+	return failFactoryRunCreationWithRedactor(store, record, out, jsonMode, deps.now(), rejection, &decision, redactor)
+}
+
+func factoryRunCreationPolicyRejection(policy factory.FactoryPolicy, executorMode, engineName string) *factoryPolicyRejectionError {
+	executorMode = strings.TrimSpace(executorMode)
+	if policy.SandboxRequired && executorMode != factory.ExecutorModeSandbox {
+		reason := fmt.Sprintf("requires sandbox executor (requested %s)", executorMode)
+		if executorMode == "" {
+			reason = "requires sandbox executor"
+		}
+		return &factoryPolicyRejectionError{
+			policyField: "factory.policy.sandboxRequired",
+			decision:    factory.PolicyDecisionRejectedExecution,
+			outcome:     factory.PolicyOutcomeRejected,
+			reason:      reason,
+		}
+	}
+
+	engineName = strings.ToLower(strings.TrimSpace(engineName))
+	if !factoryPolicyAllowsEngine(policy, engineName) {
+		reason := fmt.Sprintf("does not allow engine %q", engineName)
+		if engineName == "" {
+			reason = "does not allow an empty engine"
+		}
+		return &factoryPolicyRejectionError{
+			policyField: "factory.policy.allowedEngines",
+			decision:    factory.PolicyDecisionRejectedExecution,
+			outcome:     factory.PolicyOutcomeRejected,
+			reason:      reason,
+		}
+	}
+
+	return nil
+}
+
+func factoryPolicyAllowsEngine(policy factory.FactoryPolicy, engineName string) bool {
+	engineName = strings.ToLower(strings.TrimSpace(engineName))
+	if engineName == "" {
+		return false
+	}
+	for _, allowed := range policy.AllowedEngines {
+		if strings.ToLower(strings.TrimSpace(allowed)) == engineName {
+			return true
+		}
+	}
+	return false
+}
+
+func recordFactoryRunPreExecutionPolicyDecisions(store factory.Store, runID string, now func() time.Time, policy factory.FactoryPolicy) error {
+	if now == nil {
+		now = time.Now
+	}
+	var errs []error
+	if !policy.PRCreationAllowed {
+		decision := factory.PolicyDecisionMetadata{
+			PolicyField: "factory.policy.prCreationAllowed",
+			Decision:    factory.PolicyDecisionBlockedGate,
+			Outcome:     factory.PolicyOutcomeBlocked,
+			Reason:      "PR creation disabled; CI/PR step skipped",
+		}
+		if err := recordFactoryPolicyDecision(store, runID, now(), decision); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+func factoryPolicySkipsCI(policy factory.FactoryPolicy) bool {
+	return !policy.PRCreationAllowed
+}
+
+func factoryRunDefersSandboxSuccessCleanup(policy factory.FactoryPolicy) bool {
+	switch strings.TrimSpace(policy.CleanupBehavior) {
+	case factory.CleanupBehaviorOnSuccess, factory.CleanupBehaviorAlways:
+		return true
+	default:
+		return false
+	}
+}
+
+func factoryRunCleansSandboxAfterFailure(policy factory.FactoryPolicy) bool {
+	return strings.TrimSpace(policy.CleanupBehavior) == factory.CleanupBehaviorAlways
+}
+
+func cleanupFactoryRunSandboxAfterVerifiedSuccess(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy) (factory.RunRecord, bool, error) {
+	return cleanupFactoryRunDeferredSandbox(ctx, store, dir, req, out, record, deps, policy, "success")
+}
+
+func cleanupFactoryRunSandboxAfterFailedRun(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, cleanupContext string) (factory.RunRecord, bool, error) {
+	if !factoryRunCleansSandboxAfterFailure(policy) {
+		return record, false, nil
+	}
+	return cleanupFactoryRunDeferredSandbox(ctx, store, dir, req, out, record, deps, policy, cleanupContext)
+}
+
+func cleanupFactoryRunDeferredSandbox(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, cleanupContext string) (factory.RunRecord, bool, error) {
+	if !req.Sandbox || !factoryRunDefersSandboxSuccessCleanup(policy) {
+		return record, false, nil
+	}
+	cleanupContext = strings.TrimSpace(cleanupContext)
+	if cleanupContext == "" {
+		cleanupContext = "deferred"
+	}
+	name := strings.TrimSpace(record.SandboxName)
+	if name == "" && record.Sandbox != nil {
+		name = strings.TrimSpace(record.Sandbox.Name)
+	}
+	if name == "" {
+		return record, false, nil
+	}
+	target, err := deps.loadSandbox(name)
+	if err != nil {
+		return record, false, fmt.Errorf("load factory sandbox for %s cleanup %q: %w", cleanupContext, name, err)
+	}
+	if target == nil {
+		return record, false, nil
+	}
+	provider, err := deps.resolveProvider(dir, target.Provider)
+	if err != nil {
+		return record, false, fmt.Errorf("resolve sandbox provider %q for %s cleanup: %w", target.Provider, cleanupContext, err)
+	}
+	cleanupOut := out
+	if req.JSON {
+		cleanupOut = io.Discard
+	}
+	if deps.sandboxCopier == nil {
+		if artifactErr := collectAndStoreFactorySandboxArtifactsWithProviderExec(ctx, store, dir, req, record, deps, target, provider); artifactErr != nil {
+			if !factoryRunCleansSandboxAfterFailure(policy) {
+				return record, false, artifactErr
+			}
+			cleanupErr := deps.cleanupSandbox(ctx, factorySandboxCleanupRequest{
+				Target:   target,
+				Provider: provider,
+				Out:      cleanupOut,
+			})
+			if cleanupErr != nil {
+				return record, false, errors.Join(artifactErr, fmt.Errorf("cleanup factory sandbox after %s: %w", cleanupContext, cleanupErr))
+			}
+			secretRedactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
+			if err := recordFactorySandboxCleanedUp(store, factorySandboxExecutorDeps{
+				now:     deps.now,
+				saveRun: saveFactorySandboxRunRecord,
+			}, &record, target, secretRedactor); err != nil {
+				return record, true, errors.Join(artifactErr, err)
+			}
+			return record, true, artifactErr
+		}
+	}
+	if err := deps.cleanupSandbox(ctx, factorySandboxCleanupRequest{
+		Target:   target,
+		Provider: provider,
+		Out:      cleanupOut,
+	}); err != nil {
+		return record, false, fmt.Errorf("cleanup factory sandbox after %s: %w", cleanupContext, err)
+	}
+	secretRedactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
+	if err := recordFactorySandboxCleanedUp(store, factorySandboxExecutorDeps{
+		now:     deps.now,
+		saveRun: saveFactorySandboxRunRecord,
+	}, &record, target, secretRedactor); err != nil {
+		return record, false, err
+	}
+	return record, true, nil
+}
+
+func collectAndStoreFactorySandboxArtifactsWithProviderExec(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps, target *sandbox.SandboxState, provider sandbox.Provider) error {
+	requests := deps.sandboxRequests(dir, record)
+	if len(requests) == 0 {
+		return nil
+	}
+	if err := collectAndStoreFactorySandboxArtifactRequestsWithProviderExec(ctx, store, req, record, deps, target, provider, requests); err != nil {
+		return fmt.Errorf("collect sandbox factory artifacts before cleanup: %w", err)
+	}
+	return nil
+}
+
+func collectAndStoreFactorySandboxArtifactRequestsWithProviderExec(ctx context.Context, store factory.Store, req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps, target *sandbox.SandboxState, provider sandbox.Provider, requests []factory.SandboxArtifactRequest) error {
+	requests, err := factorySandboxRemoteWorkspaceArtifactRequests(record, requests)
+	if err != nil {
+		return err
+	}
+	copier := factoryProviderExecSandboxArtifactCopier{
+		provider:          provider,
+		connectInfo:       sandbox.ConnectInfoFromState(target),
+		baseDir:           factorySandboxRemoteWorkspaceDir(record),
+		runProviderExec:   deps.runProviderExec,
+		runProviderExecIO: deps.runProviderExecIO,
+	}
+	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
+	if _, err := factory.CollectSandboxArtifactsWithRedactor(ctx, store, record.RunID, &copier, requests, redactor); err != nil {
+		return err
+	}
+	return nil
+}
+
+func resolveFactorySandboxArtifactCollectionTarget(dir string, record factory.RunRecord, deps factoryRunDeps) (*sandbox.SandboxState, sandbox.Provider, error) {
+	name := strings.TrimSpace(record.SandboxName)
+	if name == "" && record.Sandbox != nil {
+		name = strings.TrimSpace(record.Sandbox.Name)
+	}
+	if name == "" {
+		return nil, nil, nil
+	}
+	target, err := deps.loadSandbox(name)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load factory sandbox for artifact collection %q: %w", name, err)
+	}
+	if target == nil {
+		return nil, nil, nil
+	}
+	providerName := strings.TrimSpace(target.Provider)
+	if providerName == "" && record.Sandbox != nil {
+		providerName = strings.TrimSpace(record.Sandbox.Provider)
+	}
+	if providerName == "" {
+		return nil, nil, fmt.Errorf("resolve sandbox provider for artifact collection %q: provider is required", name)
+	}
+	provider, err := deps.resolveProvider(dir, providerName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve sandbox provider %q for artifact collection: %w", providerName, err)
+	}
+	return target, provider, nil
+}
+
+func factorySandboxRemoteWorkspaceArtifactRequests(record factory.RunRecord, requests []factory.SandboxArtifactRequest) ([]factory.SandboxArtifactRequest, error) {
+	workspaceDir := strings.TrimSpace(factorySandboxRemoteWorkspaceDir(record))
+	normalized := make([]factory.SandboxArtifactRequest, 0, len(requests))
+	for _, request := range requests {
+		remotePath := strings.TrimSpace(request.RemotePath)
+		if remotePath != "" && !path.IsAbs(remotePath) {
+			if workspaceDir == "" {
+				return nil, errFactorySandboxWorkspaceRequired
+			}
+			remotePath = path.Join(filepath.ToSlash(workspaceDir), filepath.ToSlash(remotePath))
+		}
+		request.RemotePath = remotePath
+		normalized = append(normalized, request)
+	}
+	return normalized, nil
+}
+
+func failFactoryRunAfterArtifactCollectionFailure(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, out io.Writer, runningRecord factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, artifactErr error) (factoryRunExecutionResult, error) {
+	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
+	var recordErrs []error
+	failedRecord := runningRecord
+	if currentRecord, err := store.LoadRun(runningRecord.RunID); err != nil {
+		recordErrs = append(recordErrs, fmt.Errorf("load factory run for artifact failure: %w", err))
+	} else if currentRecord != nil {
+		failedRecord = *currentRecord
+	}
+	failedRecord.CurrentStep = factory.RunDurationStepArtifactCollect
+
+	failedAt := deps.now()
+	failedRecord, failureErr := markFactoryRunFailedWithRedactor(store, failedRecord, failedAt, artifactErr, redactor)
+	if failureErr != nil {
+		recordErrs = append(recordErrs, failureErr)
+	}
+	if eventErr := recordFactoryRunArtifactCollectionFailedWithRedactor(store, failedRecord.RunID, failedAt, artifactErr, redactor); eventErr != nil {
+		recordErrs = append(recordErrs, fmt.Errorf("record factory artifact collection failure event: %w", eventErr))
+	}
+	if failedRecord.Failure != nil {
+		if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, failedAt, *failedRecord.Failure); eventErr != nil {
+			recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
+		}
+	}
+	if cleanupRecord, cleanedUp, cleanupErr := cleanupFactoryRunSandboxAfterFailedRun(ctx, store, dir, req, out, failedRecord, deps, policy, "artifact collection failure"); cleanedUp {
+		failedRecord = cleanupRecord
+		if cleanupErr != nil {
+			recordErrs = append(recordErrs, cleanupErr)
+		}
+	} else if cleanupErr != nil {
+		recordErrs = append(recordErrs, cleanupErr)
+	}
+	if artifactRecord, recordArtifactErr := recordFactoryRunRecordArtifactWithRedactor(store, failedRecord, redactor); recordArtifactErr != nil {
+		recordErrs = append(recordErrs, recordArtifactErr)
+	} else {
+		failedRecord = artifactRecord
+	}
+	if len(recordErrs) > 0 {
+		return factoryRunExecutionResult{Record: failedRecord}, redactFactoryRunError(errors.Join(append([]error{artifactErr}, recordErrs...)...), redactor)
+	}
+	return factoryRunExecutionResult{Record: failedRecord, Render: true}, redactFactoryRunError(artifactErr, redactor)
+}
+
+func autoFactoryAttemptPolicyFromFactoryPolicy(policy factory.FactoryPolicy) autoFactoryAttemptPolicy {
+	return autoFactoryAttemptPolicy{
+		MaxRunAttempts:       policy.MaxRunAttempts,
+		MaxReviewFixAttempts: policy.MaxReviewFixAttempts,
+		MaxCIFixAttempts:     policy.MaxCIFixAttempts,
+	}
+}
+
+func factoryPolicyDecisionFromAttemptLimit(err error) (factory.PolicyDecisionMetadata, bool) {
+	var limitErr *compound.PolicyLimitError
+	if !errors.As(err, &limitErr) || limitErr == nil {
+		return factory.PolicyDecisionMetadata{}, false
+	}
+	return factory.PolicyDecisionMetadata{
+		PolicyField: limitErr.PolicyField,
+		Decision:    factory.PolicyDecisionBlockedGate,
+		Outcome:     factory.PolicyOutcomeBlocked,
+		Reason:      limitErr.Reason(),
+	}, true
+}
+
+func failFactoryRunCreation(store factory.Store, record factory.RunRecord, out io.Writer, jsonMode bool, failedAt time.Time, cause error, decision *factory.PolicyDecisionMetadata) error {
+	return failFactoryRunCreationWithRedactor(store, record, out, jsonMode, failedAt, cause, decision, factory.RunSecretRedactor{})
+}
+
+func failFactoryRunCreationWithRedactor(store factory.Store, record factory.RunRecord, out io.Writer, jsonMode bool, failedAt time.Time, cause error, decision *factory.PolicyDecisionMetadata, redactor factory.RunSecretRedactor) error {
+	var recordErrs []error
+	if decision != nil {
+		if err := recordFactoryPolicyDecision(store, record.RunID, failedAt, *decision); err != nil {
+			recordErrs = append(recordErrs, fmt.Errorf("record factory policy rejection: %w", err))
+		}
+	}
+
+	failedRecord, err := markFactoryRunFailedWithRedactor(store, record, failedAt, cause, redactor)
+	if err != nil {
+		recordErrs = append(recordErrs, err)
+	} else if failedRecord.Failure != nil {
+		if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, failedAt, *failedRecord.Failure); eventErr != nil {
+			recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
+		}
+	}
+	if renderErr := renderFactoryRunResult(out, store, record.RunID, jsonMode); renderErr != nil {
+		recordErrs = append(recordErrs, renderErr)
+	}
+	if len(recordErrs) > 0 {
+		return redactFactoryRunError(errors.Join(append([]error{cause}, recordErrs...)...), redactor)
+	}
+	return redactFactoryRunError(cause, redactor)
+}
+
+func factoryRunEngineTelemetry(dir string, deps factoryRunDeps) *factory.RunTelemetry {
+	if deps.loadEngine == nil {
+		return nil
+	}
+
+	engineName, err := deps.loadEngine(dir)
+	if err != nil {
+		return nil
+	}
+	engineName = strings.ToLower(strings.TrimSpace(engineName))
+	if engineName == "" {
+		return nil
+	}
+
+	model := ""
+	if deps.loadEngineConfig != nil {
+		if cfg := deps.loadEngineConfig(dir, engineName); cfg != nil {
+			model = strings.TrimSpace(cfg.Model)
+		}
+	}
+
+	return &factory.RunTelemetry{
+		Engine: &factory.EngineTelemetry{
+			Name:  engineName,
+			Model: model,
+		},
+	}
 }
 
 func factoryExecutorModeFromRequest(req factoryRunRequest) string {
@@ -837,16 +1492,21 @@ func createFactoryRunRecord(store factory.Store, record factory.RunRecord) error
 }
 
 func markFactoryRunInProgress(store factory.Store, record factory.RunRecord, now time.Time) (factory.RunRecord, error) {
+	return markFactoryRunInProgressWithRedactor(store, record, now, factory.RunSecretRedactor{})
+}
+
+func markFactoryRunInProgressWithRedactor(store factory.Store, record factory.RunRecord, now time.Time, redactor factory.RunSecretRedactor) (factory.RunRecord, error) {
 	record.Status = factory.RunStatusRunning
 	record.CurrentStep = "run"
 	record.UpdatedAt = now.UTC()
-	if err := store.SaveRun(&record); err != nil {
+	safeRecord := redactFactoryRunRecordForStorage(record, redactor)
+	if err := store.SaveRun(&safeRecord); err != nil {
 		return factory.RunRecord{}, fmt.Errorf("mark factory run in progress: %w", err)
 	}
 	return record, nil
 }
 
-func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, dir string, req factoryRunRequest, snapshot factoryArtifactSnapshot, now time.Time, deps factoryRunExecutionDeps) (factory.RunRecord, error) {
+func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, dir string, req factoryRunRequest, snapshot factoryArtifactSnapshot, now time.Time, deps factoryRunDeps, collectSandboxArtifacts bool, redactor factory.RunSecretRedactor) (factory.RunRecord, error) {
 	record, err := store.LoadRun(runID)
 	if err != nil {
 		return factory.RunRecord{}, fmt.Errorf("load factory run for artifacts: %w", err)
@@ -859,36 +1519,20 @@ func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, 
 	if err != nil {
 		return factory.RunRecord{}, err
 	}
-	if record.ExecutorMode != factory.ExecutorModeSandbox {
-		outcomes, outcomeCleanup, err := materializeFactoryOutcomeArtifacts(dir, record.CreatedAt, snapshot)
-		if outcomeCleanup != nil {
-			defer outcomeCleanup()
-		}
-		if err != nil {
-			return factory.RunRecord{}, err
-		}
-		snapshots = append(snapshots, outcomes...)
+	outcomes, outcomeCleanup, err := materializeFactoryOutcomeArtifacts(dir, record.CreatedAt)
+	if outcomeCleanup != nil {
+		defer outcomeCleanup()
 	}
+	if err != nil {
+		return factory.RunRecord{}, err
+	}
+	snapshots = append(snapshots, outcomes...)
 
 	if err := collectAndStoreFactoryRunArtifacts(store, dir, req, *record, snapshot, snapshots); err != nil {
 		return factory.RunRecord{}, err
 	}
-	if err := collectAndStoreFactorySandboxArtifacts(ctx, store, dir, *record, deps); err != nil {
-		return factory.RunRecord{}, err
-	}
-	if record.ExecutorMode == factory.ExecutorModeSandbox {
-		sandboxRecord, err := store.LoadRun(runID)
-		if err != nil {
-			return factory.RunRecord{}, fmt.Errorf("reload sandbox factory run artifacts: %w", err)
-		}
-		outcomes, outcomeCleanup, err := materializeFactorySandboxOutcomeArtifacts(store, *sandboxRecord)
-		if outcomeCleanup != nil {
-			defer outcomeCleanup()
-		}
-		if err != nil {
-			return factory.RunRecord{}, err
-		}
-		if err := storeFactoryOutcomeArtifacts(store, *sandboxRecord, outcomes); err != nil {
+	if collectSandboxArtifacts {
+		if err := collectAndStoreFactorySandboxArtifacts(ctx, store, dir, req, *record, deps); err != nil {
 			return factory.RunRecord{}, err
 		}
 	}
@@ -897,43 +1541,29 @@ func recordFactoryRunArtifacts(ctx context.Context, store factory.Store, runID, 
 		return factory.RunRecord{}, fmt.Errorf("reload factory run artifacts: %w", err)
 	}
 	record.UpdatedAt = now.UTC()
-	if err := store.SaveRun(record); err != nil {
+	safeRecord := redactFactoryRunRecordForStorage(*record, redactor)
+	if err := store.SaveRun(&safeRecord); err != nil {
 		return factory.RunRecord{}, fmt.Errorf("record factory artifacts: %w", err)
 	}
-	return *record, nil
+	return safeRecord, nil
 }
 
-func refreshFactoryRunBranch(store factory.Store, runID, dir string, currentBranch func(string) (string, error), now time.Time) (factory.RunRecord, error) {
-	record, err := store.LoadRun(runID)
-	if err != nil {
-		return factory.RunRecord{}, fmt.Errorf("load factory run for branch refresh: %w", err)
-	}
-	if currentBranch == nil {
-		currentBranch = defaultFactoryRunDeps.currentBranch
-	}
-	branchName, err := currentBranch(dir)
-	if err != nil {
-		return factory.RunRecord{}, fmt.Errorf("refresh factory run branch: %w", err)
-	}
-	branchName = strings.TrimSpace(branchName)
-	if branchName == "" || branchName == strings.TrimSpace(record.BranchName) {
-		return *record, nil
-	}
-
-	record.BranchName = branchName
-	record.UpdatedAt = now.UTC()
-	if err := store.SaveRun(record); err != nil {
-		return factory.RunRecord{}, fmt.Errorf("refresh factory run branch: %w", err)
-	}
-	return *record, nil
-}
-
-func recordFactoryRunVerification(ctx context.Context, store factory.Store, record factory.RunRecord, dir string, deps factoryRunExecutionDeps) (factory.RunRecord, time.Time, error) {
+func recordFactoryRunVerification(ctx context.Context, store factory.Store, record factory.RunRecord, dir string, deps factoryRunDeps, policy factory.FactoryPolicy, resolvedSecrets []factory.ResolvedRunSecret, redactor factory.RunSecretRedactor) (factory.RunRecord, time.Time, error) {
 	startedAt := deps.now()
 	record.CurrentStep = "verify"
 	record.UpdatedAt = startedAt.UTC()
-	if err := store.SaveRun(&record); err != nil {
+	safeRecord := redactFactoryRunRecordForStorage(record, redactor)
+	if err := store.SaveRun(&safeRecord); err != nil {
 		return record, deps.now(), fmt.Errorf("mark factory run verifying: %w", err)
+	}
+
+	if factoryRunUsesSandboxVerification(record) {
+		result, updatedRecord, err := runFactorySandboxRemoteVerification(ctx, store, dir, record, deps, resolvedSecrets, redactor)
+		finishedAt := deps.now()
+		if err != nil {
+			return record, finishedAt, fmt.Errorf("run remote sandbox verification: %w", err)
+		}
+		return recordFactoryRunVerificationOutcome(store, dir, updatedRecord, startedAt, finishedAt, result, policy, redactor, false, "")
 	}
 
 	cfg, err := deps.loadVerify(dir)
@@ -941,8 +1571,31 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 		return record, deps.now(), fmt.Errorf("load verification config: %w", err)
 	}
 	if cfg == nil || len(cfg.Checks) == 0 {
+		if policy.VerificationRequired {
+			finishedAt := deps.now()
+			decision := factory.PolicyDecisionMetadata{
+				PolicyField: "factory.policy.verificationRequired",
+				Decision:    factory.PolicyDecisionBlockedGate,
+				Outcome:     factory.PolicyOutcomeBlocked,
+				Reason:      "verification required but no checks configured",
+			}
+			if err := recordFactoryPolicyDecision(store, record.RunID, finishedAt, decision); err != nil {
+				return record, finishedAt, fmt.Errorf("record factory verification policy decision: %w", err)
+			}
+			return record, finishedAt, fmt.Errorf("verification required but no checks configured")
+		}
 		return record, deps.now(), nil
 	}
+	if err := recordFactoryRunVerificationStarted(store, record.RunID, startedAt); err != nil {
+		return record, deps.now(), fmt.Errorf("record factory verification start event: %w", err)
+	}
+
+	artifactDir, cleanupArtifacts, err := createFactoryVerificationArtifactDir(store, record.RunID)
+	if err != nil {
+		return record, deps.now(), fmt.Errorf("prepare factory verification artifacts: %w", err)
+	}
+	defer cleanupArtifacts()
+	cfg.ArtifactDir = artifactDir
 
 	result, err := deps.runVerify(ctx, cfg)
 	finishedAt := deps.now()
@@ -953,34 +1606,366 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 		return record, finishedAt, fmt.Errorf("run verification: no result")
 	}
 
+	return recordFactoryRunVerificationOutcome(store, dir, record, startedAt, finishedAt, result, policy, redactor, true, artifactDir)
+}
+
+func recordFactoryRunVerificationOutcome(store factory.Store, dir string, record factory.RunRecord, startedAt, finishedAt time.Time, result *verify.Result, policy factory.FactoryPolicy, redactor factory.RunSecretRedactor, startedRecorded bool, localArtifactDir string) (factory.RunRecord, time.Time, error) {
+	if result == nil {
+		return record, finishedAt, fmt.Errorf("run verification: no result")
+	}
+	if factoryVerificationResultHasNoChecks(result) {
+		if policy.VerificationRequired {
+			decision := factory.PolicyDecisionMetadata{
+				PolicyField: "factory.policy.verificationRequired",
+				Decision:    factory.PolicyDecisionBlockedGate,
+				Outcome:     factory.PolicyOutcomeBlocked,
+				Reason:      "verification required but no checks configured",
+			}
+			if err := recordFactoryPolicyDecision(store, record.RunID, finishedAt, decision); err != nil {
+				return record, finishedAt, fmt.Errorf("record factory verification policy decision: %w", err)
+			}
+			return record, finishedAt, fmt.Errorf("verification required but no checks configured")
+		}
+		return record, finishedAt, nil
+	}
+	if !startedRecorded {
+		if err := recordFactoryRunVerificationStarted(store, record.RunID, startedAt); err != nil {
+			return record, finishedAt, fmt.Errorf("record factory verification start event: %w", err)
+		}
+	}
+
+	safeArtifacts := redactFactoryVerificationArtifacts(result.Artifacts, redactor)
 	record.Verification = &factory.VerificationRecord{
 		Summary:   result.Summary,
-		Artifacts: result.Artifacts,
+		Artifacts: safeArtifacts,
 	}
 	record.UpdatedAt = finishedAt.UTC()
-	if err := store.SaveRun(&record); err != nil {
-		return record, finishedAt, fmt.Errorf("record factory verification: %w", err)
+	safeRecord := redactFactoryRunRecordForStorage(record, redactor)
+	if err := store.SaveRun(&safeRecord); err != nil {
+		return factory.RunRecord{}, finishedAt, fmt.Errorf("record factory verification: %w", err)
 	}
-	if err := collectAndStoreFactoryVerificationArtifacts(store, dir, record.RunID, result.Artifacts); err != nil {
-		if updatedRecord, loadErr := store.LoadRun(record.RunID); loadErr == nil {
-			record = *updatedRecord
-		} else {
-			err = errors.Join(err, fmt.Errorf("reload factory run after verification artifact failure: %w", loadErr))
+	if !factoryRunUsesSandboxVerification(record) {
+		if err := collectAndStoreFactoryVerificationArtifacts(store, dir, record.RunID, result.Artifacts, localArtifactDir, redactor); err != nil {
+			return factory.RunRecord{}, finishedAt, err
 		}
-		return record, finishedAt, err
 	}
 	updatedRecord, err := store.LoadRun(record.RunID)
 	if err != nil {
-		return record, finishedAt, fmt.Errorf("reload factory run verification artifacts: %w", err)
+		return factory.RunRecord{}, finishedAt, fmt.Errorf("reload factory run verification artifacts: %w", err)
 	}
 	record = *updatedRecord
-	if err := recordFactoryRunVerificationResult(store, record.RunID, finishedAt, *result); err != nil {
+	if err := recordFactoryRunVerificationResultWithRedactor(store, record.RunID, finishedAt, *result, redactor); err != nil {
 		return record, finishedAt, fmt.Errorf("record factory verification event: %w", err)
 	}
 	if result.Status == verify.StatusFail {
+		if !policy.VerificationRequired {
+			decision := factory.PolicyDecisionMetadata{
+				PolicyField: "factory.policy.verificationRequired",
+				Decision:    factory.PolicyDecisionAllowedExecution,
+				Outcome:     factory.PolicyOutcomeAllowed,
+				Reason:      "verification not required; advisory failure did not block",
+			}
+			if err := recordFactoryPolicyDecision(store, record.RunID, finishedAt, decision); err != nil {
+				return record, finishedAt, fmt.Errorf("record factory verification policy decision: %w", err)
+			}
+			if err := recordFactoryRunVerificationAdvisoryFailedWithRedactor(store, record.RunID, finishedAt, newFactoryRunVerificationFailure(result), redactor); err != nil {
+				return record, finishedAt, fmt.Errorf("record factory advisory verification failure event: %w", err)
+			}
+			return record, finishedAt, nil
+		}
+		decision := factory.PolicyDecisionMetadata{
+			PolicyField: "factory.policy.verificationRequired",
+			Decision:    factory.PolicyDecisionBlockedGate,
+			Outcome:     factory.PolicyOutcomeBlocked,
+			Reason:      "verification failed",
+		}
+		if err := recordFactoryPolicyDecision(store, record.RunID, finishedAt, decision); err != nil {
+			return record, finishedAt, fmt.Errorf("record factory verification policy decision: %w", err)
+		}
 		return record, finishedAt, newFactoryRunVerificationFailure(result)
 	}
+	if policy.VerificationRequired {
+		decision := factory.PolicyDecisionMetadata{
+			PolicyField: "factory.policy.verificationRequired",
+			Decision:    factory.PolicyDecisionPassedGate,
+			Outcome:     factory.PolicyOutcomePassed,
+			Reason:      "verification passed",
+		}
+		if err := recordFactoryPolicyDecision(store, record.RunID, finishedAt, decision); err != nil {
+			return record, finishedAt, fmt.Errorf("record factory verification policy decision: %w", err)
+		}
+	}
+	if err := recordFactoryRunVerificationSucceeded(store, record.RunID, finishedAt); err != nil {
+		return record, finishedAt, fmt.Errorf("record factory verification completion event: %w", err)
+	}
 	return record, finishedAt, nil
+}
+
+func factoryVerificationResultHasNoChecks(result *verify.Result) bool {
+	if result == nil {
+		return true
+	}
+	return result.Summary.Total == 0 && len(result.Checks) == 0
+}
+
+func factoryRunUsesSandboxVerification(record factory.RunRecord) bool {
+	return strings.TrimSpace(record.ExecutorMode) == factory.ExecutorModeSandbox
+}
+
+func createFactoryVerificationArtifactDir(store factory.Store, runID string) (string, func(), error) {
+	tmpRoot := ""
+	if root := strings.TrimSpace(store.Root()); root != "" {
+		tmpRoot = filepath.Join(root, "tmp")
+		if err := os.MkdirAll(tmpRoot, 0700); err != nil {
+			return "", func() {}, err
+		}
+	}
+
+	prefix := "verify-"
+	if safeRunID := sanitizeFactoryArtifactPathComponent(runID); safeRunID != "" {
+		prefix = safeRunID + "-verify-"
+	}
+	dir, err := os.MkdirTemp(tmpRoot, prefix)
+	if err != nil {
+		return "", func() {}, err
+	}
+	return dir, func() { _ = os.RemoveAll(dir) }, nil
+}
+
+func runFactorySandboxRemoteVerification(ctx context.Context, store factory.Store, dir string, record factory.RunRecord, deps factoryRunDeps, resolvedSecrets []factory.ResolvedRunSecret, redactor factory.RunSecretRedactor) (*verify.Result, factory.RunRecord, error) {
+	sandboxName := factoryRunSandboxName(record)
+	if sandboxName == "" {
+		return nil, record, fmt.Errorf("sandbox verification requires sandbox metadata")
+	}
+	target, err := deps.loadSandbox(sandboxName)
+	if err != nil {
+		return nil, record, fmt.Errorf("load sandbox %q for verification: %w", sandboxName, err)
+	}
+	if target == nil {
+		return nil, record, fmt.Errorf("load sandbox %q for verification: not found", sandboxName)
+	}
+	provider, err := deps.resolveProvider(dir, target.Provider)
+	if err != nil {
+		return nil, record, fmt.Errorf("resolve sandbox provider %q for verification: %w", target.Provider, err)
+	}
+	args, err := factorySandboxRemoteVerifyArgs(record)
+	if err != nil {
+		return nil, record, err
+	}
+	var out bytes.Buffer
+	execErr := deps.runProviderExecWithEnv(ctx, provider, sandbox.ConnectInfoFromState(target), args, factorySandboxResolvedSecretEnv(resolvedSecrets), &out)
+	result, parseErr := parseFactorySandboxVerifyResult(out.Bytes())
+	if parseErr != nil {
+		if execErr != nil {
+			return nil, record, fmt.Errorf("remote verify command failed (%w) and output was not valid verify JSON: %v", execErr, parseErr)
+		}
+		return nil, record, parseErr
+	}
+	if err := collectAndStoreFactorySandboxVerificationArtifacts(ctx, store, record, result.Artifacts, target, provider, deps, redactor); err != nil {
+		return nil, record, err
+	}
+	updatedRecord, err := store.LoadRun(record.RunID)
+	if err != nil {
+		return nil, record, fmt.Errorf("reload factory run verification artifacts: %w", err)
+	}
+	return result, *updatedRecord, nil
+}
+
+func factoryRunSandboxName(record factory.RunRecord) string {
+	if name := strings.TrimSpace(record.SandboxName); name != "" {
+		return name
+	}
+	if record.Sandbox != nil {
+		return strings.TrimSpace(record.Sandbox.Name)
+	}
+	return ""
+}
+
+func factorySandboxRemoteVerifyArgs(record factory.RunRecord) ([]string, error) {
+	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
+	if workspaceDir == "" {
+		return nil, errFactorySandboxWorkspaceRequired
+	}
+	verifyScript := "set -eu\ncd " + shellQuote(workspaceDir) + "\n" + factorySandboxRemoteHalScript([]string{"verify", "--json"}) + " 2>/tmp/hal-factory-verify-stderr"
+	return []string{"sh", "-lc", verifyScript}, nil
+}
+
+func parseFactorySandboxVerifyResult(data []byte) (*verify.Result, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("parse remote sandbox verify JSON: empty output")
+	}
+	var result verify.Result
+	if err := json.Unmarshal(trimmed, &result); err != nil {
+		return nil, fmt.Errorf("parse remote sandbox verify JSON: %w", err)
+	}
+	return &result, nil
+}
+
+func collectAndStoreFactorySandboxVerificationArtifacts(ctx context.Context, store factory.Store, record factory.RunRecord, artifacts []verify.ArtifactReference, target *sandbox.SandboxState, provider sandbox.Provider, deps factoryRunDeps, redactor factory.RunSecretRedactor) error {
+	if len(artifacts) == 0 {
+		return nil
+	}
+	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
+	if workspaceDir == "" {
+		return errFactorySandboxWorkspaceRequired
+	}
+	requests := make([]factory.SandboxArtifactRequest, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		artifactPath := strings.TrimSpace(artifact.Path)
+		if artifactPath == "" {
+			continue
+		}
+		displayPath := path.Clean(filepath.ToSlash(artifactPath))
+		remotePath := displayPath
+		if !path.IsAbs(remotePath) {
+			remotePath = path.Join(filepath.ToSlash(workspaceDir), remotePath)
+		}
+		nameParts := []string{"verification"}
+		if checkID := strings.TrimSpace(artifact.CheckID); checkID != "" {
+			nameParts = append(nameParts, sanitizeFactoryArtifactPathComponent(checkID))
+		}
+		if kind := strings.TrimSpace(artifact.Kind); kind != "" {
+			nameParts = append(nameParts, sanitizeFactoryArtifactPathComponent(kind))
+		}
+		requests = append(requests, factory.SandboxArtifactRequest{
+			ID:         factorySandboxVerificationArtifactID(artifact),
+			Name:       strings.Join(nameParts, "-"),
+			Type:       factoryArtifactTypeForPath(artifactPath),
+			RemotePath: path.Clean(remotePath),
+			Path:       displayPath,
+			Optional:   true,
+			Summary: map[string]any{
+				"checkId":      artifact.CheckID,
+				"kind":         artifact.Kind,
+				"executorMode": factory.ExecutorModeSandbox,
+				"sandboxName":  record.SandboxName,
+			},
+		})
+	}
+	if len(requests) == 0 {
+		return nil
+	}
+	copier := factoryProviderExecSandboxArtifactCopier{
+		provider:          provider,
+		connectInfo:       sandbox.ConnectInfoFromState(target),
+		baseDir:           workspaceDir,
+		runProviderExec:   deps.runProviderExec,
+		runProviderExecIO: deps.runProviderExecIO,
+	}
+	if _, err := factory.CollectSandboxArtifactsWithRedactor(ctx, store, record.RunID, &copier, requests, redactor); err != nil {
+		return fmt.Errorf("collect sandbox verification artifacts: %w", err)
+	}
+	return nil
+}
+
+func factorySandboxVerificationArtifactID(artifact verify.ArtifactReference) string {
+	parts := []string{"verification"}
+	for _, value := range []string{artifact.CheckID, artifact.Kind, artifact.Path} {
+		if part := sanitizeFactoryArtifactPathComponent(value); part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return strings.Join(parts, "-")
+}
+
+type factoryProviderExecSandboxArtifactCopier struct {
+	provider          sandbox.Provider
+	connectInfo       *sandbox.ConnectInfo
+	baseDir           string
+	runProviderExec   func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+	runProviderExecIO func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer, io.Writer) error
+}
+
+func (c *factoryProviderExecSandboxArtifactCopier) CopyFile(ctx context.Context, remotePath, localPath string) error {
+	resolvedRemotePath, err := c.resolveSandboxArtifactPath(remotePath)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
+		return fmt.Errorf("create sandbox artifact destination: %w", err)
+	}
+
+	file, err := os.OpenFile(localPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("create sandbox artifact file: %w", err)
+	}
+	var stderr bytes.Buffer
+	runErr := c.run(ctx, factorySandboxArtifactPythonCommand(factorySandboxArtifactCopyFilePythonScript, resolvedRemotePath.baseDir, resolvedRemotePath.relativePath), file, &stderr)
+	closeErr := file.Close()
+	if runErr != nil {
+		errorOutput := stderr.String()
+		if errorOutput == "" {
+			errorOutput = readFactorySandboxArtifactErrorOutput(localPath)
+		}
+		_ = os.Remove(localPath)
+		return factorySandboxArtifactCopyError(resolvedRemotePath.resolvedPath, errorOutput, runErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(localPath)
+		return fmt.Errorf("write sandbox artifact file: %w", closeErr)
+	}
+	return nil
+}
+
+func (c *factoryProviderExecSandboxArtifactCopier) CopyDir(ctx context.Context, remotePath, localPath string) error {
+	resolvedRemotePath, err := c.resolveSandboxArtifactPath(remotePath)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
+		return fmt.Errorf("create sandbox artifact destination: %w", err)
+	}
+
+	tarFile, err := os.CreateTemp(filepath.Dir(localPath), "sandbox-artifact-*.tar")
+	if err != nil {
+		return fmt.Errorf("create sandbox artifact archive: %w", err)
+	}
+	tarPath := tarFile.Name()
+	defer os.Remove(tarPath)
+
+	var stderr bytes.Buffer
+	runErr := c.run(ctx, factorySandboxArtifactPythonCommand(factorySandboxArtifactCopyDirPythonScript, resolvedRemotePath.baseDir, resolvedRemotePath.relativePath), tarFile, &stderr)
+	closeErr := tarFile.Close()
+	if runErr != nil {
+		errorOutput := stderr.String()
+		if errorOutput == "" {
+			errorOutput = readFactorySandboxArtifactErrorOutput(tarPath)
+		}
+		_ = os.RemoveAll(localPath)
+		return factorySandboxArtifactCopyError(resolvedRemotePath.resolvedPath, errorOutput, runErr)
+	}
+	if closeErr != nil {
+		_ = os.RemoveAll(localPath)
+		return fmt.Errorf("write sandbox artifact archive: %w", closeErr)
+	}
+	if err := extractFactorySandboxArtifactTar(tarPath, localPath); err != nil {
+		_ = os.RemoveAll(localPath)
+		return err
+	}
+	return nil
+}
+
+func (c *factoryProviderExecSandboxArtifactCopier) resolveSandboxArtifactPath(remotePath string) (factorySandboxArtifactRemotePath, error) {
+	return (&factorySandboxArtifactCopier{baseDir: c.baseDir}).resolveSandboxArtifactPath(remotePath)
+}
+
+func (c *factoryProviderExecSandboxArtifactCopier) run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	if c.runProviderExecIO != nil {
+		return c.runProviderExecIO(ctx, c.provider, c.connectInfo, args, stdout, stderr)
+	}
+	if c.runProviderExec == nil {
+		return fmt.Errorf("sandbox provider exec runner is required")
+	}
+	return c.runProviderExec(ctx, c.provider, c.connectInfo, args, stdout)
+}
+
+func readFactorySandboxArtifactErrorOutput(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 func defaultFactoryStatusSnapshot(dir string) (factorySnapshotArtifact, error) {
@@ -1025,7 +2010,7 @@ func defaultFactoryDoctorSnapshot(dir string) (factorySnapshotArtifact, error) {
 	}, nil
 }
 
-func materializeFactorySnapshotArtifacts(dir string, deps factoryRunExecutionDeps) ([]factory.ArtifactReference, func(), error) {
+func materializeFactorySnapshotArtifacts(dir string, deps factoryRunDeps) ([]factory.ArtifactReference, func(), error) {
 	snapshotFns := []func(string) (factorySnapshotArtifact, error){
 		deps.statusSnapshot,
 		deps.doctorSnapshot,
@@ -1084,20 +2069,8 @@ func materializeFactorySnapshotArtifacts(dir string, deps factoryRunExecutionDep
 	return artifacts, cleanup, nil
 }
 
-func materializeFactoryOutcomeArtifacts(dir string, startedAt time.Time, snapshot factoryArtifactSnapshot) ([]factory.ArtifactReference, func(), error) {
-	state := factoryOutcomePipelineState(dir, startedAt, snapshot)
-	return materializeFactoryOutcomeArtifactsFromState(state)
-}
-
-func materializeFactorySandboxOutcomeArtifacts(store factory.Store, record factory.RunRecord) ([]factory.ArtifactReference, func(), error) {
-	state, err := factorySandboxOutcomePipelineState(store, record)
-	if err != nil {
-		return nil, nil, err
-	}
-	return materializeFactoryOutcomeArtifactsFromState(state)
-}
-
-func materializeFactoryOutcomeArtifactsFromState(state *compound.PipelineState) ([]factory.ArtifactReference, func(), error) {
+func materializeFactoryOutcomeArtifacts(dir string, startedAt time.Time) ([]factory.ArtifactReference, func(), error) {
+	state := factoryOutcomePipelineState(dir, startedAt)
 	if state == nil || state.CI == nil {
 		return []factory.ArtifactReference{
 			missingFactoryOutcomeArtifact("pr-outcome", "factory/pr-outcome.json", "PR outcome data was unavailable"),
@@ -1160,42 +2133,9 @@ func materializeFactoryOutcomeArtifactsFromState(state *compound.PipelineState) 
 	return artifacts, cleanup, nil
 }
 
-func factorySandboxOutcomePipelineState(store factory.Store, record factory.RunRecord) (*compound.PipelineState, error) {
-	for _, artifact := range record.Artifacts {
-		if strings.TrimSpace(artifact.ID) == "sandbox-auto-state" || strings.TrimSpace(artifact.Name) == "sandbox-auto-state" {
-			return loadFactoryRunStoredPipelineState(store, record, artifact)
-		}
-	}
-
-	autoStatePath := filepath.ToSlash(filepath.Join(template.HalDir, template.AutoStateFile))
-	for _, artifact := range record.Artifacts {
-		if filepath.ToSlash(strings.TrimSpace(artifact.Path)) == autoStatePath {
-			return loadFactoryRunStoredPipelineState(store, record, artifact)
-		}
-	}
-	return nil, nil
-}
-
-func loadFactoryRunStoredPipelineState(store factory.Store, record factory.RunRecord, artifact factory.ArtifactReference) (*compound.PipelineState, error) {
-	if artifact.Partial || strings.TrimSpace(artifact.StoredPath) == "" {
-		return nil, nil
-	}
-	path, err := store.ResolveArtifactPath(record.RunID, artifact.StoredPath)
-	if err != nil {
-		return nil, fmt.Errorf("resolve sandbox auto-state artifact: %w", err)
-	}
-	state, ok := loadFactoryRunPipelineState(path)
-	if !ok {
-		return nil, nil
-	}
-	return state, nil
-}
-
-func factoryOutcomePipelineState(dir string, startedAt time.Time, snapshot factoryArtifactSnapshot) *compound.PipelineState {
-	autoStatePath := filepath.Join(template.HalDir, template.AutoStateFile)
-	liveState, ok := loadFactoryRunPipelineState(filepath.Join(dir, autoStatePath))
-	liveStateChanged := ok && factoryArtifactChangedSinceSnapshot(dir, autoStatePath, snapshot)
-	if liveStateChanged && factoryPipelineStateHasOutcomeData(liveState) {
+func factoryOutcomePipelineState(dir string, startedAt time.Time) *compound.PipelineState {
+	liveState, ok := loadFactoryRunPipelineState(filepath.Join(dir, template.HalDir, template.AutoStateFile))
+	if ok && factoryPipelineStateHasOutcomeData(liveState) {
 		return liveState
 	}
 
@@ -1207,10 +2147,25 @@ func factoryOutcomePipelineState(dir string, startedAt time.Time, snapshot facto
 		}
 	}
 
-	if liveStateChanged {
+	if ok {
 		return liveState
 	}
 	return nil
+}
+
+func redactFactoryVerificationArtifacts(artifacts []verify.ArtifactReference, redactor factory.RunSecretRedactor) []verify.ArtifactReference {
+	if len(artifacts) == 0 {
+		return nil
+	}
+	safe := make([]verify.ArtifactReference, len(artifacts))
+	for i, artifact := range artifacts {
+		safe[i] = verify.ArtifactReference{
+			CheckID: redactor.RedactString(artifact.CheckID),
+			Kind:    redactor.RedactString(artifact.Kind),
+			Path:    redactor.RedactString(artifact.Path),
+		}
+	}
+	return safe
 }
 
 func factoryPipelineStateHasOutcomeData(state *compound.PipelineState) bool {
@@ -1218,42 +2173,6 @@ func factoryPipelineStateHasOutcomeData(state *compound.PipelineState) bool {
 		return false
 	}
 	return safeFactoryPRURL(state.CI.PRURL) != "" || strings.TrimSpace(state.CI.Status) != ""
-}
-
-func storeFactoryOutcomeArtifacts(store factory.Store, record factory.RunRecord, artifacts []factory.ArtifactReference) error {
-	missingArtifacts := make([]factory.ArtifactReference, 0)
-	for _, artifact := range artifacts {
-		artifact.ID = factoryArtifactID(artifact)
-		if artifact.Partial && artifact.SourcePath == "" {
-			missingArtifacts = append(missingArtifacts, artifact)
-			continue
-		}
-		sourcePath := artifact.SourcePath
-		if strings.TrimSpace(sourcePath) == "" {
-			sourcePath = artifact.Path
-		}
-		if strings.TrimSpace(sourcePath) == "" {
-			continue
-		}
-		if _, err := store.SaveArtifactFile(record.RunID, artifact, sourcePath); err != nil {
-			return fmt.Errorf("store factory outcome artifact %q from %s: %w", artifact.Name, artifact.Path, err)
-		}
-	}
-	if len(missingArtifacts) == 0 {
-		return nil
-	}
-
-	updatedRecord, err := store.LoadRun(record.RunID)
-	if err != nil {
-		return fmt.Errorf("load factory run for missing outcome artifact warnings: %w", err)
-	}
-	for _, missing := range missingArtifacts {
-		updatedRecord.Artifacts = upsertFactoryRunArtifact(updatedRecord.Artifacts, missing)
-	}
-	if err := store.SaveRun(updatedRecord); err != nil {
-		return fmt.Errorf("record missing factory outcome artifact warnings: %w", err)
-	}
-	return nil
 }
 
 func materializeFactoryJSONArtifact(name, displayPath string, payload any, summary map[string]any) (factory.ArtifactReference, string, error) {
@@ -1299,14 +2218,6 @@ func missingFactoryOutcomeArtifact(name, displayPath, warning string) factory.Ar
 }
 
 func safeFactoryPRURL(rawURL string) string {
-	return safeFactoryURL(rawURL, false)
-}
-
-func safeFactoryArtifactURL(rawURL string) string {
-	return safeFactoryURL(rawURL, true)
-}
-
-func safeFactoryURL(rawURL string, rejectAnyFragment bool) string {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
 		return ""
@@ -1322,45 +2233,39 @@ func safeFactoryURL(rawURL string, rejectAnyFragment bool) string {
 	if host == "" || net.ParseIP(host) != nil {
 		return ""
 	}
-	for key := range parsed.Query() {
-		if factoryArtifactSecretURLQueryKey(key) {
-			return ""
-		}
-	}
-	if parsed.Fragment != "" && (rejectAnyFragment || factoryArtifactStringContainsSecretAssignment(parsed.Fragment)) {
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return ""
 	}
 	return parsed.String()
 }
 
-func refreshFactoryRunBranchForMode(store factory.Store, runID, dir string, req factoryRunRequest, currentBranch func(string) (string, error), now time.Time) (factory.RunRecord, error) {
-	if req.Sandbox {
-		record, err := store.LoadRun(runID)
-		if err != nil {
-			return factory.RunRecord{}, fmt.Errorf("load factory run for branch refresh: %w", err)
-		}
-		return *record, nil
-	}
-	return refreshFactoryRunBranch(store, runID, dir, currentBranch, now)
+func markFactoryRunSucceeded(store factory.Store, record factory.RunRecord, now time.Time) (factory.RunRecord, error) {
+	return markFactoryRunSucceededWithRedactor(store, record, now, factory.RunSecretRedactor{})
 }
 
-func markFactoryRunSucceeded(store factory.Store, record factory.RunRecord, now time.Time) (factory.RunRecord, error) {
+func markFactoryRunSucceededWithRedactor(store factory.Store, record factory.RunRecord, now time.Time, redactor factory.RunSecretRedactor) (factory.RunRecord, error) {
 	finishedAt := now.UTC()
 	record.Status = factory.RunStatusSucceeded
 	record.CurrentStep = "done"
 	record.UpdatedAt = finishedAt
 	record.FinishedAt = &finishedAt
 	record.Failure = nil
-	if err := store.SaveRun(&record); err != nil {
+	safeRecord := redactFactoryRunRecordForStorage(record, redactor)
+	if err := store.SaveRun(&safeRecord); err != nil {
 		return factory.RunRecord{}, fmt.Errorf("mark factory run succeeded: %w", err)
 	}
-	return record, nil
+	return safeRecord, nil
 }
 
 func markFactoryRunFailed(store factory.Store, record factory.RunRecord, now time.Time, pipelineErr error) (factory.RunRecord, error) {
+	return markFactoryRunFailedWithRedactor(store, record, now, pipelineErr, factory.RunSecretRedactor{})
+}
+
+func markFactoryRunFailedWithRedactor(store factory.Store, record factory.RunRecord, now time.Time, pipelineErr error, redactor factory.RunSecretRedactor) (factory.RunRecord, error) {
 	finishedAt := now.UTC()
 	existingFailure := record.Failure
 	failure := newFactoryRunFailureSummary(record.RunID, record.CurrentStep, pipelineErr)
+	failure = redactFactoryRunFailureSummary(failure, redactor)
 	if existingFailure != nil && record.ExecutorMode == factory.ExecutorModeSandbox {
 		preserved := *existingFailure
 		if strings.TrimSpace(preserved.Step) == "" {
@@ -1378,20 +2283,18 @@ func markFactoryRunFailed(store factory.Store, record factory.RunRecord, now tim
 		if preserved.ExitCode == 0 {
 			preserved.ExitCode = failure.ExitCode
 		}
-		failure = preserved
-		if command := strings.TrimSpace(existingFailure.SuggestedCommand); command != "" {
-			failure.SuggestedCommand = command
-		}
+		failure = redactFactoryRunFailureSummary(preserved, redactor)
 	}
 	record.Status = factory.RunStatusFailed
 	record.CurrentStep = failure.Step
 	record.UpdatedAt = finishedAt
 	record.FinishedAt = &finishedAt
 	record.Failure = &failure
-	if err := store.SaveRun(&record); err != nil {
+	safeRecord := redactFactoryRunRecordForStorage(record, redactor)
+	if err := store.SaveRun(&safeRecord); err != nil {
 		return factory.RunRecord{}, fmt.Errorf("mark factory run failed: %w", err)
 	}
-	return record, nil
+	return safeRecord, nil
 }
 
 func factorySandboxPipelineRecordError(record factory.RunRecord, fallback error) error {
@@ -1401,6 +2304,14 @@ func factorySandboxPipelineRecordError(record factory.RunRecord, fallback error)
 		}
 	}
 	return fallback
+}
+
+func redactFactoryRunFailureSummary(failure factory.FailureSummary, redactor factory.RunSecretRedactor) factory.FailureSummary {
+	failure.Step = redactFactoryString(failure.Step, redactor)
+	failure.Category = redactFactoryString(failure.Category, redactor)
+	failure.Message = redactFactoryString(failure.Message, redactor)
+	failure.SuggestedCommand = redactFactoryString(failure.SuggestedCommand, redactor)
+	return failure
 }
 
 func newFactoryRunFailureSummary(runID, currentStep string, pipelineErr error) factory.FailureSummary {
@@ -1432,41 +2343,79 @@ func classifyFactoryRunFailure(err error) string {
 		return factory.FailureCategoryUnknown
 	}
 
+	var policyErr *factoryPolicyRejectionError
+	if errors.As(err, &policyErr) {
+		return factory.FailureCategoryPRD
+	}
+	var policyLimitErr *compound.PolicyLimitError
+	if errors.As(err, &policyLimitErr) && policyLimitErr != nil {
+		if category, ok := factoryFailureCategoryForAutoStep(policyLimitErr.Step); ok {
+			return category
+		}
+		return factory.FailureCategoryPRD
+	}
+
 	var exitErr *ExitCodeError
 	if errors.As(err, &exitErr) && exitErr.Code == ExitCodeValidation {
-		return factory.FailureCategoryValidation
+		return factory.FailureCategoryPRD
 	}
 
 	step := autoFailedStep(err)
-	switch step {
-	case compound.StepValidate:
-		return factory.FailureCategoryValidation
-	case compound.StepCI:
-		return factory.FailureCategoryCI
-	case compound.StepBranch:
-		return factory.FailureCategoryGit
+	if category, ok := factoryFailureCategoryForAutoStep(step); ok {
+		return category
 	}
 
 	message := strings.ToLower(strings.TrimSpace(err.Error()))
 	switch {
-	case factoryFailureMessageContains(message, "validation", "validate", "invalid"):
-		return factory.FailureCategoryValidation
+	case factoryFailureMessageContains(message, "queue", "queued", "claim factory queue", "factory queue"):
+		return factory.FailureCategoryQueue
+	case factoryFailureMessageContains(message, "sandbox", "remote sandbox", "provider exec"):
+		return factory.FailureCategorySandbox
+	case factoryFailureMessageContains(message, "review", "review loop"):
+		return factory.FailureCategoryReview
+	case factoryFailureMessageContains(message, "prd", "planning", "plan ", "convert", "conversion", "validation", "validate", "invalid"):
+		return factory.FailureCategoryPRD
 	case factoryFailureMessageContains(message, "verification", "verify"):
-		return factory.FailureCategoryValidation
+		return factory.FailureCategoryVerification
 	case factoryFailureMessageContains(message, "engine", "codex", "claude"):
 		return factory.FailureCategoryEngine
 	case factoryFailureMessageContains(message, "github", "git ", " git", "merge-base", "commit", "branch"):
-		return factory.FailureCategoryGit
+		return factory.FailureCategorySetup
 	case factoryFailureMessageContains(message, " ci", "ci ", "ci:", "ci-", "ci_", "workflow", "status check", "check run"):
 		return factory.FailureCategoryCI
 	case factoryFailureMessageContains(message, "pipeline") || step != "":
-		return factory.FailureCategoryPipeline
+		return factory.FailureCategoryRun
 	default:
 		return factory.FailureCategoryUnknown
 	}
 }
 
+func factoryFailureCategoryForAutoStep(step string) (string, bool) {
+	switch step {
+	case compound.StepSpec, compound.StepConvert, compound.StepValidate:
+		return factory.FailureCategoryPRD, true
+	case compound.StepRun:
+		return factory.FailureCategoryRun, true
+	case compound.StepReview:
+		return factory.FailureCategoryReview, true
+	case compound.StepCI:
+		return factory.FailureCategoryCI, true
+	case compound.StepBranch:
+		return factory.FailureCategorySetup, true
+	default:
+		return "", false
+	}
+}
+
 func factoryRunFailureStep(currentStep string, err error) string {
+	var policyErr *factoryPolicyRejectionError
+	if errors.As(err, &policyErr) {
+		return "policy"
+	}
+	var policyLimitErr *compound.PolicyLimitError
+	if errors.As(err, &policyLimitErr) {
+		return "policy"
+	}
 	if step := autoFailedStep(err); step != "" {
 		return step
 	}
@@ -1484,12 +2433,16 @@ func factoryRunFailureMessage(err error) string {
 }
 
 func factoryRunFailureRecoverable(category string) bool {
-	switch category {
-	case factory.FailureCategoryValidation,
-		factory.FailureCategoryPipeline,
+	switch factory.NormalizeFailureCategory(category) {
+	case factory.FailureCategorySetup,
 		factory.FailureCategoryEngine,
-		factory.FailureCategoryGit,
-		factory.FailureCategoryCI:
+		factory.FailureCategoryPRD,
+		factory.FailureCategoryRun,
+		factory.FailureCategoryReview,
+		factory.FailureCategoryVerification,
+		factory.FailureCategoryCI,
+		factory.FailureCategorySandbox,
+		factory.FailureCategoryQueue:
 		return true
 	default:
 		return false
@@ -1506,6 +2459,37 @@ func factoryRunFailureExitCode(err error) int {
 		return execErr.ExitCode()
 	}
 	return 0
+}
+
+type factoryRunRedactedError struct {
+	message string
+	cause   error
+}
+
+func (e factoryRunRedactedError) Error() string {
+	return e.message
+}
+
+func (e factoryRunRedactedError) Unwrap() error {
+	return e.cause
+}
+
+func redactFactoryRunError(err error, redactor factory.RunSecretRedactor) error {
+	if err == nil {
+		return nil
+	}
+	message := redactFactoryString(err.Error(), redactor)
+	if message == err.Error() {
+		return err
+	}
+	return factoryRunRedactedError{
+		message: message,
+		cause:   err,
+	}
+}
+
+func redactFactoryRunJoinedError(primary error, recordErrs []error, redactor factory.RunSecretRedactor) error {
+	return redactFactoryRunError(errors.Join(append([]error{primary}, recordErrs...)...), redactor)
 }
 
 func factoryFailureMessageContains(message string, fragments ...string) bool {
@@ -1531,13 +2515,6 @@ func collectFactoryRunArtifacts(store factory.Store, dir string, req factoryRunR
 	halDir := filepath.Join(dir, template.HalDir)
 	canonicalPRDPath := filepath.Join(template.HalDir, template.PRDFile)
 	autoStatePath := filepath.Join(template.HalDir, template.AutoStateFile)
-	if req.Sandbox {
-		for _, artifact := range snapshots {
-			collector.add(artifact)
-		}
-		return collector.artifacts
-	}
-
 	if !collector.addGenerated("canonical-prd", canonicalPRDPath, snapshot) {
 		collector.addArchived("canonical-prd", canonicalPRDPath, archived)
 	}
@@ -1578,22 +2555,21 @@ func collectFactoryRunArtifacts(store factory.Store, dir string, req factoryRunR
 }
 
 func recordFactoryRunRecordArtifact(store factory.Store, record factory.RunRecord) (factory.RunRecord, error) {
+	return recordFactoryRunRecordArtifactWithRedactor(store, record, factory.RunSecretRedactor{})
+}
+
+func recordFactoryRunRecordArtifactWithRedactor(store factory.Store, record factory.RunRecord, redactor factory.RunSecretRedactor) (factory.RunRecord, error) {
 	recordPath := factoryRunRecordArtifactPath(store, record.RunID)
 	if recordPath == "" {
 		return record, nil
 	}
-	sourcePath, cleanup, err := materializeFactoryRunRecordArtifact(record)
-	if err != nil {
-		return factory.RunRecord{}, err
-	}
-	defer cleanup()
 	artifact := factory.ArtifactReference{
 		ID:   "factory-run-record",
 		Name: "factory-run-record",
 		Type: "json",
 		Path: recordPath,
 	}
-	if _, err := store.SaveArtifactFile(record.RunID, artifact, sourcePath); err != nil {
+	if _, err := store.SaveArtifactFileWithRedactor(record.RunID, artifact, recordPath, redactor); err != nil {
 		return factory.RunRecord{}, fmt.Errorf("store factory run record artifact: %w", err)
 	}
 	updatedRecord, err := store.LoadRun(record.RunID)
@@ -1603,138 +2579,27 @@ func recordFactoryRunRecordArtifact(store factory.Store, record factory.RunRecor
 	return *updatedRecord, nil
 }
 
-func materializeFactoryRunRecordArtifact(record factory.RunRecord) (string, func(), error) {
-	scrubbed := scrubFactoryRunRecordForArtifact(record)
-	data, err := json.MarshalIndent(scrubbed, "", "  ")
-	if err != nil {
-		return "", func() {}, fmt.Errorf("marshal factory run record artifact: %w", err)
-	}
-	tmp, err := os.CreateTemp("", "hal-factory-run-record-*.json")
-	if err != nil {
-		return "", func() {}, fmt.Errorf("create factory run record artifact temp file: %w", err)
-	}
-	cleanup := func() {
-		_ = os.Remove(tmp.Name())
-	}
-	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return "", func() {}, fmt.Errorf("write factory run record artifact temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return "", func() {}, fmt.Errorf("close factory run record artifact temp file: %w", err)
-	}
-	return tmp.Name(), cleanup, nil
-}
-
-func scrubFactoryRunRecordForArtifact(record factory.RunRecord) factory.RunRecord {
-	record.Source = scrubFactoryRunRecordSource(record.Source)
-	record.RepoPath = sanitizeFactoryRunRecordArtifactPath(record.RepoPath)
-	record.RepoRemote = sanitizeFactoryRunRecordRemote(record.RepoRemote)
-	record.Sandbox = scrubFactoryRunRecordSandbox(record.Sandbox)
-	record.Artifacts = scrubFactoryArtifactReferencesForRecordArtifact(record.Artifacts)
-	record.Verification = scrubFactoryVerificationRecord(record.Verification)
-	return record
-}
-
-func scrubFactoryRunRecordSource(source factory.SourceMetadata) factory.SourceMetadata {
-	source.Path = sanitizeFactoryRunRecordArtifactPath(source.Path)
-	source.ReportPath = sanitizeFactoryRunRecordArtifactPath(source.ReportPath)
-	return source
-}
-
-func scrubFactoryRunRecordSandbox(metadata *factory.SandboxMetadata) *factory.SandboxMetadata {
-	if metadata == nil {
-		return nil
-	}
-	out := *metadata
-	out.Connection = nil
-	return &out
-}
-
-func sanitizeFactoryRunRecordArtifactPath(path string) string {
-	return sanitizeFactoryArtifactPathWithURLMode(path, false)
-}
-
-func sanitizeFactoryRunRecordRemote(remote string) string {
-	remote = strings.TrimSpace(remote)
-	if remote == "" {
-		return ""
-	}
-	if strings.Contains(remote, "://") {
-		if safeURL := safeFactoryArtifactURL(remote); safeURL != "" {
-			return safeURL
-		}
-		return "[redacted]"
-	}
-	if factoryArtifactStringNeedsRedaction(remote) {
-		return "[redacted]"
-	}
-	if strings.Contains(remote, "@") || strings.Contains(remote, ":") {
-		return "[redacted]"
-	}
-	return sanitizeFactoryArtifactPath(remote)
-}
-
-func scrubFactoryArtifactReferencesForRecordArtifact(artifacts []factory.ArtifactReference) []factory.ArtifactReference {
-	if artifacts == nil {
-		return nil
-	}
-	out := make([]factory.ArtifactReference, len(artifacts))
-	for i, artifact := range artifacts {
-		artifact.SourcePath = ""
-		artifact.Path = sanitizeFactoryArtifactPath(artifact.Path)
-		artifact.StoredPath = sanitizeFactoryArtifactPath(artifact.StoredPath)
-		artifact.URL = safeFactoryArtifactURL(artifact.URL)
-		artifact.Summary = sanitizeFactoryArtifactSummary(artifact.Summary)
-		artifact.Warnings = sanitizeFactoryArtifactWarnings(artifact.Warnings)
-		out[i] = artifact
-	}
-	return out
-}
-
-func scrubFactoryVerificationRecord(record *factory.VerificationRecord) *factory.VerificationRecord {
-	if record == nil {
-		return nil
-	}
-	out := *record
-	if record.Artifacts != nil {
-		out.Artifacts = make([]verify.ArtifactReference, len(record.Artifacts))
-		for i, artifact := range record.Artifacts {
-			artifact.Path = sanitizeFactoryArtifactPath(artifact.Path)
-			out.Artifacts[i] = artifact
-		}
-	}
-	return &out
-}
-
 func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, snapshot factoryArtifactSnapshot, snapshots []factory.ArtifactReference) error {
 	artifacts := collectFactoryRunArtifacts(store, dir, req, record, snapshot, snapshots)
+	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
 	missingArtifacts := make([]factory.ArtifactReference, 0)
 	for _, artifact := range artifacts {
-		if artifact.Partial && artifact.SourcePath == "" {
-			artifact.ID = factoryArtifactID(artifact)
-			missingArtifacts = append(missingArtifacts, artifact)
-			continue
-		}
 		sourcePath := artifact.Path
-		allowExternalSourcePath := false
 		if artifact.SourcePath != "" {
 			sourcePath = artifact.SourcePath
-			allowExternalSourcePath = true
 		}
 		if sourcePath == "" {
 			continue
 		}
-		absoluteSourcePath, err := resolveFactoryArtifactSourcePath(dir, sourcePath, allowExternalSourcePath)
-		if err != nil {
-			return fmt.Errorf("resolve factory artifact %q from %s: %w", artifact.Name, factoryArtifactErrorPath(artifact.Path), err)
+		absoluteSourcePath := sourcePath
+		if !filepath.IsAbs(absoluteSourcePath) {
+			absoluteSourcePath = filepath.Join(dir, sourcePath)
 		}
 		if factoryArtifactFileExists(absoluteSourcePath) {
 			artifact.ID = factoryArtifactID(artifact)
-			if _, err := store.SaveArtifactFile(record.RunID, artifact, absoluteSourcePath); err != nil {
-				return fmt.Errorf("store factory artifact %q from %s: %w", artifact.Name, factoryArtifactErrorPath(artifact.Path), err)
+			safeArtifact := redactor.RedactArtifactReference(artifact)
+			if _, err := store.SaveArtifactFileWithRedactor(record.RunID, artifact, absoluteSourcePath, redactor); err != nil {
+				return fmt.Errorf("store factory artifact %q from %s: %w", safeArtifact.Name, safeArtifact.Path, err)
 			}
 			continue
 		}
@@ -1742,11 +2607,11 @@ func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req fac
 		missing := artifact
 		missing.ID = factoryArtifactID(missing)
 		missing.Partial = true
-		missing.Warnings = append(missing.Warnings, factoryMissingArtifactWarning("optional artifact not found", artifact.Path))
+		missing.Warnings = append(missing.Warnings, fmt.Sprintf("optional artifact not found: %s", artifact.Path))
 		missing.Summary = mergeFactoryArtifactSummary(missing.Summary, map[string]any{
 			"collectionStatus": "missing",
 		})
-		missingArtifacts = append(missingArtifacts, missing)
+		missingArtifacts = append(missingArtifacts, redactor.RedactArtifactReference(missing))
 	}
 	if len(missingArtifacts) > 0 {
 		updatedRecord, err := store.LoadRun(record.RunID)
@@ -1763,11 +2628,17 @@ func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req fac
 	return nil
 }
 
-func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID string, artifacts []verify.ArtifactReference) error {
-	missingArtifacts := make([]factory.ArtifactReference, 0)
+func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID string, artifacts []verify.ArtifactReference, artifactSourceDir string, redactor factory.RunSecretRedactor) error {
 	for _, artifact := range artifacts {
 		path := strings.TrimSpace(artifact.Path)
 		if path == "" {
+			continue
+		}
+		sourcePath := factoryVerificationArtifactSourcePath(dir, path, artifactSourceDir)
+		if explicitSourcePath := strings.TrimSpace(artifact.SourcePath()); explicitSourcePath != "" {
+			sourcePath = explicitSourcePath
+		}
+		if !factoryArtifactFileExists(sourcePath) {
 			continue
 		}
 		nameParts := []string{"verification"}
@@ -1780,136 +2651,38 @@ func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID
 		ref := factory.ArtifactReference{
 			Name: strings.Join(nameParts, "-"),
 			Type: factoryArtifactTypeForPath(path),
-			Path: filepath.Clean(path),
+			Path: filepath.ToSlash(filepath.Clean(path)),
 			Summary: map[string]any{
 				"checkId": artifact.CheckID,
 				"kind":    artifact.Kind,
 			},
 		}
 		ref.ID = factoryArtifactID(ref)
-		sourcePath, err := resolveFactoryArtifactSourcePath(dir, path, false)
-		if err != nil {
-			return fmt.Errorf("resolve factory verification artifact %q from %s: %w", ref.Name, factoryArtifactErrorPath(ref.Path), err)
-		}
-		if !factoryArtifactFileExists(sourcePath) {
-			missing := ref
-			missing.Partial = true
-			missing.Warnings = append(missing.Warnings, factoryMissingArtifactWarning("verification artifact not found", ref.Path))
-			missing.Summary = mergeFactoryArtifactSummary(missing.Summary, map[string]any{
-				"collectionStatus": "missing",
-			})
-			missingArtifacts = append(missingArtifacts, missing)
-			continue
-		}
-		if _, err := store.SaveArtifactFile(runID, ref, sourcePath); err != nil {
-			return fmt.Errorf("store factory verification artifact %q from %s: %w", ref.Name, factoryArtifactErrorPath(ref.Path), err)
-		}
-	}
-	if len(missingArtifacts) > 0 {
-		updatedRecord, err := store.LoadRun(runID)
-		if err != nil {
-			return fmt.Errorf("load factory run for missing verification artifact warnings: %w", err)
-		}
-		for _, missing := range missingArtifacts {
-			updatedRecord.Artifacts = upsertFactoryRunArtifact(updatedRecord.Artifacts, missing)
-		}
-		if err := store.SaveRun(updatedRecord); err != nil {
-			return fmt.Errorf("record missing factory verification artifact warnings: %w", err)
+		if _, err := store.SaveArtifactFileWithRedactor(runID, ref, sourcePath, redactor); err != nil {
+			return fmt.Errorf("store factory verification artifact %q from %s: %w", ref.Name, ref.Path, err)
 		}
 	}
 	return nil
 }
 
-func resolveFactoryArtifactSourcePath(dir, sourcePath string, allowExternal bool) (string, error) {
-	sourcePath = strings.TrimSpace(sourcePath)
-	if sourcePath == "" {
-		return "", fmt.Errorf("artifact source path is required")
+func factoryVerificationArtifactSourcePath(projectDir, artifactPath, artifactSourceDir string) string {
+	if filepath.IsAbs(artifactPath) {
+		return artifactPath
 	}
-	absoluteSourcePath := sourcePath
-	if !filepath.IsAbs(absoluteSourcePath) {
-		absoluteSourcePath = filepath.Join(dir, sourcePath)
+	if strings.TrimSpace(artifactSourceDir) == "" {
+		return filepath.Join(projectDir, artifactPath)
 	}
-	var err error
-	absoluteSourcePath, err = filepath.Abs(absoluteSourcePath)
-	if err != nil {
-		return "", fmt.Errorf("resolve artifact source path: %w", err)
-	}
-	absoluteSourcePath = filepath.Clean(absoluteSourcePath)
 
-	absoluteDir, err := filepath.Abs(strings.TrimSpace(dir))
-	if err != nil {
-		return "", fmt.Errorf("resolve artifact base directory: %w", err)
+	displayPrefix := path.Join(template.HalDir, "reports", "verify")
+	cleanArtifactPath := path.Clean(filepath.ToSlash(artifactPath))
+	if rel := strings.TrimPrefix(cleanArtifactPath, displayPrefix+"/"); rel != cleanArtifactPath && rel != "" {
+		return filepath.Join(artifactSourceDir, filepath.FromSlash(rel))
 	}
-	absoluteDir = filepath.Clean(absoluteDir)
-	withinProject := factoryArtifactPathWithinDir(absoluteDir, absoluteSourcePath)
-	if !withinProject && !allowExternal {
-		return "", fmt.Errorf("artifact source path resolves outside project directory")
-	}
-	if !filepath.IsAbs(sourcePath) || withinProject {
-		if err := rejectFactoryArtifactSymlinkParents(absoluteDir, absoluteSourcePath); err != nil {
-			return "", err
-		}
-	}
-	return absoluteSourcePath, nil
+
+	return filepath.Join(projectDir, artifactPath)
 }
 
-func factoryArtifactPathWithinDir(dir, candidate string) bool {
-	rel, err := filepath.Rel(dir, candidate)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
-}
-
-func rejectFactoryArtifactSymlinkParents(dir, sourcePath string) error {
-	parent := filepath.Dir(sourcePath)
-	if !factoryArtifactPathWithinDir(dir, parent) {
-		return nil
-	}
-	relParent, err := filepath.Rel(dir, parent)
-	if err != nil || relParent == "." {
-		return nil
-	}
-	current := dir
-	for _, part := range strings.Split(relParent, string(filepath.Separator)) {
-		if part == "" || part == "." {
-			continue
-		}
-		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("inspect artifact source parent %q: %w", factoryArtifactSourceParentErrorPath(dir, current), err)
-		}
-		if info.Mode()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("artifact source parent %q is a symlink", factoryArtifactSourceParentErrorPath(dir, current))
-		}
-		if !info.IsDir() {
-			return nil
-		}
-	}
-	return nil
-}
-
-func factoryArtifactErrorPath(path string) string {
-	path = sanitizeFactoryArtifactPath(path)
-	if strings.TrimSpace(path) == "" {
-		return "[redacted]"
-	}
-	return path
-}
-
-func factoryArtifactSourceParentErrorPath(dir, path string) string {
-	rel, err := filepath.Rel(dir, path)
-	if err == nil && rel != "." && !factoryArtifactPathIsParentRelative(rel) && !filepath.IsAbs(rel) {
-		return factoryArtifactErrorPath(rel)
-	}
-	return factoryArtifactErrorPath(path)
-}
-
-func collectAndStoreFactorySandboxArtifacts(ctx context.Context, store factory.Store, dir string, record factory.RunRecord, deps factoryRunExecutionDeps) error {
+func collectAndStoreFactorySandboxArtifacts(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps) error {
 	if record.ExecutorMode != factory.ExecutorModeSandbox {
 		return nil
 	}
@@ -1920,44 +2693,27 @@ func collectAndStoreFactorySandboxArtifacts(ctx context.Context, store factory.S
 	if len(requests) == 0 {
 		return nil
 	}
-	copier := deps.sandboxCopier
-	if copier == nil {
-		if !factorySandboxRemoteWorkspaceReady(dir, record) {
-			return nil
+	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
+	if deps.sandboxCopier != nil {
+		if _, err := factory.CollectSandboxArtifactsWithRedactor(ctx, store, record.RunID, deps.sandboxCopier, requests, redactor); err != nil {
+			return fmt.Errorf("collect sandbox factory artifacts: %w", err)
 		}
-		defaultCopier, err := newFactorySandboxArtifactCopier(dir, record)
-		if err != nil {
-			return fmt.Errorf("create sandbox artifact copier: %w", err)
-		}
-		copier = defaultCopier
+		return nil
 	}
-	if _, err := factory.CollectSandboxArtifacts(ctx, store, record.RunID, copier, requests); err != nil {
+	target, provider, err := resolveFactorySandboxArtifactCollectionTarget(dir, record, deps)
+	if err != nil {
+		return err
+	}
+	if target == nil || provider == nil {
+		return nil
+	}
+	if err := collectAndStoreFactorySandboxArtifactRequestsWithProviderExec(ctx, store, req, record, deps, target, provider, requests); err != nil {
 		return fmt.Errorf("collect sandbox factory artifacts: %w", err)
 	}
 	return nil
 }
 
-func factorySandboxRemoteWorkspaceReady(dir string, record factory.RunRecord) bool {
-	repoPath := strings.TrimSpace(record.RepoPath)
-	if repoPath == "" {
-		return false
-	}
-	localDir, err := filepath.Abs(strings.TrimSpace(dir))
-	if err != nil {
-		return true
-	}
-	localDir = filepath.Clean(localDir)
-	normalizedRepoPath := repoPath
-	if !filepath.IsAbs(normalizedRepoPath) {
-		normalizedRepoPath = filepath.Join(localDir, normalizedRepoPath)
-	}
-	if normalizedRepoPath, err = filepath.Abs(normalizedRepoPath); err != nil {
-		normalizedRepoPath = repoPath
-	}
-	return filepath.Clean(normalizedRepoPath) != localDir
-}
-
-func defaultFactorySandboxArtifactRequests(dir string, record factory.RunRecord) []factory.SandboxArtifactRequest {
+func defaultFactorySandboxArtifactRequests(_ string, record factory.RunRecord) []factory.SandboxArtifactRequest {
 	summary := map[string]any{
 		"executorMode": factory.ExecutorModeSandbox,
 	}
@@ -2004,7 +2760,7 @@ func defaultFactorySandboxArtifactRequests(dir string, record factory.RunRecord)
 			Summary:    summary,
 		},
 	}
-	if sourcePath, ok := factorySandboxSourceArtifactPath(dir, record.Source.Path); ok {
+	if sourcePath := strings.TrimSpace(record.Source.Path); sourcePath != "" {
 		requests = append([]factory.SandboxArtifactRequest{{
 			ID:         "sandbox-source",
 			Name:       "sandbox-source",
@@ -2016,61 +2772,6 @@ func defaultFactorySandboxArtifactRequests(dir string, record factory.RunRecord)
 		}}, requests...)
 	}
 	return requests
-}
-
-func factorySandboxSourceArtifactPath(dir, sourcePath string) (string, bool) {
-	sourcePath = strings.TrimSpace(sourcePath)
-	if sourcePath == "" {
-		return "", false
-	}
-	cleanSource := filepath.Clean(sourcePath)
-
-	if strings.TrimSpace(dir) == "" {
-		if filepath.IsAbs(cleanSource) {
-			return "", false
-		}
-		return cleanFactorySandboxSourceArtifactRelativePath(cleanSource)
-	}
-
-	baseDir, err := filepath.Abs(strings.TrimSpace(dir))
-	if err != nil {
-		if filepath.IsAbs(cleanSource) {
-			return "", false
-		}
-		return cleanFactorySandboxSourceArtifactRelativePath(cleanSource)
-	}
-	baseDir = filepath.Clean(baseDir)
-
-	absoluteSource := cleanSource
-	if !filepath.IsAbs(absoluteSource) {
-		absoluteSource = filepath.Join(baseDir, cleanSource)
-	}
-	absoluteSource, err = filepath.Abs(absoluteSource)
-	if err != nil {
-		return "", false
-	}
-	absoluteSource = filepath.Clean(absoluteSource)
-	if !factoryArtifactPathWithinDir(baseDir, absoluteSource) {
-		return "", false
-	}
-
-	relativeSource, err := filepath.Rel(baseDir, absoluteSource)
-	if err != nil {
-		return "", false
-	}
-	return cleanFactorySandboxSourceArtifactRelativePath(relativeSource)
-}
-
-func cleanFactorySandboxSourceArtifactRelativePath(sourcePath string) (string, bool) {
-	clean := filepath.Clean(strings.TrimSpace(sourcePath))
-	slashPath := strings.ReplaceAll(filepath.ToSlash(clean), "\\", "/")
-	if slashPath == "" || slashPath == "." || slashPath == ".." || strings.HasPrefix(slashPath, "../") {
-		return "", false
-	}
-	if filepath.IsAbs(clean) || filepath.VolumeName(clean) != "" || hasWindowsDriveVolume(slashPath) {
-		return "", false
-	}
-	return slashPath, true
 }
 
 type factoryArtifactCollector struct {
@@ -2152,7 +2853,17 @@ func (c *factoryArtifactCollector) addArchived(name, path string, archived facto
 	if archivedPath == "" {
 		return false
 	}
-	return c.addExisting(name, archivedPath)
+	resolvedArchivedPath := c.resolvePath(archivedPath)
+	if !factoryArtifactFileExists(resolvedArchivedPath) {
+		return false
+	}
+	c.add(factory.ArtifactReference{
+		Name:       name,
+		Type:       factoryArtifactTypeForPath(path),
+		Path:       c.displayPath(path),
+		SourcePath: resolvedArchivedPath,
+	})
+	return true
 }
 
 func (c *factoryArtifactCollector) addReference(name, path string) bool {
@@ -2349,12 +3060,9 @@ func collectFactoryRunArchivedArtifacts(dir string, startedAt time.Time) factory
 		archiveDirPath := filepath.Join(archiveRoot, dirEntry.name)
 		archiveRel := filepath.Join(template.HalDir, "archive", dirEntry.name)
 		archived.addFile(filepath.Join(template.HalDir, template.PRDFile), filepath.Join(archiveRel, template.PRDFile), filepath.Join(archiveDirPath, template.PRDFile))
-		autoStatePath := filepath.Join(archiveDirPath, template.AutoStateFile)
-		if archived.addFile(filepath.Join(template.HalDir, template.AutoStateFile), filepath.Join(archiveRel, template.AutoStateFile), autoStatePath) {
-			if factoryArtifactModifiedAtOrAfter(autoStatePath, startedAt) {
-				if state, ok := loadFactoryRunPipelineState(autoStatePath); ok {
-					archived.pipelineStates = append(archived.pipelineStates, *state)
-				}
+		if archived.addFile(filepath.Join(template.HalDir, template.AutoStateFile), filepath.Join(archiveRel, template.AutoStateFile), filepath.Join(archiveDirPath, template.AutoStateFile)) {
+			if state, ok := loadFactoryRunPipelineState(filepath.Join(archiveDirPath, template.AutoStateFile)); ok {
+				archived.pipelineStates = append(archived.pipelineStates, *state)
 			}
 		}
 
@@ -2569,14 +3277,6 @@ func factoryArtifactFileExists(path string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
-func factoryArtifactModifiedAtOrAfter(path string, threshold time.Time) bool {
-	if threshold.IsZero() {
-		return true
-	}
-	info, err := os.Lstat(path)
-	return err == nil && info.Mode().IsRegular() && !info.ModTime().Before(threshold)
-}
-
 func factoryArtifactChangedSinceSnapshot(dir, path string, snapshot factoryArtifactSnapshot) bool {
 	path = strings.TrimSpace(path)
 	if path == "" || !factoryArtifactFileExists(resolveFactoryArtifactPath(dir, path)) {
@@ -2635,23 +3335,40 @@ func recordFactoryRunPipelineStarted(store factory.Store, record factory.RunReco
 		EventType: factory.EventTypeStepStarted,
 		Summary:   "Local compound pipeline started",
 		Metadata: map[string]any{
-			"step":   record.CurrentStep,
+			"step":   factory.RunDurationStepEngineRun,
 			"status": record.Status,
 		},
 	})
 }
 
 func recordFactoryRunProgress(store factory.Store, runID string, now time.Time, event factoryRunProgressEvent) error {
-	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+	return recordFactoryRunProgressWithRedactor(store, runID, now, event, factory.RunSecretRedactor{})
+}
+
+func recordFactoryRunProgressWithRedactor(store factory.Store, runID string, now time.Time, event factoryRunProgressEvent, redactor factory.RunSecretRedactor) error {
+	safeEvent := redactFactoryTimelineEvent(factoryTimelineEvent{
 		EventType: factory.EventTypeCommandOutputSummary,
 		Message:   event.Message,
 		Summary:   event.Summary,
 		Metadata:  event.Metadata,
-	})
+	}, redactor)
+	if err := recordFactoryRunLogChunk(store, runID, factoryLogStreamFromMetadata(safeEvent.Metadata), factoryLogSourceFromMetadata(safeEvent.Metadata), safeEvent.Message, safeEvent.Summary, &now); err != nil {
+		return err
+	}
+	return appendFactoryRunTimelineEventWithRedactor(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeCommandOutputSummary,
+		Message:   event.Message,
+		Summary:   event.Summary,
+		Metadata:  event.Metadata,
+	}, redactor)
 }
 
 func recordFactoryRunVerificationResult(store factory.Store, runID string, now time.Time, result verify.Result) error {
-	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+	return recordFactoryRunVerificationResultWithRedactor(store, runID, now, result, factory.RunSecretRedactor{})
+}
+
+func recordFactoryRunVerificationResultWithRedactor(store factory.Store, runID string, now time.Time, result verify.Result, redactor factory.RunSecretRedactor) error {
+	return appendFactoryRunTimelineEventWithRedactor(store, runID, now, factoryTimelineEvent{
 		EventType: factory.EventTypeVerificationResult,
 		Summary:   factoryRunVerificationSummary(result),
 		Metadata: map[string]any{
@@ -2665,7 +3382,7 @@ func recordFactoryRunVerificationResult(store factory.Store, runID string, now t
 			"warnings":      result.Summary.Warnings,
 			"artifactCount": len(result.Artifacts),
 		},
-	})
+	}, redactor)
 }
 
 func factoryRunVerificationSummary(result verify.Result) string {
@@ -2686,34 +3403,114 @@ func recordFactoryRunPipelineSucceeded(store factory.Store, runID string, now ti
 		EventType: factory.EventTypeStepEnded,
 		Summary:   "Local compound pipeline completed",
 		Metadata: map[string]any{
-			"step":   "run",
+			"step":   factory.RunDurationStepEngineRun,
 			"status": factory.RunStatusSucceeded,
 		},
 	})
 }
 
 func recordFactoryRunPipelineFailed(store factory.Store, runID string, now time.Time, pipelineErr error) error {
-	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+	return recordFactoryRunPipelineFailedWithRedactor(store, runID, now, pipelineErr, factory.RunSecretRedactor{})
+}
+
+func recordFactoryRunPipelineFailedWithRedactor(store factory.Store, runID string, now time.Time, pipelineErr error, redactor factory.RunSecretRedactor) error {
+	return appendFactoryRunTimelineEventWithRedactor(store, runID, now, factoryTimelineEvent{
 		EventType: factory.EventTypeStepEnded,
 		Summary:   "Local compound pipeline failed",
 		Metadata: map[string]any{
-			"step":   "run",
+			"step":   factory.RunDurationStepEngineRun,
 			"status": factory.RunStatusFailed,
 			"error":  pipelineErr.Error(),
+		},
+	}, redactor)
+}
+
+func recordFactoryRunArtifactCollectionFailed(store factory.Store, runID string, now time.Time, artifactErr error) error {
+	return recordFactoryRunArtifactCollectionFailedWithRedactor(store, runID, now, artifactErr, factory.RunSecretRedactor{})
+}
+
+func recordFactoryRunArtifactCollectionFailedWithRedactor(store factory.Store, runID string, now time.Time, artifactErr error, redactor factory.RunSecretRedactor) error {
+	return appendFactoryRunTimelineEventWithRedactor(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepEnded,
+		Summary:   "Factory artifact collection failed",
+		Metadata: map[string]any{
+			"step":   factory.RunDurationStepArtifactCollect,
+			"status": factory.RunStatusFailed,
+			"error":  artifactErr.Error(),
+		},
+	}, redactor)
+}
+
+func recordFactoryRunVerificationStarted(store factory.Store, runID string, now time.Time) error {
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepStarted,
+		Summary:   "Verification started",
+		Metadata: map[string]any{
+			"step":   factory.RunDurationStepVerification,
+			"status": factory.RunStatusRunning,
 		},
 	})
 }
 
-func recordFactoryRunVerificationFailed(store factory.Store, runID string, now time.Time, verificationErr error) error {
+func recordFactoryRunVerificationSucceeded(store factory.Store, runID string, now time.Time) error {
 	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepEnded,
+		Summary:   "Verification completed",
+		Metadata: map[string]any{
+			"step":   factory.RunDurationStepVerification,
+			"status": factory.RunStatusSucceeded,
+		},
+	})
+}
+
+func recordFactoryRunSetupFailed(store factory.Store, runID string, now time.Time, setupErr error) error {
+	return recordFactoryRunSetupFailedWithRedactor(store, runID, now, setupErr, factory.RunSecretRedactor{})
+}
+
+func recordFactoryRunSetupFailedWithRedactor(store factory.Store, runID string, now time.Time, setupErr error, redactor factory.RunSecretRedactor) error {
+	return appendFactoryRunTimelineEventWithRedactor(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepEnded,
+		Summary:   "Factory run setup failed",
+		Metadata: map[string]any{
+			"step":   "setup",
+			"status": factory.RunStatusFailed,
+			"error":  setupErr.Error(),
+		},
+	}, redactor)
+}
+
+func recordFactoryRunVerificationFailed(store factory.Store, runID string, now time.Time, verificationErr error) error {
+	return recordFactoryRunVerificationFailedWithRedactor(store, runID, now, verificationErr, factory.RunSecretRedactor{})
+}
+
+func recordFactoryRunVerificationFailedWithRedactor(store factory.Store, runID string, now time.Time, verificationErr error, redactor factory.RunSecretRedactor) error {
+	return appendFactoryRunTimelineEventWithRedactor(store, runID, now, factoryTimelineEvent{
 		EventType: factory.EventTypeStepEnded,
 		Summary:   "Verification failed",
 		Metadata: map[string]any{
-			"step":   "verify",
+			"step":   factory.RunDurationStepVerification,
 			"status": factory.RunStatusFailed,
 			"error":  verificationErr.Error(),
 		},
-	})
+	}, redactor)
+}
+
+func recordFactoryRunVerificationAdvisoryFailed(store factory.Store, runID string, now time.Time, verificationErr error) error {
+	return recordFactoryRunVerificationAdvisoryFailedWithRedactor(store, runID, now, verificationErr, factory.RunSecretRedactor{})
+}
+
+func recordFactoryRunVerificationAdvisoryFailedWithRedactor(store factory.Store, runID string, now time.Time, verificationErr error, redactor factory.RunSecretRedactor) error {
+	return appendFactoryRunTimelineEventWithRedactor(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepEnded,
+		Summary:   "Verification failed (advisory)",
+		Metadata: map[string]any{
+			"step":     factory.RunDurationStepVerification,
+			"status":   factory.RunStatusFailed,
+			"advisory": true,
+			"blocking": false,
+			"error":    verificationErr.Error(),
+		},
+	}, redactor)
 }
 
 func recordFactoryRunFailureClassified(store factory.Store, runID string, now time.Time, failure factory.FailureSummary) error {
@@ -2736,24 +3533,195 @@ func recordFactoryRunFailureClassified(store factory.Store, runID string, now ti
 	})
 }
 
-func factoryRunHasFailureClassificationEvent(store factory.Store, runID string) (bool, error) {
-	events, err := store.LoadEvents(runID)
-	if err != nil {
-		return false, fmt.Errorf("load factory timeline %q: %w", runID, err)
+func recordFactoryPolicyDecision(store factory.Store, runID string, now time.Time, decision factory.PolicyDecisionMetadata) error {
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypePolicyDecision,
+		Summary:   factoryPolicyDecisionSummary(decision),
+		Metadata:  decision.EventMetadata(),
+	})
+}
+
+func factoryPolicyDecisionSummary(decision factory.PolicyDecisionMetadata) string {
+	decisionName := strings.TrimSpace(decision.Decision)
+	outcome := strings.TrimSpace(decision.Outcome)
+
+	switch {
+	case decisionName != "" && outcome != "":
+		return fmt.Sprintf("Policy decision %s: %s", decisionName, outcome)
+	case decisionName != "":
+		return "Policy decision " + decisionName
+	case outcome != "":
+		return "Policy decision: " + outcome
+	default:
+		return "Policy decision recorded"
 	}
-	for _, event := range events {
-		if event.EventType == factory.EventTypeFailureClassification {
-			return true, nil
+}
+
+func redactFactoryTimelineEvent(event factoryTimelineEvent, redactor factory.RunSecretRedactor) factoryTimelineEvent {
+	event.Message = redactFactoryString(event.Message, redactor)
+	event.Summary = redactFactoryString(event.Summary, redactor)
+	event.Metadata = redactFactoryTimelineMetadata(event.Metadata, redactor)
+	return event
+}
+
+func redactFactoryTimelineMetadata(metadata map[string]any, redactor factory.RunSecretRedactor) map[string]any {
+	if len(metadata) == 0 {
+		return nil
+	}
+	safe := make(map[string]any, len(metadata))
+	for key, value := range metadata {
+		safe[redactFactoryString(key, redactor)] = redactFactoryTimelineValue(value, redactor)
+	}
+	return safe
+}
+
+func redactFactoryTimelineValue(value any, redactor factory.RunSecretRedactor) any {
+	if value == nil {
+		return value
+	}
+	redacted, ok := redactFactoryTimelineReflectValue(reflect.ValueOf(value), redactor)
+	if !ok {
+		return value
+	}
+	return redacted.Interface()
+}
+
+func redactFactoryTimelineReflectValue(value reflect.Value, redactor factory.RunSecretRedactor) (reflect.Value, bool) {
+	if !value.IsValid() {
+		return value, false
+	}
+	switch value.Kind() {
+	case reflect.Interface:
+		if value.IsNil() {
+			return value, false
 		}
+		return redactFactoryTimelineReflectValue(value.Elem(), redactor)
+	case reflect.Pointer:
+		if value.IsNil() {
+			return value, false
+		}
+		redacted, ok := redactFactoryTimelineReflectValue(value.Elem(), redactor)
+		if !ok {
+			return value, false
+		}
+		out := reflect.New(value.Type().Elem())
+		out.Elem().Set(redacted)
+		return out, true
+	case reflect.String:
+		redacted := redactFactoryString(value.String(), redactor)
+		if redacted == value.String() {
+			return value, false
+		}
+		return reflect.ValueOf(redacted).Convert(value.Type()), true
+	case reflect.Slice:
+		if value.IsNil() {
+			return value, false
+		}
+		out := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
+		changed := false
+		for i := 0; i < value.Len(); i++ {
+			item := value.Index(i)
+			redacted, ok := redactFactoryTimelineReflectValue(item, redactor)
+			if ok {
+				out.Index(i).Set(redacted)
+				changed = true
+				continue
+			}
+			out.Index(i).Set(item)
+		}
+		return out, changed
+	case reflect.Array:
+		out := reflect.New(value.Type()).Elem()
+		changed := false
+		for i := 0; i < value.Len(); i++ {
+			item := value.Index(i)
+			redacted, ok := redactFactoryTimelineReflectValue(item, redactor)
+			if ok {
+				out.Index(i).Set(redacted)
+				changed = true
+				continue
+			}
+			out.Index(i).Set(item)
+		}
+		return out, changed
+	case reflect.Map:
+		if value.IsNil() {
+			return value, false
+		}
+		out := reflect.MakeMapWithSize(value.Type(), value.Len())
+		changed := false
+		iter := value.MapRange()
+		for iter.Next() {
+			key := iter.Key()
+			redactedKey, keyChanged := redactFactoryTimelineMapKey(key, redactor)
+			if keyChanged {
+				changed = true
+			}
+			item := iter.Value()
+			redactedItem, itemChanged := redactFactoryTimelineReflectValue(item, redactor)
+			if itemChanged {
+				out.SetMapIndex(redactedKey, redactedItem)
+				changed = true
+				continue
+			}
+			out.SetMapIndex(redactedKey, item)
+		}
+		return out, changed
+	case reflect.Struct:
+		out := reflect.New(value.Type()).Elem()
+		out.Set(value)
+		changed := false
+		for i := 0; i < value.NumField(); i++ {
+			field := value.Field(i)
+			outField := out.Field(i)
+			if !outField.CanSet() {
+				continue
+			}
+			redacted, ok := redactFactoryTimelineReflectValue(field, redactor)
+			if !ok {
+				continue
+			}
+			if redacted.Type().AssignableTo(outField.Type()) {
+				outField.Set(redacted)
+				changed = true
+				continue
+			}
+			if redacted.Type().ConvertibleTo(outField.Type()) {
+				outField.Set(redacted.Convert(outField.Type()))
+				changed = true
+			}
+		}
+		return out, changed
+	default:
+		return value, false
 	}
-	return false, nil
+}
+
+func redactFactoryTimelineMapKey(key reflect.Value, redactor factory.RunSecretRedactor) (reflect.Value, bool) {
+	redacted, ok := redactFactoryTimelineReflectValue(key, redactor)
+	if !ok {
+		return key, false
+	}
+	keyType := key.Type()
+	if redacted.Type().AssignableTo(keyType) {
+		return redacted, true
+	}
+	if redacted.Type().ConvertibleTo(keyType) {
+		return redacted.Convert(keyType), true
+	}
+	return key, false
 }
 
 func appendFactoryRunTimelineEvent(store factory.Store, runID string, timestamp time.Time, event factoryTimelineEvent) error {
+	return appendFactoryRunTimelineEventWithRedactor(store, runID, timestamp, event, factory.RunSecretRedactor{})
+}
+
+func appendFactoryRunTimelineEventWithRedactor(store factory.Store, runID string, timestamp time.Time, event factoryTimelineEvent, redactor factory.RunSecretRedactor) error {
 	events, err := store.LoadEvents(runID)
 	if err != nil {
 		return fmt.Errorf("load factory timeline %q: %w", runID, err)
 	}
+	event = redactFactoryTimelineEvent(event, redactor)
 
 	record := factory.EventRecord{
 		Sequence:  nextFactoryRunEventSequence(events),
@@ -2768,6 +3736,77 @@ func appendFactoryRunTimelineEvent(store factory.Store, runID string, timestamp 
 		return fmt.Errorf("append factory timeline event %q: %w", runID, err)
 	}
 	return nil
+}
+
+func recordFactoryRunLogChunk(store factory.Store, runID, stream, source, text, summary string, createdAt *time.Time) error {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return nil
+	}
+	if strings.TrimSpace(store.Root()) == "" {
+		return nil
+	}
+	text = sanitizeFactoryLogText(text)
+	summary = sanitizeFactoryLogText(summary)
+	if strings.TrimSpace(text) == "" && strings.TrimSpace(summary) == "" {
+		return nil
+	}
+	timestamp := time.Now().UTC()
+	if createdAt != nil && !createdAt.IsZero() {
+		timestamp = createdAt.UTC()
+	}
+	chunk := factory.LogChunk{
+		RunID:     runID,
+		Stream:    normalizeFactoryLogStream(stream),
+		Source:    normalizeFactoryLogSource(source),
+		Text:      strings.TrimSpace(text),
+		Summary:   strings.TrimSpace(summary),
+		CreatedAt: timestamp,
+	}
+	if err := store.AppendLogChunk(&chunk); err != nil {
+		return fmt.Errorf("append factory log chunk %q: %w", runID, err)
+	}
+	return nil
+}
+
+func factoryLogStreamFromMetadata(metadata map[string]any) string {
+	if metadata != nil {
+		if stream, ok := metadata["stream"].(string); ok {
+			return stream
+		}
+	}
+	return factory.LogStreamSummary
+}
+
+func factoryLogSourceFromMetadata(metadata map[string]any) string {
+	if metadata != nil {
+		if source, ok := metadata["source"].(string); ok {
+			return source
+		}
+	}
+	return factory.LogSourceLocalFactory
+}
+
+func normalizeFactoryLogStream(stream string) string {
+	switch strings.TrimSpace(stream) {
+	case factory.LogStreamStdout:
+		return factory.LogStreamStdout
+	case factory.LogStreamStderr:
+		return factory.LogStreamStderr
+	default:
+		return factory.LogStreamSummary
+	}
+}
+
+func normalizeFactoryLogSource(source string) string {
+	switch strings.TrimSpace(source) {
+	case factory.LogSourceRemoteSandbox:
+		return factory.LogSourceRemoteSandbox
+	case factory.LogSourceEngine:
+		return factory.LogSourceEngine
+	default:
+		return factory.LogSourceLocalFactory
+	}
 }
 
 func nextFactoryRunEventSequence(events []factory.EventRecord) int64 {
@@ -2814,16 +3853,31 @@ func runFactoryRunPipelineWithDeps(ctx context.Context, req factoryRunPipelineRe
 		return fmt.Errorf("factory run auto dependency is required")
 	}
 
+	redactor := factory.NewRunSecretRedactor(req.Request.ResolvedSecrets)
 	autoReq := factoryRunAutoRequestFromFactoryRequest(req.Request)
-	if strings.TrimSpace(autoReq.BaseBranch) == "" {
-		autoReq.BaseBranch = strings.TrimSpace(req.Record.BaseBranch)
-	}
-	autoReq.RecordProgress = req.RecordProgress
 	autoReq.WorkDir = strings.TrimSpace(req.WorkDir)
-	if autoReq.WorkDir == "" {
-		autoReq.WorkDir = strings.TrimSpace(req.Record.RepoPath)
+	autoReq.Engine = strings.TrimSpace(req.Engine)
+	autoReq.AttemptPolicy = req.AttemptPolicy
+	autoReq.SkipCI = req.SkipCI
+	now := req.Now
+	if now == nil {
+		now = time.Now
 	}
-	return deps.runAuto(ctx, autoReq)
+	startedAt := now()
+	if err := recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamSummary, factory.LogSourceLocalFactory, "", "Starting local hal auto pipeline", &startedAt); err != nil {
+		return err
+	}
+	err := deps.runAuto(ctx, autoReq)
+	if err != nil {
+		failedAt := now()
+		_ = recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamStderr, factory.LogSourceLocalFactory, redactor.RedactString(err.Error()), "Local hal auto pipeline failed", &failedAt)
+		return err
+	}
+	completedAt := now()
+	if err := recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamSummary, factory.LogSourceLocalFactory, "", "Local hal auto pipeline completed", &completedAt); err != nil {
+		return err
+	}
+	return nil
 }
 
 func factoryRunAutoRequestFromFactoryRequest(req factoryRunRequest) factoryRunAutoRequest {
@@ -2841,135 +3895,54 @@ func runAutoForFactoryRun(ctx context.Context, req factoryRunAutoRequest) error 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = contextWithAutoFactoryAttemptPolicy(ctx, req.AttemptPolicy)
 
-	out := io.Writer(io.Discard)
-	var progressWriter *factoryRunProgressWriter
-	if req.RecordProgress != nil {
-		progressWriter = &factoryRunProgressWriter{record: req.RecordProgress}
-		out = progressWriter
+	cmd, err := factoryRunAutoCommand(ctx, req)
+	if err != nil {
+		return err
 	}
+	return runAutoWithDir(cmd, req.Args, req.WorkDir)
+}
 
+func factoryRunAutoCommand(ctx context.Context, req factoryRunAutoRequest) (*cobra.Command, error) {
 	cmd := &cobra.Command{Use: "auto"}
 	cmd.SetContext(ctx)
-	cmd.SetOut(out)
+	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 	cmd.Flags().Bool("dry-run", false, "")
 	cmd.Flags().Bool("resume", false, "")
-	cmd.Flags().Bool("no-ci", false, "")
+	cmd.Flags().Bool("no-ci", req.SkipCI, "")
 	cmd.Flags().Bool("skip-pr", false, "")
 	cmd.Flags().Bool("no-review", false, "")
 	cmd.Flags().String("mode", "", "")
 	cmd.Flags().Int("review-streak", 0, "")
 	cmd.Flags().Int("review-max", 0, "")
 	cmd.Flags().String("report", strings.TrimSpace(req.ReportPath), "")
-	cmd.Flags().String("engine", "codex", "")
+	engineName := factoryRunAutoEngine(req.Engine)
+	cmd.Flags().String("engine", engineName, "")
+	if strings.TrimSpace(req.Engine) != "" {
+		if err := cmd.Flags().Set("engine", engineName); err != nil {
+			return nil, err
+		}
+	}
 	cmd.Flags().String("base", strings.TrimSpace(req.BaseBranch), "")
 	cmd.Flags().Bool("json", false, "")
 
-	err := runInFactoryRunDir(req.WorkDir, func() error {
-		return runAuto(cmd, req.Args)
-	})
-	if progressWriter != nil {
-		if flushErr := progressWriter.Flush(); flushErr != nil {
-			return errors.Join(err, flushErr)
-		}
-	}
-	return err
+	return cmd, nil
 }
 
-func runInFactoryRunDir(dir string, fn func() error) error {
-	if fn == nil {
-		return nil
+func factoryRunAutoEngine(engineName string) string {
+	engineName = normalizeFactoryRunEngineName(engineName)
+	if engineName == "" {
+		return factory.PolicyEngineCodex
 	}
-	dir = strings.TrimSpace(dir)
-	if dir == "" {
-		return fn()
-	}
-
-	previousDir, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("get working directory: %w", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		return fmt.Errorf("change to factory run directory %q: %w", dir, err)
-	}
-
-	runErr := fn()
-	if restoreErr := os.Chdir(previousDir); restoreErr != nil {
-		return errors.Join(runErr, fmt.Errorf("restore working directory %q: %w", previousDir, restoreErr))
-	}
-	return runErr
-}
-
-type factoryRunProgressWriter struct {
-	record   func(factoryRunProgressEvent) error
-	pending  string
-	lastStep string
-	err      error
-}
-
-func (w *factoryRunProgressWriter) Write(p []byte) (int, error) {
-	if w == nil || w.record == nil {
-		return len(p), nil
-	}
-	w.pending += string(p)
-	for {
-		idx := strings.IndexByte(w.pending, '\n')
-		if idx < 0 {
-			break
-		}
-		line := w.pending[:idx]
-		w.pending = w.pending[idx+1:]
-		w.handleLine(line)
-	}
-	return len(p), nil
-}
-
-func (w *factoryRunProgressWriter) Flush() error {
-	if w == nil {
-		return nil
-	}
-	if strings.TrimSpace(w.pending) != "" {
-		w.handleLine(w.pending)
-	}
-	w.pending = ""
-	return w.err
-}
-
-func (w *factoryRunProgressWriter) handleLine(line string) {
-	if w.err != nil {
-		return
-	}
-	step, ok := factoryRunProgressStepFromLine(line)
-	if !ok || step == w.lastStep {
-		return
-	}
-	w.lastStep = step
-	w.err = w.record(factoryRunProgressEvent{
-		Summary: fmt.Sprintf("Auto %s step started", step),
-		Metadata: map[string]any{
-			"step":   step,
-			"status": "started",
-		},
-	})
-}
-
-func factoryRunProgressStepFromLine(line string) (string, bool) {
-	line = strings.TrimSpace(line)
-	if !strings.HasPrefix(line, "Step:") {
-		return "", false
-	}
-	step := strings.TrimSpace(strings.TrimPrefix(line, "Step:"))
-	if autoStepIndex(step) < 0 {
-		return "", false
-	}
-	return step, true
+	return engineName
 }
 
 func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRunRequest, error) {
 	reportPath := factoryRunReportFlag
 	baseBranch := factoryRunBaseFlag
-	sandboxName := factoryRunSandboxNameFlag
+	secretEnv := append([]string(nil), factoryRunSecretEnvFlags...)
 	jsonMode := factoryRunJSONFlag
 	sandboxMode := factoryRunSandboxFlag
 
@@ -2988,12 +3961,12 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 			}
 			baseBranch = value
 		}
-		if cmd.Flags().Lookup("sandbox-name") != nil {
-			value, err := cmd.Flags().GetString("sandbox-name")
+		if cmd.Flags().Lookup("secret-env") != nil {
+			value, err := cmd.Flags().GetStringArray("secret-env")
 			if err != nil {
 				return factoryRunRequest{}, err
 			}
-			sandboxName = value
+			secretEnv = value
 		}
 		if cmd.Flags().Lookup("json") != nil {
 			value, err := cmd.Flags().GetBool("json")
@@ -3011,14 +3984,18 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 		}
 	}
 
-	req, err := parseFactoryRunRequest(args, reportPath, baseBranch, sandboxName, jsonMode, sandboxMode)
+	req, err := parseFactoryRunRequest(args, reportPath, baseBranch, jsonMode, sandboxMode)
+	if err != nil {
+		return factoryRunRequest{}, exitWithCode(cmd, ExitCodeValidation, err)
+	}
+	req.Secrets, err = parseFactoryRunSecretEnvFlags(secretEnv)
 	if err != nil {
 		return factoryRunRequest{}, exitWithCode(cmd, ExitCodeValidation, err)
 	}
 	return req, nil
 }
 
-func parseFactoryRunRequest(args []string, reportPath, baseBranch, sandboxName string, jsonMode bool, sandboxMode bool) (factoryRunRequest, error) {
+func parseFactoryRunRequest(args []string, reportPath, baseBranch string, jsonMode bool, sandboxMode bool) (factoryRunRequest, error) {
 	if len(args) > 1 {
 		return factoryRunRequest{}, fmt.Errorf("accepts at most 1 arg(s), received %d", len(args))
 	}
@@ -3028,21 +4005,77 @@ func parseFactoryRunRequest(args []string, reportPath, baseBranch, sandboxName s
 	if sandboxMode && strings.TrimSpace(baseBranch) == "" {
 		return factoryRunRequest{}, fmt.Errorf("--base is required when --sandbox is set")
 	}
-	if !sandboxMode && strings.TrimSpace(sandboxName) != "" {
-		return factoryRunRequest{}, fmt.Errorf("--sandbox-name requires --sandbox")
-	}
 
 	req := factoryRunRequest{
-		ReportPath:  reportPath,
-		BaseBranch:  baseBranch,
-		SandboxName: sandboxName,
-		Sandbox:     sandboxMode,
-		JSON:        jsonMode,
+		ReportPath: reportPath,
+		BaseBranch: baseBranch,
+		Sandbox:    sandboxMode,
+		JSON:       jsonMode,
 	}
 	if len(args) == 1 {
 		req.MarkdownPath = args[0]
 	}
 	return req, nil
+}
+
+func parseFactoryRunSecretEnvFlags(values []string) ([]factory.RunSecretInput, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	secrets := make([]factory.RunSecretInput, 0, len(values))
+	for _, value := range values {
+		name := strings.TrimSpace(value)
+		if name == "" {
+			return nil, fmt.Errorf("--secret-env requires a non-empty environment variable name")
+		}
+		if !isFactoryRunSecretEnvName(name) {
+			return nil, fmt.Errorf("invalid --secret-env value: expected an environment variable name like GITHUB_TOKEN")
+		}
+		secrets = append(secrets, factory.RunSecretInput{
+			Name:     name,
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+		})
+	}
+	return secrets, nil
+}
+
+func isFactoryRunSecretEnvName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		ch := name[i]
+		valid := ch == '_' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z'
+		if i > 0 {
+			valid = valid || ch >= '0' && ch <= '9'
+		}
+		if !valid {
+			return false
+		}
+	}
+	return true
+}
+
+func factoryRunSecretMetadataFromInputs(inputs []factory.RunSecretInput) []factory.RunSecretMetadata {
+	if len(inputs) == 0 {
+		return nil
+	}
+	metadata := make([]factory.RunSecretMetadata, 0, len(inputs))
+	for _, input := range inputs {
+		name := strings.TrimSpace(input.Name)
+		source := strings.TrimSpace(input.Source)
+		if name == "" && source == "" {
+			continue
+		}
+		metadata = append(metadata, factory.RunSecretMetadata{
+			Name:     name,
+			Source:   source,
+			Required: input.Required,
+			Present:  false,
+		})
+	}
+	return metadata
 }
 
 func runFactoryList(cmd *cobra.Command, args []string) error {
@@ -3133,12 +4166,20 @@ func runFactoryStatusWithDeps(out io.Writer, runID string, jsonMode bool, deps f
 		events = []factory.EventRecord{}
 	}
 
+	handoff := factory.NewHandoffSummary(store, *record)
 	if jsonMode {
-		return renderFactoryStatusJSON(out, *record, events)
+		return renderFactoryStatusJSON(out, *record, events, factoryStatusJSONHandoff(handoff))
 	}
 
-	renderFactoryStatusTable(out, *record, events)
+	renderFactoryStatusTable(out, *record, events, &handoff)
 	return nil
+}
+
+func factoryStatusJSONHandoff(handoff factory.HandoffSummary) *factory.HandoffSummary {
+	if !handoff.HasActionableData() {
+		return nil
+	}
+	return &handoff
 }
 
 func runFactoryArtifacts(cmd *cobra.Command, args []string) error {
@@ -3157,6 +4198,54 @@ func runFactoryArtifacts(cmd *cobra.Command, args []string) error {
 	}
 
 	return runFactoryArtifactsWithDeps(out, args[0], jsonMode, defaultFactoryArtifactsDeps)
+}
+
+func runFactoryLogs(cmd *cobra.Command, args []string) error {
+	out := io.Writer(os.Stdout)
+	jsonMode := factoryLogsJSONFlag
+
+	if cmd != nil {
+		out = cmd.OutOrStdout()
+		if cmd.Flags().Lookup("json") != nil {
+			value, err := cmd.Flags().GetBool("json")
+			if err != nil {
+				return err
+			}
+			jsonMode = value
+		}
+	}
+
+	return runFactoryLogsWithDeps(out, args[0], jsonMode, defaultFactoryLogsDeps)
+}
+
+func runFactoryLogsWithDeps(out io.Writer, runID string, jsonMode bool, deps factoryLogsDeps) error {
+	if out == nil {
+		out = io.Discard
+	}
+	if deps.defaultStore == nil {
+		return fmt.Errorf("factory store dependency is required")
+	}
+
+	store, err := deps.defaultStore()
+	if err != nil {
+		return fmt.Errorf("open factory store: %w", err)
+	}
+	if _, err := store.LoadRun(runID); errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("factory run %q not found", runID)
+	} else if err != nil {
+		return fmt.Errorf("load factory run %q: %w", runID, err)
+	}
+	chunks, err := store.LoadLogChunks(runID)
+	if err != nil {
+		return fmt.Errorf("load factory logs %q: %w", runID, err)
+	}
+	chunks = sanitizeFactoryLogChunks(chunks)
+
+	if jsonMode {
+		return renderFactoryLogsJSON(out, runID, chunks)
+	}
+	renderFactoryLogsTable(out, runID, chunks)
+	return nil
 }
 
 func runFactoryArtifactsWithDeps(out io.Writer, runID string, jsonMode bool, deps factoryArtifactsDeps) error {
@@ -3204,11 +4293,11 @@ func renderFactoryListJSON(out io.Writer, records []factory.RunRecord) error {
 	return nil
 }
 
-func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []factory.EventRecord) error {
+func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []factory.EventRecord, handoff *factory.HandoffSummary) error {
 	resp := FactoryStatusResponse{
 		ContractVersion: FactoryStatusContractVersion,
-		Run:             newFactoryStatusRun(record),
-		Timeline:        events,
+		Run:             newFactoryStatusRun(record, events, handoff),
+		Timeline:        normalizeFactoryTimelineEventsForContractV1(events),
 	}
 	data, err := json.MarshalIndent(resp, "", "  ")
 	if err != nil {
@@ -3218,26 +4307,97 @@ func renderFactoryStatusJSON(out io.Writer, record factory.RunRecord, events []f
 	return nil
 }
 
-func newFactoryStatusRun(record factory.RunRecord) FactoryStatusRun {
-	return FactoryStatusRun{
-		RunID:        record.RunID,
-		Status:       record.Status,
-		ExecutorMode: record.ExecutorMode,
-		Source:       record.Source,
-		RepoPath:     record.RepoPath,
-		RepoRemote:   record.RepoRemote,
-		BranchName:   record.BranchName,
-		BaseBranch:   record.BaseBranch,
-		SandboxName:  record.SandboxName,
-		Sandbox:      record.Sandbox,
-		CurrentStep:  record.CurrentStep,
-		CreatedAt:    record.CreatedAt,
-		UpdatedAt:    record.UpdatedAt,
-		FinishedAt:   record.FinishedAt,
-		Artifacts:    newFactoryStatusArtifactSummaries(record.Artifacts),
-		Verification: scrubFactoryVerificationRecord(record.Verification),
-		Failure:      record.Failure,
+func renderFactoryLogsJSON(out io.Writer, runID string, chunks []factory.LogChunk) error {
+	if chunks == nil {
+		chunks = []factory.LogChunk{}
 	}
+	resp := FactoryLogsResponse{
+		ContractVersion: FactoryLogsContractVersion,
+		RunID:           runID,
+		Chunks:          chunks,
+	}
+	data, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal factory logs: %w", err)
+	}
+	fmt.Fprintln(out, string(data))
+	return nil
+}
+
+func newFactoryStatusRun(record factory.RunRecord, events []factory.EventRecord, handoff *factory.HandoffSummary) FactoryStatusRun {
+	return FactoryStatusRun{
+		RunID:           record.RunID,
+		Status:          record.Status,
+		ExecutorMode:    record.ExecutorMode,
+		Engine:          record.Engine,
+		Source:          record.Source,
+		RepoPath:        record.RepoPath,
+		RepoRemote:      record.RepoRemote,
+		BranchName:      record.BranchName,
+		BaseBranch:      record.BaseBranch,
+		Policy:          factoryPolicySnapshotPointer(record.Policy),
+		PolicyDecisions: factoryPolicyDecisionsFromEvents(events),
+		SandboxName:     record.SandboxName,
+		Sandbox:         record.Sandbox,
+		CurrentStep:     record.CurrentStep,
+		CreatedAt:       record.CreatedAt,
+		UpdatedAt:       record.UpdatedAt,
+		FinishedAt:      record.FinishedAt,
+		Secrets:         record.Secrets,
+		Artifacts:       newFactoryArtifactSummaries(record.Artifacts),
+		Verification:    record.Verification,
+		Telemetry:       factory.DeriveRunTelemetry(record, events),
+		Failure:         normalizedFactoryFailureSummary(record.Failure),
+		Handoff:         handoff,
+	}
+}
+
+func factoryPolicySnapshotPointer(policy *factory.FactoryPolicy) *factory.FactoryPolicy {
+	if policy == nil {
+		return nil
+	}
+	snapshot := *policy
+	if policy.AllowedEngines != nil {
+		snapshot.AllowedEngines = append([]string(nil), policy.AllowedEngines...)
+	}
+	return &snapshot
+}
+
+func factoryPolicyDecisionsFromEvents(events []factory.EventRecord) []factory.PolicyDecisionMetadata {
+	decisions := make([]factory.PolicyDecisionMetadata, 0)
+	for _, event := range events {
+		if event.EventType != factory.EventTypePolicyDecision {
+			continue
+		}
+		decision := factoryPolicyDecisionFromMetadata(event.Metadata)
+		if decision.PolicyField == "" && decision.Decision == "" && decision.Outcome == "" && decision.Reason == "" {
+			continue
+		}
+		decisions = append(decisions, decision)
+	}
+	if len(decisions) == 0 {
+		return nil
+	}
+	return decisions
+}
+
+func factoryPolicyDecisionFromMetadata(metadata map[string]any) factory.PolicyDecisionMetadata {
+	return factory.PolicyDecisionMetadata{
+		PolicyField: stringFromFactoryMetadata(metadata, "policyField"),
+		Decision:    stringFromFactoryMetadata(metadata, "decision"),
+		Outcome:     stringFromFactoryMetadata(metadata, "outcome"),
+		Reason:      stringFromFactoryMetadata(metadata, "reason"),
+	}
+}
+
+func stringFromFactoryMetadata(metadata map[string]any, key string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	if value, ok := metadata[key].(string); ok {
+		return strings.TrimSpace(value)
+	}
+	return ""
 }
 
 func renderFactoryArtifactsJSON(out io.Writer, record factory.RunRecord) error {
@@ -3288,50 +4448,26 @@ func newFactoryArtifactsResponse(record factory.RunRecord) FactoryArtifactsRespo
 }
 
 func newFactoryArtifactSummaries(artifacts []factory.ArtifactReference) []FactoryArtifactSummary {
-	return newFactoryArtifactSummariesWithOptions(artifacts, false)
-}
-
-func newFactoryStatusArtifactSummaries(artifacts []factory.ArtifactReference) []FactoryArtifactSummary {
-	return newFactoryArtifactSummariesWithOptions(artifacts, true)
-}
-
-func newFactoryArtifactSummariesWithOptions(artifacts []factory.ArtifactReference, includeURL bool) []FactoryArtifactSummary {
 	summaries := make([]FactoryArtifactSummary, 0, len(artifacts))
 	for _, artifact := range artifacts {
 		entry := FactoryArtifactSummary{
 			ID:         strings.TrimSpace(artifact.ID),
 			Name:       strings.TrimSpace(artifact.Name),
 			Type:       strings.TrimSpace(artifact.Type),
-			Path:       sanitizeFactoryArtifactPathWithURLMode(artifact.Path, includeURL),
-			StoredPath: sanitizeFactoryArtifactPathWithURLMode(artifact.StoredPath, includeURL),
+			Path:       sanitizeFactoryArtifactPath(artifact.Path),
+			StoredPath: strings.TrimSpace(artifact.StoredPath),
 			SizeBytes:  artifact.SizeBytes,
 			CreatedAt:  artifact.CreatedAt,
 			Summary:    sanitizeFactoryArtifactSummary(artifact.Summary),
 			Warnings:   sanitizeFactoryArtifactWarnings(artifact.Warnings),
 			Partial:    artifact.Partial,
 		}
-		if includeURL {
-			entry.URL = safeFactoryArtifactURL(artifact.URL)
-		}
 		if entry.Path == "" && entry.StoredPath == "" && artifact.URL != "" {
-			if entry.URL == "" {
-				entry.Path = "[redacted]"
-			}
+			entry.Path = "[redacted]"
 		}
 		summaries = append(summaries, entry)
 	}
 	return summaries
-}
-
-func sanitizeFactoryArtifactPathWithURLMode(path string, includeURL bool) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return ""
-	}
-	if !includeURL && strings.Contains(path, "://") {
-		return "[redacted]"
-	}
-	return sanitizeFactoryArtifactPath(path)
 }
 
 func sanitizeFactoryArtifactPath(path string) string {
@@ -3339,13 +4475,7 @@ func sanitizeFactoryArtifactPath(path string) string {
 	if path == "" {
 		return ""
 	}
-	if strings.Contains(path, "://") {
-		if safeURL := safeFactoryArtifactURL(path); safeURL != "" {
-			return safeURL
-		}
-		return "[redacted]"
-	}
-	if factoryArtifactStringContainsSecretAssignment(path) {
+	if factoryArtifactPathLooksLikeURL(path) {
 		return "[redacted]"
 	}
 	cleanPath := filepath.Clean(path)
@@ -3365,15 +4495,21 @@ func sanitizeFactoryArtifactPath(path string) string {
 	return filepath.ToSlash(cleanPath)
 }
 
-func factoryArtifactPathIsParentRelative(value string) bool {
-	value = strings.TrimSpace(value)
-	value = filepath.ToSlash(value)
-	value = strings.ReplaceAll(value, `\`, "/")
-	value = pathpkg.Clean(value)
-	if value == ".." || strings.HasPrefix(value, "../") {
+func factoryArtifactPathLooksLikeURL(path string) bool {
+	parsed, err := url.Parse(path)
+	if err != nil {
 		return true
 	}
-	return false
+	return parsed.Scheme != "" || parsed.Host != ""
+}
+
+func factoryArtifactPathIsParentRelative(path string) bool {
+	path = filepath.ToSlash(path)
+	if path == ".." || strings.HasPrefix(path, "../") {
+		return true
+	}
+	windowsPath := strings.ReplaceAll(path, `\`, "/")
+	return windowsPath == ".." || strings.HasPrefix(windowsPath, "../")
 }
 
 func renderFactoryRunResult(out io.Writer, store factory.Store, runID string, jsonMode bool) error {
@@ -3410,8 +4546,42 @@ func summarizeFactoryRun(record factory.RunRecord) FactoryRunSummary {
 		UpdatedAt:     record.UpdatedAt,
 		FinishedAt:    record.FinishedAt,
 		ArtifactCount: len(record.Artifacts),
-		Failure:       record.Failure,
+		Telemetry:     factory.DeriveRunTelemetry(record, nil),
+		Failure:       normalizedFactoryFailureSummary(record.Failure),
 	}
+}
+
+func normalizedFactoryFailureSummary(failure *factory.FailureSummary) *factory.FailureSummary {
+	if failure == nil {
+		return nil
+	}
+	normalizedFailure := *failure
+	normalizedFailure.Category = factory.NormalizeFailureCategoryForContractV1(normalizedFailure.Category)
+	return &normalizedFailure
+}
+
+func normalizeFactoryTimelineEventsForContractV1(events []factory.EventRecord) []factory.EventRecord {
+	if len(events) == 0 {
+		return events
+	}
+	normalized := make([]factory.EventRecord, len(events))
+	copy(normalized, events)
+	for i, event := range normalized {
+		if event.EventType != factory.EventTypeFailureClassification || event.Metadata == nil {
+			continue
+		}
+		category, ok := event.Metadata["category"].(string)
+		if !ok {
+			continue
+		}
+		metadata := make(map[string]any, len(event.Metadata))
+		for key, value := range event.Metadata {
+			metadata[key] = value
+		}
+		metadata["category"] = factory.NormalizeFailureCategoryForContractV1(category)
+		normalized[i].Metadata = metadata
+	}
+	return normalized
 }
 
 func renderFactoryListTable(out io.Writer, records []factory.RunRecord) {
@@ -3434,28 +4604,82 @@ func renderFactoryListTable(out io.Writer, records []factory.RunRecord) {
 	_ = w.Flush()
 }
 
-func renderFactoryStatusTable(out io.Writer, record factory.RunRecord, events []factory.EventRecord) {
+func renderFactoryStatusTable(out io.Writer, record factory.RunRecord, events []factory.EventRecord, handoff *factory.HandoffSummary) {
+	telemetry := factory.DeriveRunTelemetry(record, events)
 	fmt.Fprintf(out, "Run ID: %s\n", record.RunID)
 	fmt.Fprintf(out, "Status: %s\n", record.Status)
 	fmt.Fprintf(out, "Branch: %s\n", record.BranchName)
 	fmt.Fprintf(out, "Step: %s\n", record.CurrentStep)
 	fmt.Fprintf(out, "Updated: %s\n", formatFactoryListTime(record.UpdatedAt))
+	renderFactoryStatusTelemetry(out, record, telemetry)
+	renderFactoryHandoffDetails(out, handoff)
 	fmt.Fprintf(out, "Timeline events: %d\n", len(events))
 	if len(events) == 0 {
 		return
 	}
 
+	fmt.Fprintln(out, "Timeline:")
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SEQUENCE\tTYPE\tTIMESTAMP\tSUMMARY")
+	fmt.Fprintln(w, "SEQUENCE\tSTEP\tSTATUS\tDURATION\tSUMMARY")
+	durations := factoryStepDurationMap(telemetry)
 	for _, event := range events {
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n",
+		step := factoryTimelineStep(event)
+		status := factoryTimelineStatus(event)
+		duration := ""
+		if event.EventType == factory.EventTypeStepEnded && step != "" {
+			duration = durations[step]
+		}
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n",
 			event.Sequence,
-			event.EventType,
-			formatFactoryListTime(event.Timestamp),
+			factoryTimelineLabel(event, step),
+			status,
+			duration,
 			event.Summary,
 		)
 	}
 	_ = w.Flush()
+}
+
+func renderFactoryStatusTelemetry(out io.Writer, record factory.RunRecord, telemetry *factory.RunTelemetry) {
+	if record.Failure != nil {
+		category := factory.NormalizeFailureCategoryForContractV1(record.Failure.Category)
+		if category != "" {
+			fmt.Fprintf(out, "Failure category: %s\n", category)
+		}
+		if message := strings.TrimSpace(record.Failure.Message); message != "" {
+			fmt.Fprintf(out, "Failure: %s\n", message)
+		}
+	}
+	if telemetry == nil {
+		return
+	}
+	if telemetry.TotalDurationMs != nil {
+		fmt.Fprintf(out, "Duration: %s\n", formatFactoryDurationMs(*telemetry.TotalDurationMs))
+	}
+	if telemetry.Engine != nil {
+		parts := compactFactoryParts(telemetry.Engine.Name, telemetry.Engine.Model)
+		if len(parts) > 0 {
+			fmt.Fprintf(out, "Engine: %s\n", strings.Join(parts, " "))
+		}
+	}
+	if telemetry.Sandbox != nil {
+		parts := compactFactoryParts(telemetry.Sandbox.Provider, telemetry.Sandbox.Size)
+		if len(parts) > 0 {
+			fmt.Fprintf(out, "Sandbox: %s\n", strings.Join(parts, " "))
+		}
+	}
+	if telemetry.EstimatedSandboxCost != nil && telemetry.EstimatedSandboxCost.Estimated {
+		fmt.Fprintf(out, "Est. sandbox cost: $%.4f\n", telemetry.EstimatedSandboxCost.AmountUSD)
+	}
+	if outcome := strings.TrimSpace(telemetry.CIOutcome); outcome != "" {
+		fmt.Fprintf(out, "CI: %s\n", outcome)
+	}
+	if outcome := strings.TrimSpace(telemetry.VerificationOutcome); outcome != "" {
+		fmt.Fprintf(out, "Verification: %s\n", outcome)
+	}
+	if telemetry.ArtifactCount != nil {
+		fmt.Fprintf(out, "Artifacts: %d\n", *telemetry.ArtifactCount)
+	}
 }
 
 func renderFactoryArtifactsTable(out io.Writer, record factory.RunRecord) {
@@ -3467,17 +4691,100 @@ func renderFactoryArtifactsTable(out io.Writer, record factory.RunRecord) {
 
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tTYPE\tPATH\tSTORED PATH\tSUMMARY\tWARNINGS")
-	for _, artifact := range newFactoryStatusArtifactSummaries(record.Artifacts) {
+	for _, artifact := range record.Artifacts {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			artifact.Name,
 			artifact.Type,
-			factoryArtifactSummaryDisplayPath(artifact),
-			sanitizeFactoryArtifactPath(artifact.StoredPath),
+			factoryArtifactDisplayPath(artifact),
+			artifact.StoredPath,
 			formatFactoryArtifactSummary(artifact.Summary),
-			formatFactoryArtifactSummaryWarnings(artifact.Warnings, artifact.Partial),
+			formatFactoryArtifactWarnings(artifact),
 		)
 	}
 	_ = w.Flush()
+}
+
+func renderFactoryLogsTable(out io.Writer, runID string, chunks []factory.LogChunk) {
+	fmt.Fprintf(out, "Run ID: %s\n", runID)
+	if len(chunks) == 0 {
+		fmt.Fprintf(out, "No logs stored for factory run %s.\n", runID)
+		return
+	}
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SEQUENCE\tSTREAM\tSOURCE\tCREATED\tTEXT")
+	for _, chunk := range chunks {
+		text := strings.TrimSpace(chunk.Text)
+		if text == "" {
+			text = strings.TrimSpace(chunk.Summary)
+		}
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n",
+			chunk.Sequence,
+			chunk.Stream,
+			chunk.Source,
+			formatFactoryListTime(chunk.CreatedAt),
+			text,
+		)
+	}
+	_ = w.Flush()
+}
+
+func factoryStepDurationMap(telemetry *factory.RunTelemetry) map[string]string {
+	durations := map[string]string{}
+	if telemetry == nil {
+		return durations
+	}
+	for _, step := range telemetry.StepDurations {
+		if strings.TrimSpace(step.Step) == "" {
+			continue
+		}
+		durations[step.Step] = formatFactoryDurationMs(step.DurationMs)
+	}
+	return durations
+}
+
+func factoryTimelineStep(event factory.EventRecord) string {
+	if event.Metadata == nil {
+		return ""
+	}
+	step, _ := event.Metadata["step"].(string)
+	return strings.TrimSpace(step)
+}
+
+func factoryTimelineStatus(event factory.EventRecord) string {
+	if event.Metadata == nil {
+		return ""
+	}
+	status, _ := event.Metadata["status"].(string)
+	return strings.TrimSpace(status)
+}
+
+func factoryTimelineLabel(event factory.EventRecord, step string) string {
+	if step != "" {
+		return step
+	}
+	return event.EventType
+}
+
+func compactFactoryParts(values ...string) []string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			parts = append(parts, value)
+		}
+	}
+	return parts
+}
+
+func formatFactoryDurationMs(ms int64) string {
+	if ms < 0 {
+		ms = 0
+	}
+	d := time.Duration(ms) * time.Millisecond
+	if d >= time.Second {
+		return d.Round(time.Second).String()
+	}
+	return d.String()
 }
 
 func factoryArtifactDisplayPath(artifact factory.ArtifactReference) string {
@@ -3485,19 +4792,6 @@ func factoryArtifactDisplayPath(artifact factory.ArtifactReference) string {
 		return path
 	}
 	if path := strings.TrimSpace(artifact.StoredPath); path != "" {
-		return path
-	}
-	if path := strings.TrimSpace(artifact.URL); path != "" {
-		return path
-	}
-	return "-"
-}
-
-func factoryArtifactSummaryDisplayPath(artifact FactoryArtifactSummary) string {
-	if path := strings.TrimSpace(artifact.Path); path != "" {
-		return path
-	}
-	if path := sanitizeFactoryArtifactPath(artifact.StoredPath); path != "" {
 		return path
 	}
 	if path := strings.TrimSpace(artifact.URL); path != "" {
@@ -3530,26 +4824,14 @@ func formatFactoryArtifactSummary(summary map[string]any) string {
 }
 
 func formatFactoryArtifactWarnings(artifact factory.ArtifactReference) string {
-	return formatFactoryArtifactSummaryWarnings(artifact.Warnings, artifact.Partial)
-}
-
-func formatFactoryArtifactSummaryWarnings(warnings []string, partial bool) string {
-	warnings = append([]string(nil), warnings...)
-	if partial && len(warnings) == 0 {
+	warnings := append([]string(nil), artifact.Warnings...)
+	if artifact.Partial && len(warnings) == 0 {
 		warnings = append(warnings, "partial")
 	}
 	if len(warnings) == 0 {
 		return "-"
 	}
 	return strings.Join(warnings, "; ")
-}
-
-func factoryMissingArtifactWarning(message, artifactPath string) string {
-	displayPath := sanitizeFactoryArtifactPath(artifactPath)
-	if displayPath == "" {
-		return message
-	}
-	return fmt.Sprintf("%s: %s", message, displayPath)
 }
 
 func sanitizeFactoryArtifactSummary(summary map[string]any) map[string]any {
@@ -3584,13 +4866,55 @@ func sanitizeFactoryArtifactWarnings(warnings []string) []string {
 	return safe
 }
 
+func sanitizeFactoryLogChunks(chunks []factory.LogChunk) []factory.LogChunk {
+	if len(chunks) == 0 {
+		return nil
+	}
+	safe := make([]factory.LogChunk, 0, len(chunks))
+	for _, chunk := range chunks {
+		chunk.Stream = normalizeFactoryLogStream(chunk.Stream)
+		chunk.Source = normalizeFactoryLogSource(chunk.Source)
+		chunk.Text = sanitizeFactoryLogText(chunk.Text)
+		chunk.Summary = sanitizeFactoryLogText(chunk.Summary)
+		safe = append(safe, chunk)
+	}
+	return safe
+}
+
+func sanitizeFactoryLogText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if factoryArtifactStringNeedsRedaction(value) || factoryLogContainsSecretAssignment(value) {
+		return "[redacted]"
+	}
+	return sanitizeCredentialedRemoteReferences(value)
+}
+
+func factoryLogContainsSecretAssignment(value string) bool {
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\n' || r == ';' || r == ','
+	})
+	for _, field := range fields {
+		field = strings.Trim(field, `"'`)
+		idx := strings.IndexAny(field, "=:")
+		if idx <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(field[:idx])
+		if factoryArtifactSecretKey(key) {
+			return true
+		}
+	}
+	return false
+}
+
 func sanitizeFactoryArtifactValue(key string, value any) any {
 	if factoryArtifactSecretKey(key) {
 		return "[redacted]"
 	}
 	switch v := value.(type) {
-	case nil:
-		return nil
 	case string:
 		if factoryArtifactStringNeedsRedaction(v) {
 			return "[redacted]"
@@ -3611,38 +4935,8 @@ func sanitizeFactoryArtifactValue(key string, value any) any {
 		}
 		return out
 	default:
-		if normalized, ok := normalizeFactoryArtifactCompositeValue(value); ok {
-			return sanitizeFactoryArtifactValue(key, normalized)
-		}
 		return value
 	}
-}
-
-func normalizeFactoryArtifactCompositeValue(value any) (any, bool) {
-	if value == nil {
-		return nil, false
-	}
-	rv := reflect.ValueOf(value)
-	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
-		if rv.IsNil() {
-			return nil, false
-		}
-		rv = rv.Elem()
-	}
-	switch rv.Kind() {
-	case reflect.Array, reflect.Map, reflect.Slice, reflect.Struct:
-	default:
-		return nil, false
-	}
-	data, err := json.Marshal(value)
-	if err != nil {
-		return nil, false
-	}
-	var normalized any
-	if err := json.Unmarshal(data, &normalized); err != nil {
-		return nil, false
-	}
-	return normalized, true
 }
 
 func factoryArtifactSecretKey(key string) bool {
@@ -3672,19 +4966,6 @@ func factoryArtifactSecretKey(key string) bool {
 	return key == "key" || strings.HasSuffix(key, "_key") || strings.HasSuffix(key, "-key")
 }
 
-func factoryArtifactSecretURLQueryKey(key string) bool {
-	key = strings.ToLower(strings.TrimSpace(key))
-	if factoryArtifactSecretKey(key) {
-		return true
-	}
-	switch key {
-	case "signature", "sig", "x-amz-signature", "x-goog-signature", "x-ms-signature":
-		return true
-	default:
-		return false
-	}
-}
-
 func factoryArtifactStringNeedsRedaction(value string) bool {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -3706,22 +4987,13 @@ func factoryArtifactStringNeedsRedaction(value string) bool {
 				return true
 			}
 			for key := range parsed.Query() {
-				if factoryArtifactSecretURLQueryKey(key) {
+				if factoryArtifactSecretKey(key) {
 					return true
 				}
-			}
-			if factoryArtifactStringContainsSecretAssignment(parsed.Fragment) {
-				return true
 			}
 		}
 	}
 	if factoryArtifactStringContainsAbsolutePath(value) {
-		return true
-	}
-	if factoryArtifactStringContainsParentRelativePath(value) {
-		return true
-	}
-	if factoryArtifactStringContainsUnsafeURL(value) {
 		return true
 	}
 	if factoryArtifactStringContainsSecretAssignment(value) {
@@ -3736,59 +5008,6 @@ func factoryArtifactStringNeedsRedaction(value string) bool {
 		}
 	}
 	return false
-}
-
-func factoryArtifactStringContainsParentRelativePath(value string) bool {
-	for _, field := range factoryArtifactRedactionFields(value) {
-		if factoryArtifactFieldIsParentRelativePath(field) {
-			return true
-		}
-		if strings.Contains(field, "://") {
-			continue
-		}
-		for _, sep := range []string{"=", ":"} {
-			if idx := strings.Index(field, sep); idx >= 0 && idx+1 < len(field) {
-				if factoryArtifactFieldIsParentRelativePath(field[idx+1:]) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-func factoryArtifactFieldIsParentRelativePath(value string) bool {
-	value = strings.TrimSpace(value)
-	value = strings.Trim(value, "\"'<>[](){}.,;")
-	if value == "" {
-		return false
-	}
-	return factoryArtifactPathIsParentRelative(value)
-}
-
-func factoryArtifactStringContainsUnsafeURL(value string) bool {
-	for _, field := range factoryArtifactURLFields(value) {
-		field = strings.TrimSpace(field)
-		field = strings.Trim(field, "\"'<>[](){}.,;")
-		if !strings.Contains(field, "://") {
-			continue
-		}
-		if safeFactoryArtifactURL(field) == "" {
-			return true
-		}
-	}
-	return false
-}
-
-func factoryArtifactURLFields(value string) []string {
-	return strings.FieldsFunc(value, func(r rune) bool {
-		switch r {
-		case ' ', '\t', '\n', '\r', '"', '\'', '<', '>', '(', ')', '[', ']', '{', '}':
-			return true
-		default:
-			return false
-		}
-	})
 }
 
 func factoryArtifactStringContainsAbsolutePath(value string) bool {
@@ -3890,4 +5109,314 @@ func readGitRemoteOptionalInDir(dir string) (string, error) {
 		return "", fmt.Errorf("read git remote origin: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+func sanitizeFactoryRunRecordCredentialedRemote(record factory.RunRecord) factory.RunRecord {
+	record.RepoRemote = sanitizeCredentialedRemote(record.RepoRemote)
+	record.Failure = sanitizeFactoryRunFailureCredentialedRemote(record.Failure)
+	return record
+}
+
+func redactFactoryRunRecordForStorage(record factory.RunRecord, redactor factory.RunSecretRedactor) factory.RunRecord {
+	return sanitizeFactoryRunRecordCredentialedRemote(redactor.RedactRunRecord(record))
+}
+
+func sanitizeFactoryRunFailureCredentialedRemote(failure *factory.FailureSummary) *factory.FailureSummary {
+	if failure == nil {
+		return nil
+	}
+	safe := *failure
+	safe.Step = sanitizeCredentialedRemoteReferences(safe.Step)
+	safe.Category = sanitizeCredentialedRemoteReferences(safe.Category)
+	safe.Message = sanitizeCredentialedRemoteReferences(safe.Message)
+	safe.SuggestedCommand = sanitizeCredentialedRemoteReferences(safe.SuggestedCommand)
+	return &safe
+}
+
+func redactFactoryString(value string, redactor factory.RunSecretRedactor) string {
+	return sanitizeCredentialedRemoteReferences(redactor.RedactString(value))
+}
+
+func sanitizeCredentialedRemote(remote string) string {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return remote
+	}
+	if sanitized, ok := sanitizeCredentialedRemoteSCPStyle(remote); ok {
+		remote = sanitized
+	}
+	parsed, err := url.Parse(remote)
+	if err != nil {
+		if sanitized, ok := sanitizeCredentialedRemoteAuthority(remote); ok {
+			return sanitizeCredentialedRemoteComponents(sanitized)
+		}
+		return sanitizeCredentialedRemoteComponents(remote)
+	}
+
+	changed := false
+	if parsed.User != nil {
+		userinfo := factory.RunSecretRedactionPlaceholder
+		parsed.User = nil
+		withoutUser := parsed.String()
+		prefix := parsed.Scheme + "://"
+		if parsed.Scheme == "" || !strings.HasPrefix(withoutUser, prefix) {
+			return sanitizeCredentialedRemoteComponents(remote)
+		}
+		remote = prefix + userinfo + "@" + strings.TrimPrefix(withoutUser, prefix)
+		parsed, err = url.Parse(remote)
+		if err != nil {
+			return sanitizeCredentialedRemoteComponents(remote)
+		}
+		changed = true
+	}
+	if sanitizedQuery, ok := sanitizeCredentialedRemoteParameters(parsed.RawQuery); ok {
+		parsed.RawQuery = sanitizedQuery
+		changed = true
+	}
+	if sanitizedFragment, ok := sanitizeCredentialedRemoteParameters(parsed.Fragment); ok {
+		parsed.Fragment = sanitizedFragment
+		parsed.RawFragment = sanitizedFragment
+		changed = true
+	}
+	if !changed {
+		return remote
+	}
+	return parsed.String()
+}
+
+func sanitizeCredentialedRemoteReferences(value string) string {
+	if strings.Contains(value, `\/`) {
+		value = strings.ReplaceAll(value, `\/`, `/`)
+	}
+	if !strings.Contains(value, "://") && !strings.Contains(value, "@") {
+		return value
+	}
+	var out strings.Builder
+	for i := 0; i < len(value); {
+		if factoryCredentialedRemoteReferenceSeparator(value[i]) {
+			out.WriteByte(value[i])
+			i++
+			continue
+		}
+		end := i
+		for end < len(value) && !factoryCredentialedRemoteReferenceSeparator(value[end]) {
+			end++
+		}
+		segment := value[i:end]
+		if strings.Contains(segment, "://") || strings.Contains(segment, "@") {
+			out.WriteString(sanitizeCredentialedRemote(segment))
+		} else {
+			out.WriteString(segment)
+		}
+		i = end
+	}
+	return out.String()
+}
+
+func factoryCredentialedRemoteReferenceSeparator(ch byte) bool {
+	switch ch {
+	case ' ', '\t', '\n', '\r':
+		return true
+	default:
+		return false
+	}
+}
+
+func sanitizeCredentialedRemoteSCPStyle(value string) (string, bool) {
+	if strings.Contains(value, "://") || !strings.Contains(value, "@") {
+		return value, false
+	}
+	var out strings.Builder
+	changed := false
+	last := 0
+	for i := 0; i < len(value); {
+		atOffset := strings.Index(value[i:], "@")
+		if atOffset < 0 {
+			break
+		}
+		at := i + atOffset
+		start := at
+		for start > 0 && factorySCPStyleUserinfoChar(value[start-1]) {
+			start--
+		}
+		userinfo := value[start:at]
+		hostStart := at + 1
+		hostEnd := hostStart
+		for hostEnd < len(value) && factorySCPStyleHostChar(value[hostEnd]) {
+			hostEnd++
+		}
+		if userinfo == "" || hostEnd == hostStart || hostEnd >= len(value) || value[hostEnd] != ':' {
+			i = at + 1
+			continue
+		}
+		pathStart := hostEnd + 1
+		if pathStart >= len(value) || factorySCPStylePathTerminator(value[pathStart]) {
+			i = at + 1
+			continue
+		}
+		if !factorySCPStyleUserinfoLooksCredentialed(userinfo, value[hostStart:hostEnd]) {
+			i = at + 1
+			continue
+		}
+		out.WriteString(value[last:start])
+		out.WriteString(factory.RunSecretRedactionPlaceholder)
+		last = at
+		changed = true
+		i = at + 1
+	}
+	if !changed {
+		return value, false
+	}
+	out.WriteString(value[last:])
+	return out.String(), true
+}
+
+func factorySCPStyleUserinfoChar(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') ||
+		(ch >= 'A' && ch <= 'Z') ||
+		(ch >= '0' && ch <= '9') ||
+		ch == '.' || ch == '_' || ch == '-' || ch == '+' || ch == ':' || ch == '%'
+}
+
+func factorySCPStyleHostChar(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') ||
+		(ch >= 'A' && ch <= 'Z') ||
+		(ch >= '0' && ch <= '9') ||
+		ch == '.' || ch == '-' || ch == '_' || ch == '[' || ch == ']'
+}
+
+func factorySCPStylePathTerminator(ch byte) bool {
+	switch ch {
+	case ' ', '\t', '\n', '\r', '"', '\'', '<', '>', '`':
+		return true
+	default:
+		return false
+	}
+}
+
+func factorySCPStyleUserinfoLooksCredentialed(userinfo, host string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(userinfo))
+	if normalized == "" || normalized == "git" {
+		return false
+	}
+	if strings.Contains(normalized, ":") || isCredentialedRemoteParameterKey(normalized) {
+		return true
+	}
+	for _, marker := range []string{"ghp_", "github_pat_", "glpat", "oauth", "x-access-token", "x-token-auth"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	switch strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]") {
+	case "github.com", "ssh.github.com", "gitlab.com", "bitbucket.org":
+		return true
+	default:
+		return false
+	}
+}
+
+func sanitizeCredentialedRemoteAuthority(remote string) (string, bool) {
+	schemeIndex := strings.Index(remote, "://")
+	if schemeIndex < 0 {
+		return remote, false
+	}
+	authorityStart := schemeIndex + len("://")
+	authorityEnd := len(remote)
+	for _, separator := range []string{"/", "?", "#"} {
+		if index := strings.Index(remote[authorityStart:], separator); index >= 0 && authorityStart+index < authorityEnd {
+			authorityEnd = authorityStart + index
+		}
+	}
+	authority := remote[authorityStart:authorityEnd]
+	atIndex := strings.LastIndex(authority, "@")
+	if atIndex < 0 {
+		return remote, false
+	}
+	return remote[:authorityStart] + factory.RunSecretRedactionPlaceholder + "@" + remote[authorityStart+atIndex+1:], true
+}
+
+func sanitizeCredentialedRemoteComponents(remote string) string {
+	queryStart := strings.Index(remote, "?")
+	fragmentStart := strings.Index(remote, "#")
+	if queryStart < 0 && fragmentStart < 0 {
+		return remote
+	}
+
+	queryEnd := len(remote)
+	if fragmentStart >= 0 && (queryStart < 0 || fragmentStart > queryStart) {
+		queryEnd = fragmentStart
+	}
+	if queryStart >= 0 {
+		if sanitized, ok := sanitizeCredentialedRemoteParameters(remote[queryStart+1 : queryEnd]); ok {
+			remote = remote[:queryStart+1] + sanitized + remote[queryEnd:]
+			fragmentStart = strings.Index(remote, "#")
+		}
+	}
+	if fragmentStart >= 0 {
+		if sanitized, ok := sanitizeCredentialedRemoteParameters(remote[fragmentStart+1:]); ok {
+			remote = remote[:fragmentStart+1] + sanitized
+		}
+	}
+	return remote
+}
+
+func sanitizeCredentialedRemoteParameters(raw string) (string, bool) {
+	if raw == "" {
+		return raw, false
+	}
+	var out strings.Builder
+	changed := false
+	start := 0
+	for i := 0; i <= len(raw); i++ {
+		if i < len(raw) && raw[i] != '&' && raw[i] != ';' {
+			continue
+		}
+		segment := raw[start:i]
+		if sanitized, ok := sanitizeCredentialedRemoteParameter(segment); ok {
+			out.WriteString(sanitized)
+			changed = true
+		} else {
+			out.WriteString(segment)
+		}
+		if i < len(raw) {
+			out.WriteByte(raw[i])
+		}
+		start = i + 1
+	}
+	if !changed {
+		return raw, false
+	}
+	return out.String(), true
+}
+
+func sanitizeCredentialedRemoteParameter(segment string) (string, bool) {
+	eq := strings.Index(segment, "=")
+	if eq < 0 {
+		return segment, false
+	}
+	key := segment[:eq]
+	decodedKey, err := url.QueryUnescape(key)
+	if err != nil {
+		decodedKey = key
+	}
+	if !isCredentialedRemoteParameterKey(decodedKey) {
+		return segment, false
+	}
+	return key + "=" + factory.RunSecretRedactionPlaceholder, true
+}
+
+func isCredentialedRemoteParameterKey(key string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	normalized = strings.NewReplacer("-", "_", ".", "_").Replace(normalized)
+	switch normalized {
+	case "token", "access_token", "access_key", "api_key", "apikey", "auth", "auth_token", "credential", "credentials", "password", "passwd", "secret", "client_secret", "private_key", "private_token":
+		return true
+	default:
+		return strings.Contains(normalized, "token") ||
+			strings.Contains(normalized, "secret") ||
+			strings.Contains(normalized, "password") ||
+			strings.Contains(normalized, "credential") ||
+			strings.Contains(normalized, "private_key") ||
+			strings.Contains(normalized, "access_key")
+	}
 }

@@ -13,6 +13,7 @@ import (
 
 	ci "github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/factory"
 	"github.com/spf13/cobra"
 )
 
@@ -208,12 +209,16 @@ type ciMergeDeps struct {
 	mergePR       func(context.Context, ci.MergeOptions) (ci.MergeResult, error)
 	currentBranch func(context.Context) (string, error)
 	findOpenPR    func(context.Context, string) (*ci.PullRequest, error)
+	repoRoot      func(context.Context) (string, error)
+	loadPolicy    func(string) (*factory.FactoryPolicy, error)
 }
 
 var defaultCIMergeDeps = ciMergeDeps{
 	mergePR:       ci.MergePR,
 	currentBranch: ciCurrentBranch,
 	findOpenPR:    ci.FindOpenPullRequestForBranch,
+	repoRoot:      ciRepoRoot,
+	loadPolicy:    factory.LoadPolicyConfig,
 }
 
 type ciMergeRunOptions struct {
@@ -852,10 +857,44 @@ func runCIMergeWithDeps(ctx context.Context, opts ciMergeRunOptions, out io.Writ
 			return nil, nil
 		}
 	}
+	if deps.loadPolicy == nil {
+		deps.loadPolicy = defaultCIMergeDeps.loadPolicy
+		if deps.loadPolicy == nil {
+			deps.loadPolicy = factory.LoadPolicyConfig
+		}
+	}
+	if deps.repoRoot == nil {
+		deps.repoRoot = defaultCIMergeDeps.repoRoot
+		if deps.repoRoot == nil {
+			deps.repoRoot = ciRepoRoot
+		}
+	}
 
 	strategy, err := ci.NormalizeMergeStrategy(opts.Strategy)
 	if err != nil {
 		return err
+	}
+	if !opts.DryRun {
+		policyDir, rootErr := deps.repoRoot(ctx)
+		if rootErr != nil {
+			return fmt.Errorf("resolve repository root: %w", rootErr)
+		}
+		policyDir = strings.TrimSpace(policyDir)
+		if policyDir == "" {
+			return fmt.Errorf("resolve repository root: empty path")
+		}
+
+		policy, policyErr := deps.loadPolicy(policyDir)
+		if policyErr != nil {
+			return fmt.Errorf("load factory policy: %w", policyErr)
+		}
+		if policy == nil {
+			defaultPolicy := factory.DefaultFactoryPolicy()
+			policy = &defaultPolicy
+		}
+		if !policy.MergeAllowed {
+			return fmt.Errorf("ci merge blocked by factory.policy.mergeAllowed=false")
+		}
 	}
 
 	if !opts.JSON {
@@ -1086,4 +1125,29 @@ func ciCurrentBranch(ctx context.Context) (string, error) {
 	}
 
 	return branch, nil
+}
+
+func ciRepoRoot(ctx context.Context) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		stderrText := strings.TrimSpace(stderr.String())
+		if stderrText != "" {
+			return "", fmt.Errorf("get repository root failed: %s: %w", stderrText, err)
+		}
+		return "", fmt.Errorf("get repository root failed: %w", err)
+	}
+
+	root := strings.TrimSpace(stdout.String())
+	if root == "" {
+		return "", fmt.Errorf("get repository root: empty path")
+	}
+
+	return root, nil
 }

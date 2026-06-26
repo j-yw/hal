@@ -14,11 +14,10 @@ func newSysProcAttr() *syscall.SysProcAttr {
 
 func setupProcessCleanup(cmd *exec.Cmd) {
 	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
+		if cmd.Process != nil {
+			return killWindowsProcessTree(cmd.Process.Pid, cmd.Process.Kill, nil)
 		}
-		// taskkill /T terminates descendants that cmd.exe would otherwise leave behind.
-		return killWindowsProcessTree(cmd.Process.Pid, cmd.Process.Kill, nil)
+		return nil
 	}
 	cmd.WaitDelay = 5 * time.Second
 }

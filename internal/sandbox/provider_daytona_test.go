@@ -24,9 +24,11 @@ func TestBuildCreateArgs_Basic(t *testing.T) {
 
 func TestBuildCreateArgs_WithEnvVars(t *testing.T) {
 	env := map[string]string{
-		"GIT_TOKEN":     "ghp_abc",
-		"API_KEY":       "sk-123",
-		"TAILSCALE_KEY": "tskey-xxx",
+		"GIT_USER_EMAIL":    "dev@example.com",
+		"GIT_USER_NAME":     "Dev User",
+		"HAL_AUTO_SHUTDOWN": "true",
+		"GITHUB_TOKEN":      "ghp_abc",
+		"TAILSCALE_AUTHKEY": "tskey-xxx",
 	}
 	args := buildCreateArgs("test-sb", env)
 
@@ -44,9 +46,9 @@ func TestBuildCreateArgs_WithEnvVars(t *testing.T) {
 	// Verify env flags — sorted alphabetically by key
 	envArgs := args[5:]
 	wantEnv := []string{
-		"-e", "API_KEY=sk-123",
-		"-e", "GIT_TOKEN=ghp_abc",
-		"-e", "TAILSCALE_KEY=tskey-xxx",
+		"-e", "GIT_USER_EMAIL=dev@example.com",
+		"-e", "GIT_USER_NAME=Dev User",
+		"-e", "HAL_AUTO_SHUTDOWN=true",
 	}
 	if len(envArgs) != len(wantEnv) {
 		t.Fatalf("env args: got %d, want %d: %v", len(envArgs), len(wantEnv), envArgs)
@@ -54,6 +56,12 @@ func TestBuildCreateArgs_WithEnvVars(t *testing.T) {
 	for i := range wantEnv {
 		if envArgs[i] != wantEnv[i] {
 			t.Errorf("envArgs[%d] = %q, want %q", i, envArgs[i], wantEnv[i])
+		}
+	}
+	argsStr := strings.Join(args, " ")
+	for _, secret := range []string{"ghp_abc", "tskey-xxx", "GITHUB_TOKEN", "TAILSCALE_AUTHKEY"} {
+		if strings.Contains(argsStr, secret) {
+			t.Fatalf("create args leaked sensitive env %q: %v", secret, args)
 		}
 	}
 }
@@ -112,14 +120,19 @@ func TestDaytonaProvider_Create_Success(t *testing.T) {
 	}
 
 	argsStr := strings.Join(capturedArgs[1:], " ")
-	for _, want := range []string{"--snapshot", "hal", "--name", "my-sandbox", "-e", "API_KEY=sk-123", "GIT_TOKEN=ghp_abc"} {
+	for _, want := range []string{"--snapshot", "hal", "--name", "my-sandbox"} {
 		if !strings.Contains(argsStr, want) {
 			t.Errorf("args %q missing expected %q", argsStr, want)
 		}
 	}
+	for _, secret := range []string{"API_KEY=sk-123", "GIT_TOKEN=ghp_abc"} {
+		if strings.Contains(argsStr, secret) {
+			t.Fatalf("args %q leaked sensitive env %q", argsStr, secret)
+		}
+	}
 
-	if out.String() != "" {
-		t.Errorf("provider output = %q, want empty structured command output", out.String())
+	if !strings.Contains(out.String(), "sandbox created") {
+		t.Errorf("provider output = %q, want streamed command output", out.String())
 	}
 }
 
@@ -218,9 +231,10 @@ func TestDaytonaProvider_Create_AllEnvFlags(t *testing.T) {
 	}
 
 	env := map[string]string{
-		"VAR_A": "val-a",
-		"VAR_B": "val-b",
-		"VAR_C": "val-c",
+		"VAR_A":        "val-a",
+		"VAR_B":        "val-b",
+		"VAR_C":        "val-c",
+		"SECRET_TOKEN": "hidden",
 	}
 
 	var out bytes.Buffer
@@ -248,10 +262,16 @@ func TestDaytonaProvider_Create_AllEnvFlags(t *testing.T) {
 	// Verify all env vars are present
 	argsStr := strings.Join(args, " ")
 	for k, v := range env {
+		if k == "SECRET_TOKEN" {
+			continue
+		}
 		want := fmt.Sprintf("%s=%s", k, v)
 		if !strings.Contains(argsStr, want) {
 			t.Errorf("args missing env var %q", want)
 		}
+	}
+	if strings.Contains(argsStr, "SECRET_TOKEN=hidden") {
+		t.Fatalf("args leaked sensitive env var: %v", args)
 	}
 }
 
@@ -365,6 +385,63 @@ func TestDaytonaProvider_Create_MissingTemplateSnapshot_AutoCreatesAndRetries(t 
 	}
 }
 
+func TestDaytonaProvider_Create_InactiveTemplateSnapshot_DeletesCreatesAndRetries(t *testing.T) {
+	var calls [][]string
+	callNum := 0
+
+	dp := &DaytonaProvider{
+		APIKey: "test-key",
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			callNum++
+			calls = append(calls, append([]string{name}, args...))
+			switch callNum {
+			case 1:
+				return exec.CommandContext(ctx, "sh", "-c", "echo 'Bad Request: Snapshot hal is inactive' >&2; exit 1")
+			case 2:
+				return exec.CommandContext(ctx, "echo", "snapshot deleted")
+			case 3:
+				return exec.CommandContext(ctx, "sh", "-c", "printf '%s\n' '--name' '--dockerfile-path' '--context-path'")
+			case 4:
+				return exec.CommandContext(ctx, "echo", "snapshot ready")
+			case 5:
+				return exec.CommandContext(ctx, "echo", "sandbox created")
+			default:
+				return exec.CommandContext(ctx, "true")
+			}
+		},
+	}
+
+	var out bytes.Buffer
+	result, err := dp.Create(context.Background(), "my-sandbox", nil, &out)
+	if err != nil {
+		t.Fatalf("Create() unexpected error: %v", err)
+	}
+	if result == nil || result.Name != "my-sandbox" {
+		t.Fatalf("result = %+v, want Name=my-sandbox", result)
+	}
+
+	wantCalls := [][]string{
+		{"daytona", "create", "--snapshot", "hal", "--name", "my-sandbox"},
+		{"daytona", "snapshot", "delete", "hal"},
+		{"daytona", "snapshot", "create", "--help"},
+		{"daytona", "snapshot", "create", "--name", "hal", "--dockerfile-path", "sandbox/Dockerfile", "--context-path", "."},
+		{"daytona", "create", "--snapshot", "hal", "--name", "my-sandbox"},
+	}
+	if len(calls) != len(wantCalls) {
+		t.Fatalf("daytona calls = %v, want %v", calls, wantCalls)
+	}
+	for i := range wantCalls {
+		if len(calls[i]) != len(wantCalls[i]) {
+			t.Fatalf("call %d = %v, want %v", i, calls[i], wantCalls[i])
+		}
+		for j := range wantCalls[i] {
+			if calls[i][j] != wantCalls[i][j] {
+				t.Fatalf("call %d arg %d = %q, want %q; call=%v", i, j, calls[i][j], wantCalls[i][j], calls[i])
+			}
+		}
+	}
+}
+
 func TestDaytonaProvider_Create_DefaultCmdContext(t *testing.T) {
 	// Verify that a DaytonaProvider without cmdContext set uses exec.CommandContext
 	dp := &DaytonaProvider{APIKey: "key"}
@@ -449,7 +526,7 @@ func TestDaytonaProvider_Delete_Success(t *testing.T) {
 		t.Fatalf("Delete() unexpected error: %v", err)
 	}
 
-	// Verify command: daytona delete my-sandbox --yes
+	// Verify command: daytona delete my-sandbox --yes.
 	wantArgs := []string{"daytona", "delete", "my-sandbox", "--yes"}
 	if len(capturedArgs) != len(wantArgs) {
 		t.Fatalf("got args %v, want %v", capturedArgs, wantArgs)
@@ -575,7 +652,7 @@ func TestDaytonaProvider_Exec(t *testing.T) {
 		t.Fatalf("Exec() unexpected error: %v", err)
 	}
 
-	wantArgs := []string{"daytona", "ssh", "my-sandbox", "--", "ls", "-la"}
+	wantArgs := []string{"daytona", "exec", "my-sandbox", "--", "'ls' '-la'"}
 	if len(cmd.Args) != len(wantArgs) {
 		t.Fatalf("got args %v, want %v", cmd.Args, wantArgs)
 	}
@@ -604,8 +681,7 @@ func TestDaytonaProvider_Exec_EmptyArgs(t *testing.T) {
 		t.Fatalf("Exec() unexpected error: %v", err)
 	}
 
-	// With empty args, should still have the -- separator
-	wantArgs := []string{"daytona", "ssh", "sb", "--"}
+	wantArgs := []string{"daytona", "exec", "sb"}
 	if len(cmd.Args) != len(wantArgs) {
 		t.Fatalf("got args %v, want %v", cmd.Args, wantArgs)
 	}

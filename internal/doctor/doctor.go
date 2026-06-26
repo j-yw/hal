@@ -373,7 +373,7 @@ func warningSummaryPart(warningID string, checks []Check) string {
 
 func checkGitRepo(dir string) Check {
 	gitDir := filepath.Join(dir, ".git")
-	if info, err := os.Stat(gitDir); err == nil && (info.IsDir() || isGitWorktreeFile(gitDir)) {
+	if isGitRepoMarker(gitDir) {
 		return Check{
 			ID:            "git_repo",
 			Status:        StatusPass,
@@ -387,20 +387,23 @@ func checkGitRepo(dir string) Check {
 		Status:        StatusWarn,
 		Severity:      SeverityWarn,
 		RemediationID: RemediationNone,
-		Message:       "No .git directory or worktree metadata file found. Hal works best inside a git repository.",
+		Message:       "No .git directory found. Hal works best inside a git repository.",
 	}
 }
 
-func isGitWorktreeFile(path string) bool {
-	data, err := os.ReadFile(path)
+func isGitRepoMarker(path string) bool {
+	info, err := os.Stat(path)
 	if err != nil {
 		return false
 	}
-	content := strings.TrimSpace(string(data))
-	if !strings.HasPrefix(content, "gitdir:") {
+	if info.IsDir() {
+		return true
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
 		return false
 	}
-	return strings.TrimSpace(strings.TrimPrefix(content, "gitdir:")) != ""
+	return strings.HasPrefix(strings.TrimSpace(string(content)), "gitdir:")
 }
 
 func checkHalDir(halDir string) Check {
@@ -771,19 +774,6 @@ func checkCodexLinks(dir, engine string) Check {
 			}
 		}
 	}
-	commandLink := linker.CommandsDir()
-	commandTarget, err := os.Readlink(commandLink)
-	if err != nil {
-		missing = append(missing, "commands")
-	} else {
-		expectedTarget := filepath.Join(absDir, template.HalDir, template.CommandsDir)
-		if commandTarget != expectedTarget {
-			otherRepo = append(otherRepo, "commands")
-			if otherTarget == "" {
-				otherTarget = commandTarget
-			}
-		}
-	}
 
 	if len(missing) == 0 && len(otherRepo) == 0 {
 		return Check{
@@ -977,15 +967,14 @@ func checkPromptMD(halDir string) Check {
 }
 
 func checkLocalSkillLinks(dir string) Check {
-	// Check that .claude/skills/ and .pi/skills/ have correct symlinks to .hal/skills/
+	// Check that .claude/skills/ and .pi/skills/ have correct managed skill symlinks.
 	type engineDir struct {
 		name      string
 		skillsDir string
-		prefix    string // relative prefix to .hal/skills/
 	}
 	engineDirs := []engineDir{
-		{name: "claude", skillsDir: filepath.Join(dir, ".claude", "skills"), prefix: filepath.Join("..", "..", template.HalDir, "skills")},
-		{name: "pi", skillsDir: filepath.Join(dir, ".pi", "skills"), prefix: filepath.Join("..", "..", template.HalDir, "skills")},
+		{name: "claude", skillsDir: filepath.Join(dir, ".claude", "skills")},
+		{name: "pi", skillsDir: filepath.Join(dir, ".pi", "skills")},
 	}
 
 	var stale []string
@@ -1008,7 +997,7 @@ func checkLocalSkillLinks(dir string) Check {
 			if err != nil {
 				continue
 			}
-			expected := filepath.Join(ed.prefix, skill)
+			expected := skills.LocalManagedSkillLinkTarget(dir, skill)
 			if target != expected {
 				stale = append(stale, filepath.Join("."+ed.name, "skills", skill))
 			}

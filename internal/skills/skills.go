@@ -5,9 +5,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jywlabs/hal/internal/template"
 )
+
+const halModulePath = "github.com/jywlabs/hal"
 
 // LoadSkill returns the embedded SKILL.md content for a skill by name.
 func LoadSkill(name string) (string, error) {
@@ -101,6 +104,43 @@ func LinkAllEngines(projectDir string) error {
 		}
 	}
 	return lastErr
+}
+
+// LocalManagedSkillLinkTarget returns the portable target used by project-local
+// engine skill links under .claude/skills and .pi/skills.
+func LocalManagedSkillLinkTarget(projectDir, skill string) string {
+	if skill == "factory" && isHalSourceRepository(projectDir) {
+		sourcePath := filepath.Join(projectDir, "internal", "skills", skill, "SKILL.md")
+		if _, err := os.Stat(sourcePath); err == nil {
+			return filepath.Join("..", "..", "internal", "skills", skill)
+		}
+	}
+
+	return filepath.Join("..", "..", template.HalDir, "skills", skill)
+}
+
+func isHalSourceRepository(projectDir string) bool {
+	data, err := os.ReadFile(filepath.Join(projectDir, "go.mod"))
+	if err != nil {
+		return false
+	}
+	return goModModulePath(data) == halModulePath
+}
+
+func goModModulePath(data []byte) string {
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "//") {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "module" {
+			return strings.Trim(fields[1], `"`)
+		}
+		return ""
+	}
+	return ""
 }
 
 // UnlinkAllEngines removes skill links for all registered engines.

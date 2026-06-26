@@ -90,9 +90,26 @@ func buildCreateArgs(name string, env map[string]string) []string {
 	sort.Strings(keys)
 
 	for _, k := range keys {
+		if !daytonaCreateEnvAllowed(k) {
+			continue
+		}
 		args = append(args, "-e", k+"="+env[k])
 	}
 	return args
+}
+
+func daytonaCreateEnvAllowed(key string) bool {
+	key = strings.ToUpper(strings.TrimSpace(key))
+	if key == "" {
+		return false
+	}
+	sensitiveMarkers := []string{"TOKEN", "SECRET", "PASSWORD", "PASS", "AUTHKEY", "KEY", "CREDENTIAL"}
+	for _, marker := range sensitiveMarkers {
+		if strings.Contains(key, marker) {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *DaytonaProvider) runDaytona(ctx context.Context, out io.Writer, args ...string) (string, error) {
@@ -100,7 +117,11 @@ func (d *DaytonaProvider) runDaytona(ctx context.Context, out io.Writer, args ..
 	d.applyCredentials(cmd)
 
 	var captured bytes.Buffer
-	safe := synchronizedWriter(&captured)
+	commandOut := io.Writer(&captured)
+	if out != nil {
+		commandOut = io.MultiWriter(&captured, out)
+	}
+	safe := synchronizedWriter(commandOut)
 	cmd.Stdout = safe
 	cmd.Stderr = safe
 
@@ -143,6 +164,15 @@ func isMissingTemplateSnapshotError(output string) bool {
 		strings.Contains(text, "no such")
 }
 
+func isInactiveTemplateSnapshotError(output string) bool {
+	text := strings.ToLower(output)
+	return strings.Contains(text, "snapshot") && strings.Contains(text, "inactive")
+}
+
+func isUnavailableTemplateSnapshotError(output string) bool {
+	return isMissingTemplateSnapshotError(output) || isInactiveTemplateSnapshotError(output)
+}
+
 func buildSnapshotCreateArgs(helpOutput string) []string {
 	args := []string{"snapshot", "create"}
 	help := strings.ToLower(helpOutput)
@@ -170,6 +200,17 @@ func buildSnapshotCreateArgs(helpOutput string) []string {
 	return args
 }
 
+func (d *DaytonaProvider) deleteTemplateSnapshot(ctx context.Context, out io.Writer) error {
+	output, err := d.runDaytona(ctx, out, "snapshot", "delete", templateSnapshotName)
+	if err != nil {
+		if isMissingTemplateSnapshotError(output) {
+			return nil
+		}
+		return wrapDaytonaError("snapshot delete", err, output)
+	}
+	return nil
+}
+
 func (d *DaytonaProvider) ensureTemplateSnapshot(ctx context.Context, out io.Writer) error {
 	helpOutput, err := d.runDaytona(ctx, io.Discard, "snapshot", "create", "--help")
 	if err != nil {
@@ -193,9 +234,14 @@ func (d *DaytonaProvider) Create(ctx context.Context, name string, env map[strin
 
 	output, err := d.runDaytona(ctx, out, args...)
 	if err != nil {
-		if isMissingTemplateSnapshotError(output) {
+		if isUnavailableTemplateSnapshotError(output) {
+			if isInactiveTemplateSnapshotError(output) {
+				if deleteErr := d.deleteTemplateSnapshot(ctx, out); deleteErr != nil {
+					return nil, fmt.Errorf("daytona create failed and template snapshot %q is inactive: %w", templateSnapshotName, deleteErr)
+				}
+			}
 			if ensureErr := d.ensureTemplateSnapshot(ctx, out); ensureErr != nil {
-				return nil, fmt.Errorf("daytona create failed and template snapshot %q is missing: %w", templateSnapshotName, ensureErr)
+				return nil, fmt.Errorf("daytona create failed and template snapshot %q is unavailable: %w", templateSnapshotName, ensureErr)
 			}
 			retryOutput, retryErr := d.runDaytona(ctx, out, args...)
 			if retryErr != nil {
@@ -291,8 +337,10 @@ func (d *DaytonaProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, err
 	if err != nil {
 		return nil, err
 	}
-	cmdArgs := []string{"ssh", name, "--"}
-	cmdArgs = append(cmdArgs, args...)
+	cmdArgs := []string{"exec", name}
+	if len(args) > 0 {
+		cmdArgs = append(cmdArgs, "--", sshRemoteCommand(args))
+	}
 	cmd := exec.Command("daytona", cmdArgs...)
 	d.applyCredentials(cmd)
 	cmd.Stdin = os.Stdin

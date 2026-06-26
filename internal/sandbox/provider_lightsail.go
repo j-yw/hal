@@ -263,18 +263,20 @@ func (l *LightsailProvider) Create(ctx context.Context, name string, env map[str
 		if sshFn == nil {
 			sshFn = exec.CommandContext
 		}
-		sshCmd := sshFn(ctx, "ssh",
-			"-o", "StrictHostKeyChecking=no",
-			"-o", "UserKnownHostsFile=/dev/null",
-			"-o", "ConnectTimeout=10",
-			fmt.Sprintf("ubuntu@%s", ip),
-			lockdownScript,
-		)
+		sshArgs := nonInteractiveSSHOptionsWithConnectTimeout("10")
+		sshArgs = append(sshArgs, fmt.Sprintf("ubuntu@%s", ip), lockdownScript)
+		sshCtx, cancel := nonInteractiveSSHContext(ctx)
+		sshCmd := sshFn(sshCtx, "ssh", sshArgs...)
 		var lockStderr bytes.Buffer
 		sshCmd.Stdout = safeOut
 		sshCmd.Stderr = &lockStderr
-		if err := sshCmd.Run(); err != nil {
+		err = sshCmd.Run()
+		cancel()
+		if err != nil {
 			cleanupInstance("firewall lockdown failed")
+			if sshCtx.Err() == context.DeadlineExceeded {
+				return nil, fmt.Errorf("failed to apply firewall lockdown in lockdown mode: ssh command timed out after %s: %w", nonInteractiveSSHCommandTimeout, err)
+			}
 			lockMsg := strings.TrimSpace(lockStderr.String())
 			if lockMsg != "" {
 				return nil, fmt.Errorf("failed to apply firewall lockdown in lockdown mode: %s: %w", lockMsg, err)
@@ -455,13 +457,9 @@ func (l *LightsailProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, e
 		return nil, fmt.Errorf("sandbox IP is required")
 	}
 
-	cmdArgs := []string{
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "LogLevel=ERROR",
-		"ubuntu@" + ip,
-	}
-	cmdArgs = append(cmdArgs, sshRemoteCommand(args))
+	cmdArgs := nonInteractiveSSHOptions()
+	cmdArgs = append(cmdArgs, "-o", "LogLevel=ERROR", "ubuntu@"+ip)
+	cmdArgs = appendSSHRemoteCommand(cmdArgs, args)
 	cmd := exec.Command("ssh", cmdArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout

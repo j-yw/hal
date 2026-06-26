@@ -83,7 +83,14 @@ type Warning struct {
 
 // ArtifactReference points to an output artifact produced by verification.
 type ArtifactReference struct {
-	CheckID string `json:"checkId"`
-	Kind    string `json:"kind"`
-	Path    string `json:"path"`
+	CheckID    string `json:"checkId"`
+	Kind       string `json:"kind"`
+	Path       string `json:"path"`
+	sourcePath string
+}
+
+// SourcePath returns the absolute path where the artifact was written when it
+// differs from the public verify-v1 artifact path.
+func (a ArtifactReference) SourcePath() string {
+	return a.sourcePath
 }

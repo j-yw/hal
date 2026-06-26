@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/template"
 )
 
 func TestPiLinkerName(t *testing.T) {
@@ -75,6 +77,46 @@ func TestPiLinkerLink(t *testing.T) {
 	}
 	if !os.SameFile(resolvedInfo, wantInfo) {
 		t.Errorf("Resolved symlink target %q does not match expected directory %q", resolved, halSkillsDir)
+	}
+}
+
+func TestPiLinkerLinkFactoryTargetsInstalledSkillSource(t *testing.T) {
+	projectDir := t.TempDir()
+	linker := &PiLinker{}
+
+	if err := linker.Link(projectDir, []string{"factory"}); err != nil {
+		t.Fatalf("Link() error = %v", err)
+	}
+
+	linkPath := filepath.Join(projectDir, ".pi", "skills", "factory")
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("Could not read factory symlink: %v", err)
+	}
+	expected := filepath.Join("..", "..", template.HalDir, "skills", "factory")
+	if target != expected {
+		t.Fatalf("factory symlink target = %q, want %q", target, expected)
+	}
+}
+
+func TestPiLinkerLinkFactoryTargetsSourceInHalRepo(t *testing.T) {
+	projectDir := t.TempDir()
+	writeGoMod(t, projectDir, halModulePath)
+	writeFactorySkillSource(t, projectDir)
+
+	linker := &PiLinker{}
+	if err := linker.Link(projectDir, []string{"factory"}); err != nil {
+		t.Fatalf("Link() error = %v", err)
+	}
+
+	linkPath := filepath.Join(projectDir, ".pi", "skills", "factory")
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("Could not read factory symlink: %v", err)
+	}
+	expected := filepath.Join("..", "..", "internal", "skills", "factory")
+	if target != expected {
+		t.Fatalf("factory symlink target = %q, want %q", target, expected)
 	}
 }
 
