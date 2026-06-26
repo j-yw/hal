@@ -231,26 +231,19 @@ func TestRunFactorySandboxExecutorWithDepsAppliesCleanupPolicy(t *testing.T) {
 	}
 }
 
-func TestCleanupFactorySandboxAfterRunAlwaysAttemptsCleanupAfterBeforeCleanupError(t *testing.T) {
+func TestCleanupFactorySandboxAfterRunSkipsCleanupAfterBeforeCleanupError(t *testing.T) {
 	target := &sandbox.SandboxState{
 		Name:     "factory-dev",
 		Provider: "daytona",
 		Status:   sandbox.StatusRunning,
 	}
 	beforeErr := fmt.Errorf("copy artifacts failed")
-	cleanupErr := fmt.Errorf("delete sandbox failed")
 	cleanupCalls := 0
 
 	cleaned, err := cleanupFactorySandboxAfterRun(context.Background(), factorySandboxExecutorDeps{
 		cleanupSandbox: func(_ context.Context, req factorySandboxCleanupRequest) error {
 			cleanupCalls++
-			if req.Target != target {
-				t.Fatalf("cleanup target = %#v, want fixture target", req.Target)
-			}
-			if req.Provider == nil {
-				t.Fatal("cleanup provider = nil")
-			}
-			return cleanupErr
+			return nil
 		},
 	}, factorySandboxExecutorRequest{
 		BeforeCleanup: func(context.Context, factory.RunRecord) error {
@@ -258,19 +251,17 @@ func TestCleanupFactorySandboxAfterRunAlwaysAttemptsCleanupAfterBeforeCleanupErr
 		},
 	}, factory.RunRecord{}, target, fakeFactorySandboxProvider{}, io.Discard, factory.CleanupBehaviorAlways, false)
 
-	if cleanupCalls != 1 {
-		t.Fatalf("cleanup calls = %d, want 1", cleanupCalls)
+	if cleanupCalls != 0 {
+		t.Fatalf("cleanup calls = %d, want 0 after BeforeCleanup error", cleanupCalls)
 	}
 	if cleaned {
-		t.Fatal("cleanupFactorySandboxAfterRun() cleaned = true, want false when cleanup fails")
+		t.Fatal("cleanupFactorySandboxAfterRun() cleaned = true, want false after BeforeCleanup error")
 	}
 	if err == nil {
-		t.Fatal("cleanupFactorySandboxAfterRun() error = nil, want joined error")
+		t.Fatal("cleanupFactorySandboxAfterRun() error = nil, want preparation error")
 	}
-	for _, want := range []string{"prepare factory sandbox cleanup: copy artifacts failed", "delete sandbox failed"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("cleanupFactorySandboxAfterRun() error = %q, want containing %q", err.Error(), want)
-		}
+	if want := "prepare factory sandbox cleanup: copy artifacts failed"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("cleanupFactorySandboxAfterRun() error = %q, want containing %q", err.Error(), want)
 	}
 }
 
@@ -988,8 +979,9 @@ func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToBootstrapEnviro
 	if strings.Contains(argText, requiredSecret) || strings.Contains(argText, optionalSecret) || strings.Contains(argText, "GITHUB_TOKEN=") || strings.Contains(argText, "OPTIONAL_TOKEN=") {
 		t.Fatalf("bootstrap exec args leaked secret env data: %#v", execCalls[0].args)
 	}
-	if !reflect.DeepEqual(execCalls[0].args, []string{"hal", "init"}) {
-		t.Fatalf("bootstrap exec args = %#v, want hal init", execCalls[0].args)
+	wantBootstrapArgs := []string{"sh", "-lc", factorySandboxRemoteHalScript([]string{"init"})}
+	if !reflect.DeepEqual(execCalls[0].args, wantBootstrapArgs) {
+		t.Fatalf("bootstrap exec args = %#v, want %#v", execCalls[0].args, wantBootstrapArgs)
 	}
 	if strings.Contains(bootstrapStep.CommandSummary, requiredSecret) || strings.Contains(bootstrapStep.CommandSummary, "GITHUB_TOKEN") {
 		t.Fatalf("bootstrap command summary leaked secret data: %q", bootstrapStep.CommandSummary)
@@ -1674,7 +1666,7 @@ func TestRunFactorySandboxExecutorWithDepsSyncsEngineAuthBeforeRemoteExecution(t
 			return factory.BootstrapResult{}, nil
 		},
 		engineAuthFiles: func() []factorySandboxAuthFile {
-			return []factorySandboxAuthFile{{SourcePath: authPath, RemotePath: "/root/.codex/auth.json"}}
+			return []factorySandboxAuthFile{{SourcePath: authPath, RemotePath: ".codex/auth.json"}}
 		},
 		runProviderScript: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, script string, _ io.Writer) error {
 			calls = append(calls, "script:"+script)
@@ -1693,10 +1685,13 @@ func TestRunFactorySandboxExecutorWithDepsSyncsEngineAuthBeforeRemoteExecution(t
 	if len(calls) != 3 {
 		t.Fatalf("calls = %#v, want auth write, chmod, remote auto", calls)
 	}
-	if !strings.Contains(calls[0], "base64 -d > '/root/.codex/auth.json'") {
+	if !strings.Contains(calls[0], `remote_file="$remote_home"/'.codex/auth.json'`) {
 		t.Fatalf("auth copy call = %q", calls[0])
 	}
-	if calls[1] != "script:chmod '0600' '/root/.codex/auth.json'" {
+	if !strings.Contains(calls[0], `base64 -d > "$remote_file"`) {
+		t.Fatalf("auth copy call = %q", calls[0])
+	}
+	if !strings.Contains(calls[1], `chmod '0600' "$remote_file"`) {
 		t.Fatalf("auth chmod call = %q", calls[1])
 	}
 	if calls[2] != "remote-auto" {
@@ -1727,14 +1722,35 @@ func TestFactorySandboxEngineAuthFilesDiscoversCodexAndPiFiles(t *testing.T) {
 		got[file.RemotePath] = file.SourcePath
 	}
 	want := map[string]string{
-		"/root/.codex/auth.json":        filepath.Join(home, ".codex", "auth.json"),
-		"/root/.codex/config.toml":      filepath.Join(home, ".codex", "config.toml"),
-		"/root/.pi/agent/auth.json":     filepath.Join(home, ".pi", "agent", "auth.json"),
-		"/root/.pi/agent/settings.json": filepath.Join(home, ".pi", "agent", "settings.json"),
-		"/root/.pi/agent/trust.json":    filepath.Join(home, ".pi", "agent", "trust.json"),
+		".codex/auth.json":        filepath.Join(home, ".codex", "auth.json"),
+		".codex/config.toml":      filepath.Join(home, ".codex", "config.toml"),
+		".pi/agent/auth.json":     filepath.Join(home, ".pi", "agent", "auth.json"),
+		".pi/agent/settings.json": filepath.Join(home, ".pi", "agent", "settings.json"),
+		".pi/agent/trust.json":    filepath.Join(home, ".pi", "agent", "trust.json"),
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("auth files = %#v, want %#v", got, want)
+	}
+}
+
+func TestFactorySandboxBootstrapCommandArgsRunsHalFromRemoteHome(t *testing.T) {
+	args := factorySandboxBootstrapCommandArgs(factory.BootstrapCommand{
+		Name: "hal",
+		Args: []string{"init", "--refresh-templates"},
+		Dir:  "/workspace/hal",
+	})
+	if len(args) != 3 || args[0] != "sh" || args[1] != "-lc" {
+		t.Fatalf("bootstrap args = %#v, want shell wrapper", args)
+	}
+	script := args[2]
+	for _, want := range []string{
+		"cd '/workspace/hal'",
+		`remote_home="${HOME:-}"`,
+		`exec "$HOME/.local/bin/hal" 'init' '--refresh-templates'`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("bootstrap script = %q, want %q", script, want)
+		}
 	}
 }
 

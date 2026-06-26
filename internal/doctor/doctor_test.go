@@ -68,7 +68,7 @@ func installCommands(t *testing.T, dir string) {
 	}
 }
 
-func TestCheckLocalSkillLinksAcceptsTrackedFactorySkillTargets(t *testing.T) {
+func TestCheckLocalSkillLinksAcceptsInstalledFactorySkillTargets(t *testing.T) {
 	dir := t.TempDir()
 	for _, engine := range []string{".claude", ".pi"} {
 		skillsDir := filepath.Join(dir, engine, "skills")

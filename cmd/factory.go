@@ -2121,10 +2121,8 @@ func safeFactoryPRURL(rawURL string) string {
 	if host == "" || net.ParseIP(host) != nil {
 		return ""
 	}
-	for key := range parsed.Query() {
-		if factoryArtifactSecretKey(key) {
-			return ""
-		}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return ""
 	}
 	return parsed.String()
 }

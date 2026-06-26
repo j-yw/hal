@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/template"
 )
 
 func TestPiLinkerName(t *testing.T) {
@@ -78,7 +80,7 @@ func TestPiLinkerLink(t *testing.T) {
 	}
 }
 
-func TestPiLinkerLinkFactoryTargetsTrackedSkillSource(t *testing.T) {
+func TestPiLinkerLinkFactoryTargetsInstalledSkillSource(t *testing.T) {
 	projectDir := t.TempDir()
 	linker := &PiLinker{}
 
@@ -91,7 +93,7 @@ func TestPiLinkerLinkFactoryTargetsTrackedSkillSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not read factory symlink: %v", err)
 	}
-	expected := filepath.Join("..", "..", "internal", "skills", "factory")
+	expected := filepath.Join("..", "..", template.HalDir, "skills", "factory")
 	if target != expected {
 		t.Fatalf("factory symlink target = %q, want %q", target, expected)
 	}

@@ -10,7 +10,22 @@ const (
 	BootstrapStepSetupHalTemplates = "setup_hal_templates"
 	BootstrapStepRefreshHalSkills  = "refresh_hal_skills"
 
-	bootstrapInstallHalScript = `tmp="$(mktemp /tmp/hal-bootstrap.XXXXXX)" && trap 'rm -f "$tmp"' EXIT && go build -o "$tmp" . && install -m 0755 "$tmp" /usr/local/bin/hal && hal version`
+	bootstrapRemoteHomeScript = `set -eu
+remote_home="${HOME:-}"
+if [ -z "$remote_home" ] && command -v getent >/dev/null 2>&1; then
+  remote_home="$(getent passwd "$(id -u)" | cut -d: -f6)"
+fi
+if [ -z "$remote_home" ]; then remote_home="$(pwd)"; fi
+export HOME="$remote_home"`
+
+	bootstrapInstallHalScript = bootstrapRemoteHomeScript + `
+tmp="$(mktemp /tmp/hal-bootstrap.XXXXXX)"
+trap 'rm -f "$tmp"' EXIT
+bin_dir="$HOME/.local/bin"
+mkdir -p "$bin_dir"
+go build -o "$tmp" .
+install -m 0755 "$tmp" "$bin_dir/hal"
+"$bin_dir/hal" version`
 )
 
 // BootstrapHalDeps holds injectable dependencies for refreshing Hal-managed

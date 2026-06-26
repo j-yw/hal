@@ -7885,7 +7885,7 @@ func TestFactoryArtifactJSONSurfacesSanitizeAbsolutePaths(t *testing.T) {
 	}
 }
 
-func TestSafeFactoryPRURLRejectsSecretQueryKeys(t *testing.T) {
+func TestSafeFactoryPRURLRejectsQueryAndFragments(t *testing.T) {
 	tests := []struct {
 		name string
 		raw  string
@@ -7904,6 +7904,16 @@ func TestSafeFactoryPRURLRejectsSecretQueryKeys(t *testing.T) {
 		{
 			name: "api key query",
 			raw:  "https://github.com/resciencelab/hal/pull/11?api_key=secret",
+			want: "",
+		},
+		{
+			name: "non-secret query",
+			raw:  "https://github.com/resciencelab/hal/pull/11?ref=main",
+			want: "",
+		},
+		{
+			name: "fragment",
+			raw:  "https://github.com/resciencelab/hal/pull/11#access_token=secret",
 			want: "",
 		},
 	}

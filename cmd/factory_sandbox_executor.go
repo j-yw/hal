@@ -399,15 +399,7 @@ func cleanupFactorySandboxAfterRun(ctx context.Context, deps factorySandboxExecu
 	}
 	if req.BeforeCleanup != nil {
 		if err := req.BeforeCleanup(ctx, record); err != nil {
-			cleanupErr := deps.cleanupSandbox(ctx, factorySandboxCleanupRequest{
-				Target:   target,
-				Provider: provider,
-				Out:      out,
-			})
-			if cleanupErr != nil {
-				return false, errors.Join(fmt.Errorf("prepare factory sandbox cleanup: %w", err), cleanupErr)
-			}
-			return true, fmt.Errorf("prepare factory sandbox cleanup: %w", err)
+			return false, fmt.Errorf("prepare factory sandbox cleanup: %w", err)
 		}
 	}
 	if err := deps.cleanupSandbox(ctx, factorySandboxCleanupRequest{
@@ -870,9 +862,28 @@ func factorySandboxBootstrapCommandArgs(command factory.BootstrapCommand) []stri
 	args := []string{strings.TrimSpace(command.Name)}
 	args = append(args, command.Args...)
 	if dir := strings.TrimSpace(command.Dir); dir != "" {
+		if strings.TrimSpace(command.Name) == "hal" {
+			return []string{"sh", "-lc", "set -eu\ncd " + shellQuote(dir) + "\n" + factorySandboxRemoteHalScript(command.Args)}
+		}
 		return []string{"sh", "-lc", "cd " + shellQuote(dir) + " && exec " + shellCommand(args)}
 	}
+	if strings.TrimSpace(command.Name) == "hal" {
+		return []string{"sh", "-lc", factorySandboxRemoteHalScript(command.Args)}
+	}
 	return args
+}
+
+func factorySandboxRemoteHalScript(args []string) string {
+	return strings.Join([]string{
+		"set -eu",
+		`remote_home="${HOME:-}"`,
+		`if [ -z "$remote_home" ] && command -v getent >/dev/null 2>&1; then`,
+		`  remote_home="$(getent passwd "$(id -u)" | cut -d: -f6)"`,
+		`fi`,
+		`if [ -z "$remote_home" ]; then remote_home="$(pwd)"; fi`,
+		`export HOME="$remote_home"`,
+		`exec "$HOME/.local/bin/hal" ` + shellCommand(args),
+	}, "\n")
 }
 
 func sortedStringMapKeys(values map[string]string) []string {
@@ -1080,8 +1091,14 @@ func factorySandboxSyncEngineAuth(ctx context.Context, provider sandbox.Provider
 		if err != nil {
 			return fmt.Errorf("read sandbox engine auth %q: %w", filepath.Base(sourcePath), err)
 		}
-		if err := factorySandboxCopyContentToRemote(ctx, content, remotePath, "0600", provider, connectInfo, out, deps); err != nil {
-			return fmt.Errorf("sync sandbox engine auth %q: %w", filepath.Base(sourcePath), err)
+		var copyErr error
+		if factorySandboxAuthRemotePathIsHomeRelative(remotePath) {
+			copyErr = factorySandboxCopyContentToRemoteHome(ctx, content, remotePath, "0600", provider, connectInfo, out, deps)
+		} else {
+			copyErr = factorySandboxCopyContentToRemote(ctx, content, remotePath, "0600", provider, connectInfo, out, deps)
+		}
+		if copyErr != nil {
+			return fmt.Errorf("sync sandbox engine auth %q: %w", filepath.Base(sourcePath), copyErr)
 		}
 	}
 	return nil
@@ -1091,8 +1108,8 @@ func factorySandboxEngineAuthFiles() []factorySandboxAuthFile {
 	candidates := []factorySandboxAuthFile{}
 	if codexHome := factorySandboxCodexHome(); codexHome != "" {
 		candidates = append(candidates,
-			factorySandboxAuthFile{SourcePath: filepath.Join(codexHome, "auth.json"), RemotePath: "/root/.codex/auth.json"},
-			factorySandboxAuthFile{SourcePath: filepath.Join(codexHome, "config.toml"), RemotePath: "/root/.codex/config.toml"},
+			factorySandboxAuthFile{SourcePath: filepath.Join(codexHome, "auth.json"), RemotePath: ".codex/auth.json"},
+			factorySandboxAuthFile{SourcePath: filepath.Join(codexHome, "config.toml"), RemotePath: ".codex/config.toml"},
 		)
 	}
 	candidates = append(candidates, factorySandboxPiAuthFileCandidates()...)
@@ -1142,12 +1159,20 @@ func factorySandboxPiAuthFileCandidates() []factorySandboxAuthFile {
 	files := make([]factorySandboxAuthFile, 0, len(dirs)*3)
 	for _, dir := range dirs {
 		files = append(files,
-			factorySandboxAuthFile{SourcePath: filepath.Join(dir, "auth.json"), RemotePath: "/root/.pi/agent/auth.json"},
-			factorySandboxAuthFile{SourcePath: filepath.Join(dir, "settings.json"), RemotePath: "/root/.pi/agent/settings.json"},
-			factorySandboxAuthFile{SourcePath: filepath.Join(dir, "trust.json"), RemotePath: "/root/.pi/agent/trust.json"},
+			factorySandboxAuthFile{SourcePath: filepath.Join(dir, "auth.json"), RemotePath: ".pi/agent/auth.json"},
+			factorySandboxAuthFile{SourcePath: filepath.Join(dir, "settings.json"), RemotePath: ".pi/agent/settings.json"},
+			factorySandboxAuthFile{SourcePath: filepath.Join(dir, "trust.json"), RemotePath: ".pi/agent/trust.json"},
 		)
 	}
 	return files
+}
+
+func factorySandboxAuthRemotePathIsHomeRelative(remotePath string) bool {
+	remotePath = strings.TrimSpace(remotePath)
+	if remotePath == "" {
+		return false
+	}
+	return !pathpkg.IsAbs(filepath.ToSlash(remotePath))
 }
 
 func factorySandboxCopyInputToRemote(ctx context.Context, projectDir, localPath, workspaceDir string, provider sandbox.Provider, connectInfo *sandbox.ConnectInfo, out io.Writer, deps factorySandboxExecutorDeps) (string, bool, error) {
@@ -1215,6 +1240,63 @@ func factorySandboxCopyContentToRemote(ctx context.Context, content []byte, remo
 		}
 	}
 	return nil
+}
+
+func factorySandboxCopyContentToRemoteHome(ctx context.Context, content []byte, remoteRelPath, mode string, provider sandbox.Provider, connectInfo *sandbox.ConnectInfo, out io.Writer, deps factorySandboxExecutorDeps) error {
+	deps = normalizeFactorySandboxExecutorDeps(deps)
+	encoded := base64.StdEncoding.EncodeToString(content)
+	remoteRelPath = pathpkg.Clean(filepath.ToSlash(strings.TrimSpace(remoteRelPath)))
+	if remoteRelPath == "" || remoteRelPath == "." || pathpkg.IsAbs(remoteRelPath) || remoteRelPath == ".." || strings.HasPrefix(remoteRelPath, "../") {
+		return fmt.Errorf("remote home path is invalid")
+	}
+	pathScript := factorySandboxRemoteHomePathScript(pathpkg.Dir(remoteRelPath), remoteRelPath)
+	if encoded == "" {
+		script := pathScript + "\nmkdir -p \"$remote_dir\" && : > \"$remote_file\""
+		if err := deps.runProviderScript(ctx, provider, connectInfo, script, out); err != nil {
+			return err
+		}
+		if strings.TrimSpace(mode) != "" {
+			if err := deps.runProviderScript(ctx, provider, connectInfo, pathScript+"\nchmod "+shellQuote(mode)+" \"$remote_file\"", out); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for offset := 0; offset < len(encoded); offset += factorySandboxCopyInputChunkEncodedBytes {
+		end := offset + factorySandboxCopyInputChunkEncodedBytes
+		if end > len(encoded) {
+			end = len(encoded)
+		}
+		redirect := ">>"
+		prefix := pathScript + "\n"
+		if offset == 0 {
+			redirect = ">"
+			prefix += "mkdir -p \"$remote_dir\" && "
+		}
+		script := prefix + "printf %s " + shellQuote(encoded[offset:end]) + " | base64 -d " + redirect + " \"$remote_file\""
+		if err := deps.runProviderScript(ctx, provider, connectInfo, script, out); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(mode) != "" {
+		if err := deps.runProviderScript(ctx, provider, connectInfo, pathScript+"\nchmod "+shellQuote(mode)+" \"$remote_file\"", out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func factorySandboxRemoteHomePathScript(remoteDir, remoteFile string) string {
+	return strings.Join([]string{
+		"set -eu",
+		`remote_home="${HOME:-}"`,
+		`if [ -z "$remote_home" ] && command -v getent >/dev/null 2>&1; then`,
+		`  remote_home="$(getent passwd "$(id -u)" | cut -d: -f6)"`,
+		`fi`,
+		`if [ -z "$remote_home" ]; then remote_home="$(pwd)"; fi`,
+		`remote_dir="$remote_home"/` + shellQuote(remoteDir),
+		`remote_file="$remote_home"/` + shellQuote(remoteFile),
+	}, "\n")
 }
 
 func factorySandboxRemoteInputPath(localPath string) string {

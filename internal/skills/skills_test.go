@@ -43,8 +43,8 @@ func TestInstallSkillsCreatesManagedSkills(t *testing.T) {
 	}
 }
 
-func TestLocalManagedSkillLinkTargetUsesTrackedFactorySkill(t *testing.T) {
-	if got, want := LocalManagedSkillLinkTarget("factory"), filepath.Join("..", "..", "internal", "skills", "factory"); got != want {
+func TestLocalManagedSkillLinkTargetUsesInstalledSkills(t *testing.T) {
+	if got, want := LocalManagedSkillLinkTarget("factory"), filepath.Join("..", "..", template.HalDir, "skills", "factory"); got != want {
 		t.Fatalf("LocalManagedSkillLinkTarget(factory) = %q, want %q", got, want)
 	}
 	if got, want := LocalManagedSkillLinkTarget("prd"), filepath.Join("..", "..", template.HalDir, "skills", "prd"); got != want {
