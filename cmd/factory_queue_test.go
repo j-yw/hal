@@ -686,6 +686,9 @@ func TestRunFactoryQueueWorkWithDepsExecutesOneEntryAndRecordsRunState(t *testin
 	if gotPipelineReq.RunID != record.RunID {
 		t.Fatalf("pipeline runID = %q, want %q", gotPipelineReq.RunID, record.RunID)
 	}
+	if gotPipelineReq.WorkDir != record.RepoPath {
+		t.Fatalf("pipeline work dir = %q, want %q", gotPipelineReq.WorkDir, record.RepoPath)
+	}
 	if gotPipelineReq.Request.MarkdownPath != ".hal/prd-queue-work.md" {
 		t.Fatalf("pipeline markdown path = %q, want source markdown", gotPipelineReq.Request.MarkdownPath)
 	}

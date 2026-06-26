@@ -242,6 +242,7 @@ type factoryRunDeps struct {
 
 type factoryRunPipelineRequest struct {
 	RunID          string
+	WorkDir        string
 	Request        factoryRunRequest
 	Record         factory.RunRecord
 	Store          factory.Store
@@ -291,6 +292,7 @@ type factoryRunRequest struct {
 }
 
 type factoryRunAutoRequest struct {
+	WorkDir       string
 	Args          []string
 	ReportPath    string
 	BaseBranch    string
@@ -597,6 +599,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 
 	pipelineReq := factoryRunPipelineRequest{
 		RunID:         runningRecord.RunID,
+		WorkDir:       dir,
 		Request:       req,
 		Record:        runningRecord,
 		Store:         store,
@@ -3852,6 +3855,7 @@ func runFactoryRunPipelineWithDeps(ctx context.Context, req factoryRunPipelineRe
 
 	redactor := factory.NewRunSecretRedactor(req.Request.ResolvedSecrets)
 	autoReq := factoryRunAutoRequestFromFactoryRequest(req.Request)
+	autoReq.WorkDir = strings.TrimSpace(req.WorkDir)
 	autoReq.Engine = strings.TrimSpace(req.Engine)
 	autoReq.AttemptPolicy = req.AttemptPolicy
 	autoReq.SkipCI = req.SkipCI
@@ -3897,7 +3901,7 @@ func runAutoForFactoryRun(ctx context.Context, req factoryRunAutoRequest) error 
 	if err != nil {
 		return err
 	}
-	return runAuto(cmd, req.Args)
+	return runAutoWithDir(cmd, req.Args, req.WorkDir)
 }
 
 func factoryRunAutoCommand(ctx context.Context, req factoryRunAutoRequest) (*cobra.Command, error) {

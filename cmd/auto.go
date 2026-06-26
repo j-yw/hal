@@ -228,11 +228,18 @@ func init() {
 }
 
 func runAuto(cmd *cobra.Command, args []string) error {
+	return runAutoWithDir(cmd, args, ".")
+}
+
+func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	autoStart := time.Now()
 	ctx := context.Background()
 	out := io.Writer(os.Stdout)
 	errOut := io.Writer(os.Stderr)
-	dir := "."
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		dir = "."
+	}
 
 	dryRun := autoDryRunFlag
 	resume := autoResumeFlag

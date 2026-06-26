@@ -6034,7 +6034,8 @@ func TestRunFactoryRunPipelineWithDepsPassesMarkdownEntryToAuto(t *testing.T) {
 	called := false
 
 	err := runFactoryRunPipelineWithDeps(ctx, factoryRunPipelineRequest{
-		Engine: " claude ",
+		WorkDir: "/workspace/queued-repo",
+		Engine:  " claude ",
 		AttemptPolicy: autoFactoryAttemptPolicy{
 			MaxRunAttempts:       1,
 			MaxReviewFixAttempts: 2,
@@ -6062,6 +6063,7 @@ func TestRunFactoryRunPipelineWithDepsPassesMarkdownEntryToAuto(t *testing.T) {
 		t.Fatal("auto dependency did not receive the original context")
 	}
 	want := factoryRunAutoRequest{
+		WorkDir:    "/workspace/queued-repo",
 		Args:       []string{".hal/prd-feature.md"},
 		BaseBranch: "develop",
 		Engine:     "claude",
