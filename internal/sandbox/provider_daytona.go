@@ -297,7 +297,7 @@ func (d *DaytonaProvider) Delete(ctx context.Context, info *ConnectInfo, out io.
 	if err != nil {
 		return err
 	}
-	cmd := d.commandContext(ctx, "daytona", "delete", name)
+	cmd := d.commandContext(ctx, "daytona", "delete", name, "--yes")
 	d.applyCredentials(cmd)
 	var captured bytes.Buffer
 	safeOut := synchronizedWriter(&captured)

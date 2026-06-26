@@ -526,8 +526,8 @@ func TestDaytonaProvider_Delete_Success(t *testing.T) {
 		t.Fatalf("Delete() unexpected error: %v", err)
 	}
 
-	// Verify command: daytona delete my-sandbox.
-	wantArgs := []string{"daytona", "delete", "my-sandbox"}
+	// Verify command: daytona delete my-sandbox --yes.
+	wantArgs := []string{"daytona", "delete", "my-sandbox", "--yes"}
 	if len(capturedArgs) != len(wantArgs) {
 		t.Fatalf("got args %v, want %v", capturedArgs, wantArgs)
 	}

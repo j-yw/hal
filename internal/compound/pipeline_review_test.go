@@ -858,6 +858,46 @@ func TestRunReviewStep_CountsReviewFixAttempts(t *testing.T) {
 	}
 }
 
+func TestRunReviewStep_RollsBackReservedReviewFixAttemptOnLoopError(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+
+	state := &PipelineState{
+		Step:       StepReview,
+		BaseBranch: "develop",
+		BranchName: "hal/review-policy-error",
+		StartedAt:  time.Now(),
+	}
+
+	origReviewLoop := runReviewLoopWithDisplay
+	runReviewLoopWithDisplay = func(context.Context, engine.Engine, *engine.Display, string, int) (*ReviewLoopResult, error) {
+		saved := pipeline.loadState()
+		if saved == nil || saved.Review == nil || saved.Review.FixAttempts != 1 {
+			t.Fatalf("saved review fix attempts before mutating review = %+v, want 1", saved)
+		}
+		return nil, errors.New("review loop exploded")
+	}
+	t.Cleanup(func() {
+		runReviewLoopWithDisplay = origReviewLoop
+	})
+
+	err := pipeline.runReviewStep(context.Background(), state, RunOptions{MaxReviewFixAttempts: 1})
+	if err == nil {
+		t.Fatal("runReviewStep() expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "review loop exploded") {
+		t.Fatalf("error = %q, want review loop failure", err.Error())
+	}
+	if state.Review == nil || state.Review.FixAttempts != 0 || state.Review.Status != "failed" {
+		t.Fatalf("state.Review = %+v, want failed review with zero fix attempts", state.Review)
+	}
+	saved := pipeline.loadState()
+	if saved == nil || saved.Review == nil || saved.Review.FixAttempts != 0 || saved.Review.Status != "failed" {
+		t.Fatalf("saved state = %+v, want failed review with rolled back fix attempt", saved)
+	}
+}
+
 func TestRunReviewStep_MaxReviewFixAttemptsBlocksAdditionalFixCycle(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultAutoConfig()

@@ -1202,12 +1202,26 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 			}
 			result, err = runReviewLoopWithDisplay(ctx, p.engine, p.display, baseBranch, 1)
 		}
+		rollbackReservedFixAttempt := func() error {
+			if opts.MaxReviewFixAttempts <= 0 || atReviewFixLimit || state.Review.FixAttempts == fixAttemptsBeforeCycle {
+				return nil
+			}
+			state.Review.FixAttempts = fixAttemptsBeforeCycle
+			state.Step = StepReview
+			return p.saveState(state)
+		}
 		if err != nil {
 			state.Review.Status = "failed"
+			if rollbackErr := rollbackReservedFixAttempt(); rollbackErr != nil {
+				return fmt.Errorf("failed to run review cycle %d: %w (also failed to persist review fix attempt rollback: %v)", cycle, err, rollbackErr)
+			}
 			return fmt.Errorf("failed to run review cycle %d: %w", cycle, err)
 		}
 		if result == nil || len(result.Iterations) == 0 {
 			state.Review.Status = "failed"
+			if rollbackErr := rollbackReservedFixAttempt(); rollbackErr != nil {
+				return fmt.Errorf("failed to run review cycle %d: no iteration result returned (also failed to persist review fix attempt rollback: %v)", cycle, rollbackErr)
+			}
 			return fmt.Errorf("failed to run review cycle %d: no iteration result returned", cycle)
 		}
 
@@ -1228,9 +1242,7 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 				state.Review.FixAttempts++
 			}
 		} else if opts.MaxReviewFixAttempts > 0 && !atReviewFixLimit {
-			state.Review.FixAttempts = fixAttemptsBeforeCycle
-			state.Step = StepReview
-			if saveErr := p.saveState(state); saveErr != nil {
+			if saveErr := rollbackReservedFixAttempt(); saveErr != nil {
 				return fmt.Errorf("failed to persist review fix attempt rollback: %w", saveErr)
 			}
 		}
