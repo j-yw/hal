@@ -199,6 +199,61 @@ func TestRunCapturesShellCheckArtifacts(t *testing.T) {
 	requireFileContent(t, filepath.Join(projectRoot, ".hal", "reports", "verify", "test-stderr.txt"), "unit stderr")
 }
 
+func TestRunWritesArtifactsWithRestrictedPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits are not portable on Windows")
+	}
+	projectRoot := t.TempDir()
+
+	_, err := Run(context.Background(), &Config{
+		ProjectRoot: projectRoot,
+		Checks: []ShellCheck{
+			{
+				ID:             "test",
+				Name:           "Unit tests",
+				Command:        helperCommand(t, "write-output", "sensitive stdout", ""),
+				WorkDir:        projectRoot,
+				TimeoutSeconds: 10,
+				Required:       true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+
+	requireFilePerm(t, filepath.Join(projectRoot, ".hal", "reports", "verify"), 0700)
+	requireFilePerm(t, filepath.Join(projectRoot, ".hal", "reports", "verify", "test-stdout.txt"), 0600)
+}
+
+func TestRunReplacesExistingRestrictedArtifact(t *testing.T) {
+	projectRoot := t.TempDir()
+	cfg := func(output string) *Config {
+		return &Config{
+			ProjectRoot: projectRoot,
+			Checks: []ShellCheck{
+				{
+					ID:             "test",
+					Name:           "Unit tests",
+					Command:        helperCommand(t, "write-output", output, ""),
+					WorkDir:        projectRoot,
+					TimeoutSeconds: 10,
+					Required:       true,
+				},
+			},
+		}
+	}
+
+	if _, err := Run(context.Background(), cfg("first stdout")); err != nil {
+		t.Fatalf("first Run() unexpected error: %v", err)
+	}
+	if _, err := Run(context.Background(), cfg("second stdout")); err != nil {
+		t.Fatalf("second Run() unexpected error: %v", err)
+	}
+
+	requireFileContent(t, filepath.Join(projectRoot, ".hal", "reports", "verify", "test-stdout.txt"), "second stdout")
+}
+
 func TestRunDisambiguatesSanitizedArtifactIDs(t *testing.T) {
 	projectRoot := t.TempDir()
 
@@ -685,5 +740,17 @@ func requireFileContent(t *testing.T, path, want string) {
 	}
 	if got := string(data); got != want {
 		t.Fatalf("%s content = %q, want %q", path, got, want)
+	}
+}
+
+func requireFilePerm(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s permissions = %#o, want %#o", path, got, want)
 	}
 }

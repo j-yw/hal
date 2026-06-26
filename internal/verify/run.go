@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -176,13 +177,16 @@ func writeCheckArtifacts(checkID string, artifactID string, stdout []byte, stder
 }
 
 func writeCheckArtifact(checkID, artifactID, kind string, data []byte, artifactsDir string) (ArtifactReference, error) {
-	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
+	if err := os.MkdirAll(artifactsDir, 0700); err != nil {
 		return ArtifactReference{}, fmt.Errorf("create verify artifacts directory: %w", err)
+	}
+	if err := os.Chmod(artifactsDir, 0700); err != nil {
+		return ArtifactReference{}, fmt.Errorf("restrict verify artifacts directory permissions: %w", err)
 	}
 
 	fileName := fmt.Sprintf("%s-%s.txt", artifactID, kind)
 	artifactPath := filepath.Join(artifactsDir, fileName)
-	if err := os.WriteFile(artifactPath, data, 0644); err != nil {
+	if err := writeRestrictedFile(artifactPath, data); err != nil {
 		return ArtifactReference{}, fmt.Errorf("write verify artifact %s: %w", fileName, err)
 	}
 
@@ -191,6 +195,49 @@ func writeCheckArtifact(checkID, artifactID, kind string, data []byte, artifacts
 		Kind:    kind,
 		Path:    path.Join(template.HalDir, "reports", "verify", fileName),
 	}, nil
+}
+
+func writeRestrictedFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	tmp, err := os.CreateTemp(dir, "."+base+".tmp-*")
+	if err != nil {
+		return err
+	}
+
+	tmpPath := tmp.Name()
+	removeTmp := true
+	defer func() {
+		if removeTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	n, err := tmp.Write(data)
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+			return err
+		}
+		if retryErr := os.Rename(tmpPath, path); retryErr != nil {
+			return retryErr
+		}
+	}
+	removeTmp = false
+	return os.Chmod(path, 0600)
 }
 
 func uniqueArtifactID(checkID string, checkIndex int, used map[string]struct{}) string {
