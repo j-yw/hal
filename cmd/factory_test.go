@@ -3,7 +3,6 @@ package cmd
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -23,6 +22,17 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
+
+func isFactorySandboxArtifactCopyArgs(args []string, baseDir, relativePath string) bool {
+	return len(args) == 7 &&
+		args[0] == "sh" &&
+		args[1] == "-c" &&
+		args[2] == factorySandboxArtifactPythonRunner &&
+		args[3] == "hal-copy-artifact" &&
+		strings.Contains(args[4], "O_NOFOLLOW") &&
+		args[5] == baseDir &&
+		args[6] == relativePath
+}
 
 func TestFactoryCommandHelpMetadata(t *testing.T) {
 	tests := []struct {
@@ -3469,9 +3479,9 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 				}
 				return nil
 			}
-			if strings.Contains(command, "base64 < '/workspace/hal/.hal/reports/verify/remote-test-stdout.txt'") {
+			if isFactorySandboxArtifactCopyArgs(args, "/workspace/hal", ".hal/reports/verify/remote-test-stdout.txt") {
 				remoteArtifactCopied = true
-				if _, err := io.WriteString(out, base64.StdEncoding.EncodeToString([]byte("verification stdout\n"))); err != nil {
+				if _, err := io.WriteString(out, "verification stdout\n"); err != nil {
 					t.Fatalf("write remote artifact error: %v", err)
 				}
 				return nil
@@ -3602,12 +3612,11 @@ func TestCleanupFactoryRunDeferredSandboxCopiesArtifactsWithProviderExecBeforeCl
 			return fakeFactorySandboxProvider{}, nil
 		},
 		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, out io.Writer) error {
-			command := strings.Join(args, " ")
-			if !strings.Contains(command, "base64 < '/workspace/hal/.hal/auto-state.json'") {
+			if !isFactorySandboxArtifactCopyArgs(args, "/workspace/hal", ".hal/auto-state.json") {
 				t.Fatalf("provider exec args = %#v, want auto-state copy", args)
 			}
 			copied = true
-			if _, err := io.WriteString(out, base64.StdEncoding.EncodeToString([]byte(`{"step":"done"}`+"\n"))); err != nil {
+			if _, err := io.WriteString(out, `{"step":"done"}`+"\n"); err != nil {
 				t.Fatalf("write remote artifact error: %v", err)
 			}
 			return nil
@@ -4002,7 +4011,7 @@ func TestRunFactorySandboxRemoteVerificationUsesResolvedSecretsAndRedactsArtifac
 			return err
 		},
 		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, out io.Writer) error {
-			_, err := out.Write([]byte(base64.StdEncoding.EncodeToString([]byte("token=" + secret + "\n"))))
+			_, err := out.Write([]byte("token=" + secret + "\n"))
 			return err
 		},
 	}
@@ -4148,7 +4157,7 @@ func TestRunFactoryRunWithDepsRecordsAlwaysCleanupWhenFailureArtifactCopyErrors(
 				}
 				return errors.New("remote verify exited 1")
 			}
-			if strings.Contains(command, "base64 < '/workspace/hal/.hal/auto-state.json'") {
+			if isFactorySandboxArtifactCopyArgs(args, "/workspace/hal", ".hal/auto-state.json") {
 				return errors.New("copy sandbox artifact failed")
 			}
 			t.Fatalf("unexpected provider exec args = %#v", args)
@@ -6471,10 +6480,8 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 				ID:         "factory-runs-run-json-contract.json",
 				Name:       "run-record",
 				Type:       "json",
-				SourcePath: "run-json-contract.json",
 				Path:       "factory/runs/run-json-contract.json",
 				StoredPath: "artifacts/run-json-contract/factory-runs-run-json-contract.json",
-				URL:        "https://github.com/acme/repo/actions/runs/123",
 			},
 		},
 		EventSummary: newFactoryRunEventSummary(events),
@@ -6554,9 +6561,12 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 	if !ok {
 		t.Fatalf("artifacts[0] should be an object, got %T", artifacts[0])
 	}
-	requireFactoryFields(t, "factory run artifact", firstArtifact, []string{"id", "name", "type", "sourcePath", "path", "storedPath", "url"})
-	if firstArtifact["url"] != "https://github.com/acme/repo/actions/runs/123" {
-		t.Fatalf("factory run artifact url = %v, want preserved URL", firstArtifact["url"])
+	requireFactoryFields(t, "factory run artifact", firstArtifact, []string{"id", "name", "type", "path", "storedPath"})
+	if _, ok := firstArtifact["sourcePath"]; ok {
+		t.Fatalf("factory run artifact must not expose sourcePath: %#v", firstArtifact)
+	}
+	if _, ok := firstArtifact["url"]; ok {
+		t.Fatalf("factory run artifact must not expose url: %#v", firstArtifact)
 	}
 
 	eventSummary, ok := raw["eventSummary"].(map[string]any)

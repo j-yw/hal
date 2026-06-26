@@ -443,7 +443,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				"estimatedSandboxCost", "ciOutcome", "verificationOutcome", "failureCategory",
 				"startedAt", "finishedAt", "durationMs", "provider", "size", "amountUsd", "estimated",
 				"model", "classification", "errorMessage", "suggestedCommand",
-				"name", "type", "sourcePath", "path", "storedPath", "url", "sizeBytes", "createdAt", "partial",
+				"name", "type", "path", "storedPath", "sizeBytes", "createdAt", "partial",
 			},
 			requiredValues: append([]string{
 				factory.RunStatusPending,

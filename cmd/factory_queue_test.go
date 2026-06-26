@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -139,6 +140,101 @@ func TestRunFactoryQueueAddWithDepsCreatesQueueEntryAndRecordsRunState(t *testin
 	}
 	if events[0].Metadata["status"] != factory.QueueStatusQueued {
 		t.Fatalf("event status = %#v, want queued", events[0].Metadata["status"])
+	}
+}
+
+func TestRunFactoryQueueAddWithDepsRollsBackQueueEntryWhenRecordingFails(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 12, 5, 0, 0, time.UTC)
+	queuedAt := createdAt.Add(5 * time.Minute)
+	record := testFactoryRunRecord("run-queue-add-rollback", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.RunStatusPending
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	recordErr := errors.New("record queued failed")
+	deps := queueAddTestDeps(store, queuedAt, "queue-add-rollback")
+	deps.recordQueued = func(gotStore factory.Store, entry factory.QueueEntry, now time.Time) error {
+		if gotStore.Root() != store.Root() {
+			t.Fatalf("recordQueued store root = %q, want %q", gotStore.Root(), store.Root())
+		}
+		if entry.QueueID != "queue-add-rollback" {
+			t.Fatalf("recordQueued queueId = %q, want queue-add-rollback", entry.QueueID)
+		}
+		if !now.Equal(queuedAt) {
+			t.Fatalf("recordQueued time = %s, want %s", now, queuedAt)
+		}
+		return recordErr
+	}
+
+	err := runFactoryQueueAddWithDeps(io.Discard, factoryQueueAddRequest{
+		RunID:        record.RunID,
+		ExecutorMode: factory.ExecutorModeLocal,
+	}, deps)
+	if !errors.Is(err, recordErr) {
+		t.Fatalf("runFactoryQueueAddWithDeps() error = %v, want record error", err)
+	}
+
+	entries, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("queue entries len = %d, want rollback to empty queue: %#v", len(entries), entries)
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.CurrentStep != factory.RunStatusPending {
+		t.Fatalf("currentStep = %q, want pending", loaded.CurrentStep)
+	}
+	if !loaded.UpdatedAt.Equal(createdAt) {
+		t.Fatalf("updatedAt = %s, want %s", loaded.UpdatedAt, createdAt)
+	}
+}
+
+func TestRecordFactoryRunQueuedRollsBackRunWhenTimelineAppendFails(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 12, 7, 0, 0, time.UTC)
+	queuedAt := createdAt.Add(5 * time.Minute)
+	record := testFactoryRunRecord("run-queue-timeline-rollback", createdAt, createdAt)
+	record.Status = factory.RunStatusPending
+	record.CurrentStep = factory.RunStatusPending
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(store.TimelinesDir(), record.RunID+".json"), 0o700); err != nil {
+		t.Fatalf("MkdirAll(timeline path) error: %v", err)
+	}
+
+	entry := factory.QueueEntry{
+		QueueID:      "queue-timeline-rollback",
+		RunID:        record.RunID,
+		ExecutorMode: factory.ExecutorModeLocal,
+		Status:       factory.QueueStatusQueued,
+		CreatedAt:    queuedAt,
+	}
+	err := recordFactoryRunQueued(store, entry, queuedAt)
+	if err == nil {
+		t.Fatal("recordFactoryRunQueued() error = nil, want timeline append error")
+	}
+	if !strings.Contains(err.Error(), "append queued factory run timeline") {
+		t.Fatalf("recordFactoryRunQueued() error = %q, want timeline append context", err.Error())
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.CurrentStep != factory.RunStatusPending {
+		t.Fatalf("currentStep = %q, want pending", loaded.CurrentStep)
+	}
+	if !loaded.UpdatedAt.Equal(createdAt) {
+		t.Fatalf("updatedAt = %s, want %s", loaded.UpdatedAt, createdAt)
 	}
 }
 

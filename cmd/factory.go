@@ -1,11 +1,9 @@
 package cmd
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,8 +40,6 @@ const (
 	FactoryArtifactsContractVersion = "factory-artifacts-v1"
 	FactoryLogsContractVersion      = "factory-logs-v1"
 )
-
-const factorySandboxArtifactMissingSentinel = "__HAL_FACTORY_ARTIFACT_MISSING__"
 
 var factoryListJSONFlag bool
 var factoryStatusJSONFlag bool
@@ -1261,6 +1257,7 @@ func collectAndStoreFactorySandboxArtifactsWithProviderExec(ctx context.Context,
 	copier := factoryProviderExecSandboxArtifactCopier{
 		provider:        provider,
 		connectInfo:     sandbox.ConnectInfoFromState(target),
+		baseDir:         factorySandboxRemoteWorkspaceDir(record),
 		runProviderExec: deps.runProviderExec,
 	}
 	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
@@ -1753,6 +1750,7 @@ func collectAndStoreFactorySandboxVerificationArtifacts(ctx context.Context, sto
 	copier := factoryProviderExecSandboxArtifactCopier{
 		provider:        provider,
 		connectInfo:     sandbox.ConnectInfoFromState(target),
+		baseDir:         workspaceDir,
 		runProviderExec: deps.runProviderExec,
 	}
 	if _, err := factory.CollectSandboxArtifactsWithRedactor(ctx, store, record.RunID, &copier, requests, redactor); err != nil {
@@ -1774,109 +1772,88 @@ func factorySandboxVerificationArtifactID(artifact verify.ArtifactReference) str
 type factoryProviderExecSandboxArtifactCopier struct {
 	provider        sandbox.Provider
 	connectInfo     *sandbox.ConnectInfo
+	baseDir         string
 	runProviderExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
 }
 
 func (c *factoryProviderExecSandboxArtifactCopier) CopyFile(ctx context.Context, remotePath, localPath string) error {
-	remotePath = strings.TrimSpace(remotePath)
-	if remotePath == "" {
-		return factory.ErrSandboxArtifactNotFound
-	}
-	var out bytes.Buffer
-	args := []string{"sh", "-lc", "if [ ! -f " + shellQuote(remotePath) + " ]; then printf %s " + shellQuote(factorySandboxArtifactMissingSentinel) + "; exit 0; fi; base64 < " + shellQuote(remotePath)}
-	if err := c.runProviderExec(ctx, c.provider, c.connectInfo, args, &out); err != nil {
-		return err
-	}
-	payload := strings.TrimSpace(out.String())
-	if payload == factorySandboxArtifactMissingSentinel {
-		return factory.ErrSandboxArtifactNotFound
-	}
-	data, err := decodeFactorySandboxBase64Payload(payload)
+	resolvedRemotePath, err := c.resolveSandboxArtifactPath(remotePath)
 	if err != nil {
-		return fmt.Errorf("decode sandbox artifact %q: %w", remotePath, err)
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
 		return fmt.Errorf("create sandbox artifact destination: %w", err)
 	}
-	if err := os.WriteFile(localPath, data, 0o600); err != nil {
-		return fmt.Errorf("write sandbox artifact %q: %w", remotePath, err)
+
+	file, err := os.Create(localPath)
+	if err != nil {
+		return fmt.Errorf("create sandbox artifact file: %w", err)
+	}
+	runErr := c.run(ctx, factorySandboxArtifactPythonCommand(factorySandboxArtifactCopyFilePythonScript, resolvedRemotePath.baseDir, resolvedRemotePath.relativePath), file)
+	closeErr := file.Close()
+	if runErr != nil {
+		stderr := readFactorySandboxArtifactErrorOutput(localPath)
+		_ = os.Remove(localPath)
+		return factorySandboxArtifactCopyError(resolvedRemotePath.resolvedPath, stderr, runErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(localPath)
+		return fmt.Errorf("write sandbox artifact file: %w", closeErr)
 	}
 	return nil
 }
 
 func (c *factoryProviderExecSandboxArtifactCopier) CopyDir(ctx context.Context, remotePath, localPath string) error {
-	remotePath = strings.TrimSpace(remotePath)
-	if remotePath == "" {
-		return factory.ErrSandboxArtifactNotFound
-	}
-	var out bytes.Buffer
-	args := []string{"sh", "-lc", "if [ ! -d " + shellQuote(remotePath) + " ]; then printf %s " + shellQuote(factorySandboxArtifactMissingSentinel) + "; exit 0; fi; tar -C " + shellQuote(remotePath) + " -cf - . | base64"}
-	if err := c.runProviderExec(ctx, c.provider, c.connectInfo, args, &out); err != nil {
+	resolvedRemotePath, err := c.resolveSandboxArtifactPath(remotePath)
+	if err != nil {
 		return err
 	}
-	payload := strings.TrimSpace(out.String())
-	if payload == factorySandboxArtifactMissingSentinel {
-		return factory.ErrSandboxArtifactNotFound
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
+		return fmt.Errorf("create sandbox artifact destination: %w", err)
 	}
-	data, err := decodeFactorySandboxBase64Payload(payload)
+
+	tarFile, err := os.CreateTemp(filepath.Dir(localPath), "sandbox-artifact-*.tar")
 	if err != nil {
-		return fmt.Errorf("decode sandbox artifact directory %q: %w", remotePath, err)
+		return fmt.Errorf("create sandbox artifact archive: %w", err)
 	}
-	if err := os.MkdirAll(localPath, 0o700); err != nil {
-		return fmt.Errorf("create sandbox artifact directory destination: %w", err)
+	tarPath := tarFile.Name()
+	defer os.Remove(tarPath)
+
+	runErr := c.run(ctx, factorySandboxArtifactPythonCommand(factorySandboxArtifactCopyDirPythonScript, resolvedRemotePath.baseDir, resolvedRemotePath.relativePath), tarFile)
+	closeErr := tarFile.Close()
+	if runErr != nil {
+		stderr := readFactorySandboxArtifactErrorOutput(tarPath)
+		_ = os.RemoveAll(localPath)
+		return factorySandboxArtifactCopyError(resolvedRemotePath.resolvedPath, stderr, runErr)
 	}
-	reader := tar.NewReader(bytes.NewReader(data))
-	for {
-		header, err := reader.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("read sandbox artifact directory %q: %w", remotePath, err)
-		}
-		name := filepath.Clean(strings.TrimSpace(header.Name))
-		if name == "" || name == "." {
-			continue
-		}
-		if filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("sandbox artifact directory contains unsafe path %q", header.Name)
-		}
-		destination := filepath.Join(localPath, name)
-		switch header.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(destination, 0o700); err != nil {
-				return fmt.Errorf("create sandbox artifact directory %q: %w", name, err)
-			}
-		case tar.TypeReg, tar.TypeRegA:
-			if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
-				return fmt.Errorf("create sandbox artifact parent %q: %w", name, err)
-			}
-			file, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-			if err != nil {
-				return fmt.Errorf("create sandbox artifact file %q: %w", name, err)
-			}
-			_, copyErr := io.Copy(file, reader)
-			closeErr := file.Close()
-			if copyErr != nil {
-				return fmt.Errorf("write sandbox artifact file %q: %w", name, copyErr)
-			}
-			if closeErr != nil {
-				return fmt.Errorf("close sandbox artifact file %q: %w", name, closeErr)
-			}
-		default:
-			continue
-		}
+	if closeErr != nil {
+		_ = os.RemoveAll(localPath)
+		return fmt.Errorf("write sandbox artifact archive: %w", closeErr)
+	}
+	if err := extractFactorySandboxArtifactTar(tarPath, localPath); err != nil {
+		_ = os.RemoveAll(localPath)
+		return err
 	}
 	return nil
 }
 
-func decodeFactorySandboxBase64Payload(payload string) ([]byte, error) {
-	return base64.StdEncoding.DecodeString(strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' || r == '\t' || r == ' ' {
-			return -1
-		}
-		return r
-	}, payload))
+func (c *factoryProviderExecSandboxArtifactCopier) resolveSandboxArtifactPath(remotePath string) (factorySandboxArtifactRemotePath, error) {
+	return (&factorySandboxArtifactCopier{baseDir: c.baseDir}).resolveSandboxArtifactPath(remotePath)
+}
+
+func (c *factoryProviderExecSandboxArtifactCopier) run(ctx context.Context, args []string, out io.Writer) error {
+	if c.runProviderExec == nil {
+		return fmt.Errorf("sandbox provider exec runner is required")
+	}
+	return c.runProviderExec(ctx, c.provider, c.connectInfo, args, out)
+}
+
+func readFactorySandboxArtifactErrorOutput(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 func defaultFactoryStatusSnapshot(dir string) (factorySnapshotArtifact, error) {

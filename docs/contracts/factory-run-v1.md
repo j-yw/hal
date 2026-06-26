@@ -61,15 +61,15 @@ Each `artifacts` entry may contain:
 | `id` | string | no | Stable artifact identifier |
 | `name` | string | yes | Stable artifact label |
 | `type` | string | yes | Artifact category, such as `json`, `markdown`, `text`, or `url` |
-| `sourcePath` | string | no | Sanitized source path used when collecting a local artifact |
 | `path` | string | no | Local path for file artifacts |
 | `storedPath` | string | no | Store-relative path for persisted artifact payloads |
-| `url` | string | no | URL for remote artifacts |
 | `sizeBytes` | integer | no | Size of the persisted payload in bytes |
 | `createdAt` | string | no | Artifact payload timestamp in RFC3339 format |
 | `summary` | object | no | Sanitized artifact-specific metadata |
 | `warnings` | array | no | Sanitized warnings about artifact collection |
 | `partial` | boolean | no | True when the artifact record is incomplete |
+
+Raw `sourcePath` and `url` fields from stored run records are intentionally omitted from this JSON surface.
 
 ## Event Summary
 

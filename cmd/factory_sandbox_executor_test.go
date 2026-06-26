@@ -1826,6 +1826,59 @@ func TestFactorySandboxRemoteCommandArgsSelectsWorkspaceDirectory(t *testing.T) 
 	}
 }
 
+func TestRepositoryNameFromRemoteStripsCredentialedURLParts(t *testing.T) {
+	tests := []struct {
+		name   string
+		remote string
+		want   string
+	}{
+		{
+			name:   "https query access token",
+			remote: "https://github.com/example/repo.git?access_token=secret-value",
+			want:   "repo",
+		},
+		{
+			name:   "https query client secret with slash",
+			remote: "https://user:pass@github.com/example/repo.git?client_secret=secret/value",
+			want:   "repo",
+		},
+		{
+			name:   "https fragment secret",
+			remote: "https://github.com/example/repo.git#client_secret=secret-value",
+			want:   "repo",
+		},
+		{
+			name:   "scp query access token",
+			remote: "git@github.com:example/repo.git?access_token=secret-value",
+			want:   "repo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := repositoryNameFromRemote(tt.remote); got != tt.want {
+				t.Fatalf("repositoryNameFromRemote(%q) = %q, want %q", tt.remote, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFactorySandboxRemoteCommandArgsMetadataOmitsCredentialedRemoteQuery(t *testing.T) {
+	got := factorySandboxRemoteCommandArgs(factory.RunRecord{
+		RepoRemote: "https://github.com/example/repo.git?access_token=secret-value&client_secret=other-secret",
+	}, factoryRunAutoRequest{
+		Args: []string{".hal/prd-feature.md"},
+	})
+
+	commandMetadata := strings.Join(got, " ")
+	if strings.Contains(commandMetadata, "secret") || strings.Contains(commandMetadata, "access_token") || strings.Contains(commandMetadata, "client_secret") {
+		t.Fatalf("remote command metadata contains credentialed remote data: %q", commandMetadata)
+	}
+	if !strings.Contains(commandMetadata, "cd '/workspace/repo'") {
+		t.Fatalf("remote command metadata = %q, want workspace /workspace/repo", commandMetadata)
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsRequiresRemoteWorkspaceBeforeExecution(t *testing.T) {
 	now := time.Date(2026, 6, 21, 12, 45, 0, 0, time.UTC)
 	var savedRecords []factory.RunRecord

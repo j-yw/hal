@@ -457,6 +457,24 @@ func TestClaimNextQueueEntryReturnsNilWhenNoQueuedEntries(t *testing.T) {
 	}
 }
 
+func TestClaimNextQueueEntryTreatsMissingFileAsNoWorkWithoutCreatingState(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "factory"))
+
+	got, err := store.ClaimNextQueueEntry(QueueOperationOptions{})
+	if err != nil {
+		t.Fatalf("ClaimNextQueueEntry() unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("ClaimNextQueueEntry() = %#v, want nil", got)
+	}
+	if _, err := os.Stat(store.QueuePath()); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("ClaimNextQueueEntry() should not create queue file, stat error = %v", err)
+	}
+	if _, err := os.Stat(store.Root()); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("ClaimNextQueueEntry() should not create store root for missing queue, stat error = %v", err)
+	}
+}
+
 func TestMarkQueueEntrySucceededRecordsTerminalState(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 21, 13, 0, 0, 0, time.UTC)

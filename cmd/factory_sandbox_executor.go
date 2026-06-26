@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -317,7 +319,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 				return factorySandboxRemoteRepoExists(ctx, provider, connectInfo, deps.runProviderScript, path)
 			},
 		})
-		if appendErr := appendFactorySandboxBootstrapTimeline(store, deps, &record, target, bootstrapResult); appendErr != nil {
+		if appendErr := appendFactorySandboxBootstrapTimeline(store, deps, &record, target, bootstrapResult, remoteOutput); appendErr != nil {
 			return fmt.Errorf("record sandbox bootstrap timeline: %w", appendErr)
 		}
 		if syncErr := remoteOutput.SyncNextSequence(); syncErr != nil {
@@ -611,6 +613,12 @@ func (w *factorySandboxTimelineWriter) appendLineLocked(line string) error {
 	if w.eventRedact != nil {
 		line = w.eventRedact(line)
 	}
+	metadata := map[string]any{
+		"source":      "remote_sandbox",
+		"stream":      "remote",
+		"sandboxName": w.sandboxName,
+		"provider":    w.provider,
+	}
 	event := factory.EventRecord{
 		Sequence:  w.nextSequence,
 		RunID:     w.runID,
@@ -618,12 +626,7 @@ func (w *factorySandboxTimelineWriter) appendLineLocked(line string) error {
 		Timestamp: w.deps.now().UTC(),
 		Message:   line,
 		Summary:   "Remote sandbox output",
-		Metadata: map[string]any{
-			"source":      "remote_sandbox",
-			"stream":      "remote",
-			"sandboxName": w.sandboxName,
-			"provider":    w.provider,
-		},
+		Metadata:  w.redactExecutorEventMetadataWithRaw(metadata),
 	}
 	if err := w.deps.appendEvent(w.store, &event); err != nil {
 		return err
@@ -939,7 +942,7 @@ func factorySandboxResolvedSecretEnv(secrets []factory.ResolvedRunSecret) map[st
 	return env
 }
 
-func appendFactorySandboxBootstrapTimeline(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, result factory.BootstrapResult) error {
+func appendFactorySandboxBootstrapTimeline(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, result factory.BootstrapResult, redactor *factorySandboxTimelineWriter) error {
 	if record == nil || strings.TrimSpace(record.RunID) == "" || len(result.Timeline) == 0 {
 		return nil
 	}
@@ -982,6 +985,11 @@ func appendFactorySandboxBootstrapTimeline(store factory.Store, deps factorySand
 			Message:   timeline.OutputSummary,
 			Summary:   timeline.Message,
 			Metadata:  metadata,
+		}
+		if redactor != nil {
+			event.Message = redactor.redactExecutorEventString(event.Message)
+			event.Summary = redactor.redactExecutorEventString(event.Summary)
+			event.Metadata = redactor.redactExecutorEventMetadataWithRaw(metadata)
 		}
 		if event.Summary == "" {
 			event.Summary = "Sandbox workspace bootstrap step recorded"
@@ -1244,6 +1252,20 @@ func factorySandboxRemoteWorkspaceDir(record factory.RunRecord) string {
 }
 
 func repositoryNameFromRemote(remote string) string {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(remote); err == nil && parsed.Scheme != "" {
+		name := pathpkg.Base(strings.TrimSuffix(parsed.Path, "/"))
+		if name == "." || name == "/" {
+			return ""
+		}
+		return strings.TrimSpace(strings.TrimSuffix(name, ".git"))
+	}
+	if idx := strings.IndexAny(remote, "?#"); idx >= 0 {
+		remote = remote[:idx]
+	}
 	remote = strings.TrimSuffix(strings.TrimSpace(remote), "/")
 	remote = strings.TrimSuffix(remote, ".git")
 	if remote == "" {
@@ -1559,7 +1581,7 @@ func runFactorySandboxProviderExec(ctx context.Context, provider sandbox.Provide
 	if cmd == nil {
 		return fmt.Errorf("sandbox provider returned nil exec command")
 	}
-	return sandbox.RunCmd(cmd, out)
+	return sandbox.RunCmdContext(ctx, cmd, out)
 }
 
 func factorySandboxProviderExecArgs(args []string) []string {
@@ -1570,7 +1592,6 @@ func factorySandboxProviderExecArgs(args []string) []string {
 }
 
 func runFactorySandboxProviderScript(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, script string, out io.Writer) error {
-	_ = ctx
 	if provider == nil {
 		return fmt.Errorf("sandbox provider is required")
 	}
@@ -1582,7 +1603,7 @@ func runFactorySandboxProviderScript(ctx context.Context, provider sandbox.Provi
 		return fmt.Errorf("sandbox provider returned nil exec command")
 	}
 	cmd.Stdin = strings.NewReader(script)
-	return sandbox.RunCmd(cmd, out)
+	return sandbox.RunCmdContext(ctx, cmd, out)
 }
 
 func runFactorySandboxProviderExecWithEnv(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, args []string, env map[string]string, out io.Writer) error {

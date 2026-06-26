@@ -182,11 +182,23 @@ func (s Store) ClaimNextQueueEntry(opts QueueOperationOptions) (*QueueEntry, err
 	opts = normalizeQueueOperationOptions(opts)
 	claim := opts.queueClaim()
 
+	exists, err := s.queueFileExists()
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, nil
+	}
+
 	var claimed *QueueEntry
-	if _, err := s.UpdateQueue(func(entries []QueueEntry) ([]QueueEntry, error) {
+	if err := s.withQueueLock(func() error {
+		entries, err := s.loadQueue()
+		if err != nil {
+			return err
+		}
 		idx := oldestQueuedEntryIndex(entries)
 		if idx < 0 {
-			return entries, nil
+			return nil
 		}
 
 		claimedAt := opts.Now().UTC()
@@ -199,7 +211,7 @@ func (s Store) ClaimNextQueueEntry(opts QueueOperationOptions) (*QueueEntry, err
 
 		entry := entries[idx]
 		claimed = &entry
-		return entries, nil
+		return s.saveQueue(entries)
 	}); err != nil {
 		return nil, err
 	}
@@ -306,6 +318,21 @@ func (s Store) loadQueue() ([]QueueEntry, error) {
 	}
 
 	return copyQueueEntries(state.Entries), nil
+}
+
+func (s Store) queueFileExists() (bool, error) {
+	path := s.QueuePath()
+	if path == "" {
+		return false, errStoreDirUnavailable
+	}
+
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat factory queue: %w", err)
+	}
+	return true, nil
 }
 
 func (s Store) saveQueue(entries []QueueEntry) error {

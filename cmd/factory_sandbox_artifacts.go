@@ -587,6 +587,15 @@ func factorySandboxArtifactCopyError(remotePath, stderr string, err error) error
 	if summary := factorySandboxArtifactCopyStderrSummary(remotePath, stderr); summary != "" {
 		return fmt.Errorf("copy sandbox artifact: %s: %s", reason, summary)
 	}
+	if detail, wrap := factorySandboxArtifactCopyErrorDetail(remotePath, err); detail != "" {
+		if detail == reason {
+			return fmt.Errorf("copy sandbox artifact: %w", err)
+		}
+		if wrap {
+			return fmt.Errorf("copy sandbox artifact: %s: %w", reason, err)
+		}
+		return fmt.Errorf("copy sandbox artifact: %s: %s", reason, detail)
+	}
 	return fmt.Errorf("copy sandbox artifact: %s", reason)
 }
 
@@ -602,6 +611,24 @@ func factorySandboxArtifactCopyErrorReason(err error) string {
 		return context.DeadlineExceeded.Error()
 	}
 	return "failed"
+}
+
+func factorySandboxArtifactCopyErrorDetail(remotePath string, err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	detail := strings.TrimSpace(err.Error())
+	if detail == "" {
+		return "", false
+	}
+	if remotePath != "" && strings.Contains(detail, remotePath) {
+		return "error details omitted", false
+	}
+	safeDetail := sanitizeFactoryLogText(detail)
+	if safeDetail == "" || safeDetail == "[redacted]" {
+		return "error details omitted", false
+	}
+	return safeDetail, safeDetail == detail
 }
 
 func factorySandboxArtifactCopyStderrSummary(remotePath, stderr string) string {

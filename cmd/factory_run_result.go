@@ -45,16 +45,13 @@ type FactoryRunFailure struct {
 	SuggestedCommand string `json:"suggestedCommand,omitempty"`
 }
 
-// FactoryRunArtifactReference preserves the factory-run-v1 artifact shape while
-// avoiding raw workspace-local absolute paths.
+// FactoryRunArtifactReference is the safe factory-run-v1 artifact surface.
 type FactoryRunArtifactReference struct {
 	ID         string         `json:"id,omitempty"`
 	Name       string         `json:"name"`
 	Type       string         `json:"type"`
-	SourcePath string         `json:"sourcePath,omitempty"`
 	StoredPath string         `json:"storedPath,omitempty"`
 	Path       string         `json:"path,omitempty"`
-	URL        string         `json:"url,omitempty"`
 	SizeBytes  *int64         `json:"sizeBytes,omitempty"`
 	CreatedAt  *time.Time     `json:"createdAt,omitempty"`
 	Summary    map[string]any `json:"summary,omitempty"`
@@ -129,10 +126,8 @@ func newFactoryRunArtifactReferences(artifacts []factory.ArtifactReference) []Fa
 			ID:         strings.TrimSpace(artifact.ID),
 			Name:       strings.TrimSpace(artifact.Name),
 			Type:       strings.TrimSpace(artifact.Type),
-			SourcePath: sanitizeFactoryArtifactPath(artifact.SourcePath),
 			StoredPath: strings.TrimSpace(artifact.StoredPath),
 			Path:       sanitizeFactoryArtifactPath(artifact.Path),
-			URL:        safeFactoryPRURL(artifact.URL),
 			SizeBytes:  artifact.SizeBytes,
 			CreatedAt:  artifact.CreatedAt,
 			Summary:    sanitizeFactoryArtifactSummary(artifact.Summary),
@@ -168,14 +163,18 @@ func newFactoryRunFailure(record factory.RunRecord) *FactoryRunFailure {
 	classification := factory.NormalizeFailureCategoryForContractV1(record.Failure.Category)
 	failure := &FactoryRunFailure{
 		Classification: classification,
-		ErrorMessage:   record.Failure.Message,
+		ErrorMessage:   sanitizeFactoryRunResultText(record.Failure.Message),
 	}
-	if suggested := strings.TrimSpace(record.Failure.SuggestedCommand); suggested != "" {
+	if suggested := sanitizeFactoryRunResultText(record.Failure.SuggestedCommand); suggested != "" {
 		failure.SuggestedCommand = suggested
 	} else if nextAction := newFactoryRunNextAction(record); nextAction != nil {
-		failure.SuggestedCommand = nextAction.Command
+		failure.SuggestedCommand = sanitizeFactoryRunResultText(nextAction.Command)
 	}
 	return failure
+}
+
+func sanitizeFactoryRunResultText(value string) string {
+	return sanitizeFactoryLogText(value)
 }
 
 func factoryRunInspectCommand(runID string) string {

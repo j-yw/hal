@@ -25,6 +25,7 @@ type factoryQueueAddDeps struct {
 	defaultStore func() (factory.Store, error)
 	now          func() time.Time
 	newQueueID   func() (string, error)
+	recordQueued func(factory.Store, factory.QueueEntry, time.Time) error
 }
 
 type factoryQueueListDeps struct {
@@ -71,6 +72,7 @@ type factoryQueueWorkRequest struct {
 var defaultFactoryQueueAddDeps = factoryQueueAddDeps{
 	defaultStore: factory.DefaultStore,
 	now:          time.Now,
+	recordQueued: recordFactoryRunQueued,
 }
 
 var defaultFactoryQueueListDeps = factoryQueueListDeps{
@@ -300,15 +302,14 @@ func runFactoryQueueAddWithDeps(out io.Writer, req factoryQueueAddRequest, deps 
 		return err
 	}
 
-	entry, err := store.EnqueueQueueEntry(req.RunID, executorMode, factory.QueueOperationOptions{
+	entry, err := store.EnqueueQueueEntryWithLockedPostSave(req.RunID, executorMode, factory.QueueOperationOptions{
 		Now:        deps.now,
 		NewQueueID: deps.newQueueID,
+	}, func(entry factory.QueueEntry) error {
+		return deps.recordQueued(store, entry, entry.CreatedAt)
 	})
 	if err != nil {
 		return fmt.Errorf("enqueue factory run %q: %w", strings.TrimSpace(req.RunID), err)
-	}
-	if err := recordFactoryRunQueued(store, entry, deps.now()); err != nil {
-		return err
 	}
 
 	return renderFactoryQueueAddResult(out, entry, req.JSON)
@@ -640,6 +641,9 @@ func normalizeFactoryQueueAddDeps(deps factoryQueueAddDeps) factoryQueueAddDeps 
 	if deps.now == nil {
 		deps.now = defaultFactoryQueueAddDeps.now
 	}
+	if deps.recordQueued == nil {
+		deps.recordQueued = defaultFactoryQueueAddDeps.recordQueued
+	}
 	return deps
 }
 
@@ -739,6 +743,7 @@ func recordFactoryRunQueued(store factory.Store, entry factory.QueueEntry, now t
 	if err != nil {
 		return fmt.Errorf("load queued factory run %q: %w", entry.RunID, err)
 	}
+	original := *record
 
 	record.CurrentStep = factory.QueueStatusQueued
 	record.UpdatedAt = now.UTC()
@@ -746,7 +751,7 @@ func recordFactoryRunQueued(store factory.Store, entry factory.QueueEntry, now t
 		return fmt.Errorf("record queued factory run %q: %w", entry.RunID, err)
 	}
 
-	return appendFactoryRunTimelineEvent(store, entry.RunID, now, factoryTimelineEvent{
+	if err := appendFactoryRunTimelineEvent(store, entry.RunID, now, factoryTimelineEvent{
 		EventType: factory.EventTypeCommandOutputSummary,
 		Summary:   "Factory run queued",
 		Metadata: map[string]any{
@@ -754,7 +759,17 @@ func recordFactoryRunQueued(store factory.Store, entry factory.QueueEntry, now t
 			"executorMode": entry.ExecutorMode,
 			"status":       factory.QueueStatusQueued,
 		},
-	})
+	}); err != nil {
+		if rollbackErr := store.SaveRun(&original); rollbackErr != nil {
+			return errors.Join(
+				fmt.Errorf("append queued factory run timeline %q: %w", entry.RunID, err),
+				fmt.Errorf("rollback queued factory run %q: %w", entry.RunID, rollbackErr),
+			)
+		}
+		return fmt.Errorf("append queued factory run timeline %q: %w", entry.RunID, err)
+	}
+
+	return nil
 }
 
 func recordFactoryRunClaimed(store factory.Store, entry factory.QueueEntry, now time.Time) error {
