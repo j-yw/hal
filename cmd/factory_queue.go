@@ -210,7 +210,9 @@ func runFactoryQueueWork(cmd *cobra.Command, _ []string) error {
 		out = cmd.OutOrStdout()
 	}
 
-	return runFactoryQueueWorkWithDeps(ctx, out, req, defaultFactoryQueueWorkDeps)
+	countingOut := newFactoryCountingWriter(out)
+	err = runFactoryQueueWorkWithDeps(ctx, countingOut, req, defaultFactoryQueueWorkDeps)
+	return suppressFactoryJSONRenderedError(err, req.JSON, countingOut)
 }
 
 func validateFactoryQueueAddArgs(cmd *cobra.Command, args []string) error {

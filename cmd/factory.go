@@ -488,7 +488,9 @@ func runFactoryRun(cmd *cobra.Command, args []string) error {
 		out = cmd.OutOrStdout()
 	}
 
-	return runFactoryRunWithDeps(ctx, ".", req, out, defaultFactoryRunDeps)
+	countingOut := newFactoryCountingWriter(out)
+	err = runFactoryRunWithDeps(ctx, ".", req, countingOut, defaultFactoryRunDeps)
+	return suppressFactoryJSONRenderedError(err, req.JSON, countingOut)
 }
 
 func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunRequest, out io.Writer, deps factoryRunDeps) error {

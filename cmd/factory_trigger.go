@@ -130,7 +130,9 @@ func runFactoryTrigger(cmd *cobra.Command, _ []string) error {
 		out = cmd.OutOrStdout()
 	}
 
-	return runFactoryTriggerWithDeps(out, req, defaultFactoryTriggerDeps)
+	countingOut := newFactoryCountingWriter(out)
+	err = runFactoryTriggerWithDeps(countingOut, req, defaultFactoryTriggerDeps)
+	return suppressFactoryJSONRenderedError(err, req.JSON, countingOut)
 }
 
 func factoryTriggerRequestFromCommand(cmd *cobra.Command) (factoryTriggerRequest, error) {
