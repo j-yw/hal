@@ -81,11 +81,11 @@ func TestBootstrapWorkspaceRunsDeterministicOrchestration(t *testing.T) {
 		BootstrapStepFetchRepository,
 		BootstrapStepCheckoutBase,
 		BootstrapStepCreateRunBranch,
-		BootstrapStepVerifyHal,
-		"verify_engine_codex",
 		BootstrapStepInstallHal,
 		BootstrapStepSetupHalTemplates,
 		BootstrapStepRefreshHalSkills,
+		BootstrapStepVerifyHal,
+		"verify_engine_codex",
 		BootstrapStepFinalCheckHalDoctor,
 	})
 	if len(result.Timeline) != len(result.Steps) {
@@ -98,11 +98,11 @@ func TestBootstrapWorkspaceRunsDeterministicOrchestration(t *testing.T) {
 		"git fetch --prune origin",
 		"git checkout -f -B main origin/main",
 		"git checkout -f -b hal/factory-remote-workspace-bootstrap main",
-		"hal version",
-		"codex --version",
 		"sh -lc " + bootstrapInstallHalScript,
 		"hal init --refresh-templates",
 		"hal links refresh",
+		"hal version",
+		"codex --version",
 		"hal doctor --json",
 	}
 	if !reflect.DeepEqual(gotSummaries, wantSummaries) {
@@ -187,10 +187,13 @@ func TestBootstrapWorkspaceStopsOnFirstBlockingFailure(t *testing.T) {
 			{ExitCode: 0, OutputSummary: "repository fetched"},
 			{ExitCode: 0, OutputSummary: "base checked out"},
 			{ExitCode: 0, OutputSummary: "run branch created"},
+			{ExitCode: 0, OutputSummary: "hal installed from checkout"},
+			{ExitCode: 0, OutputSummary: "hal refreshed"},
+			{ExitCode: 0, OutputSummary: "links refreshed"},
 			{ExitCode: 0, OutputSummary: "hal found"},
 			{ExitCode: 1, StderrSummary: "codex setup failed"},
 		},
-		errs: []error{nil, nil, nil, nil, nil, engineErr},
+		errs: []error{nil, nil, nil, nil, nil, nil, nil, nil, engineErr},
 	}
 	request := BootstrapRequest{
 		RepositoryURL: "git@github.com:jywlabs/hal.git",
@@ -236,12 +239,15 @@ func TestBootstrapWorkspaceStopsOnFirstBlockingFailure(t *testing.T) {
 		BootstrapStepFetchRepository,
 		BootstrapStepCheckoutBase,
 		BootstrapStepCreateRunBranch,
+		BootstrapStepInstallHal,
+		BootstrapStepSetupHalTemplates,
+		BootstrapStepRefreshHalSkills,
 		BootstrapStepVerifyHal,
 		"verify_engine_codex",
 	})
 
 	gotSummaries := bootstrapCommandSummaries(executor.calls)
-	if containsCommandSummary(gotSummaries, "hal init") || containsCommandSummary(gotSummaries, "hal doctor --json") {
+	if containsCommandSummary(gotSummaries, "hal doctor --json") {
 		t.Fatalf("bootstrap continued after first failure: %#v", gotSummaries)
 	}
 }

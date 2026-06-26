@@ -47,8 +47,8 @@ type bootstrapFinalCheckDeps struct {
 }
 
 // BootstrapWorkspace prepares a factory workspace in deterministic order:
-// repository checkout, run branch preparation, tooling verification, Hal setup,
-// and final workspace checks.
+// repository checkout, run branch preparation, Hal setup from the checked-out
+// branch, tooling verification, and final workspace checks.
 func BootstrapWorkspace(ctx context.Context, request BootstrapRequest, deps BootstrapDeps) (BootstrapResult, error) {
 	result := BootstrapResult{
 		RepoPath: bootstrapToolingRepoPath(request.WorkspaceDir),
@@ -64,14 +64,14 @@ func BootstrapWorkspace(ctx context.Context, request BootstrapRequest, deps Boot
 		return result, err
 	}
 
-	toolingResult, err := BootstrapVerifyTooling(ctx, request, deps.toolingDeps())
-	appendBootstrapResult(&result, toolingResult)
+	halResult, err := BootstrapRefreshHal(ctx, request, deps.halDeps())
+	appendBootstrapResult(&result, halResult)
 	if err != nil {
 		return result, err
 	}
 
-	halResult, err := BootstrapRefreshHal(ctx, request, deps.halDeps())
-	appendBootstrapResult(&result, halResult)
+	toolingResult, err := BootstrapVerifyTooling(ctx, request, deps.toolingDeps())
+	appendBootstrapResult(&result, toolingResult)
 	if err != nil {
 		return result, err
 	}
