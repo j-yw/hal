@@ -1,25 +1,32 @@
 # Hal
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Release](https://img.shields.io/github/v/release/j-yw/hal)](https://github.com/j-yw/hal/releases)
 
-Autonomous AI coding loop CLI. Feed it a PRD, and it implements each user story one iteration at a time using AI coding agents.
+Hal is a CLI for PRD-driven AI software work. It can plan a feature, convert the PRD into machine-readable runtime state, run isolated agent iterations, review the resulting branch, push through CI, and archive completed feature state.
+
+Hal is designed for both humans and supervising agents:
+
+- Humans get a small set of direct CLI workflows.
+- Agents get deterministic status, doctor, continue, review, factory, and JSON contract surfaces.
+- Each implementation pass runs with fresh context and explicit repository state.
 
 > "I'm sorry Dave, I'm afraid I can't do that... without a proper PRD."
 
-## Features
+## What Hal Does
 
-- **PRD-driven development** — Generate, convert, and validate Product Requirements Documents
-- **Autonomous execution** — Each iteration picks the next story, implements it, commits, and updates progress
-- **Fresh context per iteration** — Every story gets a clean context window, no memory pollution
-- **Pluggable engines** — Works with Claude Code, OpenAI Codex, or Pi
-- **Project standards** — Codify patterns into standards that are injected into every agent iteration
-- **Archive & restore** — Switch between features without losing state
-- **Single auto pipeline** — Deterministic automation from analysis through archive using `.hal/prd.json` runtime state
+- Generates markdown or JSON PRDs from feature briefs.
+- Converts markdown PRDs into canonical `.hal/prd.json` runtime state.
+- Runs one story or task at a time through Codex, Claude Code, or pi.
+- Tracks progress in `.hal/progress.txt` and marks completed items in `.hal/prd.json`.
+- Runs review/fix loops against a base branch.
+- Runs CI push/status/fix/merge workflows.
+- Supports remote sandbox execution for isolated factory runs.
+- Stores durable factory run, queue, log, artifact, and handoff records.
+- Exposes stable JSON contracts for automation.
 
 ## Installation
 
-### Homebrew (macOS)
+### Homebrew
 
 ```bash
 brew tap j-yw/tap
@@ -29,147 +36,217 @@ brew install --cask hal
 ### From Source
 
 ```bash
-git clone https://github.com/j-yw/hal.git
+git clone https://github.com/ReScienceLab/hal.git
 cd hal
-make install    # Installs to ~/.local/bin
+make install
 ```
 
-### Requirements
+`make install` builds `hal` and installs it to `~/.local/bin/hal`.
 
-- Go 1.25.7+ (for building from source)
-- One of the following AI coding agents:
-  - [Codex](https://github.com/openai/codex) CLI (default engine)
-  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
-  - [Pi](https://github.com/mariozechner/pi-coding-agent) CLI
+## Requirements
 
-## Quick Start
+- Go 1.25.7 or newer when building from source.
+- Git.
+- At least one supported coding engine:
+  - Codex CLI, selected by default.
+  - Claude Code CLI.
+  - pi CLI.
+
+For sandbox workflows, run `hal sandbox setup` and provide the provider credentials and environment values requested for Daytona, Hetzner, DigitalOcean, or AWS Lightsail.
+
+## First Run
 
 ```bash
-# Initialize project
 hal init
-
-# Generate a PRD interactively
-hal plan "add user authentication"
-
-# Convert markdown PRD to JSON (auto-picks .hal/prd-*.md)
-hal convert
-
-# Validate the PRD
-hal validate
-
-# Run the autonomous loop
-hal run
+hal doctor
+hal status
 ```
 
-## How It Works
+`hal init` creates `.hal/`, installs Hal skills and command prompts, and refreshes engine links. `hal doctor` checks whether the current repository is ready to run Hal.
 
-### Manual Workflow
-
-```
-hal init → hal plan → hal convert → hal validate → hal run
-```
-
-1. **init** — Set up `.hal/` directory with config, templates, skills, and commands
-2. **plan** — Generate a PRD through clarifying questions
-3. **convert** — Transform markdown PRD to structured JSON (default no archive; use `--archive` / `--force` for guarded canonical overwrites)
-4. **validate** — Check stories against quality rules
-5. **run** — Loop through stories: pick next, implement, commit, repeat
-
-### Auto Pipeline (Fully Automated)
-
-```
-hal report → hal auto → hal report → hal auto → ...
-```
-
-The auto pipeline creates a continuous development cycle:
-
-1. **`hal report`** — Runs **legacy session reporting** (the behavior that previously lived under `hal review`). It analyzes completed work and generates a report with recommendations for next steps. Saves to `.hal/reports/` and updates `AGENTS.md` with discovered patterns.
-
-2. **`hal auto`** — Runs one deterministic pipeline with config-driven source + convert policy:
-   - source discovery uses `auto.sourcePriority` (default `report_first`: latest report → newest `.hal/prd-*.md`)
-   - `auto.sourcePriority: markdown_first` flips discovery to newest markdown → latest report
-   - convert mode uses `auto.convertMode` (default `auto`: markdown entry → standard US stories, report entry → granular T tasks)
-   - `auto.convertMode: standard|granular` forces mode for all new runs
-   - **Analyze** → **Spec** → **Branch** → **Convert** → **Validate** → **Run** → **Review** → **CI** → **Report** → **Archive**
-   - `convert` writes canonical runtime PRD state to `.hal/prd.json`
-   - downstream gates consume the same `.hal/prd.json` runtime source
-   - policy presets: `--mode fast|balanced|strict` (default from `.hal/config.yaml`)
-   - per-run overrides: `--no-review`, `--no-ci`, `--review-streak`, `--review-max`
-   - `hal auto <prd-path>` skips analyze/spec and starts from **Branch**
-
-3. **Repeat** — After the PR merges, run `hal report` again to generate the next report.
-
-For iterative branch-vs-branch review/fix loops, use:
+If doctor reports safe remediations:
 
 ```bash
-hal review --base <base-branch> [iterations]
-hal review --base <base-branch> --iterations <n> -e codex
+hal repair
+hal doctor
 ```
 
-**Getting started:** Run the manual workflow first (`hal plan` → `hal run`), then `hal report` to generate your first report. Or place a report directly in `.hal/reports/`.
+## Core Workflows
 
-State is saved after each step — use `hal auto --resume` to continue from interruptions.
-When `--resume` is set, positional `prd-path` and `--report` are ignored in favor of saved state.
+### Manual PRD Loop
 
-### Migration Note
+Use this when you want to inspect each stage.
 
-The old `hal review` reporting workflow moved to `hal report`.
+```bash
+hal plan "add user authentication"
+hal convert
+hal validate
+hal run --base develop
+hal review --base develop
+hal ci push
+hal ci status --wait
+```
 
-- Use `hal report` for legacy session reporting and report generation.
-- Use `hal review --base <base-branch> [iterations]` for the new iterative review/fix loop (select engine with `-e`).
-- `hal review against <base-branch> [iterations]` remains as a deprecated alias.
-- `hal explode` is a deprecated compatibility shim for `hal convert --granular`; it writes canonical `.hal/prd.json` and prints a deprecation warning.
-- Deprecation timeline: deprecated in `v0.2.0`, removed in `v1.0.0`.
+Flow:
 
-## CLI Reference
+1. `hal plan` creates `.hal/prd-*.md`.
+2. `hal convert` writes `.hal/prd.json`.
+3. `hal validate` checks PRD quality.
+4. `hal run` implements incomplete stories.
+5. `hal review` runs branch-vs-base review/fix cycles.
+6. `hal ci` pushes, checks, fixes, or merges the PR.
 
-Generated CLI command reference docs are available in [`docs/cli/`](docs/cli/) with the main entry page at [`docs/cli/hal.md`](docs/cli/hal.md).
+### Auto Pipeline
 
-## Machine Contracts
+Use this when you want Hal to run the full deterministic pipeline.
 
-Stable JSON contracts for agent integration:
+```bash
+hal auto .hal/prd-feature.md --base develop
+```
 
-- [`docs/contracts/auto-v2.md`](docs/contracts/auto-v2.md) — `hal auto --json` output contract
-- [`docs/contracts/status-v1.md`](docs/contracts/status-v1.md) — Workflow state machine
-- [`docs/contracts/doctor-v1.md`](docs/contracts/doctor-v1.md) — Health/readiness checks
-- [`docs/contracts/continue-v1.md`](docs/contracts/continue-v1.md) — What to do next
-- [`docs/contracts/plan-v1.md`](docs/contracts/plan-v1.md) — `hal plan --json` output contract
-- [`docs/contracts/sandbox-list-v1.md`](docs/contracts/sandbox-list-v1.md) — `hal sandbox list --json` output contract
-- [`docs/contracts/ci-push-v1.md`](docs/contracts/ci-push-v1.md) — `hal ci push` output contract
-- [`docs/contracts/ci-status-v1.md`](docs/contracts/ci-status-v1.md) — `hal ci status` output contract
-- [`docs/contracts/ci-fix-v1.md`](docs/contracts/ci-fix-v1.md) — `hal ci fix` output contract
-- [`docs/contracts/ci-merge-v1.md`](docs/contracts/ci-merge-v1.md) — `hal ci merge` output contract
-- [`docs/contracts/factory-trigger-v1.md`](docs/contracts/factory-trigger-v1.md) — `hal factory trigger --json` output contract
-- [`docs/contracts/verify-v1.md`](docs/contracts/verify-v1.md) — `hal verify --json` output contract
-- [`docs/contracts/factory-artifacts-v1.md`](docs/contracts/factory-artifacts-v1.md) — `hal factory artifacts <run-id> --json` output contract
-- [`docs/contracts/factory-logs-v1.md`](docs/contracts/factory-logs-v1.md) — `hal factory logs <run-id> --json` output contract
+When no PRD path or report is provided, `hal auto` uses configured source discovery:
 
-## Commands
+1. `auto.sourcePriority=report_first` by default: latest report, then newest `.hal/prd-*.md`.
+2. `auto.sourcePriority=markdown_first`: newest `.hal/prd-*.md`, then latest report.
 
-### Core Commands
+The pipeline order is:
 
-| Command | Description |
-|---------|-------------|
-| `hal init` | Initialize `.hal/` directory with config, skills, and commands |
-| `hal plan [description]` | Generate PRD (opens editor for humans; use `--input`/`--json` for agents) |
-| `hal convert [markdown-prd]` | Convert markdown PRD to JSON (auto-discover source when omitted) |
-| `hal validate [prd.json]` | Validate PRD against quality rules |
-| `hal prd audit [--json]` | Audit PRD health and detect markdown↔JSON drift |
-| `hal run [iterations]` | Execute stories autonomously (default: 10; do not combine positional iterations with `-i/--iterations`) |
+```text
+analyze -> spec -> branch -> convert -> validate -> run -> review -> ci -> report -> archive
+```
 
-### Status & Health
+Useful controls:
 
-| Command | Description |
-|---------|-------------|
-| `hal status [--json]` | Show workflow state (manual, auto pipeline, review-loop) |
-| `hal doctor [--json]` | Check environment health (engine-aware, detects broken links) |
-| `hal continue [--json]` | Show what to do next (combines status + doctor) |
-| `hal repair [--dry-run] [--json]` | Auto-fix safe issues detected by doctor |
-| `hal verify [--json]` | Run configured verification checks and emit verify-v1 JSON with `--json` |
+```bash
+hal auto --dry-run
+hal auto --resume
+hal auto --mode fast
+hal auto --mode balanced
+hal auto --mode strict
+hal auto --no-review
+hal auto --no-ci
+hal auto --review-streak 2 --review-max 10
+hal auto --json
+```
 
-### Verification Gate
+### Report and Review
 
-Configure project verification checks in `.hal/config.yaml`:
+`hal report` analyzes completed work, writes a report under `.hal/reports/`, and can update `AGENTS.md` with discovered project patterns.
+
+```bash
+hal report
+```
+
+`hal review` is the branch review/fix loop. Use it before merging substantial work.
+
+```bash
+hal review --base develop
+hal review --base develop --iterations 3 -e codex
+```
+
+## Factory Workflows
+
+Factory commands wrap Hal runs in durable records that are easier for supervising agents to inspect, resume, or hand off.
+
+Factory state is stored in Hal's global config directory, separate from the current repository `.hal/` runtime state.
+
+### Run Immediately
+
+Run locally:
+
+```bash
+hal factory run .hal/prd-feature.md --base develop --json
+```
+
+Run from an analysis report:
+
+```bash
+hal factory run --report .hal/reports/report.md --base develop --json
+```
+
+Run in a managed sandbox:
+
+```bash
+hal factory run .hal/prd-feature.md --sandbox --base develop --json
+```
+
+Sandbox mode requires `--base` so the remote workspace can check out the correct integration base deterministically.
+
+### Queue Work
+
+Create queued work without immediately running it:
+
+```bash
+hal factory trigger --repo . --prd .hal/prd-feature.md --base develop --json
+hal factory queue list --json
+```
+
+Process at most one queued item:
+
+```bash
+hal factory queue work --json
+```
+
+Queue entries can run locally or in a sandbox:
+
+```bash
+hal factory trigger --repo . --prd .hal/prd-feature.md --executor sandbox --base develop --json
+```
+
+### Inspect Runs
+
+```bash
+hal factory list --json
+hal factory status <run-id> --json
+hal factory logs <run-id>
+hal factory artifacts <run-id>
+hal factory open <run-id>
+```
+
+`hal factory open` prints handoff guidance. With `--exec`, it executes only the generated safe Hal inspection or resume command.
+
+## Sandbox Workflows
+
+Sandboxes provide isolated remote workspaces for factory execution or manual inspection.
+
+```bash
+hal sandbox setup
+hal sandbox create --name factory-smoke
+hal sandbox list
+hal sandbox status factory-smoke
+hal sandbox ssh factory-smoke
+hal sandbox ssh factory-smoke -- hal version
+hal sandbox stop factory-smoke
+hal sandbox delete factory-smoke
+```
+
+`hal sandbox setup` writes global sandbox config under:
+
+1. `$HAL_CONFIG_HOME`
+2. `$XDG_CONFIG_HOME/hal`
+3. `~/.config/hal`
+
+Human sandbox output redacts public cloud and Tailscale addresses by default. Use `--show-addresses` only when raw addresses are intentionally needed.
+
+### Sandbox Auth
+
+Sync local Codex and pi subscription-login files into a running sandbox:
+
+```bash
+hal sandbox auth sync factory-smoke
+```
+
+Include known Claude Code auth/settings files when needed:
+
+```bash
+hal sandbox auth sync --include-claude factory-smoke
+```
+
+This does not copy GitHub CLI credentials, caches, logs, sessions, or entire auth directories. GitHub authentication for sandbox work is handled separately through sandbox token setup and Git credential helpers.
+
+## Verification
+
+`hal verify` runs configured project checks from `.hal/config.yaml`.
 
 ```yaml
 verify:
@@ -184,374 +261,66 @@ verify:
       required: false
 ```
 
-Checks are shell commands. `required` defaults to `true`, and omitted `workDir`
-values run from the project root. Required check failures, timeouts, or missing
-commands produce a `fail` gate. Optional check problems produce warnings and a
-`warn` gate. When all checks pass, the gate status is `pass`.
-
-### CI Workflow
-
-| Command | Description |
-|---------|-------------|
-| `hal ci push [--dry-run] [--json]` | Push current branch and create or reuse an open pull request |
-| `hal ci status [--wait] [--json]` | Show aggregated CI status, with deterministic wait controls |
-| `hal ci fix [--max-attempts N] [-e engine] [--json]` | Attempt CI fixes with command-layer retries |
-| `hal ci merge [--strategy <squash\|merge\|rebase>] [--delete-branch] [--allow-no-checks] [--dry-run] [--json]` | Merge PR with explicit safety controls |
-
-### Link Management
-
-| Command | Description |
-|---------|-------------|
-| `hal links status [--json]` | Inspect engine skill links (per-engine health) |
-| `hal links refresh [engine]` | Recreate skill links for all or specific engine |
-
-### Compound Pipeline
-
-| Command | Description |
-|---------|-------------|
-| `hal report` | Generate summary report → `.hal/reports/`, update AGENTS.md |
-| `hal review --base <base-branch> [iterations]` | Iterative review/fix loop against a base branch (use `-e`; do not combine positional iterations with `-i/--iterations`) |
-| `hal auto [prd-path] [--json]` | Run single auto pipeline (`analyze → ... → archive`) with runtime PRD `.hal/prd.json`; source discovery uses `auto.sourcePriority` and convert policy uses `auto.convertMode` |
-| `hal analyze [report] --format text\|json` | Analyze a report to find priority item (`--output` is deprecated) |
-| `hal explode <prd.md> --branch <name>` | Deprecated shim for `hal convert --granular` (keeps explode compatibility output) |
-
-### Standards
-
-| Command | Description |
-|---------|-------------|
-| `hal standards list` | List configured standards with index |
-| `hal standards discover` | Guide for discovering standards interactively |
-
-### Archive Management
-
-| Command | Description |
-|---------|-------------|
-| `hal archive` | Archive current feature state (alias of `hal archive create`) |
-| `hal archive create` | Archive current feature state explicitly |
-| `hal archive list` | List all archived features (`--name/-n` is invalid here) |
-| `hal archive restore <name>` | Restore an archived feature (`--name/-n` is invalid here) |
-
-Archive command details:
-- `hal archive` is the create alias
-- `--name/-n` is only valid for `hal archive` and `hal archive create`
-- If no name is provided and stdin is non-interactive, the command fails and asks for `--name/-n`
-
-### Factory Workflow
-
-| Command | Description |
-|---------|-------------|
-| `hal factory run [prd-path] [--report path] [--secret-env NAME] [--json]` | Run the local factory executor immediately |
-| `hal factory trigger --repo path (--prd path\|--report path\|--discover-report) [--secret-env NAME] [--json]` | Create a queued factory run from a trigger payload |
-| `hal factory queue add <run-id> <executor-mode> [--json]` | Add an existing pending factory run to the queue |
-| `hal factory queue list [--json]` | List durable factory queue entries |
-| `hal factory queue work [--json]` | Claim and process at most one queued factory run |
-| `hal factory list [--json]` | List stored factory runs |
-| `hal factory status <run-id> [--json]` | Inspect a stored factory run and timeline |
-| `hal factory logs <run-id> [--json]` | Inspect stored stdout, stderr, or summarized log chunks |
-
-### Utilities
-
-| Command | Description |
-|---------|-------------|
-| `hal config` | Show current configuration |
-| `hal cleanup` | Remove orphaned legacy files (supports `--dry-run`) |
-| `hal version` | Show version information |
-
-### Analyze JSON Output
+Run checks:
 
 ```bash
-hal analyze --format text
-hal analyze --format json
-hal analyze --output json   # deprecated in v0.2.0, removed in v1.0.0
+hal verify
+hal verify --json
 ```
 
-`--output/-o` and `--format/-f` cannot be used together.
+Required checks fail the verification gate when they fail, time out, or are missing. Optional checks produce warnings.
 
-### Sandbox Template Workflow
-
-hal uses one template snapshot contract:
-
-- template snapshot name is fixed to `hal`
-- template source is fixed to `sandbox/Dockerfile` with build context `.`
-- `hal sandbox create [-n NAME]` always resolves snapshot `hal` (reuse if active, create if missing)
+## Health, Links, and Status
 
 ```bash
-hal sandbox snapshot create      # create/reuse template snapshot "hal"
-hal sandbox create -n my-box     # provision sandbox from template snapshot "hal"
-hal sandbox start my-box         # power on a stopped sandbox
+hal status
+hal status --json
+hal doctor
+hal doctor --json
+hal continue
+hal continue --json
+hal links status
+hal links refresh
+hal links clean
 ```
 
-After changing `sandbox/Dockerfile`, refresh the template snapshot:
+- `hal status` classifies the current workflow state.
+- `hal doctor` checks readiness and reports safe remediations.
+- `hal continue` combines status and doctor to suggest the next command.
+- `hal links` manages engine skill links for Claude Code, pi, and Codex.
 
-```bash
-hal sandbox snapshot list
-hal sandbox snapshot delete --id <hal-snapshot-id>
-hal sandbox snapshot create
+## PRD and State Files
+
+Runtime files live under `.hal/`:
+
+```text
+.hal/
+  config.yaml       local Hal configuration
+  prd.json          canonical runtime PRD
+  progress.txt      append-only run progress
+  prompt.md         agent prompt template
+  reports/          report output for auto/report workflows
+  archive/          archived feature state
+  skills/           installed Hal skills
+  commands/         installed agent command prompts
 ```
 
-### Sandbox Name and Exec Passthrough
+Important rules:
 
-Human sandbox output redacts public cloud and Tailscale addresses by default.
-Use `--show-addresses` only when you intentionally need raw network addresses.
-The `sandbox-list-v1` contract documents which raw values list JSON exposes.
-
-`--name/-n` is available on `hal sandbox create`. Lifecycle commands target existing sandboxes positionally:
-- `hal sandbox start NAME`
-- `hal sandbox status NAME`
-- `hal sandbox stop NAME`
-- `hal sandbox delete NAME`
-- `hal sandbox ssh NAME`
-
-For remote commands that start with flags, use `--`:
-
-```bash
-hal sandbox exec -n my-sandbox -- npm test
-hal sandbox exec -- -n foo      # passes '-n foo' to remote command unchanged
-```
-
-## Planning a Feature
-
-### Editor Mode (Recommended)
-
-```bash
-hal plan
-```
-
-Opens your editor with a template. Write your feature spec, save, and quit. The AI will ask clarifying questions, then generate a complete PRD.
-
-Editor resolution: `$EDITOR` → `$VISUAL` → `nano` → `vim` → `vi`
-
-### Inline Mode
-
-```bash
-hal plan "add dark mode toggle to settings"
-```
-
-Good for quick, well-defined features.
-
-### Agent-Safe File/Stdin Mode
-
-```bash
-hal plan --input .hal/input/feature.md --no-questions --format json --json
-hal plan --input - --no-questions --format json --json < .hal/input/feature.md
-```
-
-Use `--input` for long briefs instead of pasting large text into argv. `--input -` reads stdin. In `--json` mode, `hal plan` is fully non-interactive: pass `--no-questions` plus explicit input, and parse the `plan-v1` JSON result on stdout.
-
-### Output Formats
-
-```bash
-hal plan "notifications"                    # Outputs .hal/prd-notifications.md
-hal plan "notifications" --format json      # Outputs .hal/prd.json directly
-```
-
-## Converting PRDs Safely
-
-`hal convert` now defaults to a non-destructive workflow and makes stateful behavior explicit.
-
-### Source Selection
-
-- `hal convert` (no args) scans `.hal/prd-*.md`, picks the newest file by modified time, and uses lexicographic filename ascending as the tie-break when mtimes are equal.
-- `hal convert <path>` uses the explicit path as-is (and fails early if the file does not exist).
-- Once resolved, convert prints: `Using source: <path>`.
-
-### Safety Controls
-
-- Default convert **does not** archive existing feature state.
-- `--archive` archives existing feature state before writing canonical `.hal/prd.json`.
-- `--archive` is only supported when output is canonical `.hal/prd.json` (it is rejected with custom output paths).
-- Canonical writes are protected from accidental branch switches. If existing and incoming `branchName` values differ, convert stops with:
-  - `branch changed from <old> to <new>; run 'hal convert --archive' or 'hal archive' first, or use --force`
-- Use `--force` to bypass that branch-mismatch guard without creating an archive.
-
-### Convert Examples
-
-```bash
-# Default no-archive conversion (auto-select markdown source)
-hal convert
-
-# Explicit markdown source (still no archive unless requested)
-hal convert .hal/prd-authentication.md
-
-# Explicit archive flow before canonical overwrite
-hal convert --archive
-
-# Override canonical branch mismatch guard without archiving
-hal convert .hal/prd-authentication.md --force
-
-# Custom output path (archive disabled by design)
-hal convert .hal/prd-authentication.md -o /tmp/prd.json
-```
-
-## Running the Loop
-
-```bash
-hal run                      # Run 10 iterations (default)
-hal run 5                    # Run 5 iterations (positional)
-hal run -i 5                 # Run 5 iterations (flag)
-hal run 1 -s US-001          # Run a specific story
-hal run --base develop       # Set base branch explicitly
-hal run --timeout 30m        # Raise the per-session engine timeout
-hal run --dry-run            # Preview without executing
-hal run -e codex             # Use Codex engine
-hal run -e pi                # Use Pi engine
-```
-
-`hal run [iterations]` and `hal run --iterations/-i <n>` are mutually exclusive.
-
-Each iteration:
-1. Reads `prd.json` and `progress.txt`
-2. Loads project standards from `.hal/standards/` and injects them into the prompt
-3. Picks highest-priority incomplete story
-4. Spawns fresh engine instance
-5. Implements the story
-6. Commits changes
-7. Updates `prd.json` (marks story complete)
-8. Appends learnings to `progress.txt`
-
-## Project Standards
-
-Standards are concise, codebase-specific rules stored in `.hal/standards/` as markdown files. They are automatically injected into the agent prompt on every `hal run` iteration, ensuring consistent code quality and pattern adherence across all AI-driven work.
-
-### How Standards Work
-
-1. **`hal init`** creates `.hal/standards/` and installs discovery commands for all engines
-2. Standards are `.md` files organized by domain (e.g., `config/`, `engine/`, `testing/`)
-3. On every `hal run`, all `.md` files are loaded, concatenated, and injected into the `{{STANDARDS}}` placeholder in `prompt.md`
-4. The agent sees them as "## Project Standards — You MUST follow these..."
-
-### Discovering Standards
-
-Standards discovery is interactive — it scans your codebase, identifies patterns, and walks through each one with you:
-
-```bash
-# See what's available
-hal standards list
-
-# Get instructions for your engine
-hal standards discover
-```
-
-The discovery commands are installed for all engines during `hal init`:
-
-| Engine | Command |
-|--------|---------|
-| Claude Code | `/hal/discover-standards` |
-| Pi | `/hal/discover-standards` |
-| Codex | Ask agent to read `.hal/commands/discover-standards.md` |
-
-### Example Standard
-
-```markdown
-# Init Idempotency
-
-`hal init` is safe to run repeatedly. It never destroys existing state.
-
-## Rules
-
-- **Directories**: Use `os.MkdirAll` — idempotent by design
-- **Default files**: Only write if file doesn't exist (`os.Stat` check first)
-- **Skills**: Reinstalled every init (embedded files overwrite installed copies)
-- **Template migrations**: Run every init via `migrateTemplates` (idempotent patches)
-
-## Never Overwrite User Files
-
-User customizations to `config.yaml`, `prompt.md`, and `progress.txt` are sacred.
-```
-
-### Standards Index
-
-An optional `index.yml` catalogs all standards with descriptions:
-
-```yaml
-config:
-  init-idempotency:
-    description: hal init never overwrites user files; uses MkdirAll and stat-before-write
-  template-constants:
-    description: All .hal/ paths defined in internal/template/template.go; never hardcode
-engine:
-  process-isolation:
-    description: Setsid + process group kill for TTY detachment and orphan prevention
-```
-
-### Committing Standards
-
-Standards and commands in `.hal/` are committed to git (not ignored), while runtime state (`config.yaml`, `prd.json`, `progress.txt`) stays ignored. This means your team shares the same standards and discovery commands across all clones.
-
-## PRD Format
-
-```json
-{
-  "project": "MyProject",
-  "branchName": "hal/feature-name",
-  "description": "Feature description",
-  "userStories": [
-    {
-      "id": "US-001",
-      "title": "Add database schema",
-      "description": "As a developer, I want the schema defined...",
-      "acceptanceCriteria": [
-        "Migration creates users table",
-        "Typecheck passes"
-      ],
-      "priority": 1,
-      "passes": false,
-      "notes": ""
-    }
-  ]
-}
-```
-
-### Story Rules
-
-- Each story completable in **one iteration** (one context window)
-- Ordered by dependency: schema → backend → frontend
-- Every story includes "Typecheck passes" criterion
-- UI stories include browser verification criteria
-- Acceptance criteria are verifiable, not vague
-
-## Project Structure
-
-```
-.hal/                       # Created by hal init
-├── config.yaml             # Engine, retries, auto settings (gitignored)
-├── prompt.md               # Agent instructions (gitignored, customizable)
-├── progress.txt            # Append-only progress log (gitignored)
-├── prd.json                # Current PRD (gitignored)
-├── archive/                # Archived feature states
-├── reports/                # Analysis reports for auto mode
-├── skills/                 # Installed skills (auto-generated)
-│   ├── prd/                # PRD generation
-│   ├── hal/                # PRD-to-JSON conversion
-│   ├── explode/            # Task breakdown
-│   ├── autospec/           # Non-interactive PRD generation
-│   └── review/             # Work review and patterns
-├── standards/              # Project standards (committed to git)
-│   ├── index.yml           # Standards catalog
-│   ├── config/             # Config-related standards
-│   ├── engine/             # Engine-related standards
-│   ├── state/              # State management standards
-│   └── testing/            # Testing standards
-└── commands/               # Agent commands (committed to git)
-    ├── discover-standards.md
-    ├── index-standards.md
-    └── inject-standards.md
-```
-
-Engine-specific symlinks are created during `hal init`:
-- `.claude/commands/hal` → `.hal/commands/`
-- `.claude/skills/*` → `.hal/skills/*`
-- `.pi/prompts/*.md` → `.hal/commands/*.md`
-- `.pi/skills/*` → `.hal/skills/*`
-- `~/.codex/commands/hal` → `.hal/commands/` (absolute)
-- `~/.codex/skills/*` → `.hal/skills/*` (absolute)
+- `progress.txt` is the single progress log for manual and auto workflows.
+- `prd.json` is the active runtime PRD consumed by validate, run, review, CI, report, and archive steps.
+- `hal convert --archive` archives existing feature state before writing canonical `.hal/prd.json`.
+- `hal convert --force` bypasses the branch mismatch guard without archiving.
+- `hal cleanup --dry-run` previews orphaned legacy file cleanup.
 
 ## Configuration
 
-Edit `.hal/config.yaml`:
+`.hal/config.yaml` is project-local. `hal init` preserves existing config files.
+
+Common settings:
 
 ```yaml
-engine: codex               # or claude, pi
+engine: codex
 maxIterations: 10
 retryDelay: 30s
 maxRetries: 3
@@ -559,8 +328,10 @@ maxRetries: 3
 auto:
   reportsDir: .hal/reports
   branchPrefix: compound/
+  sourcePriority: report_first   # report_first | markdown_first
+  convertMode: auto              # auto | standard | granular
   maxIterations: 25
-  mode: balanced            # fast | balanced | strict
+  mode: balanced                 # fast | balanced | strict
   ciEnabled: true
   reviewEnabled: true
   reviewCleanStreak: 1
@@ -568,82 +339,96 @@ auto:
 
 engines:
   codex:
-    model: o3
+    timeout: 30m
+  claude:
     timeout: 30m
   pi:
-    model: anthropic/claude-sonnet-4-20250514
-    provider: openrouter
+    timeout: 30m
+
+factory:
+  policy:
+    sandboxRequired: false
+    allowedEngines: [codex, claude, pi]
+    maxRunAttempts: 0
+    maxReviewFixAttempts: 0
+    maxCiFixAttempts: 0
+    verificationRequired: false
+    prCreationAllowed: true
+    mergeAllowed: true
+    cleanupBehavior: preserve    # preserve | on_success | always
 ```
 
-Use a higher `engines.codex.timeout` when Codex sessions do long reasoning or large edits. You can also override it ad hoc with `hal run --timeout 30m`.
-
-> Note: `hal init` preserves existing `.hal/config.yaml` files. If your project was initialized earlier, it may still have `engine: claude`. Update it to `engine: codex` if you want codex as the default runtime engine.
-
 Engine resolution order:
-1. explicit `--engine` (if provided)
-2. top-level `engine` in `.hal/config.yaml`
-3. fallback to `codex`
 
-If an explicit `--engine` is blank (for example `--engine "   "`), hal exits with a validation error.
+1. Explicit `--engine`.
+2. Top-level `engine` in `.hal/config.yaml`.
+3. `codex`.
 
-## Engines
+Sandbox provider credentials are managed by `hal sandbox setup` in global sandbox config, not by committing secrets to the repository.
 
-Hal supports multiple AI coding agents:
+## Machine Contracts
 
-| Engine | CLI Command | Install |
-|--------|-------------|---------|
-| Codex (default) | `codex` | [Codex repo](https://github.com/openai/codex) |
-| Claude | `claude` | [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code) |
-| Pi | `pi` | [Pi repo](https://github.com/mariozechner/pi-coding-agent) |
+Use JSON contracts when another tool or agent needs stable output.
 
-Switch engines with `-e`:
+Primary contracts:
+
+- [`auto-v2`](docs/contracts/auto-v2.md): `hal auto --json`
+- [`status-v1`](docs/contracts/status-v1.md): `hal status --json`
+- [`doctor-v1`](docs/contracts/doctor-v1.md): `hal doctor --json`
+- [`continue-v1`](docs/contracts/continue-v1.md): `hal continue --json`
+- [`plan-v1`](docs/contracts/plan-v1.md): `hal plan --json`
+- [`verify-v1`](docs/contracts/verify-v1.md): `hal verify --json`
+- [`sandbox-list-v1`](docs/contracts/sandbox-list-v1.md): `hal sandbox list --json`
+- [`ci-push-v1`](docs/contracts/ci-push-v1.md): `hal ci push --json`
+- [`ci-status-v1`](docs/contracts/ci-status-v1.md): `hal ci status --json`
+- [`ci-fix-v1`](docs/contracts/ci-fix-v1.md): `hal ci fix --json`
+- [`ci-merge-v1`](docs/contracts/ci-merge-v1.md): `hal ci merge --json`
+- [`factory-run-v1`](docs/contracts/factory-run-v1.md): `hal factory run --json`
+- [`factory-list-v1`](docs/contracts/factory-list-v1.md): `hal factory list --json`
+- [`factory-status-v1`](docs/contracts/factory-status-v1.md): `hal factory status --json`
+- [`factory-trigger-v1`](docs/contracts/factory-trigger-v1.md): `hal factory trigger --json`
+- [`factory-queue-add-v1`](docs/contracts/factory-queue-add-v1.md): `hal factory queue add --json`
+- [`factory-queue-list-v1`](docs/contracts/factory-queue-list-v1.md): `hal factory queue list --json`
+- [`factory-queue-work-v1`](docs/contracts/factory-queue-work-v1.md): `hal factory queue work --json`
+- [`factory-logs-v1`](docs/contracts/factory-logs-v1.md): `hal factory logs <run-id> --json`
+- [`factory-artifacts-v1`](docs/contracts/factory-artifacts-v1.md): `hal factory artifacts <run-id> --json`
+- [`factory-open-v1`](docs/contracts/factory-open-v1.md): `hal factory open <run-id> --json`
+
+Example payloads live in [`docs/contracts/examples/`](docs/contracts/examples/).
+
+## CLI Reference
+
+Generated command documentation lives in [`docs/cli/`](docs/cli/), starting at [`docs/cli/hal.md`](docs/cli/hal.md).
+
+Regenerate and check docs:
 
 ```bash
-hal run -e codex
-hal run -e pi
+make docs-cli
+make docs-check
 ```
 
 ## Development
 
 ```bash
-make build       # Build binary with version metadata
-make install     # Install to ~/.local/bin
-make test        # Run tests
+make build       # Build ./hal with version metadata
+make install     # Install to ~/.local/bin/hal
+make test        # Run unit tests
 make vet         # Run go vet
-make fmt         # Format code
-make lint        # Run golangci-lint (if installed)
+make fmt         # Format Go code
+make lint        # Run golangci-lint when installed
+make docs-check  # Verify generated CLI docs are current
+```
+
+Integration tests that require the Codex CLI:
+
+```bash
+go test -tags=integration ./internal/engine/codex/...
 ```
 
 ## Releases
 
-Hal release tags are standardized to **`vX.Y.Z`** (for example, `v0.1.7`).
-
-```bash
-# one-time per clone: ensure git-flow tags include "v" prefix
-git config gitflow.prefix.versiontag v
-
-# create and finish a release branch
-git flow release start 0.1.7
-git flow release finish -p 0.1.7
-```
-
-Pushing a `v*` tag triggers `.github/workflows/release.yml`, which runs tests and publishes artifacts via GoReleaser.
-
-The release workflow also requires a repository secret named `HOMEBREW_TAP_TOKEN` with write access to `j-yw/homebrew-tap`. The workflow validates that token before publishing so broken Homebrew credentials fail fast instead of leaving a partially successful release.
-
-To rotate that secret from a local GitHub CLI session with access to the tap:
-
-```bash
-gh auth switch -u j-yw
-gh auth token | gh secret set HOMEBREW_TAP_TOKEN --repo j-yw/hal
-```
+Release tags use `vX.Y.Z`. Pushing a `v*` tag triggers the release workflow and GoReleaser. The Homebrew cask is published through `j-yw/homebrew-tap`.
 
 ## License
 
 [MIT](LICENSE)
-
-## Links
-
-- [GitHub Repository](https://github.com/j-yw/hal)
-- [Releases](https://github.com/j-yw/hal/releases)
-- [Homebrew Tap](https://github.com/j-yw/homebrew-tap)
