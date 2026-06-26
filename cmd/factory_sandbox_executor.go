@@ -1863,16 +1863,6 @@ func runFactorySandboxProviderScript(ctx context.Context, provider sandbox.Provi
 	if provider == nil {
 		return fmt.Errorf("sandbox provider is required")
 	}
-	if _, ok := provider.(*sandbox.DaytonaProvider); ok {
-		cmd, err := provider.Exec(info, []string{"sh", "-c", script})
-		if err != nil {
-			return err
-		}
-		if cmd == nil {
-			return fmt.Errorf("sandbox provider returned nil exec command")
-		}
-		return sandbox.RunCmdContext(ctx, cmd, out)
-	}
 	cmd, err := provider.Exec(info, []string{"sh", "-s"})
 	if err != nil {
 		return err

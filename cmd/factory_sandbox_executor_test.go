@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -2163,6 +2164,44 @@ func TestRunFactorySandboxProviderExecWithEnvUsesStdinScriptWithoutArgSecrets(t 
 	}
 	if !strings.Contains(script, "exec 'sh' '-c'") {
 		t.Fatalf("stdin script did not exec remote command: %q", script)
+	}
+}
+
+func TestRunFactorySandboxProviderExecWithEnvUsesStdinForDaytona(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell script to stand in for the daytona CLI")
+	}
+	secret := "daytona_provider_exec_secret_12345"
+	binDir := t.TempDir()
+	argFile := filepath.Join(t.TempDir(), "args.txt")
+	daytonaPath := filepath.Join(binDir, "daytona")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$DAYTONA_ARG_FILE\"\ncat\n"
+	if err := os.WriteFile(daytonaPath, []byte(script), 0700); err != nil {
+		t.Fatalf("write fake daytona: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("DAYTONA_ARG_FILE", argFile)
+
+	provider := &sandbox.DaytonaProvider{APIKey: "test-key"}
+	var out bytes.Buffer
+	err := runFactorySandboxProviderExecWithEnv(context.Background(), provider, &sandbox.ConnectInfo{Name: "factory-dev"}, []string{"sh", "-c", "cd '/workspace/repo' && exec 'hal' 'auto'"}, map[string]string{
+		"GITHUB_TOKEN": secret,
+	}, &out)
+	if err != nil {
+		t.Fatalf("runFactorySandboxProviderExecWithEnv() unexpected error: %v", err)
+	}
+	args, err := os.ReadFile(argFile)
+	if err != nil {
+		t.Fatalf("read fake daytona args: %v", err)
+	}
+	if strings.Contains(string(args), secret) {
+		t.Fatalf("daytona command args leaked secret value: %q", string(args))
+	}
+	if !strings.Contains(string(args), "'sh' '-s'") {
+		t.Fatalf("daytona command args = %q, want stdin shell execution", string(args))
+	}
+	if !strings.Contains(out.String(), "export GITHUB_TOKEN='"+secret+"'") {
+		t.Fatalf("stdin script did not export secret env assignment: %q", out.String())
 	}
 }
 
