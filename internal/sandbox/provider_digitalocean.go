@@ -64,12 +64,17 @@ func runDigitalOceanSSHCommand(ctx context.Context, sshFn func(context.Context, 
 	}
 	sshArgs := nonInteractiveSSHOptionsWithConnectTimeout("10")
 	sshArgs = append(sshArgs, fmt.Sprintf("root@%s", target), script)
-	sshCmd := sshFn(ctx, "ssh", sshArgs...)
+	sshCtx, cancel := nonInteractiveSSHContext(ctx)
+	defer cancel()
+	sshCmd := sshFn(sshCtx, "ssh", sshArgs...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	sshCmd.Stdout = &stdout
 	sshCmd.Stderr = &stderr
 	if err := sshCmd.Run(); err != nil {
+		if sshCtx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("ssh command timed out after %s: %w", nonInteractiveSSHCommandTimeout, err)
+		}
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			return fmt.Errorf("%s: %w", msg, err)
 		}

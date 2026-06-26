@@ -210,12 +210,18 @@ func (h *HetznerProvider) Create(ctx context.Context, name string, env map[strin
 		}
 		sshArgs := nonInteractiveSSHOptionsWithConnectTimeout("10")
 		sshArgs = append(sshArgs, fmt.Sprintf("root@%s", ip), lockdownScript)
-		sshCmd := sshFn(ctx, "ssh", sshArgs...)
+		sshCtx, cancel := nonInteractiveSSHContext(ctx)
+		sshCmd := sshFn(sshCtx, "ssh", sshArgs...)
 		var lockStderr bytes.Buffer
 		sshCmd.Stdout = safeOut
 		sshCmd.Stderr = &lockStderr
-		if err := sshCmd.Run(); err != nil {
+		err = sshCmd.Run()
+		cancel()
+		if err != nil {
 			cleanupServer("firewall lockdown failed")
+			if sshCtx.Err() == context.DeadlineExceeded {
+				return nil, fmt.Errorf("failed to apply firewall lockdown in lockdown mode: ssh command timed out after %s: %w", nonInteractiveSSHCommandTimeout, err)
+			}
 			lockMsg := strings.TrimSpace(lockStderr.String())
 			if lockMsg != "" {
 				return nil, fmt.Errorf("failed to apply firewall lockdown in lockdown mode: %s: %w", lockMsg, err)

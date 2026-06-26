@@ -53,18 +53,25 @@ func fetchTailscaleIPWithProgress(ctx context.Context, user, publicIP string, ru
 		sshArgs = append(sshArgs, fmt.Sprintf("%s@%s", user, publicIP))
 		sshArgs = append(sshArgs, remoteReadCmd...)
 
-		cmd := runSSH(ctx, "ssh", sshArgs...)
+		sshCtx, cancel := nonInteractiveSSHContext(ctx)
+		cmd := runSSH(sshCtx, "ssh", sshArgs...)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
-		if err := cmd.Run(); err == nil {
+		err := cmd.Run()
+		cancel()
+		if err == nil {
 			ip := strings.TrimSpace(stdout.String())
 			if ip != "" {
 				return ip, nil
 			}
 			lastErr = fmt.Errorf("empty tailscale ip")
 		} else {
-			lastErr = fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+			if sshCtx.Err() == context.DeadlineExceeded {
+				lastErr = fmt.Errorf("ssh attempt timed out after %s", nonInteractiveSSHCommandTimeout)
+			} else {
+				lastErr = fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+			}
 		}
 
 		if out != nil {
