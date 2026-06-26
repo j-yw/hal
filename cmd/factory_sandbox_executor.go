@@ -785,7 +785,7 @@ func factorySandboxExecExitCode(err error) int {
 	if errors.As(err, &exitErr) {
 		return exitErr.ExitCode()
 	}
-	return 0
+	return -1
 }
 
 func factorySandboxRemoteRepoExists(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, runProviderScript func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error, repoPath string, expectedRemote string) (bool, error) {

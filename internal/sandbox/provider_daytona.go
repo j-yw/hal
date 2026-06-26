@@ -117,7 +117,11 @@ func (d *DaytonaProvider) runDaytona(ctx context.Context, out io.Writer, args ..
 	d.applyCredentials(cmd)
 
 	var captured bytes.Buffer
-	safe := synchronizedWriter(&captured)
+	commandOut := io.Writer(&captured)
+	if out != nil {
+		commandOut = io.MultiWriter(&captured, out)
+	}
+	safe := synchronizedWriter(commandOut)
 	cmd.Stdout = safe
 	cmd.Stderr = safe
 

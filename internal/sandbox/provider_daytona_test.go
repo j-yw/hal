@@ -131,8 +131,8 @@ func TestDaytonaProvider_Create_Success(t *testing.T) {
 		}
 	}
 
-	if out.String() != "" {
-		t.Errorf("provider output = %q, want empty structured command output", out.String())
+	if !strings.Contains(out.String(), "sandbox created") {
+		t.Errorf("provider output = %q, want streamed command output", out.String())
 	}
 }
 

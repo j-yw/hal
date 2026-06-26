@@ -2279,6 +2279,27 @@ func TestFactorySandboxBootstrapExecutorReportsRemoteExitCode(t *testing.T) {
 	}
 }
 
+func TestFactorySandboxBootstrapExecutorReportsUnknownFailureExitCode(t *testing.T) {
+	executor := &factorySandboxBootstrapExecutor{
+		provider:    fakeFactorySandboxProvider{},
+		connectInfo: &sandbox.ConnectInfo{Name: "factory-dev"},
+		runProviderExecWithEnv: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error {
+			return fmt.Errorf("transport unavailable")
+		},
+	}
+
+	result, err := executor.Run(context.Background(), factory.BootstrapCommand{
+		Name: "git",
+		Args: []string{"fetch", "origin"},
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want transport error")
+	}
+	if result.ExitCode != -1 {
+		t.Fatalf("exit code = %d, want -1", result.ExitCode)
+	}
+}
+
 func TestFactorySandboxRemoteRepoExistsUsesRemoteExitCodes(t *testing.T) {
 	exitError := func(code int) error {
 		return exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()

@@ -1367,6 +1367,9 @@ func TestRunCIMergeWithDeps_JSONOnlyOutput(t *testing.T) {
 			}
 			return want, nil
 		},
+		repoRoot: func(context.Context) (string, error) {
+			return ".", nil
+		},
 		currentBranch: func(context.Context) (string, error) {
 			t.Fatal("currentBranch should not be called when dry-run=false")
 			return "", nil
@@ -1496,12 +1499,60 @@ func TestRunCIMergeWithDeps_BlocksWhenMergePolicyDisabled(t *testing.T) {
 			policy.MergeAllowed = false
 			return &policy, nil
 		},
+		repoRoot: func(context.Context) (string, error) {
+			return ".", nil
+		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "factory.policy.mergeAllowed=false") {
 		t.Fatalf("runCIMergeWithDeps() error = %v, want merge policy block", err)
 	}
 	if mergeCalls != 0 {
 		t.Fatalf("mergePR called %d times, want 0 when merge policy is disabled", mergeCalls)
+	}
+}
+
+func TestRunCIMergeWithDeps_LoadsPolicyFromRepoRoot(t *testing.T) {
+	root := t.TempDir()
+	subdir := filepath.Join(root, "nested", "package")
+	if err := os.MkdirAll(filepath.Join(root, ".hal"), 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("mkdir subdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".hal", "config.yaml"), []byte("factory:\n  policy:\n    mergeAllowed: false\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error: %v", err)
+	}
+	if err := os.Chdir(subdir); err != nil {
+		t.Fatalf("chdir subdir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(cwd); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+
+	mergeCalls := 0
+	var buf bytes.Buffer
+	err = runCIMergeWithDeps(context.Background(), ciMergeRunOptions{Strategy: "merge"}, &buf, ciMergeDeps{
+		mergePR: func(context.Context, ci.MergeOptions) (ci.MergeResult, error) {
+			mergeCalls++
+			return ci.MergeResult{}, nil
+		},
+		repoRoot: func(context.Context) (string, error) {
+			return root, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "factory.policy.mergeAllowed=false") {
+		t.Fatalf("runCIMergeWithDeps() error = %v, want root merge policy block", err)
+	}
+	if mergeCalls != 0 {
+		t.Fatalf("mergePR called %d times, want 0 when root merge policy is disabled", mergeCalls)
 	}
 }
 
@@ -1519,6 +1570,9 @@ func TestRunCIMergeWithDeps_HumanOutputShowsBranchAlreadyAbsent(t *testing.T) {
 				DeleteWarning:   "",
 				Summary:         "merged pull request #42 using squash strategy; remote branch already absent",
 			}, nil
+		},
+		repoRoot: func(context.Context) (string, error) {
+			return ".", nil
 		},
 		currentBranch: func(context.Context) (string, error) {
 			return "hal/ci-merge", nil

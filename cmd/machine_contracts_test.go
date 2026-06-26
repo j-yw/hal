@@ -398,6 +398,9 @@ func TestMachineContractFields_CICommandOutputs(t *testing.T) {
 					Summary:         "merged pull request #33 using rebase strategy; warning: delete failed",
 				}, nil
 			},
+			repoRoot: func(context.Context) (string, error) {
+				return ".", nil
+			},
 			currentBranch: func(context.Context) (string, error) {
 				return "", nil
 			},
