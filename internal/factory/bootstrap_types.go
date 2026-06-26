@@ -12,6 +12,23 @@ type BootstrapRequest struct {
 	RequiredEnvKeys []string          `json:"requiredEnvKeys"`
 	Env             map[string]string `json:"env,omitempty"`
 	Options         BootstrapOptions  `json:"options"`
+
+	secretValues []string
+}
+
+// BootstrapRequestWithResolvedSecrets returns a copy of request configured to
+// sanitize the provided in-memory run secret values from bootstrap records.
+func BootstrapRequestWithResolvedSecrets(request BootstrapRequest, secrets []ResolvedRunSecret) BootstrapRequest {
+	if len(secrets) == 0 {
+		request.secretValues = nil
+		return request
+	}
+	values := make([]string, 0, len(secrets))
+	for _, secret := range secrets {
+		values = append(values, secret.Value)
+	}
+	request.secretValues = values
+	return request
 }
 
 // BootstrapOptions controls repository and Hal setup behavior for a bootstrap

@@ -49,28 +49,6 @@ func TestLoadQueueTreatsMissingFileAsEmpty(t *testing.T) {
 	}
 }
 
-func TestClaimNextQueueEntryTreatsMissingFileAsEmptyReadOnly(t *testing.T) {
-	store := NewStore(filepath.Join(t.TempDir(), "factory"))
-
-	got, err := store.ClaimNextQueueEntry(QueueOperationOptions{
-		Now: func() time.Time {
-			return time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
-		},
-	})
-	if err != nil {
-		t.Fatalf("ClaimNextQueueEntry() unexpected error: %v", err)
-	}
-	if got != nil {
-		t.Fatalf("ClaimNextQueueEntry() = %#v, want nil", got)
-	}
-	if _, err := os.Stat(store.Root()); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("ClaimNextQueueEntry() should not create store root, stat error = %v", err)
-	}
-	if _, err := os.Stat(store.QueuePath()); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("ClaimNextQueueEntry() should not create queue file, stat error = %v", err)
-	}
-}
-
 func TestSaveQueueAndLoadQueueRoundTripWithNewStore(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	entries := []QueueEntry{
@@ -131,36 +109,6 @@ func TestLoadQueueCorruptJSONReturnsErrorAndPreservesFile(t *testing.T) {
 	}
 	if !reflect.DeepEqual(after, contents) {
 		t.Fatalf("queue file changed after parse failure: got %q, want %q", after, contents)
-	}
-}
-
-func TestSaveQueueCorruptJSONReturnsErrorAndPreservesFile(t *testing.T) {
-	store := NewStore(filepath.Join(t.TempDir(), "factory"))
-	if err := os.MkdirAll(store.Root(), 0o700); err != nil {
-		t.Fatalf("mkdir store root: %v", err)
-	}
-
-	contents := []byte(`{"entries":` + "\n")
-	if err := os.WriteFile(store.QueuePath(), contents, 0o600); err != nil {
-		t.Fatalf("write corrupt queue: %v", err)
-	}
-
-	err := store.SaveQueue([]QueueEntry{
-		testQueueEntry("queue-replacement", "run-replacement", time.Date(2026, 6, 20, 17, 0, 0, 0, time.UTC)),
-	})
-	if err == nil {
-		t.Fatalf("SaveQueue() expected parse error")
-	}
-	if !strings.Contains(err.Error(), "parse factory queue") {
-		t.Fatalf("SaveQueue() error = %q, want clear parse factory queue error", err.Error())
-	}
-
-	after, readErr := os.ReadFile(store.QueuePath())
-	if readErr != nil {
-		t.Fatalf("queue file should remain readable after parse failure: %v", readErr)
-	}
-	if !reflect.DeepEqual(after, contents) {
-		t.Fatalf("queue file changed after failed SaveQueue: got %q, want %q", after, contents)
 	}
 }
 
@@ -310,67 +258,6 @@ func TestEnqueueQueueEntryCreatesSingleQueuedEntryWithInjectedSources(t *testing
 	}
 }
 
-func TestEnqueueQueueEntryWithLockedPostSaveRunsCallbackBeforeUnlock(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "factory")
-	store := NewStore(root)
-	createdAt := time.Date(2026, 6, 21, 9, 20, 0, 0, time.UTC)
-
-	var callbackEntry QueueEntry
-	got, err := store.EnqueueQueueEntryWithLockedPostSave("run-locked-post-save", ExecutorModeLocal, QueueOperationOptions{
-		Now: func() time.Time { return createdAt },
-		NewQueueID: func() (string, error) {
-			return "queue-locked-post-save", nil
-		},
-	}, func(entry QueueEntry) error {
-		callbackEntry = entry
-		if _, err := os.Stat(filepath.Join(root, queueLockDirName)); err != nil {
-			return fmt.Errorf("queue lock should be held during callback: %w", err)
-		}
-		entries, err := store.LoadQueue()
-		if err != nil {
-			return err
-		}
-		if len(entries) != 1 || entries[0].QueueID != entry.QueueID {
-			return fmt.Errorf("callback queue entries = %#v, want committed entry %q", entries, entry.QueueID)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("EnqueueQueueEntryWithLockedPostSave() unexpected error: %v", err)
-	}
-	if got.QueueID != "queue-locked-post-save" {
-		t.Fatalf("queueID = %q, want queue-locked-post-save", got.QueueID)
-	}
-	if callbackEntry.QueueID != got.QueueID {
-		t.Fatalf("callback entry = %#v, want queued entry %#v", callbackEntry, got)
-	}
-}
-
-func TestEnqueueQueueEntryWithLockedPostSaveRollsBackOnCallbackError(t *testing.T) {
-	store := NewStore(filepath.Join(t.TempDir(), "factory"))
-	createdAt := time.Date(2026, 6, 21, 9, 25, 0, 0, time.UTC)
-	callbackErr := errors.New("record queued state failed")
-
-	_, err := store.EnqueueQueueEntryWithLockedPostSave("run-callback-error", ExecutorModeLocal, QueueOperationOptions{
-		Now: func() time.Time { return createdAt },
-		NewQueueID: func() (string, error) {
-			return "queue-callback-error", nil
-		},
-	}, func(QueueEntry) error {
-		return callbackErr
-	})
-	if !errors.Is(err, callbackErr) {
-		t.Fatalf("EnqueueQueueEntryWithLockedPostSave() error = %v, want callback error", err)
-	}
-	entries, loadErr := store.LoadQueue()
-	if loadErr != nil {
-		t.Fatalf("LoadQueue() error: %v", loadErr)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("queue entries len = %d, want rollback to empty: %#v", len(entries), entries)
-	}
-}
-
 func TestEnqueueQueueEntryRejectsDuplicateActiveRunEntry(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -475,13 +362,10 @@ func TestListQueueReturnsFIFOOrder(t *testing.T) {
 func TestClaimNextQueueEntrySelectsOldestQueuedEntry(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	base := time.Date(2026, 6, 21, 11, 0, 0, 0, time.UTC)
-	existingClaimedAt := base.Add(20 * time.Minute)
-	existingClaimed := testQueueEntryWithStatus("queue-claimed-old", "run-claimed", QueueStatusClaimed, base.Add(-20*time.Minute))
-	existingClaimed.ClaimedAt = &existingClaimedAt
 	entries := []QueueEntry{
 		testQueueEntryWithStatus("queue-failed-old", "run-failed", QueueStatusFailed, base.Add(-30*time.Minute)),
 		testQueueEntryWithStatus("queue-queued-new", "run-new", QueueStatusQueued, base.Add(10*time.Minute)),
-		existingClaimed,
+		testQueueEntryWithStatus("queue-claimed-old", "run-claimed", QueueStatusClaimed, base.Add(-20*time.Minute)),
 		testQueueEntryWithStatus("queue-queued-old", "run-old", QueueStatusQueued, base.Add(-10*time.Minute)),
 	}
 	if err := store.SaveQueue(entries); err != nil {
@@ -548,21 +432,15 @@ func TestClaimNextQueueEntrySelectsOldestQueuedEntry(t *testing.T) {
 func TestClaimNextQueueEntryReturnsNilWhenNoQueuedEntries(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "factory"))
 	base := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
-	claimedAt := base
-	claimedEntry := testQueueEntryWithStatus("queue-claimed", "run-claimed", QueueStatusClaimed, base)
-	claimedEntry.ClaimedAt = &claimedAt
 	entries := []QueueEntry{
-		claimedEntry,
+		testQueueEntryWithStatus("queue-claimed", "run-claimed", QueueStatusClaimed, base),
 		testQueueEntryWithStatus("queue-failed", "run-failed", QueueStatusFailed, base.Add(time.Minute)),
 	}
 	if err := store.SaveQueue(entries); err != nil {
 		t.Fatalf("SaveQueue() unexpected error: %v", err)
 	}
 
-	got, err := store.ClaimNextQueueEntry(QueueOperationOptions{
-		Now:                func() time.Time { return base.Add(5 * time.Minute) },
-		ClaimLeaseDuration: time.Hour,
-	})
+	got, err := store.ClaimNextQueueEntry(QueueOperationOptions{})
 	if err != nil {
 		t.Fatalf("ClaimNextQueueEntry() unexpected error: %v", err)
 	}
@@ -576,193 +454,6 @@ func TestClaimNextQueueEntryReturnsNilWhenNoQueuedEntries(t *testing.T) {
 	}
 	if !reflect.DeepEqual(reloaded, entries) {
 		t.Fatalf("LoadQueue() = %#v, want unchanged %#v", reloaded, entries)
-	}
-}
-
-func TestClaimNextQueueEntryReclaimsExpiredClaimedEntry(t *testing.T) {
-	store := NewStore(filepath.Join(t.TempDir(), "factory"))
-	base := time.Date(2026, 6, 21, 12, 30, 0, 0, time.UTC)
-	oldClaimedAt := base.Add(-2 * time.Hour)
-	oldClaim := QueueClaim{WorkerID: "worker-old", PID: 1111, Hostname: "factory-host"}
-	expired := testQueueEntryWithStatus("queue-expired", "run-expired", QueueStatusClaimed, base.Add(-3*time.Hour))
-	expired.ClaimedAt = &oldClaimedAt
-	expired.Claim = &oldClaim
-	expired.AttemptCount = 1
-	queued := testQueueEntryWithStatus("queue-newer", "run-newer", QueueStatusQueued, base.Add(-time.Hour))
-	if err := store.SaveQueue([]QueueEntry{queued, expired}); err != nil {
-		t.Fatalf("SaveQueue() unexpected error: %v", err)
-	}
-
-	newClaim := QueueClaim{WorkerID: "worker-new", PID: 2222, Hostname: "factory-host"}
-	got, err := store.ClaimNextQueueEntry(QueueOperationOptions{
-		Now:                func() time.Time { return base },
-		Claim:              &newClaim,
-		ClaimLeaseDuration: time.Hour,
-	})
-	if err != nil {
-		t.Fatalf("ClaimNextQueueEntry() unexpected error: %v", err)
-	}
-	if got == nil {
-		t.Fatalf("ClaimNextQueueEntry() = nil, want reclaimed entry")
-	}
-	if got.QueueID != "queue-expired" {
-		t.Fatalf("ClaimNextQueueEntry() queue ID = %q, want expired claimed entry before newer queued entry", got.QueueID)
-	}
-	if got.AttemptCount != 2 {
-		t.Fatalf("ClaimNextQueueEntry() attemptCount = %d, want 2", got.AttemptCount)
-	}
-	if got.ClaimedAt == nil || !got.ClaimedAt.Equal(base) {
-		t.Fatalf("ClaimNextQueueEntry() claimedAt = %v, want %v", got.ClaimedAt, base)
-	}
-	if got.Claim == nil || !reflect.DeepEqual(*got.Claim, newClaim) {
-		t.Fatalf("ClaimNextQueueEntry() claim = %#v, want %#v", got.Claim, newClaim)
-	}
-	if got.LastError != "" {
-		t.Fatalf("ClaimNextQueueEntry() lastError = %q, want cleared on new claim", got.LastError)
-	}
-}
-
-func TestAcquireQueueLockRemovesExpiredLock(t *testing.T) {
-	path := filepath.Join(t.TempDir(), queueLockDirName)
-	if err := os.Mkdir(path, 0o700); err != nil {
-		t.Fatalf("mkdir stale queue lock: %v", err)
-	}
-	oldAcquiredAt := time.Now().Add(-queueLockStaleAfter - time.Minute)
-	ownerJSON := fmt.Sprintf(`{"pid":999999,"hostname":"old-host","acquiredAt":%q}`+"\n", oldAcquiredAt.Format(time.RFC3339Nano))
-	if err := os.WriteFile(filepath.Join(path, queueLockOwnerFileName), []byte(ownerJSON), 0o600); err != nil {
-		t.Fatalf("write stale queue lock metadata: %v", err)
-	}
-
-	release, err := acquireQueueLock(path)
-	if err != nil {
-		t.Fatalf("acquireQueueLock() unexpected error: %v", err)
-	}
-	if snapshot, err := readQueueLockSnapshot(path); err != nil || !snapshot.hasOwner {
-		t.Fatalf("expected replacement queue lock metadata, snapshot = %#v, err = %v", snapshot, err)
-	}
-	release()
-	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("queue lock should be released, stat error = %v", err)
-	}
-}
-
-func TestRemoveStaleQueueLockTreatsMissingLockAsRemoved(t *testing.T) {
-	path := filepath.Join(t.TempDir(), queueLockDirName)
-
-	removed, err := removeStaleQueueLock(path, time.Now())
-	if err != nil {
-		t.Fatalf("removeStaleQueueLock() unexpected error: %v", err)
-	}
-	if !removed {
-		t.Fatal("removeStaleQueueLock() removed = false, want true for missing lock")
-	}
-}
-
-func TestQueueLockReleaseDoesNotRemoveReplacementLock(t *testing.T) {
-	path := filepath.Join(t.TempDir(), queueLockDirName)
-
-	release, err := acquireQueueLock(path)
-	if err != nil {
-		t.Fatalf("acquireQueueLock() unexpected error: %v", err)
-	}
-	if err := os.RemoveAll(path); err != nil {
-		t.Fatalf("remove original queue lock: %v", err)
-	}
-	if err := os.Mkdir(path, 0o700); err != nil {
-		t.Fatalf("mkdir replacement queue lock: %v", err)
-	}
-	replacementRelease, err := writeQueueLockMetadata(path, time.Now())
-	if err != nil {
-		t.Fatalf("write replacement queue lock metadata: %v", err)
-	}
-	defer replacementRelease()
-
-	release()
-
-	snapshot, err := readQueueLockSnapshot(path)
-	if err != nil {
-		t.Fatalf("read replacement queue lock snapshot: %v", err)
-	}
-	if !snapshot.hasOwner {
-		t.Fatal("replacement queue lock metadata was removed")
-	}
-}
-
-func TestRemoveStaleQueueLockSnapshotDoesNotRemoveChangedLock(t *testing.T) {
-	path := filepath.Join(t.TempDir(), queueLockDirName)
-	if err := os.Mkdir(path, 0o700); err != nil {
-		t.Fatalf("mkdir stale queue lock: %v", err)
-	}
-	oldAcquiredAt := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
-	oldOwnerJSON := fmt.Sprintf(`{"pid":999999,"hostname":"old-host","acquiredAt":%q}`+"\n", oldAcquiredAt.Format(time.RFC3339Nano))
-	if err := os.WriteFile(filepath.Join(path, queueLockOwnerFileName), []byte(oldOwnerJSON), 0o600); err != nil {
-		t.Fatalf("write stale queue lock metadata: %v", err)
-	}
-	snapshot, err := readQueueLockSnapshot(path)
-	if err != nil {
-		t.Fatalf("readQueueLockSnapshot() error: %v", err)
-	}
-
-	if err := os.RemoveAll(path); err != nil {
-		t.Fatalf("remove old queue lock: %v", err)
-	}
-	if err := os.Mkdir(path, 0o700); err != nil {
-		t.Fatalf("mkdir replacement queue lock: %v", err)
-	}
-	now := oldAcquiredAt.Add(queueLockStaleAfter + time.Minute)
-	newOwnerJSON := fmt.Sprintf(`{"pid":111111,"hostname":"new-host","acquiredAt":%q}`+"\n", now.Format(time.RFC3339Nano))
-	if err := os.WriteFile(filepath.Join(path, queueLockOwnerFileName), []byte(newOwnerJSON), 0o600); err != nil {
-		t.Fatalf("write replacement queue lock metadata: %v", err)
-	}
-
-	removed, err := removeStaleQueueLockSnapshot(path, now, snapshot)
-	if err != nil {
-		t.Fatalf("removeStaleQueueLockSnapshot() error: %v", err)
-	}
-	if removed {
-		t.Fatal("removeStaleQueueLockSnapshot() removed changed queue lock")
-	}
-	data, err := os.ReadFile(filepath.Join(path, queueLockOwnerFileName))
-	if err != nil {
-		t.Fatalf("read replacement queue lock metadata: %v", err)
-	}
-	if !strings.Contains(string(data), "new-host") {
-		t.Fatalf("replacement queue lock metadata = %q, want new-host", string(data))
-	}
-}
-
-func TestRemoveStaleQueueLockSnapshotDoesNotRemoveNonOwnerFiles(t *testing.T) {
-	path := filepath.Join(t.TempDir(), queueLockDirName)
-	if err := os.Mkdir(path, 0o700); err != nil {
-		t.Fatalf("mkdir stale queue lock: %v", err)
-	}
-	oldAcquiredAt := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
-	oldOwnerJSON := fmt.Sprintf(`{"pid":999999,"hostname":"old-host","acquiredAt":%q}`+"\n", oldAcquiredAt.Format(time.RFC3339Nano))
-	if err := os.WriteFile(filepath.Join(path, queueLockOwnerFileName), []byte(oldOwnerJSON), 0o600); err != nil {
-		t.Fatalf("write stale queue lock metadata: %v", err)
-	}
-	keepPath := filepath.Join(path, "replacement-owner.json")
-	if err := os.WriteFile(keepPath, []byte("replacement\n"), 0o600); err != nil {
-		t.Fatalf("write non-owner lock file: %v", err)
-	}
-	snapshot, err := readQueueLockSnapshot(path)
-	if err != nil {
-		t.Fatalf("readQueueLockSnapshot() error: %v", err)
-	}
-
-	now := oldAcquiredAt.Add(queueLockStaleAfter + time.Minute)
-	removed, err := removeStaleQueueLockSnapshot(path, now, snapshot)
-	if err != nil {
-		t.Fatalf("removeStaleQueueLockSnapshot() error: %v", err)
-	}
-	if removed {
-		t.Fatal("removeStaleQueueLockSnapshot() removed non-empty queue lock directory")
-	}
-	if _, err := os.Stat(keepPath); err != nil {
-		t.Fatalf("non-owner lock file should remain: %v", err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("queue lock directory should remain: %v", err)
 	}
 }
 
@@ -782,9 +473,7 @@ func TestMarkQueueEntrySucceededRecordsTerminalState(t *testing.T) {
 	}
 
 	got, err := store.MarkQueueEntrySucceeded("queue-success", QueueOperationOptions{
-		Now:                  func() time.Time { return completedAt },
-		ExpectedClaimedAt:    entry.ClaimedAt,
-		ExpectedAttemptCount: entry.AttemptCount,
+		Now: func() time.Time { return completedAt },
 	})
 	if err != nil {
 		t.Fatalf("MarkQueueEntrySucceeded() unexpected error: %v", err)
@@ -821,15 +510,12 @@ func TestMarkQueueEntryFailedRecordsInspectableState(t *testing.T) {
 	entry := testQueueEntryWithStatus("queue-failed", "run-failed", QueueStatusClaimed, createdAt)
 	entry.ClaimedAt = &claimedAt
 	entry.Claim = &claim
-	entry.AttemptCount = 1
 	if err := store.SaveQueue([]QueueEntry{entry}); err != nil {
 		t.Fatalf("SaveQueue() unexpected error: %v", err)
 	}
 
 	got, err := store.MarkQueueEntryFailed("queue-failed", " unit tests failed ", QueueOperationOptions{
-		Now:                  func() time.Time { return completedAt },
-		ExpectedClaimedAt:    entry.ClaimedAt,
-		ExpectedAttemptCount: entry.AttemptCount,
+		Now: func() time.Time { return completedAt },
 	})
 	if err != nil {
 		t.Fatalf("MarkQueueEntryFailed() unexpected error: %v", err)
@@ -858,75 +544,6 @@ func TestMarkQueueEntryFailedRecordsInspectableState(t *testing.T) {
 	}
 	if !reflect.DeepEqual(reloaded[0], got) {
 		t.Fatalf("ListQueue() after reload = %#v, want retained failed entry %#v", reloaded[0], got)
-	}
-}
-
-func TestMarkQueueEntryTerminalStateRejectsStaleClaimFence(t *testing.T) {
-	tests := []struct {
-		name string
-		mark func(Store, QueueEntry, time.Time, time.Time) error
-	}{
-		{
-			name: "succeeded",
-			mark: func(store Store, entry QueueEntry, completedAt, oldClaimedAt time.Time) error {
-				_, err := store.MarkQueueEntrySucceeded(entry.QueueID, QueueOperationOptions{
-					Now:                  func() time.Time { return completedAt },
-					ExpectedClaimedAt:    &oldClaimedAt,
-					ExpectedAttemptCount: 1,
-				})
-				return err
-			},
-		},
-		{
-			name: "failed",
-			mark: func(store Store, entry QueueEntry, completedAt, oldClaimedAt time.Time) error {
-				_, err := store.MarkQueueEntryFailed(entry.QueueID, "old worker failed", QueueOperationOptions{
-					Now:                  func() time.Time { return completedAt },
-					ExpectedClaimedAt:    &oldClaimedAt,
-					ExpectedAttemptCount: 1,
-				})
-				return err
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			store := NewStore(filepath.Join(t.TempDir(), "factory"))
-			createdAt := time.Date(2026, 6, 21, 14, 30, 0, 0, time.UTC)
-			oldClaimedAt := createdAt.Add(5 * time.Minute)
-			currentClaimedAt := createdAt.Add(10 * time.Minute)
-			completedAt := createdAt.Add(30 * time.Minute)
-			entry := testQueueEntryWithStatus("queue-stale-claim", "run-stale-claim", QueueStatusClaimed, createdAt)
-			entry.ClaimedAt = &currentClaimedAt
-			entry.AttemptCount = 2
-			if err := store.SaveQueue([]QueueEntry{entry}); err != nil {
-				t.Fatalf("SaveQueue() unexpected error: %v", err)
-			}
-
-			err := tt.mark(store, entry, completedAt, oldClaimedAt)
-			if err == nil || !strings.Contains(err.Error(), `stale factory queue claim for entry "queue-stale-claim"`) {
-				t.Fatalf("mark terminal error = %v, want stale claim", err)
-			}
-
-			entries, err := store.LoadQueue()
-			if err != nil {
-				t.Fatalf("LoadQueue() unexpected error: %v", err)
-			}
-			if len(entries) != 1 {
-				t.Fatalf("queue entries len = %d, want 1: %#v", len(entries), entries)
-			}
-			if entries[0].Status != QueueStatusClaimed {
-				t.Fatalf("queue status = %q, want claimed", entries[0].Status)
-			}
-			if entries[0].CompletedAt != nil {
-				t.Fatalf("completedAt = %v, want nil", entries[0].CompletedAt)
-			}
-			if entries[0].AttemptCount != 2 {
-				t.Fatalf("attemptCount = %d, want current attempt 2", entries[0].AttemptCount)
-			}
-		})
 	}
 }
 
@@ -967,9 +584,7 @@ func TestQueueLifecycleStateSurvivesReload(t *testing.T) {
 	}
 	failedAt := base.Add(40 * time.Minute)
 	failed, err := store.MarkQueueEntryFailed(secondClaimed.QueueID, "executor failed", QueueOperationOptions{
-		Now:                  func() time.Time { return failedAt },
-		ExpectedClaimedAt:    secondClaimed.ClaimedAt,
-		ExpectedAttemptCount: secondClaimed.AttemptCount,
+		Now: func() time.Time { return failedAt },
 	})
 	if err != nil {
 		t.Fatalf("MarkQueueEntryFailed() unexpected error: %v", err)

@@ -78,6 +78,7 @@ var sandboxCreateResolveProviderForForceDelete = func(dir, providerName string) 
 	return resolveProviderWithFallback(dir, providerName)
 }
 var newSandboxID = sandbox.NewV7
+var saveSandboxInstance = sandbox.SaveInstance
 
 type sandboxCreatePendingRemoval interface {
 	Commit() error
@@ -787,7 +788,7 @@ func createBatchTarget(
 		Repo:              repo,
 	}
 
-	if err := sandbox.SaveInstance(state); err != nil {
+	if err := saveSandboxInstance(state); err != nil {
 		if cleanupErr := cleanupCreatedSandbox(ctx, provider, sandboxCfg.Provider, name, result, prefixedOut); cleanupErr != nil {
 			return fmt.Errorf("registering: %w; %v", err, cleanupErr)
 		}
@@ -877,7 +878,7 @@ func runSingleCreate(
 	}
 
 	// Persist to global registry
-	if err := sandbox.SaveInstance(state); err != nil {
+	if err := saveSandboxInstance(state); err != nil {
 		if cleanupErr := cleanupCreatedSandbox(ctx, provider, sandboxCfg.Provider, name, result, renderOut); cleanupErr != nil {
 			return sandboxSanitizeError(fmt.Errorf("registering sandbox: %w; %v", err, cleanupErr), redactor)
 		}

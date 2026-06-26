@@ -19,6 +19,25 @@
       "updatedAt": "2026-06-20T16:32:00Z",
       "finishedAt": "2026-06-20T16:33:00Z",
       "artifactCount": 3,
+      "telemetry": {
+        "totalDurationMs": 1980000,
+        "engine": {
+          "name": "codex",
+          "model": "gpt-5"
+        },
+        "sandbox": {
+          "provider": "digitalocean",
+          "size": "s-2vcpu-4gb"
+        },
+        "estimatedSandboxCost": {
+          "amountUsd": 0.05,
+          "estimated": true
+        },
+        "ciOutcome": "failed",
+        "verificationOutcome": "passed",
+        "artifactCount": 3,
+        "failureCategory": "ci"
+      },
       "failure": {
         "step": "ci",
         "category": "ci",

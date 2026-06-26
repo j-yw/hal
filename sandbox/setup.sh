@@ -21,9 +21,9 @@ set -euo pipefail
 # ── Version pins (single source of truth) ────────────────────────────────────
 GO_VERSION="${GO_VERSION:-1.25.7}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
-CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-2.1.42}"
-PI_CODING_AGENT_VERSION="${PI_CODING_AGENT_VERSION:-0.52.10}"
-CODEX_VERSION="${CODEX_VERSION:-0.101.0}"
+CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-latest}"
+PI_CODING_AGENT_VERSION="${PI_CODING_AGENT_VERSION:-latest}"
+CODEX_VERSION="${CODEX_VERSION:-latest}"
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'

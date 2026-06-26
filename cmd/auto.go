@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +32,12 @@ var (
 	autoJSONFlag         bool
 )
 
+const (
+	autoFactoryMaxRunAttemptsEnv       = "HAL_FACTORY_MAX_RUN_ATTEMPTS"
+	autoFactoryMaxReviewFixAttemptsEnv = "HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS"
+	autoFactoryMaxCIFixAttemptsEnv     = "HAL_FACTORY_MAX_CI_FIX_ATTEMPTS"
+)
+
 type autoEntryMode string
 
 const (
@@ -47,6 +54,14 @@ type autoPolicy struct {
 	reviewCleanStreak int
 	reviewMaxCycles   int
 }
+
+type autoFactoryAttemptPolicy struct {
+	MaxRunAttempts       int
+	MaxReviewFixAttempts int
+	MaxCIFixAttempts     int
+}
+
+type autoFactoryAttemptPolicyContextKey struct{}
 
 const (
 	autoStepStatusCompleted autoStepStatus = "completed"
@@ -360,6 +375,15 @@ func runAuto(cmd *cobra.Command, args []string) error {
 	resolvedConvertMode := ""
 	convertModeTelemetry := ""
 
+	factoryAttemptPolicy, err := autoFactoryAttemptPolicyForRun(ctx)
+	if err != nil {
+		if jsonMode {
+			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
+			return outputAutoJSON(out, jr)
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+
 	if err := compound.MigrateLegacyAutoPRD(dir, errOut); err != nil {
 		if jsonMode {
 			jr := autoFailureResult(entryMode, resume, "failed to migrate legacy auto-prd.json: "+err.Error(), "failed to migrate legacy auto-prd.json: "+err.Error(), autoFailurePipeline, false, "", "")
@@ -515,6 +539,10 @@ func runAuto(cmd *cobra.Command, args []string) error {
 		SourceMarkdown:    sourceMarkdown,
 		ConvertMode:       resolvedConvertMode,
 		BaseBranch:        baseBranch,
+
+		MaxRunAttempts:       factoryAttemptPolicy.MaxRunAttempts,
+		MaxReviewFixAttempts: factoryAttemptPolicy.MaxReviewFixAttempts,
+		MaxCIFixAttempts:     factoryAttemptPolicy.MaxCIFixAttempts,
 	}
 
 	// Run the pipeline
@@ -569,6 +597,62 @@ func outputAutoJSON(out io.Writer, jr AutoResult) error {
 		return fmt.Errorf("failed to marshal auto result: %w", err)
 	}
 	fmt.Fprintln(out, string(data))
+	return nil
+}
+
+func contextWithAutoFactoryAttemptPolicy(ctx context.Context, policy autoFactoryAttemptPolicy) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, autoFactoryAttemptPolicyContextKey{}, policy)
+}
+
+func autoFactoryAttemptPolicyForRun(ctx context.Context) (autoFactoryAttemptPolicy, error) {
+	if ctx != nil {
+		if policy, ok := ctx.Value(autoFactoryAttemptPolicyContextKey{}).(autoFactoryAttemptPolicy); ok {
+			return policy, validateAutoFactoryAttemptPolicy(policy)
+		}
+	}
+
+	policy := autoFactoryAttemptPolicy{}
+	var err error
+	if policy.MaxRunAttempts, err = parseAutoFactoryAttemptEnv(autoFactoryMaxRunAttemptsEnv); err != nil {
+		return autoFactoryAttemptPolicy{}, err
+	}
+	if policy.MaxReviewFixAttempts, err = parseAutoFactoryAttemptEnv(autoFactoryMaxReviewFixAttemptsEnv); err != nil {
+		return autoFactoryAttemptPolicy{}, err
+	}
+	if policy.MaxCIFixAttempts, err = parseAutoFactoryAttemptEnv(autoFactoryMaxCIFixAttemptsEnv); err != nil {
+		return autoFactoryAttemptPolicy{}, err
+	}
+	return policy, nil
+}
+
+func parseAutoFactoryAttemptEnv(key string) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer", key)
+	}
+	if value < 0 {
+		return 0, fmt.Errorf("%s must be greater than or equal to 0", key)
+	}
+	return value, nil
+}
+
+func validateAutoFactoryAttemptPolicy(policy autoFactoryAttemptPolicy) error {
+	if policy.MaxRunAttempts < 0 {
+		return fmt.Errorf("%s must be greater than or equal to 0", autoFactoryMaxRunAttemptsEnv)
+	}
+	if policy.MaxReviewFixAttempts < 0 {
+		return fmt.Errorf("%s must be greater than or equal to 0", autoFactoryMaxReviewFixAttemptsEnv)
+	}
+	if policy.MaxCIFixAttempts < 0 {
+		return fmt.Errorf("%s must be greater than or equal to 0", autoFactoryMaxCIFixAttemptsEnv)
+	}
 	return nil
 }
 

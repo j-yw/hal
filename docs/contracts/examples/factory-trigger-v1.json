@@ -5,6 +5,7 @@
     "runId": "run-20260621-001",
     "status": "pending",
     "executorMode": "local",
+    "engine": "codex",
     "source": {
       "kind": "markdown",
       "path": ".hal/prd-factory-trigger-entrypoints.md"

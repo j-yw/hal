@@ -250,15 +250,15 @@ func TestValidateEnvToken(t *testing.T) {
 			if !tt.wantRequest && requestCalls != 0 {
 				t.Fatalf("validate request calls = %d, want 0", requestCalls)
 			}
-				if tt.wantErr && tt.wantInvalidErr && !errors.Is(err, ErrInvalidEnvToken) {
-					t.Fatalf("error = %v, want %v", err, ErrInvalidEnvToken)
-				}
-				if tt.wantErr && !tt.wantInvalidErr && errors.Is(err, ErrInvalidEnvToken) {
-					t.Fatalf("error = %v, should not be classified as %v", err, ErrInvalidEnvToken)
-				}
-			})
-		}
+			if tt.wantErr && tt.wantInvalidErr && !errors.Is(err, ErrInvalidEnvToken) {
+				t.Fatalf("error = %v, want %v", err, ErrInvalidEnvToken)
+			}
+			if tt.wantErr && !tt.wantInvalidErr && errors.Is(err, ErrInvalidEnvToken) {
+				t.Fatalf("error = %v, should not be classified as %v", err, ErrInvalidEnvToken)
+			}
+		})
 	}
+}
 
 func TestIsGHAuthenticatedWithRunner_ScopesAuthToGitHubDotCom(t *testing.T) {
 	var gotName string

@@ -373,7 +373,7 @@ func warningSummaryPart(warningID string, checks []Check) string {
 
 func checkGitRepo(dir string) Check {
 	gitDir := filepath.Join(dir, ".git")
-	if info, err := os.Stat(gitDir); err == nil && (info.IsDir() || isGitWorktreeFile(gitDir)) {
+	if isGitRepoMarker(gitDir) {
 		return Check{
 			ID:            "git_repo",
 			Status:        StatusPass,
@@ -387,20 +387,23 @@ func checkGitRepo(dir string) Check {
 		Status:        StatusWarn,
 		Severity:      SeverityWarn,
 		RemediationID: RemediationNone,
-		Message:       "No .git directory or worktree metadata file found. Hal works best inside a git repository.",
+		Message:       "No .git directory found. Hal works best inside a git repository.",
 	}
 }
 
-func isGitWorktreeFile(path string) bool {
-	data, err := os.ReadFile(path)
+func isGitRepoMarker(path string) bool {
+	info, err := os.Stat(path)
 	if err != nil {
 		return false
 	}
-	content := strings.TrimSpace(string(data))
-	if !strings.HasPrefix(content, "gitdir:") {
+	if info.IsDir() {
+		return true
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
 		return false
 	}
-	return strings.TrimSpace(strings.TrimPrefix(content, "gitdir:")) != ""
+	return strings.HasPrefix(strings.TrimSpace(string(content)), "gitdir:")
 }
 
 func checkHalDir(halDir string) Check {
@@ -768,19 +771,6 @@ func checkCodexLinks(dir, engine string) Check {
 			otherRepo = append(otherRepo, name)
 			if otherTarget == "" {
 				otherTarget = target
-			}
-		}
-	}
-	commandLink := linker.CommandsDir()
-	commandTarget, err := os.Readlink(commandLink)
-	if err != nil {
-		missing = append(missing, "commands")
-	} else {
-		expectedTarget := filepath.Join(absDir, template.HalDir, template.CommandsDir)
-		if commandTarget != expectedTarget {
-			otherRepo = append(otherRepo, "commands")
-			if otherTarget == "" {
-				otherTarget = commandTarget
 			}
 		}
 	}

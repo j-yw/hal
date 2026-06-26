@@ -54,8 +54,7 @@ func BootstrapVerifyTooling(ctx context.Context, request BootstrapRequest, deps 
 
 	plans, err := bootstrapToolingPlans(request, deps)
 	if err != nil {
-		recordBootstrapRequestValidationFailure(&result, request, deps.now, err)
-		return result, err
+		return BootstrapResult{}, err
 	}
 
 	result = BootstrapResult{
@@ -116,7 +115,7 @@ func bootstrapToolingPlans(request BootstrapRequest, deps BootstrapToolingDeps) 
 	if halCheck.Command.Name == "" {
 		halCheck.Command = BootstrapCommand{
 			Name: "hal",
-			Args: []string{"--version"},
+			Args: []string{"version"},
 			Dir:  workspaceDir,
 		}
 	}

@@ -3,14 +3,17 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/spf13/cobra"
 )
 
 func TestRunFactoryTriggerWithDepsCreatesMarkdownRunAndQueueEntry(t *testing.T) {
@@ -52,6 +55,9 @@ func TestRunFactoryTriggerWithDepsCreatesMarkdownRunAndQueueEntry(t *testing.T) 
 	if resp.RunID != "run-trigger-prd" {
 		t.Fatalf("runId = %q, want run-trigger-prd", resp.RunID)
 	}
+	if resp.Entry == nil {
+		t.Fatal("entry = nil, want queued entry")
+	}
 	if resp.Entry.QueueID != "queue-trigger-prd" {
 		t.Fatalf("queueId = %q, want queue-trigger-prd", resp.Entry.QueueID)
 	}
@@ -72,6 +78,15 @@ func TestRunFactoryTriggerWithDepsCreatesMarkdownRunAndQueueEntry(t *testing.T) 
 	}
 	if resp.Run.BaseBranch != "hal/local-factory-queue-and-worker-commands" {
 		t.Fatalf("baseBranch = %q", resp.Run.BaseBranch)
+	}
+	if resp.Run.Policy == nil {
+		t.Fatal("run policy snapshot = nil, want trigger-time policy snapshot")
+	}
+	if resp.Run.Engine != factory.PolicyEngineCodex {
+		t.Fatalf("run engine = %q, want %q", resp.Run.Engine, factory.PolicyEngineCodex)
+	}
+	if got, want := strings.Join(resp.Run.Policy.AllowedEngines, ","), strings.Join(factory.SupportedPolicyEngines(), ","); got != want {
+		t.Fatalf("policy.allowedEngines = %q, want %q", got, want)
 	}
 	if resp.Summary != "queued triggered run run-trigger-prd as queue-trigger-prd" {
 		t.Fatalf("summary = %q", resp.Summary)
@@ -98,6 +113,550 @@ func TestRunFactoryTriggerWithDepsCreatesMarkdownRunAndQueueEntry(t *testing.T) 
 	}
 	if events[0].Metadata["triggerKind"] != factory.SourceKindMarkdown {
 		t.Fatalf("triggerKind metadata = %#v", events[0].Metadata["triggerKind"])
+	}
+}
+
+func TestRunFactoryTriggerWithDepsRedactsTriggerScopedSecrets(t *testing.T) {
+	secretValue := "trigger-secret-value"
+	repoDir := filepath.Join(t.TempDir(), "repo-"+secretValue)
+	halDir := filepath.Join(repoDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 22, 1, 0, 0, time.UTC)
+	deps := factoryTriggerTestDeps(store, now, "run-trigger-secret", "queue-trigger-secret")
+	deps.lookupEnv = func(name string) (string, bool) {
+		if name != "TRIGGER_SECRET" {
+			t.Fatalf("lookupEnv(%q), want TRIGGER_SECRET", name)
+		}
+		return secretValue, true
+	}
+
+	var out bytes.Buffer
+	err := runFactoryTriggerWithDeps(&out, factoryTriggerRequest{
+		RepoPath:     repoDir,
+		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "base-" + secretValue,
+		ExecutorMode: factory.ExecutorModeLocal,
+		Secrets: []factory.RunSecretInput{{
+			Name:     "TRIGGER_SECRET",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+		}},
+		JSON: true,
+	}, deps)
+	if err != nil {
+		t.Fatalf("runFactoryTriggerWithDeps() unexpected error: %v", err)
+	}
+
+	if strings.Contains(out.String(), secretValue) {
+		t.Fatalf("output contains secret value: %s", out.String())
+	}
+	record, err := store.LoadRun("run-trigger-secret")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if strings.Contains(record.RepoPath, secretValue) {
+		t.Fatalf("RepoPath = %q, want secret redacted", record.RepoPath)
+	}
+	if strings.Contains(record.BaseBranch, secretValue) {
+		t.Fatalf("BaseBranch = %q, want secret redacted", record.BaseBranch)
+	}
+	if !strings.Contains(record.RepoPath, factory.RunSecretRedactionPlaceholder) {
+		t.Fatalf("RepoPath = %q, want redaction placeholder", record.RepoPath)
+	}
+}
+
+func TestRunFactoryTriggerWithDepsRejectsSandboxRequiredBeforeEnqueue(t *testing.T) {
+	repoDir := t.TempDir()
+	halDir := filepath.Join(repoDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 22, 2, 0, 0, time.UTC)
+	policy := factory.DefaultFactoryPolicy()
+	policy.SandboxRequired = true
+	deps := factoryTriggerTestDeps(store, now, "run-trigger-policy-sandbox", "queue-trigger-policy-sandbox")
+	deps.loadPolicy = func(string) (*factory.FactoryPolicy, error) {
+		return &policy, nil
+	}
+
+	err := runFactoryTriggerWithDeps(&bytes.Buffer{}, factoryTriggerRequest{
+		RepoPath:     repoDir,
+		MarkdownPath: ".hal/prd-feature.md",
+		ExecutorMode: factory.ExecutorModeLocal,
+	}, deps)
+	if err == nil {
+		t.Fatal("runFactoryTriggerWithDeps() error = nil, want sandboxRequired rejection")
+	}
+	if !strings.Contains(err.Error(), "factory.policy.sandboxRequired") {
+		t.Fatalf("runFactoryTriggerWithDeps() error = %q, want sandboxRequired rejection", err.Error())
+	}
+
+	entries, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("queue entries len = %d, want 0: %#v", len(entries), entries)
+	}
+
+	record, err := store.LoadRun("run-trigger-policy-sandbox")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("run status = %q, want failed", record.Status)
+	}
+	if record.Policy == nil || !record.Policy.SandboxRequired {
+		t.Fatalf("policy snapshot = %#v, want sandboxRequired snapshot", record.Policy)
+	}
+	if record.Failure == nil || record.Failure.Step != "policy" {
+		t.Fatalf("failure = %#v, want policy failure", record.Failure)
+	}
+
+	events, err := store.LoadEvents("run-trigger-policy-sandbox")
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypePolicyDecision,
+		factory.EventTypeFailureClassification,
+	})
+	assertPolicyDecisionMetadata(t, events[1].Metadata, factory.PolicyDecisionMetadata{
+		PolicyField: "factory.policy.sandboxRequired",
+		Decision:    factory.PolicyDecisionRejectedExecution,
+		Outcome:     factory.PolicyOutcomeRejected,
+		Reason:      "requires sandbox executor (requested local)",
+	})
+}
+
+func TestRunFactoryTriggerWithDepsJSONPolicyRejectionUsesTriggerContract(t *testing.T) {
+	repoDir := t.TempDir()
+	halDir := filepath.Join(repoDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 22, 2, 30, 0, time.UTC)
+	policy := factory.DefaultFactoryPolicy()
+	policy.SandboxRequired = true
+	deps := factoryTriggerTestDeps(store, now, "run-trigger-json-policy", "queue-trigger-json-policy")
+	deps.loadPolicy = func(string) (*factory.FactoryPolicy, error) {
+		return &policy, nil
+	}
+
+	var out bytes.Buffer
+	err := runFactoryTriggerWithDeps(&out, factoryTriggerRequest{
+		RepoPath:     repoDir,
+		MarkdownPath: ".hal/prd-feature.md",
+		ExecutorMode: factory.ExecutorModeLocal,
+		JSON:         true,
+	}, deps)
+	if err == nil {
+		t.Fatal("runFactoryTriggerWithDeps() error = nil, want sandboxRequired rejection")
+	}
+	if !strings.Contains(err.Error(), "factory.policy.sandboxRequired") {
+		t.Fatalf("runFactoryTriggerWithDeps() error = %q, want sandboxRequired rejection", err.Error())
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
+		t.Fatalf("json.Unmarshal output error: %v\n%s", err, out.String())
+	}
+	requireExactKeys(t, raw, []string{"contractVersion", "runId", "run", "summary"})
+	if raw["contractVersion"] != FactoryTriggerContractVersion {
+		t.Fatalf("contractVersion = %v, want %q", raw["contractVersion"], FactoryTriggerContractVersion)
+	}
+	if _, ok := raw["version"]; ok {
+		t.Fatalf("unexpected factory-run-v1 version key in trigger response: %#v", raw)
+	}
+
+	var resp FactoryTriggerResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal typed response error: %v", err)
+	}
+	if resp.Entry != nil {
+		t.Fatalf("entry = %#v, want nil before enqueue", resp.Entry)
+	}
+	if resp.RunID != "run-trigger-json-policy" || resp.Run.RunID != resp.RunID {
+		t.Fatalf("run IDs = response %q run %q, want run-trigger-json-policy", resp.RunID, resp.Run.RunID)
+	}
+	if resp.Run.Status != factory.RunStatusFailed {
+		t.Fatalf("run status = %q, want failed", resp.Run.Status)
+	}
+	if resp.Run.Failure == nil || resp.Run.Failure.Step != "policy" {
+		t.Fatalf("run failure = %#v, want policy failure", resp.Run.Failure)
+	}
+
+	entries, loadErr := store.LoadQueue()
+	if loadErr != nil {
+		t.Fatalf("LoadQueue() error: %v", loadErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("queue entries len = %d, want 0: %#v", len(entries), entries)
+	}
+}
+
+func TestRunFactoryTriggerWithDepsRejectsDisallowedEngineBeforeEnqueue(t *testing.T) {
+	repoDir := t.TempDir()
+	halDir := filepath.Join(repoDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 22, 3, 0, 0, time.UTC)
+	policy := factory.DefaultFactoryPolicy()
+	policy.AllowedEngines = []string{factory.PolicyEngineClaude}
+	deps := factoryTriggerTestDeps(store, now, "run-trigger-policy-engine", "queue-trigger-policy-engine")
+	deps.loadPolicy = func(string) (*factory.FactoryPolicy, error) {
+		return &policy, nil
+	}
+	deps.loadEngine = func(string) (string, error) {
+		return factory.PolicyEngineCodex, nil
+	}
+
+	err := runFactoryTriggerWithDeps(&bytes.Buffer{}, factoryTriggerRequest{
+		RepoPath:     repoDir,
+		MarkdownPath: ".hal/prd-feature.md",
+		ExecutorMode: factory.ExecutorModeLocal,
+	}, deps)
+	if err == nil {
+		t.Fatal("runFactoryTriggerWithDeps() error = nil, want allowedEngines rejection")
+	}
+	if !strings.Contains(err.Error(), "factory.policy.allowedEngines") {
+		t.Fatalf("runFactoryTriggerWithDeps() error = %q, want allowedEngines rejection", err.Error())
+	}
+
+	entries, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("queue entries len = %d, want 0: %#v", len(entries), entries)
+	}
+	record, err := store.LoadRun("run-trigger-policy-engine")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Policy == nil || strings.Join(record.Policy.AllowedEngines, ",") != factory.PolicyEngineClaude {
+		t.Fatalf("policy snapshot = %#v, want claude-only snapshot", record.Policy)
+	}
+	if record.Engine != factory.PolicyEngineCodex {
+		t.Fatalf("engine snapshot = %q, want %q", record.Engine, factory.PolicyEngineCodex)
+	}
+
+	events, err := store.LoadEvents("run-trigger-policy-engine")
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypePolicyDecision,
+		factory.EventTypeFailureClassification,
+	})
+	assertPolicyDecisionMetadata(t, events[1].Metadata, factory.PolicyDecisionMetadata{
+		PolicyField: "factory.policy.allowedEngines",
+		Decision:    factory.PolicyDecisionRejectedExecution,
+		Outcome:     factory.PolicyOutcomeRejected,
+		Reason:      `does not allow engine "codex"`,
+	})
+}
+
+func TestFactoryTriggerRequestFromCommandParsesSecretEnvFlags(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("repo", ".", "")
+	cmd.Flags().String("prd", "", "")
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().Bool("discover-report", false, "")
+	cmd.Flags().String("reports-dir", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().String("executor", factory.ExecutorModeLocal, "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().Bool("json", false, "")
+	if err := cmd.Flags().Set("prd", ".hal/prd-feature.md"); err != nil {
+		t.Fatalf("Set(prd) error: %v", err)
+	}
+	if err := cmd.Flags().Set("secret-env", "GITHUB_TOKEN"); err != nil {
+		t.Fatalf("Set(secret-env) error: %v", err)
+	}
+
+	req, err := factoryTriggerRequestFromCommand(cmd)
+	if err != nil {
+		t.Fatalf("factoryTriggerRequestFromCommand() unexpected error: %v", err)
+	}
+
+	wantSecrets := []factory.RunSecretInput{{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true}}
+	if !reflect.DeepEqual(req.Secrets, wantSecrets) {
+		t.Fatalf("secrets = %#v, want %#v", req.Secrets, wantSecrets)
+	}
+}
+
+func TestFactoryTriggerRequestFromCommandRejectsSecretEnvAssignments(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("repo", ".", "")
+	cmd.Flags().String("prd", "", "")
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().Bool("discover-report", false, "")
+	cmd.Flags().String("reports-dir", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().String("executor", factory.ExecutorModeLocal, "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().Bool("json", false, "")
+	if err := cmd.Flags().Set("prd", ".hal/prd-feature.md"); err != nil {
+		t.Fatalf("Set(prd) error: %v", err)
+	}
+	if err := cmd.Flags().Set("secret-env", "GITHUB_TOKEN=ghp_secret"); err != nil {
+		t.Fatalf("Set(secret-env) error: %v", err)
+	}
+
+	_, err := factoryTriggerRequestFromCommand(cmd)
+	if err == nil {
+		t.Fatal("factoryTriggerRequestFromCommand() expected error")
+	}
+	if strings.Contains(err.Error(), "ghp_secret") || strings.Contains(err.Error(), "GITHUB_TOKEN=ghp_secret") {
+		t.Fatalf("error should not echo secret-env value: %v", err)
+	}
+}
+
+func TestRunFactoryTriggerWithDepsPersistsSecretRequirementsForQueueWorker(t *testing.T) {
+	repoDir := t.TempDir()
+	halDir := filepath.Join(repoDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 22, 2, 0, 0, time.UTC)
+	secretValue := "ghp_trigger_secret_12345"
+	deps := factoryTriggerTestDeps(store, now, "run-trigger-secret", "queue-trigger-secret")
+	deps.repoRemote = func(string) (string, error) {
+		return "https://x:" + secretValue + "@github.com/ReScienceLab/hal.git", nil
+	}
+
+	var out bytes.Buffer
+	err := runFactoryTriggerWithDeps(&out, factoryTriggerRequest{
+		RepoPath:     repoDir,
+		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
+		ExecutorMode: factory.ExecutorModeSandbox,
+		JSON:         true,
+		Secrets: []factory.RunSecretInput{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+		}},
+	}, deps)
+	if err != nil {
+		t.Fatalf("runFactoryTriggerWithDeps() unexpected error: %v", err)
+	}
+	if strings.Contains(out.String(), secretValue) {
+		t.Fatalf("trigger JSON leaked secret value: %s", out.String())
+	}
+	var resp FactoryTriggerResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal output error: %v\n%s", err, out.String())
+	}
+	if resp.Run.RepoRemote != "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/ReScienceLab/hal.git" {
+		t.Fatalf("response repo remote = %q, want redacted secret value", resp.Run.RepoRemote)
+	}
+
+	record, err := store.LoadRun("run-trigger-secret")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.RepoRemote != "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/ReScienceLab/hal.git" {
+		t.Fatalf("stored repo remote = %q, want redacted secret value", record.RepoRemote)
+	}
+	wantMetadata := []factory.RunSecretMetadata{{
+		Name:     "GITHUB_TOKEN",
+		Source:   factory.RunSecretSourceEnv,
+		Required: true,
+		Present:  false,
+	}}
+	if !reflect.DeepEqual(record.Secrets, wantMetadata) {
+		t.Fatalf("secrets metadata = %#v, want %#v", record.Secrets, wantMetadata)
+	}
+	req := factoryRunRequestFromQueueRecord(*record)
+	wantSecrets := []factory.RunSecretInput{{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true}}
+	if !reflect.DeepEqual(req.Secrets, wantSecrets) {
+		t.Fatalf("queue request secrets = %#v, want %#v", req.Secrets, wantSecrets)
+	}
+}
+
+func TestRunFactoryTriggerWithDepsPolicyLoadFailureKeepsSecretMetadataUnresolved(t *testing.T) {
+	repoDir := t.TempDir()
+	halDir := filepath.Join(repoDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 22, 2, 0, 0, time.UTC)
+	deps := factoryTriggerTestDeps(store, now, "run-trigger-policy-load-secret", "queue-trigger-policy-load-secret")
+	deps.loadPolicy = func(string) (*factory.FactoryPolicy, error) {
+		return nil, errors.New("policy read failed")
+	}
+
+	var out bytes.Buffer
+	err := runFactoryTriggerWithDeps(&out, factoryTriggerRequest{
+		RepoPath:     repoDir,
+		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
+		ExecutorMode: factory.ExecutorModeSandbox,
+		JSON:         true,
+		Secrets: []factory.RunSecretInput{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+		}},
+	}, deps)
+	if err == nil {
+		t.Fatal("runFactoryTriggerWithDeps() error = nil, want policy load failure")
+	}
+
+	var resp FactoryTriggerResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal output error: %v\n%s", err, out.String())
+	}
+	if resp.Run.Failure == nil {
+		t.Fatal("response failure = nil, want policy load failure")
+	}
+
+	record, err := store.LoadRun("run-trigger-policy-load-secret")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Failure == nil {
+		t.Fatal("stored failure = nil, want policy load failure")
+	}
+	wantMetadata := []factory.RunSecretMetadata{{
+		Name:     "GITHUB_TOKEN",
+		Source:   factory.RunSecretSourceEnv,
+		Required: true,
+		Present:  false,
+	}}
+	if !reflect.DeepEqual(record.Secrets, wantMetadata) {
+		t.Fatalf("secrets metadata = %#v, want %#v", record.Secrets, wantMetadata)
+	}
+}
+
+func TestRunFactoryTriggerWithDepsRedactsCredentialedRemoteWhenSecretValueMissing(t *testing.T) {
+	repoDir := t.TempDir()
+	halDir := filepath.Join(repoDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 22, 3, 0, 0, time.UTC)
+	credential := "factory-secret-12345"
+	deps := factoryTriggerTestDeps(store, now, "run-trigger-missing-secret", "queue-trigger-missing-secret")
+	deps.repoRemote = func(string) (string, error) {
+		return "https://" + credential + ":x-oauth-basic@github.com/ReScienceLab/hal.git", nil
+	}
+
+	var out bytes.Buffer
+	err := runFactoryTriggerWithDeps(&out, factoryTriggerRequest{
+		RepoPath:     repoDir,
+		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
+		ExecutorMode: factory.ExecutorModeLocal,
+		JSON:         true,
+		Secrets: []factory.RunSecretInput{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+		}},
+	}, deps)
+	if err != nil {
+		t.Fatalf("runFactoryTriggerWithDeps() unexpected error: %v", err)
+	}
+	if strings.Contains(out.String(), credential) {
+		t.Fatalf("trigger JSON leaked credentialed remote secret: %s", out.String())
+	}
+
+	var resp FactoryTriggerResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal output error: %v\n%s", err, out.String())
+	}
+	wantRemote := "https://" + factory.RunSecretRedactionPlaceholder + "@github.com/ReScienceLab/hal.git"
+	if resp.Run.RepoRemote != wantRemote {
+		t.Fatalf("response repo remote = %q, want %q", resp.Run.RepoRemote, wantRemote)
+	}
+
+	record, err := store.LoadRun("run-trigger-missing-secret")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.RepoRemote != wantRemote {
+		t.Fatalf("stored repo remote = %q, want %q", record.RepoRemote, wantRemote)
+	}
+}
+
+func TestRunFactoryTriggerWithDepsRedactsCredentialedRemoteWithoutDeclaredSecrets(t *testing.T) {
+	repoDir := t.TempDir()
+	halDir := filepath.Join(repoDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 22, 4, 0, 0, time.UTC)
+	credential := "factory-trigger-remote-token"
+	deps := factoryTriggerTestDeps(store, now, "run-trigger-credentialed-remote", "queue-trigger-credentialed-remote")
+	deps.repoRemote = func(string) (string, error) {
+		return "https://" + credential + ":x-oauth-basic@github.com/ReScienceLab/hal.git", nil
+	}
+
+	var out bytes.Buffer
+	err := runFactoryTriggerWithDeps(&out, factoryTriggerRequest{
+		RepoPath:     repoDir,
+		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
+		ExecutorMode: factory.ExecutorModeLocal,
+		JSON:         true,
+	}, deps)
+	if err != nil {
+		t.Fatalf("runFactoryTriggerWithDeps() unexpected error: %v", err)
+	}
+	if strings.Contains(out.String(), credential) {
+		t.Fatalf("trigger JSON leaked credentialed remote secret: %s", out.String())
+	}
+
+	var resp FactoryTriggerResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal output error: %v\n%s", err, out.String())
+	}
+	wantRemote := "https://" + factory.RunSecretRedactionPlaceholder + "@github.com/ReScienceLab/hal.git"
+	if resp.Run.RepoRemote != wantRemote {
+		t.Fatalf("response repo remote = %q, want %q", resp.Run.RepoRemote, wantRemote)
+	}
+
+	record, err := store.LoadRun("run-trigger-credentialed-remote")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.RepoRemote != wantRemote {
+		t.Fatalf("stored repo remote = %q, want %q", record.RepoRemote, wantRemote)
+	}
+	if len(record.Secrets) != 0 {
+		t.Fatalf("secrets metadata = %#v, want none", record.Secrets)
 	}
 }
 
@@ -296,7 +855,7 @@ func TestRunFactoryTriggerWithDepsRejectsMissingPayloads(t *testing.T) {
 			wantErr: "--reports-dir requires --discover-report",
 		},
 		{
-			name: "sandbox missing base branch",
+			name: "sandbox executor requires base",
 			req: factoryTriggerRequest{
 				RepoPath:     ".",
 				MarkdownPath: ".hal/prd.md",
@@ -381,6 +940,13 @@ func factoryTriggerTestDeps(store factory.Store, now time.Time, runID, queueID s
 		loadConfig: func(string) (*compound.AutoConfig, error) {
 			cfg := compound.DefaultAutoConfig()
 			return &cfg, nil
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			policy := factory.DefaultFactoryPolicy()
+			return &policy, nil
+		},
+		loadEngine: func(string) (string, error) {
+			return factory.PolicyEngineCodex, nil
 		},
 		discoverLatestReport: discoverLatestReportCandidate,
 	}

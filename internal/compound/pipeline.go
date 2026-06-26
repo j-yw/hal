@@ -44,6 +44,9 @@ var runLoopWithConfig = func(ctx context.Context, cfg loop.Config) (loop.Result,
 // runReviewLoopWithDisplay points to RunReviewLoopWithDisplay and is overridden in tests.
 var runReviewLoopWithDisplay = RunReviewLoopWithDisplay
 
+// runReviewValidationWithDisplay points to RunReviewValidationWithDisplay and is overridden in tests.
+var runReviewValidationWithDisplay = RunReviewValidationWithDisplay
+
 // runReportWithEngine points to Review and is overridden in tests.
 var runReportWithEngine = Review
 
@@ -61,6 +64,9 @@ var createArchiveWithOptions = archive.CreateWithOptions
 
 // workingTreeChangesInDirFn points to WorkingTreeChangesInDir and is overridden in tests.
 var workingTreeChangesInDirFn = WorkingTreeChangesInDir
+
+// workingTreeSnapshotInDirFn points to WorkingTreeSnapshotInDir and is overridden in tests.
+var workingTreeSnapshotInDirFn = WorkingTreeSnapshotInDir
 
 // gitAddAllInDirFn points to defaultGitAddAllInDir and is overridden in tests.
 var gitAddAllInDirFn = defaultGitAddAllInDir
@@ -283,6 +289,10 @@ type RunOptions struct {
 	SourceMarkdown    string // Positional markdown path (skips analyze/spec)
 	ConvertMode       string // Resolved convert mode for this run (standard|granular)
 	BaseBranch        string // Base branch for creating work branch / PR target
+
+	MaxRunAttempts       int // Optional factory policy cap; 0 means no policy cap
+	MaxReviewFixAttempts int // Optional factory policy cap; 0 means no policy cap
+	MaxCIFixAttempts     int // Optional factory policy cap; 0 means no policy cap
 }
 
 // Run executes the compound pipeline from the current state or from the beginning.
@@ -991,8 +1001,19 @@ func convertBranchFixCommand(convertMode, branchName string) string {
 func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
 	p.display.ShowInfo("   Step: run\n")
 
+	previousRunIterations := incompleteRunIterations(state)
+	maxRunIterations := p.runStepMaxIterations(state, opts)
+	if opts.MaxRunAttempts > 0 && previousRunIterations >= opts.MaxRunAttempts {
+		return &PolicyLimitError{
+			PolicyField: "factory.policy.maxRunAttempts",
+			Step:        StepRun,
+			Attempts:    previousRunIterations,
+			Limit:       opts.MaxRunAttempts,
+		}
+	}
+
 	if opts.DryRun {
-		p.display.ShowInfo("   [dry-run] Would run task loop with max %d iterations\n", p.config.MaxIterations)
+		p.display.ShowInfo("   [dry-run] Would run task loop with max %d iterations\n", maxRunIterations)
 		state.Step = StepReview
 		return nil
 	}
@@ -1019,7 +1040,7 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 		PRDFile:       template.PRDFile,
 		ProgressFile:  template.ProgressFile,
 		BaseBranch:    state.BaseBranch,
-		MaxIterations: p.config.MaxIterations,
+		MaxIterations: maxRunIterations,
 		Engine:        p.engine.Name(),
 		EngineConfig:  p.engineConfig,
 		Logger:        p.display.Writer(),
@@ -1032,15 +1053,24 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 		return fmt.Errorf("failed to create loop runner: %w", err)
 	}
 
+	totalRunIterations := previousRunIterations + result.Iterations
 	state.Run = &RunState{
-		Iterations:    result.Iterations,
+		Iterations:    totalRunIterations,
 		Complete:      result.Complete,
-		MaxIterations: p.config.MaxIterations,
+		MaxIterations: maxRunIterations,
 	}
 
 	if result.Error != nil {
 		if saveErr := p.saveState(state); saveErr != nil {
 			return fmt.Errorf("loop execution failed: %w (also failed to save run telemetry: %v)", result.Error, saveErr)
+		}
+		if opts.MaxRunAttempts > 0 && totalRunIterations >= opts.MaxRunAttempts {
+			return fmt.Errorf("%w (loop execution failed: %w)", &PolicyLimitError{
+				PolicyField: "factory.policy.maxRunAttempts",
+				Step:        StepRun,
+				Attempts:    totalRunIterations,
+				Limit:       opts.MaxRunAttempts,
+			}, result.Error)
 		}
 		return fmt.Errorf("loop execution failed: %w", result.Error)
 	}
@@ -1049,6 +1079,14 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 		p.display.ShowInfo("   Loop stopped after %d iterations (tasks remaining)\n", result.Iterations)
 		if saveErr := p.saveState(state); saveErr != nil {
 			return fmt.Errorf("run gate blocked: PRD completion incomplete (also failed to save run telemetry: %v)", saveErr)
+		}
+		if opts.MaxRunAttempts > 0 && totalRunIterations >= opts.MaxRunAttempts {
+			return &PolicyLimitError{
+				PolicyField: "factory.policy.maxRunAttempts",
+				Step:        StepRun,
+				Attempts:    totalRunIterations,
+				Limit:       opts.MaxRunAttempts,
+			}
 		}
 		if result.TotalStories > 0 {
 			return fmt.Errorf("run gate blocked: PRD completion incomplete (%d/%d complete); rerun `hal auto --resume` to continue remaining tasks", result.CompletedStories, result.TotalStories)
@@ -1063,6 +1101,24 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 	}
 
 	return nil
+}
+
+func (p *Pipeline) runStepMaxIterations(state *PipelineState, opts RunOptions) int {
+	maxIterations := p.config.MaxIterations
+	if opts.MaxRunAttempts > 0 {
+		remainingAttempts := opts.MaxRunAttempts - incompleteRunIterations(state)
+		if remainingAttempts < maxIterations {
+			return remainingAttempts
+		}
+	}
+	return maxIterations
+}
+
+func incompleteRunIterations(state *PipelineState) int {
+	if state == nil || state.Run == nil || state.Run.Complete || state.Run.Iterations <= 0 {
+		return 0
+	}
+	return state.Run.Iterations
 }
 
 // runReviewStep executes bounded review cycles before CI.
@@ -1115,10 +1171,37 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 
 	cleanStreak := 0
 	lastValidIssues := 0
-	fixesAppliedDuringReview := false
 	for cycle := 1; cycle <= maxCycles; cycle++ {
+		atReviewFixLimit := opts.MaxReviewFixAttempts > 0 && state.Review.FixAttempts >= opts.MaxReviewFixAttempts
+		fixAttemptsBeforeCycle := state.Review.FixAttempts
 		p.display.ShowInfo("   Running review cycle %d/%d against %s...\n", cycle, maxCycles, baseBranch)
-		result, err := runReviewLoopWithDisplay(ctx, p.engine, p.display, baseBranch, 1)
+		var result *ReviewLoopResult
+		var err error
+		if atReviewFixLimit {
+			snapshotBefore, snapshotErr := workingTreeSnapshotInDirFn(p.dir)
+			if snapshotErr != nil {
+				state.Review.Status = "failed"
+				return fmt.Errorf("failed to snapshot working tree before non-mutating review validation: %w", snapshotErr)
+			}
+			result, err = runReviewValidationWithDisplay(ctx, p.engine, p.display, baseBranch)
+			if mutationErr := p.ensureReviewValidationDidNotMutate(snapshotBefore); mutationErr != nil {
+				state.Review.Status = "failed"
+				state.Step = StepReview
+				if saveErr := p.saveState(state); saveErr != nil {
+					return fmt.Errorf("review gate blocked: %w (also failed to save state: %v)", mutationErr, saveErr)
+				}
+				return fmt.Errorf("review gate blocked: %w", mutationErr)
+			}
+		} else {
+			if opts.MaxReviewFixAttempts > 0 {
+				state.Review.FixAttempts++
+				state.Step = StepReview
+				if saveErr := p.saveState(state); saveErr != nil {
+					return fmt.Errorf("failed to reserve review fix attempt: %w", saveErr)
+				}
+			}
+			result, err = runReviewLoopWithDisplay(ctx, p.engine, p.display, baseBranch, 1)
+		}
 		if err != nil {
 			state.Review.Status = "failed"
 			return fmt.Errorf("failed to run review cycle %d: %w", cycle, err)
@@ -1130,15 +1213,40 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 
 		iteration := result.Iterations[len(result.Iterations)-1]
 		lastValidIssues = iteration.ValidIssues
+		countsAsFixAttempt := iteration.ValidIssues > 0 || iteration.FixesApplied > 0
+		if atReviewFixLimit && countsAsFixAttempt {
+			state.Review.Status = "failed"
+			state.Step = StepReview
+			limitErr := reviewFixPolicyLimitError(fixAttemptsBeforeCycle, opts.MaxReviewFixAttempts)
+			if saveErr := p.saveState(state); saveErr != nil {
+				return fmt.Errorf("%w (also failed to save state: %v)", limitErr, saveErr)
+			}
+			return limitErr
+		}
+		if countsAsFixAttempt {
+			if opts.MaxReviewFixAttempts <= 0 {
+				state.Review.FixAttempts++
+			}
+		} else if opts.MaxReviewFixAttempts > 0 && !atReviewFixLimit {
+			state.Review.FixAttempts = fixAttemptsBeforeCycle
+			state.Step = StepReview
+			if saveErr := p.saveState(state); saveErr != nil {
+				return fmt.Errorf("failed to persist review fix attempt rollback: %w", saveErr)
+			}
+		}
 		if iteration.FixesApplied > 0 {
-			fixesAppliedDuringReview = true
+			state.Review.PendingFixes = true
+			state.Step = StepReview
+			if saveErr := p.saveState(state); saveErr != nil {
+				return fmt.Errorf("failed to persist pending review fixes: %w", saveErr)
+			}
 		}
 
 		if iteration.ValidIssues == 0 {
 			cleanStreak++
 			p.display.ShowInfo("   Review cycle %d clean (%d/%d required)\n", cycle, cleanStreak, cleanStreakRequired)
 			if cleanStreak >= cleanStreakRequired {
-				if fixesAppliedDuringReview {
+				if state.Review.PendingFixes {
 					if err := p.finalizeReviewFixes(ctx); err != nil {
 						state.Review.Status = "failed"
 						if saveErr := p.saveState(state); saveErr != nil {
@@ -1146,6 +1254,7 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 						}
 						return fmt.Errorf("review gate blocked: finalize review fixes failed: %w", err)
 					}
+					state.Review.PendingFixes = false
 				}
 				if err := p.runFinalVerification(ctx, state); err != nil {
 					state.Review.Status = "failed"
@@ -1174,6 +1283,31 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 		return fmt.Errorf("review gate blocked: clean streak %d/%d not reached within %d cycle(s); rerun `hal auto --resume` to continue review fixes (last valid issues: %d) (also failed to save state: %v)", cleanStreak, cleanStreakRequired, maxCycles, lastValidIssues, saveErr)
 	}
 	return fmt.Errorf("review gate blocked: clean streak %d/%d not reached within %d cycle(s); rerun `hal auto --resume` to continue review fixes (last valid issues: %d)", cleanStreak, cleanStreakRequired, maxCycles, lastValidIssues)
+}
+
+func (p *Pipeline) ensureReviewValidationDidNotMutate(snapshotBefore string) error {
+	snapshotAfter, err := workingTreeSnapshotInDirFn(p.dir)
+	if err != nil {
+		return fmt.Errorf("inspect working tree after non-mutating review validation: %w", err)
+	}
+	if snapshotAfter == snapshotBefore {
+		return nil
+	}
+
+	paths, pathsErr := workingTreeChangesInDirFn(p.dir)
+	if pathsErr == nil && len(paths) > 0 {
+		return fmt.Errorf("non-mutating review validation changed working tree: %s", strings.Join(paths, ", "))
+	}
+	return fmt.Errorf("non-mutating review validation changed working tree or HEAD")
+}
+
+func reviewFixPolicyLimitError(attempts, limit int) *PolicyLimitError {
+	return &PolicyLimitError{
+		PolicyField: "factory.policy.maxReviewFixAttempts",
+		Step:        StepReview,
+		Attempts:    attempts,
+		Limit:       limit,
+	}
 }
 
 // runReportStep generates a report artifact after CI passes/skips.
@@ -1464,18 +1598,39 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 
 	// 4. If failing, attempt engine-driven fixes.
 	if status.Status == ci.StatusFailing {
-		p.display.ShowInfo("   CI checks failing; attempting auto-fix (up to %d attempts)\n", maxCIFixAttempts)
+		maxFixAttempts := ciFixMaxAttemptsForRun(state, opts)
+		p.display.ShowInfo("   CI checks failing; attempting auto-fix (up to %d attempts)\n", maxFixAttempts)
 
-		for attempt := 1; attempt <= maxCIFixAttempts; attempt++ {
-			p.display.ShowInfo("   Fix attempt %d/%d...\n", attempt, maxCIFixAttempts)
+		firstFixAttempt := 1
+		if opts.MaxCIFixAttempts > 0 {
+			firstFixAttempt = state.CI.FixAttempts + 1
+		}
+		for attempt := firstFixAttempt; attempt <= maxFixAttempts; attempt++ {
+			if opts.MaxCIFixAttempts > 0 && state.CI.FixAttempts >= opts.MaxCIFixAttempts {
+				state.CI.Status = "policy_blocked"
+				state.CI.Reason = "max_ci_fix_attempts"
+				p.recordCIState(state.CI)
+				state.Step = StepCI
+				if saveErr := p.saveState(state); saveErr != nil {
+					return fmt.Errorf("%w (also failed to save state: %v)", ciFixPolicyLimitError(state.CI.FixAttempts, opts.MaxCIFixAttempts), saveErr)
+				}
+				return ciFixPolicyLimitError(state.CI.FixAttempts, opts.MaxCIFixAttempts)
+			}
+
+			p.display.ShowInfo("   Fix attempt %d/%d...\n", attempt, maxFixAttempts)
+			state.CI.FixAttempts = attempt
+			p.recordCIState(state.CI)
+			state.Step = StepCI
+			if saveErr := p.saveState(state); saveErr != nil {
+				return fmt.Errorf("failed to reserve CI fix attempt %d: %w", attempt, saveErr)
+			}
 
 			fixResult, fixErr := p.fixWithEngineInDir(ctx, status, ci.FixOptions{
 				Engine:      p.engine,
 				Display:     p.display,
 				Attempt:     attempt,
-				MaxAttempts: maxCIFixAttempts,
+				MaxAttempts: maxFixAttempts,
 			})
-			state.CI.FixAttempts = attempt
 
 			if fixErr != nil {
 				p.display.ShowInfo("   Fix attempt %d failed: %v\n", attempt, fixErr)
@@ -1530,14 +1685,26 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 		}
 
 		// Exhausted all fix attempts.
-		p.display.ShowInfo("   CI still failing after %d fix attempt(s); stopping at CI step\n", maxCIFixAttempts)
+		p.display.ShowInfo("   CI still failing after %d fix attempt(s); stopping at CI step\n", maxFixAttempts)
+		if opts.MaxCIFixAttempts > 0 && state.CI.FixAttempts >= opts.MaxCIFixAttempts {
+			state.CI.Status = "policy_blocked"
+			state.CI.Reason = "max_ci_fix_attempts"
+			p.recordCIState(state.CI)
+			state.Step = StepCI
+			limitErr := ciFixPolicyLimitError(state.CI.FixAttempts, opts.MaxCIFixAttempts)
+			if saveErr := p.saveState(state); saveErr != nil {
+				return fmt.Errorf("%w (also failed to save state: %v)", limitErr, saveErr)
+			}
+			return limitErr
+		}
+
 		state.CI.Status = "fix_exhausted"
 		p.recordCIState(state.CI)
 		state.Step = StepCI
 		if saveErr := p.saveState(state); saveErr != nil {
-			return fmt.Errorf("ci gate blocked: CI still failing after %d fix attempt(s); resolve failures and rerun with --resume, or rerun with --no-ci (also failed to save state: %v)", maxCIFixAttempts, saveErr)
+			return fmt.Errorf("ci gate blocked: CI still failing after %d fix attempt(s); resolve failures and rerun with --resume, or rerun with --no-ci (also failed to save state: %v)", maxFixAttempts, saveErr)
 		}
-		return fmt.Errorf("ci gate blocked: CI still failing after %d fix attempt(s); resolve failures and rerun with --resume, or rerun with --no-ci", maxCIFixAttempts)
+		return fmt.Errorf("ci gate blocked: CI still failing after %d fix attempt(s); resolve failures and rerun with --resume, or rerun with --no-ci", maxFixAttempts)
 	}
 
 	// Pending/timeout/unknown — keep pipeline at CI until checks reach a terminal passing state.
@@ -1550,6 +1717,30 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	}
 
 	return fmt.Errorf("ci gate blocked: CI status is %s; wait for checks to complete and rerun with --resume, or rerun with --no-ci", status.Status)
+}
+
+func ciFixMaxAttemptsForRun(state *PipelineState, opts RunOptions) int {
+	if opts.MaxCIFixAttempts > 0 {
+		previousAttempts := 0
+		if state != nil && state.CI != nil {
+			previousAttempts = state.CI.FixAttempts
+		}
+		maxAttempts := previousAttempts + maxCIFixAttempts
+		if maxAttempts > opts.MaxCIFixAttempts {
+			return opts.MaxCIFixAttempts
+		}
+		return maxAttempts
+	}
+	return maxCIFixAttempts
+}
+
+func ciFixPolicyLimitError(attempts, limit int) *PolicyLimitError {
+	return &PolicyLimitError{
+		PolicyField: "factory.policy.maxCiFixAttempts",
+		Step:        StepCI,
+		Attempts:    attempts,
+		Limit:       limit,
+	}
 }
 
 func (p *Pipeline) waitForChecksInDir(ctx context.Context, opts ci.WaitOptions) (ci.StatusResult, error) {

@@ -3,6 +3,7 @@ package compound
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -126,7 +127,7 @@ func TestRunSingleReviewIterationPopulatesResult(t *testing.T) {
 		t.Fatalf("prompt calls = %d, want %d", promptCalls, 2)
 	}
 
-	reviewPromptSnippets := []string{"\"issues\"", "\"id\"", "\"title\"", "\"severity\"", "\"file\"", "\"line\"", "\"rationale\"", "\"suggestedFix\"", "Merge base: abc123def456", "Changed files:", "Recent commits since merge-base:", "Inline diff preview:", "Use repository tools and shell commands", "Hard limit for this step: at most 8", "Do not run hal commands or go run . commands", "go test ./..."}
+	reviewPromptSnippets := []string{"\"issues\"", "\"id\"", "\"title\"", "\"severity\"", "\"file\"", "\"line\"", "\"rationale\"", "\"suggestedFix\"", "Merge base: abc123def456", "Changed files:", "Recent commits since merge-base:", "Inline diff preview:", "Use repository tools and shell commands", "Hard limit for this step: at most 8", "nested Hal runs are forbidden", "go test ./..."}
 	for _, snippet := range reviewPromptSnippets {
 		if !strings.Contains(reviewPrompt, snippet) {
 			t.Fatalf("review prompt missing required schema snippet %q", snippet)
@@ -136,7 +137,7 @@ func TestRunSingleReviewIterationPopulatesResult(t *testing.T) {
 		t.Fatalf("review prompt should allow tool usage, got: %q", reviewPrompt)
 	}
 
-	fixPromptSnippets := []string{"\"valid\"", "\"reason\"", "\"fixed\"", "Do NOT ask for confirmation", "Use repository tools and shell commands", "Hard limit for this step: at most 12", "Do not run hal commands or go run . commands", "go test ./..."}
+	fixPromptSnippets := []string{"\"valid\"", "\"reason\"", "\"fixed\"", "Do NOT ask for confirmation", "Use repository tools and shell commands", "Hard limit for this step: at most 12", "nested Hal runs are forbidden", "go test ./..."}
 	for _, snippet := range fixPromptSnippets {
 		if !strings.Contains(fixPrompt, snippet) {
 			t.Fatalf("fix prompt missing required schema snippet %q", snippet)
@@ -191,6 +192,119 @@ func TestRunSingleReviewIterationPopulatesResult(t *testing.T) {
 
 	if result.Totals.IssuesFound != 2 || result.Totals.ValidIssues != 1 || result.Totals.InvalidIssues != 1 || result.Totals.FixesApplied != 1 {
 		t.Fatalf("Totals = %+v, want IssuesFound=2 ValidIssues=1 InvalidIssues=1 FixesApplied=1", result.Totals)
+	}
+}
+
+func TestRunReviewValidationSkipsFixPromptWhenClean(t *testing.T) {
+	start := time.Date(2026, 2, 15, 10, 0, 0, 0, time.UTC)
+	end := start.Add(2 * time.Second)
+	times := []time.Time{start, end}
+	timeIndex := 0
+
+	deps := reviewIterationDeps{
+		now: func() time.Time {
+			if timeIndex >= len(times) {
+				return times[len(times)-1]
+			}
+			current := times[timeIndex]
+			timeIndex++
+			return current
+		},
+		currentBranch: func() (string, error) { return "hal/validation", nil },
+		branchContext: func(baseBranch, currentBranch string) (reviewBranchContext, error) {
+			return testReviewBranchContext(baseBranch, currentBranch), nil
+		},
+		prompt: func(ctx context.Context, prompt string) (string, error) {
+			return `{"summary":"clean validation","issues":[]}`, nil
+		},
+	}
+
+	result, err := runReviewValidation(context.Background(), "develop", deps)
+	if err != nil {
+		t.Fatalf("runReviewValidation() unexpected error: %v", err)
+	}
+	if result.CompletedIterations != 1 || result.StopReason != "no_valid_issues" {
+		t.Fatalf("result completed/stop = %d/%q, want 1/no_valid_issues", result.CompletedIterations, result.StopReason)
+	}
+	if result.Totals.ValidIssues != 0 || result.Totals.FixesApplied != 0 {
+		t.Fatalf("totals = %+v, want no valid issues and no fixes", result.Totals)
+	}
+}
+
+func TestRunReviewValidationValidatesFindingsWithoutFixes(t *testing.T) {
+	start := time.Date(2026, 2, 15, 10, 30, 0, 0, time.UTC)
+	end := start.Add(2 * time.Second)
+	times := []time.Time{start, end}
+	timeIndex := 0
+	promptCalls := 0
+
+	deps := reviewIterationDeps{
+		now: func() time.Time {
+			if timeIndex >= len(times) {
+				return times[len(times)-1]
+			}
+			current := times[timeIndex]
+			timeIndex++
+			return current
+		},
+		currentBranch: func() (string, error) { return "hal/validation", nil },
+		branchContext: func(baseBranch, currentBranch string) (reviewBranchContext, error) {
+			return testReviewBranchContext(baseBranch, currentBranch), nil
+		},
+		prompt: func(ctx context.Context, prompt string) (string, error) {
+			promptCalls++
+			switch promptCalls {
+			case 1:
+				return `{
+					"summary": "one candidate",
+					"issues": [{
+						"id": "ISSUE-001",
+						"title": "Still failing",
+						"severity": "medium",
+						"file": "cmd/review.go",
+						"line": 42,
+						"rationale": "The issue remains",
+						"suggestedFix": "Fix it later"
+					}]
+				}`, nil
+			case 2:
+				if !strings.Contains(prompt, "Validate each issue without applying fixes") {
+					t.Fatalf("validation prompt = %q, want non-mutating validation guidance", prompt)
+				}
+				return `{
+					"summary": "candidate is stale",
+					"issues": [{
+						"id": "ISSUE-001",
+						"valid": false,
+						"reason": "The candidate no longer reproduces",
+						"fixed": false
+					}]
+				}`, nil
+			default:
+				t.Fatalf("prompt called %d times, want review plus validation", promptCalls)
+				return "", nil
+			}
+		},
+	}
+
+	result, err := runReviewValidation(context.Background(), "develop", deps)
+	if err != nil {
+		t.Fatalf("runReviewValidation() unexpected error: %v", err)
+	}
+	if promptCalls != 2 {
+		t.Fatalf("prompt calls = %d, want review plus validation", promptCalls)
+	}
+	if result.Totals.IssuesFound != 1 || result.Totals.ValidIssues != 0 || result.Totals.InvalidIssues != 1 || result.Totals.FixesApplied != 0 {
+		t.Fatalf("totals = %+v, want one invalid finding and no fixes", result.Totals)
+	}
+	if len(result.Iterations) != 1 || len(result.Iterations[0].Issues) != 1 {
+		t.Fatalf("iterations = %+v, want one issue detail", result.Iterations)
+	}
+	if result.Iterations[0].Status != "validated" {
+		t.Fatalf("iteration status = %q, want validated", result.Iterations[0].Status)
+	}
+	if result.Iterations[0].Issues[0].Valid || result.Iterations[0].Issues[0].Fixed {
+		t.Fatal("validation issue should be invalid and not fixed")
 	}
 }
 
@@ -703,7 +817,7 @@ func TestBuildCodexReviewPromptIncludesRequiredIssueFields(t *testing.T) {
 	if !strings.Contains(prompt, "Hard limit for this step: at most 8") {
 		t.Fatalf("prompt should enforce a review command budget, got: %q", prompt)
 	}
-	if !strings.Contains(prompt, "Do not run hal commands or go run . commands") {
+	if !strings.Contains(prompt, "nested Hal runs are forbidden") {
 		t.Fatalf("prompt should block recursive hal/go-run commands, got: %q", prompt)
 	}
 	if !strings.Contains(prompt, "go test ./...") {
@@ -745,7 +859,7 @@ func TestBuildCodexFixPromptIncludesRequiredFields(t *testing.T) {
 		t.Fatalf("buildReviewLoopFixPrompt() unexpected error: %v", err)
 	}
 
-	required := []string{"\"id\"", "\"valid\"", "\"reason\"", "\"fixed\"", "Do NOT ask for confirmation", "Use repository tools and shell commands", "Hard limit for this step: at most 12", "Do not run hal commands or go run . commands", "go test ./..."}
+	required := []string{"\"id\"", "\"valid\"", "\"reason\"", "\"fixed\"", "Do NOT ask for confirmation", "Use repository tools and shell commands", "Hard limit for this step: at most 12", "nested Hal runs are forbidden", "go test ./..."}
 	for _, field := range required {
 		if !strings.Contains(prompt, field) {
 			t.Fatalf("prompt missing required fix field or instruction %q", field)
@@ -784,6 +898,41 @@ func TestPromptWithRetryRetriesTransientErrors(t *testing.T) {
 	}
 	if sleepCalls != 2 {
 		t.Fatalf("sleep calls = %d, want %d", sleepCalls, 2)
+	}
+}
+
+func TestPromptWithRetrySetsReviewLoopActiveEnv(t *testing.T) {
+	previous, hadPrevious := os.LookupEnv(ReviewLoopActiveEnv)
+	if err := os.Setenv(ReviewLoopActiveEnv, "outer"); err != nil {
+		t.Fatalf("Setenv() error: %v", err)
+	}
+	t.Cleanup(func() {
+		if hadPrevious {
+			_ = os.Setenv(ReviewLoopActiveEnv, previous)
+			return
+		}
+		_ = os.Unsetenv(ReviewLoopActiveEnv)
+	})
+
+	deps := reviewIterationDeps{
+		prompt: func(ctx context.Context, prompt string) (string, error) {
+			if got := os.Getenv(ReviewLoopActiveEnv); got != "1" {
+				t.Fatalf("%s during prompt = %q, want 1", ReviewLoopActiveEnv, got)
+			}
+			return "ok", nil
+		},
+		maxRetries: 0,
+	}
+
+	got, err := promptWithRetry(context.Background(), deps, "prompt")
+	if err != nil {
+		t.Fatalf("promptWithRetry() unexpected error: %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("promptWithRetry() = %q, want ok", got)
+	}
+	if got := os.Getenv(ReviewLoopActiveEnv); got != "outer" {
+		t.Fatalf("%s after prompt = %q, want outer", ReviewLoopActiveEnv, got)
 	}
 }
 

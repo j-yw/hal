@@ -429,6 +429,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 		RunID:        "run-contract",
 		Status:       factory.RunStatusFailed,
 		ExecutorMode: factory.ExecutorModeLocal,
+		Engine:       factory.PolicyEngineCodex,
 		Source:       factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-factory.md", Title: "Factory"},
 		RepoPath:     "/workspace/hal",
 		RepoRemote:   "git@github.com:jywlabs/hal.git",
@@ -561,7 +562,111 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 		requireExactKeys(t, summary, []string{"total", "partial", "warnings"})
 	})
 
+	t.Run("factory logs top-level keys", func(t *testing.T) {
+		store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+		if err := store.SaveRun(&record); err != nil {
+			t.Fatalf("SaveRun() error: %v", err)
+		}
+		if err := store.AppendLogChunk(&factory.LogChunk{
+			RunID:     record.RunID,
+			Stream:    factory.LogStreamStdout,
+			Source:    factory.LogSourceLocalFactory,
+			Text:      "hello",
+			CreatedAt: base,
+		}); err != nil {
+			t.Fatalf("AppendLogChunk() error: %v", err)
+		}
+
+		var buf bytes.Buffer
+		err := runFactoryLogsWithDeps(&buf, record.RunID, true, factoryLogsDeps{
+			defaultStore: func() (factory.Store, error) { return store, nil },
+		})
+		if err != nil {
+			t.Fatalf("runFactoryLogsWithDeps error: %v", err)
+		}
+
+		raw := parseJSON(t, buf.Bytes())
+		requireExactKeys(t, raw, []string{"contractVersion", "runId", "chunks"})
+		if raw["contractVersion"] != FactoryLogsContractVersion {
+			t.Fatalf("factory logs contractVersion = %v, want %q", raw["contractVersion"], FactoryLogsContractVersion)
+		}
+		chunks, ok := raw["chunks"].([]interface{})
+		if !ok || len(chunks) != 1 {
+			t.Fatalf("chunks should be an array of 1, got %T", raw["chunks"])
+		}
+		chunk, ok := chunks[0].(map[string]interface{})
+		if !ok {
+			t.Fatalf("chunks[0] should be object, got %T", chunks[0])
+		}
+		requireExactKeys(t, chunk, []string{"sequence", "runId", "stream", "source", "text", "createdAt"})
+	})
+
+	t.Run("factory open success top-level keys", func(t *testing.T) {
+		handoff := &factory.HandoffSummary{
+			RunID:           record.RunID,
+			Status:          factory.RunStatusFailed,
+			ExecutorMode:    factory.ExecutorModeSandbox,
+			HandoffRequired: true,
+			NextAction: &factory.NextAction{
+				ID:          "takeover_sandbox",
+				Type:        factory.NextActionTypeTakeover,
+				Command:     "hal sandbox ssh factory-contract",
+				Description: "Open an interactive shell in the sandbox for manual takeover.",
+				RunID:       record.RunID,
+				SandboxName: "factory-contract",
+			},
+			InspectCommand: "hal factory status run-contract --json",
+			SSHCommand:     "hal sandbox ssh factory-contract",
+			SandboxName:    "factory-contract",
+		}
+
+		var buf bytes.Buffer
+		if err := renderFactoryOpenJSON(&buf, record.RunID, handoff, nil); err != nil {
+			t.Fatalf("renderFactoryOpenJSON error: %v", err)
+		}
+
+		raw := parseJSON(t, buf.Bytes())
+		requireExactKeys(t, raw, []string{"contractVersion", "runId", "handoff", "summary"})
+		if raw["contractVersion"] != FactoryOpenContractVersion {
+			t.Fatalf("factory open contractVersion = %v, want %q", raw["contractVersion"], FactoryOpenContractVersion)
+		}
+
+		handoffRaw, ok := raw["handoff"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("handoff should be object, got %T", raw["handoff"])
+		}
+		requireExactKeys(t, handoffRaw, []string{
+			"runId", "status", "executorMode", "handoffRequired",
+			"nextAction", "inspectCommand", "sshCommand", "sandboxName",
+		})
+	})
+
+	t.Run("factory open error top-level keys", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := renderFactoryOpenJSON(&buf, "missing-run", nil, fmt.Errorf("factory run %q not found", "missing-run")); err != nil {
+			t.Fatalf("renderFactoryOpenJSON error: %v", err)
+		}
+
+		raw := parseJSON(t, buf.Bytes())
+		requireExactKeys(t, raw, []string{"contractVersion", "runId", "error", "summary"})
+		if raw["contractVersion"] != FactoryOpenContractVersion {
+			t.Fatalf("factory open contractVersion = %v, want %q", raw["contractVersion"], FactoryOpenContractVersion)
+		}
+	})
+
 	t.Run("factory run result keys", func(t *testing.T) {
+		totalDurationMs := int64(600000)
+		artifactCount := 1
+		runTelemetry := &factory.RunTelemetry{
+			TotalDurationMs: &totalDurationMs,
+			Engine: &factory.EngineTelemetry{
+				Name:  "codex",
+				Model: "gpt-5",
+			},
+			ArtifactCount:   &artifactCount,
+			FailureCategory: factory.FailureCategoryCI,
+		}
+
 		var buf bytes.Buffer
 		err := renderFactoryRunJSON(&buf, FactoryRunResponse{
 			ContractVersion: FactoryRunContractVersion,
@@ -574,9 +679,10 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 				Description: "Inspect the durable run record and timeline.",
 			},
 			Artifacts:    newFactoryRunArtifactReferences(record.Artifacts),
+			Telemetry:    runTelemetry,
 			EventSummary: newFactoryRunEventSummary(events),
 			Failure: &FactoryRunFailure{
-				Classification:   "ci",
+				Classification:   factory.FailureCategoryCI,
 				ErrorMessage:     "unit tests failed",
 				SuggestedCommand: "hal factory status run-contract --json",
 			},
@@ -586,7 +692,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 		}
 
 		raw := parseJSON(t, buf.Bytes())
-		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "nextAction", "artifacts", "eventSummary", "failure"})
+		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "nextAction", "artifacts", "telemetry", "eventSummary", "failure"})
 		if raw["contractVersion"] != FactoryRunContractVersion {
 			t.Fatalf("factory run contractVersion = %v, want %q", raw["contractVersion"], FactoryRunContractVersion)
 		}
@@ -595,6 +701,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 		if !ok {
 			t.Fatalf("nextAction should be object, got %T", raw["nextAction"])
 		}
+		requireExactKeys(t, nextAction, []string{"id", "command", "description"})
 		for _, field := range []string{"id", "command", "description"} {
 			if _, ok := nextAction[field].(string); !ok {
 				t.Fatalf("nextAction.%s should be a string", field)
@@ -606,6 +713,12 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 			t.Fatalf("eventSummary should be object, got %T", raw["eventSummary"])
 		}
 		requireExactKeys(t, eventSummary, []string{"total", "byType", "lastEventType", "lastSummary"})
+
+		telemetry, ok := raw["telemetry"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("telemetry should be object, got %T", raw["telemetry"])
+		}
+		requireExactKeys(t, telemetry, []string{"totalDurationMs", "engine", "artifactCount", "failureCategory"})
 
 		failure, ok := raw["failure"].(map[string]interface{})
 		if !ok {
@@ -654,7 +767,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 			ContractVersion: FactoryTriggerContractVersion,
 			RunID:           triggerRun.RunID,
 			Run:             triggerRun,
-			Entry:           queueEntry,
+			Entry:           &queueEntry,
 			Summary:         "queued triggered run run-contract as queue-contract-001",
 		})
 		if err != nil {
@@ -672,7 +785,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 			t.Fatalf("run should be object, got %T", raw["run"])
 		}
 		requireExactKeys(t, run, []string{
-			"runId", "status", "executorMode", "source", "repoPath", "repoRemote",
+			"runId", "status", "executorMode", "engine", "source", "repoPath", "repoRemote",
 			"branchName", "baseBranch", "sandboxName", "currentStep", "createdAt",
 			"updatedAt", "artifacts", "failure",
 		})
@@ -866,7 +979,7 @@ func TestMachineContractFields_DoctorChecksHaveScopeAndApplicability(t *testing.
 
 func TestMachineContractFields_Repair(t *testing.T) {
 	dir := t.TempDir()
-	setIsolatedCodexHomeFallback(t, dir)
+	t.Setenv("HOME", dir)
 
 	var buf bytes.Buffer
 	if err := runRepairFn(dir, true, true, &buf); err != nil {
@@ -887,7 +1000,7 @@ func TestMachineContractFields_Repair(t *testing.T) {
 
 func TestMachineContractFields_LinksStatus(t *testing.T) {
 	dir := t.TempDir()
-	setIsolatedCodexHomeFallback(t, dir)
+	t.Setenv("HOME", dir)
 	os.MkdirAll(filepath.Join(dir, template.HalDir, "skills"), 0755)
 
 	var buf bytes.Buffer

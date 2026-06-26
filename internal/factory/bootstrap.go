@@ -33,7 +33,6 @@ type BootstrapDeps struct {
 	Executor           BootstrapCommandExecutor
 	Now                func() time.Time
 	RepoExists         func(path string) (bool, error)
-	RepoRemoteURL      func(path string) (string, error)
 	LocalBranchExists  BootstrapBranchExistsFunc
 	RemoteBranchExists BootstrapBranchExistsFunc
 	HalCheck           BootstrapToolingCheck
@@ -104,12 +103,11 @@ func bootstrapRunFinalChecks(ctx context.Context, request BootstrapRequest, deps
 	}
 
 	for _, check := range checks {
-		stepName := bootstrapFinalCheckStepName(check)
 		if err := validateBootstrapToolingCheck(check); err != nil {
-			recordBootstrapFinalCheckValidationFailure(&result, request, deps, stepName, check, err)
 			return result, err
 		}
 
+		stepName := bootstrapFinalCheckStepName(check)
 		if request.Options.DryRun {
 			recordBootstrapStepResult(&result, request, plannedBootstrapFinalCheckStep(deps, request, stepName, check.Command), BootstrapCommandResult{}, nil)
 			continue
@@ -189,30 +187,6 @@ func recordBootstrapRequestValidationFailure(result *BootstrapResult, request Bo
 	recordBootstrapStepResult(result, request, step, BootstrapCommandResult{}, &failure)
 }
 
-func recordBootstrapFinalCheckValidationFailure(result *BootstrapResult, request BootstrapRequest, deps bootstrapFinalCheckDeps, stepName string, check BootstrapToolingCheck, err error) {
-	now := bootstrapNow(deps.Now)
-	startedAt := now()
-	finishedAt := now()
-	command := injectBootstrapRequestEnv(request, check.Command)
-	command = NewBootstrapSanitizer(request).SanitizeCommand(command)
-	commandSummary := command.Summary()
-	stepName = strings.TrimSpace(stepName)
-	step := BootstrapStepResult{
-		Name:           stepName,
-		Status:         RunStatusFailed,
-		CommandSummary: commandSummary,
-		StartedAt:      startedAt,
-		FinishedAt:     &finishedAt,
-	}
-	failure := BootstrapFailure{
-		Step:     stepName,
-		Category: BootstrapFailureCategoryValidation,
-		Message:  bootstrapFailureMessage(BootstrapFailureCategoryValidation, stepName, commandSummary),
-	}
-	result.Failure = &failure
-	recordBootstrapStepResult(result, request, step, BootstrapCommandResult{}, &failure)
-}
-
 func normalizeBootstrapFinalChecks(repoPath string, checks []BootstrapToolingCheck) []BootstrapToolingCheck {
 	if checks == nil {
 		checks = []BootstrapToolingCheck{
@@ -257,7 +231,6 @@ func (d BootstrapDeps) repositoryDeps() BootstrapRepositoryDeps {
 		Executor:           d.Executor,
 		Now:                d.Now,
 		RepoExists:         d.RepoExists,
-		RepoRemoteURL:      d.RepoRemoteURL,
 		LocalBranchExists:  d.LocalBranchExists,
 		RemoteBranchExists: d.RemoteBranchExists,
 	}

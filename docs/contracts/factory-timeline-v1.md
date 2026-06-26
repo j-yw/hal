@@ -40,6 +40,7 @@ These fields use `omitempty` and are only present when the value is non-zero.
 | `verification_result` | A quality or browser verification result was recorded |
 | `ci_state` | CI state changed or was observed |
 | `artifact_sync` | An artifact was written, copied, uploaded, or linked |
+| `policy_decision` | A factory policy gate accepted, rejected, or blocked run progress |
 | `failure_classification` | A failure was classified for retry, fix, or handoff |
 
 ## Ordering Rules

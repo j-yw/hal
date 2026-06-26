@@ -50,12 +50,12 @@ func runWithDeps(ctx context.Context, cfg Config, deps runDeps) (*Result, error)
 		Warnings:      []Warning{},
 		Artifacts:     []ArtifactReference{},
 	}
-	artifactRun := newArtifactRun(resolveProjectRoot(cfg), deps.now())
+	artifactsDir := verifyArtifactsDir(resolveProjectRoot(cfg))
 	artifactIDs := make(map[string]struct{}, len(cfg.Checks))
 
 	for i, check := range cfg.Checks {
 		artifactID := uniqueArtifactID(check.ID, i, artifactIDs)
-		checkResult, artifacts, err := runShellCheck(ctx, check, deps, artifactRun, artifactID)
+		checkResult, artifacts, err := runShellCheck(ctx, check, deps, artifactsDir, artifactID)
 		if err != nil {
 			return nil, err
 		}
@@ -74,7 +74,7 @@ func runWithDeps(ctx context.Context, cfg Config, deps runDeps) (*Result, error)
 	return result, nil
 }
 
-func runShellCheck(ctx context.Context, check ShellCheck, deps runDeps, artifacts *artifactRun, artifactID string) (CheckResult, []ArtifactReference, error) {
+func runShellCheck(ctx context.Context, check ShellCheck, deps runDeps, artifactsDir string, artifactID string) (CheckResult, []ArtifactReference, error) {
 	startedAt := deps.now()
 	result := baseCheckResult(check, startedAt)
 	if missingMessage, ok := missingShellCheckMessage(check); ok {
@@ -124,11 +124,11 @@ func runShellCheck(ctx context.Context, check ShellCheck, deps runDeps, artifact
 		}
 	}
 
-	checkArtifacts, err := writeCheckArtifacts(check.ID, artifactID, stdout.Bytes(), stderr.Bytes(), artifacts)
+	artifacts, err := writeCheckArtifacts(check.ID, artifactID, stdout.Bytes(), stderr.Bytes(), artifactsDir)
 	if err != nil {
 		return CheckResult{}, nil, err
 	}
-	for _, artifact := range checkArtifacts {
+	for _, artifact := range artifacts {
 		switch artifact.Kind {
 		case ArtifactKindStdout:
 			result.StdoutArtifact = artifact.Path
@@ -137,7 +137,7 @@ func runShellCheck(ctx context.Context, check ShellCheck, deps runDeps, artifact
 		}
 	}
 
-	return result, checkArtifacts, nil
+	return result, artifacts, nil
 }
 
 func resolveProjectRoot(cfg Config) string {
@@ -156,75 +156,28 @@ func verifyArtifactsDir(projectRoot string) string {
 	return filepath.Join(projectRoot, template.HalDir, "reports", "verify")
 }
 
-type artifactRun struct {
-	baseDir string
-	baseRel string
-	runID   string
-	dir     string
-	relDir  string
-}
-
-func newArtifactRun(projectRoot string, startedAt time.Time) *artifactRun {
-	return &artifactRun{
-		baseDir: verifyArtifactsDir(projectRoot),
-		baseRel: path.Join(template.HalDir, "reports", "verify"),
-		runID:   artifactRunID(startedAt),
-	}
-}
-
-func artifactRunID(startedAt time.Time) string {
-	return startedAt.UTC().Format("20060102T150405.000000000Z")
-}
-
-func (r *artifactRun) ensureDir() (string, string, error) {
-	if r.dir != "" {
-		return r.dir, r.relDir, nil
-	}
-	if err := os.MkdirAll(r.baseDir, 0755); err != nil {
-		return "", "", fmt.Errorf("create verify artifacts directory: %w", err)
-	}
-
-	for suffix := 1; ; suffix++ {
-		candidate := r.runID
-		if suffix > 1 {
-			candidate = fmt.Sprintf("%s-%d", r.runID, suffix)
-		}
-		dir := filepath.Join(r.baseDir, candidate)
-		if err := os.Mkdir(dir, 0755); err != nil {
-			if errors.Is(err, os.ErrExist) {
-				continue
-			}
-			return "", "", fmt.Errorf("create verify artifacts run directory: %w", err)
-		}
-		r.dir = dir
-		r.relDir = path.Join(r.baseRel, candidate)
-		return r.dir, r.relDir, nil
-	}
-}
-
-func writeCheckArtifacts(checkID string, artifactID string, stdout []byte, stderr []byte, runArtifacts *artifactRun) ([]ArtifactReference, error) {
-	artifactRefs := make([]ArtifactReference, 0, 2)
+func writeCheckArtifacts(checkID string, artifactID string, stdout []byte, stderr []byte, artifactsDir string) ([]ArtifactReference, error) {
+	artifacts := make([]ArtifactReference, 0, 2)
 	if len(stdout) > 0 {
-		artifact, err := writeCheckArtifact(checkID, artifactID, ArtifactKindStdout, stdout, runArtifacts)
+		artifact, err := writeCheckArtifact(checkID, artifactID, ArtifactKindStdout, stdout, artifactsDir)
 		if err != nil {
 			return nil, err
 		}
-		artifactRefs = append(artifactRefs, artifact)
+		artifacts = append(artifacts, artifact)
 	}
 	if len(stderr) > 0 {
-		artifact, err := writeCheckArtifact(checkID, artifactID, ArtifactKindStderr, stderr, runArtifacts)
+		artifact, err := writeCheckArtifact(checkID, artifactID, ArtifactKindStderr, stderr, artifactsDir)
 		if err != nil {
 			return nil, err
 		}
-		artifactRefs = append(artifactRefs, artifact)
+		artifacts = append(artifacts, artifact)
 	}
-	return artifactRefs, nil
+	return artifacts, nil
 }
 
-func writeCheckArtifact(checkID, artifactID, kind string, data []byte, runArtifacts *artifactRun) (ArtifactReference, error) {
-	artifactsDir, artifactsRelDir, err := runArtifacts.ensureDir()
-	if err != nil {
-		return ArtifactReference{}, err
+func writeCheckArtifact(checkID, artifactID, kind string, data []byte, artifactsDir string) (ArtifactReference, error) {
+	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
+		return ArtifactReference{}, fmt.Errorf("create verify artifacts directory: %w", err)
 	}
 
 	fileName := fmt.Sprintf("%s-%s.txt", artifactID, kind)
@@ -236,7 +189,7 @@ func writeCheckArtifact(checkID, artifactID, kind string, data []byte, runArtifa
 	return ArtifactReference{
 		CheckID: checkID,
 		Kind:    kind,
-		Path:    path.Join(artifactsRelDir, fileName),
+		Path:    path.Join(template.HalDir, "reports", "verify", fileName),
 	}, nil
 }
 
