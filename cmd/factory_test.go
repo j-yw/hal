@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -3240,7 +3241,13 @@ func TestRunFactoryRunWithDepsRecordsVerificationMetadata(t *testing.T) {
 			if !record.UpdatedAt.Equal(verifyingAt) {
 				t.Fatalf("updatedAt during verification = %s, want %s", record.UpdatedAt, verifyingAt)
 			}
-			verifyDir := filepath.Join(halDir, "reports", "verify")
+			verifyDir := gotCfg.ArtifactDir
+			if strings.TrimSpace(verifyDir) == "" {
+				t.Fatal("runVerify config ArtifactDir should be set")
+			}
+			if strings.HasPrefix(verifyDir, halDir+string(filepath.Separator)) {
+				t.Fatalf("runVerify config ArtifactDir = %q, want outside project .hal", verifyDir)
+			}
 			if err := os.MkdirAll(verifyDir, 0755); err != nil {
 				t.Fatalf("MkdirAll(verifyDir) error: %v", err)
 			}
@@ -3351,6 +3358,68 @@ func TestRunFactoryRunWithDepsRecordsVerificationMetadata(t *testing.T) {
 	}
 	if telemetry.StepDurations[0].Step != factory.RunDurationStepEngineRun || telemetry.StepDurations[1].Step != factory.RunDurationStepVerification {
 		t.Fatalf("derived telemetry steps = %#v, want engine_run then verification", telemetry.StepDurations)
+	}
+}
+
+func TestRecordFactoryRunVerificationUsesFactoryArtifactDir(t *testing.T) {
+	dir := t.TempDir()
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 5, 0, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	finishedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{startedAt, finishedAt}
+	record := factory.RunRecord{
+		RunID:     "run-verification-temp-artifacts",
+		Status:    factory.RunStatusRunning,
+		CreatedAt: createdAt,
+		UpdatedAt: createdAt,
+	}
+	cfg := &verify.Config{
+		ProjectRoot: dir,
+		Checks: []verify.ShellCheck{
+			{
+				ID:             "test",
+				Name:           "Go tests",
+				Command:        factoryVerifyHelperCommand(t, "write-output", "verification stdout", ""),
+				WorkDir:        dir,
+				TimeoutSeconds: 10,
+				Required:       true,
+			},
+		},
+	}
+	policy := factory.DefaultFactoryPolicy()
+	policy.VerificationRequired = true
+
+	updated, _, err := recordFactoryRunVerification(context.Background(), store, record, dir, factoryRunDeps{
+		now: func() time.Time {
+			if len(times) == 0 {
+				return finishedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		loadVerify: func(gotDir string) (*verify.Config, error) {
+			if gotDir != dir {
+				t.Fatalf("loadVerify dir = %q, want %q", gotDir, dir)
+			}
+			return cfg, nil
+		},
+		runVerify: verify.Run,
+	}, policy, nil, factory.RunSecretRedactor{})
+	if err != nil {
+		t.Fatalf("recordFactoryRunVerification() unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, ".hal", "reports", "verify")); !os.IsNotExist(err) {
+		t.Fatalf("project verification artifacts dir stat error = %v, want not exist", err)
+	}
+	if updated.Verification == nil || updated.Verification.Summary.Passed != 1 {
+		t.Fatalf("verification = %#v, want passing verification", updated.Verification)
+	}
+	verificationArtifact := requireStoredFactoryArtifactPath(t, store, record.RunID, updated.Artifacts, ".hal/reports/verify/test-stdout.txt")
+	if got := readStoredFactoryArtifact(t, store, record.RunID, verificationArtifact); got != "verification stdout" {
+		t.Fatalf("stored verification artifact = %q", got)
 	}
 }
 
@@ -8303,6 +8372,51 @@ func readStoredFactoryArtifact(t *testing.T, store factory.Store, runID string, 
 		t.Fatalf("ReadFile(%q) error: %v", storedPath, err)
 	}
 	return string(data)
+}
+
+func TestFactoryVerifyHelperProcess(t *testing.T) {
+	args := os.Args
+	for i, arg := range args {
+		if arg != "--" {
+			continue
+		}
+		if len(args) <= i+1 {
+			return
+		}
+
+		switch args[i+1] {
+		case "write-output":
+			if len(args) <= i+3 {
+				os.Exit(2)
+			}
+			if _, err := os.Stdout.Write([]byte(args[i+2])); err != nil {
+				os.Exit(2)
+			}
+			if _, err := os.Stderr.Write([]byte(args[i+3])); err != nil {
+				os.Exit(2)
+			}
+			os.Exit(0)
+		}
+	}
+}
+
+func factoryVerifyHelperCommand(t *testing.T, args ...string) string {
+	t.Helper()
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable(): %v", err)
+	}
+
+	parts := []string{
+		strconv.Quote(exe),
+		"-test.run=TestFactoryVerifyHelperProcess",
+		"--",
+	}
+	for _, arg := range args {
+		parts = append(parts, strconv.Quote(arg))
+	}
+	return strings.Join(parts, " ")
 }
 
 type fakeFactorySandboxArtifactCopier struct {

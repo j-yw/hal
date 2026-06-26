@@ -51,7 +51,7 @@ func runWithDeps(ctx context.Context, cfg Config, deps runDeps) (*Result, error)
 		Warnings:      []Warning{},
 		Artifacts:     []ArtifactReference{},
 	}
-	artifactsDir := verifyArtifactsDir(resolveProjectRoot(cfg))
+	artifactsDir := verifyArtifactsDir(cfg)
 	artifactIDs := make(map[string]struct{}, len(cfg.Checks))
 
 	for i, check := range cfg.Checks {
@@ -153,8 +153,11 @@ func resolveProjectRoot(cfg Config) string {
 	return "."
 }
 
-func verifyArtifactsDir(projectRoot string) string {
-	return filepath.Join(projectRoot, template.HalDir, "reports", "verify")
+func verifyArtifactsDir(cfg Config) string {
+	if artifactDir := strings.TrimSpace(cfg.ArtifactDir); artifactDir != "" {
+		return filepath.Clean(artifactDir)
+	}
+	return filepath.Join(resolveProjectRoot(cfg), template.HalDir, "reports", "verify")
 }
 
 func writeCheckArtifacts(checkID string, artifactID string, stdout []byte, stderr []byte, artifactsDir string) ([]ArtifactReference, error) {

@@ -1494,7 +1494,7 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 		if err != nil {
 			return record, finishedAt, fmt.Errorf("run remote sandbox verification: %w", err)
 		}
-		return recordFactoryRunVerificationOutcome(store, dir, updatedRecord, startedAt, finishedAt, result, policy, redactor, false)
+		return recordFactoryRunVerificationOutcome(store, dir, updatedRecord, startedAt, finishedAt, result, policy, redactor, false, "")
 	}
 
 	cfg, err := deps.loadVerify(dir)
@@ -1521,6 +1521,13 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 		return record, deps.now(), fmt.Errorf("record factory verification start event: %w", err)
 	}
 
+	artifactDir, cleanupArtifacts, err := createFactoryVerificationArtifactDir(store, record.RunID)
+	if err != nil {
+		return record, deps.now(), fmt.Errorf("prepare factory verification artifacts: %w", err)
+	}
+	defer cleanupArtifacts()
+	cfg.ArtifactDir = artifactDir
+
 	result, err := deps.runVerify(ctx, cfg)
 	finishedAt := deps.now()
 	if err != nil {
@@ -1530,10 +1537,10 @@ func recordFactoryRunVerification(ctx context.Context, store factory.Store, reco
 		return record, finishedAt, fmt.Errorf("run verification: no result")
 	}
 
-	return recordFactoryRunVerificationOutcome(store, dir, record, startedAt, finishedAt, result, policy, redactor, true)
+	return recordFactoryRunVerificationOutcome(store, dir, record, startedAt, finishedAt, result, policy, redactor, true, artifactDir)
 }
 
-func recordFactoryRunVerificationOutcome(store factory.Store, dir string, record factory.RunRecord, startedAt, finishedAt time.Time, result *verify.Result, policy factory.FactoryPolicy, redactor factory.RunSecretRedactor, startedRecorded bool) (factory.RunRecord, time.Time, error) {
+func recordFactoryRunVerificationOutcome(store factory.Store, dir string, record factory.RunRecord, startedAt, finishedAt time.Time, result *verify.Result, policy factory.FactoryPolicy, redactor factory.RunSecretRedactor, startedRecorded bool, localArtifactDir string) (factory.RunRecord, time.Time, error) {
 	if result == nil {
 		return record, finishedAt, fmt.Errorf("run verification: no result")
 	}
@@ -1569,7 +1576,7 @@ func recordFactoryRunVerificationOutcome(store factory.Store, dir string, record
 		return factory.RunRecord{}, finishedAt, fmt.Errorf("record factory verification: %w", err)
 	}
 	if !factoryRunUsesSandboxVerification(record) {
-		if err := collectAndStoreFactoryVerificationArtifacts(store, dir, record.RunID, result.Artifacts, redactor); err != nil {
+		if err := collectAndStoreFactoryVerificationArtifacts(store, dir, record.RunID, result.Artifacts, localArtifactDir, redactor); err != nil {
 			return factory.RunRecord{}, finishedAt, err
 		}
 	}
@@ -1634,6 +1641,26 @@ func factoryVerificationResultHasNoChecks(result *verify.Result) bool {
 
 func factoryRunUsesSandboxVerification(record factory.RunRecord) bool {
 	return strings.TrimSpace(record.ExecutorMode) == factory.ExecutorModeSandbox
+}
+
+func createFactoryVerificationArtifactDir(store factory.Store, runID string) (string, func(), error) {
+	tmpRoot := ""
+	if root := strings.TrimSpace(store.Root()); root != "" {
+		tmpRoot = filepath.Join(root, "tmp")
+		if err := os.MkdirAll(tmpRoot, 0700); err != nil {
+			return "", func() {}, err
+		}
+	}
+
+	prefix := "verify-"
+	if safeRunID := sanitizeFactoryArtifactPathComponent(runID); safeRunID != "" {
+		prefix = safeRunID + "-verify-"
+	}
+	dir, err := os.MkdirTemp(tmpRoot, prefix)
+	if err != nil {
+		return "", func() {}, err
+	}
+	return dir, func() { _ = os.RemoveAll(dir) }, nil
 }
 
 func runFactorySandboxRemoteVerification(ctx context.Context, store factory.Store, dir string, record factory.RunRecord, deps factoryRunDeps, resolvedSecrets []factory.ResolvedRunSecret, redactor factory.RunSecretRedactor) (*verify.Result, factory.RunRecord, error) {
@@ -2518,16 +2545,13 @@ func collectAndStoreFactoryRunArtifacts(store factory.Store, dir string, req fac
 	return nil
 }
 
-func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID string, artifacts []verify.ArtifactReference, redactor factory.RunSecretRedactor) error {
+func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID string, artifacts []verify.ArtifactReference, artifactSourceDir string, redactor factory.RunSecretRedactor) error {
 	for _, artifact := range artifacts {
 		path := strings.TrimSpace(artifact.Path)
 		if path == "" {
 			continue
 		}
-		sourcePath := path
-		if !filepath.IsAbs(sourcePath) {
-			sourcePath = filepath.Join(dir, sourcePath)
-		}
+		sourcePath := factoryVerificationArtifactSourcePath(dir, path, artifactSourceDir)
 		if !factoryArtifactFileExists(sourcePath) {
 			continue
 		}
@@ -2553,6 +2577,23 @@ func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID
 		}
 	}
 	return nil
+}
+
+func factoryVerificationArtifactSourcePath(projectDir, artifactPath, artifactSourceDir string) string {
+	if filepath.IsAbs(artifactPath) {
+		return artifactPath
+	}
+	if strings.TrimSpace(artifactSourceDir) == "" {
+		return filepath.Join(projectDir, artifactPath)
+	}
+
+	displayPrefix := path.Join(template.HalDir, "reports", "verify")
+	cleanArtifactPath := path.Clean(filepath.ToSlash(artifactPath))
+	if rel := strings.TrimPrefix(cleanArtifactPath, displayPrefix+"/"); rel != cleanArtifactPath && rel != "" {
+		return filepath.Join(artifactSourceDir, filepath.FromSlash(rel))
+	}
+
+	return filepath.Join(projectDir, artifactPath)
 }
 
 func collectAndStoreFactorySandboxArtifacts(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps) error {
