@@ -62,13 +62,9 @@ func runDigitalOceanSSHCommand(ctx context.Context, sshFn func(context.Context, 
 	if sshFn == nil {
 		sshFn = exec.CommandContext
 	}
-	sshCmd := sshFn(ctx, "ssh",
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "ConnectTimeout=10",
-		fmt.Sprintf("root@%s", target),
-		script,
-	)
+	sshArgs := nonInteractiveSSHOptionsWithConnectTimeout("10")
+	sshArgs = append(sshArgs, fmt.Sprintf("root@%s", target), script)
+	sshCmd := sshFn(ctx, "ssh", sshArgs...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	sshCmd.Stdout = &stdout
@@ -680,12 +676,8 @@ func (d *DigitalOceanProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd
 		return nil, err
 	}
 
-	cmdArgs := []string{
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "LogLevel=ERROR",
-		"root@" + ip,
-	}
+	cmdArgs := nonInteractiveSSHOptions()
+	cmdArgs = append(cmdArgs, "-o", "LogLevel=ERROR", "root@"+ip)
 	cmdArgs = appendSSHRemoteCommand(cmdArgs, args)
 	cmd := exec.Command("ssh", cmdArgs...)
 	cmd.Stdin = os.Stdin

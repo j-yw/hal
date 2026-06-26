@@ -2,6 +2,20 @@ package sandbox
 
 import "strings"
 
+func nonInteractiveSSHOptions() []string {
+	return []string{
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "BatchMode=yes",
+		"-o", "NumberOfPasswordPrompts=0",
+	}
+}
+
+func nonInteractiveSSHOptionsWithConnectTimeout(timeout string) []string {
+	options := nonInteractiveSSHOptions()
+	return append(options, "-o", "ConnectTimeout="+timeout)
+}
+
 func sshRemoteCommand(args []string) string {
 	quoted := make([]string, 0, len(args))
 	for _, arg := range args {

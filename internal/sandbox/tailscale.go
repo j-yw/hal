@@ -49,12 +49,8 @@ func fetchTailscaleIPWithProgress(ctx context.Context, user, publicIP string, ru
 			remoteReadCmd = []string{"sudo", "cat", "/root/.tailscale-ip"}
 		}
 
-		sshArgs := []string{
-			"-o", "StrictHostKeyChecking=no",
-			"-o", "UserKnownHostsFile=/dev/null",
-			"-o", "ConnectTimeout=10",
-			fmt.Sprintf("%s@%s", user, publicIP),
-		}
+		sshArgs := nonInteractiveSSHOptionsWithConnectTimeout("10")
+		sshArgs = append(sshArgs, fmt.Sprintf("%s@%s", user, publicIP))
 		sshArgs = append(sshArgs, remoteReadCmd...)
 
 		cmd := runSSH(ctx, "ssh", sshArgs...)

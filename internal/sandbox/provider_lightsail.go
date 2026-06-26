@@ -263,13 +263,9 @@ func (l *LightsailProvider) Create(ctx context.Context, name string, env map[str
 		if sshFn == nil {
 			sshFn = exec.CommandContext
 		}
-		sshCmd := sshFn(ctx, "ssh",
-			"-o", "StrictHostKeyChecking=no",
-			"-o", "UserKnownHostsFile=/dev/null",
-			"-o", "ConnectTimeout=10",
-			fmt.Sprintf("ubuntu@%s", ip),
-			lockdownScript,
-		)
+		sshArgs := nonInteractiveSSHOptionsWithConnectTimeout("10")
+		sshArgs = append(sshArgs, fmt.Sprintf("ubuntu@%s", ip), lockdownScript)
+		sshCmd := sshFn(ctx, "ssh", sshArgs...)
 		var lockStderr bytes.Buffer
 		sshCmd.Stdout = safeOut
 		sshCmd.Stderr = &lockStderr
@@ -455,12 +451,8 @@ func (l *LightsailProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, e
 		return nil, fmt.Errorf("sandbox IP is required")
 	}
 
-	cmdArgs := []string{
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "LogLevel=ERROR",
-		"ubuntu@" + ip,
-	}
+	cmdArgs := nonInteractiveSSHOptions()
+	cmdArgs = append(cmdArgs, "-o", "LogLevel=ERROR", "ubuntu@"+ip)
 	cmdArgs = appendSSHRemoteCommand(cmdArgs, args)
 	cmd := exec.Command("ssh", cmdArgs...)
 	cmd.Stdin = os.Stdin

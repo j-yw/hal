@@ -208,13 +208,9 @@ func (h *HetznerProvider) Create(ctx context.Context, name string, env map[strin
 		if sshFn == nil {
 			sshFn = exec.CommandContext
 		}
-		sshCmd := sshFn(ctx, "ssh",
-			"-o", "StrictHostKeyChecking=no",
-			"-o", "UserKnownHostsFile=/dev/null",
-			"-o", "ConnectTimeout=10",
-			fmt.Sprintf("root@%s", ip),
-			lockdownScript,
-		)
+		sshArgs := nonInteractiveSSHOptionsWithConnectTimeout("10")
+		sshArgs = append(sshArgs, fmt.Sprintf("root@%s", ip), lockdownScript)
+		sshCmd := sshFn(ctx, "ssh", sshArgs...)
 		var lockStderr bytes.Buffer
 		sshCmd.Stdout = safeOut
 		sshCmd.Stderr = &lockStderr
@@ -316,12 +312,8 @@ func (h *HetznerProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, err
 		return nil, fmt.Errorf("sandbox IP is required")
 	}
 
-	cmdArgs := []string{
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "LogLevel=ERROR",
-		"root@" + ip,
-	}
+	cmdArgs := nonInteractiveSSHOptions()
+	cmdArgs = append(cmdArgs, "-o", "LogLevel=ERROR", "root@"+ip)
 	cmdArgs = appendSSHRemoteCommand(cmdArgs, args)
 	cmd := exec.Command("ssh", cmdArgs...)
 	cmd.Stdin = os.Stdin

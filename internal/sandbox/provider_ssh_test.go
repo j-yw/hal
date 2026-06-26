@@ -2,6 +2,25 @@ package sandbox
 
 import "testing"
 
+func TestNonInteractiveSSHOptionsDisablePrompts(t *testing.T) {
+	got := nonInteractiveSSHOptionsWithConnectTimeout("10")
+	want := []string{
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "BatchMode=yes",
+		"-o", "NumberOfPasswordPrompts=0",
+		"-o", "ConnectTimeout=10",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("nonInteractiveSSHOptionsWithConnectTimeout() = %v, want %v", got, want)
+	}
+	for i, wantArg := range want {
+		if got[i] != wantArg {
+			t.Fatalf("nonInteractiveSSHOptionsWithConnectTimeout()[%d] = %q, want %q", i, got[i], wantArg)
+		}
+	}
+}
+
 func TestSSHRemoteCommandQuotesShellArgs(t *testing.T) {
 	got := sshRemoteCommand([]string{"sh", "-lc", "cd '/workspace/hal' && exec 'git' 'checkout' '-B' 'develop' 'origin/develop'"})
 	want := `'sh' '-lc' 'cd '"'"'/workspace/hal'"'"' && exec '"'"'git'"'"' '"'"'checkout'"'"' '"'"'-B'"'"' '"'"'develop'"'"' '"'"'origin/develop'"'"''`
