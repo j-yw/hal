@@ -461,7 +461,7 @@ func (l *LightsailProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, e
 		"-o", "LogLevel=ERROR",
 		"ubuntu@" + ip,
 	}
-	cmdArgs = append(cmdArgs, sshRemoteCommand(args))
+	cmdArgs = appendSSHRemoteCommand(cmdArgs, args)
 	cmd := exec.Command("ssh", cmdArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout

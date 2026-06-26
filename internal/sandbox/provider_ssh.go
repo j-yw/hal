@@ -10,6 +10,13 @@ func sshRemoteCommand(args []string) string {
 	return strings.Join(quoted, " ")
 }
 
+func appendSSHRemoteCommand(cmdArgs []string, args []string) []string {
+	if len(args) == 0 {
+		return cmdArgs
+	}
+	return append(cmdArgs, sshRemoteCommand(args))
+}
+
 func sshShellQuote(value string) string {
 	if value == "" {
 		return "''"

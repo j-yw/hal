@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -127,16 +128,36 @@ func hashUntrackedFilesInDir(dir, gitOutput string) (string, error) {
 			continue
 		}
 
-		content, err := os.ReadFile(fullPath)
-		if err != nil {
-			return "", fmt.Errorf("read untracked file %q: %w", path, err)
+		if !info.Mode().IsRegular() {
+			sb.WriteString("special:")
+			sb.WriteString(info.Mode().String())
+			sb.WriteByte('\x00')
+			continue
 		}
-		sum := sha256.Sum256(content)
+
+		sum, err := hashRegularFileInDir(fullPath)
+		if err != nil {
+			return "", fmt.Errorf("hash untracked file %q: %w", path, err)
+		}
 		sb.WriteString("file:")
-		sb.WriteString(fmt.Sprintf("%x", sum))
+		sb.WriteString(sum)
 		sb.WriteByte('\x00')
 	}
 	return sb.String(), nil
+}
+
+func hashRegularFileInDir(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 func splitNULFields(output string) []string {

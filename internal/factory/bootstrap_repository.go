@@ -2,12 +2,15 @@ package factory
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -25,6 +28,8 @@ const (
 	BootstrapStepCreateRunBranch  = "create_run_branch"
 
 	bootstrapCleanEngineLinksScript = `git clean -fd -- .claude/skills/factory .pi/skills/factory && { git checkout -- .pi/skills/factory/SKILL.md 2>/dev/null || true; }`
+	bootstrapGitHubTokenEnvKey      = "GITHUB_TOKEN"
+	bootstrapGitHubExtraHeaderKey   = "http.https://github.com/.extraheader"
 )
 
 var (
@@ -182,7 +187,7 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 				Name: "sh",
 				Args: []string{"-lc", bootstrapCleanEngineLinksScript},
 				Dir:  repoPath,
-				Env:  bootstrapGitEnv(),
+				Env:  bootstrapGitEnv(request),
 			},
 		})
 		commands = append(commands, bootstrapRepositoryCommand{
@@ -191,7 +196,7 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 				Name: "git",
 				Args: []string{"fetch", "--prune", "origin"},
 				Dir:  repoPath,
-				Env:  bootstrapGitEnv(),
+				Env:  bootstrapGitEnv(request),
 			},
 		})
 	} else {
@@ -212,7 +217,7 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 				Name: "git",
 				Args: []string{"clone", repositoryURL, repoPath},
 				Dir:  workspaceRoot,
-				Env:  bootstrapGitEnv(),
+				Env:  bootstrapGitEnv(request),
 			},
 		})
 	}
@@ -227,7 +232,7 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 			Name: "git",
 			Args: checkoutArgs,
 			Dir:  repoPath,
-			Env:  bootstrapGitEnv(),
+			Env:  bootstrapGitEnv(request),
 		},
 	})
 
@@ -253,7 +258,7 @@ func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, d
 					Name: "git",
 					Args: []string{"checkout", "-f", runBranch},
 					Dir:  repoPath,
-					Env:  bootstrapGitEnv(),
+					Env:  bootstrapGitEnv(request),
 				},
 			},
 		}, nil
@@ -271,7 +276,7 @@ func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, d
 					Name: "git",
 					Args: []string{"fetch", "origin", runBranch + ":refs/remotes/origin/" + runBranch},
 					Dir:  repoPath,
-					Env:  bootstrapGitEnv(),
+					Env:  bootstrapGitEnv(request),
 				},
 			},
 			{
@@ -280,7 +285,7 @@ func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, d
 					Name: "git",
 					Args: []string{"checkout", "-f", "--track", "origin/" + runBranch},
 					Dir:  repoPath,
-					Env:  bootstrapGitEnv(),
+					Env:  bootstrapGitEnv(request),
 				},
 			},
 		}, nil
@@ -293,7 +298,7 @@ func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, d
 				Name: "git",
 				Args: []string{"checkout", "-f", "-b", runBranch, baseBranch},
 				Dir:  repoPath,
-				Env:  bootstrapGitEnv(),
+				Env:  bootstrapGitEnv(request),
 			},
 		},
 	}, nil
@@ -318,10 +323,64 @@ func normalizeBootstrapRepoPath(path string) (string, error) {
 	return filepath.Clean(path), nil
 }
 
-func bootstrapGitEnv() map[string]string {
-	return map[string]string{
+func bootstrapGitEnv(request BootstrapRequest) map[string]string {
+	env := map[string]string{
 		"GIT_TERMINAL_PROMPT": "0",
 	}
+	if header := bootstrapGitHubAuthHeaderForRequest(request); header != "" {
+		index := bootstrapGitConfigIndex(request.Env)
+		env["GIT_CONFIG_COUNT"] = strconv.Itoa(index + 1)
+		env[fmt.Sprintf("GIT_CONFIG_KEY_%d", index)] = bootstrapGitHubExtraHeaderKey
+		env[fmt.Sprintf("GIT_CONFIG_VALUE_%d", index)] = header
+	}
+	return env
+}
+
+func bootstrapGitHubAuthHeaderForRequest(request BootstrapRequest) string {
+	token := strings.TrimSpace(request.Env[bootstrapGitHubTokenEnvKey])
+	if token == "" {
+		return ""
+	}
+	repositoryURL := strings.TrimSpace(request.RepositoryURL)
+	if repositoryURL != "" && !bootstrapIsTrustedGitHubHTTPSURL(repositoryURL) {
+		return ""
+	}
+	return bootstrapGitHubAuthHeader(token)
+}
+
+func bootstrapIsTrustedGitHubHTTPSURL(rawURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Scheme, "https") && strings.EqualFold(parsed.Hostname(), "github.com")
+}
+
+func bootstrapGitConfigIndex(env map[string]string) int {
+	if env == nil {
+		return 0
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(env["GIT_CONFIG_COUNT"]))
+	if err != nil || count < 0 {
+		return 0
+	}
+	return count
+}
+
+func bootstrapGitHubAuthHeader(token string) string {
+	credential := bootstrapGitHubBasicAuthCredential(token)
+	if credential == "" {
+		return ""
+	}
+	return "AUTHORIZATION: basic " + credential
+}
+
+func bootstrapGitHubBasicAuthCredential(token string) string {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 }
 
 func (d BootstrapRepositoryDeps) stepDeps(request BootstrapRequest) BootstrapStepDeps {
@@ -418,7 +477,7 @@ func (d BootstrapRepositoryDeps) remoteBranchExists(ctx context.Context, request
 	if request.Options.DryRun || d.Executor == nil {
 		return false, nil
 	}
-	return d.probeBranch(ctx, request, remoteRunBranchProbeCommand(repoPath, branch), BootstrapStepCheckRemoteRun, 2)
+	return d.probeBranch(ctx, request, remoteRunBranchProbeCommand(request, repoPath, branch), BootstrapStepCheckRemoteRun, 2)
 }
 
 func (d BootstrapRepositoryDeps) recordedLocalBranchExists(ctx context.Context, request BootstrapRequest, result *BootstrapResult, repoPath string, branch string) (bool, error) {
@@ -432,7 +491,7 @@ func (d BootstrapRepositoryDeps) recordedRemoteBranchExists(ctx context.Context,
 	if d.RemoteBranchExists != nil || request.Options.DryRun || d.Executor == nil {
 		return d.remoteBranchExists(ctx, request, repoPath, branch)
 	}
-	return d.recordedProbeBranch(ctx, request, result, remoteRunBranchProbeCommand(repoPath, branch), BootstrapStepCheckRemoteRun, 2)
+	return d.recordedProbeBranch(ctx, request, result, remoteRunBranchProbeCommand(request, repoPath, branch), BootstrapStepCheckRemoteRun, 2)
 }
 
 func localRunBranchProbeCommand(repoPath string, branch string) BootstrapCommand {
@@ -440,16 +499,16 @@ func localRunBranchProbeCommand(repoPath string, branch string) BootstrapCommand
 		Name: "git",
 		Args: []string{"show-ref", "--verify", "--quiet", "refs/heads/" + branch},
 		Dir:  repoPath,
-		Env:  bootstrapGitEnv(),
+		Env:  bootstrapGitEnv(BootstrapRequest{}),
 	}
 }
 
-func remoteRunBranchProbeCommand(repoPath string, branch string) BootstrapCommand {
+func remoteRunBranchProbeCommand(request BootstrapRequest, repoPath string, branch string) BootstrapCommand {
 	return BootstrapCommand{
 		Name: "git",
 		Args: []string{"ls-remote", "--exit-code", "--heads", "origin", branch},
 		Dir:  repoPath,
-		Env:  bootstrapGitEnv(),
+		Env:  bootstrapGitEnv(request),
 	}
 }
 

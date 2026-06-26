@@ -686,7 +686,7 @@ func (d *DigitalOceanProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd
 		"-o", "LogLevel=ERROR",
 		"root@" + ip,
 	}
-	cmdArgs = append(cmdArgs, sshRemoteCommand(args))
+	cmdArgs = appendSSHRemoteCommand(cmdArgs, args)
 	cmd := exec.Command("ssh", cmdArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout

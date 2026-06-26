@@ -564,7 +564,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 			calls = append(calls, "exec")
 			execCalls++
 			gotExecInfo = info
-			if execCalls == 2 {
+			if execCalls == 3 {
 				gotExecArgs = append([]string(nil), args...)
 			}
 			return nil
@@ -584,7 +584,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
 
-	wantCalls := []string{"store", "now", "save", "load", "now", "save", "provider", "exec", "now", "event", "exec", "now", "event"}
+	wantCalls := []string{"store", "now", "save", "load", "now", "save", "provider", "exec", "exec", "now", "event", "exec", "now", "event"}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("calls = %#v, want %#v", calls, wantCalls)
 	}
@@ -1518,7 +1518,6 @@ func TestRunFactorySandboxExecutorWithDepsCopiesLocalMarkdownBeforeRemoteExecuti
 		RepoRemote: "git@github.com:example/repo.git",
 		BaseBranch: "main",
 	}
-	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
 	remoteAuto := factoryRunAutoRequest{
 		Args:       []string{".hal/prd-feature.md"},
 		BaseBranch: "main",
@@ -1547,15 +1546,18 @@ func TestRunFactorySandboxExecutorWithDepsCopiesLocalMarkdownBeforeRemoteExecuti
 	if err != nil {
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
-	if len(execArgs) != 2 {
-		t.Fatalf("exec calls = %d, want 2: %#v", len(execArgs), execArgs)
+	if len(execArgs) != 3 {
+		t.Fatalf("exec calls = %d, want 3: %#v", len(execArgs), execArgs)
 	}
-	if !strings.Contains(execArgs[0][2], "base64 -d > "+shellQuote(filepath.ToSlash(filepath.Join(workspaceDir, ".hal/prd-feature.md")))) {
+	if !strings.Contains(execArgs[0][2], `base64 -d >> "$remote_tmp"`) {
 		t.Fatalf("copy exec args = %#v", execArgs[0])
 	}
+	if !strings.Contains(execArgs[1][2], `mv -f "$remote_tmp" "$remote_file"`) {
+		t.Fatalf("finalize exec args = %#v", execArgs[1])
+	}
 	wantRemote := factorySandboxRemoteCommandArgs(record, remoteAuto)
-	if !reflect.DeepEqual(execArgs[1], wantRemote) {
-		t.Fatalf("remote exec args = %#v, want %#v", execArgs[1], wantRemote)
+	if !reflect.DeepEqual(execArgs[2], wantRemote) {
+		t.Fatalf("remote exec args = %#v, want %#v", execArgs[2], wantRemote)
 	}
 }
 
@@ -1573,7 +1575,6 @@ func TestRunFactorySandboxExecutorWithDepsCopiesAbsoluteReportToRemoteInputPath(
 		RepoRemote: "git@github.com:example/repo.git",
 		BaseBranch: "main",
 	}
-	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
 
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
 		ProjectDir:  projectDir,
@@ -1601,18 +1602,24 @@ func TestRunFactorySandboxExecutorWithDepsCopiesAbsoluteReportToRemoteInputPath(
 	if err != nil {
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
-	if len(execArgs) != 2 {
-		t.Fatalf("exec calls = %d, want 2: %#v", len(execArgs), execArgs)
+	if len(execArgs) != 3 {
+		t.Fatalf("exec calls = %d, want 3: %#v", len(execArgs), execArgs)
 	}
-	if !strings.Contains(execArgs[0][2], "base64 -d > "+shellQuote(filepath.ToSlash(filepath.Join(workspaceDir, ".hal/factory-inputs/analysis.md")))) {
+	if !strings.Contains(execArgs[0][2], `refusing symlink destination: $remote_file`) {
+		t.Fatalf("copy exec args = %#v, want no-follow guard", execArgs[0])
+	}
+	if !strings.Contains(execArgs[0][2], `base64 -d >> "$remote_tmp"`) {
 		t.Fatalf("copy exec args = %#v", execArgs[0])
+	}
+	if !strings.Contains(execArgs[1][2], `mv -f "$remote_tmp" "$remote_file"`) {
+		t.Fatalf("finalize exec args = %#v", execArgs[1])
 	}
 	wantRemote := factorySandboxRemoteCommandArgs(record, factoryRunAutoRequest{
 		ReportPath: ".hal/factory-inputs/analysis.md",
 		BaseBranch: "main",
 	})
-	if !reflect.DeepEqual(execArgs[1], wantRemote) {
-		t.Fatalf("remote exec args = %#v, want %#v", execArgs[1], wantRemote)
+	if !reflect.DeepEqual(execArgs[2], wantRemote) {
+		t.Fatalf("remote exec args = %#v, want %#v", execArgs[2], wantRemote)
 	}
 }
 
@@ -1636,20 +1643,123 @@ func TestFactorySandboxCopyInputToRemoteSplitsLargeInputCommands(t *testing.T) {
 	if !changed || remotePath != "large.md" {
 		t.Fatalf("remotePath = %q, changed = %v, want large.md and changed", remotePath, changed)
 	}
-	if len(execArgs) != 2 {
-		t.Fatalf("exec calls = %d, want 2: %#v", len(execArgs), execArgs)
+	if len(execArgs) != 3 {
+		t.Fatalf("exec calls = %d, want 3: %#v", len(execArgs), execArgs)
 	}
-	if !strings.Contains(execArgs[0][2], "base64 -d > '/workspace/repo/large.md'") {
-		t.Fatalf("first chunk command = %q, want overwrite redirect", execArgs[0][2])
+	if !strings.Contains(execArgs[0][2], `base64 -d >> "$remote_tmp"`) {
+		t.Fatalf("first chunk command = %q, want temp append", execArgs[0][2])
 	}
-	if !strings.Contains(execArgs[1][2], "base64 -d >> '/workspace/repo/large.md'") {
-		t.Fatalf("second chunk command = %q, want append redirect", execArgs[1][2])
+	if !strings.Contains(execArgs[1][2], `base64 -d >> "$remote_tmp"`) {
+		t.Fatalf("second chunk command = %q, want temp append", execArgs[1][2])
+	}
+	if !strings.Contains(execArgs[2][2], `mv -f "$remote_tmp" "$remote_file"`) {
+		t.Fatalf("finalize command = %q, want atomic rename", execArgs[2][2])
 	}
 	for _, args := range execArgs {
-		if len(args[2]) > factorySandboxCopyInputChunkEncodedBytes+512 {
+		if len(args[2]) > factorySandboxCopyInputChunkEncodedBytes+2048 {
 			t.Fatalf("copy command length = %d, want bounded chunk command", len(args[2]))
 		}
 	}
+}
+
+func TestFactorySandboxCopyContentToRemoteRejectsSymlinks(t *testing.T) {
+	runScript := func(home string) func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
+		return func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, script string, _ io.Writer) error {
+			cmd := exec.Command("sh", "-c", script)
+			cmd.Env = append(os.Environ(), "HOME="+home)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+			}
+			return nil
+		}
+	}
+
+	t.Run("workspace symlink parent", func(t *testing.T) {
+		root := tempFactorySandboxRemoteRoot(t)
+		target := filepath.Join(root, "target")
+		if err := os.Mkdir(target, 0700); err != nil {
+			t.Fatalf("Mkdir() error: %v", err)
+		}
+		if err := os.Symlink(target, filepath.Join(root, "linked")); err != nil {
+			t.Fatalf("Symlink() error: %v", err)
+		}
+
+		err := factorySandboxCopyContentToRemote(context.Background(), []byte("secret"), filepath.Join(root, "linked", "input.md"), "", fakeFactorySandboxProvider{}, &sandbox.ConnectInfo{Name: "factory-dev"}, io.Discard, factorySandboxExecutorDeps{
+			runProviderScript: runScript(root),
+		})
+		if err == nil || !strings.Contains(err.Error(), "refusing symlink parent") {
+			t.Fatalf("copy error = %v, want symlink parent refusal", err)
+		}
+	})
+
+	t.Run("workspace symlink destination", func(t *testing.T) {
+		root := tempFactorySandboxRemoteRoot(t)
+		dir := filepath.Join(root, "inputs")
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatalf("Mkdir() error: %v", err)
+		}
+		if err := os.Symlink(filepath.Join(root, "target"), filepath.Join(dir, "input.md")); err != nil {
+			t.Fatalf("Symlink() error: %v", err)
+		}
+
+		err := factorySandboxCopyContentToRemote(context.Background(), []byte("secret"), filepath.Join(dir, "input.md"), "", fakeFactorySandboxProvider{}, &sandbox.ConnectInfo{Name: "factory-dev"}, io.Discard, factorySandboxExecutorDeps{
+			runProviderScript: runScript(root),
+		})
+		if err == nil || !strings.Contains(err.Error(), "refusing symlink destination") {
+			t.Fatalf("copy error = %v, want symlink destination refusal", err)
+		}
+	})
+
+	t.Run("home symlink parent", func(t *testing.T) {
+		home := tempFactorySandboxRemoteRoot(t)
+		target := filepath.Join(home, "target")
+		if err := os.Mkdir(target, 0700); err != nil {
+			t.Fatalf("Mkdir() error: %v", err)
+		}
+		if err := os.Symlink(target, filepath.Join(home, ".codex")); err != nil {
+			t.Fatalf("Symlink() error: %v", err)
+		}
+
+		err := factorySandboxCopyContentToRemoteHome(context.Background(), []byte("secret"), ".codex/auth.json", "0600", fakeFactorySandboxProvider{}, &sandbox.ConnectInfo{Name: "factory-dev"}, io.Discard, factorySandboxExecutorDeps{
+			runProviderScript: runScript(home),
+		})
+		if err == nil || !strings.Contains(err.Error(), "refusing symlink parent") {
+			t.Fatalf("copy error = %v, want symlink parent refusal", err)
+		}
+	})
+
+	t.Run("home symlink destination", func(t *testing.T) {
+		home := tempFactorySandboxRemoteRoot(t)
+		dir := filepath.Join(home, ".codex")
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatalf("Mkdir() error: %v", err)
+		}
+		if err := os.Symlink(filepath.Join(home, "target"), filepath.Join(dir, "auth.json")); err != nil {
+			t.Fatalf("Symlink() error: %v", err)
+		}
+
+		err := factorySandboxCopyContentToRemoteHome(context.Background(), []byte("secret"), ".codex/auth.json", "0600", fakeFactorySandboxProvider{}, &sandbox.ConnectInfo{Name: "factory-dev"}, io.Discard, factorySandboxExecutorDeps{
+			runProviderScript: runScript(home),
+		})
+		if err == nil || !strings.Contains(err.Error(), "refusing symlink destination") {
+			t.Fatalf("copy error = %v, want symlink destination refusal", err)
+		}
+	})
+}
+
+func tempFactorySandboxRemoteRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp(".", "remote-copy-test-")
+	if err != nil {
+		t.Fatalf("MkdirTemp() error: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatalf("Abs() error: %v", err)
+	}
+	return abs
 }
 
 func TestRunFactorySandboxExecutorWithDepsSyncsEngineAuthBeforeRemoteExecution(t *testing.T) {
@@ -1702,11 +1812,11 @@ func TestRunFactorySandboxExecutorWithDepsSyncsEngineAuthBeforeRemoteExecution(t
 	if !strings.Contains(calls[0], `remote_file="$remote_home"/'.codex/auth.json'`) {
 		t.Fatalf("auth copy call = %q", calls[0])
 	}
-	if !strings.Contains(calls[0], `base64 -d > "$remote_file"`) {
+	if !strings.Contains(calls[0], `base64 -d >> "$remote_tmp"`) {
 		t.Fatalf("auth copy call = %q", calls[0])
 	}
-	if !strings.Contains(calls[1], `chmod '0600' "$remote_file"`) {
-		t.Fatalf("auth chmod call = %q", calls[1])
+	if !strings.Contains(calls[1], `chmod '0600' "$remote_tmp"`) || !strings.Contains(calls[1], `mv -f "$remote_tmp" "$remote_file"`) {
+		t.Fatalf("auth finalize call = %q", calls[1])
 	}
 	if calls[2] != "remote-auto" {
 		t.Fatalf("final call = %q, want remote auto", calls[2])

@@ -1227,17 +1227,14 @@ func factorySandboxCopyContentToRemote(ctx context.Context, content []byte, remo
 	if remoteAbsPath == "" || remoteAbsPath == "." {
 		return fmt.Errorf("remote path is required")
 	}
-	remoteDir := shellQuote(filepath.ToSlash(filepath.Dir(remoteAbsPath)))
-	remoteFile := shellQuote(remoteAbsPath)
+	remoteDir := filepath.ToSlash(filepath.Dir(remoteAbsPath))
+	remoteFile := remoteAbsPath
+	remoteTmp := factorySandboxRemoteTempPath(remoteDir, remoteFile, content)
+	pathScript := factorySandboxRemoteAbsolutePathScript(remoteDir, remoteFile, remoteTmp)
 	if encoded == "" {
-		script := "mkdir -p " + remoteDir + " && : > " + remoteFile
+		script := pathScript + "\n" + factorySandboxRemoteBeginCopyScript() + "\n" + factorySandboxRemoteFinalizeCopyScript(mode)
 		if err := deps.runProviderScript(ctx, provider, connectInfo, script, out); err != nil {
 			return err
-		}
-		if strings.TrimSpace(mode) != "" {
-			if err := deps.runProviderScript(ctx, provider, connectInfo, "chmod "+shellQuote(mode)+" "+remoteFile, out); err != nil {
-				return err
-			}
 		}
 		return nil
 	}
@@ -1246,21 +1243,17 @@ func factorySandboxCopyContentToRemote(ctx context.Context, content []byte, remo
 		if end > len(encoded) {
 			end = len(encoded)
 		}
-		redirect := ">>"
-		prefix := ""
+		copyScript := factorySandboxRemoteContinueCopyScript()
 		if offset == 0 {
-			redirect = ">"
-			prefix = "mkdir -p " + remoteDir + " && "
+			copyScript = factorySandboxRemoteBeginCopyScript()
 		}
-		script := prefix + "printf %s " + shellQuote(encoded[offset:end]) + " | base64 -d " + redirect + " " + remoteFile
+		script := pathScript + "\n" + copyScript + "\nprintf %s " + shellQuote(encoded[offset:end]) + " | base64 -d >> \"$remote_tmp\""
 		if err := deps.runProviderScript(ctx, provider, connectInfo, script, out); err != nil {
 			return err
 		}
 	}
-	if strings.TrimSpace(mode) != "" {
-		if err := deps.runProviderScript(ctx, provider, connectInfo, "chmod "+shellQuote(mode)+" "+remoteFile, out); err != nil {
-			return err
-		}
+	if err := deps.runProviderScript(ctx, provider, connectInfo, pathScript+"\n"+factorySandboxRemoteFinalizeCopyScript(mode), out); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1272,16 +1265,11 @@ func factorySandboxCopyContentToRemoteHome(ctx context.Context, content []byte, 
 	if remoteRelPath == "" || remoteRelPath == "." || pathpkg.IsAbs(remoteRelPath) || remoteRelPath == ".." || strings.HasPrefix(remoteRelPath, "../") {
 		return fmt.Errorf("remote home path is invalid")
 	}
-	pathScript := factorySandboxRemoteHomePathScript(pathpkg.Dir(remoteRelPath), remoteRelPath)
+	pathScript := factorySandboxRemoteHomePathScript(pathpkg.Dir(remoteRelPath), remoteRelPath, factorySandboxRemoteTempBase(remoteRelPath, content))
 	if encoded == "" {
-		script := pathScript + "\nmkdir -p \"$remote_dir\" && : > \"$remote_file\""
+		script := pathScript + "\n" + factorySandboxRemoteBeginCopyScript() + "\n" + factorySandboxRemoteFinalizeCopyScript(mode)
 		if err := deps.runProviderScript(ctx, provider, connectInfo, script, out); err != nil {
 			return err
-		}
-		if strings.TrimSpace(mode) != "" {
-			if err := deps.runProviderScript(ctx, provider, connectInfo, pathScript+"\nchmod "+shellQuote(mode)+" \"$remote_file\"", out); err != nil {
-				return err
-			}
 		}
 		return nil
 	}
@@ -1290,26 +1278,32 @@ func factorySandboxCopyContentToRemoteHome(ctx context.Context, content []byte, 
 		if end > len(encoded) {
 			end = len(encoded)
 		}
-		redirect := ">>"
-		prefix := pathScript + "\n"
+		copyScript := factorySandboxRemoteContinueCopyScript()
 		if offset == 0 {
-			redirect = ">"
-			prefix += "mkdir -p \"$remote_dir\" && "
+			copyScript = factorySandboxRemoteBeginCopyScript()
 		}
-		script := prefix + "printf %s " + shellQuote(encoded[offset:end]) + " | base64 -d " + redirect + " \"$remote_file\""
+		script := pathScript + "\n" + copyScript + "\nprintf %s " + shellQuote(encoded[offset:end]) + " | base64 -d >> \"$remote_tmp\""
 		if err := deps.runProviderScript(ctx, provider, connectInfo, script, out); err != nil {
 			return err
 		}
 	}
-	if strings.TrimSpace(mode) != "" {
-		if err := deps.runProviderScript(ctx, provider, connectInfo, pathScript+"\nchmod "+shellQuote(mode)+" \"$remote_file\"", out); err != nil {
-			return err
-		}
+	if err := deps.runProviderScript(ctx, provider, connectInfo, pathScript+"\n"+factorySandboxRemoteFinalizeCopyScript(mode), out); err != nil {
+		return err
 	}
 	return nil
 }
 
-func factorySandboxRemoteHomePathScript(remoteDir, remoteFile string) string {
+func factorySandboxRemoteAbsolutePathScript(remoteDir, remoteFile, remoteTmp string) string {
+	return strings.Join([]string{
+		"set -eu",
+		"remote_dir=" + shellQuote(remoteDir),
+		"remote_file=" + shellQuote(remoteFile),
+		"remote_tmp=" + shellQuote(remoteTmp),
+		factorySandboxRemotePathGuardScript(),
+	}, "\n")
+}
+
+func factorySandboxRemoteHomePathScript(remoteDir, remoteFile, remoteTmpBase string) string {
 	return strings.Join([]string{
 		"set -eu",
 		`remote_home="${HOME:-}"`,
@@ -1319,7 +1313,66 @@ func factorySandboxRemoteHomePathScript(remoteDir, remoteFile string) string {
 		`if [ -z "$remote_home" ]; then remote_home="$(pwd)"; fi`,
 		`remote_dir="$remote_home"/` + shellQuote(remoteDir),
 		`remote_file="$remote_home"/` + shellQuote(remoteFile),
+		`remote_tmp="$remote_dir"/` + shellQuote(remoteTmpBase),
+		factorySandboxRemotePathGuardScript(),
 	}, "\n")
+}
+
+func factorySandboxRemotePathGuardScript() string {
+	return strings.Join([]string{
+		`validate_remote_parent_no_symlink() {`,
+		`  target_dir="$1"`,
+		`  case "$target_dir" in /*) ;; *) echo "remote parent must be absolute: $target_dir" >&2; exit 1 ;; esac`,
+		`  probe="/"`,
+		`  rest="${target_dir#/}"`,
+		`  old_ifs="$IFS"`,
+		`  IFS="/"`,
+		`  set -- $rest`,
+		`  IFS="$old_ifs"`,
+		`  for component do`,
+		`    [ -z "$component" ] && continue`,
+		`    if [ "$probe" = "/" ]; then probe="/$component"; else probe="$probe/$component"; fi`,
+		`    if [ -L "$probe" ]; then echo "refusing symlink parent: $probe" >&2; exit 1; fi`,
+		`    if [ ! -e "$probe" ]; then mkdir "$probe"; fi`,
+		`    if [ ! -d "$probe" ]; then echo "remote parent is not a directory: $probe" >&2; exit 1; fi`,
+		`  done`,
+		`}`,
+		`validate_remote_parent_no_symlink "$remote_dir"`,
+		`if [ -L "$remote_file" ]; then echo "refusing symlink destination: $remote_file" >&2; exit 1; fi`,
+	}, "\n")
+}
+
+func factorySandboxRemoteBeginCopyScript() string {
+	return strings.Join([]string{
+		`if [ -e "$remote_tmp" ] || [ -L "$remote_tmp" ]; then rm -f "$remote_tmp"; fi`,
+		`( set -C; : > "$remote_tmp" ) || { echo "could not create remote temp file: $remote_tmp" >&2; exit 1; }`,
+	}, "\n")
+}
+
+func factorySandboxRemoteContinueCopyScript() string {
+	return `if [ -L "$remote_tmp" ] || [ ! -f "$remote_tmp" ]; then echo "remote temp file is not regular: $remote_tmp" >&2; exit 1; fi`
+}
+
+func factorySandboxRemoteFinalizeCopyScript(mode string) string {
+	lines := []string{factorySandboxRemoteContinueCopyScript()}
+	if strings.TrimSpace(mode) != "" {
+		lines = append(lines, "chmod "+shellQuote(mode)+" \"$remote_tmp\"")
+	}
+	lines = append(lines, `mv -f "$remote_tmp" "$remote_file"`)
+	return strings.Join(lines, "\n")
+}
+
+func factorySandboxRemoteTempPath(remoteDir, remoteFile string, content []byte) string {
+	return pathpkg.Join(remoteDir, factorySandboxRemoteTempBase(remoteFile, content))
+}
+
+func factorySandboxRemoteTempBase(remoteFile string, content []byte) string {
+	base := pathpkg.Base(filepath.ToSlash(strings.TrimSpace(remoteFile)))
+	if base == "" || base == "." || base == "/" {
+		base = "copy"
+	}
+	sum := sha256.Sum256(append(append([]byte(filepath.ToSlash(remoteFile)), 0), content...))
+	return "." + base + ".hal-copy-" + hex.EncodeToString(sum[:])[:16] + ".tmp"
 }
 
 func factorySandboxRemoteInputPath(localPath string) string {
