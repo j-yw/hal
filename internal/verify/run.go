@@ -194,9 +194,10 @@ func writeCheckArtifact(checkID, artifactID, kind string, data []byte, artifacts
 	}
 
 	return ArtifactReference{
-		CheckID: checkID,
-		Kind:    kind,
-		Path:    path.Join(template.HalDir, "reports", "verify", fileName),
+		CheckID:    checkID,
+		Kind:       kind,
+		Path:       path.Join(template.HalDir, "reports", "verify", fileName),
+		sourcePath: artifactPath,
 	}, nil
 }
 

@@ -457,7 +457,25 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 			hostnameIP, hostnameErr = fetchTailscaleIPWithProgress(ctx, "root", tailscaleHostname, d.sshContext, d.sleep, digitalOceanTailscaleHostnameAttempts, 10*time.Second, safeOut)
 			if hostnameErr == nil {
 				result.TailscaleIP = hostnameIP
-				if _, verifyErr := verifyDigitalOceanLockdownWithProgress(ctx, d.sshContext, []string{tailscaleHostname, hostnameIP}, d.sleep, digitalOceanLockdownVerifyAttempts, 10*time.Second, safeOut); verifyErr != nil {
+
+				fmt.Fprintf(safeOut, "Applying firewall lockdown on %s via Tailscale hostname...\n", name)
+				verifyTargets := []string{tailscaleHostname, hostnameIP}
+				if err := runDigitalOceanSSHCommand(ctx, d.sshContext, tailscaleHostname, digitalOceanFirewallLockdownScript(), safeOut); err != nil {
+					verifiedTarget, verifyErr := verifyDigitalOceanLockdownWithProgress(ctx, d.sshContext, verifyTargets, d.sleep, digitalOceanLockdownVerifyAttempts, 10*time.Second, safeOut)
+					if verifyErr == nil {
+						if verifiedTarget == hostnameIP {
+							fmt.Fprintf(safeOut, "Verified firewall lockdown via Tailscale after hostname SSH closed.\n")
+						} else {
+							fmt.Fprintf(safeOut, "Verified firewall lockdown via Tailscale hostname after hostname SSH closed.\n")
+						}
+						return result, nil
+					}
+
+					cleanupDroplet("firewall lockdown failed")
+					return nil, fmt.Errorf("failed to apply firewall lockdown in lockdown mode via hostname %q: %w; verification via Tailscale targets failed: %v", tailscaleHostname, err, verifyErr)
+				}
+
+				if _, verifyErr := verifyDigitalOceanLockdownWithProgress(ctx, d.sshContext, verifyTargets, d.sleep, digitalOceanLockdownVerifyAttempts, 10*time.Second, safeOut); verifyErr != nil {
 					cleanupDroplet("firewall lockdown unverified")
 					return nil, fmt.Errorf("failed to verify firewall lockdown in lockdown mode via hostname %q: %w", tailscaleHostname, verifyErr)
 				}
@@ -479,8 +497,8 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 
 		result.TailscaleIP = tailscaleIP
 
-		// Apply firewall lockdown after reading the Tailscale IP as a required
-		// duplicate of cloud-init. If public SSH closes first, verify over Tailscale.
+		// Apply firewall lockdown after reading the Tailscale IP. If public SSH
+		// closes first, verify over Tailscale.
 		fmt.Fprintf(safeOut, "Applying firewall lockdown on %s...\n", name)
 		if err := runDigitalOceanSSHCommand(ctx, d.sshContext, ip, digitalOceanFirewallLockdownScript(), safeOut); err != nil {
 			verifyTargets := []string{tailscaleIP}

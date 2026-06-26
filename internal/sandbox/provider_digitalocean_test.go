@@ -1006,8 +1006,9 @@ func TestDigitalOceanProvider_Create_LockdownFallsBackToPublicIPWhenHostnameUnav
 
 func TestDigitalOceanProvider_Create_LockdownPreservesDropletWhenTailscaleHostnameVerified(t *testing.T) {
 	var calls [][]string
-	var sshCalls [][]string
 	var publicCatCalls int
+	var hostnameApplyCalls int
+	var hostnameVerifyCalls int
 	dp := &DigitalOceanProvider{
 		SSHKey:            "ab:cd:ef:12:34",
 		Size:              "s-2vcpu-4gb",
@@ -1022,14 +1023,21 @@ func TestDigitalOceanProvider_Create_LockdownPreservesDropletWhenTailscaleHostna
 			return exec.CommandContext(ctx, "true")
 		},
 		sshContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
-			sshCalls = append(sshCalls, append([]string{name}, args...))
 			joined := strings.Join(args, " ")
 			if strings.Contains(joined, "root@10.20.30.40") && strings.Contains(joined, "cat /root/.tailscale-ip") {
 				publicCatCalls++
 				return exec.CommandContext(ctx, "false")
 			}
-			if strings.Contains(joined, "root@hal-test-droplet-1234") {
+			if strings.Contains(joined, "root@hal-test-droplet-1234") && strings.Contains(joined, "cat /root/.tailscale-ip") {
 				return exec.CommandContext(ctx, "echo", "100.64.0.99")
+			}
+			if strings.Contains(joined, "root@hal-test-droplet-1234") && strings.Contains(joined, "ufw deny 22/tcp") {
+				hostnameApplyCalls++
+				return exec.CommandContext(ctx, "true")
+			}
+			if strings.Contains(joined, "root@hal-test-droplet-1234") && strings.Contains(joined, digitalOceanLockdownMarker) {
+				hostnameVerifyCalls++
+				return exec.CommandContext(ctx, "true")
 			}
 			return exec.CommandContext(ctx, "false")
 		},
@@ -1049,10 +1057,14 @@ func TestDigitalOceanProvider_Create_LockdownPreservesDropletWhenTailscaleHostna
 	if publicCatCalls != 0 {
 		t.Fatalf("Create() public IP Tailscale lookups = %d, want 0 when hostname succeeds", publicCatCalls)
 	}
-	for _, call := range sshCalls {
-		if strings.Contains(strings.Join(call, " "), "ufw deny 22/tcp") {
-			t.Fatalf("Create() should not apply public-IP firewall lockdown after hostname verification, sshCalls=%v", sshCalls)
-		}
+	if hostnameApplyCalls != 1 {
+		t.Fatalf("Create() hostname firewall lockdown applications = %d, want 1", hostnameApplyCalls)
+	}
+	if hostnameVerifyCalls != 1 {
+		t.Fatalf("Create() hostname firewall lockdown verifications = %d, want 1", hostnameVerifyCalls)
+	}
+	if !strings.Contains(out.String(), "Applying firewall lockdown on test-droplet via Tailscale hostname") {
+		t.Fatalf("output missing hostname firewall lockdown application: %q", out.String())
 	}
 	for _, call := range calls {
 		if strings.Join(call, " ") == "doctl compute droplet delete 123456789 --force" {

@@ -2632,6 +2632,9 @@ func collectAndStoreFactoryVerificationArtifacts(store factory.Store, dir, runID
 			continue
 		}
 		sourcePath := factoryVerificationArtifactSourcePath(dir, path, artifactSourceDir)
+		if explicitSourcePath := strings.TrimSpace(artifact.SourcePath()); explicitSourcePath != "" {
+			sourcePath = explicitSourcePath
+		}
 		if !factoryArtifactFileExists(sourcePath) {
 			continue
 		}

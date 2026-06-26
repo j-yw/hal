@@ -199,6 +199,49 @@ func TestRunCapturesShellCheckArtifacts(t *testing.T) {
 	requireFileContent(t, filepath.Join(projectRoot, ".hal", "reports", "verify", "test-stderr.txt"), "unit stderr")
 }
 
+func TestRunCapturesActualArtifactSourcePathWhenArtifactDirIsOverridden(t *testing.T) {
+	projectRoot := t.TempDir()
+	artifactDir := filepath.Join(t.TempDir(), "verify-artifacts")
+
+	result, err := Run(context.Background(), &Config{
+		ProjectRoot: projectRoot,
+		ArtifactDir: artifactDir,
+		Checks: []ShellCheck{
+			{
+				ID:             "test",
+				Name:           "Unit tests",
+				Command:        helperCommand(t, "write-output", "unit stdout", ""),
+				WorkDir:        projectRoot,
+				TimeoutSeconds: 10,
+				Required:       true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+	if len(result.Artifacts) != 1 {
+		t.Fatalf("Artifacts length = %d, want 1: %#v", len(result.Artifacts), result.Artifacts)
+	}
+
+	artifact := result.Artifacts[0]
+	wantDisplayPath := ".hal/reports/verify/test-stdout.txt"
+	if artifact.Path != wantDisplayPath {
+		t.Fatalf("artifact Path = %q, want %q", artifact.Path, wantDisplayPath)
+	}
+	wantSourcePath := filepath.Join(artifactDir, "test-stdout.txt")
+	if artifact.SourcePath() != wantSourcePath {
+		t.Fatalf("artifact SourcePath = %q, want %q", artifact.SourcePath(), wantSourcePath)
+	}
+	if result.Checks[0].StdoutArtifact != wantDisplayPath {
+		t.Fatalf("StdoutArtifact = %q, want %q", result.Checks[0].StdoutArtifact, wantDisplayPath)
+	}
+	requireFileContent(t, wantSourcePath, "unit stdout")
+	if _, err := os.Stat(filepath.Join(projectRoot, ".hal", "reports", "verify", "test-stdout.txt")); !os.IsNotExist(err) {
+		t.Fatalf("default artifact path exists with overridden ArtifactDir: %v", err)
+	}
+}
+
 func TestRunWritesArtifactsWithRestrictedPermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("permission bits are not portable on Windows")
