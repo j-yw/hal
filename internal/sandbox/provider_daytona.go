@@ -143,6 +143,15 @@ func isMissingTemplateSnapshotError(output string) bool {
 		strings.Contains(text, "no such")
 }
 
+func isInactiveTemplateSnapshotError(output string) bool {
+	text := strings.ToLower(output)
+	return strings.Contains(text, "snapshot") && strings.Contains(text, "inactive")
+}
+
+func isUnavailableTemplateSnapshotError(output string) bool {
+	return isMissingTemplateSnapshotError(output) || isInactiveTemplateSnapshotError(output)
+}
+
 func buildSnapshotCreateArgs(helpOutput string) []string {
 	args := []string{"snapshot", "create"}
 	help := strings.ToLower(helpOutput)
@@ -170,6 +179,17 @@ func buildSnapshotCreateArgs(helpOutput string) []string {
 	return args
 }
 
+func (d *DaytonaProvider) deleteTemplateSnapshot(ctx context.Context, out io.Writer) error {
+	output, err := d.runDaytona(ctx, out, "snapshot", "delete", templateSnapshotName)
+	if err != nil {
+		if isMissingTemplateSnapshotError(output) {
+			return nil
+		}
+		return wrapDaytonaError("snapshot delete", err, output)
+	}
+	return nil
+}
+
 func (d *DaytonaProvider) ensureTemplateSnapshot(ctx context.Context, out io.Writer) error {
 	helpOutput, err := d.runDaytona(ctx, io.Discard, "snapshot", "create", "--help")
 	if err != nil {
@@ -193,9 +213,14 @@ func (d *DaytonaProvider) Create(ctx context.Context, name string, env map[strin
 
 	output, err := d.runDaytona(ctx, out, args...)
 	if err != nil {
-		if isMissingTemplateSnapshotError(output) {
+		if isUnavailableTemplateSnapshotError(output) {
+			if isInactiveTemplateSnapshotError(output) {
+				if deleteErr := d.deleteTemplateSnapshot(ctx, out); deleteErr != nil {
+					return nil, fmt.Errorf("daytona create failed and template snapshot %q is inactive: %w", templateSnapshotName, deleteErr)
+				}
+			}
 			if ensureErr := d.ensureTemplateSnapshot(ctx, out); ensureErr != nil {
-				return nil, fmt.Errorf("daytona create failed and template snapshot %q is missing: %w", templateSnapshotName, ensureErr)
+				return nil, fmt.Errorf("daytona create failed and template snapshot %q is unavailable: %w", templateSnapshotName, ensureErr)
 			}
 			retryOutput, retryErr := d.runDaytona(ctx, out, args...)
 			if retryErr != nil {

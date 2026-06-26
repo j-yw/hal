@@ -365,6 +365,63 @@ func TestDaytonaProvider_Create_MissingTemplateSnapshot_AutoCreatesAndRetries(t 
 	}
 }
 
+func TestDaytonaProvider_Create_InactiveTemplateSnapshot_DeletesCreatesAndRetries(t *testing.T) {
+	var calls [][]string
+	callNum := 0
+
+	dp := &DaytonaProvider{
+		APIKey: "test-key",
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			callNum++
+			calls = append(calls, append([]string{name}, args...))
+			switch callNum {
+			case 1:
+				return exec.CommandContext(ctx, "sh", "-c", "echo 'Bad Request: Snapshot hal is inactive' >&2; exit 1")
+			case 2:
+				return exec.CommandContext(ctx, "echo", "snapshot deleted")
+			case 3:
+				return exec.CommandContext(ctx, "sh", "-c", "printf '%s\n' '--name' '--dockerfile-path' '--context-path'")
+			case 4:
+				return exec.CommandContext(ctx, "echo", "snapshot ready")
+			case 5:
+				return exec.CommandContext(ctx, "echo", "sandbox created")
+			default:
+				return exec.CommandContext(ctx, "true")
+			}
+		},
+	}
+
+	var out bytes.Buffer
+	result, err := dp.Create(context.Background(), "my-sandbox", nil, &out)
+	if err != nil {
+		t.Fatalf("Create() unexpected error: %v", err)
+	}
+	if result == nil || result.Name != "my-sandbox" {
+		t.Fatalf("result = %+v, want Name=my-sandbox", result)
+	}
+
+	wantCalls := [][]string{
+		{"daytona", "create", "--snapshot", "hal", "--name", "my-sandbox"},
+		{"daytona", "snapshot", "delete", "hal"},
+		{"daytona", "snapshot", "create", "--help"},
+		{"daytona", "snapshot", "create", "--name", "hal", "--dockerfile-path", "sandbox/Dockerfile", "--context-path", "."},
+		{"daytona", "create", "--snapshot", "hal", "--name", "my-sandbox"},
+	}
+	if len(calls) != len(wantCalls) {
+		t.Fatalf("daytona calls = %v, want %v", calls, wantCalls)
+	}
+	for i := range wantCalls {
+		if len(calls[i]) != len(wantCalls[i]) {
+			t.Fatalf("call %d = %v, want %v", i, calls[i], wantCalls[i])
+		}
+		for j := range wantCalls[i] {
+			if calls[i][j] != wantCalls[i][j] {
+				t.Fatalf("call %d arg %d = %q, want %q; call=%v", i, j, calls[i][j], wantCalls[i][j], calls[i])
+			}
+		}
+	}
+}
+
 func TestDaytonaProvider_Create_DefaultCmdContext(t *testing.T) {
 	// Verify that a DaytonaProvider without cmdContext set uses exec.CommandContext
 	dp := &DaytonaProvider{APIKey: "key"}
