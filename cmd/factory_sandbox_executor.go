@@ -93,9 +93,11 @@ var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
 	appendLog:              appendFactorySandboxLogChunk,
 }
 
-var errFactorySandboxWorkspaceRequired = errors.New("sandbox workspace directory is required; configure remote.origin.url or run from a /workspace/<repo> checkout")
+var errFactorySandboxWorkspaceRequired = errors.New("sandbox workspace directory is required; configure remote.origin.url or run from a remote workspace checkout")
 
 const factorySandboxCopyInputChunkEncodedBytes = 32 * 1024
+
+const factorySandboxRemoteWorkspaceRoot = "/root/workspace"
 
 func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factorySandboxExecutorDeps {
 	customRunProviderExec := deps.runProviderExec != nil
@@ -1401,9 +1403,12 @@ func factorySandboxRemoteCommandArgs(record factory.RunRecord, req factoryRunAut
 
 func factorySandboxRemoteWorkspaceDir(record factory.RunRecord) string {
 	if name := repositoryNameFromRemote(record.RepoRemote); name != "" {
-		return "/workspace/" + factorySandboxWorkspaceName(name, record.RepoRemote)
+		return factorySandboxRemoteWorkspaceRoot + "/" + factorySandboxWorkspaceName(name, record.RepoRemote)
 	}
 	if repoPath := strings.TrimSpace(record.RepoPath); strings.HasPrefix(repoPath, "/workspace/") {
+		return repoPath
+	}
+	if repoPath := strings.TrimSpace(record.RepoPath); strings.HasPrefix(repoPath, factorySandboxRemoteWorkspaceRoot+"/") {
 		return repoPath
 	}
 	return ""

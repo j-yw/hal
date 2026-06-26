@@ -2037,7 +2037,7 @@ func TestFactorySandboxRemoteCommandArgsMetadataOmitsCredentialedRemoteQuery(t *
 		t.Fatalf("remote command metadata contains credentialed remote data: %q", commandMetadata)
 	}
 	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
-	if !strings.HasPrefix(workspaceDir, "/workspace/repo-") {
+	if !strings.HasPrefix(workspaceDir, factorySandboxRemoteWorkspaceRoot+"/repo-") {
 		t.Fatalf("workspace dir = %q, want hashed repo workspace", workspaceDir)
 	}
 	if !strings.Contains(commandMetadata, "cd "+shellQuote(workspaceDir)) {
@@ -2051,7 +2051,7 @@ func TestFactorySandboxRemoteWorkspaceDirIncludesRemoteIdentity(t *testing.T) {
 	if first == second {
 		t.Fatalf("workspace dirs should differ for remotes with the same basename: %q", first)
 	}
-	if !strings.HasPrefix(first, "/workspace/repo-") || !strings.HasPrefix(second, "/workspace/repo-") {
+	if !strings.HasPrefix(first, factorySandboxRemoteWorkspaceRoot+"/repo-") || !strings.HasPrefix(second, factorySandboxRemoteWorkspaceRoot+"/repo-") {
 		t.Fatalf("workspace dirs = %q and %q, want repo basename plus identity hash", first, second)
 	}
 }
@@ -2106,7 +2106,7 @@ func TestRunFactorySandboxExecutorWithDepsRequiresRemoteWorkspaceBeforeExecution
 			return nil
 		},
 	})
-	wantErr := "prepare factory sandbox inputs: sandbox workspace directory is required; configure remote.origin.url or run from a /workspace/<repo> checkout"
+	wantErr := "prepare factory sandbox inputs: sandbox workspace directory is required; configure remote.origin.url or run from a remote workspace checkout"
 	if err == nil || err.Error() != wantErr {
 		t.Fatalf("runFactorySandboxExecutorWithDeps() error = %v, want %q", err, wantErr)
 	}

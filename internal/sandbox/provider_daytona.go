@@ -90,9 +90,26 @@ func buildCreateArgs(name string, env map[string]string) []string {
 	sort.Strings(keys)
 
 	for _, k := range keys {
+		if !daytonaCreateEnvAllowed(k) {
+			continue
+		}
 		args = append(args, "-e", k+"="+env[k])
 	}
 	return args
+}
+
+func daytonaCreateEnvAllowed(key string) bool {
+	key = strings.ToUpper(strings.TrimSpace(key))
+	if key == "" {
+		return false
+	}
+	sensitiveMarkers := []string{"TOKEN", "SECRET", "PASSWORD", "PASS", "AUTHKEY", "KEY", "CREDENTIAL"}
+	for _, marker := range sensitiveMarkers {
+		if strings.Contains(key, marker) {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *DaytonaProvider) runDaytona(ctx context.Context, out io.Writer, args ...string) (string, error) {
@@ -280,7 +297,7 @@ func (d *DaytonaProvider) Delete(ctx context.Context, info *ConnectInfo, out io.
 	if err != nil {
 		return err
 	}
-	cmd := d.commandContext(ctx, "daytona", "delete", name, "--yes")
+	cmd := d.commandContext(ctx, "daytona", "delete", name)
 	d.applyCredentials(cmd)
 	var captured bytes.Buffer
 	safeOut := synchronizedWriter(&captured)
@@ -316,7 +333,7 @@ func (d *DaytonaProvider) Exec(info *ConnectInfo, args []string) (*exec.Cmd, err
 	if err != nil {
 		return nil, err
 	}
-	cmdArgs := []string{"ssh", name, "--"}
+	cmdArgs := []string{"exec", name, "--"}
 	cmdArgs = append(cmdArgs, args...)
 	cmd := exec.Command("daytona", cmdArgs...)
 	d.applyCredentials(cmd)

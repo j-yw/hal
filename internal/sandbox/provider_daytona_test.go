@@ -24,9 +24,11 @@ func TestBuildCreateArgs_Basic(t *testing.T) {
 
 func TestBuildCreateArgs_WithEnvVars(t *testing.T) {
 	env := map[string]string{
-		"GIT_TOKEN":     "ghp_abc",
-		"API_KEY":       "sk-123",
-		"TAILSCALE_KEY": "tskey-xxx",
+		"GIT_USER_EMAIL":    "dev@example.com",
+		"GIT_USER_NAME":     "Dev User",
+		"HAL_AUTO_SHUTDOWN": "true",
+		"GITHUB_TOKEN":      "ghp_abc",
+		"TAILSCALE_AUTHKEY": "tskey-xxx",
 	}
 	args := buildCreateArgs("test-sb", env)
 
@@ -44,9 +46,9 @@ func TestBuildCreateArgs_WithEnvVars(t *testing.T) {
 	// Verify env flags — sorted alphabetically by key
 	envArgs := args[5:]
 	wantEnv := []string{
-		"-e", "API_KEY=sk-123",
-		"-e", "GIT_TOKEN=ghp_abc",
-		"-e", "TAILSCALE_KEY=tskey-xxx",
+		"-e", "GIT_USER_EMAIL=dev@example.com",
+		"-e", "GIT_USER_NAME=Dev User",
+		"-e", "HAL_AUTO_SHUTDOWN=true",
 	}
 	if len(envArgs) != len(wantEnv) {
 		t.Fatalf("env args: got %d, want %d: %v", len(envArgs), len(wantEnv), envArgs)
@@ -54,6 +56,12 @@ func TestBuildCreateArgs_WithEnvVars(t *testing.T) {
 	for i := range wantEnv {
 		if envArgs[i] != wantEnv[i] {
 			t.Errorf("envArgs[%d] = %q, want %q", i, envArgs[i], wantEnv[i])
+		}
+	}
+	argsStr := strings.Join(args, " ")
+	for _, secret := range []string{"ghp_abc", "tskey-xxx", "GITHUB_TOKEN", "TAILSCALE_AUTHKEY"} {
+		if strings.Contains(argsStr, secret) {
+			t.Fatalf("create args leaked sensitive env %q: %v", secret, args)
 		}
 	}
 }
@@ -112,9 +120,14 @@ func TestDaytonaProvider_Create_Success(t *testing.T) {
 	}
 
 	argsStr := strings.Join(capturedArgs[1:], " ")
-	for _, want := range []string{"--snapshot", "hal", "--name", "my-sandbox", "-e", "API_KEY=sk-123", "GIT_TOKEN=ghp_abc"} {
+	for _, want := range []string{"--snapshot", "hal", "--name", "my-sandbox"} {
 		if !strings.Contains(argsStr, want) {
 			t.Errorf("args %q missing expected %q", argsStr, want)
+		}
+	}
+	for _, secret := range []string{"API_KEY=sk-123", "GIT_TOKEN=ghp_abc"} {
+		if strings.Contains(argsStr, secret) {
+			t.Fatalf("args %q leaked sensitive env %q", argsStr, secret)
 		}
 	}
 
@@ -218,9 +231,10 @@ func TestDaytonaProvider_Create_AllEnvFlags(t *testing.T) {
 	}
 
 	env := map[string]string{
-		"VAR_A": "val-a",
-		"VAR_B": "val-b",
-		"VAR_C": "val-c",
+		"VAR_A":        "val-a",
+		"VAR_B":        "val-b",
+		"VAR_C":        "val-c",
+		"SECRET_TOKEN": "hidden",
 	}
 
 	var out bytes.Buffer
@@ -248,10 +262,16 @@ func TestDaytonaProvider_Create_AllEnvFlags(t *testing.T) {
 	// Verify all env vars are present
 	argsStr := strings.Join(args, " ")
 	for k, v := range env {
+		if k == "SECRET_TOKEN" {
+			continue
+		}
 		want := fmt.Sprintf("%s=%s", k, v)
 		if !strings.Contains(argsStr, want) {
 			t.Errorf("args missing env var %q", want)
 		}
+	}
+	if strings.Contains(argsStr, "SECRET_TOKEN=hidden") {
+		t.Fatalf("args leaked sensitive env var: %v", args)
 	}
 }
 
@@ -506,8 +526,8 @@ func TestDaytonaProvider_Delete_Success(t *testing.T) {
 		t.Fatalf("Delete() unexpected error: %v", err)
 	}
 
-	// Verify command: daytona delete my-sandbox --yes
-	wantArgs := []string{"daytona", "delete", "my-sandbox", "--yes"}
+	// Verify command: daytona delete my-sandbox.
+	wantArgs := []string{"daytona", "delete", "my-sandbox"}
 	if len(capturedArgs) != len(wantArgs) {
 		t.Fatalf("got args %v, want %v", capturedArgs, wantArgs)
 	}
@@ -632,7 +652,7 @@ func TestDaytonaProvider_Exec(t *testing.T) {
 		t.Fatalf("Exec() unexpected error: %v", err)
 	}
 
-	wantArgs := []string{"daytona", "ssh", "my-sandbox", "--", "ls", "-la"}
+	wantArgs := []string{"daytona", "exec", "my-sandbox", "--", "ls", "-la"}
 	if len(cmd.Args) != len(wantArgs) {
 		t.Fatalf("got args %v, want %v", cmd.Args, wantArgs)
 	}
@@ -661,8 +681,8 @@ func TestDaytonaProvider_Exec_EmptyArgs(t *testing.T) {
 		t.Fatalf("Exec() unexpected error: %v", err)
 	}
 
-	// With empty args, should still have the -- separator
-	wantArgs := []string{"daytona", "ssh", "sb", "--"}
+	// With empty args, should still have the -- separator.
+	wantArgs := []string{"daytona", "exec", "sb", "--"}
 	if len(cmd.Args) != len(wantArgs) {
 		t.Fatalf("got args %v, want %v", cmd.Args, wantArgs)
 	}
