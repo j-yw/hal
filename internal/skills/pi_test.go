@@ -78,6 +78,25 @@ func TestPiLinkerLink(t *testing.T) {
 	}
 }
 
+func TestPiLinkerLinkFactoryTargetsTrackedSkillSource(t *testing.T) {
+	projectDir := t.TempDir()
+	linker := &PiLinker{}
+
+	if err := linker.Link(projectDir, []string{"factory"}); err != nil {
+		t.Fatalf("Link() error = %v", err)
+	}
+
+	linkPath := filepath.Join(projectDir, ".pi", "skills", "factory")
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("Could not read factory symlink: %v", err)
+	}
+	expected := filepath.Join("..", "..", "internal", "skills", "factory")
+	if target != expected {
+		t.Fatalf("factory symlink target = %q, want %q", target, expected)
+	}
+}
+
 func TestPiLinkerLinkIdempotent(t *testing.T) {
 	projectDir := t.TempDir()
 	halSkillsDir := filepath.Join(projectDir, ".hal", "skills", "testskill")

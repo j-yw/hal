@@ -68,6 +68,24 @@ func installCommands(t *testing.T, dir string) {
 	}
 }
 
+func TestCheckLocalSkillLinksAcceptsTrackedFactorySkillTargets(t *testing.T) {
+	dir := t.TempDir()
+	for _, engine := range []string{".claude", ".pi"} {
+		skillsDir := filepath.Join(dir, engine, "skills")
+		if err := os.MkdirAll(skillsDir, 0755); err != nil {
+			t.Fatalf("MkdirAll(%s) error: %v", skillsDir, err)
+		}
+		if err := os.Symlink(skills.LocalManagedSkillLinkTarget("factory"), filepath.Join(skillsDir, "factory")); err != nil {
+			t.Fatalf("Symlink(%s factory) error: %v", engine, err)
+		}
+	}
+
+	check := checkLocalSkillLinks(dir)
+	if check.Status != StatusPass {
+		t.Fatalf("checkLocalSkillLinks() status = %s, want pass: %s", check.Status, check.Message)
+	}
+}
+
 func TestRun_NoHalDir(t *testing.T) {
 	dir := t.TempDir()
 

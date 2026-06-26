@@ -43,7 +43,7 @@ func (c *ClaudeLinker) LinkCommands(projectDir string) error {
 	return os.Symlink(target, link)
 }
 
-// Link creates symlinks from .claude/skills/ to .hal/skills/.
+// Link creates symlinks from .claude/skills/ to managed skill sources.
 func (c *ClaudeLinker) Link(projectDir string, skills []string) error {
 	skillsDir := filepath.Join(projectDir, c.SkillsDir())
 	if err := os.MkdirAll(skillsDir, 0755); err != nil {
@@ -52,7 +52,7 @@ func (c *ClaudeLinker) Link(projectDir string, skills []string) error {
 
 	for _, skill := range skills {
 		// Use relative path for symlink (portable across machines)
-		target := filepath.Join("..", "..", ".hal", "skills", skill)
+		target := LocalManagedSkillLinkTarget(skill)
 		link := filepath.Join(skillsDir, skill)
 
 		// Remove existing link/dir if present

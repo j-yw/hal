@@ -967,15 +967,14 @@ func checkPromptMD(halDir string) Check {
 }
 
 func checkLocalSkillLinks(dir string) Check {
-	// Check that .claude/skills/ and .pi/skills/ have correct symlinks to .hal/skills/
+	// Check that .claude/skills/ and .pi/skills/ have correct managed skill symlinks.
 	type engineDir struct {
 		name      string
 		skillsDir string
-		prefix    string // relative prefix to .hal/skills/
 	}
 	engineDirs := []engineDir{
-		{name: "claude", skillsDir: filepath.Join(dir, ".claude", "skills"), prefix: filepath.Join("..", "..", template.HalDir, "skills")},
-		{name: "pi", skillsDir: filepath.Join(dir, ".pi", "skills"), prefix: filepath.Join("..", "..", template.HalDir, "skills")},
+		{name: "claude", skillsDir: filepath.Join(dir, ".claude", "skills")},
+		{name: "pi", skillsDir: filepath.Join(dir, ".pi", "skills")},
 	}
 
 	var stale []string
@@ -998,7 +997,7 @@ func checkLocalSkillLinks(dir string) Check {
 			if err != nil {
 				continue
 			}
-			expected := filepath.Join(ed.prefix, skill)
+			expected := skills.LocalManagedSkillLinkTarget(skill)
 			if target != expected {
 				stale = append(stale, filepath.Join("."+ed.name, "skills", skill))
 			}

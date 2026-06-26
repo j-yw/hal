@@ -103,6 +103,15 @@ func LinkAllEngines(projectDir string) error {
 	return lastErr
 }
 
+// LocalManagedSkillLinkTarget returns the portable target used by project-local
+// engine skill links under .claude/skills and .pi/skills.
+func LocalManagedSkillLinkTarget(skill string) string {
+	if skill == "factory" {
+		return filepath.Join("..", "..", "internal", "skills", skill)
+	}
+	return filepath.Join("..", "..", template.HalDir, "skills", skill)
+}
+
 // UnlinkAllEngines removes skill links for all registered engines.
 func UnlinkAllEngines(projectDir string) error {
 	var lastErr error
