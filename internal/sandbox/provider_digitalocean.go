@@ -40,6 +40,7 @@ const (
 	digitalOceanTailscalePublicAttempts   = 36
 	digitalOceanTailscaleHostnameAttempts = 3
 	digitalOceanLockdownVerifyAttempts    = 18
+	digitalOceanSSHReadyAttempts          = 36
 )
 
 func digitalOceanFirewallLockdownScript() string {
@@ -125,6 +126,34 @@ func verifyDigitalOceanLockdownWithProgress(ctx context.Context, sshFn func(cont
 	}
 
 	return "", fmt.Errorf("lockdown marker not verified after %d attempts: %s", attempts, strings.Join(lastAttemptErrors, "; "))
+}
+
+func waitDigitalOceanSSHReadyWithProgress(ctx context.Context, sshFn func(context.Context, string, ...string) *exec.Cmd, target string, sleepFn func(time.Duration), attempts int, delay time.Duration, out io.Writer) error {
+	if attempts <= 0 {
+		attempts = 1
+	}
+	if sleepFn == nil {
+		sleepFn = time.Sleep
+	}
+
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if err := runDigitalOceanSSHCommand(ctx, sshFn, target, "true", out); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if out != nil {
+			fmt.Fprintf(out, "  SSH readiness attempt %d/%d...\n", i+1, attempts)
+		}
+		if i < attempts-1 {
+			sleepFn(delay)
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("ssh unavailable")
+	}
+	return fmt.Errorf("ssh not ready after %d attempts: %w", attempts, lastErr)
 }
 
 // commandContext returns the configured command builder, defaulting to
@@ -475,6 +504,14 @@ func (d *DigitalOceanProvider) Create(ctx context.Context, name string, env map[
 
 			cleanupDroplet("firewall lockdown failed")
 			return nil, fmt.Errorf("failed to apply firewall lockdown in lockdown mode: %w; verification via Tailscale IP %q failed: %v", err, tailscaleIP, verifyErr)
+		}
+	}
+
+	if !d.TailscaleLockdown {
+		fmt.Fprintf(safeOut, "Waiting for SSH on %s (cloud-init may still be starting)...\n", name)
+		if err := waitDigitalOceanSSHReadyWithProgress(ctx, d.sshContext, ip, d.sleep, digitalOceanSSHReadyAttempts, 10*time.Second, safeOut); err != nil {
+			cleanupDroplet("ssh unavailable")
+			return nil, fmt.Errorf("failed to verify SSH readiness: %w", err)
 		}
 	}
 

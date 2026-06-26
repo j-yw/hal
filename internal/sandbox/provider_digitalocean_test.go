@@ -123,6 +123,7 @@ func TestDigitalOceanProvider_Create_VerifiesArgs(t *testing.T) {
 		SSHKey:   "ab:cd:ef:12:34",
 		Size:     "s-2vcpu-4gb",
 		lookPath: doctlLookPathStub,
+		sleep:    func(time.Duration) {},
 		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
 			calls = append(calls, append([]string{name}, args...))
 			// First call (droplet create) succeeds, second call (droplet get) returns ID and IP.
@@ -130,6 +131,9 @@ func TestDigitalOceanProvider_Create_VerifiesArgs(t *testing.T) {
 				return exec.CommandContext(ctx, "true")
 			}
 			return exec.CommandContext(ctx, "echo", "123456789 10.20.30.40")
+		},
+		sshContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "true")
 		},
 	}
 
@@ -743,6 +747,97 @@ func TestDigitalOceanProvider_Create_ErrorsWhenPublicIPMissing(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no PublicIPv4") {
 		t.Errorf("error %q should mention missing PublicIPv4", err.Error())
+	}
+}
+
+func TestDigitalOceanProvider_Create_WaitsForSSHReadinessWhenNotLockdown(t *testing.T) {
+	var calls [][]string
+	sshCalls := 0
+
+	dp := &DigitalOceanProvider{
+		SSHKey:   "ab:cd:ef:12:34",
+		Size:     "s-2vcpu-4gb",
+		lookPath: doctlLookPathStub,
+		sleep:    func(time.Duration) {},
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			calls = append(calls, append([]string{name}, args...))
+			if len(args) >= 3 && args[0] == "compute" && args[1] == "droplet" && args[2] == "get" {
+				return exec.CommandContext(ctx, "echo", "123456789 10.20.30.40")
+			}
+			return exec.CommandContext(ctx, "true")
+		},
+		sshContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			sshCalls++
+			if sshCalls == 1 {
+				return exec.CommandContext(ctx, "false")
+			}
+			return exec.CommandContext(ctx, "true")
+		},
+	}
+
+	var out bytes.Buffer
+	result, err := dp.Create(context.Background(), "test-droplet", nil, &out)
+	if err != nil {
+		t.Fatalf("Create() unexpected error: %v", err)
+	}
+	if result == nil || result.IP != "10.20.30.40" {
+		t.Fatalf("Create() result = %#v, want public IP", result)
+	}
+	if sshCalls != 2 {
+		t.Fatalf("SSH readiness calls = %d, want 2", sshCalls)
+	}
+	if !strings.Contains(out.String(), "Waiting for SSH on test-droplet") {
+		t.Fatalf("output missing SSH readiness wait: %q", out.String())
+	}
+	for _, call := range calls {
+		if strings.Join(call, " ") == "doctl compute droplet delete 123456789 --force" {
+			t.Fatalf("Create() should preserve droplet after SSH readiness succeeds, calls=%v", calls)
+		}
+	}
+}
+
+func TestDigitalOceanProvider_Create_CleansUpWhenSSHReadinessFails(t *testing.T) {
+	var calls [][]string
+
+	dp := &DigitalOceanProvider{
+		SSHKey:   "ab:cd:ef:12:34",
+		Size:     "s-2vcpu-4gb",
+		lookPath: doctlLookPathStub,
+		sleep:    func(time.Duration) {},
+		cmdContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			calls = append(calls, append([]string{name}, args...))
+			if len(args) >= 3 && args[0] == "compute" && args[1] == "droplet" && args[2] == "get" {
+				return exec.CommandContext(ctx, "echo", "123456789 10.20.30.40")
+			}
+			return exec.CommandContext(ctx, "true")
+		},
+		sshContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "false")
+		},
+	}
+
+	var out bytes.Buffer
+	result, err := dp.Create(context.Background(), "test-droplet", nil, &out)
+	if err == nil {
+		t.Fatal("Create() expected SSH readiness error, got nil")
+	}
+	if result != nil {
+		t.Fatalf("Create() result = %#v, want nil on SSH readiness failure", result)
+	}
+	if !strings.Contains(err.Error(), "failed to verify SSH readiness") {
+		t.Fatalf("error = %q, want SSH readiness failure", err.Error())
+	}
+	if !strings.Contains(out.String(), "Cleaning up test-droplet after failure (ssh unavailable)") {
+		t.Fatalf("output missing cleanup message: %q", out.String())
+	}
+	var deleted bool
+	for _, call := range calls {
+		if strings.Join(call, " ") == "doctl compute droplet delete 123456789 --force" {
+			deleted = true
+		}
+	}
+	if !deleted {
+		t.Fatalf("Create() should delete droplet when SSH readiness fails, calls=%v", calls)
 	}
 }
 
