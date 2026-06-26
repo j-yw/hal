@@ -410,7 +410,7 @@ func (c *factorySandboxArtifactCopier) CopyFile(ctx context.Context, remotePath,
 		return fmt.Errorf("create sandbox artifact destination: %w", err)
 	}
 
-	file, err := os.Create(localPath)
+	file, err := os.OpenFile(localPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("create sandbox artifact file: %w", err)
 	}

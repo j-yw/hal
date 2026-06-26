@@ -1999,8 +1999,18 @@ func TestRepositoryNameFromRemoteStripsCredentialedURLParts(t *testing.T) {
 			want:   "repo",
 		},
 		{
+			name:   "scp ssh remote",
+			remote: "git@github.com:example/repo.git",
+			want:   "repo",
+		},
+		{
 			name:   "scp query access token",
 			remote: "git@github.com:example/repo.git?access_token=secret-value",
+			want:   "repo",
+		},
+		{
+			name:   "ssh url remote",
+			remote: "ssh://git@github.com/example/repo.git",
 			want:   "repo",
 		},
 	}

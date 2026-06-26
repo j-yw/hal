@@ -1414,12 +1414,14 @@ func repositoryNameFromRemote(remote string) string {
 	if remote == "" {
 		return ""
 	}
-	if parsed, err := url.Parse(remote); err == nil && parsed.Scheme != "" {
-		name := pathpkg.Base(strings.TrimSuffix(parsed.Path, "/"))
-		if name == "." || name == "/" {
-			return ""
+	if strings.Contains(remote, "://") {
+		if parsed, err := url.Parse(remote); err == nil && parsed.Scheme != "" {
+			name := pathpkg.Base(strings.TrimSuffix(parsed.Path, "/"))
+			if name == "." || name == "/" {
+				return ""
+			}
+			return strings.TrimSpace(strings.TrimSuffix(name, ".git"))
 		}
-		return strings.TrimSpace(strings.TrimSuffix(name, ".git"))
 	}
 	if idx := strings.IndexAny(remote, "?#"); idx >= 0 {
 		remote = remote[:idx]
@@ -1490,8 +1492,10 @@ func canonicalFactorySandboxRemoteIdentity(remote string) string {
 	if idx := strings.IndexAny(remote, "?#"); idx >= 0 {
 		remote = remote[:idx]
 	}
-	if parsed, err := url.Parse(remote); err == nil && parsed.Scheme != "" {
-		return canonicalFactorySandboxRemoteParts(parsed.Host, parsed.Path)
+	if strings.Contains(remote, "://") {
+		if parsed, err := url.Parse(remote); err == nil && parsed.Scheme != "" {
+			return canonicalFactorySandboxRemoteParts(parsed.Host, parsed.Path)
+		}
 	}
 	if idx := strings.Index(remote, "://"); idx < 0 {
 		if colon := strings.Index(remote, ":"); colon >= 0 {

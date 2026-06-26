@@ -514,6 +514,42 @@ func TestRunFactoryQueueListWithDepsJSONOutputIncludesFIFOEntries(t *testing.T) 
 	}
 }
 
+func TestRunFactoryQueueListWithDepsJSONOutputSanitizesLastError(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 15, 30, 0, 0, time.UTC)
+	rawError := "executor failed at /Users/v/private/output.log with token=secret"
+	entry := testFactoryQueueEntry("queue-sensitive-error", "run-sensitive-error", factory.QueueStatusFailed, createdAt)
+	entry.LastError = rawError
+	if err := store.SaveQueue([]factory.QueueEntry{entry}); err != nil {
+		t.Fatalf("SaveQueue() error: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := runFactoryQueueListWithDeps(&out, factoryQueueListRequest{JSON: true}, queueListTestDeps(store))
+	if err != nil {
+		t.Fatalf("runFactoryQueueListWithDeps() unexpected error: %v", err)
+	}
+
+	var resp FactoryQueueListResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal typed response error: %v\n%s", err, out.String())
+	}
+	if len(resp.Entries) != 1 {
+		t.Fatalf("entries len = %d, want 1: %#v", len(resp.Entries), resp.Entries)
+	}
+	if resp.Entries[0].LastError != "[redacted]" {
+		t.Fatalf("entry.lastError = %q, want sanitized redaction marker", resp.Entries[0].LastError)
+	}
+
+	stored, err := store.LoadQueue()
+	if err != nil {
+		t.Fatalf("LoadQueue() error: %v", err)
+	}
+	if stored[0].LastError != rawError {
+		t.Fatalf("stored lastError = %q, want raw durable queue state unchanged", stored[0].LastError)
+	}
+}
+
 func TestRunFactoryQueueListWithDepsHumanOutput(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	createdAt := time.Date(2026, 6, 21, 16, 0, 0, 0, time.UTC)

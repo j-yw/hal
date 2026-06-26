@@ -814,7 +814,7 @@ func recordFactoryRunClaimed(store factory.Store, entry factory.QueueEntry, now 
 func renderFactoryQueueAddResult(out io.Writer, entry factory.QueueEntry, jsonMode bool) error {
 	resp := FactoryQueueAddResponse{
 		ContractVersion: FactoryQueueAddContractVersion,
-		Entry:           entry,
+		Entry:           newFactoryQueueEntryResponse(entry),
 		Summary:         factoryQueueAddSummary(entry),
 	}
 	if jsonMode {
@@ -837,7 +837,7 @@ func renderFactoryQueueListResult(out io.Writer, entries []factory.QueueEntry, j
 
 	resp := FactoryQueueListResponse{
 		ContractVersion: FactoryQueueListContractVersion,
-		Entries:         entries,
+		Entries:         newFactoryQueueEntryResponses(entries),
 		Summary:         factoryQueueListSummary(entries),
 	}
 	if jsonMode {
@@ -860,7 +860,7 @@ func renderFactoryQueueWorkResult(out io.Writer, entry *factory.QueueEntry, json
 	resp := FactoryQueueWorkResponse{
 		ContractVersion: FactoryQueueWorkContractVersion,
 		Claimed:         entry != nil,
-		Entry:           entry,
+		Entry:           newFactoryQueueEntryResponsePtr(entry),
 		Summary:         factoryQueueWorkSummary(entry),
 	}
 	if jsonMode {

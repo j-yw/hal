@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -192,6 +193,15 @@ exec /bin/cat "$@"
 	}
 	if string(data) != "safe-progress" {
 		t.Fatalf("CopyFile() copied %q, want original artifact content", data)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(localPath)
+		if err != nil {
+			t.Fatalf("Stat(localPath) error = %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("CopyFile() file mode = %o, want 600", got)
+		}
 	}
 }
 

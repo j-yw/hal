@@ -23,7 +23,7 @@ Succeeded and failed entries are retained in queue state as inspectable history.
 | `completedAt` | string | no | RFC 3339 timestamp when the worker recorded success or failure |
 | `claim` | object | no | Metadata for the local worker that claimed the entry |
 | `attemptCount` | integer | yes | Number of times this entry has been claimed for execution |
-| `lastError` | string | no | Last worker or executor error message recorded for the entry |
+| `lastError` | string | no | Sanitized last worker or executor error message recorded for the entry |
 
 ## Claim Metadata
 

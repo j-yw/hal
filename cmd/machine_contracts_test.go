@@ -730,7 +730,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 	t.Run("factory queue add result keys", func(t *testing.T) {
 		data, err := json.Marshal(FactoryQueueAddResponse{
 			ContractVersion: FactoryQueueAddContractVersion,
-			Entry:           queueEntry,
+			Entry:           newFactoryQueueEntryResponse(queueEntry),
 			Summary:         "queued run run-contract",
 		})
 		if err != nil {
@@ -803,7 +803,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 	t.Run("factory queue list result keys", func(t *testing.T) {
 		data, err := json.Marshal(FactoryQueueListResponse{
 			ContractVersion: FactoryQueueListContractVersion,
-			Entries:         []factory.QueueEntry{queueEntry},
+			Entries:         []FactoryQueueEntry{newFactoryQueueEntryResponse(queueEntry)},
 			Summary:         "1 queue entry",
 		})
 		if err != nil {
@@ -817,11 +817,37 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 		}
 	})
 
+	t.Run("factory queue entry lastError is sanitized", func(t *testing.T) {
+		sensitiveEntry := queueEntry
+		sensitiveEntry.LastError = "executor failed at /Users/v/private/output.log with token=secret"
+		data, err := json.Marshal(FactoryQueueListResponse{
+			ContractVersion: FactoryQueueListContractVersion,
+			Entries:         []FactoryQueueEntry{newFactoryQueueEntryResponse(sensitiveEntry)},
+			Summary:         "1 queue entry",
+		})
+		if err != nil {
+			t.Fatalf("json.Marshal factory queue list response: %v", err)
+		}
+
+		raw := parseJSON(t, data)
+		entries, ok := raw["entries"].([]interface{})
+		if !ok || len(entries) != 1 {
+			t.Fatalf("entries = %#v, want one entry", raw["entries"])
+		}
+		entry, ok := entries[0].(map[string]interface{})
+		if !ok {
+			t.Fatalf("entry should be object, got %T", entries[0])
+		}
+		if entry["lastError"] != "[redacted]" {
+			t.Fatalf("entry.lastError = %v, want sanitized redaction marker", entry["lastError"])
+		}
+	})
+
 	t.Run("factory queue work claimed result keys", func(t *testing.T) {
 		data, err := json.Marshal(FactoryQueueWorkResponse{
 			ContractVersion: FactoryQueueWorkContractVersion,
 			Claimed:         true,
-			Entry:           &queueEntry,
+			Entry:           newFactoryQueueEntryResponsePtr(&queueEntry),
 			Summary:         "claimed queue entry queue-contract-001",
 		})
 		if err != nil {
