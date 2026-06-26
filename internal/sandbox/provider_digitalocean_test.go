@@ -52,28 +52,31 @@ func TestGenerateDOCloudInit_WithEnvVars(t *testing.T) {
 	}
 }
 
-func TestGenerateDOCloudInit_LockdownRunsFromCloudInit(t *testing.T) {
+func TestGenerateDOCloudInit_LockdownDoesNotClosePublicSSHBeforeHalReadsTailscaleIP(t *testing.T) {
 	yaml := generateDOCloudInit(map[string]string{"TAILSCALE_AUTHKEY": "tskey-auth-test"}, true)
 
 	if !strings.Contains(yaml, "if tailscale up --authkey=\"$TAILSCALE_AUTHKEY\" --ssh --hostname=\"${TAILSCALE_HOSTNAME:-hal-sandbox}\" && tailscale ip -4 > /root/.tailscale-ip && [ -s /root/.tailscale-ip ]; then") {
-		t.Fatalf("lockdown should be gated on a successful Tailscale join and IP write:\n%s", yaml)
+		t.Fatalf("Tailscale IP write should be gated on a successful Tailscale join:\n%s", yaml)
 	}
 	for _, want := range []string{
-		"apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ufw",
-		"ufw allow in on tailscale0",
-		"ufw allow in on tailscale0 proto udp to any port 60000:61000",
-		"ufw allow proto tcp from 100.64.0.0/10 to any port 22",
-		"ufw deny 22/tcp",
-		"ufw --force enable",
-		"touch /root/.hal-tailscale-lockdown",
+		"tailscale ip -4 > /root/.tailscale-ip",
 		"rm -f /root/.tailscale-ip",
 	} {
 		if !strings.Contains(yaml, want) {
 			t.Fatalf("cloud-init missing %q:\n%s", want, yaml)
 		}
 	}
-	if strings.Contains(yaml, "ufw allow in on tailscale0 || true") {
-		t.Fatalf("cloud-init must not suppress lockdown failures:\n%s", yaml)
+	for _, forbidden := range []string{
+		"apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ufw",
+		"ufw allow in on tailscale0",
+		"ufw allow proto tcp from 100.64.0.0/10 to any port 22",
+		"ufw deny 22/tcp",
+		"ufw --force enable",
+		"touch /root/.hal-tailscale-lockdown",
+	} {
+		if strings.Contains(yaml, forbidden) {
+			t.Fatalf("cloud-init must leave lockdown to Hal after IP capture; found %q:\n%s", forbidden, yaml)
+		}
 	}
 }
 

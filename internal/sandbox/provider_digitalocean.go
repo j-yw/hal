@@ -178,8 +178,8 @@ func generateDOCloudInit(env map[string]string, tailscaleLockdown bool) string {
 	b.WriteString("\n")
 
 	// Install and configure Tailscale FIRST (before setup.sh which takes minutes).
-	// When lockdown is requested, apply it from cloud-init as well so startup does
-	// not depend on public SSH remaining reachable after Tailscale joins.
+	// Do not enable UFW here. Hal must keep public SSH available until it reads
+	// /root/.tailscale-ip, then applies and verifies firewall lockdown itself.
 	b.WriteString("runcmd:\n")
 	b.WriteString("  - |\n")
 	b.WriteString("    set -a\n")
@@ -191,17 +191,7 @@ func generateDOCloudInit(env map[string]string, tailscaleLockdown bool) string {
 	b.WriteString("      tailscaled --tun=userspace-networking --statedir=/var/lib/tailscale &\n")
 	b.WriteString("      sleep 3\n")
 	b.WriteString("      if tailscale up --authkey=\"$TAILSCALE_AUTHKEY\" --ssh --hostname=\"${TAILSCALE_HOSTNAME:-hal-sandbox}\" && tailscale ip -4 > /root/.tailscale-ip && [ -s /root/.tailscale-ip ]; then\n")
-	b.WriteString("        if [ \"${TAILSCALE_LOCKDOWN:-false}\" = \"true\" ]; then\n")
-	b.WriteString("          if ! command -v ufw >/dev/null 2>&1; then\n")
-	b.WriteString("            apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ufw\n")
-	b.WriteString("          fi\n")
-	b.WriteString("          ufw allow in on tailscale0 &&\n")
-	b.WriteString("          ufw allow in on tailscale0 proto udp to any port 60000:61000 &&\n")
-	b.WriteString("          ufw allow proto tcp from 100.64.0.0/10 to any port 22 &&\n")
-	b.WriteString("          ufw deny 22/tcp &&\n")
-	b.WriteString("          ufw --force enable &&\n")
-	b.WriteString("          touch " + digitalOceanLockdownMarker + "\n")
-	b.WriteString("        fi\n")
+	b.WriteString("        true\n")
 	b.WriteString("      else\n")
 	b.WriteString("        rm -f /root/.tailscale-ip\n")
 	b.WriteString("        echo \"Tailscale setup failed; leaving public SSH available for recovery\" >&2\n")
