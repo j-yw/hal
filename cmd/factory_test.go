@@ -2121,13 +2121,23 @@ func TestRunFactoryRunWithDepsRecordsArchivedArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadRun() error: %v", err)
 	}
-	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/prd-feature.md")
-	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/prd.json")
-	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/auto-state.json")
+	for _, tc := range []struct {
+		path       string
+		sourcePath string
+	}{
+		{path: ".hal/prd-feature.md", sourcePath: filepath.Join(dir, archiveRel, "prd-feature.md")},
+		{path: ".hal/prd.json", sourcePath: filepath.Join(dir, archiveRel, "prd.json")},
+		{path: ".hal/auto-state.json", sourcePath: filepath.Join(dir, archiveRel, "auto-state.json")},
+	} {
+		artifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, tc.path)
+		if artifact.SourcePath != tc.sourcePath {
+			t.Fatalf("artifact %q SourcePath = %q, want %q", tc.path, artifact.SourcePath, tc.sourcePath)
+		}
+	}
 	requireNoFactoryArtifactPath(t, record.Artifacts, ".hal/reports/review-older.md")
-	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(archiveRel, "prd-feature.md"))
-	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(archiveRel, "prd.json"))
-	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(archiveRel, "auto-state.json"))
+	requireNoFactoryArtifactPath(t, record.Artifacts, filepath.Join(archiveRel, "prd-feature.md"))
+	requireNoFactoryArtifactPath(t, record.Artifacts, filepath.Join(archiveRel, "prd.json"))
+	requireNoFactoryArtifactPath(t, record.Artifacts, filepath.Join(archiveRel, "auto-state.json"))
 	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(archiveRel, "reports", "review-older.md"))
 	requireFactoryArtifactPath(t, record.Artifacts, ".hal/reports/review-latest.md")
 	requireFactoryArtifactPath(t, record.Artifacts, filepath.Join(store.RunsDir(), "run-archived-artifacts.json"))

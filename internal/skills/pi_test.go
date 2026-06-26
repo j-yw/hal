@@ -101,13 +101,8 @@ func TestPiLinkerLinkFactoryTargetsInstalledSkillSource(t *testing.T) {
 
 func TestPiLinkerLinkFactoryTargetsSourceInHalRepo(t *testing.T) {
 	projectDir := t.TempDir()
-	factorySkill := filepath.Join(projectDir, "internal", "skills", "factory")
-	if err := os.MkdirAll(factorySkill, 0755); err != nil {
-		t.Fatalf("failed to create factory skill source: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(factorySkill, "SKILL.md"), []byte("factory"), 0644); err != nil {
-		t.Fatalf("failed to write factory skill source: %v", err)
-	}
+	writeGoMod(t, projectDir, halModulePath)
+	writeFactorySkillSource(t, projectDir)
 
 	linker := &PiLinker{}
 	if err := linker.Link(projectDir, []string{"factory"}); err != nil {

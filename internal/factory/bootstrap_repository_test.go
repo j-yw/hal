@@ -593,6 +593,50 @@ func TestBootstrapBranchProbeReceivesRequestEnvironment(t *testing.T) {
 	}
 }
 
+func TestBootstrapGitEnvUsesGitHubTokenForGitHubSSHRemotes(t *testing.T) {
+	secret := "ghp_repository_bootstrap_secret"
+	for _, repositoryURL := range []string{
+		"git@github.com:jywlabs/hal.git",
+		"ssh://git@github.com/jywlabs/hal.git",
+	} {
+		t.Run(repositoryURL, func(t *testing.T) {
+			got := bootstrapGitEnv(BootstrapRequest{
+				RepositoryURL: repositoryURL,
+				Env: map[string]string{
+					bootstrapGitHubTokenEnvKey: secret,
+				},
+			})
+
+			want := map[string]string{
+				"GIT_TERMINAL_PROMPT": "0",
+				"GIT_CONFIG_COUNT":    "3",
+				"GIT_CONFIG_KEY_0":    bootstrapGitHubExtraHeaderKey,
+				"GIT_CONFIG_VALUE_0":  bootstrapGitHubAuthHeader(secret),
+				"GIT_CONFIG_KEY_1":    bootstrapGitHubURLRewriteKey,
+				"GIT_CONFIG_VALUE_1":  "git@github.com:",
+				"GIT_CONFIG_KEY_2":    bootstrapGitHubURLRewriteKey,
+				"GIT_CONFIG_VALUE_2":  "ssh://git@github.com/",
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("bootstrapGitEnv() mismatch\n got: %#v\nwant: %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestBootstrapGitEnvDoesNotUseGitHubTokenForUntrustedSSHRemote(t *testing.T) {
+	got := bootstrapGitEnv(BootstrapRequest{
+		RepositoryURL: "git@example.com:jywlabs/hal.git",
+		Env: map[string]string{
+			bootstrapGitHubTokenEnvKey: "ghp_repository_bootstrap_secret",
+		},
+	})
+	want := map[string]string{"GIT_TERMINAL_PROMPT": "0"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("bootstrapGitEnv() mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
 func TestBootstrapRepositoryCheckoutDryRunPlansCommandsWithoutExecutor(t *testing.T) {
 	req := BootstrapRequest{
 		RepositoryURL: "git@github.com:jywlabs/hal.git",

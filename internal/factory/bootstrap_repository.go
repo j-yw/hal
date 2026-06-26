@@ -30,6 +30,7 @@ const (
 	bootstrapCleanEngineLinksScript = `git clean -fd -- .claude/skills/factory .pi/skills/factory && { git checkout -- .pi/skills/factory/SKILL.md 2>/dev/null || true; }`
 	bootstrapGitHubTokenEnvKey      = "GITHUB_TOKEN"
 	bootstrapGitHubExtraHeaderKey   = "http.https://github.com/.extraheader"
+	bootstrapGitHubURLRewriteKey    = "url.https://github.com/.insteadOf"
 )
 
 var (
@@ -55,6 +56,11 @@ type BootstrapRepositoryDeps struct {
 type bootstrapRepositoryCommand struct {
 	stepName string
 	command  BootstrapCommand
+}
+
+type bootstrapGitConfigEntry struct {
+	key   string
+	value string
 }
 
 type bootstrapBranchProbeFailure struct {
@@ -327,13 +333,34 @@ func bootstrapGitEnv(request BootstrapRequest) map[string]string {
 	env := map[string]string{
 		"GIT_TERMINAL_PROMPT": "0",
 	}
-	if header := bootstrapGitHubAuthHeaderForRequest(request); header != "" {
+	if configs := bootstrapGitHubAuthConfigsForRequest(request); len(configs) > 0 {
 		index := bootstrapGitConfigIndex(request.Env)
-		env["GIT_CONFIG_COUNT"] = strconv.Itoa(index + 1)
-		env[fmt.Sprintf("GIT_CONFIG_KEY_%d", index)] = bootstrapGitHubExtraHeaderKey
-		env[fmt.Sprintf("GIT_CONFIG_VALUE_%d", index)] = header
+		env["GIT_CONFIG_COUNT"] = strconv.Itoa(index + len(configs))
+		for offset, config := range configs {
+			configIndex := index + offset
+			env[fmt.Sprintf("GIT_CONFIG_KEY_%d", configIndex)] = config.key
+			env[fmt.Sprintf("GIT_CONFIG_VALUE_%d", configIndex)] = config.value
+		}
 	}
 	return env
+}
+
+func bootstrapGitHubAuthConfigsForRequest(request BootstrapRequest) []bootstrapGitConfigEntry {
+	header := bootstrapGitHubAuthHeaderForRequest(request)
+	if header == "" {
+		return nil
+	}
+
+	configs := []bootstrapGitConfigEntry{
+		{key: bootstrapGitHubExtraHeaderKey, value: header},
+	}
+	if bootstrapShouldRewriteGitHubSSHForRequest(request) {
+		configs = append(configs,
+			bootstrapGitConfigEntry{key: bootstrapGitHubURLRewriteKey, value: "git@github.com:"},
+			bootstrapGitConfigEntry{key: bootstrapGitHubURLRewriteKey, value: "ssh://git@github.com/"},
+		)
+	}
+	return configs
 }
 
 func bootstrapGitHubAuthHeaderForRequest(request BootstrapRequest) string {
@@ -342,10 +369,19 @@ func bootstrapGitHubAuthHeaderForRequest(request BootstrapRequest) string {
 		return ""
 	}
 	repositoryURL := strings.TrimSpace(request.RepositoryURL)
-	if repositoryURL != "" && !bootstrapIsTrustedGitHubHTTPSURL(repositoryURL) {
+	if repositoryURL != "" && !bootstrapIsTrustedGitHubURL(repositoryURL) {
 		return ""
 	}
 	return bootstrapGitHubAuthHeader(token)
+}
+
+func bootstrapShouldRewriteGitHubSSHForRequest(request BootstrapRequest) bool {
+	repositoryURL := strings.TrimSpace(request.RepositoryURL)
+	return repositoryURL == "" || bootstrapIsTrustedGitHubSSHURL(repositoryURL)
+}
+
+func bootstrapIsTrustedGitHubURL(rawURL string) bool {
+	return bootstrapIsTrustedGitHubHTTPSURL(rawURL) || bootstrapIsTrustedGitHubSSHURL(rawURL)
 }
 
 func bootstrapIsTrustedGitHubHTTPSURL(rawURL string) bool {
@@ -354,6 +390,35 @@ func bootstrapIsTrustedGitHubHTTPSURL(rawURL string) bool {
 		return false
 	}
 	return strings.EqualFold(parsed.Scheme, "https") && strings.EqualFold(parsed.Hostname(), "github.com")
+}
+
+func bootstrapIsTrustedGitHubSSHURL(rawURL string) bool {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return false
+	}
+
+	parsed, err := url.Parse(rawURL)
+	if err == nil && strings.EqualFold(parsed.Scheme, "ssh") {
+		user := parsed.User.Username()
+		return strings.EqualFold(parsed.Hostname(), "github.com") && (user == "" || strings.EqualFold(user, "git"))
+	}
+	if strings.Contains(rawURL, "://") {
+		return false
+	}
+
+	hostAndPath := rawURL
+	if user, rest, ok := strings.Cut(rawURL, "@"); ok {
+		if !strings.EqualFold(strings.TrimSpace(user), "git") {
+			return false
+		}
+		hostAndPath = rest
+	}
+	host, _, ok := strings.Cut(hostAndPath, ":")
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(host), "github.com")
 }
 
 func bootstrapGitConfigIndex(env map[string]string) int {

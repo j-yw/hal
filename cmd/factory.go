@@ -2716,7 +2716,17 @@ func (c *factoryArtifactCollector) addArchived(name, path string, archived facto
 	if archivedPath == "" {
 		return false
 	}
-	return c.addExisting(name, archivedPath)
+	resolvedArchivedPath := c.resolvePath(archivedPath)
+	if !factoryArtifactFileExists(resolvedArchivedPath) {
+		return false
+	}
+	c.add(factory.ArtifactReference{
+		Name:       name,
+		Type:       factoryArtifactTypeForPath(path),
+		Path:       c.displayPath(path),
+		SourcePath: resolvedArchivedPath,
+	})
+	return true
 }
 
 func (c *factoryArtifactCollector) addReference(name, path string) bool {
