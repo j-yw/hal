@@ -231,6 +231,7 @@ type factoryRunDeps struct {
 	loadSandbox            func(string) (*sandbox.SandboxState, error)
 	resolveProvider        func(string, string) (sandbox.Provider, error)
 	runProviderExec        func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+	runProviderExecIO      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer, io.Writer) error
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
 	cleanupSandbox         func(context.Context, factorySandboxCleanupRequest) error
 	statusSnapshot         func(string) (factorySnapshotArtifact, error)
@@ -271,6 +272,7 @@ var defaultFactoryRunDeps = factoryRunDeps{
 	loadSandbox:            sandbox.LoadActiveInstance,
 	resolveProvider:        resolveProviderWithFallback,
 	runProviderExec:        runFactorySandboxProviderExec,
+	runProviderExecIO:      runFactorySandboxProviderExecIO,
 	runProviderExecWithEnv: runFactorySandboxProviderExecWithEnv,
 	cleanupSandbox:         cleanupFactorySandbox,
 	statusSnapshot:         defaultFactoryStatusSnapshot,
@@ -643,7 +645,8 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		failedAt := deps.now()
 		failedRecord := runningRecord
 		var recordErrs []error
-		if artifactRecord, artifactErr := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, failedAt, deps, !sandboxArtifactsCollected, redactor); artifactErr != nil {
+		collectSandboxArtifacts := !sandboxArtifactsCollected && deps.sandboxCopier != nil
+		if artifactRecord, artifactErr := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, failedAt, deps, collectSandboxArtifacts, redactor); artifactErr != nil {
 			recordErrs = append(recordErrs, fmt.Errorf("record factory artifacts: %w", artifactErr))
 		} else {
 			failedRecord = artifactRecord
@@ -686,7 +689,8 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 	if err := recordFactoryRunPipelineSucceeded(store, runningRecord.RunID, pipelineCompletedAt); err != nil {
 		return factoryRunExecutionResult{Record: runningRecord}, err
 	}
-	completedRecord, err := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, pipelineCompletedAt, deps, !sandboxArtifactsCollected, redactor)
+	collectSandboxArtifacts := !sandboxArtifactsCollected && deps.sandboxCopier != nil
+	completedRecord, err := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, pipelineCompletedAt, deps, collectSandboxArtifacts, redactor)
 	if err != nil {
 		return failFactoryRunAfterArtifactCollectionFailure(ctx, store, dir, req, out, runningRecord, deps, policy, err)
 	}
@@ -723,6 +727,17 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 			return factoryRunExecutionResult{Record: failedRecord}, redactFactoryRunJoinedError(err, recordErrs, redactor)
 		}
 		return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
+	}
+	if req.Sandbox && !sandboxArtifactsCollected && !factoryRunDefersSandboxSuccessCleanup(policy) {
+		if err := collectAndStoreFactorySandboxArtifacts(ctx, store, dir, req, completedRecord, deps); err != nil {
+			return failFactoryRunAfterArtifactCollectionFailure(ctx, store, dir, req, out, completedRecord, deps, policy, err)
+		}
+		sandboxArtifactsCollected = true
+		if reloadedRecord, loadErr := store.LoadRun(completedRecord.RunID); loadErr != nil {
+			return factoryRunExecutionResult{Record: completedRecord}, fmt.Errorf("reload factory run after sandbox artifact collection: %w", loadErr)
+		} else if reloadedRecord != nil {
+			completedRecord = *reloadedRecord
+		}
 	}
 	completedRecord, cleanedUp, err := cleanupFactoryRunSandboxAfterVerifiedSuccess(ctx, store, dir, req, out, completedRecord, deps, policy)
 	if err != nil {
@@ -778,6 +793,7 @@ func normalizeFactoryRunExecutionDeps(deps factoryRunExecutionDeps) factoryRunEx
 
 func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 	customRunProviderExec := deps.runProviderExec != nil
+	customProviderExec := deps.runProviderExec != nil || deps.runProviderExecIO != nil || deps.runProviderExecWithEnv != nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactoryRunDeps.defaultStore
 	}
@@ -829,6 +845,16 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 	if deps.runProviderExec == nil {
 		deps.runProviderExec = defaultFactoryRunDeps.runProviderExec
 	}
+	if deps.runProviderExecIO == nil {
+		if customRunProviderExec {
+			runProviderExec := deps.runProviderExec
+			deps.runProviderExecIO = func(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, args []string, stdout, _ io.Writer) error {
+				return runProviderExec(ctx, provider, info, args, stdout)
+			}
+		} else {
+			deps.runProviderExecIO = defaultFactoryRunDeps.runProviderExecIO
+		}
+	}
 	if deps.runProviderExecWithEnv == nil {
 		if customRunProviderExec {
 			runProviderExec := deps.runProviderExec
@@ -849,7 +875,11 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 		deps.doctorSnapshot = defaultFactoryRunDeps.doctorSnapshot
 	}
 	if deps.sandboxRequests == nil {
-		deps.sandboxRequests = defaultFactorySandboxArtifactRequests
+		if customProviderExec && deps.sandboxCopier == nil {
+			deps.sandboxRequests = func(string, factory.RunRecord) []factory.SandboxArtifactRequest { return nil }
+		} else {
+			deps.sandboxRequests = defaultFactorySandboxArtifactRequests
+		}
 	}
 	return deps
 }
@@ -1251,22 +1281,58 @@ func collectAndStoreFactorySandboxArtifactsWithProviderExec(ctx context.Context,
 	if len(requests) == 0 {
 		return nil
 	}
-	var err error
-	requests, err = factorySandboxRemoteWorkspaceArtifactRequests(record, requests)
+	if err := collectAndStoreFactorySandboxArtifactRequestsWithProviderExec(ctx, store, req, record, deps, target, provider, requests); err != nil {
+		return fmt.Errorf("collect sandbox factory artifacts before cleanup: %w", err)
+	}
+	return nil
+}
+
+func collectAndStoreFactorySandboxArtifactRequestsWithProviderExec(ctx context.Context, store factory.Store, req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps, target *sandbox.SandboxState, provider sandbox.Provider, requests []factory.SandboxArtifactRequest) error {
+	requests, err := factorySandboxRemoteWorkspaceArtifactRequests(record, requests)
 	if err != nil {
 		return err
 	}
 	copier := factoryProviderExecSandboxArtifactCopier{
-		provider:        provider,
-		connectInfo:     sandbox.ConnectInfoFromState(target),
-		baseDir:         factorySandboxRemoteWorkspaceDir(record),
-		runProviderExec: deps.runProviderExec,
+		provider:          provider,
+		connectInfo:       sandbox.ConnectInfoFromState(target),
+		baseDir:           factorySandboxRemoteWorkspaceDir(record),
+		runProviderExec:   deps.runProviderExec,
+		runProviderExecIO: deps.runProviderExecIO,
 	}
 	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
 	if _, err := factory.CollectSandboxArtifactsWithRedactor(ctx, store, record.RunID, &copier, requests, redactor); err != nil {
-		return fmt.Errorf("collect sandbox factory artifacts before cleanup: %w", err)
+		return err
 	}
 	return nil
+}
+
+func resolveFactorySandboxArtifactCollectionTarget(dir string, record factory.RunRecord, deps factoryRunDeps) (*sandbox.SandboxState, sandbox.Provider, error) {
+	name := strings.TrimSpace(record.SandboxName)
+	if name == "" && record.Sandbox != nil {
+		name = strings.TrimSpace(record.Sandbox.Name)
+	}
+	if name == "" {
+		return nil, nil, nil
+	}
+	target, err := deps.loadSandbox(name)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load factory sandbox for artifact collection %q: %w", name, err)
+	}
+	if target == nil {
+		return nil, nil, nil
+	}
+	providerName := strings.TrimSpace(target.Provider)
+	if providerName == "" && record.Sandbox != nil {
+		providerName = strings.TrimSpace(record.Sandbox.Provider)
+	}
+	if providerName == "" {
+		return nil, nil, fmt.Errorf("resolve sandbox provider for artifact collection %q: provider is required", name)
+	}
+	provider, err := deps.resolveProvider(dir, providerName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve sandbox provider %q for artifact collection: %w", providerName, err)
+	}
+	return target, provider, nil
 }
 
 func factorySandboxRemoteWorkspaceArtifactRequests(record factory.RunRecord, requests []factory.SandboxArtifactRequest) ([]factory.SandboxArtifactRequest, error) {
@@ -1743,13 +1809,14 @@ func collectAndStoreFactorySandboxVerificationArtifacts(ctx context.Context, sto
 	}
 	requests := make([]factory.SandboxArtifactRequest, 0, len(artifacts))
 	for _, artifact := range artifacts {
-		path := strings.TrimSpace(artifact.Path)
-		if path == "" {
+		artifactPath := strings.TrimSpace(artifact.Path)
+		if artifactPath == "" {
 			continue
 		}
-		remotePath := path
-		if !filepath.IsAbs(remotePath) {
-			remotePath = filepath.ToSlash(filepath.Join(workspaceDir, remotePath))
+		displayPath := path.Clean(filepath.ToSlash(artifactPath))
+		remotePath := displayPath
+		if !path.IsAbs(remotePath) {
+			remotePath = path.Join(filepath.ToSlash(workspaceDir), remotePath)
 		}
 		nameParts := []string{"verification"}
 		if checkID := strings.TrimSpace(artifact.CheckID); checkID != "" {
@@ -1761,9 +1828,9 @@ func collectAndStoreFactorySandboxVerificationArtifacts(ctx context.Context, sto
 		requests = append(requests, factory.SandboxArtifactRequest{
 			ID:         factorySandboxVerificationArtifactID(artifact),
 			Name:       strings.Join(nameParts, "-"),
-			Type:       factoryArtifactTypeForPath(path),
-			RemotePath: filepath.ToSlash(remotePath),
-			Path:       filepath.ToSlash(filepath.Clean(path)),
+			Type:       factoryArtifactTypeForPath(artifactPath),
+			RemotePath: path.Clean(remotePath),
+			Path:       displayPath,
 			Optional:   true,
 			Summary: map[string]any{
 				"checkId":      artifact.CheckID,
@@ -1777,10 +1844,11 @@ func collectAndStoreFactorySandboxVerificationArtifacts(ctx context.Context, sto
 		return nil
 	}
 	copier := factoryProviderExecSandboxArtifactCopier{
-		provider:        provider,
-		connectInfo:     sandbox.ConnectInfoFromState(target),
-		baseDir:         workspaceDir,
-		runProviderExec: deps.runProviderExec,
+		provider:          provider,
+		connectInfo:       sandbox.ConnectInfoFromState(target),
+		baseDir:           workspaceDir,
+		runProviderExec:   deps.runProviderExec,
+		runProviderExecIO: deps.runProviderExecIO,
 	}
 	if _, err := factory.CollectSandboxArtifactsWithRedactor(ctx, store, record.RunID, &copier, requests, redactor); err != nil {
 		return fmt.Errorf("collect sandbox verification artifacts: %w", err)
@@ -1799,10 +1867,11 @@ func factorySandboxVerificationArtifactID(artifact verify.ArtifactReference) str
 }
 
 type factoryProviderExecSandboxArtifactCopier struct {
-	provider        sandbox.Provider
-	connectInfo     *sandbox.ConnectInfo
-	baseDir         string
-	runProviderExec func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+	provider          sandbox.Provider
+	connectInfo       *sandbox.ConnectInfo
+	baseDir           string
+	runProviderExec   func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+	runProviderExecIO func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer, io.Writer) error
 }
 
 func (c *factoryProviderExecSandboxArtifactCopier) CopyFile(ctx context.Context, remotePath, localPath string) error {
@@ -1814,16 +1883,20 @@ func (c *factoryProviderExecSandboxArtifactCopier) CopyFile(ctx context.Context,
 		return fmt.Errorf("create sandbox artifact destination: %w", err)
 	}
 
-	file, err := os.Create(localPath)
+	file, err := os.OpenFile(localPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("create sandbox artifact file: %w", err)
 	}
-	runErr := c.run(ctx, factorySandboxArtifactPythonCommand(factorySandboxArtifactCopyFilePythonScript, resolvedRemotePath.baseDir, resolvedRemotePath.relativePath), file)
+	var stderr bytes.Buffer
+	runErr := c.run(ctx, factorySandboxArtifactPythonCommand(factorySandboxArtifactCopyFilePythonScript, resolvedRemotePath.baseDir, resolvedRemotePath.relativePath), file, &stderr)
 	closeErr := file.Close()
 	if runErr != nil {
-		stderr := readFactorySandboxArtifactErrorOutput(localPath)
+		errorOutput := stderr.String()
+		if errorOutput == "" {
+			errorOutput = readFactorySandboxArtifactErrorOutput(localPath)
+		}
 		_ = os.Remove(localPath)
-		return factorySandboxArtifactCopyError(resolvedRemotePath.resolvedPath, stderr, runErr)
+		return factorySandboxArtifactCopyError(resolvedRemotePath.resolvedPath, errorOutput, runErr)
 	}
 	if closeErr != nil {
 		_ = os.Remove(localPath)
@@ -1848,12 +1921,16 @@ func (c *factoryProviderExecSandboxArtifactCopier) CopyDir(ctx context.Context, 
 	tarPath := tarFile.Name()
 	defer os.Remove(tarPath)
 
-	runErr := c.run(ctx, factorySandboxArtifactPythonCommand(factorySandboxArtifactCopyDirPythonScript, resolvedRemotePath.baseDir, resolvedRemotePath.relativePath), tarFile)
+	var stderr bytes.Buffer
+	runErr := c.run(ctx, factorySandboxArtifactPythonCommand(factorySandboxArtifactCopyDirPythonScript, resolvedRemotePath.baseDir, resolvedRemotePath.relativePath), tarFile, &stderr)
 	closeErr := tarFile.Close()
 	if runErr != nil {
-		stderr := readFactorySandboxArtifactErrorOutput(tarPath)
+		errorOutput := stderr.String()
+		if errorOutput == "" {
+			errorOutput = readFactorySandboxArtifactErrorOutput(tarPath)
+		}
 		_ = os.RemoveAll(localPath)
-		return factorySandboxArtifactCopyError(resolvedRemotePath.resolvedPath, stderr, runErr)
+		return factorySandboxArtifactCopyError(resolvedRemotePath.resolvedPath, errorOutput, runErr)
 	}
 	if closeErr != nil {
 		_ = os.RemoveAll(localPath)
@@ -1870,11 +1947,14 @@ func (c *factoryProviderExecSandboxArtifactCopier) resolveSandboxArtifactPath(re
 	return (&factorySandboxArtifactCopier{baseDir: c.baseDir}).resolveSandboxArtifactPath(remotePath)
 }
 
-func (c *factoryProviderExecSandboxArtifactCopier) run(ctx context.Context, args []string, out io.Writer) error {
+func (c *factoryProviderExecSandboxArtifactCopier) run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	if c.runProviderExecIO != nil {
+		return c.runProviderExecIO(ctx, c.provider, c.connectInfo, args, stdout, stderr)
+	}
 	if c.runProviderExec == nil {
 		return fmt.Errorf("sandbox provider exec runner is required")
 	}
-	return c.runProviderExec(ctx, c.provider, c.connectInfo, args, out)
+	return c.runProviderExec(ctx, c.provider, c.connectInfo, args, stdout)
 }
 
 func readFactorySandboxArtifactErrorOutput(path string) string {
@@ -2607,11 +2687,21 @@ func collectAndStoreFactorySandboxArtifacts(ctx context.Context, store factory.S
 	if len(requests) == 0 {
 		return nil
 	}
-	if deps.sandboxCopier == nil {
+	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
+	if deps.sandboxCopier != nil {
+		if _, err := factory.CollectSandboxArtifactsWithRedactor(ctx, store, record.RunID, deps.sandboxCopier, requests, redactor); err != nil {
+			return fmt.Errorf("collect sandbox factory artifacts: %w", err)
+		}
 		return nil
 	}
-	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
-	if _, err := factory.CollectSandboxArtifactsWithRedactor(ctx, store, record.RunID, deps.sandboxCopier, requests, redactor); err != nil {
+	target, provider, err := resolveFactorySandboxArtifactCollectionTarget(dir, record, deps)
+	if err != nil {
+		return err
+	}
+	if target == nil || provider == nil {
+		return nil
+	}
+	if err := collectAndStoreFactorySandboxArtifactRequestsWithProviderExec(ctx, store, req, record, deps, target, provider, requests); err != nil {
 		return fmt.Errorf("collect sandbox factory artifacts: %w", err)
 	}
 	return nil

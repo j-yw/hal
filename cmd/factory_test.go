@@ -2444,6 +2444,119 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsOnSuccess(t *testing.T) {
 	}
 }
 
+func TestRunFactoryRunWithDepsCollectsPreservedSandboxArtifactsWithProviderExec(t *testing.T) {
+	dir := t.TempDir()
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 6, 21, 4, 3, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	completedAt := createdAt.Add(2 * time.Minute)
+	times := []time.Time{createdAt, startedAt, completedAt}
+	target := &sandbox.SandboxState{
+		Name:     "factory-preserved",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	workspaceDir := factorySandboxRemoteWorkspaceDir(factory.RunRecord{RepoRemote: "git@github.com:jywlabs/hal.git"})
+	var artifactCopied bool
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		BaseBranch: "main",
+		Sandbox:    true,
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-preserved-artifacts", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return completedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+			if req.DeferSuccessCleanup {
+				t.Fatal("DeferSuccessCleanup = true, want false for preserved sandbox")
+			}
+			record := req.RunRecord
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = target.Name
+			record.Sandbox = &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status}
+			return store.SaveRun(&record)
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, info *sandbox.ConnectInfo, args []string, out io.Writer) error {
+			if info == nil || info.Name != target.Name {
+				t.Fatalf("connect info = %#v, want sandbox %q", info, target.Name)
+			}
+			if strings.Contains(strings.Join(args, " "), `"$HOME/.local/bin/hal" 'verify' '--json'`) {
+				data, err := json.Marshal(verify.Result{
+					SchemaVersion: verify.SchemaVersion,
+					Status:        verify.StatusPass,
+					Summary:       verify.Summary{},
+					Checks:        []verify.CheckResult{},
+				})
+				if err != nil {
+					t.Fatalf("Marshal(verify result) error: %v", err)
+				}
+				if _, err := out.Write(append(data, '\n')); err != nil {
+					t.Fatalf("write remote verify JSON error: %v", err)
+				}
+				return nil
+			}
+			if isFactorySandboxArtifactCopyArgs(args, workspaceDir, ".hal/auto-state.json") {
+				artifactCopied = true
+				_, err := io.WriteString(out, `{"step":"done"}`+"\n")
+				return err
+			}
+			t.Fatalf("unexpected provider exec args = %#v", args)
+			return nil
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		sandboxRequests: func(_ string, record factory.RunRecord) []factory.SandboxArtifactRequest {
+			return []factory.SandboxArtifactRequest{{
+				ID:         "sandbox-auto-state",
+				Name:       "sandbox-auto-state",
+				Type:       "json",
+				RemotePath: ".hal/auto-state.json",
+				Path:       ".hal/auto-state.json",
+				Optional:   true,
+				Summary: map[string]any{
+					"executorMode": factory.ExecutorModeSandbox,
+					"sandboxName":  record.SandboxName,
+				},
+			}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v", err)
+	}
+	if !artifactCopied {
+		t.Fatal("sandbox artifact was not copied through provider exec")
+	}
+	record, err := store.LoadRun("run-sandbox-preserved-artifacts")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/auto-state.json")
+}
+
 func TestRunFactoryRunWithDepsCollectsSandboxArtifactsBeforeSandboxCleanup(t *testing.T) {
 	dir := t.TempDir()
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))

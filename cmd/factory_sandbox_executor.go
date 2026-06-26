@@ -1831,6 +1831,22 @@ func runFactorySandboxProviderExec(ctx context.Context, provider sandbox.Provide
 	return sandbox.RunCmdContext(ctx, cmd, out)
 }
 
+func runFactorySandboxProviderExecIO(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, args []string, stdout, stderr io.Writer) error {
+	if provider == nil {
+		return fmt.Errorf("sandbox provider is required")
+	}
+	cmd, err := provider.Exec(info, factorySandboxProviderExecArgs(args))
+	if err != nil {
+		return err
+	}
+	if cmd == nil {
+		return fmt.Errorf("sandbox provider returned nil exec command")
+	}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return runFactorySandboxArtifactCommand(ctx, cmd)
+}
+
 func factorySandboxProviderExecArgs(args []string) []string {
 	if len(args) == 0 {
 		return args

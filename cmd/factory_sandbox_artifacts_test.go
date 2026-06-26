@@ -81,6 +81,38 @@ func TestFactoryProviderExecSandboxArtifactCopierRejectsTopLevelFileSymlink(t *t
 	}
 }
 
+func TestFactoryProviderExecSandboxArtifactCopierKeepsStderrOutOfFilePayload(t *testing.T) {
+	requireLocalSandboxArtifactCopierRuntime(t)
+
+	remoteRoot := realSandboxArtifactTempDir(t)
+	halDir := filepath.Join(remoteRoot, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	remotePath := filepath.Join(halDir, "progress.txt")
+	if err := os.WriteFile(remotePath, []byte("artifact payload\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(remote) error = %v", err)
+	}
+
+	localPath := filepath.Join(t.TempDir(), "progress.txt")
+	copier := &factoryProviderExecSandboxArtifactCopier{
+		provider:          warningLocalExecSandboxArtifactProvider{},
+		connectInfo:       &sandbox.ConnectInfo{Name: "local"},
+		baseDir:           remoteRoot,
+		runProviderExecIO: runFactorySandboxProviderExecIO,
+	}
+	if err := copier.CopyFile(context.Background(), remotePath, localPath); err != nil {
+		t.Fatalf("CopyFile() unexpected error: %v", err)
+	}
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatalf("ReadFile(localPath) error = %v", err)
+	}
+	if got := string(data); got != "artifact payload\n" {
+		t.Fatalf("stored artifact payload = %q, want stdout without provider stderr", got)
+	}
+}
+
 func TestFactorySandboxArtifactCopierRejectsIntermediateFileParentSymlink(t *testing.T) {
 	requireLocalSandboxArtifactCopierRuntime(t)
 
@@ -590,6 +622,10 @@ type localExecSandboxArtifactProvider struct {
 	env []string
 }
 
+type warningLocalExecSandboxArtifactProvider struct {
+	localExecSandboxArtifactProvider
+}
+
 func (localExecSandboxArtifactProvider) Create(context.Context, string, map[string]string, io.Writer) (*sandbox.SandboxResult, error) {
 	return nil, nil
 }
@@ -612,6 +648,15 @@ func (localExecSandboxArtifactProvider) SSH(*sandbox.ConnectInfo) (*exec.Cmd, er
 
 func (p localExecSandboxArtifactProvider) Exec(_ *sandbox.ConnectInfo, args []string) (*exec.Cmd, error) {
 	cmd := exec.Command(args[0], args[1:]...)
+	if len(p.env) > 0 {
+		cmd.Env = append(os.Environ(), p.env...)
+	}
+	return cmd, nil
+}
+
+func (p warningLocalExecSandboxArtifactProvider) Exec(_ *sandbox.ConnectInfo, args []string) (*exec.Cmd, error) {
+	cmdArgs := append([]string{"-c", `printf 'provider warning\n' >&2; exec "$@"`, "warning-wrapper"}, args...)
+	cmd := exec.Command("sh", cmdArgs...)
 	if len(p.env) > 0 {
 		cmd.Env = append(os.Environ(), p.env...)
 	}

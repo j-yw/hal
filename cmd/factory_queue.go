@@ -658,6 +658,7 @@ func normalizeFactoryQueueListDeps(deps factoryQueueListDeps) factoryQueueListDe
 
 func normalizeFactoryQueueWorkDeps(deps factoryQueueWorkDeps) factoryQueueWorkDeps {
 	customRunProviderExec := deps.runProviderExec != nil
+	customProviderExec := deps.runProviderExec != nil || deps.runProviderExecWithEnv != nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactoryQueueWorkDeps.defaultStore
 	}
@@ -710,7 +711,11 @@ func normalizeFactoryQueueWorkDeps(deps factoryQueueWorkDeps) factoryQueueWorkDe
 		deps.doctorSnapshot = defaultFactoryQueueWorkDeps.doctorSnapshot
 	}
 	if deps.sandboxRequests == nil {
-		deps.sandboxRequests = defaultFactoryQueueWorkDeps.sandboxRequests
+		if customProviderExec && deps.sandboxCopier == nil {
+			deps.sandboxRequests = func(string, factory.RunRecord) []factory.SandboxArtifactRequest { return nil }
+		} else {
+			deps.sandboxRequests = defaultFactoryQueueWorkDeps.sandboxRequests
+		}
 	}
 	return deps
 }
