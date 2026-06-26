@@ -767,6 +767,8 @@ func TestRunFactoryTriggerWithDepsDiscoversLatestReportDeterministically(t *test
 	writeFile(t, reportsDir, "analysis-b.md", "# B\n")
 	writeFile(t, reportsDir, "analysis-a.md", "# A\n")
 	writeFile(t, reportsDir, "older.md", "# older\n")
+	writeFile(t, reportsDir, "newer.json", `{"summary":"not a markdown report"}`)
+	writeFile(t, reportsDir, "factory.log", "not a markdown report\n")
 
 	older := time.Date(2026, 6, 21, 10, 0, 0, 0, time.UTC)
 	latest := time.Date(2026, 6, 21, 11, 0, 0, 0, time.UTC)
@@ -775,6 +777,8 @@ func TestRunFactoryTriggerWithDepsDiscoversLatestReportDeterministically(t *test
 		filepath.Join(reportsDir, "analysis-a.md"):           latest,
 		filepath.Join(reportsDir, "analysis-b.md"):           latest,
 		filepath.Join(reportsDir, "review-loop-20260621.md"): latest.Add(time.Hour),
+		filepath.Join(reportsDir, "newer.json"):              latest.Add(2 * time.Hour),
+		filepath.Join(reportsDir, "factory.log"):             latest.Add(3 * time.Hour),
 	} {
 		if err := os.Chtimes(path, modTime, modTime); err != nil {
 			t.Fatalf("Chtimes(%s) error: %v", path, err)
@@ -948,6 +952,6 @@ func factoryTriggerTestDeps(store factory.Store, now time.Time, runID, queueID s
 		loadEngine: func(string) (string, error) {
 			return factory.PolicyEngineCodex, nil
 		},
-		discoverLatestReport: discoverLatestReportCandidate,
+		discoverLatestReport: discoverLatestFactoryTriggerReportCandidate,
 	}
 }

@@ -3,7 +3,9 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -316,7 +318,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			},
 			Now: deps.now,
 			RepoExists: func(path string) (bool, error) {
-				return factorySandboxRemoteRepoExists(ctx, provider, connectInfo, deps.runProviderScript, path)
+				return factorySandboxRemoteRepoExists(ctx, provider, connectInfo, deps.runProviderScript, path, bootstrapReq.RepositoryURL)
 			},
 		})
 		if appendErr := appendFactorySandboxBootstrapTimeline(store, deps, &record, target, bootstrapResult, remoteOutput); appendErr != nil {
@@ -784,7 +786,7 @@ func factorySandboxExecExitCode(err error) int {
 	return 0
 }
 
-func factorySandboxRemoteRepoExists(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, runProviderScript func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error, repoPath string) (bool, error) {
+func factorySandboxRemoteRepoExists(ctx context.Context, provider sandbox.Provider, info *sandbox.ConnectInfo, runProviderScript func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error, repoPath string, expectedRemote string) (bool, error) {
 	if runProviderScript == nil {
 		return false, fmt.Errorf("sandbox exec dependency is required")
 	}
@@ -795,13 +797,17 @@ func factorySandboxRemoteRepoExists(ctx context.Context, provider sandbox.Provid
 	repoGitPath := filepath.ToSlash(filepath.Join(repoPath, ".git"))
 	quotedRepoPath := shellQuote(repoPath)
 	script := strings.Join([]string{
-		"if [ -e " + shellQuote(repoGitPath) + " ]; then exit 0; fi",
+		"if [ -e " + shellQuote(repoGitPath) + " ]; then git -C " + quotedRepoPath + " remote get-url origin; exit $?; fi",
 		"if [ ! -e " + quotedRepoPath + " ]; then exit 10; fi",
 		"if [ -d " + quotedRepoPath + " ] && [ -z \"$(find " + quotedRepoPath + " -mindepth 1 -maxdepth 1 -print -quit)\" ]; then exit 10; fi",
 		"exit 11",
 	}, "\n")
-	err := runProviderScript(ctx, provider, info, script, io.Discard)
+	var output bytes.Buffer
+	err := runProviderScript(ctx, provider, info, script, &output)
 	if err == nil {
+		if !factorySandboxRemoteMatches(expectedRemote, output.String()) {
+			return false, fmt.Errorf("existing checkout origin does not match requested repository")
+		}
 		return true, nil
 	}
 	switch factorySandboxExecExitCode(err) {
@@ -874,7 +880,15 @@ func factorySandboxBootstrapCommandArgs(command factory.BootstrapCommand) []stri
 }
 
 func factorySandboxRemoteHalScript(args []string) string {
-	return strings.Join([]string{
+	return factorySandboxRemoteHalScriptWithEnv(args, nil)
+}
+
+func factorySandboxRemoteHalScriptWithEnv(args []string, env []string) string {
+	command := `exec "$HOME/.local/bin/hal"`
+	if len(args) > 0 {
+		command += " " + shellCommand(args)
+	}
+	lines := []string{
 		"set -eu",
 		`remote_home="${HOME:-}"`,
 		`if [ -z "$remote_home" ] && command -v getent >/dev/null 2>&1; then`,
@@ -882,8 +896,14 @@ func factorySandboxRemoteHalScript(args []string) string {
 		`fi`,
 		`if [ -z "$remote_home" ]; then remote_home="$(pwd)"; fi`,
 		`export HOME="$remote_home"`,
-		`exec "$HOME/.local/bin/hal" ` + shellCommand(args),
-	}, "\n")
+	}
+	for _, assignment := range env {
+		if trimmed := strings.TrimSpace(assignment); trimmed != "" {
+			lines = append(lines, "export "+trimmed)
+		}
+	}
+	lines = append(lines, command)
+	return strings.Join(lines, "\n")
 }
 
 func sortedStringMapKeys(values map[string]string) []string {
@@ -1014,7 +1034,7 @@ func appendFactorySandboxBootstrapTimeline(store factory.Store, deps factorySand
 }
 
 func factorySandboxRemoteAutoArgs(req factoryRunAutoRequest) []string {
-	args := []string{"hal", "auto"}
+	args := []string{"auto"}
 	for _, arg := range req.Args {
 		if trimmed := strings.TrimSpace(arg); trimmed != "" {
 			args = append(args, trimmed)
@@ -1032,8 +1052,11 @@ func factorySandboxRemoteAutoArgs(req factoryRunAutoRequest) []string {
 	if req.SkipCI {
 		args = append(args, "--no-ci")
 	}
-	env := factorySandboxRemoteAutoEnv(req.AttemptPolicy)
-	return append(append([]string{"env"}, env...), args...)
+	return args
+}
+
+func factorySandboxRemoteAutoScript(req factoryRunAutoRequest) string {
+	return factorySandboxRemoteHalScriptWithEnv(factorySandboxRemoteAutoArgs(req), factorySandboxRemoteAutoEnv(req.AttemptPolicy))
 }
 
 func factorySandboxRemoteAutoEnv(policy autoFactoryAttemptPolicy) []string {
@@ -1315,17 +1338,17 @@ func factorySandboxRemoteInputPath(localPath string) string {
 }
 
 func factorySandboxRemoteCommandArgs(record factory.RunRecord, req factoryRunAutoRequest) []string {
-	autoArgs := factorySandboxRemoteAutoArgs(req)
+	script := factorySandboxRemoteAutoScript(req)
 	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
 	if workspaceDir == "" {
-		return autoArgs
+		return []string{"sh", "-lc", script}
 	}
-	return []string{"sh", "-lc", "cd " + shellQuote(workspaceDir) + " && exec " + shellCommand(autoArgs)}
+	return []string{"sh", "-lc", "set -eu\ncd " + shellQuote(workspaceDir) + "\n" + script}
 }
 
 func factorySandboxRemoteWorkspaceDir(record factory.RunRecord) string {
 	if name := repositoryNameFromRemote(record.RepoRemote); name != "" {
-		return "/workspace/" + name
+		return "/workspace/" + factorySandboxWorkspaceName(name, record.RepoRemote)
 	}
 	if repoPath := strings.TrimSpace(record.RepoPath); strings.HasPrefix(repoPath, "/workspace/") {
 		return repoPath
@@ -1360,6 +1383,91 @@ func repositoryNameFromRemote(remote string) string {
 		remote = remote[idx+1:]
 	}
 	return strings.TrimSpace(remote)
+}
+
+func factorySandboxWorkspaceName(repoName string, remote string) string {
+	name := safeFactorySandboxWorkspaceSegment(repoName)
+	if identity := canonicalFactorySandboxRemoteIdentity(remote); identity != "" {
+		sum := sha256.Sum256([]byte(identity))
+		name += "-" + hex.EncodeToString(sum[:])[:12]
+	}
+	return name
+}
+
+func safeFactorySandboxWorkspaceSegment(value string) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(value) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	segment := strings.Trim(b.String(), ".-")
+	if segment == "" {
+		return "repo"
+	}
+	return segment
+}
+
+func factorySandboxRemoteMatches(expectedRemote string, actualRemoteOutput string) bool {
+	expected := canonicalFactorySandboxRemoteIdentity(expectedRemote)
+	actual := canonicalFactorySandboxRemoteIdentity(firstFactorySandboxOutputLine(actualRemoteOutput))
+	if expected == "" || actual == "" {
+		return strings.TrimSpace(expectedRemote) == strings.TrimSpace(firstFactorySandboxOutputLine(actualRemoteOutput))
+	}
+	return expected == actual
+}
+
+func firstFactorySandboxOutputLine(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.TrimSpace(line) != "" {
+			return strings.TrimSpace(line)
+		}
+	}
+	return ""
+}
+
+func canonicalFactorySandboxRemoteIdentity(remote string) string {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return ""
+	}
+	if idx := strings.IndexAny(remote, "?#"); idx >= 0 {
+		remote = remote[:idx]
+	}
+	if parsed, err := url.Parse(remote); err == nil && parsed.Scheme != "" {
+		return canonicalFactorySandboxRemoteParts(parsed.Host, parsed.Path)
+	}
+	if idx := strings.Index(remote, "://"); idx < 0 {
+		if colon := strings.Index(remote, ":"); colon >= 0 {
+			host := remote[:colon]
+			if at := strings.LastIndex(host, "@"); at >= 0 {
+				host = host[at+1:]
+			}
+			if !strings.Contains(host, "/") {
+				return canonicalFactorySandboxRemoteParts(host, remote[colon+1:])
+			}
+		}
+	}
+	return canonicalFactorySandboxRemoteParts("", remote)
+}
+
+func canonicalFactorySandboxRemoteParts(host string, remotePath string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	remotePath = strings.TrimSpace(remotePath)
+	remotePath = strings.TrimSuffix(strings.Trim(remotePath, "/"), ".git")
+	if remotePath == "" || remotePath == "." {
+		return ""
+	}
+	if cleaned := pathpkg.Clean("/" + remotePath); cleaned != "/" && cleaned != "." {
+		remotePath = strings.TrimPrefix(cleaned, "/")
+	}
+	if host == "" {
+		return remotePath
+	}
+	return host + "/" + remotePath
 }
 
 func shellCommand(args []string) string {

@@ -511,17 +511,19 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 	var gotExecArgs []string
 	var gotExecInfo *sandbox.ConnectInfo
 	var execCalls int
+	record := factory.RunRecord{
+		RunID:        "run-sandbox",
+		Status:       factory.RunStatusRunning,
+		ExecutorMode: factory.ExecutorModeLocal,
+		RepoRemote:   "git@github.com:example/repo.git",
+	}
+	remoteAuto := factoryRunAutoRequest{Args: []string{".hal/prd.md"}}
 
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
-		ProjectDir:  projectDir,
-		SandboxName: "factory-dev",
-		RunRecord: factory.RunRecord{
-			RunID:        "run-sandbox",
-			Status:       factory.RunStatusRunning,
-			ExecutorMode: factory.ExecutorModeLocal,
-			RepoRemote:   "git@github.com:example/repo.git",
-		},
-		RemoteAuto:   factoryRunAutoRequest{Args: []string{".hal/prd.md"}},
+		ProjectDir:   projectDir,
+		SandboxName:  "factory-dev",
+		RunRecord:    record,
+		RemoteAuto:   remoteAuto,
 		RemoteOutput: io.Discard,
 	}, factorySandboxExecutorDeps{
 		defaultStore: func() (factory.Store, error) {
@@ -610,8 +612,8 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 	if gotExecInfo == nil || gotExecInfo.Name != "factory-dev" || gotExecInfo.IP != "127.0.0.1" {
 		t.Fatalf("exec info = %#v, want factory-dev at 127.0.0.1", gotExecInfo)
 	}
-	if !reflect.DeepEqual(gotExecArgs, []string{"sh", "-lc", "cd '/workspace/repo' && exec 'env' 'HAL_FACTORY_MAX_RUN_ATTEMPTS=0' 'HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS=0' 'HAL_FACTORY_MAX_CI_FIX_ATTEMPTS=0' 'hal' 'auto' '.hal/prd.md'"}) {
-		t.Fatalf("exec args = %#v", gotExecArgs)
+	if want := factorySandboxRemoteCommandArgs(record, remoteAuto); !reflect.DeepEqual(gotExecArgs, want) {
+		t.Fatalf("exec args = %#v, want %#v", gotExecArgs, want)
 	}
 	if appendedEvent.RunID != "run-sandbox" || appendedEvent.EventType != factory.EventTypeStepEnded || appendedEvent.Metadata["executorMode"] != factory.ExecutorModeSandbox {
 		t.Fatalf("appended event = %#v", appendedEvent)
@@ -635,16 +637,18 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecuti
 	var bootstrapReq factory.BootstrapRequest
 	var bootstrapDeps factory.BootstrapDeps
 	var events []factory.EventRecord
+	record := factory.RunRecord{
+		RunID:      "run-bootstrap",
+		RepoRemote: "git@github.com:example/repo.git",
+		BaseBranch: "main",
+		BranchName: "hal/feature",
+	}
+	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
 
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
 		SandboxName: "factory-dev",
-		RunRecord: factory.RunRecord{
-			RunID:      "run-bootstrap",
-			RepoRemote: "git@github.com:example/repo.git",
-			BaseBranch: "main",
-			BranchName: "hal/feature",
-		},
-		RemoteAuto: factoryRunAutoRequest{BaseBranch: "main"},
+		RunRecord:   record,
+		RemoteAuto:  factoryRunAutoRequest{BaseBranch: "main"},
 	}, factorySandboxExecutorDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
 		now:          func() time.Time { return now },
@@ -663,7 +667,7 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecuti
 					Step:           factory.BootstrapStepCloneRepository,
 					Status:         factory.RunStatusSucceeded,
 					Message:        "bootstrap step succeeded",
-					CommandSummary: "git clone <redacted> /workspace/repo",
+					CommandSummary: "git clone <redacted> " + workspaceDir,
 				}},
 			}, nil
 		},
@@ -683,7 +687,7 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecuti
 	if !reflect.DeepEqual(calls, []string{"provider", "bootstrap", "exec"}) {
 		t.Fatalf("calls = %#v, want provider/bootstrap/exec", calls)
 	}
-	if bootstrapReq.RepositoryURL != "git@github.com:example/repo.git" || bootstrapReq.BaseBranch != "main" || bootstrapReq.RunBranch != "hal/feature" || bootstrapReq.WorkspaceDir != "/workspace/repo" {
+	if bootstrapReq.RepositoryURL != "git@github.com:example/repo.git" || bootstrapReq.BaseBranch != "main" || bootstrapReq.RunBranch != "hal/feature" || bootstrapReq.WorkspaceDir != workspaceDir {
 		t.Fatalf("bootstrap request = %#v", bootstrapReq)
 	}
 	if !bootstrapReq.Options.RefreshHal {
@@ -1028,25 +1032,27 @@ func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToRemoteExecution
 	var gotArgs []string
 	var gotEnv map[string]string
 	var events []factory.EventRecord
+	record := factory.RunRecord{
+		RunID:      "run-remote-env",
+		Status:     factory.RunStatusRunning,
+		RepoRemote: "git@github.com:example/repo.git",
+		BranchName: "hal/feature",
+		Secrets: []factory.RunSecretMetadata{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+			Present:  true,
+		}, {
+			Name:     "OPTIONAL_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: false,
+			Present:  true,
+		}},
+	}
+	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
 		SandboxName: "factory-dev",
-		RunRecord: factory.RunRecord{
-			RunID:      "run-remote-env",
-			Status:     factory.RunStatusRunning,
-			RepoRemote: "git@github.com:example/repo.git",
-			BranchName: "hal/feature",
-			Secrets: []factory.RunSecretMetadata{{
-				Name:     "GITHUB_TOKEN",
-				Source:   factory.RunSecretSourceEnv,
-				Required: true,
-				Present:  true,
-			}, {
-				Name:     "OPTIONAL_TOKEN",
-				Source:   factory.RunSecretSourceEnv,
-				Required: false,
-				Present:  true,
-			}},
-		},
+		RunRecord:   record,
 		ResolvedSecrets: []factory.ResolvedRunSecret{{
 			Name:     "GITHUB_TOKEN",
 			Source:   factory.RunSecretSourceEnv,
@@ -1091,7 +1097,7 @@ func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToRemoteExecution
 		t.Fatalf("remote exec args = %#v", gotArgs)
 	}
 	command := gotArgs[2]
-	for _, want := range []string{"cd '/workspace/repo'", "'env'", "'HAL_FACTORY_MAX_RUN_ATTEMPTS=0'", "'hal' 'auto' '--base' 'main'"} {
+	for _, want := range []string{"cd " + shellQuote(workspaceDir), "export HAL_FACTORY_MAX_RUN_ATTEMPTS=0", `exec "$HOME/.local/bin/hal" 'auto' '--base' 'main'`} {
 		if !strings.Contains(command, want) {
 			t.Fatalf("remote exec command = %q, want fragment %q", command, want)
 		}
@@ -1506,20 +1512,23 @@ func TestRunFactorySandboxExecutorWithDepsCopiesLocalMarkdownBeforeRemoteExecuti
 	}
 	target := &sandbox.SandboxState{Name: "factory-dev", Provider: "daytona", Status: sandbox.StatusRunning}
 	var execArgs [][]string
+	record := factory.RunRecord{
+		RunID:      "run-copy-markdown",
+		Status:     factory.RunStatusRunning,
+		RepoRemote: "git@github.com:example/repo.git",
+		BaseBranch: "main",
+	}
+	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
+	remoteAuto := factoryRunAutoRequest{
+		Args:       []string{".hal/prd-feature.md"},
+		BaseBranch: "main",
+	}
 
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
-		ProjectDir:  projectDir,
-		SandboxName: "factory-dev",
-		RunRecord: factory.RunRecord{
-			RunID:      "run-copy-markdown",
-			Status:     factory.RunStatusRunning,
-			RepoRemote: "git@github.com:example/repo.git",
-			BaseBranch: "main",
-		},
-		RemoteAuto: factoryRunAutoRequest{
-			Args:       []string{".hal/prd-feature.md"},
-			BaseBranch: "main",
-		},
+		ProjectDir:   projectDir,
+		SandboxName:  "factory-dev",
+		RunRecord:    record,
+		RemoteAuto:   remoteAuto,
 		RemoteOutput: io.Discard,
 	}, factorySandboxExecutorDeps{
 		defaultStore:    func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
@@ -1541,10 +1550,10 @@ func TestRunFactorySandboxExecutorWithDepsCopiesLocalMarkdownBeforeRemoteExecuti
 	if len(execArgs) != 2 {
 		t.Fatalf("exec calls = %d, want 2: %#v", len(execArgs), execArgs)
 	}
-	if !strings.Contains(execArgs[0][2], "base64 -d > '/workspace/repo/.hal/prd-feature.md'") {
+	if !strings.Contains(execArgs[0][2], "base64 -d > "+shellQuote(filepath.ToSlash(filepath.Join(workspaceDir, ".hal/prd-feature.md")))) {
 		t.Fatalf("copy exec args = %#v", execArgs[0])
 	}
-	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && exec 'env' 'HAL_FACTORY_MAX_RUN_ATTEMPTS=0' 'HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS=0' 'HAL_FACTORY_MAX_CI_FIX_ATTEMPTS=0' 'hal' 'auto' '.hal/prd-feature.md' '--base' 'main'"}
+	wantRemote := factorySandboxRemoteCommandArgs(record, remoteAuto)
 	if !reflect.DeepEqual(execArgs[1], wantRemote) {
 		t.Fatalf("remote exec args = %#v, want %#v", execArgs[1], wantRemote)
 	}
@@ -1558,16 +1567,18 @@ func TestRunFactorySandboxExecutorWithDepsCopiesAbsoluteReportToRemoteInputPath(
 	}
 	target := &sandbox.SandboxState{Name: "factory-dev", Provider: "daytona", Status: sandbox.StatusRunning}
 	var execArgs [][]string
+	record := factory.RunRecord{
+		RunID:      "run-copy-report",
+		Status:     factory.RunStatusRunning,
+		RepoRemote: "git@github.com:example/repo.git",
+		BaseBranch: "main",
+	}
+	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
 
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
 		ProjectDir:  projectDir,
 		SandboxName: "factory-dev",
-		RunRecord: factory.RunRecord{
-			RunID:      "run-copy-report",
-			Status:     factory.RunStatusRunning,
-			RepoRemote: "git@github.com:example/repo.git",
-			BaseBranch: "main",
-		},
+		RunRecord:   record,
 		RemoteAuto: factoryRunAutoRequest{
 			ReportPath: reportPath,
 			BaseBranch: "main",
@@ -1593,10 +1604,13 @@ func TestRunFactorySandboxExecutorWithDepsCopiesAbsoluteReportToRemoteInputPath(
 	if len(execArgs) != 2 {
 		t.Fatalf("exec calls = %d, want 2: %#v", len(execArgs), execArgs)
 	}
-	if !strings.Contains(execArgs[0][2], "base64 -d > '/workspace/repo/.hal/factory-inputs/analysis.md'") {
+	if !strings.Contains(execArgs[0][2], "base64 -d > "+shellQuote(filepath.ToSlash(filepath.Join(workspaceDir, ".hal/factory-inputs/analysis.md")))) {
 		t.Fatalf("copy exec args = %#v", execArgs[0])
 	}
-	wantRemote := []string{"sh", "-lc", "cd '/workspace/repo' && exec 'env' 'HAL_FACTORY_MAX_RUN_ATTEMPTS=0' 'HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS=0' 'HAL_FACTORY_MAX_CI_FIX_ATTEMPTS=0' 'hal' 'auto' '--report' '.hal/factory-inputs/analysis.md' '--base' 'main'"}
+	wantRemote := factorySandboxRemoteCommandArgs(record, factoryRunAutoRequest{
+		ReportPath: ".hal/factory-inputs/analysis.md",
+		BaseBranch: "main",
+	})
 	if !reflect.DeepEqual(execArgs[1], wantRemote) {
 		t.Fatalf("remote exec args = %#v, want %#v", execArgs[1], wantRemote)
 	}
@@ -1755,14 +1769,8 @@ func TestFactorySandboxBootstrapCommandArgsRunsHalFromRemoteHome(t *testing.T) {
 }
 
 func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testing.T) {
-	withAttemptPolicyEnv := func(maxRun, maxReviewFix, maxCIFix int, args ...string) []string {
-		env := []string{
-			"env",
-			fmt.Sprintf("HAL_FACTORY_MAX_RUN_ATTEMPTS=%d", maxRun),
-			fmt.Sprintf("HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS=%d", maxReviewFix),
-			fmt.Sprintf("HAL_FACTORY_MAX_CI_FIX_ATTEMPTS=%d", maxCIFix),
-		}
-		return append(env, args...)
+	withAutoArgs := func(args ...string) []string {
+		return append([]string{"auto"}, args...)
 	}
 
 	tests := []struct {
@@ -1773,7 +1781,7 @@ func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testin
 		{
 			name: "auto discovery",
 			req:  factoryRunAutoRequest{},
-			want: withAttemptPolicyEnv(0, 0, 0, "hal", "auto"),
+			want: withAutoArgs(),
 		},
 		{
 			name: "markdown with base",
@@ -1781,7 +1789,7 @@ func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testin
 				Args:       []string{" .hal/prd-feature.md "},
 				BaseBranch: " main ",
 			},
-			want: withAttemptPolicyEnv(0, 0, 0, "hal", "auto", ".hal/prd-feature.md", "--base", "main"),
+			want: withAutoArgs(".hal/prd-feature.md", "--base", "main"),
 		},
 		{
 			name: "report with base",
@@ -1789,21 +1797,21 @@ func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testin
 				ReportPath: " .hal/reports/analysis.md ",
 				BaseBranch: " develop ",
 			},
-			want: withAttemptPolicyEnv(0, 0, 0, "hal", "auto", "--report", ".hal/reports/analysis.md", "--base", "develop"),
+			want: withAutoArgs("--report", ".hal/reports/analysis.md", "--base", "develop"),
 		},
 		{
 			name: "engine",
 			req: factoryRunAutoRequest{
 				Engine: " Claude ",
 			},
-			want: withAttemptPolicyEnv(0, 0, 0, "hal", "auto", "--engine", "claude"),
+			want: withAutoArgs("--engine", "claude"),
 		},
 		{
 			name: "empty args are omitted",
 			req: factoryRunAutoRequest{
 				Args: []string{"", "  ", ".hal/prd-feature.md"},
 			},
-			want: withAttemptPolicyEnv(0, 0, 0, "hal", "auto", ".hal/prd-feature.md"),
+			want: withAutoArgs(".hal/prd-feature.md"),
 		},
 		{
 			name: "attempt policy env",
@@ -1815,7 +1823,7 @@ func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testin
 					MaxCIFixAttempts:     3,
 				},
 			},
-			want: withAttemptPolicyEnv(1, 2, 3, "hal", "auto", "--base", "main"),
+			want: withAutoArgs("--base", "main"),
 		},
 	}
 
@@ -1829,14 +1837,31 @@ func TestFactorySandboxRemoteAutoArgsBuildsDeterministicHalAutoCommand(t *testin
 }
 
 func TestFactorySandboxRemoteCommandArgsSelectsWorkspaceDirectory(t *testing.T) {
-	got := factorySandboxRemoteCommandArgs(factory.RunRecord{
+	record := factory.RunRecord{
 		RepoRemote: "git@github.com:jywlabs/hal.git",
-	}, factoryRunAutoRequest{
+	}
+	got := factorySandboxRemoteCommandArgs(record, factoryRunAutoRequest{
 		Args:       []string{" .hal/prd-feature.md "},
 		BaseBranch: " hal/factory-remote-workspace-bootstrap ",
 	})
+	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
 
-	want := []string{"sh", "-lc", "cd '/workspace/hal' && exec 'env' 'HAL_FACTORY_MAX_RUN_ATTEMPTS=0' 'HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS=0' 'HAL_FACTORY_MAX_CI_FIX_ATTEMPTS=0' 'hal' 'auto' '.hal/prd-feature.md' '--base' 'hal/factory-remote-workspace-bootstrap'"}
+	wantScript := strings.Join([]string{
+		"set -eu",
+		"cd " + shellQuote(workspaceDir),
+		"set -eu",
+		`remote_home="${HOME:-}"`,
+		`if [ -z "$remote_home" ] && command -v getent >/dev/null 2>&1; then`,
+		`  remote_home="$(getent passwd "$(id -u)" | cut -d: -f6)"`,
+		`fi`,
+		`if [ -z "$remote_home" ]; then remote_home="$(pwd)"; fi`,
+		`export HOME="$remote_home"`,
+		"export HAL_FACTORY_MAX_RUN_ATTEMPTS=0",
+		"export HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS=0",
+		"export HAL_FACTORY_MAX_CI_FIX_ATTEMPTS=0",
+		`exec "$HOME/.local/bin/hal" 'auto' '.hal/prd-feature.md' '--base' 'hal/factory-remote-workspace-bootstrap'`,
+	}, "\n")
+	want := []string{"sh", "-lc", wantScript}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("factorySandboxRemoteCommandArgs() = %#v, want %#v", got, want)
 	}
@@ -1880,9 +1905,10 @@ func TestRepositoryNameFromRemoteStripsCredentialedURLParts(t *testing.T) {
 }
 
 func TestFactorySandboxRemoteCommandArgsMetadataOmitsCredentialedRemoteQuery(t *testing.T) {
-	got := factorySandboxRemoteCommandArgs(factory.RunRecord{
+	record := factory.RunRecord{
 		RepoRemote: "https://github.com/example/repo.git?access_token=secret-value&client_secret=other-secret",
-	}, factoryRunAutoRequest{
+	}
+	got := factorySandboxRemoteCommandArgs(record, factoryRunAutoRequest{
 		Args: []string{".hal/prd-feature.md"},
 	})
 
@@ -1890,8 +1916,23 @@ func TestFactorySandboxRemoteCommandArgsMetadataOmitsCredentialedRemoteQuery(t *
 	if strings.Contains(commandMetadata, "secret") || strings.Contains(commandMetadata, "access_token") || strings.Contains(commandMetadata, "client_secret") {
 		t.Fatalf("remote command metadata contains credentialed remote data: %q", commandMetadata)
 	}
-	if !strings.Contains(commandMetadata, "cd '/workspace/repo'") {
-		t.Fatalf("remote command metadata = %q, want workspace /workspace/repo", commandMetadata)
+	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
+	if !strings.HasPrefix(workspaceDir, "/workspace/repo-") {
+		t.Fatalf("workspace dir = %q, want hashed repo workspace", workspaceDir)
+	}
+	if !strings.Contains(commandMetadata, "cd "+shellQuote(workspaceDir)) {
+		t.Fatalf("remote command metadata = %q, want workspace %s", commandMetadata, workspaceDir)
+	}
+}
+
+func TestFactorySandboxRemoteWorkspaceDirIncludesRemoteIdentity(t *testing.T) {
+	first := factorySandboxRemoteWorkspaceDir(factory.RunRecord{RepoRemote: "git@github.com:example/repo.git"})
+	second := factorySandboxRemoteWorkspaceDir(factory.RunRecord{RepoRemote: "git@github.com:other/repo.git"})
+	if first == second {
+		t.Fatalf("workspace dirs should differ for remotes with the same basename: %q", first)
+	}
+	if !strings.HasPrefix(first, "/workspace/repo-") || !strings.HasPrefix(second, "/workspace/repo-") {
+		t.Fatalf("workspace dirs = %q and %q, want repo basename plus identity hash", first, second)
 	}
 }
 
@@ -2100,10 +2141,13 @@ func TestFactorySandboxRemoteRepoExistsUsesRemoteExitCodes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var gotScript string
-			got, err := factorySandboxRemoteRepoExists(context.Background(), fakeFactorySandboxProvider{}, &sandbox.ConnectInfo{Name: "factory-dev"}, func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, script string, _ io.Writer) error {
+			got, err := factorySandboxRemoteRepoExists(context.Background(), fakeFactorySandboxProvider{}, &sandbox.ConnectInfo{Name: "factory-dev"}, func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, script string, out io.Writer) error {
 				gotScript = script
+				if tt.err == nil {
+					_, _ = io.WriteString(out, "git@github.com:jywlabs/hal.git\n")
+				}
 				return tt.err
-			}, "/workspace/hal")
+			}, "/workspace/hal", "https://github.com/jywlabs/hal.git")
 			if tt.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
 					t.Fatalf("error = %v, want containing %q", err, tt.wantError)
@@ -2120,6 +2164,19 @@ func TestFactorySandboxRemoteRepoExistsUsesRemoteExitCodes(t *testing.T) {
 				t.Fatalf("remote repo check script = %q", gotScript)
 			}
 		})
+	}
+}
+
+func TestFactorySandboxRemoteRepoExistsRejectsMismatchedOrigin(t *testing.T) {
+	got, err := factorySandboxRemoteRepoExists(context.Background(), fakeFactorySandboxProvider{}, &sandbox.ConnectInfo{Name: "factory-dev"}, func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ string, out io.Writer) error {
+		_, _ = io.WriteString(out, "git@github.com:other/hal.git\n")
+		return nil
+	}, "/workspace/hal", "git@github.com:jywlabs/hal.git")
+	if err == nil || !strings.Contains(err.Error(), "existing checkout origin does not match requested repository") {
+		t.Fatalf("error = %v, want origin mismatch", err)
+	}
+	if got {
+		t.Fatal("exists = true, want false for mismatched origin")
 	}
 }
 

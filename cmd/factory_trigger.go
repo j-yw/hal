@@ -72,8 +72,16 @@ var defaultFactoryTriggerDeps = factoryTriggerDeps{
 	loadConfig:           compound.LoadConfig,
 	loadPolicy:           factory.LoadPolicyConfig,
 	loadEngine:           compound.LoadDefaultEngine,
-	discoverLatestReport: discoverLatestReportCandidate,
+	discoverLatestReport: discoverLatestFactoryTriggerReportCandidate,
 	lookupEnv:            os.LookupEnv,
+}
+
+func discoverLatestFactoryTriggerReportCandidate(dir, reportsDir string) (string, bool, error) {
+	return discoverLatestReportCandidateWithFilter(dir, reportsDir, isFactoryTriggerReportCandidate)
+}
+
+func isFactoryTriggerReportCandidate(name string) bool {
+	return isAutoReportCandidate(name) && strings.EqualFold(filepath.Ext(name), ".md")
 }
 
 var factoryTriggerCmd = &cobra.Command{

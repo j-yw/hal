@@ -886,6 +886,10 @@ func discoverNewestMarkdownCandidate(dir string) (string, bool, error) {
 }
 
 func discoverLatestReportCandidate(dir, reportsDir string) (string, bool, error) {
+	return discoverLatestReportCandidateWithFilter(dir, reportsDir, isAutoReportCandidate)
+}
+
+func discoverLatestReportCandidateWithFilter(dir, reportsDir string, isCandidate func(string) bool) (string, bool, error) {
 	reportsPath := reportsDir
 	if strings.TrimSpace(reportsPath) == "" {
 		reportsPath = filepath.Join(template.HalDir, "reports")
@@ -902,6 +906,10 @@ func discoverLatestReportCandidate(dir, reportsDir string) (string, bool, error)
 		return "", false, fmt.Errorf("failed to read reports directory %s: %w", reportsPath, err)
 	}
 
+	if isCandidate == nil {
+		isCandidate = isAutoReportCandidate
+	}
+
 	latestPath := ""
 	latestName := ""
 	var latestTime time.Time
@@ -910,7 +918,7 @@ func discoverLatestReportCandidate(dir, reportsDir string) (string, bool, error)
 			continue
 		}
 		name := entry.Name()
-		if !isAutoReportCandidate(name) {
+		if !isCandidate(name) {
 			continue
 		}
 

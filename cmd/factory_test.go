@@ -3375,6 +3375,7 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
+	workspaceDir := factorySandboxRemoteWorkspaceDir(factory.RunRecord{RepoRemote: "git@github.com:jywlabs/hal.git"})
 	var verificationCalled bool
 	var remoteVerifyArgs []string
 	var remoteArtifactCopied bool
@@ -3479,7 +3480,7 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 				}
 				return nil
 			}
-			if isFactorySandboxArtifactCopyArgs(args, "/workspace/hal", ".hal/reports/verify/remote-test-stdout.txt") {
+			if isFactorySandboxArtifactCopyArgs(args, workspaceDir, ".hal/reports/verify/remote-test-stdout.txt") {
 				remoteArtifactCopied = true
 				if _, err := io.WriteString(out, "verification stdout\n"); err != nil {
 					t.Fatalf("write remote artifact error: %v", err)
@@ -3532,7 +3533,7 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 	if cleanupCalls != 1 {
 		t.Fatalf("cleanup calls = %d, want 1 after verification passes", cleanupCalls)
 	}
-	wantArgs := []string{"sh", "-lc", "cd '/workspace/hal' && exec 'hal' 'verify' '--json' 2>/tmp/hal-factory-verify-stderr"}
+	wantArgs := []string{"sh", "-lc", "cd " + shellQuote(workspaceDir) + " && exec 'hal' 'verify' '--json' 2>/tmp/hal-factory-verify-stderr"}
 	if !reflect.DeepEqual(remoteVerifyArgs, wantArgs) {
 		t.Fatalf("remote verify args = %#v, want %#v", remoteVerifyArgs, wantArgs)
 	}
@@ -3595,6 +3596,7 @@ func TestCleanupFactoryRunDeferredSandboxCopiesArtifactsWithProviderExecBeforeCl
 	if err := store.SaveRun(&record); err != nil {
 		t.Fatalf("SaveRun() error: %v", err)
 	}
+	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
 
 	var copied bool
 	var cleanupCalls int
@@ -3612,7 +3614,7 @@ func TestCleanupFactoryRunDeferredSandboxCopiesArtifactsWithProviderExecBeforeCl
 			return fakeFactorySandboxProvider{}, nil
 		},
 		runProviderExec: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, out io.Writer) error {
-			if !isFactorySandboxArtifactCopyArgs(args, "/workspace/hal", ".hal/auto-state.json") {
+			if !isFactorySandboxArtifactCopyArgs(args, workspaceDir, ".hal/auto-state.json") {
 				t.Fatalf("provider exec args = %#v, want auto-state copy", args)
 			}
 			copied = true
@@ -4157,7 +4159,7 @@ func TestRunFactoryRunWithDepsRecordsAlwaysCleanupWhenFailureArtifactCopyErrors(
 				}
 				return errors.New("remote verify exited 1")
 			}
-			if isFactorySandboxArtifactCopyArgs(args, "/workspace/hal", ".hal/auto-state.json") {
+			if isFactorySandboxArtifactCopyArgs(args, factorySandboxRemoteWorkspaceDir(factory.RunRecord{RepoRemote: "git@github.com:jywlabs/hal.git"}), ".hal/auto-state.json") {
 				return errors.New("copy sandbox artifact failed")
 			}
 			t.Fatalf("unexpected provider exec args = %#v", args)
@@ -4174,7 +4176,7 @@ func TestRunFactoryRunWithDepsRecordsAlwaysCleanupWhenFailureArtifactCopyErrors(
 				ID:         "sandbox-auto-state",
 				Name:       "sandbox-auto-state",
 				Type:       "json",
-				RemotePath: "/workspace/hal/.hal/auto-state.json",
+				RemotePath: ".hal/auto-state.json",
 				Path:       ".hal/auto-state.json",
 			}}
 		},
