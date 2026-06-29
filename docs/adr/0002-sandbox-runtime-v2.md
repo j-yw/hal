@@ -56,6 +56,17 @@ runtime contract, or change any existing machine-readable contract surface.
 
 To be expanded by subsequent documentation tasks.
 
+## Verification Guidance
+
+Phase 0 verification should match the documentation-only scope of this ADR.
+Workers should not add brittle prose-only tests unless this repository already
+has an established documentation-test pattern for the affected content.
+
+`git diff --check` is a documentation-appropriate verification command for
+Phase 0 ADR edits. Any existing test command a worker chooses to run, such as
+the repository's standard Go test suite, must exit 0 and be reported in the
+progress record for the story.
+
 ## Phased Rollout Boundaries
 
 Phase 0 is limited to this ADR and documentation-appropriate verification of
