@@ -28,7 +28,10 @@ func TestSandboxStateJSONTags(t *testing.T) {
 				AutoShutdown: false,
 			},
 			wantPresent: []string{"id", "name", "provider", "ip", "status", "createdAt", "autoShutdown"},
-			wantAbsent:  []string{"workspaceId", "tailscaleIp", "tailscaleHostname", "tailscaleLockdown", "stoppedAt", "idleHours", "size", "repo", "snapshotId"},
+			wantAbsent: []string{
+				"workspaceId", "tailscaleIp", "tailscaleHostname", "tailscaleLockdown", "stoppedAt", "idleHours", "size",
+				"repo", "snapshotId", "host", "runtime", "workspace", "security", "lease",
+			},
 		},
 		{
 			name: "full state includes optional fields with camelCase keys",
@@ -80,6 +83,121 @@ func TestSandboxStateJSONTags(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSandboxStateUnmarshalsLegacyJSONWithoutRuntimeV2Metadata(t *testing.T) {
+	data := []byte(`{
+		"id": "019513a4-7e2b-7c1a-8a3e-1f2b3c4d5e6f",
+		"name": "api-backend",
+		"provider": "daytona",
+		"workspaceId": "123456789",
+		"ip": "104.131.5.22",
+		"status": "running",
+		"createdAt": "2026-03-21T10:00:00Z",
+		"autoShutdown": true,
+		"idleHours": 48,
+		"size": "s-2vcpu-4gb",
+		"repo": "api",
+		"snapshotId": "snap-123"
+	}`)
+
+	var got SandboxState
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal legacy sandbox state failed: %v", err)
+	}
+
+	if got.ID != "019513a4-7e2b-7c1a-8a3e-1f2b3c4d5e6f" || got.Name != "api-backend" {
+		t.Fatalf("legacy identity = %q/%q, want api-backend state", got.ID, got.Name)
+	}
+	if got.Host != nil || got.Runtime != nil || got.Workspace != nil || got.Security != nil || got.Lease != nil {
+		t.Fatalf("runtime v2 metadata = host:%#v runtime:%#v workspace:%#v security:%#v lease:%#v, want nil", got.Host, got.Runtime, got.Workspace, got.Security, got.Lease)
+	}
+}
+
+func TestSandboxStateOmitsNilRuntimeV2Metadata(t *testing.T) {
+	got := mustMarshalObject(t, SandboxState{
+		ID:           "019513a4-7e2b-7c1a-8a3e-1f2b3c4d5e6f",
+		Name:         "api-backend",
+		Provider:     "daytona",
+		Status:       StatusRunning,
+		CreatedAt:    time.Date(2026, 3, 21, 10, 0, 0, 0, time.UTC),
+		AutoShutdown: true,
+	})
+
+	assertObjectKeys(t, got, nil, []string{"host", "runtime", "workspace", "security", "lease"})
+}
+
+func TestSandboxStateRuntimeV2MetadataJSONTags(t *testing.T) {
+	expiresAt := time.Date(2026, 6, 29, 18, 0, 0, 0, time.UTC)
+
+	got := mustMarshalObject(t, SandboxState{
+		ID:           "019513a4-7e2b-7c1a-8a3e-1f2b3c4d5e6f",
+		Name:         "api-backend",
+		Provider:     "daytona",
+		Status:       StatusRunning,
+		CreatedAt:    time.Date(2026, 3, 21, 10, 0, 0, 0, time.UTC),
+		AutoShutdown: true,
+		Host: &SandboxHost{
+			ID:   "host-01",
+			Name: "builder-01",
+			Kind: SandboxHostKindWorker,
+			Capacity: &HostCapacity{
+				CPUCores:               8,
+				MemoryMB:               32768,
+				DiskGB:                 250,
+				MaxConcurrentSandboxes: 4,
+			},
+		},
+		Runtime: &SandboxRuntimeState{
+			Driver:         SandboxRuntimeDriverRootlessPodman,
+			IsolationLevel: SandboxIsolationLevelContainer,
+			RuntimeID:      "runtime-01",
+			Image:          "ghcr.io/jywlabs/hal-worker:latest",
+			WorkerID:       "worker-01",
+		},
+		Workspace: &SandboxWorkspace{
+			Mode:        SandboxWorkspaceModeClone,
+			InputSource: SandboxWorkspaceInputSourceRemoteRef,
+			Repo:        "git@github.com:jywlabs/hal.git",
+			Branch:      "phase/sandbox-runtime-v2-1-types",
+			SyncRef:     "refs/heads/phase/sandbox-runtime-v2-1-types",
+		},
+		Security: &SandboxSecurity{
+			Network: &SandboxNetworkSecurity{
+				PolicyRequested: true,
+				PolicyEnforced:  true,
+				EnforcementMode: SandboxNetworkEnforcementModeProxyFirewall,
+			},
+			Secrets: &SandboxSecretSecurity{
+				RequestedModes: []string{SandboxSecretModeEnv, SandboxSecretModeSSHAgent},
+				ActiveModes:    []string{SandboxSecretModeFileTmpfs},
+			},
+		},
+		Lease: &SandboxLeaseRef{
+			ID:          "lease-01",
+			ResourceKey: "host-01/runtime-01",
+			Holder:      "worker-01",
+			Purpose:     "factory-run",
+			RunID:       "run-01",
+			ExpiresAt:   expiresAt,
+		},
+	})
+
+	assertObjectKeys(t, got, []string{"host", "runtime", "workspace", "security", "lease"}, nil)
+	assertObjectKeys(t, got["host"], []string{"id", "name", "kind", "capacity"}, []string{"endpoint", "labels", "supportedRuntimes", "health", "cost"})
+	assertObjectKeys(t, got["runtime"], []string{"driver", "isolationLevel", "runtimeId", "image", "workerId"}, nil)
+	assertObjectKeys(t, got["workspace"], []string{"mode", "inputSource", "repo", "branch", "syncRef"}, nil)
+	assertObjectKeys(t, got["security"], []string{"network", "secrets"}, nil)
+	assertObjectKeys(t, got["lease"], []string{"id", "resourceKey", "holder", "purpose", "runId", "expiresAt"}, nil)
+
+	security := got["security"].(map[string]any)
+	assertObjectKeys(t, security["network"], []string{"policyRequested", "policyEnforced", "enforcementMode"}, nil)
+	assertObjectKeys(t, security["secrets"], []string{"requestedModes", "activeModes"}, nil)
+
+	network := security["network"].(map[string]any)
+	if network["policyRequested"] != true || network["policyEnforced"] != true {
+		t.Fatalf("network policy booleans = %#v, want explicit true values", network)
 	}
 }
 
@@ -244,8 +362,8 @@ func TestSandboxRuntimeWorkspaceSecurityLeaseMetadataJSONTags(t *testing.T) {
 			name: "security includes optional nested metadata",
 			value: SandboxSecurity{
 				Network: &SandboxNetworkSecurity{
-					PolicyRequested: SandboxNetworkEnforcementModeProxyFirewall,
-					PolicyEnforced:  SandboxNetworkEnforcementModeProxy,
+					PolicyRequested: true,
+					PolicyEnforced:  true,
 					EnforcementMode: SandboxNetworkEnforcementModeProxyFirewall,
 				},
 				Secrets: &SandboxSecretSecurity{
@@ -290,8 +408,8 @@ func TestSandboxRuntimeWorkspaceSecurityLeaseMetadataJSONTags(t *testing.T) {
 func TestSandboxRuntimeV2NestedSecurityMetadataJSONTags(t *testing.T) {
 	security := SandboxSecurity{
 		Network: &SandboxNetworkSecurity{
-			PolicyRequested: SandboxNetworkEnforcementModeProxy,
-			PolicyEnforced:  SandboxNetworkEnforcementModeBestEffort,
+			PolicyRequested: true,
+			PolicyEnforced:  true,
 			EnforcementMode: SandboxNetworkEnforcementModeProxy,
 		},
 		Secrets: &SandboxSecretSecurity{
@@ -306,10 +424,13 @@ func TestSandboxRuntimeV2NestedSecurityMetadataJSONTags(t *testing.T) {
 	assertObjectKeys(t, got["secrets"], []string{"requestedModes", "activeModes"}, nil)
 }
 
-func TestSandboxNetworkSecurityOmitsEmptyPolicyFields(t *testing.T) {
+func TestSandboxNetworkSecurityIncludesPolicyBooleans(t *testing.T) {
 	got := mustMarshalObject(t, SandboxNetworkSecurity{})
 
-	assertObjectKeys(t, got, nil, []string{"policyRequested", "policyEnforced", "enforcementMode"})
+	assertObjectKeys(t, got, []string{"policyRequested", "policyEnforced"}, []string{"enforcementMode"})
+	if got["policyRequested"] != false || got["policyEnforced"] != false {
+		t.Fatalf("network policy booleans = %#v, want explicit false values", got)
+	}
 }
 
 func TestSandboxSecretSecurityOmitsEmptyModeLists(t *testing.T) {

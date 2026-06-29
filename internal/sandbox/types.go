@@ -115,8 +115,8 @@ type SandboxSecurity struct {
 
 // SandboxNetworkSecurity describes network policy metadata for a sandbox.
 type SandboxNetworkSecurity struct {
-	PolicyRequested string `json:"policyRequested,omitempty"`
-	PolicyEnforced  string `json:"policyEnforced,omitempty"`
+	PolicyRequested bool   `json:"policyRequested"`
+	PolicyEnforced  bool   `json:"policyEnforced"`
 	EnforcementMode string `json:"enforcementMode,omitempty"`
 }
 
@@ -165,4 +165,11 @@ type SandboxState struct {
 	// Labels
 	Repo       string `json:"repo,omitempty"`
 	SnapshotID string `json:"snapshotId,omitempty"`
+
+	// Sandbox Runtime v2 metadata
+	Host      *SandboxHost         `json:"host,omitempty"`
+	Runtime   *SandboxRuntimeState `json:"runtime,omitempty"`
+	Workspace *SandboxWorkspace    `json:"workspace,omitempty"`
+	Security  *SandboxSecurity     `json:"security,omitempty"`
+	Lease     *SandboxLeaseRef     `json:"lease,omitempty"`
 }
