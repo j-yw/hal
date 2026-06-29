@@ -333,6 +333,11 @@ type SandboxMetadata struct {
 	SSHCommand     string                     `json:"sshCommand,omitempty"`
 	CleanupCommand string                     `json:"cleanupCommand,omitempty"`
 	Handoff        string                     `json:"handoff,omitempty"`
+	Host           *SandboxHostMetadata       `json:"host,omitempty"`
+	Runtime        *SandboxRuntimeMetadata    `json:"runtime,omitempty"`
+	Workspace      *SandboxWorkspaceMetadata  `json:"workspace,omitempty"`
+	Security       *SandboxSecurityMetadata   `json:"security,omitempty"`
+	Lease          *SandboxLeaseMetadata      `json:"lease,omitempty"`
 }
 
 // SandboxConnectionMetadata contains safe connection display fields. It must

@@ -110,9 +110,15 @@ When `sandbox` is present:
 | `sshCommand` | string | no | Suggested local command for interactive inspection |
 | `cleanupCommand` | string | no | Suggested local command for sandbox cleanup |
 | `handoff` | string | no | Human-readable diagnostic or continuation guidance |
+| `host` | object | no | Redaction-safe Sandbox Runtime v2 host summary metadata |
+| `runtime` | object | no | Redaction-safe Sandbox Runtime v2 runtime summary metadata |
+| `workspace` | object | no | Redaction-safe Sandbox Runtime v2 workspace summary metadata |
+| `security` | object | no | Redaction-safe Sandbox Runtime v2 security summary metadata |
+| `lease` | object | no | Redaction-safe Sandbox Runtime v2 lease summary metadata |
 
 Sandbox metadata is safe for durable local records. It must not include tokens,
-private keys, secret environment values, raw credentials, API keys, or unsafe
+private keys, secret names, secret values, raw filesystem paths, raw workspace
+paths, raw credentials, API keys, lease holders, provider credentials, or unsafe
 environment details.
 
 When `sandbox.connection` is present:
