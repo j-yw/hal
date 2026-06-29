@@ -637,6 +637,10 @@ func TestFactoryTypesHaveJSONTags(t *testing.T) {
 		reflect.TypeOf(SandboxHostMetadata{}),
 		reflect.TypeOf(SandboxRuntimeMetadata{}),
 		reflect.TypeOf(SandboxWorkspaceMetadata{}),
+		reflect.TypeOf(SandboxSecurityMetadata{}),
+		reflect.TypeOf(SandboxNetworkSecurityMetadata{}),
+		reflect.TypeOf(SandboxSecretSecurityMetadata{}),
+		reflect.TypeOf(SandboxLeaseMetadata{}),
 		reflect.TypeOf(SandboxMetadata{}),
 		reflect.TypeOf(SandboxConnectionMetadata{}),
 		reflect.TypeOf(SourceMetadata{}),
@@ -768,6 +772,111 @@ func TestSandboxHostRuntimeWorkspaceMetadataJSONTags(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSandboxSecurityLeaseMetadataJSONTags(t *testing.T) {
+	security := SandboxSecurityMetadata{
+		Network: &SandboxNetworkSecurityMetadata{
+			PolicyRequested: "deny_by_default",
+			PolicyEnforced:  "best_effort",
+			EnforcementMode: "proxy_firewall",
+		},
+		Secrets: &SandboxSecretSecurityMetadata{
+			RequestedModes: []string{"env", "file_tmpfs"},
+			ActiveModes:    []string{"file_tmpfs"},
+		},
+	}
+
+	data, err := json.Marshal(security)
+	if err != nil {
+		t.Fatalf("json.Marshal(security) error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(security payload) error = %v", err)
+	}
+
+	requireExactJSONKeys(t, raw, []string{"network", "secrets"})
+	requireJSONKeysAbsent(t, raw, []string{
+		"secretName",
+		"secretNames",
+		"secretValue",
+		"secretValues",
+		"privateKey",
+		"token",
+		"tokens",
+		"rawEnv",
+		"environment",
+		"credentials",
+		"providerCredentials",
+	})
+
+	network, ok := raw["network"].(map[string]any)
+	if !ok {
+		t.Fatalf("network should be an object, got %T", raw["network"])
+	}
+	requireExactJSONKeys(t, network, []string{"policyRequested", "policyEnforced", "enforcementMode"})
+	if network["policyRequested"] != "deny_by_default" {
+		t.Errorf("network.policyRequested = %#v, want deny_by_default", network["policyRequested"])
+	}
+	if network["policyEnforced"] != "best_effort" {
+		t.Errorf("network.policyEnforced = %#v, want best_effort", network["policyEnforced"])
+	}
+	if network["enforcementMode"] != "proxy_firewall" {
+		t.Errorf("network.enforcementMode = %#v, want proxy_firewall", network["enforcementMode"])
+	}
+
+	secrets, ok := raw["secrets"].(map[string]any)
+	if !ok {
+		t.Fatalf("secrets should be an object, got %T", raw["secrets"])
+	}
+	requireExactJSONKeys(t, secrets, []string{"requestedModes", "activeModes"})
+	if !reflect.DeepEqual(secrets["requestedModes"], []any{"env", "file_tmpfs"}) {
+		t.Errorf("secrets.requestedModes = %#v, want [env file_tmpfs]", secrets["requestedModes"])
+	}
+	if !reflect.DeepEqual(secrets["activeModes"], []any{"file_tmpfs"}) {
+		t.Errorf("secrets.activeModes = %#v, want [file_tmpfs]", secrets["activeModes"])
+	}
+
+	expiresAt := time.Date(2026, 6, 29, 14, 30, 0, 0, time.UTC)
+	lease := SandboxLeaseMetadata{
+		ID:          "lease-123",
+		ResourceKey: "host:worker-a",
+		Purpose:     "factory",
+		RunID:       "run-456",
+		ExpiresAt:   expiresAt,
+	}
+
+	data, err = json.Marshal(lease)
+	if err != nil {
+		t.Fatalf("json.Marshal(lease) error = %v", err)
+	}
+
+	raw = map[string]any{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(lease payload) error = %v", err)
+	}
+
+	requireExactJSONKeys(t, raw, []string{"id", "resourceKey", "purpose", "runId", "expiresAt"})
+	if raw["id"] != "lease-123" {
+		t.Errorf("lease.id = %#v, want lease-123", raw["id"])
+	}
+	if raw["resourceKey"] != "host:worker-a" {
+		t.Errorf("lease.resourceKey = %#v, want host:worker-a", raw["resourceKey"])
+	}
+	if raw["purpose"] != "factory" {
+		t.Errorf("lease.purpose = %#v, want factory", raw["purpose"])
+	}
+	if raw["runId"] != "run-456" {
+		t.Errorf("lease.runId = %#v, want run-456", raw["runId"])
+	}
+	if raw["expiresAt"] != expiresAt.Format(time.RFC3339) {
+		t.Errorf("lease.expiresAt = %#v, want %q", raw["expiresAt"], expiresAt.Format(time.RFC3339))
+	}
+	if _, ok := raw["holder"]; ok {
+		t.Fatal("lease holder must not be serialized")
 	}
 }
 
@@ -1859,6 +1968,38 @@ func requireExactJSONKeys(t *testing.T, got map[string]any, want []string) {
 			t.Fatalf("missing JSON key %q in %v", key, sortedMapKeys(got))
 		}
 	}
+}
+
+func requireJSONKeysAbsent(t *testing.T, value any, forbidden []string) {
+	t.Helper()
+
+	forbiddenSet := map[string]struct{}{}
+	for _, key := range forbidden {
+		forbiddenSet[key] = struct{}{}
+	}
+
+	var walk func(path string, value any)
+	walk = func(path string, value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			for key, nested := range typed {
+				nestedPath := key
+				if path != "" {
+					nestedPath = path + "." + key
+				}
+				if _, ok := forbiddenSet[key]; ok {
+					t.Fatalf("unsafe JSON field %q should not be serialized", nestedPath)
+				}
+				walk(nestedPath, nested)
+			}
+		case []any:
+			for _, nested := range typed {
+				walk(path, nested)
+			}
+		}
+	}
+
+	walk("", value)
 }
 
 func ptrInt64(v int64) *int64 {

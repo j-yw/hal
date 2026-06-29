@@ -294,6 +294,34 @@ type SandboxWorkspaceMetadata struct {
 	SyncRef     string `json:"syncRef"`
 }
 
+// SandboxSecurityMetadata captures redaction-safe sandbox security summary details.
+type SandboxSecurityMetadata struct {
+	Network *SandboxNetworkSecurityMetadata `json:"network,omitempty"`
+	Secrets *SandboxSecretSecurityMetadata  `json:"secrets,omitempty"`
+}
+
+// SandboxNetworkSecurityMetadata captures redaction-safe sandbox network policy details.
+type SandboxNetworkSecurityMetadata struct {
+	PolicyRequested string `json:"policyRequested,omitempty"`
+	PolicyEnforced  string `json:"policyEnforced,omitempty"`
+	EnforcementMode string `json:"enforcementMode,omitempty"`
+}
+
+// SandboxSecretSecurityMetadata captures redaction-safe sandbox secret delivery details.
+type SandboxSecretSecurityMetadata struct {
+	RequestedModes []string `json:"requestedModes,omitempty"`
+	ActiveModes    []string `json:"activeModes,omitempty"`
+}
+
+// SandboxLeaseMetadata captures redaction-safe sandbox lease summary details.
+type SandboxLeaseMetadata struct {
+	ID          string    `json:"id"`
+	ResourceKey string    `json:"resourceKey"`
+	Purpose     string    `json:"purpose"`
+	RunID       string    `json:"runId"`
+	ExpiresAt   time.Time `json:"expiresAt"`
+}
+
 // SandboxMetadata captures redaction-safe remote execution details for a
 // sandbox-backed factory run.
 type SandboxMetadata struct {
