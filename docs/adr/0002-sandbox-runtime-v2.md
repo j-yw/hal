@@ -14,6 +14,11 @@ Phase 0 makes no runtime behavior changes. It also makes no production code
 changes; the only intended product change in Phase 0 is this file:
 `docs/adr/0002-sandbox-runtime-v2.md`.
 
+Existing sandbox users should continue to rely on the current SSH-machine
+provider behavior while Sandbox Runtime v2 is designed. The compatibility path
+for this ADR is preserving those providers until a later implementation phase
+introduces and verifies a replacement runtime.
+
 ## Decision
 
 The target runtime for Sandbox Runtime v2 is self-hosted microVM workers. This
@@ -35,7 +40,16 @@ To be expanded by subsequent documentation tasks.
 
 ## Compatibility Assumptions
 
-To be expanded by subsequent documentation tasks.
+Current SSH-machine providers remain the compatibility path for existing
+sandbox usage. Phase 0 does not move users, factory runs, or sandbox commands
+to a new runtime, and it does not change how current providers are configured,
+selected, started, reused, or inspected.
+
+Future Sandbox Runtime v2 phases must treat existing sandbox users and provider
+integrations as compatibility inputs. Any migration away from the SSH-machine
+provider path requires an explicit implementation PRD, contract review where a
+machine-readable surface changes, and a rollout plan that preserves current
+behavior until the new runtime is intentionally enabled.
 
 ## Non-Goals
 
