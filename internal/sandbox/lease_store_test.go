@@ -210,6 +210,139 @@ func TestLoadAndListLeasesPreserveCorruptJSON(t *testing.T) {
 	assertFileBytes(t, leasePath, corrupt)
 }
 
+func TestAcquireLeaseConflictsOnActiveResourceKey(t *testing.T) {
+	home := setSandboxHome(t)
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	store := NewSandboxLeaseStore(func() time.Time { return now })
+
+	if _, err := store.Acquire(SandboxLeaseAcquireRequest{
+		ID:          "lease-01",
+		SandboxName: "api-backend",
+		ResourceKey: "sandbox:api-backend",
+		Holder:      "worker-01",
+		Purpose:     SandboxLeasePurposeRun,
+	}, 30*time.Minute); err != nil {
+		t.Fatalf("Acquire() first lease failed: %v", err)
+	}
+
+	_, err := store.Acquire(SandboxLeaseAcquireRequest{
+		ID:          "lease-02",
+		SandboxName: "api-backend",
+		ResourceKey: "sandbox:api-backend",
+		Holder:      "worker-02",
+		Purpose:     SandboxLeasePurposeAuto,
+	}, 30*time.Minute)
+	if err == nil {
+		t.Fatal("Acquire() conflict error = nil")
+	}
+	if !strings.Contains(err.Error(), "active lease") {
+		t.Fatalf("Acquire() conflict error = %q, want active lease", err.Error())
+	}
+	if _, statErr := os.Stat(filepath.Join(home, sandboxLeasesDirName, "lease-02.json")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("conflicting lease file stat error = %v, want fs.ErrNotExist", statErr)
+	}
+	assertNoTempFiles(t, filepath.Join(home, sandboxLeasesDirName))
+}
+
+func TestAcquireLeaseConflictUsesResourceKeyOnly(t *testing.T) {
+	setSandboxHome(t)
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	store := NewSandboxLeaseStore(func() time.Time { return now })
+
+	if _, err := store.Acquire(SandboxLeaseAcquireRequest{
+		ID:          "lease-01",
+		SandboxName: "shared-name",
+		ResourceKey: "sandbox:shared-name",
+		Holder:      "worker-01",
+		Purpose:     SandboxLeasePurposeRun,
+	}, 30*time.Minute); err != nil {
+		t.Fatalf("Acquire() first lease failed: %v", err)
+	}
+
+	if _, err := store.Acquire(SandboxLeaseAcquireRequest{
+		ID:          "lease-02",
+		SandboxName: "shared-name",
+		ResourceKey: "host:host-01",
+		Holder:      "worker-02",
+		Purpose:     SandboxLeasePurposeFactory,
+	}, 30*time.Minute); err != nil {
+		t.Fatalf("Acquire() with same SandboxName and different ResourceKey failed: %v", err)
+	}
+}
+
+func TestAcquireLeaseIgnoresReleasedAndExpiredLeases(t *testing.T) {
+	home := setSandboxHome(t)
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	store := NewSandboxLeaseStore(func() time.Time { return now })
+
+	writeLeaseFixture(t, home, &SandboxLease{
+		ID:          "released-lease",
+		SandboxName: "api-backend",
+		ResourceKey: "sandbox:api-backend",
+		Holder:      "worker-01",
+		Purpose:     SandboxLeasePurposeRun,
+		Status:      SandboxLeaseStatusReleased,
+	})
+	writeLeaseFixture(t, home, &SandboxLease{
+		ID:          "expired-lease",
+		SandboxName: "worker-box",
+		ResourceKey: "sandbox:worker-box",
+		Holder:      "worker-01",
+		Purpose:     SandboxLeasePurposeRun,
+		Status:      SandboxLeaseStatusExpired,
+	})
+
+	if _, err := store.Acquire(SandboxLeaseAcquireRequest{
+		ID:          "lease-01",
+		SandboxName: "api-backend",
+		ResourceKey: "sandbox:api-backend",
+		Holder:      "worker-02",
+		Purpose:     SandboxLeasePurposeAuto,
+	}, 30*time.Minute); err != nil {
+		t.Fatalf("Acquire() after released lease failed: %v", err)
+	}
+	if _, err := store.Acquire(SandboxLeaseAcquireRequest{
+		ID:          "lease-02",
+		SandboxName: "worker-box",
+		ResourceKey: "sandbox:worker-box",
+		Holder:      "worker-02",
+		Purpose:     SandboxLeasePurposeAuto,
+	}, 30*time.Minute); err != nil {
+		t.Fatalf("Acquire() after expired lease failed: %v", err)
+	}
+}
+
+func TestAcquireLeaseConflictScanPreservesCorruptJSON(t *testing.T) {
+	home := setSandboxHome(t)
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	store := NewSandboxLeaseStore(func() time.Time { return now })
+	leaseDir := filepath.Join(home, sandboxLeasesDirName)
+	if err := os.MkdirAll(leaseDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+	corruptPath := filepath.Join(leaseDir, "broken.json")
+	corrupt := []byte("{not-json\n")
+	if err := os.WriteFile(corruptPath, corrupt, 0o600); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+
+	_, err := store.Acquire(SandboxLeaseAcquireRequest{
+		ID:          "lease-01",
+		SandboxName: "api-backend",
+		ResourceKey: "sandbox:api-backend",
+		Holder:      "worker-01",
+		Purpose:     SandboxLeasePurposeRun,
+	}, 30*time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "parse lease") {
+		t.Fatalf("Acquire() error = %v, want parse lease error", err)
+	}
+	assertFileBytes(t, corruptPath, corrupt)
+	if _, statErr := os.Stat(filepath.Join(leaseDir, "lease-01.json")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("lease file stat error = %v, want fs.ErrNotExist", statErr)
+	}
+	assertNoTempFiles(t, leaseDir)
+}
+
 func writeLeaseFixture(t *testing.T, home string, lease *SandboxLease) {
 	t.Helper()
 

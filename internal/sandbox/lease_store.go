@@ -60,6 +60,9 @@ func (s *SandboxLeaseStore) Acquire(req SandboxLeaseAcquireRequest, ttl time.Dur
 	} else if exists {
 		return nil, fmt.Errorf("lease %q already exists", req.ID)
 	}
+	if err := checkActiveLeaseConflict(leaseDir, req.ID, req.ResourceKey); err != nil {
+		return nil, err
+	}
 
 	now := s.now()
 	lease := &SandboxLease{
@@ -80,6 +83,37 @@ func (s *SandboxLeaseStore) Acquire(req SandboxLeaseAcquireRequest, ttl time.Dur
 		return nil, err
 	}
 	return lease, nil
+}
+
+func checkActiveLeaseConflict(leaseDir, requestedID, resourceKey string) error {
+	entries, err := os.ReadDir(leaseDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read sandbox leases dir: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != sandboxStateFileExt {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), sandboxStateFileExt)
+		lease, err := loadLeaseFile(filepath.Join(leaseDir, entry.Name()), id)
+		if err != nil {
+			if strings.HasPrefix(err.Error(), "parse lease ") {
+				return fmt.Errorf("parse lease file %q: %w", entry.Name(), err)
+			}
+			return fmt.Errorf("read lease file %q: %w", entry.Name(), err)
+		}
+		if lease.ID == requestedID {
+			continue
+		}
+		if lease.Status == SandboxLeaseStatusActive && lease.ResourceKey == resourceKey {
+			return fmt.Errorf("resource %q already has active lease %q", resourceKey, lease.ID)
+		}
+	}
+	return nil
 }
 
 func validateLeaseAcquireRequest(req SandboxLeaseAcquireRequest) error {
