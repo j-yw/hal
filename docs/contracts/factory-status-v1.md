@@ -131,6 +131,71 @@ When `sandbox.connection` is present:
 | `tailscaleHostname` | string | no | Tailscale hostname when available |
 | `tailscaleLockdown` | boolean | no | Whether provider access expects Tailscale-only connectivity |
 
+When `sandbox.host` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | yes | Stable host identifier |
+| `name` | string | yes | Redaction-safe host display name |
+| `kind` | string | yes | Host kind, such as `local`, `ssh`, `worker`, or `k8s` |
+
+When `sandbox.runtime` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `driver` | string | yes | Runtime driver, such as `ssh_machine`, `rootless_podman`, or `microvm` |
+| `isolationLevel` | string | yes | Runtime isolation level, such as `host`, `container`, or `vm` |
+| `runtimeId` | string | yes | Stable runtime identifier |
+| `image` | string | yes | Runtime image or image reference when known |
+| `workerId` | string | yes | Worker identifier associated with the runtime when known |
+
+When `sandbox.workspace` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `mode` | string | yes | Workspace materialization mode, such as `clone`, `copy`, or `direct` |
+| `inputSource` | string | yes | Workspace input source, such as `remote_ref`, `git_bundle`, or `copy` |
+| `branch` | string | yes | Branch associated with the workspace |
+| `syncRef` | string | yes | Redaction-safe synchronization reference |
+
+When `sandbox.security` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `network` | object | no | Redaction-safe network policy summary |
+| `secrets` | object | no | Redaction-safe secret delivery summary |
+
+When `sandbox.security.network` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `policyRequested` | string | no | Requested network policy summary |
+| `policyEnforced` | string | no | Enforced network policy summary |
+| `enforcementMode` | string | no | Network enforcement mode, such as `none`, `best_effort`, `proxy`, `firewall`, `runtime`, or `proxy_firewall` |
+
+When `sandbox.security.secrets` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `requestedModes` | array | no | Requested secret delivery mode identifiers; mode names are safe summaries only |
+| `activeModes` | array | no | Active secret delivery mode identifiers; mode names are safe summaries only |
+
+When `sandbox.lease` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | yes | Stable lease identifier |
+| `resourceKey` | string | yes | Redaction-safe leased resource key |
+| `purpose` | string | yes | Lease purpose |
+| `runId` | string | yes | Factory run identifier associated with the lease |
+| `expiresAt` | string | yes | RFC 3339 timestamp when the lease expires |
+
+Factory sandbox workspace metadata intentionally omits repository paths, raw
+workspace paths, and raw filesystem paths. Factory sandbox security metadata
+intentionally omits secret names, secret values, tokens, credentials, private
+keys, provider credentials, and raw environment values. Factory sandbox lease
+metadata intentionally omits the lease holder.
+
 ## Source Metadata
 
 | Field | Type | Required | Description |
