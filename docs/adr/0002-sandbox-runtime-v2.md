@@ -41,6 +41,11 @@ adds no new CLI flags for `hal run` or `hal auto`; sandbox flag design and
 implementation for both commands belongs in a later phase after shared factory
 and sandbox orchestration boundaries have been extracted.
 
+Future Sandbox Runtime v2 contract changes must be additive unless a new v2
+contract is introduced. Phase 0 contract work is limited to documenting this
+compatibility rule in the ADR; it does not modify contract files, add a new
+runtime contract, or change any existing machine-readable contract surface.
+
 ## Consequences
 
 To be expanded by subsequent documentation tasks.
