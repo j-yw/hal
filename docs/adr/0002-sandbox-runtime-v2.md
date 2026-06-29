@@ -54,7 +54,21 @@ runtime contract, or change any existing machine-readable contract surface.
 
 ## Consequences
 
-To be expanded by subsequent documentation tasks.
+Choosing self-hosted microVM workers makes Sandbox Runtime v2 a separate
+execution boundary rather than another legacy sandbox provider. Later phases
+must preserve existing behavior while extracting the shared state, type, and
+command-orchestration seams needed to support that boundary.
+
+Keeping current SSH-machine providers as the compatibility path reduces
+migration risk for existing factory and sandbox workflows. Keeping `hal run`
+and `hal auto` local by default avoids implicit remote execution changes while
+the new runtime is designed and extracted.
+
+Deferring sandbox CLI flags and requiring additive contract changes keeps
+automation stable until factory extraction and any v2 contract work are
+explicitly scoped. This ADR therefore creates reviewable implementation
+constraints, but it does not itself authorize runtime, CLI, contract, executor,
+Podman, `sandboxd`, microVM, or network-proxy changes.
 
 ## Verification Guidance
 
