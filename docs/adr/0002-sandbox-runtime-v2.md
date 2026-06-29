@@ -30,6 +30,12 @@ extract shared sandbox orchestration, and preserve existing behavior before any
 new runtime is enabled. Phase 0 does not deliver Podman support, `sandboxd`, or
 microVM implementation work.
 
+Normal Hal workflows remain local by default while Sandbox Runtime v2 is
+designed and extracted. `hal run` remains local by default, and `hal auto`
+remains local by default. Phase 0 does not introduce new default remote
+execution behavior or new default sandbox execution behavior for either
+workflow.
+
 ## Consequences
 
 To be expanded by subsequent documentation tasks.
