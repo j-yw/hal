@@ -1,0 +1,238 @@
+package sandbox
+
+import (
+	"encoding/json"
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestAcquireLeasePersistsActiveLease(t *testing.T) {
+	home := setSandboxHome(t)
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	store := NewSandboxLeaseStore(func() time.Time { return now })
+
+	lease, err := store.Acquire(SandboxLeaseAcquireRequest{
+		ID:          "lease-01",
+		SandboxID:   "sandbox-01",
+		SandboxName: "api-backend",
+		ResourceKey: "sandbox:api-backend",
+		Holder:      "worker-01",
+		Purpose:     SandboxLeasePurposeRun,
+		RunID:       "run-01",
+	}, 30*time.Minute)
+	if err != nil {
+		t.Fatalf("Acquire() unexpected error: %v", err)
+	}
+	if lease.Status != SandboxLeaseStatusActive {
+		t.Fatalf("lease status = %q, want %q", lease.Status, SandboxLeaseStatusActive)
+	}
+	if !lease.AcquiredAt.Equal(now) || !lease.HeartbeatAt.Equal(now) {
+		t.Fatalf("lease timestamps acquired=%s heartbeat=%s, want %s", lease.AcquiredAt, lease.HeartbeatAt, now)
+	}
+	if want := now.Add(30 * time.Minute); !lease.ExpiresAt.Equal(want) {
+		t.Fatalf("lease ExpiresAt = %s, want %s", lease.ExpiresAt, want)
+	}
+
+	leasePath := filepath.Join(home, sandboxLeasesDirName, "lease-01.json")
+	info, err := os.Stat(leasePath)
+	if err != nil {
+		t.Fatalf("expected lease file to exist: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("lease file perms = %o, want %o", info.Mode().Perm(), 0o600)
+	}
+
+	dirInfo, err := os.Stat(filepath.Join(home, sandboxLeasesDirName))
+	if err != nil {
+		t.Fatalf("expected lease dir to exist: %v", err)
+	}
+	if runtime.GOOS != "windows" && dirInfo.Mode().Perm() != 0o700 {
+		t.Fatalf("lease dir perms = %o, want %o", dirInfo.Mode().Perm(), 0o700)
+	}
+	assertNoTempFiles(t, filepath.Join(home, sandboxLeasesDirName))
+
+	loaded, err := store.Load("lease-01")
+	if err != nil {
+		t.Fatalf("Load() unexpected error: %v", err)
+	}
+	if loaded.ID != lease.ID || loaded.ResourceKey != lease.ResourceKey || loaded.RunID != lease.RunID {
+		t.Fatalf("loaded lease = %#v, want %#v", loaded, lease)
+	}
+}
+
+func TestAcquireLeaseValidationLeavesNoFiles(t *testing.T) {
+	home := setSandboxHome(t)
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	store := NewSandboxLeaseStore(func() time.Time { return now })
+
+	valid := SandboxLeaseAcquireRequest{
+		ID:          "lease-01",
+		SandboxName: "api-backend",
+		ResourceKey: "sandbox:api-backend",
+		Holder:      "worker-01",
+		Purpose:     SandboxLeasePurposeRun,
+	}
+	tests := []struct {
+		name   string
+		mutate func(*SandboxLeaseAcquireRequest)
+	}{
+		{name: "missing id", mutate: func(r *SandboxLeaseAcquireRequest) { r.ID = "" }},
+		{name: "missing resource key", mutate: func(r *SandboxLeaseAcquireRequest) { r.ResourceKey = "" }},
+		{name: "missing holder", mutate: func(r *SandboxLeaseAcquireRequest) { r.Holder = "" }},
+		{name: "missing purpose", mutate: func(r *SandboxLeaseAcquireRequest) { r.Purpose = "" }},
+		{name: "unsafe id", mutate: func(r *SandboxLeaseAcquireRequest) { r.ID = "../lease" }},
+		{name: "unsupported resource prefix", mutate: func(r *SandboxLeaseAcquireRequest) { r.ResourceKey = "other:value" }},
+		{name: "empty resource suffix", mutate: func(r *SandboxLeaseAcquireRequest) { r.ResourceKey = "host:" }},
+		{name: "unsupported purpose", mutate: func(r *SandboxLeaseAcquireRequest) { r.Purpose = "deploy" }},
+		{name: "missing sandbox name", mutate: func(r *SandboxLeaseAcquireRequest) { r.SandboxName = "" }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := valid
+			tt.mutate(&req)
+			if _, err := store.Acquire(req, 30*time.Minute); err == nil {
+				t.Fatal("Acquire() error = nil, want validation error")
+			}
+			assertNoStoreFiles(t, filepath.Join(home, sandboxLeasesDirName))
+		})
+	}
+}
+
+func TestAcquireLeaseAllowsNonSandboxResourcesWithoutSandboxName(t *testing.T) {
+	setSandboxHome(t)
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	store := NewSandboxLeaseStore(func() time.Time { return now })
+
+	for _, resourceKey := range []string{"workspace:abc123", "host:host-01", "runtime:runtime-01"} {
+		leaseID := strings.ReplaceAll(resourceKey, ":", "-")
+		lease, err := store.Acquire(SandboxLeaseAcquireRequest{
+			ID:          leaseID,
+			ResourceKey: resourceKey,
+			Holder:      "worker-01",
+			Purpose:     SandboxLeasePurposeAuto,
+		}, 15*time.Minute)
+		if err != nil {
+			t.Fatalf("Acquire(%q) unexpected error: %v", resourceKey, err)
+		}
+		if lease.SandboxName != "" {
+			t.Fatalf("Acquire(%q) SandboxName = %q, want empty", resourceKey, lease.SandboxName)
+		}
+	}
+}
+
+func TestListLeasesMissingDirAndSorted(t *testing.T) {
+	home := setSandboxHome(t)
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	store := NewSandboxLeaseStore(func() time.Time { return now })
+
+	leases, err := store.List()
+	if err != nil {
+		t.Fatalf("List() on missing dir unexpected error: %v", err)
+	}
+	if len(leases) != 0 {
+		t.Fatalf("List() len = %d, want 0", len(leases))
+	}
+
+	for _, lease := range []*SandboxLease{
+		{ID: "lease-c", ResourceKey: "workspace:z", Holder: "worker-01", Purpose: SandboxLeasePurposeAuto, Status: SandboxLeaseStatusActive},
+		{ID: "lease-b", ResourceKey: "host:a", Holder: "worker-01", Purpose: SandboxLeasePurposeAuto, Status: SandboxLeaseStatusActive},
+		{ID: "lease-a", ResourceKey: "host:a", Holder: "worker-02", Purpose: SandboxLeasePurposeFactory, Status: SandboxLeaseStatusReleased},
+	} {
+		writeLeaseFixture(t, home, lease)
+	}
+
+	leases, err = store.List()
+	if err != nil {
+		t.Fatalf("List() unexpected error: %v", err)
+	}
+	got := []string{leases[0].ID, leases[1].ID, leases[2].ID}
+	want := []string{"lease-a", "lease-b", "lease-c"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("List() order = %v, want %v", got, want)
+	}
+}
+
+func TestRemoveLease(t *testing.T) {
+	setSandboxHome(t)
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	store := NewSandboxLeaseStore(func() time.Time { return now })
+
+	if _, err := store.Acquire(SandboxLeaseAcquireRequest{
+		ID:          "lease-01",
+		SandboxName: "api-backend",
+		ResourceKey: "sandbox:api-backend",
+		Holder:      "worker-01",
+		Purpose:     SandboxLeasePurposeRun,
+	}, 30*time.Minute); err != nil {
+		t.Fatalf("Acquire() failed: %v", err)
+	}
+	if err := store.Remove("lease-01"); err != nil {
+		t.Fatalf("Remove() failed: %v", err)
+	}
+	if _, err := store.Load("lease-01"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Load() after remove error = %v, want fs.ErrNotExist", err)
+	}
+	if err := store.Remove("lease-01"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Remove() missing error = %v, want fs.ErrNotExist", err)
+	}
+}
+
+func TestLoadAndListLeasesPreserveCorruptJSON(t *testing.T) {
+	home := setSandboxHome(t)
+	store := NewSandboxLeaseStore(func() time.Time {
+		return time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	})
+	leaseDir := filepath.Join(home, sandboxLeasesDirName)
+	if err := os.MkdirAll(leaseDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+	leasePath := filepath.Join(leaseDir, "lease-01.json")
+	corrupt := []byte("{not-json\n")
+	if err := os.WriteFile(leasePath, corrupt, 0o600); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+
+	if _, err := store.Load("lease-01"); err == nil || !strings.Contains(err.Error(), "parse lease") {
+		t.Fatalf("Load() error = %v, want parse lease error", err)
+	}
+	assertFileBytes(t, leasePath, corrupt)
+
+	if _, err := store.List(); err == nil || !strings.Contains(err.Error(), "parse lease") {
+		t.Fatalf("List() error = %v, want parse lease error", err)
+	}
+	assertFileBytes(t, leasePath, corrupt)
+}
+
+func writeLeaseFixture(t *testing.T, home string, lease *SandboxLease) {
+	t.Helper()
+
+	if lease.AcquiredAt.IsZero() {
+		lease.AcquiredAt = time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	}
+	if lease.HeartbeatAt.IsZero() {
+		lease.HeartbeatAt = lease.AcquiredAt
+	}
+	if lease.ExpiresAt.IsZero() {
+		lease.ExpiresAt = lease.AcquiredAt.Add(30 * time.Minute)
+	}
+	data, err := json.MarshalIndent(lease, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent() failed: %v", err)
+	}
+	data = append(data, '\n')
+
+	leaseDir := filepath.Join(home, sandboxLeasesDirName)
+	if err := os.MkdirAll(leaseDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(leaseDir, lease.ID+sandboxStateFileExt), data, 0o600); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+}
