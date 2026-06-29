@@ -634,6 +634,13 @@ func TestFactoryTypesHaveJSONTags(t *testing.T) {
 		reflect.TypeOf(RunRecord{}),
 		reflect.TypeOf(RunSecretInput{}),
 		reflect.TypeOf(RunSecretMetadata{}),
+		reflect.TypeOf(SandboxHostMetadata{}),
+		reflect.TypeOf(SandboxRuntimeMetadata{}),
+		reflect.TypeOf(SandboxWorkspaceMetadata{}),
+		reflect.TypeOf(SandboxSecurityMetadata{}),
+		reflect.TypeOf(SandboxNetworkSecurityMetadata{}),
+		reflect.TypeOf(SandboxSecretSecurityMetadata{}),
+		reflect.TypeOf(SandboxLeaseMetadata{}),
 		reflect.TypeOf(SandboxMetadata{}),
 		reflect.TypeOf(SandboxConnectionMetadata{}),
 		reflect.TypeOf(SourceMetadata{}),
@@ -679,6 +686,421 @@ func TestFactoryTypesHaveJSONTags(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSandboxHostRuntimeWorkspaceMetadataJSONTags(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     any
+		wantKeys  []string
+		wantValue map[string]any
+		forbidden []string
+	}{
+		{
+			name: "host",
+			value: SandboxHostMetadata{
+				ID:   "host-123",
+				Name: "builder-a",
+				Kind: "worker",
+			},
+			wantKeys: []string{"id", "name", "kind"},
+			wantValue: map[string]any{
+				"id":   "host-123",
+				"name": "builder-a",
+				"kind": "worker",
+			},
+		},
+		{
+			name: "runtime",
+			value: SandboxRuntimeMetadata{
+				Driver:         "rootless_podman",
+				IsolationLevel: "container",
+				RuntimeID:      "runtime-abc",
+				Image:          "ghcr.io/jywlabs/hal-worker:2026-06-29",
+				WorkerID:       "worker-7",
+			},
+			wantKeys: []string{"driver", "isolationLevel", "runtimeId", "image", "workerId"},
+			wantValue: map[string]any{
+				"driver":         "rootless_podman",
+				"isolationLevel": "container",
+				"runtimeId":      "runtime-abc",
+				"image":          "ghcr.io/jywlabs/hal-worker:2026-06-29",
+				"workerId":       "worker-7",
+			},
+		},
+		{
+			name: "workspace",
+			value: SandboxWorkspaceMetadata{
+				Mode:        "clone",
+				InputSource: "remote_ref",
+				Branch:      "hal/factory-runtime-v2",
+				SyncRef:     "refs/heads/hal/factory-runtime-v2",
+			},
+			wantKeys: []string{"mode", "inputSource", "branch", "syncRef"},
+			wantValue: map[string]any{
+				"mode":        "clone",
+				"inputSource": "remote_ref",
+				"branch":      "hal/factory-runtime-v2",
+				"syncRef":     "refs/heads/hal/factory-runtime-v2",
+			},
+			forbidden: []string{"repo", "path", "workspacePath", "workspaceRoot", "sourcePath", "storedPath"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.value)
+			if err != nil {
+				t.Fatalf("json.Marshal() error = %v", err)
+			}
+
+			var raw map[string]any
+			if err := json.Unmarshal(data, &raw); err != nil {
+				t.Fatalf("json.Unmarshal(payload) error = %v", err)
+			}
+
+			requireExactJSONKeys(t, raw, tt.wantKeys)
+			for key, want := range tt.wantValue {
+				if raw[key] != want {
+					t.Errorf("%s = %#v, want %#v", key, raw[key], want)
+				}
+			}
+			for _, key := range tt.forbidden {
+				if _, ok := raw[key]; ok {
+					t.Errorf("unsafe workspace metadata field %q should not be serialized", key)
+				}
+			}
+		})
+	}
+}
+
+func TestSandboxSecurityLeaseMetadataJSONTags(t *testing.T) {
+	security := SandboxSecurityMetadata{
+		Network: &SandboxNetworkSecurityMetadata{
+			PolicyRequested: "deny_by_default",
+			PolicyEnforced:  "best_effort",
+			EnforcementMode: "proxy_firewall",
+		},
+		Secrets: &SandboxSecretSecurityMetadata{
+			RequestedModes: []string{"env", "file_tmpfs"},
+			ActiveModes:    []string{"file_tmpfs"},
+		},
+	}
+
+	data, err := json.Marshal(security)
+	if err != nil {
+		t.Fatalf("json.Marshal(security) error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(security payload) error = %v", err)
+	}
+
+	requireExactJSONKeys(t, raw, []string{"network", "secrets"})
+	requireJSONKeysAbsent(t, raw, []string{
+		"secretName",
+		"secretNames",
+		"secretValue",
+		"secretValues",
+		"privateKey",
+		"token",
+		"tokens",
+		"rawEnv",
+		"environment",
+		"credentials",
+		"providerCredentials",
+	})
+
+	network, ok := raw["network"].(map[string]any)
+	if !ok {
+		t.Fatalf("network should be an object, got %T", raw["network"])
+	}
+	requireExactJSONKeys(t, network, []string{"policyRequested", "policyEnforced", "enforcementMode"})
+	if network["policyRequested"] != "deny_by_default" {
+		t.Errorf("network.policyRequested = %#v, want deny_by_default", network["policyRequested"])
+	}
+	if network["policyEnforced"] != "best_effort" {
+		t.Errorf("network.policyEnforced = %#v, want best_effort", network["policyEnforced"])
+	}
+	if network["enforcementMode"] != "proxy_firewall" {
+		t.Errorf("network.enforcementMode = %#v, want proxy_firewall", network["enforcementMode"])
+	}
+
+	secrets, ok := raw["secrets"].(map[string]any)
+	if !ok {
+		t.Fatalf("secrets should be an object, got %T", raw["secrets"])
+	}
+	requireExactJSONKeys(t, secrets, []string{"requestedModes", "activeModes"})
+	if !reflect.DeepEqual(secrets["requestedModes"], []any{"env", "file_tmpfs"}) {
+		t.Errorf("secrets.requestedModes = %#v, want [env file_tmpfs]", secrets["requestedModes"])
+	}
+	if !reflect.DeepEqual(secrets["activeModes"], []any{"file_tmpfs"}) {
+		t.Errorf("secrets.activeModes = %#v, want [file_tmpfs]", secrets["activeModes"])
+	}
+
+	expiresAt := time.Date(2026, 6, 29, 14, 30, 0, 0, time.UTC)
+	lease := SandboxLeaseMetadata{
+		ID:          "lease-123",
+		ResourceKey: "host:worker-a",
+		Purpose:     "factory",
+		RunID:       "run-456",
+		ExpiresAt:   expiresAt,
+	}
+
+	data, err = json.Marshal(lease)
+	if err != nil {
+		t.Fatalf("json.Marshal(lease) error = %v", err)
+	}
+
+	raw = map[string]any{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(lease payload) error = %v", err)
+	}
+
+	requireExactJSONKeys(t, raw, []string{"id", "resourceKey", "purpose", "runId", "expiresAt"})
+	if raw["id"] != "lease-123" {
+		t.Errorf("lease.id = %#v, want lease-123", raw["id"])
+	}
+	if raw["resourceKey"] != "host:worker-a" {
+		t.Errorf("lease.resourceKey = %#v, want host:worker-a", raw["resourceKey"])
+	}
+	if raw["purpose"] != "factory" {
+		t.Errorf("lease.purpose = %#v, want factory", raw["purpose"])
+	}
+	if raw["runId"] != "run-456" {
+		t.Errorf("lease.runId = %#v, want run-456", raw["runId"])
+	}
+	if raw["expiresAt"] != expiresAt.Format(time.RFC3339) {
+		t.Errorf("lease.expiresAt = %#v, want %q", raw["expiresAt"], expiresAt.Format(time.RFC3339))
+	}
+	if _, ok := raw["holder"]; ok {
+		t.Fatal("lease holder must not be serialized")
+	}
+}
+
+func TestSandboxMetadataLoadsLegacyJSON(t *testing.T) {
+	payload := []byte(`{
+		"name": "factory-run",
+		"provider": "daytona",
+		"size": "medium",
+		"status": "running",
+		"connection": {
+			"address": "100.64.0.10",
+			"publicIp": "203.0.113.10",
+			"tailscaleIp": "100.64.0.10",
+			"tailscaleHostname": "factory-run.tailnet.ts.net",
+			"tailscaleLockdown": true
+		},
+		"sshCommand": "hal sandbox ssh factory-run",
+		"cleanupCommand": "hal sandbox delete factory-run",
+		"handoff": "Inspect the sandbox before cleanup."
+	}`)
+
+	var decoded SandboxMetadata
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(legacy sandbox metadata) error = %v", err)
+	}
+
+	if decoded.Name != "factory-run" {
+		t.Fatalf("name = %q, want factory-run", decoded.Name)
+	}
+	if decoded.Provider != "daytona" {
+		t.Fatalf("provider = %q, want daytona", decoded.Provider)
+	}
+	if decoded.Connection == nil || !decoded.Connection.TailscaleLockdown {
+		t.Fatalf("connection = %#v, want populated lockdown metadata", decoded.Connection)
+	}
+	if decoded.Host != nil {
+		t.Fatalf("host = %#v, want nil for omitted legacy field", decoded.Host)
+	}
+	if decoded.Runtime != nil {
+		t.Fatalf("runtime = %#v, want nil for omitted legacy field", decoded.Runtime)
+	}
+	if decoded.Workspace != nil {
+		t.Fatalf("workspace = %#v, want nil for omitted legacy field", decoded.Workspace)
+	}
+	if decoded.Security != nil {
+		t.Fatalf("security = %#v, want nil for omitted legacy field", decoded.Security)
+	}
+	if decoded.Lease != nil {
+		t.Fatalf("lease = %#v, want nil for omitted legacy field", decoded.Lease)
+	}
+}
+
+func TestSandboxMetadataOptionalMetadataOmittedWhenNil(t *testing.T) {
+	metadata := SandboxMetadata{
+		Name:           "factory-run",
+		Provider:       "daytona",
+		Status:         "running",
+		SSHCommand:     "hal sandbox ssh factory-run",
+		CleanupCommand: "hal sandbox delete factory-run",
+	}
+
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("json.Marshal(sandbox metadata) error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(sandbox metadata payload) error = %v", err)
+	}
+
+	requireExactJSONKeys(t, raw, []string{"name", "provider", "status", "sshCommand", "cleanupCommand"})
+}
+
+func TestSandboxMetadataRuntimeV2SummaryJSONShape(t *testing.T) {
+	expiresAt := time.Date(2026, 6, 29, 16, 45, 0, 0, time.UTC)
+	metadata := SandboxMetadata{
+		Name:     "factory-run",
+		Provider: "daytona",
+		Size:     "medium",
+		Status:   "running",
+		Connection: &SandboxConnectionMetadata{
+			TailscaleLockdown: true,
+		},
+		SSHCommand:     "hal sandbox ssh factory-run",
+		CleanupCommand: "hal sandbox delete factory-run",
+		Handoff:        "Inspect the sandbox before cleanup.",
+		Host: &SandboxHostMetadata{
+			ID:   "host-123",
+			Name: "worker-a",
+			Kind: "worker",
+		},
+		Runtime: &SandboxRuntimeMetadata{
+			Driver:         "rootless_podman",
+			IsolationLevel: "container",
+			RuntimeID:      "runtime-abc",
+			Image:          "ghcr.io/jywlabs/hal-worker:2026-06-29",
+			WorkerID:       "worker-7",
+		},
+		Workspace: &SandboxWorkspaceMetadata{
+			Mode:        "clone",
+			InputSource: "remote_ref",
+			Branch:      "hal/factory-runtime-v2",
+			SyncRef:     "refs/heads/hal/factory-runtime-v2",
+		},
+		Security: &SandboxSecurityMetadata{
+			Network: &SandboxNetworkSecurityMetadata{
+				PolicyRequested: "deny_by_default",
+				PolicyEnforced:  "best_effort",
+				EnforcementMode: "proxy_firewall",
+			},
+			Secrets: &SandboxSecretSecurityMetadata{
+				RequestedModes: []string{"env", "file_tmpfs"},
+				ActiveModes:    []string{"file_tmpfs"},
+			},
+		},
+		Lease: &SandboxLeaseMetadata{
+			ID:          "lease-123",
+			ResourceKey: "host:worker-a",
+			Purpose:     "factory",
+			RunID:       "run-456",
+			ExpiresAt:   expiresAt,
+		},
+	}
+
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("json.Marshal(sandbox metadata) error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(sandbox metadata payload) error = %v", err)
+	}
+
+	requireExactJSONKeys(t, raw, []string{
+		"name",
+		"provider",
+		"size",
+		"status",
+		"connection",
+		"sshCommand",
+		"cleanupCommand",
+		"handoff",
+		"host",
+		"runtime",
+		"workspace",
+		"security",
+		"lease",
+	})
+	requireJSONKeysAbsent(t, raw, []string{
+		"path",
+		"paths",
+		"hostPath",
+		"hostPaths",
+		"workspacePath",
+		"workspaceRoot",
+		"sourcePath",
+		"storedPath",
+		"repo",
+		"secretName",
+		"secretNames",
+		"secretValue",
+		"secretValues",
+		"privateKey",
+		"token",
+		"tokens",
+		"rawEnv",
+		"rawEnvironment",
+		"environment",
+		"credentials",
+		"providerCredentials",
+		"holder",
+	})
+
+	host, ok := raw["host"].(map[string]any)
+	if !ok {
+		t.Fatalf("host should be an object, got %T", raw["host"])
+	}
+	requireExactJSONKeys(t, host, []string{"id", "name", "kind"})
+
+	runtime, ok := raw["runtime"].(map[string]any)
+	if !ok {
+		t.Fatalf("runtime should be an object, got %T", raw["runtime"])
+	}
+	requireExactJSONKeys(t, runtime, []string{"driver", "isolationLevel", "runtimeId", "image", "workerId"})
+
+	workspace, ok := raw["workspace"].(map[string]any)
+	if !ok {
+		t.Fatalf("workspace should be an object, got %T", raw["workspace"])
+	}
+	requireExactJSONKeys(t, workspace, []string{"mode", "inputSource", "branch", "syncRef"})
+
+	security, ok := raw["security"].(map[string]any)
+	if !ok {
+		t.Fatalf("security should be an object, got %T", raw["security"])
+	}
+	requireExactJSONKeys(t, security, []string{"network", "secrets"})
+
+	network, ok := security["network"].(map[string]any)
+	if !ok {
+		t.Fatalf("security.network should be an object, got %T", security["network"])
+	}
+	requireExactJSONKeys(t, network, []string{"policyRequested", "policyEnforced", "enforcementMode"})
+
+	secrets, ok := security["secrets"].(map[string]any)
+	if !ok {
+		t.Fatalf("security.secrets should be an object, got %T", security["secrets"])
+	}
+	requireExactJSONKeys(t, secrets, []string{"requestedModes", "activeModes"})
+	if !reflect.DeepEqual(secrets["requestedModes"], []any{"env", "file_tmpfs"}) {
+		t.Errorf("security.secrets.requestedModes = %#v, want [env file_tmpfs]", secrets["requestedModes"])
+	}
+	if !reflect.DeepEqual(secrets["activeModes"], []any{"file_tmpfs"}) {
+		t.Errorf("security.secrets.activeModes = %#v, want [file_tmpfs]", secrets["activeModes"])
+	}
+
+	lease, ok := raw["lease"].(map[string]any)
+	if !ok {
+		t.Fatalf("lease should be an object, got %T", raw["lease"])
+	}
+	requireExactJSONKeys(t, lease, []string{"id", "resourceKey", "purpose", "runId", "expiresAt"})
+	if lease["expiresAt"] != expiresAt.Format(time.RFC3339) {
+		t.Errorf("lease.expiresAt = %#v, want %q", lease["expiresAt"], expiresAt.Format(time.RFC3339))
 	}
 }
 
@@ -1770,6 +2192,38 @@ func requireExactJSONKeys(t *testing.T, got map[string]any, want []string) {
 			t.Fatalf("missing JSON key %q in %v", key, sortedMapKeys(got))
 		}
 	}
+}
+
+func requireJSONKeysAbsent(t *testing.T, value any, forbidden []string) {
+	t.Helper()
+
+	forbiddenSet := map[string]struct{}{}
+	for _, key := range forbidden {
+		forbiddenSet[key] = struct{}{}
+	}
+
+	var walk func(path string, value any)
+	walk = func(path string, value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			for key, nested := range typed {
+				nestedPath := key
+				if path != "" {
+					nestedPath = path + "." + key
+				}
+				if _, ok := forbiddenSet[key]; ok {
+					t.Fatalf("unsafe JSON field %q should not be serialized", nestedPath)
+				}
+				walk(nestedPath, nested)
+			}
+		case []any:
+			for _, nested := range typed {
+				walk(path, nested)
+			}
+		}
+	}
+
+	walk("", value)
 }
 
 func ptrInt64(v int64) *int64 {
