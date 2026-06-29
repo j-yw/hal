@@ -695,20 +695,68 @@ func TestFactoryStatusDocsIncludeSandboxMetadataJSONFields(t *testing.T) {
 		t.Fatalf("cannot read factory-status-v1.md: %v", err)
 	}
 	content := string(data)
+	sandboxContent := requiredMarkdownSection(t, content, "## Sandbox Metadata", "## Source Metadata")
 
 	fields := append(
 		jsonFieldNames(t, reflect.TypeOf(factory.SandboxMetadata{})),
 		jsonFieldNames(t, reflect.TypeOf(factory.SandboxConnectionMetadata{}))...,
 	)
 	for _, field := range fields {
-		if !strings.Contains(content, "`"+field+"`") {
-			t.Errorf("factory-status-v1.md missing sandbox metadata JSON field %q", field)
-		}
+		requireDocumentedJSONField(t, "factory-status-v1.md sandbox metadata", sandboxContent, field)
 	}
-	for _, forbidden := range []string{"`token`", "`privateKey`", "`credential`", "`env`", "`apiKey`"} {
-		if strings.Contains(content, forbidden) {
+
+	nestedDocs := []struct {
+		name   string
+		marker string
+		typ    reflect.Type
+	}{
+		{name: "host", marker: "When `sandbox.host` is present:", typ: reflect.TypeOf(factory.SandboxHostMetadata{})},
+		{name: "runtime", marker: "When `sandbox.runtime` is present:", typ: reflect.TypeOf(factory.SandboxRuntimeMetadata{})},
+		{name: "workspace", marker: "When `sandbox.workspace` is present:", typ: reflect.TypeOf(factory.SandboxWorkspaceMetadata{})},
+		{name: "security", marker: "When `sandbox.security` is present:", typ: reflect.TypeOf(factory.SandboxSecurityMetadata{})},
+		{name: "network security", marker: "When `sandbox.security.network` is present:", typ: reflect.TypeOf(factory.SandboxNetworkSecurityMetadata{})},
+		{name: "secret security", marker: "When `sandbox.security.secrets` is present:", typ: reflect.TypeOf(factory.SandboxSecretSecurityMetadata{})},
+		{name: "lease", marker: "When `sandbox.lease` is present:", typ: reflect.TypeOf(factory.SandboxLeaseMetadata{})},
+	}
+	for _, doc := range nestedDocs {
+		t.Run(doc.name, func(t *testing.T) {
+			block := requiredMarkdownBlock(t, sandboxContent, doc.marker)
+			for _, field := range jsonFieldNames(t, doc.typ) {
+				requireDocumentedJSONField(t, doc.marker, block, field)
+			}
+		})
+	}
+
+	for _, forbidden := range []string{
+		"`path`",
+		"`sourcePath`",
+		"`workspacePath`",
+		"`filesystemPath`",
+		"`repo`",
+		"`secretName`",
+		"`secretValue`",
+		"`token`",
+		"`tokens`",
+		"`credential`",
+		"`credentials`",
+		"`privateKey`",
+		"`env`",
+		"`environment`",
+		"`apiKey`",
+		"`holder`",
+		"`Holder`",
+	} {
+		if strings.Contains(sandboxContent, forbidden) {
 			t.Errorf("factory-status-v1.md documents forbidden sandbox field %s", forbidden)
 		}
+	}
+}
+
+func requireDocumentedJSONField(t *testing.T, label, content, field string) {
+	t.Helper()
+
+	if !strings.Contains(content, "`"+field+"`") {
+		t.Errorf("%s missing JSON field %q", label, field)
 	}
 }
 
@@ -732,6 +780,39 @@ func jsonFieldNames(t *testing.T, typ reflect.Type) []string {
 		fields = append(fields, name)
 	}
 	return fields
+}
+
+func requiredMarkdownSection(t *testing.T, content, startMarker, endMarker string) string {
+	t.Helper()
+
+	start := strings.Index(content, startMarker)
+	if start == -1 {
+		t.Fatalf("missing markdown section %q", startMarker)
+	}
+	section := content[start:]
+	end := strings.Index(section, endMarker)
+	if end == -1 {
+		t.Fatalf("markdown section %q missing end marker %q", startMarker, endMarker)
+	}
+	return section[:end]
+}
+
+func requiredMarkdownBlock(t *testing.T, content, marker string) string {
+	t.Helper()
+
+	start := strings.Index(content, marker)
+	if start == -1 {
+		t.Fatalf("missing markdown block %q", marker)
+	}
+	block := content[start:]
+	searchStart := len(marker)
+	end := len(block)
+	for _, delimiter := range []string{"\nWhen `sandbox.", "\n## "} {
+		if next := strings.Index(block[searchStart:], delimiter); next != -1 && searchStart+next < end {
+			end = searchStart + next
+		}
+	}
+	return block[:end]
 }
 
 func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
