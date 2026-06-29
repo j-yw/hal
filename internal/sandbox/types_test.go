@@ -244,8 +244,8 @@ func TestSandboxRuntimeWorkspaceSecurityLeaseMetadataJSONTags(t *testing.T) {
 			name: "security includes optional nested metadata",
 			value: SandboxSecurity{
 				Network: &SandboxNetworkSecurity{
-					PolicyRequested: true,
-					PolicyEnforced:  true,
+					PolicyRequested: SandboxNetworkEnforcementModeProxyFirewall,
+					PolicyEnforced:  SandboxNetworkEnforcementModeProxy,
 					EnforcementMode: SandboxNetworkEnforcementModeProxyFirewall,
 				},
 				Secrets: &SandboxSecretSecurity{
@@ -290,8 +290,8 @@ func TestSandboxRuntimeWorkspaceSecurityLeaseMetadataJSONTags(t *testing.T) {
 func TestSandboxRuntimeV2NestedSecurityMetadataJSONTags(t *testing.T) {
 	security := SandboxSecurity{
 		Network: &SandboxNetworkSecurity{
-			PolicyRequested: true,
-			PolicyEnforced:  true,
+			PolicyRequested: SandboxNetworkEnforcementModeProxy,
+			PolicyEnforced:  SandboxNetworkEnforcementModeBestEffort,
 			EnforcementMode: SandboxNetworkEnforcementModeProxy,
 		},
 		Secrets: &SandboxSecretSecurity{
@@ -304,6 +304,12 @@ func TestSandboxRuntimeV2NestedSecurityMetadataJSONTags(t *testing.T) {
 
 	assertObjectKeys(t, got["network"], []string{"policyRequested", "policyEnforced", "enforcementMode"}, nil)
 	assertObjectKeys(t, got["secrets"], []string{"requestedModes", "activeModes"}, nil)
+}
+
+func TestSandboxNetworkSecurityOmitsEmptyPolicyFields(t *testing.T) {
+	got := mustMarshalObject(t, SandboxNetworkSecurity{})
+
+	assertObjectKeys(t, got, nil, []string{"policyRequested", "policyEnforced", "enforcementMode"})
 }
 
 func TestSandboxSecretSecurityOmitsEmptyModeLists(t *testing.T) {

@@ -115,9 +115,9 @@ type SandboxSecurity struct {
 
 // SandboxNetworkSecurity describes network policy metadata for a sandbox.
 type SandboxNetworkSecurity struct {
-	PolicyRequested bool   `json:"policyRequested"`
-	PolicyEnforced  bool   `json:"policyEnforced"`
-	EnforcementMode string `json:"enforcementMode"`
+	PolicyRequested string `json:"policyRequested,omitempty"`
+	PolicyEnforced  string `json:"policyEnforced,omitempty"`
+	EnforcementMode string `json:"enforcementMode,omitempty"`
 }
 
 // SandboxSecretSecurity describes secret delivery mode metadata for a sandbox.
