@@ -176,9 +176,9 @@ func TestSandboxStateRuntimeV2MetadataJSONTags(t *testing.T) {
 		},
 		Lease: &SandboxLeaseRef{
 			ID:          "lease-01",
-			ResourceKey: "host-01/runtime-01",
+			ResourceKey: "runtime:runtime-01",
 			Holder:      "worker-01",
-			Purpose:     "factory-run",
+			Purpose:     SandboxLeasePurposeFactory,
 			RunID:       "run-01",
 			ExpiresAt:   expiresAt,
 		},
@@ -402,9 +402,9 @@ func TestSandboxRuntimeWorkspaceSecurityLeaseMetadataJSONTags(t *testing.T) {
 			name: "lease ref uses camelCase keys",
 			value: SandboxLeaseRef{
 				ID:          "lease-01",
-				ResourceKey: "host-01/runtime-01",
+				ResourceKey: "runtime:runtime-01",
 				Holder:      "worker-01",
-				Purpose:     "factory-run",
+				Purpose:     SandboxLeasePurposeFactory,
 				RunID:       "run-01",
 				ExpiresAt:   expiresAt,
 			},
@@ -544,6 +544,12 @@ func TestSandboxRuntimeV2MetadataConstants(t *testing.T) {
 		{name: "secret mode ssh agent", got: SandboxSecretModeSSHAgent, want: "ssh_agent"},
 		{name: "secret mode http proxy", got: SandboxSecretModeHTTPProxy, want: "http_proxy"},
 		{name: "secret mode legacy auth sync", got: SandboxSecretModeLegacyAuthSync, want: "legacy_auth_sync"},
+		{name: "lease status active", got: SandboxLeaseStatusActive, want: "active"},
+		{name: "lease status released", got: SandboxLeaseStatusReleased, want: "released"},
+		{name: "lease status expired", got: SandboxLeaseStatusExpired, want: "expired"},
+		{name: "lease purpose run", got: SandboxLeasePurposeRun, want: "run"},
+		{name: "lease purpose auto", got: SandboxLeasePurposeAuto, want: "auto"},
+		{name: "lease purpose factory", got: SandboxLeasePurposeFactory, want: "factory"},
 	}
 
 	for _, tt := range tests {
