@@ -209,12 +209,12 @@ func (s Store) Remove(executionID string) error {
 }
 
 func (s Store) executionDir(executionID string) (string, error) {
-	if strings.TrimSpace(s.root) == "" {
-		return "", errStoreRootUnavailable
-	}
 	executionID, err := validateExecutionID(executionID)
 	if err != nil {
 		return "", err
+	}
+	if strings.TrimSpace(s.root) == "" {
+		return "", errStoreRootUnavailable
 	}
 	return filepath.Join(s.root, executionID), nil
 }

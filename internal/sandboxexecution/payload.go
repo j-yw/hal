@@ -81,6 +81,9 @@ func (s Store) SaveArtifact(executionID string, artifact Artifact, payloadPath s
 	if manifest.ID != executionID {
 		return Artifact{}, fmt.Errorf("sandbox execution manifest %q has ID %q", executionID, manifest.ID)
 	}
+	if err := validateManifestForSave(manifest); err != nil {
+		return Artifact{}, err
+	}
 
 	stored, err := s.WriteArtifactPayload(executionID, payloadPath, data)
 	if err != nil {
@@ -114,6 +117,9 @@ func (s Store) CopyArtifact(executionID string, artifact Artifact, payloadPath, 
 	}
 	if manifest.ID != executionID {
 		return Artifact{}, fmt.Errorf("sandbox execution manifest %q has ID %q", executionID, manifest.ID)
+	}
+	if err := validateManifestForSave(manifest); err != nil {
+		return Artifact{}, err
 	}
 
 	stored, err := s.CopyArtifactPayload(executionID, payloadPath, sourcePath)
@@ -189,12 +195,12 @@ func (s Store) copyPayload(executionID, area, payloadPath, sourcePath string) (S
 }
 
 func (s Store) payloadPath(executionID, area, payloadPath string) (string, string, error) {
-	if strings.TrimSpace(s.root) == "" {
-		return "", "", errStoreRootUnavailable
-	}
 	executionID, err := validateExecutionID(executionID)
 	if err != nil {
 		return "", "", err
+	}
+	if strings.TrimSpace(s.root) == "" {
+		return "", "", errStoreRootUnavailable
 	}
 	relPath, err := validatePayloadPath(payloadPath)
 	if err != nil {
