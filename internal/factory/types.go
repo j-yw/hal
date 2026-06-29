@@ -270,6 +270,58 @@ type RunSecretMetadata struct {
 	Present  bool   `json:"present"`
 }
 
+// SandboxHostMetadata captures redaction-safe sandbox host summary details.
+type SandboxHostMetadata struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+}
+
+// SandboxRuntimeMetadata captures redaction-safe sandbox runtime summary details.
+type SandboxRuntimeMetadata struct {
+	Driver         string `json:"driver"`
+	IsolationLevel string `json:"isolationLevel"`
+	RuntimeID      string `json:"runtimeId"`
+	Image          string `json:"image"`
+	WorkerID       string `json:"workerId"`
+}
+
+// SandboxWorkspaceMetadata captures redaction-safe sandbox workspace summary details.
+type SandboxWorkspaceMetadata struct {
+	Mode        string `json:"mode"`
+	InputSource string `json:"inputSource"`
+	Branch      string `json:"branch"`
+	SyncRef     string `json:"syncRef"`
+}
+
+// SandboxSecurityMetadata captures redaction-safe sandbox security summary details.
+type SandboxSecurityMetadata struct {
+	Network *SandboxNetworkSecurityMetadata `json:"network,omitempty"`
+	Secrets *SandboxSecretSecurityMetadata  `json:"secrets,omitempty"`
+}
+
+// SandboxNetworkSecurityMetadata captures redaction-safe sandbox network policy details.
+type SandboxNetworkSecurityMetadata struct {
+	PolicyRequested string `json:"policyRequested,omitempty"`
+	PolicyEnforced  string `json:"policyEnforced,omitempty"`
+	EnforcementMode string `json:"enforcementMode,omitempty"`
+}
+
+// SandboxSecretSecurityMetadata captures redaction-safe sandbox secret delivery details.
+type SandboxSecretSecurityMetadata struct {
+	RequestedModes []string `json:"requestedModes,omitempty"`
+	ActiveModes    []string `json:"activeModes,omitempty"`
+}
+
+// SandboxLeaseMetadata captures redaction-safe sandbox lease summary details.
+type SandboxLeaseMetadata struct {
+	ID          string    `json:"id"`
+	ResourceKey string    `json:"resourceKey"`
+	Purpose     string    `json:"purpose"`
+	RunID       string    `json:"runId"`
+	ExpiresAt   time.Time `json:"expiresAt"`
+}
+
 // SandboxMetadata captures redaction-safe remote execution details for a
 // sandbox-backed factory run.
 type SandboxMetadata struct {
@@ -281,6 +333,11 @@ type SandboxMetadata struct {
 	SSHCommand     string                     `json:"sshCommand,omitempty"`
 	CleanupCommand string                     `json:"cleanupCommand,omitempty"`
 	Handoff        string                     `json:"handoff,omitempty"`
+	Host           *SandboxHostMetadata       `json:"host,omitempty"`
+	Runtime        *SandboxRuntimeMetadata    `json:"runtime,omitempty"`
+	Workspace      *SandboxWorkspaceMetadata  `json:"workspace,omitempty"`
+	Security       *SandboxSecurityMetadata   `json:"security,omitempty"`
+	Lease          *SandboxLeaseMetadata      `json:"lease,omitempty"`
 }
 
 // SandboxConnectionMetadata contains safe connection display fields. It must
