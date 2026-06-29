@@ -36,6 +36,11 @@ remains local by default. Phase 0 does not introduce new default remote
 execution behavior or new default sandbox execution behavior for either
 workflow.
 
+New sandbox command flags are delayed until after factory extraction. Phase 0
+adds no new CLI flags for `hal run` or `hal auto`; sandbox flag design and
+implementation for both commands belongs in a later phase after shared factory
+and sandbox orchestration boundaries have been extracted.
+
 ## Consequences
 
 To be expanded by subsequent documentation tasks.
