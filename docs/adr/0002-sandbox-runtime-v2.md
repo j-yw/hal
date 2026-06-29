@@ -16,7 +16,14 @@ changes; the only intended product change in Phase 0 is this file:
 
 ## Decision
 
-To be expanded by subsequent documentation tasks.
+The target runtime for Sandbox Runtime v2 is self-hosted microVM workers. This
+ADR records that destination so future phases can align implementation work to
+one runtime architecture.
+
+The MVP is architecture and extraction first: establish ownership boundaries,
+extract shared sandbox orchestration, and preserve existing behavior before any
+new runtime is enabled. Phase 0 does not deliver Podman support, `sandboxd`, or
+microVM implementation work.
 
 ## Consequences
 
