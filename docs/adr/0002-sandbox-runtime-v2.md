@@ -67,6 +67,10 @@ Phase 0 ADR edits. Any existing test command a worker chooses to run, such as
 the repository's standard Go test suite, must exit 0 and be reported in the
 progress record for the story.
 
+Final Phase 0 verification should also confirm the intended product diff is
+limited to this ADR and includes no runtime, CLI, contract, or production code
+changes.
+
 ## Phased Rollout Boundaries
 
 Phase 0 is limited to this ADR and documentation-appropriate verification of
