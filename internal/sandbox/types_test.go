@@ -201,6 +201,117 @@ func TestSandboxHostRefJSONTags(t *testing.T) {
 	}
 }
 
+func TestSandboxRuntimeWorkspaceSecurityLeaseMetadataJSONTags(t *testing.T) {
+	expiresAt := time.Date(2026, 6, 29, 18, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name        string
+		value       any
+		wantPresent []string
+		wantAbsent  []string
+	}{
+		{
+			name: "runtime state uses camelCase keys",
+			value: SandboxRuntimeState{
+				Driver:         SandboxRuntimeDriverRootlessPodman,
+				IsolationLevel: SandboxIsolationLevelContainer,
+				RuntimeID:      "runtime-01",
+				Image:          "ghcr.io/jywlabs/hal-worker:latest",
+				WorkerID:       "worker-01",
+			},
+			wantPresent: []string{"driver", "isolationLevel", "runtimeId", "image", "workerId"},
+		},
+		{
+			name: "workspace uses camelCase keys",
+			value: SandboxWorkspace{
+				Mode:        SandboxWorkspaceModeClone,
+				InputSource: SandboxWorkspaceInputSourceRemoteRef,
+				Repo:        "git@github.com:jywlabs/hal.git",
+				Branch:      "phase/sandbox-runtime-v2-1-types",
+				SyncRef:     "refs/heads/phase/sandbox-runtime-v2-1-types",
+			},
+			wantPresent: []string{"mode", "inputSource", "repo", "branch", "syncRef"},
+		},
+		{
+			name:  "security omits optional nested metadata",
+			value: SandboxSecurity{},
+			wantAbsent: []string{
+				"network",
+				"secrets",
+			},
+		},
+		{
+			name: "security includes optional nested metadata",
+			value: SandboxSecurity{
+				Network: &SandboxNetworkSecurity{
+					PolicyRequested: true,
+					PolicyEnforced:  true,
+					EnforcementMode: SandboxNetworkEnforcementModeProxyFirewall,
+				},
+				Secrets: &SandboxSecretSecurity{
+					RequestedModes: []string{SandboxSecretModeEnv, SandboxSecretModeSSHAgent},
+					ActiveModes:    []string{SandboxSecretModeFileTmpfs},
+				},
+			},
+			wantPresent: []string{"network", "secrets"},
+		},
+		{
+			name: "lease ref uses camelCase keys",
+			value: SandboxLeaseRef{
+				ID:          "lease-01",
+				ResourceKey: "host-01/runtime-01",
+				Holder:      "worker-01",
+				Purpose:     "factory-run",
+				RunID:       "run-01",
+				ExpiresAt:   expiresAt,
+			},
+			wantPresent: []string{"id", "resourceKey", "holder", "purpose", "runId", "expiresAt"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mustMarshalObject(t, tt.value)
+
+			for _, key := range tt.wantPresent {
+				if _, ok := got[key]; !ok {
+					t.Errorf("missing expected key %q in %#v", key, got)
+				}
+			}
+			for _, key := range tt.wantAbsent {
+				if _, ok := got[key]; ok {
+					t.Errorf("unexpected key %q in %#v", key, got)
+				}
+			}
+		})
+	}
+}
+
+func TestSandboxRuntimeV2NestedSecurityMetadataJSONTags(t *testing.T) {
+	security := SandboxSecurity{
+		Network: &SandboxNetworkSecurity{
+			PolicyRequested: true,
+			PolicyEnforced:  true,
+			EnforcementMode: SandboxNetworkEnforcementModeProxy,
+		},
+		Secrets: &SandboxSecretSecurity{
+			RequestedModes: []string{SandboxSecretModeEnv, SandboxSecretModeHTTPProxy},
+			ActiveModes:    []string{SandboxSecretModeEnv},
+		},
+	}
+
+	got := mustMarshalObject(t, security)
+
+	assertObjectKeys(t, got["network"], []string{"policyRequested", "policyEnforced", "enforcementMode"}, nil)
+	assertObjectKeys(t, got["secrets"], []string{"requestedModes", "activeModes"}, nil)
+}
+
+func TestSandboxSecretSecurityOmitsEmptyModeLists(t *testing.T) {
+	got := mustMarshalObject(t, SandboxSecretSecurity{})
+
+	assertObjectKeys(t, got, nil, []string{"requestedModes", "activeModes"})
+}
+
 func TestSandboxStatusConstants(t *testing.T) {
 	if StatusRunning != "running" {
 		t.Fatalf("StatusRunning = %q, want %q", StatusRunning, "running")

@@ -89,6 +89,53 @@ type HostCost struct {
 	BillingScope   string  `json:"billingScope,omitempty"`
 }
 
+// SandboxRuntimeState represents durable Sandbox Runtime v2 runtime metadata.
+type SandboxRuntimeState struct {
+	Driver         string `json:"driver"`
+	IsolationLevel string `json:"isolationLevel"`
+	RuntimeID      string `json:"runtimeId"`
+	Image          string `json:"image"`
+	WorkerID       string `json:"workerId"`
+}
+
+// SandboxWorkspace represents durable Sandbox Runtime v2 workspace metadata.
+type SandboxWorkspace struct {
+	Mode        string `json:"mode"`
+	InputSource string `json:"inputSource"`
+	Repo        string `json:"repo"`
+	Branch      string `json:"branch"`
+	SyncRef     string `json:"syncRef"`
+}
+
+// SandboxSecurity represents durable Sandbox Runtime v2 security metadata.
+type SandboxSecurity struct {
+	Network *SandboxNetworkSecurity `json:"network,omitempty"`
+	Secrets *SandboxSecretSecurity  `json:"secrets,omitempty"`
+}
+
+// SandboxNetworkSecurity describes network policy metadata for a sandbox.
+type SandboxNetworkSecurity struct {
+	PolicyRequested bool   `json:"policyRequested"`
+	PolicyEnforced  bool   `json:"policyEnforced"`
+	EnforcementMode string `json:"enforcementMode"`
+}
+
+// SandboxSecretSecurity describes secret delivery mode metadata for a sandbox.
+type SandboxSecretSecurity struct {
+	RequestedModes []string `json:"requestedModes,omitempty"`
+	ActiveModes    []string `json:"activeModes,omitempty"`
+}
+
+// SandboxLeaseRef identifies a lease associated with a sandbox.
+type SandboxLeaseRef struct {
+	ID          string    `json:"id"`
+	ResourceKey string    `json:"resourceKey"`
+	Holder      string    `json:"holder"`
+	Purpose     string    `json:"purpose"`
+	RunID       string    `json:"runId"`
+	ExpiresAt   time.Time `json:"expiresAt"`
+}
+
 // SandboxState represents the persisted state of a sandbox.
 type SandboxState struct {
 	// Identity
