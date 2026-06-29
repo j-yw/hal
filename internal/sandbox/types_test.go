@@ -319,6 +319,31 @@ func TestSandboxHostRefJSONTags(t *testing.T) {
 	}
 }
 
+func TestSandboxLeaseJSONTags(t *testing.T) {
+	acquiredAt := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
+	expiresAt := acquiredAt.Add(30 * time.Minute)
+	heartbeatAt := acquiredAt.Add(5 * time.Minute)
+
+	got := mustMarshalObject(t, SandboxLease{
+		ID:          "lease-01",
+		SandboxID:   "sandbox-01",
+		SandboxName: "api-backend",
+		ResourceKey: "sandbox:api-backend",
+		Holder:      "worker-01",
+		Purpose:     SandboxLeasePurposeRun,
+		RunID:       "run-01",
+		AcquiredAt:  acquiredAt,
+		ExpiresAt:   expiresAt,
+		HeartbeatAt: heartbeatAt,
+		Status:      SandboxLeaseStatusActive,
+	})
+
+	assertObjectKeys(t, got, []string{
+		"id", "sandboxId", "sandboxName", "resourceKey", "holder", "purpose", "runId",
+		"acquiredAt", "expiresAt", "heartbeatAt", "status",
+	}, nil)
+}
+
 func TestSandboxRuntimeWorkspaceSecurityLeaseMetadataJSONTags(t *testing.T) {
 	expiresAt := time.Date(2026, 6, 29, 18, 0, 0, 0, time.UTC)
 

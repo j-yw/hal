@@ -46,6 +46,16 @@ const (
 	SandboxSecretModeLegacyAuthSync = "legacy_auth_sync"
 )
 
+const (
+	SandboxLeaseStatusActive   = "active"
+	SandboxLeaseStatusReleased = "released"
+	SandboxLeaseStatusExpired  = "expired"
+
+	SandboxLeasePurposeRun     = "run"
+	SandboxLeasePurposeAuto    = "auto"
+	SandboxLeasePurposeFactory = "factory"
+)
+
 // SandboxHost represents durable Sandbox Runtime v2 host metadata.
 type SandboxHost struct {
 	ID                string            `json:"id"`
@@ -134,6 +144,21 @@ type SandboxLeaseRef struct {
 	Purpose     string    `json:"purpose"`
 	RunID       string    `json:"runId"`
 	ExpiresAt   time.Time `json:"expiresAt"`
+}
+
+// SandboxLease represents a durable local resource lease record.
+type SandboxLease struct {
+	ID          string    `json:"id"`
+	SandboxID   string    `json:"sandboxId,omitempty"`
+	SandboxName string    `json:"sandboxName,omitempty"`
+	ResourceKey string    `json:"resourceKey"`
+	Holder      string    `json:"holder"`
+	Purpose     string    `json:"purpose"`
+	RunID       string    `json:"runId,omitempty"`
+	AcquiredAt  time.Time `json:"acquiredAt"`
+	ExpiresAt   time.Time `json:"expiresAt"`
+	HeartbeatAt time.Time `json:"heartbeatAt"`
+	Status      string    `json:"status"`
 }
 
 // SandboxState represents the persisted state of a sandbox.
