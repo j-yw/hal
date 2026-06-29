@@ -165,8 +165,8 @@ func TestSandboxStateRuntimeV2MetadataJSONTags(t *testing.T) {
 		},
 		Security: &SandboxSecurity{
 			Network: &SandboxNetworkSecurity{
-				PolicyRequested: true,
-				PolicyEnforced:  true,
+				PolicyRequested: "deny_by_default",
+				PolicyEnforced:  "best_effort",
 				EnforcementMode: SandboxNetworkEnforcementModeProxyFirewall,
 			},
 			Secrets: &SandboxSecretSecurity{
@@ -196,8 +196,8 @@ func TestSandboxStateRuntimeV2MetadataJSONTags(t *testing.T) {
 	assertObjectKeys(t, security["secrets"], []string{"requestedModes", "activeModes"}, nil)
 
 	network := security["network"].(map[string]any)
-	if network["policyRequested"] != true || network["policyEnforced"] != true {
-		t.Fatalf("network policy booleans = %#v, want explicit true values", network)
+	if network["policyRequested"] != "deny_by_default" || network["policyEnforced"] != "best_effort" {
+		t.Fatalf("network policy summaries = %#v, want requested/enforced string summaries", network)
 	}
 }
 
@@ -362,8 +362,8 @@ func TestSandboxRuntimeWorkspaceSecurityLeaseMetadataJSONTags(t *testing.T) {
 			name: "security includes optional nested metadata",
 			value: SandboxSecurity{
 				Network: &SandboxNetworkSecurity{
-					PolicyRequested: true,
-					PolicyEnforced:  true,
+					PolicyRequested: "deny_by_default",
+					PolicyEnforced:  "best_effort",
 					EnforcementMode: SandboxNetworkEnforcementModeProxyFirewall,
 				},
 				Secrets: &SandboxSecretSecurity{
@@ -408,8 +408,8 @@ func TestSandboxRuntimeWorkspaceSecurityLeaseMetadataJSONTags(t *testing.T) {
 func TestSandboxRuntimeV2NestedSecurityMetadataJSONTags(t *testing.T) {
 	security := SandboxSecurity{
 		Network: &SandboxNetworkSecurity{
-			PolicyRequested: true,
-			PolicyEnforced:  true,
+			PolicyRequested: "deny_by_default",
+			PolicyEnforced:  "best_effort",
 			EnforcementMode: SandboxNetworkEnforcementModeProxy,
 		},
 		Secrets: &SandboxSecretSecurity{
@@ -424,12 +424,12 @@ func TestSandboxRuntimeV2NestedSecurityMetadataJSONTags(t *testing.T) {
 	assertObjectKeys(t, got["secrets"], []string{"requestedModes", "activeModes"}, nil)
 }
 
-func TestSandboxNetworkSecurityIncludesPolicyBooleans(t *testing.T) {
+func TestSandboxNetworkSecurityOmitsEmptyPolicySummaries(t *testing.T) {
 	got := mustMarshalObject(t, SandboxNetworkSecurity{})
 
-	assertObjectKeys(t, got, []string{"policyRequested", "policyEnforced"}, []string{"enforcementMode"})
-	if got["policyRequested"] != false || got["policyEnforced"] != false {
-		t.Fatalf("network policy booleans = %#v, want explicit false values", got)
+	assertObjectKeys(t, got, nil, []string{"policyRequested", "policyEnforced", "enforcementMode"})
+	if len(got) != 0 {
+		t.Fatalf("zero network policy metadata = %#v, want empty object", got)
 	}
 }
 
