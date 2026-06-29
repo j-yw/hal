@@ -243,8 +243,14 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		Command:     factorySandboxRemoteCommandArgs(record, req.RemoteAuto),
 		WorkDir:     factorySandboxRemoteWorkspaceDir(record),
 		Env:         factorySandboxResolvedSecretEnv(req.ResolvedSecrets),
-		Stdout:      req.RemoteOutput,
-		Stderr:      req.RemoteOutput,
+		Security: sandbox.SecurityEvaluationRequest{
+			RuntimeDriver:          sandbox.SandboxRuntimeDriverSSHMachine,
+			RequestedNetworkPolicy: sandbox.SandboxNetworkPolicyDenyByDefault,
+			RequestedSecretModes:   []string{sandbox.SandboxSecretModeHTTPProxy},
+			CompatibilityAuthSync:  true,
+		},
+		Stdout: req.RemoteOutput,
+		Stderr: req.RemoteOutput,
 	}
 	_, execErr := sandboxexec.Run(ctx, commandReq, sandboxexec.Dependencies{
 		ResolveTarget: func(ctx context.Context, _ sandboxexec.TargetRequest) (*sandbox.SandboxState, error) {
@@ -259,6 +265,9 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			record.UpdatedAt = deps.now().UTC()
 			if err := saveFactorySandboxRunRecordWithRedactor(store, deps, &record, secretRedactor); err != nil {
 				return fmt.Errorf("record factory sandbox metadata: %w", err)
+			}
+			if err := recordFactorySandboxSecurityPolicyEvent(store, deps, &record, target, secretRedactor); err != nil {
+				return fmt.Errorf("record factory sandbox security metadata: %w", err)
 			}
 			remoteOutput = newFactorySandboxTimelineWriter(store, deps, &record, target, req.RemoteOutput, req.ResolvedSecrets)
 			return nil
@@ -1883,6 +1892,7 @@ func factorySandboxMetadataFromState(instance *sandbox.SandboxState) (string, *f
 		SSHCommand:     fmt.Sprintf("hal sandbox ssh %s", instance.Name),
 		CleanupCommand: fmt.Sprintf("hal sandbox delete %s", instance.Name),
 		Handoff:        fmt.Sprintf("Inspect sandbox with `hal sandbox ssh %s`.", instance.Name),
+		Security:       factorySandboxSecurityMetadataFromState(instance),
 	}
 	return instance.Name, metadata
 }
@@ -1921,6 +1931,97 @@ func factorySandboxConnectionMetadataFromState(instance *sandbox.SandboxState) *
 		return nil
 	}
 	return connection
+}
+
+func factorySandboxSecurityMetadataFromState(instance *sandbox.SandboxState) *factory.SandboxSecurityMetadata {
+	if instance == nil || instance.Security == nil {
+		return nil
+	}
+	return factorySandboxSecurityMetadata(instance.Security)
+}
+
+func factorySandboxSecurityMetadata(security *sandbox.SandboxSecurity) *factory.SandboxSecurityMetadata {
+	if security == nil {
+		return nil
+	}
+	metadata := &factory.SandboxSecurityMetadata{}
+	if security.Network != nil {
+		metadata.Network = &factory.SandboxNetworkSecurityMetadata{
+			PolicyRequested: security.Network.PolicyRequested,
+			PolicyEnforced:  security.Network.PolicyEnforced,
+			EnforcementMode: security.Network.EnforcementMode,
+		}
+	}
+	if security.Secrets != nil {
+		metadata.Secrets = &factory.SandboxSecretSecurityMetadata{
+			RequestedModes: append([]string(nil), security.Secrets.RequestedModes...),
+			ActiveModes:    append([]string(nil), security.Secrets.ActiveModes...),
+		}
+	}
+	if metadata.Network == nil && metadata.Secrets == nil {
+		return nil
+	}
+	return metadata
+}
+
+func recordFactorySandboxSecurityPolicyEvent(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, redactor factory.RunSecretRedactor) error {
+	if record == nil || strings.TrimSpace(record.RunID) == "" {
+		return nil
+	}
+	security := factorySandboxSecurityMetadataFromState(target)
+	if security == nil {
+		return nil
+	}
+	event := redactFactoryTimelineEvent(factoryTimelineEvent{
+		EventType: factory.EventTypePolicyDecision,
+		Summary:   "Sandbox security policy evaluated",
+		Metadata: map[string]any{
+			"policyField": "sandbox.security",
+			"decision":    factory.PolicyDecisionAllowedExecution,
+			"outcome":     factory.PolicyOutcomeAllowed,
+			"reason":      "compatibility runtime security metadata recorded",
+			"source":      "remote_sandbox",
+			"sandboxName": target.Name,
+			"provider":    target.Provider,
+			"security":    factorySandboxSecurityTimelineMetadata(security),
+		},
+	}, redactor)
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		return fmt.Errorf("load factory sandbox security timeline %q: %w", record.RunID, err)
+	}
+	return deps.appendEvent(store, &factory.EventRecord{
+		Sequence:  nextFactoryRunEventSequence(events),
+		RunID:     record.RunID,
+		EventType: event.EventType,
+		Timestamp: deps.now().UTC(),
+		Summary:   event.Summary,
+		Metadata:  event.Metadata,
+	})
+}
+
+func factorySandboxSecurityTimelineMetadata(security *factory.SandboxSecurityMetadata) map[string]any {
+	if security == nil {
+		return nil
+	}
+	out := make(map[string]any)
+	if security.Network != nil {
+		out["network"] = map[string]any{
+			"policyRequested": security.Network.PolicyRequested,
+			"policyEnforced":  security.Network.PolicyEnforced,
+			"enforcementMode": security.Network.EnforcementMode,
+		}
+	}
+	if security.Secrets != nil {
+		out["secrets"] = map[string]any{
+			"requestedModes": append([]string(nil), security.Secrets.RequestedModes...),
+			"activeModes":    append([]string(nil), security.Secrets.ActiveModes...),
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func factoryRunningSandboxFilter(instance *sandbox.SandboxState) bool {

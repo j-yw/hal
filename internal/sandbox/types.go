@@ -39,6 +39,9 @@ const (
 	SandboxNetworkEnforcementModeRuntime       = "runtime"
 	SandboxNetworkEnforcementModeProxyFirewall = "proxy_firewall"
 
+	SandboxNetworkPolicyDenyByDefault = "deny_by_default"
+	SandboxNetworkPolicyBestEffort    = "best_effort"
+
 	SandboxSecretModeEnv            = "env"
 	SandboxSecretModeFileTmpfs      = "file_tmpfs"
 	SandboxSecretModeSSHAgent       = "ssh_agent"

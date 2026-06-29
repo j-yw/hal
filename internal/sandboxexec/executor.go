@@ -19,6 +19,7 @@ type CommandRequest struct {
 	Command     []string
 	WorkDir     string
 	Env         map[string]string
+	Security    sandbox.SecurityEvaluationRequest
 	Stdout      io.Writer
 	Stderr      io.Writer
 }
@@ -197,6 +198,7 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 		}
 		target = started
 	}
+	applySandboxSecurityMetadata(target, req)
 	if deps.OnTargetReady != nil {
 		if err := deps.OnTargetReady(ctx, target); err != nil {
 			return nil, err
@@ -328,7 +330,44 @@ func cloneCommandRequest(req CommandRequest) CommandRequest {
 		}
 		req.Env = env
 	}
+	req.Security.RequestedSecretModes = append([]string(nil), req.Security.RequestedSecretModes...)
+	req.Security.ActiveSecretModes = append([]string(nil), req.Security.ActiveSecretModes...)
 	return req
+}
+
+func applySandboxSecurityMetadata(target *sandbox.SandboxState, req CommandRequest) {
+	if target == nil {
+		return
+	}
+	if target.Security != nil && emptySecurityEvaluationRequest(req.Security) && len(req.Env) == 0 {
+		return
+	}
+	securityReq := req.Security
+	if strings.TrimSpace(securityReq.RuntimeDriver) == "" {
+		securityReq.RuntimeDriver = sandboxRuntimeDriver(target)
+	}
+	if len(req.Env) > 0 {
+		securityReq.ActiveSecretModes = append(securityReq.ActiveSecretModes, sandbox.SandboxSecretModeEnv)
+	}
+	target.Security = sandbox.EvaluateSandboxSecurity(securityReq)
+}
+
+func emptySecurityEvaluationRequest(req sandbox.SecurityEvaluationRequest) bool {
+	return strings.TrimSpace(req.RuntimeDriver) == "" &&
+		strings.TrimSpace(req.RequestedNetworkPolicy) == "" &&
+		len(req.RequestedSecretModes) == 0 &&
+		len(req.ActiveSecretModes) == 0 &&
+		!req.CompatibilityAuthSync
+}
+
+func sandboxRuntimeDriver(target *sandbox.SandboxState) string {
+	if target == nil || target.Runtime == nil {
+		return sandbox.SandboxRuntimeDriverSSHMachine
+	}
+	if driver := strings.TrimSpace(target.Runtime.Driver); driver != "" {
+		return driver
+	}
+	return sandbox.SandboxRuntimeDriverSSHMachine
 }
 
 type outputWriter struct {

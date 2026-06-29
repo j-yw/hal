@@ -92,6 +92,25 @@ func TestFactorySandboxConnectionMetadataFromStatePrefersTailscaleAddress(t *tes
 	}
 }
 
+func TestFactorySandboxMetadataFromStateIncludesSecurityMetadata(t *testing.T) {
+	_, got := factorySandboxMetadataFromState(&sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		Security: sandbox.EvaluateSSHMachineCompatibilitySecurity(sandbox.SecurityEvaluationRequest{
+			RuntimeDriver:          sandbox.SandboxRuntimeDriverSSHMachine,
+			RequestedNetworkPolicy: sandbox.SandboxNetworkPolicyDenyByDefault,
+			RequestedSecretModes:   []string{sandbox.SandboxSecretModeHTTPProxy},
+			ActiveSecretModes:      []string{sandbox.SandboxSecretModeEnv},
+			CompatibilityAuthSync:  true,
+		}),
+	})
+	if got == nil {
+		t.Fatal("factorySandboxMetadataFromState() = nil")
+	}
+	requireFactorySandboxSecurityMetadata(t, got.Security, []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeLegacyAuthSync})
+}
+
 func TestRunFactorySandboxExecutorWithDepsAppliesCleanupPolicy(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -585,7 +604,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
 
-	wantCalls := []string{"store", "now", "save", "load", "now", "save", "provider", "exec", "exec", "now", "event", "exec", "now", "event"}
+	wantCalls := []string{"store", "now", "save", "load", "now", "save", "now", "event", "provider", "exec", "exec", "now", "event", "exec", "now", "event"}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("calls = %#v, want %#v", calls, wantCalls)
 	}
@@ -610,6 +629,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 	if savedRecords[1].Sandbox.Connection == nil || savedRecords[1].Sandbox.Connection.PublicIP != "127.0.0.1" {
 		t.Fatalf("saved sandbox connection = %#v", savedRecords[1].Sandbox.Connection)
 	}
+	requireFactorySandboxSecurityMetadata(t, savedRecords[1].Sandbox.Security, []string{sandbox.SandboxSecretModeLegacyAuthSync})
 	if gotExecInfo == nil || gotExecInfo.Name != "factory-dev" || gotExecInfo.IP != "127.0.0.1" {
 		t.Fatalf("exec info = %#v, want factory-dev at 127.0.0.1", gotExecInfo)
 	}
@@ -697,17 +717,18 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecuti
 	if bootstrapDeps.Executor == nil {
 		t.Fatalf("bootstrap executor = nil")
 	}
-	if len(events) != 3 {
-		t.Fatalf("events = %d, want 3: %#v", len(events), events)
+	if len(events) != 4 {
+		t.Fatalf("events = %d, want 4: %#v", len(events), events)
 	}
-	if events[0].Metadata["phase"] != "bootstrap" || events[0].Metadata["source"] != "remote_sandbox" {
-		t.Fatalf("bootstrap event metadata = %#v", events[0].Metadata)
+	requireFactorySandboxSecurityPolicyEvent(t, events[0], []string{sandbox.SandboxSecretModeLegacyAuthSync})
+	if events[1].Metadata["phase"] != "bootstrap" || events[1].Metadata["source"] != "remote_sandbox" {
+		t.Fatalf("bootstrap event metadata = %#v", events[1].Metadata)
 	}
-	if events[1].Summary != "Remote sandbox execution started" || events[2].Summary != "Remote sandbox execution completed" {
+	if events[2].Summary != "Remote sandbox execution started" || events[3].Summary != "Remote sandbox execution completed" {
 		t.Fatalf("remote execution events = %#v", events)
 	}
-	if events[0].Sequence != 1 || events[1].Sequence != 2 || events[2].Sequence != 3 {
-		t.Fatalf("event sequences = %d/%d/%d, want 1/2/3", events[0].Sequence, events[1].Sequence, events[2].Sequence)
+	if events[0].Sequence != 1 || events[1].Sequence != 2 || events[2].Sequence != 3 || events[3].Sequence != 4 {
+		t.Fatalf("event sequences = %d/%d/%d/%d, want 1/2/3/4", events[0].Sequence, events[1].Sequence, events[2].Sequence, events[3].Sequence)
 	}
 }
 
@@ -855,10 +876,11 @@ func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromBootstrapTim
 	if factory.NewBootstrapSanitizer(bootstrapReq).SanitizeString(secret) == secret {
 		t.Fatalf("bootstrap request did not carry resolved secret values for sanitization")
 	}
-	if len(events) != 3 {
-		t.Fatalf("events = %d, want bootstrap/start/completion events: %#v", len(events), events)
+	if len(events) != 4 {
+		t.Fatalf("events = %d, want policy/bootstrap/start/completion events: %#v", len(events), events)
 	}
-	bootstrapEvent := events[0]
+	requireFactorySandboxSecurityPolicyEvent(t, events[0], []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeLegacyAuthSync})
+	bootstrapEvent := events[1]
 	for _, value := range []string{bootstrapEvent.Message, bootstrapEvent.Summary} {
 		if strings.Contains(value, secret) {
 			t.Fatalf("bootstrap event leaked secret in %q: %#v", value, bootstrapEvent)
@@ -1103,10 +1125,11 @@ func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToRemoteExecution
 			t.Fatalf("remote exec command = %q, want fragment %q", command, want)
 		}
 	}
-	if len(events) != 2 {
-		t.Fatalf("events = %d, want start/completion: %#v", len(events), events)
+	if len(events) != 3 {
+		t.Fatalf("events = %d, want policy/start/completion: %#v", len(events), events)
 	}
-	eventCommand, _ := events[0].Metadata["command"].(string)
+	requireFactorySandboxSecurityPolicyEvent(t, events[0], []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeLegacyAuthSync})
+	eventCommand, _ := events[1].Metadata["command"].(string)
 	if strings.Contains(eventCommand, requiredSecret) || strings.Contains(eventCommand, optionalSecret) {
 		t.Fatalf("remote start command leaked secret values: %q", eventCommand)
 	}
@@ -2417,10 +2440,11 @@ func TestRunFactorySandboxExecutorWithDepsRecordsSanitizedRemoteOutputEvents(t *
 	if !strings.Contains(out.String(), "<address redacted>") {
 		t.Fatalf("remote output writer missing redaction marker: %q", out.String())
 	}
-	if len(events) != 4 {
-		t.Fatalf("events = %d, want 4: %#v", len(events), events)
+	if len(events) != 5 {
+		t.Fatalf("events = %d, want 5: %#v", len(events), events)
 	}
-	started, firstLine, secondLine, completed := events[0], events[1], events[2], events[3]
+	requireFactorySandboxSecurityPolicyEvent(t, events[0], []string{sandbox.SandboxSecretModeLegacyAuthSync})
+	started, firstLine, secondLine, completed := events[1], events[2], events[3], events[4]
 	if started.EventType != factory.EventTypeStepStarted || started.Summary != "Remote sandbox execution started" {
 		t.Fatalf("start event = %#v", started)
 	}
@@ -2495,9 +2519,10 @@ func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromExecutorEven
 	if err != nil {
 		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
 	}
-	if len(events) != 2 {
-		t.Fatalf("events = %d, want start/end events: %#v", len(events), events)
+	if len(events) != 3 {
+		t.Fatalf("events = %d, want policy/start/end events: %#v", len(events), events)
 	}
+	requireFactorySandboxSecurityPolicyEvent(t, events[0], []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeLegacyAuthSync})
 	eventData, err := json.Marshal(events)
 	if err != nil {
 		t.Fatalf("json.Marshal(events) error: %v", err)
@@ -3027,7 +3052,11 @@ func TestRunFactorySandboxExecutorWithDepsRecordsResolveProviderFailureHandoff(t
 	if failed.Failure == nil || failed.Failure.Message != providerErr.Error() || failed.Failure.SuggestedCommand != "hal sandbox ssh factory-provider" {
 		t.Fatalf("failed failure summary = %#v", failed.Failure)
 	}
-	if len(events) != 1 || events[0].EventType != factory.EventTypeFailureClassification || events[0].Metadata["step"] != "resolve_provider" {
+	if len(events) != 2 {
+		t.Fatalf("failure events = %#v", events)
+	}
+	requireFactorySandboxSecurityPolicyEvent(t, events[0], []string{sandbox.SandboxSecretModeLegacyAuthSync})
+	if events[1].EventType != factory.EventTypeFailureClassification || events[1].Metadata["step"] != "resolve_provider" {
 		t.Fatalf("failure events = %#v", events)
 	}
 }
@@ -3102,17 +3131,92 @@ func TestRunFactorySandboxExecutorWithDepsRecordsRemoteExecutionFailureHandoff(t
 	if strings.Contains(failed.Failure.Message, "203.0.113.42") {
 		t.Fatalf("failure message leaked address: %q", failed.Failure.Message)
 	}
-	if len(events) != 3 {
-		t.Fatalf("events = %d, want 3: %#v", len(events), events)
+	if len(events) != 4 {
+		t.Fatalf("events = %d, want 4: %#v", len(events), events)
 	}
-	if events[1].EventType != factory.EventTypeCommandOutputSummary || strings.Contains(events[1].Message, "203.0.113.42") {
-		t.Fatalf("remote output event was not sanitized: %#v", events[1])
+	requireFactorySandboxSecurityPolicyEvent(t, events[0], []string{sandbox.SandboxSecretModeLegacyAuthSync})
+	if events[2].EventType != factory.EventTypeCommandOutputSummary || strings.Contains(events[2].Message, "203.0.113.42") {
+		t.Fatalf("remote output event was not sanitized: %#v", events[2])
 	}
-	if events[2].EventType != factory.EventTypeFailureClassification || events[2].Metadata["source"] != "remote_sandbox" {
-		t.Fatalf("failure event = %#v", events[2])
+	if events[3].EventType != factory.EventTypeFailureClassification || events[3].Metadata["source"] != "remote_sandbox" {
+		t.Fatalf("failure event = %#v", events[3])
 	}
-	if strings.Contains(events[2].Message, "203.0.113.42") {
-		t.Fatalf("failure event leaked address: %q", events[2].Message)
+	if strings.Contains(events[3].Message, "203.0.113.42") {
+		t.Fatalf("failure event leaked address: %q", events[3].Message)
+	}
+}
+
+func requireFactorySandboxSecurityMetadata(t *testing.T, security *factory.SandboxSecurityMetadata, wantActiveModes []string) {
+	t.Helper()
+	if security == nil {
+		t.Fatal("sandbox security metadata = nil")
+	}
+	if security.Network == nil {
+		t.Fatal("sandbox network security metadata = nil")
+	}
+	if security.Network.PolicyRequested != sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("policyRequested = %q, want %q", security.Network.PolicyRequested, sandbox.SandboxNetworkPolicyDenyByDefault)
+	}
+	if security.Network.PolicyEnforced == sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("policyEnforced = %q, compatibility path must not claim deny-by-default", security.Network.PolicyEnforced)
+	}
+	if security.Network.PolicyEnforced != sandbox.SandboxNetworkPolicyBestEffort {
+		t.Fatalf("policyEnforced = %q, want %q", security.Network.PolicyEnforced, sandbox.SandboxNetworkPolicyBestEffort)
+	}
+	if security.Network.EnforcementMode != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("enforcementMode = %q, want %q", security.Network.EnforcementMode, sandbox.SandboxNetworkEnforcementModeNone)
+	}
+	if security.Secrets == nil {
+		t.Fatal("sandbox secret security metadata = nil")
+	}
+	if !reflect.DeepEqual(security.Secrets.RequestedModes, []string{sandbox.SandboxSecretModeHTTPProxy}) {
+		t.Fatalf("requested secret modes = %#v, want http_proxy", security.Secrets.RequestedModes)
+	}
+	if !reflect.DeepEqual(security.Secrets.ActiveModes, wantActiveModes) {
+		t.Fatalf("active secret modes = %#v, want %#v", security.Secrets.ActiveModes, wantActiveModes)
+	}
+}
+
+func requireFactorySandboxSecurityPolicyEvent(t *testing.T, event factory.EventRecord, wantActiveModes []string) {
+	t.Helper()
+	if event.EventType != factory.EventTypePolicyDecision {
+		t.Fatalf("policy event type = %q, want %q: %#v", event.EventType, factory.EventTypePolicyDecision, event)
+	}
+	if event.Summary != "Sandbox security policy evaluated" {
+		t.Fatalf("policy event summary = %q", event.Summary)
+	}
+	if event.Metadata["policyField"] != "sandbox.security" {
+		t.Fatalf("policy event field = %#v", event.Metadata)
+	}
+	if event.Metadata["decision"] != factory.PolicyDecisionAllowedExecution || event.Metadata["outcome"] != factory.PolicyOutcomeAllowed {
+		t.Fatalf("policy event decision/outcome = %#v", event.Metadata)
+	}
+	security, ok := event.Metadata["security"].(map[string]any)
+	if !ok {
+		t.Fatalf("policy event security metadata = %#v", event.Metadata["security"])
+	}
+	network, ok := security["network"].(map[string]any)
+	if !ok {
+		t.Fatalf("policy event network metadata = %#v", security["network"])
+	}
+	if network["policyRequested"] != sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("policy event requested network = %#v", network)
+	}
+	if network["policyEnforced"] == sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("policy event overclaimed enforcement = %#v", network)
+	}
+	if network["policyEnforced"] != sandbox.SandboxNetworkPolicyBestEffort || network["enforcementMode"] != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("policy event network metadata = %#v", network)
+	}
+	secrets, ok := security["secrets"].(map[string]any)
+	if !ok {
+		t.Fatalf("policy event secret metadata = %#v", security["secrets"])
+	}
+	if !reflect.DeepEqual(secrets["requestedModes"], []string{sandbox.SandboxSecretModeHTTPProxy}) {
+		t.Fatalf("policy event requested modes = %#v", secrets["requestedModes"])
+	}
+	if !reflect.DeepEqual(secrets["activeModes"], wantActiveModes) {
+		t.Fatalf("policy event active modes = %#v, want %#v", secrets["activeModes"], wantActiveModes)
 	}
 }
 
