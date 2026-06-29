@@ -211,6 +211,101 @@ func TestRunUsesExistingRunningTargetWithoutStart(t *testing.T) {
 	}
 }
 
+func TestRunAttachesCompatibilitySecurityMetadataBeforeTargetReady(t *testing.T) {
+	target := &sandbox.SandboxState{Name: "factory-dev", Provider: "daytona", Status: sandbox.StatusRunning}
+	var readySecurity *sandbox.SandboxSecurity
+
+	result, err := Run(context.Background(), CommandRequest{
+		SandboxName: "factory-dev",
+		Env: map[string]string{
+			"GITHUB_TOKEN": "secret-value",
+		},
+		Security: sandbox.SecurityEvaluationRequest{
+			RuntimeDriver:          sandbox.SandboxRuntimeDriverSSHMachine,
+			RequestedNetworkPolicy: sandbox.SandboxNetworkPolicyDenyByDefault,
+			RequestedSecretModes:   []string{sandbox.SandboxSecretModeHTTPProxy},
+			CompatibilityAuthSync:  true,
+		},
+	}, Dependencies{
+		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		OnTargetReady: func(_ context.Context, ready *sandbox.SandboxState) error {
+			readySecurity = ready.Security
+			return nil
+		},
+		ResolveProvider: func(context.Context, *sandbox.SandboxState) (sandbox.Provider, error) {
+			return fakeProvider{}, nil
+		},
+		RunCommand: func(context.Context, RunContext, CommandRequest) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+	if result == nil || result.Target == nil || result.Target.Security == nil {
+		t.Fatalf("result security = %#v", result)
+	}
+	if readySecurity == nil {
+		t.Fatal("OnTargetReady observed nil security metadata")
+	}
+	if readySecurity.Network == nil || readySecurity.Network.PolicyRequested != sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("network security = %#v", readySecurity.Network)
+	}
+	if readySecurity.Network.PolicyEnforced == sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("compatibility path overclaimed deny-by-default enforcement: %#v", readySecurity.Network)
+	}
+	if readySecurity.Network.PolicyEnforced != sandbox.SandboxNetworkPolicyBestEffort || readySecurity.Network.EnforcementMode != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("network enforcement = %#v", readySecurity.Network)
+	}
+	wantActive := []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeLegacyAuthSync}
+	if readySecurity.Secrets == nil || !reflect.DeepEqual(readySecurity.Secrets.ActiveModes, wantActive) {
+		t.Fatalf("active secret modes = %#v, want %#v", readySecurity.Secrets, wantActive)
+	}
+}
+
+func TestRunPreservesExistingSecurityMetadataWithoutEvaluationRequest(t *testing.T) {
+	existing := &sandbox.SandboxSecurity{
+		Network: &sandbox.SandboxNetworkSecurity{
+			PolicyRequested: sandbox.SandboxNetworkPolicyDenyByDefault,
+			PolicyEnforced:  sandbox.SandboxNetworkPolicyDenyByDefault,
+			EnforcementMode: sandbox.SandboxNetworkEnforcementModeProxyFirewall,
+		},
+		Secrets: &sandbox.SandboxSecretSecurity{
+			RequestedModes: []string{sandbox.SandboxSecretModeHTTPProxy},
+			ActiveModes:    []string{sandbox.SandboxSecretModeHTTPProxy},
+		},
+	}
+	target := &sandbox.SandboxState{
+		Name:     "microvm-dev",
+		Provider: "worker",
+		Status:   sandbox.StatusRunning,
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver: sandbox.SandboxRuntimeDriverMicroVM,
+		},
+		Security: existing,
+	}
+
+	result, err := Run(context.Background(), CommandRequest{SandboxName: "microvm-dev"}, Dependencies{
+		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		ResolveProvider: func(context.Context, *sandbox.SandboxState) (sandbox.Provider, error) {
+			return fakeProvider{}, nil
+		},
+		RunCommand: func(context.Context, RunContext, CommandRequest) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+	if result.Target.Security != existing {
+		t.Fatalf("security metadata was replaced: got %#v want existing %#v", result.Target.Security, existing)
+	}
+}
+
 func TestRunPropagatesStartFailure(t *testing.T) {
 	target := &sandbox.SandboxState{Name: "factory-dev", Provider: "daytona", Status: sandbox.StatusStopped}
 	startErr := errors.New("provider start failed")
