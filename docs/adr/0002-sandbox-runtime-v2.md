@@ -93,4 +93,13 @@ behavior until the new runtime is intentionally enabled.
 
 ## Non-Goals
 
-To be expanded by subsequent documentation tasks.
+Phase 0 does not deliver Podman support. Podman may be evaluated in a future
+phase only under separate implementation scope.
+
+Phase 0 does not deliver `sandboxd`. The daemon design, process model,
+lifecycle contract, and deployment mechanics are outside this ADR-only phase.
+
+Phase 0 does not implement microVM workers, network proxy behavior, new CLI
+flags, executor extraction, production code changes, or runtime behavior
+changes. Those items require later PRD scope after the Phase 0 architecture
+boundary is accepted.
