@@ -176,9 +176,9 @@ func TestSandboxStateRuntimeV2MetadataJSONTags(t *testing.T) {
 		},
 		Lease: &SandboxLeaseRef{
 			ID:          "lease-01",
-			ResourceKey: "host-01/runtime-01",
+			ResourceKey: "runtime:runtime-01",
 			Holder:      "worker-01",
-			Purpose:     "factory-run",
+			Purpose:     SandboxLeasePurposeFactory,
 			RunID:       "run-01",
 			ExpiresAt:   expiresAt,
 		},
@@ -319,6 +319,31 @@ func TestSandboxHostRefJSONTags(t *testing.T) {
 	}
 }
 
+func TestSandboxLeaseJSONTags(t *testing.T) {
+	acquiredAt := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
+	expiresAt := acquiredAt.Add(30 * time.Minute)
+	heartbeatAt := acquiredAt.Add(5 * time.Minute)
+
+	got := mustMarshalObject(t, SandboxLease{
+		ID:          "lease-01",
+		SandboxID:   "sandbox-01",
+		SandboxName: "api-backend",
+		ResourceKey: "sandbox:api-backend",
+		Holder:      "worker-01",
+		Purpose:     SandboxLeasePurposeRun,
+		RunID:       "run-01",
+		AcquiredAt:  acquiredAt,
+		ExpiresAt:   expiresAt,
+		HeartbeatAt: heartbeatAt,
+		Status:      SandboxLeaseStatusActive,
+	})
+
+	assertObjectKeys(t, got, []string{
+		"id", "sandboxId", "sandboxName", "resourceKey", "holder", "purpose", "runId",
+		"acquiredAt", "expiresAt", "heartbeatAt", "status",
+	}, nil)
+}
+
 func TestSandboxRuntimeWorkspaceSecurityLeaseMetadataJSONTags(t *testing.T) {
 	expiresAt := time.Date(2026, 6, 29, 18, 0, 0, 0, time.UTC)
 
@@ -377,9 +402,9 @@ func TestSandboxRuntimeWorkspaceSecurityLeaseMetadataJSONTags(t *testing.T) {
 			name: "lease ref uses camelCase keys",
 			value: SandboxLeaseRef{
 				ID:          "lease-01",
-				ResourceKey: "host-01/runtime-01",
+				ResourceKey: "runtime:runtime-01",
 				Holder:      "worker-01",
-				Purpose:     "factory-run",
+				Purpose:     SandboxLeasePurposeFactory,
 				RunID:       "run-01",
 				ExpiresAt:   expiresAt,
 			},
@@ -519,6 +544,12 @@ func TestSandboxRuntimeV2MetadataConstants(t *testing.T) {
 		{name: "secret mode ssh agent", got: SandboxSecretModeSSHAgent, want: "ssh_agent"},
 		{name: "secret mode http proxy", got: SandboxSecretModeHTTPProxy, want: "http_proxy"},
 		{name: "secret mode legacy auth sync", got: SandboxSecretModeLegacyAuthSync, want: "legacy_auth_sync"},
+		{name: "lease status active", got: SandboxLeaseStatusActive, want: "active"},
+		{name: "lease status released", got: SandboxLeaseStatusReleased, want: "released"},
+		{name: "lease status expired", got: SandboxLeaseStatusExpired, want: "expired"},
+		{name: "lease purpose run", got: SandboxLeasePurposeRun, want: "run"},
+		{name: "lease purpose auto", got: SandboxLeasePurposeAuto, want: "auto"},
+		{name: "lease purpose factory", got: SandboxLeasePurposeFactory, want: "factory"},
 	}
 
 	for _, tt := range tests {
