@@ -235,6 +235,11 @@ func validateManifestForSave(manifest *Manifest) error {
 	if manifest.StartedAt.IsZero() {
 		return fmt.Errorf("sandbox execution startedAt is required")
 	}
+	for _, artifact := range manifest.Artifacts {
+		if err := validateArtifactMetadata(manifest.ID, artifact); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -269,6 +274,57 @@ func validateExecutionID(executionID string) (string, error) {
 		return "", fmt.Errorf("sandbox execution ID %q must not contain path separators", executionID)
 	}
 	return executionID, nil
+}
+
+func validateArtifactMetadata(executionID string, artifact Artifact) error {
+	if artifact.Path != "" {
+		if err := validateArtifactStoreRelativePath(executionID, artifact.Path); err != nil {
+			return fmt.Errorf("sandbox execution artifact path %q is invalid: %w", artifact.Path, err)
+		}
+	}
+	if artifact.StoredPath != "" {
+		if err := validateArtifactStoreRelativePath(executionID, artifact.StoredPath); err != nil {
+			return fmt.Errorf("sandbox execution artifact storedPath %q is invalid: %w", artifact.StoredPath, err)
+		}
+	}
+	return nil
+}
+
+func validateArtifactStoreRelativePath(executionID, value string) error {
+	clean, err := validateStoreRelativePath(value)
+	if err != nil {
+		return err
+	}
+	if clean == executionID || !strings.HasPrefix(clean, executionID+"/") {
+		return fmt.Errorf("must be scoped under execution %q", executionID)
+	}
+	return nil
+}
+
+func validateStoreRelativePath(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	if trimmed != value {
+		return "", fmt.Errorf("path must not have leading or trailing whitespace")
+	}
+	if filepath.IsAbs(value) || pathpkg.IsAbs(value) {
+		return "", fmt.Errorf("path must be relative")
+	}
+	if strings.Contains(value, "\\") {
+		return "", fmt.Errorf("path must not contain backslash separators")
+	}
+	for _, part := range strings.Split(value, "/") {
+		if part == ".." {
+			return "", fmt.Errorf("path must not contain traversal")
+		}
+	}
+	clean := pathpkg.Clean(value)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", fmt.Errorf("path is invalid")
+	}
+	return clean, nil
 }
 
 func writeStoreFileAtomic(path string, data []byte, mode fs.FileMode) error {

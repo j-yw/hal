@@ -113,6 +113,26 @@ func TestSaveManifestAtomicallyWritesManifest(t *testing.T) {
 	assertNoTempFiles(t, store.Root())
 }
 
+func TestSaveManifestRejectsUnsafeArtifactMetadataBeforeMutation(t *testing.T) {
+	for _, storedPath := range []string{"/tmp/secret", "../escape", "other-exec/artifacts/out.txt", `exec-1\artifacts\out.txt`} {
+		t.Run(storedPath, func(t *testing.T) {
+			store := newTestStore(t)
+			manifest := testManifest("exec-1", time.Date(2026, 6, 30, 1, 0, 0, 0, time.UTC))
+			manifest.Artifacts = []Artifact{{
+				ID:         "artifact",
+				Name:       "Artifact",
+				Type:       "text",
+				StoredPath: storedPath,
+			}}
+			err := store.SaveManifest(manifest)
+			if err == nil {
+				t.Fatalf("SaveManifest() expected artifact path validation error")
+			}
+			assertPathMissing(t, store.Root())
+		})
+	}
+}
+
 func TestLoadManifestMissingWrapsNotExist(t *testing.T) {
 	store := newTestStore(t)
 	_, err := store.LoadManifest("missing")
