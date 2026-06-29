@@ -8,12 +8,14 @@ import (
 	pathpkg "path"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // StoredFile describes a payload persisted under the execution store.
 type StoredFile struct {
-	Path      string `json:"path"`
-	SizeBytes int64  `json:"sizeBytes"`
+	Path      string    `json:"path"`
+	SizeBytes int64     `json:"sizeBytes"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 // WriteLog writes a payload under an execution's logs directory.
@@ -152,7 +154,11 @@ func (s Store) writePayload(executionID, area, payloadPath string, data []byte) 
 	if err := writeStoreFileAtomic(absolutePath, data, 0o600); err != nil {
 		return StoredFile{}, fmt.Errorf("write sandbox execution payload %q: %w", storeRelativePath, err)
 	}
-	return StoredFile{Path: storeRelativePath, SizeBytes: int64(len(data))}, nil
+	info, err := os.Stat(absolutePath)
+	if err != nil {
+		return StoredFile{}, fmt.Errorf("stat sandbox execution payload %q: %w", storeRelativePath, err)
+	}
+	return StoredFile{Path: storeRelativePath, SizeBytes: info.Size(), CreatedAt: info.ModTime().UTC()}, nil
 }
 
 func (s Store) copyPayload(executionID, area, payloadPath, sourcePath string) (StoredFile, error) {
@@ -191,7 +197,7 @@ func (s Store) copyPayload(executionID, area, payloadPath, sourcePath string) (S
 	if err != nil {
 		return StoredFile{}, fmt.Errorf("copy sandbox execution payload %q: %w", storeRelativePath, err)
 	}
-	return StoredFile{Path: storeRelativePath, SizeBytes: info.Size()}, nil
+	return StoredFile{Path: storeRelativePath, SizeBytes: info.Size(), CreatedAt: info.ModTime().UTC()}, nil
 }
 
 func (s Store) payloadPath(executionID, area, payloadPath string) (string, string, error) {
@@ -298,9 +304,13 @@ func validateArtifactForSave(artifact Artifact) error {
 
 func artifactWithStoredFile(artifact Artifact, stored StoredFile) Artifact {
 	size := stored.SizeBytes
+	createdAt := stored.CreatedAt
 	artifact.Path = stored.Path
 	artifact.StoredPath = stored.Path
 	artifact.SizeBytes = &size
+	if !createdAt.IsZero() {
+		artifact.CreatedAt = &createdAt
+	}
 	return artifact
 }
 

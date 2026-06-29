@@ -40,19 +40,19 @@ type Artifact struct {
 type Manifest struct {
 	ID          string                       `json:"id"`
 	Purpose     Purpose                      `json:"purpose"`
-	SandboxName string                       `json:"sandboxName"`
-	ProjectDir  string                       `json:"projectDir"`
-	Command     []string                     `json:"command"`
-	WorkDir     string                       `json:"workDir"`
+	SandboxName string                       `json:"sandboxName,omitempty"`
+	ProjectDir  string                       `json:"projectDir,omitempty"`
+	Command     []string                     `json:"command,omitempty"`
+	WorkDir     string                       `json:"workDir,omitempty"`
 	Status      Status                       `json:"status"`
 	StartedAt   time.Time                    `json:"startedAt"`
-	FinishedAt  *time.Time                   `json:"finishedAt"`
-	Workspace   *sandbox.SandboxWorkspace    `json:"workspace"`
-	Host        *sandbox.SandboxHost         `json:"host"`
-	Runtime     *sandbox.SandboxRuntimeState `json:"runtime"`
-	Security    *sandbox.SandboxSecurity     `json:"security"`
-	Lease       *sandbox.SandboxLeaseRef     `json:"lease"`
-	Artifacts   []Artifact                   `json:"artifacts"`
+	FinishedAt  *time.Time                   `json:"finishedAt,omitempty"`
+	Workspace   *sandbox.SandboxWorkspace    `json:"workspace,omitempty"`
+	Host        *sandbox.SandboxHost         `json:"host,omitempty"`
+	Runtime     *sandbox.SandboxRuntimeState `json:"runtime,omitempty"`
+	Security    *sandbox.SandboxSecurity     `json:"security,omitempty"`
+	Lease       *sandbox.SandboxLeaseRef     `json:"lease,omitempty"`
+	Artifacts   []Artifact                   `json:"artifacts,omitempty"`
 }
 
 func validPurpose(purpose Purpose) bool {

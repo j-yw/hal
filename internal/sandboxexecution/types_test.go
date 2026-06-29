@@ -92,6 +92,14 @@ func TestManifestJSONFieldsAndSandboxMetadataTypes(t *testing.T) {
 		"status", "startedAt", "finishedAt", "workspace", "host", "runtime",
 		"security", "lease", "artifacts",
 	})
+
+	emptyOptional := mustJSONMap(t, Manifest{
+		ID:        "exec-1",
+		Purpose:   PurposeRun,
+		Status:    StatusRunning,
+		StartedAt: time.Date(2026, 6, 30, 2, 0, 0, 0, time.UTC),
+	})
+	assertJSONKeys(t, emptyOptional, []string{"id", "purpose", "status", "startedAt"})
 }
 
 func TestManifestPurposeAndStatusConstants(t *testing.T) {

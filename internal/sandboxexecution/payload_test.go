@@ -66,6 +66,9 @@ func TestWritePayloadHelpersStoreUnderAreas(t *testing.T) {
 			if stored.SizeBytes != int64(len(tt.wantBytes)) {
 				t.Fatalf("stored size = %d, want %d", stored.SizeBytes, len(tt.wantBytes))
 			}
+			if stored.CreatedAt.IsZero() {
+				t.Fatalf("stored createdAt is zero")
+			}
 			absolute := filepath.Join(store.Root(), filepath.FromSlash(stored.Path))
 			got, readErr := os.ReadFile(absolute)
 			if readErr != nil {
@@ -111,6 +114,9 @@ func TestCopyPayloadCopiesRegularFile(t *testing.T) {
 	}
 	if stored.SizeBytes != int64(len("source\n")) {
 		t.Fatalf("stored size = %d, want %d", stored.SizeBytes, len("source\n"))
+	}
+	if stored.CreatedAt.IsZero() {
+		t.Fatalf("stored createdAt is zero")
 	}
 	absolute := filepath.Join(store.Root(), filepath.FromSlash(stored.Path))
 	got, err := os.ReadFile(absolute)
@@ -166,12 +172,10 @@ func TestSaveArtifactUpsertsMetadataByID(t *testing.T) {
 	if err := store.SaveManifest(manifest); err != nil {
 		t.Fatalf("SaveManifest() error: %v", err)
 	}
-	createdAt := time.Date(2026, 6, 30, 2, 0, 0, 0, time.UTC)
 	first, err := store.SaveArtifact("exec-1", Artifact{
-		ID:        "report",
-		Name:      "Report",
-		Type:      "markdown",
-		CreatedAt: &createdAt,
+		ID:   "report",
+		Name: "Report",
+		Type: "markdown",
 	}, "reports/report.md", []byte("first\n"))
 	if err != nil {
 		t.Fatalf("SaveArtifact(first) error: %v", err)
@@ -181,10 +185,9 @@ func TestSaveArtifactUpsertsMetadataByID(t *testing.T) {
 	}
 
 	second, err := store.SaveArtifact("exec-1", Artifact{
-		ID:        "report",
-		Name:      "Report v2",
-		Type:      "markdown",
-		CreatedAt: &createdAt,
+		ID:   "report",
+		Name: "Report v2",
+		Type: "markdown",
 	}, "reports/report-v2.md", []byte("second\n"))
 	if err != nil {
 		t.Fatalf("SaveArtifact(second) error: %v", err)
@@ -194,6 +197,9 @@ func TestSaveArtifactUpsertsMetadataByID(t *testing.T) {
 	}
 	if second.SizeBytes == nil || *second.SizeBytes != int64(len("second\n")) {
 		t.Fatalf("second size = %v, want %d", second.SizeBytes, len("second\n"))
+	}
+	if second.CreatedAt == nil || second.CreatedAt.IsZero() {
+		t.Fatalf("second createdAt = %v, want stored payload creation time", second.CreatedAt)
 	}
 
 	loaded, err := store.LoadManifest("exec-1")
@@ -209,6 +215,9 @@ func TestSaveArtifactUpsertsMetadataByID(t *testing.T) {
 	}
 	if report.StoredPath != "exec-1/artifacts/reports/report-v2.md" {
 		t.Fatalf("report stored path = %q, want replacement path", report.StoredPath)
+	}
+	if report.CreatedAt == nil || report.CreatedAt.IsZero() {
+		t.Fatalf("report createdAt = %v, want stored payload creation time", report.CreatedAt)
 	}
 	_ = requireArtifact(t, loaded.Artifacts, "keep")
 	got, readErr := os.ReadFile(filepath.Join(store.Root(), filepath.FromSlash(report.StoredPath)))
@@ -237,6 +246,9 @@ func TestCopyArtifactCopiesAndUpsertsMetadata(t *testing.T) {
 	}
 	if artifact.StoredPath != "exec-1/artifacts/logs/log.txt" {
 		t.Fatalf("artifact stored path = %q, want store-relative path", artifact.StoredPath)
+	}
+	if artifact.CreatedAt == nil || artifact.CreatedAt.IsZero() {
+		t.Fatalf("artifact createdAt = %v, want stored payload creation time", artifact.CreatedAt)
 	}
 	loaded, err := store.LoadManifest("exec-1")
 	if err != nil {
