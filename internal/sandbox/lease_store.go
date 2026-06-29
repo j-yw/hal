@@ -304,3 +304,103 @@ func (s *SandboxLeaseStore) Remove(id string) error {
 	}
 	return nil
 }
+
+// Heartbeat extends an active lease's freshness timestamps.
+func (s *SandboxLeaseStore) Heartbeat(id string, ttl time.Duration) (*SandboxLease, error) {
+	path, err := leasePath(id)
+	if err != nil {
+		return nil, err
+	}
+	lease, err := s.Load(id)
+	if err != nil {
+		return nil, err
+	}
+	if lease.Status != SandboxLeaseStatusActive {
+		return nil, fmt.Errorf("lease %q is %s, want %s", id, lease.Status, SandboxLeaseStatusActive)
+	}
+
+	now := s.now()
+	lease.HeartbeatAt = now
+	lease.ExpiresAt = now.Add(ttl)
+	if err := writeLeaseFile(path, lease, true); err != nil {
+		return nil, err
+	}
+	return lease, nil
+}
+
+// Release marks an active lease released while preserving the durable record.
+func (s *SandboxLeaseStore) Release(id string) (*SandboxLease, error) {
+	path, err := leasePath(id)
+	if err != nil {
+		return nil, err
+	}
+	lease, err := s.Load(id)
+	if err != nil {
+		return nil, err
+	}
+
+	switch lease.Status {
+	case SandboxLeaseStatusActive:
+		lease.Status = SandboxLeaseStatusReleased
+		if err := writeLeaseFile(path, lease, true); err != nil {
+			return nil, err
+		}
+		return lease, nil
+	case SandboxLeaseStatusReleased:
+		return lease, nil
+	case SandboxLeaseStatusExpired:
+		return nil, fmt.Errorf("lease %q is %s and cannot be released", id, SandboxLeaseStatusExpired)
+	default:
+		return nil, fmt.Errorf("lease %q has unsupported status %q", id, lease.Status)
+	}
+}
+
+// ExpireLeases marks stale active leases expired and returns the leases it
+// changed.
+func (s *SandboxLeaseStore) ExpireLeases() ([]*SandboxLease, error) {
+	leaseDir, err := sandboxLeasesDirPath()
+	if err != nil {
+		return nil, fmt.Errorf("resolve sandbox leases dir: %w", err)
+	}
+	entries, err := os.ReadDir(leaseDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read sandbox leases dir: %w", err)
+	}
+
+	type staleLease struct {
+		path  string
+		lease *SandboxLease
+	}
+	now := s.now()
+	stale := make([]staleLease, 0)
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != sandboxStateFileExt {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), sandboxStateFileExt)
+		path := filepath.Join(leaseDir, entry.Name())
+		lease, err := loadLeaseFile(path, id)
+		if err != nil {
+			if strings.HasPrefix(err.Error(), "parse lease ") {
+				return nil, fmt.Errorf("parse lease file %q: %w", entry.Name(), err)
+			}
+			return nil, fmt.Errorf("read lease file %q: %w", entry.Name(), err)
+		}
+		if lease.Status == SandboxLeaseStatusActive && !lease.ExpiresAt.After(now) {
+			lease.Status = SandboxLeaseStatusExpired
+			stale = append(stale, staleLease{path: path, lease: lease})
+		}
+	}
+
+	expired := make([]*SandboxLease, 0, len(stale))
+	for _, item := range stale {
+		if err := writeLeaseFile(item.path, item.lease, true); err != nil {
+			return nil, err
+		}
+		expired = append(expired, item.lease)
+	}
+	return expired, nil
+}
