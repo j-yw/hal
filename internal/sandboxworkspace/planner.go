@@ -44,9 +44,20 @@ func (p Planner) Plan(ctx context.Context, req Request) (Plan, error) {
 		}
 		return planClone(req, status)
 	case sandbox.SandboxWorkspaceModeCopy:
-		return Plan{}, fmt.Errorf("workspace planning: copy mode is not implemented")
+		status, err := p.inspectGit(ctx, projectDir)
+		if err != nil {
+			return Plan{}, fmt.Errorf("inspect git workspace: %w", err)
+		}
+		return planCopy(req, status), nil
 	case sandbox.SandboxWorkspaceModeDirect:
-		return Plan{}, fmt.Errorf("workspace planning: direct mode is not implemented")
+		if !req.DirectOptIn {
+			return Plan{}, planningError(ErrDirectOptInRequired, req, DirtyState{}, nil)
+		}
+		status, err := p.inspectGit(ctx, projectDir)
+		if err != nil {
+			return Plan{}, fmt.Errorf("inspect git workspace: %w", err)
+		}
+		return planDirect(req, status), nil
 	default:
 		return Plan{}, fmt.Errorf("workspace planning: unsupported workspace mode %q", req.WorkspaceMode)
 	}
@@ -101,6 +112,25 @@ func planClone(req Request, status GitStatus) (Plan, error) {
 	return plan, nil
 }
 
+func planCopy(req Request, status GitStatus) Plan {
+	plan := basePlan(req, status)
+	plan.Mode = sandbox.SandboxWorkspaceModeCopy
+	plan.InputSource = sandbox.SandboxWorkspaceInputSourceCopy
+	plan.SyncRef = workingTreeSyncRef
+	return plan
+}
+
+func planDirect(req Request, status GitStatus) Plan {
+	plan := basePlan(req, status)
+	plan.Mode = sandbox.SandboxWorkspaceModeDirect
+	plan.InputSource = sandbox.SandboxWorkspaceInputSourceCopy
+	plan.SyncRef = workingTreeSyncRef
+	if plan.ResourceKey == "" {
+		plan.ResourceKey = directResourceKey(req.ProjectDir)
+	}
+	return plan
+}
+
 func basePlan(req Request, status GitStatus) Plan {
 	branch := firstNonEmpty(status.Branch, req.PreferredBranch)
 	upstream := firstNonEmpty(status.Upstream, req.PreferredUpstream)
@@ -112,6 +142,10 @@ func basePlan(req Request, status GitStatus) Plan {
 		Dirty:       status.Dirty,
 		ResourceKey: strings.TrimSpace(req.ResourceKey),
 	}
+}
+
+func directResourceKey(projectDir string) string {
+	return "workspace:" + projectDir
 }
 
 func upstreamSyncRef(status GitStatus) string {
