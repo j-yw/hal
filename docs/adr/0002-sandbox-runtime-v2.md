@@ -58,7 +58,25 @@ To be expanded by subsequent documentation tasks.
 
 ## Phased Rollout Boundaries
 
-To be expanded by subsequent documentation tasks.
+Phase 0 is limited to this ADR and documentation-appropriate verification of
+the documentation diff. It records the architecture boundary for Sandbox
+Runtime v2 without changing runtime behavior, production code, CLI surfaces,
+machine-readable contracts, or Go package structure.
+
+Future architecture work may refine the self-hosted microVM worker design,
+provider migration strategy, and contract shape, but it requires separate PRD
+scope before implementation begins.
+
+Future extraction work may introduce shared sandbox orchestration and package
+changes after the ownership boundaries in this ADR are accepted. That work is
+outside Phase 0.
+
+Future CLI work may design and implement sandbox flags for `hal run` and
+`hal auto` after factory extraction. That work is outside Phase 0.
+
+Future runtime implementation work may build or enable replacement sandbox
+runtimes after the architecture and extraction phases create the required
+boundaries. That work is outside Phase 0.
 
 ## Compatibility Assumptions
 
