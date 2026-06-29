@@ -71,6 +71,11 @@
 - Sandbox executor remote lifecycle events should be appended through `factorySandboxTimelineWriter` so start/output/completion events share one sequence counter and consistent `source=remote_sandbox` metadata before the outer factory runner records terminal success/failure.
 - Sandbox remote execution failures should be sanitized and saved inside `runFactorySandboxExecutorWithDeps` before returning to the outer factory runner; `markFactoryRunFailed` should preserve existing sandbox SSH handoff commands while the status inspection command remains available through `nextAction`.
 
+## Patterns from phase/sandbox-runtime-v2-1-types (2026-06-29)
+
+- Factory Sandbox Runtime v2 summary structs belong in `internal/factory/types.go`, stay redaction-safe, and should be covered by explicit JSON tag checks plus exact marshaled shape tests in `internal/factory/types_test.go`.
+- `SandboxWorkspaceMetadata` intentionally exposes only `mode`, `inputSource`, `branch`, and `syncRef`; do not add repo, raw filesystem paths, or raw workspace paths to the factory workspace summary.
+
 ## Patterns from hal/rename-to-hal (2026-02-04)
 
 - For runtime directory renames, use template.HalDir in Go code but separately sweep hardcoded user-facing strings in cmd/* and prompt templates (e.g., config.go, explode.go) so paths like .hal stay consistent.

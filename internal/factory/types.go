@@ -270,6 +270,30 @@ type RunSecretMetadata struct {
 	Present  bool   `json:"present"`
 }
 
+// SandboxHostMetadata captures redaction-safe sandbox host summary details.
+type SandboxHostMetadata struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+}
+
+// SandboxRuntimeMetadata captures redaction-safe sandbox runtime summary details.
+type SandboxRuntimeMetadata struct {
+	Driver         string `json:"driver"`
+	IsolationLevel string `json:"isolationLevel"`
+	RuntimeID      string `json:"runtimeId"`
+	Image          string `json:"image"`
+	WorkerID       string `json:"workerId"`
+}
+
+// SandboxWorkspaceMetadata captures redaction-safe sandbox workspace summary details.
+type SandboxWorkspaceMetadata struct {
+	Mode        string `json:"mode"`
+	InputSource string `json:"inputSource"`
+	Branch      string `json:"branch"`
+	SyncRef     string `json:"syncRef"`
+}
+
 // SandboxMetadata captures redaction-safe remote execution details for a
 // sandbox-backed factory run.
 type SandboxMetadata struct {

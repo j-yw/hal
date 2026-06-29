@@ -634,6 +634,9 @@ func TestFactoryTypesHaveJSONTags(t *testing.T) {
 		reflect.TypeOf(RunRecord{}),
 		reflect.TypeOf(RunSecretInput{}),
 		reflect.TypeOf(RunSecretMetadata{}),
+		reflect.TypeOf(SandboxHostMetadata{}),
+		reflect.TypeOf(SandboxRuntimeMetadata{}),
+		reflect.TypeOf(SandboxWorkspaceMetadata{}),
 		reflect.TypeOf(SandboxMetadata{}),
 		reflect.TypeOf(SandboxConnectionMetadata{}),
 		reflect.TypeOf(SourceMetadata{}),
@@ -676,6 +679,92 @@ func TestFactoryTypesHaveJSONTags(t *testing.T) {
 				tag, ok := field.Tag.Lookup("json")
 				if !ok || tag == "" || tag == "-" {
 					t.Errorf("%s.%s missing explicit json tag", typ.Name(), field.Name)
+				}
+			}
+		})
+	}
+}
+
+func TestSandboxHostRuntimeWorkspaceMetadataJSONTags(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     any
+		wantKeys  []string
+		wantValue map[string]any
+		forbidden []string
+	}{
+		{
+			name: "host",
+			value: SandboxHostMetadata{
+				ID:   "host-123",
+				Name: "builder-a",
+				Kind: "worker",
+			},
+			wantKeys: []string{"id", "name", "kind"},
+			wantValue: map[string]any{
+				"id":   "host-123",
+				"name": "builder-a",
+				"kind": "worker",
+			},
+		},
+		{
+			name: "runtime",
+			value: SandboxRuntimeMetadata{
+				Driver:         "rootless_podman",
+				IsolationLevel: "container",
+				RuntimeID:      "runtime-abc",
+				Image:          "ghcr.io/jywlabs/hal-worker:2026-06-29",
+				WorkerID:       "worker-7",
+			},
+			wantKeys: []string{"driver", "isolationLevel", "runtimeId", "image", "workerId"},
+			wantValue: map[string]any{
+				"driver":         "rootless_podman",
+				"isolationLevel": "container",
+				"runtimeId":      "runtime-abc",
+				"image":          "ghcr.io/jywlabs/hal-worker:2026-06-29",
+				"workerId":       "worker-7",
+			},
+		},
+		{
+			name: "workspace",
+			value: SandboxWorkspaceMetadata{
+				Mode:        "clone",
+				InputSource: "remote_ref",
+				Branch:      "hal/factory-runtime-v2",
+				SyncRef:     "refs/heads/hal/factory-runtime-v2",
+			},
+			wantKeys: []string{"mode", "inputSource", "branch", "syncRef"},
+			wantValue: map[string]any{
+				"mode":        "clone",
+				"inputSource": "remote_ref",
+				"branch":      "hal/factory-runtime-v2",
+				"syncRef":     "refs/heads/hal/factory-runtime-v2",
+			},
+			forbidden: []string{"repo", "path", "workspacePath", "workspaceRoot", "sourcePath", "storedPath"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.value)
+			if err != nil {
+				t.Fatalf("json.Marshal() error = %v", err)
+			}
+
+			var raw map[string]any
+			if err := json.Unmarshal(data, &raw); err != nil {
+				t.Fatalf("json.Unmarshal(payload) error = %v", err)
+			}
+
+			requireExactJSONKeys(t, raw, tt.wantKeys)
+			for key, want := range tt.wantValue {
+				if raw[key] != want {
+					t.Errorf("%s = %#v, want %#v", key, raw[key], want)
+				}
+			}
+			for _, key := range tt.forbidden {
+				if _, ok := raw[key]; ok {
+					t.Errorf("unsafe workspace metadata field %q should not be serialized", key)
 				}
 			}
 		})
