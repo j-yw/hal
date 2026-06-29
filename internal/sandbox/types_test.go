@@ -94,3 +94,47 @@ func TestSandboxStatusConstants(t *testing.T) {
 		t.Fatalf("StatusUnknown = %q, want %q", StatusUnknown, "unknown")
 	}
 }
+
+func TestSandboxRuntimeV2MetadataConstants(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "host kind local", got: SandboxHostKindLocal, want: "local"},
+		{name: "host kind ssh", got: SandboxHostKindSSH, want: "ssh"},
+		{name: "host kind worker", got: SandboxHostKindWorker, want: "worker"},
+		{name: "host kind k8s", got: SandboxHostKindK8s, want: "k8s"},
+		{name: "runtime driver ssh machine", got: SandboxRuntimeDriverSSHMachine, want: "ssh_machine"},
+		{name: "runtime driver rootless podman", got: SandboxRuntimeDriverRootlessPodman, want: "rootless_podman"},
+		{name: "runtime driver microvm", got: SandboxRuntimeDriverMicroVM, want: "microvm"},
+		{name: "isolation level host", got: SandboxIsolationLevelHost, want: "host"},
+		{name: "isolation level container", got: SandboxIsolationLevelContainer, want: "container"},
+		{name: "isolation level vm", got: SandboxIsolationLevelVM, want: "vm"},
+		{name: "workspace mode clone", got: SandboxWorkspaceModeClone, want: "clone"},
+		{name: "workspace mode copy", got: SandboxWorkspaceModeCopy, want: "copy"},
+		{name: "workspace mode direct", got: SandboxWorkspaceModeDirect, want: "direct"},
+		{name: "workspace input source remote ref", got: SandboxWorkspaceInputSourceRemoteRef, want: "remote_ref"},
+		{name: "workspace input source git bundle", got: SandboxWorkspaceInputSourceGitBundle, want: "git_bundle"},
+		{name: "workspace input source copy", got: SandboxWorkspaceInputSourceCopy, want: "copy"},
+		{name: "network enforcement mode none", got: SandboxNetworkEnforcementModeNone, want: "none"},
+		{name: "network enforcement mode best effort", got: SandboxNetworkEnforcementModeBestEffort, want: "best_effort"},
+		{name: "network enforcement mode proxy", got: SandboxNetworkEnforcementModeProxy, want: "proxy"},
+		{name: "network enforcement mode firewall", got: SandboxNetworkEnforcementModeFirewall, want: "firewall"},
+		{name: "network enforcement mode runtime", got: SandboxNetworkEnforcementModeRuntime, want: "runtime"},
+		{name: "network enforcement mode proxy firewall", got: SandboxNetworkEnforcementModeProxyFirewall, want: "proxy_firewall"},
+		{name: "secret mode env", got: SandboxSecretModeEnv, want: "env"},
+		{name: "secret mode file tmpfs", got: SandboxSecretModeFileTmpfs, want: "file_tmpfs"},
+		{name: "secret mode ssh agent", got: SandboxSecretModeSSHAgent, want: "ssh_agent"},
+		{name: "secret mode http proxy", got: SandboxSecretModeHTTPProxy, want: "http_proxy"},
+		{name: "secret mode legacy auth sync", got: SandboxSecretModeLegacyAuthSync, want: "legacy_auth_sync"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("%s = %q, want %q", tt.name, tt.got, tt.want)
+			}
+		})
+	}
+}

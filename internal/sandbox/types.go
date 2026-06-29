@@ -8,6 +8,44 @@ const (
 	StatusUnknown = "unknown"
 )
 
+// Sandbox Runtime v2 metadata constants are stable durable values used by
+// persisted metadata contracts.
+const (
+	SandboxHostKindLocal  = "local"
+	SandboxHostKindSSH    = "ssh"
+	SandboxHostKindWorker = "worker"
+	SandboxHostKindK8s    = "k8s"
+
+	SandboxRuntimeDriverSSHMachine     = "ssh_machine"
+	SandboxRuntimeDriverRootlessPodman = "rootless_podman"
+	SandboxRuntimeDriverMicroVM        = "microvm"
+
+	SandboxIsolationLevelHost      = "host"
+	SandboxIsolationLevelContainer = "container"
+	SandboxIsolationLevelVM        = "vm"
+
+	SandboxWorkspaceModeClone  = "clone"
+	SandboxWorkspaceModeCopy   = "copy"
+	SandboxWorkspaceModeDirect = "direct"
+
+	SandboxWorkspaceInputSourceRemoteRef = "remote_ref"
+	SandboxWorkspaceInputSourceGitBundle = "git_bundle"
+	SandboxWorkspaceInputSourceCopy      = "copy"
+
+	SandboxNetworkEnforcementModeNone          = "none"
+	SandboxNetworkEnforcementModeBestEffort    = "best_effort"
+	SandboxNetworkEnforcementModeProxy         = "proxy"
+	SandboxNetworkEnforcementModeFirewall      = "firewall"
+	SandboxNetworkEnforcementModeRuntime       = "runtime"
+	SandboxNetworkEnforcementModeProxyFirewall = "proxy_firewall"
+
+	SandboxSecretModeEnv            = "env"
+	SandboxSecretModeFileTmpfs      = "file_tmpfs"
+	SandboxSecretModeSSHAgent       = "ssh_agent"
+	SandboxSecretModeHTTPProxy      = "http_proxy"
+	SandboxSecretModeLegacyAuthSync = "legacy_auth_sync"
+)
+
 // SandboxState represents the persisted state of a sandbox.
 type SandboxState struct {
 	// Identity
