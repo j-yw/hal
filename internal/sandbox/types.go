@@ -46,6 +46,49 @@ const (
 	SandboxSecretModeLegacyAuthSync = "legacy_auth_sync"
 )
 
+// SandboxHost represents durable Sandbox Runtime v2 host metadata.
+type SandboxHost struct {
+	ID                string            `json:"id"`
+	Name              string            `json:"name"`
+	Kind              string            `json:"kind"`
+	Endpoint          string            `json:"endpoint,omitempty"`
+	Labels            map[string]string `json:"labels,omitempty"`
+	SupportedRuntimes []string          `json:"supportedRuntimes,omitempty"`
+	Capacity          *HostCapacity     `json:"capacity,omitempty"`
+	Health            *HostHealth       `json:"health,omitempty"`
+	Cost              *HostCost         `json:"cost,omitempty"`
+}
+
+// SandboxHostRef identifies a sandbox host without embedding full host metadata.
+type SandboxHostRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+}
+
+// HostCapacity describes durable host resource capacity metadata.
+type HostCapacity struct {
+	CPUCores               int `json:"cpuCores"`
+	MemoryMB               int `json:"memoryMb"`
+	DiskGB                 int `json:"diskGb"`
+	MaxConcurrentSandboxes int `json:"maxConcurrentSandboxes"`
+}
+
+// HostHealth describes durable host health metadata.
+type HostHealth struct {
+	Status          string     `json:"status"`
+	CheckedAt       time.Time  `json:"checkedAt"`
+	LastHeartbeatAt *time.Time `json:"lastHeartbeatAt,omitempty"`
+	Message         string     `json:"message,omitempty"`
+}
+
+// HostCost describes durable host cost estimate metadata.
+type HostCost struct {
+	Currency       string  `json:"currency"`
+	HourlyEstimate float64 `json:"hourlyEstimate"`
+	BillingScope   string  `json:"billingScope,omitempty"`
+}
+
 // SandboxState represents the persisted state of a sandbox.
 type SandboxState struct {
 	// Identity

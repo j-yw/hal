@@ -83,6 +83,124 @@ func TestSandboxStateJSONTags(t *testing.T) {
 	}
 }
 
+func TestSandboxHostMetadataJSONTags(t *testing.T) {
+	checkedAt := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	lastHeartbeatAt := checkedAt.Add(-1 * time.Minute)
+
+	tests := []struct {
+		name        string
+		host        SandboxHost
+		wantPresent []string
+		wantAbsent  []string
+	}{
+		{
+			name: "minimal host omits optional metadata",
+			host: SandboxHost{
+				ID:   "host-01",
+				Name: "builder-01",
+				Kind: SandboxHostKindLocal,
+			},
+			wantPresent: []string{"id", "name", "kind"},
+			wantAbsent:  []string{"endpoint", "labels", "supportedRuntimes", "capacity", "health", "cost"},
+		},
+		{
+			name: "full host includes metadata with camelCase keys",
+			host: SandboxHost{
+				ID:       "host-01",
+				Name:     "builder-01",
+				Kind:     SandboxHostKindWorker,
+				Endpoint: "ssh://builder-01.example.test",
+				Labels: map[string]string{
+					"region": "iad",
+					"tier":   "trusted",
+				},
+				SupportedRuntimes: []string{
+					SandboxRuntimeDriverSSHMachine,
+					SandboxRuntimeDriverRootlessPodman,
+				},
+				Capacity: &HostCapacity{
+					CPUCores:               8,
+					MemoryMB:               32768,
+					DiskGB:                 250,
+					MaxConcurrentSandboxes: 4,
+				},
+				Health: &HostHealth{
+					Status:          StatusRunning,
+					CheckedAt:       checkedAt,
+					LastHeartbeatAt: &lastHeartbeatAt,
+					Message:         "ready",
+				},
+				Cost: &HostCost{
+					Currency:       "USD",
+					HourlyEstimate: 0.42,
+					BillingScope:   "host",
+				},
+			},
+			wantPresent: []string{"id", "name", "kind", "endpoint", "labels", "supportedRuntimes", "capacity", "health", "cost"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mustMarshalObject(t, tt.host)
+
+			for _, key := range tt.wantPresent {
+				if _, ok := got[key]; !ok {
+					t.Errorf("missing expected key %q in %#v", key, got)
+				}
+			}
+			for _, key := range tt.wantAbsent {
+				if _, ok := got[key]; ok {
+					t.Errorf("unexpected key %q in %#v", key, got)
+				}
+			}
+		})
+	}
+}
+
+func TestSandboxHostNestedMetadataJSONTags(t *testing.T) {
+	checkedAt := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+
+	host := SandboxHost{
+		ID:   "host-01",
+		Name: "builder-01",
+		Kind: SandboxHostKindWorker,
+		Capacity: &HostCapacity{
+			CPUCores:               8,
+			MemoryMB:               32768,
+			DiskGB:                 250,
+			MaxConcurrentSandboxes: 4,
+		},
+		Health: &HostHealth{
+			Status:    StatusRunning,
+			CheckedAt: checkedAt,
+		},
+		Cost: &HostCost{
+			Currency:       "USD",
+			HourlyEstimate: 0.42,
+		},
+	}
+
+	got := mustMarshalObject(t, host)
+
+	assertObjectKeys(t, got["capacity"], []string{"cpuCores", "memoryMb", "diskGb", "maxConcurrentSandboxes"}, nil)
+	assertObjectKeys(t, got["health"], []string{"status", "checkedAt"}, []string{"lastHeartbeatAt", "message"})
+	assertObjectKeys(t, got["cost"], []string{"currency", "hourlyEstimate"}, []string{"billingScope"})
+}
+
+func TestSandboxHostRefJSONTags(t *testing.T) {
+	got := mustMarshalObject(t, SandboxHostRef{
+		ID:   "host-01",
+		Name: "builder-01",
+		Kind: SandboxHostKindSSH,
+	})
+
+	assertObjectKeys(t, got, []string{"id", "name", "kind"}, nil)
+	if len(got) != 3 {
+		t.Fatalf("SandboxHostRef keys = %#v, want only id, name, and kind", got)
+	}
+}
+
 func TestSandboxStatusConstants(t *testing.T) {
 	if StatusRunning != "running" {
 		t.Fatalf("StatusRunning = %q, want %q", StatusRunning, "running")
@@ -92,6 +210,41 @@ func TestSandboxStatusConstants(t *testing.T) {
 	}
 	if StatusUnknown != "unknown" {
 		t.Fatalf("StatusUnknown = %q, want %q", StatusUnknown, "unknown")
+	}
+}
+
+func mustMarshalObject(t *testing.T, v any) map[string]any {
+	t.Helper()
+
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	return got
+}
+
+func assertObjectKeys(t *testing.T, v any, wantPresent, wantAbsent []string) {
+	t.Helper()
+
+	got, ok := v.(map[string]any)
+	if !ok {
+		t.Fatalf("value = %#v, want JSON object", v)
+	}
+
+	for _, key := range wantPresent {
+		if _, ok := got[key]; !ok {
+			t.Errorf("missing expected key %q in %#v", key, got)
+		}
+	}
+	for _, key := range wantAbsent {
+		if _, ok := got[key]; ok {
+			t.Errorf("unexpected key %q in %#v", key, got)
+		}
 	}
 }
 
