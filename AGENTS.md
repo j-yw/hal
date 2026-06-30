@@ -51,6 +51,7 @@
 - Worker `ClientDriver.CopyIn`/`CopyOut` forwarding lives in `internal/sandboxworker/adapter.go`; read copy-in sources with `io.LimitReader(MaxCopyInPayloadBytes+1)` before dispatch, send copy payloads through bounded base64 protocol fields, materialize successful copy-out payloads to the requested local destination, and avoid writing partial copy-out files when worker errors or truncation occur.
 - Worker I/O local socket round-trip coverage belongs in `internal/sandboxworker/client_test.go`; use fake driver-backed `Service`/`Server` instances plus short `/tmp` socket paths, and keep the tests free of real runtime providers, network egress, or credential material.
 - Default sandbox runtime resolver wiring lives in `cmd/sandbox_runtime_compat.go`; keep run/auto/factory defaults limited to SSH-machine or explicit rootless Podman metadata, keep worker-backed `sandboxworker.ClientDriver` construction opt-in only, and use fake runtime-driver factories in regression tests instead of constructing concrete adapters.
+- Phase 14 worker I/O verification is intentionally focused: document the allowed commands in `docs/design/sandbox-runtime-v2-phase14-worker-io-verification.md`, lock the checklist with `internal/sandboxworker/phase14_verification_test.go`, and do not run `go test ./...` or real runtime/provider workflows for this phase.
 
 ## Patterns from phase13-sandboxd-self-hosted-worker-daemon-foundation (2026-07-01)
 
