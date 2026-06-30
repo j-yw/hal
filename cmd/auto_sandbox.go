@@ -72,6 +72,8 @@ type autoSandboxExecutionResult struct {
 	RuntimeDriver   sandboxruntime.Driver
 	RemoteStarted   bool
 	PreparedCommand []string
+	StdoutSummary   string
+	StderrSummary   string
 }
 
 type autoSandboxExecutionHooks struct {
@@ -266,6 +268,11 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 			execErr = collectErr
 		}
 	}
+	if execErr == nil {
+		if collectErr := collectAutoSandboxOutputSummaryArtifacts(store, req, execResult, target); collectErr != nil {
+			execErr = collectErr
+		}
+	}
 
 	finishedAt := deps.now().UTC()
 	status := sandboxexecution.StatusSucceeded
@@ -405,6 +412,8 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 	var preparedCommand []string
 	var runtimeDriver sandboxruntime.Driver
 	var provider sandbox.Provider
+	var stdoutSummary strings.Builder
+	var stderrSummary strings.Builder
 	ensureProvider := func(providerName string) (sandbox.Provider, error) {
 		if provider != nil {
 			return provider, nil
@@ -495,6 +504,14 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 			if event.Type == sandboxexec.EventCommandOutput && event.Stream == sandboxexec.StreamStdout {
 				remoteStarted = true
 			}
+			if event.Type == sandboxexec.EventCommandOutput {
+				switch event.Stream {
+				case sandboxexec.StreamStdout:
+					appendSandboxOutputSummaryLine(&stdoutSummary, event.Line)
+				case sandboxexec.StreamStderr:
+					appendSandboxOutputSummaryLine(&stderrSummary, event.Line)
+				}
+			}
 			return nil
 		},
 	})
@@ -503,6 +520,8 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 		RuntimeDriver:   runtimeDriver,
 		RemoteStarted:   remoteStarted,
 		PreparedCommand: preparedCommand,
+		StdoutSummary:   stdoutSummary.String(),
+		StderrSummary:   stderrSummary.String(),
 	}, err
 }
 
@@ -546,6 +565,23 @@ func collectAutoSandboxGeneratedArtifacts(ctx context.Context, store sandboxexec
 		RemoteWorkspaceDir: req.WorkDir,
 	}); err != nil {
 		return fmt.Errorf("collect auto sandbox reports archive artifacts: %w", err)
+	}
+	return nil
+}
+
+func collectAutoSandboxOutputSummaryArtifacts(store sandboxexecution.Store, req autoSandboxRequest, result autoSandboxExecutionResult, target *sandbox.SandboxState) error {
+	stdoutSummary := sanitizeSandboxOutputSummary(result.StdoutSummary, target)
+	stderrSummary := sanitizeSandboxOutputSummary(result.StderrSummary, target)
+	if strings.TrimSpace(stdoutSummary) == "" && strings.TrimSpace(stderrSummary) == "" {
+		return nil
+	}
+	if _, err := sandboxexecution.SaveCommandOutputSummaryArtifacts(sandboxexecution.CommandOutputSummaryArtifactsRequest{
+		ExecutionID:   req.ExecutionID,
+		Store:         store,
+		StdoutSummary: stdoutSummary,
+		StderrSummary: stderrSummary,
+	}); err != nil {
+		return fmt.Errorf("collect auto sandbox output summary artifacts: %w", err)
 	}
 	return nil
 }

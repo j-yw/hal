@@ -633,9 +633,9 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 			if event.Type == sandboxexec.EventCommandOutput {
 				switch event.Stream {
 				case sandboxexec.StreamStdout:
-					appendRunSandboxOutputSummaryLine(&stdoutSummary, event.Line)
+					appendSandboxOutputSummaryLine(&stdoutSummary, event.Line)
 				case sandboxexec.StreamStderr:
-					appendRunSandboxOutputSummaryLine(&stderrSummary, event.Line)
+					appendSandboxOutputSummaryLine(&stderrSummary, event.Line)
 				}
 			}
 			return nil
@@ -695,8 +695,8 @@ func collectRunSandboxGeneratedArtifacts(ctx context.Context, store sandboxexecu
 }
 
 func collectRunSandboxOutputSummaryArtifacts(store sandboxexecution.Store, req runSandboxRequest, result runSandboxExecutionResult, target *sandbox.SandboxState) error {
-	stdoutSummary := sanitizeRunSandboxOutputSummary(result.StdoutSummary, target)
-	stderrSummary := sanitizeRunSandboxOutputSummary(result.StderrSummary, target)
+	stdoutSummary := sanitizeSandboxOutputSummary(result.StdoutSummary, target)
+	stderrSummary := sanitizeSandboxOutputSummary(result.StderrSummary, target)
 	if strings.TrimSpace(stdoutSummary) == "" && strings.TrimSpace(stderrSummary) == "" {
 		return nil
 	}
@@ -711,7 +711,7 @@ func collectRunSandboxOutputSummaryArtifacts(store sandboxexecution.Store, req r
 	return nil
 }
 
-func appendRunSandboxOutputSummaryLine(summary *strings.Builder, line string) {
+func appendSandboxOutputSummaryLine(summary *strings.Builder, line string) {
 	if summary == nil || strings.TrimSpace(line) == "" {
 		return
 	}
@@ -719,7 +719,7 @@ func appendRunSandboxOutputSummaryLine(summary *strings.Builder, line string) {
 	summary.WriteByte('\n')
 }
 
-func sanitizeRunSandboxOutputSummary(value string, target *sandbox.SandboxState) string {
+func sanitizeSandboxOutputSummary(value string, target *sandbox.SandboxState) string {
 	if strings.TrimSpace(value) == "" {
 		return ""
 	}

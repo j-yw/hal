@@ -710,8 +710,8 @@ func TestRunAutoSandboxWithWriterCollectsCoreStateArtifacts(t *testing.T) {
 	if manifest.ArtifactMetadata == nil {
 		t.Fatal("ArtifactMetadata = nil, want collected core state metadata")
 	}
-	if len(manifest.ArtifactMetadata.Collected) != 5 {
-		t.Fatalf("collected = %#v, want core state and generated artifact metadata", manifest.ArtifactMetadata.Collected)
+	if len(manifest.ArtifactMetadata.Collected) != 6 {
+		t.Fatalf("collected = %#v, want core state, generated artifacts, and stdout summary", manifest.ArtifactMetadata.Collected)
 	}
 	collected := map[string]sandboxexecution.ArtifactMetadataEntry{}
 	for _, artifact := range manifest.ArtifactMetadata.Collected {
@@ -722,6 +722,7 @@ func TestRunAutoSandboxWithWriterCollectsCoreStateArtifacts(t *testing.T) {
 	assertRunSandboxCollectedArtifact(t, collected[".hal/auto-state.json"], ".hal/auto-state.json", "auto-core-state/artifacts/core/hal-auto-state.json")
 	assertRunSandboxCollectedArtifact(t, collected[".hal/recovery/workspace.patch"], ".hal/recovery/workspace.patch", "auto-core-state/recovery/workspace.patch")
 	assertRunSandboxCollectedArtifact(t, collected[".hal/reports.tar"], ".hal/reports.tar", "auto-core-state/artifacts/reports/reports.tar")
+	assertRunSandboxCollectedArtifact(t, collected["output/stdout-summary.txt"], "output/stdout-summary.txt", "auto-core-state/artifacts/output/stdout-summary.txt")
 	if len(manifest.ArtifactMetadata.Partial) != 0 || len(manifest.ArtifactMetadata.Warnings) != 0 {
 		t.Fatalf("partial/warnings = %#v/%#v, want none", manifest.ArtifactMetadata.Partial, manifest.ArtifactMetadata.Warnings)
 	}
@@ -1306,6 +1307,130 @@ func TestRunAutoSandboxWithWriterJSONRemoteOutputPassesThroughAfterStdout(t *tes
 	}
 	if strings.Contains(out.String(), "remote auto failed") {
 		t.Fatalf("stdout contains synthesized local error: %s", out.String())
+	}
+}
+
+func TestRunAutoSandboxWithWriterSavesOutputSummaryArtifacts(t *testing.T) {
+	startedAt := time.Date(2026, 6, 30, 13, 25, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(5 * time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	target := &sandbox.SandboxState{
+		Name:        "auto-summary-box",
+		Provider:    "test-provider",
+		Status:      sandbox.StatusRunning,
+		IP:          "203.0.113.42",
+		TailscaleIP: "100.64.0.42",
+		Runtime:     &sandbox.SandboxRuntimeState{Driver: sandbox.SandboxRuntimeDriverSSHMachine},
+	}
+	repoRemote := "git@example.com:org/repo.git"
+	expectedWorkspace := factorySandboxRemoteWorkspaceDir(factory.RunRecord{
+		RunID:      "auto-output-summary",
+		RepoPath:   projectDir,
+		RepoRemote: repoRemote,
+		BranchName: "feature/auto-sandbox",
+		BaseBranch: "main",
+	})
+	driver := fakeRunSandboxRuntimeDriver{
+		exec: func(_ context.Context, got sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			script := ""
+			if len(got.Args) >= 3 && got.Args[0] == "sh" && got.Args[1] == "-c" {
+				script = got.Args[2]
+			}
+			switch {
+			case got.WorkDir == expectedWorkspace && strings.Contains(script, "workspace.patch"):
+			case got.WorkDir == expectedWorkspace && strings.Contains(script, "reports.tar"):
+			default:
+				_, _ = io.WriteString(got.Stdout, `{"contractVersion":2,"ok":true,"entryMode":"report_discovery","resumed":false,"steps":{},"summary":"remote"}`+"\n")
+				_, _ = io.WriteString(got.Stderr, "warning from 203.0.113.42\n")
+			}
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+		copyOut: func(_ context.Context, got sandboxruntime.CopyRequest) error {
+			if err := os.MkdirAll(filepath.Dir(got.DestinationPath), 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(got.DestinationPath, []byte("payload for "+got.SourcePath), 0o600)
+		},
+	}
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
+		Base:        "main",
+		BaseChanged: true,
+		JSON:        true,
+		JSONChanged: true,
+	}, &out, &errOut, autoSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "auto-output-summary"
+		},
+		now: runSandboxTestClock(startedAt, finishedAt),
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return autoSandboxTestPlan(projectDir), nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			return target, target.Name, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+			return driver, nil
+		},
+		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			return factory.BootstrapResult{}, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			return nil
+		},
+		runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runAutoSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+	var result AutoResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("stdout is not one parseable remote AutoResult JSON document: %v\n%s", err, out.String())
+	}
+	if !result.OK || result.Summary != "remote" {
+		t.Fatalf("AutoResult = %#v, want ok remote summary", result)
+	}
+
+	manifest, err := store.LoadManifest("auto-output-summary")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if manifest.Status != sandboxexecution.StatusSucceeded {
+		t.Fatalf("Status = %q, want succeeded", manifest.Status)
+	}
+	if len(manifest.Artifacts) != 0 {
+		t.Fatalf("legacy Artifacts = %#v, want unchanged empty top-level artifacts", manifest.Artifacts)
+	}
+	if manifest.ArtifactMetadata == nil {
+		t.Fatal("ArtifactMetadata = nil, want output summary metadata")
+	}
+	collected := map[string]sandboxexecution.ArtifactMetadataEntry{}
+	for _, artifact := range manifest.ArtifactMetadata.Collected {
+		collected[artifact.Path] = artifact
+	}
+	assertRunSandboxCollectedArtifact(t, collected["output/stdout-summary.txt"], "output/stdout-summary.txt", "auto-output-summary/artifacts/output/stdout-summary.txt")
+	assertRunSandboxCollectedArtifact(t, collected["output/stderr-summary.txt"], "output/stderr-summary.txt", "auto-output-summary/artifacts/output/stderr-summary.txt")
+	stdoutPayload := readRunSandboxStoreFile(t, store, collected["output/stdout-summary.txt"].StoredPath)
+	if stdoutPayload != `{"contractVersion":2,"ok":true,"entryMode":"report_discovery","resumed":false,"steps":{},"summary":"remote"}`+"\n" {
+		t.Fatalf("stdout summary payload = %q, want remote JSON summary", stdoutPayload)
+	}
+	stderrPayload := readRunSandboxStoreFile(t, store, collected["output/stderr-summary.txt"].StoredPath)
+	if strings.Contains(stderrPayload, "203.0.113.42") {
+		t.Fatalf("stderr summary payload leaked sandbox address: %q", stderrPayload)
+	}
+	if !strings.Contains(stderrPayload, "<address redacted>") {
+		t.Fatalf("stderr summary payload = %q, want redacted address marker", stderrPayload)
 	}
 }
 
