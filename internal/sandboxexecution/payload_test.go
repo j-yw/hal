@@ -1,6 +1,7 @@
 package sandboxexecution
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -165,6 +166,74 @@ func TestCopyPayloadRejectsSymlinkAndNonRegularSources(t *testing.T) {
 	})
 }
 
+func TestSaveArtifactFileReturnsSafeMetadata(t *testing.T) {
+	store := newTestStore(t)
+	sourcePath := filepath.Join(t.TempDir(), "prd.json")
+	if err := os.WriteFile(sourcePath, []byte(`{"project":"phase-11"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(source) error: %v", err)
+	}
+
+	artifact, err := store.SaveArtifactFile("exec-1", ArtifactMetadataEntry{
+		ID:   "prd",
+		Name: "PRD",
+		Type: "json",
+		Path: ".hal/prd.json",
+	}, "core/hal-prd.json", sourcePath)
+	if err != nil {
+		t.Fatalf("SaveArtifactFile() error: %v", err)
+	}
+
+	if artifact.Path != ".hal/prd.json" {
+		t.Fatalf("artifact display path = %q, want .hal/prd.json", artifact.Path)
+	}
+	if artifact.StoredPath != "exec-1/artifacts/core/hal-prd.json" {
+		t.Fatalf("artifact stored path = %q, want store-relative artifacts path", artifact.StoredPath)
+	}
+	if artifact.SizeBytes == nil || *artifact.SizeBytes != int64(len(`{"project":"phase-11"}`+"\n")) {
+		t.Fatalf("artifact size = %v, want source size", artifact.SizeBytes)
+	}
+	if artifact.CreatedAt == nil || artifact.CreatedAt.IsZero() {
+		t.Fatalf("artifact createdAt = %v, want stored payload creation time", artifact.CreatedAt)
+	}
+	if filepath.IsAbs(artifact.StoredPath) || strings.Contains(artifact.StoredPath, "\\") {
+		t.Fatalf("stored path %q is not safe store-relative slash form", artifact.StoredPath)
+	}
+
+	storedPath := filepath.Join(store.Root(), filepath.FromSlash(artifact.StoredPath))
+	got, err := os.ReadFile(storedPath)
+	if err != nil {
+		t.Fatalf("ReadFile(stored artifact) error: %v", err)
+	}
+	if string(got) != `{"project":"phase-11"}`+"\n" {
+		t.Fatalf("stored artifact bytes = %q, want source bytes", got)
+	}
+
+	encoded := string(mustJSONBytes(t, artifact))
+	if strings.Contains(encoded, sourcePath) || strings.Contains(encoded, "sourcePath") || strings.Contains(encoded, "localPath") {
+		t.Fatalf("artifact metadata leaked source path: %s", encoded)
+	}
+}
+
+func TestSaveArtifactFilePersistenceErrorRedactsSourcePath(t *testing.T) {
+	store := newTestStore(t)
+	secret := "token-ghp_secret_from_output"
+	sourcePath := filepath.Join(t.TempDir(), secret+".log")
+
+	_, err := store.SaveArtifactFile("exec-1", ArtifactMetadataEntry{
+		ID:   "stdout",
+		Name: "Stdout",
+		Type: "text",
+		Path: "stdout.log",
+	}, "output/stdout.log", sourcePath)
+	if err == nil {
+		t.Fatalf("SaveArtifactFile() expected error")
+	}
+	if strings.Contains(err.Error(), sourcePath) || strings.Contains(err.Error(), secret) {
+		t.Fatalf("SaveArtifactFile() error leaked source path or secret: %v", err)
+	}
+	assertPathMissing(t, store.Root())
+}
+
 func TestSaveArtifactUpsertsMetadataByID(t *testing.T) {
 	store := newTestStore(t)
 	manifest := testManifest("exec-1", time.Date(2026, 6, 30, 1, 0, 0, 0, time.UTC))
@@ -280,4 +349,13 @@ func requireArtifact(t *testing.T, artifacts []Artifact, id string) Artifact {
 		t.Fatalf("artifact ID %q count = %d, want 1 in %#v", id, len(found), artifacts)
 	}
 	return found[0]
+}
+
+func mustJSONBytes(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("Marshal() error: %v", err)
+	}
+	return data
 }

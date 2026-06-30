@@ -1,6 +1,7 @@
 package sandboxexecution
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -48,6 +49,32 @@ func (s Store) CopyLog(executionID, payloadPath, sourcePath string) (StoredFile,
 // artifacts directory without updating manifest artifact metadata.
 func (s Store) CopyArtifactPayload(executionID, payloadPath, sourcePath string) (StoredFile, error) {
 	return s.copyPayload(executionID, artifactsDirName, payloadPath, sourcePath)
+}
+
+// SaveArtifactFile copies a regular source file under an execution's artifacts
+// directory and returns collection metadata with a caller-facing display path
+// plus a store-relative stored path. It does not update the manifest.
+func (s Store) SaveArtifactFile(executionID string, artifact ArtifactMetadataEntry, payloadPath, sourcePath string) (ArtifactMetadataEntry, error) {
+	executionID, err := validateExecutionID(executionID)
+	if err != nil {
+		return ArtifactMetadataEntry{}, err
+	}
+	if err := validateArtifactFileMetadataInput(artifact); err != nil {
+		return ArtifactMetadataEntry{}, err
+	}
+	if _, _, err := s.payloadPath(executionID, artifactsDirName, payloadPath); err != nil {
+		return ArtifactMetadataEntry{}, err
+	}
+
+	stored, err := s.copyPayloadRedactingSourcePath(executionID, artifactsDirName, payloadPath, sourcePath)
+	if err != nil {
+		return ArtifactMetadataEntry{}, fmt.Errorf("save sandbox execution artifact payload: %w", err)
+	}
+	artifact = artifactMetadataWithStoredFile(artifact, stored)
+	if err := validateArtifactMetadataEntry(executionID, artifact, true); err != nil {
+		return ArtifactMetadataEntry{}, err
+	}
+	return artifact, nil
 }
 
 // CopyHandoff copies a regular source file under an execution's handoff
@@ -200,6 +227,45 @@ func (s Store) copyPayload(executionID, area, payloadPath, sourcePath string) (S
 	return StoredFile{Path: storeRelativePath, SizeBytes: info.Size(), CreatedAt: info.ModTime().UTC()}, nil
 }
 
+func (s Store) copyPayloadRedactingSourcePath(executionID, area, payloadPath, sourcePath string) (StoredFile, error) {
+	absolutePath, storeRelativePath, err := s.payloadPath(executionID, area, payloadPath)
+	if err != nil {
+		return StoredFile{}, err
+	}
+	executionID, err = validateExecutionID(executionID)
+	if err != nil {
+		return StoredFile{}, err
+	}
+
+	sourcePath = strings.TrimSpace(sourcePath)
+	if sourcePath == "" {
+		return StoredFile{}, fmt.Errorf("sandbox execution payload source path is required")
+	}
+	sourceInfo, err := os.Lstat(sourcePath)
+	if err != nil {
+		return StoredFile{}, fmt.Errorf("stat sandbox execution payload source: %w", redactPathError(err))
+	}
+	if sourceInfo.Mode()&fs.ModeSymlink != 0 {
+		return StoredFile{}, fmt.Errorf("sandbox execution payload source is a symlink")
+	}
+	if !sourceInfo.Mode().IsRegular() {
+		return StoredFile{}, fmt.Errorf("sandbox execution payload source is not a regular file")
+	}
+
+	if err := s.Ensure(executionID); err != nil {
+		return StoredFile{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(absolutePath), 0o700); err != nil {
+		return StoredFile{}, fmt.Errorf("create sandbox execution payload dir: %w", redactPathError(err))
+	}
+
+	info, err := copyStoreFileAtomicRedactingSourcePath(sourcePath, absolutePath, 0o600, sourceInfo)
+	if err != nil {
+		return StoredFile{}, fmt.Errorf("copy sandbox execution payload %q: %w", storeRelativePath, redactPathError(err))
+	}
+	return StoredFile{Path: storeRelativePath, SizeBytes: info.Size(), CreatedAt: info.ModTime().UTC()}, nil
+}
+
 func (s Store) payloadPath(executionID, area, payloadPath string) (string, string, error) {
 	executionID, err := validateExecutionID(executionID)
 	if err != nil {
@@ -286,6 +352,52 @@ func copyStoreFileAtomic(sourcePath, destPath string, mode fs.FileMode, expected
 	return os.Stat(destPath)
 }
 
+func copyStoreFileAtomicRedactingSourcePath(sourcePath, destPath string, mode fs.FileMode, expectedInfo fs.FileInfo) (fs.FileInfo, error) {
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return nil, redactPathError(err)
+	}
+	defer source.Close()
+	sourceInfo, err := source.Stat()
+	if err != nil {
+		return nil, redactPathError(err)
+	}
+	if !sourceInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("source is not a regular file")
+	}
+	if expectedInfo != nil && !os.SameFile(expectedInfo, sourceInfo) {
+		return nil, fmt.Errorf("source changed during copy")
+	}
+
+	tmpPath := destPath + tempFileSuffix
+	dest, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	if err != nil {
+		return nil, redactPathError(err)
+	}
+	if _, err := io.Copy(dest, source); err != nil {
+		_ = dest.Close()
+		_ = os.Remove(tmpPath)
+		return nil, err
+	}
+	if err := dest.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, redactPathError(err)
+	}
+	if err := os.Chmod(tmpPath, mode); err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, redactPathError(err)
+	}
+	if err := renameStoreFile(tmpPath, destPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, redactPathError(err)
+	}
+	info, err := os.Stat(destPath)
+	if err != nil {
+		return nil, redactPathError(err)
+	}
+	return info, nil
+}
+
 func validateArtifactForSave(artifact Artifact) error {
 	if strings.TrimSpace(artifact.ID) == "" {
 		return fmt.Errorf("sandbox execution artifact ID is required")
@@ -302,10 +414,34 @@ func validateArtifactForSave(artifact Artifact) error {
 	return nil
 }
 
+func validateArtifactFileMetadataInput(artifact ArtifactMetadataEntry) error {
+	if strings.TrimSpace(artifact.Path) == "" {
+		return fmt.Errorf("sandbox execution artifact display path is required")
+	}
+	if err := validateArtifactDisplayPath(artifact.Path); err != nil {
+		return fmt.Errorf("sandbox execution artifact display path %q is invalid: %w", artifact.Path, err)
+	}
+	if strings.TrimSpace(artifact.StoredPath) != "" {
+		return fmt.Errorf("sandbox execution artifact storedPath is managed by the store")
+	}
+	return nil
+}
+
 func artifactWithStoredFile(artifact Artifact, stored StoredFile) Artifact {
 	size := stored.SizeBytes
 	createdAt := stored.CreatedAt
 	artifact.Path = stored.Path
+	artifact.StoredPath = stored.Path
+	artifact.SizeBytes = &size
+	if !createdAt.IsZero() {
+		artifact.CreatedAt = &createdAt
+	}
+	return artifact
+}
+
+func artifactMetadataWithStoredFile(artifact ArtifactMetadataEntry, stored StoredFile) ArtifactMetadataEntry {
+	size := stored.SizeBytes
+	createdAt := stored.CreatedAt
 	artifact.StoredPath = stored.Path
 	artifact.SizeBytes = &size
 	if !createdAt.IsZero() {
@@ -322,4 +458,14 @@ func upsertArtifact(artifacts []Artifact, artifact Artifact) []Artifact {
 		}
 	}
 	return append(artifacts, artifact)
+}
+
+func redactPathError(err error) error {
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		redacted := *pathErr
+		redacted.Path = "<redacted>"
+		return &redacted
+	}
+	return err
 }
