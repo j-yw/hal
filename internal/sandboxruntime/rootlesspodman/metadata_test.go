@@ -140,3 +140,11 @@ func (f *fakeCommandRunner) lifecycleOperations() []string {
 	}
 	return operations
 }
+
+func (f *fakeCommandRunner) copyOperations() []string {
+	operations := make([]string, 0, len(f.copyRequests))
+	for _, req := range f.copyRequests {
+		operations = append(operations, req.Operation)
+	}
+	return operations
+}
