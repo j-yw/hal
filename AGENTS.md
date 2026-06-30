@@ -42,6 +42,7 @@
 - Worker protocol schema types live in `internal/sandboxworker`; keep the foundational request/response/status/capability/runtime-driver/security-policy types command-agnostic, package-local to the worker boundary, and free of Cobra, `cmd`, factory, PRD, compound, loop, concrete runtime adapters, or durable command-layer records.
 - `internal/sandboxworker` import-boundary tests should parse production Go imports and allow only standard-library packages plus the root `internal/sandboxruntime` contract package; keep command packages, durable sandbox state, and concrete runtime/provider adapters forbidden.
 - Worker capability and security metadata must separate requested controls from enforced controls; validation should reject metadata that claims deny-by-default network enforcement, firewall/proxy enforcement, credential-proxy support, or microVM isolation for the local worker foundation.
+- Worker runtime driver routing belongs behind `sandboxworker.DriverRegistry`; register concrete `sandboxruntime.Driver` adapters outside `internal/sandboxworker`, keep ID listing deterministic, and cover registry behavior with fake drivers only.
 
 ## Patterns from phase12-rootless-podman-local-runtime-driver-for-hal-sandbox-runtime-v2 (2026-07-01)
 
