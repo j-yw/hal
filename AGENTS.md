@@ -43,6 +43,7 @@
 - `internal/sandboxworker` import-boundary tests should parse production Go imports and allow only standard-library packages plus the root `internal/sandboxruntime` contract package; keep command packages, durable sandbox state, and concrete runtime/provider adapters forbidden.
 - Worker capability and security metadata must separate requested controls from enforced controls; validation should reject metadata that claims deny-by-default network enforcement, firewall/proxy enforcement, credential-proxy support, or microVM isolation for the local worker foundation.
 - Worker runtime driver routing belongs behind `sandboxworker.DriverRegistry`; register concrete `sandboxruntime.Driver` adapters outside `internal/sandboxworker`, keep ID listing deterministic, and cover registry behavior with fake drivers only.
+- Worker status/capability generation belongs in `sandboxworker.Service`: derive supported driver IDs from `DriverRegistry`, keep top-level supported operations conservative until server handlers exist, and use fake drivers plus honest security metadata in tests.
 
 ## Patterns from phase12-rootless-podman-local-runtime-driver-for-hal-sandbox-runtime-v2 (2026-07-01)
 

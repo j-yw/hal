@@ -1,0 +1,287 @@
+package sandboxworker
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestServiceStatusReportsStateAndRegisteredDrivers(t *testing.T) {
+	registry, err := NewDriverRegistry(
+		&fakeWorkerRuntimeDriver{id: RuntimeDriverSSHMachine},
+		&fakeWorkerRuntimeDriver{id: RuntimeDriverRootlessPodman},
+	)
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+
+	service, err := NewService(ServiceOptions{
+		WorkerID:   "worker-001",
+		SocketPath: "/tmp/hal-sandboxworker.sock",
+		Registry:   registry,
+		Health: WorkerHealth{
+			Status:  HealthStatusDegraded,
+			Message: "warming runtime driver cache",
+		},
+		Capacity: WorkerCapacity{
+			MaxConcurrentSandboxes: 4,
+			ActiveSandboxes:        1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+
+	status := service.Status()
+	if err := status.Validate(); err != nil {
+		t.Fatalf("Status().Validate() error: %v", err)
+	}
+	if status.ProtocolVersion != ProtocolVersion {
+		t.Fatalf("status protocolVersion = %q, want %q", status.ProtocolVersion, ProtocolVersion)
+	}
+	if status.WorkerID != "worker-001" {
+		t.Fatalf("status workerId = %q, want worker-001", status.WorkerID)
+	}
+	if status.HostKind != HostKindLocal {
+		t.Fatalf("status hostKind = %q, want %q", status.HostKind, HostKindLocal)
+	}
+	if status.SocketPath != "/tmp/hal-sandboxworker.sock" {
+		t.Fatalf("status socketPath = %q, want configured socket path", status.SocketPath)
+	}
+	wantDrivers := []string{RuntimeDriverRootlessPodman, RuntimeDriverSSHMachine}
+	if !reflect.DeepEqual(status.SupportedRuntimeDrivers, wantDrivers) {
+		t.Fatalf("status supported drivers = %#v, want %#v", status.SupportedRuntimeDrivers, wantDrivers)
+	}
+	if status.Health.Status != HealthStatusDegraded || status.Health.Message == "" {
+		t.Fatalf("status health = %#v, want configured degraded health", status.Health)
+	}
+	if status.Capacity.MaxConcurrentSandboxes != 4 || status.Capacity.ActiveSandboxes != 1 {
+		t.Fatalf("status capacity = %#v, want configured capacity", status.Capacity)
+	}
+	assertSecurityPolicyDoesNotOverclaim(t, status.Security)
+	if status.Security.Requested.NetworkPolicy == status.Security.Enforced.NetworkPolicy {
+		t.Fatalf("status security does not distinguish requested/enforced network policy: %#v", status.Security)
+	}
+}
+
+func TestServiceCapabilitiesReportsRegisteredDriversAndHonestSecurity(t *testing.T) {
+	registry, err := NewDriverRegistry(
+		&fakeWorkerRuntimeDriver{id: RuntimeDriverSSHMachine},
+		&fakeWorkerRuntimeDriver{id: RuntimeDriverRootlessPodman},
+	)
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+
+	service, err := NewService(ServiceOptions{
+		WorkerID: "worker-001",
+		Registry: registry,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+
+	capabilities := service.Capabilities()
+	if err := capabilities.Validate(); err != nil {
+		t.Fatalf("Capabilities().Validate() error: %v", err)
+	}
+	if capabilities.ProtocolVersion != ProtocolVersion {
+		t.Fatalf("capabilities protocolVersion = %q, want %q", capabilities.ProtocolVersion, ProtocolVersion)
+	}
+	if capabilities.WorkerID != "worker-001" {
+		t.Fatalf("capabilities workerId = %q, want worker-001", capabilities.WorkerID)
+	}
+	wantOps := []string{OperationStatus, OperationCapabilities}
+	if !reflect.DeepEqual(capabilities.SupportedOperations, wantOps) {
+		t.Fatalf("capabilities supported operations = %#v, want %#v", capabilities.SupportedOperations, wantOps)
+	}
+	if len(capabilities.RuntimeDrivers) != 2 {
+		t.Fatalf("capabilities runtime drivers = %#v, want two registered drivers", capabilities.RuntimeDrivers)
+	}
+	if capabilities.RuntimeDrivers[0].ID != RuntimeDriverRootlessPodman || capabilities.RuntimeDrivers[1].ID != RuntimeDriverSSHMachine {
+		t.Fatalf("capabilities runtime driver order = %#v, want registry-sorted drivers", capabilities.RuntimeDrivers)
+	}
+	for _, driver := range capabilities.RuntimeDrivers {
+		if driver.HostKind != HostKindLocal {
+			t.Fatalf("driver %q hostKind = %q, want local worker driver", driver.ID, driver.HostKind)
+		}
+		if driver.ID == RuntimeDriverRootlessPodman && driver.IsolationLevel != IsolationLevelContainer {
+			t.Fatalf("rootless Podman isolationLevel = %q, want %q", driver.IsolationLevel, IsolationLevelContainer)
+		}
+		if driver.ID == RuntimeDriverSSHMachine && driver.IsolationLevel != IsolationLevelHost {
+			t.Fatalf("ssh-machine isolationLevel = %q, want conservative host isolation", driver.IsolationLevel)
+		}
+		if !reflect.DeepEqual(driver.Operations, defaultRuntimeDriverOperations) {
+			t.Fatalf("driver %q operations = %#v, want lifecycle/inspect operations", driver.ID, driver.Operations)
+		}
+		assertSecurityPolicyDoesNotOverclaim(t, driver.Security)
+	}
+	assertSecurityPolicyDoesNotOverclaim(t, capabilities.Security)
+}
+
+func TestServiceProtocolResponsesValidate(t *testing.T) {
+	service, err := NewService(ServiceOptions{WorkerID: "worker-001"})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+
+	statusResp := service.StatusResponse(" req-001 ")
+	if err := statusResp.Validate(); err != nil {
+		t.Fatalf("StatusResponse().Validate() error: %v", err)
+	}
+	if statusResp.RequestID != "req-001" || statusResp.Operation != OperationStatus || statusResp.Status == nil {
+		t.Fatalf("status response = %#v, want trimmed request ID and status payload", statusResp)
+	}
+
+	capabilitiesResp := service.CapabilitiesResponse("req-002")
+	if err := capabilitiesResp.Validate(); err != nil {
+		t.Fatalf("CapabilitiesResponse().Validate() error: %v", err)
+	}
+	if capabilitiesResp.RequestID != "req-002" || capabilitiesResp.Operation != OperationCapabilities || capabilitiesResp.Capabilities == nil {
+		t.Fatalf("capabilities response = %#v, want request ID and capabilities payload", capabilitiesResp)
+	}
+}
+
+func TestServiceRejectsInvalidState(t *testing.T) {
+	tests := []struct {
+		name    string
+		options ServiceOptions
+		want    string
+	}{
+		{
+			name:    "missing worker id",
+			options: ServiceOptions{WorkerID: "  "},
+			want:    "workerId is required",
+		},
+		{
+			name: "unsupported host kind",
+			options: ServiceOptions{
+				WorkerID: "worker-001",
+				HostKind: "hosted",
+			},
+			want: "hostKind",
+		},
+		{
+			name: "active exceeds max capacity",
+			options: ServiceOptions{
+				WorkerID: "worker-001",
+				Capacity: WorkerCapacity{
+					MaxConcurrentSandboxes: 1,
+					ActiveSandboxes:        2,
+				},
+			},
+			want: "activeSandboxes",
+		},
+		{
+			name: "capabilities overstate credential proxy",
+			options: ServiceOptions{
+				WorkerID: "worker-001",
+				Security: SecurityPolicy{
+					Requested: DefaultWorkerSecurityPolicy().Requested,
+					Enforced: SecurityControls{
+						NetworkPolicy:       NetworkPolicyBestEffort,
+						NetworkEnforcement:  NetworkEnforcementNone,
+						CredentialModes:     []string{CredentialModeEnv},
+						IsolationLevel:      IsolationLevelHost,
+						CredentialProxyMode: true,
+					},
+				},
+			},
+			want: "credentialProxyMode",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service, err := NewService(tt.options)
+			if err == nil {
+				t.Fatalf("NewService() error = nil, want %q (service %#v)", tt.want, service)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("NewService() error = %q, want substring %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
+func TestServiceUsesCustomRuntimeDriverDescriptorsFromRegistry(t *testing.T) {
+	registry, err := NewDriverRegistry(&fakeWorkerRuntimeDriver{id: "fake_runtime"})
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+	service, err := NewService(ServiceOptions{
+		WorkerID: "worker-001",
+		Registry: registry,
+		RuntimeDrivers: map[string]RuntimeDriver{
+			"fake_runtime": {
+				HostKind:       HostKindLocal,
+				IsolationLevel: IsolationLevelHost,
+				Operations:     []string{OperationInspect},
+				Security:       defaultRuntimeDriverSecurityPolicy(IsolationLevelHost),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+
+	capabilities := service.Capabilities()
+	if len(capabilities.RuntimeDrivers) != 1 {
+		t.Fatalf("runtime drivers = %#v, want one fake driver", capabilities.RuntimeDrivers)
+	}
+	driver := capabilities.RuntimeDrivers[0]
+	if driver.ID != "fake_runtime" {
+		t.Fatalf("custom driver ID = %q, want descriptor ID defaulted from registry", driver.ID)
+	}
+	if !reflect.DeepEqual(driver.Operations, []string{OperationInspect}) {
+		t.Fatalf("custom driver operations = %#v, want inspect only", driver.Operations)
+	}
+}
+
+func TestServiceCapabilitiesRejectInvalidRuntimeDriverDescriptor(t *testing.T) {
+	registry, err := NewDriverRegistry(&fakeWorkerRuntimeDriver{id: "fake_runtime"})
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+
+	service, err := NewService(ServiceOptions{
+		WorkerID: "worker-001",
+		Registry: registry,
+		RuntimeDrivers: map[string]RuntimeDriver{
+			"fake_runtime": {
+				ID:             "fake_runtime",
+				HostKind:       HostKindLocal,
+				IsolationLevel: unsupportedIsolationLevelMicroVM,
+				Operations:     []string{OperationInspect},
+				Security:       DefaultWorkerSecurityPolicy(),
+			},
+		},
+	})
+	if err == nil {
+		t.Fatalf("NewService() error = nil, want invalid descriptor error (service %#v)", service)
+	}
+	if !strings.Contains(err.Error(), "isolationLevel") {
+		t.Fatalf("NewService() error = %q, want isolationLevel validation error", err.Error())
+	}
+}
+
+func assertSecurityPolicyDoesNotOverclaim(t *testing.T, policy SecurityPolicy) {
+	t.Helper()
+	if err := policy.Validate(); err != nil {
+		t.Fatalf("security policy Validate() error: %v", err)
+	}
+	if policy.Enforced.NetworkPolicy == NetworkPolicyDenyByDefault {
+		t.Fatalf("security policy claims deny-by-default enforcement: %#v", policy)
+	}
+	switch policy.Enforced.NetworkEnforcement {
+	case "", NetworkEnforcementNone, NetworkEnforcementRuntime:
+	default:
+		t.Fatalf("security policy claims unsupported network enforcement: %#v", policy)
+	}
+	if policy.Enforced.CredentialProxyMode || containsString(policy.Enforced.CredentialModes, unsupportedCredentialModeProxy) {
+		t.Fatalf("security policy claims credential proxy support: %#v", policy)
+	}
+	if policy.Enforced.IsolationLevel == unsupportedIsolationLevelMicroVM {
+		t.Fatalf("security policy claims microVM isolation: %#v", policy)
+	}
+}
