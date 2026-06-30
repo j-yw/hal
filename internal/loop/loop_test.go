@@ -81,6 +81,34 @@ func TestContainsIgnoreCase(t *testing.T) {
 	}
 }
 
+func TestNew_PreservesExplicitZeroRetries(t *testing.T) {
+	engine.RegisterEngine("loop-test-zero-retries", func(*engine.EngineConfig) engine.Engine {
+		return &fakeEngine{}
+	})
+	halDir := setupTestHalDir(t, []engine.UserStory{{
+		ID:                 "US-001",
+		Title:              "One shot",
+		Description:        "Run once",
+		AcceptanceCriteria: []string{"Typecheck passes"},
+		Priority:           1,
+		Passes:             false,
+	}})
+
+	var logBuf bytes.Buffer
+	runner, err := New(Config{
+		Dir:        halDir,
+		Engine:     "loop-test-zero-retries",
+		Logger:     &logBuf,
+		MaxRetries: 0,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if runner.config.MaxRetries != 0 {
+		t.Fatalf("MaxRetries = %d, want 0", runner.config.MaxRetries)
+	}
+}
+
 func TestLoadPrompt_InjectsStandards(t *testing.T) {
 	halDir := t.TempDir()
 

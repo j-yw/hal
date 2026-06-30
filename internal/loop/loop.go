@@ -80,7 +80,7 @@ func New(cfg Config) (*Runner, error) {
 	if cfg.RetryDelay == 0 {
 		cfg.RetryDelay = 5 * time.Second
 	}
-	if cfg.MaxRetries <= 0 {
+	if cfg.MaxRetries < 0 {
 		cfg.MaxRetries = 3
 	}
 
