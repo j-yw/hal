@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 )
 
-// GitCLIInspector inspects Git state using local Git commands only. It does not
-// fetch, push, or contact remotes.
+// GitCLIInspector inspects Git state and prepares bundles using local Git
+// commands only. It does not fetch, push, or contact remotes.
 type GitCLIInspector struct{}
+
+var absolutePathPattern = regexp.MustCompile(`(^|[[:space:]'"])(/[^\s'"]+)`)
 
 func (GitCLIInspector) InspectGit(ctx context.Context, projectDir string) (GitStatus, error) {
 	inside, err := gitOutput(ctx, projectDir, "rev-parse", "--is-inside-work-tree")
@@ -49,6 +52,110 @@ func (GitCLIInspector) InspectGit(ctx context.Context, projectDir string) (GitSt
 	}
 
 	return status, nil
+}
+
+func (GitCLIInspector) CreateBundle(ctx context.Context, req CreateBundleRequest) (CreateBundleResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	plan := req.Plan
+	projectDir := strings.TrimSpace(plan.ProjectDir)
+	if projectDir == "" {
+		return CreateBundleResult{}, fmt.Errorf("git bundle create failed: project directory is required")
+	}
+	destination := strings.TrimSpace(req.DestinationPath)
+	if destination == "" {
+		return CreateBundleResult{}, fmt.Errorf("git bundle create failed: destination path is required")
+	}
+
+	args := []string{"bundle", "create", destination}
+	args = append(args, bundleCreateRevisions(plan)...)
+	if err := gitRunSafe(ctx, projectDir, "git bundle create", args...); err != nil {
+		return CreateBundleResult{}, err
+	}
+
+	syncRef := firstNonEmpty(plan.SyncRef, bundlePositiveRef(plan))
+	return CreateBundleResult{
+		Path:    destination,
+		ID:      safeBundleSegment(syncRef),
+		SyncRef: syncRef,
+	}, nil
+}
+
+func (GitCLIInspector) VerifyBundle(ctx context.Context, req VerifyBundleRequest) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	projectDir := strings.TrimSpace(req.Plan.ProjectDir)
+	if projectDir == "" {
+		return fmt.Errorf("git bundle verify failed: project directory is required")
+	}
+	path := strings.TrimSpace(req.Path)
+	if path == "" {
+		return fmt.Errorf("git bundle verify failed: bundle path is required")
+	}
+
+	if err := gitRunSafe(ctx, projectDir, "git bundle verify", "bundle", "verify", path); err != nil {
+		return err
+	}
+	heads, err := gitOutputSafe(ctx, projectDir, "git bundle list-heads", "bundle", "list-heads", path)
+	if err != nil {
+		return err
+	}
+	expected, err := plannedBundleCommit(ctx, req.Plan, req.SyncRef)
+	if err != nil {
+		return err
+	}
+	if !bundleHeadsContainCommit(heads, expected) {
+		return fmt.Errorf("git bundle verify failed: bundle does not contain planned sync ref %q", safeBundleRef(firstNonEmpty(req.SyncRef, req.Plan.SyncRef, "HEAD")))
+	}
+	return nil
+}
+
+func bundleCreateRevisions(plan Plan) []string {
+	positiveRef := bundlePositiveRef(plan)
+	if upstream := strings.TrimSpace(plan.Upstream); upstream != "" {
+		return []string{positiveRef, "^" + upstream}
+	}
+	return []string{positiveRef}
+}
+
+func bundlePositiveRef(plan Plan) string {
+	if branch := strings.TrimSpace(plan.Branch); branch != "" {
+		return branch
+	}
+	return "HEAD"
+}
+
+func plannedBundleCommit(ctx context.Context, plan Plan, syncRef string) (string, error) {
+	ref := firstNonEmpty(syncRef, plan.SyncRef, bundlePositiveRef(plan))
+	commit, err := gitOutputSafe(ctx, plan.ProjectDir, "git rev-parse", "rev-parse", "--verify", ref+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("git bundle verify failed: resolve planned sync ref %q: %w", safeBundleRef(ref), err)
+	}
+	return commit, nil
+}
+
+func bundleHeadsContainCommit(heads string, commit string) bool {
+	commit = strings.TrimSpace(commit)
+	if commit == "" {
+		return false
+	}
+	for _, line := range splitLines(heads) {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == commit {
+			return true
+		}
+	}
+	return false
+}
+
+func safeBundleRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "HEAD"
+	}
+	return safeBundleSegment(ref)
 }
 
 func repositoryRemote(ctx context.Context, projectDir string, upstream string) string {
@@ -142,12 +249,50 @@ func gitRun(ctx context.Context, dir string, args ...string) error {
 	return nil
 }
 
+func gitRunSafe(ctx context.Context, dir string, operation string, args ...string) error {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return gitSafeCommandError(operation, stderr.String(), err)
+	}
+	return nil
+}
+
+func gitOutputSafe(ctx context.Context, dir string, operation string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", gitSafeCommandError(operation, stderr.String(), err)
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
 func gitCommandError(args []string, stderr string, err error) error {
 	detail := strings.TrimSpace(stderr)
 	if detail == "" {
 		return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
 	return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, detail)
+}
+
+func gitSafeCommandError(operation string, stderr string, err error) error {
+	detail := sanitizeGitDetail(stderr)
+	if detail == "" {
+		return fmt.Errorf("%s failed: %w", operation, err)
+	}
+	return fmt.Errorf("%s failed: %w: %s", operation, err, detail)
+}
+
+func sanitizeGitDetail(stderr string) string {
+	detail := strings.Join(splitLines(stderr), "; ")
+	if detail == "" {
+		return ""
+	}
+	return absolutePathPattern.ReplaceAllString(detail, "${1}[path]")
 }
 
 func exitCode(err error) int {
