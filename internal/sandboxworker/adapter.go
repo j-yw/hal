@@ -5,20 +5,30 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 var (
-	ErrWorkerClientRequired       = errors.New("worker client is required")
-	ErrWorkerTargetRequired       = errors.New("worker client returned no target")
-	ErrWorkerOperationUnsupported = errors.New("worker runtime driver operation unsupported")
-	ErrWorkerExecResponseRequired = errors.New("worker client returned no exec response")
-	ErrWorkerExecOutputTruncated  = errors.New("worker exec output truncated")
+	ErrWorkerClientRequired          = errors.New("worker client is required")
+	ErrWorkerTargetRequired          = errors.New("worker client returned no target")
+	ErrWorkerOperationUnsupported    = errors.New("worker runtime driver operation unsupported")
+	ErrWorkerExecResponseRequired    = errors.New("worker client returned no exec response")
+	ErrWorkerExecOutputTruncated     = errors.New("worker exec output truncated")
+	ErrWorkerCopyInResponseRequired  = errors.New("worker client returned no copy_in response")
+	ErrWorkerCopyOutResponseRequired = errors.New("worker client returned no copy_out response")
+	ErrWorkerCopyOutPayloadRequired  = errors.New("worker client returned no copy_out payload")
+	ErrWorkerCopyOutPayloadTruncated = errors.New("worker copy_out payload truncated")
 )
 
-const clientDriverExecOperationID = "client-driver-exec"
+const (
+	clientDriverExecOperationID    = "client-driver-exec"
+	clientDriverCopyInOperationID  = "client-driver-copy-in"
+	clientDriverCopyOutOperationID = "client-driver-copy-out"
+)
 
 var _ sandboxruntime.Driver = (*ClientDriver)(nil)
 
@@ -30,6 +40,8 @@ type RuntimeDriverClient interface {
 	Delete(context.Context, string, LifecycleRequest) error
 	Inspect(context.Context, string, InspectRequest) (*Target, error)
 	Exec(context.Context, string, ExecRequest) (*ExecResponse, error)
+	CopyIn(context.Context, string, CopyInRequest) (*CopyInResponse, error)
+	CopyOut(context.Context, string, CopyOutRequest) (*CopyOutResponse, error)
 }
 
 // ClientDriverOptions configures a sandboxruntime.Driver backed by a worker
@@ -164,14 +176,58 @@ func (driver *ClientDriver) Exec(ctx context.Context, req sandboxruntime.ExecReq
 	return driver.runtimeExecResultFromWorkerResponse(req, resp)
 }
 
-// CopyIn is not implemented by the worker foundation adapter yet.
-func (driver *ClientDriver) CopyIn(context.Context, sandboxruntime.CopyRequest) error {
-	return driver.operationError(OperationCopyIn, ErrWorkerOperationUnsupported)
+// CopyIn copies a bounded local file payload into a worker target.
+func (driver *ClientDriver) CopyIn(ctx context.Context, req sandboxruntime.CopyRequest) error {
+	client, driverID, err := driver.clientFor(OperationCopyIn)
+	if err != nil {
+		return err
+	}
+	payload, err := clientDriverCopyInPayload(req.SourcePath)
+	if err != nil {
+		return driver.operationError(OperationCopyIn, err)
+	}
+	workerReq := CopyInRequest{
+		OperationID: clientDriverCopyInOperationID,
+		Target:      workerTargetFromRuntimeTarget(req.Target, driverID),
+		Source: CopyPathMetadata{
+			DisplayPath: clientDriverDisplayPath(req.SourcePath),
+		},
+		RemoteDestinationPath: strings.TrimSpace(req.DestinationPath),
+		Payload:               payload,
+	}
+	if err := workerReq.Validate(); err != nil {
+		return driver.operationError(OperationCopyIn, err)
+	}
+	resp, err := client.CopyIn(ctx, driverID, workerReq)
+	if err != nil {
+		return driver.operationError(OperationCopyIn, err)
+	}
+	return driver.runtimeCopyInResultFromWorkerResponse(resp)
 }
 
-// CopyOut is not implemented by the worker foundation adapter yet.
-func (driver *ClientDriver) CopyOut(context.Context, sandboxruntime.CopyRequest) error {
-	return driver.operationError(OperationCopyOut, ErrWorkerOperationUnsupported)
+// CopyOut copies a bounded worker file payload to a local destination.
+func (driver *ClientDriver) CopyOut(ctx context.Context, req sandboxruntime.CopyRequest) error {
+	client, driverID, err := driver.clientFor(OperationCopyOut)
+	if err != nil {
+		return err
+	}
+	workerReq := CopyOutRequest{
+		OperationID:      clientDriverCopyOutOperationID,
+		Target:           workerTargetFromRuntimeTarget(req.Target, driverID),
+		RemoteSourcePath: strings.TrimSpace(req.SourcePath),
+		Destination: CopyPathMetadata{
+			DisplayPath: clientDriverDisplayPath(req.DestinationPath),
+		},
+		MaxPayloadBytes: MaxCopyOutPayloadBytes,
+	}
+	if err := workerReq.Validate(); err != nil {
+		return driver.operationError(OperationCopyOut, err)
+	}
+	resp, err := client.CopyOut(ctx, driverID, workerReq)
+	if err != nil {
+		return driver.operationError(OperationCopyOut, err)
+	}
+	return driver.runtimeCopyOutResultFromWorkerResponse(req, resp)
 }
 
 func (driver *ClientDriver) clientFor(operation string) (RuntimeDriverClient, string, error) {
@@ -236,6 +292,65 @@ func (driver *ClientDriver) runtimeExecResultFromWorkerResponse(req sandboxrunti
 	return result, nil
 }
 
+func (driver *ClientDriver) runtimeCopyInResultFromWorkerResponse(resp *CopyInResponse) error {
+	if resp == nil {
+		return driver.operationError(OperationCopyIn, ErrWorkerCopyInResponseRequired)
+	}
+	copyResp := *resp
+	if copyResp.Error != nil {
+		protocolError := *copyResp.Error
+		sanitizeEmbeddedProtocolError(&protocolError)
+		copyResp.Error = &protocolError
+	}
+	if err := copyResp.Validate(); err != nil {
+		return driver.operationError(OperationCopyIn, err)
+	}
+	if copyResp.Error != nil {
+		return driver.operationError(OperationCopyIn, &ProtocolError{
+			Operation: OperationCopyIn,
+			Code:      strings.TrimSpace(copyResp.Error.Code),
+			Message:   sanitizeProtocolErrorDetail(copyResp.Error.Message),
+		})
+	}
+	return nil
+}
+
+func (driver *ClientDriver) runtimeCopyOutResultFromWorkerResponse(req sandboxruntime.CopyRequest, resp *CopyOutResponse) error {
+	if resp == nil {
+		return driver.operationError(OperationCopyOut, ErrWorkerCopyOutResponseRequired)
+	}
+	copyResp := *resp
+	if copyResp.Error != nil {
+		protocolError := *copyResp.Error
+		sanitizeEmbeddedProtocolError(&protocolError)
+		copyResp.Error = &protocolError
+	}
+	if err := copyResp.Validate(); err != nil {
+		return driver.operationError(OperationCopyOut, err)
+	}
+	if copyResp.Truncated || copyResp.LimitExceeded {
+		return driver.operationError(OperationCopyOut, ErrWorkerCopyOutPayloadTruncated)
+	}
+	if copyResp.Error != nil {
+		return driver.operationError(OperationCopyOut, &ProtocolError{
+			Operation: OperationCopyOut,
+			Code:      strings.TrimSpace(copyResp.Error.Code),
+			Message:   sanitizeProtocolErrorDetail(copyResp.Error.Message),
+		})
+	}
+	if copyResp.Payload == nil {
+		return driver.operationError(OperationCopyOut, ErrWorkerCopyOutPayloadRequired)
+	}
+	data, err := decodeWorkerCopyPayload(*copyResp.Payload)
+	if err != nil {
+		return driver.operationError(OperationCopyOut, err)
+	}
+	if err := writeClientDriverCopyOutDestination(req.DestinationPath, data); err != nil {
+		return driver.operationError(OperationCopyOut, err)
+	}
+	return nil
+}
+
 func clientDriverExecStdinPayload(stdin io.Reader) (*ExecStdinPayload, error) {
 	if stdin == nil {
 		return nil, nil
@@ -265,6 +380,49 @@ func writeClientDriverExecOutput(writer io.Writer, stream, data string) error {
 		return fmt.Errorf("write exec %s: %w", stream, err)
 	}
 	return nil
+}
+
+func clientDriverCopyInPayload(sourcePath string) (CopyFilePayload, error) {
+	file, err := os.Open(strings.TrimSpace(sourcePath))
+	if err != nil {
+		return CopyFilePayload{}, fmt.Errorf("read copy_in source: %w", err)
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, MaxCopyInPayloadBytes+1))
+	if err != nil {
+		return CopyFilePayload{}, fmt.Errorf("read copy_in source: %w", err)
+	}
+	if int64(len(data)) > MaxCopyInPayloadBytes {
+		return CopyFilePayload{}, workerIOValidationError("copy_in payload sizeBytes exceeds maximum of %d bytes", MaxCopyInPayloadBytes)
+	}
+	return copyPayloadFromBytes(data, MaxCopyInPayloadBytes), nil
+}
+
+func writeClientDriverCopyOutDestination(destinationPath string, data []byte) error {
+	destinationPath = strings.TrimSpace(destinationPath)
+	if destinationPath == "" {
+		return workerIOValidationError("copy_out destination path is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o700); err != nil {
+		return fmt.Errorf("prepare copy_out destination: %w", err)
+	}
+	if err := os.WriteFile(destinationPath, data, 0o600); err != nil {
+		return fmt.Errorf("write copy_out destination: %w", err)
+	}
+	return nil
+}
+
+func clientDriverDisplayPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	displayPath := filepath.Base(path)
+	if displayPath == "." || displayPath == string(filepath.Separator) {
+		return ""
+	}
+	return displayPath
 }
 
 func clientDriverExecTruncationError(resp ExecResponse) error {
