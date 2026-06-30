@@ -13,6 +13,9 @@ var defaultSupportedOperations = []string{
 	OperationStop,
 	OperationDelete,
 	OperationInspect,
+	OperationExec,
+	OperationCopyIn,
+	OperationCopyOut,
 }
 
 var defaultRuntimeDriverOperations = []string{
@@ -21,6 +24,9 @@ var defaultRuntimeDriverOperations = []string{
 	OperationStop,
 	OperationDelete,
 	OperationInspect,
+	OperationExec,
+	OperationCopyIn,
+	OperationCopyOut,
 }
 
 // Service reports local worker state and capabilities without depending on

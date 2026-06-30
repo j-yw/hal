@@ -29,7 +29,7 @@ func TestWorkerSafetyCapabilitiesDoNotOverstateLocalSecurity(t *testing.T) {
 	assertWorkerSafetyHonestSecurityPolicy(t, "status", status.Security)
 
 	capabilities := service.Capabilities()
-	assertWorkerSafetyNoExecOrCopySupport(t, "worker capabilities", capabilities.SupportedOperations)
+	assertWorkerSafetyExposesWorkerIOHandlers(t, "worker capabilities", capabilities.SupportedOperations)
 	assertWorkerSafetyHonestSecurityPolicy(t, "capabilities", capabilities.Security)
 	if len(capabilities.RuntimeDrivers) != 1 {
 		t.Fatalf("runtime driver count = %d, want 1", len(capabilities.RuntimeDrivers))
@@ -41,7 +41,7 @@ func TestWorkerSafetyCapabilitiesDoNotOverstateLocalSecurity(t *testing.T) {
 	if driver.IsolationLevel != IsolationLevelContainer {
 		t.Fatalf("rootless driver isolationLevel = %q, want %q", driver.IsolationLevel, IsolationLevelContainer)
 	}
-	assertWorkerSafetyNoExecOrCopySupport(t, "runtime driver capabilities", driver.Operations)
+	assertWorkerSafetyExposesWorkerIOHandlers(t, "runtime driver capabilities", driver.Operations)
 	assertWorkerSafetyHonestSecurityPolicy(t, "runtime driver", driver.Security)
 }
 
@@ -300,12 +300,12 @@ func assertWorkerSafetyHonestSecurityPolicy(t *testing.T, label string, policy S
 	}
 }
 
-func assertWorkerSafetyNoExecOrCopySupport(t *testing.T, label string, operations []string) {
+func assertWorkerSafetyExposesWorkerIOHandlers(t *testing.T, label string, operations []string) {
 	t.Helper()
 
 	for _, operation := range []string{OperationExec, OperationCopyIn, OperationCopyOut} {
-		if containsString(operations, operation) {
-			t.Fatalf("%s includes %q before worker handler support exists: %#v", label, operation, operations)
+		if !containsString(operations, operation) {
+			t.Fatalf("%s does not include service-backed %q operation: %#v", label, operation, operations)
 		}
 	}
 }

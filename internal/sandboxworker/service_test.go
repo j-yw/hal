@@ -101,6 +101,9 @@ func TestServiceCapabilitiesReportsRegisteredDriversAndHonestSecurity(t *testing
 		OperationStop,
 		OperationDelete,
 		OperationInspect,
+		OperationExec,
+		OperationCopyIn,
+		OperationCopyOut,
 	}
 	if !reflect.DeepEqual(capabilities.SupportedOperations, wantOps) {
 		t.Fatalf("capabilities supported operations = %#v, want %#v", capabilities.SupportedOperations, wantOps)
@@ -122,7 +125,7 @@ func TestServiceCapabilitiesReportsRegisteredDriversAndHonestSecurity(t *testing
 			t.Fatalf("ssh-machine isolationLevel = %q, want conservative host isolation", driver.IsolationLevel)
 		}
 		if !reflect.DeepEqual(driver.Operations, defaultRuntimeDriverOperations) {
-			t.Fatalf("driver %q operations = %#v, want lifecycle/inspect operations", driver.ID, driver.Operations)
+			t.Fatalf("driver %q operations = %#v, want service-backed operations", driver.ID, driver.Operations)
 		}
 		assertSecurityPolicyDoesNotOverclaim(t, driver.Security)
 	}
@@ -285,6 +288,50 @@ func TestServiceUsesCustomRuntimeDriverDescriptorsFromRegistry(t *testing.T) {
 	if !reflect.DeepEqual(driver.Operations, []string{OperationInspect}) {
 		t.Fatalf("custom driver operations = %#v, want inspect only", driver.Operations)
 	}
+}
+
+func TestServiceCapabilitiesCanRemainConservativeWhenOperationsAreDisabled(t *testing.T) {
+	registry, err := NewDriverRegistry(&fakeWorkerRuntimeDriver{id: "fake_runtime"})
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+	service, err := NewService(ServiceOptions{
+		WorkerID: "worker-001",
+		Registry: registry,
+		SupportedOperations: []string{
+			OperationStatus,
+			OperationCapabilities,
+		},
+		RuntimeDrivers: map[string]RuntimeDriver{
+			"fake_runtime": {
+				HostKind:       HostKindLocal,
+				IsolationLevel: IsolationLevelHost,
+				Operations:     []string{OperationInspect},
+				Security:       defaultRuntimeDriverSecurityPolicy(IsolationLevelHost),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+
+	capabilities := service.Capabilities()
+	for _, operation := range []string{OperationExec, OperationCopyIn, OperationCopyOut} {
+		if containsString(capabilities.SupportedOperations, operation) {
+			t.Fatalf("disabled capabilities supportedOperations include %q: %#v", operation, capabilities.SupportedOperations)
+		}
+	}
+	if len(capabilities.RuntimeDrivers) != 1 {
+		t.Fatalf("runtime drivers = %#v, want one fake driver", capabilities.RuntimeDrivers)
+	}
+	driver := capabilities.RuntimeDrivers[0]
+	for _, operation := range []string{OperationExec, OperationCopyIn, OperationCopyOut} {
+		if containsString(driver.Operations, operation) {
+			t.Fatalf("disabled driver operations include %q: %#v", operation, driver.Operations)
+		}
+	}
+	assertSecurityPolicyDoesNotOverclaim(t, capabilities.Security)
+	assertSecurityPolicyDoesNotOverclaim(t, driver.Security)
 }
 
 func TestServiceCapabilitiesRejectInvalidRuntimeDriverDescriptor(t *testing.T) {
