@@ -123,6 +123,281 @@ func TestClientUsesInjectedTransportAndPropagatesContext(t *testing.T) {
 	}
 }
 
+func TestClientIOMethodsUseInjectedTransport(t *testing.T) {
+	var operations []string
+	client, err := NewClient(ClientOptions{
+		Transport: ClientTransportFunc(func(_ context.Context, req Request) (Response, error) {
+			operations = append(operations, req.Operation)
+			if req.DriverID != "fake_runtime" {
+				t.Fatalf("%s driverID = %q, want fake_runtime", req.Operation, req.DriverID)
+			}
+			if req.ProtocolVersion != ProtocolVersion || req.RequestID == "" {
+				t.Fatalf("%s request metadata = %#v, want protocol and request ID", req.Operation, req)
+			}
+			switch req.Operation {
+			case OperationExec:
+				if req.Exec == nil || req.Exec.OperationID != "exec-001" {
+					t.Fatalf("exec request = %#v, want exec payload", req.Exec)
+				}
+				return Response{
+					RequestID: req.RequestID,
+					Operation: req.Operation,
+					OK:        true,
+					Exec: &ExecResponse{
+						ExitCode: 7,
+						Stdout: ExecOutputPayload{
+							Data:       "out",
+							SizeBytes:  3,
+							LimitBytes: req.Exec.StdoutLimitBytes,
+						},
+						Stderr: ExecOutputPayload{
+							Data:       "err",
+							SizeBytes:  3,
+							LimitBytes: req.Exec.StderrLimitBytes,
+						},
+					},
+				}, nil
+			case OperationCopyIn:
+				if req.CopyIn == nil || req.CopyIn.OperationID != "copy-in-001" {
+					t.Fatalf("copy_in request = %#v, want copyIn payload", req.CopyIn)
+				}
+				return Response{
+					RequestID: req.RequestID,
+					Operation: req.Operation,
+					OK:        true,
+					CopyIn:    &CopyInResponse{Status: CopyStatusCompleted},
+				}, nil
+			case OperationCopyOut:
+				if req.CopyOut == nil || req.CopyOut.OperationID != "copy-out-001" {
+					t.Fatalf("copy_out request = %#v, want copyOut payload", req.CopyOut)
+				}
+				return Response{
+					RequestID: req.RequestID,
+					Operation: req.Operation,
+					OK:        true,
+					CopyOut: &CopyOutResponse{
+						Payload: ptrWorkerCopyPayload("payload", req.CopyOut.MaxPayloadBytes),
+					},
+				}, nil
+			default:
+				t.Fatalf("unexpected operation %q", req.Operation)
+				return Response{}, nil
+			}
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error: %v", err)
+	}
+
+	execReq := *validWorkerExecRequest().Exec
+	execReq.Target = lifecycleWorkerTarget("fake_runtime", "dev", "running")
+	execResp, err := client.Exec(context.Background(), "fake_runtime", execReq)
+	if err != nil {
+		t.Fatalf("Exec() error: %v", err)
+	}
+	if execResp.ExitCode != 7 || execResp.Stdout.Data != "out" || execResp.Stderr.Data != "err" {
+		t.Fatalf("Exec() response = %#v, want bounded exec output", execResp)
+	}
+
+	copyInReq := *validWorkerCopyInRequest().CopyIn
+	copyInReq.Target = lifecycleWorkerTarget("fake_runtime", "dev", "running")
+	copyInReq.OperationID = "copy-in-001"
+	copyInResp, err := client.CopyIn(context.Background(), "fake_runtime", copyInReq)
+	if err != nil {
+		t.Fatalf("CopyIn() error: %v", err)
+	}
+	if copyInResp.Status != CopyStatusCompleted {
+		t.Fatalf("CopyIn() status = %q, want completed", copyInResp.Status)
+	}
+
+	copyOutReq := *validWorkerCopyOutRequest().CopyOut
+	copyOutReq.Target = lifecycleWorkerTarget("fake_runtime", "dev", "running")
+	copyOutReq.OperationID = "copy-out-001"
+	copyOutResp, err := client.CopyOut(context.Background(), "fake_runtime", copyOutReq)
+	if err != nil {
+		t.Fatalf("CopyOut() error: %v", err)
+	}
+	if got := decodeWorkerCopyPayloadForTest(t, *copyOutResp.Payload); got != "payload" {
+		t.Fatalf("CopyOut() payload = %q, want payload", got)
+	}
+
+	wantOperations := []string{OperationExec, OperationCopyIn, OperationCopyOut}
+	if len(operations) != len(wantOperations) {
+		t.Fatalf("operations = %#v, want %#v", operations, wantOperations)
+	}
+	for i, want := range wantOperations {
+		if operations[i] != want {
+			t.Fatalf("operations = %#v, want %#v", operations, wantOperations)
+		}
+	}
+}
+
+func TestClientIOMethodsValidateRequestsBeforeDispatch(t *testing.T) {
+	var called atomic.Bool
+	client, err := NewClient(ClientOptions{
+		Transport: ClientTransportFunc(func(context.Context, Request) (Response, error) {
+			called.Store(true)
+			return Response{}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error: %v", err)
+	}
+
+	execReq := *validWorkerExecRequest().Exec
+	execReq.Stdin = &ExecStdinPayload{
+		Data:       "oversized",
+		SizeBytes:  MaxExecStdinBytes + 1,
+		LimitBytes: MaxExecStdinBytes + 1,
+	}
+	if _, err := client.Exec(context.Background(), "fake_runtime", execReq); err == nil || !strings.Contains(err.Error(), "exec stdin") {
+		t.Fatalf("Exec(oversized stdin) error = %v, want validation error", err)
+	}
+
+	copyInReq := *validWorkerCopyInRequest().CopyIn
+	copyInReq.Payload = workerCopyPayload("payload", MaxCopyInPayloadBytes+1)
+	if _, err := client.CopyIn(context.Background(), "fake_runtime", copyInReq); err == nil || !strings.Contains(err.Error(), "copy_in payload") {
+		t.Fatalf("CopyIn(oversized payload) error = %v, want validation error", err)
+	}
+
+	copyOutReq := *validWorkerCopyOutRequest().CopyOut
+	copyOutReq.MaxPayloadBytes = MaxCopyOutPayloadBytes + 1
+	if _, err := client.CopyOut(context.Background(), "fake_runtime", copyOutReq); err == nil || !strings.Contains(err.Error(), "copy_out max payload") {
+		t.Fatalf("CopyOut(oversized max) error = %v, want validation error", err)
+	}
+
+	if called.Load() {
+		t.Fatal("transport was called for invalid I/O requests")
+	}
+}
+
+func TestClientIOMethodsRejectResponsesAboveCallerLimits(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Client) error
+	}{
+		{
+			name: "exec stdout",
+			call: func(client *Client) error {
+				req := *validWorkerExecRequest().Exec
+				req.StdoutLimitBytes = 3
+				req.StderrLimitBytes = 3
+				_, err := client.Exec(context.Background(), "fake_runtime", req)
+				return err
+			},
+		},
+		{
+			name: "copy_out payload",
+			call: func(client *Client) error {
+				req := *validWorkerCopyOutRequest().CopyOut
+				req.MaxPayloadBytes = 3
+				_, err := client.CopyOut(context.Background(), "fake_runtime", req)
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, err := NewClient(ClientOptions{
+				Transport: ClientTransportFunc(func(_ context.Context, req Request) (Response, error) {
+					switch req.Operation {
+					case OperationExec:
+						return Response{
+							RequestID: req.RequestID,
+							Operation: req.Operation,
+							OK:        true,
+							Exec: &ExecResponse{
+								Stdout: ExecOutputPayload{Data: "over", SizeBytes: 4, LimitBytes: 4},
+								Stderr: ExecOutputPayload{Data: "ok", SizeBytes: 2, LimitBytes: 3},
+							},
+						}, nil
+					case OperationCopyOut:
+						return Response{
+							RequestID: req.RequestID,
+							Operation: req.Operation,
+							OK:        true,
+							CopyOut: &CopyOutResponse{
+								Payload: ptrWorkerCopyPayload("over", 4),
+							},
+						}, nil
+					default:
+						t.Fatalf("unexpected operation %q", req.Operation)
+						return Response{}, nil
+					}
+				}),
+			})
+			if err != nil {
+				t.Fatalf("NewClient() error: %v", err)
+			}
+
+			err = tt.call(client)
+			if err == nil {
+				t.Fatal("client I/O call error = nil, want caller limit validation error")
+			}
+			if !strings.Contains(err.Error(), "exceeds requested limit") {
+				t.Fatalf("client I/O call error = %q, want requested limit detail", err.Error())
+			}
+		})
+	}
+}
+
+func TestClientIOMethodsSanitizeEmbeddedServiceErrors(t *testing.T) {
+	client, err := NewClient(ClientOptions{
+		Transport: ClientTransportFunc(func(_ context.Context, req Request) (Response, error) {
+			switch req.Operation {
+			case OperationExec:
+				return Response{
+					RequestID: req.RequestID,
+					Operation: req.Operation,
+					OK:        true,
+					Exec: &ExecResponse{
+						Stdout: ExecOutputPayload{LimitBytes: req.Exec.StdoutLimitBytes},
+						Stderr: ExecOutputPayload{LimitBytes: req.Exec.StderrLimitBytes},
+						Error: &Error{
+							Code:    ErrorCodeDriverFailed,
+							Message: "exec failed token=raw-secret under /Users/alice/worktree",
+						},
+					},
+				}, nil
+			case OperationCopyIn:
+				return Response{
+					RequestID: req.RequestID,
+					Operation: req.Operation,
+					OK:        true,
+					CopyIn: &CopyInResponse{
+						Status: CopyStatusFailed,
+						Error: &Error{
+							Code:    ErrorCodeDriverFailed,
+							Message: "copy failed token=raw-secret under /Users/alice/worktree",
+						},
+					},
+				}, nil
+			default:
+				t.Fatalf("unexpected operation %q", req.Operation)
+				return Response{}, nil
+			}
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error: %v", err)
+	}
+
+	execReq := *validWorkerExecRequest().Exec
+	execResp, err := client.Exec(context.Background(), "fake_runtime", execReq)
+	if err != nil {
+		t.Fatalf("Exec() error: %v", err)
+	}
+	assertClientEmbeddedErrorSanitized(t, execResp.Error.Message)
+
+	copyInReq := *validWorkerCopyInRequest().CopyIn
+	copyInResp, err := client.CopyIn(context.Background(), "fake_runtime", copyInReq)
+	if err != nil {
+		t.Fatalf("CopyIn() error: %v", err)
+	}
+	assertClientEmbeddedErrorSanitized(t, copyInResp.Error.Message)
+}
+
 func TestClientReturnsCancellationAndTimeoutErrors(t *testing.T) {
 	var called atomic.Bool
 	client, err := NewClient(ClientOptions{
@@ -317,6 +592,20 @@ func validClientTestStatus(socketPath string) Status {
 			MaxConcurrentSandboxes: 1,
 		},
 		Security: DefaultWorkerSecurityPolicy(),
+	}
+}
+
+func assertClientEmbeddedErrorSanitized(t *testing.T, message string) {
+	t.Helper()
+	for _, unsafe := range []string{"raw-secret", "/Users/alice", "worktree"} {
+		if strings.Contains(message, unsafe) {
+			t.Fatalf("embedded service error leaked unsafe detail %q in %q", unsafe, message)
+		}
+	}
+	for _, want := range []string{"token=[redacted]", "[redacted-path]"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("embedded service error = %q, want sanitized marker %q", message, want)
+		}
 	}
 }
 

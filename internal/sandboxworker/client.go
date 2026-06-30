@@ -166,6 +166,60 @@ func (client *Client) Inspect(ctx context.Context, driverID string, req InspectR
 	return clientTargetResponse(resp)
 }
 
+// Exec runs a bounded command execution through the worker daemon.
+func (client *Client) Exec(ctx context.Context, driverID string, req ExecRequest) (*ExecResponse, error) {
+	resp, err := client.roundTrip(ctx, Request{
+		Operation: OperationExec,
+		DriverID:  driverID,
+		Exec:      &req,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Exec == nil {
+		return nil, malformedClientResponseError(OperationExec, "worker exec response did not include exec payload")
+	}
+	execResp := *resp.Exec
+	sanitizeEmbeddedProtocolError(execResp.Error)
+	return &execResp, nil
+}
+
+// CopyIn copies a bounded file payload into a worker target.
+func (client *Client) CopyIn(ctx context.Context, driverID string, req CopyInRequest) (*CopyInResponse, error) {
+	resp, err := client.roundTrip(ctx, Request{
+		Operation: OperationCopyIn,
+		DriverID:  driverID,
+		CopyIn:    &req,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.CopyIn == nil {
+		return nil, malformedClientResponseError(OperationCopyIn, "worker copy_in response did not include copyIn payload")
+	}
+	copyInResp := *resp.CopyIn
+	sanitizeEmbeddedProtocolError(copyInResp.Error)
+	return &copyInResp, nil
+}
+
+// CopyOut copies a bounded file payload out of a worker target.
+func (client *Client) CopyOut(ctx context.Context, driverID string, req CopyOutRequest) (*CopyOutResponse, error) {
+	resp, err := client.roundTrip(ctx, Request{
+		Operation: OperationCopyOut,
+		DriverID:  driverID,
+		CopyOut:   &req,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.CopyOut == nil {
+		return nil, malformedClientResponseError(OperationCopyOut, "worker copy_out response did not include copyOut payload")
+	}
+	copyOutResp := *resp.CopyOut
+	sanitizeEmbeddedProtocolError(copyOutResp.Error)
+	return &copyOutResp, nil
+}
+
 func (client *Client) roundTrip(ctx context.Context, req Request) (Response, error) {
 	if client == nil || !clientTransportConfigured(client.transport) {
 		return Response{}, fmt.Errorf("worker client is not configured")
@@ -224,7 +278,62 @@ func validateClientResponse(req Request, resp Response) error {
 	if !resp.OK && resp.Operation != req.Operation && resp.Operation != OperationProtocolError {
 		return malformedClientResponseError(req.Operation, "worker error response operation did not match request")
 	}
+	if err := validateClientIOResponseLimits(req, resp); err != nil {
+		return malformedClientResponseError(req.Operation, fmt.Sprintf("malformed worker response: %v", err))
+	}
 	return nil
+}
+
+func validateClientIOResponseLimits(req Request, resp Response) error {
+	if !resp.OK {
+		return nil
+	}
+	switch req.Operation {
+	case OperationExec:
+		if req.Exec == nil || resp.Exec == nil {
+			return nil
+		}
+		if err := validateClientOutputWithinLimit("exec stdout", resp.Exec.Stdout, req.Exec.StdoutLimitBytes); err != nil {
+			return err
+		}
+		return validateClientOutputWithinLimit("exec stderr", resp.Exec.Stderr, req.Exec.StderrLimitBytes)
+	case OperationCopyOut:
+		if req.CopyOut == nil || resp.CopyOut == nil || resp.CopyOut.Payload == nil {
+			return nil
+		}
+		return validateClientPayloadWithinLimit("copy_out payload", *resp.CopyOut.Payload, req.CopyOut.MaxPayloadBytes)
+	default:
+		return nil
+	}
+}
+
+func validateClientOutputWithinLimit(field string, payload ExecOutputPayload, requestedLimit int64) error {
+	field = workerIOValidationField(field, "exec output")
+	if payload.LimitBytes > requestedLimit {
+		return workerIOValidationError("%s limit exceeds requested limit of %d bytes", field, requestedLimit)
+	}
+	if payload.SizeBytes > requestedLimit {
+		return workerIOValidationError("%s sizeBytes exceeds requested limit of %d bytes", field, requestedLimit)
+	}
+	return nil
+}
+
+func validateClientPayloadWithinLimit(field string, payload CopyFilePayload, requestedLimit int64) error {
+	field = workerIOValidationField(field, "copy payload")
+	if payload.LimitBytes > requestedLimit {
+		return workerIOValidationError("%s limit exceeds requested limit of %d bytes", field, requestedLimit)
+	}
+	if payload.SizeBytes > requestedLimit {
+		return workerIOValidationError("%s sizeBytes exceeds requested limit of %d bytes", field, requestedLimit)
+	}
+	return nil
+}
+
+func sanitizeEmbeddedProtocolError(protocolError *Error) {
+	if protocolError == nil {
+		return
+	}
+	protocolError.Message = sanitizeProtocolErrorDetail(protocolError.Message)
 }
 
 func clientContextOrTransportError(operation string, err error) error {
