@@ -15,6 +15,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxworkspace"
 )
 
 func TestRunInvokesInjectedPhasesAndRunner(t *testing.T) {
@@ -86,6 +87,9 @@ func TestRunInvokesInjectedPhasesAndRunner(t *testing.T) {
 			calls = append(calls, "workspace")
 			if prep.Target.Name != "factory-dev" || prep.Target.Provider != "daytona" || prep.Connection.Address != "203.0.113.42" {
 				t.Fatalf("workspace prep context = %#v", prep)
+			}
+			if prep.Driver != driver {
+				t.Fatalf("workspace prep driver = %#v, want resolved driver", prep.Driver)
 			}
 			req.WorkDir = "/workspace/prepared"
 			return nil
@@ -353,6 +357,13 @@ func TestPrepareContextUsesRuntimeBoundaryTypes(t *testing.T) {
 	if connectionField.Type != reflect.TypeOf(sandboxruntime.ConnectionInfo{}) {
 		t.Fatalf("PrepareContext.Connection type = %v, want sandboxruntime.ConnectionInfo", connectionField.Type)
 	}
+	driverField, ok := prepareType.FieldByName("Driver")
+	if !ok {
+		t.Fatal("PrepareContext missing Driver field")
+	}
+	if driverField.Type != reflect.TypeOf((*sandboxruntime.Driver)(nil)).Elem() {
+		t.Fatalf("PrepareContext.Driver type = %v, want sandboxruntime.Driver", driverField.Type)
+	}
 }
 
 func TestRunContextUsesRuntimeBoundaryTypes(t *testing.T) {
@@ -548,13 +559,14 @@ func TestRunPrepareContextCarriesRuntimeTargetConnection(t *testing.T) {
 		},
 	}
 	var got PrepareContext
+	driver := fakeRuntimeDriver{id: "test_runtime"}
 
 	_, err := Run(context.Background(), CommandRequest{SandboxName: "factory-dev"}, Dependencies{
 		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
 			return target, nil
 		},
 		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
-			return fakeRuntimeDriver{}, nil
+			return driver, nil
 		},
 		PrepareWorkspace: func(_ context.Context, prep PrepareContext, _ *CommandRequest) error {
 			got = prep
@@ -578,6 +590,79 @@ func TestRunPrepareContextCarriesRuntimeTargetConnection(t *testing.T) {
 	}
 	if got.Target.Connection != got.Connection {
 		t.Fatalf("target connection = %#v, want %#v", got.Target.Connection, got.Connection)
+	}
+	if got.Driver != driver {
+		t.Fatalf("prepare driver = %#v, want resolved driver", got.Driver)
+	}
+}
+
+func TestRuntimeWorkspaceClientMapsCopyInAndExecToDriver(t *testing.T) {
+	target := sandboxruntime.Target{
+		ID:       "sandbox-123",
+		Name:     "workspace-box",
+		Provider: "test-provider",
+		Runtime: sandboxruntime.RuntimeState{
+			Driver: sandboxruntime.DriverSSHMachine,
+		},
+		Connection: sandboxruntime.ConnectionInfo{
+			Address:     "100.64.0.10",
+			WorkspaceID: "workspace-456",
+		},
+	}
+	var gotCopy sandboxruntime.CopyRequest
+	var gotExec sandboxruntime.ExecRequest
+	stdin := strings.NewReader("stdin")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	driver := &recordingRuntimeDriver{
+		id: sandboxruntime.DriverSSHMachine,
+		copyIn: func(_ context.Context, req sandboxruntime.CopyRequest) error {
+			gotCopy = req
+			return nil
+		},
+		exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			gotExec = cloneExecRequest(req)
+			if req.Stdin != stdin {
+				t.Fatalf("Exec stdin = %#v, want original reader", req.Stdin)
+			}
+			if req.Stdout != &stdout || req.Stderr != &stderr {
+				t.Fatalf("Exec writers = %#v/%#v, want provided writers", req.Stdout, req.Stderr)
+			}
+			return &sandboxruntime.ExecResult{ExitCode: 7}, nil
+		},
+	}
+	client := RuntimeWorkspaceClient{Driver: driver, Target: target}
+
+	if err := client.CopyIn(context.Background(), sandboxworkspace.RemoteCopyRequest{
+		SourcePath:      "/host/bundle.bundle",
+		DestinationPath: "/tmp/hal/bundles/bundle.bundle",
+	}); err != nil {
+		t.Fatalf("CopyIn() unexpected error: %v", err)
+	}
+	result, err := client.Exec(context.Background(), sandboxworkspace.RemoteCommandRequest{
+		Args:    []string{"git", "status"},
+		WorkDir: "/root/workspace/hal",
+		Env: map[string]string{
+			"HAL_TEST": "1",
+		},
+		Stdin:  stdin,
+		Stdout: &stdout,
+		Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatalf("Exec() unexpected error: %v", err)
+	}
+	if !driver.copyInCalled || !driver.execCalled {
+		t.Fatalf("driver calls copy=%t exec=%t, want both", driver.copyInCalled, driver.execCalled)
+	}
+	if gotCopy.Target != target || gotCopy.SourcePath != "/host/bundle.bundle" || gotCopy.DestinationPath != "/tmp/hal/bundles/bundle.bundle" {
+		t.Fatalf("copy request = %#v", gotCopy)
+	}
+	if gotExec.Target != target || !reflect.DeepEqual(gotExec.Args, []string{"git", "status"}) || gotExec.WorkDir != "/root/workspace/hal" || gotExec.Env["HAL_TEST"] != "1" {
+		t.Fatalf("exec request = %#v", gotExec)
+	}
+	if result.ExitCode != 7 {
+		t.Fatalf("Exec result = %#v, want exit code 7", result)
 	}
 }
 
@@ -1010,10 +1095,19 @@ func TestRunPhaseErrorCarriesSandboxTargetAndRuntimeDriver(t *testing.T) {
 	}
 }
 
-func TestSandboxexecDoesNotImportCobra(t *testing.T) {
+func TestSandboxexecDoesNotImportCommandOrProviderLayers(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("ReadDir() error: %v", err)
+	}
+	forbiddenExact := map[string]string{
+		"github.com/spf13/cobra": "cobra",
+	}
+	forbiddenPrefixes := map[string]string{
+		"github.com/jywlabs/hal/cmd":               "cmd",
+		"github.com/jywlabs/hal/internal/compound": "compound",
+		"github.com/jywlabs/hal/internal/factory":  "factory",
+		"github.com/jywlabs/hal/internal/prd":      "prd",
 	}
 	fset := token.NewFileSet()
 	for _, entry := range entries {
@@ -1027,8 +1121,14 @@ func TestSandboxexecDoesNotImportCobra(t *testing.T) {
 			t.Fatalf("ParseFile(%s) error: %v", path, err)
 		}
 		for _, imported := range file.Imports {
-			if strings.Trim(imported.Path.Value, `"`) == "github.com/spf13/cobra" {
-				t.Fatalf("%s imports github.com/spf13/cobra", path)
+			importPath := strings.Trim(imported.Path.Value, `"`)
+			if label, ok := forbiddenExact[importPath]; ok {
+				t.Fatalf("%s imports forbidden %s package %q", path, label, importPath)
+			}
+			for prefix, label := range forbiddenPrefixes {
+				if importPath == prefix || strings.HasPrefix(importPath, prefix+"/") {
+					t.Fatalf("%s imports forbidden %s package %q", path, label, importPath)
+				}
 			}
 		}
 	}
@@ -1125,9 +1225,11 @@ func (fakeRuntimeDriver) CopyOut(context.Context, sandboxruntime.CopyRequest) er
 }
 
 type recordingRuntimeDriver struct {
-	id         string
-	execCalled bool
-	exec       func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
+	id           string
+	execCalled   bool
+	copyInCalled bool
+	exec         func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
+	copyIn       func(context.Context, sandboxruntime.CopyRequest) error
 }
 
 func (r *recordingRuntimeDriver) ID() string {
@@ -1165,7 +1267,11 @@ func (r *recordingRuntimeDriver) Exec(ctx context.Context, req sandboxruntime.Ex
 	return r.exec(ctx, req)
 }
 
-func (r *recordingRuntimeDriver) CopyIn(context.Context, sandboxruntime.CopyRequest) error {
+func (r *recordingRuntimeDriver) CopyIn(ctx context.Context, req sandboxruntime.CopyRequest) error {
+	r.copyInCalled = true
+	if r.copyIn != nil {
+		return r.copyIn(ctx, req)
+	}
 	return nil
 }
 

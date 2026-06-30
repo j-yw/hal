@@ -91,6 +91,7 @@ type autoSandboxDeps struct {
 	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
 	engineAuthFiles        func() []factorySandboxAuthFile
 	bootstrap              func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
+	materializeWorkspace   func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error)
 	execute                func(context.Context, autoSandboxRequest, io.Writer, io.Writer, autoSandboxExecutionHooks) (autoSandboxExecutionResult, error)
 }
 
@@ -319,6 +320,9 @@ func normalizeAutoSandboxDeps(deps autoSandboxDeps) autoSandboxDeps {
 	if deps.bootstrap == nil {
 		deps.bootstrap = defaultAutoSandboxDeps.bootstrap
 	}
+	if deps.materializeWorkspace == nil {
+		deps.materializeWorkspace = sandboxexec.MaterializeBundleWorkspace
+	}
 	if deps.execute == nil {
 		deps.execute = deps.executeAutoSandbox
 	}
@@ -419,6 +423,21 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 			return hooks.OnTargetReady(target)
 		},
 		PrepareWorkspace: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
+			if isGitBundleWorkspace(req.Workspace) {
+				_, err := deps.materializeWorkspace(ctx, prep, sandboxexec.WorkspaceMaterializationRequest{
+					Workspace:    *req.Workspace,
+					ProjectDir:   req.ProjectDir,
+					WorkspaceDir: req.WorkDir,
+				})
+				if err != nil {
+					return err
+				}
+				provider, err := ensureProvider(prep.Target.Provider)
+				if err != nil {
+					return err
+				}
+				return deps.prepareAutoSandboxInputs(ctx, &req, provider, prep, prepOut)
+			}
 			provider, err := ensureProvider(prep.Target.Provider)
 			if err != nil {
 				return err

@@ -661,6 +661,125 @@ func TestExecuteAutoSandboxCopiesExplicitInputsBeforeRemoteCommand(t *testing.T)
 	}
 }
 
+func TestExecuteAutoSandboxGitBundleWorkspaceUsesSharedMaterializer(t *testing.T) {
+	target := &sandbox.SandboxState{
+		Name:        "auto-ready",
+		Provider:    "test-provider",
+		Status:      sandbox.StatusRunning,
+		TailscaleIP: "100.64.0.11",
+	}
+	req := autoSandboxRequest{
+		JSON:          true,
+		ProjectDir:    t.TempDir(),
+		SandboxName:   "auto-ready",
+		RepoRemote:    "git@example.com:org/repo.git",
+		BaseBranch:    "main",
+		RunBranch:     "feature/bundle-auto",
+		WorkDir:       "/root/workspace/repo",
+		RemoteCommand: []string{"hal", "auto", "--json"},
+		Flags: autoSandboxOptions{
+			JSON:        true,
+			JSONChanged: true,
+		},
+		Workspace: &sandbox.SandboxWorkspace{
+			Mode:        sandbox.SandboxWorkspaceModeClone,
+			InputSource: sandbox.SandboxWorkspaceInputSourceGitBundle,
+			Repo:        "git@example.com:org/repo.git",
+			Branch:      "feature/bundle-auto",
+			SyncRef:     "refs/hal/workspace-sync/bundle-auto",
+		},
+		Security: runSandboxSecurityRequest(),
+	}
+	var order []string
+	var materialized bool
+	driver := &fakeRunSandboxRuntimeDriver{
+		exec: func(_ context.Context, got sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			order = append(order, "runtime_exec")
+			if got.Target.Name != "auto-ready" || got.Target.Provider != "test-provider" {
+				t.Fatalf("runtime exec target = %#v, want prepared runtime target", got.Target)
+			}
+			_, _ = io.WriteString(got.Stdout, `{"contractVersion":2,"ok":true,"entryMode":"report_discovery","resumed":false,"steps":{},"summary":"ok"}`+"\n")
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	result, err := (autoSandboxDeps{
+		loadSandbox: func(string) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		startSandbox: func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error) {
+			t.Fatal("startSandbox should not run for a running target")
+			return nil, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(providerName string) (sandboxruntime.Driver, error) {
+			order = append(order, "resolve_runtime_driver")
+			if providerName != "test-provider" {
+				t.Fatalf("providerName = %q, want test-provider", providerName)
+			}
+			return driver, nil
+		},
+		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			t.Fatal("legacy bootstrap should not run for git-bundle workspace")
+			return factory.BootstrapResult{}, nil
+		},
+		materializeWorkspace: func(_ context.Context, prep sandboxexec.PrepareContext, got sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
+			order = append(order, "materialize_workspace")
+			materialized = true
+			if prep.Driver != driver {
+				t.Fatalf("prep driver = %#v, want resolved runtime driver", prep.Driver)
+			}
+			if prep.Target.Name != "auto-ready" || prep.Target.Provider != "test-provider" || prep.Target.Connection.TailscaleIP != "100.64.0.11" {
+				t.Fatalf("prep target = %#v, want runtime target metadata", prep.Target)
+			}
+			if got.ProjectDir != req.ProjectDir || got.WorkspaceDir != req.WorkDir {
+				t.Fatalf("materialize request = %#v, want project/work dirs from request", got)
+			}
+			if got.Workspace.InputSource != sandbox.SandboxWorkspaceInputSourceGitBundle || got.Workspace.SyncRef != req.Workspace.SyncRef {
+				t.Fatalf("workspace metadata = %#v, want git-bundle metadata", got.Workspace)
+			}
+			return sandboxworkspace.MaterializationResult{InputSource: sandbox.SandboxWorkspaceInputSourceGitBundle}, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			order = append(order, "auth")
+			return nil
+		},
+		runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
+			t.Fatal("provider script should not run without explicit inputs or auth files")
+			return nil
+		},
+	}).executeAutoSandbox(context.Background(), req, &out, &errOut, autoSandboxExecutionHooks{})
+	if err != nil {
+		t.Fatalf("executeAutoSandbox() unexpected error: %v", err)
+	}
+	if result.Result == nil {
+		t.Fatal("Result = nil")
+	}
+	if !result.RemoteStarted {
+		t.Fatal("RemoteStarted = false, want true after runtime stdout")
+	}
+	if !reflect.DeepEqual(result.PreparedCommand, req.RemoteCommand) {
+		t.Fatalf("PreparedCommand = %#v, want %#v", result.PreparedCommand, req.RemoteCommand)
+	}
+	if !materialized {
+		t.Fatal("materializeWorkspace was not called")
+	}
+	wantOrder := []string{"resolve_runtime_driver", "materialize_workspace", "auth", "runtime_exec"}
+	if !reflect.DeepEqual(order, wantOrder) {
+		t.Fatalf("order = %#v, want %#v", order, wantOrder)
+	}
+	if out.String() == "" {
+		t.Fatal("stdout is empty, want remote auto output")
+	}
+	if errOut.String() != "" {
+		t.Fatalf("stderr = %q, want empty", errOut.String())
+	}
+}
+
 func TestRunAutoSandboxWithWriterForwardsFactoryAttemptPolicyEnv(t *testing.T) {
 	startedAt := time.Date(2026, 6, 30, 12, 42, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(3 * time.Second)

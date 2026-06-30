@@ -41,6 +41,7 @@ type PrepareContext struct {
 	ProjectDir string
 	Target     sandboxruntime.Target
 	Connection sandboxruntime.ConnectionInfo
+	Driver     sandboxruntime.Driver
 }
 
 // RunContext carries resolved sandbox dependencies into the command runner.
@@ -220,6 +221,7 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 		Purpose:    req.Purpose,
 		ProjectDir: req.ProjectDir,
 		Target:     runtimeTarget,
+		Driver:     driver,
 	}
 	prep.Connection = prep.Target.Connection
 	if deps.PrepareWorkspace != nil {

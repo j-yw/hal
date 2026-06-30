@@ -89,6 +89,7 @@ type runSandboxDeps struct {
 	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
 	engineAuthFiles        func() []factorySandboxAuthFile
 	bootstrap              func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
+	materializeWorkspace   func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error)
 	execute                func(context.Context, runSandboxRequest, io.Writer, io.Writer, runSandboxExecutionHooks) (runSandboxExecutionResult, error)
 }
 
@@ -375,6 +376,9 @@ func normalizeRunSandboxDeps(deps runSandboxDeps) runSandboxDeps {
 	if deps.bootstrap == nil {
 		deps.bootstrap = defaultRunSandboxDeps.bootstrap
 	}
+	if deps.materializeWorkspace == nil {
+		deps.materializeWorkspace = sandboxexec.MaterializeBundleWorkspace
+	}
 	if deps.execute == nil {
 		deps.execute = deps.executeRunSandbox
 	}
@@ -489,6 +493,10 @@ func sandboxWorkspaceMetadataFromPlan(plan sandboxworkspace.Plan, defaultInputSo
 	return workspace
 }
 
+func isGitBundleWorkspace(workspace *sandbox.SandboxWorkspace) bool {
+	return workspace != nil && strings.TrimSpace(workspace.InputSource) == sandbox.SandboxWorkspaceInputSourceGitBundle
+}
+
 func defaultRunSandboxWorkspacePlan(ctx context.Context, req sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
 	return sandboxworkspace.Planner{}.Plan(ctx, req)
 }
@@ -537,6 +545,14 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 			return hooks.OnTargetReady(target)
 		},
 		PrepareWorkspace: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
+			if isGitBundleWorkspace(req.Workspace) {
+				_, err := deps.materializeWorkspace(ctx, prep, sandboxexec.WorkspaceMaterializationRequest{
+					Workspace:    *req.Workspace,
+					ProjectDir:   req.ProjectDir,
+					WorkspaceDir: req.WorkDir,
+				})
+				return err
+			}
 			provider, err := ensureProvider(prep.Target.Provider)
 			if err != nil {
 				return err
