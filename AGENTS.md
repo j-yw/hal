@@ -43,6 +43,7 @@
 - Worker exec protocol schema lives in `internal/sandboxworker/exec.go`; require `operationId`, target metadata, non-empty argv, explicit stdout/stderr capture limits, and `sizeBytes` that matches bounded stdin/stdout/stderr payload data.
 - Worker exec service routing lives in `internal/sandboxworker/exec_service.go`; route through `DriverRegistry` to `sandboxruntime.Driver.Exec`, capture stdout/stderr with bounded writers, keep command errors with an `ExecResult` in `ExecResponse.Error`, and reserve top-level protocol errors for lookup, unsupported, context, or no-result failures.
 - Worker copy protocol schema lives in `internal/sandboxworker/copy.go`; keep copy-in/copy-out payloads command-agnostic, encode file content as bounded base64 JSON payloads, and validate `sizeBytes` against decoded bytes before service dispatch.
+- Worker copy service routing lives in `internal/sandboxworker/copy_service.go`; stage base64 copy-in/copy-out payloads through temporary files, route through `DriverRegistry` to `sandboxruntime.Driver.CopyIn`/`CopyOut`, enforce copy-out response limits before serialization, and keep capability metadata conservative until the capability story.
 
 ## Patterns from phase13-sandboxd-self-hosted-worker-daemon-foundation (2026-07-01)
 

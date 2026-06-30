@@ -165,17 +165,17 @@ func TestServiceReturnsStructuredOperationErrorsOverUnixSocket(t *testing.T) {
 		t.Fatalf("unknown error code = %q, want %q", unknownResp.Error.Code, ErrorCodeMalformedRequest)
 	}
 
-	unsupportedCopyReq := validWorkerCopyInRequest()
-	unsupportedCopyReq.RequestID = "req-copy-in"
-	unsupportedResp := roundTripWorkerRequest(t, socketPath, unsupportedCopyReq)
-	if err := unsupportedResp.Validate(); err != nil {
-		t.Fatalf("unsupported response Validate() error: %v", err)
+	missingDriverCopyReq := validWorkerCopyInRequest()
+	missingDriverCopyReq.RequestID = "req-copy-in"
+	missingDriverResp := roundTripWorkerRequest(t, socketPath, missingDriverCopyReq)
+	if err := missingDriverResp.Validate(); err != nil {
+		t.Fatalf("missing driver response Validate() error: %v", err)
 	}
-	if unsupportedResp.OK || unsupportedResp.Operation != OperationCopyIn || unsupportedResp.Error == nil {
-		t.Fatalf("unsupported response = %#v, want structured unsupported-operation error", unsupportedResp)
+	if missingDriverResp.OK || missingDriverResp.Operation != OperationCopyIn || missingDriverResp.Error == nil {
+		t.Fatalf("missing driver response = %#v, want structured driver-not-found error", missingDriverResp)
 	}
-	if unsupportedResp.Error.Code != ErrorCodeUnsupportedOp {
-		t.Fatalf("unsupported error code = %q, want %q", unsupportedResp.Error.Code, ErrorCodeUnsupportedOp)
+	if missingDriverResp.Error.Code != ErrorCodeDriverNotFound {
+		t.Fatalf("missing driver error code = %q, want %q", missingDriverResp.Error.Code, ErrorCodeDriverNotFound)
 	}
 }
 

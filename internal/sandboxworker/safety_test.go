@@ -45,7 +45,7 @@ func TestWorkerSafetyCapabilitiesDoNotOverstateLocalSecurity(t *testing.T) {
 	assertWorkerSafetyHonestSecurityPolicy(t, "runtime driver", driver.Security)
 }
 
-func TestWorkerSafetyUnsupportedOperationsAreStructuredAndDoNotReachDrivers(t *testing.T) {
+func TestWorkerSafetyMalformedCopyRequestsAreStructuredAndDoNotReachDrivers(t *testing.T) {
 	driver := &recordingLifecycleDriver{id: "fake_runtime"}
 	registry, err := NewDriverRegistry(driver)
 	if err != nil {
@@ -69,14 +69,14 @@ func TestWorkerSafetyUnsupportedOperationsAreStructuredAndDoNotReachDrivers(t *t
 			t.Fatalf("%s response Validate() error: %v", operation, err)
 		}
 		if resp.OK || resp.Operation != operation || resp.Error == nil {
-			t.Fatalf("%s response = %#v, want structured unsupported-operation error", operation, resp)
+			t.Fatalf("%s response = %#v, want structured malformed-request error", operation, resp)
 		}
-		if resp.Error.Code != ErrorCodeUnsupportedOp {
-			t.Fatalf("%s error code = %q, want %q", operation, resp.Error.Code, ErrorCodeUnsupportedOp)
+		if resp.Error.Code != ErrorCodeMalformedRequest {
+			t.Fatalf("%s error code = %q, want %q", operation, resp.Error.Code, ErrorCodeMalformedRequest)
 		}
 	}
 	if len(driver.calls) != 0 {
-		t.Fatalf("driver calls = %#v, want unsupported operations to stop before driver dispatch", driver.calls)
+		t.Fatalf("driver calls = %#v, want malformed copy requests to stop before driver dispatch", driver.calls)
 	}
 }
 

@@ -52,6 +52,16 @@ func (service *Service) HandleRequest(ctx context.Context, req Request) Response
 			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request exec payload is required")
 		}
 		return service.ExecResponse(ctx, req.RequestID, req.DriverID, *req.Exec)
+	case OperationCopyIn:
+		if req.CopyIn == nil {
+			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request copyIn payload is required")
+		}
+		return service.CopyInResponse(ctx, req.RequestID, req.DriverID, *req.CopyIn)
+	case OperationCopyOut:
+		if req.CopyOut == nil {
+			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request copyOut payload is required")
+		}
+		return service.CopyOutResponse(ctx, req.RequestID, req.DriverID, *req.CopyOut)
 	default:
 		return unsupportedOperationResponse(req)
 	}
