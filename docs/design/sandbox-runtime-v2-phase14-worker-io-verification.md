@@ -4,7 +4,7 @@ Phase 14 covers the worker I/O foundation for bounded `exec`, `copy_in`, and
 `copy_out` protocol, service, client, adapter, capability, safety, and default
 runtime-selection behavior.
 
-Final acceptance uses focused verification only:
+Hal story verification uses focused checks:
 
 ```sh
 go test -timeout=180s ./internal/sandboxworker
@@ -14,7 +14,8 @@ make build
 make vet
 ```
 
-The full-suite `go test ./...` command is intentionally skipped for this phase.
-Phase 14 is restricted to focused worker I/O tests and must not exercise unrelated runtime providers or command workflows.
+The full-suite `go test ./...` command is intentionally skipped by the Phase 14 Hal story verification.
+Phase 14 story verification is restricted to focused worker I/O tests and must not exercise unrelated runtime providers or command workflows.
+Supervisors may run broader pre-merge verification separately.
 
 Verification must not run `hal run`, `hal auto`, factory execution, real runtime adapters, Podman, Docker, KVM, cloud resources, network proxy, credential proxy, templates, or kits.

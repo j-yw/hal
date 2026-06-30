@@ -20,8 +20,9 @@ func TestPhase14WorkerIOVerificationChecklistDocumentsFocusedScope(t *testing.T)
 		"go test -timeout=180s ./cmd -run 'TestExistingSandboxExecutionDefaultResolversStayWorkerOptIn|TestClientDriverSelectedOnlyWhenExplicitlyConstructed|TestRunSandboxDefaultRuntimeDriverResolver|TestAutoSandboxDefaultRuntimeDriverResolver|TestFactorySandboxDefaultRuntimeDriverResolver'",
 		"make build",
 		"make vet",
-		"The full-suite `go test ./...` command is intentionally skipped",
-		"Phase 14 is restricted to focused worker I/O tests",
+		"The full-suite `go test ./...` command is intentionally skipped by the Phase 14 Hal story verification",
+		"Phase 14 story verification is restricted to focused worker I/O tests",
+		"Supervisors may run broader pre-merge verification separately",
 		"must not exercise unrelated runtime providers or command workflows",
 		"must not run `hal run`, `hal auto`, factory execution, real runtime adapters, Podman, Docker, KVM, cloud resources, network proxy, credential proxy, templates, or kits",
 	}
