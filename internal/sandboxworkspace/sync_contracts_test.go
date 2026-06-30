@@ -97,6 +97,7 @@ func TestWorkspaceSyncContractsCompileWithNarrowAdapters(t *testing.T) {
 	var _ WorkspaceMaterializer = MaterializerFunc(func(context.Context, MaterializeRequest) (MaterializationResult, error) {
 		return MaterializationResult{}, nil
 	})
+	var _ WorkspaceMaterializer = BundleMaterializer{}
 	var _ LocalGit = GitCLIInspector{}
 	var _ LocalGit = fakeLocalGitBundle{}
 	var _ RemoteClient = fakeRemoteClient{}

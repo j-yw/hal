@@ -25,6 +25,39 @@ func (f MaterializerFunc) MaterializeWorkspace(ctx context.Context, req Material
 	return f(ctx, req)
 }
 
+// BundleMaterializer materializes git-bundle workspace plans through local
+// create/verify, remote copy-in, and remote apply boundaries.
+type BundleMaterializer struct {
+	LocalGit  LocalGit
+	Remote    RemoteClient
+	BundleDir string
+}
+
+func (m BundleMaterializer) MaterializeWorkspace(ctx context.Context, req MaterializeRequest) (MaterializationResult, error) {
+	localBundle, err := PrepareLocalBundle(ctx, m.LocalGit, PrepareLocalBundleRequest{
+		Plan:      req.Plan,
+		BundleDir: m.BundleDir,
+	})
+	if err != nil {
+		return MaterializationResult{}, err
+	}
+	remoteBundle, err := CopyLocalBundle(ctx, m.Remote, CopyLocalBundleRequest{
+		Plan:                 req.Plan,
+		Target:               req.Target,
+		Bundle:               localBundle,
+		BundleDestinationDir: req.BundleDestinationDir,
+	})
+	if err != nil {
+		return MaterializationResult{}, err
+	}
+	return ApplyRemoteBundle(ctx, m.Remote, ApplyRemoteBundleRequest{
+		Plan:         req.Plan,
+		Target:       req.Target,
+		Bundle:       remoteBundle,
+		WorkspaceDir: req.WorkspaceDir,
+	})
+}
+
 // LocalGit is the host-side Git boundary required for bundle-backed materialization.
 type LocalGit interface {
 	CreateBundle(context.Context, CreateBundleRequest) (CreateBundleResult, error)
@@ -69,6 +102,15 @@ type CopyLocalBundleRequest struct {
 	Target               RemoteTarget
 	Bundle               LocalBundleResult
 	BundleDestinationDir string
+}
+
+// ApplyRemoteBundleRequest carries a copied sandbox-local bundle plus the
+// workspace directory where it should be fetched and checked out.
+type ApplyRemoteBundleRequest struct {
+	Plan         Plan
+	Target       RemoteTarget
+	Bundle       RemoteBundleResult
+	WorkspaceDir string
 }
 
 // LocalBundleResult carries host-local bundle state for the next sync step.
@@ -140,6 +182,23 @@ type RemoteCommandRequest struct {
 type RemoteCommandResult struct {
 	ExitCode int
 }
+
+const remoteWorkspaceInitScript = `set -eu
+workspace=$1
+repo=$2
+parent=$(dirname "$workspace")
+mkdir -p "$parent"
+if [ -d "$workspace/.git" ]; then
+  if git -C "$workspace" remote get-url origin >/dev/null 2>&1; then
+    git -C "$workspace" remote set-url origin "$repo"
+  else
+    git -C "$workspace" remote add origin "$repo"
+  fi
+  git -C "$workspace" fetch --prune origin
+else
+  rm -rf "$workspace"
+  git clone "$repo" "$workspace"
+fi`
 
 type MaterializationPhase string
 
@@ -310,6 +369,111 @@ func CopyLocalBundle(ctx context.Context, remote RemoteCopier, req CopyLocalBund
 	}, nil
 }
 
+// ApplyRemoteBundle initializes or updates the sandbox workspace, fetches the
+// copied bundle into a sandbox-local ref, and checks out the intended branch or
+// ref through the narrow remote command boundary.
+func ApplyRemoteBundle(ctx context.Context, remote RemoteCommandRunner, req ApplyRemoteBundleRequest) (MaterializationResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if remote == nil {
+		return MaterializationResult{}, ErrRemoteCommandRunnerRequired
+	}
+	plan := req.Plan
+	if strings.TrimSpace(plan.InputSource) != sandbox.SandboxWorkspaceInputSourceGitBundle {
+		return MaterializationResult{}, ErrGitBundlePlanRequired
+	}
+	workspaceDir := strings.TrimSpace(req.WorkspaceDir)
+	if workspaceDir == "" {
+		return MaterializationResult{}, ErrWorkspaceDirRequired
+	}
+	repository := strings.TrimSpace(plan.Repository)
+	if repository == "" {
+		return MaterializationResult{}, fmt.Errorf("workspace bundle apply: repository URL is required")
+	}
+	bundle := cloneBundleMaterialization(req.Bundle.Bundle)
+	if bundle == nil || strings.TrimSpace(bundle.RemotePath) == "" {
+		return MaterializationResult{}, ErrRemoteBundleRequired
+	}
+
+	bundleID := firstNonEmpty(bundle.ID, localBundleID(plan))
+	syncRef := firstNonEmpty(bundle.SyncRef, plan.SyncRef, plan.Branch, "HEAD")
+	localRef := sandboxLocalBundleRef(bundleID)
+	commands := []RemoteCommandRequest{
+		remoteWorkspaceInitCommand(req.Target, workspaceDir, repository),
+		remoteBundleFetchCommand(req.Target, workspaceDir, bundle.RemotePath, syncRef, localRef),
+		remoteBundleCheckoutCommand(req.Target, workspaceDir, plan, localRef),
+	}
+	for _, command := range commands {
+		if err := execRemoteWorkspaceCommand(ctx, remote, command); err != nil {
+			return MaterializationResult{}, fmt.Errorf("workspace bundle apply: %w", err)
+		}
+	}
+
+	operations := cloneMaterializationOperations(req.Bundle.Operations)
+	operations = append(operations, MaterializationOperation{
+		Phase:   MaterializationPhaseBundleApply,
+		Summary: "applied git bundle in sandbox workspace",
+	})
+	return NewMaterializationResult(plan, MaterializationDetails{
+		WorkspaceDir: workspaceDir,
+		Bundle:       bundle,
+		Operations:   operations,
+	}), nil
+}
+
+func remoteWorkspaceInitCommand(target RemoteTarget, workspaceDir string, repository string) RemoteCommandRequest {
+	return RemoteCommandRequest{
+		Target: target,
+		Args: []string{
+			"sh",
+			"-lc",
+			remoteWorkspaceInitScript,
+			"hal-workspace-apply",
+			workspaceDir,
+			repository,
+		},
+	}
+}
+
+func remoteBundleFetchCommand(target RemoteTarget, workspaceDir string, remoteBundlePath string, syncRef string, localRef string) RemoteCommandRequest {
+	return RemoteCommandRequest{
+		Target: target,
+		Args: []string{
+			"git",
+			"-C",
+			workspaceDir,
+			"fetch",
+			remoteBundlePath,
+			syncRef + ":" + localRef,
+		},
+	}
+}
+
+func remoteBundleCheckoutCommand(target RemoteTarget, workspaceDir string, plan Plan, localRef string) RemoteCommandRequest {
+	args := []string{"git", "-C", workspaceDir, "checkout"}
+	if branch := checkoutBranchName(plan); branch != "" {
+		args = append(args, "-B", branch, localRef)
+	} else {
+		args = append(args, localRef)
+	}
+	return RemoteCommandRequest{
+		Target: target,
+		Args:   args,
+	}
+}
+
+func execRemoteWorkspaceCommand(ctx context.Context, remote RemoteCommandRunner, req RemoteCommandRequest) error {
+	result, err := remote.Exec(ctx, req)
+	if err != nil {
+		return sanitizedRemoteCommandError("remote apply", err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("remote apply failed: exit code %d", result.ExitCode)
+	}
+	return nil
+}
+
 func localBundlePath(bundleDir string, bundleID string) (string, error) {
 	bundleDir = strings.TrimSpace(bundleDir)
 	if bundleDir == "" {
@@ -351,12 +515,28 @@ func bundleSyncRefFromMaterialization(bundle *BundleMaterialization) string {
 	return bundle.SyncRef
 }
 
+func sandboxLocalBundleRef(bundleID string) string {
+	return "refs/hal/workspace-sync/" + safeBundleSegment(bundleID)
+}
+
+func checkoutBranchName(plan Plan) string {
+	branch := strings.TrimSpace(plan.Branch)
+	return strings.TrimPrefix(branch, "refs/heads/")
+}
+
 func sanitizedRemoteOperationError(operation string, err error) error {
 	detail := sanitizePathDetail(err.Error())
 	if detail == "" {
 		return fmt.Errorf("%s failed", operation)
 	}
 	return fmt.Errorf("%s failed: %s", operation, detail)
+}
+
+func sanitizedRemoteCommandError(operation string, err error) error {
+	if err == nil {
+		return fmt.Errorf("%s failed", operation)
+	}
+	return fmt.Errorf("%s failed: command failed", operation)
 }
 
 func safeBundleSegment(value string) string {

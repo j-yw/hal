@@ -14,7 +14,12 @@ import (
 // commands only. It does not fetch, push, or contact remotes.
 type GitCLIInspector struct{}
 
-var absolutePathPattern = regexp.MustCompile(`(^|[[:space:]'"])(/[^\s'"]+)`)
+var (
+	absolutePathPattern     = regexp.MustCompile(`(^|[[:space:]'"])(/[^\s'"]+)`)
+	urlUserInfoPattern      = regexp.MustCompile(`(?i)\b(https?://)[^/@\s]+@`)
+	secretAssignmentPattern = regexp.MustCompile(`(?i)\b([A-Z0-9_]*(TOKEN|SECRET|PASSWORD|API[_-]?KEY|AUTH)[A-Z0-9_]*)=([^;\s]+)`)
+	commonSecretPattern     = regexp.MustCompile(`\b(gh[pousr]_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|tskey-[A-Za-z0-9_-]+)\b`)
+)
 
 func (GitCLIInspector) InspectGit(ctx context.Context, projectDir string) (GitStatus, error) {
 	inside, err := gitOutput(ctx, projectDir, "rev-parse", "--is-inside-work-tree")
@@ -296,6 +301,9 @@ func sanitizePathDetail(raw string) string {
 	if detail == "" {
 		return ""
 	}
+	detail = urlUserInfoPattern.ReplaceAllString(detail, "${1}[redacted]@")
+	detail = secretAssignmentPattern.ReplaceAllString(detail, "$1=[redacted]")
+	detail = commonSecretPattern.ReplaceAllString(detail, "[redacted]")
 	return absolutePathPattern.ReplaceAllString(detail, "${1}[path]")
 }
 

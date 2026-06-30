@@ -229,6 +229,144 @@ func TestCopyLocalBundleFailureIsPhaseSpecificAndPathSafe(t *testing.T) {
 	}
 }
 
+func TestBundleMaterializerCopiesThenAppliesRemoteBundle(t *testing.T) {
+	bundleDir := t.TempDir()
+	workspaceDir := "/root/workspace/hal"
+	target := RemoteTarget{ID: "sandbox-1", Provider: "test-provider", RuntimeDriver: "test-driver"}
+	plan := Plan{
+		Mode:           sandbox.SandboxWorkspaceModeClone,
+		InputSource:    sandbox.SandboxWorkspaceInputSourceGitBundle,
+		ProjectDir:     t.TempDir(),
+		Repository:     "git@github.com:jywlabs/hal.git",
+		Branch:         "phase/workspace",
+		SyncRef:        "abc123",
+		RequiresBundle: true,
+	}
+	remote := &recordingRemoteClient{}
+	result, err := (BundleMaterializer{
+		LocalGit:  &recordingLocalGit{},
+		Remote:    remote,
+		BundleDir: bundleDir,
+	}).MaterializeWorkspace(context.Background(), MaterializeRequest{
+		Plan:                 plan,
+		Target:               target,
+		WorkspaceDir:         workspaceDir,
+		BundleDestinationDir: "/tmp/hal/bundles",
+	})
+	if err != nil {
+		t.Fatalf("MaterializeWorkspace() error = %v", err)
+	}
+
+	wantRemotePath := "/tmp/hal/bundles/abc123.bundle"
+	wantLocalRef := "refs/hal/workspace-sync/abc123"
+	if got, want := eventKinds(remote.events), []string{"copy", "exec", "exec", "exec"}; !stringSlicesEqual(got, want) {
+		t.Fatalf("remote events = %#v, want %#v", got, want)
+	}
+	if got := remote.copyRequests[0].DestinationPath; got != wantRemotePath {
+		t.Fatalf("CopyIn destination = %q, want %q", got, wantRemotePath)
+	}
+	if len(remote.execRequests) != 3 {
+		t.Fatalf("Exec calls = %d, want 3", len(remote.execRequests))
+	}
+	assertRemoteArgs(t, remote.execRequests[0].Args, []string{
+		"sh",
+		"-lc",
+		remoteWorkspaceInitScript,
+		"hal-workspace-apply",
+		workspaceDir,
+		"git@github.com:jywlabs/hal.git",
+	})
+	assertRemoteArgs(t, remote.execRequests[1].Args, []string{
+		"git",
+		"-C",
+		workspaceDir,
+		"fetch",
+		wantRemotePath,
+		"abc123:" + wantLocalRef,
+	})
+	assertRemoteArgs(t, remote.execRequests[2].Args, []string{
+		"git",
+		"-C",
+		workspaceDir,
+		"checkout",
+		"-B",
+		"phase/workspace",
+		wantLocalRef,
+	})
+	for i, req := range remote.execRequests {
+		if req.Target != target {
+			t.Fatalf("Exec[%d] target = %#v, want %#v", i, req.Target, target)
+		}
+	}
+
+	if result.WorkspaceDir != workspaceDir {
+		t.Fatalf("WorkspaceDir = %q, want %q", result.WorkspaceDir, workspaceDir)
+	}
+	if result.Bundle == nil || result.Bundle.RemotePath != wantRemotePath || result.Bundle.ID != "abc123" || result.Bundle.SyncRef != "abc123" {
+		t.Fatalf("Bundle = %#v, want copied bundle metadata", result.Bundle)
+	}
+	assertOperationPhases(t, result.Operations, []MaterializationPhase{
+		MaterializationPhaseBundleCreate,
+		MaterializationPhaseBundleVerify,
+		MaterializationPhaseBundleCopy,
+		MaterializationPhaseBundleApply,
+	})
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal(result) error = %v", err)
+	}
+	if strings.Contains(string(encoded), bundleDir) || strings.Contains(string(encoded), filepath.Join(bundleDir, "abc123.bundle")) {
+		t.Fatalf("materialization metadata leaked host bundle path: %s", encoded)
+	}
+}
+
+func TestApplyRemoteBundleFailureIsPhaseSpecificAndSanitized(t *testing.T) {
+	workspaceDir := "/root/workspace/hal"
+	remote := &recordingRemoteClient{
+		execErrAt: 2,
+		execErr:   fmt.Errorf("fatal: clone https://user:secret@example.test/repo.git failed\n/Users/v/work/repo/bundle.bundle\nGITHUB_TOKEN=ghp_secret"),
+	}
+	_, err := ApplyRemoteBundle(context.Background(), remote, ApplyRemoteBundleRequest{
+		Plan: Plan{
+			Mode:           sandbox.SandboxWorkspaceModeClone,
+			InputSource:    sandbox.SandboxWorkspaceInputSourceGitBundle,
+			Repository:     "https://user:secret@example.test/repo.git",
+			Branch:         "phase/workspace",
+			SyncRef:        "abc123",
+			RequiresBundle: true,
+		},
+		Target: RemoteTarget{ID: "sandbox-1"},
+		Bundle: RemoteBundleResult{
+			Bundle: &BundleMaterialization{
+				ID:         "abc123",
+				RemotePath: "/tmp/hal/bundles/abc123.bundle",
+				SyncRef:    "abc123",
+			},
+			Operations: []MaterializationOperation{
+				{Phase: MaterializationPhaseBundleCreate},
+				{Phase: MaterializationPhaseBundleVerify},
+				{Phase: MaterializationPhaseBundleCopy},
+			},
+		},
+		WorkspaceDir: workspaceDir,
+	})
+	if err == nil {
+		t.Fatal("ApplyRemoteBundle() error = nil, want apply failure")
+	}
+	errText := err.Error()
+	if !strings.Contains(errText, "workspace bundle apply") || !strings.Contains(errText, "remote apply") {
+		t.Fatalf("ApplyRemoteBundle() error = %q, want bundle apply phase", err)
+	}
+	for _, unsafe := range []string{"secret", "ghp_secret", "/Users/v", "fatal:", "https://user:secret@example.test"} {
+		if strings.Contains(errText, unsafe) {
+			t.Fatalf("ApplyRemoteBundle() error leaked unsafe detail %q: %q", unsafe, errText)
+		}
+	}
+	if len(remote.execRequests) != 2 {
+		t.Fatalf("Exec calls = %d, want stop after failed fetch", len(remote.execRequests))
+	}
+}
+
 func TestPrepareLocalBundleRejectsDirtyPlanBeforeBundleCreation(t *testing.T) {
 	git := &recordingLocalGit{}
 	_, err := PrepareLocalBundle(context.Background(), git, PrepareLocalBundleRequest{
@@ -294,4 +432,76 @@ type recordingRemoteCopier struct {
 func (r *recordingRemoteCopier) CopyIn(_ context.Context, req RemoteCopyRequest) error {
 	r.copyRequests = append(r.copyRequests, req)
 	return r.copyErr
+}
+
+type remoteEvent struct {
+	kind string
+}
+
+type recordingRemoteClient struct {
+	copyRequests []RemoteCopyRequest
+	execRequests []RemoteCommandRequest
+	events       []remoteEvent
+	copyErr      error
+	execErr      error
+	execErrAt    int
+	execResults  []RemoteCommandResult
+}
+
+func (r *recordingRemoteClient) CopyIn(_ context.Context, req RemoteCopyRequest) error {
+	r.copyRequests = append(r.copyRequests, req)
+	r.events = append(r.events, remoteEvent{kind: "copy"})
+	return r.copyErr
+}
+
+func (r *recordingRemoteClient) Exec(_ context.Context, req RemoteCommandRequest) (RemoteCommandResult, error) {
+	r.execRequests = append(r.execRequests, req)
+	r.events = append(r.events, remoteEvent{kind: "exec"})
+	call := len(r.execRequests)
+	if r.execErr != nil && (r.execErrAt == 0 || r.execErrAt == call) {
+		return RemoteCommandResult{}, r.execErr
+	}
+	if call <= len(r.execResults) {
+		return r.execResults[call-1], nil
+	}
+	return RemoteCommandResult{}, nil
+}
+
+func eventKinds(events []remoteEvent) []string {
+	kinds := make([]string, 0, len(events))
+	for _, event := range events {
+		kinds = append(kinds, event.kind)
+	}
+	return kinds
+}
+
+func assertRemoteArgs(t *testing.T, got []string, want []string) {
+	t.Helper()
+	if !stringSlicesEqual(got, want) {
+		t.Fatalf("Args = %#v, want %#v", got, want)
+	}
+}
+
+func assertOperationPhases(t *testing.T, operations []MaterializationOperation, want []MaterializationPhase) {
+	t.Helper()
+	if len(operations) != len(want) {
+		t.Fatalf("Operations = %#v, want phases %#v", operations, want)
+	}
+	for i, phase := range want {
+		if operations[i].Phase != phase {
+			t.Fatalf("Operations[%d].Phase = %q, want %q; operations = %#v", i, operations[i].Phase, phase, operations)
+		}
+	}
+}
+
+func stringSlicesEqual(a []string, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

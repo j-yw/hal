@@ -34,9 +34,21 @@ var (
 	// without a remote copy adapter.
 	ErrRemoteCopierRequired = errors.New("remote copy adapter is required")
 
+	// ErrRemoteCommandRunnerRequired is returned when bundle apply is requested
+	// without a remote command adapter.
+	ErrRemoteCommandRunnerRequired = errors.New("remote command runner is required")
+
 	// ErrLocalBundleRequired is returned when bundle copy-in is requested
 	// without a verified local bundle path.
 	ErrLocalBundleRequired = errors.New("local bundle is required")
+
+	// ErrRemoteBundleRequired is returned when bundle apply is requested without
+	// a copied sandbox-local bundle path.
+	ErrRemoteBundleRequired = errors.New("remote bundle is required")
+
+	// ErrWorkspaceDirRequired is returned when remote workspace materialization
+	// is requested without a sandbox workspace directory.
+	ErrWorkspaceDirRequired = errors.New("workspace directory is required")
 )
 
 // PlanningError adds stable context around a planning rejection while preserving
