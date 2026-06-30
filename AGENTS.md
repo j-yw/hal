@@ -37,6 +37,11 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase13-sandboxd-self-hosted-worker-daemon-foundation (2026-07-01)
+
+- Worker protocol schema types live in `internal/sandboxworker`; keep the foundational request/response/status/capability/runtime-driver/security-policy types command-agnostic, package-local to the worker boundary, and free of Cobra, `cmd`, factory, PRD, compound, loop, concrete runtime adapters, or durable command-layer records.
+- Worker capability and security metadata must separate requested controls from enforced controls; validation should reject metadata that claims deny-by-default network enforcement, firewall/proxy enforcement, credential-proxy support, or microVM isolation for the local worker foundation.
+
 ## Patterns from phase12-rootless-podman-local-runtime-driver-for-hal-sandbox-runtime-v2 (2026-07-01)
 
 - Optional real Podman integration tests for the rootless runtime belong under the explicit `podman_integration` build tag; require `HAL_PODMAN_TEST_IMAGE` to name an image that already exists locally, verify it with `podman image exists`, and never run `podman pull` by default.
