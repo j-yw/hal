@@ -249,8 +249,14 @@ func TestRunAutoSandboxWithWriterJSONWorkspacePreflightFailure(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 		t.Fatalf("unmarshal AutoResult: %v", err)
 	}
+	if result.OK {
+		t.Fatalf("AutoResult.OK = true, want false for workspace preflight failure")
+	}
 	if !strings.Contains(result.Error, "dirty worktree") {
 		t.Fatalf("Error = %q, want dirty worktree", result.Error)
+	}
+	if strings.TrimSpace(errOut.String()) != "" {
+		t.Fatalf("stderr = %q, want empty for JSON workspace preflight failure", errOut.String())
 	}
 	manifest, err := store.LoadManifest("auto-workspace-preflight")
 	if err != nil {
@@ -258,6 +264,9 @@ func TestRunAutoSandboxWithWriterJSONWorkspacePreflightFailure(t *testing.T) {
 	}
 	if manifest.Status != sandboxexecution.StatusFailed {
 		t.Fatalf("Status = %q, want failed", manifest.Status)
+	}
+	if manifest.FinishedAt == nil || !manifest.FinishedAt.Equal(finishedAt) {
+		t.Fatalf("FinishedAt = %v, want %v", manifest.FinishedAt, finishedAt)
 	}
 }
 

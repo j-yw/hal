@@ -305,8 +305,14 @@ func TestRunRunSandboxWithWriterWorkspacePlannerPreflightFailures(t *testing.T) 
 			if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 				t.Fatalf("stdout is not parseable RunResult JSON: %v\n%s", err, out.String())
 			}
+			if result.ContractVersion != 1 || result.OK {
+				t.Fatalf("RunResult = %#v, want contractVersion 1 and ok false", result)
+			}
 			if !strings.Contains(result.Error, tt.wantError) {
 				t.Fatalf("RunResult.Error = %q, want %q", result.Error, tt.wantError)
+			}
+			if strings.TrimSpace(errOut.String()) != "" {
+				t.Fatalf("stderr = %q, want empty for JSON workspace preflight failure", errOut.String())
 			}
 			manifest, err := store.LoadManifest("run-workspace-preflight")
 			if err != nil {
@@ -314,6 +320,9 @@ func TestRunRunSandboxWithWriterWorkspacePlannerPreflightFailures(t *testing.T) 
 			}
 			if manifest.Status != sandboxexecution.StatusFailed {
 				t.Fatalf("Status = %q, want failed", manifest.Status)
+			}
+			if manifest.FinishedAt == nil || !manifest.FinishedAt.Equal(finishedAt) {
+				t.Fatalf("FinishedAt = %v, want %v", manifest.FinishedAt, finishedAt)
 			}
 			if tt.wantWorkspace == nil {
 				if manifest.Workspace != nil {
