@@ -316,7 +316,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	})
 	if execErr != nil {
 		if phaseErr, ok := sandboxexec.AsPhaseError(execErr); ok {
-			if phaseErr.Target != nil {
+			if phaseErr.Target != nil && target == nil {
 				target = phaseErr.Target
 			}
 		}
@@ -450,7 +450,7 @@ func handleFactorySandboxExecutorError(ctx context.Context, store factory.Store,
 	if failureErr == nil {
 		failureErr = err
 	}
-	if phaseErr.Target != nil {
+	if phaseErr.Target != nil && target == nil {
 		target = phaseErr.Target
 	}
 	switch phaseErr.Phase {

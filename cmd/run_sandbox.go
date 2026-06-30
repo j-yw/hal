@@ -292,7 +292,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 		}
 	}
 	if execErr != nil {
-		if phaseErr, ok := sandboxexec.AsPhaseError(execErr); ok && phaseErr.Target != nil {
+		if phaseErr, ok := sandboxexec.AsPhaseError(execErr); ok && phaseErr.Target != nil && target == nil {
 			target = phaseErr.Target
 			if strings.TrimSpace(req.SandboxName) == "" {
 				req.SandboxName = strings.TrimSpace(target.Name)

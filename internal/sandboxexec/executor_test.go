@@ -341,6 +341,60 @@ func TestResultUsesRuntimeBoundaryTypes(t *testing.T) {
 	}
 }
 
+func TestPhaseErrorUsesRuntimeBoundaryTypes(t *testing.T) {
+	phaseType := reflect.TypeOf(PhaseError{})
+	providerType := reflect.TypeOf((*sandbox.Provider)(nil)).Elem()
+	connectInfoType := reflect.TypeOf((*sandbox.ConnectInfo)(nil))
+	for i := 0; i < phaseType.NumField(); i++ {
+		field := phaseType.Field(i)
+		if field.Type == providerType {
+			t.Fatalf("PhaseError.%s exposes legacy sandbox.Provider", field.Name)
+		}
+		if field.Type == connectInfoType {
+			t.Fatalf("PhaseError.%s exposes legacy *sandbox.ConnectInfo", field.Name)
+		}
+	}
+	if _, ok := phaseType.FieldByName("Provider"); ok {
+		t.Fatal("PhaseError exposes legacy sandbox.Provider field")
+	}
+	if _, ok := phaseType.FieldByName("ConnectInfo"); ok {
+		t.Fatal("PhaseError exposes legacy sandbox.ConnectInfo field")
+	}
+
+	targetField, ok := phaseType.FieldByName("Target")
+	if !ok {
+		t.Fatal("PhaseError missing Target field")
+	}
+	if targetField.Type != reflect.TypeOf((*sandbox.SandboxState)(nil)) {
+		t.Fatalf("PhaseError.Target type = %v, want *sandbox.SandboxState", targetField.Type)
+	}
+	driverField, ok := phaseType.FieldByName("RuntimeDriver")
+	if !ok {
+		t.Fatal("PhaseError missing RuntimeDriver field")
+	}
+	if driverField.Type.Kind() != reflect.String {
+		t.Fatalf("PhaseError.RuntimeDriver type = %v, want string", driverField.Type)
+	}
+}
+
+func TestPhaseNamesRemainStable(t *testing.T) {
+	tests := map[Phase]string{
+		PhaseResolveTarget:    "resolve_target",
+		PhaseProvisionTarget:  "provision",
+		PhaseStartTarget:      "start",
+		PhaseResolveDriver:    "resolve_driver",
+		PhasePrepareWorkspace: "prepare_workspace",
+		PhasePrepareAuth:      "prepare_auth",
+		PhasePrepareCommand:   "prepare_command",
+		PhaseRun:              "run",
+	}
+	for phase, want := range tests {
+		if got := string(phase); got != want {
+			t.Fatalf("phase %v = %q, want %q", phase, got, want)
+		}
+	}
+}
+
 func TestRunPrepareContextCarriesRuntimeTargetConnection(t *testing.T) {
 	target := &sandbox.SandboxState{
 		ID:                "sb-123",
@@ -543,8 +597,14 @@ func TestRunPropagatesStartFailure(t *testing.T) {
 		},
 	})
 	phaseErr, ok := AsPhaseError(err)
-	if !ok || phaseErr.Phase != PhaseStartTarget || !errors.Is(err, startErr) || phaseErr.Target != target {
+	if !ok || phaseErr.Phase != PhaseStartTarget || !errors.Is(err, startErr) {
 		t.Fatalf("error = %#v, want start phase wrapping startErr", err)
+	}
+	if phaseErr.Target != target {
+		t.Fatalf("phase target = %#v, want original target %#v", phaseErr.Target, target)
+	}
+	if phaseErr.RuntimeDriver != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("runtime driver = %q, want %q", phaseErr.RuntimeDriver, sandboxruntime.DriverSSHMachine)
 	}
 }
 
@@ -650,6 +710,170 @@ func TestRunCommandFailureEmitsOutputAndFailureEvents(t *testing.T) {
 	}
 	if !errors.Is(events[2].Err, runErr) {
 		t.Fatalf("failure event error = %v, want runErr", events[2].Err)
+	}
+}
+
+func TestRunPhaseErrorsUseStablePhaseNames(t *testing.T) {
+	tests := []struct {
+		name  string
+		phase Phase
+		value string
+		deps  func(error) Dependencies
+	}{
+		{
+			name:  "resolve target",
+			phase: PhaseResolveTarget,
+			value: "resolve_target",
+			deps: func(failure error) Dependencies {
+				return successfulDeps(t, Dependencies{
+					ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+						return nil, failure
+					},
+				})
+			},
+		},
+		{
+			name:  "start",
+			phase: PhaseStartTarget,
+			value: "start",
+			deps: func(failure error) Dependencies {
+				return successfulDeps(t, Dependencies{
+					ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+						return &sandbox.SandboxState{Name: "factory-dev", Provider: "daytona", Status: sandbox.StatusStopped}, nil
+					},
+					StartTarget: func(context.Context, *sandbox.SandboxState, io.Writer, io.Writer) (*sandbox.SandboxState, error) {
+						return nil, failure
+					},
+				})
+			},
+		},
+		{
+			name:  "resolve runtime",
+			phase: PhaseResolveDriver,
+			value: "resolve_driver",
+			deps: func(failure error) Dependencies {
+				return successfulDeps(t, Dependencies{
+					ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+						return nil, failure
+					},
+				})
+			},
+		},
+		{
+			name:  "prepare workspace",
+			phase: PhasePrepareWorkspace,
+			value: "prepare_workspace",
+			deps: func(failure error) Dependencies {
+				return successfulDeps(t, Dependencies{
+					PrepareWorkspace: func(context.Context, PrepareContext, *CommandRequest) error {
+						return failure
+					},
+				})
+			},
+		},
+		{
+			name:  "prepare auth",
+			phase: PhasePrepareAuth,
+			value: "prepare_auth",
+			deps: func(failure error) Dependencies {
+				return successfulDeps(t, Dependencies{
+					PrepareAuth: func(context.Context, PrepareContext, *CommandRequest) error {
+						return failure
+					},
+				})
+			},
+		},
+		{
+			name:  "prepare command",
+			phase: PhasePrepareCommand,
+			value: "prepare_command",
+			deps: func(failure error) Dependencies {
+				return successfulDeps(t, Dependencies{
+					PrepareCommand: func(context.Context, PrepareContext, *CommandRequest) error {
+						return failure
+					},
+				})
+			},
+		},
+		{
+			name:  "run",
+			phase: PhaseRun,
+			value: "run",
+			deps: func(failure error) Dependencies {
+				return successfulDeps(t, Dependencies{
+					RunCommand: func(context.Context, RunContext, CommandRequest) error {
+						return failure
+					},
+				})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			failure := errors.New(tt.name + " failed")
+			_, err := Run(context.Background(), CommandRequest{SandboxName: "factory-dev"}, tt.deps(failure))
+			phaseErr, ok := AsPhaseError(err)
+			if !ok {
+				t.Fatalf("Run() error = %#v, want PhaseError", err)
+			}
+			if phaseErr.Phase != tt.phase || string(phaseErr.Phase) != tt.value {
+				t.Fatalf("phase = %q/%q, want %q", phaseErr.Phase, string(phaseErr.Phase), tt.value)
+			}
+			if !errors.Is(err, failure) {
+				t.Fatalf("error = %v, want to wrap %v", err, failure)
+			}
+		})
+	}
+}
+
+func TestRunPhaseErrorCarriesSandboxTargetAndRuntimeDriver(t *testing.T) {
+	runErr := errors.New("remote failed")
+	target := &sandbox.SandboxState{
+		ID:                "sb-123",
+		Name:              "factory-dev",
+		Provider:          "digitalocean",
+		WorkspaceID:       "droplet-456",
+		IP:                "203.0.113.42",
+		TailscaleIP:       "100.64.0.7",
+		TailscaleHostname: "factory-dev.tailnet.example",
+		TailscaleLockdown: true,
+		Status:            sandbox.StatusRunning,
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandbox.SandboxRuntimeDriverSSHMachine,
+			RuntimeID:      "runtime-789",
+			Image:          "ubuntu-24.04",
+			WorkerID:       "worker-a",
+			IsolationLevel: sandbox.SandboxIsolationLevelVM,
+		},
+		Host: &sandbox.SandboxHost{
+			ID: "host-123",
+		},
+	}
+
+	_, err := Run(context.Background(), CommandRequest{SandboxName: "factory-dev"}, Dependencies{
+		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return fakeRuntimeDriver{id: "test_runtime"}, nil
+		},
+		RunCommand: func(context.Context, RunContext, CommandRequest) error {
+			return runErr
+		},
+	})
+	phaseErr, ok := AsPhaseError(err)
+	if !ok || phaseErr.Phase != PhaseRun || !errors.Is(err, runErr) {
+		t.Fatalf("error = %#v, want run phase wrapping runErr", err)
+	}
+	if phaseErr.RuntimeDriver != "test_runtime" {
+		t.Fatalf("runtime driver = %q, want test_runtime", phaseErr.RuntimeDriver)
+	}
+	if phaseErr.Target != target {
+		t.Fatalf("phase target = %#v, want original target %#v", phaseErr.Target, target)
+	}
+	if phaseErr.Target.Host == nil || phaseErr.Target.Host.ID != "host-123" {
+		t.Fatalf("phase target host = %#v, want original host metadata", phaseErr.Target.Host)
 	}
 }
 
