@@ -49,6 +49,7 @@
 - Run/auto/factory sandbox command callers should preserve the richer legacy `*sandbox.SandboxState` captured by `OnTargetReady` and use `sandboxexec.Result.Target` only as a fallback so host, runtime, and security metadata are not dropped.
 - `sandboxexec.PhaseError` intentionally carries `*sandbox.SandboxState` plus `RuntimeDriver`, but not `sandbox.Provider` or `*sandbox.ConnectInfo`; command callers should use the phase-error target only as a fallback when no richer `OnTargetReady` state is available.
 - `hal run --sandbox` remote command execution goes through `runSandboxDeps.resolveRuntimeDriver` and `sandboxruntime.Driver.Exec`; keep provider-backed compatibility helpers scoped to workspace bootstrap/auth sync until those preparation paths are migrated.
+- `hal auto --sandbox` remote command execution goes through `autoSandboxDeps.resolveRuntimeDriver` and `sandboxruntime.Driver.Exec`; keep provider-backed compatibility helpers scoped to workspace bootstrap, auth sync, and input-copy preparation until those paths are migrated.
 
 ## Patterns from local-factory-queue-storage (2026-06-21)
 

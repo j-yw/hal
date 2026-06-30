@@ -86,8 +86,8 @@ type autoSandboxDeps struct {
 	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
 	startSandbox           func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
+	resolveRuntimeDriver   func(string) (sandboxruntime.Driver, error)
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
-	runProviderCommand     func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer, io.Writer) error
 	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
 	engineAuthFiles        func() []factorySandboxAuthFile
 	bootstrap              func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
@@ -107,7 +107,6 @@ var defaultAutoSandboxDeps = autoSandboxDeps{
 		return resolveProviderWithFallback(".", providerName)
 	},
 	runProviderExecWithEnv: runFactorySandboxProviderExecWithEnv,
-	runProviderCommand:     runSandboxProviderExecWithEnv,
 	runProviderScript:      runFactorySandboxProviderScript,
 	engineAuthFiles:        factorySandboxEngineAuthFiles,
 	bootstrap:              factory.BootstrapWorkspace,
@@ -299,11 +298,17 @@ func normalizeAutoSandboxDeps(deps autoSandboxDeps) autoSandboxDeps {
 	if deps.resolveProvider == nil {
 		deps.resolveProvider = defaultAutoSandboxDeps.resolveProvider
 	}
+	if deps.resolveRuntimeDriver == nil {
+		deps.resolveRuntimeDriver = func(providerName string) (sandboxruntime.Driver, error) {
+			provider, err := deps.resolveProvider(providerName)
+			if err != nil {
+				return nil, err
+			}
+			return sandboxRuntimeDriverFromProvider(provider), nil
+		}
+	}
 	if deps.runProviderExecWithEnv == nil {
 		deps.runProviderExecWithEnv = defaultAutoSandboxDeps.runProviderExecWithEnv
-	}
-	if deps.runProviderCommand == nil {
-		deps.runProviderCommand = defaultAutoSandboxDeps.runProviderCommand
 	}
 	if deps.runProviderScript == nil {
 		deps.runProviderScript = defaultAutoSandboxDeps.runProviderScript
@@ -385,6 +390,17 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 	var remoteStarted bool
 	var preparedCommand []string
 	var provider sandbox.Provider
+	ensureProvider := func(providerName string) (sandbox.Provider, error) {
+		if provider != nil {
+			return provider, nil
+		}
+		resolved, err := deps.resolveProvider(providerName)
+		if err != nil {
+			return nil, err
+		}
+		provider = resolved
+		return provider, nil
+	}
 	result, err := sandboxexec.Run(ctx, sandboxexec.CommandRequest{
 		Purpose:     sandbox.SandboxLeasePurposeAuto,
 		ProjectDir:  req.ProjectDir,
@@ -403,12 +419,7 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 			return deps.startSandbox(ctx, target, prepOut)
 		},
 		ResolveDriver: func(_ context.Context, target sandboxruntime.Target) (sandboxruntime.Driver, error) {
-			resolved, err := deps.resolveProvider(target.Provider)
-			if err != nil {
-				return nil, err
-			}
-			provider = resolved
-			return sandboxRuntimeDriverFromProvider(resolved), nil
+			return deps.resolveRuntimeDriver(target.Provider)
 		},
 		OnTargetReady: func(_ context.Context, target *sandbox.SandboxState) error {
 			if hooks.OnTargetReady == nil {
@@ -417,12 +428,20 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 			return hooks.OnTargetReady(target)
 		},
 		PrepareWorkspace: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
+			provider, err := ensureProvider(prep.Target.Provider)
+			if err != nil {
+				return err
+			}
 			if err := deps.bootstrapAutoSandboxWorkspace(ctx, req, provider, prep, prepOut); err != nil {
 				return err
 			}
 			return deps.prepareAutoSandboxInputs(ctx, &req, provider, prep, prepOut)
 		},
 		PrepareAuth: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
+			provider, err := ensureProvider(prep.Target.Provider)
+			if err != nil {
+				return err
+			}
 			return factorySandboxSyncEngineAuth(ctx, provider, sandboxStateFromRuntimeTarget(prep.Target), prepOut, factorySandboxExecutorDeps{
 				runProviderExecWithEnv: deps.runProviderExecWithEnv,
 				runProviderScript:      deps.runProviderScript,
@@ -435,7 +454,7 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 			return nil
 		},
 		RunCommand: func(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {
-			return deps.runProviderCommand(ctx, provider, sandboxConnectInfoFromRuntimeTarget(run.Target), runSandboxRemoteExecArgs(command), command.Env, command.Stdout, command.Stderr)
+			return runSandboxRuntimeExec(ctx, run, command)
 		},
 		HandleEvent: func(_ context.Context, event sandboxexec.Event) error {
 			if event.Type == sandboxexec.EventCommandOutput && event.Stream == sandboxexec.StreamStdout {

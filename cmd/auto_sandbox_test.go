@@ -119,6 +119,21 @@ func TestBuildAutoSandboxRemoteCommandPreservesAutoFlags(t *testing.T) {
 	}
 }
 
+func TestAutoSandboxDepsUseRuntimeDriverForRemoteExecution(t *testing.T) {
+	depsType := reflect.TypeOf(autoSandboxDeps{})
+	if _, ok := depsType.FieldByName("runProviderCommand"); ok {
+		t.Fatal("autoSandboxDeps exposes direct provider command execution; use runtime-driver execution")
+	}
+	field, ok := depsType.FieldByName("resolveRuntimeDriver")
+	if !ok {
+		t.Fatal("autoSandboxDeps missing resolveRuntimeDriver")
+	}
+	want := reflect.TypeOf((func(string) (sandboxruntime.Driver, error))(nil))
+	if field.Type != want {
+		t.Fatalf("resolveRuntimeDriver type = %v, want %v", field.Type, want)
+	}
+}
+
 func TestRunAutoWithDirSandboxFlagDispatchesToSandboxExecutor(t *testing.T) {
 	startedAt := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(time.Second)
@@ -445,6 +460,14 @@ func TestRunAutoSandboxWithWriterManifestRecordsCopiedInputCommand(t *testing.T)
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return provider, nil
 		},
+		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+			return fakeRunSandboxRuntimeDriver{
+				exec: func(_ context.Context, got sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+					_, _ = io.WriteString(got.Stdout, `{"contractVersion":2,"ok":true,"entryMode":"markdown_path","resumed":false,"steps":{},"summary":"ok"}`+"\n")
+					return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+				},
+			}, nil
+		},
 		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
 			return factory.BootstrapResult{}, nil
 		},
@@ -453,11 +476,6 @@ func TestRunAutoSandboxWithWriterManifestRecordsCopiedInputCommand(t *testing.T)
 		},
 		runProviderScript: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, script string, _ io.Writer) error {
 			provider.scripts = append(provider.scripts, script)
-			return nil
-		},
-		runProviderCommand: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, _ map[string]string, stdout, _ io.Writer) error {
-			provider.finalArgs = append([]string(nil), args...)
-			_, _ = io.WriteString(stdout, `{"contractVersion":2,"ok":true,"entryMode":"markdown_path","resumed":false,"steps":{},"summary":"ok"}`+"\n")
 			return nil
 		},
 	})
@@ -492,6 +510,7 @@ func TestExecuteAutoSandboxCopiesExplicitInputsBeforeRemoteCommand(t *testing.T)
 
 	target := &sandbox.SandboxState{Name: "auto-copy", Provider: "test-provider", Status: sandbox.StatusRunning}
 	provider := &capturingAutoSandboxProvider{}
+	var execReq sandboxruntime.ExecRequest
 	prdPath := filepath.Join(projectDir, "prd.md")
 	reportPath := filepath.Join(projectDir, ".hal", "reports", "report.md")
 	req, err := parseAutoSandboxRequest([]string{prdPath}, autoSandboxOptions{
@@ -517,6 +536,15 @@ func TestExecuteAutoSandboxCopiesExplicitInputsBeforeRemoteCommand(t *testing.T)
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return provider, nil
 		},
+		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+			return fakeRunSandboxRuntimeDriver{
+				exec: func(_ context.Context, got sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+					execReq = got
+					_, _ = io.WriteString(got.Stdout, `{"contractVersion":2,"ok":true,"entryMode":"markdown_path","resumed":false,"steps":{},"summary":"ok"}`+"\n")
+					return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+				},
+			}, nil
+		},
 		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
 			return factory.BootstrapResult{}, nil
 		},
@@ -527,11 +555,6 @@ func TestExecuteAutoSandboxCopiesExplicitInputsBeforeRemoteCommand(t *testing.T)
 			provider.scripts = append(provider.scripts, script)
 			return nil
 		},
-		runProviderCommand: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, _ map[string]string, stdout, _ io.Writer) error {
-			provider.finalArgs = append([]string(nil), args...)
-			_, _ = io.WriteString(stdout, `{"contractVersion":2,"ok":true,"entryMode":"markdown_path","resumed":false,"steps":{},"summary":"ok"}`+"\n")
-			return nil
-		},
 	}.executeAutoSandbox(context.Background(), req, io.Discard, io.Discard, autoSandboxExecutionHooks{})
 	if err != nil {
 		t.Fatalf("executeAutoSandbox() unexpected error: %v", err)
@@ -539,15 +562,15 @@ func TestExecuteAutoSandboxCopiesExplicitInputsBeforeRemoteCommand(t *testing.T)
 	if result.Result == nil {
 		t.Fatal("Result = nil")
 	}
-	joinedArgs := strings.Join(provider.finalArgs, "\x00")
+	joinedArgs := strings.Join(execReq.Args, "\x00")
 	if !strings.Contains(joinedArgs, ".hal/factory-inputs/prd.md") {
-		t.Fatalf("final args %q do not include copied PRD input", strings.Join(provider.finalArgs, " "))
+		t.Fatalf("runtime exec args %q do not include copied PRD input", strings.Join(execReq.Args, " "))
 	}
 	if !strings.Contains(joinedArgs, ".hal/factory-inputs/report.md") {
-		t.Fatalf("final args %q do not include copied report input", strings.Join(provider.finalArgs, " "))
+		t.Fatalf("runtime exec args %q do not include copied report input", strings.Join(execReq.Args, " "))
 	}
 	if strings.Contains(joinedArgs, prdPath) || strings.Contains(joinedArgs, reportPath) {
-		t.Fatalf("final args still contain local input paths: %q", strings.Join(provider.finalArgs, " "))
+		t.Fatalf("runtime exec args still contain local input paths: %q", strings.Join(execReq.Args, " "))
 	}
 	if !provider.sawPayload("# PRD\n") {
 		t.Fatal("copy scripts did not include PRD payload")
@@ -592,6 +615,18 @@ func TestRunAutoSandboxWithWriterForwardsFactoryAttemptPolicyEnv(t *testing.T) {
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
 		},
+		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+			return fakeRunSandboxRuntimeDriver{
+				exec: func(_ context.Context, got sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+					gotEnv = map[string]string{}
+					for key, value := range got.Env {
+						gotEnv[key] = value
+					}
+					_, _ = io.WriteString(got.Stdout, `{"contractVersion":2,"ok":true,"entryMode":"report_discovery","resumed":false,"steps":{},"summary":"ok"}`+"\n")
+					return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+				},
+			}, nil
+		},
 		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
 			return factory.BootstrapResult{}, nil
 		},
@@ -599,14 +634,6 @@ func TestRunAutoSandboxWithWriterForwardsFactoryAttemptPolicyEnv(t *testing.T) {
 			return nil
 		},
 		runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
-			return nil
-		},
-		runProviderCommand: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, env map[string]string, stdout, _ io.Writer) error {
-			gotEnv = map[string]string{}
-			for key, value := range env {
-				gotEnv[key] = value
-			}
-			_, _ = io.WriteString(stdout, `{"contractVersion":2,"ok":true,"entryMode":"report_discovery","resumed":false,"steps":{},"summary":"ok"}`+"\n")
 			return nil
 		},
 	})
@@ -652,6 +679,14 @@ func TestRunAutoSandboxWithWriterJSONRemoteOutputPassesThroughAfterStdout(t *tes
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
 		},
+		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+			return fakeRunSandboxRuntimeDriver{
+				exec: func(_ context.Context, got sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+					_, _ = io.WriteString(got.Stdout, `{"contractVersion":2,"ok":false,"entryMode":"report_discovery","resumed":false,"steps":{},"summary":"remote"}`+"\n")
+					return nil, errors.New("remote auto failed after writing json")
+				},
+			}, nil
+		},
 		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
 			return factory.BootstrapResult{}, nil
 		},
@@ -660,10 +695,6 @@ func TestRunAutoSandboxWithWriterJSONRemoteOutputPassesThroughAfterStdout(t *tes
 		},
 		runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
 			return nil
-		},
-		runProviderCommand: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, _ map[string]string, stdout, _ io.Writer) error {
-			_, _ = io.WriteString(stdout, `{"contractVersion":2,"ok":false,"entryMode":"report_discovery","resumed":false,"steps":{},"summary":"remote"}`+"\n")
-			return errors.New("remote auto failed after writing json")
 		},
 	})
 	if err == nil {
