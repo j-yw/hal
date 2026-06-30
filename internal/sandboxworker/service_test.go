@@ -1,9 +1,11 @@
 package sandboxworker
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestServiceStatusReportsStateAndRegisteredDrivers(t *testing.T) {
@@ -139,6 +141,45 @@ func TestServiceProtocolResponsesValidate(t *testing.T) {
 	}
 	if capabilitiesResp.RequestID != "req-002" || capabilitiesResp.Operation != OperationCapabilities || capabilitiesResp.Capabilities == nil {
 		t.Fatalf("capabilities response = %#v, want request ID and capabilities payload", capabilitiesResp)
+	}
+}
+
+func TestServiceHandleRequestReturnsContextProtocolErrors(t *testing.T) {
+	service, err := NewService(ServiceOptions{WorkerID: "worker-001"})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	canceledResp := service.HandleRequest(canceledCtx, Request{
+		RequestID: "req-canceled",
+		Operation: OperationStatus,
+	})
+	if err := canceledResp.Validate(); err != nil {
+		t.Fatalf("canceled response Validate() error: %v", err)
+	}
+	if canceledResp.OK || canceledResp.Operation != OperationStatus || canceledResp.Error == nil {
+		t.Fatalf("canceled response = %#v, want structured cancellation error", canceledResp)
+	}
+	if canceledResp.Error.Code != ErrorCodeRequestCanceled {
+		t.Fatalf("canceled error code = %q, want %q", canceledResp.Error.Code, ErrorCodeRequestCanceled)
+	}
+
+	timeoutCtx, timeoutCancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer timeoutCancel()
+	timeoutResp := service.HandleRequest(timeoutCtx, Request{
+		RequestID: "req-timeout",
+		Operation: OperationCapabilities,
+	})
+	if err := timeoutResp.Validate(); err != nil {
+		t.Fatalf("timeout response Validate() error: %v", err)
+	}
+	if timeoutResp.OK || timeoutResp.Operation != OperationCapabilities || timeoutResp.Error == nil {
+		t.Fatalf("timeout response = %#v, want structured timeout error", timeoutResp)
+	}
+	if timeoutResp.Error.Code != ErrorCodeRequestTimeout {
+		t.Fatalf("timeout error code = %q, want %q", timeoutResp.Error.Code, ErrorCodeRequestTimeout)
 	}
 }
 

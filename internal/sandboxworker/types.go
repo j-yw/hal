@@ -22,6 +22,9 @@ const (
 
 	ErrorCodeMalformedRequest = "malformed_request"
 	ErrorCodeInternal         = "internal_error"
+	ErrorCodeRequestCanceled  = "request_canceled"
+	ErrorCodeRequestTimeout   = "request_timeout"
+	ErrorCodeUnsupportedOp    = "unsupported_operation"
 
 	HostKindLocal  = "local"
 	HostKindWorker = "worker"

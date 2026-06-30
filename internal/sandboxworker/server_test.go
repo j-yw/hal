@@ -54,6 +54,132 @@ func TestServerListenAndServeDispatchesValidatedRequestsOverUnixSocket(t *testin
 	}
 }
 
+func TestServiceServesStatusAndCapabilitiesOverUnixSocket(t *testing.T) {
+	socketPath := testWorkerSocketPath(t)
+	registry, err := NewDriverRegistry(
+		&fakeWorkerRuntimeDriver{id: RuntimeDriverSSHMachine},
+		&fakeWorkerRuntimeDriver{id: RuntimeDriverRootlessPodman},
+	)
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+	service, err := NewService(ServiceOptions{
+		WorkerID:   "worker-001",
+		SocketPath: socketPath,
+		Registry:   registry,
+		Health: WorkerHealth{
+			Status:  HealthStatusDegraded,
+			Message: "warming",
+		},
+		Capacity: WorkerCapacity{
+			MaxConcurrentSandboxes: 3,
+			ActiveSandboxes:        1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+	server, err := NewServer(ServerOptions{
+		SocketPath: socketPath,
+		Handler:    service,
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	cancel, errCh := runTestServer(t, server)
+	defer stopTestServer(t, cancel, errCh)
+
+	statusResp := roundTripWorkerRequest(t, socketPath, Request{
+		RequestID: "req-status",
+		Operation: OperationStatus,
+	})
+	if err := statusResp.Validate(); err != nil {
+		t.Fatalf("status response Validate() error: %v", err)
+	}
+	if !statusResp.OK || statusResp.Operation != OperationStatus || statusResp.Status == nil {
+		t.Fatalf("status response = %#v, want successful status payload", statusResp)
+	}
+	if statusResp.Status.WorkerID != "worker-001" || statusResp.Status.SocketPath != socketPath {
+		t.Fatalf("status payload = %#v, want configured worker and socket path", statusResp.Status)
+	}
+	if statusResp.Status.Health.Status != HealthStatusDegraded || statusResp.Status.Capacity.ActiveSandboxes != 1 {
+		t.Fatalf("status payload = %#v, want configured health and capacity", statusResp.Status)
+	}
+	wantDrivers := []string{RuntimeDriverRootlessPodman, RuntimeDriverSSHMachine}
+	if len(statusResp.Status.SupportedRuntimeDrivers) != len(wantDrivers) ||
+		statusResp.Status.SupportedRuntimeDrivers[0] != wantDrivers[0] ||
+		statusResp.Status.SupportedRuntimeDrivers[1] != wantDrivers[1] {
+		t.Fatalf("status drivers = %#v, want %#v", statusResp.Status.SupportedRuntimeDrivers, wantDrivers)
+	}
+
+	capabilitiesResp := roundTripWorkerRequest(t, socketPath, Request{
+		RequestID: "req-capabilities",
+		Operation: OperationCapabilities,
+	})
+	if err := capabilitiesResp.Validate(); err != nil {
+		t.Fatalf("capabilities response Validate() error: %v", err)
+	}
+	if !capabilitiesResp.OK || capabilitiesResp.Operation != OperationCapabilities || capabilitiesResp.Capabilities == nil {
+		t.Fatalf("capabilities response = %#v, want successful capabilities payload", capabilitiesResp)
+	}
+	if capabilitiesResp.Capabilities.WorkerID != "worker-001" {
+		t.Fatalf("capabilities workerId = %q, want worker-001", capabilitiesResp.Capabilities.WorkerID)
+	}
+	if len(capabilitiesResp.Capabilities.RuntimeDrivers) != 2 {
+		t.Fatalf("capabilities drivers = %#v, want two registered drivers", capabilitiesResp.Capabilities.RuntimeDrivers)
+	}
+}
+
+func TestServiceReturnsStructuredOperationErrorsOverUnixSocket(t *testing.T) {
+	socketPath := testWorkerSocketPath(t)
+	service, err := NewService(ServiceOptions{
+		WorkerID:   "worker-001",
+		SocketPath: socketPath,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+	server, err := NewServer(ServerOptions{
+		SocketPath: socketPath,
+		Handler:    service,
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	cancel, errCh := runTestServer(t, server)
+	defer stopTestServer(t, cancel, errCh)
+
+	unknownResp := roundTripWorkerRequest(t, socketPath, Request{
+		RequestID: "req-unknown",
+		Operation: "launch",
+	})
+	if err := unknownResp.Validate(); err != nil {
+		t.Fatalf("unknown response Validate() error: %v", err)
+	}
+	if unknownResp.OK || unknownResp.Operation != OperationProtocolError || unknownResp.Error == nil {
+		t.Fatalf("unknown response = %#v, want structured protocol error", unknownResp)
+	}
+	if unknownResp.Error.Code != ErrorCodeMalformedRequest {
+		t.Fatalf("unknown error code = %q, want %q", unknownResp.Error.Code, ErrorCodeMalformedRequest)
+	}
+
+	unsupportedResp := roundTripWorkerRequest(t, socketPath, Request{
+		RequestID: "req-exec",
+		Operation: OperationExec,
+	})
+	if err := unsupportedResp.Validate(); err != nil {
+		t.Fatalf("unsupported response Validate() error: %v", err)
+	}
+	if unsupportedResp.OK || unsupportedResp.Operation != OperationExec || unsupportedResp.Error == nil {
+		t.Fatalf("unsupported response = %#v, want structured unsupported-operation error", unsupportedResp)
+	}
+	if unsupportedResp.Error.Code != ErrorCodeUnsupportedOp {
+		t.Fatalf("unsupported error code = %q, want %q", unsupportedResp.Error.Code, ErrorCodeUnsupportedOp)
+	}
+}
+
 func TestServerRejectsMalformedRequestsWithStructuredProtocolError(t *testing.T) {
 	var handled atomic.Bool
 	socketPath := testWorkerSocketPath(t)
