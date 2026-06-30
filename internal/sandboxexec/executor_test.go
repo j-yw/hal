@@ -1100,15 +1100,6 @@ func TestSandboxexecDoesNotImportCommandOrProviderLayers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadDir() error: %v", err)
 	}
-	forbiddenExact := map[string]string{
-		"github.com/spf13/cobra": "cobra",
-	}
-	forbiddenPrefixes := map[string]string{
-		"github.com/jywlabs/hal/cmd":               "cmd",
-		"github.com/jywlabs/hal/internal/compound": "compound",
-		"github.com/jywlabs/hal/internal/factory":  "factory",
-		"github.com/jywlabs/hal/internal/prd":      "prd",
-	}
 	fset := token.NewFileSet()
 	for _, entry := range entries {
 		name := entry.Name()
@@ -1122,15 +1113,67 @@ func TestSandboxexecDoesNotImportCommandOrProviderLayers(t *testing.T) {
 		}
 		for _, imported := range file.Imports {
 			importPath := strings.Trim(imported.Path.Value, `"`)
-			if label, ok := forbiddenExact[importPath]; ok {
-				t.Fatalf("%s imports forbidden %s package %q", path, label, importPath)
-			}
-			for prefix, label := range forbiddenPrefixes {
-				if importPath == prefix || strings.HasPrefix(importPath, prefix+"/") {
-					t.Fatalf("%s imports forbidden %s package %q", path, label, importPath)
-				}
+			if forbidden := sandboxexecForbiddenImportFor(importPath); forbidden != nil {
+				t.Fatalf("%s imports forbidden %s package %q", path, forbidden.name, importPath)
 			}
 		}
+	}
+}
+
+func TestSandboxexecForbiddenImportListCoversRequiredBoundaries(t *testing.T) {
+	tests := []struct {
+		name       string
+		importPath string
+	}{
+		{name: "Cobra", importPath: "github.com/spf13/cobra"},
+		{name: "cmd", importPath: "github.com/jywlabs/hal/cmd"},
+		{name: "factory", importPath: "github.com/jywlabs/hal/internal/factory"},
+		{name: "prd", importPath: "github.com/jywlabs/hal/internal/prd"},
+		{name: "compound", importPath: "github.com/jywlabs/hal/internal/compound"},
+		{name: "concrete runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"},
+		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/daytona"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if forbidden := sandboxexecForbiddenImportFor(tt.importPath); forbidden == nil {
+				t.Fatalf("forbidden import list does not include %s import path %q", tt.name, tt.importPath)
+			}
+		})
+	}
+}
+
+type sandboxexecForbiddenImport struct {
+	name  string
+	match func(string) bool
+}
+
+var sandboxexecForbiddenImports = []sandboxexecForbiddenImport{
+	{
+		name: "Cobra",
+		match: func(importPath string) bool {
+			return importPath == "github.com/spf13/cobra" || strings.Contains(importPath, "/cobra")
+		},
+	},
+	{name: "cmd", match: moduleImportMatcher("github.com/jywlabs/hal/cmd")},
+	{name: "compound", match: moduleImportMatcher("github.com/jywlabs/hal/internal/compound")},
+	{name: "factory", match: moduleImportMatcher("github.com/jywlabs/hal/internal/factory")},
+	{name: "prd", match: moduleImportMatcher("github.com/jywlabs/hal/internal/prd")},
+	{name: "concrete sandbox runtime adapter", match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/sshmachine")},
+	{name: "concrete sandbox provider adapter", match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandbox/provider")},
+}
+
+func sandboxexecForbiddenImportFor(importPath string) *sandboxexecForbiddenImport {
+	for i := range sandboxexecForbiddenImports {
+		if sandboxexecForbiddenImports[i].match(importPath) {
+			return &sandboxexecForbiddenImports[i]
+		}
+	}
+	return nil
+}
+
+func moduleImportMatcher(prefix string) func(string) bool {
+	return func(importPath string) bool {
+		return importPath == prefix || strings.HasPrefix(importPath, prefix+"/")
 	}
 }
 
