@@ -404,12 +404,37 @@ func writeClientDriverCopyOutDestination(destinationPath string, data []byte) er
 	if destinationPath == "" {
 		return workerIOValidationError("copy_out destination path is required")
 	}
-	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o700); err != nil {
+	destinationDir := filepath.Dir(destinationPath)
+	if err := os.MkdirAll(destinationDir, 0o700); err != nil {
 		return fmt.Errorf("prepare copy_out destination: %w", err)
 	}
-	if err := os.WriteFile(destinationPath, data, 0o600); err != nil {
+
+	tmp, err := os.CreateTemp(destinationDir, "."+filepath.Base(destinationPath)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("prepare copy_out destination: %w", err)
+	}
+	tmpPath := tmp.Name()
+	removeTmp := true
+	defer func() {
+		if removeTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
 		return fmt.Errorf("write copy_out destination: %w", err)
 	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("write copy_out destination: %w", err)
+	}
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		return fmt.Errorf("write copy_out destination: %w", err)
+	}
+	if err := os.Rename(tmpPath, destinationPath); err != nil {
+		return fmt.Errorf("write copy_out destination: %w", err)
+	}
+	removeTmp = false
 	return nil
 }
 

@@ -167,6 +167,9 @@ func (payload CopyFilePayload) Validate(maximumBytes int64, field string, payloa
 	}); err != nil {
 		return err
 	}
+	if len(payload.Data) > maxBase64EncodedPayloadLength(payload.LimitBytes) {
+		return workerIOValidationError("%s data exceeds encoded limit for %d bytes", field, payload.LimitBytes)
+	}
 	decoded, err := base64.StdEncoding.DecodeString(payload.Data)
 	if err != nil {
 		return workerIOValidationError("%s data is not valid %s", field, CopyPayloadEncodingBase64)
@@ -175,6 +178,17 @@ func (payload CopyFilePayload) Validate(maximumBytes int64, field string, payloa
 		return workerIOValidationError("%s sizeBytes %d does not match decoded data size %d bytes", field, payload.SizeBytes, len(decoded))
 	}
 	return nil
+}
+
+func maxBase64EncodedPayloadLength(limitBytes int64) int {
+	if limitBytes <= 0 {
+		return 0
+	}
+	maxInt := int(^uint(0) >> 1)
+	if limitBytes > int64(maxInt/4*3) {
+		return maxInt
+	}
+	return base64.StdEncoding.EncodedLen(int(limitBytes))
 }
 
 func validCopyStatus(status string) bool {

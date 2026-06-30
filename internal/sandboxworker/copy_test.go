@@ -269,6 +269,15 @@ func TestWorkerCopyRequestValidationRejectsUnsafePayloads(t *testing.T) {
 			want: "requested limit",
 		},
 		{
+			name: "copy_in encoded payload exceeds requested limit before decode",
+			req: mutateCopyInRequest(validWorkerCopyInRequest(), func(req *CopyInRequest) {
+				req.Payload.Data = strings.Repeat("A", maxBase64EncodedPayloadLength(1)+1)
+				req.Payload.SizeBytes = 1
+				req.Payload.LimitBytes = 1
+			}),
+			want: "encoded limit",
+		},
+		{
 			name: "copy_in invalid base64 payload",
 			req: mutateCopyInRequest(validWorkerCopyInRequest(), func(req *CopyInRequest) {
 				req.Payload.Data = "not base64!"
