@@ -39,6 +39,7 @@
 
 ## Patterns from phase12-rootless-podman-local-runtime-driver-for-hal-sandbox-runtime-v2 (2026-07-01)
 
+- Optional real Podman integration tests for the rootless runtime belong under the explicit `podman_integration` build tag; require `HAL_PODMAN_TEST_IMAGE` to name an image that already exists locally, verify it with `podman image exists`, and never run `podman pull` by default.
 - Preserve the `hal sandbox list --json` `sandbox-list-v1` contract when adding Sandbox Runtime v2 metadata: required entry fields stay `id`, `name`, `provider`, `status`, and `createdAt`, and runtime/security/isolation metadata should not be added to this list surface without a contract version change.
 - Human `hal sandbox status NAME` output for `rootless_podman` states must not imply VM isolation, production defaults, or production-ready security posture; keep lower-isolation/rootless claims on factory status metadata and docs where explicitly modeled.
 
