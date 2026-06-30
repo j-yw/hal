@@ -51,6 +51,7 @@
 - Worker client calls belong behind `sandboxworker.Client` and `ClientTransport`: keep local transport Unix-only, one JSON request/response per connection, context-aware, and sanitize connection/protocol error details before they cross command or persistence boundaries.
 - Worker client runtime-driver adapters belong in `sandboxworker.ClientDriver`: construct them explicitly from a `RuntimeDriverClient`, forward lifecycle/inspect only through the worker protocol, return explicit unsupported errors for exec/copy until handlers exist, and do not wire run/auto/factory defaults to worker adapters without a separate story.
 - The `hal sandboxd` command should stay thin and injectable: parse flags, build `sandboxworker.DriverRegistry` with concrete adapters outside `internal/sandboxworker`, create `sandboxworker.Service`/`Server`, render startup/errors, and test with fake service/server dependencies rather than binding real sockets or invoking Podman.
+- Worker safety coverage should stay fake-only and cross-cutting: assert redaction, unsupported exec/copy behavior, honest capabilities/security posture, credential-free protocol responses, build-tagged optional integrations, and static guards against host Docker socket or privileged-container dependencies.
 - Unix socket tests should allocate short socket paths, such as `os.MkdirTemp("/tmp", ...)`, because macOS rejects long `t.TempDir()`-derived socket paths with `bind: invalid argument`.
 
 ## Patterns from phase12-rootless-podman-local-runtime-driver-for-hal-sandbox-runtime-v2 (2026-07-01)
