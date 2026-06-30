@@ -82,6 +82,8 @@ func TestAutoCommand_ExposesOnlySinglePipelineRuntimeFlags(t *testing.T) {
 		"resume":        {},
 		"review-max":    {},
 		"review-streak": {},
+		"sandbox":       {},
+		"sandbox-name":  {},
 		"skip-pr":       {},
 	}
 

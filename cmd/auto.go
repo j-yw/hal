@@ -30,6 +30,8 @@ var (
 	autoEngineFlag       string
 	autoBaseFlag         string
 	autoJSONFlag         bool
+	autoSandboxFlag      bool
+	autoSandboxNameFlag  string
 )
 
 const (
@@ -183,6 +185,7 @@ Convert mode policy:
 Agent-safe usage:
 - Pass a positional PRD path or --report <path> to avoid source discovery ambiguity.
 - Use --resume only when continuing saved state.
+- --sandbox currently rejects --resume until sandbox resume state rewriting is implemented.
 - Use --json for the auto-v2 machine-readable contract.
 
 Examples:
@@ -197,7 +200,9 @@ Examples:
   hal auto --review-max 15           # Cap review cycles for this run
   hal auto --dry-run                 # Show what would happen without executing
   hal auto --resume                  # Continue from last saved state
-  hal auto --json                    # Machine-readable result output`,
+  hal auto --json                    # Machine-readable result output
+  hal auto --sandbox                 # Run inside a sandbox
+  hal auto --sandbox --sandbox-name worker-1 # Run inside a named sandbox`,
 	Example: `  hal auto
   hal auto .hal/prd-feature.md --dry-run
   hal auto --json
@@ -205,6 +210,8 @@ Examples:
   hal auto --mode strict
   hal auto --no-ci
   hal auto --review-streak 3 --review-max 15
+  hal auto --sandbox
+  hal auto --sandbox --sandbox-name worker-1
   hal auto --engine codex --base develop`,
 	RunE: runAuto,
 }
@@ -224,6 +231,8 @@ func init() {
 	autoCmd.Flags().StringVarP(&autoEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
 	autoCmd.Flags().StringVarP(&autoBaseFlag, "base", "b", "", "Base branch for new work branch and PR target (default: current branch, or HEAD when detached)")
 	autoCmd.Flags().BoolVar(&autoJSONFlag, "json", false, "Output machine-readable JSON result")
+	autoCmd.Flags().BoolVar(&autoSandboxFlag, "sandbox", false, "Run inside a sandbox")
+	autoCmd.Flags().StringVar(&autoSandboxNameFlag, "sandbox-name", "", "Sandbox name for --sandbox execution")
 	rootCmd.AddCommand(autoCmd)
 }
 
@@ -253,12 +262,22 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	engineName := autoEngineFlag
 	baseBranch := autoBaseFlag
 	jsonMode := autoJSONFlag
+	sandboxMode := autoSandboxFlag
+	sandboxName := autoSandboxNameFlag
 
+	dryRunChanged := false
+	resumeChanged := false
 	noCIChanged := false
 	skipPRChanged := false
+	noReviewChanged := false
 	modeChanged := false
 	reviewStreakChanged := false
 	reviewMaxChanged := false
+	reportChanged := false
+	engineChanged := false
+	baseChanged := false
+	jsonChanged := false
+	sandboxNameChanged := strings.TrimSpace(autoSandboxNameFlag) != ""
 
 	if cmd != nil {
 		if cmd.Context() != nil {
@@ -273,6 +292,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 				return err
 			}
 			dryRun = value
+			dryRunChanged = cmd.Flags().Changed("dry-run")
 		}
 		if cmd.Flags().Lookup("resume") != nil {
 			value, err := cmd.Flags().GetBool("resume")
@@ -280,6 +300,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 				return err
 			}
 			resume = value
+			resumeChanged = cmd.Flags().Changed("resume")
 		}
 		if cmd.Flags().Lookup("no-ci") != nil {
 			value, err := cmd.Flags().GetBool("no-ci")
@@ -303,6 +324,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 				return err
 			}
 			noReview = value
+			noReviewChanged = cmd.Flags().Changed("no-review")
 		}
 		if cmd.Flags().Lookup("mode") != nil {
 			value, err := cmd.Flags().GetString("mode")
@@ -334,6 +356,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 				return err
 			}
 			reportPath = value
+			reportChanged = cmd.Flags().Changed("report")
 		}
 		if cmd.Flags().Lookup("engine") != nil {
 			value, err := cmd.Flags().GetString("engine")
@@ -341,6 +364,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 				return err
 			}
 			engineName = value
+			engineChanged = cmd.Flags().Changed("engine")
 		}
 		if cmd.Flags().Lookup("base") != nil {
 			value, err := cmd.Flags().GetString("base")
@@ -348,6 +372,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 				return err
 			}
 			baseBranch = value
+			baseChanged = cmd.Flags().Changed("base")
 		}
 		if cmd.Flags().Lookup("json") != nil {
 			value, err := cmd.Flags().GetBool("json")
@@ -355,6 +380,22 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 				return err
 			}
 			jsonMode = value
+			jsonChanged = cmd.Flags().Changed("json")
+		}
+		if cmd.Flags().Lookup("sandbox") != nil {
+			value, err := cmd.Flags().GetBool("sandbox")
+			if err != nil {
+				return err
+			}
+			sandboxMode = value
+		}
+		if cmd.Flags().Lookup("sandbox-name") != nil {
+			value, err := cmd.Flags().GetString("sandbox-name")
+			if err != nil {
+				return err
+			}
+			sandboxName = value
+			sandboxNameChanged = cmd.Flags().Changed("sandbox-name")
 		}
 	}
 	if skipPRChanged && !noCIChanged {
@@ -375,6 +416,37 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 			warnResumeInputIgnored(errOut, "--report")
 			reportPath = ""
 		}
+	}
+
+	if sandboxMode {
+		return runAutoSandboxWithWriter(ctx, cmd, args, dir, autoSandboxOptions{
+			DryRun:              dryRun,
+			DryRunChanged:       dryRunChanged,
+			Resume:              resume,
+			ResumeChanged:       resumeChanged,
+			NoCI:                noCI,
+			NoCIChanged:         noCIChanged,
+			SkipPR:              skipPR,
+			SkipPRChanged:       skipPRChanged,
+			NoReview:            noReview,
+			NoReviewChanged:     noReviewChanged,
+			Mode:                mode,
+			ModeChanged:         modeChanged,
+			ReviewStreak:        reviewStreak,
+			ReviewStreakChanged: reviewStreakChanged,
+			ReviewMax:           reviewMax,
+			ReviewMaxChanged:    reviewMaxChanged,
+			Report:              reportPath,
+			ReportChanged:       reportChanged,
+			Engine:              engineName,
+			EngineChanged:       engineChanged,
+			Base:                baseBranch,
+			BaseChanged:         baseChanged,
+			JSON:                jsonMode,
+			JSONChanged:         jsonChanged,
+			SandboxName:         sandboxName,
+			SandboxNameChanged:  sandboxNameChanged,
+		}, out, errOut, defaultAutoSandboxDeps)
 	}
 
 	entryMode := autoEntryModeReportDiscovery
