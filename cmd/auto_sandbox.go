@@ -1,0 +1,661 @@
+package cmd
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxexec"
+	"github.com/jywlabs/hal/internal/sandboxexecution"
+	"github.com/jywlabs/hal/internal/sandboxworkspace"
+	"github.com/spf13/cobra"
+)
+
+type autoSandboxOptions struct {
+	DryRun              bool
+	DryRunChanged       bool
+	Resume              bool
+	ResumeChanged       bool
+	NoCI                bool
+	NoCIChanged         bool
+	SkipPR              bool
+	SkipPRChanged       bool
+	NoReview            bool
+	NoReviewChanged     bool
+	Mode                string
+	ModeChanged         bool
+	ReviewStreak        int
+	ReviewStreakChanged bool
+	ReviewMax           int
+	ReviewMaxChanged    bool
+	Report              string
+	ReportChanged       bool
+	Engine              string
+	EngineChanged       bool
+	Base                string
+	BaseChanged         bool
+	JSON                bool
+	JSONChanged         bool
+	SandboxName         string
+	SandboxNameChanged  bool
+}
+
+type autoSandboxRequest struct {
+	ExecutionID   string
+	JSON          bool
+	Args          []string
+	SandboxName   string
+	ProjectDir    string
+	WorkDir       string
+	RepoRemote    string
+	BaseBranch    string
+	RunBranch     string
+	RemoteCommand []string
+	Env           map[string]string
+	Flags         autoSandboxOptions
+	Workspace     *sandbox.SandboxWorkspace
+	Security      sandbox.SecurityEvaluationRequest
+}
+
+type autoSandboxExecutionResult struct {
+	Result          *sandboxexec.Result
+	RemoteStarted   bool
+	PreparedCommand []string
+}
+
+type autoSandboxExecutionHooks struct {
+	OnTargetReady func(*sandbox.SandboxState) error
+}
+
+type autoSandboxDeps struct {
+	defaultStore           func() (sandboxexecution.Store, error)
+	newExecutionID         func(time.Time) string
+	now                    func() time.Time
+	planWorkspace          func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error)
+	loadSandbox            func(string) (*sandbox.SandboxState, error)
+	resolveDefault         func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
+	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
+	startSandbox           func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error)
+	resolveProvider        func(string) (sandbox.Provider, error)
+	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
+	runProviderCommand     func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer, io.Writer) error
+	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
+	engineAuthFiles        func() []factorySandboxAuthFile
+	bootstrap              func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
+	execute                func(context.Context, autoSandboxRequest, io.Writer, io.Writer, autoSandboxExecutionHooks) (autoSandboxExecutionResult, error)
+}
+
+var defaultAutoSandboxDeps = autoSandboxDeps{
+	defaultStore:   sandboxexecution.DefaultStore,
+	newExecutionID: defaultAutoSandboxExecutionID,
+	now:            time.Now,
+	planWorkspace:  defaultRunSandboxWorkspacePlan,
+	loadSandbox:    sandbox.LoadActiveInstance,
+	resolveDefault: sandbox.ResolveDefault,
+	provision:      provisionFactorySandbox,
+	startSandbox:   startFactorySandbox,
+	resolveProvider: func(providerName string) (sandbox.Provider, error) {
+		return resolveProviderWithFallback(".", providerName)
+	},
+	runProviderExecWithEnv: runFactorySandboxProviderExecWithEnv,
+	runProviderCommand:     runSandboxProviderExecWithEnv,
+	runProviderScript:      runFactorySandboxProviderScript,
+	engineAuthFiles:        factorySandboxEngineAuthFiles,
+	bootstrap:              factory.BootstrapWorkspace,
+}
+
+func parseAutoSandboxRequest(args []string, opts autoSandboxOptions) (autoSandboxRequest, error) {
+	if len(args) > 1 {
+		return autoSandboxRequest{}, fmt.Errorf("accepts at most 1 arg(s), received %d", len(args))
+	}
+	if opts.SandboxNameChanged && strings.TrimSpace(opts.SandboxName) == "" {
+		return autoSandboxRequest{}, fmt.Errorf("--sandbox-name must not be empty")
+	}
+	if opts.EngineChanged && strings.TrimSpace(opts.Engine) == "" {
+		return autoSandboxRequest{}, fmt.Errorf("--engine must not be empty")
+	}
+	if opts.NoReview && (opts.ReviewStreakChanged || opts.ReviewMaxChanged) {
+		return autoSandboxRequest{}, fmt.Errorf("--no-review cannot be combined with --review-streak or --review-max")
+	}
+	if opts.ReviewStreakChanged && opts.ReviewStreak <= 0 {
+		return autoSandboxRequest{}, fmt.Errorf("--review-streak must be greater than 0")
+	}
+	if opts.ReviewMaxChanged && opts.ReviewMax <= 0 {
+		return autoSandboxRequest{}, fmt.Errorf("--review-max must be greater than 0")
+	}
+	if opts.Resume {
+		return autoSandboxRequest{}, fmt.Errorf("hal auto --sandbox --resume is not supported yet; resume state path rewriting is required first")
+	}
+
+	req := autoSandboxRequest{
+		JSON:        opts.JSON,
+		Args:        append([]string(nil), args...),
+		SandboxName: strings.TrimSpace(opts.SandboxName),
+		Flags:       opts,
+		Security:    runSandboxSecurityRequest(),
+	}
+	req.RemoteCommand = buildAutoSandboxRemoteCommand(req)
+	return req, nil
+}
+
+func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []string, projectDir string, opts autoSandboxOptions, out, errOut io.Writer, deps autoSandboxDeps) error {
+	deps = normalizeAutoSandboxDeps(deps)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if out == nil {
+		out = io.Discard
+	}
+	if errOut == nil {
+		errOut = io.Discard
+	}
+
+	req, err := parseAutoSandboxRequest(args, opts)
+	if err != nil {
+		if opts.JSON {
+			return outputAutoSandboxJSONError(out, args, opts, err.Error())
+		}
+		return autoSandboxExitValidation(cmd, err)
+	}
+
+	startedAt := deps.now().UTC()
+	req.ExecutionID = deps.newExecutionID(startedAt)
+	store, storeErr := deps.defaultStore()
+	if storeErr != nil {
+		err := fmt.Errorf("open sandbox execution store: %w", storeErr)
+		if opts.JSON {
+			return outputAutoSandboxJSONError(out, args, opts, err.Error())
+		}
+		return err
+	}
+
+	projectDir = strings.TrimSpace(projectDir)
+	if projectDir == "" {
+		projectDir = "."
+	}
+	absProjectDir, err := filepath.Abs(projectDir)
+	if err != nil {
+		err := fmt.Errorf("resolve project directory: %w", err)
+		if opts.JSON {
+			return outputAutoSandboxJSONError(out, args, opts, err.Error())
+		}
+		return err
+	}
+	req.ProjectDir = filepath.Clean(absProjectDir)
+	req.RemoteCommand = buildAutoSandboxRemoteCommand(req)
+	if err := saveAutoSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, nil); err != nil {
+		if opts.JSON {
+			return outputAutoSandboxJSONError(out, args, opts, err.Error())
+		}
+		return err
+	}
+
+	failBeforeRemote := func(cause error) error {
+		finishedAt := deps.now().UTC()
+		_ = saveAutoSandboxManifest(store, req, sandboxexecution.StatusFailed, startedAt, &finishedAt, nil)
+		if opts.JSON {
+			return outputAutoSandboxJSONError(out, args, opts, cause.Error())
+		}
+		return autoSandboxExitValidation(cmd, cause)
+	}
+
+	env, err := autoSandboxFactoryAttemptEnv(ctx)
+	if err != nil {
+		return failBeforeRemote(err)
+	}
+	req.Env = env
+
+	if err := prepareAutoSandboxRequest(ctx, &req, deps); err != nil {
+		return failBeforeRemote(err)
+	}
+	req.RemoteCommand = buildAutoSandboxRemoteCommand(req)
+	if err := saveAutoSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, nil); err != nil {
+		return failBeforeRemote(err)
+	}
+
+	var target *sandbox.SandboxState
+	execResult, execErr := deps.execute(ctx, req, out, errOut, autoSandboxExecutionHooks{
+		OnTargetReady: func(ready *sandbox.SandboxState) error {
+			target = ready
+			if target != nil && strings.TrimSpace(req.SandboxName) == "" {
+				req.SandboxName = strings.TrimSpace(target.Name)
+			}
+			return saveAutoSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, target)
+		},
+	})
+	if execResult.Result != nil && execResult.Result.Target != nil {
+		target = execResult.Result.Target
+		if strings.TrimSpace(req.SandboxName) == "" {
+			req.SandboxName = strings.TrimSpace(target.Name)
+		}
+	}
+	if len(execResult.PreparedCommand) > 0 {
+		req.RemoteCommand = append([]string(nil), execResult.PreparedCommand...)
+	} else if execResult.Result != nil && len(execResult.Result.Command.Command) > 0 {
+		req.RemoteCommand = append([]string(nil), execResult.Result.Command.Command...)
+	}
+	if execErr != nil {
+		if phaseErr, ok := sandboxexec.AsPhaseError(execErr); ok && phaseErr.Target != nil {
+			target = phaseErr.Target
+			if strings.TrimSpace(req.SandboxName) == "" {
+				req.SandboxName = strings.TrimSpace(target.Name)
+			}
+		}
+	}
+
+	finishedAt := deps.now().UTC()
+	status := sandboxexecution.StatusSucceeded
+	if execErr != nil {
+		status = sandboxexecution.StatusFailed
+	}
+	if manifestErr := saveAutoSandboxManifest(store, req, status, startedAt, &finishedAt, target); manifestErr != nil && execErr == nil {
+		execErr = manifestErr
+	}
+	if execErr != nil {
+		if opts.JSON && !execResult.RemoteStarted {
+			return outputAutoSandboxJSONError(out, args, opts, execErr.Error())
+		}
+		return execErr
+	}
+	return nil
+}
+
+func normalizeAutoSandboxDeps(deps autoSandboxDeps) autoSandboxDeps {
+	if deps.defaultStore == nil {
+		deps.defaultStore = defaultAutoSandboxDeps.defaultStore
+	}
+	if deps.newExecutionID == nil {
+		deps.newExecutionID = defaultAutoSandboxDeps.newExecutionID
+	}
+	if deps.now == nil {
+		deps.now = defaultAutoSandboxDeps.now
+	}
+	if deps.planWorkspace == nil {
+		deps.planWorkspace = defaultAutoSandboxDeps.planWorkspace
+	}
+	if deps.loadSandbox == nil {
+		deps.loadSandbox = defaultAutoSandboxDeps.loadSandbox
+	}
+	if deps.resolveDefault == nil {
+		deps.resolveDefault = defaultAutoSandboxDeps.resolveDefault
+	}
+	if deps.provision == nil {
+		deps.provision = defaultAutoSandboxDeps.provision
+	}
+	if deps.startSandbox == nil {
+		deps.startSandbox = defaultAutoSandboxDeps.startSandbox
+	}
+	if deps.resolveProvider == nil {
+		deps.resolveProvider = defaultAutoSandboxDeps.resolveProvider
+	}
+	if deps.runProviderExecWithEnv == nil {
+		deps.runProviderExecWithEnv = defaultAutoSandboxDeps.runProviderExecWithEnv
+	}
+	if deps.runProviderCommand == nil {
+		deps.runProviderCommand = defaultAutoSandboxDeps.runProviderCommand
+	}
+	if deps.runProviderScript == nil {
+		deps.runProviderScript = defaultAutoSandboxDeps.runProviderScript
+	}
+	if deps.engineAuthFiles == nil {
+		deps.engineAuthFiles = defaultAutoSandboxDeps.engineAuthFiles
+	}
+	if deps.bootstrap == nil {
+		deps.bootstrap = defaultAutoSandboxDeps.bootstrap
+	}
+	if deps.execute == nil {
+		deps.execute = deps.executeAutoSandbox
+	}
+	return deps
+}
+
+func prepareAutoSandboxRequest(ctx context.Context, req *autoSandboxRequest, deps autoSandboxDeps) error {
+	plan, err := deps.planWorkspace(ctx, sandboxworkspace.Request{
+		ProjectDir:      req.ProjectDir,
+		WorkspaceMode:   sandbox.SandboxWorkspaceModeClone,
+		PreferredBranch: strings.TrimSpace(req.Flags.Base),
+	})
+	if err != nil {
+		return fmt.Errorf("plan sandbox workspace: %w", err)
+	}
+	repoRemote := strings.TrimSpace(plan.Repository)
+	if repoRemote == "" {
+		return fmt.Errorf("resolve repository remote: remote.origin.url is required for sandbox execution")
+	}
+	branchName := strings.TrimSpace(plan.Branch)
+	baseBranch := strings.TrimSpace(req.Flags.Base)
+	if baseBranch == "" {
+		baseBranch = branchName
+	}
+	if baseBranch == "" {
+		return fmt.Errorf("resolve base branch: current branch is required for sandbox execution; pass --base explicitly")
+	}
+	if plan.RequiresBundle || plan.InputSource == sandbox.SandboxWorkspaceInputSourceGitBundle {
+		return fmt.Errorf("plan sandbox workspace: git bundle workspace input is not implemented for hal auto --sandbox yet; push local commits or choose a remote ref")
+	}
+	if inputSource := strings.TrimSpace(plan.InputSource); inputSource != "" && inputSource != sandbox.SandboxWorkspaceInputSourceRemoteRef {
+		return fmt.Errorf("plan sandbox workspace: unsupported clone input source %q for hal auto --sandbox", inputSource)
+	}
+
+	req.RepoRemote = repoRemote
+	req.BaseBranch = baseBranch
+	req.RunBranch = branchName
+	workspace := sandboxworkspace.ToSandboxWorkspace(plan)
+	if strings.TrimSpace(workspace.Mode) == "" {
+		workspace.Mode = sandbox.SandboxWorkspaceModeClone
+	}
+	if strings.TrimSpace(workspace.InputSource) == "" {
+		workspace.InputSource = sandbox.SandboxWorkspaceInputSourceRemoteRef
+	}
+	if strings.TrimSpace(workspace.SyncRef) == "" {
+		workspace.SyncRef = baseBranch
+	}
+	req.Workspace = &workspace
+
+	record := factory.RunRecord{
+		RunID:      req.ExecutionID,
+		RepoPath:   req.ProjectDir,
+		RepoRemote: req.RepoRemote,
+		BranchName: req.RunBranch,
+		BaseBranch: req.BaseBranch,
+	}
+	req.WorkDir = factorySandboxRemoteWorkspaceDir(record)
+	if strings.TrimSpace(req.WorkDir) == "" {
+		return errFactorySandboxWorkspaceRequired
+	}
+	return nil
+}
+
+func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSandboxRequest, out, errOut io.Writer, hooks autoSandboxExecutionHooks) (autoSandboxExecutionResult, error) {
+	prepOut := out
+	if req.JSON {
+		prepOut = errOut
+	}
+	var remoteStarted bool
+	var preparedCommand []string
+	result, err := sandboxexec.Run(ctx, sandboxexec.CommandRequest{
+		Purpose:     sandbox.SandboxLeasePurposeAuto,
+		ProjectDir:  req.ProjectDir,
+		SandboxName: req.SandboxName,
+		Command:     append([]string(nil), req.RemoteCommand...),
+		WorkDir:     req.WorkDir,
+		Env:         req.Env,
+		Security:    req.Security,
+		Stdout:      out,
+		Stderr:      errOut,
+	}, sandboxexec.Dependencies{
+		ResolveTarget: func(ctx context.Context, _ sandboxexec.TargetRequest) (*sandbox.SandboxState, error) {
+			return deps.resolveAutoSandboxTarget(ctx, req, prepOut)
+		},
+		StartTarget: func(ctx context.Context, target *sandbox.SandboxState, _, _ io.Writer) (*sandbox.SandboxState, error) {
+			return deps.startSandbox(ctx, target, prepOut)
+		},
+		ResolveProvider: func(_ context.Context, target *sandbox.SandboxState) (sandbox.Provider, error) {
+			return deps.resolveProvider(target.Provider)
+		},
+		OnTargetReady: func(_ context.Context, target *sandbox.SandboxState) error {
+			if hooks.OnTargetReady == nil {
+				return nil
+			}
+			return hooks.OnTargetReady(target)
+		},
+		PrepareWorkspace: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
+			if err := deps.bootstrapAutoSandboxWorkspace(ctx, req, prep, prepOut); err != nil {
+				return err
+			}
+			return deps.prepareAutoSandboxInputs(ctx, &req, prep, prepOut)
+		},
+		PrepareAuth: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
+			return factorySandboxSyncEngineAuth(ctx, prep.Provider, prep.Target, prepOut, factorySandboxExecutorDeps{
+				runProviderExecWithEnv: deps.runProviderExecWithEnv,
+				runProviderScript:      deps.runProviderScript,
+				engineAuthFiles:        deps.engineAuthFiles,
+			})
+		},
+		PrepareCommand: func(_ context.Context, _ sandboxexec.PrepareContext, command *sandboxexec.CommandRequest) error {
+			command.Command = append([]string(nil), req.RemoteCommand...)
+			preparedCommand = append([]string(nil), command.Command...)
+			return nil
+		},
+		RunCommand: func(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {
+			return deps.runProviderCommand(ctx, run.Provider, run.ConnectInfo, runSandboxRemoteExecArgs(command), command.Env, command.Stdout, command.Stderr)
+		},
+		HandleEvent: func(_ context.Context, event sandboxexec.Event) error {
+			if event.Type == sandboxexec.EventCommandOutput && event.Stream == sandboxexec.StreamStdout {
+				remoteStarted = true
+			}
+			return nil
+		},
+	})
+	return autoSandboxExecutionResult{Result: result, RemoteStarted: remoteStarted, PreparedCommand: preparedCommand}, err
+}
+
+func (deps autoSandboxDeps) resolveAutoSandboxTarget(ctx context.Context, req autoSandboxRequest, out io.Writer) (*sandbox.SandboxState, error) {
+	if name := strings.TrimSpace(req.SandboxName); name != "" {
+		target, err := deps.loadSandbox(name)
+		if err == nil {
+			return target, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("load sandbox %q: %w", name, err)
+		}
+		return deps.provision(ctx, factorySandboxProvisionRequest{
+			ProjectDir: req.ProjectDir,
+			Name:       name,
+			BranchName: req.RunBranch,
+			Repo:       req.RepoRemote,
+			Out:        out,
+		})
+	}
+	target, _, err := deps.resolveDefault(factoryRunningSandboxFilter)
+	if err == nil {
+		return target, nil
+	}
+	if !isFactorySandboxProvisionableResolutionError(err) {
+		return nil, err
+	}
+	name := sandbox.SandboxNameFromBranch(req.RunBranch)
+	return deps.provision(ctx, factorySandboxProvisionRequest{
+		ProjectDir: req.ProjectDir,
+		Name:       name,
+		BranchName: req.RunBranch,
+		Repo:       req.RepoRemote,
+		Out:        out,
+	})
+}
+
+func (deps autoSandboxDeps) bootstrapAutoSandboxWorkspace(ctx context.Context, req autoSandboxRequest, prep sandboxexec.PrepareContext, out io.Writer) error {
+	bootstrapReq := factory.BootstrapRequest{
+		RepositoryURL: req.RepoRemote,
+		BaseBranch:    req.BaseBranch,
+		RunBranch:     req.RunBranch,
+		WorkspaceDir:  req.WorkDir,
+		Options: factory.BootstrapOptions{
+			RefreshHal: true,
+		},
+	}
+	_, err := deps.bootstrap(ctx, bootstrapReq, factory.BootstrapDeps{
+		Executor: &factorySandboxBootstrapExecutor{
+			provider:               prep.Provider,
+			connectInfo:            prep.ConnectInfo,
+			runProviderExecWithEnv: deps.runProviderExecWithEnv,
+			out:                    out,
+			outputRedact:           factory.NewBootstrapSanitizer(bootstrapReq).SanitizeString,
+		},
+		Now: deps.now,
+		RepoExists: func(path string) (bool, error) {
+			return factorySandboxRemoteRepoExists(ctx, prep.Provider, prep.ConnectInfo, deps.runProviderScript, path, req.RepoRemote)
+		},
+	})
+	return err
+}
+
+func (deps autoSandboxDeps) prepareAutoSandboxInputs(ctx context.Context, req *autoSandboxRequest, prep sandboxexec.PrepareContext, out io.Writer) error {
+	if req == nil {
+		return nil
+	}
+	if len(req.Args) > 0 {
+		remotePath, changed, err := factorySandboxCopyInputToRemote(ctx, req.ProjectDir, req.Args[0], req.WorkDir, prep.Provider, prep.ConnectInfo, out, factorySandboxExecutorDeps{
+			runProviderScript: deps.runProviderScript,
+		})
+		if err != nil {
+			return err
+		}
+		if changed {
+			req.Args = append([]string{remotePath}, req.Args[1:]...)
+		}
+	}
+	if reportPath := strings.TrimSpace(req.Flags.Report); reportPath != "" {
+		remotePath, changed, err := factorySandboxCopyInputToRemote(ctx, req.ProjectDir, reportPath, req.WorkDir, prep.Provider, prep.ConnectInfo, out, factorySandboxExecutorDeps{
+			runProviderScript: deps.runProviderScript,
+		})
+		if err != nil {
+			return err
+		}
+		if changed {
+			req.Flags.Report = remotePath
+		}
+	}
+	req.RemoteCommand = buildAutoSandboxRemoteCommand(*req)
+	return nil
+}
+
+func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxRequest, status sandboxexecution.Status, startedAt time.Time, finishedAt *time.Time, target *sandbox.SandboxState) error {
+	manifest := &sandboxexecution.Manifest{
+		ID:          req.ExecutionID,
+		Purpose:     sandboxexecution.PurposeAuto,
+		SandboxName: req.SandboxName,
+		ProjectDir:  req.ProjectDir,
+		Command:     append([]string(nil), req.RemoteCommand...),
+		WorkDir:     req.WorkDir,
+		Status:      status,
+		StartedAt:   startedAt,
+		FinishedAt:  finishedAt,
+		Workspace:   cloneSandboxWorkspace(req.Workspace),
+		Security:    cloneSandboxSecurity(nil),
+	}
+	if target != nil {
+		if strings.TrimSpace(manifest.SandboxName) == "" {
+			manifest.SandboxName = strings.TrimSpace(target.Name)
+		}
+		manifest.Host = cloneSandboxHost(target.Host)
+		manifest.Runtime = cloneSandboxRuntime(target.Runtime)
+		manifest.Security = cloneSandboxSecurity(target.Security)
+	}
+	if manifest.Security == nil {
+		manifest.Security = cloneSandboxSecurity(sandbox.EvaluateSandboxSecurity(req.Security))
+	}
+	return store.SaveManifest(manifest)
+}
+
+func buildAutoSandboxRemoteCommand(req autoSandboxRequest) []string {
+	flags := req.Flags
+	command := []string{"hal", "auto"}
+	for _, arg := range req.Args {
+		if trimmed := strings.TrimSpace(arg); trimmed != "" {
+			command = append(command, autoSandboxRemoteProjectPath(req.ProjectDir, trimmed))
+		}
+	}
+	if flags.DryRun {
+		command = append(command, "--dry-run")
+	}
+	if flags.Resume {
+		command = append(command, "--resume")
+	}
+	if flags.NoCI {
+		command = append(command, "--no-ci")
+	}
+	if flags.NoReview {
+		command = append(command, "--no-review")
+	}
+	if flags.ModeChanged {
+		command = append(command, "--mode", strings.TrimSpace(flags.Mode))
+	}
+	if flags.ReviewStreakChanged {
+		command = append(command, "--review-streak", strconv.Itoa(flags.ReviewStreak))
+	}
+	if flags.ReviewMaxChanged {
+		command = append(command, "--review-max", strconv.Itoa(flags.ReviewMax))
+	}
+	if flags.ReportChanged || strings.TrimSpace(flags.Report) != "" {
+		if report := strings.TrimSpace(flags.Report); report != "" {
+			command = append(command, "--report", autoSandboxRemoteProjectPath(req.ProjectDir, report))
+		}
+	}
+	if flags.EngineChanged {
+		if engineName := strings.TrimSpace(flags.Engine); engineName != "" {
+			command = append(command, "--engine", engineName)
+		}
+	}
+	if flags.BaseChanged {
+		if base := strings.TrimSpace(flags.Base); base != "" {
+			command = append(command, "--base", base)
+		}
+	}
+	if flags.JSON {
+		command = append(command, "--json")
+	}
+	return command
+}
+
+func autoSandboxRemoteProjectPath(projectDir string, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || !filepath.IsAbs(value) {
+		return value
+	}
+	projectDir = strings.TrimSpace(projectDir)
+	if projectDir == "" {
+		return value
+	}
+	rel, err := filepath.Rel(projectDir, value)
+	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+		return value
+	}
+	return filepath.ToSlash(rel)
+}
+
+func outputAutoSandboxJSONError(out io.Writer, args []string, opts autoSandboxOptions, errMsg string) error {
+	entryMode := determineAutoEntryMode("")
+	if !opts.Resume && len(args) > 0 && strings.TrimSpace(args[0]) != "" {
+		entryMode = autoEntryModeMarkdownPath
+	}
+	jr := autoFailureResult(entryMode, opts.Resume, errMsg, errMsg, autoFailurePipeline, false, "", "")
+	return outputAutoJSON(out, jr)
+}
+
+func autoSandboxFactoryAttemptEnv(ctx context.Context) (map[string]string, error) {
+	policy, err := autoFactoryAttemptPolicyForRun(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if policy.MaxRunAttempts == 0 && policy.MaxReviewFixAttempts == 0 && policy.MaxCIFixAttempts == 0 {
+		return nil, nil
+	}
+	return map[string]string{
+		autoFactoryMaxRunAttemptsEnv:       strconv.Itoa(policy.MaxRunAttempts),
+		autoFactoryMaxReviewFixAttemptsEnv: strconv.Itoa(policy.MaxReviewFixAttempts),
+		autoFactoryMaxCIFixAttemptsEnv:     strconv.Itoa(policy.MaxCIFixAttempts),
+	}, nil
+}
+
+func defaultAutoSandboxExecutionID(now time.Time) string {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return fmt.Sprintf("auto-%d", now.UTC().UnixNano())
+}
+
+func autoSandboxExitValidation(cmd *cobra.Command, err error) error {
+	if cmd != nil {
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+	return err
+}

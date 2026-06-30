@@ -39,6 +39,7 @@ Convert mode policy:
 Agent-safe usage:
 - Pass a positional PRD path or --report <path> to avoid source discovery ambiguity.
 - Use --resume only when continuing saved state.
+- --sandbox currently rejects --resume until sandbox resume state rewriting is implemented.
 - Use --json for the auto-v2 machine-readable contract.
 
 Examples:
@@ -54,6 +55,8 @@ Examples:
   hal auto --dry-run                 # Show what would happen without executing
   hal auto --resume                  # Continue from last saved state
   hal auto --json                    # Machine-readable result output
+  hal auto --sandbox                 # Run inside a sandbox
+  hal auto --sandbox --sandbox-name worker-1 # Run inside a named sandbox
 
 ```
 hal auto [prd-path] [flags]
@@ -69,6 +72,8 @@ hal auto [prd-path] [flags]
   hal auto --mode strict
   hal auto --no-ci
   hal auto --review-streak 3 --review-max 15
+  hal auto --sandbox
+  hal auto --sandbox --sandbox-name worker-1
   hal auto --engine codex --base develop
 ```
 
@@ -87,6 +92,8 @@ hal auto [prd-path] [flags]
       --resume              Continue from last saved state
       --review-max int      Maximum review cycles before failing (default from mode/config)
       --review-streak int   Consecutive clean review cycles required (default from mode/config)
+      --sandbox             Run inside a sandbox
+      --sandbox-name string  Sandbox name for --sandbox execution
 ```
 
 ### SEE ALSO
