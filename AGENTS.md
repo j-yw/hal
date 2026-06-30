@@ -70,6 +70,7 @@
 - `hal auto --sandbox` generated artifact wiring belongs after core state collection and should call `CollectRecoveryArtifacts` before `CollectReportsArchiveArtifacts`; command tests that assert runtime execution order should distinguish the remote auto command `Exec` from recovery/reports generation `Exec` calls.
 - `hal auto --sandbox` output summary capture belongs in the `sandboxexec.EventCommandOutput` handler inside `executeAutoSandbox`; persist sanitized summaries after generated artifact collection with `SaveCommandOutputSummaryArtifacts` so JSON stdout passthrough remains a single remote JSON document.
 - After non-factory `hal run --sandbox` or `hal auto --sandbox` remote command failures, attempt only best-effort recovery collection with `CollectRecoveryArtifactsBestEffort`; keep the original `sandboxexec.PhaseRun` error primary and record recovery generation/copyout/persist issues as artifact warnings.
+- Sandbox command JSON-mode tests should decode stdout with `json.Decoder` and assert a second decode returns `io.EOF`; plain `json.Unmarshal` is less explicit about guarding against trailing warning text or double JSON documents.
 
 ## Patterns from phase/sandbox-runtime-v2-9-runtime-driver (2026-06-30)
 

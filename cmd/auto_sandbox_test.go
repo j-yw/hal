@@ -835,11 +835,14 @@ func TestRunAutoSandboxWithWriterCollectsGeneratedArtifacts(t *testing.T) {
 		t.Fatalf("CopyOut sources = %#v, want %#v", copyOutSources, expectedSources)
 	}
 	var result AutoResult
-	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
-		t.Fatalf("stdout is not parseable remote AutoResult JSON: %v\n%s", err, out.String())
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
+	if !result.OK || result.Summary != "remote" {
+		t.Fatalf("AutoResult = %#v, want ok remote result", result)
 	}
-	if !result.OK {
-		t.Fatalf("AutoResult = %#v, want ok", result)
+	for _, disallowed := range []string{"missing", ".hal/reports.tar", "artifact warning"} {
+		if strings.Contains(out.String(), disallowed) {
+			t.Fatalf("stdout contains collection warning text %q outside remote JSON document: %s", disallowed, out.String())
+		}
 	}
 
 	manifest, err := store.LoadManifest("auto-generated-artifacts")
@@ -1299,9 +1302,7 @@ func TestRunAutoSandboxWithWriterJSONRemoteOutputPassesThroughAfterStdout(t *tes
 		t.Fatalf("error = %q, want remote failure", err.Error())
 	}
 	var result AutoResult
-	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
-		t.Fatalf("stdout is not parseable remote AutoResult JSON: %v\n%s", err, out.String())
-	}
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
 	if result.Summary != "remote" {
 		t.Fatalf("Summary = %q, want remote", result.Summary)
 	}
@@ -1395,9 +1396,7 @@ func TestRunAutoSandboxWithWriterSavesOutputSummaryArtifacts(t *testing.T) {
 		t.Fatalf("runAutoSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
 	}
 	var result AutoResult
-	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
-		t.Fatalf("stdout is not one parseable remote AutoResult JSON document: %v\n%s", err, out.String())
-	}
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
 	if !result.OK || result.Summary != "remote" {
 		t.Fatalf("AutoResult = %#v, want ok remote summary", result)
 	}

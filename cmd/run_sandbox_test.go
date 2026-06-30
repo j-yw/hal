@@ -663,9 +663,7 @@ func TestRunRunSandboxWithWriterJSONRemoteOutputPassesThroughAfterStdout(t *test
 		t.Fatalf("error = %q, want remote failure", err.Error())
 	}
 	var result RunResult
-	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
-		t.Fatalf("stdout is not parseable remote RunResult JSON: %v\n%s", err, out.String())
-	}
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
 	if result.Summary != "remote" {
 		t.Fatalf("Summary = %q, want remote", result.Summary)
 	}
@@ -1258,6 +1256,17 @@ func TestRunRunSandboxWithWriterCollectsGeneratedArtifacts(t *testing.T) {
 		t.Fatalf("CopyOut sources = %#v, want %#v", copyOutSources, expectedSources)
 	}
 
+	var result RunResult
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
+	if !result.OK || result.Summary != "remote" {
+		t.Fatalf("RunResult = %#v, want ok remote result", result)
+	}
+	for _, disallowed := range []string{"missing", ".hal/reports.tar", "artifact warning"} {
+		if strings.Contains(out.String(), disallowed) {
+			t.Fatalf("stdout contains collection warning text %q outside remote JSON document: %s", disallowed, out.String())
+		}
+	}
+
 	manifest, err := store.LoadManifest("run-generated-artifacts")
 	if err != nil {
 		t.Fatalf("LoadManifest() error: %v", err)
@@ -1486,9 +1495,7 @@ func TestRunRunSandboxWithWriterSavesOutputSummaryArtifacts(t *testing.T) {
 		t.Fatalf("runRunSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
 	}
 	var result RunResult
-	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
-		t.Fatalf("stdout is not one parseable remote RunResult JSON document: %v\n%s", err, out.String())
-	}
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
 	if !result.OK || result.Summary != "remote" {
 		t.Fatalf("RunResult = %#v, want ok remote summary", result)
 	}
@@ -1702,6 +1709,18 @@ func (f fakeRunSandboxRuntimeDriver) CopyOut(ctx context.Context, req sandboxrun
 		return err
 	}
 	return os.WriteFile(req.DestinationPath, []byte("fake sandbox artifact"), 0o600)
+}
+
+func decodeExactlyOneJSONDocument(t *testing.T, data []byte, dst any) {
+	t.Helper()
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(dst); err != nil {
+		t.Fatalf("stdout is not parseable JSON: %v\n%s", err, string(data))
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		t.Fatalf("stdout is not exactly one JSON document: extra=%#v err=%v\n%s", extra, err, string(data))
+	}
 }
 
 func assertRunSandboxCollectedArtifact(t *testing.T, got sandboxexecution.ArtifactMetadataEntry, wantPath, wantStoredPath string) {
