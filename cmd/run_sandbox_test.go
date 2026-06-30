@@ -393,8 +393,19 @@ func TestRunRunSandboxWithWriterGitBundlePlanMaterializesAndExecutes(t *testing.
 		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
 			return fakeRunSandboxRuntimeDriver{
 				exec: func(_ context.Context, got sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
-					order = append(order, "runtime_exec")
-					_, _ = io.WriteString(got.Stdout, `{"contractVersion":1,"ok":true,"summary":"remote"}`+"\n")
+					script := ""
+					if len(got.Args) >= 3 && got.Args[0] == "sh" && got.Args[1] == "-c" {
+						script = got.Args[2]
+					}
+					switch {
+					case strings.TrimSpace(got.WorkDir) != "" && strings.Contains(script, "workspace.patch"):
+						order = append(order, "recovery_generation")
+					case strings.TrimSpace(got.WorkDir) != "" && strings.Contains(script, "reports.tar"):
+						order = append(order, "reports_generation")
+					default:
+						order = append(order, "runtime_exec")
+						_, _ = io.WriteString(got.Stdout, `{"contractVersion":1,"ok":true,"summary":"remote"}`+"\n")
+					}
 					return &sandboxruntime.ExecResult{ExitCode: 0}, nil
 				},
 			}, nil
@@ -431,7 +442,7 @@ func TestRunRunSandboxWithWriterGitBundlePlanMaterializesAndExecutes(t *testing.
 	if !materialized {
 		t.Fatal("materializeWorkspace was not called")
 	}
-	wantOrder := []string{"materialize_workspace", "auth", "runtime_exec"}
+	wantOrder := []string{"materialize_workspace", "auth", "runtime_exec", "recovery_generation", "reports_generation"}
 	if !reflect.DeepEqual(order, wantOrder) {
 		t.Fatalf("order = %#v, want %#v", order, wantOrder)
 	}
@@ -1028,16 +1039,29 @@ func TestRunRunSandboxWithWriterCollectsCoreStateArtifacts(t *testing.T) {
 	expectedSources := []string{
 		expectedWorkspace + "/.hal/prd.json",
 		expectedWorkspace + "/.hal/progress.txt",
+		expectedWorkspace + "/.hal/recovery/workspace.patch",
+		expectedWorkspace + "/.hal/reports.tar",
 	}
 	var copyOutSources []string
 	var order []string
 	driver := fakeRunSandboxRuntimeDriver{
 		exec: func(_ context.Context, got sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
-			order = append(order, "runtime_exec")
-			if got.Target.Name != "core-state-box" {
-				t.Fatalf("Exec target = %#v, want core-state-box", got.Target)
+			script := ""
+			if len(got.Args) >= 3 && got.Args[0] == "sh" && got.Args[1] == "-c" {
+				script = got.Args[2]
 			}
-			_, _ = io.WriteString(got.Stdout, `{"contractVersion":1,"ok":true,"summary":"remote"}`+"\n")
+			switch {
+			case got.WorkDir == expectedWorkspace && strings.Contains(script, "workspace.patch"):
+				order = append(order, "recovery_generation")
+			case got.WorkDir == expectedWorkspace && strings.Contains(script, "reports.tar"):
+				order = append(order, "reports_generation")
+			default:
+				order = append(order, "runtime_exec")
+				if got.Target.Name != "core-state-box" {
+					t.Fatalf("Exec target = %#v, want core-state-box", got.Target)
+				}
+				_, _ = io.WriteString(got.Stdout, `{"contractVersion":1,"ok":true,"summary":"remote"}`+"\n")
+			}
 			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
 		},
 		copyOut: func(_ context.Context, got sandboxruntime.CopyRequest) error {
@@ -1087,7 +1111,7 @@ func TestRunRunSandboxWithWriterCollectsCoreStateArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runRunSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
 	}
-	if !reflect.DeepEqual(order, []string{"runtime_exec", "copy_out", "copy_out"}) {
+	if !reflect.DeepEqual(order, []string{"runtime_exec", "copy_out", "copy_out", "recovery_generation", "copy_out", "reports_generation", "copy_out"}) {
 		t.Fatalf("order = %#v, want runtime exec before core state copy out", order)
 	}
 	if !reflect.DeepEqual(copyOutSources, expectedSources) {
@@ -1114,8 +1138,8 @@ func TestRunRunSandboxWithWriterCollectsCoreStateArtifacts(t *testing.T) {
 	if manifest.ArtifactMetadata == nil {
 		t.Fatal("ArtifactMetadata = nil, want collected core state metadata")
 	}
-	if len(manifest.ArtifactMetadata.Collected) != 2 {
-		t.Fatalf("collected = %#v, want PRD and progress artifacts", manifest.ArtifactMetadata.Collected)
+	if len(manifest.ArtifactMetadata.Collected) != 4 {
+		t.Fatalf("collected = %#v, want core state and generated artifacts", manifest.ArtifactMetadata.Collected)
 	}
 	collected := map[string]sandboxexecution.ArtifactMetadataEntry{}
 	for _, artifact := range manifest.ArtifactMetadata.Collected {
@@ -1123,8 +1147,148 @@ func TestRunRunSandboxWithWriterCollectsCoreStateArtifacts(t *testing.T) {
 	}
 	assertRunSandboxCollectedArtifact(t, collected[".hal/prd.json"], ".hal/prd.json", "run-core-state/artifacts/core/hal-prd.json")
 	assertRunSandboxCollectedArtifact(t, collected[".hal/progress.txt"], ".hal/progress.txt", "run-core-state/artifacts/core/hal-progress.txt")
+	assertRunSandboxCollectedArtifact(t, collected[".hal/recovery/workspace.patch"], ".hal/recovery/workspace.patch", "run-core-state/recovery/workspace.patch")
+	assertRunSandboxCollectedArtifact(t, collected[".hal/reports.tar"], ".hal/reports.tar", "run-core-state/artifacts/reports/reports.tar")
 	if len(manifest.ArtifactMetadata.Partial) != 0 || len(manifest.ArtifactMetadata.Warnings) != 0 {
 		t.Fatalf("partial/warnings = %#v/%#v, want none", manifest.ArtifactMetadata.Partial, manifest.ArtifactMetadata.Warnings)
+	}
+}
+
+func TestRunRunSandboxWithWriterCollectsGeneratedArtifacts(t *testing.T) {
+	startedAt := time.Date(2026, 6, 30, 10, 45, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(5 * time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	target := &sandbox.SandboxState{
+		Name:     "generated-artifacts-box",
+		Provider: "test-provider",
+		Status:   sandbox.StatusRunning,
+		Runtime:  &sandbox.SandboxRuntimeState{Driver: sandbox.SandboxRuntimeDriverSSHMachine},
+	}
+	repoRemote := "git@example.com:org/repo.git"
+	expectedWorkspace := factorySandboxRemoteWorkspaceDir(factory.RunRecord{
+		RunID:      "run-generated-artifacts",
+		RepoPath:   projectDir,
+		RepoRemote: repoRemote,
+		BranchName: "feature/generated-artifacts",
+		BaseBranch: "main",
+	})
+	expectedSources := []string{
+		expectedWorkspace + "/.hal/prd.json",
+		expectedWorkspace + "/.hal/progress.txt",
+		expectedWorkspace + "/.hal/recovery/workspace.patch",
+		expectedWorkspace + "/.hal/reports.tar",
+	}
+	var execCalls []string
+	var copyOutSources []string
+	driver := fakeRunSandboxRuntimeDriver{
+		exec: func(_ context.Context, got sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			script := ""
+			if len(got.Args) >= 3 && got.Args[0] == "sh" && got.Args[1] == "-c" {
+				script = got.Args[2]
+			}
+			switch {
+			case got.WorkDir == expectedWorkspace && strings.Contains(script, "workspace.patch"):
+				execCalls = append(execCalls, "recovery_generation")
+			case got.WorkDir == expectedWorkspace && strings.Contains(script, "reports.tar"):
+				execCalls = append(execCalls, "reports_generation")
+			default:
+				execCalls = append(execCalls, "remote_run")
+				if got.Target.Name != "generated-artifacts-box" {
+					t.Fatalf("Exec target = %#v, want generated-artifacts-box", got.Target)
+				}
+				_, _ = io.WriteString(got.Stdout, `{"contractVersion":1,"ok":true,"summary":"remote"}`+"\n")
+			}
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+		copyOut: func(_ context.Context, got sandboxruntime.CopyRequest) error {
+			copyOutSources = append(copyOutSources, got.SourcePath)
+			if got.SourcePath == expectedWorkspace+"/.hal/reports.tar" {
+				return os.ErrNotExist
+			}
+			if err := os.MkdirAll(filepath.Dir(got.DestinationPath), 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(got.DestinationPath, []byte("payload for "+got.SourcePath), 0o600)
+		},
+	}
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+		Base:        "main",
+		BaseChanged: true,
+		JSON:        true,
+		JSONChanged: true,
+	}, &out, &errOut, runSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "run-generated-artifacts"
+		},
+		now:           runSandboxTestClock(startedAt, finishedAt),
+		workingDir:    func() (string, error) { return projectDir, nil },
+		repoRemote:    func(string) (string, error) { return repoRemote, nil },
+		currentBranch: func(string) (string, error) { return "feature/generated-artifacts", nil },
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			return target, target.Name, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+			return driver, nil
+		},
+		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			return factory.BootstrapResult{}, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runRunSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+	if !reflect.DeepEqual(execCalls, []string{"remote_run", "recovery_generation", "reports_generation"}) {
+		t.Fatalf("exec calls = %#v, want remote command followed by generated artifact commands", execCalls)
+	}
+	if !reflect.DeepEqual(copyOutSources, expectedSources) {
+		t.Fatalf("CopyOut sources = %#v, want %#v", copyOutSources, expectedSources)
+	}
+
+	manifest, err := store.LoadManifest("run-generated-artifacts")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if manifest.Status != sandboxexecution.StatusSucceeded {
+		t.Fatalf("Status = %q, want succeeded", manifest.Status)
+	}
+	if len(manifest.Artifacts) != 0 {
+		t.Fatalf("legacy Artifacts = %#v, want unchanged empty top-level artifacts", manifest.Artifacts)
+	}
+	if manifest.ArtifactMetadata == nil {
+		t.Fatal("ArtifactMetadata = nil, want generated artifact metadata")
+	}
+	collected := map[string]sandboxexecution.ArtifactMetadataEntry{}
+	for _, artifact := range manifest.ArtifactMetadata.Collected {
+		collected[artifact.Path] = artifact
+	}
+	assertRunSandboxCollectedArtifact(t, collected[".hal/prd.json"], ".hal/prd.json", "run-generated-artifacts/artifacts/core/hal-prd.json")
+	assertRunSandboxCollectedArtifact(t, collected[".hal/progress.txt"], ".hal/progress.txt", "run-generated-artifacts/artifacts/core/hal-progress.txt")
+	assertRunSandboxCollectedArtifact(t, collected[".hal/recovery/workspace.patch"], ".hal/recovery/workspace.patch", "run-generated-artifacts/recovery/workspace.patch")
+	if len(manifest.ArtifactMetadata.Partial) != 1 {
+		t.Fatalf("partial = %#v, want missing reports archive partial", manifest.ArtifactMetadata.Partial)
+	}
+	if manifest.ArtifactMetadata.Partial[0].Path != ".hal/reports.tar" || manifest.ArtifactMetadata.Partial[0].StoredPath != "" {
+		t.Fatalf("reports partial = %#v, want safe display path without stored path", manifest.ArtifactMetadata.Partial[0])
+	}
+	if len(manifest.ArtifactMetadata.Warnings) != 1 {
+		t.Fatalf("warnings = %#v, want missing reports archive warning", manifest.ArtifactMetadata.Warnings)
+	}
+	warning := manifest.ArtifactMetadata.Warnings[0]
+	if warning.Artifact.Path != ".hal/reports.tar" || !strings.Contains(warning.Message, "missing") {
+		t.Fatalf("reports warning = %#v, want missing reports archive warning", warning)
 	}
 }
 
