@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"unicode"
@@ -61,6 +62,15 @@ type PrepareLocalBundleRequest struct {
 	BundleDir string
 }
 
+// CopyLocalBundleRequest carries a verified host-local bundle plus the sandbox
+// destination where it should be copied.
+type CopyLocalBundleRequest struct {
+	Plan                 Plan
+	Target               RemoteTarget
+	Bundle               LocalBundleResult
+	BundleDestinationDir string
+}
+
 // LocalBundleResult carries host-local bundle state for the next sync step.
 // LocalPath is intentionally excluded from JSON because durable metadata must
 // use Bundle instead.
@@ -68,6 +78,12 @@ type LocalBundleResult struct {
 	LocalPath  string `json:"-"`
 	ID         string `json:"id,omitempty"`
 	SyncRef    string `json:"syncRef,omitempty"`
+	Bundle     *BundleMaterialization
+	Operations []MaterializationOperation
+}
+
+// RemoteBundleResult carries redaction-safe bundle metadata after copy-in.
+type RemoteBundleResult struct {
 	Bundle     *BundleMaterialization
 	Operations []MaterializationOperation
 }
@@ -250,6 +266,50 @@ func PrepareLocalBundle(ctx context.Context, git LocalGit, req PrepareLocalBundl
 	}, nil
 }
 
+// CopyLocalBundle copies a verified host-local bundle into the sandbox through
+// the narrow remote copy boundary and returns sandbox-safe metadata only.
+func CopyLocalBundle(ctx context.Context, remote RemoteCopier, req CopyLocalBundleRequest) (RemoteBundleResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if remote == nil {
+		return RemoteBundleResult{}, ErrRemoteCopierRequired
+	}
+	plan := req.Plan
+	if strings.TrimSpace(plan.InputSource) != sandbox.SandboxWorkspaceInputSourceGitBundle {
+		return RemoteBundleResult{}, ErrGitBundlePlanRequired
+	}
+	localPath := strings.TrimSpace(req.Bundle.LocalPath)
+	if localPath == "" {
+		return RemoteBundleResult{}, ErrLocalBundleRequired
+	}
+
+	bundleID := firstNonEmpty(req.Bundle.ID, bundleIDFromMaterialization(req.Bundle.Bundle), localBundleID(plan))
+	syncRef := firstNonEmpty(req.Bundle.SyncRef, bundleSyncRefFromMaterialization(req.Bundle.Bundle), plan.SyncRef)
+	remotePath := remoteBundlePath(req.BundleDestinationDir, bundleID)
+	if err := remote.CopyIn(ctx, RemoteCopyRequest{
+		Target:          req.Target,
+		SourcePath:      localPath,
+		DestinationPath: remotePath,
+	}); err != nil {
+		return RemoteBundleResult{}, fmt.Errorf("workspace bundle copy: %w", sanitizedRemoteOperationError("remote copy", err))
+	}
+
+	bundle := BundleMaterializationFromCreateResult(CreateBundleResult{
+		ID:      bundleID,
+		SyncRef: syncRef,
+	}, remotePath)
+	operations := cloneMaterializationOperations(req.Bundle.Operations)
+	operations = append(operations, MaterializationOperation{
+		Phase:   MaterializationPhaseBundleCopy,
+		Summary: "copied git bundle to sandbox",
+	})
+	return RemoteBundleResult{
+		Bundle:     bundle,
+		Operations: operations,
+	}, nil
+}
+
 func localBundlePath(bundleDir string, bundleID string) (string, error) {
 	bundleDir = strings.TrimSpace(bundleDir)
 	if bundleDir == "" {
@@ -261,8 +321,42 @@ func localBundlePath(bundleDir string, bundleID string) (string, error) {
 	return filepath.Join(bundleDir, bundleID+".bundle"), nil
 }
 
+func remoteBundlePath(destinationDir string, bundleID string) string {
+	destinationDir = strings.TrimSpace(destinationDir)
+	if destinationDir == "" {
+		destinationDir = "/tmp/hal-workspace-bundles"
+	}
+	fileName := safeBundleSegment(bundleID)
+	if !strings.HasSuffix(fileName, ".bundle") {
+		fileName += ".bundle"
+	}
+	return path.Join(destinationDir, fileName)
+}
+
 func localBundleID(plan Plan) string {
 	return safeBundleSegment(firstNonEmpty(plan.SyncRef, plan.Branch, "HEAD"))
+}
+
+func bundleIDFromMaterialization(bundle *BundleMaterialization) string {
+	if bundle == nil {
+		return ""
+	}
+	return bundle.ID
+}
+
+func bundleSyncRefFromMaterialization(bundle *BundleMaterialization) string {
+	if bundle == nil {
+		return ""
+	}
+	return bundle.SyncRef
+}
+
+func sanitizedRemoteOperationError(operation string, err error) error {
+	detail := sanitizePathDetail(err.Error())
+	if detail == "" {
+		return fmt.Errorf("%s failed", operation)
+	}
+	return fmt.Errorf("%s failed: %s", operation, detail)
 }
 
 func safeBundleSegment(value string) string {

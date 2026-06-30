@@ -43,6 +43,7 @@
 - Materialization metadata should be generated through `NewMaterializationResult` / `BundleMaterializationFromCreateResult`; do not persist host-local bundle paths in result or manifest metadata.
 - Host-side git-bundle preparation belongs in `sandboxworkspace.PrepareLocalBundle`: pass the planned `Plan` plus an execution-local `BundleDir`, keep create/verify behavior behind `LocalGit`, reject dirty plans before adapter calls, and rely on JSON-omitted `LocalPath` plus safe bundle metadata for later steps.
 - `GitCLIInspector` is the concrete `LocalGit` adapter: create bundles with a positive branch/`HEAD` ref plus optional `^upstream`, verify with `git bundle verify` and `git bundle list-heads`, and route bundle command failures through sanitized errors so host paths and credentials are not serialized.
+- Remote bundle copy-in belongs in `sandboxworkspace.CopyLocalBundle`: pass the planned `Plan`, verified `LocalBundleResult`, `RemoteTarget`, and sandbox destination dir, keep transfer behind `RemoteCopier.CopyIn`, and return only redaction-safe remote bundle metadata.
 - Sandbox command preflight paths that receive a valid workspace plan should populate `req.Workspace` before returning unsupported-input errors so failed execution manifests retain safe provenance metadata.
 - Keep `internal/sandboxworkspace` import-boundary tests updated when adding sync code so the package does not start importing `cmd`, `internal/factory`, `internal/prd`, `internal/compound`, `internal/loop`, Cobra, or concrete runtime adapters.
 

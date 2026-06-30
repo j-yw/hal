@@ -29,6 +29,14 @@ var (
 	// ErrGitBundlePlanRequired is returned when local bundle preparation is
 	// requested for a plan that is not bundle-backed.
 	ErrGitBundlePlanRequired = errors.New("git-bundle workspace plan required")
+
+	// ErrRemoteCopierRequired is returned when bundle copy-in is requested
+	// without a remote copy adapter.
+	ErrRemoteCopierRequired = errors.New("remote copy adapter is required")
+
+	// ErrLocalBundleRequired is returned when bundle copy-in is requested
+	// without a verified local bundle path.
+	ErrLocalBundleRequired = errors.New("local bundle is required")
 )
 
 // PlanningError adds stable context around a planning rejection while preserving

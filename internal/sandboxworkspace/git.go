@@ -288,7 +288,11 @@ func gitSafeCommandError(operation string, stderr string, err error) error {
 }
 
 func sanitizeGitDetail(stderr string) string {
-	detail := strings.Join(splitLines(stderr), "; ")
+	return sanitizePathDetail(stderr)
+}
+
+func sanitizePathDetail(raw string) string {
+	detail := strings.Join(splitLines(raw), "; ")
 	if detail == "" {
 		return ""
 	}

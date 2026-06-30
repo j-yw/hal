@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -124,6 +125,110 @@ func TestPrepareLocalBundleMetadataDoesNotLeakLocalPath(t *testing.T) {
 	}
 }
 
+func TestCopyLocalBundleInvokesRemoteCopyForGitBundlePlan(t *testing.T) {
+	bundleDir := t.TempDir()
+	plan := Plan{
+		Mode:           sandbox.SandboxWorkspaceModeClone,
+		InputSource:    sandbox.SandboxWorkspaceInputSourceGitBundle,
+		ProjectDir:     t.TempDir(),
+		Repository:     "git@github.com:jywlabs/hal.git",
+		Branch:         "phase/workspace",
+		SyncRef:        "abc123",
+		RequiresBundle: true,
+	}
+	localBundle, err := PrepareLocalBundle(context.Background(), &recordingLocalGit{}, PrepareLocalBundleRequest{
+		Plan:      plan,
+		BundleDir: bundleDir,
+	})
+	if err != nil {
+		t.Fatalf("PrepareLocalBundle() error = %v", err)
+	}
+
+	remote := &recordingRemoteCopier{}
+	target := RemoteTarget{ID: "sandbox-1", Provider: "test-provider", RuntimeDriver: "test-driver"}
+	result, err := CopyLocalBundle(context.Background(), remote, CopyLocalBundleRequest{
+		Plan:                 plan,
+		Target:               target,
+		Bundle:               localBundle,
+		BundleDestinationDir: "/tmp/hal/bundles",
+	})
+	if err != nil {
+		t.Fatalf("CopyLocalBundle() error = %v", err)
+	}
+
+	wantRemotePath := "/tmp/hal/bundles/abc123.bundle"
+	if len(remote.copyRequests) != 1 {
+		t.Fatalf("CopyIn calls = %d, want 1", len(remote.copyRequests))
+	}
+	if got := remote.copyRequests[0].Target; got != target {
+		t.Fatalf("CopyIn target = %#v, want %#v", got, target)
+	}
+	if got := remote.copyRequests[0].SourcePath; got != localBundle.LocalPath {
+		t.Fatalf("CopyIn source = %q, want local bundle path %q", got, localBundle.LocalPath)
+	}
+	if got := remote.copyRequests[0].DestinationPath; got != wantRemotePath {
+		t.Fatalf("CopyIn destination = %q, want %q", got, wantRemotePath)
+	}
+	if result.Bundle == nil || result.Bundle.ID != "abc123" || result.Bundle.SyncRef != "abc123" || result.Bundle.RemotePath != wantRemotePath {
+		t.Fatalf("Bundle = %#v, want safe copied bundle metadata", result.Bundle)
+	}
+	if len(result.Operations) != 3 ||
+		result.Operations[0].Phase != MaterializationPhaseBundleCreate ||
+		result.Operations[1].Phase != MaterializationPhaseBundleVerify ||
+		result.Operations[2].Phase != MaterializationPhaseBundleCopy {
+		t.Fatalf("Operations = %#v, want create, verify, and copy phases", result.Operations)
+	}
+
+	metadata := NewMaterializationResult(plan, MaterializationDetails{
+		Bundle:     result.Bundle,
+		Operations: result.Operations,
+	})
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("Marshal(metadata) error = %v", err)
+	}
+	if strings.Contains(string(encoded), localBundle.LocalPath) || strings.Contains(string(encoded), bundleDir) {
+		t.Fatalf("copied bundle metadata leaked local path: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), wantRemotePath) {
+		t.Fatalf("copied bundle metadata = %s, want remote path", encoded)
+	}
+}
+
+func TestCopyLocalBundleFailureIsPhaseSpecificAndPathSafe(t *testing.T) {
+	bundleDir := t.TempDir()
+	localPath := filepath.Join(bundleDir, "abc123.bundle")
+	remote := &recordingRemoteCopier{
+		copyErr: fmt.Errorf("copy %s to /tmp/hal/bundles/abc123.bundle failed", localPath),
+	}
+
+	_, err := CopyLocalBundle(context.Background(), remote, CopyLocalBundleRequest{
+		Plan: Plan{
+			Mode:           sandbox.SandboxWorkspaceModeClone,
+			InputSource:    sandbox.SandboxWorkspaceInputSourceGitBundle,
+			Repository:     "git@github.com:jywlabs/hal.git",
+			Branch:         "phase/workspace",
+			SyncRef:        "abc123",
+			RequiresBundle: true,
+		},
+		Target:               RemoteTarget{ID: "sandbox-1"},
+		Bundle:               LocalBundleResult{LocalPath: localPath, ID: "abc123", SyncRef: "abc123"},
+		BundleDestinationDir: "/tmp/hal/bundles",
+	})
+	if err == nil {
+		t.Fatal("CopyLocalBundle() error = nil, want copy failure")
+	}
+	if !strings.Contains(err.Error(), "workspace bundle copy") {
+		t.Fatalf("CopyLocalBundle() error = %q, want bundle copy phase", err)
+	}
+	if strings.Contains(err.Error(), localPath) || strings.Contains(err.Error(), bundleDir) {
+		t.Fatalf("CopyLocalBundle() error leaked local path: %q", err)
+	}
+	if len(remote.copyRequests) != 1 {
+		t.Fatalf("CopyIn calls = %d, want 1", len(remote.copyRequests))
+	}
+}
+
 func TestPrepareLocalBundleRejectsDirtyPlanBeforeBundleCreation(t *testing.T) {
 	git := &recordingLocalGit{}
 	_, err := PrepareLocalBundle(context.Background(), git, PrepareLocalBundleRequest{
@@ -179,4 +284,14 @@ func (g *recordingLocalGit) CreateBundle(_ context.Context, req CreateBundleRequ
 func (g *recordingLocalGit) VerifyBundle(_ context.Context, req VerifyBundleRequest) error {
 	g.verifyRequests = append(g.verifyRequests, req)
 	return g.verifyErr
+}
+
+type recordingRemoteCopier struct {
+	copyRequests []RemoteCopyRequest
+	copyErr      error
+}
+
+func (r *recordingRemoteCopier) CopyIn(_ context.Context, req RemoteCopyRequest) error {
+	r.copyRequests = append(r.copyRequests, req)
+	return r.copyErr
 }
