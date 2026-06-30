@@ -141,6 +141,11 @@ type prdStory struct {
 	ID     string `json:"id"`
 	Title  string `json:"title"`
 	Status string `json:"status"`
+	Passes bool   `json:"passes"`
+}
+
+func (s prdStory) passed() bool {
+	return s.Passes || s.Status == "passed"
 }
 
 // Get inspects the filesystem at dir (project root) and returns the current workflow status.
@@ -327,7 +332,7 @@ func classifyManual(dir, halDir string, artifacts Artifacts) StatusResult {
 	completed := 0
 	var nextStory *StoryRef
 	for _, s := range stories {
-		if s.Status == "passed" {
+		if s.passed() {
 			completed++
 		} else if nextStory == nil {
 			nextStory = &StoryRef{ID: s.ID, Title: s.Title}
