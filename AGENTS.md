@@ -37,6 +37,12 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase/sandbox-runtime-v2-10-workspace-sync (2026-06-30)
+
+- Workspace sync contracts live in `internal/sandboxworkspace/sync.go`; keep the core sync surface command-agnostic with package-local request/result/target types and narrow `LocalGit`/`RemoteClient` interfaces rather than Cobra, factory records, or concrete provider/runtime adapters.
+- Materialization metadata should be generated through `NewMaterializationResult` / `BundleMaterializationFromCreateResult`; do not persist host-local bundle paths in result or manifest metadata.
+- Keep `internal/sandboxworkspace` import-boundary tests updated when adding sync code so the package does not start importing `cmd`, `internal/factory`, `internal/prd`, `internal/compound`, `internal/loop`, Cobra, or concrete runtime adapters.
+
 ## Patterns from phase/sandbox-runtime-v2-9-runtime-driver (2026-06-30)
 
 - Runtime-driver boundary contracts live in `internal/sandboxruntime`; keep this package command-agnostic by using package-local target/request types and only standard-library dependencies.
