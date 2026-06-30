@@ -37,6 +37,10 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase/sandbox-runtime-v2-9-runtime-driver (2026-06-30)
+
+- Runtime-driver boundary contracts live in `internal/sandboxruntime`; keep this package command-agnostic by using package-local target/request types and only standard-library dependencies.
+
 ## Patterns from local-factory-queue-storage (2026-06-21)
 
 - Factory queue storage should build on `internal/factory.Store`: keep queue state under the global config-backed factory root (`StoreDir()/queue.json`), treat a missing queue file as empty read-only state, and preserve corrupt queue files by returning parse errors without overwriting or deleting them.
