@@ -63,6 +63,7 @@ type factorySandboxExecutorDeps struct {
 	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
 	startSandbox           func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
+	resolveRuntimeDriver   func(string) (sandboxruntime.Driver, error)
 	runProviderExec        func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
 	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
@@ -83,6 +84,13 @@ var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
 	startSandbox:   startFactorySandbox,
 	resolveProvider: func(providerName string) (sandbox.Provider, error) {
 		return resolveProviderWithFallback(".", providerName)
+	},
+	resolveRuntimeDriver: func(providerName string) (sandboxruntime.Driver, error) {
+		provider, err := resolveProviderWithFallback(".", providerName)
+		if err != nil {
+			return nil, err
+		}
+		return sandboxRuntimeDriverFromProvider(provider), nil
 	},
 	runProviderExec:        runFactorySandboxProviderExec,
 	runProviderScript:      runFactorySandboxProviderScript,
@@ -125,6 +133,15 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 	}
 	if deps.resolveProvider == nil {
 		deps.resolveProvider = defaultFactorySandboxExecutorDeps.resolveProvider
+	}
+	if deps.resolveRuntimeDriver == nil {
+		deps.resolveRuntimeDriver = func(providerName string) (sandboxruntime.Driver, error) {
+			provider, err := deps.resolveProvider(providerName)
+			if err != nil {
+				return nil, err
+			}
+			return sandboxRuntimeDriverFromProvider(provider), nil
+		}
 	}
 	if deps.runProviderExec == nil {
 		deps.runProviderExec = defaultFactorySandboxExecutorDeps.runProviderExec
@@ -203,6 +220,17 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 
 	var target *sandbox.SandboxState
 	var provider sandbox.Provider
+	ensureProvider := func(providerName string) (sandbox.Provider, error) {
+		if provider != nil {
+			return provider, nil
+		}
+		resolved, err := deps.resolveProvider(providerName)
+		if err != nil {
+			return nil, err
+		}
+		provider = resolved
+		return provider, nil
+	}
 	var remoteOutput *factorySandboxTimelineWriter
 	cleanupBehavior := factorySandboxCleanupBehavior(record)
 	if req.DeferSuccessCleanup && cleanupBehavior == factory.CleanupBehaviorOnSuccess {
@@ -274,24 +302,33 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			return nil
 		},
 		ResolveDriver: func(_ context.Context, target sandboxruntime.Target) (sandboxruntime.Driver, error) {
-			resolved, err := deps.resolveProvider(target.Provider)
-			if err != nil {
-				return nil, err
-			}
-			provider = resolved
-			return sandboxRuntimeDriverFromProvider(resolved), nil
+			return deps.resolveRuntimeDriver(target.Provider)
 		},
 		OnDriverReady: func(_ context.Context, ready sandboxruntime.Target, _ sandboxruntime.Driver) error {
-			target = sandboxStateFromRuntimeTarget(ready)
+			if target == nil {
+				target = sandboxStateFromRuntimeTarget(ready)
+			}
 			return nil
 		},
 		PrepareWorkspace: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
+			provider, err := ensureProvider(prep.Target.Provider)
+			if err != nil {
+				return err
+			}
 			return prepareFactorySandboxWorkspace(ctx, store, deps, &record, req, sandboxStateFromRuntimeTarget(prep.Target), provider, sandboxConnectInfoFromRuntimeTarget(prep.Target), remoteOutput)
 		},
 		PrepareAuth: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
+			provider, err := ensureProvider(prep.Target.Provider)
+			if err != nil {
+				return err
+			}
 			return factorySandboxSyncEngineAuth(ctx, provider, sandboxStateFromRuntimeTarget(prep.Target), remoteOutput, deps)
 		},
 		PrepareCommand: func(ctx context.Context, prep sandboxexec.PrepareContext, command *sandboxexec.CommandRequest) error {
+			provider, err := ensureProvider(prep.Target.Provider)
+			if err != nil {
+				return err
+			}
 			remoteAuto, err := factorySandboxPrepareRemoteInputs(ctx, req, provider, sandboxStateFromRuntimeTarget(prep.Target), remoteOutput, deps)
 			if err != nil {
 				return err
@@ -304,11 +341,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			return nil
 		},
 		RunCommand: func(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {
-			out := command.Stdout
-			if out == nil {
-				out = io.Discard
-			}
-			return deps.runProviderExecWithEnv(ctx, provider, sandboxConnectInfoFromRuntimeTarget(run.Target), command.Command, command.Env, out)
+			return runFactorySandboxRuntimeExec(ctx, run, command)
 		},
 		HandleEvent: func(_ context.Context, event sandboxexec.Event) error {
 			return handleFactorySandboxExecutorEvent(remoteOutput, event)
@@ -439,6 +472,21 @@ func handleFactorySandboxExecutorEvent(remoteOutput *factorySandboxTimelineWrite
 		return nil
 	}
 	return nil
+}
+
+func runFactorySandboxRuntimeExec(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {
+	if run.Driver == nil {
+		return fmt.Errorf("sandbox runtime driver is required")
+	}
+	_, err := run.Driver.Exec(ctx, sandboxruntime.ExecRequest{
+		Target: run.Target,
+		Args:   append([]string(nil), command.Command...),
+		Stdout: command.Stdout,
+		Stderr: command.Stderr,
+		Stdin:  nil,
+		Env:    command.Env,
+	})
+	return err
 }
 
 func handleFactorySandboxExecutorError(ctx context.Context, store factory.Store, deps factorySandboxExecutorDeps, req factorySandboxExecutorRequest, record *factory.RunRecord, target *sandbox.SandboxState, err error, secretRedactor factory.RunSecretRedactor) error {
