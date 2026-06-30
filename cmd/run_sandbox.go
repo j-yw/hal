@@ -67,6 +67,8 @@ type runSandboxExecutionResult struct {
 	Result        *sandboxexec.Result
 	RuntimeDriver sandboxruntime.Driver
 	RemoteStarted bool
+	StdoutSummary string
+	StderrSummary string
 }
 
 type runSandboxExecutionHooks struct {
@@ -312,6 +314,11 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 			execErr = collectErr
 		}
 	}
+	if execErr == nil {
+		if collectErr := collectRunSandboxOutputSummaryArtifacts(store, req, execResult, target); collectErr != nil {
+			execErr = collectErr
+		}
+	}
 
 	finishedAt := deps.now().UTC()
 	status := sandboxexecution.StatusSucceeded
@@ -547,6 +554,8 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 	var remoteStarted bool
 	var provider sandbox.Provider
 	var runtimeDriver sandboxruntime.Driver
+	var stdoutSummary strings.Builder
+	var stderrSummary strings.Builder
 	ensureProvider := func(providerName string) (sandbox.Provider, error) {
 		if provider != nil {
 			return provider, nil
@@ -621,10 +630,24 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 			if event.Type == sandboxexec.EventCommandOutput && event.Stream == sandboxexec.StreamStdout {
 				remoteStarted = true
 			}
+			if event.Type == sandboxexec.EventCommandOutput {
+				switch event.Stream {
+				case sandboxexec.StreamStdout:
+					appendRunSandboxOutputSummaryLine(&stdoutSummary, event.Line)
+				case sandboxexec.StreamStderr:
+					appendRunSandboxOutputSummaryLine(&stderrSummary, event.Line)
+				}
+			}
 			return nil
 		},
 	})
-	return runSandboxExecutionResult{Result: result, RuntimeDriver: runtimeDriver, RemoteStarted: remoteStarted}, err
+	return runSandboxExecutionResult{
+		Result:        result,
+		RuntimeDriver: runtimeDriver,
+		RemoteStarted: remoteStarted,
+		StdoutSummary: stdoutSummary.String(),
+		StderrSummary: stderrSummary.String(),
+	}, err
 }
 
 func collectRunSandboxCoreStateArtifacts(ctx context.Context, store sandboxexecution.Store, req runSandboxRequest, result runSandboxExecutionResult) error {
@@ -669,6 +692,39 @@ func collectRunSandboxGeneratedArtifacts(ctx context.Context, store sandboxexecu
 		return fmt.Errorf("collect run sandbox reports archive artifacts: %w", err)
 	}
 	return nil
+}
+
+func collectRunSandboxOutputSummaryArtifacts(store sandboxexecution.Store, req runSandboxRequest, result runSandboxExecutionResult, target *sandbox.SandboxState) error {
+	stdoutSummary := sanitizeRunSandboxOutputSummary(result.StdoutSummary, target)
+	stderrSummary := sanitizeRunSandboxOutputSummary(result.StderrSummary, target)
+	if strings.TrimSpace(stdoutSummary) == "" && strings.TrimSpace(stderrSummary) == "" {
+		return nil
+	}
+	if _, err := sandboxexecution.SaveCommandOutputSummaryArtifacts(sandboxexecution.CommandOutputSummaryArtifactsRequest{
+		ExecutionID:   req.ExecutionID,
+		Store:         store,
+		StdoutSummary: stdoutSummary,
+		StderrSummary: stderrSummary,
+	}); err != nil {
+		return fmt.Errorf("collect run sandbox output summary artifacts: %w", err)
+	}
+	return nil
+}
+
+func appendRunSandboxOutputSummaryLine(summary *strings.Builder, line string) {
+	if summary == nil || strings.TrimSpace(line) == "" {
+		return
+	}
+	summary.WriteString(line)
+	summary.WriteByte('\n')
+}
+
+func sanitizeRunSandboxOutputSummary(value string, target *sandbox.SandboxState) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	redactor := sandboxRedactor(false, nil, target)
+	return sanitizeCredentialedRemoteReferences(redactor.Redact(value))
 }
 
 func (deps runSandboxDeps) resolveRunSandboxTarget(ctx context.Context, req runSandboxRequest, out io.Writer) (*sandbox.SandboxState, error) {
