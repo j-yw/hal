@@ -42,6 +42,11 @@ func (service *Service) HandleRequest(ctx context.Context, req Request) Response
 			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request lifecycle payload is required")
 		}
 		return service.DeleteResponse(ctx, req.RequestID, req.DriverID, *req.Lifecycle)
+	case OperationInspect:
+		if req.Inspect == nil {
+			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request inspect payload is required")
+		}
+		return service.InspectResponse(ctx, req.RequestID, req.DriverID, *req.Inspect)
 	default:
 		return unsupportedOperationResponse(req)
 	}

@@ -12,6 +12,7 @@ var defaultSupportedOperations = []string{
 	OperationStart,
 	OperationStop,
 	OperationDelete,
+	OperationInspect,
 }
 
 var defaultRuntimeDriverOperations = []string{

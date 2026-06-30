@@ -114,7 +114,7 @@ func (client *Client) Create(ctx context.Context, driverID string, req CreateReq
 	if err != nil {
 		return nil, err
 	}
-	return clientLifecycleTarget(resp)
+	return clientTargetResponse(resp)
 }
 
 // Start starts an existing runtime target through the worker daemon.
@@ -127,7 +127,7 @@ func (client *Client) Start(ctx context.Context, driverID string, req LifecycleR
 	if err != nil {
 		return nil, err
 	}
-	return clientLifecycleTarget(resp)
+	return clientTargetResponse(resp)
 }
 
 // Stop stops an existing runtime target through the worker daemon.
@@ -140,7 +140,7 @@ func (client *Client) Stop(ctx context.Context, driverID string, req LifecycleRe
 	if err != nil {
 		return nil, err
 	}
-	return clientLifecycleTarget(resp)
+	return clientTargetResponse(resp)
 }
 
 // Delete removes an existing runtime target through the worker daemon.
@@ -151,6 +151,19 @@ func (client *Client) Delete(ctx context.Context, driverID string, req Lifecycle
 		Lifecycle: &req,
 	})
 	return err
+}
+
+// Inspect inspects an existing runtime target through the worker daemon.
+func (client *Client) Inspect(ctx context.Context, driverID string, req InspectRequest) (*Target, error) {
+	resp, err := client.roundTrip(ctx, Request{
+		Operation: OperationInspect,
+		DriverID:  driverID,
+		Inspect:   &req,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return clientTargetResponse(resp)
 }
 
 func (client *Client) roundTrip(ctx context.Context, req Request) (Response, error) {
@@ -185,9 +198,9 @@ func (client *Client) roundTrip(ctx context.Context, req Request) (Response, err
 	return resp, nil
 }
 
-func clientLifecycleTarget(resp Response) (*Target, error) {
+func clientTargetResponse(resp Response) (*Target, error) {
 	if resp.Target == nil {
-		return nil, malformedClientResponseError(resp.Operation, "worker lifecycle response did not include target payload")
+		return nil, malformedClientResponseError(resp.Operation, "worker response did not include target payload")
 	}
 	target := *resp.Target
 	return &target, nil

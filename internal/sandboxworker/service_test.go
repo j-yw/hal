@@ -100,6 +100,7 @@ func TestServiceCapabilitiesReportsRegisteredDriversAndHonestSecurity(t *testing
 		OperationStart,
 		OperationStop,
 		OperationDelete,
+		OperationInspect,
 	}
 	if !reflect.DeepEqual(capabilities.SupportedOperations, wantOps) {
 		t.Fatalf("capabilities supported operations = %#v, want %#v", capabilities.SupportedOperations, wantOps)

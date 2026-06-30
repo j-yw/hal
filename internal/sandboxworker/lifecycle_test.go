@@ -435,10 +435,16 @@ func (driver *recordingLifecycleDriver) Delete(ctx context.Context, req sandboxr
 }
 
 func (driver *recordingLifecycleDriver) Inspect(ctx context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+	driver.calls = append(driver.calls, OperationInspect)
 	if err := driver.operationError(ctx, OperationInspect); err != nil {
 		return nil, err
 	}
-	return &req.Target, nil
+	target := req.Target
+	target.Status = "inspected"
+	if target.Runtime.RuntimeID == "" {
+		target.Runtime.RuntimeID = "runtime-" + target.Name
+	}
+	return &target, nil
 }
 
 func (driver *recordingLifecycleDriver) Exec(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
