@@ -675,7 +675,14 @@ func TestExecuteAutoSandboxCopiesExplicitInputsBeforeRemoteCommand(t *testing.T)
 	req.RepoRemote = "git@example.com:org/repo.git"
 	req.BaseBranch = "main"
 	req.RunBranch = "feature/auto-copy"
-	req.Workspace = &sandbox.SandboxWorkspace{Mode: sandbox.SandboxWorkspaceModeClone}
+	req.Workspace = &sandbox.SandboxWorkspace{
+		Mode:        sandbox.SandboxWorkspaceModeClone,
+		InputSource: sandbox.SandboxWorkspaceInputSourceRemoteRef,
+		Repo:        "git@example.com:org/repo.git",
+		Branch:      "feature/auto-copy",
+		SyncRef:     "refs/remotes/origin/feature/auto-copy",
+	}
+	bootstrapped := false
 
 	result, err := autoSandboxDeps{
 		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
@@ -693,8 +700,16 @@ func TestExecuteAutoSandboxCopiesExplicitInputsBeforeRemoteCommand(t *testing.T)
 				},
 			}, nil
 		},
-		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+		bootstrap: func(_ context.Context, got factory.BootstrapRequest, _ factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			bootstrapped = true
+			if got.RepositoryURL != req.RepoRemote || got.BaseBranch != req.BaseBranch || got.RunBranch != req.RunBranch || got.WorkspaceDir != req.WorkDir {
+				t.Fatalf("bootstrap request = %#v, want remote-ref workspace request", got)
+			}
 			return factory.BootstrapResult{}, nil
+		},
+		materializeWorkspace: func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
+			t.Fatal("materializeWorkspace should not run for remote-ref workspace")
+			return sandboxworkspace.MaterializationResult{}, nil
 		},
 		engineAuthFiles: func() []factorySandboxAuthFile {
 			return nil
@@ -709,6 +724,9 @@ func TestExecuteAutoSandboxCopiesExplicitInputsBeforeRemoteCommand(t *testing.T)
 	}
 	if result.Result == nil {
 		t.Fatal("Result = nil")
+	}
+	if !bootstrapped {
+		t.Fatal("bootstrap was not called for remote-ref workspace")
 	}
 	joinedArgs := strings.Join(execReq.Args, "\x00")
 	if !strings.Contains(joinedArgs, ".hal/factory-inputs/prd.md") {

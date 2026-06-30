@@ -677,7 +677,14 @@ func TestExecuteRunSandboxUsesRuntimeDriverAfterAuthPreparation(t *testing.T) {
 		RunBranch:     "feature/runtime-run",
 		WorkDir:       "/root/workspace/repo",
 		RemoteCommand: []string{"hal", "run", "--json"},
-		Security:      runSandboxSecurityRequest(),
+		Workspace: &sandbox.SandboxWorkspace{
+			Mode:        sandbox.SandboxWorkspaceModeClone,
+			InputSource: sandbox.SandboxWorkspaceInputSourceRemoteRef,
+			Repo:        "git@example.com:org/repo.git",
+			Branch:      "feature/runtime-run",
+			SyncRef:     "refs/remotes/origin/feature/runtime-run",
+		},
+		Security: runSandboxSecurityRequest(),
 	}
 	var order []string
 	var execReq sandboxruntime.ExecRequest
@@ -714,9 +721,16 @@ func TestExecuteRunSandboxUsesRuntimeDriverAfterAuthPreparation(t *testing.T) {
 			}
 			return driver, nil
 		},
-		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+		bootstrap: func(_ context.Context, got factory.BootstrapRequest, _ factory.BootstrapDeps) (factory.BootstrapResult, error) {
 			order = append(order, "bootstrap")
+			if got.RepositoryURL != req.RepoRemote || got.BaseBranch != req.BaseBranch || got.RunBranch != req.RunBranch || got.WorkspaceDir != req.WorkDir {
+				t.Fatalf("bootstrap request = %#v, want remote-ref workspace request", got)
+			}
 			return factory.BootstrapResult{}, nil
+		},
+		materializeWorkspace: func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
+			t.Fatal("materializeWorkspace should not run for remote-ref workspace")
+			return sandboxworkspace.MaterializationResult{}, nil
 		},
 		engineAuthFiles: func() []factorySandboxAuthFile {
 			order = append(order, "auth")
