@@ -44,6 +44,7 @@
 - SSH-machine runtime adapter code lives in `internal/sandboxruntime/sshmachine`; preserve legacy target resolution by deriving provider inputs through `sandbox.ConnectInfoFromState`, and wrap provider lifecycle failures in typed errors that keep operation name, driver ID, and the underlying provider error.
 - SSH-machine runtime exec should call the legacy provider `Exec` with command args unchanged, then configure the returned `*exec.Cmd` with runtime stdin/stdout/stderr/env/workdir; stderr defaults to stdout, and context cancellation errors must remain unwrap-compatible through the adapter operation error.
 - SSH-machine runtime file transport should stay provider-Exec-backed: CopyIn streams the local source through stdin to a remote shell helper, CopyOut captures remote stdout into a local temp file before rename, and both wrap failures with `OperationError` operation names (`copy_in`/`copy_out`).
+- `internal/sandboxexec.PrepareContext` uses `sandboxruntime.Target` and `sandboxruntime.ConnectionInfo` for preparation hooks; when command code still needs legacy provider structs, bridge at the command boundary through `cmd/sandbox_runtime_compat.go` instead of re-exposing provider types from sandboxexec preparation.
 
 ## Patterns from local-factory-queue-storage (2026-06-21)
 

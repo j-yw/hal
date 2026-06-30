@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 func TestRunInvokesInjectedPhasesAndRunner(t *testing.T) {
@@ -85,7 +86,7 @@ func TestRunInvokesInjectedPhasesAndRunner(t *testing.T) {
 		},
 		PrepareWorkspace: func(_ context.Context, prep PrepareContext, req *CommandRequest) error {
 			calls = append(calls, "workspace")
-			if prep.Target.Name != "factory-dev" || prep.Provider != provider || prep.ConnectInfo.Name != "factory-dev" {
+			if prep.Target.Name != "factory-dev" || prep.Target.Provider != "daytona" || prep.Connection.Address != "203.0.113.42" {
 				t.Fatalf("workspace prep context = %#v", prep)
 			}
 			req.WorkDir = "/workspace/prepared"
@@ -181,6 +182,95 @@ func TestRunInvokesInjectedPhasesAndRunner(t *testing.T) {
 	}
 	if events[2].Stream != StreamStderr || events[2].Line != "stderr line" {
 		t.Fatalf("stderr event = %#v", events[2])
+	}
+}
+
+func TestPrepareContextUsesRuntimeBoundaryTypes(t *testing.T) {
+	prepareType := reflect.TypeOf(PrepareContext{})
+	providerType := reflect.TypeOf((*sandbox.Provider)(nil)).Elem()
+	connectInfoType := reflect.TypeOf((*sandbox.ConnectInfo)(nil))
+	for i := 0; i < prepareType.NumField(); i++ {
+		field := prepareType.Field(i)
+		if field.Type == providerType {
+			t.Fatalf("PrepareContext.%s exposes legacy sandbox.Provider", field.Name)
+		}
+		if field.Type == connectInfoType {
+			t.Fatalf("PrepareContext.%s exposes legacy *sandbox.ConnectInfo", field.Name)
+		}
+	}
+	if _, ok := prepareType.FieldByName("Provider"); ok {
+		t.Fatal("PrepareContext exposes legacy sandbox.Provider field")
+	}
+	if _, ok := prepareType.FieldByName("ConnectInfo"); ok {
+		t.Fatal("PrepareContext exposes legacy sandbox.ConnectInfo field")
+	}
+
+	targetField, ok := prepareType.FieldByName("Target")
+	if !ok {
+		t.Fatal("PrepareContext missing Target field")
+	}
+	if targetField.Type != reflect.TypeOf(sandboxruntime.Target{}) {
+		t.Fatalf("PrepareContext.Target type = %v, want sandboxruntime.Target", targetField.Type)
+	}
+	connectionField, ok := prepareType.FieldByName("Connection")
+	if !ok {
+		t.Fatal("PrepareContext missing Connection field")
+	}
+	if connectionField.Type != reflect.TypeOf(sandboxruntime.ConnectionInfo{}) {
+		t.Fatalf("PrepareContext.Connection type = %v, want sandboxruntime.ConnectionInfo", connectionField.Type)
+	}
+}
+
+func TestRunPrepareContextCarriesRuntimeTargetConnection(t *testing.T) {
+	target := &sandbox.SandboxState{
+		ID:                "sb-123",
+		Name:              "factory-dev",
+		Provider:          "digitalocean",
+		WorkspaceID:       "droplet-456",
+		IP:                "203.0.113.42",
+		TailscaleIP:       "100.64.0.7",
+		TailscaleHostname: "factory-dev.tailnet.example",
+		TailscaleLockdown: true,
+		Status:            sandbox.StatusRunning,
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandbox.SandboxRuntimeDriverSSHMachine,
+			RuntimeID:      "runtime-789",
+			Image:          "ubuntu-24.04",
+			WorkerID:       "worker-a",
+			IsolationLevel: sandbox.SandboxIsolationLevelVM,
+		},
+	}
+	var got PrepareContext
+
+	_, err := Run(context.Background(), CommandRequest{SandboxName: "factory-dev"}, Dependencies{
+		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		ResolveProvider: func(context.Context, *sandbox.SandboxState) (sandbox.Provider, error) {
+			return fakeProvider{}, nil
+		},
+		PrepareWorkspace: func(_ context.Context, prep PrepareContext, _ *CommandRequest) error {
+			got = prep
+			return nil
+		},
+		RunCommand: func(context.Context, RunContext, CommandRequest) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+	if got.Target.ID != "sb-123" || got.Target.Name != "factory-dev" || got.Target.Provider != "digitalocean" || got.Target.Status != sandbox.StatusRunning {
+		t.Fatalf("runtime target identity = %#v", got.Target)
+	}
+	if got.Target.Runtime.Driver != sandboxruntime.DriverSSHMachine || got.Target.Runtime.RuntimeID != "runtime-789" || got.Target.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelVM {
+		t.Fatalf("runtime metadata = %#v", got.Target.Runtime)
+	}
+	if got.Connection.Address != "100.64.0.7" || got.Connection.PublicIP != "203.0.113.42" || got.Connection.TailscaleHostname != "factory-dev.tailnet.example" || !got.Connection.TailscaleLockdown || got.Connection.WorkspaceID != "droplet-456" {
+		t.Fatalf("runtime connection = %#v", got.Connection)
+	}
+	if got.Target.Connection != got.Connection {
+		t.Fatalf("target connection = %#v, want %#v", got.Target.Connection, got.Connection)
 	}
 }
 

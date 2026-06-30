@@ -281,13 +281,13 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			return nil
 		},
 		PrepareWorkspace: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
-			return prepareFactorySandboxWorkspace(ctx, store, deps, &record, req, prep.Target, prep.Provider, prep.ConnectInfo, remoteOutput)
+			return prepareFactorySandboxWorkspace(ctx, store, deps, &record, req, sandboxStateFromRuntimeTarget(prep.Target), provider, sandboxConnectInfoFromRuntimeTarget(prep.Target), remoteOutput)
 		},
 		PrepareAuth: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
-			return factorySandboxSyncEngineAuth(ctx, prep.Provider, prep.Target, remoteOutput, deps)
+			return factorySandboxSyncEngineAuth(ctx, provider, sandboxStateFromRuntimeTarget(prep.Target), remoteOutput, deps)
 		},
 		PrepareCommand: func(ctx context.Context, prep sandboxexec.PrepareContext, command *sandboxexec.CommandRequest) error {
-			remoteAuto, err := factorySandboxPrepareRemoteInputs(ctx, req, prep.Provider, prep.Target, remoteOutput, deps)
+			remoteAuto, err := factorySandboxPrepareRemoteInputs(ctx, req, provider, sandboxStateFromRuntimeTarget(prep.Target), remoteOutput, deps)
 			if err != nil {
 				return err
 			}

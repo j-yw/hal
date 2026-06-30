@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 // CommandRequest describes a command that should run inside a sandbox.
@@ -35,11 +36,10 @@ type TargetRequest struct {
 
 // PrepareContext carries resolved sandbox dependencies into preparation hooks.
 type PrepareContext struct {
-	Purpose     string
-	ProjectDir  string
-	Target      *sandbox.SandboxState
-	Provider    sandbox.Provider
-	ConnectInfo *sandbox.ConnectInfo
+	Purpose    string
+	ProjectDir string
+	Target     sandboxruntime.Target
+	Connection sandboxruntime.ConnectionInfo
 }
 
 // RunContext carries resolved sandbox dependencies into the command runner.
@@ -219,12 +219,11 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 	}
 
 	prep := PrepareContext{
-		Purpose:     req.Purpose,
-		ProjectDir:  req.ProjectDir,
-		Target:      target,
-		Provider:    provider,
-		ConnectInfo: sandbox.ConnectInfoFromState(target),
+		Purpose:    req.Purpose,
+		ProjectDir: req.ProjectDir,
+		Target:     runtimeTargetFromSandboxState(target),
 	}
+	prep.Connection = prep.Target.Connection
 	if deps.PrepareWorkspace != nil {
 		if err := deps.PrepareWorkspace(ctx, prep, &req); err != nil {
 			return nil, phaseError(PhasePrepareWorkspace, target, provider, err)
@@ -368,6 +367,41 @@ func sandboxRuntimeDriver(target *sandbox.SandboxState) string {
 		return driver
 	}
 	return sandbox.SandboxRuntimeDriverSSHMachine
+}
+
+func runtimeTargetFromSandboxState(target *sandbox.SandboxState) sandboxruntime.Target {
+	if target == nil {
+		return sandboxruntime.Target{}
+	}
+	runtimeTarget := sandboxruntime.Target{
+		ID:       target.ID,
+		Name:     target.Name,
+		Provider: target.Provider,
+		Status:   target.Status,
+		Runtime: sandboxruntime.RuntimeState{
+			Driver: sandboxRuntimeDriver(target),
+		},
+	}
+	if target.Runtime != nil {
+		runtimeTarget.Runtime = sandboxruntime.RuntimeState{
+			Driver:         sandboxRuntimeDriver(target),
+			RuntimeID:      target.Runtime.RuntimeID,
+			Image:          target.Runtime.Image,
+			WorkerID:       target.Runtime.WorkerID,
+			IsolationLevel: target.Runtime.IsolationLevel,
+		}
+	}
+	if info := sandbox.ConnectInfoFromState(target); info != nil {
+		runtimeTarget.Connection = sandboxruntime.ConnectionInfo{
+			Address:           info.IP,
+			PublicIP:          info.PublicIP,
+			TailscaleIP:       info.TailscaleIP,
+			TailscaleHostname: info.TailscaleHostname,
+			TailscaleLockdown: info.TailscaleLockdown,
+			WorkspaceID:       info.WorkspaceID,
+		}
+	}
+	return runtimeTarget
 }
 
 type outputWriter struct {
