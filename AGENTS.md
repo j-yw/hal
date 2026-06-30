@@ -57,6 +57,7 @@
 - `internal/sandboxexecution` validates artifact metadata in `validateManifestForSave`; collected entries require both display and store-relative paths, while partial/warning artifact entries require at least a safe display path.
 - Use `sandboxexecution.Store.SaveArtifactFile` for collected non-factory artifact files: pass caller-facing `ArtifactMetadataEntry.Path`, let the store compute `storedPath` under `<execution-id>/artifacts/`, and keep local source paths out of returned metadata and persistence errors.
 - Use `sandboxexecution.Store.SaveHandoffFile` and `SaveRecoveryFile` for non-factory handoff/recovery payloads so metadata stores safe display paths while generated `storedPath` values stay under `<execution-id>/handoff/` or `<execution-id>/recovery/`.
+- Shared non-factory runtime artifact collection belongs in `internal/sandboxexecution.CollectRuntimeArtifacts`: pass a narrow `RuntimeArtifactCollector` backed by `sandboxruntime.Driver.Exec`/`CopyOut`, copy remote files to temp files first, and persist through store helpers instead of importing command, factory, or concrete runtime adapter packages.
 
 ## Patterns from phase/sandbox-runtime-v2-9-runtime-driver (2026-06-30)
 

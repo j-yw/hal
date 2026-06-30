@@ -39,7 +39,11 @@ func TestPackageImportBoundaries(t *testing.T) {
 func assertAllowedImport(t *testing.T, fileName, importPath string) {
 	t.Helper()
 	const internalPrefix = "github.com/jywlabs/hal/internal/"
-	if strings.HasPrefix(importPath, internalPrefix) && importPath != "github.com/jywlabs/hal/internal/sandbox" {
+	allowedInternalImports := map[string]bool{
+		"github.com/jywlabs/hal/internal/sandbox":        true,
+		"github.com/jywlabs/hal/internal/sandboxruntime": true,
+	}
+	if strings.HasPrefix(importPath, internalPrefix) && !allowedInternalImports[importPath] {
 		t.Fatalf("%s imports forbidden internal package %q", fileName, importPath)
 	}
 	switch {
