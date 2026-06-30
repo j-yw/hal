@@ -86,7 +86,6 @@ type runSandboxDeps struct {
 	loadSandbox            func(string) (*sandbox.SandboxState, error)
 	resolveDefault         func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
 	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
-	startSandbox           func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
 	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
@@ -108,7 +107,6 @@ var defaultRunSandboxDeps = runSandboxDeps{
 	loadSandbox:    sandbox.LoadActiveInstance,
 	resolveDefault: sandbox.ResolveDefault,
 	provision:      provisionFactorySandbox,
-	startSandbox:   startFactorySandbox,
 	resolveProvider: func(providerName string) (sandbox.Provider, error) {
 		return resolveProviderWithFallback(".", providerName)
 	},
@@ -372,9 +370,6 @@ func normalizeRunSandboxDeps(deps runSandboxDeps) runSandboxDeps {
 	if deps.provision == nil {
 		deps.provision = defaultRunSandboxDeps.provision
 	}
-	if deps.startSandbox == nil {
-		deps.startSandbox = defaultRunSandboxDeps.startSandbox
-	}
 	if deps.resolveProvider == nil {
 		deps.resolveProvider = defaultRunSandboxDeps.resolveProvider
 	}
@@ -575,12 +570,11 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 		Security:    req.Security,
 		Stdout:      out,
 		Stderr:      errOut,
+		SetupStdout: prepOut,
+		SetupStderr: prepOut,
 	}, sandboxexec.Dependencies{
 		ResolveTarget: func(ctx context.Context, _ sandboxexec.TargetRequest) (*sandbox.SandboxState, error) {
 			return deps.resolveRunSandboxTarget(ctx, req, prepOut)
-		},
-		StartTarget: func(ctx context.Context, target *sandbox.SandboxState, _, _ io.Writer) (*sandbox.SandboxState, error) {
-			return deps.startSandbox(ctx, target, prepOut)
 		},
 		ResolveDriver: func(_ context.Context, target sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			driver, err := deps.resolveRuntimeDriver(target)

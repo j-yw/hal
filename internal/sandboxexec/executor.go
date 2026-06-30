@@ -24,6 +24,8 @@ type CommandRequest struct {
 	Security    sandbox.SecurityEvaluationRequest
 	Stdout      io.Writer
 	Stderr      io.Writer
+	SetupStdout io.Writer
+	SetupStderr io.Writer
 }
 
 // TargetRequest carries command context into injected target resolution.
@@ -54,7 +56,6 @@ type RunContext struct {
 // Dependencies contains the side-effect boundaries used by Run.
 type Dependencies struct {
 	ResolveTarget    func(context.Context, TargetRequest) (*sandbox.SandboxState, error)
-	StartTarget      func(context.Context, *sandbox.SandboxState, io.Writer, io.Writer) (*sandbox.SandboxState, error)
 	ResolveDriver    func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error)
 	PrepareWorkspace func(context.Context, PrepareContext, *CommandRequest) error
 	PrepareAuth      func(context.Context, PrepareContext, *CommandRequest) error
@@ -162,6 +163,12 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 	if req.Stderr == nil {
 		req.Stderr = req.Stdout
 	}
+	if req.SetupStdout == nil {
+		req.SetupStdout = req.Stdout
+	}
+	if req.SetupStderr == nil {
+		req.SetupStderr = req.Stderr
+	}
 
 	if deps.ResolveTarget == nil {
 		return nil, phaseError(PhaseResolveTarget, nil, "", fmt.Errorf("sandbox target resolver is required"))
@@ -183,23 +190,13 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 		return nil, phaseError(PhaseResolveTarget, nil, "", fmt.Errorf("sandbox target is required"))
 	}
 
-	if strings.TrimSpace(target.Status) != sandbox.StatusRunning {
-		if deps.StartTarget == nil {
-			return nil, phaseError(PhaseStartTarget, target, "", fmt.Errorf("sandbox target starter is required"))
-		}
-		started, err := deps.StartTarget(ctx, target, req.Stdout, req.Stderr)
-		if err != nil {
-			return nil, phaseError(PhaseStartTarget, target, "", err)
-		}
-		if started == nil {
-			return nil, phaseError(PhaseStartTarget, target, "", fmt.Errorf("started sandbox target is required"))
-		}
-		target = started
-	}
-	applySandboxSecurityMetadata(target, req)
-	if deps.OnTargetReady != nil {
-		if err := deps.OnTargetReady(ctx, target); err != nil {
-			return nil, err
+	targetRunning := strings.TrimSpace(target.Status) == sandbox.StatusRunning
+	if targetRunning {
+		applySandboxSecurityMetadata(target, req)
+		if deps.OnTargetReady != nil {
+			if err := deps.OnTargetReady(ctx, target); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -210,6 +207,28 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 	}
 	if driver == nil {
 		return nil, phaseError(PhaseResolveDriver, target, "", fmt.Errorf("sandbox runtime driver is required"))
+	}
+
+	if !targetRunning {
+		started, err := driver.Start(ctx, sandboxruntime.LifecycleRequest{
+			Target: runtimeTarget,
+			Stdout: req.SetupStdout,
+			Stderr: req.SetupStderr,
+		})
+		if err != nil {
+			return nil, phaseError(PhaseStartTarget, target, runtimeDriverID(driver), err)
+		}
+		if started == nil {
+			return nil, phaseError(PhaseStartTarget, target, runtimeDriverID(driver), fmt.Errorf("started sandbox target is required"))
+		}
+		runtimeTarget = *started
+		target = applyRuntimeTargetToSandboxState(target, runtimeTarget)
+		applySandboxSecurityMetadata(target, req)
+		if deps.OnTargetReady != nil {
+			if err := deps.OnTargetReady(ctx, target); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if deps.OnDriverReady != nil {
 		if err := deps.OnDriverReady(ctx, runtimeTarget, driver); err != nil {
@@ -447,6 +466,57 @@ func runtimeTargetFromSandboxState(target *sandbox.SandboxState) sandboxruntime.
 		}
 	}
 	return runtimeTarget
+}
+
+func applyRuntimeTargetToSandboxState(state *sandbox.SandboxState, target sandboxruntime.Target) *sandbox.SandboxState {
+	if state == nil {
+		state = &sandbox.SandboxState{}
+	}
+	if strings.TrimSpace(target.ID) != "" {
+		state.ID = target.ID
+	}
+	if strings.TrimSpace(target.Name) != "" {
+		state.Name = target.Name
+	}
+	if strings.TrimSpace(target.Provider) != "" {
+		state.Provider = target.Provider
+	}
+	if strings.TrimSpace(target.Status) != "" {
+		state.Status = target.Status
+	}
+	if strings.TrimSpace(target.Connection.WorkspaceID) != "" {
+		state.WorkspaceID = target.Connection.WorkspaceID
+	}
+	if strings.TrimSpace(target.Connection.PublicIP) != "" {
+		state.IP = target.Connection.PublicIP
+	} else if strings.TrimSpace(target.Connection.Address) != "" {
+		state.IP = target.Connection.Address
+	}
+	if strings.TrimSpace(target.Connection.TailscaleIP) != "" {
+		state.TailscaleIP = target.Connection.TailscaleIP
+	}
+	if strings.TrimSpace(target.Connection.TailscaleHostname) != "" {
+		state.TailscaleHostname = target.Connection.TailscaleHostname
+	}
+	state.TailscaleLockdown = target.Connection.TailscaleLockdown
+	if hasRuntimeState(target.Runtime) {
+		state.Runtime = &sandbox.SandboxRuntimeState{
+			Driver:         target.Runtime.Driver,
+			RuntimeID:      target.Runtime.RuntimeID,
+			Image:          target.Runtime.Image,
+			WorkerID:       target.Runtime.WorkerID,
+			IsolationLevel: target.Runtime.IsolationLevel,
+		}
+	}
+	return state
+}
+
+func hasRuntimeState(runtime sandboxruntime.RuntimeState) bool {
+	return strings.TrimSpace(runtime.Driver) != "" ||
+		strings.TrimSpace(runtime.RuntimeID) != "" ||
+		strings.TrimSpace(runtime.Image) != "" ||
+		strings.TrimSpace(runtime.WorkerID) != "" ||
+		strings.TrimSpace(runtime.IsolationLevel) != ""
 }
 
 type outputWriter struct {

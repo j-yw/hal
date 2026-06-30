@@ -28,7 +28,6 @@ func (d *Driver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*san
 		Operation: OperationExec,
 		Args:      d.execArgs(ref, commandArgs, req.Env, req.WorkDir, req.Stdin != nil),
 		Env:       cloneStringMap(req.Env),
-		WorkDir:   req.WorkDir,
 		Stdin:     req.Stdin,
 		Stdout:    req.Stdout,
 		Stderr:    req.Stderr,

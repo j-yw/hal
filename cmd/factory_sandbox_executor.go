@@ -61,7 +61,6 @@ type factorySandboxExecutorDeps struct {
 	resolveDefault         func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
 	loadSandbox            func(string) (*sandbox.SandboxState, error)
 	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
-	startSandbox           func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
 	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
 	runProviderExec        func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
@@ -81,7 +80,6 @@ var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
 	resolveDefault: sandbox.ResolveDefault,
 	loadSandbox:    sandbox.LoadActiveInstance,
 	provision:      provisionFactorySandbox,
-	startSandbox:   startFactorySandbox,
 	resolveProvider: func(providerName string) (sandbox.Provider, error) {
 		return resolveProviderWithFallback(".", providerName)
 	},
@@ -125,9 +123,6 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 	}
 	if deps.provision == nil {
 		deps.provision = defaultFactorySandboxExecutorDeps.provision
-	}
-	if deps.startSandbox == nil {
-		deps.startSandbox = defaultFactorySandboxExecutorDeps.startSandbox
 	}
 	if deps.resolveProvider == nil {
 		deps.resolveProvider = defaultFactorySandboxExecutorDeps.resolveProvider
@@ -272,15 +267,14 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			RequestedSecretModes:   []string{sandbox.SandboxSecretModeHTTPProxy},
 			CompatibilityAuthSync:  true,
 		},
-		Stdout: req.RemoteOutput,
-		Stderr: req.RemoteOutput,
+		Stdout:      req.RemoteOutput,
+		Stderr:      req.RemoteOutput,
+		SetupStdout: req.RemoteOutput,
+		SetupStderr: req.RemoteOutput,
 	}
 	_, execErr := sandboxexec.Run(ctx, commandReq, sandboxexec.Dependencies{
 		ResolveTarget: func(ctx context.Context, _ sandboxexec.TargetRequest) (*sandbox.SandboxState, error) {
 			return resolveFactorySandboxTarget(ctx, req, &record, provisionRepo, deps)
-		},
-		StartTarget: func(ctx context.Context, target *sandbox.SandboxState, stdout, _ io.Writer) (*sandbox.SandboxState, error) {
-			return deps.startSandbox(ctx, target, stdout)
 		},
 		OnTargetReady: func(_ context.Context, ready *sandbox.SandboxState) error {
 			target = ready

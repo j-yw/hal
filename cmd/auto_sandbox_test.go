@@ -1166,10 +1166,6 @@ func TestExecuteAutoSandboxGitBundleWorkspaceUsesSharedMaterializer(t *testing.T
 		loadSandbox: func(string) (*sandbox.SandboxState, error) {
 			return target, nil
 		},
-		startSandbox: func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error) {
-			t.Fatal("startSandbox should not run for a running target")
-			return nil, nil
-		},
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
 		},

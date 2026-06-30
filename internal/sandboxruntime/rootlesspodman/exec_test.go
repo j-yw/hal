@@ -80,8 +80,8 @@ func TestExecUsesFakeRunnerAndStreamsIO(t *testing.T) {
 	if !reflect.DeepEqual(request.Env, env) {
 		t.Fatalf("env = %#v, want %#v", request.Env, env)
 	}
-	if request.WorkDir != "/workspace/project" {
-		t.Fatalf("workdir = %q, want forwarded workdir", request.WorkDir)
+	if request.WorkDir != "" {
+		t.Fatalf("host workdir = %q, want empty because --workdir is a container path", request.WorkDir)
 	}
 	if request.Stdin != stdin {
 		t.Fatalf("stdin reader was not forwarded")

@@ -30,7 +30,6 @@ func TestNormalizeFactorySandboxExecutorDepsFillsProductionDefaults(t *testing.T
 		"resolveDefault":         deps.resolveDefault,
 		"loadSandbox":            deps.loadSandbox,
 		"provision":              deps.provision,
-		"startSandbox":           deps.startSandbox,
 		"resolveProvider":        deps.resolveProvider,
 		"resolveRuntimeDriver":   deps.resolveRuntimeDriver,
 		"runProviderExec":        deps.runProviderExec,
@@ -719,10 +718,6 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 			t.Fatalf("provision should not be called when resolve succeeds")
 			return nil, nil
 		},
-		startSandbox: func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error) {
-			t.Fatalf("startSandbox should not be called for running target")
-			return nil, nil
-		},
 		resolveProvider: func(providerName string) (sandbox.Provider, error) {
 			calls = append(calls, "provider")
 			if providerName != "daytona" {
@@ -894,10 +889,6 @@ func TestRunFactorySandboxExecutorRuntimeBoundaryRegressionMatchesSSHMachineBeha
 		},
 		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
 			t.Fatal("provision should not run for existing sandbox target")
-			return nil, nil
-		},
-		startSandbox: func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error) {
-			t.Fatal("startSandbox should not run for running sandbox target")
 			return nil, nil
 		},
 		resolveProvider: func(providerName string) (sandbox.Provider, error) {
@@ -2578,7 +2569,6 @@ func TestRunFactorySandboxExecutorWithDepsRequiresRemoteWorkspaceBeforeExecution
 	var events []factory.EventRecord
 	loadCalled := false
 	provisionCalled := false
-	startCalled := false
 	resolveProviderCalled := false
 	execCalled := false
 
@@ -2599,10 +2589,6 @@ func TestRunFactorySandboxExecutorWithDepsRequiresRemoteWorkspaceBeforeExecution
 		},
 		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
 			provisionCalled = true
-			return nil, nil
-		},
-		startSandbox: func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error) {
-			startCalled = true
 			return nil, nil
 		},
 		resolveProvider: func(string) (sandbox.Provider, error) {
@@ -2626,8 +2612,8 @@ func TestRunFactorySandboxExecutorWithDepsRequiresRemoteWorkspaceBeforeExecution
 	if err == nil || err.Error() != wantErr {
 		t.Fatalf("runFactorySandboxExecutorWithDeps() error = %v, want %q", err, wantErr)
 	}
-	if loadCalled || provisionCalled || startCalled || resolveProviderCalled {
-		t.Fatalf("sandbox lifecycle should not run without a workspace directory: load=%t provision=%t start=%t resolveProvider=%t", loadCalled, provisionCalled, startCalled, resolveProviderCalled)
+	if loadCalled || provisionCalled || resolveProviderCalled {
+		t.Fatalf("sandbox lifecycle should not run without a workspace directory: load=%t provision=%t resolveProvider=%t", loadCalled, provisionCalled, resolveProviderCalled)
 	}
 	if execCalled {
 		t.Fatalf("remote execution should not run without a workspace directory")
@@ -3039,8 +3025,6 @@ func TestRunFactorySandboxExecutorWithDepsCanProvisionAndStartWithFakes(t *testi
 		Provider: "hetzner",
 		Status:   sandbox.StatusStopped,
 	}
-	started := *provisioned
-	started.Status = sandbox.StatusRunning
 
 	var provisionReq factorySandboxProvisionRequest
 	startCalled := false
@@ -3072,14 +3056,20 @@ func TestRunFactorySandboxExecutorWithDepsCanProvisionAndStartWithFakes(t *testi
 			provisionReq = req
 			return provisioned, nil
 		},
-		startSandbox: func(_ context.Context, instance *sandbox.SandboxState, _ io.Writer) (*sandbox.SandboxState, error) {
-			startCalled = true
-			if instance.Name != "factory-new" {
-				t.Fatalf("start instance = %#v", instance)
-			}
-			return &started, nil
-		},
 		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		resolveRuntimeDriver: func(target sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return fakeFactorySandboxRuntimeDriver{
+				startFn: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+					startCalled = true
+					if req.Target.Name != "factory-new" || req.Target.Status != sandbox.StatusStopped {
+						t.Fatalf("start target = %#v, want stopped factory-new runtime target", req.Target)
+					}
+					started := target
+					started.Status = sandbox.StatusRunning
+					return &started, nil
+				},
+			}, nil
+		},
 		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
 			return nil
 		},
@@ -3099,7 +3089,7 @@ func TestRunFactorySandboxExecutorWithDepsCanProvisionAndStartWithFakes(t *testi
 		t.Fatalf("provision branchName = %q, want empty", provisionReq.BranchName)
 	}
 	if !startCalled {
-		t.Fatalf("startSandbox was not called for stopped provisioned target")
+		t.Fatalf("runtime driver Start was not called for stopped provisioned target")
 	}
 }
 
@@ -3252,8 +3242,6 @@ func TestRunFactorySandboxExecutorWithDepsStartsStoppedDerivedDefaultBeforeProvi
 		Provider: "daytona",
 		Status:   sandbox.StatusStopped,
 	}
-	started := *stopped
-	started.Status = sandbox.StatusRunning
 	provisionCalled := false
 	startCalled := false
 
@@ -3279,14 +3267,20 @@ func TestRunFactorySandboxExecutorWithDepsStartsStoppedDerivedDefaultBeforeProvi
 			provisionCalled = true
 			return nil, nil
 		},
-		startSandbox: func(_ context.Context, target *sandbox.SandboxState, _ io.Writer) (*sandbox.SandboxState, error) {
-			startCalled = true
-			if target != stopped {
-				t.Fatalf("start target = %#v, want stopped sandbox", target)
-			}
-			return &started, nil
-		},
 		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		resolveRuntimeDriver: func(target sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return fakeFactorySandboxRuntimeDriver{
+				startFn: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+					startCalled = true
+					if req.Target.Name != "hal-feature" || req.Target.Status != sandbox.StatusStopped {
+						t.Fatalf("start target = %#v, want stopped hal-feature runtime target", req.Target)
+					}
+					started := target
+					started.Status = sandbox.StatusRunning
+					return &started, nil
+				},
+			}, nil
+		},
 		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
 			return nil
 		},
@@ -3300,7 +3294,7 @@ func TestRunFactorySandboxExecutorWithDepsStartsStoppedDerivedDefaultBeforeProvi
 		t.Fatalf("provision should not be called when derived stopped sandbox exists")
 	}
 	if !startCalled {
-		t.Fatalf("startSandbox was not called for stopped default sandbox")
+		t.Fatalf("runtime driver Start was not called for stopped default sandbox")
 	}
 }
 
@@ -3429,14 +3423,18 @@ func TestRunFactorySandboxExecutorWithDepsRecordsStartFailureWithSandboxMetadata
 		loadSandbox: func(string) (*sandbox.SandboxState, error) {
 			return target, nil
 		},
-		startSandbox: func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error) {
-			return nil, startErr
-		},
 		resolveProvider: func(providerName string) (sandbox.Provider, error) {
 			if providerName != "hetzner" {
 				t.Fatalf("providerName = %q, want hetzner", providerName)
 			}
 			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return fakeFactorySandboxRuntimeDriver{
+				startFn: func(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+					return nil, startErr
+				},
+			}, nil
 		},
 		cleanupSandbox: func(_ context.Context, req factorySandboxCleanupRequest) error {
 			cleanupCalls++
@@ -3756,8 +3754,9 @@ func (fakeFactorySandboxProvider) Exec(*sandbox.ConnectInfo, []string) (*exec.Cm
 }
 
 type fakeFactorySandboxRuntimeDriver struct {
-	id     string
-	execFn func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
+	id      string
+	startFn func(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error)
+	execFn  func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
 }
 
 func (d fakeFactorySandboxRuntimeDriver) ID() string {
@@ -3771,8 +3770,13 @@ func (d fakeFactorySandboxRuntimeDriver) Create(context.Context, sandboxruntime.
 	return nil, nil
 }
 
-func (d fakeFactorySandboxRuntimeDriver) Start(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
-	return &req.Target, nil
+func (d fakeFactorySandboxRuntimeDriver) Start(ctx context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	if d.startFn != nil {
+		return d.startFn(ctx, req)
+	}
+	target := req.Target
+	target.Status = sandbox.StatusRunning
+	return &target, nil
 }
 
 func (d fakeFactorySandboxRuntimeDriver) Stop(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {

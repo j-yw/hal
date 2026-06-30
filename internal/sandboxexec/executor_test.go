@@ -21,15 +21,27 @@ import (
 
 func TestRunInvokesInjectedPhasesAndRunner(t *testing.T) {
 	stopped := &sandbox.SandboxState{Name: "factory-dev", Provider: "daytona", Status: sandbox.StatusStopped, IP: "203.0.113.42"}
-	started := *stopped
-	started.Status = sandbox.StatusRunning
-	driver := fakeRuntimeDriver{id: sandboxruntime.DriverSSHMachine}
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	var calls []string
 	var events []Event
 	var gotRunReq CommandRequest
 	var gotRunContext RunContext
+	driver := &recordingRuntimeDriver{
+		id: sandboxruntime.DriverSSHMachine,
+		start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+			calls = append(calls, "start")
+			if req.Target.Name != "factory-dev" || req.Target.Provider != "daytona" || req.Target.Status != sandbox.StatusStopped {
+				t.Fatalf("start target = %#v, want stopped runtime target", req.Target)
+			}
+			if req.Stdout != &stdout || req.Stderr != &stderr {
+				t.Fatalf("start writers were not forwarded")
+			}
+			startedTarget := req.Target
+			startedTarget.Status = sandbox.StatusRunning
+			return &startedTarget, nil
+		},
+	}
 
 	result, err := Run(context.Background(), CommandRequest{
 		Purpose:     "factory",
@@ -53,20 +65,10 @@ func TestRunInvokesInjectedPhasesAndRunner(t *testing.T) {
 			}
 			return stopped, nil
 		},
-		StartTarget: func(_ context.Context, target *sandbox.SandboxState, stdoutWriter, stderrWriter io.Writer) (*sandbox.SandboxState, error) {
-			calls = append(calls, "start")
-			if target != stopped {
-				t.Fatalf("start target = %#v, want stopped target", target)
-			}
-			if stdoutWriter != &stdout || stderrWriter != &stderr {
-				t.Fatalf("start writers were not forwarded")
-			}
-			return &started, nil
-		},
 		OnTargetReady: func(_ context.Context, target *sandbox.SandboxState) error {
 			calls = append(calls, "target-ready")
-			if target.Status != sandbox.StatusRunning {
-				t.Fatalf("target ready status = %q", target.Status)
+			if target.Status != sandbox.StatusRunning || target != stopped {
+				t.Fatalf("target ready = %#v, want original state updated to running", target)
 			}
 			return nil
 		},
@@ -157,9 +159,9 @@ func TestRunInvokesInjectedPhasesAndRunner(t *testing.T) {
 
 	wantCalls := []string{
 		"resolve",
+		"driver",
 		"start",
 		"target-ready",
-		"driver",
 		"driver-ready",
 		"workspace",
 		"auth",
@@ -794,18 +796,14 @@ func TestMaterializeBundleWorkspaceUsesRuntimeClientForRootlessPodman(t *testing
 
 func TestRunUsesExistingRunningTargetWithoutStart(t *testing.T) {
 	target := &sandbox.SandboxState{Name: "factory-dev", Provider: "daytona", Status: sandbox.StatusRunning}
-	startCalled := false
+	driver := &recordingRuntimeDriver{}
 
 	_, err := Run(context.Background(), CommandRequest{SandboxName: "factory-dev"}, Dependencies{
 		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
 			return target, nil
 		},
-		StartTarget: func(context.Context, *sandbox.SandboxState, io.Writer, io.Writer) (*sandbox.SandboxState, error) {
-			startCalled = true
-			return nil, nil
-		},
 		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
-			return fakeRuntimeDriver{}, nil
+			return driver, nil
 		},
 		RunCommand: func(context.Context, RunContext, CommandRequest) error {
 			return nil
@@ -814,8 +812,74 @@ func TestRunUsesExistingRunningTargetWithoutStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() unexpected error: %v", err)
 	}
-	if startCalled {
-		t.Fatal("StartTarget was called for an already running target")
+	if driver.startCalled {
+		t.Fatal("runtime driver Start was called for an already running target")
+	}
+}
+
+func TestRunStartsStoppedRootlessPodmanTargetThroughRuntimeDriver(t *testing.T) {
+	target := &sandbox.SandboxState{
+		Name:     "podman-dev",
+		Provider: "local",
+		Status:   sandbox.StatusStopped,
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandbox.SandboxRuntimeDriverRootlessPodman,
+			RuntimeID:      "podman-container",
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+		},
+	}
+	var setupOut bytes.Buffer
+	var setupErr bytes.Buffer
+	var gotRunTarget sandboxruntime.Target
+	driver := &recordingRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+			if req.Target.Name != "podman-dev" || req.Target.Status != sandbox.StatusStopped {
+				t.Fatalf("start target = %#v, want stopped podman-dev", req.Target)
+			}
+			if req.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman || req.Target.Runtime.RuntimeID != "podman-container" {
+				t.Fatalf("start runtime metadata = %#v", req.Target.Runtime)
+			}
+			if req.Stdout != &setupOut || req.Stderr != &setupErr {
+				t.Fatalf("start writers = %#v/%#v, want setup writers", req.Stdout, req.Stderr)
+			}
+			started := req.Target
+			started.Status = sandbox.StatusRunning
+			return &started, nil
+		},
+	}
+
+	result, err := Run(context.Background(), CommandRequest{
+		SandboxName: "podman-dev",
+		Command:     []string{"hal", "status"},
+		SetupStdout: &setupOut,
+		SetupStderr: &setupErr,
+	}, Dependencies{
+		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		ResolveDriver: func(_ context.Context, runtimeTarget sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			if runtimeTarget.Runtime.Driver != sandboxruntime.DriverRootlessPodman {
+				t.Fatalf("resolved runtime driver = %q, want rootless_podman", runtimeTarget.Runtime.Driver)
+			}
+			return driver, nil
+		},
+		RunCommand: func(_ context.Context, run RunContext, _ CommandRequest) error {
+			gotRunTarget = run.Target
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+	if !driver.startCalled {
+		t.Fatal("runtime driver Start was not called for stopped rootless target")
+	}
+	if result.Target.Status != sandbox.StatusRunning || target.Status != sandbox.StatusRunning || gotRunTarget.Status != sandbox.StatusRunning {
+		t.Fatalf("statuses result/target/run = %q/%q/%q, want running", result.Target.Status, target.Status, gotRunTarget.Status)
+	}
+	if result.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman || gotRunTarget.Runtime.Driver != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("runtime driver result/run = %#v/%#v", result.Target.Runtime, gotRunTarget.Runtime)
 	}
 }
 
@@ -923,17 +987,19 @@ func TestRunPreservesExistingSecurityMetadataWithoutEvaluationRequest(t *testing
 func TestRunPropagatesStartFailure(t *testing.T) {
 	target := &sandbox.SandboxState{Name: "factory-dev", Provider: "daytona", Status: sandbox.StatusStopped}
 	startErr := errors.New("provider start failed")
+	driver := &recordingRuntimeDriver{
+		id: sandboxruntime.DriverSSHMachine,
+		start: func(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+			return nil, startErr
+		},
+	}
 
 	_, err := Run(context.Background(), CommandRequest{SandboxName: "factory-dev"}, Dependencies{
 		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
 			return target, nil
 		},
-		StartTarget: func(context.Context, *sandbox.SandboxState, io.Writer, io.Writer) (*sandbox.SandboxState, error) {
-			return nil, startErr
-		},
 		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
-			t.Fatal("ResolveDriver should not run after start failure")
-			return nil, nil
+			return driver, nil
 		},
 		RunCommand: func(context.Context, RunContext, CommandRequest) error {
 			t.Fatal("RunCommand should not run after start failure")
@@ -943,6 +1009,9 @@ func TestRunPropagatesStartFailure(t *testing.T) {
 	phaseErr, ok := AsPhaseError(err)
 	if !ok || phaseErr.Phase != PhaseStartTarget || !errors.Is(err, startErr) {
 		t.Fatalf("error = %#v, want start phase wrapping startErr", err)
+	}
+	if !driver.startCalled {
+		t.Fatal("runtime driver Start was not called")
 	}
 	if phaseErr.Target != target {
 		t.Fatalf("phase target = %#v, want original target %#v", phaseErr.Target, target)
@@ -1085,8 +1154,12 @@ func TestRunPhaseErrorsUseStablePhaseNames(t *testing.T) {
 					ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
 						return &sandbox.SandboxState{Name: "factory-dev", Provider: "daytona", Status: sandbox.StatusStopped}, nil
 					},
-					StartTarget: func(context.Context, *sandbox.SandboxState, io.Writer, io.Writer) (*sandbox.SandboxState, error) {
-						return nil, failure
+					ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+						return &recordingRuntimeDriver{
+							start: func(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+								return nil, failure
+							},
+						}, nil
 					},
 				})
 			},
@@ -1320,9 +1393,6 @@ func successfulDeps(t *testing.T, overrides Dependencies) Dependencies {
 	if overrides.ResolveTarget != nil {
 		deps.ResolveTarget = overrides.ResolveTarget
 	}
-	if overrides.StartTarget != nil {
-		deps.StartTarget = overrides.StartTarget
-	}
 	if overrides.ResolveDriver != nil {
 		deps.ResolveDriver = overrides.ResolveDriver
 	}
@@ -1365,8 +1435,10 @@ func (fakeRuntimeDriver) Create(context.Context, sandboxruntime.CreateRequest) (
 	return nil, nil
 }
 
-func (fakeRuntimeDriver) Start(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
-	return nil, nil
+func (fakeRuntimeDriver) Start(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	target := req.Target
+	target.Status = sandbox.StatusRunning
+	return &target, nil
 }
 
 func (fakeRuntimeDriver) Stop(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
@@ -1395,8 +1467,10 @@ func (fakeRuntimeDriver) CopyOut(context.Context, sandboxruntime.CopyRequest) er
 
 type recordingRuntimeDriver struct {
 	id           string
+	startCalled  bool
 	execCalled   bool
 	copyInCalled bool
+	start        func(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error)
 	exec         func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
 	copyIn       func(context.Context, sandboxruntime.CopyRequest) error
 }
@@ -1412,8 +1486,14 @@ func (r *recordingRuntimeDriver) Create(context.Context, sandboxruntime.CreateRe
 	return nil, nil
 }
 
-func (r *recordingRuntimeDriver) Start(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
-	return nil, nil
+func (r *recordingRuntimeDriver) Start(ctx context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	r.startCalled = true
+	if r.start != nil {
+		return r.start(ctx, req)
+	}
+	target := req.Target
+	target.Status = sandbox.StatusRunning
+	return &target, nil
 }
 
 func (r *recordingRuntimeDriver) Stop(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {

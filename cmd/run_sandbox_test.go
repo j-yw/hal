@@ -577,22 +577,25 @@ func TestRunRunSandboxWithWriterJSONPreRemoteExecutionFailureIncludesTargetMetad
 		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
 			return target, target.Name, nil
 		},
-		startSandbox: func(_ context.Context, got *sandbox.SandboxState, stdout io.Writer) (*sandbox.SandboxState, error) {
-			if got != target {
-				t.Fatalf("start target = %#v, want original target", got)
-			}
-			if _, err := io.WriteString(stdout, "starting sandbox\n"); err != nil {
-				return nil, err
-			}
-			return nil, errors.New("start failed")
-		},
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			t.Fatal("resolveProvider should not run after start failure")
 			return nil, nil
 		},
-		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
-			t.Fatal("resolveRuntimeDriver should not run after start failure")
-			return nil, nil
+		resolveRuntimeDriver: func(runtimeTarget sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			if runtimeTarget.Name != "stopped-box" || runtimeTarget.Status != sandbox.StatusStopped {
+				t.Fatalf("runtime target = %#v, want stopped-box stopped", runtimeTarget)
+			}
+			return fakeRunSandboxRuntimeDriver{
+				start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+					if req.Target.Name != "stopped-box" || req.Target.Status != sandbox.StatusStopped {
+						t.Fatalf("start target = %#v, want stopped-box stopped", req.Target)
+					}
+					if _, err := io.WriteString(req.Stdout, "starting sandbox\n"); err != nil {
+						return nil, err
+					}
+					return nil, errors.New("start failed")
+				},
+			}, nil
 		},
 	})
 	if err != nil {
@@ -777,10 +780,6 @@ func TestExecuteRunSandboxUsesRuntimeDriverAfterAuthPreparation(t *testing.T) {
 		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
 			return target, target.Name, nil
 		},
-		startSandbox: func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error) {
-			t.Fatal("startSandbox should not run for a running target")
-			return nil, nil
-		},
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
 		},
@@ -882,10 +881,6 @@ func TestExecuteRunSandboxGitBundleWorkspaceUsesSharedMaterializer(t *testing.T)
 	result, err := (runSandboxDeps{
 		loadSandbox: func(string) (*sandbox.SandboxState, error) {
 			return target, nil
-		},
-		startSandbox: func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error) {
-			t.Fatal("startSandbox should not run for a running target")
-			return nil, nil
 		},
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
@@ -1724,6 +1719,7 @@ func (f fakeRunSandboxGitInspector) InspectGit(context.Context, string) (sandbox
 
 type fakeRunSandboxRuntimeDriver struct {
 	id      string
+	start   func(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error)
 	exec    func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
 	copyOut func(context.Context, sandboxruntime.CopyRequest) error
 }
@@ -1739,8 +1735,13 @@ func (fakeRunSandboxRuntimeDriver) Create(context.Context, sandboxruntime.Create
 	return nil, nil
 }
 
-func (fakeRunSandboxRuntimeDriver) Start(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
-	return nil, nil
+func (f fakeRunSandboxRuntimeDriver) Start(ctx context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	if f.start != nil {
+		return f.start(ctx, req)
+	}
+	target := req.Target
+	target.Status = sandbox.StatusRunning
+	return &target, nil
 }
 
 func (fakeRunSandboxRuntimeDriver) Stop(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
