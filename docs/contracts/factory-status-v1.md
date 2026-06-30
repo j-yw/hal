@@ -149,6 +149,13 @@ When `sandbox.runtime` is present:
 | `image` | string | yes | Runtime image or image reference when known |
 | `workerId` | string | yes | Worker identifier associated with the runtime when known |
 
+For factory sandbox runs, `rootless_podman` is an experimental lower-isolation
+local container runtime. Its `sandbox.runtime.isolationLevel` is `container`;
+consumers must not treat it as VM isolation or as the production default runtime.
+When rootless Podman uses the current compatibility security posture,
+`sandbox.security.network.policyEnforced` is `best_effort` and
+`sandbox.security.network.enforcementMode` is `none`.
+
 When `sandbox.workspace` is present:
 
 | Field | Type | Required | Description |

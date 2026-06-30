@@ -181,6 +181,86 @@ func TestFactorySandboxMetadataFromStateIncludesSecurityMetadata(t *testing.T) {
 	requireFactorySandboxSecurityMetadata(t, got.Security, []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeLegacyAuthSync})
 }
 
+func TestFactorySandboxMetadataFromStateIncludesRootlessRuntimeV2Metadata(t *testing.T) {
+	expiresAt := time.Date(2026, 7, 1, 2, 30, 0, 0, time.UTC)
+	_, got := factorySandboxMetadataFromState(&sandbox.SandboxState{
+		Name:     "factory-rootless",
+		Provider: "local",
+		Size:     "podman",
+		Status:   sandbox.StatusRunning,
+		Host: &sandbox.SandboxHost{
+			ID:       "host-local",
+			Name:     "developer-workstation",
+			Kind:     sandbox.SandboxHostKindLocal,
+			Endpoint: "unix:///run/user/501/podman/podman.sock",
+		},
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandbox.SandboxRuntimeDriverRootlessPodman,
+			IsolationLevel: sandbox.SandboxIsolationLevelVM,
+			RuntimeID:      "container-123",
+			Image:          "localhost/hal-test:latest",
+			WorkerID:       "local-worker",
+		},
+		Workspace: &sandbox.SandboxWorkspace{
+			Mode:        sandbox.SandboxWorkspaceModeClone,
+			InputSource: sandbox.SandboxWorkspaceInputSourceGitBundle,
+			Repo:        "/Users/v/work/private/repo",
+			Branch:      "hal/rootless-runtime",
+			SyncRef:     "bundle:abc123",
+		},
+		Security: sandbox.EvaluateSandboxSecurity(sandbox.SecurityEvaluationRequest{
+			RuntimeDriver:          sandbox.SandboxRuntimeDriverRootlessPodman,
+			RequestedNetworkPolicy: sandbox.SandboxNetworkPolicyDenyByDefault,
+			RequestedSecretModes:   []string{sandbox.SandboxSecretModeHTTPProxy},
+			ActiveSecretModes:      []string{sandbox.SandboxSecretModeEnv},
+			CompatibilityAuthSync:  true,
+		}),
+		Lease: &sandbox.SandboxLeaseRef{
+			ID:          "lease-rootless",
+			ResourceKey: "runtime:container-123",
+			Holder:      "local-user",
+			Purpose:     sandbox.SandboxLeasePurposeFactory,
+			RunID:       "run-rootless",
+			ExpiresAt:   expiresAt,
+		},
+	})
+	if got == nil {
+		t.Fatal("factorySandboxMetadataFromState() = nil")
+	}
+	if got.Host == nil || got.Host.ID != "host-local" || got.Host.Kind != sandbox.SandboxHostKindLocal {
+		t.Fatalf("host metadata = %#v", got.Host)
+	}
+	if got.Runtime == nil {
+		t.Fatal("runtime metadata = nil")
+	}
+	if got.Runtime.Driver != sandbox.SandboxRuntimeDriverRootlessPodman {
+		t.Fatalf("runtime driver = %q, want %q", got.Runtime.Driver, sandbox.SandboxRuntimeDriverRootlessPodman)
+	}
+	if got.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelContainer {
+		t.Fatalf("runtime isolationLevel = %q, want %q", got.Runtime.IsolationLevel, sandbox.SandboxIsolationLevelContainer)
+	}
+	if got.Runtime.IsolationLevel == sandbox.SandboxIsolationLevelVM {
+		t.Fatalf("rootless Podman runtime must not report VM isolation: %#v", got.Runtime)
+	}
+	if got.Workspace == nil || got.Workspace.InputSource != sandbox.SandboxWorkspaceInputSourceGitBundle || got.Workspace.Branch != "hal/rootless-runtime" {
+		t.Fatalf("workspace metadata = %#v", got.Workspace)
+	}
+	requireFactorySandboxSecurityMetadata(t, got.Security, []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeLegacyAuthSync})
+	if got.Lease == nil || got.Lease.ID != "lease-rootless" || got.Lease.ResourceKey != "runtime:container-123" || !got.Lease.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("lease metadata = %#v", got.Lease)
+	}
+
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("json.Marshal(metadata) error: %v", err)
+	}
+	for _, forbidden := range []string{"/Users/v/work/private/repo", "local-user", "endpoint", "holder"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("factory sandbox metadata leaked %q:\n%s", forbidden, string(data))
+		}
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsAppliesCleanupPolicy(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -965,6 +1045,19 @@ func TestRunFactorySandboxExecutorUsesRootlessPodmanRuntimeMetadataForDriverReso
 	if sandboxMetadata.SSHCommand != "hal sandbox ssh factory-rootless" || sandboxMetadata.CleanupCommand != "hal sandbox delete factory-rootless" {
 		t.Fatalf("handoff metadata = %#v", sandboxMetadata)
 	}
+	if sandboxMetadata.Runtime == nil {
+		t.Fatal("saved sandbox runtime metadata = nil")
+	}
+	if sandboxMetadata.Runtime.Driver != sandbox.SandboxRuntimeDriverRootlessPodman {
+		t.Fatalf("saved sandbox runtime driver = %q, want %q", sandboxMetadata.Runtime.Driver, sandbox.SandboxRuntimeDriverRootlessPodman)
+	}
+	if sandboxMetadata.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelContainer {
+		t.Fatalf("saved sandbox runtime isolationLevel = %q, want %q", sandboxMetadata.Runtime.IsolationLevel, sandbox.SandboxIsolationLevelContainer)
+	}
+	if sandboxMetadata.Runtime.IsolationLevel == sandbox.SandboxIsolationLevelVM {
+		t.Fatalf("saved rootless Podman metadata must not report VM isolation: %#v", sandboxMetadata.Runtime)
+	}
+	requireFactorySandboxSecurityMetadata(t, sandboxMetadata.Security, []string{sandbox.SandboxSecretModeLegacyAuthSync})
 }
 
 func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecution(t *testing.T) {

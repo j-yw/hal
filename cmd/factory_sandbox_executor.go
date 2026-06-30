@@ -1936,7 +1936,11 @@ func factorySandboxMetadataFromState(instance *sandbox.SandboxState) (string, *f
 		SSHCommand:     fmt.Sprintf("hal sandbox ssh %s", instance.Name),
 		CleanupCommand: fmt.Sprintf("hal sandbox delete %s", instance.Name),
 		Handoff:        fmt.Sprintf("Inspect sandbox with `hal sandbox ssh %s`.", instance.Name),
+		Host:           factorySandboxHostMetadataFromState(instance),
+		Runtime:        factorySandboxRuntimeMetadataFromState(instance),
+		Workspace:      factorySandboxWorkspaceMetadataFromState(instance),
 		Security:       factorySandboxSecurityMetadataFromState(instance),
+		Lease:          factorySandboxLeaseMetadataFromState(instance),
 	}
 	return instance.Name, metadata
 }
@@ -1977,6 +1981,66 @@ func factorySandboxConnectionMetadataFromState(instance *sandbox.SandboxState) *
 	return connection
 }
 
+func factorySandboxHostMetadataFromState(instance *sandbox.SandboxState) *factory.SandboxHostMetadata {
+	if instance == nil || instance.Host == nil {
+		return nil
+	}
+	host := instance.Host
+	if strings.TrimSpace(host.ID) == "" && strings.TrimSpace(host.Name) == "" && strings.TrimSpace(host.Kind) == "" {
+		return nil
+	}
+	return &factory.SandboxHostMetadata{
+		ID:   host.ID,
+		Name: host.Name,
+		Kind: host.Kind,
+	}
+}
+
+func factorySandboxRuntimeMetadataFromState(instance *sandbox.SandboxState) *factory.SandboxRuntimeMetadata {
+	if instance == nil || instance.Runtime == nil {
+		return nil
+	}
+	runtime := instance.Runtime
+	if strings.TrimSpace(runtime.Driver) == "" &&
+		strings.TrimSpace(runtime.IsolationLevel) == "" &&
+		strings.TrimSpace(runtime.RuntimeID) == "" &&
+		strings.TrimSpace(runtime.Image) == "" &&
+		strings.TrimSpace(runtime.WorkerID) == "" {
+		return nil
+	}
+	driver := strings.TrimSpace(runtime.Driver)
+	isolationLevel := strings.TrimSpace(runtime.IsolationLevel)
+	if driver == sandbox.SandboxRuntimeDriverRootlessPodman {
+		isolationLevel = sandbox.SandboxIsolationLevelContainer
+	}
+	return &factory.SandboxRuntimeMetadata{
+		Driver:         driver,
+		IsolationLevel: isolationLevel,
+		RuntimeID:      runtime.RuntimeID,
+		Image:          runtime.Image,
+		WorkerID:       runtime.WorkerID,
+	}
+}
+
+func factorySandboxWorkspaceMetadataFromState(instance *sandbox.SandboxState) *factory.SandboxWorkspaceMetadata {
+	if instance == nil || instance.Workspace == nil {
+		return nil
+	}
+	workspace := instance.Workspace
+	if strings.TrimSpace(workspace.Mode) == "" &&
+		strings.TrimSpace(workspace.InputSource) == "" &&
+		strings.TrimSpace(workspace.Branch) == "" &&
+		strings.TrimSpace(workspace.SyncRef) == "" {
+		return nil
+	}
+	return &factory.SandboxWorkspaceMetadata{
+		Mode:        workspace.Mode,
+		InputSource: workspace.InputSource,
+		Branch:      workspace.Branch,
+		SyncRef:     workspace.SyncRef,
+	}
+}
+
 func factorySandboxSecurityMetadataFromState(instance *sandbox.SandboxState) *factory.SandboxSecurityMetadata {
 	if instance == nil || instance.Security == nil {
 		return nil
@@ -2006,6 +2070,27 @@ func factorySandboxSecurityMetadata(security *sandbox.SandboxSecurity) *factory.
 		return nil
 	}
 	return metadata
+}
+
+func factorySandboxLeaseMetadataFromState(instance *sandbox.SandboxState) *factory.SandboxLeaseMetadata {
+	if instance == nil || instance.Lease == nil {
+		return nil
+	}
+	lease := instance.Lease
+	if strings.TrimSpace(lease.ID) == "" &&
+		strings.TrimSpace(lease.ResourceKey) == "" &&
+		strings.TrimSpace(lease.Purpose) == "" &&
+		strings.TrimSpace(lease.RunID) == "" &&
+		lease.ExpiresAt.IsZero() {
+		return nil
+	}
+	return &factory.SandboxLeaseMetadata{
+		ID:          lease.ID,
+		ResourceKey: lease.ResourceKey,
+		Purpose:     lease.Purpose,
+		RunID:       lease.RunID,
+		ExpiresAt:   lease.ExpiresAt,
+	}
 }
 
 func recordFactorySandboxSecurityPolicyEvent(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, redactor factory.RunSecretRedactor) error {

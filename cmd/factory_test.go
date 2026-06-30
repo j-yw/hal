@@ -7235,6 +7235,73 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 	})
 }
 
+func TestRunFactoryStatusJSONEmitsRootlessPodmanSandboxMetadata(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 7, 1, 3, 0, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-status-rootless", base, base.Add(time.Minute))
+	record.ExecutorMode = factory.ExecutorModeSandbox
+	record.Status = factory.RunStatusRunning
+	record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(&sandbox.SandboxState{
+		Name:     "factory-rootless",
+		Provider: "local",
+		Status:   sandbox.StatusRunning,
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandbox.SandboxRuntimeDriverRootlessPodman,
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+			RuntimeID:      "container-123",
+			Image:          "localhost/hal-test:latest",
+			WorkerID:       "local-worker",
+		},
+		Security: sandbox.EvaluateSandboxSecurity(sandbox.SecurityEvaluationRequest{
+			RuntimeDriver:          sandbox.SandboxRuntimeDriverRootlessPodman,
+			RequestedNetworkPolicy: sandbox.SandboxNetworkPolicyDenyByDefault,
+			RequestedSecretModes:   []string{sandbox.SandboxSecretModeHTTPProxy},
+			CompatibilityAuthSync:  true,
+		}),
+	})
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := runFactoryStatusWithDeps(&buf, record.RunID, true, factoryStatusDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryStatusWithDeps() unexpected error: %v", err)
+	}
+
+	var resp FactoryStatusResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+	}
+	if resp.Run.Sandbox == nil {
+		t.Fatal("run.sandbox = nil")
+	}
+	if resp.Run.Sandbox.Runtime == nil {
+		t.Fatal("run.sandbox.runtime = nil")
+	}
+	if resp.Run.Sandbox.Runtime.Driver != sandbox.SandboxRuntimeDriverRootlessPodman {
+		t.Fatalf("runtime.driver = %q, want %q", resp.Run.Sandbox.Runtime.Driver, sandbox.SandboxRuntimeDriverRootlessPodman)
+	}
+	if resp.Run.Sandbox.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelContainer {
+		t.Fatalf("runtime.isolationLevel = %q, want %q", resp.Run.Sandbox.Runtime.IsolationLevel, sandbox.SandboxIsolationLevelContainer)
+	}
+	if strings.Contains(buf.String(), `"isolationLevel": "vm"`) {
+		t.Fatalf("factory status rootless Podman metadata must not report VM isolation:\n%s", buf.String())
+	}
+	if resp.Run.Sandbox.Security == nil || resp.Run.Sandbox.Security.Network == nil {
+		t.Fatalf("run.sandbox.security.network = %#v", resp.Run.Sandbox.Security)
+	}
+	network := resp.Run.Sandbox.Security.Network
+	if network.PolicyEnforced != sandbox.SandboxNetworkPolicyBestEffort {
+		t.Fatalf("security.network.policyEnforced = %q, want %q", network.PolicyEnforced, sandbox.SandboxNetworkPolicyBestEffort)
+	}
+	if network.EnforcementMode != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("security.network.enforcementMode = %q, want %q", network.EnforcementMode, sandbox.SandboxNetworkEnforcementModeNone)
+	}
+}
+
 func TestRunFactoryStatusJSONDerivesTelemetryDurations(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	base := time.Date(2026, 6, 21, 14, 0, 0, 0, time.UTC)

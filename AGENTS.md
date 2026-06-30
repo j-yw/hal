@@ -130,6 +130,7 @@
 - Sandbox remote output timeline capture belongs at the sandbox executor boundary: wrap the provider exec writer, tee to user output, split complete lines, sanitize with the sandbox redactor, and persist `command_output_summary` events tagged with `source=remote_sandbox`.
 - Sandbox executor remote lifecycle events should be appended through `factorySandboxTimelineWriter` so start/output/completion events share one sequence counter and consistent `source=remote_sandbox` metadata before the outer factory runner records terminal success/failure.
 - Sandbox remote execution failures should be sanitized and saved inside `runFactorySandboxExecutorWithDeps` before returning to the outer factory runner; `markFactoryRunFailed` should preserve existing sandbox SSH handoff commands while the status inspection command remains available through `nextAction`.
+- Factory sandbox status metadata is sourced from `factorySandboxMetadataFromState`; when copying Sandbox Runtime v2 state into `factory.SandboxMetadata`, keep only safe host/runtime/workspace/security/lease summaries, omit raw repo paths and lease holders, and normalize `rootless_podman` isolation to `container`.
 
 ## Patterns from hal/rename-to-hal (2026-02-04)
 
