@@ -37,6 +37,23 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase/sandbox-runtime-v2-9-runtime-driver (2026-06-30)
+
+- Runtime-driver boundary contracts live in `internal/sandboxruntime`; keep this package command-agnostic by using package-local target/request types and only standard-library dependencies.
+- The root `internal/sandboxruntime` package has an import-boundary test that scans production Go files and forbids Cobra, `cmd`, `internal/factory`, `internal/prd`, `internal/compound`, and `internal/loop`; put provider/runtime adapters outside the root contracts package.
+- SSH-machine runtime adapter code lives in `internal/sandboxruntime/sshmachine`; preserve legacy target resolution by deriving provider inputs through `sandbox.ConnectInfoFromState`, and wrap provider lifecycle failures in typed errors that keep operation name, driver ID, and the underlying provider error.
+- SSH-machine runtime exec should call the legacy provider `Exec` with command args unchanged, then configure the returned `*exec.Cmd` with runtime stdin/stdout/stderr/env/workdir; stderr defaults to stdout, and context cancellation errors must remain unwrap-compatible through the adapter operation error.
+- SSH-machine runtime file transport should stay provider-Exec-backed: CopyIn streams the local source through stdin to a remote shell helper, CopyOut captures remote stdout into a local temp file before rename, and both wrap failures with `OperationError` operation names (`copy_in`/`copy_out`).
+- `internal/sandboxexec.PrepareContext` uses `sandboxruntime.Target` and `sandboxruntime.ConnectionInfo` for preparation hooks; when command code still needs legacy provider structs, bridge at the command boundary through `cmd/sandbox_runtime_compat.go` instead of re-exposing provider types from sandboxexec preparation.
+- `internal/sandboxexec.RunContext` and `Result` expose runtime primitives (`sandboxruntime.Target`, `ConnectionInfo`, `Driver`) plus cloned command snapshots; command callers that still need provider execution should resolve an SSH-machine driver with `sandboxRuntimeDriverFromProvider` and convert at `cmd/sandbox_runtime_compat.go`.
+- `sandboxexec.Run` defaults to `sandboxruntime.Driver.Exec` when no command-specific `RunCommand` is supplied, forwarding command args, env, workdir, stdout, stderr, and stdin; command-specific wrappers should only override this when they need compatibility behavior such as remote working-directory shell wrapping.
+- Run/auto/factory sandbox command callers should preserve the richer legacy `*sandbox.SandboxState` captured by `OnTargetReady` and use `sandboxexec.Result.Target` only as a fallback so host, runtime, and security metadata are not dropped.
+- `sandboxexec.PhaseError` intentionally carries `*sandbox.SandboxState` plus `RuntimeDriver`, but not `sandbox.Provider` or `*sandbox.ConnectInfo`; command callers should use the phase-error target only as a fallback when no richer `OnTargetReady` state is available.
+- `hal run --sandbox` remote command execution goes through `runSandboxDeps.resolveRuntimeDriver` and `sandboxruntime.Driver.Exec`; keep provider-backed compatibility helpers scoped to workspace bootstrap/auth sync until those preparation paths are migrated.
+- `hal auto --sandbox` remote command execution goes through `autoSandboxDeps.resolveRuntimeDriver` and `sandboxruntime.Driver.Exec`; keep provider-backed compatibility helpers scoped to workspace bootstrap, auth sync, and input-copy preparation until those paths are migrated.
+- Factory sandbox final remote command execution goes through `factorySandboxExecutorDeps.resolveRuntimeDriver` and `sandboxruntime.Driver.Exec`; keep provider-backed compatibility helpers scoped to workspace bootstrap, auth sync, input-copy preparation, and cleanup until those paths are migrated.
+- Factory sandbox runtime exec preserves SSH-machine working-directory compatibility by embedding `cd <remote workspace>` in the shell command from `factorySandboxRemoteCommandArgs`; do not set `sandboxruntime.ExecRequest.WorkDir` for that final remote auto command unless intentionally changing legacy behavior.
+
 ## Patterns from local-factory-queue-storage (2026-06-21)
 
 - Factory queue storage should build on `internal/factory.Store`: keep queue state under the global config-backed factory root (`StoreDir()/queue.json`), treat a missing queue file as empty read-only state, and preserve corrupt queue files by returning parse errors without overwriting or deleting them.

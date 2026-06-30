@@ -4,25 +4,24 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"go/parser"
 	"go/token"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 func TestRunInvokesInjectedPhasesAndRunner(t *testing.T) {
 	stopped := &sandbox.SandboxState{Name: "factory-dev", Provider: "daytona", Status: sandbox.StatusStopped, IP: "203.0.113.42"}
 	started := *stopped
 	started.Status = sandbox.StatusRunning
-	provider := fakeProvider{}
+	driver := fakeRuntimeDriver{id: sandboxruntime.DriverSSHMachine}
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	var calls []string
@@ -69,23 +68,23 @@ func TestRunInvokesInjectedPhasesAndRunner(t *testing.T) {
 			}
 			return nil
 		},
-		ResolveProvider: func(_ context.Context, target *sandbox.SandboxState) (sandbox.Provider, error) {
-			calls = append(calls, "provider")
-			if target.Name != "factory-dev" {
-				t.Fatalf("provider target = %#v", target)
+		ResolveDriver: func(_ context.Context, target sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			calls = append(calls, "driver")
+			if target.Name != "factory-dev" || target.Provider != "daytona" {
+				t.Fatalf("driver target = %#v", target)
 			}
-			return provider, nil
+			return driver, nil
 		},
-		OnProviderReady: func(_ context.Context, target *sandbox.SandboxState, got sandbox.Provider) error {
-			calls = append(calls, "provider-ready")
-			if target.Name != "factory-dev" || got != provider {
-				t.Fatalf("provider ready target/provider = %#v/%#v", target, got)
+		OnDriverReady: func(_ context.Context, target sandboxruntime.Target, got sandboxruntime.Driver) error {
+			calls = append(calls, "driver-ready")
+			if target.Name != "factory-dev" || got != driver {
+				t.Fatalf("driver ready target/driver = %#v/%#v", target, got)
 			}
 			return nil
 		},
 		PrepareWorkspace: func(_ context.Context, prep PrepareContext, req *CommandRequest) error {
 			calls = append(calls, "workspace")
-			if prep.Target.Name != "factory-dev" || prep.Provider != provider || prep.ConnectInfo.Name != "factory-dev" {
+			if prep.Target.Name != "factory-dev" || prep.Target.Provider != "daytona" || prep.Connection.Address != "203.0.113.42" {
 				t.Fatalf("workspace prep context = %#v", prep)
 			}
 			req.WorkDir = "/workspace/prepared"
@@ -126,13 +125,16 @@ func TestRunInvokesInjectedPhasesAndRunner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() unexpected error: %v", err)
 	}
-	if result == nil || result.Target != &started || result.Provider != provider {
+	if result == nil || result.Target.Name != "factory-dev" || result.Target.Provider != "daytona" || result.Target.Status != sandbox.StatusRunning {
 		t.Fatalf("result = %#v", result)
 	}
 	if !reflect.DeepEqual(result.Command.Command, []string{"sh", "-c", "hal auto"}) || result.Command.WorkDir != "/workspace/final" {
 		t.Fatalf("result command = %#v", result.Command)
 	}
-	if gotRunContext.Target != &started || gotRunContext.Provider != provider || gotRunContext.ConnectInfo.Name != "factory-dev" {
+	if result.Command.Env["GITHUB_TOKEN"] != "secret" {
+		t.Fatalf("result env = %#v", result.Command.Env)
+	}
+	if gotRunContext.Target.Name != "factory-dev" || gotRunContext.Target.Provider != "daytona" || gotRunContext.Driver != driver || gotRunContext.Connection.Address != "203.0.113.42" {
 		t.Fatalf("run context = %#v", gotRunContext)
 	}
 	if !reflect.DeepEqual(gotRunReq.Command, []string{"sh", "-c", "hal auto"}) || gotRunReq.WorkDir != "/workspace/final" {
@@ -152,8 +154,8 @@ func TestRunInvokesInjectedPhasesAndRunner(t *testing.T) {
 		"resolve",
 		"start",
 		"target-ready",
-		"provider",
-		"provider-ready",
+		"driver",
+		"driver-ready",
 		"workspace",
 		"auth",
 		"command",
@@ -184,6 +186,401 @@ func TestRunInvokesInjectedPhasesAndRunner(t *testing.T) {
 	}
 }
 
+func TestRunDefaultRuntimeExecSelectsSSHMachineAndForwardsCommandFields(t *testing.T) {
+	target := &sandbox.SandboxState{
+		ID:          "sb-123",
+		Name:        "factory-dev",
+		Provider:    "daytona",
+		Status:      sandbox.StatusRunning,
+		IP:          "203.0.113.42",
+		WorkspaceID: "workspace-456",
+	}
+	stdin := strings.NewReader("stdin payload\n")
+	env := map[string]string{
+		"HAL_FACTORY_ATTEMPT": "2",
+		"GITHUB_TOKEN":        "secret",
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	var resolvedTarget sandboxruntime.Target
+	var gotExec sandboxruntime.ExecRequest
+	var gotStdin string
+	driver := &recordingRuntimeDriver{
+		id: sandboxruntime.DriverSSHMachine,
+		exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			if req.Stdin != stdin {
+				t.Fatalf("ExecRequest.Stdin = %#v, want original stdin reader", req.Stdin)
+			}
+			payload, err := io.ReadAll(req.Stdin)
+			if err != nil {
+				return nil, err
+			}
+			gotStdin = string(payload)
+			gotExec = cloneExecRequest(req)
+			if _, err := io.WriteString(req.Stdout, "runtime stdout\n"); err != nil {
+				return nil, err
+			}
+			if _, err := io.WriteString(req.Stderr, "runtime stderr\n"); err != nil {
+				return nil, err
+			}
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+	}
+
+	result, err := Run(context.Background(), CommandRequest{
+		Purpose:     "factory",
+		ProjectDir:  "/repo",
+		SandboxName: "factory-dev",
+		Command:     []string{"hal", "auto", "--resume"},
+		WorkDir:     "/workspace/hal",
+		Env:         env,
+		Stdin:       stdin,
+		Stdout:      &stdout,
+		Stderr:      &stderr,
+	}, Dependencies{
+		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		ResolveDriver: func(_ context.Context, runtimeTarget sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			resolvedTarget = runtimeTarget
+			if runtimeTarget.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+				t.Fatalf("resolved runtime driver = %q, want %q", runtimeTarget.Runtime.Driver, sandboxruntime.DriverSSHMachine)
+			}
+			return driver, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+	if !driver.execCalled {
+		t.Fatal("default runtime exec was not called")
+	}
+	if result == nil || result.Target.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("result target = %#v, want default ssh_machine runtime", result)
+	}
+	if gotExec.Target.Name != "factory-dev" || gotExec.Target.Provider != "daytona" || gotExec.Target.Runtime.Driver != sandboxruntime.DriverSSHMachine || gotExec.Target.Connection.WorkspaceID != "workspace-456" {
+		t.Fatalf("exec target = %#v", gotExec.Target)
+	}
+	if !reflect.DeepEqual(gotExec.Args, []string{"hal", "auto", "--resume"}) {
+		t.Fatalf("exec args = %#v", gotExec.Args)
+	}
+	if gotExec.WorkDir != "/workspace/hal" {
+		t.Fatalf("exec workdir = %q", gotExec.WorkDir)
+	}
+	if !reflect.DeepEqual(gotExec.Env, env) {
+		t.Fatalf("exec env = %#v, want %#v", gotExec.Env, env)
+	}
+	if gotStdin != "stdin payload\n" {
+		t.Fatalf("stdin payload = %q", gotStdin)
+	}
+	if stdout.String() != "runtime stdout\n" {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	if stderr.String() != "runtime stderr\n" {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	if resolvedTarget.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("resolved target runtime = %#v", resolvedTarget.Runtime)
+	}
+}
+
+func TestRunDefaultRuntimeExecPropagatesContextCancellation(t *testing.T) {
+	target := &sandbox.SandboxState{Name: "factory-dev", Provider: "daytona", Status: sandbox.StatusRunning}
+	ctx, cancel := context.WithCancel(context.Background())
+	driver := &recordingRuntimeDriver{
+		id: sandboxruntime.DriverSSHMachine,
+		exec: func(ctx context.Context, _ sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			cancel()
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	_, err := Run(ctx, CommandRequest{
+		SandboxName: "factory-dev",
+		Command:     []string{"sleep", "60"},
+	}, Dependencies{
+		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return driver, nil
+		},
+	})
+	if !driver.execCalled {
+		t.Fatal("default runtime exec was not called")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want errors.Is context.Canceled", err)
+	}
+	phaseErr, ok := AsPhaseError(err)
+	if !ok || phaseErr.Phase != PhaseRun || phaseErr.RuntimeDriver != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("phase error = %#v, want run phase with ssh_machine runtime", err)
+	}
+}
+
+func TestPrepareContextUsesRuntimeBoundaryTypes(t *testing.T) {
+	prepareType := reflect.TypeOf(PrepareContext{})
+	providerType := reflect.TypeOf((*sandbox.Provider)(nil)).Elem()
+	connectInfoType := reflect.TypeOf((*sandbox.ConnectInfo)(nil))
+	for i := 0; i < prepareType.NumField(); i++ {
+		field := prepareType.Field(i)
+		if field.Type == providerType {
+			t.Fatalf("PrepareContext.%s exposes legacy sandbox.Provider", field.Name)
+		}
+		if field.Type == connectInfoType {
+			t.Fatalf("PrepareContext.%s exposes legacy *sandbox.ConnectInfo", field.Name)
+		}
+	}
+	if _, ok := prepareType.FieldByName("Provider"); ok {
+		t.Fatal("PrepareContext exposes legacy sandbox.Provider field")
+	}
+	if _, ok := prepareType.FieldByName("ConnectInfo"); ok {
+		t.Fatal("PrepareContext exposes legacy sandbox.ConnectInfo field")
+	}
+
+	targetField, ok := prepareType.FieldByName("Target")
+	if !ok {
+		t.Fatal("PrepareContext missing Target field")
+	}
+	if targetField.Type != reflect.TypeOf(sandboxruntime.Target{}) {
+		t.Fatalf("PrepareContext.Target type = %v, want sandboxruntime.Target", targetField.Type)
+	}
+	connectionField, ok := prepareType.FieldByName("Connection")
+	if !ok {
+		t.Fatal("PrepareContext missing Connection field")
+	}
+	if connectionField.Type != reflect.TypeOf(sandboxruntime.ConnectionInfo{}) {
+		t.Fatalf("PrepareContext.Connection type = %v, want sandboxruntime.ConnectionInfo", connectionField.Type)
+	}
+}
+
+func TestRunContextUsesRuntimeBoundaryTypes(t *testing.T) {
+	runType := reflect.TypeOf(RunContext{})
+	providerType := reflect.TypeOf((*sandbox.Provider)(nil)).Elem()
+	connectInfoType := reflect.TypeOf((*sandbox.ConnectInfo)(nil))
+	sandboxStateType := reflect.TypeOf((*sandbox.SandboxState)(nil))
+	for i := 0; i < runType.NumField(); i++ {
+		field := runType.Field(i)
+		if field.Type == providerType {
+			t.Fatalf("RunContext.%s exposes legacy sandbox.Provider", field.Name)
+		}
+		if field.Type == connectInfoType {
+			t.Fatalf("RunContext.%s exposes legacy *sandbox.ConnectInfo", field.Name)
+		}
+		if field.Type == sandboxStateType {
+			t.Fatalf("RunContext.%s exposes legacy *sandbox.SandboxState", field.Name)
+		}
+	}
+	if _, ok := runType.FieldByName("Provider"); ok {
+		t.Fatal("RunContext exposes legacy sandbox.Provider field")
+	}
+	if _, ok := runType.FieldByName("ConnectInfo"); ok {
+		t.Fatal("RunContext exposes legacy sandbox.ConnectInfo field")
+	}
+
+	targetField, ok := runType.FieldByName("Target")
+	if !ok {
+		t.Fatal("RunContext missing Target field")
+	}
+	if targetField.Type != reflect.TypeOf(sandboxruntime.Target{}) {
+		t.Fatalf("RunContext.Target type = %v, want sandboxruntime.Target", targetField.Type)
+	}
+	connectionField, ok := runType.FieldByName("Connection")
+	if !ok {
+		t.Fatal("RunContext missing Connection field")
+	}
+	if connectionField.Type != reflect.TypeOf(sandboxruntime.ConnectionInfo{}) {
+		t.Fatalf("RunContext.Connection type = %v, want sandboxruntime.ConnectionInfo", connectionField.Type)
+	}
+	driverField, ok := runType.FieldByName("Driver")
+	if !ok {
+		t.Fatal("RunContext missing Driver field")
+	}
+	if driverField.Type != reflect.TypeOf((*sandboxruntime.Driver)(nil)).Elem() {
+		t.Fatalf("RunContext.Driver type = %v, want sandboxruntime.Driver", driverField.Type)
+	}
+}
+
+func TestDependenciesUseRuntimeDriverResolverTerminology(t *testing.T) {
+	depsType := reflect.TypeOf(Dependencies{})
+	if _, ok := depsType.FieldByName("ResolveProvider"); ok {
+		t.Fatal("Dependencies exposes legacy ResolveProvider")
+	}
+	if _, ok := depsType.FieldByName("OnProviderReady"); ok {
+		t.Fatal("Dependencies exposes legacy OnProviderReady")
+	}
+
+	resolveField, ok := depsType.FieldByName("ResolveDriver")
+	if !ok {
+		t.Fatal("Dependencies missing ResolveDriver")
+	}
+	wantResolve := reflect.TypeOf(func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+		return nil, nil
+	})
+	if resolveField.Type != wantResolve {
+		t.Fatalf("Dependencies.ResolveDriver type = %v, want %v", resolveField.Type, wantResolve)
+	}
+
+	readyField, ok := depsType.FieldByName("OnDriverReady")
+	if !ok {
+		t.Fatal("Dependencies missing OnDriverReady")
+	}
+	wantReady := reflect.TypeOf(func(context.Context, sandboxruntime.Target, sandboxruntime.Driver) error {
+		return nil
+	})
+	if readyField.Type != wantReady {
+		t.Fatalf("Dependencies.OnDriverReady type = %v, want %v", readyField.Type, wantReady)
+	}
+}
+
+func TestResultUsesRuntimeBoundaryTypes(t *testing.T) {
+	resultType := reflect.TypeOf(Result{})
+	providerType := reflect.TypeOf((*sandbox.Provider)(nil)).Elem()
+	connectInfoType := reflect.TypeOf((*sandbox.ConnectInfo)(nil))
+	sandboxStateType := reflect.TypeOf((*sandbox.SandboxState)(nil))
+	for i := 0; i < resultType.NumField(); i++ {
+		field := resultType.Field(i)
+		if field.Type == providerType {
+			t.Fatalf("Result.%s exposes legacy sandbox.Provider", field.Name)
+		}
+		if field.Type == connectInfoType {
+			t.Fatalf("Result.%s exposes legacy *sandbox.ConnectInfo", field.Name)
+		}
+		if field.Type == sandboxStateType {
+			t.Fatalf("Result.%s exposes legacy *sandbox.SandboxState", field.Name)
+		}
+	}
+	if _, ok := resultType.FieldByName("Provider"); ok {
+		t.Fatal("Result exposes legacy sandbox.Provider field")
+	}
+	if _, ok := resultType.FieldByName("ConnectInfo"); ok {
+		t.Fatal("Result exposes legacy sandbox.ConnectInfo field")
+	}
+
+	targetField, ok := resultType.FieldByName("Target")
+	if !ok {
+		t.Fatal("Result missing Target field")
+	}
+	if targetField.Type != reflect.TypeOf(sandboxruntime.Target{}) {
+		t.Fatalf("Result.Target type = %v, want sandboxruntime.Target", targetField.Type)
+	}
+	commandField, ok := resultType.FieldByName("Command")
+	if !ok {
+		t.Fatal("Result missing Command field")
+	}
+	if commandField.Type != reflect.TypeOf(CommandRequest{}) {
+		t.Fatalf("Result.Command type = %v, want CommandRequest", commandField.Type)
+	}
+}
+
+func TestPhaseErrorUsesRuntimeBoundaryTypes(t *testing.T) {
+	phaseType := reflect.TypeOf(PhaseError{})
+	providerType := reflect.TypeOf((*sandbox.Provider)(nil)).Elem()
+	connectInfoType := reflect.TypeOf((*sandbox.ConnectInfo)(nil))
+	for i := 0; i < phaseType.NumField(); i++ {
+		field := phaseType.Field(i)
+		if field.Type == providerType {
+			t.Fatalf("PhaseError.%s exposes legacy sandbox.Provider", field.Name)
+		}
+		if field.Type == connectInfoType {
+			t.Fatalf("PhaseError.%s exposes legacy *sandbox.ConnectInfo", field.Name)
+		}
+	}
+	if _, ok := phaseType.FieldByName("Provider"); ok {
+		t.Fatal("PhaseError exposes legacy sandbox.Provider field")
+	}
+	if _, ok := phaseType.FieldByName("ConnectInfo"); ok {
+		t.Fatal("PhaseError exposes legacy sandbox.ConnectInfo field")
+	}
+
+	targetField, ok := phaseType.FieldByName("Target")
+	if !ok {
+		t.Fatal("PhaseError missing Target field")
+	}
+	if targetField.Type != reflect.TypeOf((*sandbox.SandboxState)(nil)) {
+		t.Fatalf("PhaseError.Target type = %v, want *sandbox.SandboxState", targetField.Type)
+	}
+	driverField, ok := phaseType.FieldByName("RuntimeDriver")
+	if !ok {
+		t.Fatal("PhaseError missing RuntimeDriver field")
+	}
+	if driverField.Type.Kind() != reflect.String {
+		t.Fatalf("PhaseError.RuntimeDriver type = %v, want string", driverField.Type)
+	}
+}
+
+func TestPhaseNamesRemainStable(t *testing.T) {
+	tests := map[Phase]string{
+		PhaseResolveTarget:    "resolve_target",
+		PhaseProvisionTarget:  "provision",
+		PhaseStartTarget:      "start",
+		PhaseResolveDriver:    "resolve_driver",
+		PhasePrepareWorkspace: "prepare_workspace",
+		PhasePrepareAuth:      "prepare_auth",
+		PhasePrepareCommand:   "prepare_command",
+		PhaseRun:              "run",
+	}
+	for phase, want := range tests {
+		if got := string(phase); got != want {
+			t.Fatalf("phase %v = %q, want %q", phase, got, want)
+		}
+	}
+}
+
+func TestRunPrepareContextCarriesRuntimeTargetConnection(t *testing.T) {
+	target := &sandbox.SandboxState{
+		ID:                "sb-123",
+		Name:              "factory-dev",
+		Provider:          "digitalocean",
+		WorkspaceID:       "droplet-456",
+		IP:                "203.0.113.42",
+		TailscaleIP:       "100.64.0.7",
+		TailscaleHostname: "factory-dev.tailnet.example",
+		TailscaleLockdown: true,
+		Status:            sandbox.StatusRunning,
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandbox.SandboxRuntimeDriverSSHMachine,
+			RuntimeID:      "runtime-789",
+			Image:          "ubuntu-24.04",
+			WorkerID:       "worker-a",
+			IsolationLevel: sandbox.SandboxIsolationLevelVM,
+		},
+	}
+	var got PrepareContext
+
+	_, err := Run(context.Background(), CommandRequest{SandboxName: "factory-dev"}, Dependencies{
+		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return fakeRuntimeDriver{}, nil
+		},
+		PrepareWorkspace: func(_ context.Context, prep PrepareContext, _ *CommandRequest) error {
+			got = prep
+			return nil
+		},
+		RunCommand: func(context.Context, RunContext, CommandRequest) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+	if got.Target.ID != "sb-123" || got.Target.Name != "factory-dev" || got.Target.Provider != "digitalocean" || got.Target.Status != sandbox.StatusRunning {
+		t.Fatalf("runtime target identity = %#v", got.Target)
+	}
+	if got.Target.Runtime.Driver != sandboxruntime.DriverSSHMachine || got.Target.Runtime.RuntimeID != "runtime-789" || got.Target.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelVM {
+		t.Fatalf("runtime metadata = %#v", got.Target.Runtime)
+	}
+	if got.Connection.Address != "100.64.0.7" || got.Connection.PublicIP != "203.0.113.42" || got.Connection.TailscaleHostname != "factory-dev.tailnet.example" || !got.Connection.TailscaleLockdown || got.Connection.WorkspaceID != "droplet-456" {
+		t.Fatalf("runtime connection = %#v", got.Connection)
+	}
+	if got.Target.Connection != got.Connection {
+		t.Fatalf("target connection = %#v, want %#v", got.Target.Connection, got.Connection)
+	}
+}
+
 func TestRunUsesExistingRunningTargetWithoutStart(t *testing.T) {
 	target := &sandbox.SandboxState{Name: "factory-dev", Provider: "daytona", Status: sandbox.StatusRunning}
 	startCalled := false
@@ -196,8 +593,8 @@ func TestRunUsesExistingRunningTargetWithoutStart(t *testing.T) {
 			startCalled = true
 			return nil, nil
 		},
-		ResolveProvider: func(context.Context, *sandbox.SandboxState) (sandbox.Provider, error) {
-			return fakeProvider{}, nil
+		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return fakeRuntimeDriver{}, nil
 		},
 		RunCommand: func(context.Context, RunContext, CommandRequest) error {
 			return nil
@@ -234,8 +631,8 @@ func TestRunAttachesCompatibilitySecurityMetadataBeforeTargetReady(t *testing.T)
 			readySecurity = ready.Security
 			return nil
 		},
-		ResolveProvider: func(context.Context, *sandbox.SandboxState) (sandbox.Provider, error) {
-			return fakeProvider{}, nil
+		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return fakeRuntimeDriver{}, nil
 		},
 		RunCommand: func(context.Context, RunContext, CommandRequest) error {
 			return nil
@@ -244,8 +641,11 @@ func TestRunAttachesCompatibilitySecurityMetadataBeforeTargetReady(t *testing.T)
 	if err != nil {
 		t.Fatalf("Run() unexpected error: %v", err)
 	}
-	if result == nil || result.Target == nil || result.Target.Security == nil {
-		t.Fatalf("result security = %#v", result)
+	if result == nil || result.Target.Name != "factory-dev" || result.Target.Provider != "daytona" || result.Target.Status != sandbox.StatusRunning {
+		t.Fatalf("result target = %#v", result)
+	}
+	if target.Security == nil {
+		t.Fatalf("target security = %#v", target)
 	}
 	if readySecurity == nil {
 		t.Fatal("OnTargetReady observed nil security metadata")
@@ -291,8 +691,8 @@ func TestRunPreservesExistingSecurityMetadataWithoutEvaluationRequest(t *testing
 		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
 			return target, nil
 		},
-		ResolveProvider: func(context.Context, *sandbox.SandboxState) (sandbox.Provider, error) {
-			return fakeProvider{}, nil
+		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return fakeRuntimeDriver{}, nil
 		},
 		RunCommand: func(context.Context, RunContext, CommandRequest) error {
 			return nil
@@ -301,8 +701,11 @@ func TestRunPreservesExistingSecurityMetadataWithoutEvaluationRequest(t *testing
 	if err != nil {
 		t.Fatalf("Run() unexpected error: %v", err)
 	}
-	if result.Target.Security != existing {
-		t.Fatalf("security metadata was replaced: got %#v want existing %#v", result.Target.Security, existing)
+	if result.Target.Name != "microvm-dev" || result.Target.Provider != "worker" {
+		t.Fatalf("result target = %#v", result.Target)
+	}
+	if target.Security != existing {
+		t.Fatalf("security metadata was replaced: got %#v want existing %#v", target.Security, existing)
 	}
 }
 
@@ -317,8 +720,8 @@ func TestRunPropagatesStartFailure(t *testing.T) {
 		StartTarget: func(context.Context, *sandbox.SandboxState, io.Writer, io.Writer) (*sandbox.SandboxState, error) {
 			return nil, startErr
 		},
-		ResolveProvider: func(context.Context, *sandbox.SandboxState) (sandbox.Provider, error) {
-			t.Fatal("ResolveProvider should not run after start failure")
+		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			t.Fatal("ResolveDriver should not run after start failure")
 			return nil, nil
 		},
 		RunCommand: func(context.Context, RunContext, CommandRequest) error {
@@ -327,8 +730,14 @@ func TestRunPropagatesStartFailure(t *testing.T) {
 		},
 	})
 	phaseErr, ok := AsPhaseError(err)
-	if !ok || phaseErr.Phase != PhaseStartTarget || !errors.Is(err, startErr) || phaseErr.Target != target {
+	if !ok || phaseErr.Phase != PhaseStartTarget || !errors.Is(err, startErr) {
 		t.Fatalf("error = %#v, want start phase wrapping startErr", err)
+	}
+	if phaseErr.Target != target {
+		t.Fatalf("phase target = %#v, want original target %#v", phaseErr.Target, target)
+	}
+	if phaseErr.RuntimeDriver != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("runtime driver = %q, want %q", phaseErr.RuntimeDriver, sandboxruntime.DriverSSHMachine)
 	}
 }
 
@@ -339,8 +748,8 @@ func TestRunPreservesInjectedProvisionPhaseError(t *testing.T) {
 		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
 			return nil, &PhaseError{Phase: PhaseProvisionTarget, Err: provisionErr}
 		},
-		ResolveProvider: func(context.Context, *sandbox.SandboxState) (sandbox.Provider, error) {
-			t.Fatal("ResolveProvider should not run after provision failure")
+		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			t.Fatal("ResolveDriver should not run after provision failure")
 			return nil, nil
 		},
 		RunCommand: func(context.Context, RunContext, CommandRequest) error {
@@ -437,6 +846,170 @@ func TestRunCommandFailureEmitsOutputAndFailureEvents(t *testing.T) {
 	}
 }
 
+func TestRunPhaseErrorsUseStablePhaseNames(t *testing.T) {
+	tests := []struct {
+		name  string
+		phase Phase
+		value string
+		deps  func(error) Dependencies
+	}{
+		{
+			name:  "resolve target",
+			phase: PhaseResolveTarget,
+			value: "resolve_target",
+			deps: func(failure error) Dependencies {
+				return successfulDeps(t, Dependencies{
+					ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+						return nil, failure
+					},
+				})
+			},
+		},
+		{
+			name:  "start",
+			phase: PhaseStartTarget,
+			value: "start",
+			deps: func(failure error) Dependencies {
+				return successfulDeps(t, Dependencies{
+					ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+						return &sandbox.SandboxState{Name: "factory-dev", Provider: "daytona", Status: sandbox.StatusStopped}, nil
+					},
+					StartTarget: func(context.Context, *sandbox.SandboxState, io.Writer, io.Writer) (*sandbox.SandboxState, error) {
+						return nil, failure
+					},
+				})
+			},
+		},
+		{
+			name:  "resolve runtime",
+			phase: PhaseResolveDriver,
+			value: "resolve_driver",
+			deps: func(failure error) Dependencies {
+				return successfulDeps(t, Dependencies{
+					ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+						return nil, failure
+					},
+				})
+			},
+		},
+		{
+			name:  "prepare workspace",
+			phase: PhasePrepareWorkspace,
+			value: "prepare_workspace",
+			deps: func(failure error) Dependencies {
+				return successfulDeps(t, Dependencies{
+					PrepareWorkspace: func(context.Context, PrepareContext, *CommandRequest) error {
+						return failure
+					},
+				})
+			},
+		},
+		{
+			name:  "prepare auth",
+			phase: PhasePrepareAuth,
+			value: "prepare_auth",
+			deps: func(failure error) Dependencies {
+				return successfulDeps(t, Dependencies{
+					PrepareAuth: func(context.Context, PrepareContext, *CommandRequest) error {
+						return failure
+					},
+				})
+			},
+		},
+		{
+			name:  "prepare command",
+			phase: PhasePrepareCommand,
+			value: "prepare_command",
+			deps: func(failure error) Dependencies {
+				return successfulDeps(t, Dependencies{
+					PrepareCommand: func(context.Context, PrepareContext, *CommandRequest) error {
+						return failure
+					},
+				})
+			},
+		},
+		{
+			name:  "run",
+			phase: PhaseRun,
+			value: "run",
+			deps: func(failure error) Dependencies {
+				return successfulDeps(t, Dependencies{
+					RunCommand: func(context.Context, RunContext, CommandRequest) error {
+						return failure
+					},
+				})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			failure := errors.New(tt.name + " failed")
+			_, err := Run(context.Background(), CommandRequest{SandboxName: "factory-dev"}, tt.deps(failure))
+			phaseErr, ok := AsPhaseError(err)
+			if !ok {
+				t.Fatalf("Run() error = %#v, want PhaseError", err)
+			}
+			if phaseErr.Phase != tt.phase || string(phaseErr.Phase) != tt.value {
+				t.Fatalf("phase = %q/%q, want %q", phaseErr.Phase, string(phaseErr.Phase), tt.value)
+			}
+			if !errors.Is(err, failure) {
+				t.Fatalf("error = %v, want to wrap %v", err, failure)
+			}
+		})
+	}
+}
+
+func TestRunPhaseErrorCarriesSandboxTargetAndRuntimeDriver(t *testing.T) {
+	runErr := errors.New("remote failed")
+	target := &sandbox.SandboxState{
+		ID:                "sb-123",
+		Name:              "factory-dev",
+		Provider:          "digitalocean",
+		WorkspaceID:       "droplet-456",
+		IP:                "203.0.113.42",
+		TailscaleIP:       "100.64.0.7",
+		TailscaleHostname: "factory-dev.tailnet.example",
+		TailscaleLockdown: true,
+		Status:            sandbox.StatusRunning,
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandbox.SandboxRuntimeDriverSSHMachine,
+			RuntimeID:      "runtime-789",
+			Image:          "ubuntu-24.04",
+			WorkerID:       "worker-a",
+			IsolationLevel: sandbox.SandboxIsolationLevelVM,
+		},
+		Host: &sandbox.SandboxHost{
+			ID: "host-123",
+		},
+	}
+
+	_, err := Run(context.Background(), CommandRequest{SandboxName: "factory-dev"}, Dependencies{
+		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return fakeRuntimeDriver{id: "test_runtime"}, nil
+		},
+		RunCommand: func(context.Context, RunContext, CommandRequest) error {
+			return runErr
+		},
+	})
+	phaseErr, ok := AsPhaseError(err)
+	if !ok || phaseErr.Phase != PhaseRun || !errors.Is(err, runErr) {
+		t.Fatalf("error = %#v, want run phase wrapping runErr", err)
+	}
+	if phaseErr.RuntimeDriver != "test_runtime" {
+		t.Fatalf("runtime driver = %q, want test_runtime", phaseErr.RuntimeDriver)
+	}
+	if phaseErr.Target != target {
+		t.Fatalf("phase target = %#v, want original target %#v", phaseErr.Target, target)
+	}
+	if phaseErr.Target.Host == nil || phaseErr.Target.Host.ID != "host-123" {
+		t.Fatalf("phase target host = %#v, want original host metadata", phaseErr.Target.Host)
+	}
+}
+
 func TestSandboxexecDoesNotImportCobra(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -468,8 +1041,8 @@ func successfulDeps(t *testing.T, overrides Dependencies) Dependencies {
 		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
 			return target, nil
 		},
-		ResolveProvider: func(context.Context, *sandbox.SandboxState) (sandbox.Provider, error) {
-			return fakeProvider{}, nil
+		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return fakeRuntimeDriver{}, nil
 		},
 		RunCommand: func(context.Context, RunContext, CommandRequest) error {
 			return nil
@@ -481,8 +1054,8 @@ func successfulDeps(t *testing.T, overrides Dependencies) Dependencies {
 	if overrides.StartTarget != nil {
 		deps.StartTarget = overrides.StartTarget
 	}
-	if overrides.ResolveProvider != nil {
-		deps.ResolveProvider = overrides.ResolveProvider
+	if overrides.ResolveDriver != nil {
+		deps.ResolveDriver = overrides.ResolveDriver
 	}
 	if overrides.PrepareWorkspace != nil {
 		deps.PrepareWorkspace = overrides.PrepareWorkspace
@@ -502,38 +1075,112 @@ func successfulDeps(t *testing.T, overrides Dependencies) Dependencies {
 	if overrides.OnTargetReady != nil {
 		deps.OnTargetReady = overrides.OnTargetReady
 	}
-	if overrides.OnProviderReady != nil {
-		deps.OnProviderReady = overrides.OnProviderReady
+	if overrides.OnDriverReady != nil {
+		deps.OnDriverReady = overrides.OnDriverReady
 	}
 	return deps
 }
 
-type fakeProvider struct{}
-
-func (fakeProvider) Create(context.Context, string, map[string]string, io.Writer) (*sandbox.SandboxResult, error) {
-	return nil, fmt.Errorf("not implemented")
+type fakeRuntimeDriver struct {
+	id string
 }
 
-func (fakeProvider) Stop(context.Context, *sandbox.ConnectInfo, io.Writer) error {
-	return fmt.Errorf("not implemented")
+func (f fakeRuntimeDriver) ID() string {
+	if f.id != "" {
+		return f.id
+	}
+	return sandboxruntime.DriverSSHMachine
 }
 
-func (fakeProvider) Start(context.Context, *sandbox.ConnectInfo, io.Writer) (*sandbox.LifecycleResult, error) {
-	return nil, fmt.Errorf("not implemented")
+func (fakeRuntimeDriver) Create(context.Context, sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+	return nil, nil
 }
 
-func (fakeProvider) Delete(context.Context, *sandbox.ConnectInfo, io.Writer) error {
-	return fmt.Errorf("not implemented")
+func (fakeRuntimeDriver) Start(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	return nil, nil
 }
 
-func (fakeProvider) SSH(*sandbox.ConnectInfo) (*exec.Cmd, error) {
-	return nil, fmt.Errorf("not implemented")
+func (fakeRuntimeDriver) Stop(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	return nil, nil
 }
 
-func (fakeProvider) Exec(*sandbox.ConnectInfo, []string) (*exec.Cmd, error) {
-	return nil, fmt.Errorf("not implemented")
+func (fakeRuntimeDriver) Delete(context.Context, sandboxruntime.LifecycleRequest) error {
+	return nil
 }
 
-func (fakeProvider) Status(context.Context, *sandbox.ConnectInfo, io.Writer) error {
-	return fmt.Errorf("not implemented")
+func (fakeRuntimeDriver) Inspect(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+	return nil, nil
+}
+
+func (fakeRuntimeDriver) Exec(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+	return &sandboxruntime.ExecResult{}, nil
+}
+
+func (fakeRuntimeDriver) CopyIn(context.Context, sandboxruntime.CopyRequest) error {
+	return nil
+}
+
+func (fakeRuntimeDriver) CopyOut(context.Context, sandboxruntime.CopyRequest) error {
+	return nil
+}
+
+type recordingRuntimeDriver struct {
+	id         string
+	execCalled bool
+	exec       func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
+}
+
+func (r *recordingRuntimeDriver) ID() string {
+	if r.id != "" {
+		return r.id
+	}
+	return sandboxruntime.DriverSSHMachine
+}
+
+func (r *recordingRuntimeDriver) Create(context.Context, sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+	return nil, nil
+}
+
+func (r *recordingRuntimeDriver) Start(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	return nil, nil
+}
+
+func (r *recordingRuntimeDriver) Stop(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	return nil, nil
+}
+
+func (r *recordingRuntimeDriver) Delete(context.Context, sandboxruntime.LifecycleRequest) error {
+	return nil
+}
+
+func (r *recordingRuntimeDriver) Inspect(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+	return nil, nil
+}
+
+func (r *recordingRuntimeDriver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+	r.execCalled = true
+	if r.exec == nil {
+		return &sandboxruntime.ExecResult{}, nil
+	}
+	return r.exec(ctx, req)
+}
+
+func (r *recordingRuntimeDriver) CopyIn(context.Context, sandboxruntime.CopyRequest) error {
+	return nil
+}
+
+func (r *recordingRuntimeDriver) CopyOut(context.Context, sandboxruntime.CopyRequest) error {
+	return nil
+}
+
+func cloneExecRequest(req sandboxruntime.ExecRequest) sandboxruntime.ExecRequest {
+	req.Args = append([]string(nil), req.Args...)
+	if req.Env != nil {
+		env := make(map[string]string, len(req.Env))
+		for key, value := range req.Env {
+			env[key] = value
+		}
+		req.Env = env
+	}
+	return req
 }

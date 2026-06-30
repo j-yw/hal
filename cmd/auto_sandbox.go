@@ -15,6 +15,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 	"github.com/spf13/cobra"
 )
@@ -85,8 +86,8 @@ type autoSandboxDeps struct {
 	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
 	startSandbox           func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
+	resolveRuntimeDriver   func(string) (sandboxruntime.Driver, error)
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
-	runProviderCommand     func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer, io.Writer) error
 	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
 	engineAuthFiles        func() []factorySandboxAuthFile
 	bootstrap              func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
@@ -106,7 +107,6 @@ var defaultAutoSandboxDeps = autoSandboxDeps{
 		return resolveProviderWithFallback(".", providerName)
 	},
 	runProviderExecWithEnv: runFactorySandboxProviderExecWithEnv,
-	runProviderCommand:     runSandboxProviderExecWithEnv,
 	runProviderScript:      runFactorySandboxProviderScript,
 	engineAuthFiles:        factorySandboxEngineAuthFiles,
 	bootstrap:              factory.BootstrapWorkspace,
@@ -231,8 +231,10 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 			return saveAutoSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, target)
 		},
 	})
-	if execResult.Result != nil && execResult.Result.Target != nil {
-		target = execResult.Result.Target
+	if execResult.Result != nil {
+		if target == nil {
+			target = sandboxStateFromRuntimeTarget(execResult.Result.Target)
+		}
 		if strings.TrimSpace(req.SandboxName) == "" {
 			req.SandboxName = strings.TrimSpace(target.Name)
 		}
@@ -243,7 +245,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 		req.RemoteCommand = append([]string(nil), execResult.Result.Command.Command...)
 	}
 	if execErr != nil {
-		if phaseErr, ok := sandboxexec.AsPhaseError(execErr); ok && phaseErr.Target != nil {
+		if phaseErr, ok := sandboxexec.AsPhaseError(execErr); ok && phaseErr.Target != nil && target == nil {
 			target = phaseErr.Target
 			if strings.TrimSpace(req.SandboxName) == "" {
 				req.SandboxName = strings.TrimSpace(target.Name)
@@ -296,11 +298,17 @@ func normalizeAutoSandboxDeps(deps autoSandboxDeps) autoSandboxDeps {
 	if deps.resolveProvider == nil {
 		deps.resolveProvider = defaultAutoSandboxDeps.resolveProvider
 	}
+	if deps.resolveRuntimeDriver == nil {
+		deps.resolveRuntimeDriver = func(providerName string) (sandboxruntime.Driver, error) {
+			provider, err := deps.resolveProvider(providerName)
+			if err != nil {
+				return nil, err
+			}
+			return sandboxRuntimeDriverFromProvider(provider), nil
+		}
+	}
 	if deps.runProviderExecWithEnv == nil {
 		deps.runProviderExecWithEnv = defaultAutoSandboxDeps.runProviderExecWithEnv
-	}
-	if deps.runProviderCommand == nil {
-		deps.runProviderCommand = defaultAutoSandboxDeps.runProviderCommand
 	}
 	if deps.runProviderScript == nil {
 		deps.runProviderScript = defaultAutoSandboxDeps.runProviderScript
@@ -381,6 +389,18 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 	}
 	var remoteStarted bool
 	var preparedCommand []string
+	var provider sandbox.Provider
+	ensureProvider := func(providerName string) (sandbox.Provider, error) {
+		if provider != nil {
+			return provider, nil
+		}
+		resolved, err := deps.resolveProvider(providerName)
+		if err != nil {
+			return nil, err
+		}
+		provider = resolved
+		return provider, nil
+	}
 	result, err := sandboxexec.Run(ctx, sandboxexec.CommandRequest{
 		Purpose:     sandbox.SandboxLeasePurposeAuto,
 		ProjectDir:  req.ProjectDir,
@@ -398,8 +418,8 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 		StartTarget: func(ctx context.Context, target *sandbox.SandboxState, _, _ io.Writer) (*sandbox.SandboxState, error) {
 			return deps.startSandbox(ctx, target, prepOut)
 		},
-		ResolveProvider: func(_ context.Context, target *sandbox.SandboxState) (sandbox.Provider, error) {
-			return deps.resolveProvider(target.Provider)
+		ResolveDriver: func(_ context.Context, target sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return deps.resolveRuntimeDriver(target.Provider)
 		},
 		OnTargetReady: func(_ context.Context, target *sandbox.SandboxState) error {
 			if hooks.OnTargetReady == nil {
@@ -408,13 +428,21 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 			return hooks.OnTargetReady(target)
 		},
 		PrepareWorkspace: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
-			if err := deps.bootstrapAutoSandboxWorkspace(ctx, req, prep, prepOut); err != nil {
+			provider, err := ensureProvider(prep.Target.Provider)
+			if err != nil {
 				return err
 			}
-			return deps.prepareAutoSandboxInputs(ctx, &req, prep, prepOut)
+			if err := deps.bootstrapAutoSandboxWorkspace(ctx, req, provider, prep, prepOut); err != nil {
+				return err
+			}
+			return deps.prepareAutoSandboxInputs(ctx, &req, provider, prep, prepOut)
 		},
 		PrepareAuth: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
-			return factorySandboxSyncEngineAuth(ctx, prep.Provider, prep.Target, prepOut, factorySandboxExecutorDeps{
+			provider, err := ensureProvider(prep.Target.Provider)
+			if err != nil {
+				return err
+			}
+			return factorySandboxSyncEngineAuth(ctx, provider, sandboxStateFromRuntimeTarget(prep.Target), prepOut, factorySandboxExecutorDeps{
 				runProviderExecWithEnv: deps.runProviderExecWithEnv,
 				runProviderScript:      deps.runProviderScript,
 				engineAuthFiles:        deps.engineAuthFiles,
@@ -426,7 +454,7 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 			return nil
 		},
 		RunCommand: func(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {
-			return deps.runProviderCommand(ctx, run.Provider, run.ConnectInfo, runSandboxRemoteExecArgs(command), command.Env, command.Stdout, command.Stderr)
+			return runSandboxRuntimeExec(ctx, run, command)
 		},
 		HandleEvent: func(_ context.Context, event sandboxexec.Event) error {
 			if event.Type == sandboxexec.EventCommandOutput && event.Stream == sandboxexec.StreamStdout {
@@ -472,7 +500,7 @@ func (deps autoSandboxDeps) resolveAutoSandboxTarget(ctx context.Context, req au
 	})
 }
 
-func (deps autoSandboxDeps) bootstrapAutoSandboxWorkspace(ctx context.Context, req autoSandboxRequest, prep sandboxexec.PrepareContext, out io.Writer) error {
+func (deps autoSandboxDeps) bootstrapAutoSandboxWorkspace(ctx context.Context, req autoSandboxRequest, provider sandbox.Provider, prep sandboxexec.PrepareContext, out io.Writer) error {
 	bootstrapReq := factory.BootstrapRequest{
 		RepositoryURL: req.RepoRemote,
 		BaseBranch:    req.BaseBranch,
@@ -482,28 +510,30 @@ func (deps autoSandboxDeps) bootstrapAutoSandboxWorkspace(ctx context.Context, r
 			RefreshHal: true,
 		},
 	}
+	connectInfo := sandboxConnectInfoFromRuntimeTarget(prep.Target)
 	_, err := deps.bootstrap(ctx, bootstrapReq, factory.BootstrapDeps{
 		Executor: &factorySandboxBootstrapExecutor{
-			provider:               prep.Provider,
-			connectInfo:            prep.ConnectInfo,
+			provider:               provider,
+			connectInfo:            connectInfo,
 			runProviderExecWithEnv: deps.runProviderExecWithEnv,
 			out:                    out,
 			outputRedact:           factory.NewBootstrapSanitizer(bootstrapReq).SanitizeString,
 		},
 		Now: deps.now,
 		RepoExists: func(path string) (bool, error) {
-			return factorySandboxRemoteRepoExists(ctx, prep.Provider, prep.ConnectInfo, deps.runProviderScript, path, req.RepoRemote)
+			return factorySandboxRemoteRepoExists(ctx, provider, connectInfo, deps.runProviderScript, path, req.RepoRemote)
 		},
 	})
 	return err
 }
 
-func (deps autoSandboxDeps) prepareAutoSandboxInputs(ctx context.Context, req *autoSandboxRequest, prep sandboxexec.PrepareContext, out io.Writer) error {
+func (deps autoSandboxDeps) prepareAutoSandboxInputs(ctx context.Context, req *autoSandboxRequest, provider sandbox.Provider, prep sandboxexec.PrepareContext, out io.Writer) error {
 	if req == nil {
 		return nil
 	}
+	connectInfo := sandboxConnectInfoFromRuntimeTarget(prep.Target)
 	if len(req.Args) > 0 {
-		remotePath, changed, err := factorySandboxCopyInputToRemote(ctx, req.ProjectDir, req.Args[0], req.WorkDir, prep.Provider, prep.ConnectInfo, out, factorySandboxExecutorDeps{
+		remotePath, changed, err := factorySandboxCopyInputToRemote(ctx, req.ProjectDir, req.Args[0], req.WorkDir, provider, connectInfo, out, factorySandboxExecutorDeps{
 			runProviderScript: deps.runProviderScript,
 		})
 		if err != nil {
@@ -514,7 +544,7 @@ func (deps autoSandboxDeps) prepareAutoSandboxInputs(ctx context.Context, req *a
 		}
 	}
 	if reportPath := strings.TrimSpace(req.Flags.Report); reportPath != "" {
-		remotePath, changed, err := factorySandboxCopyInputToRemote(ctx, req.ProjectDir, reportPath, req.WorkDir, prep.Provider, prep.ConnectInfo, out, factorySandboxExecutorDeps{
+		remotePath, changed, err := factorySandboxCopyInputToRemote(ctx, req.ProjectDir, reportPath, req.WorkDir, provider, connectInfo, out, factorySandboxExecutorDeps{
 			runProviderScript: deps.runProviderScript,
 		})
 		if err != nil {

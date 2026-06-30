@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 // CommandRequest describes a command that should run inside a sandbox.
@@ -19,6 +20,7 @@ type CommandRequest struct {
 	Command     []string
 	WorkDir     string
 	Env         map[string]string
+	Stdin       io.Reader
 	Security    sandbox.SecurityEvaluationRequest
 	Stdout      io.Writer
 	Stderr      io.Writer
@@ -35,39 +37,38 @@ type TargetRequest struct {
 
 // PrepareContext carries resolved sandbox dependencies into preparation hooks.
 type PrepareContext struct {
-	Purpose     string
-	ProjectDir  string
-	Target      *sandbox.SandboxState
-	Provider    sandbox.Provider
-	ConnectInfo *sandbox.ConnectInfo
+	Purpose    string
+	ProjectDir string
+	Target     sandboxruntime.Target
+	Connection sandboxruntime.ConnectionInfo
 }
 
 // RunContext carries resolved sandbox dependencies into the command runner.
 type RunContext struct {
-	Target      *sandbox.SandboxState
-	Provider    sandbox.Provider
-	ConnectInfo *sandbox.ConnectInfo
+	Target     sandboxruntime.Target
+	Connection sandboxruntime.ConnectionInfo
+	Driver     sandboxruntime.Driver
 }
 
 // Dependencies contains the side-effect boundaries used by Run.
 type Dependencies struct {
 	ResolveTarget    func(context.Context, TargetRequest) (*sandbox.SandboxState, error)
 	StartTarget      func(context.Context, *sandbox.SandboxState, io.Writer, io.Writer) (*sandbox.SandboxState, error)
-	ResolveProvider  func(context.Context, *sandbox.SandboxState) (sandbox.Provider, error)
+	ResolveDriver    func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error)
 	PrepareWorkspace func(context.Context, PrepareContext, *CommandRequest) error
 	PrepareAuth      func(context.Context, PrepareContext, *CommandRequest) error
 	PrepareCommand   func(context.Context, PrepareContext, *CommandRequest) error
-	RunCommand       func(context.Context, RunContext, CommandRequest) error
-	HandleEvent      func(context.Context, Event) error
-	OnTargetReady    func(context.Context, *sandbox.SandboxState) error
-	OnProviderReady  func(context.Context, *sandbox.SandboxState, sandbox.Provider) error
+	// RunCommand overrides the default runtime driver Exec path for command-specific compatibility behavior.
+	RunCommand    func(context.Context, RunContext, CommandRequest) error
+	HandleEvent   func(context.Context, Event) error
+	OnTargetReady func(context.Context, *sandbox.SandboxState) error
+	OnDriverReady func(context.Context, sandboxruntime.Target, sandboxruntime.Driver) error
 }
 
 // Result describes the resolved sandbox and command after successful execution.
 type Result struct {
-	Target   *sandbox.SandboxState
-	Provider sandbox.Provider
-	Command  CommandRequest
+	Target  sandboxruntime.Target
+	Command CommandRequest
 }
 
 // Phase identifies the executor phase that produced an error.
@@ -77,20 +78,20 @@ const (
 	PhaseResolveTarget    Phase = "resolve_target"
 	PhaseProvisionTarget  Phase = "provision"
 	PhaseStartTarget      Phase = "start"
-	PhaseResolveProvider  Phase = "resolve_provider"
+	PhaseResolveDriver    Phase = "resolve_driver"
 	PhasePrepareWorkspace Phase = "prepare_workspace"
 	PhasePrepareAuth      Phase = "prepare_auth"
 	PhasePrepareCommand   Phase = "prepare_command"
 	PhaseRun              Phase = "run"
 )
 
-// PhaseError wraps errors from injected phases while preserving the target and
-// provider resolved at the time of failure.
+// PhaseError wraps errors from injected phases while preserving runtime
+// boundary context resolved at the time of failure.
 type PhaseError struct {
-	Phase    Phase
-	Target   *sandbox.SandboxState
-	Provider sandbox.Provider
-	Err      error
+	Phase         Phase
+	Target        *sandbox.SandboxState
+	RuntimeDriver string
+	Err           error
 }
 
 func (e *PhaseError) Error() string {
@@ -162,15 +163,11 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 	}
 
 	if deps.ResolveTarget == nil {
-		return nil, phaseError(PhaseResolveTarget, nil, nil, fmt.Errorf("sandbox target resolver is required"))
+		return nil, phaseError(PhaseResolveTarget, nil, "", fmt.Errorf("sandbox target resolver is required"))
 	}
-	if deps.ResolveProvider == nil {
-		return nil, phaseError(PhaseResolveProvider, nil, nil, fmt.Errorf("sandbox provider resolver is required"))
+	if deps.ResolveDriver == nil {
+		return nil, phaseError(PhaseResolveDriver, nil, "", fmt.Errorf("sandbox runtime driver resolver is required"))
 	}
-	if deps.RunCommand == nil {
-		return nil, phaseError(PhaseRun, nil, nil, fmt.Errorf("sandbox command runner is required"))
-	}
-
 	target, err := deps.ResolveTarget(ctx, TargetRequest{
 		Purpose:     req.Purpose,
 		ProjectDir:  req.ProjectDir,
@@ -179,22 +176,22 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 		Stderr:      req.Stderr,
 	})
 	if err != nil {
-		return nil, phaseError(PhaseResolveTarget, nil, nil, err)
+		return nil, phaseError(PhaseResolveTarget, nil, "", err)
 	}
 	if target == nil {
-		return nil, phaseError(PhaseResolveTarget, nil, nil, fmt.Errorf("sandbox target is required"))
+		return nil, phaseError(PhaseResolveTarget, nil, "", fmt.Errorf("sandbox target is required"))
 	}
 
 	if strings.TrimSpace(target.Status) != sandbox.StatusRunning {
 		if deps.StartTarget == nil {
-			return nil, phaseError(PhaseStartTarget, target, nil, fmt.Errorf("sandbox target starter is required"))
+			return nil, phaseError(PhaseStartTarget, target, "", fmt.Errorf("sandbox target starter is required"))
 		}
 		started, err := deps.StartTarget(ctx, target, req.Stdout, req.Stderr)
 		if err != nil {
-			return nil, phaseError(PhaseStartTarget, target, nil, err)
+			return nil, phaseError(PhaseStartTarget, target, "", err)
 		}
 		if started == nil {
-			return nil, phaseError(PhaseStartTarget, target, nil, fmt.Errorf("started sandbox target is required"))
+			return nil, phaseError(PhaseStartTarget, target, "", fmt.Errorf("started sandbox target is required"))
 		}
 		target = started
 	}
@@ -205,39 +202,39 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 		}
 	}
 
-	provider, err := deps.ResolveProvider(ctx, target)
+	runtimeTarget := runtimeTargetFromSandboxState(target)
+	driver, err := deps.ResolveDriver(ctx, runtimeTarget)
 	if err != nil {
-		return nil, phaseError(PhaseResolveProvider, target, nil, err)
+		return nil, phaseError(PhaseResolveDriver, target, "", err)
 	}
-	if provider == nil {
-		return nil, phaseError(PhaseResolveProvider, target, nil, fmt.Errorf("sandbox provider is required"))
+	if driver == nil {
+		return nil, phaseError(PhaseResolveDriver, target, "", fmt.Errorf("sandbox runtime driver is required"))
 	}
-	if deps.OnProviderReady != nil {
-		if err := deps.OnProviderReady(ctx, target, provider); err != nil {
+	if deps.OnDriverReady != nil {
+		if err := deps.OnDriverReady(ctx, runtimeTarget, driver); err != nil {
 			return nil, err
 		}
 	}
 
 	prep := PrepareContext{
-		Purpose:     req.Purpose,
-		ProjectDir:  req.ProjectDir,
-		Target:      target,
-		Provider:    provider,
-		ConnectInfo: sandbox.ConnectInfoFromState(target),
+		Purpose:    req.Purpose,
+		ProjectDir: req.ProjectDir,
+		Target:     runtimeTarget,
 	}
+	prep.Connection = prep.Target.Connection
 	if deps.PrepareWorkspace != nil {
 		if err := deps.PrepareWorkspace(ctx, prep, &req); err != nil {
-			return nil, phaseError(PhasePrepareWorkspace, target, provider, err)
+			return nil, phaseError(PhasePrepareWorkspace, target, runtimeDriverID(driver), err)
 		}
 	}
 	if deps.PrepareAuth != nil {
 		if err := deps.PrepareAuth(ctx, prep, &req); err != nil {
-			return nil, phaseError(PhasePrepareAuth, target, provider, err)
+			return nil, phaseError(PhasePrepareAuth, target, runtimeDriverID(driver), err)
 		}
 	}
 	if deps.PrepareCommand != nil {
 		if err := deps.PrepareCommand(ctx, prep, &req); err != nil {
-			return nil, phaseError(PhasePrepareCommand, target, provider, err)
+			return nil, phaseError(PhasePrepareCommand, target, runtimeDriverID(driver), err)
 		}
 	}
 
@@ -258,10 +255,14 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 	runReq := cloneCommandRequest(req)
 	runReq.Stdout = stdout
 	runReq.Stderr = stderr
-	runErr := deps.RunCommand(ctx, RunContext{
-		Target:      target,
-		Provider:    provider,
-		ConnectInfo: sandbox.ConnectInfoFromState(target),
+	runCommand := deps.RunCommand
+	if runCommand == nil {
+		runCommand = runRuntimeCommand
+	}
+	runErr := runCommand(ctx, RunContext{
+		Target:     runtimeTarget,
+		Connection: runtimeTarget.Connection,
+		Driver:     driver,
 	}, runReq)
 	flushErr := errors.Join(stdout.Flush(), stderr.Flush())
 	if runErr != nil {
@@ -269,40 +270,76 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 			runErr = errors.Join(runErr, flushErr)
 		}
 		_ = emit(ctx, deps.HandleEvent, withEvent(baseEvent, EventCommandFailed, PhaseRun, runErr))
-		return nil, phaseError(PhaseRun, target, provider, runErr)
+		return nil, phaseError(PhaseRun, target, runtimeDriverID(driver), runErr)
 	}
 	if flushErr != nil {
 		_ = emit(ctx, deps.HandleEvent, withEvent(baseEvent, EventCommandFailed, PhaseRun, flushErr))
-		return nil, phaseError(PhaseRun, target, provider, flushErr)
+		return nil, phaseError(PhaseRun, target, runtimeDriverID(driver), flushErr)
 	}
 	if err := emit(ctx, deps.HandleEvent, withEvent(baseEvent, EventCommandCompleted, PhaseRun, nil)); err != nil {
 		return nil, err
 	}
 
 	return &Result{
-		Target:   target,
-		Provider: provider,
-		Command:  cloneCommandRequest(req),
+		Target:  runtimeTarget,
+		Command: cloneCommandRequest(req),
 	}, nil
 }
 
-func phaseError(phase Phase, target *sandbox.SandboxState, provider sandbox.Provider, err error) *PhaseError {
+func runRuntimeCommand(ctx context.Context, run RunContext, req CommandRequest) error {
+	if run.Driver == nil {
+		return fmt.Errorf("sandbox runtime driver is required")
+	}
+	_, err := run.Driver.Exec(ctx, sandboxruntime.ExecRequest{
+		Target:  run.Target,
+		Args:    append([]string(nil), req.Command...),
+		Stdout:  req.Stdout,
+		Stderr:  req.Stderr,
+		Stdin:   req.Stdin,
+		Env:     cloneStringMap(req.Env),
+		WorkDir: req.WorkDir,
+	})
+	return err
+}
+
+func phaseError(phase Phase, target *sandbox.SandboxState, runtimeDriver string, err error) *PhaseError {
 	var existing *PhaseError
 	if errors.As(err, &existing) {
 		if existing.Target == nil {
 			existing.Target = target
 		}
-		if existing.Provider == nil {
-			existing.Provider = provider
+		if strings.TrimSpace(existing.RuntimeDriver) == "" {
+			driver := phaseRuntimeDriver(target, runtimeDriver)
+			if driver == "" && existing.Target != nil {
+				driver = phaseRuntimeDriver(existing.Target, "")
+			}
+			existing.RuntimeDriver = driver
 		}
 		return existing
 	}
 	return &PhaseError{
-		Phase:    phase,
-		Target:   target,
-		Provider: provider,
-		Err:      err,
+		Phase:         phase,
+		Target:        target,
+		RuntimeDriver: phaseRuntimeDriver(target, runtimeDriver),
+		Err:           err,
 	}
+}
+
+func phaseRuntimeDriver(target *sandbox.SandboxState, runtimeDriver string) string {
+	if driver := strings.TrimSpace(runtimeDriver); driver != "" {
+		return driver
+	}
+	if target == nil {
+		return ""
+	}
+	return strings.TrimSpace(sandboxRuntimeDriver(target))
+}
+
+func runtimeDriverID(driver sandboxruntime.Driver) string {
+	if driver == nil {
+		return ""
+	}
+	return strings.TrimSpace(driver.ID())
 }
 
 func withEvent(base Event, eventType EventType, phase Phase, err error) Event {
@@ -323,16 +360,21 @@ func emit(ctx context.Context, handler func(context.Context, Event) error, event
 
 func cloneCommandRequest(req CommandRequest) CommandRequest {
 	req.Command = append([]string(nil), req.Command...)
-	if req.Env != nil {
-		env := make(map[string]string, len(req.Env))
-		for key, value := range req.Env {
-			env[key] = value
-		}
-		req.Env = env
-	}
+	req.Env = cloneStringMap(req.Env)
 	req.Security.RequestedSecretModes = append([]string(nil), req.Security.RequestedSecretModes...)
 	req.Security.ActiveSecretModes = append([]string(nil), req.Security.ActiveSecretModes...)
 	return req
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func applySandboxSecurityMetadata(target *sandbox.SandboxState, req CommandRequest) {
@@ -368,6 +410,41 @@ func sandboxRuntimeDriver(target *sandbox.SandboxState) string {
 		return driver
 	}
 	return sandbox.SandboxRuntimeDriverSSHMachine
+}
+
+func runtimeTargetFromSandboxState(target *sandbox.SandboxState) sandboxruntime.Target {
+	if target == nil {
+		return sandboxruntime.Target{}
+	}
+	runtimeTarget := sandboxruntime.Target{
+		ID:       target.ID,
+		Name:     target.Name,
+		Provider: target.Provider,
+		Status:   target.Status,
+		Runtime: sandboxruntime.RuntimeState{
+			Driver: sandboxRuntimeDriver(target),
+		},
+	}
+	if target.Runtime != nil {
+		runtimeTarget.Runtime = sandboxruntime.RuntimeState{
+			Driver:         sandboxRuntimeDriver(target),
+			RuntimeID:      target.Runtime.RuntimeID,
+			Image:          target.Runtime.Image,
+			WorkerID:       target.Runtime.WorkerID,
+			IsolationLevel: target.Runtime.IsolationLevel,
+		}
+	}
+	if info := sandbox.ConnectInfoFromState(target); info != nil {
+		runtimeTarget.Connection = sandboxruntime.ConnectionInfo{
+			Address:           info.IP,
+			PublicIP:          info.PublicIP,
+			TailscaleIP:       info.TailscaleIP,
+			TailscaleHostname: info.TailscaleHostname,
+			TailscaleLockdown: info.TailscaleLockdown,
+			WorkspaceID:       info.WorkspaceID,
+		}
+	}
+	return runtimeTarget
 }
 
 type outputWriter struct {

@@ -17,6 +17,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 	"github.com/spf13/cobra"
 )
@@ -115,6 +116,21 @@ func TestBuildRunSandboxRemoteCommandPreservesRunFlags(t *testing.T) {
 		if strings.Contains(joined, disallowed) {
 			t.Fatalf("RemoteCommand %q should not contain sandbox-only value %q", joined, disallowed)
 		}
+	}
+}
+
+func TestRunSandboxDepsUseRuntimeDriverForRemoteExecution(t *testing.T) {
+	depsType := reflect.TypeOf(runSandboxDeps{})
+	if _, ok := depsType.FieldByName("runProviderCommand"); ok {
+		t.Fatal("runSandboxDeps exposes direct provider command execution; use runtime-driver execution")
+	}
+	field, ok := depsType.FieldByName("resolveRuntimeDriver")
+	if !ok {
+		t.Fatal("runSandboxDeps missing resolveRuntimeDriver")
+	}
+	want := reflect.TypeOf((func(string) (sandboxruntime.Driver, error))(nil))
+	if field.Type != want {
+		t.Fatalf("resolveRuntimeDriver type = %v, want %v", field.Type, want)
 	}
 }
 
@@ -356,9 +372,9 @@ func TestRunRunSandboxWithWriterJSONPreRemoteExecutionFailureIncludesTargetMetad
 			t.Fatal("resolveProvider should not run after start failure")
 			return nil, nil
 		},
-		runProviderCommand: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer, io.Writer) error {
-			t.Fatal("runProviderCommand should not run after start failure")
-			return nil
+		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+			t.Fatal("resolveRuntimeDriver should not run after start failure")
+			return nil, nil
 		},
 	})
 	if err != nil {
@@ -393,7 +409,7 @@ func TestRunRunSandboxWithWriterJSONPreRemoteExecutionFailureIncludesTargetMetad
 	}
 }
 
-func TestRunRunSandboxWithWriterJSONProviderSetupFailureSynthesizesRunResult(t *testing.T) {
+func TestRunRunSandboxWithWriterJSONRuntimeDriverSetupFailureSynthesizesRunResult(t *testing.T) {
 	startedAt := time.Date(2026, 6, 30, 9, 45, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(3 * time.Second)
 	projectDir := t.TempDir()
@@ -419,20 +435,8 @@ func TestRunRunSandboxWithWriterJSONProviderSetupFailureSynthesizesRunResult(t *
 		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
 			return target, target.Name, nil
 		},
-		resolveProvider: func(string) (sandbox.Provider, error) {
-			return fakeFactorySandboxProvider{}, nil
-		},
-		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
-			return factory.BootstrapResult{}, nil
-		},
-		engineAuthFiles: func() []factorySandboxAuthFile {
-			return nil
-		},
-		runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
-			return nil
-		},
-		runProviderCommand: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer, io.Writer) error {
-			return errors.New("provider exec setup failed")
+		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+			return nil, errors.New("runtime driver setup failed")
 		},
 	})
 	if err != nil {
@@ -442,8 +446,8 @@ func TestRunRunSandboxWithWriterJSONProviderSetupFailureSynthesizesRunResult(t *
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 		t.Fatalf("stdout is not parseable RunResult JSON: %v\n%s", err, out.String())
 	}
-	if !strings.Contains(result.Error, "provider exec setup failed") {
-		t.Fatalf("RunResult.Error = %q, want provider setup failure", result.Error)
+	if !strings.Contains(result.Error, "runtime driver setup failed") {
+		t.Fatalf("RunResult.Error = %q, want runtime driver setup failure", result.Error)
 	}
 }
 
@@ -476,6 +480,14 @@ func TestRunRunSandboxWithWriterJSONRemoteOutputPassesThroughAfterStdout(t *test
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
 		},
+		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+			return fakeRunSandboxRuntimeDriver{
+				exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+					_, _ = io.WriteString(req.Stdout, `{"contractVersion":1,"ok":false,"summary":"remote"}`+"\n")
+					return nil, errors.New("remote failed after writing json")
+				},
+			}, nil
+		},
 		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
 			return factory.BootstrapResult{}, nil
 		},
@@ -484,10 +496,6 @@ func TestRunRunSandboxWithWriterJSONRemoteOutputPassesThroughAfterStdout(t *test
 		},
 		runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
 			return nil
-		},
-		runProviderCommand: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, _ map[string]string, stdout, _ io.Writer) error {
-			_, _ = io.WriteString(stdout, `{"contractVersion":1,"ok":false,"summary":"remote"}`+"\n")
-			return errors.New("remote failed after writing json")
 		},
 	})
 	if err == nil {
@@ -505,6 +513,95 @@ func TestRunRunSandboxWithWriterJSONRemoteOutputPassesThroughAfterStdout(t *test
 	}
 	if strings.Contains(out.String(), "remote failed after writing json") {
 		t.Fatalf("stdout contains synthesized local error: %s", out.String())
+	}
+}
+
+func TestExecuteRunSandboxUsesRuntimeDriverAfterAuthPreparation(t *testing.T) {
+	target := &sandbox.SandboxState{
+		Name:        "ready-box",
+		Provider:    "test-provider",
+		Status:      sandbox.StatusRunning,
+		TailscaleIP: "100.64.0.10",
+	}
+	req := runSandboxRequest{
+		ProjectDir:    t.TempDir(),
+		SandboxName:   "ready-box",
+		RepoRemote:    "git@example.com:org/repo.git",
+		BaseBranch:    "main",
+		RunBranch:     "feature/runtime-run",
+		WorkDir:       "/root/workspace/repo",
+		RemoteCommand: []string{"hal", "run", "--json"},
+		Security:      runSandboxSecurityRequest(),
+	}
+	var order []string
+	var execReq sandboxruntime.ExecRequest
+	driver := fakeRunSandboxRuntimeDriver{
+		exec: func(_ context.Context, got sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			order = append(order, "runtime_exec")
+			execReq = got
+			_, _ = io.WriteString(got.Stdout, "runtime stdout\n")
+			_, _ = io.WriteString(got.Stderr, "runtime stderr\n")
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	result, err := (runSandboxDeps{
+		loadSandbox: func(string) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			return target, target.Name, nil
+		},
+		startSandbox: func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error) {
+			t.Fatal("startSandbox should not run for a running target")
+			return nil, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(providerName string) (sandboxruntime.Driver, error) {
+			order = append(order, "resolve_runtime_driver")
+			if providerName != "test-provider" {
+				t.Fatalf("providerName = %q, want test-provider", providerName)
+			}
+			return driver, nil
+		},
+		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			order = append(order, "bootstrap")
+			return factory.BootstrapResult{}, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			order = append(order, "auth")
+			return nil
+		},
+	}).executeRunSandbox(context.Background(), req, &out, &errOut, runSandboxExecutionHooks{})
+	if err != nil {
+		t.Fatalf("executeRunSandbox() unexpected error: %v", err)
+	}
+	if result.Result == nil {
+		t.Fatal("Result = nil")
+	}
+	if !result.RemoteStarted {
+		t.Fatal("RemoteStarted = false, want true after runtime stdout")
+	}
+	wantOrder := []string{"resolve_runtime_driver", "bootstrap", "auth", "runtime_exec"}
+	if !reflect.DeepEqual(order, wantOrder) {
+		t.Fatalf("order = %#v, want %#v", order, wantOrder)
+	}
+	wantArgs := runSandboxRemoteExecArgs(sandboxexec.CommandRequest{Command: req.RemoteCommand, WorkDir: req.WorkDir})
+	if !reflect.DeepEqual(execReq.Args, wantArgs) {
+		t.Fatalf("Exec args = %#v, want %#v", execReq.Args, wantArgs)
+	}
+	if execReq.Target.Name != "ready-box" || execReq.Target.Provider != "test-provider" || execReq.Target.Connection.TailscaleIP != "100.64.0.10" {
+		t.Fatalf("Exec target = %#v, want runtime target metadata", execReq.Target)
+	}
+	if out.String() != "runtime stdout\n" {
+		t.Fatalf("stdout = %q, want runtime stdout", out.String())
+	}
+	if errOut.String() != "runtime stderr\n" {
+		t.Fatalf("stderr = %q, want runtime stderr", errOut.String())
 	}
 }
 
@@ -583,7 +680,7 @@ func TestRunRunSandboxWithWriterSuccessfulExecutorUpdatesManifest(t *testing.T) 
 				}
 			}
 			return runSandboxExecutionResult{
-				Result: &sandboxexec.Result{Target: target},
+				Result: &sandboxexec.Result{Target: sandboxruntime.Target{Name: target.Name, Provider: target.Provider, Status: target.Status}},
 			}, nil
 		},
 	})
@@ -669,7 +766,7 @@ func TestRunRunWithWriterSandboxFlagDispatchesToSandboxExecutor(t *testing.T) {
 					return runSandboxExecutionResult{}, err
 				}
 			}
-			return runSandboxExecutionResult{Result: &sandboxexec.Result{Target: target}}, nil
+			return runSandboxExecutionResult{Result: &sandboxexec.Result{Target: sandboxruntime.Target{Name: target.Name, Provider: target.Provider, Status: target.Status}}}, nil
 		},
 	}
 	t.Cleanup(func() {
@@ -764,4 +861,51 @@ type fakeRunSandboxGitInspector struct {
 
 func (f fakeRunSandboxGitInspector) InspectGit(context.Context, string) (sandboxworkspace.GitStatus, error) {
 	return f.status, f.err
+}
+
+type fakeRunSandboxRuntimeDriver struct {
+	id   string
+	exec func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
+}
+
+func (f fakeRunSandboxRuntimeDriver) ID() string {
+	if f.id != "" {
+		return f.id
+	}
+	return sandboxruntime.DriverSSHMachine
+}
+
+func (fakeRunSandboxRuntimeDriver) Create(context.Context, sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+	return nil, nil
+}
+
+func (fakeRunSandboxRuntimeDriver) Start(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	return nil, nil
+}
+
+func (fakeRunSandboxRuntimeDriver) Stop(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	return nil, nil
+}
+
+func (fakeRunSandboxRuntimeDriver) Delete(context.Context, sandboxruntime.LifecycleRequest) error {
+	return nil
+}
+
+func (fakeRunSandboxRuntimeDriver) Inspect(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+	return nil, nil
+}
+
+func (f fakeRunSandboxRuntimeDriver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+	if f.exec != nil {
+		return f.exec(ctx, req)
+	}
+	return &sandboxruntime.ExecResult{}, nil
+}
+
+func (fakeRunSandboxRuntimeDriver) CopyIn(context.Context, sandboxruntime.CopyRequest) error {
+	return nil
+}
+
+func (fakeRunSandboxRuntimeDriver) CopyOut(context.Context, sandboxruntime.CopyRequest) error {
+	return nil
 }
