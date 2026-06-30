@@ -261,14 +261,26 @@ func TestRunAutoSandboxWithWriterJSONWorkspacePreflightFailure(t *testing.T) {
 	}
 }
 
-func TestRunAutoSandboxWithWriterGitBundlePreflightPersistsWorkspaceMetadata(t *testing.T) {
+func TestRunAutoSandboxWithWriterGitBundlePlanMaterializesAndExecutes(t *testing.T) {
 	startedAt := time.Date(2026, 6, 30, 12, 16, 0, 0, time.UTC)
-	finishedAt := startedAt.Add(time.Second)
+	finishedAt := startedAt.Add(4 * time.Second)
 	projectDir := t.TempDir()
 	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	target := &sandbox.SandboxState{Name: "auto-bundle", Provider: "test-provider", Status: sandbox.StatusRunning}
+	plan := sandboxworkspace.Plan{
+		Mode:           sandbox.SandboxWorkspaceModeClone,
+		InputSource:    sandbox.SandboxWorkspaceInputSourceGitBundle,
+		ProjectDir:     projectDir,
+		Repository:     "git@example.com:org/repo.git",
+		Branch:         "feature/unpushed-auto",
+		Upstream:       "origin/main",
+		SyncRef:        "abc123",
+		RequiresBundle: true,
+	}
+	var order []string
+	var materialized bool
 	var out bytes.Buffer
 	var errOut bytes.Buffer
-	executeCalled := false
 
 	err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
 		JSON:        true,
@@ -278,44 +290,84 @@ func TestRunAutoSandboxWithWriterGitBundlePreflightPersistsWorkspaceMetadata(t *
 			return store, nil
 		},
 		newExecutionID: func(time.Time) string {
-			return "auto-git-bundle-preflight"
+			return "auto-git-bundle-exec"
 		},
 		now: runSandboxTestClock(startedAt, finishedAt),
 		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
-			return sandboxworkspace.Plan{
-				Mode:           sandbox.SandboxWorkspaceModeClone,
-				InputSource:    sandbox.SandboxWorkspaceInputSourceGitBundle,
-				ProjectDir:     projectDir,
-				Repository:     "git@example.com:org/repo.git",
-				Branch:         "feature/unpushed-auto",
-				SyncRef:        "abc123",
-				RequiresBundle: true,
+			return plan, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			return target, target.Name, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+			return fakeRunSandboxRuntimeDriver{
+				exec: func(_ context.Context, got sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+					order = append(order, "runtime_exec")
+					_, _ = io.WriteString(got.Stdout, autoSandboxRemoteSuccessJSON("remote")+"\n")
+					return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+				},
 			}, nil
 		},
-		execute: func(context.Context, autoSandboxRequest, io.Writer, io.Writer, autoSandboxExecutionHooks) (autoSandboxExecutionResult, error) {
-			executeCalled = true
-			return autoSandboxExecutionResult{}, errors.New("execute should not run")
+		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			t.Fatal("legacy bootstrap should not run for git-bundle workspace")
+			return factory.BootstrapResult{}, nil
+		},
+		materializeWorkspace: func(_ context.Context, _ sandboxexec.PrepareContext, got sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
+			order = append(order, "materialize_workspace")
+			materialized = true
+			if got.Plan == nil {
+				t.Fatal("materialization plan = nil, want original workspace plan")
+			}
+			if got.Plan.Upstream != "origin/main" {
+				t.Fatalf("plan upstream = %q, want origin/main", got.Plan.Upstream)
+			}
+			if got.Plan.ProjectDir != projectDir || got.ProjectDir != projectDir {
+				t.Fatalf("materialization dirs plan=%q request=%q, want %q", got.Plan.ProjectDir, got.ProjectDir, projectDir)
+			}
+			if got.Workspace.InputSource != sandbox.SandboxWorkspaceInputSourceGitBundle || got.Workspace.SyncRef != "abc123" {
+				t.Fatalf("workspace metadata = %#v, want git-bundle metadata", got.Workspace)
+			}
+			return sandboxworkspace.MaterializationResult{InputSource: sandbox.SandboxWorkspaceInputSourceGitBundle}, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			order = append(order, "auth")
+			return nil
+		},
+		runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
+			t.Fatal("provider script should not run without explicit inputs or auth files")
+			return nil
 		},
 	})
 	if err != nil {
-		t.Fatalf("runAutoSandboxWithWriter() error = %v, want nil JSON error result", err)
+		t.Fatalf("runAutoSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
 	}
-	if executeCalled {
-		t.Fatal("execute should not run for unsupported git-bundle preflight")
+	if !materialized {
+		t.Fatal("materializeWorkspace was not called")
 	}
+	wantOrder := []string{"materialize_workspace", "auth", "runtime_exec"}
+	if !reflect.DeepEqual(order, wantOrder) {
+		t.Fatalf("order = %#v, want %#v", order, wantOrder)
+	}
+	assertAutoJSONContractV2(t, out.Bytes())
 	var result AutoResult
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 		t.Fatalf("unmarshal AutoResult: %v", err)
 	}
-	if !strings.Contains(result.Error, "git bundle workspace input is not implemented") {
-		t.Fatalf("Error = %q, want git bundle implementation guard", result.Error)
+	if !result.OK || result.Summary != "remote" {
+		t.Fatalf("AutoResult = %#v, want successful remote result", result)
 	}
-	manifest, err := store.LoadManifest("auto-git-bundle-preflight")
+	if strings.Contains(out.String(), "git bundle workspace input is not implemented") {
+		t.Fatalf("stdout contains old implementation guard: %s", out.String())
+	}
+	manifest, err := store.LoadManifest("auto-git-bundle-exec")
 	if err != nil {
 		t.Fatalf("LoadManifest() error: %v", err)
 	}
-	if manifest.Status != sandboxexecution.StatusFailed {
-		t.Fatalf("Status = %q, want failed", manifest.Status)
+	if manifest.Status != sandboxexecution.StatusSucceeded {
+		t.Fatalf("Status = %q, want succeeded", manifest.Status)
 	}
 	wantWorkspace := sandbox.SandboxWorkspace{
 		Mode:        sandbox.SandboxWorkspaceModeClone,
@@ -331,8 +383,14 @@ func TestRunAutoSandboxWithWriterGitBundlePreflightPersistsWorkspaceMetadata(t *
 	if err != nil {
 		t.Fatalf("Marshal(workspace) error: %v", err)
 	}
-	if strings.Contains(string(encodedWorkspace), projectDir) {
-		t.Fatalf("workspace metadata leaks local project path %q: %s", projectDir, encodedWorkspace)
+	if strings.Contains(string(encodedWorkspace), projectDir) || strings.Contains(string(encodedWorkspace), "origin/main") {
+		t.Fatalf("workspace metadata leaks transient plan details: %s", encodedWorkspace)
+	}
+	if manifest.Command == nil || !reflect.DeepEqual(manifest.Command, []string{"hal", "auto", "--json"}) {
+		t.Fatalf("Command = %#v, want remote auto json command", manifest.Command)
+	}
+	if manifest.FinishedAt == nil || !manifest.FinishedAt.Equal(finishedAt) {
+		t.Fatalf("FinishedAt = %v, want %v", manifest.FinishedAt, finishedAt)
 	}
 }
 
@@ -946,6 +1004,10 @@ func autoSandboxTestPlan(projectDir string) sandboxworkspace.Plan {
 		Upstream:    "origin/feature/auto-sandbox",
 		SyncRef:     "refs/remotes/origin/feature/auto-sandbox",
 	}
+}
+
+func autoSandboxRemoteSuccessJSON(summary string) string {
+	return `{"contractVersion":2,"ok":true,"entryMode":"report_discovery","resumed":false,"steps":{"analyze":{"status":"completed"},"spec":{"status":"completed"},"branch":{"status":"completed"},"convert":{"status":"completed"},"validate":{"status":"completed"},"run":{"status":"completed"},"review":{"status":"skipped"},"report":{"status":"completed"},"ci":{"status":"skipped"},"archive":{"status":"skipped"}},"summary":"` + summary + `"}`
 }
 
 type capturingAutoSandboxProvider struct {

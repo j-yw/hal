@@ -63,6 +63,7 @@ type autoSandboxRequest struct {
 	Env           map[string]string
 	Flags         autoSandboxOptions
 	Workspace     *sandbox.SandboxWorkspace
+	WorkspacePlan *sandboxworkspace.Plan
 	Security      sandbox.SecurityEvaluationRequest
 }
 
@@ -351,18 +352,24 @@ func prepareAutoSandboxRequest(ctx context.Context, req *autoSandboxRequest, dep
 		return fmt.Errorf("resolve base branch: current branch is required for sandbox execution; pass --base explicitly")
 	}
 
+	plan = sandboxWorkspacePlanForCommand(plan, req.ProjectDir, sandbox.SandboxWorkspaceInputSourceRemoteRef)
 	req.RepoRemote = repoRemote
 	req.BaseBranch = baseBranch
 	req.RunBranch = branchName
 	workspace := sandboxWorkspaceMetadataFromPlan(plan, sandbox.SandboxWorkspaceInputSourceRemoteRef, baseBranch)
 	req.Workspace = &workspace
-	if plan.RequiresBundle || plan.InputSource == sandbox.SandboxWorkspaceInputSourceGitBundle {
-		return fmt.Errorf("plan sandbox workspace: git bundle workspace input is not implemented for hal auto --sandbox yet; push local commits or choose a remote ref")
-	}
+	req.WorkspacePlan = cloneSandboxWorkspacePlan(plan)
 	if inputSource := strings.TrimSpace(plan.InputSource); inputSource != "" && inputSource != sandbox.SandboxWorkspaceInputSourceRemoteRef {
+		if inputSource == sandbox.SandboxWorkspaceInputSourceGitBundle {
+			return prepareAutoSandboxWorkDir(req)
+		}
 		return fmt.Errorf("plan sandbox workspace: unsupported clone input source %q for hal auto --sandbox", inputSource)
 	}
 
+	return prepareAutoSandboxWorkDir(req)
+}
+
+func prepareAutoSandboxWorkDir(req *autoSandboxRequest) error {
 	record := factory.RunRecord{
 		RunID:      req.ExecutionID,
 		RepoPath:   req.ProjectDir,
@@ -426,6 +433,7 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 			if isGitBundleWorkspace(req.Workspace) {
 				_, err := deps.materializeWorkspace(ctx, prep, sandboxexec.WorkspaceMaterializationRequest{
 					Workspace:    *req.Workspace,
+					Plan:         req.WorkspacePlan,
 					ProjectDir:   req.ProjectDir,
 					WorkspaceDir: req.WorkDir,
 				})
