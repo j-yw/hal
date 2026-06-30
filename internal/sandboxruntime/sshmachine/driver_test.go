@@ -20,6 +20,8 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"
 )
 
+var _ sandboxruntime.Driver = (*sshmachine.Driver)(nil)
+
 func TestDriverIdentifiesSSHMachineRuntime(t *testing.T) {
 	driver := sshmachine.New(&recordingProvider{})
 
@@ -376,6 +378,155 @@ func TestExecCancellationUnwrapsContextErrors(t *testing.T) {
 	}
 }
 
+func TestCopyInDelegatesToProviderExecAndStreamsSource(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "input with spaces.txt")
+	if err := os.WriteFile(sourcePath, []byte("copy-in payload"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	capturedPath := filepath.Join(t.TempDir(), "captured.txt")
+	provider := &recordingProvider{
+		execCommand: func(*sandbox.ConnectInfo, []string) (*exec.Cmd, error) {
+			return helperCommand("copy-in", capturedPath), nil
+		},
+	}
+	driver := sshmachine.New(provider)
+	remoteDestination := "/workspace/project/input with spaces.txt"
+
+	err := driver.CopyIn(context.Background(), sandboxruntime.CopyRequest{
+		Target: sandboxruntime.Target{
+			Name: "dev",
+			Connection: sandboxruntime.ConnectionInfo{
+				PublicIP:    "203.0.113.10",
+				TailscaleIP: "100.64.0.10",
+			},
+		},
+		SourcePath:      sourcePath,
+		DestinationPath: remoteDestination,
+	})
+	if err != nil {
+		t.Fatalf("CopyIn() unexpected error: %v", err)
+	}
+
+	captured, err := os.ReadFile(capturedPath)
+	if err != nil {
+		t.Fatalf("read captured copy-in payload: %v", err)
+	}
+	if string(captured) != "copy-in payload" {
+		t.Fatalf("captured copy-in payload = %q, want source content", captured)
+	}
+	if len(provider.calls) != 1 {
+		t.Fatalf("provider calls = %d, want 1", len(provider.calls))
+	}
+	call := provider.calls[0]
+	if call.operation != "exec" {
+		t.Fatalf("provider operation = %q, want exec", call.operation)
+	}
+	if got := call.args[len(call.args)-1]; got != remoteDestination {
+		t.Fatalf("provider CopyIn destination arg = %q, want %q", got, remoteDestination)
+	}
+	if call.info == nil || call.info.IP != "100.64.0.10" || call.info.PublicIP != "203.0.113.10" {
+		t.Fatalf("provider CopyIn ConnectInfo = %#v, want preferred connection info", call.info)
+	}
+}
+
+func TestCopyOutDelegatesToProviderExecAndWritesDestination(t *testing.T) {
+	provider := &recordingProvider{
+		execCommand: func(*sandbox.ConnectInfo, []string) (*exec.Cmd, error) {
+			return helperCommand("copy-out", "copy-out payload"), nil
+		},
+	}
+	driver := sshmachine.New(provider)
+	destinationPath := filepath.Join(t.TempDir(), "nested", "output.txt")
+	remoteSource := "/workspace/project/output.txt"
+
+	err := driver.CopyOut(context.Background(), sandboxruntime.CopyRequest{
+		Target: sandboxruntime.Target{
+			Name:       "dev",
+			Connection: sandboxruntime.ConnectionInfo{Address: "203.0.113.10"},
+		},
+		SourcePath:      remoteSource,
+		DestinationPath: destinationPath,
+	})
+	if err != nil {
+		t.Fatalf("CopyOut() unexpected error: %v", err)
+	}
+
+	content, err := os.ReadFile(destinationPath)
+	if err != nil {
+		t.Fatalf("read copy-out destination: %v", err)
+	}
+	if string(content) != "copy-out payload" {
+		t.Fatalf("copy-out destination = %q, want provider stdout payload", content)
+	}
+	if len(provider.calls) != 1 {
+		t.Fatalf("provider calls = %d, want 1", len(provider.calls))
+	}
+	call := provider.calls[0]
+	if call.operation != "exec" {
+		t.Fatalf("provider operation = %q, want exec", call.operation)
+	}
+	if got := call.args[len(call.args)-1]; got != remoteSource {
+		t.Fatalf("provider CopyOut source arg = %q, want %q", got, remoteSource)
+	}
+	if call.info == nil || call.info.IP != "203.0.113.10" {
+		t.Fatalf("provider CopyOut ConnectInfo = %#v, want runtime connection info", call.info)
+	}
+}
+
+func TestCopyErrorsWrapProviderFailuresWithOperationAndDriver(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "input.txt")
+	if err := os.WriteFile(sourcePath, []byte("payload"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	providerErr := errors.New("provider copy failed")
+
+	for _, tt := range []struct {
+		operation string
+		run       func(*sshmachine.Driver) error
+	}{
+		{
+			operation: "copy_in",
+			run: func(driver *sshmachine.Driver) error {
+				return driver.CopyIn(context.Background(), sandboxruntime.CopyRequest{
+					Target:          sandboxruntime.Target{Name: "dev", Connection: sandboxruntime.ConnectionInfo{Address: "203.0.113.10"}},
+					SourcePath:      sourcePath,
+					DestinationPath: "/workspace/input.txt",
+				})
+			},
+		},
+		{
+			operation: "copy_out",
+			run: func(driver *sshmachine.Driver) error {
+				return driver.CopyOut(context.Background(), sandboxruntime.CopyRequest{
+					Target:          sandboxruntime.Target{Name: "dev", Connection: sandboxruntime.ConnectionInfo{Address: "203.0.113.10"}},
+					SourcePath:      "/workspace/output.txt",
+					DestinationPath: filepath.Join(t.TempDir(), "output.txt"),
+				})
+			},
+		},
+	} {
+		t.Run(tt.operation, func(t *testing.T) {
+			provider := &recordingProvider{errByOperation: map[string]error{"exec": providerErr}}
+			driver := sshmachine.New(provider)
+
+			err := tt.run(driver)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !errors.Is(err, providerErr) {
+				t.Fatalf("errors.Is(%v, providerErr) = false, want true", err)
+			}
+			var opErr *sshmachine.OperationError
+			if !errors.As(err, &opErr) {
+				t.Fatalf("errors.As(%T) = false, want true", opErr)
+			}
+			if opErr.Driver != sandboxruntime.DriverSSHMachine || opErr.Operation != tt.operation {
+				t.Fatalf("OperationError = %#v, want driver %q operation %q", opErr, sandboxruntime.DriverSSHMachine, tt.operation)
+			}
+		})
+	}
+}
+
 type lifecycleCall struct {
 	operation string
 	name      string
@@ -466,8 +617,10 @@ func cloneConnectInfo(info *sandbox.ConnectInfo) *sandbox.ConnectInfo {
 	return &cloned
 }
 
-func helperCommand(mode string) *exec.Cmd {
-	cmd := exec.Command(os.Args[0], "-test.run=TestSSHMachineExecHelper", "--", mode)
+func helperCommand(mode string, args ...string) *exec.Cmd {
+	commandArgs := []string{"-test.run=TestSSHMachineExecHelper", "--", mode}
+	commandArgs = append(commandArgs, args...)
+	cmd := exec.Command(os.Args[0], commandArgs...)
 	cmd.Env = append(os.Environ(), "HAL_SSHMACHINE_EXEC_HELPER=1")
 	return cmd
 }
@@ -477,9 +630,11 @@ func TestSSHMachineExecHelper(t *testing.T) {
 		return
 	}
 	mode := ""
+	helperArgs := []string(nil)
 	for i, arg := range os.Args {
 		if arg == "--" && i+1 < len(os.Args) {
 			mode = os.Args[i+1]
+			helperArgs = os.Args[i+2:]
 			break
 		}
 	}
@@ -501,6 +656,28 @@ func TestSSHMachineExecHelper(t *testing.T) {
 	case "wait":
 		fmt.Fprintln(os.Stdout, "started")
 		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	case "copy-in":
+		if len(helperArgs) != 1 {
+			fmt.Fprintf(os.Stderr, "copy-in helper args = %v, want capture path", helperArgs)
+			os.Exit(2)
+		}
+		input, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read copy-in stdin: %v", err)
+			os.Exit(2)
+		}
+		if err := os.WriteFile(helperArgs[0], input, 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "write copy-in capture: %v", err)
+			os.Exit(2)
+		}
+		os.Exit(0)
+	case "copy-out":
+		if len(helperArgs) != 1 {
+			fmt.Fprintf(os.Stderr, "copy-out helper args = %v, want payload", helperArgs)
+			os.Exit(2)
+		}
+		fmt.Fprint(os.Stdout, helperArgs[0])
 		os.Exit(0)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown helper mode %q", mode)

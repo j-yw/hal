@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -20,6 +21,8 @@ import (
 
 var ErrProviderRequired = errors.New("sandbox provider is required")
 var ErrExecCommandRequired = errors.New("sandbox provider returned nil exec command")
+var ErrCopySourcePathRequired = errors.New("copy source path is required")
+var ErrCopyDestinationPathRequired = errors.New("copy destination path is required")
 
 // Driver adapts the existing SSH-machine sandbox.Provider lifecycle behavior
 // to the sandboxruntime boundary.
@@ -178,6 +181,99 @@ func (d *Driver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*san
 	return result, nil
 }
 
+func (d *Driver) CopyIn(ctx context.Context, req sandboxruntime.CopyRequest) error {
+	const operation = "copy_in"
+	provider, err := d.providerFor(operation)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(req.SourcePath) == "" {
+		return operationError(operation, ErrCopySourcePathRequired)
+	}
+	if strings.TrimSpace(req.DestinationPath) == "" {
+		return operationError(operation, ErrCopyDestinationPathRequired)
+	}
+
+	source, err := os.Open(req.SourcePath)
+	if err != nil {
+		return operationError(operation, err)
+	}
+	defer source.Close()
+
+	info := connectInfoFromTarget(req.Target)
+	cmd, err := provider.Exec(info, copyInArgs(req.DestinationPath))
+	if err != nil {
+		return operationError(operation, err)
+	}
+	if cmd == nil {
+		return operationError(operation, ErrExecCommandRequired)
+	}
+
+	cmd.Stdin = source
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if _, err := runExecCommandContext(ctx, cmd); err != nil {
+		return operationError(operation, err)
+	}
+	return nil
+}
+
+func (d *Driver) CopyOut(ctx context.Context, req sandboxruntime.CopyRequest) error {
+	const operation = "copy_out"
+	provider, err := d.providerFor(operation)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(req.SourcePath) == "" {
+		return operationError(operation, ErrCopySourcePathRequired)
+	}
+	if strings.TrimSpace(req.DestinationPath) == "" {
+		return operationError(operation, ErrCopyDestinationPathRequired)
+	}
+	if err := os.MkdirAll(filepath.Dir(req.DestinationPath), 0o755); err != nil {
+		return operationError(operation, err)
+	}
+
+	destination, err := os.CreateTemp(filepath.Dir(req.DestinationPath), "."+filepath.Base(req.DestinationPath)+".tmp-*")
+	if err != nil {
+		return operationError(operation, err)
+	}
+	destinationPath := destination.Name()
+	removeDestination := true
+	defer func() {
+		if removeDestination {
+			_ = os.Remove(destinationPath)
+		}
+	}()
+
+	info := connectInfoFromTarget(req.Target)
+	cmd, err := provider.Exec(info, copyOutArgs(req.SourcePath))
+	if err != nil {
+		_ = destination.Close()
+		return operationError(operation, err)
+	}
+	if cmd == nil {
+		_ = destination.Close()
+		return operationError(operation, ErrExecCommandRequired)
+	}
+
+	cmd.Stdin = nil
+	cmd.Stdout = destination
+	cmd.Stderr = io.Discard
+	if _, err := runExecCommandContext(ctx, cmd); err != nil {
+		_ = destination.Close()
+		return operationError(operation, err)
+	}
+	if err := destination.Close(); err != nil {
+		return operationError(operation, err)
+	}
+	if err := os.Rename(destinationPath, req.DestinationPath); err != nil {
+		return operationError(operation, err)
+	}
+	removeDestination = false
+	return nil
+}
+
 func (d *Driver) providerFor(operation string) (sandbox.Provider, error) {
 	if d == nil || d.provider == nil {
 		return nil, operationError(operation, ErrProviderRequired)
@@ -313,6 +409,51 @@ func execExitCode(cmd *exec.Cmd, err error) int {
 	}
 	return -1
 }
+
+func copyInArgs(destinationPath string) []string {
+	return []string{"sh", "-c", copyInScript, "hal-copy-in", destinationPath}
+}
+
+func copyOutArgs(sourcePath string) []string {
+	return []string{"sh", "-c", copyOutScript, "hal-copy-out", sourcePath}
+}
+
+const copyInScript = `set -eu
+destination=$1
+if [ -z "$destination" ]; then
+  echo "destination path is required" >&2
+  exit 2
+fi
+parent=$(dirname "$destination")
+if [ -n "$parent" ] && [ "$parent" != "." ]; then
+  mkdir -p "$parent"
+fi
+if [ -L "$destination" ]; then
+  echo "refusing symlink destination: $destination" >&2
+  exit 1
+fi
+tmp="${destination}.hal-copy.$$"
+rm -f "$tmp"
+cat > "$tmp"
+mv -f "$tmp" "$destination"
+`
+
+const copyOutScript = `set -eu
+source=$1
+if [ -z "$source" ]; then
+  echo "source path is required" >&2
+  exit 2
+fi
+if [ ! -e "$source" ]; then
+  echo "source path not found: $source" >&2
+  exit 1
+fi
+if [ -d "$source" ]; then
+  echo "source path is a directory: $source" >&2
+  exit 1
+fi
+cat "$source"
+`
 
 type execLockedWriter struct {
 	mu  *sync.Mutex
