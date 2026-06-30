@@ -2,6 +2,8 @@ package sandboxexecution
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -161,6 +163,164 @@ func TestCollectRuntimeArtifactsRejectsInvalidInputBeforeRuntimeCalls(t *testing
 	assertPathMissing(t, store.Root())
 }
 
+func TestCollectRuntimeArtifactsClassifiesCopyOutResults(t *testing.T) {
+	copyOutFailure := errors.New("remote copy failed with token-secret at /workspace/repo/.hal/reports.tar")
+
+	cases := []struct {
+		name               string
+		optional           bool
+		copyOutErr         error
+		storeRootIsFile    bool
+		wantErr            bool
+		wantCollected      int
+		wantPartial        int
+		wantWarnings       int
+		wantWarningPhase   string
+		wantWarningMessage string
+	}{
+		{
+			name:          "required present",
+			wantCollected: 1,
+		},
+		{
+			name:          "optional present",
+			optional:      true,
+			wantCollected: 1,
+		},
+		{
+			name:               "optional missing",
+			optional:           true,
+			copyOutErr:         fs.ErrNotExist,
+			wantPartial:        1,
+			wantWarnings:       1,
+			wantWarningPhase:   "copy_out",
+			wantWarningMessage: "optional sandbox execution artifact is missing",
+		},
+		{
+			name:       "required missing",
+			copyOutErr: fs.ErrNotExist,
+			wantErr:    true,
+		},
+		{
+			name:               "optional copyout failure",
+			optional:           true,
+			copyOutErr:         copyOutFailure,
+			wantPartial:        1,
+			wantWarnings:       1,
+			wantWarningPhase:   "copy_out",
+			wantWarningMessage: "optional sandbox execution artifact copy failed",
+		},
+		{
+			name:               "optional store persistence failure",
+			optional:           true,
+			storeRootIsFile:    true,
+			wantPartial:        1,
+			wantWarnings:       1,
+			wantWarningPhase:   "store",
+			wantWarningMessage: "optional sandbox execution artifact persistence failed",
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestStore(t)
+			if tt.storeRootIsFile {
+				rootFile := filepath.Join(t.TempDir(), "sandbox-executions")
+				if err := os.WriteFile(rootFile, []byte("not a directory\n"), 0o600); err != nil {
+					t.Fatalf("WriteFile(store root) error: %v", err)
+				}
+				store = NewStore(rootFile)
+			}
+			runtime := &recordingArtifactRuntime{copyOutErr: tt.copyOutErr}
+
+			result, err := CollectRuntimeArtifacts(context.Background(), RuntimeCollectionRequest{
+				ExecutionID: "exec-1",
+				Store:       store,
+				Runtime:     runtime,
+				Artifacts: []RuntimeArtifactRequest{{
+					Optional: tt.optional,
+					Artifact: ArtifactMetadataEntry{
+						ID:   "reports",
+						Name: "Reports Archive",
+						Type: "tar",
+						Path: ".hal/reports.tar",
+					},
+					PayloadPath: "reports/reports.tar",
+					RemotePath:  "/workspace/repo/.hal/reports.tar",
+				}},
+			})
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("CollectRuntimeArtifacts() expected error")
+				}
+				if len(runtime.copyOuts) != 1 {
+					t.Fatalf("CopyOut calls = %d, want 1", len(runtime.copyOuts))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("CollectRuntimeArtifacts() error: %v", err)
+			}
+			if len(runtime.copyOuts) != 1 {
+				t.Fatalf("CopyOut calls = %d, want 1", len(runtime.copyOuts))
+			}
+			metadata := result.ArtifactMetadata
+			if len(metadata.Collected) != tt.wantCollected {
+				t.Fatalf("collected = %#v, want %d entries", metadata.Collected, tt.wantCollected)
+			}
+			if len(metadata.Partial) != tt.wantPartial {
+				t.Fatalf("partial = %#v, want %d entries", metadata.Partial, tt.wantPartial)
+			}
+			if len(metadata.Warnings) != tt.wantWarnings {
+				t.Fatalf("warnings = %#v, want %d entries", metadata.Warnings, tt.wantWarnings)
+			}
+
+			if tt.wantCollected == 1 {
+				collected := metadata.Collected[0]
+				if got, want := collected.Path, ".hal/reports.tar"; got != want {
+					t.Fatalf("collected path = %q, want %q", got, want)
+				}
+				if got, want := collected.StoredPath, "exec-1/artifacts/reports/reports.tar"; got != want {
+					t.Fatalf("collected storedPath = %q, want %q", got, want)
+				}
+				if collected.SizeBytes == nil || collected.CreatedAt == nil {
+					t.Fatalf("collected metadata missing size/time: %#v", collected)
+				}
+			}
+
+			if tt.wantPartial == 1 {
+				partial := metadata.Partial[0]
+				if got, want := partial.Path, ".hal/reports.tar"; got != want {
+					t.Fatalf("partial path = %q, want %q", got, want)
+				}
+				if partial.StoredPath != "" || partial.SizeBytes != nil || partial.CreatedAt != nil {
+					t.Fatalf("partial metadata should not include stored fields: %#v", partial)
+				}
+				warning := metadata.Warnings[0]
+				if warning.Phase != tt.wantWarningPhase || warning.Message != tt.wantWarningMessage {
+					t.Fatalf("warning = %#v, want phase %q message %q", warning, tt.wantWarningPhase, tt.wantWarningMessage)
+				}
+				if warning.Artifact != partial {
+					t.Fatalf("warning artifact = %#v, want partial %#v", warning.Artifact, partial)
+				}
+
+				encoded := string(mustJSONBytes(t, metadata))
+				for _, forbidden := range []string{
+					"/workspace/repo/.hal/reports.tar",
+					"token-secret",
+					"SourcePath",
+					"DestinationPath",
+				} {
+					if strings.Contains(encoded, forbidden) {
+						t.Fatalf("partial metadata leaked %q: %s", forbidden, encoded)
+					}
+				}
+			}
+		})
+	}
+}
+
 func readStoreFile(t *testing.T, store Store, storedPath string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(store.Root(), filepath.FromSlash(storedPath)))
@@ -171,8 +331,9 @@ func readStoreFile(t *testing.T, store Store, storedPath string) string {
 }
 
 type recordingArtifactRuntime struct {
-	execs    []sandboxruntime.ExecRequest
-	copyOuts []sandboxruntime.CopyRequest
+	execs      []sandboxruntime.ExecRequest
+	copyOuts   []sandboxruntime.CopyRequest
+	copyOutErr error
 }
 
 func (r *recordingArtifactRuntime) Exec(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
@@ -190,6 +351,9 @@ func (r *recordingArtifactRuntime) Exec(_ context.Context, req sandboxruntime.Ex
 
 func (r *recordingArtifactRuntime) CopyOut(_ context.Context, req sandboxruntime.CopyRequest) error {
 	r.copyOuts = append(r.copyOuts, req)
+	if r.copyOutErr != nil {
+		return r.copyOutErr
+	}
 	if err := os.MkdirAll(filepath.Dir(req.DestinationPath), 0o700); err != nil {
 		return err
 	}

@@ -2,8 +2,10 @@ package sandboxexecution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,6 +40,7 @@ type RuntimeArtifactGeneration struct {
 // RuntimeArtifactRequest describes one remote artifact to collect.
 type RuntimeArtifactRequest struct {
 	Area        ArtifactStoreArea
+	Optional    bool
 	Artifact    ArtifactMetadataEntry
 	PayloadPath string
 	RemotePath  string
@@ -104,11 +107,19 @@ func CollectRuntimeArtifacts(ctx context.Context, req RuntimeCollectionRequest) 
 			SourcePath:      artifact.RemotePath,
 			DestinationPath: localPath,
 		}); err != nil {
+			if artifact.Optional {
+				addRuntimeArtifactPartialWarning(&result.ArtifactMetadata, artifact, "copy_out", runtimeArtifactCopyOutWarningMessage(err))
+				continue
+			}
 			return RuntimeCollectionResult{}, fmt.Errorf("copy sandbox execution artifact %q: %w", artifact.Artifact.Path, redactPathError(err))
 		}
 
 		collected, err := saveRuntimeArtifactFile(req.Store, executionID, artifact, localPath)
 		if err != nil {
+			if artifact.Optional {
+				addRuntimeArtifactPartialWarning(&result.ArtifactMetadata, artifact, "store", "optional sandbox execution artifact persistence failed")
+				continue
+			}
 			return RuntimeCollectionResult{}, err
 		}
 		result.ArtifactMetadata.Collected = append(result.ArtifactMetadata.Collected, collected)
@@ -175,6 +186,26 @@ func validateRuntimeArtifactRequest(req RuntimeArtifactRequest) error {
 		}
 	}
 	return nil
+}
+
+func addRuntimeArtifactPartialWarning(metadata *ArtifactMetadata, req RuntimeArtifactRequest, phase, message string) {
+	partial := req.Artifact
+	partial.StoredPath = ""
+	partial.SizeBytes = nil
+	partial.CreatedAt = nil
+	metadata.Partial = append(metadata.Partial, partial)
+	metadata.Warnings = append(metadata.Warnings, ArtifactWarning{
+		Phase:    phase,
+		Message:  message,
+		Artifact: partial,
+	})
+}
+
+func runtimeArtifactCopyOutWarningMessage(err error) string {
+	if errors.Is(err, fs.ErrNotExist) {
+		return "optional sandbox execution artifact is missing"
+	}
+	return "optional sandbox execution artifact copy failed"
 }
 
 func cloneCollectionStringMap(values map[string]string) map[string]string {
