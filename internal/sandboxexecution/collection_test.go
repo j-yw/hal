@@ -451,6 +451,109 @@ func TestCollectCoreStateArtifactsMissingRequiredPRDReturnsError(t *testing.T) {
 	}
 }
 
+func TestCollectRecoveryArtifactsGeneratesCopiesAndPersistsManifest(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.SaveManifest(testManifest("exec-1", time.Date(2026, 6, 30, 1, 0, 0, 0, time.UTC))); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+	runtime := &recordingArtifactRuntime{}
+	target := sandboxruntime.Target{
+		ID:       "target-1",
+		Name:     "phase-dev",
+		Provider: "daytona",
+		Runtime: sandboxruntime.RuntimeState{
+			Driver: sandboxruntime.DriverSSHMachine,
+		},
+		Connection: sandboxruntime.ConnectionInfo{
+			WorkspaceID: "workspace-1",
+		},
+	}
+
+	result, err := CollectRecoveryArtifacts(context.Background(), RecoveryArtifactCollectionRequest{
+		ExecutionID:        "exec-1",
+		Store:              store,
+		Runtime:            runtime,
+		Target:             target,
+		RemoteWorkspaceDir: "/workspace/repo",
+	})
+	if err != nil {
+		t.Fatalf("CollectRecoveryArtifacts() error: %v", err)
+	}
+
+	if got, want := runtime.events, []string{"exec", "copy_out"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("runtime events = %#v, want %#v", got, want)
+	}
+	if len(runtime.execs) != 1 {
+		t.Fatalf("Exec calls = %d, want 1", len(runtime.execs))
+	}
+	exec := runtime.execs[0]
+	if !reflect.DeepEqual(exec.Args, []string{"sh", "-c", recoveryPatchGenerationScript()}) {
+		t.Fatalf("Exec args = %#v, want recovery patch generation script", exec.Args)
+	}
+	if exec.WorkDir != "/workspace/repo" {
+		t.Fatalf("Exec workdir = %q, want remote workspace", exec.WorkDir)
+	}
+	if exec.Target.Name != "phase-dev" || exec.Target.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("Exec target = %#v, want runtime target", exec.Target)
+	}
+	if len(runtime.copyOuts) != 1 {
+		t.Fatalf("CopyOut calls = %d, want 1", len(runtime.copyOuts))
+	}
+	copyOut := runtime.copyOuts[0]
+	if got, want := copyOut.SourcePath, "/workspace/repo/.hal/recovery/workspace.patch"; got != want {
+		t.Fatalf("CopyOut source = %q, want %q", got, want)
+	}
+	if copyOut.Target.Name != "phase-dev" || copyOut.Target.Connection.WorkspaceID != "workspace-1" {
+		t.Fatalf("CopyOut target = %#v, want runtime target", copyOut.Target)
+	}
+
+	if len(result.ArtifactMetadata.Collected) != 1 {
+		t.Fatalf("collected metadata = %#v, want recovery patch", result.ArtifactMetadata.Collected)
+	}
+	recovery := result.ArtifactMetadata.Collected[0]
+	if recovery.ID != "recovery-patch" || recovery.Name != "Recovery Patch" || recovery.Type != "patch" {
+		t.Fatalf("recovery metadata identity = %#v, want recovery patch metadata", recovery)
+	}
+	if got, want := recovery.Path, ".hal/recovery/workspace.patch"; got != want {
+		t.Fatalf("recovery path = %q, want %q", got, want)
+	}
+	if got, want := recovery.StoredPath, "exec-1/recovery/workspace.patch"; got != want {
+		t.Fatalf("recovery storedPath = %q, want %q", got, want)
+	}
+	if recovery.SizeBytes == nil || *recovery.SizeBytes == 0 {
+		t.Fatalf("recovery size = %v, want copied payload size", recovery.SizeBytes)
+	}
+	if recovery.CreatedAt == nil || recovery.CreatedAt.IsZero() {
+		t.Fatalf("recovery createdAt = %v, want stored timestamp", recovery.CreatedAt)
+	}
+	if payload := readStoreFile(t, store, recovery.StoredPath); !strings.Contains(payload, "copied:/workspace/repo/.hal/recovery/workspace.patch") {
+		t.Fatalf("stored recovery payload = %q, want copied remote payload", payload)
+	}
+
+	loaded, err := store.LoadManifest("exec-1")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if loaded.ArtifactMetadata == nil || len(loaded.ArtifactMetadata.Collected) != 1 {
+		t.Fatalf("manifest recovery metadata = %#v, want persisted recovery artifact", loaded.ArtifactMetadata)
+	}
+	if !reflect.DeepEqual(loaded.ArtifactMetadata.Collected[0], recovery) {
+		t.Fatalf("manifest recovery metadata = %#v, want %#v", loaded.ArtifactMetadata.Collected[0], recovery)
+	}
+
+	encoded := string(mustJSONBytes(t, loaded.ArtifactMetadata))
+	for _, forbidden := range []string{
+		"/workspace/repo/.hal/recovery/workspace.patch",
+		copyOut.DestinationPath,
+		"SourcePath",
+		"DestinationPath",
+	} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("manifest recovery metadata leaked runtime path %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 func readStoreFile(t *testing.T, store Store, storedPath string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(store.Root(), filepath.FromSlash(storedPath)))
@@ -488,6 +591,7 @@ type recordingArtifactRuntime struct {
 	execs      []sandboxruntime.ExecRequest
 	copyOuts   []sandboxruntime.CopyRequest
 	copyOutErr error
+	events     []string
 }
 
 func (r *recordingArtifactRuntime) Exec(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
@@ -500,11 +604,13 @@ func (r *recordingArtifactRuntime) Exec(_ context.Context, req sandboxruntime.Ex
 		req.Env = env
 	}
 	r.execs = append(r.execs, req)
+	r.events = append(r.events, "exec")
 	return &sandboxruntime.ExecResult{ExitCode: 0}, nil
 }
 
 func (r *recordingArtifactRuntime) CopyOut(_ context.Context, req sandboxruntime.CopyRequest) error {
 	r.copyOuts = append(r.copyOuts, req)
+	r.events = append(r.events, "copy_out")
 	if r.copyOutErr != nil {
 		return r.copyOutErr
 	}

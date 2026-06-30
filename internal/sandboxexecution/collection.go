@@ -78,6 +78,25 @@ type CoreStateCollectionRequest struct {
 	TempDir            string
 }
 
+// RecoveryArtifactCollectionRequest carries the runtime context needed to
+// generate and collect the standard non-factory sandbox recovery patch.
+type RecoveryArtifactCollectionRequest struct {
+	ExecutionID        string
+	Store              Store
+	Runtime            RuntimeArtifactCollector
+	Target             sandboxruntime.Target
+	RemoteWorkspaceDir string
+	TempDir            string
+}
+
+const (
+	recoveryArtifactID       = "recovery-patch"
+	recoveryArtifactName     = "Recovery Patch"
+	recoveryArtifactType     = "patch"
+	recoveryArtifactDir      = "recovery"
+	recoveryArtifactFileName = "workspace.patch"
+)
+
 // CollectRuntimeArtifacts generates requested remote artifacts, copies remote
 // artifact files to local temp files through the runtime driver, and persists
 // them into the execution store.
@@ -141,6 +160,34 @@ func CollectRuntimeArtifacts(ctx context.Context, req RuntimeCollectionRequest) 
 	return result, nil
 }
 
+// CollectRecoveryArtifacts generates a deterministic remote recovery patch,
+// copies it out through the runtime driver, stores it under recovery/, and
+// records the collected metadata on the manifest.
+func CollectRecoveryArtifacts(ctx context.Context, req RecoveryArtifactCollectionRequest) (RuntimeCollectionResult, error) {
+	if _, err := req.Store.LoadManifest(req.ExecutionID); err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	artifact, err := recoveryArtifactRequest(req.RemoteWorkspaceDir)
+	if err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	result, err := CollectRuntimeArtifacts(ctx, RuntimeCollectionRequest{
+		ExecutionID: req.ExecutionID,
+		Store:       req.Store,
+		Runtime:     req.Runtime,
+		Target:      req.Target,
+		Artifacts:   []RuntimeArtifactRequest{artifact},
+		TempDir:     req.TempDir,
+	})
+	if err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	if err := req.Store.AppendArtifactMetadata(req.ExecutionID, result.ArtifactMetadata); err != nil {
+		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution recovery metadata: %w", err)
+	}
+	return result, nil
+}
+
 // CollectCoreStateArtifacts collects the core .hal state files for a run or
 // auto sandbox execution and records the collected metadata on the manifest.
 func CollectCoreStateArtifacts(ctx context.Context, req CoreStateCollectionRequest) (RuntimeCollectionResult, error) {
@@ -169,6 +216,54 @@ func CollectCoreStateArtifacts(ctx context.Context, req CoreStateCollectionReque
 		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution core state metadata: %w", err)
 	}
 	return result, nil
+}
+
+func recoveryArtifactRequest(remoteWorkspaceDir string) (RuntimeArtifactRequest, error) {
+	remoteWorkspaceDir = strings.TrimSpace(remoteWorkspaceDir)
+	if remoteWorkspaceDir == "" {
+		return RuntimeArtifactRequest{}, fmt.Errorf("sandbox execution remote workspace dir is required")
+	}
+	displayPath := recoveryArtifactDisplayPath()
+	return RuntimeArtifactRequest{
+		Area: ArtifactStoreAreaRecovery,
+		Artifact: ArtifactMetadataEntry{
+			ID:   recoveryArtifactID,
+			Name: recoveryArtifactName,
+			Type: recoveryArtifactType,
+			Path: displayPath,
+		},
+		PayloadPath: recoveryArtifactFileName,
+		RemotePath:  pathpkg.Join(remoteWorkspaceDir, displayPath),
+		Generate: &RuntimeArtifactGeneration{
+			Args:    []string{"sh", "-c", recoveryPatchGenerationScript()},
+			WorkDir: remoteWorkspaceDir,
+		},
+	}, nil
+}
+
+func recoveryArtifactDisplayPath() string {
+	return pathpkg.Join(template.HalDir, recoveryArtifactDir, recoveryArtifactFileName)
+}
+
+func recoveryPatchGenerationScript() string {
+	recoveryPath := recoveryArtifactDisplayPath()
+	tmpPath := recoveryPath + ".tmp"
+	return strings.Join([]string{
+		"set -eu",
+		fmt.Sprintf("recovery_path=%q", recoveryPath),
+		fmt.Sprintf("tmp_path=%q", tmpPath),
+		fmt.Sprintf("mkdir -p %q", pathpkg.Dir(recoveryPath)),
+		`rm -f "$tmp_path"`,
+		"if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then",
+		"\t{",
+		"\t\tgit diff --binary --no-ext-diff",
+		"\t\tgit diff --cached --binary --no-ext-diff",
+		"\t} > \"$tmp_path\"",
+		"else",
+		"\t: > \"$tmp_path\"",
+		"fi",
+		`mv "$tmp_path" "$recovery_path"`,
+	}, "\n")
 }
 
 func runRuntimeArtifactGeneration(ctx context.Context, runtime RuntimeArtifactCollector, target sandboxruntime.Target, generation RuntimeArtifactGeneration) error {
