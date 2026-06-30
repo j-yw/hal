@@ -483,7 +483,7 @@ func runFactorySandboxRuntimeExec(ctx context.Context, run sandboxexec.RunContex
 		Args:   append([]string(nil), command.Command...),
 		Stdout: command.Stdout,
 		Stderr: command.Stderr,
-		Stdin:  nil,
+		Stdin:  command.Stdin,
 		Env:    command.Env,
 	})
 	return err

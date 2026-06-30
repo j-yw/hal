@@ -605,7 +605,7 @@ func runSandboxRuntimeExec(ctx context.Context, run sandboxexec.RunContext, comm
 		Args:   runSandboxRemoteExecArgs(command),
 		Stdout: command.Stdout,
 		Stderr: command.Stderr,
-		Stdin:  nil,
+		Stdin:  command.Stdin,
 		Env:    command.Env,
 	})
 	return err

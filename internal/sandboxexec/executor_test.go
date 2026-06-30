@@ -186,6 +186,139 @@ func TestRunInvokesInjectedPhasesAndRunner(t *testing.T) {
 	}
 }
 
+func TestRunDefaultRuntimeExecSelectsSSHMachineAndForwardsCommandFields(t *testing.T) {
+	target := &sandbox.SandboxState{
+		ID:          "sb-123",
+		Name:        "factory-dev",
+		Provider:    "daytona",
+		Status:      sandbox.StatusRunning,
+		IP:          "203.0.113.42",
+		WorkspaceID: "workspace-456",
+	}
+	stdin := strings.NewReader("stdin payload\n")
+	env := map[string]string{
+		"HAL_FACTORY_ATTEMPT": "2",
+		"GITHUB_TOKEN":        "secret",
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	var resolvedTarget sandboxruntime.Target
+	var gotExec sandboxruntime.ExecRequest
+	var gotStdin string
+	driver := &recordingRuntimeDriver{
+		id: sandboxruntime.DriverSSHMachine,
+		exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			if req.Stdin != stdin {
+				t.Fatalf("ExecRequest.Stdin = %#v, want original stdin reader", req.Stdin)
+			}
+			payload, err := io.ReadAll(req.Stdin)
+			if err != nil {
+				return nil, err
+			}
+			gotStdin = string(payload)
+			gotExec = cloneExecRequest(req)
+			if _, err := io.WriteString(req.Stdout, "runtime stdout\n"); err != nil {
+				return nil, err
+			}
+			if _, err := io.WriteString(req.Stderr, "runtime stderr\n"); err != nil {
+				return nil, err
+			}
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+	}
+
+	result, err := Run(context.Background(), CommandRequest{
+		Purpose:     "factory",
+		ProjectDir:  "/repo",
+		SandboxName: "factory-dev",
+		Command:     []string{"hal", "auto", "--resume"},
+		WorkDir:     "/workspace/hal",
+		Env:         env,
+		Stdin:       stdin,
+		Stdout:      &stdout,
+		Stderr:      &stderr,
+	}, Dependencies{
+		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		ResolveDriver: func(_ context.Context, runtimeTarget sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			resolvedTarget = runtimeTarget
+			if runtimeTarget.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+				t.Fatalf("resolved runtime driver = %q, want %q", runtimeTarget.Runtime.Driver, sandboxruntime.DriverSSHMachine)
+			}
+			return driver, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+	if !driver.execCalled {
+		t.Fatal("default runtime exec was not called")
+	}
+	if result == nil || result.Target.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("result target = %#v, want default ssh_machine runtime", result)
+	}
+	if gotExec.Target.Name != "factory-dev" || gotExec.Target.Provider != "daytona" || gotExec.Target.Runtime.Driver != sandboxruntime.DriverSSHMachine || gotExec.Target.Connection.WorkspaceID != "workspace-456" {
+		t.Fatalf("exec target = %#v", gotExec.Target)
+	}
+	if !reflect.DeepEqual(gotExec.Args, []string{"hal", "auto", "--resume"}) {
+		t.Fatalf("exec args = %#v", gotExec.Args)
+	}
+	if gotExec.WorkDir != "/workspace/hal" {
+		t.Fatalf("exec workdir = %q", gotExec.WorkDir)
+	}
+	if !reflect.DeepEqual(gotExec.Env, env) {
+		t.Fatalf("exec env = %#v, want %#v", gotExec.Env, env)
+	}
+	if gotStdin != "stdin payload\n" {
+		t.Fatalf("stdin payload = %q", gotStdin)
+	}
+	if stdout.String() != "runtime stdout\n" {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	if stderr.String() != "runtime stderr\n" {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	if resolvedTarget.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("resolved target runtime = %#v", resolvedTarget.Runtime)
+	}
+}
+
+func TestRunDefaultRuntimeExecPropagatesContextCancellation(t *testing.T) {
+	target := &sandbox.SandboxState{Name: "factory-dev", Provider: "daytona", Status: sandbox.StatusRunning}
+	ctx, cancel := context.WithCancel(context.Background())
+	driver := &recordingRuntimeDriver{
+		id: sandboxruntime.DriverSSHMachine,
+		exec: func(ctx context.Context, _ sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			cancel()
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	_, err := Run(ctx, CommandRequest{
+		SandboxName: "factory-dev",
+		Command:     []string{"sleep", "60"},
+	}, Dependencies{
+		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return driver, nil
+		},
+	})
+	if !driver.execCalled {
+		t.Fatal("default runtime exec was not called")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want errors.Is context.Canceled", err)
+	}
+	phaseErr, ok := AsPhaseError(err)
+	if !ok || phaseErr.Phase != PhaseRun || phaseErr.RuntimeDriver != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("phase error = %#v, want run phase with ssh_machine runtime", err)
+	}
+}
+
 func TestPrepareContextUsesRuntimeBoundaryTypes(t *testing.T) {
 	prepareType := reflect.TypeOf(PrepareContext{})
 	providerType := reflect.TypeOf((*sandbox.Provider)(nil)).Elem()
@@ -989,4 +1122,65 @@ func (fakeRuntimeDriver) CopyIn(context.Context, sandboxruntime.CopyRequest) err
 
 func (fakeRuntimeDriver) CopyOut(context.Context, sandboxruntime.CopyRequest) error {
 	return nil
+}
+
+type recordingRuntimeDriver struct {
+	id         string
+	execCalled bool
+	exec       func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
+}
+
+func (r *recordingRuntimeDriver) ID() string {
+	if r.id != "" {
+		return r.id
+	}
+	return sandboxruntime.DriverSSHMachine
+}
+
+func (r *recordingRuntimeDriver) Create(context.Context, sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+	return nil, nil
+}
+
+func (r *recordingRuntimeDriver) Start(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	return nil, nil
+}
+
+func (r *recordingRuntimeDriver) Stop(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	return nil, nil
+}
+
+func (r *recordingRuntimeDriver) Delete(context.Context, sandboxruntime.LifecycleRequest) error {
+	return nil
+}
+
+func (r *recordingRuntimeDriver) Inspect(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+	return nil, nil
+}
+
+func (r *recordingRuntimeDriver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+	r.execCalled = true
+	if r.exec == nil {
+		return &sandboxruntime.ExecResult{}, nil
+	}
+	return r.exec(ctx, req)
+}
+
+func (r *recordingRuntimeDriver) CopyIn(context.Context, sandboxruntime.CopyRequest) error {
+	return nil
+}
+
+func (r *recordingRuntimeDriver) CopyOut(context.Context, sandboxruntime.CopyRequest) error {
+	return nil
+}
+
+func cloneExecRequest(req sandboxruntime.ExecRequest) sandboxruntime.ExecRequest {
+	req.Args = append([]string(nil), req.Args...)
+	if req.Env != nil {
+		env := make(map[string]string, len(req.Env))
+		for key, value := range req.Env {
+			env[key] = value
+		}
+		req.Env = env
+	}
+	return req
 }

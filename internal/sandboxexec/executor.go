@@ -20,6 +20,7 @@ type CommandRequest struct {
 	Command     []string
 	WorkDir     string
 	Env         map[string]string
+	Stdin       io.Reader
 	Security    sandbox.SecurityEvaluationRequest
 	Stdout      io.Writer
 	Stderr      io.Writer
@@ -57,10 +58,11 @@ type Dependencies struct {
 	PrepareWorkspace func(context.Context, PrepareContext, *CommandRequest) error
 	PrepareAuth      func(context.Context, PrepareContext, *CommandRequest) error
 	PrepareCommand   func(context.Context, PrepareContext, *CommandRequest) error
-	RunCommand       func(context.Context, RunContext, CommandRequest) error
-	HandleEvent      func(context.Context, Event) error
-	OnTargetReady    func(context.Context, *sandbox.SandboxState) error
-	OnDriverReady    func(context.Context, sandboxruntime.Target, sandboxruntime.Driver) error
+	// RunCommand overrides the default runtime driver Exec path for command-specific compatibility behavior.
+	RunCommand    func(context.Context, RunContext, CommandRequest) error
+	HandleEvent   func(context.Context, Event) error
+	OnTargetReady func(context.Context, *sandbox.SandboxState) error
+	OnDriverReady func(context.Context, sandboxruntime.Target, sandboxruntime.Driver) error
 }
 
 // Result describes the resolved sandbox and command after successful execution.
@@ -166,10 +168,6 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 	if deps.ResolveDriver == nil {
 		return nil, phaseError(PhaseResolveDriver, nil, "", fmt.Errorf("sandbox runtime driver resolver is required"))
 	}
-	if deps.RunCommand == nil {
-		return nil, phaseError(PhaseRun, nil, "", fmt.Errorf("sandbox command runner is required"))
-	}
-
 	target, err := deps.ResolveTarget(ctx, TargetRequest{
 		Purpose:     req.Purpose,
 		ProjectDir:  req.ProjectDir,
@@ -257,7 +255,11 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 	runReq := cloneCommandRequest(req)
 	runReq.Stdout = stdout
 	runReq.Stderr = stderr
-	runErr := deps.RunCommand(ctx, RunContext{
+	runCommand := deps.RunCommand
+	if runCommand == nil {
+		runCommand = runRuntimeCommand
+	}
+	runErr := runCommand(ctx, RunContext{
 		Target:     runtimeTarget,
 		Connection: runtimeTarget.Connection,
 		Driver:     driver,
@@ -282,6 +284,22 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 		Target:  runtimeTarget,
 		Command: cloneCommandRequest(req),
 	}, nil
+}
+
+func runRuntimeCommand(ctx context.Context, run RunContext, req CommandRequest) error {
+	if run.Driver == nil {
+		return fmt.Errorf("sandbox runtime driver is required")
+	}
+	_, err := run.Driver.Exec(ctx, sandboxruntime.ExecRequest{
+		Target:  run.Target,
+		Args:    append([]string(nil), req.Command...),
+		Stdout:  req.Stdout,
+		Stderr:  req.Stderr,
+		Stdin:   req.Stdin,
+		Env:     cloneStringMap(req.Env),
+		WorkDir: req.WorkDir,
+	})
+	return err
 }
 
 func phaseError(phase Phase, target *sandbox.SandboxState, runtimeDriver string, err error) *PhaseError {
@@ -342,16 +360,21 @@ func emit(ctx context.Context, handler func(context.Context, Event) error, event
 
 func cloneCommandRequest(req CommandRequest) CommandRequest {
 	req.Command = append([]string(nil), req.Command...)
-	if req.Env != nil {
-		env := make(map[string]string, len(req.Env))
-		for key, value := range req.Env {
-			env[key] = value
-		}
-		req.Env = env
-	}
+	req.Env = cloneStringMap(req.Env)
 	req.Security.RequestedSecretModes = append([]string(nil), req.Security.RequestedSecretModes...)
 	req.Security.ActiveSecretModes = append([]string(nil), req.Security.ActiveSecretModes...)
 	return req
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func applySandboxSecurityMetadata(target *sandbox.SandboxState, req CommandRequest) {
