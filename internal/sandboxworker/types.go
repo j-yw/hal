@@ -73,6 +73,7 @@ type Request struct {
 	Create          *CreateRequest    `json:"create,omitempty"`
 	Lifecycle       *LifecycleRequest `json:"lifecycle,omitempty"`
 	Inspect         *InspectRequest   `json:"inspect,omitempty"`
+	Exec            *ExecRequest      `json:"exec,omitempty"`
 }
 
 // Response is the versioned protocol envelope returned by a local sandbox
@@ -85,6 +86,7 @@ type Response struct {
 	Status          *Status       `json:"status,omitempty"`
 	Capabilities    *Capabilities `json:"capabilities,omitempty"`
 	Target          *Target       `json:"target,omitempty"`
+	Exec            *ExecResponse `json:"exec,omitempty"`
 	Error           *Error        `json:"error,omitempty"`
 }
 
@@ -233,6 +235,14 @@ func (req Request) Validate() error {
 			return fmt.Errorf("worker request inspect payload is required for %s", req.Operation)
 		}
 		return req.Inspect.Validate()
+	case OperationExec:
+		if strings.TrimSpace(req.DriverID) == "" {
+			return fmt.Errorf("worker request driverId is required for %s", req.Operation)
+		}
+		if req.Exec == nil {
+			return fmt.Errorf("worker request exec payload is required for %s", req.Operation)
+		}
+		return req.Exec.Validate()
 	default:
 		return nil
 	}
@@ -281,6 +291,17 @@ func (resp Response) Validate() error {
 		if err := resp.Target.Validate(); err != nil {
 			return fmt.Errorf("worker response target: %w", err)
 		}
+	}
+	if resp.Exec != nil {
+		if resp.Operation != OperationExec {
+			return fmt.Errorf("worker response exec payload is only valid for %s", OperationExec)
+		}
+		if err := resp.Exec.Validate(); err != nil {
+			return fmt.Errorf("worker response exec: %w", err)
+		}
+	}
+	if resp.OK && resp.Operation == OperationExec && resp.Exec == nil {
+		return fmt.Errorf("worker response exec payload is required when ok is true")
 	}
 	return nil
 }

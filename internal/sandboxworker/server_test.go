@@ -168,6 +168,8 @@ func TestServiceReturnsStructuredOperationErrorsOverUnixSocket(t *testing.T) {
 	unsupportedResp := roundTripWorkerRequest(t, socketPath, Request{
 		RequestID: "req-exec",
 		Operation: OperationExec,
+		DriverID:  RuntimeDriverRootlessPodman,
+		Exec:      validWorkerExecRequest().Exec,
 	})
 	if err := unsupportedResp.Validate(); err != nil {
 		t.Fatalf("unsupported response Validate() error: %v", err)
