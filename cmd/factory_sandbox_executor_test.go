@@ -668,6 +668,153 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 	}
 }
 
+func TestRunFactorySandboxExecutorRuntimeBoundaryRegressionMatchesSSHMachineBehavior(t *testing.T) {
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{
+		Name:     "factory-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:    sandbox.SandboxRuntimeDriverSSHMachine,
+			RuntimeID: "runtime-ssh-machine",
+		},
+	}
+	record := factory.RunRecord{
+		RunID:      "run-runtime-regression",
+		RepoRemote: "git@github.com:example/repo.git",
+		BaseBranch: "main",
+		BranchName: "hal/runtime-regression",
+	}
+	remoteAuto := factoryRunAutoRequest{
+		BaseBranch: "main",
+		Engine:     "codex",
+		SkipCI:     true,
+	}
+	secrets := []factory.ResolvedRunSecret{{
+		Name:     "GITHUB_TOKEN",
+		Source:   factory.RunSecretSourceEnv,
+		Required: true,
+		Value:    "secret-token",
+	}}
+	wantEnv := factorySandboxResolvedSecretEnv(secrets)
+	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
+
+	var remoteOutput bytes.Buffer
+	var resolvedDriverID string
+	var gotExec sandboxruntime.ExecRequest
+	var sawStdoutWriter bool
+	var sawStderrWriter bool
+	driver := fakeFactorySandboxRuntimeDriver{
+		id: sandboxruntime.DriverSSHMachine,
+		execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			sawStdoutWriter = req.Stdout != nil
+			sawStderrWriter = req.Stderr != nil
+			gotExec = sandboxruntime.ExecRequest{
+				Target:  req.Target,
+				Args:    append([]string(nil), req.Args...),
+				Env:     map[string]string{},
+				WorkDir: req.WorkDir,
+			}
+			for key, value := range req.Env {
+				gotExec.Env[key] = value
+			}
+			if _, err := io.WriteString(req.Stdout, "runtime stdout\n"); err != nil {
+				return nil, err
+			}
+			if _, err := io.WriteString(req.Stderr, "runtime stderr\n"); err != nil {
+				return nil, err
+			}
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+	}
+
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		ProjectDir:          t.TempDir(),
+		SandboxName:         "factory-dev",
+		RunRecord:           record,
+		ResolvedSecrets:     secrets,
+		RemoteAuto:          remoteAuto,
+		RemoteOutput:        &remoteOutput,
+		BeforeCleanup:       func(context.Context, factory.RunRecord) error { return nil },
+		DeferSuccessCleanup: true,
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		now:          func() time.Time { return now },
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != "factory-dev" {
+				t.Fatalf("load sandbox name = %q, want factory-dev", name)
+			}
+			return target, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			t.Fatal("resolveDefault should not run for explicit sandbox target")
+			return nil, "", nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			t.Fatal("provision should not run for existing sandbox target")
+			return nil, nil
+		},
+		startSandbox: func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error) {
+			t.Fatal("startSandbox should not run for running sandbox target")
+			return nil, nil
+		},
+		resolveProvider: func(providerName string) (sandbox.Provider, error) {
+			if providerName != "daytona" {
+				t.Fatalf("providerName = %q, want daytona", providerName)
+			}
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(providerName string) (sandboxruntime.Driver, error) {
+			if providerName != "daytona" {
+				t.Fatalf("runtime providerName = %q, want daytona", providerName)
+			}
+			resolvedDriverID = driver.ID()
+			return driver, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile { return nil },
+		bootstrap: func(_ context.Context, req factory.BootstrapRequest, _ factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			if req.WorkspaceDir != workspaceDir {
+				t.Fatalf("bootstrap workspace dir = %q, want %q", req.WorkspaceDir, workspaceDir)
+			}
+			return factory.BootstrapResult{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+
+	if resolvedDriverID != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("runtime driver ID = %q, want %q", resolvedDriverID, sandboxruntime.DriverSSHMachine)
+	}
+	if gotExec.Target.Name != "factory-dev" || gotExec.Target.Provider != "daytona" || gotExec.Target.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("exec target = %#v, want factory-dev/daytona with ssh_machine runtime", gotExec.Target)
+	}
+	if gotExec.Target.Connection.Address != "127.0.0.1" {
+		t.Fatalf("exec target connection = %#v, want legacy SSH-machine address", gotExec.Target.Connection)
+	}
+	wantArgs := factorySandboxRemoteCommandArgs(record, remoteAuto)
+	if !reflect.DeepEqual(gotExec.Args, wantArgs) {
+		t.Fatalf("exec args = %#v, want %#v", gotExec.Args, wantArgs)
+	}
+	if gotExec.WorkDir != "" {
+		t.Fatalf("exec workdir = %q, want empty because SSH-machine compatibility uses shell cd wrapper", gotExec.WorkDir)
+	}
+	if len(gotExec.Args) != 3 || !strings.Contains(gotExec.Args[2], "cd "+shellQuote(workspaceDir)) {
+		t.Fatalf("exec args = %#v, want shell cd into %q", gotExec.Args, workspaceDir)
+	}
+	if !reflect.DeepEqual(gotExec.Env, wantEnv) {
+		t.Fatalf("exec env = %#v, want %#v", gotExec.Env, wantEnv)
+	}
+	if !sawStdoutWriter || !sawStderrWriter {
+		t.Fatalf("stdout/stderr writers seen = %v/%v, want both", sawStdoutWriter, sawStderrWriter)
+	}
+	if remoteOutput.String() != "runtime stdout\nruntime stderr\n" {
+		t.Fatalf("remote output = %q, want runtime stdout/stderr", remoteOutput.String())
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecution(t *testing.T) {
 	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
 	store := factory.NewStore(t.TempDir())
