@@ -55,6 +55,24 @@ func (s Store) CopyArtifactPayload(executionID, payloadPath, sourcePath string) 
 // directory and returns collection metadata with a caller-facing display path
 // plus a store-relative stored path. It does not update the manifest.
 func (s Store) SaveArtifactFile(executionID string, artifact ArtifactMetadataEntry, payloadPath, sourcePath string) (ArtifactMetadataEntry, error) {
+	return s.saveMetadataFile(executionID, artifactsDirName, "save sandbox execution artifact payload", artifact, payloadPath, sourcePath)
+}
+
+// SaveHandoffFile copies a regular source file under an execution's handoff
+// directory and returns collection metadata with a caller-facing display path
+// plus a store-relative stored path. It does not update the manifest.
+func (s Store) SaveHandoffFile(executionID string, artifact ArtifactMetadataEntry, payloadPath, sourcePath string) (ArtifactMetadataEntry, error) {
+	return s.saveMetadataFile(executionID, handoffDirName, "save sandbox execution handoff payload", artifact, payloadPath, sourcePath)
+}
+
+// SaveRecoveryFile copies a regular source file under an execution's recovery
+// directory and returns collection metadata with a caller-facing display path
+// plus a store-relative stored path. It does not update the manifest.
+func (s Store) SaveRecoveryFile(executionID string, artifact ArtifactMetadataEntry, payloadPath, sourcePath string) (ArtifactMetadataEntry, error) {
+	return s.saveMetadataFile(executionID, recoveryDirName, "save sandbox execution recovery payload", artifact, payloadPath, sourcePath)
+}
+
+func (s Store) saveMetadataFile(executionID, area, operation string, artifact ArtifactMetadataEntry, payloadPath, sourcePath string) (ArtifactMetadataEntry, error) {
 	executionID, err := validateExecutionID(executionID)
 	if err != nil {
 		return ArtifactMetadataEntry{}, err
@@ -62,13 +80,13 @@ func (s Store) SaveArtifactFile(executionID string, artifact ArtifactMetadataEnt
 	if err := validateArtifactFileMetadataInput(artifact); err != nil {
 		return ArtifactMetadataEntry{}, err
 	}
-	if _, _, err := s.payloadPath(executionID, artifactsDirName, payloadPath); err != nil {
+	if _, _, err := s.payloadPath(executionID, area, payloadPath); err != nil {
 		return ArtifactMetadataEntry{}, err
 	}
 
-	stored, err := s.copyPayloadRedactingSourcePath(executionID, artifactsDirName, payloadPath, sourcePath)
+	stored, err := s.copyPayloadRedactingSourcePath(executionID, area, payloadPath, sourcePath)
 	if err != nil {
-		return ArtifactMetadataEntry{}, fmt.Errorf("save sandbox execution artifact payload: %w", err)
+		return ArtifactMetadataEntry{}, fmt.Errorf("%s: %w", operation, err)
 	}
 	artifact = artifactMetadataWithStoredFile(artifact, stored)
 	if err := validateArtifactMetadataEntry(executionID, artifact, true); err != nil {

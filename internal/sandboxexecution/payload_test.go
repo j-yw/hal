@@ -214,6 +214,98 @@ func TestSaveArtifactFileReturnsSafeMetadata(t *testing.T) {
 	}
 }
 
+func TestSaveHandoffAndRecoveryFilesReturnSafeMetadata(t *testing.T) {
+	store := newTestStore(t)
+	sourceDir := t.TempDir()
+	handoffSource := filepath.Join(sourceDir, "handoff.md")
+	if err := os.WriteFile(handoffSource, []byte("handoff\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(handoff source) error: %v", err)
+	}
+	recoverySource := filepath.Join(sourceDir, "recovery.patch")
+	if err := os.WriteFile(recoverySource, []byte("diff --git a/file b/file\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(recovery source) error: %v", err)
+	}
+
+	cases := []struct {
+		name       string
+		save       func() (ArtifactMetadataEntry, error)
+		sourcePath string
+		wantPath   string
+		wantStored string
+		wantBytes  string
+	}{
+		{
+			name: "handoff",
+			save: func() (ArtifactMetadataEntry, error) {
+				return store.SaveHandoffFile("exec-1", ArtifactMetadataEntry{
+					ID:   "handoff",
+					Name: "Handoff",
+					Type: "markdown",
+					Path: "handoff/sandbox.md",
+				}, "sandbox.md", handoffSource)
+			},
+			sourcePath: handoffSource,
+			wantPath:   "handoff/sandbox.md",
+			wantStored: "exec-1/handoff/sandbox.md",
+			wantBytes:  "handoff\n",
+		},
+		{
+			name: "recovery",
+			save: func() (ArtifactMetadataEntry, error) {
+				return store.SaveRecoveryFile("exec-1", ArtifactMetadataEntry{
+					ID:   "recovery",
+					Name: "Recovery Patch",
+					Type: "patch",
+					Path: ".hal/recovery/recovery.patch",
+				}, "patches/recovery.patch", recoverySource)
+			},
+			sourcePath: recoverySource,
+			wantPath:   ".hal/recovery/recovery.patch",
+			wantStored: "exec-1/recovery/patches/recovery.patch",
+			wantBytes:  "diff --git a/file b/file\n",
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			artifact, err := tt.save()
+			if err != nil {
+				t.Fatalf("save() error: %v", err)
+			}
+			if artifact.Path != tt.wantPath {
+				t.Fatalf("artifact display path = %q, want %q", artifact.Path, tt.wantPath)
+			}
+			if artifact.StoredPath != tt.wantStored {
+				t.Fatalf("artifact stored path = %q, want %q", artifact.StoredPath, tt.wantStored)
+			}
+			if artifact.SizeBytes == nil || *artifact.SizeBytes != int64(len(tt.wantBytes)) {
+				t.Fatalf("artifact size = %v, want %d", artifact.SizeBytes, len(tt.wantBytes))
+			}
+			if artifact.CreatedAt == nil || artifact.CreatedAt.IsZero() {
+				t.Fatalf("artifact createdAt = %v, want stored payload creation time", artifact.CreatedAt)
+			}
+			if filepath.IsAbs(artifact.StoredPath) || strings.Contains(artifact.StoredPath, "\\") {
+				t.Fatalf("stored path %q is not safe store-relative slash form", artifact.StoredPath)
+			}
+
+			storedPath := filepath.Join(store.Root(), filepath.FromSlash(artifact.StoredPath))
+			got, err := os.ReadFile(storedPath)
+			if err != nil {
+				t.Fatalf("ReadFile(stored payload) error: %v", err)
+			}
+			if string(got) != tt.wantBytes {
+				t.Fatalf("stored payload bytes = %q, want %q", got, tt.wantBytes)
+			}
+			assertMode(t, storedPath, 0o600)
+
+			encoded := string(mustJSONBytes(t, artifact))
+			if strings.Contains(encoded, tt.sourcePath) || strings.Contains(encoded, "sourcePath") || strings.Contains(encoded, "localPath") {
+				t.Fatalf("artifact metadata leaked source path: %s", encoded)
+			}
+		})
+	}
+}
+
 func TestSaveArtifactFilePersistenceErrorRedactsSourcePath(t *testing.T) {
 	store := newTestStore(t)
 	secret := "token-ghp_secret_from_output"

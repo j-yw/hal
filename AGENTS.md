@@ -56,6 +56,7 @@
 - For non-factory sandbox artifact metadata, `path` is a safe display path that may be a workspace path like `.hal/prd.json`, while `storedPath` must stay store-relative under the execution ID; never add host temp/source path fields to manifest metadata.
 - `internal/sandboxexecution` validates artifact metadata in `validateManifestForSave`; collected entries require both display and store-relative paths, while partial/warning artifact entries require at least a safe display path.
 - Use `sandboxexecution.Store.SaveArtifactFile` for collected non-factory artifact files: pass caller-facing `ArtifactMetadataEntry.Path`, let the store compute `storedPath` under `<execution-id>/artifacts/`, and keep local source paths out of returned metadata and persistence errors.
+- Use `sandboxexecution.Store.SaveHandoffFile` and `SaveRecoveryFile` for non-factory handoff/recovery payloads so metadata stores safe display paths while generated `storedPath` values stay under `<execution-id>/handoff/` or `<execution-id>/recovery/`.
 
 ## Patterns from phase/sandbox-runtime-v2-9-runtime-driver (2026-06-30)
 
