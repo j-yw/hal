@@ -386,6 +386,51 @@ func TestPrepareLocalBundleRejectsDirtyPlanBeforeBundleCreation(t *testing.T) {
 	}
 }
 
+func TestBundleMaterializerRejectsDirtyClonePlansBeforeCreateCopyApply(t *testing.T) {
+	tests := []struct {
+		name  string
+		dirty DirtyState
+	}{
+		{name: "staged", dirty: DirtyState{Staged: true}},
+		{name: "unstaged", dirty: DirtyState{Unstaged: true}},
+		{name: "untracked", dirty: DirtyState{Untracked: true}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			git := &recordingLocalGit{}
+			remote := &recordingRemoteClient{}
+			_, err := (BundleMaterializer{
+				LocalGit:  git,
+				Remote:    remote,
+				BundleDir: t.TempDir(),
+			}).MaterializeWorkspace(context.Background(), MaterializeRequest{
+				Plan: Plan{
+					Mode:           sandbox.SandboxWorkspaceModeClone,
+					InputSource:    sandbox.SandboxWorkspaceInputSourceGitBundle,
+					ProjectDir:     t.TempDir(),
+					Repository:     "git@example.com:org/repo.git",
+					Branch:         "feature/dirty",
+					SyncRef:        "abc123",
+					RequiresBundle: true,
+					Dirty:          tt.dirty,
+				},
+				Target:       RemoteTarget{ID: "sandbox-1"},
+				WorkspaceDir: "/workspace/repo",
+			})
+			if !errors.Is(err, ErrDirtyWorktree) {
+				t.Fatalf("MaterializeWorkspace() error = %v, want ErrDirtyWorktree", err)
+			}
+			if len(git.createRequests) != 0 || len(git.verifyRequests) != 0 {
+				t.Fatalf("git calls = create %d verify %d, want zero", len(git.createRequests), len(git.verifyRequests))
+			}
+			if len(remote.copyRequests) != 0 || len(remote.execRequests) != 0 || len(remote.events) != 0 {
+				t.Fatalf("remote calls = copy %d exec %d events %d, want zero", len(remote.copyRequests), len(remote.execRequests), len(remote.events))
+			}
+		})
+	}
+}
+
 func TestPrepareLocalBundleRejectsNonBundlePlanBeforeBundleCreation(t *testing.T) {
 	git := &recordingLocalGit{}
 	_, err := PrepareLocalBundle(context.Background(), git, PrepareLocalBundleRequest{
