@@ -67,6 +67,7 @@
 - Auto sandbox post-execution core state collectors should use the resolved `sandboxruntime.Driver` captured during `executeAutoSandbox`; because `saveAutoSandboxManifest` rebuilds manifests from request/target state, preserve existing top-level `Artifacts` and additive `ArtifactMetadata` when saving final status.
 - `hal run --sandbox` output summary capture belongs in the `sandboxexec.EventCommandOutput` handler inside `executeRunSandbox`; avoid wrapping command writers for summaries so preparation output is excluded and JSON stdout passthrough remains a single remote JSON document.
 - `hal run --sandbox` generated artifact wiring belongs after core state collection and should call `CollectRecoveryArtifacts` before `CollectReportsArchiveArtifacts`; command tests that assert runtime execution order should distinguish the remote command `Exec` from recovery/reports generation `Exec` calls.
+- `hal auto --sandbox` generated artifact wiring belongs after core state collection and should call `CollectRecoveryArtifacts` before `CollectReportsArchiveArtifacts`; command tests that assert runtime execution order should distinguish the remote auto command `Exec` from recovery/reports generation `Exec` calls.
 
 ## Patterns from phase/sandbox-runtime-v2-9-runtime-driver (2026-06-30)
 

@@ -261,6 +261,11 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 			execErr = collectErr
 		}
 	}
+	if execErr == nil {
+		if collectErr := collectAutoSandboxGeneratedArtifacts(ctx, store, req, execResult); collectErr != nil {
+			execErr = collectErr
+		}
+	}
 
 	finishedAt := deps.now().UTC()
 	status := sandboxexecution.StatusSucceeded
@@ -515,6 +520,32 @@ func collectAutoSandboxCoreStateArtifacts(ctx context.Context, store sandboxexec
 	})
 	if err != nil {
 		return fmt.Errorf("collect auto sandbox core state artifacts: %w", err)
+	}
+	return nil
+}
+
+func collectAutoSandboxGeneratedArtifacts(ctx context.Context, store sandboxexecution.Store, req autoSandboxRequest, result autoSandboxExecutionResult) error {
+	if result.Result == nil || result.RuntimeDriver == nil {
+		return nil
+	}
+	collectionReq := sandboxexecution.RecoveryArtifactCollectionRequest{
+		ExecutionID:        req.ExecutionID,
+		Store:              store,
+		Runtime:            result.RuntimeDriver,
+		Target:             result.Result.Target,
+		RemoteWorkspaceDir: req.WorkDir,
+	}
+	if _, err := sandboxexecution.CollectRecoveryArtifacts(ctx, collectionReq); err != nil {
+		return fmt.Errorf("collect auto sandbox recovery artifacts: %w", err)
+	}
+	if _, err := sandboxexecution.CollectReportsArchiveArtifacts(ctx, sandboxexecution.ReportsArchiveCollectionRequest{
+		ExecutionID:        req.ExecutionID,
+		Store:              store,
+		Runtime:            result.RuntimeDriver,
+		Target:             result.Result.Target,
+		RemoteWorkspaceDir: req.WorkDir,
+	}); err != nil {
+		return fmt.Errorf("collect auto sandbox reports archive artifacts: %w", err)
 	}
 	return nil
 }
