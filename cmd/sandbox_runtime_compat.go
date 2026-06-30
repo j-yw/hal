@@ -35,6 +35,41 @@ func sandboxStateFromRuntimeTarget(target sandboxruntime.Target) *sandbox.Sandbo
 	return state
 }
 
+func sandboxRuntimeTargetFromState(target *sandbox.SandboxState) sandboxruntime.Target {
+	if target == nil {
+		return sandboxruntime.Target{}
+	}
+	runtimeTarget := sandboxruntime.Target{
+		ID:       target.ID,
+		Name:     target.Name,
+		Provider: target.Provider,
+		Status:   target.Status,
+		Runtime: sandboxruntime.RuntimeState{
+			Driver: sandboxRuntimeDriverFromState(target),
+		},
+	}
+	if target.Runtime != nil {
+		runtimeTarget.Runtime = sandboxruntime.RuntimeState{
+			Driver:         sandboxRuntimeDriverFromState(target),
+			RuntimeID:      target.Runtime.RuntimeID,
+			Image:          target.Runtime.Image,
+			WorkerID:       target.Runtime.WorkerID,
+			IsolationLevel: target.Runtime.IsolationLevel,
+		}
+	}
+	if info := sandbox.ConnectInfoFromState(target); info != nil {
+		runtimeTarget.Connection = sandboxruntime.ConnectionInfo{
+			Address:           info.IP,
+			PublicIP:          info.PublicIP,
+			TailscaleIP:       info.TailscaleIP,
+			TailscaleHostname: info.TailscaleHostname,
+			TailscaleLockdown: info.TailscaleLockdown,
+			WorkspaceID:       info.WorkspaceID,
+		}
+	}
+	return runtimeTarget
+}
+
 func sandboxConnectInfoFromRuntimeTarget(target sandboxruntime.Target) *sandbox.ConnectInfo {
 	return &sandbox.ConnectInfo{
 		Name:              target.Name,
@@ -53,6 +88,16 @@ func hasRuntimeState(runtime sandboxruntime.RuntimeState) bool {
 		strings.TrimSpace(runtime.RuntimeID) != "" ||
 		strings.TrimSpace(runtime.Image) != "" ||
 		strings.TrimSpace(runtime.WorkerID) != ""
+}
+
+func sandboxRuntimeDriverFromState(target *sandbox.SandboxState) string {
+	if target == nil || target.Runtime == nil {
+		return sandbox.SandboxRuntimeDriverSSHMachine
+	}
+	if driver := strings.TrimSpace(target.Runtime.Driver); driver != "" {
+		return driver
+	}
+	return sandbox.SandboxRuntimeDriverSSHMachine
 }
 
 func sandboxRuntimeDriverFromProvider(provider sandbox.Provider) sandboxruntime.Driver {

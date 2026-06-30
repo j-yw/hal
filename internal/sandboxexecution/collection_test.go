@@ -554,6 +554,116 @@ func TestCollectRecoveryArtifactsGeneratesCopiesAndPersistsManifest(t *testing.T
 	}
 }
 
+func TestCollectRecoveryArtifactsBestEffortRecordsPartialWarnings(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T, store Store, runtime *recordingArtifactRuntime)
+		wantPhase  string
+		wantEvents []string
+	}{
+		{
+			name: "generation failure",
+			setup: func(t *testing.T, _ Store, runtime *recordingArtifactRuntime) {
+				t.Helper()
+				runtime.execErr = errors.New("secret generation failure")
+			},
+			wantPhase:  recoveryGenerationWarningPhase,
+			wantEvents: []string{"exec"},
+		},
+		{
+			name: "copyout failure",
+			setup: func(t *testing.T, _ Store, runtime *recordingArtifactRuntime) {
+				t.Helper()
+				runtime.copyOutErr = os.ErrNotExist
+			},
+			wantPhase:  recoveryCopyOutWarningPhase,
+			wantEvents: []string{"exec", "copy_out"},
+		},
+		{
+			name: "persist failure",
+			setup: func(t *testing.T, store Store, _ *recordingArtifactRuntime) {
+				t.Helper()
+				recoveryDir := filepath.Join(store.Root(), "exec-1", recoveryDirName)
+				if err := os.Chmod(recoveryDir, 0o500); err != nil {
+					t.Fatalf("Chmod(recovery dir) error: %v", err)
+				}
+				t.Cleanup(func() {
+					_ = os.Chmod(recoveryDir, 0o700)
+				})
+			},
+			wantPhase:  recoveryPersistWarningPhase,
+			wantEvents: []string{"exec", "copy_out"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestStore(t)
+			if err := store.SaveManifest(testManifest("exec-1", time.Date(2026, 6, 30, 1, 0, 0, 0, time.UTC))); err != nil {
+				t.Fatalf("SaveManifest() error: %v", err)
+			}
+			runtime := &recordingArtifactRuntime{}
+			if tt.setup != nil {
+				tt.setup(t, store, runtime)
+			}
+
+			result, err := CollectRecoveryArtifactsBestEffort(context.Background(), RecoveryArtifactCollectionRequest{
+				ExecutionID:        "exec-1",
+				Store:              store,
+				Runtime:            runtime,
+				Target:             sandboxruntime.Target{Name: "failed-run-box"},
+				RemoteWorkspaceDir: "/workspace/repo",
+			})
+			if err != nil {
+				t.Fatalf("CollectRecoveryArtifactsBestEffort() error: %v", err)
+			}
+			if !reflect.DeepEqual(runtime.events, tt.wantEvents) {
+				t.Fatalf("runtime events = %#v, want %#v", runtime.events, tt.wantEvents)
+			}
+			if len(result.ArtifactMetadata.Collected) != 0 {
+				t.Fatalf("collected = %#v, want none after recovery failure", result.ArtifactMetadata.Collected)
+			}
+			if len(result.ArtifactMetadata.Partial) != 1 {
+				t.Fatalf("partial = %#v, want recovery partial", result.ArtifactMetadata.Partial)
+			}
+			partial := result.ArtifactMetadata.Partial[0]
+			if partial.ID != "recovery-patch" || partial.Path != ".hal/recovery/workspace.patch" {
+				t.Fatalf("partial = %#v, want recovery patch display metadata", partial)
+			}
+			if partial.StoredPath != "" || partial.SizeBytes != nil || partial.CreatedAt != nil {
+				t.Fatalf("partial = %#v, want no stored payload fields", partial)
+			}
+			if len(result.ArtifactMetadata.Warnings) != 1 {
+				t.Fatalf("warnings = %#v, want recovery warning", result.ArtifactMetadata.Warnings)
+			}
+			warning := result.ArtifactMetadata.Warnings[0]
+			if warning.Phase != tt.wantPhase {
+				t.Fatalf("warning phase = %q, want %q", warning.Phase, tt.wantPhase)
+			}
+			if warning.Message == "" || strings.Contains(warning.Message, "secret") {
+				t.Fatalf("warning message = %q, want sanitized non-empty message", warning.Message)
+			}
+			if warning.Artifact != partial {
+				t.Fatalf("warning artifact = %#v, want partial %#v", warning.Artifact, partial)
+			}
+
+			loaded, err := store.LoadManifest("exec-1")
+			if err != nil {
+				t.Fatalf("LoadManifest() error: %v", err)
+			}
+			if loaded.ArtifactMetadata == nil {
+				t.Fatalf("manifest ArtifactMetadata = nil, want partial recovery metadata")
+			}
+			if !reflect.DeepEqual(loaded.ArtifactMetadata.Partial, result.ArtifactMetadata.Partial) {
+				t.Fatalf("manifest partial = %#v, want %#v", loaded.ArtifactMetadata.Partial, result.ArtifactMetadata.Partial)
+			}
+			if !reflect.DeepEqual(loaded.ArtifactMetadata.Warnings, result.ArtifactMetadata.Warnings) {
+				t.Fatalf("manifest warnings = %#v, want %#v", loaded.ArtifactMetadata.Warnings, result.ArtifactMetadata.Warnings)
+			}
+		})
+	}
+}
+
 func TestCollectReportsArchiveArtifactsGeneratesCopiesAndPersistsManifest(t *testing.T) {
 	store := newTestStore(t)
 	if err := store.SaveManifest(testManifest("exec-1", time.Date(2026, 6, 30, 1, 0, 0, 0, time.UTC))); err != nil {
@@ -892,6 +1002,7 @@ func assertCollectedCoreArtifact(t *testing.T, artifact ArtifactMetadataEntry, w
 
 type recordingArtifactRuntime struct {
 	execs      []sandboxruntime.ExecRequest
+	execErr    error
 	copyOuts   []sandboxruntime.CopyRequest
 	copyOutErr error
 	events     []string
@@ -908,6 +1019,9 @@ func (r *recordingArtifactRuntime) Exec(_ context.Context, req sandboxruntime.Ex
 	}
 	r.execs = append(r.execs, req)
 	r.events = append(r.events, "exec")
+	if r.execErr != nil {
+		return nil, r.execErr
+	}
 	return &sandboxruntime.ExecResult{ExitCode: 0}, nil
 }
 

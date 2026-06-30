@@ -304,6 +304,9 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 		}
 	}
 
+	if isSandboxRunPhaseError(execErr) {
+		_ = collectRunSandboxRecoveryAfterCommandFailure(ctx, store, req, execResult, target)
+	}
 	if execErr == nil {
 		if collectErr := collectRunSandboxCoreStateArtifacts(ctx, store, req, execResult); collectErr != nil {
 			execErr = collectErr
@@ -694,6 +697,36 @@ func collectRunSandboxGeneratedArtifacts(ctx context.Context, store sandboxexecu
 	return nil
 }
 
+func collectRunSandboxRecoveryAfterCommandFailure(ctx context.Context, store sandboxexecution.Store, req runSandboxRequest, result runSandboxExecutionResult, target *sandbox.SandboxState) error {
+	if result.RuntimeDriver == nil {
+		return nil
+	}
+	runtimeTarget, ok := runSandboxRuntimeTargetForCollection(result, target)
+	if !ok {
+		return nil
+	}
+	if _, err := sandboxexecution.CollectRecoveryArtifactsBestEffort(ctx, sandboxexecution.RecoveryArtifactCollectionRequest{
+		ExecutionID:        req.ExecutionID,
+		Store:              store,
+		Runtime:            result.RuntimeDriver,
+		Target:             runtimeTarget,
+		RemoteWorkspaceDir: req.WorkDir,
+	}); err != nil {
+		return fmt.Errorf("collect run sandbox recovery artifacts after command failure: %w", err)
+	}
+	return nil
+}
+
+func runSandboxRuntimeTargetForCollection(result runSandboxExecutionResult, target *sandbox.SandboxState) (sandboxruntime.Target, bool) {
+	if result.Result != nil {
+		return result.Result.Target, true
+	}
+	if target != nil {
+		return sandboxRuntimeTargetFromState(target), true
+	}
+	return sandboxruntime.Target{}, false
+}
+
 func collectRunSandboxOutputSummaryArtifacts(store sandboxexecution.Store, req runSandboxRequest, result runSandboxExecutionResult, target *sandbox.SandboxState) error {
 	stdoutSummary := sanitizeSandboxOutputSummary(result.StdoutSummary, target)
 	stderrSummary := sanitizeSandboxOutputSummary(result.StderrSummary, target)
@@ -709,6 +742,11 @@ func collectRunSandboxOutputSummaryArtifacts(store sandboxexecution.Store, req r
 		return fmt.Errorf("collect run sandbox output summary artifacts: %w", err)
 	}
 	return nil
+}
+
+func isSandboxRunPhaseError(err error) bool {
+	phaseErr, ok := sandboxexec.AsPhaseError(err)
+	return ok && phaseErr.Phase == sandboxexec.PhaseRun
 }
 
 func appendSandboxOutputSummaryLine(summary *strings.Builder, line string) {

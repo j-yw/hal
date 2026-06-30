@@ -258,6 +258,9 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 		}
 	}
 
+	if isSandboxRunPhaseError(execErr) {
+		_ = collectAutoSandboxRecoveryAfterCommandFailure(ctx, store, req, execResult, target)
+	}
 	if execErr == nil {
 		if collectErr := collectAutoSandboxCoreStateArtifacts(ctx, store, req, execResult); collectErr != nil {
 			execErr = collectErr
@@ -567,6 +570,36 @@ func collectAutoSandboxGeneratedArtifacts(ctx context.Context, store sandboxexec
 		return fmt.Errorf("collect auto sandbox reports archive artifacts: %w", err)
 	}
 	return nil
+}
+
+func collectAutoSandboxRecoveryAfterCommandFailure(ctx context.Context, store sandboxexecution.Store, req autoSandboxRequest, result autoSandboxExecutionResult, target *sandbox.SandboxState) error {
+	if result.RuntimeDriver == nil {
+		return nil
+	}
+	runtimeTarget, ok := autoSandboxRuntimeTargetForCollection(result, target)
+	if !ok {
+		return nil
+	}
+	if _, err := sandboxexecution.CollectRecoveryArtifactsBestEffort(ctx, sandboxexecution.RecoveryArtifactCollectionRequest{
+		ExecutionID:        req.ExecutionID,
+		Store:              store,
+		Runtime:            result.RuntimeDriver,
+		Target:             runtimeTarget,
+		RemoteWorkspaceDir: req.WorkDir,
+	}); err != nil {
+		return fmt.Errorf("collect auto sandbox recovery artifacts after command failure: %w", err)
+	}
+	return nil
+}
+
+func autoSandboxRuntimeTargetForCollection(result autoSandboxExecutionResult, target *sandbox.SandboxState) (sandboxruntime.Target, bool) {
+	if result.Result != nil {
+		return result.Result.Target, true
+	}
+	if target != nil {
+		return sandboxRuntimeTargetFromState(target), true
+	}
+	return sandboxruntime.Target{}, false
 }
 
 func collectAutoSandboxOutputSummaryArtifacts(store sandboxexecution.Store, req autoSandboxRequest, result autoSandboxExecutionResult, target *sandbox.SandboxState) error {

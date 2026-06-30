@@ -1293,6 +1293,117 @@ func TestRunRunSandboxWithWriterCollectsGeneratedArtifacts(t *testing.T) {
 	}
 }
 
+func TestRunRunSandboxWithWriterCollectsRecoveryAfterRemoteFailure(t *testing.T) {
+	startedAt := time.Date(2026, 6, 30, 10, 48, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(5 * time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	target := &sandbox.SandboxState{
+		Name:        "failed-run-box",
+		Provider:    "test-provider",
+		Status:      sandbox.StatusRunning,
+		WorkspaceID: "workspace-failed-run",
+		Runtime:     &sandbox.SandboxRuntimeState{Driver: sandbox.SandboxRuntimeDriverSSHMachine},
+	}
+	repoRemote := "git@example.com:org/repo.git"
+	expectedWorkspace := factorySandboxRemoteWorkspaceDir(factory.RunRecord{
+		RunID:      "run-failed-recovery",
+		RepoPath:   projectDir,
+		RepoRemote: repoRemote,
+		BranchName: "feature/failed-recovery",
+		BaseBranch: "main",
+	})
+	remoteErr := errors.New("remote command failed")
+	var execCalls []string
+	var copyOutSources []string
+	driver := fakeRunSandboxRuntimeDriver{
+		exec: func(_ context.Context, got sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			script := ""
+			if len(got.Args) >= 3 && got.Args[0] == "sh" && got.Args[1] == "-c" {
+				script = got.Args[2]
+			}
+			if got.WorkDir == expectedWorkspace && strings.Contains(script, "workspace.patch") {
+				execCalls = append(execCalls, "recovery_generation")
+				return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+			}
+			execCalls = append(execCalls, "remote_run")
+			return nil, remoteErr
+		},
+		copyOut: func(_ context.Context, got sandboxruntime.CopyRequest) error {
+			copyOutSources = append(copyOutSources, got.SourcePath)
+			if err := os.MkdirAll(filepath.Dir(got.DestinationPath), 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(got.DestinationPath, []byte("recovery payload"), 0o600)
+		},
+	}
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+		Base:        "main",
+		BaseChanged: true,
+	}, &out, &errOut, runSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "run-failed-recovery"
+		},
+		now:           runSandboxTestClock(startedAt, finishedAt),
+		workingDir:    func() (string, error) { return projectDir, nil },
+		repoRemote:    func(string) (string, error) { return repoRemote, nil },
+		currentBranch: func(string) (string, error) { return "feature/failed-recovery", nil },
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			return target, target.Name, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+			return driver, nil
+		},
+		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			return factory.BootstrapResult{}, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			return nil
+		},
+	})
+	if !errors.Is(err, remoteErr) {
+		t.Fatalf("runRunSandboxWithWriter() error = %v, want original remote error", err)
+	}
+	if !reflect.DeepEqual(execCalls, []string{"remote_run", "recovery_generation"}) {
+		t.Fatalf("exec calls = %#v, want remote failure followed by recovery generation", execCalls)
+	}
+	expectedRecoverySource := expectedWorkspace + "/.hal/recovery/workspace.patch"
+	if !reflect.DeepEqual(copyOutSources, []string{expectedRecoverySource}) {
+		t.Fatalf("CopyOut sources = %#v, want only recovery artifact", copyOutSources)
+	}
+
+	manifest, err := store.LoadManifest("run-failed-recovery")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if manifest.Status != sandboxexecution.StatusFailed {
+		t.Fatalf("Status = %q, want failed", manifest.Status)
+	}
+	if manifest.ArtifactMetadata == nil {
+		t.Fatal("ArtifactMetadata = nil, want failed-run recovery metadata")
+	}
+	if len(manifest.ArtifactMetadata.Collected) != 1 {
+		t.Fatalf("collected = %#v, want recovery artifact", manifest.ArtifactMetadata.Collected)
+	}
+	recovery := manifest.ArtifactMetadata.Collected[0]
+	assertRunSandboxCollectedArtifact(t, recovery, ".hal/recovery/workspace.patch", "run-failed-recovery/recovery/workspace.patch")
+	if len(manifest.ArtifactMetadata.Partial) != 0 || len(manifest.ArtifactMetadata.Warnings) != 0 {
+		t.Fatalf("partial/warnings = %#v/%#v, want none after successful recovery", manifest.ArtifactMetadata.Partial, manifest.ArtifactMetadata.Warnings)
+	}
+	if payload := readRunSandboxStoreFile(t, store, recovery.StoredPath); payload != "recovery payload" {
+		t.Fatalf("recovery payload = %q, want copied recovery payload", payload)
+	}
+}
+
 func TestRunRunSandboxWithWriterSavesOutputSummaryArtifacts(t *testing.T) {
 	startedAt := time.Date(2026, 6, 30, 10, 50, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(5 * time.Second)

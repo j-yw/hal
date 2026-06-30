@@ -116,6 +116,10 @@ const (
 	recoveryArtifactDir      = "recovery"
 	recoveryArtifactFileName = "workspace.patch"
 
+	recoveryGenerationWarningPhase = "recovery-generation"
+	recoveryCopyOutWarningPhase    = "recovery-copyout"
+	recoveryPersistWarningPhase    = "recovery-persist"
+
 	reportsArchiveID       = "reports-archive"
 	reportsArchiveName     = "Reports Archive"
 	reportsArchiveType     = "tar"
@@ -221,6 +225,64 @@ func CollectRecoveryArtifacts(ctx context.Context, req RecoveryArtifactCollectio
 		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution recovery metadata: %w", err)
 	}
 	return result, nil
+}
+
+// CollectRecoveryArtifactsBestEffort attempts to generate and collect the
+// standard recovery patch after a command failure. Collection failures are
+// recorded as partial metadata and warnings instead of being returned.
+func CollectRecoveryArtifactsBestEffort(ctx context.Context, req RecoveryArtifactCollectionRequest) (RuntimeCollectionResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	executionID, err := validateExecutionID(req.ExecutionID)
+	if err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	if _, err := req.Store.LoadManifest(executionID); err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	if req.Runtime == nil {
+		return RuntimeCollectionResult{}, fmt.Errorf("sandbox execution artifact runtime is required")
+	}
+	artifact, err := recoveryArtifactRequest(req.RemoteWorkspaceDir)
+	if err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	if err := validateRuntimeArtifactRequest(artifact); err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+
+	tempDir, err := os.MkdirTemp(req.TempDir, "hal-sandbox-recovery-*")
+	if err != nil {
+		return RuntimeCollectionResult{}, fmt.Errorf("create sandbox execution recovery temp dir: %w", redactPathError(err))
+	}
+	defer os.RemoveAll(tempDir)
+
+	result := RuntimeCollectionResult{}
+	if artifact.Generate != nil {
+		if err := runRuntimeArtifactGeneration(ctx, req.Runtime, req.Target, *artifact.Generate); err != nil {
+			addRuntimeArtifactPartialWarning(&result.ArtifactMetadata, artifact, recoveryGenerationWarningPhase, "sandbox execution recovery artifact generation failed")
+			return appendRecoveryArtifactMetadata(req.Store, executionID, result)
+		}
+	}
+
+	localPath := filepath.Join(tempDir, filepath.Base(filepath.FromSlash(artifact.PayloadPath)))
+	if err := req.Runtime.CopyOut(ctx, sandboxruntime.CopyRequest{
+		Target:          req.Target,
+		SourcePath:      artifact.RemotePath,
+		DestinationPath: localPath,
+	}); err != nil {
+		addRuntimeArtifactPartialWarning(&result.ArtifactMetadata, artifact, recoveryCopyOutWarningPhase, recoveryArtifactCopyOutWarningMessage(err))
+		return appendRecoveryArtifactMetadata(req.Store, executionID, result)
+	}
+
+	collected, err := saveRuntimeArtifactFile(req.Store, executionID, artifact, localPath)
+	if err != nil {
+		addRuntimeArtifactPartialWarning(&result.ArtifactMetadata, artifact, recoveryPersistWarningPhase, "sandbox execution recovery artifact persistence failed")
+		return appendRecoveryArtifactMetadata(req.Store, executionID, result)
+	}
+	result.ArtifactMetadata.Collected = append(result.ArtifactMetadata.Collected, collected)
+	return appendRecoveryArtifactMetadata(req.Store, executionID, result)
 }
 
 // CollectReportsArchiveArtifacts creates a deterministic remote tar archive of
@@ -569,6 +631,20 @@ func addRuntimeArtifactPartialWarning(metadata *ArtifactMetadata, req RuntimeArt
 		Message:  message,
 		Artifact: partial,
 	})
+}
+
+func appendRecoveryArtifactMetadata(store Store, executionID string, result RuntimeCollectionResult) (RuntimeCollectionResult, error) {
+	if err := store.AppendArtifactMetadata(executionID, result.ArtifactMetadata); err != nil {
+		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution recovery metadata: %w", err)
+	}
+	return result, nil
+}
+
+func recoveryArtifactCopyOutWarningMessage(err error) string {
+	if errors.Is(err, fs.ErrNotExist) {
+		return "sandbox execution recovery artifact is missing"
+	}
+	return "sandbox execution recovery artifact copy failed"
 }
 
 func runtimeArtifactCopyOutWarningMessage(err error) string {
