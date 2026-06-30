@@ -100,6 +100,15 @@ type ReportsArchiveCollectionRequest struct {
 	TempDir            string
 }
 
+// CommandOutputSummaryArtifactsRequest carries sanitized command output
+// summaries that should be stored as additive manifest artifacts.
+type CommandOutputSummaryArtifactsRequest struct {
+	ExecutionID   string
+	Store         Store
+	StdoutSummary string
+	StderrSummary string
+}
+
 const (
 	recoveryArtifactID       = "recovery-patch"
 	recoveryArtifactName     = "Recovery Patch"
@@ -112,6 +121,15 @@ const (
 	reportsArchiveType     = "tar"
 	reportsArchiveDir      = "reports"
 	reportsArchiveFileName = "reports.tar"
+
+	commandOutputSummaryArtifactType = "text"
+	commandOutputSummaryDir          = "output"
+	stdoutSummaryArtifactID          = "stdout-summary"
+	stdoutSummaryArtifactName        = "Stdout Summary"
+	stdoutSummaryArtifactFileName    = "stdout-summary.txt"
+	stderrSummaryArtifactID          = "stderr-summary"
+	stderrSummaryArtifactName        = "Stderr Summary"
+	stderrSummaryArtifactFileName    = "stderr-summary.txt"
 )
 
 // CollectRuntimeArtifacts generates requested remote artifacts, copies remote
@@ -229,6 +247,60 @@ func CollectReportsArchiveArtifacts(ctx context.Context, req ReportsArchiveColle
 	}
 	if err := req.Store.AppendArtifactMetadata(req.ExecutionID, result.ArtifactMetadata); err != nil {
 		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution reports archive metadata: %w", err)
+	}
+	return result, nil
+}
+
+// SaveCommandOutputSummaryArtifacts stores sanitized stdout/stderr summaries
+// under artifacts/ and records additive metadata on the execution manifest.
+func SaveCommandOutputSummaryArtifacts(req CommandOutputSummaryArtifactsRequest) (RuntimeCollectionResult, error) {
+	executionID, err := validateExecutionID(req.ExecutionID)
+	if err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	if _, err := req.Store.LoadManifest(executionID); err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+
+	summaries := []struct {
+		value    string
+		artifact ArtifactMetadataEntry
+		payload  string
+	}{
+		{
+			value: req.StdoutSummary,
+			artifact: commandOutputSummaryArtifact(
+				stdoutSummaryArtifactID,
+				stdoutSummaryArtifactName,
+				stdoutSummaryArtifactFileName,
+			),
+			payload: pathpkg.Join(commandOutputSummaryDir, stdoutSummaryArtifactFileName),
+		},
+		{
+			value: req.StderrSummary,
+			artifact: commandOutputSummaryArtifact(
+				stderrSummaryArtifactID,
+				stderrSummaryArtifactName,
+				stderrSummaryArtifactFileName,
+			),
+			payload: pathpkg.Join(commandOutputSummaryDir, stderrSummaryArtifactFileName),
+		},
+	}
+
+	result := RuntimeCollectionResult{}
+	for _, summary := range summaries {
+		if strings.TrimSpace(summary.value) == "" {
+			continue
+		}
+		collected, err := saveCommandOutputSummaryArtifact(req.Store, executionID, summary.artifact, summary.payload, []byte(summary.value))
+		if err != nil {
+			return RuntimeCollectionResult{}, err
+		}
+		result.ArtifactMetadata.Collected = append(result.ArtifactMetadata.Collected, collected)
+	}
+
+	if err := req.Store.AppendArtifactMetadata(executionID, result.ArtifactMetadata); err != nil {
+		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution output summary metadata: %w", err)
 	}
 	return result, nil
 }
@@ -414,6 +486,33 @@ func coreStateArtifactRequest(id, name, artifactType, fileName, payloadName, rem
 		PayloadPath: pathpkg.Join("core", payloadName),
 		RemotePath:  pathpkg.Join(remoteWorkspaceDir, displayPath),
 	}
+}
+
+func commandOutputSummaryArtifact(id, name, fileName string) ArtifactMetadataEntry {
+	return ArtifactMetadataEntry{
+		ID:   id,
+		Name: name,
+		Type: commandOutputSummaryArtifactType,
+		Path: pathpkg.Join(commandOutputSummaryDir, fileName),
+	}
+}
+
+func saveCommandOutputSummaryArtifact(store Store, executionID string, artifact ArtifactMetadataEntry, payloadPath string, data []byte) (ArtifactMetadataEntry, error) {
+	if err := validateArtifactFileMetadataInput(artifact); err != nil {
+		return ArtifactMetadataEntry{}, err
+	}
+	if _, err := validatePayloadPath(payloadPath); err != nil {
+		return ArtifactMetadataEntry{}, err
+	}
+	stored, err := store.WriteArtifactPayload(executionID, payloadPath, data)
+	if err != nil {
+		return ArtifactMetadataEntry{}, fmt.Errorf("save sandbox execution output summary payload: %w", err)
+	}
+	artifact = artifactMetadataWithStoredFile(artifact, stored)
+	if err := validateArtifactMetadataEntry(executionID, artifact, true); err != nil {
+		return ArtifactMetadataEntry{}, err
+	}
+	return artifact, nil
 }
 
 func saveRuntimeArtifactFile(store Store, executionID string, req RuntimeArtifactRequest, localPath string) (ArtifactMetadataEntry, error) {

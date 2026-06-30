@@ -733,6 +733,130 @@ func TestCollectReportsArchiveArtifactsMissingReportsRecordsPartialWarning(t *te
 	}
 }
 
+func TestSaveCommandOutputSummaryArtifactsStoresSanitizedStdoutAndStderr(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.SaveManifest(testManifest("exec-1", time.Date(2026, 6, 30, 1, 0, 0, 0, time.UTC))); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+	rawSecret := "ghp_raw_secret_from_command_output"
+	stdoutSummary := "stdout: command completed\nstdout token: <redacted>\n"
+	stderrSummary := "stderr: warning: <redacted>\n"
+
+	result, err := SaveCommandOutputSummaryArtifacts(CommandOutputSummaryArtifactsRequest{
+		ExecutionID:   "exec-1",
+		Store:         store,
+		StdoutSummary: stdoutSummary,
+		StderrSummary: stderrSummary,
+	})
+	if err != nil {
+		t.Fatalf("SaveCommandOutputSummaryArtifacts() error: %v", err)
+	}
+
+	collected := result.ArtifactMetadata.Collected
+	if len(collected) != 2 {
+		t.Fatalf("collected metadata = %#v, want stdout and stderr summaries", collected)
+	}
+
+	stdout := collected[0]
+	if stdout.ID != "stdout-summary" || stdout.Name != "Stdout Summary" || stdout.Type != "text" {
+		t.Fatalf("stdout metadata identity = %#v, want stdout summary metadata", stdout)
+	}
+	if got, want := stdout.Path, "output/stdout-summary.txt"; got != want {
+		t.Fatalf("stdout path = %q, want %q", got, want)
+	}
+	if got, want := stdout.StoredPath, "exec-1/artifacts/output/stdout-summary.txt"; got != want {
+		t.Fatalf("stdout storedPath = %q, want %q", got, want)
+	}
+	if stdout.SizeBytes == nil || *stdout.SizeBytes != int64(len(stdoutSummary)) {
+		t.Fatalf("stdout size = %v, want %d", stdout.SizeBytes, len(stdoutSummary))
+	}
+	if stdout.CreatedAt == nil || stdout.CreatedAt.IsZero() {
+		t.Fatalf("stdout createdAt = %v, want stored timestamp", stdout.CreatedAt)
+	}
+	if got := readStoreFile(t, store, stdout.StoredPath); got != stdoutSummary {
+		t.Fatalf("stored stdout summary = %q, want sanitized summary", got)
+	}
+
+	stderr := collected[1]
+	if stderr.ID != "stderr-summary" || stderr.Name != "Stderr Summary" || stderr.Type != "text" {
+		t.Fatalf("stderr metadata identity = %#v, want stderr summary metadata", stderr)
+	}
+	if got, want := stderr.Path, "output/stderr-summary.txt"; got != want {
+		t.Fatalf("stderr path = %q, want %q", got, want)
+	}
+	if got, want := stderr.StoredPath, "exec-1/artifacts/output/stderr-summary.txt"; got != want {
+		t.Fatalf("stderr storedPath = %q, want %q", got, want)
+	}
+	if stderr.SizeBytes == nil || *stderr.SizeBytes != int64(len(stderrSummary)) {
+		t.Fatalf("stderr size = %v, want %d", stderr.SizeBytes, len(stderrSummary))
+	}
+	if stderr.CreatedAt == nil || stderr.CreatedAt.IsZero() {
+		t.Fatalf("stderr createdAt = %v, want stored timestamp", stderr.CreatedAt)
+	}
+	if got := readStoreFile(t, store, stderr.StoredPath); got != stderrSummary {
+		t.Fatalf("stored stderr summary = %q, want sanitized summary", got)
+	}
+
+	loaded, err := store.LoadManifest("exec-1")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if len(loaded.Artifacts) != 0 {
+		t.Fatalf("legacy artifacts = %#v, want unchanged top-level artifacts", loaded.Artifacts)
+	}
+	if loaded.ArtifactMetadata == nil {
+		t.Fatalf("manifest ArtifactMetadata = nil, want output summary metadata")
+	}
+	if !reflect.DeepEqual(loaded.ArtifactMetadata.Collected, collected) {
+		t.Fatalf("manifest collected = %#v, want %#v", loaded.ArtifactMetadata.Collected, collected)
+	}
+
+	encoded := string(mustJSONBytes(t, loaded.ArtifactMetadata))
+	for _, forbidden := range []string{
+		rawSecret,
+		"command completed",
+		"warning: <redacted>",
+		"sourcePath",
+		"localPath",
+	} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("manifest output summary metadata leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestSaveCommandOutputSummaryArtifactsSkipsMissingInputs(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.SaveManifest(testManifest("exec-1", time.Date(2026, 6, 30, 1, 0, 0, 0, time.UTC))); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+
+	result, err := SaveCommandOutputSummaryArtifacts(CommandOutputSummaryArtifactsRequest{
+		ExecutionID:   "exec-1",
+		Store:         store,
+		StdoutSummary: " \n\t",
+		StderrSummary: "stderr only\n",
+	})
+	if err != nil {
+		t.Fatalf("SaveCommandOutputSummaryArtifacts() error: %v", err)
+	}
+	if len(result.ArtifactMetadata.Collected) != 1 {
+		t.Fatalf("collected metadata = %#v, want only stderr summary", result.ArtifactMetadata.Collected)
+	}
+	if got, want := result.ArtifactMetadata.Collected[0].ID, "stderr-summary"; got != want {
+		t.Fatalf("collected ID = %q, want %q", got, want)
+	}
+	assertPathMissing(t, filepath.Join(store.Root(), "exec-1", artifactsDirName, "output", "stdout-summary.txt"))
+
+	loaded, err := store.LoadManifest("exec-1")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if loaded.ArtifactMetadata == nil || len(loaded.ArtifactMetadata.Collected) != 1 {
+		t.Fatalf("manifest output summary metadata = %#v, want one collected stderr summary", loaded.ArtifactMetadata)
+	}
+}
+
 func readStoreFile(t *testing.T, store Store, storedPath string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(store.Root(), filepath.FromSlash(storedPath)))
