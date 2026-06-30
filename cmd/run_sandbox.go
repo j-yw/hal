@@ -65,6 +65,7 @@ type runSandboxRequest struct {
 
 type runSandboxExecutionResult struct {
 	Result        *sandboxexec.Result
+	RuntimeDriver sandboxruntime.Driver
 	RemoteStarted bool
 }
 
@@ -301,6 +302,12 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 		}
 	}
 
+	if execErr == nil {
+		if collectErr := collectRunSandboxCoreStateArtifacts(ctx, store, req, execResult); collectErr != nil {
+			execErr = collectErr
+		}
+	}
+
 	finishedAt := deps.now().UTC()
 	status := sandboxexecution.StatusSucceeded
 	if execErr != nil {
@@ -534,6 +541,7 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 	}
 	var remoteStarted bool
 	var provider sandbox.Provider
+	var runtimeDriver sandboxruntime.Driver
 	ensureProvider := func(providerName string) (sandbox.Provider, error) {
 		if provider != nil {
 			return provider, nil
@@ -562,7 +570,11 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 			return deps.startSandbox(ctx, target, prepOut)
 		},
 		ResolveDriver: func(_ context.Context, target sandboxruntime.Target) (sandboxruntime.Driver, error) {
-			return deps.resolveRuntimeDriver(target.Provider)
+			driver, err := deps.resolveRuntimeDriver(target.Provider)
+			if err == nil {
+				runtimeDriver = driver
+			}
+			return driver, err
 		},
 		OnTargetReady: func(_ context.Context, target *sandbox.SandboxState) error {
 			if hooks.OnTargetReady == nil {
@@ -607,7 +619,25 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 			return nil
 		},
 	})
-	return runSandboxExecutionResult{Result: result, RemoteStarted: remoteStarted}, err
+	return runSandboxExecutionResult{Result: result, RuntimeDriver: runtimeDriver, RemoteStarted: remoteStarted}, err
+}
+
+func collectRunSandboxCoreStateArtifacts(ctx context.Context, store sandboxexecution.Store, req runSandboxRequest, result runSandboxExecutionResult) error {
+	if result.Result == nil || result.RuntimeDriver == nil {
+		return nil
+	}
+	_, err := sandboxexecution.CollectCoreStateArtifacts(ctx, sandboxexecution.CoreStateCollectionRequest{
+		ExecutionID:        req.ExecutionID,
+		Store:              store,
+		Runtime:            result.RuntimeDriver,
+		Target:             result.Result.Target,
+		Purpose:            sandboxexecution.PurposeRun,
+		RemoteWorkspaceDir: req.WorkDir,
+	})
+	if err != nil {
+		return fmt.Errorf("collect run sandbox core state artifacts: %w", err)
+	}
+	return nil
 }
 
 func (deps runSandboxDeps) resolveRunSandboxTarget(ctx context.Context, req runSandboxRequest, out io.Writer) (*sandbox.SandboxState, error) {
@@ -798,7 +828,31 @@ func saveRunSandboxManifest(store sandboxexecution.Store, req runSandboxRequest,
 	if manifest.Security == nil {
 		manifest.Security = cloneSandboxSecurity(sandbox.EvaluateSandboxSecurity(req.Security))
 	}
+	preserveRunSandboxManifestArtifacts(store, manifest)
 	return store.SaveManifest(manifest)
+}
+
+func preserveRunSandboxManifestArtifacts(store sandboxexecution.Store, manifest *sandboxexecution.Manifest) {
+	if manifest == nil || strings.TrimSpace(manifest.ID) == "" {
+		return
+	}
+	existing, err := store.LoadManifest(manifest.ID)
+	if err != nil {
+		return
+	}
+	manifest.Artifacts = append([]sandboxexecution.Artifact(nil), existing.Artifacts...)
+	manifest.ArtifactMetadata = cloneSandboxArtifactMetadata(existing.ArtifactMetadata)
+}
+
+func cloneSandboxArtifactMetadata(metadata *sandboxexecution.ArtifactMetadata) *sandboxexecution.ArtifactMetadata {
+	if metadata == nil {
+		return nil
+	}
+	return &sandboxexecution.ArtifactMetadata{
+		Collected: append([]sandboxexecution.ArtifactMetadataEntry(nil), metadata.Collected...),
+		Partial:   append([]sandboxexecution.ArtifactMetadataEntry(nil), metadata.Partial...),
+		Warnings:  append([]sandboxexecution.ArtifactWarning(nil), metadata.Warnings...),
+	}
 }
 
 func cloneSandboxWorkspace(workspace *sandbox.SandboxWorkspace) *sandbox.SandboxWorkspace {

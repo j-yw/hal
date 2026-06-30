@@ -63,6 +63,7 @@
 - Use `sandboxexecution.CollectRecoveryArtifacts` when wiring non-factory generated recovery collection: it runs runtime `Exec` in the remote workspace to create `.hal/recovery/workspace.patch`, copies it out with runtime `CopyOut`, persists it via `Store.SaveRecoveryFile`, and appends recovery metadata to the manifest.
 - Use `sandboxexecution.CollectReportsArchiveArtifacts` when wiring non-factory generated reports collection: it runs runtime `Exec` to create `.hal/reports.tar` from `.hal/reports` when present, copies it out with runtime `CopyOut`, persists it via `Store.SaveArtifactFile`, and records missing reports as partial metadata plus sanitized warnings.
 - Use `sandboxexecution.SaveCommandOutputSummaryArtifacts` when wiring non-factory stdout/stderr summaries: pass already-sanitized summary text, persist payloads under `artifacts/output/`, and keep manifest metadata limited to safe `output/*-summary.txt` display paths plus store-relative `storedPath` values.
+- Run sandbox post-execution collectors should use the resolved `sandboxruntime.Driver` captured during `executeRunSandbox`; because `saveRunSandboxManifest` rebuilds manifests from request/target state, preserve existing top-level `Artifacts` and additive `ArtifactMetadata` when saving final status.
 
 ## Patterns from phase/sandbox-runtime-v2-9-runtime-driver (2026-06-30)
 
