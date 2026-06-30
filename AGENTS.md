@@ -37,6 +37,10 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase14-worker-io (2026-07-01)
+
+- Worker I/O limit constants and shared validation helpers live in `internal/sandboxworker/io_validation.go`; keep exec/copy payload bounds command-agnostic, reject unbounded reads before dispatch, and route validation details through `sanitizeProtocolErrorDetail` so host paths and secrets do not enter protocol errors.
+
 ## Patterns from phase13-sandboxd-self-hosted-worker-daemon-foundation (2026-07-01)
 
 - Worker protocol schema types live in `internal/sandboxworker`; keep the foundational request/response/status/capability/runtime-driver/security-policy types command-agnostic, package-local to the worker boundary, and free of Cobra, `cmd`, factory, PRD, compound, loop, concrete runtime adapters, or durable command-layer records.
