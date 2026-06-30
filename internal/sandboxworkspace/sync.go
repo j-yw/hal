@@ -2,8 +2,14 @@ package sandboxworkspace
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
+	"unicode"
+
+	"github.com/jywlabs/hal/internal/sandbox"
 )
 
 // WorkspaceMaterializer materializes a planned workspace into a sandbox target.
@@ -46,6 +52,24 @@ type MaterializeRequest struct {
 	Target               RemoteTarget
 	WorkspaceDir         string
 	BundleDestinationDir string
+}
+
+// PrepareLocalBundleRequest carries the bundle-backed workspace plan plus a
+// host-local directory controlled by the sync primitive.
+type PrepareLocalBundleRequest struct {
+	Plan      Plan
+	BundleDir string
+}
+
+// LocalBundleResult carries host-local bundle state for the next sync step.
+// LocalPath is intentionally excluded from JSON because durable metadata must
+// use Bundle instead.
+type LocalBundleResult struct {
+	LocalPath  string `json:"-"`
+	ID         string `json:"id,omitempty"`
+	SyncRef    string `json:"syncRef,omitempty"`
+	Bundle     *BundleMaterialization
+	Operations []MaterializationOperation
 }
 
 // RemoteTarget identifies a sandbox target without depending on provider structs.
@@ -167,6 +191,107 @@ func BundleMaterializationFromCreateResult(result CreateBundleResult, remotePath
 		RemotePath: strings.TrimSpace(remotePath),
 		SyncRef:    strings.TrimSpace(result.SyncRef),
 	}
+}
+
+// PrepareLocalBundle validates a bundle-backed plan, chooses a deterministic
+// host-local bundle path, then delegates create and verify behavior to LocalGit.
+func PrepareLocalBundle(ctx context.Context, git LocalGit, req PrepareLocalBundleRequest) (LocalBundleResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if git == nil {
+		return LocalBundleResult{}, ErrLocalGitRequired
+	}
+	plan := req.Plan
+	if plan.Dirty.Any() {
+		return LocalBundleResult{}, planningError(ErrDirtyWorktree, Request{
+			ProjectDir:    plan.ProjectDir,
+			WorkspaceMode: plan.Mode,
+		}, plan.Dirty, nil)
+	}
+	if strings.TrimSpace(plan.InputSource) != sandbox.SandboxWorkspaceInputSourceGitBundle {
+		return LocalBundleResult{}, ErrGitBundlePlanRequired
+	}
+
+	bundleID := localBundleID(plan)
+	bundlePath, err := localBundlePath(req.BundleDir, bundleID)
+	if err != nil {
+		return LocalBundleResult{}, err
+	}
+	createResult, err := git.CreateBundle(ctx, CreateBundleRequest{
+		Plan:            plan,
+		DestinationPath: bundlePath,
+	})
+	if err != nil {
+		return LocalBundleResult{}, fmt.Errorf("workspace bundle create: %w", err)
+	}
+	createResult.Path = firstNonEmpty(createResult.Path, bundlePath)
+	createResult.ID = firstNonEmpty(createResult.ID, bundleID)
+	createResult.SyncRef = firstNonEmpty(createResult.SyncRef, plan.SyncRef)
+
+	if err := git.VerifyBundle(ctx, VerifyBundleRequest{
+		Plan:    plan,
+		Path:    createResult.Path,
+		SyncRef: createResult.SyncRef,
+	}); err != nil {
+		return LocalBundleResult{}, fmt.Errorf("workspace bundle verify: %w", err)
+	}
+
+	operations := []MaterializationOperation{
+		{Phase: MaterializationPhaseBundleCreate, Summary: "created local git bundle"},
+		{Phase: MaterializationPhaseBundleVerify, Summary: "verified local git bundle"},
+	}
+	return LocalBundleResult{
+		LocalPath:  createResult.Path,
+		ID:         createResult.ID,
+		SyncRef:    createResult.SyncRef,
+		Bundle:     BundleMaterializationFromCreateResult(createResult, ""),
+		Operations: operations,
+	}, nil
+}
+
+func localBundlePath(bundleDir string, bundleID string) (string, error) {
+	bundleDir = strings.TrimSpace(bundleDir)
+	if bundleDir == "" {
+		bundleDir = filepath.Join(os.TempDir(), "hal-workspace-bundles")
+	}
+	if err := os.MkdirAll(bundleDir, 0o700); err != nil {
+		return "", fmt.Errorf("workspace bundle directory: %w", err)
+	}
+	return filepath.Join(bundleDir, bundleID+".bundle"), nil
+}
+
+func localBundleID(plan Plan) string {
+	return safeBundleSegment(firstNonEmpty(plan.SyncRef, plan.Branch, "HEAD"))
+}
+
+func safeBundleSegment(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "HEAD"
+	}
+	var b strings.Builder
+	lastDash := false
+	for _, r := range value {
+		switch {
+		case r == '.' || r == '_' || r == '-':
+			b.WriteRune(r)
+			lastDash = false
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			b.WriteRune(r)
+			lastDash = false
+		default:
+			if !lastDash {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+	safe := strings.Trim(b.String(), "-.")
+	if safe == "" {
+		return "HEAD"
+	}
+	return safe
 }
 
 func cloneBundleMaterialization(bundle *BundleMaterialization) *BundleMaterialization {

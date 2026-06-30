@@ -21,6 +21,14 @@ var (
 	// ErrDirectLockActive is returned when a direct workspace resource key is
 	// already locked.
 	ErrDirectLockActive = errors.New("direct workspace lock already active")
+
+	// ErrLocalGitRequired is returned when bundle preparation is requested
+	// without a local Git adapter.
+	ErrLocalGitRequired = errors.New("local git adapter is required")
+
+	// ErrGitBundlePlanRequired is returned when local bundle preparation is
+	// requested for a plan that is not bundle-backed.
+	ErrGitBundlePlanRequired = errors.New("git-bundle workspace plan required")
 )
 
 // PlanningError adds stable context around a planning rejection while preserving
