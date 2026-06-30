@@ -265,23 +265,6 @@ func TestRunRunSandboxWithWriterWorkspacePlannerPreflightFailures(t *testing.T) 
 			},
 			wantError: "dirty worktree",
 		},
-		{
-			name: "git bundle required",
-			status: sandboxworkspace.GitStatus{
-				IsGitWorktree: true,
-				Repository:    "git@example.com:org/repo.git",
-				Branch:        "feature/unpushed",
-				HeadRef:       "abc123",
-			},
-			wantError: "git bundle workspace input is not implemented",
-			wantWorkspace: &sandbox.SandboxWorkspace{
-				Mode:        sandbox.SandboxWorkspaceModeClone,
-				InputSource: sandbox.SandboxWorkspaceInputSourceGitBundle,
-				Repo:        "git@example.com:org/repo.git",
-				Branch:      "feature/unpushed",
-				SyncRef:     "abc123",
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -352,6 +335,132 @@ func TestRunRunSandboxWithWriterWorkspacePlannerPreflightFailures(t *testing.T) 
 				t.Fatalf("workspace metadata leaks local project path %q: %s", projectDir, encodedWorkspace)
 			}
 		})
+	}
+}
+
+func TestRunRunSandboxWithWriterGitBundlePlanMaterializesAndExecutes(t *testing.T) {
+	startedAt := time.Date(2026, 6, 30, 9, 20, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(4 * time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	target := &sandbox.SandboxState{Name: "bundle-run", Provider: "test-provider", Status: sandbox.StatusRunning}
+	plan := sandboxworkspace.Plan{
+		Mode:           sandbox.SandboxWorkspaceModeClone,
+		InputSource:    sandbox.SandboxWorkspaceInputSourceGitBundle,
+		ProjectDir:     projectDir,
+		Repository:     "git@example.com:org/repo.git",
+		Branch:         "feature/unpushed",
+		Upstream:       "origin/main",
+		SyncRef:        "abc123",
+		RequiresBundle: true,
+	}
+	var order []string
+	var materialized bool
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+		JSON:        true,
+		JSONChanged: true,
+	}, &out, &errOut, runSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "run-git-bundle-exec"
+		},
+		now:        runSandboxTestClock(startedAt, finishedAt),
+		workingDir: func() (string, error) { return projectDir, nil },
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return plan, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			return target, target.Name, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+			return fakeRunSandboxRuntimeDriver{
+				exec: func(_ context.Context, got sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+					order = append(order, "runtime_exec")
+					_, _ = io.WriteString(got.Stdout, `{"contractVersion":1,"ok":true,"summary":"remote"}`+"\n")
+					return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+				},
+			}, nil
+		},
+		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			t.Fatal("legacy bootstrap should not run for git-bundle workspace")
+			return factory.BootstrapResult{}, nil
+		},
+		materializeWorkspace: func(_ context.Context, _ sandboxexec.PrepareContext, got sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
+			order = append(order, "materialize_workspace")
+			materialized = true
+			if got.Plan == nil {
+				t.Fatal("materialization plan = nil, want original workspace plan")
+			}
+			if got.Plan.Upstream != "origin/main" {
+				t.Fatalf("plan upstream = %q, want origin/main", got.Plan.Upstream)
+			}
+			if got.Plan.ProjectDir != projectDir || got.ProjectDir != projectDir {
+				t.Fatalf("materialization dirs plan=%q request=%q, want %q", got.Plan.ProjectDir, got.ProjectDir, projectDir)
+			}
+			if got.Workspace.InputSource != sandbox.SandboxWorkspaceInputSourceGitBundle || got.Workspace.SyncRef != "abc123" {
+				t.Fatalf("workspace metadata = %#v, want git-bundle metadata", got.Workspace)
+			}
+			return sandboxworkspace.MaterializationResult{InputSource: sandbox.SandboxWorkspaceInputSourceGitBundle}, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			order = append(order, "auth")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runRunSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+	if !materialized {
+		t.Fatal("materializeWorkspace was not called")
+	}
+	wantOrder := []string{"materialize_workspace", "auth", "runtime_exec"}
+	if !reflect.DeepEqual(order, wantOrder) {
+		t.Fatalf("order = %#v, want %#v", order, wantOrder)
+	}
+	var result RunResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("stdout is not parseable remote RunResult JSON: %v\n%s", err, out.String())
+	}
+	if !result.OK || result.Summary != "remote" {
+		t.Fatalf("RunResult = %#v, want successful remote result", result)
+	}
+	if strings.Contains(out.String(), "git bundle workspace input is not implemented") {
+		t.Fatalf("stdout contains old implementation guard: %s", out.String())
+	}
+	manifest, err := store.LoadManifest("run-git-bundle-exec")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if manifest.Status != sandboxexecution.StatusSucceeded {
+		t.Fatalf("Status = %q, want succeeded", manifest.Status)
+	}
+	wantWorkspace := sandbox.SandboxWorkspace{
+		Mode:        sandbox.SandboxWorkspaceModeClone,
+		InputSource: sandbox.SandboxWorkspaceInputSourceGitBundle,
+		Repo:        "git@example.com:org/repo.git",
+		Branch:      "feature/unpushed",
+		SyncRef:     "abc123",
+	}
+	if manifest.Workspace == nil || *manifest.Workspace != wantWorkspace {
+		t.Fatalf("Workspace = %#v, want %#v", manifest.Workspace, wantWorkspace)
+	}
+	encodedWorkspace, err := json.Marshal(manifest.Workspace)
+	if err != nil {
+		t.Fatalf("Marshal(workspace) error: %v", err)
+	}
+	if strings.Contains(string(encodedWorkspace), projectDir) || strings.Contains(string(encodedWorkspace), "origin/main") {
+		t.Fatalf("workspace metadata leaks transient plan details: %s", encodedWorkspace)
+	}
+	if manifest.FinishedAt == nil || !manifest.FinishedAt.Equal(finishedAt) {
+		t.Fatalf("FinishedAt = %v, want %v", manifest.FinishedAt, finishedAt)
 	}
 }
 

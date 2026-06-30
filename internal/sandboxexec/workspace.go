@@ -15,6 +15,7 @@ import (
 // into the shared sandbox workspace materialization helper.
 type WorkspaceMaterializationRequest struct {
 	Workspace            sandbox.SandboxWorkspace
+	Plan                 *sandboxworkspace.Plan
 	ProjectDir           string
 	WorkspaceDir         string
 	BundleDir            string
@@ -32,7 +33,7 @@ func MaterializeBundleWorkspace(ctx context.Context, prep PrepareContext, req Wo
 	if localGit == nil {
 		localGit = sandboxworkspace.GitCLIInspector{}
 	}
-	plan := workspacePlanFromMetadata(req.Workspace, req.ProjectDir)
+	plan := workspacePlanFromRequest(req)
 	return (sandboxworkspace.BundleMaterializer{
 		LocalGit:  localGit,
 		Remote:    RuntimeWorkspaceClient{Driver: prep.Driver, Target: prep.Target},
@@ -100,6 +101,38 @@ func workspacePlanFromMetadata(workspace sandbox.SandboxWorkspace, projectDir st
 		SyncRef:        strings.TrimSpace(workspace.SyncRef),
 		RequiresBundle: inputSource == sandbox.SandboxWorkspaceInputSourceGitBundle,
 	}
+}
+
+func workspacePlanFromRequest(req WorkspaceMaterializationRequest) sandboxworkspace.Plan {
+	if req.Plan == nil {
+		return workspacePlanFromMetadata(req.Workspace, req.ProjectDir)
+	}
+	plan := *req.Plan
+	if strings.TrimSpace(plan.Mode) == "" {
+		plan.Mode = strings.TrimSpace(req.Workspace.Mode)
+	}
+	if strings.TrimSpace(plan.Mode) == "" {
+		plan.Mode = sandbox.SandboxWorkspaceModeClone
+	}
+	if strings.TrimSpace(plan.InputSource) == "" {
+		plan.InputSource = strings.TrimSpace(req.Workspace.InputSource)
+	}
+	if strings.TrimSpace(plan.ProjectDir) == "" {
+		plan.ProjectDir = strings.TrimSpace(req.ProjectDir)
+	}
+	if strings.TrimSpace(plan.Repository) == "" {
+		plan.Repository = strings.TrimSpace(req.Workspace.Repo)
+	}
+	if strings.TrimSpace(plan.Branch) == "" {
+		plan.Branch = strings.TrimSpace(req.Workspace.Branch)
+	}
+	if strings.TrimSpace(plan.SyncRef) == "" {
+		plan.SyncRef = strings.TrimSpace(req.Workspace.SyncRef)
+	}
+	if strings.TrimSpace(plan.InputSource) == sandbox.SandboxWorkspaceInputSourceGitBundle {
+		plan.RequiresBundle = true
+	}
+	return plan
 }
 
 func remoteTargetFromRuntime(target sandboxruntime.Target) sandboxworkspace.RemoteTarget {

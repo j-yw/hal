@@ -59,6 +59,7 @@ type runSandboxRequest struct {
 	RemoteCommand []string
 	Flags         runSandboxRunFlags
 	Workspace     *sandbox.SandboxWorkspace
+	WorkspacePlan *sandboxworkspace.Plan
 	Security      sandbox.SecurityEvaluationRequest
 }
 
@@ -415,15 +416,17 @@ func prepareRunSandboxRequestWithPlan(ctx context.Context, req *runSandboxReques
 		return fmt.Errorf("resolve base branch: current branch is required for sandbox execution; pass --base explicitly")
 	}
 
+	plan = sandboxWorkspacePlanForCommand(plan, req.ProjectDir, sandbox.SandboxWorkspaceInputSourceRemoteRef)
 	req.RepoRemote = repoRemote
 	req.BaseBranch = baseBranch
 	req.RunBranch = branchName
 	workspace := sandboxWorkspaceMetadataFromPlan(plan, sandbox.SandboxWorkspaceInputSourceRemoteRef, baseBranch)
 	req.Workspace = &workspace
-	if plan.RequiresBundle || plan.InputSource == sandbox.SandboxWorkspaceInputSourceGitBundle {
-		return fmt.Errorf("plan sandbox workspace: git bundle workspace input is not implemented for hal run --sandbox yet; push local commits or choose a remote ref")
-	}
+	req.WorkspacePlan = cloneSandboxWorkspacePlan(plan)
 	if inputSource := strings.TrimSpace(plan.InputSource); inputSource != "" && inputSource != sandbox.SandboxWorkspaceInputSourceRemoteRef {
+		if inputSource == sandbox.SandboxWorkspaceInputSourceGitBundle {
+			return prepareRunSandboxWorkDir(req)
+		}
 		return fmt.Errorf("plan sandbox workspace: unsupported clone input source %q for hal run --sandbox", inputSource)
 	}
 	return prepareRunSandboxWorkDir(req)
@@ -493,6 +496,29 @@ func sandboxWorkspaceMetadataFromPlan(plan sandboxworkspace.Plan, defaultInputSo
 	return workspace
 }
 
+func sandboxWorkspacePlanForCommand(plan sandboxworkspace.Plan, projectDir, defaultInputSource string) sandboxworkspace.Plan {
+	if strings.TrimSpace(plan.Mode) == "" {
+		plan.Mode = sandbox.SandboxWorkspaceModeClone
+	}
+	if strings.TrimSpace(plan.ProjectDir) == "" {
+		plan.ProjectDir = strings.TrimSpace(projectDir)
+	}
+	inputSource := strings.TrimSpace(plan.InputSource)
+	if plan.RequiresBundle {
+		inputSource = sandbox.SandboxWorkspaceInputSourceGitBundle
+	}
+	if inputSource == "" {
+		inputSource = strings.TrimSpace(defaultInputSource)
+	}
+	plan.InputSource = inputSource
+	return plan
+}
+
+func cloneSandboxWorkspacePlan(plan sandboxworkspace.Plan) *sandboxworkspace.Plan {
+	clone := plan
+	return &clone
+}
+
 func isGitBundleWorkspace(workspace *sandbox.SandboxWorkspace) bool {
 	return workspace != nil && strings.TrimSpace(workspace.InputSource) == sandbox.SandboxWorkspaceInputSourceGitBundle
 }
@@ -548,6 +574,7 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 			if isGitBundleWorkspace(req.Workspace) {
 				_, err := deps.materializeWorkspace(ctx, prep, sandboxexec.WorkspaceMaterializationRequest{
 					Workspace:    *req.Workspace,
+					Plan:         req.WorkspacePlan,
 					ProjectDir:   req.ProjectDir,
 					WorkspaceDir: req.WorkDir,
 				})
