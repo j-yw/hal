@@ -37,7 +37,7 @@ func TestSandboxdSafetyWiringUsesFakeableDepsAndHonestCapabilities(t *testing.T)
 				return nil, err
 			}
 			capabilities := service.Capabilities()
-			assertSandboxdSafetyNoExecOrCopySupport(t, capabilities.SupportedOperations)
+			assertSandboxdSafetyIncludesWorkerIOSupport(t, capabilities.SupportedOperations)
 			assertSandboxdSafetyHonestPolicy(t, capabilities.Security)
 			if len(capabilities.RuntimeDrivers) != 1 {
 				t.Fatalf("runtime driver count = %d, want 1", len(capabilities.RuntimeDrivers))
@@ -49,7 +49,7 @@ func TestSandboxdSafetyWiringUsesFakeableDepsAndHonestCapabilities(t *testing.T)
 			if driver.IsolationLevel != sandboxworker.IsolationLevelContainer {
 				t.Fatalf("runtime driver isolationLevel = %q, want %q", driver.IsolationLevel, sandboxworker.IsolationLevelContainer)
 			}
-			assertSandboxdSafetyNoExecOrCopySupport(t, driver.Operations)
+			assertSandboxdSafetyIncludesWorkerIOSupport(t, driver.Operations)
 			assertSandboxdSafetyHonestPolicy(t, driver.Security)
 			serviceChecked = true
 			return service, nil
@@ -96,12 +96,12 @@ func TestSandboxdProductionCodeAvoidsUnsafeHostDependencies(t *testing.T) {
 	}
 }
 
-func assertSandboxdSafetyNoExecOrCopySupport(t *testing.T, operations []string) {
+func assertSandboxdSafetyIncludesWorkerIOSupport(t *testing.T, operations []string) {
 	t.Helper()
 
 	for _, operation := range []string{sandboxworker.OperationExec, sandboxworker.OperationCopyIn, sandboxworker.OperationCopyOut} {
-		if containsSandboxdSafetyString(operations, operation) {
-			t.Fatalf("operations include %q before worker handler support exists: %#v", operation, operations)
+		if !containsSandboxdSafetyString(operations, operation) {
+			t.Fatalf("operations omit %q after worker handler support exists: %#v", operation, operations)
 		}
 	}
 }

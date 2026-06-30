@@ -108,15 +108,38 @@ func sandboxRuntimeDriverFromProvider(provider sandbox.Provider) sandboxruntime.
 	return sshmachine.New(provider)
 }
 
+type sandboxRuntimeDriverFactories struct {
+	sshMachine     func(sandbox.Provider) sandboxruntime.Driver
+	rootlessPodman func() sandboxruntime.Driver
+}
+
+var defaultSandboxRuntimeDriverFactories = productionSandboxRuntimeDriverFactories
+
 func sandboxRuntimeDriverFromTarget(target sandboxruntime.Target, resolveProvider func(string) (sandbox.Provider, error)) (sandboxruntime.Driver, error) {
+	return sandboxRuntimeDriverFromTargetWithFactories(target, resolveProvider, defaultSandboxRuntimeDriverFactories())
+}
+
+func productionSandboxRuntimeDriverFactories() sandboxRuntimeDriverFactories {
+	return sandboxRuntimeDriverFactories{
+		sshMachine: sandboxRuntimeDriverFromProvider,
+		rootlessPodman: func() sandboxruntime.Driver {
+			runner := rootlesspodman.DefaultCommandRunner{}
+			return rootlesspodman.New(rootlesspodman.Options{
+				LifecycleRunner: runner,
+				ExecRunner:      runner,
+				CopyRunner:      runner,
+			})
+		},
+	}
+}
+
+func sandboxRuntimeDriverFromTargetWithFactories(target sandboxruntime.Target, resolveProvider func(string) (sandbox.Provider, error), factories sandboxRuntimeDriverFactories) (sandboxruntime.Driver, error) {
 	switch strings.TrimSpace(target.Runtime.Driver) {
 	case sandboxruntime.DriverRootlessPodman:
-		runner := rootlesspodman.DefaultCommandRunner{}
-		return rootlesspodman.New(rootlesspodman.Options{
-			LifecycleRunner: runner,
-			ExecRunner:      runner,
-			CopyRunner:      runner,
-		}), nil
+		if factories.rootlessPodman == nil {
+			return nil, nil
+		}
+		return factories.rootlessPodman(), nil
 	default:
 		if resolveProvider == nil {
 			return nil, nil
@@ -125,6 +148,9 @@ func sandboxRuntimeDriverFromTarget(target sandboxruntime.Target, resolveProvide
 		if err != nil {
 			return nil, err
 		}
-		return sandboxRuntimeDriverFromProvider(provider), nil
+		if factories.sshMachine == nil {
+			return nil, nil
+		}
+		return factories.sshMachine(provider), nil
 	}
 }

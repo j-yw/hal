@@ -1,16 +1,30 @@
 package cmd
 
 import (
+	"context"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
-	"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"
-	"github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"
 	"github.com/jywlabs/hal/internal/sandboxworker"
 )
 
-func TestExistingSandboxExecutionDefaultResolversStayInactiveForWorkerAdapter(t *testing.T) {
+func TestExistingSandboxExecutionDefaultResolversStayWorkerOptIn(t *testing.T) {
+	originalFactories := defaultSandboxRuntimeDriverFactories
+	t.Cleanup(func() {
+		defaultSandboxRuntimeDriverFactories = originalFactories
+	})
+	defaultSandboxRuntimeDriverFactories = func() sandboxRuntimeDriverFactories {
+		return sandboxRuntimeDriverFactories{
+			sshMachine: func(sandbox.Provider) sandboxruntime.Driver {
+				return fakeRuntimeResolverDriver{id: sandboxruntime.DriverSSHMachine}
+			},
+			rootlessPodman: func() sandboxruntime.Driver {
+				return fakeRuntimeResolverDriver{id: sandboxruntime.DriverRootlessPodman}
+			},
+		}
+	}
+
 	resolvers := []struct {
 		name  string
 		build func(func(string) (sandbox.Provider, error)) func(sandboxruntime.Target) (sandboxruntime.Driver, error)
@@ -40,44 +54,37 @@ func TestExistingSandboxExecutionDefaultResolversStayInactiveForWorkerAdapter(t 
 
 	scenarios := []struct {
 		name             string
-		runtimeDriver    string
+		runtime          sandboxruntime.RuntimeState
 		wantID           string
 		wantProviderCall bool
-		assertType       func(*testing.T, sandboxruntime.Driver)
 	}{
 		{
 			name:             "absent runtime metadata",
 			wantID:           sandboxruntime.DriverSSHMachine,
 			wantProviderCall: true,
-			assertType: func(t *testing.T, driver sandboxruntime.Driver) {
-				t.Helper()
-				if _, ok := driver.(*sshmachine.Driver); !ok {
-					t.Fatalf("driver type = %T, want *sshmachine.Driver", driver)
-				}
-			},
 		},
 		{
 			name:             "explicit SSH-machine metadata",
-			runtimeDriver:    sandboxruntime.DriverSSHMachine,
+			runtime:          sandboxruntime.RuntimeState{Driver: sandboxruntime.DriverSSHMachine},
 			wantID:           sandboxruntime.DriverSSHMachine,
 			wantProviderCall: true,
-			assertType: func(t *testing.T, driver sandboxruntime.Driver) {
-				t.Helper()
-				if _, ok := driver.(*sshmachine.Driver); !ok {
-					t.Fatalf("driver type = %T, want *sshmachine.Driver", driver)
-				}
-			},
 		},
 		{
-			name:          "explicit rootless Podman metadata",
-			runtimeDriver: sandboxruntime.DriverRootlessPodman,
-			wantID:        sandboxruntime.DriverRootlessPodman,
-			assertType: func(t *testing.T, driver sandboxruntime.Driver) {
-				t.Helper()
-				if _, ok := driver.(*rootlesspodman.Driver); !ok {
-					t.Fatalf("driver type = %T, want *rootlesspodman.Driver", driver)
-				}
-			},
+			name:    "explicit rootless Podman metadata",
+			runtime: sandboxruntime.RuntimeState{Driver: sandboxruntime.DriverRootlessPodman},
+			wantID:  sandboxruntime.DriverRootlessPodman,
+		},
+		{
+			name:             "worker metadata without runtime driver",
+			runtime:          sandboxruntime.RuntimeState{WorkerID: "worker-001", RuntimeID: "runtime-dev"},
+			wantID:           sandboxruntime.DriverSSHMachine,
+			wantProviderCall: true,
+		},
+		{
+			name:             "worker-looking runtime driver string",
+			runtime:          sandboxruntime.RuntimeState{Driver: "worker_backed", WorkerID: "worker-001"},
+			wantID:           sandboxruntime.DriverSSHMachine,
+			wantProviderCall: true,
 		},
 	}
 
@@ -98,9 +105,7 @@ func TestExistingSandboxExecutionDefaultResolversStayInactiveForWorkerAdapter(t 
 
 				driver, err := resolver.build(resolveProvider)(sandboxruntime.Target{
 					Provider: "test-provider",
-					Runtime: sandboxruntime.RuntimeState{
-						Driver: scenario.runtimeDriver,
-					},
+					Runtime:  scenario.runtime,
 				})
 				if err != nil {
 					t.Fatalf("resolveRuntimeDriver() error = %v", err)
@@ -114,7 +119,6 @@ func TestExistingSandboxExecutionDefaultResolversStayInactiveForWorkerAdapter(t 
 				if _, ok := driver.(*sandboxworker.ClientDriver); ok {
 					t.Fatalf("driver type = %T, want existing sandbox execution defaults to stay worker-inactive", driver)
 				}
-				scenario.assertType(t, driver)
 
 				if scenario.wantProviderCall && providerCalls != 1 {
 					t.Fatalf("resolveProvider calls = %d, want 1", providerCalls)
@@ -125,4 +129,91 @@ func TestExistingSandboxExecutionDefaultResolversStayInactiveForWorkerAdapter(t 
 			})
 		}
 	}
+}
+
+func TestClientDriverSelectedOnlyWhenExplicitlyConstructed(t *testing.T) {
+	driver, err := sandboxworker.NewClientDriver(sandboxworker.ClientDriverOptions{
+		DriverID: "fake_worker_runtime",
+		Client:   fakeWorkerRuntimeDriverClient{},
+	})
+	if err != nil {
+		t.Fatalf("NewClientDriver() error: %v", err)
+	}
+	if driver == nil || driver.ID() != "fake_worker_runtime" {
+		t.Fatalf("worker driver = %#v, want explicitly constructed fake_worker_runtime adapter", driver)
+	}
+}
+
+type fakeRuntimeResolverDriver struct {
+	id string
+}
+
+func (driver fakeRuntimeResolverDriver) ID() string {
+	return driver.id
+}
+
+func (fakeRuntimeResolverDriver) Create(context.Context, sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+	return nil, nil
+}
+
+func (fakeRuntimeResolverDriver) Start(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	return &req.Target, nil
+}
+
+func (fakeRuntimeResolverDriver) Stop(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	return &req.Target, nil
+}
+
+func (fakeRuntimeResolverDriver) Delete(context.Context, sandboxruntime.LifecycleRequest) error {
+	return nil
+}
+
+func (fakeRuntimeResolverDriver) Inspect(_ context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+	return &req.Target, nil
+}
+
+func (fakeRuntimeResolverDriver) Exec(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+	return &sandboxruntime.ExecResult{}, nil
+}
+
+func (fakeRuntimeResolverDriver) CopyIn(context.Context, sandboxruntime.CopyRequest) error {
+	return nil
+}
+
+func (fakeRuntimeResolverDriver) CopyOut(context.Context, sandboxruntime.CopyRequest) error {
+	return nil
+}
+
+type fakeWorkerRuntimeDriverClient struct{}
+
+func (fakeWorkerRuntimeDriverClient) Create(context.Context, string, sandboxworker.CreateRequest) (*sandboxworker.Target, error) {
+	return nil, nil
+}
+
+func (fakeWorkerRuntimeDriverClient) Start(context.Context, string, sandboxworker.LifecycleRequest) (*sandboxworker.Target, error) {
+	return nil, nil
+}
+
+func (fakeWorkerRuntimeDriverClient) Stop(context.Context, string, sandboxworker.LifecycleRequest) (*sandboxworker.Target, error) {
+	return nil, nil
+}
+
+func (fakeWorkerRuntimeDriverClient) Delete(context.Context, string, sandboxworker.LifecycleRequest) error {
+	return nil
+}
+
+func (fakeWorkerRuntimeDriverClient) Inspect(context.Context, string, sandboxworker.InspectRequest) (*sandboxworker.Target, error) {
+	return nil, nil
+}
+
+func (fakeWorkerRuntimeDriverClient) Exec(context.Context, string, sandboxworker.ExecRequest) (*sandboxworker.ExecResponse, error) {
+	return nil, nil
+}
+
+func (fakeWorkerRuntimeDriverClient) CopyIn(context.Context, string, sandboxworker.CopyInRequest) (*sandboxworker.CopyInResponse, error) {
+	return nil, nil
+}
+
+func (fakeWorkerRuntimeDriverClient) CopyOut(context.Context, string, sandboxworker.CopyOutRequest) (*sandboxworker.CopyOutResponse, error) {
+	return nil, nil
 }

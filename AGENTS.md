@@ -50,6 +50,7 @@
 - Worker `ClientDriver.Exec` forwarding lives in `internal/sandboxworker/adapter.go`; convert runtime exec requests into bounded worker exec payloads, read stdin with `io.LimitReader(MaxExecStdinBytes+1)` before dispatch, request max stdout/stderr capture limits, write returned bounded output into provided runtime writers, and surface embedded worker errors or truncation through sanitized `ClientDriverError` while returning the exit result.
 - Worker `ClientDriver.CopyIn`/`CopyOut` forwarding lives in `internal/sandboxworker/adapter.go`; read copy-in sources with `io.LimitReader(MaxCopyInPayloadBytes+1)` before dispatch, send copy payloads through bounded base64 protocol fields, materialize successful copy-out payloads to the requested local destination, and avoid writing partial copy-out files when worker errors or truncation occur.
 - Worker I/O local socket round-trip coverage belongs in `internal/sandboxworker/client_test.go`; use fake driver-backed `Service`/`Server` instances plus short `/tmp` socket paths, and keep the tests free of real runtime providers, network egress, or credential material.
+- Default sandbox runtime resolver wiring lives in `cmd/sandbox_runtime_compat.go`; keep run/auto/factory defaults limited to SSH-machine or explicit rootless Podman metadata, keep worker-backed `sandboxworker.ClientDriver` construction opt-in only, and use fake runtime-driver factories in regression tests instead of constructing concrete adapters.
 
 ## Patterns from phase13-sandboxd-self-hosted-worker-daemon-foundation (2026-07-01)
 
