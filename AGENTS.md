@@ -41,6 +41,7 @@
 
 - Runtime-driver boundary contracts live in `internal/sandboxruntime`; keep this package command-agnostic by using package-local target/request types and only standard-library dependencies.
 - The root `internal/sandboxruntime` package has an import-boundary test that scans production Go files and forbids Cobra, `cmd`, `internal/factory`, `internal/prd`, `internal/compound`, and `internal/loop`; put provider/runtime adapters outside the root contracts package.
+- SSH-machine runtime adapter code lives in `internal/sandboxruntime/sshmachine`; preserve legacy target resolution by deriving provider inputs through `sandbox.ConnectInfoFromState`, and wrap provider lifecycle failures in typed errors that keep operation name, driver ID, and the underlying provider error.
 
 ## Patterns from local-factory-queue-storage (2026-06-21)
 
