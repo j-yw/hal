@@ -7,7 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"os"
+	"os/exec"
+	"sort"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/jywlabs/hal/internal/sandbox"
@@ -15,6 +19,7 @@ import (
 )
 
 var ErrProviderRequired = errors.New("sandbox provider is required")
+var ErrExecCommandRequired = errors.New("sandbox provider returned nil exec command")
 
 // Driver adapts the existing SSH-machine sandbox.Provider lifecycle behavior
 // to the sandboxruntime boundary.
@@ -149,6 +154,30 @@ func (d *Driver) Inspect(ctx context.Context, req sandboxruntime.InspectRequest)
 	return &target, nil
 }
 
+func (d *Driver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+	provider, err := d.providerFor("exec")
+	if err != nil {
+		return nil, err
+	}
+
+	info := connectInfoFromTarget(req.Target)
+	cmd, err := provider.Exec(info, append([]string(nil), req.Args...))
+	if err != nil {
+		return nil, operationError("exec", err)
+	}
+	if cmd == nil {
+		return nil, operationError("exec", ErrExecCommandRequired)
+	}
+
+	configureExecCommand(cmd, req)
+	exitCode, err := runExecCommandContext(ctx, cmd)
+	result := &sandboxruntime.ExecResult{ExitCode: exitCode}
+	if err != nil {
+		return result, operationError("exec", err)
+	}
+	return result, nil
+}
+
 func (d *Driver) providerFor(operation string) (sandbox.Provider, error) {
 	if d == nil || d.provider == nil {
 		return nil, operationError(operation, ErrProviderRequired)
@@ -175,6 +204,131 @@ func lifecycleWriter(stdout, stderr io.Writer) io.Writer {
 		return stderr
 	}
 	return io.Discard
+}
+
+func configureExecCommand(cmd *exec.Cmd, req sandboxruntime.ExecRequest) {
+	if req.Stdin != nil {
+		cmd.Stdin = req.Stdin
+	}
+	if req.WorkDir != "" {
+		cmd.Dir = req.WorkDir
+	}
+	applyExecEnvironment(cmd, req.Env)
+
+	stdout := req.Stdout
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	stderr := req.Stderr
+	if stderr == nil {
+		stderr = stdout
+	}
+	mu := &sync.Mutex{}
+	cmd.Stdout = &execLockedWriter{mu: mu, dst: stdout}
+	cmd.Stderr = &execLockedWriter{mu: mu, dst: stderr}
+}
+
+func applyExecEnvironment(cmd *exec.Cmd, env map[string]string) {
+	if cmd == nil || len(env) == 0 {
+		return
+	}
+
+	merged := append([]string(nil), cmd.Env...)
+	if len(merged) == 0 {
+		merged = os.Environ()
+	}
+	indexByKey := make(map[string]int, len(merged))
+	for i, value := range merged {
+		key, _, ok := strings.Cut(value, "=")
+		if ok {
+			indexByKey[key] = i
+		}
+	}
+	for _, key := range sortedMapKeys(env) {
+		assignment := key + "=" + env[key]
+		if index, ok := indexByKey[key]; ok {
+			merged[index] = assignment
+			continue
+		}
+		indexByKey[key] = len(merged)
+		merged = append(merged, assignment)
+	}
+	cmd.Env = merged
+}
+
+func sortedMapKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func runExecCommandContext(ctx context.Context, cmd *exec.Cmd) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return -1, err
+	}
+	if err := cmd.Start(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return -1, ctxErr
+		}
+		return -1, err
+	}
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-waitCh:
+		return execExitCode(cmd, err), err
+	case <-ctx.Done():
+		if cmd.Cancel != nil {
+			if err := cmd.Cancel(); err != nil && cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+		} else if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		waitErr := <-waitCh
+		return execExitCode(cmd, waitErr), errors.Join(ctx.Err(), waitErr)
+	}
+}
+
+func execExitCode(cmd *exec.Cmd, err error) int {
+	if cmd != nil && cmd.ProcessState != nil {
+		return cmd.ProcessState.ExitCode()
+	}
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return -1
+}
+
+type execLockedWriter struct {
+	mu  *sync.Mutex
+	dst io.Writer
+}
+
+func (w *execLockedWriter) Write(p []byte) (int, error) {
+	if w == nil || w.dst == nil {
+		return len(p), nil
+	}
+	if w.mu == nil {
+		return w.dst.Write(p)
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.dst.Write(p)
 }
 
 func targetFromCreateResult(req sandboxruntime.CreateRequest, result *sandbox.SandboxResult) sandboxruntime.Target {

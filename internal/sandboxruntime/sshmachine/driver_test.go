@@ -4,11 +4,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
@@ -208,11 +213,175 @@ func TestLifecycleErrorsWrapProviderErrorsWithOperationAndDriver(t *testing.T) {
 	}
 }
 
+func TestExecDelegatesArgsAndStreamsIO(t *testing.T) {
+	ctx := context.Background()
+	provider := &recordingProvider{
+		execCommand: func(*sandbox.ConnectInfo, []string) (*exec.Cmd, error) {
+			return helperCommand("stdio"), nil
+		},
+	}
+	driver := sshmachine.New(provider)
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	workDir := t.TempDir()
+	resolvedWorkDir, err := filepath.EvalSymlinks(workDir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", workDir, err)
+	}
+	args := []string{"codex", "exec", "--json"}
+
+	result, err := driver.Exec(ctx, sandboxruntime.ExecRequest{
+		Target: sandboxruntime.Target{
+			ID:       "runtime-existing",
+			Name:     "dev",
+			Provider: "digitalocean",
+			Connection: sandboxruntime.ConnectionInfo{
+				PublicIP:    "203.0.113.10",
+				TailscaleIP: "100.64.0.10",
+			},
+		},
+		Args:    args,
+		Stdout:  stdout,
+		Stderr:  stderr,
+		Stdin:   strings.NewReader("input-data"),
+		Env:     map[string]string{"HAL_EXEC_TEST": "env-value"},
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("Exec() unexpected error: %v", err)
+	}
+	if result == nil || result.ExitCode != 0 {
+		t.Fatalf("Exec() result = %#v, want exit code 0", result)
+	}
+
+	if got := stdout.String(); got != "stdout:input-data" {
+		t.Fatalf("stdout = %q, want helper stdout with forwarded stdin", got)
+	}
+	if got, want := stderr.String(), fmt.Sprintf("stderr:env-value:%s", resolvedWorkDir); got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
+	}
+	if len(provider.calls) != 1 {
+		t.Fatalf("provider calls = %d, want 1", len(provider.calls))
+	}
+	call := provider.calls[0]
+	if call.operation != "exec" {
+		t.Fatalf("provider operation = %q, want exec", call.operation)
+	}
+	if !reflect.DeepEqual(call.args, args) {
+		t.Fatalf("provider Exec args = %#v, want unchanged %#v", call.args, args)
+	}
+	if call.info == nil || call.info.IP != "100.64.0.10" || call.info.PublicIP != "203.0.113.10" {
+		t.Fatalf("provider Exec ConnectInfo = %#v, want preferred connection info", call.info)
+	}
+}
+
+func TestExecDefaultsStderrToStdout(t *testing.T) {
+	provider := &recordingProvider{
+		execCommand: func(*sandbox.ConnectInfo, []string) (*exec.Cmd, error) {
+			return helperCommand("stdio"), nil
+		},
+	}
+	driver := sshmachine.New(provider)
+	stdout := &bytes.Buffer{}
+
+	_, err := driver.Exec(context.Background(), sandboxruntime.ExecRequest{
+		Target: sandboxruntime.Target{Name: "dev", Connection: sandboxruntime.ConnectionInfo{Address: "203.0.113.10"}},
+		Args:   []string{"echo", "combined"},
+		Stdout: stdout,
+		Stdin:  strings.NewReader("input-data"),
+		Env:    map[string]string{"HAL_EXEC_TEST": "env-value"},
+	})
+	if err != nil {
+		t.Fatalf("Exec() unexpected error: %v", err)
+	}
+	got := stdout.String()
+	if !strings.Contains(got, "stdout:input-data") || !strings.Contains(got, "stderr:env-value:") {
+		t.Fatalf("combined output = %q, want stdout and stderr routed to stdout", got)
+	}
+}
+
+func TestExecCancellationUnwrapsContextErrors(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		context func() (context.Context, context.CancelFunc)
+		trigger func(context.CancelFunc)
+		want    error
+	}{
+		{
+			name: "canceled",
+			context: func() (context.Context, context.CancelFunc) {
+				return context.WithCancel(context.Background())
+			},
+			trigger: func(cancel context.CancelFunc) {
+				cancel()
+			},
+			want: context.Canceled,
+		},
+		{
+			name: "deadline",
+			context: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 50*time.Millisecond)
+			},
+			trigger: func(context.CancelFunc) {},
+			want:    context.DeadlineExceeded,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := &recordingProvider{
+				execCommand: func(*sandbox.ConnectInfo, []string) (*exec.Cmd, error) {
+					return helperCommand("wait"), nil
+				},
+			}
+			driver := sshmachine.New(provider)
+			ctx, cancel := tt.context()
+			defer cancel()
+			stdout := newNotifyingBuffer("started")
+			done := make(chan error, 1)
+
+			go func() {
+				_, err := driver.Exec(ctx, sandboxruntime.ExecRequest{
+					Target: sandboxruntime.Target{Name: "dev", Connection: sandboxruntime.ConnectionInfo{Address: "203.0.113.10"}},
+					Args:   []string{"sleep", "forever"},
+					Stdout: stdout,
+				})
+				done <- err
+			}()
+
+			select {
+			case <-stdout.seen:
+			case <-time.After(2 * time.Second):
+				t.Fatal("Exec() helper did not start")
+			}
+			tt.trigger(cancel)
+
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("Exec() error = nil, want cancellation error")
+				}
+				if !errors.Is(err, tt.want) {
+					t.Fatalf("Exec() error = %v, want errors.Is %v", err, tt.want)
+				}
+				var opErr *sshmachine.OperationError
+				if !errors.As(err, &opErr) {
+					t.Fatalf("errors.As(%T) = false, want true", opErr)
+				}
+				if opErr.Driver != sandboxruntime.DriverSSHMachine || opErr.Operation != "exec" {
+					t.Fatalf("OperationError = %#v, want exec error for ssh_machine", opErr)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("Exec() did not return after context cancellation")
+			}
+		})
+	}
+}
+
 type lifecycleCall struct {
 	operation string
 	name      string
 	env       map[string]string
 	info      *sandbox.ConnectInfo
+	args      []string
 	out       io.Writer
 }
 
@@ -223,6 +392,7 @@ type recordingProvider struct {
 	statusOutput   string
 	errByOperation map[string]error
 	onStart        func(*sandbox.ConnectInfo)
+	execCommand    func(*sandbox.ConnectInfo, []string) (*exec.Cmd, error)
 }
 
 func (p *recordingProvider) Create(ctx context.Context, name string, env map[string]string, out io.Writer) (*sandbox.SandboxResult, error) {
@@ -259,7 +429,14 @@ func (p *recordingProvider) SSH(info *sandbox.ConnectInfo) (*exec.Cmd, error) {
 }
 
 func (p *recordingProvider) Exec(info *sandbox.ConnectInfo, args []string) (*exec.Cmd, error) {
-	return nil, errors.New("not implemented")
+	p.calls = append(p.calls, lifecycleCall{operation: "exec", info: cloneConnectInfo(info), args: append([]string(nil), args...)})
+	if err := p.errByOperation["exec"]; err != nil {
+		return nil, err
+	}
+	if p.execCommand == nil {
+		return nil, errors.New("not implemented")
+	}
+	return p.execCommand(info, args)
 }
 
 func (p *recordingProvider) Status(ctx context.Context, info *sandbox.ConnectInfo, out io.Writer) error {
@@ -287,4 +464,71 @@ func cloneConnectInfo(info *sandbox.ConnectInfo) *sandbox.ConnectInfo {
 	}
 	cloned := *info
 	return &cloned
+}
+
+func helperCommand(mode string) *exec.Cmd {
+	cmd := exec.Command(os.Args[0], "-test.run=TestSSHMachineExecHelper", "--", mode)
+	cmd.Env = append(os.Environ(), "HAL_SSHMACHINE_EXEC_HELPER=1")
+	return cmd
+}
+
+func TestSSHMachineExecHelper(t *testing.T) {
+	if os.Getenv("HAL_SSHMACHINE_EXEC_HELPER") != "1" {
+		return
+	}
+	mode := ""
+	for i, arg := range os.Args {
+		if arg == "--" && i+1 < len(os.Args) {
+			mode = os.Args[i+1]
+			break
+		}
+	}
+	switch mode {
+	case "stdio":
+		input, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read stdin: %v", err)
+			os.Exit(2)
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "get cwd: %v", err)
+			os.Exit(2)
+		}
+		fmt.Fprintf(os.Stdout, "stdout:%s", input)
+		fmt.Fprintf(os.Stderr, "stderr:%s:%s", os.Getenv("HAL_EXEC_TEST"), cwd)
+		os.Exit(0)
+	case "wait":
+		fmt.Fprintln(os.Stdout, "started")
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown helper mode %q", mode)
+		os.Exit(2)
+	}
+}
+
+type notifyingBuffer struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	pattern string
+	seen    chan struct{}
+	once    sync.Once
+}
+
+func newNotifyingBuffer(pattern string) *notifyingBuffer {
+	return &notifyingBuffer{pattern: pattern, seen: make(chan struct{})}
+}
+
+func (b *notifyingBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	n, err := b.buf.Write(p)
+	text := b.buf.String()
+	b.mu.Unlock()
+	if strings.Contains(text, b.pattern) {
+		b.once.Do(func() {
+			close(b.seen)
+		})
+	}
+	return n, err
 }
