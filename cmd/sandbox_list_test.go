@@ -986,6 +986,67 @@ func TestRunSandboxList_JSON_Structure(t *testing.T) {
 	}
 }
 
+func TestRunSandboxListJSONPreservesV1ContractForRootlessPodmanRuntime(t *testing.T) {
+	setupListTest(t)
+
+	now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+	sandboxListNow = func() time.Time { return now }
+	t.Cleanup(func() { sandboxListNow = func() time.Time { return time.Now() } })
+
+	writeInstance(t, &sandbox.SandboxState{
+		ID:        "019579a1-0000-7000-8000-000000000011",
+		Name:      "podman-dev",
+		Provider:  "local",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: now.Add(-2 * time.Hour),
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandbox.SandboxRuntimeDriverRootlessPodman,
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+			RuntimeID:      "podman-container-1",
+			Image:          "ghcr.io/example/hal-dev:latest",
+		},
+		Security: &sandbox.SandboxSecurity{
+			Network: &sandbox.SandboxNetworkSecurity{
+				PolicyRequested: sandbox.SandboxNetworkPolicyDenyByDefault,
+				PolicyEnforced:  sandbox.SandboxNetworkPolicyBestEffort,
+				EnforcementMode: sandbox.SandboxNetworkEnforcementModeNone,
+			},
+		},
+	})
+
+	var buf bytes.Buffer
+	if err := runSandboxList(&buf, true, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+		t.Fatalf("JSON parse error: %v\nraw: %s", err, buf.String())
+	}
+	if raw["contractVersion"] != "sandbox-list-v1" {
+		t.Fatalf("contractVersion = %v, want sandbox-list-v1", raw["contractVersion"])
+	}
+
+	sandboxes, ok := raw["sandboxes"].([]interface{})
+	if !ok || len(sandboxes) != 1 {
+		t.Fatalf("sandboxes = %#v, want one entry", raw["sandboxes"])
+	}
+	entry, ok := sandboxes[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("sandbox entry = %#v, want object", sandboxes[0])
+	}
+	for _, field := range []string{"id", "name", "provider", "status", "createdAt"} {
+		if _, ok := entry[field]; !ok {
+			t.Errorf("sandbox-list-v1 entry missing required field %q", field)
+		}
+	}
+	for _, field := range []string{"runtime", "security", "isolationLevel"} {
+		if _, ok := entry[field]; ok {
+			t.Errorf("sandbox-list-v1 entry unexpectedly includes %q: %#v", field, entry[field])
+		}
+	}
+}
+
 func TestRunSandboxList_JSON_RequiredFieldKeys(t *testing.T) {
 	setupListTest(t)
 

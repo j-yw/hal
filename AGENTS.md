@@ -37,6 +37,11 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase12-rootless-podman-local-runtime-driver-for-hal-sandbox-runtime-v2 (2026-07-01)
+
+- Preserve the `hal sandbox list --json` `sandbox-list-v1` contract when adding Sandbox Runtime v2 metadata: required entry fields stay `id`, `name`, `provider`, `status`, and `createdAt`, and runtime/security/isolation metadata should not be added to this list surface without a contract version change.
+- Human `hal sandbox status NAME` output for `rootless_podman` states must not imply VM isolation, production defaults, or production-ready security posture; keep lower-isolation/rootless claims on factory status metadata and docs where explicitly modeled.
+
 ## Patterns from phase/sandbox-runtime-v2-10-workspace-sync (2026-06-30)
 
 - Workspace sync contracts live in `internal/sandboxworkspace/sync.go`; keep the core sync surface command-agnostic with package-local request/result/target types and narrow `LocalGit`/`RemoteClient` interfaces rather than Cobra, factory records, or concrete provider/runtime adapters.
