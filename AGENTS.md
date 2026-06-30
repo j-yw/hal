@@ -46,6 +46,7 @@
 - Worker status/capability generation belongs in `sandboxworker.Service`: derive supported driver IDs from `DriverRegistry`, keep top-level supported operations conservative until handlers exist for them, and use fake drivers plus honest security metadata in tests.
 - `sandboxworker.Service` is the `RequestHandler` for status/capability socket operations; valid-but-unimplemented worker operations should return structured `unsupported_operation` errors, while canceled/deadline-exceeded contexts should return structured protocol errors.
 - Worker socket transport belongs in `sandboxworker.Server` with an injected `RequestHandler`: keep the transport limited to local Unix sockets, request validation, structured protocol errors, and context-aware shutdown while operation dispatch stays behind handler/service code.
+- Worker client calls belong behind `sandboxworker.Client` and `ClientTransport`: keep local transport Unix-only, one JSON request/response per connection, context-aware, and sanitize connection/protocol error details before they cross command or persistence boundaries.
 - Unix socket tests should allocate short socket paths, such as `os.MkdirTemp("/tmp", ...)`, because macOS rejects long `t.TempDir()`-derived socket paths with `bind: invalid argument`.
 
 ## Patterns from phase12-rootless-podman-local-runtime-driver-for-hal-sandbox-runtime-v2 (2026-07-01)
