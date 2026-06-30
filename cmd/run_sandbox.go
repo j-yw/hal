@@ -915,11 +915,11 @@ func saveRunSandboxManifest(store sandboxexecution.Store, req runSandboxRequest,
 	if manifest.Security == nil {
 		manifest.Security = cloneSandboxSecurity(sandbox.EvaluateSandboxSecurity(req.Security))
 	}
-	preserveRunSandboxManifestArtifacts(store, manifest)
+	preserveSandboxManifestArtifacts(store, manifest)
 	return store.SaveManifest(manifest)
 }
 
-func preserveRunSandboxManifestArtifacts(store sandboxexecution.Store, manifest *sandboxexecution.Manifest) {
+func preserveSandboxManifestArtifacts(store sandboxexecution.Store, manifest *sandboxexecution.Manifest) {
 	if manifest == nil || strings.TrimSpace(manifest.ID) == "" {
 		return
 	}

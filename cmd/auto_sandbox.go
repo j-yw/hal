@@ -69,6 +69,7 @@ type autoSandboxRequest struct {
 
 type autoSandboxExecutionResult struct {
 	Result          *sandboxexec.Result
+	RuntimeDriver   sandboxruntime.Driver
 	RemoteStarted   bool
 	PreparedCommand []string
 }
@@ -255,6 +256,12 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 		}
 	}
 
+	if execErr == nil {
+		if collectErr := collectAutoSandboxCoreStateArtifacts(ctx, store, req, execResult); collectErr != nil {
+			execErr = collectErr
+		}
+	}
+
 	finishedAt := deps.now().UTC()
 	status := sandboxexecution.StatusSucceeded
 	if execErr != nil {
@@ -391,6 +398,7 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 	}
 	var remoteStarted bool
 	var preparedCommand []string
+	var runtimeDriver sandboxruntime.Driver
 	var provider sandbox.Provider
 	ensureProvider := func(providerName string) (sandbox.Provider, error) {
 		if provider != nil {
@@ -421,7 +429,11 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 			return deps.startSandbox(ctx, target, prepOut)
 		},
 		ResolveDriver: func(_ context.Context, target sandboxruntime.Target) (sandboxruntime.Driver, error) {
-			return deps.resolveRuntimeDriver(target.Provider)
+			driver, err := deps.resolveRuntimeDriver(target.Provider)
+			if err == nil {
+				runtimeDriver = driver
+			}
+			return driver, err
 		},
 		OnTargetReady: func(_ context.Context, target *sandbox.SandboxState) error {
 			if hooks.OnTargetReady == nil {
@@ -481,7 +493,30 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 			return nil
 		},
 	})
-	return autoSandboxExecutionResult{Result: result, RemoteStarted: remoteStarted, PreparedCommand: preparedCommand}, err
+	return autoSandboxExecutionResult{
+		Result:          result,
+		RuntimeDriver:   runtimeDriver,
+		RemoteStarted:   remoteStarted,
+		PreparedCommand: preparedCommand,
+	}, err
+}
+
+func collectAutoSandboxCoreStateArtifacts(ctx context.Context, store sandboxexecution.Store, req autoSandboxRequest, result autoSandboxExecutionResult) error {
+	if result.Result == nil || result.RuntimeDriver == nil {
+		return nil
+	}
+	_, err := sandboxexecution.CollectCoreStateArtifacts(ctx, sandboxexecution.CoreStateCollectionRequest{
+		ExecutionID:        req.ExecutionID,
+		Store:              store,
+		Runtime:            result.RuntimeDriver,
+		Target:             result.Result.Target,
+		Purpose:            sandboxexecution.PurposeAuto,
+		RemoteWorkspaceDir: req.WorkDir,
+	})
+	if err != nil {
+		return fmt.Errorf("collect auto sandbox core state artifacts: %w", err)
+	}
+	return nil
 }
 
 func (deps autoSandboxDeps) resolveAutoSandboxTarget(ctx context.Context, req autoSandboxRequest, out io.Writer) (*sandbox.SandboxState, error) {
@@ -601,6 +636,7 @@ func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxReques
 	if manifest.Security == nil {
 		manifest.Security = cloneSandboxSecurity(sandbox.EvaluateSandboxSecurity(req.Security))
 	}
+	preserveSandboxManifestArtifacts(store, manifest)
 	return store.SaveManifest(manifest)
 }
 
