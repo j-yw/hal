@@ -94,6 +94,7 @@
 - `hal run --sandbox` remote command execution goes through `runSandboxDeps.resolveRuntimeDriver` and `sandboxruntime.Driver.Exec`; keep provider-backed compatibility helpers scoped to workspace bootstrap/auth sync until those preparation paths are migrated.
 - `hal auto --sandbox` remote command execution goes through `autoSandboxDeps.resolveRuntimeDriver` and `sandboxruntime.Driver.Exec`; keep provider-backed compatibility helpers scoped to workspace bootstrap, auth sync, and input-copy preparation until those paths are migrated.
 - Factory sandbox final remote command execution goes through `factorySandboxExecutorDeps.resolveRuntimeDriver` and `sandboxruntime.Driver.Exec`; keep provider-backed compatibility helpers scoped to workspace bootstrap, auth sync, input-copy preparation, and cleanup until those paths are migrated.
+- Factory sandbox runtime-driver resolution should receive the full `sandboxruntime.Target` and use the shared `sandboxRuntimeDriverFromTarget` helper so explicit `rootless_podman` metadata selects the rootless adapter while absent or `ssh_machine` metadata preserves SSH-machine behavior.
 - Factory sandbox runtime exec preserves SSH-machine working-directory compatibility by embedding `cd <remote workspace>` in the shell command from `factorySandboxRemoteCommandArgs`; do not set `sandboxruntime.ExecRequest.WorkDir` for that final remote auto command unless intentionally changing legacy behavior.
 
 ## Patterns from local-factory-queue-storage (2026-06-21)

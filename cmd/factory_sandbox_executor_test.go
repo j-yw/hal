@@ -55,9 +55,66 @@ func TestFactorySandboxExecutorDepsExposeRuntimeDriverResolver(t *testing.T) {
 	if !ok {
 		t.Fatal("factorySandboxExecutorDeps missing resolveRuntimeDriver")
 	}
-	want := reflect.TypeOf((func(string) (sandboxruntime.Driver, error))(nil))
+	want := reflect.TypeOf((func(sandboxruntime.Target) (sandboxruntime.Driver, error))(nil))
 	if field.Type != want {
 		t.Fatalf("resolveRuntimeDriver type = %v, want %v", field.Type, want)
+	}
+}
+
+func TestFactorySandboxDefaultRuntimeDriverResolverSelectsRootlessPodmanFromTargetMetadata(t *testing.T) {
+	deps := normalizeFactorySandboxExecutorDeps(factorySandboxExecutorDeps{
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			t.Fatal("resolveProvider should not run for explicit rootless Podman runtime metadata")
+			return nil, nil
+		},
+	})
+	driver, err := deps.resolveRuntimeDriver(sandboxruntime.Target{
+		Provider: "local",
+		Runtime: sandboxruntime.RuntimeState{
+			Driver: sandboxruntime.DriverRootlessPodman,
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolveRuntimeDriver() error = %v", err)
+	}
+	if driver == nil || driver.ID() != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("driver = %#v, want rootless Podman driver", driver)
+	}
+}
+
+func TestFactorySandboxDefaultRuntimeDriverResolverKeepsSSHMachineForAbsentOrExplicitSSHMetadata(t *testing.T) {
+	tests := []struct {
+		name          string
+		runtimeDriver string
+	}{
+		{name: "absent runtime driver"},
+		{name: "explicit SSH-machine runtime driver", runtimeDriver: sandboxruntime.DriverSSHMachine},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var providerName string
+			deps := normalizeFactorySandboxExecutorDeps(factorySandboxExecutorDeps{
+				resolveProvider: func(name string) (sandbox.Provider, error) {
+					providerName = name
+					return fakeFactorySandboxProvider{}, nil
+				},
+			})
+			driver, err := deps.resolveRuntimeDriver(sandboxruntime.Target{
+				Provider: "test-provider",
+				Runtime: sandboxruntime.RuntimeState{
+					Driver: tt.runtimeDriver,
+				},
+			})
+			if err != nil {
+				t.Fatalf("resolveRuntimeDriver() error = %v", err)
+			}
+			if providerName != "test-provider" {
+				t.Fatalf("providerName = %q, want test-provider", providerName)
+			}
+			if driver == nil || driver.ID() != sandboxruntime.DriverSSHMachine {
+				t.Fatalf("driver = %#v, want SSH-machine driver", driver)
+			}
+		})
 	}
 }
 
@@ -593,10 +650,13 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 			}
 			return fakeFactorySandboxProvider{}, nil
 		},
-		resolveRuntimeDriver: func(providerName string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(target sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			calls = append(calls, "driver")
-			if providerName != "daytona" {
-				t.Fatalf("runtime providerName = %q, want daytona", providerName)
+			if target.Provider != "daytona" {
+				t.Fatalf("runtime target provider = %q, want daytona", target.Provider)
+			}
+			if target.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+				t.Fatalf("runtime target driver = %q, want %q", target.Runtime.Driver, sandboxruntime.DriverSSHMachine)
 			}
 			return fakeFactorySandboxRuntimeDriver{execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 				calls = append(calls, "runtime_exec")
@@ -766,9 +826,12 @@ func TestRunFactorySandboxExecutorRuntimeBoundaryRegressionMatchesSSHMachineBeha
 			}
 			return fakeFactorySandboxProvider{}, nil
 		},
-		resolveRuntimeDriver: func(providerName string) (sandboxruntime.Driver, error) {
-			if providerName != "daytona" {
-				t.Fatalf("runtime providerName = %q, want daytona", providerName)
+		resolveRuntimeDriver: func(target sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			if target.Provider != "daytona" {
+				t.Fatalf("runtime target provider = %q, want daytona", target.Provider)
+			}
+			if target.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+				t.Fatalf("runtime target driver = %q, want %q", target.Runtime.Driver, sandboxruntime.DriverSSHMachine)
 			}
 			resolvedDriverID = driver.ID()
 			return driver, nil
@@ -815,6 +878,95 @@ func TestRunFactorySandboxExecutorRuntimeBoundaryRegressionMatchesSSHMachineBeha
 	}
 }
 
+func TestRunFactorySandboxExecutorUsesRootlessPodmanRuntimeMetadataForDriverResolution(t *testing.T) {
+	now := time.Date(2026, 6, 30, 13, 0, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{
+		Name:     "factory-rootless",
+		Provider: "local",
+		Status:   sandbox.StatusRunning,
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandbox.SandboxRuntimeDriverRootlessPodman,
+			RuntimeID:      "container-123",
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+		},
+	}
+	record := factory.RunRecord{
+		RunID:      "run-rootless-runtime",
+		RepoRemote: "git@github.com:example/repo.git",
+		BaseBranch: "main",
+		BranchName: "hal/rootless-runtime",
+	}
+
+	var resolvedTarget sandboxruntime.Target
+	var gotExecTarget sandboxruntime.Target
+	var savedRecords []factory.RunRecord
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		ProjectDir:   t.TempDir(),
+		SandboxName:  "factory-rootless",
+		RunRecord:    record,
+		RemoteAuto:   factoryRunAutoRequest{BaseBranch: "main"},
+		RemoteOutput: io.Discard,
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		now:          func() time.Time { return now },
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != "factory-rootless" {
+				t.Fatalf("load sandbox name = %q, want factory-rootless", name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(providerName string) (sandbox.Provider, error) {
+			if providerName != "local" {
+				t.Fatalf("providerName = %q, want local", providerName)
+			}
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(target sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			resolvedTarget = target
+			return fakeFactorySandboxRuntimeDriver{
+				id: sandboxruntime.DriverRootlessPodman,
+				execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+					gotExecTarget = req.Target
+					return &sandboxruntime.ExecResult{}, nil
+				},
+			}, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile { return nil },
+		bootstrap: func(_ context.Context, req factory.BootstrapRequest, _ factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			if req.WorkspaceDir != factorySandboxRemoteWorkspaceDir(record) {
+				t.Fatalf("bootstrap workspace dir = %q, want %q", req.WorkspaceDir, factorySandboxRemoteWorkspaceDir(record))
+			}
+			return factory.BootstrapResult{}, nil
+		},
+		saveRun: func(_ factory.Store, record *factory.RunRecord) error {
+			savedRecords = append(savedRecords, *record)
+			return nil
+		},
+		appendEvent: func(factory.Store, *factory.EventRecord) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+
+	if resolvedTarget.Runtime.Driver != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("resolved target runtime driver = %q, want %q", resolvedTarget.Runtime.Driver, sandboxruntime.DriverRootlessPodman)
+	}
+	if resolvedTarget.Runtime.RuntimeID != "container-123" || resolvedTarget.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelContainer {
+		t.Fatalf("resolved target runtime metadata = %#v", resolvedTarget.Runtime)
+	}
+	if gotExecTarget.Runtime.Driver != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("exec target runtime driver = %q, want %q", gotExecTarget.Runtime.Driver, sandboxruntime.DriverRootlessPodman)
+	}
+	if len(savedRecords) < 2 || savedRecords[1].Sandbox == nil {
+		t.Fatalf("saved records missing sandbox metadata: %#v", savedRecords)
+	}
+	sandboxMetadata := savedRecords[1].Sandbox
+	if sandboxMetadata.SSHCommand != "hal sandbox ssh factory-rootless" || sandboxMetadata.CleanupCommand != "hal sandbox delete factory-rootless" {
+		t.Fatalf("handoff metadata = %#v", sandboxMetadata)
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecution(t *testing.T) {
 	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
 	store := factory.NewStore(t.TempDir())
@@ -849,7 +1001,7 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecuti
 			calls = append(calls, "provider")
 			return fakeFactorySandboxProvider{}, nil
 		},
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			calls = append(calls, "driver")
 			return fakeFactorySandboxRuntimeDriver{execFn: func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 				calls = append(calls, "runtime_exec")
@@ -1133,7 +1285,7 @@ func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToBootstrapEnviro
 		now:             func() time.Time { return now },
 		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
 		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return fakeFactorySandboxRuntimeDriver{execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 				envCopy := map[string]string{}
 				for key, value := range req.Env {
@@ -1284,7 +1436,7 @@ func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToRemoteExecution
 		now:             func() time.Time { return now },
 		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
 		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return fakeFactorySandboxRuntimeDriver{execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 				gotArgs = append([]string(nil), req.Args...)
 				gotEnv = map[string]string{}
@@ -1364,7 +1516,7 @@ func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromRemoteOutput
 		now:             func() time.Time { return now },
 		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
 		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return fakeFactorySandboxRuntimeDriver{execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 				if req.Env["GITHUB_TOKEN"] != secret {
 					t.Fatalf("GITHUB_TOKEN env = %q, want secret", req.Env["GITHUB_TOKEN"])
@@ -1439,7 +1591,7 @@ func TestRunFactorySandboxExecutorWithDepsRedactsCredentialedRemoteURLsFromRemot
 		now:             func() time.Time { return now },
 		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
 		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return fakeFactorySandboxRuntimeDriver{execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 				_, err := io.WriteString(req.Stdout, "fatal: unable to access https://x:"+credential+"@github.com/example/repo.git\n")
 				return &sandboxruntime.ExecResult{}, err
@@ -1507,7 +1659,7 @@ func TestRunFactorySandboxExecutorWithDepsRedactsSecretAssignmentsFromRemoteTime
 		now:             func() time.Time { return now },
 		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
 		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return fakeFactorySandboxRuntimeDriver{execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 				_, err := io.WriteString(req.Stdout, "TOKEN=undeclared_remote_secret\n")
 				return &sandboxruntime.ExecResult{}, err
@@ -1584,7 +1736,7 @@ func TestRunFactorySandboxExecutorWithDepsRedactsMultilineSecretsFromRemoteOutpu
 		now:             func() time.Time { return now },
 		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
 		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return fakeFactorySandboxRuntimeDriver{execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 				if req.Env["PRIVATE_KEY"] != secret {
 					t.Fatalf("PRIVATE_KEY env = %q, want secret", req.Env["PRIVATE_KEY"])
@@ -1656,7 +1808,7 @@ func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromFailureRecor
 		now:             func() time.Time { return now },
 		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
 		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return fakeFactorySandboxRuntimeDriver{execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 				if req.Env["GITHUB_TOKEN"] != secret {
 					t.Fatalf("GITHUB_TOKEN env = %q, want secret", req.Env["GITHUB_TOKEN"])
@@ -1785,7 +1937,7 @@ func TestRunFactorySandboxExecutorWithDepsCopiesLocalMarkdownBeforeRemoteExecuti
 		defaultStore:    func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
 		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
 		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return fakeFactorySandboxRuntimeDriver{execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 				runtimeArgs = append([]string(nil), req.Args...)
 				return &sandboxruntime.ExecResult{}, nil
@@ -1848,7 +2000,7 @@ func TestRunFactorySandboxExecutorWithDepsCopiesAbsoluteReportToRemoteInputPath(
 		defaultStore:    func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
 		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
 		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return fakeFactorySandboxRuntimeDriver{execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 				runtimeArgs = append([]string(nil), req.Args...)
 				return &sandboxruntime.ExecResult{}, nil
@@ -2051,7 +2203,7 @@ func TestRunFactorySandboxExecutorWithDepsSyncsEngineAuthBeforeRemoteExecution(t
 		defaultStore:    func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
 		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
 		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return fakeFactorySandboxRuntimeDriver{execFn: func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 				calls = append(calls, "remote-auto")
 				return &sandboxruntime.ExecResult{}, nil
@@ -2665,7 +2817,7 @@ func TestRunFactorySandboxExecutorWithDepsRecordsSanitizedRemoteOutputEvents(t *
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
 		},
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return fakeFactorySandboxRuntimeDriver{execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 				if _, err := io.WriteString(req.Stdout, "Step: run\nconnecting to 203.0."); err != nil {
 					return nil, err
@@ -3334,7 +3486,7 @@ func TestRunFactorySandboxExecutorWithDepsRecordsRemoteExecutionFailureHandoff(t
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
 		},
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return fakeFactorySandboxRuntimeDriver{execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 				if _, err := io.WriteString(req.Stdout, "remote stderr mentions 203.0.113.42\n"); err != nil {
 					return nil, err
