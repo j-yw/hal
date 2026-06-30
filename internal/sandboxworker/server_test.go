@@ -1,0 +1,338 @@
+package sandboxworker
+
+import (
+	"context"
+	"encoding/json"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func TestServerListenAndServeDispatchesValidatedRequestsOverUnixSocket(t *testing.T) {
+	var handled atomic.Bool
+	socketPath := testWorkerSocketPath(t)
+	server, err := NewServer(ServerOptions{
+		SocketPath: socketPath,
+		Handler: RequestHandlerFunc(func(_ context.Context, req Request) Response {
+			handled.Store(true)
+			if req.ProtocolVersion != ProtocolVersion {
+				t.Fatalf("handler request protocolVersion = %q, want %q", req.ProtocolVersion, ProtocolVersion)
+			}
+			if req.Operation != OperationStatus || req.RequestID != "req-001" {
+				t.Fatalf("handler request = %#v, want status request req-001", req)
+			}
+			return Response{
+				RequestID: req.RequestID,
+				Operation: req.Operation,
+				OK:        true,
+			}
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	cancel, errCh := runTestServer(t, server)
+	defer stopTestServer(t, cancel, errCh)
+
+	resp := roundTripWorkerRequest(t, socketPath, Request{
+		RequestID: "req-001",
+		Operation: OperationStatus,
+	})
+	if err := resp.Validate(); err != nil {
+		t.Fatalf("response Validate() error: %v", err)
+	}
+	if !resp.OK || resp.RequestID != "req-001" || resp.Operation != OperationStatus {
+		t.Fatalf("response = %#v, want successful status response", resp)
+	}
+	if !handled.Load() {
+		t.Fatal("handler was not called")
+	}
+}
+
+func TestServerRejectsMalformedRequestsWithStructuredProtocolError(t *testing.T) {
+	var handled atomic.Bool
+	socketPath := testWorkerSocketPath(t)
+	server, err := NewServer(ServerOptions{
+		SocketPath: socketPath,
+		Handler: RequestHandlerFunc(func(context.Context, Request) Response {
+			handled.Store(true)
+			return Response{Operation: OperationStatus, OK: true}
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	cancel, errCh := runTestServer(t, server)
+	defer stopTestServer(t, cancel, errCh)
+
+	conn := dialWorkerSocket(t, socketPath)
+	defer conn.Close()
+	if _, err := conn.Write([]byte("{not json")); err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	if err := conn.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite() error: %v", err)
+	}
+
+	var resp Response
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		t.Fatalf("Decode(response) error: %v", err)
+	}
+	if err := resp.Validate(); err != nil {
+		t.Fatalf("response Validate() error: %v", err)
+	}
+	if resp.OK || resp.Operation != OperationProtocolError || resp.Error == nil {
+		t.Fatalf("response = %#v, want structured protocol error", resp)
+	}
+	if resp.Error.Code != ErrorCodeMalformedRequest {
+		t.Fatalf("error code = %q, want %q", resp.Error.Code, ErrorCodeMalformedRequest)
+	}
+	if !strings.Contains(resp.Error.Message, "malformed worker request") {
+		t.Fatalf("error message = %q, want malformed request message", resp.Error.Message)
+	}
+	if handled.Load() {
+		t.Fatal("handler was called for malformed request")
+	}
+}
+
+func TestServerRejectsInvalidRequestsBeforeDispatch(t *testing.T) {
+	var handled atomic.Bool
+	socketPath := testWorkerSocketPath(t)
+	server, err := NewServer(ServerOptions{
+		SocketPath: socketPath,
+		Handler: RequestHandlerFunc(func(context.Context, Request) Response {
+			handled.Store(true)
+			return Response{Operation: OperationStatus, OK: true}
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	cancel, errCh := runTestServer(t, server)
+	defer stopTestServer(t, cancel, errCh)
+
+	resp := roundTripWorkerRequest(t, socketPath, Request{
+		RequestID: "req-bad",
+		Operation: "launch",
+	})
+	if err := resp.Validate(); err != nil {
+		t.Fatalf("response Validate() error: %v", err)
+	}
+	if resp.OK || resp.Operation != OperationProtocolError || resp.Error == nil {
+		t.Fatalf("response = %#v, want protocol error for invalid request", resp)
+	}
+	if resp.RequestID != "req-bad" {
+		t.Fatalf("response requestID = %q, want req-bad", resp.RequestID)
+	}
+	if resp.Error.Code != ErrorCodeMalformedRequest {
+		t.Fatalf("error code = %q, want %q", resp.Error.Code, ErrorCodeMalformedRequest)
+	}
+	if handled.Load() {
+		t.Fatal("handler was called for invalid request")
+	}
+}
+
+func TestServerShutdownIsContextAware(t *testing.T) {
+	socketPath := testWorkerSocketPath(t)
+	server, err := NewServer(ServerOptions{
+		SocketPath: socketPath,
+		Handler: RequestHandlerFunc(func(context.Context, Request) Response {
+			return Response{Operation: OperationStatus, OK: true}
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	cancel, errCh := runTestServer(t, server)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ListenAndServe() error after cancellation: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ListenAndServe() did not stop after context cancellation")
+	}
+	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
+		t.Fatalf("socket path still exists after shutdown: %v", err)
+	}
+}
+
+func TestServerRejectsInvalidConfiguration(t *testing.T) {
+	if server, err := NewServer(ServerOptions{
+		Handler: RequestHandlerFunc(func(context.Context, Request) Response {
+			return Response{Operation: OperationStatus, OK: true}
+		}),
+	}); err == nil {
+		t.Fatalf("NewServer() error = nil, want socketPath error (server %#v)", server)
+	}
+	if server, err := NewServer(ServerOptions{SocketPath: "/tmp/worker.sock"}); err == nil {
+		t.Fatalf("NewServer() error = nil, want handler error (server %#v)", server)
+	}
+	if server, err := NewServer(ServerOptions{
+		SocketPath: "/tmp/worker.sock",
+		Handler:    RequestHandlerFunc(nil),
+	}); err == nil {
+		t.Fatalf("NewServer() error = nil, want nil handler function error (server %#v)", server)
+	}
+}
+
+func TestServerServeRejectsNonUnixListeners(t *testing.T) {
+	listener := &fakeWorkerListener{
+		addr: fakeWorkerAddr{network: "tcp", address: "127.0.0.1:0"},
+	}
+	server, err := NewServer(ServerOptions{
+		SocketPath: testWorkerSocketPath(t),
+		Handler: RequestHandlerFunc(func(context.Context, Request) Response {
+			return Response{Operation: OperationStatus, OK: true}
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	err = server.Serve(context.Background(), listener)
+	if err == nil {
+		t.Fatal("Serve() error = nil, want non-unix listener error")
+	}
+	if !strings.Contains(err.Error(), "unix is required") {
+		t.Fatalf("Serve() error = %q, want unix listener requirement", err.Error())
+	}
+	if !listener.closed.Load() {
+		t.Fatal("Serve() did not close rejected listener")
+	}
+}
+
+func runTestServer(t *testing.T, server *Server) (context.CancelFunc, <-chan error) {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.ListenAndServe(ctx)
+	}()
+	waitForWorkerSocket(t, server.socketPath, errCh)
+	return cancel, errCh
+}
+
+func testWorkerSocketPath(t *testing.T) string {
+	t.Helper()
+
+	dir, err := os.MkdirTemp("/tmp", "hal-worker-")
+	if err != nil {
+		t.Fatalf("MkdirTemp(/tmp) error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(dir)
+	})
+	return filepath.Join(dir, "worker.sock")
+}
+
+func stopTestServer(t *testing.T, cancel context.CancelFunc, errCh <-chan error) {
+	t.Helper()
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ListenAndServe() error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ListenAndServe() did not stop")
+	}
+}
+
+func waitForWorkerSocket(t *testing.T, socketPath string, errCh <-chan error) {
+	t.Helper()
+
+	deadline := time.After(2 * time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if _, err := os.Stat(socketPath); err == nil {
+			return
+		}
+		select {
+		case err := <-errCh:
+			t.Fatalf("ListenAndServe() exited before socket was ready: %v", err)
+		case <-deadline:
+			t.Fatalf("socket %s was not created", socketPath)
+		case <-tick.C:
+		}
+	}
+}
+
+func roundTripWorkerRequest(t *testing.T, socketPath string, req Request) Response {
+	t.Helper()
+
+	conn := dialWorkerSocket(t, socketPath)
+	defer conn.Close()
+	if err := json.NewEncoder(conn).Encode(req); err != nil {
+		t.Fatalf("Encode(request) error: %v", err)
+	}
+
+	var resp Response
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		t.Fatalf("Decode(response) error: %v", err)
+	}
+	return resp
+}
+
+func dialWorkerSocket(t *testing.T, socketPath string) *net.UnixConn {
+	t.Helper()
+
+	conn, err := net.DialTimeout("unix", socketPath, time.Second)
+	if err != nil {
+		t.Fatalf("DialTimeout(%s) error: %v", socketPath, err)
+	}
+	unixConn, ok := conn.(*net.UnixConn)
+	if !ok {
+		conn.Close()
+		t.Fatalf("DialTimeout(%s) returned %T, want *net.UnixConn", socketPath, conn)
+	}
+	if err := unixConn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		unixConn.Close()
+		t.Fatalf("SetDeadline() error: %v", err)
+	}
+	return unixConn
+}
+
+type fakeWorkerListener struct {
+	addr   net.Addr
+	closed atomic.Bool
+}
+
+func (listener *fakeWorkerListener) Accept() (net.Conn, error) {
+	return nil, net.ErrClosed
+}
+
+func (listener *fakeWorkerListener) Close() error {
+	listener.closed.Store(true)
+	return nil
+}
+
+func (listener *fakeWorkerListener) Addr() net.Addr {
+	return listener.addr
+}
+
+type fakeWorkerAddr struct {
+	network string
+	address string
+}
+
+func (addr fakeWorkerAddr) Network() string {
+	return addr.network
+}
+
+func (addr fakeWorkerAddr) String() string {
+	return addr.address
+}

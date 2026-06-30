@@ -8,16 +8,20 @@ import (
 const (
 	ProtocolVersion = "sandboxworker-v1"
 
-	OperationStatus       = "status"
-	OperationCapabilities = "capabilities"
-	OperationCreate       = "create"
-	OperationStart        = "start"
-	OperationStop         = "stop"
-	OperationDelete       = "delete"
-	OperationInspect      = "inspect"
-	OperationExec         = "exec"
-	OperationCopyIn       = "copy_in"
-	OperationCopyOut      = "copy_out"
+	OperationStatus        = "status"
+	OperationCapabilities  = "capabilities"
+	OperationCreate        = "create"
+	OperationStart         = "start"
+	OperationStop          = "stop"
+	OperationDelete        = "delete"
+	OperationInspect       = "inspect"
+	OperationExec          = "exec"
+	OperationCopyIn        = "copy_in"
+	OperationCopyOut       = "copy_out"
+	OperationProtocolError = "protocol_error"
+
+	ErrorCodeMalformedRequest = "malformed_request"
+	ErrorCodeInternal         = "internal_error"
 
 	HostKindLocal  = "local"
 	HostKindWorker = "worker"
@@ -241,14 +245,22 @@ func (resp Response) Validate() error {
 	if err := validateProtocolVersion(resp.ProtocolVersion); err != nil {
 		return err
 	}
-	if !validOperation(resp.Operation) {
+	if !validResponseOperation(resp.Operation) {
 		return fmt.Errorf("worker response operation %q is unsupported", resp.Operation)
+	}
+	if resp.OK && resp.Operation == OperationProtocolError {
+		return fmt.Errorf("worker response protocol_error operation cannot be ok")
 	}
 	if resp.OK && resp.Error != nil {
 		return fmt.Errorf("worker response cannot include error when ok is true")
 	}
 	if !resp.OK && resp.Error == nil {
 		return fmt.Errorf("worker response error is required when ok is false")
+	}
+	if resp.Error != nil {
+		if err := resp.Error.Validate(); err != nil {
+			return fmt.Errorf("worker response error: %w", err)
+		}
 	}
 	if resp.Status != nil {
 		if err := resp.Status.Validate(); err != nil {
@@ -264,6 +276,17 @@ func (resp Response) Validate() error {
 		if err := resp.Target.Validate(); err != nil {
 			return fmt.Errorf("worker response target: %w", err)
 		}
+	}
+	return nil
+}
+
+// Validate checks protocol error fields.
+func (protocolError Error) Validate() error {
+	if strings.TrimSpace(protocolError.Code) == "" {
+		return fmt.Errorf("worker protocol error code is required")
+	}
+	if strings.TrimSpace(protocolError.Message) == "" {
+		return fmt.Errorf("worker protocol error message is required")
 	}
 	return nil
 }
@@ -538,6 +561,10 @@ func validOperation(operation string) bool {
 	default:
 		return false
 	}
+}
+
+func validResponseOperation(operation string) bool {
+	return validOperation(operation) || operation == OperationProtocolError
 }
 
 func validHostKind(kind string) bool {

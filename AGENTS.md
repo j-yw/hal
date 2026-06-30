@@ -44,6 +44,8 @@
 - Worker capability and security metadata must separate requested controls from enforced controls; validation should reject metadata that claims deny-by-default network enforcement, firewall/proxy enforcement, credential-proxy support, or microVM isolation for the local worker foundation.
 - Worker runtime driver routing belongs behind `sandboxworker.DriverRegistry`; register concrete `sandboxruntime.Driver` adapters outside `internal/sandboxworker`, keep ID listing deterministic, and cover registry behavior with fake drivers only.
 - Worker status/capability generation belongs in `sandboxworker.Service`: derive supported driver IDs from `DriverRegistry`, keep top-level supported operations conservative until server handlers exist, and use fake drivers plus honest security metadata in tests.
+- Worker socket transport belongs in `sandboxworker.Server` with an injected `RequestHandler`: keep the transport limited to local Unix sockets, request validation, structured protocol errors, and context-aware shutdown while operation dispatch stays behind handler/service code.
+- Unix socket tests should allocate short socket paths, such as `os.MkdirTemp("/tmp", ...)`, because macOS rejects long `t.TempDir()`-derived socket paths with `bind: invalid argument`.
 
 ## Patterns from phase12-rootless-podman-local-runtime-driver-for-hal-sandbox-runtime-v2 (2026-07-01)
 
