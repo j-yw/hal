@@ -50,6 +50,12 @@
 - Until the run/auto git-bundle preflight guards are intentionally removed, direct executor tests can bypass preflight with prepared `git_bundle` workspace metadata to validate the shared materialization branch.
 - Keep `internal/sandboxworkspace` import-boundary tests updated when adding sync code so the package does not start importing `cmd`, `internal/factory`, `internal/prd`, `internal/compound`, `internal/loop`, Cobra, or concrete runtime adapters.
 
+## Patterns from phase/sandbox-runtime-v2-11-recovery-artifacts (2026-06-30)
+
+- Non-factory sandbox execution manifests keep the legacy top-level `artifacts` array stable; new collection state belongs in additive `artifactMetadata` with `collected`, `partial`, and `warnings` entries.
+- For non-factory sandbox artifact metadata, `path` is a safe display path that may be a workspace path like `.hal/prd.json`, while `storedPath` must stay store-relative under the execution ID; never add host temp/source path fields to manifest metadata.
+- `internal/sandboxexecution` validates artifact metadata in `validateManifestForSave`; collected entries require both display and store-relative paths, while partial/warning artifact entries require at least a safe display path.
+
 ## Patterns from phase/sandbox-runtime-v2-9-runtime-driver (2026-06-30)
 
 - Runtime-driver boundary contracts live in `internal/sandboxruntime`; keep this package command-agnostic by using package-local target/request types and only standard-library dependencies.

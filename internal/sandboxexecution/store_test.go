@@ -113,6 +113,51 @@ func TestSaveManifestAtomicallyWritesManifest(t *testing.T) {
 	assertNoTempFiles(t, store.Root())
 }
 
+func TestSaveManifestAcceptsArtifactMetadataWithDisplayAndStoredPaths(t *testing.T) {
+	store := newTestStore(t)
+	manifest := testManifest("exec-1", time.Date(2026, 6, 30, 1, 0, 0, 0, time.UTC))
+	manifest.ArtifactMetadata = &ArtifactMetadata{
+		Collected: []ArtifactMetadataEntry{{
+			ID:         "prd",
+			Name:       "PRD",
+			Type:       "json",
+			Path:       ".hal/prd.json",
+			StoredPath: "exec-1/artifacts/core/hal-prd.json",
+		}},
+		Partial: []ArtifactMetadataEntry{{
+			ID:   "reports",
+			Name: "Reports",
+			Path: ".hal/reports.tar",
+		}},
+		Warnings: []ArtifactWarning{{
+			Phase:   "reports-archive",
+			Message: "reports directory missing",
+			Artifact: ArtifactMetadataEntry{
+				ID:   "reports",
+				Name: "Reports",
+				Path: ".hal/reports.tar",
+			},
+		}},
+	}
+
+	if err := store.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+	loaded, err := store.LoadManifest("exec-1")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if loaded.ArtifactMetadata == nil {
+		t.Fatalf("loaded ArtifactMetadata = nil, want metadata")
+	}
+	if got := loaded.ArtifactMetadata.Collected[0].Path; got != ".hal/prd.json" {
+		t.Fatalf("collected display path = %q, want .hal/prd.json", got)
+	}
+	if got := loaded.ArtifactMetadata.Collected[0].StoredPath; got != "exec-1/artifacts/core/hal-prd.json" {
+		t.Fatalf("collected stored path = %q, want store-relative path", got)
+	}
+}
+
 func TestSaveManifestRejectsUnsafeArtifactMetadataBeforeMutation(t *testing.T) {
 	for _, storedPath := range []string{"/tmp/secret", "../escape", "other-exec/artifacts/out.txt", `exec-1\artifacts\out.txt`} {
 		t.Run(storedPath, func(t *testing.T) {
@@ -127,6 +172,91 @@ func TestSaveManifestRejectsUnsafeArtifactMetadataBeforeMutation(t *testing.T) {
 			err := store.SaveManifest(manifest)
 			if err == nil {
 				t.Fatalf("SaveManifest() expected artifact path validation error")
+			}
+			assertPathMissing(t, store.Root())
+		})
+	}
+}
+
+func TestSaveManifestRejectsUnsafeArtifactCollectionMetadataBeforeMutation(t *testing.T) {
+	startedAt := time.Date(2026, 6, 30, 1, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name   string
+		update func(*Manifest)
+	}{
+		{
+			name: "collected missing display path",
+			update: func(manifest *Manifest) {
+				manifest.ArtifactMetadata = &ArtifactMetadata{
+					Collected: []ArtifactMetadataEntry{{StoredPath: "exec-1/artifacts/out.txt"}},
+				}
+			},
+		},
+		{
+			name: "collected missing stored path",
+			update: func(manifest *Manifest) {
+				manifest.ArtifactMetadata = &ArtifactMetadata{
+					Collected: []ArtifactMetadataEntry{{Path: ".hal/prd.json"}},
+				}
+			},
+		},
+		{
+			name: "absolute display path",
+			update: func(manifest *Manifest) {
+				manifest.ArtifactMetadata = &ArtifactMetadata{
+					Collected: []ArtifactMetadataEntry{{Path: "/tmp/secret", StoredPath: "exec-1/artifacts/out.txt"}},
+				}
+			},
+		},
+		{
+			name: "traversal display path",
+			update: func(manifest *Manifest) {
+				manifest.ArtifactMetadata = &ArtifactMetadata{
+					Partial: []ArtifactMetadataEntry{{Path: "../secret"}},
+				}
+			},
+		},
+		{
+			name: "cross execution stored path",
+			update: func(manifest *Manifest) {
+				manifest.ArtifactMetadata = &ArtifactMetadata{
+					Collected: []ArtifactMetadataEntry{{Path: ".hal/prd.json", StoredPath: "other-exec/artifacts/prd.json"}},
+				}
+			},
+		},
+		{
+			name: "warning missing phase",
+			update: func(manifest *Manifest) {
+				manifest.ArtifactMetadata = &ArtifactMetadata{
+					Warnings: []ArtifactWarning{{
+						Message:  "missing",
+						Artifact: ArtifactMetadataEntry{Path: ".hal/reports.tar"},
+					}},
+				}
+			},
+		},
+		{
+			name: "warning unsafe artifact stored path",
+			update: func(manifest *Manifest) {
+				manifest.ArtifactMetadata = &ArtifactMetadata{
+					Warnings: []ArtifactWarning{{
+						Phase:    "reports-archive",
+						Message:  "missing",
+						Artifact: ArtifactMetadataEntry{Path: ".hal/reports.tar", StoredPath: "../secret"},
+					}},
+				}
+			},
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestStore(t)
+			manifest := testManifest("exec-1", startedAt)
+			tt.update(manifest)
+			err := store.SaveManifest(manifest)
+			if err == nil {
+				t.Fatalf("SaveManifest() expected artifact metadata validation error")
 			}
 			assertPathMissing(t, store.Root())
 		})

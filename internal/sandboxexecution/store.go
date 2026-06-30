@@ -240,6 +240,9 @@ func validateManifestForSave(manifest *Manifest) error {
 			return err
 		}
 	}
+	if err := validateArtifactCollectionMetadata(manifest.ID, manifest.ArtifactMetadata); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -288,6 +291,70 @@ func validateArtifactMetadata(executionID string, artifact Artifact) error {
 		}
 	}
 	return nil
+}
+
+func validateArtifactCollectionMetadata(executionID string, metadata *ArtifactMetadata) error {
+	if metadata == nil {
+		return nil
+	}
+	for i, artifact := range metadata.Collected {
+		if err := validateArtifactMetadataEntry(executionID, artifact, true); err != nil {
+			return fmt.Errorf("sandbox execution artifact metadata collected[%d] is invalid: %w", i, err)
+		}
+	}
+	for i, artifact := range metadata.Partial {
+		if err := validateArtifactMetadataEntry(executionID, artifact, false); err != nil {
+			return fmt.Errorf("sandbox execution artifact metadata partial[%d] is invalid: %w", i, err)
+		}
+	}
+	for i, warning := range metadata.Warnings {
+		if err := validateArtifactWarning(executionID, warning); err != nil {
+			return fmt.Errorf("sandbox execution artifact metadata warnings[%d] is invalid: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func validateArtifactMetadataEntry(executionID string, artifact ArtifactMetadataEntry, requireStoredPath bool) error {
+	if strings.TrimSpace(artifact.Path) == "" {
+		return fmt.Errorf("artifact path is required")
+	}
+	if err := validateArtifactDisplayPath(artifact.Path); err != nil {
+		return fmt.Errorf("artifact path %q is invalid: %w", artifact.Path, err)
+	}
+	if requireStoredPath && strings.TrimSpace(artifact.StoredPath) == "" {
+		return fmt.Errorf("artifact storedPath is required")
+	}
+	if artifact.StoredPath != "" {
+		if err := validateArtifactStoreRelativePath(executionID, artifact.StoredPath); err != nil {
+			return fmt.Errorf("artifact storedPath %q is invalid: %w", artifact.StoredPath, err)
+		}
+	}
+	return nil
+}
+
+func validateArtifactWarning(executionID string, warning ArtifactWarning) error {
+	if strings.TrimSpace(warning.Phase) == "" {
+		return fmt.Errorf("warning phase is required")
+	}
+	if strings.TrimSpace(warning.Phase) != warning.Phase {
+		return fmt.Errorf("warning phase %q is invalid", warning.Phase)
+	}
+	if strings.TrimSpace(warning.Message) == "" {
+		return fmt.Errorf("warning message is required")
+	}
+	if strings.TrimSpace(warning.Message) != warning.Message {
+		return fmt.Errorf("warning message is invalid")
+	}
+	if err := validateArtifactMetadataEntry(executionID, warning.Artifact, false); err != nil {
+		return fmt.Errorf("warning artifact is invalid: %w", err)
+	}
+	return nil
+}
+
+func validateArtifactDisplayPath(value string) error {
+	_, err := validateStoreRelativePath(value)
+	return err
 }
 
 func validateArtifactStoreRelativePath(executionID, value string) error {
