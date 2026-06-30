@@ -88,7 +88,7 @@ type runSandboxDeps struct {
 	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
 	startSandbox           func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
-	resolveRuntimeDriver   func(string) (sandboxruntime.Driver, error)
+	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
 	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
 	engineAuthFiles        func() []factorySandboxAuthFile
@@ -379,12 +379,8 @@ func normalizeRunSandboxDeps(deps runSandboxDeps) runSandboxDeps {
 		deps.resolveProvider = defaultRunSandboxDeps.resolveProvider
 	}
 	if deps.resolveRuntimeDriver == nil {
-		deps.resolveRuntimeDriver = func(providerName string) (sandboxruntime.Driver, error) {
-			provider, err := deps.resolveProvider(providerName)
-			if err != nil {
-				return nil, err
-			}
-			return sandboxRuntimeDriverFromProvider(provider), nil
+		deps.resolveRuntimeDriver = func(target sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return sandboxRuntimeDriverFromTarget(target, deps.resolveProvider)
 		}
 	}
 	if deps.runProviderExecWithEnv == nil {
@@ -587,7 +583,7 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 			return deps.startSandbox(ctx, target, prepOut)
 		},
 		ResolveDriver: func(_ context.Context, target sandboxruntime.Target) (sandboxruntime.Driver, error) {
-			driver, err := deps.resolveRuntimeDriver(target.Provider)
+			driver, err := deps.resolveRuntimeDriver(target)
 			if err == nil {
 				runtimeDriver = driver
 			}

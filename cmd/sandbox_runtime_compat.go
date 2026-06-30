@@ -5,6 +5,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"
 	"github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"
 )
 
@@ -105,4 +106,25 @@ func sandboxRuntimeDriverFromProvider(provider sandbox.Provider) sandboxruntime.
 		return nil
 	}
 	return sshmachine.New(provider)
+}
+
+func sandboxRuntimeDriverFromTarget(target sandboxruntime.Target, resolveProvider func(string) (sandbox.Provider, error)) (sandboxruntime.Driver, error) {
+	switch strings.TrimSpace(target.Runtime.Driver) {
+	case sandboxruntime.DriverRootlessPodman:
+		runner := rootlesspodman.DefaultCommandRunner{}
+		return rootlesspodman.New(rootlesspodman.Options{
+			LifecycleRunner: runner,
+			ExecRunner:      runner,
+			CopyRunner:      runner,
+		}), nil
+	default:
+		if resolveProvider == nil {
+			return nil, nil
+		}
+		provider, err := resolveProvider(target.Provider)
+		if err != nil {
+			return nil, err
+		}
+		return sandboxRuntimeDriverFromProvider(provider), nil
+	}
 }

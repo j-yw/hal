@@ -129,9 +129,66 @@ func TestRunSandboxDepsUseRuntimeDriverForRemoteExecution(t *testing.T) {
 	if !ok {
 		t.Fatal("runSandboxDeps missing resolveRuntimeDriver")
 	}
-	want := reflect.TypeOf((func(string) (sandboxruntime.Driver, error))(nil))
+	want := reflect.TypeOf((func(sandboxruntime.Target) (sandboxruntime.Driver, error))(nil))
 	if field.Type != want {
 		t.Fatalf("resolveRuntimeDriver type = %v, want %v", field.Type, want)
+	}
+}
+
+func TestRunSandboxDefaultRuntimeDriverResolverSelectsRootlessPodmanFromTargetMetadata(t *testing.T) {
+	deps := normalizeRunSandboxDeps(runSandboxDeps{
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			t.Fatal("resolveProvider should not run for explicit rootless Podman runtime metadata")
+			return nil, nil
+		},
+	})
+	driver, err := deps.resolveRuntimeDriver(sandboxruntime.Target{
+		Provider: "local",
+		Runtime: sandboxruntime.RuntimeState{
+			Driver: sandboxruntime.DriverRootlessPodman,
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolveRuntimeDriver() error = %v", err)
+	}
+	if driver == nil || driver.ID() != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("driver = %#v, want rootless Podman driver", driver)
+	}
+}
+
+func TestRunSandboxDefaultRuntimeDriverResolverKeepsSSHMachineForAbsentOrExplicitSSHMetadata(t *testing.T) {
+	tests := []struct {
+		name          string
+		runtimeDriver string
+	}{
+		{name: "absent runtime driver"},
+		{name: "explicit SSH-machine runtime driver", runtimeDriver: sandboxruntime.DriverSSHMachine},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var providerName string
+			deps := normalizeRunSandboxDeps(runSandboxDeps{
+				resolveProvider: func(name string) (sandbox.Provider, error) {
+					providerName = name
+					return fakeFactorySandboxProvider{}, nil
+				},
+			})
+			driver, err := deps.resolveRuntimeDriver(sandboxruntime.Target{
+				Provider: "test-provider",
+				Runtime: sandboxruntime.RuntimeState{
+					Driver: tt.runtimeDriver,
+				},
+			})
+			if err != nil {
+				t.Fatalf("resolveRuntimeDriver() error = %v", err)
+			}
+			if providerName != "test-provider" {
+				t.Fatalf("providerName = %q, want test-provider", providerName)
+			}
+			if driver == nil || driver.ID() != sandboxruntime.DriverSSHMachine {
+				t.Fatalf("driver = %#v, want SSH-machine driver", driver)
+			}
+		})
 	}
 }
 
@@ -393,7 +450,7 @@ func TestRunRunSandboxWithWriterGitBundlePlanMaterializesAndExecutes(t *testing.
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
 		},
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return fakeRunSandboxRuntimeDriver{
 				exec: func(_ context.Context, got sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 					script := ""
@@ -533,7 +590,7 @@ func TestRunRunSandboxWithWriterJSONPreRemoteExecutionFailureIncludesTargetMetad
 			t.Fatal("resolveProvider should not run after start failure")
 			return nil, nil
 		},
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			t.Fatal("resolveRuntimeDriver should not run after start failure")
 			return nil, nil
 		},
@@ -596,7 +653,7 @@ func TestRunRunSandboxWithWriterJSONRuntimeDriverSetupFailureSynthesizesRunResul
 		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
 			return target, target.Name, nil
 		},
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return nil, errors.New("runtime driver setup failed")
 		},
 	})
@@ -641,7 +698,7 @@ func TestRunRunSandboxWithWriterJSONRemoteOutputPassesThroughAfterStdout(t *test
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
 		},
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return fakeRunSandboxRuntimeDriver{
 				exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 					_, _ = io.WriteString(req.Stdout, `{"contractVersion":1,"ok":false,"summary":"remote"}`+"\n")
@@ -727,10 +784,10 @@ func TestExecuteRunSandboxUsesRuntimeDriverAfterAuthPreparation(t *testing.T) {
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
 		},
-		resolveRuntimeDriver: func(providerName string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(target sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			order = append(order, "resolve_runtime_driver")
-			if providerName != "test-provider" {
-				t.Fatalf("providerName = %q, want test-provider", providerName)
+			if target.Provider != "test-provider" || target.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+				t.Fatalf("target = %#v, want test-provider SSH-machine runtime target", target)
 			}
 			return driver, nil
 		},
@@ -833,10 +890,10 @@ func TestExecuteRunSandboxGitBundleWorkspaceUsesSharedMaterializer(t *testing.T)
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
 		},
-		resolveRuntimeDriver: func(providerName string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(target sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			order = append(order, "resolve_runtime_driver")
-			if providerName != "local" {
-				t.Fatalf("providerName = %q, want local", providerName)
+			if target.Provider != "local" || target.Runtime.Driver != sandboxruntime.DriverRootlessPodman {
+				t.Fatalf("target = %#v, want local rootless runtime target", target)
 			}
 			return driver, nil
 		},
@@ -1104,7 +1161,7 @@ func TestRunRunSandboxWithWriterCollectsCoreStateArtifacts(t *testing.T) {
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
 		},
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return driver, nil
 		},
 		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
@@ -1244,7 +1301,7 @@ func TestRunRunSandboxWithWriterCollectsGeneratedArtifacts(t *testing.T) {
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
 		},
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return driver, nil
 		},
 		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
@@ -1377,7 +1434,7 @@ func TestRunRunSandboxWithWriterCollectsRecoveryAfterRemoteFailure(t *testing.T)
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
 		},
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return driver, nil
 		},
 		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
@@ -1489,7 +1546,7 @@ func TestRunRunSandboxWithWriterSavesOutputSummaryArtifacts(t *testing.T) {
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
 		},
-		resolveRuntimeDriver: func(string) (sandboxruntime.Driver, error) {
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return driver, nil
 		},
 		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
