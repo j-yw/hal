@@ -89,12 +89,29 @@ type RecoveryArtifactCollectionRequest struct {
 	TempDir            string
 }
 
+// ReportsArchiveCollectionRequest carries the runtime context needed to
+// generate and collect the standard non-factory sandbox reports archive.
+type ReportsArchiveCollectionRequest struct {
+	ExecutionID        string
+	Store              Store
+	Runtime            RuntimeArtifactCollector
+	Target             sandboxruntime.Target
+	RemoteWorkspaceDir string
+	TempDir            string
+}
+
 const (
 	recoveryArtifactID       = "recovery-patch"
 	recoveryArtifactName     = "Recovery Patch"
 	recoveryArtifactType     = "patch"
 	recoveryArtifactDir      = "recovery"
 	recoveryArtifactFileName = "workspace.patch"
+
+	reportsArchiveID       = "reports-archive"
+	reportsArchiveName     = "Reports Archive"
+	reportsArchiveType     = "tar"
+	reportsArchiveDir      = "reports"
+	reportsArchiveFileName = "reports.tar"
 )
 
 // CollectRuntimeArtifacts generates requested remote artifacts, copies remote
@@ -188,6 +205,34 @@ func CollectRecoveryArtifacts(ctx context.Context, req RecoveryArtifactCollectio
 	return result, nil
 }
 
+// CollectReportsArchiveArtifacts creates a deterministic remote tar archive of
+// .hal/reports when it exists, copies it out through the runtime driver, stores
+// it under artifacts/, and records collected or partial metadata on the manifest.
+func CollectReportsArchiveArtifacts(ctx context.Context, req ReportsArchiveCollectionRequest) (RuntimeCollectionResult, error) {
+	if _, err := req.Store.LoadManifest(req.ExecutionID); err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	artifact, err := reportsArchiveArtifactRequest(req.RemoteWorkspaceDir)
+	if err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	result, err := CollectRuntimeArtifacts(ctx, RuntimeCollectionRequest{
+		ExecutionID: req.ExecutionID,
+		Store:       req.Store,
+		Runtime:     req.Runtime,
+		Target:      req.Target,
+		Artifacts:   []RuntimeArtifactRequest{artifact},
+		TempDir:     req.TempDir,
+	})
+	if err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	if err := req.Store.AppendArtifactMetadata(req.ExecutionID, result.ArtifactMetadata); err != nil {
+		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution reports archive metadata: %w", err)
+	}
+	return result, nil
+}
+
 // CollectCoreStateArtifacts collects the core .hal state files for a run or
 // auto sandbox execution and records the collected metadata on the manifest.
 func CollectCoreStateArtifacts(ctx context.Context, req CoreStateCollectionRequest) (RuntimeCollectionResult, error) {
@@ -239,6 +284,64 @@ func recoveryArtifactRequest(remoteWorkspaceDir string) (RuntimeArtifactRequest,
 			WorkDir: remoteWorkspaceDir,
 		},
 	}, nil
+}
+
+func reportsArchiveArtifactRequest(remoteWorkspaceDir string) (RuntimeArtifactRequest, error) {
+	remoteWorkspaceDir = strings.TrimSpace(remoteWorkspaceDir)
+	if remoteWorkspaceDir == "" {
+		return RuntimeArtifactRequest{}, fmt.Errorf("sandbox execution remote workspace dir is required")
+	}
+	displayPath := reportsArchiveDisplayPath()
+	return RuntimeArtifactRequest{
+		Optional: true,
+		Artifact: ArtifactMetadataEntry{
+			ID:   reportsArchiveID,
+			Name: reportsArchiveName,
+			Type: reportsArchiveType,
+			Path: displayPath,
+		},
+		PayloadPath: pathpkg.Join(reportsArchiveDir, reportsArchiveFileName),
+		RemotePath:  pathpkg.Join(remoteWorkspaceDir, displayPath),
+		Generate: &RuntimeArtifactGeneration{
+			Args:    []string{"sh", "-c", reportsArchiveGenerationScript()},
+			WorkDir: remoteWorkspaceDir,
+		},
+	}, nil
+}
+
+func reportsArchiveDisplayPath() string {
+	return pathpkg.Join(template.HalDir, reportsArchiveFileName)
+}
+
+func reportsArchiveSourceDir() string {
+	return pathpkg.Join(template.HalDir, reportsArchiveDir)
+}
+
+func reportsArchiveGenerationScript() string {
+	reportsDir := reportsArchiveSourceDir()
+	archivePath := reportsArchiveDisplayPath()
+	tmpPath := archivePath + ".tmp"
+	return strings.Join([]string{
+		"set -eu",
+		fmt.Sprintf("reports_dir=%q", reportsDir),
+		fmt.Sprintf("archive_path=%q", archivePath),
+		fmt.Sprintf("tmp_path=%q", tmpPath),
+		`rm -f "$tmp_path" "$archive_path"`,
+		`if [ ! -d "$reports_dir" ]; then`,
+		"\texit 0",
+		"fi",
+		`if command -v gtar >/dev/null 2>&1; then`,
+		"\ttar_cmd=gtar",
+		"else",
+		"\ttar_cmd=tar",
+		"fi",
+		`if "$tar_cmd" --version 2>/dev/null | grep -qi 'gnu tar'; then`,
+		`"$tar_cmd" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf "$tmp_path" -C ".hal" "reports"`,
+		"else",
+		`(cd ".hal" && find "reports" -print | LC_ALL=C sort | "$tar_cmd" -cf "../$tmp_path" -T -)`,
+		"fi",
+		`mv "$tmp_path" "$archive_path"`,
+	}, "\n")
 }
 
 func recoveryArtifactDisplayPath() string {

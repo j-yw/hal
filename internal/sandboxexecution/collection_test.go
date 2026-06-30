@@ -554,6 +554,185 @@ func TestCollectRecoveryArtifactsGeneratesCopiesAndPersistsManifest(t *testing.T
 	}
 }
 
+func TestCollectReportsArchiveArtifactsGeneratesCopiesAndPersistsManifest(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.SaveManifest(testManifest("exec-1", time.Date(2026, 6, 30, 1, 0, 0, 0, time.UTC))); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+	runtime := &recordingArtifactRuntime{}
+	target := sandboxruntime.Target{
+		ID:       "target-1",
+		Name:     "phase-dev",
+		Provider: "daytona",
+		Runtime: sandboxruntime.RuntimeState{
+			Driver: sandboxruntime.DriverSSHMachine,
+		},
+		Connection: sandboxruntime.ConnectionInfo{
+			WorkspaceID: "workspace-1",
+		},
+	}
+
+	result, err := CollectReportsArchiveArtifacts(context.Background(), ReportsArchiveCollectionRequest{
+		ExecutionID:        "exec-1",
+		Store:              store,
+		Runtime:            runtime,
+		Target:             target,
+		RemoteWorkspaceDir: "/workspace/repo",
+	})
+	if err != nil {
+		t.Fatalf("CollectReportsArchiveArtifacts() error: %v", err)
+	}
+
+	if got, want := runtime.events, []string{"exec", "copy_out"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("runtime events = %#v, want %#v", got, want)
+	}
+	if len(runtime.execs) != 1 {
+		t.Fatalf("Exec calls = %d, want 1", len(runtime.execs))
+	}
+	exec := runtime.execs[0]
+	if !reflect.DeepEqual(exec.Args, []string{"sh", "-c", reportsArchiveGenerationScript()}) {
+		t.Fatalf("Exec args = %#v, want reports archive generation script", exec.Args)
+	}
+	if exec.WorkDir != "/workspace/repo" {
+		t.Fatalf("Exec workdir = %q, want remote workspace", exec.WorkDir)
+	}
+	if exec.Target.Name != "phase-dev" || exec.Target.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("Exec target = %#v, want runtime target", exec.Target)
+	}
+	if !strings.Contains(reportsArchiveGenerationScript(), "[ ! -d \"$reports_dir\" ]") {
+		t.Fatalf("reports archive script does not guard missing reports dir:\n%s", reportsArchiveGenerationScript())
+	}
+	if len(runtime.copyOuts) != 1 {
+		t.Fatalf("CopyOut calls = %d, want 1", len(runtime.copyOuts))
+	}
+	copyOut := runtime.copyOuts[0]
+	if got, want := copyOut.SourcePath, "/workspace/repo/.hal/reports.tar"; got != want {
+		t.Fatalf("CopyOut source = %q, want %q", got, want)
+	}
+	if copyOut.Target.Name != "phase-dev" || copyOut.Target.Connection.WorkspaceID != "workspace-1" {
+		t.Fatalf("CopyOut target = %#v, want runtime target", copyOut.Target)
+	}
+
+	if len(result.ArtifactMetadata.Collected) != 1 {
+		t.Fatalf("collected metadata = %#v, want reports archive", result.ArtifactMetadata.Collected)
+	}
+	reports := result.ArtifactMetadata.Collected[0]
+	if reports.ID != "reports-archive" || reports.Name != "Reports Archive" || reports.Type != "tar" {
+		t.Fatalf("reports metadata identity = %#v, want reports archive metadata", reports)
+	}
+	if got, want := reports.Path, ".hal/reports.tar"; got != want {
+		t.Fatalf("reports path = %q, want %q", got, want)
+	}
+	if got, want := reports.StoredPath, "exec-1/artifacts/reports/reports.tar"; got != want {
+		t.Fatalf("reports storedPath = %q, want %q", got, want)
+	}
+	if reports.SizeBytes == nil || *reports.SizeBytes == 0 {
+		t.Fatalf("reports size = %v, want copied payload size", reports.SizeBytes)
+	}
+	if reports.CreatedAt == nil || reports.CreatedAt.IsZero() {
+		t.Fatalf("reports createdAt = %v, want stored timestamp", reports.CreatedAt)
+	}
+	if payload := readStoreFile(t, store, reports.StoredPath); !strings.Contains(payload, "copied:/workspace/repo/.hal/reports.tar") {
+		t.Fatalf("stored reports payload = %q, want copied remote payload", payload)
+	}
+
+	loaded, err := store.LoadManifest("exec-1")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if loaded.ArtifactMetadata == nil || len(loaded.ArtifactMetadata.Collected) != 1 {
+		t.Fatalf("manifest reports metadata = %#v, want persisted reports artifact", loaded.ArtifactMetadata)
+	}
+	if !reflect.DeepEqual(loaded.ArtifactMetadata.Collected[0], reports) {
+		t.Fatalf("manifest reports metadata = %#v, want %#v", loaded.ArtifactMetadata.Collected[0], reports)
+	}
+
+	encoded := string(mustJSONBytes(t, loaded.ArtifactMetadata))
+	for _, forbidden := range []string{
+		"/workspace/repo/.hal/reports.tar",
+		copyOut.DestinationPath,
+		"SourcePath",
+		"DestinationPath",
+	} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("manifest reports metadata leaked runtime path %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestCollectReportsArchiveArtifactsMissingReportsRecordsPartialWarning(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.SaveManifest(testManifest("exec-1", time.Date(2026, 6, 30, 1, 0, 0, 0, time.UTC))); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+	runtime := &recordingArtifactRuntime{copyOutErr: fs.ErrNotExist}
+
+	result, err := CollectReportsArchiveArtifacts(context.Background(), ReportsArchiveCollectionRequest{
+		ExecutionID:        "exec-1",
+		Store:              store,
+		Runtime:            runtime,
+		RemoteWorkspaceDir: "/workspace/repo",
+	})
+	if err != nil {
+		t.Fatalf("CollectReportsArchiveArtifacts() error: %v", err)
+	}
+
+	if got, want := runtime.events, []string{"exec", "copy_out"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("runtime events = %#v, want %#v", got, want)
+	}
+	if len(result.ArtifactMetadata.Collected) != 0 {
+		t.Fatalf("collected metadata = %#v, want none for missing reports", result.ArtifactMetadata.Collected)
+	}
+	if len(result.ArtifactMetadata.Partial) != 1 {
+		t.Fatalf("partial metadata = %#v, want missing reports entry", result.ArtifactMetadata.Partial)
+	}
+	partial := result.ArtifactMetadata.Partial[0]
+	if partial.ID != "reports-archive" || partial.Name != "Reports Archive" || partial.Type != "tar" {
+		t.Fatalf("partial identity = %#v, want reports archive metadata", partial)
+	}
+	if got, want := partial.Path, ".hal/reports.tar"; got != want {
+		t.Fatalf("partial path = %q, want %q", got, want)
+	}
+	if partial.StoredPath != "" || partial.SizeBytes != nil || partial.CreatedAt != nil {
+		t.Fatalf("partial metadata should not include stored fields: %#v", partial)
+	}
+	if len(result.ArtifactMetadata.Warnings) != 1 {
+		t.Fatalf("warnings = %#v, want missing reports warning", result.ArtifactMetadata.Warnings)
+	}
+	warning := result.ArtifactMetadata.Warnings[0]
+	if warning.Phase != "copy_out" || warning.Message != "optional sandbox execution artifact is missing" {
+		t.Fatalf("warning = %#v, want missing optional copy_out warning", warning)
+	}
+	if warning.Artifact != partial {
+		t.Fatalf("warning artifact = %#v, want partial %#v", warning.Artifact, partial)
+	}
+
+	loaded, err := store.LoadManifest("exec-1")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if loaded.ArtifactMetadata == nil {
+		t.Fatalf("manifest ArtifactMetadata = nil, want persisted partial metadata")
+	}
+	if !reflect.DeepEqual(loaded.ArtifactMetadata.Partial, result.ArtifactMetadata.Partial) {
+		t.Fatalf("manifest partial = %#v, want %#v", loaded.ArtifactMetadata.Partial, result.ArtifactMetadata.Partial)
+	}
+	if !reflect.DeepEqual(loaded.ArtifactMetadata.Warnings, result.ArtifactMetadata.Warnings) {
+		t.Fatalf("manifest warnings = %#v, want %#v", loaded.ArtifactMetadata.Warnings, result.ArtifactMetadata.Warnings)
+	}
+
+	encoded := string(mustJSONBytes(t, loaded.ArtifactMetadata))
+	for _, forbidden := range []string{
+		"/workspace/repo/.hal/reports.tar",
+		"SourcePath",
+		"DestinationPath",
+	} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("manifest reports metadata leaked runtime path %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 func readStoreFile(t *testing.T, store Store, storedPath string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(store.Root(), filepath.FromSlash(storedPath)))
