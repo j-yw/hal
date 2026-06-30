@@ -15,6 +15,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 	"github.com/spf13/cobra"
 )
@@ -231,8 +232,10 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 			return saveAutoSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, target)
 		},
 	})
-	if execResult.Result != nil && execResult.Result.Target != nil {
-		target = execResult.Result.Target
+	if execResult.Result != nil {
+		if target == nil {
+			target = sandboxStateFromRuntimeTarget(execResult.Result.Target)
+		}
 		if strings.TrimSpace(req.SandboxName) == "" {
 			req.SandboxName = strings.TrimSpace(target.Name)
 		}
@@ -399,13 +402,13 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 		StartTarget: func(ctx context.Context, target *sandbox.SandboxState, _, _ io.Writer) (*sandbox.SandboxState, error) {
 			return deps.startSandbox(ctx, target, prepOut)
 		},
-		ResolveProvider: func(_ context.Context, target *sandbox.SandboxState) (sandbox.Provider, error) {
+		ResolveDriver: func(_ context.Context, target sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			resolved, err := deps.resolveProvider(target.Provider)
 			if err != nil {
 				return nil, err
 			}
 			provider = resolved
-			return resolved, nil
+			return sandboxRuntimeDriverFromProvider(resolved), nil
 		},
 		OnTargetReady: func(_ context.Context, target *sandbox.SandboxState) error {
 			if hooks.OnTargetReady == nil {
@@ -432,7 +435,7 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 			return nil
 		},
 		RunCommand: func(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {
-			return deps.runProviderCommand(ctx, run.Provider, run.ConnectInfo, runSandboxRemoteExecArgs(command), command.Env, command.Stdout, command.Stderr)
+			return deps.runProviderCommand(ctx, provider, sandboxConnectInfoFromRuntimeTarget(run.Target), runSandboxRemoteExecArgs(command), command.Env, command.Stdout, command.Stderr)
 		},
 		HandleEvent: func(_ context.Context, event sandboxexec.Event) error {
 			if event.Type == sandboxexec.EventCommandOutput && event.Stream == sandboxexec.StreamStdout {

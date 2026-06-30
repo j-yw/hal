@@ -17,6 +17,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 	"github.com/spf13/cobra"
 )
@@ -583,7 +584,7 @@ func TestRunRunSandboxWithWriterSuccessfulExecutorUpdatesManifest(t *testing.T) 
 				}
 			}
 			return runSandboxExecutionResult{
-				Result: &sandboxexec.Result{Target: target},
+				Result: &sandboxexec.Result{Target: sandboxruntime.Target{Name: target.Name, Provider: target.Provider, Status: target.Status}},
 			}, nil
 		},
 	})
@@ -669,7 +670,7 @@ func TestRunRunWithWriterSandboxFlagDispatchesToSandboxExecutor(t *testing.T) {
 					return runSandboxExecutionResult{}, err
 				}
 			}
-			return runSandboxExecutionResult{Result: &sandboxexec.Result{Target: target}}, nil
+			return runSandboxExecutionResult{Result: &sandboxexec.Result{Target: sandboxruntime.Target{Name: target.Name, Provider: target.Provider, Status: target.Status}}}, nil
 		},
 	}
 	t.Cleanup(func() {

@@ -22,6 +22,7 @@ import (
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxexec"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 type factorySandboxProvisionRequest struct {
@@ -272,12 +273,16 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			remoteOutput = newFactorySandboxTimelineWriter(store, deps, &record, target, req.RemoteOutput, req.ResolvedSecrets)
 			return nil
 		},
-		ResolveProvider: func(_ context.Context, target *sandbox.SandboxState) (sandbox.Provider, error) {
-			return deps.resolveProvider(target.Provider)
-		},
-		OnProviderReady: func(_ context.Context, ready *sandbox.SandboxState, resolved sandbox.Provider) error {
-			target = ready
+		ResolveDriver: func(_ context.Context, target sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			resolved, err := deps.resolveProvider(target.Provider)
+			if err != nil {
+				return nil, err
+			}
 			provider = resolved
+			return sandboxRuntimeDriverFromProvider(resolved), nil
+		},
+		OnDriverReady: func(_ context.Context, ready sandboxruntime.Target, _ sandboxruntime.Driver) error {
+			target = sandboxStateFromRuntimeTarget(ready)
 			return nil
 		},
 		PrepareWorkspace: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
@@ -303,7 +308,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			if out == nil {
 				out = io.Discard
 			}
-			return deps.runProviderExecWithEnv(ctx, run.Provider, run.ConnectInfo, command.Command, command.Env, out)
+			return deps.runProviderExecWithEnv(ctx, provider, sandboxConnectInfoFromRuntimeTarget(run.Target), command.Command, command.Env, out)
 		},
 		HandleEvent: func(_ context.Context, event sandboxexec.Event) error {
 			return handleFactorySandboxExecutorEvent(remoteOutput, event)
@@ -313,9 +318,6 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		if phaseErr, ok := sandboxexec.AsPhaseError(execErr); ok {
 			if phaseErr.Target != nil {
 				target = phaseErr.Target
-			}
-			if phaseErr.Provider != nil {
-				provider = phaseErr.Provider
 			}
 		}
 		returnErr = handleFactorySandboxExecutorError(ctx, store, deps, req, &record, target, execErr, secretRedactor)
@@ -472,8 +474,8 @@ func handleFactorySandboxExecutorError(ctx context.Context, store factory.Store,
 			return errors.Join(startErr, sanitizedCleanupErr)
 		}
 		return startErr
-	case sandboxexec.PhaseResolveProvider:
-		_ = recordFactorySandboxFailure(store, deps, record, target, "resolve_provider", failureErr, secretRedactor)
+	case sandboxexec.PhaseResolveDriver:
+		_ = recordFactorySandboxFailure(store, deps, record, target, "resolve_driver", failureErr, secretRedactor)
 		providerName := ""
 		if target != nil {
 			providerName = target.Provider

@@ -5,6 +5,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"
 )
 
 func sandboxStateFromRuntimeTarget(target sandboxruntime.Target) *sandbox.SandboxState {
@@ -52,4 +53,11 @@ func hasRuntimeState(runtime sandboxruntime.RuntimeState) bool {
 		strings.TrimSpace(runtime.RuntimeID) != "" ||
 		strings.TrimSpace(runtime.Image) != "" ||
 		strings.TrimSpace(runtime.WorkerID) != ""
+}
+
+func sandboxRuntimeDriverFromProvider(provider sandbox.Provider) sandboxruntime.Driver {
+	if provider == nil {
+		return nil
+	}
+	return sshmachine.New(provider)
 }

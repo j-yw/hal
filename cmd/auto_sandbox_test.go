@@ -19,6 +19,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 	"github.com/spf13/cobra"
 )
@@ -147,7 +148,7 @@ func TestRunAutoWithDirSandboxFlagDispatchesToSandboxExecutor(t *testing.T) {
 					return autoSandboxExecutionResult{}, err
 				}
 			}
-			return autoSandboxExecutionResult{Result: &sandboxexec.Result{Target: target}}, nil
+			return autoSandboxExecutionResult{Result: &sandboxexec.Result{Target: sandboxruntime.Target{Name: target.Name, Provider: target.Provider, Status: target.Status}}}, nil
 		},
 	}
 	t.Cleanup(func() {
@@ -366,7 +367,7 @@ func TestRunAutoSandboxWithWriterSuccessfulExecutorUpdatesManifest(t *testing.T)
 					return autoSandboxExecutionResult{}, err
 				}
 			}
-			return autoSandboxExecutionResult{Result: &sandboxexec.Result{Target: target}}, nil
+			return autoSandboxExecutionResult{Result: &sandboxexec.Result{Target: sandboxruntime.Target{Name: target.Name, Provider: target.Provider, Status: target.Status}}}, nil
 		},
 	})
 	if err != nil {

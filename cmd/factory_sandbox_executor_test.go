@@ -2991,7 +2991,7 @@ func TestRunFactorySandboxExecutorWithDepsRecordsStartFailureWithSandboxMetadata
 	}
 }
 
-func TestRunFactorySandboxExecutorWithDepsRecordsResolveProviderFailureHandoff(t *testing.T) {
+func TestRunFactorySandboxExecutorWithDepsRecordsResolveDriverFailureHandoff(t *testing.T) {
 	now := time.Date(2026, 6, 21, 11, 0, 0, 0, time.UTC)
 	providerErr := factorySandboxTestError("unknown provider missing")
 	target := &sandbox.SandboxState{
@@ -3043,7 +3043,7 @@ func TestRunFactorySandboxExecutorWithDepsRecordsResolveProviderFailureHandoff(t
 		t.Fatalf("saved records = %d, want 3", len(savedRecords))
 	}
 	failed := savedRecords[2]
-	if failed.Status != factory.RunStatusFailed || failed.CurrentStep != "resolve_provider" {
+	if failed.Status != factory.RunStatusFailed || failed.CurrentStep != "resolve_driver" {
 		t.Fatalf("failed record status/step = %s/%s", failed.Status, failed.CurrentStep)
 	}
 	if failed.SandboxName != "factory-provider" || failed.Sandbox == nil || failed.Sandbox.Provider != "missing" {
@@ -3056,7 +3056,7 @@ func TestRunFactorySandboxExecutorWithDepsRecordsResolveProviderFailureHandoff(t
 		t.Fatalf("failure events = %#v", events)
 	}
 	requireFactorySandboxSecurityPolicyEvent(t, events[0], []string{sandbox.SandboxSecretModeLegacyAuthSync})
-	if events[1].EventType != factory.EventTypeFailureClassification || events[1].Metadata["step"] != "resolve_provider" {
+	if events[1].EventType != factory.EventTypeFailureClassification || events[1].Metadata["step"] != "resolve_driver" {
 		t.Fatalf("failure events = %#v", events)
 	}
 }
