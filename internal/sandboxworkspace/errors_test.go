@@ -2,6 +2,7 @@ package sandboxworkspace
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -52,5 +53,18 @@ func TestDirtyPlanningErrorPreservesDirtyState(t *testing.T) {
 	}
 	if planningErr.Dirty != dirty {
 		t.Fatalf("Dirty = %#v, want %#v", planningErr.Dirty, dirty)
+	}
+}
+
+func TestDirtyClonePlanningErrorIncludesExplicitWorkspaceGuidance(t *testing.T) {
+	err := planningError(ErrDirtyWorktree, Request{ProjectDir: "/work/repo", WorkspaceMode: "clone"}, DirtyState{Untracked: true}, nil)
+	text := err.Error()
+	for _, want := range []string{"dirty worktree", "copy/direct workspace handling"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("error = %q, want guidance containing %q", text, want)
+		}
+	}
+	if !errors.Is(err, ErrDirtyWorktree) {
+		t.Fatalf("errors.Is(%v, ErrDirtyWorktree) = false", err)
 	}
 }

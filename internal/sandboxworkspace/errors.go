@@ -77,6 +77,9 @@ func (e *PlanningError) Error() string {
 	}
 	if e.Dirty.Any() {
 		parts = append(parts, fmt.Sprintf("dirty state staged=%t unstaged=%t untracked=%t", e.Dirty.Staged, e.Dirty.Unstaged, e.Dirty.Untracked))
+		if e.Kind == ErrDirtyWorktree && e.Mode == "clone" {
+			parts = append(parts, "commit or stash local changes, or choose copy/direct workspace handling explicitly")
+		}
 	}
 	if e.Err != nil {
 		parts = append(parts, e.Err.Error())
