@@ -6,10 +6,13 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 func TestClientStatusAndCapabilitiesOverUnixSocket(t *testing.T) {
@@ -79,6 +82,218 @@ func TestClientStatusAndCapabilitiesOverUnixSocket(t *testing.T) {
 	}
 	if len(capabilities.RuntimeDrivers) != 2 {
 		t.Fatalf("Capabilities() runtime drivers = %#v, want two registered drivers", capabilities.RuntimeDrivers)
+	}
+}
+
+func TestClientIOMethodsRoundTripOverUnixSocket(t *testing.T) {
+	socketPath := testWorkerSocketPath(t)
+	driver := &recordingSocketIODriver{
+		id:          "fake_runtime",
+		execResult:  &sandboxruntime.ExecResult{ExitCode: 42},
+		stdout:      "hello\n",
+		stderr:      "warn\n",
+		copyOutData: "report\n",
+	}
+	service := newTestWorkerIOService(t, socketPath, driver)
+	server, err := NewServer(ServerOptions{
+		SocketPath: socketPath,
+		Handler:    service,
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	cancel, errCh := runTestServer(t, server)
+	defer stopTestServer(t, cancel, errCh)
+
+	client, err := NewClient(ClientOptions{SocketPath: socketPath})
+	if err != nil {
+		t.Fatalf("NewClient() error: %v", err)
+	}
+
+	execReq := *validWorkerExecRequest().Exec
+	execReq.Target = lifecycleWorkerTarget("fake_runtime", "dev", "running")
+	execReq.Args = []string{"sh", "-lc", "cat"}
+	execReq.Env = map[string]string{"HAL_SANDBOX": "1"}
+	execReq.WorkDir = " /workspace/hal "
+	execReq.Stdin = &ExecStdinPayload{
+		Data:       "input\n",
+		SizeBytes:  6,
+		LimitBytes: MaxExecStdinBytes,
+	}
+	execResp, err := client.Exec(context.Background(), "fake_runtime", execReq)
+	if err != nil {
+		t.Fatalf("Exec() error: %v", err)
+	}
+	if execResp.ExitCode != 42 || execResp.Stdout.Data != "hello\n" || execResp.Stderr.Data != "warn\n" {
+		t.Fatalf("Exec() response = %#v, want fake driver output over socket", execResp)
+	}
+	if driver.stdinData != "input\n" {
+		t.Fatalf("driver stdin = %q, want request stdin", driver.stdinData)
+	}
+	if driver.execReq.WorkDir != "/workspace/hal" || driver.execReq.Env["HAL_SANDBOX"] != "1" {
+		t.Fatalf("driver exec request = %#v, want trimmed workdir and cloned env", driver.execReq)
+	}
+
+	copyInReq := *validWorkerCopyInRequest().CopyIn
+	copyInReq.Target = lifecycleWorkerTarget("fake_runtime", "dev", "running")
+	copyInReq.RemoteDestinationPath = " /workspace/hal/input.txt "
+	copyInReq.Payload = workerCopyPayload("copy payload\n", MaxCopyInPayloadBytes)
+	copyInResp, err := client.CopyIn(context.Background(), "fake_runtime", copyInReq)
+	if err != nil {
+		t.Fatalf("CopyIn() error: %v", err)
+	}
+	if copyInResp.Status != CopyStatusCompleted || copyInResp.Error != nil {
+		t.Fatalf("CopyIn() response = %#v, want completed copy_in over socket", copyInResp)
+	}
+	if driver.copyInData != "copy payload\n" || driver.copyInReq.DestinationPath != "/workspace/hal/input.txt" {
+		t.Fatalf("driver copy_in request = %#v data %q, want decoded payload and trimmed destination", driver.copyInReq, driver.copyInData)
+	}
+
+	copyOutReq := *validWorkerCopyOutRequest().CopyOut
+	copyOutReq.Target = lifecycleWorkerTarget("fake_runtime", "dev", "running")
+	copyOutReq.RemoteSourcePath = " /workspace/hal/report.txt "
+	copyOutReq.MaxPayloadBytes = 64
+	copyOutResp, err := client.CopyOut(context.Background(), "fake_runtime", copyOutReq)
+	if err != nil {
+		t.Fatalf("CopyOut() error: %v", err)
+	}
+	if copyOutResp.Payload == nil {
+		t.Fatal("CopyOut() payload = nil, want copied payload over socket")
+	}
+	if got := decodeWorkerCopyPayloadForTest(t, *copyOutResp.Payload); got != "report\n" {
+		t.Fatalf("CopyOut() payload = %q, want report data", got)
+	}
+	if copyOutResp.Truncated || copyOutResp.LimitExceeded || copyOutResp.Error != nil {
+		t.Fatalf("CopyOut() metadata = %#v, want untruncated payload", copyOutResp)
+	}
+	if driver.copyOutReq.SourcePath != "/workspace/hal/report.txt" {
+		t.Fatalf("driver copy_out source = %q, want trimmed remote source", driver.copyOutReq.SourcePath)
+	}
+}
+
+func TestClientIOMethodsEnforceLimitsOverUnixSocket(t *testing.T) {
+	socketPath := testWorkerSocketPath(t)
+	driver := &recordingSocketIODriver{
+		id:          "fake_runtime",
+		execResult:  &sandboxruntime.ExecResult{ExitCode: 0},
+		stdout:      "abcdef",
+		stderr:      "12345",
+		copyOutData: "copy-output",
+	}
+	service := newTestWorkerIOService(t, socketPath, driver)
+	server, err := NewServer(ServerOptions{
+		SocketPath: socketPath,
+		Handler:    service,
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	cancel, errCh := runTestServer(t, server)
+	defer stopTestServer(t, cancel, errCh)
+
+	client, err := NewClient(ClientOptions{SocketPath: socketPath})
+	if err != nil {
+		t.Fatalf("NewClient() error: %v", err)
+	}
+
+	execReq := *validWorkerExecRequest().Exec
+	execReq.Target = lifecycleWorkerTarget("fake_runtime", "dev", "running")
+	execReq.StdoutLimitBytes = 3
+	execReq.StderrLimitBytes = 2
+	execResp, err := client.Exec(context.Background(), "fake_runtime", execReq)
+	if err != nil {
+		t.Fatalf("Exec() error: %v", err)
+	}
+	if execResp.Stdout.Data != "abc" || execResp.Stdout.SizeBytes != 3 || execResp.Stdout.LimitBytes != 3 || !execResp.Stdout.Truncated {
+		t.Fatalf("exec stdout = %#v, want socket response truncated to 3 bytes", execResp.Stdout)
+	}
+	if execResp.Stderr.Data != "12" || execResp.Stderr.SizeBytes != 2 || execResp.Stderr.LimitBytes != 2 || !execResp.Stderr.Truncated {
+		t.Fatalf("exec stderr = %#v, want socket response truncated to 2 bytes", execResp.Stderr)
+	}
+
+	copyOutReq := *validWorkerCopyOutRequest().CopyOut
+	copyOutReq.Target = lifecycleWorkerTarget("fake_runtime", "dev", "running")
+	copyOutReq.MaxPayloadBytes = 4
+	copyOutResp, err := client.CopyOut(context.Background(), "fake_runtime", copyOutReq)
+	if err != nil {
+		t.Fatalf("CopyOut() error: %v", err)
+	}
+	if copyOutResp.Payload == nil {
+		t.Fatal("CopyOut() payload = nil, want bounded payload")
+	}
+	if got := decodeWorkerCopyPayloadForTest(t, *copyOutResp.Payload); got != "copy" {
+		t.Fatalf("CopyOut() payload = %q, want truncated copy_out payload", got)
+	}
+	if copyOutResp.Payload.SizeBytes != 4 || copyOutResp.Payload.LimitBytes != 4 || !copyOutResp.Truncated || !copyOutResp.LimitExceeded {
+		t.Fatalf("CopyOut() response = %#v, want limit-exceeded metadata", copyOutResp)
+	}
+	if copyOutResp.Error == nil || copyOutResp.Error.Code != ErrorCodeDriverFailed {
+		t.Fatalf("CopyOut() error = %#v, want structured payload limit error", copyOutResp.Error)
+	}
+}
+
+func TestServerHandlesSingleJSONRequestResponsePerUnixConnection(t *testing.T) {
+	var handled atomic.Int32
+	socketPath := testWorkerSocketPath(t)
+	server, err := NewServer(ServerOptions{
+		SocketPath: socketPath,
+		Handler: RequestHandlerFunc(func(_ context.Context, req Request) Response {
+			handled.Add(1)
+			return Response{
+				RequestID: req.RequestID,
+				Operation: req.Operation,
+				OK:        true,
+				Exec: &ExecResponse{
+					Stdout: ExecOutputPayload{LimitBytes: req.Exec.StdoutLimitBytes},
+					Stderr: ExecOutputPayload{LimitBytes: req.Exec.StderrLimitBytes},
+				},
+			}
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	cancel, errCh := runTestServer(t, server)
+	defer stopTestServer(t, cancel, errCh)
+
+	conn := dialWorkerSocket(t, socketPath)
+	defer conn.Close()
+	encoder := json.NewEncoder(conn)
+	firstReq := validWorkerExecRequest()
+	firstReq.RequestID = "req-001"
+	firstReq.DriverID = "fake_runtime"
+	firstReq.Exec.Target = lifecycleWorkerTarget("fake_runtime", "dev", "running")
+	if err := encoder.Encode(firstReq); err != nil {
+		t.Fatalf("Encode(first request) error: %v", err)
+	}
+	secondReq := firstReq
+	secondReq.RequestID = "req-002"
+	if err := encoder.Encode(secondReq); err != nil {
+		t.Fatalf("Encode(second request) error: %v", err)
+	}
+
+	decoder := json.NewDecoder(conn)
+	var firstResp Response
+	if err := decoder.Decode(&firstResp); err != nil {
+		t.Fatalf("Decode(first response) error: %v", err)
+	}
+	if firstResp.RequestID != "req-001" || firstResp.Operation != OperationExec || !firstResp.OK {
+		t.Fatalf("first response = %#v, want only first request response", firstResp)
+	}
+
+	var secondResp Response
+	err = decoder.Decode(&secondResp)
+	if err == nil {
+		t.Fatalf("Decode(second response) error = nil with response %#v, want closed single-response connection", secondResp)
+	}
+	if !errors.Is(err, io.EOF) && !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("Decode(second response) error = %v, want EOF or closed connection", err)
+	}
+	if got := handled.Load(); got != 1 {
+		t.Fatalf("handled requests = %d, want exactly one request per connection", got)
 	}
 }
 
@@ -607,6 +822,107 @@ func assertClientEmbeddedErrorSanitized(t *testing.T, message string) {
 			t.Fatalf("embedded service error = %q, want sanitized marker %q", message, want)
 		}
 	}
+}
+
+func newTestWorkerIOService(t *testing.T, socketPath string, driver *recordingSocketIODriver) *Service {
+	t.Helper()
+
+	registry, err := NewDriverRegistry(driver)
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+	service, err := NewService(ServiceOptions{
+		WorkerID:   "worker-001",
+		SocketPath: socketPath,
+		Registry:   registry,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+	return service
+}
+
+type recordingSocketIODriver struct {
+	id          string
+	execResult  *sandboxruntime.ExecResult
+	stdout      string
+	stderr      string
+	copyOutData string
+	execReq     sandboxruntime.ExecRequest
+	stdinData   string
+	copyInReq   sandboxruntime.CopyRequest
+	copyOutReq  sandboxruntime.CopyRequest
+	copyInData  string
+}
+
+func (driver *recordingSocketIODriver) ID() string {
+	return driver.id
+}
+
+func (driver *recordingSocketIODriver) Create(context.Context, sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+	return nil, ErrWorkerOperationUnsupported
+}
+
+func (driver *recordingSocketIODriver) Start(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	return nil, ErrWorkerOperationUnsupported
+}
+
+func (driver *recordingSocketIODriver) Stop(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	return nil, ErrWorkerOperationUnsupported
+}
+
+func (driver *recordingSocketIODriver) Delete(context.Context, sandboxruntime.LifecycleRequest) error {
+	return ErrWorkerOperationUnsupported
+}
+
+func (driver *recordingSocketIODriver) Inspect(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+	return nil, ErrWorkerOperationUnsupported
+}
+
+func (driver *recordingSocketIODriver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+	driver.execReq = req
+	if req.Stdin != nil {
+		data, err := io.ReadAll(req.Stdin)
+		if err != nil {
+			return nil, err
+		}
+		driver.stdinData = string(data)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if req.Stdout != nil && driver.stdout != "" {
+		if _, err := req.Stdout.Write([]byte(driver.stdout)); err != nil {
+			return nil, err
+		}
+	}
+	if req.Stderr != nil && driver.stderr != "" {
+		if _, err := req.Stderr.Write([]byte(driver.stderr)); err != nil {
+			return nil, err
+		}
+	}
+	if driver.execResult != nil {
+		return driver.execResult, nil
+	}
+	return &sandboxruntime.ExecResult{}, nil
+}
+
+func (driver *recordingSocketIODriver) CopyIn(ctx context.Context, req sandboxruntime.CopyRequest) error {
+	driver.copyInReq = req
+	data, err := os.ReadFile(req.SourcePath)
+	if err != nil {
+		return err
+	}
+	driver.copyInData = string(data)
+	return ctx.Err()
+}
+
+func (driver *recordingSocketIODriver) CopyOut(ctx context.Context, req sandboxruntime.CopyRequest) error {
+	driver.copyOutReq = req
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return os.WriteFile(req.DestinationPath, []byte(driver.copyOutData), 0o600)
 }
 
 func runRawWorkerResponseSocket(t *testing.T, payload string) string {

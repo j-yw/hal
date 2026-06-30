@@ -45,6 +45,7 @@
 - Worker copy protocol schema lives in `internal/sandboxworker/copy.go`; keep copy-in/copy-out payloads command-agnostic, encode file content as bounded base64 JSON payloads, and validate `sizeBytes` against decoded bytes before service dispatch.
 - Worker copy service routing lives in `internal/sandboxworker/copy_service.go`; stage base64 copy-in/copy-out payloads through temporary files, route through `DriverRegistry` to `sandboxruntime.Driver.CopyIn`/`CopyOut`, enforce copy-out response limits before serialization, and keep capability metadata conservative until the capability story.
 - Worker client I/O methods live in `internal/sandboxworker/client.go`; route exec/copy envelopes through `Client.roundTrip`, validate before transport dispatch, enforce returned payload limits against caller-requested limits, sanitize embedded response errors, and leave `ClientDriver` forwarding for the dedicated adapter stories.
+- Worker I/O local socket round-trip coverage belongs in `internal/sandboxworker/client_test.go`; use fake driver-backed `Service`/`Server` instances plus short `/tmp` socket paths, and keep the tests free of real runtime providers, network egress, or credential material.
 
 ## Patterns from phase13-sandboxd-self-hosted-worker-daemon-foundation (2026-07-01)
 
