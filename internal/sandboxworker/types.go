@@ -74,20 +74,24 @@ type Request struct {
 	Lifecycle       *LifecycleRequest `json:"lifecycle,omitempty"`
 	Inspect         *InspectRequest   `json:"inspect,omitempty"`
 	Exec            *ExecRequest      `json:"exec,omitempty"`
+	CopyIn          *CopyInRequest    `json:"copyIn,omitempty"`
+	CopyOut         *CopyOutRequest   `json:"copyOut,omitempty"`
 }
 
 // Response is the versioned protocol envelope returned by a local sandbox
 // worker.
 type Response struct {
-	ProtocolVersion string        `json:"protocolVersion,omitempty"`
-	RequestID       string        `json:"requestId,omitempty"`
-	Operation       string        `json:"operation"`
-	OK              bool          `json:"ok"`
-	Status          *Status       `json:"status,omitempty"`
-	Capabilities    *Capabilities `json:"capabilities,omitempty"`
-	Target          *Target       `json:"target,omitempty"`
-	Exec            *ExecResponse `json:"exec,omitempty"`
-	Error           *Error        `json:"error,omitempty"`
+	ProtocolVersion string           `json:"protocolVersion,omitempty"`
+	RequestID       string           `json:"requestId,omitempty"`
+	Operation       string           `json:"operation"`
+	OK              bool             `json:"ok"`
+	Status          *Status          `json:"status,omitempty"`
+	Capabilities    *Capabilities    `json:"capabilities,omitempty"`
+	Target          *Target          `json:"target,omitempty"`
+	Exec            *ExecResponse    `json:"exec,omitempty"`
+	CopyIn          *CopyInResponse  `json:"copyIn,omitempty"`
+	CopyOut         *CopyOutResponse `json:"copyOut,omitempty"`
+	Error           *Error           `json:"error,omitempty"`
 }
 
 // Error is a structured protocol error safe for local protocol responses.
@@ -243,6 +247,22 @@ func (req Request) Validate() error {
 			return fmt.Errorf("worker request exec payload is required for %s", req.Operation)
 		}
 		return req.Exec.Validate()
+	case OperationCopyIn:
+		if strings.TrimSpace(req.DriverID) == "" {
+			return fmt.Errorf("worker request driverId is required for %s", req.Operation)
+		}
+		if req.CopyIn == nil {
+			return fmt.Errorf("worker request copyIn payload is required for %s", req.Operation)
+		}
+		return req.CopyIn.Validate()
+	case OperationCopyOut:
+		if strings.TrimSpace(req.DriverID) == "" {
+			return fmt.Errorf("worker request driverId is required for %s", req.Operation)
+		}
+		if req.CopyOut == nil {
+			return fmt.Errorf("worker request copyOut payload is required for %s", req.Operation)
+		}
+		return req.CopyOut.Validate()
 	default:
 		return nil
 	}
@@ -300,8 +320,33 @@ func (resp Response) Validate() error {
 			return fmt.Errorf("worker response exec: %w", err)
 		}
 	}
+	if resp.CopyIn != nil {
+		if resp.Operation != OperationCopyIn {
+			return fmt.Errorf("worker response copyIn payload is only valid for %s", OperationCopyIn)
+		}
+		if err := resp.CopyIn.Validate(); err != nil {
+			return fmt.Errorf("worker response copyIn: %w", err)
+		}
+	}
+	if resp.CopyOut != nil {
+		if resp.Operation != OperationCopyOut {
+			return fmt.Errorf("worker response copyOut payload is only valid for %s", OperationCopyOut)
+		}
+		if err := resp.CopyOut.Validate(); err != nil {
+			return fmt.Errorf("worker response copyOut: %w", err)
+		}
+	}
 	if resp.OK && resp.Operation == OperationExec && resp.Exec == nil {
 		return fmt.Errorf("worker response exec payload is required when ok is true")
+	}
+	if resp.OK && resp.Operation == OperationCopyIn && resp.CopyIn == nil {
+		return fmt.Errorf("worker response copyIn payload is required when ok is true")
+	}
+	if resp.OK && resp.Operation == OperationCopyOut && resp.CopyOut == nil {
+		return fmt.Errorf("worker response copyOut payload is required when ok is true")
+	}
+	if resp.OK && resp.Operation == OperationCopyOut && resp.CopyOut.Payload == nil {
+		return fmt.Errorf("worker response copyOut payload data is required when ok is true")
 	}
 	return nil
 }
