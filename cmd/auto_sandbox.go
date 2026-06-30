@@ -346,27 +346,18 @@ func prepareAutoSandboxRequest(ctx context.Context, req *autoSandboxRequest, dep
 	if baseBranch == "" {
 		return fmt.Errorf("resolve base branch: current branch is required for sandbox execution; pass --base explicitly")
 	}
+
+	req.RepoRemote = repoRemote
+	req.BaseBranch = baseBranch
+	req.RunBranch = branchName
+	workspace := sandboxWorkspaceMetadataFromPlan(plan, sandbox.SandboxWorkspaceInputSourceRemoteRef, baseBranch)
+	req.Workspace = &workspace
 	if plan.RequiresBundle || plan.InputSource == sandbox.SandboxWorkspaceInputSourceGitBundle {
 		return fmt.Errorf("plan sandbox workspace: git bundle workspace input is not implemented for hal auto --sandbox yet; push local commits or choose a remote ref")
 	}
 	if inputSource := strings.TrimSpace(plan.InputSource); inputSource != "" && inputSource != sandbox.SandboxWorkspaceInputSourceRemoteRef {
 		return fmt.Errorf("plan sandbox workspace: unsupported clone input source %q for hal auto --sandbox", inputSource)
 	}
-
-	req.RepoRemote = repoRemote
-	req.BaseBranch = baseBranch
-	req.RunBranch = branchName
-	workspace := sandboxworkspace.ToSandboxWorkspace(plan)
-	if strings.TrimSpace(workspace.Mode) == "" {
-		workspace.Mode = sandbox.SandboxWorkspaceModeClone
-	}
-	if strings.TrimSpace(workspace.InputSource) == "" {
-		workspace.InputSource = sandbox.SandboxWorkspaceInputSourceRemoteRef
-	}
-	if strings.TrimSpace(workspace.SyncRef) == "" {
-		workspace.SyncRef = baseBranch
-	}
-	req.Workspace = &workspace
 
 	record := factory.RunRecord{
 		RunID:      req.ExecutionID,

@@ -250,9 +250,10 @@ func TestRunRunSandboxWithWriterWorkspacePlannerPreflightFailures(t *testing.T) 
 	finishedAt := startedAt.Add(2 * time.Second)
 
 	tests := []struct {
-		name      string
-		status    sandboxworkspace.GitStatus
-		wantError string
+		name          string
+		status        sandboxworkspace.GitStatus
+		wantError     string
+		wantWorkspace *sandbox.SandboxWorkspace
 	}{
 		{
 			name: "dirty clone workspace",
@@ -273,11 +274,19 @@ func TestRunRunSandboxWithWriterWorkspacePlannerPreflightFailures(t *testing.T) 
 				HeadRef:       "abc123",
 			},
 			wantError: "git bundle workspace input is not implemented",
+			wantWorkspace: &sandbox.SandboxWorkspace{
+				Mode:        sandbox.SandboxWorkspaceModeClone,
+				InputSource: sandbox.SandboxWorkspaceInputSourceGitBundle,
+				Repo:        "git@example.com:org/repo.git",
+				Branch:      "feature/unpushed",
+				SyncRef:     "abc123",
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			projectDir := t.TempDir()
 			store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
 			var out bytes.Buffer
 			var errOut bytes.Buffer
@@ -294,7 +303,7 @@ func TestRunRunSandboxWithWriterWorkspacePlannerPreflightFailures(t *testing.T) 
 					return "run-workspace-preflight"
 				},
 				now:        runSandboxTestClock(startedAt, finishedAt),
-				workingDir: func() (string, error) { return t.TempDir(), nil },
+				workingDir: func() (string, error) { return projectDir, nil },
 				planWorkspace: func(ctx context.Context, req sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
 					return sandboxworkspace.Planner{Git: fakeRunSandboxGitInspector{status: tt.status}}.Plan(ctx, req)
 				},
@@ -322,6 +331,25 @@ func TestRunRunSandboxWithWriterWorkspacePlannerPreflightFailures(t *testing.T) 
 			}
 			if manifest.Status != sandboxexecution.StatusFailed {
 				t.Fatalf("Status = %q, want failed", manifest.Status)
+			}
+			if tt.wantWorkspace == nil {
+				if manifest.Workspace != nil {
+					t.Fatalf("Workspace = %#v, want nil", manifest.Workspace)
+				}
+				return
+			}
+			if manifest.Workspace == nil {
+				t.Fatal("Workspace = nil, want planned workspace metadata")
+			}
+			if *manifest.Workspace != *tt.wantWorkspace {
+				t.Fatalf("Workspace = %#v, want %#v", manifest.Workspace, tt.wantWorkspace)
+			}
+			encodedWorkspace, err := json.Marshal(manifest.Workspace)
+			if err != nil {
+				t.Fatalf("Marshal(workspace) error: %v", err)
+			}
+			if strings.Contains(string(encodedWorkspace), projectDir) {
+				t.Fatalf("workspace metadata leaks local project path %q: %s", projectDir, encodedWorkspace)
 			}
 		})
 	}

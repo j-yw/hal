@@ -41,6 +41,7 @@
 
 - Workspace sync contracts live in `internal/sandboxworkspace/sync.go`; keep the core sync surface command-agnostic with package-local request/result/target types and narrow `LocalGit`/`RemoteClient` interfaces rather than Cobra, factory records, or concrete provider/runtime adapters.
 - Materialization metadata should be generated through `NewMaterializationResult` / `BundleMaterializationFromCreateResult`; do not persist host-local bundle paths in result or manifest metadata.
+- Sandbox command preflight paths that receive a valid workspace plan should populate `req.Workspace` before returning unsupported-input errors so failed execution manifests retain safe provenance metadata.
 - Keep `internal/sandboxworkspace` import-boundary tests updated when adding sync code so the package does not start importing `cmd`, `internal/factory`, `internal/prd`, `internal/compound`, `internal/loop`, Cobra, or concrete runtime adapters.
 
 ## Patterns from phase/sandbox-runtime-v2-9-runtime-driver (2026-06-30)

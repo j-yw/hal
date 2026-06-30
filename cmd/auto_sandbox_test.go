@@ -261,6 +261,81 @@ func TestRunAutoSandboxWithWriterJSONWorkspacePreflightFailure(t *testing.T) {
 	}
 }
 
+func TestRunAutoSandboxWithWriterGitBundlePreflightPersistsWorkspaceMetadata(t *testing.T) {
+	startedAt := time.Date(2026, 6, 30, 12, 16, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	executeCalled := false
+
+	err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
+		JSON:        true,
+		JSONChanged: true,
+	}, &out, &errOut, autoSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "auto-git-bundle-preflight"
+		},
+		now: runSandboxTestClock(startedAt, finishedAt),
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return sandboxworkspace.Plan{
+				Mode:           sandbox.SandboxWorkspaceModeClone,
+				InputSource:    sandbox.SandboxWorkspaceInputSourceGitBundle,
+				ProjectDir:     projectDir,
+				Repository:     "git@example.com:org/repo.git",
+				Branch:         "feature/unpushed-auto",
+				SyncRef:        "abc123",
+				RequiresBundle: true,
+			}, nil
+		},
+		execute: func(context.Context, autoSandboxRequest, io.Writer, io.Writer, autoSandboxExecutionHooks) (autoSandboxExecutionResult, error) {
+			executeCalled = true
+			return autoSandboxExecutionResult{}, errors.New("execute should not run")
+		},
+	})
+	if err != nil {
+		t.Fatalf("runAutoSandboxWithWriter() error = %v, want nil JSON error result", err)
+	}
+	if executeCalled {
+		t.Fatal("execute should not run for unsupported git-bundle preflight")
+	}
+	var result AutoResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal AutoResult: %v", err)
+	}
+	if !strings.Contains(result.Error, "git bundle workspace input is not implemented") {
+		t.Fatalf("Error = %q, want git bundle implementation guard", result.Error)
+	}
+	manifest, err := store.LoadManifest("auto-git-bundle-preflight")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if manifest.Status != sandboxexecution.StatusFailed {
+		t.Fatalf("Status = %q, want failed", manifest.Status)
+	}
+	wantWorkspace := sandbox.SandboxWorkspace{
+		Mode:        sandbox.SandboxWorkspaceModeClone,
+		InputSource: sandbox.SandboxWorkspaceInputSourceGitBundle,
+		Repo:        "git@example.com:org/repo.git",
+		Branch:      "feature/unpushed-auto",
+		SyncRef:     "abc123",
+	}
+	if manifest.Workspace == nil || *manifest.Workspace != wantWorkspace {
+		t.Fatalf("Workspace = %#v, want %#v", manifest.Workspace, wantWorkspace)
+	}
+	encodedWorkspace, err := json.Marshal(manifest.Workspace)
+	if err != nil {
+		t.Fatalf("Marshal(workspace) error: %v", err)
+	}
+	if strings.Contains(string(encodedWorkspace), projectDir) {
+		t.Fatalf("workspace metadata leaks local project path %q: %s", projectDir, encodedWorkspace)
+	}
+}
+
 func TestRunAutoSandboxWithWriterPreflightFailureNormalizesManifestCommand(t *testing.T) {
 	startedAt := time.Date(2026, 6, 30, 12, 18, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(time.Second)
@@ -411,6 +486,12 @@ func TestRunAutoSandboxWithWriterSuccessfulExecutorUpdatesManifest(t *testing.T)
 	}
 	if manifest.Workspace == nil || manifest.Workspace.Mode != sandbox.SandboxWorkspaceModeClone {
 		t.Fatalf("Workspace = %#v, want clone metadata", manifest.Workspace)
+	}
+	if manifest.Workspace.InputSource != sandbox.SandboxWorkspaceInputSourceRemoteRef ||
+		manifest.Workspace.Repo != "git@example.com:org/repo.git" ||
+		manifest.Workspace.Branch != "feature/auto-sandbox" ||
+		manifest.Workspace.SyncRef != "refs/remotes/origin/feature/auto-sandbox" {
+		t.Fatalf("Workspace = %#v, want remote-ref clone metadata", manifest.Workspace)
 	}
 	if manifest.Host == nil || manifest.Host.ID != "host-auto" {
 		t.Fatalf("Host = %#v, want target host metadata", manifest.Host)
