@@ -225,6 +225,9 @@ func TestRunAutoSandboxWithWriterJSONWorkspacePreflightFailure(t *testing.T) {
 		},
 		now: runSandboxTestClock(startedAt, finishedAt),
 		planWorkspace: func(ctx context.Context, req sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			if req.WorkspaceMode != sandbox.SandboxWorkspaceModeClone || req.DirectOptIn {
+				t.Fatalf("workspace planning request = %#v, want clone mode without direct opt-in", req)
+			}
 			status := sandboxworkspace.GitStatus{
 				IsGitWorktree: true,
 				Repository:    "git@example.com:org/repo.git",
@@ -1056,9 +1059,13 @@ func TestExecuteAutoSandboxCopiesExplicitInputsBeforeRemoteCommand(t *testing.T)
 func TestExecuteAutoSandboxGitBundleWorkspaceUsesSharedMaterializer(t *testing.T) {
 	target := &sandbox.SandboxState{
 		Name:        "auto-ready",
-		Provider:    "test-provider",
+		Provider:    "local",
 		Status:      sandbox.StatusRunning,
 		TailscaleIP: "100.64.0.11",
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandbox.SandboxRuntimeDriverRootlessPodman,
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+		},
 	}
 	req := autoSandboxRequest{
 		JSON:          true,
@@ -1085,10 +1092,11 @@ func TestExecuteAutoSandboxGitBundleWorkspaceUsesSharedMaterializer(t *testing.T
 	var order []string
 	var materialized bool
 	driver := &fakeRunSandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
 		exec: func(_ context.Context, got sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 			order = append(order, "runtime_exec")
-			if got.Target.Name != "auto-ready" || got.Target.Provider != "test-provider" {
-				t.Fatalf("runtime exec target = %#v, want prepared runtime target", got.Target)
+			if got.Target.Name != "auto-ready" || got.Target.Provider != "local" || got.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman || got.Target.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelContainer {
+				t.Fatalf("runtime exec target = %#v, want prepared rootless runtime target", got.Target)
 			}
 			_, _ = io.WriteString(got.Stdout, `{"contractVersion":2,"ok":true,"entryMode":"report_discovery","resumed":false,"steps":{},"summary":"ok"}`+"\n")
 			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
@@ -1110,8 +1118,8 @@ func TestExecuteAutoSandboxGitBundleWorkspaceUsesSharedMaterializer(t *testing.T
 		},
 		resolveRuntimeDriver: func(providerName string) (sandboxruntime.Driver, error) {
 			order = append(order, "resolve_runtime_driver")
-			if providerName != "test-provider" {
-				t.Fatalf("providerName = %q, want test-provider", providerName)
+			if providerName != "local" {
+				t.Fatalf("providerName = %q, want local", providerName)
 			}
 			return driver, nil
 		},
@@ -1125,8 +1133,8 @@ func TestExecuteAutoSandboxGitBundleWorkspaceUsesSharedMaterializer(t *testing.T
 			if prep.Driver != driver {
 				t.Fatalf("prep driver = %#v, want resolved runtime driver", prep.Driver)
 			}
-			if prep.Target.Name != "auto-ready" || prep.Target.Provider != "test-provider" || prep.Target.Connection.TailscaleIP != "100.64.0.11" {
-				t.Fatalf("prep target = %#v, want runtime target metadata", prep.Target)
+			if prep.Target.Name != "auto-ready" || prep.Target.Provider != "local" || prep.Target.Connection.TailscaleIP != "100.64.0.11" || prep.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman || prep.Target.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelContainer {
+				t.Fatalf("prep target = %#v, want rootless runtime target metadata", prep.Target)
 			}
 			if got.ProjectDir != req.ProjectDir || got.WorkspaceDir != req.WorkDir {
 				t.Fatalf("materialize request = %#v, want project/work dirs from request", got)

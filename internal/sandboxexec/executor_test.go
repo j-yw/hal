@@ -3,6 +3,7 @@ package sandboxexec
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"go/parser"
 	"go/token"
@@ -713,6 +714,84 @@ func TestRuntimeWorkspaceClientMapsCopyInAndExecToDriver(t *testing.T) {
 	}
 }
 
+func TestMaterializeBundleWorkspaceUsesRuntimeClientForRootlessPodman(t *testing.T) {
+	projectDir := t.TempDir()
+	bundleDir := t.TempDir()
+	plan := sandboxworkspace.Plan{
+		Mode:           sandbox.SandboxWorkspaceModeClone,
+		InputSource:    sandbox.SandboxWorkspaceInputSourceGitBundle,
+		ProjectDir:     projectDir,
+		Repository:     "git@example.com:org/repo.git",
+		Branch:         "feature/rootless",
+		SyncRef:        "abc123",
+		RequiresBundle: true,
+	}
+	target := sandboxruntime.Target{
+		ID:       "sandbox-123",
+		Name:     "rootless-box",
+		Provider: "local",
+		Runtime: sandboxruntime.RuntimeState{
+			Driver:         sandboxruntime.DriverRootlessPodman,
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+		},
+		Connection: sandboxruntime.ConnectionInfo{
+			WorkspaceID: "podman-container-123",
+		},
+	}
+
+	var copyIn sandboxruntime.CopyRequest
+	var execs []sandboxruntime.ExecRequest
+	driver := &recordingRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		copyIn: func(_ context.Context, req sandboxruntime.CopyRequest) error {
+			copyIn = req
+			return nil
+		},
+		exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			execs = append(execs, cloneExecRequest(req))
+			return &sandboxruntime.ExecResult{}, nil
+		},
+	}
+
+	result, err := MaterializeBundleWorkspace(context.Background(), PrepareContext{
+		Target: target,
+		Driver: driver,
+	}, WorkspaceMaterializationRequest{
+		Plan:                 &plan,
+		WorkspaceDir:         "/workspace/hal",
+		BundleDir:            bundleDir,
+		BundleDestinationDir: "/tmp/hal/bundles",
+		LocalGit:             &recordingWorkspaceLocalGit{},
+	})
+	if err != nil {
+		t.Fatalf("MaterializeBundleWorkspace() error = %v", err)
+	}
+	if !driver.copyInCalled || !driver.execCalled {
+		t.Fatalf("driver calls copy=%t exec=%t, want runtime CopyIn and Exec", driver.copyInCalled, driver.execCalled)
+	}
+	if copyIn.Target != target || copyIn.DestinationPath != "/tmp/hal/bundles/abc123.bundle" {
+		t.Fatalf("CopyIn request = %#v, want rootless target and bundle destination", copyIn)
+	}
+	if len(execs) != 3 {
+		t.Fatalf("Exec calls = %d, want remote init/fetch/checkout", len(execs))
+	}
+	for i, execReq := range execs {
+		if execReq.Target != target {
+			t.Fatalf("Exec[%d] target = %#v, want rootless runtime target", i, execReq.Target)
+		}
+	}
+	if result.InputSource != sandbox.SandboxWorkspaceInputSourceGitBundle || result.WorkspaceDir != "/workspace/hal" {
+		t.Fatalf("MaterializationResult = %#v, want git-bundle workspace metadata", result)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal(result) error = %v", err)
+	}
+	if strings.Contains(string(encoded), projectDir) || strings.Contains(string(encoded), bundleDir) || strings.Contains(string(encoded), copyIn.SourcePath) {
+		t.Fatalf("materialization metadata leaked host-local paths: %s", encoded)
+	}
+}
+
 func TestRunUsesExistingRunningTargetWithoutStart(t *testing.T) {
 	target := &sandbox.SandboxState{Name: "factory-dev", Provider: "daytona", Status: sandbox.StatusRunning}
 	startCalled := false
@@ -1366,6 +1445,25 @@ func (r *recordingRuntimeDriver) CopyIn(ctx context.Context, req sandboxruntime.
 }
 
 func (r *recordingRuntimeDriver) CopyOut(context.Context, sandboxruntime.CopyRequest) error {
+	return nil
+}
+
+type recordingWorkspaceLocalGit struct {
+	createRequests []sandboxworkspace.CreateBundleRequest
+	verifyRequests []sandboxworkspace.VerifyBundleRequest
+}
+
+func (g *recordingWorkspaceLocalGit) CreateBundle(_ context.Context, req sandboxworkspace.CreateBundleRequest) (sandboxworkspace.CreateBundleResult, error) {
+	g.createRequests = append(g.createRequests, req)
+	return sandboxworkspace.CreateBundleResult{
+		Path:    req.DestinationPath,
+		ID:      "abc123",
+		SyncRef: "abc123",
+	}, nil
+}
+
+func (g *recordingWorkspaceLocalGit) VerifyBundle(_ context.Context, req sandboxworkspace.VerifyBundleRequest) error {
+	g.verifyRequests = append(g.verifyRequests, req)
 	return nil
 }
 
