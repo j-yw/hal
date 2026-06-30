@@ -1,10 +1,15 @@
 package sandboxworker
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 func TestWorkerExecProtocolJSONContractPreservesRequestAndResponsePayloads(t *testing.T) {
@@ -281,6 +286,212 @@ func TestWorkerExecResponseValidationRejectsUnboundedOutput(t *testing.T) {
 	}
 }
 
+func TestServiceExecRoutesRequestsThroughRegisteredDriver(t *testing.T) {
+	driver := &recordingExecDriver{
+		recordingLifecycleDriver: recordingLifecycleDriver{id: "fake_runtime"},
+		result:                   &sandboxruntime.ExecResult{ExitCode: 7},
+		stdout:                   "hello\n",
+		stderr:                   "warn\n",
+	}
+	registry, err := NewDriverRegistry(driver)
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+	service, err := NewService(ServiceOptions{
+		WorkerID: "worker-001",
+		Registry: registry,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+
+	req := validWorkerExecRequest()
+	req.DriverID = "fake_runtime"
+	req.Exec.Target = lifecycleWorkerTarget("fake_runtime", "dev", "running")
+	req.Exec.Args = []string{"sh", "-lc", "cat"}
+	req.Exec.Env = map[string]string{"HAL_SANDBOX": "1"}
+	req.Exec.WorkDir = " /workspace/hal "
+	req.Exec.Stdin = &ExecStdinPayload{
+		Data:       "input\n",
+		SizeBytes:  6,
+		LimitBytes: MaxExecStdinBytes,
+	}
+
+	resp := service.HandleRequest(context.Background(), req)
+	if err := resp.Validate(); err != nil {
+		t.Fatalf("exec response Validate() error: %v", err)
+	}
+	if !resp.OK || resp.Operation != OperationExec || resp.Exec == nil {
+		t.Fatalf("exec response = %#v, want successful exec payload", resp)
+	}
+	if resp.Exec.ExitCode != 7 {
+		t.Fatalf("exec exitCode = %d, want 7", resp.Exec.ExitCode)
+	}
+	if resp.Exec.Stdout.Data != "hello\n" || resp.Exec.Stdout.SizeBytes != 6 || resp.Exec.Stdout.Truncated {
+		t.Fatalf("exec stdout = %#v, want captured non-truncated stdout", resp.Exec.Stdout)
+	}
+	if resp.Exec.Stderr.Data != "warn\n" || resp.Exec.Stderr.SizeBytes != 5 || resp.Exec.Stderr.Truncated {
+		t.Fatalf("exec stderr = %#v, want captured non-truncated stderr", resp.Exec.Stderr)
+	}
+	if !reflect.DeepEqual(driver.calls, []string{OperationExec}) {
+		t.Fatalf("driver calls = %#v, want exec call", driver.calls)
+	}
+	if !reflect.DeepEqual(driver.execReq.Args, []string{"sh", "-lc", "cat"}) {
+		t.Fatalf("driver exec args = %#v, want protocol args", driver.execReq.Args)
+	}
+	if driver.execReq.Target.Name != "dev" || driver.execReq.Target.Runtime.Driver != "fake_runtime" {
+		t.Fatalf("driver exec target = %#v, want converted worker target", driver.execReq.Target)
+	}
+	if driver.execReq.Env["HAL_SANDBOX"] != "1" {
+		t.Fatalf("driver exec env = %#v, want cloned env", driver.execReq.Env)
+	}
+	if driver.execReq.WorkDir != "/workspace/hal" {
+		t.Fatalf("driver exec workdir = %q, want trimmed workdir", driver.execReq.WorkDir)
+	}
+	if driver.stdinData != "input\n" {
+		t.Fatalf("driver stdin = %q, want request stdin", driver.stdinData)
+	}
+}
+
+func TestServiceExecEnforcesCaptureLimitsBeforeReturningResponse(t *testing.T) {
+	driver := &recordingExecDriver{
+		recordingLifecycleDriver: recordingLifecycleDriver{id: "fake_runtime"},
+		result:                   &sandboxruntime.ExecResult{ExitCode: 0},
+		stdout:                   "abcdef",
+		stderr:                   "12345",
+	}
+	registry, err := NewDriverRegistry(driver)
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+	service, err := NewService(ServiceOptions{
+		WorkerID: "worker-001",
+		Registry: registry,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+
+	req := validWorkerExecRequest()
+	req.DriverID = "fake_runtime"
+	req.Exec.Target = lifecycleWorkerTarget("fake_runtime", "dev", "running")
+	req.Exec.StdoutLimitBytes = 3
+	req.Exec.StderrLimitBytes = 2
+
+	resp := service.HandleRequest(context.Background(), req)
+	if err := resp.Validate(); err != nil {
+		t.Fatalf("exec response Validate() error: %v", err)
+	}
+	if !resp.OK || resp.Exec == nil {
+		t.Fatalf("exec response = %#v, want successful bounded payload", resp)
+	}
+	if resp.Exec.Stdout.Data != "abc" || resp.Exec.Stdout.SizeBytes != 3 || resp.Exec.Stdout.LimitBytes != 3 || !resp.Exec.Stdout.Truncated {
+		t.Fatalf("exec stdout = %#v, want truncated to 3 bytes", resp.Exec.Stdout)
+	}
+	if resp.Exec.Stderr.Data != "12" || resp.Exec.Stderr.SizeBytes != 2 || resp.Exec.Stderr.LimitBytes != 2 || !resp.Exec.Stderr.Truncated {
+		t.Fatalf("exec stderr = %#v, want truncated to 2 bytes", resp.Exec.Stderr)
+	}
+}
+
+func TestServiceExecDriverErrorsAreStructuredAndSanitized(t *testing.T) {
+	driver := &recordingExecDriver{
+		recordingLifecycleDriver: recordingLifecycleDriver{id: "fake_runtime"},
+		result:                   &sandboxruntime.ExecResult{ExitCode: 126},
+		stdout:                   "partial out",
+		stderr:                   "partial err",
+		err:                      errors.New("exec failed token=raw-secret under /Users/alice/worktree"),
+	}
+	registry, err := NewDriverRegistry(driver)
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+	service, err := NewService(ServiceOptions{
+		WorkerID: "worker-001",
+		Registry: registry,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+
+	req := validWorkerExecRequest()
+	req.DriverID = "fake_runtime"
+	req.Exec.Target = lifecycleWorkerTarget("fake_runtime", "dev", "running")
+
+	resp := service.HandleRequest(context.Background(), req)
+	if err := resp.Validate(); err != nil {
+		t.Fatalf("exec response Validate() error: %v", err)
+	}
+	if !resp.OK || resp.Error != nil || resp.Exec == nil || resp.Exec.Error == nil {
+		t.Fatalf("exec response = %#v, want command error inside exec payload", resp)
+	}
+	if resp.Exec.ExitCode != 126 {
+		t.Fatalf("exec exitCode = %d, want 126", resp.Exec.ExitCode)
+	}
+	if resp.Exec.Error.Code != ErrorCodeDriverFailed {
+		t.Fatalf("exec error code = %q, want %q", resp.Exec.Error.Code, ErrorCodeDriverFailed)
+	}
+	message := resp.Exec.Error.Message
+	for _, unsafe := range []string{"raw-secret", "/Users/alice", "worktree"} {
+		if strings.Contains(message, unsafe) {
+			t.Fatalf("exec error leaked unsafe detail %q in %q", unsafe, message)
+		}
+	}
+	for _, want := range []string{"token=[redacted]", "[redacted-path]"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("exec error message = %q, want sanitized marker %q", message, want)
+		}
+	}
+}
+
+func TestServiceExecUnsupportedUnknownDriverAndContextErrorsAreStructured(t *testing.T) {
+	driver := &recordingExecDriver{
+		recordingLifecycleDriver: recordingLifecycleDriver{id: "fake_runtime"},
+		unsupported:              true,
+	}
+	registry, err := NewDriverRegistry(driver)
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+	service, err := NewService(ServiceOptions{
+		WorkerID: "worker-001",
+		Registry: registry,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+
+	req := validWorkerExecRequest()
+	req.DriverID = "missing_runtime"
+	req.Exec.Target = lifecycleWorkerTarget("missing_runtime", "dev", "running")
+	unknownResp := service.HandleRequest(context.Background(), req)
+	if err := unknownResp.Validate(); err != nil {
+		t.Fatalf("unknown driver response Validate() error: %v", err)
+	}
+	if unknownResp.OK || unknownResp.Error == nil || unknownResp.Error.Code != ErrorCodeDriverNotFound {
+		t.Fatalf("unknown driver response = %#v, want driver_not_found", unknownResp)
+	}
+
+	req.DriverID = "fake_runtime"
+	req.Exec.Target = lifecycleWorkerTarget("fake_runtime", "dev", "running")
+	unsupportedResp := service.HandleRequest(context.Background(), req)
+	if err := unsupportedResp.Validate(); err != nil {
+		t.Fatalf("unsupported response Validate() error: %v", err)
+	}
+	if unsupportedResp.OK || unsupportedResp.Error == nil || unsupportedResp.Error.Code != ErrorCodeUnsupportedOp {
+		t.Fatalf("unsupported response = %#v, want unsupported_operation", unsupportedResp)
+	}
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	canceledResp := service.HandleRequest(canceledCtx, req)
+	if canceledResp.OK || canceledResp.Error == nil || canceledResp.Error.Code != ErrorCodeRequestCanceled {
+		t.Fatalf("canceled response = %#v, want request_canceled", canceledResp)
+	}
+	if !reflect.DeepEqual(driver.calls, []string{OperationExec}) {
+		t.Fatalf("driver calls = %#v, want no call after canceled context", driver.calls)
+	}
+}
+
 func validWorkerExecRequest() Request {
 	return Request{
 		Operation: OperationExec,
@@ -329,6 +540,50 @@ func mutateExecResponse(resp Response, mutate func(*ExecResponse)) Response {
 		mutate(resp.Exec)
 	}
 	return resp
+}
+
+type recordingExecDriver struct {
+	recordingLifecycleDriver
+	result      *sandboxruntime.ExecResult
+	stdout      string
+	stderr      string
+	err         error
+	unsupported bool
+	execReq     sandboxruntime.ExecRequest
+	stdinData   string
+}
+
+func (driver *recordingExecDriver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+	driver.calls = append(driver.calls, OperationExec)
+	driver.execReq = req
+	if req.Stdin != nil {
+		data, err := io.ReadAll(req.Stdin)
+		if err != nil {
+			return nil, err
+		}
+		driver.stdinData = string(data)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if driver.unsupported {
+		return nil, ErrWorkerOperationUnsupported
+	}
+	if req.Stdout != nil && driver.stdout != "" {
+		if _, err := req.Stdout.Write([]byte(driver.stdout)); err != nil {
+			return nil, err
+		}
+	}
+	if req.Stderr != nil && driver.stderr != "" {
+		if _, err := req.Stderr.Write([]byte(driver.stderr)); err != nil {
+			return nil, err
+		}
+	}
+	result := driver.result
+	if result == nil && driver.err == nil {
+		result = &sandboxruntime.ExecResult{}
+	}
+	return result, driver.err
 }
 
 func assertJSONFields(t *testing.T, payload map[string]any, fields []string) {

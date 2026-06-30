@@ -165,16 +165,13 @@ func TestServiceReturnsStructuredOperationErrorsOverUnixSocket(t *testing.T) {
 		t.Fatalf("unknown error code = %q, want %q", unknownResp.Error.Code, ErrorCodeMalformedRequest)
 	}
 
-	unsupportedResp := roundTripWorkerRequest(t, socketPath, Request{
-		RequestID: "req-exec",
-		Operation: OperationExec,
-		DriverID:  RuntimeDriverRootlessPodman,
-		Exec:      validWorkerExecRequest().Exec,
-	})
+	unsupportedCopyReq := validWorkerCopyInRequest()
+	unsupportedCopyReq.RequestID = "req-copy-in"
+	unsupportedResp := roundTripWorkerRequest(t, socketPath, unsupportedCopyReq)
 	if err := unsupportedResp.Validate(); err != nil {
 		t.Fatalf("unsupported response Validate() error: %v", err)
 	}
-	if unsupportedResp.OK || unsupportedResp.Operation != OperationExec || unsupportedResp.Error == nil {
+	if unsupportedResp.OK || unsupportedResp.Operation != OperationCopyIn || unsupportedResp.Error == nil {
 		t.Fatalf("unsupported response = %#v, want structured unsupported-operation error", unsupportedResp)
 	}
 	if unsupportedResp.Error.Code != ErrorCodeUnsupportedOp {

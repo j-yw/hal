@@ -59,7 +59,7 @@ func TestWorkerSafetyUnsupportedOperationsAreStructuredAndDoNotReachDrivers(t *t
 		t.Fatalf("NewService() error: %v", err)
 	}
 
-	for _, operation := range []string{OperationExec, OperationCopyIn, OperationCopyOut} {
+	for _, operation := range []string{OperationCopyIn, OperationCopyOut} {
 		resp := service.HandleRequest(context.Background(), Request{
 			RequestID: "req-" + operation,
 			Operation: operation,
