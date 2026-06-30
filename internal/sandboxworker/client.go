@@ -21,8 +21,9 @@ const (
 )
 
 var (
-	clientHostPathPattern         = regexp.MustCompile(`(?i)(/private)?/(Users|home|tmp|var/folders)/[^\s:'"]+`)
-	clientSecretAssignmentPattern = regexp.MustCompile(`(?i)\b(token|secret|password|api[_-]?key)=\S+`)
+	clientHostPathPattern         = regexp.MustCompile(`(?i)(/private)?/(Users|home|tmp|var/(folders|tmp)|run/user)/[^\s:'"]+`)
+	clientRemoteTempPathPattern   = regexp.MustCompile(`(?i)/(workspace|workspaces|sandbox|remote)/[^\s:'"]*(/\.hal/tmp|/\.tmp|/tmp|/temp)[^\s:'"]*`)
+	clientSecretAssignmentPattern = regexp.MustCompile(`(?i)\b([a-z0-9_-]*(token|secret|password|api[_-]?key))=\S+`)
 )
 
 // Client calls worker protocol operations through a fakeable local transport.
@@ -521,6 +522,7 @@ func sanitizeProtocolErrorDetail(detail string) string {
 	detail = strings.Join(strings.Fields(detail), " ")
 	detail = clientSecretAssignmentPattern.ReplaceAllString(detail, "$1=[redacted]")
 	detail = clientHostPathPattern.ReplaceAllString(detail, "[redacted-path]")
+	detail = clientRemoteTempPathPattern.ReplaceAllString(detail, "[redacted-path]")
 	if len(detail) > maxClientErrorDetailBytes {
 		detail = strings.TrimSpace(detail[:maxClientErrorDetailBytes]) + "..."
 	}

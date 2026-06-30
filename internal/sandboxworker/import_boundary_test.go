@@ -125,6 +125,21 @@ func TestSandboxworkerImportBoundaryAllowsRuntimeContractsOnly(t *testing.T) {
 	}
 }
 
+func TestSandboxworkerImportBoundaryRejectsExternalRuntimeProviders(t *testing.T) {
+	for _, importPath := range []string{
+		"github.com/docker/docker/client",
+		"github.com/containers/podman/v5/pkg/bindings",
+		"github.com/digitalocean/godo",
+	} {
+		t.Run(importPath, func(t *testing.T) {
+			message := sandboxworkerImportBoundaryMessage("types.go", importPath)
+			if !strings.Contains(message, "non-standard-library dependency") || !strings.Contains(message, importPath) {
+				t.Fatalf("boundary message = %q, want rejection for external provider import %q", message, importPath)
+			}
+		})
+	}
+}
+
 func TestSandboxworkerImportBoundaryMessageIncludesPackageAndForbiddenImport(t *testing.T) {
 	const importPath = "github.com/spf13/cobra"
 	message := sandboxworkerImportBoundaryMessage("types.go", importPath)

@@ -210,6 +210,102 @@ func TestWorkerSafetyCreateResponsesDoNotPersistRawCredentialInput(t *testing.T)
 	}
 }
 
+func TestWorkerSafetyIOProtocolResponsesRedactSecretsAndPaths(t *testing.T) {
+	unsafeDetail := strings.Join([]string{
+		"driver failed",
+		"GITHUB_TOKEN=ghp_worker_secret",
+		"PASSWORD=hunter2",
+		"host source /Users/alice/worktree/input.txt",
+		"host temp /var/tmp/hal-worker-copy-out-123/payload",
+		"remote temp /workspace/.hal/tmp/raw-output",
+	}, " ")
+
+	t.Run("exec embedded driver error", func(t *testing.T) {
+		driver := &recordingExecDriver{
+			recordingLifecycleDriver: recordingLifecycleDriver{id: "fake_runtime"},
+			result:                   &sandboxruntime.ExecResult{ExitCode: 1},
+			err:                      errors.New(unsafeDetail),
+		}
+		service := newWorkerSafetyService(t, driver)
+		req := validWorkerExecRequest()
+		req.DriverID = "fake_runtime"
+		req.Exec.Target = lifecycleWorkerTarget("fake_runtime", "dev", "running")
+
+		resp := service.HandleRequest(context.Background(), req)
+		if err := resp.Validate(); err != nil {
+			t.Fatalf("exec response Validate() error: %v", err)
+		}
+		if !resp.OK || resp.Exec == nil || resp.Exec.Error == nil {
+			t.Fatalf("exec response = %#v, want embedded sanitized command error", resp)
+		}
+		assertWorkerSafetyProtocolResponseRedacted(t, "exec response", resp)
+	})
+
+	t.Run("copy_in embedded driver error", func(t *testing.T) {
+		driver := &recordingCopyDriver{
+			recordingLifecycleDriver: recordingLifecycleDriver{id: "fake_runtime"},
+			copyInErr:                errors.New(unsafeDetail),
+		}
+		service := newWorkerSafetyService(t, driver)
+		req := validWorkerCopyInRequest()
+		req.DriverID = "fake_runtime"
+		req.CopyIn.Target = lifecycleWorkerTarget("fake_runtime", "dev", "running")
+
+		resp := service.HandleRequest(context.Background(), req)
+		if err := resp.Validate(); err != nil {
+			t.Fatalf("copy_in response Validate() error: %v", err)
+		}
+		if !resp.OK || resp.CopyIn == nil || resp.CopyIn.Error == nil {
+			t.Fatalf("copy_in response = %#v, want embedded sanitized copy error", resp)
+		}
+		assertWorkerSafetyProtocolResponseRedacted(t, "copy_in response", resp)
+	})
+
+	t.Run("copy_out top-level driver error", func(t *testing.T) {
+		driver := &recordingCopyDriver{
+			recordingLifecycleDriver: recordingLifecycleDriver{id: "fake_runtime"},
+			copyOutErr:               errors.New(unsafeDetail),
+		}
+		service := newWorkerSafetyService(t, driver)
+		req := validWorkerCopyOutRequest()
+		req.DriverID = "fake_runtime"
+		req.CopyOut.Target = lifecycleWorkerTarget("fake_runtime", "dev", "running")
+
+		resp := service.HandleRequest(context.Background(), req)
+		if err := resp.Validate(); err != nil {
+			t.Fatalf("copy_out response Validate() error: %v", err)
+		}
+		if resp.OK || resp.Error == nil {
+			t.Fatalf("copy_out response = %#v, want top-level sanitized protocol error", resp)
+		}
+		assertWorkerSafetyProtocolResponseRedacted(t, "copy_out response", resp)
+	})
+}
+
+func TestWorkerSafetyCopyOutStagingErrorsDoNotLeakHostTempPaths(t *testing.T) {
+	service := newWorkerSafetyService(t, &recordingLifecycleDriver{id: "fake_runtime"})
+	req := validWorkerCopyOutRequest()
+	req.DriverID = "fake_runtime"
+	req.CopyOut.Target = lifecycleWorkerTarget("fake_runtime", "dev", "running")
+
+	resp := service.HandleRequest(context.Background(), req)
+	if err := resp.Validate(); err != nil {
+		t.Fatalf("copy_out staging response Validate() error: %v", err)
+	}
+	if resp.OK || resp.Error == nil || resp.Error.Code != ErrorCodeDriverFailed {
+		t.Fatalf("copy_out staging response = %#v, want sanitized driver error", resp)
+	}
+	payload := marshalWorkerSafetyResponse(t, resp)
+	for _, unsafe := range []string{"/tmp/", "/private/tmp/", "/var/tmp/", "/private/var/tmp/", "/var/folders/"} {
+		if strings.Contains(payload, unsafe) {
+			t.Fatalf("copy_out staging response leaked host temp path fragment %q in %s", unsafe, payload)
+		}
+	}
+	if !strings.Contains(payload, "[redacted-path]") {
+		t.Fatalf("copy_out staging response = %s, want redacted path marker", payload)
+	}
+}
+
 func TestWorkerSafetyRuntimeTargetConversionDropsConnectionAndProviderData(t *testing.T) {
 	target := workerTargetFromRuntimeTarget(sandboxruntime.Target{
 		ID:       "target-secret",
@@ -239,6 +335,56 @@ func TestWorkerSafetyRuntimeTargetConversionDropsConnectionAndProviderData(t *te
 			t.Fatalf("worker target JSON leaked runtime connection detail %q: %s", unsafe, payload)
 		}
 	}
+}
+
+func newWorkerSafetyService(t *testing.T, driver sandboxruntime.Driver) *Service {
+	t.Helper()
+
+	registry, err := NewDriverRegistry(driver)
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+	service, err := NewService(ServiceOptions{
+		WorkerID: "worker-safety",
+		Registry: registry,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+	return service
+}
+
+func assertWorkerSafetyProtocolResponseRedacted(t *testing.T, label string, resp Response) {
+	t.Helper()
+
+	payload := marshalWorkerSafetyResponse(t, resp)
+	for _, unsafe := range []string{
+		"ghp_worker_secret",
+		"hunter2",
+		"/Users/alice",
+		"worktree/input.txt",
+		"/var/tmp/hal-worker-copy-out-123",
+		"/workspace/.hal/tmp/raw-output",
+	} {
+		if strings.Contains(payload, unsafe) {
+			t.Fatalf("%s leaked unsafe detail %q in %s", label, unsafe, payload)
+		}
+	}
+	for _, marker := range []string{"GITHUB_TOKEN=[redacted]", "PASSWORD=[redacted]", "[redacted-path]"} {
+		if !strings.Contains(payload, marker) {
+			t.Fatalf("%s = %s, want marker %q", label, payload, marker)
+		}
+	}
+}
+
+func marshalWorkerSafetyResponse(t *testing.T, resp Response) string {
+	t.Helper()
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("Marshal(response) error: %v", err)
+	}
+	return string(data)
 }
 
 func TestWorkerSafetyProductionFilesAvoidUnsafeHostDependencies(t *testing.T) {
