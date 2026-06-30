@@ -80,20 +80,20 @@ hal auto [prd-path] [flags]
 ### Options
 
 ```
-  -b, --base string         Base branch for new work branch and PR target (default: current branch, or HEAD when detached)
-      --dry-run             Show steps without executing
-  -e, --engine string       Engine to use (claude, codex, pi) (default "codex")
-  -h, --help                help for auto
-      --json                Output machine-readable JSON result
-  -m, --mode string         Policy preset: fast, balanced, strict (default from config)
-      --no-ci               Disable CI gate for this run
-      --no-review           Disable review gate for this run
-      --report string       Specific report file (overrides markdown auto-discovery, skips find latest)
-      --resume              Continue from last saved state
-      --review-max int      Maximum review cycles before failing (default from mode/config)
-      --review-streak int   Consecutive clean review cycles required (default from mode/config)
-      --sandbox             Run inside a sandbox
-      --sandbox-name string  Sandbox name for --sandbox execution
+  -b, --base string           Base branch for new work branch and PR target (default: current branch, or HEAD when detached)
+      --dry-run               Show steps without executing
+  -e, --engine string         Engine to use (claude, codex, pi) (default "codex")
+  -h, --help                  help for auto
+      --json                  Output machine-readable JSON result
+  -m, --mode string           Policy preset: fast, balanced, strict (default from config)
+      --no-ci                 Disable CI gate for this run
+      --no-review             Disable review gate for this run
+      --report string         Specific report file (overrides markdown auto-discovery, skips find latest)
+      --resume                Continue from last saved state
+      --review-max int        Maximum review cycles before failing (default from mode/config)
+      --review-streak int     Consecutive clean review cycles required (default from mode/config)
+      --sandbox               Run inside a sandbox
+      --sandbox-name string   Sandbox name for --sandbox execution
 ```
 
 ### SEE ALSO

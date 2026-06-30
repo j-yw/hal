@@ -27,6 +27,9 @@ Examples:
   hal run --dry-run                # Show what would execute
   hal run --base develop           # Branch from develop when needed
   hal run --json                   # Machine-readable result output
+  hal run --sandbox                # Run inside a sandbox
+  hal run --sandbox 3              # Run 3 iterations inside a sandbox
+  hal run --sandbox my-box         # Run inside a named sandbox
 
 
 ```
@@ -41,6 +44,9 @@ hal run [iterations] [flags]
   hal run --story US-001
   hal run --timeout 30m
   hal run --json
+  hal run --sandbox
+  hal run --sandbox 3
+  hal run --sandbox my-box
   hal run --engine codex --base develop
 ```
 
@@ -55,6 +61,8 @@ hal run [iterations] [flags]
       --json                   Output machine-readable JSON result
       --retries int            Max retries per iteration on failure (default 3)
       --retry-delay duration   Base retry delay (default 5s)
+      --sandbox                Run inside a sandbox
+      --sandbox-name string    Sandbox name for --sandbox execution
   -s, --story string           Run specific story by ID (e.g., US-001)
       --timeout duration       Per-engine session timeout override (e.g., 30m, 1h)
 ```
