@@ -7,6 +7,25 @@ import (
 	"testing"
 )
 
+func TestRuntimeDriverIDConstants(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "ssh machine", got: DriverSSHMachine, want: "ssh_machine"},
+		{name: "rootless podman", got: DriverRootlessPodman, want: "rootless_podman"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("driver ID = %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLifecycleDriverInterfaceIncludesCoreOperations(t *testing.T) {
 	var _ LifecycleDriver = fakeLifecycleDriver{}
 

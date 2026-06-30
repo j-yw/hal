@@ -5,7 +5,10 @@ import (
 	"io"
 )
 
-const DriverSSHMachine = "ssh_machine"
+const (
+	DriverSSHMachine     = "ssh_machine"
+	DriverRootlessPodman = "rootless_podman"
+)
 
 // Driver is the complete sandbox runtime boundary used by orchestration code.
 type Driver interface {

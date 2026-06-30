@@ -76,6 +76,7 @@
 ## Patterns from phase/sandbox-runtime-v2-9-runtime-driver (2026-06-30)
 
 - Runtime-driver boundary contracts live in `internal/sandboxruntime`; keep this package command-agnostic by using package-local target/request types and only standard-library dependencies.
+- Runtime driver IDs are mirrored between durable sandbox metadata constants in `internal/sandbox/types.go` and runtime-boundary constants in `internal/sandboxruntime/types.go`; keep those values in sync, and keep nil/empty runtime metadata defaulting to `ssh_machine` in sandbox execution adapters.
 - The root `internal/sandboxruntime` package has an import-boundary test that scans production Go files and forbids Cobra, `cmd`, `internal/factory`, `internal/prd`, `internal/compound`, and `internal/loop`; put provider/runtime adapters outside the root contracts package.
 - SSH-machine runtime adapter code lives in `internal/sandboxruntime/sshmachine`; preserve legacy target resolution by deriving provider inputs through `sandbox.ConnectInfoFromState`, and wrap provider lifecycle failures in typed errors that keep operation name, driver ID, and the underlying provider error.
 - SSH-machine runtime exec should call the legacy provider `Exec` with command args unchanged, then configure the returned `*exec.Cmd` with runtime stdin/stdout/stderr/env/workdir; stderr defaults to stdout, and context cancellation errors must remain unwrap-compatible through the adapter operation error.

@@ -596,6 +596,53 @@ func TestRunPrepareContextCarriesRuntimeTargetConnection(t *testing.T) {
 	}
 }
 
+func TestSandboxRuntimeDriverRecognizesRootlessPodmanWithoutChangingDefaults(t *testing.T) {
+	tests := []struct {
+		name   string
+		target *sandbox.SandboxState
+		want   string
+	}{
+		{
+			name: "nil target defaults to ssh machine",
+			want: sandbox.SandboxRuntimeDriverSSHMachine,
+		},
+		{
+			name:   "missing runtime defaults to ssh machine",
+			target: &sandbox.SandboxState{},
+			want:   sandbox.SandboxRuntimeDriverSSHMachine,
+		},
+		{
+			name: "empty runtime driver defaults to ssh machine",
+			target: &sandbox.SandboxState{
+				Runtime: &sandbox.SandboxRuntimeState{Driver: "  "},
+			},
+			want: sandbox.SandboxRuntimeDriverSSHMachine,
+		},
+		{
+			name: "explicit ssh machine remains ssh machine",
+			target: &sandbox.SandboxState{
+				Runtime: &sandbox.SandboxRuntimeState{Driver: sandbox.SandboxRuntimeDriverSSHMachine},
+			},
+			want: sandbox.SandboxRuntimeDriverSSHMachine,
+		},
+		{
+			name: "explicit rootless podman is preserved",
+			target: &sandbox.SandboxState{
+				Runtime: &sandbox.SandboxRuntimeState{Driver: sandbox.SandboxRuntimeDriverRootlessPodman},
+			},
+			want: sandboxruntime.DriverRootlessPodman,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sandboxRuntimeDriver(tt.target); got != tt.want {
+				t.Fatalf("sandboxRuntimeDriver() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRuntimeWorkspaceClientMapsCopyInAndExecToDriver(t *testing.T) {
 	target := sandboxruntime.Target{
 		ID:       "sandbox-123",
