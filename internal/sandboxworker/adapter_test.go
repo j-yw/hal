@@ -1,6 +1,7 @@
 package sandboxworker
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"reflect"
@@ -113,7 +114,90 @@ func TestClientDriverMapsLifecycleAndInspectCallsToWorkerClient(t *testing.T) {
 	}
 }
 
-func TestClientDriverUnsupportedExecAndCopyReturnExplicitErrors(t *testing.T) {
+func TestClientDriverExecForwardsToWorkerClientAndWritesBoundedOutput(t *testing.T) {
+	client := &recordingRuntimeDriverClient{
+		execResp: &ExecResponse{
+			ExitCode: 17,
+			Stdout:   workerExecOutputPayload("stdout data", MaxExecStdoutCaptureBytes, false),
+			Stderr:   workerExecOutputPayload("stderr data", MaxExecStderrCaptureBytes, false),
+		},
+	}
+	driver, err := NewClientDriver(ClientDriverOptions{
+		DriverID: "fake_runtime",
+		Client:   client,
+	})
+	if err != nil {
+		t.Fatalf("NewClientDriver() error: %v", err)
+	}
+
+	args := []string{"sh", "-lc", "cat"}
+	env := map[string]string{"TOKEN": "raw-secret"}
+	var stdout, stderr bytes.Buffer
+	result, err := driver.Exec(context.Background(), sandboxruntime.ExecRequest{
+		Target: sandboxruntime.Target{
+			ID:     "target-dev",
+			Name:   "dev",
+			Status: "running",
+			Runtime: sandboxruntime.RuntimeState{
+				RuntimeID:      "runtime-dev",
+				Image:          "image-ref",
+				WorkerID:       "worker-001",
+				IsolationLevel: IsolationLevelContainer,
+			},
+		},
+		Args:    args,
+		Env:     env,
+		WorkDir: " /workspace/hal ",
+		Stdin:   strings.NewReader("stdin data"),
+		Stdout:  &stdout,
+		Stderr:  &stderr,
+	})
+	if err != nil {
+		t.Fatalf("Exec() error: %v", err)
+	}
+	args[0] = "changed"
+	env["TOKEN"] = "changed"
+
+	if result == nil || result.ExitCode != 17 {
+		t.Fatalf("Exec() result = %#v, want exit code 17", result)
+	}
+	if stdout.String() != "stdout data" || stderr.String() != "stderr data" {
+		t.Fatalf("Exec() output = stdout %q stderr %q, want worker response output", stdout.String(), stderr.String())
+	}
+	if !reflect.DeepEqual(client.calls, []string{OperationExec}) {
+		t.Fatalf("worker client calls = %#v, want exec call", client.calls)
+	}
+	if client.driverIDs[OperationExec] != "fake_runtime" {
+		t.Fatalf("Exec() driverID = %q, want fake_runtime", client.driverIDs[OperationExec])
+	}
+	req := client.execReq
+	if req.OperationID != clientDriverExecOperationID {
+		t.Fatalf("Exec() operationID = %q, want %q", req.OperationID, clientDriverExecOperationID)
+	}
+	if req.Target.ID != "target-dev" || req.Target.Name != "dev" || req.Target.Runtime.Driver != "fake_runtime" {
+		t.Fatalf("Exec() worker target = %#v, want converted target with fallback driver", req.Target)
+	}
+	if req.Target.Runtime.RuntimeID != "runtime-dev" || req.Target.Runtime.WorkerID != "worker-001" {
+		t.Fatalf("Exec() worker target runtime metadata = %#v, want safe runtime metadata", req.Target.Runtime)
+	}
+	if !reflect.DeepEqual(req.Args, []string{"sh", "-lc", "cat"}) {
+		t.Fatalf("Exec() args = %#v, want cloned args", req.Args)
+	}
+	if req.Env["TOKEN"] != "raw-secret" {
+		t.Fatalf("Exec() env = %#v, want cloned env", req.Env)
+	}
+	if req.WorkDir != "/workspace/hal" {
+		t.Fatalf("Exec() workdir = %q, want trimmed workdir", req.WorkDir)
+	}
+	if req.Stdin == nil || req.Stdin.Data != "stdin data" || req.Stdin.SizeBytes != 10 || req.Stdin.LimitBytes != MaxExecStdinBytes {
+		t.Fatalf("Exec() stdin payload = %#v, want bounded stdin payload", req.Stdin)
+	}
+	if req.StdoutLimitBytes != MaxExecStdoutCaptureBytes || req.StderrLimitBytes != MaxExecStderrCaptureBytes {
+		t.Fatalf("Exec() capture limits = stdout %d stderr %d, want worker maximums", req.StdoutLimitBytes, req.StderrLimitBytes)
+	}
+}
+
+func TestClientDriverExecRejectsOversizedStdinBeforeWorkerClientDispatch(t *testing.T) {
 	client := &recordingRuntimeDriverClient{}
 	driver, err := NewClientDriver(ClientDriverOptions{
 		DriverID: "fake_runtime",
@@ -123,11 +207,116 @@ func TestClientDriverUnsupportedExecAndCopyReturnExplicitErrors(t *testing.T) {
 		t.Fatalf("NewClientDriver() error: %v", err)
 	}
 
-	execResult, err := driver.Exec(context.Background(), sandboxruntime.ExecRequest{})
-	if execResult != nil || !errors.Is(err, ErrWorkerOperationUnsupported) {
-		t.Fatalf("Exec() = %#v, %v; want nil result and unsupported error", execResult, err)
+	result, err := driver.Exec(context.Background(), sandboxruntime.ExecRequest{
+		Target: lifecycleRuntimeTarget("fake_runtime", "dev", "running"),
+		Args:   []string{"cat"},
+		Stdin:  strings.NewReader(strings.Repeat("x", int(MaxExecStdinBytes)+1)),
+	})
+	if result != nil || err == nil {
+		t.Fatalf("Exec() = %#v, %v; want oversized stdin error", result, err)
 	}
 	assertClientDriverError(t, err, OperationExec, "fake_runtime")
+	if !strings.Contains(err.Error(), "exec stdin") || !strings.Contains(err.Error(), "exceeds maximum") {
+		t.Fatalf("Exec() error = %q, want sanitized stdin maximum detail", err.Error())
+	}
+	if len(client.calls) != 0 {
+		t.Fatalf("worker client calls = %#v, want no dispatch after oversized stdin", client.calls)
+	}
+}
+
+func TestClientDriverExecSurfacesCommandErrorsAndTruncation(t *testing.T) {
+	t.Run("command error", func(t *testing.T) {
+		client := &recordingRuntimeDriverClient{
+			execResp: &ExecResponse{
+				ExitCode: 126,
+				Stdout:   workerExecOutputPayload("partial out", MaxExecStdoutCaptureBytes, false),
+				Stderr:   workerExecOutputPayload("partial err", MaxExecStderrCaptureBytes, false),
+				Error: &Error{
+					Code:    ErrorCodeDriverFailed,
+					Message: "exec failed token=raw-secret under /Users/alice/worktree",
+				},
+			},
+		}
+		driver, err := NewClientDriver(ClientDriverOptions{
+			DriverID: "fake_runtime",
+			Client:   client,
+		})
+		if err != nil {
+			t.Fatalf("NewClientDriver() error: %v", err)
+		}
+
+		var stdout, stderr bytes.Buffer
+		result, err := driver.Exec(context.Background(), sandboxruntime.ExecRequest{
+			Target: lifecycleRuntimeTarget("fake_runtime", "dev", "running"),
+			Args:   []string{"sh", "-lc", "exit 126"},
+			Stdout: &stdout,
+			Stderr: &stderr,
+		})
+		if result == nil || result.ExitCode != 126 || err == nil {
+			t.Fatalf("Exec() = %#v, %v; want exit result with command error", result, err)
+		}
+		assertClientDriverError(t, err, OperationExec, "fake_runtime")
+		var protocolErr *ProtocolError
+		if !errors.As(err, &protocolErr) || protocolErr.Code != ErrorCodeDriverFailed {
+			t.Fatalf("Exec() error = %T %v, want driver_failed protocol error", err, err)
+		}
+		if stdout.String() != "partial out" || stderr.String() != "partial err" {
+			t.Fatalf("Exec() output = stdout %q stderr %q, want partial worker output", stdout.String(), stderr.String())
+		}
+		message := err.Error()
+		for _, unsafe := range []string{"raw-secret", "/Users/alice", "worktree"} {
+			if strings.Contains(message, unsafe) {
+				t.Fatalf("Exec() error leaked unsafe detail %q in %q", unsafe, message)
+			}
+		}
+		for _, want := range []string{"token=[redacted]", "[redacted-path]"} {
+			if !strings.Contains(message, want) {
+				t.Fatalf("Exec() error = %q, want sanitized marker %q", message, want)
+			}
+		}
+	})
+
+	t.Run("truncated output", func(t *testing.T) {
+		client := &recordingRuntimeDriverClient{
+			execResp: &ExecResponse{
+				ExitCode: 0,
+				Stdout:   workerExecOutputPayload("abc", 3, true),
+				Stderr:   workerExecOutputPayload("", MaxExecStderrCaptureBytes, false),
+			},
+		}
+		driver, err := NewClientDriver(ClientDriverOptions{
+			DriverID: "fake_runtime",
+			Client:   client,
+		})
+		if err != nil {
+			t.Fatalf("NewClientDriver() error: %v", err)
+		}
+
+		var stdout bytes.Buffer
+		result, err := driver.Exec(context.Background(), sandboxruntime.ExecRequest{
+			Target: lifecycleRuntimeTarget("fake_runtime", "dev", "running"),
+			Args:   []string{"printf", "abcdef"},
+			Stdout: &stdout,
+		})
+		if result == nil || result.ExitCode != 0 || !errors.Is(err, ErrWorkerExecOutputTruncated) {
+			t.Fatalf("Exec() = %#v, %v; want exit result with truncation error", result, err)
+		}
+		assertClientDriverError(t, err, OperationExec, "fake_runtime")
+		if stdout.String() != "abc" {
+			t.Fatalf("Exec() stdout = %q, want truncated worker output", stdout.String())
+		}
+	})
+}
+
+func TestClientDriverCopyOperationsReturnExplicitUnsupportedErrors(t *testing.T) {
+	client := &recordingRuntimeDriverClient{}
+	driver, err := NewClientDriver(ClientDriverOptions{
+		DriverID: "fake_runtime",
+		Client:   client,
+	})
+	if err != nil {
+		t.Fatalf("NewClientDriver() error: %v", err)
+	}
 
 	err = driver.CopyIn(context.Background(), sandboxruntime.CopyRequest{})
 	if !errors.Is(err, ErrWorkerOperationUnsupported) {
@@ -142,7 +331,7 @@ func TestClientDriverUnsupportedExecAndCopyReturnExplicitErrors(t *testing.T) {
 	assertClientDriverError(t, err, OperationCopyOut, "fake_runtime")
 
 	if len(client.calls) != 0 {
-		t.Fatalf("worker client calls = %#v, want no calls for unsupported operations", client.calls)
+		t.Fatalf("worker client calls = %#v, want no calls for unsupported copy operations", client.calls)
 	}
 }
 
@@ -166,6 +355,13 @@ func TestClientDriverPreservesContextErrorsFromWorkerClient(t *testing.T) {
 	defer timeoutCancel()
 	if _, err := driver.Inspect(timeoutCtx, sandboxruntime.InspectRequest{Target: sandboxruntime.Target{Name: "dev"}}); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Inspect(timeout) error = %v, want context deadline", err)
+	}
+
+	if _, err := driver.Exec(canceledCtx, sandboxruntime.ExecRequest{
+		Target: lifecycleRuntimeTarget("fake_runtime", "dev", "running"),
+		Args:   []string{"true"},
+	}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Exec(canceled) error = %v, want context.Canceled", err)
 	}
 }
 
@@ -223,6 +419,8 @@ type recordingRuntimeDriverClient struct {
 	createReq      CreateRequest
 	lifecycleReqs  map[string]LifecycleRequest
 	inspectReq     InspectRequest
+	execReq        ExecRequest
+	execResp       *ExecResponse
 	errByOperation map[string]error
 }
 
@@ -275,6 +473,23 @@ func (client *recordingRuntimeDriverClient) Inspect(ctx context.Context, driverI
 	return &target, nil
 }
 
+func (client *recordingRuntimeDriverClient) Exec(ctx context.Context, driverID string, req ExecRequest) (*ExecResponse, error) {
+	client.record(OperationExec, driverID)
+	client.execReq = req
+	if err := client.operationError(ctx, OperationExec); err != nil {
+		return nil, err
+	}
+	if client.execResp != nil {
+		resp := *client.execResp
+		return &resp, nil
+	}
+	return &ExecResponse{
+		ExitCode: 0,
+		Stdout:   workerExecOutputPayload("", req.StdoutLimitBytes, false),
+		Stderr:   workerExecOutputPayload("", req.StderrLimitBytes, false),
+	}, nil
+}
+
 func (client *recordingRuntimeDriverClient) record(operation, driverID string) {
 	client.calls = append(client.calls, operation)
 	if client.driverIDs == nil {
@@ -298,4 +513,24 @@ func (client *recordingRuntimeDriverClient) operationError(ctx context.Context, 
 		return nil
 	}
 	return client.errByOperation[operation]
+}
+
+func workerExecOutputPayload(data string, limit int64, truncated bool) ExecOutputPayload {
+	return ExecOutputPayload{
+		Data:       data,
+		SizeBytes:  int64(len([]byte(data))),
+		LimitBytes: limit,
+		Truncated:  truncated,
+	}
+}
+
+func lifecycleRuntimeTarget(driverID, name, status string) sandboxruntime.Target {
+	return sandboxruntime.Target{
+		Name:   name,
+		Status: status,
+		Runtime: sandboxruntime.RuntimeState{
+			Driver:         driverID,
+			IsolationLevel: IsolationLevelHost,
+		},
+	}
 }

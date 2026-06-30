@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
@@ -13,7 +14,11 @@ var (
 	ErrWorkerClientRequired       = errors.New("worker client is required")
 	ErrWorkerTargetRequired       = errors.New("worker client returned no target")
 	ErrWorkerOperationUnsupported = errors.New("worker runtime driver operation unsupported")
+	ErrWorkerExecResponseRequired = errors.New("worker client returned no exec response")
+	ErrWorkerExecOutputTruncated  = errors.New("worker exec output truncated")
 )
+
+const clientDriverExecOperationID = "client-driver-exec"
 
 var _ sandboxruntime.Driver = (*ClientDriver)(nil)
 
@@ -24,6 +29,7 @@ type RuntimeDriverClient interface {
 	Stop(context.Context, string, LifecycleRequest) (*Target, error)
 	Delete(context.Context, string, LifecycleRequest) error
 	Inspect(context.Context, string, InspectRequest) (*Target, error)
+	Exec(context.Context, string, ExecRequest) (*ExecResponse, error)
 }
 
 // ClientDriverOptions configures a sandboxruntime.Driver backed by a worker
@@ -126,9 +132,36 @@ func (driver *ClientDriver) Inspect(ctx context.Context, req sandboxruntime.Insp
 	return driver.runtimeTargetFromWorkerResponse(OperationInspect, target, err)
 }
 
-// Exec is not implemented by the worker foundation adapter yet.
-func (driver *ClientDriver) Exec(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
-	return nil, driver.operationError(OperationExec, ErrWorkerOperationUnsupported)
+// Exec runs a bounded command execution through the worker client.
+func (driver *ClientDriver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+	client, driverID, err := driver.clientFor(OperationExec)
+	if err != nil {
+		return nil, err
+	}
+
+	stdin, err := clientDriverExecStdinPayload(req.Stdin)
+	if err != nil {
+		return nil, driver.operationError(OperationExec, err)
+	}
+	workerReq := ExecRequest{
+		OperationID:      clientDriverExecOperationID,
+		Target:           workerTargetFromRuntimeTarget(req.Target, driverID),
+		Args:             cloneStringSlice(req.Args),
+		Env:              cloneStringMap(req.Env),
+		WorkDir:          strings.TrimSpace(req.WorkDir),
+		Stdin:            stdin,
+		StdoutLimitBytes: MaxExecStdoutCaptureBytes,
+		StderrLimitBytes: MaxExecStderrCaptureBytes,
+	}
+	if err := workerReq.Validate(); err != nil {
+		return nil, driver.operationError(OperationExec, err)
+	}
+
+	resp, err := client.Exec(ctx, driverID, workerReq)
+	if err != nil {
+		return nil, driver.operationError(OperationExec, err)
+	}
+	return driver.runtimeExecResultFromWorkerResponse(req, resp)
 }
 
 // CopyIn is not implemented by the worker foundation adapter yet.
@@ -167,6 +200,85 @@ func (driver *ClientDriver) runtimeTargetFromWorkerResponse(operation string, ta
 		runtimeTarget.Runtime.Driver = driver.ID()
 	}
 	return &runtimeTarget, nil
+}
+
+func (driver *ClientDriver) runtimeExecResultFromWorkerResponse(req sandboxruntime.ExecRequest, resp *ExecResponse) (*sandboxruntime.ExecResult, error) {
+	if resp == nil {
+		return nil, driver.operationError(OperationExec, ErrWorkerExecResponseRequired)
+	}
+	execResp := *resp
+	if execResp.Error != nil {
+		protocolError := *execResp.Error
+		sanitizeEmbeddedProtocolError(&protocolError)
+		execResp.Error = &protocolError
+	}
+	if err := execResp.Validate(); err != nil {
+		return nil, driver.operationError(OperationExec, err)
+	}
+
+	result := &sandboxruntime.ExecResult{ExitCode: execResp.ExitCode}
+	if err := writeClientDriverExecOutput(req.Stdout, "stdout", execResp.Stdout.Data); err != nil {
+		return result, driver.operationError(OperationExec, err)
+	}
+	if err := writeClientDriverExecOutput(req.Stderr, "stderr", execResp.Stderr.Data); err != nil {
+		return result, driver.operationError(OperationExec, err)
+	}
+	if execResp.Error != nil {
+		return result, driver.operationError(OperationExec, &ProtocolError{
+			Operation: OperationExec,
+			Code:      strings.TrimSpace(execResp.Error.Code),
+			Message:   sanitizeProtocolErrorDetail(execResp.Error.Message),
+		})
+	}
+	if execResp.Stdout.Truncated || execResp.Stderr.Truncated {
+		return result, driver.operationError(OperationExec, clientDriverExecTruncationError(execResp))
+	}
+	return result, nil
+}
+
+func clientDriverExecStdinPayload(stdin io.Reader) (*ExecStdinPayload, error) {
+	if stdin == nil {
+		return nil, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(stdin, MaxExecStdinBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read exec stdin: %w", err)
+	}
+	if int64(len(data)) > MaxExecStdinBytes {
+		return nil, workerIOValidationError("exec stdin sizeBytes exceeds maximum of %d bytes", MaxExecStdinBytes)
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	return &ExecStdinPayload{
+		Data:       string(data),
+		SizeBytes:  int64(len(data)),
+		LimitBytes: MaxExecStdinBytes,
+	}, nil
+}
+
+func writeClientDriverExecOutput(writer io.Writer, stream, data string) error {
+	if writer == nil || data == "" {
+		return nil
+	}
+	if _, err := io.WriteString(writer, data); err != nil {
+		return fmt.Errorf("write exec %s: %w", stream, err)
+	}
+	return nil
+}
+
+func clientDriverExecTruncationError(resp ExecResponse) error {
+	streams := make([]string, 0, 2)
+	if resp.Stdout.Truncated {
+		streams = append(streams, "stdout")
+	}
+	if resp.Stderr.Truncated {
+		streams = append(streams, "stderr")
+	}
+	if len(streams) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", ErrWorkerExecOutputTruncated, strings.Join(streams, ", "))
 }
 
 func (driver *ClientDriver) operationError(operation string, err error) error {
