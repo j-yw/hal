@@ -49,6 +49,7 @@
 - Worker inspect socket operations belong in `sandboxworker.Service`: route inspect through `DriverRegistry`, use the worker `InspectRequest`/`Target` protocol shape, and include `inspect` in top-level supported operations only once the handler is implemented.
 - Worker socket transport belongs in `sandboxworker.Server` with an injected `RequestHandler`: keep the transport limited to local Unix sockets, request validation, structured protocol errors, and context-aware shutdown while operation dispatch stays behind handler/service code.
 - Worker client calls belong behind `sandboxworker.Client` and `ClientTransport`: keep local transport Unix-only, one JSON request/response per connection, context-aware, and sanitize connection/protocol error details before they cross command or persistence boundaries.
+- Worker client runtime-driver adapters belong in `sandboxworker.ClientDriver`: construct them explicitly from a `RuntimeDriverClient`, forward lifecycle/inspect only through the worker protocol, return explicit unsupported errors for exec/copy until handlers exist, and do not wire run/auto/factory defaults to worker adapters without a separate story.
 - Unix socket tests should allocate short socket paths, such as `os.MkdirTemp("/tmp", ...)`, because macOS rejects long `t.TempDir()`-derived socket paths with `bind: invalid argument`.
 
 ## Patterns from phase12-rootless-podman-local-runtime-driver-for-hal-sandbox-runtime-v2 (2026-07-01)
