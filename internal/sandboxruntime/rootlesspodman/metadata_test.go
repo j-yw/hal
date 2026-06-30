@@ -100,19 +100,43 @@ type fakeCommandRunner struct {
 	lifecycleRequests []rootlesspodman.CommandRequest
 	execRequests      []rootlesspodman.CommandRequest
 	copyRequests      []rootlesspodman.CommandRequest
+	resultByOperation map[string]rootlesspodman.CommandResult
+	errByOperation    map[string]error
 }
 
 func (f *fakeCommandRunner) RunLifecycleCommand(_ context.Context, req rootlesspodman.CommandRequest) (rootlesspodman.CommandResult, error) {
 	f.lifecycleRequests = append(f.lifecycleRequests, req)
-	return rootlesspodman.CommandResult{ExitCode: 0}, nil
+	return f.commandResult(req.Operation)
 }
 
 func (f *fakeCommandRunner) RunExecCommand(_ context.Context, req rootlesspodman.CommandRequest) (rootlesspodman.CommandResult, error) {
 	f.execRequests = append(f.execRequests, req)
-	return rootlesspodman.CommandResult{ExitCode: 0}, nil
+	return f.commandResult(req.Operation)
 }
 
 func (f *fakeCommandRunner) RunCopyCommand(_ context.Context, req rootlesspodman.CommandRequest) (rootlesspodman.CommandResult, error) {
 	f.copyRequests = append(f.copyRequests, req)
-	return rootlesspodman.CommandResult{ExitCode: 0}, nil
+	return f.commandResult(req.Operation)
+}
+
+func (f *fakeCommandRunner) commandResult(operation string) (rootlesspodman.CommandResult, error) {
+	result := rootlesspodman.CommandResult{ExitCode: 0}
+	if f.resultByOperation != nil {
+		if configured, ok := f.resultByOperation[operation]; ok {
+			result = configured
+		}
+	}
+	var err error
+	if f.errByOperation != nil {
+		err = f.errByOperation[operation]
+	}
+	return result, err
+}
+
+func (f *fakeCommandRunner) lifecycleOperations() []string {
+	operations := make([]string, 0, len(f.lifecycleRequests))
+	for _, req := range f.lifecycleRequests {
+		operations = append(operations, req.Operation)
+	}
+	return operations
 }
