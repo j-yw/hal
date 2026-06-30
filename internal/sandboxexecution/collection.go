@@ -7,10 +7,12 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/template"
 )
 
 // RuntimeArtifactCollector is the runtime boundary needed by non-factory
@@ -62,6 +64,18 @@ type RuntimeCollectionRequest struct {
 // collection pass.
 type RuntimeCollectionResult struct {
 	ArtifactMetadata ArtifactMetadata
+}
+
+// CoreStateCollectionRequest carries the runtime context needed to collect
+// standard Hal state files from a non-factory sandbox workspace.
+type CoreStateCollectionRequest struct {
+	ExecutionID        string
+	Store              Store
+	Runtime            RuntimeArtifactCollector
+	Target             sandboxruntime.Target
+	Purpose            Purpose
+	RemoteWorkspaceDir string
+	TempDir            string
 }
 
 // CollectRuntimeArtifacts generates requested remote artifacts, copies remote
@@ -127,6 +141,36 @@ func CollectRuntimeArtifacts(ctx context.Context, req RuntimeCollectionRequest) 
 	return result, nil
 }
 
+// CollectCoreStateArtifacts collects the core .hal state files for a run or
+// auto sandbox execution and records the collected metadata on the manifest.
+func CollectCoreStateArtifacts(ctx context.Context, req CoreStateCollectionRequest) (RuntimeCollectionResult, error) {
+	if !validPurpose(req.Purpose) {
+		return RuntimeCollectionResult{}, fmt.Errorf("sandbox execution purpose %q is invalid", req.Purpose)
+	}
+	if _, err := req.Store.LoadManifest(req.ExecutionID); err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	artifacts, err := coreStateArtifactRequests(req.Purpose, req.RemoteWorkspaceDir)
+	if err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	result, err := CollectRuntimeArtifacts(ctx, RuntimeCollectionRequest{
+		ExecutionID: req.ExecutionID,
+		Store:       req.Store,
+		Runtime:     req.Runtime,
+		Target:      req.Target,
+		Artifacts:   artifacts,
+		TempDir:     req.TempDir,
+	})
+	if err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	if err := req.Store.AppendArtifactMetadata(req.ExecutionID, result.ArtifactMetadata); err != nil {
+		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution core state metadata: %w", err)
+	}
+	return result, nil
+}
+
 func runRuntimeArtifactGeneration(ctx context.Context, runtime RuntimeArtifactCollector, target sandboxruntime.Target, generation RuntimeArtifactGeneration) error {
 	result, err := runtime.Exec(ctx, sandboxruntime.ExecRequest{
 		Target:  target,
@@ -143,6 +187,35 @@ func runRuntimeArtifactGeneration(ctx context.Context, runtime RuntimeArtifactCo
 		return fmt.Errorf("runtime command exited with status %d", result.ExitCode)
 	}
 	return nil
+}
+
+func coreStateArtifactRequests(purpose Purpose, remoteWorkspaceDir string) ([]RuntimeArtifactRequest, error) {
+	remoteWorkspaceDir = strings.TrimSpace(remoteWorkspaceDir)
+	if remoteWorkspaceDir == "" {
+		return nil, fmt.Errorf("sandbox execution remote workspace dir is required")
+	}
+	artifacts := []RuntimeArtifactRequest{
+		coreStateArtifactRequest("prd", "PRD", "json", template.PRDFile, "hal-prd.json", remoteWorkspaceDir),
+		coreStateArtifactRequest("progress", "Progress", "text", template.ProgressFile, "hal-progress.txt", remoteWorkspaceDir),
+	}
+	if purpose == PurposeAuto {
+		artifacts = append(artifacts, coreStateArtifactRequest("auto-state", "Auto State", "json", template.AutoStateFile, "hal-auto-state.json", remoteWorkspaceDir))
+	}
+	return artifacts, nil
+}
+
+func coreStateArtifactRequest(id, name, artifactType, fileName, payloadName, remoteWorkspaceDir string) RuntimeArtifactRequest {
+	displayPath := pathpkg.Join(template.HalDir, fileName)
+	return RuntimeArtifactRequest{
+		Artifact: ArtifactMetadataEntry{
+			ID:   id,
+			Name: name,
+			Type: artifactType,
+			Path: displayPath,
+		},
+		PayloadPath: pathpkg.Join("core", payloadName),
+		RemotePath:  pathpkg.Join(remoteWorkspaceDir, displayPath),
+	}
 }
 
 func saveRuntimeArtifactFile(store Store, executionID string, req RuntimeArtifactRequest, localPath string) (ArtifactMetadataEntry, error) {

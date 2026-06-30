@@ -59,6 +59,7 @@
 - Use `sandboxexecution.Store.SaveHandoffFile` and `SaveRecoveryFile` for non-factory handoff/recovery payloads so metadata stores safe display paths while generated `storedPath` values stay under `<execution-id>/handoff/` or `<execution-id>/recovery/`.
 - Shared non-factory runtime artifact collection belongs in `internal/sandboxexecution.CollectRuntimeArtifacts`: pass a narrow `RuntimeArtifactCollector` backed by `sandboxruntime.Driver.Exec`/`CopyOut`, copy remote files to temp files first, and persist through store helpers instead of importing command, factory, or concrete runtime adapter packages.
 - `RuntimeArtifactRequest.Optional` is the opt-in non-fatal path for collection: required artifacts remain the zero-value default and fail on CopyOut/store errors, while optional CopyOut/store errors append partial metadata plus sanitized warnings without remote, temp, or source paths.
+- Use `sandboxexecution.CollectCoreStateArtifacts` when wiring non-factory sandbox core state collection: it copies `.hal/prd.json` and `.hal/progress.txt` for run executions, adds `.hal/auto-state.json` for auto executions, and appends metadata through `Store.AppendArtifactMetadata`.
 
 ## Patterns from phase/sandbox-runtime-v2-9-runtime-driver (2026-06-30)
 

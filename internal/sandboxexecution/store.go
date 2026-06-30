@@ -143,6 +143,33 @@ func (s Store) LoadManifest(executionID string) (*Manifest, error) {
 	return nil, err
 }
 
+// AppendArtifactMetadata appends additive collection metadata to an existing
+// execution manifest. It does not modify the legacy top-level artifacts array.
+func (s Store) AppendArtifactMetadata(executionID string, metadata ArtifactMetadata) error {
+	executionID, err := validateExecutionID(executionID)
+	if err != nil {
+		return err
+	}
+	if isArtifactMetadataEmpty(metadata) {
+		return nil
+	}
+
+	manifest, err := s.LoadManifest(executionID)
+	if err != nil {
+		return err
+	}
+	if manifest.ID != executionID {
+		return fmt.Errorf("sandbox execution manifest %q has ID %q", executionID, manifest.ID)
+	}
+	if manifest.ArtifactMetadata == nil {
+		manifest.ArtifactMetadata = &ArtifactMetadata{}
+	}
+	manifest.ArtifactMetadata.Collected = append(manifest.ArtifactMetadata.Collected, metadata.Collected...)
+	manifest.ArtifactMetadata.Partial = append(manifest.ArtifactMetadata.Partial, metadata.Partial...)
+	manifest.ArtifactMetadata.Warnings = append(manifest.ArtifactMetadata.Warnings, metadata.Warnings...)
+	return s.SaveManifest(manifest)
+}
+
 // ListManifests returns committed manifests sorted by started time, then ID.
 func (s Store) ListManifests() ([]Manifest, error) {
 	if strings.TrimSpace(s.root) == "" {
@@ -244,6 +271,10 @@ func validateManifestForSave(manifest *Manifest) error {
 		return err
 	}
 	return nil
+}
+
+func isArtifactMetadataEmpty(metadata ArtifactMetadata) bool {
+	return len(metadata.Collected) == 0 && len(metadata.Partial) == 0 && len(metadata.Warnings) == 0
 }
 
 func loadManifestFile(path, executionID string) (*Manifest, error) {

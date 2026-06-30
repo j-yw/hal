@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
@@ -321,6 +322,135 @@ func TestCollectRuntimeArtifactsClassifiesCopyOutResults(t *testing.T) {
 	}
 }
 
+func TestCollectCoreStateArtifactsRunCollectsStateAndPersistsManifest(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.SaveManifest(testManifest("exec-1", time.Date(2026, 6, 30, 1, 0, 0, 0, time.UTC))); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+	runtime := &recordingArtifactRuntime{}
+
+	result, err := CollectCoreStateArtifacts(context.Background(), CoreStateCollectionRequest{
+		ExecutionID:        "exec-1",
+		Store:              store,
+		Runtime:            runtime,
+		Purpose:            PurposeRun,
+		RemoteWorkspaceDir: "/workspace/repo",
+	})
+	if err != nil {
+		t.Fatalf("CollectCoreStateArtifacts() error: %v", err)
+	}
+
+	if len(runtime.execs) != 0 {
+		t.Fatalf("Exec calls = %d, want none for core state files", len(runtime.execs))
+	}
+	if got, want := copyOutSources(runtime.copyOuts), []string{"/workspace/repo/.hal/prd.json", "/workspace/repo/.hal/progress.txt"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("CopyOut sources = %#v, want %#v", got, want)
+	}
+	if len(result.ArtifactMetadata.Collected) != 2 {
+		t.Fatalf("collected = %#v, want PRD and progress artifacts", result.ArtifactMetadata.Collected)
+	}
+	assertCollectedCoreArtifact(t, result.ArtifactMetadata.Collected[0], ".hal/prd.json", "exec-1/artifacts/core/hal-prd.json")
+	assertCollectedCoreArtifact(t, result.ArtifactMetadata.Collected[1], ".hal/progress.txt", "exec-1/artifacts/core/hal-progress.txt")
+	if len(result.ArtifactMetadata.Partial) != 0 || len(result.ArtifactMetadata.Warnings) != 0 {
+		t.Fatalf("run core metadata partial/warnings = %#v/%#v, want none", result.ArtifactMetadata.Partial, result.ArtifactMetadata.Warnings)
+	}
+
+	loaded, err := store.LoadManifest("exec-1")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if loaded.ArtifactMetadata == nil {
+		t.Fatalf("manifest ArtifactMetadata = nil, want persisted core state metadata")
+	}
+	if !reflect.DeepEqual(loaded.ArtifactMetadata.Collected, result.ArtifactMetadata.Collected) {
+		t.Fatalf("manifest collected = %#v, want %#v", loaded.ArtifactMetadata.Collected, result.ArtifactMetadata.Collected)
+	}
+	if len(loaded.ArtifactMetadata.Warnings) != 0 {
+		t.Fatalf("manifest warnings = %#v, want none for missing run auto-state", loaded.ArtifactMetadata.Warnings)
+	}
+	for _, source := range copyOutSources(runtime.copyOuts) {
+		if strings.Contains(source, "auto-state") {
+			t.Fatalf("run core state copied auto-state source %q, want auto-state omitted", source)
+		}
+	}
+
+	encoded := string(mustJSONBytes(t, loaded.ArtifactMetadata))
+	for _, forbidden := range []string{"/workspace/repo/.hal/prd.json", "/workspace/repo/.hal/progress.txt", "SourcePath", "DestinationPath"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("manifest core metadata leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestCollectCoreStateArtifactsAutoCollectsAutoState(t *testing.T) {
+	store := newTestStore(t)
+	manifest := testManifest("exec-1", time.Date(2026, 6, 30, 1, 0, 0, 0, time.UTC))
+	manifest.Purpose = PurposeAuto
+	if err := store.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+	runtime := &recordingArtifactRuntime{}
+
+	result, err := CollectCoreStateArtifacts(context.Background(), CoreStateCollectionRequest{
+		ExecutionID:        "exec-1",
+		Store:              store,
+		Runtime:            runtime,
+		Purpose:            PurposeAuto,
+		RemoteWorkspaceDir: "/workspace/repo",
+	})
+	if err != nil {
+		t.Fatalf("CollectCoreStateArtifacts() error: %v", err)
+	}
+
+	if got, want := copyOutSources(runtime.copyOuts), []string{"/workspace/repo/.hal/prd.json", "/workspace/repo/.hal/progress.txt", "/workspace/repo/.hal/auto-state.json"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("CopyOut sources = %#v, want %#v", got, want)
+	}
+	if len(result.ArtifactMetadata.Collected) != 3 {
+		t.Fatalf("collected = %#v, want PRD, progress, and auto-state artifacts", result.ArtifactMetadata.Collected)
+	}
+	assertCollectedCoreArtifact(t, result.ArtifactMetadata.Collected[2], ".hal/auto-state.json", "exec-1/artifacts/core/hal-auto-state.json")
+
+	loaded, err := store.LoadManifest("exec-1")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if loaded.ArtifactMetadata == nil || len(loaded.ArtifactMetadata.Collected) != 3 {
+		t.Fatalf("manifest collected = %#v, want 3 persisted core state artifacts", loaded.ArtifactMetadata)
+	}
+}
+
+func TestCollectCoreStateArtifactsMissingRequiredPRDReturnsError(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.SaveManifest(testManifest("exec-1", time.Date(2026, 6, 30, 1, 0, 0, 0, time.UTC))); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+	runtime := &recordingArtifactRuntime{copyOutErr: fs.ErrNotExist}
+
+	_, err := CollectCoreStateArtifacts(context.Background(), CoreStateCollectionRequest{
+		ExecutionID:        "exec-1",
+		Store:              store,
+		Runtime:            runtime,
+		Purpose:            PurposeRun,
+		RemoteWorkspaceDir: "/workspace/repo",
+	})
+	if err == nil {
+		t.Fatalf("CollectCoreStateArtifacts() expected missing PRD error")
+	}
+	if len(runtime.copyOuts) != 1 {
+		t.Fatalf("CopyOut calls = %d, want only required PRD attempt", len(runtime.copyOuts))
+	}
+	if got, want := runtime.copyOuts[0].SourcePath, "/workspace/repo/.hal/prd.json"; got != want {
+		t.Fatalf("CopyOut source = %q, want %q", got, want)
+	}
+	loaded, err := store.LoadManifest("exec-1")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if loaded.ArtifactMetadata != nil {
+		t.Fatalf("manifest ArtifactMetadata = %#v, want no persisted metadata after fatal PRD failure", loaded.ArtifactMetadata)
+	}
+}
+
 func readStoreFile(t *testing.T, store Store, storedPath string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(store.Root(), filepath.FromSlash(storedPath)))
@@ -328,6 +458,30 @@ func readStoreFile(t *testing.T, store Store, storedPath string) string {
 		t.Fatalf("ReadFile(%s) error: %v", storedPath, err)
 	}
 	return string(data)
+}
+
+func copyOutSources(copyOuts []sandboxruntime.CopyRequest) []string {
+	sources := make([]string, 0, len(copyOuts))
+	for _, copyOut := range copyOuts {
+		sources = append(sources, copyOut.SourcePath)
+	}
+	return sources
+}
+
+func assertCollectedCoreArtifact(t *testing.T, artifact ArtifactMetadataEntry, wantPath, wantStoredPath string) {
+	t.Helper()
+	if artifact.Path != wantPath {
+		t.Fatalf("artifact path = %q, want %q", artifact.Path, wantPath)
+	}
+	if artifact.StoredPath != wantStoredPath {
+		t.Fatalf("artifact storedPath = %q, want %q", artifact.StoredPath, wantStoredPath)
+	}
+	if artifact.SizeBytes == nil || *artifact.SizeBytes == 0 {
+		t.Fatalf("artifact size = %v, want copied payload size", artifact.SizeBytes)
+	}
+	if artifact.CreatedAt == nil || artifact.CreatedAt.IsZero() {
+		t.Fatalf("artifact createdAt = %v, want stored timestamp", artifact.CreatedAt)
+	}
 }
 
 type recordingArtifactRuntime struct {

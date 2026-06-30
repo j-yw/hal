@@ -42,6 +42,7 @@ func assertAllowedImport(t *testing.T, fileName, importPath string) {
 	allowedInternalImports := map[string]bool{
 		"github.com/jywlabs/hal/internal/sandbox":        true,
 		"github.com/jywlabs/hal/internal/sandboxruntime": true,
+		"github.com/jywlabs/hal/internal/template":       true,
 	}
 	if strings.HasPrefix(importPath, internalPrefix) && !allowedInternalImports[importPath] {
 		t.Fatalf("%s imports forbidden internal package %q", fileName, importPath)
