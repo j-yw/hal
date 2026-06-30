@@ -79,7 +79,7 @@ func NewClient(options ClientOptions) (*Client, error) {
 
 // Status returns worker readiness through the local worker protocol.
 func (client *Client) Status(ctx context.Context) (*Status, error) {
-	resp, err := client.roundTrip(ctx, OperationStatus)
+	resp, err := client.roundTrip(ctx, Request{Operation: OperationStatus})
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +93,7 @@ func (client *Client) Status(ctx context.Context) (*Status, error) {
 // Capabilities returns worker protocol capabilities through the local worker
 // protocol.
 func (client *Client) Capabilities(ctx context.Context) (*Capabilities, error) {
-	resp, err := client.roundTrip(ctx, OperationCapabilities)
+	resp, err := client.roundTrip(ctx, Request{Operation: OperationCapabilities})
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +104,56 @@ func (client *Client) Capabilities(ctx context.Context) (*Capabilities, error) {
 	return &capabilities, nil
 }
 
-func (client *Client) roundTrip(ctx context.Context, operation string) (Response, error) {
+// Create creates a runtime target through the worker daemon.
+func (client *Client) Create(ctx context.Context, driverID string, req CreateRequest) (*Target, error) {
+	resp, err := client.roundTrip(ctx, Request{
+		Operation: OperationCreate,
+		DriverID:  driverID,
+		Create:    &req,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return clientLifecycleTarget(resp)
+}
+
+// Start starts an existing runtime target through the worker daemon.
+func (client *Client) Start(ctx context.Context, driverID string, req LifecycleRequest) (*Target, error) {
+	resp, err := client.roundTrip(ctx, Request{
+		Operation: OperationStart,
+		DriverID:  driverID,
+		Lifecycle: &req,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return clientLifecycleTarget(resp)
+}
+
+// Stop stops an existing runtime target through the worker daemon.
+func (client *Client) Stop(ctx context.Context, driverID string, req LifecycleRequest) (*Target, error) {
+	resp, err := client.roundTrip(ctx, Request{
+		Operation: OperationStop,
+		DriverID:  driverID,
+		Lifecycle: &req,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return clientLifecycleTarget(resp)
+}
+
+// Delete removes an existing runtime target through the worker daemon.
+func (client *Client) Delete(ctx context.Context, driverID string, req LifecycleRequest) error {
+	_, err := client.roundTrip(ctx, Request{
+		Operation: OperationDelete,
+		DriverID:  driverID,
+		Lifecycle: &req,
+	})
+	return err
+}
+
+func (client *Client) roundTrip(ctx context.Context, req Request) (Response, error) {
 	if client == nil || !clientTransportConfigured(client.transport) {
 		return Response{}, fmt.Errorf("worker client is not configured")
 	}
@@ -112,17 +161,19 @@ func (client *Client) roundTrip(ctx context.Context, operation string) (Response
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		return Response{}, clientContextError(operation, err)
+		return Response{}, clientContextError(req.Operation, err)
 	}
 
-	req := Request{
-		ProtocolVersion: ProtocolVersion,
-		RequestID:       client.nextRequestID(operation),
-		Operation:       operation,
+	req.ProtocolVersion = ProtocolVersion
+	req.RequestID = client.nextRequestID(req.Operation)
+	req = req.WithDefaults()
+	if err := req.Validate(); err != nil {
+		return Response{}, malformedClientResponseError(req.Operation, fmt.Sprintf("malformed worker request: %v", err))
 	}
+
 	resp, err := client.transport.RoundTrip(ctx, req)
 	if err != nil {
-		return Response{}, clientContextOrTransportError(operation, err)
+		return Response{}, clientContextOrTransportError(req.Operation, err)
 	}
 	resp = resp.WithDefaults()
 	if err := validateClientResponse(req, resp); err != nil {
@@ -132,6 +183,14 @@ func (client *Client) roundTrip(ctx context.Context, operation string) (Response
 		return Response{}, protocolClientError(resp)
 	}
 	return resp, nil
+}
+
+func clientLifecycleTarget(resp Response) (*Target, error) {
+	if resp.Target == nil {
+		return nil, malformedClientResponseError(resp.Operation, "worker lifecycle response did not include target payload")
+	}
+	target := *resp.Target
+	return &target, nil
 }
 
 func (client *Client) nextRequestID(operation string) string {
@@ -162,7 +221,7 @@ func clientContextOrTransportError(operation string, err error) error {
 	return &ClientError{
 		Operation: operation,
 		Code:      ErrorCodeInternal,
-		Message:   sanitizeClientErrorDetail(err.Error()),
+		Message:   sanitizeProtocolErrorDetail(err.Error()),
 		Err:       err,
 	}
 }
@@ -186,7 +245,7 @@ func malformedClientResponseError(operation, message string) error {
 	return &ClientError{
 		Operation: operation,
 		Code:      ErrorCodeMalformedRequest,
-		Message:   sanitizeClientErrorDetail(message),
+		Message:   sanitizeProtocolErrorDetail(message),
 	}
 }
 
@@ -198,7 +257,7 @@ func protocolClientError(resp Response) error {
 	return &ProtocolError{
 		Operation: resp.Operation,
 		Code:      protocolError.Code,
-		Message:   sanitizeClientErrorDetail(protocolError.Message),
+		Message:   sanitizeProtocolErrorDetail(protocolError.Message),
 	}
 }
 
@@ -230,7 +289,7 @@ func (err *ClientError) Error() string {
 	}
 	message := strings.TrimSpace(err.Message)
 	if message == "" && err.Err != nil {
-		message = sanitizeClientErrorDetail(err.Err.Error())
+		message = sanitizeProtocolErrorDetail(err.Err.Error())
 	}
 	if message == "" {
 		message = "worker client request failed"
@@ -295,7 +354,7 @@ func (transport unixSocketClientTransport) RoundTrip(ctx context.Context, req Re
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return Response{}, ctxErr
 		}
-		return Response{}, fmt.Errorf("connect unix worker socket: %s", sanitizeClientErrorDetail(err.Error()))
+		return Response{}, fmt.Errorf("connect unix worker socket: %s", sanitizeProtocolErrorDetail(err.Error()))
 	}
 	defer conn.Close()
 
@@ -316,7 +375,7 @@ func (transport unixSocketClientTransport) RoundTrip(ctx context.Context, req Re
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return Response{}, ctxErr
 		}
-		return Response{}, fmt.Errorf("write worker request: %s", sanitizeClientErrorDetail(err.Error()))
+		return Response{}, fmt.Errorf("write worker request: %s", sanitizeProtocolErrorDetail(err.Error()))
 	}
 	if closer, ok := conn.(interface{ CloseWrite() error }); ok {
 		_ = closer.CloseWrite()
@@ -331,12 +390,12 @@ func (transport unixSocketClientTransport) RoundTrip(ctx context.Context, req Re
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return Response{}, ctxErr
 		}
-		return Response{}, fmt.Errorf("read worker response: %s", sanitizeClientErrorDetail(err.Error()))
+		return Response{}, fmt.Errorf("read worker response: %s", sanitizeProtocolErrorDetail(err.Error()))
 	}
 	return resp, nil
 }
 
-func sanitizeClientErrorDetail(detail string) string {
+func sanitizeProtocolErrorDetail(detail string) string {
 	detail = strings.Join(strings.Fields(detail), " ")
 	detail = clientSecretAssignmentPattern.ReplaceAllString(detail, "$1=[redacted]")
 	detail = clientHostPathPattern.ReplaceAllString(detail, "[redacted-path]")

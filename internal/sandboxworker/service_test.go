@@ -93,7 +93,14 @@ func TestServiceCapabilitiesReportsRegisteredDriversAndHonestSecurity(t *testing
 	if capabilities.WorkerID != "worker-001" {
 		t.Fatalf("capabilities workerId = %q, want worker-001", capabilities.WorkerID)
 	}
-	wantOps := []string{OperationStatus, OperationCapabilities}
+	wantOps := []string{
+		OperationStatus,
+		OperationCapabilities,
+		OperationCreate,
+		OperationStart,
+		OperationStop,
+		OperationDelete,
+	}
 	if !reflect.DeepEqual(capabilities.SupportedOperations, wantOps) {
 		t.Fatalf("capabilities supported operations = %#v, want %#v", capabilities.SupportedOperations, wantOps)
 	}

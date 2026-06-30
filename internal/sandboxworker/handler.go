@@ -22,6 +22,26 @@ func (service *Service) HandleRequest(ctx context.Context, req Request) Response
 		return service.StatusResponse(req.RequestID)
 	case OperationCapabilities:
 		return service.CapabilitiesResponse(req.RequestID)
+	case OperationCreate:
+		if req.Create == nil {
+			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request create payload is required")
+		}
+		return service.CreateResponse(ctx, req.RequestID, req.DriverID, *req.Create)
+	case OperationStart:
+		if req.Lifecycle == nil {
+			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request lifecycle payload is required")
+		}
+		return service.StartResponse(ctx, req.RequestID, req.DriverID, *req.Lifecycle)
+	case OperationStop:
+		if req.Lifecycle == nil {
+			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request lifecycle payload is required")
+		}
+		return service.StopResponse(ctx, req.RequestID, req.DriverID, *req.Lifecycle)
+	case OperationDelete:
+		if req.Lifecycle == nil {
+			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request lifecycle payload is required")
+		}
+		return service.DeleteResponse(ctx, req.RequestID, req.DriverID, *req.Lifecycle)
 	default:
 		return unsupportedOperationResponse(req)
 	}

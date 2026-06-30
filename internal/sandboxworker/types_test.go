@@ -91,6 +91,44 @@ func TestWorkerProtocolRequestResponseJSONRoundTripPreservesRequiredFields(t *te
 	}
 }
 
+func TestWorkerLifecycleRequestJSONRoundTripPreservesPayloads(t *testing.T) {
+	target := Target{
+		ID:     "sandbox-001",
+		Name:   "dev-sandbox",
+		Status: "stopped",
+		Runtime: RuntimeTarget{
+			Driver:         RuntimeDriverRootlessPodman,
+			RuntimeID:      "container-001",
+			WorkerID:       "worker-001",
+			IsolationLevel: IsolationLevelContainer,
+		},
+	}
+
+	for _, operation := range []string{OperationStart, OperationStop, OperationDelete} {
+		t.Run(operation, func(t *testing.T) {
+			req := Request{
+				ProtocolVersion: ProtocolVersion,
+				RequestID:       "req-" + operation,
+				Operation:       operation,
+				DriverID:        RuntimeDriverRootlessPodman,
+				Lifecycle:       &LifecycleRequest{Target: target},
+			}
+			if err := req.Validate(); err != nil {
+				t.Fatalf("request Validate() unexpected error: %v", err)
+			}
+
+			var decoded Request
+			roundTripJSON(t, req, &decoded)
+			if !reflect.DeepEqual(decoded, req) {
+				t.Fatalf("decoded request = %#v, want %#v", decoded, req)
+			}
+			if decoded.Lifecycle == nil || decoded.Lifecycle.Target.Runtime.Driver != RuntimeDriverRootlessPodman {
+				t.Fatalf("decoded request missing lifecycle target metadata: %#v", decoded)
+			}
+		})
+	}
+}
+
 func TestWorkerStatusValidationAndJSONRoundTrip(t *testing.T) {
 	status := Status{
 		ProtocolVersion: ProtocolVersion,

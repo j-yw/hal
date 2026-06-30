@@ -204,7 +204,7 @@ func protocolErrorResponse(requestID, operation, code, message string) Response 
 		OK:              false,
 		Error: &Error{
 			Code:    strings.TrimSpace(code),
-			Message: strings.TrimSpace(message),
+			Message: sanitizeProtocolErrorDetail(message),
 		},
 	}
 }

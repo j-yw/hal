@@ -8,6 +8,10 @@ import (
 var defaultSupportedOperations = []string{
 	OperationStatus,
 	OperationCapabilities,
+	OperationCreate,
+	OperationStart,
+	OperationStop,
+	OperationDelete,
 }
 
 var defaultRuntimeDriverOperations = []string{

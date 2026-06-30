@@ -25,6 +25,8 @@ const (
 	ErrorCodeRequestCanceled  = "request_canceled"
 	ErrorCodeRequestTimeout   = "request_timeout"
 	ErrorCodeUnsupportedOp    = "unsupported_operation"
+	ErrorCodeDriverNotFound   = "driver_not_found"
+	ErrorCodeDriverFailed     = "driver_error"
 
 	HostKindLocal  = "local"
 	HostKindWorker = "worker"
