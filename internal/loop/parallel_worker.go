@@ -16,6 +16,7 @@ type WorkerAssignment struct {
 	AcceptanceCriteria []string                  `json:"acceptanceCriteria,omitempty"`
 	PRDFile            string                    `json:"prdFile"`
 	ProgressFile       string                    `json:"progressFile"`
+	ManifestFile       string                    `json:"manifestFile"`
 	BaseBranch         string                    `json:"baseBranch"`
 	BranchName         string                    `json:"branchName"`
 	Scheduling         *WorkerSchedulingMetadata `json:"scheduling,omitempty"`
@@ -63,6 +64,9 @@ func BuildWorkerAssignmentPrompt(assignment WorkerAssignment) string {
 	fmt.Fprintf(&b, "- Description: %s\n", assignment.Description)
 	fmt.Fprintf(&b, "- PRD file: %s\n", assignment.PRDFile)
 	fmt.Fprintf(&b, "- Progress file: %s\n", assignment.ProgressFile)
+	if assignment.ManifestFile != "" {
+		fmt.Fprintf(&b, "- Manifest file: %s\n", assignment.ManifestFile)
+	}
 	fmt.Fprintf(&b, "- Base branch: %s\n", assignment.BaseBranch)
 	fmt.Fprintf(&b, "- Worker branch: %s\n", assignment.BranchName)
 
@@ -104,6 +108,9 @@ func BuildWorkerAssignmentPrompt(assignment WorkerAssignment) string {
 	fmt.Fprintf(&b, "- Do not append canonical `.hal/progress.txt`.\n")
 	fmt.Fprintf(&b, "- Use the assigned PRD and progress file listed above as read-only task context unless your runner provides writable worker-specific copies.\n")
 	fmt.Fprintf(&b, "- Commit implementation changes on branch `%s` when the task is done.\n", assignment.BranchName)
+	if assignment.ManifestFile != "" {
+		fmt.Fprintf(&b, "- Write the worker manifest JSON to `%s`.\n", assignment.ManifestFile)
+	}
 	fmt.Fprintf(&b, "- Write a worker manifest JSON file with `taskId`, `status`, `branch`, `commit`, `checks`, `filesChanged`, `progressEntry`, `notes`, and `error`.\n")
 	fmt.Fprintf(&b, "- Use manifest status `%s` only when the task commit is ready for Hal to integrate serially.\n", WorkerManifestStatusReadyForIntegration)
 	fmt.Fprintf(&b, "- Put the progress summary in the manifest `progressEntry`; do not append it to canonical progress.\n")

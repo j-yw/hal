@@ -17,6 +17,7 @@ func TestBuildWorkerAssignmentPromptGuardrails(t *testing.T) {
 		AcceptanceCriteria: []string{"manifest is JSON", "canonical progress is untouched"},
 		PRDFile:            ".hal/parallel/TASK-007/prd.json",
 		ProgressFile:       ".hal/parallel/TASK-007/progress.txt",
+		ManifestFile:       ".hal/parallel/TASK-007/worker-manifest.json",
 		BaseBranch:         "main",
 		BranchName:         "hal/parallel-worker-task-007",
 		Scheduling: &WorkerSchedulingMetadata{
@@ -46,6 +47,7 @@ func TestBuildWorkerAssignmentPromptGuardrails(t *testing.T) {
 		"Use manifest status `ready_for_integration`",
 		".hal/parallel/TASK-007/prd.json",
 		".hal/parallel/TASK-007/progress.txt",
+		".hal/parallel/TASK-007/worker-manifest.json",
 		"manifest is JSON",
 		"canonical progress is untouched",
 		"Depends on: TASK-001",
