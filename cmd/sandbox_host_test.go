@@ -1100,6 +1100,74 @@ func TestSandboxHostStatusMissingHostReturnsCleanError(t *testing.T) {
 	}
 }
 
+func TestSandboxHostDeleteRemovesDurableRecordOnly(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:       "worker-a",
+		Name:     "builder",
+		Kind:     sandbox.SandboxHostKindWorker,
+		Endpoint: "unix:///tmp/private/worker-a.sock",
+		Health:   &sandbox.HostHealth{Status: sandboxworker.HealthStatusHealthy},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	deps := defaultSandboxHostDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("sandbox host delete should not contact worker daemons")
+		return nil, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxHostCommand(deps)
+	cmd.SetArgs([]string{"delete", "worker-a"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+
+	if _, err := sandbox.LoadHost("worker-a"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("LoadHost() after delete error = %v, want fs.ErrNotExist", err)
+	}
+	output := stdout.String()
+	for _, want := range []string{"Deleted sandbox host record worker-a", "durable registry only"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("stdout = %q, want %q", output, want)
+		}
+	}
+	for _, leaked := range []string{"/tmp/private/worker-a.sock", "stopped worker", "deleted runtime"} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("stdout should not leak endpoint or imply runtime mutation %q: %q", leaked, output)
+		}
+	}
+}
+
+func TestSandboxHostDeleteMissingHostReturnsCleanError(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	deps := defaultSandboxHostDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("sandbox host delete missing record should not contact worker daemons")
+		return nil, nil
+	}
+
+	cmd, _, stderr := newTestSandboxHostCommand(deps)
+	cmd.SetArgs([]string{"delete", "missing-worker"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want missing host error")
+	}
+
+	output := stderr.String()
+	if !strings.Contains(output, "Sandbox Host Delete failed") {
+		t.Fatalf("stderr = %q, want delete error title", output)
+	}
+	if !strings.Contains(output, `host "missing-worker" does not exist`) {
+		t.Fatalf("stderr = %q, want missing host detail", output)
+	}
+	if strings.Contains(output, "Usage:") || strings.Contains(output, "Error:") {
+		t.Fatalf("stderr should not include raw cobra usage: %q", output)
+	}
+}
+
 func decodeOneSandboxHostListJSON(t *testing.T, data []byte) SandboxHostListResponse {
 	t.Helper()
 	decoder := json.NewDecoder(bytes.NewReader(data))

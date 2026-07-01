@@ -282,9 +282,7 @@ func normalizeSandboxHostDeps(deps sandboxHostDeps) sandboxHostDeps {
 		}
 	}
 	if deps.delete == nil {
-		deps.delete = func(context.Context, sandboxHostDeleteRequest, io.Writer) error {
-			return sandboxHostNotImplementedError("sandbox host delete")
-		}
+		deps.delete = runSandboxHostDelete
 	}
 	return deps
 }
@@ -408,6 +406,21 @@ func runSandboxHostStatus(ctx context.Context, req sandboxHostStatusRequest, out
 		return renderSandboxHostStatusJSON(out, refreshed, true)
 	}
 	return renderSandboxHostStatus(out, refreshed, true)
+}
+
+func runSandboxHostDelete(_ context.Context, req sandboxHostDeleteRequest, out io.Writer) error {
+	hostID := strings.TrimSpace(req.HostID)
+	if hostID == "" {
+		return fmt.Errorf("host id is required")
+	}
+	if err := sandbox.RemoveHost(hostID); err != nil {
+		return err
+	}
+	if out != nil {
+		_, err := fmt.Fprintf(out, "Deleted sandbox host record %s from the durable registry only.\n", hostID)
+		return err
+	}
+	return nil
 }
 
 func renderSandboxHostListJSON(out io.Writer, hosts []*sandbox.SandboxHost) error {
@@ -679,10 +692,6 @@ func sandboxHostWorkerClientError(operation string, err error) error {
 		Operation: operation,
 		Err:       err,
 	}
-}
-
-func sandboxHostNotImplementedError(command string) error {
-	return fmt.Errorf("%s is not implemented yet", command)
 }
 
 func runSandboxHostCobra(cmd *cobra.Command, title string, run func(context.Context, io.Writer) error) error {

@@ -49,6 +49,7 @@
 - Cached worker host status output should read a single durable record through `internal/sandbox.LoadHost`, avoid worker client calls unless an explicit live path requests them, label human output as cached/not live, and reuse safe endpoint/runtime/capacity summaries instead of raw socket paths, hosts, or credential-bearing URLs.
 - Live worker host status refresh should load the durable host first, require a local Unix socket endpoint, reuse the command-layer worker metadata mapper, preserve durable identity/endpoint/labels, and persist successful refreshes with `internal/sandbox.ForceWriteHost`.
 - Worker host status JSON should use the dedicated `sandbox-host-status-v1` contract, identify `cached` vs `live-refreshed` source metadata, emit exactly one JSON document, and reuse safe endpoint/runtime/capacity summaries instead of raw socket paths, hostnames, credentials, or URL query strings.
+- Worker host deletion is registry-only: use `internal/sandbox.RemoveHost`, avoid worker client calls and runtime target mutation, and make human output explicit that only the durable record was removed.
 
 ## Patterns from phase14-worker-io (2026-07-01)
 
