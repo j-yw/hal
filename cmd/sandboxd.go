@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -28,6 +29,7 @@ type sandboxdServer interface {
 type sandboxdDeps struct {
 	newService              func(sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error)
 	newServer               func(sandboxworker.ServerOptions) (sandboxdServer, error)
+	rootlessPodmanAvailable func(context.Context, string) error
 	newRootlessPodmanDriver func(string) sandboxruntime.Driver
 	workerID                func() string
 }
@@ -108,9 +110,25 @@ func defaultSandboxdDeps() sandboxdDeps {
 		newServer: func(options sandboxworker.ServerOptions) (sandboxdServer, error) {
 			return sandboxworker.NewServer(options)
 		},
+		rootlessPodmanAvailable: defaultSandboxdRootlessPodmanAvailable,
 		newRootlessPodmanDriver: defaultSandboxdRootlessPodmanDriver,
 		workerID:                defaultSandboxdWorkerID,
 	}
+}
+
+func defaultSandboxdRootlessPodmanAvailable(ctx context.Context, podmanPath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	podmanPath = strings.TrimSpace(podmanPath)
+	if podmanPath == "" {
+		podmanPath = rootlesspodman.DefaultPodmanExecutable
+	}
+	_, err := exec.LookPath(podmanPath)
+	return err
 }
 
 func defaultSandboxdRootlessPodmanDriver(podmanPath string) sandboxruntime.Driver {
@@ -216,7 +234,7 @@ func runSandboxdWithDeps(ctx context.Context, req sandboxdRequest, out io.Writer
 	}
 	deps = normalizeSandboxdDeps(deps)
 
-	registry, driverIDs, err := sandboxdDriverRegistry(req, deps)
+	registry, driverIDs, err := sandboxdDriverRegistry(ctx, req, deps)
 	if err != nil {
 		return err
 	}
@@ -255,6 +273,9 @@ func normalizeSandboxdDeps(deps sandboxdDeps) sandboxdDeps {
 	if deps.newServer == nil {
 		deps.newServer = defaults.newServer
 	}
+	if deps.rootlessPodmanAvailable == nil {
+		deps.rootlessPodmanAvailable = defaults.rootlessPodmanAvailable
+	}
 	if deps.newRootlessPodmanDriver == nil {
 		deps.newRootlessPodmanDriver = defaults.newRootlessPodmanDriver
 	}
@@ -264,7 +285,10 @@ func normalizeSandboxdDeps(deps sandboxdDeps) sandboxdDeps {
 	return deps
 }
 
-func sandboxdDriverRegistry(req sandboxdRequest, deps sandboxdDeps) (*sandboxworker.DriverRegistry, []string, error) {
+func sandboxdDriverRegistry(ctx context.Context, req sandboxdRequest, deps sandboxdDeps) (*sandboxworker.DriverRegistry, []string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	registry := &sandboxworker.DriverRegistry{}
 	driverIDs := make([]string, 0, len(req.Drivers))
 	seen := map[string]bool{}
@@ -273,6 +297,9 @@ func sandboxdDriverRegistry(req sandboxdRequest, deps sandboxdDeps) (*sandboxwor
 		case sandboxruntime.DriverRootlessPodman:
 			if seen[driverID] {
 				return nil, nil, fmt.Errorf("sandboxd driver %q is registered more than once", driverID)
+			}
+			if err := deps.rootlessPodmanAvailable(ctx, req.PodmanPath); err != nil {
+				return nil, nil, sandboxdRuntimeUnavailableError{driverID: driverID, err: err}
 			}
 			driver := deps.newRootlessPodmanDriver(req.PodmanPath)
 			if err := registry.Register(driver); err != nil {
@@ -285,6 +312,23 @@ func sandboxdDriverRegistry(req sandboxdRequest, deps sandboxdDeps) (*sandboxwor
 		}
 	}
 	return registry, driverIDs, nil
+}
+
+type sandboxdRuntimeUnavailableError struct {
+	driverID string
+	err      error
+}
+
+func (e sandboxdRuntimeUnavailableError) Error() string {
+	driverID := strings.TrimSpace(e.driverID)
+	if driverID == "" {
+		driverID = "unknown"
+	}
+	return fmt.Sprintf("runtime_unavailable: sandboxd driver %q is unavailable; install Podman or pass --podman with an available executable", driverID)
+}
+
+func (e sandboxdRuntimeUnavailableError) Unwrap() error {
+	return e.err
 }
 
 func writeSandboxdStarted(out io.Writer, req sandboxdRequest, driverIDs []string) error {

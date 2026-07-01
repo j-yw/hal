@@ -24,6 +24,9 @@ func TestSandboxdSafetyWiringUsesFakeableDepsAndHonestCapabilities(t *testing.T)
 	var serverStarted bool
 
 	err := runSandboxdWithDeps(context.Background(), req, io.Discard, sandboxdDeps{
+		rootlessPodmanAvailable: func(context.Context, string) error {
+			return nil
+		},
 		newRootlessPodmanDriver: func(podmanPath string) sandboxruntime.Driver {
 			driverConstructed = true
 			if podmanPath != "fake-podman" {

@@ -47,6 +47,7 @@
 - Default `hal factory run --sandbox` must normalize cached worker-backed targets back to SSH-machine-compatible metadata unless `--sandbox-host` or `--sandbox-runtime` explicitly selects worker routing; strip worker runtime IDs/images, avoid worker host listing/client construction, and persist `factory.RunRecord.Sandbox.WorkerRouting` as nil.
 - Command-package worker client driver construction must stay centralized in `cmd/sandbox_worker_runtime.go`; guard tests should scan `cmd/*.go` including tests for direct `sandboxworker.NewClientDriver` calls while execution files keep routing through `sandboxWorkerRuntimeDriverFromTarget` and avoid importing `internal/sandboxworker`.
 - Fake worker rootless E2E coverage should live in `internal/sandboxworker` and route a fake `sandboxruntime.Driver` through the real `Service`, Unix socket `Server`, `Client`, and `ClientDriver`; use short `/tmp` socket paths and keep default tests free of Podman, providers, external daemons, and network dependencies.
+- `hal sandboxd` rootless Podman registration must check availability through the injectable command-layer availability dependency before constructing the driver, worker service, or server; unavailable Podman should return a sanitized `runtime_unavailable` classification while startup JSON lists only successfully registered drivers.
 
 ## Patterns from phase18-worker-backed-sandbox-execution-routing (2026-07-01)
 

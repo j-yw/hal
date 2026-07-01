@@ -45,6 +45,7 @@ func TestSandboxdCommandParsesFlagsAndUsesInjectedDependencies(t *testing.T) {
 	handler := &recordingSandboxdHandler{}
 	var gotService sandboxworker.ServiceOptions
 	var gotServer sandboxworker.ServerOptions
+	var gotAvailabilityPodmanPath string
 	var gotPodmanPath string
 	var gotServeContext context.Context
 
@@ -59,6 +60,10 @@ func TestSandboxdCommandParsesFlagsAndUsesInjectedDependencies(t *testing.T) {
 				gotServeContext = ctx
 				return nil
 			}), nil
+		},
+		rootlessPodmanAvailable: func(_ context.Context, podmanPath string) error {
+			gotAvailabilityPodmanPath = podmanPath
+			return nil
 		},
 		newRootlessPodmanDriver: func(podmanPath string) sandboxruntime.Driver {
 			gotPodmanPath = podmanPath
@@ -100,6 +105,9 @@ func TestSandboxdCommandParsesFlagsAndUsesInjectedDependencies(t *testing.T) {
 	if got := strings.Join(gotService.Registry.DriverIDs(), ","); got != sandboxruntime.DriverRootlessPodman {
 		t.Fatalf("service registry driver IDs = %q, want %q", got, sandboxruntime.DriverRootlessPodman)
 	}
+	if gotAvailabilityPodmanPath != "podman-test" {
+		t.Fatalf("availability podman path = %q, want podman-test", gotAvailabilityPodmanPath)
+	}
 	if gotPodmanPath != "podman-test" {
 		t.Fatalf("podman path = %q, want podman-test", gotPodmanPath)
 	}
@@ -135,6 +143,9 @@ func TestSandboxdCommandUsesDefaultWorkerIDDependency(t *testing.T) {
 		newServer: func(options sandboxworker.ServerOptions) (sandboxdServer, error) {
 			return sandboxdServerFunc(func(context.Context) error { return nil }), nil
 		},
+		rootlessPodmanAvailable: func(context.Context, string) error {
+			return nil
+		},
 		newRootlessPodmanDriver: func(string) sandboxruntime.Driver {
 			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
 		},
@@ -152,6 +163,63 @@ func TestSandboxdCommandUsesDefaultWorkerIDDependency(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "worker-from-deps") {
 		t.Fatalf("human startup output = %q, want worker id", stdout.String())
+	}
+}
+
+func TestSandboxdRootlessPodmanUnavailableFailsBeforeService(t *testing.T) {
+	req := sandboxdRequest{
+		SocketPath:    "/tmp/hal-sandboxd-unavailable.sock",
+		WorkerID:      "worker-test",
+		Drivers:       []string{sandboxruntime.DriverRootlessPodman},
+		PodmanPath:    "ssh://deploy:secret@example.test/tmp/private/podman?token=raw-secret",
+		MaxConcurrent: 1,
+		JSON:          true,
+	}
+	var stdout bytes.Buffer
+	driverConstructed := false
+	serviceCalled := false
+	serverCalled := false
+
+	err := runSandboxdWithDeps(context.Background(), req, &stdout, sandboxdDeps{
+		rootlessPodmanAvailable: func(context.Context, string) error {
+			return errors.New("stat /tmp/private/podman failed token=raw-secret at ssh://deploy:secret@example.test/tmp/private")
+		},
+		newRootlessPodmanDriver: func(string) sandboxruntime.Driver {
+			driverConstructed = true
+			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
+		},
+		newService: func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
+			serviceCalled = true
+			return &recordingSandboxdHandler{}, nil
+		},
+		newServer: func(options sandboxworker.ServerOptions) (sandboxdServer, error) {
+			serverCalled = true
+			return sandboxdServerFunc(func(context.Context) error { return nil }), nil
+		},
+	})
+	if err == nil {
+		t.Fatal("runSandboxdWithDeps() error = nil, want runtime_unavailable")
+	}
+	if !strings.Contains(err.Error(), "runtime_unavailable") || !strings.Contains(err.Error(), sandboxruntime.DriverRootlessPodman) {
+		t.Fatalf("error = %q, want runtime_unavailable rootless_podman classification", err.Error())
+	}
+	if driverConstructed || serviceCalled || serverCalled {
+		t.Fatalf("driverConstructed=%v serviceCalled=%v serverCalled=%v, want all false", driverConstructed, serviceCalled, serverCalled)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want no startup JSON when runtime unavailable", stdout.String())
+	}
+	for _, leaked := range []string{
+		"/tmp/private",
+		req.SocketPath,
+		"deploy:secret",
+		"example.test",
+		"token=raw-secret",
+		"raw-secret",
+	} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Fatalf("runtime unavailable error leaked %q: %q", leaked, err.Error())
+		}
 	}
 }
 
@@ -198,6 +266,9 @@ func TestSandboxdCommandRendersServeErrors(t *testing.T) {
 			return sandboxdServerFunc(func(context.Context) error {
 				return errors.New("listen failed")
 			}), nil
+		},
+		rootlessPodmanAvailable: func(context.Context, string) error {
+			return nil
 		},
 		newRootlessPodmanDriver: func(string) sandboxruntime.Driver {
 			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
