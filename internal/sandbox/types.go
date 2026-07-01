@@ -140,6 +140,16 @@ type SandboxSecretSecurity struct {
 	ActiveModes    []string `json:"activeModes,omitempty"`
 }
 
+// WorkerRoutingMetadata captures the redaction-safe worker-backed execution
+// route selected for a sandbox execution record.
+type WorkerRoutingMetadata struct {
+	SelectedWorkerHostID   string `json:"selectedWorkerHostId"`
+	SelectedWorkerHostName string `json:"selectedWorkerHostName"`
+	RuntimeDriverID        string `json:"runtimeDriverId"`
+	IsolationLevel         string `json:"isolationLevel"`
+	EndpointSummary        string `json:"endpointSummary"`
+}
+
 // SandboxLeaseRef identifies a lease associated with a sandbox.
 type SandboxLeaseRef struct {
 	ID          string    `json:"id"`

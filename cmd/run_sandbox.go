@@ -95,12 +95,15 @@ type runSandboxDeps struct {
 	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
 	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
+	resolveWorkerRuntime   func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error)
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
 	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
 	engineAuthFiles        func() []factorySandboxAuthFile
 	bootstrap              func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
 	materializeWorkspace   func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error)
 	execute                func(context.Context, runSandboxRequest, io.Writer, io.Writer, runSandboxExecutionHooks) (runSandboxExecutionResult, error)
+
+	customRuntimeResolver bool
 }
 
 var defaultRunSandboxDeps = runSandboxDeps{
@@ -360,6 +363,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 
 func normalizeRunSandboxDeps(deps runSandboxDeps) runSandboxDeps {
 	customResolveDefault := deps.resolveDefault != nil
+	customRuntimeResolver := deps.resolveRuntimeDriver != nil
 	useDefaultWorkspacePlanner := deps.planWorkspace == nil && deps.currentBranch == nil && deps.repoRemote == nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultRunSandboxDeps.defaultStore
@@ -409,6 +413,7 @@ func normalizeRunSandboxDeps(deps runSandboxDeps) runSandboxDeps {
 			return sandboxRuntimeDriverFromTarget(target, deps.resolveProvider)
 		}
 	}
+	deps.customRuntimeResolver = customRuntimeResolver
 	if deps.runProviderExecWithEnv == nil {
 		deps.runProviderExecWithEnv = defaultRunSandboxDeps.runProviderExecWithEnv
 	}
@@ -579,6 +584,7 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 	var remoteStarted bool
 	var provider sandbox.Provider
 	var runtimeDriver sandboxruntime.Driver
+	var selectedTarget *sandbox.SandboxState
 	var stdoutSummary strings.Builder
 	var stderrSummary strings.Builder
 	ensureProvider := func(providerName string) (sandbox.Provider, error) {
@@ -605,10 +611,17 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 		SetupStderr: prepOut,
 	}, sandboxexec.Dependencies{
 		ResolveTarget: func(ctx context.Context, _ sandboxexec.TargetRequest) (*sandbox.SandboxState, error) {
-			return deps.resolveRunSandboxTarget(ctx, req, prepOut)
+			target, err := deps.resolveRunSandboxTarget(ctx, req, prepOut)
+			if err == nil {
+				selectedTarget = target
+			}
+			return target, err
 		},
 		ResolveDriver: func(_ context.Context, target sandboxruntime.Target) (sandboxruntime.Driver, error) {
-			driver, err := deps.resolveRuntimeDriver(target)
+			driver, handled, err := deps.resolveRunSandboxRuntimeDriver(req, target, selectedTarget)
+			if !handled {
+				driver, err = deps.resolveRuntimeDriver(target)
+			}
 			if err == nil {
 				runtimeDriver = driver
 			}
@@ -672,6 +685,30 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 		StdoutSummary: stdoutSummary.String(),
 		StderrSummary: stderrSummary.String(),
 	}, err
+}
+
+func (deps runSandboxDeps) resolveRunSandboxRuntimeDriver(req runSandboxRequest, target sandboxruntime.Target, selectedTarget *sandbox.SandboxState) (sandboxruntime.Driver, bool, error) {
+	if !runSandboxWorkerRuntimeRouteSelected(req, target, selectedTarget) {
+		return nil, false, nil
+	}
+	resolver := deps.resolveWorkerRuntime
+	if resolver == nil && !deps.customRuntimeResolver {
+		resolver = func(req sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+			return sandboxWorkerRuntimeDriverFromTarget(req, sandboxWorkerRuntimeDriverFactories{})
+		}
+	}
+	if resolver == nil {
+		return nil, false, nil
+	}
+	driver, err := resolver(sandboxWorkerRuntimeRequest{
+		Target: target,
+		Host:   selectedTarget.Host,
+	})
+	return driver, true, err
+}
+
+func runSandboxWorkerRuntimeRouteSelected(req runSandboxRequest, target sandboxruntime.Target, selectedTarget *sandbox.SandboxState) bool {
+	return sandboxWorkerRuntimeRouteSelected(req.SandboxHostID, req.SandboxRuntime, target, selectedTarget)
 }
 
 func collectRunSandboxCoreStateArtifacts(ctx context.Context, store sandboxexecution.Store, req runSandboxRequest, result runSandboxExecutionResult) error {
@@ -960,6 +997,9 @@ func saveRunSandboxManifest(store sandboxexecution.Store, req runSandboxRequest,
 		manifest.Host = cloneSandboxHost(target.Host)
 		manifest.Runtime = cloneSandboxRuntime(target.Runtime)
 		manifest.Security = cloneSandboxSecurity(target.Security)
+		if sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
+			manifest.WorkerRouting = sandboxWorkerRoutingMetadataFromState(target)
+		}
 	}
 	if manifest.Security == nil {
 		manifest.Security = cloneSandboxSecurity(sandbox.EvaluateSandboxSecurity(req.Security))
@@ -1011,6 +1051,7 @@ func cloneSandboxHost(host *sandbox.SandboxHost) *sandbox.SandboxHost {
 		}
 	}
 	clone.SupportedRuntimes = append([]string(nil), host.SupportedRuntimes...)
+	clone.Security = cloneSandboxSecurity(host.Security)
 	return &clone
 }
 

@@ -402,6 +402,10 @@ func applySandboxSecurityMetadata(target *sandbox.SandboxState, req CommandReque
 	if target == nil {
 		return
 	}
+	if security := workerBackedHostSecurity(target); security != nil {
+		target.Security = cloneSandboxSecurity(security)
+		return
+	}
 	if target.Security != nil && emptySecurityEvaluationRequest(req.Security) && len(req.Env) == 0 {
 		return
 	}
@@ -413,6 +417,37 @@ func applySandboxSecurityMetadata(target *sandbox.SandboxState, req CommandReque
 		securityReq.ActiveSecretModes = append(securityReq.ActiveSecretModes, sandbox.SandboxSecretModeEnv)
 	}
 	target.Security = sandbox.EvaluateSandboxSecurity(securityReq)
+}
+
+func workerBackedHostSecurity(target *sandbox.SandboxState) *sandbox.SandboxSecurity {
+	if target == nil || target.Host == nil || target.Runtime == nil {
+		return nil
+	}
+	if strings.TrimSpace(target.Host.Kind) != sandbox.SandboxHostKindWorker {
+		return nil
+	}
+	if strings.TrimSpace(target.Runtime.Driver) != sandbox.SandboxRuntimeDriverRootlessPodman {
+		return nil
+	}
+	return target.Host.Security
+}
+
+func cloneSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.SandboxSecurity {
+	if security == nil {
+		return nil
+	}
+	clone := &sandbox.SandboxSecurity{}
+	if security.Network != nil {
+		network := *security.Network
+		clone.Network = &network
+	}
+	if security.Secrets != nil {
+		secrets := *security.Secrets
+		secrets.RequestedModes = append([]string(nil), security.Secrets.RequestedModes...)
+		secrets.ActiveModes = append([]string(nil), security.Secrets.ActiveModes...)
+		clone.Secrets = &secrets
+	}
+	return clone
 }
 
 func emptySecurityEvaluationRequest(req sandbox.SecurityEvaluationRequest) bool {

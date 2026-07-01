@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/verify"
 )
 
@@ -927,6 +928,9 @@ func TestSandboxMetadataLoadsLegacyJSON(t *testing.T) {
 	if decoded.Lease != nil {
 		t.Fatalf("lease = %#v, want nil for omitted legacy field", decoded.Lease)
 	}
+	if decoded.WorkerRouting != nil {
+		t.Fatalf("workerRouting = %#v, want nil for omitted legacy field", decoded.WorkerRouting)
+	}
 }
 
 func TestSandboxMetadataOptionalMetadataOmittedWhenNil(t *testing.T) {
@@ -1000,6 +1004,13 @@ func TestSandboxMetadataRuntimeV2SummaryJSONShape(t *testing.T) {
 			RunID:       "run-456",
 			ExpiresAt:   expiresAt,
 		},
+		WorkerRouting: &sandbox.WorkerRoutingMetadata{
+			SelectedWorkerHostID:   "host-123",
+			SelectedWorkerHostName: "worker-a",
+			RuntimeDriverID:        sandbox.SandboxRuntimeDriverRootlessPodman,
+			IsolationLevel:         sandbox.SandboxIsolationLevelContainer,
+			EndpointSummary:        "local Unix socket",
+		},
 	}
 
 	data, err := json.Marshal(metadata)
@@ -1026,6 +1037,7 @@ func TestSandboxMetadataRuntimeV2SummaryJSONShape(t *testing.T) {
 		"workspace",
 		"security",
 		"lease",
+		"workerRouting",
 	})
 	requireJSONKeysAbsent(t, raw, []string{
 		"path",
@@ -1101,6 +1113,30 @@ func TestSandboxMetadataRuntimeV2SummaryJSONShape(t *testing.T) {
 	requireExactJSONKeys(t, lease, []string{"id", "resourceKey", "purpose", "runId", "expiresAt"})
 	if lease["expiresAt"] != expiresAt.Format(time.RFC3339) {
 		t.Errorf("lease.expiresAt = %#v, want %q", lease["expiresAt"], expiresAt.Format(time.RFC3339))
+	}
+
+	workerRouting, ok := raw["workerRouting"].(map[string]any)
+	if !ok {
+		t.Fatalf("workerRouting should be an object, got %T", raw["workerRouting"])
+	}
+	requireExactJSONKeys(t, workerRouting, []string{
+		"selectedWorkerHostId",
+		"selectedWorkerHostName",
+		"runtimeDriverId",
+		"isolationLevel",
+		"endpointSummary",
+	})
+	requireJSONKeysAbsent(t, workerRouting, []string{
+		"endpoint",
+		"endpointPath",
+		"socketPath",
+		"hostPath",
+		"localPath",
+		"remotePath",
+		"tempPath",
+	})
+	if workerRouting["endpointSummary"] != "local Unix socket" {
+		t.Fatalf("workerRouting.endpointSummary = %#v, want safe summary", workerRouting["endpointSummary"])
 	}
 }
 

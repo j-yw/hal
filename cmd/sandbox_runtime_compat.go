@@ -8,6 +8,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"
 	"github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"
+	"github.com/jywlabs/hal/internal/sandboxtarget"
 )
 
 func sandboxStateFromRuntimeTarget(target sandboxruntime.Target) *sandbox.SandboxState {
@@ -154,6 +155,22 @@ func sandboxRuntimeDriverFromTargetWithFactories(target sandboxruntime.Target, r
 		}
 		return factories.sshMachine(provider), nil
 	default:
-		return nil, fmt.Errorf("sandbox runtime driver %q is not supported by current execution resolver", driver)
+		return nil, sandboxRuntimeUnsupportedError(target, driver)
 	}
+}
+
+func sandboxRuntimeUnsupportedError(target sandboxruntime.Target, driver string) error {
+	driver = strings.TrimSpace(driver)
+	hostID := strings.TrimSpace(target.Runtime.WorkerID)
+	failure := sandboxtarget.Failure{
+		Reason:        sandboxtarget.FailureReasonRuntimeUnsupported,
+		HostID:        hostID,
+		RuntimeDriver: driver,
+	}
+	if hostID != "" {
+		failure.Message = fmt.Sprintf("runtime_unsupported: worker host %q requested sandbox runtime driver %q is not supported by current execution resolver", hostID, driver)
+	} else {
+		failure.Message = fmt.Sprintf("runtime_unsupported: requested sandbox runtime driver %q is not supported by current execution resolver", driver)
+	}
+	return &failure
 }

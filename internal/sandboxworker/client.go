@@ -24,6 +24,7 @@ var (
 	clientHostPathPattern         = regexp.MustCompile(`(?i)(/private)?/(Users|home|tmp|var/(folders|tmp)|run/user)/[^\s:'"]+`)
 	clientRemoteTempPathPattern   = regexp.MustCompile(`(?i)/(workspace|workspaces|sandbox|remote)/[^\s:'"]*(/\.hal/tmp|/\.tmp|/tmp|/temp)[^\s:'"]*`)
 	clientSecretAssignmentPattern = regexp.MustCompile(`(?i)\b([a-z0-9_-]*(token|secret|password|api[_-]?key))=\S+`)
+	clientEndpointURLPattern      = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s'"]+`)
 )
 
 // Client calls worker protocol operations through a fakeable local transport.
@@ -520,6 +521,7 @@ func (transport unixSocketClientTransport) RoundTrip(ctx context.Context, req Re
 
 func sanitizeProtocolErrorDetail(detail string) string {
 	detail = strings.Join(strings.Fields(detail), " ")
+	detail = redactClientEndpointURLs(detail)
 	detail = clientSecretAssignmentPattern.ReplaceAllString(detail, "$1=[redacted]")
 	detail = clientHostPathPattern.ReplaceAllString(detail, "[redacted-path]")
 	detail = clientRemoteTempPathPattern.ReplaceAllString(detail, "[redacted-path]")
@@ -527,4 +529,17 @@ func sanitizeProtocolErrorDetail(detail string) string {
 		detail = strings.TrimSpace(detail[:maxClientErrorDetailBytes]) + "..."
 	}
 	return detail
+}
+
+func redactClientEndpointURLs(detail string) string {
+	return clientEndpointURLPattern.ReplaceAllStringFunc(detail, func(endpoint string) string {
+		schemeEnd := strings.Index(endpoint, "://")
+		if schemeEnd <= 0 {
+			return "[redacted-endpoint]"
+		}
+		if strings.EqualFold(strings.TrimSpace(endpoint[:schemeEnd]), "unix") {
+			return endpoint
+		}
+		return "[redacted-endpoint]"
+	})
 }

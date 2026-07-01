@@ -67,6 +67,7 @@ type factorySandboxExecutorDeps struct {
 	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
 	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
+	resolveWorkerRuntime   func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error)
 	runProviderExec        func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
 	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
@@ -76,6 +77,8 @@ type factorySandboxExecutorDeps struct {
 	saveRun                func(factory.Store, *factory.RunRecord) error
 	appendEvent            func(factory.Store, *factory.EventRecord) error
 	appendLog              func(factory.Store, *factory.LogChunk) error
+
+	customRuntimeResolver bool
 }
 
 var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
@@ -113,6 +116,7 @@ const factorySandboxRemoteWorkspaceRoot = "/root/workspace"
 
 func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factorySandboxExecutorDeps {
 	customResolveDefault := deps.resolveDefault != nil
+	customRuntimeResolver := deps.resolveRuntimeDriver != nil
 	customRunProviderExec := deps.runProviderExec != nil
 	customRunProviderScript := deps.runProviderScript != nil
 	customRunProviderExecWithEnv := deps.runProviderExecWithEnv != nil
@@ -149,6 +153,7 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 			return sandboxRuntimeDriverFromTarget(target, deps.resolveProvider)
 		}
 	}
+	deps.customRuntimeResolver = customRuntimeResolver
 	if deps.runProviderExec == nil {
 		deps.runProviderExec = defaultFactorySandboxExecutorDeps.runProviderExec
 	}
@@ -225,6 +230,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	}
 
 	var target *sandbox.SandboxState
+	var selectedTarget *sandbox.SandboxState
 	var provider sandbox.Provider
 	ensureProvider := func(providerName string) (sandbox.Provider, error) {
 		if provider != nil {
@@ -291,11 +297,18 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	}
 	_, execErr := sandboxexec.Run(ctx, commandReq, sandboxexec.Dependencies{
 		ResolveTarget: func(ctx context.Context, _ sandboxexec.TargetRequest) (*sandbox.SandboxState, error) {
-			return resolveFactorySandboxTarget(ctx, req, &record, provisionRepo, deps)
+			resolved, err := resolveFactorySandboxTarget(ctx, req, &record, provisionRepo, deps)
+			if err == nil {
+				selectedTarget = resolved
+			}
+			return resolved, err
 		},
 		OnTargetReady: func(_ context.Context, ready *sandbox.SandboxState) error {
 			target = ready
 			record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
+			if record.Sandbox != nil && sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
+				record.Sandbox.WorkerRouting = sandboxWorkerRoutingMetadataFromState(target)
+			}
 			record.UpdatedAt = deps.now().UTC()
 			if err := saveFactorySandboxRunRecordWithRedactor(store, deps, &record, secretRedactor); err != nil {
 				return fmt.Errorf("record factory sandbox metadata: %w", err)
@@ -307,7 +320,11 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			return nil
 		},
 		ResolveDriver: func(_ context.Context, target sandboxruntime.Target) (sandboxruntime.Driver, error) {
-			return deps.resolveRuntimeDriver(target)
+			driver, handled, err := deps.resolveFactorySandboxRuntimeDriver(req, target, selectedTarget)
+			if !handled {
+				driver, err = deps.resolveRuntimeDriver(target)
+			}
+			return driver, err
 		},
 		OnDriverReady: func(_ context.Context, ready sandboxruntime.Target, _ sandboxruntime.Driver) error {
 			if target == nil {
@@ -365,6 +382,30 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		cleanupSucceeded = true
 	}
 	return nil
+}
+
+func (deps factorySandboxExecutorDeps) resolveFactorySandboxRuntimeDriver(req factorySandboxExecutorRequest, target sandboxruntime.Target, selectedTarget *sandbox.SandboxState) (sandboxruntime.Driver, bool, error) {
+	if !factorySandboxWorkerRuntimeRouteSelected(req, target, selectedTarget) {
+		return nil, false, nil
+	}
+	resolver := deps.resolveWorkerRuntime
+	if resolver == nil && !deps.customRuntimeResolver {
+		resolver = func(req sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+			return sandboxWorkerRuntimeDriverFromTarget(req, sandboxWorkerRuntimeDriverFactories{})
+		}
+	}
+	if resolver == nil {
+		return nil, false, nil
+	}
+	driver, err := resolver(sandboxWorkerRuntimeRequest{
+		Target: target,
+		Host:   selectedTarget.Host,
+	})
+	return driver, true, err
+}
+
+func factorySandboxWorkerRuntimeRouteSelected(req factorySandboxExecutorRequest, target sandboxruntime.Target, selectedTarget *sandbox.SandboxState) bool {
+	return sandboxWorkerRuntimeRouteSelected(req.SandboxHostID, req.SandboxRuntime, target, selectedTarget)
 }
 
 func resolveFactorySandboxTarget(ctx context.Context, req factorySandboxExecutorRequest, record *factory.RunRecord, provisionRepo string, deps factorySandboxExecutorDeps) (*sandbox.SandboxState, error) {

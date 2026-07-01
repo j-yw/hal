@@ -83,6 +83,7 @@ func TestManifestJSONFieldsAndSandboxMetadataTypes(t *testing.T) {
 	assertFieldType(t, manifestType, "Runtime", reflect.TypeOf((*sandbox.SandboxRuntimeState)(nil)))
 	assertFieldType(t, manifestType, "Security", reflect.TypeOf((*sandbox.SandboxSecurity)(nil)))
 	assertFieldType(t, manifestType, "Lease", reflect.TypeOf((*sandbox.SandboxLeaseRef)(nil)))
+	assertFieldType(t, manifestType, "WorkerRouting", reflect.TypeOf((*sandbox.WorkerRoutingMetadata)(nil)))
 
 	finishedAt := time.Date(2026, 6, 30, 3, 4, 5, 0, time.UTC)
 	manifest := Manifest{
@@ -129,6 +130,13 @@ func TestManifestJSONFieldsAndSandboxMetadataTypes(t *testing.T) {
 			RunID:       "exec-1",
 			ExpiresAt:   time.Date(2026, 6, 30, 4, 0, 0, 0, time.UTC),
 		},
+		WorkerRouting: &sandbox.WorkerRoutingMetadata{
+			SelectedWorkerHostID:   "host-1",
+			SelectedWorkerHostName: "worker",
+			RuntimeDriverID:        sandbox.SandboxRuntimeDriverRootlessPodman,
+			IsolationLevel:         sandbox.SandboxIsolationLevelContainer,
+			EndpointSummary:        "local Unix socket",
+		},
 		Artifacts: []Artifact{{ID: "log", Name: "Log", Type: "text"}},
 		ArtifactMetadata: &ArtifactMetadata{
 			Collected: []ArtifactMetadataEntry{{
@@ -159,7 +167,18 @@ func TestManifestJSONFieldsAndSandboxMetadataTypes(t *testing.T) {
 	assertJSONKeys(t, got, []string{
 		"id", "purpose", "sandboxName", "projectDir", "command", "workDir",
 		"status", "startedAt", "finishedAt", "workspace", "host", "runtime",
-		"security", "lease", "artifacts", "artifactMetadata",
+		"security", "lease", "workerRouting", "artifacts", "artifactMetadata",
+	})
+	workerRouting, ok := got["workerRouting"].(map[string]any)
+	if !ok {
+		t.Fatalf("workerRouting should be an object, got %T", got["workerRouting"])
+	}
+	assertJSONKeys(t, workerRouting, []string{
+		"selectedWorkerHostId",
+		"selectedWorkerHostName",
+		"runtimeDriverId",
+		"isolationLevel",
+		"endpointSummary",
 	})
 
 	emptyOptional := mustJSONMap(t, Manifest{
@@ -188,6 +207,9 @@ func TestManifestUnmarshalWithoutArtifactMetadata(t *testing.T) {
 	}
 	if manifest.ArtifactMetadata != nil {
 		t.Fatalf("ArtifactMetadata = %#v, want nil for legacy manifest", manifest.ArtifactMetadata)
+	}
+	if manifest.WorkerRouting != nil {
+		t.Fatalf("WorkerRouting = %#v, want nil for legacy manifest", manifest.WorkerRouting)
 	}
 	if len(manifest.Artifacts) != 1 || manifest.Artifacts[0].StoredPath != "exec-1/artifacts/log.txt" {
 		t.Fatalf("legacy artifacts = %#v, want preserved artifact", manifest.Artifacts)
