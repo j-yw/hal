@@ -37,6 +37,10 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase21-workspace-syncout-apply (2026-07-01)
+
+- Sync-out workspace contracts belong in `internal/sandboxworkspace` as data-only, command-agnostic types; keep them free of command, factory, provider, worker, concrete runtime adapter, Cobra, and network-only imports, and represent artifacts with safe IDs, display names, relative/store paths, warning codes, recovery status, and explicit apply eligibility reasons.
+
 ## Patterns from phase20-lease-aware-scheduler (2026-07-01)
 
 - Lease-aware scheduler contracts belong in `internal/sandboxtarget` as additive, command-agnostic data types; keep `SchedulerRequest`/`SchedulerResult` free of Cobra, command packages, worker clients, concrete runtime adapters, provider calls, and live inspection, and represent selection identity, capacity decisions, lease requirements, and rejection reasons separately from later scheduling behavior.

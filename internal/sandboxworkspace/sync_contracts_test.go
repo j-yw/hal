@@ -93,6 +93,126 @@ func TestBundleMaterializationOmitsLocalBundlePath(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSyncOutContractShape(t *testing.T) {
+	summary := SyncOutSummary{
+		Workspace: SyncOutWorkspaceRef{
+			Mode:        sandbox.SandboxWorkspaceModeClone,
+			InputSource: sandbox.SandboxWorkspaceInputSourceGitBundle,
+			Branch:      "phase/workspace",
+			SyncRef:     "abc123",
+		},
+		Committed: SyncOutCommittedArtifacts{
+			Patch: &SyncOutArtifact{
+				ID:          "committed-patch",
+				DisplayName: "Committed Patch",
+				Kind:        SyncOutArtifactKindPatch,
+				DisplayPath: ".hal/sync/committed.patch",
+				StoredPath:  "exec-1/artifacts/committed.patch",
+				ApplyEligibility: &SyncOutApplyEligibility{
+					Eligible: true,
+					Mode:     SyncOutApplyModePatch,
+					Reasons:  []SyncOutApplyEligibilityReason{SyncOutApplyEligibilityReasonEligiblePatch},
+				},
+			},
+			Bundle: &SyncOutArtifact{
+				ID:          "committed-bundle",
+				DisplayName: "Committed Bundle",
+				Kind:        SyncOutArtifactKindBundle,
+				DisplayPath: ".hal/sync/committed.bundle",
+				StoredPath:  "exec-1/artifacts/committed.bundle",
+				ApplyEligibility: &SyncOutApplyEligibility{
+					Eligible: true,
+					Mode:     SyncOutApplyModeBundle,
+					Reasons:  []SyncOutApplyEligibilityReason{SyncOutApplyEligibilityReasonEligibleBundle},
+				},
+			},
+		},
+		Uncommitted: SyncOutUncommittedArtifacts{
+			Diff: &SyncOutArtifact{
+				ID:          "uncommitted-diff",
+				DisplayName: "Uncommitted Diff",
+				Kind:        SyncOutArtifactKindDiff,
+				DisplayPath: ".hal/sync/uncommitted.diff",
+				StoredPath:  "exec-1/artifacts/uncommitted.diff",
+				ApplyEligibility: &SyncOutApplyEligibility{
+					Eligible: false,
+					Reasons:  []SyncOutApplyEligibilityReason{SyncOutApplyEligibilityReasonManualReviewRequired},
+				},
+			},
+		},
+		Untracked: SyncOutUntrackedArtifacts{
+			Archive: &SyncOutArtifact{
+				ID:          "untracked-archive",
+				DisplayName: "Untracked Files Archive",
+				Kind:        SyncOutArtifactKindArchive,
+				DisplayPath: ".hal/sync/untracked.tar",
+				StoredPath:  "exec-1/artifacts/untracked.tar",
+			},
+			List: &SyncOutArtifact{
+				ID:          "untracked-list",
+				DisplayName: "Untracked Files",
+				Kind:        SyncOutArtifactKindFileList,
+				DisplayPath: ".hal/sync/untracked.txt",
+				StoredPath:  "exec-1/artifacts/untracked.txt",
+			},
+		},
+		CoreArtifacts: []SyncOutArtifact{{
+			ID:          "prd",
+			DisplayName: "PRD",
+			Kind:        SyncOutArtifactKindCore,
+			DisplayPath: ".hal/prd.json",
+			StoredPath:  "exec-1/artifacts/hal-prd.json",
+		}},
+		Recovery: SyncOutRecoveryState{
+			Status: SyncOutRecoveryStatusCollected,
+			Artifacts: []SyncOutArtifact{{
+				ID:          "recovery-patch",
+				DisplayName: "Recovery Patch",
+				Kind:        SyncOutArtifactKindRecovery,
+				DisplayPath: ".hal/recovery/workspace.patch",
+				StoredPath:  "exec-1/recovery/workspace.patch",
+			}},
+		},
+		Warnings: []SyncOutWarning{{
+			Code:       "copy_out_partial",
+			Message:    "optional artifact unavailable",
+			ArtifactID: "reports-archive",
+		}},
+		Apply: SyncOutApplyDecision{
+			Eligible:   true,
+			Mode:       SyncOutApplyModePatch,
+			ArtifactID: "committed-patch",
+			Reasons:    []SyncOutApplyEligibilityReason{SyncOutApplyEligibilityReasonEligiblePatch},
+		},
+	}
+
+	got := mustSyncOutJSONMap(t, summary)
+	assertSyncOutJSONKeys(t, got, []string{
+		"workspace", "committed", "uncommitted", "untracked",
+		"coreArtifacts", "recovery", "warnings", "apply",
+	})
+	committed := syncOutJSONObject(t, got, "committed")
+	assertSyncOutJSONKeys(t, committed, []string{"patch", "bundle"})
+	patch := syncOutJSONObject(t, committed, "patch")
+	assertSyncOutJSONKeys(t, patch, []string{
+		"id", "displayName", "kind", "displayPath", "storedPath", "applyEligibility",
+	})
+	apply := syncOutJSONObject(t, got, "apply")
+	assertSyncOutJSONKeys(t, apply, []string{"eligible", "mode", "artifactId", "reasons"})
+
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("Marshal(sync-out summary) error = %v", err)
+	}
+	for _, unsafeFragment := range []string{
+		"remotePath", "localPath", "sourcePath", "tempPath", "endpoint", "credential", "providerSecret",
+	} {
+		if strings.Contains(string(encoded), unsafeFragment) {
+			t.Fatalf("sync-out contract leaked unsafe field fragment %q: %s", unsafeFragment, encoded)
+		}
+	}
+}
+
 func TestWorkspaceSyncContractsCompileWithNarrowAdapters(t *testing.T) {
 	var _ WorkspaceMaterializer = MaterializerFunc(func(context.Context, MaterializeRequest) (MaterializationResult, error) {
 		return MaterializationResult{}, nil
@@ -146,6 +266,48 @@ func assertSandboxworkspaceAllowedImport(t *testing.T, fileName, importPath stri
 	}
 	if importPath == "github.com/spf13/cobra" || strings.Contains(importPath, "/cobra") {
 		t.Fatalf("%s imports Cobra package %q", fileName, importPath)
+	}
+}
+
+func mustSyncOutJSONMap(t *testing.T, value any) map[string]any {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	return got
+}
+
+func syncOutJSONObject(t *testing.T, object map[string]any, key string) map[string]any {
+	t.Helper()
+	value, ok := object[key]
+	if !ok {
+		t.Fatalf("missing JSON key %q in %#v", key, object)
+	}
+	child, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("JSON key %q has type %T, want object", key, value)
+	}
+	return child
+}
+
+func assertSyncOutJSONKeys(t *testing.T, got map[string]any, want []string) {
+	t.Helper()
+	wantSet := make(map[string]struct{}, len(want))
+	for _, key := range want {
+		wantSet[key] = struct{}{}
+		if _, ok := got[key]; !ok {
+			t.Fatalf("missing JSON key %q in %#v", key, got)
+		}
+	}
+	for key := range got {
+		if _, ok := wantSet[key]; !ok {
+			t.Fatalf("unexpected JSON key %q in %#v", key, got)
+		}
 	}
 }
 
