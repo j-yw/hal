@@ -1002,6 +1002,161 @@ func TestWorkerRootlessAutoSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) 
 	}
 }
 
+func TestWorkerRootlessFactorySandboxUsesSharedWorkerRuntimeResolver(t *testing.T) {
+	projectDir := t.TempDir()
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	startedAt := time.Date(2026, 7, 1, 7, 41, 0, 0, time.UTC)
+	now := func() time.Time {
+		startedAt = startedAt.Add(time.Second)
+		return startedAt
+	}
+	var out bytes.Buffer
+	var workerResolverCalls int
+
+	workerDriver := fakeRunSandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			if req.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman {
+				t.Fatalf("Exec runtime driver = %q, want rootless_podman", req.Target.Runtime.Driver)
+			}
+			if req.Target.Runtime.WorkerID != "worker-1" {
+				t.Fatalf("Exec worker ID = %q, want worker-1", req.Target.Runtime.WorkerID)
+			}
+			_, _ = io.WriteString(req.Stdout, "worker-backed factory path\n")
+			return &sandboxruntime.ExecResult{}, nil
+		},
+	}
+
+	policy := factory.DefaultFactoryPolicy()
+	policy.PRCreationAllowed = false
+
+	err := runFactoryRunWithDeps(context.Background(), projectDir, factoryRunRequest{
+		BaseBranch:     "main",
+		Sandbox:        true,
+		SandboxHostID:  "worker-1",
+		SandboxRuntime: sandboxruntime.DriverRootlessPodman,
+	}, &out, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-factory-worker-rootless-shared-resolver", nil },
+		now:          now,
+		workingDir:   func() (string, error) { return projectDir, nil },
+		currentBranch: func(string) (string, error) {
+			return "feature/worker-rootless", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@example.com:org/repo.git", nil
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return &policy, nil
+		},
+		loadEngine: func(string) (string, error) {
+			return factory.PolicyEngineCodex, nil
+		},
+		runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
+			req.SandboxName = "worker-rootless"
+			return runFactorySandboxExecutorWithDeps(ctx, req, factorySandboxExecutorDeps{
+				defaultStore: func() (factory.Store, error) { return store, nil },
+				now:          now,
+				loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+					return workerRootlessCachedSandbox(name), nil
+				},
+				listHosts: func() ([]*sandbox.SandboxHost, error) {
+					return []*sandbox.SandboxHost{workerRootlessHostWithEndpoint(workerSafeUnixEndpoint())}, nil
+				},
+				listSandboxes: func() ([]*sandbox.SandboxState, error) {
+					t.Fatal("listSandboxes should not run for explicit cached worker sandbox")
+					return nil, nil
+				},
+				resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+					t.Fatal("default sandbox fallback should not run for explicit cached worker sandbox")
+					return nil, "", nil
+				},
+				provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+					t.Fatal("provision should not run for explicit cached worker sandbox")
+					return nil, nil
+				},
+				resolveProvider: func(string) (sandbox.Provider, error) {
+					return fakeFactorySandboxProvider{}, nil
+				},
+				resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+					t.Fatal("legacy runtime resolver should not run for explicit worker-backed factory execution")
+					return nil, nil
+				},
+				resolveWorkerRuntime: func(req sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+					workerResolverCalls++
+					if req.Host == nil || req.Host.ID != "worker-1" {
+						t.Fatalf("worker resolver host = %#v, want worker-1", req.Host)
+					}
+					if req.Target.Name != "worker-rootless" {
+						t.Fatalf("worker resolver target name = %q, want worker-rootless", req.Target.Name)
+					}
+					if req.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman {
+						t.Fatalf("worker resolver runtime = %q, want rootless_podman", req.Target.Runtime.Driver)
+					}
+					if req.Target.Runtime.WorkerID != "worker-1" || req.Target.Runtime.RuntimeID != "ctr-worker-rootless" {
+						t.Fatalf("worker resolver runtime metadata = %#v, want durable worker metadata", req.Target.Runtime)
+					}
+					return workerDriver, nil
+				},
+				bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+					return factory.BootstrapResult{}, nil
+				},
+				engineAuthFiles: func() []factorySandboxAuthFile {
+					return nil
+				},
+				runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
+					return nil
+				},
+			})
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			return workerRootlessCachedSandbox(name), nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, _ map[string]string, out io.Writer) error {
+			_, _ = io.WriteString(out, `{"schemaVersion":"verify-v1","status":"pass","summary":{"total":0},"checks":[]}`+"\n")
+			return nil
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) {
+			return factorySnapshotArtifact{}, nil
+		},
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) {
+			return factorySnapshotArtifact{}, nil
+		},
+		sandboxRequests: func(string, factory.RunRecord) []factory.SandboxArtifactRequest {
+			return nil
+		},
+		cleanupSandbox: func(context.Context, factorySandboxCleanupRequest) error {
+			t.Fatal("cleanup should not run for preserved worker-backed factory sandbox")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v\noutput=%s", err, out.String())
+	}
+	if workerResolverCalls != 1 {
+		t.Fatalf("worker resolver calls = %d, want 1", workerResolverCalls)
+	}
+	if !strings.Contains(out.String(), "worker-backed factory path") {
+		t.Fatalf("output = %q, want worker-backed runtime output", out.String())
+	}
+	record, loadErr := store.LoadRun("run-factory-worker-rootless-shared-resolver")
+	if loadErr != nil {
+		t.Fatalf("LoadRun() error: %v", loadErr)
+	}
+	if record.Status != factory.RunStatusSucceeded {
+		t.Fatalf("record.Status = %q, want succeeded", record.Status)
+	}
+	if record.Sandbox == nil || record.Sandbox.Runtime == nil {
+		t.Fatalf("record sandbox runtime metadata = %#v, want selected worker runtime", record.Sandbox)
+	}
+	if record.Sandbox.Runtime.Driver != sandboxruntime.DriverRootlessPodman || record.Sandbox.Runtime.WorkerID != "worker-1" {
+		t.Fatalf("record sandbox runtime = %#v, want selected worker rootless runtime", record.Sandbox.Runtime)
+	}
+}
+
 func TestWorkerRootlessRunSandboxDefaultResolverBuildsClientDriver(t *testing.T) {
 	deps := normalizeRunSandboxDeps(runSandboxDeps{
 		resolveProvider: func(string) (sandbox.Provider, error) {
