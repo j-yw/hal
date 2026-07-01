@@ -107,6 +107,7 @@ type autoSandboxDeps struct {
 	engineAuthFiles        func() []factorySandboxAuthFile
 	bootstrap              func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
 	materializeWorkspace   func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error)
+	applySyncOut           sandboxSyncOutApplier
 	execute                func(context.Context, autoSandboxRequest, io.Writer, io.Writer, autoSandboxExecutionHooks) (autoSandboxExecutionResult, error)
 
 	customRuntimeResolver bool
@@ -309,6 +310,11 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 	if execErr == nil {
 		if collectErr := collectAutoSandboxOutputSummaryArtifacts(store, req, execResult, target); collectErr != nil {
 			execErr = collectErr
+		}
+	}
+	if execErr == nil {
+		if applyErr := applyAutoSandboxSyncOut(ctx, store, req, deps); applyErr != nil {
+			execErr = applyErr
 		}
 	}
 	leaseRelease := sandboxCommandLeaseReleaseTracker{releaseLease: deps.releaseLease}

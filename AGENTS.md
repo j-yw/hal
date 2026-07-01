@@ -45,6 +45,7 @@
 - Safe host apply primitives belong in `internal/sandboxworkspace`; keep `SafeApply` behind the narrow `SafeApplyGit` boundary, run patch or bundle dry-run validation before mutation, and return structured handoff/warning metadata without raw project dirs, payload paths, endpoints, credentials, or secret-bearing repository URLs.
 - Safe host apply must check host worktree cleanliness through `SafeApplyGit` before dry-run or mutation; dirty worktrees should return `dirty_worktree` handoff metadata with only staged/unstaged/untracked categories and no file paths.
 - Safe host apply must acquire workspace locks before worktree clean checks, dry-run validation, or mutation; keep the default lock directory outside the Git worktree so lock files do not make `git status` dirty, and convert lock acquisition failures into redaction-safe `workspace_lock_failed` handoff warnings.
+- Non-factory sync-out apply wiring belongs in `cmd` behind the injectable `sandboxSyncOutApplier` boundary; invoke it only after core/recovery/generated/output artifact metadata has been persisted into `sandboxexecution.Store`, and before lease release/final manifest save, so host dry-run or mutation sees durable recovery metadata.
 
 ## Patterns from phase20-lease-aware-scheduler (2026-07-01)
 
