@@ -37,9 +37,20 @@ type ValidationState struct {
 
 // RunState stores run-step telemetry in pipeline state.
 type RunState struct {
-	Iterations    int  `json:"iterations,omitempty"`
-	Complete      bool `json:"complete,omitempty"`
-	MaxIterations int  `json:"maxIterations,omitempty"`
+	Iterations    int               `json:"iterations,omitempty"`
+	Complete      bool              `json:"complete,omitempty"`
+	MaxIterations int               `json:"maxIterations,omitempty"`
+	Parallel      *ParallelRunState `json:"parallel,omitempty"`
+}
+
+// ParallelRunState stores safe aggregate telemetry for parallel run mode.
+type ParallelRunState struct {
+	RequestedParallelism int    `json:"requestedParallelism,omitempty"`
+	RunID                string `json:"runId,omitempty"`
+	Batches              int    `json:"batches,omitempty"`
+	Started              int    `json:"started,omitempty"`
+	Integrated           int    `json:"integrated,omitempty"`
+	Failed               int    `json:"failed,omitempty"`
 }
 
 // ReviewState stores review-step telemetry in pipeline state.

@@ -31,6 +31,7 @@ func newAutoTestCommand(t *testing.T) (*cobra.Command, *bytes.Buffer) {
 	cmd.Flags().String("engine", "codex", "")
 	cmd.Flags().String("base", "", "")
 	cmd.Flags().Bool("json", false, "")
+	cmd.Flags().Int("parallel", 0, "")
 
 	var out bytes.Buffer
 	cmd.SetOut(&out)
@@ -78,6 +79,7 @@ func TestAutoCommand_ExposesOnlySinglePipelineRuntimeFlags(t *testing.T) {
 		"mode":          {},
 		"no-ci":         {},
 		"no-review":     {},
+		"parallel":      {},
 		"report":        {},
 		"resume":        {},
 		"review-max":    {},
@@ -121,6 +123,45 @@ func TestAutoCommand_ExposesOnlySinglePipelineRuntimeFlags(t *testing.T) {
 		if autoCmd.LocalFlags().Lookup(legacyFlag) != nil {
 			t.Fatalf("legacy dual-mode runtime flag %q should not be exposed", legacyFlag)
 		}
+	}
+}
+
+func TestApplyAutoRunStateAddsParallelTelemetry(t *testing.T) {
+	steps := newPendingAutoSteps()
+	applyAutoRunState(&steps, &compound.RunState{
+		Iterations: 4,
+		Parallel: &compound.ParallelRunState{
+			RequestedParallelism: 3,
+			RunID:                "run-test",
+			Batches:              2,
+			Started:              4,
+			Integrated:           4,
+		},
+	})
+
+	if steps.Run.Iterations != 4 {
+		t.Fatalf("run iterations = %d, want 4", steps.Run.Iterations)
+	}
+	if steps.Run.Parallel == nil {
+		t.Fatal("run parallel telemetry is nil")
+	}
+	if steps.Run.Parallel.RequestedParallelism != 3 || steps.Run.Parallel.Batches != 2 || steps.Run.Parallel.Integrated != 4 {
+		t.Fatalf("parallel telemetry = %+v, want requested=3 batches=2 integrated=4", steps.Run.Parallel)
+	}
+}
+
+func TestRunAutoRejectsParallelAboveCap(t *testing.T) {
+	cmd, _ := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("parallel", "11"); err != nil {
+		t.Fatalf("set parallel: %v", err)
+	}
+
+	err := runAutoWithDir(cmd, nil, t.TempDir())
+	if err == nil {
+		t.Fatal("runAutoWithDir() error = nil, want validation error")
+	}
+	if !strings.Contains(err.Error(), "--parallel must be less than or equal to 10") {
+		t.Fatalf("error = %v, want parallel cap validation", err)
 	}
 }
 

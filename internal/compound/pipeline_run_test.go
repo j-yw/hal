@@ -10,6 +10,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/loop"
+	"github.com/jywlabs/hal/internal/parallelrun"
 	"github.com/jywlabs/hal/internal/template"
 )
 
@@ -169,6 +170,70 @@ func TestRunLoopStep_MaxRunAttemptsUsesRemainingBudgetOnResume(t *testing.T) {
 	}
 	if state.Run.MaxIterations != 2 {
 		t.Fatalf("state.Run.MaxIterations = %d, want remaining policy budget 2", state.Run.MaxIterations)
+	}
+}
+
+func TestRunLoopStep_DispatchesParallelRunnerAndSavesTelemetry(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	cfg.MaxIterations = 7
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+	state := &PipelineState{Step: StepRun, BaseBranch: "develop"}
+
+	origRunLoopWithConfig := runLoopWithConfig
+	runLoopWithConfig = func(context.Context, loop.Config) (loop.Result, error) {
+		t.Fatal("sequential loop should not be called for parallel run step")
+		return loop.Result{}, nil
+	}
+	origRunParallelWithConfig := runParallelWithConfig
+	var gotParallelConfig parallelrun.Config
+	runParallelWithConfig = func(ctx context.Context, cfg parallelrun.Config) (parallelrun.Result, error) {
+		gotParallelConfig = cfg
+		return parallelrun.Result{
+			Success:          true,
+			Complete:         true,
+			Iterations:       3,
+			CompletedStories: 3,
+			TotalStories:     3,
+			Parallel: parallelrun.Summary{
+				RunID:                "run-test",
+				RequestedParallelism: 4,
+				Batches:              2,
+				Started:              3,
+				Integrated:           3,
+			},
+		}, nil
+	}
+	t.Cleanup(func() {
+		runLoopWithConfig = origRunLoopWithConfig
+		runParallelWithConfig = origRunParallelWithConfig
+	})
+
+	if err := pipeline.runLoopStep(context.Background(), state, RunOptions{Parallelism: 4, MaxRunAttempts: 3}); err != nil {
+		t.Fatalf("runLoopStep() error = %v", err)
+	}
+	if gotParallelConfig.Parallelism != 4 {
+		t.Fatalf("parallelism = %d, want 4", gotParallelConfig.Parallelism)
+	}
+	if gotParallelConfig.MaxIterations != 3 {
+		t.Fatalf("max iterations = %d, want policy cap 3", gotParallelConfig.MaxIterations)
+	}
+	if gotParallelConfig.RepoDir != dir {
+		t.Fatalf("repo dir = %q, want %q", gotParallelConfig.RepoDir, dir)
+	}
+	if state.Run == nil || state.Run.Parallel == nil {
+		t.Fatalf("state.Run = %+v, want parallel telemetry", state.Run)
+	}
+	if state.Run.Parallel.RequestedParallelism != 4 || state.Run.Parallel.Batches != 2 || state.Run.Parallel.Integrated != 3 {
+		t.Fatalf("state.Run.Parallel = %+v, want requested=4 batches=2 integrated=3", state.Run.Parallel)
+	}
+
+	saved := pipeline.loadState()
+	if saved == nil || saved.Run == nil || saved.Run.Parallel == nil {
+		t.Fatalf("saved state = %+v, want parallel run telemetry", saved)
+	}
+	if saved.Run.Parallel.RunID != "run-test" {
+		t.Fatalf("saved run ID = %q, want run-test", saved.Run.Parallel.RunID)
 	}
 }
 

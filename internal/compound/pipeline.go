@@ -15,6 +15,7 @@ import (
 	"github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/loop"
+	"github.com/jywlabs/hal/internal/parallelrun"
 	"github.com/jywlabs/hal/internal/prd"
 	"github.com/jywlabs/hal/internal/skills"
 	"github.com/jywlabs/hal/internal/template"
@@ -39,6 +40,11 @@ var runLoopWithConfig = func(ctx context.Context, cfg loop.Config) (loop.Result,
 		return loop.Result{}, err
 	}
 	return runner.Run(ctx), nil
+}
+
+// runParallelWithConfig points to parallelrun.New(...).Run and is overridden in tests.
+var runParallelWithConfig = func(ctx context.Context, cfg parallelrun.Config) (parallelrun.Result, error) {
+	return parallelrun.New(cfg, parallelrun.Deps{}).Run(ctx), nil
 }
 
 // runReviewLoopWithDisplay points to RunReviewLoopWithDisplay and is overridden in tests.
@@ -268,6 +274,23 @@ func (p *Pipeline) LastCIState() *CIState {
 	return &ci
 }
 
+// LastRunState returns the most recently saved run-step telemetry.
+func (p *Pipeline) LastRunState() *RunState {
+	if p == nil {
+		return nil
+	}
+	state := p.loadState()
+	if state == nil || state.Run == nil {
+		return nil
+	}
+	run := *state.Run
+	if state.Run.Parallel != nil {
+		parallel := *state.Run.Parallel
+		run.Parallel = &parallel
+	}
+	return &run
+}
+
 func (p *Pipeline) recordCIState(ci *CIState) {
 	if ci == nil {
 		p.lastCIState = nil
@@ -289,6 +312,7 @@ type RunOptions struct {
 	SourceMarkdown    string // Positional markdown path (skips analyze/spec)
 	ConvertMode       string // Resolved convert mode for this run (standard|granular)
 	BaseBranch        string // Base branch for creating work branch / PR target
+	Parallelism       int    // Optional parallel worker count for the run step; 0 keeps the sequential loop
 
 	MaxRunAttempts       int // Optional factory policy cap; 0 means no policy cap
 	MaxReviewFixAttempts int // Optional factory policy cap; 0 means no policy cap
@@ -1035,22 +1059,49 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 		return fmt.Errorf("failed to stat %s: %w", template.ProgressFile, err)
 	}
 
-	loopConfig := loop.Config{
-		Dir:           filepath.Join(p.dir, template.HalDir),
-		PRDFile:       template.PRDFile,
-		ProgressFile:  template.ProgressFile,
-		BaseBranch:    state.BaseBranch,
-		MaxIterations: maxRunIterations,
-		Engine:        p.engine.Name(),
-		EngineConfig:  p.engineConfig,
-		Logger:        p.display.Writer(),
-		MaxRetries:    3,
-	}
+	var result loop.Result
+	var parallelState *ParallelRunState
+	if opts.Parallelism > 0 {
+		parallelConfig := parallelrun.Config{
+			RepoDir:       p.dir,
+			HalDir:        template.HalDir,
+			PRDFile:       template.PRDFile,
+			ProgressFile:  template.ProgressFile,
+			BaseBranch:    state.BaseBranch,
+			MaxIterations: maxRunIterations,
+			Parallelism:   opts.Parallelism,
+			Engine:        p.engine.Name(),
+			EngineConfig:  p.engineConfig,
+			Logger:        p.display.Writer(),
+			MaxRetries:    3,
+		}
 
-	p.display.ShowInfo("   Running task loop...\n")
-	result, err := runLoopWithConfig(ctx, loopConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create loop runner: %w", err)
+		p.display.ShowInfo("   Running task loop with up to %d parallel worker(s)...\n", opts.Parallelism)
+		parallelResult, err := runParallelWithConfig(ctx, parallelConfig)
+		if err != nil {
+			return fmt.Errorf("failed to create parallel runner: %w", err)
+		}
+		result = parallelResult.LoopResult()
+		parallelState = parallelRunStateFromSummary(parallelResult.Parallel)
+	} else {
+		loopConfig := loop.Config{
+			Dir:           filepath.Join(p.dir, template.HalDir),
+			PRDFile:       template.PRDFile,
+			ProgressFile:  template.ProgressFile,
+			BaseBranch:    state.BaseBranch,
+			MaxIterations: maxRunIterations,
+			Engine:        p.engine.Name(),
+			EngineConfig:  p.engineConfig,
+			Logger:        p.display.Writer(),
+			MaxRetries:    3,
+		}
+
+		p.display.ShowInfo("   Running task loop...\n")
+		loopResult, err := runLoopWithConfig(ctx, loopConfig)
+		if err != nil {
+			return fmt.Errorf("failed to create loop runner: %w", err)
+		}
+		result = loopResult
 	}
 
 	totalRunIterations := previousRunIterations + result.Iterations
@@ -1058,6 +1109,7 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 		Iterations:    totalRunIterations,
 		Complete:      result.Complete,
 		MaxIterations: maxRunIterations,
+		Parallel:      parallelState,
 	}
 
 	if result.Error != nil {
@@ -1119,6 +1171,20 @@ func incompleteRunIterations(state *PipelineState) int {
 		return 0
 	}
 	return state.Run.Iterations
+}
+
+func parallelRunStateFromSummary(summary parallelrun.Summary) *ParallelRunState {
+	if summary.RequestedParallelism <= 0 {
+		return nil
+	}
+	return &ParallelRunState{
+		RequestedParallelism: summary.RequestedParallelism,
+		RunID:                summary.RunID,
+		Batches:              summary.Batches,
+		Started:              summary.Started,
+		Integrated:           summary.Integrated,
+		Failed:               summary.Failed,
+	}
 }
 
 // runReviewStep executes bounded review cycles before CI.

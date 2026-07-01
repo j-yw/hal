@@ -30,6 +30,7 @@ var (
 	autoEngineFlag       string
 	autoBaseFlag         string
 	autoJSONFlag         bool
+	autoParallelFlag     int
 )
 
 const (
@@ -85,18 +86,19 @@ type AutoResult struct {
 
 // AutoStep captures status and optional telemetry for one pipeline step.
 type AutoStep struct {
-	Status       autoStepStatus `json:"status"`
-	Reason       string         `json:"reason,omitempty"`
-	Error        string         `json:"error,omitempty"`
-	Duration     string         `json:"duration,omitempty"`
-	Branch       string         `json:"branch,omitempty"`
-	Path         string         `json:"path,omitempty"`
-	Tasks        int            `json:"tasks,omitempty"`
-	Attempts     int            `json:"attempts,omitempty"`
-	Iterations   int            `json:"iterations,omitempty"`
-	IssuesFound  int            `json:"issuesFound,omitempty"`
-	FixesApplied int            `json:"fixesApplied,omitempty"`
-	PRURL        string         `json:"prUrl,omitempty"`
+	Status       autoStepStatus   `json:"status"`
+	Reason       string           `json:"reason,omitempty"`
+	Error        string           `json:"error,omitempty"`
+	Duration     string           `json:"duration,omitempty"`
+	Branch       string           `json:"branch,omitempty"`
+	Path         string           `json:"path,omitempty"`
+	Tasks        int              `json:"tasks,omitempty"`
+	Attempts     int              `json:"attempts,omitempty"`
+	Iterations   int              `json:"iterations,omitempty"`
+	Parallel     *RunParallelInfo `json:"parallel,omitempty"`
+	IssuesFound  int              `json:"issuesFound,omitempty"`
+	FixesApplied int              `json:"fixesApplied,omitempty"`
+	PRURL        string           `json:"prUrl,omitempty"`
 }
 
 // AutoSteps contains the required fixed step map for auto-v2 JSON output.
@@ -163,6 +165,7 @@ Side effects:
   generate reports, push/create pull requests during CI, and archive completed state.
 - Use --dry-run to preview pipeline steps without executing them.
 - Use --no-review or --no-ci to disable the review or CI gates for one run.
+- Use --parallel N to run up to N isolated workers during the run step.
 
 Entry behavior:
 - hal auto <prd-path>: skips analyze/spec and starts at branch
@@ -195,6 +198,7 @@ Examples:
   hal auto --no-ci                   # Disable CI gate for this run
   hal auto --review-streak 3         # Require 3 consecutive clean review cycles
   hal auto --review-max 15           # Cap review cycles for this run
+  hal auto --parallel 4              # Run up to 4 isolated workers during the run step
   hal auto --dry-run                 # Show what would happen without executing
   hal auto --resume                  # Continue from last saved state
   hal auto --json                    # Machine-readable result output`,
@@ -204,6 +208,7 @@ Examples:
   hal auto --report .hal/reports/report.md
   hal auto --mode strict
   hal auto --no-ci
+  hal auto --parallel 4
   hal auto --review-streak 3 --review-max 15
   hal auto --engine codex --base develop`,
 	RunE: runAuto,
@@ -224,6 +229,10 @@ func init() {
 	autoCmd.Flags().StringVarP(&autoEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
 	autoCmd.Flags().StringVarP(&autoBaseFlag, "base", "b", "", "Base branch for new work branch and PR target (default: current branch, or HEAD when detached)")
 	autoCmd.Flags().BoolVar(&autoJSONFlag, "json", false, "Output machine-readable JSON result")
+	autoCmd.Flags().IntVar(&autoParallelFlag, "parallel", 0, "Run up to N isolated workers in parallel during the run step (0 disables parallel mode; max 10)")
+	if flag := autoCmd.Flags().Lookup("parallel"); flag != nil {
+		flag.NoOptDefVal = "2"
+	}
 	rootCmd.AddCommand(autoCmd)
 }
 
@@ -253,6 +262,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	engineName := autoEngineFlag
 	baseBranch := autoBaseFlag
 	jsonMode := autoJSONFlag
+	parallelWorkers := autoParallelFlag
 
 	noCIChanged := false
 	skipPRChanged := false
@@ -356,9 +366,33 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 			}
 			jsonMode = value
 		}
+		if cmd.Flags().Lookup("parallel") != nil {
+			value, err := cmd.Flags().GetInt("parallel")
+			if err != nil {
+				return err
+			}
+			parallelWorkers = value
+		}
 	}
 	if skipPRChanged && !noCIChanged {
 		noCI = skipPR
+	}
+
+	if parallelWorkers < 0 {
+		err := fmt.Errorf("--parallel must be greater than or equal to 0")
+		if jsonMode {
+			jr := autoFailureResult(autoEntryModeReportDiscovery, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
+			return outputAutoJSON(out, jr)
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+	if parallelWorkers > runMaxParallelWorkers {
+		err := fmt.Errorf("--parallel must be less than or equal to %d", runMaxParallelWorkers)
+		if jsonMode {
+			jr := autoFailureResult(autoEntryModeReportDiscovery, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
+			return outputAutoJSON(out, jr)
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
 
 	sourceMarkdown := ""
@@ -546,6 +580,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 		SourceMarkdown:    sourceMarkdown,
 		ConvertMode:       resolvedConvertMode,
 		BaseBranch:        baseBranch,
+		Parallelism:       parallelWorkers,
 
 		MaxRunAttempts:       factoryAttemptPolicy.MaxRunAttempts,
 		MaxReviewFixAttempts: factoryAttemptPolicy.MaxReviewFixAttempts,
@@ -563,6 +598,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 			jr := autoFailureResult(entryMode, resume, summary, err.Error(), autoFailurePipeline, pipeline.HasState(), failedStep, convertModeTelemetry, time.Since(autoStart))
 			applyAutoFailurePolicySkips(&jr.Steps, failedStep, policy.skipCI, policy.skipReview)
 			applyAutoFailureCIState(&jr.Steps, failedStep, pipeline.LastCIState())
+			applyAutoRunState(&jr.Steps, pipeline.LastRunState())
 			return outputAutoJSON(out, jr)
 		}
 		return err
@@ -578,6 +614,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 			summary = fmt.Sprintf("Auto pipeline completed on branch %s.", autoBranch)
 		}
 		jr := autoSuccessResult(entryMode, resume, policy.skipCI, policy.skipReview, pipeline.LastCIState(), summary, convertModeTelemetry, elapsed)
+		applyAutoRunState(&jr.Steps, pipeline.LastRunState())
 		return outputAutoJSON(out, jr)
 	}
 
@@ -1014,6 +1051,27 @@ func applyConvertModeTelemetry(steps *AutoSteps, convertMode string) {
 		return
 	}
 	steps.Convert.Reason = mode
+}
+
+func applyAutoRunState(steps *AutoSteps, runState *compound.RunState) {
+	if steps == nil || runState == nil {
+		return
+	}
+	run := steps.step(compound.StepRun)
+	if run == nil {
+		return
+	}
+	run.Iterations = runState.Iterations
+	if runState.Parallel != nil {
+		run.Parallel = &RunParallelInfo{
+			RequestedParallelism: runState.Parallel.RequestedParallelism,
+			RunID:                runState.Parallel.RunID,
+			Batches:              runState.Parallel.Batches,
+			Started:              runState.Parallel.Started,
+			Integrated:           runState.Parallel.Integrated,
+			Failed:               runState.Parallel.Failed,
+		}
+	}
 }
 
 type autoResumeStateEntry struct {
