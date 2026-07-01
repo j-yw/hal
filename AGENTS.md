@@ -42,6 +42,7 @@
 - Proxy session and network policy decision-log foundation contracts belong in `internal/sandbox/network_proxy.go`; keep them data-only and redaction-safe, with safe IDs, sources, policy snapshot identity, request categories, outcomes, and reason codes only, and no raw hostnames, IPs, ports, URLs, headers, bodies, tokens, environment values, local paths, socket paths, credentials, or live proxy/firewall/runtime/provider behavior.
 - Schema coverage for proxy/log contracts belongs beside them in `internal/sandbox/network_proxy_test.go`; lock JSON field names, `omitempty` behavior, enum values, and raw-field absence before later validation or manifest-plumbing stories.
 - Phase 24 proxy/log import-boundary coverage lives in `internal/sandbox/network_proxy_import_boundary_test.go`; keep it focused on production `network_proxy*.go` files, allow standard-library metadata helpers only, and forbid command, compound, factory, worker-client, concrete runtime/provider, net/http, process, Docker/Podman, KVM/microVM, and cloud SDK dependencies.
+- Proxy session validation/normalization belongs in `internal/sandbox/network_proxy_validation.go`; return sanitized code/field errors, expose normalized metadata only for valid input, and do not default absent enforcement metadata to `none` or any live capability claim.
 
 ## Patterns from phase23-security-intent-propagation (2026-07-02)
 
