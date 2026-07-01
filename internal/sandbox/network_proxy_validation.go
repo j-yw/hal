@@ -12,6 +12,7 @@ const (
 	SandboxNetworkProxyValidationInvalidSource        SandboxNetworkProxyValidationCode = "invalid_source"
 	SandboxNetworkProxyValidationInvalidPolicyPreset  SandboxNetworkProxyValidationCode = "invalid_policy_preset"
 	SandboxNetworkProxyValidationInvalidEnforcement   SandboxNetworkProxyValidationCode = "invalid_enforcement_mode"
+	SandboxNetworkProxyValidationUnsafeMetadata       SandboxNetworkProxyValidationCode = "unsafe_metadata"
 )
 
 // SandboxNetworkProxyValidationError identifies invalid proxy metadata by safe
@@ -45,6 +46,7 @@ const (
 	SandboxNetworkPolicyDecisionLogValidationInvalidPolicyPreset     SandboxNetworkPolicyDecisionLogValidationCode = "invalid_policy_preset"
 	SandboxNetworkPolicyDecisionLogValidationInvalidEnforcement      SandboxNetworkPolicyDecisionLogValidationCode = "invalid_enforcement_mode"
 	SandboxNetworkPolicyDecisionLogValidationUnsafeRequestMetadata   SandboxNetworkPolicyDecisionLogValidationCode = "unsafe_request_metadata"
+	SandboxNetworkPolicyDecisionLogValidationUnsafeMetadata          SandboxNetworkPolicyDecisionLogValidationCode = "unsafe_metadata"
 	SandboxNetworkPolicyDecisionLogValidationInvalidEnforcementClaim SandboxNetworkPolicyDecisionLogValidationCode = "invalid_enforcement_claim"
 )
 
@@ -74,6 +76,8 @@ func ValidateAndNormalizeSandboxNetworkProxySessionMetadata(session SandboxNetwo
 
 	if normalized.ID == "" {
 		result.addError("id", SandboxNetworkProxyValidationMissingRequiredField, "proxy session id is required")
+	} else if unsafeSandboxNetworkProxyIdentifierMetadata(normalized.ID) {
+		result.addError("id", SandboxNetworkProxyValidationUnsafeMetadata, "proxy session id must be a safe identifier")
 	}
 	if normalized.Source == "" {
 		result.addError("source", SandboxNetworkProxyValidationMissingRequiredField, "proxy session source is required")
@@ -83,6 +87,14 @@ func ValidateAndNormalizeSandboxNetworkProxySessionMetadata(session SandboxNetwo
 	if normalized.PolicySnapshot != nil {
 		if normalized.PolicySnapshot.ID == "" {
 			result.addError("policySnapshot.id", SandboxNetworkProxyValidationMissingRequiredField, "policy snapshot id is required")
+		} else if unsafeSandboxNetworkProxyIdentifierMetadata(normalized.PolicySnapshot.ID) {
+			result.addError("policySnapshot.id", SandboxNetworkProxyValidationUnsafeMetadata, "policy snapshot id must be a safe identifier")
+		}
+		if unsafeSandboxNetworkProxyIdentifierMetadata(normalized.PolicySnapshot.Version) {
+			result.addError("policySnapshot.version", SandboxNetworkProxyValidationUnsafeMetadata, "policy snapshot version must be a safe identifier")
+		}
+		if unsafeSandboxNetworkProxyIdentifierMetadata(normalized.PolicySnapshot.RuleSetID) {
+			result.addError("policySnapshot.ruleSetId", SandboxNetworkProxyValidationUnsafeMetadata, "policy snapshot rule set id must be a safe identifier")
 		}
 		if normalized.PolicySnapshot.Preset != "" && !validSandboxNetworkPolicyPreset(normalized.PolicySnapshot.Preset) {
 			result.addError("policySnapshot.preset", SandboxNetworkProxyValidationInvalidPolicyPreset, "policy snapshot preset is unsupported")
@@ -394,6 +406,12 @@ func validateSandboxNetworkPolicyDecisionLogRecord(result *SandboxNetworkPolicyD
 	} else if !validSandboxNetworkPolicyDecisionSource(record.Source) {
 		result.addError(index, "source", SandboxNetworkPolicyDecisionLogValidationInvalidSource, "decision log source is unsupported")
 	}
+	if unsafeSandboxNetworkProxyIdentifierMetadata(record.ID) {
+		result.addError(index, "id", SandboxNetworkPolicyDecisionLogValidationUnsafeMetadata, "decision log id must be a safe identifier")
+	}
+	if unsafeSandboxNetworkProxyIdentifierMetadata(record.ProxySessionID) {
+		result.addError(index, "proxySessionId", SandboxNetworkPolicyDecisionLogValidationUnsafeMetadata, "decision log proxy session id must be a safe identifier")
+	}
 	if record.Outcome == "" {
 		result.addError(index, "outcome", SandboxNetworkPolicyDecisionLogValidationMissingRequiredField, "decision log outcome is required")
 	} else if !validSandboxNetworkPolicyDecisionOutcome(record.Outcome) {
@@ -411,6 +429,14 @@ func validateSandboxNetworkPolicyDecisionLogRecord(result *SandboxNetworkPolicyD
 	if record.PolicySnapshot != nil {
 		if record.PolicySnapshot.ID == "" {
 			result.addError(index, "policySnapshot.id", SandboxNetworkPolicyDecisionLogValidationMissingRequiredField, "policy snapshot id is required")
+		} else if unsafeSandboxNetworkProxyIdentifierMetadata(record.PolicySnapshot.ID) {
+			result.addError(index, "policySnapshot.id", SandboxNetworkPolicyDecisionLogValidationUnsafeMetadata, "policy snapshot id must be a safe identifier")
+		}
+		if unsafeSandboxNetworkProxyIdentifierMetadata(record.PolicySnapshot.Version) {
+			result.addError(index, "policySnapshot.version", SandboxNetworkPolicyDecisionLogValidationUnsafeMetadata, "policy snapshot version must be a safe identifier")
+		}
+		if unsafeSandboxNetworkProxyIdentifierMetadata(record.PolicySnapshot.RuleSetID) {
+			result.addError(index, "policySnapshot.ruleSetId", SandboxNetworkPolicyDecisionLogValidationUnsafeMetadata, "policy snapshot rule set id must be a safe identifier")
 		}
 		if record.PolicySnapshot.Preset != "" && !validSandboxNetworkPolicyPreset(record.PolicySnapshot.Preset) {
 			result.addError(index, "policySnapshot.preset", SandboxNetworkPolicyDecisionLogValidationInvalidPolicyPreset, "policy snapshot preset is unsupported")
@@ -420,10 +446,10 @@ func validateSandboxNetworkPolicyDecisionLogRecord(result *SandboxNetworkPolicyD
 		if record.Request.DestinationCategory != "" && !validSandboxNetworkPolicyDestinationCategory(record.Request.DestinationCategory) {
 			result.addError(index, "request.destinationCategory", SandboxNetworkPolicyDecisionLogValidationInvalidDestination, "decision log destination category is unsupported")
 		}
-		if unsafeSandboxNetworkPolicyDecisionLogRequestMetadata(record.Request.ID) {
+		if unsafeSandboxNetworkProxyIdentifierMetadata(record.Request.ID) {
 			result.addError(index, "request.id", SandboxNetworkPolicyDecisionLogValidationUnsafeRequestMetadata, "decision log request id must be a safe identifier")
 		}
-		if unsafeSandboxNetworkPolicyDecisionLogRequestMetadata(record.Request.Operation) {
+		if unsafeSandboxNetworkProxyIdentifierMetadata(record.Request.Operation) {
 			result.addError(index, "request.operation", SandboxNetworkPolicyDecisionLogValidationUnsafeRequestMetadata, "decision log request operation must be a safe operation label")
 		}
 	}
@@ -435,6 +461,11 @@ func validateSandboxNetworkPolicyDecisionLogRecord(result *SandboxNetworkPolicyD
 		!sandboxNetworkPolicyModeCanEnforce(record.EnforcementMode) {
 		result.addError(index, "enforced", SandboxNetworkPolicyDecisionLogValidationInvalidEnforcementClaim, "decision log cannot claim enforcement without explicit enforcing metadata")
 	}
+}
+
+func unsafeSandboxNetworkProxyIdentifierMetadata(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && sanitizeSandboxNetworkProxyIdentifier(value) != value
 }
 
 func validSandboxNetworkPolicyDecisionSource(source SandboxNetworkPolicyDecisionSource) bool {
@@ -521,21 +552,4 @@ func (r *SandboxNetworkPolicyDecisionLogValidationResult) addError(index int, fi
 		Field:       field,
 		Message:     message,
 	})
-}
-
-func unsafeSandboxNetworkPolicyDecisionLogRequestMetadata(value string) bool {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return false
-	}
-	lower := strings.ToLower(value)
-	return strings.Contains(value, "://") ||
-		strings.Contains(value, "@") ||
-		strings.ContainsAny(value, "?#\r\n") ||
-		strings.HasPrefix(value, "/") ||
-		strings.Contains(value, "\\") ||
-		strings.Contains(lower, "authorization") ||
-		strings.Contains(lower, "bearer ") ||
-		strings.Contains(lower, "token=") ||
-		strings.Contains(lower, "api_key")
 }

@@ -140,6 +140,74 @@ func TestNetworkProxySessionValidationRejectsMalformedMetadata(t *testing.T) {
 	}
 }
 
+func TestNetworkProxySessionValidationRejectsUnsafeNormalizedIdentifiers(t *testing.T) {
+	tests := []struct {
+		name  string
+		input SandboxNetworkProxySessionMetadata
+		field string
+	}{
+		{
+			name: "session id raw url",
+			input: SandboxNetworkProxySessionMetadata{
+				ID:     "https://user:secret@example.invalid/proxy?token=secret",
+				Source: SandboxNetworkPolicyDecisionSourceRun,
+			},
+			field: "id",
+		},
+		{
+			name: "policy snapshot id dotted host",
+			input: SandboxNetworkProxySessionMetadata{
+				ID:     "proxy-session-01",
+				Source: SandboxNetworkPolicyDecisionSourceAuto,
+				PolicySnapshot: &SandboxNetworkPolicySnapshotIdentity{
+					ID: "api.example.com",
+				},
+			},
+			field: "policySnapshot.id",
+		},
+		{
+			name: "policy snapshot version host port",
+			input: SandboxNetworkProxySessionMetadata{
+				ID:     "proxy-session-01",
+				Source: SandboxNetworkPolicyDecisionSourceFactory,
+				PolicySnapshot: &SandboxNetworkPolicySnapshotIdentity{
+					ID:      "policy-snapshot-01",
+					Version: "api.example.com:443",
+				},
+			},
+			field: "policySnapshot.version",
+		},
+		{
+			name: "policy snapshot rule set path",
+			input: SandboxNetworkProxySessionMetadata{
+				ID:     "proxy-session-01",
+				Source: SandboxNetworkPolicyDecisionSourceWorker,
+				PolicySnapshot: &SandboxNetworkPolicySnapshotIdentity{
+					ID:        "policy-snapshot-01",
+					RuleSetID: "/Users/alice/policies/rules.json",
+				},
+			},
+			field: "policySnapshot.ruleSetId",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ValidateAndNormalizeSandboxNetworkProxySessionMetadata(tt.input)
+			if got.Valid {
+				t.Fatalf("ValidateAndNormalizeSandboxNetworkProxySessionMetadata() valid = true, want false")
+			}
+			if got.Normalized != nil {
+				t.Fatalf("normalized metadata = %#v, want nil on unsafe input", got.Normalized)
+			}
+			if !hasNetworkProxyValidationError(got, SandboxNetworkProxyValidationUnsafeMetadata, tt.field) {
+				t.Fatalf("validation errors = %#v, want unsafe metadata field %q", got.Errors, tt.field)
+			}
+			assertNetworkProxyValidationNoUnsafeLeak(t, got)
+		})
+	}
+}
+
 func TestNetworkProxySessionValidationDoesNotInferEnforcement(t *testing.T) {
 	got := ValidateAndNormalizeSandboxNetworkProxySessionMetadata(SandboxNetworkProxySessionMetadata{
 		ID:     "proxy-session-02",
@@ -362,6 +430,94 @@ func TestNetworkPolicyDecisionLogValidationRejectsMalformedMetadata(t *testing.T
 			}
 			if got.Normalized != nil {
 				t.Fatalf("normalized decision logs = %#v, want nil on invalid input", got.Normalized)
+			}
+			if !hasNetworkPolicyDecisionLogValidationError(got, tt.code, 1, tt.field) {
+				t.Fatalf("validation errors = %#v, want code %q index 1 field %q", got.Errors, tt.code, tt.field)
+			}
+			assertNetworkPolicyDecisionLogValidationNoUnsafeLeak(t, got)
+		})
+	}
+}
+
+func TestNetworkPolicyDecisionLogValidationRejectsUnsafeNormalizedIdentifiers(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*SandboxNetworkPolicyDecisionLogRecord)
+		code   SandboxNetworkPolicyDecisionLogValidationCode
+		field  string
+	}{
+		{
+			name: "decision id raw url",
+			mutate: func(record *SandboxNetworkPolicyDecisionLogRecord) {
+				record.ID = "https://user:secret@example.invalid/decision?token=secret"
+			},
+			code:  SandboxNetworkPolicyDecisionLogValidationUnsafeMetadata,
+			field: "id",
+		},
+		{
+			name: "proxy session id dotted host",
+			mutate: func(record *SandboxNetworkPolicyDecisionLogRecord) {
+				record.ProxySessionID = "api.example.com"
+			},
+			code:  SandboxNetworkPolicyDecisionLogValidationUnsafeMetadata,
+			field: "proxySessionId",
+		},
+		{
+			name: "policy snapshot id host port",
+			mutate: func(record *SandboxNetworkPolicyDecisionLogRecord) {
+				record.PolicySnapshot.ID = "api.example.com:443"
+			},
+			code:  SandboxNetworkPolicyDecisionLogValidationUnsafeMetadata,
+			field: "policySnapshot.id",
+		},
+		{
+			name: "policy snapshot version local path",
+			mutate: func(record *SandboxNetworkPolicyDecisionLogRecord) {
+				record.PolicySnapshot.Version = "/Users/alice/policies/v1"
+			},
+			code:  SandboxNetworkPolicyDecisionLogValidationUnsafeMetadata,
+			field: "policySnapshot.version",
+		},
+		{
+			name: "policy snapshot rule set token label",
+			mutate: func(record *SandboxNetworkPolicyDecisionLogRecord) {
+				record.PolicySnapshot.RuleSetID = "raw-header-token-value"
+			},
+			code:  SandboxNetworkPolicyDecisionLogValidationUnsafeMetadata,
+			field: "policySnapshot.ruleSetId",
+		},
+		{
+			name: "request id ip address",
+			mutate: func(record *SandboxNetworkPolicyDecisionLogRecord) {
+				record.Request.ID = "169.254.169.254"
+			},
+			code:  SandboxNetworkPolicyDecisionLogValidationUnsafeRequestMetadata,
+			field: "request.id",
+		},
+		{
+			name: "request operation host port",
+			mutate: func(record *SandboxNetworkPolicyDecisionLogRecord) {
+				record.Request.Operation = "api.example.com:443"
+			},
+			code:  SandboxNetworkPolicyDecisionLogValidationUnsafeRequestMetadata,
+			field: "request.operation",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			invalidRecord := validNetworkPolicyDecisionLogRecord()
+			tt.mutate(&invalidRecord)
+
+			got := ValidateAndNormalizeSandboxNetworkPolicyDecisionLogRecords([]SandboxNetworkPolicyDecisionLogRecord{
+				validNetworkPolicyDecisionLogRecord(),
+				invalidRecord,
+			})
+			if got.Valid {
+				t.Fatalf("ValidateAndNormalizeSandboxNetworkPolicyDecisionLogRecords() valid = true, want false")
+			}
+			if got.Normalized != nil {
+				t.Fatalf("normalized decision logs = %#v, want nil on unsafe input", got.Normalized)
 			}
 			if !hasNetworkPolicyDecisionLogValidationError(got, tt.code, 1, tt.field) {
 				t.Fatalf("validation errors = %#v, want code %q index 1 field %q", got.Errors, tt.code, tt.field)
