@@ -26,10 +26,31 @@ var forbiddenSandboxtargetImports = []sandboxtargetForbiddenImport{
 	{name: "loop package", match: sandboxtargetModuleImportMatcher("github.com/jywlabs/hal/internal/loop")},
 	{name: "PRD package", match: sandboxtargetModuleImportMatcher("github.com/jywlabs/hal/internal/prd")},
 	{name: "compound package", match: sandboxtargetModuleImportMatcher("github.com/jywlabs/hal/internal/compound")},
+	{name: "worker client package", match: sandboxtargetModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxworker")},
+	{name: "sandbox execution package", match: sandboxtargetModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxexec")},
+	{name: "sandbox execution record package", match: sandboxtargetModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxexecution")},
+	{name: "sandbox workspace package", match: sandboxtargetModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxworkspace")},
 	{
 		name: "concrete runtime adapter package",
 		match: func(importPath string) bool {
 			return strings.HasPrefix(importPath, "github.com/jywlabs/hal/internal/sandboxruntime/")
+		},
+	},
+	{
+		name: "network-only package",
+		match: func(importPath string) bool {
+			switch importPath {
+			case "net", "net/http", "net/rpc":
+				return true
+			default:
+				return strings.HasPrefix(importPath, "net/http/") ||
+					strings.HasPrefix(importPath, "google.golang.org/grpc") ||
+					strings.HasPrefix(importPath, "github.com/docker/docker") ||
+					strings.HasPrefix(importPath, "github.com/containers/podman") ||
+					strings.HasPrefix(importPath, "github.com/digitalocean/godo") ||
+					strings.HasPrefix(importPath, "cloud.google.com/go") ||
+					strings.HasPrefix(importPath, "github.com/aws/aws-sdk-go")
+			}
 		},
 	},
 }
@@ -75,8 +96,15 @@ func TestSandboxtargetForbiddenImportListCoversCommandCouplingSurfaces(t *testin
 		{name: "loop packages", importPath: "github.com/jywlabs/hal/internal/loop"},
 		{name: "PRD packages", importPath: "github.com/jywlabs/hal/internal/prd"},
 		{name: "compound packages", importPath: "github.com/jywlabs/hal/internal/compound"},
+		{name: "worker client packages", importPath: "github.com/jywlabs/hal/internal/sandboxworker"},
+		{name: "sandbox execution packages", importPath: "github.com/jywlabs/hal/internal/sandboxexec"},
+		{name: "sandbox execution record packages", importPath: "github.com/jywlabs/hal/internal/sandboxexecution"},
+		{name: "sandbox workspace packages", importPath: "github.com/jywlabs/hal/internal/sandboxworkspace"},
 		{name: "concrete SSH-machine runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"},
 		{name: "concrete rootless Podman runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"},
+		{name: "standard network client", importPath: "net/http"},
+		{name: "external Docker client", importPath: "github.com/docker/docker/client"},
+		{name: "external cloud provider client", importPath: "github.com/digitalocean/godo"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if forbidden := sandboxtargetForbiddenImportFor(tt.importPath); forbidden == nil {

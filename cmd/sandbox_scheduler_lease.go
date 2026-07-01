@@ -190,7 +190,10 @@ func acquireSandboxCommandLease(req sandboxCommandScheduledTargetRequest, target
 		RunID:       strings.TrimSpace(req.RunID),
 	}, ttl)
 	if err != nil {
-		return nil, fmt.Errorf("acquire sandbox lease: %w", err)
+		return nil, sandboxCommandSchedulerOperationError{
+			message: "acquire sandbox lease failed",
+			cause:   err,
+		}
 	}
 	return lease, nil
 }
@@ -300,7 +303,26 @@ func (t *sandboxCommandLeaseReleaseTracker) release() error {
 		return fmt.Errorf("sandbox lease release is required")
 	}
 	if _, err := t.releaseLease(leaseID); err != nil {
-		return fmt.Errorf("release sandbox lease: %w", err)
+		return sandboxCommandSchedulerOperationError{
+			message: "release sandbox lease failed",
+			cause:   err,
+		}
 	}
 	return nil
+}
+
+type sandboxCommandSchedulerOperationError struct {
+	message string
+	cause   error
+}
+
+func (e sandboxCommandSchedulerOperationError) Error() string {
+	if strings.TrimSpace(e.message) == "" {
+		return "sandbox scheduler operation failed"
+	}
+	return e.message
+}
+
+func (e sandboxCommandSchedulerOperationError) Unwrap() error {
+	return e.cause
 }
