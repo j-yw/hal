@@ -1,6 +1,9 @@
 package sandbox
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // SandboxCredentialProxyValidationCode identifies a sanitized credential proxy
 // metadata validation failure. Codes must not include rejected input values.
@@ -16,11 +19,42 @@ const (
 )
 
 // SandboxCredentialProxyValidationError identifies invalid metadata by safe
-// field name only.
+// field name and optional collection indexes only. It intentionally omits
+// rejected input values.
 type SandboxCredentialProxyValidationError struct {
-	Code    SandboxCredentialProxyValidationCode `json:"code"`
-	Field   string                               `json:"field,omitempty"`
-	Message string                               `json:"message,omitempty"`
+	Code         SandboxCredentialProxyValidationCode `json:"code"`
+	Field        string                               `json:"field,omitempty"`
+	RecordIndex  *int                                 `json:"recordIndex,omitempty"`
+	BindingIndex *int                                 `json:"bindingIndex,omitempty"`
+	Message      string                               `json:"message,omitempty"`
+}
+
+// Error returns a redaction-safe error string for surfaces that treat
+// validation entries as ordinary errors.
+func (e SandboxCredentialProxyValidationError) Error() string {
+	var b strings.Builder
+	b.WriteString("credential proxy validation error")
+	if e.Code != "" {
+		b.WriteString(": code=")
+		b.WriteString(string(e.Code))
+	}
+	if e.Field != "" {
+		b.WriteString(" field=")
+		b.WriteString(e.Field)
+	}
+	if e.RecordIndex != nil {
+		b.WriteString(" recordIndex=")
+		b.WriteString(strconv.Itoa(*e.RecordIndex))
+	}
+	if e.BindingIndex != nil {
+		b.WriteString(" bindingIndex=")
+		b.WriteString(strconv.Itoa(*e.BindingIndex))
+	}
+	if e.Message != "" {
+		b.WriteString(" message=")
+		b.WriteString(e.Message)
+	}
+	return b.String()
 }
 
 // SandboxCredentialProxyValidationResult is the deterministic output of pure

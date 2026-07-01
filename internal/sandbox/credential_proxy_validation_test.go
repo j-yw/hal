@@ -382,6 +382,262 @@ func TestCredentialProxyValidationRejectsUnsafeEnumLikeMetadata(t *testing.T) {
 	}
 }
 
+func TestCredentialProxyValidationErrorShapeIncludesOnlySafeFields(t *testing.T) {
+	recordIndex := 2
+	bindingIndex := 4
+	result := SandboxCredentialProxyValidationResult{
+		Valid: false,
+		Errors: []SandboxCredentialProxyValidationError{
+			{
+				Code:        SandboxCredentialProxyValidationUnsafeReference,
+				Field:       "policySnapshot.ruleSetId",
+				RecordIndex: &recordIndex,
+				Message:     "policy snapshot rule set id must be a safe reference",
+			},
+			{
+				Code:         SandboxCredentialProxyValidationInvalidEnum,
+				Field:        "deliveryMode",
+				BindingIndex: &bindingIndex,
+				Message:      "credential proxy delivery mode is unsupported",
+			},
+		},
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("json.Marshal(validation result) error: %v", err)
+	}
+
+	var decoded struct {
+		Errors []map[string]any `json:"errors"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(validation result) error: %v", err)
+	}
+	if len(decoded.Errors) != 2 {
+		t.Fatalf("errors length = %d, want 2 in %s", len(decoded.Errors), data)
+	}
+	allowedKeys := map[string]bool{
+		"code":         true,
+		"field":        true,
+		"recordIndex":  true,
+		"bindingIndex": true,
+		"message":      true,
+	}
+	for i, errObject := range decoded.Errors {
+		for key := range errObject {
+			if !allowedKeys[key] {
+				t.Fatalf("error %d exposed unexpected key %q in %s", i, key, data)
+			}
+		}
+	}
+	if got := decoded.Errors[0]["recordIndex"]; got != float64(recordIndex) {
+		t.Fatalf("recordIndex = %#v, want %d in %s", got, recordIndex, data)
+	}
+	if _, ok := decoded.Errors[0]["bindingIndex"]; ok {
+		t.Fatalf("first error unexpectedly included bindingIndex in %s", data)
+	}
+	if got := decoded.Errors[1]["bindingIndex"]; got != float64(bindingIndex) {
+		t.Fatalf("bindingIndex = %#v, want %d in %s", got, bindingIndex, data)
+	}
+	if _, ok := decoded.Errors[1]["recordIndex"]; ok {
+		t.Fatalf("second error unexpectedly included recordIndex in %s", data)
+	}
+
+	for _, validationErr := range result.Errors {
+		message := validationErr.Error()
+		assertCredentialProxyValidationExcludesRejectedInputs(t, message,
+			"policySnapshot.ruleSetId=/Users/alice/rules.json",
+			"https://api.example.invalid",
+			"Authorization: Bearer raw-token",
+		)
+	}
+}
+
+func TestCredentialProxyValidationErrorsDoNotExposeRejectedInputs(t *testing.T) {
+	tests := []struct {
+		name   string
+		value  string
+		result SandboxCredentialProxyValidationResult
+		code   SandboxCredentialProxyValidationCode
+		field  string
+	}{
+		{
+			name:  "url with token",
+			value: "https://user:pass@example.invalid/path?token=value",
+			result: ValidateSandboxCredentialProxyPlanMetadata(SandboxCredentialProxyPlanMetadata{
+				ID:     "https://user:pass@example.invalid/path?token=value",
+				Source: SandboxCredentialProxySourceRun,
+			}),
+			code:  SandboxCredentialProxyValidationUnsafeID,
+			field: "id",
+		},
+		{
+			name:  "raw hostname",
+			value: "api.example.invalid",
+			result: ValidateSandboxCredentialProxyPlanMetadata(SandboxCredentialProxyPlanMetadata{
+				ID:                    "credential-plan-01",
+				Source:                SandboxCredentialProxySourceRun,
+				SecretBrokerSessionID: "api.example.invalid",
+			}),
+			code:  SandboxCredentialProxyValidationUnsafeReference,
+			field: "secretBrokerSessionId",
+		},
+		{
+			name:  "local path",
+			value: "/Users/alice/.config/key.json",
+			result: ValidateSandboxCredentialProxyBindingMetadata(SandboxCredentialProxyBindingMetadata{
+				ID:           "credential-binding-01",
+				PlanID:       "/Users/alice/.config/key.json",
+				SecretID:     "secret-01",
+				DeliveryMode: SandboxCredentialProxyDeliveryModeEnv,
+			}),
+			code:  SandboxCredentialProxyValidationUnsafeReference,
+			field: "planId",
+		},
+		{
+			name:  "socket path",
+			value: "/tmp/credential-proxy.sock",
+			result: ValidateSandboxCredentialProxySessionMetadata(SandboxCredentialProxySessionMetadata{
+				ID:                    "credential-session-01",
+				PlanID:                "credential-plan-01",
+				Source:                SandboxCredentialProxySourceAuto,
+				NetworkProxySessionID: "/tmp/credential-proxy.sock",
+			}),
+			code:  SandboxCredentialProxyValidationUnsafeReference,
+			field: "networkProxySessionId",
+		},
+		{
+			name:  "authorization token",
+			value: "Authorization: Bearer raw-token",
+			result: ValidateSandboxCredentialProxySessionMetadata(SandboxCredentialProxySessionMetadata{
+				ID:     "credential-session-01",
+				PlanID: "Authorization: Bearer raw-token",
+				Source: SandboxCredentialProxySourceFactory,
+			}),
+			code:  SandboxCredentialProxyValidationUnsafeReference,
+			field: "planId",
+		},
+		{
+			name:  "credential value marker",
+			value: "credentialValue=raw-credential",
+			result: ValidateSandboxCredentialProxyBindingMetadata(SandboxCredentialProxyBindingMetadata{
+				ID:           "credential-binding-01",
+				PlanID:       "credential-plan-01",
+				SecretID:     "credentialValue=raw-credential",
+				DeliveryMode: SandboxCredentialProxyDeliveryModeEnv,
+			}),
+			code:  SandboxCredentialProxyValidationUnsafeReference,
+			field: "secretId",
+		},
+		{
+			name:  "secret value marker",
+			value: "secretValue=raw-secret",
+			result: ValidateSandboxCredentialProxyBindingMetadata(SandboxCredentialProxyBindingMetadata{
+				ID:           "credential-binding-01",
+				PlanID:       "credential-plan-01",
+				SecretID:     "secretValue=raw-secret",
+				DeliveryMode: SandboxCredentialProxyDeliveryModeEnv,
+			}),
+			code:  SandboxCredentialProxyValidationUnsafeReference,
+			field: "secretId",
+		},
+		{
+			name:  "control character",
+			value: "credential-plan-01\x1f",
+			result: ValidateSandboxCredentialProxyPlanMetadata(SandboxCredentialProxyPlanMetadata{
+				ID:     "credential-plan-01\x1f",
+				Source: SandboxCredentialProxySourceRun,
+			}),
+			code:  SandboxCredentialProxyValidationUnsafeID,
+			field: "id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertCredentialProxyValidationError(t, tt.result, tt.code, tt.field)
+
+			data, err := json.Marshal(tt.result)
+			if err != nil {
+				t.Fatalf("json.Marshal(validation result) error: %v", err)
+			}
+			assertCredentialProxyValidationExcludesRejectedInputs(t, string(data), tt.value)
+			for _, validationErr := range tt.result.Errors {
+				assertCredentialProxyValidationExcludesRejectedInputs(t, string(validationErr.Code), tt.value)
+				assertCredentialProxyValidationExcludesRejectedInputs(t, validationErr.Field, tt.value)
+				assertCredentialProxyValidationExcludesRejectedInputs(t, validationErr.Message, tt.value)
+				assertCredentialProxyValidationExcludesRejectedInputs(t, validationErr.Error(), tt.value)
+			}
+		})
+	}
+}
+
+func TestCredentialProxyValidationErrorCodesAreDeterministic(t *testing.T) {
+	tests := []struct {
+		name   string
+		result SandboxCredentialProxyValidationResult
+		code   SandboxCredentialProxyValidationCode
+		field  string
+	}{
+		{
+			name: "missing required id",
+			result: ValidateSandboxCredentialProxyPlanMetadata(SandboxCredentialProxyPlanMetadata{
+				Source: SandboxCredentialProxySourceRun,
+			}),
+			code:  SandboxCredentialProxyValidationMissingRequiredID,
+			field: "id",
+		},
+		{
+			name: "unsafe id",
+			result: ValidateSandboxCredentialProxyPlanMetadata(SandboxCredentialProxyPlanMetadata{
+				ID:     "https://example.invalid/plan",
+				Source: SandboxCredentialProxySourceRun,
+			}),
+			code:  SandboxCredentialProxyValidationUnsafeID,
+			field: "id",
+		},
+		{
+			name: "unsafe reference",
+			result: ValidateSandboxCredentialProxySessionMetadata(SandboxCredentialProxySessionMetadata{
+				ID:     "credential-session-01",
+				PlanID: "https://example.invalid/plan",
+				Source: SandboxCredentialProxySourceFactory,
+			}),
+			code:  SandboxCredentialProxyValidationUnsafeReference,
+			field: "planId",
+		},
+		{
+			name: "invalid enum",
+			result: ValidateSandboxCredentialProxyPlanMetadata(SandboxCredentialProxyPlanMetadata{
+				ID:     "credential-plan-01",
+				Source: SandboxCredentialProxySource("sidecar"),
+			}),
+			code:  SandboxCredentialProxyValidationInvalidEnum,
+			field: "source",
+		},
+		{
+			name: "unsafe optional metadata",
+			result: ValidateSandboxCredentialProxyBindingMetadata(SandboxCredentialProxyBindingMetadata{
+				ID:              "credential-binding-01",
+				PlanID:          "credential-plan-01",
+				SecretID:        "secret-01",
+				DeliveryMode:    SandboxCredentialProxyDeliveryModeEnv,
+				RequestCategory: SandboxCredentialProxyRequestCategory("network_auth\nheader"),
+			}),
+			code:  SandboxCredentialProxyValidationUnsafeMetadata,
+			field: "requestCategory",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertCredentialProxyValidationError(t, tt.result, tt.code, tt.field)
+			assertCredentialProxyValidationNoUnsafeLeak(t, tt.result)
+		})
+	}
+}
+
 func TestCredentialProxyValidationDoesNotInferNetworkEnforcement(t *testing.T) {
 	got := ValidateSandboxCredentialProxyBindingMetadata(SandboxCredentialProxyBindingMetadata{
 		ID:                  "credential-binding-01",
@@ -455,4 +711,32 @@ func assertCredentialProxyValidationNoUnsafeLeak(t *testing.T, result SandboxCre
 			t.Fatalf("validation result leaked unsafe value %q in %s", forbidden, payload)
 		}
 	}
+}
+
+func assertCredentialProxyValidationExcludesRejectedInputs(t *testing.T, payload string, rejectedValues ...string) {
+	t.Helper()
+
+	for _, rejected := range rejectedValues {
+		if rejected == "" {
+			continue
+		}
+		for _, forbidden := range []string{rejected, credentialProxyValidationJSONEscapedStringFragment(t, rejected)} {
+			if forbidden == "" {
+				continue
+			}
+			if strings.Contains(payload, forbidden) {
+				t.Fatalf("validation payload leaked rejected value %q in %s", forbidden, payload)
+			}
+		}
+	}
+}
+
+func credentialProxyValidationJSONEscapedStringFragment(t *testing.T, value string) string {
+	t.Helper()
+
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("json.Marshal(rejected value) error: %v", err)
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(string(data), `"`), `"`)
 }
