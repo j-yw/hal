@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -103,6 +104,36 @@ func TestWorkerIntegrationRootlessPodmanExecutionThroughSharedResolver(t *testin
 	}
 	if got := stdout.String(); got != marker {
 		t.Fatalf("Exec() stdout = %q, want %q", got, marker)
+	}
+
+	tempDir := t.TempDir()
+	copyInSource := filepath.Join(tempDir, "worker-copy-input.txt")
+	copyPayload := []byte("worker integration copy payload\n")
+	if err := os.WriteFile(copyInSource, copyPayload, 0o600); err != nil {
+		t.Fatalf("write copy input: %v", err)
+	}
+	remoteCopyPath := "/workspace/hal-worker-integration-copy.txt"
+	if err := driver.CopyIn(ctx, sandboxruntime.CopyRequest{
+		Target:          *target,
+		SourcePath:      copyInSource,
+		DestinationPath: remoteCopyPath,
+	}); err != nil {
+		t.Fatalf("CopyIn() through worker-backed resolver failed: %v", err)
+	}
+	copyOutDestination := filepath.Join(tempDir, "worker-copy-output.txt")
+	if err := driver.CopyOut(ctx, sandboxruntime.CopyRequest{
+		Target:          *target,
+		SourcePath:      remoteCopyPath,
+		DestinationPath: copyOutDestination,
+	}); err != nil {
+		t.Fatalf("CopyOut() through worker-backed resolver failed: %v", err)
+	}
+	copyOutPayload, err := os.ReadFile(copyOutDestination)
+	if err != nil {
+		t.Fatalf("read copied output: %v", err)
+	}
+	if !bytes.Equal(copyOutPayload, copyPayload) {
+		t.Fatalf("CopyOut() payload = %q, want %q", string(copyOutPayload), string(copyPayload))
 	}
 
 	target, err = driver.Stop(ctx, sandboxruntime.LifecycleRequest{Target: *target})
