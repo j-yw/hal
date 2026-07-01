@@ -235,6 +235,15 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 		return err
 	}
 	req.ProjectDir = filepath.Clean(absProjectDir)
+	securityReq, err := loadConfiguredSandboxSecurityRequest(req.ProjectDir, req.SandboxRuntime)
+	if err != nil {
+		err = fmt.Errorf("load sandbox security config: %w", err)
+		if opts.JSON {
+			return outputAutoSandboxJSONError(out, args, opts, err.Error())
+		}
+		return err
+	}
+	req.Security = securityReq
 	req.RemoteCommand = buildAutoSandboxRemoteCommand(req)
 	if err := saveAutoSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, nil); err != nil {
 		if opts.JSON {
