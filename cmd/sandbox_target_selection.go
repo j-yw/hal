@@ -56,7 +56,10 @@ func resolveSandboxCommandTarget(ctx context.Context, req sandboxCommandTargetRe
 		ListHosts:     deps.listHosts,
 	})
 	if result.Failed() {
-		return nil, result.Failure
+		return nil, sandboxCommandTargetFailureError(result.Failure)
+	}
+	if err := validateSandboxCommandWorkerRuntime(result); err != nil {
+		return nil, err
 	}
 	if result.Sandbox != nil {
 		return result.Sandbox, nil
@@ -86,6 +89,42 @@ func resolveSandboxCommandTarget(ctx context.Context, req sandboxCommandTargetRe
 		return nil, err
 	}
 	return applySandboxCommandSelectedMetadata(target, result), nil
+}
+
+func sandboxCommandTargetFailureError(failure *sandboxtarget.Failure) error {
+	if failure == nil {
+		return nil
+	}
+	if failure.Reason != sandboxtarget.FailureReasonRuntimeUnsupported {
+		return failure
+	}
+	message := failure.Error()
+	if strings.Contains(message, string(failure.Reason)) {
+		return failure
+	}
+	wrapped := *failure
+	wrapped.Message = string(failure.Reason) + ": " + message
+	return &wrapped
+}
+
+func validateSandboxCommandWorkerRuntime(result sandboxtarget.Result) error {
+	if result.Host == nil || result.Runtime == nil {
+		return nil
+	}
+	if strings.TrimSpace(result.Host.Kind) != sandbox.SandboxHostKindWorker {
+		return nil
+	}
+	driver := strings.TrimSpace(result.Runtime.Driver)
+	if driver == "" || driver == sandbox.SandboxRuntimeDriverRootlessPodman {
+		return nil
+	}
+	hostID := sandboxHostDisplayValue(result.Host.ID, result.Host.Name)
+	return &sandboxtarget.Failure{
+		Reason:        sandboxtarget.FailureReasonRuntimeUnsupported,
+		Message:       fmt.Sprintf("runtime_unsupported: worker host %q requested runtime %q is not supported by worker-backed sandbox execution", hostID, driver),
+		HostID:        strings.TrimSpace(result.Host.ID),
+		RuntimeDriver: driver,
+	}
 }
 
 func validateSandboxCommandProvisioning(req sandboxCommandTargetRequest, result sandboxtarget.Result) error {

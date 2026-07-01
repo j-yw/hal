@@ -6,6 +6,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxtarget"
 	"github.com/jywlabs/hal/internal/sandboxworker"
 )
 
@@ -36,10 +37,10 @@ func sandboxWorkerRuntimeDriverFromTarget(req sandboxWorkerRuntimeRequest, facto
 		return nil, fmt.Errorf("selected runtime driver is required for worker-backed execution")
 	}
 	if !sandboxRuntimeHostSupportsRuntime(host, driverID) {
-		return nil, fmt.Errorf("worker host %q does not support requested runtime %q", sandboxHostDisplayValue(hostID, host.Name), driverID)
+		return nil, sandboxWorkerRuntimeUnsupportedError(host, driverID, "does not support requested runtime")
 	}
 	if driverID != sandboxruntime.DriverRootlessPodman {
-		return nil, fmt.Errorf("worker-backed execution does not support selected runtime %q", driverID)
+		return nil, sandboxWorkerRuntimeUnsupportedError(host, driverID, "is not supported by worker-backed sandbox execution")
 	}
 
 	socketPath, err := sandboxHostLocalWorkerSocketPath(host.Endpoint)
@@ -81,4 +82,29 @@ func normalizeSandboxWorkerRuntimeDriverFactories(factories sandboxWorkerRuntime
 
 func newSandboxWorkerRuntimeClient(socketPath string) (sandboxworker.RuntimeDriverClient, error) {
 	return sandboxworker.NewClient(sandboxworker.ClientOptions{SocketPath: strings.TrimSpace(socketPath)})
+}
+
+func sandboxWorkerRuntimeUnsupportedError(host *sandbox.SandboxHost, driverID, detail string) error {
+	hostID := ""
+	hostName := ""
+	if host != nil {
+		hostID = strings.TrimSpace(host.ID)
+		hostName = host.Name
+	}
+	driverID = strings.TrimSpace(driverID)
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		detail = "is not supported"
+	}
+	displayHost := sandboxHostDisplayValue(hostID, hostName)
+	message := fmt.Sprintf("runtime_unsupported: worker host %q requested runtime %q %s", displayHost, driverID, detail)
+	if detail == "does not support requested runtime" {
+		message = fmt.Sprintf("runtime_unsupported: worker host %q does not support requested runtime %q", displayHost, driverID)
+	}
+	return &sandboxtarget.Failure{
+		Reason:        sandboxtarget.FailureReasonRuntimeUnsupported,
+		Message:       message,
+		HostID:        hostID,
+		RuntimeDriver: driverID,
+	}
 }

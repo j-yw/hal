@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxexecution"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 )
@@ -259,6 +262,277 @@ func TestFactorySandboxDefaultTargetResolutionStaysCachedAndFakeOnly(t *testing.
 	}
 }
 
+func TestWorkerMicroVMRunSandboxJSONFailsWithRuntimeUnsupportedClassification(t *testing.T) {
+	startedAt := time.Date(2026, 7, 1, 7, 0, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+		JSON:                  true,
+		JSONChanged:           true,
+		SandboxHostID:         "worker-1",
+		SandboxHostChanged:    true,
+		SandboxRuntime:        sandboxruntime.DriverMicroVM,
+		SandboxRuntimeChanged: true,
+	}, &out, &errOut, runSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "run-worker-microvm-unsupported"
+		},
+		now:        runSandboxTestClock(startedAt, finishedAt),
+		workingDir: func() (string, error) { return projectDir, nil },
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return workerUnsupportedRuntimePlan(projectDir), nil
+		},
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{workerMicroVMHostWithUnsafeEndpoint()}, nil
+		},
+		listSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("listSandboxes should not run for explicit worker host/runtime selection")
+			return nil, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			t.Fatal("default sandbox fallback should not run for explicit worker microvm selection")
+			return nil, "", nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			t.Fatal("provision should not run for unsupported worker microvm selection")
+			return nil, nil
+		},
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			t.Fatal("runtime driver should not be constructed for unsupported worker microvm selection")
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runRunSandboxWithWriter() error = %v, want JSON error result", err)
+	}
+	var result RunResult
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
+	requireWorkerMicroVMUnsupportedMessage(t, result.Error)
+	requireWorkerMicroVMNoUnsafeDetails(t, out.String(), errOut.String())
+	if result.OK {
+		t.Fatalf("RunResult.OK = true, want false")
+	}
+	manifest, loadErr := store.LoadManifest("run-worker-microvm-unsupported")
+	if loadErr != nil {
+		t.Fatalf("LoadManifest() error: %v", loadErr)
+	}
+	if manifest.Status != sandboxexecution.StatusFailed {
+		t.Fatalf("manifest.Status = %q, want failed", manifest.Status)
+	}
+}
+
+func TestWorkerMicroVMAutoSandboxJSONFailsWithRuntimeUnsupportedClassification(t *testing.T) {
+	startedAt := time.Date(2026, 7, 1, 7, 5, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
+		JSON:                  true,
+		JSONChanged:           true,
+		SandboxHostID:         "worker-1",
+		SandboxHostChanged:    true,
+		SandboxRuntime:        sandboxruntime.DriverMicroVM,
+		SandboxRuntimeChanged: true,
+	}, &out, &errOut, autoSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "auto-worker-microvm-unsupported"
+		},
+		now: runSandboxTestClock(startedAt, finishedAt),
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return workerUnsupportedRuntimePlan(projectDir), nil
+		},
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{workerMicroVMHostWithUnsafeEndpoint()}, nil
+		},
+		listSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("listSandboxes should not run for explicit worker host/runtime selection")
+			return nil, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			t.Fatal("default sandbox fallback should not run for explicit worker microvm selection")
+			return nil, "", nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			t.Fatal("provision should not run for unsupported worker microvm selection")
+			return nil, nil
+		},
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			t.Fatal("runtime driver should not be constructed for unsupported worker microvm selection")
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runAutoSandboxWithWriter() error = %v, want JSON error result", err)
+	}
+	var result AutoResult
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
+	requireWorkerMicroVMUnsupportedMessage(t, result.Error)
+	requireWorkerMicroVMNoUnsafeDetails(t, out.String(), errOut.String())
+	if result.OK {
+		t.Fatalf("AutoResult.OK = true, want false")
+	}
+	manifest, loadErr := store.LoadManifest("auto-worker-microvm-unsupported")
+	if loadErr != nil {
+		t.Fatalf("LoadManifest() error: %v", loadErr)
+	}
+	if manifest.Status != sandboxexecution.StatusFailed {
+		t.Fatalf("manifest.Status = %q, want failed", manifest.Status)
+	}
+}
+
+func TestWorkerMicroVMFactorySandboxJSONFailsWithRuntimeUnsupportedClassification(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".hal"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(.hal) error: %v", err)
+	}
+	writeFile(t, projectDir, ".hal/prd-feature.md", "# PRD: worker microvm\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 7, 1, 7, 10, 0, 0, time.UTC)
+	startedAt := createdAt.Add(time.Second)
+	failedAt := startedAt.Add(time.Second)
+	times := []time.Time{createdAt, startedAt, failedAt, failedAt, failedAt}
+	now := func() time.Time {
+		if len(times) == 0 {
+			return failedAt
+		}
+		next := times[0]
+		times = times[1:]
+		return next
+	}
+	var out bytes.Buffer
+
+	err := runFactoryRunWithDeps(context.Background(), projectDir, factoryRunRequest{
+		MarkdownPath:    ".hal/prd-feature.md",
+		BaseBranch:      "main",
+		Sandbox:         true,
+		SandboxHostID:   "worker-1",
+		SandboxRuntime:  sandboxruntime.DriverMicroVM,
+		JSON:            true,
+		ResolvedSecrets: nil,
+	}, &out, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-worker-microvm-unsupported", nil },
+		now:          now,
+		workingDir:   func() (string, error) { return projectDir, nil },
+		currentBranch: func(string) (string, error) {
+			return "feature/worker-microvm", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@example.com:org/repo.git", nil
+		},
+		runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
+			return runFactorySandboxExecutorWithDeps(ctx, req, factorySandboxExecutorDeps{
+				defaultStore: func() (factory.Store, error) { return store, nil },
+				now:          now,
+				listHosts: func() ([]*sandbox.SandboxHost, error) {
+					return []*sandbox.SandboxHost{workerMicroVMHostWithUnsafeEndpoint()}, nil
+				},
+				listSandboxes: func() ([]*sandbox.SandboxState, error) {
+					t.Fatal("listSandboxes should not run for explicit worker host/runtime selection")
+					return nil, nil
+				},
+				resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+					t.Fatal("default sandbox fallback should not run for explicit worker microvm selection")
+					return nil, "", nil
+				},
+				provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+					t.Fatal("provision should not run for unsupported worker microvm selection")
+					return nil, nil
+				},
+				resolveProvider: func(string) (sandbox.Provider, error) {
+					t.Fatal("provider resolution should not run for unsupported worker microvm selection")
+					return nil, nil
+				},
+				resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+					t.Fatal("runtime driver should not be constructed for unsupported worker microvm selection")
+					return nil, nil
+				},
+			})
+		},
+	})
+	if err == nil {
+		t.Fatal("runFactoryRunWithDeps() error = nil, want unsupported worker runtime error")
+	}
+	requireWorkerMicroVMUnsupportedMessage(t, err.Error())
+	var resp FactoryRunResponse
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &resp)
+	if resp.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want failed", resp.Status)
+	}
+	if resp.Failure == nil {
+		t.Fatal("failure should be emitted")
+	}
+	requireWorkerMicroVMUnsupportedMessage(t, resp.Failure.ErrorMessage)
+	requireWorkerMicroVMNoUnsafeDetails(t, out.String())
+}
+
+func TestWorkerMicroVMRuntimeResolverErrorsStayClassifiedAndDoNotFallback(t *testing.T) {
+	resolvers := []struct {
+		name  string
+		build func(func(string) (sandbox.Provider, error)) func(sandboxruntime.Target) (sandboxruntime.Driver, error)
+	}{
+		{
+			name: "run",
+			build: func(resolveProvider func(string) (sandbox.Provider, error)) func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+				deps := normalizeRunSandboxDeps(runSandboxDeps{resolveProvider: resolveProvider})
+				return deps.resolveRuntimeDriver
+			},
+		},
+		{
+			name: "auto",
+			build: func(resolveProvider func(string) (sandbox.Provider, error)) func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+				deps := normalizeAutoSandboxDeps(autoSandboxDeps{resolveProvider: resolveProvider})
+				return deps.resolveRuntimeDriver
+			},
+		},
+		{
+			name: "factory",
+			build: func(resolveProvider func(string) (sandbox.Provider, error)) func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+				deps := normalizeFactorySandboxExecutorDeps(factorySandboxExecutorDeps{resolveProvider: resolveProvider})
+				return deps.resolveRuntimeDriver
+			},
+		},
+	}
+
+	for _, resolver := range resolvers {
+		t.Run(resolver.name, func(t *testing.T) {
+			driver, err := resolver.build(func(string) (sandbox.Provider, error) {
+				t.Fatal("resolveProvider should not run for unsupported worker runtime metadata")
+				return nil, nil
+			})(sandboxruntime.Target{
+				Provider: "worker",
+				Runtime: sandboxruntime.RuntimeState{
+					Driver:         sandboxruntime.DriverMicroVM,
+					WorkerID:       "worker-1",
+					RuntimeID:      "vm-1",
+					IsolationLevel: sandbox.SandboxIsolationLevelVM,
+				},
+			})
+			if err == nil {
+				t.Fatal("resolveRuntimeDriver() error = nil, want unsupported worker runtime")
+			}
+			if driver != nil {
+				t.Fatalf("driver = %#v, want nil", driver)
+			}
+			requireWorkerMicroVMUnsupportedMessage(t, err.Error())
+		})
+	}
+}
+
 type fakeDefaultSandboxResolver struct {
 	t      *testing.T
 	target *sandbox.SandboxState
@@ -290,6 +564,50 @@ func defaultRegressionWorkerHostWithoutEndpoint() *sandbox.SandboxHost {
 		SupportedRuntimes: []string{
 			sandboxruntime.DriverRootlessPodman,
 		},
+	}
+}
+
+func workerMicroVMHostWithUnsafeEndpoint() *sandbox.SandboxHost {
+	return &sandbox.SandboxHost{
+		ID:       "worker-1",
+		Name:     "worker one",
+		Kind:     sandbox.SandboxHostKindWorker,
+		Endpoint: "ssh://deploy:secret@example.test/tmp/private/worker-1.sock?token=secret",
+		SupportedRuntimes: []string{
+			sandboxruntime.DriverMicroVM,
+			sandboxruntime.DriverRootlessPodman,
+		},
+	}
+}
+
+func workerUnsupportedRuntimePlan(projectDir string) sandboxworkspace.Plan {
+	return sandboxworkspace.Plan{
+		Mode:        sandbox.SandboxWorkspaceModeClone,
+		InputSource: sandbox.SandboxWorkspaceInputSourceRemoteRef,
+		ProjectDir:  projectDir,
+		Repository:  "git@example.com:org/repo.git",
+		Branch:      "feature/worker-microvm",
+		Upstream:    "origin/feature/worker-microvm",
+		SyncRef:     "refs/remotes/origin/feature/worker-microvm",
+	}
+}
+
+func requireWorkerMicroVMUnsupportedMessage(t *testing.T, message string) {
+	t.Helper()
+	for _, want := range []string{"runtime_unsupported", "worker-1", sandboxruntime.DriverMicroVM} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("message = %q, want %q", message, want)
+		}
+	}
+}
+
+func requireWorkerMicroVMNoUnsafeDetails(t *testing.T, values ...string) {
+	t.Helper()
+	combined := strings.Join(values, "\n")
+	for _, leaked := range []string{"deploy:secret", "example.test", "token=secret", "/tmp/private/worker-1.sock"} {
+		if strings.Contains(combined, leaked) {
+			t.Fatalf("output leaked unsafe detail %q: %q", leaked, combined)
+		}
 	}
 }
 
