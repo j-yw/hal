@@ -310,6 +310,111 @@ func TestClientDriverExecSurfacesCommandErrorsAndTruncation(t *testing.T) {
 	})
 }
 
+func TestClientDriverExecFailuresReturnPrimarySanitizedErrors(t *testing.T) {
+	unsafeDetail := "worker exec failed token=raw-secret via ssh://deploy:secret@example.test/tmp/private/worker.sock?token=raw-secret under /Users/alice/worktree and /workspace/.hal/tmp/session"
+	tests := []struct {
+		name          string
+		client        *recordingRuntimeDriverClient
+		wantWrapped   error
+		wantClientErr bool
+	}{
+		{
+			name: "worker client failure",
+			client: &recordingRuntimeDriverClient{
+				errByOperation: map[string]error{
+					OperationExec: &ClientError{
+						Operation: OperationExec,
+						Code:      ErrorCodeInternal,
+						Message:   unsafeDetail,
+					},
+				},
+			},
+			wantClientErr: true,
+		},
+		{
+			name: "worker adapter failure",
+			client: &recordingRuntimeDriverClient{
+				errByOperation: map[string]error{
+					OperationExec: errors.New(unsafeDetail),
+				},
+			},
+		},
+		{
+			name: "missing worker exec response",
+			client: &recordingRuntimeDriverClient{
+				nilExecResp: true,
+			},
+			wantWrapped: ErrWorkerExecResponseRequired,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver, err := NewClientDriver(ClientDriverOptions{
+				DriverID: "fake_runtime",
+				Client:   tt.client,
+			})
+			if err != nil {
+				t.Fatalf("NewClientDriver() error: %v", err)
+			}
+
+			result, err := driver.Exec(context.Background(), sandboxruntime.ExecRequest{
+				Target: lifecycleRuntimeTarget("fake_runtime", "dev", "running"),
+				Args:   []string{"sh", "-lc", "false"},
+			})
+			if result != nil || err == nil {
+				t.Fatalf("Exec() = %#v, %v; want primary exec error", result, err)
+			}
+			assertClientDriverError(t, err, OperationExec, "fake_runtime")
+			if tt.wantWrapped != nil && !errors.Is(err, tt.wantWrapped) {
+				t.Fatalf("Exec() error = %v, want wrapped %v", err, tt.wantWrapped)
+			}
+			if tt.wantClientErr {
+				var clientErr *ClientError
+				if !errors.As(err, &clientErr) {
+					t.Fatalf("Exec() error = %T %v, want wrapped worker client error", err, err)
+				}
+			}
+
+			message := err.Error()
+			for _, want := range []string{"fake_runtime exec failed", "exec"} {
+				if !strings.Contains(message, want) {
+					t.Fatalf("Exec() error = %q, want operation label %q", message, want)
+				}
+			}
+			for _, unsafe := range []string{"raw-secret", "deploy:secret", "example.test", "/tmp/private/worker.sock", "/Users/alice", "worktree", "/workspace/.hal/tmp/session"} {
+				if strings.Contains(message, unsafe) {
+					t.Fatalf("Exec() error leaked unsafe detail %q in %q", unsafe, message)
+				}
+			}
+			if tt.wantWrapped == nil {
+				for _, want := range []string{"token=[redacted]", "[redacted"} {
+					if !strings.Contains(message, want) {
+						t.Fatalf("Exec() error = %q, want sanitized marker %q", message, want)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestClientDriverDoesNotOwnRecoveryWarnings(t *testing.T) {
+	source, err := os.ReadFile("adapter.go")
+	if err != nil {
+		t.Fatalf("ReadFile(adapter.go) error: %v", err)
+	}
+	for _, forbidden := range []string{
+		"ArtifactWarning",
+		"ArtifactMetadata",
+		"EventTypeArtifactSync",
+		"Warnings",
+	} {
+		if strings.Contains(string(source), forbidden) {
+			t.Fatalf("ClientDriver source contains %q; recovery warnings belong at command boundaries", forbidden)
+		}
+	}
+}
+
 func TestClientDriverCopyInForwardsBoundedFileContentToWorkerClient(t *testing.T) {
 	client := &recordingRuntimeDriverClient{}
 	driver, err := NewClientDriver(ClientDriverOptions{
@@ -805,6 +910,7 @@ type recordingRuntimeDriverClient struct {
 	inspectReq     InspectRequest
 	execReq        ExecRequest
 	execResp       *ExecResponse
+	nilExecResp    bool
 	copyInReq      CopyInRequest
 	copyInResp     *CopyInResponse
 	copyOutReq     CopyOutRequest
@@ -870,6 +976,9 @@ func (client *recordingRuntimeDriverClient) Exec(ctx context.Context, driverID s
 	if client.execResp != nil {
 		resp := *client.execResp
 		return &resp, nil
+	}
+	if client.nilExecResp {
+		return nil, nil
 	}
 	return &ExecResponse{
 		ExitCode: 0,
