@@ -37,6 +37,19 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase16-runtime-inspection (2026-07-01)
+
+- Runtime inspection JSON contracts should define command-layer constants and response structs in `cmd`, document safe endpoint summaries and explicit sparse values under `docs/contracts/`, and lock referenced example files with strict decoding plus deterministic runtime ID ordering tests before command implementation stories use them.
+- Runtime status JSON error examples should retain the full endpoint-safe response shape, including safe host/runtime identity, source metadata, capacity/readiness/security placeholders, diagnostics/errors arrays, and stable error codes such as `runtime_not_found`.
+- Cached runtime list command implementations should load durable `internal/sandbox.SandboxHost` records through injectable command-layer dependencies, derive runtimes/capacity/security only from cached host metadata, emit exactly one `sandbox-runtime-list-v1` JSON document in JSON mode, and keep worker-client factories unused unless an explicit live path requests them.
+- Cached runtime status command implementations should load durable `internal/sandbox.SandboxHost` records through injectable command-layer dependencies, match the requested runtime only against durable `SupportedRuntimes`, emit `sandbox-runtime-status-v1` success/error documents from shared response structs, and keep human missing-host/runtime errors limited to the requested identity.
+- Live runtime list command implementations should load the durable host first, require worker kind plus a local Unix socket endpoint before constructing clients, query fakeable worker status/capabilities for response-only `live-refreshed` metadata, wrap client failures in sanitized `sandboxworker.ClientError`, and avoid persisting refreshed runtime data.
+- Live runtime status command implementations should load the durable host first, require worker kind plus a local Unix socket endpoint before constructing clients, use live worker capabilities as the authority for the requested runtime, emit response-only `sandbox-runtime-status-v1` live metadata, wrap client failures in sanitized `sandboxworker.ClientError`, and avoid persisting refreshed runtime data.
+- Non-worker `hal sandbox runtime list --live` requests should not error or construct worker clients; render cached durable metadata through the `sandbox-runtime-list-v1` `unsupported-live` source mode with endpoint-safe diagnostics.
+- Runtime inspection endpoint summaries should classify both `unix:` endpoints and raw absolute Unix socket paths as `local Unix socket`; command safety tests should cover human and JSON cached, live, unsupported-live, and error paths without raw endpoint leaks or unsupported enforced-security claims.
+- Runtime inspection regression guards should keep `hal sandbox runtime` scoped away from `hal sandboxd`, `hal run --sandbox`, `hal auto --sandbox`, and `hal factory run --sandbox` by checking command metadata, existing execution flags, absence of runtime inspection flags such as `--live`, and absence of runtime subcommands without invoking daemon or sandbox execution paths.
+- Phase-specific runtime inspection verification docs should live under `docs/design/`, list exact focused Go/doc/build commands plus explicit integration non-goals, and be guarded by a `cmd` documentation test so review guidance does not drift.
+
 ## Patterns from phase15-worker-hosts (2026-07-01)
 
 - New user-facing Cobra command scaffolds should provide `Use`, `Short`, `Long`, and `Example` for every in-scope group and leaf command; `cmd` metadata tests walk the global command tree and family examples should contain the full command path.

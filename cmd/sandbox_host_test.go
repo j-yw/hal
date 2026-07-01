@@ -79,6 +79,68 @@ func TestSandboxHostHelpListsScaffoldSubcommands(t *testing.T) {
 	}
 }
 
+func TestSandboxHostCommandPathsRemainStableWithRuntimeSibling(t *testing.T) {
+	root := Root()
+
+	tests := []struct {
+		path []string
+		want string
+	}{
+		{path: []string{"sandbox", "host"}, want: "hal sandbox host"},
+		{path: []string{"sandbox", "host", "register"}, want: "hal sandbox host register"},
+		{path: []string{"sandbox", "host", "register", "worker"}, want: "hal sandbox host register worker"},
+		{path: []string{"sandbox", "host", "list"}, want: "hal sandbox host list"},
+		{path: []string{"sandbox", "host", "status"}, want: "hal sandbox host status"},
+		{path: []string{"sandbox", "host", "delete"}, want: "hal sandbox host delete"},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.want, func(t *testing.T) {
+			cmd, err := commandAtPath(root, tt.path...)
+			if err != nil {
+				t.Fatalf("command path %q missing: %v", strings.Join(tt.path, " "), err)
+			}
+			if got := commandPathLabel(cmd); got != tt.want {
+				t.Fatalf("command path label = %q, want %q", got, tt.want)
+			}
+			if missing := missingCommandMetadataFields(cmd); len(missing) > 0 {
+				t.Fatalf("command %q missing metadata fields: %v", tt.want, missing)
+			}
+			if !strings.Contains(cmd.Example, tt.want) {
+				t.Fatalf("command %q example must include full path, got %q", tt.want, cmd.Example)
+			}
+		})
+	}
+
+	host, err := commandAtPath(root, "sandbox", "host")
+	if err != nil {
+		t.Fatalf("sandbox host command missing: %v", err)
+	}
+	for _, unexpected := range []string{"runtime"} {
+		if child := findDirectSubcommandByName(host, unexpected); child != nil {
+			t.Fatalf("sandbox host unexpectedly contains runtime subcommand %q", unexpected)
+		}
+	}
+	for _, unexpected := range []string{"hal sandbox runtime", "hal sandbox host runtime"} {
+		if strings.Contains(host.Long, unexpected) || strings.Contains(host.Example, unexpected) {
+			t.Fatalf("sandbox host help should remain scoped to host commands; long=%q example=%q", host.Long, host.Example)
+		}
+	}
+
+	sandboxCmd, err := commandAtPath(root, "sandbox")
+	if err != nil {
+		t.Fatalf("sandbox command missing: %v", err)
+	}
+	for _, want := range []string{
+		"host        Manage durable sandbox host records",
+		"runtime     Inspect sandbox runtime metadata",
+	} {
+		if !strings.Contains(sandboxCmd.Long, want) {
+			t.Fatalf("sandbox parent help missing %q:\n%s", want, sandboxCmd.Long)
+		}
+	}
+}
+
 func TestSandboxHostRegisterWorkerOfflinePersistsConservativeHost(t *testing.T) {
 	setSandboxHostRegistryHome(t)
 	cmd, stdout, stderr := newTestSandboxHostCommand(defaultSandboxHostDeps())
