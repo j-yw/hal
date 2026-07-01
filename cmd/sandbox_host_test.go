@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io/fs"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxworker"
@@ -195,6 +197,133 @@ func TestSandboxHostRegisterWorkerOfflineDuplicateDoesNotOverwrite(t *testing.T)
 	}
 }
 
+func TestSandboxHostRegisterWorkerLiveQueriesClientAndPersistsFreshMetadata(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	checkedAt := time.Date(2026, 7, 1, 10, 15, 0, 0, time.UTC)
+	fakeClient := &fakeSandboxHostWorkerClient{
+		status: &sandboxworker.Status{
+			WorkerID:   "local-worker",
+			HostKind:   sandboxworker.HostKindLocal,
+			SocketPath: "/tmp/reported-sandboxd.sock",
+			SupportedRuntimeDrivers: []string{
+				sandboxworker.RuntimeDriverSSHMachine,
+			},
+			Health: sandboxworker.WorkerHealth{
+				Status:  sandboxworker.HealthStatusHealthy,
+				Message: "ready",
+			},
+			Capacity: sandboxworker.WorkerCapacity{
+				MaxConcurrentSandboxes: 3,
+				ActiveSandboxes:        1,
+			},
+			Security: sandboxworker.DefaultWorkerSecurityPolicy(),
+		},
+		capabilities: &sandboxworker.Capabilities{
+			WorkerID: "local-worker",
+			SupportedOperations: []string{
+				sandboxworker.OperationStatus,
+				sandboxworker.OperationCapabilities,
+			},
+			RuntimeDrivers: []sandboxworker.RuntimeDriver{
+				{
+					ID:             sandboxworker.RuntimeDriverRootlessPodman,
+					HostKind:       sandboxworker.HostKindLocal,
+					IsolationLevel: sandboxworker.IsolationLevelContainer,
+					Security:       sandboxworker.DefaultWorkerSecurityPolicy(),
+				},
+			},
+			Security: sandboxworker.DefaultWorkerSecurityPolicy(),
+		},
+	}
+
+	var clientSockets []string
+	deps := defaultSandboxHostDeps()
+	deps.newWorkerClient = func(socketPath string) (sandboxHostWorkerClient, error) {
+		clientSockets = append(clientSockets, socketPath)
+		return fakeClient, nil
+	}
+	deps.now = func() time.Time { return checkedAt }
+
+	cmd, stdout, stderr := newTestSandboxHostCommand(deps)
+	cmd.SetArgs([]string{"register", "worker", "local-worker", "--socket", "/tmp/live-sandboxd.sock", "--live"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+
+	if len(clientSockets) != 1 || clientSockets[0] != "/tmp/live-sandboxd.sock" {
+		t.Fatalf("worker client sockets = %#v, want requested socket path", clientSockets)
+	}
+	if fakeClient.statusCalls != 1 || fakeClient.capabilitiesCalls != 1 {
+		t.Fatalf("worker client calls status=%d capabilities=%d, want one each", fakeClient.statusCalls, fakeClient.capabilitiesCalls)
+	}
+
+	loaded, err := sandbox.LoadHost("local-worker")
+	if err != nil {
+		t.Fatalf("LoadHost() error = %v", err)
+	}
+	if loaded.Kind != sandbox.SandboxHostKindWorker || loaded.Endpoint != "unix:///tmp/live-sandboxd.sock" {
+		t.Fatalf("loaded host = %#v, want worker host with requested socket endpoint", loaded)
+	}
+	if loaded.Health == nil || loaded.Health.Status != sandboxworker.HealthStatusHealthy || loaded.Health.Message != "ready" || !loaded.Health.CheckedAt.Equal(checkedAt) {
+		t.Fatalf("loaded health = %#v, want live checked worker health", loaded.Health)
+	}
+	if loaded.Capacity == nil || loaded.Capacity.MaxConcurrentSandboxes != 3 {
+		t.Fatalf("loaded capacity = %#v, want worker-reported max capacity", loaded.Capacity)
+	}
+	if len(loaded.SupportedRuntimes) != 1 || loaded.SupportedRuntimes[0] != sandboxworker.RuntimeDriverRootlessPodman {
+		t.Fatalf("supported runtimes = %#v, want capability-reported runtime only", loaded.SupportedRuntimes)
+	}
+	if loaded.Security == nil || loaded.Security.Network == nil || loaded.Security.Secrets == nil {
+		t.Fatalf("security = %#v, want live worker security summary", loaded.Security)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "Registered worker host local-worker") || !strings.Contains(output, "live") {
+		t.Fatalf("stdout = %q, want live registration confirmation", output)
+	}
+	if strings.Contains(output, "/tmp/live-sandboxd.sock") || strings.Contains(output, "/tmp/reported-sandboxd.sock") {
+		t.Fatalf("stdout should not expose raw socket paths: %q", output)
+	}
+}
+
+func TestSandboxHostRegisterWorkerLiveFailureDoesNotPersistAndSanitizesDetail(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	fakeClient := &fakeSandboxHostWorkerClient{
+		statusErr: errors.New("dial /tmp/private/hal-sandboxd.sock failed token=supersecret"),
+	}
+	deps := defaultSandboxHostDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		return fakeClient, nil
+	}
+
+	cmd, _, stderr := newTestSandboxHostCommand(deps)
+	cmd.SetArgs([]string{"register", "worker", "local-worker", "--socket", "/tmp/live-sandboxd.sock", "--live"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want live worker error")
+	}
+
+	detail := err.Error() + "\n" + stderr.String()
+	for _, leaked := range []string{"/tmp/private/hal-sandboxd.sock", "supersecret"} {
+		if strings.Contains(detail, leaked) {
+			t.Fatalf("live failure detail leaked %q: %q", leaked, detail)
+		}
+	}
+	for _, want := range []string{"[redacted-path]", "token=[redacted]"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("live failure detail = %q, want sanitized marker %q", detail, want)
+		}
+	}
+	if _, loadErr := sandbox.LoadHost("local-worker"); loadErr == nil || !errors.Is(loadErr, fs.ErrNotExist) {
+		t.Fatalf("LoadHost(local-worker) error = %v, want fs.ErrNotExist after failed live registration", loadErr)
+	}
+	if fakeClient.capabilitiesCalls != 0 {
+		t.Fatalf("capabilities calls = %d, want status failure to stop before capabilities", fakeClient.capabilitiesCalls)
+	}
+}
+
 func newTestSandboxHostCommand(deps sandboxHostDeps) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
 	cmd := newSandboxHostCommand(deps)
 	cmd.SilenceUsage = true
@@ -211,4 +340,30 @@ func setSandboxHostRegistryHome(t *testing.T) {
 	t.Setenv("HAL_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", t.TempDir())
+}
+
+type fakeSandboxHostWorkerClient struct {
+	status      *sandboxworker.Status
+	statusErr   error
+	statusCalls int
+
+	capabilities      *sandboxworker.Capabilities
+	capabilitiesErr   error
+	capabilitiesCalls int
+}
+
+func (client *fakeSandboxHostWorkerClient) Status(context.Context) (*sandboxworker.Status, error) {
+	client.statusCalls++
+	if client.statusErr != nil {
+		return nil, client.statusErr
+	}
+	return client.status, nil
+}
+
+func (client *fakeSandboxHostWorkerClient) Capabilities(context.Context) (*sandboxworker.Capabilities, error) {
+	client.capabilitiesCalls++
+	if client.capabilitiesErr != nil {
+		return nil, client.capabilitiesErr
+	}
+	return client.capabilities, nil
 }

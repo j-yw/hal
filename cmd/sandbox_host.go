@@ -6,22 +6,32 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxworker"
 	"github.com/spf13/cobra"
 )
 
 type sandboxHostDeps struct {
-	registerWorker func(context.Context, sandboxHostRegisterWorkerRequest, io.Writer) error
-	list           func(context.Context, sandboxHostListRequest, io.Writer) error
-	status         func(context.Context, sandboxHostStatusRequest, io.Writer) error
-	delete         func(context.Context, sandboxHostDeleteRequest, io.Writer) error
-	saveHost       func(*sandbox.SandboxHost) error
+	registerWorker  func(context.Context, sandboxHostRegisterWorkerRequest, io.Writer) error
+	list            func(context.Context, sandboxHostListRequest, io.Writer) error
+	status          func(context.Context, sandboxHostStatusRequest, io.Writer) error
+	delete          func(context.Context, sandboxHostDeleteRequest, io.Writer) error
+	saveHost        func(*sandbox.SandboxHost) error
+	newWorkerClient func(string) (sandboxHostWorkerClient, error)
+	now             func() time.Time
+}
+
+type sandboxHostWorkerClient interface {
+	Status(context.Context) (*sandboxworker.Status, error)
+	Capabilities(context.Context) (*sandboxworker.Capabilities, error)
 }
 
 type sandboxHostRegisterWorkerRequest struct {
 	WorkerID   string
 	SocketPath string
+	Live       bool
 }
 
 type sandboxHostListRequest struct{}
@@ -36,6 +46,7 @@ type sandboxHostDeleteRequest struct {
 
 type sandboxHostRegisterWorkerFlags struct {
 	socketPath string
+	live       bool
 }
 
 var sandboxHostCmd = newSandboxHostCommand(defaultSandboxHostDeps())
@@ -46,7 +57,9 @@ func init() {
 
 func defaultSandboxHostDeps() sandboxHostDeps {
 	return sandboxHostDeps{
-		saveHost: sandbox.SaveHost,
+		saveHost:        sandbox.SaveHost,
+		newWorkerClient: newSandboxHostWorkerClient,
+		now:             time.Now,
 	}
 }
 
@@ -63,6 +76,7 @@ capability metadata. These commands operate on the durable host registry only;
 they do not provision, start, stop, or delete runtime targets.`,
 		Example: `  hal sandbox host list
   hal sandbox host register worker local-worker --socket /tmp/hal-sandboxd.sock
+  hal sandbox host register worker local-worker --socket /tmp/hal-sandboxd.sock --live
   hal sandbox host status local-worker
   hal sandbox host delete local-worker`,
 		Args: noArgsValidation(),
@@ -88,8 +102,9 @@ func newSandboxHostRegisterCommand(deps sandboxHostDeps) *cobra.Command {
 Registration stores host metadata for later listing and status inspection. The
 worker subcommand registers local sandbox worker daemon endpoints without
 changing sandbox runtime selection defaults.`,
-		Example: `  hal sandbox host register worker local-worker --socket /tmp/hal-sandboxd.sock`,
-		Args:    noArgsValidation(),
+		Example: `  hal sandbox host register worker local-worker --socket /tmp/hal-sandboxd.sock
+  hal sandbox host register worker local-worker --socket /tmp/hal-sandboxd.sock --live`,
+		Args: noArgsValidation(),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
@@ -108,12 +123,14 @@ func newSandboxHostRegisterWorkerCommand(deps sandboxHostDeps) *cobra.Command {
 The command accepts a worker identity and local socket endpoint. Worker host
 records describe sandbox daemon endpoints without changing sandbox runtime
 selection defaults.`,
-		Example: `  hal sandbox host register worker local-worker --socket /tmp/hal-sandboxd.sock`,
-		Args:    exactArgsValidation(1),
+		Example: `  hal sandbox host register worker local-worker --socket /tmp/hal-sandboxd.sock
+  hal sandbox host register worker local-worker --socket /tmp/hal-sandboxd.sock --live`,
+		Args: exactArgsValidation(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			req := sandboxHostRegisterWorkerRequest{
 				WorkerID:   strings.TrimSpace(args[0]),
 				SocketPath: strings.TrimSpace(flags.socketPath),
+				Live:       flags.live,
 			}
 			return runSandboxHostCobra(cmd, "Sandbox Host Register failed", func(ctx context.Context, out io.Writer) error {
 				return deps.registerWorker(ctx, req, out)
@@ -121,6 +138,7 @@ selection defaults.`,
 		},
 	}
 	cmd.Flags().StringVar(&flags.socketPath, "socket", "", "Local Unix socket path for the sandbox worker")
+	cmd.Flags().BoolVar(&flags.live, "live", false, "Query the worker daemon once and persist live metadata")
 	return cmd
 }
 
@@ -187,10 +205,18 @@ func normalizeSandboxHostDeps(deps sandboxHostDeps) sandboxHostDeps {
 	if deps.saveHost == nil {
 		deps.saveHost = sandbox.SaveHost
 	}
+	if deps.newWorkerClient == nil {
+		deps.newWorkerClient = newSandboxHostWorkerClient
+	}
+	if deps.now == nil {
+		deps.now = time.Now
+	}
 	if deps.registerWorker == nil {
 		saveHost := deps.saveHost
-		deps.registerWorker = func(_ context.Context, req sandboxHostRegisterWorkerRequest, out io.Writer) error {
-			return runSandboxHostRegisterWorker(req, out, saveHost)
+		newWorkerClient := deps.newWorkerClient
+		now := deps.now
+		deps.registerWorker = func(ctx context.Context, req sandboxHostRegisterWorkerRequest, out io.Writer) error {
+			return runSandboxHostRegisterWorker(ctx, req, out, saveHost, newWorkerClient, now)
 		}
 	}
 	if deps.list == nil {
@@ -211,18 +237,40 @@ func normalizeSandboxHostDeps(deps sandboxHostDeps) sandboxHostDeps {
 	return deps
 }
 
-func runSandboxHostRegisterWorker(req sandboxHostRegisterWorkerRequest, out io.Writer, saveHost func(*sandbox.SandboxHost) error) error {
+func runSandboxHostRegisterWorker(ctx context.Context, req sandboxHostRegisterWorkerRequest, out io.Writer, saveHost func(*sandbox.SandboxHost) error, newWorkerClient func(string) (sandboxHostWorkerClient, error), now func() time.Time) error {
 	if strings.TrimSpace(req.WorkerID) == "" {
 		return fmt.Errorf("worker id is required")
+	}
+	if strings.TrimSpace(req.SocketPath) == "" {
+		return fmt.Errorf("worker socket path is required")
 	}
 	if saveHost == nil {
 		saveHost = sandbox.SaveHost
 	}
+	if newWorkerClient == nil {
+		newWorkerClient = newSandboxHostWorkerClient
+	}
+	if now == nil {
+		now = time.Now
+	}
 
-	host, err := sandboxHostFromWorkerMetadata(sandboxHostWorkerMetadataRequest{
+	metadataReq := sandboxHostWorkerMetadataRequest{
 		WorkerID:   req.WorkerID,
 		SocketPath: req.SocketPath,
-	})
+	}
+	mode := "offline"
+	if req.Live {
+		status, capabilities, err := querySandboxHostWorkerMetadata(ctx, req.SocketPath, newWorkerClient)
+		if err != nil {
+			return err
+		}
+		metadataReq.Status = status
+		metadataReq.Capabilities = capabilities
+		metadataReq.CheckedAt = now()
+		mode = "live"
+	}
+
+	host, err := sandboxHostFromWorkerMetadata(metadataReq)
 	if err != nil {
 		return err
 	}
@@ -230,9 +278,68 @@ func runSandboxHostRegisterWorker(req sandboxHostRegisterWorkerRequest, out io.W
 		return err
 	}
 	if out != nil {
-		fmt.Fprintf(out, "Registered worker host %s (offline; endpoint: local Unix socket).\n", host.ID)
+		fmt.Fprintf(out, "Registered worker host %s (%s; endpoint: local Unix socket", host.ID, mode)
+		if req.Live && host.Health != nil && strings.TrimSpace(host.Health.Status) != "" {
+			fmt.Fprintf(out, "; health: %s", host.Health.Status)
+		}
+		if req.Live && len(host.SupportedRuntimes) > 0 {
+			fmt.Fprintf(out, "; runtimes: %s", strings.Join(host.SupportedRuntimes, ", "))
+		}
+		fmt.Fprintln(out, ").")
 	}
 	return nil
+}
+
+func querySandboxHostWorkerMetadata(ctx context.Context, socketPath string, newWorkerClient func(string) (sandboxHostWorkerClient, error)) (*sandboxworker.Status, *sandboxworker.Capabilities, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	client, err := newWorkerClient(sandboxHostWorkerClientSocketPath(socketPath))
+	if err != nil {
+		return nil, nil, sandboxHostWorkerClientError("connect", err)
+	}
+	if client == nil {
+		return nil, nil, sandboxHostWorkerClientError("connect", fmt.Errorf("worker client is not configured"))
+	}
+
+	status, err := client.Status(ctx)
+	if err != nil {
+		return nil, nil, sandboxHostWorkerClientError(sandboxworker.OperationStatus, err)
+	}
+	if status == nil {
+		return nil, nil, sandboxHostWorkerClientError(sandboxworker.OperationStatus, fmt.Errorf("worker status response did not include status payload"))
+	}
+
+	capabilities, err := client.Capabilities(ctx)
+	if err != nil {
+		return nil, nil, sandboxHostWorkerClientError(sandboxworker.OperationCapabilities, err)
+	}
+	if capabilities == nil {
+		return nil, nil, sandboxHostWorkerClientError(sandboxworker.OperationCapabilities, fmt.Errorf("worker capabilities response did not include capabilities payload"))
+	}
+
+	return status, capabilities, nil
+}
+
+func newSandboxHostWorkerClient(socketPath string) (sandboxHostWorkerClient, error) {
+	return sandboxworker.NewClient(sandboxworker.ClientOptions{SocketPath: strings.TrimSpace(socketPath)})
+}
+
+func sandboxHostWorkerClientSocketPath(socketPath string) string {
+	socketPath = strings.TrimSpace(socketPath)
+	socketPath = strings.TrimPrefix(socketPath, "unix://")
+	socketPath = strings.TrimPrefix(socketPath, "unix:")
+	return socketPath
+}
+
+func sandboxHostWorkerClientError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &sandboxworker.ClientError{
+		Operation: operation,
+		Err:       err,
+	}
 }
 
 func sandboxHostNotImplementedError(command string) error {
