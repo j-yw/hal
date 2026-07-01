@@ -13,6 +13,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworker"
@@ -770,6 +771,157 @@ func TestWorkerClientRunSandboxJSONFailureIsSanitized(t *testing.T) {
 	}
 }
 
+func TestWorkerRootlessRunSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) {
+	startedAt := time.Date(2026, 7, 1, 7, 38, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	var workerResolverCalls int
+	var materializedWithDriver string
+
+	workerDriver := fakeRunSandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			if req.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman {
+				t.Fatalf("Exec runtime driver = %q, want rootless_podman", req.Target.Runtime.Driver)
+			}
+			if req.Target.Runtime.WorkerID != "worker-1" {
+				t.Fatalf("Exec worker ID = %q, want worker-1", req.Target.Runtime.WorkerID)
+			}
+			_, _ = io.WriteString(req.Stdout, "worker-backed run path\n")
+			return &sandboxruntime.ExecResult{}, nil
+		},
+	}
+
+	err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+		SandboxName:           "worker-rootless",
+		SandboxNameChanged:    true,
+		SandboxHostID:         "worker-1",
+		SandboxHostChanged:    true,
+		SandboxRuntime:        sandboxruntime.DriverRootlessPodman,
+		SandboxRuntimeChanged: true,
+	}, &out, &errOut, runSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "run-worker-rootless-shared-resolver"
+		},
+		now:        runSandboxTestClock(startedAt, finishedAt),
+		workingDir: func() (string, error) { return projectDir, nil },
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return workerRootlessBundlePlan(projectDir), nil
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			return workerRootlessCachedSandbox(name), nil
+		},
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{workerRootlessHostWithEndpoint(workerSafeUnixEndpoint())}, nil
+		},
+		listSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("listSandboxes should not run for explicit cached worker sandbox")
+			return nil, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			t.Fatal("default sandbox fallback should not run for explicit cached worker sandbox")
+			return nil, "", nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			t.Fatal("provision should not run for explicit cached worker sandbox")
+			return nil, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			t.Fatal("legacy runtime resolver should not run for explicit worker-backed run execution")
+			return nil, nil
+		},
+		resolveWorkerRuntime: func(req sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+			workerResolverCalls++
+			if req.Host == nil || req.Host.ID != "worker-1" {
+				t.Fatalf("worker resolver host = %#v, want worker-1", req.Host)
+			}
+			if req.Target.Name != "worker-rootless" {
+				t.Fatalf("worker resolver target name = %q, want worker-rootless", req.Target.Name)
+			}
+			if req.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman {
+				t.Fatalf("worker resolver runtime = %q, want rootless_podman", req.Target.Runtime.Driver)
+			}
+			if req.Target.Runtime.WorkerID != "worker-1" || req.Target.Runtime.RuntimeID != "ctr-worker-rootless" {
+				t.Fatalf("worker resolver runtime metadata = %#v, want durable worker metadata", req.Target.Runtime)
+			}
+			return workerDriver, nil
+		},
+		materializeWorkspace: func(_ context.Context, prep sandboxexec.PrepareContext, _ sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
+			materializedWithDriver = prep.Driver.ID()
+			return sandboxworkspace.MaterializationResult{}, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runRunSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+	if workerResolverCalls != 1 {
+		t.Fatalf("worker resolver calls = %d, want 1", workerResolverCalls)
+	}
+	if materializedWithDriver != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("workspace materialized with driver = %q, want rootless_podman", materializedWithDriver)
+	}
+	if !strings.Contains(out.String(), "worker-backed run path") {
+		t.Fatalf("stdout = %q, want worker-backed runtime output", out.String())
+	}
+	manifest, loadErr := store.LoadManifest("run-worker-rootless-shared-resolver")
+	if loadErr != nil {
+		t.Fatalf("LoadManifest() error: %v", loadErr)
+	}
+	if manifest.Status != sandboxexecution.StatusSucceeded {
+		t.Fatalf("manifest.Status = %q, want succeeded", manifest.Status)
+	}
+	if manifest.Runtime == nil || manifest.Runtime.Driver != sandboxruntime.DriverRootlessPodman || manifest.Runtime.WorkerID != "worker-1" {
+		t.Fatalf("manifest runtime = %#v, want selected worker rootless runtime", manifest.Runtime)
+	}
+}
+
+func TestWorkerRootlessRunSandboxDefaultResolverBuildsClientDriver(t *testing.T) {
+	deps := normalizeRunSandboxDeps(runSandboxDeps{
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			t.Fatal("generic runtime resolver should not run for explicit worker-backed run execution")
+			return nil, nil
+		},
+	})
+
+	driver, handled, err := deps.resolveRunSandboxRuntimeDriver(runSandboxRequest{
+		SandboxHostID:  "worker-1",
+		SandboxRuntime: sandboxruntime.DriverRootlessPodman,
+	}, sandboxruntime.Target{
+		Name: "worker-rootless",
+		Runtime: sandboxruntime.RuntimeState{
+			Driver:         sandboxruntime.DriverRootlessPodman,
+			RuntimeID:      "ctr-worker-rootless",
+			WorkerID:       "worker-1",
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+		},
+	}, workerRootlessCachedSandbox("worker-rootless"))
+	if err != nil {
+		t.Fatalf("resolveRunSandboxRuntimeDriver() error = %v", err)
+	}
+	if !handled {
+		t.Fatal("resolveRunSandboxRuntimeDriver() handled = false, want true")
+	}
+	workerDriver, ok := driver.(*sandboxworker.ClientDriver)
+	if !ok {
+		t.Fatalf("driver type = %T, want *sandboxworker.ClientDriver", driver)
+	}
+	if workerDriver.ID() != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("driver ID = %q, want rootless_podman", workerDriver.ID())
+	}
+}
+
 func TestWorkerClientAutoSandboxJSONProtocolFailureIsSanitized(t *testing.T) {
 	startedAt := time.Date(2026, 7, 1, 7, 40, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(time.Second)
@@ -1141,6 +1293,13 @@ func workerRootlessPlan(projectDir string) sandboxworkspace.Plan {
 		Upstream:    "origin/feature/worker-rootless",
 		SyncRef:     "refs/remotes/origin/feature/worker-rootless",
 	}
+}
+
+func workerRootlessBundlePlan(projectDir string) sandboxworkspace.Plan {
+	plan := workerRootlessPlan(projectDir)
+	plan.InputSource = sandbox.SandboxWorkspaceInputSourceGitBundle
+	plan.RequiresBundle = true
+	return plan
 }
 
 func requireWorkerMicroVMUnsupportedMessage(t *testing.T, message string) {
