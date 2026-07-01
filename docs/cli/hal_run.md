@@ -25,6 +25,7 @@ Examples:
   hal run -e codex                 # Use Codex engine
   hal run --timeout 30m            # Override per-session engine timeout
   hal run --dry-run                # Show what would execute
+  hal run --parallel 4             # Run up to 4 isolated workers at once
   hal run --base develop           # Branch from develop when needed
   hal run --json                   # Machine-readable result output
 
@@ -40,6 +41,7 @@ hal run [iterations] [flags]
   hal run 5
   hal run --story US-001
   hal run --timeout 30m
+  hal run --parallel 4
   hal run --json
   hal run --engine codex --base develop
 ```
@@ -53,6 +55,7 @@ hal run [iterations] [flags]
   -h, --help                   help for run
   -i, --iterations int         Maximum iterations to run (default 10)
       --json                   Output machine-readable JSON result
+      --parallel int[=2]       Run up to N isolated workers in parallel (0 disables parallel mode; max 10)
       --retries int            Max retries per iteration on failure (default 3)
       --retry-delay duration   Base retry delay (default 5s)
   -s, --story string           Run specific story by ID (e.g., US-001)

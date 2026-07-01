@@ -19,6 +19,7 @@ Side effects:
   generate reports, push/create pull requests during CI, and archive completed state.
 - Use --dry-run to preview pipeline steps without executing them.
 - Use --no-review or --no-ci to disable the review or CI gates for one run.
+- Use --parallel N to run up to N isolated workers during the run step.
 
 Entry behavior:
 - hal auto <prd-path>: skips analyze/spec and starts at branch
@@ -51,6 +52,7 @@ Examples:
   hal auto --no-ci                   # Disable CI gate for this run
   hal auto --review-streak 3         # Require 3 consecutive clean review cycles
   hal auto --review-max 15           # Cap review cycles for this run
+  hal auto --parallel 4              # Run up to 4 isolated workers during the run step
   hal auto --dry-run                 # Show what would happen without executing
   hal auto --resume                  # Continue from last saved state
   hal auto --json                    # Machine-readable result output
@@ -68,6 +70,7 @@ hal auto [prd-path] [flags]
   hal auto --report .hal/reports/report.md
   hal auto --mode strict
   hal auto --no-ci
+  hal auto --parallel 4
   hal auto --review-streak 3 --review-max 15
   hal auto --engine codex --base develop
 ```
@@ -83,6 +86,7 @@ hal auto [prd-path] [flags]
   -m, --mode string         Policy preset: fast, balanced, strict (default from config)
       --no-ci               Disable CI gate for this run
       --no-review           Disable review gate for this run
+      --parallel int[=2]    Run up to N isolated workers in parallel during the run step (0 disables parallel mode; max 10)
       --report string       Specific report file (overrides markdown auto-discovery, skips find latest)
       --resume              Continue from last saved state
       --review-max int      Maximum review cycles before failing (default from mode/config)

@@ -54,6 +54,7 @@ Additional telemetry fields are optional per step, including:
 - `tasks`
 - `attempts`
 - `iterations`
+- `parallel`
 - `issuesFound`
 - `fixesApplied`
 - `prUrl`
@@ -65,6 +66,22 @@ Additional telemetry fields are optional per step, including:
 
 When convert fails, human-readable failure detail should be emitted via
 `steps.convert.error` (do not overload `steps.convert.reason` with error text).
+
+`steps.run.parallel` is optional and appears only when the run step executed
+with `--parallel N`. It contains safe aggregate telemetry only:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `requestedParallelism` | int | Requested maximum worker count |
+| `runId` | string | Opaque local parallel run identifier |
+| `batches` | int | Number of scheduler batches started |
+| `started` | int | Worker tasks started |
+| `integrated` | int | Worker results integrated serially |
+| `failed` | int | Worker or integration failures |
+
+The contract intentionally does not expose worker worktree paths, prompt text,
+raw engine output, credentials, sandbox identifiers, or other local execution
+details.
 
 ## Next Action Object
 

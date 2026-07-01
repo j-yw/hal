@@ -30,6 +30,7 @@ func TestContractDocsExist(t *testing.T) {
 		{"doctor-v1", "../docs/contracts/doctor-v1.md"},
 		{"continue-v1", "../docs/contracts/continue-v1.md"},
 		{"plan-v1", "../docs/contracts/plan-v1.md"},
+		{"run-v1", "../docs/contracts/run-v1.md"},
 		{"sandbox-list-v1", "../docs/contracts/sandbox-list-v1.md"},
 		{"auto-v2", "../docs/contracts/auto-v2.md"},
 		{"ci-push-v1", "../docs/contracts/ci-push-v1.md"},
@@ -241,6 +242,33 @@ func TestContractDocsIncludeAutoV2Fields(t *testing.T) {
 
 	if !strings.Contains(content, "Contract Version:** 2") {
 		t.Error("auto-v2.md missing contract version declaration for v2")
+	}
+	if !strings.Contains(content, "`parallel`") {
+		t.Error("auto-v2.md missing optional run parallel telemetry field")
+	}
+}
+
+func TestContractDocsIncludeRunV1Fields(t *testing.T) {
+	data, err := os.ReadFile("../docs/contracts/run-v1.md")
+	if err != nil {
+		t.Skipf("cannot read run-v1.md: %v", err)
+	}
+	content := string(data)
+
+	requiredFields := []string{"contractVersion", "ok", "iterations", "complete", "summary"}
+	for _, f := range requiredFields {
+		if !strings.Contains(content, "`"+f+"`") {
+			t.Errorf("run-v1.md missing required field %q", f)
+		}
+	}
+	optionalFields := []string{"engine", "storyId", "lastStoryId", "dryRun", "duration", "prd", "parallel", "nextAction", "error"}
+	for _, f := range optionalFields {
+		if !strings.Contains(content, "`"+f+"`") {
+			t.Errorf("run-v1.md missing optional field %q", f)
+		}
+	}
+	if !strings.Contains(content, "Contract Version:** 1") {
+		t.Error("run-v1.md missing contract version declaration for v1")
 	}
 }
 
