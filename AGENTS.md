@@ -49,6 +49,7 @@
 - Runtime driver resolution in `cmd/sandbox_runtime_compat.go` must consume the already-selected `sandboxruntime.Target` only: keep default run/auto/factory execution limited to missing/SSH-machine compatibility or explicit `rootless_podman`, and fail unsupported explicit drivers such as `microvm` or worker-only driver strings instead of scanning hosts or downgrading.
 - Target-selection CLI flags belong in `cmd` on sandbox-capable entrypoints only: `--sandbox-host` and `--sandbox-runtime` parse into host-side request fields, validate runtime values through root `sandboxruntime` constants, keep help text scoped to cached target selection, and stay out of remote `hal run`/`hal auto` command builders.
 - Default sandbox execution regression tests in `cmd` should stay fake-only: inject fake default target resolvers, fake runtime drivers, temporary `HAL_CONFIG_HOME`, and deterministic clocks where records are saved, and assert default run/auto/factory paths do not explicit-load, provision, live-refresh workers, or construct concrete adapters.
+- Phase-specific target-selection verification docs should live under `docs/design/`, list exact focused Go/doc/build commands plus explicit fake-only non-goals, and be guarded by a `cmd` documentation test so review guidance does not drift.
 
 ## Patterns from phase16-runtime-inspection (2026-07-01)
 
