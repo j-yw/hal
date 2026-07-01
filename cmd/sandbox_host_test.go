@@ -551,6 +551,137 @@ func TestSandboxHostListJSONEmptyRegistry(t *testing.T) {
 	}
 }
 
+func TestSandboxHostStatusCachedWorkerHostStableAndSafe(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	checkedAt := time.Date(2026, 7, 1, 12, 30, 0, 0, time.UTC)
+	heartbeatAt := checkedAt.Add(5 * time.Minute)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:       "worker-a",
+		Name:     "builder",
+		Kind:     sandbox.SandboxHostKindWorker,
+		Endpoint: "unix:///tmp/private/worker-a.sock",
+		SupportedRuntimes: []string{
+			sandbox.SandboxRuntimeDriverSSHMachine,
+			sandbox.SandboxRuntimeDriverRootlessPodman,
+			sandbox.SandboxRuntimeDriverSSHMachine,
+		},
+		Capacity: &sandbox.HostCapacity{MaxConcurrentSandboxes: 2},
+		Health: &sandbox.HostHealth{
+			Status:          sandboxworker.HealthStatusHealthy,
+			CheckedAt:       checkedAt,
+			LastHeartbeatAt: &heartbeatAt,
+			Message:         "ready",
+		},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	deps := defaultSandboxHostDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("sandbox host status without --live should not contact worker daemons")
+		return nil, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxHostCommand(deps)
+	cmd.SetArgs([]string{"status", "worker-a"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+
+	output := stdout.String()
+	for _, want := range []string{
+		"Sandbox host builder (cached)",
+		"cached durable registry (not live)",
+		"worker-a",
+		"builder",
+		sandbox.SandboxHostKindWorker,
+		"local Unix socket",
+		sandboxworker.HealthStatusHealthy,
+		checkedAt.Format(time.RFC3339),
+		heartbeatAt.Format(time.RFC3339),
+		"ready",
+		"rootless_podman,ssh_machine",
+		"max 2 sandboxes",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("stdout = %q, want %q", output, want)
+		}
+	}
+	if strings.Contains(output, "/tmp/private/worker-a.sock") {
+		t.Fatalf("stdout leaked raw socket path: %q", output)
+	}
+}
+
+func TestSandboxHostStatusCachedNonWorkerHostStableAndSafe(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:                "ssh-1",
+		Name:              "zeta",
+		Kind:              sandbox.SandboxHostKindSSH,
+		Endpoint:          "ssh://deploy:secret@example.com:22/workspace?token=supersecret",
+		SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+		Capacity:          &sandbox.HostCapacity{CPUCores: 4, MemoryMB: 8192, DiskGB: 80},
+		Health:            &sandbox.HostHealth{Status: "degraded"},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	deps := defaultSandboxHostDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("sandbox host status without --live should not contact worker daemons for non-worker hosts")
+		return nil, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxHostCommand(deps)
+	cmd.SetArgs([]string{"status", "ssh-1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+
+	output := stdout.String()
+	for _, want := range []string{
+		"Sandbox host zeta (cached)",
+		"cached durable registry (not live)",
+		"ssh-1",
+		sandbox.SandboxHostKindSSH,
+		"ssh endpoint",
+		"degraded",
+		sandbox.SandboxRuntimeDriverSSHMachine,
+		"4 CPU, 8192 MiB, 80 GiB disk",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("stdout = %q, want %q", output, want)
+		}
+	}
+	for _, leaked := range []string{"deploy:secret", "example.com", "token=supersecret"} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("stdout leaked endpoint detail %q: %q", leaked, output)
+		}
+	}
+}
+
+func TestSandboxHostStatusMissingHostReturnsCleanError(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	cmd, _, stderr := newTestSandboxHostCommand(defaultSandboxHostDeps())
+	cmd.SetArgs([]string{"status", "missing-worker"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want missing host error")
+	}
+
+	output := stderr.String()
+	if !strings.Contains(output, "Sandbox Host Status failed") {
+		t.Fatalf("stderr = %q, want status error title", output)
+	}
+	if !strings.Contains(output, `host "missing-worker" does not exist`) {
+		t.Fatalf("stderr = %q, want missing host detail", output)
+	}
+	if strings.Contains(output, "Usage:") || strings.Contains(output, "Error:") {
+		t.Fatalf("stderr should not include raw cobra usage: %q", output)
+	}
+}
+
 func decodeOneSandboxHostListJSON(t *testing.T, data []byte) SandboxHostListResponse {
 	t.Helper()
 	decoder := json.NewDecoder(bytes.NewReader(data))

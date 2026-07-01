@@ -243,9 +243,7 @@ func normalizeSandboxHostDeps(deps sandboxHostDeps) sandboxHostDeps {
 		deps.list = runSandboxHostList
 	}
 	if deps.status == nil {
-		deps.status = func(context.Context, sandboxHostStatusRequest, io.Writer) error {
-			return sandboxHostNotImplementedError("sandbox host status")
-		}
+		deps.status = runSandboxHostStatus
 	}
 	if deps.delete == nil {
 		deps.delete = func(context.Context, sandboxHostDeleteRequest, io.Writer) error {
@@ -319,6 +317,18 @@ func runSandboxHostList(_ context.Context, req sandboxHostListRequest, out io.Wr
 	return renderSandboxHostList(out, hosts)
 }
 
+func runSandboxHostStatus(_ context.Context, req sandboxHostStatusRequest, out io.Writer) error {
+	hostID := strings.TrimSpace(req.HostID)
+	if hostID == "" {
+		return fmt.Errorf("host id is required")
+	}
+	host, err := sandbox.LoadHost(hostID)
+	if err != nil {
+		return err
+	}
+	return renderSandboxHostStatus(out, host)
+}
+
 func renderSandboxHostListJSON(out io.Writer, hosts []*sandbox.SandboxHost) error {
 	if out == nil {
 		return nil
@@ -361,6 +371,51 @@ func renderSandboxHostList(out io.Writer, hosts []*sandbox.SandboxHost) error {
 			sandboxHostRuntimesSummary(host.SupportedRuntimes),
 			sandboxHostCapacitySummary(host.Capacity),
 		); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
+}
+
+func renderSandboxHostStatus(out io.Writer, host *sandbox.SandboxHost) error {
+	if out == nil || host == nil {
+		return nil
+	}
+
+	if _, err := fmt.Fprintf(out, "Sandbox host %s (cached)\n", sandboxHostDisplayValue(host.Name, host.ID)); err != nil {
+		return err
+	}
+	type statusLine struct {
+		label string
+		value string
+	}
+	lines := []statusLine{
+		{"Source", "cached durable registry (not live)"},
+		{"ID", sandboxHostDisplayValue(host.ID, "-")},
+		{"Name", sandboxHostDisplayValue(host.Name, host.ID)},
+		{"Kind", sandboxHostDisplayValue(host.Kind, "unknown")},
+		{"Endpoint", sandboxHostEndpointSummary(host.Endpoint)},
+		{"Health", sandboxHostHealthSummary(host.Health)},
+	}
+	if host.Health != nil {
+		if !host.Health.CheckedAt.IsZero() {
+			lines = append(lines, statusLine{"Health checked at", host.Health.CheckedAt.UTC().Format(time.RFC3339)})
+		}
+		if host.Health.LastHeartbeatAt != nil && !host.Health.LastHeartbeatAt.IsZero() {
+			lines = append(lines, statusLine{"Last heartbeat at", host.Health.LastHeartbeatAt.UTC().Format(time.RFC3339)})
+		}
+		if message := strings.TrimSpace(host.Health.Message); message != "" {
+			lines = append(lines, statusLine{"Health message", message})
+		}
+	}
+	lines = append(lines,
+		statusLine{"Supported runtimes", sandboxHostRuntimesSummary(host.SupportedRuntimes)},
+		statusLine{"Capacity", sandboxHostCapacitySummary(host.Capacity)},
+	)
+
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	for _, line := range lines {
+		if _, err := fmt.Fprintf(tw, "%s:\t%s\n", line.label, line.value); err != nil {
 			return err
 		}
 	}
