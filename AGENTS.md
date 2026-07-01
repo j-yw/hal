@@ -48,6 +48,7 @@
 - Non-worker `hal sandbox runtime list --live` requests should not error or construct worker clients; render cached durable metadata through the `sandbox-runtime-list-v1` `unsupported-live` source mode with endpoint-safe diagnostics.
 - Runtime inspection endpoint summaries should classify both `unix:` endpoints and raw absolute Unix socket paths as `local Unix socket`; command safety tests should cover human and JSON cached, live, unsupported-live, and error paths without raw endpoint leaks or unsupported enforced-security claims.
 - Runtime inspection regression guards should keep `hal sandbox runtime` scoped away from `hal sandboxd`, `hal run --sandbox`, `hal auto --sandbox`, and `hal factory run --sandbox` by checking command metadata, existing execution flags, absence of runtime inspection flags such as `--live`, and absence of runtime subcommands without invoking daemon or sandbox execution paths.
+- Phase-specific runtime inspection verification docs should live under `docs/design/`, list exact focused Go/doc/build commands plus explicit integration non-goals, and be guarded by a `cmd` documentation test so review guidance does not drift.
 
 ## Patterns from phase15-worker-hosts (2026-07-01)
 
