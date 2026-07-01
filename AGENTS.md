@@ -37,6 +37,10 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase22-policy-secret-broker (2026-07-02)
+
+- Network policy foundation contracts belong in `internal/sandbox/network_policy.go` as data-only typed presets, rules, requested/effective intent, enforcement capability, result, and warning metadata; keep validation, evaluation, enforcement, command wiring, runtime adapters, providers, and workers out of this base contract layer.
+
 ## Patterns from phase21-workspace-syncout-apply (2026-07-01)
 
 - Sync-out workspace contracts belong in `internal/sandboxworkspace` as data-only, command-agnostic types; keep them free of command, factory, provider, worker, concrete runtime adapter, Cobra, and network-only imports, and represent artifacts with safe IDs, display names, relative/store paths, warning codes, recovery status, and explicit apply eligibility reasons.
