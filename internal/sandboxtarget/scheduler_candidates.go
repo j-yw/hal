@@ -57,8 +57,8 @@ func EnumerateSchedulerCandidates(req SchedulerRequest, cache CachedState) Sched
 }
 
 // Schedule makes the scheduler's current deterministic cached-host decision.
-// Later scheduler phases add health, capacity, lease, and ranking behavior
-// between candidate enumeration and the final selection.
+// Later scheduler phases add capacity, lease, and ranking behavior between
+// candidate filtering and the final selection.
 func Schedule(req SchedulerRequest, cache CachedState) SchedulerResult {
 	if rejection := validateSchedulerRequestedIsolation(req); rejection != nil {
 		return SchedulerResult{Rejection: rejection}
@@ -68,6 +68,7 @@ func Schedule(req SchedulerRequest, cache CachedState) SchedulerResult {
 	}
 
 	candidateSet := EnumerateSchedulerCandidates(req, cache)
+	candidateSet = filterSchedulerCandidatesByHealth(req, candidateSet)
 	candidateSet = filterSchedulerCandidatesByRuntimeAndIsolation(req, candidateSet)
 	if candidateSet.Failed() {
 		return SchedulerResult{Rejection: candidateSet.Rejection}
@@ -85,6 +86,36 @@ func Schedule(req SchedulerRequest, cache CachedState) SchedulerResult {
 		},
 		DecisionReason: SchedulerDecisionReasonRankedCandidate,
 	}
+}
+
+func filterSchedulerCandidatesByHealth(req SchedulerRequest, candidateSet SchedulerCandidateSet) SchedulerCandidateSet {
+	if candidateSet.Failed() || candidateSet.Empty() {
+		return candidateSet
+	}
+
+	if hostID := strings.TrimSpace(req.HostID); hostID != "" {
+		for _, candidate := range candidateSet.Candidates {
+			if strings.TrimSpace(candidate.Identity.HostID) != hostID {
+				continue
+			}
+			if status, unhealthy := schedulerCandidateUnhealthyStatus(candidate); unhealthy {
+				return SchedulerCandidateSet{Rejection: schedulerRejection(req, FailureReasonHostUnhealthy, fmt.Sprintf("host %q is not healthy: %s", hostID, status))}
+			}
+			break
+		}
+	}
+
+	filtered := make([]SchedulerCandidate, 0, len(candidateSet.Candidates))
+	for _, candidate := range candidateSet.Candidates {
+		if _, unhealthy := schedulerCandidateUnhealthyStatus(candidate); unhealthy {
+			continue
+		}
+		filtered = append(filtered, candidate)
+	}
+	if len(filtered) > 0 {
+		return SchedulerCandidateSet{Candidates: filtered}
+	}
+	return SchedulerCandidateSet{Rejection: schedulerRejection(req, FailureReasonHostUnhealthy, "no healthy cached sandbox hosts")}
 }
 
 func filterSchedulerCandidatesByRuntimeAndIsolation(req SchedulerRequest, candidateSet SchedulerCandidateSet) SchedulerCandidateSet {
@@ -131,6 +162,28 @@ func filterSchedulerCandidatesByRuntimeAndIsolation(req SchedulerRequest, candid
 		return SchedulerCandidateSet{Rejection: schedulerRejection(req, FailureReasonIsolationUnavailable, fmt.Sprintf("no durable host supports requested isolation %q", isolationLevel))}
 	}
 	return SchedulerCandidateSet{Rejection: schedulerRejection(req, FailureReasonHostNotFound, "no cached sandbox hosts")}
+}
+
+func schedulerCandidateUnhealthyStatus(candidate SchedulerCandidate) (string, bool) {
+	status, unhealthy := requestedHostUnhealthyStatus(candidate.Host)
+	if !unhealthy {
+		return "", false
+	}
+	return schedulerSafeHealthStatus(status), true
+}
+
+func schedulerSafeHealthStatus(status string) string {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return "unhealthy"
+	}
+	for _, r := range status {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			continue
+		}
+		return "unhealthy"
+	}
+	return status
 }
 
 func schedulerCandidateFromHost(host *sandbox.SandboxHost) SchedulerCandidate {
