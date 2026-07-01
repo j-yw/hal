@@ -91,6 +91,22 @@ type SyncOutWarning struct {
 	ArtifactID string `json:"artifactId,omitempty"`
 }
 
+// SyncOutHandoffInstruction gives callers safe manual follow-up guidance when
+// automatic apply is disabled, unavailable, or unsafe.
+type SyncOutHandoffInstruction struct {
+	Reason    SyncOutApplyEligibilityReason `json:"reason,omitempty"`
+	Message   string                        `json:"message,omitempty"`
+	Artifacts []SyncOutHandoffArtifactRef   `json:"artifacts,omitempty"`
+}
+
+// SyncOutHandoffArtifactRef identifies a durable artifact using only safe
+// command-facing names and display paths.
+type SyncOutHandoffArtifactRef struct {
+	ID          string `json:"id,omitempty"`
+	DisplayName string `json:"displayName,omitempty"`
+	DisplayPath string `json:"displayPath,omitempty"`
+}
+
 // SyncOutApplyDecision summarizes whether automatic host apply is safe for the
 // sync-out result and which durable artifact is the candidate.
 type SyncOutApplyDecision struct {

@@ -100,15 +100,16 @@ const (
 
 // SafeApplyResult is the redaction-safe outcome of a host apply attempt.
 type SafeApplyResult struct {
-	Status       SafeApplyStatus                 `json:"status"`
-	Applied      bool                            `json:"applied"`
-	DryRunPassed bool                            `json:"dryRunPassed"`
-	Mode         SyncOutApplyMode                `json:"mode,omitempty"`
-	ArtifactID   string                          `json:"artifactId,omitempty"`
-	DisplayName  string                          `json:"displayName,omitempty"`
-	DisplayPath  string                          `json:"displayPath,omitempty"`
-	Reasons      []SyncOutApplyEligibilityReason `json:"reasons,omitempty"`
-	Warnings     []SyncOutWarning                `json:"warnings,omitempty"`
+	Status              SafeApplyStatus                 `json:"status"`
+	Applied             bool                            `json:"applied"`
+	DryRunPassed        bool                            `json:"dryRunPassed"`
+	Mode                SyncOutApplyMode                `json:"mode,omitempty"`
+	ArtifactID          string                          `json:"artifactId,omitempty"`
+	DisplayName         string                          `json:"displayName,omitempty"`
+	DisplayPath         string                          `json:"displayPath,omitempty"`
+	Reasons             []SyncOutApplyEligibilityReason `json:"reasons,omitempty"`
+	Warnings            []SyncOutWarning                `json:"warnings,omitempty"`
+	HandoffInstructions []SyncOutHandoffInstruction     `json:"handoffInstructions,omitempty"`
 }
 
 const (

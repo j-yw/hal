@@ -49,6 +49,7 @@
 - Default non-factory `hal run --sandbox` and `hal auto --sandbox` must leave `sandboxSyncOutApplier` nil until an explicit sync-out/apply option is selected; default manifests should keep only existing artifact metadata and omit sync-out/apply fields.
 - Explicit non-factory sync-out/apply CLI flags are `--sandbox-sync-out` and `--sandbox-apply`; keep them scoped to local `hal run --sandbox` and `hal auto --sandbox`, require `--sandbox`, omit them from remote command builders, gate `sandboxSyncOutApplier` on explicit request intent, and do not add them to factory commands in this phase.
 - Command-layer sync-out apply must select only explicit eligible patch or bundle artifacts before mutation, resolve their payloads through `sandboxexecution.Store.ResolveStoredPath`, and pass no payload for untracked, recovery, core, warning-only, or otherwise ineligible outputs so they become handoff results.
+- Non-factory sync-out handoff guidance is attached in `cmd` after the applier returns as optional `sandboxworkspace.SafeApplyResult.HandoffInstructions`; keep references limited to safe artifact IDs, display names, and relative display paths, leaving manifest/JSON surfacing additive and explicit.
 
 ## Patterns from phase20-lease-aware-scheduler (2026-07-01)
 

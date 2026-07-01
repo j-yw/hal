@@ -465,6 +465,161 @@ func TestSandboxApplyOnlyUsesEligibleSyncOutArtifacts(t *testing.T) {
 	})
 }
 
+func TestSandboxSyncOutHandoffInstructions(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		options         sandboxSyncOutOptions
+		metadata        sandboxexecution.ArtifactMetadata
+		applyResult     func(t *testing.T, got sandboxSyncOutApplyRequest) sandboxworkspace.SafeApplyResult
+		wantReason      sandboxworkspace.SyncOutApplyEligibilityReason
+		wantArtifactIDs []string
+	}{
+		{
+			name: "apply disabled",
+			options: sandboxSyncOutOptions{
+				Enabled: true,
+				Apply:   false,
+			},
+			metadata: sandboxexecution.ArtifactMetadata{Collected: []sandboxexecution.ArtifactMetadataEntry{
+				sandboxSyncOutApplyCollected("committed-patch", ".hal/sync/committed.patch", "handoff-case/artifacts/sync/committed.patch"),
+				sandboxSyncOutApplyCollected("untracked-archive", ".hal/sync/untracked.tar", "handoff-case/artifacts/sync/untracked.tar"),
+				sandboxSyncOutApplyCollected("recovery-patch", ".hal/recovery/workspace.patch", "handoff-case/recovery/workspace.patch"),
+			}},
+			applyResult: func(t *testing.T, got sandboxSyncOutApplyRequest) sandboxworkspace.SafeApplyResult {
+				t.Helper()
+				if got.Artifact != nil || got.PayloadPath != "" {
+					t.Fatalf("apply disabled selected artifact=%#v payload=%q, want handoff only", got.Artifact, got.PayloadPath)
+				}
+				return got.Handoff
+			},
+			wantReason:      sandboxworkspace.SyncOutApplyEligibilityReasonApplyDisabled,
+			wantArtifactIDs: []string{"committed-patch", "untracked-archive", "recovery-patch"},
+		},
+		{
+			name: "dirty worktree",
+			options: sandboxSyncOutOptions{
+				Enabled: true,
+				Apply:   true,
+			},
+			metadata: sandboxexecution.ArtifactMetadata{Collected: []sandboxexecution.ArtifactMetadataEntry{
+				sandboxSyncOutApplyCollected("committed-patch", ".hal/sync/committed.patch", "handoff-case/artifacts/sync/committed.patch"),
+				sandboxSyncOutApplyCollected("recovery-patch", ".hal/recovery/workspace.patch", "handoff-case/recovery/workspace.patch"),
+			}},
+			applyResult: func(t *testing.T, got sandboxSyncOutApplyRequest) sandboxworkspace.SafeApplyResult {
+				t.Helper()
+				if got.Artifact == nil || got.Artifact.ID != "committed-patch" {
+					t.Fatalf("apply artifact = %#v, want committed patch", got.Artifact)
+				}
+				return sandboxworkspace.SafeApplyResult{
+					Status:      sandboxworkspace.SafeApplyStatusHandoffRequired,
+					ArtifactID:  got.Artifact.ID,
+					DisplayName: got.Artifact.DisplayName,
+					DisplayPath: got.Artifact.DisplayPath,
+					Mode:        sandboxworkspace.SyncOutApplyModePatch,
+					Reasons:     []sandboxworkspace.SyncOutApplyEligibilityReason{sandboxworkspace.SyncOutApplyEligibilityReasonDirtyWorktree},
+				}
+			},
+			wantReason:      sandboxworkspace.SyncOutApplyEligibilityReasonDirtyWorktree,
+			wantArtifactIDs: []string{"committed-patch", "recovery-patch"},
+		},
+		{
+			name: "dry-run failed",
+			options: sandboxSyncOutOptions{
+				Enabled: true,
+				Apply:   true,
+			},
+			metadata: sandboxexecution.ArtifactMetadata{Collected: []sandboxexecution.ArtifactMetadataEntry{
+				sandboxSyncOutApplyCollected("committed-patch", ".hal/sync/committed.patch", "handoff-case/artifacts/sync/committed.patch"),
+				sandboxSyncOutApplyCollected("uncommitted-diff", ".hal/sync/uncommitted.diff", "handoff-case/artifacts/sync/uncommitted.diff"),
+				sandboxSyncOutApplyCollected("recovery-patch", ".hal/recovery/workspace.patch", "handoff-case/recovery/workspace.patch"),
+			}},
+			applyResult: func(t *testing.T, got sandboxSyncOutApplyRequest) sandboxworkspace.SafeApplyResult {
+				t.Helper()
+				if got.Artifact == nil || got.PayloadPath == "" {
+					t.Fatalf("apply artifact=%#v payload=%q, want eligible artifact payload", got.Artifact, got.PayloadPath)
+				}
+				return sandboxworkspace.SafeApplyResult{
+					Status:      sandboxworkspace.SafeApplyStatusHandoffRequired,
+					ArtifactID:  got.Artifact.ID,
+					DisplayName: got.Artifact.DisplayName,
+					DisplayPath: got.Artifact.DisplayPath,
+					Mode:        sandboxworkspace.SyncOutApplyModePatch,
+					Reasons:     []sandboxworkspace.SyncOutApplyEligibilityReason{sandboxworkspace.SyncOutApplyEligibilityReasonDryRunFailed},
+				}
+			},
+			wantReason:      sandboxworkspace.SyncOutApplyEligibilityReasonDryRunFailed,
+			wantArtifactIDs: []string{"committed-patch", "uncommitted-diff", "recovery-patch"},
+		},
+		{
+			name: "eligible artifacts missing",
+			options: sandboxSyncOutOptions{
+				Enabled: true,
+				Apply:   true,
+			},
+			metadata: sandboxexecution.ArtifactMetadata{Collected: []sandboxexecution.ArtifactMetadataEntry{
+				sandboxSyncOutApplyCollected("untracked-list", ".hal/sync/untracked.txt", "handoff-case/artifacts/sync/untracked.txt"),
+				sandboxSyncOutApplyCollected("recovery-patch", ".hal/recovery/workspace.patch", "handoff-case/recovery/workspace.patch"),
+			}},
+			applyResult: func(t *testing.T, got sandboxSyncOutApplyRequest) sandboxworkspace.SafeApplyResult {
+				t.Helper()
+				if got.Artifact != nil || got.PayloadPath != "" {
+					t.Fatalf("missing eligible selected artifact=%#v payload=%q, want handoff only", got.Artifact, got.PayloadPath)
+				}
+				return got.Handoff
+			},
+			wantReason:      sandboxworkspace.SyncOutApplyEligibilityReasonNoEligibleArtifact,
+			wantArtifactIDs: []string{"untracked-list", "recovery-patch"},
+		},
+		{
+			name: "otherwise unsafe",
+			options: sandboxSyncOutOptions{
+				Enabled: true,
+				Apply:   true,
+			},
+			metadata: sandboxexecution.ArtifactMetadata{Partial: []sandboxexecution.ArtifactMetadataEntry{{
+				ID:   "committed-patch",
+				Name: "Committed patch token=secret",
+				Path: ".hal/sync/committed.patch",
+			}}},
+			applyResult: func(t *testing.T, got sandboxSyncOutApplyRequest) sandboxworkspace.SafeApplyResult {
+				t.Helper()
+				if got.Artifact != nil || got.PayloadPath != "" {
+					t.Fatalf("unsafe artifact selected artifact=%#v payload=%q, want handoff only", got.Artifact, got.PayloadPath)
+				}
+				return got.Handoff
+			},
+			wantReason:      sandboxworkspace.SyncOutApplyEligibilityReasonUnsafeArtifact,
+			wantArtifactIDs: []string{"committed-patch"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+			executionID := "handoff-case"
+			saveSandboxSyncOutApplyManifest(t, store, executionID, sandboxexecution.PurposeRun, tc.metadata)
+
+			result, err := applySandboxSyncOut(context.Background(), store, sandboxSyncOutApplyRequest{
+				ExecutionID: executionID,
+				Purpose:     sandboxexecution.PurposeRun,
+				ProjectDir:  t.TempDir(),
+				Options:     tc.options,
+			}, func(_ context.Context, got sandboxSyncOutApplyRequest) (sandboxworkspace.SafeApplyResult, error) {
+				return tc.applyResult(t, got), nil
+			})
+			if err != nil {
+				t.Fatalf("applySandboxSyncOut() error = %v", err)
+			}
+			assertSandboxSyncOutHandoffInstructions(t, result, tc.wantReason, tc.wantArtifactIDs, []string{
+				"token=secret",
+				"/tmp/",
+				"unix://",
+				"/workspace/",
+				"https://deploy:secret@example.test/repo.git",
+				"providerSecret",
+			})
+		})
+	}
+}
+
 func TestSandboxApplyPersistsRecoveryBeforeHostMutation(t *testing.T) {
 	t.Run("run", func(t *testing.T) {
 		startedAt := time.Date(2026, 7, 2, 1, 0, 0, 0, time.UTC)
@@ -861,4 +1016,47 @@ func sandboxApplyReasonsContain(reasons []sandboxworkspace.SyncOutApplyEligibili
 		}
 	}
 	return false
+}
+
+func assertSandboxSyncOutHandoffInstructions(t *testing.T, result sandboxworkspace.SafeApplyResult, wantReason sandboxworkspace.SyncOutApplyEligibilityReason, wantArtifactIDs []string, forbidden []string) {
+	t.Helper()
+	if result.Status != sandboxworkspace.SafeApplyStatusHandoffRequired || result.Applied {
+		t.Fatalf("apply result = %#v, want handoff-required without mutation", result)
+	}
+	if len(result.HandoffInstructions) == 0 {
+		t.Fatalf("handoff instructions missing: %#v", result)
+	}
+	instruction := result.HandoffInstructions[0]
+	if instruction.Reason != wantReason {
+		t.Fatalf("handoff reason = %q, want %q", instruction.Reason, wantReason)
+	}
+	if strings.TrimSpace(instruction.Message) == "" {
+		t.Fatalf("handoff message is empty: %#v", instruction)
+	}
+	gotArtifactIDs := map[string]bool{}
+	for _, artifact := range instruction.Artifacts {
+		if artifact.ID != "" {
+			gotArtifactIDs[artifact.ID] = true
+		}
+		if artifact.DisplayPath != "" {
+			if filepath.IsAbs(artifact.DisplayPath) || strings.Contains(artifact.DisplayPath, "\\") || strings.Contains(artifact.DisplayPath, "..") {
+				t.Fatalf("handoff artifact display path is unsafe: %#v", artifact)
+			}
+		}
+	}
+	for _, want := range wantArtifactIDs {
+		if !gotArtifactIDs[want] {
+			t.Fatalf("handoff artifact IDs = %#v, want %q in %#v", gotArtifactIDs, want, instruction.Artifacts)
+		}
+	}
+	encoded, err := json.Marshal(result.HandoffInstructions)
+	if err != nil {
+		t.Fatalf("Marshal(handoff instructions) error: %v", err)
+	}
+	payload := string(encoded)
+	for _, value := range forbidden {
+		if strings.Contains(payload, value) {
+			t.Fatalf("handoff instructions leaked %q: %s", value, payload)
+		}
+	}
 }
