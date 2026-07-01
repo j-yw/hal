@@ -68,9 +68,33 @@ func Schedule(req SchedulerRequest, cache CachedState) SchedulerResult {
 	}
 
 	candidateSet := EnumerateSchedulerCandidates(req, cache)
+	candidateSet = filterSchedulerCandidatesByExplicitHost(req, candidateSet)
 	candidateSet = filterSchedulerCandidatesByHealth(req, candidateSet)
 	candidateSet = filterSchedulerCandidatesByRuntimeAndIsolation(req, candidateSet)
 	return selectSchedulerCandidateWithCapacity(req, candidateSet, cache)
+}
+
+func filterSchedulerCandidatesByExplicitHost(req SchedulerRequest, candidateSet SchedulerCandidateSet) SchedulerCandidateSet {
+	if candidateSet.Failed() || candidateSet.Empty() || !req.HasHostConstraint() {
+		return candidateSet
+	}
+
+	hostID := strings.TrimSpace(req.HostID)
+	filtered := make([]SchedulerCandidate, 0, 1)
+	for _, candidate := range candidateSet.Candidates {
+		if schedulerCandidateHostID(candidate) == hostID {
+			filtered = append(filtered, candidate)
+		}
+	}
+
+	switch len(filtered) {
+	case 0:
+		return SchedulerCandidateSet{Rejection: schedulerRejection(req, FailureReasonHostNotFound, fmt.Sprintf("host %q does not exist", hostID))}
+	case 1:
+		return SchedulerCandidateSet{Candidates: filtered}
+	default:
+		return SchedulerCandidateSet{Rejection: schedulerRejection(req, FailureReasonAmbiguousTarget, fmt.Sprintf("host %q matched multiple durable host records", hostID))}
+	}
 }
 
 func filterSchedulerCandidatesByHealth(req SchedulerRequest, candidateSet SchedulerCandidateSet) SchedulerCandidateSet {
@@ -140,10 +164,18 @@ func filterSchedulerCandidatesByRuntimeAndIsolation(req SchedulerRequest, candid
 
 	if req.HasRuntimeConstraint() && !matchedRequestedRuntime {
 		runtimeDriver := strings.TrimSpace(req.RuntimeDriver)
+		if req.HasHostConstraint() {
+			hostID := strings.TrimSpace(req.HostID)
+			return SchedulerCandidateSet{Rejection: schedulerRejection(req, FailureReasonRuntimeUnsupported, fmt.Sprintf("host %q does not support requested runtime %q", hostID, runtimeDriver))}
+		}
 		return SchedulerCandidateSet{Rejection: schedulerRejection(req, FailureReasonRuntimeUnsupported, fmt.Sprintf("no durable host supports requested runtime %q", runtimeDriver))}
 	}
 	if req.HasIsolationConstraint() {
 		isolationLevel := strings.TrimSpace(req.IsolationLevel)
+		if req.HasHostConstraint() {
+			hostID := strings.TrimSpace(req.HostID)
+			return SchedulerCandidateSet{Rejection: schedulerRejection(req, FailureReasonIsolationUnavailable, fmt.Sprintf("host %q does not support requested isolation %q", hostID, isolationLevel))}
+		}
 		return SchedulerCandidateSet{Rejection: schedulerRejection(req, FailureReasonIsolationUnavailable, fmt.Sprintf("no durable host supports requested isolation %q", isolationLevel))}
 	}
 	return SchedulerCandidateSet{Rejection: schedulerRejection(req, FailureReasonHostNotFound, "no cached sandbox hosts")}
@@ -184,6 +216,16 @@ func schedulerCandidateFromHost(host *sandbox.SandboxHost) SchedulerCandidate {
 		}
 	}
 	return candidate
+}
+
+func schedulerCandidateHostID(candidate SchedulerCandidate) string {
+	if hostID := strings.TrimSpace(candidate.Identity.HostID); hostID != "" {
+		return hostID
+	}
+	if candidate.Host != nil {
+		return strings.TrimSpace(candidate.Host.ID)
+	}
+	return ""
 }
 
 func schedulerCandidateWithRuntime(candidate SchedulerCandidate, runtime *sandboxruntime.RuntimeState) SchedulerCandidate {

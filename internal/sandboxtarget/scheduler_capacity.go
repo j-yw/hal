@@ -1,6 +1,7 @@
 package sandboxtarget
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -46,9 +47,13 @@ func selectSchedulerCandidateWithCapacity(req SchedulerRequest, candidateSet Sch
 		}
 	}
 	if firstBlocked != nil {
+		message := "no cached sandbox hosts have available capacity"
+		if hostID := strings.TrimSpace(req.HostID); hostID != "" {
+			message = fmt.Sprintf("host %q has no available cached capacity", hostID)
+		}
 		return SchedulerResult{
 			Capacity:  firstBlocked.Decision,
-			Rejection: schedulerRejection(req, FailureReasonCapacityBlocked, "no cached sandbox hosts have available capacity"),
+			Rejection: schedulerRejection(req, FailureReasonCapacityBlocked, message),
 		}
 	}
 	return schedulerCapacityUnavailableResult(req, "no cached sandbox hosts have usable capacity metadata")
