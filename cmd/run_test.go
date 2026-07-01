@@ -61,6 +61,7 @@ func TestRunRun_DryRun_AllowsMissingGitRepoWithoutBase(t *testing.T) {
 		maxRetries = 3
 		retryDelay = 5 * time.Second
 		runTimeout = 0
+		runParallelFlag = 0
 	})
 	if err := os.Chdir(dir); err != nil {
 		t.Fatalf("chdir: %v", err)
@@ -74,6 +75,7 @@ func TestRunRun_DryRun_AllowsMissingGitRepoWithoutBase(t *testing.T) {
 	maxRetries = 1
 	retryDelay = 10 * time.Millisecond
 	runTimeout = 0
+	runParallelFlag = 0
 
 	var stderr bytes.Buffer
 	if err := runRunWithWriter(nil, nil, &stderr); err != nil {
@@ -156,6 +158,7 @@ func TestRunRun_DryRun_AllowsDetachedHeadWithoutBase(t *testing.T) {
 		maxRetries = 3
 		retryDelay = 5 * time.Second
 		runTimeout = 0
+		runParallelFlag = 0
 	})
 	if err := os.Chdir(dir); err != nil {
 		t.Fatalf("chdir: %v", err)
@@ -169,6 +172,7 @@ func TestRunRun_DryRun_AllowsDetachedHeadWithoutBase(t *testing.T) {
 	maxRetries = 1
 	retryDelay = 10 * time.Millisecond
 	runTimeout = 0
+	runParallelFlag = 0
 
 	if err := runRun(nil, nil); err != nil {
 		t.Fatalf("runRun should succeed on detached HEAD without --base, got: %v", err)
@@ -186,6 +190,7 @@ func TestRunRunWithWriter_IterationContract(t *testing.T) {
 		cmd.Flags().Duration("timeout", 0, "")
 		cmd.Flags().Bool("dry-run", false, "")
 		cmd.Flags().String("story", "", "")
+		cmd.Flags().Int("parallel", 0, "")
 		return cmd
 	}
 
@@ -288,6 +293,63 @@ func TestRunRunWithWriter_IterationContract(t *testing.T) {
 			t.Fatalf("expected validation exit code error, got: %T %v", err, err)
 		}
 		if !strings.Contains(err.Error(), "--timeout must be greater than or equal to 0") {
+			t.Fatalf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("negative --parallel rejected", func(t *testing.T) {
+		cmd := newCmd()
+		if err := cmd.Flags().Set("parallel", "-1"); err != nil {
+			t.Fatalf("set parallel flag: %v", err)
+		}
+
+		err := runRunWithWriter(cmd, nil, &bytes.Buffer{})
+		if err == nil {
+			t.Fatal("expected validation error, got nil")
+		}
+		if !isValidationErr(err) {
+			t.Fatalf("expected validation exit code error, got: %T %v", err, err)
+		}
+		if !strings.Contains(err.Error(), "--parallel must be greater than or equal to 0") {
+			t.Fatalf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("parallel above cap rejected", func(t *testing.T) {
+		cmd := newCmd()
+		if err := cmd.Flags().Set("parallel", "11"); err != nil {
+			t.Fatalf("set parallel flag: %v", err)
+		}
+
+		err := runRunWithWriter(cmd, nil, &bytes.Buffer{})
+		if err == nil {
+			t.Fatal("expected validation error, got nil")
+		}
+		if !isValidationErr(err) {
+			t.Fatalf("expected validation exit code error, got: %T %v", err, err)
+		}
+		if !strings.Contains(err.Error(), "--parallel must be less than or equal to 10") {
+			t.Fatalf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("parallel with story rejected", func(t *testing.T) {
+		cmd := newCmd()
+		if err := cmd.Flags().Set("parallel", "2"); err != nil {
+			t.Fatalf("set parallel flag: %v", err)
+		}
+		if err := cmd.Flags().Set("story", "US-001"); err != nil {
+			t.Fatalf("set story flag: %v", err)
+		}
+
+		err := runRunWithWriter(cmd, nil, &bytes.Buffer{})
+		if err == nil {
+			t.Fatal("expected validation error, got nil")
+		}
+		if !isValidationErr(err) {
+			t.Fatalf("expected validation exit code error, got: %T %v", err, err)
+		}
+		if !strings.Contains(err.Error(), "--parallel does not support --story") {
 			t.Fatalf("unexpected error message: %v", err)
 		}
 	})
@@ -396,6 +458,32 @@ func TestOutputRunJSON(t *testing.T) {
 				t.Fatal("summary should not be empty")
 			}
 		})
+	}
+}
+
+func TestOutputRunJSONWithParallel(t *testing.T) {
+	var buf bytes.Buffer
+	parallel := &RunParallelInfo{
+		RequestedParallelism: 4,
+		RunID:                "run-test",
+		Batches:              2,
+		Started:              4,
+		Integrated:           3,
+		Failed:               1,
+	}
+	if err := outputRunJSONWithParallel(&buf, loop.Result{Success: true, Complete: false, Iterations: 4}, "", false, "codex", parallel); err != nil {
+		t.Fatalf("outputRunJSONWithParallel() error = %v", err)
+	}
+
+	var jr RunResult
+	if err := json.Unmarshal(buf.Bytes(), &jr); err != nil {
+		t.Fatalf("JSON unmarshal error: %v\noutput: %s", err, buf.String())
+	}
+	if jr.Parallel == nil {
+		t.Fatal("parallel telemetry is nil")
+	}
+	if jr.Parallel.RequestedParallelism != 4 || jr.Parallel.Batches != 2 || jr.Parallel.Integrated != 3 {
+		t.Fatalf("parallel telemetry = %+v, want requested=4 batches=2 integrated=3", jr.Parallel)
 	}
 }
 

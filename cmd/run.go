@@ -12,9 +12,12 @@ import (
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/loop"
+	"github.com/jywlabs/hal/internal/parallelrun"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
+
+const runMaxParallelWorkers = 10
 
 // Run command flags
 var (
@@ -30,27 +33,39 @@ var (
 	runIterationsFlag int
 
 	// New flags
-	dryRunFlag  bool
-	storyFlag   string
-	runBaseFlag string
-	runJSONFlag bool
+	dryRunFlag      bool
+	storyFlag       string
+	runBaseFlag     string
+	runJSONFlag     bool
+	runParallelFlag int
 )
 
 // RunResult is the machine-readable output of hal run --json.
 type RunResult struct {
-	ContractVersion int            `json:"contractVersion"`
-	OK              bool           `json:"ok"`
-	Engine          string         `json:"engine,omitempty"`
-	Iterations      int            `json:"iterations"`
-	Complete        bool           `json:"complete"`
-	StoryID         string         `json:"storyId,omitempty"`
-	LastStoryID     string         `json:"lastStoryId,omitempty"`
-	DryRun          bool           `json:"dryRun,omitempty"`
-	Duration        string         `json:"duration,omitempty"`
-	PRD             *RunPRDInfo    `json:"prd,omitempty"`
-	NextAction      *RunNextAction `json:"nextAction,omitempty"`
-	Error           string         `json:"error,omitempty"`
-	Summary         string         `json:"summary"`
+	ContractVersion int              `json:"contractVersion"`
+	OK              bool             `json:"ok"`
+	Engine          string           `json:"engine,omitempty"`
+	Iterations      int              `json:"iterations"`
+	Complete        bool             `json:"complete"`
+	StoryID         string           `json:"storyId,omitempty"`
+	LastStoryID     string           `json:"lastStoryId,omitempty"`
+	DryRun          bool             `json:"dryRun,omitempty"`
+	Parallel        *RunParallelInfo `json:"parallel,omitempty"`
+	Duration        string           `json:"duration,omitempty"`
+	PRD             *RunPRDInfo      `json:"prd,omitempty"`
+	NextAction      *RunNextAction   `json:"nextAction,omitempty"`
+	Error           string           `json:"error,omitempty"`
+	Summary         string           `json:"summary"`
+}
+
+// RunParallelInfo provides safe aggregate telemetry for hal run --parallel.
+type RunParallelInfo struct {
+	RequestedParallelism int    `json:"requestedParallelism"`
+	RunID                string `json:"runId,omitempty"`
+	Batches              int    `json:"batches"`
+	Started              int    `json:"started"`
+	Integrated           int    `json:"integrated"`
+	Failed               int    `json:"failed"`
 }
 
 // RunPRDInfo provides PRD state at the time the run completed.
@@ -91,6 +106,7 @@ Examples:
   hal run -e codex                 # Use Codex engine
   hal run --timeout 30m            # Override per-session engine timeout
   hal run --dry-run                # Show what would execute
+  hal run --parallel 4             # Run up to 4 isolated workers at once
   hal run --base develop           # Branch from develop when needed
   hal run --json                   # Machine-readable result output
 `,
@@ -98,6 +114,7 @@ Examples:
   hal run 5
   hal run --story US-001
   hal run --timeout 30m
+  hal run --parallel 4
   hal run --json
   hal run --engine codex --base develop`,
 	Args: maxArgsValidation(1),
@@ -121,6 +138,10 @@ func init() {
 	runCmd.Flags().StringVarP(&storyFlag, "story", "s", "", "Run specific story by ID (e.g., US-001)")
 	runCmd.Flags().StringVarP(&runBaseFlag, "base", "b", "", "Base branch for creating the PRD branch (default: current branch, or HEAD when detached)")
 	runCmd.Flags().BoolVar(&runJSONFlag, "json", false, "Output machine-readable JSON result")
+	runCmd.Flags().IntVar(&runParallelFlag, "parallel", 0, "Run up to N isolated workers in parallel (0 disables parallel mode; max 10)")
+	if flag := runCmd.Flags().Lookup("parallel"); flag != nil {
+		flag.NoOptDefVal = "2"
+	}
 
 	rootCmd.AddCommand(runCmd)
 }
@@ -151,6 +172,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	dryRun := dryRunFlag
 	story := storyFlag
 	jsonMode := runJSONFlag
+	parallelWorkers := runParallelFlag
 
 	if cmd != nil {
 		flags := cmd.Flags()
@@ -227,6 +249,14 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 			}
 			jsonMode = value
 		}
+
+		if flags.Lookup("parallel") != nil {
+			value, err := flags.GetInt("parallel")
+			if err != nil {
+				return err
+			}
+			parallelWorkers = value
+		}
 	}
 
 	iterations, err := parseIterations(args, iterationsFlag, iterationsChanged, 10)
@@ -241,6 +271,26 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 			return outputRunJSONError(out, "--timeout must be greater than or equal to 0")
 		}
 		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("--timeout must be greater than or equal to 0"))
+	}
+	if parallelWorkers < 0 {
+		if jsonMode {
+			return outputRunJSONError(out, "--parallel must be greater than or equal to 0")
+		}
+		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("--parallel must be greater than or equal to 0"))
+	}
+	if parallelWorkers > runMaxParallelWorkers {
+		msg := fmt.Sprintf("--parallel must be less than or equal to %d", runMaxParallelWorkers)
+		if jsonMode {
+			return outputRunJSONError(out, msg)
+		}
+		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("%s", msg))
+	}
+	if parallelWorkers > 0 && story != "" {
+		msg := "--parallel does not support --story; run the specific story without parallel mode"
+		if jsonMode {
+			return outputRunJSONError(out, msg)
+		}
+		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("%s", msg))
 	}
 
 	// Check .hal directory exists
@@ -279,6 +329,35 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	engineCfg := compound.LoadEngineConfig(".", resolvedEngine)
 	if timeoutOverride > 0 {
 		engineCfg = withTimeoutOverride(engineCfg, timeoutOverride)
+	}
+
+	if parallelWorkers > 0 {
+		parallelResult := parallelrun.New(parallelrun.Config{
+			RepoDir:       ".",
+			HalDir:        template.HalDir,
+			PRDFile:       template.PRDFile,
+			ProgressFile:  template.ProgressFile,
+			BaseBranch:    baseBranch,
+			MaxIterations: iterations,
+			Parallelism:   parallelWorkers,
+			DryRun:        dryRun,
+			Engine:        resolvedEngine,
+			EngineConfig:  engineCfg,
+			Logger:        out,
+			RetryDelay:    delay,
+			MaxRetries:    retries,
+		}, parallelrun.Deps{}).Run(context.Background())
+		result := parallelResult.LoopResult()
+
+		if jsonMode {
+			return outputRunJSONWithParallel(out, result, story, dryRun, resolvedEngine, runParallelInfo(parallelResult.Parallel))
+		}
+
+		showRunSummary(out, result)
+		if result.Error != nil {
+			return fmt.Errorf("parallel run failed: %w", result.Error)
+		}
+		return nil
 	}
 
 	// Create and run the loop
@@ -381,6 +460,10 @@ func outputRunJSONError(out io.Writer, errMsg string) error {
 }
 
 func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun bool, engineName string) error {
+	return outputRunJSONWithParallel(out, result, storyID, dryRun, engineName, nil)
+}
+
+func outputRunJSONWithParallel(out io.Writer, result loop.Result, storyID string, dryRun bool, engineName string, parallel *RunParallelInfo) error {
 	jr := RunResult{
 		ContractVersion: 1,
 		OK:              result.Success,
@@ -389,6 +472,7 @@ func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun boo
 		StoryID:         storyID,
 		DryRun:          dryRun,
 		Complete:        result.Complete,
+		Parallel:        parallel,
 	}
 	if result.Duration > 0 {
 		jr.Duration = result.Duration.Round(time.Second).String()
@@ -439,6 +523,17 @@ func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun boo
 	}
 	fmt.Fprintln(out, string(data))
 	return nil
+}
+
+func runParallelInfo(summary parallelrun.Summary) *RunParallelInfo {
+	return &RunParallelInfo{
+		RequestedParallelism: summary.RequestedParallelism,
+		RunID:                summary.RunID,
+		Batches:              summary.Batches,
+		Started:              summary.Started,
+		Integrated:           summary.Integrated,
+		Failed:               summary.Failed,
+	}
 }
 
 func withTimeoutOverride(cfg *engine.EngineConfig, timeout time.Duration) *engine.EngineConfig {
