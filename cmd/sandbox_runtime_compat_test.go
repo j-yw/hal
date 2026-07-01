@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandbox"
@@ -72,6 +73,7 @@ func TestExistingSandboxExecutionDefaultResolversStayWorkerOptIn(t *testing.T) {
 		runtime          sandboxruntime.RuntimeState
 		wantID           string
 		wantProviderCall bool
+		wantErr          string
 	}{
 		{
 			name:             "absent runtime metadata",
@@ -96,10 +98,19 @@ func TestExistingSandboxExecutionDefaultResolversStayWorkerOptIn(t *testing.T) {
 			wantProviderCall: true,
 		},
 		{
-			name:             "worker-looking runtime driver string",
-			runtime:          sandboxruntime.RuntimeState{Driver: "worker_backed", WorkerID: "worker-001"},
-			wantID:           sandboxruntime.DriverSSHMachine,
-			wantProviderCall: true,
+			name:    "worker-looking runtime driver string",
+			runtime: sandboxruntime.RuntimeState{Driver: "worker_backed", WorkerID: "worker-001"},
+			wantErr: `runtime driver "worker_backed" is not supported`,
+		},
+		{
+			name: "explicit microVM metadata",
+			runtime: sandboxruntime.RuntimeState{
+				Driver:         sandboxruntime.DriverMicroVM,
+				WorkerID:       "worker-001",
+				RuntimeID:      "microvm-dev",
+				IsolationLevel: sandbox.SandboxIsolationLevelVM,
+			},
+			wantErr: `runtime driver "microvm" is not supported`,
 		},
 	}
 
@@ -122,6 +133,21 @@ func TestExistingSandboxExecutionDefaultResolversStayWorkerOptIn(t *testing.T) {
 					Provider: "test-provider",
 					Runtime:  scenario.runtime,
 				})
+				if scenario.wantErr != "" {
+					if err == nil {
+						t.Fatalf("resolveRuntimeDriver() error = nil, want %q", scenario.wantErr)
+					}
+					if !strings.Contains(err.Error(), scenario.wantErr) {
+						t.Fatalf("resolveRuntimeDriver() error = %q, want %q", err.Error(), scenario.wantErr)
+					}
+					if driver != nil {
+						t.Fatalf("resolveRuntimeDriver() driver = %#v, want nil on unsupported runtime", driver)
+					}
+					if providerCalls != 0 {
+						t.Fatalf("resolveProvider calls = %d, want 0 for unsupported selected runtime", providerCalls)
+					}
+					return
+				}
 				if err != nil {
 					t.Fatalf("resolveRuntimeDriver() error = %v", err)
 				}
@@ -143,6 +169,54 @@ func TestExistingSandboxExecutionDefaultResolversStayWorkerOptIn(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestSandboxRuntimeCompatRejectsUnsupportedSelectedRuntimeDrivers(t *testing.T) {
+	targets := []sandboxruntime.Target{
+		{
+			Provider: "worker",
+			Runtime: sandboxruntime.RuntimeState{
+				Driver:         sandboxruntime.DriverMicroVM,
+				WorkerID:       "worker-a",
+				RuntimeID:      "vm-123",
+				IsolationLevel: sandbox.SandboxIsolationLevelVM,
+			},
+		},
+		{
+			Provider: "worker",
+			Runtime: sandboxruntime.RuntimeState{
+				Driver:   "worker_backed",
+				WorkerID: "worker-a",
+			},
+		},
+	}
+
+	for _, target := range targets {
+		t.Run(target.Runtime.Driver, func(t *testing.T) {
+			driver, err := sandboxRuntimeDriverFromTargetWithFactories(target, func(string) (sandbox.Provider, error) {
+				t.Fatal("resolveProvider should not run for unsupported selected runtime metadata")
+				return nil, nil
+			}, sandboxRuntimeDriverFactories{
+				sshMachine: func(sandbox.Provider) sandboxruntime.Driver {
+					t.Fatal("SSH-machine factory should not be used for unsupported selected runtime metadata")
+					return nil
+				},
+				rootlessPodman: func() sandboxruntime.Driver {
+					t.Fatal("rootless Podman factory should not be used for unsupported selected runtime metadata")
+					return nil
+				},
+			})
+			if err == nil {
+				t.Fatal("sandboxRuntimeDriverFromTargetWithFactories() error = nil, want unsupported selected runtime")
+			}
+			if driver != nil {
+				t.Fatalf("driver = %#v, want nil on unsupported selected runtime", driver)
+			}
+			if !strings.Contains(err.Error(), `sandbox runtime driver "`+target.Runtime.Driver+`" is not supported`) {
+				t.Fatalf("error = %q, want unsupported runtime driver", err.Error())
+			}
+		})
 	}
 }
 

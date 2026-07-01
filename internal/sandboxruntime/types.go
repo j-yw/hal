@@ -8,6 +8,7 @@ import (
 const (
 	DriverSSHMachine     = "ssh_machine"
 	DriverRootlessPodman = "rootless_podman"
+	DriverMicroVM        = "microvm"
 )
 
 // Driver is the complete sandbox runtime boundary used by orchestration code.

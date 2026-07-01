@@ -46,6 +46,7 @@
 - Isolation-constrained target selection uses durable `sandbox` isolation constants plus selector-local runtime category mapping (`ssh_machine` -> `host`, `rootless_podman` -> `container`, `microvm` -> `vm`); persisted sandbox runtime `IsolationLevel` is authoritative when present so stronger requests fail instead of being downgraded.
 - Unconstrained `sandboxtarget.Select` preserves legacy resolution through fakeable `CachedState` callbacks: explicit sandbox load first, exactly one running sandbox as the default fallback, and `ProvisioningPlan` for command-layer create paths; use `RuntimeForSandbox` to keep missing runtime metadata on SSH-machine compatibility.
 - When `sandboxtarget.Select` attaches selected metadata to a returned `sandbox.SandboxState`, copy cached `SandboxHost` records before assignment and merge requested runtime driver/isolation constraints into existing durable runtime metadata so runtime ID, image, and worker ID are preserved.
+- Runtime driver resolution in `cmd/sandbox_runtime_compat.go` must consume the already-selected `sandboxruntime.Target` only: keep default run/auto/factory execution limited to missing/SSH-machine compatibility or explicit `rootless_podman`, and fail unsupported explicit drivers such as `microvm` or worker-only driver strings instead of scanning hosts or downgrading.
 
 ## Patterns from phase16-runtime-inspection (2026-07-01)
 

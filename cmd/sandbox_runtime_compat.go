@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/sandbox"
@@ -134,13 +135,13 @@ func productionSandboxRuntimeDriverFactories() sandboxRuntimeDriverFactories {
 }
 
 func sandboxRuntimeDriverFromTargetWithFactories(target sandboxruntime.Target, resolveProvider func(string) (sandbox.Provider, error), factories sandboxRuntimeDriverFactories) (sandboxruntime.Driver, error) {
-	switch strings.TrimSpace(target.Runtime.Driver) {
+	switch driver := strings.TrimSpace(target.Runtime.Driver); driver {
 	case sandboxruntime.DriverRootlessPodman:
 		if factories.rootlessPodman == nil {
 			return nil, nil
 		}
 		return factories.rootlessPodman(), nil
-	default:
+	case "", sandboxruntime.DriverSSHMachine:
 		if resolveProvider == nil {
 			return nil, nil
 		}
@@ -152,5 +153,7 @@ func sandboxRuntimeDriverFromTargetWithFactories(target sandboxruntime.Target, r
 			return nil, nil
 		}
 		return factories.sshMachine(provider), nil
+	default:
+		return nil, fmt.Errorf("sandbox runtime driver %q is not supported by current execution resolver", driver)
 	}
 }
