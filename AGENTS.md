@@ -40,6 +40,7 @@
 ## Patterns from phase23-security-intent-propagation (2026-07-02)
 
 - Pure config-to-evaluator security intent mapping belongs in `internal/sandbox/security_intent.go`; pass only sandbox-native `SandboxNetworkPolicyIntent`, `SandboxNetworkPolicyEnforcementCapability`, and `SandboxSecretDeliveryIntent` metadata, preserve nil-vs-explicit-empty secrets, and keep `security_intent*.go` covered by the `internal/sandbox/network_policy_import_boundary_test.go` pure import guard.
+- Compatibility security evaluation belongs in `internal/sandbox/security.go`; when `RequestedNetworkPolicyIntent` is present, derive the legacy `policyRequested` label from the typed intent while using the pure evaluator for `policyResult`, and only claim deny-by-default enforcement when explicit capability metadata supports it.
 
 ## Patterns from phase22-policy-secret-broker (2026-07-02)
 
