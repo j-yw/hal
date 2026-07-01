@@ -692,7 +692,7 @@ func (deps autoSandboxDeps) resolveAutoSandboxTarget(ctx context.Context, req au
 	if listSandboxes == nil && deps.resolveDefault != nil {
 		listSandboxes = sandboxCommandListSandboxesFromDefault(deps.resolveDefault)
 	}
-	return resolveSandboxCommandTarget(ctx, sandboxCommandTargetRequest{
+	target, err := resolveSandboxCommandTarget(ctx, sandboxCommandTargetRequest{
 		Purpose:             sandbox.SandboxLeasePurposeAuto,
 		SandboxName:         req.SandboxName,
 		SandboxHostID:       req.SandboxHostID,
@@ -709,6 +709,13 @@ func (deps autoSandboxDeps) resolveAutoSandboxTarget(ctx context.Context, req au
 		resolveDefault: deps.resolveDefault,
 		provision:      deps.provision,
 	})
+	if err != nil {
+		return nil, err
+	}
+	if !sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
+		target = sandboxCommandSSHMachineCompatWorkerTarget(target)
+	}
+	return target, nil
 }
 
 func (deps autoSandboxDeps) bootstrapAutoSandboxWorkspace(ctx context.Context, req autoSandboxRequest, provider sandbox.Provider, prep sandboxexec.PrepareContext, out io.Writer) error {

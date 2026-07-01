@@ -43,6 +43,7 @@
 - Explicit worker-backed rootless run manifests should sanitize command-owned metadata before saving: keep exact runtime and workerRouting metadata, keep workspace mode/input/branch/syncRef while omitting repository URLs, and store worker host identity plus safe security summaries without raw endpoints, supported-runtime registry details, temp paths, or credentials.
 - Explicit worker-backed rootless auto manifests should use the same command-layer sanitization as run manifests: persist `Purpose=auto`, exact runtime and workerRouting metadata, workspace mode/input/branch/syncRef without repository URLs, and worker host identity plus safe security summaries without raw endpoints or supported-runtime registry details.
 - Explicit worker-backed rootless factory sandbox metadata should be built in the target-ready command hook from the selected target plus `factorySandboxWorkspaceStateFromRecord`; persist exact runtime and workerRouting metadata while taking workspace mode/input/branch/syncRef from the factory run record and omitting raw endpoints, host temp paths, remote temp paths, bundle paths, credentials, and credential-bearing URLs.
+- Default `hal auto --sandbox` must normalize cached worker-backed targets back to SSH-machine-compatible metadata unless `--sandbox-host` or `--sandbox-runtime` explicitly selects worker routing; strip worker runtime IDs/images, avoid worker host listing/client construction, and persist `sandboxexecution.Manifest.WorkerRouting` as nil.
 
 ## Patterns from phase18-worker-backed-sandbox-execution-routing (2026-07-01)
 
