@@ -47,6 +47,7 @@
 - Explicit scheduler host filtering should run immediately after cached candidate enumeration and before health, runtime/isolation, and capacity filtering; a requested host must narrow the candidate set to that host or return endpoint-safe `host_not_found`/`ambiguous_target`/unsupported/capacity rejections instead of selecting another eligible host.
 - Scheduler capacity filtering should stay in `internal/sandboxtarget` after health and runtime/isolation filtering; count only active non-expired `host:<hostID>` leases from injectable `CachedState.ListLeases` using `CachedState.Now`, require usable `HostCapacity.MaxConcurrentSandboxes`, and reject missing/zero capacity as conservative `capacity_unavailable`.
 - Scheduler ranking should stay in `internal/sandboxtarget` after capacity evaluation; evaluate all known-capacity candidates before selecting, rank by allowed capacity, available slots, cached readiness, active lease count, max capacity, then safe host/runtime identity, and avoid map iteration, live metadata, random values, or wall-clock time outside `CachedState.Now`.
+- Default run/auto/factory sandbox execution without `--sandbox-host` or `--sandbox-runtime` must stay on the legacy resolver path, avoid scheduler host enumeration and worker runtime routing, normalize worker-backed cached targets to SSH-machine compatibility, and clear stale scheduler lease refs before command records are persisted.
 
 ## Patterns from phase19-rootless-worker-e2e-hardening (2026-07-01)
 
