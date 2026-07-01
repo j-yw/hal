@@ -634,6 +634,157 @@ func TestClientDriverErrorsSanitizeWorkerClientDetails(t *testing.T) {
 	}
 }
 
+func TestClientDriverLifecycleErrorsExposeStableClassifications(t *testing.T) {
+	unsafeDetail := "provider failed token=raw-secret via ssh://deploy:secret@example.test/tmp/private/worker.sock?token=raw-secret under /Users/alice/worktree and /workspace/.hal/tmp/session"
+	operations := []struct {
+		operation string
+		call      func(*ClientDriver) error
+	}{
+		{
+			operation: OperationCreate,
+			call: func(driver *ClientDriver) error {
+				_, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "dev"})
+				return err
+			},
+		},
+		{
+			operation: OperationStart,
+			call: func(driver *ClientDriver) error {
+				_, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: lifecycleRuntimeTarget("fake_runtime", "dev", "created")})
+				return err
+			},
+		},
+		{
+			operation: OperationInspect,
+			call: func(driver *ClientDriver) error {
+				_, err := driver.Inspect(context.Background(), sandboxruntime.InspectRequest{Target: lifecycleRuntimeTarget("fake_runtime", "dev", "running")})
+				return err
+			},
+		},
+		{
+			operation: OperationStop,
+			call: func(driver *ClientDriver) error {
+				_, err := driver.Stop(context.Background(), sandboxruntime.LifecycleRequest{Target: lifecycleRuntimeTarget("fake_runtime", "dev", "running")})
+				return err
+			},
+		},
+		{
+			operation: OperationDelete,
+			call: func(driver *ClientDriver) error {
+				return driver.Delete(context.Background(), sandboxruntime.LifecycleRequest{Target: lifecycleRuntimeTarget("fake_runtime", "dev", "stopped")})
+			},
+		},
+	}
+	failures := []struct {
+		name           string
+		classification string
+		err            func(string) error
+		assertWrapped  func(*testing.T, error)
+	}{
+		{
+			name:           "driver failure",
+			classification: FailureWorkerLifecycle,
+			err: func(operation string) error {
+				return &ProtocolError{
+					Operation: operation,
+					Code:      ErrorCodeDriverFailed,
+					Message:   unsafeDetail,
+				}
+			},
+			assertWrapped: func(t *testing.T, err error) {
+				t.Helper()
+				var protocolErr *ProtocolError
+				if !errors.As(err, &protocolErr) || protocolErr.Code != ErrorCodeDriverFailed {
+					t.Fatalf("error = %T %v, want wrapped driver protocol error", err, err)
+				}
+			},
+		},
+		{
+			name:           "runtime unavailable",
+			classification: FailureRuntimeUnavailable,
+			err: func(operation string) error {
+				return &ProtocolError{
+					Operation: operation,
+					Code:      ErrorCodeDriverNotFound,
+					Message:   unsafeDetail,
+				}
+			},
+			assertWrapped: func(t *testing.T, err error) {
+				t.Helper()
+				var protocolErr *ProtocolError
+				if !errors.As(err, &protocolErr) || protocolErr.Code != ErrorCodeDriverNotFound {
+					t.Fatalf("error = %T %v, want wrapped driver_not_found protocol error", err, err)
+				}
+			},
+		},
+		{
+			name:           "client failure",
+			classification: FailureWorkerClient,
+			err: func(operation string) error {
+				return &ClientError{
+					Operation: operation,
+					Code:      ErrorCodeInternal,
+					Message:   unsafeDetail,
+				}
+			},
+			assertWrapped: func(t *testing.T, err error) {
+				t.Helper()
+				var clientErr *ClientError
+				if !errors.As(err, &clientErr) {
+					t.Fatalf("error = %T %v, want wrapped worker client error", err, err)
+				}
+			},
+		},
+	}
+
+	for _, operation := range operations {
+		for _, failure := range failures {
+			t.Run(operation.operation+"/"+failure.name, func(t *testing.T) {
+				client := &recordingRuntimeDriverClient{
+					errByOperation: map[string]error{
+						operation.operation: failure.err(operation.operation),
+					},
+				}
+				driver, err := NewClientDriver(ClientDriverOptions{
+					DriverID: "fake_runtime",
+					Client:   client,
+				})
+				if err != nil {
+					t.Fatalf("NewClientDriver() error: %v", err)
+				}
+
+				err = operation.call(driver)
+				if err == nil {
+					t.Fatal("lifecycle operation error = nil, want classified failure")
+				}
+				var driverErr *ClientDriverError
+				if !errors.As(err, &driverErr) {
+					t.Fatalf("error = %T, want *ClientDriverError", err)
+				}
+				if got := driverErr.Classification(); got != failure.classification {
+					t.Fatalf("classification = %q, want %q", got, failure.classification)
+				}
+				failure.assertWrapped(t, err)
+
+				message := err.Error()
+				if !strings.Contains(message, failure.classification) {
+					t.Fatalf("error = %q, want classification %q", message, failure.classification)
+				}
+				for _, unsafe := range []string{"raw-secret", "deploy:secret", "example.test", "/tmp/private/worker.sock", "/Users/alice", "worktree", "/workspace/.hal/tmp/session"} {
+					if strings.Contains(message, unsafe) {
+						t.Fatalf("classified error leaked unsafe detail %q in %q", unsafe, message)
+					}
+				}
+				for _, want := range []string{"token=[redacted]", "[redacted"} {
+					if !strings.Contains(message, want) {
+						t.Fatalf("classified error = %q, want sanitized marker %q", message, want)
+					}
+				}
+			})
+		}
+	}
+}
+
 func assertClientDriverError(t *testing.T, err error, operation, driverID string) {
 	t.Helper()
 

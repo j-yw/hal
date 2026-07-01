@@ -30,6 +30,12 @@ const (
 	clientDriverCopyOutOperationID = "client-driver-copy-out"
 )
 
+const (
+	FailureWorkerClient       = "worker_client_failed"
+	FailureWorkerLifecycle    = "worker_lifecycle_failed"
+	FailureRuntimeUnavailable = "runtime_unavailable"
+)
+
 var _ sandboxruntime.Driver = (*ClientDriver)(nil)
 
 // RuntimeDriverClient is the worker-client subset needed by ClientDriver.
@@ -499,9 +505,10 @@ func (err *ClientDriverError) Error() string {
 		operation = "request"
 	}
 	if err.Err == nil {
-		return fmt.Sprintf("%s %s failed", driverID, operation)
+		return classifiedWorkerError(err.Classification(), fmt.Sprintf("%s %s failed", driverID, operation))
 	}
-	return fmt.Sprintf("%s %s failed: %s", driverID, operation, sanitizeProtocolErrorDetail(err.Err.Error()))
+	message := fmt.Sprintf("%s %s failed: %s", driverID, operation, clientDriverErrorDetail(err.Err))
+	return classifiedWorkerError(err.Classification(), message)
 }
 
 func (err *ClientDriverError) Unwrap() error {
@@ -509,4 +516,66 @@ func (err *ClientDriverError) Unwrap() error {
 		return nil
 	}
 	return err.Err
+}
+
+func (err *ClientDriverError) Classification() string {
+	if err == nil {
+		return ""
+	}
+	operation := strings.TrimSpace(err.Operation)
+	var protocolErr *ProtocolError
+	if errors.As(err.Err, &protocolErr) {
+		protocolClassification := protocolErr.Classification()
+		if protocolClassification != "" {
+			return protocolClassification
+		}
+		if protocolErr.Code == ErrorCodeDriverFailed && workerLifecycleOperation(defaultString(protocolErr.Operation, operation)) {
+			return FailureWorkerLifecycle
+		}
+		return ""
+	}
+	var clientErr *ClientError
+	if errors.As(err.Err, &clientErr) || workerLifecycleOperation(operation) {
+		return FailureWorkerClient
+	}
+	return ""
+}
+
+func clientDriverErrorDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	var clientErr *ClientError
+	if errors.As(err, &clientErr) {
+		return clientErr.message()
+	}
+	var protocolErr *ProtocolError
+	if errors.As(err, &protocolErr) {
+		return protocolErr.message()
+	}
+	return sanitizeProtocolErrorDetail(err.Error())
+}
+
+func workerLifecycleOperation(operation string) bool {
+	switch strings.TrimSpace(operation) {
+	case OperationCreate, OperationStart, OperationInspect, OperationStop, OperationDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func classifiedWorkerError(classification, message string) string {
+	classification = strings.TrimSpace(classification)
+	message = strings.TrimSpace(message)
+	if classification == "" {
+		return message
+	}
+	if message == "" {
+		return classification
+	}
+	if strings.HasPrefix(message, classification+":") {
+		return message
+	}
+	return classification + ": " + message
 }

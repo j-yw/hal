@@ -1230,6 +1230,145 @@ func TestWorkerClientRunSandboxJSONFailureIsSanitized(t *testing.T) {
 	}
 }
 
+func TestWorkerRootlessRunSandboxStartFailuresClassifyAndSanitizeOutput(t *testing.T) {
+	failures := []struct {
+		name           string
+		classification string
+		err            error
+	}{
+		{
+			name:           "driver",
+			classification: sandboxworker.FailureWorkerLifecycle,
+			err: &sandboxworker.ClientDriverError{
+				Driver:    sandboxruntime.DriverRootlessPodman,
+				Operation: sandboxworker.OperationStart,
+				Err: &sandboxworker.ProtocolError{
+					Operation: sandboxworker.OperationStart,
+					Code:      sandboxworker.ErrorCodeDriverFailed,
+					Message:   unsafeWorkerClientFailureDetail(),
+				},
+			},
+		},
+		{
+			name:           "client",
+			classification: sandboxworker.FailureWorkerClient,
+			err: &sandboxworker.ClientDriverError{
+				Driver:    sandboxruntime.DriverRootlessPodman,
+				Operation: sandboxworker.OperationStart,
+				Err: &sandboxworker.ClientError{
+					Operation: sandboxworker.OperationStart,
+					Code:      sandboxworker.ErrorCodeInternal,
+					Message:   unsafeWorkerClientFailureDetail(),
+				},
+			},
+		},
+	}
+	modes := []struct {
+		name string
+		json bool
+	}{
+		{name: "json", json: true},
+		{name: "human", json: false},
+	}
+
+	for _, failure := range failures {
+		for _, mode := range modes {
+			t.Run(failure.name+"/"+mode.name, func(t *testing.T) {
+				startedAt := time.Date(2026, 7, 1, 7, 36, 0, 0, time.UTC)
+				finishedAt := startedAt.Add(time.Second)
+				projectDir := t.TempDir()
+				store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+				var out bytes.Buffer
+				var errOut bytes.Buffer
+				executionID := "run-worker-start-" + failure.name + "-" + mode.name
+
+				err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+					JSON:                  mode.json,
+					JSONChanged:           mode.json,
+					SandboxName:           "worker-rootless",
+					SandboxNameChanged:    true,
+					SandboxHostID:         "worker-1",
+					SandboxHostChanged:    true,
+					SandboxRuntime:        sandboxruntime.DriverRootlessPodman,
+					SandboxRuntimeChanged: true,
+				}, &out, &errOut, runSandboxDeps{
+					defaultStore: func() (sandboxexecution.Store, error) {
+						return store, nil
+					},
+					newExecutionID: func(time.Time) string {
+						return executionID
+					},
+					now:        runSandboxTestClock(startedAt, finishedAt),
+					workingDir: func() (string, error) { return projectDir, nil },
+					planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+						return workerRootlessPlan(projectDir), nil
+					},
+					loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+						target := workerRootlessCachedSandbox(name)
+						target.Status = sandbox.StatusStopped
+						return target, nil
+					},
+					listHosts: func() ([]*sandbox.SandboxHost, error) {
+						return []*sandbox.SandboxHost{workerRootlessHostWithEndpoint(workerSafeUnixEndpoint())}, nil
+					},
+					listSandboxes: func() ([]*sandbox.SandboxState, error) {
+						t.Fatal("listSandboxes should not run for explicit cached worker sandbox")
+						return nil, nil
+					},
+					resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+						t.Fatal("default sandbox fallback should not run for explicit cached worker sandbox")
+						return nil, "", nil
+					},
+					provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+						t.Fatal("provision should not run for explicit cached worker sandbox")
+						return nil, nil
+					},
+					resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+						return fakeRunSandboxRuntimeDriver{
+							id: sandboxruntime.DriverRootlessPodman,
+							start: func(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+								return nil, failure.err
+							},
+						}, nil
+					},
+					resolveProvider: func(string) (sandbox.Provider, error) {
+						t.Fatal("provider resolution should not run after worker start failure")
+						return nil, nil
+					},
+				})
+
+				var message string
+				if mode.json {
+					if err != nil {
+						t.Fatalf("runRunSandboxWithWriter() error = %v, want JSON error result", err)
+					}
+					var result RunResult
+					decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
+					if result.OK {
+						t.Fatalf("RunResult.OK = true, want false")
+					}
+					message = result.Error
+				} else {
+					if err == nil {
+						t.Fatal("runRunSandboxWithWriter() error = nil, want classified human error")
+					}
+					message = err.Error()
+				}
+				requireWorkerLifecycleFailureMessage(t, message, failure.classification)
+				requireWorkerClientErrorNoUnsafeDetails(t, message, out.String(), errOut.String())
+
+				manifest, loadErr := store.LoadManifest(executionID)
+				if loadErr != nil {
+					t.Fatalf("LoadManifest() error: %v", loadErr)
+				}
+				if manifest.Status != sandboxexecution.StatusFailed {
+					t.Fatalf("manifest.Status = %q, want failed", manifest.Status)
+				}
+			})
+		}
+	}
+}
+
 func TestWorkerRootlessRunSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) {
 	startedAt := time.Date(2026, 7, 1, 7, 38, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(time.Second)
@@ -3514,6 +3653,15 @@ func requireWorkerEndpointInvalidMessage(t *testing.T, message, endpointSummary 
 func requireWorkerClientFailureMessage(t *testing.T, message string) {
 	t.Helper()
 	for _, want := range []string{"worker", "failed", "[redacted"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("message = %q, want %q", message, want)
+		}
+	}
+}
+
+func requireWorkerLifecycleFailureMessage(t *testing.T, message, classification string) {
+	t.Helper()
+	for _, want := range []string{classification, sandboxruntime.DriverRootlessPodman, sandboxworker.OperationStart, "failed", "[redacted"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("message = %q, want %q", message, want)
 		}
