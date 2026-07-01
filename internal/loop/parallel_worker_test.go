@@ -43,6 +43,9 @@ func TestBuildWorkerAssignmentPromptGuardrails(t *testing.T) {
 		"Commit implementation changes on branch `hal/parallel-worker-task-007`",
 		"Write a worker manifest JSON file",
 		"`taskId`, `status`, `branch`, `commit`, `checks`, `filesChanged`, `progressEntry`, `notes`, and `error`",
+		"Manifest `checks` and `filesChanged` MUST be JSON arrays of strings, not objects.",
+		`"checks": ["go test ./..."]`,
+		`"filesChanged": ["path/to/changed-file"]`,
 		"Put the progress summary in the manifest `progressEntry`",
 		"Use manifest status `ready_for_integration`",
 		".hal/parallel/TASK-007/prd.json",
@@ -110,6 +113,41 @@ func TestWorkerManifestRoundTrip(t *testing.T) {
 		if _, ok := raw[key]; !ok {
 			t.Fatalf("manifest JSON missing key %q in %s", key, string(data))
 		}
+	}
+}
+
+func TestReadWorkerManifestNormalizesRealEngineStringListDrift(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "worker-manifest.json")
+	data := []byte(`{
+  "taskId": "TASK-007",
+  "status": "ready_for_integration",
+  "branch": "hal/parallel-worker-task-007",
+  "commit": "abc1234",
+  "checks": {
+    "typecheck": "not run - no typecheck configured",
+    "tests": true
+  },
+  "filesChanged": "internal/loop/parallel_worker.go",
+  "progressEntry": "- TASK-007: implemented worker manifest primitives",
+  "notes": "ready for aggregation",
+  "error": ""
+}`)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	got, err := ReadWorkerManifest(path)
+	if err != nil {
+		t.Fatalf("ReadWorkerManifest() error = %v", err)
+	}
+
+	wantChecks := []string{"tests: true", "typecheck: not run - no typecheck configured"}
+	if !reflect.DeepEqual(got.Checks, wantChecks) {
+		t.Fatalf("Checks = %#v, want %#v", got.Checks, wantChecks)
+	}
+	if !reflect.DeepEqual(got.FilesChanged, []string{"internal/loop/parallel_worker.go"}) {
+		t.Fatalf("FilesChanged = %#v, want normalized single string", got.FilesChanged)
 	}
 }
 
