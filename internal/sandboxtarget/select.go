@@ -26,6 +26,7 @@ func Select(req Request, cache CachedState) Result {
 	policy := req.EffectiveFallbackPolicy()
 	var requestedHost *sandbox.SandboxHost
 	var requestedRuntime *sandboxruntime.RuntimeState
+	var requestedConstraint Result
 	if req.HasHostConstraint() {
 		hostResult := selectRequestedHost(req, cache, policy)
 		if hostResult.Failed() {
@@ -33,15 +34,24 @@ func Select(req Request, cache CachedState) Result {
 		}
 		requestedHost = hostResult.Host
 		requestedRuntime = hostResult.Runtime
+		requestedConstraint = hostResult
+	} else if req.HasRuntimeConstraint() {
+		runtimeResult := selectRequestedRuntime(req, cache, policy)
+		if runtimeResult.Failed() {
+			return runtimeResult
+		}
+		requestedHost = runtimeResult.Host
+		requestedRuntime = runtimeResult.Runtime
+		requestedConstraint = runtimeResult
 	}
 	if req.HasExplicitSandboxName() {
 		return withRequestedMetadata(selectExplicitSandbox(req, cache, policy), requestedHost, requestedRuntime)
 	}
 	if requestedHost != nil {
 		if !policy.Disabled && policy.AllowBranchProvisioning {
-			return withRequestedMetadata(provisioningResult(req, sandbox.SandboxNameFromBranch(req.Project.Branch), policy, "requested host selected"), requestedHost, requestedRuntime)
+			return withRequestedMetadata(provisioningResult(req, sandbox.SandboxNameFromBranch(req.Project.Branch), policy, requestedSelectionReason(requestedConstraint)), requestedHost, requestedRuntime)
 		}
-		return requestedHostResult(requestedHost, requestedRuntime, policy)
+		return requestedConstraint
 	}
 	if !policy.Disabled && policy.AllowDefaultRunningSandbox {
 		result, selected := selectDefaultRunningSandbox(req, cache, policy)
@@ -143,6 +153,38 @@ func selectRequestedHost(req Request, cache CachedState, policy FallbackPolicy) 
 	return requestedHostResult(host, runtime, policy)
 }
 
+func selectRequestedRuntime(req Request, cache CachedState, policy FallbackPolicy) Result {
+	runtimeDriver := strings.TrimSpace(req.RuntimeDriver)
+	if cache.ListHosts == nil {
+		return failureResult(Failure{
+			Reason:        FailureReasonInvalidRequest,
+			Message:       "host lister is required",
+			RuntimeDriver: runtimeDriver,
+		})
+	}
+	hosts, err := cache.ListHosts()
+	if err != nil {
+		return failureResult(Failure{
+			Reason:        FailureReasonInvalidRequest,
+			Message:       fmt.Sprintf("list cached sandbox hosts for runtime %q failed", runtimeDriver),
+			RuntimeDriver: runtimeDriver,
+		})
+	}
+
+	for _, host := range orderedHosts(hosts) {
+		if !hostSupportsRuntime(host, runtimeDriver) {
+			continue
+		}
+		return requestedRuntimeResult(host, &sandboxruntime.RuntimeState{Driver: runtimeDriver}, policy)
+	}
+
+	return failureResult(Failure{
+		Reason:        FailureReasonRuntimeUnsupported,
+		Message:       fmt.Sprintf("no durable host supports requested runtime %q", runtimeDriver),
+		RuntimeDriver: runtimeDriver,
+	})
+}
+
 func requestedHostUnhealthyStatus(host *sandbox.SandboxHost) (string, bool) {
 	if host == nil || host.Health == nil {
 		return "", false
@@ -169,6 +211,22 @@ func hostSupportsRuntime(host *sandbox.SandboxHost, runtimeDriver string) bool {
 	return false
 }
 
+func orderedHosts(hosts []*sandbox.SandboxHost) []*sandbox.SandboxHost {
+	ordered := make([]*sandbox.SandboxHost, 0, len(hosts))
+	for _, host := range hosts {
+		if host != nil {
+			ordered = append(ordered, host)
+		}
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].Name == ordered[j].Name {
+			return ordered[i].ID < ordered[j].ID
+		}
+		return ordered[i].Name < ordered[j].Name
+	})
+	return ordered
+}
+
 func requestedHostResult(host *sandbox.SandboxHost, runtime *sandboxruntime.RuntimeState, policy FallbackPolicy) Result {
 	result := Result{
 		Host:    host,
@@ -184,6 +242,32 @@ func requestedHostResult(host *sandbox.SandboxHost, runtime *sandboxruntime.Runt
 		result.Source.Detail = host.ID
 	}
 	return result
+}
+
+func requestedRuntimeResult(host *sandbox.SandboxHost, runtime *sandboxruntime.RuntimeState, policy FallbackPolicy) Result {
+	result := Result{
+		Host:    host,
+		Runtime: runtime,
+		Source: SourceMetadata{
+			Kind: SourceRequestedRuntime,
+		},
+		Fallback: FallbackMetadata{
+			Policy: policy,
+		},
+	}
+	if runtime != nil {
+		result.Source.Detail = runtime.Driver
+	}
+	return result
+}
+
+func requestedSelectionReason(result Result) string {
+	switch result.Source.Kind {
+	case SourceRequestedRuntime:
+		return "requested runtime selected"
+	default:
+		return "requested host selected"
+	}
 }
 
 func withRequestedMetadata(result Result, host *sandbox.SandboxHost, runtime *sandboxruntime.RuntimeState) Result {

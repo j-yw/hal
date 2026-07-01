@@ -315,6 +315,136 @@ func TestSelectRequestedHostUnsupportedRuntimeFailsWithoutEndpointLeak(t *testin
 	}
 }
 
+func TestSelectRequestedRuntimeScansDurableHosts(t *testing.T) {
+	result := Select(Request{
+		RuntimeDriver: sandbox.SandboxRuntimeDriverRootlessPodman,
+		Project: ProjectContext{
+			Branch:     "hal/runtime-target",
+			Repository: "github.com/jywlabs/hal",
+		},
+	}, CachedState{
+		ListHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{
+				{
+					ID:                "ssh-1",
+					Name:              "aaa-ssh",
+					Kind:              sandbox.SandboxHostKindSSH,
+					SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+				},
+				{
+					ID:   "worker-empty",
+					Name: "bbb-missing-runtime",
+					Kind: sandbox.SandboxHostKindWorker,
+				},
+				{
+					ID:                "worker-a",
+					Name:              "ccc-rootless",
+					Kind:              sandbox.SandboxHostKindWorker,
+					SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+				},
+			}, nil
+		},
+		ListSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("ListSandboxes should not be called for a runtime-constrained provisioning selection")
+			return nil, nil
+		},
+	})
+
+	if result.Failed() || !result.NeedsProvisioning() {
+		t.Fatalf("result = %#v, want selected runtime with branch provisioning", result)
+	}
+	if result.Host == nil || result.Host.ID != "worker-a" {
+		t.Fatalf("host = %#v, want durable host advertising requested runtime", result.Host)
+	}
+	if result.Runtime == nil || result.Runtime.Driver != sandbox.SandboxRuntimeDriverRootlessPodman {
+		t.Fatalf("runtime = %#v, want requested runtime metadata", result.Runtime)
+	}
+	if result.Provisioning.SandboxName != "hal-runtime-target" ||
+		result.Source.Kind != SourceFallbackProvisioning ||
+		result.Fallback.Reason != "requested runtime selected" {
+		t.Fatalf("provisioning/source/fallback = %#v/%#v/%#v, want runtime-constrained provisioning", result.Provisioning, result.Source, result.Fallback)
+	}
+}
+
+func TestSelectRequestedRuntimeNoEligibleHostFailsWithoutEndpointLeak(t *testing.T) {
+	result := Select(Request{
+		RuntimeDriver: sandbox.SandboxRuntimeDriverRootlessPodman,
+	}, CachedState{
+		ListHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{
+				{
+					ID:                "ssh-1",
+					Name:              "ssh one",
+					Kind:              sandbox.SandboxHostKindSSH,
+					Endpoint:          "ssh://deploy:secret@example.test?token=super-secret",
+					SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+				},
+				{
+					ID:       "worker-empty",
+					Name:     "worker empty",
+					Kind:     sandbox.SandboxHostKindWorker,
+					Endpoint: "unix:///tmp/private-worker.sock?token=super-secret",
+				},
+			}, nil
+		},
+		ListSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("ListSandboxes should not be called when requested runtime has no eligible host")
+			return nil, nil
+		},
+	})
+
+	if !result.Failed() {
+		t.Fatalf("result = %#v, want no eligible runtime host failure", result)
+	}
+	if result.Failure.Reason != FailureReasonRuntimeUnsupported ||
+		result.Failure.RuntimeDriver != sandbox.SandboxRuntimeDriverRootlessPodman ||
+		result.Failure.Error() != `no durable host supports requested runtime "rootless_podman"` {
+		t.Fatalf("failure = %#v, want deterministic requested-runtime failure", result.Failure)
+	}
+	for _, leaked := range []string{"ssh://", "secret@example.test", "/tmp/private-worker.sock", "super-secret"} {
+		if strings.Contains(result.Failure.Error(), leaked) {
+			t.Fatalf("failure %q leaked %q", result.Failure.Error(), leaked)
+		}
+	}
+}
+
+func TestSelectRequestedRuntimeChoosesDeterministicHostOrder(t *testing.T) {
+	result := Select(Request{
+		RuntimeDriver: sandbox.SandboxRuntimeDriverRootlessPodman,
+		Project:       ProjectContext{Branch: "hal/runtime-ordering"},
+	}, CachedState{
+		ListHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{
+				{
+					ID:                "worker-z",
+					Name:              "zeta",
+					Kind:              sandbox.SandboxHostKindWorker,
+					SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+				},
+				{
+					ID:                "worker-b",
+					Name:              "builder",
+					Kind:              sandbox.SandboxHostKindWorker,
+					SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+				},
+				{
+					ID:                "worker-a",
+					Name:              "builder",
+					Kind:              sandbox.SandboxHostKindWorker,
+					SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+				},
+			}, nil
+		},
+	})
+
+	if result.Failed() || !result.NeedsProvisioning() {
+		t.Fatalf("result = %#v, want deterministic runtime-constrained provisioning", result)
+	}
+	if result.Host == nil || result.Host.ID != "worker-a" {
+		t.Fatalf("host = %#v, want name-then-ID first matching host", result.Host)
+	}
+}
+
 func TestSelectRequestedHostMatchUsesCachedMetadataOnly(t *testing.T) {
 	result := Select(Request{
 		HostID:        "worker-a",
