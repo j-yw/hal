@@ -1890,6 +1890,7 @@ type fakeRunSandboxRuntimeDriver struct {
 	id      string
 	start   func(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error)
 	exec    func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
+	copyIn  func(context.Context, sandboxruntime.CopyRequest) error
 	copyOut func(context.Context, sandboxruntime.CopyRequest) error
 }
 
@@ -1932,7 +1933,10 @@ func (f fakeRunSandboxRuntimeDriver) Exec(ctx context.Context, req sandboxruntim
 	return &sandboxruntime.ExecResult{}, nil
 }
 
-func (fakeRunSandboxRuntimeDriver) CopyIn(context.Context, sandboxruntime.CopyRequest) error {
+func (f fakeRunSandboxRuntimeDriver) CopyIn(ctx context.Context, req sandboxruntime.CopyRequest) error {
+	if f.copyIn != nil {
+		return f.copyIn(ctx, req)
+	}
 	return nil
 }
 

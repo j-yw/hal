@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -1215,6 +1216,251 @@ func TestWorkerRootlessAutoSandboxStreamsOutputAndSummariesExcludePreparation(t 
 	}
 }
 
+func TestWorkerRootlessRunSandboxUsesRuntimeCopyForWorkspaceAndArtifacts(t *testing.T) {
+	startedAt := time.Date(2026, 7, 1, 8, 20, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	bundleDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	var copyIns []sandboxruntime.CopyRequest
+	var copyOuts []sandboxruntime.CopyRequest
+	localGit := &workerRootlessLocalGit{bundleID: "worker-rootless-sync", syncRef: "worker-rootless-sync"}
+
+	workerDriver := fakeRunSandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			if req.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman {
+				t.Fatalf("Exec runtime driver = %q, want rootless_podman", req.Target.Runtime.Driver)
+			}
+			if req.Target.Runtime.WorkerID != "worker-1" {
+				t.Fatalf("Exec worker ID = %q, want worker-1", req.Target.Runtime.WorkerID)
+			}
+			return &sandboxruntime.ExecResult{}, nil
+		},
+		copyIn: func(_ context.Context, req sandboxruntime.CopyRequest) error {
+			copyIns = append(copyIns, req)
+			if req.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman || req.Target.Runtime.WorkerID != "worker-1" {
+				t.Fatalf("CopyIn target runtime = %#v, want selected worker rootless runtime", req.Target.Runtime)
+			}
+			return nil
+		},
+		copyOut: func(_ context.Context, req sandboxruntime.CopyRequest) error {
+			copyOuts = append(copyOuts, req)
+			if req.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman || req.Target.Runtime.WorkerID != "worker-1" {
+				t.Fatalf("CopyOut target runtime = %#v, want selected worker rootless runtime", req.Target.Runtime)
+			}
+			return writeWorkerRuntimeCopyOutPayload(req)
+		},
+	}
+
+	err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+		SandboxName:           "worker-rootless",
+		SandboxNameChanged:    true,
+		SandboxHostID:         "worker-1",
+		SandboxHostChanged:    true,
+		SandboxRuntime:        sandboxruntime.DriverRootlessPodman,
+		SandboxRuntimeChanged: true,
+	}, &out, &errOut, runSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "run-worker-rootless-copy-semantics"
+		},
+		now:        runSandboxTestClock(startedAt, finishedAt),
+		workingDir: func() (string, error) { return projectDir, nil },
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return workerRootlessBundlePlan(projectDir), nil
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			return workerRootlessCachedSandbox(name), nil
+		},
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{workerRootlessHostWithEndpoint(workerSafeUnixEndpoint())}, nil
+		},
+		listSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("listSandboxes should not run for explicit cached worker sandbox")
+			return nil, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			t.Fatal("default sandbox fallback should not run for explicit cached worker sandbox")
+			return nil, "", nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			t.Fatal("provision should not run for explicit cached worker sandbox")
+			return nil, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			t.Fatal("legacy runtime resolver should not run for explicit worker-backed run execution")
+			return nil, nil
+		},
+		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+			return workerDriver, nil
+		},
+		materializeWorkspace: func(ctx context.Context, prep sandboxexec.PrepareContext, req sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
+			req.BundleDir = bundleDir
+			req.LocalGit = localGit
+			return sandboxexec.MaterializeBundleWorkspace(ctx, prep, req)
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			return nil
+		},
+		runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runRunSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+	if len(localGit.createRequests) != 1 || len(localGit.verifyRequests) != 1 {
+		t.Fatalf("local git create/verify calls = %d/%d, want 1/1", len(localGit.createRequests), len(localGit.verifyRequests))
+	}
+	requireWorkerRuntimeCopyIn(t, copyIns, bundleDir, "/tmp/hal-workspace-bundles/worker-rootless-sync.bundle")
+	requireWorkerRuntimeCopyOutSources(t, copyOuts, []string{
+		".hal/prd.json",
+		".hal/progress.txt",
+		".hal/recovery/workspace.patch",
+		".hal/reports.tar",
+	})
+	manifest, loadErr := store.LoadManifest("run-worker-rootless-copy-semantics")
+	if loadErr != nil {
+		t.Fatalf("LoadManifest() error: %v", loadErr)
+	}
+	requireWorkerCopyManifestNoHostPath(t, manifest, bundleDir, copyIns[0].SourcePath)
+	if manifest.Status != sandboxexecution.StatusSucceeded {
+		t.Fatalf("manifest.Status = %q, want succeeded", manifest.Status)
+	}
+}
+
+func TestWorkerRootlessAutoSandboxUsesRuntimeCopyForWorkspaceAndArtifacts(t *testing.T) {
+	startedAt := time.Date(2026, 7, 1, 8, 21, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	bundleDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	var copyIns []sandboxruntime.CopyRequest
+	var copyOuts []sandboxruntime.CopyRequest
+	localGit := &workerRootlessLocalGit{bundleID: "worker-rootless-sync", syncRef: "worker-rootless-sync"}
+
+	workerDriver := fakeRunSandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			if req.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman {
+				t.Fatalf("Exec runtime driver = %q, want rootless_podman", req.Target.Runtime.Driver)
+			}
+			if req.Target.Runtime.WorkerID != "worker-1" {
+				t.Fatalf("Exec worker ID = %q, want worker-1", req.Target.Runtime.WorkerID)
+			}
+			if isWorkerAutoCommandExec(req) {
+				_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSON("worker auto copy semantics")+"\n")
+			}
+			return &sandboxruntime.ExecResult{}, nil
+		},
+		copyIn: func(_ context.Context, req sandboxruntime.CopyRequest) error {
+			copyIns = append(copyIns, req)
+			if req.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman || req.Target.Runtime.WorkerID != "worker-1" {
+				t.Fatalf("CopyIn target runtime = %#v, want selected worker rootless runtime", req.Target.Runtime)
+			}
+			return nil
+		},
+		copyOut: func(_ context.Context, req sandboxruntime.CopyRequest) error {
+			copyOuts = append(copyOuts, req)
+			if req.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman || req.Target.Runtime.WorkerID != "worker-1" {
+				t.Fatalf("CopyOut target runtime = %#v, want selected worker rootless runtime", req.Target.Runtime)
+			}
+			return writeWorkerRuntimeCopyOutPayload(req)
+		},
+	}
+
+	err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
+		SandboxName:           "worker-rootless",
+		SandboxNameChanged:    true,
+		SandboxHostID:         "worker-1",
+		SandboxHostChanged:    true,
+		SandboxRuntime:        sandboxruntime.DriverRootlessPodman,
+		SandboxRuntimeChanged: true,
+	}, &out, &errOut, autoSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "auto-worker-rootless-copy-semantics"
+		},
+		now: runSandboxTestClock(startedAt, finishedAt),
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return workerRootlessBundlePlan(projectDir), nil
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			return workerRootlessCachedSandbox(name), nil
+		},
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{workerRootlessHostWithEndpoint(workerSafeUnixEndpoint())}, nil
+		},
+		listSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("listSandboxes should not run for explicit cached worker sandbox")
+			return nil, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			t.Fatal("default sandbox fallback should not run for explicit cached worker sandbox")
+			return nil, "", nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			t.Fatal("provision should not run for explicit cached worker sandbox")
+			return nil, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			t.Fatal("legacy runtime resolver should not run for explicit worker-backed auto execution")
+			return nil, nil
+		},
+		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+			return workerDriver, nil
+		},
+		materializeWorkspace: func(ctx context.Context, prep sandboxexec.PrepareContext, req sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
+			req.BundleDir = bundleDir
+			req.LocalGit = localGit
+			return sandboxexec.MaterializeBundleWorkspace(ctx, prep, req)
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			return nil
+		},
+		runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runAutoSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+	if len(localGit.createRequests) != 1 || len(localGit.verifyRequests) != 1 {
+		t.Fatalf("local git create/verify calls = %d/%d, want 1/1", len(localGit.createRequests), len(localGit.verifyRequests))
+	}
+	requireWorkerRuntimeCopyIn(t, copyIns, bundleDir, "/tmp/hal-workspace-bundles/worker-rootless-sync.bundle")
+	requireWorkerRuntimeCopyOutSources(t, copyOuts, []string{
+		".hal/prd.json",
+		".hal/progress.txt",
+		".hal/auto-state.json",
+		".hal/recovery/workspace.patch",
+		".hal/reports.tar",
+	})
+	manifest, loadErr := store.LoadManifest("auto-worker-rootless-copy-semantics")
+	if loadErr != nil {
+		t.Fatalf("LoadManifest() error: %v", loadErr)
+	}
+	requireWorkerCopyManifestNoHostPath(t, manifest, bundleDir, copyIns[0].SourcePath)
+	if manifest.Status != sandboxexecution.StatusSucceeded {
+		t.Fatalf("manifest.Status = %q, want succeeded", manifest.Status)
+	}
+}
+
 func TestWorkerRootlessFactorySandboxUsesSharedWorkerRuntimeResolver(t *testing.T) {
 	projectDir := t.TempDir()
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
@@ -1919,6 +2165,99 @@ func workerRootlessBundlePlan(projectDir string) sandboxworkspace.Plan {
 	plan.InputSource = sandbox.SandboxWorkspaceInputSourceGitBundle
 	plan.RequiresBundle = true
 	return plan
+}
+
+type workerRootlessLocalGit struct {
+	bundleID       string
+	syncRef        string
+	createRequests []sandboxworkspace.CreateBundleRequest
+	verifyRequests []sandboxworkspace.VerifyBundleRequest
+}
+
+func (g *workerRootlessLocalGit) CreateBundle(_ context.Context, req sandboxworkspace.CreateBundleRequest) (sandboxworkspace.CreateBundleResult, error) {
+	g.createRequests = append(g.createRequests, req)
+	if err := os.WriteFile(req.DestinationPath, []byte("worker rootless bundle"), 0o600); err != nil {
+		return sandboxworkspace.CreateBundleResult{}, err
+	}
+	return sandboxworkspace.CreateBundleResult{
+		Path:    req.DestinationPath,
+		ID:      firstNonEmptyForTest(g.bundleID, "worker-rootless-sync"),
+		SyncRef: firstNonEmptyForTest(g.syncRef, req.Plan.SyncRef),
+	}, nil
+}
+
+func (g *workerRootlessLocalGit) VerifyBundle(_ context.Context, req sandboxworkspace.VerifyBundleRequest) error {
+	g.verifyRequests = append(g.verifyRequests, req)
+	return nil
+}
+
+func requireWorkerRuntimeCopyIn(t *testing.T, copyIns []sandboxruntime.CopyRequest, bundleDir, wantDestination string) {
+	t.Helper()
+	if len(copyIns) != 1 {
+		t.Fatalf("CopyIn calls = %d, want 1", len(copyIns))
+	}
+	copyIn := copyIns[0]
+	if !strings.HasPrefix(copyIn.SourcePath, bundleDir+string(os.PathSeparator)) {
+		t.Fatalf("CopyIn source = %q, want host-local bundle under %q", copyIn.SourcePath, bundleDir)
+	}
+	if copyIn.DestinationPath != wantDestination {
+		t.Fatalf("CopyIn destination = %q, want %q", copyIn.DestinationPath, wantDestination)
+	}
+}
+
+func requireWorkerRuntimeCopyOutSources(t *testing.T, copyOuts []sandboxruntime.CopyRequest, wantSuffixes []string) {
+	t.Helper()
+	if len(copyOuts) != len(wantSuffixes) {
+		t.Fatalf("CopyOut calls = %d, want %d: %#v", len(copyOuts), len(wantSuffixes), copyOuts)
+	}
+	for i, wantSuffix := range wantSuffixes {
+		source := filepath.ToSlash(copyOuts[i].SourcePath)
+		if !strings.HasSuffix(source, wantSuffix) {
+			t.Fatalf("CopyOut[%d] source = %q, want suffix %q", i, source, wantSuffix)
+		}
+		if strings.TrimSpace(copyOuts[i].DestinationPath) == "" {
+			t.Fatalf("CopyOut[%d] destination path is empty", i)
+		}
+	}
+}
+
+func requireWorkerCopyManifestNoHostPath(t *testing.T, manifest *sandboxexecution.Manifest, forbidden ...string) {
+	t.Helper()
+	encoded, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("Marshal(manifest) error: %v", err)
+	}
+	for _, value := range forbidden {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		if strings.Contains(string(encoded), value) {
+			t.Fatalf("manifest leaked host-local path %q: %s", value, encoded)
+		}
+	}
+	if manifest == nil || manifest.Workspace == nil || manifest.Workspace.InputSource != sandbox.SandboxWorkspaceInputSourceGitBundle {
+		t.Fatalf("manifest workspace = %#v, want git_bundle workspace metadata", manifest)
+	}
+}
+
+func writeWorkerRuntimeCopyOutPayload(req sandboxruntime.CopyRequest) error {
+	if err := os.MkdirAll(filepath.Dir(req.DestinationPath), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(req.DestinationPath, []byte("copied:"+req.SourcePath), 0o600)
+}
+
+func isWorkerAutoCommandExec(req sandboxruntime.ExecRequest) bool {
+	return len(req.Args) >= 2 && req.Args[0] == "hal" && req.Args[1] == "auto"
+}
+
+func firstNonEmptyForTest(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func isWorkerOutputArtifactGenerationExec(req sandboxruntime.ExecRequest) bool {
