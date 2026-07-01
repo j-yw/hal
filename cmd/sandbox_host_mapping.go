@@ -141,13 +141,17 @@ func sandboxHostSecurityFromWorker(status *sandboxworker.Status, capabilities *s
 	if !ok {
 		return nil
 	}
+	return sandboxSecurityFromWorkerPolicy(policy)
+}
 
+func sandboxSecurityFromWorkerPolicy(policy sandboxworker.SecurityPolicy) *sandbox.SandboxSecurity {
 	security := &sandbox.SandboxSecurity{}
-	if policy.Requested.NetworkPolicy != "" || policy.Enforced.NetworkPolicy != "" || policy.Enforced.NetworkEnforcement != "" {
+	if sandboxWorkerSecurityPolicyHasNetworkMetadata(policy) {
 		security.Network = &sandbox.SandboxNetworkSecurity{
 			PolicyRequested: strings.TrimSpace(policy.Requested.NetworkPolicy),
 			PolicyEnforced:  strings.TrimSpace(policy.Enforced.NetworkPolicy),
 			EnforcementMode: strings.TrimSpace(policy.Enforced.NetworkEnforcement),
+			PolicyResult:    sandboxNetworkPolicyResultFromWorkerPolicy(policy),
 		}
 	}
 	if len(policy.Requested.CredentialModes) > 0 || len(policy.Enforced.CredentialModes) > 0 {
@@ -160,6 +164,71 @@ func sandboxHostSecurityFromWorker(status *sandboxworker.Status, capabilities *s
 		return nil
 	}
 	return security
+}
+
+func sandboxWorkerSecurityPolicyHasNetworkMetadata(policy sandboxworker.SecurityPolicy) bool {
+	return strings.TrimSpace(policy.Requested.NetworkPolicy) != "" ||
+		strings.TrimSpace(policy.Requested.NetworkEnforcement) != "" ||
+		strings.TrimSpace(policy.Enforced.NetworkPolicy) != "" ||
+		strings.TrimSpace(policy.Enforced.NetworkEnforcement) != ""
+}
+
+func sandboxNetworkPolicyResultFromWorkerPolicy(policy sandboxworker.SecurityPolicy) *sandbox.SandboxNetworkPolicyResult {
+	if !sandboxWorkerSecurityPolicyHasNetworkMetadata(policy) {
+		return nil
+	}
+	requested := sandboxNetworkPolicyIntentFromWorkerPolicy(policy.Requested.NetworkPolicy)
+	capability := sandboxNetworkPolicyCapabilityFromWorkerControls(policy.Enforced)
+	result := sandbox.EvaluateSandboxNetworkPolicy(requested, capability)
+	return sandbox.CloneSandboxNetworkPolicyResultPtr(&result)
+}
+
+func sandboxNetworkPolicyIntentFromWorkerPolicy(policy string) sandbox.SandboxNetworkPolicyIntent {
+	switch strings.TrimSpace(policy) {
+	case sandboxworker.NetworkPolicyDenyByDefault:
+		return sandbox.SandboxNetworkPolicyIntent{Preset: sandbox.SandboxNetworkPolicyPresetDenyByDefault}
+	case sandboxworker.NetworkPolicyBestEffort:
+		return sandbox.SandboxNetworkPolicyIntent{Preset: sandbox.SandboxNetworkPolicyPresetLegacyDefault}
+	default:
+		return sandbox.SandboxNetworkPolicyIntent{}
+	}
+}
+
+func sandboxNetworkPolicyCapabilityFromWorkerControls(controls sandboxworker.SecurityControls) sandbox.SandboxNetworkPolicyEnforcementCapability {
+	mode := sandboxNetworkEnforcementModeFromWorker(controls.NetworkEnforcement)
+	capability := sandbox.SandboxNetworkPolicyEnforcementCapability{}
+	if mode != "" {
+		capability.Modes = []string{mode}
+	}
+	switch mode {
+	case sandbox.SandboxNetworkEnforcementModeRuntime,
+		sandbox.SandboxNetworkEnforcementModeProxy,
+		sandbox.SandboxNetworkEnforcementModeFirewall,
+		sandbox.SandboxNetworkEnforcementModeProxyFirewall:
+		capability.Supported = true
+	}
+	capability.SupportsDefaultDenyPosture = capability.Supported &&
+		strings.TrimSpace(controls.NetworkPolicy) == sandboxworker.NetworkPolicyDenyByDefault
+	return capability
+}
+
+func sandboxNetworkEnforcementModeFromWorker(mode string) string {
+	switch strings.TrimSpace(mode) {
+	case sandboxworker.NetworkEnforcementNone:
+		return sandbox.SandboxNetworkEnforcementModeNone
+	case sandboxworker.NetworkEnforcementRuntime:
+		return sandbox.SandboxNetworkEnforcementModeRuntime
+	case sandbox.SandboxNetworkEnforcementModeBestEffort:
+		return sandbox.SandboxNetworkEnforcementModeBestEffort
+	case sandbox.SandboxNetworkEnforcementModeProxy:
+		return sandbox.SandboxNetworkEnforcementModeProxy
+	case sandbox.SandboxNetworkEnforcementModeFirewall:
+		return sandbox.SandboxNetworkEnforcementModeFirewall
+	case sandbox.SandboxNetworkEnforcementModeProxyFirewall:
+		return sandbox.SandboxNetworkEnforcementModeProxyFirewall
+	default:
+		return ""
+	}
 }
 
 func sandboxHostWorkerSecurityPolicy(status *sandboxworker.Status, capabilities *sandboxworker.Capabilities) (sandboxworker.SecurityPolicy, bool) {
