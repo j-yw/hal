@@ -146,6 +146,141 @@ func TestExistingSandboxExecutionDefaultResolversStayWorkerOptIn(t *testing.T) {
 	}
 }
 
+func TestSandboxRuntimeCompatDefaultsToSSHMachineUnlessRootlessExplicit(t *testing.T) {
+	originalFactories := defaultSandboxRuntimeDriverFactories
+	t.Cleanup(func() {
+		defaultSandboxRuntimeDriverFactories = originalFactories
+	})
+	defaultSandboxRuntimeDriverFactories = func() sandboxRuntimeDriverFactories {
+		return sandboxRuntimeDriverFactories{
+			sshMachine: func(sandbox.Provider) sandboxruntime.Driver {
+				return fakeRuntimeResolverDriver{id: sandboxruntime.DriverSSHMachine}
+			},
+			rootlessPodman: func() sandboxruntime.Driver {
+				return fakeRuntimeResolverDriver{id: sandboxruntime.DriverRootlessPodman}
+			},
+		}
+	}
+
+	tests := []struct {
+		name             string
+		target           sandboxruntime.Target
+		wantID           string
+		wantProviderCall bool
+	}{
+		{
+			name: "absent runtime defaults to SSH-machine",
+			target: sandboxruntime.Target{
+				Provider: "test-provider",
+			},
+			wantID:           sandboxruntime.DriverSSHMachine,
+			wantProviderCall: true,
+		},
+		{
+			name: "blank runtime driver defaults to SSH-machine",
+			target: sandboxruntime.Target{
+				Provider: "test-provider",
+				Runtime:  sandboxruntime.RuntimeState{Driver: " \t\n "},
+			},
+			wantID:           sandboxruntime.DriverSSHMachine,
+			wantProviderCall: true,
+		},
+		{
+			name: "explicit SSH-machine selects SSH-machine",
+			target: sandboxruntime.Target{
+				Provider: "test-provider",
+				Runtime:  sandboxruntime.RuntimeState{Driver: sandboxruntime.DriverSSHMachine},
+			},
+			wantID:           sandboxruntime.DriverSSHMachine,
+			wantProviderCall: true,
+		},
+		{
+			name: "explicit rootless Podman selects rootless Podman",
+			target: sandboxruntime.Target{
+				Provider: "test-provider",
+				Runtime:  sandboxruntime.RuntimeState{Driver: sandboxruntime.DriverRootlessPodman},
+			},
+			wantID: sandboxruntime.DriverRootlessPodman,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			providerCalls := 0
+			resolveProvider := func(providerName string) (sandbox.Provider, error) {
+				providerCalls++
+				if !tt.wantProviderCall {
+					t.Fatalf("resolveProvider called for %s", tt.name)
+				}
+				if providerName != "test-provider" {
+					t.Fatalf("providerName = %q, want test-provider", providerName)
+				}
+				return fakeFactorySandboxProvider{}, nil
+			}
+
+			driver, err := sandboxRuntimeDriverFromTarget(tt.target, resolveProvider)
+			if err != nil {
+				t.Fatalf("sandboxRuntimeDriverFromTarget() error = %v", err)
+			}
+			if driver == nil {
+				t.Fatal("sandboxRuntimeDriverFromTarget() returned nil driver")
+			}
+			if driver.ID() != tt.wantID {
+				t.Fatalf("driver ID = %q, want %q", driver.ID(), tt.wantID)
+			}
+			if providerCalls != boolToInt(tt.wantProviderCall) {
+				t.Fatalf("resolveProvider calls = %d, want %d", providerCalls, boolToInt(tt.wantProviderCall))
+			}
+		})
+	}
+}
+
+func TestSandboxRuntimeCompatWorkerHostMetadataDoesNotSelectRuntime(t *testing.T) {
+	target := sandboxRuntimeTargetFromState(&sandbox.SandboxState{
+		ID:       "sandbox-001",
+		Name:     "factory-dev",
+		Provider: "test-provider",
+		Status:   sandbox.StatusRunning,
+		Host: &sandbox.SandboxHost{
+			ID:       "registered-worker",
+			Name:     "registered-worker",
+			Kind:     sandbox.SandboxHostKindWorker,
+			Endpoint: "unix:///tmp/private/registered-worker.sock",
+			SupportedRuntimes: []string{
+				sandboxruntime.DriverRootlessPodman,
+				"worker_backed",
+			},
+		},
+	})
+	if target.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("runtime target driver = %q, want default %q", target.Runtime.Driver, sandboxruntime.DriverSSHMachine)
+	}
+	if target.Runtime.WorkerID != "" || target.Runtime.RuntimeID != "" {
+		t.Fatalf("runtime target worker metadata = %#v, want empty metadata without explicit runtime state", target.Runtime)
+	}
+
+	driver, err := sandboxRuntimeDriverFromTargetWithFactories(target, func(providerName string) (sandbox.Provider, error) {
+		if providerName != "test-provider" {
+			t.Fatalf("providerName = %q, want test-provider", providerName)
+		}
+		return fakeFactorySandboxProvider{}, nil
+	}, sandboxRuntimeDriverFactories{
+		sshMachine: func(sandbox.Provider) sandboxruntime.Driver {
+			return fakeRuntimeResolverDriver{id: sandboxruntime.DriverSSHMachine}
+		},
+		rootlessPodman: func() sandboxruntime.Driver {
+			t.Fatal("rootless Podman factory called from worker host metadata")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("sandboxRuntimeDriverFromTargetWithFactories() error = %v", err)
+	}
+	if driver == nil || driver.ID() != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("driver = %#v, want SSH-machine driver", driver)
+	}
+}
+
 func TestClientDriverSelectedOnlyWhenExplicitlyConstructed(t *testing.T) {
 	driver, err := sandboxworker.NewClientDriver(sandboxworker.ClientDriverOptions{
 		DriverID: "fake_worker_runtime",
@@ -231,4 +366,11 @@ func (fakeWorkerRuntimeDriverClient) CopyIn(context.Context, string, sandboxwork
 
 func (fakeWorkerRuntimeDriverClient) CopyOut(context.Context, string, sandboxworker.CopyOutRequest) (*sandboxworker.CopyOutResponse, error) {
 	return nil, nil
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
