@@ -74,11 +74,24 @@ const (
 	SandboxNetworkPolicyWarningUnsupportedEnforcement SandboxNetworkPolicyWarningCode = "unsupported_enforcement"
 )
 
+// SandboxNetworkPolicyWarningReason is a redaction-safe downgrade reason.
+type SandboxNetworkPolicyWarningReason string
+
+const (
+	SandboxNetworkPolicyWarningReasonEnforcementUnsupported SandboxNetworkPolicyWarningReason = "enforcement_unsupported"
+	SandboxNetworkPolicyWarningReasonModeUnavailable        SandboxNetworkPolicyWarningReason = "enforcement_mode_unavailable"
+	SandboxNetworkPolicyWarningReasonDefaultDenyUnsupported SandboxNetworkPolicyWarningReason = "default_deny_unsupported"
+	SandboxNetworkPolicyWarningReasonRuleKindUnsupported    SandboxNetworkPolicyWarningReason = "rule_kind_unsupported"
+	SandboxNetworkPolicyWarningReasonPresetUnsupported      SandboxNetworkPolicyWarningReason = "preset_unsupported"
+)
+
 // SandboxNetworkPolicyWarning contains safe metadata about policy downgrades or
 // ignored data. It must not include endpoints, credentials, or raw rule values.
 type SandboxNetworkPolicyWarning struct {
-	Code   SandboxNetworkPolicyWarningCode `json:"code"`
-	Policy string                          `json:"policy,omitempty"`
+	Code    SandboxNetworkPolicyWarningCode   `json:"code"`
+	Policy  string                            `json:"policy,omitempty"`
+	Reason  SandboxNetworkPolicyWarningReason `json:"reason,omitempty"`
+	Message string                            `json:"message,omitempty"`
 }
 
 // SandboxNetworkPolicyResult separates requested intent, effective intent,
