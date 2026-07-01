@@ -10,7 +10,7 @@ Source selection:
 - With no argument, scans .hal/prd-*.md and picks newest by modified time.
 - If modified times tie, picks lexicographically ascending filename.
 - With an explicit argument, uses that exact path.
-- Prints "Using source: <path>" once the source is resolved.
+- Human output prints "Using source: <path>" once the source is resolved.
 
 Safety controls:
 - Default convert does NOT archive existing state.

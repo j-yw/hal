@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -369,6 +370,61 @@ func TestRunConvertWithDeps_PrintsSelectedSourceMessage(t *testing.T) {
 	}
 	if !strings.Contains(output, "Using source: "+mdPath) {
 		t.Fatalf("expected selected-source message in output, got %q", output)
+	}
+}
+
+func TestRunConvertWithDeps_JSONSuppressesDisplayOutput(t *testing.T) {
+	preserveConvertFlags(t)
+
+	tmpDir := t.TempDir()
+	mdPath := filepath.Join(tmpDir, "prd.md")
+	if err := os.WriteFile(mdPath, []byte("# PRD: JSON"), 0644); err != nil {
+		t.Fatalf("failed to write markdown fixture: %v", err)
+	}
+	outPath := filepath.Join(tmpDir, "out.json")
+
+	convertEngineFlag = "claude"
+	convertOutputFlag = outPath
+	convertValidateFlag = false
+	convertArchiveFlag = false
+	convertForceFlag = false
+	convertGranularFlag = false
+	convertBranchFlag = ""
+	convertJSONFlag = true
+
+	deps := convertDeps{
+		newEngine: func(name string) (engine.Engine, error) {
+			return fakeConvertEngine{}, nil
+		},
+		convertWithEngine: func(ctx context.Context, eng engine.Engine, gotMDPath, gotOutPath string, opts prd.ConvertOptions, display *engine.Display) error {
+			if display == nil {
+				t.Fatal("display should not be nil")
+			}
+			fmt.Fprintln(display.Writer(), "Using source: "+gotMDPath)
+			fmt.Fprintln(display.Writer(), "noisy progress")
+			return nil
+		},
+		validateWithEngine: func(ctx context.Context, eng engine.Engine, prdPath string, display *engine.Display) (*prd.ValidationResult, error) {
+			t.Fatal("validateWithEngine should not be called when --validate is false")
+			return nil, nil
+		},
+	}
+
+	output, err := captureStdout(t, func() error {
+		return runConvertWithDeps(nil, []string{mdPath}, deps)
+	})
+	if err != nil {
+		t.Fatalf("runConvertWithDeps returned error: %v", err)
+	}
+	if strings.Contains(output, "Using source:") || strings.Contains(output, "noisy progress") {
+		t.Fatalf("JSON output included display text: %q", output)
+	}
+	var got ConvertResult
+	if err := json.Unmarshal([]byte(output), &got); err != nil {
+		t.Fatalf("JSON output was not parseable: %v\n%s", err, output)
+	}
+	if !got.OK || got.OutputPath != outPath {
+		t.Fatalf("convert JSON result = %+v, want ok with output path %q", got, outPath)
 	}
 }
 

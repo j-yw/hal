@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -42,7 +43,7 @@ Source selection:
 - With no argument, scans .hal/prd-*.md and picks newest by modified time.
 - If modified times tie, picks lexicographically ascending filename.
 - With an explicit argument, uses that exact path.
-- Prints "Using source: <path>" once the source is resolved.
+- Human output prints "Using source: <path>" once the source is resolved.
 
 Safety controls:
 - Default convert does NOT archive existing state.
@@ -129,15 +130,25 @@ func runConvertWithDeps(cmd *cobra.Command, args []string, deps convertDeps) err
 		return err
 	}
 
-	// Create display for streaming feedback
-	display := engine.NewDisplay(os.Stdout)
+	out := io.Writer(os.Stdout)
+	if cmd != nil {
+		out = cmd.OutOrStdout()
+	}
+
+	displayOut := out
+	if convertJSONFlag {
+		displayOut = io.Discard
+	}
+	display := engine.NewDisplay(displayOut)
 
 	// Show command header
-	hctx := buildHeaderCtx(engineName)
-	if mdPath != "" {
-		display.ShowCommandHeader("Convert", fmt.Sprintf("%s → prd.json", mdPath), hctx)
-	} else {
-		display.ShowCommandHeader("Convert", "auto-discover → prd.json", hctx)
+	if !convertJSONFlag {
+		hctx := buildHeaderCtx(engineName)
+		if mdPath != "" {
+			display.ShowCommandHeader("Convert", fmt.Sprintf("%s → prd.json", mdPath), hctx)
+		} else {
+			display.ShowCommandHeader("Convert", "auto-discover → prd.json", hctx)
+		}
 	}
 
 	opts := prd.ConvertOptions{
@@ -180,7 +191,7 @@ func runConvertWithDeps(cmd *cobra.Command, args []string, deps convertDeps) err
 		if err != nil {
 			return fmt.Errorf("failed to marshal convert result: %w", err)
 		}
-		fmt.Fprintln(os.Stdout, string(data))
+		fmt.Fprintln(out, string(data))
 		return nil
 	}
 
