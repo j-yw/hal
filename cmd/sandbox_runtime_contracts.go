@@ -204,6 +204,83 @@ func newSandboxRuntimeListLiveResponse(host *sandbox.SandboxHost, status *sandbo
 	}
 }
 
+func newSandboxRuntimeStatusCachedResponse(host *sandbox.SandboxHost, runtimeID string) SandboxRuntimeStatusResponse {
+	return newSandboxRuntimeStatusResponse(host, runtimeID, SandboxRuntimeSource{
+		Mode:          SandboxRuntimeSourceCached,
+		RequestedLive: false,
+		CacheUpdated:  false,
+		RefreshedAt:   nil,
+		Summary:       "cached durable runtime metadata",
+	}, SandboxRuntimeReadiness{
+		Status:    SandboxRuntimeReadinessUnknown,
+		CheckedAt: nil,
+		Summary:   "cached metadata confirms runtime registration; live readiness unknown",
+	}, newSandboxRuntimeSecuritySummary(sandboxRuntimeHostSecurity(host)), nil, nil)
+}
+
+func newSandboxRuntimeStatusHostNotFoundResponse(hostID, runtimeID string) SandboxRuntimeStatusResponse {
+	resp := newSandboxRuntimeStatusResponse(nil, runtimeID, SandboxRuntimeSource{
+		Mode:          SandboxRuntimeSourceCached,
+		RequestedLive: false,
+		CacheUpdated:  false,
+		RefreshedAt:   nil,
+		Summary:       "cached durable runtime metadata",
+	}, SandboxRuntimeReadiness{
+		Status:    SandboxRuntimeReadinessUnavailable,
+		CheckedAt: nil,
+		Summary:   "host record was not found",
+	}, newSandboxRuntimeSecuritySummary(nil), nil, []SandboxRuntimeError{
+		{
+			Code:    SandboxRuntimeStatusErrorHostNotFound,
+			Message: "host record was not found",
+		},
+	})
+	resp.Host.ID = sandboxHostDisplayValue(hostID, "")
+	resp.Host.Name = sandboxHostDisplayValue("", hostID)
+	return resp
+}
+
+func newSandboxRuntimeStatusRuntimeNotFoundResponse(host *sandbox.SandboxHost, runtimeID string) SandboxRuntimeStatusResponse {
+	return newSandboxRuntimeStatusResponse(host, runtimeID, SandboxRuntimeSource{
+		Mode:          SandboxRuntimeSourceCached,
+		RequestedLive: false,
+		CacheUpdated:  false,
+		RefreshedAt:   nil,
+		Summary:       "cached durable runtime metadata",
+	}, SandboxRuntimeReadiness{
+		Status:    SandboxRuntimeReadinessUnavailable,
+		CheckedAt: nil,
+		Summary:   "runtime is not registered for this host",
+	}, newSandboxRuntimeSecuritySummary(nil), nil, []SandboxRuntimeError{
+		{
+			Code:    SandboxRuntimeStatusErrorRuntimeNotFound,
+			Message: "runtime is not registered for this host",
+		},
+	})
+}
+
+func newSandboxRuntimeStatusResponse(host *sandbox.SandboxHost, runtimeID string, source SandboxRuntimeSource, readiness SandboxRuntimeReadiness, security SandboxRuntimeSecuritySummary, diagnostics []SandboxRuntimeDiagnostic, responseErrors []SandboxRuntimeError) SandboxRuntimeStatusResponse {
+	if diagnostics == nil {
+		diagnostics = []SandboxRuntimeDiagnostic{}
+	}
+	if responseErrors == nil {
+		responseErrors = []SandboxRuntimeError{}
+	}
+	return SandboxRuntimeStatusResponse{
+		ContractType:        SandboxRuntimeStatusContractType,
+		ContractVersion:     SandboxRuntimeStatusContractVersion,
+		Host:                newSandboxRuntimeHost(host),
+		Runtime:             newSandboxRuntimeStatusRuntime(runtimeID),
+		Source:              source,
+		SupportedOperations: []string{},
+		Capacity:            newSandboxRuntimeCapacitySummary(sandboxRuntimeHostCapacity(host)),
+		Readiness:           readiness,
+		Security:            security,
+		Diagnostics:         diagnostics,
+		Errors:              responseErrors,
+	}
+}
+
 func newSandboxRuntimeListResponse(host *sandbox.SandboxHost, source SandboxRuntimeSource, diagnostics []SandboxRuntimeDiagnostic, responseErrors []SandboxRuntimeError) SandboxRuntimeListResponse {
 	if diagnostics == nil {
 		diagnostics = []SandboxRuntimeDiagnostic{}
@@ -274,6 +351,14 @@ func newSandboxRuntimeEndpointSummary(endpoint string) SandboxRuntimeEndpointSum
 		Type:    "configured",
 		Summary: "configured",
 		Scheme:  nil,
+	}
+}
+
+func newSandboxRuntimeStatusRuntime(runtimeID string) SandboxRuntimeStatusRuntime {
+	return SandboxRuntimeStatusRuntime{
+		ID:             sandboxHostDisplayValue(runtimeID, ""),
+		HostKind:       nil,
+		IsolationLevel: nil,
 	}
 }
 

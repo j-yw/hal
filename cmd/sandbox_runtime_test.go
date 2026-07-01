@@ -822,6 +822,336 @@ func TestSandboxRuntimeListJSONLiveNonWorkerHostUsesUnsupportedLiveCachedMetadat
 	}
 }
 
+func TestSandboxRuntimeStatusCachedWorkerRuntimeStableAndSafe(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:       "worker-a",
+		Name:     "builder",
+		Kind:     sandbox.SandboxHostKindWorker,
+		Endpoint: "unix:///tmp/private/worker-a.sock",
+		SupportedRuntimes: []string{
+			sandbox.SandboxRuntimeDriverSSHMachine,
+			sandbox.SandboxRuntimeDriverRootlessPodman,
+			sandbox.SandboxRuntimeDriverSSHMachine,
+		},
+		Capacity: &sandbox.HostCapacity{MaxConcurrentSandboxes: 2},
+		Security: &sandbox.SandboxSecurity{
+			Network: &sandbox.SandboxNetworkSecurity{
+				PolicyRequested: sandbox.SandboxNetworkPolicyDenyByDefault,
+				PolicyEnforced:  sandbox.SandboxNetworkPolicyBestEffort,
+				EnforcementMode: sandbox.SandboxNetworkEnforcementModeNone,
+			},
+			Secrets: &sandbox.SandboxSecretSecurity{
+				RequestedModes: []string{sandbox.SandboxSecretModeSSHAgent},
+				ActiveModes:    []string{sandbox.SandboxSecretModeLegacyAuthSync, sandbox.SandboxSecretModeEnv},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	deps := defaultSandboxRuntimeDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("cached sandbox runtime status should not contact worker daemons")
+		return nil, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxRuntimeCommand(deps)
+	cmd.SetArgs([]string{"status", "worker-a", sandbox.SandboxRuntimeDriverRootlessPodman})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+
+	output := stdout.String()
+	for _, want := range []string{
+		"Sandbox runtime rootless_podman on builder (cached)",
+		"cached durable runtime metadata",
+		"worker-a",
+		sandbox.SandboxHostKindWorker,
+		"local Unix socket",
+		"Runtime ID",
+		sandbox.SandboxRuntimeDriverRootlessPodman,
+		"unknown (cached metadata confirms runtime registration; live readiness unknown)",
+		"max 2 sandboxes",
+		"requested network deny_by_default",
+		"enforced network best_effort via none",
+		"requested credentials ssh_agent",
+		"active credentials env,legacy_auth_sync",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("stdout = %q, want %q", output, want)
+		}
+	}
+	for _, leaked := range []string{"/tmp/private", "worker-a.sock"} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("stdout leaked endpoint detail %q: %q", leaked, output)
+		}
+	}
+}
+
+func TestSandboxRuntimeStatusJSONCachedWorkerRuntimeContractStableAndSafe(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:       "worker-a",
+		Name:     "builder",
+		Kind:     sandbox.SandboxHostKindWorker,
+		Endpoint: "unix:///tmp/private/worker-a.sock",
+		SupportedRuntimes: []string{
+			sandbox.SandboxRuntimeDriverSSHMachine,
+			sandbox.SandboxRuntimeDriverRootlessPodman,
+			sandbox.SandboxRuntimeDriverSSHMachine,
+		},
+		Capacity: &sandbox.HostCapacity{MaxConcurrentSandboxes: 2},
+		Security: &sandbox.SandboxSecurity{
+			Network: &sandbox.SandboxNetworkSecurity{
+				PolicyRequested: sandbox.SandboxNetworkPolicyDenyByDefault,
+				PolicyEnforced:  sandbox.SandboxNetworkPolicyBestEffort,
+				EnforcementMode: sandbox.SandboxNetworkEnforcementModeNone,
+			},
+			Secrets: &sandbox.SandboxSecretSecurity{
+				RequestedModes: []string{sandbox.SandboxSecretModeSSHAgent},
+				ActiveModes:    []string{sandbox.SandboxSecretModeLegacyAuthSync, sandbox.SandboxSecretModeEnv},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	deps := defaultSandboxRuntimeDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("cached sandbox runtime status --json should not contact worker daemons")
+		return nil, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxRuntimeCommand(deps)
+	cmd.SetArgs([]string{"status", "worker-a", sandbox.SandboxRuntimeDriverRootlessPodman, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+	firstOutput := stdout.String()
+
+	cmd2, stdout2, stderr2 := newTestSandboxRuntimeCommand(deps)
+	cmd2.SetArgs([]string{"status", "worker-a", sandbox.SandboxRuntimeDriverRootlessPodman, "--json"})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("second Execute() error = %v; stderr=%q", err, stderr2.String())
+	}
+	if stdout2.String() != firstOutput {
+		t.Fatalf("repeated JSON output differed:\nfirst=%s\nsecond=%s", firstOutput, stdout2.String())
+	}
+
+	resp := decodeOneSandboxRuntimeStatusJSON(t, stdout.Bytes())
+	if resp.ContractType != SandboxRuntimeStatusContractType || resp.ContractVersion != SandboxRuntimeStatusContractVersion {
+		t.Fatalf("contract identity = %q/%q, want %q/%q", resp.ContractType, resp.ContractVersion, SandboxRuntimeStatusContractType, SandboxRuntimeStatusContractVersion)
+	}
+	if resp.Source.Mode != SandboxRuntimeSourceCached || resp.Source.RequestedLive || resp.Source.CacheUpdated || resp.Source.RefreshedAt != nil {
+		t.Fatalf("source = %#v, want cached durable source", resp.Source)
+	}
+	if resp.Host.ID != "worker-a" || resp.Host.Name != "builder" || resp.Host.Kind != sandbox.SandboxHostKindWorker {
+		t.Fatalf("host identity = %#v, want worker-a builder worker", resp.Host)
+	}
+	if resp.Host.Endpoint.Type != "unix_socket" || resp.Host.Endpoint.Summary != "local Unix socket" || resp.Host.Endpoint.Scheme == nil || *resp.Host.Endpoint.Scheme != "unix" {
+		t.Fatalf("endpoint = %#v, want safe Unix socket summary", resp.Host.Endpoint)
+	}
+	if resp.Runtime.ID != sandbox.SandboxRuntimeDriverRootlessPodman || resp.Runtime.HostKind != nil || resp.Runtime.IsolationLevel != nil {
+		t.Fatalf("runtime identity = %#v, want cached sparse runtime metadata", resp.Runtime)
+	}
+	if len(resp.SupportedOperations) != 0 {
+		t.Fatalf("supported operations = %#v, want empty cached operation metadata", resp.SupportedOperations)
+	}
+	if resp.Readiness.Status != SandboxRuntimeReadinessUnknown || resp.Readiness.CheckedAt != nil ||
+		resp.Readiness.Summary != "cached metadata confirms runtime registration; live readiness unknown" {
+		t.Fatalf("readiness = %#v, want cached unknown readiness", resp.Readiness)
+	}
+	if resp.Capacity.MaxConcurrentSandboxes == nil || *resp.Capacity.MaxConcurrentSandboxes != 2 || resp.Capacity.Summary != "max 2 sandboxes" {
+		t.Fatalf("capacity = %#v, want cached max sandbox summary", resp.Capacity)
+	}
+	if resp.Security.Requested.NetworkPolicy == nil || *resp.Security.Requested.NetworkPolicy != sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("requested security = %#v, want durable requested network policy", resp.Security.Requested)
+	}
+	if resp.Security.Enforced.NetworkPolicy == nil || *resp.Security.Enforced.NetworkPolicy != sandbox.SandboxNetworkPolicyBestEffort {
+		t.Fatalf("enforced security = %#v, want durable enforced network policy", resp.Security.Enforced)
+	}
+	if resp.Security.Enforced.NetworkEnforcement == nil || *resp.Security.Enforced.NetworkEnforcement != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("enforced security = %#v, want durable network enforcement", resp.Security.Enforced)
+	}
+	if got := strings.Join(resp.Security.Enforced.CredentialModes, ","); got != "env,legacy_auth_sync" {
+		t.Fatalf("enforced credential modes = %q, want sorted active modes", got)
+	}
+	if len(resp.Diagnostics) != 0 || len(resp.Errors) != 0 {
+		t.Fatalf("diagnostics/errors = %#v/%#v, want empty arrays", resp.Diagnostics, resp.Errors)
+	}
+	for _, leaked := range []string{"/tmp/private", "worker-a.sock"} {
+		if strings.Contains(firstOutput, leaked) {
+			t.Fatalf("JSON output leaked endpoint detail %q: %q", leaked, firstOutput)
+		}
+	}
+	if strings.Contains(firstOutput, "Sandbox runtime rootless_podman") {
+		t.Fatalf("JSON stdout included human status text: %q", firstOutput)
+	}
+}
+
+func TestSandboxRuntimeStatusJSONMissingHostEmitsEndpointSafeErrorDocument(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	deps := defaultSandboxRuntimeDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("cached sandbox runtime status missing-host path should not contact worker daemons")
+		return nil, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxRuntimeCommand(deps)
+	cmd.SetArgs([]string{"status", "missing-host", sandbox.SandboxRuntimeDriverRootlessPodman, "--json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want missing host error")
+	}
+
+	resp := decodeOneSandboxRuntimeStatusJSON(t, stdout.Bytes())
+	if resp.ContractType != SandboxRuntimeStatusContractType || resp.ContractVersion != SandboxRuntimeStatusContractVersion {
+		t.Fatalf("contract identity = %q/%q, want runtime status contract", resp.ContractType, resp.ContractVersion)
+	}
+	if resp.Host.ID != "missing-host" || resp.Host.Name != "missing-host" || resp.Host.Kind != "unknown" {
+		t.Fatalf("host = %#v, want requested missing host identity", resp.Host)
+	}
+	if resp.Host.Endpoint.Type != "none" || resp.Host.Endpoint.Summary != "none" || resp.Host.Endpoint.Scheme != nil {
+		t.Fatalf("endpoint = %#v, want empty safe endpoint", resp.Host.Endpoint)
+	}
+	if resp.Runtime.ID != sandbox.SandboxRuntimeDriverRootlessPodman {
+		t.Fatalf("runtime = %#v, want requested runtime id", resp.Runtime)
+	}
+	if resp.Readiness.Status != SandboxRuntimeReadinessUnavailable {
+		t.Fatalf("readiness = %#v, want unavailable", resp.Readiness)
+	}
+	if len(resp.Errors) != 1 || resp.Errors[0].Code != SandboxRuntimeStatusErrorHostNotFound {
+		t.Fatalf("errors = %#v, want host_not_found", resp.Errors)
+	}
+	if len(resp.Diagnostics) != 0 || len(resp.SupportedOperations) != 0 {
+		t.Fatalf("diagnostics/operations = %#v/%#v, want empty arrays", resp.Diagnostics, resp.SupportedOperations)
+	}
+	detail := stderr.String()
+	if !strings.Contains(detail, `host "missing-host" was not found`) {
+		t.Fatalf("stderr = %q, want requested host id", detail)
+	}
+	if strings.Contains(detail, sandbox.SandboxRuntimeDriverRootlessPodman) {
+		t.Fatalf("missing host human error named runtime id: %q", detail)
+	}
+}
+
+func TestSandboxRuntimeStatusJSONMissingRuntimeEmitsEndpointSafeErrorDocument(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:                "worker-a",
+		Name:              "builder",
+		Kind:              sandbox.SandboxHostKindWorker,
+		Endpoint:          "unix:///tmp/private/worker-a.sock",
+		SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+		Capacity:          &sandbox.HostCapacity{MaxConcurrentSandboxes: 2},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+	deps := defaultSandboxRuntimeDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("cached sandbox runtime status missing-runtime path should not contact worker daemons")
+		return nil, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxRuntimeCommand(deps)
+	cmd.SetArgs([]string{"status", "worker-a", sandbox.SandboxRuntimeDriverMicroVM, "--json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want missing runtime error")
+	}
+
+	output := stdout.String()
+	resp := decodeOneSandboxRuntimeStatusJSON(t, stdout.Bytes())
+	if resp.Source.Mode != SandboxRuntimeSourceCached || resp.Source.RequestedLive || resp.Source.CacheUpdated || resp.Source.RefreshedAt != nil {
+		t.Fatalf("source = %#v, want cached durable source", resp.Source)
+	}
+	if resp.Host.ID != "worker-a" || resp.Host.Name != "builder" || resp.Host.Endpoint.Summary != "local Unix socket" {
+		t.Fatalf("host = %#v, want safe cached host identity", resp.Host)
+	}
+	if resp.Runtime.ID != sandbox.SandboxRuntimeDriverMicroVM || resp.Runtime.HostKind != nil || resp.Runtime.IsolationLevel != nil {
+		t.Fatalf("runtime = %#v, want requested sparse runtime identity", resp.Runtime)
+	}
+	if resp.Readiness.Status != SandboxRuntimeReadinessUnavailable || resp.Readiness.Summary != "runtime is not registered for this host" {
+		t.Fatalf("readiness = %#v, want missing runtime unavailable", resp.Readiness)
+	}
+	if resp.Capacity.MaxConcurrentSandboxes == nil || *resp.Capacity.MaxConcurrentSandboxes != 2 {
+		t.Fatalf("capacity = %#v, want cached host capacity", resp.Capacity)
+	}
+	if len(resp.Errors) != 1 || resp.Errors[0].Code != SandboxRuntimeStatusErrorRuntimeNotFound {
+		t.Fatalf("errors = %#v, want runtime_not_found", resp.Errors)
+	}
+	if len(resp.Diagnostics) != 0 || len(resp.SupportedOperations) != 0 {
+		t.Fatalf("diagnostics/operations = %#v/%#v, want empty arrays", resp.Diagnostics, resp.SupportedOperations)
+	}
+	for _, leaked := range []string{"/tmp/private", "worker-a.sock"} {
+		if strings.Contains(output, leaked) || strings.Contains(stderr.String(), leaked) {
+			t.Fatalf("missing-runtime output leaked endpoint detail %q:\nstdout=%s\nstderr=%s", leaked, output, stderr.String())
+		}
+	}
+	if !strings.Contains(stderr.String(), `runtime "microvm" is not registered for this host`) {
+		t.Fatalf("stderr = %q, want requested runtime id", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "worker-a") {
+		t.Fatalf("missing runtime human error named host id: %q", stderr.String())
+	}
+}
+
+func TestSandboxRuntimeStatusHumanMissingErrorsNameOnlyRequestedIdentity(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	deps := defaultSandboxRuntimeDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("cached sandbox runtime status error paths should not contact worker daemons")
+		return nil, nil
+	}
+
+	missingHostCmd, missingHostStdout, missingHostStderr := newTestSandboxRuntimeCommand(deps)
+	missingHostCmd.SetArgs([]string{"status", "missing-host", sandbox.SandboxRuntimeDriverRootlessPodman})
+	err := missingHostCmd.Execute()
+	if err == nil {
+		t.Fatal("missing host Execute() error = nil")
+	}
+	if got := missingHostStdout.String(); got != "" {
+		t.Fatalf("missing host stdout = %q, want empty", got)
+	}
+	missingHostDetail := missingHostStderr.String()
+	if !strings.Contains(missingHostDetail, `host "missing-host" was not found`) {
+		t.Fatalf("missing host stderr = %q, want requested host id", missingHostDetail)
+	}
+	if strings.Contains(missingHostDetail, sandbox.SandboxRuntimeDriverRootlessPodman) {
+		t.Fatalf("missing host stderr named runtime id: %q", missingHostDetail)
+	}
+
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:                "worker-a",
+		Name:              "builder",
+		Kind:              sandbox.SandboxHostKindWorker,
+		Endpoint:          "unix:///tmp/private/worker-a.sock",
+		SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	missingRuntimeCmd, missingRuntimeStdout, missingRuntimeStderr := newTestSandboxRuntimeCommand(deps)
+	missingRuntimeCmd.SetArgs([]string{"status", "worker-a", sandbox.SandboxRuntimeDriverMicroVM})
+	err = missingRuntimeCmd.Execute()
+	if err == nil {
+		t.Fatal("missing runtime Execute() error = nil")
+	}
+	if got := missingRuntimeStdout.String(); got != "" {
+		t.Fatalf("missing runtime stdout = %q, want empty", got)
+	}
+	missingRuntimeDetail := missingRuntimeStderr.String()
+	if !strings.Contains(missingRuntimeDetail, `runtime "microvm" is not registered for this host`) {
+		t.Fatalf("missing runtime stderr = %q, want requested runtime id", missingRuntimeDetail)
+	}
+	for _, leaked := range []string{"worker-a", "builder", "/tmp/private", "worker-a.sock"} {
+		if strings.Contains(missingRuntimeDetail, leaked) {
+			t.Fatalf("missing runtime stderr leaked host detail %q: %q", leaked, missingRuntimeDetail)
+		}
+	}
+}
+
 func sandboxRuntimeTestWorkerSecurity(isolationLevel string) sandboxworker.SecurityPolicy {
 	return sandboxworker.SecurityPolicy{
 		Requested: sandboxworker.SecurityControls{
@@ -852,6 +1182,20 @@ func decodeOneSandboxRuntimeListJSON(t *testing.T, data []byte) SandboxRuntimeLi
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		t.Fatalf("runtime list JSON stdout should contain exactly one document; second decode error = %v extra=%#v output=%q", err, extra, string(data))
+	}
+	return resp
+}
+
+func decodeOneSandboxRuntimeStatusJSON(t *testing.T, data []byte) SandboxRuntimeStatusResponse {
+	t.Helper()
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var resp SandboxRuntimeStatusResponse
+	if err := decoder.Decode(&resp); err != nil {
+		t.Fatalf("decode runtime status JSON error: %v\n%s", err, string(data))
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		t.Fatalf("runtime status JSON stdout should contain exactly one document; second decode error = %v extra=%#v output=%q", err, extra, string(data))
 	}
 	return resp
 }

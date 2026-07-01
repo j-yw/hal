@@ -3,8 +3,10 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -34,6 +36,17 @@ type sandboxRuntimeStatusRequest struct {
 	RuntimeID string
 	Live      bool
 	JSON      bool
+}
+
+type sandboxRuntimeStatusCommandError struct {
+	message string
+}
+
+func (err sandboxRuntimeStatusCommandError) Error() string {
+	if strings.TrimSpace(err.message) == "" {
+		return "sandbox runtime status failed"
+	}
+	return err.message
 }
 
 var sandboxRuntimeCmd = newSandboxRuntimeCommand(defaultSandboxRuntimeDeps())
@@ -168,7 +181,10 @@ func normalizeSandboxRuntimeDeps(deps sandboxRuntimeDeps) sandboxRuntimeDeps {
 		}
 	}
 	if deps.status == nil {
-		deps.status = runSandboxRuntimeStatus
+		loadHost := deps.loadHost
+		deps.status = func(ctx context.Context, req sandboxRuntimeStatusRequest, out io.Writer) error {
+			return runSandboxRuntimeStatus(ctx, req, out, loadHost)
+		}
 	}
 	return deps
 }
@@ -233,8 +249,57 @@ func runSandboxRuntimeList(ctx context.Context, req sandboxRuntimeListRequest, o
 	return renderSandboxRuntimeList(out, host)
 }
 
-func runSandboxRuntimeStatus(context.Context, sandboxRuntimeStatusRequest, io.Writer) error {
-	return fmt.Errorf("sandbox runtime status is not implemented yet")
+func runSandboxRuntimeStatus(_ context.Context, req sandboxRuntimeStatusRequest, out io.Writer, loadHost func(string) (*sandbox.SandboxHost, error)) error {
+	hostID := strings.TrimSpace(req.HostID)
+	if hostID == "" {
+		return fmt.Errorf("host id is required")
+	}
+	runtimeID := strings.TrimSpace(req.RuntimeID)
+	if runtimeID == "" {
+		return fmt.Errorf("runtime id is required")
+	}
+	if req.Live {
+		return fmt.Errorf("live sandbox runtime status is not implemented yet")
+	}
+	if loadHost == nil {
+		loadHost = sandbox.LoadHost
+	}
+
+	host, err := loadHost(hostID)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			statusErr := sandboxRuntimeStatusCommandError{
+				message: fmt.Sprintf("host %q was not found", hostID),
+			}
+			if req.JSON {
+				resp := newSandboxRuntimeStatusHostNotFoundResponse(hostID, runtimeID)
+				if renderErr := renderSandboxRuntimeStatusResponseJSON(out, resp); renderErr != nil {
+					return renderErr
+				}
+			}
+			return statusErr
+		}
+		return err
+	}
+
+	if !sandboxRuntimeHostSupportsRuntime(host, runtimeID) {
+		statusErr := sandboxRuntimeStatusCommandError{
+			message: fmt.Sprintf("runtime %q is not registered for this host", runtimeID),
+		}
+		if req.JSON {
+			resp := newSandboxRuntimeStatusRuntimeNotFoundResponse(host, runtimeID)
+			if renderErr := renderSandboxRuntimeStatusResponseJSON(out, resp); renderErr != nil {
+				return renderErr
+			}
+		}
+		return statusErr
+	}
+
+	resp := newSandboxRuntimeStatusCachedResponse(host, runtimeID)
+	if req.JSON {
+		return renderSandboxRuntimeStatusResponseJSON(out, resp)
+	}
+	return renderSandboxRuntimeStatusResponse(out, resp)
 }
 
 func renderSandboxRuntimeListJSON(out io.Writer, host *sandbox.SandboxHost) error {
@@ -248,6 +313,18 @@ func renderSandboxRuntimeListResponseJSON(out io.Writer, resp SandboxRuntimeList
 	data, err := json.MarshalIndent(resp, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal sandbox runtime list: %w", err)
+	}
+	_, err = fmt.Fprintln(out, string(data))
+	return err
+}
+
+func renderSandboxRuntimeStatusResponseJSON(out io.Writer, resp SandboxRuntimeStatusResponse) error {
+	if out == nil {
+		return nil
+	}
+	data, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal sandbox runtime status: %w", err)
 	}
 	_, err = fmt.Fprintln(out, string(data))
 	return err
@@ -320,6 +397,68 @@ func renderSandboxRuntimeListResponse(out io.Writer, resp SandboxRuntimeListResp
 		}
 	}
 	return runtimeTable.Flush()
+}
+
+func renderSandboxRuntimeStatusResponse(out io.Writer, resp SandboxRuntimeStatusResponse) error {
+	if out == nil {
+		return nil
+	}
+
+	hostName := sandboxHostDisplayValue(resp.Host.Name, resp.Host.ID)
+	if hostName == "" {
+		hostName = "unknown"
+	}
+	sourceMode := sandboxHostDisplayValue(resp.Source.Mode, SandboxRuntimeSourceCached)
+	if _, err := fmt.Fprintf(out, "Sandbox runtime %s on %s (%s)\n", sandboxHostDisplayValue(resp.Runtime.ID, "unknown"), hostName, sourceMode); err != nil {
+		return err
+	}
+
+	readiness := sandboxHostDisplayValue(resp.Readiness.Status, SandboxRuntimeReadinessUnknown)
+	if summary := strings.TrimSpace(resp.Readiness.Summary); summary != "" {
+		readiness += " (" + summary + ")"
+	}
+	operations := sandboxRuntimeHumanList(resp.SupportedOperations)
+	if operations == "" {
+		operations = "unknown"
+	}
+
+	lines := []struct {
+		label string
+		value string
+	}{
+		{"Source", sandboxHostDisplayValue(resp.Source.Summary, sourceMode)},
+		{"Host ID", sandboxHostDisplayValue(resp.Host.ID, "-")},
+		{"Host kind", sandboxHostDisplayValue(resp.Host.Kind, "unknown")},
+		{"Endpoint", sandboxHostDisplayValue(resp.Host.Endpoint.Summary, "unknown")},
+		{"Runtime ID", sandboxHostDisplayValue(resp.Runtime.ID, "unknown")},
+		{"Runtime host kind", sandboxRuntimeStringPtrValue(resp.Runtime.HostKind, "unknown")},
+		{"Runtime isolation", sandboxRuntimeStringPtrValue(resp.Runtime.IsolationLevel, "unknown")},
+		{"Readiness", readiness},
+		{"Supported operations", operations},
+		{"Capacity", sandboxHostDisplayValue(resp.Capacity.Summary, "unknown")},
+		{"Security", sandboxRuntimeSecuritySummaryHuman(resp.Security)},
+	}
+
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	for _, line := range lines {
+		if _, err := fmt.Fprintf(tw, "%s:\t%s\n", line.label, line.value); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
+}
+
+func sandboxRuntimeHostSupportsRuntime(host *sandbox.SandboxHost, runtimeID string) bool {
+	runtimeID = strings.TrimSpace(runtimeID)
+	if host == nil || runtimeID == "" {
+		return false
+	}
+	for _, cachedRuntimeID := range sortedUniqueStrings(host.SupportedRuntimes) {
+		if cachedRuntimeID == runtimeID {
+			return true
+		}
+	}
+	return false
 }
 
 func querySandboxRuntimeListLiveMetadata(ctx context.Context, host *sandbox.SandboxHost, newWorkerClient func(string) (sandboxHostWorkerClient, error)) (*sandboxworker.Status, *sandboxworker.Capabilities, error) {
