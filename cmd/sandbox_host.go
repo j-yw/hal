@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/spf13/cobra"
 )
 
@@ -15,6 +16,7 @@ type sandboxHostDeps struct {
 	list           func(context.Context, sandboxHostListRequest, io.Writer) error
 	status         func(context.Context, sandboxHostStatusRequest, io.Writer) error
 	delete         func(context.Context, sandboxHostDeleteRequest, io.Writer) error
+	saveHost       func(*sandbox.SandboxHost) error
 }
 
 type sandboxHostRegisterWorkerRequest struct {
@@ -43,7 +45,9 @@ func init() {
 }
 
 func defaultSandboxHostDeps() sandboxHostDeps {
-	return sandboxHostDeps{}
+	return sandboxHostDeps{
+		saveHost: sandbox.SaveHost,
+	}
 }
 
 func newSandboxHostCommand(deps sandboxHostDeps) *cobra.Command {
@@ -180,9 +184,13 @@ daemons or mutate runtime targets.`,
 }
 
 func normalizeSandboxHostDeps(deps sandboxHostDeps) sandboxHostDeps {
+	if deps.saveHost == nil {
+		deps.saveHost = sandbox.SaveHost
+	}
 	if deps.registerWorker == nil {
-		deps.registerWorker = func(context.Context, sandboxHostRegisterWorkerRequest, io.Writer) error {
-			return sandboxHostNotImplementedError("sandbox host register worker")
+		saveHost := deps.saveHost
+		deps.registerWorker = func(_ context.Context, req sandboxHostRegisterWorkerRequest, out io.Writer) error {
+			return runSandboxHostRegisterWorker(req, out, saveHost)
 		}
 	}
 	if deps.list == nil {
@@ -201,6 +209,30 @@ func normalizeSandboxHostDeps(deps sandboxHostDeps) sandboxHostDeps {
 		}
 	}
 	return deps
+}
+
+func runSandboxHostRegisterWorker(req sandboxHostRegisterWorkerRequest, out io.Writer, saveHost func(*sandbox.SandboxHost) error) error {
+	if strings.TrimSpace(req.WorkerID) == "" {
+		return fmt.Errorf("worker id is required")
+	}
+	if saveHost == nil {
+		saveHost = sandbox.SaveHost
+	}
+
+	host, err := sandboxHostFromWorkerMetadata(sandboxHostWorkerMetadataRequest{
+		WorkerID:   req.WorkerID,
+		SocketPath: req.SocketPath,
+	})
+	if err != nil {
+		return err
+	}
+	if err := saveHost(host); err != nil {
+		return err
+	}
+	if out != nil {
+		fmt.Fprintf(out, "Registered worker host %s (offline; endpoint: local Unix socket).\n", host.ID)
+	}
+	return nil
 }
 
 func sandboxHostNotImplementedError(command string) error {

@@ -42,6 +42,7 @@
 - New user-facing Cobra command scaffolds should provide `Use`, `Short`, `Long`, and `Example` for every in-scope group and leaf command; `cmd` metadata tests walk the global command tree and family examples should contain the full command path.
 - Prefer `newXCommand(deps)` constructors for new command families so command registration/help tests can use fake dependencies without sockets, providers, daemons, network access, or real runtime adapters.
 - Worker host durable mapping belongs in `cmd`: convert `internal/sandboxworker` status/capability payloads into `internal/sandbox.SandboxHost` there, keep offline records conservative, and persist security only as requested/enforced durable summaries so `internal/sandboxworker` stays command-agnostic.
+- Offline worker host registration should reuse the command-layer worker metadata mapper and persist through `internal/sandbox.SaveHost`; command tests should isolate the global registry with temporary `HAL_CONFIG_HOME` and human output should summarize local Unix socket endpoints without printing raw socket paths.
 
 ## Patterns from phase14-worker-io (2026-07-01)
 
