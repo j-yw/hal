@@ -37,6 +37,11 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase24-network-proxy-policy-log (2026-07-02)
+
+- Proxy session and network policy decision-log foundation contracts belong in `internal/sandbox/network_proxy.go`; keep them data-only and redaction-safe, with safe IDs, sources, policy snapshot identity, request categories, outcomes, and reason codes only, and no raw hostnames, IPs, ports, URLs, headers, bodies, tokens, environment values, local paths, socket paths, credentials, or live proxy/firewall/runtime/provider behavior.
+- Schema coverage for proxy/log contracts belongs beside them in `internal/sandbox/network_proxy_test.go`; lock JSON field names, `omitempty` behavior, enum values, and raw-field absence before later validation or manifest-plumbing stories.
+
 ## Patterns from phase23-security-intent-propagation (2026-07-02)
 
 - Pure config-to-evaluator security intent mapping belongs in `internal/sandbox/security_intent.go`; pass only sandbox-native `SandboxNetworkPolicyIntent`, `SandboxNetworkPolicyEnforcementCapability`, and `SandboxSecretDeliveryIntent` metadata, preserve nil-vs-explicit-empty secrets, and keep `security_intent*.go` covered by the `internal/sandbox/network_policy_import_boundary_test.go` pure import guard.
