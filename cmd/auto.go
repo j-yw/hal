@@ -230,9 +230,6 @@ func init() {
 	autoCmd.Flags().StringVarP(&autoBaseFlag, "base", "b", "", "Base branch for new work branch and PR target (default: current branch, or HEAD when detached)")
 	autoCmd.Flags().BoolVar(&autoJSONFlag, "json", false, "Output machine-readable JSON result")
 	autoCmd.Flags().IntVar(&autoParallelFlag, "parallel", 0, "Run up to N isolated workers in parallel during the run step (0 disables parallel mode; max 10)")
-	if flag := autoCmd.Flags().Lookup("parallel"); flag != nil {
-		flag.NoOptDefVal = "2"
-	}
 	rootCmd.AddCommand(autoCmd)
 }
 
