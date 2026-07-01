@@ -23,6 +23,7 @@ func init() {
 type Engine struct {
 	Timeout time.Duration
 	model   string
+	workDir string
 }
 
 // New creates a new Claude engine.
@@ -37,6 +38,7 @@ func New(cfg *engine.EngineConfig) *Engine {
 		if cfg.Timeout > 0 {
 			e.Timeout = cfg.Timeout
 		}
+		e.workDir = cfg.WorkDir
 	}
 	return e
 }
@@ -66,6 +68,14 @@ func (e *Engine) BuildArgs() []string {
 	return args
 }
 
+func (e *Engine) newCommand(ctx context.Context, args []string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, e.CLICommand(), args...)
+	if e.workDir != "" {
+		cmd.Dir = e.workDir
+	}
+	return cmd
+}
+
 func contextRunError(ctx context.Context, timeout time.Duration, operation string) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		if ctxErr == context.DeadlineExceeded {
@@ -91,7 +101,7 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 
 	// Build command. Prompt is piped via stdin.
 	args := e.BuildArgs()
-	cmd := exec.CommandContext(ctx, e.CLICommand(), args...)
+	cmd := e.newCommand(ctx, args)
 
 	// Detach from TTY to suppress interactive UI hints.
 	//
@@ -221,7 +231,7 @@ func (e *Engine) Prompt(ctx context.Context, prompt string) (string, error) {
 	if e.model != "" {
 		args = append(args, "--model", e.model)
 	}
-	cmd := exec.CommandContext(ctx, e.CLICommand(), args...)
+	cmd := e.newCommand(ctx, args)
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.SysProcAttr = newSysProcAttr()
 	setupProcessCleanup(cmd)
@@ -261,7 +271,7 @@ func (e *Engine) StreamPrompt(ctx context.Context, prompt string, display *engin
 
 	// Use same flags as Execute for streaming. Prompt is piped via stdin.
 	args := e.BuildArgs()
-	cmd := exec.CommandContext(ctx, e.CLICommand(), args...)
+	cmd := e.newCommand(ctx, args)
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.SysProcAttr = newSysProcAttr()
 	setupProcessCleanup(cmd)

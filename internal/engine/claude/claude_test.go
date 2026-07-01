@@ -13,6 +13,29 @@ import (
 	"github.com/jywlabs/hal/internal/engine"
 )
 
+func TestNewWithWorkDir(t *testing.T) {
+	eng := New(&engine.EngineConfig{WorkDir: "/tmp/hal-claude-workdir"})
+	if eng.workDir != "/tmp/hal-claude-workdir" {
+		t.Fatalf("workDir = %q, want %q", eng.workDir, "/tmp/hal-claude-workdir")
+	}
+}
+
+func TestNewCommandSetsWorkDir(t *testing.T) {
+	eng := New(&engine.EngineConfig{WorkDir: "/tmp/hal-claude-workdir"})
+	cmd := eng.newCommand(t.Context(), []string{"-p"})
+	if cmd.Dir != "/tmp/hal-claude-workdir" {
+		t.Fatalf("cmd.Dir = %q, want %q", cmd.Dir, "/tmp/hal-claude-workdir")
+	}
+}
+
+func TestNewCommandInheritsCurrentDirWhenWorkDirEmpty(t *testing.T) {
+	eng := New(nil)
+	cmd := eng.newCommand(t.Context(), []string{"-p"})
+	if cmd.Dir != "" {
+		t.Fatalf("cmd.Dir = %q, want empty", cmd.Dir)
+	}
+}
+
 func TestExecute_PreservesCanceledContextError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script fixture is unix-only")
