@@ -40,6 +40,7 @@
 ## Patterns from phase16-runtime-inspection (2026-07-01)
 
 - Runtime inspection JSON contracts should define command-layer constants and response structs in `cmd`, document safe endpoint summaries and explicit sparse values under `docs/contracts/`, and lock referenced example files with strict decoding plus deterministic runtime ID ordering tests before command implementation stories use them.
+- Runtime status JSON error examples should retain the full endpoint-safe response shape, including safe host/runtime identity, source metadata, capacity/readiness/security placeholders, diagnostics/errors arrays, and stable error codes such as `runtime_not_found`.
 
 ## Patterns from phase15-worker-hosts (2026-07-01)
 

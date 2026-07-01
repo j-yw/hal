@@ -4,11 +4,26 @@ import "time"
 
 const SandboxRuntimeListContractType = "sandbox-runtime-list"
 const SandboxRuntimeListContractVersion = "sandbox-runtime-list-v1"
+const SandboxRuntimeStatusContractType = "sandbox-runtime-status"
+const SandboxRuntimeStatusContractVersion = "sandbox-runtime-status-v1"
 
 const (
 	SandboxRuntimeSourceCached          = "cached"
 	SandboxRuntimeSourceLiveRefreshed   = "live-refreshed"
 	SandboxRuntimeSourceUnsupportedLive = "unsupported-live"
+)
+
+const (
+	SandboxRuntimeReadinessReady       = "ready"
+	SandboxRuntimeReadinessUnavailable = "unavailable"
+	SandboxRuntimeReadinessUnknown     = "unknown"
+)
+
+const (
+	SandboxRuntimeStatusErrorHostNotFound        = "host_not_found"
+	SandboxRuntimeStatusErrorRuntimeNotFound     = "runtime_not_found"
+	SandboxRuntimeStatusErrorLiveUnsupported     = "live_unsupported"
+	SandboxRuntimeStatusErrorWorkerRefreshFailed = "worker_refresh_failed"
 )
 
 // SandboxRuntimeListResponse is the machine-readable JSON output for
@@ -23,6 +38,22 @@ type SandboxRuntimeListResponse struct {
 	Security        SandboxRuntimeSecuritySummary `json:"security"`
 	Diagnostics     []SandboxRuntimeDiagnostic    `json:"diagnostics"`
 	Errors          []SandboxRuntimeError         `json:"errors"`
+}
+
+// SandboxRuntimeStatusResponse is the machine-readable JSON output for
+// hal sandbox runtime status <host-id> <runtime-id> --json.
+type SandboxRuntimeStatusResponse struct {
+	ContractType        string                        `json:"contractType"`
+	ContractVersion     string                        `json:"contractVersion"`
+	Host                SandboxRuntimeHost            `json:"host"`
+	Runtime             SandboxRuntimeStatusRuntime   `json:"runtime"`
+	Source              SandboxRuntimeSource          `json:"source"`
+	SupportedOperations []string                      `json:"supportedOperations"`
+	Capacity            SandboxRuntimeCapacitySummary `json:"capacity"`
+	Readiness           SandboxRuntimeReadiness       `json:"readiness"`
+	Security            SandboxRuntimeSecuritySummary `json:"security"`
+	Diagnostics         []SandboxRuntimeDiagnostic    `json:"diagnostics"`
+	Errors              []SandboxRuntimeError         `json:"errors"`
 }
 
 // SandboxRuntimeHost identifies the inspected host without exposing raw
@@ -51,6 +82,13 @@ type SandboxRuntimeSource struct {
 	Summary       string     `json:"summary"`
 }
 
+// SandboxRuntimeStatusRuntime identifies a single runtime driver on a host.
+type SandboxRuntimeStatusRuntime struct {
+	ID             string  `json:"id"`
+	HostKind       *string `json:"hostKind"`
+	IsolationLevel *string `json:"isolationLevel"`
+}
+
 // SandboxRuntimeListEntry summarizes a runtime driver available on a host.
 type SandboxRuntimeListEntry struct {
 	ID                  string                        `json:"id"`
@@ -69,6 +107,13 @@ type SandboxRuntimeCapacitySummary struct {
 	DiskGB                 *int   `json:"diskGb"`
 	MaxConcurrentSandboxes *int   `json:"maxConcurrentSandboxes"`
 	ActiveSandboxes        *int   `json:"activeSandboxes"`
+}
+
+// SandboxRuntimeReadiness is a safe runtime readiness summary.
+type SandboxRuntimeReadiness struct {
+	Status    string     `json:"status"`
+	CheckedAt *time.Time `json:"checkedAt"`
+	Summary   string     `json:"summary"`
 }
 
 // SandboxRuntimeSecuritySummary separates requested controls from controls
