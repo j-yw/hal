@@ -26,6 +26,7 @@ Subcommands:
   stop        Power off / shut down a running sandbox
   status      Show sandbox status
   delete      Delete a sandbox
+  host        Manage durable sandbox host records
   ssh         Open an interactive shell or run a remote command
 
 ### Examples
@@ -51,6 +52,7 @@ Subcommands:
 * [hal sandbox auth](hal_sandbox_auth.md)	 - Manage sandbox agent auth profiles
 * [hal sandbox create](hal_sandbox_create.md)	 - Provision a new sandbox
 * [hal sandbox delete](hal_sandbox_delete.md)	 - Delete one or more sandboxes permanently
+* [hal sandbox host](hal_sandbox_host.md)	 - Manage sandbox host records
 * [hal sandbox list](hal_sandbox_list.md)	 - List all sandboxes
 * [hal sandbox migrate](hal_sandbox_migrate.md)	 - Migrate legacy sandbox state to global config
 * [hal sandbox setup](hal_sandbox_setup.md)	 - Configure sandbox credentials and environment
