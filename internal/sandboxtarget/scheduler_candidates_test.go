@@ -59,15 +59,11 @@ func TestEnumerateSchedulerCandidatesUsesInjectedCachedHostLister(t *testing.T) 
 func TestScheduleSelectsFirstCachedCandidateByNameThenID(t *testing.T) {
 	result := Schedule(SchedulerRequest{
 		Intent: SchedulerIntentAnyEligibleTarget,
-	}, CachedState{
-		ListHosts: func() ([]*sandbox.SandboxHost, error) {
-			return []*sandbox.SandboxHost{
-				{ID: "worker-z", Name: "zeta", Kind: sandbox.SandboxHostKindWorker},
-				{ID: "worker-b", Name: "builder", Kind: sandbox.SandboxHostKindWorker},
-				{ID: "worker-a", Name: "builder", Kind: sandbox.SandboxHostKindWorker},
-			}, nil
-		},
-	})
+	}, schedulerTestCache([]*sandbox.SandboxHost{
+		schedulerTestHost("worker-z", "zeta", 1),
+		schedulerTestHost("worker-b", "builder", 1),
+		schedulerTestHost("worker-a", "builder", 1),
+	}, nil))
 
 	if !result.Selected() || result.Rejected() {
 		t.Fatalf("result = %#v, want selected cached host candidate", result)

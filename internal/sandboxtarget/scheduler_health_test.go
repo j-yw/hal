@@ -10,25 +10,22 @@ import (
 func TestScheduleExcludesUnhealthyCachedHostsFromAutomaticScheduling(t *testing.T) {
 	result := Schedule(SchedulerRequest{
 		Intent: SchedulerIntentAnyEligibleTarget,
-	}, CachedState{
-		ListHosts: func() ([]*sandbox.SandboxHost, error) {
-			return []*sandbox.SandboxHost{
-				{
-					ID:       "worker-unhealthy",
-					Name:     "alpha",
-					Kind:     sandbox.SandboxHostKindWorker,
-					Health:   &sandbox.HostHealth{Status: "unhealthy"},
-					Endpoint: "unix:///tmp/private-worker.sock?token=super-secret",
-				},
-				{
-					ID:     "worker-healthy",
-					Name:   "beta",
-					Kind:   sandbox.SandboxHostKindWorker,
-					Health: &sandbox.HostHealth{Status: "healthy"},
-				},
-			}, nil
+	}, schedulerTestCache([]*sandbox.SandboxHost{
+		{
+			ID:       "worker-unhealthy",
+			Name:     "alpha",
+			Kind:     sandbox.SandboxHostKindWorker,
+			Health:   &sandbox.HostHealth{Status: "unhealthy"},
+			Endpoint: "unix:///tmp/private-worker.sock?token=super-secret",
 		},
-	})
+		{
+			ID:       "worker-healthy",
+			Name:     "beta",
+			Kind:     sandbox.SandboxHostKindWorker,
+			Health:   &sandbox.HostHealth{Status: "healthy"},
+			Capacity: &sandbox.HostCapacity{MaxConcurrentSandboxes: 1},
+		},
+	}, nil))
 
 	if !result.Selected() || result.Rejected() {
 		t.Fatalf("result = %#v, want selected healthy cached candidate", result)
@@ -50,16 +47,13 @@ func TestScheduleAllowsCachedHostsWithUnknownOrMissingHealth(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := Schedule(SchedulerRequest{
 				Intent: SchedulerIntentAnyEligibleTarget,
-			}, CachedState{
-				ListHosts: func() ([]*sandbox.SandboxHost, error) {
-					return []*sandbox.SandboxHost{{
-						ID:     "worker-a",
-						Name:   "alpha",
-						Kind:   sandbox.SandboxHostKindWorker,
-						Health: tt.health,
-					}}, nil
-				},
-			})
+			}, schedulerTestCache([]*sandbox.SandboxHost{{
+				ID:       "worker-a",
+				Name:     "alpha",
+				Kind:     sandbox.SandboxHostKindWorker,
+				Health:   tt.health,
+				Capacity: &sandbox.HostCapacity{MaxConcurrentSandboxes: 1},
+			}}, nil))
 
 			if !result.Selected() || result.Selection.Identity.HostID != "worker-a" {
 				t.Fatalf("result = %#v, want cached host eligible", result)

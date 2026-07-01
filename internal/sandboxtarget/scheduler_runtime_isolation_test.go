@@ -12,24 +12,21 @@ func TestScheduleFiltersCachedCandidatesByRequestedRuntime(t *testing.T) {
 	result := Schedule(SchedulerRequest{
 		Intent:        SchedulerIntentAnyEligibleTarget,
 		RuntimeDriver: " " + sandbox.SandboxRuntimeDriverRootlessPodman + " ",
-	}, CachedState{
-		ListHosts: func() ([]*sandbox.SandboxHost, error) {
-			return []*sandbox.SandboxHost{
-				{
-					ID:                "worker-ssh",
-					Name:              "alpha",
-					Kind:              sandbox.SandboxHostKindWorker,
-					SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
-				},
-				{
-					ID:                "worker-rootless",
-					Name:              "beta",
-					Kind:              sandbox.SandboxHostKindWorker,
-					SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
-				},
-			}, nil
+	}, schedulerTestCache([]*sandbox.SandboxHost{
+		{
+			ID:                "worker-ssh",
+			Name:              "alpha",
+			Kind:              sandbox.SandboxHostKindWorker,
+			SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
 		},
-	})
+		{
+			ID:                "worker-rootless",
+			Name:              "beta",
+			Kind:              sandbox.SandboxHostKindWorker,
+			SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+			Capacity:          &sandbox.HostCapacity{MaxConcurrentSandboxes: 1},
+		},
+	}, nil))
 
 	if !result.Selected() || result.Rejected() {
 		t.Fatalf("result = %#v, want selected rootless cached candidate", result)
@@ -84,24 +81,21 @@ func TestScheduleFiltersCachedCandidatesByRequestedIsolation(t *testing.T) {
 	result := Schedule(SchedulerRequest{
 		Intent:         SchedulerIntentAnyEligibleTarget,
 		IsolationLevel: sandbox.SandboxIsolationLevelVM,
-	}, CachedState{
-		ListHosts: func() ([]*sandbox.SandboxHost, error) {
-			return []*sandbox.SandboxHost{
-				{
-					ID:                "worker-container",
-					Name:              "alpha",
-					Kind:              sandbox.SandboxHostKindWorker,
-					SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
-				},
-				{
-					ID:                "worker-vm",
-					Name:              "beta",
-					Kind:              sandbox.SandboxHostKindWorker,
-					SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverMicroVM},
-				},
-			}, nil
+	}, schedulerTestCache([]*sandbox.SandboxHost{
+		{
+			ID:                "worker-container",
+			Name:              "alpha",
+			Kind:              sandbox.SandboxHostKindWorker,
+			SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
 		},
-	})
+		{
+			ID:                "worker-vm",
+			Name:              "beta",
+			Kind:              sandbox.SandboxHostKindWorker,
+			SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverMicroVM},
+			Capacity:          &sandbox.HostCapacity{MaxConcurrentSandboxes: 1},
+		},
+	}, nil))
 
 	if !result.Selected() || result.Rejected() {
 		t.Fatalf("result = %#v, want selected VM-isolation cached candidate", result)

@@ -57,8 +57,8 @@ func EnumerateSchedulerCandidates(req SchedulerRequest, cache CachedState) Sched
 }
 
 // Schedule makes the scheduler's current deterministic cached-host decision.
-// Later scheduler phases add capacity, lease, and ranking behavior between
-// candidate filtering and the final selection.
+// Later scheduler phases add richer ranking behavior between candidate
+// filtering and the final selection.
 func Schedule(req SchedulerRequest, cache CachedState) SchedulerResult {
 	if rejection := validateSchedulerRequestedIsolation(req); rejection != nil {
 		return SchedulerResult{Rejection: rejection}
@@ -70,22 +70,7 @@ func Schedule(req SchedulerRequest, cache CachedState) SchedulerResult {
 	candidateSet := EnumerateSchedulerCandidates(req, cache)
 	candidateSet = filterSchedulerCandidatesByHealth(req, candidateSet)
 	candidateSet = filterSchedulerCandidatesByRuntimeAndIsolation(req, candidateSet)
-	if candidateSet.Failed() {
-		return SchedulerResult{Rejection: candidateSet.Rejection}
-	}
-	if candidateSet.Empty() {
-		return SchedulerResult{Rejection: schedulerRejection(req, FailureReasonHostNotFound, "no cached sandbox hosts")}
-	}
-
-	candidate := candidateSet.Candidates[0]
-	return SchedulerResult{
-		Selection: &SchedulerSelection{
-			Identity: candidate.Identity,
-			Host:     cloneSandboxHost(candidate.Host),
-			Runtime:  cloneRuntimeState(candidate.Runtime),
-		},
-		DecisionReason: SchedulerDecisionReasonRankedCandidate,
-	}
+	return selectSchedulerCandidateWithCapacity(req, candidateSet, cache)
 }
 
 func filterSchedulerCandidatesByHealth(req SchedulerRequest, candidateSet SchedulerCandidateSet) SchedulerCandidateSet {

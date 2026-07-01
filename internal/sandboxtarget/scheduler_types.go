@@ -125,13 +125,14 @@ type SchedulerTargetIdentity struct {
 type SchedulerDecisionReason string
 
 const (
-	SchedulerDecisionReasonNone               SchedulerDecisionReason = ""
-	SchedulerDecisionReasonExplicitHost       SchedulerDecisionReason = "explicit_host"
-	SchedulerDecisionReasonRequestedRuntime   SchedulerDecisionReason = "requested_runtime"
-	SchedulerDecisionReasonRequestedIsolation SchedulerDecisionReason = "requested_isolation"
-	SchedulerDecisionReasonRankedCandidate    SchedulerDecisionReason = "ranked_candidate"
-	SchedulerDecisionReasonCapacityAvailable  SchedulerDecisionReason = "capacity_available"
-	SchedulerDecisionReasonCapacityBlocked    SchedulerDecisionReason = "capacity_blocked"
+	SchedulerDecisionReasonNone                SchedulerDecisionReason = ""
+	SchedulerDecisionReasonExplicitHost        SchedulerDecisionReason = "explicit_host"
+	SchedulerDecisionReasonRequestedRuntime    SchedulerDecisionReason = "requested_runtime"
+	SchedulerDecisionReasonRequestedIsolation  SchedulerDecisionReason = "requested_isolation"
+	SchedulerDecisionReasonRankedCandidate     SchedulerDecisionReason = "ranked_candidate"
+	SchedulerDecisionReasonCapacityAvailable   SchedulerDecisionReason = "capacity_available"
+	SchedulerDecisionReasonCapacityUnavailable SchedulerDecisionReason = "capacity_unavailable"
+	SchedulerDecisionReasonCapacityBlocked     SchedulerDecisionReason = "capacity_blocked"
 )
 
 // SchedulerCapacityDecision records the capacity facts used for a scheduling
