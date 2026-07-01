@@ -315,10 +315,11 @@ type factoryRunProgressEvent struct {
 }
 
 type factoryTimelineEvent struct {
-	EventType string
-	Message   string
-	Summary   string
-	Metadata  map[string]any
+	EventType                 string
+	Message                   string
+	Summary                   string
+	Metadata                  map[string]any
+	NetworkPolicyDecisionLogs []sandbox.SandboxNetworkPolicyDecisionLogRecord
 }
 
 type factoryRunPipelineDeps struct {
@@ -3611,6 +3612,7 @@ func redactFactoryTimelineEvent(event factoryTimelineEvent, redactor factory.Run
 	event.Message = redactFactoryString(event.Message, redactor)
 	event.Summary = redactFactoryString(event.Summary, redactor)
 	event.Metadata = redactFactoryTimelineMetadata(event.Metadata, redactor)
+	event.NetworkPolicyDecisionLogs = sandbox.SanitizeSandboxNetworkPolicyDecisionLogRecords(event.NetworkPolicyDecisionLogs)
 	return event
 }
 
@@ -3774,13 +3776,14 @@ func appendFactoryRunTimelineEventWithRedactor(store factory.Store, runID string
 	event = redactFactoryTimelineEvent(event, redactor)
 
 	record := factory.EventRecord{
-		Sequence:  nextFactoryRunEventSequence(events),
-		RunID:     runID,
-		EventType: event.EventType,
-		Timestamp: timestamp.UTC(),
-		Message:   event.Message,
-		Summary:   event.Summary,
-		Metadata:  event.Metadata,
+		Sequence:                  nextFactoryRunEventSequence(events),
+		RunID:                     runID,
+		EventType:                 event.EventType,
+		Timestamp:                 timestamp.UTC(),
+		Message:                   event.Message,
+		Summary:                   event.Summary,
+		Metadata:                  event.Metadata,
+		NetworkPolicyDecisionLogs: event.NetworkPolicyDecisionLogs,
 	}
 	if err := store.AppendEvent(&record); err != nil {
 		return fmt.Errorf("append factory timeline event %q: %w", runID, err)
@@ -4655,6 +4658,9 @@ func normalizeFactoryTimelineEventsForContractV1(events []factory.EventRecord) [
 	normalized := make([]factory.EventRecord, len(events))
 	copy(normalized, events)
 	for i, event := range normalized {
+		if len(event.NetworkPolicyDecisionLogs) > 0 {
+			normalized[i].NetworkPolicyDecisionLogs = sandbox.SanitizeSandboxNetworkPolicyDecisionLogRecords(event.NetworkPolicyDecisionLogs)
+		}
 		if event.EventType != factory.EventTypeFailureClassification || event.Metadata == nil {
 			continue
 		}

@@ -121,7 +121,7 @@ func TestFactorySandboxSecurityPolicyEventIncludesEffectivePolicyResult(t *testi
 	err := recordFactorySandboxSecurityPolicyEvent(store, factorySandboxExecutorDeps{
 		now:         func() time.Time { return now },
 		appendEvent: appendFactorySandboxTimelineEvent,
-	}, &factory.RunRecord{RunID: "run-policy-event"}, target, factory.NewRunSecretRedactor([]factory.ResolvedRunSecret{{
+	}, &factory.RunRecord{RunID: "run-policy-event"}, target, nil, factory.NewRunSecretRedactor([]factory.ResolvedRunSecret{{
 		Name:  "TOKEN",
 		Value: secretValue,
 	}}))

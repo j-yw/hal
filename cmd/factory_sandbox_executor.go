@@ -45,17 +45,19 @@ type factorySandboxAuthFile struct {
 }
 
 type factorySandboxExecutorRequest struct {
-	ProjectDir          string
-	SandboxName         string
-	SandboxHostID       string
-	SandboxRuntime      string
-	Security            sandbox.SecurityEvaluationRequest
-	RunRecord           factory.RunRecord
-	ResolvedSecrets     []factory.ResolvedRunSecret
-	RemoteAuto          factoryRunAutoRequest
-	RemoteOutput        io.Writer
-	BeforeCleanup       func(context.Context, factory.RunRecord) error
-	DeferSuccessCleanup bool
+	ProjectDir                string
+	SandboxName               string
+	SandboxHostID             string
+	SandboxRuntime            string
+	Security                  sandbox.SecurityEvaluationRequest
+	NetworkProxySession       *sandbox.SandboxNetworkProxySessionMetadata
+	NetworkPolicyDecisionLogs []sandbox.SandboxNetworkPolicyDecisionLogRecord
+	RunRecord                 factory.RunRecord
+	ResolvedSecrets           []factory.ResolvedRunSecret
+	RemoteAuto                factoryRunAutoRequest
+	RemoteOutput              io.Writer
+	BeforeCleanup             func(context.Context, factory.RunRecord) error
+	DeferSuccessCleanup       bool
 }
 
 type factorySandboxExecutorDeps struct {
@@ -342,7 +344,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			if err := saveFactorySandboxRunRecordWithRedactor(store, deps, &record, secretRedactor); err != nil {
 				return fmt.Errorf("record factory sandbox metadata: %w", err)
 			}
-			if err := recordFactorySandboxSecurityPolicyEvent(store, deps, &record, target, secretRedactor); err != nil {
+			if err := recordFactorySandboxSecurityPolicyEvent(store, deps, &record, target, req.NetworkPolicyDecisionLogs, secretRedactor); err != nil {
 				return fmt.Errorf("record factory sandbox security metadata: %w", err)
 			}
 			remoteOutput = newFactorySandboxTimelineWriter(store, deps, &record, target, req.RemoteOutput, req.ResolvedSecrets)
@@ -2052,6 +2054,7 @@ func factorySandboxPersistentMetadataFromState(req factorySandboxExecutorRequest
 	if metadata == nil {
 		return name, nil
 	}
+	metadata.NetworkProxySession = factorySandboxNetworkProxySession(req.NetworkProxySession)
 	if !sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) || !selectedWorkerRootlessSandboxState(instance) {
 		return name, metadata
 	}
@@ -2060,6 +2063,14 @@ func factorySandboxPersistentMetadataFromState(req factorySandboxExecutorRequest
 	}
 	metadata.WorkerRouting = sandboxWorkerRoutingMetadataFromState(instance)
 	return name, metadata
+}
+
+func factorySandboxNetworkProxySession(session *sandbox.SandboxNetworkProxySessionMetadata) *sandbox.SandboxNetworkProxySessionMetadata {
+	if session == nil {
+		return nil
+	}
+	sanitized := sandbox.SanitizeSandboxNetworkProxySessionMetadata(*session)
+	return &sanitized
 }
 
 func factorySandboxMetadataFromName(name string) (string, *factory.SandboxMetadata) {
@@ -2214,7 +2225,7 @@ func factorySandboxLeaseMetadataFromState(instance *sandbox.SandboxState) *facto
 	}
 }
 
-func recordFactorySandboxSecurityPolicyEvent(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, redactor factory.RunSecretRedactor) error {
+func recordFactorySandboxSecurityPolicyEvent(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, decisionLogs []sandbox.SandboxNetworkPolicyDecisionLogRecord, redactor factory.RunSecretRedactor) error {
 	if record == nil || strings.TrimSpace(record.RunID) == "" {
 		return nil
 	}
@@ -2235,18 +2246,20 @@ func recordFactorySandboxSecurityPolicyEvent(store factory.Store, deps factorySa
 			"provider":    target.Provider,
 			"security":    factorySandboxSecurityTimelineMetadata(security),
 		},
+		NetworkPolicyDecisionLogs: decisionLogs,
 	}, redactor)
 	events, err := store.LoadEvents(record.RunID)
 	if err != nil {
 		return fmt.Errorf("load factory sandbox security timeline %q: %w", record.RunID, err)
 	}
 	return deps.appendEvent(store, &factory.EventRecord{
-		Sequence:  nextFactoryRunEventSequence(events),
-		RunID:     record.RunID,
-		EventType: event.EventType,
-		Timestamp: deps.now().UTC(),
-		Summary:   event.Summary,
-		Metadata:  event.Metadata,
+		Sequence:                  nextFactoryRunEventSequence(events),
+		RunID:                     record.RunID,
+		EventType:                 event.EventType,
+		Timestamp:                 deps.now().UTC(),
+		Summary:                   event.Summary,
+		Metadata:                  event.Metadata,
+		NetworkPolicyDecisionLogs: event.NetworkPolicyDecisionLogs,
 	})
 }
 

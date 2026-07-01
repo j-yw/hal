@@ -114,6 +114,7 @@ When `sandbox` is present:
 | `runtime` | object | no | Redaction-safe Sandbox Runtime v2 runtime summary metadata |
 | `workspace` | object | no | Redaction-safe Sandbox Runtime v2 workspace summary metadata |
 | `security` | object | no | Redaction-safe Sandbox Runtime v2 security summary metadata |
+| `networkProxySession` | object | no | Sanitized network proxy-session metadata for policy debugging; metadata only and not proof of live enforcement |
 | `lease` | object | no | Redaction-safe Sandbox Runtime v2 lease summary metadata |
 | `workerRouting` | object | no | Redaction-safe worker-backed execution route metadata |
 
@@ -181,6 +182,24 @@ When `sandbox.security.network` is present:
 | `policyEnforced` | string | no | Enforced network policy summary |
 | `enforcementMode` | string | no | Network enforcement mode, such as `none`, `best_effort`, `proxy`, `firewall`, `runtime`, or `proxy_firewall` |
 | `policyResult` | object | no | Additive effective policy metadata with requested/effective intent, enforcement capability, selected enforcement mode, and redaction-safe warnings |
+
+When `sandbox.networkProxySession` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | yes | Safe proxy-session identifier |
+| `source` | string | yes | Decision source label, such as `factory` |
+| `policySnapshot` | object | no | Safe policy snapshot identity |
+| `enforcementMode` | string | no | Metadata-only enforcement mode, such as `none`, `best_effort`, `proxy`, `firewall`, `runtime`, or `proxy_firewall` |
+
+When `sandbox.networkProxySession.policySnapshot` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | yes | Safe policy snapshot identifier |
+| `version` | string | no | Safe policy snapshot version identifier |
+| `preset` | string | no | Policy preset identifier, such as `deny_by_default`, `allow_listed`, `best_effort`, `disabled`, or `legacy_default` |
+| `ruleSetId` | string | no | Safe rule-set identifier |
 
 When `sandbox.security.secrets` is present:
 

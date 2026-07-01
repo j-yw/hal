@@ -805,7 +805,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			path:          "../docs/contracts/factory-timeline-v1.md",
 			contractValue: "factory-status-v1",
 			requiredFields: []string{
-				"sequence", "runId", "eventType", "timestamp", "message", "summary", "metadata",
+				"sequence", "runId", "eventType", "timestamp", "message", "summary", "metadata", "networkPolicyDecisionLogs",
 			},
 			requiredValues: []string{
 				factory.EventTypeRunCreated,

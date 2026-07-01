@@ -82,6 +82,8 @@ func TestManifestJSONFieldsAndSandboxMetadataTypes(t *testing.T) {
 	assertFieldType(t, manifestType, "Host", reflect.TypeOf((*sandbox.SandboxHost)(nil)))
 	assertFieldType(t, manifestType, "Runtime", reflect.TypeOf((*sandbox.SandboxRuntimeState)(nil)))
 	assertFieldType(t, manifestType, "Security", reflect.TypeOf((*sandbox.SandboxSecurity)(nil)))
+	assertFieldType(t, manifestType, "NetworkProxySession", reflect.TypeOf((*sandbox.SandboxNetworkProxySessionMetadata)(nil)))
+	assertFieldType(t, manifestType, "NetworkPolicyDecisionLogs", reflect.TypeOf([]sandbox.SandboxNetworkPolicyDecisionLogRecord(nil)))
 	assertFieldType(t, manifestType, "Lease", reflect.TypeOf((*sandbox.SandboxLeaseRef)(nil)))
 	assertFieldType(t, manifestType, "WorkerRouting", reflect.TypeOf((*sandbox.WorkerRoutingMetadata)(nil)))
 
@@ -122,6 +124,34 @@ func TestManifestJSONFieldsAndSandboxMetadataTypes(t *testing.T) {
 				EnforcementMode: sandbox.SandboxNetworkEnforcementModeBestEffort,
 			},
 		},
+		NetworkProxySession: &sandbox.SandboxNetworkProxySessionMetadata{
+			ID:     "proxy-session-01",
+			Source: sandbox.SandboxNetworkPolicyDecisionSourceRun,
+			PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
+				ID:     "policy-snapshot-01",
+				Preset: sandbox.SandboxNetworkPolicyPresetDenyByDefault,
+			},
+			EnforcementMode: sandbox.SandboxNetworkEnforcementModeProxy,
+		},
+		NetworkPolicyDecisionLogs: []sandbox.SandboxNetworkPolicyDecisionLogRecord{{
+			ID:             "decision-01",
+			Source:         sandbox.SandboxNetworkPolicyDecisionSourceRun,
+			ProxySessionID: "proxy-session-01",
+			PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
+				ID:     "policy-snapshot-01",
+				Preset: sandbox.SandboxNetworkPolicyPresetDenyByDefault,
+			},
+			Request: &sandbox.SandboxNetworkPolicyRequestSummary{
+				ID:                  "request-01",
+				Operation:           "connect",
+				DestinationCategory: sandbox.SandboxNetworkPolicyDestinationPublicInternet,
+			},
+			Outcome:         sandbox.SandboxNetworkPolicyDecisionOutcomeAllowed,
+			ReasonCode:      sandbox.SandboxNetworkPolicyDecisionReasonMatchedAllowRule,
+			RuleKind:        sandbox.SandboxNetworkPolicyRuleKindDomain,
+			PolicyPreset:    sandbox.SandboxNetworkPolicyPresetDenyByDefault,
+			EnforcementMode: sandbox.SandboxNetworkEnforcementModeProxy,
+		}},
 		Lease: &sandbox.SandboxLeaseRef{
 			ID:            "lease-1",
 			HostID:        "host-1",
@@ -171,7 +201,19 @@ func TestManifestJSONFieldsAndSandboxMetadataTypes(t *testing.T) {
 	assertJSONKeys(t, got, []string{
 		"id", "purpose", "sandboxName", "projectDir", "command", "workDir",
 		"status", "startedAt", "finishedAt", "workspace", "host", "runtime",
-		"security", "lease", "workerRouting", "artifacts", "artifactMetadata",
+		"security", "networkProxySession", "networkPolicyDecisionLogs", "lease", "workerRouting", "artifacts", "artifactMetadata",
+	})
+	proxySession, ok := got["networkProxySession"].(map[string]any)
+	if !ok {
+		t.Fatalf("networkProxySession should be an object, got %T", got["networkProxySession"])
+	}
+	assertJSONKeys(t, proxySession, []string{
+		"id", "source", "policySnapshot", "enforcementMode",
+	})
+	decisionLog := firstJSONArrayObject(t, got, "networkPolicyDecisionLogs")
+	assertJSONKeys(t, decisionLog, []string{
+		"id", "source", "proxySessionId", "policySnapshot", "request", "outcome",
+		"reasonCode", "ruleKind", "policyPreset", "enforcementMode",
 	})
 	lease, ok := got["lease"].(map[string]any)
 	if !ok {
@@ -225,6 +267,12 @@ func TestManifestUnmarshalWithoutArtifactMetadata(t *testing.T) {
 	}
 	if manifest.WorkerRouting != nil {
 		t.Fatalf("WorkerRouting = %#v, want nil for legacy manifest", manifest.WorkerRouting)
+	}
+	if manifest.NetworkProxySession != nil {
+		t.Fatalf("NetworkProxySession = %#v, want nil for legacy manifest", manifest.NetworkProxySession)
+	}
+	if len(manifest.NetworkPolicyDecisionLogs) != 0 {
+		t.Fatalf("NetworkPolicyDecisionLogs = %#v, want empty for legacy manifest", manifest.NetworkPolicyDecisionLogs)
 	}
 	if len(manifest.Artifacts) != 1 || manifest.Artifacts[0].StoredPath != "exec-1/artifacts/log.txt" {
 		t.Fatalf("legacy artifacts = %#v, want preserved artifact", manifest.Artifacts)

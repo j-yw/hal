@@ -58,24 +58,26 @@ type autoSandboxOptions struct {
 }
 
 type autoSandboxRequest struct {
-	ExecutionID    string
-	JSON           bool
-	Args           []string
-	SandboxName    string
-	SandboxHostID  string
-	SandboxRuntime string
-	ProjectDir     string
-	WorkDir        string
-	RepoRemote     string
-	BaseBranch     string
-	RunBranch      string
-	RemoteCommand  []string
-	Env            map[string]string
-	Flags          autoSandboxOptions
-	SyncOut        sandboxSyncOutOptions
-	Workspace      *sandbox.SandboxWorkspace
-	WorkspacePlan  *sandboxworkspace.Plan
-	Security       sandbox.SecurityEvaluationRequest
+	ExecutionID               string
+	JSON                      bool
+	Args                      []string
+	SandboxName               string
+	SandboxHostID             string
+	SandboxRuntime            string
+	ProjectDir                string
+	WorkDir                   string
+	RepoRemote                string
+	BaseBranch                string
+	RunBranch                 string
+	RemoteCommand             []string
+	Env                       map[string]string
+	Flags                     autoSandboxOptions
+	SyncOut                   sandboxSyncOutOptions
+	Workspace                 *sandbox.SandboxWorkspace
+	WorkspacePlan             *sandboxworkspace.Plan
+	Security                  sandbox.SecurityEvaluationRequest
+	NetworkProxySession       *sandbox.SandboxNetworkProxySessionMetadata
+	NetworkPolicyDecisionLogs []sandbox.SandboxNetworkPolicyDecisionLogRecord
 }
 
 type autoSandboxExecutionResult struct {
@@ -877,17 +879,19 @@ func (deps autoSandboxDeps) prepareAutoSandboxInputs(ctx context.Context, req *a
 
 func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxRequest, status sandboxexecution.Status, startedAt time.Time, finishedAt *time.Time, target *sandbox.SandboxState) error {
 	manifest := &sandboxexecution.Manifest{
-		ID:          req.ExecutionID,
-		Purpose:     sandboxexecution.PurposeAuto,
-		SandboxName: req.SandboxName,
-		ProjectDir:  req.ProjectDir,
-		Command:     append([]string(nil), req.RemoteCommand...),
-		WorkDir:     req.WorkDir,
-		Status:      status,
-		StartedAt:   startedAt,
-		FinishedAt:  finishedAt,
-		Workspace:   autoSandboxManifestWorkspace(req),
-		Security:    cloneSandboxSecurity(nil),
+		ID:                        req.ExecutionID,
+		Purpose:                   sandboxexecution.PurposeAuto,
+		SandboxName:               req.SandboxName,
+		ProjectDir:                req.ProjectDir,
+		Command:                   append([]string(nil), req.RemoteCommand...),
+		WorkDir:                   req.WorkDir,
+		Status:                    status,
+		StartedAt:                 startedAt,
+		FinishedAt:                finishedAt,
+		Workspace:                 autoSandboxManifestWorkspace(req),
+		Security:                  cloneSandboxSecurity(nil),
+		NetworkProxySession:       sandboxManifestNetworkProxySession(req.NetworkProxySession),
+		NetworkPolicyDecisionLogs: sandboxManifestNetworkPolicyDecisionLogs(req.NetworkPolicyDecisionLogs),
 	}
 	if target != nil {
 		if strings.TrimSpace(manifest.SandboxName) == "" {

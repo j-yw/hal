@@ -55,23 +55,25 @@ type runSandboxOptions struct {
 }
 
 type runSandboxRequest struct {
-	ExecutionID    string
-	JSON           bool
-	Iterations     int
-	SandboxName    string
-	SandboxHostID  string
-	SandboxRuntime string
-	ProjectDir     string
-	WorkDir        string
-	RepoRemote     string
-	BaseBranch     string
-	RunBranch      string
-	RemoteCommand  []string
-	Flags          runSandboxRunFlags
-	SyncOut        sandboxSyncOutOptions
-	Workspace      *sandbox.SandboxWorkspace
-	WorkspacePlan  *sandboxworkspace.Plan
-	Security       sandbox.SecurityEvaluationRequest
+	ExecutionID               string
+	JSON                      bool
+	Iterations                int
+	SandboxName               string
+	SandboxHostID             string
+	SandboxRuntime            string
+	ProjectDir                string
+	WorkDir                   string
+	RepoRemote                string
+	BaseBranch                string
+	RunBranch                 string
+	RemoteCommand             []string
+	Flags                     runSandboxRunFlags
+	SyncOut                   sandboxSyncOutOptions
+	Workspace                 *sandbox.SandboxWorkspace
+	WorkspacePlan             *sandboxworkspace.Plan
+	Security                  sandbox.SecurityEvaluationRequest
+	NetworkProxySession       *sandbox.SandboxNetworkProxySessionMetadata
+	NetworkPolicyDecisionLogs []sandbox.SandboxNetworkPolicyDecisionLogRecord
 }
 
 type runSandboxExecutionResult struct {
@@ -1094,17 +1096,19 @@ func (w *runSandboxLockedWriter) Write(p []byte) (int, error) {
 
 func saveRunSandboxManifest(store sandboxexecution.Store, req runSandboxRequest, status sandboxexecution.Status, startedAt time.Time, finishedAt *time.Time, target *sandbox.SandboxState) error {
 	manifest := &sandboxexecution.Manifest{
-		ID:          req.ExecutionID,
-		Purpose:     sandboxexecution.PurposeRun,
-		SandboxName: req.SandboxName,
-		ProjectDir:  req.ProjectDir,
-		Command:     append([]string(nil), req.RemoteCommand...),
-		WorkDir:     req.WorkDir,
-		Status:      status,
-		StartedAt:   startedAt,
-		FinishedAt:  finishedAt,
-		Workspace:   runSandboxManifestWorkspace(req),
-		Security:    cloneSandboxSecurity(nil),
+		ID:                        req.ExecutionID,
+		Purpose:                   sandboxexecution.PurposeRun,
+		SandboxName:               req.SandboxName,
+		ProjectDir:                req.ProjectDir,
+		Command:                   append([]string(nil), req.RemoteCommand...),
+		WorkDir:                   req.WorkDir,
+		Status:                    status,
+		StartedAt:                 startedAt,
+		FinishedAt:                finishedAt,
+		Workspace:                 runSandboxManifestWorkspace(req),
+		Security:                  cloneSandboxSecurity(nil),
+		NetworkProxySession:       sandboxManifestNetworkProxySession(req.NetworkProxySession),
+		NetworkPolicyDecisionLogs: sandboxManifestNetworkPolicyDecisionLogs(req.NetworkPolicyDecisionLogs),
 	}
 	if target != nil {
 		if strings.TrimSpace(manifest.SandboxName) == "" {
@@ -1269,6 +1273,18 @@ func cloneSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.SandboxSec
 		clone.Secrets = &secrets
 	}
 	return clone
+}
+
+func sandboxManifestNetworkProxySession(session *sandbox.SandboxNetworkProxySessionMetadata) *sandbox.SandboxNetworkProxySessionMetadata {
+	if session == nil {
+		return nil
+	}
+	sanitized := sandbox.SanitizeSandboxNetworkProxySessionMetadata(*session)
+	return &sanitized
+}
+
+func sandboxManifestNetworkPolicyDecisionLogs(records []sandbox.SandboxNetworkPolicyDecisionLogRecord) []sandbox.SandboxNetworkPolicyDecisionLogRecord {
+	return sandbox.SanitizeSandboxNetworkPolicyDecisionLogRecords(records)
 }
 
 func sandboxManifestSecurity(req sandbox.SecurityEvaluationRequest, target *sandbox.SandboxState) *sandbox.SandboxSecurity {

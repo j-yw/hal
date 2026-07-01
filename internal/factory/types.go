@@ -340,20 +340,21 @@ type SandboxLeaseMetadata struct {
 // SandboxMetadata captures redaction-safe remote execution details for a
 // sandbox-backed factory run.
 type SandboxMetadata struct {
-	Name           string                         `json:"name"`
-	Provider       string                         `json:"provider"`
-	Size           string                         `json:"size,omitempty"`
-	Status         string                         `json:"status"`
-	Connection     *SandboxConnectionMetadata     `json:"connection,omitempty"`
-	SSHCommand     string                         `json:"sshCommand,omitempty"`
-	CleanupCommand string                         `json:"cleanupCommand,omitempty"`
-	Handoff        string                         `json:"handoff,omitempty"`
-	Host           *SandboxHostMetadata           `json:"host,omitempty"`
-	Runtime        *SandboxRuntimeMetadata        `json:"runtime,omitempty"`
-	Workspace      *SandboxWorkspaceMetadata      `json:"workspace,omitempty"`
-	Security       *SandboxSecurityMetadata       `json:"security,omitempty"`
-	Lease          *SandboxLeaseMetadata          `json:"lease,omitempty"`
-	WorkerRouting  *sandbox.WorkerRoutingMetadata `json:"workerRouting,omitempty"`
+	Name                string                                      `json:"name"`
+	Provider            string                                      `json:"provider"`
+	Size                string                                      `json:"size,omitempty"`
+	Status              string                                      `json:"status"`
+	Connection          *SandboxConnectionMetadata                  `json:"connection,omitempty"`
+	SSHCommand          string                                      `json:"sshCommand,omitempty"`
+	CleanupCommand      string                                      `json:"cleanupCommand,omitempty"`
+	Handoff             string                                      `json:"handoff,omitempty"`
+	Host                *SandboxHostMetadata                        `json:"host,omitempty"`
+	Runtime             *SandboxRuntimeMetadata                     `json:"runtime,omitempty"`
+	Workspace           *SandboxWorkspaceMetadata                   `json:"workspace,omitempty"`
+	Security            *SandboxSecurityMetadata                    `json:"security,omitempty"`
+	NetworkProxySession *sandbox.SandboxNetworkProxySessionMetadata `json:"networkProxySession,omitempty"`
+	Lease               *SandboxLeaseMetadata                       `json:"lease,omitempty"`
+	WorkerRouting       *sandbox.WorkerRoutingMetadata              `json:"workerRouting,omitempty"`
 }
 
 // SandboxConnectionMetadata contains safe connection display fields. It must
@@ -496,13 +497,14 @@ type QueueClaim struct {
 
 // EventRecord captures one append-only timeline entry for a factory run.
 type EventRecord struct {
-	Sequence  int64          `json:"sequence"`
-	RunID     string         `json:"runId"`
-	EventType string         `json:"eventType"`
-	Timestamp time.Time      `json:"timestamp"`
-	Message   string         `json:"message,omitempty"`
-	Summary   string         `json:"summary,omitempty"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
+	Sequence                  int64                                           `json:"sequence"`
+	RunID                     string                                          `json:"runId"`
+	EventType                 string                                          `json:"eventType"`
+	Timestamp                 time.Time                                       `json:"timestamp"`
+	Message                   string                                          `json:"message,omitempty"`
+	Summary                   string                                          `json:"summary,omitempty"`
+	Metadata                  map[string]any                                  `json:"metadata,omitempty"`
+	NetworkPolicyDecisionLogs []sandbox.SandboxNetworkPolicyDecisionLogRecord `json:"networkPolicyDecisionLogs,omitempty"`
 }
 
 // PolicyDecisionMetadata is the safe, whitelisted metadata shape for policy
