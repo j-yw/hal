@@ -51,6 +51,7 @@
 - Worker-backed run/auto output streaming should stay on the existing `sandboxexec.EventCommandOutput` path: command-output summaries are populated only from remote command events, while preparation output should be routed through setup writers and excluded from persisted stdout/stderr summary artifacts.
 - Worker-backed run/auto copy semantics should stay on existing runtime-driver boundaries: workspace materialization delegates to `sandboxexec.MaterializeBundleWorkspace` for runtime `CopyIn` and apply `Exec`, while non-factory core/recovery/reports artifact collection uses the selected runtime driver's `CopyOut`; command regression tests can wrap `materializeWorkspace` only to inject fake `LocalGit` and should assert manifests omit host-local bundle paths.
 - Worker-backed failed run/auto recovery should stay on the existing `sandboxexec.PhaseRun` best-effort path: call `CollectRecoveryArtifactsBestEffort` with the selected worker runtime driver, keep the original command error primary, and persist recovery partial/warning metadata without raw endpoint or temp path details.
+- Worker-backed security metadata should come from durable `sandbox.SandboxHost.Security` for selected worker/rootless targets inside `sandboxexec`; do not re-evaluate those targets through SSH-machine compatibility security, and keep `workerRouting` population gated by explicit `--sandbox-host`/`--sandbox-runtime` selection.
 
 ## Patterns from phase17-target-selection (2026-07-01)
 

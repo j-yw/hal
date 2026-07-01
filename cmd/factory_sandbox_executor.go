@@ -306,6 +306,9 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		OnTargetReady: func(_ context.Context, ready *sandbox.SandboxState) error {
 			target = ready
 			record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
+			if record.Sandbox != nil && sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
+				record.Sandbox.WorkerRouting = sandboxWorkerRoutingMetadataFromState(target)
+			}
 			record.UpdatedAt = deps.now().UTC()
 			if err := saveFactorySandboxRunRecordWithRedactor(store, deps, &record, secretRedactor); err != nil {
 				return fmt.Errorf("record factory sandbox metadata: %w", err)

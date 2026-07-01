@@ -779,6 +779,9 @@ func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxReques
 		manifest.Host = cloneSandboxHost(target.Host)
 		manifest.Runtime = cloneSandboxRuntime(target.Runtime)
 		manifest.Security = cloneSandboxSecurity(target.Security)
+		if sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
+			manifest.WorkerRouting = sandboxWorkerRoutingMetadataFromState(target)
+		}
 	}
 	if manifest.Security == nil {
 		manifest.Security = cloneSandboxSecurity(sandbox.EvaluateSandboxSecurity(req.Security))

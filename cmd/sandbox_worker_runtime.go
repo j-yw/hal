@@ -72,13 +72,43 @@ func sandboxWorkerRuntimeRouteSelected(sandboxHostID, sandboxRuntime string, tar
 	if selectedTarget == nil || selectedTarget.Host == nil {
 		return false
 	}
-	if strings.TrimSpace(sandboxHostID) == "" && strings.TrimSpace(sandboxRuntime) == "" {
+	if !sandboxWorkerRoutingRequested(sandboxHostID, sandboxRuntime) {
 		return false
 	}
 	if strings.TrimSpace(selectedTarget.Host.Kind) != sandbox.SandboxHostKindWorker {
 		return false
 	}
 	return strings.TrimSpace(target.Runtime.Driver) == sandboxruntime.DriverRootlessPodman
+}
+
+func sandboxWorkerRoutingRequested(sandboxHostID, sandboxRuntime string) bool {
+	return strings.TrimSpace(sandboxHostID) != "" || strings.TrimSpace(sandboxRuntime) != ""
+}
+
+func sandboxWorkerRoutingMetadataFromState(target *sandbox.SandboxState) *sandbox.WorkerRoutingMetadata {
+	if target == nil || target.Host == nil || target.Runtime == nil {
+		return nil
+	}
+	host := target.Host
+	runtime := target.Runtime
+	if strings.TrimSpace(host.Kind) != sandbox.SandboxHostKindWorker {
+		return nil
+	}
+	driver := strings.TrimSpace(runtime.Driver)
+	if driver == "" {
+		return nil
+	}
+	isolation := strings.TrimSpace(runtime.IsolationLevel)
+	if isolation == "" && driver == sandbox.SandboxRuntimeDriverRootlessPodman {
+		isolation = sandbox.SandboxIsolationLevelContainer
+	}
+	return &sandbox.WorkerRoutingMetadata{
+		SelectedWorkerHostID:   strings.TrimSpace(host.ID),
+		SelectedWorkerHostName: strings.TrimSpace(host.Name),
+		RuntimeDriverID:        driver,
+		IsolationLevel:         isolation,
+		EndpointSummary:        sandboxHostEndpointSummary(host.Endpoint),
+	}
 }
 
 func validateSandboxWorkerHostEndpoint(host *sandbox.SandboxHost, driverID string) (string, error) {

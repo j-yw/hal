@@ -887,6 +887,7 @@ func TestWorkerRootlessRunSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) {
 	if manifest.Runtime == nil || manifest.Runtime.Driver != sandboxruntime.DriverRootlessPodman || manifest.Runtime.WorkerID != "worker-1" {
 		t.Fatalf("manifest runtime = %#v, want selected worker rootless runtime", manifest.Runtime)
 	}
+	requireWorkerRootlessExecutionManifestMetadata(t, manifest)
 }
 
 func TestWorkerRootlessAutoSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) {
@@ -1002,6 +1003,7 @@ func TestWorkerRootlessAutoSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) 
 	if manifest.Runtime == nil || manifest.Runtime.Driver != sandboxruntime.DriverRootlessPodman || manifest.Runtime.WorkerID != "worker-1" {
 		t.Fatalf("manifest runtime = %#v, want selected worker rootless runtime", manifest.Runtime)
 	}
+	requireWorkerRootlessExecutionManifestMetadata(t, manifest)
 }
 
 func TestWorkerRootlessRunSandboxStreamsOutputAndSummariesExcludePreparation(t *testing.T) {
@@ -1875,6 +1877,7 @@ func TestWorkerRootlessFactorySandboxUsesSharedWorkerRuntimeResolver(t *testing.
 	if record.Sandbox.Runtime.Driver != sandboxruntime.DriverRootlessPodman || record.Sandbox.Runtime.WorkerID != "worker-1" {
 		t.Fatalf("record sandbox runtime = %#v, want selected worker rootless runtime", record.Sandbox.Runtime)
 	}
+	requireWorkerRootlessFactorySandboxMetadata(t, record.Sandbox)
 }
 
 func TestWorkerRootlessFactorySandboxStreamsOutputInOrder(t *testing.T) {
@@ -2346,6 +2349,21 @@ func workerRootlessHostWithEndpoint(endpoint string) *sandbox.SandboxHost {
 		SupportedRuntimes: []string{
 			sandboxruntime.DriverRootlessPodman,
 		},
+		Security: workerRootlessHostSecurity(),
+	}
+}
+
+func workerRootlessHostSecurity() *sandbox.SandboxSecurity {
+	return &sandbox.SandboxSecurity{
+		Network: &sandbox.SandboxNetworkSecurity{
+			PolicyRequested: sandbox.SandboxNetworkPolicyDenyByDefault,
+			PolicyEnforced:  sandbox.SandboxNetworkPolicyBestEffort,
+			EnforcementMode: sandbox.SandboxNetworkEnforcementModeNone,
+		},
+		Secrets: &sandbox.SandboxSecretSecurity{
+			RequestedModes: []string{sandbox.SandboxSecretModeSSHAgent},
+			ActiveModes:    []string{sandbox.SandboxSecretModeEnv},
+		},
 	}
 }
 
@@ -2523,6 +2541,128 @@ func requireWorkerRecoveryMetadataSafe(t *testing.T, metadata *sandboxexecution.
 		if strings.Contains(payload, value) {
 			t.Fatalf("artifact metadata leaked unsafe detail %q: %s", value, payload)
 		}
+	}
+}
+
+func requireWorkerRootlessExecutionManifestMetadata(t *testing.T, manifest *sandboxexecution.Manifest) {
+	t.Helper()
+	if manifest == nil {
+		t.Fatal("manifest = nil, want worker-backed execution metadata")
+	}
+	if manifest.Host == nil {
+		t.Fatalf("manifest host = nil, want selected worker host metadata")
+	}
+	if manifest.Host.ID != "worker-1" || manifest.Host.Name != "worker one" || manifest.Host.Kind != sandbox.SandboxHostKindWorker {
+		t.Fatalf("manifest host = %#v, want selected worker host identity", manifest.Host)
+	}
+	requireWorkerRootlessRuntimeState(t, manifest.Runtime)
+	requireWorkerRootlessSandboxSecurity(t, manifest.Security)
+	requireWorkerRootlessSandboxSecurity(t, manifest.Host.Security)
+	requireWorkerRoutingMetadata(t, manifest.WorkerRouting)
+}
+
+func requireWorkerRootlessRuntimeState(t *testing.T, runtime *sandbox.SandboxRuntimeState) {
+	t.Helper()
+	if runtime == nil {
+		t.Fatal("runtime = nil, want selected worker rootless runtime")
+	}
+	if runtime.Driver != sandboxruntime.DriverRootlessPodman ||
+		runtime.IsolationLevel != sandbox.SandboxIsolationLevelContainer ||
+		runtime.RuntimeID != "ctr-worker-rootless" ||
+		runtime.Image != "localhost/hal:test" ||
+		runtime.WorkerID != "worker-1" {
+		t.Fatalf("runtime = %#v, want selected worker rootless runtime metadata", runtime)
+	}
+}
+
+func requireWorkerRootlessSandboxSecurity(t *testing.T, security *sandbox.SandboxSecurity) {
+	t.Helper()
+	if security == nil || security.Network == nil || security.Secrets == nil {
+		t.Fatalf("security = %#v, want durable worker requested/enforced summaries", security)
+	}
+	network := security.Network
+	if network.PolicyRequested != sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("network policyRequested = %q, want %q", network.PolicyRequested, sandbox.SandboxNetworkPolicyDenyByDefault)
+	}
+	if network.PolicyEnforced != sandbox.SandboxNetworkPolicyBestEffort {
+		t.Fatalf("network policyEnforced = %q, want %q", network.PolicyEnforced, sandbox.SandboxNetworkPolicyBestEffort)
+	}
+	if network.PolicyEnforced == sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("network policyEnforced overclaims deny-by-default enforcement: %#v", network)
+	}
+	if network.EnforcementMode != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("network enforcementMode = %q, want %q", network.EnforcementMode, sandbox.SandboxNetworkEnforcementModeNone)
+	}
+	if network.EnforcementMode == sandbox.SandboxNetworkEnforcementModeFirewall ||
+		network.EnforcementMode == sandbox.SandboxNetworkEnforcementModeProxy ||
+		network.EnforcementMode == sandbox.SandboxNetworkEnforcementModeProxyFirewall {
+		t.Fatalf("network enforcementMode overclaims worker enforcement: %#v", network)
+	}
+	if !reflect.DeepEqual(security.Secrets.RequestedModes, []string{sandbox.SandboxSecretModeSSHAgent}) {
+		t.Fatalf("requested secret modes = %#v, want durable worker request", security.Secrets.RequestedModes)
+	}
+	if !reflect.DeepEqual(security.Secrets.ActiveModes, []string{sandbox.SandboxSecretModeEnv}) {
+		t.Fatalf("active secret modes = %#v, want durable worker enforcement", security.Secrets.ActiveModes)
+	}
+	for _, mode := range security.Secrets.ActiveModes {
+		if mode == sandbox.SandboxSecretModeHTTPProxy {
+			t.Fatalf("active secret modes overclaim credential proxy support: %#v", security.Secrets.ActiveModes)
+		}
+	}
+}
+
+func requireWorkerRootlessFactorySandboxMetadata(t *testing.T, metadata *factory.SandboxMetadata) {
+	t.Helper()
+	if metadata == nil {
+		t.Fatal("factory sandbox metadata = nil, want worker-backed metadata")
+	}
+	if metadata.Host == nil || metadata.Host.ID != "worker-1" || metadata.Host.Name != "worker one" || metadata.Host.Kind != sandbox.SandboxHostKindWorker {
+		t.Fatalf("factory sandbox host = %#v, want selected worker host identity", metadata.Host)
+	}
+	if metadata.Runtime == nil ||
+		metadata.Runtime.Driver != sandboxruntime.DriverRootlessPodman ||
+		metadata.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelContainer ||
+		metadata.Runtime.RuntimeID != "ctr-worker-rootless" ||
+		metadata.Runtime.Image != "localhost/hal:test" ||
+		metadata.Runtime.WorkerID != "worker-1" {
+		t.Fatalf("factory sandbox runtime = %#v, want selected worker rootless runtime metadata", metadata.Runtime)
+	}
+	requireWorkerRootlessFactorySecurity(t, metadata.Security)
+	requireWorkerRoutingMetadata(t, metadata.WorkerRouting)
+}
+
+func requireWorkerRootlessFactorySecurity(t *testing.T, security *factory.SandboxSecurityMetadata) {
+	t.Helper()
+	if security == nil || security.Network == nil || security.Secrets == nil {
+		t.Fatalf("factory security = %#v, want durable worker requested/enforced summaries", security)
+	}
+	if security.Network.PolicyRequested != sandbox.SandboxNetworkPolicyDenyByDefault ||
+		security.Network.PolicyEnforced != sandbox.SandboxNetworkPolicyBestEffort ||
+		security.Network.EnforcementMode != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("factory network security = %#v, want durable worker network posture", security.Network)
+	}
+	if security.Network.PolicyEnforced == sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("factory network security overclaims deny-by-default enforcement: %#v", security.Network)
+	}
+	if !reflect.DeepEqual(security.Secrets.RequestedModes, []string{sandbox.SandboxSecretModeSSHAgent}) {
+		t.Fatalf("factory requested secret modes = %#v, want durable worker request", security.Secrets.RequestedModes)
+	}
+	if !reflect.DeepEqual(security.Secrets.ActiveModes, []string{sandbox.SandboxSecretModeEnv}) {
+		t.Fatalf("factory active secret modes = %#v, want durable worker enforcement", security.Secrets.ActiveModes)
+	}
+}
+
+func requireWorkerRoutingMetadata(t *testing.T, routing *sandbox.WorkerRoutingMetadata) {
+	t.Helper()
+	if routing == nil {
+		t.Fatal("workerRouting = nil, want selected worker route metadata")
+	}
+	if routing.SelectedWorkerHostID != "worker-1" ||
+		routing.SelectedWorkerHostName != "worker one" ||
+		routing.RuntimeDriverID != sandboxruntime.DriverRootlessPodman ||
+		routing.IsolationLevel != sandbox.SandboxIsolationLevelContainer ||
+		routing.EndpointSummary != "local Unix socket" {
+		t.Fatalf("workerRouting = %#v, want safe selected worker route metadata", routing)
 	}
 }
 
