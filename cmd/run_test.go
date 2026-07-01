@@ -201,6 +201,7 @@ func TestRunRunWithWriter_IterationContract(t *testing.T) {
 		cmd.Flags().Bool("dry-run", false, "")
 		cmd.Flags().String("story", "", "")
 		cmd.Flags().Int("parallel", 0, "")
+		cmd.Flags().Bool("json", false, "")
 		return cmd
 	}
 
@@ -340,6 +341,37 @@ func TestRunRunWithWriter_IterationContract(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "--parallel must be less than or equal to 10") {
 			t.Fatalf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("parallel above cap rejected in json mode with validation exit", func(t *testing.T) {
+		cmd := newCmd()
+		if err := cmd.Flags().Set("parallel", "11"); err != nil {
+			t.Fatalf("set parallel flag: %v", err)
+		}
+		if err := cmd.Flags().Set("json", "true"); err != nil {
+			t.Fatalf("set json flag: %v", err)
+		}
+
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		err := runRunWithWriter(cmd, nil, nil)
+		if err == nil {
+			t.Fatal("expected validation error, got nil")
+		}
+		if !isValidationErr(err) {
+			t.Fatalf("expected validation exit code error, got: %T %v", err, err)
+		}
+
+		var jr RunResult
+		if jsonErr := json.Unmarshal(out.Bytes(), &jr); jsonErr != nil {
+			t.Fatalf("JSON unmarshal error: %v\noutput: %s", jsonErr, out.String())
+		}
+		if jr.OK {
+			t.Fatal("ok should be false for validation error")
+		}
+		if jr.Error != "--parallel must be less than or equal to 10" {
+			t.Fatalf("error = %q, want parallel cap validation", jr.Error)
 		}
 	})
 

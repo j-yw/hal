@@ -56,7 +56,7 @@ Examples:
   hal convert --archive                      # Archive before writing .hal/prd.json
   hal convert .hal/prd.md --force           # Override branch mismatch guard
   hal convert .hal/prd.md --branch hal/my-feature
-  hal convert .hal/prd.md --granular        # 8-15 atomic T-XXX tasks
+  hal convert .hal/prd.md --granular        # Atomic T-XXX tasks for autonomous execution
   hal convert .hal/prd.md -o custom.json    # Custom output path (no archive)
   hal convert .hal/prd.md --validate        # Also validate after conversion
   hal convert .hal/prd.md -e claude         # Use Claude engine
@@ -79,7 +79,7 @@ func init() {
 	convertCmd.Flags().BoolVar(&convertValidateFlag, "validate", false, "Validate PRD after conversion")
 	convertCmd.Flags().BoolVar(&convertArchiveFlag, "archive", false, "Archive existing feature state before writing canonical .hal/prd.json")
 	convertCmd.Flags().BoolVar(&convertForceFlag, "force", false, "Allow canonical overwrite without archive when branch mismatch protection would block")
-	convertCmd.Flags().BoolVar(&convertGranularFlag, "granular", false, "Decompose into 8-15 atomic tasks (T-XXX IDs) for autonomous execution")
+	convertCmd.Flags().BoolVar(&convertGranularFlag, "granular", false, "Produce atomic T-XXX tasks for autonomous execution")
 	convertCmd.Flags().StringVar(&convertBranchFlag, "branch", "", "Pin generated branchName (overrides markdown-derived branch)")
 	convertCmd.Flags().BoolVar(&convertJSONFlag, "json", false, "Output machine-readable JSON result")
 	rootCmd.AddCommand(convertCmd)

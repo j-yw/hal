@@ -182,6 +182,121 @@ func TestRunnerRejectsInvalidSchedulingMetadataBeforeWorkersStart(t *testing.T) 
 	}
 }
 
+func TestRunnerRejectsWorkerFileWithoutManifest(t *testing.T) {
+	repo := initParallelRunRepo(t)
+	writeParallelRuntime(t, repo, `{
+  "project": "parallel",
+  "branchName": "hal/parallel",
+  "description": "parallel test",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "One",
+      "description": "Create an implementation file without a manifest",
+      "acceptanceCriteria": ["Typecheck passes"],
+      "priority": 1,
+      "passes": false,
+      "notes": "",
+      "parallelSafe": true,
+      "parallelReason": "Independent file"
+    }
+  ]
+}`)
+
+	result := New(Config{
+		RepoDir:       repo,
+		RunID:         "test-run",
+		MaxIterations: 1,
+		Parallelism:   1,
+		Engine:        "fake",
+	}, Deps{
+		Executor: workerExecutorFunc(func(ctx context.Context, req WorkerExecutionRequest) WorkerExecutionResult {
+			if err := os.WriteFile(filepath.Join(req.WorktreePath, "T-001.txt"), []byte("implemented\n"), 0o644); err != nil {
+				return WorkerExecutionResult{Error: err}
+			}
+			return WorkerExecutionResult{EngineResult: engine.Result{Success: true}}
+		}),
+	}).Run(context.Background())
+
+	if result.Error == nil || !strings.Contains(result.Error.Error(), "read worker manifest for T-001") {
+		t.Fatalf("error = %v, want missing worker manifest", result.Error)
+	}
+	if result.Parallel.Started != 1 || result.Parallel.Integrated != 0 || result.Parallel.Failed != 1 {
+		t.Fatalf("parallel summary = %+v, want started=1 integrated=0 failed=1", result.Parallel)
+	}
+	requireTaskPasses(t, filepath.Join(repo, template.HalDir, template.PRDFile), "T-001", false)
+	if got := strings.TrimSpace(git(t, repo, "status", "--short", "--untracked-files=all")); got != "" {
+		t.Fatalf("canonical git status = %q, want clean", got)
+	}
+}
+
+func TestValidateWorkerManifestGatesIntegration(t *testing.T) {
+	valid := func() *loop.WorkerManifest {
+		return &loop.WorkerManifest{
+			TaskID:        "T-001",
+			Status:        loop.WorkerManifestStatusReadyForIntegration,
+			Branch:        "hal/runs/test/T-001",
+			Commit:        "abc123",
+			ProgressEntry: "- T-001 complete",
+		}
+	}
+
+	tests := []struct {
+		name    string
+		edit    func(*loop.WorkerManifest) *loop.WorkerManifest
+		wantErr string
+	}{
+		{
+			name: "nil manifest",
+			edit: func(*loop.WorkerManifest) *loop.WorkerManifest {
+				return nil
+			},
+			wantErr: "worker manifest is required",
+		},
+		{
+			name: "in progress status",
+			edit: func(m *loop.WorkerManifest) *loop.WorkerManifest {
+				m.Status = "in_progress"
+				return m
+			},
+			wantErr: `manifest status = "in_progress"`,
+		},
+		{
+			name: "branch mismatch",
+			edit: func(m *loop.WorkerManifest) *loop.WorkerManifest {
+				m.Branch = "hal/runs/test/other"
+				return m
+			},
+			wantErr: `manifest branch = "hal/runs/test/other"`,
+		},
+		{
+			name: "missing commit",
+			edit: func(m *loop.WorkerManifest) *loop.WorkerManifest {
+				m.Commit = ""
+				return m
+			},
+			wantErr: "manifest commit is required",
+		},
+		{
+			name: "missing progress entry",
+			edit: func(m *loop.WorkerManifest) *loop.WorkerManifest {
+				m.ProgressEntry = ""
+				return m
+			},
+			wantErr: "manifest progressEntry is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateWorkerManifest(tt.edit(valid()), "T-001", "hal/runs/test/T-001")
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 type gitCommittingWorkerExecutor struct {
 	delay     time.Duration
 	mu        sync.Mutex

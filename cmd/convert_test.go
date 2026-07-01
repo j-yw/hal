@@ -92,7 +92,7 @@ func TestConvertUsageIncludesSafetyAndBranchFlags(t *testing.T) {
 		"--branch",
 		"Archive existing feature state before writing canonical .hal/prd.json",
 		"Allow canonical overwrite without archive when branch mismatch protection would block",
-		"Decompose into 8-15 atomic tasks (T-XXX IDs) for autonomous execution",
+		"Produce atomic T-XXX tasks for autonomous execution",
 		"Pin generated branchName (overrides markdown-derived branch)",
 	}
 

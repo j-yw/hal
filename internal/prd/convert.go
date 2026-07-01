@@ -157,12 +157,13 @@ func buildConversionPrompt(skill, mdContent, resolvedBranchName string, granular
 	idRule := "IDs are sequential (US-001, US-002, etc.)"
 	modeRule := "Standard mode: produce developer-sized user stories."
 	schedulingRule := "Scheduling metadata is optional: omit dependsOn, conflictDomains, parallelSafe, barrier, and parallelReason unless the PRD clearly supports them."
+	sourceRule := "Every story must trace to an explicit source requirement. Do not invent verification, integration, checkpoint, cleanup, or summary stories that are not requested by the markdown."
 	exampleID := "US-001"
 	if granular {
-		storyRule = "Decompose into 8-15 atomic tasks, each completable in ONE agent iteration"
+		storyRule = "Produce atomic tasks, each completable in ONE agent iteration; preserve explicit source stories that are already atomic and split only work that is too large"
 		idRule = "IDs are sequential (T-001, T-002, etc.)"
-		modeRule = "Granular mode: produce 8-15 dependency-ordered atomic tasks for autonomous execution."
-		schedulingRule = "Granular scheduling metadata: emit dependsOn only for true prerequisites, conflictDomains only for shared files/resources that should not run together, parallelSafe only when confidently true or false, barrier only for required fan-in/checkpoint tasks, and parallelReason whenever parallelSafe or barrier is present."
+		modeRule = "Granular mode: produce dependency-ordered atomic tasks for autonomous execution. The task count should match the source scope; do not pad to a target count."
+		schedulingRule = "Granular scheduling metadata: emit dependsOn only for true prerequisites, conflictDomains only for shared files/resources that should not run together, parallelSafe only when confidently true or false, barrier only for explicit source-requested fan-in/checkpoint tasks, and parallelReason whenever parallelSafe or barrier is present."
 		exampleID = "T-001"
 	}
 
@@ -196,6 +197,7 @@ Convert the markdown PRD to JSON format following the skill rules:
 10. %s
 11. %s
 12. Scheduling fields must be conservative and valid: no unknown dependsOn IDs, no self-dependencies, no dependencies on later items, no duplicate IDs, no dependency cycles, and omit empty optional fields.
+13. %s
 
 IMPORTANT: Do NOT use any tools (no Read, Write, Bash, etc.). Do NOT write any files.
 File saving is handled by the caller. Return ONLY the JSON object (no markdown, no explanation). The format must be:
@@ -223,7 +225,7 @@ Optional scheduling fields may be added to story/task objects only when they car
   "parallelSafe": false,
   "barrier": true,
   "parallelReason": "Requires serialized integration after prerequisite work"
-}`, skill, mdContent, storyRule, template.BrowserVerificationCriterion, idRule, modeRule, branchRule, schedulingRule, branchExample, exampleID, exampleID)
+}`, skill, mdContent, storyRule, template.BrowserVerificationCriterion, idRule, modeRule, branchRule, schedulingRule, sourceRule, branchExample, exampleID, exampleID)
 }
 
 var (

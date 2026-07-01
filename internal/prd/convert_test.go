@@ -602,10 +602,15 @@ func TestConvertWithEngine_GranularOptionAddsTaskGuidanceToPrompt(t *testing.T) 
 	}
 
 	checks := []string{
-		"Decompose into 8-15 atomic tasks, each completable in ONE agent iteration",
+		"Produce atomic tasks, each completable in ONE agent iteration",
+		"preserve explicit source stories that are already atomic",
+		"split only work that is too large",
 		"IDs are sequential (T-001, T-002, etc.)",
+		"The task count should match the source scope; do not pad to a target count.",
 		"Granular scheduling metadata: emit dependsOn only for true prerequisites",
 		"conflictDomains only for shared files/resources that should not run together",
+		"Every story must trace to an explicit source requirement.",
+		"Do not invent verification, integration, checkpoint, cleanup, or summary stories",
 		"no unknown dependsOn IDs, no self-dependencies, no dependencies on later items",
 		"no duplicate IDs, no dependency cycles",
 		"\"id\": \"T-001\"",
