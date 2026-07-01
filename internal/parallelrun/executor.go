@@ -65,18 +65,19 @@ func (e *EngineWorkerExecutor) ExecuteWorker(ctx context.Context, req WorkerExec
 	if result.Error != nil {
 		return WorkerExecutionResult{EngineResult: result}
 	}
+
+	manifest, manifestErr := loop.ReadWorkerManifest(req.ManifestPath)
+	if manifestErr == nil {
+		return WorkerExecutionResult{EngineResult: result, Manifest: manifest}
+	}
 	if !result.Success && !result.Complete {
 		return WorkerExecutionResult{
 			EngineResult: result,
-			Error:        fmt.Errorf("worker %s did not report success", req.Assignment.TaskID),
+			Error:        fmt.Errorf("worker %s did not report success and manifest is unavailable: %w", req.Assignment.TaskID, manifestErr),
 		}
 	}
 
-	manifest, err := loop.ReadWorkerManifest(req.ManifestPath)
-	if err != nil {
-		return WorkerExecutionResult{EngineResult: result, Error: err}
-	}
-	return WorkerExecutionResult{EngineResult: result, Manifest: manifest}
+	return WorkerExecutionResult{EngineResult: result, Error: manifestErr}
 }
 
 func cloneEngineConfig(cfg *engine.EngineConfig) *engine.EngineConfig {
