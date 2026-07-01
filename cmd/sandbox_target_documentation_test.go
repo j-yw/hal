@@ -24,6 +24,7 @@ func TestPhase17TargetSelectionDocumentationCoversVerificationAndScope(t *testin
 		"go test -timeout=120s ./internal/sandboxtarget",
 		"go test -timeout=120s ./cmd -run 'TestSandboxTargetSelectionFlagHelpStaysConservative|TestSandboxRuntimeInspectionDoesNotBleedIntoExecutionCommands'",
 		"go test -timeout=120s ./cmd -run 'TestRunSandboxDefaultTargetResolutionStaysCachedAndFakeOnly|TestAutoSandboxDefaultTargetResolutionStaysCachedAndFakeOnly|TestFactorySandboxDefaultTargetResolutionStaysCachedAndFakeOnly'",
+		"go test -timeout=120s ./cmd -run 'TestRunWithWriterRejectsSandboxTargetFlagsWithoutSandbox|TestRunSandboxResolveTargetRejectsExplicitRuntimeBeforeDefaultFallback|TestRunSandboxResolveTargetUsesSelectedRuntimeMetadata|TestRunAutoWithDirRejectsSandboxTargetFlagsWithoutSandbox|TestAutoSandboxResolveTargetRejectsExplicitRuntimeBeforeDefaultFallback|TestFactoryRunRequestFromCommandRejectsTargetSelectionFlagsWithoutSandbox|TestResolveFactorySandboxTargetRejectsExplicitRuntimeBeforeDefaultFallback'",
 		"go test -timeout=120s ./cmd -run 'TestSandboxRuntimeCompatRejectsUnsupportedSelectedRuntimeDrivers|TestSandboxRuntimeCompatDefaultsToSSHMachineUnlessRootlessExplicit|TestSandboxRuntimeCompatWorkerHostMetadataDoesNotSelectRuntime'",
 		"go test -timeout=120s ./cmd -run 'TestPhase17TargetSelectionDocumentationCoversVerificationAndScope'",
 		"make docs-check",
@@ -40,9 +41,13 @@ func TestPhase17TargetSelectionDocumentationCoversVerificationAndScope(t *testin
 		"Live runtime refresh is out of scope for Phase 17.",
 		"durable cached metadata supplied through fakeable selector and command-layer dependencies",
 		"not from worker clients, runtime drivers, cloud providers, Docker, Podman, KVM, or network APIs",
+		"target flags being rejected outside sandbox mode",
+		"constrained target resolution not falling back to default SSH-machine execution",
 		"Unsupported explicit runtime drivers such as `microvm` or worker-only driver strings",
 		"reject them at runtime driver resolution instead of silently downgrading to SSH-machine execution",
 		"Missing runtime metadata remains the legacy SSH-machine compatibility path.",
+		"Target-selection flags are sandbox-only intent.",
+		"`hal run`, `hal auto`, and `hal factory run` must reject `--sandbox-host` and `--sandbox-runtime` unless `--sandbox` is also set",
 	}
 	for _, want := range required {
 		if !strings.Contains(doc, want) && !strings.Contains(normalizedDoc, want) {

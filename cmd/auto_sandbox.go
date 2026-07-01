@@ -2,10 +2,8 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -92,6 +90,8 @@ type autoSandboxDeps struct {
 	now                    func() time.Time
 	planWorkspace          func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error)
 	loadSandbox            func(string) (*sandbox.SandboxState, error)
+	listSandboxes          func() ([]*sandbox.SandboxState, error)
+	listHosts              func() ([]*sandbox.SandboxHost, error)
 	resolveDefault         func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
 	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
@@ -110,6 +110,8 @@ var defaultAutoSandboxDeps = autoSandboxDeps{
 	now:            time.Now,
 	planWorkspace:  defaultRunSandboxWorkspacePlan,
 	loadSandbox:    sandbox.LoadActiveInstance,
+	listSandboxes:  sandbox.ListActiveInstances,
+	listHosts:      sandbox.ListHosts,
 	resolveDefault: sandbox.ResolveDefault,
 	provision:      provisionFactorySandbox,
 	resolveProvider: func(providerName string) (sandbox.Provider, error) {
@@ -310,6 +312,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 }
 
 func normalizeAutoSandboxDeps(deps autoSandboxDeps) autoSandboxDeps {
+	customResolveDefault := deps.resolveDefault != nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultAutoSandboxDeps.defaultStore
 	}
@@ -327,6 +330,16 @@ func normalizeAutoSandboxDeps(deps autoSandboxDeps) autoSandboxDeps {
 	}
 	if deps.resolveDefault == nil {
 		deps.resolveDefault = defaultAutoSandboxDeps.resolveDefault
+	}
+	if deps.listSandboxes == nil {
+		if customResolveDefault {
+			deps.listSandboxes = sandboxCommandListSandboxesFromDefault(deps.resolveDefault)
+		} else {
+			deps.listSandboxes = defaultAutoSandboxDeps.listSandboxes
+		}
+	}
+	if deps.listHosts == nil {
+		deps.listHosts = defaultAutoSandboxDeps.listHosts
 	}
 	if deps.provision == nil {
 		deps.provision = defaultAutoSandboxDeps.provision
@@ -627,36 +640,26 @@ func collectAutoSandboxOutputSummaryArtifacts(store sandboxexecution.Store, req 
 }
 
 func (deps autoSandboxDeps) resolveAutoSandboxTarget(ctx context.Context, req autoSandboxRequest, out io.Writer) (*sandbox.SandboxState, error) {
-	if name := strings.TrimSpace(req.SandboxName); name != "" {
-		target, err := deps.loadSandbox(name)
-		if err == nil {
-			return target, nil
-		}
-		if !errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("load sandbox %q: %w", name, err)
-		}
-		return deps.provision(ctx, factorySandboxProvisionRequest{
-			ProjectDir: req.ProjectDir,
-			Name:       name,
-			BranchName: req.RunBranch,
-			Repo:       req.RepoRemote,
-			Out:        out,
-		})
+	listSandboxes := deps.listSandboxes
+	if listSandboxes == nil && deps.resolveDefault != nil {
+		listSandboxes = sandboxCommandListSandboxesFromDefault(deps.resolveDefault)
 	}
-	target, _, err := deps.resolveDefault(factoryRunningSandboxFilter)
-	if err == nil {
-		return target, nil
-	}
-	if !isFactorySandboxProvisionableResolutionError(err) {
-		return nil, err
-	}
-	name := sandbox.SandboxNameFromBranch(req.RunBranch)
-	return deps.provision(ctx, factorySandboxProvisionRequest{
-		ProjectDir: req.ProjectDir,
-		Name:       name,
-		BranchName: req.RunBranch,
-		Repo:       req.RepoRemote,
-		Out:        out,
+	return resolveSandboxCommandTarget(ctx, sandboxCommandTargetRequest{
+		Purpose:             sandbox.SandboxLeasePurposeAuto,
+		SandboxName:         req.SandboxName,
+		SandboxHostID:       req.SandboxHostID,
+		SandboxRuntime:      req.SandboxRuntime,
+		ProjectDir:          req.ProjectDir,
+		Repository:          req.RepoRemote,
+		Branch:              req.RunBranch,
+		ProvisionRepository: req.RepoRemote,
+		Out:                 out,
+	}, sandboxCommandTargetDeps{
+		loadSandbox:    deps.loadSandbox,
+		listSandboxes:  listSandboxes,
+		listHosts:      deps.listHosts,
+		resolveDefault: deps.resolveDefault,
+		provision:      deps.provision,
 	})
 }
 

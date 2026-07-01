@@ -576,8 +576,28 @@ func validateRequestedRuntimeIsolation(req Request) Result {
 }
 
 func validateSelectedSandbox(req Request, result Result) Result {
-	if result.Failed() || result.Sandbox == nil || (!req.HasRuntimeConstraint() && !req.HasIsolationConstraint()) {
+	if result.Failed() || result.Sandbox == nil || (!req.HasHostConstraint() && !req.HasRuntimeConstraint() && !req.HasIsolationConstraint()) {
 		return Result{}
+	}
+	if req.HasHostConstraint() {
+		hostID := strings.TrimSpace(req.HostID)
+		actualHostID := selectedSandboxHostID(result.Sandbox)
+		if actualHostID == "" {
+			return failureResult(Failure{
+				Reason:      FailureReasonHostMismatch,
+				Message:     fmt.Sprintf("sandbox %q has no durable host metadata for requested host %q", result.Sandbox.Name, hostID),
+				SandboxName: result.Sandbox.Name,
+				HostID:      hostID,
+			})
+		}
+		if actualHostID != hostID {
+			return failureResult(Failure{
+				Reason:      FailureReasonHostMismatch,
+				Message:     fmt.Sprintf("sandbox %q is on host %q, not requested host %q", result.Sandbox.Name, actualHostID, hostID),
+				SandboxName: result.Sandbox.Name,
+				HostID:      hostID,
+			})
+		}
 	}
 	runtime := RuntimeForSandbox(result.Sandbox)
 	if req.HasRuntimeConstraint() {
@@ -614,6 +634,13 @@ func validateSelectedSandbox(req Request, result Result) Result {
 		}
 	}
 	return Result{}
+}
+
+func selectedSandboxHostID(target *sandbox.SandboxState) string {
+	if target == nil || target.Host == nil {
+		return ""
+	}
+	return strings.TrimSpace(target.Host.ID)
 }
 
 func runtimeStateForDriver(runtimeDriver string) *sandboxruntime.RuntimeState {

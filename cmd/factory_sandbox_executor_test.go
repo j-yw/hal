@@ -1051,6 +1051,52 @@ func TestRunFactorySandboxExecutorUsesRootlessPodmanRuntimeMetadataForDriverReso
 	requireFactorySandboxSecurityMetadata(t, sandboxMetadata.Security, []string{sandbox.SandboxSecretModeLegacyAuthSync})
 }
 
+func TestResolveFactorySandboxTargetRejectsExplicitRuntimeBeforeDefaultFallback(t *testing.T) {
+	record := factory.RunRecord{
+		RunID:      "run-microvm-target",
+		RepoRemote: "git@example.com:org/repo.git",
+		BranchName: "feature/microvm",
+	}
+	defaultCalled := false
+	provisionCalled := false
+	deps := factorySandboxExecutorDeps{
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{{
+				ID:                "ssh-a",
+				Name:              "ssh a",
+				SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+			}}, nil
+		},
+		listSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("listSandboxes should not run for unsupported explicit runtime")
+			return nil, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			defaultCalled = true
+			return &sandbox.SandboxState{Name: "legacy", Status: sandbox.StatusRunning}, "", nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			provisionCalled = true
+			return nil, nil
+		},
+	}
+
+	_, err := resolveFactorySandboxTarget(context.Background(), factorySandboxExecutorRequest{
+		ProjectDir:     "/workspace/hal",
+		SandboxRuntime: sandbox.SandboxRuntimeDriverMicroVM,
+		RemoteOutput:   io.Discard,
+	}, &record, "git@example.com:org/repo.git", deps)
+	if err == nil {
+		t.Fatal("resolveFactorySandboxTarget() error = nil, want explicit runtime failure")
+	}
+	if !strings.Contains(err.Error(), `no durable host supports requested runtime "microvm"`) {
+		t.Fatalf("error = %q, want microvm unsupported failure", err.Error())
+	}
+	if defaultCalled || provisionCalled {
+		t.Fatalf("defaultCalled=%v provisionCalled=%v, want no legacy fallback", defaultCalled, provisionCalled)
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecution(t *testing.T) {
 	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
 	store := factory.NewStore(t.TempDir())

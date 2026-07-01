@@ -26,6 +26,7 @@ Run focused checks for the target-selection foundation:
 go test -timeout=120s ./internal/sandboxtarget
 go test -timeout=120s ./cmd -run 'TestSandboxTargetSelectionFlagHelpStaysConservative|TestSandboxRuntimeInspectionDoesNotBleedIntoExecutionCommands'
 go test -timeout=120s ./cmd -run 'TestRunSandboxDefaultTargetResolutionStaysCachedAndFakeOnly|TestAutoSandboxDefaultTargetResolutionStaysCachedAndFakeOnly|TestFactorySandboxDefaultTargetResolutionStaysCachedAndFakeOnly'
+go test -timeout=120s ./cmd -run 'TestRunWithWriterRejectsSandboxTargetFlagsWithoutSandbox|TestRunSandboxResolveTargetRejectsExplicitRuntimeBeforeDefaultFallback|TestRunSandboxResolveTargetUsesSelectedRuntimeMetadata|TestRunAutoWithDirRejectsSandboxTargetFlagsWithoutSandbox|TestAutoSandboxResolveTargetRejectsExplicitRuntimeBeforeDefaultFallback|TestFactoryRunRequestFromCommandRejectsTargetSelectionFlagsWithoutSandbox|TestResolveFactorySandboxTargetRejectsExplicitRuntimeBeforeDefaultFallback'
 go test -timeout=120s ./cmd -run 'TestSandboxRuntimeCompatRejectsUnsupportedSelectedRuntimeDrivers|TestSandboxRuntimeCompatDefaultsToSSHMachineUnlessRootlessExplicit|TestSandboxRuntimeCompatWorkerHostMetadataDoesNotSelectRuntime'
 go test -timeout=120s ./cmd -run 'TestPhase17TargetSelectionDocumentationCoversVerificationAndScope'
 make docs-check
@@ -38,10 +39,12 @@ make lint
 
 These commands cover the `internal/sandboxtarget` import boundary, target
 contracts, legacy fallback behavior, explicit host/runtime/isolation
-constraints, selected metadata propagation, host-side CLI flag help, runtime
-resolver guardrails, default run/auto/factory sandbox regressions, generated
-CLI documentation drift, the full Go package graph, vet, build, and lint when
-the linter is installed.
+constraints, selected metadata propagation, host-side CLI flag help, target
+flags being rejected outside sandbox mode, constrained target resolution not
+falling back to default SSH-machine execution, runtime resolver guardrails,
+default run/auto/factory sandbox regressions, generated CLI documentation
+drift, the full Go package graph, vet, build, and lint when the linter is
+installed.
 
 Run `make docs-cli` before `make docs-check` when command metadata, examples,
 or generated CLI surfaces change.
@@ -70,3 +73,8 @@ strings may be represented in selected metadata, but Phase 17 must reject them
 at runtime driver resolution instead of silently downgrading to SSH-machine
 execution. Missing runtime metadata remains the legacy SSH-machine
 compatibility path.
+
+Target-selection flags are sandbox-only intent. `hal run`, `hal auto`, and
+`hal factory run` must reject `--sandbox-host` and `--sandbox-runtime` unless
+`--sandbox` is also set, so explicit host/runtime requests cannot be accepted
+and ignored by local execution.

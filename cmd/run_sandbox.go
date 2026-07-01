@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"strconv"
@@ -90,6 +89,8 @@ type runSandboxDeps struct {
 	repoRemote             func(string) (string, error)
 	planWorkspace          func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error)
 	loadSandbox            func(string) (*sandbox.SandboxState, error)
+	listSandboxes          func() ([]*sandbox.SandboxState, error)
+	listHosts              func() ([]*sandbox.SandboxHost, error)
 	resolveDefault         func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
 	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
@@ -111,6 +112,8 @@ var defaultRunSandboxDeps = runSandboxDeps{
 	repoRemote:     readGitRemoteOptionalInDir,
 	planWorkspace:  defaultRunSandboxWorkspacePlan,
 	loadSandbox:    sandbox.LoadActiveInstance,
+	listSandboxes:  sandbox.ListActiveInstances,
+	listHosts:      sandbox.ListHosts,
 	resolveDefault: sandbox.ResolveDefault,
 	provision:      provisionFactorySandbox,
 	resolveProvider: func(providerName string) (sandbox.Provider, error) {
@@ -356,6 +359,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 }
 
 func normalizeRunSandboxDeps(deps runSandboxDeps) runSandboxDeps {
+	customResolveDefault := deps.resolveDefault != nil
 	useDefaultWorkspacePlanner := deps.planWorkspace == nil && deps.currentBranch == nil && deps.repoRemote == nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultRunSandboxDeps.defaultStore
@@ -383,6 +387,16 @@ func normalizeRunSandboxDeps(deps runSandboxDeps) runSandboxDeps {
 	}
 	if deps.resolveDefault == nil {
 		deps.resolveDefault = defaultRunSandboxDeps.resolveDefault
+	}
+	if deps.listSandboxes == nil {
+		if customResolveDefault {
+			deps.listSandboxes = sandboxCommandListSandboxesFromDefault(deps.resolveDefault)
+		} else {
+			deps.listSandboxes = defaultRunSandboxDeps.listSandboxes
+		}
+	}
+	if deps.listHosts == nil {
+		deps.listHosts = defaultRunSandboxDeps.listHosts
 	}
 	if deps.provision == nil {
 		deps.provision = defaultRunSandboxDeps.provision
@@ -773,36 +787,26 @@ func sanitizeSandboxOutputSummary(value string, target *sandbox.SandboxState) st
 }
 
 func (deps runSandboxDeps) resolveRunSandboxTarget(ctx context.Context, req runSandboxRequest, out io.Writer) (*sandbox.SandboxState, error) {
-	if name := strings.TrimSpace(req.SandboxName); name != "" {
-		target, err := deps.loadSandbox(name)
-		if err == nil {
-			return target, nil
-		}
-		if !errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("load sandbox %q: %w", name, err)
-		}
-		return deps.provision(ctx, factorySandboxProvisionRequest{
-			ProjectDir: req.ProjectDir,
-			Name:       name,
-			BranchName: req.RunBranch,
-			Repo:       req.RepoRemote,
-			Out:        out,
-		})
+	listSandboxes := deps.listSandboxes
+	if listSandboxes == nil && deps.resolveDefault != nil {
+		listSandboxes = sandboxCommandListSandboxesFromDefault(deps.resolveDefault)
 	}
-	target, _, err := deps.resolveDefault(factoryRunningSandboxFilter)
-	if err == nil {
-		return target, nil
-	}
-	if !isFactorySandboxProvisionableResolutionError(err) {
-		return nil, err
-	}
-	name := sandbox.SandboxNameFromBranch(req.RunBranch)
-	return deps.provision(ctx, factorySandboxProvisionRequest{
-		ProjectDir: req.ProjectDir,
-		Name:       name,
-		BranchName: req.RunBranch,
-		Repo:       req.RepoRemote,
-		Out:        out,
+	return resolveSandboxCommandTarget(ctx, sandboxCommandTargetRequest{
+		Purpose:             sandbox.SandboxLeasePurposeRun,
+		SandboxName:         req.SandboxName,
+		SandboxHostID:       req.SandboxHostID,
+		SandboxRuntime:      req.SandboxRuntime,
+		ProjectDir:          req.ProjectDir,
+		Repository:          req.RepoRemote,
+		Branch:              req.RunBranch,
+		ProvisionRepository: req.RepoRemote,
+		Out:                 out,
+	}, sandboxCommandTargetDeps{
+		loadSandbox:    deps.loadSandbox,
+		listSandboxes:  listSandboxes,
+		listHosts:      deps.listHosts,
+		resolveDefault: deps.resolveDefault,
+		provision:      deps.provision,
 	})
 }
 

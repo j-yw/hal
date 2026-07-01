@@ -4047,6 +4047,9 @@ func parseFactoryRunRequestWithTarget(args []string, reportPath, baseBranch stri
 	if err != nil {
 		return factoryRunRequest{}, err
 	}
+	if err := validateSandboxTargetFlagsRequireSandbox(sandboxMode, targetFlags); err != nil {
+		return factoryRunRequest{}, err
+	}
 
 	req := factoryRunRequest{
 		ReportPath:     reportPath,

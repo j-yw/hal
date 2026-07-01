@@ -164,6 +164,7 @@ const (
 	FailureReasonSandboxNotFound      FailureReason = "sandbox_not_found"
 	FailureReasonNoRunningSandbox     FailureReason = "no_running_sandbox"
 	FailureReasonHostNotFound         FailureReason = "host_not_found"
+	FailureReasonHostMismatch         FailureReason = "host_mismatch"
 	FailureReasonHostUnhealthy        FailureReason = "host_unhealthy"
 	FailureReasonRuntimeUnsupported   FailureReason = "runtime_unsupported"
 	FailureReasonIsolationUnavailable FailureReason = "isolation_unavailable"

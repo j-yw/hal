@@ -427,18 +427,27 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	if skipPRChanged && !noCIChanged {
 		noCI = skipPR
 	}
-	if _, err := parseSandboxTargetFlagValues(sandboxTargetFlagValues{
+	targetFlags, err := parseSandboxTargetFlagValues(sandboxTargetFlagValues{
 		HostID:         sandboxHost,
 		HostChanged:    sandboxHostChanged,
 		RuntimeDriver:  sandboxRuntime,
 		RuntimeChanged: sandboxRuntimeChanged,
-	}); err != nil {
+	})
+	if err == nil {
+		err = validateSandboxTargetFlagsRequireSandbox(sandboxMode, sandboxTargetFlagValues{
+			HostChanged:    sandboxHostChanged,
+			RuntimeChanged: sandboxRuntimeChanged,
+		})
+	}
+	if err != nil {
 		if jsonMode {
 			jr := autoFailureResult(autoEntryModeReportDiscovery, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
 			return outputAutoJSON(out, jr)
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
+	sandboxHost = targetFlags.HostID
+	sandboxRuntime = targetFlags.RuntimeDriver
 
 	sourceMarkdown := ""
 	if len(args) > 0 {

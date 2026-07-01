@@ -39,3 +39,16 @@ func parseSandboxTargetFlagValues(values sandboxTargetFlagValues) (sandboxTarget
 
 	return values, nil
 }
+
+func validateSandboxTargetFlagsRequireSandbox(sandboxMode bool, values sandboxTargetFlagValues) error {
+	if sandboxMode || (!values.HostChanged && !values.RuntimeChanged) {
+		return nil
+	}
+	if values.HostChanged && values.RuntimeChanged {
+		return fmt.Errorf("--%s and --%s require --sandbox", sandboxHostFlagName, sandboxRuntimeFlagName)
+	}
+	if values.HostChanged {
+		return fmt.Errorf("--%s requires --sandbox", sandboxHostFlagName)
+	}
+	return fmt.Errorf("--%s requires --sandbox", sandboxRuntimeFlagName)
+}

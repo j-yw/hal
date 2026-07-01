@@ -306,17 +306,26 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 		}
 	}
 
-	if _, err := parseSandboxTargetFlagValues(sandboxTargetFlagValues{
+	targetFlags, err := parseSandboxTargetFlagValues(sandboxTargetFlagValues{
 		HostID:         sandboxHost,
 		HostChanged:    sandboxHostChanged,
 		RuntimeDriver:  sandboxRuntime,
 		RuntimeChanged: sandboxRuntimeChanged,
-	}); err != nil {
+	})
+	if err == nil {
+		err = validateSandboxTargetFlagsRequireSandbox(sandboxMode, sandboxTargetFlagValues{
+			HostChanged:    sandboxHostChanged,
+			RuntimeChanged: sandboxRuntimeChanged,
+		})
+	}
+	if err != nil {
 		if jsonMode {
 			return outputRunJSONError(out, err.Error())
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
+	sandboxHost = targetFlags.HostID
+	sandboxRuntime = targetFlags.RuntimeDriver
 
 	if sandboxMode {
 		ctx := context.Background()

@@ -251,6 +251,119 @@ func TestParseRunSandboxRequestRejectsEmptyExplicitEngine(t *testing.T) {
 	}
 }
 
+func TestRunWithWriterRejectsSandboxTargetFlagsWithoutSandbox(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd := newRunSandboxTestCommand(&out, &errOut)
+	if err := cmd.Flags().Set(sandboxRuntimeFlagName, sandboxruntime.DriverRootlessPodman); err != nil {
+		t.Fatalf("set sandbox-runtime: %v", err)
+	}
+
+	err := runRunWithWriter(cmd, nil, &errOut)
+	if err == nil {
+		t.Fatal("runRunWithWriter() error = nil, want sandbox target flag validation")
+	}
+	if !strings.Contains(err.Error(), "--sandbox-runtime requires --sandbox") {
+		t.Fatalf("error = %q, want sandbox-runtime require sandbox", err.Error())
+	}
+}
+
+func TestRunSandboxResolveTargetRejectsExplicitRuntimeBeforeDefaultFallback(t *testing.T) {
+	defaultCalled := false
+	provisionCalled := false
+	deps := runSandboxDeps{
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{{
+				ID:                "ssh-a",
+				Name:              "ssh a",
+				SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+			}}, nil
+		},
+		listSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("listSandboxes should not run for unsupported explicit runtime")
+			return nil, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			defaultCalled = true
+			return &sandbox.SandboxState{Name: "legacy", Status: sandbox.StatusRunning}, "", nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			provisionCalled = true
+			return nil, nil
+		},
+	}
+
+	_, err := deps.resolveRunSandboxTarget(context.Background(), runSandboxRequest{
+		SandboxRuntime: sandbox.SandboxRuntimeDriverMicroVM,
+		ProjectDir:     "/workspace/hal",
+		RepoRemote:     "git@example.com:org/repo.git",
+		RunBranch:      "feature/microvm",
+	}, io.Discard)
+	if err == nil {
+		t.Fatal("resolveRunSandboxTarget() error = nil, want explicit runtime failure")
+	}
+	if !strings.Contains(err.Error(), `no durable host supports requested runtime "microvm"`) {
+		t.Fatalf("error = %q, want microvm unsupported failure", err.Error())
+	}
+	if defaultCalled || provisionCalled {
+		t.Fatalf("defaultCalled=%v provisionCalled=%v, want no legacy fallback", defaultCalled, provisionCalled)
+	}
+}
+
+func TestRunSandboxResolveTargetUsesSelectedRuntimeMetadata(t *testing.T) {
+	target := &sandbox.SandboxState{
+		Name:     "podman-dev",
+		Provider: "local",
+		Status:   sandbox.StatusRunning,
+		Host: &sandbox.SandboxHost{
+			ID:   "worker-a",
+			Name: "worker a",
+		},
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandbox.SandboxRuntimeDriverRootlessPodman,
+			RuntimeID:      "ctr-1",
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+		},
+	}
+	deps := runSandboxDeps{
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != "podman-dev" {
+				t.Fatalf("loadSandbox name = %q, want podman-dev", name)
+			}
+			return target, nil
+		},
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{{
+				ID:                "worker-a",
+				Name:              "worker a",
+				SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+			}}, nil
+		},
+		listSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("listSandboxes should not run for explicit sandbox")
+			return nil, nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			t.Fatal("provision should not run for an existing selected sandbox")
+			return nil, nil
+		},
+	}
+
+	got, err := deps.resolveRunSandboxTarget(context.Background(), runSandboxRequest{
+		SandboxName:    "podman-dev",
+		SandboxRuntime: sandbox.SandboxRuntimeDriverRootlessPodman,
+		ProjectDir:     "/workspace/hal",
+		RepoRemote:     "git@example.com:org/repo.git",
+		RunBranch:      "feature/rootless",
+	}, io.Discard)
+	if err != nil {
+		t.Fatalf("resolveRunSandboxTarget() unexpected error: %v", err)
+	}
+	if got != target || got.Runtime == nil || got.Runtime.Driver != sandbox.SandboxRuntimeDriverRootlessPodman {
+		t.Fatalf("target = %#v, want selected rootless runtime metadata", got)
+	}
+}
+
 func TestRunRunSandboxWithWriterJSONPreRemotePreflightFailures(t *testing.T) {
 	startedAt := time.Date(2026, 6, 30, 9, 0, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(2 * time.Second)

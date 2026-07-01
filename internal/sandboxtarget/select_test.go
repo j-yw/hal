@@ -207,6 +207,10 @@ func TestSelectExplicitSandboxPropagatesSelectedHostAndRuntimeMetadata(t *testin
 		Name:     "podman-dev",
 		Provider: "local",
 		Status:   sandbox.StatusRunning,
+		Host: &sandbox.SandboxHost{
+			ID:   "worker-a",
+			Name: "worker a",
+		},
 		Runtime: &sandbox.SandboxRuntimeState{
 			Driver:    sandbox.SandboxRuntimeDriverRootlessPodman,
 			RuntimeID: "ctr-1",
@@ -271,6 +275,74 @@ func TestSelectExplicitSandboxPropagatesSelectedHostAndRuntimeMetadata(t *testin
 		result.Sandbox.Runtime.WorkerID != result.Runtime.WorkerID ||
 		result.Sandbox.Runtime.IsolationLevel != result.Runtime.IsolationLevel {
 		t.Fatalf("sandbox runtime = %#v, want result runtime %#v", result.Sandbox.Runtime, result.Runtime)
+	}
+}
+
+func TestSelectExplicitSandboxRejectsRequestedHostMismatch(t *testing.T) {
+	result := Select(Request{
+		SandboxName: "podman-dev",
+		HostID:      "worker-b",
+	}, CachedState{
+		ListHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{{
+				ID:     "worker-b",
+				Name:   "worker b",
+				Kind:   sandbox.SandboxHostKindWorker,
+				Health: &sandbox.HostHealth{Status: "healthy"},
+			}}, nil
+		},
+		LoadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != "podman-dev" {
+				t.Fatalf("loaded sandbox name = %q, want podman-dev", name)
+			}
+			return &sandbox.SandboxState{
+				Name: "podman-dev",
+				Host: &sandbox.SandboxHost{
+					ID:   "worker-a",
+					Name: "worker a",
+				},
+			}, nil
+		},
+	})
+
+	if !result.Failed() {
+		t.Fatalf("result = %#v, want host mismatch failure", result)
+	}
+	if result.Failure.Reason != FailureReasonHostMismatch ||
+		result.Failure.SandboxName != "podman-dev" ||
+		result.Failure.HostID != "worker-b" ||
+		result.Failure.Error() != `sandbox "podman-dev" is on host "worker-a", not requested host "worker-b"` {
+		t.Fatalf("failure = %#v, want explicit host mismatch", result.Failure)
+	}
+}
+
+func TestSelectExplicitSandboxRejectsMissingHostMetadataForRequestedHost(t *testing.T) {
+	result := Select(Request{
+		SandboxName: "legacy",
+		HostID:      "worker-b",
+	}, CachedState{
+		ListHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{{
+				ID:     "worker-b",
+				Name:   "worker b",
+				Kind:   sandbox.SandboxHostKindWorker,
+				Health: &sandbox.HostHealth{Status: "healthy"},
+			}}, nil
+		},
+		LoadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != "legacy" {
+				t.Fatalf("loaded sandbox name = %q, want legacy", name)
+			}
+			return &sandbox.SandboxState{Name: "legacy"}, nil
+		},
+	})
+
+	if !result.Failed() {
+		t.Fatalf("result = %#v, want missing host metadata failure", result)
+	}
+	if result.Failure.Reason != FailureReasonHostMismatch ||
+		result.Failure.Error() != `sandbox "legacy" has no durable host metadata for requested host "worker-b"` {
+		t.Fatalf("failure = %#v, want missing host metadata mismatch", result.Failure)
 	}
 }
 

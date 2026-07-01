@@ -537,6 +537,28 @@ func TestFactoryRunRequestFromCommandParsesTargetSelectionFlags(t *testing.T) {
 	}
 }
 
+func TestFactoryRunRequestFromCommandRejectsTargetSelectionFlagsWithoutSandbox(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().Bool("sandbox", false, "")
+	cmd.Flags().String("sandbox-host", "", "")
+	cmd.Flags().String("sandbox-runtime", "", "")
+	cmd.Flags().Bool("json", false, "")
+	if err := cmd.Flags().Set(sandboxRuntimeFlagName, sandboxruntime.DriverRootlessPodman); err != nil {
+		t.Fatalf("Set(sandbox-runtime) error: %v", err)
+	}
+
+	_, err := factoryRunRequestFromCommand(cmd, []string{".hal/prd-feature.md"})
+	if err == nil {
+		t.Fatal("factoryRunRequestFromCommand() error = nil, want sandbox target flag validation")
+	}
+	if !strings.Contains(err.Error(), "--sandbox-runtime requires --sandbox") {
+		t.Fatalf("error = %q, want sandbox-runtime require sandbox", err.Error())
+	}
+}
+
 func TestFactoryRunArgsValidationRejectsReportWithPositionalBeforeExecution(t *testing.T) {
 	cmd := &cobra.Command{Use: "run", Args: validateFactoryRunArgs}
 	cmd.Flags().String("report", "", "")

@@ -319,6 +319,65 @@ func TestRunAutoWithDirSandboxFlagDispatchesToSandboxExecutor(t *testing.T) {
 	}
 }
 
+func TestRunAutoWithDirRejectsSandboxTargetFlagsWithoutSandbox(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd := newAutoSandboxTestCommand(&out, &errOut)
+	if err := cmd.Flags().Set(sandboxHostFlagName, "worker-a"); err != nil {
+		t.Fatalf("set sandbox-host: %v", err)
+	}
+
+	err := runAutoWithDir(cmd, nil, t.TempDir())
+	if err == nil {
+		t.Fatal("runAutoWithDir() error = nil, want sandbox target flag validation")
+	}
+	if !strings.Contains(err.Error(), "--sandbox-host requires --sandbox") {
+		t.Fatalf("error = %q, want sandbox-host require sandbox", err.Error())
+	}
+}
+
+func TestAutoSandboxResolveTargetRejectsExplicitRuntimeBeforeDefaultFallback(t *testing.T) {
+	defaultCalled := false
+	provisionCalled := false
+	deps := autoSandboxDeps{
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{{
+				ID:                "ssh-a",
+				Name:              "ssh a",
+				SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+			}}, nil
+		},
+		listSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("listSandboxes should not run for unsupported explicit runtime")
+			return nil, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			defaultCalled = true
+			return &sandbox.SandboxState{Name: "legacy", Status: sandbox.StatusRunning}, "", nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			provisionCalled = true
+			return nil, nil
+		},
+	}
+
+	_, err := deps.resolveAutoSandboxTarget(context.Background(), autoSandboxRequest{
+		SandboxRuntime: sandbox.SandboxRuntimeDriverMicroVM,
+		ProjectDir:     "/workspace/hal",
+		RepoRemote:     "git@example.com:org/repo.git",
+		RunBranch:      "feature/microvm",
+	}, io.Discard)
+	if err == nil {
+		t.Fatal("resolveAutoSandboxTarget() error = nil, want explicit runtime failure")
+	}
+	if !strings.Contains(err.Error(), `no durable host supports requested runtime "microvm"`) {
+		t.Fatalf("error = %q, want microvm unsupported failure", err.Error())
+	}
+	if defaultCalled || provisionCalled {
+		t.Fatalf("defaultCalled=%v provisionCalled=%v, want no legacy fallback", defaultCalled, provisionCalled)
+	}
+}
+
 func TestRunAutoSandboxWithWriterJSONWorkspacePreflightFailure(t *testing.T) {
 	startedAt := time.Date(2026, 6, 30, 12, 15, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(time.Second)
