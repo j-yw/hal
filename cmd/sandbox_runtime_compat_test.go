@@ -10,6 +10,21 @@ import (
 )
 
 func TestExistingSandboxExecutionDefaultResolversStayWorkerOptIn(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:       "registered-worker",
+		Name:     "registered-worker",
+		Kind:     sandbox.SandboxHostKindWorker,
+		Endpoint: "unix:///tmp/private/registered-worker.sock",
+		SupportedRuntimes: []string{
+			sandboxruntime.DriverRootlessPodman,
+			"worker_backed",
+		},
+		Capacity: &sandbox.HostCapacity{MaxConcurrentSandboxes: 3},
+	}); err != nil {
+		t.Fatalf("SaveHost(registered worker) error = %v", err)
+	}
+
 	originalFactories := defaultSandboxRuntimeDriverFactories
 	t.Cleanup(func() {
 		defaultSandboxRuntimeDriverFactories = originalFactories
