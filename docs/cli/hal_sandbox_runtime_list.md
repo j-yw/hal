@@ -7,9 +7,8 @@ List sandbox runtimes for a host
 List sandbox runtimes for a registered sandbox host.
 
 Cached mode is the default and reads only durable host metadata. Use --live to
-request a supported worker refresh in later runtime inspection phases. Use
---json for machine-readable output following the sandbox-runtime-list-v1
-contract.
+request a supported local worker capability refresh for this response. Use --json
+for machine-readable output following the sandbox-runtime-list-v1 contract.
 
 ```
 hal sandbox runtime list HOST_ID [flags]

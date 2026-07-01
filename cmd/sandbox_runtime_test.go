@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxworker"
 	"github.com/spf13/cobra"
 )
 
@@ -345,6 +347,269 @@ func TestSandboxRuntimeListJSONCachedWorkerHostContractStableAndSafe(t *testing.
 	}
 }
 
+func TestSandboxRuntimeListLiveWorkerHostRefreshesCapabilitiesWithoutPersisting(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:                "worker-a",
+		Name:              "builder",
+		Kind:              sandbox.SandboxHostKindWorker,
+		Endpoint:          "unix:///tmp/private/worker-a.sock",
+		SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+		Capacity:          &sandbox.HostCapacity{MaxConcurrentSandboxes: 2},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	refreshedAt := time.Date(2026, 7, 1, 14, 0, 0, 0, time.UTC)
+	fakeClient := &fakeSandboxHostWorkerClient{
+		status: &sandboxworker.Status{
+			WorkerID:   "worker-a",
+			HostKind:   sandboxworker.HostKindLocal,
+			SocketPath: "/tmp/worker-reported.sock",
+			Health: sandboxworker.WorkerHealth{
+				Status: sandboxworker.HealthStatusHealthy,
+			},
+			Capacity: sandboxworker.WorkerCapacity{
+				MaxConcurrentSandboxes: 4,
+				ActiveSandboxes:        1,
+			},
+			Security: sandboxworker.DefaultWorkerSecurityPolicy(),
+		},
+		capabilities: &sandboxworker.Capabilities{
+			WorkerID: "worker-a",
+			Security: sandboxworker.SecurityPolicy{
+				Requested: sandboxworker.SecurityControls{
+					NetworkPolicy:      sandboxworker.NetworkPolicyDenyByDefault,
+					NetworkEnforcement: sandboxworker.NetworkEnforcementRuntime,
+					CredentialModes:    []string{sandboxworker.CredentialModeSSHAgent},
+					IsolationLevel:     sandboxworker.IsolationLevelContainer,
+				},
+				Enforced: sandboxworker.SecurityControls{
+					NetworkPolicy:      sandboxworker.NetworkPolicyBestEffort,
+					NetworkEnforcement: sandboxworker.NetworkEnforcementNone,
+					CredentialModes: []string{
+						sandboxworker.CredentialModeLegacyAuthSync,
+						sandboxworker.CredentialModeEnv,
+					},
+					IsolationLevel: sandboxworker.IsolationLevelHost,
+				},
+			},
+			RuntimeDrivers: []sandboxworker.RuntimeDriver{
+				{
+					ID:             sandboxworker.RuntimeDriverSSHMachine,
+					HostKind:       sandboxworker.HostKindLocal,
+					IsolationLevel: sandboxworker.IsolationLevelHost,
+					Operations: []string{
+						sandboxworker.OperationStop,
+						sandboxworker.OperationExec,
+						sandboxworker.OperationCopyOut,
+					},
+					Security: sandboxRuntimeTestWorkerSecurity(sandboxworker.IsolationLevelHost),
+				},
+				{
+					ID:             sandboxworker.RuntimeDriverRootlessPodman,
+					HostKind:       sandboxworker.HostKindLocal,
+					IsolationLevel: sandboxworker.IsolationLevelContainer,
+					Operations: []string{
+						sandboxworker.OperationStart,
+						sandboxworker.OperationCopyIn,
+						sandboxworker.OperationExec,
+					},
+					Security: sandboxRuntimeTestWorkerSecurity(sandboxworker.IsolationLevelContainer),
+				},
+			},
+		},
+	}
+	var clientSocketPath string
+	deps := defaultSandboxRuntimeDeps()
+	deps.now = func() time.Time { return refreshedAt }
+	deps.newWorkerClient = func(socketPath string) (sandboxHostWorkerClient, error) {
+		clientSocketPath = socketPath
+		return fakeClient, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxRuntimeCommand(deps)
+	cmd.SetArgs([]string{"list", "worker-a", "--live", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+	if clientSocketPath != "/tmp/private/worker-a.sock" {
+		t.Fatalf("client socket path = %q, want stripped local socket path", clientSocketPath)
+	}
+	if fakeClient.statusCalls != 1 || fakeClient.capabilitiesCalls != 1 {
+		t.Fatalf("worker calls status=%d capabilities=%d, want one each", fakeClient.statusCalls, fakeClient.capabilitiesCalls)
+	}
+
+	output := stdout.String()
+	resp := decodeOneSandboxRuntimeListJSON(t, stdout.Bytes())
+	if resp.Source.Mode != SandboxRuntimeSourceLiveRefreshed || !resp.Source.RequestedLive || resp.Source.CacheUpdated {
+		t.Fatalf("source = %#v, want live-refreshed without cache update", resp.Source)
+	}
+	if resp.Source.RefreshedAt == nil || !resp.Source.RefreshedAt.Equal(refreshedAt) {
+		t.Fatalf("refreshedAt = %v, want %v", resp.Source.RefreshedAt, refreshedAt)
+	}
+	if resp.Capacity.MaxConcurrentSandboxes == nil || *resp.Capacity.MaxConcurrentSandboxes != 4 ||
+		resp.Capacity.ActiveSandboxes == nil || *resp.Capacity.ActiveSandboxes != 1 ||
+		resp.Capacity.Summary != "1 of 4 sandboxes active" {
+		t.Fatalf("capacity = %#v, want live worker capacity", resp.Capacity)
+	}
+	if len(resp.Runtimes) != 2 {
+		t.Fatalf("runtime len = %d, want 2", len(resp.Runtimes))
+	}
+	rootless := resp.Runtimes[0]
+	if rootless.ID != sandboxworker.RuntimeDriverRootlessPodman {
+		t.Fatalf("first runtime = %#v, want rootless_podman sorted before ssh_machine", rootless)
+	}
+	if rootless.HostKind == nil || *rootless.HostKind != sandboxworker.HostKindLocal ||
+		rootless.IsolationLevel == nil || *rootless.IsolationLevel != sandboxworker.IsolationLevelContainer {
+		t.Fatalf("rootless runtime metadata = %#v, want live host kind/isolation", rootless)
+	}
+	if got := strings.Join(rootless.SupportedOperations, ","); got != "copy_in,exec,start" {
+		t.Fatalf("rootless operations = %q, want sorted live operations", got)
+	}
+	if rootless.Security.Requested.IsolationLevel == nil || *rootless.Security.Requested.IsolationLevel != sandboxworker.IsolationLevelContainer {
+		t.Fatalf("rootless security = %#v, want runtime isolation metadata", rootless.Security)
+	}
+	if resp.Security.Enforced.IsolationLevel == nil || *resp.Security.Enforced.IsolationLevel != sandboxworker.IsolationLevelHost {
+		t.Fatalf("host security = %#v, want worker capability security", resp.Security)
+	}
+	for _, leaked := range []string{"/tmp/private", "worker-a.sock", "worker-reported.sock"} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("JSON output leaked endpoint detail %q: %q", leaked, output)
+		}
+	}
+
+	loaded, err := sandbox.LoadHost("worker-a")
+	if err != nil {
+		t.Fatalf("LoadHost(worker-a) error = %v", err)
+	}
+	if strings.Join(loaded.SupportedRuntimes, ",") != sandbox.SandboxRuntimeDriverSSHMachine {
+		t.Fatalf("durable supported runtimes = %#v, want original cached metadata", loaded.SupportedRuntimes)
+	}
+	if loaded.Capacity == nil || loaded.Capacity.MaxConcurrentSandboxes != 2 {
+		t.Fatalf("durable capacity = %#v, want original cached capacity", loaded.Capacity)
+	}
+
+	humanCmd, humanStdout, humanStderr := newTestSandboxRuntimeCommand(deps)
+	humanCmd.SetArgs([]string{"list", "worker-a", "--live"})
+	if err := humanCmd.Execute(); err != nil {
+		t.Fatalf("human Execute() error = %v; stderr=%q", err, humanStderr.String())
+	}
+	humanOutput := humanStdout.String()
+	for _, want := range []string{
+		"Sandbox runtimes for builder (live-refreshed)",
+		"live worker runtime capabilities",
+		"1 of 4 sandboxes active",
+		"rootless_podman",
+		"local",
+		"container",
+		"copy_in,exec,start",
+	} {
+		if !strings.Contains(humanOutput, want) {
+			t.Fatalf("human stdout = %q, want %q", humanOutput, want)
+		}
+	}
+	for _, leaked := range []string{"/tmp/private", "worker-a.sock", "worker-reported.sock"} {
+		if strings.Contains(humanOutput, leaked) {
+			t.Fatalf("human output leaked endpoint detail %q: %q", leaked, humanOutput)
+		}
+	}
+}
+
+func TestSandboxRuntimeListLiveWorkerClientFailureSanitizedAndDoesNotPersist(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:                "worker-a",
+		Name:              "builder",
+		Kind:              sandbox.SandboxHostKindWorker,
+		Endpoint:          "unix:///tmp/private/worker-a.sock",
+		SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	fakeClient := &fakeSandboxHostWorkerClient{
+		status: &sandboxworker.Status{
+			WorkerID: "worker-a",
+			HostKind: sandboxworker.HostKindLocal,
+			Health: sandboxworker.WorkerHealth{
+				Status: sandboxworker.HealthStatusHealthy,
+			},
+			Security: sandboxworker.DefaultWorkerSecurityPolicy(),
+		},
+		capabilitiesErr: errors.New("dial /tmp/private/worker-a.sock failed token=supersecret"),
+	}
+	deps := defaultSandboxRuntimeDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		return fakeClient, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxRuntimeCommand(deps)
+	cmd.SetArgs([]string{"list", "worker-a", "--live", "--json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want live capabilities failure")
+	}
+	if got := stdout.String(); got != "" {
+		t.Fatalf("stdout = %q, want no partial JSON on live failure", got)
+	}
+	detail := err.Error() + "\n" + stderr.String()
+	for _, leaked := range []string{"/tmp/private/worker-a.sock", "supersecret"} {
+		if strings.Contains(detail, leaked) {
+			t.Fatalf("live failure detail leaked %q: %q", leaked, detail)
+		}
+	}
+	for _, want := range []string{"Sandbox Runtime List failed", "[redacted-path]", "token=[redacted]"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("live failure detail = %q, want %q", detail, want)
+		}
+	}
+	if fakeClient.statusCalls != 1 || fakeClient.capabilitiesCalls != 1 {
+		t.Fatalf("worker calls status=%d capabilities=%d, want one each", fakeClient.statusCalls, fakeClient.capabilitiesCalls)
+	}
+	loaded, loadErr := sandbox.LoadHost("worker-a")
+	if loadErr != nil {
+		t.Fatalf("LoadHost(worker-a) error = %v", loadErr)
+	}
+	if strings.Join(loaded.SupportedRuntimes, ",") != sandbox.SandboxRuntimeDriverSSHMachine {
+		t.Fatalf("durable supported runtimes = %#v, want unchanged after failed live list", loaded.SupportedRuntimes)
+	}
+}
+
+func TestSandboxRuntimeListLiveWorkerHostRequiresLocalSocketBeforeClient(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:       "worker-a",
+		Name:     "builder",
+		Kind:     sandbox.SandboxHostKindWorker,
+		Endpoint: "ssh://user:secret@example.internal/worker.sock?token=top-secret",
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	deps := defaultSandboxRuntimeDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("live runtime list should reject non-local worker endpoints before constructing a client")
+		return nil, nil
+	}
+
+	cmd, _, stderr := newTestSandboxRuntimeCommand(deps)
+	cmd.SetArgs([]string{"list", "worker-a", "--live"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want unsupported endpoint error")
+	}
+	detail := err.Error() + "\n" + stderr.String()
+	if !strings.Contains(detail, "absolute local Unix socket path") {
+		t.Fatalf("error detail = %q, want local Unix socket validation", detail)
+	}
+	for _, leaked := range []string{"user", "secret", "example.internal", "top-secret"} {
+		if strings.Contains(detail, leaked) {
+			t.Fatalf("error detail leaked endpoint value %q: %q", leaked, detail)
+		}
+	}
+}
+
 func TestSandboxRuntimeListCachedNonWorkerHostWithoutMetadataDurableOnly(t *testing.T) {
 	setSandboxHostRegistryHome(t)
 	if err := sandbox.SaveHost(&sandbox.SandboxHost{
@@ -441,6 +706,26 @@ func TestSandboxRuntimeListJSONCachedNonWorkerHostWithoutMetadataDurableOnly(t *
 	}
 	if strings.Contains(output, "No cached runtime metadata is available.") {
 		t.Fatalf("JSON stdout included human no-metadata text: %q", output)
+	}
+}
+
+func sandboxRuntimeTestWorkerSecurity(isolationLevel string) sandboxworker.SecurityPolicy {
+	return sandboxworker.SecurityPolicy{
+		Requested: sandboxworker.SecurityControls{
+			NetworkPolicy:      sandboxworker.NetworkPolicyDenyByDefault,
+			NetworkEnforcement: sandboxworker.NetworkEnforcementRuntime,
+			CredentialModes:    []string{sandboxworker.CredentialModeSSHAgent},
+			IsolationLevel:     isolationLevel,
+		},
+		Enforced: sandboxworker.SecurityControls{
+			NetworkPolicy:      sandboxworker.NetworkPolicyBestEffort,
+			NetworkEnforcement: sandboxworker.NetworkEnforcementNone,
+			CredentialModes: []string{
+				sandboxworker.CredentialModeEnv,
+				sandboxworker.CredentialModeLegacyAuthSync,
+			},
+			IsolationLevel: isolationLevel,
+		},
 	}
 }
 

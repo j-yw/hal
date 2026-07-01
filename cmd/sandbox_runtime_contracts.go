@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxworker"
 )
 
 const SandboxRuntimeListContractType = "sandbox-runtime-list"
@@ -160,6 +163,27 @@ func newSandboxRuntimeListCachedResponse(host *sandbox.SandboxHost) SandboxRunti
 	}, nil, nil)
 }
 
+func newSandboxRuntimeListLiveResponse(host *sandbox.SandboxHost, status *sandboxworker.Status, capabilities *sandboxworker.Capabilities, refreshedAt time.Time) SandboxRuntimeListResponse {
+	refreshedAt = refreshedAt.UTC()
+	return SandboxRuntimeListResponse{
+		ContractType:    SandboxRuntimeListContractType,
+		ContractVersion: SandboxRuntimeListContractVersion,
+		Host:            newSandboxRuntimeHost(host),
+		Source: SandboxRuntimeSource{
+			Mode:          SandboxRuntimeSourceLiveRefreshed,
+			RequestedLive: true,
+			CacheUpdated:  false,
+			RefreshedAt:   &refreshedAt,
+			Summary:       "live worker runtime capabilities",
+		},
+		Runtimes:    newSandboxRuntimeListEntriesFromWorkerCapabilities(capabilities),
+		Capacity:    newSandboxRuntimeCapacitySummaryFromWorkerStatus(status, sandboxRuntimeHostCapacity(host)),
+		Security:    newSandboxRuntimeSecuritySummaryFromWorkerCapabilities(capabilities),
+		Diagnostics: []SandboxRuntimeDiagnostic{},
+		Errors:      []SandboxRuntimeError{},
+	}
+}
+
 func newSandboxRuntimeListResponse(host *sandbox.SandboxHost, source SandboxRuntimeSource, diagnostics []SandboxRuntimeDiagnostic, responseErrors []SandboxRuntimeError) SandboxRuntimeListResponse {
 	if diagnostics == nil {
 		diagnostics = []SandboxRuntimeDiagnostic{}
@@ -252,6 +276,40 @@ func newSandboxRuntimeListEntries(runtimeIDs []string) []SandboxRuntimeListEntry
 	return entries
 }
 
+func newSandboxRuntimeListEntriesFromWorkerCapabilities(capabilities *sandboxworker.Capabilities) []SandboxRuntimeListEntry {
+	if capabilities == nil || len(capabilities.RuntimeDrivers) == 0 {
+		return []SandboxRuntimeListEntry{}
+	}
+	drivers := append([]sandboxworker.RuntimeDriver(nil), capabilities.RuntimeDrivers...)
+	sort.SliceStable(drivers, func(i, j int) bool {
+		return strings.TrimSpace(drivers[i].ID) < strings.TrimSpace(drivers[j].ID)
+	})
+
+	entries := make([]SandboxRuntimeListEntry, 0, len(drivers))
+	for _, driver := range drivers {
+		runtimeID := strings.TrimSpace(driver.ID)
+		if runtimeID == "" {
+			continue
+		}
+		operations := sandboxRuntimeStringSlice(driver.Operations)
+		if operations == nil {
+			operations = []string{}
+		}
+		entries = append(entries, SandboxRuntimeListEntry{
+			ID:                  runtimeID,
+			HostKind:            sandboxRuntimeStringPtr(driver.HostKind),
+			IsolationLevel:      sandboxRuntimeStringPtr(driver.IsolationLevel),
+			SupportedOperations: operations,
+			Security:            newSandboxRuntimeSecuritySummaryFromWorkerPolicy(driver.Security),
+			Diagnostics:         []SandboxRuntimeDiagnostic{},
+		})
+	}
+	if len(entries) == 0 {
+		return []SandboxRuntimeListEntry{}
+	}
+	return entries
+}
+
 func newSandboxRuntimeCapacitySummary(capacity *sandbox.HostCapacity) SandboxRuntimeCapacitySummary {
 	if capacity == nil {
 		return SandboxRuntimeCapacitySummary{
@@ -270,6 +328,34 @@ func newSandboxRuntimeCapacitySummary(capacity *sandbox.HostCapacity) SandboxRun
 		DiskGB:                 sandboxRuntimePositiveIntPtr(capacity.DiskGB),
 		MaxConcurrentSandboxes: sandboxRuntimePositiveIntPtr(capacity.MaxConcurrentSandboxes),
 		ActiveSandboxes:        nil,
+	}
+}
+
+func newSandboxRuntimeCapacitySummaryFromWorkerStatus(status *sandboxworker.Status, fallback *sandbox.HostCapacity) SandboxRuntimeCapacitySummary {
+	if status == nil {
+		return newSandboxRuntimeCapacitySummary(fallback)
+	}
+	capacity := status.Capacity
+	if capacity.MaxConcurrentSandboxes <= 0 && capacity.ActiveSandboxes <= 0 {
+		return newSandboxRuntimeCapacitySummary(fallback)
+	}
+
+	summary := "unknown"
+	switch {
+	case capacity.MaxConcurrentSandboxes > 0:
+		summary = fmt.Sprintf("%d of %d sandboxes active", capacity.ActiveSandboxes, capacity.MaxConcurrentSandboxes)
+	case capacity.ActiveSandboxes == 1:
+		summary = "1 sandbox active"
+	case capacity.ActiveSandboxes > 1:
+		summary = fmt.Sprintf("%d sandboxes active", capacity.ActiveSandboxes)
+	}
+	return SandboxRuntimeCapacitySummary{
+		Summary:                summary,
+		CPUCores:               nil,
+		MemoryMB:               nil,
+		DiskGB:                 nil,
+		MaxConcurrentSandboxes: sandboxRuntimePositiveIntPtr(capacity.MaxConcurrentSandboxes),
+		ActiveSandboxes:        sandboxRuntimeNonNegativeIntPtr(capacity.ActiveSandboxes),
 	}
 }
 
@@ -297,6 +383,51 @@ func newSandboxRuntimeSecuritySummary(security *sandbox.SandboxSecurity) Sandbox
 		Requested: requested,
 		Enforced:  enforced,
 	}
+}
+
+func newSandboxRuntimeSecuritySummaryFromWorkerCapabilities(capabilities *sandboxworker.Capabilities) SandboxRuntimeSecuritySummary {
+	if capabilities == nil {
+		return newSandboxRuntimeSecuritySummaryFromWorkerPolicy(sandboxworker.SecurityPolicy{})
+	}
+	return newSandboxRuntimeSecuritySummaryFromWorkerPolicy(capabilities.Security)
+}
+
+func newSandboxRuntimeSecuritySummaryFromWorkerPolicy(policy sandboxworker.SecurityPolicy) SandboxRuntimeSecuritySummary {
+	if sandboxRuntimeWorkerSecurityPolicyEmpty(policy) {
+		return SandboxRuntimeSecuritySummary{
+			Requested: SandboxRuntimeSecurityControls{},
+			Enforced:  SandboxRuntimeSecurityControls{},
+		}
+	}
+	return SandboxRuntimeSecuritySummary{
+		Requested: sandboxRuntimeSecurityControlsFromWorker(policy.Requested),
+		Enforced:  sandboxRuntimeSecurityControlsFromWorker(policy.Enforced),
+	}
+}
+
+func sandboxRuntimeSecurityControlsFromWorker(controls sandboxworker.SecurityControls) SandboxRuntimeSecurityControls {
+	if sandboxRuntimeWorkerSecurityControlsEmpty(controls) {
+		return SandboxRuntimeSecurityControls{}
+	}
+	return SandboxRuntimeSecurityControls{
+		NetworkPolicy:       sandboxRuntimeStringPtr(controls.NetworkPolicy),
+		NetworkEnforcement:  sandboxRuntimeStringPtr(controls.NetworkEnforcement),
+		CredentialModes:     sandboxRuntimeStringSlice(controls.CredentialModes),
+		CredentialProxyMode: sandboxRuntimeBoolPtr(controls.CredentialProxyMode),
+		IsolationLevel:      sandboxRuntimeStringPtr(controls.IsolationLevel),
+	}
+}
+
+func sandboxRuntimeWorkerSecurityPolicyEmpty(policy sandboxworker.SecurityPolicy) bool {
+	return sandboxRuntimeWorkerSecurityControlsEmpty(policy.Requested) && sandboxRuntimeWorkerSecurityControlsEmpty(policy.Enforced)
+}
+
+func sandboxRuntimeWorkerSecurityControlsEmpty(controls sandboxworker.SecurityControls) bool {
+	return strings.TrimSpace(controls.NetworkPolicy) == "" &&
+		strings.TrimSpace(controls.NetworkEnforcement) == "" &&
+		len(controls.CredentialModes) == 0 &&
+		strings.TrimSpace(controls.IsolationLevel) == "" &&
+		!controls.CredentialProxyMode
 }
 
 func sandboxRuntimeHostSupportedRuntimes(host *sandbox.SandboxHost) []string {
@@ -327,6 +458,13 @@ func sandboxRuntimePositiveIntPtr(value int) *int {
 	return &value
 }
 
+func sandboxRuntimeNonNegativeIntPtr(value int) *int {
+	if value < 0 {
+		return nil
+	}
+	return &value
+}
+
 func sandboxRuntimeStringPtr(value string) *string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -341,4 +479,8 @@ func sandboxRuntimeStringSlice(values []string) []string {
 		return nil
 	}
 	return values
+}
+
+func sandboxRuntimeBoolPtr(value bool) *bool {
+	return &value
 }

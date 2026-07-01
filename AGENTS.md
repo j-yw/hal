@@ -42,6 +42,7 @@
 - Runtime inspection JSON contracts should define command-layer constants and response structs in `cmd`, document safe endpoint summaries and explicit sparse values under `docs/contracts/`, and lock referenced example files with strict decoding plus deterministic runtime ID ordering tests before command implementation stories use them.
 - Runtime status JSON error examples should retain the full endpoint-safe response shape, including safe host/runtime identity, source metadata, capacity/readiness/security placeholders, diagnostics/errors arrays, and stable error codes such as `runtime_not_found`.
 - Cached runtime list command implementations should load durable `internal/sandbox.SandboxHost` records through injectable command-layer dependencies, derive runtimes/capacity/security only from cached host metadata, emit exactly one `sandbox-runtime-list-v1` JSON document in JSON mode, and keep worker-client factories unused unless an explicit live path requests them.
+- Live runtime list command implementations should load the durable host first, require worker kind plus a local Unix socket endpoint before constructing clients, query fakeable worker status/capabilities for response-only `live-refreshed` metadata, wrap client failures in sanitized `sandboxworker.ClientError`, and avoid persisting refreshed runtime data.
 
 ## Patterns from phase15-worker-hosts (2026-07-01)
 

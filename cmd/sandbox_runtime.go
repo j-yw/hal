@@ -8,8 +8,10 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxworker"
 	"github.com/spf13/cobra"
 )
 
@@ -18,6 +20,7 @@ type sandboxRuntimeDeps struct {
 	status          func(context.Context, sandboxRuntimeStatusRequest, io.Writer) error
 	loadHost        func(string) (*sandbox.SandboxHost, error)
 	newWorkerClient func(string) (sandboxHostWorkerClient, error)
+	now             func() time.Time
 }
 
 type sandboxRuntimeListRequest struct {
@@ -43,6 +46,7 @@ func defaultSandboxRuntimeDeps() sandboxRuntimeDeps {
 	return sandboxRuntimeDeps{
 		loadHost:        sandbox.LoadHost,
 		newWorkerClient: newSandboxHostWorkerClient,
+		now:             time.Now,
 	}
 }
 
@@ -86,9 +90,8 @@ func newSandboxRuntimeListCommand(deps sandboxRuntimeDeps) *cobra.Command {
 		Long: `List sandbox runtimes for a registered sandbox host.
 
 Cached mode is the default and reads only durable host metadata. Use --live to
-request a supported worker refresh in later runtime inspection phases. Use
---json for machine-readable output following the sandbox-runtime-list-v1
-contract.`,
+request a supported local worker capability refresh for this response. Use --json
+for machine-readable output following the sandbox-runtime-list-v1 contract.`,
 		Example: `  hal sandbox runtime list local-worker
   hal sandbox runtime list local-worker --json
   hal sandbox runtime list local-worker --live
@@ -153,11 +156,15 @@ func normalizeSandboxRuntimeDeps(deps sandboxRuntimeDeps) sandboxRuntimeDeps {
 	if deps.newWorkerClient == nil {
 		deps.newWorkerClient = newSandboxHostWorkerClient
 	}
+	if deps.now == nil {
+		deps.now = time.Now
+	}
 	if deps.list == nil {
 		loadHost := deps.loadHost
 		newWorkerClient := deps.newWorkerClient
+		now := deps.now
 		deps.list = func(ctx context.Context, req sandboxRuntimeListRequest, out io.Writer) error {
-			return runSandboxRuntimeList(ctx, req, out, loadHost, newWorkerClient)
+			return runSandboxRuntimeList(ctx, req, out, loadHost, newWorkerClient, now)
 		}
 	}
 	if deps.status == nil {
@@ -182,21 +189,36 @@ func runSandboxRuntimeCobra(cmd *cobra.Command, title string, run func(context.C
 	return nil
 }
 
-func runSandboxRuntimeList(_ context.Context, req sandboxRuntimeListRequest, out io.Writer, loadHost func(string) (*sandbox.SandboxHost, error), _ func(string) (sandboxHostWorkerClient, error)) error {
+func runSandboxRuntimeList(ctx context.Context, req sandboxRuntimeListRequest, out io.Writer, loadHost func(string) (*sandbox.SandboxHost, error), newWorkerClient func(string) (sandboxHostWorkerClient, error), now func() time.Time) error {
 	hostID := strings.TrimSpace(req.HostID)
 	if hostID == "" {
 		return fmt.Errorf("host id is required")
 	}
-	if req.Live {
-		return fmt.Errorf("live sandbox runtime list is not implemented yet")
-	}
 	if loadHost == nil {
 		loadHost = sandbox.LoadHost
+	}
+	if newWorkerClient == nil {
+		newWorkerClient = newSandboxHostWorkerClient
+	}
+	if now == nil {
+		now = time.Now
 	}
 
 	host, err := loadHost(hostID)
 	if err != nil {
 		return err
+	}
+	if req.Live {
+		status, capabilities, err := querySandboxRuntimeListLiveMetadata(ctx, host, newWorkerClient)
+		if err != nil {
+			return err
+		}
+		refreshedAt := now()
+		resp := newSandboxRuntimeListLiveResponse(host, status, capabilities, refreshedAt)
+		if req.JSON {
+			return renderSandboxRuntimeListResponseJSON(out, resp)
+		}
+		return renderSandboxRuntimeListResponse(out, resp)
 	}
 	if req.JSON {
 		return renderSandboxRuntimeListJSON(out, host)
@@ -209,10 +231,13 @@ func runSandboxRuntimeStatus(context.Context, sandboxRuntimeStatusRequest, io.Wr
 }
 
 func renderSandboxRuntimeListJSON(out io.Writer, host *sandbox.SandboxHost) error {
+	return renderSandboxRuntimeListResponseJSON(out, newSandboxRuntimeListCachedResponse(host))
+}
+
+func renderSandboxRuntimeListResponseJSON(out io.Writer, resp SandboxRuntimeListResponse) error {
 	if out == nil {
 		return nil
 	}
-	resp := newSandboxRuntimeListCachedResponse(host)
 	data, err := json.MarshalIndent(resp, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal sandbox runtime list: %w", err)
@@ -222,11 +247,20 @@ func renderSandboxRuntimeListJSON(out io.Writer, host *sandbox.SandboxHost) erro
 }
 
 func renderSandboxRuntimeList(out io.Writer, host *sandbox.SandboxHost) error {
-	if out == nil || host == nil {
+	return renderSandboxRuntimeListResponse(out, newSandboxRuntimeListCachedResponse(host))
+}
+
+func renderSandboxRuntimeListResponse(out io.Writer, resp SandboxRuntimeListResponse) error {
+	if out == nil {
 		return nil
 	}
 
-	if _, err := fmt.Fprintf(out, "Sandbox runtimes for %s (cached)\n", sandboxHostDisplayValue(host.Name, host.ID)); err != nil {
+	hostName := sandboxHostDisplayValue(resp.Host.Name, resp.Host.ID)
+	if hostName == "" {
+		hostName = "unknown"
+	}
+	sourceMode := sandboxHostDisplayValue(resp.Source.Mode, SandboxRuntimeSourceCached)
+	if _, err := fmt.Fprintf(out, "Sandbox runtimes for %s (%s)\n", hostName, sourceMode); err != nil {
 		return err
 	}
 	type runtimeLine struct {
@@ -234,12 +268,12 @@ func renderSandboxRuntimeList(out io.Writer, host *sandbox.SandboxHost) error {
 		value string
 	}
 	lines := []runtimeLine{
-		{"Source", "cached durable runtime metadata"},
-		{"Host ID", sandboxHostDisplayValue(host.ID, "-")},
-		{"Host kind", sandboxHostDisplayValue(host.Kind, "unknown")},
-		{"Endpoint", sandboxHostEndpointSummary(host.Endpoint)},
-		{"Capacity", sandboxHostCapacitySummary(host.Capacity)},
-		{"Security", sandboxRuntimeSecurityHumanSummary(host.Security)},
+		{"Source", sandboxHostDisplayValue(resp.Source.Summary, sourceMode)},
+		{"Host ID", sandboxHostDisplayValue(resp.Host.ID, "-")},
+		{"Host kind", sandboxHostDisplayValue(resp.Host.Kind, "unknown")},
+		{"Endpoint", sandboxHostDisplayValue(resp.Host.Endpoint.Summary, "unknown")},
+		{"Capacity", sandboxHostDisplayValue(resp.Capacity.Summary, "unknown")},
+		{"Security", sandboxRuntimeSecuritySummaryHuman(resp.Security)},
 	}
 
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
@@ -252,9 +286,12 @@ func renderSandboxRuntimeList(out io.Writer, host *sandbox.SandboxHost) error {
 		return err
 	}
 
-	runtimes := sortedUniqueStrings(host.SupportedRuntimes)
-	if len(runtimes) == 0 {
-		_, err := fmt.Fprintln(out, "No cached runtime metadata is available.")
+	if len(resp.Runtimes) == 0 {
+		noMetadataMessage := "No runtime metadata is available."
+		if resp.Source.Mode == SandboxRuntimeSourceCached {
+			noMetadataMessage = "No cached runtime metadata is available."
+		}
+		_, err := fmt.Fprintln(out, noMetadataMessage)
 		return err
 	}
 	if _, err := fmt.Fprintln(out, "Runtimes (sorted by runtime id):"); err != nil {
@@ -264,45 +301,111 @@ func renderSandboxRuntimeList(out io.Writer, host *sandbox.SandboxHost) error {
 	if _, err := fmt.Fprintln(runtimeTable, "ID\tHOST KIND\tISOLATION\tOPERATIONS"); err != nil {
 		return err
 	}
-	for _, runtimeID := range runtimes {
-		if _, err := fmt.Fprintf(runtimeTable, "%s\tunknown\tunknown\tunknown\n", runtimeID); err != nil {
+	for _, runtimeEntry := range resp.Runtimes {
+		hostKind := sandboxRuntimeStringPtrValue(runtimeEntry.HostKind, "unknown")
+		isolationLevel := sandboxRuntimeStringPtrValue(runtimeEntry.IsolationLevel, "unknown")
+		operations := sandboxRuntimeHumanList(runtimeEntry.SupportedOperations)
+		if operations == "" {
+			operations = "unknown"
+		}
+		if _, err := fmt.Fprintf(runtimeTable, "%s\t%s\t%s\t%s\n", runtimeEntry.ID, hostKind, isolationLevel, operations); err != nil {
 			return err
 		}
 	}
 	return runtimeTable.Flush()
 }
 
-func sandboxRuntimeSecurityHumanSummary(security *sandbox.SandboxSecurity) string {
-	if security == nil {
-		return "unknown"
+func querySandboxRuntimeListLiveMetadata(ctx context.Context, host *sandbox.SandboxHost, newWorkerClient func(string) (sandboxHostWorkerClient, error)) (*sandboxworker.Status, *sandboxworker.Capabilities, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	parts := make([]string, 0, 4)
-	if security.Network != nil {
-		if policy := strings.TrimSpace(security.Network.PolicyRequested); policy != "" {
-			parts = append(parts, "requested network "+policy)
-		}
-		if policy := strings.TrimSpace(security.Network.PolicyEnforced); policy != "" {
-			enforced := "enforced network " + policy
-			if mode := strings.TrimSpace(security.Network.EnforcementMode); mode != "" {
-				enforced += " via " + mode
-			}
-			parts = append(parts, enforced)
-		} else if mode := strings.TrimSpace(security.Network.EnforcementMode); mode != "" {
-			parts = append(parts, "network enforcement "+mode)
-		}
+	if host == nil {
+		return nil, nil, fmt.Errorf("sandbox host is required")
 	}
-	if security.Secrets != nil {
-		if requested := sandboxRuntimeHumanList(security.Secrets.RequestedModes); requested != "" {
-			parts = append(parts, "requested credentials "+requested)
+	if strings.TrimSpace(host.Kind) != sandbox.SandboxHostKindWorker {
+		return nil, nil, fmt.Errorf("live sandbox runtime list is only supported for worker hosts")
+	}
+	socketPath, err := sandboxHostLocalWorkerSocketPath(host.Endpoint)
+	if err != nil {
+		return nil, nil, err
+	}
+	if newWorkerClient == nil {
+		newWorkerClient = newSandboxHostWorkerClient
+	}
+
+	client, err := newWorkerClient(sandboxHostWorkerClientSocketPath(socketPath))
+	if err != nil {
+		return nil, nil, sandboxHostWorkerClientError("connect", err)
+	}
+	if client == nil {
+		return nil, nil, sandboxHostWorkerClientError("connect", fmt.Errorf("worker client is not configured"))
+	}
+
+	status, err := client.Status(ctx)
+	if err != nil {
+		return nil, nil, sandboxHostWorkerClientError(sandboxworker.OperationStatus, err)
+	}
+	if status == nil {
+		return nil, nil, sandboxHostWorkerClientError(sandboxworker.OperationStatus, fmt.Errorf("worker status response did not include status payload"))
+	}
+
+	capabilities, err := client.Capabilities(ctx)
+	if err != nil {
+		return nil, nil, sandboxHostWorkerClientError(sandboxworker.OperationCapabilities, err)
+	}
+	if capabilities == nil {
+		return nil, nil, sandboxHostWorkerClientError(sandboxworker.OperationCapabilities, fmt.Errorf("worker capabilities response did not include capabilities payload"))
+	}
+
+	if err := validateSandboxHostWorkerPayloads(host.ID, status, capabilities); err != nil {
+		return nil, nil, err
+	}
+	return status, capabilities, nil
+}
+
+func sandboxRuntimeSecuritySummaryHuman(security SandboxRuntimeSecuritySummary) string {
+	parts := make([]string, 0, 8)
+	if networkPolicy := sandboxRuntimeStringPtrValue(security.Requested.NetworkPolicy, ""); networkPolicy != "" {
+		parts = append(parts, "requested network "+networkPolicy)
+	}
+	if networkPolicy := sandboxRuntimeStringPtrValue(security.Enforced.NetworkPolicy, ""); networkPolicy != "" {
+		enforced := "enforced network " + networkPolicy
+		if mode := sandboxRuntimeStringPtrValue(security.Enforced.NetworkEnforcement, ""); mode != "" {
+			enforced += " via " + mode
 		}
-		if active := sandboxRuntimeHumanList(security.Secrets.ActiveModes); active != "" {
-			parts = append(parts, "active credentials "+active)
-		}
+		parts = append(parts, enforced)
+	} else if mode := sandboxRuntimeStringPtrValue(security.Enforced.NetworkEnforcement, ""); mode != "" {
+		parts = append(parts, "network enforcement "+mode)
+	}
+	if requested := sandboxRuntimeHumanList(security.Requested.CredentialModes); requested != "" {
+		parts = append(parts, "requested credentials "+requested)
+	}
+	if active := sandboxRuntimeHumanList(security.Enforced.CredentialModes); active != "" {
+		parts = append(parts, "active credentials "+active)
+	}
+	if isolationLevel := sandboxRuntimeStringPtrValue(security.Requested.IsolationLevel, ""); isolationLevel != "" {
+		parts = append(parts, "requested isolation "+isolationLevel)
+	}
+	if isolationLevel := sandboxRuntimeStringPtrValue(security.Enforced.IsolationLevel, ""); isolationLevel != "" {
+		parts = append(parts, "enforced isolation "+isolationLevel)
+	}
+	if security.Requested.CredentialProxyMode != nil {
+		parts = append(parts, fmt.Sprintf("requested credential proxy %t", *security.Requested.CredentialProxyMode))
+	}
+	if security.Enforced.CredentialProxyMode != nil {
+		parts = append(parts, fmt.Sprintf("enforced credential proxy %t", *security.Enforced.CredentialProxyMode))
 	}
 	if len(parts) == 0 {
 		return "unknown"
 	}
 	return strings.Join(parts, "; ")
+}
+
+func sandboxRuntimeStringPtrValue(value *string, fallback string) string {
+	if value == nil {
+		return fallback
+	}
+	return sandboxHostDisplayValue(*value, fallback)
 }
 
 func sandboxRuntimeHumanList(values []string) string {
