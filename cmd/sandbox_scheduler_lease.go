@@ -230,7 +230,12 @@ func sandboxCommandDefaultLeaseLister(now func() time.Time, customStore bool) fu
 		}
 	}
 	store := sandbox.NewSandboxLeaseStore(now)
-	return store.List
+	return func() ([]*sandbox.SandboxLease, error) {
+		if _, err := store.ExpireLeases(); err != nil {
+			return nil, err
+		}
+		return store.List()
+	}
 }
 
 func sandboxCommandDefaultLeaseAcquirer(now func() time.Time, customStore bool) func(sandbox.SandboxLeaseAcquireRequest, time.Duration) (*sandbox.SandboxLease, error) {
@@ -254,4 +259,48 @@ func sandboxCommandDefaultLeaseAcquirer(now func() time.Time, customStore bool) 
 	}
 	store := sandbox.NewSandboxLeaseStore(now)
 	return store.Acquire
+}
+
+func sandboxCommandDefaultLeaseReleaser(now func() time.Time, customStore bool) func(string) (*sandbox.SandboxLease, error) {
+	if customStore {
+		return func(id string) (*sandbox.SandboxLease, error) {
+			return &sandbox.SandboxLease{
+				ID:     strings.TrimSpace(id),
+				Status: sandbox.SandboxLeaseStatusReleased,
+			}, nil
+		}
+	}
+	store := sandbox.NewSandboxLeaseStore(now)
+	return store.Release
+}
+
+type sandboxCommandLeaseReleaseTracker struct {
+	releaseLease func(string) (*sandbox.SandboxLease, error)
+	leaseID      string
+	released     bool
+}
+
+func (t *sandboxCommandLeaseReleaseTracker) observe(target *sandbox.SandboxState) {
+	if t == nil || strings.TrimSpace(t.leaseID) != "" || target == nil || target.Lease == nil {
+		return
+	}
+	t.leaseID = strings.TrimSpace(target.Lease.ID)
+}
+
+func (t *sandboxCommandLeaseReleaseTracker) release() error {
+	if t == nil || t.released {
+		return nil
+	}
+	leaseID := strings.TrimSpace(t.leaseID)
+	if leaseID == "" {
+		return nil
+	}
+	t.released = true
+	if t.releaseLease == nil {
+		return fmt.Errorf("sandbox lease release is required")
+	}
+	if _, err := t.releaseLease(leaseID); err != nil {
+		return fmt.Errorf("release sandbox lease: %w", err)
+	}
+	return nil
 }

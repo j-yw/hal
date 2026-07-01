@@ -67,6 +67,7 @@ type factorySandboxExecutorDeps struct {
 	listLeases             func() ([]*sandbox.SandboxLease, error)
 	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
 	acquireLease           func(sandbox.SandboxLeaseAcquireRequest, time.Duration) (*sandbox.SandboxLease, error)
+	releaseLease           func(string) (*sandbox.SandboxLease, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
 	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
 	resolveWorkerRuntime   func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error)
@@ -156,6 +157,9 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 	if deps.acquireLease == nil {
 		deps.acquireLease = sandboxCommandDefaultLeaseAcquirer(deps.now, customDefaultStore)
 	}
+	if deps.releaseLease == nil {
+		deps.releaseLease = sandboxCommandDefaultLeaseReleaser(deps.now, customDefaultStore)
+	}
 	if deps.resolveProvider == nil {
 		deps.resolveProvider = defaultFactorySandboxExecutorDeps.resolveProvider
 	}
@@ -243,6 +247,18 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	var target *sandbox.SandboxState
 	var selectedTarget *sandbox.SandboxState
 	var provider sandbox.Provider
+	leaseRelease := sandboxCommandLeaseReleaseTracker{releaseLease: deps.releaseLease}
+	defer func() {
+		leaseRelease.observe(target)
+		leaseRelease.observe(selectedTarget)
+		if releaseErr := leaseRelease.release(); releaseErr != nil {
+			if returnErr != nil {
+				returnErr = errors.Join(returnErr, releaseErr)
+				return
+			}
+			returnErr = releaseErr
+		}
+	}()
 	ensureProvider := func(providerName string) (sandbox.Provider, error) {
 		if provider != nil {
 			return provider, nil

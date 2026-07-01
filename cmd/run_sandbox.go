@@ -95,6 +95,7 @@ type runSandboxDeps struct {
 	resolveDefault         func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
 	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
 	acquireLease           func(sandbox.SandboxLeaseAcquireRequest, time.Duration) (*sandbox.SandboxLease, error)
+	releaseLease           func(string) (*sandbox.SandboxLease, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
 	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
 	resolveWorkerRuntime   func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error)
@@ -356,6 +357,11 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 			execErr = collectErr
 		}
 	}
+	leaseRelease := sandboxCommandLeaseReleaseTracker{releaseLease: deps.releaseLease}
+	leaseRelease.observe(target)
+	if releaseErr := leaseRelease.release(); releaseErr != nil {
+		execErr = errors.Join(execErr, releaseErr)
+	}
 
 	finishedAt := deps.now().UTC()
 	status := sandboxexecution.StatusSucceeded
@@ -424,6 +430,9 @@ func normalizeRunSandboxDeps(deps runSandboxDeps) runSandboxDeps {
 	}
 	if deps.acquireLease == nil {
 		deps.acquireLease = sandboxCommandDefaultLeaseAcquirer(deps.now, customDefaultStore)
+	}
+	if deps.releaseLease == nil {
+		deps.releaseLease = sandboxCommandDefaultLeaseReleaser(deps.now, customDefaultStore)
 	}
 	if deps.resolveProvider == nil {
 		deps.resolveProvider = defaultRunSandboxDeps.resolveProvider
