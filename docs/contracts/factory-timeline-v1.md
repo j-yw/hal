@@ -26,8 +26,25 @@ These fields use `omitempty` and are only present when the value is non-zero.
 | `message` | string | Human-readable event message |
 | `summary` | string | Short event summary suitable for display |
 | `metadata` | object | Event-specific structured data |
+| `networkPolicyDecisionLogs` | array | Sanitized network policy decision-log metadata for policy debugging; metadata only and not proof of live enforcement |
 
 `metadata` is an open JSON object. Consumers should ignore unknown metadata keys and should use `eventType` to decide whether a metadata key is meaningful.
+
+When `networkPolicyDecisionLogs` is present, entries contain redaction-safe policy decision details only:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Safe decision record identifier |
+| `source` | string | Decision source, such as `run`, `auto`, `factory`, or `worker` |
+| `proxySessionId` | string | Safe proxy session identifier |
+| `policySnapshot` | object | Safe policy snapshot identity |
+| `request` | object | Safe request summary with request ID, operation label, and destination category only |
+| `outcome` | string | Decision outcome, such as `allowed`, `denied`, `downgraded`, or `audit_only` |
+| `reasonCode` | string | Safe reason code for the decision |
+| `ruleKind` | string | Safe rule kind metadata |
+| `policyPreset` | string | Safe policy preset metadata |
+| `enforcementMode` | string | Metadata-only enforcement mode when explicitly known |
+| `enforced` | boolean | Optional explicit enforcement claim; omitted when unsafe or unsupported |
 
 ## Event Types
 

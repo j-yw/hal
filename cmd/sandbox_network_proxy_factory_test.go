@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
@@ -121,6 +122,92 @@ func TestFactorySandboxPersistentMetadataSanitizesNetworkProxySession(t *testing
 	}
 }
 
+func TestFactoryTimelineEventSanitizesNetworkPolicyDecisionLogs(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	runID := "run-factory-decision-logs"
+	now := time.Date(2026, 7, 2, 6, 35, 0, 0, time.UTC)
+
+	if err := appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypePolicyDecision,
+		Summary:   "Network policy decisions recorded",
+		Metadata: map[string]any{
+			"policyField": "sandbox.networkPolicy",
+			"decision":    factory.PolicyDecisionAllowedExecution,
+			"outcome":     factory.PolicyOutcomeAllowed,
+			"source":      "remote_sandbox",
+		},
+		NetworkPolicyDecisionLogs: unsafePolicyDecisionLogManifestRecords(sandbox.SandboxNetworkPolicyDecisionSource(" FACTORY ")),
+	}); err != nil {
+		t.Fatalf("appendFactoryRunTimelineEvent() error = %v", err)
+	}
+
+	events, err := store.LoadEvents(runID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if events[0].EventType != factory.EventTypePolicyDecision {
+		t.Fatalf("event type = %q, want %q", events[0].EventType, factory.EventTypePolicyDecision)
+	}
+	assertFactoryTimelineSanitizedPolicyDecisionLogs(t, events[0], sandbox.SandboxNetworkPolicyDecisionSourceFactory)
+}
+
+func TestFactorySandboxSecurityPolicyEventAttachesSanitizedDecisionLogs(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	now := time.Date(2026, 7, 2, 6, 40, 0, 0, time.UTC)
+	target := &sandbox.SandboxState{
+		Name:     "factory-policy-target",
+		Provider: "fake",
+		Status:   sandbox.StatusRunning,
+		Security: &sandbox.SandboxSecurity{
+			Network: &sandbox.SandboxNetworkSecurity{
+				PolicyRequested: sandbox.SandboxNetworkPolicyDenyByDefault,
+				PolicyEnforced:  sandbox.SandboxNetworkPolicyDenyByDefault,
+				EnforcementMode: sandbox.SandboxNetworkEnforcementModeProxy,
+			},
+		},
+	}
+
+	err := recordFactorySandboxSecurityPolicyEvent(store, factorySandboxExecutorDeps{
+		now:         func() time.Time { return now },
+		appendEvent: appendFactorySandboxTimelineEvent,
+	}, &factory.RunRecord{RunID: "run-factory-policy-logs"}, target,
+		unsafePolicyDecisionLogManifestRecords(sandbox.SandboxNetworkPolicyDecisionSource(" FACTORY ")),
+		factory.RunSecretRedactor{})
+	if err != nil {
+		t.Fatalf("recordFactorySandboxSecurityPolicyEvent() error = %v", err)
+	}
+
+	events, err := store.LoadEvents("run-factory-policy-logs")
+	if err != nil {
+		t.Fatalf("LoadEvents() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if events[0].Metadata["policyField"] != "sandbox.security" {
+		t.Fatalf("policy event metadata = %#v, want sandbox.security policy field", events[0].Metadata)
+	}
+	assertFactoryTimelineSanitizedPolicyDecisionLogs(t, events[0], sandbox.SandboxNetworkPolicyDecisionSourceFactory)
+}
+
+func TestFactoryStatusTimelineNormalizesNetworkPolicyDecisionLogs(t *testing.T) {
+	events := normalizeFactoryTimelineEventsForContractV1([]factory.EventRecord{{
+		Sequence:                  1,
+		RunID:                     "run-status-policy-logs",
+		EventType:                 factory.EventTypePolicyDecision,
+		Timestamp:                 time.Date(2026, 7, 2, 6, 42, 0, 0, time.UTC),
+		NetworkPolicyDecisionLogs: unsafePolicyDecisionLogManifestRecords(sandbox.SandboxNetworkPolicyDecisionSource(" FACTORY ")),
+	}})
+
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	assertFactoryTimelineSanitizedPolicyDecisionLogs(t, events[0], sandbox.SandboxNetworkPolicyDecisionSourceFactory)
+}
+
 func TestFactorySandboxNetworkProxyMetadataPlumbingAvoidsLiveAdapterImports(t *testing.T) {
 	fileSet := token.NewFileSet()
 	parsed, err := parser.ParseFile(fileSet, "factory_sandbox_executor.go", nil, parser.ImportsOnly)
@@ -152,6 +239,100 @@ func TestFactorySandboxNetworkProxyMetadataPlumbingAvoidsLiveAdapterImports(t *t
 			if rule.match(importPath) {
 				t.Fatalf("factory network proxy metadata plumbing imports forbidden %s %q", rule.name, importPath)
 			}
+		}
+	}
+}
+
+func assertFactoryTimelineSanitizedPolicyDecisionLogs(t *testing.T, event factory.EventRecord, source sandbox.SandboxNetworkPolicyDecisionSource) {
+	t.Helper()
+	if len(event.NetworkPolicyDecisionLogs) == 0 {
+		t.Fatal("NetworkPolicyDecisionLogs is empty, want sanitized decision log records")
+	}
+	record := event.NetworkPolicyDecisionLogs[0]
+	if record.ID != "decision-01" {
+		t.Fatalf("decision log id = %q, want decision-01", record.ID)
+	}
+	if record.Source != source {
+		t.Fatalf("decision log source = %q, want %q", record.Source, source)
+	}
+	if record.ProxySessionID != "proxy-session-01" {
+		t.Fatalf("decision log proxy session id = %q, want proxy-session-01", record.ProxySessionID)
+	}
+	if record.PolicySnapshot == nil {
+		t.Fatal("decision log policy snapshot = nil, want sanitized snapshot metadata")
+	}
+	if record.PolicySnapshot.ID != "policy-snapshot-01" || record.PolicySnapshot.Version != "policy-v1" || record.PolicySnapshot.RuleSetID != "rules-01" {
+		t.Fatalf("decision log policy snapshot = %#v, want safe snapshot identifiers preserved", record.PolicySnapshot)
+	}
+	if record.PolicySnapshot.Preset != sandbox.SandboxNetworkPolicyPresetDenyByDefault {
+		t.Fatalf("decision log policy snapshot preset = %q, want %q", record.PolicySnapshot.Preset, sandbox.SandboxNetworkPolicyPresetDenyByDefault)
+	}
+	if record.Request == nil {
+		t.Fatal("decision log request = nil, want sanitized request summary")
+	}
+	if record.Request.ID != "request-01" || record.Request.Operation != "connect" {
+		t.Fatalf("decision log request = %#v, want safe request identifiers preserved", record.Request)
+	}
+	if record.Request.DestinationCategory != sandbox.SandboxNetworkPolicyDestinationMetadataService {
+		t.Fatalf("decision log destination category = %q, want %q", record.Request.DestinationCategory, sandbox.SandboxNetworkPolicyDestinationMetadataService)
+	}
+	if record.Outcome != sandbox.SandboxNetworkPolicyDecisionOutcomeDenied {
+		t.Fatalf("decision log outcome = %q, want %q", record.Outcome, sandbox.SandboxNetworkPolicyDecisionOutcomeDenied)
+	}
+	if record.ReasonCode != sandbox.SandboxNetworkPolicyDecisionReasonDefaultDeny {
+		t.Fatalf("decision log reason code = %q, want %q", record.ReasonCode, sandbox.SandboxNetworkPolicyDecisionReasonDefaultDeny)
+	}
+	if record.RuleKind != sandbox.SandboxNetworkPolicyRuleKindDomain {
+		t.Fatalf("decision log rule kind = %q, want %q", record.RuleKind, sandbox.SandboxNetworkPolicyRuleKindDomain)
+	}
+	if record.PolicyPreset != sandbox.SandboxNetworkPolicyPresetDenyByDefault {
+		t.Fatalf("decision log policy preset = %q, want %q", record.PolicyPreset, sandbox.SandboxNetworkPolicyPresetDenyByDefault)
+	}
+	if record.EnforcementMode != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("decision log enforcement mode = %q, want %q", record.EnforcementMode, sandbox.SandboxNetworkEnforcementModeNone)
+	}
+	if record.Enforced != nil {
+		t.Fatalf("decision log enforced = %#v, want stripped denied enforcement claim with none mode", record.Enforced)
+	}
+
+	payload, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("Marshal(event) error = %v", err)
+	}
+	encoded := string(payload)
+	for _, forbidden := range []string{
+		"api.example.com",
+		"169.254.169.254",
+		"https://user:secret@example.test/path?token=secret",
+		"unix:///tmp/private/proxy.sock",
+		"/Users/alice/project",
+		"Authorization",
+		"Bearer",
+		"OPENAI_API_KEY",
+		"raw-header-token-value",
+		"raw body secret value",
+		"enforced",
+	} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("factory timeline leaked unsafe decision log metadata %q: %s", forbidden, encoded)
+		}
+	}
+	for _, want := range []string{
+		"networkPolicyDecisionLogs",
+		"decision-01",
+		"factory",
+		"policy-snapshot-01",
+		"policy-v1",
+		"rules-01",
+		"metadata_service",
+		"denied",
+		"default_deny",
+		"domain",
+		"deny_by_default",
+		"none",
+	} {
+		if !strings.Contains(encoded, want) {
+			t.Fatalf("factory timeline omitted safe decision log metadata %q: %s", want, encoded)
 		}
 	}
 }

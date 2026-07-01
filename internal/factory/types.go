@@ -497,13 +497,14 @@ type QueueClaim struct {
 
 // EventRecord captures one append-only timeline entry for a factory run.
 type EventRecord struct {
-	Sequence  int64          `json:"sequence"`
-	RunID     string         `json:"runId"`
-	EventType string         `json:"eventType"`
-	Timestamp time.Time      `json:"timestamp"`
-	Message   string         `json:"message,omitempty"`
-	Summary   string         `json:"summary,omitempty"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
+	Sequence                  int64                                           `json:"sequence"`
+	RunID                     string                                          `json:"runId"`
+	EventType                 string                                          `json:"eventType"`
+	Timestamp                 time.Time                                       `json:"timestamp"`
+	Message                   string                                          `json:"message,omitempty"`
+	Summary                   string                                          `json:"summary,omitempty"`
+	Metadata                  map[string]any                                  `json:"metadata,omitempty"`
+	NetworkPolicyDecisionLogs []sandbox.SandboxNetworkPolicyDecisionLogRecord `json:"networkPolicyDecisionLogs,omitempty"`
 }
 
 // PolicyDecisionMetadata is the safe, whitelisted metadata shape for policy

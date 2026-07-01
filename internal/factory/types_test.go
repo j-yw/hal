@@ -2618,6 +2618,85 @@ func TestEventRecordJSONFields(t *testing.T) {
 	}
 }
 
+func TestEventRecordNetworkPolicyDecisionLogsJSONFields(t *testing.T) {
+	timestamp := time.Date(2026, 7, 2, 6, 45, 0, 0, time.UTC)
+	original := EventRecord{
+		Sequence:  8,
+		RunID:     "run-network-policy-decision-logs",
+		EventType: EventTypePolicyDecision,
+		Timestamp: timestamp,
+		NetworkPolicyDecisionLogs: sandbox.SanitizeSandboxNetworkPolicyDecisionLogRecords([]sandbox.SandboxNetworkPolicyDecisionLogRecord{{
+			ID:             " decision-01 ",
+			Source:         sandbox.SandboxNetworkPolicyDecisionSource(" FACTORY "),
+			ProxySessionID: " proxy-session-01 ",
+			PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
+				ID:        " policy-snapshot-01 ",
+				Version:   " policy-v1 ",
+				Preset:    sandbox.SandboxNetworkPolicyPreset(" DENY_BY_DEFAULT "),
+				RuleSetID: " rules-01 ",
+			},
+			Request: &sandbox.SandboxNetworkPolicyRequestSummary{
+				ID:                  " request-01 ",
+				Operation:           " connect ",
+				DestinationCategory: sandbox.SandboxNetworkPolicyDestinationCategory(" METADATA_SERVICE "),
+			},
+			Outcome:         sandbox.SandboxNetworkPolicyDecisionOutcome(" DENIED "),
+			ReasonCode:      sandbox.SandboxNetworkPolicyDecisionReasonCode(" DEFAULT_DENY "),
+			RuleKind:        sandbox.SandboxNetworkPolicyRuleKind(" DOMAIN "),
+			PolicyPreset:    sandbox.SandboxNetworkPolicyPreset(" DENY_BY_DEFAULT "),
+			EnforcementMode: sandbox.SandboxNetworkEnforcementModeFirewall,
+		}}),
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+	for _, key := range []string{"sequence", "runId", "eventType", "timestamp", "networkPolicyDecisionLogs"} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("missing event JSON field %q", key)
+		}
+	}
+
+	decisionLogs, ok := raw["networkPolicyDecisionLogs"].([]any)
+	if !ok || len(decisionLogs) != 1 {
+		t.Fatalf("networkPolicyDecisionLogs = %#v, want one record", raw["networkPolicyDecisionLogs"])
+	}
+	decisionLog, ok := decisionLogs[0].(map[string]any)
+	if !ok {
+		t.Fatalf("networkPolicyDecisionLogs[0] should be an object, got %T", decisionLogs[0])
+	}
+	requireExactJSONKeys(t, decisionLog, []string{
+		"id", "source", "proxySessionId", "policySnapshot", "request",
+		"outcome", "reasonCode", "ruleKind", "policyPreset", "enforcementMode",
+	})
+	if decisionLog["source"] != string(sandbox.SandboxNetworkPolicyDecisionSourceFactory) {
+		t.Fatalf("decision log source = %#v, want factory", decisionLog["source"])
+	}
+	if decisionLog["outcome"] != string(sandbox.SandboxNetworkPolicyDecisionOutcomeDenied) {
+		t.Fatalf("decision log outcome = %#v, want denied", decisionLog["outcome"])
+	}
+	if decisionLog["reasonCode"] != string(sandbox.SandboxNetworkPolicyDecisionReasonDefaultDeny) {
+		t.Fatalf("decision log reasonCode = %#v, want default_deny", decisionLog["reasonCode"])
+	}
+	if request, ok := decisionLog["request"].(map[string]any); !ok || request["destinationCategory"] != string(sandbox.SandboxNetworkPolicyDestinationMetadataService) {
+		t.Fatalf("decision log request = %#v, want metadata_service destination category", decisionLog["request"])
+	}
+
+	var decoded EventRecord
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(round-trip) error = %v", err)
+	}
+	if !reflect.DeepEqual(decoded, original) {
+		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", decoded, original)
+	}
+}
+
 func TestPolicyDecisionMetadataJSONFields(t *testing.T) {
 	original := PolicyDecisionMetadata{
 		PolicyField: "factory.policy.verificationRequired",
@@ -2682,7 +2761,7 @@ func TestEventRecordOptionalFieldsOmitted(t *testing.T) {
 		t.Fatalf("json.Unmarshal(payload) error = %v", err)
 	}
 
-	for _, key := range []string{"message", "summary", "metadata"} {
+	for _, key := range []string{"message", "summary", "metadata", "networkPolicyDecisionLogs"} {
 		if _, ok := raw[key]; ok {
 			t.Errorf("unexpected optional event field %q in %s", key, string(data))
 		}
