@@ -660,6 +660,219 @@ func TestSandboxHostStatusCachedNonWorkerHostStableAndSafe(t *testing.T) {
 	}
 }
 
+func TestSandboxHostStatusLiveWorkerRefreshesAndPersistsFreshMetadata(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	checkedAt := time.Date(2026, 7, 1, 14, 0, 0, 0, time.UTC)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:                "worker-a",
+		Name:              "builder",
+		Kind:              sandbox.SandboxHostKindWorker,
+		Endpoint:          "unix:///tmp/private/worker-a.sock",
+		SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+		Capacity:          &sandbox.HostCapacity{MaxConcurrentSandboxes: 1},
+		Health:            &sandbox.HostHealth{Status: "stale"},
+		Labels:            map[string]string{"team": "runtime"},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	fakeClient := &fakeSandboxHostWorkerClient{
+		status: &sandboxworker.Status{
+			WorkerID:   "worker-a",
+			HostKind:   sandboxworker.HostKindLocal,
+			SocketPath: "/tmp/reported-worker-a.sock",
+			SupportedRuntimeDrivers: []string{
+				sandboxworker.RuntimeDriverSSHMachine,
+			},
+			Health: sandboxworker.WorkerHealth{
+				Status:  sandboxworker.HealthStatusHealthy,
+				Message: "ready now",
+			},
+			Capacity: sandboxworker.WorkerCapacity{
+				MaxConcurrentSandboxes: 4,
+				ActiveSandboxes:        2,
+			},
+			Security: sandboxworker.DefaultWorkerSecurityPolicy(),
+		},
+		capabilities: &sandboxworker.Capabilities{
+			WorkerID: "worker-a",
+			SupportedOperations: []string{
+				sandboxworker.OperationStatus,
+				sandboxworker.OperationCapabilities,
+			},
+			RuntimeDrivers: []sandboxworker.RuntimeDriver{
+				{
+					ID:             sandboxworker.RuntimeDriverRootlessPodman,
+					HostKind:       sandboxworker.HostKindLocal,
+					IsolationLevel: sandboxworker.IsolationLevelContainer,
+					Security:       sandboxworker.DefaultWorkerSecurityPolicy(),
+				},
+			},
+			Security: sandboxworker.DefaultWorkerSecurityPolicy(),
+		},
+	}
+
+	var clientSockets []string
+	deps := defaultSandboxHostDeps()
+	deps.newWorkerClient = func(socketPath string) (sandboxHostWorkerClient, error) {
+		clientSockets = append(clientSockets, socketPath)
+		return fakeClient, nil
+	}
+	deps.now = func() time.Time { return checkedAt }
+
+	cmd, stdout, stderr := newTestSandboxHostCommand(deps)
+	cmd.SetArgs([]string{"status", "worker-a", "--live"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+
+	if len(clientSockets) != 1 || clientSockets[0] != "/tmp/private/worker-a.sock" {
+		t.Fatalf("worker client sockets = %#v, want durable socket path", clientSockets)
+	}
+	if fakeClient.statusCalls != 1 || fakeClient.capabilitiesCalls != 1 {
+		t.Fatalf("worker client calls status=%d capabilities=%d, want one each", fakeClient.statusCalls, fakeClient.capabilitiesCalls)
+	}
+
+	loaded, err := sandbox.LoadHost("worker-a")
+	if err != nil {
+		t.Fatalf("LoadHost() error = %v", err)
+	}
+	if loaded.Name != "builder" || loaded.Endpoint != "unix:///tmp/private/worker-a.sock" || loaded.Kind != sandbox.SandboxHostKindWorker {
+		t.Fatalf("loaded identity/endpoint = %#v, want existing durable identity preserved", loaded)
+	}
+	if loaded.Health == nil || loaded.Health.Status != sandboxworker.HealthStatusHealthy || loaded.Health.Message != "ready now" || !loaded.Health.CheckedAt.Equal(checkedAt) {
+		t.Fatalf("loaded health = %#v, want live worker health", loaded.Health)
+	}
+	if loaded.Capacity == nil || loaded.Capacity.MaxConcurrentSandboxes != 4 {
+		t.Fatalf("loaded capacity = %#v, want fresh worker capacity", loaded.Capacity)
+	}
+	if len(loaded.SupportedRuntimes) != 1 || loaded.SupportedRuntimes[0] != sandboxworker.RuntimeDriverRootlessPodman {
+		t.Fatalf("supported runtimes = %#v, want capability-reported runtime only", loaded.SupportedRuntimes)
+	}
+	if loaded.Security == nil || loaded.Security.Network == nil || loaded.Security.Secrets == nil {
+		t.Fatalf("security = %#v, want live worker security summary", loaded.Security)
+	}
+	if loaded.Labels["team"] != "runtime" {
+		t.Fatalf("labels = %#v, want existing durable labels preserved", loaded.Labels)
+	}
+
+	output := stdout.String()
+	for _, want := range []string{
+		"Sandbox host builder (live)",
+		"live worker refresh (durable cache updated)",
+		sandboxworker.HealthStatusHealthy,
+		checkedAt.Format(time.RFC3339),
+		"ready now",
+		sandboxworker.RuntimeDriverRootlessPodman,
+		"max 4 sandboxes",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("stdout = %q, want %q", output, want)
+		}
+	}
+	for _, leaked := range []string{"/tmp/private/worker-a.sock", "/tmp/reported-worker-a.sock"} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("stdout leaked raw socket path %q: %q", leaked, output)
+		}
+	}
+}
+
+func TestSandboxHostStatusLiveFailureDoesNotMutateCacheAndSanitizesDetail(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	originalCheckedAt := time.Date(2026, 7, 1, 13, 0, 0, 0, time.UTC)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:       "worker-a",
+		Name:     "builder",
+		Kind:     sandbox.SandboxHostKindWorker,
+		Endpoint: "unix:///tmp/private/worker-a.sock",
+		Health: &sandbox.HostHealth{
+			Status:    "stale",
+			CheckedAt: originalCheckedAt,
+			Message:   "old cache",
+		},
+		SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+		Capacity:          &sandbox.HostCapacity{MaxConcurrentSandboxes: 1},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	fakeClient := &fakeSandboxHostWorkerClient{
+		statusErr: errors.New("dial /tmp/private/worker-a.sock failed token=supersecret"),
+	}
+	deps := defaultSandboxHostDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		return fakeClient, nil
+	}
+
+	cmd, _, stderr := newTestSandboxHostCommand(deps)
+	cmd.SetArgs([]string{"status", "worker-a", "--live"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want live worker error")
+	}
+
+	detail := err.Error() + "\n" + stderr.String()
+	for _, leaked := range []string{"/tmp/private/worker-a.sock", "supersecret"} {
+		if strings.Contains(detail, leaked) {
+			t.Fatalf("live failure detail leaked %q: %q", leaked, detail)
+		}
+	}
+	for _, want := range []string{"[redacted-path]", "token=[redacted]"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("live failure detail = %q, want sanitized marker %q", detail, want)
+		}
+	}
+	if fakeClient.capabilitiesCalls != 0 {
+		t.Fatalf("capabilities calls = %d, want status failure to stop before capabilities", fakeClient.capabilitiesCalls)
+	}
+
+	loaded, loadErr := sandbox.LoadHost("worker-a")
+	if loadErr != nil {
+		t.Fatalf("LoadHost() error = %v", loadErr)
+	}
+	if loaded.Health == nil || loaded.Health.Status != "stale" || loaded.Health.Message != "old cache" || !loaded.Health.CheckedAt.Equal(originalCheckedAt) {
+		t.Fatalf("loaded health after failed refresh = %#v, want original cached health", loaded.Health)
+	}
+	if len(loaded.SupportedRuntimes) != 1 || loaded.SupportedRuntimes[0] != sandbox.SandboxRuntimeDriverSSHMachine {
+		t.Fatalf("supported runtimes after failed refresh = %#v, want original runtimes", loaded.SupportedRuntimes)
+	}
+}
+
+func TestSandboxHostStatusLiveNonWorkerDoesNotContactWorkerClient(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:                "ssh-1",
+		Name:              "zeta",
+		Kind:              sandbox.SandboxHostKindSSH,
+		Endpoint:          "ssh://deploy:secret@example.com:22/workspace?token=supersecret",
+		SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	deps := defaultSandboxHostDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("sandbox host status --live should not contact worker daemons for non-worker hosts")
+		return nil, nil
+	}
+
+	cmd, _, stderr := newTestSandboxHostCommand(deps)
+	cmd.SetArgs([]string{"status", "ssh-1", "--live"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want unsupported live refresh error")
+	}
+	output := err.Error() + "\n" + stderr.String()
+	if !strings.Contains(output, "live refresh is only supported for worker hosts") {
+		t.Fatalf("output = %q, want unsupported live refresh detail", output)
+	}
+	for _, leaked := range []string{"deploy:secret", "example.com", "token=supersecret"} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("output leaked endpoint detail %q: %q", leaked, output)
+		}
+	}
+}
+
 func TestSandboxHostStatusMissingHostReturnsCleanError(t *testing.T) {
 	setSandboxHostRegistryHome(t)
 	cmd, _, stderr := newTestSandboxHostCommand(defaultSandboxHostDeps())

@@ -47,6 +47,7 @@
 - Human worker host list output should read durable records through `internal/sandbox.ListHosts`, rely on its name-then-ID ordering, and render endpoint summaries such as `local Unix socket` or `<scheme> endpoint` instead of raw socket paths, hosts, or credential-bearing URLs.
 - Worker host list JSON should use the dedicated `sandbox-host-list-v1` contract, emit exactly one JSON document, preserve `internal/sandbox.ListHosts` ordering, and expose endpoint summaries only rather than raw socket paths, hostnames, credentials, or URL query strings.
 - Cached worker host status output should read a single durable record through `internal/sandbox.LoadHost`, avoid worker client calls unless an explicit live path requests them, label human output as cached/not live, and reuse safe endpoint/runtime/capacity summaries instead of raw socket paths, hosts, or credential-bearing URLs.
+- Live worker host status refresh should load the durable host first, require a local Unix socket endpoint, reuse the command-layer worker metadata mapper, preserve durable identity/endpoint/labels, and persist successful refreshes with `internal/sandbox.ForceWriteHost`.
 
 ## Patterns from phase14-worker-io (2026-07-01)
 

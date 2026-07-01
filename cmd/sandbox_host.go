@@ -21,6 +21,7 @@ type sandboxHostDeps struct {
 	status          func(context.Context, sandboxHostStatusRequest, io.Writer) error
 	delete          func(context.Context, sandboxHostDeleteRequest, io.Writer) error
 	saveHost        func(*sandbox.SandboxHost) error
+	forceWriteHost  func(*sandbox.SandboxHost) error
 	newWorkerClient func(string) (sandboxHostWorkerClient, error)
 	now             func() time.Time
 }
@@ -42,6 +43,7 @@ type sandboxHostListRequest struct {
 
 type sandboxHostStatusRequest struct {
 	HostID string
+	Live   bool
 }
 
 type sandboxHostDeleteRequest struct {
@@ -62,6 +64,7 @@ func init() {
 func defaultSandboxHostDeps() sandboxHostDeps {
 	return sandboxHostDeps{
 		saveHost:        sandbox.SaveHost,
+		forceWriteHost:  sandbox.ForceWriteHost,
 		newWorkerClient: newSandboxHostWorkerClient,
 		now:             time.Now,
 	}
@@ -182,6 +185,9 @@ sandbox-host-list-v1 contract.`,
 }
 
 func newSandboxHostStatusCommand(deps sandboxHostDeps) *cobra.Command {
+	flags := struct {
+		live bool
+	}{}
 	cmd := &cobra.Command{
 		Use:   "status ID",
 		Short: "Show sandbox host status",
@@ -189,15 +195,20 @@ func newSandboxHostStatusCommand(deps sandboxHostDeps) *cobra.Command {
 
 The command renders cached host registry metadata. It does not contact worker
 daemons unless live refresh is explicitly requested by a supported flag.`,
-		Example: `  hal sandbox host status local-worker`,
-		Args:    exactArgsValidation(1),
+		Example: `  hal sandbox host status local-worker
+  hal sandbox host status local-worker --live`,
+		Args: exactArgsValidation(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			req := sandboxHostStatusRequest{HostID: strings.TrimSpace(args[0])}
+			req := sandboxHostStatusRequest{
+				HostID: strings.TrimSpace(args[0]),
+				Live:   flags.live,
+			}
 			return runSandboxHostCobra(cmd, "Sandbox Host Status failed", func(ctx context.Context, out io.Writer) error {
 				return deps.status(ctx, req, out)
 			})
 		},
 	}
+	cmd.Flags().BoolVar(&flags.live, "live", false, "Refresh cached worker metadata from the local worker socket")
 	return cmd
 }
 
@@ -225,6 +236,9 @@ func normalizeSandboxHostDeps(deps sandboxHostDeps) sandboxHostDeps {
 	if deps.saveHost == nil {
 		deps.saveHost = sandbox.SaveHost
 	}
+	if deps.forceWriteHost == nil {
+		deps.forceWriteHost = sandbox.ForceWriteHost
+	}
 	if deps.newWorkerClient == nil {
 		deps.newWorkerClient = newSandboxHostWorkerClient
 	}
@@ -243,7 +257,12 @@ func normalizeSandboxHostDeps(deps sandboxHostDeps) sandboxHostDeps {
 		deps.list = runSandboxHostList
 	}
 	if deps.status == nil {
-		deps.status = runSandboxHostStatus
+		forceWriteHost := deps.forceWriteHost
+		newWorkerClient := deps.newWorkerClient
+		now := deps.now
+		deps.status = func(ctx context.Context, req sandboxHostStatusRequest, out io.Writer) error {
+			return runSandboxHostStatus(ctx, req, out, forceWriteHost, newWorkerClient, now)
+		}
 	}
 	if deps.delete == nil {
 		deps.delete = func(context.Context, sandboxHostDeleteRequest, io.Writer) error {
@@ -317,7 +336,7 @@ func runSandboxHostList(_ context.Context, req sandboxHostListRequest, out io.Wr
 	return renderSandboxHostList(out, hosts)
 }
 
-func runSandboxHostStatus(_ context.Context, req sandboxHostStatusRequest, out io.Writer) error {
+func runSandboxHostStatus(ctx context.Context, req sandboxHostStatusRequest, out io.Writer, forceWriteHost func(*sandbox.SandboxHost) error, newWorkerClient func(string) (sandboxHostWorkerClient, error), now func() time.Time) error {
 	hostID := strings.TrimSpace(req.HostID)
 	if hostID == "" {
 		return fmt.Errorf("host id is required")
@@ -326,7 +345,46 @@ func runSandboxHostStatus(_ context.Context, req sandboxHostStatusRequest, out i
 	if err != nil {
 		return err
 	}
-	return renderSandboxHostStatus(out, host)
+	if !req.Live {
+		return renderSandboxHostStatus(out, host, false)
+	}
+
+	if strings.TrimSpace(host.Kind) != sandbox.SandboxHostKindWorker {
+		return fmt.Errorf("live refresh is only supported for worker hosts")
+	}
+	socketPath, err := sandboxHostLocalWorkerSocketPath(host.Endpoint)
+	if err != nil {
+		return err
+	}
+	if forceWriteHost == nil {
+		forceWriteHost = sandbox.ForceWriteHost
+	}
+	if newWorkerClient == nil {
+		newWorkerClient = newSandboxHostWorkerClient
+	}
+	if now == nil {
+		now = time.Now
+	}
+
+	status, capabilities, err := querySandboxHostWorkerMetadata(ctx, socketPath, newWorkerClient)
+	if err != nil {
+		return err
+	}
+	refreshed, err := sandboxHostFromWorkerMetadata(sandboxHostWorkerMetadataRequest{
+		WorkerID:     host.ID,
+		SocketPath:   host.Endpoint,
+		Status:       status,
+		Capabilities: capabilities,
+		CheckedAt:    now(),
+	})
+	if err != nil {
+		return err
+	}
+	refreshed = mergeSandboxHostLiveRefresh(host, refreshed)
+	if err := forceWriteHost(refreshed); err != nil {
+		return err
+	}
+	return renderSandboxHostStatus(out, refreshed, true)
 }
 
 func renderSandboxHostListJSON(out io.Writer, hosts []*sandbox.SandboxHost) error {
@@ -377,12 +435,19 @@ func renderSandboxHostList(out io.Writer, hosts []*sandbox.SandboxHost) error {
 	return tw.Flush()
 }
 
-func renderSandboxHostStatus(out io.Writer, host *sandbox.SandboxHost) error {
+func renderSandboxHostStatus(out io.Writer, host *sandbox.SandboxHost, live bool) error {
 	if out == nil || host == nil {
 		return nil
 	}
 
-	if _, err := fmt.Fprintf(out, "Sandbox host %s (cached)\n", sandboxHostDisplayValue(host.Name, host.ID)); err != nil {
+	mode := "cached"
+	source := "cached durable registry (not live)"
+	if live {
+		mode = "live"
+		source = "live worker refresh (durable cache updated)"
+	}
+
+	if _, err := fmt.Fprintf(out, "Sandbox host %s (%s)\n", sandboxHostDisplayValue(host.Name, host.ID), mode); err != nil {
 		return err
 	}
 	type statusLine struct {
@@ -390,7 +455,7 @@ func renderSandboxHostStatus(out io.Writer, host *sandbox.SandboxHost) error {
 		value string
 	}
 	lines := []statusLine{
-		{"Source", "cached durable registry (not live)"},
+		{"Source", source},
 		{"ID", sandboxHostDisplayValue(host.ID, "-")},
 		{"Name", sandboxHostDisplayValue(host.Name, host.ID)},
 		{"Kind", sandboxHostDisplayValue(host.Kind, "unknown")},
@@ -420,6 +485,48 @@ func renderSandboxHostStatus(out io.Writer, host *sandbox.SandboxHost) error {
 		}
 	}
 	return tw.Flush()
+}
+
+func sandboxHostLocalWorkerSocketPath(endpoint string) (string, error) {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return "", fmt.Errorf("worker host live refresh requires a local Unix socket endpoint")
+	}
+
+	lowerEndpoint := strings.ToLower(endpoint)
+	switch {
+	case strings.HasPrefix(lowerEndpoint, "unix://"):
+		path := strings.TrimSpace(endpoint[len("unix://"):])
+		if path == "" {
+			return "", fmt.Errorf("worker host live refresh requires a local Unix socket endpoint")
+		}
+		return path, nil
+	case strings.HasPrefix(lowerEndpoint, "unix:"):
+		path := strings.TrimSpace(endpoint[len("unix:"):])
+		if path == "" {
+			return "", fmt.Errorf("worker host live refresh requires a local Unix socket endpoint")
+		}
+		return path, nil
+	case strings.HasPrefix(endpoint, "/"):
+		return endpoint, nil
+	default:
+		return "", fmt.Errorf("worker host live refresh requires a local Unix socket endpoint")
+	}
+}
+
+func mergeSandboxHostLiveRefresh(existing, refreshed *sandbox.SandboxHost) *sandbox.SandboxHost {
+	if existing == nil || refreshed == nil {
+		return refreshed
+	}
+	refreshed.ID = existing.ID
+	if strings.TrimSpace(existing.Name) != "" {
+		refreshed.Name = existing.Name
+	}
+	refreshed.Kind = existing.Kind
+	refreshed.Endpoint = existing.Endpoint
+	refreshed.Labels = existing.Labels
+	refreshed.Cost = existing.Cost
+	return refreshed
 }
 
 func sandboxHostDisplayValue(value, fallback string) string {
