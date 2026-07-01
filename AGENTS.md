@@ -44,6 +44,7 @@
 - Sync-out summary construction from non-factory execution artifacts lives in `internal/sandboxexecution`; keep `BuildSyncOutSummaryFromArtifacts` pure/fake-only over safe manifest `ArtifactMetadata`, allow only the root `internal/sandboxworkspace` data-contract import, and avoid runtime, filesystem, worker, provider, command, or network dependencies.
 - Safe host apply primitives belong in `internal/sandboxworkspace`; keep `SafeApply` behind the narrow `SafeApplyGit` boundary, run patch or bundle dry-run validation before mutation, and return structured handoff/warning metadata without raw project dirs, payload paths, endpoints, credentials, or secret-bearing repository URLs.
 - Safe host apply must check host worktree cleanliness through `SafeApplyGit` before dry-run or mutation; dirty worktrees should return `dirty_worktree` handoff metadata with only staged/unstaged/untracked categories and no file paths.
+- Safe host apply must acquire workspace locks before worktree clean checks, dry-run validation, or mutation; keep the default lock directory outside the Git worktree so lock files do not make `git status` dirty, and convert lock acquisition failures into redaction-safe `workspace_lock_failed` handoff warnings.
 
 ## Patterns from phase20-lease-aware-scheduler (2026-07-01)
 

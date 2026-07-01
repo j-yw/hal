@@ -3,13 +3,16 @@ package sandboxworkspace
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
 // SafeApplier validates sync-out artifacts before applying them to a host
 // worktree.
 type SafeApplier struct {
-	Git SafeApplyGit
+	Git   SafeApplyGit
+	Locks SafeApplyLockProvider
 }
 
 // SafeApplyGit is the narrow host-side Git boundary used by safe apply.
@@ -25,6 +28,25 @@ type SafeApplyGit interface {
 type SafeApplyGitRequest struct {
 	ProjectDir  string
 	PayloadPath string
+}
+
+// SafeApplyLockProvider acquires the host workspace lock used to serialize a
+// safe apply attempt.
+type SafeApplyLockProvider interface {
+	AcquireSafeApplyLock(resourceKey string) (SafeApplyLock, error)
+}
+
+// SafeApplyLock is an acquired host workspace lock.
+type SafeApplyLock interface {
+	Release() error
+}
+
+type directSafeApplyLockProvider struct {
+	manager LockManager
+}
+
+func (p directSafeApplyLockProvider) AcquireSafeApplyLock(resourceKey string) (SafeApplyLock, error) {
+	return p.manager.Acquire(resourceKey)
 }
 
 // GitCLIHostApplier validates and applies payloads with local Git commands.
@@ -60,6 +82,8 @@ func (GitCLIHostApplier) CheckBundle(ctx context.Context, req SafeApplyGitReques
 type SafeApplyRequest struct {
 	ProjectDir  string
 	PayloadPath string
+	ResourceKey string
+	LockDir     string
 	Artifact    SyncOutArtifact
 	Mutate      bool
 }
@@ -88,10 +112,12 @@ type SafeApplyResult struct {
 }
 
 const (
-	safeApplyDirtyWorktreeWarningCode       = "dirty_worktree"
-	safeApplyWorktreeCheckFailedWarningCode = "worktree_check_failed"
-	safeApplyDryRunFailedWarningCode        = "dry_run_failed"
-	safeApplyApplyFailedWarningCode         = "apply_failed"
+	safeApplyDirtyWorktreeWarningCode        = "dirty_worktree"
+	safeApplyWorktreeCheckFailedWarningCode  = "worktree_check_failed"
+	safeApplyWorkspaceLockFailedWarningCode  = "workspace_lock_failed"
+	safeApplyWorkspaceLockReleaseWarningCode = "workspace_lock_release_failed"
+	safeApplyDryRunFailedWarningCode         = "dry_run_failed"
+	safeApplyApplyFailedWarningCode          = "apply_failed"
 )
 
 // SafeApply validates an eligible sync-out artifact and, when requested,
@@ -136,26 +162,40 @@ func (a SafeApplier) Apply(ctx context.Context, req SafeApplyRequest) (SafeApply
 		ProjectDir:  strings.TrimSpace(req.ProjectDir),
 		PayloadPath: strings.TrimSpace(req.PayloadPath),
 	}
+
+	lock, lockErr := safeApplyLockProvider(a, req).AcquireSafeApplyLock(safeApplyResourceKey(req))
+	if lockErr != nil {
+		result.Reasons = []SyncOutApplyEligibilityReason{SyncOutApplyEligibilityReasonManualReviewRequired}
+		result.Warnings = []SyncOutWarning{safeApplyWarning(safeApplyWorkspaceLockFailedWarningCode, req.Artifact, lockErr)}
+		return result, nil
+	}
+	releaseLock := func(result SafeApplyResult) (SafeApplyResult, error) {
+		if err := lock.Release(); err != nil {
+			result.Warnings = append(result.Warnings, safeApplyWarning(safeApplyWorkspaceLockReleaseWarningCode, req.Artifact, err))
+		}
+		return result, nil
+	}
+
 	if dirty, err := git.CheckCleanWorktree(ctx, gitReq); err != nil {
 		result.Reasons = []SyncOutApplyEligibilityReason{SyncOutApplyEligibilityReasonManualReviewRequired}
 		result.Warnings = []SyncOutWarning{safeApplyWarning(safeApplyWorktreeCheckFailedWarningCode, req.Artifact, err)}
-		return result, nil
+		return releaseLock(result)
 	} else if dirty.Any() {
 		result.Reasons = []SyncOutApplyEligibilityReason{SyncOutApplyEligibilityReasonDirtyWorktree}
 		result.Warnings = []SyncOutWarning{safeApplyDirtyWorktreeWarning(req.Artifact, dirty)}
-		return result, nil
+		return releaseLock(result)
 	}
 	if err := safeApplyDryRun(ctx, git, mode, gitReq); err != nil {
 		result.Reasons = []SyncOutApplyEligibilityReason{SyncOutApplyEligibilityReasonDryRunFailed}
 		result.Warnings = []SyncOutWarning{safeApplyWarning(safeApplyDryRunFailedWarningCode, req.Artifact, err)}
-		return result, nil
+		return releaseLock(result)
 	}
 
 	result.DryRunPassed = true
 	if !req.Mutate {
 		result.Status = SafeApplyStatusDryRunPassed
 		result.Reasons = safeApplyEligibilityReasons(req.Artifact, safeApplyEligibleReason(mode))
-		return result, nil
+		return releaseLock(result)
 	}
 
 	switch mode {
@@ -163,18 +203,18 @@ func (a SafeApplier) Apply(ctx context.Context, req SafeApplyRequest) (SafeApply
 		if err := git.ApplyPatch(ctx, gitReq); err != nil {
 			result.Reasons = []SyncOutApplyEligibilityReason{SyncOutApplyEligibilityReasonManualReviewRequired}
 			result.Warnings = []SyncOutWarning{safeApplyWarning(safeApplyApplyFailedWarningCode, req.Artifact, err)}
-			return result, nil
+			return releaseLock(result)
 		}
 		result.Status = SafeApplyStatusApplied
 		result.Applied = true
 		result.Reasons = safeApplyEligibilityReasons(req.Artifact, SyncOutApplyEligibilityReasonEligiblePatch)
-		return result, nil
+		return releaseLock(result)
 	case SyncOutApplyModeBundle:
 		result.Reasons = []SyncOutApplyEligibilityReason{SyncOutApplyEligibilityReasonManualReviewRequired}
-		return result, nil
+		return releaseLock(result)
 	default:
 		result.Reasons = []SyncOutApplyEligibilityReason{SyncOutApplyEligibilityReasonUnsafeArtifact}
-		return result, nil
+		return releaseLock(result)
 	}
 }
 
@@ -206,6 +246,28 @@ func safeApplyDryRun(ctx context.Context, git SafeApplyGit, mode SyncOutApplyMod
 	default:
 		return fmt.Errorf("safe apply dry-run: unsupported apply mode %q", mode)
 	}
+}
+
+func safeApplyLockProvider(applier SafeApplier, req SafeApplyRequest) SafeApplyLockProvider {
+	if applier.Locks != nil {
+		return applier.Locks
+	}
+	lockDir := strings.TrimSpace(req.LockDir)
+	if lockDir == "" {
+		lockDir = defaultSafeApplyLockDir()
+	}
+	return directSafeApplyLockProvider{manager: NewLockManager(lockDir)}
+}
+
+func defaultSafeApplyLockDir() string {
+	return filepath.Join(os.TempDir(), "hal-workspace-locks")
+}
+
+func safeApplyResourceKey(req SafeApplyRequest) string {
+	if resourceKey := strings.TrimSpace(req.ResourceKey); resourceKey != "" {
+		return resourceKey
+	}
+	return directResourceKey(strings.TrimSpace(req.ProjectDir))
 }
 
 func safeApplyArtifactEligible(artifact SyncOutArtifact) bool {

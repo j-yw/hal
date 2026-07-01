@@ -3,6 +3,7 @@ package sandboxworkspace
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,6 +95,72 @@ func TestSafeApplyRefusesDirtyWorktreeByDefault(t *testing.T) {
 	for _, unsafe := range []string{"/tmp/host-worktree", "/tmp/committed.patch", "secret.txt", "https://user:secret@example.test/repo.git"} {
 		if strings.Contains(string(encoded), unsafe) {
 			t.Fatalf("safe apply result leaked unsafe fragment %q: %s", unsafe, encoded)
+		}
+	}
+}
+
+func TestSafeApplyUsesWorkspaceLock(t *testing.T) {
+	var calls []string
+	git := &recordingSafeApplyGit{sharedCalls: &calls}
+	locks := &recordingSafeApplyLocks{calls: &calls}
+
+	result, err := (SafeApplier{Git: git, Locks: locks}).Apply(context.Background(), SafeApplyRequest{
+		ProjectDir:  "/tmp/host-worktree",
+		PayloadPath: "/tmp/committed.patch",
+		ResourceKey: "workspace:test-repo",
+		Mutate:      true,
+		Artifact:    safeApplyPatchArtifact(),
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if result.Status != SafeApplyStatusApplied || !result.DryRunPassed || !result.Applied {
+		t.Fatalf("result = %#v, want applied after locked dry-run", result)
+	}
+	if got, want := strings.Join(calls, ","), "acquire_lock,check_worktree,check_patch,apply_patch,release_lock"; got != want {
+		t.Fatalf("call order = %q, want %q", got, want)
+	}
+	if len(locks.acquiredKeys) != 1 || locks.acquiredKeys[0] != "workspace:test-repo" {
+		t.Fatalf("acquired lock keys = %#v, want workspace:test-repo", locks.acquiredKeys)
+	}
+}
+
+func TestSafeApplyLockFailurePreventsApply(t *testing.T) {
+	git := &recordingSafeApplyGit{}
+	locks := &recordingSafeApplyLocks{
+		acquireErr: errors.New("lock held for /tmp/private/repo TOKEN=secret https://user:secret@example.test/repo.git"),
+	}
+
+	result, err := (SafeApplier{Git: git, Locks: locks}).Apply(context.Background(), SafeApplyRequest{
+		ProjectDir:  "/tmp/private/repo",
+		PayloadPath: "/tmp/private/committed.patch",
+		ResourceKey: "workspace:/tmp/private/repo",
+		Mutate:      true,
+		Artifact:    safeApplyPatchArtifact(),
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if result.Status != SafeApplyStatusHandoffRequired || result.Applied || result.DryRunPassed {
+		t.Fatalf("result = %#v, want handoff without apply after lock failure", result)
+	}
+	if !safeApplyReasonsContain(result.Reasons, SyncOutApplyEligibilityReasonManualReviewRequired) {
+		t.Fatalf("Reasons = %#v, want manual_review_required", result.Reasons)
+	}
+	if len(git.calls) != 0 {
+		t.Fatalf("git calls = %#v, want none after lock failure", git.calls)
+	}
+	if len(result.Warnings) != 1 || result.Warnings[0].Code != "workspace_lock_failed" {
+		t.Fatalf("Warnings = %#v, want workspace_lock_failed warning", result.Warnings)
+	}
+
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal(result) error = %v", err)
+	}
+	for _, unsafe := range []string{"/tmp/private/repo", "/tmp/private/committed.patch", "TOKEN=secret", "user:secret"} {
+		if strings.Contains(string(encoded), unsafe) {
+			t.Fatalf("safe apply lock failure leaked unsafe fragment %q: %s", unsafe, encoded)
 		}
 	}
 }
@@ -211,26 +278,64 @@ func safeApplyReasonsContain(reasons []SyncOutApplyEligibilityReason, want SyncO
 }
 
 type recordingSafeApplyGit struct {
-	calls []string
-	dirty DirtyState
+	calls       []string
+	sharedCalls *[]string
+	dirty       DirtyState
+}
+
+func (g *recordingSafeApplyGit) record(call string) {
+	g.calls = append(g.calls, call)
+	if g.sharedCalls != nil {
+		*g.sharedCalls = append(*g.sharedCalls, call)
+	}
 }
 
 func (g *recordingSafeApplyGit) CheckCleanWorktree(context.Context, SafeApplyGitRequest) (DirtyState, error) {
-	g.calls = append(g.calls, "check_worktree")
+	g.record("check_worktree")
 	return g.dirty, nil
 }
 
 func (g *recordingSafeApplyGit) CheckPatch(context.Context, SafeApplyGitRequest) error {
-	g.calls = append(g.calls, "check_patch")
+	g.record("check_patch")
 	return nil
 }
 
 func (g *recordingSafeApplyGit) ApplyPatch(context.Context, SafeApplyGitRequest) error {
-	g.calls = append(g.calls, "apply_patch")
+	g.record("apply_patch")
 	return nil
 }
 
 func (g *recordingSafeApplyGit) CheckBundle(context.Context, SafeApplyGitRequest) error {
-	g.calls = append(g.calls, "check_bundle")
+	g.record("check_bundle")
 	return nil
+}
+
+type recordingSafeApplyLocks struct {
+	calls        *[]string
+	acquiredKeys []string
+	acquireErr   error
+	releaseErr   error
+}
+
+func (l *recordingSafeApplyLocks) AcquireSafeApplyLock(resourceKey string) (SafeApplyLock, error) {
+	if l.calls != nil {
+		*l.calls = append(*l.calls, "acquire_lock")
+	}
+	l.acquiredKeys = append(l.acquiredKeys, resourceKey)
+	if l.acquireErr != nil {
+		return nil, l.acquireErr
+	}
+	return &recordingSafeApplyLock{calls: l.calls, releaseErr: l.releaseErr}, nil
+}
+
+type recordingSafeApplyLock struct {
+	calls      *[]string
+	releaseErr error
+}
+
+func (l *recordingSafeApplyLock) Release() error {
+	if l.calls != nil {
+		*l.calls = append(*l.calls, "release_lock")
+	}
+	return l.releaseErr
 }
