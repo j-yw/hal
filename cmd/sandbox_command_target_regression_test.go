@@ -92,6 +92,131 @@ func TestRunSandboxDefaultTargetResolutionStaysCachedAndFakeOnly(t *testing.T) {
 	}
 }
 
+func TestRunSandboxDefaultCommandKeepsWorkerRouteInactiveInManifest(t *testing.T) {
+	t.Setenv("HAL_CONFIG_HOME", t.TempDir())
+
+	startedAt := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	target := &sandbox.SandboxState{
+		Name:     "run-default-worker-box",
+		Provider: "test-provider",
+		Status:   sandbox.StatusRunning,
+		Host:     defaultRegressionWorkerHostWithoutEndpoint(),
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandboxruntime.DriverRootlessPodman,
+			RuntimeID:      "ctr-default-worker",
+			Image:          "localhost/hal:worker",
+			WorkerID:       "cached-worker-without-endpoint",
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+		},
+	}
+	resolver := &fakeDefaultSandboxResolver{t: t, target: target}
+	driver := fakeRunSandboxRuntimeDriver{
+		exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			if req.Target.Name != "run-default-worker-box" {
+				t.Fatalf("Exec target name = %q, want run-default-worker-box", req.Target.Name)
+			}
+			if req.Target.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+				t.Fatalf("Exec runtime driver = %q, want SSH-machine compatibility", req.Target.Runtime.Driver)
+			}
+			if req.Target.Runtime.WorkerID != "" || req.Target.Runtime.RuntimeID != "" || req.Target.Runtime.Image != "" {
+				t.Fatalf("Exec runtime metadata = %#v, want no worker-backed metadata on default path", req.Target.Runtime)
+			}
+			_, _ = io.WriteString(req.Stdout, `{"contractVersion":1,"ok":true,"iterations":1,"complete":true,"summary":"default run"}`+"\n")
+			return &sandboxruntime.ExecResult{}, nil
+		},
+	}
+
+	var resolvedRuntime sandboxruntime.Target
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+		JSON:        true,
+		JSONChanged: true,
+		Base:        "main",
+		BaseChanged: true,
+	}, &out, &errOut, runSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "run-default-worker-route-inactive"
+		},
+		now:           runSandboxTestClock(startedAt, finishedAt),
+		workingDir:    func() (string, error) { return projectDir, nil },
+		repoRemote:    func(string) (string, error) { return "git@example.com:org/repo.git", nil },
+		currentBranch: func(string) (string, error) { return "feature/run-default-worker", nil },
+		loadSandbox: func(string) (*sandbox.SandboxState, error) {
+			t.Fatal("loadSandbox should not run without an explicit sandbox name")
+			return nil, nil
+		},
+		resolveDefault: resolver.resolve,
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			t.Fatal("listHosts should not run without sandbox host/runtime constraints")
+			return nil, nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			t.Fatal("provision should not run when a default running sandbox is selected")
+			return nil, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+			t.Fatal("worker runtime resolver should not run without explicit worker target flags")
+			return nil, nil
+		},
+		resolveRuntimeDriver: func(target sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			resolvedRuntime = target
+			return driver, nil
+		},
+		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			return factory.BootstrapResult{}, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runRunSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+	if resolver.calls != 1 {
+		t.Fatalf("default resolver calls = %d, want 1", resolver.calls)
+	}
+	if resolvedRuntime.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("resolved runtime driver = %q, want SSH-machine compatibility", resolvedRuntime.Runtime.Driver)
+	}
+	if resolvedRuntime.Runtime.WorkerID != "" || resolvedRuntime.Runtime.RuntimeID != "" || resolvedRuntime.Runtime.Image != "" {
+		t.Fatalf("resolved runtime metadata = %#v, want worker metadata stripped on default path", resolvedRuntime.Runtime)
+	}
+	var result RunResult
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
+	if !result.OK || result.Summary != "default run" {
+		t.Fatalf("RunResult = %#v, want successful default run JSON", result)
+	}
+	manifest, err := store.LoadManifest("run-default-worker-route-inactive")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if manifest.Status != sandboxexecution.StatusSucceeded {
+		t.Fatalf("Status = %q, want succeeded", manifest.Status)
+	}
+	if manifest.WorkerRouting != nil {
+		t.Fatalf("WorkerRouting = %#v, want nil without explicit worker target flags", manifest.WorkerRouting)
+	}
+	if manifest.Runtime == nil || manifest.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("manifest runtime = %#v, want SSH-machine-compatible runtime", manifest.Runtime)
+	}
+	if manifest.Runtime.WorkerID != "" || manifest.Runtime.RuntimeID != "" || manifest.Runtime.Image != "" {
+		t.Fatalf("manifest runtime metadata = %#v, want no worker-backed metadata on default path", manifest.Runtime)
+	}
+	if manifest.Host == nil || manifest.Host.ID != "cached-worker-without-endpoint" || manifest.Host.Endpoint != "" {
+		t.Fatalf("manifest host = %#v, want safe worker host identity without endpoint", manifest.Host)
+	}
+}
+
 func TestAutoSandboxDefaultTargetResolutionStaysCachedAndFakeOnly(t *testing.T) {
 	t.Setenv("HAL_CONFIG_HOME", t.TempDir())
 

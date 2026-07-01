@@ -839,7 +839,7 @@ func (deps runSandboxDeps) resolveRunSandboxTarget(ctx context.Context, req runS
 	if listSandboxes == nil && deps.resolveDefault != nil {
 		listSandboxes = sandboxCommandListSandboxesFromDefault(deps.resolveDefault)
 	}
-	return resolveSandboxCommandTarget(ctx, sandboxCommandTargetRequest{
+	target, err := resolveSandboxCommandTarget(ctx, sandboxCommandTargetRequest{
 		Purpose:             sandbox.SandboxLeasePurposeRun,
 		SandboxName:         req.SandboxName,
 		SandboxHostID:       req.SandboxHostID,
@@ -856,6 +856,13 @@ func (deps runSandboxDeps) resolveRunSandboxTarget(ctx context.Context, req runS
 		resolveDefault: deps.resolveDefault,
 		provision:      deps.provision,
 	})
+	if err != nil {
+		return nil, err
+	}
+	if !sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
+		target = sandboxCommandSSHMachineCompatWorkerTarget(target)
+	}
+	return target, nil
 }
 
 func runSandboxRuntimeExec(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {

@@ -228,6 +228,23 @@ func applySandboxCommandSelectedMetadata(target *sandbox.SandboxState, result sa
 	return target
 }
 
+func sandboxCommandSSHMachineCompatWorkerTarget(target *sandbox.SandboxState) *sandbox.SandboxState {
+	if target == nil || target.Host == nil {
+		return target
+	}
+	if strings.TrimSpace(target.Host.Kind) != sandbox.SandboxHostKindWorker {
+		return target
+	}
+	clone := *target
+	clone.Host = sandboxCommandPersistentHost(target.Host)
+	if target.Runtime != nil {
+		clone.Runtime = &sandbox.SandboxRuntimeState{
+			Driver: sandbox.SandboxRuntimeDriverSSHMachine,
+		}
+	}
+	return &clone
+}
+
 func sandboxCommandListSandboxesFromDefault(resolveDefault func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)) func() ([]*sandbox.SandboxState, error) {
 	return func() ([]*sandbox.SandboxState, error) {
 		target, _, err := resolveDefault(factoryRunningSandboxFilter)
