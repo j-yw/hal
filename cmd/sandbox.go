@@ -43,10 +43,12 @@ Subcommands:
   status      Show sandbox status
   delete      Delete a sandbox
   host        Manage durable sandbox host records
+  runtime     Inspect sandbox runtime metadata
   ssh         Open an interactive shell or run a remote command`,
 	Example: `  hal sandbox setup
   hal sandbox create
   hal sandbox auth sync my-sandbox
+  hal sandbox runtime list local-worker
   hal sandbox start my-sandbox
   hal sandbox status`,
 }

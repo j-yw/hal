@@ -27,6 +27,7 @@ Subcommands:
   status      Show sandbox status
   delete      Delete a sandbox
   host        Manage durable sandbox host records
+  runtime     Inspect sandbox runtime metadata
   ssh         Open an interactive shell or run a remote command
 
 ### Examples
@@ -35,6 +36,7 @@ Subcommands:
   hal sandbox setup
   hal sandbox create
   hal sandbox auth sync my-sandbox
+  hal sandbox runtime list local-worker
   hal sandbox start my-sandbox
   hal sandbox status
 ```
@@ -55,6 +57,7 @@ Subcommands:
 * [hal sandbox host](hal_sandbox_host.md)	 - Manage sandbox host records
 * [hal sandbox list](hal_sandbox_list.md)	 - List all sandboxes
 * [hal sandbox migrate](hal_sandbox_migrate.md)	 - Migrate legacy sandbox state to global config
+* [hal sandbox runtime](hal_sandbox_runtime.md)	 - Inspect sandbox runtime metadata
 * [hal sandbox setup](hal_sandbox_setup.md)	 - Configure sandbox credentials and environment
 * [hal sandbox ssh](hal_sandbox_ssh.md)	 - Open an interactive shell or run a remote command
 * [hal sandbox start](hal_sandbox_start.md)	 - Start stopped sandboxes
