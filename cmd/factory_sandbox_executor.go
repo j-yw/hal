@@ -64,7 +64,9 @@ type factorySandboxExecutorDeps struct {
 	loadSandbox            func(string) (*sandbox.SandboxState, error)
 	listSandboxes          func() ([]*sandbox.SandboxState, error)
 	listHosts              func() ([]*sandbox.SandboxHost, error)
+	listLeases             func() ([]*sandbox.SandboxLease, error)
 	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
+	acquireLease           func(sandbox.SandboxLeaseAcquireRequest, time.Duration) (*sandbox.SandboxLease, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
 	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
 	resolveWorkerRuntime   func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error)
@@ -117,6 +119,7 @@ const factorySandboxCopyInputChunkEncodedBytes = 32 * 1024
 const factorySandboxRemoteWorkspaceRoot = "/root/workspace"
 
 func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factorySandboxExecutorDeps {
+	customDefaultStore := deps.defaultStore != nil
 	customResolveDefault := deps.resolveDefault != nil
 	customRuntimeResolver := deps.resolveRuntimeDriver != nil
 	customRunProviderExec := deps.runProviderExec != nil
@@ -144,8 +147,14 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 	if deps.listHosts == nil {
 		deps.listHosts = defaultFactorySandboxExecutorDeps.listHosts
 	}
+	if deps.listLeases == nil {
+		deps.listLeases = sandboxCommandDefaultLeaseLister(deps.now, customDefaultStore)
+	}
 	if deps.provision == nil {
 		deps.provision = defaultFactorySandboxExecutorDeps.provision
+	}
+	if deps.acquireLease == nil {
+		deps.acquireLease = sandboxCommandDefaultLeaseAcquirer(deps.now, customDefaultStore)
 	}
 	if deps.resolveProvider == nil {
 		deps.resolveProvider = defaultFactorySandboxExecutorDeps.resolveProvider
@@ -426,6 +435,31 @@ func resolveFactorySandboxTarget(ctx context.Context, req factorySandboxExecutor
 	} else if strings.TrimSpace(record.SandboxName) != "" {
 		req.SandboxName = strings.TrimSpace(record.SandboxName)
 	}
+	if factorySandboxShouldUseScheduledTarget(req) {
+		target, err := resolveSandboxCommandScheduledTarget(sandboxCommandScheduledTargetRequest{
+			Purpose:        sandbox.SandboxLeasePurposeFactory,
+			SandboxName:    req.SandboxName,
+			SandboxHostID:  req.SandboxHostID,
+			SandboxRuntime: req.SandboxRuntime,
+			ProjectDir:     req.ProjectDir,
+			Repository:     provisionRepo,
+			Branch:         record.BranchName,
+			RunID:          record.RunID,
+			Workspace:      factorySandboxWorkspaceStateFromRecord(*record),
+		}, sandboxCommandScheduledTargetDeps{
+			listHosts:    deps.listHosts,
+			listLeases:   deps.listLeases,
+			now:          deps.now,
+			acquireLease: deps.acquireLease,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if record.SandboxName == "" {
+			record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
+		}
+		return target, nil
+	}
 	target, err := resolveSandboxCommandTarget(ctx, sandboxCommandTargetRequest{
 		Purpose:              sandbox.SandboxLeasePurposeFactory,
 		SandboxName:          req.SandboxName,
@@ -455,6 +489,10 @@ func resolveFactorySandboxTarget(ctx context.Context, req factorySandboxExecutor
 		record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
 	}
 	return target, nil
+}
+
+func factorySandboxShouldUseScheduledTarget(req factorySandboxExecutorRequest) bool {
+	return strings.TrimSpace(req.SandboxName) == "" && sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime)
 }
 
 func prepareFactorySandboxWorkspace(ctx context.Context, store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, req factorySandboxExecutorRequest, target *sandbox.SandboxState, provider sandbox.Provider, connectInfo *sandbox.ConnectInfo, remoteOutput *factorySandboxTimelineWriter) error {
@@ -548,6 +586,7 @@ func handleFactorySandboxExecutorError(ctx context.Context, store factory.Store,
 		if strings.TrimSpace(failureErr.Error()) == "sandbox target is required" {
 			return fmt.Errorf("factory sandbox target is required")
 		}
+		_ = recordFactorySandboxFailure(store, deps, record, target, "resolve_target", failureErr, secretRedactor)
 		return failureErr
 	case sandboxexec.PhaseProvisionTarget:
 		_ = recordFactorySandboxFailure(store, deps, record, target, "provision", failureErr, secretRedactor)
