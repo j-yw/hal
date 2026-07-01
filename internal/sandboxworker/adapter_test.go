@@ -561,13 +561,15 @@ func TestClientDriverCopyOutForwardsRemoteSourceAndMaterializesReturnedPayload(t
 }
 
 func TestClientDriverCopyOperationsSurfaceSanitizedWorkerErrors(t *testing.T) {
-	t.Run("copy_in embedded error", func(t *testing.T) {
+	unsafeDetail := "copy failed token=raw-secret via ssh://deploy:secret@example.test/tmp/private/worker.sock?token=raw-secret under /Users/alice/worktree and /workspace/.hal/tmp/session"
+
+	t.Run("copy_in client failure", func(t *testing.T) {
 		client := &recordingRuntimeDriverClient{
-			copyInResp: &CopyInResponse{
-				Status: CopyStatusFailed,
-				Error: &Error{
-					Code:    ErrorCodeDriverFailed,
-					Message: "copy failed token=raw-secret under /Users/alice/worktree",
+			errByOperation: map[string]error{
+				OperationCopyIn: &ClientError{
+					Operation: OperationCopyIn,
+					Code:      ErrorCodeInternal,
+					Message:   unsafeDetail,
 				},
 			},
 		}
@@ -579,10 +581,69 @@ func TestClientDriverCopyOperationsSurfaceSanitizedWorkerErrors(t *testing.T) {
 			t.Fatalf("NewClientDriver() error: %v", err)
 		}
 
-		sourcePath := filepath.Join(t.TempDir(), "input.txt")
-		if err := os.WriteFile(sourcePath, []byte("payload"), 0o600); err != nil {
-			t.Fatalf("WriteFile(source) error: %v", err)
+		sourcePath := writeClientDriverCopySource(t, "payload")
+		err = driver.CopyIn(context.Background(), sandboxruntime.CopyRequest{
+			Target:          lifecycleRuntimeTarget("fake_runtime", "dev", "running"),
+			SourcePath:      sourcePath,
+			DestinationPath: "/workspace/input.txt",
+		})
+		if err == nil {
+			t.Fatal("CopyIn() error = nil, want client failure")
 		}
+		assertClientDriverError(t, err, OperationCopyIn, "fake_runtime")
+		var clientErr *ClientError
+		if !errors.As(err, &clientErr) {
+			t.Fatalf("CopyIn() error = %T %v, want wrapped client error", err, err)
+		}
+		assertSanitizedWorkerCopyError(t, err.Error())
+	})
+
+	t.Run("copy_in adapter failure", func(t *testing.T) {
+		client := &recordingRuntimeDriverClient{
+			errByOperation: map[string]error{
+				OperationCopyIn: errors.New(unsafeDetail),
+			},
+		}
+		driver, err := NewClientDriver(ClientDriverOptions{
+			DriverID: "fake_runtime",
+			Client:   client,
+		})
+		if err != nil {
+			t.Fatalf("NewClientDriver() error: %v", err)
+		}
+
+		sourcePath := writeClientDriverCopySource(t, "payload")
+		err = driver.CopyIn(context.Background(), sandboxruntime.CopyRequest{
+			Target:          lifecycleRuntimeTarget("fake_runtime", "dev", "running"),
+			SourcePath:      sourcePath,
+			DestinationPath: "/workspace/input.txt",
+		})
+		if err == nil {
+			t.Fatal("CopyIn() error = nil, want adapter failure")
+		}
+		assertClientDriverError(t, err, OperationCopyIn, "fake_runtime")
+		assertSanitizedWorkerCopyError(t, err.Error())
+	})
+
+	t.Run("copy_in embedded error", func(t *testing.T) {
+		client := &recordingRuntimeDriverClient{
+			copyInResp: &CopyInResponse{
+				Status: CopyStatusFailed,
+				Error: &Error{
+					Code:    ErrorCodeDriverFailed,
+					Message: unsafeDetail,
+				},
+			},
+		}
+		driver, err := NewClientDriver(ClientDriverOptions{
+			DriverID: "fake_runtime",
+			Client:   client,
+		})
+		if err != nil {
+			t.Fatalf("NewClientDriver() error: %v", err)
+		}
+
+		sourcePath := writeClientDriverCopySource(t, "payload")
 		err = driver.CopyIn(context.Background(), sandboxruntime.CopyRequest{
 			Target:          lifecycleRuntimeTarget("fake_runtime", "dev", "running"),
 			SourcePath:      sourcePath,
@@ -599,13 +660,81 @@ func TestClientDriverCopyOperationsSurfaceSanitizedWorkerErrors(t *testing.T) {
 		}
 	})
 
+	t.Run("copy_out client failure", func(t *testing.T) {
+		client := &recordingRuntimeDriverClient{
+			errByOperation: map[string]error{
+				OperationCopyOut: &ClientError{
+					Operation: OperationCopyOut,
+					Code:      ErrorCodeInternal,
+					Message:   unsafeDetail,
+				},
+			},
+		}
+		driver, err := NewClientDriver(ClientDriverOptions{
+			DriverID: "fake_runtime",
+			Client:   client,
+		})
+		if err != nil {
+			t.Fatalf("NewClientDriver() error: %v", err)
+		}
+
+		destinationPath := filepath.Join(t.TempDir(), "report.txt")
+		err = driver.CopyOut(context.Background(), sandboxruntime.CopyRequest{
+			Target:          lifecycleRuntimeTarget("fake_runtime", "dev", "running"),
+			SourcePath:      "/workspace/report.txt",
+			DestinationPath: destinationPath,
+		})
+		if err == nil {
+			t.Fatal("CopyOut() error = nil, want client failure")
+		}
+		assertClientDriverError(t, err, OperationCopyOut, "fake_runtime")
+		var clientErr *ClientError
+		if !errors.As(err, &clientErr) {
+			t.Fatalf("CopyOut() error = %T %v, want wrapped client error", err, err)
+		}
+		assertSanitizedWorkerCopyError(t, err.Error())
+		if _, statErr := os.Stat(destinationPath); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("CopyOut() destination stat error = %v, want no partial destination", statErr)
+		}
+	})
+
+	t.Run("copy_out adapter failure", func(t *testing.T) {
+		client := &recordingRuntimeDriverClient{
+			errByOperation: map[string]error{
+				OperationCopyOut: errors.New(unsafeDetail),
+			},
+		}
+		driver, err := NewClientDriver(ClientDriverOptions{
+			DriverID: "fake_runtime",
+			Client:   client,
+		})
+		if err != nil {
+			t.Fatalf("NewClientDriver() error: %v", err)
+		}
+
+		destinationPath := filepath.Join(t.TempDir(), "report.txt")
+		err = driver.CopyOut(context.Background(), sandboxruntime.CopyRequest{
+			Target:          lifecycleRuntimeTarget("fake_runtime", "dev", "running"),
+			SourcePath:      "/workspace/report.txt",
+			DestinationPath: destinationPath,
+		})
+		if err == nil {
+			t.Fatal("CopyOut() error = nil, want adapter failure")
+		}
+		assertClientDriverError(t, err, OperationCopyOut, "fake_runtime")
+		assertSanitizedWorkerCopyError(t, err.Error())
+		if _, statErr := os.Stat(destinationPath); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("CopyOut() destination stat error = %v, want no partial destination", statErr)
+		}
+	})
+
 	t.Run("copy_out embedded error", func(t *testing.T) {
 		client := &recordingRuntimeDriverClient{
 			copyOutResp: &CopyOutResponse{
 				Payload: ptrWorkerCopyPayload("partial", MaxCopyOutPayloadBytes),
 				Error: &Error{
 					Code:    ErrorCodeDriverFailed,
-					Message: "copy failed token=raw-secret under /Users/alice/worktree",
+					Message: unsafeDetail,
 				},
 			},
 		}
@@ -632,6 +761,33 @@ func TestClientDriverCopyOperationsSurfaceSanitizedWorkerErrors(t *testing.T) {
 		if !errors.As(err, &protocolErr) || protocolErr.Code != ErrorCodeDriverFailed {
 			t.Fatalf("CopyOut() error = %T %v, want driver_failed protocol error", err, err)
 		}
+		if _, statErr := os.Stat(destinationPath); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("CopyOut() destination stat error = %v, want no partial destination", statErr)
+		}
+	})
+
+	t.Run("copy_out missing payload", func(t *testing.T) {
+		client := &recordingRuntimeDriverClient{
+			copyOutResp: &CopyOutResponse{},
+		}
+		driver, err := NewClientDriver(ClientDriverOptions{
+			DriverID: "fake_runtime",
+			Client:   client,
+		})
+		if err != nil {
+			t.Fatalf("NewClientDriver() error: %v", err)
+		}
+
+		destinationPath := filepath.Join(t.TempDir(), "report.txt")
+		err = driver.CopyOut(context.Background(), sandboxruntime.CopyRequest{
+			Target:          lifecycleRuntimeTarget("fake_runtime", "dev", "running"),
+			SourcePath:      "/workspace/report.txt",
+			DestinationPath: destinationPath,
+		})
+		if !errors.Is(err, ErrWorkerCopyOutPayloadRequired) {
+			t.Fatalf("CopyOut() error = %v, want missing payload error", err)
+		}
+		assertClientDriverError(t, err, OperationCopyOut, "fake_runtime")
 		if _, statErr := os.Stat(destinationPath); !errors.Is(statErr, os.ErrNotExist) {
 			t.Fatalf("CopyOut() destination stat error = %v, want no partial destination", statErr)
 		}
@@ -669,6 +825,84 @@ func TestClientDriverCopyOperationsSurfaceSanitizedWorkerErrors(t *testing.T) {
 		assertClientDriverError(t, err, OperationCopyOut, "fake_runtime")
 		if _, statErr := os.Stat(destinationPath); !errors.Is(statErr, os.ErrNotExist) {
 			t.Fatalf("CopyOut() destination stat error = %v, want no partial destination", statErr)
+		}
+	})
+}
+
+func TestClientDriverCopyOutFailuresPreserveDestinationState(t *testing.T) {
+	t.Run("preserves pre-existing destination content", func(t *testing.T) {
+		client := &recordingRuntimeDriverClient{
+			copyOutResp: &CopyOutResponse{},
+		}
+		driver, err := NewClientDriver(ClientDriverOptions{
+			DriverID: "fake_runtime",
+			Client:   client,
+		})
+		if err != nil {
+			t.Fatalf("NewClientDriver() error: %v", err)
+		}
+
+		destinationPath := filepath.Join(t.TempDir(), "report.txt")
+		if err := os.WriteFile(destinationPath, []byte("existing report\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(destination) error: %v", err)
+		}
+		err = driver.CopyOut(context.Background(), sandboxruntime.CopyRequest{
+			Target:          lifecycleRuntimeTarget("fake_runtime", "dev", "running"),
+			SourcePath:      "/workspace/report.txt",
+			DestinationPath: destinationPath,
+		})
+		if !errors.Is(err, ErrWorkerCopyOutPayloadRequired) {
+			t.Fatalf("CopyOut() error = %v, want missing payload error", err)
+		}
+		data, readErr := os.ReadFile(destinationPath)
+		if readErr != nil {
+			t.Fatalf("ReadFile(destination) error: %v", readErr)
+		}
+		if string(data) != "existing report\n" {
+			t.Fatalf("CopyOut() destination = %q, want pre-existing content preserved", data)
+		}
+	})
+
+	t.Run("cleans temporary file after local materialization failure", func(t *testing.T) {
+		client := &recordingRuntimeDriverClient{
+			copyOutResp: &CopyOutResponse{
+				Payload: ptrWorkerCopyPayload("replacement report\n", MaxCopyOutPayloadBytes),
+			},
+		}
+		driver, err := NewClientDriver(ClientDriverOptions{
+			DriverID: "fake_runtime",
+			Client:   client,
+		})
+		if err != nil {
+			t.Fatalf("NewClientDriver() error: %v", err)
+		}
+
+		destinationDir := t.TempDir()
+		destinationPath := filepath.Join(destinationDir, "report.txt")
+		if err := os.Mkdir(destinationPath, 0o700); err != nil {
+			t.Fatalf("Mkdir(destination path) error: %v", err)
+		}
+		err = driver.CopyOut(context.Background(), sandboxruntime.CopyRequest{
+			Target:          lifecycleRuntimeTarget("fake_runtime", "dev", "running"),
+			SourcePath:      "/workspace/report.txt",
+			DestinationPath: destinationPath,
+		})
+		if err == nil {
+			t.Fatal("CopyOut() error = nil, want local materialization failure")
+		}
+		assertClientDriverError(t, err, OperationCopyOut, "fake_runtime")
+
+		entries, readErr := os.ReadDir(destinationDir)
+		if readErr != nil {
+			t.Fatalf("ReadDir(destination dir) error: %v", readErr)
+		}
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), ".report.txt.tmp-") {
+				t.Fatalf("CopyOut() left temporary file %q after failure", entry.Name())
+			}
+		}
+		if info, statErr := os.Stat(destinationPath); statErr != nil || !info.IsDir() {
+			t.Fatalf("CopyOut() destination stat = %#v, %v; want original directory preserved", info, statErr)
 		}
 	})
 }
@@ -900,6 +1134,16 @@ func assertClientDriverError(t *testing.T, err error, operation, driverID string
 	if driverErr.Operation != operation || driverErr.Driver != driverID {
 		t.Fatalf("ClientDriverError = %#v, want operation %q driver %q", driverErr, operation, driverID)
 	}
+}
+
+func writeClientDriverCopySource(t *testing.T, content string) string {
+	t.Helper()
+
+	sourcePath := filepath.Join(t.TempDir(), "input.txt")
+	if err := os.WriteFile(sourcePath, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile(source) error: %v", err)
+	}
+	return sourcePath
 }
 
 type recordingRuntimeDriverClient struct {

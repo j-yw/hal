@@ -52,6 +52,7 @@
 - Worker rootless lifecycle error classifications belong on shared `internal/sandboxworker` error types: client/transport failures classify as `worker_client_failed`, lifecycle `driver_error` protocol failures classify as `worker_lifecycle_failed`, and lifecycle `driver_not_found` protocol failures classify as `runtime_unavailable`; command tests should verify human/JSON propagation plus redaction instead of reclassifying at command call sites.
 - Worker rootless create/start failure recovery metadata should keep target metadata on the failure path without durable registry writes: command target provisioning errors may carry a partial `PhaseProvisionTarget.Target`, `sandboxexec` start failures should merge a non-nil returned runtime target before wrapping, and factory failure records should include safe `workerRouting` for worker/rootless targets.
 - `sandboxworker.ClientDriver` should return sanitized primary errors with the worker operation label (`exec`, `copy_in`, `copy_out`) and stay free of artifact/recovery warning ownership; command-owned run/auto/factory boundaries record recovery warnings and timeline events.
+- `sandboxworker.ClientDriver.CopyOut` failure coverage should assert both no new destination file is left behind and pre-existing destination content survives; the adapter writes through a temp file in the destination directory and only renames after payload validation succeeds.
 
 ## Patterns from phase18-worker-backed-sandbox-execution-routing (2026-07-01)
 
