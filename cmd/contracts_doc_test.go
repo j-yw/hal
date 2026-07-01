@@ -12,6 +12,7 @@ import (
 	"github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/doctor"
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/status"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/jywlabs/hal/internal/verify"
@@ -964,6 +965,7 @@ func factorySandboxSummaryDocs(t *testing.T) []factorySandboxSummaryDoc {
 		{name: "network security", jsonField: "network", marker: "When `sandbox.security.network` is present:", typ: reflect.TypeOf(factory.SandboxNetworkSecurityMetadata{})},
 		{name: "secret security", jsonField: "secrets", marker: "When `sandbox.security.secrets` is present:", typ: reflect.TypeOf(factory.SandboxSecretSecurityMetadata{})},
 		{name: "lease", jsonField: "lease", marker: "When `sandbox.lease` is present:", typ: reflect.TypeOf(factory.SandboxLeaseMetadata{})},
+		{name: "worker routing", jsonField: "workerRouting", marker: "When `sandbox.workerRouting` is present:", typ: reflect.TypeOf(sandbox.WorkerRoutingMetadata{})},
 	}
 
 	metadataFields := jsonFieldsByName(t, reflect.TypeOf(factory.SandboxMetadata{}))

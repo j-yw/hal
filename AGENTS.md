@@ -37,6 +37,10 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase18-worker-backed-sandbox-execution-routing (2026-07-01)
+
+- Worker-backed execution route metadata uses the shared data-only `internal/sandbox.WorkerRoutingMetadata` contract and is attached additively as optional `workerRouting,omitempty` on both non-factory `sandboxexecution.Manifest` records and factory `factory.SandboxMetadata`; keep it limited to selected worker host identity, runtime driver, isolation, and safe endpoint summaries without raw endpoints or filesystem paths.
+
 ## Patterns from phase17-target-selection (2026-07-01)
 
 - Target-selection code lives in `internal/sandboxtarget`; keep it command-agnostic and limited to standard-library imports plus root `internal/sandbox` durable metadata and root `internal/sandboxruntime` contracts. Do not import Cobra, `cmd`, factory, engine, loop, PRD, compound, or concrete runtime adapter subpackages there.

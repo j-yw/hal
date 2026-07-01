@@ -115,6 +115,7 @@ When `sandbox` is present:
 | `workspace` | object | no | Redaction-safe Sandbox Runtime v2 workspace summary metadata |
 | `security` | object | no | Redaction-safe Sandbox Runtime v2 security summary metadata |
 | `lease` | object | no | Redaction-safe Sandbox Runtime v2 lease summary metadata |
+| `workerRouting` | object | no | Redaction-safe worker-backed execution route metadata |
 
 Sandbox metadata is safe for durable local records. It must not include tokens,
 private keys, secret names, secret values, raw filesystem paths, raw workspace
@@ -197,11 +198,22 @@ When `sandbox.lease` is present:
 | `runId` | string | yes | Factory run identifier associated with the lease |
 | `expiresAt` | string | yes | RFC 3339 timestamp when the lease expires |
 
+When `sandbox.workerRouting` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `selectedWorkerHostId` | string | yes | Stable identifier of the selected worker host |
+| `selectedWorkerHostName` | string | yes | Redaction-safe display name of the selected worker host |
+| `runtimeDriverId` | string | yes | Selected runtime driver ID, such as `rootless_podman` |
+| `isolationLevel` | string | yes | Selected isolation level, such as `host`, `container`, or `vm` |
+| `endpointSummary` | string | yes | Safe endpoint summary, such as `local Unix socket`; raw socket paths, hostnames, credentials, query strings, and temp paths are omitted |
+
 Factory sandbox workspace metadata intentionally omits repository paths, raw
 workspace paths, and raw filesystem paths. Factory sandbox security metadata
 intentionally omits secret names, secret values, tokens, credentials, private
 keys, provider credentials, and raw environment values. Factory sandbox lease
-metadata intentionally omits the lease holder.
+metadata intentionally omits the lease holder. Worker routing metadata
+intentionally omits raw endpoint values and filesystem paths.
 
 ## Source Metadata
 

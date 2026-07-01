@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -450,6 +451,52 @@ func TestSandboxRuntimeWorkspaceSecurityLeaseMetadataJSONTags(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestWorkerRoutingMetadataJSONTags(t *testing.T) {
+	got := mustMarshalObject(t, WorkerRoutingMetadata{
+		SelectedWorkerHostID:   "host-01",
+		SelectedWorkerHostName: "worker-a",
+		RuntimeDriverID:        SandboxRuntimeDriverRootlessPodman,
+		IsolationLevel:         SandboxIsolationLevelContainer,
+		EndpointSummary:        "local Unix socket",
+	})
+
+	assertObjectKeys(t, got, []string{
+		"selectedWorkerHostId",
+		"selectedWorkerHostName",
+		"runtimeDriverId",
+		"isolationLevel",
+		"endpointSummary",
+	}, []string{
+		"endpoint",
+		"endpointPath",
+		"socketPath",
+		"hostPath",
+		"localPath",
+		"remotePath",
+		"tempPath",
+	})
+	if got["endpointSummary"] != "local Unix socket" {
+		t.Fatalf("endpointSummary = %#v, want safe summary", got["endpointSummary"])
+	}
+
+	data := `{
+		"selectedWorkerHostId": "host-01",
+		"selectedWorkerHostName": "worker-a",
+		"runtimeDriverId": "rootless_podman",
+		"isolationLevel": "container",
+		"endpointSummary": "local Unix socket"
+	}`
+	decoder := json.NewDecoder(strings.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var decoded WorkerRoutingMetadata
+	if err := decoder.Decode(&decoded); err != nil {
+		t.Fatalf("strict decode worker routing metadata: %v", err)
+	}
+	if decoded.SelectedWorkerHostID != "host-01" || decoded.EndpointSummary != "local Unix socket" {
+		t.Fatalf("decoded worker routing metadata = %#v", decoded)
 	}
 }
 
