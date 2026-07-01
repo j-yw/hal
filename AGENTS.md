@@ -37,6 +37,10 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase23-security-intent-propagation (2026-07-02)
+
+- Pure config-to-evaluator security intent mapping belongs in `internal/sandbox/security_intent.go`; pass only sandbox-native `SandboxNetworkPolicyIntent`, `SandboxNetworkPolicyEnforcementCapability`, and `SandboxSecretDeliveryIntent` metadata, preserve nil-vs-explicit-empty secrets, and keep `security_intent*.go` covered by the `internal/sandbox/network_policy_import_boundary_test.go` pure import guard.
+
 ## Patterns from phase22-policy-secret-broker (2026-07-02)
 
 - Network policy foundation contracts belong in `internal/sandbox/network_policy.go` as data-only typed presets, rules, requested/effective intent, enforcement capability, result, and warning metadata; keep validation, evaluation, enforcement, command wiring, runtime adapters, providers, and workers out of this base contract layer.
