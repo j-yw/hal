@@ -40,6 +40,7 @@
 ## Patterns from phase20-lease-aware-scheduler (2026-07-01)
 
 - Lease-aware scheduler contracts belong in `internal/sandboxtarget` as additive, command-agnostic data types; keep `SchedulerRequest`/`SchedulerResult` free of Cobra, command packages, worker clients, concrete runtime adapters, provider calls, and live inspection, and represent selection identity, capacity decisions, lease requirements, and rejection reasons separately from later scheduling behavior.
+- Safe lease audit metadata belongs on `sandbox.SandboxLeaseRef` and factory's `SandboxLeaseMetadata` as redaction-safe identifiers only; command persistence should use `sandboxLeaseRefFromState` to enrich host/runtime identity, preserve acquisition/expiry times, and omit lease holders, endpoints, hostnames, filesystem paths, repository URLs, and credentials.
 
 ## Patterns from phase19-rootless-worker-e2e-hardening (2026-07-01)
 

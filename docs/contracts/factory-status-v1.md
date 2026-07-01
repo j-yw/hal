@@ -193,9 +193,13 @@ When `sandbox.lease` is present:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `id` | string | yes | Stable lease identifier |
+| `hostId` | string | yes | Stable selected host identifier associated with the lease |
+| `hostName` | string | yes | Redaction-safe selected host display name |
+| `runtimeDriver` | string | yes | Selected runtime driver associated with the lease, such as `ssh_machine`, `rootless_podman`, or `microvm` |
 | `resourceKey` | string | yes | Redaction-safe leased resource key |
 | `purpose` | string | yes | Lease purpose |
 | `runId` | string | yes | Factory run identifier associated with the lease |
+| `acquiredAt` | string | yes | RFC 3339 timestamp when the lease was acquired |
 | `expiresAt` | string | yes | RFC 3339 timestamp when the lease expires |
 
 When `sandbox.workerRouting` is present:

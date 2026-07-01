@@ -176,12 +176,16 @@ func TestSandboxStateRuntimeV2MetadataJSONTags(t *testing.T) {
 			},
 		},
 		Lease: &SandboxLeaseRef{
-			ID:          "lease-01",
-			ResourceKey: "runtime:runtime-01",
-			Holder:      "worker-01",
-			Purpose:     SandboxLeasePurposeFactory,
-			RunID:       "run-01",
-			ExpiresAt:   expiresAt,
+			ID:            "lease-01",
+			HostID:        "host-01",
+			HostName:      "builder-01",
+			RuntimeDriver: SandboxRuntimeDriverRootlessPodman,
+			ResourceKey:   "runtime:runtime-01",
+			Holder:        "worker-01",
+			Purpose:       SandboxLeasePurposeFactory,
+			RunID:         "run-01",
+			AcquiredAt:    expiresAt.Add(-30 * time.Minute),
+			ExpiresAt:     expiresAt,
 		},
 	})
 
@@ -190,7 +194,10 @@ func TestSandboxStateRuntimeV2MetadataJSONTags(t *testing.T) {
 	assertObjectKeys(t, got["runtime"], []string{"driver", "isolationLevel", "runtimeId", "image", "workerId"}, nil)
 	assertObjectKeys(t, got["workspace"], []string{"mode", "inputSource", "repo", "branch", "syncRef"}, nil)
 	assertObjectKeys(t, got["security"], []string{"network", "secrets"}, nil)
-	assertObjectKeys(t, got["lease"], []string{"id", "resourceKey", "holder", "purpose", "runId", "expiresAt"}, nil)
+	assertObjectKeys(t, got["lease"], []string{
+		"id", "hostId", "hostName", "runtimeDriver", "resourceKey", "purpose",
+		"runId", "acquiredAt", "expiresAt",
+	}, []string{"holder"})
 
 	security := got["security"].(map[string]any)
 	assertObjectKeys(t, security["network"], []string{"policyRequested", "policyEnforced", "enforcementMode"}, nil)
@@ -425,14 +432,22 @@ func TestSandboxRuntimeWorkspaceSecurityLeaseMetadataJSONTags(t *testing.T) {
 		{
 			name: "lease ref uses camelCase keys",
 			value: SandboxLeaseRef{
-				ID:          "lease-01",
-				ResourceKey: "runtime:runtime-01",
-				Holder:      "worker-01",
-				Purpose:     SandboxLeasePurposeFactory,
-				RunID:       "run-01",
-				ExpiresAt:   expiresAt,
+				ID:            "lease-01",
+				HostID:        "host-01",
+				HostName:      "builder-01",
+				RuntimeDriver: SandboxRuntimeDriverRootlessPodman,
+				ResourceKey:   "runtime:runtime-01",
+				Holder:        "worker-01",
+				Purpose:       SandboxLeasePurposeFactory,
+				RunID:         "run-01",
+				AcquiredAt:    expiresAt.Add(-30 * time.Minute),
+				ExpiresAt:     expiresAt,
 			},
-			wantPresent: []string{"id", "resourceKey", "holder", "purpose", "runId", "expiresAt"},
+			wantPresent: []string{
+				"id", "hostId", "hostName", "runtimeDriver", "resourceKey",
+				"purpose", "runId", "acquiredAt", "expiresAt",
+			},
+			wantAbsent: []string{"holder"},
 		},
 	}
 

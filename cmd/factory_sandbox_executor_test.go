@@ -182,6 +182,7 @@ func TestFactorySandboxMetadataFromStateIncludesSecurityMetadata(t *testing.T) {
 
 func TestFactorySandboxMetadataFromStateIncludesRootlessRuntimeV2Metadata(t *testing.T) {
 	expiresAt := time.Date(2026, 7, 1, 2, 30, 0, 0, time.UTC)
+	acquiredAt := expiresAt.Add(-30 * time.Minute)
 	_, got := factorySandboxMetadataFromState(&sandbox.SandboxState{
 		Name:     "factory-rootless",
 		Provider: "local",
@@ -215,12 +216,16 @@ func TestFactorySandboxMetadataFromStateIncludesRootlessRuntimeV2Metadata(t *tes
 			CompatibilityAuthSync:  true,
 		}),
 		Lease: &sandbox.SandboxLeaseRef{
-			ID:          "lease-rootless",
-			ResourceKey: "runtime:container-123",
-			Holder:      "local-user",
-			Purpose:     sandbox.SandboxLeasePurposeFactory,
-			RunID:       "run-rootless",
-			ExpiresAt:   expiresAt,
+			ID:            "lease-rootless",
+			HostID:        "host-local",
+			HostName:      "developer-workstation",
+			RuntimeDriver: sandbox.SandboxRuntimeDriverRootlessPodman,
+			ResourceKey:   "runtime:container-123",
+			Holder:        "local-user",
+			Purpose:       sandbox.SandboxLeasePurposeFactory,
+			RunID:         "run-rootless",
+			AcquiredAt:    acquiredAt,
+			ExpiresAt:     expiresAt,
 		},
 	})
 	if got == nil {
@@ -245,7 +250,14 @@ func TestFactorySandboxMetadataFromStateIncludesRootlessRuntimeV2Metadata(t *tes
 		t.Fatalf("workspace metadata = %#v", got.Workspace)
 	}
 	requireFactorySandboxSecurityMetadata(t, got.Security, []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeLegacyAuthSync})
-	if got.Lease == nil || got.Lease.ID != "lease-rootless" || got.Lease.ResourceKey != "runtime:container-123" || !got.Lease.ExpiresAt.Equal(expiresAt) {
+	if got.Lease == nil ||
+		got.Lease.ID != "lease-rootless" ||
+		got.Lease.HostID != "host-local" ||
+		got.Lease.HostName != "developer-workstation" ||
+		got.Lease.RuntimeDriver != sandbox.SandboxRuntimeDriverRootlessPodman ||
+		got.Lease.ResourceKey != "runtime:container-123" ||
+		!got.Lease.AcquiredAt.Equal(acquiredAt) ||
+		!got.Lease.ExpiresAt.Equal(expiresAt) {
 		t.Fatalf("lease metadata = %#v", got.Lease)
 	}
 

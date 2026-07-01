@@ -2145,23 +2145,20 @@ func factorySandboxSecurityMetadata(security *sandbox.SandboxSecurity) *factory.
 }
 
 func factorySandboxLeaseMetadataFromState(instance *sandbox.SandboxState) *factory.SandboxLeaseMetadata {
-	if instance == nil || instance.Lease == nil {
-		return nil
-	}
-	lease := instance.Lease
-	if strings.TrimSpace(lease.ID) == "" &&
-		strings.TrimSpace(lease.ResourceKey) == "" &&
-		strings.TrimSpace(lease.Purpose) == "" &&
-		strings.TrimSpace(lease.RunID) == "" &&
-		lease.ExpiresAt.IsZero() {
+	lease := sandboxLeaseRefFromState(instance)
+	if lease == nil {
 		return nil
 	}
 	return &factory.SandboxLeaseMetadata{
-		ID:          lease.ID,
-		ResourceKey: lease.ResourceKey,
-		Purpose:     lease.Purpose,
-		RunID:       lease.RunID,
-		ExpiresAt:   lease.ExpiresAt,
+		ID:            lease.ID,
+		HostID:        lease.HostID,
+		HostName:      lease.HostName,
+		RuntimeDriver: lease.RuntimeDriver,
+		ResourceKey:   lease.ResourceKey,
+		Purpose:       lease.Purpose,
+		RunID:         lease.RunID,
+		AcquiredAt:    lease.AcquiredAt,
+		ExpiresAt:     lease.ExpiresAt,
 	}
 }
 

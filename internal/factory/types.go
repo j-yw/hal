@@ -315,11 +315,15 @@ type SandboxSecretSecurityMetadata struct {
 
 // SandboxLeaseMetadata captures redaction-safe sandbox lease summary details.
 type SandboxLeaseMetadata struct {
-	ID          string    `json:"id"`
-	ResourceKey string    `json:"resourceKey"`
-	Purpose     string    `json:"purpose"`
-	RunID       string    `json:"runId"`
-	ExpiresAt   time.Time `json:"expiresAt"`
+	ID            string    `json:"id"`
+	HostID        string    `json:"hostId"`
+	HostName      string    `json:"hostName"`
+	RuntimeDriver string    `json:"runtimeDriver"`
+	ResourceKey   string    `json:"resourceKey"`
+	Purpose       string    `json:"purpose"`
+	RunID         string    `json:"runId"`
+	AcquiredAt    time.Time `json:"acquiredAt"`
+	ExpiresAt     time.Time `json:"expiresAt"`
 }
 
 // SandboxMetadata captures redaction-safe remote execution details for a
