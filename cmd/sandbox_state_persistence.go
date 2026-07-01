@@ -78,6 +78,27 @@ func sandboxLeaseRefFromState(target *sandbox.SandboxState) *sandbox.SandboxLeas
 	return &lease
 }
 
+func sandboxLeaseRefFromLease(lease *sandbox.SandboxLease, target *sandbox.SandboxState) *sandbox.SandboxLeaseRef {
+	if lease == nil {
+		return nil
+	}
+	ref := &sandbox.SandboxLeaseRef{
+		ID:          strings.TrimSpace(lease.ID),
+		ResourceKey: strings.TrimSpace(lease.ResourceKey),
+		Holder:      strings.TrimSpace(lease.Holder),
+		Purpose:     strings.TrimSpace(lease.Purpose),
+		RunID:       strings.TrimSpace(lease.RunID),
+		AcquiredAt:  lease.AcquiredAt,
+		ExpiresAt:   lease.ExpiresAt,
+	}
+	state := &sandbox.SandboxState{Lease: ref}
+	if target != nil {
+		state.Host = target.Host
+		state.Runtime = target.Runtime
+	}
+	return sandboxLeaseRefFromState(state)
+}
+
 func sandboxLeaseRefEmpty(lease sandbox.SandboxLeaseRef) bool {
 	return strings.TrimSpace(lease.ID) == "" &&
 		strings.TrimSpace(lease.HostID) == "" &&

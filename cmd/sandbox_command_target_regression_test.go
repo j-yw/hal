@@ -3402,6 +3402,7 @@ func workerMicroVMHostWithUnsafeEndpoint() *sandbox.SandboxHost {
 			sandboxruntime.DriverMicroVM,
 			sandboxruntime.DriverRootlessPodman,
 		},
+		Capacity: &sandbox.HostCapacity{MaxConcurrentSandboxes: 1},
 	}
 }
 
@@ -3414,6 +3415,7 @@ func workerRootlessHostWithEndpoint(endpoint string) *sandbox.SandboxHost {
 		SupportedRuntimes: []string{
 			sandboxruntime.DriverRootlessPodman,
 		},
+		Capacity: &sandbox.HostCapacity{MaxConcurrentSandboxes: 1},
 		Security: workerRootlessHostSecurity(),
 	}
 }
