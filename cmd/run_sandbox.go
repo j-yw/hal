@@ -998,14 +998,18 @@ func saveRunSandboxManifest(store sandboxexecution.Store, req runSandboxRequest,
 		Status:      status,
 		StartedAt:   startedAt,
 		FinishedAt:  finishedAt,
-		Workspace:   cloneSandboxWorkspace(req.Workspace),
+		Workspace:   runSandboxManifestWorkspace(req),
 		Security:    cloneSandboxSecurity(nil),
 	}
 	if target != nil {
 		if strings.TrimSpace(manifest.SandboxName) == "" {
 			manifest.SandboxName = strings.TrimSpace(target.Name)
 		}
-		manifest.Host = cloneSandboxHost(target.Host)
+		if selectedWorkerRootlessSandboxState(target) {
+			manifest.Host = workerRootlessManifestHost(target.Host)
+		} else {
+			manifest.Host = cloneSandboxHost(target.Host)
+		}
 		manifest.Runtime = cloneSandboxRuntime(target.Runtime)
 		manifest.Security = cloneSandboxSecurity(target.Security)
 		if sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
@@ -1017,6 +1021,22 @@ func saveRunSandboxManifest(store sandboxexecution.Store, req runSandboxRequest,
 	}
 	preserveSandboxManifestArtifacts(store, manifest)
 	return store.SaveManifest(manifest)
+}
+
+func runSandboxManifestWorkspace(req runSandboxRequest) *sandbox.SandboxWorkspace {
+	if sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
+		return sandboxCommandPersistentWorkspace(req.Workspace)
+	}
+	return cloneSandboxWorkspace(req.Workspace)
+}
+
+func workerRootlessManifestHost(host *sandbox.SandboxHost) *sandbox.SandboxHost {
+	persisted := sandboxCommandPersistentHost(host)
+	if persisted == nil {
+		return nil
+	}
+	persisted.Security = cloneSandboxSecurity(host.Security)
+	return persisted
 }
 
 func preserveSandboxManifestArtifacts(store sandboxexecution.Store, manifest *sandboxexecution.Manifest) {

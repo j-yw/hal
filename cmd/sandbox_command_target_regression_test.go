@@ -814,7 +814,9 @@ func TestWorkerRootlessRunSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) {
 		now:        runSandboxTestClock(startedAt, finishedAt),
 		workingDir: func() (string, error) { return projectDir, nil },
 		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
-			return workerRootlessBundlePlan(projectDir), nil
+			plan := workerRootlessBundlePlan(projectDir)
+			plan.Repository = "https://deploy:secret@example.test/org/repo.git"
+			return plan, nil
 		},
 		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
 			return workerRootlessCachedSandbox(name), nil
@@ -887,7 +889,12 @@ func TestWorkerRootlessRunSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) {
 	if manifest.Runtime == nil || manifest.Runtime.Driver != sandboxruntime.DriverRootlessPodman || manifest.Runtime.WorkerID != "worker-1" {
 		t.Fatalf("manifest runtime = %#v, want selected worker rootless runtime", manifest.Runtime)
 	}
+	if manifest.Purpose != sandboxexecution.PurposeRun {
+		t.Fatalf("manifest.Purpose = %q, want %q", manifest.Purpose, sandboxexecution.PurposeRun)
+	}
+	requireWorkerRootlessRunManifestWorkspace(t, manifest.Workspace, sandbox.SandboxWorkspaceInputSourceGitBundle)
 	requireWorkerRootlessExecutionManifestMetadata(t, manifest)
+	requireWorkerManifestNoUnsafeDetails(t, manifest, "unix://", "/tmp/private/worker-1.sock", "deploy:secret", "example.test", "token=secret")
 }
 
 func TestWorkerRootlessRunSandboxPersistsSafeSandboxStateMetadata(t *testing.T) {
@@ -2611,6 +2618,14 @@ func requireWorkerRuntimeCopyOutSources(t *testing.T, copyOuts []sandboxruntime.
 
 func requireWorkerCopyManifestNoHostPath(t *testing.T, manifest *sandboxexecution.Manifest, forbidden ...string) {
 	t.Helper()
+	requireWorkerManifestNoUnsafeDetails(t, manifest, forbidden...)
+	if manifest == nil || manifest.Workspace == nil || manifest.Workspace.InputSource != sandbox.SandboxWorkspaceInputSourceGitBundle {
+		t.Fatalf("manifest workspace = %#v, want git_bundle workspace metadata", manifest)
+	}
+}
+
+func requireWorkerManifestNoUnsafeDetails(t *testing.T, manifest *sandboxexecution.Manifest, forbidden ...string) {
+	t.Helper()
 	encoded, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatalf("Marshal(manifest) error: %v", err)
@@ -2622,9 +2637,6 @@ func requireWorkerCopyManifestNoHostPath(t *testing.T, manifest *sandboxexecutio
 		if strings.Contains(string(encoded), value) {
 			t.Fatalf("manifest leaked host-local path %q: %s", value, encoded)
 		}
-	}
-	if manifest == nil || manifest.Workspace == nil || manifest.Workspace.InputSource != sandbox.SandboxWorkspaceInputSourceGitBundle {
-		t.Fatalf("manifest workspace = %#v, want git_bundle workspace metadata", manifest)
 	}
 }
 
@@ -2703,6 +2715,22 @@ func requireWorkerRootlessPersistedSandboxState(t *testing.T, state *sandbox.San
 		if strings.Contains(payload, leaked) {
 			t.Fatalf("persisted sandbox state leaked unsafe detail %q: %s", leaked, payload)
 		}
+	}
+}
+
+func requireWorkerRootlessRunManifestWorkspace(t *testing.T, workspace *sandbox.SandboxWorkspace, inputSource string) {
+	t.Helper()
+	if workspace == nil {
+		t.Fatal("manifest workspace = nil, want selected workspace metadata")
+	}
+	if workspace.Mode != sandbox.SandboxWorkspaceModeClone ||
+		workspace.InputSource != inputSource ||
+		workspace.Branch != "feature/worker-rootless" ||
+		workspace.SyncRef != "refs/remotes/origin/feature/worker-rootless" {
+		t.Fatalf("manifest workspace = %#v, want selected worker workspace metadata", workspace)
+	}
+	if workspace.Repo != "" {
+		t.Fatalf("manifest workspace repo = %q, want omitted to avoid credential-bearing URLs", workspace.Repo)
 	}
 }
 

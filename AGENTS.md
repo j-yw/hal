@@ -40,6 +40,7 @@
 ## Patterns from phase19-rootless-worker-e2e-hardening (2026-07-01)
 
 - Explicit worker-backed rootless SandboxState persistence belongs in command target-ready hooks through an injectable `persistSandboxState` dependency; persist a sanitized clone with worker host identity only (ID, Name, Kind), exact runtime metadata, and workspace mode/input/branch/syncRef while omitting raw worker endpoints, hostnames, temp paths, bundle paths, and credential-bearing repository URLs.
+- Explicit worker-backed rootless run manifests should sanitize command-owned metadata before saving: keep exact runtime and workerRouting metadata, keep workspace mode/input/branch/syncRef while omitting repository URLs, and store worker host identity plus safe security summaries without raw endpoints, supported-runtime registry details, temp paths, or credentials.
 
 ## Patterns from phase18-worker-backed-sandbox-execution-routing (2026-07-01)
 
