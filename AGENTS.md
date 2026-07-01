@@ -48,6 +48,7 @@
 - Command-package worker client driver construction must stay centralized in `cmd/sandbox_worker_runtime.go`; guard tests should scan `cmd/*.go` including tests for direct `sandboxworker.NewClientDriver` calls while execution files keep routing through `sandboxWorkerRuntimeDriverFromTarget` and avoid importing `internal/sandboxworker`.
 - Fake worker rootless E2E coverage should live in `internal/sandboxworker` and route a fake `sandboxruntime.Driver` through the real `Service`, Unix socket `Server`, `Client`, and `ClientDriver`; use short `/tmp` socket paths and keep default tests free of Podman, providers, external daemons, and network dependencies.
 - `hal sandboxd` rootless Podman registration must check availability through the injectable command-layer availability dependency before constructing the driver, worker service, or server; unavailable Podman should return a sanitized `runtime_unavailable` classification while startup JSON lists only successfully registered drivers.
+- Rootless Podman worker capability metadata belongs in `internal/sandboxworker` service descriptors: advertise exact create/start/stop/delete/inspect/exec/copy_in/copy_out operations, `HostKind=local`, `IsolationLevel=container`, and enforced security `NetworkPolicy=best_effort`, `NetworkEnforcement=none`, and `CredentialProxyMode=false` without microVM, firewall/proxy, credential proxy, or secret broker claims.
 
 ## Patterns from phase18-worker-backed-sandbox-execution-routing (2026-07-01)
 

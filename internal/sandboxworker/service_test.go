@@ -132,6 +132,42 @@ func TestServiceCapabilitiesReportsRegisteredDriversAndHonestSecurity(t *testing
 	assertSecurityPolicyDoesNotOverclaim(t, capabilities.Security)
 }
 
+func TestServiceRootlessPodmanCapabilityReportsExactLocalDevSecurity(t *testing.T) {
+	registry, err := NewDriverRegistry(&fakeWorkerRuntimeDriver{id: RuntimeDriverRootlessPodman})
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+	service, err := NewService(ServiceOptions{
+		WorkerID: "worker-001",
+		Registry: registry,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+
+	capabilities := service.Capabilities()
+	if err := capabilities.Validate(); err != nil {
+		t.Fatalf("Capabilities().Validate() error: %v", err)
+	}
+	if len(capabilities.RuntimeDrivers) != 1 {
+		t.Fatalf("runtime drivers = %#v, want exactly one rootless Podman driver", capabilities.RuntimeDrivers)
+	}
+	driver := capabilities.RuntimeDrivers[0]
+	if driver.ID != RuntimeDriverRootlessPodman {
+		t.Fatalf("runtime driver ID = %q, want %q", driver.ID, RuntimeDriverRootlessPodman)
+	}
+	if driver.HostKind != HostKindLocal {
+		t.Fatalf("rootless Podman hostKind = %q, want %q", driver.HostKind, HostKindLocal)
+	}
+	if driver.IsolationLevel != IsolationLevelContainer {
+		t.Fatalf("rootless Podman isolationLevel = %q, want %q", driver.IsolationLevel, IsolationLevelContainer)
+	}
+	if !reflect.DeepEqual(driver.Operations, defaultRuntimeDriverOperations) {
+		t.Fatalf("rootless Podman operations = %#v, want %#v", driver.Operations, defaultRuntimeDriverOperations)
+	}
+	assertRootlessPodmanSecurityPolicy(t, driver.Security)
+}
+
 func TestServiceProtocolResponsesValidate(t *testing.T) {
 	service, err := NewService(ServiceOptions{WorkerID: "worker-001"})
 	if err != nil {
@@ -379,5 +415,36 @@ func assertSecurityPolicyDoesNotOverclaim(t *testing.T, policy SecurityPolicy) {
 	}
 	if policy.Enforced.IsolationLevel == unsupportedIsolationLevelMicroVM {
 		t.Fatalf("security policy claims microVM isolation: %#v", policy)
+	}
+}
+
+func assertRootlessPodmanSecurityPolicy(t *testing.T, policy SecurityPolicy) {
+	t.Helper()
+	if err := policy.Validate(); err != nil {
+		t.Fatalf("rootless Podman security policy Validate() error: %v", err)
+	}
+	if policy.Enforced.NetworkPolicy != NetworkPolicyBestEffort {
+		t.Fatalf("rootless Podman enforced networkPolicy = %q, want %q", policy.Enforced.NetworkPolicy, NetworkPolicyBestEffort)
+	}
+	if policy.Enforced.NetworkEnforcement != NetworkEnforcementNone {
+		t.Fatalf("rootless Podman enforced networkEnforcement = %q, want %q", policy.Enforced.NetworkEnforcement, NetworkEnforcementNone)
+	}
+	if policy.Enforced.CredentialProxyMode {
+		t.Fatalf("rootless Podman enforced credentialProxyMode = true, want false")
+	}
+	for _, value := range append([]string{
+		policy.Enforced.NetworkPolicy,
+		policy.Enforced.NetworkEnforcement,
+		policy.Enforced.IsolationLevel,
+	}, policy.Enforced.CredentialModes...) {
+		switch value {
+		case unsupportedIsolationLevelMicroVM,
+			unsupportedNetworkEnforcementFirewall,
+			unsupportedNetworkEnforcementProxy,
+			"proxy_firewall",
+			unsupportedCredentialModeProxy,
+			"secret_broker":
+			t.Fatalf("rootless Podman enforced security advertises unsupported capability %q: %#v", value, policy.Enforced)
+		}
 	}
 }
