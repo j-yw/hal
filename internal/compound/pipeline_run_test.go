@@ -235,6 +235,17 @@ func TestRunLoopStep_DispatchesParallelRunnerAndSavesTelemetry(t *testing.T) {
 	if saved.Run.Parallel.RunID != "run-test" {
 		t.Fatalf("saved run ID = %q, want run-test", saved.Run.Parallel.RunID)
 	}
+
+	if err := pipeline.clearState(); err != nil {
+		t.Fatalf("clearState() error = %v", err)
+	}
+	lastRun := pipeline.LastRunState()
+	if lastRun == nil || lastRun.Parallel == nil {
+		t.Fatalf("LastRunState() after clear = %+v, want retained parallel run telemetry", lastRun)
+	}
+	if lastRun.Parallel.RunID != "run-test" || lastRun.Parallel.RequestedParallelism != 4 {
+		t.Fatalf("LastRunState().Parallel = %+v, want retained run-test telemetry", lastRun.Parallel)
+	}
 }
 
 func (runStepTestEngine) Execute(ctx context.Context, prompt string, display *engine.Display) engine.Result {

@@ -100,6 +100,7 @@ type Pipeline struct {
 	display         *engine.Display
 	dir             string
 	lastCIState     *CIState
+	lastRunState    *RunState
 	pushAndCreatePR func(context.Context, ci.PushOptions) (ci.PushResult, error)
 	currentBranch   func(string) (string, error)
 }
@@ -279,16 +280,14 @@ func (p *Pipeline) LastRunState() *RunState {
 	if p == nil {
 		return nil
 	}
+	if p.lastRunState != nil {
+		return cloneRunState(p.lastRunState)
+	}
 	state := p.loadState()
 	if state == nil || state.Run == nil {
 		return nil
 	}
-	run := *state.Run
-	if state.Run.Parallel != nil {
-		parallel := *state.Run.Parallel
-		run.Parallel = &parallel
-	}
-	return &run
+	return cloneRunState(state.Run)
 }
 
 func (p *Pipeline) recordCIState(ci *CIState) {
@@ -298,6 +297,26 @@ func (p *Pipeline) recordCIState(ci *CIState) {
 	}
 	ciCopy := *ci
 	p.lastCIState = &ciCopy
+}
+
+func (p *Pipeline) recordRunState(run *RunState) {
+	if run == nil {
+		p.lastRunState = nil
+		return
+	}
+	p.lastRunState = cloneRunState(run)
+}
+
+func cloneRunState(run *RunState) *RunState {
+	if run == nil {
+		return nil
+	}
+	runCopy := *run
+	if run.Parallel != nil {
+		parallel := *run.Parallel
+		runCopy.Parallel = &parallel
+	}
+	return &runCopy
 }
 
 // RunOptions contains options for the pipeline Run method.
@@ -322,6 +341,7 @@ type RunOptions struct {
 // Run executes the compound pipeline from the current state or from the beginning.
 func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 	p.recordCIState(nil)
+	p.recordRunState(nil)
 
 	// Load or create initial state
 	var state *PipelineState
@@ -332,6 +352,7 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 			return fmt.Errorf("no saved state to resume from")
 		}
 		p.recordCIState(state.CI)
+		p.recordRunState(state.Run)
 		p.display.ShowInfo("   Resuming from step: %s\n", state.Step)
 	} else {
 		state, err = p.newInitialState(opts)
@@ -1111,6 +1132,7 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 		MaxIterations: maxRunIterations,
 		Parallel:      parallelState,
 	}
+	p.recordRunState(state.Run)
 
 	if result.Error != nil {
 		if saveErr := p.saveState(state); saveErr != nil {
