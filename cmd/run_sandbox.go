@@ -96,6 +96,7 @@ type runSandboxDeps struct {
 	resolveProvider        func(string) (sandbox.Provider, error)
 	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
 	resolveWorkerRuntime   func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error)
+	persistSandboxState    func(*sandbox.SandboxState) error
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
 	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
 	engineAuthFiles        func() []factorySandboxAuthFile
@@ -107,18 +108,19 @@ type runSandboxDeps struct {
 }
 
 var defaultRunSandboxDeps = runSandboxDeps{
-	defaultStore:   sandboxexecution.DefaultStore,
-	newExecutionID: defaultRunSandboxExecutionID,
-	now:            time.Now,
-	workingDir:     os.Getwd,
-	currentBranch:  compound.CurrentBranchOptionalInDir,
-	repoRemote:     readGitRemoteOptionalInDir,
-	planWorkspace:  defaultRunSandboxWorkspacePlan,
-	loadSandbox:    sandbox.LoadActiveInstance,
-	listSandboxes:  sandbox.ListActiveInstances,
-	listHosts:      sandbox.ListHosts,
-	resolveDefault: sandbox.ResolveDefault,
-	provision:      provisionFactorySandbox,
+	defaultStore:        sandboxexecution.DefaultStore,
+	newExecutionID:      defaultRunSandboxExecutionID,
+	now:                 time.Now,
+	workingDir:          os.Getwd,
+	currentBranch:       compound.CurrentBranchOptionalInDir,
+	repoRemote:          readGitRemoteOptionalInDir,
+	planWorkspace:       defaultRunSandboxWorkspacePlan,
+	loadSandbox:         sandbox.LoadActiveInstance,
+	listSandboxes:       sandbox.ListActiveInstances,
+	listHosts:           sandbox.ListHosts,
+	resolveDefault:      sandbox.ResolveDefault,
+	provision:           provisionFactorySandbox,
+	persistSandboxState: sandbox.ForceWriteInstance,
 	resolveProvider: func(providerName string) (sandbox.Provider, error) {
 		return resolveProviderWithFallback(".", providerName)
 	},
@@ -304,6 +306,15 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 			target = ready
 			if target != nil && strings.TrimSpace(req.SandboxName) == "" {
 				req.SandboxName = strings.TrimSpace(target.Name)
+			}
+			if err := persistSandboxCommandSelectedState(sandboxCommandStatePersistenceRequest{
+				SandboxHostID:  req.SandboxHostID,
+				SandboxRuntime: req.SandboxRuntime,
+				Target:         target,
+				Workspace:      req.Workspace,
+				Save:           deps.persistSandboxState,
+			}); err != nil {
+				return err
 			}
 			return saveRunSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, target)
 		},

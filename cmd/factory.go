@@ -271,7 +271,7 @@ var defaultFactoryRunDeps = factoryRunDeps{
 	loadEngineConfig: compound.LoadEngineConfig,
 	runPipeline:      runFactoryRunPipeline,
 	runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
-		return runFactorySandboxExecutorWithDeps(ctx, req, factorySandboxExecutorDeps{})
+		return runFactorySandboxExecutorWithDeps(ctx, req, defaultFactorySandboxExecutorDeps)
 	},
 	loadVerify:             verify.LoadConfig,
 	runVerify:              verify.Run,

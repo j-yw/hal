@@ -68,6 +68,7 @@ type factorySandboxExecutorDeps struct {
 	resolveProvider        func(string) (sandbox.Provider, error)
 	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
 	resolveWorkerRuntime   func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error)
+	persistSandboxState    func(*sandbox.SandboxState) error
 	runProviderExec        func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
 	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
@@ -82,13 +83,14 @@ type factorySandboxExecutorDeps struct {
 }
 
 var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
-	defaultStore:   factory.DefaultStore,
-	now:            time.Now,
-	resolveDefault: sandbox.ResolveDefault,
-	loadSandbox:    sandbox.LoadActiveInstance,
-	listSandboxes:  sandbox.ListActiveInstances,
-	listHosts:      sandbox.ListHosts,
-	provision:      provisionFactorySandbox,
+	defaultStore:        factory.DefaultStore,
+	now:                 time.Now,
+	resolveDefault:      sandbox.ResolveDefault,
+	loadSandbox:         sandbox.LoadActiveInstance,
+	listSandboxes:       sandbox.ListActiveInstances,
+	listHosts:           sandbox.ListHosts,
+	provision:           provisionFactorySandbox,
+	persistSandboxState: sandbox.ForceWriteInstance,
 	resolveProvider: func(providerName string) (sandbox.Provider, error) {
 		return resolveProviderWithFallback(".", providerName)
 	},
@@ -305,6 +307,15 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		},
 		OnTargetReady: func(_ context.Context, ready *sandbox.SandboxState) error {
 			target = ready
+			if err := persistSandboxCommandSelectedState(sandboxCommandStatePersistenceRequest{
+				SandboxHostID:  req.SandboxHostID,
+				SandboxRuntime: req.SandboxRuntime,
+				Target:         target,
+				Workspace:      factorySandboxWorkspaceStateFromRecord(record),
+				Save:           deps.persistSandboxState,
+			}); err != nil {
+				return err
+			}
 			record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
 			if record.Sandbox != nil && sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
 				record.Sandbox.WorkerRouting = sandboxWorkerRoutingMetadataFromState(target)

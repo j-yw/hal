@@ -890,6 +890,115 @@ func TestWorkerRootlessRunSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) {
 	requireWorkerRootlessExecutionManifestMetadata(t, manifest)
 }
 
+func TestWorkerRootlessRunSandboxPersistsSafeSandboxStateMetadata(t *testing.T) {
+	t.Setenv("HAL_CONFIG_HOME", t.TempDir())
+
+	startedAt := time.Date(2026, 7, 1, 7, 38, 30, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	workerDriver := fakeRunSandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+			target := req.Target
+			target.Status = sandbox.StatusRunning
+			target.Runtime = sandboxruntime.RuntimeState{
+				Driver:         sandboxruntime.DriverRootlessPodman,
+				RuntimeID:      "ctr-worker-rootless",
+				Image:          "localhost/hal:test",
+				WorkerID:       "worker-1",
+				IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+			}
+			return &target, nil
+		},
+		exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			if req.Target.Runtime.RuntimeID != "ctr-worker-rootless" || req.Target.Runtime.Image != "localhost/hal:test" {
+				t.Fatalf("Exec target runtime = %#v, want started worker runtime metadata", req.Target.Runtime)
+			}
+			_, _ = io.WriteString(req.Stdout, "worker-backed run path\n")
+			return &sandboxruntime.ExecResult{}, nil
+		},
+	}
+
+	err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+		SandboxName:           "worker-rootless",
+		SandboxNameChanged:    true,
+		SandboxHostID:         "worker-1",
+		SandboxHostChanged:    true,
+		SandboxRuntime:        sandboxruntime.DriverRootlessPodman,
+		SandboxRuntimeChanged: true,
+	}, &out, &errOut, runSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "run-worker-rootless-persist-state"
+		},
+		now:        runSandboxTestClock(startedAt, finishedAt),
+		workingDir: func() (string, error) { return projectDir, nil },
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			plan := workerRootlessPlan(projectDir)
+			plan.Repository = "https://deploy:secret@example.test/org/repo.git"
+			return plan, nil
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			target := workerRootlessCachedSandbox(name)
+			target.Status = sandbox.StatusStopped
+			target.Runtime.RuntimeID = ""
+			target.Runtime.Image = ""
+			target.Runtime.WorkerID = ""
+			return target, nil
+		},
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{workerRootlessHostWithEndpoint(workerSafeUnixEndpoint())}, nil
+		},
+		listSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("listSandboxes should not run for explicit cached worker sandbox")
+			return nil, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			t.Fatal("default sandbox fallback should not run for explicit cached worker sandbox")
+			return nil, "", nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			t.Fatal("provision should not run for explicit cached worker sandbox")
+			return nil, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			t.Fatal("legacy runtime resolver should not run for explicit worker-backed run execution")
+			return nil, nil
+		},
+		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+			return workerDriver, nil
+		},
+		persistSandboxState: sandbox.ForceWriteInstance,
+		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			return factory.BootstrapResult{}, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			return nil
+		},
+		runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runRunSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+
+	loaded, err := sandbox.LoadInstance("worker-rootless")
+	if err != nil {
+		t.Fatalf("LoadInstance() error: %v", err)
+	}
+	requireWorkerRootlessPersistedSandboxState(t, loaded)
+}
+
 func TestWorkerRootlessAutoSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) {
 	startedAt := time.Date(2026, 7, 1, 7, 39, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(time.Second)
@@ -2559,6 +2668,42 @@ func requireWorkerRootlessExecutionManifestMetadata(t *testing.T, manifest *sand
 	requireWorkerRootlessSandboxSecurity(t, manifest.Security)
 	requireWorkerRootlessSandboxSecurity(t, manifest.Host.Security)
 	requireWorkerRoutingMetadata(t, manifest.WorkerRouting)
+}
+
+func requireWorkerRootlessPersistedSandboxState(t *testing.T, state *sandbox.SandboxState) {
+	t.Helper()
+	if state == nil {
+		t.Fatal("sandbox state = nil, want persisted worker-backed state")
+	}
+	if state.Host == nil || state.Host.ID != "worker-1" || state.Host.Name != "worker one" || state.Host.Kind != sandbox.SandboxHostKindWorker {
+		t.Fatalf("persisted host = %#v, want selected worker host identity", state.Host)
+	}
+	if state.Host.Endpoint != "" || len(state.Host.SupportedRuntimes) != 0 || state.Host.Security != nil {
+		t.Fatalf("persisted host = %#v, want safe sandbox host identity only", state.Host)
+	}
+	requireWorkerRootlessRuntimeState(t, state.Runtime)
+	if state.Workspace == nil {
+		t.Fatal("persisted workspace = nil, want selected workspace metadata")
+	}
+	if state.Workspace.Mode != sandbox.SandboxWorkspaceModeClone ||
+		state.Workspace.InputSource != sandbox.SandboxWorkspaceInputSourceRemoteRef ||
+		state.Workspace.Branch != "feature/worker-rootless" ||
+		state.Workspace.SyncRef != "refs/remotes/origin/feature/worker-rootless" {
+		t.Fatalf("persisted workspace = %#v, want selected workspace metadata", state.Workspace)
+	}
+	if state.Workspace.Repo != "" {
+		t.Fatalf("persisted workspace repo = %q, want omitted to avoid credential-bearing URLs", state.Workspace.Repo)
+	}
+	payloadBytes, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal persisted state: %v", err)
+	}
+	payload := string(payloadBytes)
+	for _, leaked := range []string{"unix://", "/tmp/private/worker-1.sock", "deploy:secret", "example.test", "token=secret"} {
+		if strings.Contains(payload, leaked) {
+			t.Fatalf("persisted sandbox state leaked unsafe detail %q: %s", leaked, payload)
+		}
+	}
 }
 
 func requireWorkerRootlessRuntimeState(t *testing.T, runtime *sandbox.SandboxRuntimeState) {

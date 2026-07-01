@@ -97,6 +97,7 @@ type autoSandboxDeps struct {
 	resolveProvider        func(string) (sandbox.Provider, error)
 	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
 	resolveWorkerRuntime   func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error)
+	persistSandboxState    func(*sandbox.SandboxState) error
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
 	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
 	engineAuthFiles        func() []factorySandboxAuthFile
@@ -108,15 +109,16 @@ type autoSandboxDeps struct {
 }
 
 var defaultAutoSandboxDeps = autoSandboxDeps{
-	defaultStore:   sandboxexecution.DefaultStore,
-	newExecutionID: defaultAutoSandboxExecutionID,
-	now:            time.Now,
-	planWorkspace:  defaultRunSandboxWorkspacePlan,
-	loadSandbox:    sandbox.LoadActiveInstance,
-	listSandboxes:  sandbox.ListActiveInstances,
-	listHosts:      sandbox.ListHosts,
-	resolveDefault: sandbox.ResolveDefault,
-	provision:      provisionFactorySandbox,
+	defaultStore:        sandboxexecution.DefaultStore,
+	newExecutionID:      defaultAutoSandboxExecutionID,
+	now:                 time.Now,
+	planWorkspace:       defaultRunSandboxWorkspacePlan,
+	loadSandbox:         sandbox.LoadActiveInstance,
+	listSandboxes:       sandbox.ListActiveInstances,
+	listHosts:           sandbox.ListHosts,
+	resolveDefault:      sandbox.ResolveDefault,
+	provision:           provisionFactorySandbox,
+	persistSandboxState: sandbox.ForceWriteInstance,
 	resolveProvider: func(providerName string) (sandbox.Provider, error) {
 		return resolveProviderWithFallback(".", providerName)
 	},
@@ -252,6 +254,15 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 			target = ready
 			if target != nil && strings.TrimSpace(req.SandboxName) == "" {
 				req.SandboxName = strings.TrimSpace(target.Name)
+			}
+			if err := persistSandboxCommandSelectedState(sandboxCommandStatePersistenceRequest{
+				SandboxHostID:  req.SandboxHostID,
+				SandboxRuntime: req.SandboxRuntime,
+				Target:         target,
+				Workspace:      req.Workspace,
+				Save:           deps.persistSandboxState,
+			}); err != nil {
+				return err
 			}
 			return saveAutoSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, target)
 		},

@@ -37,6 +37,10 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase19-rootless-worker-e2e-hardening (2026-07-01)
+
+- Explicit worker-backed rootless SandboxState persistence belongs in command target-ready hooks through an injectable `persistSandboxState` dependency; persist a sanitized clone with worker host identity only (ID, Name, Kind), exact runtime metadata, and workspace mode/input/branch/syncRef while omitting raw worker endpoints, hostnames, temp paths, bundle paths, and credential-bearing repository URLs.
+
 ## Patterns from phase18-worker-backed-sandbox-execution-routing (2026-07-01)
 
 - Worker-backed execution route metadata uses the shared data-only `internal/sandbox.WorkerRoutingMetadata` contract and is attached additively as optional `workerRouting,omitempty` on both non-factory `sandboxexecution.Manifest` records and factory `factory.SandboxMetadata`; keep it limited to selected worker host identity, runtime driver, isolation, and safe endpoint summaries without raw endpoints or filesystem paths.
