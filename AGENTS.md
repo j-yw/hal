@@ -42,6 +42,7 @@
 - Pure config-to-evaluator security intent mapping belongs in `internal/sandbox/security_intent.go`; pass only sandbox-native `SandboxNetworkPolicyIntent`, `SandboxNetworkPolicyEnforcementCapability`, and `SandboxSecretDeliveryIntent` metadata, preserve nil-vs-explicit-empty secrets, and keep `security_intent*.go` covered by the `internal/sandbox/network_policy_import_boundary_test.go` pure import guard.
 - Compatibility security evaluation belongs in `internal/sandbox/security.go`; when `RequestedNetworkPolicyIntent` is present, derive the legacy `policyRequested` label from the typed intent while using the pure evaluator for `policyResult`, and only claim deny-by-default enforcement when explicit capability metadata supports it.
 - Worker security posture mapping belongs at the command boundary in `cmd` adapters such as `sandbox_host_mapping.go` and runtime summaries; derive `SandboxNetworkPolicyResult` from worker `SecurityPolicy` requested/enforced metadata only, and keep `internal/sandboxworker` free of durable `internal/sandbox` imports.
+- `hal run --sandbox` config-aware security intent wiring belongs in `cmd`; load local `compound.LoadSandboxConfig` after the project directory is known and before the first run manifest save, then map through `sandbox.MapSandboxSecurityIntent` so absent config preserves legacy deny-by-default/http_proxy metadata and explicit config reaches request and manifest security fields.
 
 ## Patterns from phase22-policy-secret-broker (2026-07-02)
 

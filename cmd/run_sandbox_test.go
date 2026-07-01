@@ -238,6 +238,234 @@ func TestRunSandboxDefaultRuntimeDriverResolverKeepsSSHMachineForAbsentOrExplici
 	}
 }
 
+func TestRunSandboxSecurityRequestKeepsLegacyDefaultsWithoutConfig(t *testing.T) {
+	startedAt := time.Date(2026, 7, 2, 4, 10, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+
+	var captured runSandboxRequest
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+		Base:        "main",
+		BaseChanged: true,
+	}, &out, &errOut, runSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "run-security-defaults"
+		},
+		now:           runSandboxTestClock(startedAt, finishedAt),
+		workingDir:    func() (string, error) { return projectDir, nil },
+		repoRemote:    func(string) (string, error) { return "git@example.com:org/repo.git", nil },
+		currentBranch: func(string) (string, error) { return "feature/security-defaults", nil },
+		execute: func(_ context.Context, req runSandboxRequest, _ io.Writer, _ io.Writer, _ runSandboxExecutionHooks) (runSandboxExecutionResult, error) {
+			captured = req
+			running, err := store.LoadManifest("run-security-defaults")
+			if err != nil {
+				t.Fatalf("LoadManifest() before execute: %v", err)
+			}
+			requireRunSandboxLegacySecurityManifest(t, running.Security)
+			return runSandboxExecutionResult{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runRunSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+
+	if captured.Security.RuntimeDriver != sandbox.SandboxRuntimeDriverSSHMachine {
+		t.Fatalf("RuntimeDriver = %q, want %q", captured.Security.RuntimeDriver, sandbox.SandboxRuntimeDriverSSHMachine)
+	}
+	if captured.Security.RequestedNetworkPolicy != sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("RequestedNetworkPolicy = %q, want %q", captured.Security.RequestedNetworkPolicy, sandbox.SandboxNetworkPolicyDenyByDefault)
+	}
+	if captured.Security.RequestedNetworkPolicyIntent != nil {
+		t.Fatalf("RequestedNetworkPolicyIntent = %#v, want nil without config", captured.Security.RequestedNetworkPolicyIntent)
+	}
+	if !reflect.DeepEqual(captured.Security.RequestedSecretModes, []string{sandbox.SandboxSecretModeHTTPProxy}) {
+		t.Fatalf("RequestedSecretModes = %#v, want legacy http_proxy", captured.Security.RequestedSecretModes)
+	}
+	if len(captured.Security.ActiveSecretModes) != 0 {
+		t.Fatalf("ActiveSecretModes = %#v, want no configured active modes", captured.Security.ActiveSecretModes)
+	}
+	if !captured.Security.CompatibilityAuthSync {
+		t.Fatal("CompatibilityAuthSync = false, want legacy auth sync preserved")
+	}
+
+	manifest, err := store.LoadManifest("run-security-defaults")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	requireRunSandboxLegacySecurityManifest(t, manifest.Security)
+}
+
+func TestRunSandboxSecurityRequestLoadsLocalSandboxConfig(t *testing.T) {
+	startedAt := time.Date(2026, 7, 2, 4, 12, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	writeRunSandboxConfig(t, projectDir, `sandbox:
+  env:
+    RAW_SECRET: "ghp_config_secret_should_not_persist"
+    SOCKET_PATH: "unix:///tmp/private/worker.sock"
+  networkPolicy:
+    preset: allow_listed
+    rules:
+      - kind: domain
+        value: api.example.com
+        decision: allow
+      - kind: metadata_endpoint
+        value: "169.254.169.254"
+        decision: deny
+  secrets:
+    requestedModes:
+      - env
+      - file_tmpfs
+    activeModes:
+      - env
+`)
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+
+	var captured runSandboxRequest
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+		Base:        "main",
+		BaseChanged: true,
+	}, &out, &errOut, runSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "run-security-config"
+		},
+		now:           runSandboxTestClock(startedAt, finishedAt),
+		workingDir:    func() (string, error) { return projectDir, nil },
+		repoRemote:    func(string) (string, error) { return "git@example.com:org/repo.git", nil },
+		currentBranch: func(string) (string, error) { return "feature/security-config", nil },
+		execute: func(_ context.Context, req runSandboxRequest, _ io.Writer, _ io.Writer, _ runSandboxExecutionHooks) (runSandboxExecutionResult, error) {
+			captured = req
+			running, err := store.LoadManifest("run-security-config")
+			if err != nil {
+				t.Fatalf("LoadManifest() before execute: %v", err)
+			}
+			requireRunSandboxConfiguredSecurityManifest(t, running.Security)
+			return runSandboxExecutionResult{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runRunSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+
+	if captured.Security.RequestedNetworkPolicy != sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("RequestedNetworkPolicy = %q, want restrictive compatibility label", captured.Security.RequestedNetworkPolicy)
+	}
+	if captured.Security.RequestedNetworkPolicyIntent == nil {
+		t.Fatal("RequestedNetworkPolicyIntent = nil, want config policy")
+	}
+	if captured.Security.RequestedNetworkPolicyIntent.Preset != sandbox.SandboxNetworkPolicyPresetAllowListed {
+		t.Fatalf("RequestedNetworkPolicyIntent.Preset = %q, want allow_listed", captured.Security.RequestedNetworkPolicyIntent.Preset)
+	}
+	wantRules := []sandbox.SandboxNetworkPolicyRule{
+		{Kind: sandbox.SandboxNetworkPolicyRuleKindDomain, Value: "api.example.com", Decision: sandbox.SandboxNetworkPolicyDecisionAllow},
+		{Kind: sandbox.SandboxNetworkPolicyRuleKindMetadataEndpoint, Value: "169.254.169.254", Decision: sandbox.SandboxNetworkPolicyDecisionDeny},
+	}
+	if !reflect.DeepEqual(captured.Security.RequestedNetworkPolicyIntent.Rules, wantRules) {
+		t.Fatalf("RequestedNetworkPolicyIntent.Rules = %#v, want %#v", captured.Security.RequestedNetworkPolicyIntent.Rules, wantRules)
+	}
+	if !reflect.DeepEqual(captured.Security.RequestedSecretModes, []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeFileTmpfs}) {
+		t.Fatalf("RequestedSecretModes = %#v, want configured modes", captured.Security.RequestedSecretModes)
+	}
+	if !reflect.DeepEqual(captured.Security.ActiveSecretModes, []string{sandbox.SandboxSecretModeEnv}) {
+		t.Fatalf("ActiveSecretModes = %#v, want configured active modes", captured.Security.ActiveSecretModes)
+	}
+	if !captured.Security.CompatibilityAuthSync {
+		t.Fatal("CompatibilityAuthSync = false, want compatibility auth sync preserved")
+	}
+
+	manifest, err := store.LoadManifest("run-security-config")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	requireRunSandboxConfiguredSecurityManifest(t, manifest.Security)
+	encoded := mustMarshalSandboxSecurityMetadata(t, manifest.Security)
+	for _, forbidden := range []string{"ghp_config_secret_should_not_persist", "unix://", "/tmp/private/worker.sock", "https://token@", "/Users/private"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("manifest security metadata leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestRunSandboxManifestUsesConfiguredSecurityIntentAndRedactsUnsafeValues(t *testing.T) {
+	projectDir := t.TempDir()
+	writeRunSandboxConfig(t, projectDir, `sandbox:
+  env:
+    TOKEN: "ghp_manifest_secret_should_not_persist"
+    LOCAL_PATH: "/Users/private/.ssh/id_ed25519"
+  networkPolicy:
+    preset: disabled
+  secrets:
+    requestedModes:
+      - ssh_agent
+    activeModes:
+      - ssh_agent
+`)
+	store := sandboxexecution.NewStore(t.TempDir())
+	startedAt := time.Date(2026, 7, 2, 4, 13, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+		Base:        "main",
+		BaseChanged: true,
+	}, &out, &errOut, runSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "run-security-manifest"
+		},
+		now:           runSandboxTestClock(startedAt, finishedAt),
+		workingDir:    func() (string, error) { return projectDir, nil },
+		repoRemote:    func(string) (string, error) { return "git@example.com:org/repo.git", nil },
+		currentBranch: func(string) (string, error) { return "feature/security-manifest", nil },
+		execute: func(context.Context, runSandboxRequest, io.Writer, io.Writer, runSandboxExecutionHooks) (runSandboxExecutionResult, error) {
+			return runSandboxExecutionResult{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runRunSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+
+	manifest, err := store.LoadManifest("run-security-manifest")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if manifest.Security == nil || manifest.Security.Network == nil || manifest.Security.Network.PolicyResult == nil {
+		t.Fatalf("Security = %#v, want policy result", manifest.Security)
+	}
+	if manifest.Security.Network.PolicyRequested != sandbox.SandboxNetworkPolicyBestEffort {
+		t.Fatalf("PolicyRequested = %q, want best_effort compatibility label for disabled policy", manifest.Security.Network.PolicyRequested)
+	}
+	if manifest.Security.Network.PolicyResult.Requested.Preset != sandbox.SandboxNetworkPolicyPresetDisabled {
+		t.Fatalf("policyResult.requested.preset = %q, want disabled", manifest.Security.Network.PolicyResult.Requested.Preset)
+	}
+	if manifest.Security.Network.PolicyResult.Effective.Preset != sandbox.SandboxNetworkPolicyPresetDisabled {
+		t.Fatalf("policyResult.effective.preset = %q, want disabled", manifest.Security.Network.PolicyResult.Effective.Preset)
+	}
+	if manifest.Security.Secrets == nil || !reflect.DeepEqual(manifest.Security.Secrets.RequestedModes, []string{sandbox.SandboxSecretModeSSHAgent}) {
+		t.Fatalf("secret metadata = %#v, want configured ssh_agent request", manifest.Security.Secrets)
+	}
+	encoded := mustMarshalSandboxSecurityMetadata(t, manifest.Security)
+	for _, forbidden := range []string{"ghp_manifest_secret_should_not_persist", "/Users/private", "credential", "token=", "provider"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("manifest security metadata leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 func TestParseRunSandboxRequestRejectsEmptyExplicitEngine(t *testing.T) {
 	_, err := parseRunSandboxRequest(nil, runSandboxOptions{
 		EngineChanged: true,
@@ -2000,6 +2228,67 @@ func runSandboxTestClock(times ...time.Time) func() time.Time {
 			times = times[1:]
 		}
 		return next
+	}
+}
+
+func writeRunSandboxConfig(t *testing.T, projectDir, content string) {
+	t.Helper()
+	halDir := filepath.Join(projectDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(.hal) error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile(config.yaml) error: %v", err)
+	}
+}
+
+func requireRunSandboxLegacySecurityManifest(t *testing.T, security *sandbox.SandboxSecurity) {
+	t.Helper()
+	if security == nil || security.Network == nil || security.Network.PolicyResult == nil {
+		t.Fatalf("Security = %#v, want network policy result", security)
+	}
+	if security.Network.PolicyRequested != sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("PolicyRequested = %q, want deny_by_default", security.Network.PolicyRequested)
+	}
+	if security.Network.PolicyResult.Requested.Preset != sandbox.SandboxNetworkPolicyPresetDenyByDefault {
+		t.Fatalf("policyResult.requested.preset = %q, want deny_by_default", security.Network.PolicyResult.Requested.Preset)
+	}
+	if security.Network.PolicyResult.Effective.Preset != sandbox.SandboxNetworkPolicyPresetLegacyDefault {
+		t.Fatalf("policyResult.effective.preset = %q, want legacy_default", security.Network.PolicyResult.Effective.Preset)
+	}
+	if security.Secrets == nil || !reflect.DeepEqual(security.Secrets.RequestedModes, []string{sandbox.SandboxSecretModeHTTPProxy}) {
+		t.Fatalf("secret metadata = %#v, want legacy http_proxy request", security.Secrets)
+	}
+	if !reflect.DeepEqual(security.Secrets.ActiveModes, []string{sandbox.SandboxSecretModeLegacyAuthSync}) {
+		t.Fatalf("active modes = %#v, want legacy auth sync", security.Secrets.ActiveModes)
+	}
+}
+
+func requireRunSandboxConfiguredSecurityManifest(t *testing.T, security *sandbox.SandboxSecurity) {
+	t.Helper()
+	if security == nil || security.Network == nil || security.Network.PolicyResult == nil {
+		t.Fatalf("Security = %#v, want network policy result", security)
+	}
+	if security.Network.PolicyRequested != sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("PolicyRequested = %q, want deny_by_default compatibility label", security.Network.PolicyRequested)
+	}
+	if security.Network.PolicyResult.Requested.Preset != sandbox.SandboxNetworkPolicyPresetAllowListed {
+		t.Fatalf("policyResult.requested.preset = %q, want allow_listed", security.Network.PolicyResult.Requested.Preset)
+	}
+	if security.Network.PolicyResult.Effective.Preset != sandbox.SandboxNetworkPolicyPresetLegacyDefault {
+		t.Fatalf("policyResult.effective.preset = %q, want legacy_default downgrade", security.Network.PolicyResult.Effective.Preset)
+	}
+	if len(security.Network.PolicyResult.Warnings) == 0 {
+		t.Fatal("policyResult.warnings = empty, want unsupported enforcement warning")
+	}
+	if security.Secrets == nil {
+		t.Fatal("Secrets = nil, want configured secret metadata")
+	}
+	if !reflect.DeepEqual(security.Secrets.RequestedModes, []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeFileTmpfs}) {
+		t.Fatalf("RequestedModes = %#v, want configured requested modes", security.Secrets.RequestedModes)
+	}
+	if !reflect.DeepEqual(security.Secrets.ActiveModes, []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeLegacyAuthSync}) {
+		t.Fatalf("ActiveModes = %#v, want configured active mode plus compatibility auth sync", security.Secrets.ActiveModes)
 	}
 }
 

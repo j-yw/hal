@@ -294,6 +294,15 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 		return err
 	}
 	req.ProjectDir = projectDir
+	securityReq, err := loadConfiguredSandboxSecurityRequest(projectDir, req.SandboxRuntime)
+	if err != nil {
+		err = fmt.Errorf("load sandbox security config: %w", err)
+		if opts.JSON {
+			return outputRunJSONError(out, err.Error())
+		}
+		return err
+	}
+	req.Security = securityReq
 	if err := saveRunSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, nil); err != nil {
 		if opts.JSON {
 			return outputRunJSONError(out, err.Error())
