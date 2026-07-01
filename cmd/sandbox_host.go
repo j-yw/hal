@@ -44,6 +44,7 @@ type sandboxHostListRequest struct {
 type sandboxHostStatusRequest struct {
 	HostID string
 	Live   bool
+	JSON   bool
 }
 
 type sandboxHostDeleteRequest struct {
@@ -187,6 +188,7 @@ sandbox-host-list-v1 contract.`,
 func newSandboxHostStatusCommand(deps sandboxHostDeps) *cobra.Command {
 	flags := struct {
 		live bool
+		json bool
 	}{}
 	cmd := &cobra.Command{
 		Use:   "status ID",
@@ -194,14 +196,28 @@ func newSandboxHostStatusCommand(deps sandboxHostDeps) *cobra.Command {
 		Long: `Show cached durable sandbox host status.
 
 The command renders cached host registry metadata. It does not contact worker
-daemons unless live refresh is explicitly requested by a supported flag.`,
+daemons unless live refresh is explicitly requested by a supported flag. Use
+--json for machine-readable output following the sandbox-host-status-v1
+contract.`,
 		Example: `  hal sandbox host status local-worker
-  hal sandbox host status local-worker --live`,
+  hal sandbox host status local-worker --json
+  hal sandbox host status local-worker --live
+  hal sandbox host status local-worker --live --json`,
 		Args: exactArgsValidation(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			jsonMode := flags.json
+			if cmd != nil {
+				if f := cmd.Flags().Lookup("json"); f != nil {
+					v, err := cmd.Flags().GetBool("json")
+					if err == nil {
+						jsonMode = v
+					}
+				}
+			}
 			req := sandboxHostStatusRequest{
 				HostID: strings.TrimSpace(args[0]),
 				Live:   flags.live,
+				JSON:   jsonMode,
 			}
 			return runSandboxHostCobra(cmd, "Sandbox Host Status failed", func(ctx context.Context, out io.Writer) error {
 				return deps.status(ctx, req, out)
@@ -209,6 +225,7 @@ daemons unless live refresh is explicitly requested by a supported flag.`,
 		},
 	}
 	cmd.Flags().BoolVar(&flags.live, "live", false, "Refresh cached worker metadata from the local worker socket")
+	cmd.Flags().BoolVar(&flags.json, "json", false, "Output machine-readable JSON (sandbox-host-status-v1 contract)")
 	return cmd
 }
 
@@ -346,6 +363,9 @@ func runSandboxHostStatus(ctx context.Context, req sandboxHostStatusRequest, out
 		return err
 	}
 	if !req.Live {
+		if req.JSON {
+			return renderSandboxHostStatusJSON(out, host, false)
+		}
 		return renderSandboxHostStatus(out, host, false)
 	}
 
@@ -384,6 +404,9 @@ func runSandboxHostStatus(ctx context.Context, req sandboxHostStatusRequest, out
 	if err := forceWriteHost(refreshed); err != nil {
 		return err
 	}
+	if req.JSON {
+		return renderSandboxHostStatusJSON(out, refreshed, true)
+	}
 	return renderSandboxHostStatus(out, refreshed, true)
 }
 
@@ -395,6 +418,19 @@ func renderSandboxHostListJSON(out io.Writer, hosts []*sandbox.SandboxHost) erro
 	data, err := json.MarshalIndent(resp, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal sandbox host list: %w", err)
+	}
+	_, err = fmt.Fprintln(out, string(data))
+	return err
+}
+
+func renderSandboxHostStatusJSON(out io.Writer, host *sandbox.SandboxHost, live bool) error {
+	if out == nil {
+		return nil
+	}
+	resp := newSandboxHostStatusResponse(host, live)
+	data, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal sandbox host status: %w", err)
 	}
 	_, err = fmt.Fprintln(out, string(data))
 	return err

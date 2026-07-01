@@ -9,6 +9,12 @@ import (
 )
 
 const SandboxHostListContractVersion = "sandbox-host-list-v1"
+const SandboxHostStatusContractVersion = "sandbox-host-status-v1"
+
+const (
+	SandboxHostStatusSourceCached        = "cached"
+	SandboxHostStatusSourceLiveRefreshed = "live-refreshed"
+)
 
 // SandboxHostListResponse is the machine-readable JSON output for
 // hal sandbox host list --json.
@@ -59,6 +65,40 @@ type SandboxHostListTotals struct {
 	Total int `json:"total"`
 }
 
+// SandboxHostStatusResponse is the machine-readable JSON output for
+// hal sandbox host status --json.
+type SandboxHostStatusResponse struct {
+	ContractVersion string                   `json:"contractVersion"`
+	Source          SandboxHostStatusSource  `json:"source"`
+	Refresh         SandboxHostStatusRefresh `json:"refresh"`
+	Host            SandboxHostStatusHost    `json:"host"`
+}
+
+// SandboxHostStatusSource identifies whether status came from cached durable
+// state or a live worker refresh.
+type SandboxHostStatusSource struct {
+	Mode    string `json:"mode"`
+	Summary string `json:"summary"`
+}
+
+// SandboxHostStatusRefresh records request/refresh metadata for status JSON.
+type SandboxHostStatusRefresh struct {
+	RequestedLive bool       `json:"requestedLive"`
+	CacheUpdated  bool       `json:"cacheUpdated"`
+	RefreshedAt   *time.Time `json:"refreshedAt,omitempty"`
+}
+
+// SandboxHostStatusHost is the safe host payload embedded by status JSON.
+type SandboxHostStatusHost struct {
+	ID                string                  `json:"id"`
+	Name              string                  `json:"name"`
+	Kind              string                  `json:"kind"`
+	Endpoint          SandboxHostListEndpoint `json:"endpoint"`
+	Health            SandboxHostListHealth   `json:"health"`
+	SupportedRuntimes []string                `json:"supportedRuntimes"`
+	Capacity          SandboxHostListCapacity `json:"capacity"`
+}
+
 func newSandboxHostListResponse(hosts []*sandbox.SandboxHost) SandboxHostListResponse {
 	entries := make([]SandboxHostListEntry, 0, len(hosts))
 	for _, host := range hosts {
@@ -74,6 +114,58 @@ func newSandboxHostListResponse(hosts []*sandbox.SandboxHost) SandboxHostListRes
 			Total: len(entries),
 		},
 	}
+}
+
+func newSandboxHostStatusResponse(host *sandbox.SandboxHost, live bool) SandboxHostStatusResponse {
+	mode := SandboxHostStatusSourceCached
+	summary := "cached durable registry (not live)"
+	if live {
+		mode = SandboxHostStatusSourceLiveRefreshed
+		summary = "live worker refresh (durable cache updated)"
+	}
+
+	return SandboxHostStatusResponse{
+		ContractVersion: SandboxHostStatusContractVersion,
+		Source: SandboxHostStatusSource{
+			Mode:    mode,
+			Summary: summary,
+		},
+		Refresh: SandboxHostStatusRefresh{
+			RequestedLive: live,
+			CacheUpdated:  live,
+			RefreshedAt:   sandboxHostStatusRefreshedAt(host, live),
+		},
+		Host: newSandboxHostStatusHost(host),
+	}
+}
+
+func newSandboxHostStatusHost(host *sandbox.SandboxHost) SandboxHostStatusHost {
+	if host == nil {
+		return SandboxHostStatusHost{
+			Kind:              "unknown",
+			Endpoint:          newSandboxHostListEndpoint(""),
+			Health:            newSandboxHostListHealth(nil),
+			SupportedRuntimes: []string{},
+			Capacity:          newSandboxHostListCapacity(nil),
+		}
+	}
+	return SandboxHostStatusHost{
+		ID:                sandboxHostDisplayValue(host.ID, ""),
+		Name:              sandboxHostDisplayValue(host.Name, host.ID),
+		Kind:              sandboxHostDisplayValue(host.Kind, "unknown"),
+		Endpoint:          newSandboxHostListEndpoint(host.Endpoint),
+		Health:            newSandboxHostListHealth(host.Health),
+		SupportedRuntimes: sandboxHostListStringSlice(host.SupportedRuntimes),
+		Capacity:          newSandboxHostListCapacity(host.Capacity),
+	}
+}
+
+func sandboxHostStatusRefreshedAt(host *sandbox.SandboxHost, live bool) *time.Time {
+	if !live || host == nil || host.Health == nil || host.Health.CheckedAt.IsZero() {
+		return nil
+	}
+	value := host.Health.CheckedAt
+	return &value
 }
 
 func newSandboxHostListEntry(host *sandbox.SandboxHost) SandboxHostListEntry {

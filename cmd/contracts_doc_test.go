@@ -32,6 +32,7 @@ func TestContractDocsExist(t *testing.T) {
 		{"plan-v1", "../docs/contracts/plan-v1.md"},
 		{"sandbox-list-v1", "../docs/contracts/sandbox-list-v1.md"},
 		{"sandbox-host-list-v1", "../docs/contracts/sandbox-host-list-v1.md"},
+		{"sandbox-host-status-v1", "../docs/contracts/sandbox-host-status-v1.md"},
 		{"auto-v2", "../docs/contracts/auto-v2.md"},
 		{"ci-push-v1", "../docs/contracts/ci-push-v1.md"},
 		{"ci-status-v1", "../docs/contracts/ci-status-v1.md"},
@@ -165,6 +166,43 @@ func TestContractDocsIncludeSandboxHostListFields(t *testing.T) {
 	for _, value := range []string{"unix_socket", "endpoint", "configured", "none", "local Unix socket"} {
 		if !strings.Contains(content, value) {
 			t.Errorf("sandbox-host-list-v1.md missing endpoint value %q", value)
+		}
+	}
+}
+
+func TestContractDocsIncludeSandboxHostStatusFields(t *testing.T) {
+	data, err := os.ReadFile("../docs/contracts/sandbox-host-status-v1.md")
+	if err != nil {
+		t.Skipf("cannot read sandbox-host-status-v1.md: %v", err)
+	}
+	content := string(data)
+
+	for _, field := range []string{"contractVersion", "source", "refresh", "host"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-host-status-v1.md missing top-level field %q", field)
+		}
+	}
+	for _, field := range []string{"mode", "summary", "requestedLive", "cacheUpdated", "refreshedAt"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-host-status-v1.md missing source/refresh field %q", field)
+		}
+	}
+	for _, field := range []string{"id", "name", "kind", "endpoint", "health", "supportedRuntimes", "capacity"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-host-status-v1.md missing host field %q", field)
+		}
+	}
+	for _, field := range []string{"type", "scheme", "status", "checkedAt", "lastHeartbeatAt", "message", "cpuCores", "memoryMb", "diskGb", "maxConcurrentSandboxes"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-host-status-v1.md missing nested field %q", field)
+		}
+	}
+	if !strings.Contains(content, SandboxHostStatusContractVersion) {
+		t.Errorf("sandbox-host-status-v1.md missing contract value %q", SandboxHostStatusContractVersion)
+	}
+	for _, value := range []string{SandboxHostStatusSourceCached, SandboxHostStatusSourceLiveRefreshed, "unix_socket", "endpoint", "local Unix socket"} {
+		if !strings.Contains(content, value) {
+			t.Errorf("sandbox-host-status-v1.md missing value %q", value)
 		}
 	}
 }
