@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -201,6 +202,188 @@ func TestCredentialProxyBindingMetadataContract(t *testing.T) {
 	})
 }
 
+func TestCredentialProxyJSONTagsAreStable(t *testing.T) {
+	assertCredentialProxyJSONTags(t, reflect.TypeOf(SandboxCredentialProxyPlanMetadata{}), []credentialProxyJSONTagExpectation{
+		{field: "ID", name: "id"},
+		{field: "Source", name: "source"},
+		{field: "SecretBrokerSessionID", name: "secretBrokerSessionId", omitempty: true},
+		{field: "NetworkProxySessionID", name: "networkProxySessionId", omitempty: true},
+		{field: "PolicySnapshot", name: "policySnapshot", omitempty: true},
+		{field: "BindingCount", name: "bindingCount", omitempty: true},
+		{field: "Mode", name: "mode", omitempty: true},
+		{field: "Status", name: "status", omitempty: true},
+	})
+
+	assertCredentialProxyJSONTags(t, reflect.TypeOf(SandboxCredentialProxySessionMetadata{}), []credentialProxyJSONTagExpectation{
+		{field: "ID", name: "id"},
+		{field: "PlanID", name: "planId"},
+		{field: "Source", name: "source"},
+		{field: "SecretBrokerSessionID", name: "secretBrokerSessionId", omitempty: true},
+		{field: "NetworkProxySessionID", name: "networkProxySessionId", omitempty: true},
+		{field: "PolicySnapshot", name: "policySnapshot", omitempty: true},
+		{field: "Status", name: "status", omitempty: true},
+		{field: "WarningCode", name: "warningCode", omitempty: true},
+		{field: "ReasonCode", name: "reasonCode", omitempty: true},
+	})
+
+	assertCredentialProxyJSONTags(t, reflect.TypeOf(SandboxCredentialProxyBindingMetadata{}), []credentialProxyJSONTagExpectation{
+		{field: "ID", name: "id"},
+		{field: "PlanID", name: "planId", omitempty: true},
+		{field: "SessionID", name: "sessionId", omitempty: true},
+		{field: "SecretID", name: "secretId"},
+		{field: "DeliveryMode", name: "deliveryMode"},
+		{field: "RequestCategory", name: "requestCategory", omitempty: true},
+		{field: "DestinationCategory", name: "destinationCategory", omitempty: true},
+		{field: "Outcome", name: "outcome", omitempty: true},
+		{field: "Status", name: "status", omitempty: true},
+		{field: "ReasonCode", name: "reasonCode", omitempty: true},
+	})
+}
+
+func TestCredentialProxyDefaultMetadataOmitsOptionalJSONFields(t *testing.T) {
+	plan := mustMarshalObject(t, SandboxCredentialProxyPlanMetadata{})
+	assertObjectKeys(t, plan, []string{"id", "source"}, []string{
+		"secretBrokerSessionId",
+		"networkProxySessionId",
+		"policySnapshot",
+		"bindingCount",
+		"mode",
+		"status",
+	})
+
+	session := mustMarshalObject(t, SandboxCredentialProxySessionMetadata{})
+	assertObjectKeys(t, session, []string{"id", "planId", "source"}, []string{
+		"secretBrokerSessionId",
+		"networkProxySessionId",
+		"policySnapshot",
+		"status",
+		"warningCode",
+		"reasonCode",
+	})
+
+	binding := mustMarshalObject(t, SandboxCredentialProxyBindingMetadata{})
+	assertObjectKeys(t, binding, []string{"id", "secretId", "deliveryMode"}, []string{
+		"planId",
+		"sessionId",
+		"requestCategory",
+		"destinationCategory",
+		"outcome",
+		"status",
+		"reasonCode",
+	})
+}
+
+func TestCredentialProxyJSONEnumValuesSerializeAsExpectedStrings(t *testing.T) {
+	plan := mustMarshalObject(t, SandboxCredentialProxyPlanMetadata{
+		ID:     "credential-plan-01",
+		Source: SandboxCredentialProxySourceFactory,
+		Mode:   SandboxCredentialProxyModeSecretBrokerReference,
+		Status: SandboxCredentialProxyStatusReady,
+	})
+	assertCredentialProxyJSONValue(t, plan, "source", "factory")
+	assertCredentialProxyJSONValue(t, plan, "mode", "secret_broker_reference")
+	assertCredentialProxyJSONValue(t, plan, "status", "ready")
+
+	session := mustMarshalObject(t, SandboxCredentialProxySessionMetadata{
+		ID:          "credential-session-01",
+		PlanID:      "credential-plan-01",
+		Source:      SandboxCredentialProxySourceWorker,
+		Status:      SandboxCredentialProxyStatusFailed,
+		WarningCode: SandboxCredentialProxyWarningBindingOmitted,
+		ReasonCode:  SandboxCredentialProxyReasonNetworkProxyUnavailable,
+	})
+	assertCredentialProxyJSONValue(t, session, "source", "worker")
+	assertCredentialProxyJSONValue(t, session, "status", "failed")
+	assertCredentialProxyJSONValue(t, session, "warningCode", "binding_omitted")
+	assertCredentialProxyJSONValue(t, session, "reasonCode", "network_proxy_unavailable")
+
+	binding := mustMarshalObject(t, SandboxCredentialProxyBindingMetadata{
+		ID:                  "credential-binding-01",
+		SecretID:            "secret-01",
+		DeliveryMode:        SandboxCredentialProxyDeliveryModeFileTmpfs,
+		RequestCategory:     SandboxCredentialProxyRequestArtifactSync,
+		DestinationCategory: SandboxNetworkPolicyDestinationMetadataService,
+		Outcome:             SandboxCredentialProxyBindingOutcomeAuditOnly,
+		Status:              SandboxCredentialProxyStatusSkipped,
+		ReasonCode:          SandboxCredentialProxyReasonDestinationCategorySkipped,
+	})
+	assertCredentialProxyJSONValue(t, binding, "deliveryMode", "file_tmpfs")
+	assertCredentialProxyJSONValue(t, binding, "requestCategory", "artifact_sync")
+	assertCredentialProxyJSONValue(t, binding, "destinationCategory", "metadata_service")
+	assertCredentialProxyJSONValue(t, binding, "outcome", "audit_only")
+	assertCredentialProxyJSONValue(t, binding, "status", "skipped")
+	assertCredentialProxyJSONValue(t, binding, "reasonCode", "destination_category_skipped")
+}
+
+func TestCredentialProxySerializedMetadataContainsNoUnsafeRawFieldNames(t *testing.T) {
+	samples := []struct {
+		name  string
+		value any
+	}{
+		{
+			name: "plan",
+			value: SandboxCredentialProxyPlanMetadata{
+				ID:                    "credential-plan-01",
+				Source:                SandboxCredentialProxySourceRun,
+				SecretBrokerSessionID: "broker-session-01",
+				NetworkProxySessionID: "network-proxy-session-01",
+				PolicySnapshot: &SandboxNetworkPolicySnapshotIdentity{
+					ID:        "policy-snapshot-01",
+					Version:   "v1",
+					Preset:    SandboxNetworkPolicyPresetAllowListed,
+					RuleSetID: "rules-01",
+				},
+				BindingCount: 1,
+				Mode:         SandboxCredentialProxyModeBrokeredNetworkReference,
+				Status:       SandboxCredentialProxyStatusActive,
+			},
+		},
+		{
+			name: "session",
+			value: SandboxCredentialProxySessionMetadata{
+				ID:                    "credential-session-01",
+				PlanID:                "credential-plan-01",
+				Source:                SandboxCredentialProxySourceAuto,
+				SecretBrokerSessionID: "broker-session-01",
+				NetworkProxySessionID: "network-proxy-session-01",
+				PolicySnapshot:        &SandboxNetworkPolicySnapshotIdentity{ID: "policy-snapshot-01"},
+				Status:                SandboxCredentialProxyStatusCompleted,
+				WarningCode:           SandboxCredentialProxyWarningUnsupportedDeliveryMode,
+				ReasonCode:            SandboxCredentialProxyReasonDeliveryModeUnsupported,
+			},
+		},
+		{
+			name: "binding",
+			value: SandboxCredentialProxyBindingMetadata{
+				ID:                  "credential-binding-01",
+				PlanID:              "credential-plan-01",
+				SessionID:           "credential-session-01",
+				SecretID:            "secret-01",
+				DeliveryMode:        SandboxCredentialProxyDeliveryModeSSHAgent,
+				RequestCategory:     SandboxCredentialProxyRequestSourceControl,
+				DestinationCategory: SandboxNetworkPolicyDestinationPublicInternet,
+				Outcome:             SandboxCredentialProxyBindingOutcomeBound,
+				Status:              SandboxCredentialProxyStatusReady,
+				ReasonCode:          SandboxCredentialProxyReasonRequested,
+			},
+		},
+	}
+
+	for _, tt := range samples {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.value)
+			if err != nil {
+				t.Fatalf("marshal failed: %v", err)
+			}
+			var decoded any
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatalf("unmarshal failed: %v", err)
+			}
+			assertCredentialProxyJSONKeysExcludeUnsafeRawFields(t, decoded, "$")
+		})
+	}
+}
+
 func TestCredentialProxyContractsExposeNoRawValueFields(t *testing.T) {
 	contractTypes := []reflect.Type{
 		reflect.TypeOf(SandboxCredentialProxyPlanMetadata{}),
@@ -231,9 +414,11 @@ func forbiddenCredentialProxyRawFieldNames() []string {
 		"port",
 		"url",
 		"uri",
+		"header",
 		"headers",
 		"body",
 		"token",
+		"credential",
 		"environment",
 		"localPath",
 		"remotePath",
@@ -254,6 +439,7 @@ func forbiddenCredentialProxyRawFieldNameFragments() []string {
 		"header",
 		"body",
 		"token",
+		"credential",
 		"environment",
 		"localpath",
 		"remotepath",
@@ -261,5 +447,79 @@ func forbiddenCredentialProxyRawFieldNameFragments() []string {
 		"credentialvalue",
 		"secretvalue",
 		"raw",
+	}
+}
+
+type credentialProxyJSONTagExpectation struct {
+	field     string
+	name      string
+	omitempty bool
+}
+
+func assertCredentialProxyJSONTags(t *testing.T, typ reflect.Type, expectations []credentialProxyJSONTagExpectation) {
+	t.Helper()
+
+	if typ.NumField() != len(expectations) {
+		t.Fatalf("%s field count = %d, want %d", typ.Name(), typ.NumField(), len(expectations))
+	}
+
+	expectedFields := make(map[string]struct{}, len(expectations))
+	for _, expectation := range expectations {
+		expectedFields[expectation.field] = struct{}{}
+
+		field, ok := typ.FieldByName(expectation.field)
+		if !ok {
+			t.Fatalf("%s missing expected field %s", typ.Name(), expectation.field)
+		}
+		tag := field.Tag.Get("json")
+		parts := strings.Split(tag, ",")
+		if parts[0] != expectation.name {
+			t.Fatalf("%s.%s json name = %q, want %q", typ.Name(), expectation.field, parts[0], expectation.name)
+		}
+
+		gotOmitEmpty := false
+		for _, option := range parts[1:] {
+			if option == "omitempty" {
+				gotOmitEmpty = true
+			}
+		}
+		if gotOmitEmpty != expectation.omitempty {
+			t.Fatalf("%s.%s omitempty = %t, want %t", typ.Name(), expectation.field, gotOmitEmpty, expectation.omitempty)
+		}
+	}
+
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if _, ok := expectedFields[field.Name]; !ok {
+			t.Fatalf("%s has unlocked JSON field %s with tag %q", typ.Name(), field.Name, field.Tag.Get("json"))
+		}
+	}
+}
+
+func assertCredentialProxyJSONValue(t *testing.T, object map[string]any, key, want string) {
+	t.Helper()
+
+	if got := object[key]; got != want {
+		t.Fatalf("%s = %#v, want %q", key, got, want)
+	}
+}
+
+func assertCredentialProxyJSONKeysExcludeUnsafeRawFields(t *testing.T, value any, path string) {
+	t.Helper()
+
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			for _, forbidden := range forbiddenCredentialProxyRawFieldNames() {
+				if strings.EqualFold(key, forbidden) {
+					t.Fatalf("%s contains unsafe raw field name %q", path, key)
+				}
+			}
+			assertCredentialProxyJSONKeysExcludeUnsafeRawFields(t, child, path+"."+key)
+		}
+	case []any:
+		for _, child := range typed {
+			assertCredentialProxyJSONKeysExcludeUnsafeRawFields(t, child, path+"[]")
+		}
 	}
 }
