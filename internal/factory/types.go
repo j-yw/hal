@@ -71,6 +71,16 @@ const (
 	RunSecretSourceEnv = "env"
 )
 
+// Secret broker delivery mode values are durable metadata only. They mirror the
+// sandbox security mode contract without implying that delivery is implemented.
+const (
+	SecretBrokerDeliveryModeEnv            = sandbox.SandboxSecretModeEnv
+	SecretBrokerDeliveryModeFileTmpfs      = sandbox.SandboxSecretModeFileTmpfs
+	SecretBrokerDeliveryModeSSHAgent       = sandbox.SandboxSecretModeSSHAgent
+	SecretBrokerDeliveryModeHTTPProxy      = sandbox.SandboxSecretModeHTTPProxy
+	SecretBrokerDeliveryModeLegacyAuthSync = sandbox.SandboxSecretModeLegacyAuthSync
+)
+
 // Failure category values.
 const (
 	FailureCategorySetup        = "setup"

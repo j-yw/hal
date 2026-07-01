@@ -10,16 +10,19 @@ import (
 // factory run. ResolvedSecrets carry raw values and must only be passed to the
 // live broker; returned session metadata is safe to persist.
 type SecretBrokerSessionRequest struct {
-	ID              string
-	RequestedInputs []RunSecretInput
-	ResolvedSecrets []ResolvedRunSecret
+	ID                     string
+	RequestedInputs        []RunSecretInput
+	ResolvedSecrets        []ResolvedRunSecret
+	RequestedDeliveryModes []string
+	ActiveDeliveryModes    []string
 }
 
 // SecretBrokerSessionMetadata is the durable, redaction-safe description of an
 // in-memory broker session.
 type SecretBrokerSessionMetadata struct {
-	ID      string                       `json:"id"`
-	Secrets []SecretBrokerSecretMetadata `json:"secrets,omitempty"`
+	ID            string                            `json:"id"`
+	Secrets       []SecretBrokerSecretMetadata      `json:"secrets,omitempty"`
+	DeliveryModes *SecretBrokerDeliveryModeMetadata `json:"deliveryModes,omitempty"`
 }
 
 // SecretBrokerSecretMetadata identifies one secret without carrying its value.
@@ -103,10 +106,23 @@ func (b *InMemorySecretBroker) CreateSession(request SecretBrokerSessionRequest)
 		}
 	}
 
+	var deliveryModes *SecretBrokerDeliveryModeMetadata
+	if len(request.RequestedDeliveryModes) > 0 || len(request.ActiveDeliveryModes) > 0 {
+		validatedDeliveryModes, err := ValidateSecretBrokerDeliveryModes(SecretBrokerDeliveryModeValidationRequest{
+			RequestedModes: request.RequestedDeliveryModes,
+			ActiveModes:    request.ActiveDeliveryModes,
+		})
+		if err != nil {
+			return SecretBrokerSessionMetadata{}, err
+		}
+		deliveryModes = &validatedDeliveryModes
+	}
+
 	session := &secretBrokerSession{
 		metadata: SecretBrokerSessionMetadata{
-			ID:      sessionID,
-			Secrets: cloneSecretBrokerSecretMetadata(builder.secrets),
+			ID:            sessionID,
+			Secrets:       cloneSecretBrokerSecretMetadata(builder.secrets),
+			DeliveryModes: cloneSecretBrokerDeliveryModeMetadata(deliveryModes),
 		},
 		byID:   builder.byID,
 		byName: builder.byName,
@@ -298,8 +314,9 @@ func secretBrokerSecretID(source string, name string) string {
 
 func cloneSecretBrokerSessionMetadata(metadata SecretBrokerSessionMetadata) SecretBrokerSessionMetadata {
 	return SecretBrokerSessionMetadata{
-		ID:      metadata.ID,
-		Secrets: cloneSecretBrokerSecretMetadata(metadata.Secrets),
+		ID:            metadata.ID,
+		Secrets:       cloneSecretBrokerSecretMetadata(metadata.Secrets),
+		DeliveryModes: cloneSecretBrokerDeliveryModeMetadata(metadata.DeliveryModes),
 	}
 }
 

@@ -42,6 +42,7 @@
 - Network policy foundation contracts belong in `internal/sandbox/network_policy.go` as data-only typed presets, rules, requested/effective intent, enforcement capability, result, and warning metadata; keep validation, evaluation, enforcement, command wiring, runtime adapters, providers, and workers out of this base contract layer.
 - Network policy validation belongs in `internal/sandbox/network_policy_validation.go`; return sanitized validation codes and data-decision metadata only, omit raw rule values, and do not attach enforcement/capability claims from validation.
 - In-memory secret broker session foundations belong in `internal/factory/secret_broker.go`; expose only `SecretBrokerSessionMetadata`/`SecretBrokerSecretMetadata` as durable JSON-safe types, keep raw `ResolvedRunSecret.Value` data in unexported live broker maps, and discard it through explicit `CloseSession`/`DiscardSession`.
+- Secret broker delivery mode validation belongs in `internal/factory/secret_broker_delivery.go`; support only env/file_tmpfs/ssh_agent/http_proxy/legacy_auth_sync metadata, return sanitized field/index errors, and keep real HTTP proxy, tmpfs file, SSH agent, credential provider, and sandbox injection behavior out of this metadata-only layer.
 
 ## Patterns from phase21-workspace-syncout-apply (2026-07-01)
 
