@@ -24,43 +24,49 @@ import (
 )
 
 type runSandboxOptions struct {
-	Engine             string
-	EngineChanged      bool
-	IterationsFlag     int
-	IterationsChanged  bool
-	Base               string
-	BaseChanged        bool
-	Retries            int
-	RetriesChanged     bool
-	RetryDelay         time.Duration
-	RetryDelayChanged  bool
-	Timeout            time.Duration
-	TimeoutChanged     bool
-	DryRun             bool
-	DryRunChanged      bool
-	Story              string
-	StoryChanged       bool
-	JSON               bool
-	JSONChanged        bool
-	SandboxName        string
-	SandboxNameChanged bool
+	Engine                string
+	EngineChanged         bool
+	IterationsFlag        int
+	IterationsChanged     bool
+	Base                  string
+	BaseChanged           bool
+	Retries               int
+	RetriesChanged        bool
+	RetryDelay            time.Duration
+	RetryDelayChanged     bool
+	Timeout               time.Duration
+	TimeoutChanged        bool
+	DryRun                bool
+	DryRunChanged         bool
+	Story                 string
+	StoryChanged          bool
+	JSON                  bool
+	JSONChanged           bool
+	SandboxName           string
+	SandboxNameChanged    bool
+	SandboxHostID         string
+	SandboxHostChanged    bool
+	SandboxRuntime        string
+	SandboxRuntimeChanged bool
 }
 
 type runSandboxRequest struct {
-	ExecutionID   string
-	JSON          bool
-	Iterations    int
-	SandboxName   string
-	ProjectDir    string
-	WorkDir       string
-	RepoRemote    string
-	BaseBranch    string
-	RunBranch     string
-	RemoteCommand []string
-	Flags         runSandboxRunFlags
-	Workspace     *sandbox.SandboxWorkspace
-	WorkspacePlan *sandboxworkspace.Plan
-	Security      sandbox.SecurityEvaluationRequest
+	ExecutionID    string
+	JSON           bool
+	Iterations     int
+	SandboxName    string
+	SandboxHostID  string
+	SandboxRuntime string
+	ProjectDir     string
+	WorkDir        string
+	RepoRemote     string
+	BaseBranch     string
+	RunBranch      string
+	RemoteCommand  []string
+	Flags          runSandboxRunFlags
+	Workspace      *sandbox.SandboxWorkspace
+	WorkspacePlan  *sandboxworkspace.Plan
+	Security       sandbox.SecurityEvaluationRequest
 }
 
 type runSandboxExecutionResult struct {
@@ -176,6 +182,15 @@ func parseRunSandboxRequest(args []string, opts runSandboxOptions) (runSandboxRe
 	if opts.EngineChanged && strings.TrimSpace(opts.Engine) == "" {
 		return runSandboxRequest{}, fmt.Errorf("--engine must not be empty")
 	}
+	targetFlags, err := parseSandboxTargetFlagValues(sandboxTargetFlagValues{
+		HostID:         opts.SandboxHostID,
+		HostChanged:    opts.SandboxHostChanged,
+		RuntimeDriver:  opts.SandboxRuntime,
+		RuntimeChanged: opts.SandboxRuntimeChanged,
+	})
+	if err != nil {
+		return runSandboxRequest{}, err
+	}
 
 	sandboxName := explicitSandboxName
 	if positionalSandboxName != "" {
@@ -203,11 +218,13 @@ func parseRunSandboxRequest(args []string, opts runSandboxOptions) (runSandboxRe
 		JSONChanged:          opts.JSONChanged,
 	}
 	req := runSandboxRequest{
-		JSON:        opts.JSON,
-		Iterations:  iterations,
-		SandboxName: sandboxName,
-		Flags:       flags,
-		Security:    runSandboxSecurityRequest(),
+		JSON:           opts.JSON,
+		Iterations:     iterations,
+		SandboxName:    sandboxName,
+		SandboxHostID:  targetFlags.HostID,
+		SandboxRuntime: targetFlags.RuntimeDriver,
+		Flags:          flags,
+		Security:       runSandboxSecurityRequest(),
 	}
 	req.RemoteCommand = buildRunSandboxRemoteCommand(req)
 	return req, nil

@@ -47,6 +47,8 @@ type factorySandboxAuthFile struct {
 type factorySandboxExecutorRequest struct {
 	ProjectDir          string
 	SandboxName         string
+	SandboxHostID       string
+	SandboxRuntime      string
 	RunRecord           factory.RunRecord
 	ResolvedSecrets     []factory.ResolvedRunSecret
 	RemoteAuto          factoryRunAutoRequest

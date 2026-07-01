@@ -47,6 +47,7 @@
 - Unconstrained `sandboxtarget.Select` preserves legacy resolution through fakeable `CachedState` callbacks: explicit sandbox load first, exactly one running sandbox as the default fallback, and `ProvisioningPlan` for command-layer create paths; use `RuntimeForSandbox` to keep missing runtime metadata on SSH-machine compatibility.
 - When `sandboxtarget.Select` attaches selected metadata to a returned `sandbox.SandboxState`, copy cached `SandboxHost` records before assignment and merge requested runtime driver/isolation constraints into existing durable runtime metadata so runtime ID, image, and worker ID are preserved.
 - Runtime driver resolution in `cmd/sandbox_runtime_compat.go` must consume the already-selected `sandboxruntime.Target` only: keep default run/auto/factory execution limited to missing/SSH-machine compatibility or explicit `rootless_podman`, and fail unsupported explicit drivers such as `microvm` or worker-only driver strings instead of scanning hosts or downgrading.
+- Target-selection CLI flags belong in `cmd` on sandbox-capable entrypoints only: `--sandbox-host` and `--sandbox-runtime` parse into host-side request fields, validate runtime values through root `sandboxruntime` constants, keep help text scoped to cached target selection, and stay out of remote `hal run`/`hal auto` command builders.
 
 ## Patterns from phase16-runtime-inspection (2026-07-01)
 

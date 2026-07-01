@@ -21,50 +21,56 @@ import (
 )
 
 type autoSandboxOptions struct {
-	DryRun              bool
-	DryRunChanged       bool
-	Resume              bool
-	ResumeChanged       bool
-	NoCI                bool
-	NoCIChanged         bool
-	SkipPR              bool
-	SkipPRChanged       bool
-	NoReview            bool
-	NoReviewChanged     bool
-	Mode                string
-	ModeChanged         bool
-	ReviewStreak        int
-	ReviewStreakChanged bool
-	ReviewMax           int
-	ReviewMaxChanged    bool
-	Report              string
-	ReportChanged       bool
-	Engine              string
-	EngineChanged       bool
-	Base                string
-	BaseChanged         bool
-	JSON                bool
-	JSONChanged         bool
-	SandboxName         string
-	SandboxNameChanged  bool
+	DryRun                bool
+	DryRunChanged         bool
+	Resume                bool
+	ResumeChanged         bool
+	NoCI                  bool
+	NoCIChanged           bool
+	SkipPR                bool
+	SkipPRChanged         bool
+	NoReview              bool
+	NoReviewChanged       bool
+	Mode                  string
+	ModeChanged           bool
+	ReviewStreak          int
+	ReviewStreakChanged   bool
+	ReviewMax             int
+	ReviewMaxChanged      bool
+	Report                string
+	ReportChanged         bool
+	Engine                string
+	EngineChanged         bool
+	Base                  string
+	BaseChanged           bool
+	JSON                  bool
+	JSONChanged           bool
+	SandboxName           string
+	SandboxNameChanged    bool
+	SandboxHostID         string
+	SandboxHostChanged    bool
+	SandboxRuntime        string
+	SandboxRuntimeChanged bool
 }
 
 type autoSandboxRequest struct {
-	ExecutionID   string
-	JSON          bool
-	Args          []string
-	SandboxName   string
-	ProjectDir    string
-	WorkDir       string
-	RepoRemote    string
-	BaseBranch    string
-	RunBranch     string
-	RemoteCommand []string
-	Env           map[string]string
-	Flags         autoSandboxOptions
-	Workspace     *sandbox.SandboxWorkspace
-	WorkspacePlan *sandboxworkspace.Plan
-	Security      sandbox.SecurityEvaluationRequest
+	ExecutionID    string
+	JSON           bool
+	Args           []string
+	SandboxName    string
+	SandboxHostID  string
+	SandboxRuntime string
+	ProjectDir     string
+	WorkDir        string
+	RepoRemote     string
+	BaseBranch     string
+	RunBranch      string
+	RemoteCommand  []string
+	Env            map[string]string
+	Flags          autoSandboxOptions
+	Workspace      *sandbox.SandboxWorkspace
+	WorkspacePlan  *sandboxworkspace.Plan
+	Security       sandbox.SecurityEvaluationRequest
 }
 
 type autoSandboxExecutionResult struct {
@@ -137,13 +143,24 @@ func parseAutoSandboxRequest(args []string, opts autoSandboxOptions) (autoSandbo
 	if opts.Resume {
 		return autoSandboxRequest{}, fmt.Errorf("hal auto --sandbox --resume is not supported yet; resume state path rewriting is required first")
 	}
+	targetFlags, err := parseSandboxTargetFlagValues(sandboxTargetFlagValues{
+		HostID:         opts.SandboxHostID,
+		HostChanged:    opts.SandboxHostChanged,
+		RuntimeDriver:  opts.SandboxRuntime,
+		RuntimeChanged: opts.SandboxRuntimeChanged,
+	})
+	if err != nil {
+		return autoSandboxRequest{}, err
+	}
 
 	req := autoSandboxRequest{
-		JSON:        opts.JSON,
-		Args:        append([]string(nil), args...),
-		SandboxName: strings.TrimSpace(opts.SandboxName),
-		Flags:       opts,
-		Security:    runSandboxSecurityRequest(),
+		JSON:           opts.JSON,
+		Args:           append([]string(nil), args...),
+		SandboxName:    strings.TrimSpace(opts.SandboxName),
+		SandboxHostID:  targetFlags.HostID,
+		SandboxRuntime: targetFlags.RuntimeDriver,
+		Flags:          opts,
+		Security:       runSandboxSecurityRequest(),
 	}
 	req.RemoteCommand = buildAutoSandboxRemoteCommand(req)
 	return req, nil

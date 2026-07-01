@@ -50,6 +50,8 @@ var factoryRunBaseFlag string
 var factoryRunSecretEnvFlags []string
 var factoryRunJSONFlag bool
 var factoryRunSandboxFlag bool
+var factoryRunSandboxHostFlag string
+var factoryRunSandboxRuntimeFlag string
 var factoryOpenExecFlag bool
 var factoryOpenJSONFlag bool
 
@@ -93,7 +95,8 @@ factory-run-v1 output.`,
   hal factory run --report .hal/reports/analysis.md
   hal factory run .hal/prd-feature.md --secret-env GITHUB_TOKEN
   hal factory run .hal/prd-feature.md --base main --json
-  hal factory run .hal/prd-feature.md --sandbox --base main`,
+  hal factory run .hal/prd-feature.md --sandbox --base main
+  hal factory run .hal/prd-feature.md --sandbox --base main --sandbox-host worker-1`,
 	RunE: runFactoryRun,
 }
 
@@ -161,6 +164,8 @@ func init() {
 	factoryRunCmd.Flags().StringVar(&factoryRunBaseFlag, "base", "", "Target base branch for follow-up review or CI")
 	factoryRunCmd.Flags().StringArrayVar(&factoryRunSecretEnvFlags, "secret-env", nil, "Required environment variable secret for the run (repeatable)")
 	factoryRunCmd.Flags().BoolVar(&factoryRunSandboxFlag, "sandbox", false, "Run the factory executor in a managed sandbox")
+	factoryRunCmd.Flags().StringVar(&factoryRunSandboxHostFlag, sandboxHostFlagName, "", "Cached sandbox host ID for target selection")
+	factoryRunCmd.Flags().StringVar(&factoryRunSandboxRuntimeFlag, sandboxRuntimeFlagName, "", "Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)")
 	factoryRunCmd.Flags().BoolVar(&factoryRunJSONFlag, "json", false, "Output machine-readable JSON (factory-run-v1 contract)")
 	factoryListCmd.Flags().BoolVar(&factoryListJSONFlag, "json", false, "Output machine-readable JSON (factory-list-v1 contract)")
 	factoryStatusCmd.Flags().BoolVar(&factoryStatusJSONFlag, "json", false, "Output machine-readable JSON (factory-status-v1 contract)")
@@ -281,12 +286,14 @@ var defaultFactoryRunDeps = factoryRunDeps{
 }
 
 type factoryRunRequest struct {
-	MarkdownPath string
-	ReportPath   string
-	BaseBranch   string
-	Sandbox      bool
-	JSON         bool
-	Secrets      []factory.RunSecretInput
+	MarkdownPath   string
+	ReportPath     string
+	BaseBranch     string
+	Sandbox        bool
+	SandboxHostID  string
+	SandboxRuntime string
+	JSON           bool
+	Secrets        []factory.RunSecretInput
 
 	ResolvedSecrets []factory.ResolvedRunSecret
 }
@@ -628,6 +635,8 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 			RunRecord:           runningRecord,
 			ResolvedSecrets:     req.ResolvedSecrets,
 			RemoteAuto:          remoteAuto,
+			SandboxHostID:       req.SandboxHostID,
+			SandboxRuntime:      req.SandboxRuntime,
 			RemoteOutput:        remoteOutput,
 			DeferSuccessCleanup: factoryRunDefersSandboxSuccessCleanup(policy),
 			BeforeCleanup: func(ctx context.Context, record factory.RunRecord) error {
@@ -3945,6 +3954,10 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 	secretEnv := append([]string(nil), factoryRunSecretEnvFlags...)
 	jsonMode := factoryRunJSONFlag
 	sandboxMode := factoryRunSandboxFlag
+	sandboxHost := factoryRunSandboxHostFlag
+	sandboxHostChanged := strings.TrimSpace(factoryRunSandboxHostFlag) != ""
+	sandboxRuntime := factoryRunSandboxRuntimeFlag
+	sandboxRuntimeChanged := strings.TrimSpace(factoryRunSandboxRuntimeFlag) != ""
 
 	if cmd != nil {
 		if cmd.Flags().Lookup("report") != nil {
@@ -3982,9 +3995,30 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 			}
 			sandboxMode = value
 		}
+		if cmd.Flags().Lookup(sandboxHostFlagName) != nil {
+			value, err := cmd.Flags().GetString(sandboxHostFlagName)
+			if err != nil {
+				return factoryRunRequest{}, err
+			}
+			sandboxHost = value
+			sandboxHostChanged = cmd.Flags().Changed(sandboxHostFlagName)
+		}
+		if cmd.Flags().Lookup(sandboxRuntimeFlagName) != nil {
+			value, err := cmd.Flags().GetString(sandboxRuntimeFlagName)
+			if err != nil {
+				return factoryRunRequest{}, err
+			}
+			sandboxRuntime = value
+			sandboxRuntimeChanged = cmd.Flags().Changed(sandboxRuntimeFlagName)
+		}
 	}
 
-	req, err := parseFactoryRunRequest(args, reportPath, baseBranch, jsonMode, sandboxMode)
+	req, err := parseFactoryRunRequestWithTarget(args, reportPath, baseBranch, jsonMode, sandboxMode, sandboxTargetFlagValues{
+		HostID:         sandboxHost,
+		HostChanged:    sandboxHostChanged,
+		RuntimeDriver:  sandboxRuntime,
+		RuntimeChanged: sandboxRuntimeChanged,
+	})
 	if err != nil {
 		return factoryRunRequest{}, exitWithCode(cmd, ExitCodeValidation, err)
 	}
@@ -3996,6 +4030,10 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 }
 
 func parseFactoryRunRequest(args []string, reportPath, baseBranch string, jsonMode bool, sandboxMode bool) (factoryRunRequest, error) {
+	return parseFactoryRunRequestWithTarget(args, reportPath, baseBranch, jsonMode, sandboxMode, sandboxTargetFlagValues{})
+}
+
+func parseFactoryRunRequestWithTarget(args []string, reportPath, baseBranch string, jsonMode bool, sandboxMode bool, targetFlags sandboxTargetFlagValues) (factoryRunRequest, error) {
 	if len(args) > 1 {
 		return factoryRunRequest{}, fmt.Errorf("accepts at most 1 arg(s), received %d", len(args))
 	}
@@ -4005,12 +4043,18 @@ func parseFactoryRunRequest(args []string, reportPath, baseBranch string, jsonMo
 	if sandboxMode && strings.TrimSpace(baseBranch) == "" {
 		return factoryRunRequest{}, fmt.Errorf("--base is required when --sandbox is set")
 	}
+	parsedTargetFlags, err := parseSandboxTargetFlagValues(targetFlags)
+	if err != nil {
+		return factoryRunRequest{}, err
+	}
 
 	req := factoryRunRequest{
-		ReportPath: reportPath,
-		BaseBranch: baseBranch,
-		Sandbox:    sandboxMode,
-		JSON:       jsonMode,
+		ReportPath:     reportPath,
+		BaseBranch:     baseBranch,
+		Sandbox:        sandboxMode,
+		SandboxHostID:  parsedTargetFlags.HostID,
+		SandboxRuntime: parsedTargetFlags.RuntimeDriver,
+		JSON:           jsonMode,
 	}
 	if len(args) == 1 {
 		req.MarkdownPath = args[0]

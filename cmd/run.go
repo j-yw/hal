@@ -37,8 +37,10 @@ var (
 	runJSONFlag bool
 
 	// Sandbox execution
-	runSandboxFlag     bool
-	runSandboxNameFlag string
+	runSandboxFlag        bool
+	runSandboxNameFlag    string
+	runSandboxHostFlag    string
+	runSandboxRuntimeFlag string
 )
 
 // RunResult is the machine-readable output of hal run --json.
@@ -101,6 +103,7 @@ Examples:
   hal run --sandbox                # Run inside a sandbox
   hal run --sandbox 3              # Run 3 iterations inside a sandbox
   hal run --sandbox my-box         # Run inside a named sandbox
+  hal run --sandbox --sandbox-runtime rootless_podman # Request cached runtime metadata
 `,
 	Example: `  hal run
   hal run 5
@@ -110,6 +113,7 @@ Examples:
   hal run --sandbox
   hal run --sandbox 3
   hal run --sandbox my-box
+  hal run --sandbox --sandbox-host worker-1
   hal run --engine codex --base develop`,
 	Args: maxArgsValidation(1),
 	RunE: runRun,
@@ -134,6 +138,8 @@ func init() {
 	runCmd.Flags().BoolVar(&runJSONFlag, "json", false, "Output machine-readable JSON result")
 	runCmd.Flags().BoolVar(&runSandboxFlag, "sandbox", false, "Run inside a sandbox")
 	runCmd.Flags().StringVar(&runSandboxNameFlag, "sandbox-name", "", "Sandbox name for --sandbox execution")
+	runCmd.Flags().StringVar(&runSandboxHostFlag, sandboxHostFlagName, "", "Cached sandbox host ID for target selection")
+	runCmd.Flags().StringVar(&runSandboxRuntimeFlag, sandboxRuntimeFlagName, "", "Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)")
 
 	rootCmd.AddCommand(runCmd)
 }
@@ -175,6 +181,10 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	sandboxMode := runSandboxFlag
 	sandboxName := runSandboxNameFlag
 	sandboxNameChanged := strings.TrimSpace(runSandboxNameFlag) != ""
+	sandboxHost := runSandboxHostFlag
+	sandboxHostChanged := strings.TrimSpace(runSandboxHostFlag) != ""
+	sandboxRuntime := runSandboxRuntimeFlag
+	sandboxRuntimeChanged := strings.TrimSpace(runSandboxRuntimeFlag) != ""
 
 	if cmd != nil {
 		flags := cmd.Flags()
@@ -276,6 +286,36 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 			sandboxName = value
 			sandboxNameChanged = flags.Changed("sandbox-name")
 		}
+
+		if flags.Lookup(sandboxHostFlagName) != nil {
+			value, err := flags.GetString(sandboxHostFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxHost = value
+			sandboxHostChanged = flags.Changed(sandboxHostFlagName)
+		}
+
+		if flags.Lookup(sandboxRuntimeFlagName) != nil {
+			value, err := flags.GetString(sandboxRuntimeFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxRuntime = value
+			sandboxRuntimeChanged = flags.Changed(sandboxRuntimeFlagName)
+		}
+	}
+
+	if _, err := parseSandboxTargetFlagValues(sandboxTargetFlagValues{
+		HostID:         sandboxHost,
+		HostChanged:    sandboxHostChanged,
+		RuntimeDriver:  sandboxRuntime,
+		RuntimeChanged: sandboxRuntimeChanged,
+	}); err != nil {
+		if jsonMode {
+			return outputRunJSONError(out, err.Error())
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
 
 	if sandboxMode {
@@ -284,26 +324,30 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 			ctx = cmd.Context()
 		}
 		return runRunSandboxWithWriter(ctx, cmd, args, runSandboxOptions{
-			Engine:             engineName,
-			EngineChanged:      engineChanged,
-			IterationsFlag:     iterationsFlag,
-			IterationsChanged:  iterationsChanged,
-			Base:               baseFlag,
-			BaseChanged:        baseChanged,
-			Retries:            retries,
-			RetriesChanged:     retriesChanged,
-			RetryDelay:         delay,
-			RetryDelayChanged:  delayChanged,
-			Timeout:            timeoutOverride,
-			TimeoutChanged:     timeoutChanged,
-			DryRun:             dryRun,
-			DryRunChanged:      dryRunChanged,
-			Story:              story,
-			StoryChanged:       storyChanged,
-			JSON:               jsonMode,
-			JSONChanged:        jsonChanged,
-			SandboxName:        sandboxName,
-			SandboxNameChanged: sandboxNameChanged,
+			Engine:                engineName,
+			EngineChanged:         engineChanged,
+			IterationsFlag:        iterationsFlag,
+			IterationsChanged:     iterationsChanged,
+			Base:                  baseFlag,
+			BaseChanged:           baseChanged,
+			Retries:               retries,
+			RetriesChanged:        retriesChanged,
+			RetryDelay:            delay,
+			RetryDelayChanged:     delayChanged,
+			Timeout:               timeoutOverride,
+			TimeoutChanged:        timeoutChanged,
+			DryRun:                dryRun,
+			DryRunChanged:         dryRunChanged,
+			Story:                 story,
+			StoryChanged:          storyChanged,
+			JSON:                  jsonMode,
+			JSONChanged:           jsonChanged,
+			SandboxName:           sandboxName,
+			SandboxNameChanged:    sandboxNameChanged,
+			SandboxHostID:         sandboxHost,
+			SandboxHostChanged:    sandboxHostChanged,
+			SandboxRuntime:        sandboxRuntime,
+			SandboxRuntimeChanged: sandboxRuntimeChanged,
 		}, out, errOut, defaultRunSandboxDeps)
 	}
 

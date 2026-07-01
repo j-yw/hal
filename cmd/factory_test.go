@@ -19,6 +19,7 @@ import (
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/verify"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -378,12 +379,71 @@ func TestParseFactoryRunRequest(t *testing.T) {
 	}
 }
 
+func TestParseFactoryRunRequestWithTargetSelectionFlags(t *testing.T) {
+	req, err := parseFactoryRunRequestWithTarget([]string{".hal/prd-feature.md"}, "", "main", true, true, sandboxTargetFlagValues{
+		HostID:         "worker-1",
+		HostChanged:    true,
+		RuntimeDriver:  sandboxruntime.DriverMicroVM,
+		RuntimeChanged: true,
+	})
+	if err != nil {
+		t.Fatalf("parseFactoryRunRequestWithTarget() unexpected error: %v", err)
+	}
+	if req.SandboxHostID != "worker-1" {
+		t.Fatalf("SandboxHostID = %q, want worker-1", req.SandboxHostID)
+	}
+	if req.SandboxRuntime != sandboxruntime.DriverMicroVM {
+		t.Fatalf("SandboxRuntime = %q, want %q", req.SandboxRuntime, sandboxruntime.DriverMicroVM)
+	}
+
+	tests := []struct {
+		name    string
+		target  sandboxTargetFlagValues
+		wantErr string
+	}{
+		{
+			name: "empty host",
+			target: sandboxTargetFlagValues{
+				HostChanged: true,
+			},
+			wantErr: "--sandbox-host must not be empty",
+		},
+		{
+			name: "empty runtime",
+			target: sandboxTargetFlagValues{
+				RuntimeChanged: true,
+			},
+			wantErr: "--sandbox-runtime must not be empty",
+		},
+		{
+			name: "unknown runtime",
+			target: sandboxTargetFlagValues{
+				RuntimeDriver:  "worker_only",
+				RuntimeChanged: true,
+			},
+			wantErr: "--sandbox-runtime must be one of ssh_machine, rootless_podman, or microvm",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseFactoryRunRequestWithTarget([]string{".hal/prd-feature.md"}, "", "main", false, true, tt.target)
+			if err == nil {
+				t.Fatal("parseFactoryRunRequestWithTarget() error = nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("parseFactoryRunRequestWithTarget() error = %q, want %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestFactoryRunCommandRegisteredWithInputFlags(t *testing.T) {
 	cmd, err := commandAtPath(Root(), "factory", "run")
 	if err != nil {
 		t.Fatalf("factory run command missing: %v", err)
 	}
-	for _, flagName := range []string{"report", "base", "secret-env", "sandbox", "json"} {
+	for _, flagName := range []string{"report", "base", "secret-env", "sandbox", "sandbox-host", "sandbox-runtime", "json"} {
 		if cmd.Flags().Lookup(flagName) == nil {
 			t.Fatalf("factory run should expose --%s flag", flagName)
 		}
@@ -399,6 +459,8 @@ func TestFactoryRunRequestFromCommandParsesSecretEnvFlags(t *testing.T) {
 	cmd.Flags().String("base", "", "")
 	cmd.Flags().StringArray("secret-env", nil, "")
 	cmd.Flags().Bool("sandbox", false, "")
+	cmd.Flags().String("sandbox-host", "", "")
+	cmd.Flags().String("sandbox-runtime", "", "")
 	cmd.Flags().Bool("json", false, "")
 	if err := cmd.Flags().Set("secret-env", "GITHUB_TOKEN"); err != nil {
 		t.Fatalf("Set(secret-env) error: %v", err)
@@ -427,6 +489,8 @@ func TestFactoryRunRequestFromCommandRejectsSecretEnvAssignments(t *testing.T) {
 	cmd.Flags().String("base", "", "")
 	cmd.Flags().StringArray("secret-env", nil, "")
 	cmd.Flags().Bool("sandbox", false, "")
+	cmd.Flags().String("sandbox-host", "", "")
+	cmd.Flags().String("sandbox-runtime", "", "")
 	cmd.Flags().Bool("json", false, "")
 	if err := cmd.Flags().Set("secret-env", "GITHUB_TOKEN=ghp_secret"); err != nil {
 		t.Fatalf("Set(secret-env) error: %v", err)
@@ -438,6 +502,38 @@ func TestFactoryRunRequestFromCommandRejectsSecretEnvAssignments(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "ghp_secret") || strings.Contains(err.Error(), "GITHUB_TOKEN=ghp_secret") {
 		t.Fatalf("error should not echo secret-env value: %v", err)
+	}
+}
+
+func TestFactoryRunRequestFromCommandParsesTargetSelectionFlags(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().Bool("sandbox", false, "")
+	cmd.Flags().String("sandbox-host", "", "")
+	cmd.Flags().String("sandbox-runtime", "", "")
+	cmd.Flags().Bool("json", false, "")
+	for flag, value := range map[string]string{
+		"base":            "main",
+		"sandbox":         "true",
+		"sandbox-host":    "worker-1",
+		"sandbox-runtime": sandboxruntime.DriverRootlessPodman,
+	} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("Set(%s) error: %v", flag, err)
+		}
+	}
+
+	req, err := factoryRunRequestFromCommand(cmd, []string{".hal/prd-feature.md"})
+	if err != nil {
+		t.Fatalf("factoryRunRequestFromCommand() unexpected error: %v", err)
+	}
+	if req.SandboxHostID != "worker-1" {
+		t.Fatalf("SandboxHostID = %q, want worker-1", req.SandboxHostID)
+	}
+	if req.SandboxRuntime != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("SandboxRuntime = %q, want %q", req.SandboxRuntime, sandboxruntime.DriverRootlessPodman)
 	}
 }
 
@@ -533,9 +629,11 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 	sandboxCalled := false
 
 	err := runFactoryRunWithDeps(context.Background(), "/workspace/hal", factoryRunRequest{
-		MarkdownPath: ".hal/prd-feature.md",
-		BaseBranch:   "main",
-		Sandbox:      true,
+		MarkdownPath:   ".hal/prd-feature.md",
+		BaseBranch:     "main",
+		Sandbox:        true,
+		SandboxHostID:  "worker-1",
+		SandboxRuntime: sandboxruntime.DriverRootlessPodman,
 	}, io.Discard, factoryRunDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
 		newRunID:     func() (string, error) { return "run-sandbox-selected", nil },
@@ -561,6 +659,12 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 			}
 			if req.RunRecord.ExecutorMode != factory.ExecutorModeSandbox {
 				t.Fatalf("sandbox executorMode = %q, want %q", req.RunRecord.ExecutorMode, factory.ExecutorModeSandbox)
+			}
+			if req.SandboxHostID != "worker-1" {
+				t.Fatalf("sandbox host ID = %q, want worker-1", req.SandboxHostID)
+			}
+			if req.SandboxRuntime != sandboxruntime.DriverRootlessPodman {
+				t.Fatalf("sandbox runtime = %q, want %q", req.SandboxRuntime, sandboxruntime.DriverRootlessPodman)
 			}
 			wantAuto := factoryRunAutoRequest{
 				Args:       []string{".hal/prd-feature.md"},

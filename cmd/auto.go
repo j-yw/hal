@@ -18,20 +18,22 @@ import (
 )
 
 var (
-	autoDryRunFlag       bool
-	autoResumeFlag       bool
-	autoNoCIFlag         bool
-	autoSkipPRFlag       bool
-	autoNoReviewFlag     bool
-	autoModeFlag         string
-	autoReviewStreakFlag int
-	autoReviewMaxFlag    int
-	autoReportFlag       string
-	autoEngineFlag       string
-	autoBaseFlag         string
-	autoJSONFlag         bool
-	autoSandboxFlag      bool
-	autoSandboxNameFlag  string
+	autoDryRunFlag         bool
+	autoResumeFlag         bool
+	autoNoCIFlag           bool
+	autoSkipPRFlag         bool
+	autoNoReviewFlag       bool
+	autoModeFlag           string
+	autoReviewStreakFlag   int
+	autoReviewMaxFlag      int
+	autoReportFlag         string
+	autoEngineFlag         string
+	autoBaseFlag           string
+	autoJSONFlag           bool
+	autoSandboxFlag        bool
+	autoSandboxNameFlag    string
+	autoSandboxHostFlag    string
+	autoSandboxRuntimeFlag string
 )
 
 const (
@@ -202,7 +204,8 @@ Examples:
   hal auto --resume                  # Continue from last saved state
   hal auto --json                    # Machine-readable result output
   hal auto --sandbox                 # Run inside a sandbox
-  hal auto --sandbox --sandbox-name worker-1 # Run inside a named sandbox`,
+  hal auto --sandbox --sandbox-name worker-1 # Run inside a named sandbox
+  hal auto --sandbox --sandbox-runtime rootless_podman # Request cached runtime metadata`,
 	Example: `  hal auto
   hal auto .hal/prd-feature.md --dry-run
   hal auto --json
@@ -212,6 +215,7 @@ Examples:
   hal auto --review-streak 3 --review-max 15
   hal auto --sandbox
   hal auto --sandbox --sandbox-name worker-1
+  hal auto --sandbox --sandbox-host worker-1
   hal auto --engine codex --base develop`,
 	RunE: runAuto,
 }
@@ -233,6 +237,8 @@ func init() {
 	autoCmd.Flags().BoolVar(&autoJSONFlag, "json", false, "Output machine-readable JSON result")
 	autoCmd.Flags().BoolVar(&autoSandboxFlag, "sandbox", false, "Run inside a sandbox")
 	autoCmd.Flags().StringVar(&autoSandboxNameFlag, "sandbox-name", "", "Sandbox name for --sandbox execution")
+	autoCmd.Flags().StringVar(&autoSandboxHostFlag, sandboxHostFlagName, "", "Cached sandbox host ID for target selection")
+	autoCmd.Flags().StringVar(&autoSandboxRuntimeFlag, sandboxRuntimeFlagName, "", "Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)")
 	rootCmd.AddCommand(autoCmd)
 }
 
@@ -264,6 +270,8 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	jsonMode := autoJSONFlag
 	sandboxMode := autoSandboxFlag
 	sandboxName := autoSandboxNameFlag
+	sandboxHost := autoSandboxHostFlag
+	sandboxRuntime := autoSandboxRuntimeFlag
 
 	dryRunChanged := false
 	resumeChanged := false
@@ -278,6 +286,8 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	baseChanged := false
 	jsonChanged := false
 	sandboxNameChanged := strings.TrimSpace(autoSandboxNameFlag) != ""
+	sandboxHostChanged := strings.TrimSpace(autoSandboxHostFlag) != ""
+	sandboxRuntimeChanged := strings.TrimSpace(autoSandboxRuntimeFlag) != ""
 
 	if cmd != nil {
 		if cmd.Context() != nil {
@@ -397,9 +407,37 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 			sandboxName = value
 			sandboxNameChanged = cmd.Flags().Changed("sandbox-name")
 		}
+		if cmd.Flags().Lookup(sandboxHostFlagName) != nil {
+			value, err := cmd.Flags().GetString(sandboxHostFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxHost = value
+			sandboxHostChanged = cmd.Flags().Changed(sandboxHostFlagName)
+		}
+		if cmd.Flags().Lookup(sandboxRuntimeFlagName) != nil {
+			value, err := cmd.Flags().GetString(sandboxRuntimeFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxRuntime = value
+			sandboxRuntimeChanged = cmd.Flags().Changed(sandboxRuntimeFlagName)
+		}
 	}
 	if skipPRChanged && !noCIChanged {
 		noCI = skipPR
+	}
+	if _, err := parseSandboxTargetFlagValues(sandboxTargetFlagValues{
+		HostID:         sandboxHost,
+		HostChanged:    sandboxHostChanged,
+		RuntimeDriver:  sandboxRuntime,
+		RuntimeChanged: sandboxRuntimeChanged,
+	}); err != nil {
+		if jsonMode {
+			jr := autoFailureResult(autoEntryModeReportDiscovery, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
+			return outputAutoJSON(out, jr)
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
 
 	sourceMarkdown := ""
@@ -420,32 +458,36 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 
 	if sandboxMode {
 		return runAutoSandboxWithWriter(ctx, cmd, args, dir, autoSandboxOptions{
-			DryRun:              dryRun,
-			DryRunChanged:       dryRunChanged,
-			Resume:              resume,
-			ResumeChanged:       resumeChanged,
-			NoCI:                noCI,
-			NoCIChanged:         noCIChanged,
-			SkipPR:              skipPR,
-			SkipPRChanged:       skipPRChanged,
-			NoReview:            noReview,
-			NoReviewChanged:     noReviewChanged,
-			Mode:                mode,
-			ModeChanged:         modeChanged,
-			ReviewStreak:        reviewStreak,
-			ReviewStreakChanged: reviewStreakChanged,
-			ReviewMax:           reviewMax,
-			ReviewMaxChanged:    reviewMaxChanged,
-			Report:              reportPath,
-			ReportChanged:       reportChanged,
-			Engine:              engineName,
-			EngineChanged:       engineChanged,
-			Base:                baseBranch,
-			BaseChanged:         baseChanged,
-			JSON:                jsonMode,
-			JSONChanged:         jsonChanged,
-			SandboxName:         sandboxName,
-			SandboxNameChanged:  sandboxNameChanged,
+			DryRun:                dryRun,
+			DryRunChanged:         dryRunChanged,
+			Resume:                resume,
+			ResumeChanged:         resumeChanged,
+			NoCI:                  noCI,
+			NoCIChanged:           noCIChanged,
+			SkipPR:                skipPR,
+			SkipPRChanged:         skipPRChanged,
+			NoReview:              noReview,
+			NoReviewChanged:       noReviewChanged,
+			Mode:                  mode,
+			ModeChanged:           modeChanged,
+			ReviewStreak:          reviewStreak,
+			ReviewStreakChanged:   reviewStreakChanged,
+			ReviewMax:             reviewMax,
+			ReviewMaxChanged:      reviewMaxChanged,
+			Report:                reportPath,
+			ReportChanged:         reportChanged,
+			Engine:                engineName,
+			EngineChanged:         engineChanged,
+			Base:                  baseBranch,
+			BaseChanged:           baseChanged,
+			JSON:                  jsonMode,
+			JSONChanged:           jsonChanged,
+			SandboxName:           sandboxName,
+			SandboxNameChanged:    sandboxNameChanged,
+			SandboxHostID:         sandboxHost,
+			SandboxHostChanged:    sandboxHostChanged,
+			SandboxRuntime:        sandboxRuntime,
+			SandboxRuntimeChanged: sandboxRuntimeChanged,
 		}, out, errOut, defaultAutoSandboxDeps)
 	}
 

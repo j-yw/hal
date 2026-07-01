@@ -28,6 +28,7 @@ hal factory run [prd-path] [flags]
   hal factory run .hal/prd-feature.md --secret-env GITHUB_TOKEN
   hal factory run .hal/prd-feature.md --base main --json
   hal factory run .hal/prd-feature.md --sandbox --base main
+  hal factory run .hal/prd-feature.md --sandbox --base main --sandbox-host worker-1
 ```
 
 ### Options
@@ -38,6 +39,8 @@ hal factory run [prd-path] [flags]
       --json                     Output machine-readable JSON (factory-run-v1 contract)
       --report string            Start from an analysis report path
       --sandbox                  Run the factory executor in a managed sandbox
+      --sandbox-host string      Cached sandbox host ID for target selection
+      --sandbox-runtime string   Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)
       --secret-env stringArray   Required environment variable secret for the run (repeatable)
 ```
 
