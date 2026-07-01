@@ -44,6 +44,7 @@
 - Worker host durable mapping belongs in `cmd`: convert `internal/sandboxworker` status/capability payloads into `internal/sandbox.SandboxHost` there, keep offline records conservative, and persist security only as requested/enforced durable summaries so `internal/sandboxworker` stays command-agnostic.
 - Offline worker host registration should reuse the command-layer worker metadata mapper and persist through `internal/sandbox.SaveHost`; command tests should isolate the global registry with temporary `HAL_CONFIG_HOME` and human output should summarize local Unix socket endpoints without printing raw socket paths.
 - Live worker host command paths should keep worker access behind fakeable command-layer client factories plus injectable clocks; query worker status/capabilities before persistence, wrap client failures in sanitized `sandboxworker.ClientError`, and do not write durable records when live refresh fails.
+- Human worker host list output should read durable records through `internal/sandbox.ListHosts`, rely on its name-then-ID ordering, and render endpoint summaries such as `local Unix socket` or `<scheme> endpoint` instead of raw socket paths, hosts, or credential-bearing URLs.
 
 ## Patterns from phase14-worker-io (2026-07-01)
 

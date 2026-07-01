@@ -324,6 +324,104 @@ func TestSandboxHostRegisterWorkerLiveFailureDoesNotPersistAndSanitizesDetail(t 
 	}
 }
 
+func TestSandboxHostListEmptyRegistry(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	deps := defaultSandboxHostDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("sandbox host list should not contact worker daemons")
+		return nil, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxHostCommand(deps)
+	cmd.SetArgs([]string{"list"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+
+	if got, want := stdout.String(), "No sandbox hosts registered.\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestSandboxHostListHumanOutputStableAndSafe(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	checkedAt := time.Date(2026, 7, 1, 12, 30, 0, 0, time.UTC)
+	for _, host := range []*sandbox.SandboxHost{
+		{
+			ID:       "worker-b",
+			Name:     "builder",
+			Kind:     sandbox.SandboxHostKindWorker,
+			Endpoint: "unix:///tmp/private/worker-b.sock",
+			Health:   &sandbox.HostHealth{Status: sandboxworker.HealthStatusUnknown},
+		},
+		{
+			ID:                "ssh-1",
+			Name:              "zeta",
+			Kind:              sandbox.SandboxHostKindSSH,
+			Endpoint:          "ssh://deploy:secret@example.com:22/workspace?token=supersecret",
+			SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+			Capacity:          &sandbox.HostCapacity{CPUCores: 4, MemoryMB: 8192, DiskGB: 80},
+			Health:            &sandbox.HostHealth{Status: "degraded", CheckedAt: checkedAt},
+		},
+		{
+			ID:                "worker-a",
+			Name:              "builder",
+			Kind:              sandbox.SandboxHostKindWorker,
+			Endpoint:          "unix:///tmp/private/worker-a.sock",
+			SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman, sandbox.SandboxRuntimeDriverSSHMachine},
+			Capacity:          &sandbox.HostCapacity{MaxConcurrentSandboxes: 2},
+			Health:            &sandbox.HostHealth{Status: sandboxworker.HealthStatusHealthy, CheckedAt: checkedAt},
+		},
+	} {
+		if err := sandbox.SaveHost(host); err != nil {
+			t.Fatalf("SaveHost(%q) error = %v", host.ID, err)
+		}
+	}
+
+	deps := defaultSandboxHostDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("sandbox host list should not contact worker daemons")
+		return nil, nil
+	}
+	cmd, stdout, stderr := newTestSandboxHostCommand(deps)
+	cmd.SetArgs([]string{"list"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+
+	output := stdout.String()
+	for _, want := range []string{
+		"Sandbox hosts (sorted by name, then id):",
+		"NAME", "ID", "KIND", "ENDPOINT", "HEALTH", "RUNTIMES", "CAPACITY",
+		"builder", "worker-a", "worker-b", "zeta", "ssh-1",
+		sandbox.SandboxHostKindWorker, sandbox.SandboxHostKindSSH,
+		"local Unix socket", "ssh endpoint",
+		sandboxworker.HealthStatusHealthy, sandboxworker.HealthStatusUnknown, "degraded",
+		"rootless_podman,ssh_machine", "max 2 sandboxes", "4 CPU, 8192 MiB, 80 GiB disk",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("stdout = %q, want %q", output, want)
+		}
+	}
+
+	workerAIndex := strings.Index(output, "worker-a")
+	workerBIndex := strings.Index(output, "worker-b")
+	sshIndex := strings.Index(output, "ssh-1")
+	if workerAIndex == -1 || workerBIndex == -1 || sshIndex == -1 {
+		t.Fatalf("stdout = %q, want all host ids", output)
+	}
+	if !(workerAIndex < workerBIndex && workerBIndex < sshIndex) {
+		t.Fatalf("host order in stdout = %q, want name then id order", output)
+	}
+	for _, leaked := range []string{"/tmp/private", "deploy:secret", "example.com", "token=supersecret"} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("stdout leaked endpoint detail %q: %q", leaked, output)
+		}
+	}
+}
+
 func newTestSandboxHostCommand(deps sandboxHostDeps) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
 	cmd := newSandboxHostCommand(deps)
 	cmd.SilenceUsage = true

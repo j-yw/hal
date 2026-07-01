@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
@@ -149,7 +150,8 @@ func newSandboxHostListCommand(deps sandboxHostDeps) *cobra.Command {
 		Long: `List durable sandbox host records.
 
 The command renders host registry metadata in stable human-readable output. It
-does not contact worker daemons or runtime providers.`,
+sorts records by host name, then id, and does not contact worker daemons or
+runtime providers.`,
 		Example: `  hal sandbox host list`,
 		Args:    noArgsValidation(),
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -220,9 +222,7 @@ func normalizeSandboxHostDeps(deps sandboxHostDeps) sandboxHostDeps {
 		}
 	}
 	if deps.list == nil {
-		deps.list = func(context.Context, sandboxHostListRequest, io.Writer) error {
-			return sandboxHostNotImplementedError("sandbox host list")
-		}
+		deps.list = runSandboxHostList
 	}
 	if deps.status == nil {
 		deps.status = func(context.Context, sandboxHostStatusRequest, io.Writer) error {
@@ -288,6 +288,113 @@ func runSandboxHostRegisterWorker(ctx context.Context, req sandboxHostRegisterWo
 		fmt.Fprintln(out, ").")
 	}
 	return nil
+}
+
+func runSandboxHostList(_ context.Context, _ sandboxHostListRequest, out io.Writer) error {
+	hosts, err := sandbox.ListHosts()
+	if err != nil {
+		return err
+	}
+	return renderSandboxHostList(out, hosts)
+}
+
+func renderSandboxHostList(out io.Writer, hosts []*sandbox.SandboxHost) error {
+	if out == nil {
+		return nil
+	}
+	if len(hosts) == 0 {
+		_, err := fmt.Fprintln(out, "No sandbox hosts registered.")
+		return err
+	}
+
+	if _, err := fmt.Fprintln(out, "Sandbox hosts (sorted by name, then id):"); err != nil {
+		return err
+	}
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "NAME\tID\tKIND\tENDPOINT\tHEALTH\tRUNTIMES\tCAPACITY"); err != nil {
+		return err
+	}
+	for _, host := range hosts {
+		if host == nil {
+			continue
+		}
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			sandboxHostDisplayValue(host.Name, host.ID),
+			sandboxHostDisplayValue(host.ID, "-"),
+			sandboxHostDisplayValue(host.Kind, "unknown"),
+			sandboxHostEndpointSummary(host.Endpoint),
+			sandboxHostHealthSummary(host.Health),
+			sandboxHostRuntimesSummary(host.SupportedRuntimes),
+			sandboxHostCapacitySummary(host.Capacity),
+		); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
+}
+
+func sandboxHostDisplayValue(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func sandboxHostEndpointSummary(endpoint string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return "none"
+	}
+	lowerEndpoint := strings.ToLower(endpoint)
+	if strings.HasPrefix(lowerEndpoint, "unix://") || strings.HasPrefix(lowerEndpoint, "unix:") {
+		return "local Unix socket"
+	}
+	if index := strings.Index(endpoint, ":"); index > 0 {
+		scheme := strings.ToLower(strings.TrimSpace(endpoint[:index]))
+		if scheme != "" {
+			return scheme + " endpoint"
+		}
+	}
+	return "configured"
+}
+
+func sandboxHostHealthSummary(health *sandbox.HostHealth) string {
+	if health == nil {
+		return sandboxworker.HealthStatusUnknown
+	}
+	return sandboxHostDisplayValue(health.Status, sandboxworker.HealthStatusUnknown)
+}
+
+func sandboxHostRuntimesSummary(runtimes []string) string {
+	runtimes = sortedUniqueStrings(runtimes)
+	if len(runtimes) == 0 {
+		return "none"
+	}
+	return strings.Join(runtimes, ",")
+}
+
+func sandboxHostCapacitySummary(capacity *sandbox.HostCapacity) string {
+	if capacity == nil {
+		return "unknown"
+	}
+	parts := make([]string, 0, 4)
+	if capacity.MaxConcurrentSandboxes > 0 {
+		parts = append(parts, fmt.Sprintf("max %d sandboxes", capacity.MaxConcurrentSandboxes))
+	}
+	if capacity.CPUCores > 0 {
+		parts = append(parts, fmt.Sprintf("%d CPU", capacity.CPUCores))
+	}
+	if capacity.MemoryMB > 0 {
+		parts = append(parts, fmt.Sprintf("%d MiB", capacity.MemoryMB))
+	}
+	if capacity.DiskGB > 0 {
+		parts = append(parts, fmt.Sprintf("%d GiB disk", capacity.DiskGB))
+	}
+	if len(parts) == 0 {
+		return "unknown"
+	}
+	return strings.Join(parts, ", ")
 }
 
 func querySandboxHostWorkerMetadata(ctx context.Context, socketPath string, newWorkerClient func(string) (sandboxHostWorkerClient, error)) (*sandboxworker.Status, *sandboxworker.Capabilities, error) {
