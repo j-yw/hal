@@ -480,6 +480,252 @@ func TestWorkerMicroVMFactorySandboxJSONFailsWithRuntimeUnsupportedClassificatio
 	requireWorkerMicroVMNoUnsafeDetails(t, out.String())
 }
 
+func TestWorkerRootlessRunSandboxJSONMissingEndpointFailsBeforeProvisioning(t *testing.T) {
+	startedAt := time.Date(2026, 7, 1, 7, 20, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+		JSON:                  true,
+		JSONChanged:           true,
+		SandboxHostID:         "worker-1",
+		SandboxHostChanged:    true,
+		SandboxRuntime:        sandboxruntime.DriverRootlessPodman,
+		SandboxRuntimeChanged: true,
+	}, &out, &errOut, runSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "run-worker-rootless-missing-endpoint"
+		},
+		now:        runSandboxTestClock(startedAt, finishedAt),
+		workingDir: func() (string, error) { return projectDir, nil },
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return workerRootlessPlan(projectDir), nil
+		},
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{workerRootlessHostWithEndpoint("")}, nil
+		},
+		listSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("listSandboxes should not run for explicit worker host/runtime endpoint validation")
+			return nil, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			t.Fatal("default sandbox fallback should not run for explicit worker host/runtime endpoint validation")
+			return nil, "", nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			t.Fatal("provision should not run for missing worker endpoint metadata")
+			return nil, nil
+		},
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			t.Fatal("runtime driver should not be constructed for missing worker endpoint metadata")
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runRunSandboxWithWriter() error = %v, want JSON error result", err)
+	}
+	var result RunResult
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
+	requireWorkerEndpointInvalidMessage(t, result.Error, "configured endpoint: none")
+	requireWorkerEndpointNoUnsafeDetails(t, out.String(), errOut.String())
+	if result.OK {
+		t.Fatalf("RunResult.OK = true, want false")
+	}
+	manifest, loadErr := store.LoadManifest("run-worker-rootless-missing-endpoint")
+	if loadErr != nil {
+		t.Fatalf("LoadManifest() error: %v", loadErr)
+	}
+	if manifest.Status != sandboxexecution.StatusFailed {
+		t.Fatalf("manifest.Status = %q, want failed", manifest.Status)
+	}
+}
+
+func TestWorkerRootlessAutoSandboxJSONNonLocalEndpointFailsSafely(t *testing.T) {
+	startedAt := time.Date(2026, 7, 1, 7, 25, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
+		JSON:                  true,
+		JSONChanged:           true,
+		SandboxHostID:         "worker-1",
+		SandboxHostChanged:    true,
+		SandboxRuntime:        sandboxruntime.DriverRootlessPodman,
+		SandboxRuntimeChanged: true,
+	}, &out, &errOut, autoSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "auto-worker-rootless-invalid-endpoint"
+		},
+		now: runSandboxTestClock(startedAt, finishedAt),
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return workerRootlessPlan(projectDir), nil
+		},
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{workerRootlessHostWithEndpoint(workerUnsafeRemoteEndpoint())}, nil
+		},
+		listSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("listSandboxes should not run for explicit worker host/runtime endpoint validation")
+			return nil, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			t.Fatal("default sandbox fallback should not run for explicit worker host/runtime endpoint validation")
+			return nil, "", nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			t.Fatal("provision should not run for invalid worker endpoint metadata")
+			return nil, nil
+		},
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			t.Fatal("runtime driver should not be constructed for invalid worker endpoint metadata")
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runAutoSandboxWithWriter() error = %v, want JSON error result", err)
+	}
+	var result AutoResult
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
+	requireWorkerEndpointInvalidMessage(t, result.Error, "configured endpoint: ssh endpoint")
+	requireWorkerEndpointNoUnsafeDetails(t, out.String(), errOut.String())
+	if result.OK {
+		t.Fatalf("AutoResult.OK = true, want false")
+	}
+	manifest, loadErr := store.LoadManifest("auto-worker-rootless-invalid-endpoint")
+	if loadErr != nil {
+		t.Fatalf("LoadManifest() error: %v", loadErr)
+	}
+	if manifest.Status != sandboxexecution.StatusFailed {
+		t.Fatalf("manifest.Status = %q, want failed", manifest.Status)
+	}
+}
+
+func TestWorkerRootlessFactorySandboxJSONNonLocalEndpointFailsSafely(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".hal"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(.hal) error: %v", err)
+	}
+	writeFile(t, projectDir, ".hal/prd-feature.md", "# PRD: worker rootless\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 7, 1, 7, 30, 0, 0, time.UTC)
+	startedAt := createdAt.Add(time.Second)
+	failedAt := startedAt.Add(time.Second)
+	times := []time.Time{createdAt, startedAt, failedAt, failedAt, failedAt}
+	now := func() time.Time {
+		if len(times) == 0 {
+			return failedAt
+		}
+		next := times[0]
+		times = times[1:]
+		return next
+	}
+	var out bytes.Buffer
+
+	err := runFactoryRunWithDeps(context.Background(), projectDir, factoryRunRequest{
+		MarkdownPath:    ".hal/prd-feature.md",
+		BaseBranch:      "main",
+		Sandbox:         true,
+		SandboxHostID:   "worker-1",
+		SandboxRuntime:  sandboxruntime.DriverRootlessPodman,
+		JSON:            true,
+		ResolvedSecrets: nil,
+	}, &out, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-worker-rootless-invalid-endpoint", nil },
+		now:          now,
+		workingDir:   func() (string, error) { return projectDir, nil },
+		currentBranch: func(string) (string, error) {
+			return "feature/worker-rootless", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@example.com:org/repo.git", nil
+		},
+		runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
+			return runFactorySandboxExecutorWithDeps(ctx, req, factorySandboxExecutorDeps{
+				defaultStore: func() (factory.Store, error) { return store, nil },
+				now:          now,
+				listHosts: func() ([]*sandbox.SandboxHost, error) {
+					return []*sandbox.SandboxHost{workerRootlessHostWithEndpoint(workerUnsafeRemoteEndpoint())}, nil
+				},
+				listSandboxes: func() ([]*sandbox.SandboxState, error) {
+					t.Fatal("listSandboxes should not run for explicit worker host/runtime endpoint validation")
+					return nil, nil
+				},
+				resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+					t.Fatal("default sandbox fallback should not run for explicit worker host/runtime endpoint validation")
+					return nil, "", nil
+				},
+				provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+					t.Fatal("provision should not run for invalid worker endpoint metadata")
+					return nil, nil
+				},
+				resolveProvider: func(string) (sandbox.Provider, error) {
+					t.Fatal("provider resolution should not run for invalid worker endpoint metadata")
+					return nil, nil
+				},
+				resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+					t.Fatal("runtime driver should not be constructed for invalid worker endpoint metadata")
+					return nil, nil
+				},
+			})
+		},
+	})
+	if err == nil {
+		t.Fatal("runFactoryRunWithDeps() error = nil, want invalid worker endpoint error")
+	}
+	requireWorkerEndpointInvalidMessage(t, err.Error(), "configured endpoint: ssh endpoint")
+	var resp FactoryRunResponse
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &resp)
+	if resp.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want failed", resp.Status)
+	}
+	if resp.Failure == nil {
+		t.Fatal("failure should be emitted")
+	}
+	requireWorkerEndpointInvalidMessage(t, resp.Failure.ErrorMessage, "configured endpoint: ssh endpoint")
+	requireWorkerEndpointNoUnsafeDetails(t, out.String())
+}
+
+func TestWorkerRootlessTargetSelectionHumanErrorUsesSafeEndpointSummary(t *testing.T) {
+	provisionCalled := false
+	_, err := resolveSandboxCommandTarget(context.Background(), sandboxCommandTargetRequest{
+		Purpose:        sandbox.SandboxLeasePurposeRun,
+		SandboxHostID:  "worker-1",
+		SandboxRuntime: sandboxruntime.DriverRootlessPodman,
+		ProjectDir:     t.TempDir(),
+		Repository:     "git@example.com:org/repo.git",
+		Branch:         "feature/worker-rootless",
+	}, sandboxCommandTargetDeps{
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{workerRootlessHostWithEndpoint(workerUnsafeRemoteEndpoint())}, nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			provisionCalled = true
+			return nil, nil
+		},
+	})
+	if err == nil {
+		t.Fatal("resolveSandboxCommandTarget() error = nil, want invalid worker endpoint error")
+	}
+	requireWorkerEndpointInvalidMessage(t, err.Error(), "configured endpoint: ssh endpoint")
+	requireWorkerEndpointNoUnsafeDetails(t, err.Error())
+	if provisionCalled {
+		t.Fatal("provision should not run for invalid worker endpoint metadata")
+	}
+}
+
 func TestWorkerMicroVMRuntimeResolverErrorsStayClassifiedAndDoNotFallback(t *testing.T) {
 	resolvers := []struct {
 		name  string
@@ -580,6 +826,22 @@ func workerMicroVMHostWithUnsafeEndpoint() *sandbox.SandboxHost {
 	}
 }
 
+func workerRootlessHostWithEndpoint(endpoint string) *sandbox.SandboxHost {
+	return &sandbox.SandboxHost{
+		ID:       "worker-1",
+		Name:     "worker one",
+		Kind:     sandbox.SandboxHostKindWorker,
+		Endpoint: endpoint,
+		SupportedRuntimes: []string{
+			sandboxruntime.DriverRootlessPodman,
+		},
+	}
+}
+
+func workerUnsafeRemoteEndpoint() string {
+	return "ssh://deploy:secret@example.test/tmp/private/worker-1.sock?token=secret"
+}
+
 func workerUnsupportedRuntimePlan(projectDir string) sandboxworkspace.Plan {
 	return sandboxworkspace.Plan{
 		Mode:        sandbox.SandboxWorkspaceModeClone,
@@ -592,9 +854,30 @@ func workerUnsupportedRuntimePlan(projectDir string) sandboxworkspace.Plan {
 	}
 }
 
+func workerRootlessPlan(projectDir string) sandboxworkspace.Plan {
+	return sandboxworkspace.Plan{
+		Mode:        sandbox.SandboxWorkspaceModeClone,
+		InputSource: sandbox.SandboxWorkspaceInputSourceRemoteRef,
+		ProjectDir:  projectDir,
+		Repository:  "git@example.com:org/repo.git",
+		Branch:      "feature/worker-rootless",
+		Upstream:    "origin/feature/worker-rootless",
+		SyncRef:     "refs/remotes/origin/feature/worker-rootless",
+	}
+}
+
 func requireWorkerMicroVMUnsupportedMessage(t *testing.T, message string) {
 	t.Helper()
 	for _, want := range []string{"runtime_unsupported", "worker-1", sandboxruntime.DriverMicroVM} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("message = %q, want %q", message, want)
+		}
+	}
+}
+
+func requireWorkerEndpointInvalidMessage(t *testing.T, message, endpointSummary string) {
+	t.Helper()
+	for _, want := range []string{"worker_endpoint_invalid", "worker-1", sandboxruntime.DriverRootlessPodman, endpointSummary} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("message = %q, want %q", message, want)
 		}
@@ -607,6 +890,16 @@ func requireWorkerMicroVMNoUnsafeDetails(t *testing.T, values ...string) {
 	for _, leaked := range []string{"deploy:secret", "example.test", "token=secret", "/tmp/private/worker-1.sock"} {
 		if strings.Contains(combined, leaked) {
 			t.Fatalf("output leaked unsafe detail %q: %q", leaked, combined)
+		}
+	}
+}
+
+func requireWorkerEndpointNoUnsafeDetails(t *testing.T, values ...string) {
+	t.Helper()
+	combined := strings.Join(values, "\n")
+	for _, leaked := range []string{"deploy:secret", "example.test", "token=secret", "/tmp/private/worker-1.sock"} {
+		if strings.Contains(combined, leaked) {
+			t.Fatalf("output leaked unsafe endpoint detail %q: %q", leaked, combined)
 		}
 	}
 }

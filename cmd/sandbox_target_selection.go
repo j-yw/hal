@@ -115,8 +115,12 @@ func validateSandboxCommandWorkerRuntime(result sandboxtarget.Result) error {
 		return nil
 	}
 	driver := strings.TrimSpace(result.Runtime.Driver)
-	if driver == "" || driver == sandbox.SandboxRuntimeDriverRootlessPodman {
+	if driver == "" {
 		return nil
+	}
+	if driver == sandbox.SandboxRuntimeDriverRootlessPodman {
+		_, err := validateSandboxWorkerHostEndpoint(result.Host, driver)
+		return err
 	}
 	hostID := sandboxHostDisplayValue(result.Host.ID, result.Host.Name)
 	return &sandboxtarget.Failure{

@@ -177,6 +177,67 @@ func TestSandboxWorkerRuntimeResolverRejectsUnselectedOrUnsupportedTargets(t *te
 	}
 }
 
+func TestSandboxWorkerRuntimeResolverRejectsMissingOrUnsupportedEndpointsBeforeClient(t *testing.T) {
+	tests := []struct {
+		name                string
+		endpoint            string
+		wantEndpointSummary string
+	}{
+		{
+			name:                "missing endpoint",
+			wantEndpointSummary: "configured endpoint: none",
+		},
+		{
+			name:                "non local endpoint",
+			endpoint:            "ssh://deploy:secret@example.test/tmp/private/worker-1.sock?token=secret",
+			wantEndpointSummary: "configured endpoint: ssh endpoint",
+		},
+		{
+			name:                "unsupported configured endpoint",
+			endpoint:            "worker-1.sock?token=secret",
+			wantEndpointSummary: "configured endpoint: configured",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver, err := sandboxWorkerRuntimeDriverFromTarget(sandboxWorkerRuntimeRequest{
+				Target: sandboxruntime.Target{
+					Runtime: sandboxruntime.RuntimeState{Driver: sandboxruntime.DriverRootlessPodman},
+				},
+				Host: &sandbox.SandboxHost{
+					ID:                "worker-1",
+					Name:              "worker one",
+					Kind:              sandbox.SandboxHostKindWorker,
+					Endpoint:          tt.endpoint,
+					SupportedRuntimes: []string{sandboxruntime.DriverRootlessPodman},
+				},
+			}, sandboxWorkerRuntimeDriverFactories{
+				newWorkerClient: func(string) (sandboxworker.RuntimeDriverClient, error) {
+					t.Fatal("worker client should not be constructed when worker endpoint metadata is unusable")
+					return nil, nil
+				},
+			})
+			if err == nil {
+				t.Fatal("sandboxWorkerRuntimeDriverFromTarget() error = nil, want endpoint validation error")
+			}
+			if driver != nil {
+				t.Fatalf("driver = %#v, want nil on endpoint validation error", driver)
+			}
+			for _, want := range []string{"worker_endpoint_invalid", "worker-1", sandboxruntime.DriverRootlessPodman, tt.wantEndpointSummary} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error = %q, want %q", err.Error(), want)
+				}
+			}
+			for _, leaked := range []string{"deploy:secret", "example.test", "token=secret", "/tmp/private/worker-1.sock"} {
+				if strings.Contains(err.Error(), leaked) {
+					t.Fatalf("error leaked unsafe endpoint detail %q: %q", leaked, err.Error())
+				}
+			}
+		})
+	}
+}
+
 func TestSandboxWorkerRuntimeResolverWrapsWorkerClientFactoryFailures(t *testing.T) {
 	driver, err := sandboxWorkerRuntimeDriverFromTarget(sandboxWorkerRuntimeRequest{
 		Target: sandboxruntime.Target{

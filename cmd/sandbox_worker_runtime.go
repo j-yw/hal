@@ -43,7 +43,7 @@ func sandboxWorkerRuntimeDriverFromTarget(req sandboxWorkerRuntimeRequest, facto
 		return nil, sandboxWorkerRuntimeUnsupportedError(host, driverID, "is not supported by worker-backed sandbox execution")
 	}
 
-	socketPath, err := sandboxHostLocalWorkerSocketPath(host.Endpoint)
+	socketPath, err := validateSandboxWorkerHostEndpoint(host, driverID)
 	if err != nil {
 		return nil, err
 	}
@@ -66,6 +66,17 @@ func sandboxWorkerRuntimeDriverFromTarget(req sandboxWorkerRuntimeRequest, facto
 		return nil, fmt.Errorf("construct worker-backed runtime driver %q: runtime driver factory returned nil", driverID)
 	}
 	return driver, nil
+}
+
+func validateSandboxWorkerHostEndpoint(host *sandbox.SandboxHost, driverID string) (string, error) {
+	if host == nil {
+		return "", sandboxWorkerEndpointInvalidError(nil, driverID)
+	}
+	socketPath, err := sandboxHostLocalWorkerSocketPath(host.Endpoint)
+	if err != nil {
+		return "", sandboxWorkerEndpointInvalidError(host, driverID)
+	}
+	return socketPath, nil
 }
 
 func normalizeSandboxWorkerRuntimeDriverFactories(factories sandboxWorkerRuntimeDriverFactories) sandboxWorkerRuntimeDriverFactories {
@@ -103,6 +114,29 @@ func sandboxWorkerRuntimeUnsupportedError(host *sandbox.SandboxHost, driverID, d
 	}
 	return &sandboxtarget.Failure{
 		Reason:        sandboxtarget.FailureReasonRuntimeUnsupported,
+		Message:       message,
+		HostID:        hostID,
+		RuntimeDriver: driverID,
+	}
+}
+
+func sandboxWorkerEndpointInvalidError(host *sandbox.SandboxHost, driverID string) error {
+	hostID := ""
+	hostName := ""
+	endpointSummary := sandboxHostEndpointSummary("")
+	if host != nil {
+		hostID = strings.TrimSpace(host.ID)
+		hostName = host.Name
+		endpointSummary = sandboxHostEndpointSummary(host.Endpoint)
+	}
+	driverID = strings.TrimSpace(driverID)
+	displayHost := sandboxHostDisplayValue(hostID, hostName)
+	if displayHost == "" {
+		displayHost = "unknown"
+	}
+	message := fmt.Sprintf("worker_endpoint_invalid: worker host %q requested runtime %q requires an absolute local Unix socket endpoint; configured endpoint: %s", displayHost, driverID, endpointSummary)
+	return &sandboxtarget.Failure{
+		Reason:        sandboxtarget.FailureReasonInvalidRequest,
 		Message:       message,
 		HostID:        hostID,
 		RuntimeDriver: driverID,

@@ -43,6 +43,7 @@
 - Worker-backed runtime driver construction belongs in `cmd/sandbox_worker_runtime.go`: pass the already-selected `sandboxruntime.Target` plus durable `sandbox.SandboxHost`, validate worker kind, requested runtime, and local Unix endpoint, then construct `sandboxworker.ClientDriver` only through injectable worker client/runtime-driver factories.
 - Unconstrained run/auto/factory sandbox execution must preserve legacy SSH-machine-compatible target/runtime resolution: do not list cached worker hosts, require worker endpoints, attach worker runtime IDs, or construct worker clients unless `--sandbox-host` or `--sandbox-runtime` selected a worker-backed route.
 - Explicit worker-host sandbox execution supports only the rootless Podman worker-backed route for now; reject selected worker runtimes such as `microvm` in `cmd` with a `runtime_unsupported` classification before provisioning, worker-client construction, or SSH-machine fallback, and keep JSON/human errors endpoint-safe.
+- Explicit rootless Podman worker-backed execution must validate the durable worker endpoint in `cmd` before provisioning, runtime-driver resolution, or worker-client construction; use the shared worker endpoint validator so errors use `worker_endpoint_invalid` plus safe endpoint summaries such as `none`, `local Unix socket`, or `<scheme> endpoint`.
 
 ## Patterns from phase17-target-selection (2026-07-01)
 
