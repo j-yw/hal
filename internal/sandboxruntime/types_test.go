@@ -15,6 +15,7 @@ func TestRuntimeDriverIDConstants(t *testing.T) {
 	}{
 		{name: "ssh machine", got: DriverSSHMachine, want: "ssh_machine"},
 		{name: "rootless podman", got: DriverRootlessPodman, want: "rootless_podman"},
+		{name: "microVM", got: DriverMicroVM, want: "microvm"},
 	}
 
 	for _, tt := range tests {

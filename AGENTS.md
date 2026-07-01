@@ -37,6 +37,20 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase17-target-selection (2026-07-01)
+
+- Target-selection code lives in `internal/sandboxtarget`; keep it command-agnostic and limited to standard-library imports plus root `internal/sandbox` durable metadata and root `internal/sandboxruntime` contracts. Do not import Cobra, `cmd`, factory, engine, loop, PRD, compound, or concrete runtime adapter subpackages there.
+- Target-selection contracts should remain data-only: `sandboxtarget.Request` carries purpose, sandbox, host, runtime, isolation, project, and fallback intent, while zero-value fallback policy preserves legacy default-running-sandbox and branch-provisioning behavior until callers opt into stricter handling.
+- `sandboxtarget.Select` validates explicit cached target constraints before legacy fallback: requested hosts are matched through fakeable `CachedState.ListHosts`, missing/duplicate/unhealthy/unsupported-runtime hosts fail with endpoint-safe messages, and host-constrained requests avoid unrelated default-running sandbox selection.
+- Runtime-constrained target selection without an explicit host scans fakeable cached hosts in deterministic name-then-ID order, matches only durable `SupportedRuntimes`, skips missing runtime metadata, and avoids default-running sandbox fallback when the requested runtime cannot be satisfied.
+- Isolation-constrained target selection uses durable `sandbox` isolation constants plus selector-local runtime category mapping (`ssh_machine` -> `host`, `rootless_podman` -> `container`, `microvm` -> `vm`); persisted sandbox runtime `IsolationLevel` is authoritative when present so stronger requests fail instead of being downgraded.
+- Unconstrained `sandboxtarget.Select` preserves legacy resolution through fakeable `CachedState` callbacks: explicit sandbox load first, exactly one running sandbox as the default fallback, and `ProvisioningPlan` for command-layer create paths; use `RuntimeForSandbox` to keep missing runtime metadata on SSH-machine compatibility.
+- When `sandboxtarget.Select` attaches selected metadata to a returned `sandbox.SandboxState`, copy cached `SandboxHost` records before assignment and merge requested runtime driver/isolation constraints into existing durable runtime metadata so runtime ID, image, and worker ID are preserved.
+- Runtime driver resolution in `cmd/sandbox_runtime_compat.go` must consume the already-selected `sandboxruntime.Target` only: keep default run/auto/factory execution limited to missing/SSH-machine compatibility or explicit `rootless_podman`, and fail unsupported explicit drivers such as `microvm` or worker-only driver strings instead of scanning hosts or downgrading.
+- Target-selection CLI flags belong in `cmd` on sandbox-capable entrypoints only: `--sandbox-host` and `--sandbox-runtime` parse into host-side request fields, validate runtime values through root `sandboxruntime` constants, keep help text scoped to cached target selection, and stay out of remote `hal run`/`hal auto` command builders.
+- Default sandbox execution regression tests in `cmd` should stay fake-only: inject fake default target resolvers, fake runtime drivers, temporary `HAL_CONFIG_HOME`, and deterministic clocks where records are saved, and assert default run/auto/factory paths do not explicit-load, provision, live-refresh workers, or construct concrete adapters.
+- Phase-specific target-selection verification docs should live under `docs/design/`, list exact focused Go/doc/build commands plus explicit fake-only non-goals, and be guarded by a `cmd` documentation test so review guidance does not drift.
+
 ## Patterns from phase16-runtime-inspection (2026-07-01)
 
 - Runtime inspection JSON contracts should define command-layer constants and response structs in `cmd`, document safe endpoint summaries and explicit sparse values under `docs/contracts/`, and lock referenced example files with strict decoding plus deterministic runtime ID ordering tests before command implementation stories use them.

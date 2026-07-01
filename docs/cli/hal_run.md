@@ -30,6 +30,7 @@ Examples:
   hal run --sandbox                # Run inside a sandbox
   hal run --sandbox 3              # Run 3 iterations inside a sandbox
   hal run --sandbox my-box         # Run inside a named sandbox
+  hal run --sandbox --sandbox-runtime rootless_podman # Request cached runtime metadata
 
 
 ```
@@ -47,24 +48,27 @@ hal run [iterations] [flags]
   hal run --sandbox
   hal run --sandbox 3
   hal run --sandbox my-box
+  hal run --sandbox --sandbox-host worker-1
   hal run --engine codex --base develop
 ```
 
 ### Options
 
 ```
-  -b, --base string            Base branch for creating the PRD branch (default: current branch, or HEAD when detached)
-      --dry-run                Show what would execute without running
-  -e, --engine string          Engine to use (claude, codex, pi) (default "codex")
-  -h, --help                   help for run
-  -i, --iterations int         Maximum iterations to run (default 10)
-      --json                   Output machine-readable JSON result
-      --retries int            Max retries per iteration on failure (default 3)
-      --retry-delay duration   Base retry delay (default 5s)
-      --sandbox                Run inside a sandbox
-      --sandbox-name string    Sandbox name for --sandbox execution
-  -s, --story string           Run specific story by ID (e.g., US-001)
-      --timeout duration       Per-engine session timeout override (e.g., 30m, 1h)
+  -b, --base string              Base branch for creating the PRD branch (default: current branch, or HEAD when detached)
+      --dry-run                  Show what would execute without running
+  -e, --engine string            Engine to use (claude, codex, pi) (default "codex")
+  -h, --help                     help for run
+  -i, --iterations int           Maximum iterations to run (default 10)
+      --json                     Output machine-readable JSON result
+      --retries int              Max retries per iteration on failure (default 3)
+      --retry-delay duration     Base retry delay (default 5s)
+      --sandbox                  Run inside a sandbox
+      --sandbox-host string      Cached sandbox host ID for target selection
+      --sandbox-name string      Sandbox name for --sandbox execution
+      --sandbox-runtime string   Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)
+  -s, --story string             Run specific story by ID (e.g., US-001)
+      --timeout duration         Per-engine session timeout override (e.g., 30m, 1h)
 ```
 
 ### SEE ALSO

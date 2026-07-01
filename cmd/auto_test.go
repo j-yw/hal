@@ -71,20 +71,22 @@ func TestAutoCommand_HelpDescribesSourcePriority(t *testing.T) {
 
 func TestAutoCommand_ExposesOnlySinglePipelineRuntimeFlags(t *testing.T) {
 	expectedFlags := map[string]struct{}{
-		"base":          {},
-		"dry-run":       {},
-		"engine":        {},
-		"json":          {},
-		"mode":          {},
-		"no-ci":         {},
-		"no-review":     {},
-		"report":        {},
-		"resume":        {},
-		"review-max":    {},
-		"review-streak": {},
-		"sandbox":       {},
-		"sandbox-name":  {},
-		"skip-pr":       {},
+		"base":            {},
+		"dry-run":         {},
+		"engine":          {},
+		"json":            {},
+		"mode":            {},
+		"no-ci":           {},
+		"no-review":       {},
+		"report":          {},
+		"resume":          {},
+		"review-max":      {},
+		"review-streak":   {},
+		"sandbox":         {},
+		"sandbox-host":    {},
+		"sandbox-name":    {},
+		"sandbox-runtime": {},
+		"skip-pr":         {},
 	}
 
 	gotFlags := map[string]struct{}{}

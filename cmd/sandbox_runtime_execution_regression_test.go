@@ -34,7 +34,9 @@ func TestSandboxRuntimeInspectionDoesNotBleedIntoExecutionCommands(t *testing.T)
 				"engine",
 				"json",
 				"sandbox",
+				"sandbox-host",
 				"sandbox-name",
+				"sandbox-runtime",
 			},
 		},
 		{
@@ -45,7 +47,9 @@ func TestSandboxRuntimeInspectionDoesNotBleedIntoExecutionCommands(t *testing.T)
 				"engine",
 				"json",
 				"sandbox",
+				"sandbox-host",
 				"sandbox-name",
+				"sandbox-runtime",
 			},
 		},
 		{
@@ -55,6 +59,8 @@ func TestSandboxRuntimeInspectionDoesNotBleedIntoExecutionCommands(t *testing.T)
 				"base",
 				"json",
 				"sandbox",
+				"sandbox-host",
+				"sandbox-runtime",
 			},
 		},
 	}
@@ -78,6 +84,35 @@ func TestSandboxRuntimeInspectionDoesNotBleedIntoExecutionCommands(t *testing.T)
 
 			assertCommandHasNoRuntimeInspectionSurface(t, cmd)
 		})
+	}
+}
+
+func TestSandboxTargetSelectionFlagHelpStaysConservative(t *testing.T) {
+	root := Root()
+	for _, path := range [][]string{
+		{"run"},
+		{"auto"},
+		{"factory", "run"},
+	} {
+		cmd, err := commandAtPath(root, path...)
+		if err != nil {
+			t.Fatalf("command path %q missing: %v", strings.Join(path, " "), err)
+		}
+		for _, flagName := range []string{sandboxHostFlagName, sandboxRuntimeFlagName} {
+			flag := cmd.Flags().Lookup(flagName)
+			if flag == nil {
+				t.Fatalf("command %q missing --%s flag", commandPathLabel(cmd), flagName)
+			}
+			usage := strings.ToLower(flag.Usage)
+			if !strings.Contains(usage, "target selection") {
+				t.Fatalf("command %q --%s usage = %q, want target-selection scope", commandPathLabel(cmd), flagName, flag.Usage)
+			}
+			for _, forbidden := range []string{"live", "worker execution", "microvm execution", "microvm support"} {
+				if strings.Contains(usage, forbidden) {
+					t.Fatalf("command %q --%s usage overstates support with %q: %q", commandPathLabel(cmd), flagName, forbidden, flag.Usage)
+				}
+			}
+		}
 	}
 }
 

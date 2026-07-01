@@ -26,16 +26,26 @@ import (
 
 func TestParseAutoSandboxRequestArgumentContract(t *testing.T) {
 	req, err := parseAutoSandboxRequest([]string{".hal/prd-feature.md"}, autoSandboxOptions{
-		SandboxName:        "auto-box",
-		SandboxNameChanged: true,
-		JSON:               true,
-		JSONChanged:        true,
+		SandboxName:           "auto-box",
+		SandboxNameChanged:    true,
+		SandboxHostID:         "worker-1",
+		SandboxHostChanged:    true,
+		SandboxRuntime:        sandboxruntime.DriverMicroVM,
+		SandboxRuntimeChanged: true,
+		JSON:                  true,
+		JSONChanged:           true,
 	})
 	if err != nil {
 		t.Fatalf("parseAutoSandboxRequest() unexpected error: %v", err)
 	}
 	if req.SandboxName != "auto-box" {
 		t.Fatalf("SandboxName = %q, want auto-box", req.SandboxName)
+	}
+	if req.SandboxHostID != "worker-1" {
+		t.Fatalf("SandboxHostID = %q, want worker-1", req.SandboxHostID)
+	}
+	if req.SandboxRuntime != sandboxruntime.DriverMicroVM {
+		t.Fatalf("SandboxRuntime = %q, want %q", req.SandboxRuntime, sandboxruntime.DriverMicroVM)
 	}
 	if !reflect.DeepEqual(req.Args, []string{".hal/prd-feature.md"}) {
 		t.Fatalf("Args = %#v, want markdown path", req.Args)
@@ -56,28 +66,76 @@ func TestParseAutoSandboxRequestArgumentContract(t *testing.T) {
 	}
 }
 
+func TestParseAutoSandboxRequestRejectsInvalidTargetSelectionFlags(t *testing.T) {
+	tests := []struct {
+		name    string
+		opts    autoSandboxOptions
+		wantErr string
+	}{
+		{
+			name: "empty sandbox-host",
+			opts: autoSandboxOptions{
+				SandboxHostChanged: true,
+			},
+			wantErr: "--sandbox-host must not be empty",
+		},
+		{
+			name: "empty sandbox-runtime",
+			opts: autoSandboxOptions{
+				SandboxRuntimeChanged: true,
+			},
+			wantErr: "--sandbox-runtime must not be empty",
+		},
+		{
+			name: "unknown sandbox-runtime",
+			opts: autoSandboxOptions{
+				SandboxRuntime:        "worker_only",
+				SandboxRuntimeChanged: true,
+			},
+			wantErr: "--sandbox-runtime must be one of ssh_machine, rootless_podman, or microvm",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseAutoSandboxRequest(nil, tt.opts)
+			if err == nil {
+				t.Fatal("parseAutoSandboxRequest() error = nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("parseAutoSandboxRequest() error = %q, want %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestBuildAutoSandboxRemoteCommandPreservesAutoFlags(t *testing.T) {
 	req, err := parseAutoSandboxRequest([]string{"/repo/.hal/prd-feature.md"}, autoSandboxOptions{
-		DryRun:              true,
-		DryRunChanged:       true,
-		NoCI:                true,
-		NoCIChanged:         true,
-		Mode:                "strict",
-		ModeChanged:         true,
-		ReviewStreak:        3,
-		ReviewStreakChanged: true,
-		ReviewMax:           9,
-		ReviewMaxChanged:    true,
-		Report:              "/repo/.hal/reports/report.md",
-		ReportChanged:       true,
-		Engine:              "codex",
-		EngineChanged:       true,
-		Base:                "main",
-		BaseChanged:         true,
-		JSON:                true,
-		JSONChanged:         true,
-		SandboxName:         "auto-box",
-		SandboxNameChanged:  true,
+		DryRun:                true,
+		DryRunChanged:         true,
+		NoCI:                  true,
+		NoCIChanged:           true,
+		Mode:                  "strict",
+		ModeChanged:           true,
+		ReviewStreak:          3,
+		ReviewStreakChanged:   true,
+		ReviewMax:             9,
+		ReviewMaxChanged:      true,
+		Report:                "/repo/.hal/reports/report.md",
+		ReportChanged:         true,
+		Engine:                "codex",
+		EngineChanged:         true,
+		Base:                  "main",
+		BaseChanged:           true,
+		JSON:                  true,
+		JSONChanged:           true,
+		SandboxName:           "auto-box",
+		SandboxNameChanged:    true,
+		SandboxHostID:         "worker-1",
+		SandboxHostChanged:    true,
+		SandboxRuntime:        sandboxruntime.DriverRootlessPodman,
+		SandboxRuntimeChanged: true,
 	})
 	if err != nil {
 		t.Fatalf("parseAutoSandboxRequest() unexpected error: %v", err)
@@ -100,7 +158,7 @@ func TestBuildAutoSandboxRemoteCommandPreservesAutoFlags(t *testing.T) {
 		t.Fatalf("RemoteCommand = %#v, want %#v", req.RemoteCommand, want)
 	}
 	joined := strings.Join(req.RemoteCommand, " ")
-	for _, disallowed := range []string{"--sandbox", "--sandbox-name", "auto-box"} {
+	for _, disallowed := range []string{"--sandbox", "--sandbox-name", "auto-box", "--sandbox-host", "worker-1", "--sandbox-runtime", sandboxruntime.DriverRootlessPodman} {
 		if strings.Contains(joined, disallowed) {
 			t.Fatalf("RemoteCommand %q should not contain sandbox-only value %q", joined, disallowed)
 		}
@@ -258,6 +316,65 @@ func TestRunAutoWithDirSandboxFlagDispatchesToSandboxExecutor(t *testing.T) {
 	}
 	if manifest.Purpose != sandboxexecution.PurposeAuto || manifest.Status != sandboxexecution.StatusSucceeded {
 		t.Fatalf("manifest purpose/status = %q/%q, want auto/succeeded", manifest.Purpose, manifest.Status)
+	}
+}
+
+func TestRunAutoWithDirRejectsSandboxTargetFlagsWithoutSandbox(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd := newAutoSandboxTestCommand(&out, &errOut)
+	if err := cmd.Flags().Set(sandboxHostFlagName, "worker-a"); err != nil {
+		t.Fatalf("set sandbox-host: %v", err)
+	}
+
+	err := runAutoWithDir(cmd, nil, t.TempDir())
+	if err == nil {
+		t.Fatal("runAutoWithDir() error = nil, want sandbox target flag validation")
+	}
+	if !strings.Contains(err.Error(), "--sandbox-host requires --sandbox") {
+		t.Fatalf("error = %q, want sandbox-host require sandbox", err.Error())
+	}
+}
+
+func TestAutoSandboxResolveTargetRejectsExplicitRuntimeBeforeDefaultFallback(t *testing.T) {
+	defaultCalled := false
+	provisionCalled := false
+	deps := autoSandboxDeps{
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{{
+				ID:                "ssh-a",
+				Name:              "ssh a",
+				SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+			}}, nil
+		},
+		listSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("listSandboxes should not run for unsupported explicit runtime")
+			return nil, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			defaultCalled = true
+			return &sandbox.SandboxState{Name: "legacy", Status: sandbox.StatusRunning}, "", nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			provisionCalled = true
+			return nil, nil
+		},
+	}
+
+	_, err := deps.resolveAutoSandboxTarget(context.Background(), autoSandboxRequest{
+		SandboxRuntime: sandbox.SandboxRuntimeDriverMicroVM,
+		ProjectDir:     "/workspace/hal",
+		RepoRemote:     "git@example.com:org/repo.git",
+		RunBranch:      "feature/microvm",
+	}, io.Discard)
+	if err == nil {
+		t.Fatal("resolveAutoSandboxTarget() error = nil, want explicit runtime failure")
+	}
+	if !strings.Contains(err.Error(), `no durable host supports requested runtime "microvm"`) {
+		t.Fatalf("error = %q, want microvm unsupported failure", err.Error())
+	}
+	if defaultCalled || provisionCalled {
+		t.Fatalf("defaultCalled=%v provisionCalled=%v, want no legacy fallback", defaultCalled, provisionCalled)
 	}
 }
 
@@ -1512,6 +1629,8 @@ func newAutoSandboxTestCommand(out, errOut io.Writer) *cobra.Command {
 	cmd.Flags().Bool("json", false, "")
 	cmd.Flags().Bool("sandbox", false, "")
 	cmd.Flags().String("sandbox-name", "", "")
+	cmd.Flags().String("sandbox-host", "", "")
+	cmd.Flags().String("sandbox-runtime", "", "")
 	return cmd
 }
 

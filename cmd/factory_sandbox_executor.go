@@ -47,6 +47,8 @@ type factorySandboxAuthFile struct {
 type factorySandboxExecutorRequest struct {
 	ProjectDir          string
 	SandboxName         string
+	SandboxHostID       string
+	SandboxRuntime      string
 	RunRecord           factory.RunRecord
 	ResolvedSecrets     []factory.ResolvedRunSecret
 	RemoteAuto          factoryRunAutoRequest
@@ -60,6 +62,8 @@ type factorySandboxExecutorDeps struct {
 	now                    func() time.Time
 	resolveDefault         func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
 	loadSandbox            func(string) (*sandbox.SandboxState, error)
+	listSandboxes          func() ([]*sandbox.SandboxState, error)
+	listHosts              func() ([]*sandbox.SandboxHost, error)
 	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
 	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
@@ -79,6 +83,8 @@ var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
 	now:            time.Now,
 	resolveDefault: sandbox.ResolveDefault,
 	loadSandbox:    sandbox.LoadActiveInstance,
+	listSandboxes:  sandbox.ListActiveInstances,
+	listHosts:      sandbox.ListHosts,
 	provision:      provisionFactorySandbox,
 	resolveProvider: func(providerName string) (sandbox.Provider, error) {
 		return resolveProviderWithFallback(".", providerName)
@@ -106,6 +112,7 @@ const factorySandboxCopyInputChunkEncodedBytes = 32 * 1024
 const factorySandboxRemoteWorkspaceRoot = "/root/workspace"
 
 func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factorySandboxExecutorDeps {
+	customResolveDefault := deps.resolveDefault != nil
 	customRunProviderExec := deps.runProviderExec != nil
 	customRunProviderScript := deps.runProviderScript != nil
 	customRunProviderExecWithEnv := deps.runProviderExecWithEnv != nil
@@ -120,6 +127,16 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 	}
 	if deps.loadSandbox == nil {
 		deps.loadSandbox = defaultFactorySandboxExecutorDeps.loadSandbox
+	}
+	if deps.listSandboxes == nil {
+		if customResolveDefault {
+			deps.listSandboxes = sandboxCommandListSandboxesFromDefault(deps.resolveDefault)
+		} else {
+			deps.listSandboxes = defaultFactorySandboxExecutorDeps.listSandboxes
+		}
+	}
+	if deps.listHosts == nil {
+		deps.listHosts = defaultFactorySandboxExecutorDeps.listHosts
 	}
 	if deps.provision == nil {
 		deps.provision = defaultFactorySandboxExecutorDeps.provision
@@ -355,50 +372,34 @@ func resolveFactorySandboxTarget(ctx context.Context, req factorySandboxExecutor
 		return nil, fmt.Errorf("factory run record is required")
 	}
 	if name := strings.TrimSpace(req.SandboxName); name != "" {
-		target, err := deps.loadSandbox(name)
-		if err != nil {
-			if !errors.Is(err, fs.ErrNotExist) {
-				return nil, fmt.Errorf("load factory sandbox %q: %w", name, err)
-			}
-			record.SandboxName, record.Sandbox = factorySandboxMetadataFromName(name)
-			target, err = deps.provision(ctx, factorySandboxProvisionRequest{
-				ProjectDir: req.ProjectDir,
-				Name:       name,
-				BranchName: record.BranchName,
-				Repo:       provisionRepo,
-				Out:        req.RemoteOutput,
-			})
-			if err != nil {
-				return nil, &sandboxexec.PhaseError{Phase: sandboxexec.PhaseProvisionTarget, Err: err}
-			}
-		}
-		return target, nil
+		record.SandboxName, record.Sandbox = factorySandboxMetadataFromName(name)
+	} else if strings.TrimSpace(record.SandboxName) != "" {
+		req.SandboxName = strings.TrimSpace(record.SandboxName)
 	}
-
-	target, _, err := deps.resolveDefault(factoryRunningSandboxFilter)
-	if err == nil {
-		return target, nil
-	}
-	if !isFactorySandboxProvisionableResolutionError(err) {
+	target, err := resolveSandboxCommandTarget(ctx, sandboxCommandTargetRequest{
+		Purpose:              sandbox.SandboxLeasePurposeFactory,
+		SandboxName:          req.SandboxName,
+		SandboxHostID:        req.SandboxHostID,
+		SandboxRuntime:       req.SandboxRuntime,
+		ProjectDir:           req.ProjectDir,
+		Repository:           provisionRepo,
+		Branch:               record.BranchName,
+		ProvisionRepository:  provisionRepo,
+		LoadContext:          "factory sandbox",
+		Out:                  req.RemoteOutput,
+		WrapProvisionFailure: true,
+	}, sandboxCommandTargetDeps{
+		loadSandbox:    deps.loadSandbox,
+		listSandboxes:  deps.listSandboxes,
+		listHosts:      deps.listHosts,
+		resolveDefault: deps.resolveDefault,
+		provision:      deps.provision,
+	})
+	if err != nil {
 		return nil, err
 	}
-	name := factorySandboxProvisionName(*record)
-	record.SandboxName, record.Sandbox = factorySandboxMetadataFromName(name)
-	target, err = deps.loadSandbox(name)
-	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("load factory sandbox %q: %w", name, err)
-		}
-		target, err = deps.provision(ctx, factorySandboxProvisionRequest{
-			ProjectDir: req.ProjectDir,
-			Name:       name,
-			BranchName: record.BranchName,
-			Repo:       provisionRepo,
-			Out:        req.RemoteOutput,
-		})
-		if err != nil {
-			return nil, &sandboxexec.PhaseError{Phase: sandboxexec.PhaseProvisionTarget, Err: err}
-		}
+	if record.SandboxName == "" {
+		record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
 	}
 	return target, nil
 }

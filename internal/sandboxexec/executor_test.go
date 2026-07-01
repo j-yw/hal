@@ -585,7 +585,11 @@ func TestRunPrepareContextCarriesRuntimeTargetConnection(t *testing.T) {
 	if got.Target.ID != "sb-123" || got.Target.Name != "factory-dev" || got.Target.Provider != "digitalocean" || got.Target.Status != sandbox.StatusRunning {
 		t.Fatalf("runtime target identity = %#v", got.Target)
 	}
-	if got.Target.Runtime.Driver != sandboxruntime.DriverSSHMachine || got.Target.Runtime.RuntimeID != "runtime-789" || got.Target.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelVM {
+	if got.Target.Runtime.Driver != sandboxruntime.DriverSSHMachine ||
+		got.Target.Runtime.RuntimeID != "runtime-789" ||
+		got.Target.Runtime.Image != "ubuntu-24.04" ||
+		got.Target.Runtime.WorkerID != "worker-a" ||
+		got.Target.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelVM {
 		t.Fatalf("runtime metadata = %#v", got.Target.Runtime)
 	}
 	if got.Connection.Address != "100.64.0.7" || got.Connection.PublicIP != "203.0.113.42" || got.Connection.TailscaleHostname != "factory-dev.tailnet.example" || !got.Connection.TailscaleLockdown || got.Connection.WorkspaceID != "droplet-456" {
