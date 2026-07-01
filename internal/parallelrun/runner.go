@@ -173,14 +173,7 @@ func (r *Runner) Run(ctx context.Context) (result Result) {
 		return result
 	}
 
-	canonicalBranch := cfg.CanonicalBranch
-	if canonicalBranch == "" {
-		canonicalBranch, err = currentBranch(ctx, cfg.RepoDir)
-		if err != nil {
-			result.Error = err
-			return result
-		}
-	}
+	canonicalBranch := ""
 
 	manager := r.deps.Worktrees
 	if manager == nil {
@@ -204,6 +197,13 @@ func (r *Runner) Run(ctx context.Context) (result Result) {
 		if err != nil {
 			result.Error = fmt.Errorf("load PRD: %w", err)
 			return result
+		}
+		if canonicalBranch == "" {
+			canonicalBranch, err = resolveCanonicalBranch(ctx, cfg, prd)
+			if err != nil {
+				result.Error = err
+				return result
+			}
 		}
 		completed, total := prd.Progress()
 		result.CompletedStories = completed
@@ -603,6 +603,31 @@ func validateWorkerManifest(manifest *loop.WorkerManifest, taskID, branchName st
 		return fmt.Errorf("worker %s manifest progressEntry is required", taskID)
 	}
 	return nil
+}
+
+func resolveCanonicalBranch(ctx context.Context, cfg Config, prd *engine.PRD) (string, error) {
+	current, err := currentBranch(ctx, cfg.RepoDir)
+	if err != nil {
+		return "", err
+	}
+
+	canonical := strings.TrimSpace(cfg.CanonicalBranch)
+	if canonical == "" {
+		canonical = current
+	}
+
+	prdBranch := ""
+	if prd != nil {
+		prdBranch = strings.TrimSpace(prd.BranchName)
+	}
+	if prdBranch != "" && canonical != prdBranch {
+		return "", fmt.Errorf("parallel run branch mismatch: canonical branch %q does not match %s branchName %q; switch to %q before running parallel mode", canonical, filepath.ToSlash(filepath.Join(cfg.HalDir, cfg.PRDFile)), prdBranch, prdBranch)
+	}
+	if current != canonical {
+		return "", fmt.Errorf("parallel run branch mismatch: current branch %q does not match canonical branch %q; switch to %q before running parallel mode", current, canonical, canonical)
+	}
+
+	return canonical, nil
 }
 
 func schedulingIssueSummary(issues []prdvalidator.Issue) string {

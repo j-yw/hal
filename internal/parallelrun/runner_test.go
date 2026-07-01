@@ -182,6 +182,46 @@ func TestRunnerRejectsInvalidSchedulingMetadataBeforeWorkersStart(t *testing.T) 
 	}
 }
 
+func TestRunnerRejectsMismatchedPRDBranchBeforeWorkersStart(t *testing.T) {
+	repo := initParallelRunRepo(t)
+	writeParallelRuntime(t, repo, `{
+  "project": "parallel",
+  "branchName": "hal/parallel",
+  "description": "parallel test",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "One",
+      "description": "Add first file",
+      "acceptanceCriteria": ["Typecheck passes"],
+      "priority": 1,
+      "passes": false,
+      "notes": "",
+      "parallelSafe": true,
+      "parallelReason": "Adds an independent file"
+    }
+  ]
+}`)
+	git(t, repo, "switch", "main")
+
+	executor := &gitCommittingWorkerExecutor{}
+	result := New(Config{
+		RepoDir:       repo,
+		RunID:         "test-run",
+		MaxIterations: 1,
+		Parallelism:   1,
+		Engine:        "fake",
+	}, Deps{Executor: executor}).Run(context.Background())
+
+	if result.Error == nil || !strings.Contains(result.Error.Error(), `canonical branch "main" does not match .hal/prd.json branchName "hal/parallel"`) {
+		t.Fatalf("error = %v, want branch mismatch", result.Error)
+	}
+	if executor.started != 0 {
+		t.Fatalf("workers started = %d, want 0", executor.started)
+	}
+	requireTaskPasses(t, filepath.Join(repo, template.HalDir, template.PRDFile), "T-001", false)
+}
+
 func TestRunnerRejectsWorkerFileWithoutManifest(t *testing.T) {
 	repo := initParallelRunRepo(t)
 	writeParallelRuntime(t, repo, `{
@@ -381,6 +421,7 @@ func initParallelRunRepo(t *testing.T) string {
 	writeFile(t, filepath.Join(repo, "README.md"), "seed\n")
 	git(t, repo, "add", ".gitignore", "README.md")
 	git(t, repo, "commit", "-m", "initial")
+	git(t, repo, "switch", "-c", "hal/parallel")
 	return repo
 }
 
