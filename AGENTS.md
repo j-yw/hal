@@ -53,6 +53,7 @@
 - Worker-backed run/auto copy semantics should stay on existing runtime-driver boundaries: workspace materialization delegates to `sandboxexec.MaterializeBundleWorkspace` for runtime `CopyIn` and apply `Exec`, while non-factory core/recovery/reports artifact collection uses the selected runtime driver's `CopyOut`; command regression tests can wrap `materializeWorkspace` only to inject fake `LocalGit` and should assert manifests omit host-local bundle paths.
 - Worker-backed failed run/auto recovery should stay on the existing `sandboxexec.PhaseRun` best-effort path: call `CollectRecoveryArtifactsBestEffort` with the selected worker runtime driver, keep the original command error primary, and persist recovery partial/warning metadata without raw endpoint or temp path details.
 - Worker-backed security metadata should come from durable `sandbox.SandboxHost.Security` for selected worker/rootless targets inside `sandboxexec`; do not re-evaluate those targets through SSH-machine compatibility security, and keep `workerRouting` population gated by explicit `--sandbox-host`/`--sandbox-runtime` selection.
+- Real worker-backed rootless Podman coverage belongs behind the explicit `worker_integration` build tag and must skip unless `HAL_WORKER_INTEGRATION_ENDPOINT`, `HAL_WORKER_INTEGRATION_HOST_NAME`, `HAL_WORKER_INTEGRATION_RUNTIME_DRIVER=rootless_podman`, and `HAL_WORKER_INTEGRATION_IMAGE` are set; default tests must not start workers, invoke Podman, or require provider credentials.
 
 ## Patterns from phase17-target-selection (2026-07-01)
 
