@@ -37,6 +37,11 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase25-credential-proxy-plan (2026-07-02)
+
+- Credential proxy foundation contracts belong in `internal/sandbox/credential_proxy.go`; keep them data-only and redaction-safe, with safe IDs, sources, policy snapshot identity, secret-broker/network-proxy session references, delivery mode identifiers, request/destination categories, outcomes, statuses, warnings, and reason codes only, and no raw hostnames, URLs, ports, headers, bodies, tokens, environment values, local paths, socket paths, credential values, secret values, command/factory/worker/runtime/provider imports, or live proxy/delivery behavior.
+- Schema and safety coverage for credential proxy contracts belongs beside them in `internal/sandbox/credential_proxy_test.go`; lock enum values and safe JSON fields early, and keep production comments/field names free of live-behavior phrases so later source guards can stay simple and fixture-scoped.
+
 ## Patterns from phase24-network-proxy-policy-log (2026-07-02)
 
 - Proxy session and network policy decision-log foundation contracts belong in `internal/sandbox/network_proxy.go`; keep them data-only and redaction-safe, with safe IDs, sources, policy snapshot identity, request categories, outcomes, and reason codes only, and no raw hostnames, IPs, ports, URLs, headers, bodies, tokens, environment values, local paths, socket paths, credentials, or live proxy/firewall/runtime/provider behavior.
