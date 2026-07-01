@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxworker"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 )
 
@@ -698,6 +700,237 @@ func TestWorkerRootlessFactorySandboxJSONNonLocalEndpointFailsSafely(t *testing.
 	requireWorkerEndpointNoUnsafeDetails(t, out.String())
 }
 
+func TestWorkerClientRunSandboxJSONFailureIsSanitized(t *testing.T) {
+	startedAt := time.Date(2026, 7, 1, 7, 35, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+		JSON:                  true,
+		JSONChanged:           true,
+		SandboxName:           "worker-rootless",
+		SandboxNameChanged:    true,
+		SandboxHostID:         "worker-1",
+		SandboxHostChanged:    true,
+		SandboxRuntime:        sandboxruntime.DriverRootlessPodman,
+		SandboxRuntimeChanged: true,
+	}, &out, &errOut, runSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "run-worker-client-sanitized"
+		},
+		now:        runSandboxTestClock(startedAt, finishedAt),
+		workingDir: func() (string, error) { return projectDir, nil },
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return workerRootlessPlan(projectDir), nil
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			return workerRootlessCachedSandbox(name), nil
+		},
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{workerRootlessHostWithEndpoint(workerSafeUnixEndpoint())}, nil
+		},
+		listSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("listSandboxes should not run for explicit cached worker sandbox")
+			return nil, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			t.Fatal("default sandbox fallback should not run for explicit cached worker sandbox")
+			return nil, "", nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			t.Fatal("provision should not run for explicit cached worker sandbox")
+			return nil, nil
+		},
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return nil, unsafeWorkerClientConnectionFailure()
+		},
+	})
+	if err != nil {
+		t.Fatalf("runRunSandboxWithWriter() error = %v, want JSON error result", err)
+	}
+	var result RunResult
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
+	requireWorkerClientFailureMessage(t, result.Error)
+	requireWorkerClientErrorNoUnsafeDetails(t, out.String(), errOut.String())
+	if result.OK {
+		t.Fatalf("RunResult.OK = true, want false")
+	}
+	manifest, loadErr := store.LoadManifest("run-worker-client-sanitized")
+	if loadErr != nil {
+		t.Fatalf("LoadManifest() error: %v", loadErr)
+	}
+	if manifest.Status != sandboxexecution.StatusFailed {
+		t.Fatalf("manifest.Status = %q, want failed", manifest.Status)
+	}
+}
+
+func TestWorkerClientAutoSandboxJSONProtocolFailureIsSanitized(t *testing.T) {
+	startedAt := time.Date(2026, 7, 1, 7, 40, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
+		JSON:                  true,
+		JSONChanged:           true,
+		SandboxName:           "worker-rootless",
+		SandboxNameChanged:    true,
+		SandboxHostID:         "worker-1",
+		SandboxHostChanged:    true,
+		SandboxRuntime:        sandboxruntime.DriverRootlessPodman,
+		SandboxRuntimeChanged: true,
+	}, &out, &errOut, autoSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "auto-worker-client-sanitized"
+		},
+		now: runSandboxTestClock(startedAt, finishedAt),
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return workerRootlessPlan(projectDir), nil
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			return workerRootlessCachedSandbox(name), nil
+		},
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{workerRootlessHostWithEndpoint(workerSafeUnixEndpoint())}, nil
+		},
+		listSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("listSandboxes should not run for explicit cached worker sandbox")
+			return nil, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			t.Fatal("default sandbox fallback should not run for explicit cached worker sandbox")
+			return nil, "", nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			t.Fatal("provision should not run for explicit cached worker sandbox")
+			return nil, nil
+		},
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return nil, unsafeWorkerClientProtocolFailure()
+		},
+	})
+	if err != nil {
+		t.Fatalf("runAutoSandboxWithWriter() error = %v, want JSON error result", err)
+	}
+	var result AutoResult
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
+	requireWorkerClientFailureMessage(t, result.Error)
+	requireWorkerClientErrorNoUnsafeDetails(t, out.String(), errOut.String())
+	if result.OK {
+		t.Fatalf("AutoResult.OK = true, want false")
+	}
+	manifest, loadErr := store.LoadManifest("auto-worker-client-sanitized")
+	if loadErr != nil {
+		t.Fatalf("LoadManifest() error: %v", loadErr)
+	}
+	if manifest.Status != sandboxexecution.StatusFailed {
+		t.Fatalf("manifest.Status = %q, want failed", manifest.Status)
+	}
+}
+
+func TestWorkerClientFactorySandboxJSONFailureIsSanitized(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".hal"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(.hal) error: %v", err)
+	}
+	writeFile(t, projectDir, ".hal/prd-feature.md", "# PRD: worker client failure\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 7, 1, 7, 45, 0, 0, time.UTC)
+	startedAt := createdAt.Add(time.Second)
+	failedAt := startedAt.Add(time.Second)
+	times := []time.Time{createdAt, startedAt, failedAt, failedAt, failedAt}
+	now := func() time.Time {
+		if len(times) == 0 {
+			return failedAt
+		}
+		next := times[0]
+		times = times[1:]
+		return next
+	}
+	var out bytes.Buffer
+
+	err := runFactoryRunWithDeps(context.Background(), projectDir, factoryRunRequest{
+		MarkdownPath:    ".hal/prd-feature.md",
+		BaseBranch:      "main",
+		Sandbox:         true,
+		SandboxHostID:   "worker-1",
+		SandboxRuntime:  sandboxruntime.DriverRootlessPodman,
+		JSON:            true,
+		ResolvedSecrets: nil,
+	}, &out, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-worker-client-sanitized", nil },
+		now:          now,
+		workingDir:   func() (string, error) { return projectDir, nil },
+		currentBranch: func(string) (string, error) {
+			return "feature/worker-client", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@example.com:org/repo.git", nil
+		},
+		runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
+			req.SandboxName = "worker-rootless"
+			return runFactorySandboxExecutorWithDeps(ctx, req, factorySandboxExecutorDeps{
+				defaultStore: func() (factory.Store, error) { return store, nil },
+				now:          now,
+				loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+					return workerRootlessCachedSandbox(name), nil
+				},
+				listHosts: func() ([]*sandbox.SandboxHost, error) {
+					return []*sandbox.SandboxHost{workerRootlessHostWithEndpoint(workerSafeUnixEndpoint())}, nil
+				},
+				listSandboxes: func() ([]*sandbox.SandboxState, error) {
+					t.Fatal("listSandboxes should not run for explicit cached worker sandbox")
+					return nil, nil
+				},
+				resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+					t.Fatal("default sandbox fallback should not run for explicit cached worker sandbox")
+					return nil, "", nil
+				},
+				provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+					t.Fatal("provision should not run for explicit cached worker sandbox")
+					return nil, nil
+				},
+				resolveProvider: func(string) (sandbox.Provider, error) {
+					t.Fatal("provider resolution should not run after worker client resolve failure")
+					return nil, nil
+				},
+				resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+					return nil, unsafeWorkerClientConnectionFailure()
+				},
+			})
+		},
+	})
+	if err == nil {
+		t.Fatal("runFactoryRunWithDeps() error = nil, want worker client failure")
+	}
+	requireWorkerClientFailureMessage(t, err.Error())
+	var resp FactoryRunResponse
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &resp)
+	if resp.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want failed", resp.Status)
+	}
+	if resp.Failure == nil {
+		t.Fatal("failure should be emitted")
+	}
+	if strings.TrimSpace(resp.Failure.ErrorMessage) == "" {
+		t.Fatal("failure error message should be emitted")
+	}
+	requireWorkerClientErrorNoUnsafeDetails(t, out.String(), err.Error())
+}
+
 func TestWorkerRootlessTargetSelectionHumanErrorUsesSafeEndpointSummary(t *testing.T) {
 	provisionCalled := false
 	_, err := resolveSandboxCommandTarget(context.Background(), sandboxCommandTargetRequest{
@@ -838,8 +1071,52 @@ func workerRootlessHostWithEndpoint(endpoint string) *sandbox.SandboxHost {
 	}
 }
 
+func workerRootlessCachedSandbox(name string) *sandbox.SandboxState {
+	return &sandbox.SandboxState{
+		ID:       "sandbox-worker-rootless",
+		Name:     name,
+		Provider: "worker",
+		Status:   sandbox.StatusRunning,
+		Host:     workerRootlessHostWithEndpoint(workerSafeUnixEndpoint()),
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandboxruntime.DriverRootlessPodman,
+			RuntimeID:      "ctr-worker-rootless",
+			Image:          "localhost/hal:test",
+			WorkerID:       "worker-1",
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+		},
+	}
+}
+
+func workerSafeUnixEndpoint() string {
+	return "unix:///tmp/private/worker-1.sock"
+}
+
 func workerUnsafeRemoteEndpoint() string {
 	return "ssh://deploy:secret@example.test/tmp/private/worker-1.sock?token=secret"
+}
+
+func unsafeWorkerClientFailureDetail() string {
+	return "dial ssh://deploy:secret@example.test/tmp/private/worker-1.sock?token=secret failed under /Users/alice/worktree and /workspace/.hal/tmp/session"
+}
+
+func unsafeWorkerClientConnectionFailure() error {
+	return &sandboxworker.ClientError{
+		Operation: "connect",
+		Err:       errors.New(unsafeWorkerClientFailureDetail()),
+	}
+}
+
+func unsafeWorkerClientProtocolFailure() error {
+	return &sandboxworker.ClientDriverError{
+		Driver:    sandboxruntime.DriverRootlessPodman,
+		Operation: sandboxworker.OperationExec,
+		Err: &sandboxworker.ProtocolError{
+			Operation: sandboxworker.OperationExec,
+			Code:      sandboxworker.ErrorCodeDriverFailed,
+			Message:   unsafeWorkerClientFailureDetail(),
+		},
+	}
 }
 
 func workerUnsupportedRuntimePlan(projectDir string) sandboxworkspace.Plan {
@@ -878,6 +1155,15 @@ func requireWorkerMicroVMUnsupportedMessage(t *testing.T, message string) {
 func requireWorkerEndpointInvalidMessage(t *testing.T, message, endpointSummary string) {
 	t.Helper()
 	for _, want := range []string{"worker_endpoint_invalid", "worker-1", sandboxruntime.DriverRootlessPodman, endpointSummary} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("message = %q, want %q", message, want)
+		}
+	}
+}
+
+func requireWorkerClientFailureMessage(t *testing.T, message string) {
+	t.Helper()
+	for _, want := range []string{"worker", "failed", "[redacted"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("message = %q, want %q", message, want)
 		}

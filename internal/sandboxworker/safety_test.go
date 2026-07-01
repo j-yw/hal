@@ -81,10 +81,11 @@ func TestWorkerSafetyMalformedCopyRequestsAreStructuredAndDoNotReachDrivers(t *t
 }
 
 func TestWorkerSafetyRedactsSecretsInProtocolErrorSurfaces(t *testing.T) {
+	unsafeEndpoint := "ssh://deploy:secret@example.test/workspace?token=raw-secret"
 	driver := &recordingLifecycleDriver{
 		id: "fake_runtime",
 		errByOperation: map[string]error{
-			OperationStart: errors.New("provider failed token=raw-secret password=hunter2 api_key=ghp_worker_secret under /Users/alice/worktree"),
+			OperationStart: errors.New("provider failed " + unsafeEndpoint + " password=hunter2 api_key=ghp_worker_secret under /Users/alice/worktree"),
 		},
 	}
 	registry, err := NewDriverRegistry(driver)
@@ -134,7 +135,7 @@ func TestWorkerSafetyRedactsSecretsInProtocolErrorSurfaces(t *testing.T) {
 				OK:        false,
 				Error: &Error{
 					Code:    ErrorCodeDriverFailed,
-					Message: "worker failed secret=raw-secret under /Users/alice/worktree",
+					Message: "worker failed " + unsafeEndpoint + " secret=raw-secret under /Users/alice/worktree",
 				},
 			}, nil
 		}),
@@ -150,7 +151,7 @@ func TestWorkerSafetyRedactsSecretsInProtocolErrorSurfaces(t *testing.T) {
 
 	transportClient, err := NewClient(ClientOptions{
 		Transport: ClientTransportFunc(func(context.Context, Request) (Response, error) {
-			return Response{}, errors.New("dial failed token=raw-secret under /Users/alice/worktree")
+			return Response{}, errors.New("dial failed " + unsafeEndpoint + " under /Users/alice/worktree")
 		}),
 	})
 	if err != nil {
@@ -459,7 +460,7 @@ func assertWorkerSafetyExposesWorkerIOHandlers(t *testing.T, label string, opera
 func assertWorkerSafetyRedactedDetail(t *testing.T, label, detail string) {
 	t.Helper()
 
-	for _, unsafe := range []string{"raw-secret", "hunter2", "ghp_worker_secret", "/Users/alice", "worktree"} {
+	for _, unsafe := range []string{"raw-secret", "hunter2", "ghp_worker_secret", "/Users/alice", "worktree", "deploy:secret", "example.test", "token=raw-secret"} {
 		if strings.Contains(detail, unsafe) {
 			t.Fatalf("%s leaked unsafe detail %q in %q", label, unsafe, detail)
 		}

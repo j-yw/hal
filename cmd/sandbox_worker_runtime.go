@@ -60,10 +60,10 @@ func sandboxWorkerRuntimeDriverFromTarget(req sandboxWorkerRuntimeRequest, facto
 		Client:   client,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("construct worker-backed runtime driver %q: %w", driverID, err)
+		return nil, sandboxHostWorkerClientError("construct", fmt.Errorf("construct worker-backed runtime driver %q: %w", driverID, err))
 	}
 	if driver == nil {
-		return nil, fmt.Errorf("construct worker-backed runtime driver %q: runtime driver factory returned nil", driverID)
+		return nil, sandboxHostWorkerClientError("construct", fmt.Errorf("construct worker-backed runtime driver %q: runtime driver factory returned nil", driverID))
 	}
 	return driver, nil
 }

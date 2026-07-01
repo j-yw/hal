@@ -271,3 +271,75 @@ func TestSandboxWorkerRuntimeResolverWrapsWorkerClientFactoryFailures(t *testing
 		}
 	}
 }
+
+func TestSandboxWorkerRuntimeResolverSanitizesWorkerClientConstructionFailures(t *testing.T) {
+	host := &sandbox.SandboxHost{
+		ID:                "worker-1",
+		Name:              "worker one",
+		Kind:              sandbox.SandboxHostKindWorker,
+		Endpoint:          "unix:///tmp/private/worker-1.sock",
+		SupportedRuntimes: []string{sandboxruntime.DriverRootlessPodman},
+	}
+	target := sandboxruntime.Target{
+		Runtime: sandboxruntime.RuntimeState{Driver: sandboxruntime.DriverRootlessPodman},
+	}
+	unsafeDetail := "dial ssh://deploy:secret@example.test/tmp/private/worker-1.sock?token=secret failed under /Users/alice/worktree"
+
+	tests := []struct {
+		name      string
+		factories sandboxWorkerRuntimeDriverFactories
+	}{
+		{
+			name: "worker client factory",
+			factories: sandboxWorkerRuntimeDriverFactories{
+				newWorkerClient: func(string) (sandboxworker.RuntimeDriverClient, error) {
+					return nil, errors.New(unsafeDetail)
+				},
+			},
+		},
+		{
+			name: "runtime driver factory",
+			factories: sandboxWorkerRuntimeDriverFactories{
+				newWorkerClient: func(string) (sandboxworker.RuntimeDriverClient, error) {
+					return fakeWorkerRuntimeDriverClient{}, nil
+				},
+				newRuntimeDriver: func(sandboxworker.ClientDriverOptions) (sandboxruntime.Driver, error) {
+					return nil, errors.New(unsafeDetail)
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver, err := sandboxWorkerRuntimeDriverFromTarget(sandboxWorkerRuntimeRequest{
+				Target: target,
+				Host:   host,
+			}, tt.factories)
+			if err == nil {
+				t.Fatal("sandboxWorkerRuntimeDriverFromTarget() error = nil, want sanitized worker client failure")
+			}
+			if driver != nil {
+				t.Fatalf("driver = %#v, want nil on worker client failure", driver)
+			}
+			var clientErr *sandboxworker.ClientError
+			if !errors.As(err, &clientErr) {
+				t.Fatalf("error type = %T, want *sandboxworker.ClientError", err)
+			}
+			requireWorkerClientErrorNoUnsafeDetails(t, err.Error())
+			if !strings.Contains(err.Error(), "[redacted") {
+				t.Fatalf("error = %q, want redaction marker", err.Error())
+			}
+		})
+	}
+}
+
+func requireWorkerClientErrorNoUnsafeDetails(t *testing.T, values ...string) {
+	t.Helper()
+	combined := strings.Join(values, "\n")
+	for _, leaked := range []string{"deploy:secret", "example.test", "token=secret", "/tmp/private/worker-1.sock", "/Users/alice", "worktree"} {
+		if strings.Contains(combined, leaked) {
+			t.Fatalf("worker client error leaked unsafe detail %q: %q", leaked, combined)
+		}
+	}
+}
