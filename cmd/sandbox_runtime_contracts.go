@@ -218,6 +218,77 @@ func newSandboxRuntimeStatusCachedResponse(host *sandbox.SandboxHost, runtimeID 
 	}, newSandboxRuntimeSecuritySummary(sandboxRuntimeHostSecurity(host)), nil, nil)
 }
 
+func newSandboxRuntimeStatusUnsupportedLiveResponse(host *sandbox.SandboxHost, runtimeID string) SandboxRuntimeStatusResponse {
+	hostKind := sandboxHostDisplayValue("", "unknown")
+	if host != nil {
+		hostKind = sandboxHostDisplayValue(host.Kind, "unknown")
+	}
+	return newSandboxRuntimeStatusResponse(host, runtimeID, SandboxRuntimeSource{
+		Mode:          SandboxRuntimeSourceUnsupportedLive,
+		RequestedLive: true,
+		CacheUpdated:  false,
+		RefreshedAt:   nil,
+		Summary:       fmt.Sprintf("live runtime inspection is unsupported for host kind %s; using cached durable metadata", hostKind),
+	}, SandboxRuntimeReadiness{
+		Status:    SandboxRuntimeReadinessUnknown,
+		CheckedAt: nil,
+		Summary:   "cached metadata confirms runtime registration; live readiness unsupported",
+	}, newSandboxRuntimeSecuritySummary(sandboxRuntimeHostSecurity(host)), []SandboxRuntimeDiagnostic{
+		{
+			Code:     SandboxRuntimeStatusErrorLiveUnsupported,
+			Severity: "warning",
+			Message:  "live runtime inspection is unsupported for this host kind",
+		},
+	}, nil)
+}
+
+func newSandboxRuntimeStatusLiveResponse(host *sandbox.SandboxHost, runtimeID string, status *sandboxworker.Status, capabilities *sandboxworker.Capabilities, refreshedAt time.Time) (SandboxRuntimeStatusResponse, bool) {
+	driver, ok := sandboxRuntimeWorkerDriver(capabilities, runtimeID)
+	if !ok {
+		return SandboxRuntimeStatusResponse{}, false
+	}
+	refreshedAt = refreshedAt.UTC()
+	return SandboxRuntimeStatusResponse{
+		ContractType:        SandboxRuntimeStatusContractType,
+		ContractVersion:     SandboxRuntimeStatusContractVersion,
+		Host:                newSandboxRuntimeHost(host),
+		Runtime:             newSandboxRuntimeStatusRuntimeFromWorkerDriver(runtimeID, driver),
+		Source:              newSandboxRuntimeStatusLiveSource(refreshedAt),
+		SupportedOperations: sandboxRuntimeWorkerOperations(driver.Operations),
+		Capacity:            newSandboxRuntimeCapacitySummaryFromWorkerStatus(status, sandboxRuntimeHostCapacity(host)),
+		Readiness:           newSandboxRuntimeReadinessFromWorkerStatus(status, refreshedAt),
+		Security:            newSandboxRuntimeSecuritySummaryFromWorkerPolicy(driver.Security),
+		Diagnostics:         []SandboxRuntimeDiagnostic{},
+		Errors:              []SandboxRuntimeError{},
+	}, true
+}
+
+func newSandboxRuntimeStatusLiveRuntimeNotFoundResponse(host *sandbox.SandboxHost, runtimeID string, status *sandboxworker.Status, refreshedAt time.Time) SandboxRuntimeStatusResponse {
+	refreshedAt = refreshedAt.UTC()
+	return SandboxRuntimeStatusResponse{
+		ContractType:        SandboxRuntimeStatusContractType,
+		ContractVersion:     SandboxRuntimeStatusContractVersion,
+		Host:                newSandboxRuntimeHost(host),
+		Runtime:             newSandboxRuntimeStatusRuntime(runtimeID),
+		Source:              newSandboxRuntimeStatusLiveSource(refreshedAt),
+		SupportedOperations: []string{},
+		Capacity:            newSandboxRuntimeCapacitySummaryFromWorkerStatus(status, sandboxRuntimeHostCapacity(host)),
+		Readiness: SandboxRuntimeReadiness{
+			Status:    SandboxRuntimeReadinessUnavailable,
+			CheckedAt: &refreshedAt,
+			Summary:   "runtime is not advertised by this worker",
+		},
+		Security:    newSandboxRuntimeSecuritySummary(nil),
+		Diagnostics: []SandboxRuntimeDiagnostic{},
+		Errors: []SandboxRuntimeError{
+			{
+				Code:    SandboxRuntimeStatusErrorRuntimeNotFound,
+				Message: "runtime is not advertised by this worker",
+			},
+		},
+	}
+}
+
 func newSandboxRuntimeStatusHostNotFoundResponse(hostID, runtimeID string) SandboxRuntimeStatusResponse {
 	resp := newSandboxRuntimeStatusResponse(nil, runtimeID, SandboxRuntimeSource{
 		Mode:          SandboxRuntimeSourceCached,
@@ -362,6 +433,51 @@ func newSandboxRuntimeStatusRuntime(runtimeID string) SandboxRuntimeStatusRuntim
 	}
 }
 
+func newSandboxRuntimeStatusRuntimeFromWorkerDriver(runtimeID string, driver sandboxworker.RuntimeDriver) SandboxRuntimeStatusRuntime {
+	return SandboxRuntimeStatusRuntime{
+		ID:             sandboxHostDisplayValue(runtimeID, driver.ID),
+		HostKind:       sandboxRuntimeStringPtr(driver.HostKind),
+		IsolationLevel: sandboxRuntimeStringPtr(driver.IsolationLevel),
+	}
+}
+
+func newSandboxRuntimeStatusLiveSource(refreshedAt time.Time) SandboxRuntimeSource {
+	refreshedAt = refreshedAt.UTC()
+	return SandboxRuntimeSource{
+		Mode:          SandboxRuntimeSourceLiveRefreshed,
+		RequestedLive: true,
+		CacheUpdated:  false,
+		RefreshedAt:   &refreshedAt,
+		Summary:       "live worker runtime capabilities",
+	}
+}
+
+func newSandboxRuntimeReadinessFromWorkerStatus(status *sandboxworker.Status, checkedAt time.Time) SandboxRuntimeReadiness {
+	checkedAt = checkedAt.UTC()
+	healthStatus := sandboxworker.HealthStatusUnknown
+	if status != nil {
+		healthStatus = strings.TrimSpace(status.Health.Status)
+	}
+	readinessStatus := SandboxRuntimeReadinessUnknown
+	switch healthStatus {
+	case sandboxworker.HealthStatusHealthy:
+		readinessStatus = SandboxRuntimeReadinessReady
+	case sandboxworker.HealthStatusUnhealthy:
+		readinessStatus = SandboxRuntimeReadinessUnavailable
+	case sandboxworker.HealthStatusDegraded, sandboxworker.HealthStatusUnknown:
+		readinessStatus = SandboxRuntimeReadinessUnknown
+	case "":
+		healthStatus = sandboxworker.HealthStatusUnknown
+	default:
+		readinessStatus = SandboxRuntimeReadinessUnknown
+	}
+	return SandboxRuntimeReadiness{
+		Status:    readinessStatus,
+		CheckedAt: &checkedAt,
+		Summary:   "worker health is " + healthStatus,
+	}
+}
+
 func newSandboxRuntimeListEntries(runtimeIDs []string) []SandboxRuntimeListEntry {
 	runtimeIDs = sortedUniqueStrings(runtimeIDs)
 	if len(runtimeIDs) == 0 {
@@ -379,6 +495,27 @@ func newSandboxRuntimeListEntries(runtimeIDs []string) []SandboxRuntimeListEntry
 		})
 	}
 	return entries
+}
+
+func sandboxRuntimeWorkerDriver(capabilities *sandboxworker.Capabilities, runtimeID string) (sandboxworker.RuntimeDriver, bool) {
+	runtimeID = strings.TrimSpace(runtimeID)
+	if capabilities == nil || runtimeID == "" {
+		return sandboxworker.RuntimeDriver{}, false
+	}
+	for _, driver := range capabilities.RuntimeDrivers {
+		if strings.TrimSpace(driver.ID) == runtimeID {
+			return driver, true
+		}
+	}
+	return sandboxworker.RuntimeDriver{}, false
+}
+
+func sandboxRuntimeWorkerOperations(operations []string) []string {
+	sorted := sandboxRuntimeStringSlice(operations)
+	if sorted == nil {
+		return []string{}
+	}
+	return sorted
 }
 
 func newSandboxRuntimeListEntriesFromWorkerCapabilities(capabilities *sandboxworker.Capabilities) []SandboxRuntimeListEntry {

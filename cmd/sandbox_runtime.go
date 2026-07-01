@@ -137,7 +137,7 @@ func newSandboxRuntimeStatusCommand(deps sandboxRuntimeDeps) *cobra.Command {
 		Long: `Show sandbox runtime status for one runtime on a registered host.
 
 Cached mode is the default and reads only durable host metadata. Use --live to
-request a supported worker refresh in later runtime inspection phases. Use
+request a supported local worker capability refresh for this response. Use
 --json for machine-readable output following the sandbox-runtime-status-v1
 contract.`,
 		Example: `  hal sandbox runtime status local-worker rootless_podman
@@ -182,8 +182,10 @@ func normalizeSandboxRuntimeDeps(deps sandboxRuntimeDeps) sandboxRuntimeDeps {
 	}
 	if deps.status == nil {
 		loadHost := deps.loadHost
+		newWorkerClient := deps.newWorkerClient
+		now := deps.now
 		deps.status = func(ctx context.Context, req sandboxRuntimeStatusRequest, out io.Writer) error {
-			return runSandboxRuntimeStatus(ctx, req, out, loadHost)
+			return runSandboxRuntimeStatus(ctx, req, out, loadHost, newWorkerClient, now)
 		}
 	}
 	return deps
@@ -232,7 +234,7 @@ func runSandboxRuntimeList(ctx context.Context, req sandboxRuntimeListRequest, o
 			}
 			return renderSandboxRuntimeListResponse(out, resp)
 		}
-		status, capabilities, err := querySandboxRuntimeListLiveMetadata(ctx, host, newWorkerClient)
+		status, capabilities, err := querySandboxRuntimeLiveMetadata(ctx, host, newWorkerClient)
 		if err != nil {
 			return err
 		}
@@ -249,7 +251,7 @@ func runSandboxRuntimeList(ctx context.Context, req sandboxRuntimeListRequest, o
 	return renderSandboxRuntimeList(out, host)
 }
 
-func runSandboxRuntimeStatus(_ context.Context, req sandboxRuntimeStatusRequest, out io.Writer, loadHost func(string) (*sandbox.SandboxHost, error)) error {
+func runSandboxRuntimeStatus(ctx context.Context, req sandboxRuntimeStatusRequest, out io.Writer, loadHost func(string) (*sandbox.SandboxHost, error), newWorkerClient func(string) (sandboxHostWorkerClient, error), now func() time.Time) error {
 	hostID := strings.TrimSpace(req.HostID)
 	if hostID == "" {
 		return fmt.Errorf("host id is required")
@@ -258,11 +260,14 @@ func runSandboxRuntimeStatus(_ context.Context, req sandboxRuntimeStatusRequest,
 	if runtimeID == "" {
 		return fmt.Errorf("runtime id is required")
 	}
-	if req.Live {
-		return fmt.Errorf("live sandbox runtime status is not implemented yet")
-	}
 	if loadHost == nil {
 		loadHost = sandbox.LoadHost
+	}
+	if newWorkerClient == nil {
+		newWorkerClient = newSandboxHostWorkerClient
+	}
+	if now == nil {
+		now = time.Now
 	}
 
 	host, err := loadHost(hostID)
@@ -282,6 +287,10 @@ func runSandboxRuntimeStatus(_ context.Context, req sandboxRuntimeStatusRequest,
 		return err
 	}
 
+	if req.Live {
+		return runSandboxRuntimeStatusLive(ctx, req, out, host, newWorkerClient, now)
+	}
+
 	if !sandboxRuntimeHostSupportsRuntime(host, runtimeID) {
 		statusErr := sandboxRuntimeStatusCommandError{
 			message: fmt.Sprintf("runtime %q is not registered for this host", runtimeID),
@@ -296,6 +305,52 @@ func runSandboxRuntimeStatus(_ context.Context, req sandboxRuntimeStatusRequest,
 	}
 
 	resp := newSandboxRuntimeStatusCachedResponse(host, runtimeID)
+	if req.JSON {
+		return renderSandboxRuntimeStatusResponseJSON(out, resp)
+	}
+	return renderSandboxRuntimeStatusResponse(out, resp)
+}
+
+func runSandboxRuntimeStatusLive(ctx context.Context, req sandboxRuntimeStatusRequest, out io.Writer, host *sandbox.SandboxHost, newWorkerClient func(string) (sandboxHostWorkerClient, error), now func() time.Time) error {
+	runtimeID := strings.TrimSpace(req.RuntimeID)
+	if strings.TrimSpace(host.Kind) != sandbox.SandboxHostKindWorker {
+		if !sandboxRuntimeHostSupportsRuntime(host, runtimeID) {
+			statusErr := sandboxRuntimeStatusCommandError{
+				message: fmt.Sprintf("runtime %q is not registered for this host", runtimeID),
+			}
+			if req.JSON {
+				resp := newSandboxRuntimeStatusRuntimeNotFoundResponse(host, runtimeID)
+				if renderErr := renderSandboxRuntimeStatusResponseJSON(out, resp); renderErr != nil {
+					return renderErr
+				}
+			}
+			return statusErr
+		}
+		resp := newSandboxRuntimeStatusUnsupportedLiveResponse(host, runtimeID)
+		if req.JSON {
+			return renderSandboxRuntimeStatusResponseJSON(out, resp)
+		}
+		return renderSandboxRuntimeStatusResponse(out, resp)
+	}
+
+	status, capabilities, err := querySandboxRuntimeLiveMetadata(ctx, host, newWorkerClient)
+	if err != nil {
+		return err
+	}
+	refreshedAt := now()
+	resp, ok := newSandboxRuntimeStatusLiveResponse(host, runtimeID, status, capabilities, refreshedAt)
+	if !ok {
+		statusErr := sandboxRuntimeStatusCommandError{
+			message: fmt.Sprintf("runtime %q is not advertised by this worker", runtimeID),
+		}
+		if req.JSON {
+			resp := newSandboxRuntimeStatusLiveRuntimeNotFoundResponse(host, runtimeID, status, refreshedAt)
+			if renderErr := renderSandboxRuntimeStatusResponseJSON(out, resp); renderErr != nil {
+				return renderErr
+			}
+		}
+		return statusErr
+	}
 	if req.JSON {
 		return renderSandboxRuntimeStatusResponseJSON(out, resp)
 	}
@@ -461,7 +516,7 @@ func sandboxRuntimeHostSupportsRuntime(host *sandbox.SandboxHost, runtimeID stri
 	return false
 }
 
-func querySandboxRuntimeListLiveMetadata(ctx context.Context, host *sandbox.SandboxHost, newWorkerClient func(string) (sandboxHostWorkerClient, error)) (*sandboxworker.Status, *sandboxworker.Capabilities, error) {
+func querySandboxRuntimeLiveMetadata(ctx context.Context, host *sandbox.SandboxHost, newWorkerClient func(string) (sandboxHostWorkerClient, error)) (*sandboxworker.Status, *sandboxworker.Capabilities, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -469,7 +524,7 @@ func querySandboxRuntimeListLiveMetadata(ctx context.Context, host *sandbox.Sand
 		return nil, nil, fmt.Errorf("sandbox host is required")
 	}
 	if strings.TrimSpace(host.Kind) != sandbox.SandboxHostKindWorker {
-		return nil, nil, fmt.Errorf("live sandbox runtime list is only supported for worker hosts")
+		return nil, nil, fmt.Errorf("live sandbox runtime inspection is only supported for worker hosts")
 	}
 	socketPath, err := sandboxHostLocalWorkerSocketPath(host.Endpoint)
 	if err != nil {

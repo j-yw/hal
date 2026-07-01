@@ -7,7 +7,7 @@ Show sandbox runtime status
 Show sandbox runtime status for one runtime on a registered host.
 
 Cached mode is the default and reads only durable host metadata. Use --live to
-request a supported worker refresh in later runtime inspection phases. Use
+request a supported local worker capability refresh for this response. Use
 --json for machine-readable output following the sandbox-runtime-status-v1
 contract.
 
