@@ -54,6 +54,7 @@
 - Worker-backed failed run/auto recovery should stay on the existing `sandboxexec.PhaseRun` best-effort path: call `CollectRecoveryArtifactsBestEffort` with the selected worker runtime driver, keep the original command error primary, and persist recovery partial/warning metadata without raw endpoint or temp path details.
 - Worker-backed security metadata should come from durable `sandbox.SandboxHost.Security` for selected worker/rootless targets inside `sandboxexec`; do not re-evaluate those targets through SSH-machine compatibility security, and keep `workerRouting` population gated by explicit `--sandbox-host`/`--sandbox-runtime` selection.
 - Real worker-backed rootless Podman coverage belongs behind the explicit `worker_integration` build tag and must skip unless `HAL_WORKER_INTEGRATION_ENDPOINT`, `HAL_WORKER_INTEGRATION_HOST_NAME`, `HAL_WORKER_INTEGRATION_RUNTIME_DRIVER=rootless_podman`, and `HAL_WORKER_INTEGRATION_IMAGE` are set; default tests must not start workers, invoke Podman, or require provider credentials.
+- Phase 18 worker-backed execution verification docs live under `docs/design/`, should list exact fake-only resolver/default/error/output/copy/recovery/security/contract/import-boundary commands plus explicit non-goals, and are guarded by `cmd` documentation tests to prevent review guidance drift.
 
 ## Patterns from phase17-target-selection (2026-07-01)
 
