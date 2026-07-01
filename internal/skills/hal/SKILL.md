@@ -35,10 +35,26 @@ Convert a markdown PRD into canonical `.hal/prd.json`.
       "priority": 1,
       "passes": false,
       "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "[Story title]",
+      "description": "As a [user], I want follow-up work so that [benefit]",
+      "acceptanceCriteria": ["Criterion 1", "Typecheck passes"],
+      "priority": 2,
+      "passes": false,
+      "notes": "",
+      "dependsOn": ["US-001"],
+      "conflictDomains": ["api/auth"],
+      "parallelSafe": false,
+      "barrier": true,
+      "parallelReason": "Requires serialized integration after US-001"
     }
   ]
 }
 ```
+
+Scheduling fields are optional. Omit `dependsOn`, `conflictDomains`, and `parallelReason` when empty, omit `parallelSafe` when unknown, and omit `barrier` when false.
 
 ## Story Rules
 
@@ -78,5 +94,18 @@ Convert a markdown PRD into canonical `.hal/prd.json`.
 - **Priority**: Based on dependency order
 - **All stories**: `passes: false`, empty `notes`
 - **branchName**: Kebab-case, prefixed with `hal/`
+
+## Scheduling Contract v1
+
+Use scheduling metadata conservatively so downstream runners can safely identify work that may execute in parallel.
+
+- **dependsOn**: Exact story/task IDs that must complete before this item starts. Include only true prerequisites. Never reference unknown IDs, the same ID, or a later item.
+- **conflictDomains**: Stable labels for shared files, resources, subsystems, migrations, credentials, or external state that should not be modified concurrently. Omit when no concrete conflict domain is known.
+- **parallelSafe**: Use `true` only when the item can run alongside other ready items without shared-state risk. Use `false` when it must be serialized. Omit when uncertain.
+- **barrier**: Use `true` only for required fan-in/checkpoint/integration tasks. Omit when false.
+- **parallelReason**: Required when `parallelSafe` or `barrier` is present. Keep it concise and specific.
+- **Cycles**: Dependency cycles are invalid. If two items need the same serialized resource, prefer a shared `conflictDomains` label over circular dependencies.
+
+Granular conversion may emit task IDs such as `T-001`, `T-002`, etc. In granular mode, add `dependsOn` and `conflictDomains` where they are clear from the PRD, and leave scheduling fields absent where the dependency or conflict is speculative.
 
 For a complete output example, see [examples/prd-output.json](examples/prd-output.json).

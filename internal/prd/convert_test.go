@@ -604,12 +604,77 @@ func TestConvertWithEngine_GranularOptionAddsTaskGuidanceToPrompt(t *testing.T) 
 	checks := []string{
 		"Decompose into 8-15 atomic tasks, each completable in ONE agent iteration",
 		"IDs are sequential (T-001, T-002, etc.)",
+		"Granular scheduling metadata: emit dependsOn only for true prerequisites",
+		"conflictDomains only for shared files/resources that should not run together",
+		"no unknown dependsOn IDs, no self-dependencies, no dependencies on later items",
+		"no duplicate IDs, no dependency cycles",
 		"\"id\": \"T-001\"",
+		"\"parallelSafe\": false",
+		"\"barrier\": true",
 	}
 	for _, want := range checks {
 		if !strings.Contains(eng.lastPrompt, want) {
 			t.Fatalf("granular prompt missing %q:\n%s", want, eng.lastPrompt)
 		}
+	}
+}
+
+func TestExtractJSONFromResponse_PreservesSchedulingFields(t *testing.T) {
+	response := `{
+  "project": "test",
+  "branchName": "hal/scheduling",
+  "description": "desc",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Base",
+      "description": "Base work",
+      "acceptanceCriteria": ["Typecheck passes"],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Follow-up",
+      "description": "Follow-up work",
+      "acceptanceCriteria": ["Typecheck passes"],
+      "priority": 2,
+      "passes": false,
+      "notes": "",
+      "dependsOn": ["US-001"],
+      "conflictDomains": ["api/auth"],
+      "parallelSafe": false,
+      "barrier": true,
+      "parallelReason": "Serializes auth API changes"
+    }
+  ]
+}`
+
+	formatted, err := extractJSONFromResponse(response)
+	if err != nil {
+		t.Fatalf("extractJSONFromResponse returned error: %v", err)
+	}
+
+	var prd engine.PRD
+	if err := json.Unmarshal([]byte(formatted), &prd); err != nil {
+		t.Fatalf("failed to parse formatted PRD: %v", err)
+	}
+	story := prd.UserStories[1]
+	if len(story.DependsOn) != 1 || story.DependsOn[0] != "US-001" {
+		t.Fatalf("dependsOn = %#v, want [US-001]", story.DependsOn)
+	}
+	if len(story.ConflictDomains) != 1 || story.ConflictDomains[0] != "api/auth" {
+		t.Fatalf("conflictDomains = %#v, want [api/auth]", story.ConflictDomains)
+	}
+	if story.ParallelSafe == nil || *story.ParallelSafe {
+		t.Fatalf("parallelSafe = %#v, want false pointer", story.ParallelSafe)
+	}
+	if !story.Barrier {
+		t.Fatal("barrier = false, want true")
+	}
+	if story.ParallelReason != "Serializes auth API changes" {
+		t.Fatalf("parallelReason = %q", story.ParallelReason)
 	}
 }
 

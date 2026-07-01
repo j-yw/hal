@@ -26,6 +26,11 @@ type UserStory struct {
 	Priority           int      `json:"priority"`
 	Passes             bool     `json:"passes"`
 	Notes              string   `json:"notes"`
+	DependsOn          []string `json:"dependsOn,omitempty"`
+	ConflictDomains    []string `json:"conflictDomains,omitempty"`
+	ParallelSafe       *bool    `json:"parallelSafe,omitempty"`
+	Barrier            bool     `json:"barrier,omitempty"`
+	ParallelReason     string   `json:"parallelReason,omitempty"`
 }
 
 // LoadPRD reads and parses the default prd.json file (manual flow).

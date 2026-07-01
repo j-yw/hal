@@ -156,11 +156,13 @@ func buildConversionPrompt(skill, mdContent, resolvedBranchName string, granular
 	storyRule := "Each story must be completable in ONE iteration (split large stories)"
 	idRule := "IDs are sequential (US-001, US-002, etc.)"
 	modeRule := "Standard mode: produce developer-sized user stories."
+	schedulingRule := "Scheduling metadata is optional: omit dependsOn, conflictDomains, parallelSafe, barrier, and parallelReason unless the PRD clearly supports them."
 	exampleID := "US-001"
 	if granular {
 		storyRule = "Decompose into 8-15 atomic tasks, each completable in ONE agent iteration"
 		idRule = "IDs are sequential (T-001, T-002, etc.)"
 		modeRule = "Granular mode: produce 8-15 dependency-ordered atomic tasks for autonomous execution."
+		schedulingRule = "Granular scheduling metadata: emit dependsOn only for true prerequisites, conflictDomains only for shared files/resources that should not run together, parallelSafe only when confidently true or false, barrier only for required fan-in/checkpoint tasks, and parallelReason whenever parallelSafe or barrier is present."
 		exampleID = "T-001"
 	}
 
@@ -192,6 +194,8 @@ Convert the markdown PRD to JSON format following the skill rules:
 8. All stories have passes: false and empty notes
 9. %s
 10. %s
+11. %s
+12. Scheduling fields must be conservative and valid: no unknown dependsOn IDs, no self-dependencies, no dependencies on later items, no duplicate IDs, no dependency cycles, and omit empty optional fields.
 
 IMPORTANT: Do NOT use any tools (no Read, Write, Bash, etc.). Do NOT write any files.
 File saving is handled by the caller. Return ONLY the JSON object (no markdown, no explanation). The format must be:
@@ -210,7 +214,16 @@ File saving is handled by the caller. Return ONLY the JSON object (no markdown, 
       "notes": ""
     }
   ]
-}`, skill, mdContent, storyRule, template.BrowserVerificationCriterion, idRule, modeRule, branchRule, branchExample, exampleID)
+}
+
+Optional scheduling fields may be added to story/task objects only when they carry explicit metadata. Omit arrays and strings when empty, omit parallelSafe when unknown, and omit barrier when false:
+{
+  "dependsOn": ["%s"],
+  "conflictDomains": ["api/auth"],
+  "parallelSafe": false,
+  "barrier": true,
+  "parallelReason": "Requires serialized integration after prerequisite work"
+}`, skill, mdContent, storyRule, template.BrowserVerificationCriterion, idRule, modeRule, branchRule, schedulingRule, branchExample, exampleID, exampleID)
 }
 
 var (
@@ -584,6 +597,9 @@ func extractJSONFromResponse(response string) (string, error) {
 	if err := json.Unmarshal([]byte(response), &prd); err != nil {
 		return "", fmt.Errorf("invalid JSON: %w", err)
 	}
+	if issues := ValidateSchedulingDependencies(&prd); len(issues) > 0 {
+		return "", fmt.Errorf("invalid scheduling metadata: %s", schedulingIssueSummary(issues))
+	}
 
 	// Re-marshal with proper formatting
 	formatted, err := json.MarshalIndent(prd, "", "  ")
@@ -633,6 +649,9 @@ func fallbackJSONFromOutput(outPath string, before *outputSnapshot) (string, boo
 	var prd engine.PRD
 	if err := json.Unmarshal(after.data, &prd); err != nil {
 		return "", true, fmt.Errorf("invalid JSON in output file: %w", err)
+	}
+	if issues := ValidateSchedulingDependencies(&prd); len(issues) > 0 {
+		return "", true, fmt.Errorf("invalid scheduling metadata in output file: %s", schedulingIssueSummary(issues))
 	}
 
 	formatted, err := json.MarshalIndent(prd, "", "  ")
@@ -741,6 +760,24 @@ func branchNameFromPRDJSON(prdJSON string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(prd.BranchName), nil
+}
+
+func schedulingIssueSummary(issues []Issue) string {
+	if len(issues) == 0 {
+		return ""
+	}
+
+	issue := issues[0]
+	if issue.StoryID != "" && issue.Field != "" {
+		return fmt.Sprintf("[%s] %s: %s", issue.StoryID, issue.Field, issue.Message)
+	}
+	if issue.StoryID != "" {
+		return fmt.Sprintf("[%s] %s", issue.StoryID, issue.Message)
+	}
+	if issue.Field != "" {
+		return fmt.Sprintf("%s: %s", issue.Field, issue.Message)
+	}
+	return issue.Message
 }
 
 func setPRDBranchName(prdJSON, branchName string) (string, error) {

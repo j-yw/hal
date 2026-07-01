@@ -153,10 +153,12 @@ Files to update:
 Repair requirements:
 1. Resolve every validation error in the feedback JSON.
 2. Keep existing intent and branchName stable unless feedback explicitly requires a correction.
-3. Ensure stories/tasks remain dependency-ordered and each is completable in one iteration.
-4. Ensure each story has "Typecheck passes" and UI stories include "%s".
-5. Keep markdown and JSON consistent when markdown source is available.
-6. Apply edits directly to files using tools.
+3. Preserve scheduling metadata fields when still valid: dependsOn, conflictDomains, parallelSafe, barrier, and parallelReason.
+4. Ensure dependsOn references only known earlier prerequisite IDs, with no self-dependencies or dependency cycles.
+5. Ensure stories/tasks remain dependency-ordered and each is completable in one iteration.
+6. Ensure each story has "Typecheck passes" and UI stories include "%s".
+7. Keep markdown and JSON consistent when markdown source is available.
+8. Apply edits directly to files using tools.
 
 After finishing edits, respond with a single line: REPAIRED`, skill, string(feedback), markdownInstruction, prdPath, template.BrowserVerificationCriterion), nil
 }
