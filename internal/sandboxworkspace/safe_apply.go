@@ -14,6 +14,7 @@ type SafeApplier struct {
 
 // SafeApplyGit is the narrow host-side Git boundary used by safe apply.
 type SafeApplyGit interface {
+	CheckCleanWorktree(context.Context, SafeApplyGitRequest) (DirtyState, error)
 	CheckPatch(context.Context, SafeApplyGitRequest) error
 	ApplyPatch(context.Context, SafeApplyGitRequest) error
 	CheckBundle(context.Context, SafeApplyGitRequest) error
@@ -28,6 +29,15 @@ type SafeApplyGitRequest struct {
 
 // GitCLIHostApplier validates and applies payloads with local Git commands.
 type GitCLIHostApplier struct{}
+
+// CheckCleanWorktree reports whether the host worktree has local changes.
+func (GitCLIHostApplier) CheckCleanWorktree(ctx context.Context, req SafeApplyGitRequest) (DirtyState, error) {
+	raw, err := gitOutputSafe(ctx, req.ProjectDir, "git status --porcelain", "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return DirtyState{}, err
+	}
+	return parsePorcelainDirty(raw), nil
+}
 
 // CheckPatch runs the patch dry-run boundary.
 func (GitCLIHostApplier) CheckPatch(ctx context.Context, req SafeApplyGitRequest) error {
@@ -78,8 +88,10 @@ type SafeApplyResult struct {
 }
 
 const (
-	safeApplyDryRunFailedWarningCode = "dry_run_failed"
-	safeApplyApplyFailedWarningCode  = "apply_failed"
+	safeApplyDirtyWorktreeWarningCode       = "dirty_worktree"
+	safeApplyWorktreeCheckFailedWarningCode = "worktree_check_failed"
+	safeApplyDryRunFailedWarningCode        = "dry_run_failed"
+	safeApplyApplyFailedWarningCode         = "apply_failed"
 )
 
 // SafeApply validates an eligible sync-out artifact and, when requested,
@@ -123,6 +135,15 @@ func (a SafeApplier) Apply(ctx context.Context, req SafeApplyRequest) (SafeApply
 	gitReq := SafeApplyGitRequest{
 		ProjectDir:  strings.TrimSpace(req.ProjectDir),
 		PayloadPath: strings.TrimSpace(req.PayloadPath),
+	}
+	if dirty, err := git.CheckCleanWorktree(ctx, gitReq); err != nil {
+		result.Reasons = []SyncOutApplyEligibilityReason{SyncOutApplyEligibilityReasonManualReviewRequired}
+		result.Warnings = []SyncOutWarning{safeApplyWarning(safeApplyWorktreeCheckFailedWarningCode, req.Artifact, err)}
+		return result, nil
+	} else if dirty.Any() {
+		result.Reasons = []SyncOutApplyEligibilityReason{SyncOutApplyEligibilityReasonDirtyWorktree}
+		result.Warnings = []SyncOutWarning{safeApplyDirtyWorktreeWarning(req.Artifact, dirty)}
+		return result, nil
 	}
 	if err := safeApplyDryRun(ctx, git, mode, gitReq); err != nil {
 		result.Reasons = []SyncOutApplyEligibilityReason{SyncOutApplyEligibilityReasonDryRunFailed}
@@ -225,6 +246,31 @@ func safeApplyWarning(code string, artifact SyncOutArtifact, err error) SyncOutW
 		Message:    sanitizeSafeApplyMessage(err),
 		ArtifactID: strings.TrimSpace(artifact.ID),
 	}
+}
+
+func safeApplyDirtyWorktreeWarning(artifact SyncOutArtifact, dirty DirtyState) SyncOutWarning {
+	return SyncOutWarning{
+		Code:       safeApplyDirtyWorktreeWarningCode,
+		Message:    safeApplyDirtyWorktreeMessage(dirty),
+		ArtifactID: strings.TrimSpace(artifact.ID),
+	}
+}
+
+func safeApplyDirtyWorktreeMessage(dirty DirtyState) string {
+	categories := make([]string, 0, 3)
+	if dirty.Staged {
+		categories = append(categories, "staged")
+	}
+	if dirty.Unstaged {
+		categories = append(categories, "unstaged")
+	}
+	if dirty.Untracked {
+		categories = append(categories, "untracked")
+	}
+	if len(categories) == 0 {
+		return "host worktree has local changes"
+	}
+	return "host worktree has local changes: " + strings.Join(categories, ", ")
 }
 
 func sanitizeSafeApplyMessage(err error) string {

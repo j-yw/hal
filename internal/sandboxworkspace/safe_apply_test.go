@@ -24,7 +24,7 @@ func TestSafeApplyRunsDryRunBeforePatchMutation(t *testing.T) {
 	if result.Status != SafeApplyStatusApplied || !result.DryRunPassed || !result.Applied {
 		t.Fatalf("result = %#v, want applied after dry-run", result)
 	}
-	if got, want := strings.Join(git.calls, ","), "check_patch,apply_patch"; got != want {
+	if got, want := strings.Join(git.calls, ","), "check_worktree,check_patch,apply_patch"; got != want {
 		t.Fatalf("git call order = %q, want %q", got, want)
 	}
 }
@@ -43,11 +43,58 @@ func TestSafeApplyDryRunValidatesEligibleBundle(t *testing.T) {
 	if result.Status != SafeApplyStatusDryRunPassed || !result.DryRunPassed || result.Applied {
 		t.Fatalf("result = %#v, want dry-run bundle validation only", result)
 	}
-	if got, want := strings.Join(git.calls, ","), "check_bundle"; got != want {
+	if got, want := strings.Join(git.calls, ","), "check_worktree,check_bundle"; got != want {
 		t.Fatalf("git call order = %q, want %q", got, want)
 	}
 	if !safeApplyReasonsContain(result.Reasons, SyncOutApplyEligibilityReasonEligibleBundle) {
 		t.Fatalf("Reasons = %#v, want eligible_bundle", result.Reasons)
+	}
+}
+
+func TestSafeApplyRefusesDirtyWorktreeByDefault(t *testing.T) {
+	git := &recordingSafeApplyGit{
+		dirty: DirtyState{Staged: true, Unstaged: true, Untracked: true},
+	}
+
+	result, err := (SafeApplier{Git: git}).Apply(context.Background(), SafeApplyRequest{
+		ProjectDir:  "/tmp/host-worktree",
+		PayloadPath: "/tmp/committed.patch",
+		Mutate:      true,
+		Artifact:    safeApplyPatchArtifact(),
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if result.Status != SafeApplyStatusHandoffRequired {
+		t.Fatalf("Status = %q, want handoff_required; result = %#v", result.Status, result)
+	}
+	if result.Applied || result.DryRunPassed {
+		t.Fatalf("result applied/dryRunPassed = %t/%t, want no apply after dirty worktree", result.Applied, result.DryRunPassed)
+	}
+	if !safeApplyReasonsContain(result.Reasons, SyncOutApplyEligibilityReasonDirtyWorktree) {
+		t.Fatalf("Reasons = %#v, want dirty_worktree", result.Reasons)
+	}
+	if got, want := strings.Join(git.calls, ","), "check_worktree"; got != want {
+		t.Fatalf("git call order = %q, want %q", got, want)
+	}
+	if len(result.Warnings) != 1 || result.Warnings[0].Code != "dirty_worktree" {
+		t.Fatalf("Warnings = %#v, want dirty_worktree warning", result.Warnings)
+	}
+	message := result.Warnings[0].Message
+	for _, want := range []string{"staged", "unstaged", "untracked"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("warning message = %q, want safe category %q", message, want)
+		}
+	}
+
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal(result) error = %v", err)
+	}
+	for _, unsafe := range []string{"/tmp/host-worktree", "/tmp/committed.patch", "secret.txt", "https://user:secret@example.test/repo.git"} {
+		if strings.Contains(string(encoded), unsafe) {
+			t.Fatalf("safe apply result leaked unsafe fragment %q: %s", unsafe, encoded)
+		}
 	}
 }
 
@@ -165,6 +212,12 @@ func safeApplyReasonsContain(reasons []SyncOutApplyEligibilityReason, want SyncO
 
 type recordingSafeApplyGit struct {
 	calls []string
+	dirty DirtyState
+}
+
+func (g *recordingSafeApplyGit) CheckCleanWorktree(context.Context, SafeApplyGitRequest) (DirtyState, error) {
+	g.calls = append(g.calls, "check_worktree")
+	return g.dirty, nil
 }
 
 func (g *recordingSafeApplyGit) CheckPatch(context.Context, SafeApplyGitRequest) error {
