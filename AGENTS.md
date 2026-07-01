@@ -46,6 +46,7 @@
 - Live runtime list command implementations should load the durable host first, require worker kind plus a local Unix socket endpoint before constructing clients, query fakeable worker status/capabilities for response-only `live-refreshed` metadata, wrap client failures in sanitized `sandboxworker.ClientError`, and avoid persisting refreshed runtime data.
 - Live runtime status command implementations should load the durable host first, require worker kind plus a local Unix socket endpoint before constructing clients, use live worker capabilities as the authority for the requested runtime, emit response-only `sandbox-runtime-status-v1` live metadata, wrap client failures in sanitized `sandboxworker.ClientError`, and avoid persisting refreshed runtime data.
 - Non-worker `hal sandbox runtime list --live` requests should not error or construct worker clients; render cached durable metadata through the `sandbox-runtime-list-v1` `unsupported-live` source mode with endpoint-safe diagnostics.
+- Runtime inspection endpoint summaries should classify both `unix:` endpoints and raw absolute Unix socket paths as `local Unix socket`; command safety tests should cover human and JSON cached, live, unsupported-live, and error paths without raw endpoint leaks or unsupported enforced-security claims.
 
 ## Patterns from phase15-worker-hosts (2026-07-01)
 

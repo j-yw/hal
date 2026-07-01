@@ -406,6 +406,14 @@ func newSandboxRuntimeEndpointSummary(endpoint string) SandboxRuntimeEndpointSum
 			Scheme:  &scheme,
 		}
 	}
+	if strings.HasPrefix(endpoint, "/") {
+		scheme := "unix"
+		return SandboxRuntimeEndpointSummary{
+			Type:    "unix_socket",
+			Summary: "local Unix socket",
+			Scheme:  &scheme,
+		}
+	}
 
 	if index := strings.Index(endpoint, ":"); index > 0 {
 		scheme := strings.ToLower(strings.TrimSpace(endpoint[:index]))

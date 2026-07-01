@@ -1451,6 +1451,383 @@ func TestSandboxRuntimeStatusHumanMissingErrorsNameOnlyRequestedIdentity(t *test
 	}
 }
 
+func TestSandboxRuntimeOutputSafetyMatrix(t *testing.T) {
+	refreshedAt := time.Date(2026, 7, 1, 16, 0, 0, 0, time.UTC)
+	credentialedEndpoint := "ssh://user:s3cr3t-value@runtime.internal:22/workspace?token=top-secret"
+	forbidden := []string{
+		"/tmp/private",
+		".sock",
+		"s3cr3t-value",
+		"runtime.internal",
+		"token=top-secret",
+		"top-secret",
+		"supersecret",
+	}
+
+	tests := []struct {
+		name       string
+		host       *sandbox.SandboxHost
+		args       []string
+		client     *fakeSandboxHostWorkerClient
+		wantErr    bool
+		wantErrOut []string
+		check      func(*testing.T, []byte)
+	}{
+		{
+			name: "cached human list raw socket endpoint",
+			host: &sandbox.SandboxHost{
+				ID:                "worker-raw",
+				Name:              "raw-worker",
+				Kind:              sandbox.SandboxHostKindWorker,
+				Endpoint:          "/tmp/private/worker-raw.sock",
+				SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+			},
+			args: []string{"list", "worker-raw"},
+			check: func(t *testing.T, stdout []byte) {
+				t.Helper()
+				output := string(stdout)
+				if !strings.Contains(output, "local Unix socket") {
+					t.Fatalf("stdout = %q, want safe Unix socket summary", output)
+				}
+			},
+		},
+		{
+			name: "cached json list credentialed endpoint",
+			host: &sandbox.SandboxHost{
+				ID:       "ssh-json",
+				Name:     "ssh-json",
+				Kind:     sandbox.SandboxHostKindSSH,
+				Endpoint: credentialedEndpoint,
+				Security: &sandbox.SandboxSecurity{
+					Network: &sandbox.SandboxNetworkSecurity{
+						PolicyRequested: sandbox.SandboxNetworkPolicyDenyByDefault,
+						PolicyEnforced:  sandbox.SandboxNetworkPolicyBestEffort,
+						EnforcementMode: sandbox.SandboxNetworkEnforcementModeNone,
+					},
+				},
+			},
+			args: []string{"list", "ssh-json", "--json"},
+			check: func(t *testing.T, stdout []byte) {
+				t.Helper()
+				resp := decodeOneSandboxRuntimeListJSON(t, stdout)
+				if resp.Host.Endpoint.Type != "endpoint" || resp.Host.Endpoint.Summary != "ssh endpoint" {
+					t.Fatalf("endpoint = %#v, want safe scheme-only endpoint", resp.Host.Endpoint)
+				}
+				if resp.Source.Mode != SandboxRuntimeSourceCached {
+					t.Fatalf("source = %#v, want cached", resp.Source)
+				}
+				assertSandboxRuntimeListResponseDoesNotOverclaimSecurity(t, resp)
+			},
+		},
+		{
+			name: "live human status worker endpoint",
+			host: &sandbox.SandboxHost{
+				ID:                "worker-live",
+				Name:              "live-worker",
+				Kind:              sandbox.SandboxHostKindWorker,
+				Endpoint:          "unix:///tmp/private/worker-live.sock",
+				SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+			},
+			args:   []string{"status", "worker-live", sandbox.SandboxRuntimeDriverRootlessPodman, "--live"},
+			client: newSandboxRuntimeSafetyWorkerClient("worker-live"),
+			check: func(t *testing.T, stdout []byte) {
+				t.Helper()
+				output := string(stdout)
+				for _, want := range []string{
+					"live-refreshed",
+					"local Unix socket",
+					"requested network deny_by_default",
+					"enforced network best_effort via none",
+					"requested isolation container",
+					"enforced isolation container",
+				} {
+					if !strings.Contains(output, want) {
+						t.Fatalf("stdout = %q, want %q", output, want)
+					}
+				}
+				for _, unsupported := range []string{"enforced network deny_by_default", "via firewall", "via proxy", "enforced isolation microvm", "enforced credential proxy true"} {
+					if strings.Contains(output, unsupported) {
+						t.Fatalf("stdout made unsupported security claim %q: %q", unsupported, output)
+					}
+				}
+			},
+		},
+		{
+			name: "live json list raw socket endpoint",
+			host: &sandbox.SandboxHost{
+				ID:                "worker-json-live",
+				Name:              "json-live-worker",
+				Kind:              sandbox.SandboxHostKindWorker,
+				Endpoint:          "/tmp/private/worker-json-live.sock",
+				SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+			},
+			args:   []string{"list", "worker-json-live", "--live", "--json"},
+			client: newSandboxRuntimeSafetyWorkerClient("worker-json-live"),
+			check: func(t *testing.T, stdout []byte) {
+				t.Helper()
+				resp := decodeOneSandboxRuntimeListJSON(t, stdout)
+				if resp.Host.Endpoint.Type != "unix_socket" || resp.Host.Endpoint.Summary != "local Unix socket" {
+					t.Fatalf("endpoint = %#v, want safe Unix socket summary", resp.Host.Endpoint)
+				}
+				if resp.Source.Mode != SandboxRuntimeSourceLiveRefreshed {
+					t.Fatalf("source = %#v, want live-refreshed", resp.Source)
+				}
+				assertSandboxRuntimeListResponseDoesNotOverclaimSecurity(t, resp)
+			},
+		},
+		{
+			name: "unsupported-live human list credentialed endpoint",
+			host: &sandbox.SandboxHost{
+				ID:                "ssh-live",
+				Name:              "ssh-live",
+				Kind:              sandbox.SandboxHostKindSSH,
+				Endpoint:          credentialedEndpoint,
+				SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+			},
+			args: []string{"list", "ssh-live", "--live"},
+			check: func(t *testing.T, stdout []byte) {
+				t.Helper()
+				output := string(stdout)
+				for _, want := range []string{"unsupported-live", "ssh endpoint"} {
+					if !strings.Contains(output, want) {
+						t.Fatalf("stdout = %q, want %q", output, want)
+					}
+				}
+			},
+		},
+		{
+			name: "unsupported-live json status credentialed endpoint",
+			host: &sandbox.SandboxHost{
+				ID:                "ssh-status",
+				Name:              "ssh-status",
+				Kind:              sandbox.SandboxHostKindSSH,
+				Endpoint:          credentialedEndpoint,
+				SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+			},
+			args: []string{"status", "ssh-status", sandbox.SandboxRuntimeDriverSSHMachine, "--live", "--json"},
+			check: func(t *testing.T, stdout []byte) {
+				t.Helper()
+				resp := decodeOneSandboxRuntimeStatusJSON(t, stdout)
+				if resp.Host.Endpoint.Type != "endpoint" || resp.Host.Endpoint.Summary != "ssh endpoint" {
+					t.Fatalf("endpoint = %#v, want safe scheme-only endpoint", resp.Host.Endpoint)
+				}
+				if resp.Source.Mode != SandboxRuntimeSourceUnsupportedLive {
+					t.Fatalf("source = %#v, want unsupported-live", resp.Source)
+				}
+				assertSandboxRuntimeStatusResponseDoesNotOverclaimSecurity(t, resp)
+			},
+		},
+		{
+			name: "cached human missing-runtime error",
+			host: &sandbox.SandboxHost{
+				ID:                "worker-missing",
+				Name:              "missing-worker",
+				Kind:              sandbox.SandboxHostKindWorker,
+				Endpoint:          "/tmp/private/worker-missing.sock",
+				SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+			},
+			args:    []string{"status", "worker-missing", "unknown_runtime"},
+			wantErr: true,
+		},
+		{
+			name: "cached json missing-runtime error document",
+			host: &sandbox.SandboxHost{
+				ID:                "worker-missing-json",
+				Name:              "missing-json-worker",
+				Kind:              sandbox.SandboxHostKindWorker,
+				Endpoint:          "/tmp/private/worker-missing-json.sock",
+				SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+			},
+			args:    []string{"status", "worker-missing-json", "unknown_runtime", "--json"},
+			wantErr: true,
+			check: func(t *testing.T, stdout []byte) {
+				t.Helper()
+				resp := decodeOneSandboxRuntimeStatusJSON(t, stdout)
+				if len(resp.Errors) != 1 || resp.Errors[0].Code != SandboxRuntimeStatusErrorRuntimeNotFound {
+					t.Fatalf("errors = %#v, want runtime_not_found", resp.Errors)
+				}
+				assertSandboxRuntimeStatusResponseDoesNotOverclaimSecurity(t, resp)
+			},
+		},
+		{
+			name: "live json worker client failure",
+			host: &sandbox.SandboxHost{
+				ID:                "worker-failure",
+				Name:              "failure-worker",
+				Kind:              sandbox.SandboxHostKindWorker,
+				Endpoint:          "unix:///tmp/private/worker-failure.sock",
+				SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+			},
+			args: []string{"status", "worker-failure", sandbox.SandboxRuntimeDriverRootlessPodman, "--live", "--json"},
+			client: &fakeSandboxHostWorkerClient{
+				status: &sandboxworker.Status{
+					WorkerID: "worker-failure",
+					HostKind: sandboxworker.HostKindLocal,
+					Health: sandboxworker.WorkerHealth{
+						Status: sandboxworker.HealthStatusHealthy,
+					},
+					Security: sandboxworker.DefaultWorkerSecurityPolicy(),
+				},
+				capabilitiesErr: errors.New("dial /tmp/private/worker-failure.sock failed token=supersecret"),
+			},
+			wantErr:    true,
+			wantErrOut: []string{"[redacted-path]", "token=[redacted]"},
+			check: func(t *testing.T, stdout []byte) {
+				t.Helper()
+				if len(stdout) != 0 {
+					t.Fatalf("stdout = %q, want no partial JSON on live client failure", string(stdout))
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			setSandboxHostRegistryHome(t)
+			if tt.host != nil {
+				if err := sandbox.SaveHost(tt.host); err != nil {
+					t.Fatalf("SaveHost() error = %v", err)
+				}
+			}
+
+			deps := defaultSandboxRuntimeDeps()
+			deps.now = func() time.Time { return refreshedAt }
+			deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+				if tt.client == nil {
+					t.Fatal("sandbox runtime safety test unexpectedly constructed a worker client")
+				}
+				return tt.client, nil
+			}
+
+			cmd, stdout, stderr := newTestSandboxRuntimeCommand(deps)
+			cmd.SetArgs(tt.args)
+			err := cmd.Execute()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("Execute() error = nil, want error")
+				}
+			} else if err != nil {
+				t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+			}
+
+			combined := stdout.String() + "\n" + stderr.String()
+			if err != nil {
+				combined += "\n" + err.Error()
+			}
+			assertSandboxRuntimeOutputOmits(t, combined, forbidden)
+			for _, want := range tt.wantErrOut {
+				if !strings.Contains(combined, want) {
+					t.Fatalf("combined output = %q, want sanitized marker %q", combined, want)
+				}
+			}
+			if tt.check != nil {
+				tt.check(t, stdout.Bytes())
+			}
+		})
+	}
+}
+
+func newSandboxRuntimeSafetyWorkerClient(workerID string) *fakeSandboxHostWorkerClient {
+	return &fakeSandboxHostWorkerClient{
+		status: &sandboxworker.Status{
+			WorkerID:   workerID,
+			HostKind:   sandboxworker.HostKindLocal,
+			SocketPath: "/tmp/private/reported-live.sock",
+			Health: sandboxworker.WorkerHealth{
+				Status: sandboxworker.HealthStatusHealthy,
+			},
+			Capacity: sandboxworker.WorkerCapacity{
+				MaxConcurrentSandboxes: 2,
+				ActiveSandboxes:        1,
+			},
+			Security: sandboxworker.DefaultWorkerSecurityPolicy(),
+		},
+		capabilities: &sandboxworker.Capabilities{
+			WorkerID: workerID,
+			Security: sandboxworker.DefaultWorkerSecurityPolicy(),
+			RuntimeDrivers: []sandboxworker.RuntimeDriver{
+				{
+					ID:             sandboxworker.RuntimeDriverRootlessPodman,
+					HostKind:       sandboxworker.HostKindLocal,
+					IsolationLevel: sandboxworker.IsolationLevelContainer,
+					Operations:     []string{sandboxworker.OperationExec},
+					Security:       sandboxRuntimeTestWorkerSecurity(sandboxworker.IsolationLevelContainer),
+				},
+				{
+					ID:             sandboxworker.RuntimeDriverSSHMachine,
+					HostKind:       sandboxworker.HostKindLocal,
+					IsolationLevel: sandboxworker.IsolationLevelHost,
+					Operations:     []string{sandboxworker.OperationExec},
+					Security:       sandboxRuntimeTestWorkerSecurity(sandboxworker.IsolationLevelHost),
+				},
+			},
+		},
+	}
+}
+
+func assertSandboxRuntimeOutputOmits(t *testing.T, output string, forbidden []string) {
+	t.Helper()
+	for _, value := range forbidden {
+		if strings.Contains(output, value) {
+			t.Fatalf("runtime output leaked sensitive detail %q: %q", value, output)
+		}
+	}
+}
+
+func assertSandboxRuntimeListResponseDoesNotOverclaimSecurity(t *testing.T, resp SandboxRuntimeListResponse) {
+	t.Helper()
+	assertSandboxRuntimeSecurityDoesNotOverclaim(t, "host", resp.Security)
+	for _, runtimeEntry := range resp.Runtimes {
+		assertSandboxRuntimeSecurityDoesNotOverclaim(t, "runtime "+runtimeEntry.ID, runtimeEntry.Security)
+	}
+}
+
+func assertSandboxRuntimeStatusResponseDoesNotOverclaimSecurity(t *testing.T, resp SandboxRuntimeStatusResponse) {
+	t.Helper()
+	assertSandboxRuntimeSecurityDoesNotOverclaim(t, "runtime status", resp.Security)
+}
+
+func assertSandboxRuntimeSecurityDoesNotOverclaim(t *testing.T, label string, security SandboxRuntimeSecuritySummary) {
+	t.Helper()
+	if sandboxRuntimeStringPtrEquals(security.Enforced.NetworkPolicy, sandbox.SandboxNetworkPolicyDenyByDefault) {
+		t.Fatalf("%s security enforced deny-by-default networking: %#v", label, security)
+	}
+	for _, unsupported := range []string{
+		sandbox.SandboxNetworkEnforcementModeFirewall,
+		sandbox.SandboxNetworkEnforcementModeProxy,
+		sandbox.SandboxNetworkEnforcementModeProxyFirewall,
+	} {
+		if sandboxRuntimeStringPtrEquals(security.Enforced.NetworkEnforcement, unsupported) {
+			t.Fatalf("%s security overclaimed network enforcement %q: %#v", label, unsupported, security)
+		}
+	}
+	for _, unsupported := range []string{sandbox.SandboxSecretModeHTTPProxy, "credential_proxy"} {
+		if sandboxRuntimeContainsString(security.Enforced.CredentialModes, unsupported) {
+			t.Fatalf("%s security overclaimed credential proxy mode %q: %#v", label, unsupported, security)
+		}
+	}
+	if security.Enforced.CredentialProxyMode != nil && *security.Enforced.CredentialProxyMode {
+		t.Fatalf("%s security overclaimed credential proxy support: %#v", label, security)
+	}
+	if sandboxRuntimeStringPtrEquals(security.Enforced.IsolationLevel, sandbox.SandboxRuntimeDriverMicroVM) {
+		t.Fatalf("%s security overclaimed microVM isolation: %#v", label, security)
+	}
+}
+
+func sandboxRuntimeStringPtrEquals(value *string, want string) bool {
+	return value != nil && *value == want
+}
+
+func sandboxRuntimeContainsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func sandboxRuntimeTestWorkerSecurity(isolationLevel string) sandboxworker.SecurityPolicy {
 	return sandboxworker.SecurityPolicy{
 		Requested: sandboxworker.SecurityControls{
