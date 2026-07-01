@@ -127,8 +127,9 @@ type SandboxRuntimeReadiness struct {
 // SandboxRuntimeSecuritySummary separates requested controls from controls
 // actually enforced by durable metadata or live worker capabilities.
 type SandboxRuntimeSecuritySummary struct {
-	Requested SandboxRuntimeSecurityControls `json:"requested"`
-	Enforced  SandboxRuntimeSecurityControls `json:"enforced"`
+	Requested           SandboxRuntimeSecurityControls      `json:"requested"`
+	Enforced            SandboxRuntimeSecurityControls      `json:"enforced"`
+	NetworkPolicyResult *sandbox.SandboxNetworkPolicyResult `json:"networkPolicyResult,omitempty"`
 }
 
 // SandboxRuntimeSecurityControls captures safe security posture metadata.
@@ -666,10 +667,12 @@ func newSandboxRuntimeSecuritySummary(security *sandbox.SandboxSecurity) Sandbox
 
 	var requested SandboxRuntimeSecurityControls
 	var enforced SandboxRuntimeSecurityControls
+	var policyResult *sandbox.SandboxNetworkPolicyResult
 	if security.Network != nil {
 		requested.NetworkPolicy = sandboxRuntimeStringPtr(security.Network.PolicyRequested)
 		enforced.NetworkPolicy = sandboxRuntimeStringPtr(security.Network.PolicyEnforced)
 		enforced.NetworkEnforcement = sandboxRuntimeStringPtr(security.Network.EnforcementMode)
+		policyResult = sandbox.CloneSandboxNetworkPolicyResultPtr(security.Network.PolicyResult)
 	}
 	if security.Secrets != nil {
 		requested.CredentialModes = sandboxRuntimeStringSlice(security.Secrets.RequestedModes)
@@ -677,8 +680,9 @@ func newSandboxRuntimeSecuritySummary(security *sandbox.SandboxSecurity) Sandbox
 	}
 
 	return SandboxRuntimeSecuritySummary{
-		Requested: requested,
-		Enforced:  enforced,
+		Requested:           requested,
+		Enforced:            enforced,
+		NetworkPolicyResult: policyResult,
 	}
 }
 

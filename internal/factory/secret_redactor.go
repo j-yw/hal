@@ -45,6 +45,35 @@ func (r RunSecretRedactor) RedactString(value string) string {
 	return value
 }
 
+// RedactError returns an error with run-scoped secret values removed from its
+// message while preserving the original error for unwrapping.
+func (r RunSecretRedactor) RedactError(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := r.RedactString(err.Error())
+	if message == err.Error() {
+		return err
+	}
+	return runSecretRedactedError{
+		message: message,
+		cause:   err,
+	}
+}
+
+type runSecretRedactedError struct {
+	message string
+	cause   error
+}
+
+func (e runSecretRedactedError) Error() string {
+	return e.message
+}
+
+func (e runSecretRedactedError) Unwrap() error {
+	return e.cause
+}
+
 // RedactArtifactReference returns a copy of artifact with run-scoped secret
 // values removed from persisted string metadata.
 func (r RunSecretRedactor) RedactArtifactReference(artifact ArtifactReference) ArtifactReference {
@@ -84,6 +113,29 @@ func (r RunSecretRedactor) RedactRunRecord(record RunRecord) RunRecord {
 	record.Failure = r.redactFailureSummary(record.Failure)
 	record.Secrets = r.redactSecretMetadata(record.Secrets)
 	return record
+}
+
+// RedactEventRecord returns a copy of event with run-scoped secret values
+// removed from durable timeline output fields.
+func (r RunSecretRedactor) RedactEventRecord(event EventRecord) EventRecord {
+	if len(r.secretValues) == 0 {
+		return event
+	}
+	event.Message = r.RedactString(event.Message)
+	event.Summary = r.RedactString(event.Summary)
+	event.Metadata = r.redactArtifactSummary(event.Metadata)
+	return event
+}
+
+// RedactLogChunk returns a copy of chunk with run-scoped secret values removed
+// from durable log text fields.
+func (r RunSecretRedactor) RedactLogChunk(chunk LogChunk) LogChunk {
+	if len(r.secretValues) == 0 {
+		return chunk
+	}
+	chunk.Text = r.RedactString(chunk.Text)
+	chunk.Summary = r.RedactString(chunk.Summary)
+	return chunk
 }
 
 func (r RunSecretRedactor) redactSourceMetadata(source SourceMetadata) SourceMetadata {

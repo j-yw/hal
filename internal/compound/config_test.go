@@ -3,10 +3,13 @@ package compound
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jywlabs/hal/internal/sandbox"
 )
 
 func TestDefaultAutoConfig(t *testing.T) {
@@ -1269,5 +1272,200 @@ func TestLoadSandboxConfig_InvalidYAML(t *testing.T) {
 	_, err := LoadSandboxConfig(dir)
 	if err == nil {
 		t.Fatal("LoadSandboxConfig() expected error for invalid YAML, got nil")
+	}
+}
+
+func TestSandboxPolicyConfig(t *testing.T) {
+	t.Run("loads local sandbox network policy metadata", func(t *testing.T) {
+		dir := t.TempDir()
+		halDir := filepath.Join(dir, ".hal")
+		if err := os.MkdirAll(halDir, 0755); err != nil {
+			t.Fatalf("Failed to create .hal dir: %v", err)
+		}
+		yaml := `sandbox:
+  provider: daytona
+  networkPolicy:
+    preset: allow_listed
+    rules:
+      - kind: domain
+        value: api.example.com
+        decision: allow
+      - kind: metadata_endpoint
+        value: "169.254.169.254"
+        decision: deny
+`
+		if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(yaml), 0644); err != nil {
+			t.Fatalf("Failed to write config.yaml: %v", err)
+		}
+
+		cfg, err := LoadSandboxConfig(dir)
+		if err != nil {
+			t.Fatalf("LoadSandboxConfig() unexpected error: %v", err)
+		}
+		if cfg.NetworkPolicy == nil {
+			t.Fatal("NetworkPolicy = nil, want parsed policy")
+		}
+		if cfg.NetworkPolicy.Preset != sandbox.SandboxNetworkPolicyPresetAllowListed {
+			t.Fatalf("NetworkPolicy.Preset = %q, want %q", cfg.NetworkPolicy.Preset, sandbox.SandboxNetworkPolicyPresetAllowListed)
+		}
+		wantRules := []sandbox.SandboxNetworkPolicyRule{
+			{Kind: sandbox.SandboxNetworkPolicyRuleKindDomain, Value: "api.example.com", Decision: sandbox.SandboxNetworkPolicyDecisionAllow},
+			{Kind: sandbox.SandboxNetworkPolicyRuleKindMetadataEndpoint, Value: "169.254.169.254", Decision: sandbox.SandboxNetworkPolicyDecisionDeny},
+		}
+		if !reflect.DeepEqual(cfg.NetworkPolicy.Rules, wantRules) {
+			t.Fatalf("NetworkPolicy.Rules = %#v, want %#v", cfg.NetworkPolicy.Rules, wantRules)
+		}
+	})
+
+	t.Run("rejects invalid policy with sanitized error", func(t *testing.T) {
+		dir := t.TempDir()
+		halDir := filepath.Join(dir, ".hal")
+		if err := os.MkdirAll(halDir, 0755); err != nil {
+			t.Fatalf("Failed to create .hal dir: %v", err)
+		}
+		yaml := `sandbox:
+  networkPolicy:
+    preset: allow_listed
+    rules:
+      - kind: domain
+        value: "https://user:secret@example.com/query"
+        decision: allow
+`
+		if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(yaml), 0644); err != nil {
+			t.Fatalf("Failed to write config.yaml: %v", err)
+		}
+
+		_, err := LoadSandboxConfig(dir)
+		if err == nil {
+			t.Fatal("LoadSandboxConfig() error = nil, want policy validation error")
+		}
+		got := err.Error()
+		if !strings.Contains(got, "sandbox.networkPolicy.rules[0]") || !strings.Contains(got, string(sandbox.SandboxNetworkPolicyValidationCredentialBearingURL)) {
+			t.Fatalf("error = %q, want sanitized policy location and code", got)
+		}
+		for _, unsafe := range []string{"user:secret", "example.com/query", "https://"} {
+			if strings.Contains(got, unsafe) {
+				t.Fatalf("error = %q leaks unsafe policy value fragment %q", got, unsafe)
+			}
+		}
+	})
+}
+
+func TestSandboxSecretConfig(t *testing.T) {
+	t.Run("loads local sandbox secret mode metadata", func(t *testing.T) {
+		dir := t.TempDir()
+		halDir := filepath.Join(dir, ".hal")
+		if err := os.MkdirAll(halDir, 0755); err != nil {
+			t.Fatalf("Failed to create .hal dir: %v", err)
+		}
+		yaml := `sandbox:
+  secrets:
+    requestedModes:
+      - " env "
+      - http_proxy
+      - env
+    activeModes:
+      - env
+      - legacy_auth_sync
+`
+		if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(yaml), 0644); err != nil {
+			t.Fatalf("Failed to write config.yaml: %v", err)
+		}
+
+		cfg, err := LoadSandboxConfig(dir)
+		if err != nil {
+			t.Fatalf("LoadSandboxConfig() unexpected error: %v", err)
+		}
+		if cfg.Secrets == nil {
+			t.Fatal("Secrets = nil, want parsed secret metadata")
+		}
+		if !reflect.DeepEqual(cfg.Secrets.RequestedModes, []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeHTTPProxy}) {
+			t.Fatalf("Secrets.RequestedModes = %#v, want normalized unique modes", cfg.Secrets.RequestedModes)
+		}
+		if !reflect.DeepEqual(cfg.Secrets.ActiveModes, []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeLegacyAuthSync}) {
+			t.Fatalf("Secrets.ActiveModes = %#v, want normalized modes", cfg.Secrets.ActiveModes)
+		}
+	})
+
+	t.Run("rejects invalid secret mode with sanitized error", func(t *testing.T) {
+		dir := t.TempDir()
+		halDir := filepath.Join(dir, ".hal")
+		if err := os.MkdirAll(halDir, 0755); err != nil {
+			t.Fatalf("Failed to create .hal dir: %v", err)
+		}
+		yaml := `sandbox:
+  secrets:
+    requestedModes:
+      - token://secret-value
+`
+		if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(yaml), 0644); err != nil {
+			t.Fatalf("Failed to write config.yaml: %v", err)
+		}
+
+		_, err := LoadSandboxConfig(dir)
+		if err == nil {
+			t.Fatal("LoadSandboxConfig() error = nil, want secret mode validation error")
+		}
+		got := err.Error()
+		if !strings.Contains(got, "sandbox.secrets") || !strings.Contains(got, "requestedModes[0]") {
+			t.Fatalf("error = %q, want sanitized secret mode location", got)
+		}
+		if strings.Contains(got, "token://secret-value") {
+			t.Fatalf("error = %q leaks rejected secret mode value", got)
+		}
+	})
+}
+
+func TestSandboxConfigPreservesPolicyAndSecretMetadata(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("Failed to create .hal dir: %v", err)
+	}
+	existingYAML := `engine: codex
+auto:
+  reportsDir: custom/reports
+sandbox:
+  provider: daytona
+  env:
+    EXISTING: keep
+  networkPolicy:
+    preset: deny_by_default
+  secrets:
+    requestedModes:
+      - env
+`
+	if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(existingYAML), 0644); err != nil {
+		t.Fatalf("Failed to write config.yaml: %v", err)
+	}
+
+	cfg, err := LoadSandboxConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadSandboxConfig() unexpected error: %v", err)
+	}
+	cfg.Env["NEW"] = "value"
+	if err := SaveSandboxConfig(dir, cfg); err != nil {
+		t.Fatalf("SaveSandboxConfig() unexpected error: %v", err)
+	}
+
+	autoCfg, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadConfig() unexpected error: %v", err)
+	}
+	if autoCfg.ReportsDir != "custom/reports" {
+		t.Fatalf("auto.reportsDir = %q, want custom/reports", autoCfg.ReportsDir)
+	}
+	loaded, err := LoadSandboxConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadSandboxConfig() after save unexpected error: %v", err)
+	}
+	if loaded.Env["EXISTING"] != "keep" || loaded.Env["NEW"] != "value" {
+		t.Fatalf("Env = %#v, want existing and new keys preserved", loaded.Env)
+	}
+	if loaded.NetworkPolicy == nil || loaded.NetworkPolicy.Preset != sandbox.SandboxNetworkPolicyPresetDenyByDefault {
+		t.Fatalf("NetworkPolicy = %#v, want deny_by_default policy preserved", loaded.NetworkPolicy)
+	}
+	if loaded.Secrets == nil || !reflect.DeepEqual(loaded.Secrets.RequestedModes, []string{sandbox.SandboxSecretModeEnv}) {
+		t.Fatalf("Secrets = %#v, want env request preserved", loaded.Secrets)
 	}
 }
