@@ -780,14 +780,18 @@ func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxReques
 		Status:      status,
 		StartedAt:   startedAt,
 		FinishedAt:  finishedAt,
-		Workspace:   cloneSandboxWorkspace(req.Workspace),
+		Workspace:   autoSandboxManifestWorkspace(req),
 		Security:    cloneSandboxSecurity(nil),
 	}
 	if target != nil {
 		if strings.TrimSpace(manifest.SandboxName) == "" {
 			manifest.SandboxName = strings.TrimSpace(target.Name)
 		}
-		manifest.Host = cloneSandboxHost(target.Host)
+		if selectedWorkerRootlessSandboxState(target) {
+			manifest.Host = workerRootlessManifestHost(target.Host)
+		} else {
+			manifest.Host = cloneSandboxHost(target.Host)
+		}
 		manifest.Runtime = cloneSandboxRuntime(target.Runtime)
 		manifest.Security = cloneSandboxSecurity(target.Security)
 		if sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
@@ -799,6 +803,13 @@ func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxReques
 	}
 	preserveSandboxManifestArtifacts(store, manifest)
 	return store.SaveManifest(manifest)
+}
+
+func autoSandboxManifestWorkspace(req autoSandboxRequest) *sandbox.SandboxWorkspace {
+	if sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
+		return sandboxCommandPersistentWorkspace(req.Workspace)
+	}
+	return cloneSandboxWorkspace(req.Workspace)
 }
 
 func buildAutoSandboxRemoteCommand(req autoSandboxRequest) []string {

@@ -1046,7 +1046,9 @@ func TestWorkerRootlessAutoSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) 
 		},
 		now: runSandboxTestClock(startedAt, finishedAt),
 		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
-			return workerRootlessBundlePlan(projectDir), nil
+			plan := workerRootlessBundlePlan(projectDir)
+			plan.Repository = "https://deploy:secret@example.test/org/repo.git?token=secret"
+			return plan, nil
 		},
 		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
 			return workerRootlessCachedSandbox(name), nil
@@ -1119,7 +1121,12 @@ func TestWorkerRootlessAutoSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) 
 	if manifest.Runtime == nil || manifest.Runtime.Driver != sandboxruntime.DriverRootlessPodman || manifest.Runtime.WorkerID != "worker-1" {
 		t.Fatalf("manifest runtime = %#v, want selected worker rootless runtime", manifest.Runtime)
 	}
+	if manifest.Purpose != sandboxexecution.PurposeAuto {
+		t.Fatalf("manifest.Purpose = %q, want %q", manifest.Purpose, sandboxexecution.PurposeAuto)
+	}
+	requireWorkerRootlessRunManifestWorkspace(t, manifest.Workspace, sandbox.SandboxWorkspaceInputSourceGitBundle)
 	requireWorkerRootlessExecutionManifestMetadata(t, manifest)
+	requireWorkerManifestNoUnsafeDetails(t, manifest, "unix://", "/tmp/private/worker-1.sock", "deploy:secret", "example.test", "token=secret")
 }
 
 func TestWorkerRootlessRunSandboxStreamsOutputAndSummariesExcludePreparation(t *testing.T) {
