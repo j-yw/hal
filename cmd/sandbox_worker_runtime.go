@@ -1,0 +1,84 @@
+package cmd
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxworker"
+)
+
+type sandboxWorkerRuntimeRequest struct {
+	Target sandboxruntime.Target
+	Host   *sandbox.SandboxHost
+}
+
+type sandboxWorkerRuntimeDriverFactories struct {
+	newWorkerClient  func(string) (sandboxworker.RuntimeDriverClient, error)
+	newRuntimeDriver func(sandboxworker.ClientDriverOptions) (sandboxruntime.Driver, error)
+}
+
+func sandboxWorkerRuntimeDriverFromTarget(req sandboxWorkerRuntimeRequest, factories sandboxWorkerRuntimeDriverFactories) (sandboxruntime.Driver, error) {
+	factories = normalizeSandboxWorkerRuntimeDriverFactories(factories)
+
+	host := req.Host
+	if host == nil {
+		return nil, fmt.Errorf("selected worker host metadata is required")
+	}
+	hostID := strings.TrimSpace(host.ID)
+	if strings.TrimSpace(host.Kind) != sandbox.SandboxHostKindWorker {
+		return nil, fmt.Errorf("selected sandbox host %q is not a worker host", sandboxHostDisplayValue(hostID, host.Name))
+	}
+
+	driverID := strings.TrimSpace(req.Target.Runtime.Driver)
+	if driverID == "" {
+		return nil, fmt.Errorf("selected runtime driver is required for worker-backed execution")
+	}
+	if !sandboxRuntimeHostSupportsRuntime(host, driverID) {
+		return nil, fmt.Errorf("worker host %q does not support requested runtime %q", sandboxHostDisplayValue(hostID, host.Name), driverID)
+	}
+	if driverID != sandboxruntime.DriverRootlessPodman {
+		return nil, fmt.Errorf("worker-backed execution does not support selected runtime %q", driverID)
+	}
+
+	socketPath, err := sandboxHostLocalWorkerSocketPath(host.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+	client, err := factories.newWorkerClient(sandboxHostWorkerClientSocketPath(socketPath))
+	if err != nil {
+		return nil, sandboxHostWorkerClientError("connect", err)
+	}
+	if client == nil {
+		return nil, sandboxHostWorkerClientError("connect", fmt.Errorf("worker client is not configured"))
+	}
+
+	driver, err := factories.newRuntimeDriver(sandboxworker.ClientDriverOptions{
+		DriverID: driverID,
+		Client:   client,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("construct worker-backed runtime driver %q: %w", driverID, err)
+	}
+	if driver == nil {
+		return nil, fmt.Errorf("construct worker-backed runtime driver %q: runtime driver factory returned nil", driverID)
+	}
+	return driver, nil
+}
+
+func normalizeSandboxWorkerRuntimeDriverFactories(factories sandboxWorkerRuntimeDriverFactories) sandboxWorkerRuntimeDriverFactories {
+	if factories.newWorkerClient == nil {
+		factories.newWorkerClient = newSandboxWorkerRuntimeClient
+	}
+	if factories.newRuntimeDriver == nil {
+		factories.newRuntimeDriver = func(options sandboxworker.ClientDriverOptions) (sandboxruntime.Driver, error) {
+			return sandboxworker.NewClientDriver(options)
+		}
+	}
+	return factories
+}
+
+func newSandboxWorkerRuntimeClient(socketPath string) (sandboxworker.RuntimeDriverClient, error) {
+	return sandboxworker.NewClient(sandboxworker.ClientOptions{SocketPath: strings.TrimSpace(socketPath)})
+}
