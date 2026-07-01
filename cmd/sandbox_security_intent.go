@@ -1,16 +1,18 @@
 package cmd
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/template"
 )
 
 func loadConfiguredSandboxSecurityRequest(projectDir, runtimeDriver string) (sandbox.SecurityEvaluationRequest, error) {
 	cfg, err := compound.LoadSandboxConfig(projectDir)
 	if err != nil {
-		return sandbox.SecurityEvaluationRequest{}, err
+		return sandbox.SecurityEvaluationRequest{}, sanitizeSandboxSecurityConfigLoadError(projectDir, err)
 	}
 	return sandboxSecurityRequestFromConfig(cfg, runtimeDriver), nil
 }
@@ -50,4 +52,46 @@ func emptySandboxSecurityEvaluationRequest(req sandbox.SecurityEvaluationRequest
 		len(req.RequestedSecretModes) == 0 &&
 		len(req.ActiveSecretModes) == 0 &&
 		!req.CompatibilityAuthSync
+}
+
+type safeSandboxSecurityConfigLoadError struct {
+	message string
+	cause   error
+}
+
+func (e safeSandboxSecurityConfigLoadError) Error() string {
+	return e.message
+}
+
+func (e safeSandboxSecurityConfigLoadError) Unwrap() error {
+	return e.cause
+}
+
+func sanitizeSandboxSecurityConfigLoadError(projectDir string, err error) error {
+	if err == nil {
+		return nil
+	}
+	message := sanitizeCredentialedRemoteReferences(err.Error())
+	configPath := filepath.Join(projectDir, template.HalDir, template.ConfigFile)
+	displayPath := filepath.ToSlash(filepath.Join(template.HalDir, template.ConfigFile))
+	message = replacePathVariants(message, configPath, displayPath)
+	if projectDir != "" {
+		message = replacePathVariants(message, filepath.Clean(projectDir), "[project]")
+	}
+	if strings.TrimSpace(message) == "" {
+		message = "sandbox security config load failed"
+	}
+	return safeSandboxSecurityConfigLoadError{message: message, cause: err}
+}
+
+func replacePathVariants(value, rawPath, replacement string) string {
+	rawPath = strings.TrimSpace(rawPath)
+	if rawPath == "" {
+		return value
+	}
+	value = strings.ReplaceAll(value, rawPath, replacement)
+	if slashPath := filepath.ToSlash(rawPath); slashPath != rawPath {
+		value = strings.ReplaceAll(value, slashPath, replacement)
+	}
+	return value
 }

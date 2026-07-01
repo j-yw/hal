@@ -128,6 +128,57 @@ func TestEffectiveNetworkPolicyWarnings(t *testing.T) {
 	})
 }
 
+func TestCloneSandboxNetworkPolicyResultOmitsRuleValues(t *testing.T) {
+	requested := SandboxNetworkPolicyIntent{
+		Preset: SandboxNetworkPolicyPresetAllowListed,
+		Rules: []SandboxNetworkPolicyRule{
+			{
+				Kind:     SandboxNetworkPolicyRuleKindDomain,
+				Value:    "api.example.com",
+				Decision: SandboxNetworkPolicyDecisionAllow,
+			},
+			{
+				Kind:     SandboxNetworkPolicyRuleKindMetadataEndpoint,
+				Value:    "169.254.169.254",
+				Decision: SandboxNetworkPolicyDecisionDeny,
+			},
+		},
+	}
+	result := EvaluateSandboxNetworkPolicy(requested, SandboxNetworkPolicyEnforcementCapability{
+		Supported:                  true,
+		Modes:                      []string{SandboxNetworkEnforcementModeRuntime},
+		SupportsDomainRules:        true,
+		SupportsMetadataEndpoint:   true,
+		SupportsDefaultDenyPosture: true,
+	})
+
+	cloned := CloneSandboxNetworkPolicyResult(result)
+	if len(cloned.Requested.Rules) != len(requested.Rules) {
+		t.Fatalf("requested rule count = %d, want %d", len(cloned.Requested.Rules), len(requested.Rules))
+	}
+	if len(cloned.Effective.Rules) != len(requested.Rules) {
+		t.Fatalf("effective rule count = %d, want %d", len(cloned.Effective.Rules), len(requested.Rules))
+	}
+	for _, rule := range append(cloned.Requested.Rules, cloned.Effective.Rules...) {
+		if rule.Value != "" {
+			t.Fatalf("durable policy rule value = %q, want omitted", rule.Value)
+		}
+	}
+	if result.Requested.Rules[0].Value != "api.example.com" || result.Effective.Rules[1].Value != "169.254.169.254" {
+		t.Fatalf("clone mutated source result: %#v", result)
+	}
+
+	payload, err := json.Marshal(cloned)
+	if err != nil {
+		t.Fatalf("marshal cloned result: %v", err)
+	}
+	for _, forbidden := range []string{"api.example.com", "169.254.169.254", "secret", "token", "://"} {
+		if strings.Contains(string(payload), forbidden) {
+			t.Fatalf("durable policy result leaked %q: %s", forbidden, payload)
+		}
+	}
+}
+
 func TestEffectiveNetworkPolicyNoRealNetworking(t *testing.T) {
 	const filename = "network_policy_evaluator.go"
 

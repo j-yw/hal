@@ -446,6 +446,94 @@ func TestPhase23FinalBarrierFactoryQueueSandboxFailureRedaction(t *testing.T) {
 	}), fixtures)
 }
 
+func TestPhase23FinalBarrierFactorySandboxConfigLoadFailureRedaction(t *testing.T) {
+	fixtures := phase23SecurityFixtures()
+	projectDir := t.TempDir()
+	halDir := filepath.Join(projectDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(.hal) error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(halDir, "prd.md"), []byte("# PRD\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(prd.md) error: %v", err)
+	}
+	configPath := filepath.Join(halDir, "config.yaml")
+	if err := os.Mkdir(configPath, 0o700); err != nil {
+		t.Fatalf("Mkdir(config.yaml) error: %v", err)
+	}
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 7, 2, 10, 6, 0, 0, time.UTC)
+	var out bytes.Buffer
+	err := runFactoryRunWithDeps(context.Background(), projectDir, factoryRunRequest{
+		MarkdownPath: ".hal/prd.md",
+		BaseBranch:   "main",
+		Sandbox:      true,
+		JSON:         true,
+		Secrets: []factory.RunSecretInput{{
+			Name:     "PHASE23_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+		}},
+	}, &out, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "phase23-config-load-failure", nil },
+		now:          func() time.Time { return now },
+		workingDir:   func() (string, error) { return projectDir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/phase-23-security-intent-propagation", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "https://github.com/example/hal.git", nil
+		},
+		lookupEnv: phase23LookupEnv(fixtures),
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			policy := factory.DefaultFactoryPolicy()
+			return &policy, nil
+		},
+		loadEngine: func(string) (string, error) {
+			return factory.PolicyEngineCodex, nil
+		},
+		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
+			t.Fatal("local pipeline should not run after sandbox config load failure")
+			return nil
+		},
+		runSandbox: func(context.Context, factorySandboxExecutorRequest) error {
+			t.Fatal("sandbox executor should not run after sandbox config load failure")
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("runFactoryRunWithDeps() error = nil, want sandbox config load failure")
+	}
+	loaded, loadErr := store.LoadRun("phase23-config-load-failure")
+	if loadErr != nil {
+		t.Fatalf("LoadRun() error: %v", loadErr)
+	}
+	events, loadErr := store.LoadEvents("phase23-config-load-failure")
+	if loadErr != nil {
+		t.Fatalf("LoadEvents() error: %v", loadErr)
+	}
+	payload := strings.Join([]string{
+		err.Error(),
+		out.String(),
+		loaded.Failure.Message,
+		mustMarshalSandboxSecurityMetadata(t, events),
+	}, "\n")
+	if !strings.Contains(payload, ".hal/config.yaml") {
+		t.Fatalf("failure payload = %q, want safe config path summary", payload)
+	}
+	for _, forbidden := range []string{
+		configPath,
+		filepath.ToSlash(configPath),
+		fixtures.rawSecret,
+		url.QueryEscape(fixtures.rawSecret),
+	} {
+		if strings.Contains(payload, forbidden) {
+			t.Fatalf("factory config failure leaked %q: %s", forbidden, payload)
+		}
+	}
+}
+
 func TestPhase23FinalBarrierRootlessSecurityDoesNotOverclaimDenyByDefault(t *testing.T) {
 	security := workerRootlessHostSecurity()
 	requireWorkerRootlessSandboxSecurity(t, security)
@@ -498,6 +586,8 @@ func (v phase23SensitiveValues) forbidden() []string {
 		v.credentialRemote,
 		v.workerEndpoint,
 		v.hostTempPath,
+		"api.example.com",
+		"169.254.169.254",
 	}
 }
 

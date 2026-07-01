@@ -205,12 +205,15 @@ func sandboxNetworkPolicyWarningMessage(reason SandboxNetworkPolicyWarningReason
 	}
 }
 
-// CloneSandboxNetworkPolicyResult returns a deep copy of network policy result
-// metadata so callers can persist or attach it without sharing mutable slices.
+// CloneSandboxNetworkPolicyResult returns a redaction-safe deep copy of network
+// policy result metadata so callers can persist or attach it without sharing
+// mutable slices. Rule values are intentionally omitted from durable result
+// metadata; the result records rule kind/decision shape without storing raw
+// domains, endpoints, local addresses, or credential-bearing strings.
 func CloneSandboxNetworkPolicyResult(result SandboxNetworkPolicyResult) SandboxNetworkPolicyResult {
 	out := result
-	out.Requested = CloneSandboxNetworkPolicyIntent(result.Requested)
-	out.Effective = CloneSandboxNetworkPolicyIntent(result.Effective)
+	out.Requested = cloneSandboxNetworkPolicyIntentWithoutRuleValues(result.Requested)
+	out.Effective = cloneSandboxNetworkPolicyIntentWithoutRuleValues(result.Effective)
 	out.Capability = CloneSandboxNetworkPolicyEnforcementCapability(result.Capability)
 	if len(result.Warnings) > 0 {
 		out.Warnings = append([]SandboxNetworkPolicyWarning(nil), result.Warnings...)
@@ -244,6 +247,21 @@ func cloneSandboxNetworkPolicyIntent(intent SandboxNetworkPolicyIntent) SandboxN
 	out := SandboxNetworkPolicyIntent{Preset: intent.Preset}
 	if len(intent.Rules) > 0 {
 		out.Rules = append([]SandboxNetworkPolicyRule(nil), intent.Rules...)
+	}
+	return out
+}
+
+func cloneSandboxNetworkPolicyIntentWithoutRuleValues(intent SandboxNetworkPolicyIntent) SandboxNetworkPolicyIntent {
+	out := SandboxNetworkPolicyIntent{Preset: intent.Preset}
+	if len(intent.Rules) == 0 {
+		return out
+	}
+	out.Rules = make([]SandboxNetworkPolicyRule, 0, len(intent.Rules))
+	for _, rule := range intent.Rules {
+		out.Rules = append(out.Rules, SandboxNetworkPolicyRule{
+			Kind:     rule.Kind,
+			Decision: rule.Decision,
+		})
 	}
 	return out
 }
