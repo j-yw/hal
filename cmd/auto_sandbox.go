@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -266,7 +267,13 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 	}
 
 	var target *sandbox.SandboxState
-	execResult, execErr := deps.execute(ctx, req, out, errOut, autoSandboxExecutionHooks{
+	commandOut := out
+	var capturedJSON bytes.Buffer
+	augmentJSON := opts.JSON && req.SyncOut.Enabled
+	if augmentJSON {
+		commandOut = &capturedJSON
+	}
+	execResult, execErr := deps.execute(ctx, req, commandOut, errOut, autoSandboxExecutionHooks{
 		OnTargetReady: func(ready *sandbox.SandboxState) error {
 			target = ready
 			if target != nil && strings.TrimSpace(req.SandboxName) == "" {
@@ -342,6 +349,11 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 	}
 	if manifestErr := saveAutoSandboxManifest(store, req, status, startedAt, &finishedAt, target); manifestErr != nil && execErr == nil {
 		execErr = manifestErr
+	}
+	if augmentJSON && execResult.RemoteStarted {
+		if outputErr := outputSandboxSyncOutAugmentedJSON(out, capturedJSON.Bytes(), store, req.ExecutionID); outputErr != nil {
+			execErr = errors.Join(execErr, outputErr)
+		}
 	}
 	if execErr != nil {
 		if opts.JSON && !execResult.RemoteStarted {

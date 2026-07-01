@@ -13,6 +13,7 @@ import (
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/loop"
+	"github.com/jywlabs/hal/internal/sandboxworkspace"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
@@ -47,19 +48,21 @@ var (
 
 // RunResult is the machine-readable output of hal run --json.
 type RunResult struct {
-	ContractVersion int            `json:"contractVersion"`
-	OK              bool           `json:"ok"`
-	Engine          string         `json:"engine,omitempty"`
-	Iterations      int            `json:"iterations"`
-	Complete        bool           `json:"complete"`
-	StoryID         string         `json:"storyId,omitempty"`
-	LastStoryID     string         `json:"lastStoryId,omitempty"`
-	DryRun          bool           `json:"dryRun,omitempty"`
-	Duration        string         `json:"duration,omitempty"`
-	PRD             *RunPRDInfo    `json:"prd,omitempty"`
-	NextAction      *RunNextAction `json:"nextAction,omitempty"`
-	Error           string         `json:"error,omitempty"`
-	Summary         string         `json:"summary"`
+	ContractVersion int                               `json:"contractVersion"`
+	OK              bool                              `json:"ok"`
+	Engine          string                            `json:"engine,omitempty"`
+	Iterations      int                               `json:"iterations"`
+	Complete        bool                              `json:"complete"`
+	StoryID         string                            `json:"storyId,omitempty"`
+	LastStoryID     string                            `json:"lastStoryId,omitempty"`
+	DryRun          bool                              `json:"dryRun,omitempty"`
+	Duration        string                            `json:"duration,omitempty"`
+	PRD             *RunPRDInfo                       `json:"prd,omitempty"`
+	SyncOut         *sandboxworkspace.SyncOutSummary  `json:"syncOut,omitempty"`
+	SyncOutApply    *sandboxworkspace.SafeApplyResult `json:"syncOutApply,omitempty"`
+	NextAction      *RunNextAction                    `json:"nextAction,omitempty"`
+	Error           string                            `json:"error,omitempty"`
+	Summary         string                            `json:"summary"`
 }
 
 // RunPRDInfo provides PRD state at the time the run completed.

@@ -1,8 +1,12 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	pathpkg "path"
 	"path/filepath"
 	"strings"
@@ -79,7 +83,12 @@ func applySandboxSyncOut(ctx context.Context, store sandboxexecution.Store, req 
 		return sandboxworkspace.SafeApplyResult{}, err
 	}
 	result, err := apply(ctx, req)
-	return sandboxSyncOutApplyResultWithHandoffInstructions(req, result), err
+	result = sandboxSyncOutNormalizeApplyResult(req, result)
+	result = sandboxSyncOutApplyResultWithHandoffInstructions(req, result)
+	if persistErr := persistSandboxSyncOutApplyMetadata(store, req.ExecutionID, req.Summary, result); persistErr != nil {
+		err = errors.Join(err, persistErr)
+	}
+	return result, err
 }
 
 func defaultSandboxSyncOutApplier(ctx context.Context, req sandboxSyncOutApplyRequest) (sandboxworkspace.SafeApplyResult, error) {
@@ -212,6 +221,80 @@ func sandboxSyncOutApplyResultWithHandoffInstructions(req sandboxSyncOutApplyReq
 		Artifacts: sandboxSyncOutHandoffArtifactRefs(req.Summary, result),
 	}}
 	return result
+}
+
+func sandboxSyncOutNormalizeApplyResult(req sandboxSyncOutApplyRequest, result sandboxworkspace.SafeApplyResult) sandboxworkspace.SafeApplyResult {
+	if result.Status != "" || result.Applied || result.DryRunPassed {
+		return result
+	}
+	if req.Handoff.Status != "" {
+		return req.Handoff
+	}
+	return sandboxSyncOutApplyHandoff(req.Summary, []sandboxworkspace.SyncOutApplyEligibilityReason{sandboxworkspace.SyncOutApplyEligibilityReasonNoEligibleArtifact})
+}
+
+func persistSandboxSyncOutApplyMetadata(store sandboxexecution.Store, executionID string, summary sandboxworkspace.SyncOutSummary, result sandboxworkspace.SafeApplyResult) error {
+	manifest, err := store.LoadManifest(executionID)
+	if err != nil {
+		return fmt.Errorf("load sandbox execution manifest for sync-out metadata: %w", err)
+	}
+	manifest.SyncOut = cloneSandboxSyncOutSummary(&summary)
+	manifest.SyncOutApply = cloneSandboxSafeApplyResult(&result)
+	if err := store.SaveManifest(manifest); err != nil {
+		return fmt.Errorf("persist sandbox sync-out metadata: %w", err)
+	}
+	return nil
+}
+
+func outputSandboxSyncOutAugmentedJSON(out io.Writer, remoteJSON []byte, store sandboxexecution.Store, executionID string) error {
+	if out == nil {
+		out = io.Discard
+	}
+	manifest, err := store.LoadManifest(executionID)
+	if err != nil || (manifest.SyncOut == nil && manifest.SyncOutApply == nil) {
+		return writeSandboxCapturedJSON(out, remoteJSON)
+	}
+	augmented, ok := sandboxSyncOutAugmentJSON(remoteJSON, manifest)
+	if !ok {
+		return writeSandboxCapturedJSON(out, remoteJSON)
+	}
+	_, err = fmt.Fprintln(out, string(augmented))
+	return err
+}
+
+func writeSandboxCapturedJSON(out io.Writer, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	_, err := out.Write(data)
+	return err
+}
+
+func sandboxSyncOutAugmentJSON(remoteJSON []byte, manifest *sandboxexecution.Manifest) ([]byte, bool) {
+	if len(bytes.TrimSpace(remoteJSON)) == 0 || manifest == nil {
+		return nil, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(remoteJSON))
+	decoder.UseNumber()
+	var raw map[string]any
+	if err := decoder.Decode(&raw); err != nil {
+		return nil, false
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, false
+	}
+	if manifest.SyncOut != nil {
+		raw["syncOut"] = manifest.SyncOut
+	}
+	if manifest.SyncOutApply != nil {
+		raw["syncOutApply"] = manifest.SyncOutApply
+	}
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return nil, false
+	}
+	return data, true
 }
 
 func sandboxSyncOutPrimaryHandoffReason(reasons []sandboxworkspace.SyncOutApplyEligibilityReason) sandboxworkspace.SyncOutApplyEligibilityReason {

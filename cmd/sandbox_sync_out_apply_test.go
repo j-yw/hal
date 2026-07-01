@@ -620,6 +620,237 @@ func TestSandboxSyncOutHandoffInstructions(t *testing.T) {
 	}
 }
 
+func TestSandboxSyncOutManifestJSONAdditiveContract(t *testing.T) {
+	t.Run("manifest persists optional sync-out fields and decodes legacy records", func(t *testing.T) {
+		store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+		executionID := "manifest-additive"
+		saveSandboxSyncOutApplyManifest(t, store, executionID, sandboxexecution.PurposeRun, sandboxexecution.ArtifactMetadata{
+			Collected: []sandboxexecution.ArtifactMetadataEntry{
+				sandboxSyncOutApplyCollected("committed-patch", ".hal/sync/committed.patch", executionID+"/artifacts/sync/committed.patch"),
+				sandboxSyncOutApplyCollected("recovery-patch", ".hal/recovery/workspace.patch", executionID+"/recovery/workspace.patch"),
+			},
+		})
+
+		result, err := applySandboxSyncOut(context.Background(), store, sandboxSyncOutApplyRequest{
+			ExecutionID: executionID,
+			Purpose:     sandboxexecution.PurposeRun,
+			ProjectDir:  t.TempDir(),
+			Options: sandboxSyncOutOptions{
+				Enabled: true,
+				Apply:   false,
+			},
+		}, func(_ context.Context, got sandboxSyncOutApplyRequest) (sandboxworkspace.SafeApplyResult, error) {
+			return got.Handoff, nil
+		})
+		if err != nil {
+			t.Fatalf("applySandboxSyncOut() error = %v", err)
+		}
+		if result.Status != sandboxworkspace.SafeApplyStatusHandoffRequired {
+			t.Fatalf("apply result = %#v, want handoff-required", result)
+		}
+
+		manifest := mustLoadSandboxExecutionManifest(t, store, executionID)
+		if manifest.SyncOut == nil {
+			t.Fatal("manifest SyncOut = nil, want additive sync-out summary")
+		}
+		if manifest.SyncOut.Committed.Patch == nil || manifest.SyncOut.Committed.Patch.ID != "committed-patch" {
+			t.Fatalf("manifest SyncOut committed patch = %#v, want committed patch metadata", manifest.SyncOut.Committed.Patch)
+		}
+		if manifest.SyncOutApply == nil {
+			t.Fatal("manifest SyncOutApply = nil, want additive apply result")
+		}
+		if !sandboxApplyReasonsContain(manifest.SyncOutApply.Reasons, sandboxworkspace.SyncOutApplyEligibilityReasonApplyDisabled) {
+			t.Fatalf("manifest SyncOutApply reasons = %#v, want apply_disabled", manifest.SyncOutApply.Reasons)
+		}
+
+		encoded, err := json.Marshal(manifest)
+		if err != nil {
+			t.Fatalf("Marshal(manifest) error: %v", err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &fields); err != nil {
+			t.Fatalf("Unmarshal(manifest fields) error: %v", err)
+		}
+		for _, field := range []string{"syncOut", "syncOutApply"} {
+			if _, ok := fields[field]; !ok {
+				t.Fatalf("manifest JSON missing %q field: %s", field, string(encoded))
+			}
+		}
+
+		var decoded sandboxexecution.Manifest
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatalf("Unmarshal(manifest with sync-out fields) error: %v", err)
+		}
+		if decoded.SyncOut == nil || decoded.SyncOutApply == nil {
+			t.Fatalf("decoded sync-out fields = %#v/%#v, want populated", decoded.SyncOut, decoded.SyncOutApply)
+		}
+
+		var legacy sandboxexecution.Manifest
+		if err := json.Unmarshal([]byte(`{"id":"legacy","purpose":"run","status":"running","startedAt":"2026-07-02T02:00:00Z"}`), &legacy); err != nil {
+			t.Fatalf("Unmarshal(legacy manifest) error: %v", err)
+		}
+		if legacy.SyncOut != nil || legacy.SyncOutApply != nil {
+			t.Fatalf("legacy sync-out fields = %#v/%#v, want nil optional fields", legacy.SyncOut, legacy.SyncOutApply)
+		}
+	})
+
+	t.Run("run sandbox JSON includes sync-out metadata when explicit", func(t *testing.T) {
+		startedAt := time.Date(2026, 7, 2, 2, 10, 0, 0, time.UTC)
+		finishedAt := startedAt.Add(5 * time.Second)
+		projectDir := t.TempDir()
+		store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+		target := &sandbox.SandboxState{
+			Name:     "run-json-sync-out",
+			Provider: "test-provider",
+			Status:   sandbox.StatusRunning,
+			Runtime:  &sandbox.SandboxRuntimeState{Driver: sandbox.SandboxRuntimeDriverSSHMachine},
+		}
+		plan := sandboxworkspace.Plan{
+			Mode:        sandbox.SandboxWorkspaceModeClone,
+			InputSource: sandbox.SandboxWorkspaceInputSourceRemoteRef,
+			ProjectDir:  projectDir,
+			Repository:  "git@example.com:org/repo.git",
+			Branch:      "feature/run-json-sync-out",
+			Upstream:    "origin/feature/run-json-sync-out",
+			SyncRef:     "refs/remotes/origin/feature/run-json-sync-out",
+		}
+		expectedWorkspace := factorySandboxRemoteWorkspaceDir(factory.RunRecord{
+			RunID:      "run-json-sync-out",
+			RepoPath:   projectDir,
+			RepoRemote: plan.Repository,
+			BranchName: plan.Branch,
+			BaseBranch: "main",
+		})
+		var order []string
+		driver := sandboxApplyOrderRuntimeDriver(t, expectedWorkspace, &order, `{"contractVersion":1,"ok":true,"iterations":1,"complete":false,"summary":"remote run"}`+"\n")
+		var out bytes.Buffer
+		var errOut bytes.Buffer
+
+		err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+			Base:                  "main",
+			BaseChanged:           true,
+			JSON:                  true,
+			JSONChanged:           true,
+			SandboxSyncOut:        true,
+			SandboxSyncOutChanged: true,
+		}, &out, &errOut, runSandboxDeps{
+			defaultStore: func() (sandboxexecution.Store, error) {
+				return store, nil
+			},
+			newExecutionID: func(time.Time) string {
+				return "run-json-sync-out"
+			},
+			now:        runSandboxTestClock(startedAt, finishedAt),
+			workingDir: func() (string, error) { return projectDir, nil },
+			planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+				return plan, nil
+			},
+			resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+				return target, target.Name, nil
+			},
+			resolveProvider: func(string) (sandbox.Provider, error) {
+				return fakeFactorySandboxProvider{}, nil
+			},
+			resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+				return driver, nil
+			},
+			bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+				return factory.BootstrapResult{}, nil
+			},
+			engineAuthFiles: func() []factorySandboxAuthFile {
+				return nil
+			},
+		})
+		if err != nil {
+			t.Fatalf("runRunSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+		}
+
+		var result RunResult
+		decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
+		if result.Summary != "remote run" {
+			t.Fatalf("RunResult.Summary = %q, want remote run", result.Summary)
+		}
+		assertRunAutoSyncOutJSONFields(t, result.SyncOut, result.SyncOutApply)
+		manifest := mustLoadSandboxExecutionManifest(t, store, "run-json-sync-out")
+		assertRunAutoSyncOutJSONFields(t, manifest.SyncOut, manifest.SyncOutApply)
+	})
+
+	t.Run("auto sandbox JSON includes sync-out metadata when explicit", func(t *testing.T) {
+		startedAt := time.Date(2026, 7, 2, 2, 15, 0, 0, time.UTC)
+		finishedAt := startedAt.Add(5 * time.Second)
+		projectDir := t.TempDir()
+		store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+		target := &sandbox.SandboxState{
+			Name:     "auto-json-sync-out",
+			Provider: "test-provider",
+			Status:   sandbox.StatusRunning,
+			Runtime:  &sandbox.SandboxRuntimeState{Driver: sandbox.SandboxRuntimeDriverSSHMachine},
+		}
+		plan := autoSandboxTestPlan(projectDir)
+		expectedWorkspace := factorySandboxRemoteWorkspaceDir(factory.RunRecord{
+			RunID:      "auto-json-sync-out",
+			RepoPath:   projectDir,
+			RepoRemote: plan.Repository,
+			BranchName: plan.Branch,
+			BaseBranch: "main",
+		})
+		var order []string
+		driver := sandboxApplyOrderRuntimeDriver(t, expectedWorkspace, &order, autoSandboxRemoteSuccessJSON("remote auto")+"\n")
+		var out bytes.Buffer
+		var errOut bytes.Buffer
+
+		err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
+			Base:                  "main",
+			BaseChanged:           true,
+			JSON:                  true,
+			JSONChanged:           true,
+			SandboxSyncOut:        true,
+			SandboxSyncOutChanged: true,
+		}, &out, &errOut, autoSandboxDeps{
+			defaultStore: func() (sandboxexecution.Store, error) {
+				return store, nil
+			},
+			newExecutionID: func(time.Time) string {
+				return "auto-json-sync-out"
+			},
+			now: runSandboxTestClock(startedAt, finishedAt),
+			planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+				return plan, nil
+			},
+			resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+				return target, target.Name, nil
+			},
+			resolveProvider: func(string) (sandbox.Provider, error) {
+				return fakeFactorySandboxProvider{}, nil
+			},
+			resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+				return driver, nil
+			},
+			bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+				return factory.BootstrapResult{}, nil
+			},
+			engineAuthFiles: func() []factorySandboxAuthFile {
+				return nil
+			},
+			runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
+				return nil
+			},
+		})
+		if err != nil {
+			t.Fatalf("runAutoSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+		}
+
+		var result AutoResult
+		decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
+		if result.Summary != "remote auto" {
+			t.Fatalf("AutoResult.Summary = %q, want remote auto", result.Summary)
+		}
+		assertRunAutoSyncOutJSONFields(t, result.SyncOut, result.SyncOutApply)
+		manifest := mustLoadSandboxExecutionManifest(t, store, "auto-json-sync-out")
+		assertRunAutoSyncOutJSONFields(t, manifest.SyncOut, manifest.SyncOutApply)
+	})
+}
+
 func TestSandboxApplyPersistsRecoveryBeforeHostMutation(t *testing.T) {
 	t.Run("run", func(t *testing.T) {
 		startedAt := time.Date(2026, 7, 2, 1, 0, 0, 0, time.UTC)
@@ -1058,5 +1289,30 @@ func assertSandboxSyncOutHandoffInstructions(t *testing.T, result sandboxworkspa
 		if strings.Contains(payload, value) {
 			t.Fatalf("handoff instructions leaked %q: %s", value, payload)
 		}
+	}
+}
+
+func assertRunAutoSyncOutJSONFields(t *testing.T, summary *sandboxworkspace.SyncOutSummary, apply *sandboxworkspace.SafeApplyResult) {
+	t.Helper()
+	if summary == nil {
+		t.Fatal("syncOut = nil, want additive sync-out summary")
+	}
+	if summary.Recovery.Status != sandboxworkspace.SyncOutRecoveryStatusCollected {
+		t.Fatalf("syncOut.recovery.status = %q, want collected", summary.Recovery.Status)
+	}
+	if len(summary.CoreArtifacts) == 0 {
+		t.Fatalf("syncOut.coreArtifacts = %#v, want durable core artifact references", summary.CoreArtifacts)
+	}
+	if apply == nil {
+		t.Fatal("syncOutApply = nil, want additive apply/handoff result")
+	}
+	if apply.Status != sandboxworkspace.SafeApplyStatusHandoffRequired || apply.Applied {
+		t.Fatalf("syncOutApply = %#v, want handoff-required without apply", apply)
+	}
+	if !sandboxApplyReasonsContain(apply.Reasons, sandboxworkspace.SyncOutApplyEligibilityReasonApplyDisabled) {
+		t.Fatalf("syncOutApply.reasons = %#v, want apply_disabled", apply.Reasons)
+	}
+	if len(apply.HandoffInstructions) == 0 {
+		t.Fatalf("syncOutApply.handoffInstructions = %#v, want safe handoff guidance", apply.HandoffInstructions)
 	}
 }
