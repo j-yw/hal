@@ -549,8 +549,8 @@ func handleFactorySandboxExecutorError(ctx context.Context, store factory.Store,
 		}
 		return failureErr
 	case sandboxexec.PhaseProvisionTarget:
-		_ = recordFactorySandboxFailure(store, deps, record, nil, "provision", failureErr, secretRedactor)
-		return factorySandboxRecordedError("provision factory sandbox", nil, failureErr, secretRedactor)
+		_ = recordFactorySandboxFailure(store, deps, record, target, "provision", failureErr, secretRedactor)
+		return factorySandboxRecordedError("provision factory sandbox", target, failureErr, secretRedactor)
 	case sandboxexec.PhaseStartTarget:
 		_ = recordFactorySandboxFailure(store, deps, record, target, "start", failureErr, secretRedactor)
 		name := ""
@@ -1988,6 +1988,9 @@ func factorySandboxMetadataFromState(instance *sandbox.SandboxState) (string, *f
 		Workspace:      factorySandboxWorkspaceMetadataFromState(instance),
 		Security:       factorySandboxSecurityMetadataFromState(instance),
 		Lease:          factorySandboxLeaseMetadataFromState(instance),
+	}
+	if selectedWorkerRootlessSandboxState(instance) {
+		metadata.WorkerRouting = sandboxWorkerRoutingMetadataFromState(instance)
 	}
 	return instance.Name, metadata
 }

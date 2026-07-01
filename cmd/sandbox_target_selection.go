@@ -84,7 +84,7 @@ func resolveSandboxCommandTarget(ctx context.Context, req sandboxCommandTargetRe
 	})
 	if err != nil {
 		if req.WrapProvisionFailure {
-			return nil, &sandboxexec.PhaseError{Phase: sandboxexec.PhaseProvisionTarget, Err: err}
+			return nil, &sandboxexec.PhaseError{Phase: sandboxexec.PhaseProvisionTarget, Target: target, Err: err}
 		}
 		return nil, err
 	}
@@ -202,7 +202,7 @@ func provisionSandboxCommandTarget(ctx context.Context, req sandboxCommandTarget
 	})
 	if err != nil {
 		if req.WrapProvisionFailure {
-			return nil, &sandboxexec.PhaseError{Phase: sandboxexec.PhaseProvisionTarget, Err: err}
+			return nil, &sandboxexec.PhaseError{Phase: sandboxexec.PhaseProvisionTarget, Target: target, Err: err}
 		}
 		return nil, err
 	}

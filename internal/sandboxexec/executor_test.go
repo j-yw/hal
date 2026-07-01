@@ -1025,6 +1025,70 @@ func TestRunPropagatesStartFailure(t *testing.T) {
 	}
 }
 
+func TestRunStartFailurePreservesReturnedRuntimeTarget(t *testing.T) {
+	target := &sandbox.SandboxState{
+		Name:     "worker-rootless",
+		Provider: "worker",
+		Status:   sandbox.StatusStopped,
+		Host: &sandbox.SandboxHost{
+			ID:   "worker-1",
+			Name: "worker one",
+			Kind: sandbox.SandboxHostKindWorker,
+		},
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandboxruntime.DriverRootlessPodman,
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+		},
+	}
+	startErr := errors.New("worker start failed")
+	driver := &recordingRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+			returned := req.Target
+			returned.Status = sandbox.StatusRunning
+			returned.Runtime = sandboxruntime.RuntimeState{
+				Driver:         sandboxruntime.DriverRootlessPodman,
+				RuntimeID:      "ctr-worker-rootless",
+				Image:          "localhost/hal:test",
+				WorkerID:       "worker-1",
+				IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+			}
+			return &returned, startErr
+		},
+	}
+
+	_, err := Run(context.Background(), CommandRequest{SandboxName: "worker-rootless"}, Dependencies{
+		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return driver, nil
+		},
+		RunCommand: func(context.Context, RunContext, CommandRequest) error {
+			t.Fatal("RunCommand should not run after start failure")
+			return nil
+		},
+	})
+	phaseErr, ok := AsPhaseError(err)
+	if !ok || phaseErr.Phase != PhaseStartTarget || !errors.Is(err, startErr) {
+		t.Fatalf("error = %#v, want start phase wrapping startErr", err)
+	}
+	if phaseErr.Target == nil {
+		t.Fatal("phase target = nil, want returned start target metadata")
+	}
+	if phaseErr.Target.Host == nil || phaseErr.Target.Host.ID != "worker-1" {
+		t.Fatalf("phase target host = %#v, want original worker host", phaseErr.Target.Host)
+	}
+	if phaseErr.Target.Runtime == nil ||
+		phaseErr.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman ||
+		phaseErr.Target.Runtime.RuntimeID != "ctr-worker-rootless" ||
+		phaseErr.Target.Runtime.Image != "localhost/hal:test" ||
+		phaseErr.Target.Runtime.WorkerID != "worker-1" ||
+		phaseErr.Target.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelContainer {
+		t.Fatalf("phase target runtime = %#v, want returned worker rootless runtime metadata", phaseErr.Target.Runtime)
+	}
+}
+
 func TestRunPreservesInjectedProvisionPhaseError(t *testing.T) {
 	provisionErr := errors.New("quota exceeded")
 
