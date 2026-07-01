@@ -331,6 +331,11 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 		engineCfg = withTimeoutOverride(engineCfg, timeoutOverride)
 	}
 
+	runLogger := out
+	if jsonMode {
+		runLogger = io.Discard
+	}
+
 	if parallelWorkers > 0 {
 		parallelResult := parallelrun.New(parallelrun.Config{
 			RepoDir:       ".",
@@ -343,7 +348,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 			DryRun:        dryRun,
 			Engine:        resolvedEngine,
 			EngineConfig:  engineCfg,
-			Logger:        out,
+			Logger:        runLogger,
 			RetryDelay:    delay,
 			MaxRetries:    retries,
 		}, parallelrun.Deps{}).Run(context.Background())
@@ -366,7 +371,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 		MaxIterations: iterations,
 		Engine:        resolvedEngine,
 		EngineConfig:  engineCfg,
-		Logger:        out,
+		Logger:        runLogger,
 		RetryDelay:    delay,
 		MaxRetries:    retries,
 		DryRun:        dryRun,
