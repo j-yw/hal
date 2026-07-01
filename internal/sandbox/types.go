@@ -69,6 +69,7 @@ type SandboxHost struct {
 	SupportedRuntimes []string          `json:"supportedRuntimes,omitempty"`
 	Capacity          *HostCapacity     `json:"capacity,omitempty"`
 	Health            *HostHealth       `json:"health,omitempty"`
+	Security          *SandboxSecurity  `json:"security,omitempty"`
 	Cost              *HostCost         `json:"cost,omitempty"`
 }
 

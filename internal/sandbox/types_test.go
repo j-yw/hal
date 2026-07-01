@@ -248,13 +248,24 @@ func TestSandboxHostMetadataJSONTags(t *testing.T) {
 					LastHeartbeatAt: &lastHeartbeatAt,
 					Message:         "ready",
 				},
+				Security: &SandboxSecurity{
+					Network: &SandboxNetworkSecurity{
+						PolicyRequested: SandboxNetworkPolicyDenyByDefault,
+						PolicyEnforced:  SandboxNetworkPolicyBestEffort,
+						EnforcementMode: SandboxNetworkEnforcementModeNone,
+					},
+					Secrets: &SandboxSecretSecurity{
+						RequestedModes: []string{SandboxSecretModeSSHAgent},
+						ActiveModes:    []string{SandboxSecretModeEnv},
+					},
+				},
 				Cost: &HostCost{
 					Currency:       "USD",
 					HourlyEstimate: 0.42,
 					BillingScope:   "host",
 				},
 			},
-			wantPresent: []string{"id", "name", "kind", "endpoint", "labels", "supportedRuntimes", "capacity", "health", "cost"},
+			wantPresent: []string{"id", "name", "kind", "endpoint", "labels", "supportedRuntimes", "capacity", "health", "security", "cost"},
 		},
 	}
 
@@ -297,6 +308,17 @@ func TestSandboxHostNestedMetadataJSONTags(t *testing.T) {
 			Currency:       "USD",
 			HourlyEstimate: 0.42,
 		},
+		Security: &SandboxSecurity{
+			Network: &SandboxNetworkSecurity{
+				PolicyRequested: SandboxNetworkPolicyDenyByDefault,
+				PolicyEnforced:  SandboxNetworkPolicyBestEffort,
+				EnforcementMode: SandboxNetworkEnforcementModeNone,
+			},
+			Secrets: &SandboxSecretSecurity{
+				RequestedModes: []string{SandboxSecretModeSSHAgent},
+				ActiveModes:    []string{SandboxSecretModeEnv},
+			},
+		},
 	}
 
 	got := mustMarshalObject(t, host)
@@ -304,6 +326,7 @@ func TestSandboxHostNestedMetadataJSONTags(t *testing.T) {
 	assertObjectKeys(t, got["capacity"], []string{"cpuCores", "memoryMb", "diskGb", "maxConcurrentSandboxes"}, nil)
 	assertObjectKeys(t, got["health"], []string{"status", "checkedAt"}, []string{"lastHeartbeatAt", "message"})
 	assertObjectKeys(t, got["cost"], []string{"currency", "hourlyEstimate"}, []string{"billingScope"})
+	assertObjectKeys(t, got["security"], []string{"network", "secrets"}, nil)
 }
 
 func TestSandboxHostRefJSONTags(t *testing.T) {
