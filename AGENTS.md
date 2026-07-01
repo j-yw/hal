@@ -41,6 +41,7 @@
 
 - Sync-out workspace contracts belong in `internal/sandboxworkspace` as data-only, command-agnostic types; keep them free of command, factory, provider, worker, concrete runtime adapter, Cobra, and network-only imports, and represent artifacts with safe IDs, display names, relative/store paths, warning codes, recovery status, and explicit apply eligibility reasons.
 - Sync-out import-boundary guard coverage lives in `internal/sandboxworkspace/sync_out_import_boundary_test.go`; keep `TestSyncOutImportBoundaries` focused on production `sync_out*.go` contract files, with only standard library imports plus root `internal/sandbox` and `internal/sandboxruntime` data contracts allowed.
+- Sync-out summary construction from non-factory execution artifacts lives in `internal/sandboxexecution`; keep `BuildSyncOutSummaryFromArtifacts` pure/fake-only over safe manifest `ArtifactMetadata`, allow only the root `internal/sandboxworkspace` data-contract import, and avoid runtime, filesystem, worker, provider, command, or network dependencies.
 
 ## Patterns from phase20-lease-aware-scheduler (2026-07-01)
 

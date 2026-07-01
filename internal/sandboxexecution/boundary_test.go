@@ -40,9 +40,10 @@ func assertAllowedImport(t *testing.T, fileName, importPath string) {
 	t.Helper()
 	const internalPrefix = "github.com/jywlabs/hal/internal/"
 	allowedInternalImports := map[string]bool{
-		"github.com/jywlabs/hal/internal/sandbox":        true,
-		"github.com/jywlabs/hal/internal/sandboxruntime": true,
-		"github.com/jywlabs/hal/internal/template":       true,
+		"github.com/jywlabs/hal/internal/sandbox":          true,
+		"github.com/jywlabs/hal/internal/sandboxruntime":   true,
+		"github.com/jywlabs/hal/internal/sandboxworkspace": true,
+		"github.com/jywlabs/hal/internal/template":         true,
 	}
 	if forbidden := sandboxexecutionForbiddenImportFor(importPath); forbidden != nil {
 		t.Fatalf("%s imports forbidden %s package %q", fileName, forbidden.name, importPath)
