@@ -77,6 +77,7 @@ type EngineConfig struct {
 	Model    string        // Model ID (e.g., "claude-sonnet-4-20250514", "gemini-2.5-pro")
 	Provider string        // Provider name (pi-only: "anthropic", "google", "openai", etc.)
 	Timeout  time.Duration // Per-session timeout (0 means use DefaultTimeout)
+	WorkDir  string        // Working directory for engine subprocesses (empty means inherit current directory)
 }
 
 // DefaultTimeout for engine execution.

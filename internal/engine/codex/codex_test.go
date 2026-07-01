@@ -17,6 +17,29 @@ func TestNew(t *testing.T) {
 	}
 }
 
+func TestNewWithWorkDir(t *testing.T) {
+	e := New(&engine.EngineConfig{WorkDir: "/tmp/hal-codex-workdir"})
+	if e.workDir != "/tmp/hal-codex-workdir" {
+		t.Fatalf("workDir = %q, want %q", e.workDir, "/tmp/hal-codex-workdir")
+	}
+}
+
+func TestNewCommandSetsWorkDir(t *testing.T) {
+	e := New(&engine.EngineConfig{WorkDir: "/tmp/hal-codex-workdir"})
+	cmd := e.newCommand(t.Context(), []string{"exec", "-"})
+	if cmd.Dir != "/tmp/hal-codex-workdir" {
+		t.Fatalf("cmd.Dir = %q, want %q", cmd.Dir, "/tmp/hal-codex-workdir")
+	}
+}
+
+func TestNewCommandInheritsCurrentDirWhenWorkDirEmpty(t *testing.T) {
+	e := New(nil)
+	cmd := e.newCommand(t.Context(), []string{"exec", "-"})
+	if cmd.Dir != "" {
+		t.Fatalf("cmd.Dir = %q, want empty", cmd.Dir)
+	}
+}
+
 func TestName(t *testing.T) {
 	e := New(nil)
 	if e.Name() != "codex" {
