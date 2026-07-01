@@ -16,6 +16,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func TestRunCommand_ParallelFlagRequiresExplicitValue(t *testing.T) {
+	parallelFlag := runCmd.LocalFlags().Lookup("parallel")
+	if parallelFlag == nil {
+		t.Fatal("run command missing parallel flag")
+	}
+	if parallelFlag.NoOptDefVal != "" {
+		t.Fatalf("parallel flag NoOptDefVal = %q, want empty so `--parallel 4` is parsed as a flag value", parallelFlag.NoOptDefVal)
+	}
+}
+
 func TestRunRun_DryRun_AllowsMissingGitRepoWithoutBase(t *testing.T) {
 	dir := t.TempDir()
 

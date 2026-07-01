@@ -86,7 +86,7 @@ hal auto [prd-path] [flags]
   -m, --mode string         Policy preset: fast, balanced, strict (default from config)
       --no-ci               Disable CI gate for this run
       --no-review           Disable review gate for this run
-      --parallel int[=2]    Run up to N isolated workers in parallel during the run step (0 disables parallel mode; max 10)
+      --parallel int        Run up to N isolated workers in parallel during the run step (0 disables parallel mode; max 10)
       --report string       Specific report file (overrides markdown auto-discovery, skips find latest)
       --resume              Continue from last saved state
       --review-max int      Maximum review cycles before failing (default from mode/config)

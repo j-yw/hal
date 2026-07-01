@@ -117,6 +117,13 @@ func TestAutoCommand_ExposesOnlySinglePipelineRuntimeFlags(t *testing.T) {
 	if skipPRFlag.Deprecated == "" {
 		t.Fatal("skip-pr alias should be marked deprecated")
 	}
+	parallelFlag := autoCmd.LocalFlags().Lookup("parallel")
+	if parallelFlag == nil {
+		t.Fatal("auto command missing parallel flag")
+	}
+	if parallelFlag.NoOptDefVal != "" {
+		t.Fatalf("parallel flag NoOptDefVal = %q, want empty so `--parallel 4` is parsed as a flag value", parallelFlag.NoOptDefVal)
+	}
 
 	legacyDualModeFlags := []string{"manual", "prd", "explode", "loop", "pr", "auto-prd", "from-step", "start-step"}
 	for _, legacyFlag := range legacyDualModeFlags {

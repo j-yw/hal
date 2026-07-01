@@ -139,9 +139,6 @@ func init() {
 	runCmd.Flags().StringVarP(&runBaseFlag, "base", "b", "", "Base branch for creating the PRD branch (default: current branch, or HEAD when detached)")
 	runCmd.Flags().BoolVar(&runJSONFlag, "json", false, "Output machine-readable JSON result")
 	runCmd.Flags().IntVar(&runParallelFlag, "parallel", 0, "Run up to N isolated workers in parallel (0 disables parallel mode; max 10)")
-	if flag := runCmd.Flags().Lookup("parallel"); flag != nil {
-		flag.NoOptDefVal = "2"
-	}
 
 	rootCmd.AddCommand(runCmd)
 }

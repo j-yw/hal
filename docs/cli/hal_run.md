@@ -55,7 +55,7 @@ hal run [iterations] [flags]
   -h, --help                   help for run
   -i, --iterations int         Maximum iterations to run (default 10)
       --json                   Output machine-readable JSON result
-      --parallel int[=2]       Run up to N isolated workers in parallel (0 disables parallel mode; max 10)
+      --parallel int           Run up to N isolated workers in parallel (0 disables parallel mode; max 10)
       --retries int            Max retries per iteration on failure (default 3)
       --retry-delay duration   Base retry delay (default 5s)
   -s, --story string           Run specific story by ID (e.g., US-001)
