@@ -842,12 +842,17 @@ func TestSandboxSecurityLeaseMetadataJSONTags(t *testing.T) {
 	}
 
 	expiresAt := time.Date(2026, 6, 29, 14, 30, 0, 0, time.UTC)
+	acquiredAt := expiresAt.Add(-30 * time.Minute)
 	lease := SandboxLeaseMetadata{
-		ID:          "lease-123",
-		ResourceKey: "host:worker-a",
-		Purpose:     "factory",
-		RunID:       "run-456",
-		ExpiresAt:   expiresAt,
+		ID:            "lease-123",
+		HostID:        "host-123",
+		HostName:      "worker-a",
+		RuntimeDriver: "rootless_podman",
+		ResourceKey:   "host:worker-a",
+		Purpose:       "factory",
+		RunID:         "run-456",
+		AcquiredAt:    acquiredAt,
+		ExpiresAt:     expiresAt,
 	}
 
 	data, err = json.Marshal(lease)
@@ -860,9 +865,21 @@ func TestSandboxSecurityLeaseMetadataJSONTags(t *testing.T) {
 		t.Fatalf("json.Unmarshal(lease payload) error = %v", err)
 	}
 
-	requireExactJSONKeys(t, raw, []string{"id", "resourceKey", "purpose", "runId", "expiresAt"})
+	requireExactJSONKeys(t, raw, []string{
+		"id", "hostId", "hostName", "runtimeDriver", "resourceKey", "purpose",
+		"runId", "acquiredAt", "expiresAt",
+	})
 	if raw["id"] != "lease-123" {
 		t.Errorf("lease.id = %#v, want lease-123", raw["id"])
+	}
+	if raw["hostId"] != "host-123" {
+		t.Errorf("lease.hostId = %#v, want host-123", raw["hostId"])
+	}
+	if raw["hostName"] != "worker-a" {
+		t.Errorf("lease.hostName = %#v, want worker-a", raw["hostName"])
+	}
+	if raw["runtimeDriver"] != "rootless_podman" {
+		t.Errorf("lease.runtimeDriver = %#v, want rootless_podman", raw["runtimeDriver"])
 	}
 	if raw["resourceKey"] != "host:worker-a" {
 		t.Errorf("lease.resourceKey = %#v, want host:worker-a", raw["resourceKey"])
@@ -872,6 +889,9 @@ func TestSandboxSecurityLeaseMetadataJSONTags(t *testing.T) {
 	}
 	if raw["runId"] != "run-456" {
 		t.Errorf("lease.runId = %#v, want run-456", raw["runId"])
+	}
+	if raw["acquiredAt"] != acquiredAt.Format(time.RFC3339) {
+		t.Errorf("lease.acquiredAt = %#v, want %q", raw["acquiredAt"], acquiredAt.Format(time.RFC3339))
 	}
 	if raw["expiresAt"] != expiresAt.Format(time.RFC3339) {
 		t.Errorf("lease.expiresAt = %#v, want %q", raw["expiresAt"], expiresAt.Format(time.RFC3339))
@@ -998,11 +1018,15 @@ func TestSandboxMetadataRuntimeV2SummaryJSONShape(t *testing.T) {
 			},
 		},
 		Lease: &SandboxLeaseMetadata{
-			ID:          "lease-123",
-			ResourceKey: "host:worker-a",
-			Purpose:     "factory",
-			RunID:       "run-456",
-			ExpiresAt:   expiresAt,
+			ID:            "lease-123",
+			HostID:        "host-123",
+			HostName:      "worker-a",
+			RuntimeDriver: "rootless_podman",
+			ResourceKey:   "host:worker-a",
+			Purpose:       "factory",
+			RunID:         "run-456",
+			AcquiredAt:    expiresAt.Add(-30 * time.Minute),
+			ExpiresAt:     expiresAt,
 		},
 		WorkerRouting: &sandbox.WorkerRoutingMetadata{
 			SelectedWorkerHostID:   "host-123",
@@ -1110,7 +1134,10 @@ func TestSandboxMetadataRuntimeV2SummaryJSONShape(t *testing.T) {
 	if !ok {
 		t.Fatalf("lease should be an object, got %T", raw["lease"])
 	}
-	requireExactJSONKeys(t, lease, []string{"id", "resourceKey", "purpose", "runId", "expiresAt"})
+	requireExactJSONKeys(t, lease, []string{
+		"id", "hostId", "hostName", "runtimeDriver", "resourceKey", "purpose",
+		"runId", "acquiredAt", "expiresAt",
+	})
 	if lease["expiresAt"] != expiresAt.Format(time.RFC3339) {
 		t.Errorf("lease.expiresAt = %#v, want %q", lease["expiresAt"], expiresAt.Format(time.RFC3339))
 	}

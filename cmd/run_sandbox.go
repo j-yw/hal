@@ -91,8 +91,11 @@ type runSandboxDeps struct {
 	loadSandbox            func(string) (*sandbox.SandboxState, error)
 	listSandboxes          func() ([]*sandbox.SandboxState, error)
 	listHosts              func() ([]*sandbox.SandboxHost, error)
+	listLeases             func() ([]*sandbox.SandboxLease, error)
 	resolveDefault         func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
 	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
+	acquireLease           func(sandbox.SandboxLeaseAcquireRequest, time.Duration) (*sandbox.SandboxLease, error)
+	releaseLease           func(string) (*sandbox.SandboxLease, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
 	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
 	resolveWorkerRuntime   func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error)
@@ -354,6 +357,11 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 			execErr = collectErr
 		}
 	}
+	leaseRelease := sandboxCommandLeaseReleaseTracker{releaseLease: deps.releaseLease}
+	leaseRelease.observe(target)
+	if releaseErr := leaseRelease.release(); releaseErr != nil {
+		execErr = errors.Join(execErr, releaseErr)
+	}
 
 	finishedAt := deps.now().UTC()
 	status := sandboxexecution.StatusSucceeded
@@ -373,6 +381,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 }
 
 func normalizeRunSandboxDeps(deps runSandboxDeps) runSandboxDeps {
+	customDefaultStore := deps.defaultStore != nil
 	customResolveDefault := deps.resolveDefault != nil
 	customRuntimeResolver := deps.resolveRuntimeDriver != nil
 	useDefaultWorkspacePlanner := deps.planWorkspace == nil && deps.currentBranch == nil && deps.repoRemote == nil
@@ -413,8 +422,17 @@ func normalizeRunSandboxDeps(deps runSandboxDeps) runSandboxDeps {
 	if deps.listHosts == nil {
 		deps.listHosts = defaultRunSandboxDeps.listHosts
 	}
+	if deps.listLeases == nil {
+		deps.listLeases = sandboxCommandDefaultLeaseLister(deps.now, customDefaultStore)
+	}
 	if deps.provision == nil {
 		deps.provision = defaultRunSandboxDeps.provision
+	}
+	if deps.acquireLease == nil {
+		deps.acquireLease = sandboxCommandDefaultLeaseAcquirer(deps.now, customDefaultStore)
+	}
+	if deps.releaseLease == nil {
+		deps.releaseLease = sandboxCommandDefaultLeaseReleaser(deps.now, customDefaultStore)
 	}
 	if deps.resolveProvider == nil {
 		deps.resolveProvider = defaultRunSandboxDeps.resolveProvider
@@ -853,6 +871,25 @@ func sanitizeSandboxOutputSummary(value string, target *sandbox.SandboxState) st
 }
 
 func (deps runSandboxDeps) resolveRunSandboxTarget(ctx context.Context, req runSandboxRequest, out io.Writer) (*sandbox.SandboxState, error) {
+	if runSandboxShouldUseScheduledTarget(req) {
+		return resolveSandboxCommandScheduledTarget(sandboxCommandScheduledTargetRequest{
+			Purpose:        sandbox.SandboxLeasePurposeRun,
+			SandboxName:    req.SandboxName,
+			SandboxHostID:  req.SandboxHostID,
+			SandboxRuntime: req.SandboxRuntime,
+			ProjectDir:     req.ProjectDir,
+			Repository:     req.RepoRemote,
+			Branch:         req.RunBranch,
+			RunID:          req.ExecutionID,
+			Workspace:      req.Workspace,
+		}, sandboxCommandScheduledTargetDeps{
+			listHosts:    deps.listHosts,
+			listLeases:   deps.listLeases,
+			now:          deps.now,
+			acquireLease: deps.acquireLease,
+		})
+	}
+
 	listSandboxes := deps.listSandboxes
 	if listSandboxes == nil && deps.resolveDefault != nil {
 		listSandboxes = sandboxCommandListSandboxesFromDefault(deps.resolveDefault)
@@ -881,6 +918,10 @@ func (deps runSandboxDeps) resolveRunSandboxTarget(ctx context.Context, req runS
 		target = sandboxCommandSSHMachineCompatWorkerTarget(target)
 	}
 	return target, nil
+}
+
+func runSandboxShouldUseScheduledTarget(req runSandboxRequest) bool {
+	return strings.TrimSpace(req.SandboxName) == "" && sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime)
 }
 
 func runSandboxRuntimeExec(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {
@@ -1037,6 +1078,7 @@ func saveRunSandboxManifest(store sandboxexecution.Store, req runSandboxRequest,
 		}
 		manifest.Runtime = cloneSandboxRuntime(target.Runtime)
 		manifest.Security = cloneSandboxSecurity(target.Security)
+		manifest.Lease = sandboxLeaseRefFromState(target)
 		if sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
 			manifest.WorkerRouting = sandboxWorkerRoutingMetadataFromState(target)
 		}

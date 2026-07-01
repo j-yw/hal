@@ -53,11 +53,62 @@ func sandboxCommandPersistentState(target *sandbox.SandboxState, workspace *sand
 		state.Workspace = sandboxCommandPersistentWorkspace(target.Workspace)
 	}
 	state.Security = cloneSandboxSecurity(target.Security)
-	if target.Lease != nil {
-		lease := *target.Lease
-		state.Lease = &lease
-	}
+	state.Lease = sandboxLeaseRefFromState(target)
 	return &state
+}
+
+func sandboxLeaseRefFromState(target *sandbox.SandboxState) *sandbox.SandboxLeaseRef {
+	if target == nil || target.Lease == nil {
+		return nil
+	}
+	lease := *target.Lease
+	if strings.TrimSpace(lease.HostID) == "" && target.Host != nil {
+		lease.HostID = strings.TrimSpace(target.Host.ID)
+	}
+	if strings.TrimSpace(lease.HostName) == "" && target.Host != nil {
+		lease.HostName = strings.TrimSpace(target.Host.Name)
+	}
+	if strings.TrimSpace(lease.RuntimeDriver) == "" && target.Runtime != nil {
+		lease.RuntimeDriver = strings.TrimSpace(target.Runtime.Driver)
+	}
+	lease.Holder = ""
+	if sandboxLeaseRefEmpty(lease) {
+		return nil
+	}
+	return &lease
+}
+
+func sandboxLeaseRefFromLease(lease *sandbox.SandboxLease, target *sandbox.SandboxState) *sandbox.SandboxLeaseRef {
+	if lease == nil {
+		return nil
+	}
+	ref := &sandbox.SandboxLeaseRef{
+		ID:          strings.TrimSpace(lease.ID),
+		ResourceKey: strings.TrimSpace(lease.ResourceKey),
+		Holder:      strings.TrimSpace(lease.Holder),
+		Purpose:     strings.TrimSpace(lease.Purpose),
+		RunID:       strings.TrimSpace(lease.RunID),
+		AcquiredAt:  lease.AcquiredAt,
+		ExpiresAt:   lease.ExpiresAt,
+	}
+	state := &sandbox.SandboxState{Lease: ref}
+	if target != nil {
+		state.Host = target.Host
+		state.Runtime = target.Runtime
+	}
+	return sandboxLeaseRefFromState(state)
+}
+
+func sandboxLeaseRefEmpty(lease sandbox.SandboxLeaseRef) bool {
+	return strings.TrimSpace(lease.ID) == "" &&
+		strings.TrimSpace(lease.HostID) == "" &&
+		strings.TrimSpace(lease.HostName) == "" &&
+		strings.TrimSpace(lease.RuntimeDriver) == "" &&
+		strings.TrimSpace(lease.ResourceKey) == "" &&
+		strings.TrimSpace(lease.Purpose) == "" &&
+		strings.TrimSpace(lease.RunID) == "" &&
+		lease.AcquiredAt.IsZero() &&
+		lease.ExpiresAt.IsZero()
 }
 
 func sandboxCommandPersistentHost(host *sandbox.SandboxHost) *sandbox.SandboxHost {

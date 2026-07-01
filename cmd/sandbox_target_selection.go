@@ -37,7 +37,11 @@ type sandboxCommandTargetDeps struct {
 
 func resolveSandboxCommandTarget(ctx context.Context, req sandboxCommandTargetRequest, deps sandboxCommandTargetDeps) (*sandbox.SandboxState, error) {
 	if !sandboxCommandHasTargetSelectionConstraint(req) {
-		return resolveSandboxCommandLegacyTarget(ctx, req, deps)
+		target, err := resolveSandboxCommandLegacyTarget(ctx, req, deps)
+		if err != nil {
+			return nil, err
+		}
+		return sandboxCommandLegacyCompatibilityTarget(target), nil
 	}
 	result := sandboxtarget.Select(sandboxtarget.Request{
 		Purpose:       sandboxtarget.Purpose(req.Purpose),
@@ -242,6 +246,15 @@ func sandboxCommandSSHMachineCompatWorkerTarget(target *sandbox.SandboxState) *s
 			Driver: sandbox.SandboxRuntimeDriverSSHMachine,
 		}
 	}
+	return &clone
+}
+
+func sandboxCommandLegacyCompatibilityTarget(target *sandbox.SandboxState) *sandbox.SandboxState {
+	if target == nil || target.Lease == nil {
+		return target
+	}
+	clone := *target
+	clone.Lease = nil
 	return &clone
 }
 

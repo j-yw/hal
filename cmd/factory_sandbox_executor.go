@@ -64,7 +64,10 @@ type factorySandboxExecutorDeps struct {
 	loadSandbox            func(string) (*sandbox.SandboxState, error)
 	listSandboxes          func() ([]*sandbox.SandboxState, error)
 	listHosts              func() ([]*sandbox.SandboxHost, error)
+	listLeases             func() ([]*sandbox.SandboxLease, error)
 	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
+	acquireLease           func(sandbox.SandboxLeaseAcquireRequest, time.Duration) (*sandbox.SandboxLease, error)
+	releaseLease           func(string) (*sandbox.SandboxLease, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
 	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
 	resolveWorkerRuntime   func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error)
@@ -117,6 +120,7 @@ const factorySandboxCopyInputChunkEncodedBytes = 32 * 1024
 const factorySandboxRemoteWorkspaceRoot = "/root/workspace"
 
 func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factorySandboxExecutorDeps {
+	customDefaultStore := deps.defaultStore != nil
 	customResolveDefault := deps.resolveDefault != nil
 	customRuntimeResolver := deps.resolveRuntimeDriver != nil
 	customRunProviderExec := deps.runProviderExec != nil
@@ -144,8 +148,17 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 	if deps.listHosts == nil {
 		deps.listHosts = defaultFactorySandboxExecutorDeps.listHosts
 	}
+	if deps.listLeases == nil {
+		deps.listLeases = sandboxCommandDefaultLeaseLister(deps.now, customDefaultStore)
+	}
 	if deps.provision == nil {
 		deps.provision = defaultFactorySandboxExecutorDeps.provision
+	}
+	if deps.acquireLease == nil {
+		deps.acquireLease = sandboxCommandDefaultLeaseAcquirer(deps.now, customDefaultStore)
+	}
+	if deps.releaseLease == nil {
+		deps.releaseLease = sandboxCommandDefaultLeaseReleaser(deps.now, customDefaultStore)
 	}
 	if deps.resolveProvider == nil {
 		deps.resolveProvider = defaultFactorySandboxExecutorDeps.resolveProvider
@@ -234,6 +247,18 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	var target *sandbox.SandboxState
 	var selectedTarget *sandbox.SandboxState
 	var provider sandbox.Provider
+	leaseRelease := sandboxCommandLeaseReleaseTracker{releaseLease: deps.releaseLease}
+	defer func() {
+		leaseRelease.observe(target)
+		leaseRelease.observe(selectedTarget)
+		if releaseErr := leaseRelease.release(); releaseErr != nil {
+			if returnErr != nil {
+				returnErr = errors.Join(returnErr, releaseErr)
+				return
+			}
+			returnErr = releaseErr
+		}
+	}()
 	ensureProvider := func(providerName string) (sandbox.Provider, error) {
 		if provider != nil {
 			return provider, nil
@@ -426,6 +451,31 @@ func resolveFactorySandboxTarget(ctx context.Context, req factorySandboxExecutor
 	} else if strings.TrimSpace(record.SandboxName) != "" {
 		req.SandboxName = strings.TrimSpace(record.SandboxName)
 	}
+	if factorySandboxShouldUseScheduledTarget(req) {
+		target, err := resolveSandboxCommandScheduledTarget(sandboxCommandScheduledTargetRequest{
+			Purpose:        sandbox.SandboxLeasePurposeFactory,
+			SandboxName:    req.SandboxName,
+			SandboxHostID:  req.SandboxHostID,
+			SandboxRuntime: req.SandboxRuntime,
+			ProjectDir:     req.ProjectDir,
+			Repository:     provisionRepo,
+			Branch:         record.BranchName,
+			RunID:          record.RunID,
+			Workspace:      factorySandboxWorkspaceStateFromRecord(*record),
+		}, sandboxCommandScheduledTargetDeps{
+			listHosts:    deps.listHosts,
+			listLeases:   deps.listLeases,
+			now:          deps.now,
+			acquireLease: deps.acquireLease,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if record.SandboxName == "" {
+			record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
+		}
+		return target, nil
+	}
 	target, err := resolveSandboxCommandTarget(ctx, sandboxCommandTargetRequest{
 		Purpose:              sandbox.SandboxLeasePurposeFactory,
 		SandboxName:          req.SandboxName,
@@ -455,6 +505,10 @@ func resolveFactorySandboxTarget(ctx context.Context, req factorySandboxExecutor
 		record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
 	}
 	return target, nil
+}
+
+func factorySandboxShouldUseScheduledTarget(req factorySandboxExecutorRequest) bool {
+	return strings.TrimSpace(req.SandboxName) == "" && sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime)
 }
 
 func prepareFactorySandboxWorkspace(ctx context.Context, store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, req factorySandboxExecutorRequest, target *sandbox.SandboxState, provider sandbox.Provider, connectInfo *sandbox.ConnectInfo, remoteOutput *factorySandboxTimelineWriter) error {
@@ -548,6 +602,7 @@ func handleFactorySandboxExecutorError(ctx context.Context, store factory.Store,
 		if strings.TrimSpace(failureErr.Error()) == "sandbox target is required" {
 			return fmt.Errorf("factory sandbox target is required")
 		}
+		_ = recordFactorySandboxFailure(store, deps, record, target, "resolve_target", failureErr, secretRedactor)
 		return failureErr
 	case sandboxexec.PhaseProvisionTarget:
 		_ = recordFactorySandboxFailure(store, deps, record, target, "provision", failureErr, secretRedactor)
@@ -2145,23 +2200,20 @@ func factorySandboxSecurityMetadata(security *sandbox.SandboxSecurity) *factory.
 }
 
 func factorySandboxLeaseMetadataFromState(instance *sandbox.SandboxState) *factory.SandboxLeaseMetadata {
-	if instance == nil || instance.Lease == nil {
-		return nil
-	}
-	lease := instance.Lease
-	if strings.TrimSpace(lease.ID) == "" &&
-		strings.TrimSpace(lease.ResourceKey) == "" &&
-		strings.TrimSpace(lease.Purpose) == "" &&
-		strings.TrimSpace(lease.RunID) == "" &&
-		lease.ExpiresAt.IsZero() {
+	lease := sandboxLeaseRefFromState(instance)
+	if lease == nil {
 		return nil
 	}
 	return &factory.SandboxLeaseMetadata{
-		ID:          lease.ID,
-		ResourceKey: lease.ResourceKey,
-		Purpose:     lease.Purpose,
-		RunID:       lease.RunID,
-		ExpiresAt:   lease.ExpiresAt,
+		ID:            lease.ID,
+		HostID:        lease.HostID,
+		HostName:      lease.HostName,
+		RuntimeDriver: lease.RuntimeDriver,
+		ResourceKey:   lease.ResourceKey,
+		Purpose:       lease.Purpose,
+		RunID:         lease.RunID,
+		AcquiredAt:    lease.AcquiredAt,
+		ExpiresAt:     lease.ExpiresAt,
 	}
 }
 

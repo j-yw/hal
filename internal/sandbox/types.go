@@ -150,14 +150,19 @@ type WorkerRoutingMetadata struct {
 	EndpointSummary        string `json:"endpointSummary"`
 }
 
-// SandboxLeaseRef identifies a lease associated with a sandbox.
+// SandboxLeaseRef identifies a lease associated with a sandbox using only
+// redaction-safe scheduling metadata.
 type SandboxLeaseRef struct {
-	ID          string    `json:"id"`
-	ResourceKey string    `json:"resourceKey"`
-	Holder      string    `json:"holder"`
-	Purpose     string    `json:"purpose"`
-	RunID       string    `json:"runId"`
-	ExpiresAt   time.Time `json:"expiresAt"`
+	ID            string    `json:"id"`
+	HostID        string    `json:"hostId"`
+	HostName      string    `json:"hostName"`
+	RuntimeDriver string    `json:"runtimeDriver"`
+	ResourceKey   string    `json:"resourceKey"`
+	Holder        string    `json:"-"`
+	Purpose       string    `json:"purpose"`
+	RunID         string    `json:"runId"`
+	AcquiredAt    time.Time `json:"acquiredAt"`
+	ExpiresAt     time.Time `json:"expiresAt"`
 }
 
 // SandboxLease represents a durable local resource lease record.

@@ -123,12 +123,16 @@ func TestManifestJSONFieldsAndSandboxMetadataTypes(t *testing.T) {
 			},
 		},
 		Lease: &sandbox.SandboxLeaseRef{
-			ID:          "lease-1",
-			ResourceKey: "sandbox:dev",
-			Holder:      "hal",
-			Purpose:     sandbox.SandboxLeasePurposeRun,
-			RunID:       "exec-1",
-			ExpiresAt:   time.Date(2026, 6, 30, 4, 0, 0, 0, time.UTC),
+			ID:            "lease-1",
+			HostID:        "host-1",
+			HostName:      "worker",
+			RuntimeDriver: sandbox.SandboxRuntimeDriverSSHMachine,
+			ResourceKey:   "sandbox:dev",
+			Holder:        "hal",
+			Purpose:       sandbox.SandboxLeasePurposeRun,
+			RunID:         "exec-1",
+			AcquiredAt:    time.Date(2026, 6, 30, 3, 0, 0, 0, time.UTC),
+			ExpiresAt:     time.Date(2026, 6, 30, 4, 0, 0, 0, time.UTC),
 		},
 		WorkerRouting: &sandbox.WorkerRoutingMetadata{
 			SelectedWorkerHostID:   "host-1",
@@ -169,6 +173,17 @@ func TestManifestJSONFieldsAndSandboxMetadataTypes(t *testing.T) {
 		"status", "startedAt", "finishedAt", "workspace", "host", "runtime",
 		"security", "lease", "workerRouting", "artifacts", "artifactMetadata",
 	})
+	lease, ok := got["lease"].(map[string]any)
+	if !ok {
+		t.Fatalf("lease should be an object, got %T", got["lease"])
+	}
+	assertJSONKeys(t, lease, []string{
+		"id", "hostId", "hostName", "runtimeDriver", "resourceKey", "purpose",
+		"runId", "acquiredAt", "expiresAt",
+	})
+	if _, ok := lease["holder"]; ok {
+		t.Fatalf("lease holder must not be serialized: %#v", lease)
+	}
 	workerRouting, ok := got["workerRouting"].(map[string]any)
 	if !ok {
 		t.Fatalf("workerRouting should be an object, got %T", got["workerRouting"])

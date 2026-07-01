@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
@@ -17,6 +18,8 @@ type CachedState struct {
 	LoadSandbox   func(name string) (*sandbox.SandboxState, error)
 	ListSandboxes func() ([]*sandbox.SandboxState, error)
 	ListHosts     func() ([]*sandbox.SandboxHost, error)
+	ListLeases    func() ([]*sandbox.SandboxLease, error)
+	Now           func() time.Time
 }
 
 // Select validates explicit cached target constraints before preserving the
