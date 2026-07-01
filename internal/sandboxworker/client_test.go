@@ -1,12 +1,14 @@
 package sandboxworker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -169,6 +171,159 @@ func TestClientIOMethodsRoundTripOverUnixSocket(t *testing.T) {
 	}
 	if driver.copyOutReq.SourcePath != "/workspace/hal/report.txt" {
 		t.Fatalf("driver copy_out source = %q, want trimmed remote source", driver.copyOutReq.SourcePath)
+	}
+}
+
+func TestClientDriverRootlessLifecycleRoundTripOverUnixSocket(t *testing.T) {
+	socketPath := testWorkerSocketPath(t)
+	fakeDriver := &recordingRootlessE2EDriver{
+		copyOutData: "artifact\n",
+		execStdout:  "rootless stdout\n",
+		execStderr:  "rootless stderr\n",
+	}
+	registry, err := NewDriverRegistry(fakeDriver)
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+	service, err := NewService(ServiceOptions{
+		WorkerID:   "worker-001",
+		SocketPath: socketPath,
+		Registry:   registry,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+	server, err := NewServer(ServerOptions{
+		SocketPath: socketPath,
+		Handler:    service,
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	cancel, errCh := runTestServer(t, server)
+	defer stopTestServer(t, cancel, errCh)
+
+	client, err := NewClient(ClientOptions{SocketPath: socketPath})
+	if err != nil {
+		t.Fatalf("NewClient() error: %v", err)
+	}
+	clientDriver, err := NewClientDriver(ClientDriverOptions{
+		DriverID: sandboxruntime.DriverRootlessPodman,
+		Client:   client,
+	})
+	if err != nil {
+		t.Fatalf("NewClientDriver() error: %v", err)
+	}
+
+	ctx, cancelCtx := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelCtx()
+
+	created, err := clientDriver.Create(ctx, sandboxruntime.CreateRequest{
+		Name: "worker-rootless",
+		Env:  map[string]string{"HAL_SANDBOX": "1"},
+	})
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	assertRootlessE2ETarget(t, OperationCreate, created, "created")
+
+	started, err := clientDriver.Start(ctx, sandboxruntime.LifecycleRequest{Target: *created})
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	assertRootlessE2ETarget(t, OperationStart, started, "running")
+
+	inspected, err := clientDriver.Inspect(ctx, sandboxruntime.InspectRequest{Target: *started})
+	if err != nil {
+		t.Fatalf("Inspect() error: %v", err)
+	}
+	assertRootlessE2ETarget(t, OperationInspect, inspected, "running")
+
+	var stdout, stderr bytes.Buffer
+	execResult, err := clientDriver.Exec(ctx, sandboxruntime.ExecRequest{
+		Target: *inspected,
+		Args:   []string{"sh", "-lc", "printf rootless"},
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Stdin:  strings.NewReader("stdin\n"),
+	})
+	if err != nil {
+		t.Fatalf("Exec() error: %v", err)
+	}
+	if execResult == nil || execResult.ExitCode != 19 {
+		t.Fatalf("Exec() result = %#v, want exit code 19", execResult)
+	}
+	if stdout.String() != "rootless stdout\n" || stderr.String() != "rootless stderr\n" {
+		t.Fatalf("Exec() output = stdout %q stderr %q, want fake rootless output", stdout.String(), stderr.String())
+	}
+
+	tempDir := t.TempDir()
+	copyInSource := filepath.Join(tempDir, "input.txt")
+	if err := os.WriteFile(copyInSource, []byte("copy input\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(copyInSource) error: %v", err)
+	}
+	if err := clientDriver.CopyIn(ctx, sandboxruntime.CopyRequest{
+		Target:          *inspected,
+		SourcePath:      copyInSource,
+		DestinationPath: "/workspace/input.txt",
+	}); err != nil {
+		t.Fatalf("CopyIn() error: %v", err)
+	}
+	if fakeDriver.copyInData != "copy input\n" {
+		t.Fatalf("CopyIn() driver data = %q, want copied payload", fakeDriver.copyInData)
+	}
+
+	copyOutDestination := filepath.Join(tempDir, "artifact.txt")
+	if err := clientDriver.CopyOut(ctx, sandboxruntime.CopyRequest{
+		Target:          *inspected,
+		SourcePath:      "/workspace/artifact.txt",
+		DestinationPath: copyOutDestination,
+	}); err != nil {
+		t.Fatalf("CopyOut() error: %v", err)
+	}
+	copyOutData, err := os.ReadFile(copyOutDestination)
+	if err != nil {
+		t.Fatalf("ReadFile(copyOutDestination) error: %v", err)
+	}
+	if string(copyOutData) != "artifact\n" {
+		t.Fatalf("CopyOut() destination = %q, want fake artifact", string(copyOutData))
+	}
+
+	stopped, err := clientDriver.Stop(ctx, sandboxruntime.LifecycleRequest{Target: *inspected})
+	if err != nil {
+		t.Fatalf("Stop() error: %v", err)
+	}
+	assertRootlessE2ETarget(t, OperationStop, stopped, "stopped")
+
+	if err := clientDriver.Delete(ctx, sandboxruntime.LifecycleRequest{Target: *stopped}); err != nil {
+		t.Fatalf("Delete() error: %v", err)
+	}
+
+	wantCalls := strings.Join([]string{
+		OperationCreate,
+		OperationStart,
+		OperationInspect,
+		OperationExec,
+		OperationCopyIn,
+		OperationCopyOut,
+		OperationStop,
+		OperationDelete,
+	}, ",")
+	if gotCalls := strings.Join(fakeDriver.calls, ","); gotCalls != wantCalls {
+		t.Fatalf("driver calls = %q, want %q", gotCalls, wantCalls)
+	}
+	for _, operation := range []string{
+		OperationCreate,
+		OperationStart,
+		OperationInspect,
+		OperationExec,
+		OperationCopyIn,
+		OperationCopyOut,
+		OperationStop,
+		OperationDelete,
+	} {
+		assertRootlessE2ERuntime(t, operation, fakeDriver.runtimeByOperation[operation])
 	}
 }
 
@@ -853,6 +1008,147 @@ type recordingSocketIODriver struct {
 	copyInReq   sandboxruntime.CopyRequest
 	copyOutReq  sandboxruntime.CopyRequest
 	copyInData  string
+}
+
+type recordingRootlessE2EDriver struct {
+	calls              []string
+	runtimeByOperation map[string]sandboxruntime.RuntimeState
+	copyInData         string
+	copyOutData        string
+	execStdout         string
+	execStderr         string
+}
+
+func (driver *recordingRootlessE2EDriver) ID() string {
+	return sandboxruntime.DriverRootlessPodman
+}
+
+func (driver *recordingRootlessE2EDriver) Create(ctx context.Context, req sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+	driver.record(OperationCreate, recordingRootlessE2ERuntime())
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	target := recordingRootlessE2ETarget(req.Name, "created")
+	return &target, nil
+}
+
+func (driver *recordingRootlessE2EDriver) Start(ctx context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	driver.record(OperationStart, req.Target.Runtime)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	target := req.Target
+	target.Status = "running"
+	return &target, nil
+}
+
+func (driver *recordingRootlessE2EDriver) Stop(ctx context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	driver.record(OperationStop, req.Target.Runtime)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	target := req.Target
+	target.Status = "stopped"
+	return &target, nil
+}
+
+func (driver *recordingRootlessE2EDriver) Delete(ctx context.Context, req sandboxruntime.LifecycleRequest) error {
+	driver.record(OperationDelete, req.Target.Runtime)
+	return ctx.Err()
+}
+
+func (driver *recordingRootlessE2EDriver) Inspect(ctx context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+	driver.record(OperationInspect, req.Target.Runtime)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	target := req.Target
+	target.Status = "running"
+	return &target, nil
+}
+
+func (driver *recordingRootlessE2EDriver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+	driver.record(OperationExec, req.Target.Runtime)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if req.Stdout != nil && driver.execStdout != "" {
+		if _, err := io.WriteString(req.Stdout, driver.execStdout); err != nil {
+			return nil, err
+		}
+	}
+	if req.Stderr != nil && driver.execStderr != "" {
+		if _, err := io.WriteString(req.Stderr, driver.execStderr); err != nil {
+			return nil, err
+		}
+	}
+	return &sandboxruntime.ExecResult{ExitCode: 19}, nil
+}
+
+func (driver *recordingRootlessE2EDriver) CopyIn(ctx context.Context, req sandboxruntime.CopyRequest) error {
+	driver.record(OperationCopyIn, req.Target.Runtime)
+	data, err := os.ReadFile(req.SourcePath)
+	if err != nil {
+		return err
+	}
+	driver.copyInData = string(data)
+	return ctx.Err()
+}
+
+func (driver *recordingRootlessE2EDriver) CopyOut(ctx context.Context, req sandboxruntime.CopyRequest) error {
+	driver.record(OperationCopyOut, req.Target.Runtime)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return os.WriteFile(req.DestinationPath, []byte(driver.copyOutData), 0o600)
+}
+
+func (driver *recordingRootlessE2EDriver) record(operation string, runtime sandboxruntime.RuntimeState) {
+	driver.calls = append(driver.calls, operation)
+	if driver.runtimeByOperation == nil {
+		driver.runtimeByOperation = map[string]sandboxruntime.RuntimeState{}
+	}
+	driver.runtimeByOperation[operation] = runtime
+}
+
+func recordingRootlessE2ETarget(name, status string) sandboxruntime.Target {
+	return sandboxruntime.Target{
+		ID:      "target-worker-rootless",
+		Name:    name,
+		Status:  status,
+		Runtime: recordingRootlessE2ERuntime(),
+	}
+}
+
+func recordingRootlessE2ERuntime() sandboxruntime.RuntimeState {
+	return sandboxruntime.RuntimeState{
+		Driver:         sandboxruntime.DriverRootlessPodman,
+		RuntimeID:      "ctr-worker-rootless",
+		Image:          "localhost/hal-rootless:test",
+		WorkerID:       "worker-001",
+		IsolationLevel: IsolationLevelContainer,
+	}
+}
+
+func assertRootlessE2ETarget(t *testing.T, operation string, target *sandboxruntime.Target, status string) {
+	t.Helper()
+
+	if target == nil {
+		t.Fatalf("%s target = nil, want rootless target", operation)
+	}
+	if target.ID != "target-worker-rootless" || target.Name != "worker-rootless" || target.Status != status {
+		t.Fatalf("%s target = %#v, want rootless target status %q", operation, target, status)
+	}
+	assertRootlessE2ERuntime(t, operation, target.Runtime)
+}
+
+func assertRootlessE2ERuntime(t *testing.T, operation string, runtime sandboxruntime.RuntimeState) {
+	t.Helper()
+
+	want := recordingRootlessE2ERuntime()
+	if runtime != want {
+		t.Fatalf("%s runtime = %#v, want %#v", operation, runtime, want)
+	}
 }
 
 func (driver *recordingSocketIODriver) ID() string {
