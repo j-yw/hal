@@ -41,6 +41,7 @@
 
 - Worker-backed execution route metadata uses the shared data-only `internal/sandbox.WorkerRoutingMetadata` contract and is attached additively as optional `workerRouting,omitempty` on both non-factory `sandboxexecution.Manifest` records and factory `factory.SandboxMetadata`; keep it limited to selected worker host identity, runtime driver, isolation, and safe endpoint summaries without raw endpoints or filesystem paths.
 - Worker-backed runtime driver construction belongs in `cmd/sandbox_worker_runtime.go`: pass the already-selected `sandboxruntime.Target` plus durable `sandbox.SandboxHost`, validate worker kind, requested runtime, and local Unix endpoint, then construct `sandboxworker.ClientDriver` only through injectable worker client/runtime-driver factories.
+- Unconstrained run/auto/factory sandbox execution must preserve legacy SSH-machine-compatible target/runtime resolution: do not list cached worker hosts, require worker endpoints, attach worker runtime IDs, or construct worker clients unless `--sandbox-host` or `--sandbox-runtime` selected a worker-backed route.
 
 ## Patterns from phase17-target-selection (2026-07-01)
 

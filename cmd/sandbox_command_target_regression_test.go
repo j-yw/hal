@@ -21,6 +21,7 @@ func TestRunSandboxDefaultTargetResolutionStaysCachedAndFakeOnly(t *testing.T) {
 		Name:     "run-default-box",
 		Provider: "test-provider",
 		Status:   sandbox.StatusRunning,
+		Host:     defaultRegressionWorkerHostWithoutEndpoint(),
 	}
 	resolver := &fakeDefaultSandboxResolver{t: t, target: target}
 	driver := fakeRunSandboxRuntimeDriver{
@@ -41,6 +42,10 @@ func TestRunSandboxDefaultTargetResolutionStaysCachedAndFakeOnly(t *testing.T) {
 			return nil, nil
 		},
 		resolveDefault: resolver.resolve,
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			t.Fatal("listHosts should not run without sandbox host/runtime constraints")
+			return nil, nil
+		},
 		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
 			t.Fatal("provision should not run when a default running sandbox is selected")
 			return nil, nil
@@ -71,6 +76,9 @@ func TestRunSandboxDefaultTargetResolutionStaysCachedAndFakeOnly(t *testing.T) {
 	if resolvedRuntime.Runtime.Driver != sandboxruntime.DriverSSHMachine {
 		t.Fatalf("runtime driver = %q, want SSH-machine compatibility", resolvedRuntime.Runtime.Driver)
 	}
+	if resolvedRuntime.Runtime.WorkerID != "" || resolvedRuntime.Runtime.RuntimeID != "" {
+		t.Fatalf("runtime worker metadata = %#v, want empty metadata on unconstrained default path", resolvedRuntime.Runtime)
+	}
 	if !strings.Contains(out.String(), "run default path") {
 		t.Fatalf("stdout = %q, want fake runtime output", out.String())
 	}
@@ -84,6 +92,7 @@ func TestAutoSandboxDefaultTargetResolutionStaysCachedAndFakeOnly(t *testing.T) 
 		Name:     "auto-default-box",
 		Provider: "test-provider",
 		Status:   sandbox.StatusRunning,
+		Host:     defaultRegressionWorkerHostWithoutEndpoint(),
 	}
 	resolver := &fakeDefaultSandboxResolver{t: t, target: target}
 	driver := fakeRunSandboxRuntimeDriver{
@@ -107,6 +116,10 @@ func TestAutoSandboxDefaultTargetResolutionStaysCachedAndFakeOnly(t *testing.T) 
 			return nil, nil
 		},
 		resolveDefault: resolver.resolve,
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			t.Fatal("listHosts should not run without sandbox host/runtime constraints")
+			return nil, nil
+		},
 		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
 			t.Fatal("provision should not run when a default running sandbox is selected")
 			return nil, nil
@@ -137,6 +150,9 @@ func TestAutoSandboxDefaultTargetResolutionStaysCachedAndFakeOnly(t *testing.T) 
 	if resolvedRuntime.Runtime.Driver != sandboxruntime.DriverSSHMachine {
 		t.Fatalf("runtime driver = %q, want SSH-machine compatibility", resolvedRuntime.Runtime.Driver)
 	}
+	if resolvedRuntime.Runtime.WorkerID != "" || resolvedRuntime.Runtime.RuntimeID != "" {
+		t.Fatalf("runtime worker metadata = %#v, want empty metadata on unconstrained default path", resolvedRuntime.Runtime)
+	}
 	if !strings.Contains(out.String(), "auto default path") {
 		t.Fatalf("stdout = %q, want fake runtime output", out.String())
 	}
@@ -149,6 +165,7 @@ func TestFactorySandboxDefaultTargetResolutionStaysCachedAndFakeOnly(t *testing.
 		Name:     "factory-default-box",
 		Provider: "test-provider",
 		Status:   sandbox.StatusRunning,
+		Host:     defaultRegressionWorkerHostWithoutEndpoint(),
 	}
 	resolver := &fakeDefaultSandboxResolver{t: t, target: target}
 	now := runSandboxTestClock(
@@ -179,6 +196,10 @@ func TestFactorySandboxDefaultTargetResolutionStaysCachedAndFakeOnly(t *testing.
 			return nil, nil
 		},
 		resolveDefault: resolver.resolve,
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			t.Fatal("listHosts should not run without sandbox host/runtime constraints")
+			return nil, nil
+		},
 		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
 			t.Fatal("provision should not run when a default running sandbox is selected")
 			return nil, nil
@@ -227,6 +248,9 @@ func TestFactorySandboxDefaultTargetResolutionStaysCachedAndFakeOnly(t *testing.
 	if resolvedRuntime.Runtime.Driver != sandboxruntime.DriverSSHMachine {
 		t.Fatalf("runtime driver = %q, want SSH-machine compatibility", resolvedRuntime.Runtime.Driver)
 	}
+	if resolvedRuntime.Runtime.WorkerID != "" || resolvedRuntime.Runtime.RuntimeID != "" {
+		t.Fatalf("runtime worker metadata = %#v, want empty metadata on unconstrained default path", resolvedRuntime.Runtime)
+	}
 	if len(savedRecords) < 2 || savedRecords[1].SandboxName != "factory-default-box" {
 		t.Fatalf("saved records = %#v, want selected factory-default-box metadata", savedRecords)
 	}
@@ -256,6 +280,17 @@ func (r *fakeDefaultSandboxResolver) resolve(filter func(*sandbox.SandboxState) 
 		r.t.Fatalf("running-sandbox filter accepted stopped target %#v", stopped)
 	}
 	return r.target, r.target.Name, nil
+}
+
+func defaultRegressionWorkerHostWithoutEndpoint() *sandbox.SandboxHost {
+	return &sandbox.SandboxHost{
+		ID:   "cached-worker-without-endpoint",
+		Name: "cached-worker-without-endpoint",
+		Kind: sandbox.SandboxHostKindWorker,
+		SupportedRuntimes: []string{
+			sandboxruntime.DriverRootlessPodman,
+		},
+	}
 }
 
 func defaultRunSandboxRegressionRequest(t *testing.T) runSandboxRequest {
