@@ -49,6 +49,7 @@
 - Optional factory sandbox proxy-session metadata belongs on `internal/factory.SandboxMetadata` as additive `networkProxySession,omitempty`; populate it from `cmd/factory_sandbox_executor.go` persistence helpers only after `sandbox.SanitizeSandboxNetworkProxySessionMetadata`, and keep default factory records omitting proxy/log fields.
 - Optional non-factory run/auto policy decision logs belong on `internal/sandboxexecution.Manifest` as additive `networkPolicyDecisionLogs,omitempty`; populate them from `cmd` save helpers only after `sandbox.SanitizeSandboxNetworkPolicyDecisionLogRecords`, and keep default manifests omitting proxy/log fields.
 - Optional factory timeline policy decision logs belong on `internal/factory.EventRecord` as additive `networkPolicyDecisionLogs,omitempty`; sanitize in factory timeline append/status helpers and sandbox policy-event plumbing before JSON persistence or rendering, and keep default timeline events omitting proxy/log fields.
+- Phase 24 verification docs live in `docs/design/sandbox-runtime-v2-phase24-network-proxy-policy-log-verification.md` and are guarded by `cmd/phase24_network_proxy_docs_test.go`; keep focused commands, fake-only scope, metadata-only non-goals, and future-phase live enforcement handoffs in sync with proxy/log contract behavior.
 
 ## Patterns from phase23-security-intent-propagation (2026-07-02)
 
