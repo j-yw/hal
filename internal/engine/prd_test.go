@@ -274,3 +274,73 @@ func TestPRD_JSONSerialization_TasksOmitEmpty(t *testing.T) {
 		t.Error("expected 'tasks' to be omitted when empty, but it was present")
 	}
 }
+
+func TestPRD_UserStorySchedulingFieldsJSONRoundTrip(t *testing.T) {
+	parallelSafe := false
+	prd := &PRD{
+		Project:     "test",
+		BranchName:  "hal/test",
+		Description: "Test",
+		UserStories: []UserStory{
+			{
+				ID:              "US-001",
+				Title:           "Story 1",
+				Priority:        1,
+				Passes:          false,
+				DependsOn:       []string{"US-000"},
+				ConflictDomains: []string{"api/auth"},
+				ParallelSafe:    &parallelSafe,
+				Barrier:         true,
+				ParallelReason:  "Serializes auth API changes",
+			},
+			{
+				ID:       "US-002",
+				Title:    "Story 2",
+				Priority: 2,
+				Passes:   false,
+			},
+		},
+	}
+
+	data, err := json.Marshal(prd)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var raw struct {
+		UserStories []map[string]interface{} `json:"userStories"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := raw.UserStories[1]["dependsOn"]; exists {
+		t.Fatal("expected empty scheduling fields to be omitted")
+	}
+	if got, exists := raw.UserStories[0]["parallelSafe"]; !exists || got != false {
+		t.Fatalf("expected explicit parallelSafe=false to be preserved, got %v (exists=%v)", got, exists)
+	}
+	if got, exists := raw.UserStories[0]["barrier"]; !exists || got != true {
+		t.Fatalf("expected barrier=true to be preserved, got %v (exists=%v)", got, exists)
+	}
+
+	var decoded PRD
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	story := decoded.UserStories[0]
+	if len(story.DependsOn) != 1 || story.DependsOn[0] != "US-000" {
+		t.Fatalf("dependsOn round-trip = %#v, want [US-000]", story.DependsOn)
+	}
+	if len(story.ConflictDomains) != 1 || story.ConflictDomains[0] != "api/auth" {
+		t.Fatalf("conflictDomains round-trip = %#v, want [api/auth]", story.ConflictDomains)
+	}
+	if story.ParallelSafe == nil || *story.ParallelSafe {
+		t.Fatalf("parallelSafe round-trip = %#v, want false pointer", story.ParallelSafe)
+	}
+	if !story.Barrier {
+		t.Fatal("barrier round-trip = false, want true")
+	}
+	if story.ParallelReason != "Serializes auth API changes" {
+		t.Fatalf("parallelReason round-trip = %q", story.ParallelReason)
+	}
+}
