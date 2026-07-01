@@ -137,6 +137,7 @@ const (
 	SourceDefaultRunningSandbox SourceKind = "default_running_sandbox"
 	SourceRequestedHost         SourceKind = "requested_host"
 	SourceRequestedRuntime      SourceKind = "requested_runtime"
+	SourceRequestedIsolation    SourceKind = "requested_isolation"
 	SourceFallbackProvisioning  SourceKind = "fallback_provisioning"
 )
 

@@ -519,3 +519,218 @@ func TestSelectRequestedHostDoesNotUseUnrelatedDefaultRunningSandbox(t *testing.
 		t.Fatalf("host = %#v, want selected requested host", result.Host)
 	}
 }
+
+func TestSelectRequestedIsolationExactMatches(t *testing.T) {
+	tests := []struct {
+		name      string
+		isolation string
+		runtime   string
+		hostID    string
+	}{
+		{
+			name:      "host",
+			isolation: sandbox.SandboxIsolationLevelHost,
+			runtime:   sandbox.SandboxRuntimeDriverSSHMachine,
+			hostID:    "ssh-a",
+		},
+		{
+			name:      "container",
+			isolation: sandbox.SandboxIsolationLevelContainer,
+			runtime:   sandbox.SandboxRuntimeDriverRootlessPodman,
+			hostID:    "worker-a",
+		},
+		{
+			name:      "vm",
+			isolation: sandbox.SandboxIsolationLevelVM,
+			runtime:   sandbox.SandboxRuntimeDriverMicroVM,
+			hostID:    "vm-a",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := Select(Request{
+				IsolationLevel: tt.isolation,
+				Project:        ProjectContext{Branch: "hal/isolation-target"},
+			}, CachedState{
+				ListHosts: func() ([]*sandbox.SandboxHost, error) {
+					return []*sandbox.SandboxHost{
+						{
+							ID:                tt.hostID,
+							Name:              tt.hostID,
+							Kind:              sandbox.SandboxHostKindWorker,
+							SupportedRuntimes: []string{tt.runtime},
+						},
+					}, nil
+				},
+				ListSandboxes: func() ([]*sandbox.SandboxState, error) {
+					t.Fatal("ListSandboxes should not be called for an isolation-constrained provisioning selection")
+					return nil, nil
+				},
+			})
+
+			if result.Failed() || !result.NeedsProvisioning() {
+				t.Fatalf("result = %#v, want isolation-constrained provisioning", result)
+			}
+			if result.Host == nil || result.Host.ID != tt.hostID {
+				t.Fatalf("host = %#v, want host supporting requested isolation", result.Host)
+			}
+			if result.Runtime == nil || result.Runtime.Driver != tt.runtime || result.Runtime.IsolationLevel != tt.isolation {
+				t.Fatalf("runtime = %#v, want requested isolation runtime metadata", result.Runtime)
+			}
+			if result.Source.Kind != SourceFallbackProvisioning || result.Fallback.Reason != "requested isolation selected" {
+				t.Fatalf("source/fallback = %#v/%#v, want isolation-constrained branch provisioning", result.Source, result.Fallback)
+			}
+		})
+	}
+}
+
+func TestSelectRequestedIsolationUnavailableDoesNotUseWeakerRuntimeFallback(t *testing.T) {
+	result := Select(Request{
+		IsolationLevel: sandbox.SandboxIsolationLevelVM,
+	}, CachedState{
+		ListHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{
+				{
+					ID:                "ssh-a",
+					Name:              "ssh a",
+					Endpoint:          "ssh://deploy:secret@example.test",
+					SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+				},
+				{
+					ID:                "worker-a",
+					Name:              "worker a",
+					Endpoint:          "unix:///tmp/private-worker.sock?token=super-secret",
+					SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+				},
+			}, nil
+		},
+		ListSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("ListSandboxes should not be called when requested isolation has no eligible host")
+			return nil, nil
+		},
+	})
+
+	if !result.Failed() {
+		t.Fatalf("result = %#v, want unavailable isolation failure", result)
+	}
+	if result.Failure.Reason != FailureReasonIsolationUnavailable ||
+		result.Failure.IsolationLevel != sandbox.SandboxIsolationLevelVM ||
+		result.Failure.Error() != `no durable host supports requested isolation "vm"` {
+		t.Fatalf("failure = %#v, want deterministic unavailable-isolation failure", result.Failure)
+	}
+	for _, leaked := range []string{"ssh://", "secret@example.test", "/tmp/private-worker.sock", "super-secret"} {
+		if strings.Contains(result.Failure.Error(), leaked) {
+			t.Fatalf("failure %q leaked %q", result.Failure.Error(), leaked)
+		}
+	}
+}
+
+func TestSelectRequestedMicroVMRuntimeDoesNotUseWeakerRuntimeFallback(t *testing.T) {
+	result := Select(Request{
+		RuntimeDriver: sandbox.SandboxRuntimeDriverMicroVM,
+	}, CachedState{
+		ListHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{
+				{
+					ID:                "ssh-a",
+					Name:              "ssh a",
+					SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+				},
+				{
+					ID:                "worker-a",
+					Name:              "worker a",
+					SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+				},
+			}, nil
+		},
+		ListSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("ListSandboxes should not be called when requested runtime has no eligible host")
+			return nil, nil
+		},
+	})
+
+	if !result.Failed() {
+		t.Fatalf("result = %#v, want unavailable microvm runtime failure", result)
+	}
+	if result.Failure.Reason != FailureReasonRuntimeUnsupported ||
+		result.Failure.RuntimeDriver != sandbox.SandboxRuntimeDriverMicroVM ||
+		result.Failure.Error() != `no durable host supports requested runtime "microvm"` {
+		t.Fatalf("failure = %#v, want deterministic microvm runtime failure", result.Failure)
+	}
+}
+
+func TestSelectExplicitSandboxRejectsRuntimeWithIncompatibleDurableIsolation(t *testing.T) {
+	result := Select(Request{
+		SandboxName:   "legacy",
+		RuntimeDriver: sandbox.SandboxRuntimeDriverRootlessPodman,
+	}, CachedState{
+		ListHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{
+				{
+					ID:                "worker-a",
+					Name:              "worker a",
+					SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+				},
+			}, nil
+		},
+		LoadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != "legacy" {
+				t.Fatalf("loaded sandbox name = %q, want legacy", name)
+			}
+			return &sandbox.SandboxState{
+				Name: "legacy",
+				Runtime: &sandbox.SandboxRuntimeState{
+					Driver:         sandbox.SandboxRuntimeDriverRootlessPodman,
+					IsolationLevel: sandbox.SandboxIsolationLevelHost,
+				},
+			}, nil
+		},
+	})
+
+	if !result.Failed() {
+		t.Fatalf("result = %#v, want incompatible durable runtime failure", result)
+	}
+	if result.Failure.Reason != FailureReasonRuntimeUnsupported ||
+		result.Failure.RuntimeDriver != sandbox.SandboxRuntimeDriverRootlessPodman ||
+		result.Failure.IsolationLevel != sandbox.SandboxIsolationLevelContainer ||
+		result.Failure.Error() != `sandbox "legacy" runtime "rootless_podman" does not satisfy requested runtime category "container"` {
+		t.Fatalf("failure = %#v, want deterministic runtime-category failure", result.Failure)
+	}
+}
+
+func TestSelectExplicitSandboxRejectsRequestedVMIsolationOnWeakerRuntime(t *testing.T) {
+	result := Select(Request{
+		SandboxName:    "legacy",
+		IsolationLevel: sandbox.SandboxIsolationLevelVM,
+	}, CachedState{
+		ListHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{
+				{
+					ID:                "vm-a",
+					Name:              "vm a",
+					SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverMicroVM},
+				},
+			}, nil
+		},
+		LoadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != "legacy" {
+				t.Fatalf("loaded sandbox name = %q, want legacy", name)
+			}
+			return &sandbox.SandboxState{
+				Name:    "legacy",
+				Runtime: &sandbox.SandboxRuntimeState{Driver: sandbox.SandboxRuntimeDriverSSHMachine},
+			}, nil
+		},
+	})
+
+	if !result.Failed() {
+		t.Fatalf("result = %#v, want requested VM isolation failure", result)
+	}
+	if result.Failure.Reason != FailureReasonIsolationUnavailable ||
+		result.Failure.RuntimeDriver != sandbox.SandboxRuntimeDriverSSHMachine ||
+		result.Failure.IsolationLevel != sandbox.SandboxIsolationLevelVM ||
+		result.Failure.Error() != `sandbox "legacy" does not satisfy requested isolation "vm"` {
+		t.Fatalf("failure = %#v, want deterministic VM isolation failure", result.Failure)
+	}
+}

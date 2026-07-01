@@ -24,6 +24,13 @@ type CachedState struct {
 // running sandbox, then branch-named provisioning when fallback policy allows it.
 func Select(req Request, cache CachedState) Result {
 	policy := req.EffectiveFallbackPolicy()
+	if isolationResult := validateRequestedIsolation(req); isolationResult.Failed() {
+		return isolationResult
+	}
+	if compatibilityResult := validateRequestedRuntimeIsolation(req); compatibilityResult.Failed() {
+		return compatibilityResult
+	}
+
 	var requestedHost *sandbox.SandboxHost
 	var requestedRuntime *sandboxruntime.RuntimeState
 	var requestedConstraint Result
@@ -43,9 +50,21 @@ func Select(req Request, cache CachedState) Result {
 		requestedHost = runtimeResult.Host
 		requestedRuntime = runtimeResult.Runtime
 		requestedConstraint = runtimeResult
+	} else if req.HasIsolationConstraint() {
+		isolationResult := selectRequestedIsolation(req, cache, policy)
+		if isolationResult.Failed() {
+			return isolationResult
+		}
+		requestedHost = isolationResult.Host
+		requestedRuntime = isolationResult.Runtime
+		requestedConstraint = isolationResult
 	}
 	if req.HasExplicitSandboxName() {
-		return withRequestedMetadata(selectExplicitSandbox(req, cache, policy), requestedHost, requestedRuntime)
+		result := selectExplicitSandbox(req, cache, policy)
+		if failure := validateSelectedSandbox(req, result); failure.Failed() {
+			return failure
+		}
+		return withRequestedMetadata(result, requestedHost, requestedRuntime)
 	}
 	if requestedHost != nil {
 		if !policy.Disabled && policy.AllowBranchProvisioning {
@@ -147,7 +166,32 @@ func selectRequestedHost(req Request, cache CachedState, policy FallbackPolicy) 
 				RuntimeDriver: runtimeDriver,
 			})
 		}
-		runtime = &sandboxruntime.RuntimeState{Driver: runtimeDriver}
+		runtime = runtimeStateForDriver(runtimeDriver)
+	}
+	if req.HasIsolationConstraint() {
+		isolationLevel := strings.TrimSpace(req.IsolationLevel)
+		if runtime != nil {
+			if !runtimeSatisfiesIsolation(*runtime, isolationLevel) {
+				return failureResult(Failure{
+					Reason:         FailureReasonIsolationUnavailable,
+					Message:        fmt.Sprintf("requested runtime %q does not satisfy requested isolation %q", runtime.Driver, isolationLevel),
+					HostID:         hostID,
+					RuntimeDriver:  runtime.Driver,
+					IsolationLevel: isolationLevel,
+				})
+			}
+		} else {
+			runtimeDriver, ok := hostRuntimeForIsolation(host, isolationLevel)
+			if !ok {
+				return failureResult(Failure{
+					Reason:         FailureReasonIsolationUnavailable,
+					Message:        fmt.Sprintf("host %q does not support requested isolation %q", hostID, isolationLevel),
+					HostID:         hostID,
+					IsolationLevel: isolationLevel,
+				})
+			}
+			runtime = runtimeStateForDriver(runtimeDriver)
+		}
 	}
 
 	return requestedHostResult(host, runtime, policy)
@@ -175,13 +219,46 @@ func selectRequestedRuntime(req Request, cache CachedState, policy FallbackPolic
 		if !hostSupportsRuntime(host, runtimeDriver) {
 			continue
 		}
-		return requestedRuntimeResult(host, &sandboxruntime.RuntimeState{Driver: runtimeDriver}, policy)
+		return requestedRuntimeResult(host, runtimeStateForDriver(runtimeDriver), policy)
 	}
 
 	return failureResult(Failure{
 		Reason:        FailureReasonRuntimeUnsupported,
 		Message:       fmt.Sprintf("no durable host supports requested runtime %q", runtimeDriver),
 		RuntimeDriver: runtimeDriver,
+	})
+}
+
+func selectRequestedIsolation(req Request, cache CachedState, policy FallbackPolicy) Result {
+	isolationLevel := strings.TrimSpace(req.IsolationLevel)
+	if cache.ListHosts == nil {
+		return failureResult(Failure{
+			Reason:         FailureReasonInvalidRequest,
+			Message:        "host lister is required",
+			IsolationLevel: isolationLevel,
+		})
+	}
+	hosts, err := cache.ListHosts()
+	if err != nil {
+		return failureResult(Failure{
+			Reason:         FailureReasonInvalidRequest,
+			Message:        fmt.Sprintf("list cached sandbox hosts for isolation %q failed", isolationLevel),
+			IsolationLevel: isolationLevel,
+		})
+	}
+
+	for _, host := range orderedHosts(hosts) {
+		runtimeDriver, ok := hostRuntimeForIsolation(host, isolationLevel)
+		if !ok {
+			continue
+		}
+		return requestedIsolationResult(host, runtimeStateForDriver(runtimeDriver), isolationLevel, policy)
+	}
+
+	return failureResult(Failure{
+		Reason:         FailureReasonIsolationUnavailable,
+		Message:        fmt.Sprintf("no durable host supports requested isolation %q", isolationLevel),
+		IsolationLevel: isolationLevel,
 	})
 }
 
@@ -209,6 +286,38 @@ func hostSupportsRuntime(host *sandbox.SandboxHost, runtimeDriver string) bool {
 		}
 	}
 	return false
+}
+
+func hostRuntimeForIsolation(host *sandbox.SandboxHost, isolationLevel string) (string, bool) {
+	isolationLevel = strings.TrimSpace(isolationLevel)
+	if host == nil || isolationLevel == "" {
+		return "", false
+	}
+	for _, driver := range orderedRuntimeDrivers(host.SupportedRuntimes) {
+		runtime := runtimeStateForDriver(driver)
+		if runtime != nil && runtimeSatisfiesIsolation(*runtime, isolationLevel) {
+			return runtime.Driver, true
+		}
+	}
+	return "", false
+}
+
+func orderedRuntimeDrivers(runtimeDrivers []string) []string {
+	seen := make(map[string]struct{}, len(runtimeDrivers))
+	ordered := make([]string, 0, len(runtimeDrivers))
+	for _, runtimeDriver := range runtimeDrivers {
+		driver := strings.TrimSpace(runtimeDriver)
+		if driver == "" {
+			continue
+		}
+		if _, ok := seen[driver]; ok {
+			continue
+		}
+		seen[driver] = struct{}{}
+		ordered = append(ordered, driver)
+	}
+	sort.Strings(ordered)
+	return ordered
 }
 
 func orderedHosts(hosts []*sandbox.SandboxHost) []*sandbox.SandboxHost {
@@ -261,10 +370,27 @@ func requestedRuntimeResult(host *sandbox.SandboxHost, runtime *sandboxruntime.R
 	return result
 }
 
+func requestedIsolationResult(host *sandbox.SandboxHost, runtime *sandboxruntime.RuntimeState, isolationLevel string, policy FallbackPolicy) Result {
+	result := Result{
+		Host:    host,
+		Runtime: runtime,
+		Source: SourceMetadata{
+			Kind:   SourceRequestedIsolation,
+			Detail: isolationLevel,
+		},
+		Fallback: FallbackMetadata{
+			Policy: policy,
+		},
+	}
+	return result
+}
+
 func requestedSelectionReason(result Result) string {
 	switch result.Source.Kind {
 	case SourceRequestedRuntime:
 		return "requested runtime selected"
+	case SourceRequestedIsolation:
+		return "requested isolation selected"
 	default:
 		return "requested host selected"
 	}
@@ -311,6 +437,132 @@ func selectExplicitSandbox(req Request, cache CachedState, policy FallbackPolicy
 		Message:     fmt.Sprintf("load sandbox %q: %v", name, err),
 		SandboxName: name,
 	})
+}
+
+func validateRequestedIsolation(req Request) Result {
+	if !req.HasIsolationConstraint() {
+		return Result{}
+	}
+	isolationLevel := strings.TrimSpace(req.IsolationLevel)
+	if isRecognizedIsolationLevel(isolationLevel) {
+		return Result{}
+	}
+	return failureResult(Failure{
+		Reason:         FailureReasonIsolationUnavailable,
+		Message:        fmt.Sprintf("requested isolation %q is not supported", isolationLevel),
+		IsolationLevel: isolationLevel,
+	})
+}
+
+func validateRequestedRuntimeIsolation(req Request) Result {
+	if !req.HasRuntimeConstraint() || !req.HasIsolationConstraint() {
+		return Result{}
+	}
+	runtimeDriver := strings.TrimSpace(req.RuntimeDriver)
+	isolationLevel := strings.TrimSpace(req.IsolationLevel)
+	runtime := runtimeStateForDriver(runtimeDriver)
+	if runtime == nil || runtimeSatisfiesIsolation(*runtime, isolationLevel) {
+		return Result{}
+	}
+	runtimeIsolation := selectedRuntimeIsolation(*runtime)
+	return failureResult(Failure{
+		Reason:         FailureReasonIsolationUnavailable,
+		Message:        fmt.Sprintf("requested runtime %q provides isolation %q, not requested isolation %q", runtimeDriver, runtimeIsolation, isolationLevel),
+		RuntimeDriver:  runtimeDriver,
+		IsolationLevel: isolationLevel,
+	})
+}
+
+func validateSelectedSandbox(req Request, result Result) Result {
+	if result.Failed() || result.Sandbox == nil || (!req.HasRuntimeConstraint() && !req.HasIsolationConstraint()) {
+		return Result{}
+	}
+	runtime := RuntimeForSandbox(result.Sandbox)
+	if req.HasRuntimeConstraint() {
+		runtimeDriver := strings.TrimSpace(req.RuntimeDriver)
+		if strings.TrimSpace(runtime.Driver) != runtimeDriver {
+			return failureResult(Failure{
+				Reason:        FailureReasonRuntimeUnsupported,
+				Message:       fmt.Sprintf("sandbox %q uses runtime %q, not requested runtime %q", result.Sandbox.Name, runtime.Driver, runtimeDriver),
+				SandboxName:   result.Sandbox.Name,
+				RuntimeDriver: runtimeDriver,
+			})
+		}
+		expectedIsolation, ok := runtimeDriverIsolationLevel(runtimeDriver)
+		if ok && !runtimeSatisfiesIsolation(runtime, expectedIsolation) {
+			return failureResult(Failure{
+				Reason:         FailureReasonRuntimeUnsupported,
+				Message:        fmt.Sprintf("sandbox %q runtime %q does not satisfy requested runtime category %q", result.Sandbox.Name, runtimeDriver, expectedIsolation),
+				SandboxName:    result.Sandbox.Name,
+				RuntimeDriver:  runtimeDriver,
+				IsolationLevel: expectedIsolation,
+			})
+		}
+	}
+	if req.HasIsolationConstraint() {
+		isolationLevel := strings.TrimSpace(req.IsolationLevel)
+		if !runtimeSatisfiesIsolation(runtime, isolationLevel) {
+			return failureResult(Failure{
+				Reason:         FailureReasonIsolationUnavailable,
+				Message:        fmt.Sprintf("sandbox %q does not satisfy requested isolation %q", result.Sandbox.Name, isolationLevel),
+				SandboxName:    result.Sandbox.Name,
+				RuntimeDriver:  runtime.Driver,
+				IsolationLevel: isolationLevel,
+			})
+		}
+	}
+	return Result{}
+}
+
+func runtimeStateForDriver(runtimeDriver string) *sandboxruntime.RuntimeState {
+	driver := strings.TrimSpace(runtimeDriver)
+	if driver == "" {
+		return nil
+	}
+	runtime := &sandboxruntime.RuntimeState{Driver: driver}
+	if isolationLevel, ok := runtimeDriverIsolationLevel(driver); ok {
+		runtime.IsolationLevel = isolationLevel
+	}
+	return runtime
+}
+
+func runtimeSatisfiesIsolation(runtime sandboxruntime.RuntimeState, requestedIsolation string) bool {
+	requestedIsolation = strings.TrimSpace(requestedIsolation)
+	if requestedIsolation == "" {
+		return true
+	}
+	selectedIsolation := selectedRuntimeIsolation(runtime)
+	return selectedIsolation == requestedIsolation
+}
+
+func selectedRuntimeIsolation(runtime sandboxruntime.RuntimeState) string {
+	if isolationLevel := strings.TrimSpace(runtime.IsolationLevel); isolationLevel != "" {
+		return isolationLevel
+	}
+	isolationLevel, _ := runtimeDriverIsolationLevel(runtime.Driver)
+	return isolationLevel
+}
+
+func isRecognizedIsolationLevel(isolationLevel string) bool {
+	switch strings.TrimSpace(isolationLevel) {
+	case sandbox.SandboxIsolationLevelHost, sandbox.SandboxIsolationLevelContainer, sandbox.SandboxIsolationLevelVM:
+		return true
+	default:
+		return false
+	}
+}
+
+func runtimeDriverIsolationLevel(runtimeDriver string) (string, bool) {
+	switch strings.TrimSpace(runtimeDriver) {
+	case sandbox.SandboxRuntimeDriverSSHMachine:
+		return sandbox.SandboxIsolationLevelHost, true
+	case sandbox.SandboxRuntimeDriverRootlessPodman:
+		return sandbox.SandboxIsolationLevelContainer, true
+	case sandbox.SandboxRuntimeDriverMicroVM:
+		return sandbox.SandboxIsolationLevelVM, true
+	default:
+		return "", false
+	}
 }
 
 func selectDefaultRunningSandbox(req Request, cache CachedState, policy FallbackPolicy) (Result, bool) {
