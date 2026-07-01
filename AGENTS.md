@@ -55,6 +55,7 @@
 - Non-factory run/auto post-command artifact `CopyOut` failures should cross from `internal/sandboxexecution` as `ArtifactCollectionError` values and be converted in `cmd` into sanitized `ArtifactMetadata.Warnings` only, without partial entries; factory sandbox artifact copy failures should append sanitized `factory.EventTypeArtifactSync` timeline events at the command boundary.
 - Factory sandbox command output summaries should be populated only from `sandboxexec.EventCommandOutput` through `factorySandboxTimelineWriter`; preparation/auth/input-copy output should stream through `newFactorySandboxRemoteUserOutputWriter` so visible setup output does not become `factory.EventTypeCommandOutputSummary` events or remote log chunks.
 - `sandboxworker.ClientDriver.CopyOut` failure coverage should assert both no new destination file is left behind and pre-existing destination content survives; the adapter writes through a temp file in the destination directory and only renames after payload validation succeeds.
+- Local rootless worker operation docs should live under `docs/design/` and be guarded by `cmd` documentation tests; keep the guide explicit opt-in, local/dev lower-isolation only, and include start/register/run/auto/factory/cleanup/integration-env details without claiming microVM isolation, scheduling, network/proxy/firewall enforcement, or secret broker support.
 
 ## Patterns from phase18-worker-backed-sandbox-execution-routing (2026-07-01)
 

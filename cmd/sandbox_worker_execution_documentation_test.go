@@ -57,6 +57,58 @@ func TestPhase18WorkerBackedExecutionDocumentationCoversVerificationAndScope(t *
 	}
 }
 
+func TestPhase19LocalRootlessWorkerOperationDocumentationCoversWorkflowAndScope(t *testing.T) {
+	doc := readSandboxWorkerExecutionDoc(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-phase19-local-rootless-worker-operation.md"))
+	normalizedDoc := strings.Join(strings.Fields(doc), " ")
+	required := []string{
+		"Phase 19 documents local rootless worker operation",
+		"Rootless worker execution is explicit opt-in.",
+		"local/dev lower-isolation only",
+		"Podman is installed and available to the user running `hal sandboxd`",
+		"The selected rootless Podman image is already available locally",
+		"hal sandboxd --socket /tmp/hal-sandboxd.sock --worker-id local-worker --driver rootless_podman",
+		"hal sandbox host register worker local-worker --socket /tmp/hal-sandboxd.sock --live",
+		"hal run --sandbox --sandbox-host local-worker --sandbox-runtime rootless_podman",
+		"hal auto --sandbox --sandbox-host local-worker --sandbox-runtime rootless_podman",
+		"hal factory run .hal/prd-feature.md --sandbox --base <base-branch> --sandbox-host local-worker --sandbox-runtime rootless_podman",
+		"does not provide microVM isolation",
+		"does not provide scheduler behavior",
+		"does not enforce network policy",
+		"does not provide proxy or firewall enforcement",
+		"does not provide secret broker support",
+		"container isolation with best-effort network policy metadata and no network enforcement",
+		"hal sandbox host delete local-worker",
+		"Stop the `hal sandboxd` process",
+		"remove `/tmp/hal-sandboxd.sock` before starting a new daemon on the same path",
+		"go test -timeout=120s -tags=worker_integration ./cmd -run TestWorkerIntegrationRootlessPodmanExecutionThroughSharedResolver -count=1 -v",
+		"HAL_WORKER_INTEGRATION_ENDPOINT",
+		"HAL_WORKER_INTEGRATION_HOST_NAME",
+		"HAL_WORKER_INTEGRATION_RUNTIME_DRIVER=rootless_podman",
+		"HAL_WORKER_INTEGRATION_IMAGE",
+		"Default test runs must remain free of Podman, worker daemons, network access, provider credentials, and untagged worker integration behavior.",
+	}
+	for _, want := range required {
+		if !strings.Contains(doc, want) && !strings.Contains(normalizedDoc, want) {
+			t.Fatalf("phase 19 local rootless worker operation documentation missing %q", want)
+		}
+	}
+
+	forbiddenClaims := []string{
+		"provides microVM isolation",
+		"provides scheduler behavior",
+		"enforces network policy",
+		"provides proxy or firewall enforcement",
+		"provides secret broker support",
+		"deny-by-default network enforcement",
+		"credential proxy support",
+	}
+	for _, claim := range forbiddenClaims {
+		if strings.Contains(doc, claim) || strings.Contains(normalizedDoc, claim) {
+			t.Fatalf("phase 19 local rootless worker operation documentation makes unsupported claim %q", claim)
+		}
+	}
+}
+
 func readSandboxWorkerExecutionDoc(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)
