@@ -310,6 +310,161 @@ func TestSandboxSyncOutApplyFlagsAreExplicitAndScoped(t *testing.T) {
 	})
 }
 
+func TestSandboxApplyOnlyUsesEligibleSyncOutArtifacts(t *testing.T) {
+	t.Run("selects eligible committed patch only", func(t *testing.T) {
+		store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+		executionID := "eligible-apply"
+		projectDir := t.TempDir()
+		saveSandboxSyncOutApplyManifest(t, store, executionID, sandboxexecution.PurposeRun, sandboxexecution.ArtifactMetadata{
+			Collected: []sandboxexecution.ArtifactMetadataEntry{
+				sandboxSyncOutApplyCollected("untracked-archive", ".hal/sync/untracked.tar", executionID+"/artifacts/sync/untracked.tar"),
+				sandboxSyncOutApplyCollected("recovery-patch", ".hal/recovery/workspace.patch", executionID+"/recovery/workspace.patch"),
+				sandboxSyncOutApplyCollected("committed-patch", ".hal/sync/committed.patch", executionID+"/artifacts/sync/committed.patch"),
+			},
+		})
+
+		var called bool
+		result, err := applySandboxSyncOut(context.Background(), store, sandboxSyncOutApplyRequest{
+			ExecutionID: executionID,
+			Purpose:     sandboxexecution.PurposeRun,
+			ProjectDir:  projectDir,
+			Options: sandboxSyncOutOptions{
+				Enabled: true,
+				Apply:   true,
+			},
+		}, func(_ context.Context, got sandboxSyncOutApplyRequest) (sandboxworkspace.SafeApplyResult, error) {
+			called = true
+			if got.Artifact == nil {
+				t.Fatal("apply request Artifact = nil, want selected eligible artifact")
+			}
+			if got.Artifact.ID != "committed-patch" || got.Artifact.Kind != sandboxworkspace.SyncOutArtifactKindPatch {
+				t.Fatalf("apply request Artifact = %#v, want eligible committed patch", got.Artifact)
+			}
+			if got.Artifact.ApplyEligibility == nil || !got.Artifact.ApplyEligibility.Eligible ||
+				got.Artifact.ApplyEligibility.Mode != sandboxworkspace.SyncOutApplyModePatch {
+				t.Fatalf("selected artifact eligibility = %#v, want explicit eligible patch", got.Artifact.ApplyEligibility)
+			}
+			wantPayload := filepath.Join(store.Root(), filepath.FromSlash(executionID+"/artifacts/sync/committed.patch"))
+			if got.PayloadPath != wantPayload {
+				t.Fatalf("apply request PayloadPath = %q, want %q", got.PayloadPath, wantPayload)
+			}
+			if got.Summary.Untracked.Archive == nil || got.Summary.Recovery.Status != sandboxworkspace.SyncOutRecoveryStatusCollected {
+				t.Fatalf("sync-out summary = %#v, want non-eligible artifacts preserved for handoff metadata", got.Summary)
+			}
+			return sandboxworkspace.SafeApplyResult{
+				Status:     sandboxworkspace.SafeApplyStatusApplied,
+				Applied:    true,
+				ArtifactID: got.Artifact.ID,
+				Mode:       sandboxworkspace.SyncOutApplyModePatch,
+			}, nil
+		})
+		if err != nil {
+			t.Fatalf("applySandboxSyncOut() error = %v", err)
+		}
+		if !called {
+			t.Fatal("apply hook was not called for eligible committed patch")
+		}
+		if result.Status != sandboxworkspace.SafeApplyStatusApplied || !result.Applied || result.ArtifactID != "committed-patch" {
+			t.Fatalf("apply result = %#v, want committed patch applied result", result)
+		}
+	})
+
+	t.Run("hands off outputs without eligible patch or bundle", func(t *testing.T) {
+		for _, tc := range []struct {
+			name       string
+			metadata   sandboxexecution.ArtifactMetadata
+			wantReason sandboxworkspace.SyncOutApplyEligibilityReason
+		}{
+			{
+				name: "untracked archive",
+				metadata: sandboxexecution.ArtifactMetadata{Collected: []sandboxexecution.ArtifactMetadataEntry{
+					sandboxSyncOutApplyCollected("untracked-archive", ".hal/sync/untracked.tar", "exec-case/artifacts/sync/untracked.tar"),
+					sandboxSyncOutApplyCollected("untracked-list", ".hal/sync/untracked.txt", "exec-case/artifacts/sync/untracked.txt"),
+				}},
+				wantReason: sandboxworkspace.SyncOutApplyEligibilityReasonNoEligibleArtifact,
+			},
+			{
+				name: "recovery bundle",
+				metadata: sandboxexecution.ArtifactMetadata{Collected: []sandboxexecution.ArtifactMetadataEntry{
+					sandboxSyncOutApplyCollected("recovery-patch", ".hal/recovery/workspace.patch", "exec-case/recovery/workspace.patch"),
+				}},
+				wantReason: sandboxworkspace.SyncOutApplyEligibilityReasonNoEligibleArtifact,
+			},
+			{
+				name: "raw artifact directory metadata",
+				metadata: sandboxexecution.ArtifactMetadata{Collected: []sandboxexecution.ArtifactMetadataEntry{
+					sandboxSyncOutApplyCollected("raw-artifacts", "output/raw-artifacts", "exec-case/artifacts/output/raw-artifacts"),
+				}},
+				wantReason: sandboxworkspace.SyncOutApplyEligibilityReasonNoEligibleArtifact,
+			},
+			{
+				name: "warning only",
+				metadata: sandboxexecution.ArtifactMetadata{Warnings: []sandboxexecution.ArtifactWarning{{
+					Phase:   "copy_out",
+					Message: "artifact collection failed",
+					Artifact: sandboxexecution.ArtifactMetadataEntry{
+						ID:   "untracked-archive",
+						Name: "Untracked archive",
+						Path: ".hal/sync/untracked.tar",
+					},
+				}}},
+				wantReason: sandboxworkspace.SyncOutApplyEligibilityReasonNoEligibleArtifact,
+			},
+			{
+				name: "ineligible committed patch",
+				metadata: sandboxexecution.ArtifactMetadata{Partial: []sandboxexecution.ArtifactMetadataEntry{{
+					ID:   "committed-patch",
+					Name: "Committed patch",
+					Path: ".hal/sync/committed.patch",
+				}}},
+				wantReason: sandboxworkspace.SyncOutApplyEligibilityReasonUnsafeArtifact,
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+				projectDir := t.TempDir()
+				executionID := "exec-case"
+				saveSandboxSyncOutApplyManifest(t, store, executionID, sandboxexecution.PurposeRun, tc.metadata)
+
+				var called bool
+				result, err := applySandboxSyncOut(context.Background(), store, sandboxSyncOutApplyRequest{
+					ExecutionID: executionID,
+					Purpose:     sandboxexecution.PurposeRun,
+					ProjectDir:  projectDir,
+					Options: sandboxSyncOutOptions{
+						Enabled: true,
+						Apply:   true,
+					},
+				}, func(_ context.Context, got sandboxSyncOutApplyRequest) (sandboxworkspace.SafeApplyResult, error) {
+					called = true
+					if got.Artifact != nil {
+						t.Fatalf("apply request Artifact = %#v, want no selected artifact", got.Artifact)
+					}
+					if got.PayloadPath != "" {
+						t.Fatalf("apply request PayloadPath = %q, want empty handoff payload", got.PayloadPath)
+					}
+					if got.Handoff.Status != sandboxworkspace.SafeApplyStatusHandoffRequired || got.Handoff.Applied {
+						t.Fatalf("apply request Handoff = %#v, want handoff-required result", got.Handoff)
+					}
+					if !sandboxApplyReasonsContain(got.Handoff.Reasons, tc.wantReason) {
+						t.Fatalf("handoff reasons = %#v, want %q", got.Handoff.Reasons, tc.wantReason)
+					}
+					return got.Handoff, nil
+				})
+				if err != nil {
+					t.Fatalf("applySandboxSyncOut() error = %v", err)
+				}
+				if !called {
+					t.Fatal("apply hook was not called to receive handoff metadata")
+				}
+				if result.Status != sandboxworkspace.SafeApplyStatusHandoffRequired || result.Applied || result.DryRunPassed {
+					t.Fatalf("apply result = %#v, want handoff without mutation", result)
+				}
+			})
+		}
+	})
+}
+
 func TestSandboxApplyPersistsRecoveryBeforeHostMutation(t *testing.T) {
 	t.Run("run", func(t *testing.T) {
 		startedAt := time.Date(2026, 7, 2, 1, 0, 0, 0, time.UTC)
@@ -671,6 +826,37 @@ func sandboxManifestHasCollectedPath(manifest *sandboxexecution.Manifest, path s
 func sandboxSyncOutSummaryHasCorePath(summary sandboxworkspace.SyncOutSummary, path string) bool {
 	for _, artifact := range summary.CoreArtifacts {
 		if artifact.DisplayPath == path && artifact.StoredPath != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func saveSandboxSyncOutApplyManifest(t *testing.T, store sandboxexecution.Store, executionID string, purpose sandboxexecution.Purpose, metadata sandboxexecution.ArtifactMetadata) {
+	t.Helper()
+	if err := store.SaveManifest(&sandboxexecution.Manifest{
+		ID:               executionID,
+		Purpose:          purpose,
+		Status:           sandboxexecution.StatusRunning,
+		StartedAt:        time.Date(2026, 7, 2, 2, 0, 0, 0, time.UTC),
+		ArtifactMetadata: &metadata,
+	}); err != nil {
+		t.Fatalf("SaveManifest() error = %v", err)
+	}
+}
+
+func sandboxSyncOutApplyCollected(id, path, storedPath string) sandboxexecution.ArtifactMetadataEntry {
+	return sandboxexecution.ArtifactMetadataEntry{
+		ID:         id,
+		Name:       id,
+		Path:       path,
+		StoredPath: storedPath,
+	}
+}
+
+func sandboxApplyReasonsContain(reasons []sandboxworkspace.SyncOutApplyEligibilityReason, want sandboxworkspace.SyncOutApplyEligibilityReason) bool {
+	for _, reason := range reasons {
+		if reason == want {
 			return true
 		}
 	}
