@@ -209,6 +209,13 @@ func runSandboxRuntimeList(ctx context.Context, req sandboxRuntimeListRequest, o
 		return err
 	}
 	if req.Live {
+		if strings.TrimSpace(host.Kind) != sandbox.SandboxHostKindWorker {
+			resp := newSandboxRuntimeListUnsupportedLiveResponse(host)
+			if req.JSON {
+				return renderSandboxRuntimeListResponseJSON(out, resp)
+			}
+			return renderSandboxRuntimeListResponse(out, resp)
+		}
 		status, capabilities, err := querySandboxRuntimeListLiveMetadata(ctx, host, newWorkerClient)
 		if err != nil {
 			return err

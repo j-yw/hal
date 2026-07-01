@@ -163,6 +163,26 @@ func newSandboxRuntimeListCachedResponse(host *sandbox.SandboxHost) SandboxRunti
 	}, nil, nil)
 }
 
+func newSandboxRuntimeListUnsupportedLiveResponse(host *sandbox.SandboxHost) SandboxRuntimeListResponse {
+	hostKind := sandboxHostDisplayValue("", "unknown")
+	if host != nil {
+		hostKind = sandboxHostDisplayValue(host.Kind, "unknown")
+	}
+	return newSandboxRuntimeListResponse(host, SandboxRuntimeSource{
+		Mode:          SandboxRuntimeSourceUnsupportedLive,
+		RequestedLive: true,
+		CacheUpdated:  false,
+		RefreshedAt:   nil,
+		Summary:       fmt.Sprintf("live runtime inspection is unsupported for host kind %s; using cached durable metadata", hostKind),
+	}, []SandboxRuntimeDiagnostic{
+		{
+			Code:     SandboxRuntimeStatusErrorLiveUnsupported,
+			Severity: "warning",
+			Message:  "live runtime inspection is unsupported for this host kind",
+		},
+	}, nil)
+}
+
 func newSandboxRuntimeListLiveResponse(host *sandbox.SandboxHost, status *sandboxworker.Status, capabilities *sandboxworker.Capabilities, refreshedAt time.Time) SandboxRuntimeListResponse {
 	refreshedAt = refreshedAt.UTC()
 	return SandboxRuntimeListResponse{

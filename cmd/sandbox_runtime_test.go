@@ -709,6 +709,119 @@ func TestSandboxRuntimeListJSONCachedNonWorkerHostWithoutMetadataDurableOnly(t *
 	}
 }
 
+func TestSandboxRuntimeListLiveNonWorkerHostUsesUnsupportedLiveCachedMetadata(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:       "ssh-1",
+		Name:     "zeta",
+		Kind:     sandbox.SandboxHostKindSSH,
+		Endpoint: "ssh://deploy:secret@example.com:22/workspace?token=supersecret",
+		SupportedRuntimes: []string{
+			sandbox.SandboxRuntimeDriverSSHMachine,
+			sandbox.SandboxRuntimeDriverRootlessPodman,
+		},
+		Capacity: &sandbox.HostCapacity{MaxConcurrentSandboxes: 3},
+		Security: &sandbox.SandboxSecurity{
+			Network: &sandbox.SandboxNetworkSecurity{
+				PolicyRequested: sandbox.SandboxNetworkPolicyBestEffort,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	deps := defaultSandboxRuntimeDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("runtime list --live should not contact worker daemons for non-worker hosts")
+		return nil, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxRuntimeCommand(deps)
+	cmd.SetArgs([]string{"list", "ssh-1", "--live"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+
+	output := stdout.String()
+	for _, want := range []string{
+		"Sandbox runtimes for zeta (unsupported-live)",
+		"live runtime inspection is unsupported for host kind ssh; using cached durable metadata",
+		"ssh endpoint",
+		"max 3 sandboxes",
+		"requested network best_effort",
+		sandbox.SandboxRuntimeDriverRootlessPodman,
+		sandbox.SandboxRuntimeDriverSSHMachine,
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("stdout = %q, want %q", output, want)
+		}
+	}
+	for _, leaked := range []string{"deploy", "secret", "example.com", "token=supersecret"} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("stdout leaked endpoint detail %q: %q", leaked, output)
+		}
+	}
+}
+
+func TestSandboxRuntimeListJSONLiveNonWorkerHostUsesUnsupportedLiveCachedMetadata(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:       "local-a",
+		Name:     "laptop",
+		Kind:     sandbox.SandboxHostKindLocal,
+		Endpoint: "https://user:secret@runtime.example.internal/api?token=top-secret",
+		SupportedRuntimes: []string{
+			sandbox.SandboxRuntimeDriverSSHMachine,
+		},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	deps := defaultSandboxRuntimeDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("runtime list --live --json should not contact worker daemons for non-worker hosts")
+		return nil, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxRuntimeCommand(deps)
+	cmd.SetArgs([]string{"list", "local-a", "--live", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+
+	output := stdout.String()
+	resp := decodeOneSandboxRuntimeListJSON(t, stdout.Bytes())
+	if resp.Source.Mode != SandboxRuntimeSourceUnsupportedLive || !resp.Source.RequestedLive || resp.Source.CacheUpdated || resp.Source.RefreshedAt != nil {
+		t.Fatalf("source = %#v, want unsupported-live without cache update", resp.Source)
+	}
+	if !strings.Contains(resp.Source.Summary, "host kind local") {
+		t.Fatalf("source summary = %q, want host kind", resp.Source.Summary)
+	}
+	if resp.Host.ID != "local-a" || resp.Host.Name != "laptop" || resp.Host.Kind != sandbox.SandboxHostKindLocal {
+		t.Fatalf("host identity = %#v, want local-a laptop local", resp.Host)
+	}
+	if resp.Host.Endpoint.Type != "endpoint" || resp.Host.Endpoint.Summary != "https endpoint" || resp.Host.Endpoint.Scheme == nil || *resp.Host.Endpoint.Scheme != "https" {
+		t.Fatalf("endpoint = %#v, want safe HTTPS endpoint summary", resp.Host.Endpoint)
+	}
+	if len(resp.Runtimes) != 1 || resp.Runtimes[0].ID != sandbox.SandboxRuntimeDriverSSHMachine {
+		t.Fatalf("runtimes = %#v, want cached ssh_machine metadata", resp.Runtimes)
+	}
+	if len(resp.Diagnostics) != 1 || resp.Diagnostics[0].Code != SandboxRuntimeStatusErrorLiveUnsupported || resp.Diagnostics[0].Severity != "warning" {
+		t.Fatalf("diagnostics = %#v, want live_unsupported warning", resp.Diagnostics)
+	}
+	if len(resp.Errors) != 0 {
+		t.Fatalf("errors = %#v, want empty errors", resp.Errors)
+	}
+	for _, leaked := range []string{"user", "secret", "runtime.example.internal", "top-secret"} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("JSON output leaked endpoint detail %q: %q", leaked, output)
+		}
+	}
+	if strings.Contains(output, "Sandbox runtimes for laptop") {
+		t.Fatalf("JSON stdout included human list text: %q", output)
+	}
+}
+
 func sandboxRuntimeTestWorkerSecurity(isolationLevel string) sandboxworker.SecurityPolicy {
 	return sandboxworker.SecurityPolicy{
 		Requested: sandboxworker.SecurityControls{
