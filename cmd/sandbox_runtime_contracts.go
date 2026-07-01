@@ -1,6 +1,11 @@
 package cmd
 
-import "time"
+import (
+	"strings"
+	"time"
+
+	"github.com/jywlabs/hal/internal/sandbox"
+)
 
 const SandboxRuntimeListContractType = "sandbox-runtime-list"
 const SandboxRuntimeListContractVersion = "sandbox-runtime-list-v1"
@@ -143,4 +148,197 @@ type SandboxRuntimeDiagnostic struct {
 type SandboxRuntimeError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+func newSandboxRuntimeListCachedResponse(host *sandbox.SandboxHost) SandboxRuntimeListResponse {
+	return newSandboxRuntimeListResponse(host, SandboxRuntimeSource{
+		Mode:          SandboxRuntimeSourceCached,
+		RequestedLive: false,
+		CacheUpdated:  false,
+		RefreshedAt:   nil,
+		Summary:       "cached durable runtime metadata",
+	}, nil, nil)
+}
+
+func newSandboxRuntimeListResponse(host *sandbox.SandboxHost, source SandboxRuntimeSource, diagnostics []SandboxRuntimeDiagnostic, responseErrors []SandboxRuntimeError) SandboxRuntimeListResponse {
+	if diagnostics == nil {
+		diagnostics = []SandboxRuntimeDiagnostic{}
+	}
+	if responseErrors == nil {
+		responseErrors = []SandboxRuntimeError{}
+	}
+	return SandboxRuntimeListResponse{
+		ContractType:    SandboxRuntimeListContractType,
+		ContractVersion: SandboxRuntimeListContractVersion,
+		Host:            newSandboxRuntimeHost(host),
+		Source:          source,
+		Runtimes:        newSandboxRuntimeListEntries(sandboxRuntimeHostSupportedRuntimes(host)),
+		Capacity:        newSandboxRuntimeCapacitySummary(sandboxRuntimeHostCapacity(host)),
+		Security:        newSandboxRuntimeSecuritySummary(sandboxRuntimeHostSecurity(host)),
+		Diagnostics:     diagnostics,
+		Errors:          responseErrors,
+	}
+}
+
+func newSandboxRuntimeHost(host *sandbox.SandboxHost) SandboxRuntimeHost {
+	if host == nil {
+		return SandboxRuntimeHost{
+			Kind:     "unknown",
+			Endpoint: newSandboxRuntimeEndpointSummary(""),
+		}
+	}
+	return SandboxRuntimeHost{
+		ID:       sandboxHostDisplayValue(host.ID, ""),
+		Name:     sandboxHostDisplayValue(host.Name, host.ID),
+		Kind:     sandboxHostDisplayValue(host.Kind, "unknown"),
+		Endpoint: newSandboxRuntimeEndpointSummary(host.Endpoint),
+	}
+}
+
+func newSandboxRuntimeEndpointSummary(endpoint string) SandboxRuntimeEndpointSummary {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return SandboxRuntimeEndpointSummary{
+			Type:    "none",
+			Summary: "none",
+			Scheme:  nil,
+		}
+	}
+
+	lowerEndpoint := strings.ToLower(endpoint)
+	if strings.HasPrefix(lowerEndpoint, "unix://") || strings.HasPrefix(lowerEndpoint, "unix:") {
+		scheme := "unix"
+		return SandboxRuntimeEndpointSummary{
+			Type:    "unix_socket",
+			Summary: "local Unix socket",
+			Scheme:  &scheme,
+		}
+	}
+
+	if index := strings.Index(endpoint, ":"); index > 0 {
+		scheme := strings.ToLower(strings.TrimSpace(endpoint[:index]))
+		if scheme != "" {
+			return SandboxRuntimeEndpointSummary{
+				Type:    "endpoint",
+				Summary: scheme + " endpoint",
+				Scheme:  &scheme,
+			}
+		}
+	}
+
+	return SandboxRuntimeEndpointSummary{
+		Type:    "configured",
+		Summary: "configured",
+		Scheme:  nil,
+	}
+}
+
+func newSandboxRuntimeListEntries(runtimeIDs []string) []SandboxRuntimeListEntry {
+	runtimeIDs = sortedUniqueStrings(runtimeIDs)
+	if len(runtimeIDs) == 0 {
+		return []SandboxRuntimeListEntry{}
+	}
+	entries := make([]SandboxRuntimeListEntry, 0, len(runtimeIDs))
+	for _, runtimeID := range runtimeIDs {
+		entries = append(entries, SandboxRuntimeListEntry{
+			ID:                  runtimeID,
+			HostKind:            nil,
+			IsolationLevel:      nil,
+			SupportedOperations: []string{},
+			Security:            newSandboxRuntimeSecuritySummary(nil),
+			Diagnostics:         []SandboxRuntimeDiagnostic{},
+		})
+	}
+	return entries
+}
+
+func newSandboxRuntimeCapacitySummary(capacity *sandbox.HostCapacity) SandboxRuntimeCapacitySummary {
+	if capacity == nil {
+		return SandboxRuntimeCapacitySummary{
+			Summary:                sandboxHostCapacitySummary(nil),
+			CPUCores:               nil,
+			MemoryMB:               nil,
+			DiskGB:                 nil,
+			MaxConcurrentSandboxes: nil,
+			ActiveSandboxes:        nil,
+		}
+	}
+	return SandboxRuntimeCapacitySummary{
+		Summary:                sandboxHostCapacitySummary(capacity),
+		CPUCores:               sandboxRuntimePositiveIntPtr(capacity.CPUCores),
+		MemoryMB:               sandboxRuntimePositiveIntPtr(capacity.MemoryMB),
+		DiskGB:                 sandboxRuntimePositiveIntPtr(capacity.DiskGB),
+		MaxConcurrentSandboxes: sandboxRuntimePositiveIntPtr(capacity.MaxConcurrentSandboxes),
+		ActiveSandboxes:        nil,
+	}
+}
+
+func newSandboxRuntimeSecuritySummary(security *sandbox.SandboxSecurity) SandboxRuntimeSecuritySummary {
+	if security == nil {
+		return SandboxRuntimeSecuritySummary{
+			Requested: SandboxRuntimeSecurityControls{},
+			Enforced:  SandboxRuntimeSecurityControls{},
+		}
+	}
+
+	var requested SandboxRuntimeSecurityControls
+	var enforced SandboxRuntimeSecurityControls
+	if security.Network != nil {
+		requested.NetworkPolicy = sandboxRuntimeStringPtr(security.Network.PolicyRequested)
+		enforced.NetworkPolicy = sandboxRuntimeStringPtr(security.Network.PolicyEnforced)
+		enforced.NetworkEnforcement = sandboxRuntimeStringPtr(security.Network.EnforcementMode)
+	}
+	if security.Secrets != nil {
+		requested.CredentialModes = sandboxRuntimeStringSlice(security.Secrets.RequestedModes)
+		enforced.CredentialModes = sandboxRuntimeStringSlice(security.Secrets.ActiveModes)
+	}
+
+	return SandboxRuntimeSecuritySummary{
+		Requested: requested,
+		Enforced:  enforced,
+	}
+}
+
+func sandboxRuntimeHostSupportedRuntimes(host *sandbox.SandboxHost) []string {
+	if host == nil {
+		return nil
+	}
+	return host.SupportedRuntimes
+}
+
+func sandboxRuntimeHostCapacity(host *sandbox.SandboxHost) *sandbox.HostCapacity {
+	if host == nil {
+		return nil
+	}
+	return host.Capacity
+}
+
+func sandboxRuntimeHostSecurity(host *sandbox.SandboxHost) *sandbox.SandboxSecurity {
+	if host == nil {
+		return nil
+	}
+	return host.Security
+}
+
+func sandboxRuntimePositiveIntPtr(value int) *int {
+	if value <= 0 {
+		return nil
+	}
+	return &value
+}
+
+func sandboxRuntimeStringPtr(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func sandboxRuntimeStringSlice(values []string) []string {
+	values = sortedUniqueStrings(values)
+	if len(values) == 0 {
+		return nil
+	}
+	return values
 }

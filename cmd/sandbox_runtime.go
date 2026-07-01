@@ -2,17 +2,22 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"text/tabwriter"
 
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/spf13/cobra"
 )
 
 type sandboxRuntimeDeps struct {
-	list   func(context.Context, sandboxRuntimeListRequest, io.Writer) error
-	status func(context.Context, sandboxRuntimeStatusRequest, io.Writer) error
+	list            func(context.Context, sandboxRuntimeListRequest, io.Writer) error
+	status          func(context.Context, sandboxRuntimeStatusRequest, io.Writer) error
+	loadHost        func(string) (*sandbox.SandboxHost, error)
+	newWorkerClient func(string) (sandboxHostWorkerClient, error)
 }
 
 type sandboxRuntimeListRequest struct {
@@ -35,7 +40,10 @@ func init() {
 }
 
 func defaultSandboxRuntimeDeps() sandboxRuntimeDeps {
-	return sandboxRuntimeDeps{}
+	return sandboxRuntimeDeps{
+		loadHost:        sandbox.LoadHost,
+		newWorkerClient: newSandboxHostWorkerClient,
+	}
 }
 
 func newSandboxRuntimeCommand(deps sandboxRuntimeDeps) *cobra.Command {
@@ -139,8 +147,18 @@ contract.`,
 }
 
 func normalizeSandboxRuntimeDeps(deps sandboxRuntimeDeps) sandboxRuntimeDeps {
+	if deps.loadHost == nil {
+		deps.loadHost = sandbox.LoadHost
+	}
+	if deps.newWorkerClient == nil {
+		deps.newWorkerClient = newSandboxHostWorkerClient
+	}
 	if deps.list == nil {
-		deps.list = runSandboxRuntimeList
+		loadHost := deps.loadHost
+		newWorkerClient := deps.newWorkerClient
+		deps.list = func(ctx context.Context, req sandboxRuntimeListRequest, out io.Writer) error {
+			return runSandboxRuntimeList(ctx, req, out, loadHost, newWorkerClient)
+		}
 	}
 	if deps.status == nil {
 		deps.status = runSandboxRuntimeStatus
@@ -164,10 +182,133 @@ func runSandboxRuntimeCobra(cmd *cobra.Command, title string, run func(context.C
 	return nil
 }
 
-func runSandboxRuntimeList(context.Context, sandboxRuntimeListRequest, io.Writer) error {
-	return fmt.Errorf("sandbox runtime list is not implemented yet")
+func runSandboxRuntimeList(_ context.Context, req sandboxRuntimeListRequest, out io.Writer, loadHost func(string) (*sandbox.SandboxHost, error), _ func(string) (sandboxHostWorkerClient, error)) error {
+	hostID := strings.TrimSpace(req.HostID)
+	if hostID == "" {
+		return fmt.Errorf("host id is required")
+	}
+	if req.Live {
+		return fmt.Errorf("live sandbox runtime list is not implemented yet")
+	}
+	if loadHost == nil {
+		loadHost = sandbox.LoadHost
+	}
+
+	host, err := loadHost(hostID)
+	if err != nil {
+		return err
+	}
+	if req.JSON {
+		return renderSandboxRuntimeListJSON(out, host)
+	}
+	return renderSandboxRuntimeList(out, host)
 }
 
 func runSandboxRuntimeStatus(context.Context, sandboxRuntimeStatusRequest, io.Writer) error {
 	return fmt.Errorf("sandbox runtime status is not implemented yet")
+}
+
+func renderSandboxRuntimeListJSON(out io.Writer, host *sandbox.SandboxHost) error {
+	if out == nil {
+		return nil
+	}
+	resp := newSandboxRuntimeListCachedResponse(host)
+	data, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal sandbox runtime list: %w", err)
+	}
+	_, err = fmt.Fprintln(out, string(data))
+	return err
+}
+
+func renderSandboxRuntimeList(out io.Writer, host *sandbox.SandboxHost) error {
+	if out == nil || host == nil {
+		return nil
+	}
+
+	if _, err := fmt.Fprintf(out, "Sandbox runtimes for %s (cached)\n", sandboxHostDisplayValue(host.Name, host.ID)); err != nil {
+		return err
+	}
+	type runtimeLine struct {
+		label string
+		value string
+	}
+	lines := []runtimeLine{
+		{"Source", "cached durable runtime metadata"},
+		{"Host ID", sandboxHostDisplayValue(host.ID, "-")},
+		{"Host kind", sandboxHostDisplayValue(host.Kind, "unknown")},
+		{"Endpoint", sandboxHostEndpointSummary(host.Endpoint)},
+		{"Capacity", sandboxHostCapacitySummary(host.Capacity)},
+		{"Security", sandboxRuntimeSecurityHumanSummary(host.Security)},
+	}
+
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	for _, line := range lines {
+		if _, err := fmt.Fprintf(tw, "%s:\t%s\n", line.label, line.value); err != nil {
+			return err
+		}
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+
+	runtimes := sortedUniqueStrings(host.SupportedRuntimes)
+	if len(runtimes) == 0 {
+		_, err := fmt.Fprintln(out, "No cached runtime metadata is available.")
+		return err
+	}
+	if _, err := fmt.Fprintln(out, "Runtimes (sorted by runtime id):"); err != nil {
+		return err
+	}
+	runtimeTable := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	if _, err := fmt.Fprintln(runtimeTable, "ID\tHOST KIND\tISOLATION\tOPERATIONS"); err != nil {
+		return err
+	}
+	for _, runtimeID := range runtimes {
+		if _, err := fmt.Fprintf(runtimeTable, "%s\tunknown\tunknown\tunknown\n", runtimeID); err != nil {
+			return err
+		}
+	}
+	return runtimeTable.Flush()
+}
+
+func sandboxRuntimeSecurityHumanSummary(security *sandbox.SandboxSecurity) string {
+	if security == nil {
+		return "unknown"
+	}
+	parts := make([]string, 0, 4)
+	if security.Network != nil {
+		if policy := strings.TrimSpace(security.Network.PolicyRequested); policy != "" {
+			parts = append(parts, "requested network "+policy)
+		}
+		if policy := strings.TrimSpace(security.Network.PolicyEnforced); policy != "" {
+			enforced := "enforced network " + policy
+			if mode := strings.TrimSpace(security.Network.EnforcementMode); mode != "" {
+				enforced += " via " + mode
+			}
+			parts = append(parts, enforced)
+		} else if mode := strings.TrimSpace(security.Network.EnforcementMode); mode != "" {
+			parts = append(parts, "network enforcement "+mode)
+		}
+	}
+	if security.Secrets != nil {
+		if requested := sandboxRuntimeHumanList(security.Secrets.RequestedModes); requested != "" {
+			parts = append(parts, "requested credentials "+requested)
+		}
+		if active := sandboxRuntimeHumanList(security.Secrets.ActiveModes); active != "" {
+			parts = append(parts, "active credentials "+active)
+		}
+	}
+	if len(parts) == 0 {
+		return "unknown"
+	}
+	return strings.Join(parts, "; ")
+}
+
+func sandboxRuntimeHumanList(values []string) string {
+	values = sortedUniqueStrings(values)
+	if len(values) == 0 {
+		return ""
+	}
+	return strings.Join(values, ",")
 }
