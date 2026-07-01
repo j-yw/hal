@@ -44,6 +44,7 @@
 - Effective network policy evaluation belongs in `internal/sandbox/network_policy_evaluator.go`; derive effective intent and enforcement mode only from requested intent plus `SandboxNetworkPolicyEnforcementCapability`, downgrade unsupported strict policy to `legacy_default`/`none`, and keep warnings limited to safe policy identifiers plus reason/message metadata without raw rule values or runtime side effects.
 - In-memory secret broker session foundations belong in `internal/factory/secret_broker.go`; expose only `SecretBrokerSessionMetadata`/`SecretBrokerSecretMetadata` as durable JSON-safe types, keep raw `ResolvedRunSecret.Value` data in unexported live broker maps, and discard it through explicit `CloseSession`/`DiscardSession`.
 - Secret broker delivery mode validation belongs in `internal/factory/secret_broker_delivery.go`; support only env/file_tmpfs/ssh_agent/http_proxy/legacy_auth_sync metadata, return sanitized field/index errors, and keep real HTTP proxy, tmpfs file, SSH agent, credential provider, and sandbox injection behavior out of this metadata-only layer.
+- Local sandbox policy/secret config parsing belongs in `internal/compound/config.go` under `sandbox.networkPolicy` and `sandbox.secrets`; validate with the pure `internal/sandbox` policy validator and factory delivery-mode validator, preserve nil optional fields when absent, and keep `SaveSandboxConfig` round-tripping these metadata-only fields without provider/network calls.
 
 ## Patterns from phase21-workspace-syncout-apply (2026-07-01)
 

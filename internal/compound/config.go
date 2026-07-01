@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/template"
 	"gopkg.in/yaml.v3"
 )
@@ -130,12 +132,21 @@ type LightsailConfig struct {
 
 // SandboxConfig contains sandbox configuration including provider selection and env vars.
 type SandboxConfig struct {
-	Provider          string             `yaml:"provider"`
-	TailscaleLockdown bool               `yaml:"tailscaleLockdown"`
-	Env               map[string]string  `yaml:"env"`
-	Hetzner           HetznerConfig      `yaml:"hetzner"`
-	DigitalOcean      DigitalOceanConfig `yaml:"digitalocean"`
-	Lightsail         LightsailConfig    `yaml:"lightsail"`
+	Provider          string                              `yaml:"provider"`
+	TailscaleLockdown bool                                `yaml:"tailscaleLockdown"`
+	Env               map[string]string                   `yaml:"env"`
+	Hetzner           HetznerConfig                       `yaml:"hetzner"`
+	DigitalOcean      DigitalOceanConfig                  `yaml:"digitalocean"`
+	Lightsail         LightsailConfig                     `yaml:"lightsail"`
+	NetworkPolicy     *sandbox.SandboxNetworkPolicyIntent `yaml:"networkPolicy,omitempty"`
+	Secrets           *SandboxSecretConfig                `yaml:"secrets,omitempty"`
+}
+
+// SandboxSecretConfig contains requested and active secret delivery mode
+// metadata parsed from local sandbox configuration.
+type SandboxSecretConfig struct {
+	RequestedModes []string `yaml:"requestedModes"`
+	ActiveModes    []string `yaml:"activeModes"`
 }
 
 // rawDaytonaConfig is used for YAML unmarshaling to distinguish missing keys from explicit values.
@@ -453,6 +464,8 @@ func LoadSandboxConfig(dir string) (*SandboxConfig, error) {
 				Bundle           *string `yaml:"bundle"`
 				KeyPairName      *string `yaml:"keyPairName"`
 			} `yaml:"lightsail"`
+			NetworkPolicy *sandbox.SandboxNetworkPolicyIntent `yaml:"networkPolicy"`
+			Secrets       *SandboxSecretConfig                `yaml:"secrets"`
 		} `yaml:"sandbox"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
@@ -502,8 +515,72 @@ func LoadSandboxConfig(dir string) (*SandboxConfig, error) {
 	if raw.Sandbox.Lightsail.KeyPairName != nil {
 		cfg.Lightsail.KeyPairName = *raw.Sandbox.Lightsail.KeyPairName
 	}
+	if raw.Sandbox.NetworkPolicy != nil {
+		networkPolicy, err := normalizeSandboxNetworkPolicyConfig(*raw.Sandbox.NetworkPolicy)
+		if err != nil {
+			return nil, err
+		}
+		cfg.NetworkPolicy = networkPolicy
+	}
+	if raw.Sandbox.Secrets != nil {
+		secrets, err := normalizeSandboxSecretConfig(*raw.Sandbox.Secrets)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Secrets = secrets
+	}
 
 	return cfg, nil
+}
+
+func normalizeSandboxNetworkPolicyConfig(intent sandbox.SandboxNetworkPolicyIntent) (*sandbox.SandboxNetworkPolicyIntent, error) {
+	normalized := sandbox.SandboxNetworkPolicyIntent{
+		Preset: sandbox.SandboxNetworkPolicyPreset(strings.TrimSpace(string(intent.Preset))),
+	}
+	if len(intent.Rules) > 0 {
+		normalized.Rules = make([]sandbox.SandboxNetworkPolicyRule, 0, len(intent.Rules))
+		for _, rule := range intent.Rules {
+			normalized.Rules = append(normalized.Rules, sandbox.SandboxNetworkPolicyRule{
+				Kind:     sandbox.SandboxNetworkPolicyRuleKind(strings.TrimSpace(string(rule.Kind))),
+				Value:    strings.TrimSpace(rule.Value),
+				Decision: sandbox.SandboxNetworkPolicyDecision(strings.TrimSpace(string(rule.Decision))),
+			})
+		}
+	}
+
+	validation := sandbox.ValidateSandboxNetworkPolicyIntent(normalized)
+	if !validation.Valid {
+		return nil, sandboxNetworkPolicyConfigError(validation)
+	}
+	return &normalized, nil
+}
+
+func sandboxNetworkPolicyConfigError(validation sandbox.SandboxNetworkPolicyValidationResult) error {
+	if len(validation.Errors) == 0 {
+		return fmt.Errorf("sandbox.networkPolicy invalid")
+	}
+	err := validation.Errors[0]
+	location := "sandbox.networkPolicy"
+	if err.RuleIndex >= 0 {
+		location = fmt.Sprintf("%s.rules[%d]", location, err.RuleIndex)
+	} else if err.Code == sandbox.SandboxNetworkPolicyValidationInvalidPreset {
+		location = location + ".preset"
+	}
+	return fmt.Errorf("%s invalid: %s", location, err.Code)
+}
+
+func normalizeSandboxSecretConfig(secrets SandboxSecretConfig) (*SandboxSecretConfig, error) {
+	metadata, err := factory.ValidateSecretBrokerDeliveryModes(factory.SecretBrokerDeliveryModeValidationRequest{
+		RequestedModes: secrets.RequestedModes,
+		ActiveModes:    secrets.ActiveModes,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("sandbox.secrets: %w", err)
+	}
+	return &SandboxSecretConfig{
+		RequestedModes: append([]string(nil), metadata.RequestedModes...),
+		ActiveModes:    append([]string(nil), metadata.ActiveModes...),
+	}, nil
 }
 
 // SaveSandboxConfig merges the given SandboxConfig into .hal/config.yaml without
@@ -590,6 +667,12 @@ func SaveSandboxConfig(dir string, sandbox *SandboxConfig) error {
 			lightsailMap["keyPairName"] = sandbox.Lightsail.KeyPairName
 		}
 		sandboxMap["lightsail"] = lightsailMap
+	}
+	if sandbox.NetworkPolicy != nil {
+		sandboxMap["networkPolicy"] = sandbox.NetworkPolicy
+	}
+	if sandbox.Secrets != nil {
+		sandboxMap["secrets"] = sandbox.Secrets
 	}
 
 	existing["sandbox"] = sandboxMap
