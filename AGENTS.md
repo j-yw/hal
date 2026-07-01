@@ -37,6 +37,10 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase20-lease-aware-scheduler (2026-07-01)
+
+- Lease-aware scheduler contracts belong in `internal/sandboxtarget` as additive, command-agnostic data types; keep `SchedulerRequest`/`SchedulerResult` free of Cobra, command packages, worker clients, concrete runtime adapters, provider calls, and live inspection, and represent selection identity, capacity decisions, lease requirements, and rejection reasons separately from later scheduling behavior.
+
 ## Patterns from phase19-rootless-worker-e2e-hardening (2026-07-01)
 
 - Explicit worker-backed rootless SandboxState persistence belongs in command target-ready hooks through an injectable `persistSandboxState` dependency; persist a sanitized clone with worker host identity only (ID, Name, Kind), exact runtime metadata, and workspace mode/input/branch/syncRef while omitting raw worker endpoints, hostnames, temp paths, bundle paths, and credential-bearing repository URLs.

@@ -168,6 +168,8 @@ const (
 	FailureReasonHostUnhealthy        FailureReason = "host_unhealthy"
 	FailureReasonRuntimeUnsupported   FailureReason = "runtime_unsupported"
 	FailureReasonIsolationUnavailable FailureReason = "isolation_unavailable"
+	FailureReasonCapacityUnavailable  FailureReason = "capacity_unavailable"
+	FailureReasonCapacityBlocked      FailureReason = "capacity_blocked"
 	FailureReasonAmbiguousTarget      FailureReason = "ambiguous_target"
 )
 
