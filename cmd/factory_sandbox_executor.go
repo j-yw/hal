@@ -316,10 +316,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			}); err != nil {
 				return err
 			}
-			record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
-			if record.Sandbox != nil && sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
-				record.Sandbox.WorkerRouting = sandboxWorkerRoutingMetadataFromState(target)
-			}
+			record.SandboxName, record.Sandbox = factorySandboxPersistentMetadataFromState(req, record, target)
 			record.UpdatedAt = deps.now().UTC()
 			if err := saveFactorySandboxRunRecordWithRedactor(store, deps, &record, secretRedactor); err != nil {
 				return fmt.Errorf("record factory sandbox metadata: %w", err)
@@ -1992,6 +1989,21 @@ func factorySandboxMetadataFromState(instance *sandbox.SandboxState) (string, *f
 	return instance.Name, metadata
 }
 
+func factorySandboxPersistentMetadataFromState(req factorySandboxExecutorRequest, record factory.RunRecord, instance *sandbox.SandboxState) (string, *factory.SandboxMetadata) {
+	name, metadata := factorySandboxMetadataFromState(instance)
+	if metadata == nil {
+		return name, nil
+	}
+	if !sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) || !selectedWorkerRootlessSandboxState(instance) {
+		return name, metadata
+	}
+	if workspace := factorySandboxWorkspaceMetadataFromWorkspace(factorySandboxWorkspaceStateFromRecord(record)); workspace != nil {
+		metadata.Workspace = workspace
+	}
+	metadata.WorkerRouting = sandboxWorkerRoutingMetadataFromState(instance)
+	return name, metadata
+}
+
 func factorySandboxMetadataFromName(name string) (string, *factory.SandboxMetadata) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -2073,7 +2085,13 @@ func factorySandboxWorkspaceMetadataFromState(instance *sandbox.SandboxState) *f
 	if instance == nil || instance.Workspace == nil {
 		return nil
 	}
-	workspace := instance.Workspace
+	return factorySandboxWorkspaceMetadataFromWorkspace(instance.Workspace)
+}
+
+func factorySandboxWorkspaceMetadataFromWorkspace(workspace *sandbox.SandboxWorkspace) *factory.SandboxWorkspaceMetadata {
+	if workspace == nil {
+		return nil
+	}
 	if strings.TrimSpace(workspace.Mode) == "" &&
 		strings.TrimSpace(workspace.InputSource) == "" &&
 		strings.TrimSpace(workspace.Branch) == "" &&
