@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -17,6 +18,189 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 )
+
+func TestSandboxRunAutoDefaultDoesNotMutateHostWorktree(t *testing.T) {
+	t.Run("default deps leave apply hook disabled", func(t *testing.T) {
+		if apply := normalizeRunSandboxDeps(runSandboxDeps{}).applySyncOut; apply != nil {
+			t.Fatal("run sandbox default applySyncOut is non-nil, want disabled until explicit opt-in")
+		}
+		if apply := normalizeAutoSandboxDeps(autoSandboxDeps{}).applySyncOut; apply != nil {
+			t.Fatal("auto sandbox default applySyncOut is non-nil, want disabled until explicit opt-in")
+		}
+	})
+
+	t.Run("run", func(t *testing.T) {
+		startedAt := time.Date(2026, 7, 2, 1, 10, 0, 0, time.UTC)
+		finishedAt := startedAt.Add(5 * time.Second)
+		projectDir := t.TempDir()
+		store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+		target := &sandbox.SandboxState{
+			Name:     "default-no-apply-run",
+			Provider: "test-provider",
+			Status:   sandbox.StatusRunning,
+			Runtime:  &sandbox.SandboxRuntimeState{Driver: sandbox.SandboxRuntimeDriverSSHMachine},
+		}
+		plan := sandboxworkspace.Plan{
+			Mode:        sandbox.SandboxWorkspaceModeClone,
+			InputSource: sandbox.SandboxWorkspaceInputSourceRemoteRef,
+			ProjectDir:  projectDir,
+			Repository:  "git@example.com:org/repo.git",
+			Branch:      "feature/default-no-apply-run",
+			Upstream:    "origin/feature/default-no-apply-run",
+			SyncRef:     "refs/remotes/origin/feature/default-no-apply-run",
+		}
+		expectedWorkspace := factorySandboxRemoteWorkspaceDir(factory.RunRecord{
+			RunID:      "run-default-no-apply",
+			RepoPath:   projectDir,
+			RepoRemote: plan.Repository,
+			BranchName: plan.Branch,
+			BaseBranch: "main",
+		})
+		var order []string
+		driver := sandboxApplyOrderRuntimeDriver(t, expectedWorkspace, &order, `{"contractVersion":1,"ok":true,"summary":"remote"}`+"\n")
+		var out bytes.Buffer
+		var errOut bytes.Buffer
+
+		err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+			Base:        "main",
+			BaseChanged: true,
+			JSON:        true,
+			JSONChanged: true,
+		}, &out, &errOut, runSandboxDeps{
+			defaultStore: func() (sandboxexecution.Store, error) {
+				return store, nil
+			},
+			newExecutionID: func(time.Time) string {
+				return "run-default-no-apply"
+			},
+			now:        runSandboxTestClock(startedAt, finishedAt),
+			workingDir: func() (string, error) { return projectDir, nil },
+			planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+				return plan, nil
+			},
+			resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+				return target, target.Name, nil
+			},
+			resolveProvider: func(string) (sandbox.Provider, error) {
+				return fakeFactorySandboxProvider{}, nil
+			},
+			resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+				return driver, nil
+			},
+			bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+				return factory.BootstrapResult{}, nil
+			},
+			engineAuthFiles: func() []factorySandboxAuthFile {
+				return nil
+			},
+		})
+		if err != nil {
+			t.Fatalf("runRunSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+		}
+		assertSandboxApplyOrder(t, order, []string{
+			"remote_run",
+			"copy_core_prd",
+			"copy_core_progress",
+			"recovery_generation",
+			"copy_recovery",
+			"reports_generation",
+			"copy_reports",
+		})
+		manifest := mustLoadSandboxExecutionManifest(t, store, "run-default-no-apply")
+		assertDefaultSandboxManifestArtifacts(t, manifest, []string{
+			".hal/prd.json",
+			".hal/progress.txt",
+			".hal/recovery/workspace.patch",
+			".hal/reports.tar",
+			"output/stdout-summary.txt",
+		})
+		assertDefaultSandboxManifestOmitsSyncOutApplyFields(t, manifest)
+	})
+
+	t.Run("auto", func(t *testing.T) {
+		startedAt := time.Date(2026, 7, 2, 1, 15, 0, 0, time.UTC)
+		finishedAt := startedAt.Add(5 * time.Second)
+		projectDir := t.TempDir()
+		store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+		target := &sandbox.SandboxState{
+			Name:     "default-no-apply-auto",
+			Provider: "test-provider",
+			Status:   sandbox.StatusRunning,
+			Runtime:  &sandbox.SandboxRuntimeState{Driver: sandbox.SandboxRuntimeDriverSSHMachine},
+		}
+		plan := autoSandboxTestPlan(projectDir)
+		expectedWorkspace := factorySandboxRemoteWorkspaceDir(factory.RunRecord{
+			RunID:      "auto-default-no-apply",
+			RepoPath:   projectDir,
+			RepoRemote: plan.Repository,
+			BranchName: plan.Branch,
+			BaseBranch: "main",
+		})
+		var order []string
+		driver := sandboxApplyOrderRuntimeDriver(t, expectedWorkspace, &order, autoSandboxRemoteSuccessJSON("remote")+"\n")
+		var out bytes.Buffer
+		var errOut bytes.Buffer
+
+		err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
+			Base:        "main",
+			BaseChanged: true,
+			JSON:        true,
+			JSONChanged: true,
+		}, &out, &errOut, autoSandboxDeps{
+			defaultStore: func() (sandboxexecution.Store, error) {
+				return store, nil
+			},
+			newExecutionID: func(time.Time) string {
+				return "auto-default-no-apply"
+			},
+			now: runSandboxTestClock(startedAt, finishedAt),
+			planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+				return plan, nil
+			},
+			resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+				return target, target.Name, nil
+			},
+			resolveProvider: func(string) (sandbox.Provider, error) {
+				return fakeFactorySandboxProvider{}, nil
+			},
+			resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+				return driver, nil
+			},
+			bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+				return factory.BootstrapResult{}, nil
+			},
+			engineAuthFiles: func() []factorySandboxAuthFile {
+				return nil
+			},
+			runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
+				return nil
+			},
+		})
+		if err != nil {
+			t.Fatalf("runAutoSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+		}
+		assertSandboxApplyOrder(t, order, []string{
+			"remote_run",
+			"copy_core_prd",
+			"copy_core_progress",
+			"copy_core_auto_state",
+			"recovery_generation",
+			"copy_recovery",
+			"reports_generation",
+			"copy_reports",
+		})
+		manifest := mustLoadSandboxExecutionManifest(t, store, "auto-default-no-apply")
+		assertDefaultSandboxManifestArtifacts(t, manifest, []string{
+			".hal/prd.json",
+			".hal/progress.txt",
+			".hal/auto-state.json",
+			".hal/recovery/workspace.patch",
+			".hal/reports.tar",
+			"output/stdout-summary.txt",
+		})
+		assertDefaultSandboxManifestOmitsSyncOutApplyFields(t, manifest)
+	})
+}
 
 func TestSandboxApplyPersistsRecoveryBeforeHostMutation(t *testing.T) {
 	t.Run("run", func(t *testing.T) {
@@ -285,10 +469,7 @@ func assertSandboxApplyOrder(t *testing.T, got, want []string) {
 
 func assertSandboxFinalManifestRetainsRecovery(t *testing.T, store sandboxexecution.Store, executionID string) {
 	t.Helper()
-	manifest, err := store.LoadManifest(executionID)
-	if err != nil {
-		t.Fatalf("LoadManifest() error: %v", err)
-	}
+	manifest := mustLoadSandboxExecutionManifest(t, store, executionID)
 	if manifest.Status != sandboxexecution.StatusFailed {
 		t.Fatalf("final manifest Status = %q, want failed after apply error", manifest.Status)
 	}
@@ -297,6 +478,56 @@ func assertSandboxFinalManifestRetainsRecovery(t *testing.T, store sandboxexecut
 	}
 	if !sandboxManifestHasCollectedPath(manifest, ".hal/recovery/workspace.patch") {
 		t.Fatalf("final manifest missing recovery patch: %#v", manifest.ArtifactMetadata.Collected)
+	}
+}
+
+func mustLoadSandboxExecutionManifest(t *testing.T, store sandboxexecution.Store, executionID string) *sandboxexecution.Manifest {
+	t.Helper()
+	manifest, err := store.LoadManifest(executionID)
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	return manifest
+}
+
+func assertDefaultSandboxManifestArtifacts(t *testing.T, manifest *sandboxexecution.Manifest, paths []string) {
+	t.Helper()
+	if manifest.Status != sandboxexecution.StatusSucceeded {
+		t.Fatalf("final manifest Status = %q, want succeeded", manifest.Status)
+	}
+	if len(manifest.Artifacts) != 0 {
+		t.Fatalf("legacy Artifacts = %#v, want unchanged empty top-level artifacts", manifest.Artifacts)
+	}
+	if manifest.ArtifactMetadata == nil {
+		t.Fatal("ArtifactMetadata = nil, want default core/recovery artifact metadata")
+	}
+	if len(manifest.ArtifactMetadata.Collected) != len(paths) {
+		t.Fatalf("collected = %#v, want exactly %d default artifacts", manifest.ArtifactMetadata.Collected, len(paths))
+	}
+	for _, path := range paths {
+		if !sandboxManifestHasCollectedPath(manifest, path) {
+			t.Fatalf("manifest missing default artifact %q: %#v", path, manifest.ArtifactMetadata.Collected)
+		}
+	}
+	if len(manifest.ArtifactMetadata.Partial) != 0 || len(manifest.ArtifactMetadata.Warnings) != 0 {
+		t.Fatalf("partial/warnings = %#v/%#v, want none", manifest.ArtifactMetadata.Partial, manifest.ArtifactMetadata.Warnings)
+	}
+}
+
+func assertDefaultSandboxManifestOmitsSyncOutApplyFields(t *testing.T, manifest *sandboxexecution.Manifest) {
+	t.Helper()
+	encoded, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("Marshal(manifest) error: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatalf("Unmarshal(manifest fields) error: %v", err)
+	}
+	for _, field := range []string{"syncOut", "syncOutApply", "apply", "applyResult"} {
+		if _, ok := fields[field]; ok {
+			t.Fatalf("default manifest unexpectedly includes %q field: %s", field, string(encoded))
+		}
 	}
 }
 
