@@ -31,7 +31,7 @@ Mapped to hal CLI commands:
 | Step | What happens | CLI equivalent |
 |------|-------------|---------------|
 | Write spec | You write markdown in the editor | Creating a `prd-*.md` file |
-| Generate tasks | Spec is split into 8-15 small tasks | `hal convert` + `hal explode` |
+| Generate tasks | Spec is split into source-traceable small tasks | `hal convert` + `hal explode` |
 | Execute | All tasks are built, one by one, automatically | `hal run` |
 | Review | AI reviews its own code and fixes issues | `hal review --base <project.default_branch> --json` |
 | Report | Summary of what was built + what to do next | `hal report` |

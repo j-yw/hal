@@ -64,7 +64,7 @@ Scheduling fields are optional. Omit `dependsOn`, `conflictDomains`, and `parall
 1. Schema / database changes
 2. Backend logic / server actions
 3. UI components consuming the backend
-4. Verification / integration
+4. Explicit verification / integration work requested by the source markdown
 
 **Acceptance criteria must be verifiable** — specific enough to check TRUE/FALSE:
 
@@ -94,6 +94,8 @@ Scheduling fields are optional. Omit `dependsOn`, `conflictDomains`, and `parall
 - **Priority**: Based on dependency order
 - **All stories**: `passes: false`, empty `notes`
 - **branchName**: Kebab-case, prefixed with `hal/`
+- **Source traceability**: Every story/task must trace to an explicit source requirement. Do not invent verification, integration, checkpoint, cleanup, or summary stories that the markdown did not request.
+- **Granular mode**: Preserve explicit source stories that are already atomic. Split only work that is too large for one agent iteration; do not pad the task count to a target number.
 
 ## Scheduling Contract v1
 
@@ -102,10 +104,10 @@ Use scheduling metadata conservatively so downstream runners can safely identify
 - **dependsOn**: Exact story/task IDs that must complete before this item starts. Include only true prerequisites. Never reference unknown IDs, the same ID, or a later item.
 - **conflictDomains**: Stable labels for shared files, resources, subsystems, migrations, credentials, or external state that should not be modified concurrently. Omit when no concrete conflict domain is known.
 - **parallelSafe**: Use `true` only when the item can run alongside other ready items without shared-state risk. Use `false` when it must be serialized. Omit when uncertain.
-- **barrier**: Use `true` only for required fan-in/checkpoint/integration tasks. Omit when false.
+- **barrier**: Use `true` only for explicit source-requested fan-in/checkpoint/integration tasks. Omit when false.
 - **parallelReason**: Required when `parallelSafe` or `barrier` is present. Keep it concise and specific.
 - **Cycles**: Dependency cycles are invalid. If two items need the same serialized resource, prefer a shared `conflictDomains` label over circular dependencies.
 
-Granular conversion may emit task IDs such as `T-001`, `T-002`, etc. In granular mode, add `dependsOn` and `conflictDomains` where they are clear from the PRD, and leave scheduling fields absent where the dependency or conflict is speculative.
+Granular conversion may emit task IDs such as `T-001`, `T-002`, etc. In granular mode, add `dependsOn` and `conflictDomains` where they are clear from the PRD, and leave scheduling fields absent where the dependency or conflict is speculative. Do not add extra verification, integration, or checkpoint tasks unless they are explicitly requested by the source markdown.
 
 For a complete output example, see [examples/prd-output.json](examples/prd-output.json).

@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,6 +54,17 @@ func chdirTemp(t *testing.T) {
 	t.Cleanup(func() {
 		_ = os.Chdir(wd)
 	})
+}
+
+func assertValidationExitError(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected validation exit error, got nil")
+	}
+	var exitErr *ExitCodeError
+	if !errors.As(err, &exitErr) || exitErr.Code != ExitCodeValidation {
+		t.Fatalf("error = %T %v, want validation exit code", err, err)
+	}
 }
 
 func TestAutoCommand_HelpDescribesSourcePriority(t *testing.T) {
@@ -169,6 +181,31 @@ func TestRunAutoRejectsParallelAboveCap(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--parallel must be less than or equal to 10") {
 		t.Fatalf("error = %v, want parallel cap validation", err)
+	}
+}
+
+func TestRunAutoJSONRejectsParallelAboveCapWithValidationExit(t *testing.T) {
+	cmd, out := newAutoTestCommand(t)
+	if err := cmd.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set json: %v", err)
+	}
+	if err := cmd.Flags().Set("parallel", "11"); err != nil {
+		t.Fatalf("set parallel: %v", err)
+	}
+
+	err := runAutoWithDir(cmd, nil, t.TempDir())
+	assertValidationExitError(t, err)
+
+	assertAutoJSONContractV2(t, out.Bytes())
+	var result AutoResult
+	if jsonErr := json.Unmarshal(out.Bytes(), &result); jsonErr != nil {
+		t.Fatalf("unmarshal output: %v", jsonErr)
+	}
+	if result.OK {
+		t.Fatal("result.OK = true, want false")
+	}
+	if result.Error != "--parallel must be less than or equal to 10" {
+		t.Fatalf("result.Error = %q, want parallel cap validation", result.Error)
 	}
 }
 
@@ -308,9 +345,8 @@ func TestRunAuto_JSONNoReportsReturnsJSONOnly(t *testing.T) {
 		t.Fatalf("set json flag: %v", err)
 	}
 
-	if err := runAuto(cmd, nil); err != nil {
-		t.Fatalf("runAuto returned error: %v", err)
-	}
+	err := runAuto(cmd, nil)
+	assertValidationExitError(t, err)
 
 	assertAutoJSONContractV2(t, out.Bytes())
 
@@ -354,9 +390,8 @@ func TestRunAuto_JSONMissingMarkdownPathPreservesMarkdownEntryMode(t *testing.T)
 	}
 
 	missingPath := filepath.Join(".", "missing.md")
-	if err := runAuto(cmd, []string{missingPath}); err != nil {
-		t.Fatalf("runAuto returned error: %v", err)
-	}
+	err := runAuto(cmd, []string{missingPath})
+	assertValidationExitError(t, err)
 
 	assertAutoJSONContractV2(t, out.Bytes())
 
@@ -431,9 +466,8 @@ func TestRunAuto_JSONResumeWithoutStateReturnsJSONOnly(t *testing.T) {
 		t.Fatalf("set resume flag: %v", err)
 	}
 
-	if err := runAuto(cmd, nil); err != nil {
-		t.Fatalf("runAuto returned error: %v", err)
-	}
+	err := runAuto(cmd, nil)
+	assertValidationExitError(t, err)
 
 	assertAutoJSONContractV2(t, out.Bytes())
 
@@ -675,9 +709,8 @@ func TestRunAuto_MigratesLegacyAutoPRDAtStartup(t *testing.T) {
 	var errOut bytes.Buffer
 	cmd.SetErr(&errOut)
 
-	if err := runAuto(cmd, nil); err != nil {
-		t.Fatalf("runAuto returned error: %v", err)
-	}
+	err := runAuto(cmd, nil)
+	assertValidationExitError(t, err)
 
 	assertAutoJSONContractV2(t, out.Bytes())
 

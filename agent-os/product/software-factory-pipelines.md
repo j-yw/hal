@@ -80,7 +80,7 @@ discover prd-*.md (newest by mtime, or explicit arg)
   │
 branch:    create hal/<feature> branch
   │
-convert:   prd-*.md → prd.json (granular: 8-15 T-XXX tasks)
+convert:   prd-*.md → prd.json (granular: source-traceable T-XXX tasks)
   │
 validate:  check prd.json quality
   │         └─ fails → re-convert with error feedback (max 3 attempts)
@@ -195,10 +195,10 @@ Create and checkout `hal/<feature>` from base branch.
 - If branch already exists (resume), just checkout
 
 #### `convert`
-Run `hal convert --granular` internally: prd-*.md → prd.json with 8-15 atomic T-XXX tasks.
+Run `hal convert --granular` internally: prd-*.md → prd.json with source-traceable atomic T-XXX tasks.
 - Uses merged convert skill (absorbs explode skill behavior)
 - Output always writes to `.hal/prd.json` — no more `auto-prd.json`
-- `--granular` enforces: 8-15 tasks, T-XXX IDs, one-iteration sizing, boolean criteria
+- `--granular` enforces: T-XXX IDs, one-iteration sizing, boolean criteria, no invented padding tasks
 
 #### `validate`
 Run `hal validate` on the generated prd.json. If validation fails:
@@ -267,13 +267,13 @@ Run `hal archive create` to snapshot completed feature state before returning to
 ```bash
 hal convert                          # prd-*.md → prd.json (US-XXX stories)
 hal convert .hal/prd-auth.md         # explicit source
-hal convert --granular               # 8-15 atomic tasks, T-XXX IDs
+hal convert --granular               # atomic T-XXX tasks for autonomous execution
 hal convert --granular --json        # machine-readable output
 ```
 
 **Without `--granular`:** Standard conversion. US-XXX story IDs, developer-sized stories. For manual workflow where humans supervise each story.
 
-**With `--granular`:** Atomic decomposition. T-XXX task IDs, 8-15 tasks enforced, each completable in one agent iteration. For auto workflow.
+**With `--granular`:** Atomic decomposition. T-XXX task IDs, each completable in one agent iteration, preserving source stories that are already atomic and splitting only oversized work. For auto workflow.
 
 `hal auto` always uses `--granular` internally.
 
@@ -291,7 +291,7 @@ The current `hal` skill and `explode` skill merge into one convert skill with a 
 
 ### Granular Mode (--granular)
 - T-XXX IDs, one-iteration atomic tasks
-- 8-15 tasks enforced
+- Task count follows source scope; do not pad to a target count
 - Each task: one function, one struct, one component
 - Dependency-ordered: types → logic → integration → verification
 ```
