@@ -5,11 +5,13 @@ import "strings"
 // SecurityEvaluationRequest captures the runtime policy posture inputs needed
 // to produce redaction-safe sandbox security metadata.
 type SecurityEvaluationRequest struct {
-	RuntimeDriver          string
-	RequestedNetworkPolicy string
-	RequestedSecretModes   []string
-	ActiveSecretModes      []string
-	CompatibilityAuthSync  bool
+	RuntimeDriver                string
+	RequestedNetworkPolicy       string
+	RequestedNetworkPolicyIntent *SandboxNetworkPolicyIntent
+	NetworkPolicyCapability      *SandboxNetworkPolicyEnforcementCapability
+	RequestedSecretModes         []string
+	ActiveSecretModes            []string
+	CompatibilityAuthSync        bool
 }
 
 // EvaluateSandboxSecurity returns honest Sandbox Runtime v2 security metadata
@@ -23,6 +25,7 @@ func EvaluateSandboxSecurity(req SecurityEvaluationRequest) *SandboxSecurity {
 // network enforcement that the compatibility runtime does not provide.
 func EvaluateSSHMachineCompatibilitySecurity(req SecurityEvaluationRequest) *SandboxSecurity {
 	requestedNetworkPolicy := normalizeSandboxNetworkPolicy(req.RequestedNetworkPolicy)
+	networkPolicyResult := evaluateCompatibilityNetworkPolicy(req, requestedNetworkPolicy)
 	activeSecretModes := normalizeSandboxSecretModes(req.ActiveSecretModes)
 	if req.CompatibilityAuthSync {
 		activeSecretModes = appendSandboxSecretMode(activeSecretModes, SandboxSecretModeLegacyAuthSync)
@@ -31,8 +34,9 @@ func EvaluateSSHMachineCompatibilitySecurity(req SecurityEvaluationRequest) *San
 	security := &SandboxSecurity{
 		Network: &SandboxNetworkSecurity{
 			PolicyRequested: requestedNetworkPolicy,
-			PolicyEnforced:  SandboxNetworkPolicyBestEffort,
-			EnforcementMode: SandboxNetworkEnforcementModeNone,
+			PolicyEnforced:  compatibilityEnforcedNetworkPolicy(networkPolicyResult),
+			EnforcementMode: networkPolicyResult.EnforcementMode,
+			PolicyResult:    CloneSandboxNetworkPolicyResultPtr(&networkPolicyResult),
 		},
 	}
 	requestedSecretModes := normalizeSandboxSecretModes(req.RequestedSecretModes)
@@ -43,6 +47,41 @@ func EvaluateSSHMachineCompatibilitySecurity(req SecurityEvaluationRequest) *San
 		}
 	}
 	return security
+}
+
+func evaluateCompatibilityNetworkPolicy(req SecurityEvaluationRequest, requestedNetworkPolicy string) SandboxNetworkPolicyResult {
+	requested := compatibilityNetworkPolicyIntent(req, requestedNetworkPolicy)
+	capability := SandboxNetworkPolicyEnforcementCapability{}
+	if req.NetworkPolicyCapability != nil {
+		capability = CloneSandboxNetworkPolicyEnforcementCapability(*req.NetworkPolicyCapability)
+	}
+	return EvaluateSandboxNetworkPolicy(requested, capability)
+}
+
+func compatibilityNetworkPolicyIntent(req SecurityEvaluationRequest, requestedNetworkPolicy string) SandboxNetworkPolicyIntent {
+	if req.RequestedNetworkPolicyIntent != nil {
+		return CloneSandboxNetworkPolicyIntent(*req.RequestedNetworkPolicyIntent)
+	}
+	switch requestedNetworkPolicy {
+	case SandboxNetworkPolicyDenyByDefault:
+		return SandboxNetworkPolicyIntent{Preset: SandboxNetworkPolicyPresetDenyByDefault}
+	case SandboxNetworkPolicyBestEffort:
+		return SandboxNetworkPolicyIntent{Preset: SandboxNetworkPolicyPresetLegacyDefault}
+	default:
+		return SandboxNetworkPolicyIntent{Preset: SandboxNetworkPolicyPresetDenyByDefault}
+	}
+}
+
+func compatibilityEnforcedNetworkPolicy(result SandboxNetworkPolicyResult) string {
+	if result.EnforcementMode == SandboxNetworkEnforcementModeNone ||
+		result.EnforcementMode == SandboxNetworkEnforcementModeBestEffort {
+		return SandboxNetworkPolicyBestEffort
+	}
+	if result.Effective.Preset == SandboxNetworkPolicyPresetDenyByDefault ||
+		result.Effective.Preset == SandboxNetworkPolicyPresetAllowListed {
+		return SandboxNetworkPolicyDenyByDefault
+	}
+	return SandboxNetworkPolicyBestEffort
 }
 
 func normalizeSandboxNetworkPolicy(policy string) string {

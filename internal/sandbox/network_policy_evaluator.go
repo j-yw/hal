@@ -214,6 +214,41 @@ func sandboxNetworkPolicyWarningMessage(reason SandboxNetworkPolicyWarningReason
 	}
 }
 
+// CloneSandboxNetworkPolicyResult returns a deep copy of network policy result
+// metadata so callers can persist or attach it without sharing mutable slices.
+func CloneSandboxNetworkPolicyResult(result SandboxNetworkPolicyResult) SandboxNetworkPolicyResult {
+	out := result
+	out.Requested = CloneSandboxNetworkPolicyIntent(result.Requested)
+	out.Effective = CloneSandboxNetworkPolicyIntent(result.Effective)
+	out.Capability = CloneSandboxNetworkPolicyEnforcementCapability(result.Capability)
+	if len(result.Warnings) > 0 {
+		out.Warnings = append([]SandboxNetworkPolicyWarning(nil), result.Warnings...)
+	}
+	return out
+}
+
+// CloneSandboxNetworkPolicyResultPtr returns nil for nil input or a deep copy
+// for optional policy result metadata.
+func CloneSandboxNetworkPolicyResultPtr(result *SandboxNetworkPolicyResult) *SandboxNetworkPolicyResult {
+	if result == nil {
+		return nil
+	}
+	cloned := CloneSandboxNetworkPolicyResult(*result)
+	return &cloned
+}
+
+// CloneSandboxNetworkPolicyIntent returns a deep copy of policy intent
+// metadata.
+func CloneSandboxNetworkPolicyIntent(intent SandboxNetworkPolicyIntent) SandboxNetworkPolicyIntent {
+	return cloneSandboxNetworkPolicyIntent(intent)
+}
+
+// CloneSandboxNetworkPolicyEnforcementCapability returns a deep copy of
+// runtime network policy capability metadata.
+func CloneSandboxNetworkPolicyEnforcementCapability(capability SandboxNetworkPolicyEnforcementCapability) SandboxNetworkPolicyEnforcementCapability {
+	return cloneSandboxNetworkPolicyEnforcementCapability(capability)
+}
+
 func cloneSandboxNetworkPolicyIntent(intent SandboxNetworkPolicyIntent) SandboxNetworkPolicyIntent {
 	out := SandboxNetworkPolicyIntent{Preset: intent.Preset}
 	if len(intent.Rules) > 0 {
