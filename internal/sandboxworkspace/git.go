@@ -16,6 +16,7 @@ type GitCLIInspector struct{}
 
 var (
 	absolutePathPattern     = regexp.MustCompile(`(^|[[:space:]'"])(/[^\s'"]+)`)
+	unixEndpointPattern     = regexp.MustCompile(`(?i)\bunix://[^\s'";,]+`)
 	urlUserInfoPattern      = regexp.MustCompile(`(?i)\b(https?://)[^/@\s]+@`)
 	secretAssignmentPattern = regexp.MustCompile(`(?i)\b([A-Z0-9_]*(TOKEN|SECRET|PASSWORD|API[_-]?KEY|AUTH)[A-Z0-9_]*)=([^;\s]+)`)
 	commonSecretPattern     = regexp.MustCompile(`\b(gh[pousr]_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|tskey-[A-Za-z0-9_-]+)\b`)
@@ -301,6 +302,7 @@ func sanitizePathDetail(raw string) string {
 	if detail == "" {
 		return ""
 	}
+	detail = unixEndpointPattern.ReplaceAllString(detail, "local Unix socket")
 	detail = urlUserInfoPattern.ReplaceAllString(detail, "${1}[redacted]@")
 	detail = secretAssignmentPattern.ReplaceAllString(detail, "$1=[redacted]")
 	detail = commonSecretPattern.ReplaceAllString(detail, "[redacted]")

@@ -620,6 +620,79 @@ func TestSandboxSyncOutHandoffInstructions(t *testing.T) {
 	}
 }
 
+func TestSandboxSyncOutApplyRedaction(t *testing.T) {
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	executionID := "sync-out-redaction"
+	saveSandboxSyncOutApplyManifest(t, store, executionID, sandboxexecution.PurposeRun, sandboxexecution.ArtifactMetadata{
+		Collected: []sandboxexecution.ArtifactMetadataEntry{
+			sandboxSyncOutApplyCollected("committed-patch", ".hal/sync/committed.patch", executionID+"/artifacts/sync/committed.patch"),
+			sandboxSyncOutApplyCollected("recovery-patch", ".hal/recovery/workspace.patch", executionID+"/recovery/workspace.patch"),
+		},
+	})
+
+	result, err := applySandboxSyncOut(context.Background(), store, sandboxSyncOutApplyRequest{
+		ExecutionID: executionID,
+		Purpose:     sandboxexecution.PurposeRun,
+		ProjectDir:  t.TempDir(),
+		Options: sandboxSyncOutOptions{
+			Enabled: true,
+			Apply:   true,
+		},
+	}, func(_ context.Context, got sandboxSyncOutApplyRequest) (sandboxworkspace.SafeApplyResult, error) {
+		if got.Artifact == nil || got.PayloadPath == "" {
+			t.Fatalf("apply request artifact=%#v payload=%q, want eligible committed patch", got.Artifact, got.PayloadPath)
+		}
+		return sandboxworkspace.SafeApplyResult{
+			Status:      sandboxworkspace.SafeApplyStatusHandoffRequired,
+			Mode:        sandboxworkspace.SyncOutApplyModePatch,
+			ArtifactID:  "committed-patch",
+			DisplayName: "Patch from https://deploy:secret@example.test/repo.git?token=secret",
+			DisplayPath: "/tmp/private/committed.patch",
+			Reasons:     []sandboxworkspace.SyncOutApplyEligibilityReason{sandboxworkspace.SyncOutApplyEligibilityReasonDryRunFailed},
+			Warnings: []sandboxworkspace.SyncOutWarning{{
+				Code:       "dry_run_failed",
+				Message:    "dry-run failed from unix:///tmp/private/worker-1.sock at /workspace/.hal/tmp/session TOKEN=secret ghp_sync_secret_123 https://deploy:secret@example.test/repo.git?client_secret=provider-secret",
+				ArtifactID: "committed-patch",
+			}},
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("applySandboxSyncOut() error = %v", err)
+	}
+
+	forbidden := []string{
+		"unix://",
+		"/tmp/private",
+		"/workspace/.hal",
+		"TOKEN=secret",
+		"ghp_sync_secret_123",
+		"deploy:secret",
+		"token=secret",
+		"client_secret=provider-secret",
+	}
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal(result) error: %v", err)
+	}
+	assertSandboxSyncOutApplyRedaction(t, string(resultJSON), forbidden)
+
+	manifest := mustLoadSandboxExecutionManifest(t, store, executionID)
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("Marshal(manifest) error: %v", err)
+	}
+	assertSandboxSyncOutApplyRedaction(t, string(manifestJSON), forbidden)
+	if manifest.SyncOutApply == nil || len(manifest.SyncOutApply.HandoffInstructions) == 0 {
+		t.Fatalf("manifest SyncOutApply = %#v, want sanitized handoff instructions", manifest.SyncOutApply)
+	}
+
+	var out bytes.Buffer
+	if err := outputSandboxSyncOutAugmentedJSON(&out, []byte(`{"contractVersion":1,"ok":true}`+"\n"), store, executionID); err != nil {
+		t.Fatalf("outputSandboxSyncOutAugmentedJSON() error = %v", err)
+	}
+	assertSandboxSyncOutApplyRedaction(t, out.String(), forbidden)
+}
+
 func TestSandboxSyncOutManifestJSONAdditiveContract(t *testing.T) {
 	t.Run("manifest persists optional sync-out fields and decodes legacy records", func(t *testing.T) {
 		store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
@@ -1247,6 +1320,15 @@ func sandboxApplyReasonsContain(reasons []sandboxworkspace.SyncOutApplyEligibili
 		}
 	}
 	return false
+}
+
+func assertSandboxSyncOutApplyRedaction(t *testing.T, payload string, forbidden []string) {
+	t.Helper()
+	for _, unsafe := range forbidden {
+		if strings.Contains(payload, unsafe) {
+			t.Fatalf("sync-out apply payload leaked unsafe fragment %q: %s", unsafe, payload)
+		}
+	}
 }
 
 func assertSandboxSyncOutHandoffInstructions(t *testing.T, result sandboxworkspace.SafeApplyResult, wantReason sandboxworkspace.SyncOutApplyEligibilityReason, wantArtifactIDs []string, forbidden []string) {

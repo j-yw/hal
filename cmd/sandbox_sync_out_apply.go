@@ -83,8 +83,10 @@ func applySandboxSyncOut(ctx context.Context, store sandboxexecution.Store, req 
 		return sandboxworkspace.SafeApplyResult{}, err
 	}
 	result, err := apply(ctx, req)
+	result = sandboxworkspace.SanitizeSafeApplyResult(result)
 	result = sandboxSyncOutNormalizeApplyResult(req, result)
 	result = sandboxSyncOutApplyResultWithHandoffInstructions(req, result)
+	result = sandboxworkspace.SanitizeSafeApplyResult(result)
 	if persistErr := persistSandboxSyncOutApplyMetadata(store, req.ExecutionID, req.Summary, result); persistErr != nil {
 		err = errors.Join(err, persistErr)
 	}
@@ -238,6 +240,8 @@ func persistSandboxSyncOutApplyMetadata(store sandboxexecution.Store, executionI
 	if err != nil {
 		return fmt.Errorf("load sandbox execution manifest for sync-out metadata: %w", err)
 	}
+	summary = sandboxworkspace.SanitizeSyncOutSummary(summary)
+	result = sandboxworkspace.SanitizeSafeApplyResult(result)
 	manifest.SyncOut = cloneSandboxSyncOutSummary(&summary)
 	manifest.SyncOutApply = cloneSandboxSafeApplyResult(&result)
 	if err := store.SaveManifest(manifest); err != nil {

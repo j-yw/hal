@@ -142,6 +142,7 @@ func (a SafeApplier) Apply(ctx context.Context, req SafeApplyRequest) (SafeApply
 		DisplayName: strings.TrimSpace(req.Artifact.DisplayName),
 		DisplayPath: strings.TrimSpace(req.Artifact.DisplayPath),
 	}
+	result = SanitizeSafeApplyResult(result)
 
 	if err := validateSafeApplyRequest(req); err != nil {
 		return result, err
@@ -305,17 +306,17 @@ func safeApplyEligibilityReasons(artifact SyncOutArtifact, fallback SyncOutApply
 
 func safeApplyWarning(code string, artifact SyncOutArtifact, err error) SyncOutWarning {
 	return SyncOutWarning{
-		Code:       code,
+		Code:       sanitizeSyncOutIdentifier(code),
 		Message:    sanitizeSafeApplyMessage(err),
-		ArtifactID: strings.TrimSpace(artifact.ID),
+		ArtifactID: sanitizeSyncOutIdentifier(artifact.ID),
 	}
 }
 
 func safeApplyDirtyWorktreeWarning(artifact SyncOutArtifact, dirty DirtyState) SyncOutWarning {
 	return SyncOutWarning{
-		Code:       safeApplyDirtyWorktreeWarningCode,
+		Code:       sanitizeSyncOutIdentifier(safeApplyDirtyWorktreeWarningCode),
 		Message:    safeApplyDirtyWorktreeMessage(dirty),
-		ArtifactID: strings.TrimSpace(artifact.ID),
+		ArtifactID: sanitizeSyncOutIdentifier(artifact.ID),
 	}
 }
 

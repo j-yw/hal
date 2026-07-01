@@ -53,7 +53,7 @@ func BuildSyncOutSummaryFromArtifacts(manifest *Manifest) sandboxworkspace.SyncO
 		summary.Recovery.Status = sandboxworkspace.SyncOutRecoveryStatusCollected
 	}
 	summary.Apply = syncOutApplyDecision(summary)
-	return summary
+	return sandboxworkspace.SanitizeSyncOutSummary(summary)
 }
 
 func syncOutWorkspaceRef(workspace *sandbox.SandboxWorkspace) sandboxworkspace.SyncOutWorkspaceRef {

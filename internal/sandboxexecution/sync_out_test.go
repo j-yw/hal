@@ -209,3 +209,73 @@ func TestBuildSyncOutSummaryFromArtifactsMissingOptionalCategories(t *testing.T)
 		t.Fatalf("apply = %#v, want no eligible artifact decision", summary.Apply)
 	}
 }
+
+func TestBuildSyncOutSummaryRedaction(t *testing.T) {
+	manifest := &Manifest{
+		ID:      "sync-redaction",
+		Purpose: PurposeRun,
+		Workspace: &sandbox.SandboxWorkspace{
+			Mode:        sandbox.SandboxWorkspaceModeClone,
+			InputSource: sandbox.SandboxWorkspaceInputSourceGitBundle,
+			Repo:        "https://deploy:secret@example.test/repo.git?token=secret",
+			Branch:      "feature/token=secret",
+			SyncRef:     "refs/heads/feature/client_secret=provider-secret",
+		},
+		ArtifactMetadata: &ArtifactMetadata{
+			Collected: []ArtifactMetadataEntry{
+				{
+					ID:         "committed-patch",
+					Name:       "Patch from unix:///tmp/private/worker-1.sock TOKEN=secret",
+					Path:       ".hal/sync/committed.patch",
+					StoredPath: "sync-redaction/artifacts/sync/committed.patch",
+				},
+				{
+					ID:         "recovery-patch",
+					Name:       "Recovery Patch",
+					Path:       ".hal/recovery/workspace.patch",
+					StoredPath: "sync-redaction/recovery/workspace.patch",
+				},
+			},
+			Warnings: []ArtifactWarning{
+				{
+					Phase:   "copy_out",
+					Message: "copy failed from unix:///tmp/private/worker-1.sock at /workspace/.hal/tmp/session TOKEN=secret ghp_sync_secret_123 https://deploy:secret@example.test/repo.git?client_secret=provider-secret",
+					Artifact: ArtifactMetadataEntry{
+						ID:   "committed-patch",
+						Name: "Committed Patch",
+						Path: ".hal/sync/committed.patch",
+					},
+				},
+			},
+		},
+	}
+
+	summary := BuildSyncOutSummaryFromArtifacts(manifest)
+	encoded := string(mustJSONBytes(t, summary))
+	assertSyncOutSummaryRedaction(t, encoded, []string{
+		"unix://",
+		"/tmp/private",
+		"/workspace/.hal",
+		"TOKEN=secret",
+		"ghp_sync_secret_123",
+		"deploy:secret",
+		"token=secret",
+		"client_secret=provider-secret",
+		`"repo"`,
+	})
+	if summary.Committed.Patch == nil || summary.Committed.Patch.DisplayName == "" {
+		t.Fatalf("sanitized committed patch = %#v, want retained safe display name", summary.Committed.Patch)
+	}
+	if len(summary.Warnings) != 1 || summary.Warnings[0].Message == "" {
+		t.Fatalf("warnings = %#v, want sanitized warning message", summary.Warnings)
+	}
+}
+
+func assertSyncOutSummaryRedaction(t *testing.T, payload string, forbidden []string) {
+	t.Helper()
+	for _, unsafe := range forbidden {
+		if strings.Contains(payload, unsafe) {
+			t.Fatalf("sync-out summary leaked unsafe fragment %q: %s", unsafe, payload)
+		}
+	}
+}

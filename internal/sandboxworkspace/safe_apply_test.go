@@ -165,6 +165,46 @@ func TestSafeApplyLockFailurePreventsApply(t *testing.T) {
 	}
 }
 
+func TestSafeApplyRedaction(t *testing.T) {
+	git := &recordingSafeApplyGit{
+		checkPatchErr: errors.New("dry-run failed from unix:///tmp/private/worker-1.sock at /workspace/.hal/tmp/session TOKEN=secret ghp_sync_secret_123 https://deploy:secret@example.test/repo.git?client_secret=provider-secret"),
+	}
+	artifact := safeApplyPatchArtifact()
+	artifact.DisplayName = "Patch from https://deploy:secret@example.test/repo.git?token=secret"
+	artifact.DisplayPath = "/tmp/private/committed.patch"
+
+	result, err := (SafeApplier{Git: git}).Apply(context.Background(), SafeApplyRequest{
+		ProjectDir:  "/tmp/private/repo",
+		PayloadPath: "/tmp/private/committed.patch",
+		Mutate:      true,
+		Artifact:    artifact,
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if result.Status != SafeApplyStatusHandoffRequired {
+		t.Fatalf("Status = %q, want handoff_required; result = %#v", result.Status, result)
+	}
+	if len(result.Warnings) != 1 || result.Warnings[0].Code != "dry_run_failed" {
+		t.Fatalf("Warnings = %#v, want sanitized dry-run warning", result.Warnings)
+	}
+
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal(result) error = %v", err)
+	}
+	assertSafeApplyRedaction(t, string(encoded), []string{
+		"unix://",
+		"/tmp/private",
+		"/workspace/.hal",
+		"TOKEN=secret",
+		"ghp_sync_secret_123",
+		"deploy:secret",
+		"token=secret",
+		"client_secret=provider-secret",
+	})
+}
+
 func TestSafeApplyDryRunRejectsIncompatiblePatch(t *testing.T) {
 	requireGitCLI(t)
 	repo := setupSafeApplyRepo(t, "host base\n")
@@ -277,10 +317,23 @@ func safeApplyReasonsContain(reasons []SyncOutApplyEligibilityReason, want SyncO
 	return false
 }
 
+func assertSafeApplyRedaction(t *testing.T, payload string, forbidden []string) {
+	t.Helper()
+	for _, unsafe := range forbidden {
+		if strings.Contains(payload, unsafe) {
+			t.Fatalf("safe apply payload leaked unsafe fragment %q: %s", unsafe, payload)
+		}
+	}
+}
+
 type recordingSafeApplyGit struct {
-	calls       []string
-	sharedCalls *[]string
-	dirty       DirtyState
+	calls            []string
+	sharedCalls      *[]string
+	dirty            DirtyState
+	checkWorktreeErr error
+	checkPatchErr    error
+	applyPatchErr    error
+	checkBundleErr   error
 }
 
 func (g *recordingSafeApplyGit) record(call string) {
@@ -292,22 +345,25 @@ func (g *recordingSafeApplyGit) record(call string) {
 
 func (g *recordingSafeApplyGit) CheckCleanWorktree(context.Context, SafeApplyGitRequest) (DirtyState, error) {
 	g.record("check_worktree")
+	if g.checkWorktreeErr != nil {
+		return DirtyState{}, g.checkWorktreeErr
+	}
 	return g.dirty, nil
 }
 
 func (g *recordingSafeApplyGit) CheckPatch(context.Context, SafeApplyGitRequest) error {
 	g.record("check_patch")
-	return nil
+	return g.checkPatchErr
 }
 
 func (g *recordingSafeApplyGit) ApplyPatch(context.Context, SafeApplyGitRequest) error {
 	g.record("apply_patch")
-	return nil
+	return g.applyPatchErr
 }
 
 func (g *recordingSafeApplyGit) CheckBundle(context.Context, SafeApplyGitRequest) error {
 	g.record("check_bundle")
-	return nil
+	return g.checkBundleErr
 }
 
 type recordingSafeApplyLocks struct {

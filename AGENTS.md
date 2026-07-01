@@ -51,6 +51,7 @@
 - Command-layer sync-out apply must select only explicit eligible patch or bundle artifacts before mutation, resolve their payloads through `sandboxexecution.Store.ResolveStoredPath`, and pass no payload for untracked, recovery, core, warning-only, or otherwise ineligible outputs so they become handoff results.
 - Non-factory sync-out handoff guidance is attached in `cmd` after the applier returns as optional `sandboxworkspace.SafeApplyResult.HandoffInstructions`; keep references limited to safe artifact IDs, display names, and relative display paths, leaving manifest/JSON surfacing additive and explicit.
 - Explicit non-factory sync-out/apply JSON output should capture remote run/auto JSON only when sync-out is requested, persist `sandboxexecution.Manifest.SyncOut`/`SyncOutApply` first, then merge those optional fields into the single stdout JSON document; default sandbox JSON pass-through must remain unchanged.
+- Sync-out/apply redaction belongs on the shared `internal/sandboxworkspace` contract helpers; run `SyncOutSummary` and `SafeApplyResult` through those sanitizers before persisting manifests or augmenting JSON output.
 
 ## Patterns from phase20-lease-aware-scheduler (2026-07-01)
 
