@@ -30,6 +30,41 @@ type SandboxNetworkProxyValidationResult struct {
 	Errors     []SandboxNetworkProxyValidationError `json:"errors,omitempty"`
 }
 
+// SandboxNetworkPolicyDecisionLogValidationCode identifies a sanitized policy
+// decision-log validation failure. Codes must not include raw destinations,
+// request values, endpoints, credentials, or query data.
+type SandboxNetworkPolicyDecisionLogValidationCode string
+
+const (
+	SandboxNetworkPolicyDecisionLogValidationMissingRequiredField    SandboxNetworkPolicyDecisionLogValidationCode = "missing_required_field"
+	SandboxNetworkPolicyDecisionLogValidationInvalidSource           SandboxNetworkPolicyDecisionLogValidationCode = "invalid_source"
+	SandboxNetworkPolicyDecisionLogValidationInvalidOutcome          SandboxNetworkPolicyDecisionLogValidationCode = "invalid_outcome"
+	SandboxNetworkPolicyDecisionLogValidationInvalidReasonCode       SandboxNetworkPolicyDecisionLogValidationCode = "invalid_reason_code"
+	SandboxNetworkPolicyDecisionLogValidationInvalidDestination      SandboxNetworkPolicyDecisionLogValidationCode = "invalid_destination_category"
+	SandboxNetworkPolicyDecisionLogValidationInvalidRuleKind         SandboxNetworkPolicyDecisionLogValidationCode = "invalid_rule_kind"
+	SandboxNetworkPolicyDecisionLogValidationInvalidPolicyPreset     SandboxNetworkPolicyDecisionLogValidationCode = "invalid_policy_preset"
+	SandboxNetworkPolicyDecisionLogValidationInvalidEnforcement      SandboxNetworkPolicyDecisionLogValidationCode = "invalid_enforcement_mode"
+	SandboxNetworkPolicyDecisionLogValidationUnsafeRequestMetadata   SandboxNetworkPolicyDecisionLogValidationCode = "unsafe_request_metadata"
+	SandboxNetworkPolicyDecisionLogValidationInvalidEnforcementClaim SandboxNetworkPolicyDecisionLogValidationCode = "invalid_enforcement_claim"
+)
+
+// SandboxNetworkPolicyDecisionLogValidationError identifies invalid durable
+// decision-log metadata by safe record index and field name only.
+type SandboxNetworkPolicyDecisionLogValidationError struct {
+	Code        SandboxNetworkPolicyDecisionLogValidationCode `json:"code"`
+	RecordIndex int                                           `json:"recordIndex"`
+	Field       string                                        `json:"field,omitempty"`
+	Message     string                                        `json:"message,omitempty"`
+}
+
+// SandboxNetworkPolicyDecisionLogValidationResult is the deterministic output
+// of pure policy decision-log validation and normalization.
+type SandboxNetworkPolicyDecisionLogValidationResult struct {
+	Valid      bool                                             `json:"valid"`
+	Normalized []SandboxNetworkPolicyDecisionLogRecord          `json:"normalized,omitempty"`
+	Errors     []SandboxNetworkPolicyDecisionLogValidationError `json:"errors,omitempty"`
+}
+
 // ValidateAndNormalizeSandboxNetworkProxySessionMetadata validates durable
 // proxy-session metadata without inspecting hosts, starting listeners, or
 // inferring runtime enforcement capability.
@@ -65,6 +100,34 @@ func ValidateAndNormalizeSandboxNetworkProxySessionMetadata(session SandboxNetwo
 	return result
 }
 
+// ValidateAndNormalizeSandboxNetworkPolicyDecisionLogRecord validates a single
+// durable policy decision-log record through the same pure metadata path used
+// for decision-log batches.
+func ValidateAndNormalizeSandboxNetworkPolicyDecisionLogRecord(record SandboxNetworkPolicyDecisionLogRecord) SandboxNetworkPolicyDecisionLogValidationResult {
+	return ValidateAndNormalizeSandboxNetworkPolicyDecisionLogRecords([]SandboxNetworkPolicyDecisionLogRecord{record})
+}
+
+// ValidateAndNormalizeSandboxNetworkPolicyDecisionLogRecords validates durable
+// policy decision logs without inspecting hosts, starting listeners, opening
+// sockets, or inferring runtime enforcement capability.
+func ValidateAndNormalizeSandboxNetworkPolicyDecisionLogRecords(records []SandboxNetworkPolicyDecisionLogRecord) SandboxNetworkPolicyDecisionLogValidationResult {
+	result := SandboxNetworkPolicyDecisionLogValidationResult{Valid: true}
+	normalized := make([]SandboxNetworkPolicyDecisionLogRecord, 0, len(records))
+
+	for i, record := range records {
+		current := normalizeSandboxNetworkPolicyDecisionLogRecord(record)
+		validateSandboxNetworkPolicyDecisionLogRecord(&result, i, current)
+		normalized = append(normalized, current)
+	}
+
+	if len(result.Errors) > 0 {
+		result.Valid = false
+		return result
+	}
+	result.Normalized = normalized
+	return result
+}
+
 func normalizeSandboxNetworkProxySessionMetadata(session SandboxNetworkProxySessionMetadata) SandboxNetworkProxySessionMetadata {
 	normalized := SandboxNetworkProxySessionMetadata{
 		ID:              strings.TrimSpace(session.ID),
@@ -82,8 +145,57 @@ func normalizeSandboxNetworkProxySessionMetadata(session SandboxNetworkProxySess
 	return normalized
 }
 
+func normalizeSandboxNetworkPolicyDecisionLogRecord(record SandboxNetworkPolicyDecisionLogRecord) SandboxNetworkPolicyDecisionLogRecord {
+	normalized := SandboxNetworkPolicyDecisionLogRecord{
+		ID:              strings.TrimSpace(record.ID),
+		Source:          normalizeSandboxNetworkPolicyDecisionSource(record.Source),
+		ProxySessionID:  strings.TrimSpace(record.ProxySessionID),
+		Outcome:         normalizeSandboxNetworkPolicyDecisionOutcome(record.Outcome),
+		ReasonCode:      normalizeSandboxNetworkPolicyDecisionReasonCode(record.ReasonCode),
+		RuleKind:        normalizeSandboxNetworkPolicyRuleKind(record.RuleKind),
+		PolicyPreset:    normalizeSandboxNetworkPolicyPreset(record.PolicyPreset),
+		EnforcementMode: normalizeSandboxNetworkProxyEnforcementMode(record.EnforcementMode),
+	}
+	if record.PolicySnapshot != nil {
+		normalized.PolicySnapshot = &SandboxNetworkPolicySnapshotIdentity{
+			ID:        strings.TrimSpace(record.PolicySnapshot.ID),
+			Version:   strings.TrimSpace(record.PolicySnapshot.Version),
+			Preset:    normalizeSandboxNetworkPolicyPreset(record.PolicySnapshot.Preset),
+			RuleSetID: strings.TrimSpace(record.PolicySnapshot.RuleSetID),
+		}
+	}
+	if record.Request != nil {
+		normalized.Request = &SandboxNetworkPolicyRequestSummary{
+			ID:                  strings.TrimSpace(record.Request.ID),
+			Operation:           strings.TrimSpace(record.Request.Operation),
+			DestinationCategory: normalizeSandboxNetworkPolicyDestinationCategory(record.Request.DestinationCategory),
+		}
+	}
+	if record.Enforced != nil {
+		enforced := *record.Enforced
+		normalized.Enforced = &enforced
+	}
+	return normalized
+}
+
 func normalizeSandboxNetworkPolicyDecisionSource(source SandboxNetworkPolicyDecisionSource) SandboxNetworkPolicyDecisionSource {
 	return SandboxNetworkPolicyDecisionSource(strings.ToLower(strings.TrimSpace(string(source))))
+}
+
+func normalizeSandboxNetworkPolicyDecisionOutcome(outcome SandboxNetworkPolicyDecisionOutcome) SandboxNetworkPolicyDecisionOutcome {
+	return SandboxNetworkPolicyDecisionOutcome(strings.ToLower(strings.TrimSpace(string(outcome))))
+}
+
+func normalizeSandboxNetworkPolicyDecisionReasonCode(reason SandboxNetworkPolicyDecisionReasonCode) SandboxNetworkPolicyDecisionReasonCode {
+	return SandboxNetworkPolicyDecisionReasonCode(strings.ToLower(strings.TrimSpace(string(reason))))
+}
+
+func normalizeSandboxNetworkPolicyDestinationCategory(category SandboxNetworkPolicyDestinationCategory) SandboxNetworkPolicyDestinationCategory {
+	return SandboxNetworkPolicyDestinationCategory(strings.ToLower(strings.TrimSpace(string(category))))
+}
+
+func normalizeSandboxNetworkPolicyRuleKind(kind SandboxNetworkPolicyRuleKind) SandboxNetworkPolicyRuleKind {
+	return SandboxNetworkPolicyRuleKind(strings.ToLower(strings.TrimSpace(string(kind))))
 }
 
 func normalizeSandboxNetworkPolicyPreset(preset SandboxNetworkPolicyPreset) SandboxNetworkPolicyPreset {
@@ -94,12 +206,105 @@ func normalizeSandboxNetworkProxyEnforcementMode(mode string) string {
 	return strings.ToLower(strings.TrimSpace(mode))
 }
 
+func validateSandboxNetworkPolicyDecisionLogRecord(result *SandboxNetworkPolicyDecisionLogValidationResult, index int, record SandboxNetworkPolicyDecisionLogRecord) {
+	if record.Source == "" {
+		result.addError(index, "source", SandboxNetworkPolicyDecisionLogValidationMissingRequiredField, "decision log source is required")
+	} else if !validSandboxNetworkPolicyDecisionSource(record.Source) {
+		result.addError(index, "source", SandboxNetworkPolicyDecisionLogValidationInvalidSource, "decision log source is unsupported")
+	}
+	if record.Outcome == "" {
+		result.addError(index, "outcome", SandboxNetworkPolicyDecisionLogValidationMissingRequiredField, "decision log outcome is required")
+	} else if !validSandboxNetworkPolicyDecisionOutcome(record.Outcome) {
+		result.addError(index, "outcome", SandboxNetworkPolicyDecisionLogValidationInvalidOutcome, "decision log outcome is unsupported")
+	}
+	if record.ReasonCode != "" && !validSandboxNetworkPolicyDecisionReasonCode(record.ReasonCode) {
+		result.addError(index, "reasonCode", SandboxNetworkPolicyDecisionLogValidationInvalidReasonCode, "decision log reason code is unsupported")
+	}
+	if record.RuleKind != "" && !validSandboxNetworkPolicyRuleKind(record.RuleKind) {
+		result.addError(index, "ruleKind", SandboxNetworkPolicyDecisionLogValidationInvalidRuleKind, "decision log rule kind is unsupported")
+	}
+	if record.PolicyPreset != "" && !validSandboxNetworkPolicyPreset(record.PolicyPreset) {
+		result.addError(index, "policyPreset", SandboxNetworkPolicyDecisionLogValidationInvalidPolicyPreset, "decision log policy preset is unsupported")
+	}
+	if record.PolicySnapshot != nil {
+		if record.PolicySnapshot.ID == "" {
+			result.addError(index, "policySnapshot.id", SandboxNetworkPolicyDecisionLogValidationMissingRequiredField, "policy snapshot id is required")
+		}
+		if record.PolicySnapshot.Preset != "" && !validSandboxNetworkPolicyPreset(record.PolicySnapshot.Preset) {
+			result.addError(index, "policySnapshot.preset", SandboxNetworkPolicyDecisionLogValidationInvalidPolicyPreset, "policy snapshot preset is unsupported")
+		}
+	}
+	if record.Request != nil {
+		if record.Request.DestinationCategory != "" && !validSandboxNetworkPolicyDestinationCategory(record.Request.DestinationCategory) {
+			result.addError(index, "request.destinationCategory", SandboxNetworkPolicyDecisionLogValidationInvalidDestination, "decision log destination category is unsupported")
+		}
+		if unsafeSandboxNetworkPolicyDecisionLogRequestMetadata(record.Request.ID) {
+			result.addError(index, "request.id", SandboxNetworkPolicyDecisionLogValidationUnsafeRequestMetadata, "decision log request id must be a safe identifier")
+		}
+		if unsafeSandboxNetworkPolicyDecisionLogRequestMetadata(record.Request.Operation) {
+			result.addError(index, "request.operation", SandboxNetworkPolicyDecisionLogValidationUnsafeRequestMetadata, "decision log request operation must be a safe operation label")
+		}
+	}
+	if record.EnforcementMode != "" && !validSandboxNetworkProxyEnforcementMode(record.EnforcementMode) {
+		result.addError(index, "enforcementMode", SandboxNetworkPolicyDecisionLogValidationInvalidEnforcement, "decision log enforcement mode is unsupported")
+	}
+	if record.Outcome == SandboxNetworkPolicyDecisionOutcomeDenied &&
+		record.Enforced != nil &&
+		*record.Enforced &&
+		(record.EnforcementMode == "" || record.EnforcementMode == SandboxNetworkEnforcementModeNone) {
+		result.addError(index, "enforced", SandboxNetworkPolicyDecisionLogValidationInvalidEnforcementClaim, "denied decision cannot claim enforcement without explicit enforcing metadata")
+	}
+}
+
 func validSandboxNetworkPolicyDecisionSource(source SandboxNetworkPolicyDecisionSource) bool {
 	switch source {
 	case SandboxNetworkPolicyDecisionSourceRun,
 		SandboxNetworkPolicyDecisionSourceAuto,
 		SandboxNetworkPolicyDecisionSourceFactory,
 		SandboxNetworkPolicyDecisionSourceWorker:
+		return true
+	default:
+		return false
+	}
+}
+
+func validSandboxNetworkPolicyDecisionOutcome(outcome SandboxNetworkPolicyDecisionOutcome) bool {
+	switch outcome {
+	case SandboxNetworkPolicyDecisionOutcomeAllowed,
+		SandboxNetworkPolicyDecisionOutcomeDenied,
+		SandboxNetworkPolicyDecisionOutcomeDowngraded,
+		SandboxNetworkPolicyDecisionOutcomeAuditOnly:
+		return true
+	default:
+		return false
+	}
+}
+
+func validSandboxNetworkPolicyDecisionReasonCode(reason SandboxNetworkPolicyDecisionReasonCode) bool {
+	switch reason {
+	case SandboxNetworkPolicyDecisionReasonUnknown,
+		SandboxNetworkPolicyDecisionReasonMatchedAllowRule,
+		SandboxNetworkPolicyDecisionReasonMatchedDenyRule,
+		SandboxNetworkPolicyDecisionReasonDefaultAllow,
+		SandboxNetworkPolicyDecisionReasonDefaultDeny,
+		SandboxNetworkPolicyDecisionReasonPolicyDisabled,
+		SandboxNetworkPolicyDecisionReasonPolicyDowngraded,
+		SandboxNetworkPolicyDecisionReasonEnforcementUnsupported,
+		SandboxNetworkPolicyDecisionReasonAuditOnly:
+		return true
+	default:
+		return false
+	}
+}
+
+func validSandboxNetworkPolicyDestinationCategory(category SandboxNetworkPolicyDestinationCategory) bool {
+	switch category {
+	case SandboxNetworkPolicyDestinationPublicInternet,
+		SandboxNetworkPolicyDestinationPrivateNetwork,
+		SandboxNetworkPolicyDestinationMetadataService,
+		SandboxNetworkPolicyDestinationLoopback,
+		SandboxNetworkPolicyDestinationUnixSocket,
+		SandboxNetworkPolicyDestinationUnknown:
 		return true
 	default:
 		return false
@@ -126,4 +331,30 @@ func (r *SandboxNetworkProxyValidationResult) addError(field string, code Sandbo
 		Field:   field,
 		Message: message,
 	})
+}
+
+func (r *SandboxNetworkPolicyDecisionLogValidationResult) addError(index int, field string, code SandboxNetworkPolicyDecisionLogValidationCode, message string) {
+	r.Errors = append(r.Errors, SandboxNetworkPolicyDecisionLogValidationError{
+		Code:        code,
+		RecordIndex: index,
+		Field:       field,
+		Message:     message,
+	})
+}
+
+func unsafeSandboxNetworkPolicyDecisionLogRequestMetadata(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	lower := strings.ToLower(value)
+	return strings.Contains(value, "://") ||
+		strings.Contains(value, "@") ||
+		strings.ContainsAny(value, "?#\r\n") ||
+		strings.HasPrefix(value, "/") ||
+		strings.Contains(value, "\\") ||
+		strings.Contains(lower, "authorization") ||
+		strings.Contains(lower, "bearer ") ||
+		strings.Contains(lower, "token=") ||
+		strings.Contains(lower, "api_key")
 }
