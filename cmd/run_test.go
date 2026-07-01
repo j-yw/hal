@@ -309,6 +309,7 @@ func TestWithTimeoutOverride(t *testing.T) {
 			Model:    "o3",
 			Provider: "openai",
 			Timeout:  15 * time.Minute,
+			WorkDir:  "/tmp/hal-worker",
 		}, 45*time.Minute)
 		if cfg.Model != "o3" {
 			t.Fatalf("Model = %q, want %q", cfg.Model, "o3")
@@ -318,6 +319,9 @@ func TestWithTimeoutOverride(t *testing.T) {
 		}
 		if cfg.Timeout != 45*time.Minute {
 			t.Fatalf("Timeout = %v, want %v", cfg.Timeout, 45*time.Minute)
+		}
+		if cfg.WorkDir != "/tmp/hal-worker" {
+			t.Fatalf("WorkDir = %q, want %q", cfg.WorkDir, "/tmp/hal-worker")
 		}
 	})
 

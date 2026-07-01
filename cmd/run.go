@@ -453,5 +453,6 @@ func withTimeoutOverride(cfg *engine.EngineConfig, timeout time.Duration) *engin
 
 	merged.Model = cfg.Model
 	merged.Provider = cfg.Provider
+	merged.WorkDir = cfg.WorkDir
 	return merged
 }
