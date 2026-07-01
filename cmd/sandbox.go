@@ -42,6 +42,7 @@ Subcommands:
   stop        Power off / shut down a running sandbox
   status      Show sandbox status
   delete      Delete a sandbox
+  host        Manage durable sandbox host records
   ssh         Open an interactive shell or run a remote command`,
 	Example: `  hal sandbox setup
   hal sandbox create

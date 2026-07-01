@@ -37,6 +37,11 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase15-worker-hosts (2026-07-01)
+
+- New user-facing Cobra command scaffolds should provide `Use`, `Short`, `Long`, and `Example` for every in-scope group and leaf command; `cmd` metadata tests walk the global command tree and family examples should contain the full command path.
+- Prefer `newXCommand(deps)` constructors for new command families so command registration/help tests can use fake dependencies without sockets, providers, daemons, network access, or real runtime adapters.
+
 ## Patterns from phase14-worker-io (2026-07-01)
 
 - Worker I/O limit constants and shared validation helpers live in `internal/sandboxworker/io_validation.go`; keep exec/copy payload bounds command-agnostic, reject unbounded reads before dispatch, and route validation details through `sanitizeProtocolErrorDetail` so host paths and secrets do not enter protocol errors.
