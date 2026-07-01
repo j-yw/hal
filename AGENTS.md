@@ -37,6 +37,10 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase17-target-selection (2026-07-01)
+
+- Target-selection code lives in `internal/sandboxtarget`; keep it command-agnostic and limited to standard-library imports plus root `internal/sandbox` durable metadata and root `internal/sandboxruntime` contracts. Do not import Cobra, `cmd`, factory, engine, loop, PRD, compound, or concrete runtime adapter subpackages there.
+
 ## Patterns from phase16-runtime-inspection (2026-07-01)
 
 - Runtime inspection JSON contracts should define command-layer constants and response structs in `cmd`, document safe endpoint summaries and explicit sparse values under `docs/contracts/`, and lock referenced example files with strict decoding plus deterministic runtime ID ordering tests before command implementation stories use them.
