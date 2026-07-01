@@ -48,6 +48,7 @@
 - Unconstrained run/auto/factory sandbox execution must preserve legacy SSH-machine-compatible target/runtime resolution: do not list cached worker hosts, require worker endpoints, attach worker runtime IDs, or construct worker clients unless `--sandbox-host` or `--sandbox-runtime` selected a worker-backed route.
 - Explicit worker-host sandbox execution supports only the rootless Podman worker-backed route for now; reject selected worker runtimes such as `microvm` in `cmd` with a `runtime_unsupported` classification before provisioning, worker-client construction, or SSH-machine fallback, and keep JSON/human errors endpoint-safe.
 - Explicit rootless Podman worker-backed execution must validate the durable worker endpoint in `cmd` before provisioning, runtime-driver resolution, or worker-client construction; use the shared worker endpoint validator so errors use `worker_endpoint_invalid` plus safe endpoint summaries such as `none`, `local Unix socket`, or `<scheme> endpoint`.
+- Worker-backed run/auto output streaming should stay on the existing `sandboxexec.EventCommandOutput` path: command-output summaries are populated only from remote command events, while preparation output should be routed through setup writers and excluded from persisted stdout/stderr summary artifacts.
 
 ## Patterns from phase17-target-selection (2026-07-01)
 

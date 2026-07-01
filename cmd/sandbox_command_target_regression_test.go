@@ -1002,6 +1002,219 @@ func TestWorkerRootlessAutoSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) 
 	}
 }
 
+func TestWorkerRootlessRunSandboxStreamsOutputAndSummariesExcludePreparation(t *testing.T) {
+	startedAt := time.Date(2026, 7, 1, 8, 10, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	workerDriver := fakeRunSandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			if isWorkerOutputArtifactGenerationExec(req) {
+				return &sandboxruntime.ExecResult{}, nil
+			}
+			_, _ = io.WriteString(req.Stdout, `{"contractVersion":1,"ok":true,"summary":"worker run stream"}`+"\n")
+			_, _ = io.WriteString(req.Stderr, "worker run stderr one\n")
+			_, _ = io.WriteString(req.Stderr, "worker run stderr two\n")
+			return &sandboxruntime.ExecResult{}, nil
+		},
+	}
+
+	err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+		JSON:                  true,
+		JSONChanged:           true,
+		SandboxName:           "worker-rootless",
+		SandboxNameChanged:    true,
+		SandboxHostID:         "worker-1",
+		SandboxHostChanged:    true,
+		SandboxRuntime:        sandboxruntime.DriverRootlessPodman,
+		SandboxRuntimeChanged: true,
+	}, &out, &errOut, runSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "run-worker-rootless-output-stream"
+		},
+		now:        runSandboxTestClock(startedAt, finishedAt),
+		workingDir: func() (string, error) { return projectDir, nil },
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return workerRootlessPlan(projectDir), nil
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			return workerRootlessCachedSandbox(name), nil
+		},
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{workerRootlessHostWithEndpoint(workerSafeUnixEndpoint())}, nil
+		},
+		listSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("listSandboxes should not run for explicit cached worker sandbox")
+			return nil, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			t.Fatal("default sandbox fallback should not run for explicit cached worker sandbox")
+			return nil, "", nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			t.Fatal("provision should not run for explicit cached worker sandbox")
+			return nil, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			t.Fatal("legacy runtime resolver should not run for explicit worker-backed run execution")
+			return nil, nil
+		},
+		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+			return workerDriver, nil
+		},
+		bootstrap:              bootstrapWithPreparationOutput(),
+		runProviderExecWithEnv: runProviderExecWithPreparationOutput("run preparation output"),
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			return nil
+		},
+		runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runRunSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+	var result RunResult
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
+	if !result.OK || result.Summary != "worker run stream" {
+		t.Fatalf("RunResult = %#v, want successful remote JSON", result)
+	}
+	if !strings.Contains(errOut.String(), "run preparation output") {
+		t.Fatalf("stderr/setup output = %q, want preparation output", errOut.String())
+	}
+	manifest, loadErr := store.LoadManifest("run-worker-rootless-output-stream")
+	if loadErr != nil {
+		t.Fatalf("LoadManifest() error: %v", loadErr)
+	}
+	stdoutSummary := requireSandboxOutputSummaryPayload(t, store, manifest, "output/stdout-summary.txt")
+	stderrSummary := requireSandboxOutputSummaryPayload(t, store, manifest, "output/stderr-summary.txt")
+	if stdoutSummary != `{"contractVersion":1,"ok":true,"summary":"worker run stream"}`+"\n" {
+		t.Fatalf("stdout summary = %q, want only remote JSON output", stdoutSummary)
+	}
+	if stderrSummary != "worker run stderr one\nworker run stderr two\n" {
+		t.Fatalf("stderr summary = %q, want ordered remote stderr lines", stderrSummary)
+	}
+	if strings.Contains(stdoutSummary+stderrSummary, "preparation output") {
+		t.Fatalf("output summaries included preparation output: stdout=%q stderr=%q", stdoutSummary, stderrSummary)
+	}
+}
+
+func TestWorkerRootlessAutoSandboxStreamsOutputAndSummariesExcludePreparation(t *testing.T) {
+	startedAt := time.Date(2026, 7, 1, 8, 11, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	workerDriver := fakeRunSandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			if isWorkerOutputArtifactGenerationExec(req) {
+				return &sandboxruntime.ExecResult{}, nil
+			}
+			_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSON("worker auto stream")+"\n")
+			_, _ = io.WriteString(req.Stderr, "worker auto stderr one\n")
+			_, _ = io.WriteString(req.Stderr, "worker auto stderr two\n")
+			return &sandboxruntime.ExecResult{}, nil
+		},
+	}
+
+	err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
+		JSON:                  true,
+		JSONChanged:           true,
+		SandboxName:           "worker-rootless",
+		SandboxNameChanged:    true,
+		SandboxHostID:         "worker-1",
+		SandboxHostChanged:    true,
+		SandboxRuntime:        sandboxruntime.DriverRootlessPodman,
+		SandboxRuntimeChanged: true,
+	}, &out, &errOut, autoSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "auto-worker-rootless-output-stream"
+		},
+		now: runSandboxTestClock(startedAt, finishedAt),
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return workerRootlessPlan(projectDir), nil
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			return workerRootlessCachedSandbox(name), nil
+		},
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{workerRootlessHostWithEndpoint(workerSafeUnixEndpoint())}, nil
+		},
+		listSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("listSandboxes should not run for explicit cached worker sandbox")
+			return nil, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			t.Fatal("default sandbox fallback should not run for explicit cached worker sandbox")
+			return nil, "", nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			t.Fatal("provision should not run for explicit cached worker sandbox")
+			return nil, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			t.Fatal("legacy runtime resolver should not run for explicit worker-backed auto execution")
+			return nil, nil
+		},
+		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+			return workerDriver, nil
+		},
+		bootstrap:              bootstrapWithPreparationOutput(),
+		runProviderExecWithEnv: runProviderExecWithPreparationOutput("auto preparation output"),
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			return nil
+		},
+		runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runAutoSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+	var result AutoResult
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
+	if !result.OK || result.Summary != "worker auto stream" {
+		t.Fatalf("AutoResult = %#v, want successful remote JSON", result)
+	}
+	if !strings.Contains(errOut.String(), "auto preparation output") {
+		t.Fatalf("stderr/setup output = %q, want preparation output", errOut.String())
+	}
+	manifest, loadErr := store.LoadManifest("auto-worker-rootless-output-stream")
+	if loadErr != nil {
+		t.Fatalf("LoadManifest() error: %v", loadErr)
+	}
+	stdoutSummary := requireSandboxOutputSummaryPayload(t, store, manifest, "output/stdout-summary.txt")
+	stderrSummary := requireSandboxOutputSummaryPayload(t, store, manifest, "output/stderr-summary.txt")
+	if stdoutSummary != autoSandboxRemoteSuccessJSON("worker auto stream")+"\n" {
+		t.Fatalf("stdout summary = %q, want only remote JSON output", stdoutSummary)
+	}
+	if stderrSummary != "worker auto stderr one\nworker auto stderr two\n" {
+		t.Fatalf("stderr summary = %q, want ordered remote stderr lines", stderrSummary)
+	}
+	if strings.Contains(stdoutSummary+stderrSummary, "preparation output") {
+		t.Fatalf("output summaries included preparation output: stdout=%q stderr=%q", stdoutSummary, stderrSummary)
+	}
+}
+
 func TestWorkerRootlessFactorySandboxUsesSharedWorkerRuntimeResolver(t *testing.T) {
 	projectDir := t.TempDir()
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
@@ -1154,6 +1367,107 @@ func TestWorkerRootlessFactorySandboxUsesSharedWorkerRuntimeResolver(t *testing.
 	}
 	if record.Sandbox.Runtime.Driver != sandboxruntime.DriverRootlessPodman || record.Sandbox.Runtime.WorkerID != "worker-1" {
 		t.Fatalf("record sandbox runtime = %#v, want selected worker rootless runtime", record.Sandbox.Runtime)
+	}
+}
+
+func TestWorkerRootlessFactorySandboxStreamsOutputInOrder(t *testing.T) {
+	projectDir := t.TempDir()
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	startedAt := time.Date(2026, 7, 1, 8, 12, 0, 0, time.UTC)
+	now := func() time.Time {
+		startedAt = startedAt.Add(time.Second)
+		return startedAt
+	}
+	var out bytes.Buffer
+
+	workerDriver := fakeRunSandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			if req.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman {
+				t.Fatalf("Exec runtime driver = %q, want rootless_podman", req.Target.Runtime.Driver)
+			}
+			_, _ = io.WriteString(req.Stdout, "factory stdout one\n")
+			_, _ = io.WriteString(req.Stderr, "factory stderr one\n")
+			_, _ = io.WriteString(req.Stdout, "factory stdout two\n")
+			return &sandboxruntime.ExecResult{}, nil
+		},
+	}
+
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		ProjectDir:     projectDir,
+		SandboxName:    "worker-rootless",
+		SandboxHostID:  "worker-1",
+		SandboxRuntime: sandboxruntime.DriverRootlessPodman,
+		RemoteOutput:   &out,
+		RunRecord: factory.RunRecord{
+			RunID:      "factory-worker-rootless-output-stream",
+			RepoPath:   projectDir,
+			RepoRemote: "git@example.com:org/repo.git",
+			BranchName: "feature/worker-rootless",
+			BaseBranch: "main",
+		},
+		RemoteAuto: factoryRunAutoRequest{BaseBranch: "main"},
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		now:          now,
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			return workerRootlessCachedSandbox(name), nil
+		},
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{workerRootlessHostWithEndpoint(workerSafeUnixEndpoint())}, nil
+		},
+		listSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("listSandboxes should not run for explicit cached worker sandbox")
+			return nil, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			t.Fatal("default sandbox fallback should not run for explicit cached worker sandbox")
+			return nil, "", nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			t.Fatal("provision should not run for explicit cached worker sandbox")
+			return nil, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			t.Fatal("legacy runtime resolver should not run for explicit worker-backed factory execution")
+			return nil, nil
+		},
+		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+			return workerDriver, nil
+		},
+		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			return factory.BootstrapResult{}, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			return nil
+		},
+		runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v\noutput=%s", err, out.String())
+	}
+	wantOutput := "factory stdout one\nfactory stderr one\nfactory stdout two\n"
+	if out.String() != wantOutput {
+		t.Fatalf("output = %q, want ordered worker output %q", out.String(), wantOutput)
+	}
+	events, loadErr := store.LoadEvents("factory-worker-rootless-output-stream")
+	if loadErr != nil {
+		t.Fatalf("LoadEvents() error: %v", loadErr)
+	}
+	var outputLines []string
+	for _, event := range events {
+		if event.EventType == factory.EventTypeCommandOutputSummary {
+			outputLines = append(outputLines, event.Message)
+		}
+	}
+	wantLines := []string{"factory stdout one", "factory stderr one", "factory stdout two"}
+	if strings.Join(outputLines, "\n") != strings.Join(wantLines, "\n") {
+		t.Fatalf("output event lines = %#v, want %#v", outputLines, wantLines)
 	}
 }
 
@@ -1605,6 +1919,52 @@ func workerRootlessBundlePlan(projectDir string) sandboxworkspace.Plan {
 	plan.InputSource = sandbox.SandboxWorkspaceInputSourceGitBundle
 	plan.RequiresBundle = true
 	return plan
+}
+
+func isWorkerOutputArtifactGenerationExec(req sandboxruntime.ExecRequest) bool {
+	command := strings.Join(req.Args, "\n")
+	return strings.Contains(command, ".hal/recovery/workspace.patch") ||
+		strings.Contains(command, ".hal/reports.tar")
+}
+
+func bootstrapWithPreparationOutput() func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+	return func(ctx context.Context, _ factory.BootstrapRequest, deps factory.BootstrapDeps) (factory.BootstrapResult, error) {
+		if deps.Executor == nil {
+			return factory.BootstrapResult{}, nil
+		}
+		_, err := deps.Executor.Run(ctx, factory.BootstrapCommand{Name: "sh", Args: []string{"-c", "true"}})
+		if err != nil {
+			return factory.BootstrapResult{}, err
+		}
+		return factory.BootstrapResult{}, nil
+	}
+}
+
+func runProviderExecWithPreparationOutput(line string) func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error {
+	return func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, _ map[string]string, out io.Writer) error {
+		_, err := io.WriteString(out, line+"\n")
+		return err
+	}
+}
+
+func requireSandboxOutputSummaryPayload(t *testing.T, store sandboxexecution.Store, manifest *sandboxexecution.Manifest, path string) string {
+	t.Helper()
+	if manifest == nil {
+		t.Fatal("manifest = nil, want output summary metadata")
+	}
+	if manifest.ArtifactMetadata == nil {
+		t.Fatalf("manifest ArtifactMetadata = nil, want collected %s", path)
+	}
+	for _, artifact := range manifest.ArtifactMetadata.Collected {
+		if artifact.Path == path {
+			if strings.TrimSpace(artifact.StoredPath) == "" {
+				t.Fatalf("artifact %s storedPath is empty", path)
+			}
+			return readRunSandboxStoreFile(t, store, artifact.StoredPath)
+		}
+	}
+	t.Fatalf("manifest missing collected artifact %s: %#v", path, manifest.ArtifactMetadata.Collected)
+	return ""
 }
 
 func requireWorkerMicroVMUnsupportedMessage(t *testing.T, message string) {
