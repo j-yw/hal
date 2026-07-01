@@ -92,8 +92,10 @@ type autoSandboxDeps struct {
 	loadSandbox            func(string) (*sandbox.SandboxState, error)
 	listSandboxes          func() ([]*sandbox.SandboxState, error)
 	listHosts              func() ([]*sandbox.SandboxHost, error)
+	listLeases             func() ([]*sandbox.SandboxLease, error)
 	resolveDefault         func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
 	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
+	acquireLease           func(sandbox.SandboxLeaseAcquireRequest, time.Duration) (*sandbox.SandboxLease, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
 	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
 	resolveWorkerRuntime   func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error)
@@ -326,6 +328,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 }
 
 func normalizeAutoSandboxDeps(deps autoSandboxDeps) autoSandboxDeps {
+	customDefaultStore := deps.defaultStore != nil
 	customResolveDefault := deps.resolveDefault != nil
 	customRuntimeResolver := deps.resolveRuntimeDriver != nil
 	if deps.defaultStore == nil {
@@ -356,8 +359,14 @@ func normalizeAutoSandboxDeps(deps autoSandboxDeps) autoSandboxDeps {
 	if deps.listHosts == nil {
 		deps.listHosts = defaultAutoSandboxDeps.listHosts
 	}
+	if deps.listLeases == nil {
+		deps.listLeases = sandboxCommandDefaultLeaseLister(deps.now, customDefaultStore)
+	}
 	if deps.provision == nil {
 		deps.provision = defaultAutoSandboxDeps.provision
+	}
+	if deps.acquireLease == nil {
+		deps.acquireLease = sandboxCommandDefaultLeaseAcquirer(deps.now, customDefaultStore)
 	}
 	if deps.resolveProvider == nil {
 		deps.resolveProvider = defaultAutoSandboxDeps.resolveProvider
@@ -706,6 +715,25 @@ func collectAutoSandboxOutputSummaryArtifacts(store sandboxexecution.Store, req 
 }
 
 func (deps autoSandboxDeps) resolveAutoSandboxTarget(ctx context.Context, req autoSandboxRequest, out io.Writer) (*sandbox.SandboxState, error) {
+	if autoSandboxShouldUseScheduledTarget(req) {
+		return resolveSandboxCommandScheduledTarget(sandboxCommandScheduledTargetRequest{
+			Purpose:        sandbox.SandboxLeasePurposeAuto,
+			SandboxName:    req.SandboxName,
+			SandboxHostID:  req.SandboxHostID,
+			SandboxRuntime: req.SandboxRuntime,
+			ProjectDir:     req.ProjectDir,
+			Repository:     req.RepoRemote,
+			Branch:         req.RunBranch,
+			RunID:          req.ExecutionID,
+			Workspace:      req.Workspace,
+		}, sandboxCommandScheduledTargetDeps{
+			listHosts:    deps.listHosts,
+			listLeases:   deps.listLeases,
+			now:          deps.now,
+			acquireLease: deps.acquireLease,
+		})
+	}
+
 	listSandboxes := deps.listSandboxes
 	if listSandboxes == nil && deps.resolveDefault != nil {
 		listSandboxes = sandboxCommandListSandboxesFromDefault(deps.resolveDefault)
@@ -734,6 +762,10 @@ func (deps autoSandboxDeps) resolveAutoSandboxTarget(ctx context.Context, req au
 		target = sandboxCommandSSHMachineCompatWorkerTarget(target)
 	}
 	return target, nil
+}
+
+func autoSandboxShouldUseScheduledTarget(req autoSandboxRequest) bool {
+	return strings.TrimSpace(req.SandboxName) == "" && sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime)
 }
 
 func (deps autoSandboxDeps) bootstrapAutoSandboxWorkspace(ctx context.Context, req autoSandboxRequest, provider sandbox.Provider, prep sandboxexec.PrepareContext, out io.Writer) error {
