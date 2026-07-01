@@ -447,6 +447,9 @@ func resolveFactorySandboxTarget(ctx context.Context, req factorySandboxExecutor
 	if err != nil {
 		return nil, err
 	}
+	if !sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
+		target = sandboxCommandSSHMachineCompatWorkerTarget(target)
+	}
 	if record.SandboxName == "" {
 		record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
 	}

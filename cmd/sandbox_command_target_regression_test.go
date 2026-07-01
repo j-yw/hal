@@ -437,6 +437,13 @@ func TestFactorySandboxDefaultTargetResolutionStaysCachedAndFakeOnly(t *testing.
 		Provider: "test-provider",
 		Status:   sandbox.StatusRunning,
 		Host:     defaultRegressionWorkerHostWithoutEndpoint(),
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandboxruntime.DriverRootlessPodman,
+			RuntimeID:      "ctr-factory-default",
+			Image:          "localhost/hal:factory-worker",
+			WorkerID:       "cached-worker-without-endpoint",
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+		},
 	}
 	resolver := &fakeDefaultSandboxResolver{t: t, target: target}
 	now := runSandboxTestClock(
@@ -478,12 +485,22 @@ func TestFactorySandboxDefaultTargetResolutionStaysCachedAndFakeOnly(t *testing.
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
 		},
+		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+			t.Fatal("worker runtime resolver should not run without explicit worker target flags")
+			return nil, nil
+		},
 		resolveRuntimeDriver: func(target sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			resolvedRuntime = target
 			return fakeFactorySandboxRuntimeDriver{
 				execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 					if req.Target.Name != "factory-default-box" {
 						t.Fatalf("Exec target name = %q, want factory-default-box", req.Target.Name)
+					}
+					if req.Target.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+						t.Fatalf("Exec runtime driver = %q, want SSH-machine compatibility", req.Target.Runtime.Driver)
+					}
+					if req.Target.Runtime.WorkerID != "" || req.Target.Runtime.RuntimeID != "" || req.Target.Runtime.Image != "" {
+						t.Fatalf("Exec runtime metadata = %#v, want no worker-backed metadata on default path", req.Target.Runtime)
 					}
 					_, _ = io.WriteString(req.Stdout, "factory default path\n")
 					return &sandboxruntime.ExecResult{}, nil
@@ -519,14 +536,191 @@ func TestFactorySandboxDefaultTargetResolutionStaysCachedAndFakeOnly(t *testing.
 	if resolvedRuntime.Runtime.Driver != sandboxruntime.DriverSSHMachine {
 		t.Fatalf("runtime driver = %q, want SSH-machine compatibility", resolvedRuntime.Runtime.Driver)
 	}
-	if resolvedRuntime.Runtime.WorkerID != "" || resolvedRuntime.Runtime.RuntimeID != "" {
+	if resolvedRuntime.Runtime.WorkerID != "" || resolvedRuntime.Runtime.RuntimeID != "" || resolvedRuntime.Runtime.Image != "" {
 		t.Fatalf("runtime worker metadata = %#v, want empty metadata on unconstrained default path", resolvedRuntime.Runtime)
 	}
 	if len(savedRecords) < 2 || savedRecords[1].SandboxName != "factory-default-box" {
 		t.Fatalf("saved records = %#v, want selected factory-default-box metadata", savedRecords)
 	}
+	if savedRecords[1].Sandbox.WorkerRouting != nil {
+		t.Fatalf("saved WorkerRouting = %#v, want nil without explicit worker target flags", savedRecords[1].Sandbox.WorkerRouting)
+	}
+	if savedRecords[1].Sandbox.Runtime == nil || savedRecords[1].Sandbox.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("saved runtime = %#v, want SSH-machine-compatible runtime", savedRecords[1].Sandbox.Runtime)
+	}
+	if savedRecords[1].Sandbox.Runtime.WorkerID != "" || savedRecords[1].Sandbox.Runtime.RuntimeID != "" || savedRecords[1].Sandbox.Runtime.Image != "" {
+		t.Fatalf("saved runtime metadata = %#v, want no worker-backed metadata on default path", savedRecords[1].Sandbox.Runtime)
+	}
 	if !strings.Contains(out.String(), "factory default path") {
 		t.Fatalf("remote output = %q, want fake runtime output", out.String())
+	}
+}
+
+func TestFactorySandboxDefaultCommandKeepsWorkerRouteInactiveInRecord(t *testing.T) {
+	t.Setenv("HAL_CONFIG_HOME", t.TempDir())
+
+	projectDir := t.TempDir()
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	startedAt := time.Date(2026, 7, 1, 9, 30, 0, 0, time.UTC)
+	now := func() time.Time {
+		startedAt = startedAt.Add(time.Second)
+		return startedAt
+	}
+	target := &sandbox.SandboxState{
+		Name:     "factory-default-worker-box",
+		Provider: "test-provider",
+		Status:   sandbox.StatusRunning,
+		Host:     defaultRegressionWorkerHostWithoutEndpoint(),
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandboxruntime.DriverRootlessPodman,
+			RuntimeID:      "ctr-factory-default-worker",
+			Image:          "localhost/hal:factory-worker",
+			WorkerID:       "cached-worker-without-endpoint",
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+		},
+	}
+	resolver := &fakeDefaultSandboxResolver{t: t, target: target}
+	driver := fakeRunSandboxRuntimeDriver{
+		exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			if req.Target.Name != "factory-default-worker-box" {
+				t.Fatalf("Exec target name = %q, want factory-default-worker-box", req.Target.Name)
+			}
+			if req.Target.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+				t.Fatalf("Exec runtime driver = %q, want SSH-machine compatibility", req.Target.Runtime.Driver)
+			}
+			if req.Target.Runtime.WorkerID != "" || req.Target.Runtime.RuntimeID != "" || req.Target.Runtime.Image != "" {
+				t.Fatalf("Exec runtime metadata = %#v, want no worker-backed metadata on default path", req.Target.Runtime)
+			}
+			_, _ = io.WriteString(req.Stdout, "factory default command path\n")
+			return &sandboxruntime.ExecResult{}, nil
+		},
+	}
+
+	policy := factory.DefaultFactoryPolicy()
+	policy.PRCreationAllowed = false
+
+	var resolvedRuntime sandboxruntime.Target
+	var out bytes.Buffer
+	err := runFactoryRunWithDeps(context.Background(), projectDir, factoryRunRequest{
+		BaseBranch: "main",
+		Sandbox:    true,
+	}, &out, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-factory-default-worker-route-inactive", nil },
+		now:          now,
+		workingDir:   func() (string, error) { return projectDir, nil },
+		currentBranch: func(string) (string, error) {
+			return "feature/factory-default-worker", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@example.com:org/repo.git", nil
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			return &policy, nil
+		},
+		loadEngine: func(string) (string, error) {
+			return factory.PolicyEngineCodex, nil
+		},
+		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
+			t.Fatal("local pipeline should not run with --sandbox")
+			return nil
+		},
+		runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
+			return runFactorySandboxExecutorWithDeps(ctx, req, factorySandboxExecutorDeps{
+				defaultStore: func() (factory.Store, error) { return store, nil },
+				now:          now,
+				loadSandbox: func(string) (*sandbox.SandboxState, error) {
+					t.Fatal("loadSandbox should not run without an explicit sandbox name")
+					return nil, nil
+				},
+				resolveDefault: resolver.resolve,
+				listHosts: func() ([]*sandbox.SandboxHost, error) {
+					t.Fatal("listHosts should not run without sandbox host/runtime constraints")
+					return nil, nil
+				},
+				provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+					t.Fatal("provision should not run when a default running sandbox is selected")
+					return nil, nil
+				},
+				resolveProvider: func(string) (sandbox.Provider, error) {
+					return fakeFactorySandboxProvider{}, nil
+				},
+				resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+					t.Fatal("worker runtime resolver should not run without explicit worker target flags")
+					return nil, nil
+				},
+				resolveRuntimeDriver: func(target sandboxruntime.Target) (sandboxruntime.Driver, error) {
+					resolvedRuntime = target
+					return driver, nil
+				},
+				bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+					return factory.BootstrapResult{}, nil
+				},
+				engineAuthFiles: func() []factorySandboxAuthFile {
+					return nil
+				},
+			})
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != "factory-default-worker-box" {
+				t.Fatalf("loadSandbox name = %q, want factory-default-worker-box", name)
+			}
+			return sandboxCommandSSHMachineCompatWorkerTarget(target), nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, _ map[string]string, out io.Writer) error {
+			_, _ = io.WriteString(out, `{"schemaVersion":"verify-v1","status":"pass","summary":{"total":0},"checks":[]}`+"\n")
+			return nil
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) {
+			return factorySnapshotArtifact{}, nil
+		},
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) {
+			return factorySnapshotArtifact{}, nil
+		},
+		sandboxRequests: func(string, factory.RunRecord) []factory.SandboxArtifactRequest {
+			return nil
+		},
+		cleanupSandbox: func(context.Context, factorySandboxCleanupRequest) error {
+			t.Fatal("cleanup should not run with the default preserve policy")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v\noutput=%s", err, out.String())
+	}
+	if resolver.calls != 1 {
+		t.Fatalf("default resolver calls = %d, want 1", resolver.calls)
+	}
+	if resolvedRuntime.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("resolved runtime driver = %q, want SSH-machine compatibility", resolvedRuntime.Runtime.Driver)
+	}
+	if resolvedRuntime.Runtime.WorkerID != "" || resolvedRuntime.Runtime.RuntimeID != "" || resolvedRuntime.Runtime.Image != "" {
+		t.Fatalf("resolved runtime metadata = %#v, want worker metadata stripped on default path", resolvedRuntime.Runtime)
+	}
+	record, loadErr := store.LoadRun("run-factory-default-worker-route-inactive")
+	if loadErr != nil {
+		t.Fatalf("LoadRun() error: %v", loadErr)
+	}
+	if record.Status != factory.RunStatusSucceeded {
+		t.Fatalf("record.Status = %q, want succeeded", record.Status)
+	}
+	if record.Sandbox == nil {
+		t.Fatal("record.Sandbox = nil, want persisted default sandbox metadata")
+	}
+	if record.Sandbox.WorkerRouting != nil {
+		t.Fatalf("record WorkerRouting = %#v, want nil without explicit worker target flags", record.Sandbox.WorkerRouting)
+	}
+	if record.Sandbox.Runtime == nil || record.Sandbox.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("record sandbox runtime = %#v, want SSH-machine-compatible runtime", record.Sandbox.Runtime)
+	}
+	if record.Sandbox.Runtime.WorkerID != "" || record.Sandbox.Runtime.RuntimeID != "" || record.Sandbox.Runtime.Image != "" {
+		t.Fatalf("record sandbox runtime metadata = %#v, want no worker-backed metadata on default path", record.Sandbox.Runtime)
+	}
+	if record.Sandbox.Host == nil || record.Sandbox.Host.ID != "cached-worker-without-endpoint" {
+		t.Fatalf("record sandbox host = %#v, want safe cached worker host identity", record.Sandbox.Host)
 	}
 }
 
