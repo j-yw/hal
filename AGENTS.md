@@ -37,6 +37,10 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase16-runtime-inspection (2026-07-01)
+
+- Runtime inspection JSON contracts should define command-layer constants and response structs in `cmd`, document safe endpoint summaries and explicit sparse values under `docs/contracts/`, and lock referenced example files with strict decoding plus deterministic runtime ID ordering tests before command implementation stories use them.
+
 ## Patterns from phase15-worker-hosts (2026-07-01)
 
 - New user-facing Cobra command scaffolds should provide `Use`, `Short`, `Long`, and `Example` for every in-scope group and leaf command; `cmd` metadata tests walk the global command tree and family examples should contain the full command path.

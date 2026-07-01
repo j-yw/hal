@@ -1,0 +1,128 @@
+{
+  "contractType": "sandbox-runtime-list",
+  "contractVersion": "sandbox-runtime-list-v1",
+  "host": {
+    "id": "worker-a",
+    "name": "builder",
+    "kind": "worker",
+    "endpoint": {
+      "type": "unix_socket",
+      "summary": "local Unix socket",
+      "scheme": "unix"
+    }
+  },
+  "source": {
+    "mode": "live-refreshed",
+    "requestedLive": true,
+    "cacheUpdated": false,
+    "refreshedAt": "2026-07-01T14:00:00Z",
+    "summary": "live worker runtime capabilities"
+  },
+  "runtimes": [
+    {
+      "id": "rootless_podman",
+      "hostKind": "local",
+      "isolationLevel": "container",
+      "supportedOperations": [
+        "copy_in",
+        "copy_out",
+        "create",
+        "delete",
+        "exec",
+        "inspect",
+        "start",
+        "stop"
+      ],
+      "security": {
+        "requested": {
+          "networkPolicy": "deny_by_default",
+          "networkEnforcement": "runtime",
+          "credentialModes": [
+            "ssh_agent"
+          ],
+          "credentialProxyMode": false,
+          "isolationLevel": "container"
+        },
+        "enforced": {
+          "networkPolicy": "best_effort",
+          "networkEnforcement": "none",
+          "credentialModes": [
+            "env",
+            "legacy_auth_sync"
+          ],
+          "credentialProxyMode": false,
+          "isolationLevel": "container"
+        }
+      },
+      "diagnostics": []
+    },
+    {
+      "id": "ssh_machine",
+      "hostKind": "local",
+      "isolationLevel": "host",
+      "supportedOperations": [
+        "copy_in",
+        "copy_out",
+        "create",
+        "delete",
+        "exec",
+        "inspect",
+        "start",
+        "stop"
+      ],
+      "security": {
+        "requested": {
+          "networkPolicy": "deny_by_default",
+          "networkEnforcement": "runtime",
+          "credentialModes": [
+            "ssh_agent"
+          ],
+          "credentialProxyMode": false,
+          "isolationLevel": "host"
+        },
+        "enforced": {
+          "networkPolicy": "best_effort",
+          "networkEnforcement": "none",
+          "credentialModes": [
+            "env",
+            "legacy_auth_sync"
+          ],
+          "credentialProxyMode": false,
+          "isolationLevel": "host"
+        }
+      },
+      "diagnostics": []
+    }
+  ],
+  "capacity": {
+    "summary": "1 of 4 sandboxes active",
+    "cpuCores": null,
+    "memoryMb": null,
+    "diskGb": null,
+    "maxConcurrentSandboxes": 4,
+    "activeSandboxes": 1
+  },
+  "security": {
+    "requested": {
+      "networkPolicy": "deny_by_default",
+      "networkEnforcement": "runtime",
+      "credentialModes": [
+        "ssh_agent"
+      ],
+      "credentialProxyMode": false,
+      "isolationLevel": "container"
+    },
+    "enforced": {
+      "networkPolicy": "best_effort",
+      "networkEnforcement": "none",
+      "credentialModes": [
+        "env",
+        "legacy_auth_sync"
+      ],
+      "credentialProxyMode": false,
+      "isolationLevel": "host"
+    }
+  },
+  "diagnostics": [],
+  "errors": []
+}

@@ -33,6 +33,7 @@ func TestContractDocsExist(t *testing.T) {
 		{"sandbox-list-v1", "../docs/contracts/sandbox-list-v1.md"},
 		{"sandbox-host-list-v1", "../docs/contracts/sandbox-host-list-v1.md"},
 		{"sandbox-host-status-v1", "../docs/contracts/sandbox-host-status-v1.md"},
+		{"sandbox-runtime-list-v1", "../docs/contracts/sandbox-runtime-list-v1.md"},
 		{"auto-v2", "../docs/contracts/auto-v2.md"},
 		{"ci-push-v1", "../docs/contracts/ci-push-v1.md"},
 		{"ci-status-v1", "../docs/contracts/ci-status-v1.md"},
@@ -203,6 +204,78 @@ func TestContractDocsIncludeSandboxHostStatusFields(t *testing.T) {
 	for _, value := range []string{SandboxHostStatusSourceCached, SandboxHostStatusSourceLiveRefreshed, "unix_socket", "endpoint", "local Unix socket"} {
 		if !strings.Contains(content, value) {
 			t.Errorf("sandbox-host-status-v1.md missing value %q", value)
+		}
+	}
+}
+
+func TestContractDocsIncludeSandboxRuntimeListFields(t *testing.T) {
+	data, err := os.ReadFile("../docs/contracts/sandbox-runtime-list-v1.md")
+	if err != nil {
+		t.Skipf("cannot read sandbox-runtime-list-v1.md: %v", err)
+	}
+	content := string(data)
+	normalizedContent := strings.Join(strings.Fields(content), " ")
+
+	for _, field := range []string{
+		"contractType", "contractVersion", "host", "source", "runtimes",
+		"capacity", "security", "diagnostics", "errors",
+	} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-list-v1.md missing top-level field %q", field)
+		}
+	}
+	for _, field := range []string{"id", "name", "kind", "endpoint", "type", "summary", "scheme"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-list-v1.md missing host/endpoint field %q", field)
+		}
+	}
+	for _, field := range []string{"mode", "requestedLive", "cacheUpdated", "refreshedAt"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-list-v1.md missing source field %q", field)
+		}
+	}
+	for _, field := range []string{"hostKind", "isolationLevel", "supportedOperations"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-list-v1.md missing runtime field %q", field)
+		}
+	}
+	for _, field := range []string{"cpuCores", "memoryMb", "diskGb", "maxConcurrentSandboxes", "activeSandboxes"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-list-v1.md missing capacity field %q", field)
+		}
+	}
+	for _, field := range []string{"requested", "enforced", "networkPolicy", "networkEnforcement", "credentialModes", "credentialProxyMode"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-list-v1.md missing security field %q", field)
+		}
+	}
+	for _, value := range []string{
+		SandboxRuntimeListContractType,
+		SandboxRuntimeListContractVersion,
+		SandboxRuntimeSourceCached,
+		SandboxRuntimeSourceLiveRefreshed,
+		SandboxRuntimeSourceUnsupportedLive,
+		"local Unix socket",
+		"ssh endpoint",
+	} {
+		if !strings.Contains(content, value) {
+			t.Errorf("sandbox-runtime-list-v1.md missing value %q", value)
+		}
+	}
+	for _, phrase := range []string{
+		"raw socket paths, hostnames, credentials, URL query strings, temp paths, or sensitive endpoint details",
+		"Empty arrays",
+		"Empty objects",
+		"Explicit `null`",
+		"does not change `sandbox-list-v1`, `sandbox-host-list-v1`, or `sandbox-host-status-v1`",
+	} {
+		if !strings.Contains(normalizedContent, phrase) {
+			t.Errorf("sandbox-runtime-list-v1.md missing safety/sparse metadata phrase %q", phrase)
+		}
+	}
+	for _, example := range sandboxRuntimeListExamplePaths() {
+		if !strings.Contains(content, strings.TrimPrefix(example, "../")) {
+			t.Errorf("sandbox-runtime-list-v1.md missing example reference %q", example)
 		}
 	}
 }
@@ -1217,6 +1290,145 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 			t.Fatalf("factory queue work noop entry = %#v, want nil", resp.Entry)
 		}
 	})
+}
+
+func TestSandboxRuntimeListContractExamplesMatchSchema(t *testing.T) {
+	for _, path := range sandboxRuntimeListExamplePaths() {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			var resp SandboxRuntimeListResponse
+			raw := decodeStrictJSONExample(t, path, &resp)
+
+			requireExactKeys(t, raw, []string{
+				"contractType",
+				"contractVersion",
+				"host",
+				"source",
+				"runtimes",
+				"capacity",
+				"security",
+				"diagnostics",
+				"errors",
+			})
+			if resp.ContractType != SandboxRuntimeListContractType {
+				t.Fatalf("contractType = %q, want %q", resp.ContractType, SandboxRuntimeListContractType)
+			}
+			if resp.ContractVersion != SandboxRuntimeListContractVersion {
+				t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, SandboxRuntimeListContractVersion)
+			}
+			if resp.Host.ID == "" || resp.Host.Kind == "" {
+				t.Fatalf("example host identity must include id and kind: %#v", resp.Host)
+			}
+			if resp.Host.Endpoint.Summary == "" {
+				t.Fatalf("example endpoint must include a safe summary: %#v", resp.Host.Endpoint)
+			}
+			switch resp.Source.Mode {
+			case SandboxRuntimeSourceCached, SandboxRuntimeSourceLiveRefreshed, SandboxRuntimeSourceUnsupportedLive:
+			default:
+				t.Fatalf("source.mode = %q, want documented source mode", resp.Source.Mode)
+			}
+			requireRuntimeListExamplesSorted(t, resp.Runtimes)
+			requireRuntimeListExampleRawKeys(t, raw)
+			requireRuntimeListExampleSafe(t, path)
+		})
+	}
+}
+
+func sandboxRuntimeListExamplePaths() []string {
+	return []string{
+		"../docs/contracts/examples/sandbox-runtime-list-v1-cached.json",
+		"../docs/contracts/examples/sandbox-runtime-list-v1-live-refreshed.json",
+		"../docs/contracts/examples/sandbox-runtime-list-v1-unsupported-live.json",
+	}
+}
+
+func requireRuntimeListExamplesSorted(t *testing.T, entries []SandboxRuntimeListEntry) {
+	t.Helper()
+	for i := 1; i < len(entries); i++ {
+		if entries[i-1].ID > entries[i].ID {
+			t.Fatalf("runtime entries are not sorted by id: %q before %q", entries[i-1].ID, entries[i].ID)
+		}
+	}
+}
+
+func requireRuntimeListExampleRawKeys(t *testing.T, raw map[string]interface{}) {
+	t.Helper()
+
+	host, ok := raw["host"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("host should be an object, got %T", raw["host"])
+	}
+	requireExactKeys(t, host, []string{"id", "name", "kind", "endpoint"})
+	endpoint, ok := host["endpoint"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("host.endpoint should be an object, got %T", host["endpoint"])
+	}
+	requireExactKeys(t, endpoint, []string{"type", "summary", "scheme"})
+
+	source, ok := raw["source"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("source should be an object, got %T", raw["source"])
+	}
+	requireExactKeys(t, source, []string{"mode", "requestedLive", "cacheUpdated", "refreshedAt", "summary"})
+
+	runtimes, ok := raw["runtimes"].([]interface{})
+	if !ok {
+		t.Fatalf("runtimes should be an array, got %T", raw["runtimes"])
+	}
+	for i, item := range runtimes {
+		runtimeEntry, ok := item.(map[string]interface{})
+		if !ok {
+			t.Fatalf("runtimes[%d] should be an object, got %T", i, item)
+		}
+		requireExactKeys(t, runtimeEntry, []string{
+			"id",
+			"hostKind",
+			"isolationLevel",
+			"supportedOperations",
+			"security",
+			"diagnostics",
+		})
+	}
+
+	capacity, ok := raw["capacity"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("capacity should be an object, got %T", raw["capacity"])
+	}
+	requireExactKeys(t, capacity, []string{
+		"summary",
+		"cpuCores",
+		"memoryMb",
+		"diskGb",
+		"maxConcurrentSandboxes",
+		"activeSandboxes",
+	})
+
+	security, ok := raw["security"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("security should be an object, got %T", raw["security"])
+	}
+	requireExactKeys(t, security, []string{"requested", "enforced"})
+}
+
+func requireRuntimeListExampleSafe(t *testing.T, path string) {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("cannot read %s: %v", path, err)
+	}
+	content := string(data)
+	for _, forbidden := range []string{
+		"socketPath",
+		"/tmp/",
+		"token=",
+		"password",
+		"secret",
+		"builder.internal",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("runtime list example %s contains forbidden sensitive detail %q", path, forbidden)
+		}
+	}
 }
 
 func TestVerifyContractExamplesMatchSchema(t *testing.T) {
