@@ -3,6 +3,7 @@ package sandboxtarget
 import (
 	"errors"
 	"io/fs"
+	"strings"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandbox"
@@ -200,5 +201,191 @@ func TestSelectPropagatesCachedStateErrorsAsSafeFailures(t *testing.T) {
 	}
 	if result.Failure.SandboxName != "chosen" {
 		t.Fatalf("failure sandbox name = %q, want requested name", result.Failure.SandboxName)
+	}
+}
+
+func TestSelectRequestedHostMissingFailsDeterministically(t *testing.T) {
+	result := Select(Request{HostID: "worker-a"}, CachedState{
+		ListHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{
+				{ID: "worker-b", Name: "worker b", Kind: sandbox.SandboxHostKindWorker},
+			}, nil
+		},
+		ListSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("ListSandboxes should not be called when requested host is missing")
+			return nil, nil
+		},
+	})
+
+	if !result.Failed() {
+		t.Fatalf("result = %#v, want missing host failure", result)
+	}
+	if result.Failure.Reason != FailureReasonHostNotFound ||
+		result.Failure.HostID != "worker-a" ||
+		result.Failure.Error() != `host "worker-a" does not exist` {
+		t.Fatalf("failure = %#v, want deterministic requested-host missing failure", result.Failure)
+	}
+}
+
+func TestSelectRequestedHostDuplicateMatchesFail(t *testing.T) {
+	result := Select(Request{HostID: "worker-a"}, CachedState{
+		ListHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{
+				{ID: "worker-a", Name: "alpha", Kind: sandbox.SandboxHostKindWorker},
+				{ID: "worker-a", Name: "duplicate", Kind: sandbox.SandboxHostKindWorker},
+			}, nil
+		},
+	})
+
+	if !result.Failed() {
+		t.Fatalf("result = %#v, want duplicate requested-host failure", result)
+	}
+	if result.Failure.Reason != FailureReasonAmbiguousTarget ||
+		result.Failure.HostID != "worker-a" ||
+		result.Failure.Error() != `host "worker-a" matched multiple durable host records` {
+		t.Fatalf("failure = %#v, want deterministic duplicate host failure", result.Failure)
+	}
+}
+
+func TestSelectRequestedHostUnhealthyFailsWithoutEndpointLeak(t *testing.T) {
+	result := Select(Request{HostID: "worker-a"}, CachedState{
+		ListHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{
+				{
+					ID:       "worker-a",
+					Name:     "worker a",
+					Kind:     sandbox.SandboxHostKindWorker,
+					Endpoint: "unix:///tmp/secret-worker.sock?token=super-secret",
+					Health: &sandbox.HostHealth{
+						Status:  "unhealthy",
+						Message: "token=super-secret",
+					},
+				},
+			}, nil
+		},
+	})
+
+	if !result.Failed() {
+		t.Fatalf("result = %#v, want unhealthy requested-host failure", result)
+	}
+	if result.Failure.Reason != FailureReasonHostUnhealthy ||
+		result.Failure.HostID != "worker-a" ||
+		result.Failure.Error() != `host "worker-a" is not healthy: unhealthy` {
+		t.Fatalf("failure = %#v, want deterministic unhealthy host failure", result.Failure)
+	}
+	for _, leaked := range []string{"unix://", "/tmp/secret-worker.sock", "super-secret"} {
+		if strings.Contains(result.Failure.Error(), leaked) {
+			t.Fatalf("failure %q leaked %q", result.Failure.Error(), leaked)
+		}
+	}
+}
+
+func TestSelectRequestedHostUnsupportedRuntimeFailsWithoutEndpointLeak(t *testing.T) {
+	result := Select(Request{
+		HostID:        "worker-a",
+		RuntimeDriver: sandbox.SandboxRuntimeDriverRootlessPodman,
+	}, CachedState{
+		ListHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{
+				{
+					ID:                "worker-a",
+					Name:              "worker a",
+					Kind:              sandbox.SandboxHostKindWorker,
+					Endpoint:          "ssh://user:secret@example.test",
+					Health:            &sandbox.HostHealth{Status: "healthy"},
+					SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+				},
+			}, nil
+		},
+	})
+
+	if !result.Failed() {
+		t.Fatalf("result = %#v, want unsupported runtime failure", result)
+	}
+	if result.Failure.Reason != FailureReasonRuntimeUnsupported ||
+		result.Failure.HostID != "worker-a" ||
+		result.Failure.RuntimeDriver != sandbox.SandboxRuntimeDriverRootlessPodman ||
+		result.Failure.Error() != `host "worker-a" does not support requested runtime "rootless_podman"` {
+		t.Fatalf("failure = %#v, want deterministic unsupported-runtime failure", result.Failure)
+	}
+	for _, leaked := range []string{"ssh://", "secret@example.test"} {
+		if strings.Contains(result.Failure.Error(), leaked) {
+			t.Fatalf("failure %q leaked %q", result.Failure.Error(), leaked)
+		}
+	}
+}
+
+func TestSelectRequestedHostMatchUsesCachedMetadataOnly(t *testing.T) {
+	result := Select(Request{
+		HostID:        "worker-a",
+		RuntimeDriver: sandbox.SandboxRuntimeDriverRootlessPodman,
+		Project: ProjectContext{
+			Branch:     "hal/target-host",
+			Repository: "github.com/jywlabs/hal",
+		},
+	}, CachedState{
+		ListHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{
+				{
+					ID:                "worker-a",
+					Name:              "worker a",
+					Kind:              sandbox.SandboxHostKindWorker,
+					Endpoint:          "unix:///tmp/worker.sock",
+					Health:            &sandbox.HostHealth{Status: "healthy"},
+					SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+				},
+			}, nil
+		},
+		ListSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("ListSandboxes should not be called for a host-constrained provisioning selection")
+			return nil, nil
+		},
+	})
+
+	if result.Failed() || !result.NeedsProvisioning() {
+		t.Fatalf("result = %#v, want selected host with branch provisioning", result)
+	}
+	if result.Host == nil || result.Host.ID != "worker-a" {
+		t.Fatalf("host = %#v, want selected cached requested host", result.Host)
+	}
+	if result.Runtime == nil || result.Runtime.Driver != sandbox.SandboxRuntimeDriverRootlessPodman {
+		t.Fatalf("runtime = %#v, want requested runtime metadata", result.Runtime)
+	}
+	if result.Provisioning.SandboxName != "hal-target-host" || result.Source.Kind != SourceFallbackProvisioning {
+		t.Fatalf("provisioning/source = %#v/%#v, want branch provisioning after host selection", result.Provisioning, result.Source)
+	}
+}
+
+func TestSelectRequestedHostDoesNotUseUnrelatedDefaultRunningSandbox(t *testing.T) {
+	result := Select(Request{
+		HostID: "worker-a",
+		Project: ProjectContext{
+			Branch: "hal/target-host",
+		},
+	}, CachedState{
+		ListHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{
+				{
+					ID:     "worker-a",
+					Name:   "worker a",
+					Kind:   sandbox.SandboxHostKindWorker,
+					Health: &sandbox.HostHealth{Status: "healthy"},
+				},
+			}, nil
+		},
+		ListSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("ListSandboxes should not be called for a host-constrained request without an explicit sandbox")
+			return nil, nil
+		},
+	})
+
+	if result.Failed() || !result.NeedsProvisioning() {
+		t.Fatalf("result = %#v, want host-constrained branch provisioning", result)
+	}
+	if result.Sandbox != nil {
+		t.Fatalf("sandbox = %#v, want no default-running sandbox for host-constrained request", result.Sandbox)
+	}
+	if result.Host == nil || result.Host.ID != "worker-a" {
+		t.Fatalf("host = %#v, want selected requested host", result.Host)
 	}
 }
