@@ -51,6 +51,7 @@
 - Local sandbox policy/secret config parsing belongs in `internal/compound/config.go` under `sandbox.networkPolicy` and `sandbox.secrets`; validate with the pure `internal/sandbox` policy validator and factory delivery-mode validator, preserve nil optional fields when absent, and keep `SaveSandboxConfig` round-tripping these metadata-only fields without provider/network calls.
 - Existing sandbox security surfaces should project optional effective network policy metadata additively: deep-copy `SandboxNetworkSecurity.policyResult` through command/target clones, expose it as `networkPolicyResult` on runtime summaries and `policyResult` on factory security metadata/timeline maps, and keep secret metadata limited to requested/active delivery mode identifiers.
 - Phase 22 policy/secret verification docs live in `docs/design/sandbox-runtime-v2-phase22-policy-secret-broker-verification.md` and are guarded by `cmd/phase22_policy_secret_docs_test.go`; keep the required focused commands, fake-only scope, and non-goals in sync with policy and broker contract behavior.
+- Phase 22 fake-only verification guard coverage lives in `cmd/phase22_policy_secret_docs_test.go` as `TestPhase22PolicySecretFakeOnlyVerification`; keep it focused on documented `go test` commands and Phase 22 default test files, and avoid exact live-integration env literals in guard source when older broad substring guards would misclassify the test itself as an integration hook.
 
 ## Patterns from phase21-workspace-syncout-apply (2026-07-01)
 

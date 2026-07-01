@@ -98,6 +98,12 @@ Run command metadata projection and documentation guard checks:
 go test -timeout=120s ./cmd -run 'TestSandboxSecurityMetadata|TestFactorySandboxSecurityPolicyEvent|TestPhase22PolicySecretDocs'
 ```
 
+Run Phase 22 documentation and fake-only verification guard checks:
+
+```sh
+go test -timeout=120s ./cmd -run 'TestPhase22PolicySecret(Docs|FakeOnlyVerification)'
+```
+
 Run full package, vet, whitespace, build, and lint verification:
 
 ```sh
@@ -123,6 +129,11 @@ verification should not start daemons, create real sandboxes, contact worker
 hosts, contact provider APIs, access cloud resources, mutate firewall rules,
 bind proxies, forward SSH agents, write tmpfs secrets, or open network
 connections.
+
+Phase 22 fake-only verification has no real network calls, Docker, Podman,
+cloud credentials, worker daemon, microVM, live proxy/firewall, or provider
+credential requirement. Default Phase 22 test commands must not use integration
+build tags or require live environment variables.
 
 ## Non-Goals
 
