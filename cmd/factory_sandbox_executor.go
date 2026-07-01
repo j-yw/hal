@@ -352,21 +352,22 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			if err != nil {
 				return err
 			}
-			return factorySandboxSyncEngineAuth(ctx, provider, sandboxStateFromRuntimeTarget(prep.Target), remoteOutput, deps)
+			return factorySandboxSyncEngineAuth(ctx, provider, sandboxStateFromRuntimeTarget(prep.Target), newFactorySandboxRemoteUserOutputWriter(remoteOutput), deps)
 		},
 		PrepareCommand: func(ctx context.Context, prep sandboxexec.PrepareContext, command *sandboxexec.CommandRequest) error {
 			provider, err := ensureProvider(prep.Target.Provider)
 			if err != nil {
 				return err
 			}
-			remoteAuto, err := factorySandboxPrepareRemoteInputs(ctx, req, provider, sandboxStateFromRuntimeTarget(prep.Target), remoteOutput, deps)
+			userOutput := newFactorySandboxRemoteUserOutputWriter(remoteOutput)
+			remoteAuto, err := factorySandboxPrepareRemoteInputs(ctx, req, provider, sandboxStateFromRuntimeTarget(prep.Target), userOutput, deps)
 			if err != nil {
 				return err
 			}
 			command.Command = factorySandboxRemoteCommandArgs(record, remoteAuto)
 			command.WorkDir = factorySandboxRemoteWorkspaceDir(record)
 			command.Env = factorySandboxResolvedSecretEnv(req.ResolvedSecrets)
-			command.Stdout = newFactorySandboxRemoteUserOutputWriter(remoteOutput)
+			command.Stdout = userOutput
 			command.Stderr = command.Stdout
 			return nil
 		},
@@ -832,7 +833,7 @@ func (w *factorySandboxTimelineWriter) appendLineLocked(line string) error {
 		line = w.eventRedact(line)
 	}
 	metadata := map[string]any{
-		"source":      "remote_sandbox",
+		"source":      factory.LogSourceRemoteSandbox,
 		"stream":      "remote",
 		"sandboxName": w.sandboxName,
 		"provider":    w.provider,
@@ -867,7 +868,7 @@ func (w *factorySandboxTimelineWriter) appendLineLocked(line string) error {
 
 func (w *factorySandboxTimelineWriter) appendExecutorEventLocked(eventType, summary string, metadata map[string]any) error {
 	eventMetadata := map[string]any{
-		"source":       "remote_sandbox",
+		"source":       factory.LogSourceRemoteSandbox,
 		"step":         factory.RunDurationStepEngineRun,
 		"executorMode": factory.ExecutorModeSandbox,
 		"sandboxName":  w.sandboxName,
@@ -1251,7 +1252,7 @@ func appendFactorySandboxBootstrapTimeline(store factory.Store, deps factorySand
 			eventType = factory.EventTypeFailureClassification
 		}
 		metadata := map[string]any{
-			"source":       "remote_sandbox",
+			"source":       factory.LogSourceRemoteSandbox,
 			"phase":        "bootstrap",
 			"step":         timeline.Step,
 			"status":       timeline.Status,
