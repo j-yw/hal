@@ -457,6 +457,8 @@ func cloneSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.SandboxSec
 func emptySecurityEvaluationRequest(req sandbox.SecurityEvaluationRequest) bool {
 	return strings.TrimSpace(req.RuntimeDriver) == "" &&
 		strings.TrimSpace(req.RequestedNetworkPolicy) == "" &&
+		req.RequestedNetworkPolicyIntent == nil &&
+		req.NetworkPolicyCapability == nil &&
 		len(req.RequestedSecretModes) == 0 &&
 		len(req.ActiveSecretModes) == 0 &&
 		!req.CompatibilityAuthSync

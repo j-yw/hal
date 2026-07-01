@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"strings"
+
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/sandbox"
 )
@@ -41,8 +43,8 @@ func sandboxSecurityRequestOrDefault(req sandbox.SecurityEvaluationRequest, runt
 }
 
 func emptySandboxSecurityEvaluationRequest(req sandbox.SecurityEvaluationRequest) bool {
-	return req.RuntimeDriver == "" &&
-		req.RequestedNetworkPolicy == "" &&
+	return strings.TrimSpace(req.RuntimeDriver) == "" &&
+		strings.TrimSpace(req.RequestedNetworkPolicy) == "" &&
 		req.RequestedNetworkPolicyIntent == nil &&
 		req.NetworkPolicyCapability == nil &&
 		len(req.RequestedSecretModes) == 0 &&

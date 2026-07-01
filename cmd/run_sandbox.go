@@ -1116,15 +1116,12 @@ func saveRunSandboxManifest(store sandboxexecution.Store, req runSandboxRequest,
 			manifest.Host = cloneSandboxHost(target.Host)
 		}
 		manifest.Runtime = cloneSandboxRuntime(target.Runtime)
-		manifest.Security = cloneSandboxSecurity(target.Security)
 		manifest.Lease = sandboxLeaseRefFromState(target)
 		if sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
 			manifest.WorkerRouting = sandboxWorkerRoutingMetadataFromState(target)
 		}
 	}
-	if manifest.Security == nil {
-		manifest.Security = cloneSandboxSecurity(sandbox.EvaluateSandboxSecurity(req.Security))
-	}
+	manifest.Security = sandboxManifestSecurity(req.Security, target)
 	preserveSandboxManifestArtifacts(store, manifest)
 	return store.SaveManifest(manifest)
 }
@@ -1272,6 +1269,41 @@ func cloneSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.SandboxSec
 		clone.Secrets = &secrets
 	}
 	return clone
+}
+
+func sandboxManifestSecurity(req sandbox.SecurityEvaluationRequest, target *sandbox.SandboxState) *sandbox.SandboxSecurity {
+	if target != nil && selectedWorkerRootlessSandboxState(target) {
+		return cloneSandboxSecurity(target.Security)
+	}
+	if !emptySandboxSecurityEvaluationRequest(req) {
+		security := sandbox.EvaluateSandboxSecurity(req)
+		mergeSandboxManifestTargetSecretModes(security, req, target)
+		return cloneSandboxSecurity(security)
+	}
+	if target != nil {
+		return cloneSandboxSecurity(target.Security)
+	}
+	return nil
+}
+
+func mergeSandboxManifestTargetSecretModes(security *sandbox.SandboxSecurity, req sandbox.SecurityEvaluationRequest, target *sandbox.SandboxState) {
+	if security == nil || target == nil || target.Security == nil || target.Security.Secrets == nil {
+		return
+	}
+	if len(req.ActiveSecretModes) > 0 || !legacySandboxSecretRequest(req.RequestedSecretModes) {
+		return
+	}
+	if len(target.Security.Secrets.ActiveModes) == 0 {
+		return
+	}
+	if security.Secrets == nil {
+		security.Secrets = &sandbox.SandboxSecretSecurity{}
+	}
+	security.Secrets.ActiveModes = append([]string(nil), target.Security.Secrets.ActiveModes...)
+}
+
+func legacySandboxSecretRequest(modes []string) bool {
+	return len(modes) == 1 && strings.TrimSpace(modes[0]) == sandbox.SandboxSecretModeHTTPProxy
 }
 
 func defaultRunSandboxExecutionID(now time.Time) string {

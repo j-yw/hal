@@ -940,6 +940,70 @@ func TestRunAttachesCompatibilitySecurityMetadataBeforeTargetReady(t *testing.T)
 	}
 }
 
+func TestRunTreatsTypedNetworkPolicyIntentAsSecurityEvaluationRequest(t *testing.T) {
+	existing := &sandbox.SandboxSecurity{
+		Network: &sandbox.SandboxNetworkSecurity{
+			PolicyRequested: sandbox.SandboxNetworkPolicyDenyByDefault,
+			PolicyEnforced:  sandbox.SandboxNetworkPolicyBestEffort,
+			EnforcementMode: sandbox.SandboxNetworkEnforcementModeNone,
+		},
+		Secrets: &sandbox.SandboxSecretSecurity{
+			RequestedModes: []string{sandbox.SandboxSecretModeHTTPProxy},
+		},
+	}
+	target := &sandbox.SandboxState{
+		Name:     "typed-intent-dev",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		Runtime:  &sandbox.SandboxRuntimeState{Driver: sandbox.SandboxRuntimeDriverSSHMachine},
+		Security: existing,
+	}
+	intent := &sandbox.SandboxNetworkPolicyIntent{Preset: sandbox.SandboxNetworkPolicyPresetDisabled}
+	var readySecurity *sandbox.SandboxSecurity
+
+	_, err := Run(context.Background(), CommandRequest{
+		SandboxName: "typed-intent-dev",
+		Security: sandbox.SecurityEvaluationRequest{
+			RequestedNetworkPolicyIntent: intent,
+		},
+	}, Dependencies{
+		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		OnTargetReady: func(_ context.Context, ready *sandbox.SandboxState) error {
+			readySecurity = ready.Security
+			return nil
+		},
+		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return fakeRuntimeDriver{}, nil
+		},
+		RunCommand: func(context.Context, RunContext, CommandRequest) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+	if target.Security == existing {
+		t.Fatal("typed security intent should replace stale target security metadata")
+	}
+	if readySecurity == nil || readySecurity.Network == nil || readySecurity.Network.PolicyResult == nil {
+		t.Fatalf("ready security = %#v, want additive policy result", readySecurity)
+	}
+	if readySecurity.Network.PolicyRequested != sandbox.SandboxNetworkPolicyBestEffort {
+		t.Fatalf("policyRequested = %q, want disabled compatibility label", readySecurity.Network.PolicyRequested)
+	}
+	if readySecurity.Network.PolicyResult.Requested.Preset != sandbox.SandboxNetworkPolicyPresetDisabled {
+		t.Fatalf("policyResult.requested.preset = %q, want disabled", readySecurity.Network.PolicyResult.Requested.Preset)
+	}
+	if readySecurity.Network.PolicyResult.Effective.Preset != sandbox.SandboxNetworkPolicyPresetDisabled {
+		t.Fatalf("policyResult.effective.preset = %q, want disabled", readySecurity.Network.PolicyResult.Effective.Preset)
+	}
+	if readySecurity.Secrets != nil {
+		t.Fatalf("secrets = %#v, want stale target secret metadata omitted", readySecurity.Secrets)
+	}
+}
+
 func TestRunPreservesExistingSecurityMetadataWithoutEvaluationRequest(t *testing.T) {
 	existing := &sandbox.SandboxSecurity{
 		Network: &sandbox.SandboxNetworkSecurity{

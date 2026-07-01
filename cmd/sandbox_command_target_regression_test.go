@@ -3421,17 +3421,12 @@ func workerRootlessHostWithEndpoint(endpoint string) *sandbox.SandboxHost {
 }
 
 func workerRootlessHostSecurity() *sandbox.SandboxSecurity {
-	return &sandbox.SandboxSecurity{
-		Network: &sandbox.SandboxNetworkSecurity{
-			PolicyRequested: sandbox.SandboxNetworkPolicyDenyByDefault,
-			PolicyEnforced:  sandbox.SandboxNetworkPolicyBestEffort,
-			EnforcementMode: sandbox.SandboxNetworkEnforcementModeNone,
-		},
-		Secrets: &sandbox.SandboxSecretSecurity{
-			RequestedModes: []string{sandbox.SandboxSecretModeSSHAgent},
-			ActiveModes:    []string{sandbox.SandboxSecretModeEnv},
-		},
-	}
+	return sandbox.EvaluateSandboxSecurity(sandbox.SecurityEvaluationRequest{
+		RuntimeDriver:          sandbox.SandboxRuntimeDriverRootlessPodman,
+		RequestedNetworkPolicy: sandbox.SandboxNetworkPolicyDenyByDefault,
+		RequestedSecretModes:   []string{sandbox.SandboxSecretModeSSHAgent},
+		ActiveSecretModes:      []string{sandbox.SandboxSecretModeEnv},
+	})
 }
 
 func workerRootlessCachedSandbox(name string) *sandbox.SandboxState {
@@ -3722,6 +3717,18 @@ func requireWorkerRootlessSandboxSecurity(t *testing.T, security *sandbox.Sandbo
 		network.EnforcementMode == sandbox.SandboxNetworkEnforcementModeProxyFirewall {
 		t.Fatalf("network enforcementMode overclaims worker enforcement: %#v", network)
 	}
+	if network.PolicyResult == nil {
+		t.Fatal("network policyResult = nil, want additive worker policy result")
+	}
+	if network.PolicyResult.Requested.Preset != sandbox.SandboxNetworkPolicyPresetDenyByDefault {
+		t.Fatalf("network policyResult.requested.preset = %q, want %q", network.PolicyResult.Requested.Preset, sandbox.SandboxNetworkPolicyPresetDenyByDefault)
+	}
+	if network.PolicyResult.Effective.Preset != sandbox.SandboxNetworkPolicyPresetLegacyDefault {
+		t.Fatalf("network policyResult.effective.preset = %q, want %q", network.PolicyResult.Effective.Preset, sandbox.SandboxNetworkPolicyPresetLegacyDefault)
+	}
+	if network.PolicyResult.EnforcementMode != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("network policyResult.enforcementMode = %q, want %q", network.PolicyResult.EnforcementMode, sandbox.SandboxNetworkEnforcementModeNone)
+	}
 	if !reflect.DeepEqual(security.Secrets.RequestedModes, []string{sandbox.SandboxSecretModeSSHAgent}) {
 		t.Fatalf("requested secret modes = %#v, want durable worker request", security.Secrets.RequestedModes)
 	}
@@ -3791,6 +3798,18 @@ func requireWorkerRootlessFactorySecurity(t *testing.T, security *factory.Sandbo
 	}
 	if security.Network.PolicyEnforced == sandbox.SandboxNetworkPolicyDenyByDefault {
 		t.Fatalf("factory network security overclaims deny-by-default enforcement: %#v", security.Network)
+	}
+	if security.Network.PolicyResult == nil {
+		t.Fatal("factory network policyResult = nil, want additive worker policy result")
+	}
+	if security.Network.PolicyResult.Requested.Preset != sandbox.SandboxNetworkPolicyPresetDenyByDefault {
+		t.Fatalf("factory policyResult.requested.preset = %q, want %q", security.Network.PolicyResult.Requested.Preset, sandbox.SandboxNetworkPolicyPresetDenyByDefault)
+	}
+	if security.Network.PolicyResult.Effective.Preset != sandbox.SandboxNetworkPolicyPresetLegacyDefault {
+		t.Fatalf("factory policyResult.effective.preset = %q, want %q", security.Network.PolicyResult.Effective.Preset, sandbox.SandboxNetworkPolicyPresetLegacyDefault)
+	}
+	if security.Network.PolicyResult.EnforcementMode != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("factory policyResult.enforcementMode = %q, want %q", security.Network.PolicyResult.EnforcementMode, sandbox.SandboxNetworkEnforcementModeNone)
 	}
 	if !reflect.DeepEqual(security.Secrets.RequestedModes, []string{sandbox.SandboxSecretModeSSHAgent}) {
 		t.Fatalf("factory requested secret modes = %#v, want durable worker request", security.Secrets.RequestedModes)
