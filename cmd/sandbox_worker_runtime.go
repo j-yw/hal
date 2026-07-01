@@ -68,6 +68,19 @@ func sandboxWorkerRuntimeDriverFromTarget(req sandboxWorkerRuntimeRequest, facto
 	return driver, nil
 }
 
+func sandboxWorkerRuntimeRouteSelected(sandboxHostID, sandboxRuntime string, target sandboxruntime.Target, selectedTarget *sandbox.SandboxState) bool {
+	if selectedTarget == nil || selectedTarget.Host == nil {
+		return false
+	}
+	if strings.TrimSpace(sandboxHostID) == "" && strings.TrimSpace(sandboxRuntime) == "" {
+		return false
+	}
+	if strings.TrimSpace(selectedTarget.Host.Kind) != sandbox.SandboxHostKindWorker {
+		return false
+	}
+	return strings.TrimSpace(target.Runtime.Driver) == sandboxruntime.DriverRootlessPodman
+}
+
 func validateSandboxWorkerHostEndpoint(host *sandbox.SandboxHost, driverID string) (string, error) {
 	if host == nil {
 		return "", sandboxWorkerEndpointInvalidError(nil, driverID)

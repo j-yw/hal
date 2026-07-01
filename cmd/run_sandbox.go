@@ -708,16 +708,7 @@ func (deps runSandboxDeps) resolveRunSandboxRuntimeDriver(req runSandboxRequest,
 }
 
 func runSandboxWorkerRuntimeRouteSelected(req runSandboxRequest, target sandboxruntime.Target, selectedTarget *sandbox.SandboxState) bool {
-	if selectedTarget == nil || selectedTarget.Host == nil {
-		return false
-	}
-	if strings.TrimSpace(req.SandboxHostID) == "" && strings.TrimSpace(req.SandboxRuntime) == "" {
-		return false
-	}
-	if strings.TrimSpace(selectedTarget.Host.Kind) != sandbox.SandboxHostKindWorker {
-		return false
-	}
-	return strings.TrimSpace(target.Runtime.Driver) == sandboxruntime.DriverRootlessPodman
+	return sandboxWorkerRuntimeRouteSelected(req.SandboxHostID, req.SandboxRuntime, target, selectedTarget)
 }
 
 func collectRunSandboxCoreStateArtifacts(ctx context.Context, store sandboxexecution.Store, req runSandboxRequest, result runSandboxExecutionResult) error {

@@ -96,12 +96,15 @@ type autoSandboxDeps struct {
 	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
 	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
+	resolveWorkerRuntime   func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error)
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
 	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
 	engineAuthFiles        func() []factorySandboxAuthFile
 	bootstrap              func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
 	materializeWorkspace   func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error)
 	execute                func(context.Context, autoSandboxRequest, io.Writer, io.Writer, autoSandboxExecutionHooks) (autoSandboxExecutionResult, error)
+
+	customRuntimeResolver bool
 }
 
 var defaultAutoSandboxDeps = autoSandboxDeps{
@@ -313,6 +316,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 
 func normalizeAutoSandboxDeps(deps autoSandboxDeps) autoSandboxDeps {
 	customResolveDefault := deps.resolveDefault != nil
+	customRuntimeResolver := deps.resolveRuntimeDriver != nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultAutoSandboxDeps.defaultStore
 	}
@@ -352,6 +356,7 @@ func normalizeAutoSandboxDeps(deps autoSandboxDeps) autoSandboxDeps {
 			return sandboxRuntimeDriverFromTarget(target, deps.resolveProvider)
 		}
 	}
+	deps.customRuntimeResolver = customRuntimeResolver
 	if deps.runProviderExecWithEnv == nil {
 		deps.runProviderExecWithEnv = defaultAutoSandboxDeps.runProviderExecWithEnv
 	}
@@ -435,6 +440,7 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 	var remoteStarted bool
 	var preparedCommand []string
 	var runtimeDriver sandboxruntime.Driver
+	var selectedTarget *sandbox.SandboxState
 	var provider sandbox.Provider
 	var stdoutSummary strings.Builder
 	var stderrSummary strings.Builder
@@ -463,10 +469,17 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 		SetupStderr: prepOut,
 	}, sandboxexec.Dependencies{
 		ResolveTarget: func(ctx context.Context, _ sandboxexec.TargetRequest) (*sandbox.SandboxState, error) {
-			return deps.resolveAutoSandboxTarget(ctx, req, prepOut)
+			target, err := deps.resolveAutoSandboxTarget(ctx, req, prepOut)
+			if err == nil {
+				selectedTarget = target
+			}
+			return target, err
 		},
 		ResolveDriver: func(_ context.Context, target sandboxruntime.Target) (sandboxruntime.Driver, error) {
-			driver, err := deps.resolveRuntimeDriver(target)
+			driver, handled, err := deps.resolveAutoSandboxRuntimeDriver(req, target, selectedTarget)
+			if !handled {
+				driver, err = deps.resolveRuntimeDriver(target)
+			}
 			if err == nil {
 				runtimeDriver = driver
 			}
@@ -546,6 +559,30 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 		StdoutSummary:   stdoutSummary.String(),
 		StderrSummary:   stderrSummary.String(),
 	}, err
+}
+
+func (deps autoSandboxDeps) resolveAutoSandboxRuntimeDriver(req autoSandboxRequest, target sandboxruntime.Target, selectedTarget *sandbox.SandboxState) (sandboxruntime.Driver, bool, error) {
+	if !autoSandboxWorkerRuntimeRouteSelected(req, target, selectedTarget) {
+		return nil, false, nil
+	}
+	resolver := deps.resolveWorkerRuntime
+	if resolver == nil && !deps.customRuntimeResolver {
+		resolver = func(req sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+			return sandboxWorkerRuntimeDriverFromTarget(req, sandboxWorkerRuntimeDriverFactories{})
+		}
+	}
+	if resolver == nil {
+		return nil, false, nil
+	}
+	driver, err := resolver(sandboxWorkerRuntimeRequest{
+		Target: target,
+		Host:   selectedTarget.Host,
+	})
+	return driver, true, err
+}
+
+func autoSandboxWorkerRuntimeRouteSelected(req autoSandboxRequest, target sandboxruntime.Target, selectedTarget *sandbox.SandboxState) bool {
+	return sandboxWorkerRuntimeRouteSelected(req.SandboxHostID, req.SandboxRuntime, target, selectedTarget)
 }
 
 func collectAutoSandboxCoreStateArtifacts(ctx context.Context, store sandboxexecution.Store, req autoSandboxRequest, result autoSandboxExecutionResult) error {
