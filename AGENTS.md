@@ -49,6 +49,7 @@
 - Factory secret redaction should use `RunSecretRedactor` for run records, artifact metadata/payloads, timeline events, log chunks, and error strings; prefer `Store` `WithRedactor` helpers when persisting durable factory state that may include resolved run secret output.
 - Phase 22 secret broker import-boundary coverage lives in `internal/factory/secret_broker_import_boundary_test.go`; keep `TestSecretBrokerImportBoundaries` focused on production `secret*.go`, allowing standard library plus root `internal/sandbox`/`internal/verify` metadata dependencies only and forbidding command/factory orchestration, runtime adapter, provider, worker, Docker/Podman, network-client, HTTP proxy, SSH-agent, tmpfs writer, and cloud SDK dependencies.
 - Local sandbox policy/secret config parsing belongs in `internal/compound/config.go` under `sandbox.networkPolicy` and `sandbox.secrets`; validate with the pure `internal/sandbox` policy validator and factory delivery-mode validator, preserve nil optional fields when absent, and keep `SaveSandboxConfig` round-tripping these metadata-only fields without provider/network calls.
+- Existing sandbox security surfaces should project optional effective network policy metadata additively: deep-copy `SandboxNetworkSecurity.policyResult` through command/target clones, expose it as `networkPolicyResult` on runtime summaries and `policyResult` on factory security metadata/timeline maps, and keep secret metadata limited to requested/active delivery mode identifiers.
 
 ## Patterns from phase21-workspace-syncout-apply (2026-07-01)
 

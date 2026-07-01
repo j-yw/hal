@@ -312,9 +312,10 @@ type SandboxSecurityMetadata struct {
 
 // SandboxNetworkSecurityMetadata captures redaction-safe sandbox network policy details.
 type SandboxNetworkSecurityMetadata struct {
-	PolicyRequested string `json:"policyRequested,omitempty"`
-	PolicyEnforced  string `json:"policyEnforced,omitempty"`
-	EnforcementMode string `json:"enforcementMode,omitempty"`
+	PolicyRequested string                              `json:"policyRequested,omitempty"`
+	PolicyEnforced  string                              `json:"policyEnforced,omitempty"`
+	EnforcementMode string                              `json:"enforcementMode,omitempty"`
+	PolicyResult    *sandbox.SandboxNetworkPolicyResult `json:"policyResult,omitempty"`
 }
 
 // SandboxSecretSecurityMetadata captures redaction-safe sandbox secret delivery details.

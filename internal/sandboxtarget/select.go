@@ -503,6 +503,7 @@ func cloneSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.SandboxSec
 	cloned := *security
 	if security.Network != nil {
 		network := *security.Network
+		network.PolicyResult = sandbox.CloneSandboxNetworkPolicyResultPtr(security.Network.PolicyResult)
 		cloned.Network = &network
 	}
 	if security.Secrets != nil {

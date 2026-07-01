@@ -2185,6 +2185,7 @@ func factorySandboxSecurityMetadata(security *sandbox.SandboxSecurity) *factory.
 			PolicyRequested: security.Network.PolicyRequested,
 			PolicyEnforced:  security.Network.PolicyEnforced,
 			EnforcementMode: security.Network.EnforcementMode,
+			PolicyResult:    sandbox.CloneSandboxNetworkPolicyResultPtr(security.Network.PolicyResult),
 		}
 	}
 	if security.Secrets != nil {
@@ -2263,6 +2264,7 @@ func factorySandboxSecurityTimelineMetadata(security *factory.SandboxSecurityMet
 			"policyRequested": security.Network.PolicyRequested,
 			"policyEnforced":  security.Network.PolicyEnforced,
 			"enforcementMode": security.Network.EnforcementMode,
+			"policyResult":    sandbox.CloneSandboxNetworkPolicyResultPtr(security.Network.PolicyResult),
 		}
 	}
 	if security.Secrets != nil {

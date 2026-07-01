@@ -180,6 +180,7 @@ When `sandbox.security.network` is present:
 | `policyRequested` | string | no | Requested network policy summary |
 | `policyEnforced` | string | no | Enforced network policy summary |
 | `enforcementMode` | string | no | Network enforcement mode, such as `none`, `best_effort`, `proxy`, `firewall`, `runtime`, or `proxy_firewall` |
+| `policyResult` | object | no | Additive effective policy metadata with requested/effective intent, enforcement capability, selected enforcement mode, and redaction-safe warnings |
 
 When `sandbox.security.secrets` is present:
 
