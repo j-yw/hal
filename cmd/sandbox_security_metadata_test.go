@@ -49,6 +49,64 @@ func TestSandboxSecurityMetadataIncludesEffectivePolicyResult(t *testing.T) {
 	}
 }
 
+func TestSandboxManifestsUseRequestedSecurityIntentWhenTargetHasLegacySecurity(t *testing.T) {
+	startedAt := time.Date(2026, 7, 2, 3, 2, 0, 0, time.UTC)
+	securityReq := sandbox.SecurityEvaluationRequest{
+		RuntimeDriver: sandbox.SandboxRuntimeDriverSSHMachine,
+		RequestedNetworkPolicyIntent: &sandbox.SandboxNetworkPolicyIntent{
+			Preset: sandbox.SandboxNetworkPolicyPresetDisabled,
+		},
+		RequestedSecretModes:  []string{sandbox.SandboxSecretModeSSHAgent},
+		ActiveSecretModes:     []string{sandbox.SandboxSecretModeSSHAgent},
+		CompatibilityAuthSync: true,
+	}
+	legacyTarget := &sandbox.SandboxState{
+		Name:     "legacy-security-target",
+		Provider: "fake",
+		Status:   sandbox.StatusRunning,
+		Runtime:  &sandbox.SandboxRuntimeState{Driver: sandbox.SandboxRuntimeDriverSSHMachine},
+		Security: &sandbox.SandboxSecurity{
+			Network: &sandbox.SandboxNetworkSecurity{
+				PolicyRequested: sandbox.SandboxNetworkPolicyDenyByDefault,
+				PolicyEnforced:  sandbox.SandboxNetworkPolicyBestEffort,
+				EnforcementMode: sandbox.SandboxNetworkEnforcementModeNone,
+			},
+			Secrets: &sandbox.SandboxSecretSecurity{
+				RequestedModes: []string{sandbox.SandboxSecretModeHTTPProxy},
+				ActiveModes:    []string{sandbox.SandboxSecretModeHTTPProxy},
+			},
+		},
+	}
+
+	runStore := sandboxexecution.NewStore(t.TempDir())
+	if err := saveRunSandboxManifest(runStore, runSandboxRequest{
+		ExecutionID: "run-typed-security-manifest",
+		ProjectDir:  "/repo",
+		Security:    securityReq,
+	}, sandboxexecution.StatusSucceeded, startedAt, nil, legacyTarget); err != nil {
+		t.Fatalf("saveRunSandboxManifest() error: %v", err)
+	}
+	runManifest, err := runStore.LoadManifest("run-typed-security-manifest")
+	if err != nil {
+		t.Fatalf("LoadManifest(run) error: %v", err)
+	}
+	requireDisabledSandboxSecurityIntent(t, runManifest.Security)
+
+	autoStore := sandboxexecution.NewStore(t.TempDir())
+	if err := saveAutoSandboxManifest(autoStore, autoSandboxRequest{
+		ExecutionID: "auto-typed-security-manifest",
+		ProjectDir:  "/repo",
+		Security:    securityReq,
+	}, sandboxexecution.StatusSucceeded, startedAt, nil, legacyTarget); err != nil {
+		t.Fatalf("saveAutoSandboxManifest() error: %v", err)
+	}
+	autoManifest, err := autoStore.LoadManifest("auto-typed-security-manifest")
+	if err != nil {
+		t.Fatalf("LoadManifest(auto) error: %v", err)
+	}
+	requireDisabledSandboxSecurityIntent(t, autoManifest.Security)
+}
+
 func TestFactorySandboxSecurityPolicyEventIncludesEffectivePolicyResult(t *testing.T) {
 	store := factory.NewStore(t.TempDir())
 	now := time.Date(2026, 7, 2, 3, 1, 0, 0, time.UTC)
@@ -157,6 +215,32 @@ func requireEffectiveSandboxPolicyResult(t *testing.T, result *sandbox.SandboxNe
 	}
 	if result.Warnings[0].Code != sandbox.SandboxNetworkPolicyWarningUnsupportedEnforcement {
 		t.Fatalf("warning code = %q, want %q", result.Warnings[0].Code, sandbox.SandboxNetworkPolicyWarningUnsupportedEnforcement)
+	}
+}
+
+func requireDisabledSandboxSecurityIntent(t *testing.T, security *sandbox.SandboxSecurity) {
+	t.Helper()
+	if security == nil || security.Network == nil || security.Network.PolicyResult == nil {
+		t.Fatalf("security = %#v, want additive policy result", security)
+	}
+	if security.Network.PolicyRequested != sandbox.SandboxNetworkPolicyBestEffort {
+		t.Fatalf("policyRequested = %q, want best_effort disabled compatibility label", security.Network.PolicyRequested)
+	}
+	if security.Network.PolicyResult.Requested.Preset != sandbox.SandboxNetworkPolicyPresetDisabled {
+		t.Fatalf("policyResult.requested.preset = %q, want disabled", security.Network.PolicyResult.Requested.Preset)
+	}
+	if security.Network.PolicyResult.Effective.Preset != sandbox.SandboxNetworkPolicyPresetDisabled {
+		t.Fatalf("policyResult.effective.preset = %q, want disabled", security.Network.PolicyResult.Effective.Preset)
+	}
+	if security.Secrets == nil {
+		t.Fatal("secret security metadata = nil")
+	}
+	if !reflect.DeepEqual(security.Secrets.RequestedModes, []string{sandbox.SandboxSecretModeSSHAgent}) {
+		t.Fatalf("requestedModes = %#v, want ssh_agent", security.Secrets.RequestedModes)
+	}
+	wantActiveModes := []string{sandbox.SandboxSecretModeSSHAgent, sandbox.SandboxSecretModeLegacyAuthSync}
+	if !reflect.DeepEqual(security.Secrets.ActiveModes, wantActiveModes) {
+		t.Fatalf("activeModes = %#v, want %#v", security.Secrets.ActiveModes, wantActiveModes)
 	}
 }
 

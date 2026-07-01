@@ -701,8 +701,9 @@ func newSandboxRuntimeSecuritySummaryFromWorkerPolicy(policy sandboxworker.Secur
 		}
 	}
 	return SandboxRuntimeSecuritySummary{
-		Requested: sandboxRuntimeSecurityControlsFromWorker(policy.Requested),
-		Enforced:  sandboxRuntimeSecurityControlsFromWorker(policy.Enforced),
+		Requested:           sandboxRuntimeSecurityControlsFromWorker(policy.Requested),
+		Enforced:            sandboxRuntimeSecurityControlsFromWorker(policy.Enforced),
+		NetworkPolicyResult: sandboxNetworkPolicyResultFromWorkerPolicy(policy),
 	}
 }
 

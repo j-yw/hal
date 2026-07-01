@@ -51,6 +51,12 @@ var forbiddenSandboxNetworkPolicyImports = []sandboxNetworkPolicyForbiddenImport
 		},
 	},
 	{
+		name: "proxy/firewall implementation package",
+		match: func(importPath string) bool {
+			return strings.Contains(importPath, "proxy") || strings.Contains(importPath, "firewall")
+		},
+	},
+	{
 		name: "Docker or Podman client package",
 		match: func(importPath string) bool {
 			return strings.HasPrefix(importPath, "github.com/docker/docker") ||
@@ -114,6 +120,8 @@ func TestNetworkPolicyForbiddenImportListCoversRequiredBoundaries(t *testing.T) 
 		{name: "concrete rootless Podman runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"},
 		{name: "standard network client", importPath: "net/http"},
 		{name: "external network client", importPath: "google.golang.org/grpc"},
+		{name: "proxy package", importPath: "github.com/jywlabs/hal/internal/sandboxproxy"},
+		{name: "firewall package", importPath: "github.com/jywlabs/hal/internal/sandbox/firewall"},
 		{name: "Docker client", importPath: "github.com/docker/docker/client"},
 		{name: "Podman bindings", importPath: "github.com/containers/podman/v5/pkg/bindings"},
 		{name: "DigitalOcean SDK", importPath: "github.com/digitalocean/godo"},
@@ -166,6 +174,16 @@ func TestNetworkPolicyImportBoundaryMessageIncludesPackageAndForbiddenImport(t *
 	}
 }
 
+func TestNetworkPolicyImportBoundaryCoversSecurityIntentMapper(t *testing.T) {
+	paths := sandboxNetworkPolicyBoundaryFiles(t)
+	for _, path := range paths {
+		if path == "security_intent.go" {
+			return
+		}
+	}
+	t.Fatalf("import-boundary guard files = %#v, want security_intent.go covered", paths)
+}
+
 func sandboxNetworkPolicyBoundaryFiles(t *testing.T) []string {
 	t.Helper()
 
@@ -174,6 +192,11 @@ func sandboxNetworkPolicyBoundaryFiles(t *testing.T) []string {
 		t.Fatalf("Glob(network_policy*.go) error: %v", err)
 	}
 	paths = append(paths, "security.go")
+	securityIntentPaths, err := filepath.Glob("security_intent*.go")
+	if err != nil {
+		t.Fatalf("Glob(security_intent*.go) error: %v", err)
+	}
+	paths = append(paths, securityIntentPaths...)
 	seen := make(map[string]bool, len(paths))
 	out := make([]string, 0, len(paths))
 	for _, path := range paths {

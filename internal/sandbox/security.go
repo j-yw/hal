@@ -24,7 +24,7 @@ func EvaluateSandboxSecurity(req SecurityEvaluationRequest) *SandboxSecurity {
 // SSH-machine path. It records the requested posture without claiming strict
 // network enforcement that the compatibility runtime does not provide.
 func EvaluateSSHMachineCompatibilitySecurity(req SecurityEvaluationRequest) *SandboxSecurity {
-	requestedNetworkPolicy := normalizeSandboxNetworkPolicy(req.RequestedNetworkPolicy)
+	requestedNetworkPolicy := compatibilityRequestedNetworkPolicyLabel(req)
 	networkPolicyResult := evaluateCompatibilityNetworkPolicy(req, requestedNetworkPolicy)
 	activeSecretModes := normalizeSandboxSecretModes(req.ActiveSecretModes)
 	if req.CompatibilityAuthSync {
@@ -56,6 +56,13 @@ func evaluateCompatibilityNetworkPolicy(req SecurityEvaluationRequest, requested
 		capability = CloneSandboxNetworkPolicyEnforcementCapability(*req.NetworkPolicyCapability)
 	}
 	return EvaluateSandboxNetworkPolicy(requested, capability)
+}
+
+func compatibilityRequestedNetworkPolicyLabel(req SecurityEvaluationRequest) string {
+	if req.RequestedNetworkPolicyIntent != nil {
+		return compatibilityNetworkPolicyLabelForIntent(*req.RequestedNetworkPolicyIntent)
+	}
+	return normalizeSandboxNetworkPolicy(req.RequestedNetworkPolicy)
 }
 
 func compatibilityNetworkPolicyIntent(req SecurityEvaluationRequest, requestedNetworkPolicy string) SandboxNetworkPolicyIntent {

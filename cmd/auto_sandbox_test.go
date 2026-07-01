@@ -659,6 +659,165 @@ func TestRunAutoSandboxWithWriterRejectsResumeUntilStateRewriteExists(t *testing
 	}
 }
 
+func TestRunAutoSandboxSecurityRequestKeepsLegacyDefaultsWithoutConfig(t *testing.T) {
+	startedAt := time.Date(2026, 7, 2, 4, 30, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+
+	var captured autoSandboxRequest
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
+		Base:        "main",
+		BaseChanged: true,
+	}, &out, &errOut, autoSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "auto-security-defaults"
+		},
+		now: runSandboxTestClock(startedAt, finishedAt),
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return autoSandboxTestPlan(projectDir), nil
+		},
+		execute: func(_ context.Context, req autoSandboxRequest, _ io.Writer, _ io.Writer, _ autoSandboxExecutionHooks) (autoSandboxExecutionResult, error) {
+			captured = req
+			running, err := store.LoadManifest("auto-security-defaults")
+			if err != nil {
+				t.Fatalf("LoadManifest() before execute: %v", err)
+			}
+			requireRunSandboxLegacySecurityManifest(t, running.Security)
+			return autoSandboxExecutionResult{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runAutoSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+
+	if captured.Security.RuntimeDriver != sandbox.SandboxRuntimeDriverSSHMachine {
+		t.Fatalf("RuntimeDriver = %q, want %q", captured.Security.RuntimeDriver, sandbox.SandboxRuntimeDriverSSHMachine)
+	}
+	if captured.Security.RequestedNetworkPolicy != sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("RequestedNetworkPolicy = %q, want %q", captured.Security.RequestedNetworkPolicy, sandbox.SandboxNetworkPolicyDenyByDefault)
+	}
+	if captured.Security.RequestedNetworkPolicyIntent != nil {
+		t.Fatalf("RequestedNetworkPolicyIntent = %#v, want nil without config", captured.Security.RequestedNetworkPolicyIntent)
+	}
+	if !reflect.DeepEqual(captured.Security.RequestedSecretModes, []string{sandbox.SandboxSecretModeHTTPProxy}) {
+		t.Fatalf("RequestedSecretModes = %#v, want legacy http_proxy", captured.Security.RequestedSecretModes)
+	}
+	if len(captured.Security.ActiveSecretModes) != 0 {
+		t.Fatalf("ActiveSecretModes = %#v, want no configured active modes", captured.Security.ActiveSecretModes)
+	}
+	if !captured.Security.CompatibilityAuthSync {
+		t.Fatal("CompatibilityAuthSync = false, want legacy auth sync preserved")
+	}
+
+	manifest, err := store.LoadManifest("auto-security-defaults")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	requireRunSandboxLegacySecurityManifest(t, manifest.Security)
+}
+
+func TestRunAutoSandboxSecurityRequestLoadsLocalSandboxConfig(t *testing.T) {
+	startedAt := time.Date(2026, 7, 2, 4, 32, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	writeRunSandboxConfig(t, projectDir, `sandbox:
+  env:
+    RAW_SECRET: "ghp_auto_config_secret_should_not_persist"
+    SOCKET_PATH: "unix:///tmp/private/auto-worker.sock"
+  networkPolicy:
+    preset: allow_listed
+    rules:
+      - kind: domain
+        value: api.example.com
+        decision: allow
+      - kind: metadata_endpoint
+        value: "169.254.169.254"
+        decision: deny
+  secrets:
+    requestedModes:
+      - env
+      - file_tmpfs
+    activeModes:
+      - env
+`)
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+
+	var captured autoSandboxRequest
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
+		Base:        "main",
+		BaseChanged: true,
+	}, &out, &errOut, autoSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "auto-security-config"
+		},
+		now: runSandboxTestClock(startedAt, finishedAt),
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return autoSandboxTestPlan(projectDir), nil
+		},
+		execute: func(_ context.Context, req autoSandboxRequest, _ io.Writer, _ io.Writer, _ autoSandboxExecutionHooks) (autoSandboxExecutionResult, error) {
+			captured = req
+			running, err := store.LoadManifest("auto-security-config")
+			if err != nil {
+				t.Fatalf("LoadManifest() before execute: %v", err)
+			}
+			requireRunSandboxConfiguredSecurityManifest(t, running.Security)
+			return autoSandboxExecutionResult{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runAutoSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+
+	if captured.Security.RequestedNetworkPolicy != sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("RequestedNetworkPolicy = %q, want restrictive compatibility label", captured.Security.RequestedNetworkPolicy)
+	}
+	if captured.Security.RequestedNetworkPolicyIntent == nil {
+		t.Fatal("RequestedNetworkPolicyIntent = nil, want config policy")
+	}
+	if captured.Security.RequestedNetworkPolicyIntent.Preset != sandbox.SandboxNetworkPolicyPresetAllowListed {
+		t.Fatalf("RequestedNetworkPolicyIntent.Preset = %q, want allow_listed", captured.Security.RequestedNetworkPolicyIntent.Preset)
+	}
+	wantRules := []sandbox.SandboxNetworkPolicyRule{
+		{Kind: sandbox.SandboxNetworkPolicyRuleKindDomain, Value: "api.example.com", Decision: sandbox.SandboxNetworkPolicyDecisionAllow},
+		{Kind: sandbox.SandboxNetworkPolicyRuleKindMetadataEndpoint, Value: "169.254.169.254", Decision: sandbox.SandboxNetworkPolicyDecisionDeny},
+	}
+	if !reflect.DeepEqual(captured.Security.RequestedNetworkPolicyIntent.Rules, wantRules) {
+		t.Fatalf("RequestedNetworkPolicyIntent.Rules = %#v, want %#v", captured.Security.RequestedNetworkPolicyIntent.Rules, wantRules)
+	}
+	if !reflect.DeepEqual(captured.Security.RequestedSecretModes, []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeFileTmpfs}) {
+		t.Fatalf("RequestedSecretModes = %#v, want configured modes", captured.Security.RequestedSecretModes)
+	}
+	if !reflect.DeepEqual(captured.Security.ActiveSecretModes, []string{sandbox.SandboxSecretModeEnv}) {
+		t.Fatalf("ActiveSecretModes = %#v, want configured active modes", captured.Security.ActiveSecretModes)
+	}
+	if !captured.Security.CompatibilityAuthSync {
+		t.Fatal("CompatibilityAuthSync = false, want compatibility auth sync preserved")
+	}
+
+	manifest, err := store.LoadManifest("auto-security-config")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	requireRunSandboxConfiguredSecurityManifest(t, manifest.Security)
+	encoded := mustMarshalSandboxSecurityMetadata(t, manifest.Security)
+	for _, forbidden := range []string{"ghp_auto_config_secret_should_not_persist", "unix://", "/tmp/private/auto-worker.sock", "https://token@", "/Users/private"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("manifest security metadata leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 func TestRunAutoSandboxWithWriterSuccessfulExecutorUpdatesManifest(t *testing.T) {
 	startedAt := time.Date(2026, 6, 30, 12, 30, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(5 * time.Second)

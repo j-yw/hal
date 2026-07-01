@@ -743,6 +743,146 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 	}
 }
 
+func TestRunFactoryRunWithDepsPropagatesConfiguredSandboxSecurityIntent(t *testing.T) {
+	dir := t.TempDir()
+	writeRunSandboxConfig(t, dir, factorySandboxConfiguredSecurityConfigYAML())
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 7, 2, 9, 0, 0, 0, time.UTC)
+	secretValue := "ghp_factory_security_secret_123"
+	stopErr := errors.New("stop after factory sandbox security capture")
+
+	var captured factorySandboxExecutorRequest
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
+		Sandbox:      true,
+		Secrets: []factory.RunSecretInput{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+		}},
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-factory-security-config", nil },
+		now:          func() time.Time { return now },
+		workingDir:   func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory-security-config", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		lookupEnv: func(name string) (string, bool) {
+			if name != "GITHUB_TOKEN" {
+				t.Fatalf("lookup env name = %q, want GITHUB_TOKEN", name)
+			}
+			return secretValue, true
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			policy := factory.DefaultFactoryPolicy()
+			return &policy, nil
+		},
+		loadEngine: func(string) (string, error) {
+			return factory.PolicyEngineCodex, nil
+		},
+		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
+			t.Fatal("local pipeline should not be called with --sandbox")
+			return nil
+		},
+		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+			captured = req
+			return stopErr
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), stopErr.Error()) {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want sandbox capture stop", err)
+	}
+
+	requireFactoryConfiguredSandboxSecurityRequest(t, captured.Security)
+	if len(captured.ResolvedSecrets) != 1 || captured.ResolvedSecrets[0].Value != secretValue {
+		t.Fatalf("resolved secrets = %#v, want live secret on executor request only", captured.ResolvedSecrets)
+	}
+
+	record, loadErr := store.LoadRun("run-factory-security-config")
+	if loadErr != nil {
+		t.Fatalf("LoadRun() error: %v", loadErr)
+	}
+	events, loadErr := store.LoadEvents("run-factory-security-config")
+	if loadErr != nil {
+		t.Fatalf("LoadEvents() error: %v", loadErr)
+	}
+	payload, marshalErr := json.Marshal(struct {
+		Run    *factory.RunRecord    `json:"run"`
+		Events []factory.EventRecord `json:"events"`
+		Error  string                `json:"error"`
+	}{
+		Run:    record,
+		Events: events,
+		Error:  err.Error(),
+	})
+	if marshalErr != nil {
+		t.Fatalf("Marshal(factory durable surfaces) error: %v", marshalErr)
+	}
+	if strings.Contains(string(payload), secretValue) {
+		t.Fatalf("factory durable surfaces leaked raw resolved secret: %s", payload)
+	}
+}
+
+func factorySandboxConfiguredSecurityConfigYAML() string {
+	return `
+sandbox:
+  networkPolicy:
+    preset: allow_listed
+    rules:
+      - kind: domain
+        value: api.example.com
+        decision: allow
+      - kind: metadata_endpoint
+        value: 169.254.169.254
+        decision: deny
+  secrets:
+    requestedModes:
+      - env
+      - file_tmpfs
+    activeModes:
+      - env
+`
+}
+
+func requireFactoryConfiguredSandboxSecurityRequest(t *testing.T, security sandbox.SecurityEvaluationRequest) {
+	t.Helper()
+	if security.RuntimeDriver != sandbox.SandboxRuntimeDriverSSHMachine {
+		t.Fatalf("RuntimeDriver = %q, want %q", security.RuntimeDriver, sandbox.SandboxRuntimeDriverSSHMachine)
+	}
+	if security.RequestedNetworkPolicy != sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("RequestedNetworkPolicy = %q, want deny_by_default compatibility label", security.RequestedNetworkPolicy)
+	}
+	if security.RequestedNetworkPolicyIntent == nil {
+		t.Fatal("RequestedNetworkPolicyIntent = nil, want configured policy")
+	}
+	if security.RequestedNetworkPolicyIntent.Preset != sandbox.SandboxNetworkPolicyPresetAllowListed {
+		t.Fatalf("RequestedNetworkPolicyIntent.Preset = %q, want allow_listed", security.RequestedNetworkPolicyIntent.Preset)
+	}
+	wantRules := []sandbox.SandboxNetworkPolicyRule{
+		{Kind: sandbox.SandboxNetworkPolicyRuleKindDomain, Value: "api.example.com", Decision: sandbox.SandboxNetworkPolicyDecisionAllow},
+		{Kind: sandbox.SandboxNetworkPolicyRuleKindMetadataEndpoint, Value: "169.254.169.254", Decision: sandbox.SandboxNetworkPolicyDecisionDeny},
+	}
+	if !reflect.DeepEqual(security.RequestedNetworkPolicyIntent.Rules, wantRules) {
+		t.Fatalf("RequestedNetworkPolicyIntent.Rules = %#v, want %#v", security.RequestedNetworkPolicyIntent.Rules, wantRules)
+	}
+	if !reflect.DeepEqual(security.RequestedSecretModes, []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeFileTmpfs}) {
+		t.Fatalf("RequestedSecretModes = %#v, want configured modes", security.RequestedSecretModes)
+	}
+	if !reflect.DeepEqual(security.ActiveSecretModes, []string{sandbox.SandboxSecretModeEnv}) {
+		t.Fatalf("ActiveSecretModes = %#v, want configured active mode", security.ActiveSecretModes)
+	}
+	if !security.CompatibilityAuthSync {
+		t.Fatal("CompatibilityAuthSync = false, want legacy auth sync preserved")
+	}
+}
+
 func TestRunFactoryRunWithDepsResolvesRequiredEnvSecretsBeforePipeline(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	secretValue := "ghp_factory_secret_value_123"

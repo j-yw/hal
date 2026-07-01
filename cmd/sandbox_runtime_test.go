@@ -470,9 +470,11 @@ func TestSandboxRuntimeListLiveWorkerHostRefreshesCapabilitiesWithoutPersisting(
 	if rootless.Security.Requested.IsolationLevel == nil || *rootless.Security.Requested.IsolationLevel != sandboxworker.IsolationLevelContainer {
 		t.Fatalf("rootless security = %#v, want runtime isolation metadata", rootless.Security)
 	}
+	requireWorkerBestEffortPolicyResult(t, rootless.Security.NetworkPolicyResult)
 	if resp.Security.Enforced.IsolationLevel == nil || *resp.Security.Enforced.IsolationLevel != sandboxworker.IsolationLevelHost {
 		t.Fatalf("host security = %#v, want worker capability security", resp.Security)
 	}
+	requireWorkerBestEffortPolicyResult(t, resp.Security.NetworkPolicyResult)
 	for _, leaked := range []string{"/tmp/private", "worker-a.sock", "worker-reported.sock"} {
 		if strings.Contains(output, leaked) {
 			t.Fatalf("JSON output leaked endpoint detail %q: %q", leaked, output)

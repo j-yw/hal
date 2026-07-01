@@ -49,6 +49,7 @@ type factorySandboxExecutorRequest struct {
 	SandboxName         string
 	SandboxHostID       string
 	SandboxRuntime      string
+	Security            sandbox.SecurityEvaluationRequest
 	RunRecord           factory.RunRecord
 	ResolvedSecrets     []factory.ResolvedRunSecret
 	RemoteAuto          factoryRunAutoRequest
@@ -311,12 +312,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		Command:     factorySandboxRemoteCommandArgs(record, req.RemoteAuto),
 		WorkDir:     factorySandboxRemoteWorkspaceDir(record),
 		Env:         factorySandboxResolvedSecretEnv(req.ResolvedSecrets),
-		Security: sandbox.SecurityEvaluationRequest{
-			RuntimeDriver:          sandbox.SandboxRuntimeDriverSSHMachine,
-			RequestedNetworkPolicy: sandbox.SandboxNetworkPolicyDenyByDefault,
-			RequestedSecretModes:   []string{sandbox.SandboxSecretModeHTTPProxy},
-			CompatibilityAuthSync:  true,
-		},
+		Security:    sandboxSecurityRequestOrDefault(req.Security, req.SandboxRuntime),
 		Stdout:      req.RemoteOutput,
 		Stderr:      req.RemoteOutput,
 		SetupStdout: req.RemoteOutput,

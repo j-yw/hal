@@ -235,6 +235,15 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 		return err
 	}
 	req.ProjectDir = filepath.Clean(absProjectDir)
+	securityReq, err := loadConfiguredSandboxSecurityRequest(req.ProjectDir, req.SandboxRuntime)
+	if err != nil {
+		err = fmt.Errorf("load sandbox security config: %w", err)
+		if opts.JSON {
+			return outputAutoSandboxJSONError(out, args, opts, err.Error())
+		}
+		return err
+	}
+	req.Security = securityReq
 	req.RemoteCommand = buildAutoSandboxRemoteCommand(req)
 	if err := saveAutoSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, nil); err != nil {
 		if opts.JSON {
@@ -890,15 +899,12 @@ func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxReques
 			manifest.Host = cloneSandboxHost(target.Host)
 		}
 		manifest.Runtime = cloneSandboxRuntime(target.Runtime)
-		manifest.Security = cloneSandboxSecurity(target.Security)
 		manifest.Lease = sandboxLeaseRefFromState(target)
 		if sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
 			manifest.WorkerRouting = sandboxWorkerRoutingMetadataFromState(target)
 		}
 	}
-	if manifest.Security == nil {
-		manifest.Security = cloneSandboxSecurity(sandbox.EvaluateSandboxSecurity(req.Security))
-	}
+	manifest.Security = sandboxManifestSecurity(req.Security, target)
 	preserveSandboxManifestArtifacts(store, manifest)
 	return store.SaveManifest(manifest)
 }

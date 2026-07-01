@@ -84,6 +84,72 @@ func TestEffectiveNetworkPolicyCompatibility(t *testing.T) {
 	}
 }
 
+func TestEvaluateSSHMachineCompatibilitySecurityUsesRequestedNetworkPolicyIntent(t *testing.T) {
+	requested := SandboxNetworkPolicyIntent{
+		Preset: SandboxNetworkPolicyPresetDisabled,
+	}
+	got := EvaluateSSHMachineCompatibilitySecurity(SecurityEvaluationRequest{
+		RuntimeDriver:                SandboxRuntimeDriverSSHMachine,
+		RequestedNetworkPolicyIntent: &requested,
+	})
+	if got == nil || got.Network == nil || got.Network.PolicyResult == nil {
+		t.Fatalf("security network = %#v, want populated policy result", got)
+	}
+	if got.Network.PolicyRequested != SandboxNetworkPolicyBestEffort {
+		t.Fatalf("policyRequested = %q, want %q derived from disabled intent", got.Network.PolicyRequested, SandboxNetworkPolicyBestEffort)
+	}
+	if got.Network.PolicyEnforced != SandboxNetworkPolicyBestEffort {
+		t.Fatalf("policyEnforced = %q, want %q", got.Network.PolicyEnforced, SandboxNetworkPolicyBestEffort)
+	}
+	if got.Network.EnforcementMode != SandboxNetworkEnforcementModeNone {
+		t.Fatalf("enforcementMode = %q, want %q", got.Network.EnforcementMode, SandboxNetworkEnforcementModeNone)
+	}
+	if got.Network.PolicyResult.Requested.Preset != SandboxNetworkPolicyPresetDisabled {
+		t.Fatalf("policyResult.requested.preset = %q, want %q", got.Network.PolicyResult.Requested.Preset, SandboxNetworkPolicyPresetDisabled)
+	}
+	if got.Network.PolicyResult.Effective.Preset != SandboxNetworkPolicyPresetDisabled {
+		t.Fatalf("policyResult.effective.preset = %q, want %q", got.Network.PolicyResult.Effective.Preset, SandboxNetworkPolicyPresetDisabled)
+	}
+}
+
+func TestEvaluateSSHMachineCompatibilitySecurityDowngradesUnsupportedStrictIntent(t *testing.T) {
+	requested := SandboxNetworkPolicyIntent{
+		Preset: SandboxNetworkPolicyPresetAllowListed,
+		Rules: []SandboxNetworkPolicyRule{
+			{
+				Kind:     SandboxNetworkPolicyRuleKindDomain,
+				Value:    "https://user:super-secret-token@example.com/path?api_key=secret-query",
+				Decision: SandboxNetworkPolicyDecisionAllow,
+			},
+		},
+	}
+	got := EvaluateSSHMachineCompatibilitySecurity(SecurityEvaluationRequest{
+		RuntimeDriver:                SandboxRuntimeDriverSSHMachine,
+		RequestedNetworkPolicyIntent: &requested,
+		NetworkPolicyCapability: &SandboxNetworkPolicyEnforcementCapability{
+			Supported: true,
+			Modes:     []string{SandboxNetworkEnforcementModeBestEffort},
+		},
+	})
+	if got == nil || got.Network == nil || got.Network.PolicyResult == nil {
+		t.Fatalf("security network = %#v, want populated policy result", got)
+	}
+	if got.Network.PolicyRequested != SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("policyRequested = %q, want %q for strict intent", got.Network.PolicyRequested, SandboxNetworkPolicyDenyByDefault)
+	}
+	if got.Network.PolicyEnforced == SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("policyEnforced = %q, unsupported strict intent must not claim deny-by-default enforcement", got.Network.PolicyEnforced)
+	}
+	if got.Network.EnforcementMode != SandboxNetworkEnforcementModeNone {
+		t.Fatalf("enforcementMode = %q, want %q after downgrade", got.Network.EnforcementMode, SandboxNetworkEnforcementModeNone)
+	}
+	if got.Network.PolicyResult.Effective.Preset != SandboxNetworkPolicyPresetLegacyDefault {
+		t.Fatalf("effective preset = %q, want %q", got.Network.PolicyResult.Effective.Preset, SandboxNetworkPolicyPresetLegacyDefault)
+	}
+	assertNetworkPolicyWarning(t, got.Network.PolicyResult.Warnings, SandboxNetworkPolicyWarningUnsupportedEnforcement, SandboxNetworkPolicyWarningReasonModeUnavailable, string(SandboxNetworkPolicyPresetAllowListed))
+	assertSandboxNetworkPolicyWarningsSafe(t, got.Network.PolicyResult.Warnings)
+}
+
 func TestEvaluateSSHMachineCompatibilitySecurityDefaultsNetworkHonestly(t *testing.T) {
 	got := EvaluateSSHMachineCompatibilitySecurity(SecurityEvaluationRequest{
 		RuntimeDriver:         SandboxRuntimeDriverSSHMachine,
@@ -139,6 +205,15 @@ func TestEvaluateSSHMachineCompatibilitySecuritySeparatesRequestedAndActiveSecre
 	wantActive := []string{SandboxSecretModeEnv, SandboxSecretModeLegacyAuthSync}
 	if !reflect.DeepEqual(got.Secrets.ActiveModes, wantActive) {
 		t.Fatalf("active modes = %#v, want %#v", got.Secrets.ActiveModes, wantActive)
+	}
+	payload, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal security metadata: %v", err)
+	}
+	for _, unsafe := range []string{"sk-test-secret-value", "ghp_fake_secret_value"} {
+		if strings.Contains(string(payload), unsafe) {
+			t.Fatalf("security metadata leaked raw secret %q: %s", unsafe, payload)
+		}
 	}
 }
 

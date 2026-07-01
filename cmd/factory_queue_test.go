@@ -768,12 +768,15 @@ func TestRunFactoryQueueWorkWithDepsExecutesOneEntryAndRecordsRunState(t *testin
 
 func TestRunFactoryQueueWorkWithDepsExecutesSandboxEntryThroughSandbox(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	projectDir := t.TempDir()
+	writeRunSandboxConfig(t, projectDir, factorySandboxConfiguredSecurityConfigYAML())
 	createdAt := time.Date(2026, 6, 21, 18, 15, 0, 0, time.UTC)
 	claimedAt := createdAt.Add(5 * time.Minute)
 	claim := factory.QueueClaim{WorkerID: "worker-sandbox", PID: 5357, Hostname: "factory-host"}
 	record := testFactoryRunRecord("run-queue-sandbox", createdAt, createdAt)
 	record.Status = factory.RunStatusPending
 	record.CurrentStep = factory.QueueStatusQueued
+	record.RepoPath = projectDir
 	record.Source = factory.SourceMetadata{Kind: factory.SourceKindMarkdown, Path: ".hal/prd-queue-sandbox.md"}
 	record.BaseBranch = "main"
 	if err := store.SaveRun(&record); err != nil {
@@ -856,6 +859,7 @@ func TestRunFactoryQueueWorkWithDepsExecutesSandboxEntryThroughSandbox(t *testin
 	if gotSandboxReq.RemoteAuto.Engine != factory.PolicyEngineCodex {
 		t.Fatalf("sandbox engine = %q, want %q", gotSandboxReq.RemoteAuto.Engine, factory.PolicyEngineCodex)
 	}
+	requireFactoryConfiguredSandboxSecurityRequest(t, gotSandboxReq.Security)
 }
 
 func TestRunFactoryQueueWorkWithDepsRejectsLegacySandboxEntryWithoutBaseBranch(t *testing.T) {

@@ -815,6 +815,112 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 	}
 }
 
+func TestRunFactorySandboxExecutorWithDepsUsesConfiguredSecurityRequest(t *testing.T) {
+	now := time.Date(2026, 7, 2, 9, 15, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".hal"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(.hal) error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".hal", "prd.md"), []byte("# PRD\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(prd.md) error: %v", err)
+	}
+	target := &sandbox.SandboxState{
+		Name:     "factory-security",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	networkPolicy := sandbox.SandboxNetworkPolicyIntent{
+		Preset: sandbox.SandboxNetworkPolicyPresetAllowListed,
+		Rules: []sandbox.SandboxNetworkPolicyRule{{
+			Kind:     sandbox.SandboxNetworkPolicyRuleKindDomain,
+			Value:    "api.example.com",
+			Decision: sandbox.SandboxNetworkPolicyDecisionAllow,
+		}},
+	}
+	securityReq := sandbox.MapSandboxSecurityIntent(sandbox.SandboxSecurityIntent{
+		RuntimeDriver: sandbox.SandboxRuntimeDriverSSHMachine,
+		NetworkPolicy: &networkPolicy,
+		Secrets: &sandbox.SandboxSecretDeliveryIntent{
+			RequestedModes: []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeFileTmpfs},
+			ActiveModes:    []string{sandbox.SandboxSecretModeEnv},
+		},
+		CompatibilityAuthSync: true,
+	})
+	secretValue := "ghp_executor_security_secret_123"
+
+	var savedRecords []factory.RunRecord
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		ProjectDir:      projectDir,
+		SandboxName:     "factory-security",
+		Security:        securityReq,
+		ResolvedSecrets: []factory.ResolvedRunSecret{{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true, Value: secretValue}},
+		RunRecord: factory.RunRecord{
+			RunID:        "run-executor-security-config",
+			Status:       factory.RunStatusRunning,
+			ExecutorMode: factory.ExecutorModeLocal,
+			RepoRemote:   "git@github.com:example/repo.git",
+		},
+		RemoteAuto:   factoryRunAutoRequest{Args: []string{".hal/prd.md"}},
+		RemoteOutput: io.Discard,
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		now:          func() time.Time { return now },
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != "factory-security" {
+				t.Fatalf("load sandbox name = %q, want factory-security", name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return fakeFactorySandboxRuntimeDriver{execFn: func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+				return &sandboxruntime.ExecResult{}, nil
+			}}, nil
+		},
+		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+			return nil
+		},
+		saveRun: func(store factory.Store, record *factory.RunRecord) error {
+			savedRecords = append(savedRecords, *record)
+			return store.SaveRun(record)
+		},
+		appendEvent: func(store factory.Store, event *factory.EventRecord) error {
+			return store.AppendEvent(event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if len(savedRecords) < 2 || savedRecords[1].Sandbox == nil {
+		t.Fatalf("saved records = %#v, want sandbox metadata", savedRecords)
+	}
+	requireFactorySandboxConfiguredSecurityMetadata(t, savedRecords[1].Sandbox.Security)
+
+	events, err := store.LoadEvents("run-executor-security-config")
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	requireFactorySandboxConfiguredSecurityPolicyEvent(t, events[0])
+
+	payload, err := json.Marshal(struct {
+		Records []factory.RunRecord   `json:"records"`
+		Events  []factory.EventRecord `json:"events"`
+	}{
+		Records: savedRecords,
+		Events:  events,
+	})
+	if err != nil {
+		t.Fatalf("Marshal(factory sandbox security surfaces) error: %v", err)
+	}
+	if strings.Contains(string(payload), secretValue) {
+		t.Fatalf("factory sandbox security surfaces leaked raw secret: %s", payload)
+	}
+}
+
 func TestRunFactorySandboxExecutorRuntimeBoundaryRegressionMatchesSSHMachineBehavior(t *testing.T) {
 	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
 	store := factory.NewStore(t.TempDir())
@@ -3884,6 +3990,106 @@ func requireFactorySandboxSecurityPolicyEvent(t *testing.T, event factory.EventR
 	}
 	if !reflect.DeepEqual(secrets["activeModes"], wantActiveModes) {
 		t.Fatalf("policy event active modes = %#v, want %#v", secrets["activeModes"], wantActiveModes)
+	}
+}
+
+func requireFactorySandboxConfiguredSecurityMetadata(t *testing.T, security *factory.SandboxSecurityMetadata) {
+	t.Helper()
+	if security == nil {
+		t.Fatal("sandbox security metadata = nil")
+	}
+	if security.Network == nil || security.Network.PolicyResult == nil {
+		t.Fatalf("sandbox network security metadata = %#v, want policy result", security.Network)
+	}
+	if security.Network.PolicyRequested != sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("policyRequested = %q, want deny_by_default compatibility label", security.Network.PolicyRequested)
+	}
+	if security.Network.PolicyEnforced != sandbox.SandboxNetworkPolicyBestEffort {
+		t.Fatalf("policyEnforced = %q, want best_effort", security.Network.PolicyEnforced)
+	}
+	if security.Network.EnforcementMode != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("enforcementMode = %q, want none", security.Network.EnforcementMode)
+	}
+	if security.Network.PolicyResult.Requested.Preset != sandbox.SandboxNetworkPolicyPresetAllowListed {
+		t.Fatalf("policyResult.requested.preset = %q, want allow_listed", security.Network.PolicyResult.Requested.Preset)
+	}
+	if security.Network.PolicyResult.Effective.Preset != sandbox.SandboxNetworkPolicyPresetLegacyDefault {
+		t.Fatalf("policyResult.effective.preset = %q, want legacy_default", security.Network.PolicyResult.Effective.Preset)
+	}
+	if len(security.Network.PolicyResult.Warnings) == 0 {
+		t.Fatal("policyResult.warnings = empty, want unsupported enforcement warning")
+	}
+	if security.Secrets == nil {
+		t.Fatal("sandbox secret security metadata = nil")
+	}
+	if !reflect.DeepEqual(security.Secrets.RequestedModes, []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeFileTmpfs}) {
+		t.Fatalf("requested secret modes = %#v, want configured modes", security.Secrets.RequestedModes)
+	}
+	if !reflect.DeepEqual(security.Secrets.ActiveModes, []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeLegacyAuthSync}) {
+		t.Fatalf("active secret modes = %#v, want env plus legacy auth sync", security.Secrets.ActiveModes)
+	}
+}
+
+func requireFactorySandboxConfiguredSecurityPolicyEvent(t *testing.T, event factory.EventRecord) {
+	t.Helper()
+	if event.EventType != factory.EventTypePolicyDecision {
+		t.Fatalf("policy event type = %q, want %q: %#v", event.EventType, factory.EventTypePolicyDecision, event)
+	}
+	security, ok := event.Metadata["security"].(map[string]any)
+	if !ok {
+		t.Fatalf("policy event security metadata = %#v", event.Metadata["security"])
+	}
+	network, ok := security["network"].(map[string]any)
+	if !ok {
+		t.Fatalf("policy event network metadata = %#v", security["network"])
+	}
+	requireFactorySandboxPolicyEventRequestedPreset(t, network["policyResult"], sandbox.SandboxNetworkPolicyPresetAllowListed)
+	secrets, ok := security["secrets"].(map[string]any)
+	if !ok {
+		t.Fatalf("policy event secret metadata = %#v", security["secrets"])
+	}
+	if !reflect.DeepEqual(factorySandboxPolicyEventStringSlice(secrets["requestedModes"]), []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeFileTmpfs}) {
+		t.Fatalf("policy event requested modes = %#v", secrets["requestedModes"])
+	}
+	if !reflect.DeepEqual(factorySandboxPolicyEventStringSlice(secrets["activeModes"]), []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeLegacyAuthSync}) {
+		t.Fatalf("policy event active modes = %#v", secrets["activeModes"])
+	}
+}
+
+func requireFactorySandboxPolicyEventRequestedPreset(t *testing.T, value any, want sandbox.SandboxNetworkPolicyPreset) {
+	t.Helper()
+	switch result := value.(type) {
+	case *sandbox.SandboxNetworkPolicyResult:
+		if result == nil || result.Requested.Preset != want {
+			t.Fatalf("policy event requested preset = %#v, want %q", result, want)
+		}
+	case map[string]any:
+		requested, ok := result["requested"].(map[string]any)
+		if !ok {
+			t.Fatalf("policy event requested result = %#v", result["requested"])
+		}
+		if requested["preset"] != string(want) {
+			t.Fatalf("policy event requested preset = %#v, want %q", requested["preset"], want)
+		}
+	default:
+		t.Fatalf("policy event result metadata = %#v", value)
+	}
+}
+
+func factorySandboxPolicyEventStringSlice(value any) []string {
+	switch modes := value.(type) {
+	case []string:
+		return append([]string(nil), modes...)
+	case []any:
+		out := make([]string, 0, len(modes))
+		for _, mode := range modes {
+			if text, ok := mode.(string); ok {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }
 

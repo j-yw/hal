@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -119,12 +120,73 @@ func TestSandboxHostFromWorkerMetadataMapsLiveStatusAndCapabilities(t *testing.T
 	if host.Security.Network.EnforcementMode != sandboxworker.NetworkEnforcementNone {
 		t.Fatalf("network enforcement mode = %q, want worker enforced mode only", host.Security.Network.EnforcementMode)
 	}
+	requireWorkerBestEffortPolicyResult(t, host.Security.Network.PolicyResult)
 	if strings.Join(host.Security.Secrets.RequestedModes, ",") != sandboxworker.CredentialModeSSHAgent {
 		t.Fatalf("requested secret modes = %#v, want worker requested modes", host.Security.Secrets.RequestedModes)
 	}
 	wantActiveModes := []string{sandboxworker.CredentialModeEnv, sandboxworker.CredentialModeLegacyAuthSync}
 	if strings.Join(host.Security.Secrets.ActiveModes, ",") != strings.Join(wantActiveModes, ",") {
 		t.Fatalf("active secret modes = %#v, want worker enforced modes", host.Security.Secrets.ActiveModes)
+	}
+
+	encoded, err := json.Marshal(host.Security)
+	if err != nil {
+		t.Fatalf("json.Marshal(security) error: %v", err)
+	}
+	for _, leaked := range []string{"/tmp/requested-sandboxworker.sock", "worker-reported.sock", "supersecret", "token=", "://"} {
+		if strings.Contains(string(encoded), leaked) {
+			t.Fatalf("security metadata leaked %q: %s", leaked, encoded)
+		}
+	}
+}
+
+func TestSandboxHostFromWorkerMetadataMapsRuntimeCapabilityWithoutDefaultDenyOverclaim(t *testing.T) {
+	policy := sandboxworker.SecurityPolicy{
+		Requested: sandboxworker.SecurityControls{
+			NetworkPolicy:      sandboxworker.NetworkPolicyDenyByDefault,
+			NetworkEnforcement: sandboxworker.NetworkEnforcementRuntime,
+		},
+		Enforced: sandboxworker.SecurityControls{
+			NetworkPolicy:      sandboxworker.NetworkPolicyBestEffort,
+			NetworkEnforcement: sandboxworker.NetworkEnforcementRuntime,
+		},
+	}
+	host, err := sandboxHostFromWorkerMetadata(sandboxHostWorkerMetadataRequest{
+		WorkerID:   "worker-001",
+		SocketPath: "/tmp/hal-sandboxworker.sock",
+		Status: &sandboxworker.Status{
+			WorkerID: "worker-001",
+			HostKind: sandboxworker.HostKindLocal,
+			Health: sandboxworker.WorkerHealth{
+				Status: sandboxworker.HealthStatusHealthy,
+			},
+			Security: policy,
+		},
+	})
+	if err != nil {
+		t.Fatalf("sandboxHostFromWorkerMetadata() error = %v", err)
+	}
+	if host.Security == nil || host.Security.Network == nil {
+		t.Fatalf("security = %#v, want network security", host.Security)
+	}
+	result := host.Security.Network.PolicyResult
+	if result == nil {
+		t.Fatal("policyResult = nil, want worker network policy result")
+	}
+	if result.Requested.Preset != sandbox.SandboxNetworkPolicyPresetDenyByDefault {
+		t.Fatalf("requested preset = %q, want %q", result.Requested.Preset, sandbox.SandboxNetworkPolicyPresetDenyByDefault)
+	}
+	if result.Capability.Supported != true || strings.Join(result.Capability.Modes, ",") != sandbox.SandboxNetworkEnforcementModeRuntime {
+		t.Fatalf("capability = %#v, want runtime mode support", result.Capability)
+	}
+	if result.Capability.SupportsDefaultDenyPosture {
+		t.Fatalf("capability overclaimed default-deny support: %#v", result.Capability)
+	}
+	if result.Effective.Preset != sandbox.SandboxNetworkPolicyPresetLegacyDefault {
+		t.Fatalf("effective preset = %q, want %q", result.Effective.Preset, sandbox.SandboxNetworkPolicyPresetLegacyDefault)
+	}
+	if result.EnforcementMode != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("enforcement mode = %q, want %q", result.EnforcementMode, sandbox.SandboxNetworkEnforcementModeNone)
 	}
 }
 
@@ -214,5 +276,34 @@ func TestSandboxHostFromWorkerMetadataRejectsNonLocalWorkerSocketWithoutLeakingE
 				}
 			}
 		})
+	}
+}
+
+func requireWorkerBestEffortPolicyResult(t *testing.T, result *sandbox.SandboxNetworkPolicyResult) {
+	t.Helper()
+	if result == nil {
+		t.Fatal("policyResult = nil, want worker network policy result")
+	}
+	if result.Requested.Preset != sandbox.SandboxNetworkPolicyPresetDenyByDefault {
+		t.Fatalf("requested preset = %q, want %q", result.Requested.Preset, sandbox.SandboxNetworkPolicyPresetDenyByDefault)
+	}
+	if result.Effective.Preset != sandbox.SandboxNetworkPolicyPresetLegacyDefault {
+		t.Fatalf("effective preset = %q, want %q", result.Effective.Preset, sandbox.SandboxNetworkPolicyPresetLegacyDefault)
+	}
+	if result.EnforcementMode != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("enforcement mode = %q, want %q", result.EnforcementMode, sandbox.SandboxNetworkEnforcementModeNone)
+	}
+	if result.Capability.SupportsDefaultDenyPosture {
+		t.Fatalf("capability overclaimed default-deny support: %#v", result.Capability)
+	}
+	if len(result.Warnings) == 0 {
+		t.Fatal("warnings = empty, want downgrade warning")
+	}
+	for _, warning := range result.Warnings {
+		for _, leaked := range []string{"/tmp/", ".sock", "://", "supersecret", "token="} {
+			if strings.Contains(warning.Policy, leaked) || strings.Contains(warning.Message, leaked) {
+				t.Fatalf("warning leaked %q: %#v", leaked, warning)
+			}
+		}
 	}
 }
