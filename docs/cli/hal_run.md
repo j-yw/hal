@@ -30,6 +30,8 @@ Examples:
   hal run --sandbox                # Run inside a sandbox
   hal run --sandbox 3              # Run 3 iterations inside a sandbox
   hal run --sandbox my-box         # Run inside a named sandbox
+  hal run --sandbox --sandbox-sync-out # Collect sync-out handoff metadata without host apply
+  hal run --sandbox --sandbox-apply    # Explicit opt-in to automatic eligible host apply
   hal run --sandbox --sandbox-host worker-1 --sandbox-runtime rootless_podman # Explicit worker/rootless target selection
 
 
@@ -48,6 +50,8 @@ hal run [iterations] [flags]
   hal run --sandbox
   hal run --sandbox 3
   hal run --sandbox my-box
+  hal run --sandbox --sandbox-sync-out
+  hal run --sandbox --sandbox-apply
   hal run --sandbox --sandbox-host worker-1 --sandbox-runtime rootless_podman
   hal run --engine codex --base develop
 ```
@@ -64,9 +68,11 @@ hal run [iterations] [flags]
       --retries int              Max retries per iteration on failure (default 3)
       --retry-delay duration     Base retry delay (default 5s)
       --sandbox                  Run inside a sandbox
+      --sandbox-apply            explicit opt-in: dry-run and apply eligible sandbox sync-out artifacts to the host worktree
       --sandbox-host string      Cached sandbox host ID for target selection
       --sandbox-name string      Sandbox name for --sandbox execution
       --sandbox-runtime string   Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)
+      --sandbox-sync-out         Collect sandbox sync-out metadata without applying to the host worktree
   -s, --story string             Run specific story by ID (e.g., US-001)
       --timeout duration         Per-engine session timeout override (e.g., 30m, 1h)
 ```

@@ -17,6 +17,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxexecution"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
+	"github.com/spf13/cobra"
 )
 
 func TestSandboxRunAutoDefaultDoesNotMutateHostWorktree(t *testing.T) {
@@ -26,6 +27,20 @@ func TestSandboxRunAutoDefaultDoesNotMutateHostWorktree(t *testing.T) {
 		}
 		if apply := normalizeAutoSandboxDeps(autoSandboxDeps{}).applySyncOut; apply != nil {
 			t.Fatal("auto sandbox default applySyncOut is non-nil, want disabled until explicit opt-in")
+		}
+	})
+
+	t.Run("injected apply hook still requires explicit sync-out intent", func(t *testing.T) {
+		store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+		fatalApply := func(context.Context, sandboxSyncOutApplyRequest) (sandboxworkspace.SafeApplyResult, error) {
+			t.Fatal("applySyncOut ran without explicit sync-out/apply intent")
+			return sandboxworkspace.SafeApplyResult{}, nil
+		}
+		if err := applyRunSandboxSyncOut(context.Background(), store, runSandboxRequest{}, runSandboxDeps{applySyncOut: fatalApply}); err != nil {
+			t.Fatalf("applyRunSandboxSyncOut() error = %v, want nil", err)
+		}
+		if err := applyAutoSandboxSyncOut(context.Background(), store, autoSandboxRequest{}, autoSandboxDeps{applySyncOut: fatalApply}); err != nil {
+			t.Fatalf("applyAutoSandboxSyncOut() error = %v, want nil", err)
 		}
 	})
 
@@ -202,6 +217,99 @@ func TestSandboxRunAutoDefaultDoesNotMutateHostWorktree(t *testing.T) {
 	})
 }
 
+func TestSandboxSyncOutApplyFlagsAreExplicitAndScoped(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		command *cobra.Command
+	}{
+		{name: "run", command: runCmd},
+		{name: "auto", command: autoCmd},
+	} {
+		t.Run(tc.name+" flags", func(t *testing.T) {
+			syncOutFlag := tc.command.Flags().Lookup(sandboxSyncOutFlagName)
+			if syncOutFlag == nil {
+				t.Fatalf("%s command missing --%s flag", tc.name, sandboxSyncOutFlagName)
+			}
+			if !strings.Contains(syncOutFlag.Usage, "sync-out") || !strings.Contains(syncOutFlag.Usage, "without applying") {
+				t.Fatalf("--%s usage = %q, want sync-out without apply guidance", sandboxSyncOutFlagName, syncOutFlag.Usage)
+			}
+
+			applyFlag := tc.command.Flags().Lookup(sandboxApplyFlagName)
+			if applyFlag == nil {
+				t.Fatalf("%s command missing --%s flag", tc.name, sandboxApplyFlagName)
+			}
+			if !strings.Contains(applyFlag.Usage, "explicit opt-in") || !strings.Contains(applyFlag.Usage, "host worktree") {
+				t.Fatalf("--%s usage = %q, want explicit opt-in host apply guidance", sandboxApplyFlagName, applyFlag.Usage)
+			}
+		})
+	}
+
+	t.Run("factory run remains decoupled", func(t *testing.T) {
+		if flag := factoryRunCmd.Flags().Lookup(sandboxSyncOutFlagName); flag != nil {
+			t.Fatalf("factory run unexpectedly has --%s flag", sandboxSyncOutFlagName)
+		}
+		if flag := factoryRunCmd.Flags().Lookup(sandboxApplyFlagName); flag != nil {
+			t.Fatalf("factory run unexpectedly has --%s flag", sandboxApplyFlagName)
+		}
+	})
+
+	t.Run("flags require sandbox mode", func(t *testing.T) {
+		err := validateSandboxSyncOutFlagsRequireSandbox(false, sandboxSyncOutFlagValues{
+			SyncOutChanged: true,
+			ApplyChanged:   true,
+		})
+		if err == nil {
+			t.Fatal("validateSandboxSyncOutFlagsRequireSandbox() error = nil")
+		}
+		if want := "--sandbox-sync-out and --sandbox-apply require --sandbox"; !strings.Contains(err.Error(), want) {
+			t.Fatalf("validation error = %q, want %q", err.Error(), want)
+		}
+		if err := validateSandboxSyncOutFlagsRequireSandbox(true, sandboxSyncOutFlagValues{ApplyChanged: true}); err != nil {
+			t.Fatalf("validateSandboxSyncOutFlagsRequireSandbox() with sandbox error = %v, want nil", err)
+		}
+	})
+
+	t.Run("run request records local intent without forwarding it", func(t *testing.T) {
+		req, err := parseRunSandboxRequest([]string{"2"}, runSandboxOptions{
+			Base:                  "main",
+			BaseChanged:           true,
+			SandboxName:           "sync-run",
+			SandboxNameChanged:    true,
+			SandboxSyncOut:        true,
+			SandboxSyncOutChanged: true,
+			SandboxApply:          true,
+			SandboxApplyChanged:   true,
+		})
+		if err != nil {
+			t.Fatalf("parseRunSandboxRequest() unexpected error: %v", err)
+		}
+		if !req.SyncOut.Enabled || !req.SyncOut.Apply {
+			t.Fatalf("run sync-out options = %#v, want enabled apply intent", req.SyncOut)
+		}
+		assertSandboxRemoteCommandOmitsSyncOutApplyFlags(t, req.RemoteCommand)
+	})
+
+	t.Run("auto request records local intent without forwarding it", func(t *testing.T) {
+		req, err := parseAutoSandboxRequest([]string{".hal/prd.md"}, autoSandboxOptions{
+			Base:                  "main",
+			BaseChanged:           true,
+			SandboxName:           "sync-auto",
+			SandboxNameChanged:    true,
+			SandboxSyncOut:        true,
+			SandboxSyncOutChanged: true,
+			SandboxApply:          true,
+			SandboxApplyChanged:   true,
+		})
+		if err != nil {
+			t.Fatalf("parseAutoSandboxRequest() unexpected error: %v", err)
+		}
+		if !req.SyncOut.Enabled || !req.SyncOut.Apply {
+			t.Fatalf("auto sync-out options = %#v, want enabled apply intent", req.SyncOut)
+		}
+		assertSandboxRemoteCommandOmitsSyncOutApplyFlags(t, req.RemoteCommand)
+	})
+}
+
 func TestSandboxApplyPersistsRecoveryBeforeHostMutation(t *testing.T) {
 	t.Run("run", func(t *testing.T) {
 		startedAt := time.Date(2026, 7, 2, 1, 0, 0, 0, time.UTC)
@@ -237,10 +345,12 @@ func TestSandboxApplyPersistsRecoveryBeforeHostMutation(t *testing.T) {
 		var errOut bytes.Buffer
 
 		err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
-			Base:        "main",
-			BaseChanged: true,
-			JSON:        true,
-			JSONChanged: true,
+			Base:                "main",
+			BaseChanged:         true,
+			JSON:                true,
+			JSONChanged:         true,
+			SandboxApply:        true,
+			SandboxApplyChanged: true,
 		}, &out, &errOut, runSandboxDeps{
 			defaultStore: func() (sandboxexecution.Store, error) {
 				return store, nil
@@ -311,10 +421,12 @@ func TestSandboxApplyPersistsRecoveryBeforeHostMutation(t *testing.T) {
 		var errOut bytes.Buffer
 
 		err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
-			Base:        "main",
-			BaseChanged: true,
-			JSON:        true,
-			JSONChanged: true,
+			Base:                "main",
+			BaseChanged:         true,
+			JSON:                true,
+			JSONChanged:         true,
+			SandboxApply:        true,
+			SandboxApplyChanged: true,
 		}, &out, &errOut, autoSandboxDeps{
 			defaultStore: func() (sandboxexecution.Store, error) {
 				return store, nil
@@ -361,6 +473,16 @@ func TestSandboxApplyPersistsRecoveryBeforeHostMutation(t *testing.T) {
 		assertSandboxApplyOrder(t, order, wantOrder)
 		assertSandboxFinalManifestRetainsRecovery(t, store, "auto-apply-order")
 	})
+}
+
+func assertSandboxRemoteCommandOmitsSyncOutApplyFlags(t *testing.T, command []string) {
+	t.Helper()
+	joined := strings.Join(command, " ")
+	for _, disallowed := range []string{"--" + sandboxSyncOutFlagName, "--" + sandboxApplyFlagName} {
+		if strings.Contains(joined, disallowed) {
+			t.Fatalf("RemoteCommand %q should not contain sandbox sync-out/apply flag %q", joined, disallowed)
+		}
+	}
 }
 
 func sandboxApplyOrderRuntimeDriver(t *testing.T, expectedWorkspace string, order *[]string, remoteStdout string) fakeRunSandboxRuntimeDriver {
@@ -421,6 +543,9 @@ func assertSandboxSyncOutApplyRequestHasDurableArtifacts(t *testing.T, got sandb
 	}
 	if got.ProjectDir != projectDir {
 		t.Fatalf("apply request ProjectDir = %q, want project dir", got.ProjectDir)
+	}
+	if !got.Options.Enabled || !got.Options.Apply {
+		t.Fatalf("apply request Options = %#v, want explicit apply intent", got.Options)
 	}
 	if got.Store.Root() != store.Root() {
 		t.Fatalf("apply request Store root = %q, want %q", got.Store.Root(), store.Root())

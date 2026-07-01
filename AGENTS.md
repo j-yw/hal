@@ -47,6 +47,7 @@
 - Safe host apply must acquire workspace locks before worktree clean checks, dry-run validation, or mutation; keep the default lock directory outside the Git worktree so lock files do not make `git status` dirty, and convert lock acquisition failures into redaction-safe `workspace_lock_failed` handoff warnings.
 - Non-factory sync-out apply wiring belongs in `cmd` behind the injectable `sandboxSyncOutApplier` boundary; invoke it only after core/recovery/generated/output artifact metadata has been persisted into `sandboxexecution.Store`, and before lease release/final manifest save, so host dry-run or mutation sees durable recovery metadata.
 - Default non-factory `hal run --sandbox` and `hal auto --sandbox` must leave `sandboxSyncOutApplier` nil until an explicit sync-out/apply option is selected; default manifests should keep only existing artifact metadata and omit sync-out/apply fields.
+- Explicit non-factory sync-out/apply CLI flags are `--sandbox-sync-out` and `--sandbox-apply`; keep them scoped to local `hal run --sandbox` and `hal auto --sandbox`, require `--sandbox`, omit them from remote command builders, gate `sandboxSyncOutApplier` on explicit request intent, and do not add them to factory commands in this phase.
 
 ## Patterns from phase20-lease-aware-scheduler (2026-07-01)
 

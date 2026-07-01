@@ -14,19 +14,21 @@ type sandboxSyncOutApplyRequest struct {
 	ExecutionID string
 	Purpose     sandboxexecution.Purpose
 	ProjectDir  string
+	Options     sandboxSyncOutOptions
 	Store       sandboxexecution.Store
 	Manifest    *sandboxexecution.Manifest
 	Summary     sandboxworkspace.SyncOutSummary
 }
 
 func applyRunSandboxSyncOut(ctx context.Context, store sandboxexecution.Store, req runSandboxRequest, deps runSandboxDeps) error {
-	if deps.applySyncOut == nil {
+	if deps.applySyncOut == nil || !req.SyncOut.Enabled {
 		return nil
 	}
 	if _, err := applySandboxSyncOut(ctx, store, sandboxSyncOutApplyRequest{
 		ExecutionID: req.ExecutionID,
 		Purpose:     sandboxexecution.PurposeRun,
 		ProjectDir:  req.ProjectDir,
+		Options:     req.SyncOut,
 	}, deps.applySyncOut); err != nil {
 		return fmt.Errorf("apply run sandbox sync-out: %w", err)
 	}
@@ -34,13 +36,14 @@ func applyRunSandboxSyncOut(ctx context.Context, store sandboxexecution.Store, r
 }
 
 func applyAutoSandboxSyncOut(ctx context.Context, store sandboxexecution.Store, req autoSandboxRequest, deps autoSandboxDeps) error {
-	if deps.applySyncOut == nil {
+	if deps.applySyncOut == nil || !req.SyncOut.Enabled {
 		return nil
 	}
 	if _, err := applySandboxSyncOut(ctx, store, sandboxSyncOutApplyRequest{
 		ExecutionID: req.ExecutionID,
 		Purpose:     sandboxexecution.PurposeAuto,
 		ProjectDir:  req.ProjectDir,
+		Options:     req.SyncOut,
 	}, deps.applySyncOut); err != nil {
 		return fmt.Errorf("apply auto sandbox sync-out: %w", err)
 	}

@@ -159,7 +159,7 @@ func TestBuildRunSandboxRemoteCommandPreservesRunFlags(t *testing.T) {
 	}
 
 	joined := strings.Join(req.RemoteCommand, " ")
-	for _, disallowed := range []string{"--sandbox", "--sandbox-name", "local-box", "--sandbox-host", "worker-1", "--sandbox-runtime", sandboxruntime.DriverRootlessPodman} {
+	for _, disallowed := range []string{"--sandbox", "--sandbox-name", "local-box", "--sandbox-host", "worker-1", "--sandbox-runtime", sandboxruntime.DriverRootlessPodman, "--" + sandboxSyncOutFlagName, "--" + sandboxApplyFlagName} {
 		if strings.Contains(joined, disallowed) {
 			t.Fatalf("RemoteCommand %q should not contain sandbox-only value %q", joined, disallowed)
 		}
@@ -1985,6 +1985,8 @@ func newRunSandboxTestCommand(out, errOut io.Writer) *cobra.Command {
 	cmd.Flags().String("sandbox-name", "", "")
 	cmd.Flags().String("sandbox-host", "", "")
 	cmd.Flags().String("sandbox-runtime", "", "")
+	cmd.Flags().Bool(sandboxSyncOutFlagName, false, "")
+	cmd.Flags().Bool(sandboxApplyFlagName, false, "")
 	return cmd
 }
 

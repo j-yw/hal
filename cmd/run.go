@@ -41,6 +41,8 @@ var (
 	runSandboxNameFlag    string
 	runSandboxHostFlag    string
 	runSandboxRuntimeFlag string
+	runSandboxSyncOutFlag bool
+	runSandboxApplyFlag   bool
 )
 
 // RunResult is the machine-readable output of hal run --json.
@@ -103,6 +105,8 @@ Examples:
   hal run --sandbox                # Run inside a sandbox
   hal run --sandbox 3              # Run 3 iterations inside a sandbox
   hal run --sandbox my-box         # Run inside a named sandbox
+  hal run --sandbox --sandbox-sync-out # Collect sync-out handoff metadata without host apply
+  hal run --sandbox --sandbox-apply    # Explicit opt-in to automatic eligible host apply
   hal run --sandbox --sandbox-host worker-1 --sandbox-runtime rootless_podman # Explicit worker/rootless target selection
 `,
 	Example: `  hal run
@@ -113,6 +117,8 @@ Examples:
   hal run --sandbox
   hal run --sandbox 3
   hal run --sandbox my-box
+  hal run --sandbox --sandbox-sync-out
+  hal run --sandbox --sandbox-apply
   hal run --sandbox --sandbox-host worker-1 --sandbox-runtime rootless_podman
   hal run --engine codex --base develop`,
 	Args: maxArgsValidation(1),
@@ -140,6 +146,8 @@ func init() {
 	runCmd.Flags().StringVar(&runSandboxNameFlag, "sandbox-name", "", "Sandbox name for --sandbox execution")
 	runCmd.Flags().StringVar(&runSandboxHostFlag, sandboxHostFlagName, "", "Cached sandbox host ID for target selection")
 	runCmd.Flags().StringVar(&runSandboxRuntimeFlag, sandboxRuntimeFlagName, "", "Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)")
+	runCmd.Flags().BoolVar(&runSandboxSyncOutFlag, sandboxSyncOutFlagName, false, "Collect sandbox sync-out metadata without applying to the host worktree")
+	runCmd.Flags().BoolVar(&runSandboxApplyFlag, sandboxApplyFlagName, false, "explicit opt-in: dry-run and apply eligible sandbox sync-out artifacts to the host worktree")
 
 	rootCmd.AddCommand(runCmd)
 }
@@ -185,6 +193,10 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	sandboxHostChanged := strings.TrimSpace(runSandboxHostFlag) != ""
 	sandboxRuntime := runSandboxRuntimeFlag
 	sandboxRuntimeChanged := strings.TrimSpace(runSandboxRuntimeFlag) != ""
+	sandboxSyncOut := runSandboxSyncOutFlag
+	sandboxSyncOutChanged := false
+	sandboxApply := runSandboxApplyFlag
+	sandboxApplyChanged := false
 
 	if cmd != nil {
 		flags := cmd.Flags()
@@ -304,6 +316,24 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 			sandboxRuntime = value
 			sandboxRuntimeChanged = flags.Changed(sandboxRuntimeFlagName)
 		}
+
+		if flags.Lookup(sandboxSyncOutFlagName) != nil {
+			value, err := flags.GetBool(sandboxSyncOutFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxSyncOut = value
+			sandboxSyncOutChanged = flags.Changed(sandboxSyncOutFlagName)
+		}
+
+		if flags.Lookup(sandboxApplyFlagName) != nil {
+			value, err := flags.GetBool(sandboxApplyFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxApply = value
+			sandboxApplyChanged = flags.Changed(sandboxApplyFlagName)
+		}
 	}
 
 	targetFlags, err := parseSandboxTargetFlagValues(sandboxTargetFlagValues{
@@ -316,6 +346,12 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 		err = validateSandboxTargetFlagsRequireSandbox(sandboxMode, sandboxTargetFlagValues{
 			HostChanged:    sandboxHostChanged,
 			RuntimeChanged: sandboxRuntimeChanged,
+		})
+	}
+	if err == nil {
+		err = validateSandboxSyncOutFlagsRequireSandbox(sandboxMode, sandboxSyncOutFlagValues{
+			SyncOutChanged: sandboxSyncOutChanged,
+			ApplyChanged:   sandboxApplyChanged,
 		})
 	}
 	if err != nil {
@@ -357,6 +393,10 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 			SandboxHostChanged:    sandboxHostChanged,
 			SandboxRuntime:        sandboxRuntime,
 			SandboxRuntimeChanged: sandboxRuntimeChanged,
+			SandboxSyncOut:        sandboxSyncOut,
+			SandboxSyncOutChanged: sandboxSyncOutChanged,
+			SandboxApply:          sandboxApply,
+			SandboxApplyChanged:   sandboxApplyChanged,
 		}, out, errOut, defaultRunSandboxDeps)
 	}
 

@@ -50,6 +50,10 @@ type autoSandboxOptions struct {
 	SandboxHostChanged    bool
 	SandboxRuntime        string
 	SandboxRuntimeChanged bool
+	SandboxSyncOut        bool
+	SandboxSyncOutChanged bool
+	SandboxApply          bool
+	SandboxApplyChanged   bool
 }
 
 type autoSandboxRequest struct {
@@ -67,6 +71,7 @@ type autoSandboxRequest struct {
 	RemoteCommand  []string
 	Env            map[string]string
 	Flags          autoSandboxOptions
+	SyncOut        sandboxSyncOutOptions
 	Workspace      *sandbox.SandboxWorkspace
 	WorkspacePlan  *sandboxworkspace.Plan
 	Security       sandbox.SecurityEvaluationRequest
@@ -164,6 +169,12 @@ func parseAutoSandboxRequest(args []string, opts autoSandboxOptions) (autoSandbo
 	if err != nil {
 		return autoSandboxRequest{}, err
 	}
+	syncOut := parseSandboxSyncOutFlagValues(sandboxSyncOutFlagValues{
+		SyncOut:        opts.SandboxSyncOut,
+		SyncOutChanged: opts.SandboxSyncOutChanged,
+		Apply:          opts.SandboxApply,
+		ApplyChanged:   opts.SandboxApplyChanged,
+	})
 
 	req := autoSandboxRequest{
 		JSON:           opts.JSON,
@@ -172,6 +183,7 @@ func parseAutoSandboxRequest(args []string, opts autoSandboxOptions) (autoSandbo
 		SandboxHostID:  targetFlags.HostID,
 		SandboxRuntime: targetFlags.RuntimeDriver,
 		Flags:          opts,
+		SyncOut:        syncOut,
 		Security:       runSandboxSecurityRequest(),
 	}
 	req.RemoteCommand = buildAutoSandboxRemoteCommand(req)

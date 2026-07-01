@@ -34,6 +34,8 @@ var (
 	autoSandboxNameFlag    string
 	autoSandboxHostFlag    string
 	autoSandboxRuntimeFlag string
+	autoSandboxSyncOutFlag bool
+	autoSandboxApplyFlag   bool
 )
 
 const (
@@ -205,6 +207,8 @@ Examples:
   hal auto --json                    # Machine-readable result output
   hal auto --sandbox                 # Run inside a sandbox
   hal auto --sandbox --sandbox-name worker-1 # Run inside a named sandbox
+  hal auto --sandbox --sandbox-sync-out # Collect sync-out handoff metadata without host apply
+  hal auto --sandbox --sandbox-apply    # Explicit opt-in to automatic eligible host apply
   hal auto --sandbox --sandbox-host worker-1 --sandbox-runtime rootless_podman # Explicit worker/rootless target selection`,
 	Example: `  hal auto
   hal auto .hal/prd-feature.md --dry-run
@@ -215,6 +219,8 @@ Examples:
   hal auto --review-streak 3 --review-max 15
   hal auto --sandbox
   hal auto --sandbox --sandbox-name worker-1
+  hal auto --sandbox --sandbox-sync-out
+  hal auto --sandbox --sandbox-apply
   hal auto --sandbox --sandbox-host worker-1 --sandbox-runtime rootless_podman
   hal auto --engine codex --base develop`,
 	RunE: runAuto,
@@ -239,6 +245,8 @@ func init() {
 	autoCmd.Flags().StringVar(&autoSandboxNameFlag, "sandbox-name", "", "Sandbox name for --sandbox execution")
 	autoCmd.Flags().StringVar(&autoSandboxHostFlag, sandboxHostFlagName, "", "Cached sandbox host ID for target selection")
 	autoCmd.Flags().StringVar(&autoSandboxRuntimeFlag, sandboxRuntimeFlagName, "", "Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)")
+	autoCmd.Flags().BoolVar(&autoSandboxSyncOutFlag, sandboxSyncOutFlagName, false, "Collect sandbox sync-out metadata without applying to the host worktree")
+	autoCmd.Flags().BoolVar(&autoSandboxApplyFlag, sandboxApplyFlagName, false, "explicit opt-in: dry-run and apply eligible sandbox sync-out artifacts to the host worktree")
 	rootCmd.AddCommand(autoCmd)
 }
 
@@ -272,6 +280,8 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	sandboxName := autoSandboxNameFlag
 	sandboxHost := autoSandboxHostFlag
 	sandboxRuntime := autoSandboxRuntimeFlag
+	sandboxSyncOut := autoSandboxSyncOutFlag
+	sandboxApply := autoSandboxApplyFlag
 
 	dryRunChanged := false
 	resumeChanged := false
@@ -288,6 +298,8 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	sandboxNameChanged := strings.TrimSpace(autoSandboxNameFlag) != ""
 	sandboxHostChanged := strings.TrimSpace(autoSandboxHostFlag) != ""
 	sandboxRuntimeChanged := strings.TrimSpace(autoSandboxRuntimeFlag) != ""
+	sandboxSyncOutChanged := false
+	sandboxApplyChanged := false
 
 	if cmd != nil {
 		if cmd.Context() != nil {
@@ -423,6 +435,22 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 			sandboxRuntime = value
 			sandboxRuntimeChanged = cmd.Flags().Changed(sandboxRuntimeFlagName)
 		}
+		if cmd.Flags().Lookup(sandboxSyncOutFlagName) != nil {
+			value, err := cmd.Flags().GetBool(sandboxSyncOutFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxSyncOut = value
+			sandboxSyncOutChanged = cmd.Flags().Changed(sandboxSyncOutFlagName)
+		}
+		if cmd.Flags().Lookup(sandboxApplyFlagName) != nil {
+			value, err := cmd.Flags().GetBool(sandboxApplyFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxApply = value
+			sandboxApplyChanged = cmd.Flags().Changed(sandboxApplyFlagName)
+		}
 	}
 	if skipPRChanged && !noCIChanged {
 		noCI = skipPR
@@ -437,6 +465,12 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 		err = validateSandboxTargetFlagsRequireSandbox(sandboxMode, sandboxTargetFlagValues{
 			HostChanged:    sandboxHostChanged,
 			RuntimeChanged: sandboxRuntimeChanged,
+		})
+	}
+	if err == nil {
+		err = validateSandboxSyncOutFlagsRequireSandbox(sandboxMode, sandboxSyncOutFlagValues{
+			SyncOutChanged: sandboxSyncOutChanged,
+			ApplyChanged:   sandboxApplyChanged,
 		})
 	}
 	if err != nil {
@@ -497,6 +531,10 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 			SandboxHostChanged:    sandboxHostChanged,
 			SandboxRuntime:        sandboxRuntime,
 			SandboxRuntimeChanged: sandboxRuntimeChanged,
+			SandboxSyncOut:        sandboxSyncOut,
+			SandboxSyncOutChanged: sandboxSyncOutChanged,
+			SandboxApply:          sandboxApply,
+			SandboxApplyChanged:   sandboxApplyChanged,
 		}, out, errOut, defaultAutoSandboxDeps)
 	}
 

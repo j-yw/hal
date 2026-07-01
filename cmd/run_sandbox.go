@@ -47,6 +47,10 @@ type runSandboxOptions struct {
 	SandboxHostChanged    bool
 	SandboxRuntime        string
 	SandboxRuntimeChanged bool
+	SandboxSyncOut        bool
+	SandboxSyncOutChanged bool
+	SandboxApply          bool
+	SandboxApplyChanged   bool
 }
 
 type runSandboxRequest struct {
@@ -63,6 +67,7 @@ type runSandboxRequest struct {
 	RunBranch      string
 	RemoteCommand  []string
 	Flags          runSandboxRunFlags
+	SyncOut        sandboxSyncOutOptions
 	Workspace      *sandbox.SandboxWorkspace
 	WorkspacePlan  *sandboxworkspace.Plan
 	Security       sandbox.SecurityEvaluationRequest
@@ -203,6 +208,12 @@ func parseRunSandboxRequest(args []string, opts runSandboxOptions) (runSandboxRe
 	if err != nil {
 		return runSandboxRequest{}, err
 	}
+	syncOut := parseSandboxSyncOutFlagValues(sandboxSyncOutFlagValues{
+		SyncOut:        opts.SandboxSyncOut,
+		SyncOutChanged: opts.SandboxSyncOutChanged,
+		Apply:          opts.SandboxApply,
+		ApplyChanged:   opts.SandboxApplyChanged,
+	})
 
 	sandboxName := explicitSandboxName
 	if positionalSandboxName != "" {
@@ -236,6 +247,7 @@ func parseRunSandboxRequest(args []string, opts runSandboxOptions) (runSandboxRe
 		SandboxHostID:  targetFlags.HostID,
 		SandboxRuntime: targetFlags.RuntimeDriver,
 		Flags:          flags,
+		SyncOut:        syncOut,
 		Security:       runSandboxSecurityRequest(),
 	}
 	req.RemoteCommand = buildRunSandboxRemoteCommand(req)
