@@ -592,6 +592,14 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 	if req.Sandbox && strings.TrimSpace(req.BaseBranch) == "" {
 		return failFactoryRunSetup(store, record, deps.now(), fmt.Errorf("--base is required when --sandbox is set"), redactor)
 	}
+	var sandboxSecurity sandbox.SecurityEvaluationRequest
+	if req.Sandbox {
+		var err error
+		sandboxSecurity, err = loadConfiguredSandboxSecurityRequest(dir, req.SandboxRuntime)
+		if err != nil {
+			return failFactoryRunSetup(store, record, deps.now(), fmt.Errorf("load factory sandbox security config: %w", err), redactor)
+		}
+	}
 
 	runningRecord, err := markFactoryRunInProgressWithRedactor(store, record, deps.now(), redactor)
 	if err != nil {
@@ -637,6 +645,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 			RemoteAuto:          remoteAuto,
 			SandboxHostID:       req.SandboxHostID,
 			SandboxRuntime:      req.SandboxRuntime,
+			Security:            sandboxSecurity,
 			RemoteOutput:        remoteOutput,
 			DeferSuccessCleanup: factoryRunDefersSandboxSuccessCleanup(policy),
 			BeforeCleanup: func(ctx context.Context, record factory.RunRecord) error {

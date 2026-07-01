@@ -32,3 +32,20 @@ func sandboxSecurityRequestFromConfig(cfg *compound.SandboxConfig, runtimeDriver
 	}
 	return sandbox.MapSandboxSecurityIntent(intent)
 }
+
+func sandboxSecurityRequestOrDefault(req sandbox.SecurityEvaluationRequest, runtimeDriver string) sandbox.SecurityEvaluationRequest {
+	if !emptySandboxSecurityEvaluationRequest(req) {
+		return req
+	}
+	return sandboxSecurityRequestFromConfig(nil, runtimeDriver)
+}
+
+func emptySandboxSecurityEvaluationRequest(req sandbox.SecurityEvaluationRequest) bool {
+	return req.RuntimeDriver == "" &&
+		req.RequestedNetworkPolicy == "" &&
+		req.RequestedNetworkPolicyIntent == nil &&
+		req.NetworkPolicyCapability == nil &&
+		len(req.RequestedSecretModes) == 0 &&
+		len(req.ActiveSecretModes) == 0 &&
+		!req.CompatibilityAuthSync
+}
