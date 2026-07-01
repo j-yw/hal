@@ -45,6 +45,7 @@
 - Proxy session validation/normalization belongs in `internal/sandbox/network_proxy_validation.go`; return sanitized code/field errors, expose normalized metadata only for valid input, and do not default absent enforcement metadata to `none` or any live capability claim.
 - Decision-log validation/normalization belongs in `internal/sandbox/network_proxy_validation.go`; keep errors record-index/field-oriented and sanitized, reject unsafe request metadata labels, preserve only safe destination categories, and never infer denied decisions as enforced without explicit enforcing metadata.
 - Proxy/log durable redaction sanitizers belong in `internal/sandbox/network_proxy_validation.go`; clear unsafe dynamic identifiers/labels before manifest or record persistence, preserve safe enum-like categories/policy/outcome/source metadata, and drop denied `enforced` claims when enforcing metadata is stripped.
+- Optional non-factory run/auto proxy-session metadata belongs on `internal/sandboxexecution.Manifest` as additive `networkProxySession,omitempty`; populate it from `cmd` save helpers only after `sandbox.SanitizeSandboxNetworkProxySessionMetadata`, and keep default manifests omitting proxy/log fields.
 
 ## Patterns from phase23-security-intent-propagation (2026-07-02)
 
