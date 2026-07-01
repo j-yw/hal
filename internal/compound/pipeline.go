@@ -1422,14 +1422,93 @@ func (p *Pipeline) runReportStep(ctx context.Context, state *PipelineState, opts
 }
 
 func (p *Pipeline) ensureCleanWorkingTree() error {
+	return p.ensureCleanWorkingTreeExcept(nil)
+}
+
+func (p *Pipeline) ensureCleanWorkingTreeExcept(excludePaths []string) error {
 	paths, err := workingTreeChangesInDirFn(p.dir)
 	if err != nil {
 		return err
+	}
+	excludes := workingTreeExcludeSet(p.dir, excludePaths)
+	if len(excludes) > 0 {
+		filtered := paths[:0]
+		for _, path := range paths {
+			if _, ok := excludes[normalizeWorkingTreePath(path)]; ok {
+				continue
+			}
+			filtered = append(filtered, path)
+		}
+		paths = filtered
 	}
 	if len(paths) == 0 {
 		return nil
 	}
 	return fmt.Errorf("working tree is dirty: %s", strings.Join(paths, ", "))
+}
+
+func workingTreeExcludeSet(dir string, paths []string) map[string]struct{} {
+	excludes := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		for _, candidate := range workingTreePathCandidates(dir, path) {
+			candidate = normalizeWorkingTreePath(candidate)
+			if candidate == "" || candidate == "." || strings.HasPrefix(candidate, "../") {
+				continue
+			}
+			excludes[candidate] = struct{}{}
+		}
+	}
+	return excludes
+}
+
+func workingTreePathCandidates(dir, path string) []string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	if !filepath.IsAbs(path) {
+		return []string{path}
+	}
+
+	var candidates []string
+	addRel := func(base, target string) {
+		if strings.TrimSpace(base) == "" || strings.TrimSpace(target) == "" {
+			return
+		}
+		rel, err := filepath.Rel(base, target)
+		if err != nil {
+			return
+		}
+		if rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+			return
+		}
+		candidates = append(candidates, rel)
+	}
+
+	addRel(dir, path)
+	if absDir, err := filepath.Abs(dir); err == nil {
+		addRel(absDir, path)
+		if absPath, err := filepath.Abs(path); err == nil {
+			addRel(absDir, absPath)
+		}
+	}
+	if evalDir, err := filepath.EvalSymlinks(dir); err == nil {
+		addRel(evalDir, path)
+		if evalPath, err := filepath.EvalSymlinks(path); err == nil {
+			addRel(evalDir, evalPath)
+		}
+	}
+
+	return candidates
+}
+
+func normalizeWorkingTreePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	path = strings.TrimPrefix(filepath.ToSlash(filepath.Clean(path)), "./")
+	return path
 }
 
 func (p *Pipeline) finalizeReviewFixes(ctx context.Context) error {
@@ -1843,7 +1922,16 @@ func (p *Pipeline) runArchiveStep(ctx context.Context, state *PipelineState, opt
 		return nil
 	}
 
-	if err := p.ensureCleanWorkingTree(); err != nil {
+	var reportExcludePaths []string
+	if reportPath := strings.TrimSpace(state.ReportPath); reportPath != "" {
+		reportExclude := reportPath
+		if !filepath.IsAbs(reportExclude) {
+			reportExclude = filepath.Join(p.dir, reportExclude)
+		}
+		reportExcludePaths = []string{filepath.Clean(reportExclude)}
+	}
+
+	if err := p.ensureCleanWorkingTreeExcept(reportExcludePaths); err != nil {
 		return fmt.Errorf("archive gate blocked: %w", err)
 	}
 
@@ -1854,12 +1942,8 @@ func (p *Pipeline) runArchiveStep(ctx context.Context, state *PipelineState, opt
 	}
 
 	createOpts := archive.CreateOptions{}
-	if reportPath := strings.TrimSpace(state.ReportPath); reportPath != "" {
-		reportExclude := reportPath
-		if !filepath.IsAbs(reportExclude) {
-			reportExclude = filepath.Join(p.dir, reportExclude)
-		}
-		createOpts.ExcludePaths = []string{reportExclude}
+	if len(reportExcludePaths) > 0 {
+		createOpts.ExcludePaths = reportExcludePaths
 	}
 
 	archiveDir, err := createArchiveWithOptions(halDir, archiveName, p.display.Writer(), createOpts)

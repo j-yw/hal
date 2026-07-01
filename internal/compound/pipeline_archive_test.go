@@ -95,6 +95,101 @@ func TestRunArchiveStep_ExcludesLatestReportFromArchive(t *testing.T) {
 	}
 }
 
+func TestRunArchiveStep_AllowsDirtyPreservedLatestReport(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+
+	latestReportRel := filepath.Join(template.HalDir, "reports", "review-latest.md")
+	latestReportAbs := filepath.Join(dir, latestReportRel)
+	olderReportAbs := filepath.Join(halDir, "reports", "review-older.md")
+
+	writeCompoundFile(t, filepath.Join(halDir, template.PRDFile), `{"project":"archive","branchName":"hal/archive-report","userStories":[]}`)
+	writeCompoundFile(t, filepath.Join(halDir, template.ProgressFile), "progress")
+	writeCompoundFile(t, filepath.Join(halDir, template.AutoStateFile), `{"step":"archive"}`)
+	writeCompoundFile(t, latestReportAbs, "# latest report")
+	writeCompoundFile(t, olderReportAbs, "# older report")
+
+	cfg := DefaultAutoConfig()
+	var out bytes.Buffer
+	pipeline := NewPipeline(&cfg, nil, engine.NewDisplay(&out), dir)
+
+	origStatus := workingTreeChangesInDirFn
+	workingTreeChangesInDirFn = func(string) ([]string, error) {
+		return []string{filepath.ToSlash(latestReportRel)}, nil
+	}
+	t.Cleanup(func() {
+		workingTreeChangesInDirFn = origStatus
+	})
+
+	state := &PipelineState{
+		Step:       StepArchive,
+		BranchName: "hal/archive-report",
+		ReportPath: latestReportAbs,
+		StartedAt:  time.Now(),
+	}
+
+	if err := pipeline.runArchiveStep(context.Background(), state, RunOptions{}); err != nil {
+		t.Fatalf("runArchiveStep returned error: %v", err)
+	}
+	if state.Step != StepDone {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepDone)
+	}
+	if _, err := os.Stat(latestReportAbs); err != nil {
+		t.Fatalf("expected dirty preserved report to remain at %s: %v", latestReportAbs, err)
+	}
+	if _, err := os.Stat(olderReportAbs); !os.IsNotExist(err) {
+		t.Fatalf("expected non-excluded report to be archived, stat err=%v", err)
+	}
+}
+
+func TestRunArchiveStep_BlocksWhenNonReportDirtyAlongsidePreservedReport(t *testing.T) {
+	dir := t.TempDir()
+	latestReportRel := filepath.Join(template.HalDir, "reports", "review-latest.md")
+	latestReportAbs := filepath.Join(dir, latestReportRel)
+	writeCompoundFile(t, latestReportAbs, "# latest report")
+
+	cfg := DefaultAutoConfig()
+	var out bytes.Buffer
+	pipeline := NewPipeline(&cfg, nil, engine.NewDisplay(&out), dir)
+	state := &PipelineState{
+		Step:       StepArchive,
+		BranchName: "hal/archive-dirty",
+		ReportPath: latestReportAbs,
+		StartedAt:  time.Now(),
+	}
+
+	origStatus := workingTreeChangesInDirFn
+	workingTreeChangesInDirFn = func(string) ([]string, error) {
+		return []string{filepath.ToSlash(latestReportRel), "dirty.txt"}, nil
+	}
+	t.Cleanup(func() {
+		workingTreeChangesInDirFn = origStatus
+	})
+
+	origArchive := createArchiveWithOptions
+	createArchiveWithOptions = func(halDir, name string, out io.Writer, opts archive.CreateOptions) (string, error) {
+		t.Fatal("createArchiveWithOptions should not be called when non-report files are dirty")
+		return "", nil
+	}
+	t.Cleanup(func() {
+		createArchiveWithOptions = origArchive
+	})
+
+	err := pipeline.runArchiveStep(context.Background(), state, RunOptions{})
+	if err == nil {
+		t.Fatal("expected dirty non-report file to block archive step")
+	}
+	if !strings.Contains(err.Error(), "dirty.txt") {
+		t.Fatalf("error = %q, want dirty path details", err)
+	}
+	if strings.Contains(err.Error(), filepath.ToSlash(latestReportRel)) {
+		t.Fatalf("error = %q should exclude preserved report from dirty path details", err)
+	}
+	if state.Step != StepArchive {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepArchive)
+	}
+}
+
 func TestRunArchiveStep_BlocksWhenWorkingTreeDirty(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultAutoConfig()
