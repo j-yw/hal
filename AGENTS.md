@@ -42,6 +42,7 @@
 - Lease-aware scheduler contracts belong in `internal/sandboxtarget` as additive, command-agnostic data types; keep `SchedulerRequest`/`SchedulerResult` free of Cobra, command packages, worker clients, concrete runtime adapters, provider calls, and live inspection, and represent selection identity, capacity decisions, lease requirements, and rejection reasons separately from later scheduling behavior.
 - Safe lease audit metadata belongs on `sandbox.SandboxLeaseRef` and factory's `SandboxLeaseMetadata` as redaction-safe identifiers only; command persistence should use `sandboxLeaseRefFromState` to enrich host/runtime identity, preserve acquisition/expiry times, and omit lease holders, endpoints, hostnames, filesystem paths, repository URLs, and credentials.
 - Cached scheduler candidate enumeration belongs in `internal/sandboxtarget` behind `CachedState.ListHosts`; keep it fake-only and durable-metadata-only, clone returned `SandboxHost` metadata, use endpoint-safe scheduler rejections for missing/list failures, and preserve host name then ID ordering as the base ordering before later filters and ranking.
+- Scheduler runtime/isolation filtering should stay in `internal/sandboxtarget`, match requested runtimes only against durable cached `SandboxHost.SupportedRuntimes`, use shared durable isolation constants plus the existing runtime category mapping, and treat explicit runtime `IsolationLevel` metadata as authoritative so stronger requested isolation is never downgraded.
 
 ## Patterns from phase19-rootless-worker-e2e-hardening (2026-07-01)
 
