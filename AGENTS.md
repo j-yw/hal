@@ -41,6 +41,7 @@
 
 - Target-selection code lives in `internal/sandboxtarget`; keep it command-agnostic and limited to standard-library imports plus root `internal/sandbox` durable metadata and root `internal/sandboxruntime` contracts. Do not import Cobra, `cmd`, factory, engine, loop, PRD, compound, or concrete runtime adapter subpackages there.
 - Target-selection contracts should remain data-only: `sandboxtarget.Request` carries purpose, sandbox, host, runtime, isolation, project, and fallback intent, while zero-value fallback policy preserves legacy default-running-sandbox and branch-provisioning behavior until callers opt into stricter handling.
+- `sandboxtarget.Select` preserves legacy resolution through fakeable `CachedState` callbacks: explicit sandbox load first, exactly one running sandbox as the default fallback, and `ProvisioningPlan` for command-layer create paths; use `RuntimeForSandbox` to keep missing runtime metadata on SSH-machine compatibility.
 
 ## Patterns from phase16-runtime-inspection (2026-07-01)
 

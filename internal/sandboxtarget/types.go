@@ -96,12 +96,13 @@ func (r Request) HasIsolationConstraint() bool {
 // metadata only. Selector implementations can fill whichever selected metadata
 // is known without constructing live clients or runtime drivers.
 type Result struct {
-	Sandbox  *sandbox.SandboxState
-	Host     *sandbox.SandboxHost
-	Runtime  *sandboxruntime.RuntimeState
-	Source   SourceMetadata
-	Fallback FallbackMetadata
-	Failure  *Failure
+	Sandbox      *sandbox.SandboxState
+	Host         *sandbox.SandboxHost
+	Runtime      *sandboxruntime.RuntimeState
+	Provisioning *ProvisioningPlan
+	Source       SourceMetadata
+	Fallback     FallbackMetadata
+	Failure      *Failure
 }
 
 // Selected reports whether the result carries any selected target metadata.
@@ -112,6 +113,19 @@ func (r Result) Selected() bool {
 // Failed reports whether the result carries a deterministic failure reason.
 func (r Result) Failed() bool {
 	return r.Failure != nil && r.Failure.Reason != FailureReasonNone
+}
+
+// NeedsProvisioning reports whether selection intentionally left sandbox
+// creation to the command layer.
+func (r Result) NeedsProvisioning() bool {
+	return r.Provisioning != nil && strings.TrimSpace(r.Provisioning.SandboxName) != ""
+}
+
+// ProvisioningPlan describes a legacy-compatible sandbox creation fallback.
+type ProvisioningPlan struct {
+	SandboxName string
+	Branch      string
+	Repository  string
 }
 
 // SourceKind identifies how a target was selected.
