@@ -224,6 +224,18 @@ func runSandboxRuntimeList(ctx context.Context, req sandboxRuntimeListRequest, o
 
 	host, err := loadHost(hostID)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			listErr := sandboxRuntimeStatusCommandError{
+				message: fmt.Sprintf("host %q was not found", hostID),
+			}
+			if req.JSON {
+				resp := newSandboxRuntimeListHostNotFoundResponse(hostID)
+				if renderErr := renderSandboxRuntimeListResponseJSON(out, resp); renderErr != nil {
+					return renderErr
+				}
+			}
+			return listErr
+		}
 		return err
 	}
 	if req.Live {
@@ -319,7 +331,7 @@ func runSandboxRuntimeStatusLive(ctx context.Context, req sandboxRuntimeStatusRe
 				message: fmt.Sprintf("runtime %q is not registered for this host", runtimeID),
 			}
 			if req.JSON {
-				resp := newSandboxRuntimeStatusRuntimeNotFoundResponse(host, runtimeID)
+				resp := newSandboxRuntimeStatusUnsupportedLiveRuntimeNotFoundResponse(host, runtimeID)
 				if renderErr := renderSandboxRuntimeStatusResponseJSON(out, resp); renderErr != nil {
 					return renderErr
 				}

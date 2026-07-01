@@ -576,6 +576,51 @@ func TestSandboxRuntimeListLiveWorkerClientFailureSanitizedAndDoesNotPersist(t *
 	}
 }
 
+func TestSandboxRuntimeListJSONMissingHostEmitsEndpointSafeErrorDocument(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	deps := defaultSandboxRuntimeDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("cached sandbox runtime list missing-host path should not contact worker daemons")
+		return nil, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxRuntimeCommand(deps)
+	cmd.SetArgs([]string{"list", "missing-host", "--json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want missing host error")
+	}
+
+	resp := decodeOneSandboxRuntimeListJSON(t, stdout.Bytes())
+	if resp.ContractType != SandboxRuntimeListContractType || resp.ContractVersion != SandboxRuntimeListContractVersion {
+		t.Fatalf("contract identity = %q/%q, want runtime list contract", resp.ContractType, resp.ContractVersion)
+	}
+	if resp.Host.ID != "missing-host" || resp.Host.Name != "missing-host" || resp.Host.Kind != "unknown" {
+		t.Fatalf("host = %#v, want requested missing host identity", resp.Host)
+	}
+	if resp.Host.Endpoint.Type != "none" || resp.Host.Endpoint.Summary != "none" || resp.Host.Endpoint.Scheme != nil {
+		t.Fatalf("endpoint = %#v, want empty safe endpoint", resp.Host.Endpoint)
+	}
+	if resp.Source.Mode != SandboxRuntimeSourceCached || resp.Source.RequestedLive || resp.Source.CacheUpdated || resp.Source.RefreshedAt != nil {
+		t.Fatalf("source = %#v, want cached durable source", resp.Source)
+	}
+	if len(resp.Errors) != 1 || resp.Errors[0].Code != SandboxRuntimeStatusErrorHostNotFound {
+		t.Fatalf("errors = %#v, want host_not_found", resp.Errors)
+	}
+	if len(resp.Diagnostics) != 0 || len(resp.Runtimes) != 0 {
+		t.Fatalf("diagnostics/runtimes = %#v/%#v, want empty arrays", resp.Diagnostics, resp.Runtimes)
+	}
+	detail := stdout.String() + "\n" + stderr.String()
+	for _, leaked := range []string{os.Getenv("HAL_CONFIG_HOME"), "sandbox-hosts", ".json"} {
+		if strings.Contains(detail, leaked) {
+			t.Fatalf("missing host output leaked storage detail %q:\n%s", leaked, detail)
+		}
+	}
+	if !strings.Contains(stderr.String(), `host "missing-host" was not found`) {
+		t.Fatalf("stderr = %q, want requested host id", stderr.String())
+	}
+}
+
 func TestSandboxRuntimeListLiveWorkerHostRequiresLocalSocketBeforeClient(t *testing.T) {
 	setSandboxHostRegistryHome(t)
 	if err := sandbox.SaveHost(&sandbox.SandboxHost{
@@ -1226,6 +1271,76 @@ func TestSandboxRuntimeStatusLiveWorkerMissingRuntimeEmitsEndpointSafeErrorDocum
 	}
 	if strings.Contains(stderr.String(), "worker-a") {
 		t.Fatalf("missing runtime human error named host id: %q", stderr.String())
+	}
+}
+
+func TestSandboxRuntimeStatusJSONLiveNonWorkerMissingRuntimeUsesUnsupportedLiveCachedMetadata(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:                "ssh-a",
+		Name:              "ssh-box",
+		Kind:              sandbox.SandboxHostKindSSH,
+		Endpoint:          "ssh://deploy:secret@example.internal:22/workspace?token=top-secret",
+		SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+		Capacity:          &sandbox.HostCapacity{MaxConcurrentSandboxes: 2},
+		Security: &sandbox.SandboxSecurity{
+			Network: &sandbox.SandboxNetworkSecurity{
+				PolicyRequested: sandbox.SandboxNetworkPolicyBestEffort,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	deps := defaultSandboxRuntimeDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("runtime status --live --json should not contact worker daemons for non-worker hosts")
+		return nil, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxRuntimeCommand(deps)
+	cmd.SetArgs([]string{"status", "ssh-a", sandbox.SandboxRuntimeDriverMicroVM, "--live", "--json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want missing runtime error")
+	}
+
+	output := stdout.String()
+	resp := decodeOneSandboxRuntimeStatusJSON(t, stdout.Bytes())
+	if resp.Source.Mode != SandboxRuntimeSourceUnsupportedLive || !resp.Source.RequestedLive || resp.Source.CacheUpdated || resp.Source.RefreshedAt != nil {
+		t.Fatalf("source = %#v, want unsupported-live without cache update", resp.Source)
+	}
+	if !strings.Contains(resp.Source.Summary, "host kind ssh") {
+		t.Fatalf("source summary = %q, want host kind", resp.Source.Summary)
+	}
+	if resp.Host.ID != "ssh-a" || resp.Host.Name != "ssh-box" || resp.Host.Kind != sandbox.SandboxHostKindSSH {
+		t.Fatalf("host identity = %#v, want ssh-a ssh-box ssh", resp.Host)
+	}
+	if resp.Host.Endpoint.Type != "endpoint" || resp.Host.Endpoint.Summary != "ssh endpoint" || resp.Host.Endpoint.Scheme == nil || *resp.Host.Endpoint.Scheme != "ssh" {
+		t.Fatalf("endpoint = %#v, want safe SSH endpoint summary", resp.Host.Endpoint)
+	}
+	if resp.Runtime.ID != sandbox.SandboxRuntimeDriverMicroVM || resp.Runtime.HostKind != nil || resp.Runtime.IsolationLevel != nil {
+		t.Fatalf("runtime = %#v, want requested sparse runtime identity", resp.Runtime)
+	}
+	if resp.Readiness.Status != SandboxRuntimeReadinessUnavailable || resp.Readiness.Summary != "runtime is not registered for this host" {
+		t.Fatalf("readiness = %#v, want missing runtime unavailable", resp.Readiness)
+	}
+	if resp.Capacity.MaxConcurrentSandboxes == nil || *resp.Capacity.MaxConcurrentSandboxes != 2 {
+		t.Fatalf("capacity = %#v, want cached host capacity", resp.Capacity)
+	}
+	if len(resp.Diagnostics) != 1 || resp.Diagnostics[0].Code != SandboxRuntimeStatusErrorLiveUnsupported || resp.Diagnostics[0].Severity != "warning" {
+		t.Fatalf("diagnostics = %#v, want live_unsupported warning", resp.Diagnostics)
+	}
+	if len(resp.Errors) != 1 || resp.Errors[0].Code != SandboxRuntimeStatusErrorRuntimeNotFound {
+		t.Fatalf("errors = %#v, want runtime_not_found", resp.Errors)
+	}
+	for _, leaked := range []string{"deploy", "secret", "example.internal", "top-secret"} {
+		if strings.Contains(output, leaked) || strings.Contains(stderr.String(), leaked) {
+			t.Fatalf("missing-runtime output leaked endpoint detail %q:\nstdout=%s\nstderr=%s", leaked, output, stderr.String())
+		}
+	}
+	if !strings.Contains(stderr.String(), `runtime "microvm" is not registered for this host`) {
+		t.Fatalf("stderr = %q, want requested runtime id", stderr.String())
 	}
 }
 

@@ -183,6 +183,24 @@ func newSandboxRuntimeListUnsupportedLiveResponse(host *sandbox.SandboxHost) San
 	}, nil)
 }
 
+func newSandboxRuntimeListHostNotFoundResponse(hostID string) SandboxRuntimeListResponse {
+	resp := newSandboxRuntimeListResponse(nil, SandboxRuntimeSource{
+		Mode:          SandboxRuntimeSourceCached,
+		RequestedLive: false,
+		CacheUpdated:  false,
+		RefreshedAt:   nil,
+		Summary:       "cached durable runtime metadata",
+	}, nil, []SandboxRuntimeError{
+		{
+			Code:    SandboxRuntimeStatusErrorHostNotFound,
+			Message: "host record was not found",
+		},
+	})
+	resp.Host.ID = sandboxHostDisplayValue(hostID, "")
+	resp.Host.Name = sandboxHostDisplayValue("", hostID)
+	return resp
+}
+
 func newSandboxRuntimeListLiveResponse(host *sandbox.SandboxHost, status *sandboxworker.Status, capabilities *sandboxworker.Capabilities, refreshedAt time.Time) SandboxRuntimeListResponse {
 	refreshedAt = refreshedAt.UTC()
 	return SandboxRuntimeListResponse{
@@ -240,6 +258,35 @@ func newSandboxRuntimeStatusUnsupportedLiveResponse(host *sandbox.SandboxHost, r
 			Message:  "live runtime inspection is unsupported for this host kind",
 		},
 	}, nil)
+}
+
+func newSandboxRuntimeStatusUnsupportedLiveRuntimeNotFoundResponse(host *sandbox.SandboxHost, runtimeID string) SandboxRuntimeStatusResponse {
+	hostKind := sandboxHostDisplayValue("", "unknown")
+	if host != nil {
+		hostKind = sandboxHostDisplayValue(host.Kind, "unknown")
+	}
+	return newSandboxRuntimeStatusResponse(host, runtimeID, SandboxRuntimeSource{
+		Mode:          SandboxRuntimeSourceUnsupportedLive,
+		RequestedLive: true,
+		CacheUpdated:  false,
+		RefreshedAt:   nil,
+		Summary:       fmt.Sprintf("live runtime inspection is unsupported for host kind %s; using cached durable metadata", hostKind),
+	}, SandboxRuntimeReadiness{
+		Status:    SandboxRuntimeReadinessUnavailable,
+		CheckedAt: nil,
+		Summary:   "runtime is not registered for this host",
+	}, newSandboxRuntimeSecuritySummary(sandboxRuntimeHostSecurity(host)), []SandboxRuntimeDiagnostic{
+		{
+			Code:     SandboxRuntimeStatusErrorLiveUnsupported,
+			Severity: "warning",
+			Message:  "live runtime inspection is unsupported for this host kind",
+		},
+	}, []SandboxRuntimeError{
+		{
+			Code:    SandboxRuntimeStatusErrorRuntimeNotFound,
+			Message: "runtime is not registered for this host",
+		},
+	})
 }
 
 func newSandboxRuntimeStatusLiveResponse(host *sandbox.SandboxHost, runtimeID string, status *sandboxworker.Status, capabilities *sandboxworker.Capabilities, refreshedAt time.Time) (SandboxRuntimeStatusResponse, bool) {
