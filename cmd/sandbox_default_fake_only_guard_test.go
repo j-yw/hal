@@ -107,6 +107,41 @@ func TestPhase19WorkerLiveRefreshCallSitesStayScoped(t *testing.T) {
 	}
 }
 
+func TestPhase19SandboxRuntimeImportBoundaryGuardsCoverRuntimePackages(t *testing.T) {
+	required := map[string][]string{
+		"internal/sandboxexec/import_boundary_test.go": {
+			"TestSandboxexecDoesNotImportCommandOrProviderLayers",
+			"TestSandboxexecForbiddenImportListCoversRequiredBoundaries",
+			"github.com/jywlabs/hal/internal/loop",
+			"github.com/jywlabs/hal/internal/sandboxworker",
+			"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman",
+			"github.com/jywlabs/hal/internal/sandbox/provider",
+		},
+		"internal/sandboxworker/import_boundary_test.go": {
+			"TestSandboxworkerImportsStayCommandAgnostic",
+			"TestSandboxworkerImportBoundaryAllowsRuntimeContractsOnly",
+			"github.com/jywlabs/hal/internal/sandboxruntime",
+			"non-standard-library dependency",
+		},
+		"internal/sandboxruntime/rootlesspodman/import_boundary_test.go": {
+			"TestRootlessPodmanImportsStayCommandAgnostic",
+			"TestRootlessPodmanForbiddenImportListCoversCommandCouplingSurfaces",
+			"github.com/jywlabs/hal/internal/sandboxworker",
+			"github.com/jywlabs/hal/internal/sandboxexecution",
+			"github.com/jywlabs/hal/internal/sandboxtarget",
+			"github.com/jywlabs/hal/internal/sandbox/provider",
+		},
+	}
+	for path, markers := range required {
+		source := phase19ReadFile(t, filepath.Join("..", path))
+		for _, marker := range markers {
+			if !strings.Contains(source, marker) {
+				t.Fatalf("%s does not cover required import-boundary marker %q", path, marker)
+			}
+		}
+	}
+}
+
 func phase19GoTestFiles(t *testing.T, repoRoot string) []string {
 	t.Helper()
 	var files []string

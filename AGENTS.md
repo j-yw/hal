@@ -57,6 +57,7 @@
 - `sandboxworker.ClientDriver.CopyOut` failure coverage should assert both no new destination file is left behind and pre-existing destination content survives; the adapter writes through a temp file in the destination directory and only renames after payload validation succeeds.
 - Local rootless worker operation docs should live under `docs/design/` and be guarded by `cmd` documentation tests; keep the guide explicit opt-in, local/dev lower-isolation only, and include start/register/run/auto/factory/cleanup/integration-env details without claiming microVM isolation, scheduling, network/proxy/firewall enforcement, or secret broker support.
 - Default fake-only sandbox safety guards live in `cmd/sandbox_default_fake_only_guard_test.go`; untagged default tests must not require real Podman, worker integration env vars, production sandboxd deps, or non-test worker sockets, and run/auto/factory help should show worker/rootless routing as explicit target selection.
+- Sandbox runtime import-boundary coverage should stay package-local for `internal/sandboxexec`, `internal/sandboxworker`, and `internal/sandboxruntime/rootlesspodman`, with the Phase 19 `cmd` guard ensuring focused verification includes the rootless Podman subpackage and forbids command, planning, worker-record, concrete runtime, and provider leakage.
 
 ## Patterns from phase18-worker-backed-sandbox-execution-routing (2026-07-01)
 
