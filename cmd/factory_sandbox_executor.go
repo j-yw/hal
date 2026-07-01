@@ -50,6 +50,7 @@ type factorySandboxExecutorRequest struct {
 	SandboxHostID       string
 	SandboxRuntime      string
 	Security            sandbox.SecurityEvaluationRequest
+	NetworkProxySession *sandbox.SandboxNetworkProxySessionMetadata
 	RunRecord           factory.RunRecord
 	ResolvedSecrets     []factory.ResolvedRunSecret
 	RemoteAuto          factoryRunAutoRequest
@@ -2052,6 +2053,7 @@ func factorySandboxPersistentMetadataFromState(req factorySandboxExecutorRequest
 	if metadata == nil {
 		return name, nil
 	}
+	metadata.NetworkProxySession = factorySandboxNetworkProxySession(req.NetworkProxySession)
 	if !sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) || !selectedWorkerRootlessSandboxState(instance) {
 		return name, metadata
 	}
@@ -2060,6 +2062,14 @@ func factorySandboxPersistentMetadataFromState(req factorySandboxExecutorRequest
 	}
 	metadata.WorkerRouting = sandboxWorkerRoutingMetadataFromState(instance)
 	return name, metadata
+}
+
+func factorySandboxNetworkProxySession(session *sandbox.SandboxNetworkProxySessionMetadata) *sandbox.SandboxNetworkProxySessionMetadata {
+	if session == nil {
+		return nil
+	}
+	sanitized := sandbox.SanitizeSandboxNetworkProxySessionMetadata(*session)
+	return &sanitized
 }
 
 func factorySandboxMetadataFromName(name string) (string, *factory.SandboxMetadata) {

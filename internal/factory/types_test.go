@@ -973,6 +973,110 @@ func TestSandboxMetadataOptionalMetadataOmittedWhenNil(t *testing.T) {
 	}
 
 	requireExactJSONKeys(t, raw, []string{"name", "provider", "status", "sshCommand", "cleanupCommand"})
+	requireJSONKeysAbsent(t, raw, []string{"networkProxySession", "networkPolicyDecisionLog", "networkPolicyDecisionLogs"})
+}
+
+func TestSandboxMetadataNetworkProxySessionJSONShape(t *testing.T) {
+	session := sandbox.SanitizeSandboxNetworkProxySessionMetadata(sandbox.SandboxNetworkProxySessionMetadata{
+		ID:     " proxy-session-01 ",
+		Source: sandbox.SandboxNetworkPolicyDecisionSource(" FACTORY "),
+		PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
+			ID:        " policy-snapshot-01 ",
+			Version:   " policy-v1 ",
+			Preset:    sandbox.SandboxNetworkPolicyPreset(" DENY_BY_DEFAULT "),
+			RuleSetID: " rules-01 ",
+		},
+		EnforcementMode: " PROXY ",
+	})
+	metadata := SandboxMetadata{
+		Name:                "factory-run",
+		Provider:            "daytona",
+		Status:              "running",
+		NetworkProxySession: &session,
+	}
+
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("json.Marshal(sandbox metadata) error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(sandbox metadata payload) error = %v", err)
+	}
+
+	requireExactJSONKeys(t, raw, []string{"name", "provider", "status", "networkProxySession"})
+	requireJSONKeysAbsent(t, raw, []string{"networkPolicyDecisionLog", "networkPolicyDecisionLogs"})
+
+	proxySession, ok := raw["networkProxySession"].(map[string]any)
+	if !ok {
+		t.Fatalf("networkProxySession should be an object, got %T", raw["networkProxySession"])
+	}
+	requireExactJSONKeys(t, proxySession, []string{"id", "source", "policySnapshot", "enforcementMode"})
+	if proxySession["id"] != "proxy-session-01" {
+		t.Fatalf("networkProxySession.id = %#v, want proxy-session-01", proxySession["id"])
+	}
+	if proxySession["source"] != string(sandbox.SandboxNetworkPolicyDecisionSourceFactory) {
+		t.Fatalf("networkProxySession.source = %#v, want factory", proxySession["source"])
+	}
+	if proxySession["enforcementMode"] != sandbox.SandboxNetworkEnforcementModeProxy {
+		t.Fatalf("networkProxySession.enforcementMode = %#v, want proxy", proxySession["enforcementMode"])
+	}
+
+	snapshot, ok := proxySession["policySnapshot"].(map[string]any)
+	if !ok {
+		t.Fatalf("networkProxySession.policySnapshot should be an object, got %T", proxySession["policySnapshot"])
+	}
+	requireExactJSONKeys(t, snapshot, []string{"id", "version", "preset", "ruleSetId"})
+	if snapshot["id"] != "policy-snapshot-01" || snapshot["version"] != "policy-v1" || snapshot["ruleSetId"] != "rules-01" {
+		t.Fatalf("policySnapshot = %#v, want safe snapshot identifiers preserved", snapshot)
+	}
+	if snapshot["preset"] != string(sandbox.SandboxNetworkPolicyPresetDenyByDefault) {
+		t.Fatalf("policySnapshot.preset = %#v, want deny_by_default", snapshot["preset"])
+	}
+}
+
+func TestSandboxMetadataNetworkProxySessionJSONRedactionSafety(t *testing.T) {
+	for _, sensitive := range networkProxyRedactionTestValues() {
+		t.Run(sensitive, func(t *testing.T) {
+			session := sandbox.SanitizeSandboxNetworkProxySessionMetadata(sandbox.SandboxNetworkProxySessionMetadata{
+				ID:     sensitive,
+				Source: sandbox.SandboxNetworkPolicyDecisionSource(" FACTORY "),
+				PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
+					ID:        " policy-snapshot-01 ",
+					Version:   sensitive,
+					Preset:    sandbox.SandboxNetworkPolicyPreset(" DENY_BY_DEFAULT "),
+					RuleSetID: sensitive,
+				},
+				EnforcementMode: sensitive,
+			})
+			metadata := SandboxMetadata{
+				Name:                "factory-run",
+				Provider:            "daytona",
+				Status:              "running",
+				NetworkProxySession: &session,
+			}
+
+			data, err := json.Marshal(metadata)
+			if err != nil {
+				t.Fatalf("json.Marshal(sandbox metadata) error = %v", err)
+			}
+			encoded := string(data)
+			if strings.Contains(encoded, sensitive) {
+				t.Fatalf("sandbox metadata leaked unsafe proxy session value %q: %s", sensitive, encoded)
+			}
+			for _, want := range []string{
+				"networkProxySession",
+				"policy-snapshot-01",
+				string(sandbox.SandboxNetworkPolicyDecisionSourceFactory),
+				string(sandbox.SandboxNetworkPolicyPresetDenyByDefault),
+			} {
+				if !strings.Contains(encoded, want) {
+					t.Fatalf("sandbox metadata omitted safe value %q after sanitization: %s", want, encoded)
+				}
+			}
+		})
+	}
 }
 
 func TestSandboxMetadataRuntimeV2SummaryJSONShape(t *testing.T) {
@@ -2254,6 +2358,21 @@ func requireExactJSONKeys(t *testing.T, got map[string]any, want []string) {
 		if _, ok := got[key]; !ok {
 			t.Fatalf("missing JSON key %q in %v", key, sortedMapKeys(got))
 		}
+	}
+}
+
+func networkProxyRedactionTestValues() []string {
+	return []string{
+		"api.example.com",
+		"169.254.169.254",
+		"https://user:secret@example.test/path?token=secret",
+		"unix:///tmp/private/proxy.sock",
+		"/Users/alice/project",
+		"Authorization",
+		"Bearer",
+		"OPENAI_API_KEY",
+		"raw-header-token-value",
+		"raw body secret value",
 	}
 }
 
