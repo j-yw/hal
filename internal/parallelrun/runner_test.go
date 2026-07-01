@@ -3,6 +3,7 @@ package parallelrun
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/loop"
 	"github.com/jywlabs/hal/internal/template"
+	"github.com/jywlabs/hal/internal/worktree"
 )
 
 func TestRunnerRunsParallelWorkersFromIgnoredHalStateAndIntegratesSerially(t *testing.T) {
@@ -222,6 +224,113 @@ func TestRunnerRejectsMismatchedPRDBranchBeforeWorkersStart(t *testing.T) {
 	requireTaskPasses(t, filepath.Join(repo, template.HalDir, template.PRDFile), "T-001", false)
 }
 
+func TestRunnerDryRunDoesNotCreateMissingProgressFile(t *testing.T) {
+	repo := initParallelRunRepo(t)
+	writeParallelRuntime(t, repo, `{
+  "project": "parallel",
+  "branchName": "hal/parallel",
+  "description": "parallel test",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "One",
+      "description": "Preview first file",
+      "acceptanceCriteria": ["Typecheck passes"],
+      "priority": 1,
+      "passes": false,
+      "notes": "",
+      "parallelSafe": true,
+      "parallelReason": "Adds an independent file"
+    }
+  ]
+}`)
+	progressPath := filepath.Join(repo, template.HalDir, template.ProgressFile)
+	if err := os.Remove(progressPath); err != nil {
+		t.Fatalf("remove progress fixture: %v", err)
+	}
+
+	executor := &gitCommittingWorkerExecutor{}
+	result := New(Config{
+		RepoDir:       repo,
+		RunID:         "test-run",
+		MaxIterations: 1,
+		Parallelism:   1,
+		DryRun:        true,
+		Engine:        "fake",
+	}, Deps{Executor: executor}).Run(context.Background())
+
+	if result.Error != nil {
+		t.Fatalf("Run() error = %v", result.Error)
+	}
+	if !result.Success || result.Complete {
+		t.Fatalf("success/complete = %v/%v, want true/false", result.Success, result.Complete)
+	}
+	if executor.started != 0 {
+		t.Fatalf("workers started = %d, want 0", executor.started)
+	}
+	if _, err := os.Stat(progressPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("progress stat err = %v, want not exist", err)
+	}
+}
+
+func TestRunnerSetupFailureDoesNotCountWorkersAsStarted(t *testing.T) {
+	repo := initParallelRunRepo(t)
+	writeParallelRuntime(t, repo, `{
+  "project": "parallel",
+  "branchName": "hal/parallel",
+  "description": "parallel test",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "One",
+      "description": "Add first file",
+      "acceptanceCriteria": ["Typecheck passes"],
+      "priority": 1,
+      "passes": false,
+      "notes": "",
+      "parallelSafe": true,
+      "parallelReason": "Adds an independent file"
+    },
+    {
+      "id": "T-002",
+      "title": "Two",
+      "description": "Add second file",
+      "acceptanceCriteria": ["Typecheck passes"],
+      "priority": 2,
+      "passes": false,
+      "notes": "",
+      "parallelSafe": true,
+      "parallelReason": "Adds another independent file"
+    }
+  ]
+}`)
+
+	executor := &gitCommittingWorkerExecutor{}
+	result := New(Config{
+		RepoDir:       repo,
+		RunID:         "test-run",
+		MaxIterations: 2,
+		Parallelism:   2,
+		Engine:        "fake",
+	}, Deps{
+		Worktrees: failingWorktreeManager{err: errors.New("worker path collision")},
+		Executor:  executor,
+	}).Run(context.Background())
+
+	if result.Error == nil || !strings.Contains(result.Error.Error(), "worker path collision") {
+		t.Fatalf("error = %v, want worker path collision", result.Error)
+	}
+	if result.Iterations != 0 {
+		t.Fatalf("iterations = %d, want 0", result.Iterations)
+	}
+	if result.Parallel.Started != 0 || result.Parallel.Failed != 1 || result.Parallel.Integrated != 0 {
+		t.Fatalf("parallel summary = %+v, want started=0 failed=1 integrated=0", result.Parallel)
+	}
+	if executor.started != 0 {
+		t.Fatalf("executor starts = %d, want 0", executor.started)
+	}
+}
+
 func TestRunnerRejectsWorkerFileWithoutManifest(t *testing.T) {
 	repo := initParallelRunRepo(t)
 	writeParallelRuntime(t, repo, `{
@@ -335,6 +444,18 @@ func TestValidateWorkerManifestGatesIntegration(t *testing.T) {
 			}
 		})
 	}
+}
+
+type failingWorktreeManager struct {
+	err error
+}
+
+func (m failingWorktreeManager) Create(context.Context, worktree.CreateRequest) (worktree.CreateResult, error) {
+	return worktree.CreateResult{}, m.err
+}
+
+func (m failingWorktreeManager) Cleanup(context.Context, worktree.CleanupRequest) (worktree.CleanupResult, error) {
+	return worktree.CleanupResult{}, nil
 }
 
 type gitCommittingWorkerExecutor struct {

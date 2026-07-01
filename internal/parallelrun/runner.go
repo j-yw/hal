@@ -168,11 +168,6 @@ func (r *Runner) Run(ctx context.Context) (result Result) {
 	result.Parallel.RunID = cfg.RunID
 	result.Parallel.RequestedParallelism = cfg.Parallelism
 
-	if err := ensureProgressFile(filepath.Join(cfg.RepoDir, cfg.HalDir), cfg.ProgressFile); err != nil {
-		result.Error = err
-		return result
-	}
-
 	canonicalBranch := ""
 
 	manager := r.deps.Worktrees
@@ -245,10 +240,16 @@ func (r *Runner) Run(ctx context.Context) (result Result) {
 			return result
 		}
 
+		if err := ensureProgressFile(filepath.Join(cfg.RepoDir, cfg.HalDir), cfg.ProgressFile); err != nil {
+			result.Error = err
+			return result
+		}
+
 		result.Parallel.Batches++
 		batchResults := r.runBatch(ctx, cfg, manager, executor, ready, prd)
-		result.Iterations += len(batchResults)
-		result.Parallel.Started += len(batchResults)
+		started := countStartedWorkers(batchResults)
+		result.Iterations += started
+		result.Parallel.Started += started
 
 		for _, workerResult := range batchResults {
 			if workerResult.err != nil {
@@ -317,6 +318,7 @@ type batchWorkerResult struct {
 	manifestPath string
 	worktree     worktree.CreateResult
 	manifest     *loop.WorkerManifest
+	started      bool
 	err          error
 }
 
@@ -363,6 +365,7 @@ func (r *Runner) runBatch(ctx context.Context, cfg Config, manager worktreeManag
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			results[i].started = true
 			execResult := executor.ExecuteWorker(ctx, WorkerExecutionRequest{
 				Task:         results[i].story,
 				Assignment:   results[i].assignment,
@@ -400,6 +403,16 @@ func (r *Runner) runBatch(ctx context.Context, cfg Config, manager worktreeManag
 	wg.Wait()
 	cleanupFailedBatch(ctx, cfg, manager, results)
 	return results
+}
+
+func countStartedWorkers(results []batchWorkerResult) int {
+	started := 0
+	for _, result := range results {
+		if result.started {
+			started++
+		}
+	}
+	return started
 }
 
 func cleanupFailedBatch(ctx context.Context, cfg Config, manager worktreeManager, results []batchWorkerResult) {
