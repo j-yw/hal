@@ -99,9 +99,6 @@ func sandboxWorkerClientDriverConstructorCallSites(t *testing.T) []string {
 	}
 	var callSites []string
 	for _, path := range files {
-		if strings.HasSuffix(path, "_test.go") {
-			continue
-		}
 		fset := token.NewFileSet()
 		file, err := parser.ParseFile(fset, path, nil, 0)
 		if err != nil {

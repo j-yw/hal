@@ -45,6 +45,7 @@
 - Explicit worker-backed rootless factory sandbox metadata should be built in the target-ready command hook from the selected target plus `factorySandboxWorkspaceStateFromRecord`; persist exact runtime and workerRouting metadata while taking workspace mode/input/branch/syncRef from the factory run record and omitting raw endpoints, host temp paths, remote temp paths, bundle paths, credentials, and credential-bearing URLs.
 - Default `hal auto --sandbox` must normalize cached worker-backed targets back to SSH-machine-compatible metadata unless `--sandbox-host` or `--sandbox-runtime` explicitly selects worker routing; strip worker runtime IDs/images, avoid worker host listing/client construction, and persist `sandboxexecution.Manifest.WorkerRouting` as nil.
 - Default `hal factory run --sandbox` must normalize cached worker-backed targets back to SSH-machine-compatible metadata unless `--sandbox-host` or `--sandbox-runtime` explicitly selects worker routing; strip worker runtime IDs/images, avoid worker host listing/client construction, and persist `factory.RunRecord.Sandbox.WorkerRouting` as nil.
+- Command-package worker client driver construction must stay centralized in `cmd/sandbox_worker_runtime.go`; guard tests should scan `cmd/*.go` including tests for direct `sandboxworker.NewClientDriver` calls while execution files keep routing through `sandboxWorkerRuntimeDriverFromTarget` and avoid importing `internal/sandboxworker`.
 
 ## Patterns from phase18-worker-backed-sandbox-execution-routing (2026-07-01)
 
