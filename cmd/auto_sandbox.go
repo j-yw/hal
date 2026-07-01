@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -50,6 +51,10 @@ type autoSandboxOptions struct {
 	SandboxHostChanged    bool
 	SandboxRuntime        string
 	SandboxRuntimeChanged bool
+	SandboxSyncOut        bool
+	SandboxSyncOutChanged bool
+	SandboxApply          bool
+	SandboxApplyChanged   bool
 }
 
 type autoSandboxRequest struct {
@@ -67,6 +72,7 @@ type autoSandboxRequest struct {
 	RemoteCommand  []string
 	Env            map[string]string
 	Flags          autoSandboxOptions
+	SyncOut        sandboxSyncOutOptions
 	Workspace      *sandbox.SandboxWorkspace
 	WorkspacePlan  *sandboxworkspace.Plan
 	Security       sandbox.SecurityEvaluationRequest
@@ -107,6 +113,7 @@ type autoSandboxDeps struct {
 	engineAuthFiles        func() []factorySandboxAuthFile
 	bootstrap              func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
 	materializeWorkspace   func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error)
+	applySyncOut           sandboxSyncOutApplier
 	execute                func(context.Context, autoSandboxRequest, io.Writer, io.Writer, autoSandboxExecutionHooks) (autoSandboxExecutionResult, error)
 
 	customRuntimeResolver bool
@@ -163,6 +170,12 @@ func parseAutoSandboxRequest(args []string, opts autoSandboxOptions) (autoSandbo
 	if err != nil {
 		return autoSandboxRequest{}, err
 	}
+	syncOut := parseSandboxSyncOutFlagValues(sandboxSyncOutFlagValues{
+		SyncOut:        opts.SandboxSyncOut,
+		SyncOutChanged: opts.SandboxSyncOutChanged,
+		Apply:          opts.SandboxApply,
+		ApplyChanged:   opts.SandboxApplyChanged,
+	})
 
 	req := autoSandboxRequest{
 		JSON:           opts.JSON,
@@ -171,6 +184,7 @@ func parseAutoSandboxRequest(args []string, opts autoSandboxOptions) (autoSandbo
 		SandboxHostID:  targetFlags.HostID,
 		SandboxRuntime: targetFlags.RuntimeDriver,
 		Flags:          opts,
+		SyncOut:        syncOut,
 		Security:       runSandboxSecurityRequest(),
 	}
 	req.RemoteCommand = buildAutoSandboxRemoteCommand(req)
@@ -253,7 +267,13 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 	}
 
 	var target *sandbox.SandboxState
-	execResult, execErr := deps.execute(ctx, req, out, errOut, autoSandboxExecutionHooks{
+	commandOut := out
+	var capturedJSON bytes.Buffer
+	augmentJSON := opts.JSON && req.SyncOut.Enabled
+	if augmentJSON {
+		commandOut = &capturedJSON
+	}
+	execResult, execErr := deps.execute(ctx, req, commandOut, errOut, autoSandboxExecutionHooks{
 		OnTargetReady: func(ready *sandbox.SandboxState) error {
 			target = ready
 			if target != nil && strings.TrimSpace(req.SandboxName) == "" {
@@ -311,6 +331,11 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 			execErr = collectErr
 		}
 	}
+	if execErr == nil {
+		if applyErr := applyAutoSandboxSyncOut(ctx, store, req, deps); applyErr != nil {
+			execErr = applyErr
+		}
+	}
 	leaseRelease := sandboxCommandLeaseReleaseTracker{releaseLease: deps.releaseLease}
 	leaseRelease.observe(target)
 	if releaseErr := leaseRelease.release(); releaseErr != nil {
@@ -324,6 +349,11 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 	}
 	if manifestErr := saveAutoSandboxManifest(store, req, status, startedAt, &finishedAt, target); manifestErr != nil && execErr == nil {
 		execErr = manifestErr
+	}
+	if augmentJSON && execResult.RemoteStarted {
+		if outputErr := outputSandboxSyncOutAugmentedJSON(out, capturedJSON.Bytes(), store, req.ExecutionID); outputErr != nil {
+			execErr = errors.Join(execErr, outputErr)
+		}
 	}
 	if execErr != nil {
 		if opts.JSON && !execResult.RemoteStarted {

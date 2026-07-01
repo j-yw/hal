@@ -61,6 +61,26 @@ func (s Store) Root() string {
 	return s.root
 }
 
+// ResolveStoredPath returns the local filesystem path for a store-relative
+// artifact payload that is already scoped to executionID.
+func (s Store) ResolveStoredPath(executionID, storedPath string) (string, error) {
+	executionID, err := validateExecutionID(executionID)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(s.root) == "" {
+		return "", errStoreRootUnavailable
+	}
+	clean, err := validateStoreRelativePath(storedPath)
+	if err != nil {
+		return "", fmt.Errorf("sandbox execution stored path is invalid: %w", err)
+	}
+	if clean == executionID || !strings.HasPrefix(clean, executionID+"/") {
+		return "", fmt.Errorf("sandbox execution stored path is not scoped under execution %q", executionID)
+	}
+	return filepath.Join(s.root, filepath.FromSlash(clean)), nil
+}
+
 // Ensure creates the store root, execution directory, and known payload
 // subdirectories for executionID.
 func (s Store) Ensure(executionID string) error {

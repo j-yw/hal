@@ -1458,11 +1458,13 @@ func TestMachineContractFields_AutoV2Examples(t *testing.T) {
 	validEntryModes := map[string]bool{"markdown_path": true, "report_discovery": true}
 
 	testCases := []struct {
-		name string
-		path string
+		name        string
+		path        string
+		wantSyncOut bool
 	}{
 		{name: "success example", path: filepath.Join("..", "docs", "contracts", "examples", "auto-v2-success.json")},
 		{name: "failure example", path: filepath.Join("..", "docs", "contracts", "examples", "auto-v2-failure.json")},
+		{name: "sandbox sync-out example", path: filepath.Join("..", "docs", "contracts", "examples", "auto-v2-sandbox-sync-out.json"), wantSyncOut: true},
 	}
 
 	for _, tc := range testCases {
@@ -1535,6 +1537,19 @@ func TestMachineContractFields_AutoV2Examples(t *testing.T) {
 					if _, ok := nextAction[field].(string); !ok {
 						t.Fatalf("nextAction.%s should be a string", field)
 					}
+				}
+			}
+
+			var result AutoResult
+			if err := json.Unmarshal(data, &result); err != nil {
+				t.Fatalf("decode %s as AutoResult: %v", tc.path, err)
+			}
+			if tc.wantSyncOut {
+				if result.SyncOut == nil {
+					t.Fatalf("sync-out example missing decoded SyncOut")
+				}
+				if result.SyncOutApply == nil {
+					t.Fatalf("sync-out example missing decoded SyncOutApply")
 				}
 			}
 		})

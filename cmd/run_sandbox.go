@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -47,6 +48,10 @@ type runSandboxOptions struct {
 	SandboxHostChanged    bool
 	SandboxRuntime        string
 	SandboxRuntimeChanged bool
+	SandboxSyncOut        bool
+	SandboxSyncOutChanged bool
+	SandboxApply          bool
+	SandboxApplyChanged   bool
 }
 
 type runSandboxRequest struct {
@@ -63,6 +68,7 @@ type runSandboxRequest struct {
 	RunBranch      string
 	RemoteCommand  []string
 	Flags          runSandboxRunFlags
+	SyncOut        sandboxSyncOutOptions
 	Workspace      *sandbox.SandboxWorkspace
 	WorkspacePlan  *sandboxworkspace.Plan
 	Security       sandbox.SecurityEvaluationRequest
@@ -105,6 +111,7 @@ type runSandboxDeps struct {
 	engineAuthFiles        func() []factorySandboxAuthFile
 	bootstrap              func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
 	materializeWorkspace   func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error)
+	applySyncOut           sandboxSyncOutApplier
 	execute                func(context.Context, runSandboxRequest, io.Writer, io.Writer, runSandboxExecutionHooks) (runSandboxExecutionResult, error)
 
 	customRuntimeResolver bool
@@ -202,6 +209,12 @@ func parseRunSandboxRequest(args []string, opts runSandboxOptions) (runSandboxRe
 	if err != nil {
 		return runSandboxRequest{}, err
 	}
+	syncOut := parseSandboxSyncOutFlagValues(sandboxSyncOutFlagValues{
+		SyncOut:        opts.SandboxSyncOut,
+		SyncOutChanged: opts.SandboxSyncOutChanged,
+		Apply:          opts.SandboxApply,
+		ApplyChanged:   opts.SandboxApplyChanged,
+	})
 
 	sandboxName := explicitSandboxName
 	if positionalSandboxName != "" {
@@ -235,6 +248,7 @@ func parseRunSandboxRequest(args []string, opts runSandboxOptions) (runSandboxRe
 		SandboxHostID:  targetFlags.HostID,
 		SandboxRuntime: targetFlags.RuntimeDriver,
 		Flags:          flags,
+		SyncOut:        syncOut,
 		Security:       runSandboxSecurityRequest(),
 	}
 	req.RemoteCommand = buildRunSandboxRemoteCommand(req)
@@ -304,7 +318,13 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 	}
 
 	var target *sandbox.SandboxState
-	execResult, execErr := deps.execute(ctx, req, out, errOut, runSandboxExecutionHooks{
+	commandOut := out
+	var capturedJSON bytes.Buffer
+	augmentJSON := opts.JSON && req.SyncOut.Enabled
+	if augmentJSON {
+		commandOut = &capturedJSON
+	}
+	execResult, execErr := deps.execute(ctx, req, commandOut, errOut, runSandboxExecutionHooks{
 		OnTargetReady: func(ready *sandbox.SandboxState) error {
 			target = ready
 			if target != nil && strings.TrimSpace(req.SandboxName) == "" {
@@ -357,6 +377,11 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 			execErr = collectErr
 		}
 	}
+	if execErr == nil {
+		if applyErr := applyRunSandboxSyncOut(ctx, store, req, deps); applyErr != nil {
+			execErr = applyErr
+		}
+	}
 	leaseRelease := sandboxCommandLeaseReleaseTracker{releaseLease: deps.releaseLease}
 	leaseRelease.observe(target)
 	if releaseErr := leaseRelease.release(); releaseErr != nil {
@@ -370,6 +395,11 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 	}
 	if manifestErr := saveRunSandboxManifest(store, req, status, startedAt, &finishedAt, target); manifestErr != nil && execErr == nil {
 		execErr = manifestErr
+	}
+	if augmentJSON && execResult.RemoteStarted {
+		if outputErr := outputSandboxSyncOutAugmentedJSON(out, capturedJSON.Bytes(), store, req.ExecutionID); outputErr != nil {
+			execErr = errors.Join(execErr, outputErr)
+		}
 	}
 	if execErr != nil {
 		if opts.JSON && !execResult.RemoteStarted {
@@ -1116,6 +1146,8 @@ func preserveSandboxManifestArtifacts(store sandboxexecution.Store, manifest *sa
 	}
 	manifest.Artifacts = append([]sandboxexecution.Artifact(nil), existing.Artifacts...)
 	manifest.ArtifactMetadata = cloneSandboxArtifactMetadata(existing.ArtifactMetadata)
+	manifest.SyncOut = cloneSandboxSyncOutSummary(existing.SyncOut)
+	manifest.SyncOutApply = cloneSandboxSafeApplyResult(existing.SyncOutApply)
 }
 
 func cloneSandboxArtifactMetadata(metadata *sandboxexecution.ArtifactMetadata) *sandboxexecution.ArtifactMetadata {
@@ -1127,6 +1159,59 @@ func cloneSandboxArtifactMetadata(metadata *sandboxexecution.ArtifactMetadata) *
 		Partial:   append([]sandboxexecution.ArtifactMetadataEntry(nil), metadata.Partial...),
 		Warnings:  append([]sandboxexecution.ArtifactWarning(nil), metadata.Warnings...),
 	}
+}
+
+func cloneSandboxSyncOutSummary(summary *sandboxworkspace.SyncOutSummary) *sandboxworkspace.SyncOutSummary {
+	if summary == nil {
+		return nil
+	}
+	clone := *summary
+	clone.CoreArtifacts = append([]sandboxworkspace.SyncOutArtifact(nil), summary.CoreArtifacts...)
+	clone.Warnings = append([]sandboxworkspace.SyncOutWarning(nil), summary.Warnings...)
+	clone.Recovery.Artifacts = append([]sandboxworkspace.SyncOutArtifact(nil), summary.Recovery.Artifacts...)
+	clone.Apply.Reasons = append([]sandboxworkspace.SyncOutApplyEligibilityReason(nil), summary.Apply.Reasons...)
+	clone.Committed.Patch = cloneSandboxSyncOutArtifact(summary.Committed.Patch)
+	clone.Committed.Bundle = cloneSandboxSyncOutArtifact(summary.Committed.Bundle)
+	clone.Uncommitted.Diff = cloneSandboxSyncOutArtifact(summary.Uncommitted.Diff)
+	clone.Untracked.Archive = cloneSandboxSyncOutArtifact(summary.Untracked.Archive)
+	clone.Untracked.List = cloneSandboxSyncOutArtifact(summary.Untracked.List)
+	return &clone
+}
+
+func cloneSandboxSyncOutArtifact(artifact *sandboxworkspace.SyncOutArtifact) *sandboxworkspace.SyncOutArtifact {
+	if artifact == nil {
+		return nil
+	}
+	clone := *artifact
+	if artifact.ApplyEligibility != nil {
+		eligibility := *artifact.ApplyEligibility
+		eligibility.Reasons = append([]sandboxworkspace.SyncOutApplyEligibilityReason(nil), artifact.ApplyEligibility.Reasons...)
+		clone.ApplyEligibility = &eligibility
+	}
+	return &clone
+}
+
+func cloneSandboxSafeApplyResult(result *sandboxworkspace.SafeApplyResult) *sandboxworkspace.SafeApplyResult {
+	if result == nil {
+		return nil
+	}
+	clone := *result
+	clone.Reasons = append([]sandboxworkspace.SyncOutApplyEligibilityReason(nil), result.Reasons...)
+	clone.Warnings = append([]sandboxworkspace.SyncOutWarning(nil), result.Warnings...)
+	clone.HandoffInstructions = cloneSandboxSyncOutHandoffInstructions(result.HandoffInstructions)
+	return &clone
+}
+
+func cloneSandboxSyncOutHandoffInstructions(instructions []sandboxworkspace.SyncOutHandoffInstruction) []sandboxworkspace.SyncOutHandoffInstruction {
+	if len(instructions) == 0 {
+		return nil
+	}
+	clone := make([]sandboxworkspace.SyncOutHandoffInstruction, len(instructions))
+	for i, instruction := range instructions {
+		clone[i] = instruction
+		clone[i].Artifacts = append([]sandboxworkspace.SyncOutHandoffArtifactRef(nil), instruction.Artifacts...)
+	}
+	return clone
 }
 
 func cloneSandboxWorkspace(workspace *sandbox.SandboxWorkspace) *sandbox.SandboxWorkspace {
