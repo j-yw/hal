@@ -337,6 +337,7 @@ func orderedHosts(hosts []*sandbox.SandboxHost) []*sandbox.SandboxHost {
 }
 
 func requestedHostResult(host *sandbox.SandboxHost, runtime *sandboxruntime.RuntimeState, policy FallbackPolicy) Result {
+	host = cloneSandboxHost(host)
 	result := Result{
 		Host:    host,
 		Runtime: runtime,
@@ -354,6 +355,7 @@ func requestedHostResult(host *sandbox.SandboxHost, runtime *sandboxruntime.Runt
 }
 
 func requestedRuntimeResult(host *sandbox.SandboxHost, runtime *sandboxruntime.RuntimeState, policy FallbackPolicy) Result {
+	host = cloneSandboxHost(host)
 	result := Result{
 		Host:    host,
 		Runtime: runtime,
@@ -371,6 +373,7 @@ func requestedRuntimeResult(host *sandbox.SandboxHost, runtime *sandboxruntime.R
 }
 
 func requestedIsolationResult(host *sandbox.SandboxHost, runtime *sandboxruntime.RuntimeState, isolationLevel string, policy FallbackPolicy) Result {
+	host = cloneSandboxHost(host)
 	result := Result{
 		Host:    host,
 		Runtime: runtime,
@@ -401,12 +404,111 @@ func withRequestedMetadata(result Result, host *sandbox.SandboxHost, runtime *sa
 		return result
 	}
 	if host != nil {
-		result.Host = host
+		result.Host = cloneSandboxHost(host)
+		if result.Sandbox != nil {
+			result.Sandbox.Host = cloneSandboxHost(host)
+		}
 	}
 	if runtime != nil {
-		result.Runtime = runtime
+		mergedRuntime := mergeRuntimeState(result.Runtime, runtime)
+		result.Runtime = &mergedRuntime
+		if result.Sandbox != nil {
+			result.Sandbox.Runtime = sandboxRuntimeStateFromRuntime(mergedRuntime)
+		}
 	}
 	return result
+}
+
+func mergeRuntimeState(existing, selected *sandboxruntime.RuntimeState) sandboxruntime.RuntimeState {
+	var merged sandboxruntime.RuntimeState
+	if existing != nil {
+		merged = *existing
+	}
+	if selected == nil {
+		return merged
+	}
+	if driver := strings.TrimSpace(selected.Driver); driver != "" {
+		merged.Driver = driver
+	}
+	if selected.RuntimeID != "" {
+		merged.RuntimeID = selected.RuntimeID
+	}
+	if selected.Image != "" {
+		merged.Image = selected.Image
+	}
+	if selected.WorkerID != "" {
+		merged.WorkerID = selected.WorkerID
+	}
+	if selected.IsolationLevel != "" {
+		merged.IsolationLevel = selected.IsolationLevel
+	}
+	return merged
+}
+
+func sandboxRuntimeStateFromRuntime(runtime sandboxruntime.RuntimeState) *sandbox.SandboxRuntimeState {
+	return &sandbox.SandboxRuntimeState{
+		Driver:         runtime.Driver,
+		IsolationLevel: runtime.IsolationLevel,
+		RuntimeID:      runtime.RuntimeID,
+		Image:          runtime.Image,
+		WorkerID:       runtime.WorkerID,
+	}
+}
+
+func cloneSandboxHost(host *sandbox.SandboxHost) *sandbox.SandboxHost {
+	if host == nil {
+		return nil
+	}
+	cloned := *host
+	cloned.Labels = cloneStringMap(host.Labels)
+	cloned.SupportedRuntimes = append([]string(nil), host.SupportedRuntimes...)
+	if host.Capacity != nil {
+		capacity := *host.Capacity
+		cloned.Capacity = &capacity
+	}
+	if host.Health != nil {
+		health := *host.Health
+		if host.Health.LastHeartbeatAt != nil {
+			lastHeartbeatAt := *host.Health.LastHeartbeatAt
+			health.LastHeartbeatAt = &lastHeartbeatAt
+		}
+		cloned.Health = &health
+	}
+	cloned.Security = cloneSandboxSecurity(host.Security)
+	if host.Cost != nil {
+		cost := *host.Cost
+		cloned.Cost = &cost
+	}
+	return &cloned
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func cloneSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.SandboxSecurity {
+	if security == nil {
+		return nil
+	}
+	cloned := *security
+	if security.Network != nil {
+		network := *security.Network
+		cloned.Network = &network
+	}
+	if security.Secrets != nil {
+		secrets := *security.Secrets
+		secrets.RequestedModes = append([]string(nil), security.Secrets.RequestedModes...)
+		secrets.ActiveModes = append([]string(nil), security.Secrets.ActiveModes...)
+		cloned.Secrets = &secrets
+	}
+	return &cloned
 }
 
 func selectExplicitSandbox(req Request, cache CachedState, policy FallbackPolicy) Result {

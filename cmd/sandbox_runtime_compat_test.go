@@ -235,6 +235,30 @@ func TestSandboxRuntimeCompatDefaultsToSSHMachineUnlessRootlessExplicit(t *testi
 	}
 }
 
+func TestSandboxRuntimeTargetFromStatePreservesDurableRuntimeMetadata(t *testing.T) {
+	target := sandboxRuntimeTargetFromState(&sandbox.SandboxState{
+		ID:       "sandbox-001",
+		Name:     "podman-dev",
+		Provider: "local",
+		Status:   sandbox.StatusRunning,
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandbox.SandboxRuntimeDriverRootlessPodman,
+			RuntimeID:      "ctr-1",
+			Image:          "localhost/hal:test",
+			WorkerID:       "worker-a",
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+		},
+	})
+
+	if target.Runtime.Driver != sandboxruntime.DriverRootlessPodman ||
+		target.Runtime.RuntimeID != "ctr-1" ||
+		target.Runtime.Image != "localhost/hal:test" ||
+		target.Runtime.WorkerID != "worker-a" ||
+		target.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelContainer {
+		t.Fatalf("runtime target metadata = %#v, want durable runtime metadata preserved", target.Runtime)
+	}
+}
+
 func TestSandboxRuntimeCompatWorkerHostMetadataDoesNotSelectRuntime(t *testing.T) {
 	target := sandboxRuntimeTargetFromState(&sandbox.SandboxState{
 		ID:       "sandbox-001",

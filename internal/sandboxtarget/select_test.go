@@ -188,6 +188,92 @@ func TestRuntimeForSandboxPreservesDurableRuntimeMetadata(t *testing.T) {
 	}
 }
 
+func TestSelectExplicitSandboxPropagatesSelectedHostAndRuntimeMetadata(t *testing.T) {
+	cachedHost := &sandbox.SandboxHost{
+		ID:                "worker-a",
+		Name:              "worker a",
+		Kind:              sandbox.SandboxHostKindWorker,
+		Labels:            map[string]string{"pool": "ci"},
+		SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+		Health:            &sandbox.HostHealth{Status: "healthy"},
+		Security: &sandbox.SandboxSecurity{
+			Secrets: &sandbox.SandboxSecretSecurity{
+				RequestedModes: []string{sandbox.SandboxSecretModeEnv},
+				ActiveModes:    []string{sandbox.SandboxSecretModeEnv},
+			},
+		},
+	}
+	selectedSandbox := &sandbox.SandboxState{
+		Name:     "podman-dev",
+		Provider: "local",
+		Status:   sandbox.StatusRunning,
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:    sandbox.SandboxRuntimeDriverRootlessPodman,
+			RuntimeID: "ctr-1",
+			Image:     "localhost/hal:test",
+			WorkerID:  "worker-a",
+		},
+	}
+
+	result := Select(Request{
+		SandboxName:   "podman-dev",
+		HostID:        "worker-a",
+		RuntimeDriver: sandbox.SandboxRuntimeDriverRootlessPodman,
+	}, CachedState{
+		ListHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{cachedHost}, nil
+		},
+		LoadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != "podman-dev" {
+				t.Fatalf("loaded sandbox name = %q, want podman-dev", name)
+			}
+			return selectedSandbox, nil
+		},
+	})
+
+	if result.Failed() || result.Sandbox != selectedSandbox {
+		t.Fatalf("result = %#v, want selected explicit sandbox", result)
+	}
+	if result.Host == nil || result.Host == cachedHost || result.Sandbox.Host == nil || result.Sandbox.Host == cachedHost {
+		t.Fatalf("host result/state = %#v/%#v, want copied selected host metadata", result.Host, result.Sandbox.Host)
+	}
+	if result.Sandbox.Host.ID != "worker-a" || result.Sandbox.Host.Labels["pool"] != "ci" || result.Sandbox.Host.SupportedRuntimes[0] != sandbox.SandboxRuntimeDriverRootlessPodman {
+		t.Fatalf("sandbox host metadata = %#v, want selected cached host metadata", result.Sandbox.Host)
+	}
+	if result.Sandbox.Host.Security == nil || result.Sandbox.Host.Security.Secrets == nil || len(result.Sandbox.Host.Security.Secrets.ActiveModes) != 1 {
+		t.Fatalf("sandbox host security metadata = %#v, want copied nested metadata", result.Sandbox.Host.Security)
+	}
+
+	cachedHost.Labels["pool"] = "mutated"
+	cachedHost.SupportedRuntimes[0] = sandbox.SandboxRuntimeDriverSSHMachine
+	cachedHost.Health.Status = "unhealthy"
+	cachedHost.Security.Secrets.ActiveModes[0] = sandbox.SandboxSecretModeHTTPProxy
+	if result.Sandbox.Host.Labels["pool"] != "ci" ||
+		result.Sandbox.Host.SupportedRuntimes[0] != sandbox.SandboxRuntimeDriverRootlessPodman ||
+		result.Sandbox.Host.Health.Status != "healthy" ||
+		result.Sandbox.Host.Security.Secrets.ActiveModes[0] != sandbox.SandboxSecretModeEnv {
+		t.Fatalf("sandbox host metadata = %#v, want independent copy of cached host", result.Sandbox.Host)
+	}
+
+	if result.Runtime == nil || result.Sandbox.Runtime == nil {
+		t.Fatalf("runtime result/state = %#v/%#v, want selected runtime metadata", result.Runtime, result.Sandbox.Runtime)
+	}
+	if result.Runtime.Driver != sandbox.SandboxRuntimeDriverRootlessPodman ||
+		result.Runtime.RuntimeID != "ctr-1" ||
+		result.Runtime.Image != "localhost/hal:test" ||
+		result.Runtime.WorkerID != "worker-a" ||
+		result.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelContainer {
+		t.Fatalf("runtime result = %#v, want merged selected and durable runtime metadata", result.Runtime)
+	}
+	if result.Sandbox.Runtime.Driver != result.Runtime.Driver ||
+		result.Sandbox.Runtime.RuntimeID != result.Runtime.RuntimeID ||
+		result.Sandbox.Runtime.Image != result.Runtime.Image ||
+		result.Sandbox.Runtime.WorkerID != result.Runtime.WorkerID ||
+		result.Sandbox.Runtime.IsolationLevel != result.Runtime.IsolationLevel {
+		t.Fatalf("sandbox runtime = %#v, want result runtime %#v", result.Sandbox.Runtime, result.Runtime)
+	}
+}
+
 func TestSelectPropagatesCachedStateErrorsAsSafeFailures(t *testing.T) {
 	loadErr := errors.New("permission denied")
 	result := Select(Request{SandboxName: "chosen"}, CachedState{
