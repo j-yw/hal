@@ -207,7 +207,7 @@ func serialReasons(task Task, opts Options) []string {
 }
 
 func metadataUntrusted(task Task) bool {
-	return task.MetadataConfidence != MetadataConfidenceHigh || len(task.ConflictDomains) == 0
+	return task.MetadataConfidence != MetadataConfidenceHigh
 }
 
 func overlapsSelectedDomain(task Task, opts Options, used map[string]string) (bool, string) {

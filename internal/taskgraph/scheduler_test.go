@@ -96,30 +96,31 @@ func TestSchedule_DependenciesMustBeComplete(t *testing.T) {
 	}
 }
 
-func TestSchedule_MetadataDefaultsToSerialUnlessFallbackAllowed(t *testing.T) {
+func TestSchedule_MetadataConfidenceControlsSerialFallback(t *testing.T) {
 	unknown := Task{
 		ID:           "unknown",
-		Priority:     10,
+		Priority:     30,
 		ParallelSafe: true,
 	}
-	hintsOnly := Task{
-		ID:                 "passes-only",
+	knownNoDomains := Task{
+		ID:                 "known-no-domains",
 		Priority:           10,
-		DomainHints:        []string{"same-domain"},
 		ParallelSafe:       true,
 		MetadataConfidence: MetadataConfidenceHigh,
 	}
 
 	defaultResult := Schedule([]Task{
-		hintsOnly,
+		unknown,
+		knownNoDomains,
 		parallelTask("known", 20, "known"),
 	}, Options{Parallelism: 3})
 
-	if got, want := taskIDs(defaultResult.Ready), []string{"passes-only"}; !reflect.DeepEqual(got, want) {
+	if got, want := taskIDs(defaultResult.Ready), []string{"known-no-domains", "known"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("default ready IDs = %v, want %v", got, want)
 	}
-	assertSerialReason(t, defaultResult.Serial, "passes-only", ReasonUntrustedMetadata)
+	assertSerialReason(t, defaultResult.Serial, "unknown", ReasonUntrustedMetadata)
 
+	unknown.Priority = 10
 	fallbackResult := Schedule([]Task{
 		unknown,
 		parallelTask("known", 20, "known"),
@@ -132,18 +133,25 @@ func TestSchedule_MetadataDefaultsToSerialUnlessFallbackAllowed(t *testing.T) {
 		t.Fatalf("fallback serial = %v, want none", fallbackResult.Serial)
 	}
 
+	hintsOnly := Task{
+		ID:                 "hints-only",
+		Priority:           10,
+		DomainHints:        []string{"same-domain"},
+		ParallelSafe:       true,
+		MetadataConfidence: MetadataConfidenceLow,
+	}
 	alsoHintsOnly := hintsOnly
-	alsoHintsOnly.ID = "also-passes-only"
+	alsoHintsOnly.ID = "also-hints-only"
 	alsoHintsOnly.Priority = 20
 	fallbackConflictResult := Schedule([]Task{
 		hintsOnly,
 		alsoHintsOnly,
 	}, Options{Parallelism: 3, AllowConservativeFallback: true})
 
-	if got, want := taskIDs(fallbackConflictResult.Ready), []string{"passes-only"}; !reflect.DeepEqual(got, want) {
+	if got, want := taskIDs(fallbackConflictResult.Ready), []string{"hints-only"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("fallback conflict ready IDs = %v, want %v", got, want)
 	}
-	assertBlockedReason(t, fallbackConflictResult.Blocked, "also-passes-only", ReasonConflictDomainOverlap+":hint:same-domain")
+	assertBlockedReason(t, fallbackConflictResult.Blocked, "also-hints-only", ReasonConflictDomainOverlap+":hint:same-domain")
 }
 
 func TestSchedule_BlocksCyclesAndInvalidDependencies(t *testing.T) {
