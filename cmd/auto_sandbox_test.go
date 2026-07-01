@@ -1058,6 +1058,133 @@ func TestRunAutoSandboxWithWriterCollectsGeneratedArtifacts(t *testing.T) {
 	}
 }
 
+func TestRunAutoSandboxWithWriterRecordsArtifactCopyWarningsAtCommandBoundary(t *testing.T) {
+	startedAt := time.Date(2026, 7, 1, 9, 12, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(5 * time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	target := &sandbox.SandboxState{
+		Name:     "auto-artifact-warning-box",
+		Provider: "test-provider",
+		Status:   sandbox.StatusRunning,
+		Runtime:  &sandbox.SandboxRuntimeState{Driver: sandbox.SandboxRuntimeDriverSSHMachine},
+	}
+	repoRemote := "git@example.com:org/repo.git"
+	expectedWorkspace := factorySandboxRemoteWorkspaceDir(factory.RunRecord{
+		RunID:      "auto-artifact-copy-warning",
+		RepoPath:   projectDir,
+		RepoRemote: repoRemote,
+		BranchName: "feature/auto-artifact-warning",
+		BaseBranch: "main",
+	})
+	copyErr := errors.New("copy_out failed from unix:///tmp/private/worker-1.sock at /workspace/.hal/tmp/session token=secret")
+	var execCalls []string
+	driver := fakeRunSandboxRuntimeDriver{
+		exec: func(_ context.Context, got sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			script := ""
+			if len(got.Args) >= 3 && got.Args[0] == "sh" && got.Args[1] == "-c" {
+				script = got.Args[2]
+			}
+			switch {
+			case got.WorkDir == expectedWorkspace && strings.Contains(script, "workspace.patch"):
+				execCalls = append(execCalls, "recovery_generation")
+			case got.WorkDir == expectedWorkspace && strings.Contains(script, "reports.tar"):
+				execCalls = append(execCalls, "reports_generation")
+			default:
+				execCalls = append(execCalls, "remote_auto")
+				_, _ = io.WriteString(got.Stdout, autoSandboxRemoteSuccessJSON("remote")+"\n")
+			}
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+		copyOut: func(_ context.Context, got sandboxruntime.CopyRequest) error {
+			if got.SourcePath == expectedWorkspace+"/.hal/recovery/workspace.patch" {
+				return copyErr
+			}
+			if err := os.MkdirAll(filepath.Dir(got.DestinationPath), 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(got.DestinationPath, []byte("payload for "+got.SourcePath), 0o600)
+		},
+	}
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
+		Base:        "main",
+		BaseChanged: true,
+		JSON:        true,
+		JSONChanged: true,
+	}, &out, &errOut, autoSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "auto-artifact-copy-warning"
+		},
+		now: runSandboxTestClock(startedAt, finishedAt),
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return autoSandboxTestPlan(projectDir), nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			return target, target.Name, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return driver, nil
+		},
+		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			return factory.BootstrapResult{}, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			return nil
+		},
+		runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runAutoSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+	if !reflect.DeepEqual(execCalls, []string{"remote_auto", "recovery_generation", "reports_generation"}) {
+		t.Fatalf("exec calls = %#v, want remote command and both artifact generation commands", execCalls)
+	}
+
+	manifest, err := store.LoadManifest("auto-artifact-copy-warning")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if manifest.Status != sandboxexecution.StatusSucceeded {
+		t.Fatalf("Status = %q, want succeeded", manifest.Status)
+	}
+	if manifest.ArtifactMetadata == nil {
+		t.Fatal("ArtifactMetadata = nil, want warning metadata")
+	}
+	if len(manifest.ArtifactMetadata.Partial) != 0 {
+		t.Fatalf("partial = %#v, want no partial entries for command-boundary copy warning", manifest.ArtifactMetadata.Partial)
+	}
+	if len(manifest.ArtifactMetadata.Warnings) != 1 {
+		t.Fatalf("warnings = %#v, want one copy-out warning", manifest.ArtifactMetadata.Warnings)
+	}
+	warning := manifest.ArtifactMetadata.Warnings[0]
+	if warning.Phase != sandboxexecution.ArtifactWarningPhaseCopyOut ||
+		warning.Message != "sandbox execution recovery artifact copy failed" ||
+		warning.Artifact.Path != ".hal/recovery/workspace.patch" ||
+		warning.Artifact.StoredPath != "" {
+		t.Fatalf("warning = %#v, want sanitized recovery copy-out warning", warning)
+	}
+	encoded, err := json.Marshal(manifest.ArtifactMetadata)
+	if err != nil {
+		t.Fatalf("Marshal(ArtifactMetadata) error: %v", err)
+	}
+	for _, forbidden := range []string{"unix://", "/tmp/private/worker-1.sock", "/workspace/.hal/tmp/session", "token=secret"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("artifact warning leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 func TestRunAutoSandboxWithWriterManifestRecordsCopiedInputCommand(t *testing.T) {
 	startedAt := time.Date(2026, 6, 30, 12, 40, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(3 * time.Second)

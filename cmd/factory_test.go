@@ -2879,6 +2879,113 @@ func TestRunFactoryRunWithDepsCollectsSandboxWarningsOnFailure(t *testing.T) {
 	}
 }
 
+func TestRunFactoryRunWithDepsRecordsArtifactSyncEventWhenSandboxCopyFails(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 7, 1, 9, 20, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	pipelineCompletedAt := createdAt.Add(2 * time.Minute)
+	artifactSyncAt := createdAt.Add(3 * time.Minute)
+	failedAt := createdAt.Add(4 * time.Minute)
+	times := []time.Time{createdAt, startedAt, pipelineCompletedAt, artifactSyncAt, failedAt}
+	copyErr := errors.New("copy failed from unix:///tmp/private/worker-1.sock at /workspace/.hal/tmp/session https://deploy:secret@example.test/repo.git?token=secret")
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-copy-failed", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return failedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			record, err := req.Store.LoadRun(req.RunID)
+			if err != nil {
+				t.Fatalf("LoadRun() during pipeline error: %v", err)
+			}
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = "factory-sandbox"
+			if err := req.Store.SaveRun(record); err != nil {
+				t.Fatalf("SaveRun() sandbox record error: %v", err)
+			}
+			return nil
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		sandboxCopier: &fakeFactorySandboxArtifactCopier{
+			fileErrs: map[string]error{
+				"/workspace/.hal/progress.txt": copyErr,
+			},
+		},
+		sandboxRequests: func(_ string, record factory.RunRecord) []factory.SandboxArtifactRequest {
+			return []factory.SandboxArtifactRequest{{
+				ID:         "sandbox-progress",
+				Name:       "sandbox-progress",
+				Type:       "text",
+				RemotePath: "/workspace/.hal/progress.txt",
+				Path:       ".hal/progress.txt",
+				Optional:   true,
+				Summary: map[string]any{
+					"executorMode": factory.ExecutorModeSandbox,
+					"sandboxName":  record.SandboxName,
+				},
+			}}
+		},
+	})
+	if err == nil {
+		t.Fatal("runFactoryRunWithDeps() expected sandbox artifact copy failure")
+	}
+
+	events, loadErr := store.LoadEvents("run-sandbox-copy-failed")
+	if loadErr != nil {
+		t.Fatalf("LoadEvents() error: %v", loadErr)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypeStepStarted,
+		factory.EventTypeStepEnded,
+		factory.EventTypeArtifactSync,
+		factory.EventTypeStepEnded,
+		factory.EventTypeFailureClassification,
+	})
+	if !events[3].Timestamp.Equal(artifactSyncAt) {
+		t.Fatalf("artifact sync timestamp = %s, want %s", events[3].Timestamp, artifactSyncAt)
+	}
+	if events[3].Summary != "Factory sandbox artifact sync failed" ||
+		events[3].Metadata["step"] != factory.RunDurationStepArtifactCollect ||
+		events[3].Metadata["status"] != factory.RunStatusFailed {
+		t.Fatalf("artifact sync event = %#v, want failed artifact collection metadata", events[3])
+	}
+	encoded, marshalErr := json.Marshal(events)
+	if marshalErr != nil {
+		t.Fatalf("Marshal(events) error: %v", marshalErr)
+	}
+	for _, forbidden := range []string{"unix://", "/tmp/private/worker-1.sock", "/workspace/.hal/tmp/session", "deploy:secret", "token=secret"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("factory artifact timeline leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 func TestRunFactoryRunWithDepsCollectsStatusAndDoctorSnapshots(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
@@ -8734,12 +8841,17 @@ type fakeFactorySandboxArtifactCopier struct {
 	files     map[string]string
 	dirs      map[string]map[string]string
 	missing   map[string]bool
+	fileErrs  map[string]error
+	dirErrs   map[string]error
 	fileCalls []string
 	dirCalls  []string
 }
 
 func (f *fakeFactorySandboxArtifactCopier) CopyFile(_ context.Context, remotePath, localPath string) error {
 	f.fileCalls = append(f.fileCalls, remotePath)
+	if err := f.fileErrs[remotePath]; err != nil {
+		return err
+	}
 	if f.missing[remotePath] {
 		return factory.ErrSandboxArtifactNotFound
 	}
@@ -8755,6 +8867,9 @@ func (f *fakeFactorySandboxArtifactCopier) CopyFile(_ context.Context, remotePat
 
 func (f *fakeFactorySandboxArtifactCopier) CopyDir(_ context.Context, remotePath, localPath string) error {
 	f.dirCalls = append(f.dirCalls, remotePath)
+	if err := f.dirErrs[remotePath]; err != nil {
+		return err
+	}
 	if f.missing[remotePath] {
 		return factory.ErrSandboxArtifactNotFound
 	}

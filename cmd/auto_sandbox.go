@@ -609,6 +609,12 @@ func collectAutoSandboxCoreStateArtifacts(ctx context.Context, store sandboxexec
 		RemoteWorkspaceDir: req.WorkDir,
 	})
 	if err != nil {
+		if handled, warningErr := appendSandboxArtifactCopyWarning(store, req.ExecutionID, err); handled {
+			if warningErr != nil {
+				return fmt.Errorf("collect auto sandbox core state artifacts: %w", warningErr)
+			}
+			return nil
+		}
 		return fmt.Errorf("collect auto sandbox core state artifacts: %w", err)
 	}
 	return nil
@@ -626,7 +632,13 @@ func collectAutoSandboxGeneratedArtifacts(ctx context.Context, store sandboxexec
 		RemoteWorkspaceDir: req.WorkDir,
 	}
 	if _, err := sandboxexecution.CollectRecoveryArtifacts(ctx, collectionReq); err != nil {
-		return fmt.Errorf("collect auto sandbox recovery artifacts: %w", err)
+		if handled, warningErr := appendSandboxArtifactCopyWarning(store, req.ExecutionID, err); handled {
+			if warningErr != nil {
+				return fmt.Errorf("collect auto sandbox recovery artifacts: %w", warningErr)
+			}
+		} else {
+			return fmt.Errorf("collect auto sandbox recovery artifacts: %w", err)
+		}
 	}
 	if _, err := sandboxexecution.CollectReportsArchiveArtifacts(ctx, sandboxexecution.ReportsArchiveCollectionRequest{
 		ExecutionID:        req.ExecutionID,
@@ -635,6 +647,12 @@ func collectAutoSandboxGeneratedArtifacts(ctx context.Context, store sandboxexec
 		Target:             result.Result.Target,
 		RemoteWorkspaceDir: req.WorkDir,
 	}); err != nil {
+		if handled, warningErr := appendSandboxArtifactCopyWarning(store, req.ExecutionID, err); handled {
+			if warningErr != nil {
+				return fmt.Errorf("collect auto sandbox reports archive artifacts: %w", warningErr)
+			}
+			return nil
+		}
 		return fmt.Errorf("collect auto sandbox reports archive artifacts: %w", err)
 	}
 	return nil

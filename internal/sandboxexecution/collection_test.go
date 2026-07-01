@@ -436,6 +436,17 @@ func TestCollectCoreStateArtifactsMissingRequiredPRDReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("CollectCoreStateArtifacts() expected missing PRD error")
 	}
+	var artifactErr *ArtifactCollectionError
+	if !errors.As(err, &artifactErr) {
+		t.Fatalf("CollectCoreStateArtifacts() error = %T %[1]v, want ArtifactCollectionError", err)
+	}
+	warning := artifactErr.Warning()
+	if warning.Phase != ArtifactWarningPhaseCopyOut ||
+		warning.Message != "sandbox execution artifact is missing" ||
+		warning.Artifact.Path != ".hal/prd.json" ||
+		warning.Artifact.StoredPath != "" {
+		t.Fatalf("artifact collection warning = %#v, want safe PRD copy-out warning", warning)
+	}
 	if len(runtime.copyOuts) != 1 {
 		t.Fatalf("CopyOut calls = %d, want only required PRD attempt", len(runtime.copyOuts))
 	}
