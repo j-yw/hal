@@ -345,6 +345,105 @@ func TestSandboxRuntimeListJSONCachedWorkerHostContractStableAndSafe(t *testing.
 	}
 }
 
+func TestSandboxRuntimeListCachedNonWorkerHostWithoutMetadataDurableOnly(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:       "ssh-a",
+		Name:     "ssh-box",
+		Kind:     sandbox.SandboxHostKindSSH,
+		Endpoint: "ssh://deploy:secret@example.internal:22?token=top-secret",
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	deps := defaultSandboxRuntimeDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("cached sandbox runtime list for non-worker hosts should not contact worker daemons")
+		return nil, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxRuntimeCommand(deps)
+	cmd.SetArgs([]string{"list", "ssh-a"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+
+	output := stdout.String()
+	for _, want := range []string{
+		"Sandbox runtimes for ssh-box (cached)",
+		"cached durable runtime metadata",
+		"ssh-a",
+		sandbox.SandboxHostKindSSH,
+		"ssh endpoint",
+		"No cached runtime metadata is available.",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("stdout = %q, want %q", output, want)
+		}
+	}
+	for _, leaked := range []string{"deploy", "secret", "example.internal", "top-secret"} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("stdout leaked endpoint detail %q: %q", leaked, output)
+		}
+	}
+}
+
+func TestSandboxRuntimeListJSONCachedNonWorkerHostWithoutMetadataDurableOnly(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:       "local-a",
+		Name:     "laptop",
+		Kind:     sandbox.SandboxHostKindLocal,
+		Endpoint: "https://user:secret@runtime.example.internal/api?token=top-secret",
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	deps := defaultSandboxRuntimeDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("cached sandbox runtime list --json for non-worker hosts should not contact worker daemons")
+		return nil, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxRuntimeCommand(deps)
+	cmd.SetArgs([]string{"list", "local-a", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+
+	output := stdout.String()
+	resp := decodeOneSandboxRuntimeListJSON(t, stdout.Bytes())
+	if resp.Source.Mode != SandboxRuntimeSourceCached || resp.Source.RequestedLive || resp.Source.CacheUpdated || resp.Source.RefreshedAt != nil {
+		t.Fatalf("source = %#v, want cached durable source", resp.Source)
+	}
+	if resp.Host.ID != "local-a" || resp.Host.Name != "laptop" || resp.Host.Kind != sandbox.SandboxHostKindLocal {
+		t.Fatalf("host identity = %#v, want local-a laptop local", resp.Host)
+	}
+	if resp.Host.Endpoint.Type != "endpoint" || resp.Host.Endpoint.Summary != "https endpoint" || resp.Host.Endpoint.Scheme == nil || *resp.Host.Endpoint.Scheme != "https" {
+		t.Fatalf("endpoint = %#v, want safe HTTPS endpoint summary", resp.Host.Endpoint)
+	}
+	if len(resp.Runtimes) != 0 {
+		t.Fatalf("runtime len = %d, want empty cached runtime list", len(resp.Runtimes))
+	}
+	if resp.Capacity.Summary != "unknown" || resp.Capacity.CPUCores != nil || resp.Capacity.MaxConcurrentSandboxes != nil {
+		t.Fatalf("capacity = %#v, want sparse unknown capacity", resp.Capacity)
+	}
+	if len(resp.Security.Requested.CredentialModes) != 0 || len(resp.Security.Enforced.CredentialModes) != 0 {
+		t.Fatalf("security = %#v, want sparse empty credential metadata", resp.Security)
+	}
+	if len(resp.Diagnostics) != 0 || len(resp.Errors) != 0 {
+		t.Fatalf("diagnostics/errors = %#v/%#v, want empty arrays", resp.Diagnostics, resp.Errors)
+	}
+	for _, leaked := range []string{"user", "secret", "runtime.example.internal", "top-secret"} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("JSON output leaked endpoint detail %q: %q", leaked, output)
+		}
+	}
+	if strings.Contains(output, "No cached runtime metadata is available.") {
+		t.Fatalf("JSON stdout included human no-metadata text: %q", output)
+	}
+}
+
 func decodeOneSandboxRuntimeListJSON(t *testing.T, data []byte) SandboxRuntimeListResponse {
 	t.Helper()
 	decoder := json.NewDecoder(bytes.NewReader(data))
