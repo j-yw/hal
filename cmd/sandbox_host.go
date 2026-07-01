@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -35,7 +36,9 @@ type sandboxHostRegisterWorkerRequest struct {
 	Live       bool
 }
 
-type sandboxHostListRequest struct{}
+type sandboxHostListRequest struct {
+	JSON bool
+}
 
 type sandboxHostStatusRequest struct {
 	HostID string
@@ -144,6 +147,9 @@ selection defaults.`,
 }
 
 func newSandboxHostListCommand(deps sandboxHostDeps) *cobra.Command {
+	flags := struct {
+		json bool
+	}{}
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List sandbox host records",
@@ -151,15 +157,27 @@ func newSandboxHostListCommand(deps sandboxHostDeps) *cobra.Command {
 
 The command renders host registry metadata in stable human-readable output. It
 sorts records by host name, then id, and does not contact worker daemons or
-runtime providers.`,
-		Example: `  hal sandbox host list`,
-		Args:    noArgsValidation(),
+runtime providers. Use --json for machine-readable output following the
+sandbox-host-list-v1 contract.`,
+		Example: `  hal sandbox host list
+  hal sandbox host list --json`,
+		Args: noArgsValidation(),
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			jsonMode := flags.json
+			if cmd != nil {
+				if f := cmd.Flags().Lookup("json"); f != nil {
+					v, err := cmd.Flags().GetBool("json")
+					if err == nil {
+						jsonMode = v
+					}
+				}
+			}
 			return runSandboxHostCobra(cmd, "Sandbox Host List failed", func(ctx context.Context, out io.Writer) error {
-				return deps.list(ctx, sandboxHostListRequest{}, out)
+				return deps.list(ctx, sandboxHostListRequest{JSON: jsonMode}, out)
 			})
 		},
 	}
+	cmd.Flags().BoolVar(&flags.json, "json", false, "Output machine-readable JSON (sandbox-host-list-v1 contract)")
 	return cmd
 }
 
@@ -290,12 +308,28 @@ func runSandboxHostRegisterWorker(ctx context.Context, req sandboxHostRegisterWo
 	return nil
 }
 
-func runSandboxHostList(_ context.Context, _ sandboxHostListRequest, out io.Writer) error {
+func runSandboxHostList(_ context.Context, req sandboxHostListRequest, out io.Writer) error {
 	hosts, err := sandbox.ListHosts()
 	if err != nil {
 		return err
 	}
+	if req.JSON {
+		return renderSandboxHostListJSON(out, hosts)
+	}
 	return renderSandboxHostList(out, hosts)
+}
+
+func renderSandboxHostListJSON(out io.Writer, hosts []*sandbox.SandboxHost) error {
+	if out == nil {
+		return nil
+	}
+	resp := newSandboxHostListResponse(hosts)
+	data, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal sandbox host list: %w", err)
+	}
+	_, err = fmt.Fprintln(out, string(data))
+	return err
 }
 
 func renderSandboxHostList(out io.Writer, hosts []*sandbox.SandboxHost) error {

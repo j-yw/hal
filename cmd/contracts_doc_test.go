@@ -31,6 +31,7 @@ func TestContractDocsExist(t *testing.T) {
 		{"continue-v1", "../docs/contracts/continue-v1.md"},
 		{"plan-v1", "../docs/contracts/plan-v1.md"},
 		{"sandbox-list-v1", "../docs/contracts/sandbox-list-v1.md"},
+		{"sandbox-host-list-v1", "../docs/contracts/sandbox-host-list-v1.md"},
 		{"auto-v2", "../docs/contracts/auto-v2.md"},
 		{"ci-push-v1", "../docs/contracts/ci-push-v1.md"},
 		{"ci-status-v1", "../docs/contracts/ci-status-v1.md"},
@@ -133,6 +134,38 @@ func TestContractDocsIncludeSandboxListFields(t *testing.T) {
 	// Contract version value
 	if !strings.Contains(content, "sandbox-list-v1") {
 		t.Error("sandbox-list-v1.md missing contract version value \"sandbox-list-v1\"")
+	}
+}
+
+func TestContractDocsIncludeSandboxHostListFields(t *testing.T) {
+	data, err := os.ReadFile("../docs/contracts/sandbox-host-list-v1.md")
+	if err != nil {
+		t.Skipf("cannot read sandbox-host-list-v1.md: %v", err)
+	}
+	content := string(data)
+
+	for _, field := range []string{"contractVersion", "hosts", "totals"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-host-list-v1.md missing top-level field %q", field)
+		}
+	}
+	for _, field := range []string{"id", "name", "kind", "endpoint", "health", "supportedRuntimes", "capacity"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-host-list-v1.md missing host field %q", field)
+		}
+	}
+	for _, field := range []string{"type", "summary", "scheme", "status", "checkedAt", "lastHeartbeatAt", "message", "cpuCores", "memoryMb", "diskGb", "maxConcurrentSandboxes", "total"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-host-list-v1.md missing nested field %q", field)
+		}
+	}
+	if !strings.Contains(content, SandboxHostListContractVersion) {
+		t.Errorf("sandbox-host-list-v1.md missing contract value %q", SandboxHostListContractVersion)
+	}
+	for _, value := range []string{"unix_socket", "endpoint", "configured", "none", "local Unix socket"} {
+		if !strings.Contains(content, value) {
+			t.Errorf("sandbox-host-list-v1.md missing endpoint value %q", value)
+		}
 	}
 }
 

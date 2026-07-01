@@ -3,7 +3,9 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"strings"
 	"testing"
@@ -420,6 +422,147 @@ func TestSandboxHostListHumanOutputStableAndSafe(t *testing.T) {
 			t.Fatalf("stdout leaked endpoint detail %q: %q", leaked, output)
 		}
 	}
+}
+
+func TestSandboxHostListJSONContractStableAndSafe(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	checkedAt := time.Date(2026, 7, 1, 12, 30, 0, 0, time.UTC)
+	for _, host := range []*sandbox.SandboxHost{
+		{
+			ID:       "worker-b",
+			Name:     "builder",
+			Kind:     sandbox.SandboxHostKindWorker,
+			Endpoint: "unix:///tmp/private/worker-b.sock",
+			Health:   &sandbox.HostHealth{Status: sandboxworker.HealthStatusUnknown},
+		},
+		{
+			ID:                "ssh-1",
+			Name:              "zeta",
+			Kind:              sandbox.SandboxHostKindSSH,
+			Endpoint:          "ssh://deploy:secret@example.com:22/workspace?token=supersecret",
+			SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine},
+			Capacity:          &sandbox.HostCapacity{CPUCores: 4, MemoryMB: 8192, DiskGB: 80},
+			Health:            &sandbox.HostHealth{Status: "degraded", CheckedAt: checkedAt, Message: "slow"},
+		},
+		{
+			ID:                "worker-a",
+			Name:              "builder",
+			Kind:              sandbox.SandboxHostKindWorker,
+			Endpoint:          "unix:///tmp/private/worker-a.sock",
+			SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverSSHMachine, sandbox.SandboxRuntimeDriverRootlessPodman, sandbox.SandboxRuntimeDriverSSHMachine},
+			Capacity:          &sandbox.HostCapacity{MaxConcurrentSandboxes: 2},
+			Health:            &sandbox.HostHealth{Status: sandboxworker.HealthStatusHealthy, CheckedAt: checkedAt},
+		},
+	} {
+		if err := sandbox.SaveHost(host); err != nil {
+			t.Fatalf("SaveHost(%q) error = %v", host.ID, err)
+		}
+	}
+
+	deps := defaultSandboxHostDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("sandbox host list --json should not contact worker daemons")
+		return nil, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxHostCommand(deps)
+	cmd.SetArgs([]string{"list", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+	firstOutput := stdout.String()
+
+	cmd2, stdout2, stderr2 := newTestSandboxHostCommand(deps)
+	cmd2.SetArgs([]string{"list", "--json"})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("second Execute() error = %v; stderr=%q", err, stderr2.String())
+	}
+	if stdout2.String() != firstOutput {
+		t.Fatalf("repeated JSON output differed:\nfirst=%s\nsecond=%s", firstOutput, stdout2.String())
+	}
+
+	resp := decodeOneSandboxHostListJSON(t, stdout.Bytes())
+	if resp.ContractVersion != SandboxHostListContractVersion {
+		t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, SandboxHostListContractVersion)
+	}
+	if resp.Totals.Total != 3 || len(resp.Hosts) != 3 {
+		t.Fatalf("response counts = total %d len %d, want 3", resp.Totals.Total, len(resp.Hosts))
+	}
+	gotOrder := []string{resp.Hosts[0].ID, resp.Hosts[1].ID, resp.Hosts[2].ID}
+	wantOrder := []string{"worker-a", "worker-b", "ssh-1"}
+	for i := range wantOrder {
+		if gotOrder[i] != wantOrder[i] {
+			t.Fatalf("host order = %#v, want %#v", gotOrder, wantOrder)
+		}
+	}
+
+	workerA := resp.Hosts[0]
+	if workerA.Endpoint.Type != "unix_socket" || workerA.Endpoint.Scheme != "unix" || workerA.Endpoint.Summary != "local Unix socket" {
+		t.Fatalf("worker-a endpoint = %#v, want safe Unix socket summary", workerA.Endpoint)
+	}
+	if workerA.Health.Status != sandboxworker.HealthStatusHealthy || workerA.Health.CheckedAt == nil || !workerA.Health.CheckedAt.Equal(checkedAt) {
+		t.Fatalf("worker-a health = %#v, want cached healthy status", workerA.Health)
+	}
+	if got := strings.Join(workerA.SupportedRuntimes, ","); got != "rootless_podman,ssh_machine" {
+		t.Fatalf("worker-a runtimes = %q, want sorted unique runtimes", got)
+	}
+	if workerA.Capacity.MaxConcurrentSandboxes != 2 || workerA.Capacity.Summary != "max 2 sandboxes" {
+		t.Fatalf("worker-a capacity = %#v, want max sandbox summary", workerA.Capacity)
+	}
+
+	workerB := resp.Hosts[1]
+	if workerB.Health.Status != sandboxworker.HealthStatusUnknown || len(workerB.SupportedRuntimes) != 0 || workerB.Capacity.Summary != "unknown" {
+		t.Fatalf("worker-b entry = %#v, want unknown cached metadata and empty runtimes", workerB)
+	}
+
+	sshHost := resp.Hosts[2]
+	if sshHost.Endpoint.Type != "endpoint" || sshHost.Endpoint.Scheme != "ssh" || sshHost.Endpoint.Summary != "ssh endpoint" {
+		t.Fatalf("ssh endpoint = %#v, want scheme-only endpoint summary", sshHost.Endpoint)
+	}
+	if sshHost.Capacity.CPUCores != 4 || sshHost.Capacity.MemoryMB != 8192 || sshHost.Capacity.DiskGB != 80 {
+		t.Fatalf("ssh capacity = %#v, want cached capacity fields", sshHost.Capacity)
+	}
+
+	for _, leaked := range []string{"/tmp/private", "deploy:secret", "example.com", "token=supersecret"} {
+		if strings.Contains(firstOutput, leaked) {
+			t.Fatalf("JSON output leaked endpoint detail %q: %q", leaked, firstOutput)
+		}
+	}
+}
+
+func TestSandboxHostListJSONEmptyRegistry(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	cmd, stdout, stderr := newTestSandboxHostCommand(defaultSandboxHostDeps())
+	cmd.SetArgs([]string{"list", "--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+
+	resp := decodeOneSandboxHostListJSON(t, stdout.Bytes())
+	if resp.ContractVersion != SandboxHostListContractVersion {
+		t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, SandboxHostListContractVersion)
+	}
+	if resp.Totals.Total != 0 || len(resp.Hosts) != 0 {
+		t.Fatalf("empty registry response = %#v, want zero hosts", resp)
+	}
+	if strings.Contains(stdout.String(), "No sandbox hosts registered") {
+		t.Fatalf("JSON stdout included human empty-state text: %q", stdout.String())
+	}
+}
+
+func decodeOneSandboxHostListJSON(t *testing.T, data []byte) SandboxHostListResponse {
+	t.Helper()
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var resp SandboxHostListResponse
+	if err := decoder.Decode(&resp); err != nil {
+		t.Fatalf("decode host list JSON error: %v\n%s", err, string(data))
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		t.Fatalf("host list JSON stdout should contain exactly one document; second decode error = %v extra=%#v output=%q", err, extra, string(data))
+	}
+	return resp
 }
 
 func newTestSandboxHostCommand(deps sandboxHostDeps) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {

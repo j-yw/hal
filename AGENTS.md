@@ -45,6 +45,7 @@
 - Offline worker host registration should reuse the command-layer worker metadata mapper and persist through `internal/sandbox.SaveHost`; command tests should isolate the global registry with temporary `HAL_CONFIG_HOME` and human output should summarize local Unix socket endpoints without printing raw socket paths.
 - Live worker host command paths should keep worker access behind fakeable command-layer client factories plus injectable clocks; query worker status/capabilities before persistence, wrap client failures in sanitized `sandboxworker.ClientError`, and do not write durable records when live refresh fails.
 - Human worker host list output should read durable records through `internal/sandbox.ListHosts`, rely on its name-then-ID ordering, and render endpoint summaries such as `local Unix socket` or `<scheme> endpoint` instead of raw socket paths, hosts, or credential-bearing URLs.
+- Worker host list JSON should use the dedicated `sandbox-host-list-v1` contract, emit exactly one JSON document, preserve `internal/sandbox.ListHosts` ordering, and expose endpoint summaries only rather than raw socket paths, hostnames, credentials, or URL query strings.
 
 ## Patterns from phase14-worker-io (2026-07-01)
 
