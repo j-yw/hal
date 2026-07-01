@@ -208,7 +208,7 @@ func (s Store) saveArtifactFile(runID string, artifact ArtifactReference, source
 	artifact.CreatedAt = &createdAt
 
 	record.Artifacts = upsertArtifact(record.Artifacts, artifact)
-	if err := s.SaveRun(record); err != nil {
+	if err := s.SaveRunWithRedactor(record, redactor); err != nil {
 		return ArtifactReference{}, fmt.Errorf("save factory artifact metadata %q: %w", artifact.Name, err)
 	}
 
@@ -278,6 +278,16 @@ func (s Store) SaveRun(record *RunRecord) error {
 	return nil
 }
 
+// SaveRunWithRedactor persists a factory run record after removing
+// run-scoped secret values from durable string metadata.
+func (s Store) SaveRunWithRedactor(record *RunRecord, redactor RunSecretRedactor) error {
+	if record == nil {
+		return s.SaveRun(record)
+	}
+	safeRecord := redactor.RedactRunRecord(*record)
+	return s.SaveRun(&safeRecord)
+}
+
 // LoadRun loads a committed factory run record by run ID.
 func (s Store) LoadRun(runID string) (*RunRecord, error) {
 	path, err := s.runRecordPath(runID)
@@ -343,6 +353,16 @@ func (s Store) AppendEvent(event *EventRecord) error {
 	return nil
 }
 
+// AppendEventWithRedactor durably appends a timeline event after removing
+// run-scoped secret values from user-facing event fields and metadata.
+func (s Store) AppendEventWithRedactor(event *EventRecord, redactor RunSecretRedactor) error {
+	if event == nil {
+		return s.AppendEvent(event)
+	}
+	safeEvent := redactor.RedactEventRecord(*event)
+	return s.AppendEvent(&safeEvent)
+}
+
 // AppendLogChunk durably appends a log chunk to a run's stored logs.
 func (s Store) AppendLogChunk(chunk *LogChunk) error {
 	if chunk == nil {
@@ -385,6 +405,16 @@ func (s Store) AppendLogChunk(chunk *LogChunk) error {
 	}
 
 	return nil
+}
+
+// AppendLogChunkWithRedactor durably appends a log chunk after removing
+// run-scoped secret values from persisted text fields.
+func (s Store) AppendLogChunkWithRedactor(chunk *LogChunk, redactor RunSecretRedactor) error {
+	if chunk == nil {
+		return s.AppendLogChunk(chunk)
+	}
+	safeChunk := redactor.RedactLogChunk(*chunk)
+	return s.AppendLogChunk(&safeChunk)
 }
 
 // LoadEvents loads a run's committed timeline events in append order.
