@@ -189,3 +189,30 @@ func TestSandboxHostFromWorkerMetadataRejectsInvalidLiveMetadata(t *testing.T) {
 		t.Fatalf("error = %q, want worker validation detail", err.Error())
 	}
 }
+
+func TestSandboxHostFromWorkerMetadataRejectsNonLocalWorkerSocketWithoutLeakingEndpoint(t *testing.T) {
+	for _, socketPath := range []string{
+		"relative.sock",
+		"ssh://user:supersecret@example.test/workspace?token=abc",
+		"unix:ssh://user:supersecret@example.test/workspace?token=abc",
+		"unix://ssh://user:supersecret@example.test/workspace?token=abc",
+	} {
+		t.Run(socketPath, func(t *testing.T) {
+			_, err := sandboxHostFromWorkerMetadata(sandboxHostWorkerMetadataRequest{
+				WorkerID:   "worker-001",
+				SocketPath: socketPath,
+			})
+			if err == nil {
+				t.Fatal("sandboxHostFromWorkerMetadata() error = nil, want non-local socket validation error")
+			}
+			if !strings.Contains(err.Error(), "absolute local Unix socket path") {
+				t.Fatalf("error = %q, want absolute local socket validation detail", err.Error())
+			}
+			for _, leaked := range []string{"supersecret", "example.test", "token=abc", socketPath} {
+				if strings.Contains(err.Error(), leaked) {
+					t.Fatalf("error leaked endpoint detail %q: %q", leaked, err.Error())
+				}
+			}
+		})
+	}
+}

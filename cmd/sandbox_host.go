@@ -546,20 +546,20 @@ func sandboxHostLocalWorkerSocketPath(endpoint string) (string, error) {
 	switch {
 	case strings.HasPrefix(lowerEndpoint, "unix://"):
 		path := strings.TrimSpace(endpoint[len("unix://"):])
-		if path == "" {
-			return "", fmt.Errorf("worker host live refresh requires a local Unix socket endpoint")
+		if !strings.HasPrefix(path, "/") {
+			return "", fmt.Errorf("worker socket path must be an absolute local Unix socket path")
 		}
 		return path, nil
 	case strings.HasPrefix(lowerEndpoint, "unix:"):
 		path := strings.TrimSpace(endpoint[len("unix:"):])
-		if path == "" {
-			return "", fmt.Errorf("worker host live refresh requires a local Unix socket endpoint")
+		if !strings.HasPrefix(path, "/") {
+			return "", fmt.Errorf("worker socket path must be an absolute local Unix socket path")
 		}
 		return path, nil
 	case strings.HasPrefix(endpoint, "/"):
 		return endpoint, nil
 	default:
-		return "", fmt.Errorf("worker host live refresh requires a local Unix socket endpoint")
+		return "", fmt.Errorf("worker socket path must be an absolute local Unix socket path")
 	}
 }
 

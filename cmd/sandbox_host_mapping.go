@@ -71,13 +71,12 @@ func sandboxHostWorkerEndpoint(socketPath string, status *sandboxworker.Status) 
 	if socketPath == "" {
 		return "", fmt.Errorf("worker socket path is required")
 	}
-	if strings.HasPrefix(socketPath, "unix://") {
-		return socketPath, nil
+
+	path, err := sandboxHostLocalWorkerSocketPath(socketPath)
+	if err != nil {
+		return "", err
 	}
-	if strings.HasPrefix(socketPath, "/") {
-		return "unix://" + socketPath, nil
-	}
-	return "unix:" + socketPath, nil
+	return "unix://" + path, nil
 }
 
 func validateSandboxHostWorkerPayloads(workerID string, status *sandboxworker.Status, capabilities *sandboxworker.Capabilities) error {

@@ -144,6 +144,11 @@ func TestSandboxHostRegisterWorkerOfflineRequiresIDAndSocket(t *testing.T) {
 			args:       []string{"register", "worker", "local-worker"},
 			wantDetail: "worker socket path is required",
 		},
+		{
+			name:       "non local socket",
+			args:       []string{"register", "worker", "local-worker", "--socket", "ssh://user:supersecret@example.test/workspace?token=abc"},
+			wantDetail: "absolute local Unix socket path",
+		},
 	}
 
 	for _, tt := range tests {
@@ -159,6 +164,11 @@ func TestSandboxHostRegisterWorkerOfflineRequiresIDAndSocket(t *testing.T) {
 			detail := err.Error() + "\n" + stderr.String()
 			if !strings.Contains(detail, tt.wantDetail) {
 				t.Fatalf("error/stderr = %q, want %q", detail, tt.wantDetail)
+			}
+			for _, leaked := range []string{"supersecret", "example.test", "token=abc"} {
+				if strings.Contains(detail, leaked) {
+					t.Fatalf("error/stderr leaked endpoint detail %q: %q", leaked, detail)
+				}
 			}
 			if _, loadErr := sandbox.LoadHost("local-worker"); loadErr == nil || !errors.Is(loadErr, fs.ErrNotExist) {
 				t.Fatalf("LoadHost(local-worker) error = %v, want fs.ErrNotExist", loadErr)
@@ -1040,6 +1050,42 @@ func TestSandboxHostStatusLiveFailureDoesNotMutateCacheAndSanitizesDetail(t *tes
 	}
 	if len(loaded.SupportedRuntimes) != 1 || loaded.SupportedRuntimes[0] != sandbox.SandboxRuntimeDriverSSHMachine {
 		t.Fatalf("supported runtimes after failed refresh = %#v, want original runtimes", loaded.SupportedRuntimes)
+	}
+}
+
+func TestSandboxHostStatusLiveRejectsNonLocalWorkerEndpointWithoutContactOrLeak(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:       "worker-a",
+		Name:     "builder",
+		Kind:     sandbox.SandboxHostKindWorker,
+		Endpoint: "unix:ssh://user:supersecret@example.test/workspace?token=abc",
+		Health:   &sandbox.HostHealth{Status: "stale"},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	deps := defaultSandboxHostDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("sandbox host status --live should reject non-local worker endpoints before constructing a worker client")
+		return nil, nil
+	}
+
+	cmd, _, stderr := newTestSandboxHostCommand(deps)
+	cmd.SetArgs([]string{"status", "worker-a", "--live"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want non-local worker endpoint validation error")
+	}
+
+	detail := err.Error() + "\n" + stderr.String()
+	if !strings.Contains(detail, "absolute local Unix socket path") {
+		t.Fatalf("error/stderr = %q, want absolute local socket validation detail", detail)
+	}
+	for _, leaked := range []string{"supersecret", "example.test", "token=abc", "ssh://user"} {
+		if strings.Contains(detail, leaked) {
+			t.Fatalf("live failure detail leaked %q: %q", leaked, detail)
+		}
 	}
 }
 
