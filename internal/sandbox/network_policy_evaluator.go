@@ -135,15 +135,6 @@ func sandboxNetworkPolicyIntentNeedsEnforcement(intent SandboxNetworkPolicyInten
 	return len(intent.Rules) > 0
 }
 
-func sandboxNetworkPolicyPresetNeedsDefaultDeny(preset SandboxNetworkPolicyPreset) bool {
-	switch preset {
-	case SandboxNetworkPolicyPresetAllowListed, SandboxNetworkPolicyPresetDenyByDefault:
-		return true
-	default:
-		return false
-	}
-}
-
 func sandboxNetworkPolicyRuleSupported(kind SandboxNetworkPolicyRuleKind, capability SandboxNetworkPolicyEnforcementCapability) bool {
 	switch kind {
 	case SandboxNetworkPolicyRuleKindDomain:

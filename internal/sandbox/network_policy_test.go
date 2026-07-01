@@ -114,6 +114,9 @@ func TestNetworkPolicyRuleValidation(t *testing.T) {
 	if !valid.Valid {
 		t.Fatalf("valid policy returned errors: %#v", valid.Errors)
 	}
+	if !hasNetworkPolicyDataDecision(valid, SandboxNetworkPolicyDataDecisionDefaultDenyPosture) {
+		t.Fatalf("validation decisions missing allow-listed default-deny posture: %#v", valid.Decisions)
+	}
 	if !hasNetworkPolicyDataDecision(valid, SandboxNetworkPolicyDataDecisionDomainRule) {
 		t.Fatalf("validation decisions missing domain rule: %#v", valid.Decisions)
 	}

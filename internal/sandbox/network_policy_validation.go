@@ -74,7 +74,7 @@ func ValidateSandboxNetworkPolicyIntent(intent SandboxNetworkPolicyIntent) Sandb
 	if intent.Preset != "" {
 		if !validSandboxNetworkPolicyPreset(intent.Preset) {
 			result.addError(-1, "", SandboxNetworkPolicyValidationInvalidPreset, "network policy preset is unsupported")
-		} else if intent.Preset == SandboxNetworkPolicyPresetDenyByDefault {
+		} else if sandboxNetworkPolicyPresetNeedsDefaultDeny(intent.Preset) {
 			result.Decisions = append(result.Decisions, SandboxNetworkPolicyValidationDecision{
 				Code:   SandboxNetworkPolicyDataDecisionDefaultDenyPosture,
 				Preset: intent.Preset,

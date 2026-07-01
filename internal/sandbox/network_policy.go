@@ -103,3 +103,12 @@ type SandboxNetworkPolicyResult struct {
 	Capability      SandboxNetworkPolicyEnforcementCapability `json:"capability"`
 	Warnings        []SandboxNetworkPolicyWarning             `json:"warnings,omitempty"`
 }
+
+func sandboxNetworkPolicyPresetNeedsDefaultDeny(preset SandboxNetworkPolicyPreset) bool {
+	switch preset {
+	case SandboxNetworkPolicyPresetAllowListed, SandboxNetworkPolicyPresetDenyByDefault:
+		return true
+	default:
+		return false
+	}
+}
