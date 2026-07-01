@@ -44,6 +44,7 @@
 - Phase 24 proxy/log import-boundary coverage lives in `internal/sandbox/network_proxy_import_boundary_test.go`; keep it focused on production `network_proxy*.go` files, allow standard-library metadata helpers only, and forbid command, compound, factory, worker-client, concrete runtime/provider, net/http, process, Docker/Podman, KVM/microVM, and cloud SDK dependencies.
 - Proxy session validation/normalization belongs in `internal/sandbox/network_proxy_validation.go`; return sanitized code/field errors, expose normalized metadata only for valid input, and do not default absent enforcement metadata to `none` or any live capability claim.
 - Decision-log validation/normalization belongs in `internal/sandbox/network_proxy_validation.go`; keep errors record-index/field-oriented and sanitized, reject unsafe request metadata labels, preserve only safe destination categories, and never infer denied decisions as enforced without explicit enforcing metadata.
+- Proxy/log durable redaction sanitizers belong in `internal/sandbox/network_proxy_validation.go`; clear unsafe dynamic identifiers/labels before manifest or record persistence, preserve safe enum-like categories/policy/outcome/source metadata, and drop denied `enforced` claims when enforcing metadata is stripped.
 
 ## Patterns from phase23-security-intent-propagation (2026-07-02)
 

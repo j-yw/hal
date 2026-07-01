@@ -438,6 +438,107 @@ func TestNetworkPolicyDecisionLogValidationDoesNotInferDeniedEnforcement(t *test
 	}
 }
 
+func TestNetworkProxySessionMetadataSanitizationRedactsSensitiveExamples(t *testing.T) {
+	for _, sensitive := range networkProxySensitiveExamples() {
+		t.Run(sensitive, func(t *testing.T) {
+			session := SandboxNetworkProxySessionMetadata{
+				ID:     sensitive,
+				Source: SandboxNetworkPolicyDecisionSource(" RUN "),
+				PolicySnapshot: &SandboxNetworkPolicySnapshotIdentity{
+					ID:        " policy-snapshot-01 ",
+					Version:   sensitive,
+					Preset:    SandboxNetworkPolicyPreset(" DENY_BY_DEFAULT "),
+					RuleSetID: sensitive,
+				},
+				EnforcementMode: sensitive,
+			}
+
+			sanitized := SanitizeSandboxNetworkProxySessionMetadata(session)
+			payload, err := json.Marshal(sanitized)
+			if err != nil {
+				t.Fatalf("json.Marshal(sanitized proxy session) error: %v", err)
+			}
+
+			assertNetworkProxyPayloadNoSensitiveExamples(t, string(payload))
+			assertNetworkProxyPayloadContains(t, string(payload),
+				string(SandboxNetworkPolicyDecisionSourceRun),
+				"policy-snapshot-01",
+				string(SandboxNetworkPolicyPresetDenyByDefault),
+			)
+			if sanitized.ID != "" {
+				t.Fatalf("sanitized id = %q, want empty for unsafe input", sanitized.ID)
+			}
+			if sanitized.EnforcementMode != "" {
+				t.Fatalf("sanitized enforcement mode = %q, want empty for unsafe input", sanitized.EnforcementMode)
+			}
+			if sanitized.PolicySnapshot == nil {
+				t.Fatal("sanitized policy snapshot = nil, want safe snapshot identity preserved")
+			}
+			if sanitized.PolicySnapshot.Version != "" || sanitized.PolicySnapshot.RuleSetID != "" {
+				t.Fatalf("sanitized policy snapshot = %#v, want unsafe free-form fields cleared", sanitized.PolicySnapshot)
+			}
+		})
+	}
+}
+
+func TestNetworkPolicyDecisionLogSanitizationRedactsSensitiveExamples(t *testing.T) {
+	for _, sensitive := range networkProxySensitiveExamples() {
+		t.Run(sensitive, func(t *testing.T) {
+			enforced := true
+			record := validNetworkPolicyDecisionLogRecord()
+			record.ID = sensitive
+			record.Source = SandboxNetworkPolicyDecisionSource(" FACTORY ")
+			record.ProxySessionID = sensitive
+			record.PolicySnapshot.Version = sensitive
+			record.PolicySnapshot.RuleSetID = sensitive
+			record.Request.ID = sensitive
+			record.Request.Operation = sensitive
+			record.Request.DestinationCategory = SandboxNetworkPolicyDestinationCategory(" METADATA_SERVICE ")
+			record.Outcome = SandboxNetworkPolicyDecisionOutcome(" DENIED ")
+			record.ReasonCode = SandboxNetworkPolicyDecisionReasonCode(" DEFAULT_DENY ")
+			record.RuleKind = SandboxNetworkPolicyRuleKind(" METADATA_ENDPOINT ")
+			record.PolicyPreset = SandboxNetworkPolicyPreset(" DENY_BY_DEFAULT ")
+			record.EnforcementMode = sensitive
+			record.Enforced = &enforced
+
+			sanitized := SanitizeSandboxNetworkPolicyDecisionLogRecords([]SandboxNetworkPolicyDecisionLogRecord{record})
+			payload, err := json.Marshal(sanitized)
+			if err != nil {
+				t.Fatalf("json.Marshal(sanitized decision logs) error: %v", err)
+			}
+
+			assertNetworkProxyPayloadNoSensitiveExamples(t, string(payload))
+			assertNetworkProxyPayloadContains(t, string(payload),
+				string(SandboxNetworkPolicyDecisionSourceFactory),
+				"policy-snapshot-01",
+				string(SandboxNetworkPolicyDestinationMetadataService),
+				string(SandboxNetworkPolicyDecisionOutcomeDenied),
+				string(SandboxNetworkPolicyDecisionReasonDefaultDeny),
+				string(SandboxNetworkPolicyRuleKindMetadataEndpoint),
+				string(SandboxNetworkPolicyPresetDenyByDefault),
+			)
+			if len(sanitized) != 1 {
+				t.Fatalf("sanitized records length = %d, want 1", len(sanitized))
+			}
+			if sanitized[0].ID != "" || sanitized[0].ProxySessionID != "" {
+				t.Fatalf("sanitized record identifiers = id %q proxySessionID %q, want empty for unsafe input", sanitized[0].ID, sanitized[0].ProxySessionID)
+			}
+			if sanitized[0].EnforcementMode != "" {
+				t.Fatalf("sanitized enforcement mode = %q, want empty for unsafe input", sanitized[0].EnforcementMode)
+			}
+			if sanitized[0].Enforced != nil {
+				t.Fatalf("sanitized enforced = %#v, want nil when enforcing metadata was cleared", sanitized[0].Enforced)
+			}
+			if sanitized[0].Request == nil {
+				t.Fatal("sanitized request = nil, want safe destination category preserved")
+			}
+			if sanitized[0].Request.ID != "" || sanitized[0].Request.Operation != "" {
+				t.Fatalf("sanitized request = %#v, want unsafe request metadata cleared", sanitized[0].Request)
+			}
+		})
+	}
+}
+
 func hasNetworkProxyValidationError(result SandboxNetworkProxyValidationResult, code SandboxNetworkProxyValidationCode, field string) bool {
 	for _, err := range result.Errors {
 		if err.Code == code && err.Field == field {
@@ -445,6 +546,39 @@ func hasNetworkProxyValidationError(result SandboxNetworkProxyValidationResult, 
 		}
 	}
 	return false
+}
+
+func networkProxySensitiveExamples() []string {
+	return []string{
+		"api.example.com",
+		"169.254.169.254",
+		"https://user:secret@example.test/path?token=secret",
+		"unix:///tmp/private/proxy.sock",
+		"/Users/alice/project",
+		"Authorization",
+		"Bearer",
+		"OPENAI_API_KEY",
+		"X-Raw-Header: Bearer raw-header-value",
+		`{"raw_body":"raw-body-value"}`,
+	}
+}
+
+func assertNetworkProxyPayloadNoSensitiveExamples(t *testing.T, payload string) {
+	t.Helper()
+	for _, unsafe := range networkProxySensitiveExamples() {
+		if strings.Contains(payload, unsafe) {
+			t.Fatalf("payload leaked sensitive example %q: %s", unsafe, payload)
+		}
+	}
+}
+
+func assertNetworkProxyPayloadContains(t *testing.T, payload string, expected ...string) {
+	t.Helper()
+	for _, value := range expected {
+		if !strings.Contains(payload, value) {
+			t.Fatalf("payload %s does not contain expected safe value %q", payload, value)
+		}
+	}
 }
 
 func assertNetworkProxyValidationNoUnsafeLeak(t *testing.T, result SandboxNetworkProxyValidationResult) {

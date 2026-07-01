@@ -128,6 +128,54 @@ func ValidateAndNormalizeSandboxNetworkPolicyDecisionLogRecords(records []Sandbo
 	return result
 }
 
+// SanitizeSandboxNetworkProxySessionMetadata returns a normalized copy of
+// proxy-session metadata safe for durable manifests and records. Unsafe dynamic
+// identifiers are cleared instead of redacted so optional JSON fields disappear.
+func SanitizeSandboxNetworkProxySessionMetadata(session SandboxNetworkProxySessionMetadata) SandboxNetworkProxySessionMetadata {
+	sanitized := normalizeSandboxNetworkProxySessionMetadata(session)
+	sanitized.ID = sanitizeSandboxNetworkProxyIdentifier(sanitized.ID)
+	sanitized.Source = sanitizeSandboxNetworkPolicyDecisionSourceValue(sanitized.Source)
+	sanitized.EnforcementMode = sanitizeSandboxNetworkProxyEnforcementModeValue(sanitized.EnforcementMode)
+	sanitized.PolicySnapshot = sanitizeSandboxNetworkPolicySnapshotIdentityPtr(sanitized.PolicySnapshot)
+	return sanitized
+}
+
+// SanitizeSandboxNetworkPolicyDecisionLogRecord returns a normalized copy of a
+// policy decision-log record safe for durable manifests and records.
+func SanitizeSandboxNetworkPolicyDecisionLogRecord(record SandboxNetworkPolicyDecisionLogRecord) SandboxNetworkPolicyDecisionLogRecord {
+	sanitized := normalizeSandboxNetworkPolicyDecisionLogRecord(record)
+	sanitized.ID = sanitizeSandboxNetworkProxyIdentifier(sanitized.ID)
+	sanitized.Source = sanitizeSandboxNetworkPolicyDecisionSourceValue(sanitized.Source)
+	sanitized.ProxySessionID = sanitizeSandboxNetworkProxyIdentifier(sanitized.ProxySessionID)
+	sanitized.PolicySnapshot = sanitizeSandboxNetworkPolicySnapshotIdentityPtr(sanitized.PolicySnapshot)
+	sanitized.Request = sanitizeSandboxNetworkPolicyRequestSummaryPtr(sanitized.Request)
+	sanitized.Outcome = sanitizeSandboxNetworkPolicyDecisionOutcomeValue(sanitized.Outcome)
+	sanitized.ReasonCode = sanitizeSandboxNetworkPolicyDecisionReasonCodeValue(sanitized.ReasonCode)
+	sanitized.RuleKind = sanitizeSandboxNetworkPolicyRuleKindValue(sanitized.RuleKind)
+	sanitized.PolicyPreset = sanitizeSandboxNetworkPolicyPresetValue(sanitized.PolicyPreset)
+	sanitized.EnforcementMode = sanitizeSandboxNetworkProxyEnforcementModeValue(sanitized.EnforcementMode)
+	if sanitized.Outcome == SandboxNetworkPolicyDecisionOutcomeDenied &&
+		sanitized.Enforced != nil &&
+		*sanitized.Enforced &&
+		(sanitized.EnforcementMode == "" || sanitized.EnforcementMode == SandboxNetworkEnforcementModeNone) {
+		sanitized.Enforced = nil
+	}
+	return sanitized
+}
+
+// SanitizeSandboxNetworkPolicyDecisionLogRecords returns a sanitized copy of a
+// decision-log batch.
+func SanitizeSandboxNetworkPolicyDecisionLogRecords(records []SandboxNetworkPolicyDecisionLogRecord) []SandboxNetworkPolicyDecisionLogRecord {
+	if len(records) == 0 {
+		return nil
+	}
+	sanitized := make([]SandboxNetworkPolicyDecisionLogRecord, 0, len(records))
+	for _, record := range records {
+		sanitized = append(sanitized, SanitizeSandboxNetworkPolicyDecisionLogRecord(record))
+	}
+	return sanitized
+}
+
 func normalizeSandboxNetworkProxySessionMetadata(session SandboxNetworkProxySessionMetadata) SandboxNetworkProxySessionMetadata {
 	normalized := SandboxNetworkProxySessionMetadata{
 		ID:              strings.TrimSpace(session.ID),
@@ -176,6 +224,141 @@ func normalizeSandboxNetworkPolicyDecisionLogRecord(record SandboxNetworkPolicyD
 		normalized.Enforced = &enforced
 	}
 	return normalized
+}
+
+func sanitizeSandboxNetworkPolicySnapshotIdentityPtr(snapshot *SandboxNetworkPolicySnapshotIdentity) *SandboxNetworkPolicySnapshotIdentity {
+	if snapshot == nil {
+		return nil
+	}
+	sanitized := SandboxNetworkPolicySnapshotIdentity{
+		ID:        sanitizeSandboxNetworkProxyIdentifier(snapshot.ID),
+		Version:   sanitizeSandboxNetworkProxyIdentifier(snapshot.Version),
+		Preset:    sanitizeSandboxNetworkPolicyPresetValue(snapshot.Preset),
+		RuleSetID: sanitizeSandboxNetworkProxyIdentifier(snapshot.RuleSetID),
+	}
+	if sanitized.ID == "" {
+		return nil
+	}
+	return &sanitized
+}
+
+func sanitizeSandboxNetworkPolicyRequestSummaryPtr(request *SandboxNetworkPolicyRequestSummary) *SandboxNetworkPolicyRequestSummary {
+	if request == nil {
+		return nil
+	}
+	sanitized := SandboxNetworkPolicyRequestSummary{
+		ID:                  sanitizeSandboxNetworkProxyIdentifier(request.ID),
+		Operation:           sanitizeSandboxNetworkProxyLabel(request.Operation),
+		DestinationCategory: sanitizeSandboxNetworkPolicyDestinationCategoryValue(request.DestinationCategory),
+	}
+	if sanitized.ID == "" && sanitized.Operation == "" && sanitized.DestinationCategory == "" {
+		return nil
+	}
+	return &sanitized
+}
+
+func sanitizeSandboxNetworkPolicyDecisionSourceValue(source SandboxNetworkPolicyDecisionSource) SandboxNetworkPolicyDecisionSource {
+	source = normalizeSandboxNetworkPolicyDecisionSource(source)
+	if !validSandboxNetworkPolicyDecisionSource(source) {
+		return ""
+	}
+	return source
+}
+
+func sanitizeSandboxNetworkPolicyDecisionOutcomeValue(outcome SandboxNetworkPolicyDecisionOutcome) SandboxNetworkPolicyDecisionOutcome {
+	outcome = normalizeSandboxNetworkPolicyDecisionOutcome(outcome)
+	if !validSandboxNetworkPolicyDecisionOutcome(outcome) {
+		return ""
+	}
+	return outcome
+}
+
+func sanitizeSandboxNetworkPolicyDecisionReasonCodeValue(reason SandboxNetworkPolicyDecisionReasonCode) SandboxNetworkPolicyDecisionReasonCode {
+	reason = normalizeSandboxNetworkPolicyDecisionReasonCode(reason)
+	if reason != "" && !validSandboxNetworkPolicyDecisionReasonCode(reason) {
+		return ""
+	}
+	return reason
+}
+
+func sanitizeSandboxNetworkPolicyDestinationCategoryValue(category SandboxNetworkPolicyDestinationCategory) SandboxNetworkPolicyDestinationCategory {
+	category = normalizeSandboxNetworkPolicyDestinationCategory(category)
+	if category != "" && !validSandboxNetworkPolicyDestinationCategory(category) {
+		return ""
+	}
+	return category
+}
+
+func sanitizeSandboxNetworkPolicyRuleKindValue(kind SandboxNetworkPolicyRuleKind) SandboxNetworkPolicyRuleKind {
+	kind = normalizeSandboxNetworkPolicyRuleKind(kind)
+	if kind != "" && !validSandboxNetworkPolicyRuleKind(kind) {
+		return ""
+	}
+	return kind
+}
+
+func sanitizeSandboxNetworkPolicyPresetValue(preset SandboxNetworkPolicyPreset) SandboxNetworkPolicyPreset {
+	preset = normalizeSandboxNetworkPolicyPreset(preset)
+	if preset != "" && !validSandboxNetworkPolicyPreset(preset) {
+		return ""
+	}
+	return preset
+}
+
+func sanitizeSandboxNetworkProxyEnforcementModeValue(mode string) string {
+	mode = normalizeSandboxNetworkProxyEnforcementMode(mode)
+	if mode != "" && !validSandboxNetworkProxyEnforcementMode(mode) {
+		return ""
+	}
+	return mode
+}
+
+func sanitizeSandboxNetworkProxyLabel(value string) string {
+	return sanitizeSandboxNetworkProxyIdentifier(value)
+}
+
+func sanitizeSandboxNetworkProxyIdentifier(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || unsafeSandboxNetworkProxyFreeformMetadata(value) {
+		return ""
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_':
+		default:
+			return ""
+		}
+	}
+	return value
+}
+
+func unsafeSandboxNetworkProxyFreeformMetadata(value string) bool {
+	lower := strings.ToLower(value)
+	for _, marker := range []string{
+		"://",
+		"@",
+		"authorization",
+		"bearer",
+		"token",
+		"secret",
+		"credential",
+		"password",
+		"api_key",
+		"apikey",
+		"access_key",
+		"private_key",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	if strings.Contains(value, ".") || strings.ContainsAny(value, "/\\?#\r\n\t \"'`{}[]()<>|;&=$:") {
+		return true
+	}
+	return false
 }
 
 func normalizeSandboxNetworkPolicyDecisionSource(source SandboxNetworkPolicyDecisionSource) SandboxNetworkPolicyDecisionSource {
