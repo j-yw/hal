@@ -438,6 +438,137 @@ func TestNetworkPolicyDecisionLogValidationDoesNotInferDeniedEnforcement(t *test
 	}
 }
 
+func TestNetworkPolicyDecisionLogValidationRejectsNonEnforcingCompatibilityClaims(t *testing.T) {
+	enforced := true
+	tests := []struct {
+		name    string
+		outcome SandboxNetworkPolicyDecisionOutcome
+		reason  SandboxNetworkPolicyDecisionReasonCode
+		mode    string
+	}{
+		{
+			name:    "denied decision with no mode",
+			outcome: SandboxNetworkPolicyDecisionOutcomeDenied,
+			reason:  SandboxNetworkPolicyDecisionReasonDefaultDeny,
+			mode:    "",
+		},
+		{
+			name:    "denied decision with none mode",
+			outcome: SandboxNetworkPolicyDecisionOutcomeDenied,
+			reason:  SandboxNetworkPolicyDecisionReasonDefaultDeny,
+			mode:    SandboxNetworkEnforcementModeNone,
+		},
+		{
+			name:    "denied decision with best effort mode",
+			outcome: SandboxNetworkPolicyDecisionOutcomeDenied,
+			reason:  SandboxNetworkPolicyDecisionReasonEnforcementUnsupported,
+			mode:    SandboxNetworkEnforcementModeBestEffort,
+		},
+		{
+			name:    "audit only decision with best effort mode",
+			outcome: SandboxNetworkPolicyDecisionOutcomeAuditOnly,
+			reason:  SandboxNetworkPolicyDecisionReasonAuditOnly,
+			mode:    SandboxNetworkEnforcementModeBestEffort,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ValidateAndNormalizeSandboxNetworkPolicyDecisionLogRecord(SandboxNetworkPolicyDecisionLogRecord{
+				Source:          SandboxNetworkPolicyDecisionSourceRun,
+				Outcome:         tt.outcome,
+				ReasonCode:      tt.reason,
+				PolicyPreset:    SandboxNetworkPolicyPresetLegacyDefault,
+				EnforcementMode: tt.mode,
+				Enforced:        &enforced,
+			})
+			if got.Valid {
+				t.Fatalf("ValidateAndNormalizeSandboxNetworkPolicyDecisionLogRecord() valid = true, want false")
+			}
+			if !hasNetworkPolicyDecisionLogValidationError(got, SandboxNetworkPolicyDecisionLogValidationInvalidEnforcementClaim, 0, "enforced") {
+				t.Fatalf("validation errors = %#v, want invalid enforced claim", got.Errors)
+			}
+			assertNetworkPolicyDecisionLogValidationNoUnsafeLeak(t, got)
+		})
+	}
+}
+
+func TestNetworkPolicyDecisionLogSanitizationPreservesHonestCompatibilitySemantics(t *testing.T) {
+	enforced := true
+	records := []SandboxNetworkPolicyDecisionLogRecord{
+		{
+			Source:          SandboxNetworkPolicyDecisionSourceRun,
+			Outcome:         SandboxNetworkPolicyDecisionOutcomeAuditOnly,
+			ReasonCode:      SandboxNetworkPolicyDecisionReasonAuditOnly,
+			PolicyPreset:    SandboxNetworkPolicyPresetLegacyDefault,
+			EnforcementMode: SandboxNetworkEnforcementModeBestEffort,
+			Enforced:        &enforced,
+		},
+		{
+			Source:          SandboxNetworkPolicyDecisionSourceWorker,
+			Outcome:         SandboxNetworkPolicyDecisionOutcomeDenied,
+			ReasonCode:      SandboxNetworkPolicyDecisionReasonEnforcementUnsupported,
+			PolicyPreset:    SandboxNetworkPolicyPresetLegacyDefault,
+			EnforcementMode: SandboxNetworkEnforcementModeNone,
+			Enforced:        &enforced,
+		},
+		{
+			Source:          SandboxNetworkPolicyDecisionSourceWorker,
+			Outcome:         SandboxNetworkPolicyDecisionOutcomeDenied,
+			ReasonCode:      SandboxNetworkPolicyDecisionReasonDefaultDeny,
+			PolicyPreset:    SandboxNetworkPolicyPresetDenyByDefault,
+			EnforcementMode: SandboxNetworkEnforcementModeFirewall,
+			Enforced:        &enforced,
+		},
+	}
+
+	sanitized := SanitizeSandboxNetworkPolicyDecisionLogRecords(records)
+	if len(sanitized) != 3 {
+		t.Fatalf("sanitized records length = %d, want 3", len(sanitized))
+	}
+	if sanitized[0].Outcome != SandboxNetworkPolicyDecisionOutcomeAuditOnly ||
+		sanitized[0].ReasonCode != SandboxNetworkPolicyDecisionReasonAuditOnly ||
+		sanitized[0].PolicyPreset != SandboxNetworkPolicyPresetLegacyDefault ||
+		sanitized[0].EnforcementMode != SandboxNetworkEnforcementModeBestEffort {
+		t.Fatalf("audit-only compatibility record = %#v, want safe non-enforcing metadata preserved", sanitized[0])
+	}
+	if sanitized[0].Enforced != nil {
+		t.Fatalf("audit-only compatibility enforced = %#v, want nil", sanitized[0].Enforced)
+	}
+	if sanitized[1].Outcome != SandboxNetworkPolicyDecisionOutcomeDenied ||
+		sanitized[1].ReasonCode != SandboxNetworkPolicyDecisionReasonEnforcementUnsupported ||
+		sanitized[1].PolicyPreset != SandboxNetworkPolicyPresetLegacyDefault ||
+		sanitized[1].EnforcementMode != SandboxNetworkEnforcementModeNone {
+		t.Fatalf("unsupported compatibility record = %#v, want safe non-enforcing metadata preserved", sanitized[1])
+	}
+	if sanitized[1].Enforced != nil {
+		t.Fatalf("unsupported compatibility enforced = %#v, want nil", sanitized[1].Enforced)
+	}
+	if sanitized[2].Enforced == nil || !*sanitized[2].Enforced {
+		t.Fatalf("explicit enforcing record enforced = %#v, want true", sanitized[2].Enforced)
+	}
+	if sanitized[2].EnforcementMode != SandboxNetworkEnforcementModeFirewall {
+		t.Fatalf("explicit enforcing mode = %q, want firewall", sanitized[2].EnforcementMode)
+	}
+
+	payload, err := json.Marshal(sanitized[:2])
+	if err != nil {
+		t.Fatalf("json.Marshal(non-enforcing records) error: %v", err)
+	}
+	for _, forbidden := range []string{"\"enforced\":true", string(SandboxNetworkPolicyPresetDenyByDefault)} {
+		if strings.Contains(string(payload), forbidden) {
+			t.Fatalf("non-enforcing compatibility records overclaimed %q: %s", forbidden, payload)
+		}
+	}
+	assertNetworkProxyPayloadContains(t, string(payload),
+		string(SandboxNetworkPolicyDecisionOutcomeAuditOnly),
+		string(SandboxNetworkPolicyDecisionReasonEnforcementUnsupported),
+		string(SandboxNetworkPolicyPresetLegacyDefault),
+		SandboxNetworkEnforcementModeBestEffort,
+		SandboxNetworkEnforcementModeNone,
+	)
+}
+
 func TestNetworkProxySessionMetadataSanitizationRedactsSensitiveExamples(t *testing.T) {
 	for _, sensitive := range networkProxySensitiveExamples() {
 		t.Run(sensitive, func(t *testing.T) {

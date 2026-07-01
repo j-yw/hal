@@ -154,10 +154,9 @@ func SanitizeSandboxNetworkPolicyDecisionLogRecord(record SandboxNetworkPolicyDe
 	sanitized.RuleKind = sanitizeSandboxNetworkPolicyRuleKindValue(sanitized.RuleKind)
 	sanitized.PolicyPreset = sanitizeSandboxNetworkPolicyPresetValue(sanitized.PolicyPreset)
 	sanitized.EnforcementMode = sanitizeSandboxNetworkProxyEnforcementModeValue(sanitized.EnforcementMode)
-	if sanitized.Outcome == SandboxNetworkPolicyDecisionOutcomeDenied &&
-		sanitized.Enforced != nil &&
+	if sanitized.Enforced != nil &&
 		*sanitized.Enforced &&
-		(sanitized.EnforcementMode == "" || sanitized.EnforcementMode == SandboxNetworkEnforcementModeNone) {
+		!sandboxNetworkPolicyModeCanEnforce(sanitized.EnforcementMode) {
 		sanitized.Enforced = nil
 	}
 	return sanitized
@@ -431,11 +430,10 @@ func validateSandboxNetworkPolicyDecisionLogRecord(result *SandboxNetworkPolicyD
 	if record.EnforcementMode != "" && !validSandboxNetworkProxyEnforcementMode(record.EnforcementMode) {
 		result.addError(index, "enforcementMode", SandboxNetworkPolicyDecisionLogValidationInvalidEnforcement, "decision log enforcement mode is unsupported")
 	}
-	if record.Outcome == SandboxNetworkPolicyDecisionOutcomeDenied &&
-		record.Enforced != nil &&
+	if record.Enforced != nil &&
 		*record.Enforced &&
-		(record.EnforcementMode == "" || record.EnforcementMode == SandboxNetworkEnforcementModeNone) {
-		result.addError(index, "enforced", SandboxNetworkPolicyDecisionLogValidationInvalidEnforcementClaim, "denied decision cannot claim enforcement without explicit enforcing metadata")
+		!sandboxNetworkPolicyModeCanEnforce(record.EnforcementMode) {
+		result.addError(index, "enforced", SandboxNetworkPolicyDecisionLogValidationInvalidEnforcementClaim, "decision log cannot claim enforcement without explicit enforcing metadata")
 	}
 }
 

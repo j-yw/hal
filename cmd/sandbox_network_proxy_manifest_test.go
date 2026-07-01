@@ -86,6 +86,32 @@ func TestRunAndAutoSandboxManifestsPersistSanitizedPolicyDecisionLogs(t *testing
 	assertSandboxManifestSanitizedPolicyDecisionLogs(t, autoManifest, sandbox.SandboxNetworkPolicyDecisionSourceAuto)
 }
 
+func TestRunAndAutoSandboxManifestsStripNonEnforcingDecisionLogClaims(t *testing.T) {
+	startedAt := time.Date(2026, 7, 2, 6, 28, 0, 0, time.UTC)
+
+	runStore := sandboxexecution.NewStore(t.TempDir())
+	if err := saveRunSandboxManifest(runStore, runSandboxRequest{
+		ExecutionID:               "run-compat-decision-log",
+		ProjectDir:                "/repo",
+		NetworkPolicyDecisionLogs: nonEnforcingCompatibilityDecisionLogRecords(sandbox.SandboxNetworkPolicyDecisionSourceRun),
+	}, sandboxexecution.StatusRunning, startedAt, nil, nil); err != nil {
+		t.Fatalf("saveRunSandboxManifest() error = %v", err)
+	}
+	runManifest := mustLoadSandboxExecutionManifest(t, runStore, "run-compat-decision-log")
+	assertSandboxManifestNonEnforcingDecisionLogs(t, runManifest, sandbox.SandboxNetworkPolicyDecisionSourceRun)
+
+	autoStore := sandboxexecution.NewStore(t.TempDir())
+	if err := saveAutoSandboxManifest(autoStore, autoSandboxRequest{
+		ExecutionID:               "auto-compat-decision-log",
+		ProjectDir:                "/repo",
+		NetworkPolicyDecisionLogs: nonEnforcingCompatibilityDecisionLogRecords(sandbox.SandboxNetworkPolicyDecisionSourceAuto),
+	}, sandboxexecution.StatusRunning, startedAt, nil, nil); err != nil {
+		t.Fatalf("saveAutoSandboxManifest() error = %v", err)
+	}
+	autoManifest := mustLoadSandboxExecutionManifest(t, autoStore, "auto-compat-decision-log")
+	assertSandboxManifestNonEnforcingDecisionLogs(t, autoManifest, sandbox.SandboxNetworkPolicyDecisionSourceAuto)
+}
+
 func unsafeProxyManifestSession(source sandbox.SandboxNetworkPolicyDecisionSource) *sandbox.SandboxNetworkProxySessionMetadata {
 	return &sandbox.SandboxNetworkProxySessionMetadata{
 		ID:     " proxy-session-01 ",
@@ -149,6 +175,31 @@ func unsafePolicyDecisionLogManifestRecords(source sandbox.SandboxNetworkPolicyD
 	return records
 }
 
+func nonEnforcingCompatibilityDecisionLogRecords(source sandbox.SandboxNetworkPolicyDecisionSource) []sandbox.SandboxNetworkPolicyDecisionLogRecord {
+	enforced := true
+	return []sandbox.SandboxNetworkPolicyDecisionLogRecord{
+		{
+			ID:             "compat-decision-01",
+			Source:         source,
+			ProxySessionID: "compat-proxy-01",
+			PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
+				ID:     "compat-policy-01",
+				Preset: sandbox.SandboxNetworkPolicyPresetLegacyDefault,
+			},
+			Request: &sandbox.SandboxNetworkPolicyRequestSummary{
+				ID:                  "compat-request-01",
+				Operation:           "connect",
+				DestinationCategory: sandbox.SandboxNetworkPolicyDestinationPublicInternet,
+			},
+			Outcome:         sandbox.SandboxNetworkPolicyDecisionOutcomeAuditOnly,
+			ReasonCode:      sandbox.SandboxNetworkPolicyDecisionReasonEnforcementUnsupported,
+			PolicyPreset:    sandbox.SandboxNetworkPolicyPresetLegacyDefault,
+			EnforcementMode: sandbox.SandboxNetworkEnforcementModeBestEffort,
+			Enforced:        &enforced,
+		},
+	}
+}
+
 func assertSandboxManifestOmitsNetworkProxyMetadata(t *testing.T, manifest *sandboxexecution.Manifest) {
 	t.Helper()
 	if manifest.NetworkProxySession != nil {
@@ -161,6 +212,56 @@ func assertSandboxManifestOmitsNetworkProxyMetadata(t *testing.T, manifest *sand
 	for _, forbidden := range []string{"networkProxySession", "networkPolicyDecisionLog", "networkPolicyDecisionLogs"} {
 		if _, ok := fields[forbidden]; ok {
 			t.Fatalf("manifest should omit %q by default: %#v", forbidden, fields)
+		}
+	}
+}
+
+func assertSandboxManifestNonEnforcingDecisionLogs(t *testing.T, manifest *sandboxexecution.Manifest, source sandbox.SandboxNetworkPolicyDecisionSource) {
+	t.Helper()
+	if len(manifest.NetworkPolicyDecisionLogs) != 1 {
+		t.Fatalf("NetworkPolicyDecisionLogs length = %d, want 1", len(manifest.NetworkPolicyDecisionLogs))
+	}
+	record := manifest.NetworkPolicyDecisionLogs[0]
+	if record.Source != source {
+		t.Fatalf("decision log source = %q, want %q", record.Source, source)
+	}
+	if record.Outcome != sandbox.SandboxNetworkPolicyDecisionOutcomeAuditOnly {
+		t.Fatalf("decision log outcome = %q, want audit_only", record.Outcome)
+	}
+	if record.ReasonCode != sandbox.SandboxNetworkPolicyDecisionReasonEnforcementUnsupported {
+		t.Fatalf("decision log reason = %q, want enforcement_unsupported", record.ReasonCode)
+	}
+	if record.PolicyPreset != sandbox.SandboxNetworkPolicyPresetLegacyDefault {
+		t.Fatalf("decision log policy preset = %q, want legacy_default", record.PolicyPreset)
+	}
+	if record.EnforcementMode != sandbox.SandboxNetworkEnforcementModeBestEffort {
+		t.Fatalf("decision log enforcement mode = %q, want best_effort", record.EnforcementMode)
+	}
+	if record.Enforced != nil {
+		t.Fatalf("decision log enforced = %#v, want nil for non-enforcing compatibility metadata", record.Enforced)
+	}
+
+	payload, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("Marshal(manifest) error = %v", err)
+	}
+	encoded := string(payload)
+	for _, forbidden := range []string{"\"enforced\":true", string(sandbox.SandboxNetworkPolicyPresetDenyByDefault)} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("manifest overclaimed compatibility enforcement %q: %s", forbidden, encoded)
+		}
+	}
+	for _, want := range []string{
+		"networkPolicyDecisionLogs",
+		"compat-decision-01",
+		string(source),
+		string(sandbox.SandboxNetworkPolicyDecisionOutcomeAuditOnly),
+		string(sandbox.SandboxNetworkPolicyDecisionReasonEnforcementUnsupported),
+		string(sandbox.SandboxNetworkPolicyPresetLegacyDefault),
+		sandbox.SandboxNetworkEnforcementModeBestEffort,
+	} {
+		if !strings.Contains(encoded, want) {
+			t.Fatalf("manifest omitted safe non-enforcing metadata %q: %s", want, encoded)
 		}
 	}
 }

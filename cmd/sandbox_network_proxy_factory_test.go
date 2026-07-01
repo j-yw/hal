@@ -154,6 +154,29 @@ func TestFactoryTimelineEventSanitizesNetworkPolicyDecisionLogs(t *testing.T) {
 	assertFactoryTimelineSanitizedPolicyDecisionLogs(t, events[0], sandbox.SandboxNetworkPolicyDecisionSourceFactory)
 }
 
+func TestFactoryTimelineStripsNonEnforcingDecisionLogClaims(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	runID := "run-factory-compat-decision-logs"
+	now := time.Date(2026, 7, 2, 6, 38, 0, 0, time.UTC)
+
+	if err := appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType:                 factory.EventTypePolicyDecision,
+		Summary:                   "Network policy compatibility metadata recorded",
+		NetworkPolicyDecisionLogs: nonEnforcingCompatibilityDecisionLogRecords(sandbox.SandboxNetworkPolicyDecisionSourceFactory),
+	}); err != nil {
+		t.Fatalf("appendFactoryRunTimelineEvent() error = %v", err)
+	}
+
+	events, err := store.LoadEvents(runID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	assertFactoryTimelineNonEnforcingDecisionLogs(t, events[0], sandbox.SandboxNetworkPolicyDecisionSourceFactory)
+}
+
 func TestFactorySandboxSecurityPolicyEventAttachesSanitizedDecisionLogs(t *testing.T) {
 	store := factory.NewStore(t.TempDir())
 	now := time.Date(2026, 7, 2, 6, 40, 0, 0, time.UTC)
@@ -239,6 +262,56 @@ func TestFactorySandboxNetworkProxyMetadataPlumbingAvoidsLiveAdapterImports(t *t
 			if rule.match(importPath) {
 				t.Fatalf("factory network proxy metadata plumbing imports forbidden %s %q", rule.name, importPath)
 			}
+		}
+	}
+}
+
+func assertFactoryTimelineNonEnforcingDecisionLogs(t *testing.T, event factory.EventRecord, source sandbox.SandboxNetworkPolicyDecisionSource) {
+	t.Helper()
+	if len(event.NetworkPolicyDecisionLogs) != 1 {
+		t.Fatalf("NetworkPolicyDecisionLogs length = %d, want 1", len(event.NetworkPolicyDecisionLogs))
+	}
+	record := event.NetworkPolicyDecisionLogs[0]
+	if record.Source != source {
+		t.Fatalf("decision log source = %q, want %q", record.Source, source)
+	}
+	if record.Outcome != sandbox.SandboxNetworkPolicyDecisionOutcomeAuditOnly {
+		t.Fatalf("decision log outcome = %q, want audit_only", record.Outcome)
+	}
+	if record.ReasonCode != sandbox.SandboxNetworkPolicyDecisionReasonEnforcementUnsupported {
+		t.Fatalf("decision log reason = %q, want enforcement_unsupported", record.ReasonCode)
+	}
+	if record.PolicyPreset != sandbox.SandboxNetworkPolicyPresetLegacyDefault {
+		t.Fatalf("decision log policy preset = %q, want legacy_default", record.PolicyPreset)
+	}
+	if record.EnforcementMode != sandbox.SandboxNetworkEnforcementModeBestEffort {
+		t.Fatalf("decision log enforcement mode = %q, want best_effort", record.EnforcementMode)
+	}
+	if record.Enforced != nil {
+		t.Fatalf("decision log enforced = %#v, want nil for non-enforcing compatibility metadata", record.Enforced)
+	}
+
+	payload, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("Marshal(event) error = %v", err)
+	}
+	encoded := string(payload)
+	for _, forbidden := range []string{"\"enforced\":true", string(sandbox.SandboxNetworkPolicyPresetDenyByDefault)} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("factory timeline overclaimed compatibility enforcement %q: %s", forbidden, encoded)
+		}
+	}
+	for _, want := range []string{
+		"networkPolicyDecisionLogs",
+		"compat-decision-01",
+		string(source),
+		string(sandbox.SandboxNetworkPolicyDecisionOutcomeAuditOnly),
+		string(sandbox.SandboxNetworkPolicyDecisionReasonEnforcementUnsupported),
+		string(sandbox.SandboxNetworkPolicyPresetLegacyDefault),
+		sandbox.SandboxNetworkEnforcementModeBestEffort,
+	} {
+		if !strings.Contains(encoded, want) {
+			t.Fatalf("factory timeline omitted safe non-enforcing metadata %q: %s", want, encoded)
 		}
 	}
 }
