@@ -184,7 +184,7 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 		Stderr:      req.Stderr,
 	})
 	if err != nil {
-		return nil, phaseError(PhaseResolveTarget, nil, "", err)
+		return nil, phaseError(PhaseResolveTarget, target, "", err)
 	}
 	if target == nil {
 		return nil, phaseError(PhaseResolveTarget, nil, "", fmt.Errorf("sandbox target is required"))
@@ -216,6 +216,9 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 			Stderr: req.SetupStderr,
 		})
 		if err != nil {
+			if started != nil {
+				target = applyRuntimeTargetToSandboxState(target, *started)
+			}
 			return nil, phaseError(PhaseStartTarget, target, runtimeDriverID(driver), err)
 		}
 		if started == nil {

@@ -96,7 +96,7 @@ factory-run-v1 output.`,
   hal factory run .hal/prd-feature.md --secret-env GITHUB_TOKEN
   hal factory run .hal/prd-feature.md --base main --json
   hal factory run .hal/prd-feature.md --sandbox --base main
-  hal factory run .hal/prd-feature.md --sandbox --base main --sandbox-host worker-1`,
+  hal factory run .hal/prd-feature.md --sandbox --base main --sandbox-host worker-1 --sandbox-runtime rootless_podman`,
 	RunE: runFactoryRun,
 }
 
@@ -271,7 +271,7 @@ var defaultFactoryRunDeps = factoryRunDeps{
 	loadEngineConfig: compound.LoadEngineConfig,
 	runPipeline:      runFactoryRunPipeline,
 	runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
-		return runFactorySandboxExecutorWithDeps(ctx, req, factorySandboxExecutorDeps{})
+		return runFactorySandboxExecutorWithDeps(ctx, req, defaultFactorySandboxExecutorDeps)
 	},
 	loadVerify:             verify.LoadConfig,
 	runVerify:              verify.Run,
@@ -1313,6 +1313,7 @@ func collectAndStoreFactorySandboxArtifactRequestsWithProviderExec(ctx context.C
 	}
 	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
 	if _, err := factory.CollectSandboxArtifactsWithRedactor(ctx, store, record.RunID, &copier, requests, redactor); err != nil {
+		_ = recordFactoryRunArtifactSyncFailedWithRedactor(store, record.RunID, factoryRunDepsNow(deps), err, redactor)
 		return err
 	}
 	return nil
@@ -2705,6 +2706,7 @@ func collectAndStoreFactorySandboxArtifacts(ctx context.Context, store factory.S
 	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
 	if deps.sandboxCopier != nil {
 		if _, err := factory.CollectSandboxArtifactsWithRedactor(ctx, store, record.RunID, deps.sandboxCopier, requests, redactor); err != nil {
+			_ = recordFactoryRunArtifactSyncFailedWithRedactor(store, record.RunID, factoryRunDepsNow(deps), err, redactor)
 			return fmt.Errorf("collect sandbox factory artifacts: %w", err)
 		}
 		return nil
@@ -2720,6 +2722,13 @@ func collectAndStoreFactorySandboxArtifacts(ctx context.Context, store factory.S
 		return fmt.Errorf("collect sandbox factory artifacts: %w", err)
 	}
 	return nil
+}
+
+func factoryRunDepsNow(deps factoryRunDeps) time.Time {
+	if deps.now != nil {
+		return deps.now()
+	}
+	return time.Now()
 }
 
 func defaultFactorySandboxArtifactRequests(_ string, record factory.RunRecord) []factory.SandboxArtifactRequest {
@@ -3445,9 +3454,32 @@ func recordFactoryRunArtifactCollectionFailedWithRedactor(store factory.Store, r
 		Metadata: map[string]any{
 			"step":   factory.RunDurationStepArtifactCollect,
 			"status": factory.RunStatusFailed,
-			"error":  artifactErr.Error(),
+			"error":  sanitizeFactoryArtifactEventError(artifactErr, redactor),
 		},
 	}, redactor)
+}
+
+func recordFactoryRunArtifactSyncFailedWithRedactor(store factory.Store, runID string, now time.Time, artifactErr error, redactor factory.RunSecretRedactor) error {
+	return appendFactoryRunTimelineEventWithRedactor(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeArtifactSync,
+		Summary:   "Factory sandbox artifact sync failed",
+		Metadata: map[string]any{
+			"step":   factory.RunDurationStepArtifactCollect,
+			"status": factory.RunStatusFailed,
+			"error":  sanitizeFactoryArtifactEventError(artifactErr, redactor),
+		},
+	}, redactor)
+}
+
+func sanitizeFactoryArtifactEventError(err error, redactor factory.RunSecretRedactor) string {
+	if err == nil {
+		return "artifact collection failed"
+	}
+	errorMessage := sanitizeFactoryLogText(redactFactoryString(err.Error(), redactor))
+	if strings.TrimSpace(errorMessage) == "" {
+		return "artifact collection failed"
+	}
+	return errorMessage
 }
 
 func recordFactoryRunVerificationStarted(store factory.Store, runID string, now time.Time) error {

@@ -96,6 +96,7 @@ type runSandboxDeps struct {
 	resolveProvider        func(string) (sandbox.Provider, error)
 	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
 	resolveWorkerRuntime   func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error)
+	persistSandboxState    func(*sandbox.SandboxState) error
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
 	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
 	engineAuthFiles        func() []factorySandboxAuthFile
@@ -107,18 +108,19 @@ type runSandboxDeps struct {
 }
 
 var defaultRunSandboxDeps = runSandboxDeps{
-	defaultStore:   sandboxexecution.DefaultStore,
-	newExecutionID: defaultRunSandboxExecutionID,
-	now:            time.Now,
-	workingDir:     os.Getwd,
-	currentBranch:  compound.CurrentBranchOptionalInDir,
-	repoRemote:     readGitRemoteOptionalInDir,
-	planWorkspace:  defaultRunSandboxWorkspacePlan,
-	loadSandbox:    sandbox.LoadActiveInstance,
-	listSandboxes:  sandbox.ListActiveInstances,
-	listHosts:      sandbox.ListHosts,
-	resolveDefault: sandbox.ResolveDefault,
-	provision:      provisionFactorySandbox,
+	defaultStore:        sandboxexecution.DefaultStore,
+	newExecutionID:      defaultRunSandboxExecutionID,
+	now:                 time.Now,
+	workingDir:          os.Getwd,
+	currentBranch:       compound.CurrentBranchOptionalInDir,
+	repoRemote:          readGitRemoteOptionalInDir,
+	planWorkspace:       defaultRunSandboxWorkspacePlan,
+	loadSandbox:         sandbox.LoadActiveInstance,
+	listSandboxes:       sandbox.ListActiveInstances,
+	listHosts:           sandbox.ListHosts,
+	resolveDefault:      sandbox.ResolveDefault,
+	provision:           provisionFactorySandbox,
+	persistSandboxState: sandbox.ForceWriteInstance,
 	resolveProvider: func(providerName string) (sandbox.Provider, error) {
 		return resolveProviderWithFallback(".", providerName)
 	},
@@ -304,6 +306,15 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 			target = ready
 			if target != nil && strings.TrimSpace(req.SandboxName) == "" {
 				req.SandboxName = strings.TrimSpace(target.Name)
+			}
+			if err := persistSandboxCommandSelectedState(sandboxCommandStatePersistenceRequest{
+				SandboxHostID:  req.SandboxHostID,
+				SandboxRuntime: req.SandboxRuntime,
+				Target:         target,
+				Workspace:      req.Workspace,
+				Save:           deps.persistSandboxState,
+			}); err != nil {
+				return err
 			}
 			return saveRunSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, target)
 		},
@@ -724,6 +735,12 @@ func collectRunSandboxCoreStateArtifacts(ctx context.Context, store sandboxexecu
 		RemoteWorkspaceDir: req.WorkDir,
 	})
 	if err != nil {
+		if handled, warningErr := appendSandboxArtifactCopyWarning(store, req.ExecutionID, err); handled {
+			if warningErr != nil {
+				return fmt.Errorf("collect run sandbox core state artifacts: %w", warningErr)
+			}
+			return nil
+		}
 		return fmt.Errorf("collect run sandbox core state artifacts: %w", err)
 	}
 	return nil
@@ -741,7 +758,13 @@ func collectRunSandboxGeneratedArtifacts(ctx context.Context, store sandboxexecu
 		RemoteWorkspaceDir: req.WorkDir,
 	}
 	if _, err := sandboxexecution.CollectRecoveryArtifacts(ctx, collectionReq); err != nil {
-		return fmt.Errorf("collect run sandbox recovery artifacts: %w", err)
+		if handled, warningErr := appendSandboxArtifactCopyWarning(store, req.ExecutionID, err); handled {
+			if warningErr != nil {
+				return fmt.Errorf("collect run sandbox recovery artifacts: %w", warningErr)
+			}
+		} else {
+			return fmt.Errorf("collect run sandbox recovery artifacts: %w", err)
+		}
 	}
 	if _, err := sandboxexecution.CollectReportsArchiveArtifacts(ctx, sandboxexecution.ReportsArchiveCollectionRequest{
 		ExecutionID:        req.ExecutionID,
@@ -750,6 +773,12 @@ func collectRunSandboxGeneratedArtifacts(ctx context.Context, store sandboxexecu
 		Target:             result.Result.Target,
 		RemoteWorkspaceDir: req.WorkDir,
 	}); err != nil {
+		if handled, warningErr := appendSandboxArtifactCopyWarning(store, req.ExecutionID, err); handled {
+			if warningErr != nil {
+				return fmt.Errorf("collect run sandbox reports archive artifacts: %w", warningErr)
+			}
+			return nil
+		}
 		return fmt.Errorf("collect run sandbox reports archive artifacts: %w", err)
 	}
 	return nil
@@ -828,7 +857,7 @@ func (deps runSandboxDeps) resolveRunSandboxTarget(ctx context.Context, req runS
 	if listSandboxes == nil && deps.resolveDefault != nil {
 		listSandboxes = sandboxCommandListSandboxesFromDefault(deps.resolveDefault)
 	}
-	return resolveSandboxCommandTarget(ctx, sandboxCommandTargetRequest{
+	target, err := resolveSandboxCommandTarget(ctx, sandboxCommandTargetRequest{
 		Purpose:             sandbox.SandboxLeasePurposeRun,
 		SandboxName:         req.SandboxName,
 		SandboxHostID:       req.SandboxHostID,
@@ -845,6 +874,13 @@ func (deps runSandboxDeps) resolveRunSandboxTarget(ctx context.Context, req runS
 		resolveDefault: deps.resolveDefault,
 		provision:      deps.provision,
 	})
+	if err != nil {
+		return nil, err
+	}
+	if !sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
+		target = sandboxCommandSSHMachineCompatWorkerTarget(target)
+	}
+	return target, nil
 }
 
 func runSandboxRuntimeExec(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {
@@ -987,14 +1023,18 @@ func saveRunSandboxManifest(store sandboxexecution.Store, req runSandboxRequest,
 		Status:      status,
 		StartedAt:   startedAt,
 		FinishedAt:  finishedAt,
-		Workspace:   cloneSandboxWorkspace(req.Workspace),
+		Workspace:   runSandboxManifestWorkspace(req),
 		Security:    cloneSandboxSecurity(nil),
 	}
 	if target != nil {
 		if strings.TrimSpace(manifest.SandboxName) == "" {
 			manifest.SandboxName = strings.TrimSpace(target.Name)
 		}
-		manifest.Host = cloneSandboxHost(target.Host)
+		if selectedWorkerRootlessSandboxState(target) {
+			manifest.Host = workerRootlessManifestHost(target.Host)
+		} else {
+			manifest.Host = cloneSandboxHost(target.Host)
+		}
 		manifest.Runtime = cloneSandboxRuntime(target.Runtime)
 		manifest.Security = cloneSandboxSecurity(target.Security)
 		if sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
@@ -1006,6 +1046,22 @@ func saveRunSandboxManifest(store sandboxexecution.Store, req runSandboxRequest,
 	}
 	preserveSandboxManifestArtifacts(store, manifest)
 	return store.SaveManifest(manifest)
+}
+
+func runSandboxManifestWorkspace(req runSandboxRequest) *sandbox.SandboxWorkspace {
+	if sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
+		return sandboxCommandPersistentWorkspace(req.Workspace)
+	}
+	return cloneSandboxWorkspace(req.Workspace)
+}
+
+func workerRootlessManifestHost(host *sandbox.SandboxHost) *sandbox.SandboxHost {
+	persisted := sandboxCommandPersistentHost(host)
+	if persisted == nil {
+		return nil
+	}
+	persisted.Security = cloneSandboxSecurity(host.Security)
+	return persisted
 }
 
 func preserveSandboxManifestArtifacts(store sandboxexecution.Store, manifest *sandboxexecution.Manifest) {

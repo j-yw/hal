@@ -28,7 +28,7 @@ hal factory run [prd-path] [flags]
   hal factory run .hal/prd-feature.md --secret-env GITHUB_TOKEN
   hal factory run .hal/prd-feature.md --base main --json
   hal factory run .hal/prd-feature.md --sandbox --base main
-  hal factory run .hal/prd-feature.md --sandbox --base main --sandbox-host worker-1
+  hal factory run .hal/prd-feature.md --sandbox --base main --sandbox-host worker-1 --sandbox-runtime rootless_podman
 ```
 
 ### Options

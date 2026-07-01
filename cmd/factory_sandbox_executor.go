@@ -68,6 +68,7 @@ type factorySandboxExecutorDeps struct {
 	resolveProvider        func(string) (sandbox.Provider, error)
 	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
 	resolveWorkerRuntime   func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error)
+	persistSandboxState    func(*sandbox.SandboxState) error
 	runProviderExec        func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
 	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
@@ -82,13 +83,14 @@ type factorySandboxExecutorDeps struct {
 }
 
 var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
-	defaultStore:   factory.DefaultStore,
-	now:            time.Now,
-	resolveDefault: sandbox.ResolveDefault,
-	loadSandbox:    sandbox.LoadActiveInstance,
-	listSandboxes:  sandbox.ListActiveInstances,
-	listHosts:      sandbox.ListHosts,
-	provision:      provisionFactorySandbox,
+	defaultStore:        factory.DefaultStore,
+	now:                 time.Now,
+	resolveDefault:      sandbox.ResolveDefault,
+	loadSandbox:         sandbox.LoadActiveInstance,
+	listSandboxes:       sandbox.ListActiveInstances,
+	listHosts:           sandbox.ListHosts,
+	provision:           provisionFactorySandbox,
+	persistSandboxState: sandbox.ForceWriteInstance,
 	resolveProvider: func(providerName string) (sandbox.Provider, error) {
 		return resolveProviderWithFallback(".", providerName)
 	},
@@ -305,10 +307,16 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		},
 		OnTargetReady: func(_ context.Context, ready *sandbox.SandboxState) error {
 			target = ready
-			record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
-			if record.Sandbox != nil && sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
-				record.Sandbox.WorkerRouting = sandboxWorkerRoutingMetadataFromState(target)
+			if err := persistSandboxCommandSelectedState(sandboxCommandStatePersistenceRequest{
+				SandboxHostID:  req.SandboxHostID,
+				SandboxRuntime: req.SandboxRuntime,
+				Target:         target,
+				Workspace:      factorySandboxWorkspaceStateFromRecord(record),
+				Save:           deps.persistSandboxState,
+			}); err != nil {
+				return err
 			}
+			record.SandboxName, record.Sandbox = factorySandboxPersistentMetadataFromState(req, record, target)
 			record.UpdatedAt = deps.now().UTC()
 			if err := saveFactorySandboxRunRecordWithRedactor(store, deps, &record, secretRedactor); err != nil {
 				return fmt.Errorf("record factory sandbox metadata: %w", err)
@@ -344,21 +352,22 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			if err != nil {
 				return err
 			}
-			return factorySandboxSyncEngineAuth(ctx, provider, sandboxStateFromRuntimeTarget(prep.Target), remoteOutput, deps)
+			return factorySandboxSyncEngineAuth(ctx, provider, sandboxStateFromRuntimeTarget(prep.Target), newFactorySandboxRemoteUserOutputWriter(remoteOutput), deps)
 		},
 		PrepareCommand: func(ctx context.Context, prep sandboxexec.PrepareContext, command *sandboxexec.CommandRequest) error {
 			provider, err := ensureProvider(prep.Target.Provider)
 			if err != nil {
 				return err
 			}
-			remoteAuto, err := factorySandboxPrepareRemoteInputs(ctx, req, provider, sandboxStateFromRuntimeTarget(prep.Target), remoteOutput, deps)
+			userOutput := newFactorySandboxRemoteUserOutputWriter(remoteOutput)
+			remoteAuto, err := factorySandboxPrepareRemoteInputs(ctx, req, provider, sandboxStateFromRuntimeTarget(prep.Target), userOutput, deps)
 			if err != nil {
 				return err
 			}
 			command.Command = factorySandboxRemoteCommandArgs(record, remoteAuto)
 			command.WorkDir = factorySandboxRemoteWorkspaceDir(record)
 			command.Env = factorySandboxResolvedSecretEnv(req.ResolvedSecrets)
-			command.Stdout = newFactorySandboxRemoteUserOutputWriter(remoteOutput)
+			command.Stdout = userOutput
 			command.Stderr = command.Stdout
 			return nil
 		},
@@ -438,6 +447,9 @@ func resolveFactorySandboxTarget(ctx context.Context, req factorySandboxExecutor
 	})
 	if err != nil {
 		return nil, err
+	}
+	if !sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
+		target = sandboxCommandSSHMachineCompatWorkerTarget(target)
 	}
 	if record.SandboxName == "" {
 		record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
@@ -538,8 +550,8 @@ func handleFactorySandboxExecutorError(ctx context.Context, store factory.Store,
 		}
 		return failureErr
 	case sandboxexec.PhaseProvisionTarget:
-		_ = recordFactorySandboxFailure(store, deps, record, nil, "provision", failureErr, secretRedactor)
-		return factorySandboxRecordedError("provision factory sandbox", nil, failureErr, secretRedactor)
+		_ = recordFactorySandboxFailure(store, deps, record, target, "provision", failureErr, secretRedactor)
+		return factorySandboxRecordedError("provision factory sandbox", target, failureErr, secretRedactor)
 	case sandboxexec.PhaseStartTarget:
 		_ = recordFactorySandboxFailure(store, deps, record, target, "start", failureErr, secretRedactor)
 		name := ""
@@ -821,7 +833,7 @@ func (w *factorySandboxTimelineWriter) appendLineLocked(line string) error {
 		line = w.eventRedact(line)
 	}
 	metadata := map[string]any{
-		"source":      "remote_sandbox",
+		"source":      factory.LogSourceRemoteSandbox,
 		"stream":      "remote",
 		"sandboxName": w.sandboxName,
 		"provider":    w.provider,
@@ -856,7 +868,7 @@ func (w *factorySandboxTimelineWriter) appendLineLocked(line string) error {
 
 func (w *factorySandboxTimelineWriter) appendExecutorEventLocked(eventType, summary string, metadata map[string]any) error {
 	eventMetadata := map[string]any{
-		"source":       "remote_sandbox",
+		"source":       factory.LogSourceRemoteSandbox,
 		"step":         factory.RunDurationStepEngineRun,
 		"executorMode": factory.ExecutorModeSandbox,
 		"sandboxName":  w.sandboxName,
@@ -1240,7 +1252,7 @@ func appendFactorySandboxBootstrapTimeline(store factory.Store, deps factorySand
 			eventType = factory.EventTypeFailureClassification
 		}
 		metadata := map[string]any{
-			"source":       "remote_sandbox",
+			"source":       factory.LogSourceRemoteSandbox,
 			"phase":        "bootstrap",
 			"step":         timeline.Step,
 			"status":       timeline.Status,
@@ -1978,7 +1990,25 @@ func factorySandboxMetadataFromState(instance *sandbox.SandboxState) (string, *f
 		Security:       factorySandboxSecurityMetadataFromState(instance),
 		Lease:          factorySandboxLeaseMetadataFromState(instance),
 	}
+	if selectedWorkerRootlessSandboxState(instance) {
+		metadata.WorkerRouting = sandboxWorkerRoutingMetadataFromState(instance)
+	}
 	return instance.Name, metadata
+}
+
+func factorySandboxPersistentMetadataFromState(req factorySandboxExecutorRequest, record factory.RunRecord, instance *sandbox.SandboxState) (string, *factory.SandboxMetadata) {
+	name, metadata := factorySandboxMetadataFromState(instance)
+	if metadata == nil {
+		return name, nil
+	}
+	if !sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) || !selectedWorkerRootlessSandboxState(instance) {
+		return name, metadata
+	}
+	if workspace := factorySandboxWorkspaceMetadataFromWorkspace(factorySandboxWorkspaceStateFromRecord(record)); workspace != nil {
+		metadata.Workspace = workspace
+	}
+	metadata.WorkerRouting = sandboxWorkerRoutingMetadataFromState(instance)
+	return name, metadata
 }
 
 func factorySandboxMetadataFromName(name string) (string, *factory.SandboxMetadata) {
@@ -2062,7 +2092,13 @@ func factorySandboxWorkspaceMetadataFromState(instance *sandbox.SandboxState) *f
 	if instance == nil || instance.Workspace == nil {
 		return nil
 	}
-	workspace := instance.Workspace
+	return factorySandboxWorkspaceMetadataFromWorkspace(instance.Workspace)
+}
+
+func factorySandboxWorkspaceMetadataFromWorkspace(workspace *sandbox.SandboxWorkspace) *factory.SandboxWorkspaceMetadata {
+	if workspace == nil {
+		return nil
+	}
 	if strings.TrimSpace(workspace.Mode) == "" &&
 		strings.TrimSpace(workspace.InputSource) == "" &&
 		strings.TrimSpace(workspace.Branch) == "" &&

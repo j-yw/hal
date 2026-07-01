@@ -84,7 +84,7 @@ go test -timeout=120s ./internal/sandbox ./internal/sandboxexecution ./internal/
 Run import-boundary checks:
 
 ```sh
-go test -timeout=120s ./internal/sandboxworker ./internal/sandboxruntime ./internal/sandboxexecution ./internal/sandboxexec ./internal/sandboxtarget -run 'Test.*Import|TestPackageImportBoundaries|TestSandboxexecDoesNotImportCommandOrProviderLayers|TestSandboxexecForbiddenImportListCoversRequiredBoundaries'
+go test -timeout=120s ./internal/sandboxworker ./internal/sandboxruntime ./internal/sandboxruntime/rootlesspodman ./internal/sandboxexecution ./internal/sandboxexec ./internal/sandboxtarget -run 'Test.*Import|TestPackageImportBoundaries|TestSandboxexecDoesNotImportCommandOrProviderLayers|TestSandboxexecForbiddenImportListCoversRequiredBoundaries'
 ```
 
 Run the Phase 18 documentation guard:

@@ -41,8 +41,24 @@ var forbiddenRootlessPodmanImports = []rootlessPodmanForbiddenImport{
 		match: moduleImportMatcher("github.com/jywlabs/hal/internal/loop"),
 	},
 	{
+		name:  "sandbox execution record package",
+		match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxexecution"),
+	},
+	{
+		name:  "sandbox target selection package",
+		match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxtarget"),
+	},
+	{
+		name:  "worker protocol package",
+		match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxworker"),
+	},
+	{
 		name:  "concrete SSH-machine runtime adapter",
 		match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"),
+	},
+	{
+		name:  "concrete provider adapter",
+		match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandbox/provider"),
 	},
 }
 
@@ -86,7 +102,11 @@ func TestRootlessPodmanForbiddenImportListCoversCommandCouplingSurfaces(t *testi
 		{name: "PRD packages", importPath: "github.com/jywlabs/hal/internal/prd"},
 		{name: "command-specific auto code", importPath: "github.com/jywlabs/hal/internal/compound"},
 		{name: "command-specific loop code", importPath: "github.com/jywlabs/hal/internal/loop"},
+		{name: "sandbox execution record packages", importPath: "github.com/jywlabs/hal/internal/sandboxexecution"},
+		{name: "sandbox target selection packages", importPath: "github.com/jywlabs/hal/internal/sandboxtarget"},
+		{name: "worker protocol packages", importPath: "github.com/jywlabs/hal/internal/sandboxworker"},
 		{name: "SSH-machine runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"},
+		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/daytona"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if forbidden := rootlessPodmanForbiddenImportFor(tt.importPath); forbidden == nil {

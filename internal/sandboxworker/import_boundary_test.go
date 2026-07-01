@@ -119,9 +119,17 @@ func TestSandboxworkerImportBoundaryAllowsRuntimeContractsOnly(t *testing.T) {
 		})
 	}
 
-	const unapprovedInternalPackage = "github.com/jywlabs/hal/internal/template"
-	if message := sandboxworkerImportBoundaryMessage("types.go", unapprovedInternalPackage); !strings.Contains(message, unapprovedInternalPackage) {
-		t.Fatalf("boundary message = %q, want unapproved internal package %q", message, unapprovedInternalPackage)
+	for _, importPath := range []string{
+		"github.com/jywlabs/hal/internal/sandbox",
+		"github.com/jywlabs/hal/internal/sandboxexecution",
+		"github.com/jywlabs/hal/internal/sandboxtarget",
+		"github.com/jywlabs/hal/internal/template",
+	} {
+		t.Run(importPath, func(t *testing.T) {
+			if message := sandboxworkerImportBoundaryMessage("types.go", importPath); !strings.Contains(message, importPath) {
+				t.Fatalf("boundary message = %q, want unapproved internal package %q", message, importPath)
+			}
+		})
 	}
 }
 

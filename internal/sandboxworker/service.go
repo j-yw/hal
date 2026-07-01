@@ -213,6 +213,14 @@ func (service *Service) runtimeDriverCapability(driverID string) RuntimeDriver {
 		return descriptor
 	}
 
+	return defaultRuntimeDriverCapability(driverID)
+}
+
+func defaultRuntimeDriverCapability(driverID string) RuntimeDriver {
+	if driverID == RuntimeDriverRootlessPodman {
+		return rootlessPodmanRuntimeDriverCapability()
+	}
+
 	isolationLevel := defaultRuntimeDriverIsolation(driverID)
 	return RuntimeDriver{
 		ID:             driverID,
@@ -223,12 +231,46 @@ func (service *Service) runtimeDriverCapability(driverID string) RuntimeDriver {
 	}
 }
 
+func rootlessPodmanRuntimeDriverCapability() RuntimeDriver {
+	return RuntimeDriver{
+		ID:             RuntimeDriverRootlessPodman,
+		HostKind:       HostKindLocal,
+		IsolationLevel: IsolationLevelContainer,
+		Operations:     cloneStringSlice(defaultRuntimeDriverOperations),
+		Security:       rootlessPodmanRuntimeDriverSecurityPolicy(),
+	}
+}
+
 func defaultRuntimeDriverIsolation(driverID string) string {
 	switch driverID {
 	case RuntimeDriverRootlessPodman:
 		return IsolationLevelContainer
 	default:
 		return IsolationLevelHost
+	}
+}
+
+func rootlessPodmanRuntimeDriverSecurityPolicy() SecurityPolicy {
+	return SecurityPolicy{
+		Requested: SecurityControls{
+			NetworkPolicy:      NetworkPolicyDenyByDefault,
+			NetworkEnforcement: NetworkEnforcementRuntime,
+			CredentialModes: []string{
+				CredentialModeSSHAgent,
+			},
+			IsolationLevel:      IsolationLevelContainer,
+			CredentialProxyMode: false,
+		},
+		Enforced: SecurityControls{
+			NetworkPolicy:      NetworkPolicyBestEffort,
+			NetworkEnforcement: NetworkEnforcementNone,
+			CredentialModes: []string{
+				CredentialModeEnv,
+				CredentialModeLegacyAuthSync,
+			},
+			IsolationLevel:      IsolationLevelContainer,
+			CredentialProxyMode: false,
+		},
 	}
 }
 

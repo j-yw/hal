@@ -3007,6 +3007,121 @@ func TestRunFactorySandboxExecutorWithDepsRecordsSanitizedRemoteOutputEvents(t *
 	}
 }
 
+func TestRunFactorySandboxExecutorWithDepsPersistsOnlyRemoteCommandOutputSummaries(t *testing.T) {
+	now := time.Date(2026, 7, 1, 20, 10, 0, 0, time.UTC)
+	projectDir := t.TempDir()
+	inputPath := filepath.Join(projectDir, "story.md")
+	if err := os.WriteFile(inputPath, []byte("# Story\n"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	authPath := filepath.Join(projectDir, "auth.json")
+	if err := os.WriteFile(authPath, []byte(`{"token":"test"}`), 0o600); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{
+		Name:     "factory-remote-clean-output",
+		Provider: "daytona",
+		Status:   sandbox.StatusStopped,
+	}
+
+	var out bytes.Buffer
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		ProjectDir:   projectDir,
+		SandboxName:  target.Name,
+		RemoteOutput: &out,
+		RunRecord: factory.RunRecord{
+			RunID:      "run-remote-command-only-output",
+			Status:     factory.RunStatusRunning,
+			RepoRemote: "git@github.com:example/repo.git",
+			RepoPath:   projectDir,
+		},
+		RemoteAuto: factoryRunAutoRequest{Args: []string{inputPath}},
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return store, nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return fakeFactorySandboxRuntimeDriver{
+				startFn: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+					_, _ = io.WriteString(req.Stdout, "local setup stdout\n")
+					_, _ = io.WriteString(req.Stderr, "local setup stderr\n")
+					started := req.Target
+					started.Status = sandbox.StatusRunning
+					return &started, nil
+				},
+				execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+					_, _ = io.WriteString(req.Stdout, "remote stdout line\n")
+					_, _ = io.WriteString(req.Stderr, "remote stderr line\n")
+					return &sandboxruntime.ExecResult{}, nil
+				},
+			}, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			return []factorySandboxAuthFile{{SourcePath: authPath, RemotePath: ".codex/auth.json"}}
+		},
+		runProviderScript: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, script string, out io.Writer) error {
+			switch {
+			case strings.Contains(script, ".codex/auth.json"):
+				_, _ = io.WriteString(out, "auth prep output\n")
+			case strings.Contains(script, "story.md"):
+				_, _ = io.WriteString(out, "copy prep output\n")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v\noutput=%s", err, out.String())
+	}
+	for _, want := range []string{"local setup stdout", "local setup stderr", "auth prep output", "copy prep output", "remote stdout line", "remote stderr line"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output = %q, want visible %q", out.String(), want)
+		}
+	}
+
+	events, err := store.LoadEvents("run-remote-command-only-output")
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	var summaryMessages []string
+	for _, event := range events {
+		if event.EventType != factory.EventTypeCommandOutputSummary {
+			continue
+		}
+		if event.Metadata["source"] != factory.LogSourceRemoteSandbox {
+			t.Fatalf("summary event source = %#v, want %q", event.Metadata["source"], factory.LogSourceRemoteSandbox)
+		}
+		summaryMessages = append(summaryMessages, event.Message)
+	}
+	wantMessages := []string{"remote stdout line", "remote stderr line"}
+	if !reflect.DeepEqual(summaryMessages, wantMessages) {
+		t.Fatalf("summary messages = %#v, want %#v", summaryMessages, wantMessages)
+	}
+	for _, disallowed := range []string{"local setup", "auth prep", "copy prep"} {
+		if strings.Contains(strings.Join(summaryMessages, "\n"), disallowed) {
+			t.Fatalf("summary messages included preparation output %q: %#v", disallowed, summaryMessages)
+		}
+	}
+
+	chunks, err := store.LoadLogChunks("run-remote-command-only-output")
+	if err != nil {
+		t.Fatalf("LoadLogChunks() error: %v", err)
+	}
+	if len(chunks) != len(wantMessages) {
+		t.Fatalf("log chunks = %d, want %d: %#v", len(chunks), len(wantMessages), chunks)
+	}
+	for i, chunk := range chunks {
+		if chunk.Source != factory.LogSourceRemoteSandbox {
+			t.Fatalf("log chunk %d source = %q, want %q", i, chunk.Source, factory.LogSourceRemoteSandbox)
+		}
+		if chunk.Text != wantMessages[i] {
+			t.Fatalf("log chunk %d text = %q, want %q", i, chunk.Text, wantMessages[i])
+		}
+	}
+}
+
 func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromExecutorEvents(t *testing.T) {
 	now := time.Date(2026, 6, 21, 10, 20, 0, 0, time.UTC)
 	store := factory.NewStore(t.TempDir())

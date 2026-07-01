@@ -57,7 +57,7 @@ Examples:
   hal auto --json                    # Machine-readable result output
   hal auto --sandbox                 # Run inside a sandbox
   hal auto --sandbox --sandbox-name worker-1 # Run inside a named sandbox
-  hal auto --sandbox --sandbox-runtime rootless_podman # Request cached runtime metadata
+  hal auto --sandbox --sandbox-host worker-1 --sandbox-runtime rootless_podman # Explicit worker/rootless target selection
 
 ```
 hal auto [prd-path] [flags]
@@ -75,7 +75,7 @@ hal auto [prd-path] [flags]
   hal auto --review-streak 3 --review-max 15
   hal auto --sandbox
   hal auto --sandbox --sandbox-name worker-1
-  hal auto --sandbox --sandbox-host worker-1
+  hal auto --sandbox --sandbox-host worker-1 --sandbox-runtime rootless_podman
   hal auto --engine codex --base develop
 ```
 

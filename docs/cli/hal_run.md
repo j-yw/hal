@@ -30,7 +30,7 @@ Examples:
   hal run --sandbox                # Run inside a sandbox
   hal run --sandbox 3              # Run 3 iterations inside a sandbox
   hal run --sandbox my-box         # Run inside a named sandbox
-  hal run --sandbox --sandbox-runtime rootless_podman # Request cached runtime metadata
+  hal run --sandbox --sandbox-host worker-1 --sandbox-runtime rootless_podman # Explicit worker/rootless target selection
 
 
 ```
@@ -48,7 +48,7 @@ hal run [iterations] [flags]
   hal run --sandbox
   hal run --sandbox 3
   hal run --sandbox my-box
-  hal run --sandbox --sandbox-host worker-1
+  hal run --sandbox --sandbox-host worker-1 --sandbox-runtime rootless_podman
   hal run --engine codex --base develop
 ```
 

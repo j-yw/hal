@@ -97,6 +97,7 @@ type autoSandboxDeps struct {
 	resolveProvider        func(string) (sandbox.Provider, error)
 	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
 	resolveWorkerRuntime   func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error)
+	persistSandboxState    func(*sandbox.SandboxState) error
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
 	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
 	engineAuthFiles        func() []factorySandboxAuthFile
@@ -108,15 +109,16 @@ type autoSandboxDeps struct {
 }
 
 var defaultAutoSandboxDeps = autoSandboxDeps{
-	defaultStore:   sandboxexecution.DefaultStore,
-	newExecutionID: defaultAutoSandboxExecutionID,
-	now:            time.Now,
-	planWorkspace:  defaultRunSandboxWorkspacePlan,
-	loadSandbox:    sandbox.LoadActiveInstance,
-	listSandboxes:  sandbox.ListActiveInstances,
-	listHosts:      sandbox.ListHosts,
-	resolveDefault: sandbox.ResolveDefault,
-	provision:      provisionFactorySandbox,
+	defaultStore:        sandboxexecution.DefaultStore,
+	newExecutionID:      defaultAutoSandboxExecutionID,
+	now:                 time.Now,
+	planWorkspace:       defaultRunSandboxWorkspacePlan,
+	loadSandbox:         sandbox.LoadActiveInstance,
+	listSandboxes:       sandbox.ListActiveInstances,
+	listHosts:           sandbox.ListHosts,
+	resolveDefault:      sandbox.ResolveDefault,
+	provision:           provisionFactorySandbox,
+	persistSandboxState: sandbox.ForceWriteInstance,
 	resolveProvider: func(providerName string) (sandbox.Provider, error) {
 		return resolveProviderWithFallback(".", providerName)
 	},
@@ -252,6 +254,15 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 			target = ready
 			if target != nil && strings.TrimSpace(req.SandboxName) == "" {
 				req.SandboxName = strings.TrimSpace(target.Name)
+			}
+			if err := persistSandboxCommandSelectedState(sandboxCommandStatePersistenceRequest{
+				SandboxHostID:  req.SandboxHostID,
+				SandboxRuntime: req.SandboxRuntime,
+				Target:         target,
+				Workspace:      req.Workspace,
+				Save:           deps.persistSandboxState,
+			}); err != nil {
+				return err
 			}
 			return saveAutoSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, target)
 		},
@@ -598,6 +609,12 @@ func collectAutoSandboxCoreStateArtifacts(ctx context.Context, store sandboxexec
 		RemoteWorkspaceDir: req.WorkDir,
 	})
 	if err != nil {
+		if handled, warningErr := appendSandboxArtifactCopyWarning(store, req.ExecutionID, err); handled {
+			if warningErr != nil {
+				return fmt.Errorf("collect auto sandbox core state artifacts: %w", warningErr)
+			}
+			return nil
+		}
 		return fmt.Errorf("collect auto sandbox core state artifacts: %w", err)
 	}
 	return nil
@@ -615,7 +632,13 @@ func collectAutoSandboxGeneratedArtifacts(ctx context.Context, store sandboxexec
 		RemoteWorkspaceDir: req.WorkDir,
 	}
 	if _, err := sandboxexecution.CollectRecoveryArtifacts(ctx, collectionReq); err != nil {
-		return fmt.Errorf("collect auto sandbox recovery artifacts: %w", err)
+		if handled, warningErr := appendSandboxArtifactCopyWarning(store, req.ExecutionID, err); handled {
+			if warningErr != nil {
+				return fmt.Errorf("collect auto sandbox recovery artifacts: %w", warningErr)
+			}
+		} else {
+			return fmt.Errorf("collect auto sandbox recovery artifacts: %w", err)
+		}
 	}
 	if _, err := sandboxexecution.CollectReportsArchiveArtifacts(ctx, sandboxexecution.ReportsArchiveCollectionRequest{
 		ExecutionID:        req.ExecutionID,
@@ -624,6 +647,12 @@ func collectAutoSandboxGeneratedArtifacts(ctx context.Context, store sandboxexec
 		Target:             result.Result.Target,
 		RemoteWorkspaceDir: req.WorkDir,
 	}); err != nil {
+		if handled, warningErr := appendSandboxArtifactCopyWarning(store, req.ExecutionID, err); handled {
+			if warningErr != nil {
+				return fmt.Errorf("collect auto sandbox reports archive artifacts: %w", warningErr)
+			}
+			return nil
+		}
 		return fmt.Errorf("collect auto sandbox reports archive artifacts: %w", err)
 	}
 	return nil
@@ -681,7 +710,7 @@ func (deps autoSandboxDeps) resolveAutoSandboxTarget(ctx context.Context, req au
 	if listSandboxes == nil && deps.resolveDefault != nil {
 		listSandboxes = sandboxCommandListSandboxesFromDefault(deps.resolveDefault)
 	}
-	return resolveSandboxCommandTarget(ctx, sandboxCommandTargetRequest{
+	target, err := resolveSandboxCommandTarget(ctx, sandboxCommandTargetRequest{
 		Purpose:             sandbox.SandboxLeasePurposeAuto,
 		SandboxName:         req.SandboxName,
 		SandboxHostID:       req.SandboxHostID,
@@ -698,6 +727,13 @@ func (deps autoSandboxDeps) resolveAutoSandboxTarget(ctx context.Context, req au
 		resolveDefault: deps.resolveDefault,
 		provision:      deps.provision,
 	})
+	if err != nil {
+		return nil, err
+	}
+	if !sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
+		target = sandboxCommandSSHMachineCompatWorkerTarget(target)
+	}
+	return target, nil
 }
 
 func (deps autoSandboxDeps) bootstrapAutoSandboxWorkspace(ctx context.Context, req autoSandboxRequest, provider sandbox.Provider, prep sandboxexec.PrepareContext, out io.Writer) error {
@@ -769,14 +805,18 @@ func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxReques
 		Status:      status,
 		StartedAt:   startedAt,
 		FinishedAt:  finishedAt,
-		Workspace:   cloneSandboxWorkspace(req.Workspace),
+		Workspace:   autoSandboxManifestWorkspace(req),
 		Security:    cloneSandboxSecurity(nil),
 	}
 	if target != nil {
 		if strings.TrimSpace(manifest.SandboxName) == "" {
 			manifest.SandboxName = strings.TrimSpace(target.Name)
 		}
-		manifest.Host = cloneSandboxHost(target.Host)
+		if selectedWorkerRootlessSandboxState(target) {
+			manifest.Host = workerRootlessManifestHost(target.Host)
+		} else {
+			manifest.Host = cloneSandboxHost(target.Host)
+		}
 		manifest.Runtime = cloneSandboxRuntime(target.Runtime)
 		manifest.Security = cloneSandboxSecurity(target.Security)
 		if sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
@@ -788,6 +828,13 @@ func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxReques
 	}
 	preserveSandboxManifestArtifacts(store, manifest)
 	return store.SaveManifest(manifest)
+}
+
+func autoSandboxManifestWorkspace(req autoSandboxRequest) *sandbox.SandboxWorkspace {
+	if sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
+		return sandboxCommandPersistentWorkspace(req.Workspace)
+	}
+	return cloneSandboxWorkspace(req.Workspace)
 }
 
 func buildAutoSandboxRemoteCommand(req autoSandboxRequest) []string {

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -342,4 +343,38 @@ func requireWorkerClientErrorNoUnsafeDetails(t *testing.T, values ...string) {
 			t.Fatalf("worker client error leaked unsafe detail %q: %q", leaked, combined)
 		}
 	}
+}
+
+type fakeWorkerRuntimeDriverClient struct{}
+
+func (fakeWorkerRuntimeDriverClient) Create(context.Context, string, sandboxworker.CreateRequest) (*sandboxworker.Target, error) {
+	return nil, nil
+}
+
+func (fakeWorkerRuntimeDriverClient) Start(context.Context, string, sandboxworker.LifecycleRequest) (*sandboxworker.Target, error) {
+	return nil, nil
+}
+
+func (fakeWorkerRuntimeDriverClient) Stop(context.Context, string, sandboxworker.LifecycleRequest) (*sandboxworker.Target, error) {
+	return nil, nil
+}
+
+func (fakeWorkerRuntimeDriverClient) Delete(context.Context, string, sandboxworker.LifecycleRequest) error {
+	return nil
+}
+
+func (fakeWorkerRuntimeDriverClient) Inspect(context.Context, string, sandboxworker.InspectRequest) (*sandboxworker.Target, error) {
+	return nil, nil
+}
+
+func (fakeWorkerRuntimeDriverClient) Exec(context.Context, string, sandboxworker.ExecRequest) (*sandboxworker.ExecResponse, error) {
+	return nil, nil
+}
+
+func (fakeWorkerRuntimeDriverClient) CopyIn(context.Context, string, sandboxworker.CopyInRequest) (*sandboxworker.CopyInResponse, error) {
+	return nil, nil
+}
+
+func (fakeWorkerRuntimeDriverClient) CopyOut(context.Context, string, sandboxworker.CopyOutRequest) (*sandboxworker.CopyOutResponse, error) {
+	return nil, nil
 }

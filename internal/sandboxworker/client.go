@@ -407,6 +407,13 @@ func (err *ClientError) Error() string {
 	if err == nil {
 		return ""
 	}
+	return classifiedWorkerError(err.Classification(), err.classifiedMessage())
+}
+
+func (err *ClientError) message() string {
+	if err == nil {
+		return ""
+	}
 	operation := strings.TrimSpace(err.Operation)
 	if operation == "" {
 		operation = "request"
@@ -418,10 +425,33 @@ func (err *ClientError) Error() string {
 	if message == "" {
 		message = "worker client request failed"
 	}
+	message = sanitizeProtocolErrorDetail(message)
 	if code := strings.TrimSpace(err.Code); code != "" {
 		return fmt.Sprintf("worker client %s failed: %s: %s", operation, code, message)
 	}
 	return fmt.Sprintf("worker client %s failed: %s", operation, message)
+}
+
+func (err *ClientError) classifiedMessage() string {
+	if err == nil {
+		return ""
+	}
+	operation := strings.TrimSpace(err.Operation)
+	if operation == "" {
+		operation = "request"
+	}
+	message := strings.TrimSpace(err.Message)
+	if message == "" && err.Err != nil {
+		message = sanitizeProtocolErrorDetail(err.Err.Error())
+	}
+	if message == "" {
+		message = "worker client request failed"
+	}
+	message = sanitizeProtocolErrorDetail(message)
+	if code := strings.TrimSpace(err.Code); code != "" {
+		return fmt.Sprintf("%s failed: %s: %s", operation, code, message)
+	}
+	return fmt.Sprintf("%s failed: %s", operation, message)
 }
 
 func (err *ClientError) Unwrap() error {
@@ -429,6 +459,13 @@ func (err *ClientError) Unwrap() error {
 		return nil
 	}
 	return err.Err
+}
+
+func (err *ClientError) Classification() string {
+	if err == nil {
+		return ""
+	}
+	return FailureWorkerClient
 }
 
 // ProtocolError describes a non-OK worker protocol response with sanitized
@@ -443,6 +480,13 @@ func (err *ProtocolError) Error() string {
 	if err == nil {
 		return ""
 	}
+	return classifiedWorkerError(err.Classification(), err.message())
+}
+
+func (err *ProtocolError) message() string {
+	if err == nil {
+		return ""
+	}
 	operation := strings.TrimSpace(err.Operation)
 	if operation == "" {
 		operation = "request"
@@ -451,7 +495,21 @@ func (err *ProtocolError) Error() string {
 	if message == "" {
 		message = "worker protocol request failed"
 	}
+	message = sanitizeProtocolErrorDetail(message)
 	return fmt.Sprintf("worker protocol %s failed: %s: %s", operation, strings.TrimSpace(err.Code), message)
+}
+
+func (err *ProtocolError) Classification() string {
+	if err == nil {
+		return ""
+	}
+	if err.Code == ErrorCodeDriverNotFound && workerLifecycleOperation(err.Operation) {
+		return FailureRuntimeUnavailable
+	}
+	if err.Code == ErrorCodeDriverFailed && workerLifecycleOperation(err.Operation) {
+		return FailureWorkerLifecycle
+	}
+	return ""
 }
 
 type unixSocketClientTransport struct {

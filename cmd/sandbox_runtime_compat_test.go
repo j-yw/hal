@@ -2,12 +2,12 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
-	"github.com/jywlabs/hal/internal/sandboxworker"
 )
 
 func TestExistingSandboxExecutionDefaultResolversStayWorkerOptIn(t *testing.T) {
@@ -157,10 +157,9 @@ func TestExistingSandboxExecutionDefaultResolversStayWorkerOptIn(t *testing.T) {
 				if driver.ID() != scenario.wantID {
 					t.Fatalf("driver ID = %q, want %q", driver.ID(), scenario.wantID)
 				}
-				if _, ok := driver.(*sandboxworker.ClientDriver); ok {
+				if strings.Contains(fmt.Sprintf("%T", driver), "sandboxworker.ClientDriver") {
 					t.Fatalf("driver type = %T, want existing sandbox execution defaults to stay worker-inactive", driver)
 				}
-
 				if scenario.wantProviderCall && providerCalls != 1 {
 					t.Fatalf("resolveProvider calls = %d, want 1", providerCalls)
 				}
@@ -379,19 +378,6 @@ func TestSandboxRuntimeCompatWorkerHostMetadataDoesNotSelectRuntime(t *testing.T
 	}
 }
 
-func TestClientDriverSelectedOnlyWhenExplicitlyConstructed(t *testing.T) {
-	driver, err := sandboxworker.NewClientDriver(sandboxworker.ClientDriverOptions{
-		DriverID: "fake_worker_runtime",
-		Client:   fakeWorkerRuntimeDriverClient{},
-	})
-	if err != nil {
-		t.Fatalf("NewClientDriver() error: %v", err)
-	}
-	if driver == nil || driver.ID() != "fake_worker_runtime" {
-		t.Fatalf("worker driver = %#v, want explicitly constructed fake_worker_runtime adapter", driver)
-	}
-}
-
 type fakeRuntimeResolverDriver struct {
 	id string
 }
@@ -430,40 +416,6 @@ func (fakeRuntimeResolverDriver) CopyIn(context.Context, sandboxruntime.CopyRequ
 
 func (fakeRuntimeResolverDriver) CopyOut(context.Context, sandboxruntime.CopyRequest) error {
 	return nil
-}
-
-type fakeWorkerRuntimeDriverClient struct{}
-
-func (fakeWorkerRuntimeDriverClient) Create(context.Context, string, sandboxworker.CreateRequest) (*sandboxworker.Target, error) {
-	return nil, nil
-}
-
-func (fakeWorkerRuntimeDriverClient) Start(context.Context, string, sandboxworker.LifecycleRequest) (*sandboxworker.Target, error) {
-	return nil, nil
-}
-
-func (fakeWorkerRuntimeDriverClient) Stop(context.Context, string, sandboxworker.LifecycleRequest) (*sandboxworker.Target, error) {
-	return nil, nil
-}
-
-func (fakeWorkerRuntimeDriverClient) Delete(context.Context, string, sandboxworker.LifecycleRequest) error {
-	return nil
-}
-
-func (fakeWorkerRuntimeDriverClient) Inspect(context.Context, string, sandboxworker.InspectRequest) (*sandboxworker.Target, error) {
-	return nil, nil
-}
-
-func (fakeWorkerRuntimeDriverClient) Exec(context.Context, string, sandboxworker.ExecRequest) (*sandboxworker.ExecResponse, error) {
-	return nil, nil
-}
-
-func (fakeWorkerRuntimeDriverClient) CopyIn(context.Context, string, sandboxworker.CopyInRequest) (*sandboxworker.CopyInResponse, error) {
-	return nil, nil
-}
-
-func (fakeWorkerRuntimeDriverClient) CopyOut(context.Context, string, sandboxworker.CopyOutRequest) (*sandboxworker.CopyOutResponse, error) {
-	return nil, nil
 }
 
 func boolToInt(value bool) int {

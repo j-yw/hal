@@ -66,6 +66,47 @@ type RuntimeCollectionResult struct {
 	ArtifactMetadata ArtifactMetadata
 }
 
+// ArtifactCollectionError exposes safe artifact warning metadata for command
+// boundaries that choose to keep artifact copy failures non-fatal.
+type ArtifactCollectionError struct {
+	Phase    string
+	Message  string
+	Artifact ArtifactMetadataEntry
+	Err      error
+}
+
+func (e *ArtifactCollectionError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return e.Message
+}
+
+func (e *ArtifactCollectionError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func (e *ArtifactCollectionError) Warning() ArtifactWarning {
+	if e == nil {
+		return ArtifactWarning{}
+	}
+	artifact := e.Artifact
+	artifact.StoredPath = ""
+	artifact.SizeBytes = nil
+	artifact.CreatedAt = nil
+	return ArtifactWarning{
+		Phase:    e.Phase,
+		Message:  e.Message,
+		Artifact: artifact,
+	}
+}
+
 // CoreStateCollectionRequest carries the runtime context needed to collect
 // standard Hal state files from a non-factory sandbox workspace.
 type CoreStateCollectionRequest struct {
@@ -110,6 +151,8 @@ type CommandOutputSummaryArtifactsRequest struct {
 }
 
 const (
+	ArtifactWarningPhaseCopyOut = "copy_out"
+
 	recoveryArtifactID       = "recovery-patch"
 	recoveryArtifactName     = "Recovery Patch"
 	recoveryArtifactType     = "patch"
@@ -180,10 +223,16 @@ func CollectRuntimeArtifacts(ctx context.Context, req RuntimeCollectionRequest) 
 			DestinationPath: localPath,
 		}); err != nil {
 			if artifact.Optional {
-				addRuntimeArtifactPartialWarning(&result.ArtifactMetadata, artifact, "copy_out", runtimeArtifactCopyOutWarningMessage(err))
+				addRuntimeArtifactPartialWarning(&result.ArtifactMetadata, artifact, ArtifactWarningPhaseCopyOut, runtimeArtifactCopyOutWarningMessage(err))
 				continue
 			}
-			return RuntimeCollectionResult{}, fmt.Errorf("copy sandbox execution artifact %q: %w", artifact.Artifact.Path, redactPathError(err))
+			collectionErr := &ArtifactCollectionError{
+				Phase:    ArtifactWarningPhaseCopyOut,
+				Message:  requiredRuntimeArtifactCopyOutWarningMessage(artifact, err),
+				Artifact: artifact.Artifact,
+				Err:      redactPathError(err),
+			}
+			return RuntimeCollectionResult{}, fmt.Errorf("copy sandbox execution artifact %q: %w", artifact.Artifact.Path, collectionErr)
 		}
 
 		collected, err := saveRuntimeArtifactFile(req.Store, executionID, artifact, localPath)
@@ -652,6 +701,16 @@ func runtimeArtifactCopyOutWarningMessage(err error) string {
 		return "optional sandbox execution artifact is missing"
 	}
 	return "optional sandbox execution artifact copy failed"
+}
+
+func requiredRuntimeArtifactCopyOutWarningMessage(req RuntimeArtifactRequest, err error) string {
+	if req.Artifact.ID == recoveryArtifactID {
+		return recoveryArtifactCopyOutWarningMessage(err)
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return "sandbox execution artifact is missing"
+	}
+	return "sandbox execution artifact copy failed"
 }
 
 func cloneCollectionStringMap(values map[string]string) map[string]string {
