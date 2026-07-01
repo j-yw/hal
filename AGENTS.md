@@ -46,6 +46,7 @@
 - Scheduler health filtering should run in `internal/sandboxtarget` immediately after cached candidate enumeration and before runtime/isolation filtering; treat missing, empty, healthy, and unknown health as eligible, reject explicit unhealthy hosts with `FailureReasonHostUnhealthy`, and keep health rejection text sanitized to host IDs plus safe status tokens only.
 - Explicit scheduler host filtering should run immediately after cached candidate enumeration and before health, runtime/isolation, and capacity filtering; a requested host must narrow the candidate set to that host or return endpoint-safe `host_not_found`/`ambiguous_target`/unsupported/capacity rejections instead of selecting another eligible host.
 - Scheduler capacity filtering should stay in `internal/sandboxtarget` after health and runtime/isolation filtering; count only active non-expired `host:<hostID>` leases from injectable `CachedState.ListLeases` using `CachedState.Now`, require usable `HostCapacity.MaxConcurrentSandboxes`, and reject missing/zero capacity as conservative `capacity_unavailable`.
+- Scheduler ranking should stay in `internal/sandboxtarget` after capacity evaluation; evaluate all known-capacity candidates before selecting, rank by allowed capacity, available slots, cached readiness, active lease count, max capacity, then safe host/runtime identity, and avoid map iteration, live metadata, random values, or wall-clock time outside `CachedState.Now`.
 
 ## Patterns from phase19-rootless-worker-e2e-hardening (2026-07-01)
 

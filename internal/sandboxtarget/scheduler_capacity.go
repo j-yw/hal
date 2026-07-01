@@ -2,6 +2,7 @@ package sandboxtarget
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,27 +33,28 @@ func selectSchedulerCandidateWithCapacity(req SchedulerRequest, candidateSet Sch
 	}
 	now := cache.Now()
 
-	var firstBlocked *schedulerCapacityEvaluation
+	evaluations := make([]schedulerCapacityEvaluation, 0, len(candidateSet.Candidates))
 	for _, candidate := range candidateSet.Candidates {
 		evaluation := schedulerEvaluateCandidateCapacity(candidate, leases, now)
 		if !evaluation.Decision.Known {
 			continue
 		}
-		if evaluation.Decision.Allowed {
-			return schedulerSelectedCapacityResult(req, evaluation)
-		}
-		if firstBlocked == nil {
-			copied := evaluation
-			firstBlocked = &copied
-		}
+		evaluations = append(evaluations, evaluation)
 	}
-	if firstBlocked != nil {
+	rankSchedulerCapacityEvaluations(evaluations)
+
+	if len(evaluations) > 0 {
+		for _, evaluation := range evaluations {
+			if evaluation.Decision.Allowed {
+				return schedulerSelectedCapacityResult(req, evaluation)
+			}
+		}
 		message := "no cached sandbox hosts have available capacity"
 		if hostID := strings.TrimSpace(req.HostID); hostID != "" {
 			message = fmt.Sprintf("host %q has no available cached capacity", hostID)
 		}
 		return SchedulerResult{
-			Capacity:  firstBlocked.Decision,
+			Capacity:  evaluations[0].Decision,
 			Rejection: schedulerRejection(req, FailureReasonCapacityBlocked, message),
 		}
 	}
@@ -63,6 +65,54 @@ type schedulerCapacityEvaluation struct {
 	Candidate   SchedulerCandidate
 	Decision    SchedulerCapacityDecision
 	ResourceKey string
+}
+
+func rankSchedulerCapacityEvaluations(evaluations []schedulerCapacityEvaluation) {
+	sort.SliceStable(evaluations, func(i, j int) bool {
+		left := evaluations[i]
+		right := evaluations[j]
+		if left.Decision.Allowed != right.Decision.Allowed {
+			return left.Decision.Allowed
+		}
+		if left.Decision.AvailableSlots != right.Decision.AvailableSlots {
+			return left.Decision.AvailableSlots > right.Decision.AvailableSlots
+		}
+		if leftRank, rightRank := schedulerCandidateReadinessRank(left.Candidate), schedulerCandidateReadinessRank(right.Candidate); leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		if left.Decision.ActiveLeases != right.Decision.ActiveLeases {
+			return left.Decision.ActiveLeases < right.Decision.ActiveLeases
+		}
+		if left.Decision.MaxConcurrentSandboxes != right.Decision.MaxConcurrentSandboxes {
+			return left.Decision.MaxConcurrentSandboxes > right.Decision.MaxConcurrentSandboxes
+		}
+		return schedulerCandidateRankKey(left.Candidate) < schedulerCandidateRankKey(right.Candidate)
+	})
+}
+
+func schedulerCandidateReadinessRank(candidate SchedulerCandidate) int {
+	if candidate.Host == nil || candidate.Host.Health == nil {
+		return 1
+	}
+	switch strings.TrimSpace(candidate.Host.Health.Status) {
+	case "healthy":
+		return 0
+	case "", "unknown":
+		return 1
+	default:
+		return 2
+	}
+}
+
+func schedulerCandidateRankKey(candidate SchedulerCandidate) string {
+	return strings.Join([]string{
+		strings.TrimSpace(candidate.Identity.HostName),
+		strings.TrimSpace(candidate.Identity.HostID),
+		strings.TrimSpace(candidate.Identity.HostKind),
+		strings.TrimSpace(candidate.Identity.RuntimeDriver),
+		strings.TrimSpace(candidate.Identity.RuntimeID),
+		strings.TrimSpace(candidate.Identity.IsolationLevel),
+	}, "\x00")
 }
 
 func schedulerSelectedCapacityResult(req SchedulerRequest, evaluation schedulerCapacityEvaluation) SchedulerResult {
