@@ -10,9 +10,11 @@ func EvaluateSandboxSecurityCapabilityReadiness(input SandboxSecurityCapabilityR
 			results = append(results, sandboxSecurityCapabilityBlockedResult(requested, blocker))
 			continue
 		}
-		if !sandboxSecurityCapabilityHasCompatibleSupport(requested, input.Ready) {
-			results = append(results, sandboxSecurityCapabilityUnsupportedResult(requested, input.Ready))
+		if ready, ok := sandboxSecurityCapabilityFindExplicitSupport(requested, input.Ready); ok {
+			results = append(results, sandboxSecurityCapabilityReadyResult(requested, ready))
+			continue
 		}
+		results = append(results, sandboxSecurityCapabilityUnsupportedResult(requested, input.Ready))
 	}
 
 	if input.NetworkProxySession != nil {
@@ -54,6 +56,19 @@ func EvaluateSandboxSecurityCapabilityReadiness(input SandboxSecurityCapabilityR
 	return SandboxSecurityCapabilityReadinessOutput{Results: results}
 }
 
+func sandboxSecurityCapabilityFindExplicitSupport(requested SandboxSecurityCapabilityMetadata, ready []SandboxSecurityCapabilityMetadata) (SandboxSecurityCapabilityMetadata, bool) {
+	for _, candidate := range ready {
+		if !sandboxSecurityCapabilitySameRequest(requested, candidate) {
+			continue
+		}
+		if !sandboxSecurityCapabilityExplicitReadyMetadata(candidate) {
+			continue
+		}
+		return candidate, true
+	}
+	return SandboxSecurityCapabilityMetadata{}, false
+}
+
 func sandboxSecurityCapabilityFindExplicitBlocker(requested SandboxSecurityCapabilityMetadata, ready []SandboxSecurityCapabilityMetadata) (SandboxSecurityCapabilityMetadata, bool) {
 	for _, candidate := range ready {
 		if !sandboxSecurityCapabilitySameRequest(requested, candidate) {
@@ -67,22 +82,6 @@ func sandboxSecurityCapabilityFindExplicitBlocker(requested SandboxSecurityCapab
 	return SandboxSecurityCapabilityMetadata{}, false
 }
 
-func sandboxSecurityCapabilityHasCompatibleSupport(requested SandboxSecurityCapabilityMetadata, ready []SandboxSecurityCapabilityMetadata) bool {
-	for _, candidate := range ready {
-		if !sandboxSecurityCapabilitySameRequest(requested, candidate) {
-			continue
-		}
-		if !sandboxSecurityCapabilityExplicitSupportSource(candidate.Source) {
-			continue
-		}
-		switch candidate.Status {
-		case "", SandboxSecurityCapabilityReadinessReady:
-			return true
-		}
-	}
-	return false
-}
-
 func sandboxSecurityCapabilityBlockedResult(requested, blocker SandboxSecurityCapabilityMetadata) SandboxSecurityCapabilityReadinessResult {
 	reason := SandboxSecurityCapabilityReasonCapabilityBlocked
 	warnings := sandboxSecurityCapabilityBlockedWarnings(blocker.WarningCodes)
@@ -94,6 +93,18 @@ func sandboxSecurityCapabilityBlockedResult(requested, blocker SandboxSecurityCa
 		Ready:        &blockerContext,
 		ReasonCode:   reason,
 		WarningCodes: warnings,
+	}
+}
+
+func sandboxSecurityCapabilityReadyResult(requested, ready SandboxSecurityCapabilityMetadata) SandboxSecurityCapabilityReadinessResult {
+	reason := SandboxSecurityCapabilityReasonCapabilityConfirmed
+	requestedContext := sandboxSecurityCapabilityReadyRequestedContext(requested, reason)
+	readyContext := sandboxSecurityCapabilityReadyContext(ready, reason)
+	return SandboxSecurityCapabilityReadinessResult{
+		State:      SandboxSecurityCapabilityReadinessReady,
+		Requested:  &requestedContext,
+		Ready:      &readyContext,
+		ReasonCode: reason,
 	}
 }
 
@@ -156,6 +167,28 @@ func sandboxSecurityCapabilityBlockedWarnings(warnings []SandboxSecurityCapabili
 	return nil
 }
 
+func sandboxSecurityCapabilityReadyRequestedContext(requested SandboxSecurityCapabilityMetadata, reason SandboxSecurityCapabilityReasonCode) SandboxSecurityCapabilityMetadata {
+	return SandboxSecurityCapabilityMetadata{
+		Family:     requested.Family,
+		Capability: requested.Capability,
+		Mode:       sandboxSecurityCapabilitySafeMode(requested.Family, requested.Capability, requested.Mode),
+		Source:     SandboxSecurityCapabilitySourceRequested,
+		Status:     SandboxSecurityCapabilityReadinessReady,
+		ReasonCode: reason,
+	}
+}
+
+func sandboxSecurityCapabilityReadyContext(ready SandboxSecurityCapabilityMetadata, reason SandboxSecurityCapabilityReasonCode) SandboxSecurityCapabilityMetadata {
+	return SandboxSecurityCapabilityMetadata{
+		Family:     ready.Family,
+		Capability: ready.Capability,
+		Mode:       sandboxSecurityCapabilitySafeMode(ready.Family, ready.Capability, ready.Mode),
+		Source:     ready.Source,
+		Status:     SandboxSecurityCapabilityReadinessReady,
+		ReasonCode: reason,
+	}
+}
+
 func sandboxSecurityCapabilityBlockedRequestedContext(requested SandboxSecurityCapabilityMetadata, reason SandboxSecurityCapabilityReasonCode, warnings []SandboxSecurityCapabilityWarningCode) SandboxSecurityCapabilityMetadata {
 	return SandboxSecurityCapabilityMetadata{
 		Family:       requested.Family,
@@ -201,6 +234,22 @@ func sandboxSecurityCapabilitySameRequest(requested, candidate SandboxSecurityCa
 
 func sandboxSecurityCapabilityModeCompatible(requestedMode, candidateMode string) bool {
 	return requestedMode == "" || requestedMode == candidateMode
+}
+
+func sandboxSecurityCapabilityExplicitReadyMetadata(candidate SandboxSecurityCapabilityMetadata) bool {
+	if candidate.Status != SandboxSecurityCapabilityReadinessReady {
+		return false
+	}
+	if !sandboxSecurityCapabilityExplicitSupportSource(candidate.Source) {
+		return false
+	}
+	if !sandboxSecurityCapabilityKnownFamily(candidate.Family) || !sandboxSecurityCapabilityKnownCapability(candidate.Capability) {
+		return false
+	}
+	if candidate.ReasonCode != "" && candidate.ReasonCode != SandboxSecurityCapabilityReasonCapabilityConfirmed {
+		return false
+	}
+	return candidate.Mode == "" || sandboxSecurityCapabilitySafeMode(candidate.Family, candidate.Capability, candidate.Mode) == candidate.Mode
 }
 
 func sandboxSecurityCapabilityExplicitBlockerMetadata(candidate SandboxSecurityCapabilityMetadata) bool {
