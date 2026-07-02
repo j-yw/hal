@@ -50,6 +50,16 @@ func TestCredentialProxyValidationAcceptsSafeMetadata(t *testing.T) {
 	assertCredentialProxyValidationValid(t, binding)
 }
 
+func TestCredentialProxyValidationAcceptsSecretBrokerSecretIDs(t *testing.T) {
+	got := ValidateSandboxCredentialProxyBindingMetadata(SandboxCredentialProxyBindingMetadata{
+		ID:           "credential-binding-01",
+		SessionID:    "credential-session-01",
+		SecretID:     "env:GITHUB_TOKEN",
+		DeliveryMode: SandboxCredentialProxyDeliveryModeHTTPProxy,
+	})
+	assertCredentialProxyValidationValid(t, got)
+}
+
 func TestCredentialProxyValidationRejectsMissingRequiredMetadata(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -235,6 +245,16 @@ func TestCredentialProxyValidationRejectsUnsafeReferences(t *testing.T) {
 				ID:           "credential-binding-01",
 				PlanID:       "credential-plan-01",
 				SecretID:     "secretValue=raw-secret",
+				DeliveryMode: SandboxCredentialProxyDeliveryModeEnv,
+			}),
+			field: "secretId",
+		},
+		{
+			name: "binding raw-looking broker secret id",
+			result: ValidateSandboxCredentialProxyBindingMetadata(SandboxCredentialProxyBindingMetadata{
+				ID:           "credential-binding-01",
+				PlanID:       "credential-plan-01",
+				SecretID:     "env:ghp_raw_secret_value_123",
 				DeliveryMode: SandboxCredentialProxyDeliveryModeEnv,
 			}),
 			field: "secretId",

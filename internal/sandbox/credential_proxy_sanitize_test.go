@@ -59,7 +59,7 @@ func TestCredentialProxySanitizeReturnsCopies(t *testing.T) {
 		ID:                  " credential-binding-01 ",
 		PlanID:              " credential-plan-01 ",
 		SessionID:           " credential-session-01 ",
-		SecretID:            " secret-01 ",
+		SecretID:            " env:GITHUB_TOKEN ",
 		DeliveryMode:        SandboxCredentialProxyDeliveryMode(" FILE_TMPFS "),
 		RequestCategory:     SandboxCredentialProxyRequestCategory(" ARTIFACT_SYNC "),
 		DestinationCategory: SandboxNetworkPolicyDestinationCategory(" METADATA_SERVICE "),
@@ -72,7 +72,7 @@ func TestCredentialProxySanitizeReturnsCopies(t *testing.T) {
 	if !reflect.DeepEqual(binding, originalBinding) {
 		t.Fatalf("binding input mutated: got %#v, want %#v", binding, originalBinding)
 	}
-	if sanitizedBinding.ID != "credential-binding-01" || sanitizedBinding.DeliveryMode != SandboxCredentialProxyDeliveryModeFileTmpfs {
+	if sanitizedBinding.ID != "credential-binding-01" || sanitizedBinding.SecretID != "env:GITHUB_TOKEN" || sanitizedBinding.DeliveryMode != SandboxCredentialProxyDeliveryModeFileTmpfs {
 		t.Fatalf("sanitized binding = %#v, want normalized safe copy", sanitizedBinding)
 	}
 }
@@ -113,6 +113,16 @@ func TestCredentialProxySanitizeZeroesRecordsWithUnsafeRequiredIDs(t *testing.T)
 				ID:           "credential-binding-01",
 				PlanID:       "credential-plan-01",
 				SecretID:     "secretValue=raw-secret",
+				DeliveryMode: SandboxCredentialProxyDeliveryModeEnv,
+			}),
+			want: SandboxCredentialProxyBindingMetadata{},
+		},
+		{
+			name: "binding broker secret id raw marker unsafe",
+			got: SanitizeSandboxCredentialProxyBindingMetadata(SandboxCredentialProxyBindingMetadata{
+				ID:           "credential-binding-01",
+				PlanID:       "credential-plan-01",
+				SecretID:     "env:ghp_raw_secret_value_123",
 				DeliveryMode: SandboxCredentialProxyDeliveryModeEnv,
 			}),
 			want: SandboxCredentialProxyBindingMetadata{},

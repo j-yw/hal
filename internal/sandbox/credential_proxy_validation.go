@@ -111,7 +111,7 @@ func ValidateSandboxCredentialProxyBindingMetadata(binding SandboxCredentialProx
 	}
 	result.validateOptionalReference("planId", binding.PlanID, "credential proxy plan id must be a safe reference")
 	result.validateOptionalReference("sessionId", binding.SessionID, "credential proxy session id must be a safe reference")
-	result.validateRequiredID("secretId", binding.SecretID, SandboxCredentialProxyValidationUnsafeReference, "credential proxy secret id is required")
+	result.validateRequiredSecretReference("secretId", binding.SecretID, "credential proxy secret id is required")
 	result.validateRequiredEnum("deliveryMode", string(binding.DeliveryMode), validSandboxCredentialProxyDeliveryMode, "credential proxy delivery mode is required", "credential proxy delivery mode is unsupported")
 	result.validateOptionalEnum("requestCategory", string(binding.RequestCategory), validSandboxCredentialProxyRequestCategory, "credential proxy request category is unsupported")
 	result.validateOptionalEnum("destinationCategory", string(binding.DestinationCategory), validSandboxCredentialProxyDestinationCategory, "credential proxy destination category is unsupported")
@@ -130,6 +130,16 @@ func (r *SandboxCredentialProxyValidationResult) validateRequiredID(field, value
 	}
 	if unsafeSandboxCredentialProxyIdentifier(value) {
 		r.addError(field, unsafeCode, "credential proxy identifier must be a safe value")
+	}
+}
+
+func (r *SandboxCredentialProxyValidationResult) validateRequiredSecretReference(field, value, missingMessage string) {
+	if strings.TrimSpace(value) == "" {
+		r.addError(field, SandboxCredentialProxyValidationMissingRequiredID, missingMessage)
+		return
+	}
+	if unsafeSandboxCredentialProxySecretReference(value) {
+		r.addError(field, SandboxCredentialProxyValidationUnsafeReference, "credential proxy secret id must be a safe reference")
 	}
 }
 
@@ -202,6 +212,41 @@ func unsafeSandboxCredentialProxyIdentifier(value string) bool {
 		}
 	}
 	return false
+}
+
+func unsafeSandboxCredentialProxySecretReference(value string) bool {
+	if value == "" || value != strings.TrimSpace(value) || sandboxCredentialProxyContainsControl(value) {
+		return true
+	}
+	if !unsafeSandboxCredentialProxyIdentifier(value) {
+		return false
+	}
+
+	source, name, ok := strings.Cut(value, ":")
+	if !ok || strings.Contains(name, ":") {
+		return true
+	}
+	return !sandboxCredentialProxySafeBrokerSecretSource(source) || !sandboxCredentialProxySafeBrokerSecretName(name)
+}
+
+func sandboxCredentialProxySafeBrokerSecretSource(value string) bool {
+	return value != "" && !unsafeSandboxCredentialProxyIdentifier(value)
+}
+
+func sandboxCredentialProxySafeBrokerSecretName(value string) bool {
+	if value == "" || value != strings.TrimSpace(value) || sandboxCredentialProxyContainsControl(value) {
+		return false
+	}
+	for i, r := range value {
+		switch {
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9' && i > 0:
+		case r == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func unsafeSandboxCredentialProxyFreeformMetadata(value string) bool {

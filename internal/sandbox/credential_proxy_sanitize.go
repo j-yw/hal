@@ -46,7 +46,7 @@ func SanitizeSandboxCredentialProxyBindingMetadata(binding SandboxCredentialProx
 	sanitized.ID = sanitizeSandboxCredentialProxyIdentifier(sanitized.ID)
 	sanitized.PlanID = sanitizeSandboxCredentialProxyIdentifier(sanitized.PlanID)
 	sanitized.SessionID = sanitizeSandboxCredentialProxyIdentifier(sanitized.SessionID)
-	sanitized.SecretID = sanitizeSandboxCredentialProxyIdentifier(sanitized.SecretID)
+	sanitized.SecretID = sanitizeSandboxCredentialProxySecretReference(sanitized.SecretID)
 	if sanitized.ID == "" || sanitized.SecretID == "" || (sanitized.PlanID == "" && sanitized.SessionID == "") {
 		return SandboxCredentialProxyBindingMetadata{}
 	}
@@ -134,6 +134,13 @@ func sanitizeSandboxCredentialProxyPolicySnapshotIdentityPtr(snapshot *SandboxNe
 
 func sanitizeSandboxCredentialProxyIdentifier(value string) string {
 	if value == "" || unsafeSandboxCredentialProxyIdentifier(value) {
+		return ""
+	}
+	return value
+}
+
+func sanitizeSandboxCredentialProxySecretReference(value string) string {
+	if value == "" || unsafeSandboxCredentialProxySecretReference(value) {
 		return ""
 	}
 	return value
