@@ -80,6 +80,7 @@ func TestSandboxSecurityCapabilityReadinessJSONFieldApprovedStructs(t *testing.T
 func TestSandboxRuntimeSecurityReadinessDiagnosticsJSONFieldApprovedStruct(t *testing.T) {
 	for _, typ := range []reflect.Type{
 		reflect.TypeOf(sandbox.SandboxSecurity{}),
+		reflect.TypeOf(factory.SandboxSecurityMetadata{}),
 		reflect.TypeOf(SandboxRuntimeSecuritySummary{}),
 	} {
 		field, ok := typ.FieldByName("CapabilityReadinessDiagnostics")

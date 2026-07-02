@@ -133,6 +133,52 @@ func TestFactorySandboxMetadataAttachesSanitizedProjectedCapabilityReadiness(t *
 	}
 }
 
+func TestFactorySandboxMetadataAttachesSanitizedReadinessDiagnostics(t *testing.T) {
+	fixture, _, metadata, _ := factorySandboxReadinessDiagnosticsFixture(t)
+	readiness := metadata.Security.CapabilityReadiness
+	diagnostics := metadata.Security.CapabilityReadinessDiagnostics
+	requireFactorySandboxReadinessDiagnostics(t, readiness, diagnostics)
+
+	encoded := mustMarshalSandboxSecurityMetadata(t, metadata.Security)
+	if !strings.Contains(encoded, "capabilityReadinessDiagnostics") {
+		t.Fatalf("factory security metadata omitted capabilityReadinessDiagnostics: %s", encoded)
+	}
+	assertPhase26CredentialProxyUnsafeValuesAbsent(t, "factory readiness diagnostics metadata", encoded, fixture)
+	assertFactorySandboxCredentialProxyPayloadExcludes(t, "factory readiness diagnostics metadata", encoded, factorySandboxReadinessDiagnosticsForbiddenValues(fixture)...)
+	assertPhase26CredentialProxyNoRedactionPlaceholders(t, "factory readiness diagnostics metadata", diagnostics)
+}
+
+func TestFactorySandboxTimelineAttachesSanitizedReadinessDiagnostics(t *testing.T) {
+	fixture, req, metadata, target := factorySandboxReadinessDiagnosticsFixture(t)
+	store := factory.NewStore(t.TempDir())
+	record := &factory.RunRecord{RunID: "run-factory-readiness-diagnostics-timeline", Sandbox: metadata}
+	if err := recordFactorySandboxSecurityPolicyEvent(store, factorySandboxExecutorDeps{
+		now:         func() time.Time { return time.Date(2026, 7, 2, 9, 57, 0, 0, time.UTC) },
+		appendEvent: appendFactorySandboxTimelineEvent,
+	}, record, target, req.NetworkPolicyDecisionLogs, factory.RunSecretRedactor{}); err != nil {
+		t.Fatalf("recordFactorySandboxSecurityPolicyEvent() error = %v", err)
+	}
+	events, err := store.LoadEvents("run-factory-readiness-diagnostics-timeline")
+	if err != nil {
+		t.Fatalf("LoadEvents() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	securityMap := requireSandboxSecurityMap(t, events[0].Metadata["security"])
+	diagnosticsMap, ok := securityMap["capabilityReadinessDiagnostics"].(map[string]any)
+	if !ok {
+		t.Fatalf("timeline security metadata = %#v, want capabilityReadinessDiagnostics object", securityMap)
+	}
+	if diagnosticsMap["status"] != string(sandbox.SandboxSecurityCapabilityDiagnosticSummaryStatusAdvisory) {
+		t.Fatalf("timeline diagnostics = %#v, want advisory status", diagnosticsMap)
+	}
+	timelinePayload := mustMarshalSandboxSecurityMetadata(t, events[0])
+	assertPhase26CredentialProxyUnsafeValuesAbsent(t, "factory readiness diagnostics timeline", timelinePayload, fixture)
+	assertFactorySandboxCredentialProxyPayloadExcludes(t, "factory readiness diagnostics timeline", timelinePayload, factorySandboxReadinessDiagnosticsForbiddenValues(fixture)...)
+	assertPhase26CredentialProxyNoRedactionPlaceholders(t, "factory readiness diagnostics timeline", events[0])
+}
+
 func TestRunFactorySandboxExecutorCapabilityReadinessDoesNotChangeExecution(t *testing.T) {
 	now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
 	store := factory.NewStore(t.TempDir())
@@ -219,6 +265,78 @@ func TestRunFactorySandboxExecutorCapabilityReadinessDoesNotChangeExecution(t *t
 		t.Fatalf("Marshal(storedRun) error = %v", err)
 	}
 	assertFactorySandboxCredentialProxyPayloadExcludes(t, "factory readiness executor", string(payload), fixture.ForbiddenValues()...)
+}
+
+func factorySandboxReadinessDiagnosticsFixture(t *testing.T) (phase26CredentialProxyUnsafeValueFixture, factorySandboxExecutorRequest, *factory.SandboxMetadata, *sandbox.SandboxState) {
+	t.Helper()
+	fixture := phase26CredentialProxyUnsafeValues()
+	req := factorySandboxExecutorRequest{
+		Security:            fixture.SecurityRequest([]string{sandbox.SandboxSecretModeHTTPProxy}, []string{sandbox.SandboxSecretModeHTTPProxy}),
+		NetworkProxySession: fixture.NetworkProxySession(sandbox.SandboxNetworkPolicyDecisionSourceFactory, "network-proxy-session-factory-readiness-diagnostics", "policy-snapshot-factory-readiness-diagnostics"),
+		NetworkPolicyDecisionLogs: unsafePolicyDecisionLogManifestRecords(
+			sandbox.SandboxNetworkPolicyDecisionSource(" FACTORY "),
+		),
+	}
+	target := factorySandboxReadinessTarget(sandbox.EvaluateSandboxSecurity(req.Security))
+	target.Host.Endpoint = "unix:///tmp/raw-factory-readiness-diagnostics.sock"
+	target.Runtime.Image = "ghcr.io/private/raw-factory-readiness-diagnostics-image:latest"
+
+	_, metadata := factorySandboxPersistentMetadataFromState(req, factory.RunRecord{}, target)
+	if metadata == nil || metadata.Security == nil || metadata.Security.CapabilityReadiness == nil {
+		t.Fatalf("factory sandbox metadata = %#v, want readiness metadata", metadata)
+	}
+	return fixture, req, metadata, target
+}
+
+func requireFactorySandboxReadinessDiagnostics(t *testing.T, readiness *sandbox.SandboxSecurityCapabilityReadinessOutput, diagnostics *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary) {
+	t.Helper()
+	if readiness == nil {
+		t.Fatal("capabilityReadiness = nil, want readiness output")
+	}
+	if diagnostics == nil {
+		t.Fatal("capabilityReadinessDiagnostics = nil, want advisory diagnostics")
+	}
+	want := sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(*readiness)
+	if !reflect.DeepEqual(*diagnostics, want) {
+		t.Fatalf("capabilityReadinessDiagnostics not derived from sanitized readiness:\ngot:  %#v\nwant: %#v", *diagnostics, want)
+	}
+	if diagnostics.Status != sandbox.SandboxSecurityCapabilityDiagnosticSummaryStatusAdvisory ||
+		diagnostics.HighestSeverity != sandbox.SandboxSecurityCapabilityDiagnosticSeverityWarning ||
+		!diagnostics.AdvisoryOnly {
+		t.Fatalf("capabilityReadinessDiagnostics = %#v, want advisory warning summary", diagnostics)
+	}
+	requireRuntimeCapabilityReadinessDiagnostic(t, diagnostics,
+		sandbox.SandboxSecurityCapabilityDiagnosticClassificationUnsupported,
+		sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,
+		sandbox.SandboxSecurityCapabilityNetworkDenyByDefault,
+		true,
+	)
+	requireRuntimeCapabilityReadinessDiagnostic(t, diagnostics,
+		sandbox.SandboxSecurityCapabilityDiagnosticClassificationMetadataOnly,
+		sandbox.SandboxSecurityCapabilityFamilyNetworkProxy,
+		sandbox.SandboxSecurityCapabilityNetworkProxyEnforcement,
+		true,
+	)
+}
+
+func factorySandboxReadinessDiagnosticsForbiddenValues(fixture phase26CredentialProxyUnsafeValueFixture) []string {
+	values := append([]string(nil), fixture.ForbiddenValues()...)
+	values = append(values,
+		"api.example.com",
+		"169.254.169.254",
+		"https://user:secret@example.test/path?token=secret",
+		"unix:///tmp/private/proxy.sock",
+		"/Users/alice/project",
+		"Authorization",
+		"Bearer",
+		"OPENAI_API_KEY",
+		"raw-header-token-value",
+		"raw body secret value",
+		"unix:///tmp/raw-factory-readiness-diagnostics.sock",
+		"ghcr.io/private",
+		"raw-factory-readiness-diagnostics-image",
+	)
+	return values
 }
 
 func factorySandboxReadinessTarget(security *sandbox.SandboxSecurity) *sandbox.SandboxState {
