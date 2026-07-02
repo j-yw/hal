@@ -148,6 +148,7 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 		"ProcessLaunchStateAccepted":            true,
 		"ProcessLaunchStateAttempted":           true,
 		"ProcessLaunchStateBoundaryAvailable":   true,
+		"ProcessRunnerStartRequest":             true,
 		"ProcessStartCommandRequest":            true,
 		"ProcessStartRequest":                   true,
 		"ProcessStarter":                        true,
