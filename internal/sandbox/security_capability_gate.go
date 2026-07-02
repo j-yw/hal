@@ -75,6 +75,16 @@ func EvaluateSandboxSecurityCapabilityReadinessGateFromOutput(mode SandboxSecuri
 	return EvaluateSandboxSecurityCapabilityReadinessGate(mode, DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(output))
 }
 
+// EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr evaluates
+// optional diagnostic metadata. Nil diagnostics are treated as missing
+// readiness, so only explicit strict mode can block.
+func EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(mode SandboxSecurityCapabilityReadinessGatePolicyMode, diagnostics *SandboxSecurityCapabilityReadinessDiagnosticSummary) SandboxSecurityCapabilityReadinessGateDecision {
+	if diagnostics == nil {
+		return EvaluateSandboxSecurityCapabilityReadinessGate(mode, SandboxSecurityCapabilityReadinessDiagnosticSummary{})
+	}
+	return EvaluateSandboxSecurityCapabilityReadinessGate(mode, *diagnostics)
+}
+
 // EvaluateSandboxSecurityCapabilityReadinessGate converts advisory readiness
 // diagnostics into a deterministic, redaction-safe policy decision.
 func EvaluateSandboxSecurityCapabilityReadinessGate(mode SandboxSecurityCapabilityReadinessGatePolicyMode, diagnostics SandboxSecurityCapabilityReadinessDiagnosticSummary) SandboxSecurityCapabilityReadinessGateDecision {

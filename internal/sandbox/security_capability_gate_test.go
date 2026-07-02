@@ -195,6 +195,47 @@ func TestSecurityCapabilityReadinessGate(t *testing.T) {
 		assertSecurityCapabilityReadinessGateDecisionContainsOnlySafeFields(t, got)
 		assertSecurityCapabilityJSONExcludes(t, got, securityCapabilityDiagnosticUnsafeValueFixtures()...)
 	})
+
+	t.Run("diagnostics pointer path treats nil diagnostics as missing readiness", func(t *testing.T) {
+		got := EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(SandboxSecurityCapabilityReadinessGatePolicyModeStrict, nil)
+		want := securityCapabilityReadinessGateDecisionExpectation(
+			SandboxSecurityCapabilityReadinessGateCodeBlocked,
+			SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+			SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+			SandboxSecurityCapabilityReadinessGateReasonReadinessMissing,
+			SandboxSecurityCapabilityReadinessGateCounts{Total: 1, Missing: 1, StrictBlocking: 1},
+		)
+		assertSecurityCapabilityReadinessGateDecision(t, got, want)
+		assertSecurityCapabilityReadinessGateDecisionContainsOnlySafeFields(t, got)
+	})
+
+	t.Run("diagnostics pointer path matches value diagnostics path", func(t *testing.T) {
+		got := EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(SandboxSecurityCapabilityReadinessGatePolicyModeStrict, &readyDiagnostics)
+		want := EvaluateSandboxSecurityCapabilityReadinessGate(SandboxSecurityCapabilityReadinessGatePolicyModeStrict, readyDiagnostics)
+		assertSecurityCapabilityReadinessGateDecision(t, got, want)
+		assertSecurityCapabilityReadinessGateDecisionContainsOnlySafeFields(t, got)
+	})
+}
+
+func TestSecurityCapabilityReadinessGateDeterministic(t *testing.T) {
+	output := SandboxSecurityCapabilityReadinessOutput{
+		Results: []SandboxSecurityCapabilityReadinessResult{
+			securityCapabilityDiagnosticUnsupportedResult(),
+			securityCapabilityDiagnosticReadyResult(),
+			securityCapabilityDiagnosticMetadataOnlyResult(),
+			securityCapabilityDiagnosticBlockedResult(),
+		},
+	}
+	diagnostics := DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(output)
+	want := EvaluateSandboxSecurityCapabilityReadinessGate(SandboxSecurityCapabilityReadinessGatePolicyModeStrict, diagnostics)
+
+	for i := 0; i < 10; i++ {
+		got := EvaluateSandboxSecurityCapabilityReadinessGate(SandboxSecurityCapabilityReadinessGatePolicyModeStrict, diagnostics)
+		assertSecurityCapabilityReadinessGateDecision(t, got, want)
+
+		fromOutput := EvaluateSandboxSecurityCapabilityReadinessGateFromOutput(SandboxSecurityCapabilityReadinessGatePolicyModeStrict, output)
+		assertSecurityCapabilityReadinessGateDecision(t, fromOutput, want)
+	}
 }
 
 func TestSecurityCapabilityReadinessGateDoesNotCopyRawDiagnosticValues(t *testing.T) {
