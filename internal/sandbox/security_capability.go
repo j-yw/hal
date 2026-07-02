@@ -77,11 +77,14 @@ const (
 // SandboxSecurityCapabilityMetadata describes a requested or ready capability
 // using only safe identifiers and enum-like metadata.
 type SandboxSecurityCapabilityMetadata struct {
-	ID         string                          `json:"id,omitempty"`
-	Family     SandboxSecurityCapabilityFamily `json:"family"`
-	Capability SandboxSecurityCapabilityName   `json:"capability"`
-	Mode       string                          `json:"mode,omitempty"`
-	Source     SandboxSecurityCapabilitySource `json:"source,omitempty"`
+	ID           string                                  `json:"id,omitempty"`
+	Family       SandboxSecurityCapabilityFamily         `json:"family"`
+	Capability   SandboxSecurityCapabilityName           `json:"capability"`
+	Mode         string                                  `json:"mode,omitempty"`
+	Source       SandboxSecurityCapabilitySource         `json:"source,omitempty"`
+	Status       SandboxSecurityCapabilityReadinessState `json:"status,omitempty"`
+	ReasonCode   SandboxSecurityCapabilityReasonCode     `json:"reasonCode,omitempty"`
+	WarningCodes []SandboxSecurityCapabilityWarningCode  `json:"warningCodes,omitempty"`
 }
 
 // SandboxSecurityCapabilityReadinessRequest separates requested capabilities
@@ -91,6 +94,11 @@ type SandboxSecurityCapabilityReadinessRequest struct {
 	Ready     []SandboxSecurityCapabilityMetadata `json:"ready,omitempty"`
 }
 
+// SandboxSecurityCapabilityReadinessInput is the request-shaped input contract
+// accepted by readiness evaluation. It is an alias so callers can use either
+// request or input terminology without changing the JSON contract.
+type SandboxSecurityCapabilityReadinessInput = SandboxSecurityCapabilityReadinessRequest
+
 // SandboxSecurityCapabilityReadinessResult records one readiness decision for
 // a requested capability.
 type SandboxSecurityCapabilityReadinessResult struct {
@@ -99,4 +107,10 @@ type SandboxSecurityCapabilityReadinessResult struct {
 	Ready        *SandboxSecurityCapabilityMetadata      `json:"ready,omitempty"`
 	ReasonCode   SandboxSecurityCapabilityReasonCode     `json:"reasonCode,omitempty"`
 	WarningCodes []SandboxSecurityCapabilityWarningCode  `json:"warningCodes,omitempty"`
+}
+
+// SandboxSecurityCapabilityReadinessOutput is the result-shaped output contract
+// for readiness evaluation. It carries only per-capability readiness decisions.
+type SandboxSecurityCapabilityReadinessOutput struct {
+	Results []SandboxSecurityCapabilityReadinessResult `json:"results,omitempty"`
 }

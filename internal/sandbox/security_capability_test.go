@@ -150,6 +150,63 @@ func TestSecurityCapabilityReadinessResultJSONSchema(t *testing.T) {
 	}
 }
 
+func TestSecurityCapabilityMetadataStatusReasonWarningJSONSchema(t *testing.T) {
+	metadata := SandboxSecurityCapabilityMetadata{
+		ID:           "blocked-network-01",
+		Family:       SandboxSecurityCapabilityFamilyNetworkPolicy,
+		Capability:   SandboxSecurityCapabilityNetworkProxyEnforcement,
+		Mode:         SandboxNetworkEnforcementModeProxy,
+		Source:       SandboxSecurityCapabilitySourceRuntime,
+		Status:       SandboxSecurityCapabilityReadinessBlocked,
+		ReasonCode:   SandboxSecurityCapabilityReasonCapabilityBlocked,
+		WarningCodes: []SandboxSecurityCapabilityWarningCode{SandboxSecurityCapabilityWarningBlockedByPolicy},
+	}
+
+	got := mustMarshalObject(t, metadata)
+	assertObjectKeys(t, got, []string{
+		"id",
+		"family",
+		"capability",
+		"mode",
+		"source",
+		"status",
+		"reasonCode",
+		"warningCodes",
+	}, forbiddenSecurityCapabilityRawFieldNames())
+	assertSecurityCapabilityJSONValue(t, got, "status", "blocked")
+	assertSecurityCapabilityJSONValue(t, got, "reasonCode", "capability_blocked")
+
+	warnings := got["warningCodes"].([]any)
+	if len(warnings) != 1 || warnings[0] != "blocked_by_policy" {
+		t.Fatalf("warningCodes = %#v, want blocked_by_policy", warnings)
+	}
+}
+
+func TestSecurityCapabilityReadinessOutputJSONSchema(t *testing.T) {
+	output := SandboxSecurityCapabilityReadinessOutput{
+		Results: []SandboxSecurityCapabilityReadinessResult{
+			{
+				State:      SandboxSecurityCapabilityReadinessMetadataOnly,
+				ReasonCode: SandboxSecurityCapabilityReasonMetadataOnly,
+			},
+			{
+				State:      SandboxSecurityCapabilityReadinessUnsupported,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityMissing,
+			},
+		},
+	}
+
+	got := mustMarshalObject(t, output)
+	assertObjectKeys(t, got, []string{"results"}, forbiddenSecurityCapabilityRawFieldNames())
+
+	results := got["results"].([]any)
+	if len(results) != 2 {
+		t.Fatalf("results count = %d, want 2", len(results))
+	}
+	assertSecurityCapabilityJSONValue(t, results[0], "state", "metadata_only")
+	assertSecurityCapabilityJSONValue(t, results[1], "state", "unsupported")
+}
+
 func TestSecurityCapabilityReadinessDefaultMetadataOmitsOptionalJSONFields(t *testing.T) {
 	request := mustMarshalObject(t, SandboxSecurityCapabilityReadinessRequest{})
 	if len(request) != 0 {
@@ -164,6 +221,11 @@ func TestSecurityCapabilityReadinessDefaultMetadataOmitsOptionalJSONFields(t *te
 		"warningCodes",
 	})
 
+	output := mustMarshalObject(t, SandboxSecurityCapabilityReadinessOutput{})
+	if len(output) != 0 {
+		t.Fatalf("zero readiness output = %#v, want empty object", output)
+	}
+
 	metadata := mustMarshalObject(t, SandboxSecurityCapabilityMetadata{
 		Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
 		Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
@@ -172,6 +234,9 @@ func TestSecurityCapabilityReadinessDefaultMetadataOmitsOptionalJSONFields(t *te
 		"id",
 		"mode",
 		"source",
+		"status",
+		"reasonCode",
+		"warningCodes",
 	})
 }
 
@@ -182,6 +247,9 @@ func TestSecurityCapabilityReadinessJSONTagsAreStable(t *testing.T) {
 		{field: "Capability", name: "capability"},
 		{field: "Mode", name: "mode", omitempty: true},
 		{field: "Source", name: "source", omitempty: true},
+		{field: "Status", name: "status", omitempty: true},
+		{field: "ReasonCode", name: "reasonCode", omitempty: true},
+		{field: "WarningCodes", name: "warningCodes", omitempty: true},
 	})
 
 	assertSecurityCapabilityJSONTags(t, reflect.TypeOf(SandboxSecurityCapabilityReadinessRequest{}), []securityCapabilityJSONTagExpectation{
@@ -196,6 +264,10 @@ func TestSecurityCapabilityReadinessJSONTagsAreStable(t *testing.T) {
 		{field: "ReasonCode", name: "reasonCode", omitempty: true},
 		{field: "WarningCodes", name: "warningCodes", omitempty: true},
 	})
+
+	assertSecurityCapabilityJSONTags(t, reflect.TypeOf(SandboxSecurityCapabilityReadinessOutput{}), []securityCapabilityJSONTagExpectation{
+		{field: "Results", name: "results", omitempty: true},
+	})
 }
 
 func TestSecurityCapabilityReadinessContractsExposeNoRawValueFields(t *testing.T) {
@@ -203,6 +275,7 @@ func TestSecurityCapabilityReadinessContractsExposeNoRawValueFields(t *testing.T
 		reflect.TypeOf(SandboxSecurityCapabilityMetadata{}),
 		reflect.TypeOf(SandboxSecurityCapabilityReadinessRequest{}),
 		reflect.TypeOf(SandboxSecurityCapabilityReadinessResult{}),
+		reflect.TypeOf(SandboxSecurityCapabilityReadinessOutput{}),
 	}
 	for _, typ := range contractTypes {
 		t.Run(typ.Name(), func(t *testing.T) {
@@ -253,6 +326,15 @@ func TestSecurityCapabilitySerializedReadinessContainsNoUnsafeRawFieldNames(t *t
 				State:      SandboxSecurityCapabilityReadinessBlocked,
 				Requested:  &SandboxSecurityCapabilityMetadata{Family: SandboxSecurityCapabilityFamilySecretDelivery, Capability: SandboxSecurityCapabilitySecretFileTmpfs},
 				ReasonCode: SandboxSecurityCapabilityReasonCapabilityBlocked,
+			},
+		},
+		{
+			name: "output",
+			value: SandboxSecurityCapabilityReadinessOutput{
+				Results: []SandboxSecurityCapabilityReadinessResult{{
+					State:      SandboxSecurityCapabilityReadinessMetadataOnly,
+					ReasonCode: SandboxSecurityCapabilityReasonMetadataOnly,
+				}},
 			},
 		},
 	}
