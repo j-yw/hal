@@ -320,6 +320,11 @@ func TestSandboxRuntimeListJSONCachedWorkerHostContractStableAndSafe(t *testing.
 	if got := strings.Join(resp.Security.Enforced.CredentialModes, ","); got != "env,legacy_auth_sync" {
 		t.Fatalf("enforced credential modes = %q, want sorted active modes", got)
 	}
+	requireRuntimeCapabilityReadinessResult(t, resp.Security.CapabilityReadiness,
+		sandbox.SandboxSecurityCapabilityReadinessUnsupported,
+		sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,
+		sandbox.SandboxSecurityCapabilityNetworkDenyByDefault,
+	)
 	if len(resp.Runtimes) != 2 {
 		t.Fatalf("runtime len = %d, want 2", len(resp.Runtimes))
 	}
@@ -1024,6 +1029,11 @@ func TestSandboxRuntimeStatusJSONCachedWorkerRuntimeContractStableAndSafe(t *tes
 	if got := strings.Join(resp.Security.Enforced.CredentialModes, ","); got != "env,legacy_auth_sync" {
 		t.Fatalf("enforced credential modes = %q, want sorted active modes", got)
 	}
+	requireRuntimeCapabilityReadinessResult(t, resp.Security.CapabilityReadiness,
+		sandbox.SandboxSecurityCapabilityReadinessUnsupported,
+		sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,
+		sandbox.SandboxSecurityCapabilityNetworkDenyByDefault,
+	)
 	if len(resp.Diagnostics) != 0 || len(resp.Errors) != 0 {
 		t.Fatalf("diagnostics/errors = %#v/%#v, want empty arrays", resp.Diagnostics, resp.Errors)
 	}
@@ -1034,6 +1044,91 @@ func TestSandboxRuntimeStatusJSONCachedWorkerRuntimeContractStableAndSafe(t *tes
 	}
 	if strings.Contains(firstOutput, "Sandbox runtime rootless_podman") {
 		t.Fatalf("JSON stdout included human status text: %q", firstOutput)
+	}
+}
+
+func TestSandboxRuntimeStatusJSONOmitsCapabilityReadinessWhenSecurityAbsent(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:                "worker-a",
+		Name:              "builder",
+		Kind:              sandbox.SandboxHostKindWorker,
+		Endpoint:          "unix:///tmp/private/worker-a.sock",
+		SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	deps := defaultSandboxRuntimeDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("cached sandbox runtime status --json should not contact worker daemons")
+		return nil, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxRuntimeCommand(deps)
+	cmd.SetArgs([]string{"status", "worker-a", sandbox.SandboxRuntimeDriverRootlessPodman, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+
+	resp := decodeOneSandboxRuntimeStatusJSON(t, stdout.Bytes())
+	if resp.Security.CapabilityReadiness != nil {
+		t.Fatalf("capabilityReadiness = %#v, want omitted when no security metadata is available", resp.Security.CapabilityReadiness)
+	}
+	if strings.Contains(stdout.String(), "capabilityReadiness") {
+		t.Fatalf("JSON output included capabilityReadiness without security metadata: %s", stdout.String())
+	}
+}
+
+func TestSandboxRuntimeSecuritySummarySanitizesCapabilityReadinessBeforeJSON(t *testing.T) {
+	summary := newSandboxRuntimeSecuritySummary(&sandbox.SandboxSecurity{
+		CapabilityReadiness: &sandbox.SandboxSecurityCapabilityReadinessOutput{
+			Results: []sandbox.SandboxSecurityCapabilityReadinessResult{
+				{
+					State: sandbox.SandboxSecurityCapabilityReadinessReady,
+					Ready: &sandbox.SandboxSecurityCapabilityMetadata{
+						ID:         "safe-ready",
+						Family:     sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,
+						Capability: sandbox.SandboxSecurityCapabilityNetworkDenyByDefault,
+						Mode:       sandbox.SandboxNetworkEnforcementModeFirewall,
+						Source:     sandbox.SandboxSecurityCapabilitySourceRuntime,
+						Status:     sandbox.SandboxSecurityCapabilityReadinessReady,
+						ReasonCode: sandbox.SandboxSecurityCapabilityReasonCapabilityConfirmed,
+					},
+					ReasonCode: sandbox.SandboxSecurityCapabilityReasonCapabilityConfirmed,
+				},
+				{
+					State: sandbox.SandboxSecurityCapabilityReadinessReady,
+					Ready: &sandbox.SandboxSecurityCapabilityMetadata{
+						ID:         "https://secret.example:443/token",
+						Family:     sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,
+						Capability: sandbox.SandboxSecurityCapabilityNetworkDenyByDefault,
+						Mode:       sandbox.SandboxNetworkEnforcementModeFirewall,
+						Source:     sandbox.SandboxSecurityCapabilitySourceRuntime,
+						Status:     sandbox.SandboxSecurityCapabilityReadinessReady,
+						ReasonCode: sandbox.SandboxSecurityCapabilityReasonCapabilityConfirmed,
+					},
+					ReasonCode: sandbox.SandboxSecurityCapabilityReasonCapabilityConfirmed,
+				},
+			},
+		},
+	})
+	if summary.CapabilityReadiness == nil {
+		t.Fatal("capabilityReadiness = nil, want sanitized safe readiness output")
+	}
+
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	output := string(encoded)
+	if !strings.Contains(output, "safe-ready") {
+		t.Fatalf("sanitized runtime summary omitted safe readiness metadata: %s", output)
+	}
+	for _, leaked := range []string{"https://secret.example:443/token", "secret.example", ":443", "token"} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("runtime summary readiness leaked unsafe value %q: %s", leaked, output)
+		}
 	}
 }
 
@@ -1943,6 +2038,27 @@ func sandboxRuntimeContainsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func requireRuntimeCapabilityReadinessResult(t *testing.T, output *sandbox.SandboxSecurityCapabilityReadinessOutput, state sandbox.SandboxSecurityCapabilityReadinessState, family sandbox.SandboxSecurityCapabilityFamily, capability sandbox.SandboxSecurityCapabilityName) {
+	t.Helper()
+	if output == nil {
+		t.Fatalf("capabilityReadiness = nil, want %s %s/%s result", state, family, capability)
+	}
+	for _, result := range output.Results {
+		if result.State != state {
+			continue
+		}
+		for _, metadata := range []*sandbox.SandboxSecurityCapabilityMetadata{result.Metadata, result.Requested, result.Ready} {
+			if metadata == nil {
+				continue
+			}
+			if metadata.Family == family && metadata.Capability == capability {
+				return
+			}
+		}
+	}
+	t.Fatalf("capabilityReadiness results = %#v, want %s %s/%s result", output.Results, state, family, capability)
 }
 
 func sandboxRuntimeTestWorkerSecurity(isolationLevel string) sandboxworker.SecurityPolicy {
