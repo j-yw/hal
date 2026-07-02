@@ -49,6 +49,82 @@ func TestSandboxSecurityMetadataIncludesEffectivePolicyResult(t *testing.T) {
 	}
 }
 
+func TestSandboxSecurityCapabilityReadinessJSONFieldApprovedStructs(t *testing.T) {
+	for _, typ := range []reflect.Type{
+		reflect.TypeOf(sandbox.SandboxSecurity{}),
+		reflect.TypeOf(factory.SandboxSecurityMetadata{}),
+		reflect.TypeOf(SandboxRuntimeSecuritySummary{}),
+	} {
+		field, ok := typ.FieldByName("CapabilityReadiness")
+		if !ok {
+			t.Fatalf("%s missing CapabilityReadiness field", typ)
+		}
+		if got := field.Tag.Get("json"); got != "capabilityReadiness,omitempty" {
+			t.Fatalf("%s CapabilityReadiness json tag = %q, want capabilityReadiness,omitempty", typ, got)
+		}
+	}
+
+	for _, typ := range []reflect.Type{
+		reflect.TypeOf(sandbox.SandboxNetworkSecurity{}),
+		reflect.TypeOf(sandbox.SandboxSecretSecurity{}),
+		reflect.TypeOf(factory.SandboxNetworkSecurityMetadata{}),
+		reflect.TypeOf(factory.SandboxSecretSecurityMetadata{}),
+		reflect.TypeOf(SandboxRuntimeSecurityControls{}),
+	} {
+		if _, ok := typ.FieldByName("CapabilityReadiness"); ok {
+			t.Fatalf("%s must not expose CapabilityReadiness", typ)
+		}
+	}
+}
+
+func TestSandboxSecurityCapabilityReadinessMetadataPreservedWhenAttached(t *testing.T) {
+	security := testEffectiveSandboxSecurityMetadata()
+	security.CapabilityReadiness = testCommandSandboxCapabilityReadinessOutput()
+	store := sandboxexecution.NewStore(t.TempDir())
+	startedAt := time.Date(2026, 7, 2, 3, 4, 0, 0, time.UTC)
+
+	err := saveRunSandboxManifest(store, runSandboxRequest{
+		ExecutionID: "run-capability-readiness-metadata",
+		ProjectDir:  "/repo",
+		SandboxName: "readiness-target",
+	}, sandboxexecution.StatusSucceeded, startedAt, &startedAt, &sandbox.SandboxState{
+		Name:     "readiness-target",
+		Provider: "fake",
+		Status:   sandbox.StatusStopped,
+		Security: security,
+	})
+	if err != nil {
+		t.Fatalf("saveRunSandboxManifest() error: %v", err)
+	}
+
+	manifest, err := store.LoadManifest("run-capability-readiness-metadata")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	requireCapabilityReadinessOutput(t, manifest.Security.CapabilityReadiness)
+
+	summary := newSandboxRuntimeSecuritySummary(manifest.Security)
+	requireCapabilityReadinessOutput(t, summary.CapabilityReadiness)
+
+	factoryMetadata := factorySandboxSecurityMetadata(manifest.Security)
+	if factoryMetadata == nil {
+		t.Fatal("factory sandbox security metadata = nil")
+	}
+	requireCapabilityReadinessOutput(t, factoryMetadata.CapabilityReadiness)
+
+	timelineMetadata := factorySandboxSecurityTimelineMetadata(factoryMetadata)
+	timelineReadiness, ok := timelineMetadata["capabilityReadiness"].(*sandbox.SandboxSecurityCapabilityReadinessOutput)
+	if !ok {
+		t.Fatalf("timeline capabilityReadiness = %#v, want readiness output", timelineMetadata["capabilityReadiness"])
+	}
+	requireCapabilityReadinessOutput(t, timelineReadiness)
+
+	encoded := mustMarshalSandboxSecurityMetadata(t, manifest.Security)
+	if !strings.Contains(encoded, "capabilityReadiness") {
+		t.Fatalf("sandbox security metadata omitted capabilityReadiness: %s", encoded)
+	}
+}
+
 func TestSandboxManifestsUseRequestedSecurityIntentWhenTargetHasLegacySecurity(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 3, 2, 0, 0, time.UTC)
 	securityReq := sandbox.SecurityEvaluationRequest{
@@ -191,6 +267,46 @@ func testEffectiveSandboxSecurityMetadata() *sandbox.SandboxSecurity {
 		ActiveSecretModes:      []string{sandbox.SandboxSecretModeEnv},
 		CompatibilityAuthSync:  true,
 	})
+}
+
+func testCommandSandboxCapabilityReadinessOutput() *sandbox.SandboxSecurityCapabilityReadinessOutput {
+	return &sandbox.SandboxSecurityCapabilityReadinessOutput{
+		Results: []sandbox.SandboxSecurityCapabilityReadinessResult{{
+			State: sandbox.SandboxSecurityCapabilityReadinessReady,
+			Requested: &sandbox.SandboxSecurityCapabilityMetadata{
+				ID:         "command-capability-requested",
+				Family:     sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,
+				Capability: sandbox.SandboxSecurityCapabilityNetworkDenyByDefault,
+				Source:     sandbox.SandboxSecurityCapabilitySourceRequested,
+			},
+			Ready: &sandbox.SandboxSecurityCapabilityMetadata{
+				ID:         "command-capability-ready",
+				Family:     sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,
+				Capability: sandbox.SandboxSecurityCapabilityNetworkDenyByDefault,
+				Source:     sandbox.SandboxSecurityCapabilitySourceRuntime,
+				Status:     sandbox.SandboxSecurityCapabilityReadinessReady,
+				ReasonCode: sandbox.SandboxSecurityCapabilityReasonCapabilityConfirmed,
+			},
+			ReasonCode: sandbox.SandboxSecurityCapabilityReasonCapabilityConfirmed,
+		}},
+	}
+}
+
+func requireCapabilityReadinessOutput(t *testing.T, output *sandbox.SandboxSecurityCapabilityReadinessOutput) {
+	t.Helper()
+	if output == nil {
+		t.Fatal("capabilityReadiness = nil")
+	}
+	if len(output.Results) != 1 {
+		t.Fatalf("capabilityReadiness results = %#v, want one result", output.Results)
+	}
+	result := output.Results[0]
+	if result.State != sandbox.SandboxSecurityCapabilityReadinessReady {
+		t.Fatalf("capabilityReadiness state = %q, want ready", result.State)
+	}
+	if result.Ready == nil || result.Ready.Capability != sandbox.SandboxSecurityCapabilityNetworkDenyByDefault {
+		t.Fatalf("capabilityReadiness ready metadata = %#v", result.Ready)
+	}
 }
 
 func requireEffectiveSandboxPolicyResult(t *testing.T, result *sandbox.SandboxNetworkPolicyResult) {

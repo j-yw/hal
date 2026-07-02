@@ -347,6 +347,9 @@ func sanitizeSandboxNetworkProxyIdentifier(value string) string {
 }
 
 func unsafeSandboxNetworkProxyFreeformMetadata(value string) bool {
+	if sandboxNetworkProxyAllDigits(value) {
+		return true
+	}
 	lower := strings.ToLower(value)
 	for _, marker := range []string{
 		"://",
@@ -370,6 +373,15 @@ func unsafeSandboxNetworkProxyFreeformMetadata(value string) bool {
 		return true
 	}
 	return false
+}
+
+func sandboxNetworkProxyAllDigits(value string) bool {
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return value != ""
 }
 
 func normalizeSandboxNetworkPolicyDecisionSource(source SandboxNetworkPolicyDecisionSource) SandboxNetworkPolicyDecisionSource {

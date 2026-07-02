@@ -136,7 +136,7 @@ func TestSecurityCapabilityImportBoundaries(t *testing.T) {
 	}
 }
 
-func TestSecurityCapabilityImportBoundaryCoversProductionEvaluatorFiles(t *testing.T) {
+func TestSecurityCapabilityImportBoundaryCoversProductionMetadataFiles(t *testing.T) {
 	paths := sandboxSecurityCapabilityBoundaryFiles(t)
 	found := make(map[string]bool, len(paths))
 	for _, path := range paths {
@@ -149,6 +149,7 @@ func TestSecurityCapabilityImportBoundaryCoversProductionEvaluatorFiles(t *testi
 		"security_capability.go",
 		"security_capability_evaluator.go",
 		"security_capability_sanitize.go",
+		"credential_proxy_projection.go",
 	} {
 		if !found[path] {
 			t.Fatalf("import-boundary guard files = %#v, want %s covered", paths, path)
@@ -323,9 +324,13 @@ const (
 func sandboxSecurityCapabilityBoundaryFiles(t *testing.T) []string {
 	t.Helper()
 
-	paths, err := filepath.Glob("security_capability*.go")
-	if err != nil {
-		t.Fatalf("Glob(security_capability*.go) error: %v", err)
+	var paths []string
+	for _, pattern := range []string{"security_capability*.go", "*_projection.go"} {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatalf("Glob(%s) error: %v", pattern, err)
+		}
+		paths = append(paths, matches...)
 	}
 	seen := make(map[string]bool, len(paths))
 	out := make([]string, 0, len(paths))

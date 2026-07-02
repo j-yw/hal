@@ -416,6 +416,217 @@ func TestSecurityCapabilitySerializedReadinessContainsNoUnsafeRawFieldNames(t *t
 	}
 }
 
+func TestSecurityCapabilityReadinessOutputJSONContainsOnlySafeMetadataValues(t *testing.T) {
+	output := SanitizeSandboxSecurityCapabilityReadinessOutput(SandboxSecurityCapabilityReadinessOutput{
+		Results: []SandboxSecurityCapabilityReadinessResult{
+			{
+				State: SandboxSecurityCapabilityReadinessReady,
+				Requested: &SandboxSecurityCapabilityMetadata{
+					ID:         "requested-network-01",
+					Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+					Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+					Mode:       SandboxNetworkEnforcementModeFirewall,
+					Source:     SandboxSecurityCapabilitySourceRequested,
+					Status:     SandboxSecurityCapabilityReadinessReady,
+					ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+				},
+				Ready: &SandboxSecurityCapabilityMetadata{
+					ID:         "ready-network-01",
+					Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+					Capability: SandboxSecurityCapabilityNetworkFirewallEnforcement,
+					Mode:       SandboxNetworkEnforcementModeFirewall,
+					Source:     SandboxSecurityCapabilitySourceRuntime,
+					Status:     SandboxSecurityCapabilityReadinessReady,
+					ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+				},
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+			},
+			{
+				State: SandboxSecurityCapabilityReadinessBlocked,
+				Requested: &SandboxSecurityCapabilityMetadata{
+					ID:           "requested-secret-01",
+					Family:       SandboxSecurityCapabilityFamilySecretDelivery,
+					Capability:   SandboxSecurityCapabilitySecretFileTmpfs,
+					Mode:         SandboxSecretModeFileTmpfs,
+					Source:       SandboxSecurityCapabilitySourceRequested,
+					Status:       SandboxSecurityCapabilityReadinessBlocked,
+					ReasonCode:   SandboxSecurityCapabilityReasonCapabilityBlocked,
+					WarningCodes: []SandboxSecurityCapabilityWarningCode{SandboxSecurityCapabilityWarningBlockedByPolicy},
+				},
+				Ready: &SandboxSecurityCapabilityMetadata{
+					ID:           "blocked-secret-01",
+					Family:       SandboxSecurityCapabilityFamilySecretDelivery,
+					Capability:   SandboxSecurityCapabilitySecretFileTmpfs,
+					Mode:         SandboxSecretModeFileTmpfs,
+					Source:       SandboxSecurityCapabilitySourceWorker,
+					Status:       SandboxSecurityCapabilityReadinessBlocked,
+					ReasonCode:   SandboxSecurityCapabilityReasonCapabilityBlocked,
+					WarningCodes: []SandboxSecurityCapabilityWarningCode{SandboxSecurityCapabilityWarningBlockedByPolicy},
+				},
+				ReasonCode:   SandboxSecurityCapabilityReasonCapabilityBlocked,
+				WarningCodes: []SandboxSecurityCapabilityWarningCode{SandboxSecurityCapabilityWarningBlockedByPolicy},
+			},
+			{
+				State: SandboxSecurityCapabilityReadinessMetadataOnly,
+				Metadata: &SandboxSecurityCapabilityMetadata{
+					ID:           "metadata-credential-01",
+					Family:       SandboxSecurityCapabilityFamilyCredentialProxy,
+					Capability:   SandboxSecurityCapabilityCredentialProxy,
+					Source:       SandboxSecurityCapabilitySourceMetadata,
+					Status:       SandboxSecurityCapabilityReadinessMetadataOnly,
+					ReasonCode:   SandboxSecurityCapabilityReasonMetadataDeliveryUnproven,
+					WarningCodes: []SandboxSecurityCapabilityWarningCode{SandboxSecurityCapabilityWarningMetadataNotCapability},
+				},
+				ReasonCode:   SandboxSecurityCapabilityReasonMetadataDeliveryUnproven,
+				WarningCodes: []SandboxSecurityCapabilityWarningCode{SandboxSecurityCapabilityWarningMetadataNotCapability},
+			},
+		},
+	})
+
+	got := mustMarshalObject(t, output)
+	assertSecurityCapabilityReadinessJSONOnlySafeMetadataValues(t, got, "$")
+	assertSecurityCapabilityJSONKeysExcludeUnsafeRawFields(t, got, "$")
+}
+
+func TestSecurityCapabilityReadinessOutputSanitizationDropsResultsWithoutRequiredContext(t *testing.T) {
+	validRequested := SandboxSecurityCapabilityMetadata{
+		ID:         "requested-network-01",
+		Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+		Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+		Mode:       SandboxNetworkEnforcementModeFirewall,
+		Source:     SandboxSecurityCapabilitySourceRequested,
+	}
+	validReady := SandboxSecurityCapabilityMetadata{
+		ID:         "ready-network-01",
+		Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+		Capability: SandboxSecurityCapabilityNetworkFirewallEnforcement,
+		Mode:       SandboxNetworkEnforcementModeFirewall,
+		Source:     SandboxSecurityCapabilitySourceRuntime,
+		Status:     SandboxSecurityCapabilityReadinessReady,
+	}
+	validMetadata := SandboxSecurityCapabilityMetadata{
+		ID:         "metadata-network-01",
+		Family:     SandboxSecurityCapabilityFamilyNetworkProxy,
+		Capability: SandboxSecurityCapabilityNetworkProxyEnforcement,
+		Mode:       SandboxNetworkEnforcementModeProxy,
+		Source:     SandboxSecurityCapabilitySourceMetadata,
+		Status:     SandboxSecurityCapabilityReadinessMetadataOnly,
+	}
+	invalidReady := validReady
+	invalidReady.Mode = "https://worker.example.invalid:8443/proxy?token=raw-token"
+
+	output := SanitizeSandboxSecurityCapabilityReadinessOutput(SandboxSecurityCapabilityReadinessOutput{
+		Results: []SandboxSecurityCapabilityReadinessResult{
+			{
+				State:      SandboxSecurityCapabilityReadinessReady,
+				Requested:  &validRequested,
+				Ready:      &invalidReady,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+			},
+			{
+				State:      SandboxSecurityCapabilityReadinessReady,
+				Requested:  &validRequested,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+			},
+			{
+				State:      SandboxSecurityCapabilityReadinessBlocked,
+				Requested:  &validRequested,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityBlocked,
+			},
+			{
+				State:      SandboxSecurityCapabilityReadinessUnsupported,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityMissing,
+			},
+			{
+				State:      SandboxSecurityCapabilityReadinessMetadataOnly,
+				ReasonCode: SandboxSecurityCapabilityReasonMetadataOnly,
+			},
+			{
+				State:      SandboxSecurityCapabilityReadinessReady,
+				Requested:  &validRequested,
+				Ready:      &validReady,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+			},
+			{
+				State:      SandboxSecurityCapabilityReadinessUnsupported,
+				Requested:  &validRequested,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityMissing,
+			},
+			{
+				State:      SandboxSecurityCapabilityReadinessMetadataOnly,
+				Metadata:   &validMetadata,
+				ReasonCode: SandboxSecurityCapabilityReasonMetadataOnly,
+			},
+		},
+	})
+
+	if len(output.Results) != 3 {
+		t.Fatalf("sanitized results count = %d, want only valid-context results: %#v", len(output.Results), output.Results)
+	}
+	if output.Results[0].State != SandboxSecurityCapabilityReadinessReady ||
+		output.Results[0].Requested == nil ||
+		output.Results[0].Ready == nil {
+		t.Fatalf("ready result = %#v, want requested and ready context preserved", output.Results[0])
+	}
+	if output.Results[1].State != SandboxSecurityCapabilityReadinessUnsupported ||
+		output.Results[1].Requested == nil {
+		t.Fatalf("unsupported result = %#v, want requested context preserved", output.Results[1])
+	}
+	if output.Results[2].State != SandboxSecurityCapabilityReadinessMetadataOnly ||
+		output.Results[2].Metadata == nil {
+		t.Fatalf("metadata-only result = %#v, want metadata context preserved", output.Results[2])
+	}
+
+	cloned := CloneSandboxSecurityCapabilityReadinessOutputPtr(&SandboxSecurityCapabilityReadinessOutput{
+		Results: []SandboxSecurityCapabilityReadinessResult{{
+			State:      SandboxSecurityCapabilityReadinessReady,
+			Requested:  &validRequested,
+			Ready:      &invalidReady,
+			ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+		}},
+	})
+	if cloned != nil {
+		t.Fatalf("cloned invalid ready output = %#v, want nil after proof context is stripped", cloned)
+	}
+}
+
+func TestSecurityCapabilityReadinessSanitizationRejectsOrOmitsRawLookingValues(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		value string
+	}{
+		{name: "hostname", value: "worker-01.example.invalid"},
+		{name: "url", value: "https://user:pass@example.invalid/path?token=raw-url-token"},
+		{name: "local path", value: "/Users/v/project/.hal/config.yaml"},
+		{name: "socket path", value: "unix:///tmp/hal-worker.sock"},
+		{name: "ip and port", value: "127.0.0.1:8443"},
+		{name: "port", value: "8443"},
+		{name: "credential value", value: "credentialValue=raw-credential"},
+		{name: "token string", value: "ghp_raw_token_value"},
+		{name: "secret value", value: "secretValue=raw-secret"},
+		{name: "command output", value: "stderr: command failed token=raw-secret"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			input := securityCapabilityReadinessInputWithUnsafeValue(tt.value)
+
+			validation := ValidateAndNormalizeSandboxSecurityCapabilityReadinessInput(input)
+			if validation.Valid {
+				t.Fatalf("ValidateAndNormalizeSandboxSecurityCapabilityReadinessInput(%q) valid = true, want unsafe metadata rejected", tt.value)
+			}
+			assertSecurityCapabilityJSONExcludes(t, validation.Errors, tt.value)
+			for _, err := range validation.Errors {
+				assertSecurityCapabilityTextExcludes(t, err.Error(), tt.value)
+			}
+
+			sanitized := SanitizeSandboxSecurityCapabilityReadinessInput(input)
+			assertSecurityCapabilityJSONExcludes(t, sanitized, tt.value)
+
+			output := EvaluateSandboxSecurityCapabilityReadiness(input)
+			assertSecurityCapabilityJSONExcludes(t, output, tt.value)
+		})
+	}
+}
+
 func assertSecurityCapabilityJSONValue(t *testing.T, object any, key, want string) {
 	t.Helper()
 
@@ -433,6 +644,62 @@ func assertSecurityCapabilityJSONValue(t *testing.T, object any, key, want strin
 	assertSecurityCapabilitySafeEnumValue(t, gotString)
 }
 
+func assertSecurityCapabilityReadinessJSONOnlySafeMetadataValues(t *testing.T, value any, path string) {
+	t.Helper()
+
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			childPath := path + "." + key
+			switch key {
+			case "results", "metadata", "requested", "ready":
+				assertSecurityCapabilityReadinessJSONOnlySafeMetadataValues(t, child, childPath)
+			case "id":
+				assertSecurityCapabilitySafeIdentifierValue(t, requireSecurityCapabilityJSONString(t, child, childPath))
+			case "family", "capability", "mode", "source", "status", "state", "reasonCode":
+				assertSecurityCapabilitySafeEnumValue(t, requireSecurityCapabilityJSONString(t, child, childPath))
+			case "warningCodes":
+				warnings, ok := child.([]any)
+				if !ok {
+					t.Fatalf("%s = %#v, want JSON array", childPath, child)
+				}
+				for i, warning := range warnings {
+					assertSecurityCapabilitySafeEnumValue(t, requireSecurityCapabilityJSONString(t, warning, childPath+"["+securityCapabilityTestIndexString(i)+"]"))
+				}
+			default:
+				t.Fatalf("%s contains unexpected readiness JSON key %q", path, key)
+			}
+		}
+	case []any:
+		for i, child := range typed {
+			assertSecurityCapabilityReadinessJSONOnlySafeMetadataValues(t, child, path+"["+securityCapabilityTestIndexString(i)+"]")
+		}
+	default:
+		t.Fatalf("%s = %#v, want readiness JSON object or array", path, value)
+	}
+}
+
+func requireSecurityCapabilityJSONString(t *testing.T, value any, path string) string {
+	t.Helper()
+
+	got, ok := value.(string)
+	if !ok {
+		t.Fatalf("%s = %#v, want string", path, value)
+	}
+	return got
+}
+
+func assertSecurityCapabilitySafeIdentifierValue(t *testing.T, value string) {
+	t.Helper()
+
+	if value == "" {
+		t.Fatal("identifier value must not be empty")
+	}
+	if unsafeSandboxCredentialProxyIdentifier(value) {
+		t.Fatalf("identifier value %q is not redaction-safe", value)
+	}
+}
+
 func assertSecurityCapabilitySafeEnumValue(t *testing.T, value string) {
 	t.Helper()
 
@@ -445,6 +712,114 @@ func assertSecurityCapabilitySafeEnumValue(t *testing.T, value string) {
 		}
 		t.Fatalf("enum value %q is not redaction-safe snake_case", value)
 	}
+}
+
+func securityCapabilityReadinessInputWithUnsafeValue(value string) SandboxSecurityCapabilityReadinessInput {
+	return SandboxSecurityCapabilityReadinessInput{
+		Requested: []SandboxSecurityCapabilityMetadata{
+			{
+				ID:         value,
+				Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+				Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+				Mode:       SandboxNetworkEnforcementModeFirewall,
+				Source:     SandboxSecurityCapabilitySourceRequested,
+			},
+			{
+				ID:         "requested-unsafe-mode",
+				Family:     SandboxSecurityCapabilityFamilyCredentialProxy,
+				Capability: SandboxSecurityCapabilityCredentialProxy,
+				Mode:       value,
+				Source:     SandboxSecurityCapabilitySourceRequested,
+			},
+		},
+		Ready: []SandboxSecurityCapabilityMetadata{
+			{
+				ID:         value,
+				Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+				Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+				Mode:       SandboxNetworkEnforcementModeFirewall,
+				Source:     SandboxSecurityCapabilitySourceRuntime,
+				Status:     SandboxSecurityCapabilityReadinessReady,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+				WarningCodes: []SandboxSecurityCapabilityWarningCode{
+					SandboxSecurityCapabilityWarningBlockedByPolicy,
+					SandboxSecurityCapabilityWarningCode(value),
+				},
+			},
+			{
+				ID:         "ready-unsafe-reason",
+				Family:     SandboxSecurityCapabilityFamilyNetworkProxy,
+				Capability: SandboxSecurityCapabilityNetworkProxyEnforcement,
+				Mode:       SandboxNetworkEnforcementModeProxy,
+				Source:     SandboxSecurityCapabilitySourceRuntime,
+				Status:     SandboxSecurityCapabilityReadinessReady,
+				ReasonCode: SandboxSecurityCapabilityReasonCode(value),
+			},
+		},
+		WorkerPostures: []SandboxSecurityCapabilityWorkerPostureMetadata{{
+			WorkerKind:         value,
+			RuntimeDriver:      value,
+			IsolationLevel:     value,
+			NetworkPolicy:      value,
+			NetworkEnforcement: value,
+			CredentialModes:    []string{value},
+		}},
+		NetworkProxySession: &SandboxNetworkProxySessionMetadata{
+			ID:              value,
+			Source:          SandboxNetworkPolicyDecisionSourceRun,
+			EnforcementMode: SandboxNetworkEnforcementModeProxy,
+		},
+		NetworkPolicyDecisionLogs: []SandboxNetworkPolicyDecisionLogRecord{{
+			ID:             value,
+			Source:         SandboxNetworkPolicyDecisionSourceRun,
+			ProxySessionID: value,
+			Request: &SandboxNetworkPolicyRequestSummary{
+				ID:                  value,
+				Operation:           value,
+				DestinationCategory: SandboxNetworkPolicyDestinationCategory(value),
+			},
+			Outcome:         SandboxNetworkPolicyDecisionOutcomeDenied,
+			ReasonCode:      SandboxNetworkPolicyDecisionReasonDefaultDeny,
+			PolicyPreset:    SandboxNetworkPolicyPresetDenyByDefault,
+			EnforcementMode: SandboxNetworkEnforcementModeProxy,
+		}},
+		CredentialProxyPlan: &SandboxCredentialProxyPlanMetadata{
+			ID:                    value,
+			Source:                SandboxCredentialProxySourceRun,
+			SecretBrokerSessionID: value,
+			NetworkProxySessionID: value,
+			Mode:                  SandboxCredentialProxyModeMetadataOnly,
+			Status:                SandboxCredentialProxyStatusReady,
+		},
+		CredentialProxySession: &SandboxCredentialProxySessionMetadata{
+			ID:         "credential-proxy-session-01",
+			PlanID:     value,
+			Source:     SandboxCredentialProxySourceWorker,
+			Status:     SandboxCredentialProxyStatusActive,
+			ReasonCode: SandboxCredentialProxyReasonRequested,
+		},
+		CredentialProxyBindings: []SandboxCredentialProxyBindingMetadata{{
+			ID:           "credential-proxy-binding-01",
+			PlanID:       "credential-proxy-plan-01",
+			SecretID:     value,
+			DeliveryMode: SandboxCredentialProxyDeliveryModeHTTPProxy,
+			Status:       SandboxCredentialProxyStatusReady,
+		}},
+	}
+}
+
+func securityCapabilityTestIndexString(index int) string {
+	if index == 0 {
+		return "0"
+	}
+	var digits [20]byte
+	i := len(digits)
+	for index > 0 {
+		i--
+		digits[i] = byte('0' + index%10)
+		index /= 10
+	}
+	return string(digits[i:])
 }
 
 func forbiddenSecurityCapabilityRawFieldNames() []string {

@@ -412,6 +412,7 @@ func TestSandboxRuntimeWorkspaceSecurityLeaseMetadataJSONTags(t *testing.T) {
 			wantAbsent: []string{
 				"network",
 				"secrets",
+				"capabilityReadiness",
 			},
 		},
 		{
@@ -534,10 +535,25 @@ func TestSandboxRuntimeV2NestedSecurityMetadataJSONTags(t *testing.T) {
 	assertObjectKeys(t, got["secrets"], []string{"requestedModes", "activeModes"}, nil)
 }
 
+func TestSandboxSecurityCapabilityReadinessJSONField(t *testing.T) {
+	security := SandboxSecurity{
+		CapabilityReadiness: testSandboxCapabilityReadinessOutput(),
+	}
+
+	got := mustMarshalObject(t, security)
+
+	assertObjectKeys(t, got, []string{"capabilityReadiness"}, []string{"network", "secrets"})
+	readiness, ok := got["capabilityReadiness"].(map[string]any)
+	if !ok {
+		t.Fatalf("capabilityReadiness = %#v, want object", got["capabilityReadiness"])
+	}
+	assertObjectKeys(t, readiness, []string{"results"}, nil)
+}
+
 func TestSandboxNetworkSecurityOmitsEmptyPolicySummaries(t *testing.T) {
 	got := mustMarshalObject(t, SandboxNetworkSecurity{})
 
-	assertObjectKeys(t, got, nil, []string{"policyRequested", "policyEnforced", "enforcementMode"})
+	assertObjectKeys(t, got, nil, []string{"policyRequested", "policyEnforced", "enforcementMode", "capabilityReadiness"})
 	if len(got) != 0 {
 		t.Fatalf("zero network policy metadata = %#v, want empty object", got)
 	}
@@ -593,6 +609,23 @@ func assertObjectKeys(t *testing.T, v any, wantPresent, wantAbsent []string) {
 		if _, ok := got[key]; ok {
 			t.Errorf("unexpected key %q in %#v", key, got)
 		}
+	}
+}
+
+func testSandboxCapabilityReadinessOutput() *SandboxSecurityCapabilityReadinessOutput {
+	return &SandboxSecurityCapabilityReadinessOutput{
+		Results: []SandboxSecurityCapabilityReadinessResult{{
+			State: SandboxSecurityCapabilityReadinessReady,
+			Ready: &SandboxSecurityCapabilityMetadata{
+				ID:         "capability-ready",
+				Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+				Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+				Source:     SandboxSecurityCapabilitySourceRuntime,
+				Status:     SandboxSecurityCapabilityReadinessReady,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+			},
+			ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+		}},
 	}
 }
 

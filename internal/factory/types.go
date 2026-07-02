@@ -306,8 +306,9 @@ type SandboxWorkspaceMetadata struct {
 
 // SandboxSecurityMetadata captures redaction-safe sandbox security summary details.
 type SandboxSecurityMetadata struct {
-	Network *SandboxNetworkSecurityMetadata `json:"network,omitempty"`
-	Secrets *SandboxSecretSecurityMetadata  `json:"secrets,omitempty"`
+	Network             *SandboxNetworkSecurityMetadata                   `json:"network,omitempty"`
+	Secrets             *SandboxSecretSecurityMetadata                    `json:"secrets,omitempty"`
+	CapabilityReadiness *sandbox.SandboxSecurityCapabilityReadinessOutput `json:"capabilityReadiness,omitempty"`
 }
 
 // SandboxNetworkSecurityMetadata captures redaction-safe sandbox network policy details.

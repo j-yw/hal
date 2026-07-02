@@ -2079,12 +2079,14 @@ func factorySandboxPersistentMetadataFromState(req factorySandboxExecutorRequest
 	metadata.NetworkProxySession = networkProxySession
 	applyFactorySandboxCredentialProxyMetadata(metadata, req, record, networkProxySession)
 	if !sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) || !selectedWorkerRootlessSandboxState(instance) {
+		applyFactorySandboxCapabilityReadinessMetadata(req, metadata, instance)
 		return name, metadata
 	}
 	if workspace := factorySandboxWorkspaceMetadataFromWorkspace(factorySandboxWorkspaceStateFromRecord(record)); workspace != nil {
 		metadata.Workspace = workspace
 	}
 	metadata.WorkerRouting = sandboxWorkerRoutingMetadataFromState(instance)
+	applyFactorySandboxCapabilityReadinessMetadata(req, metadata, instance)
 	return name, metadata
 }
 
@@ -2209,7 +2211,9 @@ func factorySandboxSecurityMetadata(security *sandbox.SandboxSecurity) *factory.
 	if security == nil {
 		return nil
 	}
-	metadata := &factory.SandboxSecurityMetadata{}
+	metadata := &factory.SandboxSecurityMetadata{
+		CapabilityReadiness: sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness),
+	}
 	if security.Network != nil {
 		metadata.Network = &factory.SandboxNetworkSecurityMetadata{
 			PolicyRequested: security.Network.PolicyRequested,
@@ -2224,7 +2228,7 @@ func factorySandboxSecurityMetadata(security *sandbox.SandboxSecurity) *factory.
 			ActiveModes:    append([]string(nil), security.Secrets.ActiveModes...),
 		}
 	}
-	if metadata.Network == nil && metadata.Secrets == nil {
+	if metadata.Network == nil && metadata.Secrets == nil && metadata.CapabilityReadiness == nil {
 		return nil
 	}
 	return metadata
@@ -2252,10 +2256,11 @@ func recordFactorySandboxSecurityPolicyEvent(store factory.Store, deps factorySa
 	if record == nil || strings.TrimSpace(record.RunID) == "" {
 		return nil
 	}
-	security := factorySandboxSecurityMetadataFromState(target)
+	security := factorySandboxSecurityMetadataForPolicyEvent(record, target)
 	if security == nil {
 		return nil
 	}
+	sandboxName, provider := factorySandboxPolicyEventTargetIdentity(record, target)
 	event := redactFactoryTimelineEvent(factoryTimelineEvent{
 		EventType: factory.EventTypePolicyDecision,
 		Summary:   "Sandbox security policy evaluated",
@@ -2265,8 +2270,8 @@ func recordFactorySandboxSecurityPolicyEvent(store factory.Store, deps factorySa
 			"outcome":     factory.PolicyOutcomeAllowed,
 			"reason":      "compatibility runtime security metadata recorded",
 			"source":      "remote_sandbox",
-			"sandboxName": target.Name,
-			"provider":    target.Provider,
+			"sandboxName": sandboxName,
+			"provider":    provider,
 			"security":    factorySandboxSecurityTimelineMetadata(security),
 		},
 		NetworkPolicyDecisionLogs: decisionLogs,
@@ -2305,10 +2310,57 @@ func factorySandboxSecurityTimelineMetadata(security *factory.SandboxSecurityMet
 			"activeModes":    append([]string(nil), security.Secrets.ActiveModes...),
 		}
 	}
+	if capabilityReadiness := sanitizedFactorySandboxCapabilityReadiness(security.CapabilityReadiness); capabilityReadiness != nil {
+		out["capabilityReadiness"] = capabilityReadiness
+	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+func factorySandboxPolicyEventTargetIdentity(record *factory.RunRecord, target *sandbox.SandboxState) (string, string) {
+	if target != nil {
+		return target.Name, target.Provider
+	}
+	if record != nil && record.Sandbox != nil {
+		return record.Sandbox.Name, record.Sandbox.Provider
+	}
+	return "", ""
+}
+
+func factorySandboxSecurityMetadataForPolicyEvent(record *factory.RunRecord, target *sandbox.SandboxState) *factory.SandboxSecurityMetadata {
+	if record != nil && record.Sandbox != nil && record.Sandbox.Security != nil {
+		return cloneFactorySandboxSecurityMetadata(record.Sandbox.Security)
+	}
+	return factorySandboxSecurityMetadataFromState(target)
+}
+
+func cloneFactorySandboxSecurityMetadata(security *factory.SandboxSecurityMetadata) *factory.SandboxSecurityMetadata {
+	if security == nil {
+		return nil
+	}
+	clone := &factory.SandboxSecurityMetadata{
+		CapabilityReadiness: sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness),
+	}
+	if security.Network != nil {
+		clone.Network = &factory.SandboxNetworkSecurityMetadata{
+			PolicyRequested: security.Network.PolicyRequested,
+			PolicyEnforced:  security.Network.PolicyEnforced,
+			EnforcementMode: security.Network.EnforcementMode,
+			PolicyResult:    sandbox.CloneSandboxNetworkPolicyResultPtr(security.Network.PolicyResult),
+		}
+	}
+	if security.Secrets != nil {
+		clone.Secrets = &factory.SandboxSecretSecurityMetadata{
+			RequestedModes: append([]string(nil), security.Secrets.RequestedModes...),
+			ActiveModes:    append([]string(nil), security.Secrets.ActiveModes...),
+		}
+	}
+	if clone.Network == nil && clone.Secrets == nil && clone.CapabilityReadiness == nil {
+		return nil
+	}
+	return clone
 }
 
 func factoryRunningSandboxFilter(instance *sandbox.SandboxState) bool {

@@ -127,9 +127,10 @@ type SandboxRuntimeReadiness struct {
 // SandboxRuntimeSecuritySummary separates requested controls from controls
 // actually enforced by durable metadata or live worker capabilities.
 type SandboxRuntimeSecuritySummary struct {
-	Requested           SandboxRuntimeSecurityControls      `json:"requested"`
-	Enforced            SandboxRuntimeSecurityControls      `json:"enforced"`
-	NetworkPolicyResult *sandbox.SandboxNetworkPolicyResult `json:"networkPolicyResult,omitempty"`
+	Requested           SandboxRuntimeSecurityControls                    `json:"requested"`
+	Enforced            SandboxRuntimeSecurityControls                    `json:"enforced"`
+	NetworkPolicyResult *sandbox.SandboxNetworkPolicyResult               `json:"networkPolicyResult,omitempty"`
+	CapabilityReadiness *sandbox.SandboxSecurityCapabilityReadinessOutput `json:"capabilityReadiness,omitempty"`
 }
 
 // SandboxRuntimeSecurityControls captures safe security posture metadata.
@@ -305,7 +306,7 @@ func newSandboxRuntimeStatusLiveResponse(host *sandbox.SandboxHost, runtimeID st
 		SupportedOperations: sandboxRuntimeWorkerOperations(driver.Operations),
 		Capacity:            newSandboxRuntimeCapacitySummaryFromWorkerStatus(status, sandboxRuntimeHostCapacity(host)),
 		Readiness:           newSandboxRuntimeReadinessFromWorkerStatus(status, refreshedAt),
-		Security:            newSandboxRuntimeSecuritySummaryFromWorkerPolicy(driver.Security),
+		Security:            newSandboxRuntimeSecuritySummaryFromWorkerDriver(driver),
 		Diagnostics:         []SandboxRuntimeDiagnostic{},
 		Errors:              []SandboxRuntimeError{},
 	}, true
@@ -598,7 +599,7 @@ func newSandboxRuntimeListEntriesFromWorkerCapabilities(capabilities *sandboxwor
 			HostKind:            sandboxRuntimeStringPtr(driver.HostKind),
 			IsolationLevel:      sandboxRuntimeStringPtr(driver.IsolationLevel),
 			SupportedOperations: operations,
-			Security:            newSandboxRuntimeSecuritySummaryFromWorkerPolicy(driver.Security),
+			Security:            newSandboxRuntimeSecuritySummaryFromWorkerDriver(driver),
 			Diagnostics:         []SandboxRuntimeDiagnostic{},
 		})
 	}
@@ -668,6 +669,7 @@ func newSandboxRuntimeSecuritySummary(security *sandbox.SandboxSecurity) Sandbox
 	var requested SandboxRuntimeSecurityControls
 	var enforced SandboxRuntimeSecurityControls
 	var policyResult *sandbox.SandboxNetworkPolicyResult
+	capabilityReadiness := sandboxRuntimeCapabilityReadinessFromSandboxSecurity(security)
 	if security.Network != nil {
 		requested.NetworkPolicy = sandboxRuntimeStringPtr(security.Network.PolicyRequested)
 		enforced.NetworkPolicy = sandboxRuntimeStringPtr(security.Network.PolicyEnforced)
@@ -683,6 +685,7 @@ func newSandboxRuntimeSecuritySummary(security *sandbox.SandboxSecurity) Sandbox
 		Requested:           requested,
 		Enforced:            enforced,
 		NetworkPolicyResult: policyResult,
+		CapabilityReadiness: capabilityReadiness,
 	}
 }
 
@@ -693,8 +696,17 @@ func newSandboxRuntimeSecuritySummaryFromWorkerCapabilities(capabilities *sandbo
 	return newSandboxRuntimeSecuritySummaryFromWorkerPolicy(capabilities.Security)
 }
 
+func newSandboxRuntimeSecuritySummaryFromWorkerDriver(driver sandboxworker.RuntimeDriver) SandboxRuntimeSecuritySummary {
+	return newSandboxRuntimeSecuritySummaryFromWorkerPolicyAndRuntime(driver.Security, sandboxRuntimeStateFromWorkerDriver(driver))
+}
+
 func newSandboxRuntimeSecuritySummaryFromWorkerPolicy(policy sandboxworker.SecurityPolicy) SandboxRuntimeSecuritySummary {
-	if sandboxRuntimeWorkerSecurityPolicyEmpty(policy) {
+	return newSandboxRuntimeSecuritySummaryFromWorkerPolicyAndRuntime(policy, nil)
+}
+
+func newSandboxRuntimeSecuritySummaryFromWorkerPolicyAndRuntime(policy sandboxworker.SecurityPolicy, runtime *sandbox.SandboxRuntimeState) SandboxRuntimeSecuritySummary {
+	capabilityReadiness := sandboxRuntimeCapabilityReadinessFromWorkerPolicy(policy, runtime)
+	if sandboxRuntimeWorkerSecurityPolicyEmpty(policy) && capabilityReadiness == nil {
 		return SandboxRuntimeSecuritySummary{
 			Requested: SandboxRuntimeSecurityControls{},
 			Enforced:  SandboxRuntimeSecurityControls{},
@@ -704,6 +716,51 @@ func newSandboxRuntimeSecuritySummaryFromWorkerPolicy(policy sandboxworker.Secur
 		Requested:           sandboxRuntimeSecurityControlsFromWorker(policy.Requested),
 		Enforced:            sandboxRuntimeSecurityControlsFromWorker(policy.Enforced),
 		NetworkPolicyResult: sandboxNetworkPolicyResultFromWorkerPolicy(policy),
+		CapabilityReadiness: capabilityReadiness,
+	}
+}
+
+func sandboxRuntimeCapabilityReadinessFromSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.SandboxSecurityCapabilityReadinessOutput {
+	if security == nil {
+		return nil
+	}
+	if capabilityReadiness := sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness); capabilityReadiness != nil {
+		return capabilityReadiness
+	}
+	return sandbox.EvaluateProjectedSandboxSecurityCapabilityReadiness(
+		sandbox.ProjectSandboxSecurityCapabilityReadinessInput(security),
+	)
+}
+
+func sandboxRuntimeCapabilityReadinessFromWorkerPolicy(policy sandboxworker.SecurityPolicy, runtime *sandbox.SandboxRuntimeState) *sandbox.SandboxSecurityCapabilityReadinessOutput {
+	return sandbox.EvaluateProjectedSandboxSecurityCapabilityReadiness(
+		sandbox.ProjectSandboxSecurityCapabilityReadinessInput(sandboxSecurityFromWorkerPolicy(policy)),
+		sandbox.ProjectSandboxWorkerRuntimeCapabilityReadinessInput(sandbox.SandboxWorkerRuntimeCapabilityReadinessProjection{
+			Runtime:        runtime,
+			WorkerPostures: []sandbox.SandboxSecurityCapabilityWorkerPostureMetadata{sandboxRuntimeWorkerPostureFromPolicy(policy)},
+		}),
+	)
+}
+
+func sandboxRuntimeStateFromWorkerDriver(driver sandboxworker.RuntimeDriver) *sandbox.SandboxRuntimeState {
+	runtimeID := strings.TrimSpace(driver.ID)
+	isolationLevel := strings.TrimSpace(driver.IsolationLevel)
+	if runtimeID == "" && isolationLevel == "" {
+		return nil
+	}
+	return &sandbox.SandboxRuntimeState{
+		Driver:         runtimeID,
+		IsolationLevel: isolationLevel,
+	}
+}
+
+func sandboxRuntimeWorkerPostureFromPolicy(policy sandboxworker.SecurityPolicy) sandbox.SandboxSecurityCapabilityWorkerPostureMetadata {
+	return sandbox.SandboxSecurityCapabilityWorkerPostureMetadata{
+		IsolationLevel:      strings.TrimSpace(policy.Enforced.IsolationLevel),
+		NetworkPolicy:       strings.TrimSpace(policy.Enforced.NetworkPolicy),
+		NetworkEnforcement:  sandboxNetworkEnforcementModeFromWorker(policy.Enforced.NetworkEnforcement),
+		CredentialModes:     sandboxRuntimeStringSlice(policy.Enforced.CredentialModes),
+		CredentialProxyMode: policy.Enforced.CredentialProxyMode,
 	}
 }
 

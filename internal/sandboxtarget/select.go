@@ -501,6 +501,7 @@ func cloneSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.SandboxSec
 		return nil
 	}
 	cloned := *security
+	cloned.CapabilityReadiness = sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness)
 	if security.Network != nil {
 		network := *security.Network
 		network.PolicyResult = sandbox.CloneSandboxNetworkPolicyResultPtr(security.Network.PolicyResult)

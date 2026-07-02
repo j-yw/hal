@@ -910,6 +910,7 @@ func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxReques
 		}
 	}
 	manifest.Security = sandboxManifestSecurity(req.Security, target)
+	applyAutoSandboxCapabilityReadinessMetadata(manifest)
 	preserveSandboxManifestArtifacts(store, manifest)
 	return store.SaveManifest(manifest)
 }

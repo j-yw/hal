@@ -1126,7 +1126,7 @@ func saveRunSandboxManifest(store sandboxexecution.Store, req runSandboxRequest,
 			manifest.WorkerRouting = sandboxWorkerRoutingMetadataFromState(target)
 		}
 	}
-	manifest.Security = sandboxManifestSecurity(req.Security, target)
+	manifest.Security = runSandboxManifestSecurity(req, manifest, target)
 	preserveSandboxManifestArtifacts(store, manifest)
 	return store.SaveManifest(manifest)
 }
@@ -1261,7 +1261,9 @@ func cloneSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.SandboxSec
 	if security == nil {
 		return nil
 	}
-	clone := &sandbox.SandboxSecurity{}
+	clone := &sandbox.SandboxSecurity{
+		CapabilityReadiness: sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness),
+	}
 	if security.Network != nil {
 		network := *security.Network
 		network.PolicyResult = sandbox.CloneSandboxNetworkPolicyResultPtr(security.Network.PolicyResult)
@@ -1301,6 +1303,94 @@ func sandboxManifestSecurity(req sandbox.SecurityEvaluationRequest, target *sand
 		return cloneSandboxSecurity(target.Security)
 	}
 	return nil
+}
+
+func runSandboxManifestSecurity(req runSandboxRequest, manifest *sandboxexecution.Manifest, target *sandbox.SandboxState) *sandbox.SandboxSecurity {
+	security := sandboxManifestSecurity(req.Security, target)
+	readiness := runSandboxManifestCapabilityReadiness(security, manifest, target)
+	if readiness == nil {
+		return security
+	}
+	if security == nil {
+		security = &sandbox.SandboxSecurity{}
+	}
+	security.CapabilityReadiness = readiness
+	return security
+}
+
+func runSandboxManifestCapabilityReadiness(security *sandbox.SandboxSecurity, manifest *sandboxexecution.Manifest, target *sandbox.SandboxState) *sandbox.SandboxSecurityCapabilityReadinessOutput {
+	if security != nil {
+		if readiness := sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness); readiness != nil {
+			return readiness
+		}
+	}
+
+	var inputs []sandbox.SandboxSecurityCapabilityReadinessInput
+	if target != nil {
+		inputs = append(inputs, sandbox.ProjectSandboxSecurityCapabilityReadinessInput(security))
+		inputs = append(inputs, sandbox.ProjectSandboxWorkerRuntimeCapabilityReadinessInput(sandbox.SandboxWorkerRuntimeCapabilityReadinessProjection{
+			Host:          runSandboxManifestReadinessHost(manifest, target),
+			Runtime:       runSandboxManifestReadinessRuntime(manifest, target),
+			WorkerRouting: runSandboxManifestReadinessWorkerRouting(manifest),
+		}))
+	}
+	if target != nil && runSandboxManifestHasPolicyProxyCredentialReadinessInputs(manifest) {
+		inputs = append(inputs, sandbox.ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(sandbox.SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+			NetworkPolicyResult:       runSandboxManifestReadinessPolicyResult(security),
+			NetworkProxySession:       manifest.NetworkProxySession,
+			NetworkPolicyDecisionLogs: manifest.NetworkPolicyDecisionLogs,
+			CredentialProxyPlan:       manifest.CredentialProxyPlan,
+			CredentialProxySession:    manifest.CredentialProxySession,
+			CredentialProxyBindings:   manifest.CredentialProxyBindings,
+		}))
+	}
+	if len(inputs) == 0 {
+		return nil
+	}
+	return sandbox.EvaluateProjectedSandboxSecurityCapabilityReadiness(inputs...)
+}
+
+func runSandboxManifestReadinessHost(manifest *sandboxexecution.Manifest, target *sandbox.SandboxState) *sandbox.SandboxHost {
+	if manifest != nil && manifest.Host != nil {
+		return manifest.Host
+	}
+	if target != nil {
+		return target.Host
+	}
+	return nil
+}
+
+func runSandboxManifestReadinessRuntime(manifest *sandboxexecution.Manifest, target *sandbox.SandboxState) *sandbox.SandboxRuntimeState {
+	if manifest != nil && manifest.Runtime != nil {
+		return manifest.Runtime
+	}
+	if target != nil {
+		return target.Runtime
+	}
+	return nil
+}
+
+func runSandboxManifestReadinessWorkerRouting(manifest *sandboxexecution.Manifest) *sandbox.WorkerRoutingMetadata {
+	if manifest == nil {
+		return nil
+	}
+	return manifest.WorkerRouting
+}
+
+func runSandboxManifestReadinessPolicyResult(security *sandbox.SandboxSecurity) *sandbox.SandboxNetworkPolicyResult {
+	if security == nil || security.Network == nil {
+		return nil
+	}
+	return security.Network.PolicyResult
+}
+
+func runSandboxManifestHasPolicyProxyCredentialReadinessInputs(manifest *sandboxexecution.Manifest) bool {
+	return manifest != nil &&
+		(manifest.NetworkProxySession != nil ||
+			len(manifest.NetworkPolicyDecisionLogs) > 0 ||
+			manifest.CredentialProxyPlan != nil ||
+			manifest.CredentialProxySession != nil ||
+			len(manifest.CredentialProxyBindings) > 0)
 }
 
 func mergeSandboxManifestTargetSecretModes(security *sandbox.SandboxSecurity, req sandbox.SecurityEvaluationRequest, target *sandbox.SandboxState) {
