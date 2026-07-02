@@ -893,6 +893,7 @@ func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxReques
 		NetworkProxySession:       sandboxManifestNetworkProxySession(req.NetworkProxySession),
 		NetworkPolicyDecisionLogs: sandboxManifestNetworkPolicyDecisionLogs(req.NetworkPolicyDecisionLogs),
 	}
+	applyAutoSandboxCredentialProxyMetadata(manifest, req)
 	if target != nil {
 		if strings.TrimSpace(manifest.SandboxName) == "" {
 			manifest.SandboxName = strings.TrimSpace(target.Name)

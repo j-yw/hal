@@ -83,6 +83,9 @@ type Manifest struct {
 	Security                  *sandbox.SandboxSecurity                        `json:"security,omitempty"`
 	NetworkProxySession       *sandbox.SandboxNetworkProxySessionMetadata     `json:"networkProxySession,omitempty"`
 	NetworkPolicyDecisionLogs []sandbox.SandboxNetworkPolicyDecisionLogRecord `json:"networkPolicyDecisionLogs,omitempty"`
+	CredentialProxyPlan       *sandbox.SandboxCredentialProxyPlanMetadata     `json:"credentialProxyPlan,omitempty"`
+	CredentialProxySession    *sandbox.SandboxCredentialProxySessionMetadata  `json:"credentialProxySession,omitempty"`
+	CredentialProxyBindings   []sandbox.SandboxCredentialProxyBindingMetadata `json:"credentialProxyBindings,omitempty"`
 	Lease                     *sandbox.SandboxLeaseRef                        `json:"lease,omitempty"`
 	WorkerRouting             *sandbox.WorkerRoutingMetadata                  `json:"workerRouting,omitempty"`
 	Artifacts                 []Artifact                                      `json:"artifacts,omitempty"`

@@ -130,6 +130,222 @@ func TestCredentialProxySecretBrokerHelperDropsUnsafeSecretReferences(t *testing
 	}
 }
 
+func TestProjectCredentialProxyMetadataFromSafeSecretBrokerNetworkAndSecurityIntent(t *testing.T) {
+	secretValue := "credentialValue=raw-secret-token-789"
+	broker := NewInMemorySecretBroker()
+	session, err := broker.CreateSession(SecretBrokerSessionRequest{
+		ID: " secret-broker-session-projection ",
+		ResolvedSecrets: []ResolvedRunSecret{{
+			Name:     "GITHUB_TOKEN",
+			Source:   RunSecretSourceEnv,
+			Required: true,
+			Value:    secretValue,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() unexpected error: %v", err)
+	}
+	networkSession := sandbox.SandboxNetworkProxySessionMetadata{
+		ID:     " network-proxy-session-projection ",
+		Source: sandbox.SandboxNetworkPolicyDecisionSourceFactory,
+		PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
+			ID:        " policy-snapshot-projection ",
+			Version:   " v1 ",
+			Preset:    sandbox.SandboxNetworkPolicyPreset(" DENY_BY_DEFAULT "),
+			RuleSetID: " rules-projection ",
+		},
+		EnforcementMode: sandbox.SandboxNetworkEnforcementModeProxyFirewall,
+	}
+	intent := &sandbox.SandboxSecretDeliveryIntent{
+		RequestedModes: []string{SecretBrokerDeliveryModeHTTPProxy, SecretBrokerDeliveryModeEnv},
+		ActiveModes:    []string{SecretBrokerDeliveryModeHTTPProxy},
+	}
+
+	projection := ProjectCredentialProxyMetadata(CredentialProxyProjectionRequest{
+		PlanID:               "credential-plan-projection",
+		SessionID:            "credential-session-projection",
+		BindingIDPrefix:      "credential-projection",
+		Source:               sandbox.SandboxCredentialProxySourceFactory,
+		SecretBrokerSession:  &session,
+		SecretDeliveryIntent: intent,
+		NetworkProxySession:  &networkSession,
+		RequestCategory:      sandbox.SandboxCredentialProxyRequestNetworkAuth,
+		DestinationCategory:  sandbox.SandboxNetworkPolicyDestinationPublicInternet,
+	})
+
+	if projection.Plan == nil {
+		t.Fatal("projection.Plan = nil, want plan metadata")
+	}
+	if projection.Session == nil {
+		t.Fatal("projection.Session = nil, want session metadata")
+	}
+	if projection.Plan.SecretBrokerSessionID != "secret-broker-session-projection" {
+		t.Fatalf("plan secret broker session ID = %q, want sanitized broker ID", projection.Plan.SecretBrokerSessionID)
+	}
+	if projection.Plan.NetworkProxySessionID != "network-proxy-session-projection" {
+		t.Fatalf("plan network proxy session ID = %q, want sanitized proxy ID", projection.Plan.NetworkProxySessionID)
+	}
+	if projection.Plan.Mode != sandbox.SandboxCredentialProxyModeBrokeredNetworkReference {
+		t.Fatalf("plan mode = %q, want brokered network reference", projection.Plan.Mode)
+	}
+	if got, want := len(projection.Bindings), 2; got != want {
+		t.Fatalf("len(bindings) = %d, want %d: %#v", got, want, projection.Bindings)
+	}
+	httpProxyBinding := requireFactoryCredentialProxyProjectionBinding(t, projection.Bindings, sandbox.SandboxCredentialProxyDeliveryModeHTTPProxy)
+	if httpProxyBinding.SecretID != "env:GITHUB_TOKEN" {
+		t.Fatalf("http proxy binding secret ID = %q, want broker safe secret ID", httpProxyBinding.SecretID)
+	}
+	if httpProxyBinding.Outcome != sandbox.SandboxCredentialProxyBindingOutcomeAuditOnly ||
+		httpProxyBinding.Status != sandbox.SandboxCredentialProxyStatusReady {
+		t.Fatalf("http proxy binding = %#v, want active-mode metadata without live delivery claim", httpProxyBinding)
+	}
+	envBinding := requireFactoryCredentialProxyProjectionBinding(t, projection.Bindings, sandbox.SandboxCredentialProxyDeliveryModeEnv)
+	if envBinding.Outcome != sandbox.SandboxCredentialProxyBindingOutcomePlanned ||
+		envBinding.Status != sandbox.SandboxCredentialProxyStatusPlanned {
+		t.Fatalf("env binding = %#v, want requested-only metadata", envBinding)
+	}
+	for _, binding := range projection.Bindings {
+		if binding.Outcome == sandbox.SandboxCredentialProxyBindingOutcomeBound || binding.Status == sandbox.SandboxCredentialProxyStatusActive {
+			t.Fatalf("binding claims credential delivery: %#v", binding)
+		}
+		assertCredentialProxyFactoryValidationValid(t, sandbox.ValidateSandboxCredentialProxyBindingMetadata(binding))
+	}
+	assertCredentialProxyFactoryValidationValid(t, sandbox.ValidateSandboxCredentialProxyPlanMetadata(*projection.Plan))
+	assertCredentialProxyFactoryValidationValid(t, sandbox.ValidateSandboxCredentialProxySessionMetadata(*projection.Session))
+
+	intent.RequestedModes[0] = SecretBrokerDeliveryModeSSHAgent
+	networkSession.PolicySnapshot.ID = "mutated-policy-snapshot"
+	if projection.Bindings[0].DeliveryMode != sandbox.SandboxCredentialProxyDeliveryModeHTTPProxy {
+		t.Fatalf("projection binding changed after intent mutation: %#v", projection.Bindings[0])
+	}
+	if projection.Plan.PolicySnapshot.ID != "policy-snapshot-projection" {
+		t.Fatalf("projection policy snapshot changed after network input mutation: %#v", projection.Plan.PolicySnapshot)
+	}
+
+	data, err := json.Marshal(projection)
+	if err != nil {
+		t.Fatalf("json.Marshal(projection) error: %v", err)
+	}
+	payload := string(data)
+	assertCredentialProxyFactoryNoRawPayload(t, payload, secretValue, "credentialValue=", "raw-secret-token-789", `"value"`, `"Value"`)
+	for _, forbidden := range []string{`"name"`, `"source":"env"`, `"required"`, `"present"`, "enforcementMode", sandbox.SandboxNetworkEnforcementModeProxyFirewall} {
+		if strings.Contains(payload, forbidden) {
+			t.Fatalf("credential proxy projection copied unsafe or unrelated metadata %q in %s", forbidden, payload)
+		}
+	}
+}
+
+func TestProjectCredentialProxyMetadataPreservesExplicitEmptyBrokerMetadata(t *testing.T) {
+	session := SecretBrokerSessionMetadata{
+		ID:      "secret-broker-session-empty",
+		Secrets: []SecretBrokerSecretMetadata{},
+		DeliveryModes: &SecretBrokerDeliveryModeMetadata{
+			RequestedModes: []string{},
+			ActiveModes:    []string{},
+		},
+	}
+	projection := ProjectCredentialProxyMetadata(CredentialProxyProjectionRequest{
+		PlanID:              "credential-plan-empty",
+		SessionID:           "credential-session-empty",
+		Source:              sandbox.SandboxCredentialProxySourceFactory,
+		SecretBrokerSession: &session,
+	})
+	if projection.Plan == nil || projection.Session == nil {
+		t.Fatalf("projection = %#v, want plan/session metadata", projection)
+	}
+	if projection.Bindings == nil {
+		t.Fatal("projection.Bindings = nil, want explicit empty slice")
+	}
+	if len(projection.Bindings) != 0 {
+		t.Fatalf("projection.Bindings = %#v, want empty", projection.Bindings)
+	}
+}
+
+func TestRunSecretRedactorRedactsSandboxCredentialProxyMetadata(t *testing.T) {
+	secretValue := "credential-proxy-collision-value"
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{{
+		Name:  "COLLISION_SECRET",
+		Value: secretValue,
+	}})
+	record := RunRecord{
+		RunID: "run-redact-sandbox-credential-proxy",
+		Sandbox: &SandboxMetadata{
+			Name:   "factory-sandbox",
+			Status: "running",
+			CredentialProxyPlan: &sandbox.SandboxCredentialProxyPlanMetadata{
+				ID:                    secretValue,
+				Source:                sandbox.SandboxCredentialProxySource(secretValue),
+				SecretBrokerSessionID: secretValue,
+				NetworkProxySessionID: secretValue,
+				PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
+					ID:        secretValue,
+					Version:   secretValue,
+					Preset:    sandbox.SandboxNetworkPolicyPreset(secretValue),
+					RuleSetID: secretValue,
+				},
+				Mode:   sandbox.SandboxCredentialProxyMode(secretValue),
+				Status: sandbox.SandboxCredentialProxyStatus(secretValue),
+			},
+			CredentialProxySession: &sandbox.SandboxCredentialProxySessionMetadata{
+				ID:                    secretValue,
+				PlanID:                secretValue,
+				Source:                sandbox.SandboxCredentialProxySource(secretValue),
+				SecretBrokerSessionID: secretValue,
+				NetworkProxySessionID: secretValue,
+				PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
+					ID:        secretValue,
+					Version:   secretValue,
+					Preset:    sandbox.SandboxNetworkPolicyPreset(secretValue),
+					RuleSetID: secretValue,
+				},
+				Status:      sandbox.SandboxCredentialProxyStatus(secretValue),
+				WarningCode: sandbox.SandboxCredentialProxyWarningCode(secretValue),
+				ReasonCode:  sandbox.SandboxCredentialProxyReasonCode(secretValue),
+			},
+			CredentialProxyBindings: []sandbox.SandboxCredentialProxyBindingMetadata{{
+				ID:                  secretValue,
+				PlanID:              secretValue,
+				SessionID:           secretValue,
+				SecretID:            secretValue,
+				DeliveryMode:        sandbox.SandboxCredentialProxyDeliveryMode(secretValue),
+				RequestCategory:     sandbox.SandboxCredentialProxyRequestCategory(secretValue),
+				DestinationCategory: sandbox.SandboxNetworkPolicyDestinationCategory(secretValue),
+				Outcome:             sandbox.SandboxCredentialProxyBindingOutcome(secretValue),
+				Status:              sandbox.SandboxCredentialProxyStatus(secretValue),
+				ReasonCode:          sandbox.SandboxCredentialProxyReasonCode(secretValue),
+			}},
+		},
+	}
+
+	redacted := redactor.RedactRunRecord(record)
+	data, err := json.Marshal(redacted)
+	if err != nil {
+		t.Fatalf("json.Marshal(redacted) error: %v", err)
+	}
+	payload := string(data)
+	if strings.Contains(payload, secretValue) {
+		t.Fatalf("redacted record leaked credential proxy collision value: %s", payload)
+	}
+	if !strings.Contains(payload, RunSecretRedactionPlaceholder) {
+		t.Fatalf("redacted record missing redaction placeholder: %s", payload)
+	}
+	if record.Sandbox.CredentialProxyPlan.ID != secretValue {
+		t.Fatal("RedactRunRecord mutated original credential proxy metadata")
+	}
+}
+
+func requireFactoryCredentialProxyProjectionBinding(t *testing.T, bindings []sandbox.SandboxCredentialProxyBindingMetadata, mode sandbox.SandboxCredentialProxyDeliveryMode) sandbox.SandboxCredentialProxyBindingMetadata {
+	t.Helper()
+
+	for _, binding := range bindings {
+		if binding.DeliveryMode == mode {
+			return binding
+		}
+	}
+	t.Fatalf("missing binding for mode %q in %#v", mode, bindings)
+	return sandbox.SandboxCredentialProxyBindingMetadata{}
+}
+
 func assertCredentialProxyFactoryValidationValid(t *testing.T, result sandbox.SandboxCredentialProxyValidationResult) {
 	t.Helper()
 

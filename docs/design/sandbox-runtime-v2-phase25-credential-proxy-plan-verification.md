@@ -100,7 +100,7 @@ Run non-factory manifest, factory persistence, documentation, and fake-only
 guard coverage:
 
 ```sh
-go test -timeout=120s ./cmd -run 'Test(RunAndAutoSandboxManifestsOmitCredentialProxyMetadataInPhase25|Phase25NonFactoryManifestSourcesDoNotPersistCredentialProxyMetadata|FactoryPersistenceOmitsCredentialProxyMetadataInPhase25|Phase25FactorySourcesDoNotPersistCredentialProxyMetadata|Phase25CredentialProxy(VerificationDocs|FakeOnlyVerification))'
+go test -timeout=120s ./cmd -run 'Test(RunAndAutoSandboxManifestsOmitCredentialProxyMetadataByDefault|FactoryPersistenceOmitsCredentialProxyMetadataByDefault|Phase26CredentialProxy(PersistenceFieldsUseApprovedSurfaces|MetadataRejectedFromUnapprovedSurfaces|MetadataRejectedFromCommandResultEnvelopes|FactoryTimeline(OmissionAfterSanitization|PersistenceAndRenderingOmitMetadata|DocsStateOmission))|Phase25CredentialProxy(VerificationDocs|FakeOnlyVerification))'
 ```
 
 Run full package, vet, whitespace, build, and lint verification:

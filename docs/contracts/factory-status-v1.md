@@ -115,13 +115,21 @@ When `sandbox` is present:
 | `workspace` | object | no | Redaction-safe Sandbox Runtime v2 workspace summary metadata |
 | `security` | object | no | Redaction-safe Sandbox Runtime v2 security summary metadata |
 | `networkProxySession` | object | no | Sanitized network proxy-session metadata for policy debugging; metadata only and not proof of live enforcement |
+| `credentialProxyPlan` | object | no | Sanitized credential proxy plan metadata; safe identifiers and enum-like metadata only |
+| `credentialProxySession` | object | no | Sanitized credential proxy session metadata; safe identifiers and enum-like metadata only |
+| `credentialProxyBindings` | array | no | Sanitized credential proxy binding metadata; safe identifiers, safe secret references, and enum-like metadata only |
 | `lease` | object | no | Redaction-safe Sandbox Runtime v2 lease summary metadata |
 | `workerRouting` | object | no | Redaction-safe worker-backed execution route metadata |
 
 Sandbox metadata is safe for durable local records. It must not include tokens,
 private keys, secret names, secret values, raw filesystem paths, raw workspace
 paths, raw credentials, API keys, lease holders, provider credentials, or unsafe
-environment details.
+environment details. Credential proxy metadata is metadata-only and must not
+include raw hosts, URLs, ports, headers, bodies, environment values, socket
+paths, local paths, credential values, or secret values. In Phase 26, credential
+proxy persistence is limited to non-factory sandbox execution manifests and
+factory sandbox metadata; factory timeline events do not mirror credential
+proxy plan, session, or binding metadata.
 
 When `sandbox.connection` is present:
 
