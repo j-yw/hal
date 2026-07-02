@@ -632,12 +632,7 @@ func handleFactorySandboxExecutorError(ctx context.Context, store factory.Store,
 		if target != nil {
 			name = target.Name
 		}
-		startErr := factorySandboxRecordedError(fmt.Sprintf("start factory sandbox %q", name), target, failureErr, secretRedactor)
-		if cleanupErr := cleanupFactorySandboxAfterFailedStart(ctx, store, deps, req, *record, target); cleanupErr != nil {
-			sanitizedCleanupErr := fmt.Errorf("%s", factorySandboxSanitizedError(target, fmt.Errorf("cleanup factory sandbox: %w", cleanupErr), secretRedactor))
-			return errors.Join(startErr, sanitizedCleanupErr)
-		}
-		return startErr
+		return factorySandboxRecordedError(fmt.Sprintf("start factory sandbox %q", name), target, failureErr, secretRedactor)
 	case sandboxexec.PhaseResolveDriver:
 		_ = recordFactorySandboxFailure(store, deps, record, target, "resolve_driver", failureErr, secretRedactor)
 		providerName := ""
@@ -705,28 +700,6 @@ func cleanupFactorySandboxAfterRun(ctx context.Context, deps factorySandboxExecu
 		return false, err
 	}
 	return true, nil
-}
-
-func cleanupFactorySandboxAfterFailedStart(ctx context.Context, store factory.Store, deps factorySandboxExecutorDeps, req factorySandboxExecutorRequest, record factory.RunRecord, target *sandbox.SandboxState) error {
-	if factorySandboxCleanupBehavior(record) != factory.CleanupBehaviorAlways {
-		return nil
-	}
-	secretRedactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
-	provider, err := deps.resolveProvider(target.Provider)
-	if err != nil {
-		return fmt.Errorf("resolve sandbox provider %q: %w", target.Provider, err)
-	}
-	cleaned, cleanupErr := cleanupFactorySandboxAfterRun(ctx, deps, req, record, target, provider, req.RemoteOutput, factory.CleanupBehaviorAlways, false)
-	if cleaned {
-		if recordErr := recordFactorySandboxCleanedUp(store, deps, &record, target, secretRedactor); recordErr != nil {
-			if cleanupErr != nil {
-				cleanupErr = errors.Join(cleanupErr, recordErr)
-			} else {
-				cleanupErr = recordErr
-			}
-		}
-	}
-	return cleanupErr
 }
 
 type factorySandboxTimelineWriter struct {
