@@ -839,6 +839,7 @@ func networkProxySensitiveExamples() []string {
 	return []string{
 		"api.example.com",
 		"169.254.169.254",
+		"8443",
 		"https://user:secret@example.test/path?token=secret",
 		"unix:///tmp/private/proxy.sock",
 		"/Users/alice/project",
