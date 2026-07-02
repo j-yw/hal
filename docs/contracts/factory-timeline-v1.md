@@ -30,6 +30,19 @@ These fields use `omitempty` and are only present when the value is non-zero.
 
 `metadata` is an open JSON object. Consumers should ignore unknown metadata keys and should use `eventType` to decide whether a metadata key is meaningful.
 
+## Phase 26 Credential Proxy Omission
+
+Phase 26 credential proxy persistence is limited to non-factory sandbox
+execution manifests and factory sandbox metadata. Factory timeline events do not
+add `credentialProxy`, `credentialProxyPlan`, `credentialProxySession`, or
+`credentialProxyBindings`.
+
+Timeline metadata must not be used to claim credential delivery, credential
+proxy delivery, proxy enforcement, network enforcement, SSH-agent forwarding,
+tmpfs writes, or runtime support. Those claims require later live-delivery and
+enforcement phases and must not be inferred from Phase 26 credential proxy
+metadata.
+
 When `networkPolicyDecisionLogs` is present, entries contain redaction-safe policy decision details only:
 
 | Field | Type | Description |

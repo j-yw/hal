@@ -126,7 +126,10 @@ private keys, secret names, secret values, raw filesystem paths, raw workspace
 paths, raw credentials, API keys, lease holders, provider credentials, or unsafe
 environment details. Credential proxy metadata is metadata-only and must not
 include raw hosts, URLs, ports, headers, bodies, environment values, socket
-paths, local paths, credential values, or secret values.
+paths, local paths, credential values, or secret values. In Phase 26, credential
+proxy persistence is limited to non-factory sandbox execution manifests and
+factory sandbox metadata; factory timeline events do not mirror credential
+proxy plan, session, or binding metadata.
 
 When `sandbox.connection` is present:
 

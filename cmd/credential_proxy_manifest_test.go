@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -93,6 +95,125 @@ func TestFactoryPersistenceOmitsCredentialProxyMetadataByDefault(t *testing.T) {
 		},
 	}
 	assertJSONOmitsCredentialProxyMetadata(t, "factory timeline event", event)
+}
+
+func TestPhase26CredentialProxyFactoryTimelineOmissionAfterSanitization(t *testing.T) {
+	startedAt := time.Date(2026, 7, 2, 14, 10, 0, 0, time.UTC)
+	redactor, metadata, forbidden := phase26FactoryTimelineCredentialProxySeed()
+
+	event := redactFactoryTimelineEvent(factoryTimelineEvent{
+		EventType: factory.EventTypePolicyDecision,
+		Summary:   "Sandbox policy metadata recorded",
+		Metadata:  metadata,
+	}, redactor)
+	if event.Metadata["safeDetail"] != "kept" {
+		t.Fatalf("sanitized timeline metadata lost safe field: %#v", event.Metadata)
+	}
+	sanitizedRecord := factory.EventRecord{
+		Sequence:  1,
+		RunID:     "run-timeline-sanitize",
+		EventType: event.EventType,
+		Timestamp: startedAt,
+		Summary:   event.Summary,
+		Metadata:  event.Metadata,
+	}
+	assertFactoryTimelineOmitsCredentialProxyClaims(t, "sanitized factory timeline event", sanitizedRecord, forbidden)
+
+	_, legacyMetadata, legacyForbidden := phase26FactoryTimelineCredentialProxySeed()
+	normalized := normalizeFactoryTimelineEventsForContractV1([]factory.EventRecord{{
+		Sequence:  2,
+		RunID:     "run-timeline-normalize",
+		EventType: factory.EventTypePolicyDecision,
+		Timestamp: startedAt,
+		Summary:   "Legacy policy metadata recorded",
+		Metadata:  legacyMetadata,
+	}})
+	if len(normalized) != 1 {
+		t.Fatalf("normalized events = %d, want 1", len(normalized))
+	}
+	if normalized[0].Metadata["safeDetail"] != "kept" {
+		t.Fatalf("normalized timeline metadata lost safe field: %#v", normalized[0].Metadata)
+	}
+	assertFactoryTimelineOmitsCredentialProxyClaims(t, "normalized factory timeline event", normalized[0], legacyForbidden)
+}
+
+func TestPhase26CredentialProxyFactoryTimelinePersistenceAndRenderingOmitMetadata(t *testing.T) {
+	startedAt := time.Date(2026, 7, 2, 14, 30, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	record := factory.RunRecord{
+		RunID:        "run-timeline-credential-proxy-omission",
+		Status:       factory.RunStatusRunning,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		Source: factory.SourceMetadata{
+			Kind: factory.SourceKindPRD,
+			Path: ".hal/prd.json",
+		},
+		RepoPath:    "/repo",
+		RepoRemote:  "origin",
+		BranchName:  "hal/phase-26-credential-proxy-plumbing",
+		BaseBranch:  "main",
+		CurrentStep: "run",
+		CreatedAt:   startedAt,
+		UpdatedAt:   startedAt,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error = %v", err)
+	}
+
+	redactor, metadata, forbidden := phase26FactoryTimelineCredentialProxySeed()
+	if err := appendFactoryRunTimelineEventWithRedactor(store, record.RunID, startedAt, factoryTimelineEvent{
+		EventType: factory.EventTypePolicyDecision,
+		Summary:   "Sandbox policy metadata recorded",
+		Metadata:  metadata,
+	}, redactor); err != nil {
+		t.Fatalf("appendFactoryRunTimelineEventWithRedactor() error = %v", err)
+	}
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadEvents() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if events[0].Metadata["safeDetail"] != "kept" {
+		t.Fatalf("persisted timeline metadata lost safe field: %#v", events[0].Metadata)
+	}
+	assertFactoryTimelineOmitsCredentialProxyClaims(t, "persisted factory timeline event", events[0], forbidden)
+
+	_, legacyMetadata, legacyForbidden := phase26FactoryTimelineCredentialProxySeed()
+	var statusJSON bytes.Buffer
+	if err := renderFactoryStatusJSON(&statusJSON, record, []factory.EventRecord{{
+		Sequence:  2,
+		RunID:     record.RunID,
+		EventType: factory.EventTypePolicyDecision,
+		Timestamp: startedAt.Add(time.Minute),
+		Summary:   "Legacy policy metadata recorded",
+		Metadata:  legacyMetadata,
+	}}, nil); err != nil {
+		t.Fatalf("renderFactoryStatusJSON() error = %v", err)
+	}
+	assertFactoryTimelinePayloadOmitsCredentialProxyClaims(t, "factory status timeline JSON", statusJSON.String(), legacyForbidden)
+}
+
+func TestPhase26CredentialProxyFactoryTimelineDocsStateOmission(t *testing.T) {
+	timelineDoc := readPhase26CredentialProxyContractDoc(t, filepath.Join("..", "docs", "contracts", "factory-timeline-v1.md"))
+	statusDoc := readPhase26CredentialProxyContractDoc(t, filepath.Join("..", "docs", "contracts", "factory-status-v1.md"))
+	requiredTimeline := []string{
+		"Phase 26 credential proxy persistence is limited to non-factory sandbox execution manifests and factory sandbox metadata.",
+		"Factory timeline events do not add `credentialProxy`, `credentialProxyPlan`, `credentialProxySession`, or `credentialProxyBindings`.",
+		"Timeline metadata must not be used to claim credential delivery, credential proxy delivery, proxy enforcement, network enforcement, SSH-agent forwarding, tmpfs writes, or runtime support.",
+	}
+	for _, want := range requiredTimeline {
+		if !phase26CredentialProxyDocContains(timelineDoc, want) {
+			t.Fatalf("factory timeline contract missing %q", want)
+		}
+	}
+	if !phase26CredentialProxyDocContains(statusDoc, "credential proxy persistence is limited to non-factory sandbox execution manifests and factory sandbox metadata") {
+		t.Fatal("factory status contract must state Phase 26 credential proxy persistence is limited to non-factory manifests and factory sandbox metadata")
+	}
+	if !phase26CredentialProxyDocContains(statusDoc, "factory timeline events do not mirror credential proxy plan, session, or binding metadata") {
+		t.Fatal("factory status contract must state factory timeline events do not mirror credential proxy metadata")
+	}
 }
 
 func TestPhase26CredentialProxyPersistenceFieldsUseApprovedSurfaces(t *testing.T) {
@@ -216,6 +337,137 @@ func assertJSONOmitsCredentialProxyMetadata(t *testing.T, label string, value an
 			t.Fatalf("%s unexpectedly includes credential proxy field %q: %s", label, field, encoded)
 		}
 	}
+}
+
+func assertFactoryTimelineOmitsCredentialProxyClaims(t *testing.T, label string, value any, forbiddenValues []string) {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("Marshal(%s) error = %v", label, err)
+	}
+	assertFactoryTimelinePayloadOmitsCredentialProxyClaims(t, label, string(data), forbiddenValues)
+}
+
+func assertFactoryTimelinePayloadOmitsCredentialProxyClaims(t *testing.T, label string, payload string, forbiddenValues []string) {
+	t.Helper()
+	for _, field := range phase26CredentialProxyJSONFields {
+		if strings.Contains(payload, `"`+field+`"`) {
+			t.Fatalf("%s unexpectedly includes credential proxy field %q: %s", label, field, payload)
+		}
+	}
+	for _, forbidden := range forbiddenValues {
+		if forbidden == "" {
+			continue
+		}
+		if strings.Contains(payload, forbidden) {
+			t.Fatalf("%s leaked credential proxy timeline value %q: %s", label, forbidden, payload)
+		}
+	}
+}
+
+func phase26FactoryTimelineCredentialProxySeed() (factory.RunSecretRedactor, map[string]any, []string) {
+	rawSecret := "phase26-raw-secret-token-123"
+	rawEnvValue := "AWS_SECRET_ACCESS_KEY=phase26-secret-value-123"
+	rawURL := "https://api.example.invalid:443/path?token=phase26-raw-secret-token-123"
+	rawHeader := "Authorization: Bearer phase26-raw-secret-token-123"
+	socketPath := "/tmp/phase26-credential-proxy.sock"
+	localPath := "/Users/v/.ssh/phase26_id_rsa"
+	redactor := factory.NewRunSecretRedactor([]factory.ResolvedRunSecret{{
+		Name:  "PHASE26_TOKEN",
+		Value: rawSecret,
+	}, {
+		Name:  "PHASE26_ENV_VALUE",
+		Value: "phase26-secret-value-123",
+	}})
+	plan := sandbox.SandboxCredentialProxyPlanMetadata{
+		ID:                    "timeline-plan-01",
+		Source:                sandbox.SandboxCredentialProxySourceFactory,
+		SecretBrokerSessionID: rawSecret,
+		NetworkProxySessionID: rawURL,
+		PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
+			ID:        "timeline-policy-01",
+			RuleSetID: rawURL,
+		},
+		Mode:   sandbox.SandboxCredentialProxyModeBrokeredNetworkReference,
+		Status: sandbox.SandboxCredentialProxyStatusActive,
+	}
+	session := sandbox.SandboxCredentialProxySessionMetadata{
+		ID:                    "timeline-session-01",
+		PlanID:                "timeline-plan-01",
+		Source:                sandbox.SandboxCredentialProxySourceFactory,
+		SecretBrokerSessionID: rawHeader,
+		NetworkProxySessionID: socketPath,
+		Status:                sandbox.SandboxCredentialProxyStatusActive,
+	}
+	bindings := []sandbox.SandboxCredentialProxyBindingMetadata{{
+		ID:              "timeline-binding-01",
+		PlanID:          "timeline-plan-01",
+		SessionID:       "timeline-session-01",
+		SecretID:        "env:GITHUB_TOKEN",
+		DeliveryMode:    sandbox.SandboxCredentialProxyDeliveryModeSSHAgent,
+		RequestCategory: sandbox.SandboxCredentialProxyRequestSecretDelivery,
+		Outcome:         sandbox.SandboxCredentialProxyBindingOutcomeBound,
+		Status:          sandbox.SandboxCredentialProxyStatusActive,
+	}}
+	metadata := map[string]any{
+		"safeDetail":                  "kept",
+		"credentialProxy":             map[string]any{"rawURL": rawURL},
+		"credentialProxyMode":         true,
+		"credentialProxyPlan":         plan,
+		"credentialProxyDelivery":     "active " + rawHeader,
+		"credentialDelivery":          "delivered " + rawEnvValue,
+		"proxyEnforcement":            sandbox.SandboxNetworkEnforcementModeProxyFirewall,
+		"networkEnforcement":          sandbox.SandboxNetworkPolicyDenyByDefault,
+		"sshAgentForwarding":          true,
+		"tmpfsWrites":                 true,
+		"runtimeSupport":              "rootless_podman",
+		"credentialProxyProjection":   sandbox.SandboxCredentialProxyProjection{Plan: &plan, Session: &session, Bindings: bindings},
+		"credentialProxyUnsafePath":   localPath,
+		"credential_proxy_delivery":   "active",
+		"credential-delivery-status":  "complete",
+		"nested":                      map[string]any{"credentialProxySession": &session, "credentialProxyBindings": bindings},
+		"nestedCredentialProxyRecord": []sandbox.SandboxCredentialProxyBindingMetadata(bindings),
+	}
+	forbidden := []string{
+		rawSecret,
+		rawEnvValue,
+		rawURL,
+		rawHeader,
+		socketPath,
+		localPath,
+		"phase26-secret-value-123",
+		"credentialProxyMode",
+		"credentialProxyDelivery",
+		"credentialDelivery",
+		"credential_proxy_delivery",
+		"credential-delivery-status",
+		"proxyEnforcement",
+		"networkEnforcement",
+		"sshAgentForwarding",
+		"tmpfsWrites",
+		"runtimeSupport",
+		"rootless_podman",
+		string(sandbox.SandboxNetworkEnforcementModeProxyFirewall),
+		string(sandbox.SandboxNetworkPolicyDenyByDefault),
+		string(sandbox.SandboxCredentialProxyStatusActive),
+		string(sandbox.SandboxCredentialProxyBindingOutcomeBound),
+		string(sandbox.SandboxCredentialProxyDeliveryModeSSHAgent),
+		string(sandbox.SandboxCredentialProxyDeliveryModeFileTmpfs),
+	}
+	return redactor, metadata, forbidden
+}
+
+func readPhase26CredentialProxyContractDoc(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", path, err)
+	}
+	return string(data)
+}
+
+func phase26CredentialProxyDocContains(doc, want string) bool {
+	return strings.Contains(doc, want) || strings.Contains(strings.Join(strings.Fields(doc), " "), want)
 }
 
 func findCredentialProxyPersistenceFieldViolations(t *testing.T) []string {

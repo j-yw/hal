@@ -49,7 +49,7 @@ func TestPhase25CredentialProxyVerificationDocs(t *testing.T) {
 		"Future phases are responsible for live credential proxy delivery, credential injection, tmpfs delivery integration, SSH-agent forwarding integration, firewall enforcement integration, worker daemon support, concrete runtime/provider integration, and durable command/factory plumbing.",
 		"go test -timeout=120s ./internal/sandbox -run 'TestCredentialProxy'",
 		"go test -timeout=120s ./internal/factory -run 'TestCredentialProxyReferencesSecretBrokerMetadataBySafeIDs|TestCredentialProxySecretBrokerHelperDropsUnsafeSecretReferences'",
-		"go test -timeout=120s ./cmd -run 'Test(RunAndAutoSandboxManifestsOmitCredentialProxyMetadataByDefault|FactoryPersistenceOmitsCredentialProxyMetadataByDefault|Phase26CredentialProxy(PersistenceFieldsUseApprovedSurfaces|MetadataRejectedFromUnapprovedSurfaces|MetadataRejectedFromCommandResultEnvelopes)|Phase25CredentialProxy(VerificationDocs|FakeOnlyVerification))'",
+		"go test -timeout=120s ./cmd -run 'Test(RunAndAutoSandboxManifestsOmitCredentialProxyMetadataByDefault|FactoryPersistenceOmitsCredentialProxyMetadataByDefault|Phase26CredentialProxy(PersistenceFieldsUseApprovedSurfaces|MetadataRejectedFromUnapprovedSurfaces|MetadataRejectedFromCommandResultEnvelopes|FactoryTimeline(OmissionAfterSanitization|PersistenceAndRenderingOmitMetadata|DocsStateOmission))|Phase25CredentialProxy(VerificationDocs|FakeOnlyVerification))'",
 		"go test -timeout=300s ./...",
 		"go vet ./...",
 		"git diff --check",
@@ -90,7 +90,7 @@ func TestPhase25CredentialProxyFakeOnlyVerification(t *testing.T) {
 		"Phase 25 verification is fake-only.",
 		"Phase 25 fake-only verification has no real network access, live proxy server, credential injection, tmpfs mount, SSH-agent forwarding, firewall mutation, Docker, Podman, KVM, cloud credentials, worker daemon, microVM, runtime/provider integration, or provider credential requirement.",
 		"Default Phase 25 test commands must not use integration build tags or require live environment variables.",
-		"go test -timeout=120s ./cmd -run 'Test(RunAndAutoSandboxManifestsOmitCredentialProxyMetadataByDefault|FactoryPersistenceOmitsCredentialProxyMetadataByDefault|Phase26CredentialProxy(PersistenceFieldsUseApprovedSurfaces|MetadataRejectedFromUnapprovedSurfaces|MetadataRejectedFromCommandResultEnvelopes)|Phase25CredentialProxy(VerificationDocs|FakeOnlyVerification))'",
+		"go test -timeout=120s ./cmd -run 'Test(RunAndAutoSandboxManifestsOmitCredentialProxyMetadataByDefault|FactoryPersistenceOmitsCredentialProxyMetadataByDefault|Phase26CredentialProxy(PersistenceFieldsUseApprovedSurfaces|MetadataRejectedFromUnapprovedSurfaces|MetadataRejectedFromCommandResultEnvelopes|FactoryTimeline(OmissionAfterSanitization|PersistenceAndRenderingOmitMetadata|DocsStateOmission))|Phase25CredentialProxy(VerificationDocs|FakeOnlyVerification))'",
 	}
 	for _, want := range required {
 		if !strings.Contains(doc, want) && !strings.Contains(normalizedDoc, want) {
@@ -267,6 +267,21 @@ func phase25AssertFocusedVerificationCoversRequiredAreas(t *testing.T, doc strin
 			pkg:      "./cmd",
 			file:     "credential_proxy_manifest_test.go",
 			testName: "TestFactoryPersistenceOmitsCredentialProxyMetadataByDefault",
+		},
+		{
+			pkg:      "./cmd",
+			file:     "credential_proxy_manifest_test.go",
+			testName: "TestPhase26CredentialProxyFactoryTimelineOmissionAfterSanitization",
+		},
+		{
+			pkg:      "./cmd",
+			file:     "credential_proxy_manifest_test.go",
+			testName: "TestPhase26CredentialProxyFactoryTimelinePersistenceAndRenderingOmitMetadata",
+		},
+		{
+			pkg:      "./cmd",
+			file:     "credential_proxy_manifest_test.go",
+			testName: "TestPhase26CredentialProxyFactoryTimelineDocsStateOmission",
 		},
 		{
 			pkg:      "./cmd",

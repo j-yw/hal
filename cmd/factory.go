@@ -3622,7 +3622,14 @@ func redactFactoryTimelineMetadata(metadata map[string]any, redactor factory.Run
 	}
 	safe := make(map[string]any, len(metadata))
 	for key, value := range metadata {
-		safe[redactFactoryString(key, redactor)] = redactFactoryTimelineValue(value, redactor)
+		safeKey := redactFactoryString(key, redactor)
+		if omitFactoryTimelineMetadataEntry(key, safeKey, reflect.ValueOf(value)) {
+			continue
+		}
+		safe[safeKey] = redactFactoryTimelineValue(value, redactor)
+	}
+	if len(safe) == 0 {
+		return nil
 	}
 	return safe
 }
@@ -3709,6 +3716,10 @@ func redactFactoryTimelineReflectValue(value reflect.Value, redactor factory.Run
 			if keyChanged {
 				changed = true
 			}
+			if omitFactoryTimelineMetadataReflectEntry(key, redactedKey, iter.Value()) {
+				changed = true
+				continue
+			}
 			item := iter.Value()
 			redactedItem, itemChanged := redactFactoryTimelineReflectValue(item, redactor)
 			if itemChanged {
@@ -3762,6 +3773,85 @@ func redactFactoryTimelineMapKey(key reflect.Value, redactor factory.RunSecretRe
 		return redacted.Convert(keyType), true
 	}
 	return key, false
+}
+
+func omitFactoryTimelineMetadataReflectEntry(rawKey, safeKey, value reflect.Value) bool {
+	if factoryTimelineMetadataKeyOmitted(reflectString(rawKey)) || factoryTimelineMetadataKeyOmitted(reflectString(safeKey)) {
+		return true
+	}
+	return factoryTimelineMetadataValueOmitted(value)
+}
+
+func omitFactoryTimelineMetadataEntry(rawKey, safeKey string, value reflect.Value) bool {
+	if factoryTimelineMetadataKeyOmitted(rawKey) || factoryTimelineMetadataKeyOmitted(safeKey) {
+		return true
+	}
+	return factoryTimelineMetadataValueOmitted(value)
+}
+
+func reflectString(value reflect.Value) string {
+	if !value.IsValid() || value.Kind() != reflect.String {
+		return ""
+	}
+	return value.String()
+}
+
+func factoryTimelineMetadataKeyOmitted(key string) bool {
+	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.TrimSpace(key)))
+	if strings.HasPrefix(normalized, "credentialproxy") {
+		return true
+	}
+	switch normalized {
+	case "credentialdelivery",
+		"credentialdeliveryclaim",
+		"credentialdeliverystatus",
+		"credentialproxydelivery",
+		"credentialproxydeliveryclaim",
+		"credentialproxydeliverystatus",
+		"proxyenforcement",
+		"networkenforcement",
+		"sshagentforwarding",
+		"tmpfswrites",
+		"runtimesupport":
+		return true
+	default:
+		return false
+	}
+}
+
+func factoryTimelineMetadataValueOmitted(value reflect.Value) bool {
+	if !value.IsValid() {
+		return false
+	}
+	for {
+		switch value.Kind() {
+		case reflect.Interface, reflect.Pointer:
+			if value.IsNil() {
+				return false
+			}
+			value = value.Elem()
+		case reflect.Slice, reflect.Array:
+			if factoryTimelineMetadataTypeOmitted(value.Type().Elem()) {
+				return true
+			}
+			for i := 0; i < value.Len(); i++ {
+				if factoryTimelineMetadataValueOmitted(value.Index(i)) {
+					return true
+				}
+			}
+			return false
+		default:
+			return factoryTimelineMetadataTypeOmitted(value.Type())
+		}
+	}
+}
+
+func factoryTimelineMetadataTypeOmitted(typ reflect.Type) bool {
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	return typ.PkgPath() == "github.com/jywlabs/hal/internal/sandbox" &&
+		strings.HasPrefix(typ.Name(), "SandboxCredentialProxy")
 }
 
 func appendFactoryRunTimelineEvent(store factory.Store, runID string, timestamp time.Time, event factoryTimelineEvent) error {
@@ -4661,15 +4751,16 @@ func normalizeFactoryTimelineEventsForContractV1(events []factory.EventRecord) [
 		if len(event.NetworkPolicyDecisionLogs) > 0 {
 			normalized[i].NetworkPolicyDecisionLogs = sandbox.SanitizeSandboxNetworkPolicyDecisionLogRecords(event.NetworkPolicyDecisionLogs)
 		}
+		normalized[i].Metadata = redactFactoryTimelineMetadata(event.Metadata, factory.RunSecretRedactor{})
 		if event.EventType != factory.EventTypeFailureClassification || event.Metadata == nil {
 			continue
 		}
-		category, ok := event.Metadata["category"].(string)
+		category, ok := normalized[i].Metadata["category"].(string)
 		if !ok {
 			continue
 		}
-		metadata := make(map[string]any, len(event.Metadata))
-		for key, value := range event.Metadata {
+		metadata := make(map[string]any, len(normalized[i].Metadata))
+		for key, value := range normalized[i].Metadata {
 			metadata[key] = value
 		}
 		metadata["category"] = factory.NormalizeFailureCategoryForContractV1(category)
