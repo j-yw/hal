@@ -551,7 +551,11 @@ func TestBackendUnsupportedExecAndCopyOperationsReturnSanitizedErrors(t *testing
 }
 
 func TestMicroVMDriverCreateCanUseInjectedFirecrackerBackend(t *testing.T) {
-	backend := NewBackend(BackendOptions{BaseStateDir: firecrackerPathTestBase("driver-target-state")})
+	adapter := &fakeProcessAdapter{}
+	backend := NewBackend(BackendOptions{
+		BaseStateDir:   firecrackerPathTestBase("driver-target-state"),
+		ProcessAdapter: adapter,
+	})
 	kvmReadable := true
 	driver := microvm.NewDriver(microvm.DriverOptions{
 		Config: validMicroVMConfig(),
@@ -575,6 +579,26 @@ func TestMicroVMDriverCreateCanUseInjectedFirecrackerBackend(t *testing.T) {
 	assertFirecrackerCreatedTarget(t, target, "firecracker-dev")
 	if target.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelVM {
 		t.Fatalf("driver-created target isolationLevel = %q, want microVM driver metadata %q", target.Runtime.IsolationLevel, sandbox.SandboxIsolationLevelVM)
+	}
+
+	started, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: *target})
+	if err != nil {
+		t.Fatalf("driver Start() error = %v, want nil", err)
+	}
+	if adapter.prepareCalls != 1 {
+		t.Fatalf("prepare calls = %d, want 1 through explicitly injected Firecracker backend", adapter.prepareCalls)
+	}
+	if adapter.startCalls != 0 {
+		t.Fatalf("start calls = %d, want 0 because Firecracker backend still plans without live launch", adapter.startCalls)
+	}
+	if started == nil || started.Runtime.Metadata == nil || started.Runtime.Metadata.OperationPlan == nil {
+		t.Fatalf("driver Start() target = %#v, want Firecracker operation-plan metadata", started)
+	}
+	if started.Runtime.Metadata.Backend != BackendID {
+		t.Fatalf("started runtime backend = %q, want %q", started.Runtime.Metadata.Backend, BackendID)
+	}
+	if started.Runtime.Metadata.OperationPlan.Action != string(OperationActionStart) {
+		t.Fatalf("started operation action = %q, want %q", started.Runtime.Metadata.OperationPlan.Action, OperationActionStart)
 	}
 }
 

@@ -200,6 +200,21 @@ func TestSandboxdCommandRejectsMicroVMDriverWithoutConfiguredFactory(t *testing.
 	}
 }
 
+func TestSandboxdDefaultsDoNotRegisterMicroVMFactory(t *testing.T) {
+	flags := defaultSandboxdFlags()
+	if got := strings.Join(flags.drivers, ","); got != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("default sandboxd drivers = %q, want only %q", got, sandboxruntime.DriverRootlessPodman)
+	}
+
+	deps := defaultSandboxdDeps()
+	if deps.newMicroVMDriver != nil {
+		t.Fatal("default sandboxd newMicroVMDriver is configured, want nil until an explicit Firecracker backend factory is injected")
+	}
+	if sandboxdDriverSupportedByDeps(sandboxruntime.DriverMicroVM, deps) {
+		t.Fatal("sandboxd reports microVM supported by default deps, want unsupported without injected backend factory")
+	}
+}
+
 func TestSandboxdCommandRegistersMicroVMOnlyWithInjectedFactory(t *testing.T) {
 	handler := &recordingSandboxdHandler{}
 	var gotService sandboxworker.ServiceOptions

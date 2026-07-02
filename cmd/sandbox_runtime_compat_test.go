@@ -279,6 +279,41 @@ func TestSandboxRuntimeCompatSelectsMicroVMAndDefersUnavailableToDriver(t *testi
 	}
 }
 
+func TestProductionRuntimeResolverMicroVMFactoryDoesNotConfigureFirecrackerBackend(t *testing.T) {
+	factories := productionSandboxRuntimeDriverFactories()
+	if factories.microVM == nil {
+		t.Fatal("production microVM factory = nil, want backendless microVM driver factory")
+	}
+
+	driver := factories.microVM()
+	if driver == nil {
+		t.Fatal("production microVM factory returned nil driver")
+	}
+	if driver.ID() != sandboxruntime.DriverMicroVM {
+		t.Fatalf("driver ID = %q, want %q", driver.ID(), sandboxruntime.DriverMicroVM)
+	}
+	if typeName := fmt.Sprintf("%T", driver); strings.Contains(strings.ToLower(typeName), "firecracker") {
+		t.Fatalf("production microVM factory returned Firecracker type %q, want backend-neutral microVM driver", typeName)
+	}
+
+	microVMDriver, ok := driver.(*microvm.Driver)
+	if !ok {
+		t.Fatalf("production microVM factory returned %T, want *microvm.Driver", driver)
+	}
+	metadata := microVMDriver.Metadata()
+	if metadata.BackendConfigured {
+		t.Fatalf("BackendConfigured = true, want false until Firecracker backend is explicitly injected")
+	}
+	if metadata.Availability != microvm.CapabilityAvailabilityUnavailable {
+		t.Fatalf("Availability = %q, want %q without explicit backend", metadata.Availability, microvm.CapabilityAvailabilityUnavailable)
+	}
+
+	target, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "firecracker-dev"})
+	if err == nil {
+		t.Fatalf("Create() error = nil with target %#v, want unavailable default production microVM driver", target)
+	}
+}
+
 func TestSandboxRuntimeCompatDefaultsToSSHMachineUnlessExplicitRuntimeSelected(t *testing.T) {
 	originalFactories := defaultSandboxRuntimeDriverFactories
 	t.Cleanup(func() {
