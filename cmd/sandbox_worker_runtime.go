@@ -16,8 +16,9 @@ type sandboxWorkerRuntimeRequest struct {
 }
 
 type sandboxWorkerRuntimeDriverFactories struct {
-	newWorkerClient  func(string) (sandboxworker.RuntimeDriverClient, error)
-	newRuntimeDriver func(sandboxworker.ClientDriverOptions) (sandboxruntime.Driver, error)
+	newWorkerClient         func(string) (sandboxworker.RuntimeDriverClient, error)
+	newRuntimeDriver        func(sandboxworker.ClientDriverOptions) (sandboxruntime.Driver, error)
+	newMicroVMRuntimeDriver func(sandboxworker.ClientDriverOptions) (sandboxruntime.Driver, error)
 }
 
 func sandboxWorkerRuntimeDriverFromTarget(req sandboxWorkerRuntimeRequest, factories sandboxWorkerRuntimeDriverFactories) (sandboxruntime.Driver, error) {
@@ -39,7 +40,11 @@ func sandboxWorkerRuntimeDriverFromTarget(req sandboxWorkerRuntimeRequest, facto
 	if !sandboxRuntimeHostSupportsRuntime(host, driverID) {
 		return nil, sandboxWorkerRuntimeUnsupportedError(host, driverID, "does not support requested runtime")
 	}
-	if driverID != sandboxruntime.DriverRootlessPodman {
+	runtimeDriverFactory := factories.newRuntimeDriver
+	if driverID == sandboxruntime.DriverMicroVM {
+		runtimeDriverFactory = factories.newMicroVMRuntimeDriver
+	}
+	if !sandboxWorkerRuntimeDriverUsesWorkerBoundary(driverID) || runtimeDriverFactory == nil {
 		return nil, sandboxWorkerRuntimeUnsupportedError(host, driverID, "is not supported by worker-backed sandbox execution")
 	}
 
@@ -55,7 +60,7 @@ func sandboxWorkerRuntimeDriverFromTarget(req sandboxWorkerRuntimeRequest, facto
 		return nil, sandboxHostWorkerClientError("connect", fmt.Errorf("worker client is not configured"))
 	}
 
-	driver, err := factories.newRuntimeDriver(sandboxworker.ClientDriverOptions{
+	driver, err := runtimeDriverFactory(sandboxworker.ClientDriverOptions{
 		DriverID: driverID,
 		Client:   client,
 	})
@@ -78,7 +83,7 @@ func sandboxWorkerRuntimeRouteSelected(sandboxHostID, sandboxRuntime string, tar
 	if strings.TrimSpace(selectedTarget.Host.Kind) != sandbox.SandboxHostKindWorker {
 		return false
 	}
-	return strings.TrimSpace(target.Runtime.Driver) == sandboxruntime.DriverRootlessPodman
+	return sandboxWorkerRuntimeDriverUsesWorkerBoundary(target.Runtime.Driver)
 }
 
 func sandboxWorkerRoutingRequested(sandboxHostID, sandboxRuntime string) bool {
@@ -108,6 +113,15 @@ func sandboxWorkerRoutingMetadataFromState(target *sandbox.SandboxState) *sandbo
 		RuntimeDriverID:        driver,
 		IsolationLevel:         isolation,
 		EndpointSummary:        sandboxHostEndpointSummary(host.Endpoint),
+	}
+}
+
+func sandboxWorkerRuntimeDriverUsesWorkerBoundary(driverID string) bool {
+	switch strings.TrimSpace(driverID) {
+	case sandboxruntime.DriverRootlessPodman, sandboxruntime.DriverMicroVM:
+		return true
+	default:
+		return false
 	}
 }
 

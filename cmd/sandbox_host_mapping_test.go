@@ -225,6 +225,58 @@ func TestSandboxHostFromWorkerMetadataUsesOnlyReportedRuntimeDrivers(t *testing.
 	}
 }
 
+func TestSandboxHostFromWorkerMetadataPreservesMicroVMRuntimeDriverID(t *testing.T) {
+	status := sandboxworker.Status{
+		WorkerID: "worker-001",
+		HostKind: sandboxworker.HostKindLocal,
+		SupportedRuntimeDrivers: []string{
+			sandbox.SandboxRuntimeDriverMicroVM,
+		},
+		Health:   sandboxworker.WorkerHealth{Status: sandboxworker.HealthStatusHealthy},
+		Security: sandboxworker.DefaultWorkerSecurityPolicy(),
+	}
+	capabilities := sandboxworker.Capabilities{
+		WorkerID: "worker-001",
+		RuntimeDrivers: []sandboxworker.RuntimeDriver{
+			{
+				ID:             sandbox.SandboxRuntimeDriverMicroVM,
+				HostKind:       sandboxworker.HostKindLocal,
+				IsolationLevel: sandboxworker.IsolationLevelHost,
+				Operations:     []string{sandboxworker.OperationStatus, sandboxworker.OperationCapabilities},
+				Security: sandboxworker.SecurityPolicy{
+					Requested: sandboxworker.SecurityControls{
+						NetworkPolicy:      sandboxworker.NetworkPolicyBestEffort,
+						NetworkEnforcement: sandboxworker.NetworkEnforcementNone,
+						IsolationLevel:     sandboxworker.IsolationLevelHost,
+					},
+					Enforced: sandboxworker.SecurityControls{
+						NetworkPolicy:      sandboxworker.NetworkPolicyBestEffort,
+						NetworkEnforcement: sandboxworker.NetworkEnforcementNone,
+						IsolationLevel:     sandboxworker.IsolationLevelHost,
+					},
+				},
+			},
+		},
+		Security: sandboxworker.DefaultWorkerSecurityPolicy(),
+	}
+
+	host, err := sandboxHostFromWorkerMetadata(sandboxHostWorkerMetadataRequest{
+		WorkerID:     "worker-001",
+		SocketPath:   "/tmp/hal-sandboxworker.sock",
+		Status:       &status,
+		Capabilities: &capabilities,
+	})
+	if err != nil {
+		t.Fatalf("sandboxHostFromWorkerMetadata() error = %v", err)
+	}
+	if len(host.SupportedRuntimes) != 1 || host.SupportedRuntimes[0] != sandbox.SandboxRuntimeDriverMicroVM {
+		t.Fatalf("supported runtimes = %#v, want metadata-preserved microVM runtime ID", host.SupportedRuntimes)
+	}
+	if host.Security == nil || host.Security.Network == nil {
+		t.Fatalf("security = %#v, want metadata-only worker security", host.Security)
+	}
+}
+
 func TestSandboxHostFromWorkerMetadataRejectsInvalidLiveMetadata(t *testing.T) {
 	status := sandboxworker.Status{
 		WorkerID: "worker-001",

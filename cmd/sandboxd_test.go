@@ -166,6 +166,99 @@ func TestSandboxdCommandUsesDefaultWorkerIDDependency(t *testing.T) {
 	}
 }
 
+func TestSandboxdCommandRejectsMicroVMDriverWithoutConfiguredFactory(t *testing.T) {
+	serviceCalled := false
+	serverCalled := false
+	cmd, _, _ := newTestSandboxdCommand(sandboxdDeps{
+		newService: func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
+			serviceCalled = true
+			return nil, nil
+		},
+		newServer: func(options sandboxworker.ServerOptions) (sandboxdServer, error) {
+			serverCalled = true
+			return nil, nil
+		},
+		workerID: func() string {
+			return "worker-test"
+		},
+	})
+	cmd.SetArgs([]string{"--driver", sandboxruntime.DriverMicroVM})
+
+	err := cmd.Execute()
+	var exitErr *ExitCodeError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("Execute() error = %T, want ExitCodeError", err)
+	}
+	if exitErr.Code != ExitCodeValidation {
+		t.Fatalf("exit code = %d, want %d", exitErr.Code, ExitCodeValidation)
+	}
+	if exitErr.Err == nil || !strings.Contains(exitErr.Err.Error(), `driver "microvm" is unsupported`) {
+		t.Fatalf("exit error = %#v, want unsupported microVM driver detail", exitErr.Err)
+	}
+	if serviceCalled || serverCalled {
+		t.Fatalf("serviceCalled=%v serverCalled=%v, want neither called", serviceCalled, serverCalled)
+	}
+}
+
+func TestSandboxdCommandRegistersMicroVMOnlyWithInjectedFactory(t *testing.T) {
+	handler := &recordingSandboxdHandler{}
+	var gotService sandboxworker.ServiceOptions
+	microVMConstructed := false
+	rootlessAvailabilityCalled := false
+
+	cmd, stdout, _ := newTestSandboxdCommand(sandboxdDeps{
+		newService: func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
+			gotService = options
+			return handler, nil
+		},
+		newServer: func(options sandboxworker.ServerOptions) (sandboxdServer, error) {
+			return sandboxdServerFunc(func(context.Context) error { return nil }), nil
+		},
+		rootlessPodmanAvailable: func(context.Context, string) error {
+			rootlessAvailabilityCalled = true
+			return nil
+		},
+		newMicroVMDriver: func() sandboxruntime.Driver {
+			microVMConstructed = true
+			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverMicroVM}
+		},
+		workerID: func() string {
+			return "unused-default-worker"
+		},
+	})
+	cmd.SetArgs([]string{
+		"--socket", "/tmp/microvm-sandboxd.sock",
+		"--worker-id", "worker-microvm",
+		"--driver", sandboxruntime.DriverMicroVM,
+		"--json",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("sandboxd Execute() error: %v", err)
+	}
+
+	if !microVMConstructed {
+		t.Fatal("microVM driver factory was not called")
+	}
+	if rootlessAvailabilityCalled {
+		t.Fatal("rootless Podman availability should not be checked for injected microVM-only registration")
+	}
+	if gotService.Registry == nil {
+		t.Fatal("service registry is nil")
+	}
+	if got := strings.Join(gotService.Registry.DriverIDs(), ","); got != sandboxruntime.DriverMicroVM {
+		t.Fatalf("service registry driver IDs = %q, want %q", got, sandboxruntime.DriverMicroVM)
+	}
+
+	var started sandboxdStartedOutput
+	if err := json.Unmarshal(stdout.Bytes(), &started); err != nil {
+		t.Fatalf("startup JSON = %q, unmarshal error: %v", stdout.String(), err)
+	}
+	if got := strings.Join(started.Drivers, ","); got != sandboxruntime.DriverMicroVM {
+		t.Fatalf("startup drivers = %q, want %q", got, sandboxruntime.DriverMicroVM)
+	}
+}
+
 func TestSandboxdRootlessPodmanUnavailableFailsBeforeService(t *testing.T) {
 	req := sandboxdRequest{
 		SocketPath:    "/tmp/hal-sandboxd-unavailable.sock",
