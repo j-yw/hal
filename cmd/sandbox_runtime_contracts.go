@@ -127,10 +127,11 @@ type SandboxRuntimeReadiness struct {
 // SandboxRuntimeSecuritySummary separates requested controls from controls
 // actually enforced by durable metadata or live worker capabilities.
 type SandboxRuntimeSecuritySummary struct {
-	Requested           SandboxRuntimeSecurityControls                    `json:"requested"`
-	Enforced            SandboxRuntimeSecurityControls                    `json:"enforced"`
-	NetworkPolicyResult *sandbox.SandboxNetworkPolicyResult               `json:"networkPolicyResult,omitempty"`
-	CapabilityReadiness *sandbox.SandboxSecurityCapabilityReadinessOutput `json:"capabilityReadiness,omitempty"`
+	Requested                      SandboxRuntimeSecurityControls                               `json:"requested"`
+	Enforced                       SandboxRuntimeSecurityControls                               `json:"enforced"`
+	NetworkPolicyResult            *sandbox.SandboxNetworkPolicyResult                          `json:"networkPolicyResult,omitempty"`
+	CapabilityReadiness            *sandbox.SandboxSecurityCapabilityReadinessOutput            `json:"capabilityReadiness,omitempty"`
+	CapabilityReadinessDiagnostics *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary `json:"capabilityReadinessDiagnostics,omitempty"`
 }
 
 // SandboxRuntimeSecurityControls captures safe security posture metadata.
@@ -682,10 +683,11 @@ func newSandboxRuntimeSecuritySummary(security *sandbox.SandboxSecurity) Sandbox
 	}
 
 	return SandboxRuntimeSecuritySummary{
-		Requested:           requested,
-		Enforced:            enforced,
-		NetworkPolicyResult: policyResult,
-		CapabilityReadiness: capabilityReadiness,
+		Requested:                      requested,
+		Enforced:                       enforced,
+		NetworkPolicyResult:            policyResult,
+		CapabilityReadiness:            capabilityReadiness,
+		CapabilityReadinessDiagnostics: sandboxRuntimeCapabilityReadinessDiagnostics(capabilityReadiness),
 	}
 }
 
@@ -713,11 +715,21 @@ func newSandboxRuntimeSecuritySummaryFromWorkerPolicyAndRuntime(policy sandboxwo
 		}
 	}
 	return SandboxRuntimeSecuritySummary{
-		Requested:           sandboxRuntimeSecurityControlsFromWorker(policy.Requested),
-		Enforced:            sandboxRuntimeSecurityControlsFromWorker(policy.Enforced),
-		NetworkPolicyResult: sandboxNetworkPolicyResultFromWorkerPolicy(policy),
-		CapabilityReadiness: capabilityReadiness,
+		Requested:                      sandboxRuntimeSecurityControlsFromWorker(policy.Requested),
+		Enforced:                       sandboxRuntimeSecurityControlsFromWorker(policy.Enforced),
+		NetworkPolicyResult:            sandboxNetworkPolicyResultFromWorkerPolicy(policy),
+		CapabilityReadiness:            capabilityReadiness,
+		CapabilityReadinessDiagnostics: sandboxRuntimeCapabilityReadinessDiagnostics(capabilityReadiness),
 	}
+}
+
+func sandboxRuntimeCapabilityReadinessDiagnostics(readiness *sandbox.SandboxSecurityCapabilityReadinessOutput) *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary {
+	readiness = sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(readiness)
+	if readiness == nil {
+		return nil
+	}
+	summary := sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(*readiness)
+	return &summary
 }
 
 func sandboxRuntimeCapabilityReadinessFromSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.SandboxSecurityCapabilityReadinessOutput {

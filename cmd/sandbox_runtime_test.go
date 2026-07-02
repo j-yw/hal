@@ -1034,6 +1034,12 @@ func TestSandboxRuntimeStatusJSONCachedWorkerRuntimeContractStableAndSafe(t *tes
 		sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,
 		sandbox.SandboxSecurityCapabilityNetworkDenyByDefault,
 	)
+	requireRuntimeCapabilityReadinessDiagnostic(t, resp.Security.CapabilityReadinessDiagnostics,
+		sandbox.SandboxSecurityCapabilityDiagnosticClassificationUnsupported,
+		sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,
+		sandbox.SandboxSecurityCapabilityNetworkDenyByDefault,
+		true,
+	)
 	if len(resp.Diagnostics) != 0 || len(resp.Errors) != 0 {
 		t.Fatalf("diagnostics/errors = %#v/%#v, want empty arrays", resp.Diagnostics, resp.Errors)
 	}
@@ -1075,8 +1081,110 @@ func TestSandboxRuntimeStatusJSONOmitsCapabilityReadinessWhenSecurityAbsent(t *t
 	if resp.Security.CapabilityReadiness != nil {
 		t.Fatalf("capabilityReadiness = %#v, want omitted when no security metadata is available", resp.Security.CapabilityReadiness)
 	}
+	if resp.Security.CapabilityReadinessDiagnostics != nil {
+		t.Fatalf("capabilityReadinessDiagnostics = %#v, want omitted when no security metadata is available", resp.Security.CapabilityReadinessDiagnostics)
+	}
 	if strings.Contains(stdout.String(), "capabilityReadiness") {
 		t.Fatalf("JSON output included capabilityReadiness without security metadata: %s", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "capabilityReadinessDiagnostics") {
+		t.Fatalf("JSON output included capabilityReadinessDiagnostics without security metadata: %s", stdout.String())
+	}
+}
+
+func TestSandboxRuntimeStatusJSONSecurityReadinessDiagnosticsFromCachedMetadata(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:                "worker-diagnostics",
+		Name:              "diag-worker",
+		Kind:              sandbox.SandboxHostKindWorker,
+		Endpoint:          "unix:///tmp/private/security-diagnostics.sock",
+		SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+		Security: &sandbox.SandboxSecurity{
+			Network: &sandbox.SandboxNetworkSecurity{
+				PolicyRequested: sandbox.SandboxNetworkPolicyDenyByDefault,
+				PolicyEnforced:  sandbox.SandboxNetworkPolicyBestEffort,
+				EnforcementMode: sandbox.SandboxNetworkEnforcementModeNone,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	deps := defaultSandboxRuntimeDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("cached sandbox runtime status --json should not contact worker daemons")
+		return nil, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxRuntimeCommand(deps)
+	cmd.SetArgs([]string{"status", "worker-diagnostics", sandbox.SandboxRuntimeDriverRootlessPodman, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+
+	resp := decodeOneSandboxRuntimeStatusJSON(t, stdout.Bytes())
+	diagnostic := requireRuntimeCapabilityReadinessDiagnostic(t, resp.Security.CapabilityReadinessDiagnostics,
+		sandbox.SandboxSecurityCapabilityDiagnosticClassificationUnsupported,
+		sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,
+		sandbox.SandboxSecurityCapabilityNetworkDenyByDefault,
+		true,
+	)
+	if resp.Security.CapabilityReadinessDiagnostics.Status != sandbox.SandboxSecurityCapabilityDiagnosticSummaryStatusAdvisory ||
+		resp.Security.CapabilityReadinessDiagnostics.HighestSeverity != sandbox.SandboxSecurityCapabilityDiagnosticSeverityWarning ||
+		!resp.Security.CapabilityReadinessDiagnostics.AdvisoryOnly {
+		t.Fatalf("capabilityReadinessDiagnostics = %#v, want advisory warning summary", resp.Security.CapabilityReadinessDiagnostics)
+	}
+	if diagnostic.Code != sandbox.SandboxSecurityCapabilityDiagnosticCodeUnsupported ||
+		diagnostic.Severity != sandbox.SandboxSecurityCapabilityDiagnosticSeverityWarning ||
+		!diagnostic.AdvisoryOnly {
+		t.Fatalf("diagnostic = %#v, want advisory unsupported warning", diagnostic)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "capabilityReadinessDiagnostics") {
+		t.Fatalf("JSON output omitted capabilityReadinessDiagnostics: %s", output)
+	}
+	for _, leaked := range []string{"/tmp/private", "security-diagnostics.sock"} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("JSON output leaked endpoint detail %q: %s", leaked, output)
+		}
+	}
+	if len(resp.Diagnostics) != 0 || len(resp.Errors) != 0 {
+		t.Fatalf("diagnostics/errors = %#v/%#v, want runtime diagnostics unchanged", resp.Diagnostics, resp.Errors)
+	}
+}
+
+func TestSandboxRuntimeStatusJSONSecurityReadinessDiagnosticsOmittedWhenSecurityAbsent(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:                "worker-no-security-diagnostics",
+		Name:              "no-security",
+		Kind:              sandbox.SandboxHostKindWorker,
+		Endpoint:          "unix:///tmp/private/no-security.sock",
+		SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	deps := defaultSandboxRuntimeDeps()
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		t.Fatal("cached sandbox runtime status --json should not contact worker daemons")
+		return nil, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxRuntimeCommand(deps)
+	cmd.SetArgs([]string{"status", "worker-no-security-diagnostics", sandbox.SandboxRuntimeDriverRootlessPodman, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+
+	resp := decodeOneSandboxRuntimeStatusJSON(t, stdout.Bytes())
+	if resp.Security.CapabilityReadinessDiagnostics != nil {
+		t.Fatalf("capabilityReadinessDiagnostics = %#v, want omitted without approved readiness surface", resp.Security.CapabilityReadinessDiagnostics)
+	}
+	if strings.Contains(stdout.String(), "capabilityReadinessDiagnostics") {
+		t.Fatalf("JSON output included capabilityReadinessDiagnostics without approved readiness surface: %s", stdout.String())
 	}
 }
 
@@ -1142,6 +1250,75 @@ func TestSandboxRuntimeSecuritySummarySanitizesCapabilityReadinessBeforeJSON(t *
 	for _, leaked := range []string{"https://secret.example:443/token", "secret.example", ":443", "token"} {
 		if strings.Contains(output, leaked) {
 			t.Fatalf("runtime summary readiness leaked unsafe value %q: %s", leaked, output)
+		}
+	}
+}
+
+func TestSandboxRuntimeSecurityReadinessDiagnosticsSanitizeBeforeJSON(t *testing.T) {
+	summary := newSandboxRuntimeSecuritySummary(&sandbox.SandboxSecurity{
+		CapabilityReadiness: &sandbox.SandboxSecurityCapabilityReadinessOutput{
+			Results: []sandbox.SandboxSecurityCapabilityReadinessResult{
+				{
+					State: sandbox.SandboxSecurityCapabilityReadinessUnsupported,
+					Requested: &sandbox.SandboxSecurityCapabilityMetadata{
+						ID:         "safe-requested",
+						Family:     sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,
+						Capability: sandbox.SandboxSecurityCapabilityNetworkDenyByDefault,
+						Source:     sandbox.SandboxSecurityCapabilitySourceRequested,
+					},
+					ReasonCode: sandbox.SandboxSecurityCapabilityReasonCapabilityMissing,
+				},
+				{
+					State: sandbox.SandboxSecurityCapabilityReadinessUnsupported,
+					Requested: &sandbox.SandboxSecurityCapabilityMetadata{
+						ID:         "https://secret.example:443/token",
+						Family:     sandbox.SandboxSecurityCapabilityFamilyCredentialProxy,
+						Capability: sandbox.SandboxSecurityCapabilityCredentialProxy,
+						Mode:       "/Users/private/.ssh/agent.sock",
+						Source:     sandbox.SandboxSecurityCapabilitySourceRequested,
+						ReasonCode: sandbox.SandboxSecurityCapabilityReasonCode("Authorization: Bearer raw-token"),
+						WarningCodes: []sandbox.SandboxSecurityCapabilityWarningCode{
+							sandbox.SandboxSecurityCapabilityWarningCode("GITHUB_TOKEN=raw-secret"),
+						},
+					},
+					ReasonCode: sandbox.SandboxSecurityCapabilityReasonCode("curl https://secret.example"),
+				},
+			},
+		},
+	})
+
+	diagnostic := requireRuntimeCapabilityReadinessDiagnostic(t, summary.CapabilityReadinessDiagnostics,
+		sandbox.SandboxSecurityCapabilityDiagnosticClassificationUnsupported,
+		sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,
+		sandbox.SandboxSecurityCapabilityNetworkDenyByDefault,
+		true,
+	)
+	if diagnostic.ReasonCode != sandbox.SandboxSecurityCapabilityReasonCapabilityMissing {
+		t.Fatalf("diagnostic reasonCode = %q, want %q", diagnostic.ReasonCode, sandbox.SandboxSecurityCapabilityReasonCapabilityMissing)
+	}
+
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	output := string(encoded)
+	if !strings.Contains(output, "capabilityReadinessDiagnostics") {
+		t.Fatalf("runtime summary omitted capabilityReadinessDiagnostics: %s", output)
+	}
+	for _, leaked := range []string{
+		"https://secret.example:443/token",
+		"secret.example",
+		":443",
+		"Authorization",
+		"raw-token",
+		"GITHUB_TOKEN",
+		"raw-secret",
+		"/Users/private",
+		"agent.sock",
+		"curl",
+	} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("runtime summary diagnostics leaked unsafe value %q: %s", leaked, output)
 		}
 	}
 }
@@ -2073,6 +2250,29 @@ func requireRuntimeCapabilityReadinessResult(t *testing.T, output *sandbox.Sandb
 		}
 	}
 	t.Fatalf("capabilityReadiness results = %#v, want %s %s/%s result", output.Results, state, family, capability)
+}
+
+func requireRuntimeCapabilityReadinessDiagnostic(t *testing.T, summary *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary, classification sandbox.SandboxSecurityCapabilityDiagnosticClassification, family sandbox.SandboxSecurityCapabilityFamily, capability sandbox.SandboxSecurityCapabilityName, wouldBlock bool) sandbox.SandboxSecurityCapabilityReadinessDiagnosticItem {
+	t.Helper()
+	if summary == nil {
+		t.Fatalf("capabilityReadinessDiagnostics = nil, want %s %s/%s diagnostic", classification, family, capability)
+	}
+	if !summary.AdvisoryOnly {
+		t.Fatalf("capabilityReadinessDiagnostics advisoryOnly = false: %#v", summary)
+	}
+	if summary.WouldBlockStrictGate != wouldBlock {
+		t.Fatalf("capabilityReadinessDiagnostics wouldBlockStrictGate = %t, want %t: %#v", summary.WouldBlockStrictGate, wouldBlock, summary)
+	}
+	for _, item := range summary.Items {
+		if item.Classification == classification && item.Family == family && item.Capability == capability {
+			if item.WouldBlockStrictGate != wouldBlock {
+				t.Fatalf("diagnostic wouldBlockStrictGate = %t, want %t: %#v", item.WouldBlockStrictGate, wouldBlock, item)
+			}
+			return item
+		}
+	}
+	t.Fatalf("capabilityReadinessDiagnostics items = %#v, want %s %s/%s diagnostic", summary.Items, classification, family, capability)
+	return sandbox.SandboxSecurityCapabilityReadinessDiagnosticItem{}
 }
 
 func sandboxRuntimeTestWorkerSecurity(isolationLevel string) sandboxworker.SecurityPolicy {
