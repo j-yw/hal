@@ -108,6 +108,19 @@ func DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(output SandboxSec
 	}
 }
 
+// DeriveSandboxSecurityCapabilityReadinessDiagnosticSummaryPtr returns nil
+// when readiness is nil or sanitizes to no results. It is intended for
+// additive metadata clone paths that should only surface diagnostics from an
+// approved readiness surface.
+func DeriveSandboxSecurityCapabilityReadinessDiagnosticSummaryPtr(output *SandboxSecurityCapabilityReadinessOutput) *SandboxSecurityCapabilityReadinessDiagnosticSummary {
+	output = CloneSandboxSecurityCapabilityReadinessOutputPtr(output)
+	if output == nil {
+		return nil
+	}
+	summary := DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(*output)
+	return &summary
+}
+
 func sandboxSecurityCapabilityReadinessMissingDiagnosticSummary() SandboxSecurityCapabilityReadinessDiagnosticSummary {
 	item := SandboxSecurityCapabilityReadinessDiagnosticItem{
 		Code:                 SandboxSecurityCapabilityDiagnosticCodeReadinessMissing,

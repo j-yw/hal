@@ -1261,8 +1261,10 @@ func cloneSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.SandboxSec
 	if security == nil {
 		return nil
 	}
+	capabilityReadiness := sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness)
 	clone := &sandbox.SandboxSecurity{
-		CapabilityReadiness: sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness),
+		CapabilityReadiness:            capabilityReadiness,
+		CapabilityReadinessDiagnostics: sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummaryPtr(capabilityReadiness),
 	}
 	if security.Network != nil {
 		network := *security.Network
