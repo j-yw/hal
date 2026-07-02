@@ -177,6 +177,7 @@ const (
 // Policy decision outcome values recorded in policy decision timeline events.
 const (
 	PolicyOutcomeAllowed  = "allowed"
+	PolicyOutcomeAdvisory = "advisory"
 	PolicyOutcomeRejected = "rejected"
 	PolicyOutcomePassed   = "passed"
 	PolicyOutcomeBlocked  = "blocked"
@@ -516,20 +517,34 @@ type EventRecord struct {
 // decision timeline events. It must not grow raw config values, environment
 // values, source paths, provider internals, or credentials.
 type PolicyDecisionMetadata struct {
-	PolicyField string `json:"policyField"`
-	Decision    string `json:"decision"`
-	Outcome     string `json:"outcome"`
-	Reason      string `json:"reason"`
+	PolicyField string                                                   `json:"policyField"`
+	Decision    string                                                   `json:"decision"`
+	Outcome     string                                                   `json:"outcome"`
+	Reason      string                                                   `json:"reason"`
+	PolicyMode  sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode `json:"policyMode,omitempty"`
+	Code        sandbox.SandboxSecurityCapabilityReadinessGateCode       `json:"code,omitempty"`
+	Counts      *sandbox.SandboxSecurityCapabilityReadinessGateCounts    `json:"counts,omitempty"`
 }
 
 // EventMetadata returns the map representation stored in EventRecord.Metadata.
 func (m PolicyDecisionMetadata) EventMetadata() map[string]any {
-	return map[string]any{
+	metadata := map[string]any{
 		"policyField": strings.TrimSpace(m.PolicyField),
 		"decision":    strings.TrimSpace(m.Decision),
 		"outcome":     strings.TrimSpace(m.Outcome),
 		"reason":      strings.TrimSpace(m.Reason),
 	}
+	if m.PolicyMode != "" {
+		metadata["policyMode"] = strings.TrimSpace(string(m.PolicyMode))
+	}
+	if m.Code != "" {
+		metadata["code"] = strings.TrimSpace(string(m.Code))
+	}
+	if m.Counts != nil {
+		counts := *m.Counts
+		metadata["counts"] = &counts
+	}
+	return metadata
 }
 
 // LogChunk captures one durable factory log chunk or summarized output line.

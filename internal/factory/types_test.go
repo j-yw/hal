@@ -3050,6 +3050,51 @@ func TestPolicyDecisionMetadataJSONFields(t *testing.T) {
 	}
 }
 
+func TestPolicyDecisionMetadataSecurityReadinessGateOptionalFields(t *testing.T) {
+	original := PolicyDecisionMetadata{
+		PolicyField: "factory.policy.securityReadinessGatePolicyMode",
+		Decision:    PolicyDecisionBlockedGate,
+		Outcome:     PolicyOutcomeBlocked,
+		Reason:      string(sandbox.SandboxSecurityCapabilityReadinessGateReasonCapabilityUnsupported),
+		PolicyMode:  sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+		Code:        sandbox.SandboxSecurityCapabilityReadinessGateCodeBlocked,
+		Counts: &sandbox.SandboxSecurityCapabilityReadinessGateCounts{
+			Total:          2,
+			Advisory:       2,
+			MetadataOnly:   1,
+			Unsupported:    1,
+			StrictBlocking: 2,
+		},
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+	for _, key := range []string{"policyField", "decision", "outcome", "reason", "policyMode", "code", "counts"} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("missing readiness gate policy metadata field %q", key)
+		}
+	}
+	for _, forbidden := range []string{"token", "secret", "credential", "env", "sourcePath", "provider", "apiKey", "url", "hostname", "port", "path", "socket", "command", "endpoint", "image"} {
+		if _, ok := raw[forbidden]; ok {
+			t.Errorf("unsafe readiness gate policy metadata field %q should not be serialized", forbidden)
+		}
+	}
+
+	metadata := original.EventMetadata()
+	for _, key := range []string{"policyField", "decision", "outcome", "reason", "policyMode", "code", "counts"} {
+		if _, ok := metadata[key]; !ok {
+			t.Errorf("missing readiness gate policy event metadata key %q", key)
+		}
+	}
+}
+
 func TestEventRecordOptionalFieldsOmitted(t *testing.T) {
 	timestamp := time.Date(2026, 6, 20, 10, 30, 0, 0, time.UTC)
 	original := EventRecord{

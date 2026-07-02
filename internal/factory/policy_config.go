@@ -4,20 +4,22 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/template"
 	"gopkg.in/yaml.v3"
 )
 
 type rawPolicyConfig struct {
-	SandboxRequired      *bool     `yaml:"sandboxRequired"`
-	AllowedEngines       *[]string `yaml:"allowedEngines"`
-	MaxRunAttempts       *int      `yaml:"maxRunAttempts"`
-	MaxReviewFixAttempts *int      `yaml:"maxReviewFixAttempts"`
-	MaxCIFixAttempts     *int      `yaml:"maxCiFixAttempts"`
-	VerificationRequired *bool     `yaml:"verificationRequired"`
-	PRCreationAllowed    *bool     `yaml:"prCreationAllowed"`
-	MergeAllowed         *bool     `yaml:"mergeAllowed"`
-	CleanupBehavior      *string   `yaml:"cleanupBehavior"`
+	SandboxRequired                 *bool                                                     `yaml:"sandboxRequired"`
+	AllowedEngines                  *[]string                                                 `yaml:"allowedEngines"`
+	MaxRunAttempts                  *int                                                      `yaml:"maxRunAttempts"`
+	MaxReviewFixAttempts            *int                                                      `yaml:"maxReviewFixAttempts"`
+	MaxCIFixAttempts                *int                                                      `yaml:"maxCiFixAttempts"`
+	VerificationRequired            *bool                                                     `yaml:"verificationRequired"`
+	PRCreationAllowed               *bool                                                     `yaml:"prCreationAllowed"`
+	MergeAllowed                    *bool                                                     `yaml:"mergeAllowed"`
+	CleanupBehavior                 *string                                                   `yaml:"cleanupBehavior"`
+	SecurityReadinessGatePolicyMode *sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode `yaml:"securityReadinessGatePolicyMode"`
 }
 
 // LoadPolicyConfig reads factory.policy from .hal/config.yaml and merges any
@@ -80,5 +82,8 @@ func mergePolicyConfig(policy *FactoryPolicy, raw rawPolicyConfig) {
 	}
 	if raw.CleanupBehavior != nil {
 		policy.CleanupBehavior = *raw.CleanupBehavior
+	}
+	if raw.SecurityReadinessGatePolicyMode != nil {
+		policy.SecurityReadinessGatePolicyMode = *raw.SecurityReadinessGatePolicyMode
 	}
 }

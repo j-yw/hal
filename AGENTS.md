@@ -15,6 +15,7 @@
 - `make vet`: run `go vet` checks.
 - `make fmt`: format code with `go fmt` (gofmt).
 - `make lint`: run `golangci-lint` if installed.
+- `make lint` prints an install hint and can exit successfully when `golangci-lint` is missing; check `command -v golangci-lint` before reporting lint as passed.
 - `make run ARGS='--help'`: build and run with arguments.
 - Integration tests: `go test -tags=integration ./internal/engine/codex/...` (requires the Codex CLI).
 

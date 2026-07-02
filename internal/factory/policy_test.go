@@ -1,11 +1,14 @@
 package factory
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/sandbox"
 )
 
 func TestDefaultFactoryPolicy(t *testing.T) {
@@ -37,6 +40,12 @@ func TestDefaultFactoryPolicy(t *testing.T) {
 	}
 	if policy.CleanupBehavior != CleanupBehaviorPreserve {
 		t.Errorf("CleanupBehavior = %q, want %q", policy.CleanupBehavior, CleanupBehaviorPreserve)
+	}
+	if policy.SecurityReadinessGatePolicyMode != "" {
+		t.Errorf("SecurityReadinessGatePolicyMode = %q, want empty default", policy.SecurityReadinessGatePolicyMode)
+	}
+	if got := policy.EffectiveSecurityReadinessGatePolicyMode(); got != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeOff {
+		t.Errorf("EffectiveSecurityReadinessGatePolicyMode() = %q, want %q", got, sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeOff)
 	}
 	if err := policy.Validate(); err != nil {
 		t.Fatalf("Validate() unexpected error: %v", err)
@@ -98,6 +107,13 @@ func TestFactoryPolicyValidateRejectsInvalidValues(t *testing.T) {
 			},
 			wantErr: "factory.policy.cleanupBehavior must be one of preserve, on_success, always",
 		},
+		{
+			name: "unknown security readiness gate policy mode",
+			mutate: func(policy *FactoryPolicy) {
+				policy.SecurityReadinessGatePolicyMode = sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode("enforce")
+			},
+			wantErr: "factory.policy.securityReadinessGatePolicyMode must be one of off, advisory, strict",
+		},
 	}
 
 	for _, tt := range tests {
@@ -121,6 +137,7 @@ func TestFactoryPolicyValidateNormalizesEnums(t *testing.T) {
 	policy := DefaultFactoryPolicy()
 	policy.AllowedEngines = []string{" CODEX ", "Claude", "pi"}
 	policy.CleanupBehavior = " ON_SUCCESS "
+	policy.SecurityReadinessGatePolicyMode = sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode(" STRICT ")
 
 	if err := policy.Validate(); err != nil {
 		t.Fatalf("Validate() unexpected error: %v", err)
@@ -131,6 +148,38 @@ func TestFactoryPolicyValidateNormalizesEnums(t *testing.T) {
 	}
 	if policy.CleanupBehavior != CleanupBehaviorOnSuccess {
 		t.Fatalf("CleanupBehavior = %q, want %q", policy.CleanupBehavior, CleanupBehaviorOnSuccess)
+	}
+	if policy.SecurityReadinessGatePolicyMode != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict {
+		t.Fatalf("SecurityReadinessGatePolicyMode = %q, want %q", policy.SecurityReadinessGatePolicyMode, sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict)
+	}
+}
+
+func TestFactoryPolicySecurityReadinessGateModeJSONIsAdditive(t *testing.T) {
+	defaultPolicy := DefaultFactoryPolicy()
+	defaultData, err := json.Marshal(defaultPolicy)
+	if err != nil {
+		t.Fatalf("marshal default policy: %v", err)
+	}
+	var defaultObject map[string]any
+	if err := json.Unmarshal(defaultData, &defaultObject); err != nil {
+		t.Fatalf("unmarshal default policy: %v", err)
+	}
+	if _, ok := defaultObject["securityReadinessGatePolicyMode"]; ok {
+		t.Fatalf("default policy JSON includes securityReadinessGatePolicyMode: %s", defaultData)
+	}
+
+	strictPolicy := DefaultFactoryPolicy()
+	strictPolicy.SecurityReadinessGatePolicyMode = sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict
+	strictData, err := json.Marshal(strictPolicy)
+	if err != nil {
+		t.Fatalf("marshal strict policy: %v", err)
+	}
+	var strictObject map[string]any
+	if err := json.Unmarshal(strictData, &strictObject); err != nil {
+		t.Fatalf("unmarshal strict policy: %v", err)
+	}
+	if got := strictObject["securityReadinessGatePolicyMode"]; got != string(sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict) {
+		t.Fatalf("securityReadinessGatePolicyMode = %#v, want %q in %s", got, sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict, strictData)
 	}
 }
 
@@ -188,6 +237,7 @@ func TestLoadPolicyConfigPreservesExplicitStrictValues(t *testing.T) {
     prCreationAllowed: false
     mergeAllowed: false
     cleanupBehavior: always
+    securityReadinessGatePolicyMode: strict
 `)
 
 	got, err := LoadPolicyConfig(dir)
@@ -196,15 +246,16 @@ func TestLoadPolicyConfigPreservesExplicitStrictValues(t *testing.T) {
 	}
 
 	want := FactoryPolicy{
-		SandboxRequired:      true,
-		AllowedEngines:       []string{PolicyEngineCodex},
-		MaxRunAttempts:       2,
-		MaxReviewFixAttempts: 3,
-		MaxCIFixAttempts:     4,
-		VerificationRequired: true,
-		PRCreationAllowed:    false,
-		MergeAllowed:         false,
-		CleanupBehavior:      CleanupBehaviorAlways,
+		SandboxRequired:                 true,
+		AllowedEngines:                  []string{PolicyEngineCodex},
+		MaxRunAttempts:                  2,
+		MaxReviewFixAttempts:            3,
+		MaxCIFixAttempts:                4,
+		VerificationRequired:            true,
+		PRCreationAllowed:               false,
+		MergeAllowed:                    false,
+		CleanupBehavior:                 CleanupBehaviorAlways,
+		SecurityReadinessGatePolicyMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
 	}
 	assertFactoryPolicy(t, got, want)
 }
@@ -222,6 +273,7 @@ func TestLoadPolicyConfigPreservesExplicitZeroAndEmptyValues(t *testing.T) {
     prCreationAllowed: false
     mergeAllowed: false
     cleanupBehavior: preserve
+    securityReadinessGatePolicyMode: ""
 `)
 
 	got, err := LoadPolicyConfig(dir)
@@ -241,6 +293,26 @@ func TestLoadPolicyConfigPreservesExplicitZeroAndEmptyValues(t *testing.T) {
 		CleanupBehavior:      CleanupBehaviorPreserve,
 	}
 	assertFactoryPolicy(t, got, want)
+}
+
+func TestLoadPolicyConfigNormalizesSecurityReadinessGatePolicyMode(t *testing.T) {
+	dir := t.TempDir()
+	writeFactoryConfig(t, dir, `factory:
+  policy:
+    securityReadinessGatePolicyMode: " Advisory "
+`)
+
+	got, err := LoadPolicyConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadPolicyConfig() unexpected error: %v", err)
+	}
+
+	if got.SecurityReadinessGatePolicyMode != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeAdvisory {
+		t.Fatalf("SecurityReadinessGatePolicyMode = %q, want %q", got.SecurityReadinessGatePolicyMode, sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeAdvisory)
+	}
+	if got.EffectiveSecurityReadinessGatePolicyMode() != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeAdvisory {
+		t.Fatalf("EffectiveSecurityReadinessGatePolicyMode() = %q, want %q", got.EffectiveSecurityReadinessGatePolicyMode(), sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeAdvisory)
+	}
 }
 
 func TestLoadPolicyConfigRejectsInvalidConfiguredValues(t *testing.T) {
@@ -274,6 +346,14 @@ func TestLoadPolicyConfigRejectsInvalidConfiguredValues(t *testing.T) {
     cleanupBehavior: ""
 `,
 			wantErr: "factory.policy.cleanupBehavior",
+		},
+		{
+			name: "unknown security readiness gate policy mode",
+			yaml: `factory:
+  policy:
+    securityReadinessGatePolicyMode: enforcing
+`,
+			wantErr: "factory.policy.securityReadinessGatePolicyMode",
 		},
 	}
 

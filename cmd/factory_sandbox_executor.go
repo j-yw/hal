@@ -50,6 +50,7 @@ type factorySandboxExecutorRequest struct {
 	SandboxHostID             string
 	SandboxRuntime            string
 	Security                  sandbox.SecurityEvaluationRequest
+	SecurityReadinessGateMode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode
 	NetworkProxySession       *sandbox.SandboxNetworkProxySessionMetadata
 	NetworkPolicyDecisionLogs []sandbox.SandboxNetworkPolicyDecisionLogRecord
 	RunRecord                 factory.RunRecord
@@ -280,14 +281,31 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	}
 	cleanupSucceeded := false
 	defer func() {
-		if target == nil || provider == nil {
+		if target == nil {
 			return
 		}
 		deferredCleanupBehavior := cleanupBehavior
 		if req.DeferSuccessCleanup && returnErr == nil && cleanupBehavior == factory.CleanupBehaviorAlways {
 			deferredCleanupBehavior = factory.CleanupBehaviorPreserve
 		}
-		cleaned, cleanupErr := cleanupFactorySandboxAfterRun(ctx, deps, req, record, target, provider, req.RemoteOutput, deferredCleanupBehavior, cleanupSucceeded)
+		if !factorySandboxCleanupBehaviorWillRun(deferredCleanupBehavior, cleanupSucceeded) {
+			return
+		}
+		cleanupProvider := provider
+		if cleanupProvider == nil {
+			var providerErr error
+			cleanupProvider, providerErr = ensureProvider(target.Provider)
+			if providerErr != nil {
+				sanitizedProviderErr := fmt.Errorf("%s", factorySandboxSanitizedError(target, fmt.Errorf("resolve sandbox provider for cleanup: %w", providerErr), secretRedactor))
+				if returnErr != nil {
+					returnErr = errors.Join(returnErr, sanitizedProviderErr)
+					return
+				}
+				returnErr = sanitizedProviderErr
+				return
+			}
+		}
+		cleaned, cleanupErr := cleanupFactorySandboxAfterRun(ctx, deps, req, record, target, cleanupProvider, req.RemoteOutput, deferredCleanupBehavior, cleanupSucceeded)
 		if cleaned {
 			if recordErr := recordFactorySandboxCleanedUp(store, deps, &record, target, secretRedactor); recordErr != nil {
 				if cleanupErr != nil {
@@ -346,6 +364,9 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			}
 			if err := recordFactorySandboxSecurityPolicyEvent(store, deps, &record, target, req.NetworkPolicyDecisionLogs, secretRedactor); err != nil {
 				return fmt.Errorf("record factory sandbox security metadata: %w", err)
+			}
+			if err := enforceFactorySandboxReadinessGate(store, deps, req, &record, secretRedactor); err != nil {
+				return err
 			}
 			remoteOutput = newFactorySandboxTimelineWriter(store, deps, &record, target, req.RemoteOutput, req.ResolvedSecrets)
 			return nil
@@ -611,12 +632,7 @@ func handleFactorySandboxExecutorError(ctx context.Context, store factory.Store,
 		if target != nil {
 			name = target.Name
 		}
-		startErr := factorySandboxRecordedError(fmt.Sprintf("start factory sandbox %q", name), target, failureErr, secretRedactor)
-		if cleanupErr := cleanupFactorySandboxAfterFailedStart(ctx, store, deps, req, *record, target); cleanupErr != nil {
-			sanitizedCleanupErr := fmt.Errorf("%s", factorySandboxSanitizedError(target, fmt.Errorf("cleanup factory sandbox: %w", cleanupErr), secretRedactor))
-			return errors.Join(startErr, sanitizedCleanupErr)
-		}
-		return startErr
+		return factorySandboxRecordedError(fmt.Sprintf("start factory sandbox %q", name), target, failureErr, secretRedactor)
 	case sandboxexec.PhaseResolveDriver:
 		_ = recordFactorySandboxFailure(store, deps, record, target, "resolve_driver", failureErr, secretRedactor)
 		providerName := ""
@@ -656,14 +672,19 @@ func factorySandboxCleanupBehavior(record factory.RunRecord) string {
 	}
 }
 
-func cleanupFactorySandboxAfterRun(ctx context.Context, deps factorySandboxExecutorDeps, req factorySandboxExecutorRequest, record factory.RunRecord, target *sandbox.SandboxState, provider sandbox.Provider, out io.Writer, behavior string, succeeded bool) (bool, error) {
+func factorySandboxCleanupBehaviorWillRun(behavior string, succeeded bool) bool {
 	switch behavior {
 	case factory.CleanupBehaviorAlways:
+		return true
 	case factory.CleanupBehaviorOnSuccess:
-		if !succeeded {
-			return false, nil
-		}
+		return succeeded
 	default:
+		return false
+	}
+}
+
+func cleanupFactorySandboxAfterRun(ctx context.Context, deps factorySandboxExecutorDeps, req factorySandboxExecutorRequest, record factory.RunRecord, target *sandbox.SandboxState, provider sandbox.Provider, out io.Writer, behavior string, succeeded bool) (bool, error) {
+	if !factorySandboxCleanupBehaviorWillRun(behavior, succeeded) {
 		return false, nil
 	}
 	if req.BeforeCleanup != nil {
@@ -679,28 +700,6 @@ func cleanupFactorySandboxAfterRun(ctx context.Context, deps factorySandboxExecu
 		return false, err
 	}
 	return true, nil
-}
-
-func cleanupFactorySandboxAfterFailedStart(ctx context.Context, store factory.Store, deps factorySandboxExecutorDeps, req factorySandboxExecutorRequest, record factory.RunRecord, target *sandbox.SandboxState) error {
-	if factorySandboxCleanupBehavior(record) != factory.CleanupBehaviorAlways {
-		return nil
-	}
-	secretRedactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
-	provider, err := deps.resolveProvider(target.Provider)
-	if err != nil {
-		return fmt.Errorf("resolve sandbox provider %q: %w", target.Provider, err)
-	}
-	cleaned, cleanupErr := cleanupFactorySandboxAfterRun(ctx, deps, req, record, target, provider, req.RemoteOutput, factory.CleanupBehaviorAlways, false)
-	if cleaned {
-		if recordErr := recordFactorySandboxCleanedUp(store, deps, &record, target, secretRedactor); recordErr != nil {
-			if cleanupErr != nil {
-				cleanupErr = errors.Join(cleanupErr, recordErr)
-			} else {
-				cleanupErr = recordErr
-			}
-		}
-	}
-	return cleanupErr
 }
 
 type factorySandboxTimelineWriter struct {

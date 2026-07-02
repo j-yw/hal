@@ -640,15 +640,16 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		remoteAuto.AttemptPolicy = autoFactoryAttemptPolicyFromFactoryPolicy(policy)
 		remoteAuto.SkipCI = factoryPolicySkipsCI(policy)
 		runErr = deps.runSandbox(ctx, factorySandboxExecutorRequest{
-			ProjectDir:          dir,
-			RunRecord:           runningRecord,
-			ResolvedSecrets:     req.ResolvedSecrets,
-			RemoteAuto:          remoteAuto,
-			SandboxHostID:       req.SandboxHostID,
-			SandboxRuntime:      req.SandboxRuntime,
-			Security:            sandboxSecurity,
-			RemoteOutput:        remoteOutput,
-			DeferSuccessCleanup: factoryRunDefersSandboxSuccessCleanup(policy),
+			ProjectDir:                dir,
+			RunRecord:                 runningRecord,
+			ResolvedSecrets:           req.ResolvedSecrets,
+			RemoteAuto:                remoteAuto,
+			SandboxHostID:             req.SandboxHostID,
+			SandboxRuntime:            req.SandboxRuntime,
+			Security:                  sandboxSecurity,
+			SecurityReadinessGateMode: policy.EffectiveSecurityReadinessGatePolicyMode(),
+			RemoteOutput:              remoteOutput,
+			DeferSuccessCleanup:       factoryRunDefersSandboxSuccessCleanup(policy),
 			BeforeCleanup: func(ctx context.Context, record factory.RunRecord) error {
 				if sandboxArtifactsCollected {
 					return nil
@@ -4568,6 +4569,92 @@ func factoryPolicyDecisionFromMetadata(metadata map[string]any) factory.PolicyDe
 		Decision:    stringFromFactoryMetadata(metadata, "decision"),
 		Outcome:     stringFromFactoryMetadata(metadata, "outcome"),
 		Reason:      stringFromFactoryMetadata(metadata, "reason"),
+		PolicyMode:  sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode(stringFromFactoryMetadata(metadata, "policyMode")),
+		Code:        sandbox.SandboxSecurityCapabilityReadinessGateCode(stringFromFactoryMetadata(metadata, "code")),
+		Counts:      sandboxSecurityReadinessGateCountsFromFactoryMetadata(metadata["counts"]),
+	}
+}
+
+func sandboxSecurityReadinessGateCountsFromFactoryMetadata(value any) *sandbox.SandboxSecurityCapabilityReadinessGateCounts {
+	switch counts := value.(type) {
+	case nil:
+		return nil
+	case *sandbox.SandboxSecurityCapabilityReadinessGateCounts:
+		if counts == nil {
+			return nil
+		}
+		clone := *counts
+		return &clone
+	case sandbox.SandboxSecurityCapabilityReadinessGateCounts:
+		clone := counts
+		return &clone
+	case map[string]any:
+		return sandboxSecurityReadinessGateCountsFromMap(counts)
+	case map[string]int:
+		return sandboxSecurityReadinessGateCountsFromIntMap(counts)
+	default:
+		return nil
+	}
+}
+
+func sandboxSecurityReadinessGateCountsFromMap(values map[string]any) *sandbox.SandboxSecurityCapabilityReadinessGateCounts {
+	if len(values) == 0 {
+		return nil
+	}
+	counts := sandbox.SandboxSecurityCapabilityReadinessGateCounts{
+		Total:          intFromFactoryMetadata(values["total"]),
+		Ready:          intFromFactoryMetadata(values["ready"]),
+		Advisory:       intFromFactoryMetadata(values["advisory"]),
+		Blocked:        intFromFactoryMetadata(values["blocked"]),
+		Missing:        intFromFactoryMetadata(values["missing"]),
+		MetadataOnly:   intFromFactoryMetadata(values["metadataOnly"]),
+		Unsupported:    intFromFactoryMetadata(values["unsupported"]),
+		StrictBlocking: intFromFactoryMetadata(values["strictBlocking"]),
+	}
+	if counts == (sandbox.SandboxSecurityCapabilityReadinessGateCounts{}) {
+		return nil
+	}
+	return &counts
+}
+
+func sandboxSecurityReadinessGateCountsFromIntMap(values map[string]int) *sandbox.SandboxSecurityCapabilityReadinessGateCounts {
+	if len(values) == 0 {
+		return nil
+	}
+	counts := sandbox.SandboxSecurityCapabilityReadinessGateCounts{
+		Total:          values["total"],
+		Ready:          values["ready"],
+		Advisory:       values["advisory"],
+		Blocked:        values["blocked"],
+		Missing:        values["missing"],
+		MetadataOnly:   values["metadataOnly"],
+		Unsupported:    values["unsupported"],
+		StrictBlocking: values["strictBlocking"],
+	}
+	if counts == (sandbox.SandboxSecurityCapabilityReadinessGateCounts{}) {
+		return nil
+	}
+	return &counts
+}
+
+func intFromFactoryMetadata(value any) int {
+	switch number := value.(type) {
+	case int:
+		return number
+	case int64:
+		return int(number)
+	case float64:
+		return int(number)
+	case float32:
+		return int(number)
+	case json.Number:
+		parsed, err := number.Int64()
+		if err != nil {
+			return 0
+		}
+		return int(parsed)
+	default:
+		return 0
 	}
 }
 
