@@ -38,6 +38,13 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase33-firecracker-process-launch-adapter (2026-07-03)
+
+- Phase 33 Firecracker live process launch code belongs only in `internal/sandboxruntime/microvm/firecracker`; default `NewBackend(BackendOptions{})` and backends with an injected adapter but without `LiveStart: true` must remain planning-only.
+- Firecracker `ProcessLaunchAdapter` must delegate only to an injected `ProcessStarter`, omit environment delivery, sanitize process handle metadata, and avoid `os/exec`, Firecracker SDKs, KVM, network listeners, guest readiness claims, exec/copy support, credential delivery, or network enforcement.
+- Phase 33 default-path guard coverage lives in `cmd/phase33_firecracker_default_guard_test.go`; keep command, factory, scheduler, sandboxd, sandboxexec, and sandboxworker production paths free of Firecracker adapter imports, `BackendOptions`/`LiveStart` markers, and literal Firecracker process launch calls.
+- Phase 33 verification docs live in `docs/design/sandbox-runtime-v2-phase33-firecracker-process-launch-adapter-verification.md` and are guarded by `cmd/phase33_firecracker_docs_test.go`; keep focused commands, broad checks, fake-only scope, explicit non-goals, and `golangci-lint` availability guidance in sync.
+
 ## Patterns from phase26-credential-proxy-plumbing (2026-07-02)
 
 - Phase 26 credential proxy persistence guard coverage lives in `cmd/credential_proxy_manifest_test.go`; allow direct `credentialProxy*` JSON persistence fields only on `internal/sandboxexecution.Manifest` and `internal/factory.SandboxMetadata`, require `omitempty` plus sandbox credential proxy contract/wrapper types, and keep `factory.EventRecord`, worker metadata, runtime metadata, provider metadata, and command-result envelopes free of direct Phase 26 credential proxy persistence fields.
