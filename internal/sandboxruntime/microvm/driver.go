@@ -374,6 +374,7 @@ func applyRuntimeMetadata(target *sandboxruntime.Target) *sandboxruntime.Target 
 		return nil
 	}
 	copied := *target
+	copied.Runtime.Metadata = cloneRuntimeMetadata(target.Runtime.Metadata)
 	copied.Runtime.Driver = sandboxruntime.DriverMicroVM
 	copied.Runtime.IsolationLevel = sandbox.SandboxIsolationLevelVM
 	return &copied
@@ -402,6 +403,62 @@ func cloneStringSlice(values []string) []string {
 		return nil
 	}
 	return append([]string(nil), values...)
+}
+
+func cloneRuntimeMetadata(metadata *sandboxruntime.RuntimeMetadata) *sandboxruntime.RuntimeMetadata {
+	if metadata == nil {
+		return nil
+	}
+	copied := *metadata
+	copied.CapabilityLabels = cloneStringSlice(metadata.CapabilityLabels)
+	copied.PathRoles = cloneStringSlice(metadata.PathRoles)
+	copied.OperationPlan = cloneRuntimeOperationPlan(metadata.OperationPlan)
+	return &copied
+}
+
+func cloneRuntimeOperationPlan(plan *sandboxruntime.RuntimeOperationPlan) *sandboxruntime.RuntimeOperationPlan {
+	if plan == nil {
+		return nil
+	}
+	copied := *plan
+	copied.Environment = cloneRuntimeOperationEnvironment(plan.Environment)
+	copied.PathRoles = cloneStringSlice(plan.PathRoles)
+	copied.Payloads = cloneRuntimeOperationPayloads(plan.Payloads)
+	copied.ProcessDescriptor = cloneRuntimeProcessDescriptor(plan.ProcessDescriptor)
+	return &copied
+}
+
+func cloneRuntimeProcessDescriptor(descriptor *sandboxruntime.RuntimeProcessDescriptor) *sandboxruntime.RuntimeProcessDescriptor {
+	if descriptor == nil {
+		return nil
+	}
+	copied := *descriptor
+	copied.Argv = cloneRuntimeOperationArguments(descriptor.Argv)
+	copied.Environment = cloneRuntimeOperationEnvironment(descriptor.Environment)
+	copied.PathRoles = cloneStringSlice(descriptor.PathRoles)
+	copied.Payloads = cloneRuntimeOperationPayloads(descriptor.Payloads)
+	return &copied
+}
+
+func cloneRuntimeOperationArguments(values []sandboxruntime.RuntimeOperationArgument) []sandboxruntime.RuntimeOperationArgument {
+	if values == nil {
+		return nil
+	}
+	return append([]sandboxruntime.RuntimeOperationArgument(nil), values...)
+}
+
+func cloneRuntimeOperationEnvironment(values []sandboxruntime.RuntimeOperationEnvironment) []sandboxruntime.RuntimeOperationEnvironment {
+	if values == nil {
+		return nil
+	}
+	return append([]sandboxruntime.RuntimeOperationEnvironment(nil), values...)
+}
+
+func cloneRuntimeOperationPayloads(values []sandboxruntime.RuntimeOperationPayload) []sandboxruntime.RuntimeOperationPayload {
+	if values == nil {
+		return nil
+	}
+	return append([]sandboxruntime.RuntimeOperationPayload(nil), values...)
 }
 
 func cloneCapabilityReport(report CapabilityReport) CapabilityReport {

@@ -156,6 +156,7 @@ func TestMicroVMForbiddenImportListCoversRequiredBoundaries(t *testing.T) {
 		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/daytona", want: "concrete provider adapter package"},
 		{name: "rootless Podman runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman", want: "concrete sibling runtime adapter package"},
 		{name: "SSH-machine runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine", want: "concrete sibling runtime adapter package"},
+		{name: "Firecracker backend subpackage", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker", want: "concrete sibling runtime adapter package"},
 		{name: "standard network package", importPath: "net", want: "network socket or RPC package"},
 		{name: "standard HTTP package", importPath: "net/http", want: "network socket or RPC package"},
 		{name: "gRPC package", importPath: "google.golang.org/grpc", want: "network socket or RPC package"},

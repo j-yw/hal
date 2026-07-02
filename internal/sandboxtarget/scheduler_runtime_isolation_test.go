@@ -207,3 +207,30 @@ func TestSchedulerFilteringUsesPersistedRuntimeIsolationWhenPresent(t *testing.T
 		t.Fatalf("runtime = %#v, want persisted runtime metadata", runtime)
 	}
 }
+
+func TestPhase32SchedulerDoesNotInferMicroVMRuntimeWithoutExplicitConstraint(t *testing.T) {
+	candidateSet := SchedulerCandidateSet{Candidates: []SchedulerCandidate{
+		{
+			Identity: SchedulerTargetIdentity{
+				HostID:   "worker-microvm",
+				HostName: "microvm worker",
+				HostKind: sandbox.SandboxHostKindWorker,
+			},
+			Host: &sandbox.SandboxHost{
+				ID:                "worker-microvm",
+				Name:              "microvm worker",
+				Kind:              sandbox.SandboxHostKindWorker,
+				SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverMicroVM},
+				Capacity:          &sandbox.HostCapacity{MaxConcurrentSandboxes: 1},
+			},
+		},
+	}}
+
+	filtered := filterSchedulerCandidatesByRuntimeAndIsolation(SchedulerRequest{}, candidateSet)
+	if filtered.Failed() || len(filtered.Candidates) != 1 {
+		t.Fatalf("filtered = %#v, want unconstrained candidate set preserved", filtered)
+	}
+	if filtered.Candidates[0].Runtime != nil || filtered.Candidates[0].Identity.RuntimeDriver != "" || filtered.Candidates[0].Identity.IsolationLevel != "" {
+		t.Fatalf("filtered candidate = %#v, want no inferred microVM runtime without explicit scheduler constraint", filtered.Candidates[0])
+	}
+}

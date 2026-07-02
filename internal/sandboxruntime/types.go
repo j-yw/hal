@@ -57,6 +57,59 @@ type RuntimeState struct {
 	Image          string
 	WorkerID       string
 	IsolationLevel string
+	Metadata       *RuntimeMetadata `json:"metadata,omitempty"`
+}
+
+// RuntimeMetadata captures optional runtime-specific target metadata using only
+// redaction-safe labels.
+type RuntimeMetadata struct {
+	Backend          string                `json:"backend,omitempty"`
+	CapabilityLabels []string              `json:"capabilityLabels,omitempty"`
+	PathRoles        []string              `json:"pathRoles,omitempty"`
+	OperationPlan    *RuntimeOperationPlan `json:"operationPlan,omitempty"`
+}
+
+// RuntimeOperationPlan is a sanitized runtime-operation plan. It carries only
+// role and label metadata so backends can expose launch preparation without raw
+// host paths, endpoints, credentials, or command payload bodies.
+type RuntimeOperationPlan struct {
+	Action            string                        `json:"action,omitempty"`
+	Environment       []RuntimeOperationEnvironment `json:"environment,omitempty"`
+	PathRoles         []string                      `json:"pathRoles,omitempty"`
+	Payloads          []RuntimeOperationPayload     `json:"payloads,omitempty"`
+	ProcessDescriptor *RuntimeProcessDescriptor     `json:"processDescriptor,omitempty"`
+}
+
+// RuntimeProcessDescriptor describes a process-boundary command without raw
+// argv values that contain host paths.
+type RuntimeProcessDescriptor struct {
+	Action         string                        `json:"action,omitempty"`
+	ExecutableRole string                        `json:"executableRole,omitempty"`
+	Argv           []RuntimeOperationArgument    `json:"argv"`
+	Environment    []RuntimeOperationEnvironment `json:"environment"`
+	PathRoles      []string                      `json:"pathRoles"`
+	Payloads       []RuntimeOperationPayload     `json:"payloads"`
+}
+
+// RuntimeOperationArgument is the public argv shape for runtime operation
+// planning. Literal flags appear as Value; path arguments appear by role only.
+type RuntimeOperationArgument struct {
+	Value    string `json:"value,omitempty"`
+	PathRole string `json:"pathRole,omitempty"`
+}
+
+// RuntimeOperationEnvironment describes an environment entry without exposing
+// environment values.
+type RuntimeOperationEnvironment struct {
+	Name   string `json:"name,omitempty"`
+	Source string `json:"source,omitempty"`
+}
+
+// RuntimeOperationPayload identifies a backend payload by role and safe API
+// path only.
+type RuntimeOperationPayload struct {
+	Role    string `json:"role,omitempty"`
+	APIPath string `json:"apiPath,omitempty"`
 }
 
 // ConnectionInfo captures command-agnostic connection metadata for a target.

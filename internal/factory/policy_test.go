@@ -183,6 +183,35 @@ func TestFactoryPolicySecurityReadinessGateModeJSONIsAdditive(t *testing.T) {
 	}
 }
 
+func TestPhase32DefaultFactoryPolicyRemainsRuntimeAgnostic(t *testing.T) {
+	policy := DefaultFactoryPolicy()
+	if policy.SandboxRequired {
+		t.Fatal("SandboxRequired = true, want Phase 32 Firecracker support to remain opt-in")
+	}
+	if policy.SecurityReadinessGatePolicyMode != "" {
+		t.Fatalf("SecurityReadinessGatePolicyMode = %q, want empty default", policy.SecurityReadinessGatePolicyMode)
+	}
+
+	data, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatalf("Marshal(DefaultFactoryPolicy()) error: %v", err)
+	}
+	lower := strings.ToLower(string(data))
+	for _, marker := range []string{
+		"firecracker",
+		"microvm",
+		"rootless_podman",
+		"docker",
+		"podman",
+		"runtime",
+		"isolation",
+	} {
+		if strings.Contains(lower, marker) {
+			t.Fatalf("default factory policy JSON includes runtime-specific marker %q: %s", marker, data)
+		}
+	}
+}
+
 func TestLoadPolicyConfigMissingUsesDefaults(t *testing.T) {
 	defaults := DefaultFactoryPolicy()
 

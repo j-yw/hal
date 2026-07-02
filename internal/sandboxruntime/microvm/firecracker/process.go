@@ -1,0 +1,359 @@
+package firecracker
+
+import (
+	"context"
+	"errors"
+	"strings"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
+)
+
+const (
+	// ProcessBoundaryOperation is the sanitized operation label used for
+	// Firecracker process-boundary errors.
+	ProcessBoundaryOperation = "firecracker_process_boundary"
+)
+
+// ProcessAdapter is the injectable boundary for Firecracker process and
+// command operations. Default tests should use fakes; live process start
+// behavior belongs only behind implementations of this interface.
+type ProcessAdapter interface {
+	PrepareStartCommand(context.Context, ProcessStartCommandRequest) (ProcessCommandDescriptor, error)
+	StartProcess(context.Context, ProcessStartRequest) (ProcessHandleMetadata, error)
+}
+
+// ProcessStartCommandRequest asks an adapter to construct a process descriptor
+// from a validated Firecracker start operation plan.
+type ProcessStartCommandRequest struct {
+	Plan StartOperationPlan `json:"plan"`
+}
+
+// ProcessStartRequest asks an adapter to start a process from a prepared
+// descriptor. The descriptor carries raw argv only across this injected
+// boundary.
+type ProcessStartRequest struct {
+	Descriptor ProcessCommandDescriptor `json:"descriptor"`
+}
+
+// ProcessCommandDescriptor is the process-boundary command shape. Argv keeps
+// host paths available to the adapter but is intentionally omitted from JSON.
+type ProcessCommandDescriptor struct {
+	Action      OperationAction                `json:"action"`
+	Executable  OperationPathReference         `json:"executable"`
+	Argv        []string                       `json:"-"`
+	Environment []OperationEnvironmentMetadata `json:"environment"`
+	Paths       []OperationPathReference       `json:"paths"`
+	Payloads    []OperationPayloadReference    `json:"payloads"`
+}
+
+// ProcessHandleMetadata is redaction-safe process identity returned by a
+// process adapter. Unsafe IDs or sources are cleared before callers see them.
+type ProcessHandleMetadata struct {
+	ID     string `json:"id,omitempty"`
+	Source string `json:"source,omitempty"`
+}
+
+// PrepareStartCommand delegates Firecracker start command preparation to an
+// injected adapter and validates the returned descriptor without starting a
+// process.
+func PrepareStartCommand(ctx context.Context, adapter ProcessAdapter, plan StartOperationPlan) (ProcessCommandDescriptor, error) {
+	if adapter == nil {
+		return ProcessCommandDescriptor{}, newProcessBoundaryError("processAdapter", "process adapter is required")
+	}
+	descriptor, err := adapter.PrepareStartCommand(processContext(ctx), ProcessStartCommandRequest{Plan: plan})
+	if err != nil {
+		return ProcessCommandDescriptor{}, newProcessBoundaryAdapterError("processAdapter", "process command preparation failed", err)
+	}
+	if err := validateProcessCommandDescriptor(descriptor); err != nil {
+		return ProcessCommandDescriptor{}, err
+	}
+	return descriptor, nil
+}
+
+// StartProcess delegates Firecracker process start to an injected adapter.
+// This function validates the descriptor before crossing the adapter boundary.
+func StartProcess(ctx context.Context, adapter ProcessAdapter, descriptor ProcessCommandDescriptor) (ProcessHandleMetadata, error) {
+	if adapter == nil {
+		return ProcessHandleMetadata{}, newProcessBoundaryError("processAdapter", "process adapter is required")
+	}
+	if err := validateProcessCommandDescriptor(descriptor); err != nil {
+		return ProcessHandleMetadata{}, err
+	}
+	handle, err := adapter.StartProcess(processContext(ctx), ProcessStartRequest{Descriptor: descriptor})
+	if err != nil {
+		return ProcessHandleMetadata{}, newProcessBoundaryAdapterError("processAdapter", "process start failed", err)
+	}
+	return sanitizeProcessHandleMetadata(handle), nil
+}
+
+// ProcessCommandDescriptorFromStartPlan converts a pure start operation plan
+// into the command descriptor consumed by the injected process adapter.
+func ProcessCommandDescriptorFromStartPlan(plan StartOperationPlan) (ProcessCommandDescriptor, error) {
+	if plan.Action != OperationActionStart {
+		return ProcessCommandDescriptor{}, newProcessBoundaryError("action", "start action is required")
+	}
+	if err := validateProcessPathReference(plan.Executable, OperationPathRoleExecutable, "executablePath"); err != nil {
+		return ProcessCommandDescriptor{}, err
+	}
+	paths := []OperationPathReference{
+		plan.APISocket,
+		plan.Config,
+		plan.Log,
+		plan.Metrics,
+	}
+	if err := validateProcessPathReferences(paths); err != nil {
+		return ProcessCommandDescriptor{}, err
+	}
+	if err := validateProcessStartArgv(plan.Argv, plan.Executable, paths); err != nil {
+		return ProcessCommandDescriptor{}, err
+	}
+	if err := validateProcessPayloadReferences(plan.Payloads); err != nil {
+		return ProcessCommandDescriptor{}, err
+	}
+
+	return ProcessCommandDescriptor{
+		Action:      plan.Action,
+		Executable:  plan.Executable,
+		Argv:        cloneStringSlice(plan.Argv),
+		Environment: cloneOperationEnvironment(plan.Environment),
+		Paths:       cloneOperationPathReferences(paths),
+		Payloads:    cloneOperationPayloadReferences(plan.Payloads),
+	}, nil
+}
+
+// Summary returns a public process descriptor shape without raw argv or host
+// paths.
+func (descriptor ProcessCommandDescriptor) Summary() OperationPlanSummary {
+	return OperationPlanSummary{
+		Action:         descriptor.Action,
+		ExecutableRole: descriptor.Executable.Role,
+		Argv:           processCommandArgumentSummary(descriptor),
+		Environment:    []OperationEnvironmentMetadata{},
+		PathRoles:      operationPathRolesFromReferences(descriptor.Paths),
+		Payloads:       cloneOperationPayloadReferences(descriptor.Payloads),
+	}
+}
+
+func processContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+func validateProcessCommandDescriptor(descriptor ProcessCommandDescriptor) error {
+	if descriptor.Action != OperationActionStart {
+		return newProcessBoundaryError("action", "start action is required")
+	}
+	if err := validateProcessPathReference(descriptor.Executable, OperationPathRoleExecutable, "executablePath"); err != nil {
+		return err
+	}
+	if err := validateProcessPathReferences(descriptor.Paths); err != nil {
+		return err
+	}
+	if err := validateProcessStartArgv(descriptor.Argv, descriptor.Executable, descriptor.Paths); err != nil {
+		return err
+	}
+	if len(descriptor.Environment) != 0 {
+		return newProcessBoundaryError("environment", "process environment metadata is not supported")
+	}
+	return validateProcessPayloadReferences(descriptor.Payloads)
+}
+
+func validateProcessPathReferences(paths []OperationPathReference) error {
+	required := []struct {
+		role  OperationPathRole
+		field string
+	}{
+		{role: OperationPathRoleAPISocket, field: "apiSocketPath"},
+		{role: OperationPathRoleConfig, field: "configPath"},
+		{role: OperationPathRoleLog, field: "logPath"},
+		{role: OperationPathRoleMetrics, field: "metricsPath"},
+	}
+	if len(paths) != len(required) {
+		return newProcessBoundaryError("paths", "required process path roles are missing")
+	}
+	for i, req := range required {
+		if err := validateProcessPathReference(paths[i], req.role, req.field); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateProcessPathReference(ref OperationPathReference, role OperationPathRole, field string) error {
+	if ref.Role != role {
+		return newProcessBoundaryError(field, "path role is invalid")
+	}
+	if strings.TrimSpace(ref.Path) == "" {
+		return newProcessBoundaryError(field, "path role is required")
+	}
+	if hasUnsafePathControl(ref.Path) {
+		return newProcessBoundaryError(field, "path role is invalid")
+	}
+	return nil
+}
+
+func validateProcessStartArgv(argv []string, executable OperationPathReference, paths []OperationPathReference) error {
+	want, err := processStartArgv(executable, paths)
+	if err != nil {
+		return err
+	}
+	if !equalStringSlices(argv, want) {
+		return newProcessBoundaryError("argv", "start argv does not match process path roles")
+	}
+	for _, arg := range argv {
+		if hasUnsafePathControl(arg) {
+			return newProcessBoundaryError("argv", "start argv is invalid")
+		}
+	}
+	return nil
+}
+
+func processStartArgv(executable OperationPathReference, paths []OperationPathReference) ([]string, error) {
+	byRole := operationPathReferenceByRole(paths)
+	apiSocket, ok := byRole[OperationPathRoleAPISocket]
+	if !ok {
+		return nil, newProcessBoundaryError("apiSocketPath", "path role is required")
+	}
+	config, ok := byRole[OperationPathRoleConfig]
+	if !ok {
+		return nil, newProcessBoundaryError("configPath", "path role is required")
+	}
+	logPath, ok := byRole[OperationPathRoleLog]
+	if !ok {
+		return nil, newProcessBoundaryError("logPath", "path role is required")
+	}
+	metrics, ok := byRole[OperationPathRoleMetrics]
+	if !ok {
+		return nil, newProcessBoundaryError("metricsPath", "path role is required")
+	}
+	return []string{
+		executable.Path,
+		"--api-sock", apiSocket.Path,
+		"--config-file", config.Path,
+		"--log-path", logPath.Path,
+		"--metrics-path", metrics.Path,
+	}, nil
+}
+
+func validateProcessPayloadReferences(payloads []OperationPayloadReference) error {
+	want := operationPayloadReferences()
+	if len(payloads) != len(want) {
+		return newProcessBoundaryError("payloads", "required payload references are missing")
+	}
+	for i := range want {
+		if payloads[i] != want[i] {
+			return newProcessBoundaryError("payloads", "payload reference is invalid")
+		}
+	}
+	return nil
+}
+
+func processCommandArgumentSummary(descriptor ProcessCommandDescriptor) []OperationArgumentSummary {
+	if descriptor.Action != OperationActionStart {
+		return []OperationArgumentSummary{}
+	}
+	byRole := operationPathReferenceByRole(descriptor.Paths)
+	return []OperationArgumentSummary{
+		{PathRole: descriptor.Executable.Role},
+		{Value: "--api-sock"},
+		{PathRole: byRole[OperationPathRoleAPISocket].Role},
+		{Value: "--config-file"},
+		{PathRole: byRole[OperationPathRoleConfig].Role},
+		{Value: "--log-path"},
+		{PathRole: byRole[OperationPathRoleLog].Role},
+		{Value: "--metrics-path"},
+		{PathRole: byRole[OperationPathRoleMetrics].Role},
+	}
+}
+
+func operationPathReferenceByRole(paths []OperationPathReference) map[OperationPathRole]OperationPathReference {
+	out := make(map[OperationPathRole]OperationPathReference, len(paths))
+	for _, path := range paths {
+		out[path.Role] = path
+	}
+	return out
+}
+
+func operationPathRolesFromReferences(paths []OperationPathReference) []OperationPathRole {
+	if len(paths) == 0 {
+		return []OperationPathRole{}
+	}
+	out := make([]OperationPathRole, 0, len(paths))
+	for _, path := range paths {
+		out = append(out, path.Role)
+	}
+	return out
+}
+
+func sanitizeProcessHandleMetadata(handle ProcessHandleMetadata) ProcessHandleMetadata {
+	handle.ID = sanitizeProcessMetadataToken(handle.ID)
+	handle.Source = sanitizeProcessMetadataToken(handle.Source)
+	return handle
+}
+
+func sanitizeProcessMetadataToken(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || hasUnsafePathControl(value) {
+		return ""
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-' || r == '.' || r == ':':
+		default:
+			return ""
+		}
+	}
+	return value
+}
+
+func cloneOperationPathReferences(in []OperationPathReference) []OperationPathReference {
+	if len(in) == 0 {
+		return []OperationPathReference{}
+	}
+	out := make([]OperationPathReference, len(in))
+	copy(out, in)
+	return out
+}
+
+func cloneStringSlice(in []string) []string {
+	if len(in) == 0 {
+		return []string{}
+	}
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func newProcessBoundaryError(field, message string) *microvm.OperationError {
+	err := microvm.NewInvalidConfigError(ProcessBoundaryOperation, microvm.ErrInvalidConfig)
+	err.Field = strings.TrimSpace(field)
+	err.Message = strings.TrimSpace(message)
+	return err
+}
+
+func newProcessBoundaryAdapterError(field, message string, err error) *microvm.OperationError {
+	if err == nil {
+		err = errors.New(message)
+	}
+	operationErr := microvm.NewBackendOperationFailedError(ProcessBoundaryOperation, err)
+	operationErr.Field = strings.TrimSpace(field)
+	operationErr.Message = strings.TrimSpace(message)
+	return operationErr
+}
