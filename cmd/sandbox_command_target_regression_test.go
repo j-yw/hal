@@ -3305,7 +3305,7 @@ func TestWorkerRootlessTargetSelectionHumanErrorUsesSafeEndpointSummary(t *testi
 	}
 }
 
-func TestWorkerMicroVMRuntimeResolverErrorsStayClassifiedAndDoNotFallback(t *testing.T) {
+func TestWorkerMicroVMRuntimeResolverSelectsMicroVMAndDoesNotFallback(t *testing.T) {
 	resolvers := []struct {
 		name  string
 		build func(func(string) (sandbox.Provider, error)) func(sandboxruntime.Target) (sandboxruntime.Driver, error)
@@ -3336,7 +3336,7 @@ func TestWorkerMicroVMRuntimeResolverErrorsStayClassifiedAndDoNotFallback(t *tes
 	for _, resolver := range resolvers {
 		t.Run(resolver.name, func(t *testing.T) {
 			driver, err := resolver.build(func(string) (sandbox.Provider, error) {
-				t.Fatal("resolveProvider should not run for unsupported worker runtime metadata")
+				t.Fatal("resolveProvider should not run for explicit microVM runtime metadata")
 				return nil, nil
 			})(sandboxruntime.Target{
 				Provider: "worker",
@@ -3347,13 +3347,15 @@ func TestWorkerMicroVMRuntimeResolverErrorsStayClassifiedAndDoNotFallback(t *tes
 					IsolationLevel: sandbox.SandboxIsolationLevelVM,
 				},
 			})
-			if err == nil {
-				t.Fatal("resolveRuntimeDriver() error = nil, want unsupported worker runtime")
+			if err != nil {
+				t.Fatalf("resolveRuntimeDriver() error = %v", err)
 			}
-			if driver != nil {
-				t.Fatalf("driver = %#v, want nil", driver)
+			if driver == nil {
+				t.Fatal("resolveRuntimeDriver() driver = nil, want microVM driver")
 			}
-			requireWorkerMicroVMUnsupportedMessage(t, err.Error())
+			if driver.ID() != sandboxruntime.DriverMicroVM {
+				t.Fatalf("driver ID = %q, want %q", driver.ID(), sandboxruntime.DriverMicroVM)
+			}
 		})
 	}
 }
