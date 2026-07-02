@@ -97,6 +97,197 @@ func TestFactoryPersistenceOmitsCredentialProxyMetadataByDefault(t *testing.T) {
 	assertJSONOmitsCredentialProxyMetadata(t, "factory timeline event", event)
 }
 
+func TestPhase26CredentialProxyLegacyJSONCompatibility(t *testing.T) {
+	t.Run("sandbox execution manifest", func(t *testing.T) {
+		const executionID = "legacy-run-manifest"
+		store := sandboxexecution.NewStore(t.TempDir())
+		writeSandboxExecutionManifestFixture(t, store, executionID, `{
+			"id": "legacy-run-manifest",
+			"purpose": "run",
+			"sandboxName": "phase24-run",
+			"projectDir": "/repo",
+			"command": ["hal", "run", "--sandbox"],
+			"workDir": "/repo",
+			"status": "succeeded",
+			"startedAt": "2026-07-01T08:00:00Z",
+			"finishedAt": "2026-07-01T08:30:00Z",
+			"networkProxySession": {
+				"id": "proxy-session-01",
+				"source": "run",
+				"policySnapshot": {
+					"id": "policy-snapshot-01",
+					"preset": "deny_by_default"
+				},
+				"enforcementMode": "proxy"
+			},
+			"networkPolicyDecisionLogs": [{
+				"id": "decision-01",
+				"source": "run",
+				"proxySessionId": "proxy-session-01",
+				"policySnapshot": {
+					"id": "policy-snapshot-01",
+					"preset": "deny_by_default"
+				},
+				"request": {
+					"id": "request-01",
+					"operation": "connect",
+					"destinationCategory": "public_internet"
+				},
+				"outcome": "allowed",
+				"reasonCode": "matched_allow_rule",
+				"policyPreset": "deny_by_default",
+				"enforcementMode": "proxy"
+			}],
+			"artifacts": [{
+				"id": "stdout",
+				"name": "stdout",
+				"type": "text",
+				"path": "legacy-run-manifest/artifacts/stdout.txt",
+				"storedPath": "legacy-run-manifest/artifacts/stdout.txt"
+			}]
+		}`)
+
+		manifest := mustLoadSandboxExecutionManifest(t, store, executionID)
+		if manifest.NetworkProxySession == nil || manifest.NetworkProxySession.ID != "proxy-session-01" {
+			t.Fatalf("NetworkProxySession = %#v, want legacy proxy metadata", manifest.NetworkProxySession)
+		}
+		if len(manifest.NetworkPolicyDecisionLogs) != 1 {
+			t.Fatalf("NetworkPolicyDecisionLogs = %#v, want one legacy decision log", manifest.NetworkPolicyDecisionLogs)
+		}
+		assertSandboxManifestOmitsCredentialProxyMetadata(t, manifest)
+
+		if err := store.SaveManifest(manifest); err != nil {
+			t.Fatalf("SaveManifest(legacy manifest) error = %v", err)
+		}
+		assertSandboxManifestOmitsCredentialProxyMetadata(t, mustLoadSandboxExecutionManifest(t, store, executionID))
+	})
+
+	t.Run("factory run record", func(t *testing.T) {
+		const runID = "run-legacy-factory-record"
+		store := factory.NewStore(t.TempDir())
+		writeFactoryRunRecordFixture(t, store, runID, `{
+			"runId": "run-legacy-factory-record",
+			"status": "running",
+			"executorMode": "sandbox",
+			"engine": "codex",
+			"source": {"kind": "prd", "path": ".hal/prd.json"},
+			"repoPath": "/repo",
+			"repoRemote": "origin",
+			"branchName": "hal/phase-24-network-proxy-policy-log",
+			"baseBranch": "main",
+			"sandboxName": "factory-legacy",
+			"sandbox": {
+				"name": "factory-legacy",
+				"provider": "fake",
+				"size": "medium",
+				"status": "running",
+				"connection": {
+					"address": "100.64.0.10",
+					"tailscaleHostname": "factory-legacy.tailnet.ts.net",
+					"tailscaleLockdown": true
+				},
+				"networkProxySession": {
+					"id": "proxy-session-factory",
+					"source": "factory",
+					"policySnapshot": {
+						"id": "policy-snapshot-factory",
+						"preset": "deny_by_default"
+					},
+					"enforcementMode": "proxy"
+				}
+			},
+			"currentStep": "run",
+			"createdAt": "2026-07-01T09:00:00Z",
+			"updatedAt": "2026-07-01T09:15:00Z"
+		}`)
+
+		record, err := store.LoadRun(runID)
+		if err != nil {
+			t.Fatalf("LoadRun(legacy record) error = %v", err)
+		}
+		if record.Sandbox == nil || record.Sandbox.NetworkProxySession == nil {
+			t.Fatalf("sandbox metadata = %#v, want legacy proxy metadata", record.Sandbox)
+		}
+		assertJSONOmitsCredentialProxyMetadata(t, "loaded legacy factory run record", record)
+
+		if err := store.SaveRun(record); err != nil {
+			t.Fatalf("SaveRun(legacy record) error = %v", err)
+		}
+		roundTripped, err := store.LoadRun(runID)
+		if err != nil {
+			t.Fatalf("LoadRun(round-tripped legacy record) error = %v", err)
+		}
+		assertJSONOmitsCredentialProxyMetadata(t, "round-tripped legacy factory run record", roundTripped)
+	})
+
+	t.Run("factory timeline events", func(t *testing.T) {
+		const runID = "run-legacy-factory-timeline"
+		store := factory.NewStore(t.TempDir())
+		writeFactoryTimelineFixture(t, store, runID, `[{
+			"sequence": 1,
+			"runId": "run-legacy-factory-timeline",
+			"eventType": "run_created",
+			"timestamp": "2026-07-01T10:00:00Z",
+			"message": "factory run created",
+			"metadata": {
+				"executorMode": "sandbox",
+				"sandboxName": "factory-legacy"
+			}
+		}, {
+			"sequence": 2,
+			"runId": "run-legacy-factory-timeline",
+			"eventType": "policy_decision",
+			"timestamp": "2026-07-01T10:01:00Z",
+			"summary": "network policy decision recorded",
+			"metadata": {
+				"policyField": "sandbox.networkPolicy",
+				"decision": "passed_gate",
+				"outcome": "passed",
+				"reason": "policy_metadata_only"
+			},
+			"networkPolicyDecisionLogs": [{
+				"id": "decision-factory-01",
+				"source": "factory",
+				"proxySessionId": "proxy-session-factory",
+				"policySnapshot": {
+					"id": "policy-snapshot-factory",
+					"preset": "deny_by_default"
+				},
+				"request": {
+					"id": "request-factory-01",
+					"operation": "connect",
+					"destinationCategory": "public_internet"
+				},
+				"outcome": "allowed",
+				"reasonCode": "matched_allow_rule",
+				"policyPreset": "deny_by_default",
+				"enforcementMode": "proxy"
+			}]
+		}]`)
+
+		events, err := store.LoadEvents(runID)
+		if err != nil {
+			t.Fatalf("LoadEvents(legacy timeline) error = %v", err)
+		}
+		if len(events) != 2 {
+			t.Fatalf("events = %d, want 2", len(events))
+		}
+		assertJSONOmitsCredentialProxyMetadata(t, "loaded legacy factory timeline events", events)
+
+		roundTripStore := factory.NewStore(t.TempDir())
+		for i := range events {
+			if err := roundTripStore.AppendEvent(&events[i]); err != nil {
+				t.Fatalf("AppendEvent(legacy event %d) error = %v", i, err)
+			}
+		}
+		roundTripped, err := roundTripStore.LoadEvents(runID)
+		if err != nil {
+			t.Fatalf("LoadEvents(round-tripped legacy timeline) error = %v", err)
+		}
+		assertJSONOmitsCredentialProxyMetadata(t, "round-tripped legacy factory timeline events", roundTripped)
+	})
+}
+
 func TestPhase26CredentialProxyFactoryTimelineOmissionAfterSanitization(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 14, 10, 0, 0, time.UTC)
 	redactor, metadata, forbidden := phase26FactoryTimelineCredentialProxySeed()
@@ -336,6 +527,42 @@ func assertJSONOmitsCredentialProxyMetadata(t *testing.T, label string, value an
 		if strings.Contains(encoded, `"`+field+`"`) {
 			t.Fatalf("%s unexpectedly includes credential proxy field %q: %s", label, field, encoded)
 		}
+	}
+}
+
+func writeSandboxExecutionManifestFixture(t *testing.T, store sandboxexecution.Store, executionID string, payload string) {
+	t.Helper()
+	if err := store.Ensure(executionID); err != nil {
+		t.Fatalf("Ensure(%s) error = %v", executionID, err)
+	}
+	path, err := store.ManifestPath(executionID)
+	if err != nil {
+		t.Fatalf("ManifestPath(%s) error = %v", executionID, err)
+	}
+	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", path, err)
+	}
+}
+
+func writeFactoryRunRecordFixture(t *testing.T, store factory.Store, runID string, payload string) {
+	t.Helper()
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+	path := filepath.Join(store.RunsDir(), runID+".json")
+	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", path, err)
+	}
+}
+
+func writeFactoryTimelineFixture(t *testing.T, store factory.Store, runID string, payload string) {
+	t.Helper()
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+	path := filepath.Join(store.TimelinesDir(), runID+".json")
+	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", path, err)
 	}
 }
 
