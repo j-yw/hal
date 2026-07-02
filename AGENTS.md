@@ -45,6 +45,7 @@
 - Credential proxy normalization belongs in `internal/sandbox/credential_proxy_normalization.go`; return copies, trim ID/reference fields before validation, lowercase enum-like metadata only, preserve nil versus explicit empty slices, and never use normalization to make raw-looking hosts, URLs, paths, tokens, or secret markers acceptable.
 - Credential proxy durable sanitizers belong in `internal/sandbox/credential_proxy_sanitize.go`; normalize first, return copies, zero records with unsafe required IDs/references, omit unsafe records from slice helpers, and drop unsafe optional references rather than replacing them with redaction placeholders.
 - Phase 25 secret broker bridge helpers belong on the factory side in `internal/factory/secret_broker_credential_proxy.go`; keep `internal/sandbox` free of factory imports, copy only `SecretBrokerSessionMetadata.ID` and `SecretBrokerSecretMetadata.ID`, and allow broker-style `secretId` references such as `env:GITHUB_TOKEN` only through the binding secret reference validator/sanitizer.
+- Phase 25 network proxy bridge helpers belong in `internal/sandbox/credential_proxy_network_proxy.go`; keep them data-only, copy only `SandboxNetworkProxySessionMetadata.ID` and safe policy snapshot identity into sanitized credential proxy plan/session metadata, and keep request/destination handling limited to Phase 24 safe categories without raw hosts, URLs, ports, headers, bodies, or enforcement metadata.
 
 ## Patterns from phase24-network-proxy-policy-log (2026-07-02)
 
