@@ -40,6 +40,10 @@ var (
 	runParallelFlag int
 )
 
+var runParallelWithConfig = func(ctx context.Context, cfg parallelrun.Config) (parallelrun.Result, error) {
+	return parallelrun.New(cfg, parallelrun.Deps{}).Run(ctx), nil
+}
+
 // RunResult is the machine-readable output of hal run --json.
 type RunResult struct {
 	ContractVersion int              `json:"contractVersion"`
@@ -334,7 +338,14 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	}
 
 	if parallelWorkers > 0 {
-		parallelResult := parallelrun.New(parallelrun.Config{
+		autoConfig, err := compound.LoadConfig(".")
+		if err != nil {
+			if jsonMode {
+				return outputRunJSONValidationError(cmd, out, err.Error())
+			}
+			return exitWithCode(cmd, ExitCodeValidation, err)
+		}
+		parallelResult, err := runParallelWithConfig(context.Background(), parallelrun.Config{
 			RepoDir:       ".",
 			HalDir:        template.HalDir,
 			PRDFile:       template.PRDFile,
@@ -348,7 +359,14 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 			Logger:        runLogger,
 			RetryDelay:    delay,
 			MaxRetries:    retries,
-		}, parallelrun.Deps{}).Run(context.Background())
+			CheckCommands: parallelrun.ShellCheckCommands(autoConfig.QualityChecks),
+		})
+		if err != nil {
+			if jsonMode {
+				return outputRunJSONError(out, err.Error())
+			}
+			return err
+		}
 		result := parallelResult.LoopResult()
 
 		if jsonMode {

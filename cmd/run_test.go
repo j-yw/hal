@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/loop"
+	"github.com/jywlabs/hal/internal/parallelrun"
 	"github.com/spf13/cobra"
 )
 
@@ -395,6 +397,117 @@ func TestRunRunWithWriter_IterationContract(t *testing.T) {
 			t.Fatalf("unexpected error message: %v", err)
 		}
 	})
+}
+
+func TestRunRunWithWriter_ParallelUsesConfiguredQualityChecks(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(halDir, "prompt.md"), []byte("Prompt\n"), 0644); err != nil {
+		t.Fatalf("write prompt.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(halDir, "progress.txt"), []byte("## Progress\n"), 0644); err != nil {
+		t.Fatalf("write progress.txt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(halDir, "prd.json"), []byte(`{
+  "project": "test",
+  "branchName": "hal/test",
+  "description": "desc",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Task",
+      "description": "Do thing",
+      "acceptanceCriteria": ["works"],
+      "priority": 1,
+      "passes": false,
+      "parallelSafe": true,
+      "parallelReason": "independent"
+    }
+  ]
+}`), 0644); err != nil {
+		t.Fatalf("write prd.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(`auto:
+  qualityChecks:
+    - "go test ./..."
+    - "make vet"
+`), 0644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	origRunParallelWithConfig := runParallelWithConfig
+	t.Cleanup(func() {
+		_ = os.Chdir(origDir)
+		runParallelWithConfig = origRunParallelWithConfig
+		dryRunFlag = false
+		storyFlag = ""
+		runBaseFlag = ""
+		runIterationsFlag = 10
+		engineFlag = "codex"
+		maxRetries = 3
+		retryDelay = 5 * time.Second
+		runTimeout = 0
+		runParallelFlag = 0
+		runJSONFlag = false
+	})
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	var gotConfig parallelrun.Config
+	runParallelWithConfig = func(_ context.Context, cfg parallelrun.Config) (parallelrun.Result, error) {
+		gotConfig = cfg
+		return parallelrun.Result{
+			Success:          true,
+			Complete:         true,
+			Iterations:       1,
+			CompletedStories: 1,
+			TotalStories:     1,
+			Parallel: parallelrun.Summary{
+				RequestedParallelism: cfg.Parallelism,
+				Batches:              1,
+				Started:              1,
+				Integrated:           1,
+			},
+		}, nil
+	}
+
+	dryRunFlag = false
+	storyFlag = ""
+	runBaseFlag = ""
+	runIterationsFlag = 10
+	engineFlag = "codex"
+	maxRetries = 1
+	retryDelay = 10 * time.Millisecond
+	runTimeout = 0
+	runParallelFlag = 2
+	runJSONFlag = false
+
+	var stderr bytes.Buffer
+	if err := runRunWithWriter(nil, nil, &stderr); err != nil {
+		t.Fatalf("runRunWithWriter() error = %v", err)
+	}
+	if gotConfig.Parallelism != 2 {
+		t.Fatalf("parallelism = %d, want 2", gotConfig.Parallelism)
+	}
+	wantChecks := parallelrun.ShellCheckCommands([]string{"go test ./...", "make vet"})
+	if len(gotConfig.CheckCommands) != len(wantChecks) {
+		t.Fatalf("check commands length = %d, want %d", len(gotConfig.CheckCommands), len(wantChecks))
+	}
+	for i := range wantChecks {
+		got := gotConfig.CheckCommands[i]
+		want := wantChecks[i]
+		if got.Name != want.Name || strings.Join(got.Args, "\x00") != strings.Join(want.Args, "\x00") {
+			t.Fatalf("check command %d = %+v, want %+v", i, got, want)
+		}
+	}
 }
 
 func TestWithTimeoutOverride(t *testing.T) {

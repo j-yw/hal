@@ -1095,6 +1095,7 @@ func (p *Pipeline) runLoopStep(ctx context.Context, state *PipelineState, opts R
 			EngineConfig:  p.engineConfig,
 			Logger:        p.display.Writer(),
 			MaxRetries:    3,
+			CheckCommands: parallelrun.ShellCheckCommands(p.config.QualityChecks),
 		}
 
 		p.display.ShowInfo("   Running task loop with up to %d parallel worker(s)...\n", opts.Parallelism)

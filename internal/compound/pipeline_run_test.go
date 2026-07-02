@@ -177,6 +177,7 @@ func TestRunLoopStep_DispatchesParallelRunnerAndSavesTelemetry(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultAutoConfig()
 	cfg.MaxIterations = 7
+	cfg.QualityChecks = []string{"go test ./...", "make vet"}
 	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
 	state := &PipelineState{Step: StepRun, BaseBranch: "develop"}
 
@@ -223,6 +224,17 @@ func TestRunLoopStep_DispatchesParallelRunnerAndSavesTelemetry(t *testing.T) {
 	}
 	if gotParallelConfig.CleanupFailedWorktrees {
 		t.Fatal("parallel run config should preserve failed worker worktrees by default")
+	}
+	wantChecks := parallelrun.ShellCheckCommands(cfg.QualityChecks)
+	if len(gotParallelConfig.CheckCommands) != len(wantChecks) {
+		t.Fatalf("parallel check commands length = %d, want %d", len(gotParallelConfig.CheckCommands), len(wantChecks))
+	}
+	for i := range wantChecks {
+		got := gotParallelConfig.CheckCommands[i]
+		want := wantChecks[i]
+		if got.Name != want.Name || strings.Join(got.Args, "\x00") != strings.Join(want.Args, "\x00") {
+			t.Fatalf("parallel check command %d = %+v, want %+v", i, got, want)
+		}
 	}
 	if state.Run == nil || state.Run.Parallel == nil {
 		t.Fatalf("state.Run = %+v, want parallel telemetry", state.Run)
