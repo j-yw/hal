@@ -368,9 +368,9 @@ func validateWorkerCommitPaths(ctx context.Context, runner CommandRunner, req Re
 	if err != nil {
 		return err
 	}
-	blocked := make([]string, 0, len(protected))
+	blocked := make([]string, 0, len(protected.exact)+len(protected.blockedPrefixes))
 	for _, path := range changed {
-		if _, ok := protected[normalizeRepoPath(path)]; ok {
+		if protected.blocks(path) {
 			blocked = append(blocked, normalizeRepoPath(path))
 		}
 	}
@@ -380,18 +380,60 @@ func validateWorkerCommitPaths(ctx context.Context, runner CommandRunner, req Re
 	return nil
 }
 
-func protectedStatePaths(repoDir, prdPath, progressPath string) (map[string]struct{}, error) {
-	protected := make(map[string]struct{}, 2)
+type protectedStatePathSet struct {
+	exact           map[string]struct{}
+	blockedPrefixes []string
+	allowedPrefixes []string
+}
+
+func (s protectedStatePathSet) blocks(path string) bool {
+	path = normalizeRepoPath(path)
+	if path == "" {
+		return false
+	}
+	if _, ok := s.exact[path]; ok {
+		return true
+	}
+	for _, prefix := range s.allowedPrefixes {
+		if pathMatchesPrefix(path, prefix) {
+			return false
+		}
+	}
+	for _, prefix := range s.blockedPrefixes {
+		if pathMatchesPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func pathMatchesPrefix(path, prefix string) bool {
+	path = normalizeRepoPath(path)
+	prefix = normalizeRepoPath(prefix)
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
+}
+
+func protectedStatePaths(repoDir, prdPath, progressPath string) (protectedStatePathSet, error) {
+	protected := protectedStatePathSet{
+		exact: make(map[string]struct{}, 2),
+	}
+	var stateDirs []string
 	for _, path := range []string{prdPath, progressPath} {
 		fullPath, err := repoPath(repoDir, path)
 		if err != nil {
-			return nil, err
+			return protectedStatePathSet{}, err
 		}
 		relPath, err := repoRelativePath(repoDir, fullPath)
 		if err != nil {
-			return nil, err
+			return protectedStatePathSet{}, err
 		}
-		protected[normalizeRepoPath(relPath)] = struct{}{}
+		relPath = normalizeRepoPath(relPath)
+		protected.exact[relPath] = struct{}{}
+		stateDirs = append(stateDirs, normalizeRepoPath(filepath.Dir(relPath)))
+	}
+	if len(stateDirs) == 2 && stateDirs[0] == ".hal" && stateDirs[1] == ".hal" {
+		protected.blockedPrefixes = append(protected.blockedPrefixes, ".hal/")
+		protected.allowedPrefixes = append(protected.allowedPrefixes, ".hal/commands/", ".hal/standards/")
 	}
 	return protected, nil
 }

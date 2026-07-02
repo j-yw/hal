@@ -152,6 +152,104 @@ func TestIntegratorRejectsWorkerCommitTouchingCanonicalHalState(t *testing.T) {
 	}
 }
 
+func TestIntegratorRejectsWorkerCommitTouchingCopiedHalRuntimeState(t *testing.T) {
+	repo := initTestRepo(t)
+	writeFile(t, repo, ".gitignore", ".hal/*\n!.hal/commands/\n!.hal/standards/\n")
+	writeFile(t, repo, ".hal/prd.json", `{
+  "project": "parallel",
+  "tasks": [
+    {"id": "T-001", "title": "One", "priority": 1, "passes": false}
+  ]
+}
+`)
+	writeFile(t, repo, ".hal/progress.txt", "## Progress\n")
+	writeFile(t, repo, "app.txt", "base\n")
+	git(t, repo, "add", ".gitignore", "app.txt")
+	git(t, repo, "commit", "-m", "initial")
+	originalHead := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+
+	git(t, repo, "checkout", "-b", "worker/t-001")
+	writeFile(t, repo, "app.txt", "worker change\n")
+	writeFile(t, repo, ".hal/config.yaml", "sandbox:\n  secret: local\n")
+	writeFile(t, repo, ".hal/prompt.md", "local prompt\n")
+	writeFile(t, repo, ".hal/parallel/test-run/T-001/worker-manifest.json", `{"taskId":"T-001"}`)
+	git(t, repo, "add", "app.txt")
+	git(t, repo, "add", "-f", ".hal/config.yaml", ".hal/prompt.md", ".hal/parallel/test-run/T-001/worker-manifest.json")
+	git(t, repo, "commit", "-m", "feat: worker with runtime state")
+	workerCommit := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+	git(t, repo, "checkout", "main")
+
+	_, err := New().Integrate(context.Background(), Request{
+		RepoDir:         repo,
+		TaskID:          "T-001",
+		WorkerBranch:    "worker/t-001",
+		WorkerCommit:    workerCommit,
+		CanonicalBranch: "main",
+		PRDPath:         ".hal/prd.json",
+		ProgressPath:    ".hal/progress.txt",
+		ProgressEntry:   "- T-001 integrated",
+	})
+	if err == nil {
+		t.Fatal("Integrate() error = nil, want runtime state rejection")
+	}
+	var integrationErr *IntegrationError
+	if !errors.As(err, &integrationErr) {
+		t.Fatalf("error type = %T, want *IntegrationError", err)
+	}
+	if integrationErr.Stage != StageValidate {
+		t.Fatalf("stage = %s, want %s", integrationErr.Stage, StageValidate)
+	}
+	for _, want := range []string{".hal/config.yaml", ".hal/prompt.md", ".hal/parallel/test-run/T-001/worker-manifest.json"} {
+		if !strings.Contains(integrationErr.Error(), want) {
+			t.Fatalf("error = %v, want blocked path %s", integrationErr, want)
+		}
+	}
+	if got := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD")); got != originalHead {
+		t.Fatalf("HEAD = %s, want %s", got, originalHead)
+	}
+	if got := readFile(t, repo, "app.txt"); got != "base\n" {
+		t.Fatalf("app.txt = %q, want base content", got)
+	}
+	requireTaskPasses(t, filepath.Join(repo, ".hal/prd.json"), "T-001", false)
+	if got := readFile(t, repo, ".hal/progress.txt"); strings.Contains(got, "integrated") {
+		t.Fatalf("progress was updated on rejected worker commit: %q", got)
+	}
+	if got := strings.TrimSpace(git(t, repo, "status", "--short", "--untracked-files=all")); got != "" {
+		t.Fatalf("git status = %q, want clean", got)
+	}
+}
+
+func TestProtectedStatePathsAllowCommittedHalCommandAndStandardFiles(t *testing.T) {
+	protected, err := protectedStatePaths(t.TempDir(), ".hal/prd.json", ".hal/progress.txt")
+	if err != nil {
+		t.Fatalf("protectedStatePaths() error = %v", err)
+	}
+	blocked := []string{
+		".hal/prd.json",
+		".hal/progress.txt",
+		".hal/config.yaml",
+		".hal/prompt.md",
+		".hal/parallel/test-run/T-001/worker-manifest.json",
+		".hal/skills/local/SKILL.md",
+		".hal/commands-old/leak.md",
+	}
+	for _, path := range blocked {
+		if !protected.blocks(path) {
+			t.Fatalf("blocks(%q) = false, want true", path)
+		}
+	}
+	allowed := []string{
+		".hal/commands/fix.md",
+		".hal/standards/go.md",
+		"internal/integrator/integrator.go",
+	}
+	for _, path := range allowed {
+		if protected.blocks(path) {
+			t.Fatalf("blocks(%q) = true, want false", path)
+		}
+	}
+}
+
 func TestIntegratorRejectsMultiCommitWorkerBranch(t *testing.T) {
 	repo := initTestRepo(t)
 	writeFile(t, repo, ".hal/prd.json", `{
