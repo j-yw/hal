@@ -5,6 +5,7 @@ import "strings"
 // EvaluateSandboxSecurityCapabilityReadiness classifies safe sandbox metadata
 // without treating durable records as proof of runtime support.
 func EvaluateSandboxSecurityCapabilityReadiness(input SandboxSecurityCapabilityReadinessInput) SandboxSecurityCapabilityReadinessOutput {
+	input = SanitizeSandboxSecurityCapabilityReadinessInput(input)
 	var results []SandboxSecurityCapabilityReadinessResult
 
 	for _, requested := range input.Requested {
@@ -58,7 +59,7 @@ func EvaluateSandboxSecurityCapabilityReadiness(input SandboxSecurityCapabilityR
 		))
 	}
 
-	return SandboxSecurityCapabilityReadinessOutput{Results: results}
+	return SanitizeSandboxSecurityCapabilityReadinessOutput(SandboxSecurityCapabilityReadinessOutput{Results: results})
 }
 
 func sandboxSecurityCapabilityWorkerPostureResults(posture SandboxSecurityCapabilityWorkerPostureMetadata) []SandboxSecurityCapabilityReadinessResult {
@@ -344,6 +345,8 @@ func sandboxSecurityCapabilitySameRequest(requested, candidate SandboxSecurityCa
 }
 
 func sandboxSecurityCapabilityModeCompatible(requestedMode, candidateMode string) bool {
+	requestedMode = strings.ToLower(strings.TrimSpace(requestedMode))
+	candidateMode = strings.ToLower(strings.TrimSpace(candidateMode))
 	return requestedMode == "" || requestedMode == candidateMode
 }
 
@@ -420,6 +423,7 @@ func sandboxSecurityCapabilityKnownCapability(capability SandboxSecurityCapabili
 }
 
 func sandboxSecurityCapabilitySafeMode(family SandboxSecurityCapabilityFamily, capability SandboxSecurityCapabilityName, mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
 	switch family {
 	case SandboxSecurityCapabilityFamilyNetworkPolicy, SandboxSecurityCapabilityFamilyNetworkProxy:
 		return sandboxSecurityCapabilitySafeNetworkMode(mode)

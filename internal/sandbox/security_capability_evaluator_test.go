@@ -900,6 +900,250 @@ func TestEvaluateSecurityCapabilityReadinessRequiresExplicitSafeBlockerMetadata(
 	}
 }
 
+func TestEvaluateSecurityCapabilityReadinessSanitizesUnsafeInputValues(t *testing.T) {
+	unsafeValues := securityCapabilityUnsafeValueFixtures()
+	input := SandboxSecurityCapabilityReadinessInput{
+		Requested: []SandboxSecurityCapabilityMetadata{
+			{
+				ID:         unsafeValues[1],
+				Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+				Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+				Mode:       " FIREWALL ",
+				Source:     SandboxSecurityCapabilitySource(unsafeValues[3]),
+				Status:     SandboxSecurityCapabilityReadinessState(unsafeValues[4]),
+				ReasonCode: SandboxSecurityCapabilityReasonCode(unsafeValues[7]),
+				WarningCodes: []SandboxSecurityCapabilityWarningCode{
+					SandboxSecurityCapabilityWarningCode(unsafeValues[8]),
+				},
+			},
+			{
+				ID:         "drop-unsafe-family",
+				Family:     SandboxSecurityCapabilityFamily(unsafeValues[0]),
+				Capability: SandboxSecurityCapabilityNetworkProxyEnforcement,
+				Mode:       SandboxNetworkEnforcementModeProxy,
+				Source:     SandboxSecurityCapabilitySourceRequested,
+			},
+			{
+				ID:         "drop-unsafe-mode",
+				Family:     SandboxSecurityCapabilityFamilyCredentialProxy,
+				Capability: SandboxSecurityCapabilityCredentialProxy,
+				Mode:       unsafeValues[5],
+				Source:     SandboxSecurityCapabilitySourceRequested,
+			},
+		},
+		Ready: []SandboxSecurityCapabilityMetadata{
+			{
+				ID:         unsafeValues[6],
+				Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+				Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+				Mode:       SandboxNetworkEnforcementModeFirewall,
+				Source:     SandboxSecurityCapabilitySourceRuntime,
+				Status:     SandboxSecurityCapabilityReadinessBlocked,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityBlocked,
+				WarningCodes: []SandboxSecurityCapabilityWarningCode{
+					SandboxSecurityCapabilityWarningBlockedByPolicy,
+					SandboxSecurityCapabilityWarningCode(unsafeValues[9]),
+				},
+			},
+			{
+				ID:         "drop-unsafe-ready-reason",
+				Family:     SandboxSecurityCapabilityFamilyCredentialProxy,
+				Capability: SandboxSecurityCapabilityCredentialProxy,
+				Mode:       SandboxSecretModeHTTPProxy,
+				Source:     SandboxSecurityCapabilitySourceWorker,
+				Status:     SandboxSecurityCapabilityReadinessReady,
+				ReasonCode: SandboxSecurityCapabilityReasonCode(unsafeValues[10]),
+			},
+			{
+				ID:         "drop-unsafe-ready-mode",
+				Family:     SandboxSecurityCapabilityFamilyNetworkProxy,
+				Capability: SandboxSecurityCapabilityNetworkProxyEnforcement,
+				Mode:       unsafeValues[2],
+				Source:     SandboxSecurityCapabilitySourceRuntime,
+				Status:     SandboxSecurityCapabilityReadinessReady,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+			},
+		},
+		WorkerPostures: []SandboxSecurityCapabilityWorkerPostureMetadata{{
+			WorkerKind:         unsafeValues[0],
+			RuntimeDriver:      unsafeValues[6],
+			IsolationLevel:     unsafeValues[5],
+			NetworkPolicy:      unsafeValues[2],
+			NetworkEnforcement: unsafeValues[3],
+			CredentialModes: []string{
+				unsafeValues[4],
+				SandboxSecretModeHTTPProxy,
+			},
+			CredentialProxyMode: true,
+		}},
+		NetworkProxySession: &SandboxNetworkProxySessionMetadata{
+			ID:              unsafeValues[0],
+			Source:          SandboxNetworkPolicyDecisionSourceRun,
+			EnforcementMode: SandboxNetworkEnforcementModeProxy,
+			PolicySnapshot: &SandboxNetworkPolicySnapshotIdentity{
+				ID:        unsafeValues[1],
+				Version:   unsafeValues[8],
+				Preset:    SandboxNetworkPolicyPreset(unsafeValues[4]),
+				RuleSetID: unsafeValues[10],
+			},
+		},
+		NetworkPolicyDecisionLogs: []SandboxNetworkPolicyDecisionLogRecord{{
+			ID:             unsafeValues[2],
+			Source:         SandboxNetworkPolicyDecisionSourceRun,
+			ProxySessionID: unsafeValues[5],
+			Request: &SandboxNetworkPolicyRequestSummary{
+				ID:                  unsafeValues[3],
+				Operation:           unsafeValues[4],
+				DestinationCategory: SandboxNetworkPolicyDestinationCategory(unsafeValues[1]),
+			},
+			Outcome:         SandboxNetworkPolicyDecisionOutcomeDenied,
+			ReasonCode:      SandboxNetworkPolicyDecisionReasonDefaultDeny,
+			PolicyPreset:    SandboxNetworkPolicyPresetDenyByDefault,
+			EnforcementMode: SandboxNetworkEnforcementModeProxy,
+		}},
+		CredentialProxyPlan: &SandboxCredentialProxyPlanMetadata{
+			ID:                    unsafeValues[9],
+			Source:                SandboxCredentialProxySourceRun,
+			SecretBrokerSessionID: unsafeValues[7],
+			NetworkProxySessionID: unsafeValues[0],
+			Mode:                  SandboxCredentialProxyModeMetadataOnly,
+			Status:                SandboxCredentialProxyStatusReady,
+		},
+		CredentialProxySession: &SandboxCredentialProxySessionMetadata{
+			ID:         "credential-proxy-session-01",
+			PlanID:     unsafeValues[10],
+			Source:     SandboxCredentialProxySourceWorker,
+			Status:     SandboxCredentialProxyStatusActive,
+			ReasonCode: SandboxCredentialProxyReasonRequested,
+		},
+		CredentialProxyBindings: []SandboxCredentialProxyBindingMetadata{{
+			ID:           "credential-proxy-binding-01",
+			PlanID:       "credential-proxy-plan-01",
+			SecretID:     unsafeValues[10],
+			DeliveryMode: SandboxCredentialProxyDeliveryModeHTTPProxy,
+			Status:       SandboxCredentialProxyStatusReady,
+		}},
+	}
+
+	output := EvaluateSandboxSecurityCapabilityReadiness(input)
+	if len(output.Results) != 3 {
+		t.Fatalf("result count = %d, want 3: %#v", len(output.Results), output.Results)
+	}
+	assertSecurityCapabilityBlockedResult(t, output.Results[0],
+		SandboxSecurityCapabilityFamilyNetworkPolicy,
+		SandboxSecurityCapabilityNetworkDenyByDefault,
+		SandboxNetworkEnforcementModeFirewall,
+		SandboxSecurityCapabilitySourceRuntime,
+		[]SandboxSecurityCapabilityWarningCode{SandboxSecurityCapabilityWarningBlockedByPolicy},
+	)
+	assertSecurityCapabilityMetadataOnlyResult(t, output.Results[1],
+		SandboxSecurityCapabilityFamilyCredentialProxy,
+		SandboxSecurityCapabilityCredentialProxy,
+		SandboxSecurityCapabilityReasonMetadataDeliveryUnproven,
+	)
+	assertSecurityCapabilityMetadataOnlyResult(t, output.Results[2],
+		SandboxSecurityCapabilityFamilySecretDelivery,
+		SandboxSecurityCapabilitySecretHTTPProxy,
+		SandboxSecurityCapabilityReasonMetadataDeliveryUnproven,
+	)
+
+	assertSecurityCapabilityOutputExcludes(t, output, append(unsafeValues, "[REDACTED]", "<redacted>", "redacted")...)
+	assertSecurityCapabilityJSONExcludes(t, SanitizeSandboxSecurityCapabilityReadinessInput(input), unsafeValues...)
+}
+
+func TestValidateSecurityCapabilityReadinessInputErrorsAreSanitized(t *testing.T) {
+	unsafeValues := securityCapabilityUnsafeValueFixtures()
+	result := ValidateAndNormalizeSandboxSecurityCapabilityReadinessInput(SandboxSecurityCapabilityReadinessInput{
+		Requested: []SandboxSecurityCapabilityMetadata{{
+			ID:         unsafeValues[1],
+			Family:     SandboxSecurityCapabilityFamily(unsafeValues[0]),
+			Capability: SandboxSecurityCapabilityName(unsafeValues[3]),
+			Mode:       unsafeValues[2],
+			Source:     SandboxSecurityCapabilitySource(unsafeValues[4]),
+			WarningCodes: []SandboxSecurityCapabilityWarningCode{
+				SandboxSecurityCapabilityWarningCode(unsafeValues[8]),
+			},
+		}},
+		Ready: []SandboxSecurityCapabilityMetadata{{
+			ID:         unsafeValues[6],
+			Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+			Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+			Mode:       unsafeValues[5],
+			Source:     SandboxSecurityCapabilitySourceRuntime,
+			Status:     SandboxSecurityCapabilityReadinessBlocked,
+			ReasonCode: SandboxSecurityCapabilityReasonCode(unsafeValues[10]),
+			WarningCodes: []SandboxSecurityCapabilityWarningCode{
+				SandboxSecurityCapabilityWarningCode(unsafeValues[9]),
+			},
+		}},
+		WorkerPostures: []SandboxSecurityCapabilityWorkerPostureMetadata{{
+			WorkerKind:         unsafeValues[0],
+			RuntimeDriver:      unsafeValues[6],
+			IsolationLevel:     unsafeValues[5],
+			NetworkPolicy:      unsafeValues[2],
+			NetworkEnforcement: unsafeValues[3],
+			CredentialModes:    []string{unsafeValues[4]},
+		}},
+		NetworkProxySession: &SandboxNetworkProxySessionMetadata{
+			ID:              unsafeValues[0],
+			Source:          SandboxNetworkPolicyDecisionSourceRun,
+			EnforcementMode: SandboxNetworkEnforcementModeProxy,
+		},
+		NetworkPolicyDecisionLogs: []SandboxNetworkPolicyDecisionLogRecord{{
+			ID:      unsafeValues[2],
+			Source:  SandboxNetworkPolicyDecisionSourceRun,
+			Outcome: SandboxNetworkPolicyDecisionOutcomeDenied,
+			Request: &SandboxNetworkPolicyRequestSummary{
+				ID:        unsafeValues[3],
+				Operation: unsafeValues[4],
+			},
+		}},
+		CredentialProxyPlan: &SandboxCredentialProxyPlanMetadata{
+			ID:                    unsafeValues[9],
+			Source:                SandboxCredentialProxySourceRun,
+			SecretBrokerSessionID: unsafeValues[7],
+		},
+		CredentialProxyBindings: []SandboxCredentialProxyBindingMetadata{{
+			ID:           "credential-proxy-binding-01",
+			PlanID:       "credential-proxy-plan-01",
+			SecretID:     unsafeValues[10],
+			DeliveryMode: SandboxCredentialProxyDeliveryModeHTTPProxy,
+		}},
+	})
+
+	if result.Valid {
+		t.Fatalf("ValidateAndNormalizeSandboxSecurityCapabilityReadinessInput() valid = true, want false")
+	}
+	if result.Normalized != nil {
+		t.Fatalf("normalized = %#v, want nil when validation fails", result.Normalized)
+	}
+	if len(result.Errors) == 0 {
+		t.Fatal("errors = nil, want sanitized validation errors")
+	}
+	for _, err := range result.Errors {
+		if err.Code == "" {
+			t.Fatalf("error code is empty: %#v", err)
+		}
+		if err.Field == "" {
+			t.Fatalf("error field is empty: %#v", err)
+		}
+		if err.Message == "" {
+			t.Fatalf("error message is empty: %#v", err)
+		}
+		errorObject := mustMarshalObject(t, err)
+		assertObjectKeys(t, errorObject,
+			[]string{"code", "field", "message"},
+			[]string{"recordIndex", "value", "rawValue", "rejectedValue", "normalized"},
+		)
+		if len(errorObject) != 3 {
+			t.Fatalf("error JSON keys = %#v, want only code, field, and message", errorObject)
+		}
+		assertSecurityCapabilityJSONExcludes(t, err, unsafeValues...)
+		assertSecurityCapabilityTextExcludes(t, err.Error(), unsafeValues...)
+	}
+	assertSecurityCapabilityJSONExcludes(t, result.Errors, append(unsafeValues, "[REDACTED]", "<redacted>", "redacted")...)
+}
+
 func assertSecurityCapabilityMetadataOnlyResult(t *testing.T, result SandboxSecurityCapabilityReadinessResult, family SandboxSecurityCapabilityFamily, capability SandboxSecurityCapabilityName, reason SandboxSecurityCapabilityReasonCode) {
 	t.Helper()
 
@@ -1138,14 +1382,44 @@ func assertSecurityCapabilityMetadataNotCapabilityWarning(t *testing.T, warnings
 func assertSecurityCapabilityOutputExcludes(t *testing.T, output SandboxSecurityCapabilityReadinessOutput, forbidden ...string) {
 	t.Helper()
 
-	data, err := json.Marshal(output)
+	assertSecurityCapabilityJSONExcludes(t, output, forbidden...)
+}
+
+func assertSecurityCapabilityJSONExcludes(t *testing.T, value any, forbidden ...string) {
+	t.Helper()
+
+	data, err := json.Marshal(value)
 	if err != nil {
-		t.Fatalf("json.Marshal(output) error = %v", err)
+		t.Fatalf("json.Marshal(value) error = %v", err)
 	}
-	payload := string(data)
+	assertSecurityCapabilityTextExcludes(t, string(data), forbidden...)
+}
+
+func assertSecurityCapabilityTextExcludes(t *testing.T, payload string, forbidden ...string) {
+	t.Helper()
+
 	for _, value := range forbidden {
-		if strings.Contains(payload, value) {
-			t.Fatalf("readiness output leaked raw value %q in %s", value, payload)
+		if value == "" {
+			continue
 		}
+		if strings.Contains(payload, value) {
+			t.Fatalf("readiness payload leaked raw value %q in %s", value, payload)
+		}
+	}
+}
+
+func securityCapabilityUnsafeValueFixtures() []string {
+	return []string{
+		"api.example.invalid",
+		"https://user:pass@example.invalid/path?token=raw-url-token",
+		"127.0.0.1:8443",
+		"Authorization: Bearer raw-header-token",
+		`{"token":"raw-body-token","payload":"unsafe"}`,
+		"/var/run/provider.sock",
+		"/Users/v/project/.hal/config.yaml",
+		"GITHUB_TOKEN=raw-env-token",
+		"ghp_raw_token_value",
+		"credential_value=raw-credential",
+		"secret_value=raw-secret",
 	}
 }
