@@ -24,6 +24,19 @@ type SandboxWorkerRuntimeCapabilityReadinessProjection struct {
 	Ready          []SandboxSecurityCapabilityMetadata
 }
 
+// SandboxPolicyProxyCredentialCapabilityReadinessProjection carries durable
+// policy, proxy, and credential proxy metadata into readiness input.
+type SandboxPolicyProxyCredentialCapabilityReadinessProjection struct {
+	Requested                 []SandboxSecurityCapabilityMetadata
+	Ready                     []SandboxSecurityCapabilityMetadata
+	NetworkPolicyResult       *SandboxNetworkPolicyResult
+	NetworkProxySession       *SandboxNetworkProxySessionMetadata
+	NetworkPolicyDecisionLogs []SandboxNetworkPolicyDecisionLogRecord
+	CredentialProxyPlan       *SandboxCredentialProxyPlanMetadata
+	CredentialProxySession    *SandboxCredentialProxySessionMetadata
+	CredentialProxyBindings   []SandboxCredentialProxyBindingMetadata
+}
+
 // ProjectSandboxWorkerRuntimeCapabilityReadinessInput maps durable
 // worker/runtime metadata into readiness evaluator input.
 func ProjectSandboxWorkerRuntimeCapabilityReadinessInput(projection SandboxWorkerRuntimeCapabilityReadinessProjection) SandboxSecurityCapabilityReadinessInput {
@@ -41,6 +54,26 @@ func ProjectSandboxWorkerRuntimeCapabilityReadinessInput(projection SandboxWorke
 	return SanitizeSandboxSecurityCapabilityReadinessInput(input)
 }
 
+// ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput maps durable
+// policy, proxy, and credential proxy metadata into readiness evaluator input.
+func ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(projection SandboxPolicyProxyCredentialCapabilityReadinessProjection) SandboxSecurityCapabilityReadinessInput {
+	input := SandboxSecurityCapabilityReadinessInput{}
+	for _, requested := range projection.Requested {
+		input.Requested = sandboxSecurityCapabilityProjectionAppendUnique(input.Requested, requested)
+	}
+	input.Requested = sandboxSecurityCapabilityProjectionRequestedNetworkPolicyResult(input.Requested, projection.NetworkPolicyResult)
+	input.Ready = sandboxSecurityCapabilityProjectionMetadataOnlyNetworkPolicyResult(input.Ready, projection.NetworkPolicyResult)
+	for _, ready := range projection.Ready {
+		input.Ready = sandboxSecurityCapabilityProjectionAppendUnique(input.Ready, ready)
+	}
+	input.NetworkProxySession = projection.NetworkProxySession
+	input.NetworkPolicyDecisionLogs = append(input.NetworkPolicyDecisionLogs, projection.NetworkPolicyDecisionLogs...)
+	input.CredentialProxyPlan = projection.CredentialProxyPlan
+	input.CredentialProxySession = projection.CredentialProxySession
+	input.CredentialProxyBindings = append(input.CredentialProxyBindings, projection.CredentialProxyBindings...)
+	return SanitizeSandboxSecurityCapabilityReadinessInput(input)
+}
+
 func sandboxSecurityCapabilityProjectionRequestedNetwork(records []SandboxSecurityCapabilityMetadata, network *SandboxNetworkSecurity) []SandboxSecurityCapabilityMetadata {
 	if network == nil {
 		return records
@@ -53,6 +86,7 @@ func sandboxSecurityCapabilityProjectionRequestedNetwork(records []SandboxSecuri
 			Source:     SandboxSecurityCapabilitySourceRequested,
 		})
 	default:
+		records = sandboxSecurityCapabilityProjectionRequestedNetworkPolicyResult(records, network.PolicyResult)
 		return records
 	}
 }
@@ -70,7 +104,50 @@ func sandboxSecurityCapabilityProjectionMetadataOnlyNetwork(records []SandboxSec
 			SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
 		)
 	}
-	switch mode {
+	records = sandboxSecurityCapabilityProjectionMetadataOnlyNetworkEnforcementMode(records, mode)
+	records = sandboxSecurityCapabilityProjectionMetadataOnlyNetworkPolicyResult(records, network.PolicyResult)
+	return records
+}
+
+func sandboxSecurityCapabilityProjectionRequestedNetworkPolicyResult(records []SandboxSecurityCapabilityMetadata, result *SandboxNetworkPolicyResult) []SandboxSecurityCapabilityMetadata {
+	if result == nil {
+		return records
+	}
+	if !sandboxSecurityCapabilityProjectionPolicyIntentRequestsNetworkCapability(result.Requested) {
+		return records
+	}
+	return sandboxSecurityCapabilityProjectionAppendUnique(records, SandboxSecurityCapabilityMetadata{
+		Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+		Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+		Source:     SandboxSecurityCapabilitySourceRequested,
+	})
+}
+
+func sandboxSecurityCapabilityProjectionMetadataOnlyNetworkPolicyResult(records []SandboxSecurityCapabilityMetadata, result *SandboxNetworkPolicyResult) []SandboxSecurityCapabilityMetadata {
+	if result == nil {
+		return records
+	}
+	mode := sanitizeSandboxSecurityCapabilityNetworkEnforcementValue(result.EnforcementMode)
+	if sandboxSecurityCapabilityProjectionPolicyIntentRequestsNetworkCapability(result.Effective) {
+		records = sandboxSecurityCapabilityProjectionAppendMetadataOnly(records,
+			SandboxSecurityCapabilityFamilyNetworkPolicy,
+			SandboxSecurityCapabilityNetworkDenyByDefault,
+			sandboxSecurityCapabilitySafeNetworkMode(SandboxSecurityCapabilityNetworkDenyByDefault, mode),
+			SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+		)
+	}
+	return sandboxSecurityCapabilityProjectionMetadataOnlyNetworkEnforcementMode(records, mode)
+}
+
+func sandboxSecurityCapabilityProjectionPolicyIntentRequestsNetworkCapability(intent SandboxNetworkPolicyIntent) bool {
+	if sandboxNetworkPolicyPresetNeedsDefaultDeny(intent.Preset) {
+		return true
+	}
+	return len(intent.Rules) > 0
+}
+
+func sandboxSecurityCapabilityProjectionMetadataOnlyNetworkEnforcementMode(records []SandboxSecurityCapabilityMetadata, mode string) []SandboxSecurityCapabilityMetadata {
+	switch sanitizeSandboxSecurityCapabilityNetworkEnforcementValue(mode) {
 	case SandboxNetworkEnforcementModeProxy:
 		records = sandboxSecurityCapabilityProjectionAppendMetadataOnly(records,
 			SandboxSecurityCapabilityFamilyNetworkProxy,

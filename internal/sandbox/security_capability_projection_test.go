@@ -180,6 +180,216 @@ func TestProjectSandboxSecurityCapabilityReadinessInputExplicitSafeMetadata(t *t
 	}
 }
 
+func TestProjectSandboxSecurityCapabilityReadinessInputProjectsPolicyResultWithoutRuleValues(t *testing.T) {
+	policyResult := EvaluateSandboxNetworkPolicy(
+		SandboxNetworkPolicyIntent{
+			Preset: SandboxNetworkPolicyPresetAllowListed,
+			Rules: []SandboxNetworkPolicyRule{{
+				Kind:     SandboxNetworkPolicyRuleKindDomain,
+				Value:    "api.github.example.invalid",
+				Decision: SandboxNetworkPolicyDecisionAllow,
+			}},
+		},
+		SandboxNetworkPolicyEnforcementCapability{
+			Supported:                  true,
+			Modes:                      []string{SandboxNetworkEnforcementModeFirewall},
+			SupportsDomainRules:        true,
+			SupportsDefaultDenyPosture: true,
+		},
+	)
+	security := &SandboxSecurity{
+		Network: &SandboxNetworkSecurity{
+			PolicyResult: &policyResult,
+		},
+	}
+
+	got := ProjectSandboxSecurityCapabilityReadinessInput(security)
+	assertProjectedSecurityCapabilityMetadata(t, got.Requested, []SandboxSecurityCapabilityMetadata{{
+		Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+		Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+		Source:     SandboxSecurityCapabilitySourceRequested,
+	}})
+	assertProjectedSecurityCapabilityMetadata(t, got.Ready, []SandboxSecurityCapabilityMetadata{
+		{
+			Family:       SandboxSecurityCapabilityFamilyNetworkPolicy,
+			Capability:   SandboxSecurityCapabilityNetworkDenyByDefault,
+			Mode:         SandboxNetworkEnforcementModeFirewall,
+			Source:       SandboxSecurityCapabilitySourceMetadata,
+			Status:       SandboxSecurityCapabilityReadinessMetadataOnly,
+			ReasonCode:   SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+			WarningCodes: []SandboxSecurityCapabilityWarningCode{SandboxSecurityCapabilityWarningMetadataNotCapability},
+		},
+		{
+			Family:       SandboxSecurityCapabilityFamilyNetworkPolicy,
+			Capability:   SandboxSecurityCapabilityNetworkFirewallEnforcement,
+			Mode:         SandboxNetworkEnforcementModeFirewall,
+			Source:       SandboxSecurityCapabilitySourceMetadata,
+			Status:       SandboxSecurityCapabilityReadinessMetadataOnly,
+			ReasonCode:   SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+			WarningCodes: []SandboxSecurityCapabilityWarningCode{SandboxSecurityCapabilityWarningMetadataNotCapability},
+		},
+	})
+	validation := ValidateAndNormalizeSandboxSecurityCapabilityReadinessInput(got)
+	if !validation.Valid {
+		t.Fatalf("projected input validation errors = %#v, want valid", validation.Errors)
+	}
+	assertSecurityCapabilityJSONExcludes(t, got, "api.github.example.invalid")
+
+	output := EvaluateSandboxSecurityCapabilityReadiness(got)
+	if len(output.Results) != 1 {
+		t.Fatalf("readiness output result count = %d, want 1: %#v", len(output.Results), output.Results)
+	}
+	assertSecurityCapabilityUnsupportedResult(t, output.Results[0],
+		SandboxSecurityCapabilityFamilyNetworkPolicy,
+		SandboxSecurityCapabilityNetworkDenyByDefault,
+		"",
+		SandboxSecurityCapabilityReasonCapabilityMissing,
+	)
+}
+
+func TestProjectSandboxPolicyProxyCredentialCapabilityReadinessInputMetadataOnlyNotReady(t *testing.T) {
+	enforced := true
+	got := ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+		NetworkProxySession: &SandboxNetworkProxySessionMetadata{
+			ID:     "network-proxy-session-01",
+			Source: SandboxNetworkPolicyDecisionSourceRun,
+			PolicySnapshot: &SandboxNetworkPolicySnapshotIdentity{
+				ID:     "policy-snapshot-01",
+				Preset: SandboxNetworkPolicyPresetDenyByDefault,
+			},
+			EnforcementMode: SandboxNetworkEnforcementModeProxy,
+		},
+		NetworkPolicyDecisionLogs: []SandboxNetworkPolicyDecisionLogRecord{{
+			ID:             "decision-log-01",
+			Source:         SandboxNetworkPolicyDecisionSourceRun,
+			ProxySessionID: "network-proxy-session-01",
+			Request: &SandboxNetworkPolicyRequestSummary{
+				ID:                  "request-01",
+				Operation:           "connect",
+				DestinationCategory: SandboxNetworkPolicyDestinationMetadataService,
+			},
+			Outcome:         SandboxNetworkPolicyDecisionOutcomeDenied,
+			ReasonCode:      SandboxNetworkPolicyDecisionReasonDefaultDeny,
+			PolicyPreset:    SandboxNetworkPolicyPresetDenyByDefault,
+			EnforcementMode: SandboxNetworkEnforcementModeProxy,
+			Enforced:        &enforced,
+		}},
+		CredentialProxyPlan: &SandboxCredentialProxyPlanMetadata{
+			ID:                    "credential-proxy-plan-01",
+			Source:                SandboxCredentialProxySourceRun,
+			SecretBrokerSessionID: "secret-broker-session-01",
+			NetworkProxySessionID: "network-proxy-session-01",
+			BindingCount:          1,
+			Mode:                  SandboxCredentialProxyModeBrokeredNetworkReference,
+			Status:                SandboxCredentialProxyStatusReady,
+		},
+		CredentialProxySession: &SandboxCredentialProxySessionMetadata{
+			ID:                    "credential-proxy-session-01",
+			PlanID:                "credential-proxy-plan-01",
+			Source:                SandboxCredentialProxySourceRun,
+			SecretBrokerSessionID: "secret-broker-session-01",
+			NetworkProxySessionID: "network-proxy-session-01",
+			Status:                SandboxCredentialProxyStatusActive,
+			ReasonCode:            SandboxCredentialProxyReasonRequested,
+		},
+		CredentialProxyBindings: []SandboxCredentialProxyBindingMetadata{{
+			ID:                  "credential-proxy-binding-01",
+			PlanID:              "credential-proxy-plan-01",
+			SessionID:           "credential-proxy-session-01",
+			SecretID:            "env:GITHUB_TOKEN",
+			DeliveryMode:        SandboxCredentialProxyDeliveryModeHTTPProxy,
+			RequestCategory:     SandboxCredentialProxyRequestSourceControl,
+			DestinationCategory: SandboxNetworkPolicyDestinationPublicInternet,
+			Outcome:             SandboxCredentialProxyBindingOutcomeBound,
+			Status:              SandboxCredentialProxyStatusReady,
+			ReasonCode:          SandboxCredentialProxyReasonRequested,
+		}},
+	})
+
+	if got.NetworkProxySession == nil || got.NetworkProxySession.ID != "network-proxy-session-01" {
+		t.Fatalf("network proxy session = %#v, want sanitized session metadata", got.NetworkProxySession)
+	}
+	if len(got.NetworkPolicyDecisionLogs) != 1 {
+		t.Fatalf("network policy decision logs = %#v, want one sanitized record", got.NetworkPolicyDecisionLogs)
+	}
+	if got.CredentialProxyPlan == nil || got.CredentialProxySession == nil || len(got.CredentialProxyBindings) != 1 {
+		t.Fatalf("credential proxy metadata = %#v/%#v/%#v, want plan/session/binding", got.CredentialProxyPlan, got.CredentialProxySession, got.CredentialProxyBindings)
+	}
+	validation := ValidateAndNormalizeSandboxSecurityCapabilityReadinessInput(got)
+	if !validation.Valid {
+		t.Fatalf("projected input validation errors = %#v, want valid", validation.Errors)
+	}
+
+	output := EvaluateSandboxSecurityCapabilityReadiness(got)
+	if len(output.Results) != 5 {
+		t.Fatalf("readiness output result count = %d, want 5: %#v", len(output.Results), output.Results)
+	}
+	assertSecurityCapabilityMetadataOnlyResult(t, output.Results[0],
+		SandboxSecurityCapabilityFamilyNetworkProxy,
+		SandboxSecurityCapabilityNetworkProxyEnforcement,
+		SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+	)
+	assertSecurityCapabilityMetadataOnlyResult(t, output.Results[1],
+		SandboxSecurityCapabilityFamilyNetworkPolicy,
+		SandboxSecurityCapabilityNetworkDenyByDefault,
+		SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+	)
+	for i, result := range output.Results[2:] {
+		if result.State == SandboxSecurityCapabilityReadinessReady {
+			t.Fatalf("credential proxy metadata-only result[%d] inferred ready: %#v", i+2, result)
+		}
+		assertSecurityCapabilityMetadataOnlyResult(t, result,
+			SandboxSecurityCapabilityFamilyCredentialProxy,
+			SandboxSecurityCapabilityCredentialProxy,
+			SandboxSecurityCapabilityReasonMetadataDeliveryUnproven,
+		)
+	}
+}
+
+func TestProjectSandboxPolicyProxyCredentialCapabilityReadinessInputRequiresExplicitReadyMetadata(t *testing.T) {
+	got := ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+		Requested: []SandboxSecurityCapabilityMetadata{{
+			Family:     SandboxSecurityCapabilityFamilyCredentialProxy,
+			Capability: SandboxSecurityCapabilityCredentialProxy,
+			Mode:       string(SandboxCredentialProxyModeBrokeredNetworkReference),
+			Source:     SandboxSecurityCapabilitySourceRequested,
+		}},
+		Ready: []SandboxSecurityCapabilityMetadata{{
+			Family:     SandboxSecurityCapabilityFamilyCredentialProxy,
+			Capability: SandboxSecurityCapabilityCredentialProxy,
+			Mode:       string(SandboxCredentialProxyModeBrokeredNetworkReference),
+			Source:     SandboxSecurityCapabilitySourceWorker,
+			Status:     SandboxSecurityCapabilityReadinessReady,
+			ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+		}},
+		CredentialProxyPlan: &SandboxCredentialProxyPlanMetadata{
+			ID:                    "credential-proxy-plan-01",
+			Source:                SandboxCredentialProxySourceWorker,
+			SecretBrokerSessionID: "secret-broker-session-01",
+			NetworkProxySessionID: "network-proxy-session-01",
+			BindingCount:          1,
+			Mode:                  SandboxCredentialProxyModeBrokeredNetworkReference,
+			Status:                SandboxCredentialProxyStatusReady,
+		},
+	})
+
+	output := EvaluateSandboxSecurityCapabilityReadiness(got)
+	if len(output.Results) != 2 {
+		t.Fatalf("readiness output result count = %d, want 2: %#v", len(output.Results), output.Results)
+	}
+	assertSecurityCapabilityReadyResult(t, output.Results[0],
+		SandboxSecurityCapabilityFamilyCredentialProxy,
+		SandboxSecurityCapabilityCredentialProxy,
+		string(SandboxCredentialProxyModeBrokeredNetworkReference),
+		SandboxSecurityCapabilitySourceWorker,
+	)
+	assertSecurityCapabilityMetadataOnlyResult(t, output.Results[1],
+		SandboxSecurityCapabilityFamilyCredentialProxy,
+		SandboxSecurityCapabilityCredentialProxy,
+		SandboxSecurityCapabilityReasonMetadataDeliveryUnproven,
+	)
+}
+
 func TestProjectSandboxWorkerRuntimeCapabilityReadinessInputRootlessMetadataOnly(t *testing.T) {
 	got := ProjectSandboxWorkerRuntimeCapabilityReadinessInput(SandboxWorkerRuntimeCapabilityReadinessProjection{
 		Host: &SandboxHost{
