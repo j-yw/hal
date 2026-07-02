@@ -342,8 +342,32 @@ func newProcessBoundaryAdapterError(field, message string, err error) *microvm.O
 	if err == nil {
 		err = errors.New(message)
 	}
-	operationErr := microvm.NewBackendOperationFailedError(ProcessBoundaryOperation, err)
+	operationErr := microvm.NewBackendOperationFailedError(ProcessBoundaryOperation, newSanitizedProcessBoundaryAdapterCause(err))
 	operationErr.Field = strings.TrimSpace(field)
 	operationErr.Message = strings.TrimSpace(message)
 	return operationErr
+}
+
+type sanitizedProcessBoundaryAdapterCause struct {
+	detail string
+	cause  error
+}
+
+func newSanitizedProcessBoundaryAdapterCause(err error) sanitizedProcessBoundaryAdapterCause {
+	sanitized := microvm.NewBackendOperationFailedError(ProcessBoundaryOperation, err)
+	return sanitizedProcessBoundaryAdapterCause{
+		detail: sanitized.Error(),
+		cause:  err,
+	}
+}
+
+func (err sanitizedProcessBoundaryAdapterCause) Error() string {
+	if detail := strings.TrimSpace(err.detail); detail != "" {
+		return detail
+	}
+	return "firecracker process adapter failed"
+}
+
+func (err sanitizedProcessBoundaryAdapterCause) Is(target error) bool {
+	return target != nil && errors.Is(err.cause, target)
 }

@@ -388,6 +388,80 @@ func TestBackendLiveStartOptionCallsInjectedAdapterAfterPlanRendered(t *testing.
 	assertFirecrackerRuntimeMetadataDoesNotClaimUnsupportedLiveCapabilities(t, started)
 }
 
+func TestBackendLiveStartReturnsSanitizedRunnerFailure(t *testing.T) {
+	runnerErr := errors.New("firecracker runner failed stderr=/Users/alice/private/firecracker.sock stdout=token=ghp_secret endpoint=https://raw-secret@example.test:8443/api")
+	starter := &fakeProcessStarter{
+		start: func(context.Context, ProcessRunnerStartRequest) (ProcessHandleMetadata, error) {
+			return ProcessHandleMetadata{}, runnerErr
+		},
+	}
+	backend := NewBackend(BackendOptions{
+		BaseStateDir:   firecrackerPathTestBase("live-start-failure-state"),
+		ProcessAdapter: ProcessLaunchAdapter{Starter: starter},
+		LiveStart:      true,
+	})
+	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+		Operation: microvm.OperationCreate,
+		Config:    validMicroVMConfig(),
+		Name:      "firecracker-live-failure",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Controller() error = %v, want nil", err)
+	}
+
+	started, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+
+	if started != nil {
+		t.Fatalf("Start() target = %#v, want nil after live-start runner failure", started)
+	}
+	if starter.startCalls != 1 {
+		t.Fatalf("starter calls = %d, want one explicit live-start attempt", starter.startCalls)
+	}
+	assertFirecrackerStartOperationError(t, err, microvm.ErrorCodeBackendOperationFailed, ProcessBoundaryOperation, "processAdapter")
+	if !errors.Is(err, runnerErr) {
+		t.Fatalf("errors.Is(err, runnerErr) = false, want true without exposing raw runner output")
+	}
+
+	encoded, marshalErr := json.Marshal(err)
+	if marshalErr != nil {
+		t.Fatalf("Marshal(live-start error) error = %v", marshalErr)
+	}
+	publicText := err.Error() + " " + string(encoded)
+	wrappedText := ""
+	for unwrapped := errors.Unwrap(err); unwrapped != nil; unwrapped = errors.Unwrap(unwrapped) {
+		wrappedText += " " + unwrapped.Error()
+	}
+	combinedText := publicText + wrappedText
+	for _, unsafe := range []string{
+		"/Users/alice",
+		"private",
+		"firecracker.sock",
+		"ghp_secret",
+		"raw-secret",
+		"example.test",
+		"8443",
+	} {
+		if strings.Contains(combinedText, unsafe) {
+			t.Fatalf("live-start failure leaked unsafe fragment %q in public=%q wrapped=%q", unsafe, publicText, wrappedText)
+		}
+	}
+	if !strings.Contains(wrappedText, "[redacted-path]") || !strings.Contains(wrappedText, "[redacted-endpoint]") {
+		t.Fatalf("wrapped live-start error = %q, want sanitized runner output markers", wrappedText)
+	}
+}
+
 func TestBackendStartRejectsInvalidPathPlanWithOperationError(t *testing.T) {
 	backend := NewBackend(BackendOptions{BaseStateDir: "alice/private/firecracker-state"})
 	target := sandboxruntime.Target{
