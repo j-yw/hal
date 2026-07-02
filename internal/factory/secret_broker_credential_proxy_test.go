@@ -261,6 +261,79 @@ func TestProjectCredentialProxyMetadataPreservesExplicitEmptyBrokerMetadata(t *t
 	}
 }
 
+func TestRunSecretRedactorRedactsSandboxCredentialProxyMetadata(t *testing.T) {
+	secretValue := "credential-proxy-collision-value"
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{{
+		Name:  "COLLISION_SECRET",
+		Value: secretValue,
+	}})
+	record := RunRecord{
+		RunID: "run-redact-sandbox-credential-proxy",
+		Sandbox: &SandboxMetadata{
+			Name:   "factory-sandbox",
+			Status: "running",
+			CredentialProxyPlan: &sandbox.SandboxCredentialProxyPlanMetadata{
+				ID:                    secretValue,
+				Source:                sandbox.SandboxCredentialProxySource(secretValue),
+				SecretBrokerSessionID: secretValue,
+				NetworkProxySessionID: secretValue,
+				PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
+					ID:        secretValue,
+					Version:   secretValue,
+					Preset:    sandbox.SandboxNetworkPolicyPreset(secretValue),
+					RuleSetID: secretValue,
+				},
+				Mode:   sandbox.SandboxCredentialProxyMode(secretValue),
+				Status: sandbox.SandboxCredentialProxyStatus(secretValue),
+			},
+			CredentialProxySession: &sandbox.SandboxCredentialProxySessionMetadata{
+				ID:                    secretValue,
+				PlanID:                secretValue,
+				Source:                sandbox.SandboxCredentialProxySource(secretValue),
+				SecretBrokerSessionID: secretValue,
+				NetworkProxySessionID: secretValue,
+				PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
+					ID:        secretValue,
+					Version:   secretValue,
+					Preset:    sandbox.SandboxNetworkPolicyPreset(secretValue),
+					RuleSetID: secretValue,
+				},
+				Status:      sandbox.SandboxCredentialProxyStatus(secretValue),
+				WarningCode: sandbox.SandboxCredentialProxyWarningCode(secretValue),
+				ReasonCode:  sandbox.SandboxCredentialProxyReasonCode(secretValue),
+			},
+			CredentialProxyBindings: []sandbox.SandboxCredentialProxyBindingMetadata{{
+				ID:                  secretValue,
+				PlanID:              secretValue,
+				SessionID:           secretValue,
+				SecretID:            secretValue,
+				DeliveryMode:        sandbox.SandboxCredentialProxyDeliveryMode(secretValue),
+				RequestCategory:     sandbox.SandboxCredentialProxyRequestCategory(secretValue),
+				DestinationCategory: sandbox.SandboxNetworkPolicyDestinationCategory(secretValue),
+				Outcome:             sandbox.SandboxCredentialProxyBindingOutcome(secretValue),
+				Status:              sandbox.SandboxCredentialProxyStatus(secretValue),
+				ReasonCode:          sandbox.SandboxCredentialProxyReasonCode(secretValue),
+			}},
+		},
+	}
+
+	redacted := redactor.RedactRunRecord(record)
+	data, err := json.Marshal(redacted)
+	if err != nil {
+		t.Fatalf("json.Marshal(redacted) error: %v", err)
+	}
+	payload := string(data)
+	if strings.Contains(payload, secretValue) {
+		t.Fatalf("redacted record leaked credential proxy collision value: %s", payload)
+	}
+	if !strings.Contains(payload, RunSecretRedactionPlaceholder) {
+		t.Fatalf("redacted record missing redaction placeholder: %s", payload)
+	}
+	if record.Sandbox.CredentialProxyPlan.ID != secretValue {
+		t.Fatal("RedactRunRecord mutated original credential proxy metadata")
+	}
+}
+
 func requireFactoryCredentialProxyProjectionBinding(t *testing.T, bindings []sandbox.SandboxCredentialProxyBindingMetadata, mode sandbox.SandboxCredentialProxyDeliveryMode) sandbox.SandboxCredentialProxyBindingMetadata {
 	t.Helper()
 

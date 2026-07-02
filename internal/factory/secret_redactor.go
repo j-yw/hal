@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/verify"
 )
 
@@ -168,6 +169,9 @@ func (r RunSecretRedactor) redactSandboxMetadata(sandbox *SandboxMetadata) *Sand
 	safe.SSHCommand = r.RedactString(safe.SSHCommand)
 	safe.CleanupCommand = r.RedactString(safe.CleanupCommand)
 	safe.Handoff = r.RedactString(safe.Handoff)
+	safe.CredentialProxyPlan = r.redactSandboxCredentialProxyPlanMetadata(safe.CredentialProxyPlan)
+	safe.CredentialProxySession = r.redactSandboxCredentialProxySessionMetadata(safe.CredentialProxySession)
+	safe.CredentialProxyBindings = r.redactSandboxCredentialProxyBindingMetadata(safe.CredentialProxyBindings)
 	return &safe
 }
 
@@ -180,6 +184,72 @@ func (r RunSecretRedactor) redactSandboxConnectionMetadata(connection *SandboxCo
 	safe.PublicIP = r.RedactString(safe.PublicIP)
 	safe.TailscaleIP = r.RedactString(safe.TailscaleIP)
 	safe.TailscaleHostname = r.RedactString(safe.TailscaleHostname)
+	return &safe
+}
+
+func (r RunSecretRedactor) redactSandboxCredentialProxyPlanMetadata(plan *sandbox.SandboxCredentialProxyPlanMetadata) *sandbox.SandboxCredentialProxyPlanMetadata {
+	if plan == nil {
+		return nil
+	}
+	safe := *plan
+	safe.ID = r.RedactString(safe.ID)
+	safe.Source = sandbox.SandboxCredentialProxySource(r.RedactString(string(safe.Source)))
+	safe.SecretBrokerSessionID = r.RedactString(safe.SecretBrokerSessionID)
+	safe.NetworkProxySessionID = r.RedactString(safe.NetworkProxySessionID)
+	safe.PolicySnapshot = r.redactSandboxNetworkPolicySnapshotIdentity(safe.PolicySnapshot)
+	safe.Mode = sandbox.SandboxCredentialProxyMode(r.RedactString(string(safe.Mode)))
+	safe.Status = sandbox.SandboxCredentialProxyStatus(r.RedactString(string(safe.Status)))
+	return &safe
+}
+
+func (r RunSecretRedactor) redactSandboxCredentialProxySessionMetadata(session *sandbox.SandboxCredentialProxySessionMetadata) *sandbox.SandboxCredentialProxySessionMetadata {
+	if session == nil {
+		return nil
+	}
+	safe := *session
+	safe.ID = r.RedactString(safe.ID)
+	safe.PlanID = r.RedactString(safe.PlanID)
+	safe.Source = sandbox.SandboxCredentialProxySource(r.RedactString(string(safe.Source)))
+	safe.SecretBrokerSessionID = r.RedactString(safe.SecretBrokerSessionID)
+	safe.NetworkProxySessionID = r.RedactString(safe.NetworkProxySessionID)
+	safe.PolicySnapshot = r.redactSandboxNetworkPolicySnapshotIdentity(safe.PolicySnapshot)
+	safe.Status = sandbox.SandboxCredentialProxyStatus(r.RedactString(string(safe.Status)))
+	safe.WarningCode = sandbox.SandboxCredentialProxyWarningCode(r.RedactString(string(safe.WarningCode)))
+	safe.ReasonCode = sandbox.SandboxCredentialProxyReasonCode(r.RedactString(string(safe.ReasonCode)))
+	return &safe
+}
+
+func (r RunSecretRedactor) redactSandboxCredentialProxyBindingMetadata(bindings []sandbox.SandboxCredentialProxyBindingMetadata) []sandbox.SandboxCredentialProxyBindingMetadata {
+	if len(bindings) == 0 {
+		return nil
+	}
+	safe := make([]sandbox.SandboxCredentialProxyBindingMetadata, len(bindings))
+	for i, binding := range bindings {
+		safe[i] = sandbox.SandboxCredentialProxyBindingMetadata{
+			ID:                  r.RedactString(binding.ID),
+			PlanID:              r.RedactString(binding.PlanID),
+			SessionID:           r.RedactString(binding.SessionID),
+			SecretID:            r.RedactString(binding.SecretID),
+			DeliveryMode:        sandbox.SandboxCredentialProxyDeliveryMode(r.RedactString(string(binding.DeliveryMode))),
+			RequestCategory:     sandbox.SandboxCredentialProxyRequestCategory(r.RedactString(string(binding.RequestCategory))),
+			DestinationCategory: sandbox.SandboxNetworkPolicyDestinationCategory(r.RedactString(string(binding.DestinationCategory))),
+			Outcome:             sandbox.SandboxCredentialProxyBindingOutcome(r.RedactString(string(binding.Outcome))),
+			Status:              sandbox.SandboxCredentialProxyStatus(r.RedactString(string(binding.Status))),
+			ReasonCode:          sandbox.SandboxCredentialProxyReasonCode(r.RedactString(string(binding.ReasonCode))),
+		}
+	}
+	return safe
+}
+
+func (r RunSecretRedactor) redactSandboxNetworkPolicySnapshotIdentity(snapshot *sandbox.SandboxNetworkPolicySnapshotIdentity) *sandbox.SandboxNetworkPolicySnapshotIdentity {
+	if snapshot == nil {
+		return nil
+	}
+	safe := *snapshot
+	safe.ID = r.RedactString(safe.ID)
+	safe.Version = r.RedactString(safe.Version)
+	safe.Preset = sandbox.SandboxNetworkPolicyPreset(r.RedactString(string(safe.Preset)))
+	safe.RuleSetID = r.RedactString(safe.RuleSetID)
 	return &safe
 }
 

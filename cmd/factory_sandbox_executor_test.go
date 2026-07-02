@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -2328,6 +2329,98 @@ func TestRecordFactorySandboxFailureRedactsCredentialedRemoteWithoutDeclaredSecr
 		if !strings.Contains(payload, factory.RunSecretRedactionPlaceholder) {
 			t.Fatalf("%s missing redaction marker: %s", name, payload)
 		}
+	}
+}
+
+func TestRecordFactorySandboxFailurePreservesCredentialProxyMetadata(t *testing.T) {
+	now := time.Date(2026, 7, 2, 16, 20, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	networkSession := &sandbox.SandboxNetworkProxySessionMetadata{
+		ID:     "network-proxy-session-failure",
+		Source: sandbox.SandboxNetworkPolicyDecisionSourceFactory,
+		PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
+			ID:      "policy-snapshot-failure",
+			Version: "v1",
+			Preset:  sandbox.SandboxNetworkPolicyPresetDenyByDefault,
+		},
+	}
+	record := factory.RunRecord{
+		RunID:       "run-sandbox-failure-preserves-credential-proxy",
+		Status:      factory.RunStatusRunning,
+		SandboxName: "factory-ready",
+		Sandbox: &factory.SandboxMetadata{
+			Name:                "factory-ready",
+			Provider:            "daytona",
+			Status:              sandbox.StatusRunning,
+			NetworkProxySession: networkSession,
+			CredentialProxyPlan: &sandbox.SandboxCredentialProxyPlanMetadata{
+				ID:                    "credential-plan-failure",
+				Source:                sandbox.SandboxCredentialProxySourceFactory,
+				NetworkProxySessionID: networkSession.ID,
+				Mode:                  sandbox.SandboxCredentialProxyModeNetworkProxyReference,
+				Status:                sandbox.SandboxCredentialProxyStatusPlanned,
+			},
+			CredentialProxySession: &sandbox.SandboxCredentialProxySessionMetadata{
+				ID:                    "credential-session-failure",
+				PlanID:                "credential-plan-failure",
+				Source:                sandbox.SandboxCredentialProxySourceFactory,
+				NetworkProxySessionID: networkSession.ID,
+				Status:                sandbox.SandboxCredentialProxyStatusReady,
+			},
+			CredentialProxyBindings: []sandbox.SandboxCredentialProxyBindingMetadata{{
+				ID:                  "credential-binding-failure",
+				PlanID:              "credential-plan-failure",
+				SessionID:           "credential-session-failure",
+				SecretID:            "env:GITHUB_TOKEN",
+				DeliveryMode:        sandbox.SandboxCredentialProxyDeliveryModeHTTPProxy,
+				RequestCategory:     sandbox.SandboxCredentialProxyRequestNetworkAuth,
+				DestinationCategory: sandbox.SandboxNetworkPolicyDestinationPublicInternet,
+				Outcome:             sandbox.SandboxCredentialProxyBindingOutcomePlanned,
+				Status:              sandbox.SandboxCredentialProxyStatusPlanned,
+				ReasonCode:          sandbox.SandboxCredentialProxyReasonRequested,
+			}},
+		},
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	target := &sandbox.SandboxState{
+		Name:     "factory-ready",
+		Provider: "daytona",
+		Size:     "medium",
+		Status:   sandbox.StatusRunning,
+	}
+
+	err := recordFactorySandboxFailure(store, factorySandboxExecutorDeps{
+		now:         func() time.Time { return now },
+		saveRun:     saveFactorySandboxRunRecord,
+		appendEvent: appendFactorySandboxTimelineEvent,
+	}, &record, target, "bootstrap", errors.New("bootstrap failed"), factory.RunSecretRedactor{})
+	if err != nil {
+		t.Fatalf("recordFactorySandboxFailure() unexpected error: %v", err)
+	}
+
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if loaded.Sandbox == nil {
+		t.Fatal("loaded sandbox metadata = nil")
+	}
+	if loaded.Sandbox.Provider != "daytona" || loaded.Sandbox.Size != "medium" || loaded.Sandbox.Status != sandbox.StatusRunning {
+		t.Fatalf("loaded sandbox state fields = %#v, want refreshed target metadata", loaded.Sandbox)
+	}
+	if loaded.Sandbox.NetworkProxySession == nil || loaded.Sandbox.NetworkProxySession.ID != networkSession.ID {
+		t.Fatalf("loaded network proxy session = %#v, want preserved target-ready metadata", loaded.Sandbox.NetworkProxySession)
+	}
+	if loaded.Sandbox.CredentialProxyPlan == nil || loaded.Sandbox.CredentialProxyPlan.ID != "credential-plan-failure" {
+		t.Fatalf("loaded credential proxy plan = %#v, want preserved metadata", loaded.Sandbox.CredentialProxyPlan)
+	}
+	if loaded.Sandbox.CredentialProxySession == nil || loaded.Sandbox.CredentialProxySession.ID != "credential-session-failure" {
+		t.Fatalf("loaded credential proxy session = %#v, want preserved metadata", loaded.Sandbox.CredentialProxySession)
+	}
+	if len(loaded.Sandbox.CredentialProxyBindings) != 1 || loaded.Sandbox.CredentialProxyBindings[0].ID != "credential-binding-failure" {
+		t.Fatalf("loaded credential proxy bindings = %#v, want preserved metadata", loaded.Sandbox.CredentialProxyBindings)
 	}
 }
 

@@ -1875,12 +1875,18 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 	if record == nil {
 		return nil
 	}
+	previousSandbox := record.Sandbox
 	if existing, err := store.LoadRun(record.RunID); err == nil && existing != nil {
 		record.Artifacts = existing.Artifacts
+		if previousSandbox == nil {
+			previousSandbox = existing.Sandbox
+		}
 	}
 	failedAt := deps.now().UTC()
 	if target != nil {
-		record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
+		name, metadata := factorySandboxMetadataFromState(target)
+		record.SandboxName = name
+		record.Sandbox = factorySandboxFailureMetadataWithPersistentOverlay(metadata, previousSandbox)
 	} else if strings.TrimSpace(record.SandboxName) == "" && record.Sandbox == nil {
 		record.SandboxName, record.Sandbox = factorySandboxMetadataFromName("")
 	}
@@ -1918,6 +1924,20 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 			"source":      "remote_sandbox",
 		},
 	})
+}
+
+func factorySandboxFailureMetadataWithPersistentOverlay(metadata *factory.SandboxMetadata, previous *factory.SandboxMetadata) *factory.SandboxMetadata {
+	if metadata == nil || previous == nil {
+		return metadata
+	}
+	metadata.NetworkProxySession = previous.NetworkProxySession
+	metadata.CredentialProxyPlan = previous.CredentialProxyPlan
+	metadata.CredentialProxySession = previous.CredentialProxySession
+	if len(previous.CredentialProxyBindings) > 0 {
+		metadata.CredentialProxyBindings = append([]sandbox.SandboxCredentialProxyBindingMetadata(nil), previous.CredentialProxyBindings...)
+	}
+	factorySandboxSanitizeCredentialProxyMetadata(metadata)
+	return metadata
 }
 
 func recordFactorySandboxCleanedUp(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, secretRedactor factory.RunSecretRedactor) error {
