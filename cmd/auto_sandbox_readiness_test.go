@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 )
 
@@ -268,6 +270,127 @@ func TestAutoSandboxReadinessDiagnosticsDoNotBlockOrAlterExecution(t *testing.T)
 	}
 	if manifest.Security == nil || manifest.Security.CapabilityReadinessDiagnostics == nil {
 		t.Fatalf("Security = %#v, want non-blocking readiness diagnostics attached", manifest.Security)
+	}
+	if !manifest.Security.CapabilityReadinessDiagnostics.WouldBlockStrictGate {
+		t.Fatalf("CapabilityReadinessDiagnostics = %#v, want wouldBlockStrictGate", manifest.Security.CapabilityReadinessDiagnostics)
+	}
+}
+
+func TestAutoSandboxDefaultReadinessGateDoesNotTriggerSchedulerLeaseOrLiveRefresh(t *testing.T) {
+	t.Setenv("HAL_CONFIG_HOME", t.TempDir())
+
+	startedAt := time.Date(2026, 7, 2, 8, 11, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(4 * time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(t.TempDir())
+	target := runSandboxCapabilityReadinessTarget(runSandboxSecurityRequest())
+	target.Name = "auto-readiness-default-box"
+	resolver := &fakeDefaultSandboxResolver{t: t, target: target}
+
+	var execCalled bool
+	var resolvedRuntime sandboxruntime.Target
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	driver := fakeRunSandboxRuntimeDriver{
+		exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			resolvedRuntime = req.Target
+			joinedArgs := strings.Join(req.Args, " ")
+			for _, forbidden := range []string{"security-readiness-gate", "readiness-gate", "strict-readiness"} {
+				if strings.Contains(joinedArgs, forbidden) {
+					t.Fatalf("Exec args added readiness gate marker %q: %#v", forbidden, req.Args)
+				}
+			}
+			if strings.Contains(joinedArgs, "'hal' 'auto'") {
+				execCalled = true
+				_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSON("default advisory readiness auto executed")+"\n")
+			}
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+	}
+
+	err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
+		Base:        "main",
+		BaseChanged: true,
+	}, &out, &errOut, autoSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "auto-readiness-default-gate"
+		},
+		now: runSandboxTestClock(startedAt, finishedAt),
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return autoSandboxTestPlan(projectDir), nil
+		},
+		loadSandbox: func(string) (*sandbox.SandboxState, error) {
+			t.Fatal("loadSandbox should not run without an explicit sandbox name")
+			return nil, nil
+		},
+		resolveDefault: resolver.resolve,
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			t.Fatal("listHosts should not run for default auto readiness gate evaluation")
+			return nil, nil
+		},
+		listLeases: func() ([]*sandbox.SandboxLease, error) {
+			t.Fatal("listLeases should not run for default auto readiness gate evaluation")
+			return nil, nil
+		},
+		acquireLease: func(sandbox.SandboxLeaseAcquireRequest, time.Duration) (*sandbox.SandboxLease, error) {
+			t.Fatal("acquireLease should not run for default auto readiness gate evaluation")
+			return nil, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return noLiveRefreshSandboxProvider{t: t}, nil
+		},
+		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+			t.Fatal("worker runtime resolver should not run for default auto readiness gate evaluation")
+			return nil, nil
+		},
+		resolveRuntimeDriver: func(target sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			resolvedRuntime = target
+			return driver, nil
+		},
+		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			return factory.BootstrapResult{}, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runAutoSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+	if !execCalled {
+		t.Fatal("runtime Exec was not called for remote hal auto")
+	}
+	if resolver.calls != 1 {
+		t.Fatalf("default resolver calls = %d, want 1", resolver.calls)
+	}
+	if resolvedRuntime.Name != "auto-readiness-default-box" {
+		t.Fatalf("resolved runtime target = %#v, want selected default target", resolvedRuntime)
+	}
+	if !strings.Contains(out.String(), "default advisory readiness auto executed") {
+		t.Fatalf("stdout = %q, want default execution output", out.String())
+	}
+
+	manifest := mustLoadSandboxExecutionManifest(t, store, "auto-readiness-default-gate")
+	if manifest.Status != sandboxexecution.StatusSucceeded {
+		t.Fatalf("Status = %q, want succeeded", manifest.Status)
+	}
+	if manifest.Security == nil || manifest.Security.CapabilityReadinessDiagnostics == nil {
+		t.Fatalf("Security = %#v, want advisory readiness diagnostics", manifest.Security)
+	}
+	if !manifest.Security.CapabilityReadinessDiagnostics.WouldBlockStrictGate {
+		t.Fatalf("CapabilityReadinessDiagnostics = %#v, want wouldBlockStrictGate", manifest.Security.CapabilityReadinessDiagnostics)
+	}
+	if manifest.Lease != nil {
+		t.Fatalf("Lease = %#v, want nil without scheduler acquisition", manifest.Lease)
+	}
+	encoded := mustMarshalSandboxSecurityMetadata(t, manifest)
+	for _, forbidden := range []string{"security_readiness_gate", "readinessGate", "policyField", "policyMode"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("default auto manifest recorded readiness gate metadata %q: %s", forbidden, encoded)
+		}
 	}
 }
 
