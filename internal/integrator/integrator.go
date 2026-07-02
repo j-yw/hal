@@ -199,6 +199,9 @@ func (i *Integrator) Integrate(ctx context.Context, req Request) (Result, error)
 		WorkerCommit:    req.WorkerCommit,
 		CanonicalBranch: req.CanonicalBranch,
 	}
+	if err := validateWorkerCommitPaths(ctx, runner, req); err != nil {
+		return result, &IntegrationError{Stage: StageValidate, Err: err}
+	}
 
 	if _, err := runGit(ctx, runner, req.RepoDir, "checkout", req.CanonicalBranch); err != nil {
 		cmd := gitCommand(req.RepoDir, "checkout", req.CanonicalBranch)
@@ -323,6 +326,67 @@ func validateRequest(req Request) error {
 		return fmt.Errorf("missing required integration input: %s", strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+func validateWorkerCommitPaths(ctx context.Context, runner CommandRunner, req Request) error {
+	protected, err := protectedStatePaths(req.RepoDir, req.PRDPath, req.ProgressPath)
+	if err != nil {
+		return err
+	}
+	changed, err := workerCommitChangedPaths(ctx, runner, req.RepoDir, req.WorkerCommit)
+	if err != nil {
+		return err
+	}
+	blocked := make([]string, 0, len(protected))
+	for _, path := range changed {
+		if _, ok := protected[normalizeRepoPath(path)]; ok {
+			blocked = append(blocked, normalizeRepoPath(path))
+		}
+	}
+	if len(blocked) > 0 {
+		return fmt.Errorf("worker commit %s touches canonical Hal state: %s", req.WorkerCommit, strings.Join(blocked, ", "))
+	}
+	return nil
+}
+
+func protectedStatePaths(repoDir, prdPath, progressPath string) (map[string]struct{}, error) {
+	protected := make(map[string]struct{}, 2)
+	for _, path := range []string{prdPath, progressPath} {
+		fullPath, err := repoPath(repoDir, path)
+		if err != nil {
+			return nil, err
+		}
+		relPath, err := repoRelativePath(repoDir, fullPath)
+		if err != nil {
+			return nil, err
+		}
+		protected[normalizeRepoPath(relPath)] = struct{}{}
+	}
+	return protected, nil
+}
+
+func workerCommitChangedPaths(ctx context.Context, runner CommandRunner, repoDir, commit string) ([]string, error) {
+	result, err := runGit(ctx, runner, repoDir, "diff-tree", "--no-commit-id", "--name-only", "-r", commit, "--")
+	if err != nil {
+		return nil, fmt.Errorf("list worker commit changed paths: %w", err)
+	}
+	paths := make([]string, 0)
+	for _, line := range strings.Split(result.Stdout, "\n") {
+		path := normalizeRepoPath(line)
+		if path != "" && path != "." {
+			paths = append(paths, path)
+		}
+	}
+	return paths, nil
+}
+
+func normalizeRepoPath(path string) string {
+	path = strings.TrimSpace(filepath.ToSlash(path))
+	if path == "" {
+		return ""
+	}
+	path = filepath.ToSlash(filepath.Clean(path))
+	return strings.TrimPrefix(path, "./")
 }
 
 func runGit(ctx context.Context, runner CommandRunner, repoDir string, args ...string) (CommandResult, error) {

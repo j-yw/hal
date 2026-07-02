@@ -81,6 +81,77 @@ func TestIntegratorIntegratesWorkerCommitAndCommitsBookkeeping(t *testing.T) {
 	}
 }
 
+func TestIntegratorRejectsWorkerCommitTouchingCanonicalHalState(t *testing.T) {
+	repo := initTestRepo(t)
+	writeFile(t, repo, ".hal/prd.json", `{
+  "project": "parallel",
+  "tasks": [
+    {"id": "T-001", "title": "One", "priority": 1, "passes": false},
+    {"id": "T-002", "title": "Two", "priority": 2, "passes": false}
+  ]
+}
+`)
+	writeFile(t, repo, ".hal/progress.txt", "## Progress\n")
+	writeFile(t, repo, "app.txt", "base\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	originalHead := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+
+	git(t, repo, "checkout", "-b", "worker/t-001")
+	writeFile(t, repo, "app.txt", "worker change\n")
+	writeFile(t, repo, ".hal/prd.json", `{
+  "project": "parallel",
+  "tasks": [
+    {"id": "T-001", "title": "One", "priority": 1, "passes": true},
+    {"id": "T-002", "title": "Two", "priority": 2, "passes": true}
+  ]
+}
+`)
+	writeFile(t, repo, ".hal/progress.txt", "## Progress\n- forged progress\n")
+	git(t, repo, "add", "app.txt", ".hal/prd.json", ".hal/progress.txt")
+	git(t, repo, "commit", "-m", "feat: worker with canonical state")
+	workerCommit := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+	git(t, repo, "checkout", "main")
+
+	_, err := New().Integrate(context.Background(), Request{
+		RepoDir:         repo,
+		TaskID:          "T-001",
+		WorkerBranch:    "worker/t-001",
+		WorkerCommit:    workerCommit,
+		CanonicalBranch: "main",
+		PRDPath:         ".hal/prd.json",
+		ProgressPath:    ".hal/progress.txt",
+		ProgressEntry:   "- T-001 integrated",
+	})
+	if err == nil {
+		t.Fatal("Integrate() error = nil, want canonical state rejection")
+	}
+	var integrationErr *IntegrationError
+	if !errors.As(err, &integrationErr) {
+		t.Fatalf("error type = %T, want *IntegrationError", err)
+	}
+	if integrationErr.Stage != StageValidate {
+		t.Fatalf("stage = %s, want %s", integrationErr.Stage, StageValidate)
+	}
+	if !strings.Contains(integrationErr.Error(), "touches canonical Hal state") || !strings.Contains(integrationErr.Error(), ".hal/prd.json") || !strings.Contains(integrationErr.Error(), ".hal/progress.txt") {
+		t.Fatalf("error = %v, want canonical state paths", integrationErr)
+	}
+	if got := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD")); got != originalHead {
+		t.Fatalf("HEAD = %s, want %s", got, originalHead)
+	}
+	if got := readFile(t, repo, "app.txt"); got != "base\n" {
+		t.Fatalf("app.txt = %q, want base content", got)
+	}
+	requireTaskPasses(t, filepath.Join(repo, ".hal/prd.json"), "T-001", false)
+	requireTaskPasses(t, filepath.Join(repo, ".hal/prd.json"), "T-002", false)
+	if got := readFile(t, repo, ".hal/progress.txt"); strings.Contains(got, "forged") || strings.Contains(got, "integrated") {
+		t.Fatalf("progress was updated on rejected worker commit: %q", got)
+	}
+	if got := strings.TrimSpace(git(t, repo, "status", "--short")); got != "" {
+		t.Fatalf("git status = %q, want clean", got)
+	}
+}
+
 func TestIntegratorReturnsStructuredErrorAndAbortsCherryPickConflict(t *testing.T) {
 	repo := initTestRepo(t)
 	writeFile(t, repo, ".hal/prd.json", `{"tasks":[{"id":"T-001","passes":false}]}`)
