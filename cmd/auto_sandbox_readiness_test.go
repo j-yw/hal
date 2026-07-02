@@ -40,6 +40,30 @@ func TestAutoSandboxManifestOmitsCapabilityReadinessWhenUnavailable(t *testing.T
 	}
 }
 
+func TestAutoSandboxManifestOmitsReadinessDiagnosticsWhenUnavailable(t *testing.T) {
+	startedAt := time.Date(2026, 7, 2, 8, 2, 0, 0, time.UTC)
+	store := sandboxexecution.NewStore(t.TempDir())
+
+	if err := saveAutoSandboxManifest(store, autoSandboxRequest{
+		ExecutionID: "auto-readiness-diagnostics-unavailable",
+		ProjectDir:  "/repo",
+	}, sandboxexecution.StatusRunning, startedAt, nil, nil); err != nil {
+		t.Fatalf("saveAutoSandboxManifest() error = %v", err)
+	}
+
+	manifest := mustLoadSandboxExecutionManifest(t, store, "auto-readiness-diagnostics-unavailable")
+	if manifest.Security != nil && manifest.Security.CapabilityReadinessDiagnostics != nil {
+		t.Fatalf("capabilityReadinessDiagnostics = %#v, want omitted without readiness inputs", manifest.Security.CapabilityReadinessDiagnostics)
+	}
+	payload, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("Marshal(manifest) error = %v", err)
+	}
+	if strings.Contains(string(payload), "capabilityReadinessDiagnostics") {
+		t.Fatalf("manifest JSON included capabilityReadinessDiagnostics without readiness inputs: %s", string(payload))
+	}
+}
+
 func TestRunAutoSandboxWithWriterAttachesCapabilityReadinessWithoutChangingExecution(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 8, 5, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(4 * time.Second)
@@ -108,6 +132,143 @@ func TestRunAutoSandboxWithWriterAttachesCapabilityReadinessWithoutChangingExecu
 		t.Fatalf("WorkerRouting = %#v, want unchanged rootless worker routing metadata", manifest.WorkerRouting)
 	}
 	requireAutoSandboxCapabilityReadinessOutput(t, manifest.Security)
+}
+
+func TestAutoSandboxManifestAttachesReadinessDiagnosticsFromSanitizedReadiness(t *testing.T) {
+	startedAt := time.Date(2026, 7, 2, 8, 7, 0, 0, time.UTC)
+	store := sandboxexecution.NewStore(t.TempDir())
+	fixture := phase26CredentialProxyUnsafeValues()
+	req := autoSandboxRequest{
+		ExecutionID:         "auto-readiness-diagnostics-projected",
+		ProjectDir:          "/repo",
+		NetworkProxySession: fixture.NetworkProxySession(sandbox.SandboxNetworkPolicyDecisionSourceAuto, "network-proxy-session-01", "policy-snapshot-01"),
+		Security:            fixture.SecurityRequest([]string{sandbox.SandboxSecretModeHTTPProxy}, []string{sandbox.SandboxSecretModeHTTPProxy}),
+	}
+	target := autoSandboxCapabilityReadinessTarget()
+
+	if err := saveAutoSandboxManifest(store, req, sandboxexecution.StatusSucceeded, startedAt, &startedAt, target); err != nil {
+		t.Fatalf("saveAutoSandboxManifest() error = %v", err)
+	}
+
+	manifest := mustLoadSandboxExecutionManifest(t, store, "auto-readiness-diagnostics-projected")
+	if manifest.Security == nil || manifest.Security.CapabilityReadiness == nil {
+		t.Fatalf("Security = %#v, want sanitized capabilityReadiness for diagnostics", manifest.Security)
+	}
+	readiness := manifest.Security.CapabilityReadiness
+	if sanitized := sandbox.SanitizeSandboxSecurityCapabilityReadinessOutput(*readiness); !reflect.DeepEqual(sanitized, *readiness) {
+		t.Fatalf("capabilityReadiness was not sanitized before diagnostics:\nsanitized: %#v\nreadiness: %#v", sanitized, *readiness)
+	}
+	diagnostics := manifest.Security.CapabilityReadinessDiagnostics
+	if diagnostics == nil {
+		t.Fatal("capabilityReadinessDiagnostics = nil, want advisory diagnostics")
+	}
+	want := sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(*readiness)
+	if !reflect.DeepEqual(*diagnostics, want) {
+		t.Fatalf("capabilityReadinessDiagnostics not derived from sanitized readiness:\ngot:  %#v\nwant: %#v", *diagnostics, want)
+	}
+	if diagnostics.Status != sandbox.SandboxSecurityCapabilityDiagnosticSummaryStatusAdvisory ||
+		diagnostics.HighestSeverity != sandbox.SandboxSecurityCapabilityDiagnosticSeverityWarning ||
+		!diagnostics.AdvisoryOnly {
+		t.Fatalf("capabilityReadinessDiagnostics = %#v, want advisory warning summary", diagnostics)
+	}
+	requireRuntimeCapabilityReadinessDiagnostic(t, diagnostics,
+		sandbox.SandboxSecurityCapabilityDiagnosticClassificationUnsupported,
+		sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,
+		sandbox.SandboxSecurityCapabilityNetworkDenyByDefault,
+		true,
+	)
+	requireRuntimeCapabilityReadinessDiagnostic(t, diagnostics,
+		sandbox.SandboxSecurityCapabilityDiagnosticClassificationMetadataOnly,
+		sandbox.SandboxSecurityCapabilityFamilyNetworkProxy,
+		sandbox.SandboxSecurityCapabilityNetworkProxyEnforcement,
+		true,
+	)
+	requireRuntimeCapabilityReadinessDiagnostic(t, diagnostics,
+		sandbox.SandboxSecurityCapabilityDiagnosticClassificationMetadataOnly,
+		sandbox.SandboxSecurityCapabilityFamilyCredentialProxy,
+		sandbox.SandboxSecurityCapabilityCredentialProxy,
+		true,
+	)
+
+	encoded := mustMarshalSandboxSecurityMetadata(t, manifest.Security)
+	if !strings.Contains(encoded, "capabilityReadinessDiagnostics") {
+		t.Fatalf("security JSON omitted capabilityReadinessDiagnostics: %s", encoded)
+	}
+	assertPhase26CredentialProxyUnsafeValuesAbsent(t, "auto sandbox readiness diagnostics", encoded, fixture)
+	assertPhase26CredentialProxyNoRedactionPlaceholders(t, "auto sandbox readiness diagnostics", diagnostics)
+	for _, forbidden := range []string{"unix://", "/tmp/raw-worker-readiness.sock", "ghcr.io/private", "raw-readiness-image"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("capabilityReadinessDiagnostics leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestAutoSandboxReadinessDiagnosticsDoNotBlockOrAlterExecution(t *testing.T) {
+	startedAt := time.Date(2026, 7, 2, 8, 9, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(4 * time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(t.TempDir())
+	target := autoSandboxCapabilityReadinessTarget()
+	wantCommand := []string{"hal", "auto", "--base", "main"}
+
+	var executed bool
+	var remoteCommand []string
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
+		Base:                  "main",
+		BaseChanged:           true,
+		SandboxRuntime:        sandbox.SandboxRuntimeDriverRootlessPodman,
+		SandboxRuntimeChanged: true,
+	}, &out, &errOut, autoSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "auto-readiness-diagnostics-nonblocking"
+		},
+		now: runSandboxTestClock(startedAt, finishedAt),
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return autoSandboxTestPlan(projectDir), nil
+		},
+		execute: func(_ context.Context, req autoSandboxRequest, out io.Writer, _ io.Writer, hooks autoSandboxExecutionHooks) (autoSandboxExecutionResult, error) {
+			executed = true
+			remoteCommand = append([]string(nil), req.RemoteCommand...)
+			if strings.Contains(strings.Join(req.RemoteCommand, " "), "readiness") {
+				t.Fatalf("RemoteCommand added diagnostics/readiness flag: %#v", req.RemoteCommand)
+			}
+			if hooks.OnTargetReady != nil {
+				if err := hooks.OnTargetReady(target); err != nil {
+					return autoSandboxExecutionResult{}, err
+				}
+			}
+			_, _ = io.WriteString(out, autoSandboxRemoteSuccessJSON("readiness diagnostics preserved execution")+"\n")
+			return autoSandboxExecutionResult{
+				Result:          &sandboxexec.Result{Target: sandboxRuntimeTargetFromState(target)},
+				PreparedCommand: append([]string(nil), req.RemoteCommand...),
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runAutoSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+	if !executed {
+		t.Fatal("execute hook was not called")
+	}
+	if !reflect.DeepEqual(remoteCommand, wantCommand) {
+		t.Fatalf("RemoteCommand = %#v, want %#v", remoteCommand, wantCommand)
+	}
+	if !strings.Contains(out.String(), "readiness diagnostics preserved execution") {
+		t.Fatalf("stdout = %q, want remote output unchanged", out.String())
+	}
+
+	manifest := mustLoadSandboxExecutionManifest(t, store, "auto-readiness-diagnostics-nonblocking")
+	if manifest.Status != sandboxexecution.StatusSucceeded {
+		t.Fatalf("Status = %q, want succeeded", manifest.Status)
+	}
+	if manifest.Security == nil || manifest.Security.CapabilityReadinessDiagnostics == nil {
+		t.Fatalf("Security = %#v, want non-blocking readiness diagnostics attached", manifest.Security)
+	}
 }
 
 func autoSandboxCapabilityReadinessTarget() *sandbox.SandboxState {

@@ -13,9 +13,11 @@ func applyAutoSandboxCapabilityReadinessMetadata(manifest *sandboxexecution.Mani
 		sanitized := sandbox.SanitizeSandboxSecurityCapabilityReadinessOutput(*manifest.Security.CapabilityReadiness)
 		if len(sanitized.Results) == 0 {
 			manifest.Security.CapabilityReadiness = nil
+			manifest.Security.CapabilityReadinessDiagnostics = nil
 			return
 		}
 		manifest.Security.CapabilityReadiness = &sanitized
+		applyAutoSandboxReadinessDiagnostics(manifest.Security)
 		return
 	}
 
@@ -35,6 +37,18 @@ func applyAutoSandboxCapabilityReadinessMetadata(manifest *sandboxexecution.Mani
 			CredentialProxyBindings:   manifest.CredentialProxyBindings,
 		}),
 	)
+	applyAutoSandboxReadinessDiagnostics(manifest.Security)
+}
+
+func applyAutoSandboxReadinessDiagnostics(security *sandbox.SandboxSecurity) {
+	if security == nil || security.CapabilityReadiness == nil {
+		if security != nil {
+			security.CapabilityReadinessDiagnostics = nil
+		}
+		return
+	}
+	diagnostics := sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(*security.CapabilityReadiness)
+	security.CapabilityReadinessDiagnostics = &diagnostics
 }
 
 func autoSandboxManifestNetworkPolicyResult(security *sandbox.SandboxSecurity) *sandbox.SandboxNetworkPolicyResult {
