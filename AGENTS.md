@@ -50,6 +50,7 @@
 - Phase 25 credential proxy live-behavior source guards live in `internal/sandbox/credential_proxy_import_boundary_test.go`; scan production `credential_proxy*.go` files only, use implementation-shaped markers, and avoid forbidding legitimate metadata enum values such as `ssh_agent`, `file_tmpfs`, or `http_proxy`.
 - Phase 25 non-factory manifest no-op coverage lives in `cmd/credential_proxy_manifest_test.go`; keep default `hal run --sandbox`/`hal auto --sandbox` manifests free of credential proxy JSON fields and guard `cmd/run_sandbox.go`, `cmd/auto_sandbox.go`, and `internal/sandboxexecution/types.go` from credential proxy persistence fields until an explicit later plumbing phase.
 - Phase 25 factory persistence no-op coverage lives in `cmd/credential_proxy_manifest_test.go`; keep default factory sandbox metadata, run records, and timeline events free of credential proxy JSON fields and guard `internal/factory/types.go`, `cmd/factory.go`, and `cmd/factory_sandbox_executor.go` from credential proxy persistence fields until an explicit later plumbing phase.
+- Phase 25 verification docs live in `docs/design/sandbox-runtime-v2-phase25-credential-proxy-plan-verification.md` and are guarded by `cmd/phase25_credential_proxy_docs_test.go`; keep focused commands, fake-only scope, unchanged command/manifest/factory/timeline JSON surfaces, and future-phase live-delivery handoffs in sync with credential proxy metadata behavior.
 
 ## Patterns from phase24-network-proxy-policy-log (2026-07-02)
 
