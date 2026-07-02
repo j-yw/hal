@@ -108,6 +108,19 @@ func SanitizeSandboxSecurityCapabilityReadinessOutput(output SandboxSecurityCapa
 	return SandboxSecurityCapabilityReadinessOutput{Results: results}
 }
 
+// CloneSandboxSecurityCapabilityReadinessOutputPtr returns nil for nil or empty
+// readiness output, or a durable-safe deep copy for optional security metadata.
+func CloneSandboxSecurityCapabilityReadinessOutputPtr(output *SandboxSecurityCapabilityReadinessOutput) *SandboxSecurityCapabilityReadinessOutput {
+	if output == nil {
+		return nil
+	}
+	cloned := SanitizeSandboxSecurityCapabilityReadinessOutput(*output)
+	if len(cloned.Results) == 0 {
+		return nil
+	}
+	return &cloned
+}
+
 func sanitizeSandboxSecurityCapabilityMetadataRecords(records []SandboxSecurityCapabilityMetadata, requested bool) []SandboxSecurityCapabilityMetadata {
 	if len(records) == 0 {
 		return nil

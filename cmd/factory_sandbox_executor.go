@@ -2209,7 +2209,9 @@ func factorySandboxSecurityMetadata(security *sandbox.SandboxSecurity) *factory.
 	if security == nil {
 		return nil
 	}
-	metadata := &factory.SandboxSecurityMetadata{}
+	metadata := &factory.SandboxSecurityMetadata{
+		CapabilityReadiness: sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness),
+	}
 	if security.Network != nil {
 		metadata.Network = &factory.SandboxNetworkSecurityMetadata{
 			PolicyRequested: security.Network.PolicyRequested,
@@ -2224,7 +2226,7 @@ func factorySandboxSecurityMetadata(security *sandbox.SandboxSecurity) *factory.
 			ActiveModes:    append([]string(nil), security.Secrets.ActiveModes...),
 		}
 	}
-	if metadata.Network == nil && metadata.Secrets == nil {
+	if metadata.Network == nil && metadata.Secrets == nil && metadata.CapabilityReadiness == nil {
 		return nil
 	}
 	return metadata
@@ -2304,6 +2306,9 @@ func factorySandboxSecurityTimelineMetadata(security *factory.SandboxSecurityMet
 			"requestedModes": append([]string(nil), security.Secrets.RequestedModes...),
 			"activeModes":    append([]string(nil), security.Secrets.ActiveModes...),
 		}
+	}
+	if capabilityReadiness := sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness); capabilityReadiness != nil {
+		out["capabilityReadiness"] = capabilityReadiness
 	}
 	if len(out) == 0 {
 		return nil

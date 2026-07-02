@@ -118,6 +118,7 @@ claims are present in durable metadata or live worker capabilities.
 |-------|------|-------------|
 | `requested` | object | Requested security controls, or an empty object when unknown |
 | `enforced` | object | Actually enforced security controls, or an empty object when unknown |
+| `capabilityReadiness` | object | Optional security capability readiness output when projected metadata is available |
 
 Known control fields:
 

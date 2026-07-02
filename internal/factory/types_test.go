@@ -901,6 +901,39 @@ func TestSandboxSecurityLeaseMetadataJSONTags(t *testing.T) {
 	}
 }
 
+func TestSandboxSecurityCapabilityReadinessMetadataJSONTags(t *testing.T) {
+	security := SandboxSecurityMetadata{
+		CapabilityReadiness: testFactorySandboxCapabilityReadinessOutput(),
+	}
+
+	data, err := json.Marshal(security)
+	if err != nil {
+		t.Fatalf("json.Marshal(security) error = %v", err)
+	}
+
+	raw := mustJSONMapFromBytes(t, data)
+	requireExactJSONKeys(t, raw, []string{"capabilityReadiness"})
+	requireJSONKeysAbsent(t, raw, []string{"network", "secrets"})
+
+	readiness, ok := raw["capabilityReadiness"].(map[string]any)
+	if !ok {
+		t.Fatalf("capabilityReadiness should be an object, got %T", raw["capabilityReadiness"])
+	}
+	requireExactJSONKeys(t, readiness, []string{"results"})
+
+	results, ok := readiness["results"].([]any)
+	if !ok || len(results) != 1 {
+		t.Fatalf("capabilityReadiness.results = %#v, want one result", readiness["results"])
+	}
+	result, ok := results[0].(map[string]any)
+	if !ok {
+		t.Fatalf("capabilityReadiness result should be an object, got %T", results[0])
+	}
+	if result["state"] != string(sandbox.SandboxSecurityCapabilityReadinessReady) {
+		t.Fatalf("capabilityReadiness result state = %#v", result["state"])
+	}
+}
+
 func TestSandboxMetadataLoadsLegacyJSON(t *testing.T) {
 	payload := []byte(`{
 		"name": "factory-run",
@@ -2574,6 +2607,23 @@ func mustJSONMapFromBytes(t *testing.T, data []byte) map[string]any {
 		t.Fatalf("json.Unmarshal(payload) error = %v", err)
 	}
 	return raw
+}
+
+func testFactorySandboxCapabilityReadinessOutput() *sandbox.SandboxSecurityCapabilityReadinessOutput {
+	return &sandbox.SandboxSecurityCapabilityReadinessOutput{
+		Results: []sandbox.SandboxSecurityCapabilityReadinessResult{{
+			State: sandbox.SandboxSecurityCapabilityReadinessReady,
+			Ready: &sandbox.SandboxSecurityCapabilityMetadata{
+				ID:         "factory-capability-ready",
+				Family:     sandbox.SandboxSecurityCapabilityFamilySecretDelivery,
+				Capability: sandbox.SandboxSecurityCapabilitySecretEnv,
+				Source:     sandbox.SandboxSecurityCapabilitySourceRuntime,
+				Status:     sandbox.SandboxSecurityCapabilityReadinessReady,
+				ReasonCode: sandbox.SandboxSecurityCapabilityReasonCapabilityConfirmed,
+			},
+			ReasonCode: sandbox.SandboxSecurityCapabilityReasonCapabilityConfirmed,
+		}},
+	}
 }
 
 func firstJSONMapArrayObject(t *testing.T, values map[string]any, key string) (map[string]any, bool) {

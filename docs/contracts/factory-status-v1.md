@@ -181,6 +181,7 @@ When `sandbox.security` is present:
 |-------|------|----------|-------------|
 | `network` | object | no | Redaction-safe network policy summary |
 | `secrets` | object | no | Redaction-safe secret delivery summary |
+| `capabilityReadiness` | object | no | Additive security capability readiness output with redaction-safe result metadata |
 
 When `sandbox.security.network` is present:
 
