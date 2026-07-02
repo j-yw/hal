@@ -14,6 +14,33 @@ func ProjectSandboxSecurityCapabilityReadinessInput(security *SandboxSecurity) S
 	return SanitizeSandboxSecurityCapabilityReadinessInput(input)
 }
 
+// SandboxWorkerRuntimeCapabilityReadinessProjection carries durable
+// worker/runtime posture labels into readiness input.
+type SandboxWorkerRuntimeCapabilityReadinessProjection struct {
+	Host           *SandboxHost
+	Runtime        *SandboxRuntimeState
+	WorkerRouting  *WorkerRoutingMetadata
+	WorkerPostures []SandboxSecurityCapabilityWorkerPostureMetadata
+	Ready          []SandboxSecurityCapabilityMetadata
+}
+
+// ProjectSandboxWorkerRuntimeCapabilityReadinessInput maps durable
+// worker/runtime metadata into readiness evaluator input.
+func ProjectSandboxWorkerRuntimeCapabilityReadinessInput(projection SandboxWorkerRuntimeCapabilityReadinessProjection) SandboxSecurityCapabilityReadinessInput {
+	input := SandboxSecurityCapabilityReadinessInput{}
+	input.WorkerPostures = sandboxSecurityCapabilityProjectionAppendWorkerPosture(
+		input.WorkerPostures,
+		sandboxSecurityCapabilityProjectionWorkerRuntimePosture(projection.Host, projection.Runtime, projection.WorkerRouting),
+	)
+	for _, posture := range projection.WorkerPostures {
+		input.WorkerPostures = sandboxSecurityCapabilityProjectionAppendWorkerPosture(input.WorkerPostures, posture)
+	}
+	for _, ready := range projection.Ready {
+		input.Ready = sandboxSecurityCapabilityProjectionAppendUnique(input.Ready, ready)
+	}
+	return SanitizeSandboxSecurityCapabilityReadinessInput(input)
+}
+
 func sandboxSecurityCapabilityProjectionRequestedNetwork(records []SandboxSecurityCapabilityMetadata, network *SandboxNetworkSecurity) []SandboxSecurityCapabilityMetadata {
 	if network == nil {
 		return records
@@ -137,6 +164,105 @@ func sandboxSecurityCapabilityProjectionSecretMode(mode string) (SandboxSecurity
 	default:
 		return "", "", "", false
 	}
+}
+
+func sandboxSecurityCapabilityProjectionWorkerRuntimePosture(host *SandboxHost, runtime *SandboxRuntimeState, routing *WorkerRoutingMetadata) SandboxSecurityCapabilityWorkerPostureMetadata {
+	posture := SandboxSecurityCapabilityWorkerPostureMetadata{}
+	if host != nil {
+		posture.WorkerKind = sandboxSecurityCapabilityProjectionFirstSafeLabel(posture.WorkerKind, host.Kind, sanitizeSandboxSecurityCapabilityWorkerKindValue)
+		posture = sandboxSecurityCapabilityProjectionApplySecurityPosture(posture, host.Security)
+	}
+	if runtime != nil {
+		posture.RuntimeDriver = sandboxSecurityCapabilityProjectionFirstSafeLabel(posture.RuntimeDriver, runtime.Driver, sanitizeSandboxSecurityCapabilityRuntimeDriverValue)
+		posture.IsolationLevel = sandboxSecurityCapabilityProjectionFirstSafeLabel(posture.IsolationLevel, runtime.IsolationLevel, sanitizeSandboxSecurityCapabilityIsolationLevelValue)
+	}
+	if routing != nil {
+		posture.RuntimeDriver = sandboxSecurityCapabilityProjectionFirstSafeLabel(posture.RuntimeDriver, routing.RuntimeDriverID, sanitizeSandboxSecurityCapabilityRuntimeDriverValue)
+		posture.IsolationLevel = sandboxSecurityCapabilityProjectionFirstSafeLabel(posture.IsolationLevel, routing.IsolationLevel, sanitizeSandboxSecurityCapabilityIsolationLevelValue)
+	}
+	return posture
+}
+
+func sandboxSecurityCapabilityProjectionApplySecurityPosture(posture SandboxSecurityCapabilityWorkerPostureMetadata, security *SandboxSecurity) SandboxSecurityCapabilityWorkerPostureMetadata {
+	if security == nil {
+		return posture
+	}
+	if security.Network != nil {
+		posture.NetworkPolicy = sandboxSecurityCapabilityProjectionFirstSafeLabel(posture.NetworkPolicy, security.Network.PolicyEnforced, sanitizeSandboxSecurityCapabilityNetworkPolicyValue)
+		posture.NetworkEnforcement = sandboxSecurityCapabilityProjectionFirstSafeLabel(posture.NetworkEnforcement, security.Network.EnforcementMode, sanitizeSandboxSecurityCapabilityNetworkEnforcementValue)
+	}
+	if security.Secrets != nil {
+		posture.CredentialModes = sandboxSecurityCapabilityProjectionAppendSecretModes(posture.CredentialModes, security.Secrets.ActiveModes)
+	}
+	return posture
+}
+
+type sandboxSecurityCapabilityProjectionLabelSanitizer func(string) string
+
+func sandboxSecurityCapabilityProjectionFirstSafeLabel(existing, candidate string, sanitize sandboxSecurityCapabilityProjectionLabelSanitizer) string {
+	if sanitize(existing) != "" {
+		return sanitize(existing)
+	}
+	return sanitize(candidate)
+}
+
+func sandboxSecurityCapabilityProjectionAppendSecretModes(existing, candidates []string) []string {
+	modes := sanitizeSandboxSecurityCapabilitySecretModes(existing)
+	if len(candidates) == 0 {
+		return modes
+	}
+	for _, mode := range sanitizeSandboxSecurityCapabilitySecretModes(candidates) {
+		duplicate := false
+		for _, existingMode := range modes {
+			if existingMode == mode {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			modes = append(modes, mode)
+		}
+	}
+	if len(modes) == 0 {
+		return nil
+	}
+	return modes
+}
+
+func sandboxSecurityCapabilityProjectionAppendWorkerPosture(records []SandboxSecurityCapabilityWorkerPostureMetadata, posture SandboxSecurityCapabilityWorkerPostureMetadata) []SandboxSecurityCapabilityWorkerPostureMetadata {
+	sanitized := sanitizeSandboxSecurityCapabilityWorkerPostures([]SandboxSecurityCapabilityWorkerPostureMetadata{posture})
+	if len(sanitized) == 0 {
+		return records
+	}
+	record := sanitized[0]
+	for _, existing := range records {
+		if sandboxSecurityCapabilityProjectionSameWorkerPosture(existing, record) {
+			return records
+		}
+	}
+	return append(records, record)
+}
+
+func sandboxSecurityCapabilityProjectionSameWorkerPosture(a, b SandboxSecurityCapabilityWorkerPostureMetadata) bool {
+	return a.WorkerKind == b.WorkerKind &&
+		a.RuntimeDriver == b.RuntimeDriver &&
+		a.IsolationLevel == b.IsolationLevel &&
+		a.NetworkPolicy == b.NetworkPolicy &&
+		a.NetworkEnforcement == b.NetworkEnforcement &&
+		a.CredentialProxyMode == b.CredentialProxyMode &&
+		sandboxSecurityCapabilityProjectionSameStrings(a.CredentialModes, b.CredentialModes)
+}
+
+func sandboxSecurityCapabilityProjectionSameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func sandboxSecurityCapabilityProjectionAppendMetadataOnly(records []SandboxSecurityCapabilityMetadata, family SandboxSecurityCapabilityFamily, capability SandboxSecurityCapabilityName, mode string, reason SandboxSecurityCapabilityReasonCode) []SandboxSecurityCapabilityMetadata {
