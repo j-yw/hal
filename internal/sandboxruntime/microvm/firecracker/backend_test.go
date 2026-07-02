@@ -260,6 +260,365 @@ func TestBackendStartReturnsSanitizedOperationPlanWithoutStartingProcess(t *test
 	}
 }
 
+func TestBackendStartPublicJSONRedactsPlanningAndLiveLaunchMetadata(t *testing.T) {
+	tests := []struct {
+		name      string
+		liveStart bool
+		adapter   ProcessAdapter
+	}{
+		{
+			name:    "planning only",
+			adapter: &fakeProcessAdapter{},
+		},
+		{
+			name:      "explicit live start",
+			liveStart: true,
+			adapter: &fakeProcessAdapter{
+				start: func(context.Context, ProcessStartRequest) (ProcessHandleMetadata, error) {
+					return ProcessHandleMetadata{
+						ID:     "424242",
+						Source: "pid=424242",
+					}, nil
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := validMicroVMConfig()
+			config.HypervisorPath = "/Users/alice/private/bin/firecracker-secret"
+			config.KernelImagePath = "/Users/alice/private/images/vmlinux-secret"
+			config.RootfsPath = "/Users/alice/private/images/rootfs-secret.ext4"
+			config.InitrdPath = "/Users/alice/private/images/initrd-secret.img"
+			config.ImageLabel = "template-token-ghp_secret"
+			backend := NewBackend(BackendOptions{
+				BaseStateDir:   firecrackerPathTestBase("alice", "private", "live-start-json-state"),
+				ProcessAdapter: tt.adapter,
+				LiveStart:      tt.liveStart,
+			})
+			created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+				Operation: microvm.OperationCreate,
+				Config:    config,
+				Name:      "firecracker-live-json token=ghp_secret",
+			})
+			if err != nil {
+				t.Fatalf("Create() error = %v, want nil", err)
+			}
+			controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+				Operation: microvm.OperationStart,
+				Config:    config,
+				Target:    *created,
+			})
+			if err != nil {
+				t.Fatalf("Controller() error = %v, want nil", err)
+			}
+
+			started, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
+				Operation: microvm.OperationStart,
+				Config:    config,
+				Target:    *created,
+			})
+			if err != nil {
+				t.Fatalf("Start() error = %v, want nil", err)
+			}
+			if started == nil {
+				t.Fatal("Start() target = nil, want Firecracker target")
+			}
+			assertFirecrackerRuntimeMetadataDoesNotClaimUnsupportedLiveCapabilities(t, started)
+
+			encoded, marshalErr := json.Marshal(started)
+			if marshalErr != nil {
+				t.Fatalf("Marshal(started) error = %v", marshalErr)
+			}
+			publicText := string(encoded)
+			for _, unsafe := range []string{
+				"/Users/alice",
+				"private",
+				"firecracker-secret",
+				"firecracker.sock",
+				"firecracker-config.json",
+				"firecracker.log",
+				"firecracker.metrics",
+				"vmlinux-secret",
+				"rootfs-secret.ext4",
+				"initrd-secret.img",
+				"template-token-ghp_secret",
+				"ghp_secret",
+				"SECRET_TOKEN",
+				"OPENAI_API_KEY",
+				"424242",
+				"pid=424242",
+			} {
+				if strings.Contains(publicText, unsafe) {
+					t.Fatalf("public %s target JSON leaked unsafe fragment %q in %s", tt.name, unsafe, publicText)
+				}
+			}
+		})
+	}
+}
+
+func TestBackendDefaultOptionsStartRemainsPlanningOnly(t *testing.T) {
+	backend := NewBackend(BackendOptions{})
+	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+		Operation: microvm.OperationCreate,
+		Config:    validMicroVMConfig(),
+		Name:      "firecracker-default",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Controller() error = %v, want nil", err)
+	}
+
+	started, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v, want planning-only nil error", err)
+	}
+
+	if started == nil {
+		t.Fatal("Start() target = nil, want planning target")
+	}
+	if started.Status != sandbox.StatusStopped {
+		t.Fatalf("started Status = %q, want %q for default planning-only start", started.Status, sandbox.StatusStopped)
+	}
+	assertFirecrackerOwnedRuntimeMetadata(t, started)
+	if started.Runtime.Metadata.OperationPlan == nil || started.Runtime.Metadata.OperationPlan.ProcessDescriptor == nil {
+		t.Fatalf("runtime operation metadata = %#v, want rendered start plan and descriptor", started.Runtime.Metadata.OperationPlan)
+	}
+	if started.Runtime.Metadata.ProcessLaunch.State != string(ProcessLaunchStateBoundaryAvailable) {
+		t.Fatalf("ProcessLaunch.State = %q, want planning-only %q", started.Runtime.Metadata.ProcessLaunch.State, ProcessLaunchStateBoundaryAvailable)
+	}
+}
+
+func TestBackendInjectedAdapterWithoutLiveStartRemainsPlanningOnly(t *testing.T) {
+	adapter := &fakeProcessAdapter{
+		prepare: func(_ context.Context, req ProcessStartCommandRequest) (ProcessCommandDescriptor, error) {
+			return ProcessCommandDescriptorFromStartPlan(req.Plan)
+		},
+		start: func(context.Context, ProcessStartRequest) (ProcessHandleMetadata, error) {
+			t.Fatal("StartProcess should not run unless LiveStart is explicitly enabled")
+			return ProcessHandleMetadata{}, nil
+		},
+	}
+	backend := NewBackend(BackendOptions{
+		BaseStateDir:   firecrackerPathTestBase("planning-only-with-adapter"),
+		ProcessAdapter: adapter,
+	})
+	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+		Operation: microvm.OperationCreate,
+		Config:    validMicroVMConfig(),
+		Name:      "firecracker-planning-only",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Controller() error = %v, want nil", err)
+	}
+
+	started, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v, want planning-only nil error", err)
+	}
+
+	if adapter.prepareCalls != 1 || adapter.startCalls != 0 {
+		t.Fatalf("adapter calls = prepare:%d start:%d, want one prepare and no process start", adapter.prepareCalls, adapter.startCalls)
+	}
+	if started == nil || started.Runtime.Metadata == nil || started.Runtime.Metadata.OperationPlan == nil {
+		t.Fatalf("started target metadata = %#v, want planning metadata", started)
+	}
+	if started.Runtime.Metadata.ProcessLaunch == nil || started.Runtime.Metadata.ProcessLaunch.State != string(ProcessLaunchStateBoundaryAvailable) {
+		t.Fatalf("ProcessLaunch = %#v, want boundary-available planning metadata", started.Runtime.Metadata.ProcessLaunch)
+	}
+}
+
+func TestBackendLiveStartOptionCallsInjectedAdapterAfterPlanRendered(t *testing.T) {
+	var events []string
+	adapter := &fakeProcessAdapter{
+		prepare: func(_ context.Context, req ProcessStartCommandRequest) (ProcessCommandDescriptor, error) {
+			events = append(events, "prepare")
+			if req.Plan.Action != OperationActionStart {
+				t.Fatalf("PrepareStartCommand plan Action = %q, want %q", req.Plan.Action, OperationActionStart)
+			}
+			if req.Plan.Executable.Role != OperationPathRoleExecutable {
+				t.Fatalf("PrepareStartCommand executable role = %q, want %q", req.Plan.Executable.Role, OperationPathRoleExecutable)
+			}
+			if len(req.Plan.Argv) == 0 {
+				t.Fatal("PrepareStartCommand plan Argv is empty, want rendered process argv")
+			}
+			return ProcessCommandDescriptorFromStartPlan(req.Plan)
+		},
+		start: func(_ context.Context, req ProcessStartRequest) (ProcessHandleMetadata, error) {
+			events = append(events, "start")
+			if req.Descriptor.Action != OperationActionStart {
+				t.Fatalf("StartProcess descriptor Action = %q, want %q", req.Descriptor.Action, OperationActionStart)
+			}
+			if len(req.Descriptor.Argv) == 0 {
+				t.Fatal("StartProcess descriptor Argv is empty, want prepared process argv")
+			}
+			return ProcessHandleMetadata{ID: "fc-handle-1234", Source: "adapter"}, nil
+		},
+	}
+	backend := NewBackend(BackendOptions{
+		BaseStateDir:   firecrackerPathTestBase("live-start-state"),
+		ProcessAdapter: adapter,
+		LiveStart:      true,
+	})
+	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+		Operation: microvm.OperationCreate,
+		Config:    validMicroVMConfig(),
+		Name:      "firecracker-live",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Controller() error = %v, want nil", err)
+	}
+
+	started, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v, want nil", err)
+	}
+
+	if !reflect.DeepEqual(events, []string{"prepare", "start"}) {
+		t.Fatalf("adapter events = %#v, want prepare before live process start", events)
+	}
+	if adapter.prepareCalls != 1 || adapter.startCalls != 1 {
+		t.Fatalf("adapter calls = prepare:%d start:%d, want one prepare and one explicit live start", adapter.prepareCalls, adapter.startCalls)
+	}
+	if started == nil {
+		t.Fatal("Start() target = nil, want live-start target")
+	}
+	if started.Status != sandbox.StatusStopped {
+		t.Fatalf("started Status = %q, want %q because live start does not claim guest readiness", started.Status, sandbox.StatusStopped)
+	}
+	if started.Runtime.Metadata == nil || started.Runtime.Metadata.OperationPlan == nil || started.Runtime.Metadata.OperationPlan.ProcessDescriptor == nil {
+		t.Fatalf("runtime metadata = %#v, want rendered operation plan before live start", started.Runtime.Metadata)
+	}
+	if started.Runtime.Metadata.ProcessLaunch == nil {
+		t.Fatal("ProcessLaunch = nil, want safe accepted process metadata")
+	}
+	if started.Runtime.Metadata.ProcessLaunch.State != string(ProcessLaunchStateAccepted) {
+		t.Fatalf("ProcessLaunch.State = %q, want %q", started.Runtime.Metadata.ProcessLaunch.State, ProcessLaunchStateAccepted)
+	}
+	if started.Runtime.Metadata.ProcessLaunch.ProcessID != "fc-handle-1234" || started.Runtime.Metadata.ProcessLaunch.ProcessIDSource != "adapter" {
+		t.Fatalf("ProcessLaunch handle = %#v, want sanitized adapter handle", started.Runtime.Metadata.ProcessLaunch)
+	}
+	assertFirecrackerRuntimeMetadataDoesNotClaimUnsupportedLiveCapabilities(t, started)
+}
+
+func TestBackendLiveStartReturnsSanitizedRunnerFailure(t *testing.T) {
+	runnerErr := errors.New("firecracker runner failed executable=/Users/alice/private/bin/firecracker-secret argv=--api-sock /Users/alice/private/firecracker.sock --config-file /Users/alice/private/firecracker-config.json --log-path /Users/alice/private/firecracker.log --metrics-path /Users/alice/private/firecracker.metrics stderr=/Users/alice/private/firecracker.sock stdout=token=ghp_secret endpoint=https://raw-secret@example.test:8443/api pid=424242 OPENAI_API_KEY=sk-live-secret SECRET_TOKEN=ghp_secret")
+	starter := &fakeProcessStarter{
+		start: func(context.Context, ProcessRunnerStartRequest) (ProcessHandleMetadata, error) {
+			return ProcessHandleMetadata{}, runnerErr
+		},
+	}
+	backend := NewBackend(BackendOptions{
+		BaseStateDir:   firecrackerPathTestBase("live-start-failure-state"),
+		ProcessAdapter: ProcessLaunchAdapter{Starter: starter},
+		LiveStart:      true,
+	})
+	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+		Operation: microvm.OperationCreate,
+		Config:    validMicroVMConfig(),
+		Name:      "firecracker-live-failure",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Controller() error = %v, want nil", err)
+	}
+
+	started, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+
+	if started != nil {
+		t.Fatalf("Start() target = %#v, want nil after live-start runner failure", started)
+	}
+	if starter.startCalls != 1 {
+		t.Fatalf("starter calls = %d, want one explicit live-start attempt", starter.startCalls)
+	}
+	assertFirecrackerStartOperationError(t, err, microvm.ErrorCodeBackendOperationFailed, ProcessBoundaryOperation, "processAdapter")
+	if !errors.Is(err, runnerErr) {
+		t.Fatalf("errors.Is(err, runnerErr) = false, want true without exposing raw runner output")
+	}
+
+	encoded, marshalErr := json.Marshal(err)
+	if marshalErr != nil {
+		t.Fatalf("Marshal(live-start error) error = %v", marshalErr)
+	}
+	publicText := err.Error() + " " + string(encoded)
+	wrappedText := ""
+	for unwrapped := errors.Unwrap(err); unwrapped != nil; unwrapped = errors.Unwrap(unwrapped) {
+		wrappedText += " " + unwrapped.Error()
+	}
+	combinedText := publicText + wrappedText
+	for _, unsafe := range []string{
+		"/Users/alice",
+		"private",
+		"firecracker.sock",
+		"ghp_secret",
+		"raw-secret",
+		"example.test",
+		"8443",
+		"424242",
+		"pid=424242",
+		"OPENAI_API_KEY",
+		"SECRET_TOKEN",
+		"sk-live-secret",
+	} {
+		if strings.Contains(combinedText, unsafe) {
+			t.Fatalf("live-start failure leaked unsafe fragment %q in public=%q wrapped=%q", unsafe, publicText, wrappedText)
+		}
+	}
+	if !strings.Contains(wrappedText, "[redacted-path]") || !strings.Contains(wrappedText, "[redacted-endpoint]") {
+		t.Fatalf("wrapped live-start error = %q, want sanitized runner output markers", wrappedText)
+	}
+	if !strings.Contains(wrappedText, "[redacted-pid]") || !strings.Contains(wrappedText, "[redacted-env]") {
+		t.Fatalf("wrapped live-start error = %q, want sanitized PID and environment markers", wrappedText)
+	}
+}
+
 func TestBackendStartRejectsInvalidPathPlanWithOperationError(t *testing.T) {
 	backend := NewBackend(BackendOptions{BaseStateDir: "alice/private/firecracker-state"})
 	target := sandboxruntime.Target{
@@ -673,6 +1032,49 @@ func assertFirecrackerOwnedRuntimeMetadata(t *testing.T, target *sandboxruntime.
 	if !reflect.DeepEqual(target.Runtime.Metadata.PathRoles, wantPathRoles) {
 		t.Fatalf("runtime metadata PathRoles = %#v, want %#v", target.Runtime.Metadata.PathRoles, wantPathRoles)
 	}
+	if target.Runtime.Metadata.ProcessLaunch == nil {
+		t.Fatal("runtime metadata ProcessLaunch = nil, want safe launch metadata")
+	}
+	if target.Runtime.Metadata.ProcessLaunch.State != string(ProcessLaunchStateBoundaryAvailable) {
+		t.Fatalf("runtime metadata ProcessLaunch.State = %q, want %q", target.Runtime.Metadata.ProcessLaunch.State, ProcessLaunchStateBoundaryAvailable)
+	}
+	if !reflect.DeepEqual(target.Runtime.Metadata.ProcessLaunch.Labels, []string{string(ProcessLaunchStateBoundaryAvailable)}) {
+		t.Fatalf("runtime metadata ProcessLaunch.Labels = %#v, want boundary-available label", target.Runtime.Metadata.ProcessLaunch.Labels)
+	}
+	if target.Runtime.Metadata.ProcessLaunch.ProcessID != "" || target.Runtime.Metadata.ProcessLaunch.ProcessIDSource != "" {
+		t.Fatalf("runtime metadata ProcessLaunch exposes process identity before launch acceptance: %#v", target.Runtime.Metadata.ProcessLaunch)
+	}
+}
+
+func assertFirecrackerRuntimeMetadataDoesNotClaimUnsupportedLiveCapabilities(t *testing.T, target *sandboxruntime.Target) {
+	t.Helper()
+	if target == nil || target.Runtime.Metadata == nil {
+		t.Fatalf("target runtime metadata = %#v, want Firecracker metadata", target)
+	}
+	encoded, err := json.Marshal(target.Runtime.Metadata)
+	if err != nil {
+		t.Fatalf("Marshal(runtime metadata) error = %v", err)
+	}
+	publicText := string(encoded)
+	for _, unsupported := range []string{
+		"guest_ready",
+		"vm_boot_ready",
+		"guest_network",
+		"network_proxy",
+		"credential",
+		"guest_exec",
+		"vsock_exec",
+		"copy",
+		"kvm",
+		"jailer",
+		"root_setup",
+		"/dev/kvm",
+		"firecracker binary",
+	} {
+		if strings.Contains(strings.ToLower(publicText), unsupported) {
+			t.Fatalf("live-start metadata claims unsupported capability %q in %s", unsupported, publicText)
+		}
+	}
 }
 
 func poisonFirecrackerRuntimeMetadata(target *sandboxruntime.Target) {
@@ -692,6 +1094,12 @@ func poisonFirecrackerRuntimeMetadata(target *sandboxruntime.Target) {
 			Environment: []sandboxruntime.RuntimeOperationEnvironment{
 				{Name: "SECRET_TOKEN", Source: "env:OPENAI_API_KEY"},
 			},
+		},
+		ProcessLaunch: &sandboxruntime.RuntimeProcessLaunchMetadata{
+			State:           "guest_ready",
+			Labels:          []string{"network_enforced", "/Users/alice/private/firecracker.sock"},
+			ProcessID:       "pid:/Users/alice/private/firecracker.sock",
+			ProcessIDSource: "env:OPENAI_API_KEY token=ghp_secret",
 		},
 	}
 }

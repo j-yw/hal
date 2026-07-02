@@ -63,10 +63,21 @@ type RuntimeState struct {
 // RuntimeMetadata captures optional runtime-specific target metadata using only
 // redaction-safe labels.
 type RuntimeMetadata struct {
-	Backend          string                `json:"backend,omitempty"`
-	CapabilityLabels []string              `json:"capabilityLabels,omitempty"`
-	PathRoles        []string              `json:"pathRoles,omitempty"`
-	OperationPlan    *RuntimeOperationPlan `json:"operationPlan,omitempty"`
+	Backend          string                        `json:"backend,omitempty"`
+	CapabilityLabels []string                      `json:"capabilityLabels,omitempty"`
+	PathRoles        []string                      `json:"pathRoles,omitempty"`
+	OperationPlan    *RuntimeOperationPlan         `json:"operationPlan,omitempty"`
+	ProcessLaunch    *RuntimeProcessLaunchMetadata `json:"processLaunch,omitempty"`
+}
+
+// RuntimeProcessLaunchMetadata captures sanitized process-launch state labels.
+// It intentionally does not describe guest readiness, networking, credential
+// delivery, exec support, copy support, or raw host process details.
+type RuntimeProcessLaunchMetadata struct {
+	State           string   `json:"state,omitempty"`
+	Labels          []string `json:"labels,omitempty"`
+	ProcessID       string   `json:"processId,omitempty"`
+	ProcessIDSource string   `json:"processIdSource,omitempty"`
 }
 
 // RuntimeOperationPlan is a sanitized runtime-operation plan. It carries only

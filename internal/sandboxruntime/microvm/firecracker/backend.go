@@ -21,13 +21,15 @@ const (
 	targetCapabilityProcessBoundary       = "process_boundary"
 )
 
-// BackendOptions configures the metadata-only Firecracker backend. BaseStateDir
-// is used only to derive target-specific path plans; ProcessAdapter prepares
-// process descriptors without starting processes. Raw paths are not exposed on
+// BackendOptions configures the Firecracker backend. BaseStateDir is used only
+// to derive target-specific path plans. ProcessAdapter prepares process
+// descriptors, and LiveStart must be set explicitly before the backend calls
+// StartProcess through that injected boundary. Raw paths are not exposed on
 // returned targets.
 type BackendOptions struct {
 	BaseStateDir   string
 	ProcessAdapter ProcessAdapter
+	LiveStart      bool
 }
 
 // Backend implements the microVM backend boundary for Firecracker target
@@ -35,6 +37,7 @@ type BackendOptions struct {
 type Backend struct {
 	baseStateDir   string
 	processAdapter ProcessAdapter
+	liveStart      bool
 }
 
 // NewBackend constructs an explicitly injected Firecracker backend.
@@ -42,6 +45,7 @@ func NewBackend(options BackendOptions) *Backend {
 	return &Backend{
 		baseStateDir:   strings.TrimSpace(options.BaseStateDir),
 		processAdapter: options.ProcessAdapter,
+		liveStart:      options.LiveStart,
 	}
 }
 
@@ -61,10 +65,7 @@ func (b *Backend) Create(_ context.Context, req microvm.BackendCreateRequest) (*
 	if b != nil {
 		baseStateDir = b.baseStateDir
 	}
-	paths, err := PlanPaths(PathPlanRequest{
-		RuntimeID:    runtimeID,
-		BaseStateDir: baseStateDir,
-	})
+	paths, err := backendPathPlan(runtimeID, baseStateDir, config.Paths)
 	if err != nil {
 		return nil, err
 	}
@@ -83,6 +84,7 @@ func (b *Backend) Create(_ context.Context, req microvm.BackendCreateRequest) (*
 				Backend:          BackendID,
 				CapabilityLabels: firecrackerTargetCapabilityLabels(),
 				PathRoles:        firecrackerTargetPathRoles(config.Paths),
+				ProcessLaunch:    processBoundaryAvailableRuntimeMetadata(),
 			},
 		},
 	}, nil
@@ -106,12 +108,14 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 	return firecrackerController{
 		baseStateDir:   baseStateDir,
 		processAdapter: adapter,
+		liveStart:      b != nil && b.liveStart,
 	}, nil
 }
 
 type firecrackerController struct {
 	baseStateDir   string
 	processAdapter ProcessAdapter
+	liveStart      bool
 }
 
 func (c firecrackerController) Start(ctx context.Context, req microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
@@ -123,7 +127,15 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 	if err != nil {
 		return nil, err
 	}
-	return firecrackerStartTarget(req.Target, operation.ProcessDescriptor), nil
+	processLaunch := processBoundaryAvailableRuntimeMetadata()
+	if c.liveStart {
+		handle, err := StartProcess(ctx, c.processAdapter, operation.ProcessDescriptor)
+		if err != nil {
+			return nil, err
+		}
+		processLaunch = NewProcessLaunchMetadata(ProcessLaunchStateAccepted, handle).RuntimeMetadata()
+	}
+	return firecrackerStartTarget(req.Target, operation.ProcessDescriptor, processLaunch), nil
 }
 
 func (c firecrackerController) Stop(_ context.Context, req microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
@@ -180,10 +192,7 @@ func (c firecrackerController) startBackendConfig(input microvm.Config, target s
 		return BackendConfig{}, err
 	}
 	runtimeID := firecrackerStartRuntimeID(target)
-	paths, err := PlanPaths(PathPlanRequest{
-		RuntimeID:    runtimeID,
-		BaseStateDir: c.baseStateDir,
-	})
+	paths, err := backendPathPlan(runtimeID, c.baseStateDir, config.Paths)
 	if err != nil {
 		return BackendConfig{}, err
 	}
@@ -238,6 +247,16 @@ func firecrackerLifecyclePathPlan(target sandboxruntime.Target, baseStateDir str
 	})
 }
 
+func backendPathPlan(runtimeID, baseStateDir string, fallback PathPlan) (PathPlan, error) {
+	if strings.TrimSpace(baseStateDir) != "" {
+		return PlanPaths(PathPlanRequest{
+			RuntimeID:    runtimeID,
+			BaseStateDir: baseStateDir,
+		})
+	}
+	return fallback, nil
+}
+
 func firecrackerStartRuntimeID(target sandboxruntime.Target) string {
 	for _, candidate := range []string{
 		target.Runtime.RuntimeID,
@@ -253,10 +272,13 @@ func firecrackerStartRuntimeID(target sandboxruntime.Target) string {
 	return ""
 }
 
-func firecrackerStartTarget(target sandboxruntime.Target, descriptor ProcessCommandDescriptor) *sandboxruntime.Target {
+func firecrackerStartTarget(target sandboxruntime.Target, descriptor ProcessCommandDescriptor, processLaunch *sandboxruntime.RuntimeProcessLaunchMetadata) *sandboxruntime.Target {
 	started := cloneFirecrackerTarget(target)
 	ensureFirecrackerPlanningTarget(&started, target)
 	started.Runtime.Metadata.OperationPlan = firecrackerRuntimeOperationPlanMetadata(descriptor)
+	if processLaunch != nil {
+		started.Runtime.Metadata.ProcessLaunch = cloneRuntimeProcessLaunchMetadata(processLaunch)
+	}
 	return &started
 }
 
@@ -292,6 +314,7 @@ func ensureFirecrackerPlanningTarget(target *sandboxruntime.Target, source sandb
 	target.Runtime.Metadata.Backend = BackendID
 	target.Runtime.Metadata.CapabilityLabels = firecrackerTargetCapabilityLabels()
 	target.Runtime.Metadata.PathRoles = firecrackerTargetPathRoleLabels()
+	target.Runtime.Metadata.ProcessLaunch = processBoundaryAvailableRuntimeMetadata()
 }
 
 func firecrackerRuntimeOperationPlanMetadata(descriptor ProcessCommandDescriptor) *sandboxruntime.RuntimeOperationPlan {
@@ -383,6 +406,7 @@ func cloneFirecrackerRuntimeMetadata(metadata *sandboxruntime.RuntimeMetadata) *
 	copied.CapabilityLabels = cloneStringSlice(metadata.CapabilityLabels)
 	copied.PathRoles = cloneStringSlice(metadata.PathRoles)
 	copied.OperationPlan = cloneFirecrackerRuntimeOperationPlan(metadata.OperationPlan)
+	copied.ProcessLaunch = cloneRuntimeProcessLaunchMetadata(metadata.ProcessLaunch)
 	return &copied
 }
 

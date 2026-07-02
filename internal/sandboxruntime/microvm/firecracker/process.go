@@ -3,6 +3,7 @@ package firecracker
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
@@ -12,6 +13,11 @@ const (
 	// ProcessBoundaryOperation is the sanitized operation label used for
 	// Firecracker process-boundary errors.
 	ProcessBoundaryOperation = "firecracker_process_boundary"
+)
+
+var (
+	processBoundaryPIDDetailPattern = regexp.MustCompile(`(?i)\b(?:pid|process[_ -]?id)\s*[:=]\s*\d+\b`)
+	processBoundarySecretEnvPattern = regexp.MustCompile(`(?i)\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API[_-]?KEY|APIKEY|CREDENTIAL|AUTHORIZATION|BEARER)[A-Z0-9_]*=\[redacted\]`)
 )
 
 // ProcessAdapter is the injectable boundary for Firecracker process and
@@ -295,20 +301,40 @@ func sanitizeProcessHandleMetadata(handle ProcessHandleMetadata) ProcessHandleMe
 
 func sanitizeProcessMetadataToken(value string) string {
 	value = strings.TrimSpace(value)
-	if value == "" || hasUnsafePathControl(value) {
+	if safeFirecrackerMetadataToken(value) == "" {
 		return ""
 	}
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z':
-		case r >= 'A' && r <= 'Z':
-		case r >= '0' && r <= '9':
-		case r == '_' || r == '-' || r == '.' || r == ':':
-		default:
-			return ""
-		}
+	if isRawProcessIdentityToken(value) {
+		return ""
 	}
 	return value
+}
+
+func isRawProcessIdentityToken(value string) bool {
+	if value == "" {
+		return false
+	}
+	lower := strings.ToLower(value)
+	switch {
+	case strings.HasPrefix(lower, "pid-"):
+		return true
+	case strings.HasPrefix(lower, "pid_"):
+		return true
+	case strings.HasPrefix(lower, "pid."):
+		return true
+	case strings.HasPrefix(lower, "process-"):
+		return true
+	case strings.HasPrefix(lower, "process_"):
+		return true
+	case strings.HasPrefix(lower, "process."):
+		return true
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func cloneOperationPathReferences(in []OperationPathReference) []OperationPathReference {
@@ -352,8 +378,62 @@ func newProcessBoundaryAdapterError(field, message string, err error) *microvm.O
 	if err == nil {
 		err = errors.New(message)
 	}
-	operationErr := microvm.NewBackendOperationFailedError(ProcessBoundaryOperation, err)
+	operationErr := microvm.NewBackendOperationFailedError(ProcessBoundaryOperation, newSanitizedProcessBoundaryAdapterCause(err))
 	operationErr.Field = strings.TrimSpace(field)
 	operationErr.Message = strings.TrimSpace(message)
 	return operationErr
+}
+
+type sanitizedProcessBoundaryAdapterCause struct {
+	detail string
+	cause  error
+}
+
+func newSanitizedProcessBoundaryAdapterCause(err error) sanitizedProcessBoundaryAdapterCause {
+	if cause := sanitizedProcessBoundaryNestedCause(err); cause != "" {
+		return sanitizedProcessBoundaryAdapterCause{
+			detail: cause,
+			cause:  err,
+		}
+	}
+	sanitized := microvm.NewBackendOperationFailedError(ProcessBoundaryOperation, err)
+	return sanitizedProcessBoundaryAdapterCause{
+		detail: sanitizeProcessBoundaryAdapterDetail(sanitized.Error()),
+		cause:  err,
+	}
+}
+
+func sanitizedProcessBoundaryNestedCause(err error) string {
+	var operationErr *microvm.OperationError
+	if !errors.As(err, &operationErr) {
+		return ""
+	}
+	if operationErr.Code != microvm.ErrorCodeBackendOperationFailed || operationErr.Operation != ProcessBoundaryOperation {
+		return ""
+	}
+	if cause := errors.Unwrap(operationErr); cause != nil {
+		return sanitizeProcessBoundaryAdapterDetail(cause.Error())
+	}
+	return ""
+}
+
+func sanitizeProcessBoundaryAdapterDetail(detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		return ""
+	}
+	detail = processBoundaryPIDDetailPattern.ReplaceAllString(detail, "pid=[redacted-pid]")
+	detail = processBoundarySecretEnvPattern.ReplaceAllString(detail, "[redacted-env]=[redacted]")
+	return detail
+}
+
+func (err sanitizedProcessBoundaryAdapterCause) Error() string {
+	if detail := strings.TrimSpace(err.detail); detail != "" {
+		return detail
+	}
+	return "firecracker process adapter failed"
+}
+
+func (err sanitizedProcessBoundaryAdapterCause) Is(target error) bool {
+	return target != nil && errors.Is(err.cause, target)
 }
