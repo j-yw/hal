@@ -41,6 +41,7 @@
 
 - Phase 26 credential proxy persistence guard coverage lives in `cmd/credential_proxy_manifest_test.go`; allow direct `credentialProxy*` JSON persistence fields only on `internal/sandboxexecution.Manifest` and `internal/factory.SandboxMetadata`, require `omitempty` plus sandbox credential proxy contract/wrapper types, and keep `factory.EventRecord`, worker metadata, runtime metadata, provider metadata, and command-result envelopes free of direct Phase 26 credential proxy persistence fields.
 - Default no-metadata run manifests, auto manifests, factory sandbox metadata, factory run records, and factory timeline events must keep omitting `credentialProxy`, `credentialProxyPlan`, `credentialProxySession`, and `credentialProxyBindings`; keep the Phase 25 verification doc/test focused selector in sync when these guard names change.
+- Phase 26 final verification docs live in `docs/design/sandbox-runtime-v2-phase26-credential-proxy-plumbing-verification.md` and are guarded by `cmd/phase26_credential_proxy_docs_test.go`; keep focused fake-only selectors and full quality commands in sync with schema, projection, persistence, redaction, compatibility, guard, and docs coverage.
 
 ## Patterns from phase25-credential-proxy-plan (2026-07-02)
 
