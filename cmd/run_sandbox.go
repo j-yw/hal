@@ -1095,6 +1095,7 @@ func (w *runSandboxLockedWriter) Write(p []byte) (int, error) {
 }
 
 func saveRunSandboxManifest(store sandboxexecution.Store, req runSandboxRequest, status sandboxexecution.Status, startedAt time.Time, finishedAt *time.Time, target *sandbox.SandboxState) error {
+	credentialProxy := sandboxManifestCredentialProxyProjection(req)
 	manifest := &sandboxexecution.Manifest{
 		ID:                        req.ExecutionID,
 		Purpose:                   sandboxexecution.PurposeRun,
@@ -1109,6 +1110,9 @@ func saveRunSandboxManifest(store sandboxexecution.Store, req runSandboxRequest,
 		Security:                  cloneSandboxSecurity(nil),
 		NetworkProxySession:       sandboxManifestNetworkProxySession(req.NetworkProxySession),
 		NetworkPolicyDecisionLogs: sandboxManifestNetworkPolicyDecisionLogs(req.NetworkPolicyDecisionLogs),
+		CredentialProxyPlan:       credentialProxy.Plan,
+		CredentialProxySession:    credentialProxy.Session,
+		CredentialProxyBindings:   credentialProxy.Bindings,
 	}
 	if target != nil {
 		if strings.TrimSpace(manifest.SandboxName) == "" {
@@ -1285,6 +1289,60 @@ func sandboxManifestNetworkProxySession(session *sandbox.SandboxNetworkProxySess
 
 func sandboxManifestNetworkPolicyDecisionLogs(records []sandbox.SandboxNetworkPolicyDecisionLogRecord) []sandbox.SandboxNetworkPolicyDecisionLogRecord {
 	return sandbox.SanitizeSandboxNetworkPolicyDecisionLogRecords(records)
+}
+
+func sandboxManifestCredentialProxyProjection(req runSandboxRequest) sandbox.SandboxCredentialProxyProjection {
+	projection := sandbox.ProjectSandboxCredentialProxyMetadata(sandbox.SandboxCredentialProxyProjectionRequest{
+		PlanID:               runSandboxCredentialProxyID(req.ExecutionID, "plan"),
+		SessionID:            runSandboxCredentialProxyID(req.ExecutionID, "session"),
+		BindingIDPrefix:      runSandboxCredentialProxyID(req.ExecutionID, "binding"),
+		Source:               sandbox.SandboxCredentialProxySourceRun,
+		SecretDeliveryIntent: runSandboxCredentialProxySecretDeliveryIntent(req.Security),
+		NetworkProxySession:  req.NetworkProxySession,
+		RequestCategory:      sandbox.SandboxCredentialProxyRequestNetworkAuth,
+		DestinationCategory:  sandbox.SandboxNetworkPolicyDestinationUnknown,
+	})
+	return sandboxManifestSanitizedCredentialProxyProjection(projection)
+}
+
+func runSandboxCredentialProxyID(executionID, suffix string) string {
+	if strings.TrimSpace(executionID) == "" || strings.TrimSpace(suffix) == "" {
+		return ""
+	}
+	return executionID + "-credential-proxy-" + suffix
+}
+
+func runSandboxCredentialProxySecretDeliveryIntent(req sandbox.SecurityEvaluationRequest) *sandbox.SandboxSecretDeliveryIntent {
+	requestedModes := append([]string(nil), req.RequestedSecretModes...)
+	activeModes := append([]string(nil), req.ActiveSecretModes...)
+	if req.CompatibilityAuthSync {
+		activeModes = append(activeModes, sandbox.SandboxSecretModeLegacyAuthSync)
+	}
+	if len(requestedModes) == 0 && len(activeModes) == 0 {
+		return nil
+	}
+	return &sandbox.SandboxSecretDeliveryIntent{
+		RequestedModes: requestedModes,
+		ActiveModes:    activeModes,
+	}
+}
+
+func sandboxManifestSanitizedCredentialProxyProjection(projection sandbox.SandboxCredentialProxyProjection) sandbox.SandboxCredentialProxyProjection {
+	var sanitized sandbox.SandboxCredentialProxyProjection
+	if projection.Plan != nil {
+		plan := sandbox.SanitizeSandboxCredentialProxyPlanMetadata(*projection.Plan)
+		if plan.ID != "" {
+			sanitized.Plan = &plan
+		}
+	}
+	if projection.Session != nil {
+		session := sandbox.SanitizeSandboxCredentialProxySessionMetadata(*projection.Session)
+		if session.ID != "" {
+			sanitized.Session = &session
+		}
+	}
+	sanitized.Bindings = sandbox.SanitizeSandboxCredentialProxyBindingMetadataRecords(projection.Bindings)
+	return sanitized
 }
 
 func sandboxManifestSecurity(req sandbox.SecurityEvaluationRequest, target *sandbox.SandboxState) *sandbox.SandboxSecurity {
