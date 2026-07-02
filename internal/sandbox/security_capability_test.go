@@ -41,6 +41,8 @@ func TestSecurityCapabilityReadinessContractConstants(t *testing.T) {
 		{name: "reason mode unsupported", got: string(SandboxSecurityCapabilityReasonModeUnsupported), want: "mode_unsupported"},
 		{name: "reason capability blocked", got: string(SandboxSecurityCapabilityReasonCapabilityBlocked), want: "capability_blocked"},
 		{name: "reason capability confirmed", got: string(SandboxSecurityCapabilityReasonCapabilityConfirmed), want: "capability_confirmed"},
+		{name: "reason metadata enforcement unproven", got: string(SandboxSecurityCapabilityReasonMetadataEnforcementUnproven), want: "metadata_enforcement_unproven"},
+		{name: "reason metadata delivery unproven", got: string(SandboxSecurityCapabilityReasonMetadataDeliveryUnproven), want: "metadata_delivery_unproven"},
 		{name: "reason unknown", got: string(SandboxSecurityCapabilityReasonUnknown), want: "unknown"},
 		{name: "warning metadata not capability", got: string(SandboxSecurityCapabilityWarningMetadataNotCapability), want: "metadata_not_capability"},
 		{name: "warning unsupported mode", got: string(SandboxSecurityCapabilityWarningUnsupportedMode), want: "unsupported_mode"},
@@ -112,6 +114,13 @@ func TestSecurityCapabilityReadinessRequestJSONSchema(t *testing.T) {
 func TestSecurityCapabilityReadinessResultJSONSchema(t *testing.T) {
 	result := SandboxSecurityCapabilityReadinessResult{
 		State: SandboxSecurityCapabilityReadinessReady,
+		Metadata: &SandboxSecurityCapabilityMetadata{
+			ID:         "metadata-network-01",
+			Family:     SandboxSecurityCapabilityFamilyNetworkProxy,
+			Capability: SandboxSecurityCapabilityNetworkProxyEnforcement,
+			Source:     SandboxSecurityCapabilitySourceMetadata,
+			Status:     SandboxSecurityCapabilityReadinessMetadataOnly,
+		},
 		Requested: &SandboxSecurityCapabilityMetadata{
 			ID:         "requested-network-01",
 			Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
@@ -133,6 +142,7 @@ func TestSecurityCapabilityReadinessResultJSONSchema(t *testing.T) {
 	got := mustMarshalObject(t, result)
 	assertObjectKeys(t, got, []string{
 		"state",
+		"metadata",
 		"requested",
 		"ready",
 		"reasonCode",
@@ -141,6 +151,7 @@ func TestSecurityCapabilityReadinessResultJSONSchema(t *testing.T) {
 	assertSecurityCapabilityJSONValue(t, got, "state", "ready")
 	assertSecurityCapabilityJSONValue(t, got, "reasonCode", "capability_confirmed")
 
+	assertObjectKeys(t, got["metadata"], []string{"id", "family", "capability", "source", "status"}, forbiddenSecurityCapabilityRawFieldNames())
 	assertObjectKeys(t, got["requested"], []string{"id", "family", "capability", "mode", "source"}, forbiddenSecurityCapabilityRawFieldNames())
 	assertObjectKeys(t, got["ready"], []string{"id", "family", "capability", "mode", "source"}, forbiddenSecurityCapabilityRawFieldNames())
 
@@ -255,10 +266,16 @@ func TestSecurityCapabilityReadinessJSONTagsAreStable(t *testing.T) {
 	assertSecurityCapabilityJSONTags(t, reflect.TypeOf(SandboxSecurityCapabilityReadinessRequest{}), []securityCapabilityJSONTagExpectation{
 		{field: "Requested", name: "requested", omitempty: true},
 		{field: "Ready", name: "ready", omitempty: true},
+		{field: "NetworkProxySession", name: "networkProxySession", omitempty: true},
+		{field: "NetworkPolicyDecisionLogs", name: "networkPolicyDecisionLogs", omitempty: true},
+		{field: "CredentialProxyPlan", name: "credentialPlanMetadata", omitempty: true},
+		{field: "CredentialProxySession", name: "credentialSessionMetadata", omitempty: true},
+		{field: "CredentialProxyBindings", name: "credentialBindingMetadata", omitempty: true},
 	})
 
 	assertSecurityCapabilityJSONTags(t, reflect.TypeOf(SandboxSecurityCapabilityReadinessResult{}), []securityCapabilityJSONTagExpectation{
 		{field: "State", name: "state"},
+		{field: "Metadata", name: "metadata", omitempty: true},
 		{field: "Requested", name: "requested", omitempty: true},
 		{field: "Ready", name: "ready", omitempty: true},
 		{field: "ReasonCode", name: "reasonCode", omitempty: true},

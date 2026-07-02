@@ -56,12 +56,14 @@ const (
 type SandboxSecurityCapabilityReasonCode string
 
 const (
-	SandboxSecurityCapabilityReasonMetadataOnly        SandboxSecurityCapabilityReasonCode = "metadata_only"
-	SandboxSecurityCapabilityReasonCapabilityMissing   SandboxSecurityCapabilityReasonCode = "capability_missing"
-	SandboxSecurityCapabilityReasonModeUnsupported     SandboxSecurityCapabilityReasonCode = "mode_unsupported"
-	SandboxSecurityCapabilityReasonCapabilityBlocked   SandboxSecurityCapabilityReasonCode = "capability_blocked"
-	SandboxSecurityCapabilityReasonCapabilityConfirmed SandboxSecurityCapabilityReasonCode = "capability_confirmed"
-	SandboxSecurityCapabilityReasonUnknown             SandboxSecurityCapabilityReasonCode = "unknown"
+	SandboxSecurityCapabilityReasonMetadataOnly                SandboxSecurityCapabilityReasonCode = "metadata_only"
+	SandboxSecurityCapabilityReasonCapabilityMissing           SandboxSecurityCapabilityReasonCode = "capability_missing"
+	SandboxSecurityCapabilityReasonModeUnsupported             SandboxSecurityCapabilityReasonCode = "mode_unsupported"
+	SandboxSecurityCapabilityReasonCapabilityBlocked           SandboxSecurityCapabilityReasonCode = "capability_blocked"
+	SandboxSecurityCapabilityReasonCapabilityConfirmed         SandboxSecurityCapabilityReasonCode = "capability_confirmed"
+	SandboxSecurityCapabilityReasonMetadataEnforcementUnproven SandboxSecurityCapabilityReasonCode = "metadata_enforcement_unproven"
+	SandboxSecurityCapabilityReasonMetadataDeliveryUnproven    SandboxSecurityCapabilityReasonCode = "metadata_delivery_unproven"
+	SandboxSecurityCapabilityReasonUnknown                     SandboxSecurityCapabilityReasonCode = "unknown"
 )
 
 // SandboxSecurityCapabilityWarningCode is a safe warning label for readiness
@@ -88,10 +90,15 @@ type SandboxSecurityCapabilityMetadata struct {
 }
 
 // SandboxSecurityCapabilityReadinessRequest separates requested capabilities
-// from metadata that explicitly marks capabilities as ready.
+// from explicit capability metadata and existing metadata-only records.
 type SandboxSecurityCapabilityReadinessRequest struct {
-	Requested []SandboxSecurityCapabilityMetadata `json:"requested,omitempty"`
-	Ready     []SandboxSecurityCapabilityMetadata `json:"ready,omitempty"`
+	Requested                 []SandboxSecurityCapabilityMetadata     `json:"requested,omitempty"`
+	Ready                     []SandboxSecurityCapabilityMetadata     `json:"ready,omitempty"`
+	NetworkProxySession       *SandboxNetworkProxySessionMetadata     `json:"networkProxySession,omitempty"`
+	NetworkPolicyDecisionLogs []SandboxNetworkPolicyDecisionLogRecord `json:"networkPolicyDecisionLogs,omitempty"`
+	CredentialProxyPlan       *SandboxCredentialProxyPlanMetadata     `json:"credentialPlanMetadata,omitempty"`
+	CredentialProxySession    *SandboxCredentialProxySessionMetadata  `json:"credentialSessionMetadata,omitempty"`
+	CredentialProxyBindings   []SandboxCredentialProxyBindingMetadata `json:"credentialBindingMetadata,omitempty"`
 }
 
 // SandboxSecurityCapabilityReadinessInput is the request-shaped input contract
@@ -100,9 +107,10 @@ type SandboxSecurityCapabilityReadinessRequest struct {
 type SandboxSecurityCapabilityReadinessInput = SandboxSecurityCapabilityReadinessRequest
 
 // SandboxSecurityCapabilityReadinessResult records one readiness decision for
-// a requested capability.
+// requested, ready, or metadata-only capability posture.
 type SandboxSecurityCapabilityReadinessResult struct {
 	State        SandboxSecurityCapabilityReadinessState `json:"state"`
+	Metadata     *SandboxSecurityCapabilityMetadata      `json:"metadata,omitempty"`
 	Requested    *SandboxSecurityCapabilityMetadata      `json:"requested,omitempty"`
 	Ready        *SandboxSecurityCapabilityMetadata      `json:"ready,omitempty"`
 	ReasonCode   SandboxSecurityCapabilityReasonCode     `json:"reasonCode,omitempty"`
