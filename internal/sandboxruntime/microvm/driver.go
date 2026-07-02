@@ -2,6 +2,7 @@ package microvm
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/sandbox"
@@ -233,7 +234,7 @@ func (d *Driver) backendFor(operation string) (Backend, Config, error) {
 	}
 	config := ApplyDefaults(d.config)
 	if err := ValidateConfig(config); err != nil {
-		return nil, Config{}, err
+		return nil, Config{}, operationInvalidConfigError(operation, err)
 	}
 	return d.backend, config, nil
 }
@@ -310,6 +311,19 @@ func newOperationValidationError(operation, field, message string) *OperationErr
 	err.Field = field
 	err.Message = message
 	return err
+}
+
+func operationInvalidConfigError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	operationErr := NewInvalidConfigError(operation, err)
+	var validationErr *OperationError
+	if errors.As(err, &validationErr) {
+		operationErr.Field = validationErr.Field
+		operationErr.Message = validationErr.safeMessage()
+	}
+	return operationErr
 }
 
 func metadataFromCapability(report CapabilityReport, backendConfigured bool) RuntimeMetadata {

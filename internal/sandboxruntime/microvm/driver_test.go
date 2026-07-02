@@ -3,9 +3,11 @@ package microvm
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandbox"
@@ -333,6 +335,106 @@ func TestDriverCopyDelegatesThroughControllerWithSanitizedPaths(t *testing.T) {
 	}
 }
 
+func TestDriverRejectsUnavailableOperationsBeforeBackendCalls(t *testing.T) {
+	report := availableCapabilityReport()
+	report.Availability = CapabilityAvailabilityUnavailable
+	report.ReasonCode = CapabilityReasonKVMDeviceUnreadable
+	report.Error = NewUnavailableCapabilityError("detect_capability", errors.New("kvm failed at /Users/alice/private/vmlinux endpoint=https://secret.example.test:8443/api token=ghp_secret firecracker-go-sdk"))
+
+	for _, tt := range driverOperationErrorCases(validMicroVMTarget()) {
+		t.Run(tt.name, func(t *testing.T) {
+			backend := &fakeBackend{controller: &fakeController{}}
+			driver := NewDriver(DriverOptions{
+				Config:             minimalValidConfig(),
+				CapabilityDetector: fixedCapabilityDetector(report),
+				Backend:            backend,
+			})
+
+			err := tt.run(driver)
+			assertOperationError(t, err, ErrorCodeUnavailableCapability, tt.operation)
+			assertNoBackendCalls(t, backend)
+			assertPublicErrorOmits(t, err, []string{
+				"/Users/alice",
+				"vmlinux",
+				"secret.example.test",
+				"8443",
+				"ghp_secret",
+				"firecracker-go-sdk",
+			})
+		})
+	}
+}
+
+func TestDriverRejectsOperationsWithoutConfiguredBackend(t *testing.T) {
+	for _, tt := range driverOperationErrorCases(validMicroVMTarget()) {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := NewDriver(DriverOptions{
+				Config:             minimalValidConfig(),
+				CapabilityDetector: fixedCapabilityDetector(availableCapabilityReport()),
+			})
+
+			err := tt.run(driver)
+			assertOperationError(t, err, ErrorCodeBackendNotConfigured, tt.operation)
+		})
+	}
+}
+
+func TestDriverRejectsMissingTargetBeforeBackendControllerLookup(t *testing.T) {
+	for _, tt := range driverTargetOperationErrorCases(sandboxruntime.Target{}) {
+		t.Run(tt.name, func(t *testing.T) {
+			backend := &fakeBackend{controller: &fakeController{}}
+			driver := NewDriver(DriverOptions{
+				Config:             minimalValidConfig(),
+				CapabilityDetector: fixedCapabilityDetector(availableCapabilityReport()),
+				Backend:            backend,
+			})
+
+			err := tt.run(driver)
+			assertOperationError(t, err, ErrorCodeTargetRequired, tt.operation)
+			if len(backend.controllerRequests) != 0 {
+				t.Fatalf("backend controller calls = %d, want 0 before target validation succeeds", len(backend.controllerRequests))
+			}
+			if len(backend.createRequests) != 0 {
+				t.Fatalf("backend create calls = %d, want 0 for target operation rejection", len(backend.createRequests))
+			}
+		})
+	}
+}
+
+func TestDriverRejectsMissingCreateTargetNameBeforeBackendCreate(t *testing.T) {
+	backend := &fakeBackend{controller: &fakeController{}}
+	driver := NewDriver(DriverOptions{
+		Config:             minimalValidConfig(),
+		CapabilityDetector: fixedCapabilityDetector(availableCapabilityReport()),
+		Backend:            backend,
+	})
+
+	_, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: " \t "})
+	assertOperationError(t, err, ErrorCodeTargetNameRequired, OperationCreate)
+	assertNoBackendCalls(t, backend)
+}
+
+func TestDriverRejectsInvalidConfigBeforeBackendCalls(t *testing.T) {
+	invalidConfig := minimalValidConfig()
+	invalidConfig.RootfsPath = " \t "
+
+	for _, tt := range driverOperationErrorCases(validMicroVMTarget()) {
+		t.Run(tt.name, func(t *testing.T) {
+			backend := &fakeBackend{controller: &fakeController{}}
+			driver := NewDriver(DriverOptions{
+				Config:             invalidConfig,
+				CapabilityDetector: fixedCapabilityDetector(availableCapabilityReport()),
+				Backend:            backend,
+			})
+
+			err := tt.run(driver)
+			assertOperationError(t, err, ErrorCodeInvalidConfig, tt.operation)
+			assertOperationErrorField(t, err, "rootfsPath")
+			assertNoBackendCalls(t, backend)
+		})
+	}
+}
+
 func availableCapabilityReport() CapabilityReport {
 	return CapabilityReport{
 		OS:                             "linux",
@@ -342,6 +444,118 @@ func availableCapabilityReport() CapabilityReport {
 		HypervisorExecutableConfigured: false,
 		Availability:                   CapabilityAvailabilityAvailable,
 		ReasonCode:                     CapabilityReasonAvailable,
+	}
+}
+
+type driverOperationErrorCase struct {
+	name      string
+	operation string
+	run       func(*Driver) error
+}
+
+func driverOperationErrorCases(target sandboxruntime.Target) []driverOperationErrorCase {
+	return append(
+		[]driverOperationErrorCase{
+			{
+				name:      OperationCreate,
+				operation: OperationCreate,
+				run: func(driver *Driver) error {
+					_, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "microvm-dev"})
+					return err
+				},
+			},
+		},
+		driverTargetOperationErrorCases(target)...,
+	)
+}
+
+func driverTargetOperationErrorCases(target sandboxruntime.Target) []driverOperationErrorCase {
+	return []driverOperationErrorCase{
+		{
+			name:      OperationStart,
+			operation: OperationStart,
+			run: func(driver *Driver) error {
+				_, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: target})
+				return err
+			},
+		},
+		{
+			name:      OperationInspect,
+			operation: OperationInspect,
+			run: func(driver *Driver) error {
+				_, err := driver.Inspect(context.Background(), sandboxruntime.InspectRequest{Target: target})
+				return err
+			},
+		},
+		{
+			name:      OperationStop,
+			operation: OperationStop,
+			run: func(driver *Driver) error {
+				_, err := driver.Stop(context.Background(), sandboxruntime.LifecycleRequest{Target: target})
+				return err
+			},
+		},
+		{
+			name:      OperationDelete,
+			operation: OperationDelete,
+			run: func(driver *Driver) error {
+				return driver.Delete(context.Background(), sandboxruntime.LifecycleRequest{Target: target})
+			},
+		},
+		{
+			name:      OperationExec,
+			operation: OperationExec,
+			run: func(driver *Driver) error {
+				_, err := driver.Exec(context.Background(), sandboxruntime.ExecRequest{
+					Target:  target,
+					Args:    []string{"true"},
+					WorkDir: "/workspace/project",
+				})
+				return err
+			},
+		},
+		{
+			name:      OperationCopyIn,
+			operation: OperationCopyIn,
+			run: func(driver *Driver) error {
+				return driver.CopyIn(context.Background(), sandboxruntime.CopyRequest{
+					Target:          target,
+					SourcePath:      "/safe/input.txt",
+					DestinationPath: "/workspace/input.txt",
+				})
+			},
+		},
+		{
+			name:      OperationCopyOut,
+			operation: OperationCopyOut,
+			run: func(driver *Driver) error {
+				return driver.CopyOut(context.Background(), sandboxruntime.CopyRequest{
+					Target:          target,
+					SourcePath:      "/workspace/output.txt",
+					DestinationPath: "/safe/output.txt",
+				})
+			},
+		},
+	}
+}
+
+func validMicroVMTarget() sandboxruntime.Target {
+	return sandboxruntime.Target{
+		ID:   "microvm-target-1",
+		Name: "microvm-dev",
+		Runtime: sandboxruntime.RuntimeState{
+			RuntimeID: "microvm-target-1",
+		},
+	}
+}
+
+func assertNoBackendCalls(t *testing.T, backend *fakeBackend) {
+	t.Helper()
+	if len(backend.createRequests) != 0 {
+		t.Fatalf("backend create calls = %d, want 0", len(backend.createRequests))
+	}
+	if len(backend.controllerRequests) != 0 {
+		t.Fatalf("backend controller calls = %d, want 0", len(backend.controllerRequests))
 	}
 }
 
@@ -484,5 +698,30 @@ func assertOperationError(t *testing.T, err error, code ErrorCode, operation str
 	}
 	if opErr.Operation != operation {
 		t.Fatalf("OperationError.Operation = %q, want %q", opErr.Operation, operation)
+	}
+}
+
+func assertOperationErrorField(t *testing.T, err error, field string) {
+	t.Helper()
+	var opErr *OperationError
+	if !errors.As(err, &opErr) {
+		t.Fatalf("error type = %T, want *OperationError", err)
+	}
+	if opErr.Field != field {
+		t.Fatalf("OperationError.Field = %q, want %q", opErr.Field, field)
+	}
+}
+
+func assertPublicErrorOmits(t *testing.T, err error, unsafeFragments []string) {
+	t.Helper()
+	encoded, marshalErr := json.Marshal(err)
+	if marshalErr != nil {
+		t.Fatalf("Marshal(error) error: %v", marshalErr)
+	}
+	publicText := err.Error() + " " + string(encoded)
+	for _, unsafe := range unsafeFragments {
+		if strings.Contains(publicText, unsafe) {
+			t.Fatalf("public error text leaked unsafe fragment %q in %q", unsafe, publicText)
+		}
 	}
 }
