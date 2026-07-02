@@ -2,6 +2,7 @@ package microvm
 
 import (
 	"context"
+	"strings"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
@@ -20,14 +21,6 @@ const (
 // DriverReasonCode explains the runtime driver availability state without
 // exposing host paths, endpoints, or backend implementation details.
 type DriverReasonCode string
-
-// Backend is the injectable microVM backend boundary used once host capability
-// checks and backend-specific prerequisites are satisfied.
-type Backend interface {
-	sandboxruntime.LifecycleDriver
-	sandboxruntime.ExecDriver
-	sandboxruntime.FileTransport
-}
 
 // DriverOptions configures the microVM runtime shell. Config is durable
 // backend-neutral input; Detector and Backend are live dependencies.
@@ -54,6 +47,7 @@ type RuntimeMetadata struct {
 // boundary while keeping real backend lifecycle behavior behind Backend.
 type Driver struct {
 	backend  Backend
+	config   Config
 	metadata RuntimeMetadata
 }
 
@@ -77,6 +71,7 @@ func NewDriver(options DriverOptions) *Driver {
 
 	return &Driver{
 		backend:  options.Backend,
+		config:   config,
 		metadata: metadata,
 	}
 }
@@ -98,11 +93,15 @@ func (d *Driver) Metadata() RuntimeMetadata {
 }
 
 func (d *Driver) Create(ctx context.Context, req sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
-	backend, err := d.backendFor("create")
+	backend, config, err := d.backendFor(OperationCreate)
 	if err != nil {
 		return nil, err
 	}
-	target, err := backend.Create(ctx, req)
+	backendReq := backendCreateRequest(config, req)
+	if err := validateCreateRequest(backendReq); err != nil {
+		return nil, err
+	}
+	target, err := backend.Create(ctx, backendReq)
 	if err != nil {
 		return nil, err
 	}
@@ -110,76 +109,116 @@ func (d *Driver) Create(ctx context.Context, req sandboxruntime.CreateRequest) (
 }
 
 func (d *Driver) Start(ctx context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
-	backend, err := d.backendFor("start")
+	controller, config, target, err := d.controllerFor(ctx, OperationStart, req.Target)
 	if err != nil {
 		return nil, err
 	}
-	target, err := backend.Start(ctx, req)
+	started, err := controller.Start(ctx, ControllerLifecycleRequest{
+		Operation: OperationStart,
+		Config:    config,
+		Target:    target,
+		Stdout:    req.Stdout,
+		Stderr:    req.Stderr,
+	})
 	if err != nil {
 		return nil, err
 	}
-	return applyRuntimeMetadata(target), nil
+	return applyRuntimeMetadata(started), nil
 }
 
 func (d *Driver) Stop(ctx context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
-	backend, err := d.backendFor("stop")
+	controller, config, target, err := d.controllerFor(ctx, OperationStop, req.Target)
 	if err != nil {
 		return nil, err
 	}
-	target, err := backend.Stop(ctx, req)
+	stopped, err := controller.Stop(ctx, ControllerLifecycleRequest{
+		Operation: OperationStop,
+		Config:    config,
+		Target:    target,
+		Stdout:    req.Stdout,
+		Stderr:    req.Stderr,
+	})
 	if err != nil {
 		return nil, err
 	}
-	return applyRuntimeMetadata(target), nil
+	return applyRuntimeMetadata(stopped), nil
 }
 
 func (d *Driver) Delete(ctx context.Context, req sandboxruntime.LifecycleRequest) error {
-	backend, err := d.backendFor("delete")
+	controller, config, target, err := d.controllerFor(ctx, OperationDelete, req.Target)
 	if err != nil {
 		return err
 	}
-	return backend.Delete(ctx, req)
+	return controller.Delete(ctx, ControllerLifecycleRequest{
+		Operation: OperationDelete,
+		Config:    config,
+		Target:    target,
+		Stdout:    req.Stdout,
+		Stderr:    req.Stderr,
+	})
 }
 
 func (d *Driver) Inspect(ctx context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
-	backend, err := d.backendFor("inspect")
+	controller, config, target, err := d.controllerFor(ctx, OperationInspect, req.Target)
 	if err != nil {
 		return nil, err
 	}
-	target, err := backend.Inspect(ctx, req)
+	inspected, err := controller.Inspect(ctx, ControllerInspectRequest{
+		Operation: OperationInspect,
+		Config:    config,
+		Target:    target,
+	})
 	if err != nil {
 		return nil, err
 	}
-	return applyRuntimeMetadata(target), nil
+	return applyRuntimeMetadata(inspected), nil
 }
 
 func (d *Driver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
-	backend, err := d.backendFor("exec")
+	controller, config, target, err := d.controllerFor(ctx, OperationExec, req.Target)
 	if err != nil {
 		return nil, err
 	}
-	return backend.Exec(ctx, req)
+	return controller.Exec(ctx, ControllerExecRequest{
+		Operation: OperationExec,
+		Config:    config,
+		Target:    target,
+		Args:      cloneStringSlice(req.Args),
+		Stdout:    req.Stdout,
+		Stderr:    req.Stderr,
+		Stdin:     req.Stdin,
+		Env:       cloneStringMap(req.Env),
+		WorkDir:   strings.TrimSpace(req.WorkDir),
+	})
 }
 
 func (d *Driver) CopyIn(ctx context.Context, req sandboxruntime.CopyRequest) error {
-	backend, err := d.backendFor("copy_in")
+	controller, config, target, err := d.controllerFor(ctx, OperationCopyIn, req.Target)
 	if err != nil {
 		return err
 	}
-	return backend.CopyIn(ctx, req)
+	copyReq, err := controllerCopyRequest(OperationCopyIn, config, target, req)
+	if err != nil {
+		return err
+	}
+	return controller.CopyIn(ctx, copyReq)
 }
 
 func (d *Driver) CopyOut(ctx context.Context, req sandboxruntime.CopyRequest) error {
-	backend, err := d.backendFor("copy_out")
+	controller, config, target, err := d.controllerFor(ctx, OperationCopyOut, req.Target)
 	if err != nil {
 		return err
 	}
-	return backend.CopyOut(ctx, req)
+	copyReq, err := controllerCopyRequest(OperationCopyOut, config, target, req)
+	if err != nil {
+		return err
+	}
+	return controller.CopyOut(ctx, copyReq)
 }
 
-func (d *Driver) backendFor(operation string) (Backend, error) {
+func (d *Driver) backendFor(operation string) (Backend, Config, error) {
 	if d == nil {
-		return nil, NewBackendNotConfiguredError(operation)
+		return nil, Config{}, NewBackendNotConfiguredError(operation)
 	}
 	metadata := d.Metadata()
 	if metadata.Capability.Availability != CapabilityAvailabilityAvailable {
@@ -187,12 +226,90 @@ func (d *Driver) backendFor(operation string) (Backend, error) {
 		if metadata.Capability.Error != nil {
 			cause = metadata.Capability.Error
 		}
-		return nil, NewUnavailableCapabilityError(operation, cause)
+		return nil, Config{}, NewUnavailableCapabilityError(operation, cause)
 	}
 	if d.backend == nil {
-		return nil, NewBackendNotConfiguredError(operation)
+		return nil, Config{}, NewBackendNotConfiguredError(operation)
 	}
-	return d.backend, nil
+	config := ApplyDefaults(d.config)
+	if err := ValidateConfig(config); err != nil {
+		return nil, Config{}, err
+	}
+	return d.backend, config, nil
+}
+
+func (d *Driver) controllerFor(ctx context.Context, operation string, target sandboxruntime.Target) (Controller, Config, sandboxruntime.Target, error) {
+	backend, config, err := d.backendFor(operation)
+	if err != nil {
+		return nil, Config{}, sandboxruntime.Target{}, err
+	}
+	target = sanitizeTarget(target)
+	if err := validateTarget(operation, target); err != nil {
+		return nil, Config{}, sandboxruntime.Target{}, err
+	}
+	controller, err := backend.Controller(ctx, ControllerRequest{
+		Operation: operation,
+		Config:    config,
+		Target:    target,
+	})
+	if err != nil {
+		return nil, Config{}, sandboxruntime.Target{}, err
+	}
+	if controller == nil {
+		return nil, Config{}, sandboxruntime.Target{}, NewBackendNotConfiguredError(operation)
+	}
+	return controller, config, target, nil
+}
+
+func backendCreateRequest(config Config, req sandboxruntime.CreateRequest) BackendCreateRequest {
+	return BackendCreateRequest{
+		Operation: OperationCreate,
+		Config:    config,
+		Name:      strings.TrimSpace(req.Name),
+		Env:       cloneStringMap(req.Env),
+		Stdout:    req.Stdout,
+		Stderr:    req.Stderr,
+	}
+}
+
+func validateCreateRequest(req BackendCreateRequest) error {
+	if strings.TrimSpace(req.Name) == "" {
+		return NewTargetNameRequiredError(OperationCreate)
+	}
+	return nil
+}
+
+func validateTarget(operation string, target sandboxruntime.Target) error {
+	if strings.TrimSpace(target.ID) == "" &&
+		strings.TrimSpace(target.Name) == "" &&
+		strings.TrimSpace(target.Runtime.RuntimeID) == "" {
+		return NewTargetRequiredError(operation)
+	}
+	return nil
+}
+
+func controllerCopyRequest(operation string, config Config, target sandboxruntime.Target, req sandboxruntime.CopyRequest) (ControllerCopyRequest, error) {
+	copyReq := ControllerCopyRequest{
+		Operation:       operation,
+		Config:          config,
+		Target:          target,
+		SourcePath:      strings.TrimSpace(req.SourcePath),
+		DestinationPath: strings.TrimSpace(req.DestinationPath),
+	}
+	if copyReq.SourcePath == "" {
+		return ControllerCopyRequest{}, newOperationValidationError(operation, "sourcePath", "copy source path is required")
+	}
+	if copyReq.DestinationPath == "" {
+		return ControllerCopyRequest{}, newOperationValidationError(operation, "destinationPath", "copy destination path is required")
+	}
+	return copyReq, nil
+}
+
+func newOperationValidationError(operation, field, message string) *OperationError {
+	err := NewInvalidConfigError(operation, ErrInvalidConfig)
+	err.Field = field
+	err.Message = message
+	return err
 }
 
 func metadataFromCapability(report CapabilityReport, backendConfigured bool) RuntimeMetadata {
@@ -226,6 +343,31 @@ func applyRuntimeMetadata(target *sandboxruntime.Target) *sandboxruntime.Target 
 	copied.Runtime.Driver = sandboxruntime.DriverMicroVM
 	copied.Runtime.IsolationLevel = sandbox.SandboxIsolationLevelVM
 	return &copied
+}
+
+func sanitizeTarget(target sandboxruntime.Target) sandboxruntime.Target {
+	target.ID = strings.TrimSpace(target.ID)
+	target.Name = strings.TrimSpace(target.Name)
+	target.Runtime.RuntimeID = strings.TrimSpace(target.Runtime.RuntimeID)
+	return *applyRuntimeMetadata(&target)
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	copied := make(map[string]string, len(values))
+	for key, value := range values {
+		copied[key] = value
+	}
+	return copied
+}
+
+func cloneStringSlice(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	return append([]string(nil), values...)
 }
 
 func cloneCapabilityReport(report CapabilityReport) CapabilityReport {
