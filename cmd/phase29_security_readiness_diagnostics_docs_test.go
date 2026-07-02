@@ -52,6 +52,8 @@ func TestPhase29SecurityReadinessDiagnosticsVerificationDocs(t *testing.T) {
 		}
 	}
 
+	phase29AssertBroadVerificationCommands(t, doc)
+
 	unsupportedClaims := []string{
 		"diagnostics block execution",
 		"diagnostics block target selection",
@@ -139,6 +141,42 @@ func phase29FocusedGoTestCommands(doc string) []string {
 		line := strings.TrimSpace(raw)
 		if strings.HasPrefix(line, "go test ") {
 			commands = append(commands, line)
+		}
+	}
+	return commands
+}
+
+func phase29AssertBroadVerificationCommands(t *testing.T, doc string) {
+	t.Helper()
+	commands := phase29DocumentedShellCommands(doc)
+	required := []string{
+		"go test -count=1 -timeout=420s ./...",
+		"go test -count=1 -timeout=300s -run '^$' ./...",
+		"go vet ./...",
+		"make docs-check",
+		"make build",
+		"git diff --check",
+	}
+	for _, want := range required {
+		if !commands[want] {
+			t.Fatalf("phase 29 verification documentation missing broad verification command line %q", want)
+		}
+	}
+}
+
+func phase29DocumentedShellCommands(doc string) map[string]bool {
+	commands := make(map[string]bool)
+	for _, raw := range strings.Split(doc, "\n") {
+		line := strings.TrimSpace(raw)
+		switch {
+		case strings.HasPrefix(line, "go test "):
+			commands[line] = true
+		case strings.HasPrefix(line, "go vet "):
+			commands[line] = true
+		case strings.HasPrefix(line, "make "):
+			commands[line] = true
+		case strings.HasPrefix(line, "git diff "):
+			commands[line] = true
 		}
 	}
 	return commands
