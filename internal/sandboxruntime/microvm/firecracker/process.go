@@ -3,6 +3,7 @@ package firecracker
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
@@ -12,6 +13,11 @@ const (
 	// ProcessBoundaryOperation is the sanitized operation label used for
 	// Firecracker process-boundary errors.
 	ProcessBoundaryOperation = "firecracker_process_boundary"
+)
+
+var (
+	processBoundaryPIDDetailPattern = regexp.MustCompile(`(?i)\b(?:pid|process[_ -]?id)\s*[:=]\s*\d+\b`)
+	processBoundarySecretEnvPattern = regexp.MustCompile(`(?i)\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API[_-]?KEY|APIKEY|CREDENTIAL|AUTHORIZATION|BEARER)[A-Z0-9_]*=\[redacted\]`)
 )
 
 // ProcessAdapter is the injectable boundary for Firecracker process and
@@ -298,7 +304,22 @@ func sanitizeProcessMetadataToken(value string) string {
 	if safeFirecrackerMetadataToken(value) == "" {
 		return ""
 	}
+	if isRawNumericProcessToken(value) {
+		return ""
+	}
 	return value
+}
+
+func isRawNumericProcessToken(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func cloneOperationPathReferences(in []OperationPathReference) []OperationPathReference {
@@ -356,9 +377,19 @@ type sanitizedProcessBoundaryAdapterCause struct {
 func newSanitizedProcessBoundaryAdapterCause(err error) sanitizedProcessBoundaryAdapterCause {
 	sanitized := microvm.NewBackendOperationFailedError(ProcessBoundaryOperation, err)
 	return sanitizedProcessBoundaryAdapterCause{
-		detail: sanitized.Error(),
+		detail: sanitizeProcessBoundaryAdapterDetail(sanitized.Error()),
 		cause:  err,
 	}
+}
+
+func sanitizeProcessBoundaryAdapterDetail(detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		return ""
+	}
+	detail = processBoundaryPIDDetailPattern.ReplaceAllString(detail, "pid=[redacted-pid]")
+	detail = processBoundarySecretEnvPattern.ReplaceAllString(detail, "[redacted-env]=[redacted]")
+	return detail
 }
 
 func (err sanitizedProcessBoundaryAdapterCause) Error() string {

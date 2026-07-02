@@ -260,6 +260,104 @@ func TestBackendStartReturnsSanitizedOperationPlanWithoutStartingProcess(t *test
 	}
 }
 
+func TestBackendStartPublicJSONRedactsPlanningAndLiveLaunchMetadata(t *testing.T) {
+	tests := []struct {
+		name      string
+		liveStart bool
+		adapter   ProcessAdapter
+	}{
+		{
+			name:    "planning only",
+			adapter: &fakeProcessAdapter{},
+		},
+		{
+			name:      "explicit live start",
+			liveStart: true,
+			adapter: &fakeProcessAdapter{
+				start: func(context.Context, ProcessStartRequest) (ProcessHandleMetadata, error) {
+					return ProcessHandleMetadata{
+						ID:     "424242",
+						Source: "pid=424242",
+					}, nil
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := validMicroVMConfig()
+			config.HypervisorPath = "/Users/alice/private/bin/firecracker-secret"
+			config.KernelImagePath = "/Users/alice/private/images/vmlinux-secret"
+			config.RootfsPath = "/Users/alice/private/images/rootfs-secret.ext4"
+			config.InitrdPath = "/Users/alice/private/images/initrd-secret.img"
+			config.ImageLabel = "template-token-ghp_secret"
+			backend := NewBackend(BackendOptions{
+				BaseStateDir:   firecrackerPathTestBase("alice", "private", "live-start-json-state"),
+				ProcessAdapter: tt.adapter,
+				LiveStart:      tt.liveStart,
+			})
+			created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+				Operation: microvm.OperationCreate,
+				Config:    config,
+				Name:      "firecracker-live-json token=ghp_secret",
+			})
+			if err != nil {
+				t.Fatalf("Create() error = %v, want nil", err)
+			}
+			controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+				Operation: microvm.OperationStart,
+				Config:    config,
+				Target:    *created,
+			})
+			if err != nil {
+				t.Fatalf("Controller() error = %v, want nil", err)
+			}
+
+			started, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
+				Operation: microvm.OperationStart,
+				Config:    config,
+				Target:    *created,
+			})
+			if err != nil {
+				t.Fatalf("Start() error = %v, want nil", err)
+			}
+			if started == nil {
+				t.Fatal("Start() target = nil, want Firecracker target")
+			}
+			assertFirecrackerRuntimeMetadataDoesNotClaimUnsupportedLiveCapabilities(t, started)
+
+			encoded, marshalErr := json.Marshal(started)
+			if marshalErr != nil {
+				t.Fatalf("Marshal(started) error = %v", marshalErr)
+			}
+			publicText := string(encoded)
+			for _, unsafe := range []string{
+				"/Users/alice",
+				"private",
+				"firecracker-secret",
+				"firecracker.sock",
+				"firecracker-config.json",
+				"firecracker.log",
+				"firecracker.metrics",
+				"vmlinux-secret",
+				"rootfs-secret.ext4",
+				"initrd-secret.img",
+				"template-token-ghp_secret",
+				"ghp_secret",
+				"SECRET_TOKEN",
+				"OPENAI_API_KEY",
+				"424242",
+				"pid=424242",
+			} {
+				if strings.Contains(publicText, unsafe) {
+					t.Fatalf("public %s target JSON leaked unsafe fragment %q in %s", tt.name, unsafe, publicText)
+				}
+			}
+		})
+	}
+}
+
 func TestBackendDefaultOptionsStartRemainsPlanningOnly(t *testing.T) {
 	backend := NewBackend(BackendOptions{})
 	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
@@ -440,7 +538,7 @@ func TestBackendLiveStartOptionCallsInjectedAdapterAfterPlanRendered(t *testing.
 }
 
 func TestBackendLiveStartReturnsSanitizedRunnerFailure(t *testing.T) {
-	runnerErr := errors.New("firecracker runner failed stderr=/Users/alice/private/firecracker.sock stdout=token=ghp_secret endpoint=https://raw-secret@example.test:8443/api")
+	runnerErr := errors.New("firecracker runner failed executable=/Users/alice/private/bin/firecracker-secret argv=--api-sock /Users/alice/private/firecracker.sock --config-file /Users/alice/private/firecracker-config.json --log-path /Users/alice/private/firecracker.log --metrics-path /Users/alice/private/firecracker.metrics stderr=/Users/alice/private/firecracker.sock stdout=token=ghp_secret endpoint=https://raw-secret@example.test:8443/api pid=424242 OPENAI_API_KEY=sk-live-secret SECRET_TOKEN=ghp_secret")
 	starter := &fakeProcessStarter{
 		start: func(context.Context, ProcessRunnerStartRequest) (ProcessHandleMetadata, error) {
 			return ProcessHandleMetadata{}, runnerErr
@@ -503,6 +601,11 @@ func TestBackendLiveStartReturnsSanitizedRunnerFailure(t *testing.T) {
 		"raw-secret",
 		"example.test",
 		"8443",
+		"424242",
+		"pid=424242",
+		"OPENAI_API_KEY",
+		"SECRET_TOKEN",
+		"sk-live-secret",
 	} {
 		if strings.Contains(combinedText, unsafe) {
 			t.Fatalf("live-start failure leaked unsafe fragment %q in public=%q wrapped=%q", unsafe, publicText, wrappedText)
@@ -510,6 +613,9 @@ func TestBackendLiveStartReturnsSanitizedRunnerFailure(t *testing.T) {
 	}
 	if !strings.Contains(wrappedText, "[redacted-path]") || !strings.Contains(wrappedText, "[redacted-endpoint]") {
 		t.Fatalf("wrapped live-start error = %q, want sanitized runner output markers", wrappedText)
+	}
+	if !strings.Contains(wrappedText, "[redacted-pid]") || !strings.Contains(wrappedText, "[redacted-env]") {
+		t.Fatalf("wrapped live-start error = %q, want sanitized PID and environment markers", wrappedText)
 	}
 }
 
