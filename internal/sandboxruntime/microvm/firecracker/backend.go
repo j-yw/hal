@@ -423,7 +423,7 @@ func unsupportedFirecrackerOperation(operation string) error {
 	if strings.TrimSpace(operation) == "" {
 		operation = "firecracker_backend"
 	}
-	return microvm.NewUnavailableCapabilityError(operation, errors.New("firecracker backend operation is not implemented in this phase"))
+	return microvm.NewUnavailableCapabilityError(operation, errors.New("firecracker backend operation is not implemented until a guest agent or vsock transport is available"))
 }
 
 func firecrackerRuntimeID(name string) string {

@@ -475,6 +475,81 @@ func TestBackendStopInspectDeleteFailuresAreSanitizedOperationErrors(t *testing.
 	assertFirecrackerErrorDoesNotLeak(t, err, "alice/private", "firecracker-state")
 }
 
+func TestBackendUnsupportedExecAndCopyOperationsReturnSanitizedErrors(t *testing.T) {
+	controller := firecrackerController{}
+	target := sandboxruntime.Target{
+		ID:       "runtime-alpha",
+		Name:     "firecracker-dev",
+		Provider: BackendID,
+		Status:   sandbox.StatusStopped,
+		Runtime: sandboxruntime.RuntimeState{
+			Driver:    sandboxruntime.DriverMicroVM,
+			RuntimeID: "runtime-alpha",
+		},
+	}
+
+	tests := []struct {
+		name      string
+		operation string
+		run       func() error
+	}{
+		{
+			name:      "exec",
+			operation: microvm.OperationExec,
+			run: func() error {
+				_, err := controller.Exec(context.Background(), microvm.ControllerExecRequest{
+					Operation: microvm.OperationExec,
+					Target:    target,
+					Args:      []string{"sh", "-lc", "cat /Users/alice/private/socket token=ghp_secret"},
+					Env:       map[string]string{"SECRET_TOKEN": "ghp_secret"},
+					WorkDir:   "/Users/alice/private/workspace",
+				})
+				return err
+			},
+		},
+		{
+			name:      "copy in",
+			operation: microvm.OperationCopyIn,
+			run: func() error {
+				return controller.CopyIn(context.Background(), microvm.ControllerCopyRequest{
+					Operation:       microvm.OperationCopyIn,
+					Target:          target,
+					SourcePath:      "/Users/alice/private/input-token-ghp_secret.txt",
+					DestinationPath: "/workspace/input-token-ghp_secret.txt",
+				})
+			},
+		},
+		{
+			name:      "copy out",
+			operation: microvm.OperationCopyOut,
+			run: func() error {
+				return controller.CopyOut(context.Background(), microvm.ControllerCopyRequest{
+					Operation:       microvm.OperationCopyOut,
+					Target:          target,
+					SourcePath:      "/workspace/output-token-ghp_secret.txt",
+					DestinationPath: "/Users/alice/private/output-token-ghp_secret.txt",
+				})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.run()
+			assertFirecrackerUnsupportedOperationError(t, err, tt.operation)
+			assertFirecrackerErrorDoesNotLeak(t, err,
+				"/Users/alice",
+				"private",
+				"workspace",
+				"ghp_secret",
+				"SECRET_TOKEN",
+				"input-token-ghp_secret.txt",
+				"output-token-ghp_secret.txt",
+			)
+		})
+	}
+}
+
 func TestMicroVMDriverCreateCanUseInjectedFirecrackerBackend(t *testing.T) {
 	backend := NewBackend(BackendOptions{BaseStateDir: firecrackerPathTestBase("driver-target-state")})
 	kvmReadable := true
@@ -570,6 +645,29 @@ func assertFirecrackerStartOperationError(t *testing.T, err error, code microvm.
 	}
 	if opErr.Field != field {
 		t.Fatalf("OperationError.Field = %q, want %q", opErr.Field, field)
+	}
+}
+
+func assertFirecrackerUnsupportedOperationError(t *testing.T, err error, operation string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s error = nil, want unsupported operation error", operation)
+	}
+	var opErr *microvm.OperationError
+	if !errors.As(err, &opErr) {
+		t.Fatalf("error type = %T, want *microvm.OperationError", err)
+	}
+	if opErr.Code != microvm.ErrorCodeUnavailableCapability {
+		t.Fatalf("OperationError.Code = %q, want %q", opErr.Code, microvm.ErrorCodeUnavailableCapability)
+	}
+	if opErr.Operation != operation {
+		t.Fatalf("OperationError.Operation = %q, want %q", opErr.Operation, operation)
+	}
+	publicText := err.Error()
+	for _, want := range []string{"not implemented", "guest agent", "vsock transport"} {
+		if !strings.Contains(publicText, want) {
+			t.Fatalf("error = %q, want high-level unsupported detail containing %q", publicText, want)
+		}
 	}
 }
 
