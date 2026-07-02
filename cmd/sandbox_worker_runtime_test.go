@@ -100,6 +100,76 @@ func TestSandboxWorkerRuntimeResolverUsesInjectableRuntimeFactory(t *testing.T) 
 	}
 }
 
+func TestSandboxWorkerRuntimeResolverUsesInjectedMicroVMWorkerFactory(t *testing.T) {
+	wantClient := fakeWorkerRuntimeDriverClient{}
+	var gotOptions sandboxworker.ClientDriverOptions
+	driver, err := sandboxWorkerRuntimeDriverFromTarget(sandboxWorkerRuntimeRequest{
+		Target: sandboxruntime.Target{
+			Runtime: sandboxruntime.RuntimeState{Driver: sandboxruntime.DriverMicroVM},
+		},
+		Host: &sandbox.SandboxHost{
+			ID:                "worker-1",
+			Name:              "worker one",
+			Kind:              sandbox.SandboxHostKindWorker,
+			Endpoint:          "unix:///tmp/private/worker-1.sock",
+			SupportedRuntimes: []string{sandboxruntime.DriverMicroVM},
+		},
+	}, sandboxWorkerRuntimeDriverFactories{
+		newWorkerClient: func(socketPath string) (sandboxworker.RuntimeDriverClient, error) {
+			if socketPath != "/tmp/private/worker-1.sock" {
+				t.Fatalf("socketPath = %q, want durable local socket path", socketPath)
+			}
+			return wantClient, nil
+		},
+		newMicroVMRuntimeDriver: func(options sandboxworker.ClientDriverOptions) (sandboxruntime.Driver, error) {
+			gotOptions = options
+			return fakeRuntimeResolverDriver{id: sandboxruntime.DriverMicroVM}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("sandboxWorkerRuntimeDriverFromTarget() error = %v", err)
+	}
+	if driver == nil || driver.ID() != sandboxruntime.DriverMicroVM {
+		t.Fatalf("driver = %#v, want fake injected microVM worker driver", driver)
+	}
+	if gotOptions.DriverID != sandboxruntime.DriverMicroVM {
+		t.Fatalf("factory driver ID = %q, want %q", gotOptions.DriverID, sandboxruntime.DriverMicroVM)
+	}
+	if gotOptions.Client != wantClient {
+		t.Fatalf("factory client = %#v, want injected worker client", gotOptions.Client)
+	}
+}
+
+func TestSandboxWorkerRuntimeResolverKeepsMicroVMMetadataUnsupportedWithoutHook(t *testing.T) {
+	driver, err := sandboxWorkerRuntimeDriverFromTarget(sandboxWorkerRuntimeRequest{
+		Target: sandboxruntime.Target{
+			Runtime: sandboxruntime.RuntimeState{Driver: sandboxruntime.DriverMicroVM},
+		},
+		Host: &sandbox.SandboxHost{
+			ID:                "worker-1",
+			Name:              "worker one",
+			Kind:              sandbox.SandboxHostKindWorker,
+			Endpoint:          "unix:///tmp/private/worker-1.sock",
+			SupportedRuntimes: []string{sandboxruntime.DriverMicroVM},
+		},
+	}, sandboxWorkerRuntimeDriverFactories{
+		newWorkerClient: func(string) (sandboxworker.RuntimeDriverClient, error) {
+			t.Fatal("worker client should not be constructed for metadata-only microVM support without an explicit hook")
+			return nil, nil
+		},
+	})
+	if err == nil {
+		t.Fatal("sandboxWorkerRuntimeDriverFromTarget() error = nil, want unsupported metadata-only microVM worker runtime")
+	}
+	if driver != nil {
+		t.Fatalf("driver = %#v, want nil on unsupported metadata-only microVM worker runtime", driver)
+	}
+	if !strings.Contains(err.Error(), `requested runtime "microvm" is not supported by worker-backed sandbox execution`) {
+		t.Fatalf("error = %q, want worker-backed unsupported microVM runtime", err.Error())
+	}
+	requireWorkerClientErrorNoUnsafeDetails(t, err.Error())
+}
+
 func TestSandboxWorkerRuntimeResolverRejectsUnselectedOrUnsupportedTargets(t *testing.T) {
 	baseHost := &sandbox.SandboxHost{
 		ID:                "worker-1",

@@ -6,6 +6,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
 	"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"
 	"github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"
 	"github.com/jywlabs/hal/internal/sandboxtarget"
@@ -113,6 +114,7 @@ func sandboxRuntimeDriverFromProvider(provider sandbox.Provider) sandboxruntime.
 type sandboxRuntimeDriverFactories struct {
 	sshMachine     func(sandbox.Provider) sandboxruntime.Driver
 	rootlessPodman func() sandboxruntime.Driver
+	microVM        func() sandboxruntime.Driver
 }
 
 var defaultSandboxRuntimeDriverFactories = productionSandboxRuntimeDriverFactories
@@ -132,6 +134,9 @@ func productionSandboxRuntimeDriverFactories() sandboxRuntimeDriverFactories {
 				CopyRunner:      runner,
 			})
 		},
+		microVM: func() sandboxruntime.Driver {
+			return microvm.New()
+		},
 	}
 }
 
@@ -142,6 +147,11 @@ func sandboxRuntimeDriverFromTargetWithFactories(target sandboxruntime.Target, r
 			return nil, nil
 		}
 		return factories.rootlessPodman(), nil
+	case sandboxruntime.DriverMicroVM:
+		if factories.microVM == nil {
+			return nil, nil
+		}
+		return factories.microVM(), nil
 	case "", sandboxruntime.DriverSSHMachine:
 		if resolveProvider == nil {
 			return nil, nil

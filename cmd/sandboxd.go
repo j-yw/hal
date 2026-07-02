@@ -31,6 +31,7 @@ type sandboxdDeps struct {
 	newServer               func(sandboxworker.ServerOptions) (sandboxdServer, error)
 	rootlessPodmanAvailable func(context.Context, string) error
 	newRootlessPodmanDriver func(string) sandboxruntime.Driver
+	newMicroVMDriver        func() sandboxruntime.Driver
 	workerID                func() string
 }
 
@@ -215,7 +216,7 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 		return sandboxdRequest{}, fmt.Errorf("sandboxd requires at least one --driver")
 	}
 	for _, driverID := range req.Drivers {
-		if driverID != sandboxruntime.DriverRootlessPodman {
+		if !sandboxdDriverSupportedByDeps(driverID, deps) {
 			return sandboxdRequest{}, fmt.Errorf("sandboxd driver %q is unsupported", driverID)
 		}
 	}
@@ -307,11 +308,35 @@ func sandboxdDriverRegistry(ctx context.Context, req sandboxdRequest, deps sandb
 			}
 			seen[driverID] = true
 			driverIDs = append(driverIDs, driverID)
+		case sandboxruntime.DriverMicroVM:
+			if seen[driverID] {
+				return nil, nil, fmt.Errorf("sandboxd driver %q is registered more than once", driverID)
+			}
+			if deps.newMicroVMDriver == nil {
+				return nil, nil, fmt.Errorf("sandboxd driver %q is unsupported", driverID)
+			}
+			driver := deps.newMicroVMDriver()
+			if err := registry.Register(driver); err != nil {
+				return nil, nil, fmt.Errorf("register sandboxd driver %q: %w", driverID, err)
+			}
+			seen[driverID] = true
+			driverIDs = append(driverIDs, driverID)
 		default:
 			return nil, nil, fmt.Errorf("sandboxd driver %q is unsupported", driverID)
 		}
 	}
 	return registry, driverIDs, nil
+}
+
+func sandboxdDriverSupportedByDeps(driverID string, deps sandboxdDeps) bool {
+	switch strings.TrimSpace(driverID) {
+	case sandboxruntime.DriverRootlessPodman:
+		return true
+	case sandboxruntime.DriverMicroVM:
+		return deps.newMicroVMDriver != nil
+	default:
+		return false
+	}
 }
 
 type sandboxdRuntimeUnavailableError struct {
