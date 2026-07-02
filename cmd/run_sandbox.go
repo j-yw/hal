@@ -1297,7 +1297,7 @@ func sandboxManifestCredentialProxyProjection(req runSandboxRequest) sandbox.San
 		SessionID:            runSandboxCredentialProxyID(req.ExecutionID, "session"),
 		BindingIDPrefix:      runSandboxCredentialProxyID(req.ExecutionID, "binding"),
 		Source:               sandbox.SandboxCredentialProxySourceRun,
-		SecretDeliveryIntent: runSandboxCredentialProxySecretDeliveryIntent(req.Security),
+		SecretDeliveryIntent: sandboxManifestCredentialProxySecretDeliveryIntent(req.Security),
 		NetworkProxySession:  req.NetworkProxySession,
 		RequestCategory:      sandbox.SandboxCredentialProxyRequestNetworkAuth,
 		DestinationCategory:  sandbox.SandboxNetworkPolicyDestinationUnknown,
@@ -1312,7 +1312,7 @@ func runSandboxCredentialProxyID(executionID, suffix string) string {
 	return executionID + "-credential-proxy-" + suffix
 }
 
-func runSandboxCredentialProxySecretDeliveryIntent(req sandbox.SecurityEvaluationRequest) *sandbox.SandboxSecretDeliveryIntent {
+func sandboxManifestCredentialProxySecretDeliveryIntent(req sandbox.SecurityEvaluationRequest) *sandbox.SandboxSecretDeliveryIntent {
 	requestedModes := append([]string(nil), req.RequestedSecretModes...)
 	activeModes := append([]string(nil), req.ActiveSecretModes...)
 	if req.CompatibilityAuthSync {
