@@ -2,9 +2,12 @@ package firecracker
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
 )
 
 func TestRenderStartOperationPlanConstructsDeterministicProcessDescriptor(t *testing.T) {
@@ -56,6 +59,23 @@ func TestRenderStartOperationPlanConstructsDeterministicProcessDescriptor(t *tes
 	if !reflect.DeepEqual(first.Payloads, wantPayloads) {
 		t.Fatalf("Payloads = %#v, want %#v", first.Payloads, wantPayloads)
 	}
+}
+
+func TestRenderStartOperationPlanRejectsInvalidPayloadInput(t *testing.T) {
+	config := validFirecrackerOperationConfig(t)
+	config.CPUCount = 0
+	config.KernelImagePath = "/Users/alice/private/images/secret-vmlinux"
+	config.RootfsPath = "/var/folders/private/rootfs-secret.ext4"
+
+	_, err := RenderStartOperationPlan(config)
+
+	assertFirecrackerOperationPlanError(t, err, "cpuCount")
+	assertFirecrackerErrorDoesNotLeak(t, err,
+		"/Users/alice",
+		"/var/folders",
+		"secret-vmlinux",
+		"rootfs-secret.ext4",
+	)
 }
 
 func TestRenderStopInspectDeleteOperationPlansDescribeLifecycleActions(t *testing.T) {
@@ -248,5 +268,28 @@ func assertOperationPathReference(t *testing.T, got OperationPathReference, role
 	}
 	if got.Path != path {
 		t.Fatalf("path reference path = %q, want %q", got.Path, path)
+	}
+}
+
+func assertFirecrackerOperationPlanError(t *testing.T, err error, field string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("operation plan error = nil, want invalid config error")
+	}
+	if !errors.Is(err, microvm.ErrInvalidConfig) {
+		t.Fatalf("errors.Is(err, microvm.ErrInvalidConfig) = false for %v", err)
+	}
+	var opErr *microvm.OperationError
+	if !errors.As(err, &opErr) {
+		t.Fatalf("error type = %T, want *microvm.OperationError", err)
+	}
+	if opErr.Code != microvm.ErrorCodeInvalidConfig {
+		t.Fatalf("OperationError.Code = %q, want %q", opErr.Code, microvm.ErrorCodeInvalidConfig)
+	}
+	if opErr.Operation != OperationPlanningOperation {
+		t.Fatalf("OperationError.Operation = %q, want %q", opErr.Operation, OperationPlanningOperation)
+	}
+	if opErr.Field != field {
+		t.Fatalf("OperationError.Field = %q, want %q", opErr.Field, field)
 	}
 }

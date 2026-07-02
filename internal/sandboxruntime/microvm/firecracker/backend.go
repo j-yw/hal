@@ -22,23 +22,26 @@ const (
 )
 
 // BackendOptions configures the metadata-only Firecracker backend. BaseStateDir
-// is used only to derive target-specific path plans; raw paths are not exposed
-// on created targets.
+// is used only to derive target-specific path plans; ProcessAdapter prepares
+// process descriptors without starting processes. Raw paths are not exposed on
+// returned targets.
 type BackendOptions struct {
-	BaseStateDir string
+	BaseStateDir   string
+	ProcessAdapter ProcessAdapter
 }
 
 // Backend implements the microVM backend boundary for Firecracker target
-// creation metadata. Lifecycle behavior remains intentionally deferred to later
-// phases.
+// creation metadata and fake-safe start planning.
 type Backend struct {
-	baseStateDir string
+	baseStateDir   string
+	processAdapter ProcessAdapter
 }
 
 // NewBackend constructs an explicitly injected Firecracker backend.
 func NewBackend(options BackendOptions) *Backend {
 	return &Backend{
-		baseStateDir: strings.TrimSpace(options.BaseStateDir),
+		baseStateDir:   strings.TrimSpace(options.BaseStateDir),
+		processAdapter: options.ProcessAdapter,
 	}
 }
 
@@ -91,13 +94,36 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 		strings.TrimSpace(req.Target.Runtime.RuntimeID) == "" {
 		return nil, microvm.NewTargetRequiredError(req.Operation)
 	}
-	return firecrackerController{}, nil
+	baseStateDir := ""
+	var adapter ProcessAdapter
+	if b != nil {
+		baseStateDir = b.baseStateDir
+		adapter = b.processAdapter
+	}
+	if adapter == nil {
+		adapter = startPlanningProcessAdapter{}
+	}
+	return firecrackerController{
+		baseStateDir:   baseStateDir,
+		processAdapter: adapter,
+	}, nil
 }
 
-type firecrackerController struct{}
+type firecrackerController struct {
+	baseStateDir   string
+	processAdapter ProcessAdapter
+}
 
-func (firecrackerController) Start(_ context.Context, req microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
-	return nil, unsupportedFirecrackerOperation(req.Operation)
+func (c firecrackerController) Start(ctx context.Context, req microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
+	config, err := c.startBackendConfig(req.Config, req.Target)
+	if err != nil {
+		return nil, err
+	}
+	operation, err := planFirecrackerStartOperation(ctx, c.processAdapter, config)
+	if err != nil {
+		return nil, err
+	}
+	return firecrackerStartTarget(req.Target, operation.ProcessDescriptor), nil
 }
 
 func (firecrackerController) Stop(_ context.Context, req microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
@@ -122,6 +148,210 @@ func (firecrackerController) CopyIn(_ context.Context, req microvm.ControllerCop
 
 func (firecrackerController) CopyOut(_ context.Context, req microvm.ControllerCopyRequest) error {
 	return unsupportedFirecrackerOperation(req.Operation)
+}
+
+type firecrackerStartOperation struct {
+	Plan              StartOperationPlan
+	ProcessDescriptor ProcessCommandDescriptor
+}
+
+type startPlanningProcessAdapter struct{}
+
+func (startPlanningProcessAdapter) PrepareStartCommand(_ context.Context, req ProcessStartCommandRequest) (ProcessCommandDescriptor, error) {
+	return ProcessCommandDescriptorFromStartPlan(req.Plan)
+}
+
+func (startPlanningProcessAdapter) StartProcess(context.Context, ProcessStartRequest) (ProcessHandleMetadata, error) {
+	return ProcessHandleMetadata{}, newProcessBoundaryError("processAdapter", "process start is not available during start planning")
+}
+
+func (c firecrackerController) startBackendConfig(input microvm.Config, target sandboxruntime.Target) (BackendConfig, error) {
+	config, err := BackendConfigFromMicroVMConfig(input)
+	if err != nil {
+		return BackendConfig{}, err
+	}
+	runtimeID := firecrackerStartRuntimeID(target)
+	paths, err := PlanPaths(PathPlanRequest{
+		RuntimeID:    runtimeID,
+		BaseStateDir: c.baseStateDir,
+	})
+	if err != nil {
+		return BackendConfig{}, err
+	}
+	config.RuntimeID = runtimeID
+	config.Paths = paths
+	return config, nil
+}
+
+func planFirecrackerStartOperation(ctx context.Context, adapter ProcessAdapter, config BackendConfig) (firecrackerStartOperation, error) {
+	plan, err := RenderStartOperationPlan(config)
+	if err != nil {
+		return firecrackerStartOperation{}, err
+	}
+	descriptor, err := PrepareStartCommand(ctx, adapter, plan)
+	if err != nil {
+		return firecrackerStartOperation{}, err
+	}
+	return firecrackerStartOperation{
+		Plan:              plan,
+		ProcessDescriptor: descriptor,
+	}, nil
+}
+
+func firecrackerStartRuntimeID(target sandboxruntime.Target) string {
+	for _, candidate := range []string{
+		target.Runtime.RuntimeID,
+		target.ID,
+	} {
+		if value := strings.TrimSpace(candidate); value != "" {
+			return value
+		}
+	}
+	if name := strings.TrimSpace(target.Name); name != "" {
+		return firecrackerRuntimeID(name)
+	}
+	return ""
+}
+
+func firecrackerStartTarget(target sandboxruntime.Target, descriptor ProcessCommandDescriptor) *sandboxruntime.Target {
+	started := cloneFirecrackerTarget(target)
+	if strings.TrimSpace(started.Provider) == "" {
+		started.Provider = BackendID
+	}
+	if strings.TrimSpace(started.Status) == "" {
+		started.Status = sandbox.StatusUnknown
+	}
+	if strings.TrimSpace(started.Runtime.Driver) == "" {
+		started.Runtime.Driver = sandboxruntime.DriverMicroVM
+	}
+	if strings.TrimSpace(started.Runtime.RuntimeID) == "" {
+		started.Runtime.RuntimeID = firecrackerStartRuntimeID(target)
+	}
+	if strings.TrimSpace(started.ID) == "" {
+		started.ID = started.Runtime.RuntimeID
+	}
+	if started.Runtime.Metadata == nil {
+		started.Runtime.Metadata = &sandboxruntime.RuntimeMetadata{}
+	}
+	if strings.TrimSpace(started.Runtime.Metadata.Backend) == "" {
+		started.Runtime.Metadata.Backend = BackendID
+	}
+	if len(started.Runtime.Metadata.PathRoles) == 0 {
+		started.Runtime.Metadata.PathRoles = []string{
+			string(OperationPathRoleStateDir),
+			string(OperationPathRoleAPISocket),
+			string(OperationPathRoleConfig),
+			string(OperationPathRoleLog),
+			string(OperationPathRoleMetrics),
+		}
+	}
+	started.Runtime.Metadata.OperationPlan = firecrackerRuntimeOperationPlanMetadata(descriptor)
+	return &started
+}
+
+func firecrackerRuntimeOperationPlanMetadata(descriptor ProcessCommandDescriptor) *sandboxruntime.RuntimeOperationPlan {
+	summary := descriptor.Summary()
+	return &sandboxruntime.RuntimeOperationPlan{
+		Action: string(summary.Action),
+		ProcessDescriptor: &sandboxruntime.RuntimeProcessDescriptor{
+			Action:         string(summary.Action),
+			ExecutableRole: string(summary.ExecutableRole),
+			Argv:           runtimeOperationArguments(summary.Argv),
+			Environment:    runtimeOperationEnvironment(summary.Environment),
+			PathRoles:      runtimeOperationPathRoles(summary.PathRoles),
+			Payloads:       runtimeOperationPayloads(summary.Payloads),
+		},
+	}
+}
+
+func runtimeOperationArguments(arguments []OperationArgumentSummary) []sandboxruntime.RuntimeOperationArgument {
+	if len(arguments) == 0 {
+		return []sandboxruntime.RuntimeOperationArgument{}
+	}
+	out := make([]sandboxruntime.RuntimeOperationArgument, 0, len(arguments))
+	for _, argument := range arguments {
+		out = append(out, sandboxruntime.RuntimeOperationArgument{
+			Value:    argument.Value,
+			PathRole: string(argument.PathRole),
+		})
+	}
+	return out
+}
+
+func runtimeOperationEnvironment(environment []OperationEnvironmentMetadata) []sandboxruntime.RuntimeOperationEnvironment {
+	if len(environment) == 0 {
+		return []sandboxruntime.RuntimeOperationEnvironment{}
+	}
+	out := make([]sandboxruntime.RuntimeOperationEnvironment, 0, len(environment))
+	for _, entry := range environment {
+		out = append(out, sandboxruntime.RuntimeOperationEnvironment{
+			Name:   entry.Name,
+			Source: entry.Source,
+		})
+	}
+	return out
+}
+
+func runtimeOperationPathRoles(pathRoles []OperationPathRole) []string {
+	if len(pathRoles) == 0 {
+		return []string{}
+	}
+	out := make([]string, 0, len(pathRoles))
+	for _, role := range pathRoles {
+		out = append(out, string(role))
+	}
+	return out
+}
+
+func runtimeOperationPayloads(payloads []OperationPayloadReference) []sandboxruntime.RuntimeOperationPayload {
+	if len(payloads) == 0 {
+		return []sandboxruntime.RuntimeOperationPayload{}
+	}
+	out := make([]sandboxruntime.RuntimeOperationPayload, 0, len(payloads))
+	for _, payload := range payloads {
+		out = append(out, sandboxruntime.RuntimeOperationPayload{
+			Role:    string(payload.Role),
+			APIPath: payload.APIPath,
+		})
+	}
+	return out
+}
+
+func cloneFirecrackerTarget(target sandboxruntime.Target) sandboxruntime.Target {
+	target.Runtime.Metadata = cloneFirecrackerRuntimeMetadata(target.Runtime.Metadata)
+	return target
+}
+
+func cloneFirecrackerRuntimeMetadata(metadata *sandboxruntime.RuntimeMetadata) *sandboxruntime.RuntimeMetadata {
+	if metadata == nil {
+		return nil
+	}
+	copied := *metadata
+	copied.CapabilityLabels = cloneStringSlice(metadata.CapabilityLabels)
+	copied.PathRoles = cloneStringSlice(metadata.PathRoles)
+	copied.OperationPlan = cloneFirecrackerRuntimeOperationPlan(metadata.OperationPlan)
+	return &copied
+}
+
+func cloneFirecrackerRuntimeOperationPlan(plan *sandboxruntime.RuntimeOperationPlan) *sandboxruntime.RuntimeOperationPlan {
+	if plan == nil {
+		return nil
+	}
+	copied := *plan
+	copied.ProcessDescriptor = cloneFirecrackerRuntimeProcessDescriptor(plan.ProcessDescriptor)
+	return &copied
+}
+
+func cloneFirecrackerRuntimeProcessDescriptor(descriptor *sandboxruntime.RuntimeProcessDescriptor) *sandboxruntime.RuntimeProcessDescriptor {
+	if descriptor == nil {
+		return nil
+	}
+	copied := *descriptor
+	copied.Argv = append([]sandboxruntime.RuntimeOperationArgument(nil), descriptor.Argv...)
+	copied.Environment = append([]sandboxruntime.RuntimeOperationEnvironment(nil), descriptor.Environment...)
+	copied.PathRoles = cloneStringSlice(descriptor.PathRoles)
+	copied.Payloads = append([]sandboxruntime.RuntimeOperationPayload(nil), descriptor.Payloads...)
+	return &copied
 }
 
 func unsupportedFirecrackerOperation(operation string) error {
