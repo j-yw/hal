@@ -945,12 +945,86 @@ func TestSandboxMetadataLoadsLegacyJSON(t *testing.T) {
 	if decoded.Security != nil {
 		t.Fatalf("security = %#v, want nil for omitted legacy field", decoded.Security)
 	}
+	if decoded.CredentialProxyPlan != nil {
+		t.Fatalf("credentialProxyPlan = %#v, want nil for omitted legacy field", decoded.CredentialProxyPlan)
+	}
+	if decoded.CredentialProxySession != nil {
+		t.Fatalf("credentialProxySession = %#v, want nil for omitted legacy field", decoded.CredentialProxySession)
+	}
+	if len(decoded.CredentialProxyBindings) != 0 {
+		t.Fatalf("credentialProxyBindings = %#v, want empty for omitted legacy field", decoded.CredentialProxyBindings)
+	}
 	if decoded.Lease != nil {
 		t.Fatalf("lease = %#v, want nil for omitted legacy field", decoded.Lease)
 	}
 	if decoded.WorkerRouting != nil {
 		t.Fatalf("workerRouting = %#v, want nil for omitted legacy field", decoded.WorkerRouting)
 	}
+}
+
+func TestFactoryCredentialProxyLegacyRecordsAndEventsLoadWithoutMetadata(t *testing.T) {
+	runPayload := []byte(`{
+		"runId": "run-legacy-credential-proxy",
+		"status": "running",
+		"executorMode": "sandbox",
+		"source": {"kind": "prd", "path": ".hal/prd.json"},
+		"repoPath": "/repo",
+		"repoRemote": "origin",
+		"branchName": "hal/legacy-record",
+		"baseBranch": "main",
+		"sandboxName": "factory-run",
+		"sandbox": {
+			"name": "factory-run",
+			"provider": "daytona",
+			"status": "running"
+		},
+		"currentStep": "run",
+		"createdAt": "2026-07-02T10:00:00Z",
+		"updatedAt": "2026-07-02T10:00:00Z"
+	}`)
+
+	var record RunRecord
+	if err := json.Unmarshal(runPayload, &record); err != nil {
+		t.Fatalf("json.Unmarshal(legacy run record) error = %v", err)
+	}
+	if record.Sandbox == nil {
+		t.Fatal("sandbox metadata = nil, want decoded legacy sandbox metadata")
+	}
+	if record.Sandbox.CredentialProxyPlan != nil {
+		t.Fatalf("CredentialProxyPlan = %#v, want nil for legacy record", record.Sandbox.CredentialProxyPlan)
+	}
+	if record.Sandbox.CredentialProxySession != nil {
+		t.Fatalf("CredentialProxySession = %#v, want nil for legacy record", record.Sandbox.CredentialProxySession)
+	}
+	if len(record.Sandbox.CredentialProxyBindings) != 0 {
+		t.Fatalf("CredentialProxyBindings = %#v, want empty for legacy record", record.Sandbox.CredentialProxyBindings)
+	}
+	recordData, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("json.Marshal(legacy run record) error = %v", err)
+	}
+	requireJSONKeysAbsent(t, mustJSONMapFromBytes(t, recordData), []string{
+		"credentialProxy", "credentialProxyPlan", "credentialProxySession", "credentialProxyBindings",
+	})
+
+	eventPayload := []byte(`{
+		"sequence": 1,
+		"runId": "run-legacy-credential-proxy",
+		"eventType": "run_created",
+		"timestamp": "2026-07-02T10:00:00Z",
+		"message": "factory run created"
+	}`)
+	var event EventRecord
+	if err := json.Unmarshal(eventPayload, &event); err != nil {
+		t.Fatalf("json.Unmarshal(legacy event record) error = %v", err)
+	}
+	eventData, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("json.Marshal(legacy event record) error = %v", err)
+	}
+	requireJSONKeysAbsent(t, mustJSONMapFromBytes(t, eventData), []string{
+		"credentialProxy", "credentialProxyPlan", "credentialProxySession", "credentialProxyBindings",
+	})
 }
 
 func TestSandboxMetadataOptionalMetadataOmittedWhenNil(t *testing.T) {
@@ -973,7 +1047,10 @@ func TestSandboxMetadataOptionalMetadataOmittedWhenNil(t *testing.T) {
 	}
 
 	requireExactJSONKeys(t, raw, []string{"name", "provider", "status", "sshCommand", "cleanupCommand"})
-	requireJSONKeysAbsent(t, raw, []string{"networkProxySession", "networkPolicyDecisionLog", "networkPolicyDecisionLogs"})
+	requireJSONKeysAbsent(t, raw, []string{
+		"networkProxySession", "networkPolicyDecisionLog", "networkPolicyDecisionLogs",
+		"credentialProxy", "credentialProxyPlan", "credentialProxySession", "credentialProxyBindings",
+	})
 }
 
 func TestSandboxMetadataNetworkProxySessionJSONShape(t *testing.T) {
@@ -1033,6 +1110,134 @@ func TestSandboxMetadataNetworkProxySessionJSONShape(t *testing.T) {
 	}
 	if snapshot["preset"] != string(sandbox.SandboxNetworkPolicyPresetDenyByDefault) {
 		t.Fatalf("policySnapshot.preset = %#v, want deny_by_default", snapshot["preset"])
+	}
+}
+
+func TestSandboxMetadataCredentialProxyMetadataTypesAndJSONShape(t *testing.T) {
+	metadataType := reflect.TypeOf(SandboxMetadata{})
+	for _, field := range []struct {
+		name string
+		typ  reflect.Type
+	}{
+		{name: "CredentialProxyPlan", typ: reflect.TypeOf((*sandbox.SandboxCredentialProxyPlanMetadata)(nil))},
+		{name: "CredentialProxySession", typ: reflect.TypeOf((*sandbox.SandboxCredentialProxySessionMetadata)(nil))},
+		{name: "CredentialProxyBindings", typ: reflect.TypeOf([]sandbox.SandboxCredentialProxyBindingMetadata(nil))},
+	} {
+		got, ok := metadataType.FieldByName(field.name)
+		if !ok {
+			t.Fatalf("SandboxMetadata missing field %s", field.name)
+		}
+		if got.Type != field.typ {
+			t.Fatalf("SandboxMetadata.%s type = %s, want %s", field.name, got.Type, field.typ)
+		}
+		if got.Tag.Get("json") == "" || !strings.Contains(","+got.Tag.Get("json")+",", ",omitempty,") {
+			t.Fatalf("SandboxMetadata.%s json tag = %q, want omitempty", field.name, got.Tag.Get("json"))
+		}
+	}
+
+	plan := sandbox.SanitizeSandboxCredentialProxyPlanMetadata(sandbox.SandboxCredentialProxyPlanMetadata{
+		ID:                    " credential-plan-01 ",
+		Source:                sandbox.SandboxCredentialProxySource(" FACTORY "),
+		SecretBrokerSessionID: " secret-session-01 ",
+		NetworkProxySessionID: " proxy-session-01 ",
+		PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
+			ID:     " policy-snapshot-01 ",
+			Preset: sandbox.SandboxNetworkPolicyPreset(" DENY_BY_DEFAULT "),
+		},
+		BindingCount: 1,
+		Mode:         sandbox.SandboxCredentialProxyMode(" BROKERED_NETWORK_REFERENCE "),
+		Status:       sandbox.SandboxCredentialProxyStatus(" PLANNED "),
+	})
+	session := sandbox.SanitizeSandboxCredentialProxySessionMetadata(sandbox.SandboxCredentialProxySessionMetadata{
+		ID:                    " credential-session-01 ",
+		PlanID:                " credential-plan-01 ",
+		Source:                sandbox.SandboxCredentialProxySource(" FACTORY "),
+		SecretBrokerSessionID: " secret-session-01 ",
+		NetworkProxySessionID: " proxy-session-01 ",
+		PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
+			ID:     " policy-snapshot-01 ",
+			Preset: sandbox.SandboxNetworkPolicyPreset(" DENY_BY_DEFAULT "),
+		},
+		Status:      sandbox.SandboxCredentialProxyStatus(" ACTIVE "),
+		WarningCode: sandbox.SandboxCredentialProxyWarningCode(" BINDING_OMITTED "),
+		ReasonCode:  sandbox.SandboxCredentialProxyReasonCode(" REQUESTED "),
+	})
+	binding := sandbox.SanitizeSandboxCredentialProxyBindingMetadata(sandbox.SandboxCredentialProxyBindingMetadata{
+		ID:                  " credential-binding-01 ",
+		PlanID:              " credential-plan-01 ",
+		SessionID:           " credential-session-01 ",
+		SecretID:            "env:GITHUB_TOKEN",
+		DeliveryMode:        sandbox.SandboxCredentialProxyDeliveryMode(" HTTP_PROXY "),
+		RequestCategory:     sandbox.SandboxCredentialProxyRequestCategory(" NETWORK_AUTH "),
+		DestinationCategory: sandbox.SandboxNetworkPolicyDestinationCategory(" PUBLIC_INTERNET "),
+		Outcome:             sandbox.SandboxCredentialProxyBindingOutcome(" BOUND "),
+		Status:              sandbox.SandboxCredentialProxyStatus(" ACTIVE "),
+		ReasonCode:          sandbox.SandboxCredentialProxyReasonCode(" REQUESTED "),
+	})
+	metadata := SandboxMetadata{
+		Name:                    "factory-run",
+		Provider:                "daytona",
+		Status:                  "running",
+		CredentialProxyPlan:     &plan,
+		CredentialProxySession:  &session,
+		CredentialProxyBindings: []sandbox.SandboxCredentialProxyBindingMetadata{binding},
+	}
+
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("json.Marshal(sandbox metadata) error = %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(sandbox metadata payload) error = %v", err)
+	}
+	requireExactJSONKeys(t, raw, []string{
+		"name", "provider", "status",
+		"credentialProxyPlan", "credentialProxySession", "credentialProxyBindings",
+	})
+	requireJSONKeysAbsent(t, raw, []string{"credentialProxy"})
+
+	credentialProxyPlan, ok := raw["credentialProxyPlan"].(map[string]any)
+	if !ok {
+		t.Fatalf("credentialProxyPlan should be an object, got %T", raw["credentialProxyPlan"])
+	}
+	requireExactJSONKeys(t, credentialProxyPlan, []string{
+		"id", "source", "secretBrokerSessionId", "networkProxySessionId",
+		"policySnapshot", "bindingCount", "mode", "status",
+	})
+	if credentialProxyPlan["source"] != string(sandbox.SandboxCredentialProxySourceFactory) {
+		t.Fatalf("credentialProxyPlan.source = %#v, want factory", credentialProxyPlan["source"])
+	}
+	if credentialProxyPlan["mode"] != string(sandbox.SandboxCredentialProxyModeBrokeredNetworkReference) {
+		t.Fatalf("credentialProxyPlan.mode = %#v, want brokered_network_reference", credentialProxyPlan["mode"])
+	}
+
+	credentialProxySession, ok := raw["credentialProxySession"].(map[string]any)
+	if !ok {
+		t.Fatalf("credentialProxySession should be an object, got %T", raw["credentialProxySession"])
+	}
+	requireExactJSONKeys(t, credentialProxySession, []string{
+		"id", "planId", "source", "secretBrokerSessionId", "networkProxySessionId",
+		"policySnapshot", "status", "warningCode", "reasonCode",
+	})
+	if credentialProxySession["status"] != string(sandbox.SandboxCredentialProxyStatusActive) {
+		t.Fatalf("credentialProxySession.status = %#v, want active", credentialProxySession["status"])
+	}
+
+	credentialProxyBinding, ok := firstJSONMapArrayObject(t, raw, "credentialProxyBindings")
+	if !ok {
+		t.Fatalf("credentialProxyBindings[0] should be an object, got %#v", raw["credentialProxyBindings"])
+	}
+	requireExactJSONKeys(t, credentialProxyBinding, []string{
+		"id", "planId", "sessionId", "secretId", "deliveryMode", "requestCategory",
+		"destinationCategory", "outcome", "status", "reasonCode",
+	})
+	if credentialProxyBinding["secretId"] != "env:GITHUB_TOKEN" {
+		t.Fatalf("credentialProxyBindings[0].secretId = %#v, want env:GITHUB_TOKEN", credentialProxyBinding["secretId"])
+	}
+	if credentialProxyBinding["deliveryMode"] != string(sandbox.SandboxCredentialProxyDeliveryModeHTTPProxy) {
+		t.Fatalf("credentialProxyBindings[0].deliveryMode = %#v, want http_proxy", credentialProxyBinding["deliveryMode"])
 	}
 }
 
@@ -2359,6 +2564,27 @@ func requireExactJSONKeys(t *testing.T, got map[string]any, want []string) {
 			t.Fatalf("missing JSON key %q in %v", key, sortedMapKeys(got))
 		}
 	}
+}
+
+func mustJSONMapFromBytes(t *testing.T, data []byte) map[string]any {
+	t.Helper()
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal(payload) error = %v", err)
+	}
+	return raw
+}
+
+func firstJSONMapArrayObject(t *testing.T, values map[string]any, key string) (map[string]any, bool) {
+	t.Helper()
+
+	items, ok := values[key].([]any)
+	if !ok || len(items) == 0 {
+		return nil, false
+	}
+	first, ok := items[0].(map[string]any)
+	return first, ok
 }
 
 func networkProxyRedactionTestValues() []string {
