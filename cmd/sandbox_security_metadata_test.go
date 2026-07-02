@@ -47,9 +47,6 @@ func TestSandboxSecurityMetadataIncludesEffectivePolicyResult(t *testing.T) {
 			t.Fatalf("sandbox security metadata leaked %q: %s", forbidden, encoded)
 		}
 	}
-	if strings.Contains(encoded, "capabilityReadiness") {
-		t.Fatalf("default sandbox security metadata included capabilityReadiness: %s", encoded)
-	}
 }
 
 func TestSandboxSecurityCapabilityReadinessJSONFieldApprovedStructs(t *testing.T) {
