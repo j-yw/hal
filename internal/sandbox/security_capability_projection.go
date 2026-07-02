@@ -74,6 +74,52 @@ func ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(projection Sand
 	return SanitizeSandboxSecurityCapabilityReadinessInput(input)
 }
 
+// MergeSandboxSecurityCapabilityReadinessInputs combines already-projected
+// readiness inputs into a deterministic, durable-safe evaluator input.
+func MergeSandboxSecurityCapabilityReadinessInputs(inputs ...SandboxSecurityCapabilityReadinessInput) SandboxSecurityCapabilityReadinessInput {
+	merged := SandboxSecurityCapabilityReadinessInput{}
+	for _, input := range inputs {
+		input = SanitizeSandboxSecurityCapabilityReadinessInput(input)
+		for _, requested := range input.Requested {
+			merged.Requested = sandboxSecurityCapabilityProjectionAppendUnique(merged.Requested, requested)
+		}
+		for _, ready := range input.Ready {
+			merged.Ready = sandboxSecurityCapabilityProjectionAppendUnique(merged.Ready, ready)
+		}
+		for _, posture := range input.WorkerPostures {
+			merged.WorkerPostures = sandboxSecurityCapabilityProjectionAppendWorkerPosture(merged.WorkerPostures, posture)
+		}
+		if merged.NetworkProxySession == nil && input.NetworkProxySession != nil {
+			session := *input.NetworkProxySession
+			merged.NetworkProxySession = &session
+		}
+		merged.NetworkPolicyDecisionLogs = append(merged.NetworkPolicyDecisionLogs, input.NetworkPolicyDecisionLogs...)
+		if merged.CredentialProxyPlan == nil && input.CredentialProxyPlan != nil {
+			plan := *input.CredentialProxyPlan
+			merged.CredentialProxyPlan = &plan
+		}
+		if merged.CredentialProxySession == nil && input.CredentialProxySession != nil {
+			session := *input.CredentialProxySession
+			merged.CredentialProxySession = &session
+		}
+		merged.CredentialProxyBindings = append(merged.CredentialProxyBindings, input.CredentialProxyBindings...)
+	}
+	return SanitizeSandboxSecurityCapabilityReadinessInput(merged)
+}
+
+// EvaluateProjectedSandboxSecurityCapabilityReadiness runs projected input
+// through the Phase 27 evaluator and returns sanitized output safe to attach to
+// command or factory metadata.
+func EvaluateProjectedSandboxSecurityCapabilityReadiness(inputs ...SandboxSecurityCapabilityReadinessInput) *SandboxSecurityCapabilityReadinessOutput {
+	input := MergeSandboxSecurityCapabilityReadinessInputs(inputs...)
+	output := EvaluateSandboxSecurityCapabilityReadiness(input)
+	sanitized := SanitizeSandboxSecurityCapabilityReadinessOutput(output)
+	if len(sanitized.Results) == 0 {
+		return nil
+	}
+	return &sanitized
+}
+
 func sandboxSecurityCapabilityProjectionRequestedNetwork(records []SandboxSecurityCapabilityMetadata, network *SandboxNetworkSecurity) []SandboxSecurityCapabilityMetadata {
 	if network == nil {
 		return records

@@ -589,6 +589,124 @@ func TestProjectSandboxWorkerRuntimeCapabilityReadinessInputCopiesOnlySafeLabels
 	)
 }
 
+func TestEvaluateProjectedSandboxSecurityCapabilityReadinessMergesProjectedInputAndEvaluates(t *testing.T) {
+	security := EvaluateSSHMachineCompatibilitySecurity(SecurityEvaluationRequest{
+		RuntimeDriver:          SandboxRuntimeDriverSSHMachine,
+		RequestedNetworkPolicy: SandboxNetworkPolicyDenyByDefault,
+		RequestedSecretModes:   []string{SandboxSecretModeHTTPProxy},
+		CompatibilityAuthSync:  true,
+	})
+	securityInput := ProjectSandboxSecurityCapabilityReadinessInput(security)
+	workerInput := ProjectSandboxWorkerRuntimeCapabilityReadinessInput(SandboxWorkerRuntimeCapabilityReadinessProjection{
+		Ready: []SandboxSecurityCapabilityMetadata{{
+			Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+			Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+			Source:     SandboxSecurityCapabilitySourceRuntime,
+			Status:     SandboxSecurityCapabilityReadinessReady,
+			ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+		}},
+	})
+	policyInput := ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+		NetworkProxySession: &SandboxNetworkProxySessionMetadata{
+			ID:              "network-proxy-session-01",
+			Source:          SandboxNetworkPolicyDecisionSourceRun,
+			PolicySnapshot:  &SandboxNetworkPolicySnapshotIdentity{ID: "policy-snapshot-01", Preset: SandboxNetworkPolicyPresetDenyByDefault},
+			EnforcementMode: SandboxNetworkEnforcementModeProxy,
+		},
+	})
+
+	merged := MergeSandboxSecurityCapabilityReadinessInputs(securityInput, workerInput, policyInput)
+	assertProjectedSecurityCapabilityMetadata(t, merged.Requested, securityInput.Requested)
+	assertProjectedSecurityCapabilityMetadata(t, merged.Ready, workerInput.Ready)
+	if merged.NetworkProxySession == nil || merged.NetworkProxySession.ID != "network-proxy-session-01" {
+		t.Fatalf("merged network proxy session = %#v, want projected safe session", merged.NetworkProxySession)
+	}
+	if validation := ValidateAndNormalizeSandboxSecurityCapabilityReadinessInput(merged); !validation.Valid {
+		t.Fatalf("merged projected input validation errors = %#v, want valid", validation.Errors)
+	}
+
+	output := EvaluateProjectedSandboxSecurityCapabilityReadiness(securityInput, workerInput, policyInput)
+	if output == nil {
+		t.Fatal("projected readiness output = nil, want evaluated output")
+	}
+	if got, want := len(output.Results), 3; got != want {
+		t.Fatalf("readiness output result count = %d, want %d: %#v", got, want, output.Results)
+	}
+	assertSecurityCapabilityReadyResult(t, output.Results[0],
+		SandboxSecurityCapabilityFamilyNetworkPolicy,
+		SandboxSecurityCapabilityNetworkDenyByDefault,
+		"",
+		SandboxSecurityCapabilitySourceRuntime,
+	)
+	assertSecurityCapabilityUnsupportedResult(t, output.Results[1],
+		SandboxSecurityCapabilityFamilySecretDelivery,
+		SandboxSecurityCapabilitySecretHTTPProxy,
+		SandboxSecretModeHTTPProxy,
+		SandboxSecurityCapabilityReasonCapabilityMissing,
+	)
+	assertSecurityCapabilityMetadataOnlyResult(t, output.Results[2],
+		SandboxSecurityCapabilityFamilyNetworkProxy,
+		SandboxSecurityCapabilityNetworkProxyEnforcement,
+		SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+	)
+	if sanitized := SanitizeSandboxSecurityCapabilityReadinessOutput(*output); !reflect.DeepEqual(sanitized, *output) {
+		t.Fatalf("projected readiness output was not already sanitized:\nsanitized: %#v\noutput:    %#v", sanitized, *output)
+	}
+}
+
+func TestEvaluateProjectedSandboxSecurityCapabilityReadinessSanitizesOutputForAttachment(t *testing.T) {
+	rawValue := "https://token@example.invalid:8443/tmp/secret"
+	projected := ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+		Requested: []SandboxSecurityCapabilityMetadata{{
+			ID:         rawValue,
+			Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+			Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+			Mode:       SandboxNetworkEnforcementModeFirewall,
+			Source:     SandboxSecurityCapabilitySourceRequested,
+		}},
+		Ready: []SandboxSecurityCapabilityMetadata{{
+			ID:         rawValue,
+			Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+			Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+			Mode:       SandboxNetworkEnforcementModeFirewall,
+			Source:     SandboxSecurityCapabilitySourceWorker,
+			Status:     SandboxSecurityCapabilityReadinessBlocked,
+			ReasonCode: SandboxSecurityCapabilityReasonCapabilityBlocked,
+			WarningCodes: []SandboxSecurityCapabilityWarningCode{
+				SandboxSecurityCapabilityWarningBlockedByPolicy,
+				SandboxSecurityCapabilityWarningCode(rawValue),
+			},
+		}},
+	})
+
+	if len(projected.Requested) != 1 || projected.Requested[0].ID != "" {
+		t.Fatalf("projected requested metadata = %#v, want unsafe id cleared", projected.Requested)
+	}
+	if len(projected.Ready) != 1 || projected.Ready[0].ID != "" {
+		t.Fatalf("projected ready metadata = %#v, want unsafe id cleared", projected.Ready)
+	}
+	assertSecurityCapabilityWarningsEqual(t, projected.Ready[0].WarningCodes, []SandboxSecurityCapabilityWarningCode{SandboxSecurityCapabilityWarningBlockedByPolicy})
+
+	output := EvaluateProjectedSandboxSecurityCapabilityReadiness(projected)
+	if output == nil {
+		t.Fatal("projected readiness output = nil, want blocked output")
+	}
+	if got, want := len(output.Results), 1; got != want {
+		t.Fatalf("readiness output result count = %d, want %d: %#v", got, want, output.Results)
+	}
+	assertSecurityCapabilityBlockedResult(t, output.Results[0],
+		SandboxSecurityCapabilityFamilyNetworkPolicy,
+		SandboxSecurityCapabilityNetworkDenyByDefault,
+		SandboxNetworkEnforcementModeFirewall,
+		SandboxSecurityCapabilitySourceWorker,
+		[]SandboxSecurityCapabilityWarningCode{SandboxSecurityCapabilityWarningBlockedByPolicy},
+	)
+	assertSecurityCapabilityJSONExcludes(t, output, rawValue, "token", "/tmp/secret", "example.invalid", ":8443")
+	if sanitized := SanitizeSandboxSecurityCapabilityReadinessOutput(*output); !reflect.DeepEqual(sanitized, *output) {
+		t.Fatalf("projected readiness output was not already sanitized:\nsanitized: %#v\noutput:    %#v", sanitized, *output)
+	}
+}
+
 func assertProjectedSecurityCapabilityMetadata(t *testing.T, got, want []SandboxSecurityCapabilityMetadata) {
 	t.Helper()
 	if !reflect.DeepEqual(got, want) {
