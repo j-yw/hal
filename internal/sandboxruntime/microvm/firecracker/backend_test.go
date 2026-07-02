@@ -303,6 +303,57 @@ func TestBackendDefaultOptionsStartRemainsPlanningOnly(t *testing.T) {
 	}
 }
 
+func TestBackendInjectedAdapterWithoutLiveStartRemainsPlanningOnly(t *testing.T) {
+	adapter := &fakeProcessAdapter{
+		prepare: func(_ context.Context, req ProcessStartCommandRequest) (ProcessCommandDescriptor, error) {
+			return ProcessCommandDescriptorFromStartPlan(req.Plan)
+		},
+		start: func(context.Context, ProcessStartRequest) (ProcessHandleMetadata, error) {
+			t.Fatal("StartProcess should not run unless LiveStart is explicitly enabled")
+			return ProcessHandleMetadata{}, nil
+		},
+	}
+	backend := NewBackend(BackendOptions{
+		BaseStateDir:   firecrackerPathTestBase("planning-only-with-adapter"),
+		ProcessAdapter: adapter,
+	})
+	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+		Operation: microvm.OperationCreate,
+		Config:    validMicroVMConfig(),
+		Name:      "firecracker-planning-only",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Controller() error = %v, want nil", err)
+	}
+
+	started, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v, want planning-only nil error", err)
+	}
+
+	if adapter.prepareCalls != 1 || adapter.startCalls != 0 {
+		t.Fatalf("adapter calls = prepare:%d start:%d, want one prepare and no process start", adapter.prepareCalls, adapter.startCalls)
+	}
+	if started == nil || started.Runtime.Metadata == nil || started.Runtime.Metadata.OperationPlan == nil {
+		t.Fatalf("started target metadata = %#v, want planning metadata", started)
+	}
+	if started.Runtime.Metadata.ProcessLaunch == nil || started.Runtime.Metadata.ProcessLaunch.State != string(ProcessLaunchStateBoundaryAvailable) {
+		t.Fatalf("ProcessLaunch = %#v, want boundary-available planning metadata", started.Runtime.Metadata.ProcessLaunch)
+	}
+}
+
 func TestBackendLiveStartOptionCallsInjectedAdapterAfterPlanRendered(t *testing.T) {
 	var events []string
 	adapter := &fakeProcessAdapter{

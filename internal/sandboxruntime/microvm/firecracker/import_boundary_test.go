@@ -435,6 +435,93 @@ func TestFirecrackerDefaultTestBoundaryGuardsCoverLiveOperations(t *testing.T) {
 	}
 }
 
+func TestPhase33FirecrackerLiveProcessCodeStaysInExplicitAdapterBoundary(t *testing.T) {
+	allowedFiles := map[string]bool{
+		"backend.go":         true,
+		"process.go":         true,
+		"process_adapter.go": true,
+	}
+	for _, path := range firecrackerProductionBoundaryFiles(t) {
+		source, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error: %v", path, err)
+		}
+		if allowedFiles[path] {
+			continue
+		}
+		for _, marker := range []string{
+			"ProcessLaunchAdapter",
+			"ProcessStarter",
+			"ProcessRunnerStartRequest",
+			"ProcessStartRequest",
+			"StartProcess(",
+			"LiveStart",
+		} {
+			if strings.Contains(string(source), marker) {
+				t.Fatalf("%s contains %q; Phase 33 live-start process code must stay in the explicit Firecracker process adapter/backend boundary", path, marker)
+			}
+		}
+	}
+}
+
+func TestPhase33ExplicitLiveAdapterTestsUseInjectedFakesByDefault(t *testing.T) {
+	for _, tt := range []struct {
+		fileName   string
+		testName   string
+		fakeMarker string
+	}{
+		{
+			fileName:   "backend_test.go",
+			testName:   "TestBackendLiveStartOptionCallsInjectedAdapterAfterPlanRendered",
+			fakeMarker: "fakeProcessAdapter",
+		},
+		{
+			fileName:   "backend_test.go",
+			testName:   "TestBackendLiveStartReturnsSanitizedRunnerFailure",
+			fakeMarker: "fakeProcessStarter",
+		},
+		{
+			fileName:   "process_adapter_test.go",
+			testName:   "TestProcessLaunchAdapterStartProcessBuildsRunnerRequestAndUsesContext",
+			fakeMarker: "fakeProcessStarter",
+		},
+		{
+			fileName:   "process_test.go",
+			testName:   "TestStartProcessCallsOnlyInjectedProcessAdapter",
+			fakeMarker: "fakeProcessAdapter",
+		},
+	} {
+		t.Run(tt.testName, func(t *testing.T) {
+			body := firecrackerTestFunctionSource(t, tt.fileName, tt.testName)
+			if !strings.Contains(body, tt.fakeMarker) {
+				t.Fatalf("%s in %s does not use injected fake marker %q", tt.testName, tt.fileName, tt.fakeMarker)
+			}
+		})
+	}
+
+	for _, path := range []string{
+		"backend_test.go",
+		"process_adapter_test.go",
+		"process_test.go",
+	} {
+		file := firecrackerParseTestFile(t, path, parser.ImportsOnly)
+		for _, spec := range file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("unquote import %s in %s: %v", spec.Path.Value, path, err)
+			}
+			if message := firecrackerDefaultTestImportBoundaryMessage(path, importPath); message != "" {
+				t.Fatal(message)
+			}
+		}
+
+		file = firecrackerParseTestFile(t, path, 0)
+		if message := firecrackerDefaultTestCallBoundaryMessage(path, file); message != "" {
+			t.Fatal(message)
+		}
+	}
+}
+
 func firecrackerProductionBoundaryFiles(t *testing.T) []string {
 	t.Helper()
 
@@ -608,6 +695,43 @@ func firecrackerDefaultTestForbiddenCallReason(call *ast.CallExpr) string {
 		}
 	}
 	return ""
+}
+
+func firecrackerTestFunctionSource(t *testing.T, path, testName string) string {
+	t.Helper()
+
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error: %v", path, err)
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, source, 0)
+	if err != nil {
+		t.Fatalf("ParseFile(%s) error: %v", path, err)
+	}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != testName {
+			continue
+		}
+		start := fset.Position(fn.Pos()).Offset
+		end := fset.Position(fn.End()).Offset
+		if start < 0 || end > len(source) || start >= end {
+			t.Fatalf("invalid source span for %s in %s: start=%d end=%d len=%d", testName, path, start, end, len(source))
+		}
+		return string(source[start:end])
+	}
+	t.Fatalf("%s does not define required Phase 33 live adapter test %s", path, testName)
+	return ""
+}
+
+func firecrackerParseTestFile(t *testing.T, path string, mode parser.Mode) *ast.File {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, mode)
+	if err != nil {
+		t.Fatalf("ParseFile(%s) error: %v", path, err)
+	}
+	return file
 }
 
 func firecrackerCallHasRootOnlyPathArg(call *ast.CallExpr) bool {
