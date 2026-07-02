@@ -123,9 +123,10 @@ type SandboxWorkspace struct {
 
 // SandboxSecurity represents durable Sandbox Runtime v2 security metadata.
 type SandboxSecurity struct {
-	Network             *SandboxNetworkSecurity                   `json:"network,omitempty"`
-	Secrets             *SandboxSecretSecurity                    `json:"secrets,omitempty"`
-	CapabilityReadiness *SandboxSecurityCapabilityReadinessOutput `json:"capabilityReadiness,omitempty"`
+	Network                        *SandboxNetworkSecurity                              `json:"network,omitempty"`
+	Secrets                        *SandboxSecretSecurity                               `json:"secrets,omitempty"`
+	CapabilityReadiness            *SandboxSecurityCapabilityReadinessOutput            `json:"capabilityReadiness,omitempty"`
+	CapabilityReadinessDiagnostics *SandboxSecurityCapabilityReadinessDiagnosticSummary `json:"capabilityReadinessDiagnostics,omitempty"`
 }
 
 // SandboxNetworkSecurity describes network policy metadata for a sandbox.

@@ -1315,6 +1315,8 @@ func runSandboxManifestSecurity(req runSandboxRequest, manifest *sandboxexecutio
 		security = &sandbox.SandboxSecurity{}
 	}
 	security.CapabilityReadiness = readiness
+	diagnostics := sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(*readiness)
+	security.CapabilityReadinessDiagnostics = &diagnostics
 	return security
 }
 
