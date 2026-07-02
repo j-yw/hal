@@ -290,7 +290,7 @@ func TestPhase26CredentialProxyLegacyJSONCompatibility(t *testing.T) {
 
 func TestPhase26CredentialProxyFactoryTimelineOmissionAfterSanitization(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 14, 10, 0, 0, time.UTC)
-	redactor, metadata, forbidden := phase26FactoryTimelineCredentialProxySeed()
+	redactor, metadata, forbidden := phase26CredentialProxyUnsafeValues().TimelineSeed()
 
 	event := redactFactoryTimelineEvent(factoryTimelineEvent{
 		EventType: factory.EventTypePolicyDecision,
@@ -310,7 +310,7 @@ func TestPhase26CredentialProxyFactoryTimelineOmissionAfterSanitization(t *testi
 	}
 	assertFactoryTimelineOmitsCredentialProxyClaims(t, "sanitized factory timeline event", sanitizedRecord, forbidden)
 
-	_, legacyMetadata, legacyForbidden := phase26FactoryTimelineCredentialProxySeed()
+	_, legacyMetadata, legacyForbidden := phase26CredentialProxyUnsafeValues().TimelineSeed()
 	normalized := normalizeFactoryTimelineEventsForContractV1([]factory.EventRecord{{
 		Sequence:  2,
 		RunID:     "run-timeline-normalize",
@@ -351,7 +351,7 @@ func TestPhase26CredentialProxyFactoryTimelinePersistenceAndRenderingOmitMetadat
 		t.Fatalf("SaveRun() error = %v", err)
 	}
 
-	redactor, metadata, forbidden := phase26FactoryTimelineCredentialProxySeed()
+	redactor, metadata, forbidden := phase26CredentialProxyUnsafeValues().TimelineSeed()
 	if err := appendFactoryRunTimelineEventWithRedactor(store, record.RunID, startedAt, factoryTimelineEvent{
 		EventType: factory.EventTypePolicyDecision,
 		Summary:   "Sandbox policy metadata recorded",
@@ -371,7 +371,7 @@ func TestPhase26CredentialProxyFactoryTimelinePersistenceAndRenderingOmitMetadat
 	}
 	assertFactoryTimelineOmitsCredentialProxyClaims(t, "persisted factory timeline event", events[0], forbidden)
 
-	_, legacyMetadata, legacyForbidden := phase26FactoryTimelineCredentialProxySeed()
+	_, legacyMetadata, legacyForbidden := phase26CredentialProxyUnsafeValues().TimelineSeed()
 	var statusJSON bytes.Buffer
 	if err := renderFactoryStatusJSON(&statusJSON, record, []factory.EventRecord{{
 		Sequence:  2,
@@ -590,98 +590,7 @@ func assertFactoryTimelinePayloadOmitsCredentialProxyClaims(t *testing.T, label 
 			t.Fatalf("%s leaked credential proxy timeline value %q: %s", label, forbidden, payload)
 		}
 	}
-}
-
-func phase26FactoryTimelineCredentialProxySeed() (factory.RunSecretRedactor, map[string]any, []string) {
-	rawSecret := "phase26-raw-secret-token-123"
-	rawEnvValue := "AWS_SECRET_ACCESS_KEY=phase26-secret-value-123"
-	rawURL := "https://api.example.invalid:443/path?token=phase26-raw-secret-token-123"
-	rawHeader := "Authorization: Bearer phase26-raw-secret-token-123"
-	socketPath := "/tmp/phase26-credential-proxy.sock"
-	localPath := "/Users/v/.ssh/phase26_id_rsa"
-	redactor := factory.NewRunSecretRedactor([]factory.ResolvedRunSecret{{
-		Name:  "PHASE26_TOKEN",
-		Value: rawSecret,
-	}, {
-		Name:  "PHASE26_ENV_VALUE",
-		Value: "phase26-secret-value-123",
-	}})
-	plan := sandbox.SandboxCredentialProxyPlanMetadata{
-		ID:                    "timeline-plan-01",
-		Source:                sandbox.SandboxCredentialProxySourceFactory,
-		SecretBrokerSessionID: rawSecret,
-		NetworkProxySessionID: rawURL,
-		PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
-			ID:        "timeline-policy-01",
-			RuleSetID: rawURL,
-		},
-		Mode:   sandbox.SandboxCredentialProxyModeBrokeredNetworkReference,
-		Status: sandbox.SandboxCredentialProxyStatusActive,
-	}
-	session := sandbox.SandboxCredentialProxySessionMetadata{
-		ID:                    "timeline-session-01",
-		PlanID:                "timeline-plan-01",
-		Source:                sandbox.SandboxCredentialProxySourceFactory,
-		SecretBrokerSessionID: rawHeader,
-		NetworkProxySessionID: socketPath,
-		Status:                sandbox.SandboxCredentialProxyStatusActive,
-	}
-	bindings := []sandbox.SandboxCredentialProxyBindingMetadata{{
-		ID:              "timeline-binding-01",
-		PlanID:          "timeline-plan-01",
-		SessionID:       "timeline-session-01",
-		SecretID:        "env:GITHUB_TOKEN",
-		DeliveryMode:    sandbox.SandboxCredentialProxyDeliveryModeSSHAgent,
-		RequestCategory: sandbox.SandboxCredentialProxyRequestSecretDelivery,
-		Outcome:         sandbox.SandboxCredentialProxyBindingOutcomeBound,
-		Status:          sandbox.SandboxCredentialProxyStatusActive,
-	}}
-	metadata := map[string]any{
-		"safeDetail":                  "kept",
-		"credentialProxy":             map[string]any{"rawURL": rawURL},
-		"credentialProxyMode":         true,
-		"credentialProxyPlan":         plan,
-		"credentialProxyDelivery":     "active " + rawHeader,
-		"credentialDelivery":          "delivered " + rawEnvValue,
-		"proxyEnforcement":            sandbox.SandboxNetworkEnforcementModeProxyFirewall,
-		"networkEnforcement":          sandbox.SandboxNetworkPolicyDenyByDefault,
-		"sshAgentForwarding":          true,
-		"tmpfsWrites":                 true,
-		"runtimeSupport":              "rootless_podman",
-		"credentialProxyProjection":   sandbox.SandboxCredentialProxyProjection{Plan: &plan, Session: &session, Bindings: bindings},
-		"credentialProxyUnsafePath":   localPath,
-		"credential_proxy_delivery":   "active",
-		"credential-delivery-status":  "complete",
-		"nested":                      map[string]any{"credentialProxySession": &session, "credentialProxyBindings": bindings},
-		"nestedCredentialProxyRecord": []sandbox.SandboxCredentialProxyBindingMetadata(bindings),
-	}
-	forbidden := []string{
-		rawSecret,
-		rawEnvValue,
-		rawURL,
-		rawHeader,
-		socketPath,
-		localPath,
-		"phase26-secret-value-123",
-		"credentialProxyMode",
-		"credentialProxyDelivery",
-		"credentialDelivery",
-		"credential_proxy_delivery",
-		"credential-delivery-status",
-		"proxyEnforcement",
-		"networkEnforcement",
-		"sshAgentForwarding",
-		"tmpfsWrites",
-		"runtimeSupport",
-		"rootless_podman",
-		string(sandbox.SandboxNetworkEnforcementModeProxyFirewall),
-		string(sandbox.SandboxNetworkPolicyDenyByDefault),
-		string(sandbox.SandboxCredentialProxyStatusActive),
-		string(sandbox.SandboxCredentialProxyBindingOutcomeBound),
-		string(sandbox.SandboxCredentialProxyDeliveryModeSSHAgent),
-		string(sandbox.SandboxCredentialProxyDeliveryModeFileTmpfs),
-	}
-	return redactor, metadata, forbidden
+	assertPhase26CredentialProxyNoRedactionPlaceholders(t, label, payload)
 }
 
 func readPhase26CredentialProxyContractDoc(t *testing.T, path string) string {

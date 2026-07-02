@@ -818,12 +818,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 func TestRunFactorySandboxExecutorWithDepsPersistsSanitizedCredentialProxyMetadata(t *testing.T) {
 	now := time.Date(2026, 7, 2, 13, 30, 0, 0, time.UTC)
 	store := factory.NewStore(t.TempDir())
-	rawURL := "https://api.example.invalid:443/path?token=raw-secret-token-123"
-	rawHeader := "Authorization: Bearer raw-secret-token-123"
-	rawEnvValue := "AWS_SECRET_ACCESS_KEY=secret-value-123"
-	socketPath := "/tmp/credential-proxy.sock"
-	localPath := "/Users/v/.ssh/id_rsa"
-	forbidden := []string{rawURL, rawHeader, rawEnvValue, socketPath, localPath, "raw-secret-token-123", "secret-value-123"}
+	fixture := phase26CredentialProxyUnsafeValues()
 	target := &sandbox.SandboxState{
 		Name:     "factory-credential-proxy",
 		Provider: "daytona",
@@ -841,7 +836,7 @@ func TestRunFactorySandboxExecutorWithDepsPersistsSanitizedCredentialProxyMetada
 			Required: true,
 			Present:  true,
 		}, {
-			Name:     "BAD-NAME",
+			Name:     "bad-secret-name",
 			Source:   factory.RunSecretSourceEnv,
 			Required: false,
 			Present:  true,
@@ -852,22 +847,8 @@ func TestRunFactorySandboxExecutorWithDepsPersistsSanitizedCredentialProxyMetada
 			Present:  false,
 		}},
 	}
-	securityReq := sandbox.SecurityEvaluationRequest{
-		RequestedSecretModes:  []string{sandbox.SandboxSecretModeEnv, rawHeader, rawEnvValue},
-		ActiveSecretModes:     []string{sandbox.SandboxSecretModeHTTPProxy, socketPath},
-		CompatibilityAuthSync: true,
-	}
-	networkSession := &sandbox.SandboxNetworkProxySessionMetadata{
-		ID:     " network-proxy-session-factory ",
-		Source: sandbox.SandboxNetworkPolicyDecisionSourceFactory,
-		PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
-			ID:        " policy-snapshot-factory ",
-			Version:   localPath,
-			Preset:    sandbox.SandboxNetworkPolicyPreset(" DENY_BY_DEFAULT "),
-			RuleSetID: rawURL,
-		},
-		EnforcementMode: sandbox.SandboxNetworkEnforcementModeProxyFirewall,
-	}
+	securityReq := fixture.SecurityRequest([]string{sandbox.SandboxSecretModeEnv}, []string{sandbox.SandboxSecretModeHTTPProxy})
+	networkSession := fixture.NetworkProxySession(sandbox.SandboxNetworkPolicyDecisionSourceFactory, "network-proxy-session-factory", "policy-snapshot-factory")
 
 	var savedRecords []factory.RunRecord
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
@@ -929,6 +910,12 @@ func TestRunFactorySandboxExecutorWithDepsPersistsSanitizedCredentialProxyMetada
 	if sandboxMetadata.CredentialProxyPlan.PolicySnapshot.Version != "" || sandboxMetadata.CredentialProxyPlan.PolicySnapshot.RuleSetID != "" {
 		t.Fatalf("unsafe policy snapshot fields survived sanitizer: %#v", sandboxMetadata.CredentialProxyPlan.PolicySnapshot)
 	}
+	if sandboxMetadata.CredentialProxySession.PolicySnapshot == nil || sandboxMetadata.CredentialProxySession.PolicySnapshot.ID != "policy-snapshot-factory" {
+		t.Fatalf("credential proxy session policy snapshot = %#v", sandboxMetadata.CredentialProxySession.PolicySnapshot)
+	}
+	if sandboxMetadata.CredentialProxySession.PolicySnapshot.Version != "" || sandboxMetadata.CredentialProxySession.PolicySnapshot.RuleSetID != "" {
+		t.Fatalf("unsafe session policy snapshot fields survived sanitizer: %#v", sandboxMetadata.CredentialProxySession.PolicySnapshot)
+	}
 	if got, want := len(sandboxMetadata.CredentialProxyBindings), 3; got != want {
 		t.Fatalf("credential proxy bindings = %#v, want %d safe bindings", sandboxMetadata.CredentialProxyBindings, want)
 	}
@@ -949,6 +936,7 @@ func TestRunFactorySandboxExecutorWithDepsPersistsSanitizedCredentialProxyMetada
 	if result := sandbox.ValidateSandboxCredentialProxySessionMetadata(*sandboxMetadata.CredentialProxySession); !result.Valid {
 		t.Fatalf("session validation = %#v, want valid", result)
 	}
+	assertPhase26CredentialProxyNoRedactionPlaceholders(t, "factory sandbox credential proxy metadata", sandboxMetadata)
 
 	storedRun, err := store.LoadRun("run-factory-credential-proxy")
 	if err != nil {
@@ -958,13 +946,51 @@ func TestRunFactorySandboxExecutorWithDepsPersistsSanitizedCredentialProxyMetada
 	if err != nil {
 		t.Fatalf("json.Marshal(run) error: %v", err)
 	}
-	assertFactorySandboxCredentialProxyPayloadExcludes(t, "stored run", string(recordPayload), forbidden...)
+	assertFactorySandboxCredentialProxyPayloadExcludes(t, "stored run", string(recordPayload), fixture.ForbiddenValues()...)
+	assertPhase26CredentialProxyNoRedactionPlaceholders(t, "stored factory run", storedRun)
+	assertPhase26CredentialProxyValuesPresent(t, "stored factory run", string(recordPayload),
+		"run-factory-credential-proxy-credential-proxy-plan",
+		"run-factory-credential-proxy-credential-proxy-session",
+		"run-factory-credential-proxy-credential-proxy-secret-broker-session",
+		"network-proxy-session-factory",
+		"policy-snapshot-factory",
+		"env:GITHUB_TOKEN",
+		string(sandbox.SandboxCredentialProxySourceFactory),
+		string(sandbox.SandboxCredentialProxyModeBrokeredNetworkReference),
+		string(sandbox.SandboxCredentialProxyDeliveryModeEnv),
+		string(sandbox.SandboxCredentialProxyDeliveryModeHTTPProxy),
+		string(sandbox.SandboxCredentialProxyDeliveryModeLegacyAuthSync),
+		string(sandbox.SandboxCredentialProxyRequestNetworkAuth),
+		string(sandbox.SandboxNetworkPolicyDestinationUnknown),
+		string(sandbox.SandboxCredentialProxyBindingOutcomePlanned),
+		string(sandbox.SandboxCredentialProxyBindingOutcomeAuditOnly),
+		string(sandbox.SandboxCredentialProxyStatusPlanned),
+		string(sandbox.SandboxCredentialProxyStatusReady),
+		string(sandbox.SandboxCredentialProxyReasonRequested),
+	)
 
 	var statusJSON bytes.Buffer
 	if err := renderFactoryStatusJSON(&statusJSON, *storedRun, nil, nil); err != nil {
 		t.Fatalf("renderFactoryStatusJSON() error: %v", err)
 	}
-	assertFactorySandboxCredentialProxyPayloadExcludes(t, "factory status json", statusJSON.String(), forbidden...)
+	assertFactorySandboxCredentialProxyPayloadExcludes(t, "factory status json", statusJSON.String(), fixture.ForbiddenValues()...)
+	assertPhase26CredentialProxyNoRedactionPlaceholders(t, "factory status json", statusJSON.String())
+	assertPhase26CredentialProxyValuesPresent(t, "factory status json", statusJSON.String(),
+		"run-factory-credential-proxy-credential-proxy-plan",
+		"run-factory-credential-proxy-credential-proxy-session",
+		"run-factory-credential-proxy-credential-proxy-secret-broker-session",
+		"network-proxy-session-factory",
+		"policy-snapshot-factory",
+		"env:GITHUB_TOKEN",
+		string(sandbox.SandboxCredentialProxySourceFactory),
+		string(sandbox.SandboxCredentialProxyModeBrokeredNetworkReference),
+		string(sandbox.SandboxCredentialProxyDeliveryModeEnv),
+		string(sandbox.SandboxCredentialProxyDeliveryModeHTTPProxy),
+		string(sandbox.SandboxCredentialProxyDeliveryModeLegacyAuthSync),
+		string(sandbox.SandboxCredentialProxyRequestNetworkAuth),
+		string(sandbox.SandboxNetworkPolicyDestinationUnknown),
+		string(sandbox.SandboxCredentialProxyReasonRequested),
+	)
 }
 
 func TestRunFactorySandboxExecutorWithDepsUsesConfiguredSecurityRequest(t *testing.T) {

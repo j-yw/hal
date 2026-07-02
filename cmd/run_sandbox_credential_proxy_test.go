@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -13,35 +12,13 @@ import (
 func TestRunSandboxManifestPersistsSanitizedCredentialProxyMetadata(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 7, 10, 0, 0, time.UTC)
 	store := sandboxexecution.NewStore(t.TempDir())
+	fixture := phase26CredentialProxyUnsafeValues()
 
 	req := runSandboxRequest{
-		ExecutionID: "run-credential-proxy-metadata",
-		ProjectDir:  "/repo",
-		NetworkProxySession: &sandbox.SandboxNetworkProxySessionMetadata{
-			ID:     " network-proxy-session-01 ",
-			Source: sandbox.SandboxNetworkPolicyDecisionSource(" RUN "),
-			PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
-				ID:        " policy-snapshot-01 ",
-				Version:   "https://token@example.invalid/policy",
-				Preset:    sandbox.SandboxNetworkPolicyPreset(" DENY_BY_DEFAULT "),
-				RuleSetID: "/Users/private/rules.json",
-			},
-			EnforcementMode: "https://proxy.example.invalid:443/session?token=value",
-		},
-		Security: sandbox.SecurityEvaluationRequest{
-			RequestedSecretModes: []string{
-				sandbox.SandboxSecretModeHTTPProxy,
-				"Authorization: Bearer request-token",
-				"OPENAI_API_KEY=raw-env-value",
-			},
-			ActiveSecretModes: []string{
-				sandbox.SandboxSecretModeHTTPProxy,
-				"secretValue=raw-secret",
-				"credentialValue=raw-credential",
-				"unix:///tmp/private/proxy.sock",
-			},
-			CompatibilityAuthSync: true,
-		},
+		ExecutionID:         "run-credential-proxy-metadata",
+		ProjectDir:          "/repo",
+		NetworkProxySession: fixture.NetworkProxySession(sandbox.SandboxNetworkPolicyDecisionSourceRun, "network-proxy-session-01", "policy-snapshot-01"),
+		Security:            fixture.SecurityRequest([]string{sandbox.SandboxSecretModeHTTPProxy}, []string{sandbox.SandboxSecretModeHTTPProxy}),
 	}
 	if err := saveRunSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, nil); err != nil {
 		t.Fatalf("saveRunSandboxManifest() error = %v", err)
@@ -52,51 +29,8 @@ func TestRunSandboxManifestPersistsSanitizedCredentialProxyMetadata(t *testing.T
 }
 
 func TestRunSandboxCredentialProxyManifestSanitizesProjectionBeforePersistence(t *testing.T) {
-	projection := sandbox.SandboxCredentialProxyProjection{
-		Plan: &sandbox.SandboxCredentialProxyPlanMetadata{
-			ID:                    " credential-plan-01 ",
-			Source:                sandbox.SandboxCredentialProxySource(" RUN "),
-			SecretBrokerSessionID: "https://broker.example.invalid/session?token=value",
-			NetworkProxySessionID: " network-proxy-session-01 ",
-			PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
-				ID:        " policy-snapshot-01 ",
-				Version:   "v1",
-				Preset:    sandbox.SandboxNetworkPolicyPreset(" DENY_BY_DEFAULT "),
-				RuleSetID: "Authorization: Bearer raw-token",
-			},
-			Mode:   sandbox.SandboxCredentialProxyMode(" NETWORK_PROXY_REFERENCE "),
-			Status: sandbox.SandboxCredentialProxyStatus(" PLANNED "),
-		},
-		Session: &sandbox.SandboxCredentialProxySessionMetadata{
-			ID:                    " credential-session-01 ",
-			PlanID:                " credential-plan-01 ",
-			Source:                sandbox.SandboxCredentialProxySource(" RUN "),
-			SecretBrokerSessionID: "secretValue=raw-secret",
-			NetworkProxySessionID: " network-proxy-session-01 ",
-			Status:                sandbox.SandboxCredentialProxyStatus(" READY "),
-			WarningCode:           sandbox.SandboxCredentialProxyWarningCode(" BINDING_OMITTED "),
-			ReasonCode:            sandbox.SandboxCredentialProxyReasonCode(" REQUESTED "),
-		},
-		Bindings: []sandbox.SandboxCredentialProxyBindingMetadata{
-			{
-				ID:              " credential-binding-01 ",
-				PlanID:          " credential-plan-01 ",
-				SessionID:       " credential-session-01 ",
-				SecretID:        "env:GITHUB_TOKEN",
-				DeliveryMode:    sandbox.SandboxCredentialProxyDeliveryMode(" HTTP_PROXY "),
-				RequestCategory: sandbox.SandboxCredentialProxyRequestCategory(" NETWORK_AUTH "),
-				Outcome:         sandbox.SandboxCredentialProxyBindingOutcome(" PLANNED "),
-				Status:          sandbox.SandboxCredentialProxyStatus(" PLANNED "),
-				ReasonCode:      sandbox.SandboxCredentialProxyReasonCode(" REQUESTED "),
-			},
-			{
-				ID:           "credential-binding-02",
-				PlanID:       "credential-plan-01",
-				SecretID:     "Authorization: Bearer raw-token",
-				DeliveryMode: sandbox.SandboxCredentialProxyDeliveryModeEnv,
-			},
-		},
-	}
+	fixture := phase26CredentialProxyUnsafeValues()
+	projection := fixture.Projection(sandbox.SandboxCredentialProxySourceRun)
 
 	sanitized := sandboxManifestSanitizedCredentialProxyProjection(projection)
 	if sanitized.Plan == nil {
@@ -121,25 +55,37 @@ func TestRunSandboxCredentialProxyManifestSanitizesProjectionBeforePersistence(t
 	}
 	if sanitized.Plan.PolicySnapshot == nil ||
 		sanitized.Plan.PolicySnapshot.ID != "policy-snapshot-01" ||
+		sanitized.Plan.PolicySnapshot.Version != "" ||
 		sanitized.Plan.PolicySnapshot.RuleSetID != "" {
 		t.Fatalf("sanitized policy snapshot = %#v, want unsafe fields dropped", sanitized.Plan.PolicySnapshot)
 	}
+	if sanitized.Session.SecretBrokerSessionID != "" {
+		t.Fatalf("session secret broker session id = %q, want unsafe reference dropped", sanitized.Session.SecretBrokerSessionID)
+	}
+	assertPhase26CredentialProxyNoRedactionPlaceholders(t, "sanitized run credential proxy projection", sanitized)
 
 	encoded := mustMarshalRunSandboxCredentialProxyProjection(t, sanitized)
-	for _, forbidden := range []string{
-		"https://broker.example.invalid/session?token=value",
-		"Authorization: Bearer raw-token",
-		"secretValue=raw-secret",
-		"raw-token",
-	} {
-		if strings.Contains(encoded, forbidden) {
-			t.Fatalf("sanitized projection leaked %q: %s", forbidden, encoded)
-		}
-	}
+	assertPhase26CredentialProxyUnsafeValuesAbsent(t, "sanitized run credential proxy projection", encoded, fixture)
+	assertPhase26CredentialProxyValuesPresent(t, "sanitized run credential proxy projection", encoded,
+		"credential-plan-01",
+		"credential-session-01",
+		"credential-binding-01",
+		"network-proxy-session-01",
+		"policy-snapshot-01",
+		string(sandbox.SandboxCredentialProxySourceRun),
+		string(sandbox.SandboxCredentialProxyModeNetworkProxyReference),
+		string(sandbox.SandboxCredentialProxyStatusPlanned),
+		string(sandbox.SandboxCredentialProxyStatusReady),
+		string(sandbox.SandboxCredentialProxyDeliveryModeHTTPProxy),
+		string(sandbox.SandboxCredentialProxyRequestNetworkAuth),
+		string(sandbox.SandboxCredentialProxyBindingOutcomePlanned),
+		string(sandbox.SandboxCredentialProxyReasonRequested),
+	)
 }
 
 func assertRunSandboxManifestSanitizedCredentialProxyMetadata(t *testing.T, manifest *sandboxexecution.Manifest) {
 	t.Helper()
+	fixture := phase26CredentialProxyUnsafeValues()
 
 	if manifest.CredentialProxyPlan == nil {
 		t.Fatal("CredentialProxyPlan = nil, want sanitized plan metadata")
@@ -177,6 +123,9 @@ func assertRunSandboxManifestSanitizedCredentialProxyMetadata(t *testing.T, mani
 	if plan.PolicySnapshot.Version != "" || plan.PolicySnapshot.RuleSetID != "" {
 		t.Fatalf("plan policy snapshot = %#v, want unsafe optional fields dropped", plan.PolicySnapshot)
 	}
+	if plan.SecretBrokerSessionID != "" {
+		t.Fatalf("plan secret broker session id = %q, want unsafe optional reference dropped", plan.SecretBrokerSessionID)
+	}
 
 	session := manifest.CredentialProxySession
 	if session.ID != "run-credential-proxy-metadata-credential-proxy-session" {
@@ -188,6 +137,9 @@ func assertRunSandboxManifestSanitizedCredentialProxyMetadata(t *testing.T, mani
 	if session.WarningCode != sandbox.SandboxCredentialProxyWarningUnsupportedDeliveryMode ||
 		session.ReasonCode != sandbox.SandboxCredentialProxyReasonDeliveryModeUnsupported {
 		t.Fatalf("session warning/reason = %#v, want unsupported unsafe delivery mode metadata", session)
+	}
+	if session.SecretBrokerSessionID != "" {
+		t.Fatalf("session secret broker session id = %q, want unsafe optional reference dropped", session.SecretBrokerSessionID)
 	}
 
 	fields := sandboxManifestJSONFields(t, manifest)
@@ -205,28 +157,21 @@ func assertRunSandboxManifestSanitizedCredentialProxyMetadata(t *testing.T, mani
 		t.Fatalf("Marshal(manifest) error = %v", err)
 	}
 	encoded := string(payload)
-	for _, forbidden := range []string{
-		"https://token@example.invalid/policy",
-		"https://proxy.example.invalid:443/session?token=value",
-		"Authorization: Bearer request-token",
-		"secretValue=raw-secret",
-		"/Users/private/rules.json",
-		"token@example.invalid",
-		"proxy.example.invalid",
-		":443",
-		"raw-secret",
-		"raw-credential",
-		"request-token",
-		"OPENAI_API_KEY",
-		"raw-env-value",
-		"unix:///tmp/private/proxy.sock",
-		"ruleSetId",
-		"credentialProxyBindings",
-	} {
-		if strings.Contains(encoded, forbidden) {
-			t.Fatalf("manifest leaked unsafe credential proxy metadata %q: %s", forbidden, encoded)
-		}
-	}
+	assertPhase26CredentialProxyUnsafeValuesAbsent(t, "run sandbox manifest", encoded, fixture)
+	assertPhase26CredentialProxyNoRedactionPlaceholders(t, "run sandbox manifest", manifest)
+	assertPhase26CredentialProxyValuesPresent(t, "run sandbox manifest", encoded,
+		"run-credential-proxy-metadata-credential-proxy-plan",
+		"run-credential-proxy-metadata-credential-proxy-session",
+		"network-proxy-session-01",
+		"policy-snapshot-01",
+		string(sandbox.SandboxCredentialProxySourceRun),
+		string(sandbox.SandboxCredentialProxyModeNetworkProxyReference),
+		string(sandbox.SandboxCredentialProxyStatusPlanned),
+		string(sandbox.SandboxCredentialProxyStatusReady),
+		string(sandbox.SandboxNetworkPolicyPresetDenyByDefault),
+		string(sandbox.SandboxCredentialProxyWarningUnsupportedDeliveryMode),
+		string(sandbox.SandboxCredentialProxyReasonDeliveryModeUnsupported),
+	)
 }
 
 func mustMarshalRunSandboxCredentialProxyProjection(t *testing.T, projection sandbox.SandboxCredentialProxyProjection) string {

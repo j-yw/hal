@@ -3,7 +3,6 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -15,35 +14,13 @@ import (
 func TestAutoSandboxManifestPersistsSanitizedCredentialProxyMetadata(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 7, 30, 0, 0, time.UTC)
 	store := sandboxexecution.NewStore(t.TempDir())
+	fixture := phase26CredentialProxyUnsafeValues()
 
 	req := autoSandboxRequest{
-		ExecutionID: "auto-credential-proxy-metadata",
-		ProjectDir:  "/repo",
-		NetworkProxySession: &sandbox.SandboxNetworkProxySessionMetadata{
-			ID:     " network-proxy-session-01 ",
-			Source: sandbox.SandboxNetworkPolicyDecisionSource(" AUTO "),
-			PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
-				ID:        " policy-snapshot-01 ",
-				Version:   "https://token@example.invalid/policy",
-				Preset:    sandbox.SandboxNetworkPolicyPreset(" DENY_BY_DEFAULT "),
-				RuleSetID: "/Users/private/rules.json",
-			},
-			EnforcementMode: "https://proxy.example.invalid:443/session?token=value",
-		},
-		Security: sandbox.SecurityEvaluationRequest{
-			RequestedSecretModes: []string{
-				sandbox.SandboxSecretModeHTTPProxy,
-				"Authorization: Bearer request-token",
-				"OPENAI_API_KEY=raw-env-value",
-			},
-			ActiveSecretModes: []string{
-				sandbox.SandboxSecretModeHTTPProxy,
-				"secretValue=raw-secret",
-				"credentialValue=raw-credential",
-				"unix:///tmp/private/proxy.sock",
-			},
-			CompatibilityAuthSync: true,
-		},
+		ExecutionID:         "auto-credential-proxy-metadata",
+		ProjectDir:          "/repo",
+		NetworkProxySession: fixture.NetworkProxySession(sandbox.SandboxNetworkPolicyDecisionSourceAuto, "network-proxy-session-01", "policy-snapshot-01"),
+		Security:            fixture.SecurityRequest([]string{sandbox.SandboxSecretModeHTTPProxy}, []string{sandbox.SandboxSecretModeHTTPProxy}),
 	}
 	if err := saveAutoSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, nil); err != nil {
 		t.Fatalf("saveAutoSandboxManifest() error = %v", err)
@@ -56,14 +33,12 @@ func TestAutoSandboxManifestPersistsSanitizedCredentialProxyMetadata(t *testing.
 func TestAutoSandboxManifestOmitsCredentialProxyMetadataWithoutSafeSources(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 7, 35, 0, 0, time.UTC)
 	store := sandboxexecution.NewStore(t.TempDir())
+	fixture := phase26CredentialProxyUnsafeValues()
 
 	if err := saveAutoSandboxManifest(store, autoSandboxRequest{
 		ExecutionID: "auto-credential-proxy-legacy",
 		ProjectDir:  "/repo",
-		Security: sandbox.SecurityEvaluationRequest{
-			RequestedSecretModes: []string{"https://token@example.invalid/secret"},
-			ActiveSecretModes:    []string{"OPENAI_API_KEY=raw-env-value"},
-		},
+		Security:    fixture.SecurityRequest(nil, nil),
 	}, sandboxexecution.StatusRunning, startedAt, nil, nil); err != nil {
 		t.Fatalf("saveAutoSandboxManifest() error = %v", err)
 	}
@@ -74,27 +49,12 @@ func TestAutoSandboxManifestOmitsCredentialProxyMetadataWithoutSafeSources(t *te
 func TestAutoSandboxCredentialProxyMetadataStaysOutOfJSONOutput(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 7, 40, 0, 0, time.UTC)
 	store := sandboxexecution.NewStore(t.TempDir())
+	fixture := phase26CredentialProxyUnsafeValues()
 	req := autoSandboxRequest{
-		ExecutionID: "auto-credential-proxy-json",
-		ProjectDir:  "/repo",
-		NetworkProxySession: &sandbox.SandboxNetworkProxySessionMetadata{
-			ID:     "network-proxy-session-01",
-			Source: sandbox.SandboxNetworkPolicyDecisionSourceAuto,
-			PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
-				ID:      "policy-snapshot-01",
-				Version: "https://token@example.invalid/policy",
-			},
-			EnforcementMode: "https://proxy.example.invalid:443/session?token=value",
-		},
-		Security: sandbox.SecurityEvaluationRequest{
-			RequestedSecretModes: []string{
-				sandbox.SandboxSecretModeHTTPProxy,
-				"Authorization: Bearer request-token",
-			},
-			ActiveSecretModes: []string{
-				"secretValue=raw-secret",
-			},
-		},
+		ExecutionID:         "auto-credential-proxy-json",
+		ProjectDir:          "/repo",
+		NetworkProxySession: fixture.NetworkProxySession(sandbox.SandboxNetworkPolicyDecisionSourceAuto, "network-proxy-session-01", "policy-snapshot-01"),
+		Security:            fixture.SecurityRequest([]string{sandbox.SandboxSecretModeHTTPProxy}, []string{sandbox.SandboxSecretModeHTTPProxy}),
 	}
 	if err := saveAutoSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, nil); err != nil {
 		t.Fatalf("saveAutoSandboxManifest() error = %v", err)
@@ -137,6 +97,7 @@ func TestAutoSandboxCredentialProxyMetadataStaysOutOfJSONOutput(t *testing.T) {
 
 func assertAutoSandboxManifestSanitizedCredentialProxyMetadata(t *testing.T, manifest *sandboxexecution.Manifest) {
 	t.Helper()
+	fixture := phase26CredentialProxyUnsafeValues()
 
 	if manifest.CredentialProxyPlan == nil {
 		t.Fatal("CredentialProxyPlan = nil, want sanitized plan metadata")
@@ -174,6 +135,9 @@ func assertAutoSandboxManifestSanitizedCredentialProxyMetadata(t *testing.T, man
 	if plan.PolicySnapshot.Version != "" || plan.PolicySnapshot.RuleSetID != "" {
 		t.Fatalf("plan policy snapshot = %#v, want unsafe optional fields dropped", plan.PolicySnapshot)
 	}
+	if plan.SecretBrokerSessionID != "" {
+		t.Fatalf("plan secret broker session id = %q, want unsafe optional reference dropped", plan.SecretBrokerSessionID)
+	}
 
 	session := manifest.CredentialProxySession
 	if session.ID != "auto-credential-proxy-metadata-credential-proxy-session" {
@@ -188,6 +152,9 @@ func assertAutoSandboxManifestSanitizedCredentialProxyMetadata(t *testing.T, man
 	if session.WarningCode != sandbox.SandboxCredentialProxyWarningUnsupportedDeliveryMode ||
 		session.ReasonCode != sandbox.SandboxCredentialProxyReasonDeliveryModeUnsupported {
 		t.Fatalf("session warning/reason = %#v, want unsupported unsafe delivery mode metadata", session)
+	}
+	if session.SecretBrokerSessionID != "" {
+		t.Fatalf("session secret broker session id = %q, want unsafe optional reference dropped", session.SecretBrokerSessionID)
 	}
 
 	fields := sandboxManifestJSONFields(t, manifest)
@@ -204,32 +171,27 @@ func assertAutoSandboxManifestSanitizedCredentialProxyMetadata(t *testing.T, man
 	if err != nil {
 		t.Fatalf("Marshal(manifest) error = %v", err)
 	}
-	assertAutoSandboxCredentialProxyForbiddenStringsAbsent(t, "manifest", string(payload))
+	encoded := string(payload)
+	assertPhase26CredentialProxyUnsafeValuesAbsent(t, "auto sandbox manifest", encoded, fixture)
+	assertPhase26CredentialProxyNoRedactionPlaceholders(t, "auto sandbox manifest", manifest)
+	assertPhase26CredentialProxyValuesPresent(t, "auto sandbox manifest", encoded,
+		"auto-credential-proxy-metadata-credential-proxy-plan",
+		"auto-credential-proxy-metadata-credential-proxy-session",
+		"network-proxy-session-01",
+		"policy-snapshot-01",
+		string(sandbox.SandboxCredentialProxySourceAuto),
+		string(sandbox.SandboxCredentialProxyModeNetworkProxyReference),
+		string(sandbox.SandboxCredentialProxyStatusPlanned),
+		string(sandbox.SandboxCredentialProxyStatusReady),
+		string(sandbox.SandboxNetworkPolicyPresetDenyByDefault),
+		string(sandbox.SandboxCredentialProxyWarningUnsupportedDeliveryMode),
+		string(sandbox.SandboxCredentialProxyReasonDeliveryModeUnsupported),
+	)
 }
 
 func assertAutoSandboxCredentialProxyForbiddenStringsAbsent(t *testing.T, label string, encoded string) {
 	t.Helper()
 
-	for _, forbidden := range []string{
-		"https://token@example.invalid/policy",
-		"https://proxy.example.invalid:443/session?token=value",
-		"Authorization: Bearer request-token",
-		"secretValue=raw-secret",
-		"/Users/private/rules.json",
-		"token@example.invalid",
-		"proxy.example.invalid",
-		":443",
-		"raw-secret",
-		"raw-credential",
-		"request-token",
-		"OPENAI_API_KEY",
-		"raw-env-value",
-		"unix:///tmp/private/proxy.sock",
-		"ruleSetId",
-		"credentialProxyBindings",
-	} {
-		if strings.Contains(encoded, forbidden) {
-			t.Fatalf("%s leaked unsafe credential proxy metadata %q: %s", label, forbidden, encoded)
-		}
-	}
+	assertPhase26CredentialProxyUnsafeValuesAbsent(t, label, encoded, phase26CredentialProxyUnsafeValues())
+	assertPhase26CredentialProxyNoRedactionPlaceholders(t, label, encoded)
 }
