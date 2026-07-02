@@ -289,18 +289,9 @@ func ensureFirecrackerPlanningTarget(target *sandboxruntime.Target, source sandb
 	if target.Runtime.Metadata == nil {
 		target.Runtime.Metadata = &sandboxruntime.RuntimeMetadata{}
 	}
-	if strings.TrimSpace(target.Runtime.Metadata.Backend) == "" {
-		target.Runtime.Metadata.Backend = BackendID
-	}
-	if len(target.Runtime.Metadata.PathRoles) == 0 {
-		target.Runtime.Metadata.PathRoles = []string{
-			string(OperationPathRoleStateDir),
-			string(OperationPathRoleAPISocket),
-			string(OperationPathRoleConfig),
-			string(OperationPathRoleLog),
-			string(OperationPathRoleMetrics),
-		}
-	}
+	target.Runtime.Metadata.Backend = BackendID
+	target.Runtime.Metadata.CapabilityLabels = firecrackerTargetCapabilityLabels()
+	target.Runtime.Metadata.PathRoles = firecrackerTargetPathRoleLabels()
 }
 
 func firecrackerRuntimeOperationPlanMetadata(descriptor ProcessCommandDescriptor) *sandboxruntime.RuntimeOperationPlan {
@@ -423,7 +414,7 @@ func unsupportedFirecrackerOperation(operation string) error {
 	if strings.TrimSpace(operation) == "" {
 		operation = "firecracker_backend"
 	}
-	return microvm.NewUnavailableCapabilityError(operation, errors.New("firecracker backend operation is not implemented until a guest agent or vsock transport is available"))
+	return microvm.NewUnavailableCapabilityError(operation, errors.New("firecracker backend operation is not supported in this phase"))
 }
 
 func firecrackerRuntimeID(name string) string {
@@ -492,6 +483,10 @@ func firecrackerTargetPathRoles(paths PathPlan) []string {
 	if paths == (PathPlan{}) {
 		return []string{}
 	}
+	return firecrackerTargetPathRoleLabels()
+}
+
+func firecrackerTargetPathRoleLabels() []string {
 	return []string{
 		string(OperationPathRoleStateDir),
 		string(OperationPathRoleAPISocket),

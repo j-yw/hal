@@ -120,6 +120,34 @@ func TestProcessCommandDescriptorPublicJSONOmitRawHostPaths(t *testing.T) {
 	}
 }
 
+func TestProcessCommandDescriptorRejectsAdapterEnvironmentMetadata(t *testing.T) {
+	plan := validFirecrackerStartOperationPlan(t)
+	descriptor, err := ProcessCommandDescriptorFromStartPlan(plan)
+	if err != nil {
+		t.Fatalf("ProcessCommandDescriptorFromStartPlan() error = %v, want nil", err)
+	}
+	descriptor.Environment = []OperationEnvironmentMetadata{
+		{Name: "SECRET_TOKEN", Source: "env:OPENAI_API_KEY"},
+	}
+
+	_, prepareErr := PrepareStartCommand(context.Background(), &fakeProcessAdapter{
+		prepare: func(context.Context, ProcessStartCommandRequest) (ProcessCommandDescriptor, error) {
+			return descriptor, nil
+		},
+	}, plan)
+	assertFirecrackerProcessBoundaryError(t, prepareErr, "environment")
+	assertFirecrackerErrorDoesNotLeak(t, prepareErr, "SECRET_TOKEN", "OPENAI_API_KEY")
+
+	_, startErr := StartProcess(context.Background(), &fakeProcessAdapter{}, descriptor)
+	assertFirecrackerProcessBoundaryError(t, startErr, "environment")
+	assertFirecrackerErrorDoesNotLeak(t, startErr, "SECRET_TOKEN", "OPENAI_API_KEY")
+
+	summary := descriptor.Summary()
+	if len(summary.Environment) != 0 {
+		t.Fatalf("summary Environment = %#v, want empty unsupported environment metadata", summary.Environment)
+	}
+}
+
 func TestProcessBoundaryRejectsInvalidPlansWithoutLeakingHostPaths(t *testing.T) {
 	plan := validFirecrackerStartOperationPlan(t)
 	plan.Argv = append([]string(nil), plan.Argv...)

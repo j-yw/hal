@@ -128,7 +128,7 @@ func (descriptor ProcessCommandDescriptor) Summary() OperationPlanSummary {
 		Action:         descriptor.Action,
 		ExecutableRole: descriptor.Executable.Role,
 		Argv:           processCommandArgumentSummary(descriptor),
-		Environment:    cloneOperationEnvironment(descriptor.Environment),
+		Environment:    []OperationEnvironmentMetadata{},
 		PathRoles:      operationPathRolesFromReferences(descriptor.Paths),
 		Payloads:       cloneOperationPayloadReferences(descriptor.Payloads),
 	}
@@ -153,6 +153,9 @@ func validateProcessCommandDescriptor(descriptor ProcessCommandDescriptor) error
 	}
 	if err := validateProcessStartArgv(descriptor.Argv, descriptor.Executable, descriptor.Paths); err != nil {
 		return err
+	}
+	if len(descriptor.Environment) != 0 {
+		return newProcessBoundaryError("environment", "process environment metadata is not supported")
 	}
 	return validateProcessPayloadReferences(descriptor.Payloads)
 }

@@ -149,6 +149,7 @@ func TestBackendStartReturnsSanitizedOperationPlanWithoutStartingProcess(t *test
 	if err != nil {
 		t.Fatalf("Create() error = %v, want nil", err)
 	}
+	poisonFirecrackerRuntimeMetadata(created)
 	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
 		Operation: microvm.OperationStart,
 		Config:    validMicroVMConfig(),
@@ -182,6 +183,7 @@ func TestBackendStartReturnsSanitizedOperationPlanWithoutStartingProcess(t *test
 	if started.Runtime.Metadata == nil || started.Runtime.Metadata.OperationPlan == nil {
 		t.Fatalf("runtime metadata = %#v, want sanitized operation plan", started.Runtime.Metadata)
 	}
+	assertFirecrackerOwnedRuntimeMetadata(t, started)
 
 	plan := started.Runtime.Metadata.OperationPlan
 	if plan.Action != string(OperationActionStart) {
@@ -246,6 +248,11 @@ func TestBackendStartReturnsSanitizedOperationPlanWithoutStartingProcess(t *test
 		"firecracker-config.json",
 		"firecracker.log",
 		"firecracker.metrics",
+		"guest_agent",
+		"network_proxy",
+		"SECRET_TOKEN",
+		"OPENAI_API_KEY",
+		"/Users/alice",
 	} {
 		if strings.Contains(publicText, unsafe) {
 			t.Fatalf("start operation metadata leaked unsafe fragment %q in %s", unsafe, publicText)
@@ -336,6 +343,7 @@ func TestBackendStopInspectDeleteBuildSanitizedLifecyclePlans(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v, want nil", err)
 	}
+	poisonFirecrackerRuntimeMetadata(created)
 	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
 		Operation: microvm.OperationStop,
 		Config:    validMicroVMConfig(),
@@ -353,6 +361,7 @@ func TestBackendStopInspectDeleteBuildSanitizedLifecyclePlans(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stop() error = %v, want nil", err)
 	}
+	assertFirecrackerOwnedRuntimeMetadata(t, stopped)
 	assertFirecrackerLifecycleOperationPlan(t, stopped, OperationActionStop, []string{string(OperationPathRoleAPISocket)})
 	if stopped.Status != sandbox.StatusStopped {
 		t.Fatalf("Stop() status = %q, want %q", stopped.Status, sandbox.StatusStopped)
@@ -366,6 +375,7 @@ func TestBackendStopInspectDeleteBuildSanitizedLifecyclePlans(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Inspect() error = %v, want nil", err)
 	}
+	assertFirecrackerOwnedRuntimeMetadata(t, inspected)
 	assertFirecrackerLifecycleOperationPlan(t, inspected, OperationActionInspect, []string{string(OperationPathRoleAPISocket)})
 	if inspected.Status != sandbox.StatusStopped {
 		t.Fatalf("Inspect() status = %q, want preserved %q", inspected.Status, sandbox.StatusStopped)
@@ -422,6 +432,11 @@ func TestBackendStopInspectDeleteBuildSanitizedLifecyclePlans(t *testing.T) {
 		"firecracker-config.json",
 		"firecracker.log",
 		"firecracker.metrics",
+		"guest_agent",
+		"network_proxy",
+		"SECRET_TOKEN",
+		"OPENAI_API_KEY",
+		"/Users/alice",
 	} {
 		if strings.Contains(publicText, unsafe) {
 			t.Fatalf("lifecycle operation metadata leaked unsafe fragment %q in %s", unsafe, publicText)
@@ -625,11 +640,19 @@ func assertFirecrackerCreatedTarget(t *testing.T, target *sandboxruntime.Target,
 	if target.Runtime.Metadata == nil {
 		t.Fatal("runtime Metadata = nil, want Firecracker metadata")
 	}
-	if target.Runtime.Metadata.Backend != BackendID {
-		t.Fatalf("runtime metadata Backend = %q, want %q", target.Runtime.Metadata.Backend, BackendID)
-	}
+	assertFirecrackerOwnedRuntimeMetadata(t, target)
 	if target.Runtime.RuntimeID != target.ID {
 		t.Fatalf("runtime RuntimeID = %q, want target ID %q", target.Runtime.RuntimeID, target.ID)
+	}
+}
+
+func assertFirecrackerOwnedRuntimeMetadata(t *testing.T, target *sandboxruntime.Target) {
+	t.Helper()
+	if target == nil || target.Runtime.Metadata == nil {
+		t.Fatalf("target runtime metadata = %#v, want Firecracker metadata", target)
+	}
+	if target.Runtime.Metadata.Backend != BackendID {
+		t.Fatalf("runtime metadata Backend = %q, want %q", target.Runtime.Metadata.Backend, BackendID)
 	}
 	wantCapabilities := []string{
 		"target_creation",
@@ -649,6 +672,27 @@ func assertFirecrackerCreatedTarget(t *testing.T, target *sandboxruntime.Target,
 	}
 	if !reflect.DeepEqual(target.Runtime.Metadata.PathRoles, wantPathRoles) {
 		t.Fatalf("runtime metadata PathRoles = %#v, want %#v", target.Runtime.Metadata.PathRoles, wantPathRoles)
+	}
+}
+
+func poisonFirecrackerRuntimeMetadata(target *sandboxruntime.Target) {
+	target.Runtime.Metadata = &sandboxruntime.RuntimeMetadata{
+		Backend: "stale_guest_agent_backend",
+		CapabilityLabels: []string{
+			"guest_agent",
+			"network_proxy",
+			"/Users/alice/private/token",
+		},
+		PathRoles: []string{
+			"host_docker_socket",
+			"/Users/alice/private/firecracker.sock",
+		},
+		OperationPlan: &sandboxruntime.RuntimeOperationPlan{
+			Action: "stale",
+			Environment: []sandboxruntime.RuntimeOperationEnvironment{
+				{Name: "SECRET_TOKEN", Source: "env:OPENAI_API_KEY"},
+			},
+		},
 	}
 }
 
@@ -688,7 +732,15 @@ func assertFirecrackerUnsupportedOperationError(t *testing.T, err error, operati
 		t.Fatalf("OperationError.Operation = %q, want %q", opErr.Operation, operation)
 	}
 	publicText := err.Error()
-	for _, want := range []string{"not implemented", "guest agent", "vsock transport"} {
+	if !strings.Contains(publicText, "not supported in this phase") {
+		t.Fatalf("error = %q, want phase-scoped unsupported detail", publicText)
+	}
+	for _, unsafe := range []string{"guest agent", "vsock transport"} {
+		if strings.Contains(publicText, unsafe) {
+			t.Fatalf("error = %q, want no transport-specific detail containing %q", publicText, unsafe)
+		}
+	}
+	for _, want := range []string{"not supported"} {
 		if !strings.Contains(publicText, want) {
 			t.Fatalf("error = %q, want high-level unsupported detail containing %q", publicText, want)
 		}
