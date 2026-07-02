@@ -91,58 +91,67 @@ var forbiddenFirecrackerProductionImports = []firecrackerForbiddenImport{
 func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 	paths := firecrackerProductionBoundaryFiles(t)
 	allowedExportedNames := map[string]bool{
-		"BackendConfig":                     true,
-		"BackendConfigFromMicroVMConfig":    true,
-		"BackendID":                         true,
-		"BootSourcePayload":                 true,
-		"DefaultConfigPath":                 true,
-		"ConfigOperation":                   true,
-		"DeleteOperationPlan":               true,
-		"DefaultAPISocketPath":              true,
-		"DefaultLogPath":                    true,
-		"DefaultMetricsPath":                true,
-		"DefaultRuntimeID":                  true,
-		"DefaultStateDir":                   true,
-		"GuestWorkDirMetadata":              true,
-		"InspectOperationPlan":              true,
-		"MachineConfigPayload":              true,
-		"OperationAction":                   true,
-		"OperationActionDelete":             true,
-		"OperationActionInspect":            true,
-		"OperationActionStart":              true,
-		"OperationActionStop":               true,
-		"OperationArgumentSummary":          true,
-		"OperationEnvironmentMetadata":      true,
-		"OperationPathReference":            true,
-		"OperationPathRole":                 true,
-		"OperationPathRoleAPISocket":        true,
-		"OperationPathRoleConfig":           true,
-		"OperationPathRoleExecutable":       true,
-		"OperationPathRoleLog":              true,
-		"OperationPathRoleMetrics":          true,
-		"OperationPathRoleStateDir":         true,
-		"OperationPayloadReference":         true,
-		"OperationPayloadRole":              true,
-		"OperationPayloadRoleBootSource":    true,
-		"OperationPayloadRoleMachineConfig": true,
-		"OperationPayloadRoleRootDrive":     true,
-		"OperationPlanSummary":              true,
-		"OperationPlanningOperation":        true,
-		"PathPlan":                          true,
-		"PathPlanRequest":                   true,
-		"PathPlanningOperation":             true,
-		"PayloadRenderingOperation":         true,
-		"PlanPaths":                         true,
-		"RenderBootSourcePayload":           true,
-		"RenderDeleteOperationPlan":         true,
-		"RenderInspectOperationPlan":        true,
-		"RenderMachineConfigPayload":        true,
-		"RenderRootDrivePayload":            true,
-		"RenderStartOperationPlan":          true,
-		"RenderStopOperationPlan":           true,
-		"RootDrivePayload":                  true,
-		"StartOperationPlan":                true,
-		"StopOperationPlan":                 true,
+		"BackendConfig":                         true,
+		"BackendConfigFromMicroVMConfig":        true,
+		"BackendID":                             true,
+		"BootSourcePayload":                     true,
+		"DefaultConfigPath":                     true,
+		"ConfigOperation":                       true,
+		"DeleteOperationPlan":                   true,
+		"DefaultAPISocketPath":                  true,
+		"DefaultLogPath":                        true,
+		"DefaultMetricsPath":                    true,
+		"DefaultRuntimeID":                      true,
+		"DefaultStateDir":                       true,
+		"GuestWorkDirMetadata":                  true,
+		"InspectOperationPlan":                  true,
+		"MachineConfigPayload":                  true,
+		"OperationAction":                       true,
+		"OperationActionDelete":                 true,
+		"OperationActionInspect":                true,
+		"OperationActionStart":                  true,
+		"OperationActionStop":                   true,
+		"OperationArgumentSummary":              true,
+		"OperationEnvironmentMetadata":          true,
+		"OperationPathReference":                true,
+		"OperationPathRole":                     true,
+		"OperationPathRoleAPISocket":            true,
+		"OperationPathRoleConfig":               true,
+		"OperationPathRoleExecutable":           true,
+		"OperationPathRoleLog":                  true,
+		"OperationPathRoleMetrics":              true,
+		"OperationPathRoleStateDir":             true,
+		"OperationPayloadReference":             true,
+		"OperationPayloadRole":                  true,
+		"OperationPayloadRoleBootSource":        true,
+		"OperationPayloadRoleMachineConfig":     true,
+		"OperationPayloadRoleRootDrive":         true,
+		"OperationPlanSummary":                  true,
+		"OperationPlanningOperation":            true,
+		"PathPlan":                              true,
+		"PathPlanRequest":                       true,
+		"PathPlanningOperation":                 true,
+		"PayloadRenderingOperation":             true,
+		"PlanPaths":                             true,
+		"PrepareStartCommand":                   true,
+		"ProcessAdapter":                        true,
+		"ProcessBoundaryOperation":              true,
+		"ProcessCommandDescriptor":              true,
+		"ProcessCommandDescriptorFromStartPlan": true,
+		"ProcessHandleMetadata":                 true,
+		"ProcessStartCommandRequest":            true,
+		"ProcessStartRequest":                   true,
+		"RenderBootSourcePayload":               true,
+		"RenderDeleteOperationPlan":             true,
+		"RenderInspectOperationPlan":            true,
+		"RenderMachineConfigPayload":            true,
+		"RenderRootDrivePayload":                true,
+		"RenderStartOperationPlan":              true,
+		"RenderStopOperationPlan":               true,
+		"RootDrivePayload":                      true,
+		"StartProcess":                          true,
+		"StartOperationPlan":                    true,
+		"StopOperationPlan":                     true,
 	}
 	seenExportedNames := map[string]bool{}
 
@@ -182,7 +191,7 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 
 	for name := range seenExportedNames {
 		if !allowedExportedNames[name] {
-			t.Fatalf("unexpected exported Firecracker namespace %q; Phase 32 foundation should expose only namespace, US-002 config contracts, US-003 path planning contracts, US-004 payload contracts, and US-005 operation plan contracts", name)
+			t.Fatalf("unexpected exported Firecracker namespace %q; Phase 32 foundation should expose only namespace, US-002 config contracts, US-003 path planning contracts, US-004 payload contracts, US-005 operation plan contracts, and US-006 process boundary contracts", name)
 		}
 	}
 	for name := range allowedExportedNames {
@@ -289,6 +298,105 @@ func TestFirecrackerProductionSourceOmitsLiveBackendOperations(t *testing.T) {
 	}
 }
 
+func TestFirecrackerDefaultTestsUseFakeProcessBoundaryOnly(t *testing.T) {
+	paths := firecrackerDefaultTestBoundaryFiles(t)
+	fset := token.NewFileSet()
+	for _, path := range paths {
+		file, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("ParseFile(%s) error: %v", path, err)
+		}
+		for _, spec := range file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("unquote import %s in %s: %v", spec.Path.Value, path, err)
+			}
+			if message := firecrackerDefaultTestImportBoundaryMessage(path, importPath); message != "" {
+				t.Fatal(message)
+			}
+		}
+	}
+}
+
+func TestFirecrackerDefaultTestSourceOmitsLiveProcessAndKVMAccess(t *testing.T) {
+	paths := firecrackerDefaultTestBoundaryFiles(t)
+	fset := token.NewFileSet()
+	for _, path := range paths {
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("ParseFile(%s) error: %v", path, err)
+		}
+		if message := firecrackerDefaultTestCallBoundaryMessage(path, file); message != "" {
+			t.Fatal(message)
+		}
+	}
+}
+
+func TestFirecrackerDefaultTestBoundaryGuardsCoverLiveOperations(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name:   "process start",
+			source: `package firecracker; import "os/exec"; func TestLive(t *testing.T) { _ = exec.Command("firecracker") }`,
+			want:   "process launch",
+		},
+		{
+			name:   "API socket listener",
+			source: `package firecracker; import "net"; func TestLive(t *testing.T) { _, _ = net.Listen("tcp", "127.0.0.1:0") }`,
+			want:   "network socket",
+		},
+		{
+			name:   "KVM open",
+			source: `package firecracker; import "os"; func TestLive(t *testing.T) { _, _ = os.Open("/dev/kvm") }`,
+			want:   "live KVM or root-only path",
+		},
+		{
+			name:   "root path stat",
+			source: `package firecracker; import "os"; func TestLive(t *testing.T) { _, _ = os.Stat("/root/private") }`,
+			want:   "live KVM or root-only path",
+		},
+		{
+			name:   "root requirement",
+			source: `package firecracker; import "os"; func TestLive(t *testing.T) { _ = os.Geteuid() }`,
+			want:   "root privilege check",
+		},
+		{
+			name:   "Firecracker SDK",
+			source: `package firecracker; func TestLive(t *testing.T) { _, _ = firecracker.NewMachine(ctx, cfg) }`,
+			want:   "Firecracker SDK",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := parser.ParseFile(token.NewFileSet(), tt.name+".go", tt.source, 0)
+			if err != nil {
+				t.Fatalf("ParseFile fixture error: %v", err)
+			}
+			message := firecrackerDefaultTestCallBoundaryMessage(tt.name+".go", file)
+			if !strings.Contains(message, tt.want) {
+				t.Fatalf("boundary message = %q, want %q", message, tt.want)
+			}
+		})
+	}
+
+	for _, tt := range []struct {
+		importPath string
+		want       string
+	}{
+		{importPath: "os/exec", want: "process-starting package"},
+		{importPath: "net", want: "network listener package"},
+		{importPath: "github.com/firecracker-microvm/firecracker-go-sdk", want: "Firecracker SDK package"},
+		{importPath: "golang.org/x/sys/unix", want: "KVM access package"},
+	} {
+		message := firecrackerDefaultTestImportBoundaryMessage("fixture_test.go", tt.importPath)
+		if !strings.Contains(message, tt.want) || !strings.Contains(message, tt.importPath) {
+			t.Fatalf("default test import boundary message = %q, want %q rejection for %q", message, tt.want, tt.importPath)
+		}
+	}
+}
+
 func firecrackerProductionBoundaryFiles(t *testing.T) []string {
 	t.Helper()
 
@@ -310,6 +418,53 @@ func firecrackerProductionBoundaryFiles(t *testing.T) []string {
 	return out
 }
 
+func firecrackerDefaultTestBoundaryFiles(t *testing.T) []string {
+	t.Helper()
+
+	paths, err := filepath.Glob("*_test.go")
+	if err != nil {
+		t.Fatalf("Glob(*_test.go) error: %v", err)
+	}
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if !firecrackerDefaultTestFile(t, path) {
+			continue
+		}
+		out = append(out, path)
+	}
+	sort.Strings(out)
+	if len(out) == 0 {
+		t.Fatal("no Firecracker default test files matched process-boundary guard")
+	}
+	return out
+}
+
+func firecrackerDefaultTestFile(t *testing.T, path string) bool {
+	t.Helper()
+
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error: %v", path, err)
+	}
+	for _, line := range strings.Split(string(source), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "//go:build") || strings.HasPrefix(trimmed, "// +build") {
+			if strings.Contains(trimmed, "integration") {
+				return false
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		break
+	}
+	return true
+}
+
 func firecrackerProductionImportBoundaryMessage(fileName, importPath string) string {
 	if forbidden := firecrackerForbiddenImportFor(importPath); forbidden != nil {
 		return fmt.Sprintf("package %s file %s imports forbidden %s %q", firecrackerPackagePath, fileName, forbidden.name, importPath)
@@ -318,6 +473,13 @@ func firecrackerProductionImportBoundaryMessage(fileName, importPath string) str
 		return ""
 	}
 	return fmt.Sprintf("package %s file %s imports unapproved dependency %q; Firecracker backend code may only depend on standard library and approved microVM contracts until an explicit adapter boundary is added", firecrackerPackagePath, fileName, importPath)
+}
+
+func firecrackerDefaultTestImportBoundaryMessage(fileName, importPath string) string {
+	if forbidden := firecrackerForbiddenImportFor(importPath); forbidden != nil {
+		return fmt.Sprintf("package %s default test file %s imports forbidden %s %q; default Firecracker tests must use fake process adapters only", firecrackerPackagePath, fileName, forbidden.name, importPath)
+	}
+	return ""
 }
 
 func firecrackerForbiddenImportFor(importPath string) *firecrackerForbiddenImport {
@@ -366,6 +528,72 @@ func firecrackerProductionCallBoundaryMessage(fileName string, file *ast.File) s
 	}, func(selector, reason string) string {
 		return fmt.Sprintf("%s calls %s (%s); live Firecracker behavior belongs behind a later explicit adapter boundary", fileName, selector, reason)
 	})
+}
+
+func firecrackerDefaultTestCallBoundaryMessage(fileName string, file *ast.File) string {
+	var message string
+	ast.Inspect(file, func(node ast.Node) bool {
+		if message != "" {
+			return false
+		}
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if reason := firecrackerDefaultTestForbiddenCallReason(call); reason != "" {
+			selector := firecrackerCallSelectorName(call.Fun)
+			message = fmt.Sprintf("%s calls %s (%s); default Firecracker tests must stay fake-only", fileName, selector, reason)
+			return false
+		}
+		return true
+	})
+	return message
+}
+
+func firecrackerDefaultTestForbiddenCallReason(call *ast.CallExpr) string {
+	switch firecrackerCallSelectorName(call.Fun) {
+	case "exec.Command", "exec.CommandContext":
+		return "process launch"
+	case "net.Listen", "net.ListenPacket", "net.Dial", "net.DialTimeout":
+		return "network socket"
+	case "http.Get", "http.Head", "http.Post", "http.PostForm", "http.ListenAndServe", "http.ListenAndServeTLS":
+		return "HTTP client or server"
+	case "grpc.Dial", "grpc.DialContext", "grpc.NewClient":
+		return "gRPC client"
+	case "firecracker.NewMachine":
+		return "Firecracker SDK"
+	case "os.Geteuid":
+		return "root privilege check"
+	case "os.Open", "os.OpenFile", "os.Stat":
+		if firecrackerCallHasRootOnlyPathArg(call) {
+			return "live KVM or root-only path"
+		}
+	}
+	return ""
+}
+
+func firecrackerCallHasRootOnlyPathArg(call *ast.CallExpr) bool {
+	for _, arg := range call.Args {
+		lit, ok := arg.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			continue
+		}
+		value, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			continue
+		}
+		if firecrackerRootOnlyPathLiteral(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func firecrackerRootOnlyPathLiteral(value string) bool {
+	return value == "/dev/kvm" ||
+		strings.HasPrefix(value, "/dev/kvm/") ||
+		value == "/root" ||
+		strings.HasPrefix(value, "/root/")
 }
 
 func firecrackerFirstForbiddenCall(file *ast.File, classify func(string) string, format func(string, string) string) string {
