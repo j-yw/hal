@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 func TestRunSandboxCapabilityReadinessOmittedWhenUnavailable(t *testing.T) {
@@ -304,6 +306,119 @@ func TestRunSandboxReadinessDiagnosticsDoNotBlockOrAlterExecution(t *testing.T) 
 	}
 }
 
+func TestRunSandboxDefaultReadinessGateDoesNotTriggerSchedulerLeaseOrLiveRefresh(t *testing.T) {
+	t.Setenv("HAL_CONFIG_HOME", t.TempDir())
+
+	startedAt := time.Date(2026, 7, 2, 8, 24, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(2 * time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	target := runSandboxCapabilityReadinessTarget(runSandboxSecurityRequest())
+	target.Name = "run-readiness-default-box"
+	resolver := &fakeDefaultSandboxResolver{t: t, target: target}
+
+	var execCalled bool
+	var resolvedRuntime sandboxruntime.Target
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	driver := fakeRunSandboxRuntimeDriver{
+		exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			execCalled = true
+			resolvedRuntime = req.Target
+			if strings.Contains(strings.Join(req.Args, " "), "readiness") {
+				t.Fatalf("Exec args added readiness gate flag: %#v", req.Args)
+			}
+			_, _ = io.WriteString(req.Stdout, "default readiness run executed\n")
+			return &sandboxruntime.ExecResult{}, nil
+		},
+	}
+
+	err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+		Base:        "main",
+		BaseChanged: true,
+	}, &out, &errOut, runSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "run-readiness-default-gate"
+		},
+		now:           runSandboxTestClock(startedAt, finishedAt),
+		workingDir:    func() (string, error) { return projectDir, nil },
+		repoRemote:    func(string) (string, error) { return "git@example.com:org/repo.git", nil },
+		currentBranch: func(string) (string, error) { return "feature/run-readiness-default", nil },
+		loadSandbox: func(string) (*sandbox.SandboxState, error) {
+			t.Fatal("loadSandbox should not run without an explicit sandbox name")
+			return nil, nil
+		},
+		resolveDefault: resolver.resolve,
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			t.Fatal("listHosts should not run for default run readiness gate evaluation")
+			return nil, nil
+		},
+		listLeases: func() ([]*sandbox.SandboxLease, error) {
+			t.Fatal("listLeases should not run for default run readiness gate evaluation")
+			return nil, nil
+		},
+		acquireLease: func(sandbox.SandboxLeaseAcquireRequest, time.Duration) (*sandbox.SandboxLease, error) {
+			t.Fatal("acquireLease should not run for default run readiness gate evaluation")
+			return nil, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			return noLiveRefreshSandboxProvider{t: t}, nil
+		},
+		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+			t.Fatal("worker runtime resolver should not run for default run readiness gate evaluation")
+			return nil, nil
+		},
+		resolveRuntimeDriver: func(target sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			resolvedRuntime = target
+			return driver, nil
+		},
+		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			return factory.BootstrapResult{}, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runRunSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+	if !execCalled {
+		t.Fatal("runtime Exec was not called")
+	}
+	if resolver.calls != 1 {
+		t.Fatalf("default resolver calls = %d, want 1", resolver.calls)
+	}
+	if resolvedRuntime.Name != "run-readiness-default-box" {
+		t.Fatalf("resolved runtime target = %#v, want selected default target", resolvedRuntime)
+	}
+	if !strings.Contains(out.String(), "default readiness run executed") {
+		t.Fatalf("stdout = %q, want default execution output", out.String())
+	}
+
+	manifest := mustLoadSandboxExecutionManifest(t, store, "run-readiness-default-gate")
+	if manifest.Status != sandboxexecution.StatusSucceeded {
+		t.Fatalf("Status = %q, want succeeded", manifest.Status)
+	}
+	if manifest.Security == nil || manifest.Security.CapabilityReadinessDiagnostics == nil {
+		t.Fatalf("Security = %#v, want advisory readiness diagnostics", manifest.Security)
+	}
+	if !manifest.Security.CapabilityReadinessDiagnostics.WouldBlockStrictGate {
+		t.Fatalf("CapabilityReadinessDiagnostics = %#v, want wouldBlockStrictGate", manifest.Security.CapabilityReadinessDiagnostics)
+	}
+	if manifest.Lease != nil {
+		t.Fatalf("Lease = %#v, want nil without scheduler acquisition", manifest.Lease)
+	}
+	encoded := mustMarshalSandboxSecurityMetadata(t, manifest)
+	for _, forbidden := range []string{"security_readiness_gate", "readinessGate", "policyField", "policyMode"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("default run manifest recorded readiness gate metadata %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 func runSandboxCapabilityReadinessTarget(securityReq sandbox.SecurityEvaluationRequest) *sandbox.SandboxState {
 	return &sandbox.SandboxState{
 		ID:       "sandbox-readiness-01",
@@ -343,4 +458,15 @@ func requireRunSandboxCapabilityReadinessResult(t *testing.T, output *sandbox.Sa
 		}
 	}
 	t.Fatalf("capabilityReadiness missing %s result for %s/%s: %#v", state, family, capability, output.Results)
+}
+
+type noLiveRefreshSandboxProvider struct {
+	fakeFactorySandboxProvider
+	t *testing.T
+}
+
+func (p noLiveRefreshSandboxProvider) Status(context.Context, *sandbox.ConnectInfo, io.Writer) error {
+	p.t.Helper()
+	p.t.Fatal("live provider status refresh should not run for default run readiness gate evaluation")
+	return nil
 }
