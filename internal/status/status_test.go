@@ -327,6 +327,135 @@ func TestGet_ManualInProgress_DetailFields(t *testing.T) {
 	}
 }
 
+func TestGet_ManualCanonicalPassesUserStories(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+
+	prd := map[string]interface{}{
+		"branchName": "hal/test-feature",
+		"userStories": []map[string]interface{}{
+			{"id": "US-001", "title": "Setup DB", "passes": true},
+			{"id": "US-002", "title": "Add API", "passes": false},
+			{"id": "US-003", "title": "Add UI", "passes": false},
+		},
+	}
+	data, _ := json.Marshal(prd)
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), data, 0644)
+
+	result := Get(dir)
+
+	if result.Manual == nil {
+		t.Fatal("manual detail should not be nil")
+	}
+	if result.Manual.TotalStories != 3 {
+		t.Fatalf("totalStories = %d, want 3", result.Manual.TotalStories)
+	}
+	if result.Manual.CompletedStories != 1 {
+		t.Fatalf("completedStories = %d, want 1", result.Manual.CompletedStories)
+	}
+	if result.Manual.NextStory == nil || result.Manual.NextStory.ID != "US-002" {
+		t.Fatalf("nextStory = %#v, want US-002", result.Manual.NextStory)
+	}
+}
+
+func TestGet_ManualCanonicalPassesTasks(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+
+	prd := map[string]interface{}{
+		"branchName": "hal/test-feature",
+		"tasks": []map[string]interface{}{
+			{"id": "T-001", "title": "Setup DB", "passes": true},
+			{"id": "T-002", "title": "Add API", "passes": false},
+		},
+	}
+	data, _ := json.Marshal(prd)
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), data, 0644)
+
+	result := Get(dir)
+
+	if result.Manual == nil {
+		t.Fatal("manual detail should not be nil")
+	}
+	if result.Manual.TotalStories != 2 {
+		t.Fatalf("totalStories = %d, want 2", result.Manual.TotalStories)
+	}
+	if result.Manual.CompletedStories != 1 {
+		t.Fatalf("completedStories = %d, want 1", result.Manual.CompletedStories)
+	}
+	if result.Manual.NextStory == nil || result.Manual.NextStory.ID != "T-002" {
+		t.Fatalf("nextStory = %#v, want T-002", result.Manual.NextStory)
+	}
+}
+
+func TestGet_ManualCanonicalPassesCountsUserStoriesAndTasks(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+
+	prd := map[string]interface{}{
+		"branchName": "hal/test-feature",
+		"userStories": []map[string]interface{}{
+			{"id": "US-001", "title": "Setup DB", "passes": true},
+			{"id": "US-002", "title": "Add API", "passes": false},
+		},
+		"tasks": []map[string]interface{}{
+			{"id": "T-001", "title": "Task setup", "passes": true},
+			{"id": "T-002", "title": "Task API", "passes": false},
+		},
+	}
+	data, _ := json.Marshal(prd)
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), data, 0644)
+
+	result := Get(dir)
+
+	if result.Manual == nil {
+		t.Fatal("manual detail should not be nil")
+	}
+	if result.Manual.TotalStories != 4 {
+		t.Fatalf("totalStories = %d, want 4", result.Manual.TotalStories)
+	}
+	if result.Manual.CompletedStories != 2 {
+		t.Fatalf("completedStories = %d, want 2", result.Manual.CompletedStories)
+	}
+	if result.Manual.NextStory == nil || result.Manual.NextStory.ID != "US-002" {
+		t.Fatalf("nextStory = %#v, want US-002", result.Manual.NextStory)
+	}
+}
+
+func TestGet_ManualCanonicalPassesComplete(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+
+	prd := map[string]interface{}{
+		"branchName": "hal/test-feature",
+		"userStories": []map[string]interface{}{
+			{"id": "US-001", "title": "Setup DB", "passes": true},
+			{"id": "US-002", "title": "Add API", "passes": true},
+		},
+	}
+	data, _ := json.Marshal(prd)
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), data, 0644)
+
+	result := Get(dir)
+
+	if result.State != StateManualComplete {
+		t.Fatalf("state = %q, want %q", result.State, StateManualComplete)
+	}
+	if result.Manual == nil {
+		t.Fatal("manual detail should not be nil")
+	}
+	if result.Manual.CompletedStories != 2 {
+		t.Fatalf("completedStories = %d, want 2", result.Manual.CompletedStories)
+	}
+	if result.Manual.NextStory != nil {
+		t.Fatalf("nextStory = %#v, want nil", result.Manual.NextStory)
+	}
+}
+
 func TestGet_ManualComplete_NoNextStory(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, template.HalDir)
