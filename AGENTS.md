@@ -37,6 +37,11 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase26-credential-proxy-plumbing (2026-07-02)
+
+- Phase 26 credential proxy persistence guard coverage lives in `cmd/credential_proxy_manifest_test.go`; allow direct `credentialProxy*` JSON persistence fields only on `internal/sandboxexecution.Manifest` and `internal/factory.SandboxMetadata`, require `omitempty` plus sandbox credential proxy contract/wrapper types, and keep `factory.EventRecord`, worker metadata, runtime metadata, provider metadata, and command-result envelopes free of direct Phase 26 credential proxy persistence fields.
+- Default no-metadata run manifests, auto manifests, factory sandbox metadata, factory run records, and factory timeline events must keep omitting `credentialProxy`, `credentialProxyPlan`, `credentialProxySession`, and `credentialProxyBindings`; keep the Phase 25 verification doc/test focused selector in sync when these guard names change.
+
 ## Patterns from phase25-credential-proxy-plan (2026-07-02)
 
 - Credential proxy foundation contracts belong in `internal/sandbox/credential_proxy.go`; keep them data-only and redaction-safe, with safe IDs, sources, policy snapshot identity, secret-broker/network-proxy session references, delivery mode identifiers, request/destination categories, outcomes, statuses, warnings, and reason codes only, and no raw hostnames, URLs, ports, headers, bodies, tokens, environment values, local paths, socket paths, credential values, secret values, command/factory/worker/runtime/provider imports, or live proxy/delivery behavior.
