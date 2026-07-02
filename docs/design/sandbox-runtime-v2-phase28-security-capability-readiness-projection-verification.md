@@ -85,10 +85,16 @@ default omission, redaction, and non-blocking execution coverage:
 go test -timeout=120s ./cmd -run 'Test(SandboxRuntimeStatusJSON(CachedWorkerRuntimeContractStableAndSafe|OmitsCapabilityReadinessWhenSecurityAbsent)|SandboxRuntimeSecuritySummarySanitizesCapabilityReadinessBeforeJSON|FactorySandbox(CapabilityReadinessOmittedByDefault|MetadataAttachesSanitizedProjectedCapabilityReadiness)|RunFactorySandboxExecutorCapabilityReadinessDoesNotChangeExecution)'
 ```
 
+Run Phase 28 documentation guard coverage:
+
+```sh
+go test -timeout=120s ./cmd -run 'TestPhase28SecurityCapabilityReadinessProjection(VerificationDocs|FakeOnlyVerification)'
+```
+
 These focused commands are fake-only. They cover the internal projection path,
 approved JSON surfaces, default omission, sanitized attachment, redaction, and
 the requirement that readiness metadata does not alter command, runtime
-summary, or factory execution behavior.
+summary, or factory execution behavior, plus documentation guard coverage.
 
 ## Full Verification Commands
 
