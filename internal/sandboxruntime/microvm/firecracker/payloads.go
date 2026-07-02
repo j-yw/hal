@@ -1,0 +1,95 @@
+package firecracker
+
+import (
+	"strings"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
+)
+
+const (
+	// PayloadRenderingOperation is the sanitized operation label used for
+	// Firecracker payload rendering errors.
+	PayloadRenderingOperation = "firecracker_payload"
+
+	defaultRootDriveID = "rootfs"
+)
+
+// MachineConfigPayload is the JSON-compatible Firecracker machine-config
+// request body derived from the validated backend configuration.
+type MachineConfigPayload struct {
+	VCPUCount  int `json:"vcpu_count"`
+	MemSizeMiB int `json:"mem_size_mib"`
+}
+
+// BootSourcePayload is the JSON-compatible Firecracker boot-source request
+// body. InitrdPath is omitted when the backend configuration has no initrd.
+type BootSourcePayload struct {
+	KernelImagePath string  `json:"kernel_image_path"`
+	InitrdPath      *string `json:"initrd_path,omitempty"`
+}
+
+// RootDrivePayload is the JSON-compatible Firecracker block-device request
+// body for the root filesystem.
+type RootDrivePayload struct {
+	DriveID      string `json:"drive_id"`
+	PathOnHost   string `json:"path_on_host"`
+	IsRootDevice bool   `json:"is_root_device"`
+	IsReadOnly   bool   `json:"is_read_only"`
+}
+
+// RenderMachineConfigPayload derives the Firecracker machine-config payload
+// without starting processes, opening sockets, or consulting live binaries.
+func RenderMachineConfigPayload(config BackendConfig) (MachineConfigPayload, error) {
+	if config.CPUCount <= 0 {
+		return MachineConfigPayload{}, newPayloadRenderingError("cpuCount", "CPU count must be positive")
+	}
+	if config.MemoryMiB <= 0 {
+		return MachineConfigPayload{}, newPayloadRenderingError("memoryMiB", "memory size must be positive")
+	}
+	return MachineConfigPayload{
+		VCPUCount:  config.CPUCount,
+		MemSizeMiB: config.MemoryMiB,
+	}, nil
+}
+
+// RenderBootSourcePayload derives the Firecracker boot-source payload without
+// touching host files or requiring a Firecracker binary.
+func RenderBootSourcePayload(config BackendConfig) (BootSourcePayload, error) {
+	kernelImagePath := strings.TrimSpace(config.KernelImagePath)
+	if kernelImagePath == "" {
+		return BootSourcePayload{}, newPayloadRenderingError("kernelImagePath", "kernel image path is required")
+	}
+	return BootSourcePayload{
+		KernelImagePath: kernelImagePath,
+		InitrdPath:      optionalPayloadPath(config.InitrdPath),
+	}, nil
+}
+
+// RenderRootDrivePayload derives the Firecracker root block-device payload
+// without checking or opening the root filesystem path.
+func RenderRootDrivePayload(config BackendConfig) (RootDrivePayload, error) {
+	rootfsPath := strings.TrimSpace(config.RootfsPath)
+	if rootfsPath == "" {
+		return RootDrivePayload{}, newPayloadRenderingError("rootfsPath", "rootfs path is required")
+	}
+	return RootDrivePayload{
+		DriveID:      defaultRootDriveID,
+		PathOnHost:   rootfsPath,
+		IsRootDevice: true,
+		IsReadOnly:   false,
+	}, nil
+}
+
+func optionalPayloadPath(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	return optionalPath(*value)
+}
+
+func newPayloadRenderingError(field, message string) *microvm.OperationError {
+	err := microvm.NewInvalidConfigError(PayloadRenderingOperation, microvm.ErrInvalidConfig)
+	err.Field = strings.TrimSpace(field)
+	err.Message = strings.TrimSpace(message)
+	return err
+}

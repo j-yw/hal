@@ -94,6 +94,7 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 		"BackendConfig":                  true,
 		"BackendConfigFromMicroVMConfig": true,
 		"BackendID":                      true,
+		"BootSourcePayload":              true,
 		"DefaultConfigPath":              true,
 		"ConfigOperation":                true,
 		"DefaultAPISocketPath":           true,
@@ -102,10 +103,16 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 		"DefaultRuntimeID":               true,
 		"DefaultStateDir":                true,
 		"GuestWorkDirMetadata":           true,
+		"MachineConfigPayload":           true,
 		"PathPlan":                       true,
 		"PathPlanRequest":                true,
 		"PathPlanningOperation":          true,
+		"PayloadRenderingOperation":      true,
 		"PlanPaths":                      true,
+		"RenderBootSourcePayload":        true,
+		"RenderMachineConfigPayload":     true,
+		"RenderRootDrivePayload":         true,
+		"RootDrivePayload":               true,
 	}
 	seenExportedNames := map[string]bool{}
 
@@ -145,7 +152,7 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 
 	for name := range seenExportedNames {
 		if !allowedExportedNames[name] {
-			t.Fatalf("unexpected exported Firecracker namespace %q; Phase 32 foundation should expose only namespace, US-002 config contracts, and US-003 path planning contracts", name)
+			t.Fatalf("unexpected exported Firecracker namespace %q; Phase 32 foundation should expose only namespace, US-002 config contracts, US-003 path planning contracts, and US-004 payload contracts", name)
 		}
 	}
 	for name := range allowedExportedNames {
