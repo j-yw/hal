@@ -75,9 +75,15 @@ contract, sanitizer, and evaluator files:
 go test -timeout=120s ./internal/sandbox -run 'TestSecurityCapability(ImportBoundar|Source)'
 ```
 
+Run Phase 27 documentation guard coverage:
+
+```sh
+go test -timeout=120s ./cmd -run 'TestPhase27SecurityCapability(ReadinessVerificationDocs|FakeOnlyVerification)'
+```
+
 These focused commands are fake-only and cover readiness contracts, evaluator
 behavior, sanitized validation errors, deterministic output, import boundaries,
-and live-behavior guards for Phase 27.
+live-behavior guards, and documentation guards for Phase 27.
 
 ## Full Verification Commands
 
@@ -104,11 +110,12 @@ data contracts, JSON marshaling, reflection over struct tags, deterministic
 metadata fixtures, parsed imports, production source scans, and seeded unsafe
 strings.
 
-Phase 27 fake-only verification has no live proxy server, live firewall
-configuration, credential delivery, credential injection, tmpfs writes,
-SSH-agent forwarding, worker daemon, worker protocol negotiation, provider
-startup, runtime startup, Docker, Podman, KVM, microVM, cloud credentials,
-external network access, new command flags, or durable persistence behavior.
+Phase 27 fake-only verification has no live services, live proxy server, live
+firewall configuration, credential delivery, credential injection, tmpfs
+writes, SSH-agent forwarding, worker daemon changes, worker daemon, worker
+protocol negotiation, provider startup, runtime startup, Docker, Podman, KVM,
+microVM, cloud credentials, provider credentials, external network access, new
+command flags, or durable persistence behavior.
 Default Phase 27 test commands must not use integration build tags or require
 live environment variables.
 
@@ -130,6 +137,7 @@ No credential injection is included in Phase 27.
 No tmpfs credential delivery is included in Phase 27.
 No SSH-agent forwarding is included in Phase 27.
 No worker protocol changes are included in Phase 27.
+No worker daemon changes are included in Phase 27.
 No worker daemon behavior is included in Phase 27.
 No provider integration is included in Phase 27.
 No runtime integration is included in Phase 27.
