@@ -89,16 +89,29 @@ type SandboxSecurityCapabilityMetadata struct {
 	WarningCodes []SandboxSecurityCapabilityWarningCode  `json:"warningCodes,omitempty"`
 }
 
+// SandboxSecurityCapabilityWorkerPostureMetadata captures safe local/worker
+// posture labels without treating them as proof of live security capability.
+type SandboxSecurityCapabilityWorkerPostureMetadata struct {
+	WorkerKind          string   `json:"workerKind,omitempty"`
+	RuntimeDriver       string   `json:"runtimeDriver,omitempty"`
+	IsolationLevel      string   `json:"isolationLevel,omitempty"`
+	NetworkPolicy       string   `json:"networkPolicy,omitempty"`
+	NetworkEnforcement  string   `json:"networkEnforcement,omitempty"`
+	CredentialModes     []string `json:"credentialModes,omitempty"`
+	CredentialProxyMode bool     `json:"credentialProxyMode,omitempty"`
+}
+
 // SandboxSecurityCapabilityReadinessRequest separates requested capabilities
 // from explicit capability metadata and existing metadata-only records.
 type SandboxSecurityCapabilityReadinessRequest struct {
-	Requested                 []SandboxSecurityCapabilityMetadata     `json:"requested,omitempty"`
-	Ready                     []SandboxSecurityCapabilityMetadata     `json:"ready,omitempty"`
-	NetworkProxySession       *SandboxNetworkProxySessionMetadata     `json:"networkProxySession,omitempty"`
-	NetworkPolicyDecisionLogs []SandboxNetworkPolicyDecisionLogRecord `json:"networkPolicyDecisionLogs,omitempty"`
-	CredentialProxyPlan       *SandboxCredentialProxyPlanMetadata     `json:"credentialPlanMetadata,omitempty"`
-	CredentialProxySession    *SandboxCredentialProxySessionMetadata  `json:"credentialSessionMetadata,omitempty"`
-	CredentialProxyBindings   []SandboxCredentialProxyBindingMetadata `json:"credentialBindingMetadata,omitempty"`
+	Requested                 []SandboxSecurityCapabilityMetadata              `json:"requested,omitempty"`
+	Ready                     []SandboxSecurityCapabilityMetadata              `json:"ready,omitempty"`
+	WorkerPostures            []SandboxSecurityCapabilityWorkerPostureMetadata `json:"workerPostures,omitempty"`
+	NetworkProxySession       *SandboxNetworkProxySessionMetadata              `json:"networkProxySession,omitempty"`
+	NetworkPolicyDecisionLogs []SandboxNetworkPolicyDecisionLogRecord          `json:"networkPolicyDecisionLogs,omitempty"`
+	CredentialProxyPlan       *SandboxCredentialProxyPlanMetadata              `json:"credentialPlanMetadata,omitempty"`
+	CredentialProxySession    *SandboxCredentialProxySessionMetadata           `json:"credentialSessionMetadata,omitempty"`
+	CredentialProxyBindings   []SandboxCredentialProxyBindingMetadata          `json:"credentialBindingMetadata,omitempty"`
 }
 
 // SandboxSecurityCapabilityReadinessInput is the request-shaped input contract

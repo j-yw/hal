@@ -1,5 +1,7 @@
 package sandbox
 
+import "strings"
+
 // EvaluateSandboxSecurityCapabilityReadiness classifies safe sandbox metadata
 // without treating durable records as proof of runtime support.
 func EvaluateSandboxSecurityCapabilityReadiness(input SandboxSecurityCapabilityReadinessInput) SandboxSecurityCapabilityReadinessOutput {
@@ -17,6 +19,9 @@ func EvaluateSandboxSecurityCapabilityReadiness(input SandboxSecurityCapabilityR
 		results = append(results, sandboxSecurityCapabilityUnsupportedResult(requested, input.Ready))
 	}
 
+	for _, posture := range input.WorkerPostures {
+		results = append(results, sandboxSecurityCapabilityWorkerPostureResults(posture)...)
+	}
 	if input.NetworkProxySession != nil {
 		results = append(results, sandboxSecurityCapabilityMetadataOnlyResult(
 			SandboxSecurityCapabilityFamilyNetworkProxy,
@@ -54,6 +59,112 @@ func EvaluateSandboxSecurityCapabilityReadiness(input SandboxSecurityCapabilityR
 	}
 
 	return SandboxSecurityCapabilityReadinessOutput{Results: results}
+}
+
+func sandboxSecurityCapabilityWorkerPostureResults(posture SandboxSecurityCapabilityWorkerPostureMetadata) []SandboxSecurityCapabilityReadinessResult {
+	var results []SandboxSecurityCapabilityReadinessResult
+	if sandboxSecurityCapabilityWorkerNetworkPosturePresent(posture) {
+		results = append(results, sandboxSecurityCapabilityMetadataOnlyResult(
+			SandboxSecurityCapabilityFamilyNetworkPolicy,
+			SandboxSecurityCapabilityNetworkDenyByDefault,
+			SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+		))
+	}
+	switch strings.TrimSpace(posture.NetworkEnforcement) {
+	case SandboxNetworkEnforcementModeProxy:
+		results = append(results, sandboxSecurityCapabilityMetadataOnlyResult(
+			SandboxSecurityCapabilityFamilyNetworkProxy,
+			SandboxSecurityCapabilityNetworkProxyEnforcement,
+			SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+		))
+	case SandboxNetworkEnforcementModeFirewall:
+		results = append(results, sandboxSecurityCapabilityMetadataOnlyResult(
+			SandboxSecurityCapabilityFamilyNetworkPolicy,
+			SandboxSecurityCapabilityNetworkFirewallEnforcement,
+			SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+		))
+	case SandboxNetworkEnforcementModeRuntime:
+		results = append(results, sandboxSecurityCapabilityMetadataOnlyResult(
+			SandboxSecurityCapabilityFamilyNetworkPolicy,
+			SandboxSecurityCapabilityNetworkRuntimeEnforcement,
+			SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+		))
+	case SandboxNetworkEnforcementModeProxyFirewall:
+		results = append(results,
+			sandboxSecurityCapabilityMetadataOnlyResult(
+				SandboxSecurityCapabilityFamilyNetworkProxy,
+				SandboxSecurityCapabilityNetworkProxyEnforcement,
+				SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+			),
+			sandboxSecurityCapabilityMetadataOnlyResult(
+				SandboxSecurityCapabilityFamilyNetworkPolicy,
+				SandboxSecurityCapabilityNetworkFirewallEnforcement,
+				SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+			),
+		)
+	}
+	if posture.CredentialProxyMode {
+		results = append(results, sandboxSecurityCapabilityMetadataOnlyResult(
+			SandboxSecurityCapabilityFamilyCredentialProxy,
+			SandboxSecurityCapabilityCredentialProxy,
+			SandboxSecurityCapabilityReasonMetadataDeliveryUnproven,
+		))
+	}
+	for _, mode := range posture.CredentialModes {
+		switch strings.TrimSpace(mode) {
+		case SandboxSecretModeEnv:
+			results = append(results, sandboxSecurityCapabilityMetadataOnlyResult(
+				SandboxSecurityCapabilityFamilySecretDelivery,
+				SandboxSecurityCapabilitySecretEnv,
+				SandboxSecurityCapabilityReasonMetadataDeliveryUnproven,
+			))
+		case SandboxSecretModeFileTmpfs:
+			results = append(results, sandboxSecurityCapabilityMetadataOnlyResult(
+				SandboxSecurityCapabilityFamilySecretDelivery,
+				SandboxSecurityCapabilitySecretFileTmpfs,
+				SandboxSecurityCapabilityReasonMetadataDeliveryUnproven,
+			))
+		case SandboxSecretModeSSHAgent:
+			results = append(results, sandboxSecurityCapabilityMetadataOnlyResult(
+				SandboxSecurityCapabilityFamilySecretDelivery,
+				SandboxSecurityCapabilitySecretSSHAgent,
+				SandboxSecurityCapabilityReasonMetadataDeliveryUnproven,
+			))
+		case SandboxSecretModeHTTPProxy:
+			results = append(results, sandboxSecurityCapabilityMetadataOnlyResult(
+				SandboxSecurityCapabilityFamilySecretDelivery,
+				SandboxSecurityCapabilitySecretHTTPProxy,
+				SandboxSecurityCapabilityReasonMetadataDeliveryUnproven,
+			))
+		}
+	}
+	if strings.TrimSpace(posture.RuntimeDriver) == SandboxRuntimeDriverMicroVM ||
+		strings.TrimSpace(posture.IsolationLevel) == SandboxIsolationLevelVM {
+		results = append(results, sandboxSecurityCapabilityMetadataOnlyResult(
+			SandboxSecurityCapabilityFamilyIsolation,
+			SandboxSecurityCapabilityIsolationMicroVM,
+			SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+		))
+	}
+	return results
+}
+
+func sandboxSecurityCapabilityWorkerNetworkPosturePresent(posture SandboxSecurityCapabilityWorkerPostureMetadata) bool {
+	switch strings.TrimSpace(posture.NetworkPolicy) {
+	case SandboxNetworkPolicyDenyByDefault, SandboxNetworkPolicyBestEffort:
+		return true
+	}
+	switch strings.TrimSpace(posture.NetworkEnforcement) {
+	case SandboxNetworkEnforcementModeNone,
+		SandboxNetworkEnforcementModeBestEffort,
+		SandboxNetworkEnforcementModeProxy,
+		SandboxNetworkEnforcementModeFirewall,
+		SandboxNetworkEnforcementModeRuntime,
+		SandboxNetworkEnforcementModeProxyFirewall:
+		return true
+	default:
+		return false
+	}
 }
 
 func sandboxSecurityCapabilityFindExplicitSupport(requested SandboxSecurityCapabilityMetadata, ready []SandboxSecurityCapabilityMetadata) (SandboxSecurityCapabilityMetadata, bool) {

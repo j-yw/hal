@@ -86,10 +86,19 @@ func TestSecurityCapabilityReadinessRequestJSONSchema(t *testing.T) {
 				Source:     SandboxSecurityCapabilitySourceRuntime,
 			},
 		},
+		WorkerPostures: []SandboxSecurityCapabilityWorkerPostureMetadata{
+			{
+				WorkerKind:         SandboxHostKindWorker,
+				RuntimeDriver:      SandboxRuntimeDriverRootlessPodman,
+				IsolationLevel:     SandboxIsolationLevelContainer,
+				NetworkPolicy:      SandboxNetworkPolicyBestEffort,
+				NetworkEnforcement: SandboxNetworkEnforcementModeNone,
+			},
+		},
 	}
 
 	got := mustMarshalObject(t, request)
-	assertObjectKeys(t, got, []string{"requested", "ready"}, forbiddenSecurityCapabilityRawFieldNames())
+	assertObjectKeys(t, got, []string{"requested", "ready", "workerPostures"}, forbiddenSecurityCapabilityRawFieldNames())
 
 	requested := got["requested"].([]any)
 	if len(requested) != 2 {
@@ -109,6 +118,23 @@ func TestSecurityCapabilityReadinessRequestJSONSchema(t *testing.T) {
 	}
 	assertObjectKeys(t, ready[0], []string{"id", "family", "capability", "mode", "source"}, forbiddenSecurityCapabilityRawFieldNames())
 	assertSecurityCapabilityJSONValue(t, ready[0], "source", "runtime")
+
+	workerPostures := got["workerPostures"].([]any)
+	if len(workerPostures) != 1 {
+		t.Fatalf("workerPostures count = %d, want 1", len(workerPostures))
+	}
+	assertObjectKeys(t, workerPostures[0], []string{
+		"workerKind",
+		"runtimeDriver",
+		"isolationLevel",
+		"networkPolicy",
+		"networkEnforcement",
+	}, forbiddenSecurityCapabilityRawFieldNames())
+	assertSecurityCapabilityJSONValue(t, workerPostures[0], "workerKind", SandboxHostKindWorker)
+	assertSecurityCapabilityJSONValue(t, workerPostures[0], "runtimeDriver", SandboxRuntimeDriverRootlessPodman)
+	assertSecurityCapabilityJSONValue(t, workerPostures[0], "isolationLevel", SandboxIsolationLevelContainer)
+	assertSecurityCapabilityJSONValue(t, workerPostures[0], "networkPolicy", SandboxNetworkPolicyBestEffort)
+	assertSecurityCapabilityJSONValue(t, workerPostures[0], "networkEnforcement", SandboxNetworkEnforcementModeNone)
 }
 
 func TestSecurityCapabilityReadinessResultJSONSchema(t *testing.T) {
@@ -263,9 +289,20 @@ func TestSecurityCapabilityReadinessJSONTagsAreStable(t *testing.T) {
 		{field: "WarningCodes", name: "warningCodes", omitempty: true},
 	})
 
+	assertSecurityCapabilityJSONTags(t, reflect.TypeOf(SandboxSecurityCapabilityWorkerPostureMetadata{}), []securityCapabilityJSONTagExpectation{
+		{field: "WorkerKind", name: "workerKind", omitempty: true},
+		{field: "RuntimeDriver", name: "runtimeDriver", omitempty: true},
+		{field: "IsolationLevel", name: "isolationLevel", omitempty: true},
+		{field: "NetworkPolicy", name: "networkPolicy", omitempty: true},
+		{field: "NetworkEnforcement", name: "networkEnforcement", omitempty: true},
+		{field: "CredentialModes", name: "credentialModes", omitempty: true},
+		{field: "CredentialProxyMode", name: "credentialProxyMode", omitempty: true},
+	})
+
 	assertSecurityCapabilityJSONTags(t, reflect.TypeOf(SandboxSecurityCapabilityReadinessRequest{}), []securityCapabilityJSONTagExpectation{
 		{field: "Requested", name: "requested", omitempty: true},
 		{field: "Ready", name: "ready", omitempty: true},
+		{field: "WorkerPostures", name: "workerPostures", omitempty: true},
 		{field: "NetworkProxySession", name: "networkProxySession", omitempty: true},
 		{field: "NetworkPolicyDecisionLogs", name: "networkPolicyDecisionLogs", omitempty: true},
 		{field: "CredentialProxyPlan", name: "credentialPlanMetadata", omitempty: true},
@@ -290,6 +327,7 @@ func TestSecurityCapabilityReadinessJSONTagsAreStable(t *testing.T) {
 func TestSecurityCapabilityReadinessContractsExposeNoRawValueFields(t *testing.T) {
 	contractTypes := []reflect.Type{
 		reflect.TypeOf(SandboxSecurityCapabilityMetadata{}),
+		reflect.TypeOf(SandboxSecurityCapabilityWorkerPostureMetadata{}),
 		reflect.TypeOf(SandboxSecurityCapabilityReadinessRequest{}),
 		reflect.TypeOf(SandboxSecurityCapabilityReadinessResult{}),
 		reflect.TypeOf(SandboxSecurityCapabilityReadinessOutput{}),
@@ -334,6 +372,13 @@ func TestSecurityCapabilitySerializedReadinessContainsNoUnsafeRawFieldNames(t *t
 					Capability: SandboxSecurityCapabilityCredentialProxy,
 					Mode:       SandboxSecretModeHTTPProxy,
 					Source:     SandboxSecurityCapabilitySourceRequested,
+				}},
+				WorkerPostures: []SandboxSecurityCapabilityWorkerPostureMetadata{{
+					WorkerKind:         SandboxHostKindLocal,
+					RuntimeDriver:      SandboxRuntimeDriverRootlessPodman,
+					IsolationLevel:     SandboxIsolationLevelContainer,
+					NetworkPolicy:      SandboxNetworkPolicyBestEffort,
+					NetworkEnforcement: SandboxNetworkEnforcementModeNone,
 				}},
 			},
 		},

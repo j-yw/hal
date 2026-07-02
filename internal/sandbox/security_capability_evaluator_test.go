@@ -536,6 +536,212 @@ func TestEvaluateSecurityCapabilityReadinessDoesNotInferReadyFromLegacyCompatibi
 	}
 }
 
+func TestEvaluateSecurityCapabilityReadinessDoesNotInferReadyFromRootlessWorkerPosture(t *testing.T) {
+	requested := []SandboxSecurityCapabilityMetadata{
+		{
+			Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+			Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+			Mode:       SandboxNetworkEnforcementModeFirewall,
+			Source:     SandboxSecurityCapabilitySourceRequested,
+		},
+		{
+			Family:     SandboxSecurityCapabilityFamilyNetworkProxy,
+			Capability: SandboxSecurityCapabilityNetworkProxyEnforcement,
+			Mode:       SandboxNetworkEnforcementModeProxy,
+			Source:     SandboxSecurityCapabilitySourceRequested,
+		},
+		{
+			Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+			Capability: SandboxSecurityCapabilityNetworkFirewallEnforcement,
+			Mode:       SandboxNetworkEnforcementModeFirewall,
+			Source:     SandboxSecurityCapabilitySourceRequested,
+		},
+		{
+			Family:     SandboxSecurityCapabilityFamilyCredentialProxy,
+			Capability: SandboxSecurityCapabilityCredentialProxy,
+			Mode:       SandboxSecretModeHTTPProxy,
+			Source:     SandboxSecurityCapabilitySourceRequested,
+		},
+		{
+			Family:     SandboxSecurityCapabilityFamilySecretDelivery,
+			Capability: SandboxSecurityCapabilitySecretFileTmpfs,
+			Mode:       SandboxSecretModeFileTmpfs,
+			Source:     SandboxSecurityCapabilitySourceRequested,
+		},
+		{
+			Family:     SandboxSecurityCapabilityFamilySecretDelivery,
+			Capability: SandboxSecurityCapabilitySecretSSHAgent,
+			Mode:       SandboxSecretModeSSHAgent,
+			Source:     SandboxSecurityCapabilitySourceRequested,
+		},
+		{
+			Family:     SandboxSecurityCapabilityFamilyIsolation,
+			Capability: SandboxSecurityCapabilityIsolationMicroVM,
+			Source:     SandboxSecurityCapabilitySourceRequested,
+		},
+	}
+
+	output := EvaluateSandboxSecurityCapabilityReadiness(SandboxSecurityCapabilityReadinessInput{
+		Requested: requested,
+		WorkerPostures: []SandboxSecurityCapabilityWorkerPostureMetadata{
+			{
+				WorkerKind:         SandboxHostKindLocal,
+				RuntimeDriver:      SandboxRuntimeDriverRootlessPodman,
+				IsolationLevel:     SandboxIsolationLevelContainer,
+				NetworkPolicy:      SandboxNetworkPolicyBestEffort,
+				NetworkEnforcement: SandboxNetworkEnforcementModeNone,
+			},
+			{
+				WorkerKind:     SandboxHostKindWorker,
+				RuntimeDriver:  SandboxRuntimeDriverRootlessPodman,
+				IsolationLevel: SandboxIsolationLevelContainer,
+			},
+		},
+	})
+
+	if len(output.Results) != len(requested)+1 {
+		t.Fatalf("result count = %d, want %d: %#v", len(output.Results), len(requested)+1, output.Results)
+	}
+	for i, result := range output.Results[:len(requested)] {
+		if result.State == SandboxSecurityCapabilityReadinessReady {
+			t.Fatalf("result[%d] inferred ready from rootless worker posture: %#v", i, result)
+		}
+		assertSecurityCapabilityUnsupportedResult(t, result,
+			requested[i].Family,
+			requested[i].Capability,
+			requested[i].Mode,
+			SandboxSecurityCapabilityReasonCapabilityMissing,
+		)
+	}
+	assertSecurityCapabilityMetadataOnlyResult(t, output.Results[len(requested)],
+		SandboxSecurityCapabilityFamilyNetworkPolicy,
+		SandboxSecurityCapabilityNetworkDenyByDefault,
+		SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+	)
+}
+
+func TestEvaluateSecurityCapabilityReadinessTreatsWorkerPostureCapabilitiesAsMetadataOnly(t *testing.T) {
+	output := EvaluateSandboxSecurityCapabilityReadiness(SandboxSecurityCapabilityReadinessInput{
+		WorkerPostures: []SandboxSecurityCapabilityWorkerPostureMetadata{{
+			WorkerKind:          SandboxHostKindWorker,
+			RuntimeDriver:       SandboxRuntimeDriverRootlessPodman,
+			IsolationLevel:      SandboxIsolationLevelVM,
+			NetworkPolicy:       SandboxNetworkPolicyDenyByDefault,
+			NetworkEnforcement:  SandboxNetworkEnforcementModeProxyFirewall,
+			CredentialModes:     []string{SandboxSecretModeFileTmpfs, SandboxSecretModeSSHAgent},
+			CredentialProxyMode: true,
+		}},
+	})
+
+	want := []struct {
+		family     SandboxSecurityCapabilityFamily
+		capability SandboxSecurityCapabilityName
+		reason     SandboxSecurityCapabilityReasonCode
+	}{
+		{
+			family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+			capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+			reason:     SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+		},
+		{
+			family:     SandboxSecurityCapabilityFamilyNetworkProxy,
+			capability: SandboxSecurityCapabilityNetworkProxyEnforcement,
+			reason:     SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+		},
+		{
+			family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+			capability: SandboxSecurityCapabilityNetworkFirewallEnforcement,
+			reason:     SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+		},
+		{
+			family:     SandboxSecurityCapabilityFamilyCredentialProxy,
+			capability: SandboxSecurityCapabilityCredentialProxy,
+			reason:     SandboxSecurityCapabilityReasonMetadataDeliveryUnproven,
+		},
+		{
+			family:     SandboxSecurityCapabilityFamilySecretDelivery,
+			capability: SandboxSecurityCapabilitySecretFileTmpfs,
+			reason:     SandboxSecurityCapabilityReasonMetadataDeliveryUnproven,
+		},
+		{
+			family:     SandboxSecurityCapabilityFamilySecretDelivery,
+			capability: SandboxSecurityCapabilitySecretSSHAgent,
+			reason:     SandboxSecurityCapabilityReasonMetadataDeliveryUnproven,
+		},
+		{
+			family:     SandboxSecurityCapabilityFamilyIsolation,
+			capability: SandboxSecurityCapabilityIsolationMicroVM,
+			reason:     SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+		},
+	}
+	if len(output.Results) != len(want) {
+		t.Fatalf("result count = %d, want %d: %#v", len(output.Results), len(want), output.Results)
+	}
+	for i, wantResult := range want {
+		if output.Results[i].State == SandboxSecurityCapabilityReadinessReady {
+			t.Fatalf("result[%d] inferred ready from worker posture metadata: %#v", i, output.Results[i])
+		}
+		assertSecurityCapabilityMetadataOnlyResult(t, output.Results[i], wantResult.family, wantResult.capability, wantResult.reason)
+	}
+}
+
+func TestEvaluateSecurityCapabilityReadinessRequiresExplicitReadyMetadataForRootlessWorker(t *testing.T) {
+	requested := SandboxSecurityCapabilityMetadata{
+		Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+		Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+		Mode:       SandboxNetworkEnforcementModeFirewall,
+		Source:     SandboxSecurityCapabilitySourceRequested,
+	}
+	workerPosture := SandboxSecurityCapabilityWorkerPostureMetadata{
+		WorkerKind:         SandboxHostKindLocal,
+		RuntimeDriver:      SandboxRuntimeDriverRootlessPodman,
+		IsolationLevel:     SandboxIsolationLevelContainer,
+		NetworkPolicy:      SandboxNetworkPolicyBestEffort,
+		NetworkEnforcement: SandboxNetworkEnforcementModeNone,
+	}
+
+	withoutReady := EvaluateSandboxSecurityCapabilityReadiness(SandboxSecurityCapabilityReadinessInput{
+		Requested:      []SandboxSecurityCapabilityMetadata{requested},
+		WorkerPostures: []SandboxSecurityCapabilityWorkerPostureMetadata{workerPosture},
+	})
+	if len(withoutReady.Results) != 2 {
+		t.Fatalf("without ready result count = %d, want 2: %#v", len(withoutReady.Results), withoutReady.Results)
+	}
+	assertSecurityCapabilityUnsupportedResult(t, withoutReady.Results[0],
+		requested.Family,
+		requested.Capability,
+		requested.Mode,
+		SandboxSecurityCapabilityReasonCapabilityMissing,
+	)
+
+	withReady := EvaluateSandboxSecurityCapabilityReadiness(SandboxSecurityCapabilityReadinessInput{
+		Requested:      []SandboxSecurityCapabilityMetadata{requested},
+		WorkerPostures: []SandboxSecurityCapabilityWorkerPostureMetadata{workerPosture},
+		Ready: []SandboxSecurityCapabilityMetadata{{
+			Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+			Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+			Mode:       SandboxNetworkEnforcementModeFirewall,
+			Source:     SandboxSecurityCapabilitySourceWorker,
+			Status:     SandboxSecurityCapabilityReadinessReady,
+			ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+		}},
+	})
+	if len(withReady.Results) != 2 {
+		t.Fatalf("with ready result count = %d, want 2: %#v", len(withReady.Results), withReady.Results)
+	}
+	assertSecurityCapabilityReadyResult(t, withReady.Results[0],
+		SandboxSecurityCapabilityFamilyNetworkPolicy,
+		SandboxSecurityCapabilityNetworkDenyByDefault,
+		SandboxNetworkEnforcementModeFirewall,
+		SandboxSecurityCapabilitySourceWorker,
+	)
+	assertSecurityCapabilityMetadataOnlyResult(t, withReady.Results[1],
+		SandboxSecurityCapabilityFamilyNetworkPolicy,
+		SandboxSecurityCapabilityNetworkDenyByDefault,
+		SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+	)
+}
+
 func TestEvaluateSecurityCapabilityReadinessMarksExplicitBlockedCapability(t *testing.T) {
 	rawRequestID := "config:///Users/v/project/.hal/config.yaml?secretName=GITHUB_TOKEN"
 	rawBlockerID := "runtime://podman-host.example.invalid/var/run/provider.sock?token=raw-token"
