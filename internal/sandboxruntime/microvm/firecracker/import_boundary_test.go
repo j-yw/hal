@@ -301,6 +301,31 @@ func TestFirecrackerProductionSourceOmitsLiveBackendOperations(t *testing.T) {
 	}
 }
 
+func TestFirecrackerProductionSourceDoesNotIntroduceDockerOrPodmanGuestEngine(t *testing.T) {
+	for _, path := range firecrackerProductionBoundaryFiles(t) {
+		source, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error: %v", path, err)
+		}
+		lower := strings.ToLower(string(source))
+		for _, marker := range []string{
+			"docker",
+			"podman",
+			"buildah",
+			"containers/",
+			"container image",
+			"oci image",
+			"dockerfile",
+			"docker.sock",
+			"host docker socket",
+		} {
+			if strings.Contains(lower, marker) {
+				t.Fatalf("%s contains %q; Phase 32 Firecracker backend foundation must not introduce a Docker or Podman guest engine", path, marker)
+			}
+		}
+	}
+}
+
 func TestFirecrackerDefaultTestsUseFakeProcessBoundaryOnly(t *testing.T) {
 	paths := firecrackerDefaultTestBoundaryFiles(t)
 	fset := token.NewFileSet()
