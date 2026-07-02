@@ -59,6 +59,9 @@ func TestBackendConfigFromMicroVMConfigMapsRequiredFields(t *testing.T) {
 	if config.Paths.MetricsPath != DefaultMetricsPath {
 		t.Fatalf("Paths.MetricsPath = %q, want %q", config.Paths.MetricsPath, DefaultMetricsPath)
 	}
+	if config.Paths.ConfigPath != DefaultConfigPath {
+		t.Fatalf("Paths.ConfigPath = %q, want %q", config.Paths.ConfigPath, DefaultConfigPath)
+	}
 }
 
 func TestBackendConfigFromMicroVMConfigAppliesCPUAndMemoryDefaults(t *testing.T) {

@@ -17,6 +17,7 @@ const (
 	DefaultAPISocketPath = "firecracker.sock"
 	DefaultLogPath       = "firecracker.log"
 	DefaultMetricsPath   = "firecracker.metrics"
+	DefaultConfigPath    = "firecracker-config.json"
 )
 
 // BackendConfig is the Firecracker-specific configuration contract derived
@@ -49,6 +50,7 @@ type PathPlan struct {
 	APISocketPath string `json:"apiSocketPath,omitempty"`
 	LogPath       string `json:"logPath,omitempty"`
 	MetricsPath   string `json:"metricsPath,omitempty"`
+	ConfigPath    string `json:"configPath,omitempty"`
 }
 
 // BackendConfigFromMicroVMConfig maps valid Phase 31 backend-neutral microVM
@@ -78,6 +80,7 @@ func BackendConfigFromMicroVMConfig(input microvm.Config) (BackendConfig, error)
 			APISocketPath: DefaultAPISocketPath,
 			LogPath:       DefaultLogPath,
 			MetricsPath:   DefaultMetricsPath,
+			ConfigPath:    DefaultConfigPath,
 		},
 	}, nil
 }
