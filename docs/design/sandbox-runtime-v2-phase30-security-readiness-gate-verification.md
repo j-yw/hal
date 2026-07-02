@@ -110,10 +110,17 @@ go test -timeout=120s ./internal/sandboxexec -run 'TestRunDoesNotRejectWorkerTar
 go test -timeout=120s ./internal/sandboxworker -run 'TestWorkerProtocolOmitsSecurityReadinessGateDecisionFields'
 ```
 
+Run the Phase 30 documentation guard coverage:
+
+```bash
+go test -timeout=120s ./cmd -run 'TestPhase30SecurityReadinessGate'
+```
+
 These focused commands are fake-only. They cover the pure evaluator, policy
 config parsing, factory strict/advisory behavior, default non-blocking
 run/auto behavior, scheduler and target-selection non-wiring, sandboxexec
-non-rejection, and worker protocol non-expansion.
+non-rejection, worker protocol non-expansion, and documentation guard
+coverage.
 
 ## Broad Verification Commands
 
