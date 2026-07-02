@@ -581,6 +581,55 @@ branchName: hal/from-markdown
 	}
 }
 
+func TestConvertWithEngine_StandardPromptIncludesParallelAwareSchedulingGuidance(t *testing.T) {
+	tmpDir := t.TempDir()
+	chdirTo(t, tmpDir)
+	halDir := filepath.Join(tmpDir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mdPath := filepath.Join(halDir, "prd-new.md")
+	writeFile(t, mdPath, "# PRD")
+	outPath := filepath.Join(tmpDir, "out.json")
+
+	eng := &mockEngine{
+		promptResponse: promptResponseWithBranch(t, "hal/new-feature"),
+	}
+
+	if err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{}, nil); err != nil {
+		t.Fatalf("ConvertWithEngine failed: %v", err)
+	}
+
+	checks := []string{
+		"Standard mode: produce developer-sized user stories.",
+		"Parallel-aware scheduling metadata: evaluate every story for scheduling metadata.",
+		"conflictDomains only for shared files/resources/subsystems that should not run together",
+		"parallelSafe only when confidently true or false",
+		"parallelReason whenever parallelSafe or barrier is present",
+		"Scheduling fields must be conservative and valid",
+		"Add optional scheduling fields to story/task objects when they carry concrete metadata.",
+		"\"id\": \"US-001\"",
+		"\"parallelSafe\": false",
+		"\"barrier\": true",
+	}
+	for _, want := range checks {
+		if !strings.Contains(eng.lastPrompt, want) {
+			t.Fatalf("standard prompt missing %q:\n%s", want, eng.lastPrompt)
+		}
+	}
+
+	rejections := []string{
+		"Granular mode: produce dependency-ordered atomic tasks",
+		"\"id\": \"T-001\"",
+	}
+	for _, reject := range rejections {
+		if strings.Contains(eng.lastPrompt, reject) {
+			t.Fatalf("standard prompt should not contain %q:\n%s", reject, eng.lastPrompt)
+		}
+	}
+}
+
 func TestConvertWithEngine_GranularOptionAddsTaskGuidanceToPrompt(t *testing.T) {
 	tmpDir := t.TempDir()
 	chdirTo(t, tmpDir)
@@ -607,8 +656,8 @@ func TestConvertWithEngine_GranularOptionAddsTaskGuidanceToPrompt(t *testing.T) 
 		"split only work that is too large",
 		"IDs are sequential (T-001, T-002, etc.)",
 		"The task count should match the source scope; do not pad to a target count.",
-		"Granular scheduling metadata: emit dependsOn only for true prerequisites",
-		"conflictDomains only for shared files/resources that should not run together",
+		"Granular scheduling metadata: evaluate every task for scheduling metadata.",
+		"conflictDomains only for shared files/resources/subsystems that should not run together",
 		"Every story must trace to an explicit source requirement.",
 		"Do not invent verification, integration, checkpoint, cleanup, or summary stories",
 		"no unknown dependsOn IDs, no self-dependencies, no dependencies on later items",

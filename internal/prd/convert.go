@@ -156,14 +156,14 @@ func buildConversionPrompt(skill, mdContent, resolvedBranchName string, granular
 	storyRule := "Each story must be completable in ONE iteration (split large stories)"
 	idRule := "IDs are sequential (US-001, US-002, etc.)"
 	modeRule := "Standard mode: produce developer-sized user stories."
-	schedulingRule := "Scheduling metadata is optional: omit dependsOn, conflictDomains, parallelSafe, barrier, and parallelReason unless the PRD clearly supports them."
+	schedulingRule := "Parallel-aware scheduling metadata: evaluate every story for scheduling metadata. Emit dependsOn only for true prerequisites, conflictDomains only for shared files/resources/subsystems that should not run together, parallelSafe only when confidently true or false, barrier only for explicit source-requested fan-in/checkpoint tasks, and parallelReason whenever parallelSafe or barrier is present. Omit fields when uncertain or empty."
 	sourceRule := "Every story must trace to an explicit source requirement. Do not invent verification, integration, checkpoint, cleanup, or summary stories that are not requested by the markdown."
 	exampleID := "US-001"
 	if granular {
 		storyRule = "Produce atomic tasks, each completable in ONE agent iteration; preserve explicit source stories that are already atomic and split only work that is too large"
 		idRule = "IDs are sequential (T-001, T-002, etc.)"
 		modeRule = "Granular mode: produce dependency-ordered atomic tasks for autonomous execution. The task count should match the source scope; do not pad to a target count."
-		schedulingRule = "Granular scheduling metadata: emit dependsOn only for true prerequisites, conflictDomains only for shared files/resources that should not run together, parallelSafe only when confidently true or false, barrier only for explicit source-requested fan-in/checkpoint tasks, and parallelReason whenever parallelSafe or barrier is present."
+		schedulingRule = "Granular scheduling metadata: evaluate every task for scheduling metadata. Emit dependsOn only for true prerequisites, conflictDomains only for shared files/resources/subsystems that should not run together, parallelSafe only when confidently true or false, barrier only for explicit source-requested fan-in/checkpoint tasks, and parallelReason whenever parallelSafe or barrier is present. Omit fields when uncertain or empty."
 		exampleID = "T-001"
 	}
 
@@ -218,7 +218,7 @@ File saving is handled by the caller. Return ONLY the JSON object (no markdown, 
   ]
 }
 
-Optional scheduling fields may be added to story/task objects only when they carry explicit metadata. Omit arrays and strings when empty, omit parallelSafe when unknown, and omit barrier when false:
+Add optional scheduling fields to story/task objects when they carry concrete metadata. Omit arrays and strings when empty, omit parallelSafe when unknown, and omit barrier when false:
 {
   "dependsOn": ["%s"],
   "conflictDomains": ["api/auth"],
