@@ -377,6 +377,121 @@ func TestRunFactorySandboxExecutorStrictReadinessGateBlocksBeforeRemoteExecution
 	)
 }
 
+func TestRunFactorySandboxExecutorStrictReadinessGateAlwaysCleanupResolvesProvider(t *testing.T) {
+	now := time.Date(2026, 7, 2, 10, 15, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	fixture := phase26CredentialProxyUnsafeValues()
+	securityReq := fixture.SecurityRequest([]string{sandbox.SandboxSecretModeHTTPProxy}, []string{sandbox.SandboxSecretModeHTTPProxy})
+	target := factorySandboxReadinessTarget(sandbox.EvaluateSandboxSecurity(securityReq))
+	record := factory.RunRecord{
+		RunID:      "run-factory-readiness-strict-cleanup",
+		RepoRemote: "git@github.com:example/repo.git",
+		BaseBranch: "main",
+		BranchName: "hal/factory-readiness-strict-cleanup",
+		Status:     factory.RunStatusRunning,
+		Policy: &factory.FactoryPolicy{
+			CleanupBehavior:                 factory.CleanupBehaviorAlways,
+			SecurityReadinessGatePolicyMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+		},
+	}
+
+	var driverResolved bool
+	var resolveProviderCalls int
+	var cleanupCalls int
+	var cleanedTargetName string
+	var remoteOutput bytes.Buffer
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		ProjectDir:                t.TempDir(),
+		SandboxName:               "factory-readiness",
+		RunRecord:                 record,
+		Security:                  securityReq,
+		SecurityReadinessGateMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+		RemoteAuto:                factoryRunAutoRequest{BaseBranch: "main"},
+		RemoteOutput:              &remoteOutput,
+		DeferSuccessCleanup:       true,
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		now:          func() time.Time { return now },
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != "factory-readiness" {
+				t.Fatalf("load sandbox name = %q, want factory-readiness", name)
+			}
+			return target, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			t.Fatal("resolveDefault should not run for explicit strict readiness target")
+			return nil, "", nil
+		},
+		acquireLease: func(sandbox.SandboxLeaseAcquireRequest, time.Duration) (*sandbox.SandboxLease, error) {
+			t.Fatal("acquireLease should not run for explicit strict readiness target")
+			return nil, nil
+		},
+		resolveProvider: func(providerName string) (sandbox.Provider, error) {
+			resolveProviderCalls++
+			if providerName != target.Provider {
+				t.Fatalf("resolveProvider name = %q, want %q", providerName, target.Provider)
+			}
+			return fakeFactorySandboxProvider{}, nil
+		},
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			driverResolved = true
+			return fakeFactorySandboxRuntimeDriver{}, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile { return nil },
+		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			t.Fatal("bootstrap should not run after strict readiness gate blocks")
+			return factory.BootstrapResult{}, nil
+		},
+		cleanupSandbox: func(_ context.Context, req factorySandboxCleanupRequest) error {
+			cleanupCalls++
+			if req.Provider == nil {
+				t.Fatal("cleanup provider = nil, want provider resolved for strict gate cleanup")
+			}
+			if req.Target == nil {
+				t.Fatal("cleanup target = nil, want selected strict gate target")
+			}
+			cleanedTargetName = req.Target.Name
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("runFactorySandboxExecutorWithDeps() error = nil, want strict readiness gate block")
+	}
+	if driverResolved {
+		t.Fatal("runtime driver resolved after strict readiness gate block")
+	}
+	if !strings.Contains(err.Error(), string(sandbox.SandboxSecurityCapabilityReadinessGateCodeBlocked)) {
+		t.Fatalf("strict readiness gate error = %q, want blocked gate code", err.Error())
+	}
+	if resolveProviderCalls != 1 {
+		t.Fatalf("resolveProvider calls = %d, want 1 cleanup provider resolution", resolveProviderCalls)
+	}
+	if cleanupCalls != 1 {
+		t.Fatalf("cleanup calls = %d, want 1 cleanup call for cleanupBehavior always", cleanupCalls)
+	}
+	if cleanedTargetName != target.Name {
+		t.Fatalf("cleaned target name = %q, want %q", cleanedTargetName, target.Name)
+	}
+
+	storedRun, err := store.LoadRun("run-factory-readiness-strict-cleanup")
+	if err != nil {
+		t.Fatalf("LoadRun() error = %v", err)
+	}
+	if storedRun.Sandbox == nil || storedRun.Sandbox.CleanupCommand != "" || storedRun.Sandbox.Handoff != "" {
+		t.Fatalf("stored sandbox cleanup metadata = %#v, want cleaned-up sandbox metadata", storedRun.Sandbox)
+	}
+	events, err := store.LoadEvents("run-factory-readiness-strict-cleanup")
+	if err != nil {
+		t.Fatalf("LoadEvents() error = %v", err)
+	}
+	requireFactorySandboxReadinessGatePolicyEvent(t, events,
+		sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+		factory.PolicyDecisionBlockedGate,
+		factory.PolicyOutcomeBlocked,
+		sandbox.SandboxSecurityCapabilityReadinessGateCodeBlocked,
+	)
+}
+
 func TestRunFactorySandboxExecutorAdvisoryReadinessGateRecordsWithoutBlocking(t *testing.T) {
 	now := time.Date(2026, 7, 2, 10, 20, 0, 0, time.UTC)
 	store := factory.NewStore(t.TempDir())

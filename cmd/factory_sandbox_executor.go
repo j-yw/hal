@@ -281,14 +281,31 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	}
 	cleanupSucceeded := false
 	defer func() {
-		if target == nil || provider == nil {
+		if target == nil {
 			return
 		}
 		deferredCleanupBehavior := cleanupBehavior
 		if req.DeferSuccessCleanup && returnErr == nil && cleanupBehavior == factory.CleanupBehaviorAlways {
 			deferredCleanupBehavior = factory.CleanupBehaviorPreserve
 		}
-		cleaned, cleanupErr := cleanupFactorySandboxAfterRun(ctx, deps, req, record, target, provider, req.RemoteOutput, deferredCleanupBehavior, cleanupSucceeded)
+		if !factorySandboxCleanupBehaviorWillRun(deferredCleanupBehavior, cleanupSucceeded) {
+			return
+		}
+		cleanupProvider := provider
+		if cleanupProvider == nil {
+			var providerErr error
+			cleanupProvider, providerErr = ensureProvider(target.Provider)
+			if providerErr != nil {
+				sanitizedProviderErr := fmt.Errorf("%s", factorySandboxSanitizedError(target, fmt.Errorf("resolve sandbox provider for cleanup: %w", providerErr), secretRedactor))
+				if returnErr != nil {
+					returnErr = errors.Join(returnErr, sanitizedProviderErr)
+					return
+				}
+				returnErr = sanitizedProviderErr
+				return
+			}
+		}
+		cleaned, cleanupErr := cleanupFactorySandboxAfterRun(ctx, deps, req, record, target, cleanupProvider, req.RemoteOutput, deferredCleanupBehavior, cleanupSucceeded)
 		if cleaned {
 			if recordErr := recordFactorySandboxCleanedUp(store, deps, &record, target, secretRedactor); recordErr != nil {
 				if cleanupErr != nil {
@@ -660,14 +677,19 @@ func factorySandboxCleanupBehavior(record factory.RunRecord) string {
 	}
 }
 
-func cleanupFactorySandboxAfterRun(ctx context.Context, deps factorySandboxExecutorDeps, req factorySandboxExecutorRequest, record factory.RunRecord, target *sandbox.SandboxState, provider sandbox.Provider, out io.Writer, behavior string, succeeded bool) (bool, error) {
+func factorySandboxCleanupBehaviorWillRun(behavior string, succeeded bool) bool {
 	switch behavior {
 	case factory.CleanupBehaviorAlways:
+		return true
 	case factory.CleanupBehaviorOnSuccess:
-		if !succeeded {
-			return false, nil
-		}
+		return succeeded
 	default:
+		return false
+	}
+}
+
+func cleanupFactorySandboxAfterRun(ctx context.Context, deps factorySandboxExecutorDeps, req factorySandboxExecutorRequest, record factory.RunRecord, target *sandbox.SandboxState, provider sandbox.Provider, out io.Writer, behavior string, succeeded bool) (bool, error) {
+	if !factorySandboxCleanupBehaviorWillRun(behavior, succeeded) {
 		return false, nil
 	}
 	if req.BeforeCleanup != nil {
