@@ -165,6 +165,163 @@ func TestEvaluateSecurityCapabilityReadinessMarksRequestedCredentialProxyUnsuppo
 	assertSecurityCapabilityOutputExcludes(t, output, rawProviderID, "host.example.invalid", "credential-proxy/socket")
 }
 
+func TestEvaluateSecurityCapabilityReadinessMarksExplicitBlockedCapability(t *testing.T) {
+	rawRequestID := "config:///Users/v/project/.hal/config.yaml?secretName=GITHUB_TOKEN"
+	rawBlockerID := "runtime://podman-host.example.invalid/var/run/provider.sock?token=raw-token"
+	rawWarning := SandboxSecurityCapabilityWarningCode("token=raw-token")
+
+	output := EvaluateSandboxSecurityCapabilityReadiness(SandboxSecurityCapabilityReadinessInput{
+		Requested: []SandboxSecurityCapabilityMetadata{{
+			ID:         rawRequestID,
+			Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+			Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+			Mode:       SandboxNetworkEnforcementModeFirewall,
+			Source:     SandboxSecurityCapabilitySourceRequested,
+		}},
+		Ready: []SandboxSecurityCapabilityMetadata{{
+			ID:         rawBlockerID,
+			Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+			Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+			Mode:       SandboxNetworkEnforcementModeFirewall,
+			Source:     SandboxSecurityCapabilitySourceRuntime,
+			Status:     SandboxSecurityCapabilityReadinessBlocked,
+			ReasonCode: SandboxSecurityCapabilityReasonCapabilityBlocked,
+			WarningCodes: []SandboxSecurityCapabilityWarningCode{
+				SandboxSecurityCapabilityWarningBlockedByPolicy,
+				rawWarning,
+			},
+		}},
+	})
+
+	if len(output.Results) != 1 {
+		t.Fatalf("result count = %d, want 1: %#v", len(output.Results), output.Results)
+	}
+	assertSecurityCapabilityBlockedResult(t, output.Results[0],
+		SandboxSecurityCapabilityFamilyNetworkPolicy,
+		SandboxSecurityCapabilityNetworkDenyByDefault,
+		SandboxNetworkEnforcementModeFirewall,
+		SandboxSecurityCapabilitySourceRuntime,
+		[]SandboxSecurityCapabilityWarningCode{SandboxSecurityCapabilityWarningBlockedByPolicy},
+	)
+	assertSecurityCapabilityOutputExcludes(t, output,
+		rawRequestID,
+		rawBlockerID,
+		"/Users/v/project",
+		"podman-host.example.invalid",
+		"provider.sock",
+		"GITHUB_TOKEN",
+		"raw-token",
+	)
+}
+
+func TestEvaluateSecurityCapabilityReadinessRequiresExplicitSafeBlockerMetadata(t *testing.T) {
+	tests := []struct {
+		name              string
+		requestedMode     string
+		ready             []SandboxSecurityCapabilityMetadata
+		wantResultCount   int
+		wantUnsupported   bool
+		forbiddenInOutput []string
+	}{
+		{
+			name:          "metadata source blocked is not explicit support",
+			requestedMode: SandboxNetworkEnforcementModeFirewall,
+			ready: []SandboxSecurityCapabilityMetadata{{
+				ID:         "metadata-blocker-01",
+				Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+				Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+				Mode:       SandboxNetworkEnforcementModeFirewall,
+				Source:     SandboxSecurityCapabilitySourceMetadata,
+				Status:     SandboxSecurityCapabilityReadinessBlocked,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityBlocked,
+			}},
+			wantResultCount: 1,
+			wantUnsupported: true,
+		},
+		{
+			name:          "blocked reason without blocked status is not a blocker",
+			requestedMode: SandboxNetworkEnforcementModeFirewall,
+			ready: []SandboxSecurityCapabilityMetadata{{
+				ID:         "ready-network-01",
+				Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+				Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+				Mode:       SandboxNetworkEnforcementModeFirewall,
+				Source:     SandboxSecurityCapabilitySourceRuntime,
+				Status:     SandboxSecurityCapabilityReadinessReady,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityBlocked,
+			}},
+			wantResultCount: 0,
+		},
+		{
+			name:          "raw blocker mode is not safe blocker metadata",
+			requestedMode: "",
+			ready: []SandboxSecurityCapabilityMetadata{{
+				ID:         "unsafe-blocker-01",
+				Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+				Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+				Mode:       "/tmp/provider.sock",
+				Source:     SandboxSecurityCapabilitySourceRuntime,
+				Status:     SandboxSecurityCapabilityReadinessBlocked,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityBlocked,
+				WarningCodes: []SandboxSecurityCapabilityWarningCode{
+					SandboxSecurityCapabilityWarningCode("secretName=GITHUB_TOKEN"),
+				},
+			}},
+			wantResultCount:   1,
+			wantUnsupported:   true,
+			forbiddenInOutput: []string{"/tmp/provider.sock", "GITHUB_TOKEN"},
+		},
+		{
+			name:          "raw blocker reason is not safe blocker metadata",
+			requestedMode: SandboxNetworkEnforcementModeFirewall,
+			ready: []SandboxSecurityCapabilityMetadata{{
+				ID:         "unsafe-reason-blocker-01",
+				Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+				Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+				Mode:       SandboxNetworkEnforcementModeFirewall,
+				Source:     SandboxSecurityCapabilitySourceRuntime,
+				Status:     SandboxSecurityCapabilityReadinessBlocked,
+				ReasonCode: SandboxSecurityCapabilityReasonCode("config=/Users/v/project/.hal/config.yaml"),
+			}},
+			wantResultCount:   1,
+			wantUnsupported:   true,
+			forbiddenInOutput: []string{"/Users/v/project", "config.yaml"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := EvaluateSandboxSecurityCapabilityReadiness(SandboxSecurityCapabilityReadinessInput{
+				Requested: []SandboxSecurityCapabilityMetadata{{
+					Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+					Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+					Mode:       tt.requestedMode,
+					Source:     SandboxSecurityCapabilitySourceRequested,
+				}},
+				Ready: tt.ready,
+			})
+
+			if len(output.Results) != tt.wantResultCount {
+				t.Fatalf("result count = %d, want %d: %#v", len(output.Results), tt.wantResultCount, output.Results)
+			}
+			for _, result := range output.Results {
+				if result.State == SandboxSecurityCapabilityReadinessBlocked {
+					t.Fatalf("state = blocked from non-explicit blocker metadata: %#v", result)
+				}
+			}
+			if tt.wantUnsupported {
+				assertSecurityCapabilityUnsupportedResult(t, output.Results[0],
+					SandboxSecurityCapabilityFamilyNetworkPolicy,
+					SandboxSecurityCapabilityNetworkDenyByDefault,
+					sandboxSecurityCapabilitySafeMode(SandboxSecurityCapabilityFamilyNetworkPolicy, SandboxSecurityCapabilityNetworkDenyByDefault, tt.requestedMode),
+					SandboxSecurityCapabilityReasonCapabilityMissing,
+				)
+			}
+			assertSecurityCapabilityOutputExcludes(t, output, tt.forbiddenInOutput...)
+		})
+	}
+}
+
 func assertSecurityCapabilityMetadataOnlyResult(t *testing.T, result SandboxSecurityCapabilityReadinessResult, family SandboxSecurityCapabilityFamily, capability SandboxSecurityCapabilityName, reason SandboxSecurityCapabilityReasonCode) {
 	t.Helper()
 
@@ -203,6 +360,70 @@ func assertSecurityCapabilityMetadataOnlyResult(t *testing.T, result SandboxSecu
 	assertSecurityCapabilityMetadataNotCapabilityWarning(t, result.Metadata.WarningCodes)
 	if result.Metadata.ID != "" || result.Metadata.Mode != "" {
 		t.Fatalf("metadata copied source identifiers or modes: %#v", result.Metadata)
+	}
+}
+
+func assertSecurityCapabilityBlockedResult(t *testing.T, result SandboxSecurityCapabilityReadinessResult, family SandboxSecurityCapabilityFamily, capability SandboxSecurityCapabilityName, mode string, blockerSource SandboxSecurityCapabilitySource, warnings []SandboxSecurityCapabilityWarningCode) {
+	t.Helper()
+
+	if result.State != SandboxSecurityCapabilityReadinessBlocked {
+		t.Fatalf("state = %q, want blocked", result.State)
+	}
+	if result.Metadata != nil {
+		t.Fatalf("metadata = %#v, want nil for blocked request", result.Metadata)
+	}
+	if result.ReasonCode != SandboxSecurityCapabilityReasonCapabilityBlocked {
+		t.Fatalf("reasonCode = %q, want capability_blocked", result.ReasonCode)
+	}
+	assertSecurityCapabilityWarningsEqual(t, result.WarningCodes, warnings)
+
+	if result.Requested == nil {
+		t.Fatal("requested = nil, want sanitized requested capability context")
+	}
+	assertSecurityCapabilityBlockedContext(t, *result.Requested,
+		family,
+		capability,
+		mode,
+		SandboxSecurityCapabilitySourceRequested,
+		warnings,
+	)
+
+	if result.Ready == nil {
+		t.Fatal("ready = nil, want sanitized blocker capability context")
+	}
+	assertSecurityCapabilityBlockedContext(t, *result.Ready,
+		family,
+		capability,
+		mode,
+		blockerSource,
+		warnings,
+	)
+}
+
+func assertSecurityCapabilityBlockedContext(t *testing.T, metadata SandboxSecurityCapabilityMetadata, family SandboxSecurityCapabilityFamily, capability SandboxSecurityCapabilityName, mode string, source SandboxSecurityCapabilitySource, warnings []SandboxSecurityCapabilityWarningCode) {
+	t.Helper()
+
+	if metadata.Family != family {
+		t.Fatalf("family = %q, want %q", metadata.Family, family)
+	}
+	if metadata.Capability != capability {
+		t.Fatalf("capability = %q, want %q", metadata.Capability, capability)
+	}
+	if metadata.Mode != mode {
+		t.Fatalf("mode = %q, want %q", metadata.Mode, mode)
+	}
+	if metadata.Source != source {
+		t.Fatalf("source = %q, want %q", metadata.Source, source)
+	}
+	if metadata.Status != SandboxSecurityCapabilityReadinessBlocked {
+		t.Fatalf("status = %q, want blocked", metadata.Status)
+	}
+	if metadata.ReasonCode != SandboxSecurityCapabilityReasonCapabilityBlocked {
+		t.Fatalf("reasonCode = %q, want capability_blocked", metadata.ReasonCode)
+	}
+	assertSecurityCapabilityWarningsEqual(t, metadata.WarningCodes, warnings)
+	if metadata.ID != "" {
+		t.Fatalf("metadata copied source identifier: %#v", metadata)
 	}
 }
 
@@ -250,6 +471,19 @@ func assertSecurityCapabilityUnsupportedResult(t *testing.T, result SandboxSecur
 	}
 	if result.Requested.ID != "" {
 		t.Fatalf("requested copied source identifier: %#v", result.Requested)
+	}
+}
+
+func assertSecurityCapabilityWarningsEqual(t *testing.T, got, want []SandboxSecurityCapabilityWarningCode) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("warningCodes = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("warningCodes = %#v, want %#v", got, want)
+		}
 	}
 }
 
