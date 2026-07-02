@@ -331,6 +331,77 @@ func TestRunnerSetupFailureDoesNotCountWorkersAsStarted(t *testing.T) {
 	}
 }
 
+func TestRunnerSetupFailureAfterPreparedWorktreeReturnsErrorBeforeManifestRead(t *testing.T) {
+	repo := initParallelRunRepo(t)
+	writeParallelRuntime(t, repo, `{
+  "project": "parallel",
+  "branchName": "hal/parallel",
+  "description": "parallel test",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "One",
+      "description": "Add first file",
+      "acceptanceCriteria": ["Typecheck passes"],
+      "priority": 1,
+      "passes": false,
+      "notes": "",
+      "parallelSafe": true,
+      "parallelReason": "Adds an independent file"
+    },
+    {
+      "id": "T-002",
+      "title": "Two",
+      "description": "Add second file",
+      "acceptanceCriteria": ["Typecheck passes"],
+      "priority": 2,
+      "passes": false,
+      "notes": "",
+      "parallelSafe": true,
+      "parallelReason": "Adds another independent file"
+    }
+  ]
+}`)
+
+	executor := &gitCommittingWorkerExecutor{}
+	manager := &failOnCreateWorktreeManager{
+		delegate: worktree.NewManager(worktree.Config{RepoPath: repo}),
+		failAt:   2,
+		err:      errors.New("second worker path collision"),
+	}
+	result := New(Config{
+		RepoDir:       repo,
+		RunID:         "test-run",
+		MaxIterations: 2,
+		Parallelism:   2,
+		Engine:        "fake",
+	}, Deps{
+		Worktrees: manager,
+		Executor:  executor,
+	}).Run(context.Background())
+
+	if result.Error == nil || !strings.Contains(result.Error.Error(), "second worker path collision") {
+		t.Fatalf("error = %v, want second worker setup failure", result.Error)
+	}
+	if result.LastStoryID != "T-002" {
+		t.Fatalf("last story ID = %q, want T-002", result.LastStoryID)
+	}
+	if result.Iterations != 0 {
+		t.Fatalf("iterations = %d, want 0", result.Iterations)
+	}
+	if result.Parallel.Started != 0 || result.Parallel.Failed != 1 || result.Parallel.Integrated != 0 {
+		t.Fatalf("parallel summary = %+v, want started=0 failed=1 integrated=0", result.Parallel)
+	}
+	if executor.started != 0 {
+		t.Fatalf("executor starts = %d, want 0", executor.started)
+	}
+	requireTaskPasses(t, filepath.Join(repo, template.HalDir, template.PRDFile), "T-001", false)
+	requireTaskPasses(t, filepath.Join(repo, template.HalDir, template.PRDFile), "T-002", false)
+	if got := strings.TrimSpace(git(t, repo, "status", "--short", "--untracked-files=all")); got != "" {
+		t.Fatalf("canonical git status = %q, want clean", got)
+	}
+}
+
 func TestRunnerRejectsWorkerFileWithoutManifest(t *testing.T) {
 	repo := initParallelRunRepo(t)
 	writeParallelRuntime(t, repo, `{
@@ -743,6 +814,25 @@ func (m failingWorktreeManager) Create(context.Context, worktree.CreateRequest) 
 
 func (m failingWorktreeManager) Cleanup(context.Context, worktree.CleanupRequest) (worktree.CleanupResult, error) {
 	return worktree.CleanupResult{}, nil
+}
+
+type failOnCreateWorktreeManager struct {
+	delegate worktreeManager
+	failAt   int
+	err      error
+	calls    int
+}
+
+func (m *failOnCreateWorktreeManager) Create(ctx context.Context, request worktree.CreateRequest) (worktree.CreateResult, error) {
+	m.calls++
+	if m.calls == m.failAt {
+		return worktree.CreateResult{}, m.err
+	}
+	return m.delegate.Create(ctx, request)
+}
+
+func (m *failOnCreateWorktreeManager) Cleanup(ctx context.Context, request worktree.CleanupRequest) (worktree.CleanupResult, error) {
+	return m.delegate.Cleanup(ctx, request)
 }
 
 type recordingCleanupManager struct {

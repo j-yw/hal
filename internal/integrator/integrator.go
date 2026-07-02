@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -266,24 +267,34 @@ func (i *Integrator) Integrate(ctx context.Context, req Request) (Result, error)
 		rollbackCmd, rollbackErr := resetHard(ctx, runner, req.RepoDir, result.OriginalHead)
 		return result, &IntegrationError{Stage: StagePRD, Err: err, Rollback: rollbackCmd, RollbackErr: rollbackErr}
 	}
-	if err := markPRDPasses(prdPath, req.TaskID); err != nil {
+	prdSnapshot, err := snapshotFile(prdPath)
+	if err != nil {
 		rollbackCmd, rollbackErr := resetHard(ctx, runner, req.RepoDir, result.OriginalHead)
+		return result, &IntegrationError{Stage: StagePRD, Err: err, Rollback: rollbackCmd, RollbackErr: rollbackErr}
+	}
+	if err := markPRDPasses(prdPath, req.TaskID); err != nil {
+		rollbackCmd, rollbackErr := resetHardAndRestore(ctx, runner, req.RepoDir, result.OriginalHead, prdSnapshot)
 		return result, &IntegrationError{Stage: StagePRD, Err: err, Rollback: rollbackCmd, RollbackErr: rollbackErr}
 	}
 
 	progressPath, err := repoPath(req.RepoDir, req.ProgressPath)
 	if err != nil {
-		rollbackCmd, rollbackErr := resetHard(ctx, runner, req.RepoDir, result.OriginalHead)
+		rollbackCmd, rollbackErr := resetHardAndRestore(ctx, runner, req.RepoDir, result.OriginalHead, prdSnapshot)
+		return result, &IntegrationError{Stage: StageProgress, Err: err, Rollback: rollbackCmd, RollbackErr: rollbackErr}
+	}
+	progressSnapshot, err := snapshotFile(progressPath)
+	if err != nil {
+		rollbackCmd, rollbackErr := resetHardAndRestore(ctx, runner, req.RepoDir, result.OriginalHead, prdSnapshot)
 		return result, &IntegrationError{Stage: StageProgress, Err: err, Rollback: rollbackCmd, RollbackErr: rollbackErr}
 	}
 	if err := appendProgress(progressPath, req.ProgressEntry); err != nil {
-		rollbackCmd, rollbackErr := resetHard(ctx, runner, req.RepoDir, result.OriginalHead)
+		rollbackCmd, rollbackErr := resetHardAndRestore(ctx, runner, req.RepoDir, result.OriginalHead, prdSnapshot, progressSnapshot)
 		return result, &IntegrationError{Stage: StageProgress, Err: err, Rollback: rollbackCmd, RollbackErr: rollbackErr}
 	}
 
 	if req.Bookkeeping.Commit {
 		if err := commitBookkeeping(ctx, runner, req, prdPath, progressPath); err != nil {
-			rollbackCmd, rollbackErr := resetHard(ctx, runner, req.RepoDir, result.OriginalHead)
+			rollbackCmd, rollbackErr := resetHardAndRestore(ctx, runner, req.RepoDir, result.OriginalHead, prdSnapshot, progressSnapshot)
 			return result, &IntegrationError{Stage: StageBookkeeping, Err: err, Rollback: rollbackCmd, RollbackErr: rollbackErr}
 		}
 		head, err := runGit(ctx, runner, req.RepoDir, "rev-parse", "HEAD")
@@ -430,6 +441,61 @@ func resetHard(ctx context.Context, runner CommandRunner, repoDir, ref string) (
 	cmd := gitCommand(repoDir, "reset", "--hard", ref)
 	_, err := runner.Run(ctx, cmd)
 	return &cmd, err
+}
+
+type fileSnapshot struct {
+	path   string
+	data   []byte
+	mode   fs.FileMode
+	exists bool
+}
+
+func snapshotFile(path string) (fileSnapshot, error) {
+	snapshot := fileSnapshot{path: path}
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return snapshot, nil
+		}
+		return snapshot, fmt.Errorf("stat snapshot file: %w", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return snapshot, fmt.Errorf("read snapshot file: %w", err)
+	}
+	snapshot.data = append([]byte(nil), data...)
+	snapshot.mode = info.Mode().Perm()
+	snapshot.exists = true
+	return snapshot, nil
+}
+
+func resetHardAndRestore(ctx context.Context, runner CommandRunner, repoDir, ref string, snapshots ...fileSnapshot) (*Command, error) {
+	cmd, resetErr := resetHard(ctx, runner, repoDir, ref)
+	restoreErr := restoreFileSnapshots(snapshots...)
+	return cmd, errors.Join(resetErr, restoreErr)
+}
+
+func restoreFileSnapshots(snapshots ...fileSnapshot) error {
+	var errs []error
+	for _, snapshot := range snapshots {
+		if strings.TrimSpace(snapshot.path) == "" {
+			continue
+		}
+		if !snapshot.exists {
+			if err := os.Remove(snapshot.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				errs = append(errs, fmt.Errorf("remove restored absent file: %w", err))
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(snapshot.path), 0o755); err != nil {
+			errs = append(errs, fmt.Errorf("create restored file directory: %w", err))
+			continue
+		}
+		if err := os.WriteFile(snapshot.path, snapshot.data, snapshot.mode); err != nil {
+			errs = append(errs, fmt.Errorf("restore file snapshot: %w", err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func commandDir(repoDir, dir string) string {

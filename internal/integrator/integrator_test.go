@@ -383,6 +383,59 @@ func TestIntegratorReturnsStructuredErrorAndRollsBackMissingProgressFile(t *test
 	}
 }
 
+func TestIntegratorRestoresIgnoredPRDStateWhenProgressRollbackFails(t *testing.T) {
+	repo := initTestRepo(t)
+	writeFile(t, repo, ".gitignore", ".hal/*\n")
+	writeFile(t, repo, ".hal/prd.json", `{"tasks":[{"id":"T-001","passes":false}]}`)
+	writeFile(t, repo, "app.txt", "base\n")
+	git(t, repo, "add", ".gitignore", "app.txt")
+	git(t, repo, "commit", "-m", "initial")
+	originalHead := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+
+	git(t, repo, "checkout", "-b", "worker/t-001")
+	writeFile(t, repo, "app.txt", "worker\n")
+	git(t, repo, "commit", "-am", "worker change")
+	workerCommit := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+	git(t, repo, "checkout", "main")
+
+	_, err := New().Integrate(context.Background(), Request{
+		RepoDir:         repo,
+		TaskID:          "T-001",
+		WorkerBranch:    "worker/t-001",
+		WorkerCommit:    workerCommit,
+		CanonicalBranch: "main",
+		PRDPath:         ".hal/prd.json",
+		ProgressPath:    ".hal/progress.txt",
+		ProgressEntry:   "- T-001 integrated",
+	})
+	if err == nil {
+		t.Fatal("Integrate() error = nil, want missing progress failure")
+	}
+	var integrationErr *IntegrationError
+	if !errors.As(err, &integrationErr) {
+		t.Fatalf("error type = %T, want *IntegrationError", err)
+	}
+	if integrationErr.Stage != StageProgress {
+		t.Fatalf("stage = %s, want %s", integrationErr.Stage, StageProgress)
+	}
+	if integrationErr.RollbackErr != nil {
+		t.Fatalf("rollback error = %v", integrationErr.RollbackErr)
+	}
+	if got := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD")); got != originalHead {
+		t.Fatalf("HEAD = %s, want %s", got, originalHead)
+	}
+	if got := readFile(t, repo, "app.txt"); got != "base\n" {
+		t.Fatalf("app.txt = %q", got)
+	}
+	requireTaskPasses(t, filepath.Join(repo, ".hal/prd.json"), "T-001", false)
+	if _, err := os.Stat(filepath.Join(repo, ".hal/progress.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("progress stat error = %v, want not exist", err)
+	}
+	if got := strings.TrimSpace(git(t, repo, "status", "--short", "--untracked-files=all")); got != "" {
+		t.Fatalf("git status = %q, want clean", got)
+	}
+}
+
 func initTestRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()

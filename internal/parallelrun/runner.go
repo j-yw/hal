@@ -260,10 +260,30 @@ func (r *Runner) Run(ctx context.Context) (result Result) {
 				result.Parallel.Failed++
 				result.Error = workerResult.err
 				result.Success = false
+				if workerResult.task.ID != "" {
+					result.LastStoryID = workerResult.task.ID
+					if story := prd.FindStoryByID(workerResult.task.ID); story != nil {
+						result.LastStoryTitle = story.Title
+					}
+				}
 				return result
 			}
+		}
 
+		for _, workerResult := range batchResults {
 			manifest := workerResult.manifest
+			if manifest == nil {
+				result.Parallel.Failed++
+				result.Error = fmt.Errorf("worker %s completed without a ready manifest", workerResult.task.ID)
+				result.Success = false
+				if workerResult.task.ID != "" {
+					result.LastStoryID = workerResult.task.ID
+					if story := prd.FindStoryByID(workerResult.task.ID); story != nil {
+						result.LastStoryTitle = story.Title
+					}
+				}
+				return result
+			}
 			result.LastStoryID = manifest.TaskID
 			if story := prd.FindStoryByID(manifest.TaskID); story != nil {
 				result.LastStoryTitle = story.Title
