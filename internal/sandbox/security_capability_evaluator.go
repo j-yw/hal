@@ -434,7 +434,7 @@ func sandboxSecurityCapabilitySafeMode(family SandboxSecurityCapabilityFamily, c
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	switch family {
 	case SandboxSecurityCapabilityFamilyNetworkPolicy, SandboxSecurityCapabilityFamilyNetworkProxy:
-		return sandboxSecurityCapabilitySafeNetworkMode(mode)
+		return sandboxSecurityCapabilitySafeNetworkMode(capability, mode)
 	case SandboxSecurityCapabilityFamilyCredentialProxy:
 		if capability == SandboxSecurityCapabilityCredentialProxy {
 			return sandboxSecurityCapabilitySafeCredentialProxyMode(mode)
@@ -445,16 +445,32 @@ func sandboxSecurityCapabilitySafeMode(family SandboxSecurityCapabilityFamily, c
 	return ""
 }
 
-func sandboxSecurityCapabilitySafeNetworkMode(mode string) string {
-	switch mode {
-	case SandboxNetworkEnforcementModeProxy,
-		SandboxNetworkEnforcementModeFirewall,
-		SandboxNetworkEnforcementModeRuntime,
-		SandboxNetworkEnforcementModeProxyFirewall:
-		return mode
+func sandboxSecurityCapabilitySafeNetworkMode(capability SandboxSecurityCapabilityName, mode string) string {
+	switch capability {
+	case SandboxSecurityCapabilityNetworkProxyEnforcement:
+		if mode == SandboxNetworkEnforcementModeProxy {
+			return mode
+		}
+	case SandboxSecurityCapabilityNetworkFirewallEnforcement:
+		if mode == SandboxNetworkEnforcementModeFirewall {
+			return mode
+		}
+	case SandboxSecurityCapabilityNetworkRuntimeEnforcement:
+		if mode == SandboxNetworkEnforcementModeRuntime {
+			return mode
+		}
+	case SandboxSecurityCapabilityNetworkDenyByDefault:
+		switch mode {
+		case SandboxNetworkEnforcementModeProxy,
+			SandboxNetworkEnforcementModeFirewall,
+			SandboxNetworkEnforcementModeRuntime,
+			SandboxNetworkEnforcementModeProxyFirewall:
+			return mode
+		}
 	default:
 		return ""
 	}
+	return ""
 }
 
 func sandboxSecurityCapabilitySafeCredentialProxyMode(mode string) string {

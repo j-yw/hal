@@ -227,6 +227,8 @@ func TestSecurityCapabilityImportBoundaryAllowsStandardLibraryMetadataHelpersOnl
 		"net/http",
 		"os",
 		"os/exec",
+		"plugin",
+		"syscall",
 		"github.com/jywlabs/hal/internal/factory",
 		"github.com/jywlabs/hal/internal/sandboxruntime",
 		"github.com/jywlabs/hal/internal/template",
@@ -476,12 +478,17 @@ func sandboxSecurityCapabilityForbiddenImportFor(importPath string) *sandboxSecu
 }
 
 func sandboxSecurityCapabilityAllowedImport(importPath string) bool {
-	return sandboxSecurityCapabilityIsStandardLibraryImport(importPath)
-}
-
-func sandboxSecurityCapabilityIsStandardLibraryImport(importPath string) bool {
-	firstSegment := strings.Split(importPath, "/")[0]
-	return !strings.Contains(firstSegment, ".")
+	switch importPath {
+	case "encoding/json",
+		"fmt",
+		"reflect",
+		"sort",
+		"strconv",
+		"strings":
+		return true
+	default:
+		return false
+	}
 }
 
 func sandboxSecurityCapabilityModuleImportMatcher(prefix string) func(string) bool {

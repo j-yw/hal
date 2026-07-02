@@ -236,6 +236,69 @@ func TestEvaluateSecurityCapabilityReadinessMarksExplicitReadyNetworkEnforcement
 	}
 }
 
+func TestEvaluateSecurityCapabilityReadinessRejectsMismatchedNetworkCapabilityModes(t *testing.T) {
+	tests := []struct {
+		name       string
+		family     SandboxSecurityCapabilityFamily
+		capability SandboxSecurityCapabilityName
+		requested  string
+		ready      string
+	}{
+		{
+			name:       "proxy capability cannot claim firewall mode",
+			family:     SandboxSecurityCapabilityFamilyNetworkProxy,
+			capability: SandboxSecurityCapabilityNetworkProxyEnforcement,
+			requested:  SandboxNetworkEnforcementModeProxy,
+			ready:      SandboxNetworkEnforcementModeFirewall,
+		},
+		{
+			name:       "firewall capability cannot claim proxy mode",
+			family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+			capability: SandboxSecurityCapabilityNetworkFirewallEnforcement,
+			requested:  SandboxNetworkEnforcementModeFirewall,
+			ready:      SandboxNetworkEnforcementModeProxy,
+		},
+		{
+			name:       "runtime capability cannot claim proxy firewall mode",
+			family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+			capability: SandboxSecurityCapabilityNetworkRuntimeEnforcement,
+			requested:  SandboxNetworkEnforcementModeRuntime,
+			ready:      SandboxNetworkEnforcementModeProxyFirewall,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := EvaluateSandboxSecurityCapabilityReadiness(SandboxSecurityCapabilityReadinessInput{
+				Requested: []SandboxSecurityCapabilityMetadata{{
+					Family:     tt.family,
+					Capability: tt.capability,
+					Mode:       tt.requested,
+					Source:     SandboxSecurityCapabilitySourceRequested,
+				}},
+				Ready: []SandboxSecurityCapabilityMetadata{{
+					Family:     tt.family,
+					Capability: tt.capability,
+					Mode:       tt.ready,
+					Source:     SandboxSecurityCapabilitySourceRuntime,
+					Status:     SandboxSecurityCapabilityReadinessReady,
+					ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+				}},
+			})
+
+			if len(output.Results) != 1 {
+				t.Fatalf("result count = %d, want 1: %#v", len(output.Results), output.Results)
+			}
+			assertSecurityCapabilityUnsupportedResult(t, output.Results[0],
+				tt.family,
+				tt.capability,
+				tt.requested,
+				SandboxSecurityCapabilityReasonCapabilityMissing,
+			)
+		})
+	}
+}
+
 func TestEvaluateSecurityCapabilityReadinessMarksExplicitReadyCredentialProxy(t *testing.T) {
 	tests := []struct {
 		name string
