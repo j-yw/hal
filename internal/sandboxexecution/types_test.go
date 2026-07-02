@@ -84,6 +84,9 @@ func TestManifestJSONFieldsAndSandboxMetadataTypes(t *testing.T) {
 	assertFieldType(t, manifestType, "Security", reflect.TypeOf((*sandbox.SandboxSecurity)(nil)))
 	assertFieldType(t, manifestType, "NetworkProxySession", reflect.TypeOf((*sandbox.SandboxNetworkProxySessionMetadata)(nil)))
 	assertFieldType(t, manifestType, "NetworkPolicyDecisionLogs", reflect.TypeOf([]sandbox.SandboxNetworkPolicyDecisionLogRecord(nil)))
+	assertFieldType(t, manifestType, "CredentialProxyPlan", reflect.TypeOf((*sandbox.SandboxCredentialProxyPlanMetadata)(nil)))
+	assertFieldType(t, manifestType, "CredentialProxySession", reflect.TypeOf((*sandbox.SandboxCredentialProxySessionMetadata)(nil)))
+	assertFieldType(t, manifestType, "CredentialProxyBindings", reflect.TypeOf([]sandbox.SandboxCredentialProxyBindingMetadata(nil)))
 	assertFieldType(t, manifestType, "Lease", reflect.TypeOf((*sandbox.SandboxLeaseRef)(nil)))
 	assertFieldType(t, manifestType, "WorkerRouting", reflect.TypeOf((*sandbox.WorkerRoutingMetadata)(nil)))
 
@@ -152,6 +155,45 @@ func TestManifestJSONFieldsAndSandboxMetadataTypes(t *testing.T) {
 			PolicyPreset:    sandbox.SandboxNetworkPolicyPresetDenyByDefault,
 			EnforcementMode: sandbox.SandboxNetworkEnforcementModeProxy,
 		}},
+		CredentialProxyPlan: &sandbox.SandboxCredentialProxyPlanMetadata{
+			ID:                    "credential-plan-01",
+			Source:                sandbox.SandboxCredentialProxySourceRun,
+			SecretBrokerSessionID: "secret-session-01",
+			NetworkProxySessionID: "proxy-session-01",
+			PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
+				ID:     "policy-snapshot-01",
+				Preset: sandbox.SandboxNetworkPolicyPresetDenyByDefault,
+			},
+			BindingCount: 1,
+			Mode:         sandbox.SandboxCredentialProxyModeBrokeredNetworkReference,
+			Status:       sandbox.SandboxCredentialProxyStatusPlanned,
+		},
+		CredentialProxySession: &sandbox.SandboxCredentialProxySessionMetadata{
+			ID:                    "credential-session-01",
+			PlanID:                "credential-plan-01",
+			Source:                sandbox.SandboxCredentialProxySourceRun,
+			SecretBrokerSessionID: "secret-session-01",
+			NetworkProxySessionID: "proxy-session-01",
+			PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
+				ID:     "policy-snapshot-01",
+				Preset: sandbox.SandboxNetworkPolicyPresetDenyByDefault,
+			},
+			Status:      sandbox.SandboxCredentialProxyStatusActive,
+			WarningCode: sandbox.SandboxCredentialProxyWarningBindingOmitted,
+			ReasonCode:  sandbox.SandboxCredentialProxyReasonRequested,
+		},
+		CredentialProxyBindings: []sandbox.SandboxCredentialProxyBindingMetadata{{
+			ID:                  "credential-binding-01",
+			PlanID:              "credential-plan-01",
+			SessionID:           "credential-session-01",
+			SecretID:            "env:GITHUB_TOKEN",
+			DeliveryMode:        sandbox.SandboxCredentialProxyDeliveryModeHTTPProxy,
+			RequestCategory:     sandbox.SandboxCredentialProxyRequestNetworkAuth,
+			DestinationCategory: sandbox.SandboxNetworkPolicyDestinationPublicInternet,
+			Outcome:             sandbox.SandboxCredentialProxyBindingOutcomeBound,
+			Status:              sandbox.SandboxCredentialProxyStatusActive,
+			ReasonCode:          sandbox.SandboxCredentialProxyReasonRequested,
+		}},
 		Lease: &sandbox.SandboxLeaseRef{
 			ID:            "lease-1",
 			HostID:        "host-1",
@@ -201,7 +243,9 @@ func TestManifestJSONFieldsAndSandboxMetadataTypes(t *testing.T) {
 	assertJSONKeys(t, got, []string{
 		"id", "purpose", "sandboxName", "projectDir", "command", "workDir",
 		"status", "startedAt", "finishedAt", "workspace", "host", "runtime",
-		"security", "networkProxySession", "networkPolicyDecisionLogs", "lease", "workerRouting", "artifacts", "artifactMetadata",
+		"security", "networkProxySession", "networkPolicyDecisionLogs",
+		"credentialProxyPlan", "credentialProxySession", "credentialProxyBindings",
+		"lease", "workerRouting", "artifacts", "artifactMetadata",
 	})
 	proxySession, ok := got["networkProxySession"].(map[string]any)
 	if !ok {
@@ -214,6 +258,27 @@ func TestManifestJSONFieldsAndSandboxMetadataTypes(t *testing.T) {
 	assertJSONKeys(t, decisionLog, []string{
 		"id", "source", "proxySessionId", "policySnapshot", "request", "outcome",
 		"reasonCode", "ruleKind", "policyPreset", "enforcementMode",
+	})
+	credentialProxyPlan, ok := got["credentialProxyPlan"].(map[string]any)
+	if !ok {
+		t.Fatalf("credentialProxyPlan should be an object, got %T", got["credentialProxyPlan"])
+	}
+	assertJSONKeys(t, credentialProxyPlan, []string{
+		"id", "source", "secretBrokerSessionId", "networkProxySessionId",
+		"policySnapshot", "bindingCount", "mode", "status",
+	})
+	credentialProxySession, ok := got["credentialProxySession"].(map[string]any)
+	if !ok {
+		t.Fatalf("credentialProxySession should be an object, got %T", got["credentialProxySession"])
+	}
+	assertJSONKeys(t, credentialProxySession, []string{
+		"id", "planId", "source", "secretBrokerSessionId", "networkProxySessionId",
+		"policySnapshot", "status", "warningCode", "reasonCode",
+	})
+	credentialProxyBinding := firstJSONArrayObject(t, got, "credentialProxyBindings")
+	assertJSONKeys(t, credentialProxyBinding, []string{
+		"id", "planId", "sessionId", "secretId", "deliveryMode", "requestCategory",
+		"destinationCategory", "outcome", "status", "reasonCode",
 	})
 	lease, ok := got["lease"].(map[string]any)
 	if !ok {
@@ -273,6 +338,15 @@ func TestManifestUnmarshalWithoutArtifactMetadata(t *testing.T) {
 	}
 	if len(manifest.NetworkPolicyDecisionLogs) != 0 {
 		t.Fatalf("NetworkPolicyDecisionLogs = %#v, want empty for legacy manifest", manifest.NetworkPolicyDecisionLogs)
+	}
+	if manifest.CredentialProxyPlan != nil {
+		t.Fatalf("CredentialProxyPlan = %#v, want nil for legacy manifest", manifest.CredentialProxyPlan)
+	}
+	if manifest.CredentialProxySession != nil {
+		t.Fatalf("CredentialProxySession = %#v, want nil for legacy manifest", manifest.CredentialProxySession)
+	}
+	if len(manifest.CredentialProxyBindings) != 0 {
+		t.Fatalf("CredentialProxyBindings = %#v, want empty for legacy manifest", manifest.CredentialProxyBindings)
 	}
 	if len(manifest.Artifacts) != 1 || manifest.Artifacts[0].StoredPath != "exec-1/artifacts/log.txt" {
 		t.Fatalf("legacy artifacts = %#v, want preserved artifact", manifest.Artifacts)
