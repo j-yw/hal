@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -319,6 +321,160 @@ func TestBackendStartReturnsSanitizedProcessAdapterFailure(t *testing.T) {
 	assertFirecrackerErrorDoesNotLeak(t, err, "/Users/alice", "private", "firecracker.sock", "ghp_secret")
 }
 
+func TestBackendStopInspectDeleteBuildSanitizedLifecyclePlans(t *testing.T) {
+	adapter := &fakeProcessAdapter{}
+	baseStateDir := filepath.Join(t.TempDir(), "lifecycle-state")
+	backend := NewBackend(BackendOptions{
+		BaseStateDir:   baseStateDir,
+		ProcessAdapter: adapter,
+	})
+	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+		Operation: microvm.OperationCreate,
+		Config:    validMicroVMConfig(),
+		Name:      "firecracker-dev",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+		Operation: microvm.OperationStop,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Controller() error = %v, want nil", err)
+	}
+
+	stopped, err := controller.Stop(context.Background(), microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStop,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Stop() error = %v, want nil", err)
+	}
+	assertFirecrackerLifecycleOperationPlan(t, stopped, OperationActionStop, []string{string(OperationPathRoleAPISocket)})
+	if stopped.Status != sandbox.StatusStopped {
+		t.Fatalf("Stop() status = %q, want %q", stopped.Status, sandbox.StatusStopped)
+	}
+
+	inspected, err := controller.Inspect(context.Background(), microvm.ControllerInspectRequest{
+		Operation: microvm.OperationInspect,
+		Config:    validMicroVMConfig(),
+		Target:    *stopped,
+	})
+	if err != nil {
+		t.Fatalf("Inspect() error = %v, want nil", err)
+	}
+	assertFirecrackerLifecycleOperationPlan(t, inspected, OperationActionInspect, []string{string(OperationPathRoleAPISocket)})
+	if inspected.Status != sandbox.StatusStopped {
+		t.Fatalf("Inspect() status = %q, want preserved %q", inspected.Status, sandbox.StatusStopped)
+	}
+
+	deletePlan, err := planFirecrackerDeleteOperation(*inspected, baseStateDir)
+	if err != nil {
+		t.Fatalf("planFirecrackerDeleteOperation() error = %v, want nil", err)
+	}
+	deleteSummary := deletePlan.Summary()
+	wantDeleteRoles := []OperationPathRole{
+		OperationPathRoleStateDir,
+		OperationPathRoleAPISocket,
+		OperationPathRoleConfig,
+		OperationPathRoleLog,
+		OperationPathRoleMetrics,
+	}
+	if deleteSummary.Action != OperationActionDelete {
+		t.Fatalf("delete summary Action = %q, want %q", deleteSummary.Action, OperationActionDelete)
+	}
+	if !reflect.DeepEqual(deleteSummary.PathRoles, wantDeleteRoles) {
+		t.Fatalf("delete summary PathRoles = %#v, want %#v", deleteSummary.PathRoles, wantDeleteRoles)
+	}
+
+	stateFile := filepath.Join(baseStateDir, created.Runtime.RuntimeID, "owned-state")
+	if err := os.MkdirAll(filepath.Dir(stateFile), 0o755); err != nil {
+		t.Fatalf("MkdirAll(state dir) error = %v", err)
+	}
+	if err := os.WriteFile(stateFile, []byte("planned cleanup only"), 0o600); err != nil {
+		t.Fatalf("WriteFile(state file) error = %v", err)
+	}
+	if err := controller.Delete(context.Background(), microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationDelete,
+		Config:    validMicroVMConfig(),
+		Target:    *inspected,
+	}); err != nil {
+		t.Fatalf("Delete() error = %v, want nil", err)
+	}
+	if _, err := os.Stat(stateFile); err != nil {
+		t.Fatalf("Delete() touched host state file, Stat() error = %v", err)
+	}
+	if adapter.prepareCalls != 0 || adapter.startCalls != 0 {
+		t.Fatalf("process adapter calls = prepare:%d start:%d, want no process calls for lifecycle planning", adapter.prepareCalls, adapter.startCalls)
+	}
+
+	encoded, marshalErr := json.Marshal([]*sandboxruntime.Target{stopped, inspected})
+	if marshalErr != nil {
+		t.Fatalf("Marshal(lifecycle targets) error = %v", marshalErr)
+	}
+	publicText := string(encoded)
+	for _, unsafe := range []string{
+		baseStateDir,
+		"firecracker.sock",
+		"firecracker-config.json",
+		"firecracker.log",
+		"firecracker.metrics",
+	} {
+		if strings.Contains(publicText, unsafe) {
+			t.Fatalf("lifecycle operation metadata leaked unsafe fragment %q in %s", unsafe, publicText)
+		}
+	}
+}
+
+func TestBackendStopInspectDeleteFailuresAreSanitizedOperationErrors(t *testing.T) {
+	backend := NewBackend(BackendOptions{BaseStateDir: "alice/private/firecracker-state"})
+	target := sandboxruntime.Target{
+		ID:       "runtime-alpha",
+		Name:     "firecracker-dev",
+		Provider: BackendID,
+		Status:   sandbox.StatusStopped,
+		Runtime: sandboxruntime.RuntimeState{
+			Driver:    sandboxruntime.DriverMicroVM,
+			RuntimeID: "runtime-alpha",
+		},
+	}
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+		Operation: microvm.OperationStop,
+		Config:    validMicroVMConfig(),
+		Target:    target,
+	})
+	if err != nil {
+		t.Fatalf("Controller() error = %v, want nil", err)
+	}
+
+	_, err = controller.Stop(context.Background(), microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStop,
+		Config:    validMicroVMConfig(),
+		Target:    target,
+	})
+	assertFirecrackerStartOperationError(t, err, microvm.ErrorCodeInvalidConfig, PathPlanningOperation, "baseStateDir")
+	assertFirecrackerErrorDoesNotLeak(t, err, "alice/private", "firecracker-state")
+
+	_, err = controller.Inspect(context.Background(), microvm.ControllerInspectRequest{
+		Operation: microvm.OperationInspect,
+		Config:    validMicroVMConfig(),
+		Target:    target,
+	})
+	assertFirecrackerStartOperationError(t, err, microvm.ErrorCodeInvalidConfig, PathPlanningOperation, "baseStateDir")
+	assertFirecrackerErrorDoesNotLeak(t, err, "alice/private", "firecracker-state")
+
+	err = controller.Delete(context.Background(), microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationDelete,
+		Config:    validMicroVMConfig(),
+		Target:    target,
+	})
+	assertFirecrackerStartOperationError(t, err, microvm.ErrorCodeInvalidConfig, PathPlanningOperation, "baseStateDir")
+	assertFirecrackerErrorDoesNotLeak(t, err, "alice/private", "firecracker-state")
+}
+
 func TestMicroVMDriverCreateCanUseInjectedFirecrackerBackend(t *testing.T) {
 	backend := NewBackend(BackendOptions{BaseStateDir: firecrackerPathTestBase("driver-target-state")})
 	kvmReadable := true
@@ -414,5 +570,31 @@ func assertFirecrackerStartOperationError(t *testing.T, err error, code microvm.
 	}
 	if opErr.Field != field {
 		t.Fatalf("OperationError.Field = %q, want %q", opErr.Field, field)
+	}
+}
+
+func assertFirecrackerLifecycleOperationPlan(t *testing.T, target *sandboxruntime.Target, action OperationAction, pathRoles []string) {
+	t.Helper()
+	if target == nil {
+		t.Fatalf("%s target = nil, want lifecycle planning target", action)
+	}
+	if target.Runtime.Metadata == nil || target.Runtime.Metadata.OperationPlan == nil {
+		t.Fatalf("%s runtime metadata = %#v, want sanitized operation plan", action, target.Runtime.Metadata)
+	}
+	plan := target.Runtime.Metadata.OperationPlan
+	if plan.Action != string(action) {
+		t.Fatalf("%s operation plan Action = %q, want %q", action, plan.Action, action)
+	}
+	if plan.ProcessDescriptor != nil {
+		t.Fatalf("%s operation ProcessDescriptor = %#v, want nil for non-process lifecycle planning", action, plan.ProcessDescriptor)
+	}
+	if !reflect.DeepEqual(plan.PathRoles, pathRoles) {
+		t.Fatalf("%s operation PathRoles = %#v, want %#v", action, plan.PathRoles, pathRoles)
+	}
+	if len(plan.Payloads) != 0 {
+		t.Fatalf("%s operation Payloads = %#v, want empty metadata list", action, plan.Payloads)
+	}
+	if len(plan.Environment) != 0 {
+		t.Fatalf("%s operation Environment = %#v, want empty metadata list", action, plan.Environment)
 	}
 }

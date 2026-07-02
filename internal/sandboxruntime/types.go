@@ -73,8 +73,11 @@ type RuntimeMetadata struct {
 // role and label metadata so backends can expose launch preparation without raw
 // host paths, endpoints, credentials, or command payload bodies.
 type RuntimeOperationPlan struct {
-	Action            string                    `json:"action,omitempty"`
-	ProcessDescriptor *RuntimeProcessDescriptor `json:"processDescriptor,omitempty"`
+	Action            string                        `json:"action,omitempty"`
+	Environment       []RuntimeOperationEnvironment `json:"environment,omitempty"`
+	PathRoles         []string                      `json:"pathRoles,omitempty"`
+	Payloads          []RuntimeOperationPayload     `json:"payloads,omitempty"`
+	ProcessDescriptor *RuntimeProcessDescriptor     `json:"processDescriptor,omitempty"`
 }
 
 // RuntimeProcessDescriptor describes a process-boundary command without raw

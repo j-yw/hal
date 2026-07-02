@@ -421,6 +421,9 @@ func cloneRuntimeOperationPlan(plan *sandboxruntime.RuntimeOperationPlan) *sandb
 		return nil
 	}
 	copied := *plan
+	copied.Environment = cloneRuntimeOperationEnvironment(plan.Environment)
+	copied.PathRoles = cloneStringSlice(plan.PathRoles)
+	copied.Payloads = cloneRuntimeOperationPayloads(plan.Payloads)
 	copied.ProcessDescriptor = cloneRuntimeProcessDescriptor(plan.ProcessDescriptor)
 	return &copied
 }
