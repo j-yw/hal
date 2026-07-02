@@ -1086,6 +1086,13 @@ func TestSandboxRuntimeSecuritySummarySanitizesCapabilityReadinessBeforeJSON(t *
 			Results: []sandbox.SandboxSecurityCapabilityReadinessResult{
 				{
 					State: sandbox.SandboxSecurityCapabilityReadinessReady,
+					Requested: &sandbox.SandboxSecurityCapabilityMetadata{
+						ID:         "safe-requested",
+						Family:     sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,
+						Capability: sandbox.SandboxSecurityCapabilityNetworkDenyByDefault,
+						Mode:       sandbox.SandboxNetworkEnforcementModeFirewall,
+						Source:     sandbox.SandboxSecurityCapabilitySourceRequested,
+					},
 					Ready: &sandbox.SandboxSecurityCapabilityMetadata{
 						ID:         "safe-ready",
 						Family:     sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,
@@ -1099,6 +1106,13 @@ func TestSandboxRuntimeSecuritySummarySanitizesCapabilityReadinessBeforeJSON(t *
 				},
 				{
 					State: sandbox.SandboxSecurityCapabilityReadinessReady,
+					Requested: &sandbox.SandboxSecurityCapabilityMetadata{
+						ID:         "safe-requested",
+						Family:     sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,
+						Capability: sandbox.SandboxSecurityCapabilityNetworkDenyByDefault,
+						Mode:       sandbox.SandboxNetworkEnforcementModeFirewall,
+						Source:     sandbox.SandboxSecurityCapabilitySourceRequested,
+					},
 					Ready: &sandbox.SandboxSecurityCapabilityMetadata{
 						ID:         "https://secret.example:443/token",
 						Family:     sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,

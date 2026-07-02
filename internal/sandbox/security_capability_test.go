@@ -488,6 +488,108 @@ func TestSecurityCapabilityReadinessOutputJSONContainsOnlySafeMetadataValues(t *
 	assertSecurityCapabilityJSONKeysExcludeUnsafeRawFields(t, got, "$")
 }
 
+func TestSecurityCapabilityReadinessOutputSanitizationDropsResultsWithoutRequiredContext(t *testing.T) {
+	validRequested := SandboxSecurityCapabilityMetadata{
+		ID:         "requested-network-01",
+		Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+		Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+		Mode:       SandboxNetworkEnforcementModeFirewall,
+		Source:     SandboxSecurityCapabilitySourceRequested,
+	}
+	validReady := SandboxSecurityCapabilityMetadata{
+		ID:         "ready-network-01",
+		Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+		Capability: SandboxSecurityCapabilityNetworkFirewallEnforcement,
+		Mode:       SandboxNetworkEnforcementModeFirewall,
+		Source:     SandboxSecurityCapabilitySourceRuntime,
+		Status:     SandboxSecurityCapabilityReadinessReady,
+	}
+	validMetadata := SandboxSecurityCapabilityMetadata{
+		ID:         "metadata-network-01",
+		Family:     SandboxSecurityCapabilityFamilyNetworkProxy,
+		Capability: SandboxSecurityCapabilityNetworkProxyEnforcement,
+		Mode:       SandboxNetworkEnforcementModeProxy,
+		Source:     SandboxSecurityCapabilitySourceMetadata,
+		Status:     SandboxSecurityCapabilityReadinessMetadataOnly,
+	}
+	invalidReady := validReady
+	invalidReady.Mode = "https://worker.example.invalid:8443/proxy?token=raw-token"
+
+	output := SanitizeSandboxSecurityCapabilityReadinessOutput(SandboxSecurityCapabilityReadinessOutput{
+		Results: []SandboxSecurityCapabilityReadinessResult{
+			{
+				State:      SandboxSecurityCapabilityReadinessReady,
+				Requested:  &validRequested,
+				Ready:      &invalidReady,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+			},
+			{
+				State:      SandboxSecurityCapabilityReadinessReady,
+				Requested:  &validRequested,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+			},
+			{
+				State:      SandboxSecurityCapabilityReadinessBlocked,
+				Requested:  &validRequested,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityBlocked,
+			},
+			{
+				State:      SandboxSecurityCapabilityReadinessUnsupported,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityMissing,
+			},
+			{
+				State:      SandboxSecurityCapabilityReadinessMetadataOnly,
+				ReasonCode: SandboxSecurityCapabilityReasonMetadataOnly,
+			},
+			{
+				State:      SandboxSecurityCapabilityReadinessReady,
+				Requested:  &validRequested,
+				Ready:      &validReady,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+			},
+			{
+				State:      SandboxSecurityCapabilityReadinessUnsupported,
+				Requested:  &validRequested,
+				ReasonCode: SandboxSecurityCapabilityReasonCapabilityMissing,
+			},
+			{
+				State:      SandboxSecurityCapabilityReadinessMetadataOnly,
+				Metadata:   &validMetadata,
+				ReasonCode: SandboxSecurityCapabilityReasonMetadataOnly,
+			},
+		},
+	})
+
+	if len(output.Results) != 3 {
+		t.Fatalf("sanitized results count = %d, want only valid-context results: %#v", len(output.Results), output.Results)
+	}
+	if output.Results[0].State != SandboxSecurityCapabilityReadinessReady ||
+		output.Results[0].Requested == nil ||
+		output.Results[0].Ready == nil {
+		t.Fatalf("ready result = %#v, want requested and ready context preserved", output.Results[0])
+	}
+	if output.Results[1].State != SandboxSecurityCapabilityReadinessUnsupported ||
+		output.Results[1].Requested == nil {
+		t.Fatalf("unsupported result = %#v, want requested context preserved", output.Results[1])
+	}
+	if output.Results[2].State != SandboxSecurityCapabilityReadinessMetadataOnly ||
+		output.Results[2].Metadata == nil {
+		t.Fatalf("metadata-only result = %#v, want metadata context preserved", output.Results[2])
+	}
+
+	cloned := CloneSandboxSecurityCapabilityReadinessOutputPtr(&SandboxSecurityCapabilityReadinessOutput{
+		Results: []SandboxSecurityCapabilityReadinessResult{{
+			State:      SandboxSecurityCapabilityReadinessReady,
+			Requested:  &validRequested,
+			Ready:      &invalidReady,
+			ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+		}},
+	})
+	if cloned != nil {
+		t.Fatalf("cloned invalid ready output = %#v, want nil after proof context is stripped", cloned)
+	}
+}
+
 func TestSecurityCapabilityReadinessSanitizationRejectsOrOmitsRawLookingValues(t *testing.T) {
 	for _, tt := range []struct {
 		name  string

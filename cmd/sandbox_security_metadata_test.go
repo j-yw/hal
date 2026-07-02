@@ -273,6 +273,12 @@ func testCommandSandboxCapabilityReadinessOutput() *sandbox.SandboxSecurityCapab
 	return &sandbox.SandboxSecurityCapabilityReadinessOutput{
 		Results: []sandbox.SandboxSecurityCapabilityReadinessResult{{
 			State: sandbox.SandboxSecurityCapabilityReadinessReady,
+			Requested: &sandbox.SandboxSecurityCapabilityMetadata{
+				ID:         "command-capability-requested",
+				Family:     sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,
+				Capability: sandbox.SandboxSecurityCapabilityNetworkDenyByDefault,
+				Source:     sandbox.SandboxSecurityCapabilitySourceRequested,
+			},
 			Ready: &sandbox.SandboxSecurityCapabilityMetadata{
 				ID:         "command-capability-ready",
 				Family:     sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,

@@ -292,7 +292,24 @@ func sanitizeSandboxSecurityCapabilityReadinessResult(result SandboxSecurityCapa
 			sanitized.Ready = &ready
 		}
 	}
+	if !sandboxSecurityCapabilityReadinessResultHasRequiredContext(sanitized) {
+		return SandboxSecurityCapabilityReadinessResult{}, false
+	}
 	return sanitized, true
+}
+
+func sandboxSecurityCapabilityReadinessResultHasRequiredContext(result SandboxSecurityCapabilityReadinessResult) bool {
+	switch result.State {
+	case SandboxSecurityCapabilityReadinessMetadataOnly:
+		return result.Metadata != nil
+	case SandboxSecurityCapabilityReadinessUnsupported:
+		return result.Requested != nil
+	case SandboxSecurityCapabilityReadinessBlocked,
+		SandboxSecurityCapabilityReadinessReady:
+		return result.Requested != nil && result.Ready != nil
+	default:
+		return false
+	}
 }
 
 func sanitizeSandboxSecurityCapabilityResultMetadata(metadata SandboxSecurityCapabilityMetadata) (SandboxSecurityCapabilityMetadata, bool) {
