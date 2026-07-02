@@ -311,6 +311,43 @@ func TestFirecrackerProductionSourceOmitsLiveBackendOperations(t *testing.T) {
 	}
 }
 
+func TestPhase34FirecrackerProductionLiveBootDoesNotCallOSExecDirectly(t *testing.T) {
+	paths := firecrackerProductionBoundaryFiles(t)
+	fset := token.NewFileSet()
+	for _, path := range paths {
+		file, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("ParseFile(%s imports) error: %v", path, err)
+		}
+		for _, spec := range file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("unquote import %s in %s: %v", spec.Path.Value, path, err)
+			}
+			if importPath == "os/exec" {
+				t.Fatalf("%s imports os/exec; live Firecracker boot must cross the injected ProcessRunnerStartRequest boundary", path)
+			}
+		}
+
+		file, err = parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("ParseFile(%s) error: %v", path, err)
+		}
+		if message := firecrackerFirstForbiddenCall(file, func(selector string) string {
+			switch selector {
+			case "exec.Command", "exec.CommandContext":
+				return "direct os/exec process launch"
+			default:
+				return ""
+			}
+		}, func(selector, reason string) string {
+			return fmt.Sprintf("%s calls %s (%s); live Firecracker boot must use an injected ProcessStarter or ProcessAdapter", path, selector, reason)
+		}); message != "" {
+			t.Fatal(message)
+		}
+	}
+}
+
 func TestFirecrackerProductionSourceDoesNotIntroduceDockerOrPodmanGuestEngine(t *testing.T) {
 	for _, path := range firecrackerProductionBoundaryFiles(t) {
 		source, err := os.ReadFile(path)
