@@ -476,7 +476,7 @@ func TestBackendLiveStartOptionCallsInjectedAdapterAfterPlanRendered(t *testing.
 			if len(req.Descriptor.Argv) == 0 {
 				t.Fatal("StartProcess descriptor Argv is empty, want prepared process argv")
 			}
-			return ProcessHandleMetadata{ID: "pid-1234", Source: "adapter"}, nil
+			return ProcessHandleMetadata{ID: "fc-handle-1234", Source: "adapter"}, nil
 		},
 	}
 	backend := NewBackend(BackendOptions{
@@ -531,7 +531,7 @@ func TestBackendLiveStartOptionCallsInjectedAdapterAfterPlanRendered(t *testing.
 	if started.Runtime.Metadata.ProcessLaunch.State != string(ProcessLaunchStateAccepted) {
 		t.Fatalf("ProcessLaunch.State = %q, want %q", started.Runtime.Metadata.ProcessLaunch.State, ProcessLaunchStateAccepted)
 	}
-	if started.Runtime.Metadata.ProcessLaunch.ProcessID != "pid-1234" || started.Runtime.Metadata.ProcessLaunch.ProcessIDSource != "adapter" {
+	if started.Runtime.Metadata.ProcessLaunch.ProcessID != "fc-handle-1234" || started.Runtime.Metadata.ProcessLaunch.ProcessIDSource != "adapter" {
 		t.Fatalf("ProcessLaunch handle = %#v, want sanitized adapter handle", started.Runtime.Metadata.ProcessLaunch)
 	}
 	assertFirecrackerRuntimeMetadataDoesNotClaimUnsupportedLiveCapabilities(t, started)

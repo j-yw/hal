@@ -304,15 +304,30 @@ func sanitizeProcessMetadataToken(value string) string {
 	if safeFirecrackerMetadataToken(value) == "" {
 		return ""
 	}
-	if isRawNumericProcessToken(value) {
+	if isRawProcessIdentityToken(value) {
 		return ""
 	}
 	return value
 }
 
-func isRawNumericProcessToken(value string) bool {
+func isRawProcessIdentityToken(value string) bool {
 	if value == "" {
 		return false
+	}
+	lower := strings.ToLower(value)
+	switch {
+	case strings.HasPrefix(lower, "pid-"):
+		return true
+	case strings.HasPrefix(lower, "pid_"):
+		return true
+	case strings.HasPrefix(lower, "pid."):
+		return true
+	case strings.HasPrefix(lower, "process-"):
+		return true
+	case strings.HasPrefix(lower, "process_"):
+		return true
+	case strings.HasPrefix(lower, "process."):
+		return true
 	}
 	for _, r := range value {
 		if r < '0' || r > '9' {
@@ -375,11 +390,31 @@ type sanitizedProcessBoundaryAdapterCause struct {
 }
 
 func newSanitizedProcessBoundaryAdapterCause(err error) sanitizedProcessBoundaryAdapterCause {
+	if cause := sanitizedProcessBoundaryNestedCause(err); cause != "" {
+		return sanitizedProcessBoundaryAdapterCause{
+			detail: cause,
+			cause:  err,
+		}
+	}
 	sanitized := microvm.NewBackendOperationFailedError(ProcessBoundaryOperation, err)
 	return sanitizedProcessBoundaryAdapterCause{
 		detail: sanitizeProcessBoundaryAdapterDetail(sanitized.Error()),
 		cause:  err,
 	}
+}
+
+func sanitizedProcessBoundaryNestedCause(err error) string {
+	var operationErr *microvm.OperationError
+	if !errors.As(err, &operationErr) {
+		return ""
+	}
+	if operationErr.Code != microvm.ErrorCodeBackendOperationFailed || operationErr.Operation != ProcessBoundaryOperation {
+		return ""
+	}
+	if cause := errors.Unwrap(operationErr); cause != nil {
+		return sanitizeProcessBoundaryAdapterDetail(cause.Error())
+	}
+	return ""
 }
 
 func sanitizeProcessBoundaryAdapterDetail(detail string) string {

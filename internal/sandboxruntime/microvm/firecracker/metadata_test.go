@@ -16,19 +16,19 @@ func TestProcessLaunchMetadataDistinguishesSafeLaunchStates(t *testing.T) {
 	}{
 		{
 			name:      "process boundary available",
-			metadata:  NewProcessLaunchMetadata(ProcessLaunchStateBoundaryAvailable, ProcessHandleMetadata{ID: "pid-1234", Source: "adapter"}),
+			metadata:  NewProcessLaunchMetadata(ProcessLaunchStateBoundaryAvailable, ProcessHandleMetadata{ID: "fc-handle-1234", Source: "adapter"}),
 			wantState: ProcessLaunchStateBoundaryAvailable,
 		},
 		{
 			name:      "process launch attempted",
-			metadata:  NewProcessLaunchMetadata(ProcessLaunchStateAttempted, ProcessHandleMetadata{ID: "pid-1234", Source: "adapter"}),
+			metadata:  NewProcessLaunchMetadata(ProcessLaunchStateAttempted, ProcessHandleMetadata{ID: "fc-handle-1234", Source: "adapter"}),
 			wantState: ProcessLaunchStateAttempted,
 		},
 		{
 			name:      "process launch accepted",
-			metadata:  NewProcessLaunchMetadata(ProcessLaunchStateAccepted, ProcessHandleMetadata{ID: "pid-1234", Source: "adapter"}),
+			metadata:  NewProcessLaunchMetadata(ProcessLaunchStateAccepted, ProcessHandleMetadata{ID: "fc-handle-1234", Source: "adapter"}),
 			wantState: ProcessLaunchStateAccepted,
-			wantID:    "pid-1234",
+			wantID:    "fc-handle-1234",
 		},
 	}
 
@@ -131,7 +131,7 @@ func TestProcessLaunchMetadataDoesNotClaimGuestReadinessOrUnsupportedCapabilitie
 	metadata := []ProcessLaunchMetadata{
 		NewProcessLaunchMetadata(ProcessLaunchStateBoundaryAvailable, ProcessHandleMetadata{}),
 		NewProcessLaunchMetadata(ProcessLaunchStateAttempted, ProcessHandleMetadata{}),
-		NewProcessLaunchMetadata(ProcessLaunchStateAccepted, ProcessHandleMetadata{ID: "pid-1234", Source: "adapter"}),
+		NewProcessLaunchMetadata(ProcessLaunchStateAccepted, ProcessHandleMetadata{ID: "fc-handle-1234", Source: "adapter"}),
 	}
 	encoded, err := json.Marshal(metadata)
 	if err != nil {

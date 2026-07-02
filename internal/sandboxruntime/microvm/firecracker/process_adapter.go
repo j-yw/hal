@@ -48,7 +48,7 @@ func (adapter ProcessLaunchAdapter) StartProcess(ctx context.Context, req Proces
 	}
 	handle, err := adapter.Starter.StartProcess(ctx, startReq)
 	if err != nil {
-		return ProcessHandleMetadata{}, err
+		return ProcessHandleMetadata{}, newProcessBoundaryAdapterError("processStarter", "process start failed", err)
 	}
 	return sanitizeProcessHandleMetadata(handle), nil
 }

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
 )
 
 func TestProcessLaunchAdapterImplementsProcessAdapter(t *testing.T) {
@@ -54,7 +56,7 @@ func TestProcessLaunchAdapterStartProcessBuildsRunnerRequestAndUsesContext(t *te
 			if len(req.Environment) != 0 {
 				t.Fatalf("runner Environment = %#v, want no environment variables delivered", req.Environment)
 			}
-			return ProcessHandleMetadata{ID: "pid-1234", Source: "starter"}, nil
+			return ProcessHandleMetadata{ID: "fc-handle-1234", Source: "starter"}, nil
 		},
 	}
 	adapter := ProcessLaunchAdapter{Starter: starter}
@@ -67,7 +69,7 @@ func TestProcessLaunchAdapterStartProcessBuildsRunnerRequestAndUsesContext(t *te
 	if starter.startCalls != 1 {
 		t.Fatalf("starter calls = %d, want 1", starter.startCalls)
 	}
-	if handle.ID != "pid-1234" || handle.Source != "starter" {
+	if handle.ID != "fc-handle-1234" || handle.Source != "starter" {
 		t.Fatalf("handle = %#v, want fake starter metadata", handle)
 	}
 }
@@ -137,6 +139,63 @@ func TestProcessLaunchAdapterStartProcessSanitizesStarterHandleMetadata(t *testi
 	}
 }
 
+func TestProcessLaunchAdapterStartProcessRejectsPIDShapedHandleMetadata(t *testing.T) {
+	plan := validFirecrackerStartOperationPlan(t)
+	descriptor, err := ProcessCommandDescriptorFromStartPlan(plan)
+	if err != nil {
+		t.Fatalf("ProcessCommandDescriptorFromStartPlan() error = %v, want nil", err)
+	}
+	starter := &fakeProcessStarter{
+		start: func(context.Context, ProcessRunnerStartRequest) (ProcessHandleMetadata, error) {
+			return ProcessHandleMetadata{
+				ID:     "pid-1234",
+				Source: "process_5678",
+			}, nil
+		},
+	}
+
+	handle, err := (ProcessLaunchAdapter{Starter: starter}).StartProcess(context.Background(), ProcessStartRequest{Descriptor: descriptor})
+	if err != nil {
+		t.Fatalf("StartProcess() error = %v, want nil", err)
+	}
+
+	if handle.ID != "" || handle.Source != "" {
+		t.Fatalf("handle = %#v, want PID-shaped starter metadata cleared", handle)
+	}
+}
+
+func TestProcessLaunchAdapterStartProcessSanitizesStarterError(t *testing.T) {
+	plan := validFirecrackerStartOperationPlan(t)
+	descriptor, err := ProcessCommandDescriptorFromStartPlan(plan)
+	if err != nil {
+		t.Fatalf("ProcessCommandDescriptorFromStartPlan() error = %v, want nil", err)
+	}
+	starterErr := errors.New("start failed argv=--api-sock /Users/alice/private/firecracker.sock endpoint=https://secret.example.test:8443/api pid=424242 OPENAI_API_KEY=sk-live-secret token=ghp_secret")
+	starter := &fakeProcessStarter{
+		start: func(context.Context, ProcessRunnerStartRequest) (ProcessHandleMetadata, error) {
+			return ProcessHandleMetadata{}, starterErr
+		},
+	}
+
+	_, err = (ProcessLaunchAdapter{Starter: starter}).StartProcess(context.Background(), ProcessStartRequest{Descriptor: descriptor})
+
+	assertFirecrackerStartOperationError(t, err, microvm.ErrorCodeBackendOperationFailed, ProcessBoundaryOperation, "processStarter")
+	if !errors.Is(err, starterErr) {
+		t.Fatalf("errors.Is(err, starterErr) = false, want true without exposing unsafe details")
+	}
+	assertFirecrackerErrorDoesNotLeak(t, err,
+		"/Users/alice",
+		"private",
+		"firecracker.sock",
+		"secret.example.test",
+		"8443",
+		"424242",
+		"OPENAI_API_KEY",
+		"sk-live-secret",
+		"ghp_secret",
+	)
+}
+
 func TestProcessLaunchAdapterRequiresInjectedStarter(t *testing.T) {
 	plan := validFirecrackerStartOperationPlan(t)
 	descriptor, err := ProcessCommandDescriptorFromStartPlan(plan)
@@ -156,7 +215,7 @@ type fakeProcessStarter struct {
 func (starter *fakeProcessStarter) StartProcess(ctx context.Context, req ProcessRunnerStartRequest) (ProcessHandleMetadata, error) {
 	starter.startCalls++
 	if starter.start == nil {
-		return ProcessHandleMetadata{ID: "pid-1234", Source: "starter"}, nil
+		return ProcessHandleMetadata{ID: "fc-handle-1234", Source: "starter"}, nil
 	}
 	return starter.start(ctx, req)
 }
