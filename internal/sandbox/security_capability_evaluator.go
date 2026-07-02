@@ -255,12 +255,20 @@ func sandboxSecurityCapabilityUnsupportedReason(requested SandboxSecurityCapabil
 		if candidate.Family != requested.Family || candidate.Capability != requested.Capability {
 			continue
 		}
+		if !sandboxSecurityCapabilityExplicitSupportOrBlockerMetadata(candidate) {
+			continue
+		}
 		if sandboxSecurityCapabilityModeCompatible(requested.Mode, candidate.Mode) {
 			continue
 		}
 		return SandboxSecurityCapabilityReasonModeUnsupported
 	}
 	return SandboxSecurityCapabilityReasonCapabilityMissing
+}
+
+func sandboxSecurityCapabilityExplicitSupportOrBlockerMetadata(candidate SandboxSecurityCapabilityMetadata) bool {
+	return sandboxSecurityCapabilityExplicitReadyMetadata(candidate) ||
+		sandboxSecurityCapabilityExplicitBlockerMetadata(candidate)
 }
 
 func sandboxSecurityCapabilityUnsupportedWarnings(reason SandboxSecurityCapabilityReasonCode) []SandboxSecurityCapabilityWarningCode {

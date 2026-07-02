@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -436,6 +437,77 @@ func TestEvaluateSecurityCapabilityReadinessRequiresMatchingExplicitReadyMetadat
 			assertSecurityCapabilityOutputExcludes(t, output, tt.forbiddenInOutput...)
 		})
 	}
+}
+
+func TestEvaluateSecurityCapabilityReadinessIsDeterministicAndIgnoresMetadataOnlyModeHints(t *testing.T) {
+	input := SandboxSecurityCapabilityReadinessInput{
+		Requested: []SandboxSecurityCapabilityMetadata{{
+			ID:         " requested-network-01 ",
+			Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+			Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+			Mode:       " FIREWALL ",
+			Source:     SandboxSecurityCapabilitySourceRequested,
+			WarningCodes: []SandboxSecurityCapabilityWarningCode{
+				SandboxSecurityCapabilityWarningCode(""),
+			},
+		}},
+		Ready: []SandboxSecurityCapabilityMetadata{{
+			ID:         "metadata-only-proxy-01",
+			Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+			Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+			Mode:       SandboxNetworkEnforcementModeProxy,
+			Source:     SandboxSecurityCapabilitySourceMetadata,
+			Status:     SandboxSecurityCapabilityReadinessReady,
+			ReasonCode: SandboxSecurityCapabilityReasonCapabilityConfirmed,
+		}},
+		WorkerPostures: []SandboxSecurityCapabilityWorkerPostureMetadata{{
+			WorkerKind:      SandboxHostKindWorker,
+			CredentialModes: []string{},
+		}},
+	}
+	cloneWarnings := func(values []SandboxSecurityCapabilityWarningCode) []SandboxSecurityCapabilityWarningCode {
+		if values == nil {
+			return nil
+		}
+		cloned := make([]SandboxSecurityCapabilityWarningCode, len(values))
+		copy(cloned, values)
+		return cloned
+	}
+	cloneStrings := func(values []string) []string {
+		if values == nil {
+			return nil
+		}
+		cloned := make([]string, len(values))
+		copy(cloned, values)
+		return cloned
+	}
+	original := SandboxSecurityCapabilityReadinessInput{
+		Requested:      append([]SandboxSecurityCapabilityMetadata(nil), input.Requested...),
+		Ready:          append([]SandboxSecurityCapabilityMetadata(nil), input.Ready...),
+		WorkerPostures: append([]SandboxSecurityCapabilityWorkerPostureMetadata(nil), input.WorkerPostures...),
+	}
+	original.Requested[0].WarningCodes = cloneWarnings(input.Requested[0].WarningCodes)
+	original.Ready[0].WarningCodes = cloneWarnings(input.Ready[0].WarningCodes)
+	original.WorkerPostures[0].CredentialModes = cloneStrings(input.WorkerPostures[0].CredentialModes)
+
+	first := EvaluateSandboxSecurityCapabilityReadiness(input)
+	second := EvaluateSandboxSecurityCapabilityReadiness(input)
+
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("EvaluateSandboxSecurityCapabilityReadiness() is not deterministic:\nfirst:  %#v\nsecond: %#v", first, second)
+	}
+	if !reflect.DeepEqual(input, original) {
+		t.Fatalf("EvaluateSandboxSecurityCapabilityReadiness() mutated input:\ninput:    %#v\noriginal: %#v", input, original)
+	}
+	if len(first.Results) != 1 {
+		t.Fatalf("result count = %d, want 1: %#v", len(first.Results), first.Results)
+	}
+	assertSecurityCapabilityUnsupportedResult(t, first.Results[0],
+		SandboxSecurityCapabilityFamilyNetworkPolicy,
+		SandboxSecurityCapabilityNetworkDenyByDefault,
+		SandboxNetworkEnforcementModeFirewall,
+		SandboxSecurityCapabilityReasonCapabilityMissing,
+	)
 }
 
 func TestEvaluateSecurityCapabilityReadinessDoesNotInferReadyFromLegacyCompatibilityMetadata(t *testing.T) {
