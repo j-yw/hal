@@ -50,6 +50,7 @@ type factorySandboxExecutorRequest struct {
 	SandboxHostID             string
 	SandboxRuntime            string
 	Security                  sandbox.SecurityEvaluationRequest
+	SecurityReadinessGateMode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode
 	NetworkProxySession       *sandbox.SandboxNetworkProxySessionMetadata
 	NetworkPolicyDecisionLogs []sandbox.SandboxNetworkPolicyDecisionLogRecord
 	RunRecord                 factory.RunRecord
@@ -346,6 +347,9 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			}
 			if err := recordFactorySandboxSecurityPolicyEvent(store, deps, &record, target, req.NetworkPolicyDecisionLogs, secretRedactor); err != nil {
 				return fmt.Errorf("record factory sandbox security metadata: %w", err)
+			}
+			if err := enforceFactorySandboxReadinessGate(store, deps, req, &record, secretRedactor); err != nil {
+				return err
 			}
 			remoteOutput = newFactorySandboxTimelineWriter(store, deps, &record, target, req.RemoteOutput, req.ResolvedSecrets)
 			return nil
