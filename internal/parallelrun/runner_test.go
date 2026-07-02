@@ -352,6 +352,7 @@ func TestRunnerRejectsWorkerFileWithoutManifest(t *testing.T) {
   ]
 }`)
 
+	var workerPath string
 	result := New(Config{
 		RepoDir:       repo,
 		RunID:         "test-run",
@@ -360,6 +361,7 @@ func TestRunnerRejectsWorkerFileWithoutManifest(t *testing.T) {
 		Engine:        "fake",
 	}, Deps{
 		Executor: workerExecutorFunc(func(ctx context.Context, req WorkerExecutionRequest) WorkerExecutionResult {
+			workerPath = req.WorktreePath
 			if err := os.WriteFile(filepath.Join(req.WorktreePath, "T-001.txt"), []byte("implemented\n"), 0o644); err != nil {
 				return WorkerExecutionResult{Error: err}
 			}
@@ -376,6 +378,107 @@ func TestRunnerRejectsWorkerFileWithoutManifest(t *testing.T) {
 	requireTaskPasses(t, filepath.Join(repo, template.HalDir, template.PRDFile), "T-001", false)
 	if got := strings.TrimSpace(git(t, repo, "status", "--short", "--untracked-files=all")); got != "" {
 		t.Fatalf("canonical git status = %q, want clean", got)
+	}
+	if workerPath == "" {
+		t.Fatal("worker path was not captured")
+	}
+	if _, err := os.Stat(workerPath); err != nil {
+		t.Fatalf("failed worker worktree stat err = %v, want preserved", err)
+	}
+	if got := readFile(t, filepath.Join(workerPath, "T-001.txt")); !strings.Contains(got, "implemented") {
+		t.Fatalf("failed worker file = %q, want preserved implementation", got)
+	}
+}
+
+func TestRunnerExplicitCleanupRemovesFailedWorkerWorktree(t *testing.T) {
+	repo := initParallelRunRepo(t)
+	writeParallelRuntime(t, repo, `{
+  "project": "parallel",
+  "branchName": "hal/parallel",
+  "description": "parallel test",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "One",
+      "description": "Create an implementation file without a manifest",
+      "acceptanceCriteria": ["Typecheck passes"],
+      "priority": 1,
+      "passes": false,
+      "notes": "",
+      "parallelSafe": true,
+      "parallelReason": "Independent file"
+    }
+  ]
+}`)
+
+	var workerPath string
+	result := New(Config{
+		RepoDir:                repo,
+		RunID:                  "test-run",
+		MaxIterations:          1,
+		Parallelism:            1,
+		Engine:                 "fake",
+		CleanupFailedWorktrees: true,
+	}, Deps{
+		Executor: workerExecutorFunc(func(ctx context.Context, req WorkerExecutionRequest) WorkerExecutionResult {
+			workerPath = req.WorktreePath
+			if err := os.WriteFile(filepath.Join(req.WorktreePath, "T-001.txt"), []byte("implemented\n"), 0o644); err != nil {
+				return WorkerExecutionResult{Error: err}
+			}
+			return WorkerExecutionResult{EngineResult: engine.Result{Success: true}}
+		}),
+	}).Run(context.Background())
+
+	if result.Error == nil || !strings.Contains(result.Error.Error(), "read worker manifest for T-001") {
+		t.Fatalf("error = %v, want missing worker manifest", result.Error)
+	}
+	if workerPath == "" {
+		t.Fatal("worker path was not captured")
+	}
+	if _, err := os.Stat(workerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed worker worktree stat err = %v, want removed", err)
+	}
+}
+
+func TestCleanupFailedBatchPreservesByDefaultWithoutForce(t *testing.T) {
+	manager := &recordingCleanupManager{}
+	cleanupFailedBatch(context.Background(), Config{}, manager, []batchWorkerResult{
+		{
+			worktree: worktree.CreateResult{
+				WorktreePath: "/tmp/hal-worker",
+				BranchName:   "hal/runs/test/T-001",
+			},
+			err: errors.New("worker failed"),
+		},
+	})
+
+	if len(manager.requests) != 1 {
+		t.Fatalf("cleanup requests = %d, want 1", len(manager.requests))
+	}
+	got := manager.requests[0]
+	if !got.Failed || !got.PreserveFailed || got.Force {
+		t.Fatalf("cleanup request = %+v, want failed preserved without force", got)
+	}
+}
+
+func TestCleanupFailedBatchExplicitCleanupUsesForce(t *testing.T) {
+	manager := &recordingCleanupManager{}
+	cleanupFailedBatch(context.Background(), Config{CleanupFailedWorktrees: true}, manager, []batchWorkerResult{
+		{
+			worktree: worktree.CreateResult{
+				WorktreePath: "/tmp/hal-worker",
+				BranchName:   "hal/runs/test/T-001",
+			},
+			err: errors.New("worker failed"),
+		},
+	})
+
+	if len(manager.requests) != 1 {
+		t.Fatalf("cleanup requests = %d, want 1", len(manager.requests))
+	}
+	got := manager.requests[0]
+	if !got.Failed || got.PreserveFailed || !got.Force {
+		t.Fatalf("cleanup request = %+v, want explicit cleanup with force", got)
 	}
 }
 
@@ -455,6 +558,19 @@ func (m failingWorktreeManager) Create(context.Context, worktree.CreateRequest) 
 }
 
 func (m failingWorktreeManager) Cleanup(context.Context, worktree.CleanupRequest) (worktree.CleanupResult, error) {
+	return worktree.CleanupResult{}, nil
+}
+
+type recordingCleanupManager struct {
+	requests []worktree.CleanupRequest
+}
+
+func (m *recordingCleanupManager) Create(context.Context, worktree.CreateRequest) (worktree.CreateResult, error) {
+	return worktree.CreateResult{}, errors.New("unexpected create")
+}
+
+func (m *recordingCleanupManager) Cleanup(_ context.Context, request worktree.CleanupRequest) (worktree.CleanupResult, error) {
+	m.requests = append(m.requests, request)
 	return worktree.CleanupResult{}, nil
 }
 

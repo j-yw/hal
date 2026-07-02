@@ -48,7 +48,11 @@ type Config struct {
 	CheckCommands     []integrator.CheckCommand
 	CommitBookkeeping bool
 
+	// PreserveFailedWorktrees is retained for callers that want to make the
+	// recovery default explicit. Failed worktrees are preserved unless
+	// CleanupFailedWorktrees is set.
 	PreserveFailedWorktrees bool
+	CleanupFailedWorktrees  bool
 	RemoveWorkerBranches    bool
 }
 
@@ -416,6 +420,7 @@ func countStartedWorkers(results []batchWorkerResult) int {
 }
 
 func cleanupFailedBatch(ctx context.Context, cfg Config, manager worktreeManager, results []batchWorkerResult) {
+	preserveFailed := cfg.preserveFailedWorktrees()
 	for _, result := range results {
 		if result.err == nil {
 			continue
@@ -425,15 +430,16 @@ func cleanupFailedBatch(ctx context.Context, cfg Config, manager worktreeManager
 				WorktreePath:   result.worktree.WorktreePath,
 				BranchName:     result.worktree.BranchName,
 				Failed:         true,
-				PreserveFailed: cfg.PreserveFailedWorktrees,
+				PreserveFailed: preserveFailed,
 				RemoveBranch:   cfg.RemoveWorkerBranches,
-				Force:          !cfg.PreserveFailedWorktrees,
+				Force:          !preserveFailed,
 			})
 		}
 	}
 }
 
 func cleanupCreatedBatch(ctx context.Context, cfg Config, manager worktreeManager, results []batchWorkerResult) {
+	preserveFailed := cfg.preserveFailedWorktrees()
 	for _, result := range results {
 		if result.worktree.WorktreePath == "" {
 			continue
@@ -442,11 +448,15 @@ func cleanupCreatedBatch(ctx context.Context, cfg Config, manager worktreeManage
 			WorktreePath:   result.worktree.WorktreePath,
 			BranchName:     result.worktree.BranchName,
 			Failed:         true,
-			PreserveFailed: cfg.PreserveFailedWorktrees,
+			PreserveFailed: preserveFailed,
 			RemoveBranch:   cfg.RemoveWorkerBranches,
-			Force:          !cfg.PreserveFailedWorktrees,
+			Force:          !preserveFailed,
 		})
 	}
+}
+
+func (cfg Config) preserveFailedWorktrees() bool {
+	return cfg.PreserveFailedWorktrees || !cfg.CleanupFailedWorktrees
 }
 
 func (r *Runner) normalizedConfig() (Config, error) {

@@ -221,6 +221,9 @@ func TestRunLoopStep_DispatchesParallelRunnerAndSavesTelemetry(t *testing.T) {
 	if gotParallelConfig.RepoDir != dir {
 		t.Fatalf("repo dir = %q, want %q", gotParallelConfig.RepoDir, dir)
 	}
+	if gotParallelConfig.CleanupFailedWorktrees {
+		t.Fatal("parallel run config should preserve failed worker worktrees by default")
+	}
 	if state.Run == nil || state.Run.Parallel == nil {
 		t.Fatalf("state.Run = %+v, want parallel telemetry", state.Run)
 	}
