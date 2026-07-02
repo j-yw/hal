@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -502,6 +503,180 @@ func TestPhase26CredentialProxyMetadataRejectedFromCommandResultEnvelopes(t *tes
 	}
 }
 
+func TestPhase26CredentialProxyPlumbingGuardsCoverProductionFiles(t *testing.T) {
+	want := map[string]bool{
+		"credential_proxy_plumbing.go":                                                  true,
+		filepath.Join("..", "internal", "factory", "types.go"):                          true,
+		filepath.Join("..", "internal", "factory", "secret_broker_credential_proxy.go"): true,
+		filepath.Join("..", "internal", "sandbox", "credential_proxy_projection.go"):    true,
+		filepath.Join("..", "internal", "sandboxexecution", "types.go"):                 true,
+	}
+	targets := phase26CredentialProxyPlumbingGuardTargets()
+	if len(targets) != len(want) {
+		t.Fatalf("Phase 26 credential proxy plumbing guard targets = %d, want %d", len(targets), len(want))
+	}
+	for _, target := range targets {
+		if !want[target.path] {
+			t.Fatalf("unexpected Phase 26 credential proxy plumbing guard target %s", target.path)
+		}
+		if strings.HasSuffix(target.path, "_test.go") {
+			t.Fatalf("Phase 26 credential proxy plumbing guard should scan production files only, got %s", target.path)
+		}
+		source, err := os.ReadFile(target.path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error = %v", target.path, err)
+		}
+		if !strings.Contains(string(source), "CredentialProxy") {
+			t.Fatalf("Phase 26 credential proxy plumbing target %s no longer contains credential proxy plumbing", target.path)
+		}
+	}
+}
+
+func TestPhase26CredentialProxyPlumbingImportBoundaries(t *testing.T) {
+	fset := token.NewFileSet()
+	for _, target := range phase26CredentialProxyPlumbingGuardTargets() {
+		file, err := parser.ParseFile(fset, target.path, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("ParseFile(%s) error = %v", target.path, err)
+		}
+		for _, spec := range file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("unquote import %s in %s: %v", spec.Path.Value, target.path, err)
+			}
+			if message := phase26CredentialProxyPlumbingImportBoundaryMessage(target.path, importPath); message != "" {
+				t.Fatal(message)
+			}
+		}
+	}
+}
+
+func TestPhase26CredentialProxyPlumbingForbiddenImportListCoversLiveBehaviorDependencies(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		importPath string
+	}{
+		{name: "live network package", importPath: "net"},
+		{name: "HTTP client or server", importPath: "net/http"},
+		{name: "HTTP proxy utility", importPath: "net/http/httputil"},
+		{name: "external network client", importPath: "google.golang.org/grpc"},
+		{name: "live HTTP proxy", importPath: "golang.org/x/net/proxy"},
+		{name: "third-party HTTP proxy", importPath: "github.com/elazarl/goproxy"},
+		{name: "credential process execution", importPath: "os/exec"},
+		{name: "tmpfs file writer", importPath: "os"},
+		{name: "tmpfs filesystem helper", importPath: "path/filepath"},
+		{name: "SSH-agent forwarding", importPath: "golang.org/x/crypto/ssh/agent"},
+		{name: "SSH forwarding", importPath: "golang.org/x/crypto/ssh"},
+		{name: "Docker client", importPath: "github.com/docker/docker/client"},
+		{name: "Podman bindings", importPath: "github.com/containers/podman/v5/pkg/bindings"},
+		{name: "KVM helper", importPath: "github.com/example/kvm-driver"},
+		{name: "microVM SDK", importPath: "github.com/firecracker-microvm/firecracker-go-sdk"},
+		{name: "libvirt binding", importPath: "libvirt.org/go/libvirt"},
+		{name: "cloud SDK", importPath: "github.com/aws/aws-sdk-go-v2/service/secretsmanager"},
+		{name: "DigitalOcean SDK", importPath: "github.com/digitalocean/godo"},
+		{name: "Google Cloud SDK", importPath: "cloud.google.com/go/secretmanager/apiv1"},
+		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/daytona"},
+		{name: "runtime package", importPath: "github.com/jywlabs/hal/internal/sandboxruntime"},
+		{name: "runtime adapter package", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"},
+		{name: "worker daemon package", importPath: "github.com/jywlabs/hal/internal/sandboxworker"},
+		{name: "sandbox execution behavior package", importPath: "github.com/jywlabs/hal/internal/sandboxexec"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if forbidden := phase26CredentialProxyPlumbingForbiddenImportFor(tt.importPath); forbidden == nil {
+				t.Fatalf("forbidden import list does not include %s import path %q", tt.name, tt.importPath)
+			}
+		})
+	}
+}
+
+func TestPhase26CredentialProxyPlumbingImportBoundaryAllowsCurrentMetadataOnlyDependencies(t *testing.T) {
+	for _, target := range phase26CredentialProxyPlumbingGuardTargets() {
+		for _, importPath := range target.allowedImports {
+			t.Run(target.path+" "+importPath, func(t *testing.T) {
+				if message := phase26CredentialProxyPlumbingImportBoundaryMessage(target.path, importPath); message != "" {
+					t.Fatalf("metadata import %q unexpectedly failed boundary check: %s", importPath, message)
+				}
+			})
+		}
+	}
+
+	for _, importPath := range []string{
+		"github.com/jywlabs/hal/internal/template",
+		"gopkg.in/yaml.v3",
+		"github.com/spf13/cobra",
+	} {
+		t.Run(importPath, func(t *testing.T) {
+			message := phase26CredentialProxyPlumbingImportBoundaryMessage("credential_proxy_plumbing.go", importPath)
+			if !strings.Contains(message, importPath) {
+				t.Fatalf("boundary message = %q, want rejected import path %q", message, importPath)
+			}
+		})
+	}
+}
+
+func TestPhase26CredentialProxyPlumbingSourceGuardsOmitLiveBehaviorMarkers(t *testing.T) {
+	for _, target := range phase26CredentialProxyPlumbingGuardTargets() {
+		source, err := os.ReadFile(target.path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error = %v", target.path, err)
+		}
+		if message := phase26CredentialProxyPlumbingSourceBoundaryMessage(target.path, string(source)); message != "" {
+			t.Fatal(message)
+		}
+	}
+}
+
+func TestPhase26CredentialProxyPlumbingSourceGuardCoversForbiddenMarkers(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{name: "network listener", source: `net.Listen("tcp", ":8080")`, want: "net.Listen"},
+		{name: "HTTP server", source: `server.ListenAndServe()`, want: "ListenAndServe"},
+		{name: "HTTP proxy", source: `http.ProxyURL(target)`, want: "http.ProxyURL"},
+		{name: "HTTP reverse proxy", source: `httputil.NewSingleHostReverseProxy(target)`, want: "httputil.NewSingleHostReverseProxy"},
+		{name: "process execution", source: `exec.CommandContext(ctx, "sh", "-c", script)`, want: "exec.CommandContext"},
+		{name: "tmpfs write", source: `os.WriteFile(tmpfsPath, secret, 0o600)`, want: "os.WriteFile"},
+		{name: "SSH agent forwarding", source: `agent.NewClient(conn)`, want: "agent.NewClient"},
+		{name: "SSH auth socket", source: `env["SSH_AUTH_SOCK"] = socket`, want: "SSH_AUTH_SOCK"},
+		{name: "firewall enforcement", source: `iptables.Apply(policy)`, want: "iptables."},
+		{name: "Docker client", source: `docker.NewClientWithOpts()`, want: "docker.NewClient"},
+		{name: "Podman bindings", source: `bindings.NewConnection(ctx, uri)`, want: "bindings.NewConnection"},
+		{name: "KVM helper", source: `kvm.NewDriver()`, want: "kvm."},
+		{name: "microVM helper", source: `firecracker.NewMachine(ctx, cfg)`, want: "firecracker.NewMachine"},
+		{name: "cloud SDK", source: `secretsmanager.NewFromConfig(cfg)`, want: "secretsmanager.NewFromConfig"},
+		{name: "runtime driver", source: `sandboxruntime.NewDriver(target)`, want: "sandboxruntime."},
+		{name: "provider construction", source: `NewProvider(config)`, want: "NewProvider("},
+		{name: "worker daemon", source: `sandboxworker.NewClientDriver(opts)`, want: "sandboxworker."},
+		{name: "network client", source: `grpc.Dial(target)`, want: "grpc.Dial"},
+		{name: "credential injection", source: `InjectCredential(target, value)`, want: "InjectCredential"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			message := phase26CredentialProxyPlumbingSourceBoundaryMessage("fixture.go", tt.source)
+			if !strings.Contains(message, tt.want) {
+				t.Fatalf("source boundary message = %q, want marker %q", message, tt.want)
+			}
+		})
+	}
+}
+
+func TestPhase26CredentialProxyPlumbingSourceGuardAllowsSafeMetadataLabels(t *testing.T) {
+	const safeMetadataLabels = `
+		SandboxSecretModeFileTmpfs
+		SandboxSecretModeSSHAgent
+		SandboxSecretModeHTTPProxy
+		credentialProxyPlan
+		credentialProxySession
+		credentialProxyBindings
+		network_proxy_reference
+		secret_broker_reference
+	`
+	if message := phase26CredentialProxyPlumbingSourceBoundaryMessage("fixture.go", safeMetadataLabels); message != "" {
+		t.Fatalf("safe metadata labels unexpectedly failed source boundary check: %s", message)
+	}
+}
+
 func assertSandboxManifestOmitsCredentialProxyMetadata(t *testing.T, manifest *sandboxexecution.Manifest) {
 	t.Helper()
 	fields := sandboxManifestJSONFields(t, manifest)
@@ -748,6 +923,256 @@ func phase26CredentialProxyPersistenceBaseType(typ reflect.Type) (reflect.Type, 
 			return typ, plural
 		}
 	}
+}
+
+func phase26CredentialProxyPlumbingGuardTargets() []phase26CredentialProxyPlumbingGuardTarget {
+	return []phase26CredentialProxyPlumbingGuardTarget{
+		{
+			path: "credential_proxy_plumbing.go",
+			allowedImports: []string{
+				"strings",
+				"github.com/jywlabs/hal/internal/factory",
+				"github.com/jywlabs/hal/internal/sandbox",
+				"github.com/jywlabs/hal/internal/sandboxexecution",
+			},
+		},
+		{
+			path: filepath.Join("..", "internal", "factory", "secret_broker_credential_proxy.go"),
+			allowedImports: []string{
+				"github.com/jywlabs/hal/internal/sandbox",
+			},
+		},
+		{
+			path: filepath.Join("..", "internal", "factory", "types.go"),
+			allowedImports: []string{
+				"fmt",
+				"strings",
+				"time",
+				"github.com/jywlabs/hal/internal/sandbox",
+				"github.com/jywlabs/hal/internal/verify",
+			},
+		},
+		{
+			path: filepath.Join("..", "internal", "sandbox", "credential_proxy_projection.go"),
+			allowedImports: []string{
+				"strconv",
+			},
+		},
+		{
+			path: filepath.Join("..", "internal", "sandboxexecution", "types.go"),
+			allowedImports: []string{
+				"time",
+				"github.com/jywlabs/hal/internal/sandbox",
+				"github.com/jywlabs/hal/internal/sandboxworkspace",
+			},
+		},
+	}
+}
+
+func phase26CredentialProxyPlumbingImportBoundaryMessage(fileName, importPath string) string {
+	if forbidden := phase26CredentialProxyPlumbingForbiddenImportFor(importPath); forbidden != nil {
+		return "Phase 26 credential proxy plumbing file " + fileName + " imports forbidden " + forbidden.name + " " + strconv.Quote(importPath)
+	}
+	if phase26CredentialProxyPlumbingAllowedImport(fileName, importPath) {
+		return ""
+	}
+	return "Phase 26 credential proxy plumbing file " + fileName + " imports unapproved dependency " + strconv.Quote(importPath) + "; projection and persistence code must stay metadata-only"
+}
+
+func phase26CredentialProxyPlumbingAllowedImport(fileName, importPath string) bool {
+	for _, target := range phase26CredentialProxyPlumbingGuardTargets() {
+		if target.path != fileName {
+			continue
+		}
+		for _, allowed := range target.allowedImports {
+			if importPath == allowed {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func phase26CredentialProxyPlumbingForbiddenImportFor(importPath string) *phase26CredentialProxyPlumbingForbiddenImport {
+	for i := range phase26CredentialProxyPlumbingForbiddenImports {
+		if phase26CredentialProxyPlumbingForbiddenImports[i].match(importPath) {
+			return &phase26CredentialProxyPlumbingForbiddenImports[i]
+		}
+	}
+	return nil
+}
+
+var phase26CredentialProxyPlumbingForbiddenImports = []phase26CredentialProxyPlumbingForbiddenImport{
+	{
+		name: "network client or HTTP proxy package",
+		match: func(importPath string) bool {
+			switch importPath {
+			case "net", "net/http", "net/http/httputil", "net/rpc", "net/smtp":
+				return true
+			default:
+				return strings.HasPrefix(importPath, "net/http/") ||
+					strings.HasPrefix(importPath, "google.golang.org/grpc") ||
+					strings.HasPrefix(importPath, "golang.org/x/net/proxy") ||
+					strings.HasPrefix(importPath, "github.com/elazarl/goproxy") ||
+					strings.HasPrefix(importPath, "github.com/armon/go-socks5")
+			}
+		},
+	},
+	{
+		name: "credential process execution package",
+		match: func(importPath string) bool {
+			return importPath == "os/exec"
+		},
+	},
+	{
+		name: "tmpfs or credential file writer package",
+		match: func(importPath string) bool {
+			switch importPath {
+			case "io/fs", "os", "path/filepath":
+				return true
+			default:
+				return strings.HasPrefix(importPath, "github.com/spf13/afero")
+			}
+		},
+	},
+	{
+		name: "SSH-agent forwarding package",
+		match: func(importPath string) bool {
+			return strings.HasPrefix(importPath, "golang.org/x/crypto/ssh") ||
+				strings.HasPrefix(importPath, "github.com/gliderlabs/ssh")
+		},
+	},
+	{
+		name: "Docker or Podman client package",
+		match: func(importPath string) bool {
+			return strings.HasPrefix(importPath, "github.com/docker/docker") ||
+				strings.HasPrefix(importPath, "github.com/containers/podman")
+		},
+	},
+	{
+		name: "KVM or microVM package",
+		match: func(importPath string) bool {
+			lower := strings.ToLower(importPath)
+			return strings.Contains(lower, "libvirt") ||
+				strings.Contains(lower, "firecracker") ||
+				strings.Contains(lower, "microvm") ||
+				strings.Contains(lower, "kvm") ||
+				strings.Contains(lower, "qemu")
+		},
+	},
+	{
+		name: "cloud or provider package",
+		match: func(importPath string) bool {
+			return strings.HasPrefix(importPath, "github.com/digitalocean/godo") ||
+				strings.HasPrefix(importPath, "github.com/aws/aws-sdk-go") ||
+				strings.HasPrefix(importPath, "github.com/aws/aws-sdk-go-v2") ||
+				strings.HasPrefix(importPath, "github.com/Azure/azure-sdk-for-go") ||
+				strings.HasPrefix(importPath, "github.com/hetznercloud/hcloud-go") ||
+				strings.HasPrefix(importPath, "cloud.google.com/go") ||
+				strings.HasPrefix(importPath, "google.golang.org/api") ||
+				phase26CredentialProxyPlumbingModuleImportMatcher("github.com/jywlabs/hal/internal/sandbox/provider")(importPath)
+		},
+	},
+	{
+		name: "worker daemon or runtime behavior package",
+		match: func(importPath string) bool {
+			return phase26CredentialProxyPlumbingModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxworker")(importPath) ||
+				phase26CredentialProxyPlumbingModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime")(importPath) ||
+				phase26CredentialProxyPlumbingModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxexec")(importPath) ||
+				phase26CredentialProxyPlumbingModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxtarget")(importPath)
+		},
+	},
+	{
+		name: "command or orchestration package",
+		match: func(importPath string) bool {
+			return phase26CredentialProxyPlumbingModuleImportMatcher("github.com/jywlabs/hal/cmd")(importPath) ||
+				phase26CredentialProxyPlumbingModuleImportMatcher("github.com/jywlabs/hal/internal/compound")(importPath) ||
+				phase26CredentialProxyPlumbingModuleImportMatcher("github.com/jywlabs/hal/internal/engine")(importPath)
+		},
+	},
+}
+
+func phase26CredentialProxyPlumbingSourceBoundaryMessage(fileName, source string) string {
+	for _, marker := range phase26CredentialProxyPlumbingForbiddenSourceMarkers() {
+		if strings.Contains(source, marker) {
+			return "Phase 26 credential proxy plumbing file " + fileName + " contains forbidden live behavior marker " + strconv.Quote(marker)
+		}
+	}
+	return ""
+}
+
+func phase26CredentialProxyPlumbingForbiddenSourceMarkers() []string {
+	return []string{
+		"net.Listen",
+		"ListenAndServe",
+		"http.ProxyURL",
+		"httputil.NewSingleHostReverseProxy",
+		"ProxyFromEnvironment",
+		"http.Client",
+		"grpc.Dial",
+		"net.Dial",
+		"DialContext",
+		"exec.CommandContext",
+		"exec.Command",
+		"os.WriteFile",
+		"os.Create",
+		"MkdirTemp",
+		"tmpfs.Write",
+		"TmpfsWriter",
+		"WriteTmpfs",
+		"agent.NewClient",
+		"agent.NewKeyring",
+		"sshagent.",
+		"SSH_AUTH_SOCK",
+		"ForwardAgent",
+		"iptables.",
+		"nftables.",
+		"pfctl",
+		"firewall.Apply",
+		"EnforceFirewall",
+		"docker.NewClient",
+		"NewClientWithOpts",
+		"bindings.NewConnection",
+		"podman.New",
+		"kvm.",
+		"libvirt.",
+		"firecracker.NewMachine",
+		"microvm.",
+		"microVM.",
+		"qemu.",
+		"secretsmanager.NewFromConfig",
+		"godo.New",
+		"hcloud.New",
+		"compute.New",
+		"sandboxruntime.",
+		"NewProvider(",
+		"ResolveProvider(",
+		"sandboxworker.",
+		"NewClientDriver",
+		"worker daemon",
+		"CredentialInjector",
+		"InjectCredential",
+		"InjectCredentials",
+		"injectCredential",
+		"injectCredentials",
+		"credential injection",
+	}
+}
+
+func phase26CredentialProxyPlumbingModuleImportMatcher(prefix string) func(string) bool {
+	return func(importPath string) bool {
+		return importPath == prefix || strings.HasPrefix(importPath, prefix+"/")
+	}
+}
+
+type phase26CredentialProxyPlumbingGuardTarget struct {
+	path           string
+	allowedImports []string
+}
+
+type phase26CredentialProxyPlumbingForbiddenImport struct {
+	name  string
+	match func(string) bool
 }
 
 func jsonFieldNameFromTag(rawTag string) string {

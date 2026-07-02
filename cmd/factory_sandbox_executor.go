@@ -2057,11 +2057,7 @@ func factorySandboxPersistentMetadataFromState(req factorySandboxExecutorRequest
 	}
 	networkProxySession := factorySandboxNetworkProxySession(req.NetworkProxySession)
 	metadata.NetworkProxySession = networkProxySession
-	credentialProxy := factorySandboxCredentialProxyProjection(req, record, networkProxySession)
-	metadata.CredentialProxyPlan = credentialProxy.Plan
-	metadata.CredentialProxySession = credentialProxy.Session
-	metadata.CredentialProxyBindings = credentialProxy.Bindings
-	factorySandboxSanitizeCredentialProxyMetadata(metadata)
+	applyFactorySandboxCredentialProxyMetadata(metadata, req, record, networkProxySession)
 	if !sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) || !selectedWorkerRootlessSandboxState(instance) {
 		return name, metadata
 	}
@@ -2078,89 +2074,6 @@ func factorySandboxNetworkProxySession(session *sandbox.SandboxNetworkProxySessi
 	}
 	sanitized := sandbox.SanitizeSandboxNetworkProxySessionMetadata(*session)
 	return &sanitized
-}
-
-func factorySandboxCredentialProxyProjection(req factorySandboxExecutorRequest, record factory.RunRecord, networkProxySession *sandbox.SandboxNetworkProxySessionMetadata) sandbox.SandboxCredentialProxyProjection {
-	projection := factory.ProjectCredentialProxyMetadata(factory.CredentialProxyProjectionRequest{
-		PlanID:               factorySandboxCredentialProxyID(record.RunID, "plan"),
-		SessionID:            factorySandboxCredentialProxyID(record.RunID, "session"),
-		BindingIDPrefix:      factorySandboxCredentialProxyID(record.RunID, "binding"),
-		Source:               sandbox.SandboxCredentialProxySourceFactory,
-		SecretBrokerSession:  factorySandboxCredentialProxySecretBrokerSession(record),
-		SecretDeliveryIntent: sandboxManifestCredentialProxySecretDeliveryIntent(req.Security),
-		NetworkProxySession:  networkProxySession,
-		RequestCategory:      sandbox.SandboxCredentialProxyRequestNetworkAuth,
-		DestinationCategory:  sandbox.SandboxNetworkPolicyDestinationUnknown,
-	})
-	return sandboxManifestSanitizedCredentialProxyProjection(projection)
-}
-
-func factorySandboxCredentialProxyID(runID, suffix string) string {
-	if strings.TrimSpace(runID) == "" || strings.TrimSpace(suffix) == "" {
-		return ""
-	}
-	return runID + "-credential-proxy-" + suffix
-}
-
-func factorySandboxCredentialProxySecretBrokerSession(record factory.RunRecord) *factory.SecretBrokerSessionMetadata {
-	if len(record.Secrets) == 0 {
-		return nil
-	}
-	session := factory.SecretBrokerSessionMetadata{
-		ID: factorySandboxCredentialProxyID(record.RunID, "secret-broker-session"),
-	}
-	for _, secret := range record.Secrets {
-		metadata, ok := factorySandboxCredentialProxySecretMetadata(secret)
-		if !ok {
-			continue
-		}
-		session.Secrets = append(session.Secrets, metadata)
-	}
-	if len(session.Secrets) == 0 {
-		return nil
-	}
-	return &session
-}
-
-func factorySandboxCredentialProxySecretMetadata(secret factory.RunSecretMetadata) (factory.SecretBrokerSecretMetadata, bool) {
-	if !secret.Present {
-		return factory.SecretBrokerSecretMetadata{}, false
-	}
-	source := strings.TrimSpace(secret.Source)
-	name := strings.TrimSpace(secret.Name)
-	if source == "" || name == "" {
-		return factory.SecretBrokerSecretMetadata{}, false
-	}
-	return factory.SecretBrokerSecretMetadata{
-		ID:       source + ":" + name,
-		Name:     name,
-		Source:   source,
-		Required: secret.Required,
-		Present:  true,
-	}, true
-}
-
-func factorySandboxSanitizeCredentialProxyMetadata(metadata *factory.SandboxMetadata) {
-	if metadata == nil {
-		return
-	}
-	if metadata.CredentialProxyPlan != nil {
-		plan := sandbox.SanitizeSandboxCredentialProxyPlanMetadata(*metadata.CredentialProxyPlan)
-		if plan.ID == "" {
-			metadata.CredentialProxyPlan = nil
-		} else {
-			metadata.CredentialProxyPlan = &plan
-		}
-	}
-	if metadata.CredentialProxySession != nil {
-		session := sandbox.SanitizeSandboxCredentialProxySessionMetadata(*metadata.CredentialProxySession)
-		if session.ID == "" {
-			metadata.CredentialProxySession = nil
-		} else {
-			metadata.CredentialProxySession = &session
-		}
-	}
-	metadata.CredentialProxyBindings = sandbox.SanitizeSandboxCredentialProxyBindingMetadataRecords(metadata.CredentialProxyBindings)
 }
 
 func factorySandboxMetadataFromName(name string) (string, *factory.SandboxMetadata) {

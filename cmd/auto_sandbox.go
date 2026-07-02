@@ -878,7 +878,6 @@ func (deps autoSandboxDeps) prepareAutoSandboxInputs(ctx context.Context, req *a
 }
 
 func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxRequest, status sandboxexecution.Status, startedAt time.Time, finishedAt *time.Time, target *sandbox.SandboxState) error {
-	credentialProxy := autoSandboxManifestCredentialProxyProjection(req)
 	manifest := &sandboxexecution.Manifest{
 		ID:                        req.ExecutionID,
 		Purpose:                   sandboxexecution.PurposeAuto,
@@ -893,10 +892,8 @@ func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxReques
 		Security:                  cloneSandboxSecurity(nil),
 		NetworkProxySession:       sandboxManifestNetworkProxySession(req.NetworkProxySession),
 		NetworkPolicyDecisionLogs: sandboxManifestNetworkPolicyDecisionLogs(req.NetworkPolicyDecisionLogs),
-		CredentialProxyPlan:       credentialProxy.Plan,
-		CredentialProxySession:    credentialProxy.Session,
-		CredentialProxyBindings:   credentialProxy.Bindings,
 	}
+	applyAutoSandboxCredentialProxyMetadata(manifest, req)
 	if target != nil {
 		if strings.TrimSpace(manifest.SandboxName) == "" {
 			manifest.SandboxName = strings.TrimSpace(target.Name)
@@ -922,27 +919,6 @@ func autoSandboxManifestWorkspace(req autoSandboxRequest) *sandbox.SandboxWorksp
 		return sandboxCommandPersistentWorkspace(req.Workspace)
 	}
 	return cloneSandboxWorkspace(req.Workspace)
-}
-
-func autoSandboxManifestCredentialProxyProjection(req autoSandboxRequest) sandbox.SandboxCredentialProxyProjection {
-	projection := sandbox.ProjectSandboxCredentialProxyMetadata(sandbox.SandboxCredentialProxyProjectionRequest{
-		PlanID:               autoSandboxCredentialProxyID(req.ExecutionID, "plan"),
-		SessionID:            autoSandboxCredentialProxyID(req.ExecutionID, "session"),
-		BindingIDPrefix:      autoSandboxCredentialProxyID(req.ExecutionID, "binding"),
-		Source:               sandbox.SandboxCredentialProxySourceAuto,
-		SecretDeliveryIntent: sandboxManifestCredentialProxySecretDeliveryIntent(req.Security),
-		NetworkProxySession:  req.NetworkProxySession,
-		RequestCategory:      sandbox.SandboxCredentialProxyRequestNetworkAuth,
-		DestinationCategory:  sandbox.SandboxNetworkPolicyDestinationUnknown,
-	})
-	return sandboxManifestSanitizedCredentialProxyProjection(projection)
-}
-
-func autoSandboxCredentialProxyID(executionID, suffix string) string {
-	if strings.TrimSpace(executionID) == "" || strings.TrimSpace(suffix) == "" {
-		return ""
-	}
-	return executionID + "-credential-proxy-" + suffix
 }
 
 func buildAutoSandboxRemoteCommand(req autoSandboxRequest) []string {
