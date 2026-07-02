@@ -673,6 +673,18 @@ func assertFirecrackerOwnedRuntimeMetadata(t *testing.T, target *sandboxruntime.
 	if !reflect.DeepEqual(target.Runtime.Metadata.PathRoles, wantPathRoles) {
 		t.Fatalf("runtime metadata PathRoles = %#v, want %#v", target.Runtime.Metadata.PathRoles, wantPathRoles)
 	}
+	if target.Runtime.Metadata.ProcessLaunch == nil {
+		t.Fatal("runtime metadata ProcessLaunch = nil, want safe launch metadata")
+	}
+	if target.Runtime.Metadata.ProcessLaunch.State != string(ProcessLaunchStateBoundaryAvailable) {
+		t.Fatalf("runtime metadata ProcessLaunch.State = %q, want %q", target.Runtime.Metadata.ProcessLaunch.State, ProcessLaunchStateBoundaryAvailable)
+	}
+	if !reflect.DeepEqual(target.Runtime.Metadata.ProcessLaunch.Labels, []string{string(ProcessLaunchStateBoundaryAvailable)}) {
+		t.Fatalf("runtime metadata ProcessLaunch.Labels = %#v, want boundary-available label", target.Runtime.Metadata.ProcessLaunch.Labels)
+	}
+	if target.Runtime.Metadata.ProcessLaunch.ProcessID != "" || target.Runtime.Metadata.ProcessLaunch.ProcessIDSource != "" {
+		t.Fatalf("runtime metadata ProcessLaunch exposes process identity before launch acceptance: %#v", target.Runtime.Metadata.ProcessLaunch)
+	}
 }
 
 func poisonFirecrackerRuntimeMetadata(target *sandboxruntime.Target) {
@@ -692,6 +704,12 @@ func poisonFirecrackerRuntimeMetadata(target *sandboxruntime.Target) {
 			Environment: []sandboxruntime.RuntimeOperationEnvironment{
 				{Name: "SECRET_TOKEN", Source: "env:OPENAI_API_KEY"},
 			},
+		},
+		ProcessLaunch: &sandboxruntime.RuntimeProcessLaunchMetadata{
+			State:           "guest_ready",
+			Labels:          []string{"network_enforced", "/Users/alice/private/firecracker.sock"},
+			ProcessID:       "pid:/Users/alice/private/firecracker.sock",
+			ProcessIDSource: "env:OPENAI_API_KEY token=ghp_secret",
 		},
 	}
 }

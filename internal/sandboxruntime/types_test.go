@@ -2,8 +2,10 @@ package sandboxruntime
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -79,6 +81,43 @@ func TestFileTransportInterfaceIncludesCopyInAndCopyOut(t *testing.T) {
 	}
 	if err := transport.CopyOut(ctx, CopyRequest{SourcePath: "/remote/out", DestinationPath: "/host/out"}); err != nil {
 		t.Fatalf("CopyOut() unexpected error: %v", err)
+	}
+}
+
+func TestRuntimeMetadataIncludesOptionalProcessLaunchMetadata(t *testing.T) {
+	metadataType := reflect.TypeOf(RuntimeMetadata{})
+	assertFieldType(t, metadataType, "ProcessLaunch", reflect.TypeOf((*RuntimeProcessLaunchMetadata)(nil)))
+
+	launchType := reflect.TypeOf(RuntimeProcessLaunchMetadata{})
+	assertFieldType(t, launchType, "State", reflect.TypeOf(""))
+	assertFieldType(t, launchType, "Labels", reflect.TypeOf([]string{}))
+	assertFieldType(t, launchType, "ProcessID", reflect.TypeOf(""))
+	assertFieldType(t, launchType, "ProcessIDSource", reflect.TypeOf(""))
+
+	metadata := RuntimeMetadata{
+		Backend: "firecracker",
+		ProcessLaunch: &RuntimeProcessLaunchMetadata{
+			State:           "process_launch_accepted",
+			Labels:          []string{"process_launch_accepted"},
+			ProcessID:       "pid-1234",
+			ProcessIDSource: "adapter",
+		},
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("Marshal(RuntimeMetadata) error = %v", err)
+	}
+	publicText := string(encoded)
+	for _, want := range []string{
+		`"processLaunch":`,
+		`"state":"process_launch_accepted"`,
+		`"labels":["process_launch_accepted"]`,
+		`"processId":"pid-1234"`,
+		`"processIdSource":"adapter"`,
+	} {
+		if !strings.Contains(publicText, want) {
+			t.Fatalf("RuntimeMetadata JSON %s missing %s", publicText, want)
+		}
 	}
 }
 

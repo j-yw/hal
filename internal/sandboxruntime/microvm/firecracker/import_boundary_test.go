@@ -142,6 +142,11 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 		"ProcessCommandDescriptor":              true,
 		"ProcessCommandDescriptorFromStartPlan": true,
 		"ProcessHandleMetadata":                 true,
+		"ProcessLaunchMetadata":                 true,
+		"ProcessLaunchState":                    true,
+		"ProcessLaunchStateAccepted":            true,
+		"ProcessLaunchStateAttempted":           true,
+		"ProcessLaunchStateBoundaryAvailable":   true,
 		"ProcessStartCommandRequest":            true,
 		"ProcessStartRequest":                   true,
 		"RenderBootSourcePayload":               true,
@@ -152,9 +157,11 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 		"RenderStartOperationPlan":              true,
 		"RenderStopOperationPlan":               true,
 		"RootDrivePayload":                      true,
+		"SanitizeProcessLaunchMetadata":         true,
 		"StartProcess":                          true,
 		"StartOperationPlan":                    true,
 		"StopOperationPlan":                     true,
+		"NewProcessLaunchMetadata":              true,
 	}
 	seenExportedNames := map[string]bool{}
 
@@ -194,7 +201,7 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 
 	for name := range seenExportedNames {
 		if !allowedExportedNames[name] {
-			t.Fatalf("unexpected exported Firecracker namespace %q; Phase 32 foundation should expose only namespace, US-002 config contracts, US-003 path planning contracts, US-004 payload contracts, US-005 operation plan contracts, US-006 process boundary contracts, and US-007 metadata-only backend creation contracts", name)
+			t.Fatalf("unexpected exported Firecracker namespace %q; Firecracker package exports must stay limited to foundation contracts and Phase 33 launch metadata labels", name)
 		}
 	}
 	for name := range allowedExportedNames {

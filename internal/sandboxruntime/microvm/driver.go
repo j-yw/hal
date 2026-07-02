@@ -413,6 +413,16 @@ func cloneRuntimeMetadata(metadata *sandboxruntime.RuntimeMetadata) *sandboxrunt
 	copied.CapabilityLabels = cloneStringSlice(metadata.CapabilityLabels)
 	copied.PathRoles = cloneStringSlice(metadata.PathRoles)
 	copied.OperationPlan = cloneRuntimeOperationPlan(metadata.OperationPlan)
+	copied.ProcessLaunch = cloneRuntimeProcessLaunchMetadata(metadata.ProcessLaunch)
+	return &copied
+}
+
+func cloneRuntimeProcessLaunchMetadata(metadata *sandboxruntime.RuntimeProcessLaunchMetadata) *sandboxruntime.RuntimeProcessLaunchMetadata {
+	if metadata == nil {
+		return nil
+	}
+	copied := *metadata
+	copied.Labels = cloneStringSlice(metadata.Labels)
 	return &copied
 }
 

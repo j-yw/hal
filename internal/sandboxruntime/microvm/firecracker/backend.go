@@ -83,6 +83,7 @@ func (b *Backend) Create(_ context.Context, req microvm.BackendCreateRequest) (*
 				Backend:          BackendID,
 				CapabilityLabels: firecrackerTargetCapabilityLabels(),
 				PathRoles:        firecrackerTargetPathRoles(config.Paths),
+				ProcessLaunch:    processBoundaryAvailableRuntimeMetadata(),
 			},
 		},
 	}, nil
@@ -292,6 +293,7 @@ func ensureFirecrackerPlanningTarget(target *sandboxruntime.Target, source sandb
 	target.Runtime.Metadata.Backend = BackendID
 	target.Runtime.Metadata.CapabilityLabels = firecrackerTargetCapabilityLabels()
 	target.Runtime.Metadata.PathRoles = firecrackerTargetPathRoleLabels()
+	target.Runtime.Metadata.ProcessLaunch = processBoundaryAvailableRuntimeMetadata()
 }
 
 func firecrackerRuntimeOperationPlanMetadata(descriptor ProcessCommandDescriptor) *sandboxruntime.RuntimeOperationPlan {
@@ -383,6 +385,7 @@ func cloneFirecrackerRuntimeMetadata(metadata *sandboxruntime.RuntimeMetadata) *
 	copied.CapabilityLabels = cloneStringSlice(metadata.CapabilityLabels)
 	copied.PathRoles = cloneStringSlice(metadata.PathRoles)
 	copied.OperationPlan = cloneFirecrackerRuntimeOperationPlan(metadata.OperationPlan)
+	copied.ProcessLaunch = cloneRuntimeProcessLaunchMetadata(metadata.ProcessLaunch)
 	return &copied
 }
 

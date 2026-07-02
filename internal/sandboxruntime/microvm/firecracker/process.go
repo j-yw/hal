@@ -295,18 +295,8 @@ func sanitizeProcessHandleMetadata(handle ProcessHandleMetadata) ProcessHandleMe
 
 func sanitizeProcessMetadataToken(value string) string {
 	value = strings.TrimSpace(value)
-	if value == "" || hasUnsafePathControl(value) {
+	if safeFirecrackerMetadataToken(value) == "" {
 		return ""
-	}
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z':
-		case r >= 'A' && r <= 'Z':
-		case r >= '0' && r <= '9':
-		case r == '_' || r == '-' || r == '.' || r == ':':
-		default:
-			return ""
-		}
 	}
 	return value
 }
