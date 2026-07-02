@@ -179,7 +179,7 @@ Source selection (when not resuming):
      - markdown_first: newest .hal/prd-*.md -> latest report in auto.reportsDir
 
 Convert mode policy:
-  - auto.convertMode=auto (default): markdown entry -> standard, report entry -> granular
+  - auto.convertMode=auto (default): markdown entry -> standard parallel-aware US-XXX stories, report entry -> granular T-XXX tasks
   - auto.convertMode=standard|granular overrides entry defaults for new runs
   - --resume always uses saved state convert mode
 

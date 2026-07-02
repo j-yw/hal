@@ -54,7 +54,7 @@ Convert a markdown PRD into canonical `.hal/prd.json`.
 }
 ```
 
-Scheduling fields are optional. Omit `dependsOn`, `conflictDomains`, and `parallelReason` when empty, omit `parallelSafe` when unknown, and omit `barrier` when false.
+Scheduling fields are optional schema fields, but every conversion should evaluate each story/task for concrete scheduling metadata. Emit fields when supported by explicit PRD requirements or clear engineering order; omit `dependsOn`, `conflictDomains`, and `parallelReason` when empty, omit `parallelSafe` when unknown, and omit `barrier` when false.
 
 ## Story Rules
 
@@ -99,7 +99,7 @@ Scheduling fields are optional. Omit `dependsOn`, `conflictDomains`, and `parall
 
 ## Scheduling Contract v1
 
-Use scheduling metadata conservatively so downstream runners can safely identify work that may execute in parallel.
+Use scheduling metadata conservatively in both standard and granular conversion so downstream runners can safely identify work that may execute in parallel.
 
 - **dependsOn**: Exact story/task IDs that must complete before this item starts. Include only true prerequisites. Never reference unknown IDs, the same ID, or a later item.
 - **conflictDomains**: Stable labels for shared files, resources, subsystems, migrations, credentials, or external state that should not be modified concurrently. Omit when no concrete conflict domain is known.
@@ -108,6 +108,6 @@ Use scheduling metadata conservatively so downstream runners can safely identify
 - **parallelReason**: Required when `parallelSafe` or `barrier` is present. Keep it concise and specific.
 - **Cycles**: Dependency cycles are invalid. If two items need the same serialized resource, prefer a shared `conflictDomains` label over circular dependencies.
 
-Granular conversion may emit task IDs such as `T-001`, `T-002`, etc. In granular mode, add `dependsOn` and `conflictDomains` where they are clear from the PRD, and leave scheduling fields absent where the dependency or conflict is speculative. Do not add extra verification, integration, or checkpoint tasks unless they are explicitly requested by the source markdown.
+Standard conversion emits user story IDs such as `US-001`, `US-002`, etc. Granular conversion may emit task IDs such as `T-001`, `T-002`, etc. Apply the same scheduling contract in both modes, and leave scheduling fields absent where the dependency or conflict is speculative. Granular mode only changes task shape: preserve explicit source stories that are already atomic, split only work that is too large for one agent iteration, and do not add extra verification, integration, or checkpoint tasks unless they are explicitly requested by the source markdown.
 
 For a complete output example, see [examples/prd-output.json](examples/prd-output.json).

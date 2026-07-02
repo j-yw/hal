@@ -37,13 +37,18 @@ type ConvertResult struct {
 var convertCmd = &cobra.Command{
 	Use:   "convert [markdown-prd]",
 	Short: "Convert markdown PRD to JSON",
-	Long: `Convert a markdown PRD file to prd.json format using the hal skill.
+	Long: `Convert a markdown PRD file to a parallel-aware prd.json blueprint using the hal skill.
 
 Source selection:
 - With no argument, scans .hal/prd-*.md and picks newest by modified time.
 - If modified times tie, picks lexicographically ascending filename.
 - With an explicit argument, uses that exact path.
 - Human output prints "Using source: <path>" once the source is resolved.
+
+Output behavior:
+- Standard conversion produces US-XXX user stories and evaluates each story for scheduling metadata.
+- --granular produces atomic T-XXX tasks for autonomous execution.
+- Scheduling metadata is conservative: dependencies and conflict domains are emitted only when clear.
 
 Safety controls:
 - Default convert does NOT archive existing state.
