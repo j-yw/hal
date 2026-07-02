@@ -88,10 +88,20 @@ var forbiddenFirecrackerProductionImports = []firecrackerForbiddenImport{
 	},
 }
 
-func TestFirecrackerPackageDeclaresInitialNamespaceOnly(t *testing.T) {
+func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 	paths := firecrackerProductionBoundaryFiles(t)
 	allowedExportedNames := map[string]bool{
-		"BackendID": true,
+		"BackendConfig":                  true,
+		"BackendConfigFromMicroVMConfig": true,
+		"BackendID":                      true,
+		"ConfigOperation":                true,
+		"DefaultAPISocketPath":           true,
+		"DefaultLogPath":                 true,
+		"DefaultMetricsPath":             true,
+		"DefaultRuntimeID":               true,
+		"DefaultStateDir":                true,
+		"GuestWorkDirMetadata":           true,
+		"PathPlan":                       true,
 	}
 	seenExportedNames := map[string]bool{}
 
@@ -131,7 +141,7 @@ func TestFirecrackerPackageDeclaresInitialNamespaceOnly(t *testing.T) {
 
 	for name := range seenExportedNames {
 		if !allowedExportedNames[name] {
-			t.Fatalf("unexpected exported Firecracker namespace %q; US-001 should not add config, payload, command-plan, or backend behavior yet", name)
+			t.Fatalf("unexpected exported Firecracker namespace %q; Phase 32 foundation should expose only namespace and US-002 config contracts", name)
 		}
 	}
 	for name := range allowedExportedNames {

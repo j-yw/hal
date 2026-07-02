@@ -5,8 +5,8 @@
 // in internal/sandboxruntime/microvm should keep only reusable microVM
 // contracts and must not import this package for default construction.
 //
-// US-001 intentionally exposes only the backend namespace. Later stories may
-// add configuration, path, payload, process-boundary, and backend
+// US-001 established the backend namespace. US-002 adds the pure configuration
+// contract; later stories may add path, payload, process-boundary, and backend
 // implementations here behind fakeable tests and explicit injection.
 package firecracker
 
