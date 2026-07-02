@@ -486,6 +486,94 @@ func TestRunnerRejectsManifestCommitThatIsNotWorkerBranchTip(t *testing.T) {
 	}
 }
 
+func TestRunnerRejectsDirtyWorkerWorktreeBeforeIntegration(t *testing.T) {
+	repo := initParallelRunRepo(t)
+	writeParallelRuntime(t, repo, `{
+  "project": "parallel",
+  "branchName": "hal/parallel",
+  "description": "parallel test",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "One",
+      "description": "Leave uncommitted worker edits behind",
+      "acceptanceCriteria": ["Typecheck passes"],
+      "priority": 1,
+      "passes": false,
+      "notes": "",
+      "parallelSafe": true,
+      "parallelReason": "Independent file"
+    }
+  ]
+}`)
+
+	var workerPath string
+	result := New(Config{
+		RepoDir:       repo,
+		RunID:         "test-run",
+		MaxIterations: 1,
+		Parallelism:   1,
+		Engine:        "fake",
+	}, Deps{
+		Executor: workerExecutorFunc(func(ctx context.Context, req WorkerExecutionRequest) WorkerExecutionResult {
+			workerPath = req.WorktreePath
+			committed := filepath.Join(req.WorktreePath, "T-001.txt")
+			if err := os.WriteFile(committed, []byte("committed\n"), 0o644); err != nil {
+				return WorkerExecutionResult{Error: err}
+			}
+			if _, err := gitOutputForTest(req.WorktreePath, "add", "T-001.txt"); err != nil {
+				return WorkerExecutionResult{Error: err}
+			}
+			if _, err := gitOutputForTest(req.WorktreePath, "commit", "-m", "feat: T-001 committed"); err != nil {
+				return WorkerExecutionResult{Error: err}
+			}
+			commit, err := gitOutputForTest(req.WorktreePath, "rev-parse", "HEAD")
+			if err != nil {
+				return WorkerExecutionResult{Error: err}
+			}
+			commit = strings.TrimSpace(commit)
+
+			if err := os.WriteFile(filepath.Join(req.WorktreePath, "left-behind.txt"), []byte("uncommitted\n"), 0o644); err != nil {
+				return WorkerExecutionResult{Error: err}
+			}
+			manifest := loop.WorkerManifest{
+				TaskID:        req.Task.ID,
+				Status:        loop.WorkerManifestStatusReadyForIntegration,
+				Branch:        req.Assignment.BranchName,
+				Commit:        commit,
+				Checks:        []string{"fake check"},
+				FilesChanged:  []string{"T-001.txt", "left-behind.txt"},
+				ProgressEntry: "- " + req.Task.ID + " complete",
+				Notes:         "ready with dirty worktree",
+			}
+			if err := loop.WriteWorkerManifest(req.ManifestPath, manifest); err != nil {
+				return WorkerExecutionResult{Error: err}
+			}
+			return WorkerExecutionResult{
+				EngineResult: engine.Result{Success: true},
+				Manifest:     &manifest,
+			}
+		}),
+	}).Run(context.Background())
+
+	if result.Error == nil || !strings.Contains(result.Error.Error(), "worktree has uncommitted changes") {
+		t.Fatalf("error = %v, want dirty worktree rejection", result.Error)
+	}
+	if result.Parallel.Started != 1 || result.Parallel.Integrated != 0 || result.Parallel.Failed != 1 {
+		t.Fatalf("parallel summary = %+v, want started=1 integrated=0 failed=1", result.Parallel)
+	}
+	requireTaskPasses(t, filepath.Join(repo, template.HalDir, template.PRDFile), "T-001", false)
+	if got := strings.TrimSpace(git(t, repo, "status", "--short", "--untracked-files=all")); got != "" {
+		t.Fatalf("canonical git status = %q, want clean", got)
+	}
+	if workerPath == "" {
+		t.Fatal("worker path was not captured")
+	}
+	if got := strings.TrimSpace(git(t, workerPath, "status", "--short", "--untracked-files=all")); !strings.Contains(got, "left-behind.txt") {
+		t.Fatalf("worker git status = %q, want left-behind.txt", got)
+	}
+}
+
 func TestRunnerExplicitCleanupRemovesFailedWorkerWorktree(t *testing.T) {
 	repo := initParallelRunRepo(t)
 	writeParallelRuntime(t, repo, `{

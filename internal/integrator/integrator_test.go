@@ -152,6 +152,72 @@ func TestIntegratorRejectsWorkerCommitTouchingCanonicalHalState(t *testing.T) {
 	}
 }
 
+func TestIntegratorRejectsMultiCommitWorkerBranch(t *testing.T) {
+	repo := initTestRepo(t)
+	writeFile(t, repo, ".hal/prd.json", `{
+  "project": "parallel",
+  "tasks": [
+    {"id": "T-001", "title": "One", "priority": 1, "passes": false}
+  ]
+}
+`)
+	writeFile(t, repo, ".hal/progress.txt", "## Progress\n")
+	writeFile(t, repo, "app.txt", "base\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	originalHead := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+
+	git(t, repo, "checkout", "-b", "worker/t-001")
+	writeFile(t, repo, "first.txt", "first\n")
+	git(t, repo, "add", "first.txt")
+	git(t, repo, "commit", "-m", "feat: first part")
+	writeFile(t, repo, "second.txt", "second\n")
+	git(t, repo, "add", "second.txt")
+	git(t, repo, "commit", "-m", "feat: second part")
+	workerCommit := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+	git(t, repo, "checkout", "main")
+
+	_, err := New().Integrate(context.Background(), Request{
+		RepoDir:         repo,
+		TaskID:          "T-001",
+		WorkerBranch:    "worker/t-001",
+		WorkerCommit:    workerCommit,
+		CanonicalBranch: "main",
+		PRDPath:         ".hal/prd.json",
+		ProgressPath:    ".hal/progress.txt",
+		ProgressEntry:   "- T-001 integrated",
+	})
+	if err == nil {
+		t.Fatal("Integrate() error = nil, want multi-commit branch rejection")
+	}
+	var integrationErr *IntegrationError
+	if !errors.As(err, &integrationErr) {
+		t.Fatalf("error type = %T, want *IntegrationError", err)
+	}
+	if integrationErr.Stage != StageValidate {
+		t.Fatalf("stage = %s, want %s", integrationErr.Stage, StageValidate)
+	}
+	if !strings.Contains(integrationErr.Error(), "has 2 commits") || !strings.Contains(integrationErr.Error(), "requires a single worker commit") {
+		t.Fatalf("error = %v, want multi-commit rejection", integrationErr)
+	}
+	if got := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD")); got != originalHead {
+		t.Fatalf("HEAD = %s, want %s", got, originalHead)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "first.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("first.txt err = %v, want not exist", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "second.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("second.txt err = %v, want not exist", err)
+	}
+	requireTaskPasses(t, filepath.Join(repo, ".hal/prd.json"), "T-001", false)
+	if got := readFile(t, repo, ".hal/progress.txt"); strings.Contains(got, "integrated") {
+		t.Fatalf("progress was updated on rejected worker branch: %q", got)
+	}
+	if got := strings.TrimSpace(git(t, repo, "status", "--short")); got != "" {
+		t.Fatalf("git status = %q, want clean", got)
+	}
+}
+
 func TestIntegratorReturnsStructuredErrorAndAbortsCherryPickConflict(t *testing.T) {
 	repo := initTestRepo(t)
 	writeFile(t, repo, ".hal/prd.json", `{"tasks":[{"id":"T-001","passes":false}]}`)

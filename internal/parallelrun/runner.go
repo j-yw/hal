@@ -404,6 +404,10 @@ func (r *Runner) runBatch(ctx context.Context, cfg Config, manager worktreeManag
 				results[i].err = err
 				return
 			}
+			if err := validateWorkerWorktreeClean(ctx, results[i].worktree.WorktreePath, results[i].task.ID); err != nil {
+				results[i].err = err
+				return
+			}
 			results[i].manifest = manifest
 		}()
 	}
@@ -643,6 +647,22 @@ func validateWorkerManifestCommit(ctx context.Context, repoDir string, manifest 
 	}
 	if manifestCommit != branchCommit {
 		return fmt.Errorf("worker %s manifest commit %q resolves to %s, want worker branch %q tip %s", taskID, manifest.Commit, manifestCommit, branchName, branchCommit)
+	}
+	return nil
+}
+
+func validateWorkerWorktreeClean(ctx context.Context, worktreePath, taskID string) error {
+	if strings.TrimSpace(worktreePath) == "" {
+		return fmt.Errorf("worker %s worktree path is required", taskID)
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "status", "--porcelain", "--untracked-files=all")
+	out, err := cmd.CombinedOutput()
+	status := strings.TrimSpace(string(out))
+	if err != nil {
+		return fmt.Errorf("check worker %s worktree status: %w (output: %s)", taskID, err, status)
+	}
+	if status != "" {
+		return fmt.Errorf("worker %s worktree has uncommitted changes; commit or remove changes before writing ready manifest", taskID)
 	}
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -199,6 +200,9 @@ func (i *Integrator) Integrate(ctx context.Context, req Request) (Result, error)
 		WorkerCommit:    req.WorkerCommit,
 		CanonicalBranch: req.CanonicalBranch,
 	}
+	if err := validateSingleWorkerCommit(ctx, runner, req); err != nil {
+		return result, &IntegrationError{Stage: StageValidate, Err: err}
+	}
 	if err := validateWorkerCommitPaths(ctx, runner, req); err != nil {
 		return result, &IntegrationError{Stage: StageValidate, Err: err}
 	}
@@ -324,6 +328,22 @@ func validateRequest(req Request) error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing required integration input: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func validateSingleWorkerCommit(ctx context.Context, runner CommandRunner, req Request) error {
+	revisionRange := req.CanonicalBranch + ".." + req.WorkerCommit
+	result, err := runGit(ctx, runner, req.RepoDir, "rev-list", "--count", revisionRange)
+	if err != nil {
+		return fmt.Errorf("count worker branch commits: %w", err)
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(result.Stdout))
+	if err != nil {
+		return fmt.Errorf("parse worker branch commit count %q: %w", strings.TrimSpace(result.Stdout), err)
+	}
+	if count > 1 {
+		return fmt.Errorf("worker branch %s has %d commits beyond %s; parallel integration requires a single worker commit", req.WorkerBranch, count, req.CanonicalBranch)
 	}
 	return nil
 }
