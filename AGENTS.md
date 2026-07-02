@@ -43,6 +43,7 @@
 - Schema and safety coverage for credential proxy contracts belongs beside them in `internal/sandbox/credential_proxy_test.go`; lock enum values and safe JSON fields early, and keep production comments/field names free of live-behavior phrases so later source guards can stay simple and fixture-scoped.
 - Credential proxy validation belongs in `internal/sandbox/credential_proxy_validation.go`; keep it pure and data-only, validate safe IDs/references and explicit enum allowlists, reject raw-looking values with sanitized code/field/message errors plus optional record/binding indexes only, and keep `Error()` strings redaction-safe while leaving normalization, durable sanitizers, manifest/factory plumbing, and live behavior to later phases.
 - Credential proxy normalization belongs in `internal/sandbox/credential_proxy_normalization.go`; return copies, trim ID/reference fields before validation, lowercase enum-like metadata only, preserve nil versus explicit empty slices, and never use normalization to make raw-looking hosts, URLs, paths, tokens, or secret markers acceptable.
+- Credential proxy durable sanitizers belong in `internal/sandbox/credential_proxy_sanitize.go`; normalize first, return copies, zero records with unsafe required IDs/references, omit unsafe records from slice helpers, and drop unsafe optional references rather than replacing them with redaction placeholders.
 
 ## Patterns from phase24-network-proxy-policy-log (2026-07-02)
 
