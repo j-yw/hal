@@ -400,6 +400,10 @@ func (r *Runner) runBatch(ctx context.Context, cfg Config, manager worktreeManag
 				results[i].err = err
 				return
 			}
+			if err := validateWorkerManifestCommit(ctx, cfg.RepoDir, manifest, results[i].task.ID, results[i].worktree.BranchName); err != nil {
+				results[i].err = err
+				return
+			}
 			results[i].manifest = manifest
 		}()
 	}
@@ -626,6 +630,38 @@ func validateWorkerManifest(manifest *loop.WorkerManifest, taskID, branchName st
 		return fmt.Errorf("worker %s manifest progressEntry is required", taskID)
 	}
 	return nil
+}
+
+func validateWorkerManifestCommit(ctx context.Context, repoDir string, manifest *loop.WorkerManifest, taskID, branchName string) error {
+	manifestCommit, err := resolveGitCommit(ctx, repoDir, strings.TrimSpace(manifest.Commit))
+	if err != nil {
+		return fmt.Errorf("worker %s manifest commit %q is not a commit: %w", taskID, manifest.Commit, err)
+	}
+	branchCommit, err := resolveGitCommit(ctx, repoDir, "refs/heads/"+strings.TrimSpace(branchName))
+	if err != nil {
+		return fmt.Errorf("worker %s branch %q tip could not be resolved: %w", taskID, branchName, err)
+	}
+	if manifestCommit != branchCommit {
+		return fmt.Errorf("worker %s manifest commit %q resolves to %s, want worker branch %q tip %s", taskID, manifest.Commit, manifestCommit, branchName, branchCommit)
+	}
+	return nil
+}
+
+func resolveGitCommit(ctx context.Context, repoDir, rev string) (string, error) {
+	rev = strings.TrimSpace(rev)
+	if rev == "" {
+		return "", errors.New("commit revision is required")
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "rev-parse", "--verify", "--end-of-options", rev+"^{commit}")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --verify %q failed: %w (output: %s)", rev, err, strings.TrimSpace(string(out)))
+	}
+	commit := strings.TrimSpace(string(out))
+	if commit == "" {
+		return "", fmt.Errorf("git rev-parse --verify %q returned empty commit", rev)
+	}
+	return commit, nil
 }
 
 func resolveCanonicalBranch(ctx context.Context, cfg Config, prd *engine.PRD) (string, error) {

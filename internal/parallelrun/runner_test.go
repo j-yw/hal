@@ -390,6 +390,102 @@ func TestRunnerRejectsWorkerFileWithoutManifest(t *testing.T) {
 	}
 }
 
+func TestRunnerRejectsManifestCommitThatIsNotWorkerBranchTip(t *testing.T) {
+	repo := initParallelRunRepo(t)
+	writeParallelRuntime(t, repo, `{
+  "project": "parallel",
+  "branchName": "hal/parallel",
+  "description": "parallel test",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "One",
+      "description": "Create two commits but report the stale one",
+      "acceptanceCriteria": ["Typecheck passes"],
+      "priority": 1,
+      "passes": false,
+      "notes": "",
+      "parallelSafe": true,
+      "parallelReason": "Independent file"
+    }
+  ]
+}`)
+
+	var workerPath string
+	result := New(Config{
+		RepoDir:       repo,
+		RunID:         "test-run",
+		MaxIterations: 1,
+		Parallelism:   1,
+		Engine:        "fake",
+	}, Deps{
+		Executor: workerExecutorFunc(func(ctx context.Context, req WorkerExecutionRequest) WorkerExecutionResult {
+			workerPath = req.WorktreePath
+			first := filepath.Join(req.WorktreePath, "T-001-first.txt")
+			if err := os.WriteFile(first, []byte("first\n"), 0o644); err != nil {
+				return WorkerExecutionResult{Error: err}
+			}
+			if _, err := gitOutputForTest(req.WorktreePath, "add", "T-001-first.txt"); err != nil {
+				return WorkerExecutionResult{Error: err}
+			}
+			if _, err := gitOutputForTest(req.WorktreePath, "commit", "-m", "feat: stale T-001"); err != nil {
+				return WorkerExecutionResult{Error: err}
+			}
+			staleCommit, err := gitOutputForTest(req.WorktreePath, "rev-parse", "HEAD")
+			if err != nil {
+				return WorkerExecutionResult{Error: err}
+			}
+			staleCommit = strings.TrimSpace(staleCommit)
+
+			second := filepath.Join(req.WorktreePath, "T-001-final.txt")
+			if err := os.WriteFile(second, []byte("final\n"), 0o644); err != nil {
+				return WorkerExecutionResult{Error: err}
+			}
+			if _, err := gitOutputForTest(req.WorktreePath, "add", "T-001-final.txt"); err != nil {
+				return WorkerExecutionResult{Error: err}
+			}
+			if _, err := gitOutputForTest(req.WorktreePath, "commit", "-m", "feat: final T-001"); err != nil {
+				return WorkerExecutionResult{Error: err}
+			}
+
+			manifest := loop.WorkerManifest{
+				TaskID:        req.Task.ID,
+				Status:        loop.WorkerManifestStatusReadyForIntegration,
+				Branch:        req.Assignment.BranchName,
+				Commit:        staleCommit,
+				Checks:        []string{"fake check"},
+				FilesChanged:  []string{"T-001-first.txt", "T-001-final.txt"},
+				ProgressEntry: "- " + req.Task.ID + " complete",
+				Notes:         "stale manifest commit",
+			}
+			if err := loop.WriteWorkerManifest(req.ManifestPath, manifest); err != nil {
+				return WorkerExecutionResult{Error: err}
+			}
+			return WorkerExecutionResult{
+				EngineResult: engine.Result{Success: true},
+				Manifest:     &manifest,
+			}
+		}),
+	}).Run(context.Background())
+
+	if result.Error == nil || !strings.Contains(result.Error.Error(), "manifest commit") || !strings.Contains(result.Error.Error(), "want worker branch") {
+		t.Fatalf("error = %v, want stale manifest commit rejection", result.Error)
+	}
+	if result.Parallel.Started != 1 || result.Parallel.Integrated != 0 || result.Parallel.Failed != 1 {
+		t.Fatalf("parallel summary = %+v, want started=1 integrated=0 failed=1", result.Parallel)
+	}
+	requireTaskPasses(t, filepath.Join(repo, template.HalDir, template.PRDFile), "T-001", false)
+	if got := strings.TrimSpace(git(t, repo, "status", "--short", "--untracked-files=all")); got != "" {
+		t.Fatalf("canonical git status = %q, want clean", got)
+	}
+	if workerPath == "" {
+		t.Fatal("worker path was not captured")
+	}
+	if _, err := os.Stat(workerPath); err != nil {
+		t.Fatalf("failed worker worktree stat err = %v, want preserved", err)
+	}
+}
+
 func TestRunnerExplicitCleanupRemovesFailedWorkerWorktree(t *testing.T) {
 	repo := initParallelRunRepo(t)
 	writeParallelRuntime(t, repo, `{
