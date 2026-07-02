@@ -207,6 +207,103 @@ func TestWorkerCapabilitiesValidationAndJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWorkerProtocolOmitsSecurityReadinessGateDecisionFields(t *testing.T) {
+	payloads := []struct {
+		name  string
+		value any
+	}{
+		{
+			name: "request",
+			value: Request{
+				ProtocolVersion: ProtocolVersion,
+				RequestID:       "req-001",
+				Operation:       OperationCreate,
+				DriverID:        RuntimeDriverRootlessPodman,
+				Create: &CreateRequest{
+					Name:     "dev-sandbox",
+					Security: honestSecurityPolicy(),
+				},
+			},
+		},
+		{
+			name: "response",
+			value: Response{
+				ProtocolVersion: ProtocolVersion,
+				RequestID:       "req-001",
+				Operation:       OperationStart,
+				OK:              true,
+				Target: &Target{
+					ID:     "target-001",
+					Name:   "dev-sandbox",
+					Status: "running",
+					Runtime: RuntimeTarget{
+						Driver:         RuntimeDriverRootlessPodman,
+						RuntimeID:      "runtime-001",
+						WorkerID:       "worker-001",
+						IsolationLevel: IsolationLevelContainer,
+					},
+				},
+			},
+		},
+		{
+			name: "status",
+			value: Status{
+				ProtocolVersion:         ProtocolVersion,
+				WorkerID:                "worker-001",
+				HostKind:                HostKindLocal,
+				SupportedRuntimeDrivers: []string{RuntimeDriverRootlessPodman},
+				Health:                  WorkerHealth{Status: HealthStatusHealthy},
+				Capacity:                WorkerCapacity{MaxConcurrentSandboxes: 1},
+				Security:                honestSecurityPolicy(),
+			},
+		},
+		{
+			name: "capabilities",
+			value: Capabilities{
+				ProtocolVersion: ProtocolVersion,
+				WorkerID:        "worker-001",
+				RuntimeDrivers: []RuntimeDriver{
+					{
+						ID:             RuntimeDriverRootlessPodman,
+						HostKind:       HostKindLocal,
+						IsolationLevel: IsolationLevelContainer,
+						Security:       honestSecurityPolicy(),
+					},
+				},
+				Security: honestSecurityPolicy(),
+			},
+		},
+	}
+	for _, payload := range payloads {
+		t.Run(payload.name, func(t *testing.T) {
+			data, err := json.Marshal(payload.value)
+			if err != nil {
+				t.Fatalf("Marshal(%s) error: %v", payload.name, err)
+			}
+			assertWorkerProtocolReadinessGateFieldsAbsent(t, string(data))
+		})
+	}
+
+	for _, typ := range []reflect.Type{
+		reflect.TypeOf(Request{}),
+		reflect.TypeOf(Response{}),
+		reflect.TypeOf(Status{}),
+		reflect.TypeOf(Capabilities{}),
+		reflect.TypeOf(RuntimeDriver{}),
+		reflect.TypeOf(SecurityPolicy{}),
+		reflect.TypeOf(SecurityControls{}),
+		reflect.TypeOf(Target{}),
+		reflect.TypeOf(RuntimeTarget{}),
+		reflect.TypeOf(WorkerHealth{}),
+		reflect.TypeOf(WorkerCapacity{}),
+		reflect.TypeOf(CreateRequest{}),
+		reflect.TypeOf(LifecycleRequest{}),
+		reflect.TypeOf(InspectRequest{}),
+	} {
+		assertWorkerProtocolTypeOmitsReadinessGateFields(t, typ)
+	}
+}
+
 func TestWorkerSecurityPolicyDistinguishesRequestedFromEnforcedControls(t *testing.T) {
 	policy := honestSecurityPolicy()
 	if err := policy.Validate(); err != nil {
@@ -373,4 +470,45 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func assertWorkerProtocolReadinessGateFieldsAbsent(t *testing.T, payload string) {
+	t.Helper()
+	for _, forbidden := range []string{
+		"capabilityReadiness",
+		"capabilityReadinessDiagnostics",
+		"securityReadinessGate",
+		"readinessGate",
+		"wouldBlockStrictGate",
+		"policyMode",
+	} {
+		if strings.Contains(payload, forbidden) {
+			t.Fatalf("worker protocol payload included readiness gate field %q: %s", forbidden, payload)
+		}
+	}
+}
+
+func assertWorkerProtocolTypeOmitsReadinessGateFields(t *testing.T, typ reflect.Type) {
+	t.Helper()
+	if typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		jsonName := strings.Split(field.Tag.Get("json"), ",")[0]
+		for _, forbidden := range []string{
+			"CapabilityReadiness",
+			"ReadinessGate",
+			"SecurityReadinessGate",
+			"WouldBlockStrictGate",
+			"capabilityReadiness",
+			"readinessGate",
+			"securityReadinessGate",
+			"wouldBlockStrictGate",
+		} {
+			if strings.Contains(field.Name, forbidden) || strings.Contains(jsonName, forbidden) {
+				t.Fatalf("%s.%s exposes readiness gate field %q", typ.Name(), field.Name, forbidden)
+			}
+		}
+	}
 }
