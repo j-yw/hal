@@ -43,6 +43,204 @@ func TestSecurityCapabilityReadinessGateContractConstants(t *testing.T) {
 	}
 }
 
+func TestSecurityCapabilityReadinessGate(t *testing.T) {
+	blockingDiagnostics := DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(SandboxSecurityCapabilityReadinessOutput{
+		Results: []SandboxSecurityCapabilityReadinessResult{
+			securityCapabilityDiagnosticReadyResult(),
+			securityCapabilityDiagnosticMetadataOnlyResult(),
+			securityCapabilityDiagnosticBlockedResult(),
+			securityCapabilityDiagnosticUnsupportedResult(),
+		},
+	})
+	readyDiagnostics := DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(SandboxSecurityCapabilityReadinessOutput{
+		Results: []SandboxSecurityCapabilityReadinessResult{securityCapabilityDiagnosticReadyResult()},
+	})
+
+	tests := []struct {
+		name        string
+		mode        SandboxSecurityCapabilityReadinessGatePolicyMode
+		diagnostics SandboxSecurityCapabilityReadinessDiagnosticSummary
+		want        SandboxSecurityCapabilityReadinessGateDecision
+	}{
+		{
+			name:        "default mode is allowed even when strict would block",
+			diagnostics: blockingDiagnostics,
+			want: securityCapabilityReadinessGateDecisionExpectation(
+				SandboxSecurityCapabilityReadinessGateCodeAllowed,
+				SandboxSecurityCapabilityReadinessGateOutcomeAllowed,
+				SandboxSecurityCapabilityReadinessGatePolicyModeOff,
+				SandboxSecurityCapabilityReadinessGateReasonPolicyOff,
+				securityCapabilityReadinessGateMixedCounts(),
+			),
+		},
+		{
+			name:        "off mode is allowed even when strict would block",
+			mode:        SandboxSecurityCapabilityReadinessGatePolicyModeOff,
+			diagnostics: blockingDiagnostics,
+			want: securityCapabilityReadinessGateDecisionExpectation(
+				SandboxSecurityCapabilityReadinessGateCodeAllowed,
+				SandboxSecurityCapabilityReadinessGateOutcomeAllowed,
+				SandboxSecurityCapabilityReadinessGatePolicyModeOff,
+				SandboxSecurityCapabilityReadinessGateReasonPolicyOff,
+				securityCapabilityReadinessGateMixedCounts(),
+			),
+		},
+		{
+			name:        "advisory mode returns non-blocking advisory when strict would block",
+			mode:        SandboxSecurityCapabilityReadinessGatePolicyModeAdvisory,
+			diagnostics: blockingDiagnostics,
+			want: securityCapabilityReadinessGateDecisionExpectation(
+				SandboxSecurityCapabilityReadinessGateCodeAdvisory,
+				SandboxSecurityCapabilityReadinessGateOutcomeAdvisory,
+				SandboxSecurityCapabilityReadinessGatePolicyModeAdvisory,
+				SandboxSecurityCapabilityReadinessGateReasonPolicyAdvisory,
+				securityCapabilityReadinessGateMixedCounts(),
+			),
+		},
+		{
+			name:        "strict mode blocks when diagnostics would block strict gate",
+			mode:        SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+			diagnostics: blockingDiagnostics,
+			want: securityCapabilityReadinessGateDecisionExpectation(
+				SandboxSecurityCapabilityReadinessGateCodeBlocked,
+				SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+				SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+				SandboxSecurityCapabilityReadinessGateReasonCapabilityBlocked,
+				securityCapabilityReadinessGateMixedCounts(),
+			),
+		},
+		{
+			name:        "strict mode passes ready-only diagnostics",
+			mode:        SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+			diagnostics: readyDiagnostics,
+			want: securityCapabilityReadinessGateDecisionExpectation(
+				SandboxSecurityCapabilityReadinessGateCodeAllowed,
+				SandboxSecurityCapabilityReadinessGateOutcomeAllowed,
+				SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+				SandboxSecurityCapabilityReadinessGateReasonReadinessReady,
+				SandboxSecurityCapabilityReadinessGateCounts{Total: 1, Ready: 1},
+			),
+		},
+		{
+			name:        "strict mode treats missing readiness conservatively",
+			mode:        SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+			diagnostics: DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(SandboxSecurityCapabilityReadinessOutput{}),
+			want: securityCapabilityReadinessGateDecisionExpectation(
+				SandboxSecurityCapabilityReadinessGateCodeBlocked,
+				SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+				SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+				SandboxSecurityCapabilityReadinessGateReasonReadinessMissing,
+				SandboxSecurityCapabilityReadinessGateCounts{Total: 1, Missing: 1, StrictBlocking: 1},
+			),
+		},
+		{
+			name:        "strict mode treats metadata-only readiness conservatively",
+			mode:        SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+			diagnostics: DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(SandboxSecurityCapabilityReadinessOutput{Results: []SandboxSecurityCapabilityReadinessResult{securityCapabilityDiagnosticMetadataOnlyResult()}}),
+			want: securityCapabilityReadinessGateDecisionExpectation(
+				SandboxSecurityCapabilityReadinessGateCodeBlocked,
+				SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+				SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+				SandboxSecurityCapabilityReadinessGateReasonMetadataOnly,
+				SandboxSecurityCapabilityReadinessGateCounts{Total: 1, Advisory: 1, MetadataOnly: 1, StrictBlocking: 1},
+			),
+		},
+		{
+			name:        "strict mode treats unsupported readiness conservatively",
+			mode:        SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+			diagnostics: DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(SandboxSecurityCapabilityReadinessOutput{Results: []SandboxSecurityCapabilityReadinessResult{securityCapabilityDiagnosticUnsupportedResult()}}),
+			want: securityCapabilityReadinessGateDecisionExpectation(
+				SandboxSecurityCapabilityReadinessGateCodeBlocked,
+				SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+				SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+				SandboxSecurityCapabilityReadinessGateReasonCapabilityUnsupported,
+				SandboxSecurityCapabilityReadinessGateCounts{Total: 1, Advisory: 1, Unsupported: 1, StrictBlocking: 1},
+			),
+		},
+		{
+			name:        "strict mode treats blocked readiness conservatively",
+			mode:        SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+			diagnostics: DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(SandboxSecurityCapabilityReadinessOutput{Results: []SandboxSecurityCapabilityReadinessResult{securityCapabilityDiagnosticBlockedResult()}}),
+			want: securityCapabilityReadinessGateDecisionExpectation(
+				SandboxSecurityCapabilityReadinessGateCodeBlocked,
+				SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+				SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+				SandboxSecurityCapabilityReadinessGateReasonCapabilityBlocked,
+				SandboxSecurityCapabilityReadinessGateCounts{Total: 1, Blocked: 1, StrictBlocking: 1},
+			),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EvaluateSandboxSecurityCapabilityReadinessGate(tt.mode, tt.diagnostics)
+			assertSecurityCapabilityReadinessGateDecision(t, got, tt.want)
+			assertSecurityCapabilityReadinessGateDecisionContainsOnlySafeFields(t, got)
+			assertSecurityCapabilityJSONExcludes(t, got, securityCapabilityDiagnosticUnsafeValueFixtures()...)
+		})
+	}
+
+	t.Run("readiness output path derives diagnostics before gating", func(t *testing.T) {
+		got := EvaluateSandboxSecurityCapabilityReadinessGateFromOutput(SandboxSecurityCapabilityReadinessGatePolicyModeStrict, SandboxSecurityCapabilityReadinessOutput{
+			Results: []SandboxSecurityCapabilityReadinessResult{securityCapabilityDiagnosticReadyResult()},
+		})
+		want := securityCapabilityReadinessGateDecisionExpectation(
+			SandboxSecurityCapabilityReadinessGateCodeAllowed,
+			SandboxSecurityCapabilityReadinessGateOutcomeAllowed,
+			SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+			SandboxSecurityCapabilityReadinessGateReasonReadinessReady,
+			SandboxSecurityCapabilityReadinessGateCounts{Total: 1, Ready: 1},
+		)
+		assertSecurityCapabilityReadinessGateDecision(t, got, want)
+		assertSecurityCapabilityReadinessGateDecisionContainsOnlySafeFields(t, got)
+		assertSecurityCapabilityJSONExcludes(t, got, securityCapabilityDiagnosticUnsafeValueFixtures()...)
+	})
+}
+
+func TestSecurityCapabilityReadinessGateDoesNotCopyRawDiagnosticValues(t *testing.T) {
+	rawValues := []string{
+		"https://api.example.invalid/private?token=raw-token",
+		"api.example.invalid",
+		"Authorization: Bearer raw-header-token",
+		"GITHUB_TOKEN=raw-secret",
+		"/private/var/run/credential-proxy.sock",
+		"command=curl https://api.example.invalid",
+	}
+	diagnostics := SandboxSecurityCapabilityReadinessDiagnosticSummary{
+		Status:               SandboxSecurityCapabilityDiagnosticSummaryStatus(rawValues[0]),
+		Total:                1,
+		HighestSeverity:      SandboxSecurityCapabilityDiagnosticSeverity(rawValues[1]),
+		AdvisoryOnly:         true,
+		WouldBlockStrictGate: true,
+		Items: []SandboxSecurityCapabilityReadinessDiagnosticItem{{
+			Code:                 SandboxSecurityCapabilityDiagnosticCode(rawValues[2]),
+			Severity:             SandboxSecurityCapabilityDiagnosticSeverity(rawValues[3]),
+			Classification:       SandboxSecurityCapabilityDiagnosticClassification(rawValues[4]),
+			AdvisoryOnly:         true,
+			WouldBlockStrictGate: true,
+			State:                SandboxSecurityCapabilityReadinessState(rawValues[5]),
+			Family:               SandboxSecurityCapabilityFamily(rawValues[0]),
+			Capability:           SandboxSecurityCapabilityName(rawValues[1]),
+			ReasonCode:           SandboxSecurityCapabilityReasonCode(rawValues[2]),
+			WarningCodes: []SandboxSecurityCapabilityWarningCode{
+				SandboxSecurityCapabilityWarningCode(rawValues[3]),
+			},
+		}},
+	}
+
+	got := EvaluateSandboxSecurityCapabilityReadinessGate(SandboxSecurityCapabilityReadinessGatePolicyModeStrict, diagnostics)
+	want := securityCapabilityReadinessGateDecisionExpectation(
+		SandboxSecurityCapabilityReadinessGateCodeBlocked,
+		SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+		SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+		SandboxSecurityCapabilityReadinessGateReasonStrictBlockRequired,
+		SandboxSecurityCapabilityReadinessGateCounts{Total: 1, StrictBlocking: 1},
+	)
+	assertSecurityCapabilityReadinessGateDecision(t, got, want)
+	assertSecurityCapabilityReadinessGateDecisionContainsOnlySafeFields(t, got)
+	assertSecurityCapabilityJSONExcludes(t, got, rawValues...)
+}
+
 func TestSecurityCapabilityReadinessGateDecisionJSONSchema(t *testing.T) {
 	decision := SandboxSecurityCapabilityReadinessGateDecision{
 		Code:       SandboxSecurityCapabilityReadinessGateCodeBlocked,
@@ -178,6 +376,68 @@ func TestSecurityCapabilityReadinessGateSerializedDecisionContainsOnlySafeMetada
 	var decoded any
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
+	}
+	assertSecurityCapabilityReadinessGateJSONOnlySafeFields(t, decoded, "$")
+}
+
+func securityCapabilityReadinessGateDecisionExpectation(
+	code SandboxSecurityCapabilityReadinessGateCode,
+	outcome SandboxSecurityCapabilityReadinessGateOutcome,
+	policyMode SandboxSecurityCapabilityReadinessGatePolicyMode,
+	reason SandboxSecurityCapabilityReadinessGateReasonCode,
+	counts SandboxSecurityCapabilityReadinessGateCounts,
+) SandboxSecurityCapabilityReadinessGateDecision {
+	return SandboxSecurityCapabilityReadinessGateDecision{
+		Code:       code,
+		Outcome:    outcome,
+		PolicyMode: policyMode,
+		Reason:     reason,
+		Counts:     &counts,
+	}
+}
+
+func securityCapabilityReadinessGateMixedCounts() SandboxSecurityCapabilityReadinessGateCounts {
+	return SandboxSecurityCapabilityReadinessGateCounts{
+		Total:          4,
+		Ready:          1,
+		Advisory:       2,
+		Blocked:        1,
+		MetadataOnly:   1,
+		Unsupported:    1,
+		StrictBlocking: 3,
+	}
+}
+
+func assertSecurityCapabilityReadinessGateDecision(t *testing.T, got, want SandboxSecurityCapabilityReadinessGateDecision) {
+	t.Helper()
+
+	if got.Code != want.Code {
+		t.Fatalf("code = %q, want %q", got.Code, want.Code)
+	}
+	if got.Outcome != want.Outcome {
+		t.Fatalf("outcome = %q, want %q", got.Outcome, want.Outcome)
+	}
+	if got.PolicyMode != want.PolicyMode {
+		t.Fatalf("policyMode = %q, want %q", got.PolicyMode, want.PolicyMode)
+	}
+	if got.Reason != want.Reason {
+		t.Fatalf("reason = %q, want %q", got.Reason, want.Reason)
+	}
+	if !reflect.DeepEqual(got.Counts, want.Counts) {
+		t.Fatalf("counts = %#v, want %#v", got.Counts, want.Counts)
+	}
+}
+
+func assertSecurityCapabilityReadinessGateDecisionContainsOnlySafeFields(t *testing.T, decision SandboxSecurityCapabilityReadinessGateDecision) {
+	t.Helper()
+
+	data, err := json.Marshal(decision)
+	if err != nil {
+		t.Fatalf("marshal decision failed: %v", err)
+	}
+	var decoded any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal decision failed: %v", err)
 	}
 	assertSecurityCapabilityReadinessGateJSONOnlySafeFields(t, decoded, "$")
 }
