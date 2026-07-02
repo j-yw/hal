@@ -104,7 +104,7 @@ func (d *Driver) Create(ctx context.Context, req sandboxruntime.CreateRequest) (
 	}
 	target, err := backend.Create(ctx, backendReq)
 	if err != nil {
-		return nil, err
+		return nil, wrapBackendOperationError(OperationCreate, err)
 	}
 	return applyRuntimeMetadata(target), nil
 }
@@ -122,7 +122,7 @@ func (d *Driver) Start(ctx context.Context, req sandboxruntime.LifecycleRequest)
 		Stderr:    req.Stderr,
 	})
 	if err != nil {
-		return nil, err
+		return nil, wrapBackendOperationError(OperationStart, err)
 	}
 	return applyRuntimeMetadata(started), nil
 }
@@ -140,7 +140,7 @@ func (d *Driver) Stop(ctx context.Context, req sandboxruntime.LifecycleRequest) 
 		Stderr:    req.Stderr,
 	})
 	if err != nil {
-		return nil, err
+		return nil, wrapBackendOperationError(OperationStop, err)
 	}
 	return applyRuntimeMetadata(stopped), nil
 }
@@ -150,13 +150,13 @@ func (d *Driver) Delete(ctx context.Context, req sandboxruntime.LifecycleRequest
 	if err != nil {
 		return err
 	}
-	return controller.Delete(ctx, ControllerLifecycleRequest{
+	return wrapBackendOperationError(OperationDelete, controller.Delete(ctx, ControllerLifecycleRequest{
 		Operation: OperationDelete,
 		Config:    config,
 		Target:    target,
 		Stdout:    req.Stdout,
 		Stderr:    req.Stderr,
-	})
+	}))
 }
 
 func (d *Driver) Inspect(ctx context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
@@ -170,7 +170,7 @@ func (d *Driver) Inspect(ctx context.Context, req sandboxruntime.InspectRequest)
 		Target:    target,
 	})
 	if err != nil {
-		return nil, err
+		return nil, wrapBackendOperationError(OperationInspect, err)
 	}
 	return applyRuntimeMetadata(inspected), nil
 }
@@ -180,7 +180,7 @@ func (d *Driver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*san
 	if err != nil {
 		return nil, err
 	}
-	return controller.Exec(ctx, ControllerExecRequest{
+	result, err := controller.Exec(ctx, ControllerExecRequest{
 		Operation: OperationExec,
 		Config:    config,
 		Target:    target,
@@ -191,6 +191,10 @@ func (d *Driver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*san
 		Env:       cloneStringMap(req.Env),
 		WorkDir:   strings.TrimSpace(req.WorkDir),
 	})
+	if err != nil {
+		return nil, wrapBackendOperationError(OperationExec, err)
+	}
+	return result, nil
 }
 
 func (d *Driver) CopyIn(ctx context.Context, req sandboxruntime.CopyRequest) error {
@@ -202,7 +206,7 @@ func (d *Driver) CopyIn(ctx context.Context, req sandboxruntime.CopyRequest) err
 	if err != nil {
 		return err
 	}
-	return controller.CopyIn(ctx, copyReq)
+	return wrapBackendOperationError(OperationCopyIn, controller.CopyIn(ctx, copyReq))
 }
 
 func (d *Driver) CopyOut(ctx context.Context, req sandboxruntime.CopyRequest) error {
@@ -214,7 +218,7 @@ func (d *Driver) CopyOut(ctx context.Context, req sandboxruntime.CopyRequest) er
 	if err != nil {
 		return err
 	}
-	return controller.CopyOut(ctx, copyReq)
+	return wrapBackendOperationError(OperationCopyOut, controller.CopyOut(ctx, copyReq))
 }
 
 func (d *Driver) backendFor(operation string) (Backend, Config, error) {
@@ -254,7 +258,7 @@ func (d *Driver) controllerFor(ctx context.Context, operation string, target san
 		Target:    target,
 	})
 	if err != nil {
-		return nil, Config{}, sandboxruntime.Target{}, err
+		return nil, Config{}, sandboxruntime.Target{}, wrapBackendOperationError(operation, err)
 	}
 	if controller == nil {
 		return nil, Config{}, sandboxruntime.Target{}, NewBackendNotConfiguredError(operation)
@@ -324,6 +328,22 @@ func operationInvalidConfigError(operation string, err error) error {
 		operationErr.Message = validationErr.safeMessage()
 	}
 	return operationErr
+}
+
+func wrapBackendOperationError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var operationErr *OperationError
+	if errors.As(err, &operationErr) {
+		if strings.TrimSpace(operationErr.Operation) != "" {
+			return operationErr
+		}
+		wrapped := *operationErr
+		wrapped.Operation = sanitizeIdentifier(operation)
+		return &wrapped
+	}
+	return NewBackendOperationFailedError(operation, err)
 }
 
 func metadataFromCapability(report CapabilityReport, backendConfigured bool) RuntimeMetadata {

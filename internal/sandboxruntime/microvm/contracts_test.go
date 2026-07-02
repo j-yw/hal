@@ -117,6 +117,7 @@ func TestOperationErrorCodesAreStable(t *testing.T) {
 		{name: "unavailable capability", got: ErrorCodeUnavailableCapability, want: "unavailable_capability"},
 		{name: "invalid config", got: ErrorCodeInvalidConfig, want: "invalid_config"},
 		{name: "backend not configured", got: ErrorCodeBackendNotConfigured, want: "backend_not_configured"},
+		{name: "backend operation failed", got: ErrorCodeBackendOperationFailed, want: "backend_operation_failed"},
 		{name: "target required", got: ErrorCodeTargetRequired, want: "target_required"},
 		{name: "target name required", got: ErrorCodeTargetNameRequired, want: "target_name_required"},
 	}
@@ -208,6 +209,7 @@ func TestOperationErrorConstructorsUseStableCodes(t *testing.T) {
 		{name: "unavailable capability", err: NewUnavailableCapabilityError("create", errors.New("kvm unavailable")), code: ErrorCodeUnavailableCapability},
 		{name: "invalid config", err: NewInvalidConfigError("create", errors.New("bad config")), code: ErrorCodeInvalidConfig},
 		{name: "backend not configured", err: NewBackendNotConfiguredError("inspect"), code: ErrorCodeBackendNotConfigured},
+		{name: "backend operation failed", err: NewBackendOperationFailedError("exec", errors.New("backend failed")), code: ErrorCodeBackendOperationFailed},
 		{name: "target required", err: NewTargetRequiredError("start"), code: ErrorCodeTargetRequired},
 		{name: "target name required", err: NewTargetNameRequiredError("create"), code: ErrorCodeTargetNameRequired},
 	}

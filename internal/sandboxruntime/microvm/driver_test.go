@@ -435,6 +435,151 @@ func TestDriverRejectsInvalidConfigBeforeBackendCalls(t *testing.T) {
 	}
 }
 
+func TestDriverRejectsExplicitNegativeSizingBeforeBackendCalls(t *testing.T) {
+	invalidConfig := minimalValidConfig()
+	invalidConfig.MemoryMiB = -1
+
+	backend := &fakeBackend{controller: &fakeController{}}
+	driver := NewDriver(DriverOptions{
+		Config:             invalidConfig,
+		CapabilityDetector: fixedCapabilityDetector(availableCapabilityReport()),
+		Backend:            backend,
+	})
+
+	_, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "microvm-dev"})
+	assertOperationError(t, err, ErrorCodeInvalidConfig, OperationCreate)
+	assertOperationErrorField(t, err, "memoryMiB")
+	assertNoBackendCalls(t, backend)
+}
+
+func TestDriverWrapsBackendAndControllerErrorsWithSanitizedOperationErrors(t *testing.T) {
+	rawErr := errors.New("firecracker-go-sdk failed kernel=/srv/hal/images/vmlinux rootfs=/nix/store/abc123/rootfs.ext4 socket=/mnt/secrets/firecracker.sock endpoint=https://secret.example.test:8443/api token=ghp_secret password=hunter2")
+	unsafeFragments := []string{
+		"/srv/hal",
+		"/nix/store",
+		"/mnt/secrets",
+		"vmlinux",
+		"rootfs.ext4",
+		"firecracker.sock",
+		"secret.example.test",
+		"8443",
+		"ghp_secret",
+		"hunter2",
+		"firecracker-go-sdk",
+	}
+
+	tests := []struct {
+		name      string
+		operation string
+		backend   *fakeBackend
+		run       func(*Driver) error
+	}{
+		{
+			name:      "create backend error",
+			operation: OperationCreate,
+			backend:   &fakeBackend{createErr: rawErr},
+			run: func(driver *Driver) error {
+				_, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "microvm-dev"})
+				return err
+			},
+		},
+		{
+			name:      "start controller lookup error",
+			operation: OperationStart,
+			backend:   &fakeBackend{controllerErr: rawErr},
+			run: func(driver *Driver) error {
+				_, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: validMicroVMTarget()})
+				return err
+			},
+		},
+		{
+			name:      "start controller operation error",
+			operation: OperationStart,
+			backend:   &fakeBackend{controller: &fakeController{startErr: rawErr}},
+			run: func(driver *Driver) error {
+				_, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: validMicroVMTarget()})
+				return err
+			},
+		},
+		{
+			name:      "inspect controller operation error",
+			operation: OperationInspect,
+			backend:   &fakeBackend{controller: &fakeController{inspectErr: rawErr}},
+			run: func(driver *Driver) error {
+				_, err := driver.Inspect(context.Background(), sandboxruntime.InspectRequest{Target: validMicroVMTarget()})
+				return err
+			},
+		},
+		{
+			name:      "stop controller operation error",
+			operation: OperationStop,
+			backend:   &fakeBackend{controller: &fakeController{stopErr: rawErr}},
+			run: func(driver *Driver) error {
+				_, err := driver.Stop(context.Background(), sandboxruntime.LifecycleRequest{Target: validMicroVMTarget()})
+				return err
+			},
+		},
+		{
+			name:      "delete controller operation error",
+			operation: OperationDelete,
+			backend:   &fakeBackend{controller: &fakeController{deleteErr: rawErr}},
+			run: func(driver *Driver) error {
+				return driver.Delete(context.Background(), sandboxruntime.LifecycleRequest{Target: validMicroVMTarget()})
+			},
+		},
+		{
+			name:      "exec controller operation error",
+			operation: OperationExec,
+			backend:   &fakeBackend{controller: &fakeController{execErr: rawErr}},
+			run: func(driver *Driver) error {
+				_, err := driver.Exec(context.Background(), sandboxruntime.ExecRequest{Target: validMicroVMTarget(), Args: []string{"true"}})
+				return err
+			},
+		},
+		{
+			name:      "copy in controller operation error",
+			operation: OperationCopyIn,
+			backend:   &fakeBackend{controller: &fakeController{copyInErr: rawErr}},
+			run: func(driver *Driver) error {
+				return driver.CopyIn(context.Background(), sandboxruntime.CopyRequest{
+					Target:          validMicroVMTarget(),
+					SourcePath:      "/safe/input.txt",
+					DestinationPath: "/workspace/input.txt",
+				})
+			},
+		},
+		{
+			name:      "copy out controller operation error",
+			operation: OperationCopyOut,
+			backend:   &fakeBackend{controller: &fakeController{copyOutErr: rawErr}},
+			run: func(driver *Driver) error {
+				return driver.CopyOut(context.Background(), sandboxruntime.CopyRequest{
+					Target:          validMicroVMTarget(),
+					SourcePath:      "/workspace/output.txt",
+					DestinationPath: "/safe/output.txt",
+				})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := NewDriver(DriverOptions{
+				Config:             minimalValidConfig(),
+				CapabilityDetector: fixedCapabilityDetector(availableCapabilityReport()),
+				Backend:            tt.backend,
+			})
+
+			err := tt.run(driver)
+			assertOperationError(t, err, ErrorCodeBackendOperationFailed, tt.operation)
+			if !errors.Is(err, rawErr) {
+				t.Fatalf("errors.Is(%v, rawErr) = false, want true", err)
+			}
+			assertPublicErrorOmits(t, err, unsafeFragments)
+		})
+	}
+}
+
 func availableCapabilityReport() CapabilityReport {
 	return CapabilityReport{
 		OS:                             "linux",
@@ -567,12 +712,17 @@ func fixedCapabilityDetector(report CapabilityReport) CapabilityDetector {
 
 type fakeBackend struct {
 	controller         Controller
+	createErr          error
+	controllerErr      error
 	createRequests     []BackendCreateRequest
 	controllerRequests []ControllerRequest
 }
 
 func (b *fakeBackend) Create(_ context.Context, req BackendCreateRequest) (*sandboxruntime.Target, error) {
 	b.createRequests = append(b.createRequests, req)
+	if b.createErr != nil {
+		return nil, b.createErr
+	}
 	return &sandboxruntime.Target{
 		ID:       "microvm-created",
 		Name:     req.Name,
@@ -588,6 +738,9 @@ func (b *fakeBackend) Create(_ context.Context, req BackendCreateRequest) (*sand
 
 func (b *fakeBackend) Controller(_ context.Context, req ControllerRequest) (Controller, error) {
 	b.controllerRequests = append(b.controllerRequests, req)
+	if b.controllerErr != nil {
+		return nil, b.controllerErr
+	}
 	return b.controller, nil
 }
 
@@ -604,6 +757,13 @@ type fakeController struct {
 	inspectRequests   []ControllerInspectRequest
 	execRequests      []ControllerExecRequest
 	copyRequests      []ControllerCopyRequest
+	startErr          error
+	stopErr           error
+	deleteErr         error
+	inspectErr        error
+	execErr           error
+	copyInErr         error
+	copyOutErr        error
 	execExitCode      int
 	execStdout        string
 	execStderr        string
@@ -612,6 +772,9 @@ type fakeController struct {
 func (c *fakeController) Start(_ context.Context, req ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
 	req.Operation = OperationStart
 	c.lifecycleRequests = append(c.lifecycleRequests, req)
+	if c.startErr != nil {
+		return nil, c.startErr
+	}
 	target := req.Target
 	target.Status = sandbox.StatusRunning
 	return &target, nil
@@ -620,6 +783,9 @@ func (c *fakeController) Start(_ context.Context, req ControllerLifecycleRequest
 func (c *fakeController) Stop(_ context.Context, req ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
 	req.Operation = OperationStop
 	c.lifecycleRequests = append(c.lifecycleRequests, req)
+	if c.stopErr != nil {
+		return nil, c.stopErr
+	}
 	target := req.Target
 	target.Status = sandbox.StatusStopped
 	return &target, nil
@@ -628,11 +794,17 @@ func (c *fakeController) Stop(_ context.Context, req ControllerLifecycleRequest)
 func (c *fakeController) Delete(_ context.Context, req ControllerLifecycleRequest) error {
 	req.Operation = OperationDelete
 	c.lifecycleRequests = append(c.lifecycleRequests, req)
+	if c.deleteErr != nil {
+		return c.deleteErr
+	}
 	return nil
 }
 
 func (c *fakeController) Inspect(_ context.Context, req ControllerInspectRequest) (*sandboxruntime.Target, error) {
 	c.inspectRequests = append(c.inspectRequests, req)
+	if c.inspectErr != nil {
+		return nil, c.inspectErr
+	}
 	target := req.Target
 	target.Status = sandbox.StatusRunning
 	return &target, nil
@@ -640,6 +812,9 @@ func (c *fakeController) Inspect(_ context.Context, req ControllerInspectRequest
 
 func (c *fakeController) Exec(_ context.Context, req ControllerExecRequest) (*sandboxruntime.ExecResult, error) {
 	c.execRequests = append(c.execRequests, req)
+	if c.execErr != nil {
+		return nil, c.execErr
+	}
 	writeString(req.Stdout, c.execStdout)
 	writeString(req.Stderr, c.execStderr)
 	return &sandboxruntime.ExecResult{ExitCode: c.execExitCode}, nil
@@ -648,12 +823,18 @@ func (c *fakeController) Exec(_ context.Context, req ControllerExecRequest) (*sa
 func (c *fakeController) CopyIn(_ context.Context, req ControllerCopyRequest) error {
 	req.Operation = OperationCopyIn
 	c.copyRequests = append(c.copyRequests, req)
+	if c.copyInErr != nil {
+		return c.copyInErr
+	}
 	return nil
 }
 
 func (c *fakeController) CopyOut(_ context.Context, req ControllerCopyRequest) error {
 	req.Operation = OperationCopyOut
 	c.copyRequests = append(c.copyRequests, req)
+	if c.copyOutErr != nil {
+		return c.copyOutErr
+	}
 	return nil
 }
 

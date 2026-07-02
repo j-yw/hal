@@ -16,10 +16,10 @@ guest workdir, network mode, image metadata, and template metadata. The default
 network mode is `no_live_networking`.
 
 Stable operation error codes cover unavailable capability, invalid config,
-backend not configured, target required, and target name required. Public error
-strings and JSON output are sanitized so unsafe host paths, endpoint details,
-tokens, credentials, provider internals, and raw backend messages are not
-persisted or printed.
+backend not configured, backend operation failure, target required, and target
+name required. Public error strings and JSON output are sanitized so unsafe host
+paths, endpoint details, tokens, credentials, provider internals, and raw
+backend messages are not persisted or printed.
 
 `HostCapabilityDetector` is injectable and fakeable. macOS and other non-Linux
 hosts report unavailable without live KVM access. Linux KVM and configured

@@ -24,19 +24,21 @@ const (
 )
 
 const (
-	ErrorCodeUnavailableCapability ErrorCode = "unavailable_capability"
-	ErrorCodeInvalidConfig         ErrorCode = "invalid_config"
-	ErrorCodeBackendNotConfigured  ErrorCode = "backend_not_configured"
-	ErrorCodeTargetRequired        ErrorCode = "target_required"
-	ErrorCodeTargetNameRequired    ErrorCode = "target_name_required"
+	ErrorCodeUnavailableCapability  ErrorCode = "unavailable_capability"
+	ErrorCodeInvalidConfig          ErrorCode = "invalid_config"
+	ErrorCodeBackendNotConfigured   ErrorCode = "backend_not_configured"
+	ErrorCodeBackendOperationFailed ErrorCode = "backend_operation_failed"
+	ErrorCodeTargetRequired         ErrorCode = "target_required"
+	ErrorCodeTargetNameRequired     ErrorCode = "target_name_required"
 )
 
 var (
-	ErrUnavailableCapability = errors.New("microvm capability unavailable")
-	ErrInvalidConfig         = errors.New("microvm config is invalid")
-	ErrBackendNotConfigured  = errors.New("microvm backend is not configured")
-	ErrTargetRequired        = errors.New("microvm target is required")
-	ErrTargetNameRequired    = errors.New("microvm target name is required")
+	ErrUnavailableCapability  = errors.New("microvm capability unavailable")
+	ErrInvalidConfig          = errors.New("microvm config is invalid")
+	ErrBackendNotConfigured   = errors.New("microvm backend is not configured")
+	ErrBackendOperationFailed = errors.New("microvm backend operation failed")
+	ErrTargetRequired         = errors.New("microvm target is required")
+	ErrTargetNameRequired     = errors.New("microvm target name is required")
 )
 
 var (
@@ -109,13 +111,13 @@ func DefaultConfig() Config {
 // explicit backend and image/template metadata.
 func ApplyDefaults(config Config) Config {
 	defaults := DefaultConfig()
-	if config.CPUCount <= 0 {
+	if config.CPUCount == 0 {
 		config.CPUCount = defaults.CPUCount
 	}
-	if config.MemoryMiB <= 0 {
+	if config.MemoryMiB == 0 {
 		config.MemoryMiB = defaults.MemoryMiB
 	}
-	if config.DiskSizeMiB <= 0 {
+	if config.DiskSizeMiB == 0 {
 		config.DiskSizeMiB = defaults.DiskSizeMiB
 	}
 	if strings.TrimSpace(config.GuestWorkDir) == "" {
@@ -157,6 +159,13 @@ func NewInvalidConfigError(operation string, err error) *OperationError {
 
 func NewBackendNotConfiguredError(operation string) *OperationError {
 	return NewOperationError(ErrorCodeBackendNotConfigured, operation, ErrBackendNotConfigured)
+}
+
+func NewBackendOperationFailedError(operation string, err error) *OperationError {
+	if err == nil {
+		err = ErrBackendOperationFailed
+	}
+	return NewOperationError(ErrorCodeBackendOperationFailed, operation, err)
 }
 
 func NewTargetRequiredError(operation string) *OperationError {
@@ -222,6 +231,7 @@ func normalizeErrorCode(code ErrorCode) ErrorCode {
 	case ErrorCodeUnavailableCapability,
 		ErrorCodeInvalidConfig,
 		ErrorCodeBackendNotConfigured,
+		ErrorCodeBackendOperationFailed,
 		ErrorCodeTargetRequired,
 		ErrorCodeTargetNameRequired:
 		return code

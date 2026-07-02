@@ -21,7 +21,7 @@ func TestPhase31MicroVMRuntimeFoundationVerificationDocs(t *testing.T) {
 		"`internal/sandboxruntime/microvm`",
 		"`Config` and `Options` describe kernel image, rootfs, optional initrd",
 		"The default network mode is `no_live_networking`.",
-		"Stable operation error codes cover unavailable capability, invalid config, backend not configured, target required, and target name required.",
+		"Stable operation error codes cover unavailable capability, invalid config, backend not configured, backend operation failure, target required, and target name required.",
 		"`HostCapabilityDetector` is injectable and fakeable.",
 		"macOS and other non-Linux hosts report unavailable without live KVM access.",
 		"`microvm.Driver` satisfies `sandboxruntime.Driver`",
