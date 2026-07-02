@@ -201,7 +201,7 @@ func (err *OperationError) MarshalJSON() ([]byte, error) {
 	}{
 		Code:      normalizeErrorCode(err.Code),
 		Operation: sanitizeIdentifier(err.Operation),
-		Field:     sanitizeIdentifier(err.Field),
+		Field:     sanitizeFieldName(err.Field),
 		Message:   err.safeMessage(),
 	})
 }
@@ -279,6 +279,33 @@ func sanitizeIdentifier(value string) string {
 		case r >= '0' && r <= '9':
 			builder.WriteRune(r)
 		case r == '_' || r == '-' || r == '.':
+			builder.WriteRune(r)
+		default:
+			return ""
+		}
+	}
+	value = builder.String()
+	if value == "" {
+		return ""
+	}
+	if len(value) > 64 {
+		value = value[:64]
+	}
+	return value
+}
+
+func sanitizeFieldName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	var builder strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '_' || r == '-' || r == '.':
 			builder.WriteRune(r)
 		default:
 			return ""
