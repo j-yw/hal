@@ -42,6 +42,7 @@ var (
 var (
 	endpointURLPattern       = regexp.MustCompile(`(?i)\b(?:https?|ssh|tcp|udp|grpc|unix)://[^\s'"<>]+`)
 	hostPathPattern          = regexp.MustCompile(`(?i)(?:/private)?/(?:Users|home|tmp|var|opt|etc|run|usr/local|Volumes)/[^\s:'",]+`)
+	absolutePathPattern      = regexp.MustCompile(`(^|[\s"'=:(])(/[A-Za-z0-9._~@%+-][^\s:'",)]*)`)
 	secretAssignmentPattern  = regexp.MustCompile(`(?i)\b(token|secret|password|api[_-]?key|credential|authorization)=\S+`)
 	commonSecretValuePattern = regexp.MustCompile(`(?i)(^|[\s"'=:/])([A-Za-z0-9._-]*(?:secret|hunter2|ghp_[A-Za-z0-9_]*|sk-[A-Za-z0-9_-]+)[A-Za-z0-9._-]*)`)
 	ipEndpointPattern        = regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b`)
@@ -253,6 +254,7 @@ func sanitizeOperationDetail(detail string) string {
 	detail = strings.Join(strings.Fields(detail), " ")
 	detail = endpointURLPattern.ReplaceAllString(detail, "[redacted-endpoint]")
 	detail = hostPathPattern.ReplaceAllString(detail, "[redacted-path]")
+	detail = absolutePathPattern.ReplaceAllString(detail, "$1[redacted-path]")
 	detail = secretAssignmentPattern.ReplaceAllString(detail, "$1=[redacted]")
 	detail = commonSecretValuePattern.ReplaceAllString(detail, "$1[redacted]")
 	detail = ipEndpointPattern.ReplaceAllString(detail, "[redacted-endpoint]")

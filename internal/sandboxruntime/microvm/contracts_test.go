@@ -173,6 +173,32 @@ func TestOperationErrorStringAndJSONAreSanitized(t *testing.T) {
 	}
 }
 
+func TestOperationErrorSanitizesArbitraryAbsoluteHostPaths(t *testing.T) {
+	cause := errors.New("missing kernel /srv/hal/images/vmlinux rootfs=/nix/store/abc123/rootfs.ext4 socket(/mnt/secrets/firecracker.sock)")
+	err := NewOperationError(ErrorCodeUnavailableCapability, "detect_capability", cause)
+
+	encoded, marshalErr := json.Marshal(err)
+	if marshalErr != nil {
+		t.Fatalf("Marshal(OperationError) error: %v", marshalErr)
+	}
+	publicText := err.Error() + " " + string(encoded)
+	for _, unsafe := range []string{
+		"/srv/hal",
+		"/nix/store",
+		"/mnt/secrets",
+		"vmlinux",
+		"rootfs.ext4",
+		"firecracker.sock",
+	} {
+		if strings.Contains(publicText, unsafe) {
+			t.Fatalf("public error text leaked unsafe fragment %q in %q", unsafe, publicText)
+		}
+	}
+	if !strings.Contains(publicText, "[redacted-path]") {
+		t.Fatalf("public error text %q missing redacted path marker", publicText)
+	}
+}
+
 func TestOperationErrorConstructorsUseStableCodes(t *testing.T) {
 	tests := []struct {
 		name string
