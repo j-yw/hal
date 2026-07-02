@@ -57,6 +57,15 @@ type RuntimeState struct {
 	Image          string
 	WorkerID       string
 	IsolationLevel string
+	Metadata       *RuntimeMetadata `json:"metadata,omitempty"`
+}
+
+// RuntimeMetadata captures optional runtime-specific target metadata using only
+// redaction-safe labels.
+type RuntimeMetadata struct {
+	Backend          string   `json:"backend,omitempty"`
+	CapabilityLabels []string `json:"capabilityLabels,omitempty"`
+	PathRoles        []string `json:"pathRoles,omitempty"`
 }
 
 // ConnectionInfo captures command-agnostic connection metadata for a target.

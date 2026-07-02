@@ -374,6 +374,7 @@ func applyRuntimeMetadata(target *sandboxruntime.Target) *sandboxruntime.Target 
 		return nil
 	}
 	copied := *target
+	copied.Runtime.Metadata = cloneRuntimeMetadata(target.Runtime.Metadata)
 	copied.Runtime.Driver = sandboxruntime.DriverMicroVM
 	copied.Runtime.IsolationLevel = sandbox.SandboxIsolationLevelVM
 	return &copied
@@ -402,6 +403,16 @@ func cloneStringSlice(values []string) []string {
 		return nil
 	}
 	return append([]string(nil), values...)
+}
+
+func cloneRuntimeMetadata(metadata *sandboxruntime.RuntimeMetadata) *sandboxruntime.RuntimeMetadata {
+	if metadata == nil {
+		return nil
+	}
+	copied := *metadata
+	copied.CapabilityLabels = cloneStringSlice(metadata.CapabilityLabels)
+	copied.PathRoles = cloneStringSlice(metadata.PathRoles)
+	return &copied
 }
 
 func cloneCapabilityReport(report CapabilityReport) CapabilityReport {

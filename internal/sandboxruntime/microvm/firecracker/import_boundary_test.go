@@ -91,9 +91,11 @@ var forbiddenFirecrackerProductionImports = []firecrackerForbiddenImport{
 func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 	paths := firecrackerProductionBoundaryFiles(t)
 	allowedExportedNames := map[string]bool{
+		"Backend":                               true,
 		"BackendConfig":                         true,
 		"BackendConfigFromMicroVMConfig":        true,
 		"BackendID":                             true,
+		"BackendOptions":                        true,
 		"BootSourcePayload":                     true,
 		"DefaultConfigPath":                     true,
 		"ConfigOperation":                       true,
@@ -106,6 +108,7 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 		"GuestWorkDirMetadata":                  true,
 		"InspectOperationPlan":                  true,
 		"MachineConfigPayload":                  true,
+		"NewBackend":                            true,
 		"OperationAction":                       true,
 		"OperationActionDelete":                 true,
 		"OperationActionInspect":                true,
@@ -191,7 +194,7 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 
 	for name := range seenExportedNames {
 		if !allowedExportedNames[name] {
-			t.Fatalf("unexpected exported Firecracker namespace %q; Phase 32 foundation should expose only namespace, US-002 config contracts, US-003 path planning contracts, US-004 payload contracts, US-005 operation plan contracts, and US-006 process boundary contracts", name)
+			t.Fatalf("unexpected exported Firecracker namespace %q; Phase 32 foundation should expose only namespace, US-002 config contracts, US-003 path planning contracts, US-004 payload contracts, US-005 operation plan contracts, US-006 process boundary contracts, and US-007 metadata-only backend creation contracts", name)
 		}
 	}
 	for name := range allowedExportedNames {
