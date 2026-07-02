@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -246,6 +247,61 @@ func TestCredentialProxyImportBoundaryMessageIncludesPackageAndForbiddenImport(t
 	}
 }
 
+func TestCredentialProxyContractSourceOmitsLiveProxyBehaviorMarkers(t *testing.T) {
+	for _, path := range sandboxCredentialProxyBoundaryFiles(t) {
+		source, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error: %v", path, err)
+		}
+		if message := sandboxCredentialProxySourceBoundaryMessage(path, string(source)); message != "" {
+			t.Fatal(message)
+		}
+	}
+}
+
+func TestCredentialProxySourceGuardCoversRequiredLiveBehaviorMarkers(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{name: "listener", source: `net.Listen("tcp", ":8080")`, want: "net.Listen"},
+		{name: "HTTP server", source: `server.ListenAndServe()`, want: "ListenAndServe"},
+		{name: "HTTP proxy", source: `handler := http.ProxyURL(target)`, want: "http.Proxy"},
+		{name: "HTTP proxy utility", source: `proxy := httputil.NewSingleHostReverseProxy(target)`, want: "httputil"},
+		{name: "process execution", source: `cmd := exec.Command("sh", "-c", script)`, want: "exec.Command"},
+		{name: "process execution with context", source: `cmd := exec.CommandContext(ctx, "sh", "-c", script)`, want: "exec.CommandContext"},
+		{name: "Docker client", source: `client, _ := docker.NewClientWithOpts()`, want: "docker.NewClient"},
+		{name: "Podman bindings", source: `conn, _ := bindings.NewConnection(ctx, uri)`, want: "bindings.NewConnection"},
+		{name: "KVM package", source: `driver := kvm.NewDriver()`, want: "kvm."},
+		{name: "microVM package", source: `vm := firecracker.NewMachine(ctx, cfg)`, want: "firecracker"},
+		{name: "SSH agent helper", source: `agent.NewClient(conn)`, want: "agent.NewClient"},
+		{name: "tmpfs writer", source: `os.WriteFile(tmpfsPath, secret, 0600)`, want: "os.WriteFile"},
+		{name: "worker client", source: `driver := sandboxworker.NewClientDriver(opts)`, want: "sandboxworker."},
+		{name: "worker daemon", source: `worker daemon socket ready`, want: "worker daemon"},
+		{name: "credential injection", source: `injectCredential(target, value)`, want: "injectCredential"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			message := sandboxCredentialProxySourceBoundaryMessage("credential_proxy.go", tt.source)
+			if !strings.Contains(message, tt.want) {
+				t.Fatalf("source boundary message = %q, want marker %q", message, tt.want)
+			}
+		})
+	}
+}
+
+func TestCredentialProxySourceGuardScopeAllowsTestFixtures(t *testing.T) {
+	const fixtureWithForbiddenMarkers = `net.Listen("tcp", ":8080"); exec.Command("sh"); injectCredential(target, value)`
+	if message := sandboxCredentialProxySourceBoundaryMessage("credential_proxy_source_fixture_test.go", fixtureWithForbiddenMarkers); message == "" {
+		t.Fatal("source boundary fixture should prove the forbidden markers are active")
+	}
+	for _, path := range sandboxCredentialProxyBoundaryFiles(t) {
+		if strings.HasSuffix(path, "_test.go") {
+			t.Fatalf("source guard should scan production files only, got %s", path)
+		}
+	}
+}
+
 func sandboxCredentialProxyBoundaryFiles(t *testing.T) []string {
 	t.Helper()
 
@@ -267,6 +323,55 @@ func sandboxCredentialProxyBoundaryFiles(t *testing.T) []string {
 		t.Fatal("no credential proxy files matched import-boundary guard")
 	}
 	return out
+}
+
+func sandboxCredentialProxySourceBoundaryMessage(fileName, source string) string {
+	for _, marker := range sandboxCredentialProxyForbiddenSourceMarkers() {
+		if strings.Contains(source, marker) {
+			return fmt.Sprintf("package %s file %s contains forbidden live credential proxy behavior marker %q", sandboxCredentialProxyPackagePath, fileName, marker)
+		}
+	}
+	return ""
+}
+
+func sandboxCredentialProxyForbiddenSourceMarkers() []string {
+	return []string{
+		"net.Listen",
+		"ListenAndServe",
+		"http.Proxy",
+		"httputil",
+		"exec.CommandContext",
+		"exec.Command",
+		"docker.NewClient",
+		"NewClientWithOpts",
+		"bindings.NewConnection",
+		"podman.New",
+		"kvm.",
+		"KVM",
+		"libvirt",
+		"firecracker",
+		"microvm.",
+		"microVM.",
+		"qemu.",
+		"agent.NewClient",
+		"agent.NewKeyring",
+		"sshagent.",
+		"SSH_AUTH_SOCK",
+		"os.WriteFile",
+		"tmpfs.Write",
+		"TmpfsWriter",
+		"WriteTmpfs",
+		"sandboxworker.",
+		"NewClientDriver",
+		"worker client",
+		"worker daemon",
+		"credential injection",
+		"CredentialInjector",
+		"InjectCredential",
+		"InjectCredentials",
+		"injectCredential",
+		"injectCredentials",
+	}
 }
 
 func sandboxCredentialProxyImportBoundaryMessage(fileName, importPath string) string {

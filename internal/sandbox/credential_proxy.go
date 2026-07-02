@@ -13,7 +13,7 @@ const (
 
 // SandboxCredentialProxyMode is a metadata-only credential proxy plan mode. It
 // describes intended coordination between safe secret broker and network proxy
-// references, not live credential delivery.
+// references without carrying delivery behavior.
 type SandboxCredentialProxyMode string
 
 const (
@@ -24,8 +24,7 @@ const (
 )
 
 // SandboxCredentialProxyStatus is a durable state label for credential proxy
-// plans, sessions, and bindings. It does not imply a live proxy or delivery
-// process exists.
+// plans, sessions, and bindings. It does not imply runtime behavior exists.
 type SandboxCredentialProxyStatus string
 
 const (
@@ -120,8 +119,8 @@ type SandboxCredentialProxyPlanMetadata struct {
 }
 
 // SandboxCredentialProxySessionMetadata captures durable session metadata for
-// future credential proxy plumbing without representing a live proxy listener,
-// runtime mutation path, or secret delivery channel.
+// future credential proxy plumbing without representing listeners, runtime
+// mutation paths, or credential material channels.
 type SandboxCredentialProxySessionMetadata struct {
 	ID                    string                                `json:"id"`
 	PlanID                string                                `json:"planId"`
