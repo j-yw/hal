@@ -40,6 +40,31 @@ func TestRunSandboxCapabilityReadinessOmittedWhenUnavailable(t *testing.T) {
 	}
 }
 
+func TestRunSandboxManifestOmitsReadinessDiagnosticsWhenUnavailable(t *testing.T) {
+	startedAt := time.Date(2026, 7, 2, 8, 12, 0, 0, time.UTC)
+	store := sandboxexecution.NewStore(t.TempDir())
+
+	if err := saveRunSandboxManifest(store, runSandboxRequest{
+		ExecutionID: "run-readiness-diagnostics-unavailable",
+		ProjectDir:  "/repo",
+		Security:    runSandboxSecurityRequest(),
+	}, sandboxexecution.StatusRunning, startedAt, nil, nil); err != nil {
+		t.Fatalf("saveRunSandboxManifest() error = %v", err)
+	}
+
+	manifest := mustLoadSandboxExecutionManifest(t, store, "run-readiness-diagnostics-unavailable")
+	if manifest.Security == nil {
+		t.Fatal("Security = nil, want existing run security metadata preserved")
+	}
+	if manifest.Security.CapabilityReadinessDiagnostics != nil {
+		t.Fatalf("capabilityReadinessDiagnostics = %#v, want omitted without run readiness inputs", manifest.Security.CapabilityReadinessDiagnostics)
+	}
+	encoded := mustMarshalSandboxSecurityMetadata(t, manifest.Security)
+	if strings.Contains(encoded, "capabilityReadinessDiagnostics") {
+		t.Fatalf("security JSON included capabilityReadinessDiagnostics without run readiness inputs: %s", encoded)
+	}
+}
+
 func TestRunSandboxManifestAttachesSanitizedProjectedCapabilityReadiness(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 8, 15, 0, 0, time.UTC)
 	store := sandboxexecution.NewStore(t.TempDir())
@@ -86,6 +111,66 @@ func TestRunSandboxManifestAttachesSanitizedProjectedCapabilityReadiness(t *test
 	}
 	assertPhase26CredentialProxyUnsafeValuesAbsent(t, "run sandbox capability readiness", encoded, fixture)
 	assertPhase26CredentialProxyNoRedactionPlaceholders(t, "run sandbox capability readiness", readiness)
+}
+
+func TestRunSandboxManifestAttachesSanitizedReadinessDiagnostics(t *testing.T) {
+	startedAt := time.Date(2026, 7, 2, 8, 17, 0, 0, time.UTC)
+	store := sandboxexecution.NewStore(t.TempDir())
+	fixture := phase26CredentialProxyUnsafeValues()
+	req := runSandboxRequest{
+		ExecutionID:         "run-readiness-diagnostics-projected",
+		ProjectDir:          "/repo",
+		NetworkProxySession: fixture.NetworkProxySession(sandbox.SandboxNetworkPolicyDecisionSourceRun, "network-proxy-session-02", "policy-snapshot-02"),
+		Security:            fixture.SecurityRequest([]string{sandbox.SandboxSecretModeHTTPProxy}, []string{sandbox.SandboxSecretModeHTTPProxy}),
+	}
+	target := runSandboxCapabilityReadinessTarget(req.Security)
+
+	if err := saveRunSandboxManifest(store, req, sandboxexecution.StatusSucceeded, startedAt, &startedAt, target); err != nil {
+		t.Fatalf("saveRunSandboxManifest() error = %v", err)
+	}
+
+	manifest := mustLoadSandboxExecutionManifest(t, store, "run-readiness-diagnostics-projected")
+	if manifest.Security == nil || manifest.Security.CapabilityReadiness == nil {
+		t.Fatalf("Security = %#v, want capabilityReadiness for diagnostics", manifest.Security)
+	}
+	diagnostics := manifest.Security.CapabilityReadinessDiagnostics
+	if diagnostics == nil {
+		t.Fatal("capabilityReadinessDiagnostics = nil, want advisory diagnostics")
+	}
+	want := sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(*manifest.Security.CapabilityReadiness)
+	if !reflect.DeepEqual(*diagnostics, want) {
+		t.Fatalf("capabilityReadinessDiagnostics not derived from sanitized readiness:\ngot:  %#v\nwant: %#v", *diagnostics, want)
+	}
+	if diagnostics.Status != sandbox.SandboxSecurityCapabilityDiagnosticSummaryStatusAdvisory ||
+		diagnostics.HighestSeverity != sandbox.SandboxSecurityCapabilityDiagnosticSeverityWarning ||
+		!diagnostics.AdvisoryOnly {
+		t.Fatalf("capabilityReadinessDiagnostics = %#v, want advisory warning summary", diagnostics)
+	}
+	requireRuntimeCapabilityReadinessDiagnostic(t, diagnostics,
+		sandbox.SandboxSecurityCapabilityDiagnosticClassificationUnsupported,
+		sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,
+		sandbox.SandboxSecurityCapabilityNetworkDenyByDefault,
+		true,
+	)
+	requireRuntimeCapabilityReadinessDiagnostic(t, diagnostics,
+		sandbox.SandboxSecurityCapabilityDiagnosticClassificationMetadataOnly,
+		sandbox.SandboxSecurityCapabilityFamilyNetworkProxy,
+		sandbox.SandboxSecurityCapabilityNetworkProxyEnforcement,
+		true,
+	)
+	requireRuntimeCapabilityReadinessDiagnostic(t, diagnostics,
+		sandbox.SandboxSecurityCapabilityDiagnosticClassificationMetadataOnly,
+		sandbox.SandboxSecurityCapabilityFamilyCredentialProxy,
+		sandbox.SandboxSecurityCapabilityCredentialProxy,
+		true,
+	)
+
+	encoded := mustMarshalSandboxSecurityMetadata(t, manifest.Security)
+	if !strings.Contains(encoded, "capabilityReadinessDiagnostics") {
+		t.Fatalf("security JSON omitted capabilityReadinessDiagnostics: %s", encoded)
+	}
+	assertPhase26CredentialProxyUnsafeValuesAbsent(t, "run sandbox readiness diagnostics", encoded, fixture)
+	assertPhase26CredentialProxyNoRedactionPlaceholders(t, "run sandbox readiness diagnostics", diagnostics)
 }
 
 func TestRunSandboxCapabilityReadinessDoesNotBlockOrAlterExecution(t *testing.T) {
@@ -149,6 +234,73 @@ func TestRunSandboxCapabilityReadinessDoesNotBlockOrAlterExecution(t *testing.T)
 	}
 	if manifest.Security == nil || manifest.Security.CapabilityReadiness == nil {
 		t.Fatalf("Security = %#v, want non-blocking readiness metadata attached", manifest.Security)
+	}
+}
+
+func TestRunSandboxReadinessDiagnosticsDoNotBlockOrAlterExecution(t *testing.T) {
+	startedAt := time.Date(2026, 7, 2, 8, 22, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(2 * time.Second)
+	projectDir := t.TempDir()
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	target := runSandboxCapabilityReadinessTarget(runSandboxSecurityRequest())
+
+	var executed bool
+	var remoteCommand []string
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+		Base:        "main",
+		BaseChanged: true,
+	}, &out, &errOut, runSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "run-readiness-diagnostics-nonblocking"
+		},
+		now:           runSandboxTestClock(startedAt, finishedAt),
+		workingDir:    func() (string, error) { return projectDir, nil },
+		repoRemote:    func(string) (string, error) { return "git@example.com:org/repo.git", nil },
+		currentBranch: func(string) (string, error) { return "feature/readiness-diagnostics", nil },
+		execute: func(_ context.Context, req runSandboxRequest, out io.Writer, _ io.Writer, hooks runSandboxExecutionHooks) (runSandboxExecutionResult, error) {
+			executed = true
+			remoteCommand = append([]string(nil), req.RemoteCommand...)
+			if strings.Contains(strings.Join(req.RemoteCommand, " "), "readiness") {
+				t.Fatalf("RemoteCommand added diagnostics/readiness flag: %#v", req.RemoteCommand)
+			}
+			if hooks.OnTargetReady != nil {
+				if err := hooks.OnTargetReady(target); err != nil {
+					return runSandboxExecutionResult{}, err
+				}
+			}
+			if _, err := io.WriteString(out, "remote-output\n"); err != nil {
+				return runSandboxExecutionResult{}, err
+			}
+			return runSandboxExecutionResult{
+				Result: &sandboxexec.Result{Target: sandboxRuntimeTargetFromState(target)},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runRunSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+	if !executed {
+		t.Fatal("execute hook was not called")
+	}
+	wantCommand := []string{"hal", "run", "--base", "main"}
+	if !reflect.DeepEqual(remoteCommand, wantCommand) {
+		t.Fatalf("RemoteCommand = %#v, want %#v", remoteCommand, wantCommand)
+	}
+	if out.String() != "remote-output\n" {
+		t.Fatalf("stdout = %q, want remote output unchanged", out.String())
+	}
+
+	manifest := mustLoadSandboxExecutionManifest(t, store, "run-readiness-diagnostics-nonblocking")
+	if manifest.Status != sandboxexecution.StatusSucceeded {
+		t.Fatalf("Status = %q, want succeeded", manifest.Status)
+	}
+	if manifest.Security == nil || manifest.Security.CapabilityReadinessDiagnostics == nil {
+		t.Fatalf("Security = %#v, want non-blocking readiness diagnostics attached", manifest.Security)
 	}
 }
 

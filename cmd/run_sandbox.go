@@ -1261,8 +1261,10 @@ func cloneSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.SandboxSec
 	if security == nil {
 		return nil
 	}
+	capabilityReadiness := sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness)
 	clone := &sandbox.SandboxSecurity{
-		CapabilityReadiness: sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness),
+		CapabilityReadiness:            capabilityReadiness,
+		CapabilityReadinessDiagnostics: sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummaryPtr(capabilityReadiness),
 	}
 	if security.Network != nil {
 		network := *security.Network
@@ -1315,6 +1317,8 @@ func runSandboxManifestSecurity(req runSandboxRequest, manifest *sandboxexecutio
 		security = &sandbox.SandboxSecurity{}
 	}
 	security.CapabilityReadiness = readiness
+	diagnostics := sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(*readiness)
+	security.CapabilityReadinessDiagnostics = &diagnostics
 	return security
 }
 

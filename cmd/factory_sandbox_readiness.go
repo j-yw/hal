@@ -12,17 +12,21 @@ func applyFactorySandboxCapabilityReadinessMetadata(req factorySandboxExecutorRe
 		return
 	}
 	if metadata.Security != nil && metadata.Security.CapabilityReadiness != nil {
-		metadata.Security.CapabilityReadiness = sanitizedFactorySandboxCapabilityReadiness(metadata.Security.CapabilityReadiness)
+		applyFactorySandboxCapabilityReadinessDiagnostics(metadata.Security)
 		return
 	}
 	readiness := factorySandboxCapabilityReadiness(req, metadata, target)
 	if readiness == nil {
+		if metadata.Security != nil {
+			metadata.Security.CapabilityReadinessDiagnostics = nil
+		}
 		return
 	}
 	if metadata.Security == nil {
 		metadata.Security = &factory.SandboxSecurityMetadata{}
 	}
 	metadata.Security.CapabilityReadiness = readiness
+	applyFactorySandboxCapabilityReadinessDiagnostics(metadata.Security)
 }
 
 func factorySandboxCapabilityReadiness(req factorySandboxExecutorRequest, metadata *factory.SandboxMetadata, target *sandbox.SandboxState) *sandbox.SandboxSecurityCapabilityReadinessOutput {
@@ -68,6 +72,29 @@ func sanitizedFactorySandboxCapabilityReadiness(readiness *sandbox.SandboxSecuri
 	return &sanitized
 }
 
+func factorySandboxCapabilityReadinessDiagnostics(readiness *sandbox.SandboxSecurityCapabilityReadinessOutput) *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary {
+	readiness = sanitizedFactorySandboxCapabilityReadiness(readiness)
+	if readiness == nil {
+		return nil
+	}
+	diagnostics := sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(*readiness)
+	return &diagnostics
+}
+
+func applyFactorySandboxCapabilityReadinessDiagnostics(security *factory.SandboxSecurityMetadata) {
+	if security == nil {
+		return
+	}
+	readiness := sanitizedFactorySandboxCapabilityReadiness(security.CapabilityReadiness)
+	if readiness == nil {
+		security.CapabilityReadiness = nil
+		security.CapabilityReadinessDiagnostics = nil
+		return
+	}
+	security.CapabilityReadiness = readiness
+	security.CapabilityReadinessDiagnostics = factorySandboxCapabilityReadinessDiagnostics(readiness)
+}
+
 func factorySandboxSecurityRequestHasReadinessIntent(req factorySandboxExecutorRequest) bool {
 	if emptySandboxSecurityEvaluationRequest(req.Security) {
 		return false
@@ -98,7 +125,8 @@ func factorySandboxReadinessSecurity(security *factory.SandboxSecurityMetadata) 
 		return nil
 	}
 	out := &sandbox.SandboxSecurity{
-		CapabilityReadiness: sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness),
+		CapabilityReadiness:            sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness),
+		CapabilityReadinessDiagnostics: factorySandboxCapabilityReadinessDiagnostics(security.CapabilityReadiness),
 	}
 	if security.Network != nil {
 		out.Network = &sandbox.SandboxNetworkSecurity{

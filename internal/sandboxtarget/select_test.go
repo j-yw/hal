@@ -3,6 +3,7 @@ package sandboxtarget
 import (
 	"errors"
 	"io/fs"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -188,6 +189,56 @@ func TestRuntimeForSandboxPreservesDurableRuntimeMetadata(t *testing.T) {
 	}
 }
 
+func TestSelectExplicitSandboxDerivesHostReadinessDiagnosticsFromReadiness(t *testing.T) {
+	readiness := &sandbox.SandboxSecurityCapabilityReadinessOutput{
+		Results: []sandbox.SandboxSecurityCapabilityReadinessResult{
+			{
+				State: sandbox.SandboxSecurityCapabilityReadinessUnsupported,
+				Requested: &sandbox.SandboxSecurityCapabilityMetadata{
+					Family:     sandbox.SandboxSecurityCapabilityFamilyNetworkPolicy,
+					Capability: sandbox.SandboxSecurityCapabilityNetworkDenyByDefault,
+					Source:     sandbox.SandboxSecurityCapabilitySourceRequested,
+				},
+				ReasonCode: sandbox.SandboxSecurityCapabilityReasonCapabilityMissing,
+			},
+		},
+	}
+	staleDiagnostics := &sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary{
+		Status:               sandbox.SandboxSecurityCapabilityDiagnosticSummaryStatusReady,
+		AdvisoryOnly:         false,
+		WouldBlockStrictGate: false,
+	}
+	result := selectExplicitSandboxWithHostSecurity(t, &sandbox.SandboxSecurity{
+		CapabilityReadiness:            readiness,
+		CapabilityReadinessDiagnostics: staleDiagnostics,
+	})
+
+	got := result.Sandbox.Host.Security.CapabilityReadinessDiagnostics
+	if got == nil {
+		t.Fatal("capability readiness diagnostics = nil, want derived diagnostics")
+	}
+	want := sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(*readiness)
+	if !reflect.DeepEqual(*got, want) {
+		t.Fatalf("capability readiness diagnostics = %#v, want derived %#v", *got, want)
+	}
+	if got == staleDiagnostics || got.Status == staleDiagnostics.Status || !got.AdvisoryOnly || !got.WouldBlockStrictGate {
+		t.Fatalf("capability readiness diagnostics preserved stale metadata: %#v", got)
+	}
+}
+
+func TestSelectExplicitSandboxDropsStandaloneReadinessDiagnosticsWithoutReadiness(t *testing.T) {
+	result := selectExplicitSandboxWithHostSecurity(t, &sandbox.SandboxSecurity{
+		CapabilityReadinessDiagnostics: &sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary{
+			Status:       sandbox.SandboxSecurityCapabilityDiagnosticSummaryStatusBlocked,
+			AdvisoryOnly: true,
+		},
+	})
+
+	if result.Sandbox.Host.Security.CapabilityReadinessDiagnostics != nil {
+		t.Fatalf("capability readiness diagnostics = %#v, want omitted without readiness", result.Sandbox.Host.Security.CapabilityReadinessDiagnostics)
+	}
+}
+
 func TestSelectExplicitSandboxPropagatesSelectedHostAndRuntimeMetadata(t *testing.T) {
 	cachedHost := &sandbox.SandboxHost{
 		ID:                "worker-a",
@@ -276,6 +327,50 @@ func TestSelectExplicitSandboxPropagatesSelectedHostAndRuntimeMetadata(t *testin
 		result.Sandbox.Runtime.IsolationLevel != result.Runtime.IsolationLevel {
 		t.Fatalf("sandbox runtime = %#v, want result runtime %#v", result.Sandbox.Runtime, result.Runtime)
 	}
+}
+
+func selectExplicitSandboxWithHostSecurity(t *testing.T, security *sandbox.SandboxSecurity) Result {
+	t.Helper()
+	cachedHost := &sandbox.SandboxHost{
+		ID:                "worker-a",
+		Name:              "worker a",
+		Kind:              sandbox.SandboxHostKindWorker,
+		SupportedRuntimes: []string{sandbox.SandboxRuntimeDriverRootlessPodman},
+		Security:          security,
+	}
+	selectedSandbox := &sandbox.SandboxState{
+		Name:     "podman-dev",
+		Provider: "local",
+		Status:   sandbox.StatusRunning,
+		Host: &sandbox.SandboxHost{
+			ID:   "worker-a",
+			Name: "worker a",
+		},
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:    sandbox.SandboxRuntimeDriverRootlessPodman,
+			RuntimeID: "ctr-1",
+			WorkerID:  "worker-a",
+		},
+	}
+	result := Select(Request{
+		SandboxName:   "podman-dev",
+		HostID:        "worker-a",
+		RuntimeDriver: sandbox.SandboxRuntimeDriverRootlessPodman,
+	}, CachedState{
+		ListHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{cachedHost}, nil
+		},
+		LoadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != "podman-dev" {
+				t.Fatalf("loaded sandbox name = %q, want podman-dev", name)
+			}
+			return selectedSandbox, nil
+		},
+	})
+	if result.Failed() || result.Sandbox == nil || result.Sandbox.Host == nil || result.Sandbox.Host.Security == nil {
+		t.Fatalf("result = %#v, want selected sandbox with host security", result)
+	}
+	return result
 }
 
 func TestSelectExplicitSandboxRejectsRequestedHostMismatch(t *testing.T) {

@@ -77,6 +77,29 @@ func TestSandboxSecurityCapabilityReadinessJSONFieldApprovedStructs(t *testing.T
 	}
 }
 
+func TestSandboxRuntimeSecurityReadinessDiagnosticsJSONFieldApprovedStruct(t *testing.T) {
+	for _, typ := range []reflect.Type{
+		reflect.TypeOf(sandbox.SandboxSecurity{}),
+		reflect.TypeOf(factory.SandboxSecurityMetadata{}),
+		reflect.TypeOf(SandboxRuntimeSecuritySummary{}),
+	} {
+		field, ok := typ.FieldByName("CapabilityReadinessDiagnostics")
+		if !ok {
+			t.Fatalf("%s missing CapabilityReadinessDiagnostics field", typ)
+		}
+		if got := field.Tag.Get("json"); got != "capabilityReadinessDiagnostics,omitempty" {
+			t.Fatalf("%s CapabilityReadinessDiagnostics json tag = %q, want capabilityReadinessDiagnostics,omitempty", typ, got)
+		}
+		if field.Type != reflect.TypeOf((*sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary)(nil)) {
+			t.Fatalf("%s CapabilityReadinessDiagnostics type = %s, want *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary", typ, field.Type)
+		}
+	}
+
+	if _, ok := reflect.TypeOf(SandboxRuntimeSecurityControls{}).FieldByName("CapabilityReadinessDiagnostics"); ok {
+		t.Fatalf("%s must not expose runtime CapabilityReadinessDiagnostics", reflect.TypeOf(SandboxRuntimeSecurityControls{}))
+	}
+}
+
 func TestSandboxSecurityCapabilityReadinessMetadataPreservedWhenAttached(t *testing.T) {
 	security := testEffectiveSandboxSecurityMetadata()
 	security.CapabilityReadiness = testCommandSandboxCapabilityReadinessOutput()

@@ -934,6 +934,32 @@ func TestSandboxSecurityCapabilityReadinessMetadataJSONTags(t *testing.T) {
 	}
 }
 
+func TestSandboxSecurityCapabilityReadinessDiagnosticsMetadataJSONTags(t *testing.T) {
+	readiness := testFactorySandboxCapabilityReadinessOutput()
+	diagnostics := sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(*readiness)
+	security := SandboxSecurityMetadata{
+		CapabilityReadiness:            readiness,
+		CapabilityReadinessDiagnostics: &diagnostics,
+	}
+
+	data, err := json.Marshal(security)
+	if err != nil {
+		t.Fatalf("json.Marshal(security) error = %v", err)
+	}
+
+	raw := mustJSONMapFromBytes(t, data)
+	requireExactJSONKeys(t, raw, []string{"capabilityReadiness", "capabilityReadinessDiagnostics"})
+
+	diagnosticsJSON, ok := raw["capabilityReadinessDiagnostics"].(map[string]any)
+	if !ok {
+		t.Fatalf("capabilityReadinessDiagnostics should be an object, got %T", raw["capabilityReadinessDiagnostics"])
+	}
+	requireExactJSONKeys(t, diagnosticsJSON, []string{"status", "total", "highestSeverity", "advisoryOnly", "wouldBlockStrictGate", "items"})
+	if diagnosticsJSON["status"] != string(sandbox.SandboxSecurityCapabilityDiagnosticSummaryStatusReady) {
+		t.Fatalf("capabilityReadinessDiagnostics.status = %#v, want ready", diagnosticsJSON["status"])
+	}
+}
+
 func TestSandboxMetadataLoadsLegacyJSON(t *testing.T) {
 	payload := []byte(`{
 		"name": "factory-run",
@@ -2613,6 +2639,12 @@ func testFactorySandboxCapabilityReadinessOutput() *sandbox.SandboxSecurityCapab
 	return &sandbox.SandboxSecurityCapabilityReadinessOutput{
 		Results: []sandbox.SandboxSecurityCapabilityReadinessResult{{
 			State: sandbox.SandboxSecurityCapabilityReadinessReady,
+			Requested: &sandbox.SandboxSecurityCapabilityMetadata{
+				ID:         "factory-capability-requested",
+				Family:     sandbox.SandboxSecurityCapabilityFamilySecretDelivery,
+				Capability: sandbox.SandboxSecurityCapabilitySecretEnv,
+				Source:     sandbox.SandboxSecurityCapabilitySourceRequested,
+			},
 			Ready: &sandbox.SandboxSecurityCapabilityMetadata{
 				ID:         "factory-capability-ready",
 				Family:     sandbox.SandboxSecurityCapabilityFamilySecretDelivery,

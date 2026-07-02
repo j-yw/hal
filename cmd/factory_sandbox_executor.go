@@ -2211,8 +2211,10 @@ func factorySandboxSecurityMetadata(security *sandbox.SandboxSecurity) *factory.
 	if security == nil {
 		return nil
 	}
+	capabilityReadiness := sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness)
 	metadata := &factory.SandboxSecurityMetadata{
-		CapabilityReadiness: sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness),
+		CapabilityReadiness:            capabilityReadiness,
+		CapabilityReadinessDiagnostics: factorySandboxCapabilityReadinessDiagnostics(capabilityReadiness),
 	}
 	if security.Network != nil {
 		metadata.Network = &factory.SandboxNetworkSecurityMetadata{
@@ -2312,6 +2314,9 @@ func factorySandboxSecurityTimelineMetadata(security *factory.SandboxSecurityMet
 	}
 	if capabilityReadiness := sanitizedFactorySandboxCapabilityReadiness(security.CapabilityReadiness); capabilityReadiness != nil {
 		out["capabilityReadiness"] = capabilityReadiness
+		if diagnostics := factorySandboxCapabilityReadinessDiagnostics(capabilityReadiness); diagnostics != nil {
+			out["capabilityReadinessDiagnostics"] = diagnostics
+		}
 	}
 	if len(out) == 0 {
 		return nil
@@ -2340,8 +2345,10 @@ func cloneFactorySandboxSecurityMetadata(security *factory.SandboxSecurityMetada
 	if security == nil {
 		return nil
 	}
+	capabilityReadiness := sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness)
 	clone := &factory.SandboxSecurityMetadata{
-		CapabilityReadiness: sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness),
+		CapabilityReadiness:            capabilityReadiness,
+		CapabilityReadinessDiagnostics: factorySandboxCapabilityReadinessDiagnostics(capabilityReadiness),
 	}
 	if security.Network != nil {
 		clone.Network = &factory.SandboxNetworkSecurityMetadata{

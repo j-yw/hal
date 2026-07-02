@@ -147,6 +147,7 @@ func TestSecurityCapabilityImportBoundaryCoversProductionMetadataFiles(t *testin
 	}
 	for _, path := range []string{
 		"security_capability.go",
+		"security_capability_diagnostics.go",
 		"security_capability_evaluator.go",
 		"security_capability_sanitize.go",
 		"credential_proxy_projection.go",
