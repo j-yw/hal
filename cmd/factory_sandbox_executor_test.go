@@ -815,6 +815,158 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 	}
 }
 
+func TestRunFactorySandboxExecutorWithDepsPersistsSanitizedCredentialProxyMetadata(t *testing.T) {
+	now := time.Date(2026, 7, 2, 13, 30, 0, 0, time.UTC)
+	store := factory.NewStore(t.TempDir())
+	rawURL := "https://api.example.invalid:443/path?token=raw-secret-token-123"
+	rawHeader := "Authorization: Bearer raw-secret-token-123"
+	rawEnvValue := "AWS_SECRET_ACCESS_KEY=secret-value-123"
+	socketPath := "/tmp/credential-proxy.sock"
+	localPath := "/Users/v/.ssh/id_rsa"
+	forbidden := []string{rawURL, rawHeader, rawEnvValue, socketPath, localPath, "raw-secret-token-123", "secret-value-123"}
+	target := &sandbox.SandboxState{
+		Name:     "factory-credential-proxy",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+	}
+	record := factory.RunRecord{
+		RunID:      "run-factory-credential-proxy",
+		Status:     factory.RunStatusRunning,
+		RepoRemote: "git@github.com:example/repo.git",
+		BranchName: "hal/credential-proxy",
+		BaseBranch: "main",
+		Secrets: []factory.RunSecretMetadata{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+			Present:  true,
+		}, {
+			Name:     "BAD-NAME",
+			Source:   factory.RunSecretSourceEnv,
+			Required: false,
+			Present:  true,
+		}, {
+			Name:     "OPTIONAL_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: false,
+			Present:  false,
+		}},
+	}
+	securityReq := sandbox.SecurityEvaluationRequest{
+		RequestedSecretModes:  []string{sandbox.SandboxSecretModeEnv, rawHeader, rawEnvValue},
+		ActiveSecretModes:     []string{sandbox.SandboxSecretModeHTTPProxy, socketPath},
+		CompatibilityAuthSync: true,
+	}
+	networkSession := &sandbox.SandboxNetworkProxySessionMetadata{
+		ID:     " network-proxy-session-factory ",
+		Source: sandbox.SandboxNetworkPolicyDecisionSourceFactory,
+		PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
+			ID:        " policy-snapshot-factory ",
+			Version:   localPath,
+			Preset:    sandbox.SandboxNetworkPolicyPreset(" DENY_BY_DEFAULT "),
+			RuleSetID: rawURL,
+		},
+		EnforcementMode: sandbox.SandboxNetworkEnforcementModeProxyFirewall,
+	}
+
+	var savedRecords []factory.RunRecord
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		ProjectDir:          t.TempDir(),
+		SandboxName:         "factory-credential-proxy",
+		RunRecord:           record,
+		Security:            securityReq,
+		NetworkProxySession: networkSession,
+		RemoteAuto:          factoryRunAutoRequest{BaseBranch: "main"},
+		RemoteOutput:        io.Discard,
+		DeferSuccessCleanup: true,
+	}, factorySandboxExecutorDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		now:          func() time.Time { return now },
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != "factory-credential-proxy" {
+				t.Fatalf("load sandbox name = %q, want factory-credential-proxy", name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return fakeFactorySandboxRuntimeDriver{}, nil
+		},
+		engineAuthFiles: func() []factorySandboxAuthFile { return nil },
+		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			return factory.BootstrapResult{}, nil
+		},
+		saveRun: func(store factory.Store, record *factory.RunRecord) error {
+			savedRecords = append(savedRecords, *record)
+			return store.SaveRun(record)
+		},
+		appendEvent: func(store factory.Store, event *factory.EventRecord) error {
+			return store.AppendEvent(event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error: %v", err)
+	}
+	if len(savedRecords) < 2 || savedRecords[1].Sandbox == nil {
+		t.Fatalf("saved records = %#v, want sandbox metadata on second write", savedRecords)
+	}
+	sandboxMetadata := savedRecords[1].Sandbox
+	if sandboxMetadata.CredentialProxyPlan == nil || sandboxMetadata.CredentialProxySession == nil {
+		t.Fatalf("credential proxy plan/session = %#v/%#v, want metadata", sandboxMetadata.CredentialProxyPlan, sandboxMetadata.CredentialProxySession)
+	}
+	if sandboxMetadata.CredentialProxyPlan.Source != sandbox.SandboxCredentialProxySourceFactory {
+		t.Fatalf("credential proxy source = %q, want factory", sandboxMetadata.CredentialProxyPlan.Source)
+	}
+	if sandboxMetadata.CredentialProxyPlan.SecretBrokerSessionID != "run-factory-credential-proxy-credential-proxy-secret-broker-session" {
+		t.Fatalf("secret broker session id = %q", sandboxMetadata.CredentialProxyPlan.SecretBrokerSessionID)
+	}
+	if sandboxMetadata.CredentialProxyPlan.NetworkProxySessionID != "network-proxy-session-factory" {
+		t.Fatalf("network proxy session id = %q", sandboxMetadata.CredentialProxyPlan.NetworkProxySessionID)
+	}
+	if sandboxMetadata.CredentialProxyPlan.PolicySnapshot == nil || sandboxMetadata.CredentialProxyPlan.PolicySnapshot.ID != "policy-snapshot-factory" {
+		t.Fatalf("credential proxy policy snapshot = %#v", sandboxMetadata.CredentialProxyPlan.PolicySnapshot)
+	}
+	if sandboxMetadata.CredentialProxyPlan.PolicySnapshot.Version != "" || sandboxMetadata.CredentialProxyPlan.PolicySnapshot.RuleSetID != "" {
+		t.Fatalf("unsafe policy snapshot fields survived sanitizer: %#v", sandboxMetadata.CredentialProxyPlan.PolicySnapshot)
+	}
+	if got, want := len(sandboxMetadata.CredentialProxyBindings), 3; got != want {
+		t.Fatalf("credential proxy bindings = %#v, want %d safe bindings", sandboxMetadata.CredentialProxyBindings, want)
+	}
+	for _, binding := range sandboxMetadata.CredentialProxyBindings {
+		if binding.SecretID != "env:GITHUB_TOKEN" {
+			t.Fatalf("binding secret id = %q, want only sanitized broker secret reference", binding.SecretID)
+		}
+		if binding.Status == sandbox.SandboxCredentialProxyStatusActive || binding.Outcome == sandbox.SandboxCredentialProxyBindingOutcomeBound {
+			t.Fatalf("binding overclaims live delivery: %#v", binding)
+		}
+		if result := sandbox.ValidateSandboxCredentialProxyBindingMetadata(binding); !result.Valid {
+			t.Fatalf("binding validation = %#v, want valid", result)
+		}
+	}
+	if result := sandbox.ValidateSandboxCredentialProxyPlanMetadata(*sandboxMetadata.CredentialProxyPlan); !result.Valid {
+		t.Fatalf("plan validation = %#v, want valid", result)
+	}
+	if result := sandbox.ValidateSandboxCredentialProxySessionMetadata(*sandboxMetadata.CredentialProxySession); !result.Valid {
+		t.Fatalf("session validation = %#v, want valid", result)
+	}
+
+	storedRun, err := store.LoadRun("run-factory-credential-proxy")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	recordPayload, err := json.Marshal(storedRun)
+	if err != nil {
+		t.Fatalf("json.Marshal(run) error: %v", err)
+	}
+	assertFactorySandboxCredentialProxyPayloadExcludes(t, "stored run", string(recordPayload), forbidden...)
+
+	var statusJSON bytes.Buffer
+	if err := renderFactoryStatusJSON(&statusJSON, *storedRun, nil, nil); err != nil {
+		t.Fatalf("renderFactoryStatusJSON() error: %v", err)
+	}
+	assertFactorySandboxCredentialProxyPayloadExcludes(t, "factory status json", statusJSON.String(), forbidden...)
+}
+
 func TestRunFactorySandboxExecutorWithDepsUsesConfiguredSecurityRequest(t *testing.T) {
 	now := time.Date(2026, 7, 2, 9, 15, 0, 0, time.UTC)
 	store := factory.NewStore(t.TempDir())
@@ -4090,6 +4242,18 @@ func factorySandboxPolicyEventStringSlice(value any) []string {
 		return out
 	default:
 		return nil
+	}
+}
+
+func assertFactorySandboxCredentialProxyPayloadExcludes(t *testing.T, label string, payload string, forbiddenValues ...string) {
+	t.Helper()
+	for _, forbidden := range forbiddenValues {
+		if forbidden == "" {
+			continue
+		}
+		if strings.Contains(payload, forbidden) {
+			t.Fatalf("%s leaked forbidden value %q: %s", label, forbidden, payload)
+		}
 	}
 }
 
