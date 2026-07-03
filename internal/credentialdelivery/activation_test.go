@@ -54,6 +54,14 @@ func TestActivateDeliveryUsesInjectedFakeAdapterForEveryMode(t *testing.T) {
 				plan.NetworkProxySessionID = binding.NetworkProxySessionID
 				plan.ActiveModes = []Mode{ModeHTTPProxy}
 			}
+			wantStatus := StatusActive
+			wantBindingStatus := StatusActive
+			wantActiveModes := []Mode{mode}
+			if mode == ModeLegacyAuthSync {
+				wantStatus = StatusSkipped
+				wantBindingStatus = StatusSkipped
+				wantActiveModes = nil
+			}
 			adapter := &fakeActivationAdapter{}
 
 			got := ActivateDelivery(ActivationRequest{
@@ -70,14 +78,139 @@ func TestActivateDeliveryUsesInjectedFakeAdapterForEveryMode(t *testing.T) {
 			if adapter.calls[0].Bindings[0].ID != binding.ID || adapter.calls[0].Bindings[0].DeliveryMode != mode {
 				t.Fatalf("adapter input bindings = %#v, want sanitized binding metadata", adapter.calls[0].Bindings)
 			}
-			if got.Status != StatusActive {
-				t.Fatalf("activation status = %q, want active", got.Status)
+			if got.Status != wantStatus {
+				t.Fatalf("activation status = %q, want %q", got.Status, wantStatus)
 			}
 			assertPlanModes(t, got.RequestedModes, []Mode{mode})
-			assertPlanModes(t, got.ActiveModes, []Mode{mode})
-			assertActivationBindingStatus(t, got, binding.ID, mode, StatusActive)
+			assertPlanModes(t, got.ActiveModes, wantActiveModes)
+			assertActivationBindingStatus(t, got, binding.ID, mode, wantBindingStatus)
 			assertActivationBindingService(t, got, binding.ID, binding.ServiceID)
+			if mode == ModeLegacyAuthSync {
+				assertActivationWarning(t, got, WarningLegacyAuthCompatibility, ReasonCompatibilityMode, ModeLegacyAuthSync)
+			}
 			assertActivationNoLeak(t, got)
+		})
+	}
+}
+
+func TestActivateDeliverySanitizesAdapterBoundaryAndResultContractsForSupportedModes(t *testing.T) {
+	rawEndpoint := "https://proxy.example.invalid:8443/credential?token=raw"
+	rawPath := "/Users/v/.ssh/id_rsa"
+	rawSocket := "/var/run/ssh-agent.sock"
+	rawEnvValue := "GITHUB_TOKEN=ghp_raw_secret_value"
+	rawHeader := "Authorization: Bearer ghp_raw_secret_value"
+	rawCommand := "ssh-agent -a /tmp/agent.sock"
+	rejectedValues := []string{rawEndpoint, rawPath, rawSocket, rawEnvValue, rawHeader, rawCommand, "proxy.example.invalid", "token=raw"}
+
+	for _, mode := range SupportedModes() {
+		t.Run(string(mode), func(t *testing.T) {
+			binding := planBindingFixture(mode)
+			binding.ID = "binding-" + string(mode)
+			binding.RequestID = rawEndpoint
+			binding.PolicySnapshotID = rawPath
+			binding.ServiceLabels = []string{"source-control", rawHeader}
+			binding.DomainLabels = []string{"github", rawCommand}
+			binding.DestinationCategory = DestinationCategory(rawEndpoint)
+			if mode == ModeHTTPProxy {
+				binding.NetworkProxySessionID = "network-proxy-session-01"
+			} else {
+				binding.NetworkProxySessionID = rawSocket
+			}
+
+			plan := Plan{
+				ID:             "delivery-plan-" + string(mode),
+				RequestID:      rawEndpoint,
+				RequestedModes: []Mode{mode, Mode(rawHeader)},
+				ActiveModes:    []Mode{Mode(rawEnvValue)},
+				Status:         StatusPlanned,
+				Warnings: []Warning{{
+					Code:       WarningAdapterUnavailable,
+					ReasonCode: ReasonActivationUnavailable,
+					BindingID:  rawSocket,
+					Mode:       mode,
+				}},
+			}
+			if mode == ModeHTTPProxy {
+				plan.NetworkProxySessionID = "network-proxy-session-01"
+				plan.ActiveModes = []Mode{ModeHTTPProxy, Mode(rawEnvValue)}
+			}
+
+			unsafeBinding := Binding{
+				ID:           "binding-unsafe-" + string(mode),
+				SecretRef:    rawEnvValue,
+				ServiceID:    rawSocket,
+				DeliveryMode: mode,
+			}
+			adapter := &fakeActivationAdapter{
+				result: ActivationResult{
+					ID:             rawEndpoint,
+					PlanID:         rawPath,
+					RequestedModes: []Mode{Mode(rawHeader)},
+					ActiveModes:    []Mode{mode, Mode(rawEnvValue)},
+					Bindings: []BindingActivationResult{
+						{
+							BindingID:    binding.ID,
+							ServiceID:    rawSocket,
+							DeliveryMode: mode,
+							Outcome:      StatusActive,
+							Status:       StatusActive,
+							ReasonCode:   ReasonRequested,
+						},
+						{
+							BindingID:    rawSocket,
+							DeliveryMode: mode,
+							Outcome:      StatusActive,
+							Status:       StatusActive,
+						},
+					},
+					Status: StatusActive,
+					Warnings: []Warning{{
+						Code:       WarningAdapterUnavailable,
+						ReasonCode: ReasonActivationUnavailable,
+						BindingID:  rawHeader,
+						Mode:       mode,
+					}},
+				},
+			}
+
+			got := ActivateDelivery(ActivationRequest{
+				ActivationID: " " + rawCommand + " ",
+				Plan:         plan,
+				Bindings:     []Binding{binding, unsafeBinding},
+			}, adapter)
+
+			if len(adapter.calls) != 1 {
+				t.Fatalf("adapter calls = %d, want 1", len(adapter.calls))
+			}
+			call := adapter.calls[0]
+			if call.ActivationID != plan.ID+"-activation" {
+				t.Fatalf("adapter activation ID = %q, want sanitized default", call.ActivationID)
+			}
+			if len(call.Bindings) != 1 {
+				t.Fatalf("adapter bindings = %#v, want only safe binding", call.Bindings)
+			}
+			if call.Bindings[0].ID != binding.ID || call.Bindings[0].DeliveryMode != mode {
+				t.Fatalf("adapter binding = %#v, want safe %s binding", call.Bindings[0], mode)
+			}
+			assertPlanModes(t, call.Plan.RequestedModes, []Mode{mode})
+			assertActivationNoLeak(t, call, rejectedValues...)
+
+			assertPlanModes(t, got.RequestedModes, []Mode{mode})
+			if mode == ModeLegacyAuthSync {
+				if got.Status != StatusSkipped {
+					t.Fatalf("legacy activation status = %q, want skipped compatibility metadata", got.Status)
+				}
+				assertPlanModes(t, got.ActiveModes, nil)
+				assertActivationBindingStatus(t, got, binding.ID, mode, StatusSkipped)
+				assertActivationWarning(t, got, WarningLegacyAuthCompatibility, ReasonCompatibilityMode, ModeLegacyAuthSync)
+			} else {
+				if got.Status != StatusActive {
+					t.Fatalf("activation status = %q, want active", got.Status)
+				}
+				assertPlanModes(t, got.ActiveModes, []Mode{mode})
+				assertActivationBindingStatus(t, got, binding.ID, mode, StatusActive)
+			}
+			assertActivationNoLeak(t, got, rejectedValues...)
 		})
 	}
 }

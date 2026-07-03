@@ -157,6 +157,7 @@ func finalizeAdapterActivationResult(input ActivationRequest, raw ActivationResu
 	normalized.RequestedModes = input.Plan.RequestedModes
 	normalized.Bindings = activationBindingResultsForInput(input, normalized.Bindings)
 	normalized.Warnings = appendHTTPProxyActivationWarnings(input, adapterActiveModes, normalized.Bindings, normalized.Warnings)
+	normalized.Warnings = appendLegacyAuthCompatibilityWarnings(input, normalized.Warnings)
 	normalized.ActiveModes = activationActiveModesForInput(input, normalized)
 
 	result := SanitizeActivationResultMetadata(normalized)
@@ -257,6 +258,15 @@ func activationBindingResultsForInput(input ActivationRequest, raw []BindingActi
 		}
 		result.ServiceID = binding.ServiceID
 		result = normalizeActivationBindingOutcome(result)
+		if result.DeliveryMode == ModeLegacyAuthSync {
+			if result.Status == StatusActive {
+				result.Status = StatusSkipped
+				result.Outcome = StatusSkipped
+			}
+			if result.ReasonCode == "" || result.ReasonCode == ReasonRequested {
+				result.ReasonCode = ReasonCompatibilityMode
+			}
+		}
 		if result.DeliveryMode == ModeHTTPProxy && result.Status == StatusActive && !httpProxyActivationAllowed(input.Plan, binding) {
 			result.Status = StatusSkipped
 			result.Outcome = StatusSkipped
@@ -286,7 +296,7 @@ func activationActiveModesForInput(input ActivationRequest, result ActivationRes
 	active := newPlanModeSet()
 	for _, mode := range result.ActiveModes {
 		mode = normalizeMode(mode)
-		if mode == ModeHTTPProxy {
+		if mode == ModeHTTPProxy || mode == ModeLegacyAuthSync {
 			continue
 		}
 		if requested.contains(mode) {
@@ -294,6 +304,9 @@ func activationActiveModesForInput(input ActivationRequest, result ActivationRes
 		}
 	}
 	for _, binding := range result.Bindings {
+		if binding.DeliveryMode == ModeLegacyAuthSync {
+			continue
+		}
 		if binding.Status == StatusActive && requested.contains(binding.DeliveryMode) {
 			active.add(binding.DeliveryMode)
 		}
@@ -339,6 +352,17 @@ func appendHTTPProxyActivationWarnings(input ActivationRequest, adapterActiveMod
 		})
 	}
 	return warnings
+}
+
+func appendLegacyAuthCompatibilityWarnings(input ActivationRequest, warnings []Warning) []Warning {
+	if !activationModeRecordsContain(input.Plan.RequestedModes, ModeLegacyAuthSync) {
+		return warnings
+	}
+	return appendActivationWarningIfMissing(warnings, Warning{
+		Code:       WarningLegacyAuthCompatibility,
+		ReasonCode: ReasonCompatibilityMode,
+		Mode:       ModeLegacyAuthSync,
+	})
 }
 
 func appendActivationWarningIfMissing(warnings []Warning, warning Warning) []Warning {
