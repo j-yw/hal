@@ -353,6 +353,7 @@ func TestPlanPublicSchemaContainsNoUnsafeFields(t *testing.T) {
 		reflect.TypeOf(RawProtocolPlan{}),
 		reflect.TypeOf(ProxyRoutingIntent{}),
 		reflect.TypeOf(FirewallIntent{}),
+		reflect.TypeOf(Result{}),
 	}
 
 	for _, typ := range contractTypes {
@@ -406,7 +407,8 @@ func assertSafePlanFieldType(t *testing.T, typeName string, field reflect.Struct
 			reflect.TypeOf(CategoryPosturePlan{}),
 			reflect.TypeOf(RawProtocolPlan{}),
 			reflect.TypeOf(ProxyRoutingIntent{}),
-			reflect.TypeOf(FirewallIntent{}):
+			reflect.TypeOf(FirewallIntent{}),
+			reflect.TypeOf(ResultCapability{}):
 			return
 		default:
 			t.Fatalf("%s.%s exposes unsupported public struct type %s", typeName, field.Name, typ)
