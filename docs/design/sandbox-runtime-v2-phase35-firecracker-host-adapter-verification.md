@@ -13,8 +13,11 @@ The package is intentionally separate from
 boot contract and keeps live boot behind explicit `BackendOptions.LiveStart`
 plus injected `ProcessAdapter`, `BootAcceptanceWaiter`, and
 `LiveProcessManager` dependencies. Phase 35 provides host-side implementations
-that can satisfy those injected interfaces, but it does not register, select,
-or pass them to backend options from default Hal execution paths.
+for `ProcessStarter`, `BootAcceptanceWaiter`, and `LiveProcessManager`. A
+future live backend path composes the starter into `BackendOptions.ProcessAdapter`
+with `firecracker.ProcessLaunchAdapter{Starter: adapter}`. Phase 35 does not
+register, select, or pass those dependencies to backend options from default Hal
+execution paths.
 
 `firecrackerhost.NewAdapter` builds an inert adapter unless dependencies are
 explicitly provided with options such as `WithProcessRunner`,
@@ -25,8 +28,10 @@ starting or accepting a process.
 `firecrackerhost.NewProcessLifecycleManager` owns fake-safe host process handle
 lifecycle and state cleanup through injected boundaries. It stores only opaque
 handle metadata publicly, keeps raw process state in memory, treats unknown
-handles as idempotent cleanup no-ops, validates Firecracker-owned state
-directories before deletion, and sanitizes lifecycle and filesystem errors.
+handles as idempotent cleanup no-ops, removes only state paths that match the
+tracked start-time Firecracker path plan for the live process handle, validates
+those directories before deletion, and sanitizes lifecycle and filesystem
+errors.
 
 `firecrackerhost.NewOSExecProcessRunner` is the only production `os/exec`
 boundary for starting a Firecracker host process. It is still explicit

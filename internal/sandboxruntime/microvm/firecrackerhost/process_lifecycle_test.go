@@ -159,7 +159,7 @@ func TestProcessLifecycleManagerCleanupRemovesOnlyValidatedFirecrackerStateDir(t
 		&fakeHostProcessRunner{processes: []HostProcess{process}},
 		WithProcessLifecycleCleanupFilesystem(filesystem),
 	)
-	handle, err := manager.StartProcess(context.Background(), firecracker.ProcessRunnerStartRequest{Executable: "firecracker"})
+	handle, err := manager.StartProcess(context.Background(), processStartRequestForCleanupPaths(paths))
 	if err != nil {
 		t.Fatalf("StartProcess() error = %v, want nil", err)
 	}
@@ -194,7 +194,7 @@ func TestProcessLifecycleManagerCleanupRemovesOnlyValidatedFirecrackerStateDir(t
 	}
 }
 
-func TestProcessLifecycleManagerDeleteUnknownHandleCleansValidatedStateIdempotently(t *testing.T) {
+func TestProcessLifecycleManagerDeleteUnknownHandleDoesNotRemoveState(t *testing.T) {
 	paths := cleanupPathPlanForTest("fc-delete-unknown")
 	filesystem := newFakeCleanupFilesystem()
 	filesystem.addDir(paths.StateDir)
@@ -208,15 +208,64 @@ func TestProcessLifecycleManagerDeleteUnknownHandleCleansValidatedStateIdempoten
 	if err := manager.DeleteLiveProcess(context.Background(), firecracker.LiveProcessRequest{Handle: unknown, Paths: paths}); err != nil {
 		t.Fatalf("DeleteLiveProcess(unknown) error = %v, want nil", err)
 	}
-	if filesystem.exists(paths.StateDir) {
-		t.Fatalf("DeleteLiveProcess(unknown) left state dir %q, want removed", paths.StateDir)
+	if !filesystem.exists(paths.StateDir) {
+		t.Fatalf("DeleteLiveProcess(unknown) removed state dir %q", paths.StateDir)
 	}
 
 	if err := manager.DeleteLiveProcess(context.Background(), firecracker.LiveProcessRequest{Handle: unknown, Paths: paths}); err != nil {
-		t.Fatalf("DeleteLiveProcess(unknown already removed) error = %v, want nil", err)
+		t.Fatalf("DeleteLiveProcess(unknown second call) error = %v, want nil", err)
 	}
-	if !reflect.DeepEqual(filesystem.removeCalls, []string{paths.StateDir}) {
-		t.Fatalf("DeleteLiveProcess(unknown) RemoveAll calls = %#v, want one idempotent removal", filesystem.removeCalls)
+	if len(filesystem.removeCalls) != 0 {
+		t.Fatalf("DeleteLiveProcess(unknown) RemoveAll calls = %#v, want none", filesystem.removeCalls)
+	}
+}
+
+func TestProcessLifecycleManagerCleanupRequiresTrackedStartPaths(t *testing.T) {
+	trackedPaths := cleanupPathPlanForTest("fc-cleanup-tracked")
+	untrackedPaths := cleanupPathPlanForTest("fc-cleanup-untracked")
+	filesystem := newFakeCleanupFilesystem()
+	for _, paths := range []firecracker.PathPlan{trackedPaths, untrackedPaths} {
+		filesystem.addDir(paths.StateDir)
+		filesystem.addFile(paths.APISocketPath)
+		filesystem.addFile(paths.ConfigPath)
+		filesystem.addFile(paths.LogPath)
+		filesystem.addFile(paths.MetricsPath)
+	}
+	process := &fakeHostProcess{rawPID: 4445}
+	manager := NewProcessLifecycleManager(
+		&fakeHostProcessRunner{processes: []HostProcess{process}},
+		WithProcessLifecycleCleanupFilesystem(filesystem),
+	)
+	handle, err := manager.StartProcess(context.Background(), processStartRequestForCleanupPaths(trackedPaths))
+	if err != nil {
+		t.Fatalf("StartProcess() error = %v, want nil", err)
+	}
+
+	err = manager.CleanupLiveProcess(context.Background(), firecracker.LiveProcessRequest{Handle: handle, Paths: untrackedPaths})
+	if !errors.Is(err, ErrUnsafeCleanupPath) {
+		t.Fatalf("CleanupLiveProcess(untracked paths) error = %v, want ErrUnsafeCleanupPath", err)
+	}
+	if process.killCalls != 0 || process.waitCalls != 0 || process.signalCalls != 0 {
+		t.Fatalf("untracked cleanup touched process: signal=%d kill=%d wait=%d", process.signalCalls, process.killCalls, process.waitCalls)
+	}
+	if len(filesystem.removeCalls) != 0 {
+		t.Fatalf("untracked cleanup RemoveAll calls = %#v, want none", filesystem.removeCalls)
+	}
+	if !filesystem.exists(untrackedPaths.StateDir) {
+		t.Fatalf("untracked cleanup removed state dir %q", untrackedPaths.StateDir)
+	}
+
+	if err := manager.CleanupLiveProcess(context.Background(), firecracker.LiveProcessRequest{Handle: handle, Paths: trackedPaths}); err != nil {
+		t.Fatalf("CleanupLiveProcess(tracked paths) error = %v, want nil", err)
+	}
+	if !reflect.DeepEqual(filesystem.removeCalls, []string{trackedPaths.StateDir}) {
+		t.Fatalf("tracked cleanup RemoveAll calls = %#v, want only %q", filesystem.removeCalls, trackedPaths.StateDir)
+	}
+	if filesystem.exists(trackedPaths.StateDir) {
+		t.Fatalf("tracked cleanup left state dir %q", trackedPaths.StateDir)
+	}
+	if !filesystem.exists(untrackedPaths.StateDir) {
+		t.Fatalf("tracked cleanup removed untracked state dir %q", untrackedPaths.StateDir)
 	}
 }
 
@@ -259,7 +308,7 @@ func TestProcessLifecycleManagerCleanupRefusesUnsafePathPlans(t *testing.T) {
 				&fakeHostProcessRunner{processes: []HostProcess{process}},
 				WithProcessLifecycleCleanupFilesystem(filesystem),
 			)
-			handle, err := manager.StartProcess(context.Background(), firecracker.ProcessRunnerStartRequest{Executable: "firecracker"})
+			handle, err := manager.StartProcess(context.Background(), processStartRequestForCleanupPaths(safePaths))
 			if err != nil {
 				t.Fatalf("StartProcess() error = %v, want nil", err)
 			}
@@ -294,7 +343,7 @@ func TestProcessLifecycleManagerCleanupFilesystemErrorsAreSanitized(t *testing.T
 		&fakeHostProcessRunner{processes: []HostProcess{process}},
 		WithProcessLifecycleCleanupFilesystem(filesystem),
 	)
-	handle, err := manager.StartProcess(context.Background(), firecracker.ProcessRunnerStartRequest{Executable: "firecracker"})
+	handle, err := manager.StartProcess(context.Background(), processStartRequestForCleanupPaths(paths))
 	if err != nil {
 		t.Fatalf("StartProcess() error = %v, want nil", err)
 	}
@@ -506,6 +555,18 @@ func cleanupPathPlanForStateDir(stateDir string) firecracker.PathPlan {
 		ConfigPath:    filepath.Join(stateDir, firecracker.DefaultConfigPath),
 		LogPath:       filepath.Join(stateDir, firecracker.DefaultLogPath),
 		MetricsPath:   filepath.Join(stateDir, firecracker.DefaultMetricsPath),
+	}
+}
+
+func processStartRequestForCleanupPaths(paths firecracker.PathPlan) firecracker.ProcessRunnerStartRequest {
+	return firecracker.ProcessRunnerStartRequest{
+		Executable: "firecracker",
+		Args: []string{
+			"--api-sock", paths.APISocketPath,
+			"--config-file", paths.ConfigPath,
+			"--log-path", paths.LogPath,
+			"--metrics-path", paths.MetricsPath,
+		},
 	}
 }
 

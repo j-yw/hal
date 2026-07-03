@@ -44,11 +44,29 @@ func TestPhase35WorkerPathsDoNotConstructSelectOrInjectFirecrackerHostAdapter(t 
 	}
 }
 
+func TestPhase35SandboxTargetPathsDoNotConstructSelectOrInjectFirecrackerHostAdapter(t *testing.T) {
+	for _, path := range phase35ProductionFilesInDirs(t, filepath.Join("..", "internal", "sandboxtarget")) {
+		t.Run(phase33DefaultGuardDisplayPath(t, path), func(t *testing.T) {
+			phase35AssertNoFirecrackerHostAdapterWiring(t, path)
+		})
+	}
+}
+
+func TestPhase35FirecrackerBackendPathsDoNotConstructSelectOrInjectFirecrackerHostAdapter(t *testing.T) {
+	for _, path := range phase35ProductionFilesInDirs(t, filepath.Join("..", "internal", "sandboxruntime", "microvm", "firecracker")) {
+		t.Run(phase33DefaultGuardDisplayPath(t, path), func(t *testing.T) {
+			phase35AssertNoFirecrackerHostAdapterPackageImport(t, path)
+		})
+	}
+}
+
 func TestPhase35DefaultHostAdapterGuardCoversRequiredSurfaces(t *testing.T) {
 	all := append([]string{}, phase35DefaultCLIProductionFiles(t)...)
 	all = append(all, phase35FactoryProductionFiles(t)...)
 	all = append(all, phase35ProductionFilesInDirs(t, filepath.Join("..", "internal", "sandboxexec"))...)
 	all = append(all, phase35WorkerProductionFiles(t)...)
+	all = append(all, phase35ProductionFilesInDirs(t, filepath.Join("..", "internal", "sandboxtarget"))...)
+	all = append(all, phase35ProductionFilesInDirs(t, filepath.Join("..", "internal", "sandboxruntime", "microvm", "firecracker"))...)
 
 	covered := make(map[string]bool, len(all))
 	for _, path := range all {
@@ -70,6 +88,10 @@ func TestPhase35DefaultHostAdapterGuardCoversRequiredSurfaces(t *testing.T) {
 		"../internal/sandboxworker/adapter.go",
 		"../internal/sandboxworker/service.go",
 		"../internal/sandboxworker/types.go",
+		"../internal/sandboxtarget/scheduler_candidates.go",
+		"../internal/sandboxtarget/select.go",
+		"../internal/sandboxruntime/microvm/firecracker/backend.go",
+		"../internal/sandboxruntime/microvm/firecracker/process.go",
 	} {
 		clean := filepath.ToSlash(filepath.Clean(want))
 		if !covered[clean] {
@@ -185,6 +207,28 @@ func phase35AssertNoFirecrackerHostAdapterWiring(t *testing.T, path string) {
 	}
 	if message := phase35FirecrackerHostSourceBoundaryMessage(path, string(source), file); message != "" {
 		t.Fatal(message)
+	}
+}
+
+func phase35AssertNoFirecrackerHostAdapterPackageImport(t *testing.T, path string) {
+	t.Helper()
+
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error: %v", path, err)
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), path, source, parser.ImportsOnly)
+	if err != nil {
+		t.Fatalf("ParseFile(%s imports) error: %v", path, err)
+	}
+	for _, imported := range file.Imports {
+		importPath, err := strconv.Unquote(imported.Path.Value)
+		if err != nil {
+			t.Fatalf("Unquote import path %s in %s: %v", imported.Path.Value, path, err)
+		}
+		if message := phase35FirecrackerHostImportBoundaryMessage(path, importPath); message != "" {
+			t.Fatal(message)
+		}
 	}
 }
 
@@ -389,5 +433,5 @@ func phase35FirecrackerHostExprName(expr ast.Expr) string {
 }
 
 func phase35DefaultHostAdapterBoundaryMessage(fileName, detail string) string {
-	return phase33DefaultGuardDisplayPathNoFatal(fileName) + " " + detail + "; Phase 35 default CLI, factory, sandboxexec, and worker paths must not construct, select, or inject the Firecracker host adapter"
+	return phase33DefaultGuardDisplayPathNoFatal(fileName) + " " + detail + "; Phase 35 default CLI, factory, sandboxexec, worker, scheduler, and Firecracker backend paths must not construct, select, or inject the Firecracker host adapter"
 }

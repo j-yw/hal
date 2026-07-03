@@ -126,8 +126,11 @@ type ProcessLifecycleManager struct {
 }
 
 type trackedProcess struct {
-	process  HostProcess
-	finished bool
+	process      HostProcess
+	finished     bool
+	stateRemoved bool
+	paths        firecracker.PathPlan
+	hasPaths     bool
 }
 
 // NewProcessLifecycleManager constructs a fake-safe lifecycle manager. Without
@@ -171,14 +174,15 @@ func (manager *ProcessLifecycleManager) StartProcess(ctx context.Context, req fi
 		return firecracker.ProcessHandleMetadata{}, newProcessLifecycleError(processOperationStart, ErrHostProcessRequired)
 	}
 
-	handle := manager.storeProcess(process)
+	paths, hasPaths := trustedStartPathPlan(req)
+	handle := manager.storeProcess(process, paths, hasPaths)
 	return handle, nil
 }
 
 // CleanupLiveProcess force-stops a tracked live process and waits for it to
 // finish. Unknown or already-finished handles are idempotent no-ops.
 func (manager *ProcessLifecycleManager) CleanupLiveProcess(ctx context.Context, req firecracker.LiveProcessRequest) error {
-	plan, removeState, err := validatedCleanupPathPlan(req.Paths)
+	plan, removeState, err := manager.trackedCleanupPathPlan(req.Handle, req.Paths)
 	if err != nil {
 		return newProcessLifecycleError(processOperationCleanup, err)
 	}
@@ -188,7 +192,11 @@ func (manager *ProcessLifecycleManager) CleanupLiveProcess(ctx context.Context, 
 	if !removeState {
 		return nil
 	}
-	return manager.removeValidatedStateDir(plan)
+	if err := manager.removeValidatedStateDir(plan); err != nil {
+		return err
+	}
+	manager.markStateRemoved(req.Handle)
+	return nil
 }
 
 // StopLiveProcess gracefully stops a tracked live process and waits for it to
@@ -213,17 +221,21 @@ func (manager *ProcessLifecycleManager) StopLiveProcess(ctx context.Context, req
 // and forgets the opaque handle. Unknown or already-finished handles are
 // idempotent no-ops.
 func (manager *ProcessLifecycleManager) DeleteLiveProcess(ctx context.Context, req firecracker.LiveProcessRequest) error {
-	plan, removeState, err := validatedCleanupPathPlan(req.Paths)
+	plan, removeState, err := manager.trackedCleanupPathPlan(req.Handle, req.Paths)
 	if err != nil {
 		return newProcessLifecycleError(processOperationCleanup, err)
 	}
-	if err := manager.killAndWait(ctx, req.Handle, true); err != nil {
+	if err := manager.killAndWait(ctx, req.Handle, false); err != nil {
 		return err
 	}
-	if !removeState {
-		return nil
+	if removeState {
+		if err := manager.removeValidatedStateDir(plan); err != nil {
+			return err
+		}
+		manager.markStateRemoved(req.Handle)
 	}
-	return manager.removeValidatedStateDir(plan)
+	manager.forgetProcess(req.Handle)
+	return nil
 }
 
 func (manager *ProcessLifecycleManager) killAndWait(ctx context.Context, handle firecracker.ProcessHandleMetadata, forget bool) error {
@@ -249,7 +261,7 @@ func (manager *ProcessLifecycleManager) killAndWait(ctx context.Context, handle 
 	return nil
 }
 
-func (manager *ProcessLifecycleManager) storeProcess(process HostProcess) firecracker.ProcessHandleMetadata {
+func (manager *ProcessLifecycleManager) storeProcess(process HostProcess, paths firecracker.PathPlan, hasPaths bool) firecracker.ProcessHandleMetadata {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	if manager.processes == nil {
@@ -257,11 +269,65 @@ func (manager *ProcessLifecycleManager) storeProcess(process HostProcess) firecr
 	}
 	manager.nextID++
 	id := fmt.Sprintf("%s-%012d", processHandlePrefix, manager.nextID)
-	manager.processes[id] = &trackedProcess{process: process}
+	manager.processes[id] = &trackedProcess{
+		process:  process,
+		paths:    paths,
+		hasPaths: hasPaths,
+	}
 	return firecracker.ProcessHandleMetadata{
 		ID:     id,
 		Source: processHandleSource,
 	}
+}
+
+func (manager *ProcessLifecycleManager) trackedCleanupPathPlan(handle firecracker.ProcessHandleMetadata, paths firecracker.PathPlan) (firecracker.PathPlan, bool, error) {
+	if cleanupPathPlanEmpty(paths) {
+		return firecracker.PathPlan{}, false, nil
+	}
+
+	tracked, ok := manager.lookupProcessSnapshot(handle)
+	if !ok {
+		return firecracker.PathPlan{}, false, nil
+	}
+
+	plan, removeState, err := validatedCleanupPathPlan(paths)
+	if err != nil {
+		return firecracker.PathPlan{}, false, err
+	}
+	if !removeState || tracked.stateRemoved {
+		return firecracker.PathPlan{}, false, nil
+	}
+	if !tracked.hasPaths || !cleanupPathPlansEqual(plan, tracked.paths) {
+		return firecracker.PathPlan{}, false, fmt.Errorf("state directory does not match tracked live process: %w", ErrUnsafeCleanupPath)
+	}
+	return plan, true, nil
+}
+
+type trackedProcessSnapshot struct {
+	paths        firecracker.PathPlan
+	hasPaths     bool
+	stateRemoved bool
+}
+
+func (manager *ProcessLifecycleManager) lookupProcessSnapshot(handle firecracker.ProcessHandleMetadata) (trackedProcessSnapshot, bool) {
+	if manager == nil {
+		return trackedProcessSnapshot{}, false
+	}
+	id := normalizeProcessHandleID(handle)
+	if id == "" {
+		return trackedProcessSnapshot{}, false
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	tracked, ok := manager.processes[id]
+	if !ok || tracked == nil {
+		return trackedProcessSnapshot{}, false
+	}
+	return trackedProcessSnapshot{
+		paths:        tracked.paths,
+		hasPaths:     tracked.hasPaths,
+		stateRemoved: tracked.stateRemoved,
+	}, true
 }
 
 func (manager *ProcessLifecycleManager) lookupActiveProcess(handle firecracker.ProcessHandleMetadata) (HostProcess, string, bool) {
@@ -289,6 +355,21 @@ func (manager *ProcessLifecycleManager) markProcessFinished(id string) {
 	defer manager.mu.Unlock()
 	if tracked := manager.processes[id]; tracked != nil {
 		tracked.finished = true
+	}
+}
+
+func (manager *ProcessLifecycleManager) markStateRemoved(handle firecracker.ProcessHandleMetadata) {
+	if manager == nil {
+		return
+	}
+	id := normalizeProcessHandleID(handle)
+	if id == "" {
+		return
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if tracked := manager.processes[id]; tracked != nil {
+		tracked.stateRemoved = true
 	}
 }
 
@@ -364,6 +445,54 @@ func validatedCleanupPathPlan(paths firecracker.PathPlan) (firecracker.PathPlan,
 		LogPath:       logPath,
 		MetricsPath:   metricsPath,
 	}, true, nil
+}
+
+func trustedStartPathPlan(req firecracker.ProcessRunnerStartRequest) (firecracker.PathPlan, bool) {
+	apiSocketPath, ok := startRequestFlagValue(req.Args, "--api-sock")
+	if !ok {
+		return firecracker.PathPlan{}, false
+	}
+	configPath, ok := startRequestFlagValue(req.Args, "--config-file")
+	if !ok {
+		return firecracker.PathPlan{}, false
+	}
+	logPath, ok := startRequestFlagValue(req.Args, "--log-path")
+	if !ok {
+		return firecracker.PathPlan{}, false
+	}
+	metricsPath, ok := startRequestFlagValue(req.Args, "--metrics-path")
+	if !ok {
+		return firecracker.PathPlan{}, false
+	}
+	stateDir := filepath.Dir(configPath)
+	plan, removeState, err := validatedCleanupPathPlan(firecracker.PathPlan{
+		StateDir:      stateDir,
+		APISocketPath: apiSocketPath,
+		ConfigPath:    configPath,
+		LogPath:       logPath,
+		MetricsPath:   metricsPath,
+	})
+	if err != nil || !removeState {
+		return firecracker.PathPlan{}, false
+	}
+	return plan, true
+}
+
+func startRequestFlagValue(args []string, flag string) (string, bool) {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == flag {
+			return args[i+1], true
+		}
+	}
+	return "", false
+}
+
+func cleanupPathPlansEqual(a, b firecracker.PathPlan) bool {
+	return filepath.Clean(a.StateDir) == filepath.Clean(b.StateDir) &&
+		filepath.Clean(a.APISocketPath) == filepath.Clean(b.APISocketPath) &&
+		filepath.Clean(a.ConfigPath) == filepath.Clean(b.ConfigPath) &&
+		filepath.Clean(a.LogPath) == filepath.Clean(b.LogPath) &&
+		filepath.Clean(a.MetricsPath) == filepath.Clean(b.MetricsPath)
 }
 
 func cleanupPathPlanEmpty(paths firecracker.PathPlan) bool {
