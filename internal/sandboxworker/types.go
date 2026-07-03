@@ -38,9 +38,11 @@ const (
 
 	RuntimeDriverSSHMachine     = "ssh_machine"
 	RuntimeDriverRootlessPodman = "rootless_podman"
+	RuntimeDriverMicroVM        = "microvm"
 
 	IsolationLevelHost      = "host"
 	IsolationLevelContainer = "container"
+	IsolationLevelVM        = "vm"
 
 	NetworkPolicyDenyByDefault = "deny_by_default"
 	NetworkPolicyBestEffort    = "best_effort"
@@ -588,7 +590,7 @@ func validRequestedNetworkEnforcement(mode string) bool {
 
 func validRequestedIsolationLevel(level string) bool {
 	switch level {
-	case IsolationLevelHost, IsolationLevelContainer:
+	case IsolationLevelHost, IsolationLevelContainer, IsolationLevelVM:
 		return true
 	default:
 		return false
@@ -597,7 +599,7 @@ func validRequestedIsolationLevel(level string) bool {
 
 func validEnforcedIsolationLevel(level string) bool {
 	switch level {
-	case IsolationLevelHost, IsolationLevelContainer:
+	case IsolationLevelHost, IsolationLevelContainer, IsolationLevelVM:
 		return true
 	default:
 		return false

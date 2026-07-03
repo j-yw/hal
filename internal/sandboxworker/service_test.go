@@ -168,6 +168,61 @@ func TestServiceRootlessPodmanCapabilityReportsExactLocalDevSecurity(t *testing.
 	assertRootlessPodmanSecurityPolicy(t, driver.Security)
 }
 
+func TestServiceMicroVMCapabilityReportsConservativeRuntimeMetadata(t *testing.T) {
+	registry, err := NewDriverRegistry(&fakeWorkerRuntimeDriver{id: RuntimeDriverMicroVM})
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+	service, err := NewService(ServiceOptions{
+		WorkerID: "worker-001",
+		Registry: registry,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+
+	capabilities := service.Capabilities()
+	if err := capabilities.Validate(); err != nil {
+		t.Fatalf("Capabilities().Validate() error: %v", err)
+	}
+	for _, unsupported := range []string{OperationExec, OperationCopyIn, OperationCopyOut} {
+		if containsString(capabilities.SupportedOperations, unsupported) {
+			t.Fatalf("microVM worker supportedOperations claim unsupported %q support: %#v", unsupported, capabilities.SupportedOperations)
+		}
+	}
+	if len(capabilities.RuntimeDrivers) != 1 {
+		t.Fatalf("runtime drivers = %#v, want exactly one microVM driver", capabilities.RuntimeDrivers)
+	}
+	driver := capabilities.RuntimeDrivers[0]
+	if driver.ID != RuntimeDriverMicroVM {
+		t.Fatalf("runtime driver ID = %q, want %q", driver.ID, RuntimeDriverMicroVM)
+	}
+	if driver.HostKind != HostKindLocal {
+		t.Fatalf("microVM hostKind = %q, want %q", driver.HostKind, HostKindLocal)
+	}
+	if driver.IsolationLevel != IsolationLevelVM {
+		t.Fatalf("microVM isolationLevel = %q, want %q", driver.IsolationLevel, IsolationLevelVM)
+	}
+	if !reflect.DeepEqual(driver.Operations, microVMRuntimeDriverOperations) {
+		t.Fatalf("microVM operations = %#v, want lifecycle/inspect only %#v", driver.Operations, microVMRuntimeDriverOperations)
+	}
+	for _, unsupported := range []string{
+		OperationExec,
+		OperationCopyIn,
+		OperationCopyOut,
+		unsupportedCredentialModeProxy,
+		"template",
+		"templates",
+		"kit",
+		"kits",
+	} {
+		if containsString(driver.Operations, unsupported) {
+			t.Fatalf("microVM operations claim unsupported %q support: %#v", unsupported, driver.Operations)
+		}
+	}
+	assertMicroVMRuntimeDriverSecurityPolicy(t, driver.Security)
+}
+
 func TestServiceProtocolResponsesValidate(t *testing.T) {
 	service, err := NewService(ServiceOptions{WorkerID: "worker-001"})
 	if err != nil {
@@ -446,5 +501,36 @@ func assertRootlessPodmanSecurityPolicy(t *testing.T, policy SecurityPolicy) {
 			"secret_broker":
 			t.Fatalf("rootless Podman enforced security advertises unsupported capability %q: %#v", value, policy.Enforced)
 		}
+	}
+}
+
+func assertMicroVMRuntimeDriverSecurityPolicy(t *testing.T, policy SecurityPolicy) {
+	t.Helper()
+	if err := policy.Validate(); err != nil {
+		t.Fatalf("microVM security policy Validate() error: %v", err)
+	}
+	if policy.Requested.NetworkPolicy != NetworkPolicyBestEffort {
+		t.Fatalf("microVM requested networkPolicy = %q, want %q", policy.Requested.NetworkPolicy, NetworkPolicyBestEffort)
+	}
+	if policy.Requested.NetworkEnforcement != NetworkEnforcementNone {
+		t.Fatalf("microVM requested networkEnforcement = %q, want %q", policy.Requested.NetworkEnforcement, NetworkEnforcementNone)
+	}
+	if len(policy.Requested.CredentialModes) != 0 || policy.Requested.CredentialProxyMode {
+		t.Fatalf("microVM requested credential controls overclaim support: %#v", policy.Requested)
+	}
+	if policy.Requested.IsolationLevel != IsolationLevelVM {
+		t.Fatalf("microVM requested isolationLevel = %q, want %q", policy.Requested.IsolationLevel, IsolationLevelVM)
+	}
+	if policy.Enforced.NetworkPolicy != NetworkPolicyBestEffort {
+		t.Fatalf("microVM enforced networkPolicy = %q, want %q", policy.Enforced.NetworkPolicy, NetworkPolicyBestEffort)
+	}
+	if policy.Enforced.NetworkEnforcement != NetworkEnforcementNone {
+		t.Fatalf("microVM enforced networkEnforcement = %q, want %q", policy.Enforced.NetworkEnforcement, NetworkEnforcementNone)
+	}
+	if len(policy.Enforced.CredentialModes) != 0 || policy.Enforced.CredentialProxyMode {
+		t.Fatalf("microVM enforced credential controls overclaim support: %#v", policy.Enforced)
+	}
+	if policy.Enforced.IsolationLevel != IsolationLevelVM {
+		t.Fatalf("microVM enforced isolationLevel = %q, want %q", policy.Enforced.IsolationLevel, IsolationLevelVM)
 	}
 }

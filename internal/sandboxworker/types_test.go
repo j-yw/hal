@@ -413,6 +413,30 @@ func TestWorkerSecurityPolicyRejectsOverstatedCapabilityClaims(t *testing.T) {
 	}
 }
 
+func TestWorkerRuntimeDriverAllowsVMIsolationMetadata(t *testing.T) {
+	driver := RuntimeDriver{
+		ID:             RuntimeDriverMicroVM,
+		HostKind:       HostKindLocal,
+		IsolationLevel: IsolationLevelVM,
+		Operations:     []string{OperationCreate},
+		Security: SecurityPolicy{
+			Requested: SecurityControls{
+				NetworkPolicy:      NetworkPolicyBestEffort,
+				NetworkEnforcement: NetworkEnforcementNone,
+				IsolationLevel:     IsolationLevelVM,
+			},
+			Enforced: SecurityControls{
+				NetworkPolicy:      NetworkPolicyBestEffort,
+				NetworkEnforcement: NetworkEnforcementNone,
+				IsolationLevel:     IsolationLevelVM,
+			},
+		},
+	}
+	if err := driver.Validate(); err != nil {
+		t.Fatalf("Validate() unexpected error: %v", err)
+	}
+}
+
 func TestWorkerRuntimeDriverRejectsMicroVMIsolationClaim(t *testing.T) {
 	driver := RuntimeDriver{
 		ID:             "microvm",

@@ -300,6 +300,32 @@ func TestSandboxdCommandRegistersLiveMicroVMDriverWithExplicitInputs(t *testing.
 	if !microVMDriver.Metadata().BackendConfigured {
 		t.Fatal("registered microVM driver BackendConfigured = false, want live Firecracker backend configured")
 	}
+	service, err := sandboxworker.NewService(gotService)
+	if err != nil {
+		t.Fatalf("NewService(gotService) error: %v", err)
+	}
+	capabilities := service.Capabilities()
+	for _, unsupported := range []string{sandboxworker.OperationExec, sandboxworker.OperationCopyIn, sandboxworker.OperationCopyOut} {
+		if containsSandboxdTestString(capabilities.SupportedOperations, unsupported) {
+			t.Fatalf("sandboxd microVM supportedOperations claim unsupported %q operation: %#v", unsupported, capabilities.SupportedOperations)
+		}
+	}
+	if len(capabilities.RuntimeDrivers) != 1 {
+		t.Fatalf("sandboxd capabilities runtime drivers = %#v, want one microVM driver", capabilities.RuntimeDrivers)
+	}
+	driver := capabilities.RuntimeDrivers[0]
+	if driver.ID != sandboxruntime.DriverMicroVM {
+		t.Fatalf("sandboxd capability driver ID = %q, want %q", driver.ID, sandboxruntime.DriverMicroVM)
+	}
+	if driver.IsolationLevel != sandboxworker.IsolationLevelVM {
+		t.Fatalf("sandboxd microVM isolationLevel = %q, want %q", driver.IsolationLevel, sandboxworker.IsolationLevelVM)
+	}
+	for _, unsupported := range []string{sandboxworker.OperationExec, sandboxworker.OperationCopyIn, sandboxworker.OperationCopyOut, "template", "kit"} {
+		if containsSandboxdTestString(driver.Operations, unsupported) {
+			t.Fatalf("sandboxd microVM capabilities claim unsupported %q operation: %#v", unsupported, driver.Operations)
+		}
+	}
+	assertSandboxdMicroVMCapabilitySecurity(t, driver.Security)
 
 	var started sandboxdStartedOutput
 	if err := json.Unmarshal(stdout.Bytes(), &started); err != nil {
@@ -625,6 +651,36 @@ type sandboxdServerFunc func(context.Context) error
 
 func (fn sandboxdServerFunc) ListenAndServe(ctx context.Context) error {
 	return fn(ctx)
+}
+
+func assertSandboxdMicroVMCapabilitySecurity(t *testing.T, policy sandboxworker.SecurityPolicy) {
+	t.Helper()
+	if err := policy.Validate(); err != nil {
+		t.Fatalf("microVM security policy Validate() error: %v", err)
+	}
+	if policy.Requested.NetworkPolicy != sandboxworker.NetworkPolicyBestEffort ||
+		policy.Requested.NetworkEnforcement != sandboxworker.NetworkEnforcementNone ||
+		policy.Enforced.NetworkPolicy != sandboxworker.NetworkPolicyBestEffort ||
+		policy.Enforced.NetworkEnforcement != sandboxworker.NetworkEnforcementNone {
+		t.Fatalf("microVM network policy overclaims secure defaults: %#v", policy)
+	}
+	if policy.Requested.CredentialProxyMode || policy.Enforced.CredentialProxyMode ||
+		len(policy.Requested.CredentialModes) != 0 || len(policy.Enforced.CredentialModes) != 0 {
+		t.Fatalf("microVM credential policy overclaims support: %#v", policy)
+	}
+	if policy.Requested.IsolationLevel != sandboxworker.IsolationLevelVM ||
+		policy.Enforced.IsolationLevel != sandboxworker.IsolationLevelVM {
+		t.Fatalf("microVM isolation policy = %#v, want VM isolation", policy)
+	}
+}
+
+func containsSandboxdTestString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 type fakeSandboxdRuntimeDriver struct {
