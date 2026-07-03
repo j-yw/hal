@@ -58,6 +58,71 @@ func SanitizeBindingMetadataRecords(bindings []Binding) []Binding {
 	return sanitized
 }
 
+// SanitizeSecretReferenceMetadata returns a safe copy of one broker secret
+// reference. Unsafe required references return the zero value.
+func SanitizeSecretReferenceMetadata(reference SecretReference) SecretReference {
+	sanitized := NormalizeSecretReferenceMetadata(reference)
+	sanitized.BindingID = sanitizeIdentifier(sanitized.BindingID)
+	sanitized.SecretRef = sanitizeSecretReference(sanitized.SecretRef)
+	if sanitized.SecretRef == "" {
+		return SecretReference{}
+	}
+	return sanitized
+}
+
+// SanitizeBrokerSecretMetadata returns the safe subset of broker metadata that
+// delivery planning may consume. Unsafe required IDs return the zero value.
+func SanitizeBrokerSecretMetadata(metadata BrokerSecretMetadata) BrokerSecretMetadata {
+	sanitized := NormalizeBrokerSecretMetadata(metadata)
+	sanitized.ID = sanitizeSecretReference(sanitized.ID)
+	if sanitized.ID == "" {
+		return BrokerSecretMetadata{}
+	}
+	sanitized.Source = sanitizeIdentifier(sanitized.Source)
+	return sanitized
+}
+
+// SanitizeResolvedBindingSecretMetadata returns a durable-safe resolved binding
+// record. Unsafe required metadata returns the zero value.
+func SanitizeResolvedBindingSecretMetadata(resolved ResolvedBindingSecretMetadata) ResolvedBindingSecretMetadata {
+	sanitized := NormalizeResolvedBindingSecretMetadata(resolved)
+	sanitized.BindingID = sanitizeIdentifier(sanitized.BindingID)
+	sanitized.SecretRef = sanitizeSecretReference(sanitized.SecretRef)
+	sanitized.DeliveryMode = sanitizeOptionalModeValue(sanitized.DeliveryMode)
+	sanitized.BrokerSecret = SanitizeBrokerSecretMetadata(sanitized.BrokerSecret)
+	if sanitized.BindingID == "" || sanitized.SecretRef == "" || sanitized.BrokerSecret.ID == "" || sanitized.BrokerSecret.ID != sanitized.SecretRef {
+		return ResolvedBindingSecretMetadata{}
+	}
+	return sanitized
+}
+
+// SanitizeResolvedBindingSecretMetadataRecords returns durable-safe resolution
+// records while preserving nil versus explicit empty input slices.
+func SanitizeResolvedBindingSecretMetadataRecords(records []ResolvedBindingSecretMetadata) []ResolvedBindingSecretMetadata {
+	if records == nil {
+		return nil
+	}
+	sanitized := make([]ResolvedBindingSecretMetadata, 0, len(records))
+	for _, record := range records {
+		record := SanitizeResolvedBindingSecretMetadata(record)
+		if record.BindingID != "" {
+			sanitized = append(sanitized, record)
+		}
+	}
+	return sanitized
+}
+
+// SanitizeSecretResolutionResult returns a durable-safe copy of secret
+// resolution output.
+func SanitizeSecretResolutionResult(result SecretResolutionResult) SecretResolutionResult {
+	return SecretResolutionResult{
+		Valid:    result.Valid,
+		Bindings: SanitizeResolvedBindingSecretMetadataRecords(result.Bindings),
+		Warnings: SanitizeWarningMetadataRecords(result.Warnings),
+		Errors:   SanitizeSanitizedErrorRecords(result.Errors),
+	}
+}
+
 // SanitizePlanMetadata returns a durable-safe copy of delivery plan metadata.
 // A missing or unsafe required ID returns the zero value.
 func SanitizePlanMetadata(plan Plan) Plan {

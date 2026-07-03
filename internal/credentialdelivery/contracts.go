@@ -109,13 +109,15 @@ const (
 type ErrorCode string
 
 const (
-	ErrorMissingRequiredField ErrorCode = "missing_required_field"
-	ErrorUnsupportedMode      ErrorCode = "unsupported_mode"
-	ErrorUnsupportedCategory  ErrorCode = "unsupported_category"
-	ErrorUnsafeReference      ErrorCode = "unsafe_reference"
-	ErrorUnsafeMetadata       ErrorCode = "unsafe_metadata"
-	ErrorDuplicateBinding     ErrorCode = "duplicate_binding"
-	ErrorActivationFailed     ErrorCode = "activation_failed"
+	ErrorMissingRequiredField   ErrorCode = "missing_required_field"
+	ErrorMissingSecretReference ErrorCode = "missing_secret_reference"
+	ErrorUnsupportedMode        ErrorCode = "unsupported_mode"
+	ErrorUnsupportedCategory    ErrorCode = "unsupported_category"
+	ErrorUnsafeReference        ErrorCode = "unsafe_reference"
+	ErrorUnsafeMetadata         ErrorCode = "unsafe_metadata"
+	ErrorDuplicateBinding       ErrorCode = "duplicate_binding"
+	ErrorResolverFailed         ErrorCode = "resolver_failed"
+	ErrorActivationFailed       ErrorCode = "activation_failed"
 )
 
 // Request captures requested delivery intent and any already-active delivery
@@ -146,6 +148,41 @@ type Binding struct {
 	DeliveryMode          Mode                `json:"deliveryMode"`
 	Status                Status              `json:"status,omitempty"`
 	ReasonCode            ReasonCode          `json:"reasonCode,omitempty"`
+}
+
+// SecretReference is the safe broker ID passed to a metadata resolver. It must
+// not contain raw secret values, provider details, endpoints, or local paths.
+type SecretReference struct {
+	BindingID string `json:"bindingId,omitempty"`
+	SecretRef string `json:"secretRef"`
+}
+
+// BrokerSecretMetadata is the resolver output allowed into delivery planning.
+// It intentionally excludes secret names, values, provider payloads, endpoints,
+// paths, and delivery handles.
+type BrokerSecretMetadata struct {
+	ID       string `json:"id"`
+	Source   string `json:"source,omitempty"`
+	Required bool   `json:"required"`
+	Present  bool   `json:"present"`
+}
+
+// ResolvedBindingSecretMetadata records that a binding's safe secret reference
+// matched broker metadata. It is planning metadata only and carries no value.
+type ResolvedBindingSecretMetadata struct {
+	BindingID    string               `json:"bindingId"`
+	SecretRef    string               `json:"secretRef"`
+	DeliveryMode Mode                 `json:"deliveryMode,omitempty"`
+	BrokerSecret BrokerSecretMetadata `json:"brokerSecret"`
+}
+
+// SecretResolutionResult is the fail-closed output of resolving binding secret
+// references before any delivery plan can be activated.
+type SecretResolutionResult struct {
+	Valid    bool                            `json:"valid"`
+	Bindings []ResolvedBindingSecretMetadata `json:"bindings,omitempty"`
+	Warnings []Warning                       `json:"warnings,omitempty"`
+	Errors   []SanitizedError                `json:"errors,omitempty"`
 }
 
 // Plan is a durable delivery plan summary produced before activation.

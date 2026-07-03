@@ -106,11 +106,13 @@ func TestContractConstants(t *testing.T) {
 		{name: "warning adapter unavailable", got: string(WarningAdapterUnavailable), want: "adapter_unavailable"},
 		{name: "warning legacy auth compatibility", got: string(WarningLegacyAuthCompatibility), want: "legacy_auth_compatibility"},
 		{name: "error missing required field", got: string(ErrorMissingRequiredField), want: "missing_required_field"},
+		{name: "error missing secret reference", got: string(ErrorMissingSecretReference), want: "missing_secret_reference"},
 		{name: "error unsupported mode", got: string(ErrorUnsupportedMode), want: "unsupported_mode"},
 		{name: "error unsupported category", got: string(ErrorUnsupportedCategory), want: "unsupported_category"},
 		{name: "error unsafe reference", got: string(ErrorUnsafeReference), want: "unsafe_reference"},
 		{name: "error unsafe metadata", got: string(ErrorUnsafeMetadata), want: "unsafe_metadata"},
 		{name: "error duplicate binding", got: string(ErrorDuplicateBinding), want: "duplicate_binding"},
+		{name: "error resolver failed", got: string(ErrorResolverFailed), want: "resolver_failed"},
 		{name: "error activation failed", got: string(ErrorActivationFailed), want: "activation_failed"},
 	}
 
@@ -261,6 +263,59 @@ func TestPlanJSONContract(t *testing.T) {
 	})
 }
 
+func TestSecretResolutionJSONContracts(t *testing.T) {
+	reference := mustMarshalObject(t, SecretReference{
+		BindingID: "binding-01",
+		SecretRef: "env:GITHUB_TOKEN",
+	})
+	assertObjectKeys(t, reference, []string{"bindingId", "secretRef"}, forbiddenRawFieldNames())
+
+	brokerSecret := mustMarshalObject(t, BrokerSecretMetadata{
+		ID:       "env:GITHUB_TOKEN",
+		Source:   "env",
+		Required: true,
+		Present:  true,
+	})
+	assertObjectKeys(t, brokerSecret, []string{"id", "source", "required", "present"}, forbiddenRawFieldNames())
+
+	resolved := mustMarshalObject(t, ResolvedBindingSecretMetadata{
+		BindingID:    "binding-01",
+		SecretRef:    "env:GITHUB_TOKEN",
+		DeliveryMode: ModeEnv,
+		BrokerSecret: BrokerSecretMetadata{
+			ID:       "env:GITHUB_TOKEN",
+			Source:   "env",
+			Required: true,
+			Present:  true,
+		},
+	})
+	assertObjectKeys(t, resolved, []string{"bindingId", "secretRef", "deliveryMode", "brokerSecret"}, forbiddenRawFieldNames())
+
+	index := 0
+	result := mustMarshalObject(t, SecretResolutionResult{
+		Valid:    false,
+		Bindings: []ResolvedBindingSecretMetadata{},
+		Warnings: []Warning{{
+			Code:       WarningBindingOmitted,
+			ReasonCode: ReasonMissingSecretReference,
+			BindingID:  "binding-01",
+			Mode:       ModeEnv,
+		}},
+		Errors: []SanitizedError{{
+			Code:       ErrorMissingSecretReference,
+			Field:      "bindings.secretRef",
+			BindingID:  "binding-01",
+			Mode:       ModeEnv,
+			Index:      &index,
+			ReasonCode: ReasonMissingSecretReference,
+		}},
+	})
+	assertObjectKeys(t, result, []string{"valid", "warnings", "errors"}, forbiddenRawFieldNames())
+
+	minimal := mustMarshalObject(t, SecretResolutionResult{Valid: true})
+	assertObjectKeys(t, minimal, []string{"valid"}, []string{"bindings", "warnings", "errors"})
+}
+
 func TestActivationResultJSONContract(t *testing.T) {
 	activation := ActivationResult{
 		ID:             "activation-01",
@@ -404,6 +459,28 @@ func TestJSONTagsAreStable(t *testing.T) {
 		{field: "Status", name: "status", omitempty: true},
 		{field: "ReasonCode", name: "reasonCode", omitempty: true},
 	})
+	assertJSONTags(t, reflect.TypeOf(SecretReference{}), []jsonTagExpectation{
+		{field: "BindingID", name: "bindingId", omitempty: true},
+		{field: "SecretRef", name: "secretRef"},
+	})
+	assertJSONTags(t, reflect.TypeOf(BrokerSecretMetadata{}), []jsonTagExpectation{
+		{field: "ID", name: "id"},
+		{field: "Source", name: "source", omitempty: true},
+		{field: "Required", name: "required"},
+		{field: "Present", name: "present"},
+	})
+	assertJSONTags(t, reflect.TypeOf(ResolvedBindingSecretMetadata{}), []jsonTagExpectation{
+		{field: "BindingID", name: "bindingId"},
+		{field: "SecretRef", name: "secretRef"},
+		{field: "DeliveryMode", name: "deliveryMode", omitempty: true},
+		{field: "BrokerSecret", name: "brokerSecret"},
+	})
+	assertJSONTags(t, reflect.TypeOf(SecretResolutionResult{}), []jsonTagExpectation{
+		{field: "Valid", name: "valid"},
+		{field: "Bindings", name: "bindings", omitempty: true},
+		{field: "Warnings", name: "warnings", omitempty: true},
+		{field: "Errors", name: "errors", omitempty: true},
+	})
 	assertJSONTags(t, reflect.TypeOf(Plan{}), []jsonTagExpectation{
 		{field: "ID", name: "id"},
 		{field: "RequestID", name: "requestId", omitempty: true},
@@ -466,6 +543,10 @@ func TestContractsExposeNoRawValueFields(t *testing.T) {
 	contractTypes := []reflect.Type{
 		reflect.TypeOf(Request{}),
 		reflect.TypeOf(Binding{}),
+		reflect.TypeOf(SecretReference{}),
+		reflect.TypeOf(BrokerSecretMetadata{}),
+		reflect.TypeOf(ResolvedBindingSecretMetadata{}),
+		reflect.TypeOf(SecretResolutionResult{}),
 		reflect.TypeOf(Plan{}),
 		reflect.TypeOf(ActivationResult{}),
 		reflect.TypeOf(BindingActivationResult{}),

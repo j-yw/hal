@@ -347,11 +347,13 @@ func validWarningCode(value WarningCode) bool {
 func validErrorCode(value ErrorCode) bool {
 	switch value {
 	case ErrorMissingRequiredField,
+		ErrorMissingSecretReference,
 		ErrorUnsupportedMode,
 		ErrorUnsupportedCategory,
 		ErrorUnsafeReference,
 		ErrorUnsafeMetadata,
 		ErrorDuplicateBinding,
+		ErrorResolverFailed,
 		ErrorActivationFailed:
 		return true
 	default:

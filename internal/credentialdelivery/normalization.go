@@ -48,6 +48,61 @@ func NormalizeBindingMetadataRecords(bindings []Binding) []Binding {
 	return normalized
 }
 
+// NormalizeSecretReferenceMetadata returns a deterministic copy of one safe
+// broker secret reference before resolver lookup.
+func NormalizeSecretReferenceMetadata(reference SecretReference) SecretReference {
+	return SecretReference{
+		BindingID: strings.TrimSpace(reference.BindingID),
+		SecretRef: strings.TrimSpace(reference.SecretRef),
+	}
+}
+
+// NormalizeBrokerSecretMetadata returns a deterministic copy of broker secret
+// metadata before validation or persistence.
+func NormalizeBrokerSecretMetadata(metadata BrokerSecretMetadata) BrokerSecretMetadata {
+	return BrokerSecretMetadata{
+		ID:       strings.TrimSpace(metadata.ID),
+		Source:   strings.TrimSpace(metadata.Source),
+		Required: metadata.Required,
+		Present:  metadata.Present,
+	}
+}
+
+// NormalizeResolvedBindingSecretMetadata returns a deterministic copy of one
+// resolved binding record before validation or persistence.
+func NormalizeResolvedBindingSecretMetadata(resolved ResolvedBindingSecretMetadata) ResolvedBindingSecretMetadata {
+	return ResolvedBindingSecretMetadata{
+		BindingID:    strings.TrimSpace(resolved.BindingID),
+		SecretRef:    strings.TrimSpace(resolved.SecretRef),
+		DeliveryMode: normalizeMode(resolved.DeliveryMode),
+		BrokerSecret: NormalizeBrokerSecretMetadata(resolved.BrokerSecret),
+	}
+}
+
+// NormalizeResolvedBindingSecretMetadataRecords returns normalized resolution
+// records while preserving nil versus explicit empty slices.
+func NormalizeResolvedBindingSecretMetadataRecords(records []ResolvedBindingSecretMetadata) []ResolvedBindingSecretMetadata {
+	if records == nil {
+		return nil
+	}
+	normalized := make([]ResolvedBindingSecretMetadata, len(records))
+	for i, record := range records {
+		normalized[i] = NormalizeResolvedBindingSecretMetadata(record)
+	}
+	return normalized
+}
+
+// NormalizeSecretResolutionResult returns a deterministic copy of resolver
+// output before durable persistence.
+func NormalizeSecretResolutionResult(result SecretResolutionResult) SecretResolutionResult {
+	return SecretResolutionResult{
+		Valid:    result.Valid,
+		Bindings: NormalizeResolvedBindingSecretMetadataRecords(result.Bindings),
+		Warnings: NormalizeWarningMetadataRecords(result.Warnings),
+		Errors:   NormalizeSanitizedErrorRecords(result.Errors),
+	}
+}
+
 // NormalizePlanMetadata returns a deterministic copy of a durable delivery
 // plan summary before validation or persistence.
 func NormalizePlanMetadata(plan Plan) Plan {
