@@ -3,6 +3,7 @@ package cmd
 import (
 	"testing"
 
+	"github.com/jywlabs/hal/internal/credentialdelivery"
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
@@ -41,6 +42,119 @@ func TestCredentialDeliveryProjectionAcrossRunAutoAndFactoryIsPlanOnly(t *testin
 	assertPlanOnlyCredentialDeliveryStatus(t, "factory", factoryMetadata.CredentialDelivery, sandbox.SandboxSecretModeHTTPProxy)
 }
 
+func TestCredentialDeliveryActivationProjectionAcrossRunAutoAndFactory(t *testing.T) {
+	activation := credentialDeliveryProjectionHTTPProxyActivationResult(t, true)
+	networkProxySession := &sandbox.SandboxNetworkProxySessionMetadata{
+		ID:     "network-proxy-session-01",
+		Source: sandbox.SandboxNetworkPolicyDecisionSourceRun,
+	}
+	security := sandbox.SecurityEvaluationRequest{
+		RequestedSecretModes: []string{sandbox.SandboxSecretModeHTTPProxy},
+		ActiveSecretModes:    []string{sandbox.SandboxSecretModeHTTPProxy},
+	}
+
+	runManifest := &sandboxexecution.Manifest{}
+	applyRunSandboxCredentialProxyMetadata(runManifest, runSandboxRequest{
+		ExecutionID:                  "run-exec-active",
+		Security:                     security,
+		NetworkProxySession:          networkProxySession,
+		CredentialDeliveryActivation: activation,
+	})
+	assertActiveCredentialDeliveryStatus(t, "run", runManifest.CredentialDelivery, sandbox.SandboxSecretModeHTTPProxy)
+
+	autoManifest := &sandboxexecution.Manifest{}
+	applyAutoSandboxCredentialProxyMetadata(autoManifest, autoSandboxRequest{
+		ExecutionID:                  "auto-exec-active",
+		Security:                     security,
+		NetworkProxySession:          networkProxySession,
+		CredentialDeliveryActivation: activation,
+	})
+	assertActiveCredentialDeliveryStatus(t, "auto", autoManifest.CredentialDelivery, sandbox.SandboxSecretModeHTTPProxy)
+
+	factoryMetadata := &factory.SandboxMetadata{Name: "sandbox", Provider: "worker", Status: "running"}
+	applyFactorySandboxCredentialProxyMetadata(factoryMetadata, factorySandboxExecutorRequest{
+		Security:                     security,
+		CredentialDeliveryActivation: activation,
+	}, factory.RunRecord{RunID: "factory-run-active"}, networkProxySession)
+	assertActiveCredentialDeliveryStatus(t, "factory", factoryMetadata.CredentialDelivery, sandbox.SandboxSecretModeHTTPProxy)
+}
+
+func TestCredentialDeliveryHTTPProxyProjectionRequiresProvenActivationResult(t *testing.T) {
+	activation := credentialDeliveryProjectionHTTPProxyActivationResult(t, false)
+	if activation.Status == credentialdelivery.StatusActive || len(activation.ActiveModes) != 0 {
+		t.Fatalf("fixture activation = %#v, want US-002 fail-closed non-active result", activation)
+	}
+	status := sandboxManifestCredentialDeliveryStatus(sandbox.SandboxCredentialProxyProjection{
+		Plan: &sandbox.SandboxCredentialProxyPlanMetadata{
+			ID:     "credential-plan-http-proxy",
+			Source: sandbox.SandboxCredentialProxySourceRun,
+			Status: sandbox.SandboxCredentialProxyStatusReady,
+		},
+		Session: &sandbox.SandboxCredentialProxySessionMetadata{
+			ID:     "credential-session-http-proxy",
+			PlanID: "credential-plan-http-proxy",
+			Source: sandbox.SandboxCredentialProxySourceRun,
+			Status: sandbox.SandboxCredentialProxyStatusReady,
+		},
+	}, sandbox.SecurityEvaluationRequest{
+		RequestedSecretModes: []string{sandbox.SandboxSecretModeHTTPProxy},
+		ActiveSecretModes:    []string{sandbox.SandboxSecretModeHTTPProxy},
+	}, activation)
+
+	if status == nil {
+		t.Fatal("credentialDelivery = nil")
+	}
+	if status.Status == "active" {
+		t.Fatalf("status = %#v, want non-active without proven HTTP proxy activation", status)
+	}
+	if len(status.ActiveModes) != 0 {
+		t.Fatalf("active modes = %#v, want omitted without proven HTTP proxy activation", status.ActiveModes)
+	}
+	if status.ActivationID == "" {
+		t.Fatalf("activation id = %q, want persisted non-active activation result metadata", status.ActivationID)
+	}
+}
+
+func TestCredentialDeliveryDefaultProjectionOmitsActivationFieldsWithoutActivationResult(t *testing.T) {
+	runManifest := &sandboxexecution.Manifest{}
+	applyRunSandboxCredentialProxyMetadata(runManifest, runSandboxRequest{ExecutionID: "run-default"})
+	if runManifest.CredentialDelivery != nil {
+		t.Fatalf("run credentialDelivery = %#v, want omitted for default metadata without activation result", runManifest.CredentialDelivery)
+	}
+
+	autoManifest := &sandboxexecution.Manifest{}
+	applyAutoSandboxCredentialProxyMetadata(autoManifest, autoSandboxRequest{ExecutionID: "auto-default"})
+	if autoManifest.CredentialDelivery != nil {
+		t.Fatalf("auto credentialDelivery = %#v, want omitted for default metadata without activation result", autoManifest.CredentialDelivery)
+	}
+
+	factoryMetadata := &factory.SandboxMetadata{Name: "sandbox", Provider: "worker", Status: "running"}
+	applyFactorySandboxCredentialProxyMetadata(factoryMetadata, factorySandboxExecutorRequest{}, factory.RunRecord{RunID: "factory-default"}, nil)
+	if factoryMetadata.CredentialDelivery != nil {
+		t.Fatalf("factory credentialDelivery = %#v, want omitted for default metadata without activation result", factoryMetadata.CredentialDelivery)
+	}
+
+	planOnlyStatus := sandboxManifestCredentialDeliveryStatus(sandbox.SandboxCredentialProxyProjection{
+		Plan: &sandbox.SandboxCredentialProxyPlanMetadata{
+			ID:     "credential-plan-no-activation",
+			Source: sandbox.SandboxCredentialProxySourceRun,
+			Status: sandbox.SandboxCredentialProxyStatusReady,
+		},
+	}, sandbox.SecurityEvaluationRequest{
+		RequestedSecretModes: []string{sandbox.SandboxSecretModeHTTPProxy},
+		ActiveSecretModes:    []string{sandbox.SandboxSecretModeHTTPProxy},
+	}, credentialdelivery.ActivationResult{})
+	if planOnlyStatus == nil {
+		t.Fatal("plan-only credentialDelivery = nil")
+	}
+	if planOnlyStatus.ActivationID != "" {
+		t.Fatalf("activation id = %q, want omitted without activation result", planOnlyStatus.ActivationID)
+	}
+	if len(planOnlyStatus.ActiveModes) != 0 {
+		t.Fatalf("active modes = %#v, want omitted without activation result", planOnlyStatus.ActiveModes)
+	}
+}
+
 func TestCredentialDeliveryProjectionRepresentsLegacyAuthSyncAsRequestedOnly(t *testing.T) {
 	status := sandboxManifestCredentialDeliveryStatus(sandbox.SandboxCredentialProxyProjection{
 		Plan: &sandbox.SandboxCredentialProxyPlanMetadata{
@@ -48,7 +162,7 @@ func TestCredentialDeliveryProjectionRepresentsLegacyAuthSyncAsRequestedOnly(t *
 			Source: sandbox.SandboxCredentialProxySourceRun,
 			Status: sandbox.SandboxCredentialProxyStatusPlanned,
 		},
-	}, sandbox.SecurityEvaluationRequest{CompatibilityAuthSync: true})
+	}, sandbox.SecurityEvaluationRequest{CompatibilityAuthSync: true}, credentialdelivery.ActivationResult{})
 
 	assertPlanOnlyCredentialDeliveryStatus(t, "legacy", status, sandbox.SandboxSecretModeLegacyAuthSync)
 }
@@ -116,6 +230,106 @@ func assertPlanOnlyCredentialDeliveryStatus(t *testing.T, label string, status *
 	if len(status.ActiveModes) != 0 {
 		t.Fatalf("%s credentialDelivery active modes = %#v, want omitted for plan-only projection", label, status.ActiveModes)
 	}
+	if status.ActivationID != "" {
+		t.Fatalf("%s credentialDelivery activation id = %q, want omitted for plan-only projection", label, status.ActivationID)
+	}
+}
+
+func assertActiveCredentialDeliveryStatus(t *testing.T, label string, status *sandbox.SandboxCredentialDeliveryStatusMetadata, wantMode string) {
+	t.Helper()
+	if status == nil {
+		t.Fatalf("%s credentialDelivery = nil", label)
+	}
+	if status.ID == "" || status.PlanID == "" || status.ActivationID == "" {
+		t.Fatalf("%s credentialDelivery identifiers = %#v", label, status)
+	}
+	if status.Status != "active" {
+		t.Fatalf("%s credentialDelivery status = %q, want active", label, status.Status)
+	}
+	if len(status.RequestedModes) != 1 || status.RequestedModes[0] != wantMode {
+		t.Fatalf("%s credentialDelivery requested modes = %#v, want %q", label, status.RequestedModes, wantMode)
+	}
+	if len(status.ActiveModes) != 1 || status.ActiveModes[0] != wantMode {
+		t.Fatalf("%s credentialDelivery active modes = %#v, want %q", label, status.ActiveModes, wantMode)
+	}
+}
+
+func credentialDeliveryProjectionHTTPProxyActivationResult(t *testing.T, proven bool) credentialdelivery.ActivationResult {
+	t.Helper()
+	binding := credentialdelivery.Binding{
+		ID:                    "delivery-binding-http-proxy",
+		PolicySnapshotID:      "policy-snapshot-01",
+		SecretRef:             "env:GITHUB_TOKEN",
+		NetworkProxySessionID: "network-proxy-session-01",
+		ServiceID:             "service-source-control",
+		DestinationCategory:   credentialdelivery.DestinationPublicInternet,
+		DeliveryMode:          credentialdelivery.ModeHTTPProxy,
+		Status:                credentialdelivery.StatusPlanned,
+		ReasonCode:            credentialdelivery.ReasonRequested,
+	}
+	plan := credentialdelivery.Plan{
+		ID:                    "delivery-plan-http-proxy",
+		RequestID:             "delivery-request-http-proxy",
+		NetworkProxySessionID: "network-proxy-session-01",
+		HTTPProxyProof: &credentialdelivery.HTTPProxyProof{
+			BindingID:                binding.ID,
+			SecretID:                 binding.SecretRef,
+			SecretBrokerSessionID:    "secret-broker-session-01",
+			CredentialProxyPlanID:    "credential-proxy-plan-01",
+			CredentialProxySessionID: "credential-proxy-session-01",
+			CredentialProxyBindingID: "credential-proxy-binding-01",
+			NetworkEnforcement: &sandbox.SandboxNetworkEnforcementProofMetadata{
+				NetworkProxySessionID:    "network-proxy-session-01",
+				PolicySnapshotID:         "policy-snapshot-01",
+				NetworkEnforcementPlanID: "network-enforcement-plan-01",
+				ProxyLifecycleStatus:     "active",
+				ProxyLifecycleReasonCode: "active",
+				ResultOutcome:            "success",
+				ResultEnforcementMode:    sandbox.SandboxNetworkEnforcementModeProxyFirewall,
+				ResultSupported:          true,
+			},
+		},
+		RequestedModes: []credentialdelivery.Mode{credentialdelivery.ModeHTTPProxy},
+		ActiveModes:    []credentialdelivery.Mode{credentialdelivery.ModeHTTPProxy},
+		Status:         credentialdelivery.StatusPlanned,
+	}
+	if !proven {
+		plan.HTTPProxyProof.NetworkEnforcement.ResultSupported = false
+	}
+
+	result := credentialdelivery.ActivateDelivery(credentialdelivery.ActivationRequest{
+		ActivationID: "delivery-activation-http-proxy",
+		Plan:         plan,
+		Bindings:     []credentialdelivery.Binding{binding},
+	}, credentialDeliveryProjectionActivationAdapter{})
+	if proven && result.Status != credentialdelivery.StatusActive {
+		t.Fatalf("fixture activation = %#v, want active", result)
+	}
+	return result
+}
+
+type credentialDeliveryProjectionActivationAdapter struct{}
+
+func (credentialDeliveryProjectionActivationAdapter) ActivateCredentialDelivery(input credentialdelivery.SanitizedActivationRequest) (credentialdelivery.ActivationResult, error) {
+	request := input.Request()
+	result := credentialdelivery.ActivationResult{
+		ID:             request.ActivationID,
+		PlanID:         request.Plan.ID,
+		RequestedModes: request.Plan.RequestedModes,
+		ActiveModes:    request.Plan.RequestedModes,
+		Status:         credentialdelivery.StatusActive,
+	}
+	for _, binding := range request.Bindings {
+		result.Bindings = append(result.Bindings, credentialdelivery.BindingActivationResult{
+			BindingID:    binding.ID,
+			ServiceID:    binding.ServiceID,
+			DeliveryMode: binding.DeliveryMode,
+			Outcome:      credentialdelivery.StatusActive,
+			Status:       credentialdelivery.StatusActive,
+			ReasonCode:   credentialdelivery.ReasonRequested,
+		})
+	}
+	return result, nil
 }
 
 func containsString(values []string, want string) bool {

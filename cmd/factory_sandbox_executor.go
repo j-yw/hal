@@ -45,20 +45,21 @@ type factorySandboxAuthFile struct {
 }
 
 type factorySandboxExecutorRequest struct {
-	ProjectDir                string
-	SandboxName               string
-	SandboxHostID             string
-	SandboxRuntime            string
-	Security                  sandbox.SecurityEvaluationRequest
-	SecurityReadinessGateMode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode
-	NetworkProxySession       *sandbox.SandboxNetworkProxySessionMetadata
-	NetworkPolicyDecisionLogs []sandbox.SandboxNetworkPolicyDecisionLogRecord
-	RunRecord                 factory.RunRecord
-	ResolvedSecrets           []factory.ResolvedRunSecret
-	RemoteAuto                factoryRunAutoRequest
-	RemoteOutput              io.Writer
-	BeforeCleanup             func(context.Context, factory.RunRecord) error
-	DeferSuccessCleanup       bool
+	ProjectDir                   string
+	SandboxName                  string
+	SandboxHostID                string
+	SandboxRuntime               string
+	Security                     sandbox.SecurityEvaluationRequest
+	SecurityReadinessGateMode    sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode
+	NetworkProxySession          *sandbox.SandboxNetworkProxySessionMetadata
+	NetworkPolicyDecisionLogs    []sandbox.SandboxNetworkPolicyDecisionLogRecord
+	CredentialDeliveryActivation credentialDeliveryActivationResult
+	RunRecord                    factory.RunRecord
+	ResolvedSecrets              []factory.ResolvedRunSecret
+	RemoteAuto                   factoryRunAutoRequest
+	RemoteOutput                 io.Writer
+	BeforeCleanup                func(context.Context, factory.RunRecord) error
+	DeferSuccessCleanup          bool
 }
 
 type factorySandboxExecutorDeps struct {
