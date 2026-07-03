@@ -61,6 +61,9 @@ func TestNewLiveBackendOptionsComposesExplicitFirecrackerLiveDependencies(t *tes
 	if options.LiveProcessManager != hostAdapter {
 		t.Fatalf("LiveProcessManager = %T, want same host adapter used by ProcessLaunchAdapter", options.LiveProcessManager)
 	}
+	if options.GuestReadinessWaiter != nil {
+		t.Fatalf("GuestReadinessWaiter = %T, want nil until a guest readiness probe is supplied", options.GuestReadinessWaiter)
+	}
 
 	lifecycle, ok := hostAdapter.processRunner.(*ProcessLifecycleManager)
 	if !ok {
@@ -78,6 +81,9 @@ func TestNewLiveBackendOptionsComposesExplicitFirecrackerLiveDependencies(t *tes
 	if hostAdapter.poller != poller {
 		t.Fatal("adapter did not receive injected boot acceptance poller")
 	}
+	if hostAdapter.guestReadinessProbe != nil {
+		t.Fatal("adapter guest readiness probe configured without explicit probe option")
+	}
 	if got := hostAdapter.clock.Now(); !got.Equal(clock.now) {
 		t.Fatalf("adapter clock Now() = %s, want %s", got, clock.now)
 	}
@@ -89,6 +95,45 @@ func TestNewLiveBackendOptionsComposesExplicitFirecrackerLiveDependencies(t *tes
 	}
 	if hostAdapter.bootInterval != 25*time.Millisecond {
 		t.Fatalf("adapter boot interval = %s, want 25ms", hostAdapter.bootInterval)
+	}
+}
+
+func TestNewLiveBackendOptionsConfiguresOptionalGuestReadinessProbe(t *testing.T) {
+	baseStateDir := filepath.Join(t.TempDir(), "firecracker-state")
+	probe := &fakeGuestReadinessProbe{}
+
+	options, err := NewLiveBackendOptions(LiveDriverOptions{
+		Config:               liveDriverValidConfig(),
+		BaseStateDir:         baseStateDir,
+		HostProcessRunner:    &fakeHostProcessRunner{},
+		BootAcceptancePoller: &fakeBootAcceptancePoller{},
+		GuestReadinessProbe:  probe,
+		GuestTimeout:         9 * time.Second,
+		GuestPollInterval:    75 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewLiveBackendOptions() error = %v, want nil", err)
+	}
+
+	processAdapter, ok := options.ProcessAdapter.(firecracker.ProcessLaunchAdapter)
+	if !ok {
+		t.Fatalf("ProcessAdapter = %T, want firecracker.ProcessLaunchAdapter", options.ProcessAdapter)
+	}
+	hostAdapter, ok := processAdapter.Starter.(*Adapter)
+	if !ok {
+		t.Fatalf("ProcessLaunchAdapter.Starter = %T, want *Adapter", processAdapter.Starter)
+	}
+	if options.GuestReadinessWaiter != hostAdapter {
+		t.Fatalf("GuestReadinessWaiter = %T, want same host adapter used by ProcessLaunchAdapter", options.GuestReadinessWaiter)
+	}
+	if hostAdapter.guestReadinessProbe != probe {
+		t.Fatal("adapter did not receive injected guest readiness probe")
+	}
+	if hostAdapter.guestTimeout != 9*time.Second {
+		t.Fatalf("adapter guest timeout = %s, want 9s", hostAdapter.guestTimeout)
+	}
+	if hostAdapter.guestInterval != 75*time.Millisecond {
+		t.Fatalf("adapter guest interval = %s, want 75ms", hostAdapter.guestInterval)
 	}
 }
 
@@ -204,6 +249,65 @@ func TestNewLiveDriverStartUsesFakeHostRunnerAndBootAcceptance(t *testing.T) {
 	if process.signalCalls != 0 || process.killCalls != 0 || process.waitCalls != 0 {
 		t.Fatalf("fake process cleanup calls after accepted start = signal:%d kill:%d wait:%d, want none", process.signalCalls, process.killCalls, process.waitCalls)
 	}
+}
+
+func TestNewLiveDriverStartUsesOptionalGuestReadinessProbe(t *testing.T) {
+	baseStateDir := filepath.Join(t.TempDir(), "firecracker-state")
+	process := &fakeHostProcess{rawPID: 424242}
+	runner := &fakeHostProcessRunner{processes: []HostProcess{process}}
+	poller := &fakeBootAcceptancePoller{result: firecracker.BootAcceptanceResult{
+		ProcessAccepted:    true,
+		APISocketAvailable: true,
+	}}
+	probe := &fakeGuestReadinessProbe{result: firecracker.NewGuestReadinessResult(
+		sandboxruntime.RuntimeGuestReadinessStateReady,
+		"VSOCK",
+		[]string{"probe_ok", "exec_support", "copy_support", "credential_proxy"},
+	)}
+
+	driver, err := NewLiveDriver(LiveDriverOptions{
+		Config:               liveDriverValidConfig(),
+		BaseStateDir:         baseStateDir,
+		CapabilityDetector:   liveDriverAvailableDetector{},
+		HostProcessRunner:    runner,
+		BootAcceptancePoller: poller,
+		GuestReadinessProbe:  probe,
+		CleanupFilesystem:    newFakeCleanupFilesystem(),
+	})
+	if err != nil {
+		t.Fatalf("NewLiveDriver() error = %v, want nil", err)
+	}
+
+	created, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "firecracker-live-guest-ready"})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	started, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: *created})
+	if err != nil {
+		t.Fatalf("Start() error = %v, want nil through optional fake guest readiness probe", err)
+	}
+
+	if poller.calls != 1 || probe.calls != 1 {
+		t.Fatalf("readiness calls = boot:%d guest:%d, want one host acceptance and one guest readiness wait", poller.calls, probe.calls)
+	}
+	if probe.req.RuntimeID != created.Runtime.RuntimeID {
+		t.Fatalf("guest readiness runtime ID = %q, want %q", probe.req.RuntimeID, created.Runtime.RuntimeID)
+	}
+	launch := started.Runtime.Metadata.ProcessLaunch
+	if probe.req.Handle.ID != launch.ProcessID || probe.req.Handle.Source != launch.ProcessIDSource {
+		t.Fatalf("guest readiness handle = %#v, launch metadata = %#v, want accepted host handle", probe.req.Handle, launch)
+	}
+	readiness := started.Runtime.Metadata.GuestReadiness
+	if readiness == nil {
+		t.Fatal("GuestReadiness = nil, want ready metadata from optional probe")
+	}
+	if readiness.State != sandboxruntime.RuntimeGuestReadinessStateReady || readiness.Transport != "vsock" {
+		t.Fatalf("GuestReadiness = %#v, want sanitized ready vsock metadata", readiness)
+	}
+	if !reflect.DeepEqual(readiness.Labels, []string{"ready", "probe_ok"}) {
+		t.Fatalf("GuestReadiness.Labels = %#v, want sanitized labels", readiness.Labels)
+	}
+	assertLiveFirecrackerMetadataDoesNotOverclaim(t, started.Runtime.Metadata)
 }
 
 func TestNewLiveDriverReportsHonestLiveFirecrackerRuntimeMetadata(t *testing.T) {
