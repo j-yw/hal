@@ -10,6 +10,12 @@ Phase 44 templates are contracts only. Hal does not build images, pull
 artifacts, fetch Git repositories, execute runtimes, enforce network policy, or
 deliver credentials from these files.
 
+Phase 47 adds fake-safe acquisition metadata for local files and injected
+OCI-like fixtures. Acquisition resolves a template document into normalized,
+sanitized template metadata plus redaction-safe lock metadata; it still does
+not perform live pulls, contact registries, clone repositories, start runtimes,
+or deliver credentials.
+
 ## YAML Example
 
 ```yaml
@@ -107,15 +113,90 @@ setup:
 }
 ```
 
+## Local YAML/JSON acquisition
+
+Local acquisition uses the `local_file` source kind to read a YAML or JSON
+sandbox template document from a caller-provided path such as `codex-go.yaml`
+or `codex-go.json`.
+
+```go
+resolver := acquisition.NewLocalResolver()
+result, err := resolver.Resolve(ctx, acquisition.ResolveRequest{
+	Source: acquisition.TemplateSource{
+		Kind:      acquisition.SourceKindLocalFile,
+		LocalPath: "codex-go.yaml",
+		Format:    sandboxtemplate.FormatYAML,
+	},
+})
+```
+
+The local resolver decodes the document, runs the Phase 44 normalization,
+validation, sanitization, and immutable-reference preservation path, and then
+records a locked `document` entry with reason code `document_digest`. That
+entry is a deterministic SHA-256 document digest over the template document
+bytes, plus the byte size and optional lock timestamp. Local paths are caller
+input and are not copied into durable lock metadata or public error strings.
+
+## Fake OCI acquisition
+
+Fake OCI acquisition uses the `oci_artifact` source kind with an injected
+resolver. The default implementation is fixture-driven
+`NewInMemoryOCIArtifactResolver`, also available as
+`NewFakeOCIArtifactResolver`, and does not require a live registry.
+
+```go
+fake := acquisition.NewInMemoryOCIArtifactResolver(map[string]acquisition.OCIArtifactResolveResult{
+	"ghcr.io/acme/templates/codex-go:1.2.0": {
+		TemplateBytes:          []byte(templateYAML),
+		Format:                 sandboxtemplate.FormatYAML,
+		TemplateArtifactDigest: digest,
+		ReferenceDigests: []acquisition.ReferenceDigestProof{
+			{Field: "runtime.image", Kind: sandboxtemplate.ReferenceKindOCIImage, Digest: imageDigest},
+		},
+	},
+})
+resolver := acquisition.NewOCIResolver(fake)
+```
+
+Fixture metadata may provide `documentDigest`, `templateArtifactDigest`, and
+per-reference digest proofs. When fixture metadata proves immutable identity,
+the acquisition lock records `immutable_digest`; otherwise it falls back to a
+deterministic document digest for the template document and unresolved mutable
+metadata for unproven references.
+
 ## Reference Semantics
 
 A reference with valid digest metadata is digest-pinned. Hal preserves that
 digest in normalized, sanitized, and projected metadata, but Phase 44 does not
-verify the remote object behind it.
+verify the remote object behind it. Phase 47 preserves pinned `ImmutableRef`
+values and treats those as digest-locked references in acquisition metadata
+with reason code `immutable_digest`.
 
 A reference without digest metadata is unresolved mutable metadata. Hal may
 project the reference as an unresolved requirement, but it must not claim the
 reference is immutable or locked.
+
+Acquisition records the field that was evaluated, such as
+`metadata.reference`, `runtime.image`, or `workspace.ref`. Mutable runtime
+image and source references without a digest proof are preserved as unresolved
+mutable references with reason code `mutable_reference`; they are not upgraded
+to locked runtime image or source artifact digests.
+
+## Durable `templateLock` surfaces
+
+Resolved acquisition metadata is projected into the additive `templateLock`
+JSON field only on these durable surfaces:
+
+- `internal/sandbox.SandboxRuntimeState.TemplateLock`
+- `internal/sandboxexecution.Manifest.TemplateLock`
+- `internal/factory.SandboxMetadata.TemplateLock`
+- `internal/sandboxruntime.RuntimeMetadata.TemplateLock`
+
+The durable lock categories are `document`, `templateReference`,
+`runtimeImage`, and `sourceArtifact`. Each entry keeps only bounded
+redaction-safe fields: `sourceKind`, `referenceKind`, `status`,
+`digestAlgorithm`, `digestValue`, optional `sizeBytes`, optional `lockedAt`,
+bounded `warningCodes`, and `reasonCode`.
 
 ## Workspace Modes
 

@@ -30,6 +30,15 @@ func TestPhase47SandboxTemplateAcquisitionUserDocs(t *testing.T) {
 		"`runtime.image`",
 		"`workspace.ref`",
 		"`mutable_reference`",
+		"`internal/sandbox.SandboxRuntimeState.TemplateLock`",
+		"`internal/sandboxexecution.Manifest.TemplateLock`",
+		"`internal/factory.SandboxMetadata.TemplateLock`",
+		"`internal/sandboxruntime.RuntimeMetadata.TemplateLock`",
+		"`templateLock`",
+		"`document`",
+		"`templateReference`",
+		"`runtimeImage`",
+		"`sourceArtifact`",
 	}
 	for _, want := range required {
 		if !strings.Contains(doc, want) && !strings.Contains(normalized, want) {
@@ -47,12 +56,24 @@ func TestPhase47SandboxTemplateAcquisitionVerificationDocs(t *testing.T) {
 		"`internal/sandboxtemplate/acquisition` owns resolver request/result contracts, local file acquisition, fake OCI artifact acquisition, deterministic digest locking, sanitized errors, and import-boundary guards.",
 		"Local acquisition records a locked template document digest while preserving digest-pinned template references and marking mutable runtime image or workspace references unresolved.",
 		"Fake OCI acquisition uses injected resolver fixtures and must not contact a live registry by default.",
+		"`internal/sandbox.SandboxRuntimeState.TemplateLock`",
+		"`internal/sandboxexecution.Manifest.TemplateLock`",
+		"`internal/factory.SandboxMetadata.TemplateLock`",
+		"`internal/sandboxruntime.RuntimeMetadata.TemplateLock`",
+		"`templateLock`",
+		"`document`, `templateReference`, `runtimeImage`, and `sourceArtifact`",
+		"For this PRD conversion workflow, use `hal convert` without `--granular`.",
+		"Do not run `hal run` as part of the planning phase.",
 		"Default Phase 47 verification is fake-only.",
 		"Default Phase 47 verification is fake-only and does not require Docker Hub, Docker AI Sandboxes, OCI registries, live network access, Docker, Podman, KVM, Firecracker, cloud credentials, or provider credentials.",
+		"Default Phase 47 test commands must not use integration build tags or require live environment variables.",
+		"Default `go test ./...` does not run optional live integration tests.",
 		"go test -count=1 -timeout=180s ./internal/sandboxtemplate/acquisition",
 		"go test -count=1 -timeout=180s ./internal/sandboxtemplate",
 		"go test -count=1 ./cmd -run 'TestPhase47SandboxTemplateAcquisition'",
+		"go test -count=1 ./cmd -run 'TestPhase47TemplateLock'",
 		"go test -count=1 -timeout=420s ./...",
+		"make test",
 		"go vet ./...",
 		"make docs-check",
 		"make build",
@@ -87,6 +108,31 @@ func TestPhase47SandboxTemplateAcquisitionOptionalOCIIntegrationDocumentation(t 
 	}
 }
 
+func TestPhase47SandboxTemplateAcquisitionVerificationCommandsStayFakeOnly(t *testing.T) {
+	doc := readPhase47TemplateAcquisitionDoc(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-phase47-template-acquisition-verification.md"))
+	for _, command := range phase47TemplateAcquisitionGoTestCommands(doc) {
+		if strings.Contains(command, "-tags=template_oci_integration") {
+			continue
+		}
+		for _, forbidden := range []string{
+			"-tags=integration",
+			"-tags=worker_integration",
+			"-tags=podman_integration",
+			"-tags=firecracker_live",
+			"-tags=template_oci_integration",
+			"HAL_TEMPLATE_OCI_",
+			"DOCKER_HOST",
+			"docker ",
+			"podman ",
+			"hal run",
+		} {
+			if strings.Contains(command, forbidden) {
+				t.Fatalf("phase 47 default verification command %q uses forbidden live/planning marker %q", command, forbidden)
+			}
+		}
+	}
+}
+
 func readPhase47TemplateAcquisitionDoc(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -111,4 +157,15 @@ func phase47MentionsOptionalOCIIntegration(doc string, normalized string) bool {
 		}
 	}
 	return false
+}
+
+func phase47TemplateAcquisitionGoTestCommands(doc string) []string {
+	var commands []string
+	for _, raw := range strings.Split(doc, "\n") {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "go test ") {
+			commands = append(commands, line)
+		}
+	}
+	return commands
 }
