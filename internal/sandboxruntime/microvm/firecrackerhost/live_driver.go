@@ -19,10 +19,13 @@ type LiveDriverOptions struct {
 	CapabilityDetector   microvm.CapabilityDetector
 	HostProcessRunner    HostProcessRunner
 	BootAcceptancePoller BootAcceptancePoller
+	GuestReadinessProbe  GuestReadinessProbe
 	Clock                Clock
 	Sleeper              Sleeper
 	BootTimeout          time.Duration
 	BootPollInterval     time.Duration
+	GuestTimeout         time.Duration
+	GuestPollInterval    time.Duration
 	CleanupFilesystem    CleanupFilesystem
 }
 
@@ -65,13 +68,17 @@ func newLiveBackendOptions(options LiveDriverOptions) (microvm.Config, firecrack
 	lifecycle := NewProcessLifecycleManager(liveDriverHostProcessRunner(options), liveDriverLifecycleOptions(options)...)
 	adapter := NewAdapter(liveDriverAdapterOptions(options, lifecycle)...)
 
-	return config, firecracker.BackendOptions{
+	backendOptions := firecracker.BackendOptions{
 		BaseStateDir:         baseStateDir,
 		ProcessAdapter:       firecracker.ProcessLaunchAdapter{Starter: adapter},
 		BootAcceptanceWaiter: adapter,
 		LiveProcessManager:   adapter,
 		LiveStart:            true,
-	}, nil
+	}
+	if options.GuestReadinessProbe != nil {
+		backendOptions.GuestReadinessWaiter = adapter
+	}
+	return config, backendOptions, nil
 }
 
 func validatedLiveDriverConfig(config microvm.Config) (microvm.Config, error) {
@@ -124,6 +131,15 @@ func liveDriverAdapterOptions(options LiveDriverOptions, lifecycle *ProcessLifec
 	}
 	if options.BootPollInterval > 0 {
 		adapterOptions = append(adapterOptions, WithBootAcceptancePollInterval(options.BootPollInterval))
+	}
+	if options.GuestReadinessProbe != nil {
+		adapterOptions = append(adapterOptions, WithGuestReadinessProbe(options.GuestReadinessProbe))
+	}
+	if options.GuestTimeout > 0 {
+		adapterOptions = append(adapterOptions, WithGuestReadinessTimeout(options.GuestTimeout))
+	}
+	if options.GuestPollInterval > 0 {
+		adapterOptions = append(adapterOptions, WithGuestReadinessPollInterval(options.GuestPollInterval))
 	}
 	return adapterOptions
 }

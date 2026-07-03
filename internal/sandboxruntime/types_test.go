@@ -121,6 +121,168 @@ func TestRuntimeMetadataIncludesOptionalProcessLaunchMetadata(t *testing.T) {
 	}
 }
 
+func TestRuntimeMetadataIncludesOptionalGuestReadinessMetadata(t *testing.T) {
+	metadataType := reflect.TypeOf(RuntimeMetadata{})
+	assertFieldType(t, metadataType, "GuestReadiness", reflect.TypeOf((*RuntimeGuestReadinessMetadata)(nil)))
+
+	readinessType := reflect.TypeOf(RuntimeGuestReadinessMetadata{})
+	assertFieldType(t, readinessType, "State", reflect.TypeOf(RuntimeGuestReadinessState("")))
+	assertFieldType(t, readinessType, "Transport", reflect.TypeOf(""))
+	assertFieldType(t, readinessType, "Labels", reflect.TypeOf([]string{}))
+
+	metadata := RuntimeMetadata{
+		Backend: "firecracker",
+		GuestReadiness: NewRuntimeGuestReadinessMetadata(
+			RuntimeGuestReadinessStateWaiting,
+			"VSock",
+			[]string{"probe_pending", "waiting"},
+		),
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("Marshal(RuntimeMetadata) error = %v", err)
+	}
+	publicText := string(encoded)
+	for _, want := range []string{
+		`"guestReadiness":`,
+		`"state":"waiting"`,
+		`"transport":"vsock"`,
+		`"labels":["waiting","probe_pending"]`,
+	} {
+		if !strings.Contains(publicText, want) {
+			t.Fatalf("RuntimeMetadata JSON %s missing %s", publicText, want)
+		}
+	}
+}
+
+func TestRuntimeGuestReadinessMetadataStatesAreStable(t *testing.T) {
+	tests := []struct {
+		name  string
+		state RuntimeGuestReadinessState
+		want  string
+	}{
+		{name: "not configured", state: RuntimeGuestReadinessStateNotConfigured, want: "not_configured"},
+		{name: "waiting", state: RuntimeGuestReadinessStateWaiting, want: "waiting"},
+		{name: "ready", state: RuntimeGuestReadinessStateReady, want: "ready"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if string(tt.state) != tt.want {
+				t.Fatalf("guest readiness state = %q, want %q", tt.state, tt.want)
+			}
+			metadata := NewRuntimeGuestReadinessMetadata(tt.state, "vsock", nil)
+			if metadata == nil {
+				t.Fatal("NewRuntimeGuestReadinessMetadata() = nil, want metadata")
+			}
+			if metadata.State != tt.state {
+				t.Fatalf("metadata State = %q, want %q", metadata.State, tt.state)
+			}
+		})
+	}
+}
+
+func TestRuntimeGuestReadinessMetadataSanitizesUnsafeValues(t *testing.T) {
+	metadata := SanitizeRuntimeGuestReadinessMetadata(&RuntimeGuestReadinessMetadata{
+		State:     RuntimeGuestReadinessStateReady,
+		Transport: "tcp://127.0.0.1:9000/private/firecracker.sock?token=ghp_secret",
+		Labels: []string{
+			"ready",
+			"probe_ok",
+			"/Users/alice/private",
+			"https://guest-ready.example.test:8443/status",
+			"127.0.0.1",
+			"OPENAI_API_KEY",
+			"guest_command_payload",
+			"exec_support",
+			"copy_support",
+			"credential_proxy",
+			"template_ready",
+			"image_ready",
+			"provisioned",
+			"guest_agent",
+			"ssh_ready",
+		},
+	})
+	if metadata == nil {
+		t.Fatal("SanitizeRuntimeGuestReadinessMetadata() = nil, want sanitized metadata")
+	}
+	if metadata.Transport != "" {
+		t.Fatalf("unsafe Transport = %q, want omitted", metadata.Transport)
+	}
+	if !reflect.DeepEqual(metadata.Labels, []string{"ready", "probe_ok"}) {
+		t.Fatalf("Labels = %#v, want canonical ready plus safe label only", metadata.Labels)
+	}
+
+	encoded, err := json.Marshal(RuntimeMetadata{GuestReadiness: metadata})
+	if err != nil {
+		t.Fatalf("Marshal(RuntimeMetadata) error = %v", err)
+	}
+	publicText := string(encoded)
+	for _, unsafe := range []string{
+		"/Users/alice",
+		"private",
+		"127.0.0.1",
+		"9000",
+		"firecracker.sock",
+		"guest-ready.example.test",
+		"ghp_secret",
+		"OPENAI_API_KEY",
+		"guest_command_payload",
+		"exec_support",
+		"copy_support",
+		"credential_proxy",
+		"template_ready",
+		"image_ready",
+		"provisioned",
+		"guest_agent",
+		"ssh_ready",
+		"token=",
+	} {
+		if strings.Contains(publicText, unsafe) {
+			t.Fatalf("guest readiness metadata leaked unsafe fragment %q in %s", unsafe, publicText)
+		}
+	}
+	for _, want := range []string{
+		`"guestReadiness":`,
+		`"state":"ready"`,
+		`"labels":["ready","probe_ok"]`,
+	} {
+		if !strings.Contains(publicText, want) {
+			t.Fatalf("guest readiness metadata JSON %s missing %s", publicText, want)
+		}
+	}
+}
+
+func TestRuntimeGuestReadinessMetadataDoesNotClaimExecOrCopySupport(t *testing.T) {
+	metadata := RuntimeMetadata{
+		Backend:        "firecracker",
+		GuestReadiness: NewRuntimeGuestReadinessMetadata(RuntimeGuestReadinessStateReady, "vsock", []string{"probe_ok"}),
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("Marshal(RuntimeMetadata) error = %v", err)
+	}
+	publicText := strings.ToLower(string(encoded))
+	for _, unsupported := range []string{
+		"exec",
+		"copy",
+		"copyin",
+		"copyout",
+		"guest_agent",
+		"guest_command",
+		"file_transfer",
+		"template",
+		"image",
+		"provision",
+		"ssh",
+	} {
+		if strings.Contains(publicText, unsupported) {
+			t.Fatalf("guest readiness metadata claims unsupported capability %q in %s", unsupported, publicText)
+		}
+	}
+}
+
 func assertFieldType(t *testing.T, typ reflect.Type, fieldName string, want reflect.Type) {
 	t.Helper()
 	field, ok := typ.FieldByName(fieldName)

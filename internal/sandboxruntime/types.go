@@ -63,11 +63,12 @@ type RuntimeState struct {
 // RuntimeMetadata captures optional runtime-specific target metadata using only
 // redaction-safe labels.
 type RuntimeMetadata struct {
-	Backend          string                        `json:"backend,omitempty"`
-	CapabilityLabels []string                      `json:"capabilityLabels,omitempty"`
-	PathRoles        []string                      `json:"pathRoles,omitempty"`
-	OperationPlan    *RuntimeOperationPlan         `json:"operationPlan,omitempty"`
-	ProcessLaunch    *RuntimeProcessLaunchMetadata `json:"processLaunch,omitempty"`
+	Backend          string                         `json:"backend,omitempty"`
+	CapabilityLabels []string                       `json:"capabilityLabels,omitempty"`
+	PathRoles        []string                       `json:"pathRoles,omitempty"`
+	OperationPlan    *RuntimeOperationPlan          `json:"operationPlan,omitempty"`
+	ProcessLaunch    *RuntimeProcessLaunchMetadata  `json:"processLaunch,omitempty"`
+	GuestReadiness   *RuntimeGuestReadinessMetadata `json:"guestReadiness,omitempty"`
 }
 
 // RuntimeProcessLaunchMetadata captures sanitized process-launch state labels.
@@ -78,6 +79,16 @@ type RuntimeProcessLaunchMetadata struct {
 	Labels          []string `json:"labels,omitempty"`
 	ProcessID       string   `json:"processId,omitempty"`
 	ProcessIDSource string   `json:"processIdSource,omitempty"`
+}
+
+// RuntimeGuestReadinessMetadata captures sanitized guest readiness state
+// labels. It intentionally carries no paths, endpoints, process details,
+// credentials, IP addresses, raw transport configuration, or guest command
+// payloads.
+type RuntimeGuestReadinessMetadata struct {
+	State     RuntimeGuestReadinessState `json:"state,omitempty"`
+	Transport string                     `json:"transport,omitempty"`
+	Labels    []string                   `json:"labels,omitempty"`
 }
 
 // RuntimeOperationPlan is a sanitized runtime-operation plan. It carries only

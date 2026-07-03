@@ -18,6 +18,7 @@ const (
 	liveBootContractOperation   = "firecracker_live_boot"
 	liveBootAcceptanceOperation = "firecracker_boot_acceptance"
 	liveProcessManagerOperation = "firecracker_live_process_manager"
+	liveGuestReadinessOperation = "firecracker_guest_readiness"
 
 	targetCapabilityCreation              = "target_creation"
 	targetCapabilityDeterministicIdentity = "deterministic_identity"
@@ -28,18 +29,21 @@ const (
 var (
 	errBootAcceptanceProcessNotAccepted   = errors.New("host process was not accepted")
 	errBootAcceptanceAPISocketUnavailable = errors.New("host-side API socket was not accepted")
+	errGuestReadinessNotReady             = errors.New("guest readiness waiter did not report ready")
 )
 
 // BackendOptions configures the Firecracker backend. BaseStateDir is used only
 // to derive target-specific path plans. ProcessAdapter prepares process
 // descriptors. LiveStart permits StartProcess only when ProcessAdapter,
-// BootAcceptanceWaiter, and LiveProcessManager are all explicitly injected. Raw
-// paths are not exposed on returned targets.
+// BootAcceptanceWaiter, and LiveProcessManager are all explicitly injected.
+// GuestReadinessWaiter is optional and remains inert until an explicit live
+// start path chooses to call it. Raw paths are not exposed on returned targets.
 type BackendOptions struct {
 	BaseStateDir         string
 	ProcessAdapter       ProcessAdapter
 	BootAcceptanceWaiter BootAcceptanceWaiter
 	LiveProcessManager   LiveProcessManager
+	GuestReadinessWaiter GuestReadinessWaiter
 	LiveStart            bool
 }
 
@@ -86,6 +90,7 @@ type Backend struct {
 	processAdapter       ProcessAdapter
 	bootAcceptanceWaiter BootAcceptanceWaiter
 	liveProcessManager   LiveProcessManager
+	guestReadinessWaiter GuestReadinessWaiter
 	liveStart            bool
 }
 
@@ -96,6 +101,7 @@ func NewBackend(options BackendOptions) *Backend {
 		processAdapter:       options.ProcessAdapter,
 		bootAcceptanceWaiter: options.BootAcceptanceWaiter,
 		liveProcessManager:   options.LiveProcessManager,
+		guestReadinessWaiter: options.GuestReadinessWaiter,
 		liveStart:            options.LiveStart,
 	}
 }
@@ -151,17 +157,20 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 	var adapter ProcessAdapter
 	var waiter BootAcceptanceWaiter
 	var manager LiveProcessManager
+	var guestWaiter GuestReadinessWaiter
 	if b != nil {
 		baseStateDir = b.baseStateDir
 		adapter = b.processAdapter
 		waiter = b.bootAcceptanceWaiter
 		manager = b.liveProcessManager
+		guestWaiter = b.guestReadinessWaiter
 	}
 	return firecrackerController{
 		baseStateDir:         baseStateDir,
 		processAdapter:       adapter,
 		bootAcceptanceWaiter: waiter,
 		liveProcessManager:   manager,
+		guestReadinessWaiter: guestWaiter,
 		liveStart:            b != nil && b.liveStart,
 	}, nil
 }
@@ -171,6 +180,7 @@ type firecrackerController struct {
 	processAdapter       ProcessAdapter
 	bootAcceptanceWaiter BootAcceptanceWaiter
 	liveProcessManager   LiveProcessManager
+	guestReadinessWaiter GuestReadinessWaiter
 	liveStart            bool
 }
 
@@ -191,17 +201,19 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 		return nil, err
 	}
 	processLaunch := processBoundaryAvailableRuntimeMetadata()
+	var guestReadiness *sandboxruntime.RuntimeGuestReadinessMetadata
 	if c.liveStart {
 		if err := renderLiveBootFiles(config); err != nil {
 			return nil, err
 		}
-		liveLaunch, err := c.startLiveProcess(ctx, operation.ProcessDescriptor, config.Paths)
+		liveStart, err := c.startLiveProcess(ctx, operation.ProcessDescriptor, config)
 		if err != nil {
 			return nil, err
 		}
-		processLaunch = liveLaunch
+		processLaunch = liveStart.processLaunch
+		guestReadiness = liveStart.guestReadiness
 	}
-	return firecrackerStartTarget(req.Target, operation.ProcessDescriptor, processLaunch), nil
+	return firecrackerStartTarget(req.Target, operation.ProcessDescriptor, processLaunch, guestReadiness), nil
 }
 
 func (c firecrackerController) validateLiveBootContract() error {
@@ -220,16 +232,28 @@ func (c firecrackerController) validateLiveBootContract() error {
 	}
 }
 
-func (c firecrackerController) startLiveProcess(ctx context.Context, descriptor ProcessCommandDescriptor, paths PathPlan) (*sandboxruntime.RuntimeProcessLaunchMetadata, error) {
+type firecrackerLiveStartResult struct {
+	processLaunch  *sandboxruntime.RuntimeProcessLaunchMetadata
+	guestReadiness *sandboxruntime.RuntimeGuestReadinessMetadata
+}
+
+func (c firecrackerController) startLiveProcess(ctx context.Context, descriptor ProcessCommandDescriptor, config BackendConfig) (firecrackerLiveStartResult, error) {
 	handle, err := StartProcess(ctx, c.processAdapter, descriptor)
 	if err != nil {
-		return nil, err
+		return firecrackerLiveStartResult{}, err
 	}
-	launch, err := c.waitForBootAcceptance(ctx, handle, paths)
+	launch, err := c.waitForBootAcceptance(ctx, handle, config.Paths)
 	if err != nil {
-		return nil, c.cleanupLiveProcessAfterBootAcceptanceFailure(ctx, handle, paths, err)
+		return firecrackerLiveStartResult{}, c.cleanupLiveProcessAfterStartFailure(ctx, handle, config.Paths, err)
 	}
-	return launch, nil
+	guestReadiness, err := c.waitForGuestReadiness(ctx, handle, config.RuntimeID)
+	if err != nil {
+		return firecrackerLiveStartResult{}, c.cleanupLiveProcessAfterStartFailure(ctx, handle, config.Paths, err)
+	}
+	return firecrackerLiveStartResult{
+		processLaunch:  launch,
+		guestReadiness: guestReadiness,
+	}, nil
 }
 
 func (c firecrackerController) waitForBootAcceptance(ctx context.Context, handle ProcessHandleMetadata, paths PathPlan) (*sandboxruntime.RuntimeProcessLaunchMetadata, error) {
@@ -252,15 +276,37 @@ func (c firecrackerController) waitForBootAcceptance(ctx context.Context, handle
 	return NewProcessLaunchMetadata(ProcessLaunchStateAccepted, handle).RuntimeMetadata(), nil
 }
 
-func (c firecrackerController) cleanupLiveProcessAfterBootAcceptanceFailure(ctx context.Context, handle ProcessHandleMetadata, paths PathPlan, acceptanceErr error) error {
-	cleanupErr := c.cleanupLiveProcess(ctx, LiveProcessRequest{
+func (c firecrackerController) waitForGuestReadiness(ctx context.Context, handle ProcessHandleMetadata, runtimeID string) (*sandboxruntime.RuntimeGuestReadinessMetadata, error) {
+	if c.guestReadinessWaiter == nil {
+		return nil, nil
+	}
+	result, err := c.guestReadinessWaiter.WaitForGuestReadiness(processContext(ctx), NewGuestReadinessRequest(handle, runtimeID))
+	if err != nil {
+		return nil, newLiveGuestReadinessFailure("guestReadinessWaiter", liveGuestReadinessFailureMessage(err), err)
+	}
+	result = SanitizeGuestReadinessResult(result)
+	if result.State != sandboxruntime.RuntimeGuestReadinessStateReady {
+		return nil, newLiveGuestReadinessFailure("guestReadinessState", "guest readiness was not reported ready", errGuestReadinessNotReady)
+	}
+	return result.RuntimeMetadata(), nil
+}
+
+func (c firecrackerController) cleanupLiveProcessAfterStartFailure(ctx context.Context, handle ProcessHandleMetadata, paths PathPlan, startErr error) error {
+	cleanupErr := c.cleanupLiveProcess(liveStartCleanupContext(ctx), LiveProcessRequest{
 		Handle: sanitizeProcessHandleMetadata(handle),
 		Paths:  paths,
 	})
 	if cleanupErr == nil {
-		return acceptanceErr
+		return startErr
 	}
-	return errors.Join(acceptanceErr, cleanupErr)
+	return errors.Join(startErr, cleanupErr)
+}
+
+func liveStartCleanupContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return context.WithoutCancel(ctx)
 }
 
 func (c firecrackerController) cleanupLiveProcess(ctx context.Context, req LiveProcessRequest) error {
@@ -445,12 +491,15 @@ func firecrackerStartRuntimeID(target sandboxruntime.Target) string {
 	return ""
 }
 
-func firecrackerStartTarget(target sandboxruntime.Target, descriptor ProcessCommandDescriptor, processLaunch *sandboxruntime.RuntimeProcessLaunchMetadata) *sandboxruntime.Target {
+func firecrackerStartTarget(target sandboxruntime.Target, descriptor ProcessCommandDescriptor, processLaunch *sandboxruntime.RuntimeProcessLaunchMetadata, guestReadiness *sandboxruntime.RuntimeGuestReadinessMetadata) *sandboxruntime.Target {
 	started := cloneFirecrackerTarget(target)
 	ensureFirecrackerPlanningTarget(&started, target)
 	started.Runtime.Metadata.OperationPlan = firecrackerRuntimeOperationPlanMetadata(descriptor)
 	if processLaunch != nil {
 		started.Runtime.Metadata.ProcessLaunch = cloneRuntimeProcessLaunchMetadata(processLaunch)
+	}
+	if guestReadiness != nil {
+		started.Runtime.Metadata.GuestReadiness = sandboxruntime.SanitizeRuntimeGuestReadinessMetadata(guestReadiness)
 	}
 	return &started
 }
@@ -512,6 +561,7 @@ func ensureFirecrackerPlanningTarget(target *sandboxruntime.Target, source sandb
 		processLaunch = processBoundaryAvailableRuntimeMetadata()
 	}
 	target.Runtime.Metadata.ProcessLaunch = processLaunch
+	target.Runtime.Metadata.GuestReadiness = nil
 }
 
 func firecrackerRuntimeOperationPlanMetadata(descriptor ProcessCommandDescriptor) *sandboxruntime.RuntimeOperationPlan {
@@ -604,6 +654,7 @@ func cloneFirecrackerRuntimeMetadata(metadata *sandboxruntime.RuntimeMetadata) *
 	copied.PathRoles = cloneStringSlice(metadata.PathRoles)
 	copied.OperationPlan = cloneFirecrackerRuntimeOperationPlan(metadata.OperationPlan)
 	copied.ProcessLaunch = cloneRuntimeProcessLaunchMetadata(metadata.ProcessLaunch)
+	copied.GuestReadiness = sandboxruntime.SanitizeRuntimeGuestReadinessMetadata(metadata.GuestReadiness)
 	return &copied
 }
 
@@ -660,6 +711,10 @@ func newLiveBootAcceptanceFailure(field, message string, cause error) *microvm.O
 	return newLiveDependencyFailure(liveBootAcceptanceOperation, field, message, cause)
 }
 
+func newLiveGuestReadinessFailure(field, message string, cause error) *microvm.OperationError {
+	return newLiveDependencyFailure(liveGuestReadinessOperation, field, message, cause)
+}
+
 func newLiveProcessManagerFailure(field, message string, cause error) *microvm.OperationError {
 	return newLiveDependencyFailure(liveProcessManagerOperation, field, message, cause)
 }
@@ -682,6 +737,13 @@ func liveBootAcceptanceFailureMessage(err error) string {
 		return "host-side boot acceptance timed out"
 	}
 	return "host-side boot acceptance failed"
+}
+
+func liveGuestReadinessFailureMessage(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "guest readiness timed out"
+	}
+	return "guest readiness failed"
 }
 
 func sanitizedLiveDependencyDetail(operation string, cause error) string {

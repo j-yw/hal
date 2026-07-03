@@ -147,6 +147,48 @@ func TestDefaultConstructorsDoNotConfigureOrSelectFirecrackerHost(t *testing.T) 
 	}
 }
 
+func TestPhase37MicroVMNewRemainsInertForFirecrackerGuestReadiness(t *testing.T) {
+	driver := New()
+	if driver == nil {
+		t.Fatal("New() = nil, want default microVM driver")
+	}
+	if driver.backend != nil {
+		t.Fatalf("New() backend = %T, want nil default backend", driver.backend)
+	}
+
+	metadata := driver.Metadata()
+	if metadata.BackendConfigured {
+		t.Fatal("BackendConfigured = true, want false for inert default microVM construction")
+	}
+	if metadata.Availability == CapabilityAvailabilityAvailable {
+		t.Fatalf("Availability = %q, want unavailable without an explicit backend", metadata.Availability)
+	}
+	if metadata.ReasonCode == DriverReasonAvailable {
+		t.Fatalf("ReasonCode = %q, want non-live default construction reason", metadata.ReasonCode)
+	}
+	if metadata.IsolationLevel != sandbox.SandboxIsolationLevelVM {
+		t.Fatalf("IsolationLevel = %q, want driver-level %q metadata", metadata.IsolationLevel, sandbox.SandboxIsolationLevelVM)
+	}
+
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("Marshal(metadata) error = %v", err)
+	}
+	publicText := strings.ToLower(string(encoded))
+	for _, marker := range []string{
+		"guestreadiness",
+		"guest_readiness",
+		"guest readiness",
+		"guestreadinesswaiter",
+		"livestart",
+		"firecrackerhost",
+	} {
+		if strings.Contains(publicText, marker) {
+			t.Fatalf("default microVM metadata configured live guest readiness marker %q in %s", marker, publicText)
+		}
+	}
+}
+
 func TestDefaultProductionDriverDetectsCapabilityAndStartsUnavailable(t *testing.T) {
 	driver := New()
 	metadata := driver.Metadata()
@@ -276,6 +318,61 @@ func TestDriverLifecycleDelegatesThroughBackendControllerBoundary(t *testing.T) 
 		}
 		if req.Target.Name != "microvm-dev" || req.Target.Runtime.Driver != sandboxruntime.DriverMicroVM || req.Target.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelVM {
 			t.Fatalf("%s lifecycle target = %#v, want sanitized microVM target", req.Operation, req.Target)
+		}
+	}
+}
+
+func TestApplyRuntimeMetadataSanitizesGuestReadinessMetadata(t *testing.T) {
+	target := &sandboxruntime.Target{
+		Name: "microvm-readiness",
+		Runtime: sandboxruntime.RuntimeState{
+			Metadata: &sandboxruntime.RuntimeMetadata{
+				Backend: "firecracker",
+				GuestReadiness: &sandboxruntime.RuntimeGuestReadinessMetadata{
+					State:     sandboxruntime.RuntimeGuestReadinessStateReady,
+					Transport: "tcp://127.0.0.1:9000/private/firecracker.sock?token=ghp_secret",
+					Labels: []string{
+						"probe_ok",
+						"exec_support",
+						"copy_support",
+						"/Users/alice/private",
+					},
+				},
+			},
+		},
+	}
+
+	applied := applyRuntimeMetadata(target)
+	if applied == nil || applied.Runtime.Metadata == nil || applied.Runtime.Metadata.GuestReadiness == nil {
+		t.Fatalf("applyRuntimeMetadata() = %#v, want guest readiness metadata", applied)
+	}
+	readiness := applied.Runtime.Metadata.GuestReadiness
+	if readiness.State != sandboxruntime.RuntimeGuestReadinessStateReady {
+		t.Fatalf("GuestReadiness.State = %q, want ready", readiness.State)
+	}
+	if readiness.Transport != "" {
+		t.Fatalf("GuestReadiness.Transport = %q, want unsafe transport omitted", readiness.Transport)
+	}
+	if !reflect.DeepEqual(readiness.Labels, []string{"ready", "probe_ok"}) {
+		t.Fatalf("GuestReadiness.Labels = %#v, want sanitized labels", readiness.Labels)
+	}
+
+	encoded, err := json.Marshal(applied)
+	if err != nil {
+		t.Fatalf("Marshal(target) error = %v", err)
+	}
+	publicText := string(encoded)
+	for _, unsafe := range []string{
+		"127.0.0.1",
+		"9000",
+		"firecracker.sock",
+		"ghp_secret",
+		"exec_support",
+		"copy_support",
+		"/Users/alice",
+	} {
+		if strings.Contains(publicText, unsafe) {
+			t.Fatalf("applied target leaked unsafe guest readiness fragment %q in %s", unsafe, publicText)
 		}
 	}
 }
