@@ -1,6 +1,7 @@
 package sandboxworker
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -169,6 +170,15 @@ type SecurityControls struct {
 	CredentialDelivery           *sandboxruntime.RuntimeCredentialDeliveryMetadata   `json:"credentialDelivery,omitempty"`
 	IsolationLevel               string                                              `json:"isolationLevel,omitempty"`
 	CredentialProxyMode          bool                                                `json:"credentialProxyMode,omitempty"`
+}
+
+func (controls SecurityControls) MarshalJSON() ([]byte, error) {
+	type securityControlsJSON SecurityControls
+	sanitized := securityControlsJSON(controls)
+	sanitized.NetworkEnforcementCapability = sandboxruntime.SanitizeRuntimeNetworkEnforcementCapability(controls.NetworkEnforcementCapability)
+	sanitized.CredentialModes = sanitizeWorkerCredentialModes(controls.CredentialModes)
+	sanitized.CredentialDelivery = sandboxruntime.SanitizeRuntimeCredentialDeliveryMetadata(controls.CredentialDelivery)
+	return json.Marshal(sanitized)
 }
 
 // Target is the worker protocol target shape used by lifecycle and inspect
@@ -545,6 +555,9 @@ func validateRequestedSecurityControls(controls SecurityControls) error {
 	if err := validateNetworkEnforcementCapability(controls.NetworkEnforcementCapability); err != nil {
 		return err
 	}
+	if err := validateCredentialDeliveryMetadata(controls.CredentialDelivery); err != nil {
+		return err
+	}
 	if controls.IsolationLevel != "" && !validRequestedIsolationLevel(controls.IsolationLevel) {
 		return fmt.Errorf("isolationLevel %q is unsupported", controls.IsolationLevel)
 	}
@@ -567,6 +580,9 @@ func validateEnforcedSecurityControls(controls SecurityControls) error {
 		}
 	}
 	if err := validateNetworkEnforcementCapability(controls.NetworkEnforcementCapability); err != nil {
+		return err
+	}
+	if err := validateCredentialDeliveryMetadata(controls.CredentialDelivery); err != nil {
 		return err
 	}
 	switch controls.NetworkEnforcement {
@@ -600,6 +616,16 @@ func validateNetworkEnforcementCapability(capability *sandboxruntime.RuntimeNetw
 	return nil
 }
 
+func validateCredentialDeliveryMetadata(metadata *sandboxruntime.RuntimeCredentialDeliveryMetadata) error {
+	if metadata == nil {
+		return nil
+	}
+	if sandboxruntime.SanitizeRuntimeCredentialDeliveryMetadata(metadata) == nil {
+		return fmt.Errorf("credentialDelivery is invalid")
+	}
+	return nil
+}
+
 func networkEnforcementCapabilitySupportsMode(capability *sandboxruntime.RuntimeNetworkEnforcementCapability, mode string) bool {
 	if capability == nil || !capability.Supported {
 		return false
@@ -624,6 +650,26 @@ func validateCredentialModes(modes []string, enforced bool) error {
 		}
 	}
 	return nil
+}
+
+func sanitizeWorkerCredentialModes(modes []string) []string {
+	if len(modes) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(modes))
+	for _, mode := range modes {
+		mode = strings.ToLower(strings.TrimSpace(mode))
+		if mode == "" || !validCredentialMode(mode) || seen[mode] {
+			continue
+		}
+		seen[mode] = true
+		out = append(out, mode)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func validRequestedNetworkPolicy(policy string) bool {

@@ -365,6 +365,163 @@ func TestWorkerSecurityControlsCarryOptionalCredentialDeliveryMetadata(t *testin
 	}
 }
 
+func TestWorkerProtocolCredentialDeliveryMetadataOmitsRawActivationValues(t *testing.T) {
+	rawValues := []string{
+		"https://credential-proxy.internal.example/token=ghp_raw_secret",
+		"/Users/alice/.config/hal/credential.json",
+		"unix:///tmp/hal-credential.sock",
+		"Authorization: Bearer raw-token",
+		"HAL_TOKEN=raw-env-value",
+		"sh -c 'printenv HAL_TOKEN'",
+	}
+	controls := SecurityControls{
+		CredentialModes: []string{CredentialModeEnv},
+		CredentialDelivery: &sandboxruntime.RuntimeCredentialDeliveryMetadata{
+			ID:             "credential-status-worker",
+			RequestID:      rawValues[0],
+			PlanID:         "credential-plan-worker",
+			ActivationID:   rawValues[1],
+			RequestedModes: []string{CredentialModeEnv, rawValues[2], CredentialModeSSHAgent},
+			ActiveModes:    []string{CredentialModeEnv, rawValues[3]},
+			Status:         " ACTIVE ",
+			ReasonCode:     rawValues[4],
+			WarningCount:   1,
+		},
+		IsolationLevel: IsolationLevelContainer,
+	}
+	policy := SecurityPolicy{
+		Requested: controls,
+		Enforced: SecurityControls{
+			CredentialModes: []string{CredentialModeEnv},
+			CredentialDelivery: &sandboxruntime.RuntimeCredentialDeliveryMetadata{
+				ID:             "credential-status-enforced",
+				PlanID:         "credential-plan-worker",
+				ActivationID:   "credential-activation-worker",
+				RequestedModes: []string{CredentialModeEnv},
+				ActiveModes:    []string{CredentialModeEnv, rawValues[5]},
+				Status:         "active",
+			},
+			IsolationLevel: IsolationLevelContainer,
+		},
+	}
+	if err := policy.Validate(); err != nil {
+		t.Fatalf("security policy Validate() unexpected error: %v", err)
+	}
+
+	payloads := []struct {
+		name  string
+		value any
+	}{
+		{
+			name: "status",
+			value: Status{
+				ProtocolVersion:         ProtocolVersion,
+				WorkerID:                "worker-001",
+				HostKind:                HostKindLocal,
+				SupportedRuntimeDrivers: []string{RuntimeDriverRootlessPodman},
+				Health:                  WorkerHealth{Status: HealthStatusHealthy},
+				Capacity:                WorkerCapacity{MaxConcurrentSandboxes: 1},
+				Security:                policy,
+			},
+		},
+		{
+			name: "capabilities",
+			value: Capabilities{
+				ProtocolVersion: ProtocolVersion,
+				WorkerID:        "worker-001",
+				RuntimeDrivers: []RuntimeDriver{{
+					ID:             RuntimeDriverRootlessPodman,
+					HostKind:       HostKindLocal,
+					IsolationLevel: IsolationLevelContainer,
+					Security:       policy,
+				}},
+				Security: policy,
+			},
+		},
+		{
+			name: "create request security",
+			value: Request{
+				ProtocolVersion: ProtocolVersion,
+				RequestID:       "req-credential-delivery",
+				Operation:       OperationCreate,
+				DriverID:        RuntimeDriverRootlessPodman,
+				Create: &CreateRequest{
+					Name:     "dev-sandbox",
+					Security: policy,
+				},
+			},
+		},
+	}
+	for _, payload := range payloads {
+		t.Run(payload.name, func(t *testing.T) {
+			data, err := json.Marshal(payload.value)
+			if err != nil {
+				t.Fatalf("Marshal(%s) error: %v", payload.name, err)
+			}
+			publicText := string(data)
+			for _, raw := range rawValues {
+				if strings.Contains(publicText, raw) {
+					t.Fatalf("%s leaked raw credential delivery value %q in %s", payload.name, raw, publicText)
+				}
+			}
+			for _, want := range []string{
+				`"credentialDelivery":`,
+				`"id":"credential-status-enforced"`,
+				`"activationId":"credential-activation-worker"`,
+				`"requestedModes":["env"]`,
+				`"activeModes":["env"]`,
+				`"status":"active"`,
+			} {
+				if !strings.Contains(publicText, want) {
+					t.Fatalf("%s JSON %s missing %s", payload.name, publicText, want)
+				}
+			}
+			if strings.Contains(publicText, `"activeModes":["env","legacy_auth_sync"]`) {
+				t.Fatalf("%s overreported compatibility mode as active delivery: %s", payload.name, publicText)
+			}
+		})
+	}
+}
+
+func TestWorkerCredentialDeliveryActiveModesRequireSanitizedActivationStatus(t *testing.T) {
+	controls := SecurityControls{
+		CredentialModes: []string{CredentialModeEnv},
+		CredentialDelivery: &sandboxruntime.RuntimeCredentialDeliveryMetadata{
+			ID:             "credential-status-worker",
+			PlanID:         "credential-plan-worker",
+			RequestedModes: []string{CredentialModeEnv},
+			ActiveModes:    []string{CredentialModeEnv},
+			Status:         "planned",
+		},
+	}
+	encoded, err := json.Marshal(controls)
+	if err != nil {
+		t.Fatalf("Marshal(SecurityControls) error = %v", err)
+	}
+	if strings.Contains(string(encoded), "activeModes") {
+		t.Fatalf("planned worker credentialDelivery must omit activeModes: %s", string(encoded))
+	}
+
+	controls.CredentialDelivery.Status = "active"
+	controls.CredentialDelivery.ActivationID = "/tmp/raw-activation.sock"
+	encoded, err = json.Marshal(controls)
+	if err != nil {
+		t.Fatalf("Marshal(SecurityControls) active error = %v", err)
+	}
+	if strings.Contains(string(encoded), "activeModes") {
+		t.Fatalf("active worker credentialDelivery without safe activation ID must omit activeModes: %s", string(encoded))
+	}
+
+	controls.CredentialDelivery.ActivationID = "credential-activation-worker"
+	encoded, err = json.Marshal(controls)
+	if err != nil {
+		t.Fatalf("Marshal(SecurityControls) safe active error = %v", err)
+	}
+	if !strings.Contains(string(encoded), `"activeModes":["env"]`) {
+		t.Fatalf("active worker credentialDelivery with safe activation result missing activeModes: %s", string(encoded))
+	}
+}
+
 func TestWorkerSecurityPolicyRejectsOverstatedCapabilityClaims(t *testing.T) {
 	tests := []struct {
 		name   string

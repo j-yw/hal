@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/credentialdelivery"
 )
 
 func TestRuntimeDriverIDConstants(t *testing.T) {
@@ -384,6 +386,123 @@ func TestRuntimeMetadataIncludesOptionalCredentialDeliveryMetadata(t *testing.T)
 	}
 }
 
+func TestRuntimeCredentialDeliveryMetadataSanitizesToCompactStatus(t *testing.T) {
+	rawValues := []string{
+		"https://proxy.internal.example/token=ghp_raw_secret",
+		"/Users/alice/.ssh/id_ed25519",
+		"unix:///tmp/hal-credential.sock",
+		"Authorization: Bearer raw-token",
+		"HAL_TOKEN=raw-env-value",
+		"sh -c 'cat /tmp/secret'",
+	}
+	metadata := RuntimeMetadata{
+		Backend: "microvm",
+		CredentialDelivery: &RuntimeCredentialDeliveryMetadata{
+			ID:             " credential-status-01 ",
+			RequestID:      rawValues[0],
+			PlanID:         "credential-plan-01",
+			ActivationID:   rawValues[1],
+			RequestedModes: []string{" HTTP_PROXY ", rawValues[2], "env"},
+			ActiveModes:    []string{" HTTP_PROXY ", rawValues[3], "legacy_auth_sync"},
+			Status:         " ACTIVE ",
+			ReasonCode:     rawValues[4],
+			WarningCount:   -1,
+			ErrorCount:     2,
+		},
+	}
+
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("Marshal(RuntimeMetadata) error = %v", err)
+	}
+	publicText := string(encoded)
+	for _, raw := range rawValues {
+		if strings.Contains(publicText, raw) {
+			t.Fatalf("runtime credentialDelivery leaked raw value %q in %s", raw, publicText)
+		}
+	}
+	for _, want := range []string{
+		`"credentialDelivery":`,
+		`"id":"credential-status-01"`,
+		`"planId":"credential-plan-01"`,
+		`"requestedModes":["http_proxy","env"]`,
+		`"status":"skipped"`,
+		`"errorCount":2`,
+	} {
+		if !strings.Contains(publicText, want) {
+			t.Fatalf("RuntimeMetadata JSON %s missing %s", publicText, want)
+		}
+	}
+	if strings.Contains(publicText, "activeModes") {
+		t.Fatalf("runtime credentialDelivery activeModes must be omitted without safe activation status: %s", publicText)
+	}
+	if strings.Contains(publicText, "warningCount") {
+		t.Fatalf("runtime credentialDelivery warningCount must omit negative counts: %s", publicText)
+	}
+}
+
+func TestRuntimeCredentialDeliveryMetadataProjectsActiveModesOnlyFromSanitizedActivation(t *testing.T) {
+	plan := credentialdelivery.Plan{
+		ID:             "credential-plan-activation",
+		RequestID:      "credential-request-activation",
+		RequestedModes: []credentialdelivery.Mode{credentialdelivery.ModeHTTPProxy, credentialdelivery.ModeLegacyAuthSync},
+		Status:         credentialdelivery.StatusPlanned,
+	}
+	active := runtimeCredentialDeliveryMetadataFromStatus(credentialdelivery.StatusMetadataFromActivation(plan, credentialdelivery.ActivationResult{
+		ID:             "credential-activation-active",
+		PlanID:         "credential-plan-activation",
+		RequestedModes: []credentialdelivery.Mode{credentialdelivery.ModeHTTPProxy, credentialdelivery.ModeLegacyAuthSync},
+		ActiveModes:    []credentialdelivery.Mode{credentialdelivery.ModeHTTPProxy, credentialdelivery.ModeLegacyAuthSync},
+		Status:         credentialdelivery.StatusActive,
+	}))
+	sanitizedActive := SanitizeRuntimeCredentialDeliveryMetadata(active)
+	if sanitizedActive == nil {
+		t.Fatal("active credentialDelivery = nil")
+	}
+	if sanitizedActive.Status != "active" {
+		t.Fatalf("active status = %q, want active", sanitizedActive.Status)
+	}
+	if !reflect.DeepEqual(sanitizedActive.ActiveModes, []string{"http_proxy"}) {
+		t.Fatalf("active modes = %#v, want only sanitized http_proxy", sanitizedActive.ActiveModes)
+	}
+
+	skipped := runtimeCredentialDeliveryMetadataFromStatus(credentialdelivery.StatusMetadataFromActivation(plan, credentialdelivery.ActivationResult{
+		ID:             "credential-activation-skipped",
+		PlanID:         "credential-plan-activation",
+		RequestedModes: []credentialdelivery.Mode{credentialdelivery.ModeHTTPProxy},
+		ActiveModes:    []credentialdelivery.Mode{credentialdelivery.ModeHTTPProxy},
+		Status:         credentialdelivery.StatusSkipped,
+		Warnings: []credentialdelivery.Warning{{
+			Code:       credentialdelivery.WarningActivationSkipped,
+			ReasonCode: credentialdelivery.ReasonActivationUnavailable,
+			Mode:       credentialdelivery.ModeHTTPProxy,
+		}},
+	}))
+	sanitizedSkipped := SanitizeRuntimeCredentialDeliveryMetadata(skipped)
+	if sanitizedSkipped == nil {
+		t.Fatal("skipped credentialDelivery = nil")
+	}
+	if sanitizedSkipped.Status != "skipped" {
+		t.Fatalf("skipped status = %q, want skipped", sanitizedSkipped.Status)
+	}
+	if len(sanitizedSkipped.ActiveModes) != 0 {
+		t.Fatalf("skipped active modes = %#v, want omitted", sanitizedSkipped.ActiveModes)
+	}
+
+	planOnly := runtimeCredentialDeliveryMetadataFromStatus(credentialdelivery.StatusMetadataFromPlan(plan))
+	planOnly.ActiveModes = []string{"http_proxy"}
+	sanitizedPlan := SanitizeRuntimeCredentialDeliveryMetadata(planOnly)
+	if sanitizedPlan == nil {
+		t.Fatal("plan-only credentialDelivery = nil")
+	}
+	if sanitizedPlan.Status != "planned" {
+		t.Fatalf("plan-only status = %q, want planned", sanitizedPlan.Status)
+	}
+	if len(sanitizedPlan.ActiveModes) != 0 {
+		t.Fatalf("plan-only active modes = %#v, want omitted", sanitizedPlan.ActiveModes)
+	}
+}
+
 func TestRuntimeNetworkEnforcementMetadataSanitizesUnsafeValues(t *testing.T) {
 	metadata := SanitizeRuntimeNetworkEnforcementMetadata(&RuntimeNetworkEnforcementMetadata{
 		Plan: &RuntimeNetworkEnforcementPlanMetadata{
@@ -682,6 +801,32 @@ func assertFieldType(t *testing.T, typ reflect.Type, fieldName string, want refl
 	if field.Type != want {
 		t.Fatalf("%s.%s type = %v, want %v", typ.Name(), fieldName, field.Type, want)
 	}
+}
+
+func runtimeCredentialDeliveryMetadataFromStatus(status credentialdelivery.StatusMetadata) *RuntimeCredentialDeliveryMetadata {
+	return &RuntimeCredentialDeliveryMetadata{
+		ID:             status.ID,
+		RequestID:      status.RequestID,
+		PlanID:         status.PlanID,
+		ActivationID:   status.ActivationID,
+		RequestedModes: runtimeCredentialDeliveryModeStrings(status.RequestedModes),
+		ActiveModes:    runtimeCredentialDeliveryModeStrings(status.ActiveModes),
+		Status:         string(status.Status),
+		ReasonCode:     string(status.ReasonCode),
+		WarningCount:   status.WarningCount,
+		ErrorCount:     status.ErrorCount,
+	}
+}
+
+func runtimeCredentialDeliveryModeStrings(modes []credentialdelivery.Mode) []string {
+	if len(modes) == 0 {
+		return nil
+	}
+	out := make([]string, len(modes))
+	for i, mode := range modes {
+		out[i] = string(mode)
+	}
+	return out
 }
 
 type fakeLifecycleDriver struct{}

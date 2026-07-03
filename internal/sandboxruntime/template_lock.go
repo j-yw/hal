@@ -96,6 +96,7 @@ func (metadata *RuntimeTemplateLockMetadata) UnmarshalJSON(data []byte) error {
 func (metadata RuntimeMetadata) MarshalJSON() ([]byte, error) {
 	type runtimeMetadataJSON RuntimeMetadata
 	encoded := runtimeMetadataJSON(metadata)
+	encoded.CredentialDelivery = SanitizeRuntimeCredentialDeliveryMetadata(metadata.CredentialDelivery)
 	encoded.TemplateLock = SanitizeRuntimeTemplateLockMetadata(metadata.TemplateLock)
 	return json.Marshal(encoded)
 }
@@ -106,6 +107,7 @@ func (metadata *RuntimeMetadata) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
+	decoded.CredentialDelivery = SanitizeRuntimeCredentialDeliveryMetadata(decoded.CredentialDelivery)
 	decoded.TemplateLock = SanitizeRuntimeTemplateLockMetadata(decoded.TemplateLock)
 	*metadata = RuntimeMetadata(decoded)
 	return nil
