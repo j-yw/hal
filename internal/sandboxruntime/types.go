@@ -113,8 +113,9 @@ type RuntimeGuestReadinessMetadata struct {
 // not imply production egress, proxy listeners, firewall mutation, or guest
 // network readiness.
 type RuntimeNetworkEnforcementMetadata struct {
-	Plan   *RuntimeNetworkEnforcementPlanMetadata   `json:"plan,omitempty"`
-	Result *RuntimeNetworkEnforcementResultMetadata `json:"result,omitempty"`
+	Plan          *RuntimeNetworkEnforcementPlanMetadata          `json:"plan,omitempty"`
+	Orchestration *RuntimeNetworkEnforcementOrchestrationMetadata `json:"orchestration,omitempty"`
+	Result        *RuntimeNetworkEnforcementResultMetadata        `json:"result,omitempty"`
 }
 
 // RuntimeNetworkEnforcementPlanMetadata carries safe plan identity and intent
@@ -128,6 +129,41 @@ type RuntimeNetworkEnforcementPlanMetadata struct {
 	DefaultPosture   string   `json:"defaultPosture,omitempty"`
 	Mechanisms       []string `json:"mechanisms,omitempty"`
 	Operations       []string `json:"operations,omitempty"`
+}
+
+// RuntimeNetworkEnforcementOrchestrationMetadata carries safe live-enforcement
+// lifecycle planning labels without implying that listeners, firewall rules,
+// runtime rules, or guest networking are active.
+type RuntimeNetworkEnforcementOrchestrationMetadata struct {
+	PlanID           string                                       `json:"planId,omitempty"`
+	AdapterID        string                                       `json:"adapterId,omitempty"`
+	Status           string                                       `json:"status,omitempty"`
+	Mechanisms       []string                                     `json:"mechanisms,omitempty"`
+	Operations       []string                                     `json:"operations,omitempty"`
+	PolicySnapshotID string                                       `json:"policySnapshotId,omitempty"`
+	PolicyPreset     string                                       `json:"policyPreset,omitempty"`
+	Proxy            *RuntimeNetworkEnforcementLifecycleMetadata  `json:"proxy,omitempty"`
+	Rules            []RuntimeNetworkEnforcementLifecycleMetadata `json:"rules,omitempty"`
+	CapabilityLabels []string                                     `json:"capabilityLabels,omitempty"`
+	ReasonCode       string                                       `json:"reasonCode,omitempty"`
+	WarningCodes     []string                                     `json:"warningCodes,omitempty"`
+}
+
+// RuntimeNetworkEnforcementLifecycleMetadata carries safe proxy or rule
+// lifecycle state labels without endpoints, rule bodies, process details,
+// credentials, or local paths.
+type RuntimeNetworkEnforcementLifecycleMetadata struct {
+	ID               string   `json:"id,omitempty"`
+	PlanID           string   `json:"planId,omitempty"`
+	AdapterID        string   `json:"adapterId,omitempty"`
+	Status           string   `json:"status,omitempty"`
+	Mechanisms       []string `json:"mechanisms,omitempty"`
+	Operations       []string `json:"operations,omitempty"`
+	PolicySnapshotID string   `json:"policySnapshotId,omitempty"`
+	PolicyPreset     string   `json:"policyPreset,omitempty"`
+	CapabilityLabels []string `json:"capabilityLabels,omitempty"`
+	ReasonCode       string   `json:"reasonCode,omitempty"`
+	WarningCodes     []string `json:"warningCodes,omitempty"`
 }
 
 // RuntimeNetworkEnforcementResultMetadata carries safe adapter result labels.
