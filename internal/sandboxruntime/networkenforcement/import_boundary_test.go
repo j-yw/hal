@@ -133,6 +133,7 @@ func TestNetworkEnforcementImportBoundaryCoversPlanningAndAdapterFiles(t *testin
 	}
 	for _, path := range []string{
 		"adapter.go",
+		"aggregation.go",
 		"allowlist_normalization.go",
 		"doc.go",
 		"listener_lifecycle.go",
