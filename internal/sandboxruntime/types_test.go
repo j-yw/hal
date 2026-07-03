@@ -410,7 +410,7 @@ func TestRuntimeNetworkEnforcementMetadataSanitizesUnsafeValues(t *testing.T) {
 				SupportsDefaultDenyPosture: true,
 			},
 			ReasonCode:   " APPLIED ",
-			WarningCodes: []string{"partial_enforcement", "https://warning.example.test"},
+			WarningCodes: []string{"https://warning.example.test"},
 		},
 	})
 	if metadata == nil || metadata.Plan == nil || metadata.Result == nil {
@@ -429,7 +429,7 @@ func TestRuntimeNetworkEnforcementMetadataSanitizesUnsafeValues(t *testing.T) {
 		metadata.Result.EnforcementMode != "firewall" ||
 		metadata.Result.Capability == nil ||
 		!reflect.DeepEqual(metadata.Result.Capability.Modes, []string{"firewall"}) ||
-		!reflect.DeepEqual(metadata.Result.WarningCodes, []string{"partial_enforcement"}) {
+		len(metadata.Result.WarningCodes) != 0 {
 		t.Fatalf("result metadata = %#v, want sanitized safe result", metadata.Result)
 	}
 
@@ -482,6 +482,194 @@ func TestRuntimeNetworkEnforcementFailureClearsCapabilityUpgrade(t *testing.T) {
 	}
 	if metadata.Result.ReasonCode != "adapter_failed" {
 		t.Fatalf("failure reasonCode = %q, want adapter_failed", metadata.Result.ReasonCode)
+	}
+}
+
+func TestRuntimeNetworkEnforcementProjectionDowngradesNonEnforcingResults(t *testing.T) {
+	safePlan := &RuntimeNetworkEnforcementPlanMetadata{
+		ID:               "network-plan-downgrade",
+		Source:           "microvm",
+		Operation:        "prepare_network",
+		PolicySnapshotID: "policy-snapshot-downgrade",
+		PolicyPreset:     "deny_by_default",
+		DefaultPosture:   "deny_by_default",
+		Mechanisms:       []string{"proxy", "firewall"},
+		Operations: []string{
+			"default_deny",
+			"allowlist",
+			"api.internal.example.com:443",
+			"/tmp/live-proxy.sock",
+			"iptables -A OUTPUT",
+			"process pid=1234 token=secret",
+		},
+	}
+	enforcingCapability := func() *RuntimeNetworkEnforcementCapability {
+		return &RuntimeNetworkEnforcementCapability{
+			Supported:                  true,
+			Modes:                      []string{"proxy_firewall"},
+			SupportsDomainRules:        true,
+			SupportsEndpointRules:      true,
+			SupportsPrivateRangeRules:  true,
+			SupportsMetadataEndpoint:   true,
+			SupportsDefaultDenyPosture: true,
+		}
+	}
+	result := func(outcome, mode, reason string, warnings ...string) *RuntimeNetworkEnforcementResultMetadata {
+		return &RuntimeNetworkEnforcementResultMetadata{
+			PlanID:           "network-plan-downgrade",
+			AdapterID:        "live-adapter-downgrade",
+			Outcome:          outcome,
+			EnforcementMode:  mode,
+			Mechanisms:       []string{"proxy", "firewall"},
+			Operations:       []string{"proxy_route", "firewall_apply", "connect api.internal.example.com:443", "/tmp/firewall.rules", "GITHUB_TOKEN"},
+			PolicySnapshotID: "policy-snapshot-downgrade",
+			PolicyPreset:     "deny_by_default",
+			Capability:       enforcingCapability(),
+			ReasonCode:       reason,
+			WarningCodes:     warnings,
+		}
+	}
+
+	tests := []struct {
+		name         string
+		result       *RuntimeNetworkEnforcementResultMetadata
+		wantOutcome  string
+		wantMode     string
+		wantReason   string
+		wantWarnings []string
+	}{
+		{
+			name:   "nil result preserves requested plan only",
+			result: nil,
+		},
+		{
+			name:        "unsupported result",
+			result:      result("unsupported", "proxy_firewall", "adapter_unsupported"),
+			wantOutcome: "unsupported",
+			wantMode:    "none",
+			wantReason:  "adapter_unsupported",
+		},
+		{
+			name:         "failed result",
+			result:       result("failure", "proxy_firewall", "adapter_failed", "sanitized_adapter_error"),
+			wantOutcome:  "failure",
+			wantMode:     "none",
+			wantReason:   "adapter_failed",
+			wantWarnings: []string{"sanitized_adapter_error"},
+		},
+		{
+			name:         "partial live success",
+			result:       result("success", "proxy_firewall", "applied", "partial_enforcement"),
+			wantOutcome:  "success",
+			wantMode:     "none",
+			wantReason:   "applied",
+			wantWarnings: []string{"partial_enforcement"},
+		},
+		{
+			name:         "audit-only result",
+			result:       result("success", "best_effort", "best_effort", "metadata_only_fallback"),
+			wantOutcome:  "success",
+			wantMode:     "none",
+			wantReason:   "best_effort",
+			wantWarnings: []string{"metadata_only_fallback"},
+		},
+		{
+			name:         "best-effort result",
+			result:       result("best_effort", "proxy_firewall", "best_effort", "capability_downgraded"),
+			wantOutcome:  "best_effort",
+			wantMode:     "best_effort",
+			wantReason:   "best_effort",
+			wantWarnings: []string{"capability_downgraded"},
+		},
+		{
+			name:         "cleanup-failure result",
+			result:       result("success", "proxy_firewall", "adapter_failed", "partial_enforcement", "sanitized_adapter_error"),
+			wantOutcome:  "success",
+			wantMode:     "none",
+			wantReason:   "adapter_failed",
+			wantWarnings: []string{"partial_enforcement", "sanitized_adapter_error"},
+		},
+		{
+			name:         "rollback-failure result",
+			result:       result("success", "runtime", "adapter_failed", "partial_enforcement", "sanitized_adapter_error"),
+			wantOutcome:  "success",
+			wantMode:     "none",
+			wantReason:   "adapter_failed",
+			wantWarnings: []string{"partial_enforcement", "sanitized_adapter_error"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			metadata := SanitizeRuntimeNetworkEnforcementMetadata(&RuntimeNetworkEnforcementMetadata{
+				Plan:   safePlan,
+				Result: tt.result,
+			})
+			if metadata == nil || metadata.Plan == nil {
+				t.Fatalf("metadata = %#v, want requested plan metadata", metadata)
+			}
+			if metadata.Plan.PolicyPreset != "deny_by_default" ||
+				metadata.Plan.DefaultPosture != "deny_by_default" ||
+				!reflect.DeepEqual(metadata.Plan.Mechanisms, []string{"proxy", "firewall"}) ||
+				!reflect.DeepEqual(metadata.Plan.Operations, []string{"default_deny", "allowlist"}) {
+				t.Fatalf("plan metadata = %#v, want safe requested-policy metadata preserved", metadata.Plan)
+			}
+
+			if tt.result == nil {
+				if metadata.Result != nil {
+					t.Fatalf("Result = %#v, want nil for nil runtime result", metadata.Result)
+				}
+			} else {
+				if metadata.Result == nil {
+					t.Fatalf("Result = nil, want downgraded result metadata")
+				}
+				if metadata.Result.Outcome != tt.wantOutcome {
+					t.Fatalf("Outcome = %q, want %q", metadata.Result.Outcome, tt.wantOutcome)
+				}
+				if metadata.Result.EnforcementMode != tt.wantMode {
+					t.Fatalf("EnforcementMode = %q, want %q", metadata.Result.EnforcementMode, tt.wantMode)
+				}
+				if metadata.Result.Capability != nil {
+					t.Fatalf("Capability = %#v, want no enforcing capability claim", metadata.Result.Capability)
+				}
+				if metadata.Result.PolicyPreset != "deny_by_default" {
+					t.Fatalf("PolicyPreset = %q, want safe policy metadata preserved", metadata.Result.PolicyPreset)
+				}
+				if metadata.Result.ReasonCode != tt.wantReason {
+					t.Fatalf("ReasonCode = %q, want %q", metadata.Result.ReasonCode, tt.wantReason)
+				}
+				if !reflect.DeepEqual(metadata.Result.WarningCodes, tt.wantWarnings) {
+					t.Fatalf("WarningCodes = %#v, want %#v", metadata.Result.WarningCodes, tt.wantWarnings)
+				}
+			}
+
+			encoded, err := json.Marshal(RuntimeMetadata{NetworkEnforcement: metadata})
+			if err != nil {
+				t.Fatalf("Marshal(RuntimeMetadata) error = %v", err)
+			}
+			publicText := string(encoded)
+			for _, unsafe := range []string{
+				"api.internal.example.com",
+				"127.0.0.1",
+				"443",
+				"/tmp",
+				"live-proxy.sock",
+				"iptables",
+				"firewall.rules",
+				"process",
+				"pid=",
+				"token",
+				"secret",
+				"GITHUB_TOKEN",
+				"://",
+				`"capability":`,
+				"supportsDefaultDenyPosture",
+			} {
+				if strings.Contains(publicText, unsafe) {
+					t.Fatalf("runtime projection leaked or claimed unsafe fragment %q in %s", unsafe, publicText)
+				}
+			}
+		})
 	}
 }
 

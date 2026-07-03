@@ -135,6 +135,17 @@ func sanitizeRuntimeNetworkEnforcementResultMetadata(metadata *RuntimeNetworkEnf
 	if outcome == "success" && !runtimeNetworkEnforcementModeCanEnforce(mode) {
 		mode = "none"
 	}
+	reason := sanitizeRuntimeNetworkEnforcementReasonCode(metadata.ReasonCode)
+	warnings := sanitizeRuntimeNetworkEnforcementWarningCodeList(metadata.WarningCodes)
+	if outcome == "success" && runtimeNetworkEnforcementResultHasDowngradeSignal(reason, warnings) {
+		mode = "none"
+	}
+	capability := SanitizeRuntimeNetworkEnforcementCapability(metadata.Capability)
+	if outcome != "success" ||
+		!runtimeNetworkEnforcementModeCanEnforce(mode) ||
+		runtimeNetworkEnforcementResultHasDowngradeSignal(reason, warnings) {
+		capability = nil
+	}
 
 	sanitized := &RuntimeNetworkEnforcementResultMetadata{
 		PlanID:           sanitizeRuntimeNetworkEnforcementID(metadata.PlanID),
@@ -145,9 +156,9 @@ func sanitizeRuntimeNetworkEnforcementResultMetadata(metadata *RuntimeNetworkEnf
 		Operations:       sanitizeRuntimeNetworkEnforcementIDList(metadata.Operations),
 		PolicySnapshotID: sanitizeRuntimeNetworkEnforcementID(metadata.PolicySnapshotID),
 		PolicyPreset:     sanitizeRuntimeNetworkEnforcementPolicyPreset(metadata.PolicyPreset),
-		Capability:       SanitizeRuntimeNetworkEnforcementCapability(metadata.Capability),
-		ReasonCode:       sanitizeRuntimeNetworkEnforcementReasonCode(metadata.ReasonCode),
-		WarningCodes:     sanitizeRuntimeNetworkEnforcementWarningCodeList(metadata.WarningCodes),
+		Capability:       capability,
+		ReasonCode:       reason,
+		WarningCodes:     warnings,
 	}
 	if outcome == "failure" || outcome == "unsupported" {
 		sanitized.Capability = nil
@@ -166,6 +177,20 @@ func sanitizeRuntimeNetworkEnforcementResultMetadata(metadata *RuntimeNetworkEnf
 		return nil
 	}
 	return sanitized
+}
+
+func runtimeNetworkEnforcementResultHasDowngradeSignal(reason string, warnings []string) bool {
+	switch reason {
+	case "best_effort", "adapter_unsupported", "adapter_failed", "capability_missing", "mode_unavailable":
+		return true
+	}
+	for _, warning := range warnings {
+		switch warning {
+		case "partial_enforcement", "unsupported_mode", "capability_downgraded", "metadata_only_fallback", "sanitized_adapter_error":
+			return true
+		}
+	}
+	return false
 }
 
 func runtimeNetworkEnforcementModeCanEnforce(mode string) bool {
