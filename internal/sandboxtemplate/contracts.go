@@ -152,6 +152,8 @@ type WorkspaceRequirements struct {
 	InputSource WorkspaceInputSource `json:"inputSource,omitempty" yaml:"inputSource,omitempty"`
 	Ref         *ImmutableRef        `json:"ref,omitempty" yaml:"ref,omitempty"`
 	ReadOnly    bool                 `json:"readOnly,omitempty" yaml:"readOnly,omitempty"`
+	Trusted     bool                 `json:"trusted,omitempty" yaml:"trusted,omitempty"`
+	Unsafe      bool                 `json:"unsafe,omitempty" yaml:"unsafe,omitempty"`
 }
 
 // NetworkRequirements describes policy requirements without live enforcement.
@@ -167,11 +169,9 @@ type NetworkRequirements struct {
 
 // NetworkRule carries safe allowlist metadata only.
 type NetworkRule struct {
-	ID       string              `json:"id,omitempty" yaml:"id,omitempty"`
-	Kind     NetworkRuleCategory `json:"kind,omitempty" yaml:"kind,omitempty"`
-	Value    string              `json:"value,omitempty" yaml:"value,omitempty"`
-	Port     int                 `json:"port,omitempty" yaml:"port,omitempty"`
-	Protocol string              `json:"protocol,omitempty" yaml:"protocol,omitempty"`
+	ID    string              `json:"id,omitempty" yaml:"id,omitempty"`
+	Kind  NetworkRuleCategory `json:"kind,omitempty" yaml:"kind,omitempty"`
+	Value string              `json:"value,omitempty" yaml:"value,omitempty"`
 }
 
 // CredentialRequirements describes credential planning requirements.
@@ -185,15 +185,15 @@ type CredentialService struct {
 	ID            string                   `json:"id" yaml:"id"`
 	Domains       []string                 `json:"domains,omitempty" yaml:"domains,omitempty"`
 	DeliveryModes []CredentialDeliveryMode `json:"deliveryModes,omitempty" yaml:"deliveryModes,omitempty"`
-	Header        string                   `json:"header,omitempty" yaml:"header,omitempty"`
-	Format        string                   `json:"format,omitempty" yaml:"format,omitempty"`
 	Required      bool                     `json:"required,omitempty" yaml:"required,omitempty"`
 }
 
 // SetupCommandMetadata describes setup expectations without executing them.
 type SetupCommandMetadata struct {
 	ID              string   `json:"id" yaml:"id"`
+	DisplayName     string   `json:"displayName,omitempty" yaml:"displayName,omitempty"`
 	Description     string   `json:"description,omitempty" yaml:"description,omitempty"`
+	Tools           []string `json:"tools,omitempty" yaml:"tools,omitempty"`
 	Command         []string `json:"command,omitempty" yaml:"command,omitempty"`
 	WorkDir         string   `json:"workDir,omitempty" yaml:"workDir,omitempty"`
 	RequiresNetwork bool     `json:"requiresNetwork,omitempty" yaml:"requiresNetwork,omitempty"`

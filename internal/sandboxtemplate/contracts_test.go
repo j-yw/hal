@@ -74,6 +74,8 @@ func TestSandboxTemplateContractFieldsAndJSONTags(t *testing.T) {
 	assertTemplateField(t, workspaceType, "InputSource", reflect.TypeOf(WorkspaceInputSource("")), `json:"inputSource,omitempty" yaml:"inputSource,omitempty"`)
 	assertTemplateField(t, workspaceType, "Ref", reflect.TypeOf((*ImmutableRef)(nil)), `json:"ref,omitempty" yaml:"ref,omitempty"`)
 	assertTemplateField(t, workspaceType, "ReadOnly", reflect.TypeOf(false), `json:"readOnly,omitempty" yaml:"readOnly,omitempty"`)
+	assertTemplateField(t, workspaceType, "Trusted", reflect.TypeOf(false), `json:"trusted,omitempty" yaml:"trusted,omitempty"`)
+	assertTemplateField(t, workspaceType, "Unsafe", reflect.TypeOf(false), `json:"unsafe,omitempty" yaml:"unsafe,omitempty"`)
 
 	networkType := reflect.TypeOf(NetworkRequirements{})
 	assertTemplateField(t, networkType, "Profile", reflect.TypeOf(NetworkPolicyProfile("")), `json:"profile,omitempty" yaml:"profile,omitempty"`)
@@ -90,7 +92,9 @@ func TestSandboxTemplateContractFieldsAndJSONTags(t *testing.T) {
 
 	setupType := reflect.TypeOf(SetupCommandMetadata{})
 	assertTemplateField(t, setupType, "ID", reflect.TypeOf(""), `json:"id" yaml:"id"`)
+	assertTemplateField(t, setupType, "DisplayName", reflect.TypeOf(""), `json:"displayName,omitempty" yaml:"displayName,omitempty"`)
 	assertTemplateField(t, setupType, "Description", reflect.TypeOf(""), `json:"description,omitempty" yaml:"description,omitempty"`)
+	assertTemplateField(t, setupType, "Tools", reflect.TypeOf([]string{}), `json:"tools,omitempty" yaml:"tools,omitempty"`)
 	assertTemplateField(t, setupType, "Command", reflect.TypeOf([]string{}), `json:"command,omitempty" yaml:"command,omitempty"`)
 	assertTemplateField(t, setupType, "WorkDir", reflect.TypeOf(""), `json:"workDir,omitempty" yaml:"workDir,omitempty"`)
 	assertTemplateField(t, setupType, "RequiresNetwork", reflect.TypeOf(false), `json:"requiresNetwork,omitempty" yaml:"requiresNetwork,omitempty"`)
@@ -139,7 +143,6 @@ func TestSandboxTemplateJSONShapeIncludesCoreContractMetadata(t *testing.T) {
 				ID:    "github-api",
 				Kind:  NetworkRuleCategoryDomain,
 				Value: "api.github.com",
-				Port:  443,
 			}},
 		},
 		Credentials: &CredentialRequirements{
@@ -148,8 +151,6 @@ func TestSandboxTemplateJSONShapeIncludesCoreContractMetadata(t *testing.T) {
 				ID:            "openai",
 				Domains:       []string{"api.openai.com"},
 				DeliveryModes: []CredentialDeliveryMode{CredentialDeliveryModeHTTPProxy},
-				Header:        "Authorization",
-				Format:        "Bearer %s",
 				Required:      true,
 			}},
 		},
