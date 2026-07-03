@@ -16,8 +16,9 @@ const (
 )
 
 var (
-	processBoundaryPIDDetailPattern = regexp.MustCompile(`(?i)\b(?:pid|process[_ -]?id)\s*[:=]\s*\d+\b`)
-	processBoundarySecretEnvPattern = regexp.MustCompile(`(?i)\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API[_-]?KEY|APIKEY|CREDENTIAL|AUTHORIZATION|BEARER)[A-Z0-9_]*=\[redacted\]`)
+	processBoundaryPIDDetailPattern     = regexp.MustCompile(`(?i)\b(?:pid|process[_ -]?id)\s*[:=]\s*\d+\b`)
+	processBoundarySecretEnvPattern     = regexp.MustCompile(`(?i)\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API[_-]?KEY|APIKEY|CREDENTIAL|AUTHORIZATION|BEARER)[A-Z0-9_]*=\[redacted\]`)
+	processBoundarySecretEnvNamePattern = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|APIKEY|CREDENTIAL|AUTHORIZATION|BEARER)[A-Z0-9_]*\b`)
 )
 
 // ProcessAdapter is the injectable boundary for Firecracker process and
@@ -396,9 +397,8 @@ func newSanitizedProcessBoundaryAdapterCause(err error) sanitizedProcessBoundary
 			cause:  err,
 		}
 	}
-	sanitized := microvm.NewBackendOperationFailedError(ProcessBoundaryOperation, err)
 	return sanitizedProcessBoundaryAdapterCause{
-		detail: sanitizeProcessBoundaryAdapterDetail(sanitized.Error()),
+		detail: sanitizeFirecrackerFailureDetail(ProcessBoundaryOperation, err),
 		cause:  err,
 	}
 }
@@ -412,7 +412,7 @@ func sanitizedProcessBoundaryNestedCause(err error) string {
 		return ""
 	}
 	if cause := errors.Unwrap(operationErr); cause != nil {
-		return sanitizeProcessBoundaryAdapterDetail(cause.Error())
+		return sanitizeFirecrackerFailureDetail(ProcessBoundaryOperation, cause)
 	}
 	return ""
 }
@@ -424,6 +424,7 @@ func sanitizeProcessBoundaryAdapterDetail(detail string) string {
 	}
 	detail = processBoundaryPIDDetailPattern.ReplaceAllString(detail, "pid=[redacted-pid]")
 	detail = processBoundarySecretEnvPattern.ReplaceAllString(detail, "[redacted-env]=[redacted]")
+	detail = processBoundarySecretEnvNamePattern.ReplaceAllString(detail, "[redacted-env]")
 	return detail
 }
 

@@ -682,6 +682,13 @@ func sanitizedLiveDependencyDetail(operation string, cause error) string {
 	if cause == nil {
 		return ""
 	}
+	return sanitizeFirecrackerFailureDetail(operation, cause)
+}
+
+func sanitizeFirecrackerFailureDetail(operation string, cause error) string {
+	if cause == nil {
+		return ""
+	}
 	sanitized := microvm.NewBackendOperationFailedError(operation, cause)
 	return sanitizeProcessBoundaryAdapterDetail(sanitized.Error())
 }
