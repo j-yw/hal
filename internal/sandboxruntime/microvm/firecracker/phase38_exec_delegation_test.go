@@ -353,14 +353,181 @@ func TestPhase38FirecrackerCopyInTransportFailureIsWrappedAndSanitized(t *testin
 	}
 }
 
+func TestPhase38FirecrackerCopyOutRequiresLiveGuestTransportAndReadyGuestReadiness(t *testing.T) {
+	readyTarget := phase38ExecTarget(sandboxruntime.NewRuntimeGuestReadinessMetadata(
+		sandboxruntime.RuntimeGuestReadinessStateReady,
+		"vsock",
+		[]string{"ready"},
+	))
+
+	t.Run("default backend", func(t *testing.T) {
+		controller := phase38CopyOutController(t, NewBackend(BackendOptions{}), readyTarget)
+		err := controller.CopyOut(context.Background(), microvm.ControllerCopyRequest{
+			Operation:       microvm.OperationCopyOut,
+			Target:          readyTarget,
+			SourcePath:      "/workspace/output-token-ghp_secret.txt",
+			DestinationPath: "/Users/alice/private/output-token-ghp_secret.txt",
+		})
+		assertFirecrackerUnsupportedOperationError(t, err, microvm.OperationCopyOut)
+		assertFirecrackerErrorDoesNotLeak(t, err, "/Users/alice", "private", "ghp_secret", "output-token-ghp_secret.txt")
+	})
+
+	t.Run("live backend without guest transport", func(t *testing.T) {
+		controller := phase38CopyOutController(t, NewBackend(BackendOptions{LiveStart: true}), readyTarget)
+		err := controller.CopyOut(context.Background(), microvm.ControllerCopyRequest{
+			Operation:       microvm.OperationCopyOut,
+			Target:          readyTarget,
+			SourcePath:      "/workspace/output.txt",
+			DestinationPath: "/safe/output.txt",
+		})
+		assertFirecrackerUnsupportedOperationError(t, err, microvm.OperationCopyOut)
+	})
+
+	tests := []struct {
+		name      string
+		readiness *sandboxruntime.RuntimeGuestReadinessMetadata
+	}{
+		{name: "absent readiness"},
+		{
+			name: "waiting readiness",
+			readiness: sandboxruntime.NewRuntimeGuestReadinessMetadata(
+				sandboxruntime.RuntimeGuestReadinessStateWaiting,
+				"vsock",
+				[]string{"waiting"},
+			),
+		},
+		{
+			name: "not configured readiness",
+			readiness: sandboxruntime.NewRuntimeGuestReadinessMetadata(
+				sandboxruntime.RuntimeGuestReadinessStateNotConfigured,
+				"vsock",
+				[]string{"not_configured"},
+			),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := &phase38RecordingGuestTransport{}
+			target := phase38ExecTarget(tt.readiness)
+			controller := phase38CopyOutController(t, NewBackend(BackendOptions{
+				GuestTransport: transport,
+				LiveStart:      true,
+			}), target)
+
+			err := controller.CopyOut(context.Background(), microvm.ControllerCopyRequest{
+				Operation:       microvm.OperationCopyOut,
+				Target:          target,
+				SourcePath:      "/workspace/output.txt",
+				DestinationPath: "/safe/output.txt",
+			})
+			assertFirecrackerUnsupportedOperationError(t, err, microvm.OperationCopyOut)
+			if transport.copyOutCalls != 0 {
+				t.Fatalf("guest transport CopyOut calls = %d, want none", transport.copyOutCalls)
+			}
+		})
+	}
+}
+
+func TestPhase38FirecrackerCopyOutDelegatesToInjectedGuestTransportWhenReady(t *testing.T) {
+	transport := &phase38RecordingGuestTransport{}
+	target := phase38ExecTarget(sandboxruntime.NewRuntimeGuestReadinessMetadata(
+		sandboxruntime.RuntimeGuestReadinessStateReady,
+		"vsock",
+		[]string{"ready", "probe_ok"},
+	))
+	controller := phase38CopyOutController(t, NewBackend(BackendOptions{
+		GuestTransport: transport,
+		LiveStart:      true,
+	}), target)
+	source := "/workspace/project/output.txt"
+	destination := "/Users/alice/project/output.txt"
+
+	err := controller.CopyOut(context.Background(), microvm.ControllerCopyRequest{
+		Operation:       microvm.OperationCopyOut,
+		Target:          target,
+		SourcePath:      source,
+		DestinationPath: destination,
+	})
+	if err != nil {
+		t.Fatalf("CopyOut() error = %v, want nil", err)
+	}
+	if transport.copyOutCalls != 1 {
+		t.Fatalf("guest transport CopyOut calls = %d, want 1", transport.copyOutCalls)
+	}
+	got := transport.copyOutRequest
+	if !reflect.DeepEqual(got.Target, target) {
+		t.Fatalf("transport Target = %#v, want %#v", got.Target, target)
+	}
+	if got.SourcePath != source {
+		t.Fatalf("transport SourcePath = %q, want %q", got.SourcePath, source)
+	}
+	if got.DestinationPath != destination {
+		t.Fatalf("transport DestinationPath = %q, want %q", got.DestinationPath, destination)
+	}
+}
+
+func TestPhase38FirecrackerCopyOutTransportFailureIsWrappedAndSanitized(t *testing.T) {
+	transportErr := errors.New("copy out failed source=/workspace/private/output-token-ghp_secret.txt destination=/Users/alice/private/output-token-ghp_secret.txt endpoint=unix:///tmp/firecracker.sock socket=/tmp/firecracker.sock token=ghp_secret pid=4242")
+	transport := &phase38RecordingGuestTransport{copyOutErr: transportErr}
+	target := phase38ExecTarget(sandboxruntime.NewRuntimeGuestReadinessMetadata(
+		sandboxruntime.RuntimeGuestReadinessStateReady,
+		"vsock",
+		[]string{"ready"},
+	))
+	controller := phase38CopyOutController(t, NewBackend(BackendOptions{
+		GuestTransport: transport,
+		LiveStart:      true,
+	}), target)
+
+	err := controller.CopyOut(context.Background(), microvm.ControllerCopyRequest{
+		Operation:       microvm.OperationCopyOut,
+		Target:          target,
+		SourcePath:      "/workspace/private/output-token-ghp_secret.txt",
+		DestinationPath: "/Users/alice/private/output-token-ghp_secret.txt",
+	})
+	if err == nil {
+		t.Fatal("CopyOut() error = nil, want wrapped transport failure")
+	}
+	if !errors.Is(err, transportErr) {
+		t.Fatalf("errors.Is(CopyOut() error, transportErr) = false for %v", err)
+	}
+	assertFirecrackerStartOperationError(t, err, microvm.ErrorCodeBackendOperationFailed, microvm.OperationCopyOut, "guestTransport")
+	publicText := err.Error()
+	if !strings.Contains(publicText, "guest transport copy out failed") {
+		t.Fatalf("CopyOut() error = %q, want sanitized guest transport failure", publicText)
+	}
+	assertFirecrackerErrorDoesNotLeak(t, err,
+		"/Users/alice",
+		"private",
+		"ghp_secret",
+		"output-token-ghp_secret.txt",
+		"/tmp",
+		"firecracker.sock",
+		"unix://",
+		"4242",
+	)
+	encoded, marshalErr := json.Marshal(target)
+	if marshalErr != nil {
+		t.Fatalf("Marshal(target) error = %v", marshalErr)
+	}
+	for _, unsafe := range []string{"ghp_secret", "/Users/alice", "firecracker.sock", "unix://", "4242"} {
+		if strings.Contains(string(encoded), unsafe) {
+			t.Fatalf("runtime metadata leaked unsafe fragment %q in %s", unsafe, encoded)
+		}
+	}
+}
+
 type phase38RecordingGuestTransport struct {
-	execCalls     int
-	copyInCalls   int
-	execRequest   GuestExecRequest
-	copyInRequest GuestCopyRequest
-	result        *sandboxruntime.ExecResult
-	err           error
-	copyInErr     error
+	execCalls      int
+	copyInCalls    int
+	copyOutCalls   int
+	execRequest    GuestExecRequest
+	copyInRequest  GuestCopyRequest
+	copyOutRequest GuestCopyRequest
+	result         *sandboxruntime.ExecResult
+	err            error
+	copyInErr      error
+	copyOutErr     error
 }
 
 func (transport *phase38RecordingGuestTransport) Exec(_ context.Context, req GuestExecRequest) (*sandboxruntime.ExecResult, error) {
@@ -381,8 +548,10 @@ func (transport *phase38RecordingGuestTransport) CopyIn(_ context.Context, req G
 	return transport.copyInErr
 }
 
-func (transport *phase38RecordingGuestTransport) CopyOut(context.Context, GuestCopyRequest) error {
-	return nil
+func (transport *phase38RecordingGuestTransport) CopyOut(_ context.Context, req GuestCopyRequest) error {
+	transport.copyOutCalls++
+	transport.copyOutRequest = req
+	return transport.copyOutErr
 }
 
 func phase38ExecController(t *testing.T, backend *Backend, target sandboxruntime.Target) microvm.Controller {
@@ -402,6 +571,19 @@ func phase38CopyInController(t *testing.T, backend *Backend, target sandboxrunti
 	t.Helper()
 	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
 		Operation: microvm.OperationCopyIn,
+		Config:    validMicroVMConfig(),
+		Target:    target,
+	})
+	if err != nil {
+		t.Fatalf("Controller() error = %v, want nil", err)
+	}
+	return controller
+}
+
+func phase38CopyOutController(t *testing.T, backend *Backend, target sandboxruntime.Target) microvm.Controller {
+	t.Helper()
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+		Operation: microvm.OperationCopyOut,
 		Config:    validMicroVMConfig(),
 		Target:    target,
 	})

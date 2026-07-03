@@ -421,8 +421,19 @@ func (c firecrackerController) CopyIn(ctx context.Context, req microvm.Controlle
 	return nil
 }
 
-func (firecrackerController) CopyOut(_ context.Context, req microvm.ControllerCopyRequest) error {
-	return unsupportedFirecrackerOperation(req.Operation)
+func (c firecrackerController) CopyOut(ctx context.Context, req microvm.ControllerCopyRequest) error {
+	if !c.canDelegateGuestTransport(req.Target) {
+		return unsupportedFirecrackerOperation(req.Operation)
+	}
+	err := c.guestTransport.CopyOut(processContext(ctx), GuestCopyRequest{
+		Target:          req.Target,
+		SourcePath:      req.SourcePath,
+		DestinationPath: req.DestinationPath,
+	})
+	if err != nil {
+		return newGuestTransportCopyOutFailure(req.Operation, err)
+	}
+	return nil
 }
 
 func (c firecrackerController) canDelegateGuestTransport(target sandboxruntime.Target) bool {
@@ -766,6 +777,19 @@ func newGuestTransportCopyInFailure(operation string, cause error) *microvm.Oper
 	err := microvm.NewBackendOperationFailedError(operation, sanitizedGuestTransportCause{cause: cause})
 	err.Field = "guestTransport"
 	err.Message = "guest transport copy in failed"
+	return err
+}
+
+func newGuestTransportCopyOutFailure(operation string, cause error) *microvm.OperationError {
+	if strings.TrimSpace(operation) == "" {
+		operation = microvm.OperationCopyOut
+	}
+	if cause == nil {
+		cause = errors.New("guest transport copy out failed")
+	}
+	err := microvm.NewBackendOperationFailedError(operation, sanitizedGuestTransportCause{cause: cause})
+	err.Field = "guestTransport"
+	err.Message = "guest transport copy out failed"
 	return err
 }
 
