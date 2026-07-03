@@ -15,37 +15,88 @@ import (
 const (
 	targetRuntimeIDPrefix = "fc-"
 
+	liveBootContractOperation   = "firecracker_live_boot"
+	liveBootAcceptanceOperation = "firecracker_boot_acceptance"
+	liveProcessManagerOperation = "firecracker_live_process_manager"
+
 	targetCapabilityCreation              = "target_creation"
 	targetCapabilityDeterministicIdentity = "deterministic_identity"
 	targetCapabilityPathRoleMetadata      = "path_role_metadata"
 	targetCapabilityProcessBoundary       = "process_boundary"
 )
 
+var (
+	errBootAcceptanceProcessNotAccepted   = errors.New("host process was not accepted")
+	errBootAcceptanceAPISocketUnavailable = errors.New("host-side API socket was not accepted")
+)
+
 // BackendOptions configures the Firecracker backend. BaseStateDir is used only
 // to derive target-specific path plans. ProcessAdapter prepares process
-// descriptors, and LiveStart must be set explicitly before the backend calls
-// StartProcess through that injected boundary. Raw paths are not exposed on
-// returned targets.
+// descriptors. LiveStart permits StartProcess only when ProcessAdapter,
+// BootAcceptanceWaiter, and LiveProcessManager are all explicitly injected. Raw
+// paths are not exposed on returned targets.
 type BackendOptions struct {
-	BaseStateDir   string
-	ProcessAdapter ProcessAdapter
-	LiveStart      bool
+	BaseStateDir         string
+	ProcessAdapter       ProcessAdapter
+	BootAcceptanceWaiter BootAcceptanceWaiter
+	LiveProcessManager   LiveProcessManager
+	LiveStart            bool
+}
+
+// BootAcceptanceWaiter is the injected host-side readiness boundary for an
+// explicitly live-started Firecracker process.
+type BootAcceptanceWaiter interface {
+	WaitForBootAcceptance(context.Context, BootAcceptanceRequest) (BootAcceptanceResult, error)
+}
+
+// BootAcceptanceRequest carries the sanitized process handle and API socket
+// path reference used to wait for host-side Firecracker acceptance.
+type BootAcceptanceRequest struct {
+	Handle    ProcessHandleMetadata
+	APISocket OperationPathReference
+}
+
+// BootAcceptanceResult reports host-side process and API socket acceptance. It
+// does not imply guest boot readiness or guest command availability.
+type BootAcceptanceResult struct {
+	ProcessAccepted    bool
+	APISocketAvailable bool
+}
+
+// LiveProcessManager is the injected cleanup boundary for explicitly
+// live-started Firecracker host processes. Requests contain only sanitized
+// handle metadata and configured Firecracker state paths.
+type LiveProcessManager interface {
+	CleanupLiveProcess(context.Context, LiveProcessRequest) error
+	StopLiveProcess(context.Context, LiveProcessRequest) error
+	DeleteLiveProcess(context.Context, LiveProcessRequest) error
+}
+
+// LiveProcessRequest identifies the live-started Firecracker process and
+// Firecracker-owned state paths that may be used by cleanup implementations.
+type LiveProcessRequest struct {
+	Handle ProcessHandleMetadata
+	Paths  PathPlan
 }
 
 // Backend implements the microVM backend boundary for Firecracker target
 // creation metadata and fake-safe start planning.
 type Backend struct {
-	baseStateDir   string
-	processAdapter ProcessAdapter
-	liveStart      bool
+	baseStateDir         string
+	processAdapter       ProcessAdapter
+	bootAcceptanceWaiter BootAcceptanceWaiter
+	liveProcessManager   LiveProcessManager
+	liveStart            bool
 }
 
 // NewBackend constructs an explicitly injected Firecracker backend.
 func NewBackend(options BackendOptions) *Backend {
 	return &Backend{
-		baseStateDir:   strings.TrimSpace(options.BaseStateDir),
-		processAdapter: options.ProcessAdapter,
-		liveStart:      options.LiveStart,
+		baseStateDir:         strings.TrimSpace(options.BaseStateDir),
+		processAdapter:       options.ProcessAdapter,
+		bootAcceptanceWaiter: options.BootAcceptanceWaiter,
+		liveProcessManager:   options.LiveProcessManager,
+		liveStart:            options.LiveStart,
 	}
 }
 
@@ -98,57 +149,179 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 	}
 	baseStateDir := ""
 	var adapter ProcessAdapter
+	var waiter BootAcceptanceWaiter
+	var manager LiveProcessManager
 	if b != nil {
 		baseStateDir = b.baseStateDir
 		adapter = b.processAdapter
-	}
-	if adapter == nil {
-		adapter = startPlanningProcessAdapter{}
+		waiter = b.bootAcceptanceWaiter
+		manager = b.liveProcessManager
 	}
 	return firecrackerController{
-		baseStateDir:   baseStateDir,
-		processAdapter: adapter,
-		liveStart:      b != nil && b.liveStart,
+		baseStateDir:         baseStateDir,
+		processAdapter:       adapter,
+		bootAcceptanceWaiter: waiter,
+		liveProcessManager:   manager,
+		liveStart:            b != nil && b.liveStart,
 	}, nil
 }
 
 type firecrackerController struct {
-	baseStateDir   string
-	processAdapter ProcessAdapter
-	liveStart      bool
+	baseStateDir         string
+	processAdapter       ProcessAdapter
+	bootAcceptanceWaiter BootAcceptanceWaiter
+	liveProcessManager   LiveProcessManager
+	liveStart            bool
 }
 
 func (c firecrackerController) Start(ctx context.Context, req microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
+	if err := c.validateLiveBootContract(); err != nil {
+		return nil, err
+	}
 	config, err := c.startBackendConfig(req.Config, req.Target)
 	if err != nil {
 		return nil, err
 	}
-	operation, err := planFirecrackerStartOperation(ctx, c.processAdapter, config)
+	adapter := c.processAdapter
+	if adapter == nil {
+		adapter = startPlanningProcessAdapter{}
+	}
+	operation, err := planFirecrackerStartOperation(ctx, adapter, config)
 	if err != nil {
 		return nil, err
 	}
 	processLaunch := processBoundaryAvailableRuntimeMetadata()
 	if c.liveStart {
-		handle, err := StartProcess(ctx, c.processAdapter, operation.ProcessDescriptor)
+		if err := renderLiveBootFiles(config); err != nil {
+			return nil, err
+		}
+		liveLaunch, err := c.startLiveProcess(ctx, operation.ProcessDescriptor, config.Paths)
 		if err != nil {
 			return nil, err
 		}
-		processLaunch = NewProcessLaunchMetadata(ProcessLaunchStateAccepted, handle).RuntimeMetadata()
+		processLaunch = liveLaunch
 	}
 	return firecrackerStartTarget(req.Target, operation.ProcessDescriptor, processLaunch), nil
 }
 
-func (c firecrackerController) Stop(_ context.Context, req microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
-	plan, err := planFirecrackerStopOperation(req.Target, c.baseStateDir)
+func (c firecrackerController) validateLiveBootContract() error {
+	if !c.liveStart {
+		return nil
+	}
+	switch {
+	case c.processAdapter == nil:
+		return newLiveBootContractError("processAdapter", "live boot requires an injected process adapter")
+	case c.bootAcceptanceWaiter == nil:
+		return newLiveBootContractError("bootAcceptanceWaiter", "live boot requires an injected host-side acceptance waiter")
+	case c.liveProcessManager == nil:
+		return newLiveBootContractError("liveProcessManager", "live boot requires an injected live process manager")
+	default:
+		return nil
+	}
+}
+
+func (c firecrackerController) startLiveProcess(ctx context.Context, descriptor ProcessCommandDescriptor, paths PathPlan) (*sandboxruntime.RuntimeProcessLaunchMetadata, error) {
+	handle, err := StartProcess(ctx, c.processAdapter, descriptor)
 	if err != nil {
 		return nil, err
+	}
+	launch, err := c.waitForBootAcceptance(ctx, handle, paths)
+	if err != nil {
+		return nil, c.cleanupLiveProcessAfterBootAcceptanceFailure(ctx, handle, paths, err)
+	}
+	return launch, nil
+}
+
+func (c firecrackerController) waitForBootAcceptance(ctx context.Context, handle ProcessHandleMetadata, paths PathPlan) (*sandboxruntime.RuntimeProcessLaunchMetadata, error) {
+	result, err := c.bootAcceptanceWaiter.WaitForBootAcceptance(processContext(ctx), BootAcceptanceRequest{
+		Handle: sanitizeProcessHandleMetadata(handle),
+		APISocket: OperationPathReference{
+			Role: OperationPathRoleAPISocket,
+			Path: paths.APISocketPath,
+		},
+	})
+	if err != nil {
+		return nil, newLiveBootAcceptanceFailure("bootAcceptanceWaiter", liveBootAcceptanceFailureMessage(err), err)
+	}
+	if !result.ProcessAccepted {
+		return nil, newLiveBootAcceptanceFailure("processAccepted", "host process was not accepted", errBootAcceptanceProcessNotAccepted)
+	}
+	if !result.APISocketAvailable {
+		return nil, newLiveBootAcceptanceFailure("apiSocket", "host-side API socket was not accepted", errBootAcceptanceAPISocketUnavailable)
+	}
+	return NewProcessLaunchMetadata(ProcessLaunchStateAccepted, handle).RuntimeMetadata(), nil
+}
+
+func (c firecrackerController) cleanupLiveProcessAfterBootAcceptanceFailure(ctx context.Context, handle ProcessHandleMetadata, paths PathPlan, acceptanceErr error) error {
+	cleanupErr := c.cleanupLiveProcess(ctx, LiveProcessRequest{
+		Handle: sanitizeProcessHandleMetadata(handle),
+		Paths:  paths,
+	})
+	if cleanupErr == nil {
+		return acceptanceErr
+	}
+	return errors.Join(acceptanceErr, cleanupErr)
+}
+
+func (c firecrackerController) cleanupLiveProcess(ctx context.Context, req LiveProcessRequest) error {
+	if c.liveProcessManager == nil {
+		return newLiveBootContractError("liveProcessManager", "live boot requires an injected live process manager")
+	}
+	if err := c.liveProcessManager.CleanupLiveProcess(processContext(ctx), req); err != nil {
+		return newLiveProcessManagerFailure("liveProcessManager", "live process cleanup failed", err)
+	}
+	return nil
+}
+
+func (c firecrackerController) Stop(ctx context.Context, req microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
+	paths, err := firecrackerLifecyclePathPlan(req.Target, c.baseStateDir)
+	if err != nil {
+		return nil, err
+	}
+	plan, err := RenderStopOperationPlan(paths)
+	if err != nil {
+		return nil, err
+	}
+	if liveReq, ok := liveProcessRequestFromTarget(req.Target, paths); ok {
+		if err := c.stopLiveProcess(ctx, liveReq); err != nil {
+			return nil, err
+		}
 	}
 	return firecrackerLifecycleTarget(req.Target, plan.Summary(), sandbox.StatusStopped), nil
 }
 
-func (c firecrackerController) Delete(_ context.Context, req microvm.ControllerLifecycleRequest) error {
-	_, err := planFirecrackerDeleteOperation(req.Target, c.baseStateDir)
-	return err
+func (c firecrackerController) stopLiveProcess(ctx context.Context, req LiveProcessRequest) error {
+	if c.liveProcessManager == nil {
+		return newLiveBootContractError("liveProcessManager", "live boot requires an injected live process manager")
+	}
+	if err := c.liveProcessManager.StopLiveProcess(processContext(ctx), req); err != nil {
+		return newLiveProcessManagerFailure("liveProcessManager", "live process stop failed", err)
+	}
+	return nil
+}
+
+func (c firecrackerController) Delete(ctx context.Context, req microvm.ControllerLifecycleRequest) error {
+	paths, err := firecrackerLifecyclePathPlan(req.Target, c.baseStateDir)
+	if err != nil {
+		return err
+	}
+	if _, err := RenderDeleteOperationPlan(paths); err != nil {
+		return err
+	}
+	if liveReq, ok := liveProcessRequestFromTarget(req.Target, paths); ok {
+		return c.deleteLiveProcess(ctx, liveReq)
+	}
+	return nil
+}
+
+func (c firecrackerController) deleteLiveProcess(ctx context.Context, req LiveProcessRequest) error {
+	if c.liveProcessManager == nil {
+		return newLiveBootContractError("liveProcessManager", "live boot requires an injected live process manager")
+	}
+	if err := c.liveProcessManager.DeleteLiveProcess(processContext(ctx), req); err != nil {
+		return newLiveProcessManagerFailure("liveProcessManager", "live process delete failed", err)
+	}
+	return nil
 }
 
 func (c firecrackerController) Inspect(_ context.Context, req microvm.ControllerInspectRequest) (*sandboxruntime.Target, error) {
@@ -292,7 +465,28 @@ func firecrackerLifecycleTarget(target sandboxruntime.Target, summary OperationP
 	return &planned
 }
 
+func liveProcessRequestFromTarget(target sandboxruntime.Target, paths PathPlan) (LiveProcessRequest, bool) {
+	if target.Runtime.Metadata == nil {
+		return LiveProcessRequest{}, false
+	}
+	processLaunch := sanitizeRuntimeProcessLaunchMetadata(target.Runtime.Metadata.ProcessLaunch)
+	if processLaunch == nil || processLaunch.State != string(ProcessLaunchStateAccepted) {
+		return LiveProcessRequest{}, false
+	}
+	return LiveProcessRequest{
+		Handle: sanitizeProcessHandleMetadata(ProcessHandleMetadata{
+			ID:     processLaunch.ProcessID,
+			Source: processLaunch.ProcessIDSource,
+		}),
+		Paths: paths,
+	}, true
+}
+
 func ensureFirecrackerPlanningTarget(target *sandboxruntime.Target, source sandboxruntime.Target) {
+	var processLaunch *sandboxruntime.RuntimeProcessLaunchMetadata
+	if target.Runtime.Metadata != nil {
+		processLaunch = sanitizeRuntimeProcessLaunchMetadata(target.Runtime.Metadata.ProcessLaunch)
+	}
 	if strings.TrimSpace(target.Provider) == "" {
 		target.Provider = BackendID
 	}
@@ -314,7 +508,10 @@ func ensureFirecrackerPlanningTarget(target *sandboxruntime.Target, source sandb
 	target.Runtime.Metadata.Backend = BackendID
 	target.Runtime.Metadata.CapabilityLabels = firecrackerTargetCapabilityLabels()
 	target.Runtime.Metadata.PathRoles = firecrackerTargetPathRoleLabels()
-	target.Runtime.Metadata.ProcessLaunch = processBoundaryAvailableRuntimeMetadata()
+	if processLaunch == nil {
+		processLaunch = processBoundaryAvailableRuntimeMetadata()
+	}
+	target.Runtime.Metadata.ProcessLaunch = processLaunch
 }
 
 func firecrackerRuntimeOperationPlanMetadata(descriptor ProcessCommandDescriptor) *sandboxruntime.RuntimeOperationPlan {
@@ -434,11 +631,88 @@ func cloneFirecrackerRuntimeProcessDescriptor(descriptor *sandboxruntime.Runtime
 	return &copied
 }
 
+func sanitizeRuntimeProcessLaunchMetadata(metadata *sandboxruntime.RuntimeProcessLaunchMetadata) *sandboxruntime.RuntimeProcessLaunchMetadata {
+	if metadata == nil {
+		return nil
+	}
+	return SanitizeProcessLaunchMetadata(ProcessLaunchMetadata{
+		State:           ProcessLaunchState(metadata.State),
+		ProcessID:       metadata.ProcessID,
+		ProcessIDSource: metadata.ProcessIDSource,
+	}).RuntimeMetadata()
+}
+
 func unsupportedFirecrackerOperation(operation string) error {
 	if strings.TrimSpace(operation) == "" {
 		operation = "firecracker_backend"
 	}
 	return microvm.NewUnavailableCapabilityError(operation, errors.New("firecracker backend operation is not supported in this phase"))
+}
+
+func newLiveBootContractError(field, message string) *microvm.OperationError {
+	err := microvm.NewInvalidConfigError(liveBootContractOperation, microvm.ErrInvalidConfig)
+	err.Field = strings.TrimSpace(field)
+	err.Message = strings.TrimSpace(message)
+	return err
+}
+
+func newLiveBootAcceptanceFailure(field, message string, cause error) *microvm.OperationError {
+	return newLiveDependencyFailure(liveBootAcceptanceOperation, field, message, cause)
+}
+
+func newLiveProcessManagerFailure(field, message string, cause error) *microvm.OperationError {
+	return newLiveDependencyFailure(liveProcessManagerOperation, field, message, cause)
+}
+
+func newLiveDependencyFailure(operation, field, message string, cause error) *microvm.OperationError {
+	if cause == nil {
+		cause = errors.New(message)
+	}
+	err := microvm.NewBackendOperationFailedError(operation, sanitizedLiveDependencyCause{
+		detail: sanitizedLiveDependencyDetail(operation, cause),
+		cause:  cause,
+	})
+	err.Field = strings.TrimSpace(field)
+	err.Message = strings.TrimSpace(message)
+	return err
+}
+
+func liveBootAcceptanceFailureMessage(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "host-side boot acceptance timed out"
+	}
+	return "host-side boot acceptance failed"
+}
+
+func sanitizedLiveDependencyDetail(operation string, cause error) string {
+	if cause == nil {
+		return ""
+	}
+	return sanitizeFirecrackerFailureDetail(operation, cause)
+}
+
+func sanitizeFirecrackerFailureDetail(operation string, cause error) string {
+	if cause == nil {
+		return ""
+	}
+	sanitized := microvm.NewBackendOperationFailedError(operation, cause)
+	return sanitizeProcessBoundaryAdapterDetail(sanitized.Error())
+}
+
+type sanitizedLiveDependencyCause struct {
+	detail string
+	cause  error
+}
+
+func (err sanitizedLiveDependencyCause) Error() string {
+	if detail := strings.TrimSpace(err.detail); detail != "" {
+		return detail
+	}
+	return "live Firecracker dependency failed"
+}
+
+func (err sanitizedLiveDependencyCause) Is(target error) bool {
+	return target != nil && errors.Is(err.cause, target)
 }
 
 func firecrackerRuntimeID(name string) string {

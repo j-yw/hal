@@ -8,9 +8,9 @@
 // US-001 established the backend namespace. US-002 adds the pure configuration
 // contract, US-003 adds path planning, US-004 adds payload rendering, US-005
 // adds operation planning, US-006 adds process-boundary contracts, and US-007
-// adds explicit metadata-only target creation behind backend injection. Later
-// stories may add lifecycle behavior here behind fakeable tests and explicit
-// injection.
+// connects explicit live launch to the injected process boundary after boot
+// files render. Later stories may add lifecycle behavior here behind fakeable
+// tests and explicit injection.
 package firecracker
 
 // BackendID is the stable namespace for the Firecracker microVM backend.

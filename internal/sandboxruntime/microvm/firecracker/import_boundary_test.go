@@ -96,6 +96,9 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 		"BackendConfigFromMicroVMConfig":        true,
 		"BackendID":                             true,
 		"BackendOptions":                        true,
+		"BootAcceptanceRequest":                 true,
+		"BootAcceptanceResult":                  true,
+		"BootAcceptanceWaiter":                  true,
 		"BootSourcePayload":                     true,
 		"DefaultConfigPath":                     true,
 		"ConfigOperation":                       true,
@@ -107,6 +110,8 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 		"DefaultStateDir":                       true,
 		"GuestWorkDirMetadata":                  true,
 		"InspectOperationPlan":                  true,
+		"LiveProcessManager":                    true,
+		"LiveProcessRequest":                    true,
 		"MachineConfigPayload":                  true,
 		"NewBackend":                            true,
 		"OperationAction":                       true,
@@ -311,6 +316,43 @@ func TestFirecrackerProductionSourceOmitsLiveBackendOperations(t *testing.T) {
 	}
 }
 
+func TestPhase34FirecrackerProductionLiveBootDoesNotCallOSExecDirectly(t *testing.T) {
+	paths := firecrackerProductionBoundaryFiles(t)
+	fset := token.NewFileSet()
+	for _, path := range paths {
+		file, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("ParseFile(%s imports) error: %v", path, err)
+		}
+		for _, spec := range file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("unquote import %s in %s: %v", spec.Path.Value, path, err)
+			}
+			if importPath == "os/exec" {
+				t.Fatalf("%s imports os/exec; live Firecracker boot must cross the injected ProcessRunnerStartRequest boundary", path)
+			}
+		}
+
+		file, err = parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("ParseFile(%s) error: %v", path, err)
+		}
+		if message := firecrackerFirstForbiddenCall(file, func(selector string) string {
+			switch selector {
+			case "exec.Command", "exec.CommandContext":
+				return "direct os/exec process launch"
+			default:
+				return ""
+			}
+		}, func(selector, reason string) string {
+			return fmt.Sprintf("%s calls %s (%s); live Firecracker boot must use an injected ProcessStarter or ProcessAdapter", path, selector, reason)
+		}); message != "" {
+			t.Fatal(message)
+		}
+	}
+}
+
 func TestFirecrackerProductionSourceDoesNotIntroduceDockerOrPodmanGuestEngine(t *testing.T) {
 	for _, path := range firecrackerProductionBoundaryFiles(t) {
 		source, err := os.ReadFile(path)
@@ -432,6 +474,16 @@ func TestFirecrackerDefaultTestBoundaryGuardsCoverLiveOperations(t *testing.T) {
 		if !strings.Contains(message, tt.want) || !strings.Contains(message, tt.importPath) {
 			t.Fatalf("default test import boundary message = %q, want %q rejection for %q", message, tt.want, tt.importPath)
 		}
+	}
+}
+
+func TestFirecrackerDefaultTestBoundaryExcludesOptInLiveTests(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "firecracker_live_integration_test.go")
+	if err := os.WriteFile(path, []byte("//go:build firecracker_live\n\npackage firecracker\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s) error: %v", path, err)
+	}
+	if firecrackerDefaultTestFile(t, path) {
+		t.Fatalf("%s matched default Firecracker test boundaries; firecracker_live tests must stay opt-in", path)
 	}
 }
 
@@ -577,7 +629,7 @@ func firecrackerDefaultTestFile(t *testing.T, path string) bool {
 			continue
 		}
 		if strings.HasPrefix(trimmed, "//go:build") || strings.HasPrefix(trimmed, "// +build") {
-			if strings.Contains(trimmed, "integration") {
+			if strings.Contains(trimmed, "integration") || strings.Contains(trimmed, "firecracker_live") {
 				return false
 			}
 			continue
