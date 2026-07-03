@@ -442,6 +442,107 @@ func TestSandboxdCommandRegistersMicroVMOnlyWithInjectedFactory(t *testing.T) {
 	}
 }
 
+func TestSandboxdMicroVMValidationRejectsUnsafeLivePaths(t *testing.T) {
+	tests := []struct {
+		name      string
+		flag      string
+		value     string
+		want      string
+		forbidden []string
+	}{
+		{
+			name:      "relative kernel",
+			flag:      "--firecracker-kernel",
+			value:     "relative/vmlinux",
+			want:      "--firecracker-kernel must be an absolute path",
+			forbidden: []string{"relative/vmlinux"},
+		},
+		{
+			name:      "control char rootfs",
+			flag:      "--firecracker-rootfs",
+			value:     "/opt/hal/images/rootfs.ext4\nsecret=raw",
+			want:      "--firecracker-rootfs is invalid",
+			forbidden: []string{"rootfs.ext4", "secret=raw"},
+		},
+		{
+			name:      "unsafe initrd URL",
+			flag:      "--firecracker-initrd",
+			value:     "https://example.test/initrd.img?token=ghp_secret",
+			want:      "--firecracker-initrd is invalid",
+			forbidden: []string{"example.test", "token=ghp_secret", "ghp_secret"},
+		},
+		{
+			name:      "unsafe state dir query",
+			flag:      "--firecracker-state-dir",
+			value:     "/tmp/hal-firecracker?token=ghp_secret",
+			want:      "--firecracker-state-dir is invalid",
+			forbidden: []string{"token=ghp_secret", "ghp_secret"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			serviceCalled := false
+			serverCalled := false
+			args := []string{
+				"--socket", "/tmp/microvm-invalid-path.sock",
+				"--worker-id", "worker-microvm",
+				"--driver", sandboxruntime.DriverMicroVM,
+				"--firecracker-executable", "/usr/bin/firecracker",
+				"--firecracker-kernel", "/opt/hal/images/vmlinux",
+				"--firecracker-rootfs", "/opt/hal/images/rootfs.ext4",
+				"--firecracker-state-dir", "/tmp/hal-firecracker-state",
+			}
+			for i := 0; i < len(args)-1; i++ {
+				if args[i] == tt.flag {
+					args[i+1] = tt.value
+				}
+			}
+			if tt.flag == "--firecracker-initrd" {
+				args = append(args, tt.flag, tt.value)
+			}
+
+			cmd, _, _ := newTestSandboxdCommand(sandboxdDeps{
+				newService: func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
+					serviceCalled = true
+					return &recordingSandboxdHandler{}, nil
+				},
+				newServer: func(options sandboxworker.ServerOptions) (sandboxdServer, error) {
+					serverCalled = true
+					return sandboxdServerFunc(func(context.Context) error { return nil }), nil
+				},
+				newMicroVMDriver: func(config sandboxdMicroVMConfig) (sandboxruntime.Driver, error) {
+					return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverMicroVM}, nil
+				},
+				workerID: func() string {
+					return "worker-test"
+				},
+			})
+			cmd.SetArgs(args)
+
+			err := cmd.Execute()
+			var exitErr *ExitCodeError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("Execute() error = %T, want ExitCodeError", err)
+			}
+			if exitErr.Code != ExitCodeValidation {
+				t.Fatalf("exit code = %d, want %d", exitErr.Code, ExitCodeValidation)
+			}
+			if exitErr.Err == nil || !strings.Contains(exitErr.Err.Error(), tt.want) {
+				t.Fatalf("exit error = %#v, want %q", exitErr.Err, tt.want)
+			}
+			for _, leaked := range tt.forbidden {
+				if strings.Contains(exitErr.Err.Error(), leaked) {
+					t.Fatalf("exit error leaked %q: %q", leaked, exitErr.Err.Error())
+				}
+			}
+			if serviceCalled || serverCalled {
+				t.Fatalf("serviceCalled=%v serverCalled=%v, want neither called", serviceCalled, serverCalled)
+			}
+		})
+	}
+}
+
 func TestSandboxdMicroVMValidationDoesNotRunForRootlessPodmanOnly(t *testing.T) {
 	var gotService sandboxworker.ServiceOptions
 	cmd, _, _ := newTestSandboxdCommand(sandboxdDeps{

@@ -515,7 +515,24 @@ func validateSandboxdMicroVMConfig(config sandboxdMicroVMConfig) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("sandboxd --driver microvm requires %s", sandboxdJoinFlagList(missing))
 	}
+	for _, value := range []struct {
+		flag string
+		path string
+	}{
+		{flag: "--firecracker-executable", path: config.Config.HypervisorPath},
+		{flag: "--firecracker-kernel", path: config.Config.KernelImagePath},
+		{flag: "--firecracker-rootfs", path: config.Config.RootfsPath},
+		{flag: "--firecracker-initrd", path: config.Config.InitrdPath},
+		{flag: "--firecracker-jailer", path: config.Config.JailerPath},
+	} {
+		if err := validateSandboxdMicroVMPathFlag(value.flag, value.path); err != nil {
+			return err
+		}
+	}
 	if sandboxdPathHasControl(config.StateDir) {
+		return fmt.Errorf("sandboxd --firecracker-state-dir is invalid")
+	}
+	if sandboxdPathHasUnsafeDetail(config.StateDir) {
 		return fmt.Errorf("sandboxd --firecracker-state-dir is invalid")
 	}
 	if !filepath.IsAbs(config.StateDir) {
@@ -540,6 +557,23 @@ func validateSandboxdMicroVMConfig(config sandboxdMicroVMConfig) error {
 	}
 	if err := microvm.ValidateConfig(config.Config); err != nil {
 		return fmt.Errorf("sandboxd --driver microvm config is invalid: %w", err)
+	}
+	return nil
+}
+
+func validateSandboxdMicroVMPathFlag(flag, path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	if sandboxdPathHasControl(path) || sandboxdPathHasUnsafeDetail(path) {
+		return fmt.Errorf("sandboxd %s is invalid", flag)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("sandboxd %s must be an absolute path", flag)
+	}
+	if sandboxdFilesystemRoot(path) {
+		return fmt.Errorf("sandboxd %s must not be the filesystem root", flag)
 	}
 	return nil
 }
@@ -587,6 +621,31 @@ func sandboxdDriverRequested(drivers []string, want string) bool {
 func sandboxdPathHasControl(path string) bool {
 	for _, r := range path {
 		if r == 0 || r == '\n' || r == '\r' || r == '\t' {
+			return true
+		}
+	}
+	return false
+}
+
+func sandboxdPathHasUnsafeDetail(path string) bool {
+	lower := strings.ToLower(strings.TrimSpace(path))
+	if lower == "" {
+		return false
+	}
+	if strings.Contains(lower, "://") || strings.ContainsAny(lower, "?#") {
+		return true
+	}
+	for _, marker := range []string{
+		"token=",
+		"secret=",
+		"password=",
+		"credential=",
+		"authorization=",
+		"bearer ",
+		"ghp_",
+		"sk-",
+	} {
+		if strings.Contains(lower, marker) {
 			return true
 		}
 	}

@@ -247,6 +247,25 @@ func defaultSupportedOperationsForDrivers(driverIDs []string, descriptors map[st
 	return operations
 }
 
+func (service *Service) supportsRequestOperation(operation, driverID string) bool {
+	operation = strings.TrimSpace(operation)
+	if operation == OperationStatus || operation == OperationCapabilities {
+		return true
+	}
+	if !validOperation(operation) {
+		return false
+	}
+	driverID = strings.TrimSpace(driverID)
+	if driverID == "" || service == nil || service.registry == nil {
+		return stringSliceContains(service.supportedOps, operation)
+	}
+	if !stringSliceContains(service.registry.DriverIDs(), driverID) {
+		return true
+	}
+	driver := service.runtimeDriverCapability(driverID)
+	return stringSliceContains(driver.Operations, operation)
+}
+
 func defaultRuntimeDriverCapability(driverID string) RuntimeDriver {
 	if driverID == RuntimeDriverRootlessPodman {
 		return rootlessPodmanRuntimeDriverCapability()
@@ -390,6 +409,16 @@ func cloneStringSlice(values []string) []string {
 	}
 	clone := append([]string(nil), values...)
 	return clone
+}
+
+func stringSliceContains(values []string, want string) bool {
+	want = strings.TrimSpace(want)
+	for _, value := range values {
+		if strings.TrimSpace(value) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func zeroSecurityPolicy(policy SecurityPolicy) bool {

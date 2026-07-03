@@ -547,7 +547,6 @@ func TestNewLiveDriverBootAcceptanceFailureCleansUpFakeHostProcess(t *testing.T)
 		t.Fatalf("PlanPaths() error = %v, want nil", err)
 	}
 	cleanupFS.addDir(paths.StateDir)
-	cleanupFS.addFile(paths.APISocketPath)
 	cleanupFS.addFile(paths.ConfigPath)
 	cleanupFS.addFile(paths.LogPath)
 	cleanupFS.addFile(paths.MetricsPath)

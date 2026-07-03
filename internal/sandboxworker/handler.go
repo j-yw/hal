@@ -16,6 +16,9 @@ func (service *Service) HandleRequest(ctx context.Context, req Request) Response
 	if resp, ok := contextErrorResponse(ctx, req); ok {
 		return resp
 	}
+	if !service.supportsRequestOperation(req.Operation, req.DriverID) {
+		return unsupportedOperationResponse(req)
+	}
 
 	switch req.Operation {
 	case OperationStatus:

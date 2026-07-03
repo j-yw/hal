@@ -223,6 +223,47 @@ func TestServiceMicroVMCapabilityReportsConservativeRuntimeMetadata(t *testing.T
 	assertMicroVMRuntimeDriverSecurityPolicy(t, driver.Security)
 }
 
+func TestServiceMicroVMWorkerIORequestsAreRejectedBeforeDriverDispatch(t *testing.T) {
+	driver := &fakeWorkerRuntimeDriver{id: RuntimeDriverMicroVM}
+	registry, err := NewDriverRegistry(driver)
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+	service, err := NewService(ServiceOptions{
+		WorkerID: "worker-001",
+		Registry: registry,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+
+	execReq := validWorkerExecRequest()
+	execReq.DriverID = RuntimeDriverMicroVM
+	execReq.Exec.Target = lifecycleWorkerTarget(RuntimeDriverMicroVM, "microvm-dev", "running")
+
+	copyInReq := validWorkerCopyInRequest()
+	copyInReq.DriverID = RuntimeDriverMicroVM
+	copyInReq.CopyIn.Target = lifecycleWorkerTarget(RuntimeDriverMicroVM, "microvm-dev", "running")
+	copyInReq.CopyIn.Payload = workerCopyPayload("payload", MaxCopyInPayloadBytes)
+
+	copyOutReq := validWorkerCopyOutRequest()
+	copyOutReq.DriverID = RuntimeDriverMicroVM
+	copyOutReq.CopyOut.Target = lifecycleWorkerTarget(RuntimeDriverMicroVM, "microvm-dev", "running")
+
+	for _, req := range []Request{execReq, copyInReq, copyOutReq} {
+		resp := service.HandleRequest(context.Background(), req)
+		if err := resp.Validate(); err != nil {
+			t.Fatalf("%s response Validate() error: %v", req.Operation, err)
+		}
+		if resp.OK || resp.Error == nil || resp.Error.Code != ErrorCodeUnsupportedOp {
+			t.Fatalf("%s response = %#v, want unsupported operation", req.Operation, resp)
+		}
+	}
+	if driver.execCalls != 0 || driver.copyInCalls != 0 || driver.copyOutCalls != 0 {
+		t.Fatalf("driver dispatch calls = exec:%d copyIn:%d copyOut:%d, want zero", driver.execCalls, driver.copyInCalls, driver.copyOutCalls)
+	}
+}
+
 func TestServiceProtocolResponsesValidate(t *testing.T) {
 	service, err := NewService(ServiceOptions{WorkerID: "worker-001"})
 	if err != nil {

@@ -111,8 +111,11 @@ func TestDriverRegistryZeroValueIsUsable(t *testing.T) {
 }
 
 type fakeWorkerRuntimeDriver struct {
-	id      string
-	created string
+	id           string
+	created      string
+	execCalls    int
+	copyInCalls  int
+	copyOutCalls int
 }
 
 func (driver *fakeWorkerRuntimeDriver) ID() string {
@@ -146,13 +149,16 @@ func (driver *fakeWorkerRuntimeDriver) Inspect(_ context.Context, req sandboxrun
 }
 
 func (driver *fakeWorkerRuntimeDriver) Exec(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+	driver.execCalls++
 	return &sandboxruntime.ExecResult{}, nil
 }
 
 func (driver *fakeWorkerRuntimeDriver) CopyIn(context.Context, sandboxruntime.CopyRequest) error {
+	driver.copyInCalls++
 	return nil
 }
 
 func (driver *fakeWorkerRuntimeDriver) CopyOut(context.Context, sandboxruntime.CopyRequest) error {
+	driver.copyOutCalls++
 	return nil
 }
