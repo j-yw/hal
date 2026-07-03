@@ -25,6 +25,13 @@ type BootAcceptancePoller interface {
 	PollBootAcceptance(context.Context, firecracker.BootAcceptanceRequest) (firecracker.BootAcceptanceResult, error)
 }
 
+// GuestReadinessProbe checks whether an accepted host process has reached the
+// guest readiness boundary. Implementations may perform host-side IO, but must
+// return only Firecracker guest readiness metadata.
+type GuestReadinessProbe interface {
+	ProbeGuestReadiness(context.Context, firecracker.GuestReadinessRequest) (firecracker.GuestReadinessResult, error)
+}
+
 // Clock is the injectable time source used by later deterministic polling
 // behavior.
 type Clock interface {
@@ -48,13 +55,16 @@ type LiveProcessCleanup interface {
 // Adapter satisfies the Phase 34 Firecracker live-boot injection interfaces by
 // delegating host behavior to explicitly configured dependencies.
 type Adapter struct {
-	processRunner ProcessRunner
-	poller        BootAcceptancePoller
-	clock         Clock
-	sleeper       Sleeper
-	bootTimeout   time.Duration
-	bootInterval  time.Duration
-	cleanup       LiveProcessCleanup
+	processRunner       ProcessRunner
+	poller              BootAcceptancePoller
+	guestReadinessProbe GuestReadinessProbe
+	clock               Clock
+	sleeper             Sleeper
+	bootTimeout         time.Duration
+	bootInterval        time.Duration
+	guestTimeout        time.Duration
+	guestInterval       time.Duration
+	cleanup             LiveProcessCleanup
 }
 
 // Option configures a host adapter dependency.
@@ -65,10 +75,12 @@ type Option func(*Adapter)
 // dependencies are injected.
 func NewAdapter(options ...Option) *Adapter {
 	adapter := &Adapter{
-		clock:        systemClock{},
-		sleeper:      contextSleeper{},
-		bootTimeout:  defaultBootAcceptanceTimeout,
-		bootInterval: defaultBootAcceptancePollInterval,
+		clock:         systemClock{},
+		sleeper:       contextSleeper{},
+		bootTimeout:   defaultBootAcceptanceTimeout,
+		bootInterval:  defaultBootAcceptancePollInterval,
+		guestTimeout:  defaultGuestReadinessTimeout,
+		guestInterval: defaultGuestReadinessPollInterval,
 	}
 	for _, option := range options {
 		if option != nil {
@@ -90,6 +102,14 @@ func WithProcessRunner(runner ProcessRunner) Option {
 func WithBootAcceptancePoller(poller BootAcceptancePoller) Option {
 	return func(adapter *Adapter) {
 		adapter.poller = poller
+	}
+}
+
+// WithGuestReadinessProbe injects the host-side probe used by
+// WaitForGuestReadiness.
+func WithGuestReadinessProbe(probe GuestReadinessProbe) Option {
+	return func(adapter *Adapter) {
+		adapter.guestReadinessProbe = probe
 	}
 }
 
@@ -131,6 +151,26 @@ func WithBootAcceptancePollInterval(interval time.Duration) Option {
 	}
 }
 
+// WithGuestReadinessTimeout injects the maximum host-side wait duration used
+// by WaitForGuestReadiness.
+func WithGuestReadinessTimeout(timeout time.Duration) Option {
+	return func(adapter *Adapter) {
+		if timeout > 0 {
+			adapter.guestTimeout = timeout
+		}
+	}
+}
+
+// WithGuestReadinessPollInterval injects the delay between deterministic
+// host-side guest readiness probes.
+func WithGuestReadinessPollInterval(interval time.Duration) Option {
+	return func(adapter *Adapter) {
+		if interval > 0 {
+			adapter.guestInterval = interval
+		}
+	}
+}
+
 // WithLiveProcessCleanup injects the host cleanup manager used by cleanup,
 // stop, and delete operations.
 func WithLiveProcessCleanup(cleanup LiveProcessCleanup) Option {
@@ -155,6 +195,15 @@ func (adapter *Adapter) WaitForBootAcceptance(ctx context.Context, req firecrack
 		return firecracker.BootAcceptanceResult{}, dependencyNotConfigured("bootAcceptancePoller")
 	}
 	return adapter.waitForBootAcceptance(nonNilContext(ctx), req)
+}
+
+// WaitForGuestReadiness polls guest readiness through the injected host-side
+// probe.
+func (adapter *Adapter) WaitForGuestReadiness(ctx context.Context, req firecracker.GuestReadinessRequest) (firecracker.GuestReadinessResult, error) {
+	if adapter == nil || adapter.guestReadinessProbe == nil {
+		return firecracker.GuestReadinessResult{}, dependencyNotConfigured("guestReadinessProbe")
+	}
+	return adapter.waitForGuestReadiness(nonNilContext(ctx), req)
 }
 
 // CleanupLiveProcess delegates cleanup of a live Firecracker process to the

@@ -12,11 +12,13 @@ import (
 
 var _ firecracker.ProcessStarter = (*Adapter)(nil)
 var _ firecracker.BootAcceptanceWaiter = (*Adapter)(nil)
+var _ firecracker.GuestReadinessWaiter = (*Adapter)(nil)
 var _ firecracker.LiveProcessManager = (*Adapter)(nil)
 
 func TestNewAdapterAppliesDependencyOptions(t *testing.T) {
 	runner := &fakeProcessRunner{}
 	poller := &fakeBootAcceptancePoller{}
+	guestProbe := &fakeGuestReadinessProbe{}
 	clock := fakeClock{now: time.Unix(100, 0)}
 	sleeper := &fakeSleeper{}
 	cleanup := &fakeLiveProcessCleanup{}
@@ -24,8 +26,11 @@ func TestNewAdapterAppliesDependencyOptions(t *testing.T) {
 	adapter := NewAdapter(
 		WithProcessRunner(runner),
 		WithBootAcceptancePoller(poller),
+		WithGuestReadinessProbe(guestProbe),
 		WithClock(clock),
 		WithSleeper(sleeper),
+		WithGuestReadinessTimeout(7*time.Second),
+		WithGuestReadinessPollInterval(50*time.Millisecond),
 		WithLiveProcessCleanup(cleanup),
 	)
 
@@ -35,11 +40,20 @@ func TestNewAdapterAppliesDependencyOptions(t *testing.T) {
 	if adapter.poller != poller {
 		t.Fatal("boot acceptance poller option was not applied")
 	}
+	if adapter.guestReadinessProbe != guestProbe {
+		t.Fatal("guest readiness probe option was not applied")
+	}
 	if got := adapter.clock.Now(); !got.Equal(clock.now) {
 		t.Fatalf("clock option Now() = %s, want %s", got, clock.now)
 	}
 	if adapter.sleeper != sleeper {
 		t.Fatal("sleeper option was not applied")
+	}
+	if adapter.guestTimeout != 7*time.Second {
+		t.Fatalf("guest readiness timeout = %s, want 7s", adapter.guestTimeout)
+	}
+	if adapter.guestInterval != 50*time.Millisecond {
+		t.Fatalf("guest readiness interval = %s, want 50ms", adapter.guestInterval)
 	}
 	if adapter.cleanup != cleanup {
 		t.Fatal("cleanup option was not applied")
@@ -143,6 +157,9 @@ func TestAdapterWithoutDependenciesReturnsConfiguredSentinelError(t *testing.T) 
 	if _, err := adapter.WaitForBootAcceptance(context.Background(), firecracker.BootAcceptanceRequest{}); !errors.Is(err, ErrDependencyNotConfigured) {
 		t.Fatalf("WaitForBootAcceptance() error = %v, want ErrDependencyNotConfigured", err)
 	}
+	if _, err := adapter.WaitForGuestReadiness(context.Background(), firecracker.GuestReadinessRequest{}); !errors.Is(err, ErrDependencyNotConfigured) {
+		t.Fatalf("WaitForGuestReadiness() error = %v, want ErrDependencyNotConfigured", err)
+	}
 	if err := adapter.CleanupLiveProcess(context.Background(), firecracker.LiveProcessRequest{}); !errors.Is(err, ErrDependencyNotConfigured) {
 		t.Fatalf("CleanupLiveProcess() error = %v, want ErrDependencyNotConfigured", err)
 	}
@@ -180,6 +197,19 @@ func (poller *fakeBootAcceptancePoller) PollBootAcceptance(_ context.Context, re
 	poller.calls++
 	poller.req = req
 	return poller.result, poller.err
+}
+
+type fakeGuestReadinessProbe struct {
+	calls  int
+	req    firecracker.GuestReadinessRequest
+	result firecracker.GuestReadinessResult
+	err    error
+}
+
+func (probe *fakeGuestReadinessProbe) ProbeGuestReadiness(_ context.Context, req firecracker.GuestReadinessRequest) (firecracker.GuestReadinessResult, error) {
+	probe.calls++
+	probe.req = req
+	return probe.result, probe.err
 }
 
 type fakeClock struct {
