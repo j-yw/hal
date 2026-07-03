@@ -80,10 +80,14 @@ func NormalizeActivationRequestMetadata(request ActivationRequest) ActivationReq
 // ActivateDelivery sanitizes activation input and output. Without an injected
 // adapter the result is planning-only and contains no active delivery modes.
 func ActivateDelivery(request ActivationRequest, adapter ActivationAdapter) ActivationResult {
+	modeErrors := activationModeMetadataErrors(request)
 	sanitizedInput := NewSanitizedActivationRequest(request)
 	input := sanitizedInput.Request()
 	if input.ActivationID == "" || input.Plan.ID == "" {
 		return ActivationResult{}
+	}
+	if len(modeErrors) > 0 {
+		return activationModeMetadataFailedActivationResult(input, modeErrors)
 	}
 	if input.Plan.Status == StatusFailed || len(input.Plan.Errors) > 0 {
 		return planFailedActivationResult(input)
@@ -144,6 +148,19 @@ func adapterFailedActivationResult(input ActivationRequest) ActivationResult {
 		Bindings:       activationBindingResults(input.Bindings, StatusFailed, ReasonActivationUnavailable),
 		Status:         StatusFailed,
 		Errors:         []SanitizedError{activationFailedError()},
+	})
+}
+
+func activationModeMetadataFailedActivationResult(input ActivationRequest, errors []SanitizedError) ActivationResult {
+	resultErrors := append([]SanitizedError{}, errors...)
+	resultErrors = append(resultErrors, input.Plan.Errors...)
+	return SanitizeActivationResultMetadata(ActivationResult{
+		ID:             input.ActivationID,
+		PlanID:         input.Plan.ID,
+		RequestedModes: input.Plan.RequestedModes,
+		Bindings:       activationBindingResults(input.Bindings, StatusFailed, ReasonUnsupportedMode),
+		Status:         StatusFailed,
+		Errors:         resultErrors,
 	})
 }
 
@@ -296,13 +313,15 @@ func activationActiveModesForInput(input ActivationRequest, result ActivationRes
 		requested.add(mode)
 	}
 	active := newPlanModeSet()
-	for _, mode := range result.ActiveModes {
-		mode = normalizeMode(mode)
-		if mode == ModeHTTPProxy || mode == ModeLegacyAuthSync {
-			continue
-		}
-		if requested.contains(mode) {
-			active.add(mode)
+	if len(input.Bindings) == 0 && (result.Status == "" || result.Status == StatusActive) {
+		for _, mode := range result.ActiveModes {
+			mode = normalizeMode(mode)
+			if mode == ModeHTTPProxy || mode == ModeLegacyAuthSync {
+				continue
+			}
+			if requested.contains(mode) {
+				active.add(mode)
+			}
 		}
 	}
 	for _, binding := range result.Bindings {
@@ -314,6 +333,54 @@ func activationActiveModesForInput(input ActivationRequest, result ActivationRes
 		}
 	}
 	return active.ordered()
+}
+
+func activationModeMetadataErrors(request ActivationRequest) []SanitizedError {
+	var errors []SanitizedError
+	errors = append(errors, activationModeListMetadataErrors("plan.requestedModes", request.Plan.RequestedModes)...)
+	for i, binding := range request.Bindings {
+		if err, ok := activationModeMetadataError("bindings.deliveryMode", binding.DeliveryMode, &i); ok {
+			errors = append(errors, err)
+		}
+	}
+	return SanitizeSanitizedErrorRecords(errors)
+}
+
+func activationModeListMetadataErrors(field string, modes []Mode) []SanitizedError {
+	if modes == nil {
+		return nil
+	}
+	errors := make([]SanitizedError, 0, len(modes))
+	for i, mode := range modes {
+		if err, ok := activationModeMetadataError(field, mode, &i); ok {
+			errors = append(errors, err)
+		}
+	}
+	return errors
+}
+
+func activationModeMetadataError(field string, mode Mode, index *int) (SanitizedError, bool) {
+	raw := string(mode)
+	normalized := normalizeMode(mode)
+	err := SanitizedError{
+		Field:      field,
+		ReasonCode: ReasonUnsupportedMode,
+	}
+	if index != nil {
+		idx := *index
+		err.Index = &idx
+	}
+	switch {
+	case strings.TrimSpace(raw) == "":
+		err.Code = ErrorMissingRequiredField
+	case unsafeCredentialDeliveryFreeformMetadata(string(normalized)):
+		err.Code = ErrorUnsafeMetadata
+	case !validMode(normalized):
+		err.Code = ErrorUnsupportedMode
+	default:
+		return SanitizedError{}, false
+	}
+	return err, true
 }
 
 func normalizeActivationBindingOutcome(result BindingActivationResult) BindingActivationResult {

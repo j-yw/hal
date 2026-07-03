@@ -122,7 +122,7 @@ func TestActivateDeliverySanitizesAdapterBoundaryAndResultContractsForSupportedM
 			plan := Plan{
 				ID:             "delivery-plan-" + string(mode),
 				RequestID:      rawEndpoint,
-				RequestedModes: []Mode{mode, Mode(rawHeader)},
+				RequestedModes: []Mode{mode},
 				ActiveModes:    []Mode{Mode(rawEnvValue)},
 				Status:         StatusPlanned,
 				Warnings: []Warning{{

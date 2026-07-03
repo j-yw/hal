@@ -44,8 +44,12 @@ func StatusMetadataFromActivation(plan Plan, activation ActivationResult) Status
 	if status.PlanID == "" {
 		status.PlanID = sanitizedPlan.ID
 	}
-	if sanitizedActivation.Status == StatusActive {
-		status.ActiveModes = sanitizedActivation.ActiveModes
+	activeModes := secureActiveStatusModes(sanitizedActivation.ActiveModes)
+	if sanitizedActivation.Status == StatusActive && len(activeModes) == 0 {
+		status.Status = StatusSkipped
+	}
+	if status.Status == StatusActive {
+		status.ActiveModes = activeModes
 	}
 	return SanitizeStatusMetadata(status)
 }
@@ -58,4 +62,19 @@ func activationStatusReason(activation ActivationResult) ReasonCode {
 		return activation.Warnings[0].ReasonCode
 	}
 	return ReasonRequested
+}
+
+func secureActiveStatusModes(modes []Mode) []Mode {
+	if modes == nil {
+		return nil
+	}
+	active := newPlanModeSet()
+	for _, mode := range modes {
+		mode = normalizeMode(mode)
+		if mode == ModeLegacyAuthSync {
+			continue
+		}
+		active.add(mode)
+	}
+	return active.ordered()
 }
