@@ -419,6 +419,7 @@ func TestSandboxdMicroVMDescriptorCanAdvertiseExplicitNetworkEnforcementCapabili
 			},
 			ReasonCode: "applied",
 		},
+		Orchestration: sandboxdActiveNetworkEnforcementOrchestration("network-plan-sandboxd"),
 	})
 	if err := descriptor.Validate(); err != nil {
 		t.Fatalf("descriptor Validate() error: %v", err)
@@ -427,8 +428,8 @@ func TestSandboxdMicroVMDescriptorCanAdvertiseExplicitNetworkEnforcementCapabili
 		t.Fatalf("NetworkEnforcement = %#v, want explicit metadata", descriptor.NetworkEnforcement)
 	}
 	if descriptor.Security.Requested.NetworkPolicy != sandboxworker.NetworkPolicyDenyByDefault ||
-		descriptor.Security.Requested.NetworkEnforcement != sandboxworker.NetworkEnforcementProxyFirewall {
-		t.Fatalf("requested security = %#v, want explicit deny/proxy_firewall request", descriptor.Security.Requested)
+		descriptor.Security.Requested.NetworkEnforcement != sandboxworker.NetworkEnforcementNone {
+		t.Fatalf("requested security = %#v, want requested policy without planned mechanism", descriptor.Security.Requested)
 	}
 	if descriptor.Security.Enforced.NetworkPolicy != sandboxworker.NetworkPolicyDenyByDefault ||
 		descriptor.Security.Enforced.NetworkEnforcement != sandboxworker.NetworkEnforcementProxyFirewall ||
@@ -458,6 +459,125 @@ func TestSandboxdMicroVMDescriptorCanAdvertiseExplicitNetworkEnforcementCapabili
 		if strings.Contains(publicText, unsafe) {
 			t.Fatalf("descriptor leaked or claimed %q in %s", unsafe, publicText)
 		}
+	}
+}
+
+func TestSandboxdMicroVMDescriptorDoesNotClaimNetworkEnforcementFromPlanOnlyMetadata(t *testing.T) {
+	descriptor := sandboxdMicroVMRuntimeDriverDescriptor(sandboxdMicroVMOperationsDefault(), &sandboxruntime.RuntimeNetworkEnforcementMetadata{
+		Plan: &sandboxruntime.RuntimeNetworkEnforcementPlanMetadata{
+			ID:               "network-plan-only-sandboxd",
+			Source:           "microvm",
+			Operation:        "prepare_network",
+			PolicySnapshotID: "policy-snapshot-plan-only",
+			PolicyPreset:     "deny_by_default",
+			DefaultPosture:   "deny_by_default",
+			Mechanisms:       []string{"proxy", "firewall"},
+			Operations:       []string{"default_deny", "allowlist", "iptables -A OUTPUT", "/tmp/proxy.sock", "token=secret"},
+		},
+	})
+	if err := descriptor.Validate(); err != nil {
+		t.Fatalf("descriptor Validate() error: %v", err)
+	}
+	if descriptor.Security.Requested.NetworkPolicy != sandboxworker.NetworkPolicyDenyByDefault {
+		t.Fatalf("requested security = %#v, want requested deny-by-default policy", descriptor.Security.Requested)
+	}
+	if descriptor.Security.Enforced.NetworkPolicy != sandboxworker.NetworkPolicyBestEffort ||
+		descriptor.Security.Enforced.NetworkEnforcement != sandboxworker.NetworkEnforcementNone ||
+		descriptor.Security.Enforced.NetworkEnforcementCapability != nil {
+		t.Fatalf("enforced security = %#v, want no enforcement claim from plan-only metadata", descriptor.Security.Enforced)
+	}
+
+	encoded, err := json.Marshal(descriptor)
+	if err != nil {
+		t.Fatalf("Marshal(descriptor) error: %v", err)
+	}
+	publicText := string(encoded)
+	for _, forbidden := range []string{
+		`"enforced":{"networkPolicy":"deny_by_default"`,
+		`"networkEnforcement":"proxy_firewall"`,
+		"iptables",
+		"/tmp/",
+		"proxy.sock",
+		"token",
+		"secret",
+	} {
+		if strings.Contains(publicText, forbidden) {
+			t.Fatalf("plan-only descriptor overclaimed or leaked %q in %s", forbidden, publicText)
+		}
+	}
+}
+
+func TestSandboxdMicroVMDescriptorRequiresActiveNetworkRuntimeMetadataBeforeEnforcedPolicy(t *testing.T) {
+	metadata := &sandboxruntime.RuntimeNetworkEnforcementMetadata{
+		Plan: &sandboxruntime.RuntimeNetworkEnforcementPlanMetadata{
+			ID:               "network-plan-planned-sandboxd",
+			Source:           "microvm",
+			Operation:        "prepare_network",
+			PolicySnapshotID: "policy-snapshot-planned",
+			PolicyPreset:     "deny_by_default",
+			DefaultPosture:   "deny_by_default",
+			Mechanisms:       []string{"proxy", "firewall"},
+			Operations:       []string{"default_deny", "allowlist"},
+		},
+		Orchestration: &sandboxruntime.RuntimeNetworkEnforcementOrchestrationMetadata{
+			PlanID:     "network-plan-planned-sandboxd",
+			AdapterID:  "fake-sandboxd-adapter",
+			Status:     "planned",
+			Mechanisms: []string{"proxy", "firewall"},
+			Proxy: &sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata{
+				ID:         "proxy-planned-sandboxd",
+				PlanID:     "network-plan-planned-sandboxd",
+				AdapterID:  "fake-sandboxd-adapter",
+				Status:     "prepared",
+				Mechanisms: []string{"proxy"},
+				ReasonCode: "prepared",
+			},
+			Rules: []sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata{{
+				ID:         "rules-planned-sandboxd",
+				PlanID:     "network-plan-planned-sandboxd",
+				AdapterID:  "fake-sandboxd-adapter",
+				Status:     "planned",
+				Mechanisms: []string{"firewall"},
+				ReasonCode: "prepared",
+			}},
+			ReasonCode:   "prepared",
+			WarningCodes: []string{"metadata_only_fallback"},
+		},
+		Result: &sandboxruntime.RuntimeNetworkEnforcementResultMetadata{
+			PlanID:          "network-plan-planned-sandboxd",
+			AdapterID:       "fake-sandboxd-adapter",
+			Outcome:         "success",
+			EnforcementMode: "proxy_firewall",
+			Mechanisms:      []string{"proxy", "firewall"},
+			Operations:      []string{"proxy_route", "firewall_apply"},
+			Capability: &sandboxruntime.RuntimeNetworkEnforcementCapability{
+				Supported:                  true,
+				Modes:                      []string{"proxy_firewall"},
+				SupportsDefaultDenyPosture: true,
+			},
+			ReasonCode: "applied",
+		},
+	}
+	descriptor := sandboxdMicroVMRuntimeDriverDescriptor(sandboxdMicroVMOperationsDefault(), metadata)
+	if err := descriptor.Validate(); err != nil {
+		t.Fatalf("descriptor Validate() error: %v", err)
+	}
+	if descriptor.NetworkEnforcement == nil || descriptor.NetworkEnforcement.Result == nil || descriptor.NetworkEnforcement.Orchestration == nil {
+		t.Fatalf("NetworkEnforcement = %#v, want sanitized plan/result/orchestration metadata", descriptor.NetworkEnforcement)
+	}
+	if descriptor.Security.Enforced.NetworkPolicy != sandboxworker.NetworkPolicyBestEffort ||
+		descriptor.Security.Enforced.NetworkEnforcement != sandboxworker.NetworkEnforcementNone ||
+		descriptor.Security.Enforced.NetworkEnforcementCapability != nil {
+		t.Fatalf("enforced security = %#v, want no enforcement claim until lifecycle metadata is active", descriptor.Security.Enforced)
+	}
+
+	activeMetadata := *metadata
+	activeMetadata.Orchestration = sandboxdActiveNetworkEnforcementOrchestration("network-plan-planned-sandboxd")
+	activeDescriptor := sandboxdMicroVMRuntimeDriverDescriptor(sandboxdMicroVMOperationsDefault(), &activeMetadata)
+	if activeDescriptor.Security.Enforced.NetworkPolicy != sandboxworker.NetworkPolicyDenyByDefault ||
+		activeDescriptor.Security.Enforced.NetworkEnforcement != sandboxworker.NetworkEnforcementProxyFirewall ||
+		activeDescriptor.Security.Enforced.NetworkEnforcementCapability == nil {
+		t.Fatalf("active enforced security = %#v, want explicit active-success enforcement", activeDescriptor.Security.Enforced)
 	}
 }
 
@@ -525,9 +645,10 @@ func TestSandboxdRuntimeRegistrationRequestsNetworkPlanOnlyForExplicitMicroVMPat
 		},
 	}
 	planning := &microvm.NetworkEnforcementPlanning{
-		Request: request,
-		Planner: planner,
-		Adapter: adapter,
+		Request:       request,
+		Planner:       planner,
+		Adapter:       adapter,
+		Orchestration: sandboxdActiveNetworkEnforcementLifecycleMetadata(networkenforcement.BuildPlan(request)),
 	}
 
 	err := runSandboxdWithDeps(context.Background(), sandboxdRequest{
@@ -1397,6 +1518,67 @@ func sandboxdNetworkEnforcementPlanRequest() networkenforcement.PlanRequest {
 			FirewallMode:      networkenforcement.FirewallIntentModeApply,
 			FirewallMechanism: networkenforcement.EnforcementMechanismFirewall,
 		},
+	}
+}
+
+func sandboxdActiveNetworkEnforcementOrchestration(planID string) *sandboxruntime.RuntimeNetworkEnforcementOrchestrationMetadata {
+	return &sandboxruntime.RuntimeNetworkEnforcementOrchestrationMetadata{
+		PlanID:     planID,
+		AdapterID:  "fake-sandboxd-adapter",
+		Status:     string(networkenforcement.LifecycleStatusActive),
+		Mechanisms: []string{string(networkenforcement.EnforcementMechanismProxy), string(networkenforcement.EnforcementMechanismFirewall)},
+		Operations: []string{"proxy_route", "firewall_apply"},
+		Proxy: &sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata{
+			ID:         "proxy-active-sandboxd",
+			PlanID:     planID,
+			AdapterID:  "fake-sandboxd-adapter",
+			Status:     string(networkenforcement.LifecycleStatusActive),
+			Mechanisms: []string{string(networkenforcement.EnforcementMechanismProxy)},
+			Operations: []string{"proxy_route"},
+			ReasonCode: string(networkenforcement.LifecycleReasonActive),
+		},
+		Rules: []sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata{{
+			ID:         "rules-active-sandboxd",
+			PlanID:     planID,
+			AdapterID:  "fake-sandboxd-adapter",
+			Status:     string(networkenforcement.LifecycleStatusActive),
+			Mechanisms: []string{string(networkenforcement.EnforcementMechanismFirewall)},
+			Operations: []string{"firewall_apply"},
+			ReasonCode: string(networkenforcement.LifecycleReasonActive),
+		}},
+		ReasonCode: string(networkenforcement.LifecycleReasonActive),
+	}
+}
+
+func sandboxdActiveNetworkEnforcementLifecycleMetadata(plan networkenforcement.Plan) *networkenforcement.LiveLifecycleMetadata {
+	return &networkenforcement.LiveLifecycleMetadata{
+		PlanID:         plan.ID,
+		AdapterID:      "fake-sandboxd-adapter",
+		Status:         networkenforcement.LifecycleStatusActive,
+		Mechanisms:     []networkenforcement.EnforcementMechanism{networkenforcement.EnforcementMechanismProxy, networkenforcement.EnforcementMechanismFirewall},
+		Operations:     []string{"proxy_route", "firewall_apply"},
+		PolicySnapshot: plan.PolicySnapshot,
+		Proxy: &networkenforcement.ProxyListenerLifecycleMetadata{
+			ID:             "proxy-active-sandboxd",
+			PlanID:         plan.ID,
+			AdapterID:      "fake-sandboxd-adapter",
+			Status:         networkenforcement.LifecycleStatusActive,
+			Mechanisms:     []networkenforcement.EnforcementMechanism{networkenforcement.EnforcementMechanismProxy},
+			Operations:     []string{"proxy_route"},
+			PolicySnapshot: plan.PolicySnapshot,
+			ReasonCode:     networkenforcement.LifecycleReasonActive,
+		},
+		Rules: []networkenforcement.RuleLifecycleMetadata{{
+			ID:             "rules-active-sandboxd",
+			PlanID:         plan.ID,
+			AdapterID:      "fake-sandboxd-adapter",
+			Status:         networkenforcement.LifecycleStatusActive,
+			Mechanisms:     []networkenforcement.EnforcementMechanism{networkenforcement.EnforcementMechanismFirewall},
+			Operations:     []string{"firewall_apply"},
+			PolicySnapshot: plan.PolicySnapshot,
+			ReasonCode:     networkenforcement.LifecycleReasonActive,
+		}},
+		ReasonCode: networkenforcement.LifecycleReasonActive,
 	}
 }
 

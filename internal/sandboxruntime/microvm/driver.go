@@ -27,12 +27,13 @@ type DriverReasonCode string
 // DriverOptions configures the microVM runtime shell. Config is durable
 // backend-neutral input; Detector and Backend are live dependencies.
 type DriverOptions struct {
-	Config                   Config
-	CapabilityDetector       CapabilityDetector
-	Backend                  Backend
-	NetworkEnforcement       *NetworkEnforcementPlanning
-	NetworkEnforcementPlan   *networkenforcement.Plan
-	NetworkEnforcementResult *networkenforcement.Result
+	Config                          Config
+	CapabilityDetector              CapabilityDetector
+	Backend                         Backend
+	NetworkEnforcement              *NetworkEnforcementPlanning
+	NetworkEnforcementPlan          *networkenforcement.Plan
+	NetworkEnforcementOrchestration *networkenforcement.LiveLifecycleMetadata
+	NetworkEnforcementResult        *networkenforcement.Result
 }
 
 // RuntimeMetadata identifies the driver posture before target-specific

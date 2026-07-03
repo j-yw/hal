@@ -12,10 +12,11 @@ func SanitizeRuntimeNetworkEnforcementMetadata(metadata *RuntimeNetworkEnforceme
 		return nil
 	}
 	sanitized := &RuntimeNetworkEnforcementMetadata{
-		Plan:   sanitizeRuntimeNetworkEnforcementPlanMetadata(metadata.Plan),
-		Result: sanitizeRuntimeNetworkEnforcementResultMetadata(metadata.Result),
+		Plan:          sanitizeRuntimeNetworkEnforcementPlanMetadata(metadata.Plan),
+		Orchestration: sanitizeRuntimeNetworkEnforcementOrchestrationMetadata(metadata.Orchestration),
+		Result:        sanitizeRuntimeNetworkEnforcementResultMetadata(metadata.Result),
 	}
-	if sanitized.Plan == nil && sanitized.Result == nil {
+	if sanitized.Plan == nil && sanitized.Orchestration == nil && sanitized.Result == nil {
 		return nil
 	}
 	return sanitized
@@ -78,6 +79,24 @@ func (metadata RuntimeNetworkEnforcementResultMetadata) MarshalJSON() ([]byte, e
 	return json.Marshal(runtimeNetworkEnforcementResultMetadataJSON(*sanitized))
 }
 
+func (metadata RuntimeNetworkEnforcementOrchestrationMetadata) MarshalJSON() ([]byte, error) {
+	type runtimeNetworkEnforcementOrchestrationMetadataJSON RuntimeNetworkEnforcementOrchestrationMetadata
+	sanitized := sanitizeRuntimeNetworkEnforcementOrchestrationMetadata(&metadata)
+	if sanitized == nil {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(runtimeNetworkEnforcementOrchestrationMetadataJSON(*sanitized))
+}
+
+func (metadata RuntimeNetworkEnforcementLifecycleMetadata) MarshalJSON() ([]byte, error) {
+	type runtimeNetworkEnforcementLifecycleMetadataJSON RuntimeNetworkEnforcementLifecycleMetadata
+	sanitized := sanitizeRuntimeNetworkEnforcementLifecycleMetadata(&metadata)
+	if sanitized == nil {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(runtimeNetworkEnforcementLifecycleMetadataJSON(*sanitized))
+}
+
 func (capability RuntimeNetworkEnforcementCapability) MarshalJSON() ([]byte, error) {
 	type runtimeNetworkEnforcementCapabilityJSON RuntimeNetworkEnforcementCapability
 	sanitized := SanitizeRuntimeNetworkEnforcementCapability(&capability)
@@ -114,6 +133,91 @@ func sanitizeRuntimeNetworkEnforcementPlanMetadata(metadata *RuntimeNetworkEnfor
 	return sanitized
 }
 
+func sanitizeRuntimeNetworkEnforcementOrchestrationMetadata(metadata *RuntimeNetworkEnforcementOrchestrationMetadata) *RuntimeNetworkEnforcementOrchestrationMetadata {
+	if metadata == nil {
+		return nil
+	}
+	sanitized := &RuntimeNetworkEnforcementOrchestrationMetadata{
+		PlanID:           sanitizeRuntimeNetworkEnforcementID(metadata.PlanID),
+		AdapterID:        sanitizeRuntimeNetworkEnforcementID(metadata.AdapterID),
+		Status:           sanitizeRuntimeNetworkEnforcementLifecycleStatus(metadata.Status),
+		Mechanisms:       sanitizeRuntimeNetworkEnforcementMechanismList(metadata.Mechanisms),
+		Operations:       sanitizeRuntimeNetworkEnforcementIDList(metadata.Operations),
+		PolicySnapshotID: sanitizeRuntimeNetworkEnforcementID(metadata.PolicySnapshotID),
+		PolicyPreset:     sanitizeRuntimeNetworkEnforcementPolicyPreset(metadata.PolicyPreset),
+		Proxy:            sanitizeRuntimeNetworkEnforcementLifecycleMetadata(metadata.Proxy),
+		Rules:            sanitizeRuntimeNetworkEnforcementLifecycleMetadataList(metadata.Rules),
+		CapabilityLabels: sanitizeRuntimeNetworkEnforcementIDList(metadata.CapabilityLabels),
+		ReasonCode:       sanitizeRuntimeNetworkEnforcementLifecycleReasonCode(metadata.ReasonCode),
+		WarningCodes:     sanitizeRuntimeNetworkEnforcementLifecycleWarningCodeList(metadata.WarningCodes),
+	}
+	if sanitized.PlanID == "" &&
+		sanitized.AdapterID == "" &&
+		sanitized.Status == "" &&
+		len(sanitized.Mechanisms) == 0 &&
+		len(sanitized.Operations) == 0 &&
+		sanitized.PolicySnapshotID == "" &&
+		sanitized.PolicyPreset == "" &&
+		sanitized.Proxy == nil &&
+		len(sanitized.Rules) == 0 &&
+		len(sanitized.CapabilityLabels) == 0 &&
+		sanitized.ReasonCode == "" &&
+		len(sanitized.WarningCodes) == 0 {
+		return nil
+	}
+	return sanitized
+}
+
+func sanitizeRuntimeNetworkEnforcementLifecycleMetadata(metadata *RuntimeNetworkEnforcementLifecycleMetadata) *RuntimeNetworkEnforcementLifecycleMetadata {
+	if metadata == nil {
+		return nil
+	}
+	sanitized := &RuntimeNetworkEnforcementLifecycleMetadata{
+		ID:               sanitizeRuntimeNetworkEnforcementID(metadata.ID),
+		PlanID:           sanitizeRuntimeNetworkEnforcementID(metadata.PlanID),
+		AdapterID:        sanitizeRuntimeNetworkEnforcementID(metadata.AdapterID),
+		Status:           sanitizeRuntimeNetworkEnforcementLifecycleStatus(metadata.Status),
+		Mechanisms:       sanitizeRuntimeNetworkEnforcementMechanismList(metadata.Mechanisms),
+		Operations:       sanitizeRuntimeNetworkEnforcementIDList(metadata.Operations),
+		PolicySnapshotID: sanitizeRuntimeNetworkEnforcementID(metadata.PolicySnapshotID),
+		PolicyPreset:     sanitizeRuntimeNetworkEnforcementPolicyPreset(metadata.PolicyPreset),
+		CapabilityLabels: sanitizeRuntimeNetworkEnforcementIDList(metadata.CapabilityLabels),
+		ReasonCode:       sanitizeRuntimeNetworkEnforcementLifecycleReasonCode(metadata.ReasonCode),
+		WarningCodes:     sanitizeRuntimeNetworkEnforcementLifecycleWarningCodeList(metadata.WarningCodes),
+	}
+	if sanitized.ID == "" &&
+		sanitized.PlanID == "" &&
+		sanitized.AdapterID == "" &&
+		sanitized.Status == "" &&
+		len(sanitized.Mechanisms) == 0 &&
+		len(sanitized.Operations) == 0 &&
+		sanitized.PolicySnapshotID == "" &&
+		sanitized.PolicyPreset == "" &&
+		len(sanitized.CapabilityLabels) == 0 &&
+		sanitized.ReasonCode == "" &&
+		len(sanitized.WarningCodes) == 0 {
+		return nil
+	}
+	return sanitized
+}
+
+func sanitizeRuntimeNetworkEnforcementLifecycleMetadataList(values []RuntimeNetworkEnforcementLifecycleMetadata) []RuntimeNetworkEnforcementLifecycleMetadata {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]RuntimeNetworkEnforcementLifecycleMetadata, 0, len(values))
+	for _, value := range values {
+		sanitized := sanitizeRuntimeNetworkEnforcementLifecycleMetadata(&value)
+		if sanitized != nil {
+			out = append(out, *sanitized)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func sanitizeRuntimeNetworkEnforcementResultMetadata(metadata *RuntimeNetworkEnforcementResultMetadata) *RuntimeNetworkEnforcementResultMetadata {
 	if metadata == nil {
 		return nil
@@ -135,6 +239,17 @@ func sanitizeRuntimeNetworkEnforcementResultMetadata(metadata *RuntimeNetworkEnf
 	if outcome == "success" && !runtimeNetworkEnforcementModeCanEnforce(mode) {
 		mode = "none"
 	}
+	reason := sanitizeRuntimeNetworkEnforcementReasonCode(metadata.ReasonCode)
+	warnings := sanitizeRuntimeNetworkEnforcementWarningCodeList(metadata.WarningCodes)
+	if outcome == "success" && runtimeNetworkEnforcementResultHasDowngradeSignal(reason, warnings) {
+		mode = "none"
+	}
+	capability := SanitizeRuntimeNetworkEnforcementCapability(metadata.Capability)
+	if outcome != "success" ||
+		!runtimeNetworkEnforcementModeCanEnforce(mode) ||
+		runtimeNetworkEnforcementResultHasDowngradeSignal(reason, warnings) {
+		capability = nil
+	}
 
 	sanitized := &RuntimeNetworkEnforcementResultMetadata{
 		PlanID:           sanitizeRuntimeNetworkEnforcementID(metadata.PlanID),
@@ -145,9 +260,9 @@ func sanitizeRuntimeNetworkEnforcementResultMetadata(metadata *RuntimeNetworkEnf
 		Operations:       sanitizeRuntimeNetworkEnforcementIDList(metadata.Operations),
 		PolicySnapshotID: sanitizeRuntimeNetworkEnforcementID(metadata.PolicySnapshotID),
 		PolicyPreset:     sanitizeRuntimeNetworkEnforcementPolicyPreset(metadata.PolicyPreset),
-		Capability:       SanitizeRuntimeNetworkEnforcementCapability(metadata.Capability),
-		ReasonCode:       sanitizeRuntimeNetworkEnforcementReasonCode(metadata.ReasonCode),
-		WarningCodes:     sanitizeRuntimeNetworkEnforcementWarningCodeList(metadata.WarningCodes),
+		Capability:       capability,
+		ReasonCode:       reason,
+		WarningCodes:     warnings,
 	}
 	if outcome == "failure" || outcome == "unsupported" {
 		sanitized.Capability = nil
@@ -166,6 +281,20 @@ func sanitizeRuntimeNetworkEnforcementResultMetadata(metadata *RuntimeNetworkEnf
 		return nil
 	}
 	return sanitized
+}
+
+func runtimeNetworkEnforcementResultHasDowngradeSignal(reason string, warnings []string) bool {
+	switch reason {
+	case "best_effort", "adapter_unsupported", "adapter_failed", "capability_missing", "mode_unavailable":
+		return true
+	}
+	for _, warning := range warnings {
+		switch warning {
+		case "partial_enforcement", "unsupported_mode", "capability_downgraded", "metadata_only_fallback", "sanitized_adapter_error":
+			return true
+		}
+	}
+	return false
 }
 
 func runtimeNetworkEnforcementModeCanEnforce(mode string) bool {
@@ -231,6 +360,33 @@ func sanitizeRuntimeNetworkEnforcementOutcome(value string) string {
 	}
 }
 
+func sanitizeRuntimeNetworkEnforcementLifecycleStatus(value string) string {
+	switch normalizeRuntimeNetworkEnforcementEnum(value) {
+	case "requested", "planned", "prepared", "starting", "applying", "active", "rolling_back", "cleaning_up", "stopped", "failed", "skipped":
+		return normalizeRuntimeNetworkEnforcementEnum(value)
+	default:
+		return ""
+	}
+}
+
+func sanitizeRuntimeNetworkEnforcementLifecycleReasonCode(value string) string {
+	switch normalizeRuntimeNetworkEnforcementEnum(value) {
+	case "prepared", "started", "applied", "active", "stopped", "skipped", "adapter_unsupported", "adapter_failed", "capability_missing", "cleanup_failed", "rollback_failed", "active_check_failed":
+		return normalizeRuntimeNetworkEnforcementEnum(value)
+	default:
+		return ""
+	}
+}
+
+func sanitizeRuntimeNetworkEnforcementLifecycleWarningCode(value string) string {
+	switch normalizeRuntimeNetworkEnforcementEnum(value) {
+	case "cleanup_failed", "rollback_failed", "active_check_failed", "partial_lifecycle", "unsupported_mechanism", "sanitized_adapter_error", "metadata_only_fallback":
+		return normalizeRuntimeNetworkEnforcementEnum(value)
+	default:
+		return ""
+	}
+}
+
 func sanitizeRuntimeNetworkEnforcementReasonCode(value string) string {
 	switch normalizeRuntimeNetworkEnforcementEnum(value) {
 	case "applied", "best_effort", "adapter_unsupported", "adapter_failed", "capability_missing", "mode_unavailable":
@@ -263,6 +419,10 @@ func sanitizeRuntimeNetworkEnforcementModeList(values []string) []string {
 
 func sanitizeRuntimeNetworkEnforcementWarningCodeList(values []string) []string {
 	return sanitizeRuntimeNetworkEnforcementStringList(values, sanitizeRuntimeNetworkEnforcementWarningCode)
+}
+
+func sanitizeRuntimeNetworkEnforcementLifecycleWarningCodeList(values []string) []string {
+	return sanitizeRuntimeNetworkEnforcementStringList(values, sanitizeRuntimeNetworkEnforcementLifecycleWarningCode)
 }
 
 func sanitizeRuntimeNetworkEnforcementStringList(values []string, sanitize func(string) string) []string {

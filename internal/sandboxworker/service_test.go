@@ -260,6 +260,209 @@ func TestServiceMicroVMCapabilityOutputDoesNotClaimDefaultNetworkEnforcement(t *
 	}
 }
 
+func TestServiceRuntimeDriverDescriptorProjectsNetworkSecurityFromActiveMetadataOnly(t *testing.T) {
+	enforcingCapability := func(mode string) *sandboxruntime.RuntimeNetworkEnforcementCapability {
+		return &sandboxruntime.RuntimeNetworkEnforcementCapability{
+			Supported:                  true,
+			Modes:                      []string{mode, "https://api.internal.example.com"},
+			SupportsDomainRules:        true,
+			SupportsEndpointRules:      true,
+			SupportsPrivateRangeRules:  true,
+			SupportsMetadataEndpoint:   true,
+			SupportsLoopbackRules:      true,
+			SupportsLinkLocalRules:     true,
+			SupportsDefaultDenyPosture: true,
+		}
+	}
+	requestedOnlySecurity := SecurityPolicy{
+		Requested: SecurityControls{
+			NetworkPolicy:      NetworkPolicyDenyByDefault,
+			NetworkEnforcement: NetworkEnforcementProxyFirewall,
+			IsolationLevel:     IsolationLevelVM,
+		},
+		Enforced: SecurityControls{
+			NetworkPolicy:                NetworkPolicyDenyByDefault,
+			NetworkEnforcement:           NetworkEnforcementRuntime,
+			NetworkEnforcementCapability: enforcingCapability(NetworkEnforcementRuntime),
+			IsolationLevel:               IsolationLevelVM,
+		},
+	}
+	metadataSecurity := SecurityPolicy{
+		Requested: SecurityControls{
+			NetworkPolicy:      NetworkPolicyBestEffort,
+			NetworkEnforcement: NetworkEnforcementNone,
+			IsolationLevel:     IsolationLevelVM,
+		},
+		Enforced: SecurityControls{
+			NetworkPolicy:                NetworkPolicyDenyByDefault,
+			NetworkEnforcement:           NetworkEnforcementProxyFirewall,
+			NetworkEnforcementCapability: enforcingCapability(NetworkEnforcementProxyFirewall),
+			IsolationLevel:               IsolationLevelVM,
+		},
+	}
+	conservativeSecurity := SecurityPolicy{
+		Requested: SecurityControls{
+			NetworkPolicy:      NetworkPolicyBestEffort,
+			NetworkEnforcement: NetworkEnforcementNone,
+			IsolationLevel:     IsolationLevelVM,
+		},
+		Enforced: SecurityControls{
+			NetworkPolicy:      NetworkPolicyBestEffort,
+			NetworkEnforcement: NetworkEnforcementNone,
+			IsolationLevel:     IsolationLevelVM,
+		},
+	}
+
+	tests := []struct {
+		name                     string
+		security                 SecurityPolicy
+		metadata                 *sandboxruntime.RuntimeNetworkEnforcementMetadata
+		wantRequestedPolicy      string
+		wantRequestedEnforcement string
+		wantEnforcedPolicy       string
+		wantEnforcedMode         string
+		wantCapability           bool
+		wantResultMode           string
+		wantResultCapability     bool
+	}{
+		{
+			name:                     "requested policy only",
+			security:                 requestedOnlySecurity,
+			wantRequestedPolicy:      NetworkPolicyDenyByDefault,
+			wantRequestedEnforcement: NetworkEnforcementProxyFirewall,
+			wantEnforcedPolicy:       NetworkPolicyBestEffort,
+			wantEnforcedMode:         NetworkEnforcementNone,
+		},
+		{
+			name:                     "planned enforcement",
+			security:                 metadataSecurity,
+			metadata:                 workerDescriptorNetworkMetadata("network-plan-planned", "planned", "firewall", nil),
+			wantRequestedPolicy:      NetworkPolicyDenyByDefault,
+			wantRequestedEnforcement: NetworkEnforcementNone,
+			wantEnforcedPolicy:       NetworkPolicyBestEffort,
+			wantEnforcedMode:         NetworkEnforcementNone,
+		},
+		{
+			name:                     "partial success",
+			security:                 metadataSecurity,
+			metadata:                 workerDescriptorNetworkMetadata("network-plan-partial", "active", "firewall", workerDescriptorNetworkResult("success", NetworkEnforcementProxyFirewall, enforcingCapability(NetworkEnforcementProxyFirewall), "applied", "partial_enforcement")),
+			wantRequestedPolicy:      NetworkPolicyDenyByDefault,
+			wantRequestedEnforcement: NetworkEnforcementNone,
+			wantEnforcedPolicy:       NetworkPolicyBestEffort,
+			wantEnforcedMode:         NetworkEnforcementNone,
+			wantResultMode:           NetworkEnforcementNone,
+		},
+		{
+			name:                     "failure",
+			security:                 metadataSecurity,
+			metadata:                 workerDescriptorNetworkMetadata("network-plan-failure", "active", "firewall", workerDescriptorNetworkResult("failure", NetworkEnforcementProxyFirewall, enforcingCapability(NetworkEnforcementProxyFirewall), "adapter_failed", "sanitized_adapter_error")),
+			wantRequestedPolicy:      NetworkPolicyDenyByDefault,
+			wantRequestedEnforcement: NetworkEnforcementNone,
+			wantEnforcedPolicy:       NetworkPolicyBestEffort,
+			wantEnforcedMode:         NetworkEnforcementNone,
+			wantResultMode:           NetworkEnforcementNone,
+		},
+		{
+			name:                     "active success",
+			security:                 conservativeSecurity,
+			metadata:                 workerDescriptorNetworkMetadata("network-plan-active", "active", "firewall", workerDescriptorNetworkResult("success", NetworkEnforcementProxyFirewall, enforcingCapability(NetworkEnforcementProxyFirewall), "applied")),
+			wantRequestedPolicy:      NetworkPolicyDenyByDefault,
+			wantRequestedEnforcement: NetworkEnforcementNone,
+			wantEnforcedPolicy:       NetworkPolicyDenyByDefault,
+			wantEnforcedMode:         NetworkEnforcementProxyFirewall,
+			wantCapability:           true,
+			wantResultMode:           NetworkEnforcementProxyFirewall,
+			wantResultCapability:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			registry, err := NewDriverRegistry(&fakeWorkerRuntimeDriver{id: RuntimeDriverMicroVM})
+			if err != nil {
+				t.Fatalf("NewDriverRegistry() error: %v", err)
+			}
+			service, err := NewService(ServiceOptions{
+				WorkerID: "worker-projection-" + strings.ReplaceAll(tt.name, " ", "-"),
+				Registry: registry,
+				RuntimeDrivers: map[string]RuntimeDriver{
+					RuntimeDriverMicroVM: {
+						ID:                 RuntimeDriverMicroVM,
+						HostKind:           HostKindLocal,
+						IsolationLevel:     IsolationLevelVM,
+						Operations:         microVMRuntimeDriverOperations,
+						Security:           tt.security,
+						NetworkEnforcement: tt.metadata,
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewService() error: %v", err)
+			}
+
+			capabilities := service.Capabilities()
+			if err := capabilities.Validate(); err != nil {
+				t.Fatalf("Capabilities().Validate() error: %v", err)
+			}
+			if len(capabilities.RuntimeDrivers) != 1 {
+				t.Fatalf("runtime drivers = %#v, want one microVM driver", capabilities.RuntimeDrivers)
+			}
+			driver := capabilities.RuntimeDrivers[0]
+			if driver.Security.Requested.NetworkPolicy != tt.wantRequestedPolicy ||
+				driver.Security.Requested.NetworkEnforcement != tt.wantRequestedEnforcement {
+				t.Fatalf("requested security = %#v, want policy %q enforcement %q", driver.Security.Requested, tt.wantRequestedPolicy, tt.wantRequestedEnforcement)
+			}
+			if driver.Security.Enforced.NetworkPolicy != tt.wantEnforcedPolicy ||
+				driver.Security.Enforced.NetworkEnforcement != tt.wantEnforcedMode {
+				t.Fatalf("enforced security = %#v, want policy %q enforcement %q", driver.Security.Enforced, tt.wantEnforcedPolicy, tt.wantEnforcedMode)
+			}
+			if gotCapability := driver.Security.Enforced.NetworkEnforcementCapability != nil; gotCapability != tt.wantCapability {
+				t.Fatalf("enforced capability present = %v, want %v (%#v)", gotCapability, tt.wantCapability, driver.Security.Enforced.NetworkEnforcementCapability)
+			}
+			if tt.wantCapability {
+				if !reflect.DeepEqual(driver.Security.Enforced.NetworkEnforcementCapability.Modes, []string{NetworkEnforcementProxyFirewall}) {
+					t.Fatalf("enforced capability modes = %#v, want sanitized proxy_firewall only", driver.Security.Enforced.NetworkEnforcementCapability.Modes)
+				}
+			}
+			if tt.metadata == nil {
+				if driver.NetworkEnforcement != nil {
+					t.Fatalf("NetworkEnforcement = %#v, want nil", driver.NetworkEnforcement)
+				}
+			} else {
+				if driver.NetworkEnforcement == nil || driver.NetworkEnforcement.Plan == nil || driver.NetworkEnforcement.Orchestration == nil {
+					t.Fatalf("NetworkEnforcement = %#v, want sanitized plan and orchestration metadata", driver.NetworkEnforcement)
+				}
+				if driver.NetworkEnforcement.Result != nil {
+					if driver.NetworkEnforcement.Result.EnforcementMode != tt.wantResultMode {
+						t.Fatalf("result enforcementMode = %q, want %q", driver.NetworkEnforcement.Result.EnforcementMode, tt.wantResultMode)
+					}
+					if gotCapability := driver.NetworkEnforcement.Result.Capability != nil; gotCapability != tt.wantResultCapability {
+						t.Fatalf("result capability present = %v, want %v (%#v)", gotCapability, tt.wantResultCapability, driver.NetworkEnforcement.Result.Capability)
+					}
+				}
+			}
+
+			encoded, err := json.Marshal(driver)
+			if err != nil {
+				t.Fatalf("Marshal(driver) error: %v", err)
+			}
+			publicText := string(encoded)
+			for _, unsafe := range []string{
+				"api.internal.example.com",
+				"/tmp/",
+				"proxy.sock",
+				"token",
+				"secret",
+				"://",
+			} {
+				if strings.Contains(publicText, unsafe) {
+					t.Fatalf("driver descriptor leaked unsafe value %q in %s", unsafe, publicText)
+				}
+			}
+		})
+	}
+}
+
 func TestServiceCapabilitiesCanIncludeExplicitNetworkEnforcementCapability(t *testing.T) {
 	registry, err := NewDriverRegistry(&fakeWorkerRuntimeDriver{id: RuntimeDriverMicroVM})
 	if err != nil {
@@ -276,6 +479,7 @@ func TestServiceCapabilitiesCanIncludeExplicitNetworkEnforcementCapability(t *te
 			Mechanisms:       []string{"proxy", "firewall"},
 			Operations:       []string{"default_deny", "allowlist", "/tmp/raw-rules.sock"},
 		},
+		Orchestration: workerDescriptorActiveNetworkOrchestration("network-plan-worker"),
 		Result: &sandboxruntime.RuntimeNetworkEnforcementResultMetadata{
 			PlanID:          "network-plan-worker",
 			AdapterID:       "fake-worker-adapter",
@@ -372,6 +576,119 @@ func TestServiceCapabilitiesCanIncludeExplicitNetworkEnforcementCapability(t *te
 		if strings.Contains(publicText, unsafe) {
 			t.Fatalf("capabilities leaked or claimed %q in %s", unsafe, publicText)
 		}
+	}
+}
+
+func workerDescriptorNetworkMetadata(planID, orchestrationStatus, ruleMechanism string, result *sandboxruntime.RuntimeNetworkEnforcementResultMetadata) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
+	return &sandboxruntime.RuntimeNetworkEnforcementMetadata{
+		Plan: &sandboxruntime.RuntimeNetworkEnforcementPlanMetadata{
+			ID:               planID,
+			Source:           "worker",
+			Operation:        "prepare_network",
+			PolicySnapshotID: planID + "-snapshot",
+			PolicyPreset:     "deny_by_default",
+			DefaultPosture:   "deny_by_default",
+			Mechanisms:       []string{"proxy", "firewall"},
+			Operations:       []string{"default_deny", "allowlist", "iptables -A OUTPUT", "/tmp/proxy.sock", "token=secret"},
+		},
+		Orchestration: workerDescriptorNetworkOrchestration(planID, orchestrationStatus, ruleMechanism),
+		Result:        result,
+	}
+}
+
+func workerDescriptorNetworkResult(outcome, mode string, capability *sandboxruntime.RuntimeNetworkEnforcementCapability, reason string, warnings ...string) *sandboxruntime.RuntimeNetworkEnforcementResultMetadata {
+	return &sandboxruntime.RuntimeNetworkEnforcementResultMetadata{
+		PlanID:           "network-plan-result",
+		AdapterID:        "fake-worker-adapter",
+		Outcome:          outcome,
+		EnforcementMode:  mode,
+		Mechanisms:       []string{"proxy", "firewall"},
+		Operations:       []string{"proxy_route", "firewall_apply", "connect api.internal.example.com:443", "/tmp/firewall.rules", "GITHUB_TOKEN"},
+		PolicySnapshotID: "policy-snapshot-result",
+		PolicyPreset:     "deny_by_default",
+		Capability:       capability,
+		ReasonCode:       reason,
+		WarningCodes:     warnings,
+	}
+}
+
+func workerDescriptorNetworkOrchestration(planID, status, ruleMechanism string) *sandboxruntime.RuntimeNetworkEnforcementOrchestrationMetadata {
+	if status == "active" {
+		return workerDescriptorActiveNetworkOrchestration(planID)
+	}
+	return &sandboxruntime.RuntimeNetworkEnforcementOrchestrationMetadata{
+		PlanID:           planID,
+		AdapterID:        "fake-worker-adapter",
+		Status:           status,
+		Mechanisms:       []string{"proxy", "firewall"},
+		Operations:       []string{"prepare_proxy", "plan_rules"},
+		PolicySnapshotID: planID + "-snapshot",
+		PolicyPreset:     "deny_by_default",
+		Proxy: &sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata{
+			ID:               planID + "-proxy",
+			PlanID:           planID,
+			AdapterID:        "fake-worker-adapter",
+			Status:           "prepared",
+			Mechanisms:       []string{"proxy"},
+			Operations:       []string{"prepare_proxy"},
+			PolicySnapshotID: planID + "-snapshot",
+			PolicyPreset:     "deny_by_default",
+			CapabilityLabels: []string{"proxy_prepared", "token_holder"},
+			ReasonCode:       "prepared",
+		},
+		Rules: []sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata{{
+			ID:               planID + "-rules",
+			PlanID:           planID,
+			AdapterID:        "fake-worker-adapter",
+			Status:           "planned",
+			Mechanisms:       []string{ruleMechanism},
+			Operations:       []string{"plan_rules"},
+			PolicySnapshotID: planID + "-snapshot",
+			PolicyPreset:     "deny_by_default",
+			CapabilityLabels: []string{"firewall_planned", "/tmp/rules"},
+			ReasonCode:       "prepared",
+		}},
+		CapabilityLabels: []string{"network_planned", "token_holder"},
+		ReasonCode:       "prepared",
+		WarningCodes:     []string{"metadata_only_fallback"},
+	}
+}
+
+func workerDescriptorActiveNetworkOrchestration(planID string) *sandboxruntime.RuntimeNetworkEnforcementOrchestrationMetadata {
+	return &sandboxruntime.RuntimeNetworkEnforcementOrchestrationMetadata{
+		PlanID:           planID,
+		AdapterID:        "fake-worker-adapter",
+		Status:           "active",
+		Mechanisms:       []string{"proxy", "firewall"},
+		Operations:       []string{"active_proxy", "active_rules"},
+		PolicySnapshotID: planID + "-snapshot",
+		PolicyPreset:     "deny_by_default",
+		Proxy: &sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata{
+			ID:               planID + "-proxy",
+			PlanID:           planID,
+			AdapterID:        "fake-worker-adapter",
+			Status:           "active",
+			Mechanisms:       []string{"proxy"},
+			Operations:       []string{"active_proxy", "/tmp/proxy.sock"},
+			PolicySnapshotID: planID + "-snapshot",
+			PolicyPreset:     "deny_by_default",
+			CapabilityLabels: []string{"proxy_active", "token_holder"},
+			ReasonCode:       "active",
+		},
+		Rules: []sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata{{
+			ID:               planID + "-rules",
+			PlanID:           planID,
+			AdapterID:        "fake-worker-adapter",
+			Status:           "active",
+			Mechanisms:       []string{"firewall"},
+			Operations:       []string{"active_rules", "iptables -A OUTPUT"},
+			PolicySnapshotID: planID + "-snapshot",
+			PolicyPreset:     "deny_by_default",
+			CapabilityLabels: []string{"firewall_active", "secret_rule"},
+			ReasonCode:       "active",
+		}},
+		CapabilityLabels: []string{"proxy_active", "firewall_active", "token_holder"},
+		ReasonCode:       "active",
 	}
 }
 

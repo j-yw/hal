@@ -758,11 +758,8 @@ func sandboxdMicroVMRuntimeDriverSecurity(enforcement *sandboxruntime.RuntimeNet
 	}
 	if enforcement.Plan != nil && enforcement.Plan.DefaultPosture == sandboxworker.NetworkPolicyDenyByDefault {
 		policy.Requested.NetworkPolicy = sandboxworker.NetworkPolicyDenyByDefault
-		if requestedMode := sandboxdNetworkEnforcementModeFromPlan(enforcement.Plan); requestedMode != "" {
-			policy.Requested.NetworkEnforcement = requestedMode
-		}
 	}
-	if enforcement.Result == nil || enforcement.Result.Outcome != "success" {
+	if !sandboxdRuntimeNetworkEnforcementActiveSuccess(enforcement) {
 		return policy
 	}
 	capability := sandboxruntime.SanitizeRuntimeNetworkEnforcementCapability(enforcement.Result.Capability)
@@ -778,37 +775,6 @@ func sandboxdMicroVMRuntimeDriverSecurity(enforcement *sandboxruntime.RuntimeNet
 		policy.Enforced.NetworkPolicy = sandboxworker.NetworkPolicyDenyByDefault
 	}
 	return policy
-}
-
-func sandboxdNetworkEnforcementModeFromPlan(plan *sandboxruntime.RuntimeNetworkEnforcementPlanMetadata) string {
-	if plan == nil {
-		return ""
-	}
-	hasProxy := false
-	hasFirewall := false
-	hasRuntime := false
-	for _, mechanism := range plan.Mechanisms {
-		switch mechanism {
-		case sandboxworker.NetworkEnforcementProxy:
-			hasProxy = true
-		case sandboxworker.NetworkEnforcementFirewall:
-			hasFirewall = true
-		case sandboxworker.NetworkEnforcementRuntime:
-			hasRuntime = true
-		}
-	}
-	switch {
-	case hasProxy && hasFirewall:
-		return sandboxworker.NetworkEnforcementProxyFirewall
-	case hasFirewall:
-		return sandboxworker.NetworkEnforcementFirewall
-	case hasProxy:
-		return sandboxworker.NetworkEnforcementProxy
-	case hasRuntime:
-		return sandboxworker.NetworkEnforcementRuntime
-	default:
-		return ""
-	}
 }
 
 func sandboxdNetworkEnforcementMode(mode string) string {
@@ -834,6 +800,71 @@ func sandboxdNetworkEnforcementModeCanEnforce(mode string) bool {
 	default:
 		return false
 	}
+}
+
+func sandboxdRuntimeNetworkEnforcementActiveSuccess(enforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata) bool {
+	enforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(enforcement)
+	if enforcement == nil || enforcement.Result == nil || enforcement.Result.Outcome != "success" {
+		return false
+	}
+	mode := sandboxdNetworkEnforcementMode(enforcement.Result.EnforcementMode)
+	if !sandboxdNetworkEnforcementModeCanEnforce(mode) {
+		return false
+	}
+	if sandboxruntime.SanitizeRuntimeNetworkEnforcementCapability(enforcement.Result.Capability) == nil {
+		return false
+	}
+	return sandboxdRuntimeNetworkEnforcementOrchestrationActive(enforcement.Orchestration, mode)
+}
+
+func sandboxdRuntimeNetworkEnforcementOrchestrationActive(orchestration *sandboxruntime.RuntimeNetworkEnforcementOrchestrationMetadata, mode string) bool {
+	if orchestration == nil ||
+		orchestration.Status != "active" ||
+		orchestration.ReasonCode != "active" ||
+		len(orchestration.WarningCodes) > 0 {
+		return false
+	}
+	proxyActive := sandboxdRuntimeNetworkEnforcementLifecycleActive(orchestration.Proxy)
+	ruleActive := false
+	for i := range orchestration.Rules {
+		rule := &orchestration.Rules[i]
+		if !sandboxdRuntimeNetworkEnforcementLifecycleActive(rule) {
+			return false
+		}
+		if sandboxdRuntimeNetworkEnforcementLifecycleHasMechanism(rule, sandboxworker.NetworkEnforcementFirewall) ||
+			sandboxdRuntimeNetworkEnforcementLifecycleHasMechanism(rule, sandboxworker.NetworkEnforcementRuntime) {
+			ruleActive = true
+		}
+	}
+	switch mode {
+	case sandboxworker.NetworkEnforcementProxyFirewall:
+		return proxyActive && ruleActive
+	case sandboxworker.NetworkEnforcementProxy:
+		return proxyActive
+	case sandboxworker.NetworkEnforcementFirewall, sandboxworker.NetworkEnforcementRuntime:
+		return ruleActive
+	default:
+		return false
+	}
+}
+
+func sandboxdRuntimeNetworkEnforcementLifecycleActive(lifecycle *sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata) bool {
+	return lifecycle != nil &&
+		lifecycle.Status == "active" &&
+		lifecycle.ReasonCode == "active" &&
+		len(lifecycle.WarningCodes) == 0
+}
+
+func sandboxdRuntimeNetworkEnforcementLifecycleHasMechanism(lifecycle *sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata, mechanism string) bool {
+	if lifecycle == nil {
+		return false
+	}
+	for _, candidate := range lifecycle.Mechanisms {
+		if candidate == mechanism {
+			return true
+		}
+	}
+	return false
 }
 
 func sandboxdMicroVMOperationsWithGuestAgent() []string {

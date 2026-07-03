@@ -560,6 +560,104 @@ func TestDriverNetworkEnforcementPlanningWithoutAdapterFailsClosed(t *testing.T)
 	}
 }
 
+func TestDriverNetworkEnforcementMetadataOptionsAreClonedSanitizedAdditiveAndInert(t *testing.T) {
+	plan := microVMNetworkEnforcementTestPlan()
+	orchestration := microVMNetworkEnforcementTestOrchestration(plan)
+
+	driver := NewDriver(DriverOptions{
+		CapabilityDetector:              fixedCapabilityDetector(availableCapabilityReport()),
+		NetworkEnforcementPlan:          &plan,
+		NetworkEnforcementOrchestration: &orchestration,
+	})
+
+	plan.ID = "mutated-plan"
+	if plan.PolicySnapshot != nil {
+		plan.PolicySnapshot.ID = "mutated-policy"
+	}
+	orchestration.PlanID = "mutated-orchestration"
+	if orchestration.Proxy != nil {
+		orchestration.Proxy.ID = "mutated-proxy"
+	}
+	if len(orchestration.Rules) > 0 {
+		orchestration.Rules[0].ID = "mutated-rules"
+	}
+
+	metadata := driver.Metadata().NetworkEnforcement
+	if metadata == nil || metadata.Plan == nil || metadata.Orchestration == nil {
+		t.Fatalf("NetworkEnforcement = %#v, want plan and orchestration metadata", metadata)
+	}
+	if metadata.Result != nil {
+		t.Fatalf("NetworkEnforcement.Result = %#v, want nil for metadata-only planning", metadata.Result)
+	}
+	if metadata.Plan.ID != "network-plan-microvm" ||
+		metadata.Plan.PolicySnapshotID != "policy-snapshot-microvm" ||
+		!reflect.DeepEqual(metadata.Plan.Mechanisms, []string{"proxy", "firewall"}) {
+		t.Fatalf("plan metadata = %#v, want cloned sanitized plan", metadata.Plan)
+	}
+	orchestrationMetadata := metadata.Orchestration
+	if orchestrationMetadata.PlanID != "network-plan-microvm" ||
+		orchestrationMetadata.AdapterID != "fake-live-orchestrator" ||
+		orchestrationMetadata.Status != string(networkenforcement.LifecycleStatusPlanned) ||
+		orchestrationMetadata.PolicySnapshotID != "policy-snapshot-microvm" ||
+		orchestrationMetadata.PolicyPreset != string(networkenforcement.PolicyPresetDenyByDefault) {
+		t.Fatalf("orchestration metadata = %#v, want cloned sanitized live planning labels", orchestrationMetadata)
+	}
+	if orchestrationMetadata.Proxy == nil || orchestrationMetadata.Proxy.ID != "proxy-microvm" ||
+		orchestrationMetadata.Proxy.Status != string(networkenforcement.LifecycleStatusPrepared) {
+		t.Fatalf("orchestration proxy metadata = %#v, want sanitized proxy lifecycle metadata", orchestrationMetadata.Proxy)
+	}
+	if len(orchestrationMetadata.Rules) != 1 ||
+		orchestrationMetadata.Rules[0].ID != "rules-microvm" ||
+		orchestrationMetadata.Rules[0].Status != string(networkenforcement.LifecycleStatusPlanned) {
+		t.Fatalf("orchestration rules metadata = %#v, want sanitized rule lifecycle metadata", orchestrationMetadata.Rules)
+	}
+	if !reflect.DeepEqual(orchestrationMetadata.Operations, []string{"proxy_route", "firewall_apply"}) {
+		t.Fatalf("orchestration operations = %#v, want safe operations only", orchestrationMetadata.Operations)
+	}
+	if !reflect.DeepEqual(orchestrationMetadata.WarningCodes, []string{"metadata_only_fallback"}) {
+		t.Fatalf("orchestration warnings = %#v, want safe warning codes only", orchestrationMetadata.WarningCodes)
+	}
+
+	metadata.Orchestration.Proxy.ID = "returned-metadata-mutation"
+	metadata.Orchestration.Rules[0].ID = "returned-rules-mutation"
+	second := driver.Metadata().NetworkEnforcement
+	if second.Orchestration.Proxy.ID != "proxy-microvm" || second.Orchestration.Rules[0].ID != "rules-microvm" {
+		t.Fatalf("Metadata() returned mutable orchestration aliases: %#v", second.Orchestration)
+	}
+
+	encoded, err := json.Marshal(second)
+	if err != nil {
+		t.Fatalf("Marshal(NetworkEnforcement) error = %v", err)
+	}
+	publicText := string(encoded)
+	for _, unsafe := range []string{
+		"api.internal.example.com",
+		"127.0.0.1",
+		"443",
+		"/tmp",
+		"live-proxy.sock",
+		"iptables",
+		"token",
+		"secret",
+		"://",
+		`"result":`,
+		`"outcome":`,
+		`"enforcementMode":`,
+		`"capability":`,
+	} {
+		if strings.Contains(publicText, unsafe) {
+			t.Fatalf("metadata-only network enforcement leaked or overclaimed %q in %s", unsafe, publicText)
+		}
+	}
+
+	defaultDriver := NewDriver(DriverOptions{
+		CapabilityDetector: fixedCapabilityDetector(availableCapabilityReport()),
+	})
+	if got := defaultDriver.Metadata().NetworkEnforcement; got != nil {
+		t.Fatalf("default NetworkEnforcement = %#v, want nil without injected metadata", got)
+	}
+}
+
 func TestDriverExecDelegatesThroughControllerAndStreamsOutput(t *testing.T) {
 	config := minimalValidConfig()
 	controller := &fakeController{
@@ -1078,6 +1176,54 @@ func (adapter *recordingMicroVMNetworkEnforcementAdapter) EnforceNetwork(_ conte
 
 func microVMNetworkEnforcementTestPlan() networkenforcement.Plan {
 	return networkenforcement.BuildPlan(microVMNetworkEnforcementTestPlanRequest())
+}
+
+func microVMNetworkEnforcementTestOrchestration(plan networkenforcement.Plan) networkenforcement.LiveLifecycleMetadata {
+	return networkenforcement.LiveLifecycleMetadata{
+		PlanID:     plan.ID,
+		AdapterID:  "fake-live-orchestrator",
+		Status:     networkenforcement.LifecycleStatusPlanned,
+		Mechanisms: []networkenforcement.EnforcementMechanism{networkenforcement.EnforcementMechanismProxy, networkenforcement.EnforcementMechanismFirewall},
+		Operations: []string{
+			"proxy_route",
+			"firewall_apply",
+			"/tmp/live-proxy.sock",
+			"connect api.internal.example.com:443",
+			"iptables -A OUTPUT",
+			"token=secret",
+		},
+		PolicySnapshot: plan.PolicySnapshot,
+		Proxy: &networkenforcement.ProxyListenerLifecycleMetadata{
+			ID:               "proxy-microvm",
+			PlanID:           plan.ID,
+			AdapterID:        "fake-live-orchestrator",
+			Status:           networkenforcement.LifecycleStatusPrepared,
+			Mechanisms:       []networkenforcement.EnforcementMechanism{networkenforcement.EnforcementMechanismProxy},
+			Operations:       []string{"proxy_prepare", "/tmp/proxy.sock"},
+			PolicySnapshot:   plan.PolicySnapshot,
+			CapabilityLabels: []string{"proxy_prepared", "https://proxy.example.test"},
+			ReasonCode:       networkenforcement.LifecycleReasonPrepared,
+		},
+		Rules: []networkenforcement.RuleLifecycleMetadata{
+			{
+				ID:               "rules-microvm",
+				PlanID:           plan.ID,
+				AdapterID:        "fake-live-orchestrator",
+				Status:           networkenforcement.LifecycleStatusPlanned,
+				Mechanisms:       []networkenforcement.EnforcementMechanism{networkenforcement.EnforcementMechanismFirewall},
+				Operations:       []string{"rules_plan", "nft add rule"},
+				PolicySnapshot:   plan.PolicySnapshot,
+				CapabilityLabels: []string{"rules_planned", "secret_rules"},
+				ReasonCode:       networkenforcement.LifecycleReasonPrepared,
+			},
+		},
+		CapabilityLabels: []string{"metadata_only", "default_deny_requested", "/tmp/proxy.sock"},
+		ReasonCode:       networkenforcement.LifecycleReasonPrepared,
+		WarningCodes: []networkenforcement.LifecycleWarningCode{
+			networkenforcement.LifecycleWarningMetadataOnlyFallback,
+			networkenforcement.LifecycleWarningCode("https://warning.example.test"),
+		},
+	}
 }
 
 func microVMNetworkEnforcementTestPlanRequest() networkenforcement.PlanRequest {

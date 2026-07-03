@@ -2207,6 +2207,7 @@ func factorySandboxSecurityMetadataFromState(instance *sandbox.SandboxState) *fa
 }
 
 func factorySandboxSecurityMetadata(security *sandbox.SandboxSecurity) *factory.SandboxSecurityMetadata {
+	security = sanitizeCommandSandboxSecurity(security)
 	if security == nil {
 		return nil
 	}
@@ -2293,6 +2294,7 @@ func recordFactorySandboxSecurityPolicyEvent(store factory.Store, deps factorySa
 }
 
 func factorySandboxSecurityTimelineMetadata(security *factory.SandboxSecurityMetadata) map[string]any {
+	security = cloneFactorySandboxSecurityMetadata(security)
 	if security == nil {
 		return nil
 	}
@@ -2344,6 +2346,7 @@ func cloneFactorySandboxSecurityMetadata(security *factory.SandboxSecurityMetada
 	if security == nil {
 		return nil
 	}
+	security = sanitizeFactorySandboxSecurityMetadata(security)
 	capabilityReadiness := sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness)
 	clone := &factory.SandboxSecurityMetadata{
 		CapabilityReadiness:            capabilityReadiness,
@@ -2367,6 +2370,44 @@ func cloneFactorySandboxSecurityMetadata(security *factory.SandboxSecurityMetada
 		return nil
 	}
 	return clone
+}
+
+func sanitizeFactorySandboxSecurityMetadata(security *factory.SandboxSecurityMetadata) *factory.SandboxSecurityMetadata {
+	if security == nil {
+		return nil
+	}
+	network := factorySandboxNetworkSecurityToSandbox(security.Network)
+	sanitized := sanitizeCommandSandboxSecurity(&sandbox.SandboxSecurity{
+		Network:             network,
+		CapabilityReadiness: sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness),
+		Secrets:             factorySandboxSecretSecurityToSandbox(security.Secrets),
+	})
+	if sanitized == nil {
+		return nil
+	}
+	return factorySandboxSecurityMetadata(sanitized)
+}
+
+func factorySandboxNetworkSecurityToSandbox(network *factory.SandboxNetworkSecurityMetadata) *sandbox.SandboxNetworkSecurity {
+	if network == nil {
+		return nil
+	}
+	return &sandbox.SandboxNetworkSecurity{
+		PolicyRequested: network.PolicyRequested,
+		PolicyEnforced:  network.PolicyEnforced,
+		EnforcementMode: network.EnforcementMode,
+		PolicyResult:    sandbox.CloneSandboxNetworkPolicyResultPtr(network.PolicyResult),
+	}
+}
+
+func factorySandboxSecretSecurityToSandbox(secrets *factory.SandboxSecretSecurityMetadata) *sandbox.SandboxSecretSecurity {
+	if secrets == nil {
+		return nil
+	}
+	return &sandbox.SandboxSecretSecurity{
+		RequestedModes: append([]string(nil), secrets.RequestedModes...),
+		ActiveModes:    append([]string(nil), secrets.ActiveModes...),
+	}
 }
 
 func factoryRunningSandboxFilter(instance *sandbox.SandboxState) bool {

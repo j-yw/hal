@@ -267,6 +267,12 @@ func unsafeFreeformMetadata(value string) bool {
 		"access_key",
 		"private-key",
 		"private_key",
+		"process",
+		"command",
+		"iptables",
+		"nftables",
+		"pfctl",
+		"firewall-cmd",
 	} {
 		if strings.Contains(lower, marker) {
 			return true

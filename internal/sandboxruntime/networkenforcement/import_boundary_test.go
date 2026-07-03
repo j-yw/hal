@@ -133,11 +133,15 @@ func TestNetworkEnforcementImportBoundaryCoversPlanningAndAdapterFiles(t *testin
 	}
 	for _, path := range []string{
 		"adapter.go",
+		"aggregation.go",
 		"allowlist_normalization.go",
 		"doc.go",
+		"listener_lifecycle.go",
+		"live_contracts.go",
 		"plan.go",
 		"planner.go",
 		"redaction.go",
+		"rule_lifecycle.go",
 	} {
 		if !found[path] {
 			t.Fatalf("import-boundary guard files = %#v, want %s covered", paths, path)

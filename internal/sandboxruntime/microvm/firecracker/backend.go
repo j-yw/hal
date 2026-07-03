@@ -39,7 +39,9 @@ var (
 // GuestReadinessWaiter is optional and remains inert until an explicit live
 // start path chooses to call it. GuestTransport is optional and only used for
 // guest operations after the controller is live-start enabled and target guest
-// readiness is ready. Raw paths are not exposed on returned targets.
+// readiness is ready. NetworkEnforcement carries sanitized metadata only and
+// never starts listeners, mutates firewall/runtime state, or enables live
+// enforcement. Raw paths are not exposed on returned targets.
 type BackendOptions struct {
 	BaseStateDir         string
 	ProcessAdapter       ProcessAdapter
@@ -47,6 +49,7 @@ type BackendOptions struct {
 	LiveProcessManager   LiveProcessManager
 	GuestReadinessWaiter GuestReadinessWaiter
 	GuestTransport       GuestTransport
+	NetworkEnforcement   *sandboxruntime.RuntimeNetworkEnforcementMetadata
 	LiveStart            bool
 }
 
@@ -95,6 +98,7 @@ type Backend struct {
 	liveProcessManager   LiveProcessManager
 	guestReadinessWaiter GuestReadinessWaiter
 	guestTransport       GuestTransport
+	networkEnforcement   *sandboxruntime.RuntimeNetworkEnforcementMetadata
 	liveStart            bool
 }
 
@@ -107,6 +111,7 @@ func NewBackend(options BackendOptions) *Backend {
 		liveProcessManager:   options.LiveProcessManager,
 		guestReadinessWaiter: options.GuestReadinessWaiter,
 		guestTransport:       options.GuestTransport,
+		networkEnforcement:   sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(options.NetworkEnforcement),
 		liveStart:            options.LiveStart,
 	}
 }
@@ -143,13 +148,21 @@ func (b *Backend) Create(_ context.Context, req microvm.BackendCreateRequest) (*
 			Driver:    sandboxruntime.DriverMicroVM,
 			RuntimeID: runtimeID,
 			Metadata: &sandboxruntime.RuntimeMetadata{
-				Backend:          BackendID,
-				CapabilityLabels: firecrackerTargetCapabilityLabels(),
-				PathRoles:        firecrackerTargetPathRoles(config.Paths),
-				ProcessLaunch:    processBoundaryAvailableRuntimeMetadata(),
+				Backend:            BackendID,
+				CapabilityLabels:   firecrackerTargetCapabilityLabels(),
+				PathRoles:          firecrackerTargetPathRoles(config.Paths),
+				ProcessLaunch:      processBoundaryAvailableRuntimeMetadata(),
+				NetworkEnforcement: b.runtimeNetworkEnforcementMetadata(),
 			},
 		},
 	}, nil
+}
+
+func (b *Backend) runtimeNetworkEnforcementMetadata() *sandboxruntime.RuntimeNetworkEnforcementMetadata {
+	if b == nil {
+		return nil
+	}
+	return sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(b.networkEnforcement)
 }
 
 func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (microvm.Controller, error) {
@@ -164,6 +177,7 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 	var manager LiveProcessManager
 	var guestWaiter GuestReadinessWaiter
 	var guestTransport GuestTransport
+	var networkEnforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata
 	if b != nil {
 		baseStateDir = b.baseStateDir
 		adapter = b.processAdapter
@@ -171,6 +185,7 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 		manager = b.liveProcessManager
 		guestWaiter = b.guestReadinessWaiter
 		guestTransport = b.guestTransport
+		networkEnforcement = b.runtimeNetworkEnforcementMetadata()
 	}
 	return firecrackerController{
 		baseStateDir:         baseStateDir,
@@ -179,6 +194,7 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 		liveProcessManager:   manager,
 		guestReadinessWaiter: guestWaiter,
 		guestTransport:       guestTransport,
+		networkEnforcement:   networkEnforcement,
 		liveStart:            b != nil && b.liveStart,
 	}, nil
 }
@@ -190,6 +206,7 @@ type firecrackerController struct {
 	liveProcessManager   LiveProcessManager
 	guestReadinessWaiter GuestReadinessWaiter
 	guestTransport       GuestTransport
+	networkEnforcement   *sandboxruntime.RuntimeNetworkEnforcementMetadata
 	liveStart            bool
 }
 
@@ -222,7 +239,7 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 		processLaunch = liveStart.processLaunch
 		guestReadiness = liveStart.guestReadiness
 	}
-	return firecrackerStartTarget(req.Target, operation.ProcessDescriptor, processLaunch, guestReadiness), nil
+	return firecrackerStartTarget(req.Target, operation.ProcessDescriptor, processLaunch, guestReadiness, c.networkEnforcement), nil
 }
 
 func (c firecrackerController) validateLiveBootContract() error {
@@ -342,7 +359,7 @@ func (c firecrackerController) Stop(ctx context.Context, req microvm.ControllerL
 			return nil, err
 		}
 	}
-	return firecrackerLifecycleTarget(req.Target, plan.Summary(), sandbox.StatusStopped), nil
+	return firecrackerLifecycleTarget(req.Target, plan.Summary(), sandbox.StatusStopped, c.networkEnforcement), nil
 }
 
 func (c firecrackerController) stopLiveProcess(ctx context.Context, req LiveProcessRequest) error {
@@ -384,7 +401,7 @@ func (c firecrackerController) Inspect(_ context.Context, req microvm.Controller
 	if err != nil {
 		return nil, err
 	}
-	return firecrackerLifecycleTarget(req.Target, plan.Summary(), ""), nil
+	return firecrackerLifecycleTarget(req.Target, plan.Summary(), "", c.networkEnforcement), nil
 }
 
 func (c firecrackerController) Exec(ctx context.Context, req microvm.ControllerExecRequest) (*sandboxruntime.ExecResult, error) {
@@ -545,9 +562,9 @@ func firecrackerStartRuntimeID(target sandboxruntime.Target) string {
 	return ""
 }
 
-func firecrackerStartTarget(target sandboxruntime.Target, descriptor ProcessCommandDescriptor, processLaunch *sandboxruntime.RuntimeProcessLaunchMetadata, guestReadiness *sandboxruntime.RuntimeGuestReadinessMetadata) *sandboxruntime.Target {
+func firecrackerStartTarget(target sandboxruntime.Target, descriptor ProcessCommandDescriptor, processLaunch *sandboxruntime.RuntimeProcessLaunchMetadata, guestReadiness *sandboxruntime.RuntimeGuestReadinessMetadata, networkEnforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata) *sandboxruntime.Target {
 	started := cloneFirecrackerTarget(target)
-	ensureFirecrackerPlanningTarget(&started, target)
+	ensureFirecrackerPlanningTarget(&started, target, networkEnforcement)
 	started.Runtime.Metadata.OperationPlan = firecrackerRuntimeOperationPlanMetadata(descriptor)
 	if processLaunch != nil {
 		started.Runtime.Metadata.ProcessLaunch = cloneRuntimeProcessLaunchMetadata(processLaunch)
@@ -558,9 +575,9 @@ func firecrackerStartTarget(target sandboxruntime.Target, descriptor ProcessComm
 	return &started
 }
 
-func firecrackerLifecycleTarget(target sandboxruntime.Target, summary OperationPlanSummary, status string) *sandboxruntime.Target {
+func firecrackerLifecycleTarget(target sandboxruntime.Target, summary OperationPlanSummary, status string, networkEnforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata) *sandboxruntime.Target {
 	planned := cloneFirecrackerTarget(target)
-	ensureFirecrackerPlanningTarget(&planned, target)
+	ensureFirecrackerPlanningTarget(&planned, target, networkEnforcement)
 	if strings.TrimSpace(status) != "" {
 		planned.Status = status
 	}
@@ -585,10 +602,15 @@ func liveProcessRequestFromTarget(target sandboxruntime.Target, paths PathPlan) 
 	}, true
 }
 
-func ensureFirecrackerPlanningTarget(target *sandboxruntime.Target, source sandboxruntime.Target) {
+func ensureFirecrackerPlanningTarget(target *sandboxruntime.Target, source sandboxruntime.Target, fallbackNetworkEnforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata) {
 	var processLaunch *sandboxruntime.RuntimeProcessLaunchMetadata
+	var networkEnforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata
 	if target.Runtime.Metadata != nil {
 		processLaunch = sanitizeRuntimeProcessLaunchMetadata(target.Runtime.Metadata.ProcessLaunch)
+		networkEnforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(target.Runtime.Metadata.NetworkEnforcement)
+	}
+	if networkEnforcement == nil {
+		networkEnforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(fallbackNetworkEnforcement)
 	}
 	if strings.TrimSpace(target.Provider) == "" {
 		target.Provider = BackendID
@@ -616,6 +638,7 @@ func ensureFirecrackerPlanningTarget(target *sandboxruntime.Target, source sandb
 	}
 	target.Runtime.Metadata.ProcessLaunch = processLaunch
 	target.Runtime.Metadata.GuestReadiness = nil
+	target.Runtime.Metadata.NetworkEnforcement = networkEnforcement
 }
 
 func firecrackerRuntimeOperationPlanMetadata(descriptor ProcessCommandDescriptor) *sandboxruntime.RuntimeOperationPlan {

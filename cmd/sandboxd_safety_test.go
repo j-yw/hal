@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"go/parser"
+	"go/token"
 	"io"
 	"os"
 	"strings"
@@ -122,6 +124,65 @@ func TestSandboxdProductionCodeDoesNotOwnNetworkEnforcementPlanningOrSetup(t *te
 	} {
 		if strings.Contains(content, forbidden.needle) {
 			t.Fatalf("sandboxd.go contains %q (%s); enforcement planning/setup must stay behind runtime boundaries", forbidden.needle, forbidden.reason)
+		}
+	}
+}
+
+func TestCommandAndSandboxdProductionSecurityPathsAvoidLiveMutationDependencies(t *testing.T) {
+	productionFiles := []string{
+		"sandboxd.go",
+		"sandboxd_firecracker_live_driver.go",
+		"sandbox_security_projection.go",
+		"sandbox_runtime_contracts.go",
+		"sandbox_host_mapping.go",
+		"run_sandbox.go",
+		"auto_sandbox.go",
+		"factory_sandbox_executor.go",
+	}
+	forbiddenImports := map[string]string{
+		"net":               "direct listener or socket mutation",
+		"net/http":          "direct HTTP proxy/listener setup",
+		"net/http/httputil": "direct reverse proxy setup",
+		"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement": "direct planner or adapter package usage",
+	}
+	forbiddenSource := []struct {
+		needle string
+		reason string
+	}{
+		{needle: "networkenforcement.", reason: "direct live network enforcement planner/adapter call"},
+		{needle: "RunPlanner(", reason: "direct planner invocation"},
+		{needle: "RunAdapter(", reason: "direct adapter invocation"},
+		{needle: "LiveEnforcementRunner", reason: "direct live lifecycle orchestration"},
+		{needle: "ProxyListenerLifecycleRunner", reason: "direct listener lifecycle orchestration"},
+		{needle: "RuleLifecycleRunner", reason: "direct firewall/runtime rule lifecycle orchestration"},
+		{needle: "net.Listen(", reason: "direct listener binding"},
+		{needle: "http.ListenAndServe", reason: "direct HTTP listener setup"},
+		{needle: "httputil.NewSingleHostReverseProxy", reason: "direct reverse proxy setup"},
+		{needle: "iptables", reason: "direct firewall mutation"},
+		{needle: "nftables", reason: "direct firewall mutation"},
+		{needle: "pfctl", reason: "direct firewall mutation"},
+	}
+
+	for _, path := range productionFiles {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error: %v", path, err)
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, data, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("ParseFile(%s) error: %v", path, err)
+		}
+		for _, spec := range file.Imports {
+			importPath := strings.Trim(spec.Path.Value, `"`)
+			if reason, forbidden := forbiddenImports[importPath]; forbidden {
+				t.Fatalf("%s imports %q (%s); live mutation must stay behind runtime boundaries", path, importPath, reason)
+			}
+		}
+		content := string(data)
+		for _, forbidden := range forbiddenSource {
+			if strings.Contains(content, forbidden.needle) {
+				t.Fatalf("%s contains %q (%s); command/sandboxd security metadata must stay runtime-boundary-only", path, forbidden.needle, forbidden.reason)
+			}
 		}
 	}
 }

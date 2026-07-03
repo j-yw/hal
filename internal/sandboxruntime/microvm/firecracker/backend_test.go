@@ -13,6 +13,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
 )
 
 func TestBackendImplementsMicroVMBackend(t *testing.T) {
@@ -257,6 +258,129 @@ func TestBackendStartReturnsSanitizedOperationPlanWithoutStartingProcess(t *test
 		if strings.Contains(publicText, unsafe) {
 			t.Fatalf("start operation metadata leaked unsafe fragment %q in %s", unsafe, publicText)
 		}
+	}
+}
+
+func TestBackendNetworkEnforcementMetadataIsClonedSanitizedAndPlanningOnly(t *testing.T) {
+	processAdapter := &fakeProcessAdapter{}
+	networkMetadata := firecrackerBackendNetworkEnforcementMetadata()
+	backend := NewBackend(BackendOptions{
+		BaseStateDir:       firecrackerPathTestBase("network-metadata"),
+		ProcessAdapter:     processAdapter,
+		NetworkEnforcement: networkMetadata,
+	})
+
+	networkMetadata.Plan.ID = "mutated-plan"
+	networkMetadata.Orchestration.PlanID = "mutated-orchestration"
+	networkMetadata.Orchestration.Proxy.ID = "mutated-proxy"
+	networkMetadata.Orchestration.Rules[0].ID = "mutated-rules"
+
+	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+		Operation: microvm.OperationCreate,
+		Config:    validMicroVMConfig(),
+		Name:      "firecracker-network-metadata",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	assertFirecrackerNetworkEnforcementPlanningMetadata(t, created)
+
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Controller() error = %v, want nil", err)
+	}
+	started, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v, want planning-only nil error", err)
+	}
+	assertFirecrackerNetworkEnforcementPlanningMetadata(t, started)
+	if processAdapter.prepareCalls != 1 {
+		t.Fatalf("process prepare calls = %d, want 1 planning call", processAdapter.prepareCalls)
+	}
+	if processAdapter.startCalls != 0 {
+		t.Fatalf("process start calls = %d, want none without LiveStart", processAdapter.startCalls)
+	}
+}
+
+func TestBackendNetworkEnforcementMetadataDoesNotBreakMicroVMPlanningConstruction(t *testing.T) {
+	var plannerCalls int
+	request := firecrackerBackendNetworkEnforcementPlanRequest()
+	planner := networkenforcement.PlannerFunc(func(got networkenforcement.PlanRequest) networkenforcement.Plan {
+		plannerCalls++
+		if !reflect.DeepEqual(got, request) {
+			t.Fatalf("planner request = %#v, want %#v", got, request)
+		}
+		return networkenforcement.BuildPlan(got)
+	})
+	networkAdapter := &recordingFirecrackerNetworkEnforcementAdapter{
+		result: networkenforcement.Result{
+			AdapterID:       "fake-firecracker-network-adapter",
+			Outcome:         networkenforcement.ResultOutcomeSuccess,
+			EnforcementMode: networkenforcement.ResultModeFirewall,
+			Mechanisms:      []networkenforcement.EnforcementMechanism{networkenforcement.EnforcementMechanismFirewall},
+			Operations:      []string{"firewall_apply"},
+			Capability: &networkenforcement.ResultCapability{
+				Supported:                  true,
+				Modes:                      []networkenforcement.ResultMode{networkenforcement.ResultModeFirewall},
+				SupportsDefaultDenyPosture: true,
+			},
+			ReasonCode: networkenforcement.ResultReasonApplied,
+		},
+	}
+	processAdapter := &fakeProcessAdapter{}
+	driver := microvm.NewDriver(microvm.DriverOptions{
+		Config: validMicroVMConfig(),
+		CapabilityDetector: microvm.CapabilityDetectorFunc(func(microvm.CapabilityDetectionRequest) microvm.CapabilityReport {
+			return microvm.CapabilityReport{
+				Availability: microvm.CapabilityAvailabilityAvailable,
+				ReasonCode:   microvm.CapabilityReasonAvailable,
+			}
+		}),
+		Backend: NewBackend(BackendOptions{
+			BaseStateDir:       firecrackerPathTestBase("planning-compat"),
+			ProcessAdapter:     processAdapter,
+			NetworkEnforcement: firecrackerBackendNetworkEnforcementMetadata(),
+		}),
+		NetworkEnforcement: &microvm.NetworkEnforcementPlanning{
+			Request: request,
+			Planner: planner,
+			Adapter: networkAdapter,
+		},
+	})
+	if plannerCalls != 1 || networkAdapter.calls != 1 {
+		t.Fatalf("network planner calls=%d adapter calls=%d, want one explicit planning pass", plannerCalls, networkAdapter.calls)
+	}
+	driverMetadata := driver.Metadata().NetworkEnforcement
+	if driverMetadata == nil || driverMetadata.Plan == nil || driverMetadata.Result == nil {
+		t.Fatalf("driver NetworkEnforcement = %#v, want existing planning metadata", driverMetadata)
+	}
+	if driverMetadata.Result.AdapterID != "fake-firecracker-network-adapter" ||
+		driverMetadata.Result.EnforcementMode != string(networkenforcement.ResultModeFirewall) {
+		t.Fatalf("driver NetworkEnforcement result = %#v, want explicit planning result", driverMetadata.Result)
+	}
+
+	created, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "firecracker-planning-compat"})
+	if err != nil {
+		t.Fatalf("driver.Create() error = %v, want nil", err)
+	}
+	started, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: *created})
+	if err != nil {
+		t.Fatalf("driver.Start() error = %v, want planning-only nil error", err)
+	}
+	assertFirecrackerNetworkEnforcementPlanningMetadata(t, started)
+	if processAdapter.startCalls != 0 {
+		t.Fatalf("process start calls = %d, want no live process start from network planning metadata", processAdapter.startCalls)
+	}
+	if networkAdapter.calls != 1 {
+		t.Fatalf("network adapter calls = %d, want no additional live enforcement during Create/Start", networkAdapter.calls)
 	}
 }
 
@@ -1229,6 +1353,156 @@ func poisonFirecrackerRuntimeMetadata(target *sandboxruntime.Target) {
 				"copy_support",
 				"/Users/alice/private",
 			},
+		},
+	}
+}
+
+func firecrackerBackendNetworkEnforcementMetadata() *sandboxruntime.RuntimeNetworkEnforcementMetadata {
+	return &sandboxruntime.RuntimeNetworkEnforcementMetadata{
+		Plan: &sandboxruntime.RuntimeNetworkEnforcementPlanMetadata{
+			ID:               "network-plan-firecracker",
+			Source:           "microvm",
+			Operation:        "prepare_network",
+			PolicySnapshotID: "policy-snapshot-firecracker",
+			PolicyPreset:     "deny_by_default",
+			DefaultPosture:   "deny_by_default",
+			Mechanisms:       []string{"proxy", "firewall", "https://proxy.example.test"},
+			Operations:       []string{"default_deny", "allowlist", "/tmp/firewall.sock", "token=secret"},
+		},
+		Orchestration: &sandboxruntime.RuntimeNetworkEnforcementOrchestrationMetadata{
+			PlanID:           "network-plan-firecracker",
+			AdapterID:        "fake-firecracker-orchestrator",
+			Status:           "planned",
+			Mechanisms:       []string{"proxy", "firewall"},
+			Operations:       []string{"proxy_route", "firewall_apply", "api.internal.example.com:443", "/tmp/live-proxy.sock"},
+			PolicySnapshotID: "policy-snapshot-firecracker",
+			PolicyPreset:     "deny_by_default",
+			Proxy: &sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata{
+				ID:               "proxy-firecracker",
+				PlanID:           "network-plan-firecracker",
+				AdapterID:        "fake-firecracker-orchestrator",
+				Status:           "prepared",
+				Mechanisms:       []string{"proxy"},
+				Operations:       []string{"proxy_prepare", "/tmp/proxy.sock"},
+				PolicySnapshotID: "policy-snapshot-firecracker",
+				PolicyPreset:     "deny_by_default",
+				CapabilityLabels: []string{"proxy_prepared", "https://proxy.example.test"},
+				ReasonCode:       "prepared",
+			},
+			Rules: []sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata{
+				{
+					ID:               "rules-firecracker",
+					PlanID:           "network-plan-firecracker",
+					AdapterID:        "fake-firecracker-orchestrator",
+					Status:           "planned",
+					Mechanisms:       []string{"firewall"},
+					Operations:       []string{"rules_plan", "iptables -A OUTPUT"},
+					PolicySnapshotID: "policy-snapshot-firecracker",
+					PolicyPreset:     "deny_by_default",
+					CapabilityLabels: []string{"rules_planned", "secret_rules"},
+					ReasonCode:       "prepared",
+				},
+			},
+			CapabilityLabels: []string{"metadata_only", "default_deny_requested", "/tmp/proxy.sock"},
+			ReasonCode:       "prepared",
+			WarningCodes:     []string{"metadata_only_fallback", "https://warning.example.test"},
+		},
+	}
+}
+
+func assertFirecrackerNetworkEnforcementPlanningMetadata(t *testing.T, target *sandboxruntime.Target) {
+	t.Helper()
+	if target == nil || target.Runtime.Metadata == nil || target.Runtime.Metadata.NetworkEnforcement == nil {
+		t.Fatalf("target NetworkEnforcement = %#v, want planning metadata", target)
+	}
+	metadata := target.Runtime.Metadata.NetworkEnforcement
+	if metadata.Result != nil {
+		t.Fatalf("NetworkEnforcement.Result = %#v, want no enforcement result from metadata-only Firecracker options", metadata.Result)
+	}
+	if metadata.Plan == nil || metadata.Plan.ID != "network-plan-firecracker" ||
+		metadata.Plan.PolicySnapshotID != "policy-snapshot-firecracker" ||
+		!reflect.DeepEqual(metadata.Plan.Mechanisms, []string{"proxy", "firewall"}) {
+		t.Fatalf("NetworkEnforcement.Plan = %#v, want sanitized Firecracker plan metadata", metadata.Plan)
+	}
+	orchestration := metadata.Orchestration
+	if orchestration == nil ||
+		orchestration.PlanID != "network-plan-firecracker" ||
+		orchestration.AdapterID != "fake-firecracker-orchestrator" ||
+		orchestration.Status != "planned" ||
+		orchestration.PolicySnapshotID != "policy-snapshot-firecracker" {
+		t.Fatalf("NetworkEnforcement.Orchestration = %#v, want sanitized Firecracker orchestration metadata", orchestration)
+	}
+	if orchestration.Proxy == nil || orchestration.Proxy.ID != "proxy-firecracker" || orchestration.Proxy.Status != "prepared" {
+		t.Fatalf("NetworkEnforcement.Orchestration.Proxy = %#v, want sanitized proxy metadata", orchestration.Proxy)
+	}
+	if len(orchestration.Rules) != 1 || orchestration.Rules[0].ID != "rules-firecracker" || orchestration.Rules[0].Status != "planned" {
+		t.Fatalf("NetworkEnforcement.Orchestration.Rules = %#v, want sanitized rule metadata", orchestration.Rules)
+	}
+
+	encoded, err := json.Marshal(target.Runtime.Metadata.NetworkEnforcement)
+	if err != nil {
+		t.Fatalf("Marshal(NetworkEnforcement) error = %v", err)
+	}
+	publicText := string(encoded)
+	for _, unsafe := range []string{
+		"api.internal.example.com",
+		"127.0.0.1",
+		"443",
+		"/tmp",
+		"live-proxy.sock",
+		"iptables",
+		"token",
+		"secret",
+		"://",
+		`"result":`,
+		`"outcome":`,
+		`"enforcementMode":`,
+		`"capability":`,
+	} {
+		if strings.Contains(publicText, unsafe) {
+			t.Fatalf("Firecracker network metadata leaked or overclaimed %q in %s", unsafe, publicText)
+		}
+	}
+}
+
+type recordingFirecrackerNetworkEnforcementAdapter struct {
+	calls  int
+	plan   networkenforcement.Plan
+	result networkenforcement.Result
+}
+
+func (adapter *recordingFirecrackerNetworkEnforcementAdapter) EnforceNetwork(_ context.Context, plan networkenforcement.SanitizedPlan) networkenforcement.Result {
+	adapter.calls++
+	adapter.plan = plan.Plan()
+	result := adapter.result
+	if result.PlanID == "" {
+		result.PlanID = adapter.plan.ID
+	}
+	if result.PolicySnapshot == nil {
+		result.PolicySnapshot = adapter.plan.PolicySnapshot
+	}
+	return result
+}
+
+func firecrackerBackendNetworkEnforcementPlanRequest() networkenforcement.PlanRequest {
+	return networkenforcement.PlanRequest{
+		ID:        "network-plan-firecracker-planning",
+		Source:    networkenforcement.PlanSourceMicroVM,
+		Operation: "prepare_network",
+		PolicySnapshot: &networkenforcement.PolicySnapshotIdentity{
+			ID:        "policy-snapshot-firecracker-planning",
+			Preset:    networkenforcement.PolicyPresetDenyByDefault,
+			RuleSetID: "rules-firecracker-planning",
+		},
+		RequestedPolicy: networkenforcement.RequestedNetworkPosture{
+			Preset:            networkenforcement.PolicyPresetDenyByDefault,
+			RuleSetID:         "rules-firecracker-planning",
+			RuleIDs:           []string{"rule-firecracker-domain"},
+			RuleCategories:    []networkenforcement.AllowlistRuleCategory{networkenforcement.AllowlistRuleCategoryDomain},
+			PrivateNetwork:    networkenforcement.PostureBlock,
+			MetadataEndpoint:  networkenforcement.PostureBlock,
+			FirewallMode:      networkenforcement.FirewallIntentModeApply,
+			FirewallMechanism: networkenforcement.EnforcementMechanismFirewall,
 		},
 	}
 }
