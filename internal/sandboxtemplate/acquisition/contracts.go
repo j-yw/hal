@@ -1,7 +1,4 @@
 // Package acquisition defines sandbox template acquisition contracts.
-//
-// This package intentionally contains contract shape only in US-001. Local
-// file resolution behavior is introduced by the later implementation story.
 package acquisition
 
 import (
@@ -12,7 +9,8 @@ import (
 )
 
 const (
-	SourceKindLocalFile SourceKind = "local_file"
+	SourceKindLocalFile   SourceKind = "local_file"
+	SourceKindOCIArtifact SourceKind = "oci_artifact"
 )
 
 const (
@@ -25,13 +23,45 @@ const (
 	LockReasonImmutableDigest     LockReasonCode = "immutable_digest"
 	LockReasonDocumentDigest      LockReasonCode = "document_digest"
 	LockReasonResolverUnavailable LockReasonCode = "resolver_unavailable"
+	LockReasonUnsupportedSource   LockReasonCode = "unsupported_source"
 )
 
 var ErrResolverUnavailable = errors.New("local template acquisition resolver is unavailable")
+var ErrUnsupportedSource = errors.New("sandbox template acquisition source kind is unsupported")
 
 type SourceKind string
 type LockStatus string
 type LockReasonCode string
+type ResolveErrorCode string
+
+const (
+	ResolveErrorCodeResolverUnavailable ResolveErrorCode = "resolver_unavailable"
+	ResolveErrorCodeUnsupportedSource   ResolveErrorCode = "unsupported_source"
+)
+
+// ResolveError carries stable, redaction-safe acquisition failure metadata.
+type ResolveError struct {
+	Code    ResolveErrorCode `json:"code"`
+	Message string           `json:"message,omitempty"`
+	Err     error            `json:"-"`
+}
+
+func (e *ResolveError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Message == "" {
+		return string(e.Code)
+	}
+	return string(e.Code) + ": " + e.Message
+}
+
+func (e *ResolveError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
 
 // ResolveRequest describes one sandbox template acquisition request.
 type ResolveRequest struct {
@@ -43,9 +73,10 @@ type ResolveRequest struct {
 // persistence requirements. LocalPath is caller input and must not be copied
 // into persisted lock metadata.
 type TemplateSource struct {
-	Kind      SourceKind             `json:"kind"`
-	LocalPath string                 `json:"localPath,omitempty"`
-	Format    sandboxtemplate.Format `json:"format,omitempty"`
+	Kind      SourceKind                    `json:"kind"`
+	LocalPath string                        `json:"localPath,omitempty"`
+	Reference *sandboxtemplate.ImmutableRef `json:"reference,omitempty"`
+	Format    sandboxtemplate.Format        `json:"format,omitempty"`
 }
 
 // ResolveResult is the resolved template plus redaction-safe acquisition lock
@@ -84,6 +115,38 @@ type ReferenceLock struct {
 	ReasonCode LockReasonCode                  `json:"reasonCode,omitempty"`
 }
 
+// OCIArtifactResolver resolves OCI-like artifact metadata through injected,
+// fake-safe implementations. Production acquisition code must not create live
+// registry clients directly.
+type OCIArtifactResolver interface {
+	ResolveOCIArtifact(context.Context, OCIArtifactResolveRequest) (OCIArtifactResolveResult, error)
+}
+
+// OCIArtifactResolveRequest identifies the template artifact to load.
+type OCIArtifactResolveRequest struct {
+	Reference sandboxtemplate.ImmutableRef `json:"reference"`
+}
+
+// OCIArtifactResolveResult is fixture-provided artifact content and immutable
+// identity proof returned by an injected resolver.
+type OCIArtifactResolveResult struct {
+	TemplateBytes          []byte                          `json:"templateBytes,omitempty"`
+	Format                 sandboxtemplate.Format          `json:"format,omitempty"`
+	DocumentDigest         *sandboxtemplate.DigestMetadata `json:"documentDigest,omitempty"`
+	TemplateArtifactDigest *sandboxtemplate.DigestMetadata `json:"templateArtifactDigest,omitempty"`
+	ReferenceDigests       []ReferenceDigestProof          `json:"referenceDigests,omitempty"`
+	SizeBytes              int64                           `json:"sizeBytes,omitempty"`
+}
+
+// ReferenceDigestProof records immutable identity for a reference discovered
+// while resolving a template artifact.
+type ReferenceDigestProof struct {
+	Field  string                          `json:"field,omitempty"`
+	Kind   sandboxtemplate.ReferenceKind   `json:"kind,omitempty"`
+	Ref    string                          `json:"ref,omitempty"`
+	Digest *sandboxtemplate.DigestMetadata `json:"digest,omitempty"`
+}
+
 // LocalResolver resolves local YAML or JSON template documents.
 type LocalResolver struct{}
 
@@ -92,5 +155,19 @@ func NewLocalResolver() LocalResolver {
 }
 
 func (LocalResolver) Resolve(context.Context, ResolveRequest) (ResolveResult, error) {
+	return ResolveResult{}, ErrResolverUnavailable
+}
+
+// OCIResolver resolves OCI-like template artifacts through an injected
+// OCIArtifactResolver. Fake-safe resolution is implemented in a later story.
+type OCIResolver struct {
+	artifactResolver OCIArtifactResolver
+}
+
+func NewOCIResolver(resolver OCIArtifactResolver) OCIResolver {
+	return OCIResolver{artifactResolver: resolver}
+}
+
+func (OCIResolver) Resolve(context.Context, ResolveRequest) (ResolveResult, error) {
 	return ResolveResult{}, ErrResolverUnavailable
 }
