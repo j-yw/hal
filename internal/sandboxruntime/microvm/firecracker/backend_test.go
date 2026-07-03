@@ -109,8 +109,8 @@ func TestBackendCreateMetadataDoesNotClaimUnsupportedFirecrackerCapabilities(t *
 		t.Fatalf("Create() error = %v, want nil", err)
 	}
 
-	if target.Runtime.IsolationLevel != "" {
-		t.Fatalf("backend target isolationLevel = %q, want empty until driver metadata is applied after live VM creation exists", target.Runtime.IsolationLevel)
+	if target.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelVM {
+		t.Fatalf("backend target isolationLevel = %q, want %q", target.Runtime.IsolationLevel, sandbox.SandboxIsolationLevelVM)
 	}
 	if target.Runtime.Metadata == nil {
 		t.Fatal("runtime metadata = nil, want Firecracker capability metadata")
@@ -1042,6 +1042,12 @@ func assertFirecrackerOwnedRuntimeMetadata(t *testing.T, target *sandboxruntime.
 	if target == nil || target.Runtime.Metadata == nil {
 		t.Fatalf("target runtime metadata = %#v, want Firecracker metadata", target)
 	}
+	if target.Runtime.Driver != sandboxruntime.DriverMicroVM {
+		t.Fatalf("runtime Driver = %q, want %q", target.Runtime.Driver, sandboxruntime.DriverMicroVM)
+	}
+	if target.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelVM {
+		t.Fatalf("runtime IsolationLevel = %q, want %q", target.Runtime.IsolationLevel, sandbox.SandboxIsolationLevelVM)
+	}
 	if target.Runtime.Metadata.Backend != BackendID {
 		t.Fatalf("runtime metadata Backend = %q, want %q", target.Runtime.Metadata.Backend, BackendID)
 	}
@@ -1092,11 +1098,22 @@ func assertFirecrackerRuntimeMetadataDoesNotClaimUnsupportedLiveCapabilities(t *
 		"guest_ready",
 		"vm_boot_ready",
 		"guest_network",
+		"deny_by_default",
+		"brokered_secret",
+		"secret_broker",
 		"network_proxy",
+		"credential_broker",
+		"credential_proxy",
 		"credential",
 		"guest_exec",
+		"guest_copy",
 		"vsock_exec",
 		"copy",
+		"template",
+		"kit",
+		"docker_in_guest",
+		"host_docker_socket",
+		"rootless_podman",
 		"kvm",
 		"jailer",
 		"root_setup",

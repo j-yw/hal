@@ -129,8 +129,9 @@ func (b *Backend) Create(_ context.Context, req microvm.BackendCreateRequest) (*
 		Provider: BackendID,
 		Status:   sandbox.StatusStopped,
 		Runtime: sandboxruntime.RuntimeState{
-			Driver:    sandboxruntime.DriverMicroVM,
-			RuntimeID: runtimeID,
+			Driver:         sandboxruntime.DriverMicroVM,
+			RuntimeID:      runtimeID,
+			IsolationLevel: sandbox.SandboxIsolationLevelVM,
 			Metadata: &sandboxruntime.RuntimeMetadata{
 				Backend:          BackendID,
 				CapabilityLabels: firecrackerTargetCapabilityLabels(),
@@ -496,6 +497,7 @@ func ensureFirecrackerPlanningTarget(target *sandboxruntime.Target, source sandb
 	if strings.TrimSpace(target.Runtime.Driver) == "" {
 		target.Runtime.Driver = sandboxruntime.DriverMicroVM
 	}
+	target.Runtime.IsolationLevel = sandbox.SandboxIsolationLevelVM
 	if strings.TrimSpace(target.Runtime.RuntimeID) == "" {
 		target.Runtime.RuntimeID = firecrackerStartRuntimeID(source)
 	}
