@@ -69,11 +69,14 @@ func TestSandboxTemplateForbiddenImportListCoversRequiredBoundaries(t *testing.T
 		{name: "cmd", importPath: "github.com/jywlabs/hal/cmd", want: "command package"},
 		{name: "project template", importPath: "github.com/jywlabs/hal/internal/template", want: "Hal project template package"},
 		{name: "factory", importPath: "github.com/jywlabs/hal/internal/factory", want: "factory orchestration package"},
+		{name: "provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/daytona", want: "concrete provider package"},
 		{name: "rootless Podman runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman", want: "concrete runtime package"},
 		{name: "SSH-machine runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine", want: "concrete runtime package"},
 		{name: "Firecracker runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker", want: "concrete runtime package"},
 		{name: "Firecracker host", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecrackerhost", want: "concrete runtime package"},
 		{name: "exec", importPath: "os/exec", want: "process execution package"},
+		{name: "syscall", importPath: "syscall", want: "process execution package"},
+		{name: "x/sys", importPath: "golang.org/x/sys/unix", want: "process execution package"},
 		{name: "net", importPath: "net", want: "network client or server package"},
 		{name: "http", importPath: "net/http", want: "network client or server package"},
 		{name: "Docker", importPath: "github.com/docker/docker/client", want: "Docker or Podman package"},
@@ -81,6 +84,8 @@ func TestSandboxTemplateForbiddenImportListCoversRequiredBoundaries(t *testing.T
 		{name: "OCI client", importPath: "github.com/google/go-containerregistry/pkg/v1/remote", want: "OCI client package"},
 		{name: "Git client", importPath: "github.com/go-git/go-git/v5", want: "Git client package"},
 		{name: "Firecracker SDK", importPath: "github.com/firecracker-microvm/firecracker-go-sdk", want: "live microVM SDK package"},
+		{name: "KVM helper", importPath: "github.com/example/kvm-driver", want: "live microVM SDK package"},
+		{name: "cloud SDK", importPath: "github.com/aws/aws-sdk-go-v2/service/ec2", want: "cloud SDK package"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			message := sandboxTemplateForbiddenImportMessage("contracts.go", tt.importPath)
@@ -171,13 +176,16 @@ func sandboxTemplateForbiddenImports() []sandboxTemplateForbiddenImport {
 		{name: "command package", match: moduleImport("github.com/jywlabs/hal/cmd")},
 		{name: "Hal project template package", match: moduleImport("github.com/jywlabs/hal/internal/template")},
 		{name: "factory orchestration package", match: moduleImport("github.com/jywlabs/hal/internal/factory")},
+		{name: "concrete provider package", match: moduleImport("github.com/jywlabs/hal/internal/sandbox/provider")},
 		{name: "concrete runtime package", match: func(path string) bool {
 			return moduleImport("github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman")(path) ||
 				moduleImport("github.com/jywlabs/hal/internal/sandboxruntime/sshmachine")(path) ||
 				moduleImport("github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker")(path) ||
 				moduleImport("github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecrackerhost")(path)
 		}},
-		{name: "process execution package", match: func(path string) bool { return path == "os/exec" }},
+		{name: "process execution package", match: func(path string) bool {
+			return path == "os/exec" || path == "syscall" || strings.HasPrefix(path, "golang.org/x/sys")
+		}},
 		{name: "network client or server package", match: func(path string) bool {
 			return path == "net" || path == "net/http" || strings.HasPrefix(path, "net/http/") || strings.HasPrefix(path, "google.golang.org/grpc")
 		}},
@@ -207,6 +215,15 @@ func sandboxTemplateForbiddenImports() []sandboxTemplateForbiddenImport {
 				strings.Contains(lower, "qemu") ||
 				strings.Contains(lower, "kvm")
 		}},
+		{name: "cloud SDK package", match: func(path string) bool {
+			return strings.HasPrefix(path, "github.com/aws/aws-sdk-go") ||
+				strings.HasPrefix(path, "github.com/aws/aws-sdk-go-v2") ||
+				strings.HasPrefix(path, "github.com/Azure/azure-sdk-for-go") ||
+				strings.HasPrefix(path, "github.com/digitalocean/godo") ||
+				strings.HasPrefix(path, "github.com/hetznercloud/hcloud-go") ||
+				strings.HasPrefix(path, "cloud.google.com/go") ||
+				strings.HasPrefix(path, "google.golang.org/api")
+		}},
 	}
 }
 
@@ -230,9 +247,16 @@ func sandboxTemplateForbiddenSourceMarkers() []string {
 		"docker ",
 		"podman ",
 		"firecracker-go-sdk",
+		"/dev/kvm",
+		"KVM_CREATE_VM",
+		"syscall.Exec",
 		"StartVM",
 		"CreateMachine",
 		"DeliverCredentials",
+		"secretsmanager.NewFromConfig",
+		"godo.New",
+		"hcloud.New",
+		"compute.New",
 	}
 }
 

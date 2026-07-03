@@ -362,6 +362,7 @@ type SandboxMetadata struct {
 	CredentialDelivery      *sandbox.SandboxCredentialDeliveryStatusMetadata `json:"credentialDelivery,omitempty"`
 	Lease                   *SandboxLeaseMetadata                            `json:"lease,omitempty"`
 	WorkerRouting           *sandbox.WorkerRoutingMetadata                   `json:"workerRouting,omitempty"`
+	TemplateLock            *sandbox.SandboxTemplateLockMetadata             `json:"templateLock,omitempty"`
 }
 
 // SandboxConnectionMetadata contains safe connection display fields. It must

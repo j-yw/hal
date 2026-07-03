@@ -71,6 +71,7 @@ type RuntimeMetadata struct {
 	GuestReadiness     *RuntimeGuestReadinessMetadata     `json:"guestReadiness,omitempty"`
 	NetworkEnforcement *RuntimeNetworkEnforcementMetadata `json:"networkEnforcement,omitempty"`
 	CredentialDelivery *RuntimeCredentialDeliveryMetadata `json:"credentialDelivery,omitempty"`
+	TemplateLock       *RuntimeTemplateLockMetadata       `json:"templateLock,omitempty"`
 }
 
 // RuntimeCredentialDeliveryMetadata is a stdlib-only compact credential

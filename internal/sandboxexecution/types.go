@@ -89,6 +89,7 @@ type Manifest struct {
 	CredentialDelivery        *sandbox.SandboxCredentialDeliveryStatusMetadata `json:"credentialDelivery,omitempty"`
 	Lease                     *sandbox.SandboxLeaseRef                         `json:"lease,omitempty"`
 	WorkerRouting             *sandbox.WorkerRoutingMetadata                   `json:"workerRouting,omitempty"`
+	TemplateLock              *sandbox.SandboxTemplateLockMetadata             `json:"templateLock,omitempty"`
 	Artifacts                 []Artifact                                       `json:"artifacts,omitempty"`
 	ArtifactMetadata          *ArtifactMetadata                                `json:"artifactMetadata,omitempty"`
 	SyncOut                   *sandboxworkspace.SyncOutSummary                 `json:"syncOut,omitempty"`

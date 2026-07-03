@@ -121,6 +121,7 @@ When `sandbox` is present:
 | `credentialDelivery` | object | no | Sanitized credential delivery status metadata; requested versus active mode labels only |
 | `lease` | object | no | Redaction-safe Sandbox Runtime v2 lease summary metadata |
 | `workerRouting` | object | no | Redaction-safe worker-backed execution route metadata |
+| `templateLock` | object | no | Redaction-safe template acquisition lock metadata; digest and status labels only |
 
 Sandbox metadata is safe for durable local records. It must not include tokens,
 private keys, secret names, secret values, raw filesystem paths, raw workspace
@@ -130,7 +131,9 @@ include raw hosts, URLs, ports, headers, bodies, environment values, socket
 paths, local paths, credential values, or secret values. In Phase 26, credential
 proxy persistence is limited to non-factory sandbox execution manifests and
 factory sandbox metadata; factory timeline events do not mirror credential
-proxy plan, session, or binding metadata.
+proxy plan, session, or binding metadata. Template lock metadata must not
+include local paths, raw registry endpoints, query strings, credentials, tokens,
+or secret-like values.
 
 When `sandbox.connection` is present:
 
