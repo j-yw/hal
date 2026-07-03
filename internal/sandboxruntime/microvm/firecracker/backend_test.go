@@ -1079,6 +1079,9 @@ func assertFirecrackerOwnedRuntimeMetadata(t *testing.T, target *sandboxruntime.
 	if target.Runtime.Metadata.ProcessLaunch.ProcessID != "" || target.Runtime.Metadata.ProcessLaunch.ProcessIDSource != "" {
 		t.Fatalf("runtime metadata ProcessLaunch exposes process identity before launch acceptance: %#v", target.Runtime.Metadata.ProcessLaunch)
 	}
+	if target.Runtime.Metadata.GuestReadiness != nil {
+		t.Fatalf("runtime metadata GuestReadiness = %#v, want absent until explicit guest readiness wiring is configured", target.Runtime.Metadata.GuestReadiness)
+	}
 }
 
 func assertFirecrackerRuntimeMetadataDoesNotClaimUnsupportedLiveCapabilities(t *testing.T, target *sandboxruntime.Target) {
@@ -1146,6 +1149,15 @@ func poisonFirecrackerRuntimeMetadata(target *sandboxruntime.Target) {
 			Labels:          []string{"network_enforced", "/Users/alice/private/firecracker.sock"},
 			ProcessID:       "pid:/Users/alice/private/firecracker.sock",
 			ProcessIDSource: "env:OPENAI_API_KEY token=ghp_secret",
+		},
+		GuestReadiness: &sandboxruntime.RuntimeGuestReadinessMetadata{
+			State:     sandboxruntime.RuntimeGuestReadinessStateReady,
+			Transport: "tcp://127.0.0.1:9000/private/firecracker.sock?token=ghp_secret",
+			Labels: []string{
+				"exec_support",
+				"copy_support",
+				"/Users/alice/private",
+			},
 		},
 	}
 }

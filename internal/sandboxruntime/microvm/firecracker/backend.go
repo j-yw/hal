@@ -512,6 +512,7 @@ func ensureFirecrackerPlanningTarget(target *sandboxruntime.Target, source sandb
 		processLaunch = processBoundaryAvailableRuntimeMetadata()
 	}
 	target.Runtime.Metadata.ProcessLaunch = processLaunch
+	target.Runtime.Metadata.GuestReadiness = nil
 }
 
 func firecrackerRuntimeOperationPlanMetadata(descriptor ProcessCommandDescriptor) *sandboxruntime.RuntimeOperationPlan {
@@ -604,6 +605,7 @@ func cloneFirecrackerRuntimeMetadata(metadata *sandboxruntime.RuntimeMetadata) *
 	copied.PathRoles = cloneStringSlice(metadata.PathRoles)
 	copied.OperationPlan = cloneFirecrackerRuntimeOperationPlan(metadata.OperationPlan)
 	copied.ProcessLaunch = cloneRuntimeProcessLaunchMetadata(metadata.ProcessLaunch)
+	copied.GuestReadiness = sandboxruntime.SanitizeRuntimeGuestReadinessMetadata(metadata.GuestReadiness)
 	return &copied
 }
 

@@ -414,6 +414,7 @@ func cloneRuntimeMetadata(metadata *sandboxruntime.RuntimeMetadata) *sandboxrunt
 	copied.PathRoles = cloneStringSlice(metadata.PathRoles)
 	copied.OperationPlan = cloneRuntimeOperationPlan(metadata.OperationPlan)
 	copied.ProcessLaunch = cloneRuntimeProcessLaunchMetadata(metadata.ProcessLaunch)
+	copied.GuestReadiness = sandboxruntime.SanitizeRuntimeGuestReadinessMetadata(metadata.GuestReadiness)
 	return &copied
 }
 

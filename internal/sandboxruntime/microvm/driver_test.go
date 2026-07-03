@@ -280,6 +280,61 @@ func TestDriverLifecycleDelegatesThroughBackendControllerBoundary(t *testing.T) 
 	}
 }
 
+func TestApplyRuntimeMetadataSanitizesGuestReadinessMetadata(t *testing.T) {
+	target := &sandboxruntime.Target{
+		Name: "microvm-readiness",
+		Runtime: sandboxruntime.RuntimeState{
+			Metadata: &sandboxruntime.RuntimeMetadata{
+				Backend: "firecracker",
+				GuestReadiness: &sandboxruntime.RuntimeGuestReadinessMetadata{
+					State:     sandboxruntime.RuntimeGuestReadinessStateReady,
+					Transport: "tcp://127.0.0.1:9000/private/firecracker.sock?token=ghp_secret",
+					Labels: []string{
+						"probe_ok",
+						"exec_support",
+						"copy_support",
+						"/Users/alice/private",
+					},
+				},
+			},
+		},
+	}
+
+	applied := applyRuntimeMetadata(target)
+	if applied == nil || applied.Runtime.Metadata == nil || applied.Runtime.Metadata.GuestReadiness == nil {
+		t.Fatalf("applyRuntimeMetadata() = %#v, want guest readiness metadata", applied)
+	}
+	readiness := applied.Runtime.Metadata.GuestReadiness
+	if readiness.State != sandboxruntime.RuntimeGuestReadinessStateReady {
+		t.Fatalf("GuestReadiness.State = %q, want ready", readiness.State)
+	}
+	if readiness.Transport != "" {
+		t.Fatalf("GuestReadiness.Transport = %q, want unsafe transport omitted", readiness.Transport)
+	}
+	if !reflect.DeepEqual(readiness.Labels, []string{"ready", "probe_ok"}) {
+		t.Fatalf("GuestReadiness.Labels = %#v, want sanitized labels", readiness.Labels)
+	}
+
+	encoded, err := json.Marshal(applied)
+	if err != nil {
+		t.Fatalf("Marshal(target) error = %v", err)
+	}
+	publicText := string(encoded)
+	for _, unsafe := range []string{
+		"127.0.0.1",
+		"9000",
+		"firecracker.sock",
+		"ghp_secret",
+		"exec_support",
+		"copy_support",
+		"/Users/alice",
+	} {
+		if strings.Contains(publicText, unsafe) {
+			t.Fatalf("applied target leaked unsafe guest readiness fragment %q in %s", unsafe, publicText)
+		}
+	}
+}
+
 func TestDriverExecDelegatesThroughControllerAndStreamsOutput(t *testing.T) {
 	config := minimalValidConfig()
 	controller := &fakeController{
