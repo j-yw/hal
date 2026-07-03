@@ -406,6 +406,74 @@ func TestBackendDefaultOptionsStartRemainsPlanningOnly(t *testing.T) {
 	if started.Runtime.Metadata.ProcessLaunch.State != string(ProcessLaunchStateBoundaryAvailable) {
 		t.Fatalf("ProcessLaunch.State = %q, want planning-only %q", started.Runtime.Metadata.ProcessLaunch.State, ProcessLaunchStateBoundaryAvailable)
 	}
+	if started.Runtime.Metadata.GuestReadiness != nil {
+		t.Fatalf("GuestReadiness = %#v, want default backend to leave readiness unconfigured", started.Runtime.Metadata.GuestReadiness)
+	}
+}
+
+func TestBackendGuestReadinessWaiterIsOptionalAndInertUntilLiveWiring(t *testing.T) {
+	waiter := &fakeGuestReadinessWaiter{}
+	adapter := &fakeProcessAdapter{
+		prepare: func(_ context.Context, req ProcessStartCommandRequest) (ProcessCommandDescriptor, error) {
+			return ProcessCommandDescriptorFromStartPlan(req.Plan)
+		},
+		start: func(context.Context, ProcessStartRequest) (ProcessHandleMetadata, error) {
+			t.Fatal("StartProcess should not run without LiveStart")
+			return ProcessHandleMetadata{}, nil
+		},
+	}
+	backend := NewBackend(BackendOptions{
+		BaseStateDir:         firecrackerPathTestBase("guest-readiness-planning"),
+		ProcessAdapter:       adapter,
+		GuestReadinessWaiter: waiter,
+	})
+	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+		Operation: microvm.OperationCreate,
+		Config:    validMicroVMConfig(),
+		Name:      "firecracker-readiness",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Controller() error = %v, want nil", err)
+	}
+	firecrackerController, ok := controller.(firecrackerController)
+	if !ok {
+		t.Fatalf("controller type = %T, want firecrackerController", controller)
+	}
+	if firecrackerController.guestReadinessWaiter != waiter {
+		t.Fatalf("guestReadinessWaiter = %#v, want injected waiter", firecrackerController.guestReadinessWaiter)
+	}
+
+	started, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v, want planning-only nil error", err)
+	}
+	if waiter.calls != 0 {
+		t.Fatalf("guest readiness calls = %d, want none until live readiness wiring is added", waiter.calls)
+	}
+	if adapter.prepareCalls != 1 || adapter.startCalls != 0 {
+		t.Fatalf("adapter calls = prepare:%d start:%d, want planning-only prepare", adapter.prepareCalls, adapter.startCalls)
+	}
+	if started == nil || started.Runtime.Metadata == nil {
+		t.Fatalf("started target = %#v, want Firecracker metadata", started)
+	}
+	if started.Runtime.Metadata.GuestReadiness != nil {
+		t.Fatalf("GuestReadiness = %#v, want absent before explicit readiness wait", started.Runtime.Metadata.GuestReadiness)
+	}
+	if started.Runtime.Metadata.ProcessLaunch == nil || started.Runtime.Metadata.ProcessLaunch.State != string(ProcessLaunchStateBoundaryAvailable) {
+		t.Fatalf("ProcessLaunch = %#v, want planning-only boundary metadata", started.Runtime.Metadata.ProcessLaunch)
+	}
 }
 
 func TestBackendInjectedAdapterWithoutLiveStartRemainsPlanningOnly(t *testing.T) {

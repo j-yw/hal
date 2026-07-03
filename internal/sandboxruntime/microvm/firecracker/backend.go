@@ -33,13 +33,15 @@ var (
 // BackendOptions configures the Firecracker backend. BaseStateDir is used only
 // to derive target-specific path plans. ProcessAdapter prepares process
 // descriptors. LiveStart permits StartProcess only when ProcessAdapter,
-// BootAcceptanceWaiter, and LiveProcessManager are all explicitly injected. Raw
-// paths are not exposed on returned targets.
+// BootAcceptanceWaiter, and LiveProcessManager are all explicitly injected.
+// GuestReadinessWaiter is optional and remains inert until an explicit live
+// start path chooses to call it. Raw paths are not exposed on returned targets.
 type BackendOptions struct {
 	BaseStateDir         string
 	ProcessAdapter       ProcessAdapter
 	BootAcceptanceWaiter BootAcceptanceWaiter
 	LiveProcessManager   LiveProcessManager
+	GuestReadinessWaiter GuestReadinessWaiter
 	LiveStart            bool
 }
 
@@ -86,6 +88,7 @@ type Backend struct {
 	processAdapter       ProcessAdapter
 	bootAcceptanceWaiter BootAcceptanceWaiter
 	liveProcessManager   LiveProcessManager
+	guestReadinessWaiter GuestReadinessWaiter
 	liveStart            bool
 }
 
@@ -96,6 +99,7 @@ func NewBackend(options BackendOptions) *Backend {
 		processAdapter:       options.ProcessAdapter,
 		bootAcceptanceWaiter: options.BootAcceptanceWaiter,
 		liveProcessManager:   options.LiveProcessManager,
+		guestReadinessWaiter: options.GuestReadinessWaiter,
 		liveStart:            options.LiveStart,
 	}
 }
@@ -151,17 +155,20 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 	var adapter ProcessAdapter
 	var waiter BootAcceptanceWaiter
 	var manager LiveProcessManager
+	var guestWaiter GuestReadinessWaiter
 	if b != nil {
 		baseStateDir = b.baseStateDir
 		adapter = b.processAdapter
 		waiter = b.bootAcceptanceWaiter
 		manager = b.liveProcessManager
+		guestWaiter = b.guestReadinessWaiter
 	}
 	return firecrackerController{
 		baseStateDir:         baseStateDir,
 		processAdapter:       adapter,
 		bootAcceptanceWaiter: waiter,
 		liveProcessManager:   manager,
+		guestReadinessWaiter: guestWaiter,
 		liveStart:            b != nil && b.liveStart,
 	}, nil
 }
@@ -171,6 +178,7 @@ type firecrackerController struct {
 	processAdapter       ProcessAdapter
 	bootAcceptanceWaiter BootAcceptanceWaiter
 	liveProcessManager   LiveProcessManager
+	guestReadinessWaiter GuestReadinessWaiter
 	liveStart            bool
 }
 
