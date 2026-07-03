@@ -148,7 +148,6 @@ func TestProcessLifecycleManagerCleanupRemovesOnlyValidatedFirecrackerStateDir(t
 	callerOwnedPath := filepath.Join(filepath.Dir(paths.StateDir), "caller-owned", firecracker.DefaultAPISocketPath)
 	filesystem := newFakeCleanupFilesystem()
 	filesystem.addDir(paths.StateDir)
-	filesystem.addFile(paths.APISocketPath)
 	filesystem.addFile(paths.ConfigPath)
 	filesystem.addFile(paths.LogPath)
 	filesystem.addFile(paths.MetricsPath)
@@ -194,6 +193,61 @@ func TestProcessLifecycleManagerCleanupRemovesOnlyValidatedFirecrackerStateDir(t
 	}
 }
 
+func TestProcessLifecycleManagerRemovesStaleAPISocketBeforeStart(t *testing.T) {
+	paths := cleanupPathPlanForTest("fc-stale-socket")
+	filesystem := newFakeCleanupFilesystem()
+	filesystem.addDir(paths.StateDir)
+	filesystem.addSocket(paths.APISocketPath)
+	process := &fakeHostProcess{rawPID: 31337}
+	runner := &fakeHostProcessRunner{processes: []HostProcess{process}}
+	manager := NewProcessLifecycleManager(
+		runner,
+		WithProcessLifecycleCleanupFilesystem(filesystem),
+	)
+
+	if _, err := manager.StartProcess(context.Background(), processStartRequestForCleanupPaths(paths)); err != nil {
+		t.Fatalf("StartProcess() error = %v, want nil after stale socket removal", err)
+	}
+
+	if runner.calls != 1 {
+		t.Fatalf("runner calls = %d, want process launch after stale socket removal", runner.calls)
+	}
+	if !reflect.DeepEqual(filesystem.removeCalls, []string{paths.APISocketPath}) {
+		t.Fatalf("RemoveAll calls = %#v, want only stale API socket %q", filesystem.removeCalls, paths.APISocketPath)
+	}
+	if filesystem.exists(paths.APISocketPath) {
+		t.Fatalf("stale API socket %q still exists after StartProcess", paths.APISocketPath)
+	}
+}
+
+func TestProcessLifecycleManagerRejectsNonSocketAPISocketBlockerBeforeStart(t *testing.T) {
+	paths := cleanupPathPlanForTest("fc-stale-file")
+	filesystem := newFakeCleanupFilesystem()
+	filesystem.addDir(paths.StateDir)
+	filesystem.addFile(paths.APISocketPath)
+	runner := &fakeHostProcessRunner{processes: []HostProcess{&fakeHostProcess{rawPID: 31338}}}
+	manager := NewProcessLifecycleManager(
+		runner,
+		WithProcessLifecycleCleanupFilesystem(filesystem),
+	)
+
+	_, err := manager.StartProcess(context.Background(), processStartRequestForCleanupPaths(paths))
+
+	if err == nil {
+		t.Fatal("StartProcess() error = nil, want non-socket API path blocker rejected")
+	}
+	if !errors.Is(err, ErrUnsafeCleanupPath) {
+		t.Fatalf("errors.Is(err, ErrUnsafeCleanupPath) = false for %v", err)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("runner calls = %d, want launch prevented", runner.calls)
+	}
+	if len(filesystem.removeCalls) != 0 {
+		t.Fatalf("RemoveAll calls = %#v, want non-socket blocker preserved", filesystem.removeCalls)
+	}
+	assertProcessLifecyclePublicTextRedacted(t, err.Error(), paths.APISocketPath, "firecracker.sock")
+}
+
 func TestProcessLifecycleManagerDeleteUnknownHandleDoesNotRemoveState(t *testing.T) {
 	paths := cleanupPathPlanForTest("fc-delete-unknown")
 	filesystem := newFakeCleanupFilesystem()
@@ -224,13 +278,15 @@ func TestProcessLifecycleManagerCleanupRequiresTrackedStartPaths(t *testing.T) {
 	trackedPaths := cleanupPathPlanForTest("fc-cleanup-tracked")
 	untrackedPaths := cleanupPathPlanForTest("fc-cleanup-untracked")
 	filesystem := newFakeCleanupFilesystem()
-	for _, paths := range []firecracker.PathPlan{trackedPaths, untrackedPaths} {
-		filesystem.addDir(paths.StateDir)
-		filesystem.addFile(paths.APISocketPath)
-		filesystem.addFile(paths.ConfigPath)
-		filesystem.addFile(paths.LogPath)
-		filesystem.addFile(paths.MetricsPath)
-	}
+	filesystem.addDir(trackedPaths.StateDir)
+	filesystem.addFile(trackedPaths.ConfigPath)
+	filesystem.addFile(trackedPaths.LogPath)
+	filesystem.addFile(trackedPaths.MetricsPath)
+	filesystem.addDir(untrackedPaths.StateDir)
+	filesystem.addFile(untrackedPaths.APISocketPath)
+	filesystem.addFile(untrackedPaths.ConfigPath)
+	filesystem.addFile(untrackedPaths.LogPath)
+	filesystem.addFile(untrackedPaths.MetricsPath)
 	process := &fakeHostProcess{rawPID: 4445}
 	manager := NewProcessLifecycleManager(
 		&fakeHostProcessRunner{processes: []HostProcess{process}},
@@ -619,6 +675,13 @@ func (filesystem *fakeCleanupFilesystem) addFile(path string) {
 	filesystem.entries[filepath.Clean(path)] = fakeCleanupFileInfo{
 		name: filepath.Base(path),
 		mode: 0o600,
+	}
+}
+
+func (filesystem *fakeCleanupFilesystem) addSocket(path string) {
+	filesystem.entries[filepath.Clean(path)] = fakeCleanupFileInfo{
+		name: filepath.Base(path),
+		mode: os.ModeSocket | 0o600,
 	}
 }
 

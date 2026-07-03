@@ -6,10 +6,16 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
+)
+
+const (
+	phase39ExplicitSandboxdFirecrackerLiveDriverPath = "sandboxd_firecracker_live_driver.go"
+	phase39FirecrackerHostImportPath                 = "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecrackerhost"
 )
 
 func TestPhase35DefaultCLIPathsDoNotConstructSelectOrInjectFirecrackerHostAdapter(t *testing.T) {
@@ -97,6 +103,47 @@ func TestPhase35DefaultHostAdapterGuardCoversRequiredSurfaces(t *testing.T) {
 		if !covered[clean] {
 			t.Fatalf("Phase 35 default host adapter guard does not cover %s", want)
 		}
+	}
+}
+
+func TestPhase35ExplicitSandboxdFirecrackerLiveDriverExceptionIsNarrow(t *testing.T) {
+	allCommandFiles := phase35ProductionFilesInDirs(t, ".")
+	defaultCommandFiles := phase35DefaultCLIProductionFiles(t)
+	defaultCovered := make(map[string]bool, len(defaultCommandFiles))
+	for _, path := range defaultCommandFiles {
+		defaultCovered[filepath.ToSlash(filepath.Clean(path))] = true
+	}
+
+	var excluded []string
+	for _, path := range allCommandFiles {
+		clean := filepath.ToSlash(filepath.Clean(path))
+		if !defaultCovered[clean] {
+			excluded = append(excluded, clean)
+		}
+	}
+	want := []string{phase39ExplicitSandboxdFirecrackerLiveDriverPath}
+	if !reflect.DeepEqual(excluded, want) {
+		t.Fatalf("default command guard exclusions = %#v, want only %#v", excluded, want)
+	}
+
+	for _, path := range []string{
+		"sandboxd.go",
+		"sandboxd_firecracker_live_driver_extra.go",
+		filepath.Join("..", "internal", "sandboxruntime", "microvm", "firecrackerhost", "sandboxd_firecracker_live_driver.go"),
+	} {
+		if phase39IsExplicitSandboxdFirecrackerLiveDriverPath(path) {
+			t.Fatalf("%s matched explicit sandboxd Firecracker live-driver exception; only %s may match", path, phase39ExplicitSandboxdFirecrackerLiveDriverPath)
+		}
+	}
+}
+
+func TestPhase35ExplicitSandboxdFirecrackerLiveDriverPathAllowsHostAdapterWiring(t *testing.T) {
+	_, file := phase39ReadExplicitSandboxdFirecrackerLiveDriver(t)
+	if !phase39ImportsFirecrackerHost(file) {
+		t.Fatalf("%s does not import %s", phase39ExplicitSandboxdFirecrackerLiveDriverPath, phase39FirecrackerHostImportPath)
+	}
+	if message := phase35FirecrackerHostImportBoundaryMessage(phase39ExplicitSandboxdFirecrackerLiveDriverPath, phase39FirecrackerHostImportPath); message == "" {
+		t.Fatalf("Phase 35 host adapter import guard did not reject %s outside the explicit sandboxd exception", phase39FirecrackerHostImportPath)
 	}
 }
 
@@ -234,7 +281,49 @@ func phase35AssertNoFirecrackerHostAdapterPackageImport(t *testing.T, path strin
 
 func phase35DefaultCLIProductionFiles(t *testing.T) []string {
 	t.Helper()
-	return phase35ProductionFilesInDirs(t, ".")
+	return phase39WithoutExplicitSandboxdFirecrackerLiveDriverFiles(phase35ProductionFilesInDirs(t, "."))
+}
+
+func phase39WithoutExplicitSandboxdFirecrackerLiveDriverFiles(paths []string) []string {
+	filtered := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if phase39IsExplicitSandboxdFirecrackerLiveDriverPath(path) {
+			continue
+		}
+		filtered = append(filtered, path)
+	}
+	return filtered
+}
+
+func phase39IsExplicitSandboxdFirecrackerLiveDriverPath(path string) bool {
+	return filepath.ToSlash(filepath.Clean(path)) == phase39ExplicitSandboxdFirecrackerLiveDriverPath
+}
+
+func phase39ReadExplicitSandboxdFirecrackerLiveDriver(t *testing.T) (string, *ast.File) {
+	t.Helper()
+
+	source, err := os.ReadFile(phase39ExplicitSandboxdFirecrackerLiveDriverPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error: %v", phase39ExplicitSandboxdFirecrackerLiveDriverPath, err)
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), phase39ExplicitSandboxdFirecrackerLiveDriverPath, source, 0)
+	if err != nil {
+		t.Fatalf("ParseFile(%s) error: %v", phase39ExplicitSandboxdFirecrackerLiveDriverPath, err)
+	}
+	return string(source), file
+}
+
+func phase39ImportsFirecrackerHost(file *ast.File) bool {
+	for _, imported := range file.Imports {
+		importPath, err := strconv.Unquote(imported.Path.Value)
+		if err != nil {
+			continue
+		}
+		if importPath == phase39FirecrackerHostImportPath {
+			return true
+		}
+	}
+	return false
 }
 
 func phase35FactoryProductionFiles(t *testing.T) []string {

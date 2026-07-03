@@ -166,6 +166,13 @@ func (manager *ProcessLifecycleManager) StartProcess(ctx context.Context, req fi
 		return firecracker.ProcessHandleMetadata{}, err
 	}
 
+	paths, hasPaths := trustedStartPathPlan(req)
+	if hasPaths {
+		if err := manager.removeStaleAPISocketBeforeStart(paths); err != nil {
+			return firecracker.ProcessHandleMetadata{}, err
+		}
+	}
+
 	process, err := manager.runner.StartHostProcess(ctx, cloneProcessRunnerStartRequest(req))
 	if err != nil {
 		return firecracker.ProcessHandleMetadata{}, newProcessLifecycleError(processOperationStart, err)
@@ -174,7 +181,6 @@ func (manager *ProcessLifecycleManager) StartProcess(ctx context.Context, req fi
 		return firecracker.ProcessHandleMetadata{}, newProcessLifecycleError(processOperationStart, ErrHostProcessRequired)
 	}
 
-	paths, hasPaths := trustedStartPathPlan(req)
 	handle := manager.storeProcess(process, paths, hasPaths)
 	return handle, nil
 }
@@ -401,6 +407,28 @@ func (manager *ProcessLifecycleManager) removeValidatedStateDir(plan firecracker
 	}
 	if err := filesystem.RemoveAll(plan.StateDir); err != nil {
 		return newProcessLifecycleError(processOperationCleanup, fmt.Errorf("state directory removal failed: %w", err))
+	}
+	return nil
+}
+
+func (manager *ProcessLifecycleManager) removeStaleAPISocketBeforeStart(plan firecracker.PathPlan) error {
+	filesystem := manager.cleanupFilesystem()
+	info, err := filesystem.Lstat(plan.APISocketPath)
+	switch {
+	case err == nil:
+		if info == nil || info.Mode()&os.ModeSymlink != 0 {
+			return newProcessLifecycleError(processOperationCleanup, fmt.Errorf("API socket path is invalid: %w", ErrUnsafeCleanupPath))
+		}
+		if info.Mode()&os.ModeSocket == 0 {
+			return newProcessLifecycleError(processOperationCleanup, fmt.Errorf("API socket path already exists and is not a socket: %w", ErrUnsafeCleanupPath))
+		}
+	case os.IsNotExist(err):
+		return nil
+	default:
+		return newProcessLifecycleError(processOperationCleanup, fmt.Errorf("API socket path inspection failed: %w", err))
+	}
+	if err := filesystem.RemoveAll(plan.APISocketPath); err != nil {
+		return newProcessLifecycleError(processOperationCleanup, fmt.Errorf("stale API socket removal failed: %w", err))
 	}
 	return nil
 }

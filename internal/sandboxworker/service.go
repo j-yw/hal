@@ -29,6 +29,14 @@ var defaultRuntimeDriverOperations = []string{
 	OperationCopyOut,
 }
 
+var microVMRuntimeDriverOperations = []string{
+	OperationCreate,
+	OperationStart,
+	OperationStop,
+	OperationDelete,
+	OperationInspect,
+}
+
 // Service reports local worker state and capabilities without depending on
 // command-layer records or concrete runtime adapters.
 type Service struct {
@@ -98,12 +106,11 @@ func NewService(options ServiceOptions) (*Service, error) {
 		security = DefaultWorkerSecurityPolicy()
 	}
 
+	descriptors := cloneRuntimeDriverMap(options.RuntimeDrivers)
 	supportedOps := cloneStringSlice(options.SupportedOperations)
 	if len(supportedOps) == 0 {
-		supportedOps = cloneStringSlice(defaultSupportedOperations)
+		supportedOps = defaultSupportedOperationsForDrivers(registry.DriverIDs(), descriptors)
 	}
-
-	descriptors := cloneRuntimeDriverMap(options.RuntimeDrivers)
 	service := &Service{
 		workerID:          workerID,
 		hostKind:          hostKind,
@@ -206,7 +213,11 @@ func DefaultWorkerSecurityPolicy() SecurityPolicy {
 }
 
 func (service *Service) runtimeDriverCapability(driverID string) RuntimeDriver {
-	if descriptor, ok := service.driverDescriptors[driverID]; ok {
+	return runtimeDriverCapabilityFromDescriptors(driverID, service.driverDescriptors)
+}
+
+func runtimeDriverCapabilityFromDescriptors(driverID string, descriptors map[string]RuntimeDriver) RuntimeDriver {
+	if descriptor, ok := descriptors[driverID]; ok {
 		descriptor.ID = strings.TrimSpace(defaultString(descriptor.ID, driverID))
 		descriptor.Operations = cloneStringSlice(descriptor.Operations)
 		descriptor.Security = cloneSecurityPolicy(descriptor.Security)
@@ -216,9 +227,51 @@ func (service *Service) runtimeDriverCapability(driverID string) RuntimeDriver {
 	return defaultRuntimeDriverCapability(driverID)
 }
 
+func defaultSupportedOperationsForDrivers(driverIDs []string, descriptors map[string]RuntimeDriver) []string {
+	supported := map[string]bool{
+		OperationStatus:       true,
+		OperationCapabilities: true,
+	}
+	for _, driverID := range driverIDs {
+		driver := runtimeDriverCapabilityFromDescriptors(driverID, descriptors)
+		for _, operation := range driver.Operations {
+			supported[operation] = true
+		}
+	}
+	operations := make([]string, 0, len(defaultSupportedOperations))
+	for _, operation := range defaultSupportedOperations {
+		if supported[operation] {
+			operations = append(operations, operation)
+		}
+	}
+	return operations
+}
+
+func (service *Service) supportsRequestOperation(operation, driverID string) bool {
+	operation = strings.TrimSpace(operation)
+	if operation == OperationStatus || operation == OperationCapabilities {
+		return true
+	}
+	if !validOperation(operation) {
+		return false
+	}
+	driverID = strings.TrimSpace(driverID)
+	if driverID == "" || service == nil || service.registry == nil {
+		return stringSliceContains(service.supportedOps, operation)
+	}
+	if !stringSliceContains(service.registry.DriverIDs(), driverID) {
+		return true
+	}
+	driver := service.runtimeDriverCapability(driverID)
+	return stringSliceContains(driver.Operations, operation)
+}
+
 func defaultRuntimeDriverCapability(driverID string) RuntimeDriver {
 	if driverID == RuntimeDriverRootlessPodman {
 		return rootlessPodmanRuntimeDriverCapability()
+	}
+	if driverID == RuntimeDriverMicroVM {
+		return microVMRuntimeDriverCapability()
 	}
 
 	isolationLevel := defaultRuntimeDriverIsolation(driverID)
@@ -241,10 +294,22 @@ func rootlessPodmanRuntimeDriverCapability() RuntimeDriver {
 	}
 }
 
+func microVMRuntimeDriverCapability() RuntimeDriver {
+	return RuntimeDriver{
+		ID:             RuntimeDriverMicroVM,
+		HostKind:       HostKindLocal,
+		IsolationLevel: IsolationLevelVM,
+		Operations:     cloneStringSlice(microVMRuntimeDriverOperations),
+		Security:       microVMRuntimeDriverSecurityPolicy(),
+	}
+}
+
 func defaultRuntimeDriverIsolation(driverID string) string {
 	switch driverID {
 	case RuntimeDriverRootlessPodman:
 		return IsolationLevelContainer
+	case RuntimeDriverMicroVM:
+		return IsolationLevelVM
 	default:
 		return IsolationLevelHost
 	}
@@ -296,6 +361,23 @@ func defaultRuntimeDriverSecurityPolicy(isolationLevel string) SecurityPolicy {
 	}
 }
 
+func microVMRuntimeDriverSecurityPolicy() SecurityPolicy {
+	return SecurityPolicy{
+		Requested: SecurityControls{
+			NetworkPolicy:       NetworkPolicyBestEffort,
+			NetworkEnforcement:  NetworkEnforcementNone,
+			IsolationLevel:      IsolationLevelVM,
+			CredentialProxyMode: false,
+		},
+		Enforced: SecurityControls{
+			NetworkPolicy:       NetworkPolicyBestEffort,
+			NetworkEnforcement:  NetworkEnforcementNone,
+			IsolationLevel:      IsolationLevelVM,
+			CredentialProxyMode: false,
+		},
+	}
+}
+
 func cloneRuntimeDriverMap(drivers map[string]RuntimeDriver) map[string]RuntimeDriver {
 	if len(drivers) == 0 {
 		return nil
@@ -327,6 +409,16 @@ func cloneStringSlice(values []string) []string {
 	}
 	clone := append([]string(nil), values...)
 	return clone
+}
+
+func stringSliceContains(values []string, want string) bool {
+	want = strings.TrimSpace(want)
+	for _, value := range values {
+		if strings.TrimSpace(value) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func zeroSecurityPolicy(policy SecurityPolicy) bool {

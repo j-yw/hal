@@ -103,6 +103,21 @@ func TestPhase38FirecrackerLiveGuestTransportGuardCoversRequiredDefaultSurfaces(
 	}
 }
 
+func TestPhase38ExplicitSandboxdFirecrackerLiveDriverPathDoesNotWireGuestTransport(t *testing.T) {
+	source, _ := phase39ReadExplicitSandboxdFirecrackerLiveDriver(t)
+	for _, marker := range []string{
+		"WithGuestTransport",
+		"NewGuestTransport",
+		"GuestTransport",
+		"GuestExecRequest",
+		"GuestCopyRequest",
+	} {
+		if strings.Contains(source, marker) {
+			t.Fatalf("%s contains guest transport marker %q; the Phase 39 sandboxd exception is only for explicit live-driver construction", phase39ExplicitSandboxdFirecrackerLiveDriverPath, marker)
+		}
+	}
+}
+
 func TestPhase38RunAutoFactoryDefaultsDoNotSelectFirecrackerRuntimeOrGuestTransport(t *testing.T) {
 	runReq, err := parseRunSandboxRequest(nil, runSandboxOptions{})
 	if err != nil {
@@ -262,11 +277,11 @@ func TestPhase38DefaultMicroVMAndSandboxdMetadataDoNotClaimLiveGuestTransport(t 
 		t.Fatalf("default sandboxd drivers = %#v, want only rootless_podman", flags.drivers)
 	}
 	deps := defaultSandboxdDeps()
-	if deps.newMicroVMDriver != nil {
-		t.Fatal("default sandboxd newMicroVMDriver is configured; Firecracker live guest transport must remain opt-in")
+	if deps.newMicroVMDriver == nil {
+		t.Fatal("default sandboxd newMicroVMDriver is nil; explicit Firecracker microVM registration should be available only when --driver microvm is requested")
 	}
-	if sandboxdDriverSupportedByDeps(sandboxruntime.DriverMicroVM, deps) {
-		t.Fatal("default sandboxd reports microVM supported without an injected backend factory")
+	if !sandboxdDriverSupportedByDeps(sandboxruntime.DriverMicroVM, deps) {
+		t.Fatal("default sandboxd reports microVM unsupported despite explicit --driver microvm live-driver support")
 	}
 }
 

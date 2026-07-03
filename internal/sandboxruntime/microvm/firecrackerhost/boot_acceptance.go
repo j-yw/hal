@@ -3,6 +3,7 @@ package firecrackerhost
 import (
 	"context"
 	"errors"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -21,7 +22,14 @@ const (
 	bootAcceptanceOperationTimeout = "timeout"
 )
 
-var bootAcceptancePathLikePattern = regexp.MustCompile(`(?i)(?:[A-Za-z0-9._~@%+-]+/)+[^\s:'",]+|[^\s:'",/]+\.sock\b`)
+var (
+	bootAcceptanceEndpointPattern = regexp.MustCompile(`(?i)\b(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|\[[0-9a-f:]+\]|[A-Za-z0-9.-]+\.[A-Za-z]{2,})(?::\d{1,5})\b`)
+	bootAcceptancePathLikePattern = regexp.MustCompile(`(?i)(?:[A-Za-z0-9._~@%+-]+/)+[^\s:'",]+|[^\s:'",/]+\.sock\b`)
+)
+
+type bootAcceptanceFilesystem interface {
+	Lstat(string) (os.FileInfo, error)
+}
 
 // BootAcceptancePollingError wraps host-side API socket acceptance failures
 // with sanitized public detail while preserving the original cause.
@@ -51,6 +59,59 @@ func (err *BootAcceptancePollingError) Unwrap() error {
 		return nil
 	}
 	return err.Err
+}
+
+// APISocketBootAcceptancePoller checks only the planned host-side Firecracker
+// API socket path. It does not dial the socket, call Firecracker APIs, inspect
+// guest readiness, or examine host process internals.
+type APISocketBootAcceptancePoller struct {
+	fs bootAcceptanceFilesystem
+}
+
+var _ BootAcceptancePoller = APISocketBootAcceptancePoller{}
+
+// NewAPISocketBootAcceptancePoller constructs the concrete host-side
+// Firecracker API socket acceptance poller.
+func NewAPISocketBootAcceptancePoller() APISocketBootAcceptancePoller {
+	return APISocketBootAcceptancePoller{}
+}
+
+// PollBootAcceptance reports accepted only when the planned API socket path is
+// present as a Unix socket. Missing or non-socket paths are not accepted yet.
+func (poller APISocketBootAcceptancePoller) PollBootAcceptance(ctx context.Context, req firecracker.BootAcceptanceRequest) (firecracker.BootAcceptanceResult, error) {
+	ctx = nonNilContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return firecracker.BootAcceptanceResult{}, newBootAcceptancePollingError(bootAcceptanceOperationPoll, err)
+	}
+	req, err := bootAcceptancePollRequest(req)
+	if err != nil {
+		return firecracker.BootAcceptanceResult{}, newBootAcceptancePollingError(bootAcceptanceOperationRequest, err)
+	}
+
+	info, err := poller.filesystem().Lstat(req.APISocket.Path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return firecracker.BootAcceptanceResult{}, nil
+		}
+		return firecracker.BootAcceptanceResult{}, newBootAcceptancePollingError(bootAcceptanceOperationPoll, err)
+	}
+	if info == nil {
+		return firecracker.BootAcceptanceResult{}, newBootAcceptancePollingError(bootAcceptanceOperationPoll, errors.New("API socket inspection failed"))
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return firecracker.BootAcceptanceResult{}, nil
+	}
+	return firecracker.BootAcceptanceResult{
+		ProcessAccepted:    true,
+		APISocketAvailable: true,
+	}, nil
+}
+
+func (poller APISocketBootAcceptancePoller) filesystem() bootAcceptanceFilesystem {
+	if poller.fs == nil {
+		return osCleanupFilesystem{}
+	}
+	return poller.fs
 }
 
 func (adapter *Adapter) waitForBootAcceptance(ctx context.Context, req firecracker.BootAcceptanceRequest) (firecracker.BootAcceptanceResult, error) {
@@ -226,6 +287,7 @@ func sanitizeBootAcceptanceErrorDetail(cause error) string {
 		return ""
 	}
 	detail := sanitizeProcessLifecycleErrorDetail(cause)
+	detail = bootAcceptanceEndpointPattern.ReplaceAllString(detail, "[redacted-endpoint]")
 	detail = bootAcceptancePathLikePattern.ReplaceAllString(detail, "[redacted-path]")
 	detail = strings.Join(strings.Fields(detail), " ")
 	return detail

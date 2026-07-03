@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -197,6 +198,153 @@ func TestAdapterBootAcceptanceRequestMappingRedactsUnsafeHandleFromReturnedError
 	)
 }
 
+func TestAPISocketBootAcceptancePollerReportsReadyOnlyForSocket(t *testing.T) {
+	socketPath := "/tmp/hal/firecracker-state/firecracker.sock"
+	tests := []struct {
+		name string
+		info os.FileInfo
+		err  error
+		want firecracker.BootAcceptanceResult
+	}{
+		{
+			name: "socket",
+			info: fakeBootAcceptanceFileInfo{mode: os.ModeSocket},
+			want: firecracker.BootAcceptanceResult{
+				ProcessAccepted:    true,
+				APISocketAvailable: true,
+			},
+		},
+		{
+			name: "regular file",
+			info: fakeBootAcceptanceFileInfo{mode: 0},
+			want: firecracker.BootAcceptanceResult{},
+		},
+		{
+			name: "directory",
+			info: fakeBootAcceptanceFileInfo{mode: os.ModeDir},
+			want: firecracker.BootAcceptanceResult{},
+		},
+		{
+			name: "missing",
+			err:  fmt.Errorf("socket missing: %w", os.ErrNotExist),
+			want: firecracker.BootAcceptanceResult{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filesystem := &fakeBootAcceptanceFilesystem{info: tt.info, err: tt.err}
+			poller := APISocketBootAcceptancePoller{fs: filesystem}
+
+			got, err := poller.PollBootAcceptance(context.Background(), firecracker.BootAcceptanceRequest{
+				Handle: firecracker.ProcessHandleMetadata{ID: "fc-host-handle", Source: "firecrackerhost"},
+				APISocket: firecracker.OperationPathReference{
+					Role: firecracker.OperationPathRoleAPISocket,
+					Path: socketPath,
+				},
+			})
+
+			if err != nil {
+				t.Fatalf("PollBootAcceptance() error = %v, want nil", err)
+			}
+			if got != tt.want {
+				t.Fatalf("PollBootAcceptance() = %#v, want %#v", got, tt.want)
+			}
+			if filesystem.calls != 1 {
+				t.Fatalf("filesystem calls = %d, want 1", filesystem.calls)
+			}
+			if filesystem.paths[0] != socketPath {
+				t.Fatalf("filesystem path = %q, want planned API socket path", filesystem.paths[0])
+			}
+		})
+	}
+}
+
+func TestAPISocketBootAcceptancePollerStatErrorsAreSanitized(t *testing.T) {
+	socketPath := "/Users/alice/private/firecracker-state/firecracker.sock"
+	statErr := &bootAcceptanceTypedStatError{
+		message: "stat " + socketPath + " failed for /Users/alice/private/rootfs.ext4 endpoint=127.0.0.1:8080 token=ghp_secret OPENAI_API_KEY=sk-live-secret",
+	}
+	poller := APISocketBootAcceptancePoller{
+		fs: &fakeBootAcceptanceFilesystem{err: statErr},
+	}
+
+	_, err := poller.PollBootAcceptance(context.Background(), firecracker.BootAcceptanceRequest{
+		Handle: firecracker.ProcessHandleMetadata{ID: "fc-host-handle", Source: "firecrackerhost"},
+		APISocket: firecracker.OperationPathReference{
+			Role: firecracker.OperationPathRoleAPISocket,
+			Path: socketPath,
+		},
+	})
+
+	if err == nil {
+		t.Fatal("PollBootAcceptance() error = nil, want sanitized stat error")
+	}
+	if !errors.Is(err, statErr) {
+		t.Fatalf("errors.Is(poll error, statErr) = false for %v", err)
+	}
+	var typedErr *bootAcceptanceTypedStatError
+	if !errors.As(err, &typedErr) {
+		t.Fatalf("errors.As(poll error, *bootAcceptanceTypedStatError) = false for %v", err)
+	}
+	var pollingErr *BootAcceptancePollingError
+	if !errors.As(err, &pollingErr) {
+		t.Fatalf("error type = %T, want *BootAcceptancePollingError", err)
+	}
+	assertBootAcceptancePublicTextRedacted(t, err.Error(),
+		socketPath,
+		"/Users/alice",
+		"private",
+		"rootfs.ext4",
+		"127.0.0.1:8080",
+		"ghp_secret",
+		"OPENAI_API_KEY",
+		"sk-live-secret",
+	)
+}
+
+func TestAdapterWithAPISocketBootAcceptancePollerTimeoutIsSanitized(t *testing.T) {
+	clock := &bootAcceptanceFakeClock{now: time.Unix(500, 0)}
+	socketPath := "/Users/alice/private/firecracker-state/firecracker.sock"
+	adapter := NewAdapter(
+		WithBootAcceptancePoller(APISocketBootAcceptancePoller{
+			fs: &fakeBootAcceptanceFilesystem{err: os.ErrNotExist},
+		}),
+		WithClock(clock),
+		WithSleeper(&bootAcceptanceAdvancingSleeper{clock: clock}),
+		WithBootAcceptanceTimeout(2*time.Second),
+		WithBootAcceptancePollInterval(time.Second),
+	)
+
+	got, err := adapter.WaitForBootAcceptance(context.Background(), firecracker.BootAcceptanceRequest{
+		Handle: firecracker.ProcessHandleMetadata{ID: "fc-host-handle", Source: "firecrackerhost"},
+		APISocket: firecracker.OperationPathReference{
+			Role: firecracker.OperationPathRoleAPISocket,
+			Path: socketPath,
+		},
+	})
+
+	if err == nil {
+		t.Fatal("WaitForBootAcceptance() error = nil, want timeout")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("errors.Is(timeout, DeadlineExceeded) = false for %v", err)
+	}
+	var pollingErr *BootAcceptancePollingError
+	if !errors.As(err, &pollingErr) {
+		t.Fatalf("error type = %T, want *BootAcceptancePollingError", err)
+	}
+	if got.ProcessAccepted || got.APISocketAvailable {
+		t.Fatalf("boot acceptance result = %#v, want zero result on timeout", got)
+	}
+	assertBootAcceptancePublicTextRedacted(t, err.Error(),
+		socketPath,
+		"/Users/alice",
+		"private",
+		"firecracker.sock",
+	)
+}
+
 type sequenceBootAcceptancePoller struct {
 	calls    int
 	requests []firecracker.BootAcceptanceRequest
@@ -226,6 +374,55 @@ type requestEchoBootAcceptancePoller struct {
 func (poller *requestEchoBootAcceptancePoller) PollBootAcceptance(_ context.Context, req firecracker.BootAcceptanceRequest) (firecracker.BootAcceptanceResult, error) {
 	poller.requests = append(poller.requests, req)
 	return firecracker.BootAcceptanceResult{}, fmt.Errorf("handle=%s source=%s apiSocket=%s", req.Handle.ID, req.Handle.Source, req.APISocket.Path)
+}
+
+type fakeBootAcceptanceFilesystem struct {
+	calls int
+	paths []string
+	info  os.FileInfo
+	err   error
+}
+
+func (filesystem *fakeBootAcceptanceFilesystem) Lstat(path string) (os.FileInfo, error) {
+	filesystem.calls++
+	filesystem.paths = append(filesystem.paths, path)
+	return filesystem.info, filesystem.err
+}
+
+type fakeBootAcceptanceFileInfo struct {
+	mode os.FileMode
+}
+
+func (info fakeBootAcceptanceFileInfo) Name() string {
+	return "firecracker.sock"
+}
+
+func (info fakeBootAcceptanceFileInfo) Size() int64 {
+	return 0
+}
+
+func (info fakeBootAcceptanceFileInfo) Mode() os.FileMode {
+	return info.mode
+}
+
+func (info fakeBootAcceptanceFileInfo) ModTime() time.Time {
+	return time.Time{}
+}
+
+func (info fakeBootAcceptanceFileInfo) IsDir() bool {
+	return info.mode.IsDir()
+}
+
+func (info fakeBootAcceptanceFileInfo) Sys() any {
+	return nil
+}
+
+type bootAcceptanceTypedStatError struct {
+	message string
+}
+
+func (err *bootAcceptanceTypedStatError) Error() string {
+	return err.message
 }
 
 type bootAcceptanceFakeClock struct {

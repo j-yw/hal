@@ -7,8 +7,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
 	"github.com/jywlabs/hal/internal/sandboxworker"
 	"github.com/spf13/cobra"
 )
@@ -21,9 +23,33 @@ func TestSandboxdCommandRegisteredWithoutDisruptingSandboxCommands(t *testing.T)
 	if missing := missingCommandMetadataFields(cmd); len(missing) > 0 {
 		t.Fatalf("sandboxd missing metadata fields: %v", missing)
 	}
-	for _, flagName := range []string{"socket", "worker-id", "driver", "podman", "max-concurrent", "json"} {
+	for _, flagName := range []string{
+		"socket",
+		"worker-id",
+		"driver",
+		"podman",
+		"firecracker-executable",
+		"firecracker-kernel",
+		"firecracker-rootfs",
+		"firecracker-initrd",
+		"firecracker-jailer",
+		"firecracker-state-dir",
+		"microvm-cpu-count",
+		"microvm-memory-mib",
+		"microvm-disk-mib",
+		"microvm-guest-workdir",
+		"firecracker-boot-timeout",
+		"firecracker-boot-poll-interval",
+		"max-concurrent",
+		"json",
+	} {
 		if cmd.Flags().Lookup(flagName) == nil {
 			t.Fatalf("sandboxd missing --%s flag", flagName)
+		}
+	}
+	for _, flagName := range []string{"firecracker-guest-readiness-timeout", "firecracker-guest-readiness-poll-interval"} {
+		if cmd.Flags().Lookup(flagName) != nil {
+			t.Fatalf("sandboxd registered --%s by default without a configured readiness probe", flagName)
 		}
 	}
 
@@ -192,8 +218,17 @@ func TestSandboxdCommandRejectsMicroVMDriverWithoutConfiguredFactory(t *testing.
 	if exitErr.Code != ExitCodeValidation {
 		t.Fatalf("exit code = %d, want %d", exitErr.Code, ExitCodeValidation)
 	}
-	if exitErr.Err == nil || !strings.Contains(exitErr.Err.Error(), `driver "microvm" is unsupported`) {
-		t.Fatalf("exit error = %#v, want unsupported microVM driver detail", exitErr.Err)
+	if exitErr.Err == nil {
+		t.Fatal("exit error detail is nil, want missing Firecracker input detail")
+	}
+	detail := exitErr.Err.Error()
+	for _, want := range []string{"--firecracker-executable", "--firecracker-kernel", "--firecracker-rootfs", "--firecracker-state-dir"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("exit error = %q, want missing %s detail", detail, want)
+		}
+	}
+	if strings.Contains(detail, `driver "microvm" is unsupported`) {
+		t.Fatalf("exit error = %q, want missing Firecracker inputs before unsupported driver detail", detail)
 	}
 	if serviceCalled || serverCalled {
 		t.Fatalf("serviceCalled=%v serverCalled=%v, want neither called", serviceCalled, serverCalled)
@@ -207,17 +242,104 @@ func TestSandboxdDefaultsDoNotRegisterMicroVMFactory(t *testing.T) {
 	}
 
 	deps := defaultSandboxdDeps()
-	if deps.newMicroVMDriver != nil {
-		t.Fatal("default sandboxd newMicroVMDriver is configured, want nil until an explicit Firecracker backend factory is injected")
+	if deps.newMicroVMDriver == nil {
+		t.Fatal("default sandboxd newMicroVMDriver is nil, want explicit microVM constructor available for --driver microvm")
 	}
-	if sandboxdDriverSupportedByDeps(sandboxruntime.DriverMicroVM, deps) {
-		t.Fatal("sandboxd reports microVM supported by default deps, want unsupported without injected backend factory")
+	if !sandboxdDriverSupportedByDeps(sandboxruntime.DriverMicroVM, deps) {
+		t.Fatal("sandboxd reports microVM unsupported by default deps, want support gated by explicit --driver microvm inputs")
+	}
+}
+
+func TestSandboxdCommandRegistersLiveMicroVMDriverWithExplicitInputs(t *testing.T) {
+	handler := &recordingSandboxdHandler{}
+	var gotService sandboxworker.ServiceOptions
+	var gotDriver sandboxruntime.Driver
+
+	deps := defaultSandboxdDeps()
+	deps.newService = func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
+		gotService = options
+		driver, err := options.Registry.Lookup(sandboxruntime.DriverMicroVM)
+		if err != nil {
+			return nil, err
+		}
+		gotDriver = driver
+		return handler, nil
+	}
+	deps.newServer = func(options sandboxworker.ServerOptions) (sandboxdServer, error) {
+		return sandboxdServerFunc(func(context.Context) error { return nil }), nil
+	}
+
+	cmd, stdout, _ := newTestSandboxdCommand(deps)
+	cmd.SetArgs([]string{
+		"--socket", "/tmp/live-microvm-sandboxd.sock",
+		"--worker-id", "worker-live-microvm",
+		"--driver", sandboxruntime.DriverMicroVM,
+		"--firecracker-executable", "/usr/bin/firecracker",
+		"--firecracker-kernel", "/opt/hal/images/vmlinux",
+		"--firecracker-rootfs", "/opt/hal/images/rootfs.ext4",
+		"--firecracker-state-dir", t.TempDir(),
+		"--json",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("sandboxd Execute() error: %v", err)
+	}
+	if gotService.Registry == nil {
+		t.Fatal("service registry is nil")
+	}
+	if gotDriver == nil {
+		t.Fatal("microVM driver was not registered")
+	}
+	if gotDriver.ID() != sandboxruntime.DriverMicroVM {
+		t.Fatalf("registered driver ID = %q, want %q", gotDriver.ID(), sandboxruntime.DriverMicroVM)
+	}
+	microVMDriver, ok := gotDriver.(*microvm.Driver)
+	if !ok {
+		t.Fatalf("registered microVM driver = %T, want *microvm.Driver", gotDriver)
+	}
+	if !microVMDriver.Metadata().BackendConfigured {
+		t.Fatal("registered microVM driver BackendConfigured = false, want live Firecracker backend configured")
+	}
+	service, err := sandboxworker.NewService(gotService)
+	if err != nil {
+		t.Fatalf("NewService(gotService) error: %v", err)
+	}
+	capabilities := service.Capabilities()
+	for _, unsupported := range []string{sandboxworker.OperationExec, sandboxworker.OperationCopyIn, sandboxworker.OperationCopyOut} {
+		if containsSandboxdTestString(capabilities.SupportedOperations, unsupported) {
+			t.Fatalf("sandboxd microVM supportedOperations claim unsupported %q operation: %#v", unsupported, capabilities.SupportedOperations)
+		}
+	}
+	if len(capabilities.RuntimeDrivers) != 1 {
+		t.Fatalf("sandboxd capabilities runtime drivers = %#v, want one microVM driver", capabilities.RuntimeDrivers)
+	}
+	driver := capabilities.RuntimeDrivers[0]
+	if driver.ID != sandboxruntime.DriverMicroVM {
+		t.Fatalf("sandboxd capability driver ID = %q, want %q", driver.ID, sandboxruntime.DriverMicroVM)
+	}
+	if driver.IsolationLevel != sandboxworker.IsolationLevelVM {
+		t.Fatalf("sandboxd microVM isolationLevel = %q, want %q", driver.IsolationLevel, sandboxworker.IsolationLevelVM)
+	}
+	for _, unsupported := range []string{sandboxworker.OperationExec, sandboxworker.OperationCopyIn, sandboxworker.OperationCopyOut, "template", "kit"} {
+		if containsSandboxdTestString(driver.Operations, unsupported) {
+			t.Fatalf("sandboxd microVM capabilities claim unsupported %q operation: %#v", unsupported, driver.Operations)
+		}
+	}
+	assertSandboxdMicroVMCapabilitySecurity(t, driver.Security)
+
+	var started sandboxdStartedOutput
+	if err := json.Unmarshal(stdout.Bytes(), &started); err != nil {
+		t.Fatalf("startup JSON = %q, unmarshal error: %v", stdout.String(), err)
+	}
+	if got := strings.Join(started.Drivers, ","); got != sandboxruntime.DriverMicroVM {
+		t.Fatalf("startup drivers = %q, want %q", got, sandboxruntime.DriverMicroVM)
 	}
 }
 
 func TestSandboxdCommandRegistersMicroVMOnlyWithInjectedFactory(t *testing.T) {
 	handler := &recordingSandboxdHandler{}
 	var gotService sandboxworker.ServiceOptions
+	var gotMicroVM sandboxdMicroVMConfig
 	microVMConstructed := false
 	rootlessAvailabilityCalled := false
 
@@ -233,9 +355,10 @@ func TestSandboxdCommandRegistersMicroVMOnlyWithInjectedFactory(t *testing.T) {
 			rootlessAvailabilityCalled = true
 			return nil
 		},
-		newMicroVMDriver: func() sandboxruntime.Driver {
+		newMicroVMDriver: func(config sandboxdMicroVMConfig) (sandboxruntime.Driver, error) {
 			microVMConstructed = true
-			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverMicroVM}
+			gotMicroVM = config
+			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverMicroVM}, nil
 		},
 		workerID: func() string {
 			return "unused-default-worker"
@@ -245,6 +368,18 @@ func TestSandboxdCommandRegistersMicroVMOnlyWithInjectedFactory(t *testing.T) {
 		"--socket", "/tmp/microvm-sandboxd.sock",
 		"--worker-id", "worker-microvm",
 		"--driver", sandboxruntime.DriverMicroVM,
+		"--firecracker-executable", " /usr/bin/firecracker ",
+		"--firecracker-kernel", " /opt/hal/images/vmlinux ",
+		"--firecracker-rootfs", " /opt/hal/images/rootfs.ext4 ",
+		"--firecracker-initrd", " /opt/hal/images/initrd.img ",
+		"--firecracker-jailer", " /usr/bin/firecracker-jailer ",
+		"--firecracker-state-dir", " /tmp/hal-firecracker-state ",
+		"--microvm-cpu-count", "4",
+		"--microvm-memory-mib", "4096",
+		"--microvm-disk-mib", "20480",
+		"--microvm-guest-workdir", " /workspace/project ",
+		"--firecracker-boot-timeout", "15s",
+		"--firecracker-boot-poll-interval", "250ms",
 		"--json",
 	})
 
@@ -257,6 +392,39 @@ func TestSandboxdCommandRegistersMicroVMOnlyWithInjectedFactory(t *testing.T) {
 	}
 	if rootlessAvailabilityCalled {
 		t.Fatal("rootless Podman availability should not be checked for injected microVM-only registration")
+	}
+	if gotMicroVM.Config.HypervisorPath != "/usr/bin/firecracker" {
+		t.Fatalf("microVM firecracker executable = %q", gotMicroVM.Config.HypervisorPath)
+	}
+	if gotMicroVM.Config.KernelImagePath != "/opt/hal/images/vmlinux" {
+		t.Fatalf("microVM kernel image = %q", gotMicroVM.Config.KernelImagePath)
+	}
+	if gotMicroVM.Config.RootfsPath != "/opt/hal/images/rootfs.ext4" {
+		t.Fatalf("microVM rootfs image = %q", gotMicroVM.Config.RootfsPath)
+	}
+	if gotMicroVM.Config.InitrdPath != "/opt/hal/images/initrd.img" {
+		t.Fatalf("microVM initrd image = %q", gotMicroVM.Config.InitrdPath)
+	}
+	if gotMicroVM.Config.JailerPath != "/usr/bin/firecracker-jailer" {
+		t.Fatalf("microVM jailer path = %q", gotMicroVM.Config.JailerPath)
+	}
+	if gotMicroVM.StateDir != "/tmp/hal-firecracker-state" {
+		t.Fatalf("microVM state dir = %q", gotMicroVM.StateDir)
+	}
+	if gotMicroVM.Config.CPUCount != 4 || gotMicroVM.Config.MemoryMiB != 4096 || gotMicroVM.Config.DiskSizeMiB != 20480 {
+		t.Fatalf("microVM sizing = cpu:%d memory:%d disk:%d", gotMicroVM.Config.CPUCount, gotMicroVM.Config.MemoryMiB, gotMicroVM.Config.DiskSizeMiB)
+	}
+	if gotMicroVM.Config.GuestWorkDir != "/workspace/project" {
+		t.Fatalf("microVM guest workdir = %q", gotMicroVM.Config.GuestWorkDir)
+	}
+	if gotMicroVM.BootAcceptanceTimeout != 15*time.Second {
+		t.Fatalf("microVM boot timeout = %s", gotMicroVM.BootAcceptanceTimeout)
+	}
+	if gotMicroVM.BootAcceptancePollInterval != 250*time.Millisecond {
+		t.Fatalf("microVM boot poll interval = %s", gotMicroVM.BootAcceptancePollInterval)
+	}
+	if gotMicroVM.GuestReadinessProbeConfigured {
+		t.Fatal("guest readiness probe configured by default, want false")
 	}
 	if gotService.Registry == nil {
 		t.Fatal("service registry is nil")
@@ -271,6 +439,157 @@ func TestSandboxdCommandRegistersMicroVMOnlyWithInjectedFactory(t *testing.T) {
 	}
 	if got := strings.Join(started.Drivers, ","); got != sandboxruntime.DriverMicroVM {
 		t.Fatalf("startup drivers = %q, want %q", got, sandboxruntime.DriverMicroVM)
+	}
+}
+
+func TestSandboxdMicroVMValidationRejectsUnsafeLivePaths(t *testing.T) {
+	tests := []struct {
+		name      string
+		flag      string
+		value     string
+		want      string
+		forbidden []string
+	}{
+		{
+			name:      "relative kernel",
+			flag:      "--firecracker-kernel",
+			value:     "relative/vmlinux",
+			want:      "--firecracker-kernel must be an absolute path",
+			forbidden: []string{"relative/vmlinux"},
+		},
+		{
+			name:      "control char rootfs",
+			flag:      "--firecracker-rootfs",
+			value:     "/opt/hal/images/rootfs.ext4\nsecret=raw",
+			want:      "--firecracker-rootfs is invalid",
+			forbidden: []string{"rootfs.ext4", "secret=raw"},
+		},
+		{
+			name:      "unsafe initrd URL",
+			flag:      "--firecracker-initrd",
+			value:     "https://example.test/initrd.img?token=ghp_secret",
+			want:      "--firecracker-initrd is invalid",
+			forbidden: []string{"example.test", "token=ghp_secret", "ghp_secret"},
+		},
+		{
+			name:      "unsafe state dir query",
+			flag:      "--firecracker-state-dir",
+			value:     "/tmp/hal-firecracker?token=ghp_secret",
+			want:      "--firecracker-state-dir is invalid",
+			forbidden: []string{"token=ghp_secret", "ghp_secret"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			serviceCalled := false
+			serverCalled := false
+			args := []string{
+				"--socket", "/tmp/microvm-invalid-path.sock",
+				"--worker-id", "worker-microvm",
+				"--driver", sandboxruntime.DriverMicroVM,
+				"--firecracker-executable", "/usr/bin/firecracker",
+				"--firecracker-kernel", "/opt/hal/images/vmlinux",
+				"--firecracker-rootfs", "/opt/hal/images/rootfs.ext4",
+				"--firecracker-state-dir", "/tmp/hal-firecracker-state",
+			}
+			for i := 0; i < len(args)-1; i++ {
+				if args[i] == tt.flag {
+					args[i+1] = tt.value
+				}
+			}
+			if tt.flag == "--firecracker-initrd" {
+				args = append(args, tt.flag, tt.value)
+			}
+
+			cmd, _, _ := newTestSandboxdCommand(sandboxdDeps{
+				newService: func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
+					serviceCalled = true
+					return &recordingSandboxdHandler{}, nil
+				},
+				newServer: func(options sandboxworker.ServerOptions) (sandboxdServer, error) {
+					serverCalled = true
+					return sandboxdServerFunc(func(context.Context) error { return nil }), nil
+				},
+				newMicroVMDriver: func(config sandboxdMicroVMConfig) (sandboxruntime.Driver, error) {
+					return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverMicroVM}, nil
+				},
+				workerID: func() string {
+					return "worker-test"
+				},
+			})
+			cmd.SetArgs(args)
+
+			err := cmd.Execute()
+			var exitErr *ExitCodeError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("Execute() error = %T, want ExitCodeError", err)
+			}
+			if exitErr.Code != ExitCodeValidation {
+				t.Fatalf("exit code = %d, want %d", exitErr.Code, ExitCodeValidation)
+			}
+			if exitErr.Err == nil || !strings.Contains(exitErr.Err.Error(), tt.want) {
+				t.Fatalf("exit error = %#v, want %q", exitErr.Err, tt.want)
+			}
+			for _, leaked := range tt.forbidden {
+				if strings.Contains(exitErr.Err.Error(), leaked) {
+					t.Fatalf("exit error leaked %q: %q", leaked, exitErr.Err.Error())
+				}
+			}
+			if serviceCalled || serverCalled {
+				t.Fatalf("serviceCalled=%v serverCalled=%v, want neither called", serviceCalled, serverCalled)
+			}
+		})
+	}
+}
+
+func TestSandboxdMicroVMValidationDoesNotRunForRootlessPodmanOnly(t *testing.T) {
+	var gotService sandboxworker.ServiceOptions
+	cmd, _, _ := newTestSandboxdCommand(sandboxdDeps{
+		newService: func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
+			gotService = options
+			return &recordingSandboxdHandler{}, nil
+		},
+		newServer: func(options sandboxworker.ServerOptions) (sandboxdServer, error) {
+			return sandboxdServerFunc(func(context.Context) error { return nil }), nil
+		},
+		rootlessPodmanAvailable: func(context.Context, string) error {
+			return nil
+		},
+		newRootlessPodmanDriver: func(string) sandboxruntime.Driver {
+			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
+		},
+		workerID: func() string {
+			return "worker-test"
+		},
+	})
+	cmd.SetArgs([]string{
+		"--driver", sandboxruntime.DriverRootlessPodman,
+		"--microvm-cpu-count", "-1",
+		"--firecracker-boot-timeout", "-1s",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("sandboxd Execute() error = %v, want nil because microVM validation is gated by --driver microvm", err)
+	}
+	if got := strings.Join(gotService.Registry.DriverIDs(), ","); got != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("service registry driver IDs = %q, want %q", got, sandboxruntime.DriverRootlessPodman)
+	}
+}
+
+func TestSandboxdGuestReadinessFlagsRequireConfiguredProbe(t *testing.T) {
+	defaultCmd, _, _ := newTestSandboxdCommand(sandboxdDeps{})
+	for _, flagName := range []string{"firecracker-guest-readiness-timeout", "firecracker-guest-readiness-poll-interval"} {
+		if defaultCmd.Flags().Lookup(flagName) != nil {
+			t.Fatalf("default sandboxd command registered --%s without a configured readiness probe", flagName)
+		}
+	}
+
+	configuredCmd, _, _ := newTestSandboxdCommand(sandboxdDeps{microVMGuestReadinessConfigured: true})
+	for _, flagName := range []string{"firecracker-guest-readiness-timeout", "firecracker-guest-readiness-poll-interval"} {
+		if configuredCmd.Flags().Lookup(flagName) == nil {
+			t.Fatalf("sandboxd command with configured readiness probe missing --%s", flagName)
+		}
 	}
 }
 
@@ -433,6 +752,36 @@ type sandboxdServerFunc func(context.Context) error
 
 func (fn sandboxdServerFunc) ListenAndServe(ctx context.Context) error {
 	return fn(ctx)
+}
+
+func assertSandboxdMicroVMCapabilitySecurity(t *testing.T, policy sandboxworker.SecurityPolicy) {
+	t.Helper()
+	if err := policy.Validate(); err != nil {
+		t.Fatalf("microVM security policy Validate() error: %v", err)
+	}
+	if policy.Requested.NetworkPolicy != sandboxworker.NetworkPolicyBestEffort ||
+		policy.Requested.NetworkEnforcement != sandboxworker.NetworkEnforcementNone ||
+		policy.Enforced.NetworkPolicy != sandboxworker.NetworkPolicyBestEffort ||
+		policy.Enforced.NetworkEnforcement != sandboxworker.NetworkEnforcementNone {
+		t.Fatalf("microVM network policy overclaims secure defaults: %#v", policy)
+	}
+	if policy.Requested.CredentialProxyMode || policy.Enforced.CredentialProxyMode ||
+		len(policy.Requested.CredentialModes) != 0 || len(policy.Enforced.CredentialModes) != 0 {
+		t.Fatalf("microVM credential policy overclaims support: %#v", policy)
+	}
+	if policy.Requested.IsolationLevel != sandboxworker.IsolationLevelVM ||
+		policy.Enforced.IsolationLevel != sandboxworker.IsolationLevelVM {
+		t.Fatalf("microVM isolation policy = %#v, want VM isolation", policy)
+	}
+}
+
+func containsSandboxdTestString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 type fakeSandboxdRuntimeDriver struct {
