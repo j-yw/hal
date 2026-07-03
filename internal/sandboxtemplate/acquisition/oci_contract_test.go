@@ -130,6 +130,49 @@ func TestUnsupportedSourceKindReturnsStableSanitizedError(t *testing.T) {
 	assertAcquisitionErrorOmitsFragments(t, err, "oci_index?token", "ghp_fixturetoken", "password=hunter2")
 }
 
+func TestInMemoryOCIArtifactResolverLeavesUnprovenMutableRefsUnresolved(t *testing.T) {
+	sourceRef := "ghcr.io/acme/templates/codex-go:1.2.0"
+	document := ociFixtureTemplateYAML()
+	templateArtifactDigest := testDigest(strings.Repeat("e", 64))
+	documentDigest := testDigest(strings.Repeat("f", 64))
+	fake := acquisition.NewInMemoryOCIArtifactResolver(map[string]acquisition.OCIArtifactResolveResult{
+		sourceRef: {
+			TemplateBytes:          []byte(document),
+			Format:                 sandboxtemplate.FormatYAML,
+			DocumentDigest:         documentDigest,
+			TemplateArtifactDigest: templateArtifactDigest,
+			SizeBytes:              int64(len(document)),
+		},
+	})
+	resolver := acquisition.NewOCIResolver(fake)
+
+	result, err := resolver.Resolve(context.Background(), acquisition.ResolveRequest{
+		Source: acquisition.TemplateSource{
+			Kind: acquisition.SourceKindOCIArtifact,
+			Reference: &sandboxtemplate.ImmutableRef{
+				Ref: sourceRef,
+			},
+			Format: sandboxtemplate.FormatYAML,
+		},
+		LockedAtUnixMillis: acquisitionTestLockedAtUnixMillis,
+	})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v, want nil", err)
+	}
+
+	calls := fake.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("in-memory OCI resolver calls = %d, want 1", len(calls))
+	}
+	if got := calls[0].Reference.Kind; got != sandboxtemplate.ReferenceKindOCIArtifact {
+		t.Fatalf("in-memory OCI resolver ref kind = %q, want normalized oci_artifact", got)
+	}
+	assertOCIDocumentLock(t, result.Lock, documentDigest, int64(len(document)))
+	assertReferenceDigestLock(t, result.Lock, "metadata.reference", sandboxtemplate.ReferenceKindOCIArtifact, templateArtifactDigest)
+	assertMutableReferenceUnresolved(t, result.Lock, "runtime.image")
+	assertMutableReferenceUnresolved(t, result.Lock, "workspace.ref")
+}
+
 type fakeOCIArtifactResolver struct {
 	fixtures map[string]acquisition.OCIArtifactResolveResult
 	calls    []acquisition.OCIArtifactResolveRequest

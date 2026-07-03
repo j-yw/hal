@@ -178,7 +178,3 @@ type OCIResolver struct {
 func NewOCIResolver(resolver OCIArtifactResolver) OCIResolver {
 	return OCIResolver{artifactResolver: resolver}
 }
-
-func (OCIResolver) Resolve(context.Context, ResolveRequest) (ResolveResult, error) {
-	return ResolveResult{}, ErrResolverUnavailable
-}
