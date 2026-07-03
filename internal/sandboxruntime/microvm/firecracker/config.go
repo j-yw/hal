@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
 )
 
 const (
@@ -23,17 +24,18 @@ const (
 // BackendConfig is the Firecracker-specific configuration contract derived
 // from the backend-neutral microVM config before live backend behavior exists.
 type BackendConfig struct {
-	BackendID       string               `json:"backendId,omitempty"`
-	ExecutablePath  string               `json:"executablePath,omitempty"`
-	JailerPath      *string              `json:"jailerPath,omitempty"`
-	KernelImagePath string               `json:"kernelImagePath,omitempty"`
-	RootfsPath      string               `json:"rootfsPath,omitempty"`
-	InitrdPath      *string              `json:"initrdPath,omitempty"`
-	CPUCount        int                  `json:"cpuCount,omitempty"`
-	MemoryMiB       int                  `json:"memoryMiB,omitempty"`
-	GuestWorkDir    GuestWorkDirMetadata `json:"guestWorkDir,omitempty"`
-	RuntimeID       string               `json:"runtimeId,omitempty"`
-	Paths           PathPlan             `json:"paths,omitempty"`
+	BackendID        string                   `json:"backendId,omitempty"`
+	ExecutablePath   string                   `json:"executablePath,omitempty"`
+	JailerPath       *string                  `json:"jailerPath,omitempty"`
+	KernelImagePath  string                   `json:"kernelImagePath,omitempty"`
+	RootfsPath       string                   `json:"rootfsPath,omitempty"`
+	InitrdPath       *string                  `json:"initrdPath,omitempty"`
+	LaunchDescriptor *assets.LaunchDescriptor `json:"-"`
+	CPUCount         int                      `json:"cpuCount,omitempty"`
+	MemoryMiB        int                      `json:"memoryMiB,omitempty"`
+	GuestWorkDir     GuestWorkDirMetadata     `json:"guestWorkDir,omitempty"`
+	RuntimeID        string                   `json:"runtimeId,omitempty"`
+	Paths            PathPlan                 `json:"paths,omitempty"`
 }
 
 // GuestWorkDirMetadata carries the guest workdir contract without adding host
@@ -62,15 +64,32 @@ func BackendConfigFromMicroVMConfig(input microvm.Config) (BackendConfig, error)
 		return BackendConfig{}, err
 	}
 
+	kernelImagePath := strings.TrimSpace(config.KernelImagePath)
+	rootfsPath := strings.TrimSpace(config.RootfsPath)
+	initrdPath := optionalPath(config.InitrdPath)
+	var launchDescriptor *assets.LaunchDescriptor
+	if config.LaunchDescriptor != nil {
+		launchAssets, err := firecrackerLaunchDescriptorAssets(config.LaunchDescriptor, ConfigOperation)
+		if err != nil {
+			return BackendConfig{}, err
+		}
+		kernelImagePath = launchAssets.kernelPath()
+		rootfsPath = launchAssets.rootfsPath()
+		initrdPath = launchAssets.initrdPath()
+		descriptor := launchAssets.Descriptor
+		launchDescriptor = &descriptor
+	}
+
 	return BackendConfig{
-		BackendID:       BackendID,
-		ExecutablePath:  strings.TrimSpace(config.HypervisorPath),
-		JailerPath:      optionalPath(config.JailerPath),
-		KernelImagePath: strings.TrimSpace(config.KernelImagePath),
-		RootfsPath:      strings.TrimSpace(config.RootfsPath),
-		InitrdPath:      optionalPath(config.InitrdPath),
-		CPUCount:        config.CPUCount,
-		MemoryMiB:       config.MemoryMiB,
+		BackendID:        BackendID,
+		ExecutablePath:   strings.TrimSpace(config.HypervisorPath),
+		JailerPath:       optionalPath(config.JailerPath),
+		KernelImagePath:  kernelImagePath,
+		RootfsPath:       rootfsPath,
+		InitrdPath:       initrdPath,
+		LaunchDescriptor: launchDescriptor,
+		CPUCount:         config.CPUCount,
+		MemoryMiB:        config.MemoryMiB,
 		GuestWorkDir: GuestWorkDirMetadata{
 			Path: strings.TrimSpace(config.GuestWorkDir),
 		},

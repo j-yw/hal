@@ -269,11 +269,54 @@ func validateProcessPayloadReferences(payloads []OperationPayloadReference) erro
 		return newProcessBoundaryError("payloads", "required payload references are missing")
 	}
 	for i := range want {
-		if payloads[i] != want[i] {
+		if payloads[i].Role != want[i].Role || payloads[i].APIPath != want[i].APIPath {
 			return newProcessBoundaryError("payloads", "payload reference is invalid")
+		}
+		if err := validateProcessPayloadAssetMetadata(payloads[i].Assets); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func validateProcessPayloadAssetMetadata(assets []OperationPayloadAssetMetadata) error {
+	for _, asset := range assets {
+		if strings.TrimSpace(asset.AssetRole) != "" && safeFirecrackerMetadataToken(asset.AssetRole) == "" {
+			return newProcessBoundaryError("payloads", "payload asset metadata is invalid")
+		}
+		if strings.TrimSpace(asset.ID) != "" && safeFirecrackerMetadataToken(asset.ID) == "" {
+			return newProcessBoundaryError("payloads", "payload asset metadata is invalid")
+		}
+		for _, label := range asset.Labels {
+			if safeFirecrackerMetadataToken(label) == "" {
+				return newProcessBoundaryError("payloads", "payload asset metadata is invalid")
+			}
+		}
+		if asset.Digest != nil && !validProcessPayloadDigestMetadata(*asset.Digest) {
+			return newProcessBoundaryError("payloads", "payload asset digest metadata is invalid")
+		}
+	}
+	return nil
+}
+
+func validProcessPayloadDigestMetadata(digest OperationPayloadDigestMetadata) bool {
+	algorithm := strings.TrimSpace(digest.Algorithm)
+	value := strings.TrimSpace(digest.Value)
+	if algorithm == "" && value == "" {
+		return true
+	}
+	if safeFirecrackerMetadataToken(algorithm) == "" || value == "" || len(value) > 128 {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'f':
+		case r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func processCommandArgumentSummary(descriptor ProcessCommandDescriptor) []OperationArgumentSummary {
@@ -416,11 +459,34 @@ func equalOperationPayloadReferences(a, b []OperationPayloadReference) bool {
 		return false
 	}
 	for i := range a {
-		if a[i] != b[i] {
+		if a[i].Role != b[i].Role || a[i].APIPath != b[i].APIPath ||
+			!equalOperationPayloadAssetMetadata(a[i].Assets, b[i].Assets) {
 			return false
 		}
 	}
 	return true
+}
+
+func equalOperationPayloadAssetMetadata(a, b []OperationPayloadAssetMetadata) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].AssetRole != b[i].AssetRole ||
+			a[i].ID != b[i].ID ||
+			!equalStringSlices(a[i].Labels, b[i].Labels) ||
+			!equalOperationPayloadDigestMetadata(a[i].Digest, b[i].Digest) {
+			return false
+		}
+	}
+	return true
+}
+
+func equalOperationPayloadDigestMetadata(a, b *OperationPayloadDigestMetadata) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func newProcessBoundaryError(field, message string) *microvm.OperationError {

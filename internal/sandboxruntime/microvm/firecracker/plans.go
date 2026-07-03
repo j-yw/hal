@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
 )
 
 const (
@@ -66,10 +67,28 @@ type OperationEnvironmentMetadata struct {
 }
 
 // OperationPayloadReference identifies a rendered Firecracker payload by safe
-// role and API path without copying path-bearing payload bodies.
+// role, API path, and optional immutable asset metadata without copying
+// path-bearing payload bodies.
 type OperationPayloadReference struct {
-	Role    OperationPayloadRole `json:"role"`
-	APIPath string               `json:"apiPath"`
+	Role    OperationPayloadRole            `json:"role"`
+	APIPath string                          `json:"apiPath"`
+	Assets  []OperationPayloadAssetMetadata `json:"assets,omitempty"`
+}
+
+// OperationPayloadAssetMetadata carries safe immutable launch asset metadata.
+// Host paths are intentionally omitted from public process and runtime output.
+type OperationPayloadAssetMetadata struct {
+	AssetRole string                          `json:"assetRole,omitempty"`
+	ID        string                          `json:"id,omitempty"`
+	Labels    []string                        `json:"labels,omitempty"`
+	Digest    *OperationPayloadDigestMetadata `json:"digest,omitempty"`
+}
+
+// OperationPayloadDigestMetadata carries digest lock metadata copied from a
+// validated immutable launch descriptor.
+type OperationPayloadDigestMetadata struct {
+	Algorithm string `json:"algorithm,omitempty"`
+	Value     string `json:"value,omitempty"`
 }
 
 // OperationArgumentSummary is the public, reviewable argv shape. Literal flags
@@ -132,6 +151,11 @@ type DeleteOperationPlan struct {
 // RenderStartOperationPlan derives a fake-testable Firecracker start plan. It
 // validates payload renderability but stores only payload references.
 func RenderStartOperationPlan(config BackendConfig) (StartOperationPlan, error) {
+	if config.LaunchDescriptor != nil {
+		if _, err := firecrackerLaunchDescriptorAssets(config.LaunchDescriptor, OperationPlanningOperation); err != nil {
+			return StartOperationPlan{}, err
+		}
+	}
 	executable, err := operationPathReference(OperationPathRoleExecutable, config.ExecutablePath, "executablePath")
 	if err != nil {
 		return StartOperationPlan{}, err
@@ -152,7 +176,8 @@ func RenderStartOperationPlan(config BackendConfig) (StartOperationPlan, error) 
 	if err != nil {
 		return StartOperationPlan{}, err
 	}
-	if err := validateOperationPayloadReferences(config); err != nil {
+	payloads, err := validateOperationPayloadReferences(config)
+	if err != nil {
 		return StartOperationPlan{}, err
 	}
 
@@ -173,7 +198,7 @@ func RenderStartOperationPlan(config BackendConfig) (StartOperationPlan, error) 
 		Config:      configPath,
 		Log:         logPath,
 		Metrics:     metricsPath,
-		Payloads:    operationPayloadReferences(),
+		Payloads:    payloads,
 	}, nil
 }
 
@@ -302,17 +327,21 @@ func operationPathReference(role OperationPathRole, path string, field string) (
 	}, nil
 }
 
-func validateOperationPayloadReferences(config BackendConfig) error {
+func validateOperationPayloadReferences(config BackendConfig) ([]OperationPayloadReference, error) {
 	if _, err := RenderMachineConfigPayload(config); err != nil {
-		return operationPlanPayloadError(err)
+		return nil, operationPlanPayloadError(err)
 	}
 	if _, err := RenderBootSourcePayload(config); err != nil {
-		return operationPlanPayloadError(err)
+		return nil, operationPlanPayloadError(err)
 	}
 	if _, err := RenderRootDrivePayload(config); err != nil {
-		return operationPlanPayloadError(err)
+		return nil, operationPlanPayloadError(err)
 	}
-	return nil
+	payloads, err := operationPayloadReferencesForConfig(config)
+	if err != nil {
+		return nil, operationPlanPayloadError(err)
+	}
+	return payloads, nil
 }
 
 func operationPlanPayloadError(err error) error {
@@ -339,6 +368,54 @@ func operationPayloadReferences() []OperationPayloadReference {
 	}
 }
 
+func operationPayloadReferencesForConfig(config BackendConfig) ([]OperationPayloadReference, error) {
+	payloads := operationPayloadReferences()
+	if config.LaunchDescriptor == nil {
+		return payloads, nil
+	}
+	launchAssets, err := firecrackerLaunchDescriptorAssets(config.LaunchDescriptor, PayloadRenderingOperation)
+	if err != nil {
+		return nil, err
+	}
+	payloads[1].Assets = []OperationPayloadAssetMetadata{
+		operationPayloadAssetMetadata(launchAssets.Kernel),
+	}
+	if launchAssets.HasInitrd {
+		payloads[1].Assets = append(payloads[1].Assets, operationPayloadAssetMetadata(launchAssets.Initrd))
+	}
+	payloads[2].Assets = []OperationPayloadAssetMetadata{
+		operationPayloadAssetMetadata(launchAssets.Rootfs),
+	}
+	return payloads, nil
+}
+
+func operationPayloadAssetMetadata(asset assets.LaunchAsset) OperationPayloadAssetMetadata {
+	metadata := OperationPayloadAssetMetadata{
+		AssetRole: string(asset.Role),
+		ID:        string(asset.ID),
+		Labels:    launchAssetLabels(asset.Labels),
+		Digest: &OperationPayloadDigestMetadata{
+			Algorithm: string(asset.Lock.Digest.Algorithm),
+			Value:     asset.Lock.Digest.Value,
+		},
+	}
+	if metadata.Labels == nil {
+		metadata.Labels = []string{}
+	}
+	return metadata
+}
+
+func launchAssetLabels(labels []assets.SafeLabel) []string {
+	if labels == nil {
+		return nil
+	}
+	out := make([]string, len(labels))
+	for i, label := range labels {
+		out[i] = string(label)
+	}
+	return out
+}
+
 func cloneOperationEnvironment(in []OperationEnvironmentMetadata) []OperationEnvironmentMetadata {
 	if len(in) == 0 {
 		return []OperationEnvironmentMetadata{}
@@ -362,7 +439,26 @@ func cloneOperationPayloadReferences(in []OperationPayloadReference) []Operation
 		return []OperationPayloadReference{}
 	}
 	out := make([]OperationPayloadReference, len(in))
-	copy(out, in)
+	for i, payload := range in {
+		out[i] = payload
+		out[i].Assets = cloneOperationPayloadAssetMetadata(payload.Assets)
+	}
+	return out
+}
+
+func cloneOperationPayloadAssetMetadata(in []OperationPayloadAssetMetadata) []OperationPayloadAssetMetadata {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]OperationPayloadAssetMetadata, len(in))
+	for i, asset := range in {
+		out[i] = asset
+		out[i].Labels = cloneStringSlice(asset.Labels)
+		if asset.Digest != nil {
+			digest := *asset.Digest
+			out[i].Digest = &digest
+		}
+	}
 	return out
 }
 

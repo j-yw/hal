@@ -92,8 +92,9 @@ type RuntimeGuestReadinessMetadata struct {
 }
 
 // RuntimeOperationPlan is a sanitized runtime-operation plan. It carries only
-// role and label metadata so backends can expose launch preparation without raw
-// host paths, endpoints, credentials, or command payload bodies.
+// role, label, and explicitly safe digest metadata so backends can expose
+// launch preparation without raw host paths, endpoints, credentials, or command
+// payload bodies.
 type RuntimeOperationPlan struct {
 	Action            string                        `json:"action,omitempty"`
 	Environment       []RuntimeOperationEnvironment `json:"environment,omitempty"`
@@ -127,11 +128,29 @@ type RuntimeOperationEnvironment struct {
 	Source string `json:"source,omitempty"`
 }
 
-// RuntimeOperationPayload identifies a backend payload by role and safe API
-// path only.
+// RuntimeOperationPayload identifies a backend payload by role, safe API path,
+// and optional redaction-safe immutable asset metadata. It never carries host
+// paths, endpoints, credentials, or payload bodies.
 type RuntimeOperationPayload struct {
-	Role    string `json:"role,omitempty"`
-	APIPath string `json:"apiPath,omitempty"`
+	Role    string                         `json:"role,omitempty"`
+	APIPath string                         `json:"apiPath,omitempty"`
+	Assets  []RuntimeOperationPayloadAsset `json:"assets,omitempty"`
+}
+
+// RuntimeOperationPayloadAsset carries public immutable launch asset metadata.
+// Values must already be safe IDs, labels, roles, and digest metadata.
+type RuntimeOperationPayloadAsset struct {
+	AssetRole string                         `json:"assetRole,omitempty"`
+	ID        string                         `json:"id,omitempty"`
+	Labels    []string                       `json:"labels,omitempty"`
+	Digest    *RuntimeOperationPayloadDigest `json:"digest,omitempty"`
+}
+
+// RuntimeOperationPayloadDigest carries digest lock metadata without exposing
+// any host path or file resolution details.
+type RuntimeOperationPayloadDigest struct {
+	Algorithm string `json:"algorithm,omitempty"`
+	Value     string `json:"value,omitempty"`
 }
 
 // ConnectionInfo captures command-agnostic connection metadata for a target.

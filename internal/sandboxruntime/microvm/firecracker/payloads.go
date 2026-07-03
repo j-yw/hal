@@ -55,6 +55,16 @@ func RenderMachineConfigPayload(config BackendConfig) (MachineConfigPayload, err
 // RenderBootSourcePayload derives the Firecracker boot-source payload without
 // touching host files or requiring a Firecracker binary.
 func RenderBootSourcePayload(config BackendConfig) (BootSourcePayload, error) {
+	if config.LaunchDescriptor != nil {
+		launchAssets, err := firecrackerLaunchDescriptorAssets(config.LaunchDescriptor, PayloadRenderingOperation)
+		if err != nil {
+			return BootSourcePayload{}, err
+		}
+		return BootSourcePayload{
+			KernelImagePath: launchAssets.kernelPath(),
+			InitrdPath:      launchAssets.initrdPath(),
+		}, nil
+	}
 	kernelImagePath := strings.TrimSpace(config.KernelImagePath)
 	if kernelImagePath == "" {
 		return BootSourcePayload{}, newPayloadRenderingError("kernelImagePath", "kernel image path is required")
@@ -68,6 +78,18 @@ func RenderBootSourcePayload(config BackendConfig) (BootSourcePayload, error) {
 // RenderRootDrivePayload derives the Firecracker root block-device payload
 // without checking or opening the root filesystem path.
 func RenderRootDrivePayload(config BackendConfig) (RootDrivePayload, error) {
+	if config.LaunchDescriptor != nil {
+		launchAssets, err := firecrackerLaunchDescriptorAssets(config.LaunchDescriptor, PayloadRenderingOperation)
+		if err != nil {
+			return RootDrivePayload{}, err
+		}
+		return RootDrivePayload{
+			DriveID:      defaultRootDriveID,
+			PathOnHost:   launchAssets.rootfsPath(),
+			IsRootDevice: true,
+			IsReadOnly:   false,
+		}, nil
+	}
 	rootfsPath := strings.TrimSpace(config.RootfsPath)
 	if rootfsPath == "" {
 		return RootDrivePayload{}, newPayloadRenderingError("rootfsPath", "rootfs path is required")

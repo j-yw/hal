@@ -141,6 +141,8 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 		"OperationPathRoleLog":                  true,
 		"OperationPathRoleMetrics":              true,
 		"OperationPathRoleStateDir":             true,
+		"OperationPayloadAssetMetadata":         true,
+		"OperationPayloadDigestMetadata":        true,
 		"OperationPayloadReference":             true,
 		"OperationPayloadRole":                  true,
 		"OperationPayloadRoleBootSource":        true,
@@ -692,7 +694,8 @@ func firecrackerAllowedProductionImport(importPath string) bool {
 	return firecrackerIsStandardLibraryImport(importPath) ||
 		importPath == "github.com/jywlabs/hal/internal/sandbox" ||
 		importPath == "github.com/jywlabs/hal/internal/sandboxruntime" ||
-		importPath == "github.com/jywlabs/hal/internal/sandboxruntime/microvm"
+		importPath == "github.com/jywlabs/hal/internal/sandboxruntime/microvm" ||
+		importPath == "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
 }
 
 func firecrackerIsStandardLibraryImport(importPath string) bool {
