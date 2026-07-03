@@ -12,9 +12,11 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
 	"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"
 	"github.com/jywlabs/hal/internal/sandboxworker"
 	"github.com/spf13/cobra"
@@ -27,12 +29,13 @@ type sandboxdServer interface {
 }
 
 type sandboxdDeps struct {
-	newService              func(sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error)
-	newServer               func(sandboxworker.ServerOptions) (sandboxdServer, error)
-	rootlessPodmanAvailable func(context.Context, string) error
-	newRootlessPodmanDriver func(string) sandboxruntime.Driver
-	newMicroVMDriver        func() sandboxruntime.Driver
-	workerID                func() string
+	newService                      func(sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error)
+	newServer                       func(sandboxworker.ServerOptions) (sandboxdServer, error)
+	rootlessPodmanAvailable         func(context.Context, string) error
+	newRootlessPodmanDriver         func(string) sandboxruntime.Driver
+	newMicroVMDriver                func(sandboxdMicroVMConfig) (sandboxruntime.Driver, error)
+	microVMGuestReadinessConfigured bool
+	workerID                        func() string
 }
 
 type sandboxdFlags struct {
@@ -40,8 +43,36 @@ type sandboxdFlags struct {
 	workerID      string
 	drivers       []string
 	podmanPath    string
+	microVM       sandboxdMicroVMFlags
 	maxConcurrent int
 	json          bool
+}
+
+type sandboxdMicroVMFlags struct {
+	firecrackerExecutablePath  string
+	kernelImagePath            string
+	rootfsImagePath            string
+	initrdPath                 string
+	jailerPath                 string
+	stateDir                   string
+	cpuCount                   int
+	memoryMiB                  int
+	diskSizeMiB                int
+	guestWorkDir               string
+	bootAcceptanceTimeout      time.Duration
+	bootAcceptancePollInterval time.Duration
+	guestReadinessTimeout      time.Duration
+	guestReadinessPollInterval time.Duration
+}
+
+type sandboxdMicroVMConfig struct {
+	Config                        microvm.Config
+	StateDir                      string
+	BootAcceptanceTimeout         time.Duration
+	BootAcceptancePollInterval    time.Duration
+	GuestReadinessTimeout         time.Duration
+	GuestReadinessPollInterval    time.Duration
+	GuestReadinessProbeConfigured bool
 }
 
 type sandboxdRequest struct {
@@ -49,6 +80,7 @@ type sandboxdRequest struct {
 	WorkerID      string
 	Drivers       []string
 	PodmanPath    string
+	MicroVM       sandboxdMicroVMConfig
 	MaxConcurrent int
 	JSON          bool
 }
@@ -89,6 +121,7 @@ hal sandbox subcommands continue to manage durable sandbox records separately.`,
 	cmd.Flags().StringVar(&flags.workerID, "worker-id", flags.workerID, "worker identifier to report in daemon status")
 	cmd.Flags().StringSliceVar(&flags.drivers, "driver", flags.drivers, "runtime driver to register with the worker daemon")
 	cmd.Flags().StringVar(&flags.podmanPath, "podman", flags.podmanPath, "podman executable for the rootless_podman driver")
+	registerSandboxdMicroVMFlags(cmd, &flags, deps)
 	cmd.Flags().IntVar(&flags.maxConcurrent, "max-concurrent", flags.maxConcurrent, "maximum concurrent sandboxes reported by daemon capacity")
 	cmd.Flags().BoolVar(&flags.json, "json", flags.json, "Output machine-readable daemon startup status")
 	return cmd
@@ -99,7 +132,37 @@ func defaultSandboxdFlags() sandboxdFlags {
 		socketPath:    defaultSandboxdSocketPath(),
 		drivers:       []string{sandboxruntime.DriverRootlessPodman},
 		podmanPath:    rootlesspodman.DefaultPodmanExecutable,
+		microVM:       defaultSandboxdMicroVMFlags(),
 		maxConcurrent: 1,
+	}
+}
+
+func defaultSandboxdMicroVMFlags() sandboxdMicroVMFlags {
+	defaultConfig := microvm.DefaultConfig()
+	return sandboxdMicroVMFlags{
+		cpuCount:     defaultConfig.CPUCount,
+		memoryMiB:    defaultConfig.MemoryMiB,
+		diskSizeMiB:  defaultConfig.DiskSizeMiB,
+		guestWorkDir: defaultConfig.GuestWorkDir,
+	}
+}
+
+func registerSandboxdMicroVMFlags(cmd *cobra.Command, flags *sandboxdFlags, deps sandboxdDeps) {
+	cmd.Flags().StringVar(&flags.microVM.firecrackerExecutablePath, "firecracker-executable", flags.microVM.firecrackerExecutablePath, "Firecracker executable path for the microvm driver")
+	cmd.Flags().StringVar(&flags.microVM.kernelImagePath, "firecracker-kernel", flags.microVM.kernelImagePath, "kernel image path for the microvm driver")
+	cmd.Flags().StringVar(&flags.microVM.rootfsImagePath, "firecracker-rootfs", flags.microVM.rootfsImagePath, "rootfs image path for the microvm driver")
+	cmd.Flags().StringVar(&flags.microVM.initrdPath, "firecracker-initrd", flags.microVM.initrdPath, "optional initrd image path for the microvm driver")
+	cmd.Flags().StringVar(&flags.microVM.jailerPath, "firecracker-jailer", flags.microVM.jailerPath, "optional Firecracker jailer executable path for the microvm driver")
+	cmd.Flags().StringVar(&flags.microVM.stateDir, "firecracker-state-dir", flags.microVM.stateDir, "state directory for the microvm driver")
+	cmd.Flags().IntVar(&flags.microVM.cpuCount, "microvm-cpu-count", flags.microVM.cpuCount, "CPU count for the microvm driver")
+	cmd.Flags().IntVar(&flags.microVM.memoryMiB, "microvm-memory-mib", flags.microVM.memoryMiB, "memory size in MiB for the microvm driver")
+	cmd.Flags().IntVar(&flags.microVM.diskSizeMiB, "microvm-disk-mib", flags.microVM.diskSizeMiB, "disk size in MiB for the microvm driver")
+	cmd.Flags().StringVar(&flags.microVM.guestWorkDir, "microvm-guest-workdir", flags.microVM.guestWorkDir, "guest workdir for the microvm driver")
+	cmd.Flags().DurationVar(&flags.microVM.bootAcceptanceTimeout, "firecracker-boot-timeout", flags.microVM.bootAcceptanceTimeout, "host-side Firecracker boot acceptance timeout; 0 uses the live driver default")
+	cmd.Flags().DurationVar(&flags.microVM.bootAcceptancePollInterval, "firecracker-boot-poll-interval", flags.microVM.bootAcceptancePollInterval, "host-side Firecracker boot acceptance poll interval; 0 uses the live driver default")
+	if deps.microVMGuestReadinessConfigured {
+		cmd.Flags().DurationVar(&flags.microVM.guestReadinessTimeout, "firecracker-guest-readiness-timeout", flags.microVM.guestReadinessTimeout, "guest readiness timeout for configured microvm readiness probes; 0 uses the live driver default")
+		cmd.Flags().DurationVar(&flags.microVM.guestReadinessPollInterval, "firecracker-guest-readiness-poll-interval", flags.microVM.guestReadinessPollInterval, "guest readiness poll interval for configured microvm readiness probes; 0 uses the live driver default")
 	}
 }
 
@@ -172,6 +235,7 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 		WorkerID:      flags.workerID,
 		Drivers:       cloneSandboxdStringSlice(flags.drivers),
 		PodmanPath:    flags.podmanPath,
+		MicroVM:       sandboxdMicroVMConfigFromFlags(flags.microVM, deps),
 		MaxConcurrent: flags.maxConcurrent,
 		JSON:          flags.json,
 	}
@@ -189,6 +253,10 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 		if req.PodmanPath, err = cmd.Flags().GetString("podman"); err != nil {
 			return sandboxdRequest{}, err
 		}
+		req.MicroVM, err = sandboxdMicroVMConfigFromCommand(cmd, flags.microVM, deps)
+		if err != nil {
+			return sandboxdRequest{}, err
+		}
 		if req.MaxConcurrent, err = cmd.Flags().GetInt("max-concurrent"); err != nil {
 			return sandboxdRequest{}, err
 		}
@@ -201,6 +269,7 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 	req.WorkerID = strings.TrimSpace(req.WorkerID)
 	req.PodmanPath = strings.TrimSpace(req.PodmanPath)
 	req.Drivers = normalizedSandboxdDrivers(req.Drivers)
+	req.MicroVM = sanitizeSandboxdMicroVMConfig(req.MicroVM)
 
 	if req.SocketPath == "" {
 		return sandboxdRequest{}, fmt.Errorf("sandboxd --socket is required")
@@ -214,6 +283,11 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 	}
 	if len(req.Drivers) == 0 {
 		return sandboxdRequest{}, fmt.Errorf("sandboxd requires at least one --driver")
+	}
+	if sandboxdDriverRequested(req.Drivers, sandboxruntime.DriverMicroVM) {
+		if err := validateSandboxdMicroVMConfig(req.MicroVM); err != nil {
+			return sandboxdRequest{}, err
+		}
 	}
 	for _, driverID := range req.Drivers {
 		if !sandboxdDriverSupportedByDeps(driverID, deps) {
@@ -315,7 +389,10 @@ func sandboxdDriverRegistry(ctx context.Context, req sandboxdRequest, deps sandb
 			if deps.newMicroVMDriver == nil {
 				return nil, nil, fmt.Errorf("sandboxd driver %q is unsupported", driverID)
 			}
-			driver := deps.newMicroVMDriver()
+			driver, err := deps.newMicroVMDriver(req.MicroVM)
+			if err != nil {
+				return nil, nil, fmt.Errorf("create sandboxd driver %q: %w", driverID, err)
+			}
 			if err := registry.Register(driver); err != nil {
 				return nil, nil, fmt.Errorf("register sandboxd driver %q: %w", driverID, err)
 			}
@@ -337,6 +414,188 @@ func sandboxdDriverSupportedByDeps(driverID string, deps sandboxdDeps) bool {
 	default:
 		return false
 	}
+}
+
+func sandboxdMicroVMConfigFromCommand(cmd *cobra.Command, fallback sandboxdMicroVMFlags, deps sandboxdDeps) (sandboxdMicroVMConfig, error) {
+	flags := fallback
+	var err error
+	if flags.firecrackerExecutablePath, err = cmd.Flags().GetString("firecracker-executable"); err != nil {
+		return sandboxdMicroVMConfig{}, err
+	}
+	if flags.kernelImagePath, err = cmd.Flags().GetString("firecracker-kernel"); err != nil {
+		return sandboxdMicroVMConfig{}, err
+	}
+	if flags.rootfsImagePath, err = cmd.Flags().GetString("firecracker-rootfs"); err != nil {
+		return sandboxdMicroVMConfig{}, err
+	}
+	if flags.initrdPath, err = cmd.Flags().GetString("firecracker-initrd"); err != nil {
+		return sandboxdMicroVMConfig{}, err
+	}
+	if flags.jailerPath, err = cmd.Flags().GetString("firecracker-jailer"); err != nil {
+		return sandboxdMicroVMConfig{}, err
+	}
+	if flags.stateDir, err = cmd.Flags().GetString("firecracker-state-dir"); err != nil {
+		return sandboxdMicroVMConfig{}, err
+	}
+	if flags.cpuCount, err = cmd.Flags().GetInt("microvm-cpu-count"); err != nil {
+		return sandboxdMicroVMConfig{}, err
+	}
+	if flags.memoryMiB, err = cmd.Flags().GetInt("microvm-memory-mib"); err != nil {
+		return sandboxdMicroVMConfig{}, err
+	}
+	if flags.diskSizeMiB, err = cmd.Flags().GetInt("microvm-disk-mib"); err != nil {
+		return sandboxdMicroVMConfig{}, err
+	}
+	if flags.guestWorkDir, err = cmd.Flags().GetString("microvm-guest-workdir"); err != nil {
+		return sandboxdMicroVMConfig{}, err
+	}
+	if flags.bootAcceptanceTimeout, err = cmd.Flags().GetDuration("firecracker-boot-timeout"); err != nil {
+		return sandboxdMicroVMConfig{}, err
+	}
+	if flags.bootAcceptancePollInterval, err = cmd.Flags().GetDuration("firecracker-boot-poll-interval"); err != nil {
+		return sandboxdMicroVMConfig{}, err
+	}
+	if cmd.Flags().Lookup("firecracker-guest-readiness-timeout") != nil {
+		if flags.guestReadinessTimeout, err = cmd.Flags().GetDuration("firecracker-guest-readiness-timeout"); err != nil {
+			return sandboxdMicroVMConfig{}, err
+		}
+	}
+	if cmd.Flags().Lookup("firecracker-guest-readiness-poll-interval") != nil {
+		if flags.guestReadinessPollInterval, err = cmd.Flags().GetDuration("firecracker-guest-readiness-poll-interval"); err != nil {
+			return sandboxdMicroVMConfig{}, err
+		}
+	}
+	return sandboxdMicroVMConfigFromFlags(flags, deps), nil
+}
+
+func sandboxdMicroVMConfigFromFlags(flags sandboxdMicroVMFlags, deps sandboxdDeps) sandboxdMicroVMConfig {
+	return sandboxdMicroVMConfig{
+		Config: microvm.Config{
+			HypervisorPath:  flags.firecrackerExecutablePath,
+			KernelImagePath: flags.kernelImagePath,
+			RootfsPath:      flags.rootfsImagePath,
+			InitrdPath:      flags.initrdPath,
+			JailerPath:      flags.jailerPath,
+			CPUCount:        flags.cpuCount,
+			MemoryMiB:       flags.memoryMiB,
+			DiskSizeMiB:     flags.diskSizeMiB,
+			GuestWorkDir:    flags.guestWorkDir,
+			NetworkMode:     microvm.DefaultNetworkMode,
+		},
+		StateDir:                      flags.stateDir,
+		BootAcceptanceTimeout:         flags.bootAcceptanceTimeout,
+		BootAcceptancePollInterval:    flags.bootAcceptancePollInterval,
+		GuestReadinessTimeout:         flags.guestReadinessTimeout,
+		GuestReadinessPollInterval:    flags.guestReadinessPollInterval,
+		GuestReadinessProbeConfigured: deps.microVMGuestReadinessConfigured,
+	}
+}
+
+func sanitizeSandboxdMicroVMConfig(config sandboxdMicroVMConfig) sandboxdMicroVMConfig {
+	config.Config.HypervisorPath = strings.TrimSpace(config.Config.HypervisorPath)
+	config.Config.KernelImagePath = strings.TrimSpace(config.Config.KernelImagePath)
+	config.Config.RootfsPath = strings.TrimSpace(config.Config.RootfsPath)
+	config.Config.InitrdPath = strings.TrimSpace(config.Config.InitrdPath)
+	config.Config.JailerPath = strings.TrimSpace(config.Config.JailerPath)
+	config.Config.GuestWorkDir = strings.TrimSpace(config.Config.GuestWorkDir)
+	config.Config.NetworkMode = microvm.NetworkMode(strings.TrimSpace(string(config.Config.NetworkMode)))
+	if config.Config.NetworkMode == "" {
+		config.Config.NetworkMode = microvm.DefaultNetworkMode
+	}
+	config.StateDir = strings.TrimSpace(config.StateDir)
+	if config.StateDir != "" {
+		config.StateDir = filepath.Clean(config.StateDir)
+	}
+	return config
+}
+
+func validateSandboxdMicroVMConfig(config sandboxdMicroVMConfig) error {
+	missing := sandboxdMissingMicroVMConfigFlags(config)
+	if len(missing) > 0 {
+		return fmt.Errorf("sandboxd --driver microvm requires %s", sandboxdJoinFlagList(missing))
+	}
+	if sandboxdPathHasControl(config.StateDir) {
+		return fmt.Errorf("sandboxd --firecracker-state-dir is invalid")
+	}
+	if !filepath.IsAbs(config.StateDir) {
+		return fmt.Errorf("sandboxd --firecracker-state-dir must be an absolute path")
+	}
+	if sandboxdFilesystemRoot(config.StateDir) {
+		return fmt.Errorf("sandboxd --firecracker-state-dir must not be the filesystem root")
+	}
+	if config.BootAcceptanceTimeout < 0 {
+		return fmt.Errorf("sandboxd --firecracker-boot-timeout must be greater than or equal to zero")
+	}
+	if config.BootAcceptancePollInterval < 0 {
+		return fmt.Errorf("sandboxd --firecracker-boot-poll-interval must be greater than or equal to zero")
+	}
+	if config.GuestReadinessProbeConfigured {
+		if config.GuestReadinessTimeout < 0 {
+			return fmt.Errorf("sandboxd --firecracker-guest-readiness-timeout must be greater than or equal to zero")
+		}
+		if config.GuestReadinessPollInterval < 0 {
+			return fmt.Errorf("sandboxd --firecracker-guest-readiness-poll-interval must be greater than or equal to zero")
+		}
+	}
+	if err := microvm.ValidateConfig(config.Config); err != nil {
+		return fmt.Errorf("sandboxd --driver microvm config is invalid: %w", err)
+	}
+	return nil
+}
+
+func sandboxdMissingMicroVMConfigFlags(config sandboxdMicroVMConfig) []string {
+	var missing []string
+	if strings.TrimSpace(config.Config.HypervisorPath) == "" {
+		missing = append(missing, "--firecracker-executable")
+	}
+	if strings.TrimSpace(config.Config.KernelImagePath) == "" {
+		missing = append(missing, "--firecracker-kernel")
+	}
+	if strings.TrimSpace(config.Config.RootfsPath) == "" {
+		missing = append(missing, "--firecracker-rootfs")
+	}
+	if strings.TrimSpace(config.StateDir) == "" {
+		missing = append(missing, "--firecracker-state-dir")
+	}
+	return missing
+}
+
+func sandboxdJoinFlagList(flags []string) string {
+	switch len(flags) {
+	case 0:
+		return ""
+	case 1:
+		return flags[0]
+	case 2:
+		return flags[0] + " and " + flags[1]
+	default:
+		return strings.Join(flags[:len(flags)-1], ", ") + ", and " + flags[len(flags)-1]
+	}
+}
+
+func sandboxdDriverRequested(drivers []string, want string) bool {
+	want = strings.TrimSpace(want)
+	for _, driver := range drivers {
+		if strings.TrimSpace(driver) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func sandboxdPathHasControl(path string) bool {
+	for _, r := range path {
+		if r == 0 || r == '\n' || r == '\r' || r == '\t' {
+			return true
+		}
+	}
+	return false
+}
+
+func sandboxdFilesystemRoot(path string) bool {
+	volumeName := filepath.VolumeName(path)
+	withoutVolume := strings.TrimPrefix(path, volumeName)
+	return withoutVolume == string(filepath.Separator)
 }
 
 type sandboxdRuntimeUnavailableError struct {
