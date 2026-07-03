@@ -221,12 +221,13 @@ func TestBindingJSONContract(t *testing.T) {
 func TestPlanJSONContract(t *testing.T) {
 	index := 0
 	plan := Plan{
-		ID:             "delivery-plan-01",
-		RequestID:      "delivery-request-01",
-		RequestedModes: []Mode{ModeHTTPProxy, ModeLegacyAuthSync},
-		ActiveModes:    []Mode{ModeHTTPProxy},
-		BindingCount:   2,
-		Status:         StatusPlanned,
+		ID:                    "delivery-plan-01",
+		RequestID:             "delivery-request-01",
+		NetworkProxySessionID: "network-proxy-session-01",
+		RequestedModes:        []Mode{ModeHTTPProxy, ModeLegacyAuthSync},
+		ActiveModes:           []Mode{ModeHTTPProxy},
+		BindingCount:          2,
+		Status:                StatusPlanned,
 		Warnings: []Warning{{
 			Code:       WarningLegacyAuthCompatibility,
 			ReasonCode: ReasonCompatibilityMode,
@@ -243,6 +244,7 @@ func TestPlanJSONContract(t *testing.T) {
 	assertObjectKeys(t, got, []string{
 		"id",
 		"requestId",
+		"networkProxySessionId",
 		"requestedModes",
 		"activeModes",
 		"bindingCount",
@@ -254,6 +256,7 @@ func TestPlanJSONContract(t *testing.T) {
 	minimal := mustMarshalObject(t, Plan{ID: "delivery-plan-02"})
 	assertObjectKeys(t, minimal, []string{"id"}, []string{
 		"requestId",
+		"networkProxySessionId",
 		"requestedModes",
 		"activeModes",
 		"bindingCount",
@@ -352,7 +355,9 @@ func TestActivationResultJSONContract(t *testing.T) {
 		ActiveModes:    []Mode{ModeHTTPProxy},
 		Bindings: []BindingActivationResult{{
 			BindingID:    "binding-01",
+			ServiceID:    "service-01",
 			DeliveryMode: ModeHTTPProxy,
+			Outcome:      StatusActive,
 			Status:       StatusActive,
 			ReasonCode:   ReasonRequested,
 		}},
@@ -512,6 +517,7 @@ func TestJSONTagsAreStable(t *testing.T) {
 	assertJSONTags(t, reflect.TypeOf(Plan{}), []jsonTagExpectation{
 		{field: "ID", name: "id"},
 		{field: "RequestID", name: "requestId", omitempty: true},
+		{field: "NetworkProxySessionID", name: "networkProxySessionId", omitempty: true},
 		{field: "RequestedModes", name: "requestedModes", omitempty: true},
 		{field: "ActiveModes", name: "activeModes", omitempty: true},
 		{field: "BindingCount", name: "bindingCount", omitempty: true},
@@ -536,7 +542,9 @@ func TestJSONTagsAreStable(t *testing.T) {
 	})
 	assertJSONTags(t, reflect.TypeOf(BindingActivationResult{}), []jsonTagExpectation{
 		{field: "BindingID", name: "bindingId"},
+		{field: "ServiceID", name: "serviceId", omitempty: true},
 		{field: "DeliveryMode", name: "deliveryMode"},
+		{field: "Outcome", name: "outcome", omitempty: true},
 		{field: "Status", name: "status", omitempty: true},
 		{field: "ReasonCode", name: "reasonCode", omitempty: true},
 	})
@@ -613,7 +621,9 @@ func TestSerializedMetadataContainsNoUnsafeRawFieldNames(t *testing.T) {
 		ActiveModes:    []Mode{ModeHTTPProxy},
 		Bindings: []BindingActivationResult{{
 			BindingID:    "binding-01",
+			ServiceID:    "service-01",
 			DeliveryMode: ModeHTTPProxy,
+			Outcome:      StatusActive,
 			Status:       StatusActive,
 		}},
 		Status: StatusActive,

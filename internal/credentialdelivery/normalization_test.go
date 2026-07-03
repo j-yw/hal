@@ -41,11 +41,12 @@ func TestCredentialDeliveryNormalizationTrimsReferencesAndLowercasesEnums(t *tes
 	assertRequestValidationValid(t, ValidateRequestMetadata(request))
 
 	plan := NormalizePlanMetadata(Plan{
-		ID:             " DeliveryPlan-01 ",
-		RequestID:      " DeliveryRequest-01 ",
-		RequestedModes: []Mode{" LEGACY_AUTH_SYNC "},
-		ActiveModes:    []Mode{" HTTP_PROXY "},
-		Status:         Status(" PLANNED "),
+		ID:                    " DeliveryPlan-01 ",
+		RequestID:             " DeliveryRequest-01 ",
+		NetworkProxySessionID: " NetworkProxySession-01 ",
+		RequestedModes:        []Mode{" LEGACY_AUTH_SYNC "},
+		ActiveModes:           []Mode{" HTTP_PROXY "},
+		Status:                Status(" PLANNED "),
 		Warnings: []Warning{{
 			Code:       WarningCode(" LEGACY_AUTH_COMPATIBILITY "),
 			ReasonCode: ReasonCode(" COMPATIBILITY_MODE "),
@@ -60,7 +61,7 @@ func TestCredentialDeliveryNormalizationTrimsReferencesAndLowercasesEnums(t *tes
 			ReasonCode: ReasonCode(" UNSUPPORTED_MODE "),
 		}},
 	})
-	if plan.ID != "DeliveryPlan-01" || plan.RequestID != "DeliveryRequest-01" || plan.Status != StatusPlanned {
+	if plan.ID != "DeliveryPlan-01" || plan.RequestID != "DeliveryRequest-01" || plan.NetworkProxySessionID != "NetworkProxySession-01" || plan.Status != StatusPlanned {
 		t.Fatalf("plan metadata = %#v, want normalized plan", plan)
 	}
 	if plan.Warnings[0].Code != WarningLegacyAuthCompatibility || plan.Errors[0].Code != ErrorUnsupportedMode {
@@ -73,13 +74,15 @@ func TestCredentialDeliveryNormalizationTrimsReferencesAndLowercasesEnums(t *tes
 		RequestedModes: []Mode{" FILE_TMPFS "},
 		Bindings: []BindingActivationResult{{
 			BindingID:    " Binding-01 ",
+			ServiceID:    " Service-01 ",
 			DeliveryMode: Mode(" FILE_TMPFS "),
+			Outcome:      Status(" ACTIVE "),
 			Status:       Status(" ACTIVE "),
 			ReasonCode:   ReasonCode(" REQUESTED "),
 		}},
 		Status: Status(" ACTIVE "),
 	})
-	if activation.ID != "Activation-01" || activation.PlanID != "DeliveryPlan-01" || activation.Bindings[0].DeliveryMode != ModeFileTmpfs {
+	if activation.ID != "Activation-01" || activation.PlanID != "DeliveryPlan-01" || activation.Bindings[0].ServiceID != "Service-01" || activation.Bindings[0].DeliveryMode != ModeFileTmpfs || activation.Bindings[0].Outcome != StatusActive {
 		t.Fatalf("activation metadata = %#v, want normalized activation result", activation)
 	}
 }

@@ -37,7 +37,10 @@ func BuildDeliveryPlan(request PlanConstructionRequest) Plan {
 		plan.Status = StatusFailed
 		return SanitizePlanMetadata(plan)
 	}
-	if requestedModes.contains(ModeHTTPProxy) && hasActiveHTTPProxyPlanBinding(bindings, resolvedByBindingID, proxyContext) {
+	if requestedModes.contains(ModeHTTPProxy) {
+		plan.NetworkProxySessionID = activeHTTPProxyPlanSessionID(bindings, resolvedByBindingID, proxyContext)
+	}
+	if plan.NetworkProxySessionID != "" {
 		plan.ActiveModes = []Mode{ModeHTTPProxy}
 	}
 	addPlanModeWarnings(&plan, requestedModes, len(plan.ActiveModes) > 0)
@@ -105,7 +108,7 @@ func countPlanBindingsWithBrokerMetadata(bindings []Binding, resolvedByBindingID
 	return count
 }
 
-func hasActiveHTTPProxyPlanBinding(bindings []Binding, resolvedByBindingID map[string]ResolvedBindingSecretMetadata, proxyContext planProxyContext) bool {
+func activeHTTPProxyPlanSessionID(bindings []Binding, resolvedByBindingID map[string]ResolvedBindingSecretMetadata, proxyContext planProxyContext) string {
 	for _, binding := range bindings {
 		if binding.DeliveryMode != ModeHTTPProxy {
 			continue
@@ -117,14 +120,14 @@ func hasActiveHTTPProxyPlanBinding(bindings []Binding, resolvedByBindingID map[s
 		if !proxyContext.policyAllows(binding.PolicySnapshotID) {
 			continue
 		}
-		if proxyContext.hasNetworkProxySession(binding.NetworkProxySessionID) {
-			return true
+		if sessionID := proxyContext.networkProxySessionForBinding(binding.NetworkProxySessionID); sessionID != "" {
+			return sessionID
 		}
 		if proxyContext.hasCredentialProxyBinding(resolved.BrokerSecret.ID) {
-			return true
+			return proxyContext.defaultNetworkProxySessionID()
 		}
 	}
-	return false
+	return ""
 }
 
 func resolvedPlanBindingMatches(binding Binding, resolved ResolvedBindingSecretMetadata) bool {
@@ -280,12 +283,22 @@ func (c planProxyContext) policyAllows(bindingPolicySnapshotID string) bool {
 	return ok
 }
 
-func (c planProxyContext) hasNetworkProxySession(bindingNetworkProxySessionID string) bool {
+func (c planProxyContext) networkProxySessionForBinding(bindingNetworkProxySessionID string) string {
 	if bindingNetworkProxySessionID == "" {
-		return false
+		return ""
 	}
-	return bindingNetworkProxySessionID == c.networkProxySessionID ||
-		bindingNetworkProxySessionID == c.credentialProxyNetworkID
+	if bindingNetworkProxySessionID == c.networkProxySessionID ||
+		bindingNetworkProxySessionID == c.credentialProxyNetworkID {
+		return bindingNetworkProxySessionID
+	}
+	return ""
+}
+
+func (c planProxyContext) defaultNetworkProxySessionID() string {
+	if c.credentialProxyNetworkID != "" {
+		return c.credentialProxyNetworkID
+	}
+	return c.networkProxySessionID
 }
 
 func (c planProxyContext) hasCredentialProxyBinding(secretRef string) bool {

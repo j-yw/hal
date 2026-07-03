@@ -73,6 +73,12 @@ func TestBuildDeliveryPlanReportsRequestedAndActiveModesForEveryDeliveryMode(t *
 			assertPlanValid(t, got)
 			assertPlanModes(t, got.RequestedModes, []Mode{tt.mode})
 			assertPlanModes(t, got.ActiveModes, tt.wantActive)
+			if tt.mode == ModeHTTPProxy && tt.proxyReady && got.NetworkProxySessionID != "network-proxy-session-01" {
+				t.Fatalf("network proxy session id = %q, want safe active session", got.NetworkProxySessionID)
+			}
+			if tt.mode == ModeHTTPProxy && !tt.proxyReady && got.NetworkProxySessionID != "" {
+				t.Fatalf("network proxy session id = %q, want omitted without safe session binding", got.NetworkProxySessionID)
+			}
 			if got.BindingCount != 1 {
 				t.Fatalf("binding count = %d, want 1", got.BindingCount)
 			}
@@ -122,6 +128,9 @@ func TestBuildDeliveryPlanPrefersHTTPProxyWithSafeCredentialProxySessionBinding(
 	assertPlanValid(t, got)
 	assertPlanModes(t, got.RequestedModes, []Mode{ModeHTTPProxy, ModeLegacyAuthSync})
 	assertPlanModes(t, got.ActiveModes, []Mode{ModeHTTPProxy})
+	if got.NetworkProxySessionID != "network-proxy-session-01" {
+		t.Fatalf("network proxy session id = %q, want safe credential proxy session network reference", got.NetworkProxySessionID)
+	}
 	assertPlanWarning(t, got, WarningLegacyAuthCompatibility, ReasonCompatibilityMode, ModeLegacyAuthSync)
 	if len(got.Warnings) != 1 {
 		t.Fatalf("warnings = %#v, want only legacy compatibility warning", got.Warnings)
@@ -147,6 +156,9 @@ func TestBuildDeliveryPlanRecordsHTTPProxyRequestedButInactiveWithoutSafeProxyBi
 	assertPlanModes(t, got.RequestedModes, []Mode{ModeHTTPProxy})
 	if len(got.ActiveModes) != 0 {
 		t.Fatalf("active modes = %#v, want http_proxy requested but inactive", got.ActiveModes)
+	}
+	if got.NetworkProxySessionID != "" {
+		t.Fatalf("network proxy session id = %q, want omitted for unsafe proxy metadata", got.NetworkProxySessionID)
 	}
 	assertPlanWarning(t, got, WarningActivationSkipped, ReasonMissingServiceBinding, ModeHTTPProxy)
 	assertPlanNoUnsafeLeak(t, got, "https://proxy.example.invalid/session?token=value", "proxy.example.invalid", "token=value")

@@ -187,14 +187,15 @@ type SecretResolutionResult struct {
 
 // Plan is a durable delivery plan summary produced before activation.
 type Plan struct {
-	ID             string           `json:"id"`
-	RequestID      string           `json:"requestId,omitempty"`
-	RequestedModes []Mode           `json:"requestedModes,omitempty"`
-	ActiveModes    []Mode           `json:"activeModes,omitempty"`
-	BindingCount   int              `json:"bindingCount,omitempty"`
-	Status         Status           `json:"status,omitempty"`
-	Warnings       []Warning        `json:"warnings,omitempty"`
-	Errors         []SanitizedError `json:"errors,omitempty"`
+	ID                    string           `json:"id"`
+	RequestID             string           `json:"requestId,omitempty"`
+	NetworkProxySessionID string           `json:"networkProxySessionId,omitempty"`
+	RequestedModes        []Mode           `json:"requestedModes,omitempty"`
+	ActiveModes           []Mode           `json:"activeModes,omitempty"`
+	BindingCount          int              `json:"bindingCount,omitempty"`
+	Status                Status           `json:"status,omitempty"`
+	Warnings              []Warning        `json:"warnings,omitempty"`
+	Errors                []SanitizedError `json:"errors,omitempty"`
 }
 
 // ActivationRequest is the redaction-safe adapter input for an activation
@@ -221,7 +222,9 @@ type ActivationResult struct {
 // BindingActivationResult records the activation state for one planned binding.
 type BindingActivationResult struct {
 	BindingID    string     `json:"bindingId"`
+	ServiceID    string     `json:"serviceId,omitempty"`
 	DeliveryMode Mode       `json:"deliveryMode"`
+	Outcome      Status     `json:"outcome,omitempty"`
 	Status       Status     `json:"status,omitempty"`
 	ReasonCode   ReasonCode `json:"reasonCode,omitempty"`
 }

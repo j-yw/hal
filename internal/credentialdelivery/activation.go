@@ -147,6 +147,7 @@ func adapterFailedActivationResult(input ActivationRequest) ActivationResult {
 
 func finalizeAdapterActivationResult(input ActivationRequest, raw ActivationResult) ActivationResult {
 	normalized := NormalizeActivationResultMetadata(raw)
+	adapterActiveModes := normalized.ActiveModes
 	if sanitizeIdentifier(normalized.ID) == "" {
 		normalized.ID = input.ActivationID
 	}
@@ -155,6 +156,7 @@ func finalizeAdapterActivationResult(input ActivationRequest, raw ActivationResu
 	}
 	normalized.RequestedModes = input.Plan.RequestedModes
 	normalized.Bindings = activationBindingResultsForInput(input, normalized.Bindings)
+	normalized.Warnings = appendHTTPProxyActivationWarnings(input, adapterActiveModes, normalized.Bindings, normalized.Warnings)
 	normalized.ActiveModes = activationActiveModesForInput(input, normalized)
 
 	result := SanitizeActivationResultMetadata(normalized)
@@ -231,7 +233,9 @@ func activationBindingResults(bindings []Binding, status Status, fallbackReason 
 		}
 		results = append(results, BindingActivationResult{
 			BindingID:    binding.ID,
+			ServiceID:    binding.ServiceID,
 			DeliveryMode: binding.DeliveryMode,
+			Outcome:      status,
 			Status:       status,
 			ReasonCode:   reason,
 		})
@@ -243,26 +247,33 @@ func activationBindingResultsForInput(input ActivationRequest, raw []BindingActi
 	if raw == nil {
 		return nil
 	}
-	allowed := activationBindingModesByID(input.Bindings)
+	allowed := activationBindingsByID(input.Bindings)
 	sanitized := SanitizeBindingActivationResultMetadataRecords(raw)
 	results := make([]BindingActivationResult, 0, len(sanitized))
 	for _, result := range sanitized {
-		mode, ok := allowed[result.BindingID]
-		if !ok || result.DeliveryMode != mode {
+		binding, ok := allowed[result.BindingID]
+		if !ok || result.DeliveryMode != binding.DeliveryMode {
 			continue
+		}
+		result.ServiceID = binding.ServiceID
+		result = normalizeActivationBindingOutcome(result)
+		if result.DeliveryMode == ModeHTTPProxy && result.Status == StatusActive && !httpProxyActivationAllowed(input.Plan, binding) {
+			result.Status = StatusSkipped
+			result.Outcome = StatusSkipped
+			result.ReasonCode = ReasonMissingServiceBinding
 		}
 		results = append(results, result)
 	}
 	return results
 }
 
-func activationBindingModesByID(bindings []Binding) map[string]Mode {
+func activationBindingsByID(bindings []Binding) map[string]Binding {
 	if len(bindings) == 0 {
 		return nil
 	}
-	out := make(map[string]Mode, len(bindings))
+	out := make(map[string]Binding, len(bindings))
 	for _, binding := range SanitizeBindingMetadataRecords(bindings) {
-		out[binding.ID] = binding.DeliveryMode
+		out[binding.ID] = binding
 	}
 	return out
 }
@@ -274,7 +285,11 @@ func activationActiveModesForInput(input ActivationRequest, result ActivationRes
 	}
 	active := newPlanModeSet()
 	for _, mode := range result.ActiveModes {
-		if requested.contains(normalizeMode(mode)) {
+		mode = normalizeMode(mode)
+		if mode == ModeHTTPProxy {
+			continue
+		}
+		if requested.contains(mode) {
 			active.add(mode)
 		}
 	}
@@ -284,4 +299,80 @@ func activationActiveModesForInput(input ActivationRequest, result ActivationRes
 		}
 	}
 	return active.ordered()
+}
+
+func normalizeActivationBindingOutcome(result BindingActivationResult) BindingActivationResult {
+	if result.Status == "" && result.Outcome != "" {
+		result.Status = result.Outcome
+	}
+	if result.Outcome == "" {
+		result.Outcome = result.Status
+	}
+	return result
+}
+
+func httpProxyActivationAllowed(plan Plan, binding Binding) bool {
+	if binding.DeliveryMode != ModeHTTPProxy || binding.ServiceID == "" {
+		return false
+	}
+	if !activationModeRecordsContain(plan.RequestedModes, ModeHTTPProxy) ||
+		!activationModeRecordsContain(plan.ActiveModes, ModeHTTPProxy) ||
+		plan.NetworkProxySessionID == "" {
+		return false
+	}
+	return binding.NetworkProxySessionID == "" || binding.NetworkProxySessionID == plan.NetworkProxySessionID
+}
+
+func appendHTTPProxyActivationWarnings(input ActivationRequest, adapterActiveModes []Mode, bindings []BindingActivationResult, warnings []Warning) []Warning {
+	if !activationModeRecordsContain(input.Plan.RequestedModes, ModeHTTPProxy) {
+		return warnings
+	}
+	if activationHasActiveBindingForMode(bindings, ModeHTTPProxy) {
+		return warnings
+	}
+	if activationHasSkippedBindingForMode(bindings, ModeHTTPProxy) ||
+		activationModeRecordsContain(adapterActiveModes, ModeHTTPProxy) {
+		return appendActivationWarningIfMissing(warnings, Warning{
+			Code:       WarningActivationSkipped,
+			ReasonCode: ReasonMissingServiceBinding,
+			Mode:       ModeHTTPProxy,
+		})
+	}
+	return warnings
+}
+
+func appendActivationWarningIfMissing(warnings []Warning, warning Warning) []Warning {
+	for _, existing := range SanitizeWarningMetadataRecords(warnings) {
+		if existing.Code == warning.Code && existing.ReasonCode == warning.ReasonCode && existing.Mode == warning.Mode && existing.BindingID == warning.BindingID {
+			return warnings
+		}
+	}
+	return append(warnings, warning)
+}
+
+func activationHasActiveBindingForMode(bindings []BindingActivationResult, mode Mode) bool {
+	for _, binding := range bindings {
+		if binding.DeliveryMode == mode && binding.Status == StatusActive {
+			return true
+		}
+	}
+	return false
+}
+
+func activationHasSkippedBindingForMode(bindings []BindingActivationResult, mode Mode) bool {
+	for _, binding := range bindings {
+		if binding.DeliveryMode == mode && binding.Status == StatusSkipped {
+			return true
+		}
+	}
+	return false
+}
+
+func activationModeRecordsContain(modes []Mode, target Mode) bool {
+	for _, mode := range normalizeModeRecords(modes) {
+		if mode == target {
+			return true
+		}
+	}
+	return false
 }

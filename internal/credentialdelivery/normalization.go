@@ -107,14 +107,15 @@ func NormalizeSecretResolutionResult(result SecretResolutionResult) SecretResolu
 // plan summary before validation or persistence.
 func NormalizePlanMetadata(plan Plan) Plan {
 	return Plan{
-		ID:             strings.TrimSpace(plan.ID),
-		RequestID:      strings.TrimSpace(plan.RequestID),
-		RequestedModes: normalizeModeRecords(plan.RequestedModes),
-		ActiveModes:    normalizeModeRecords(plan.ActiveModes),
-		BindingCount:   plan.BindingCount,
-		Status:         normalizeStatus(plan.Status),
-		Warnings:       NormalizeWarningMetadataRecords(plan.Warnings),
-		Errors:         NormalizeSanitizedErrorRecords(plan.Errors),
+		ID:                    strings.TrimSpace(plan.ID),
+		RequestID:             strings.TrimSpace(plan.RequestID),
+		NetworkProxySessionID: strings.TrimSpace(plan.NetworkProxySessionID),
+		RequestedModes:        normalizeModeRecords(plan.RequestedModes),
+		ActiveModes:           normalizeModeRecords(plan.ActiveModes),
+		BindingCount:          plan.BindingCount,
+		Status:                normalizeStatus(plan.Status),
+		Warnings:              NormalizeWarningMetadataRecords(plan.Warnings),
+		Errors:                NormalizeSanitizedErrorRecords(plan.Errors),
 	}
 }
 
@@ -138,7 +139,9 @@ func NormalizeActivationResultMetadata(result ActivationResult) ActivationResult
 func NormalizeBindingActivationResultMetadata(result BindingActivationResult) BindingActivationResult {
 	return BindingActivationResult{
 		BindingID:    strings.TrimSpace(result.BindingID),
+		ServiceID:    strings.TrimSpace(result.ServiceID),
 		DeliveryMode: normalizeMode(result.DeliveryMode),
+		Outcome:      normalizeStatus(result.Outcome),
 		Status:       normalizeStatus(result.Status),
 		ReasonCode:   normalizeReasonCode(result.ReasonCode),
 	}

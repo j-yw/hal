@@ -50,6 +50,10 @@ func TestActivateDeliveryUsesInjectedFakeAdapterForEveryMode(t *testing.T) {
 				RequestedModes: []Mode{mode},
 				Status:         StatusPlanned,
 			}
+			if mode == ModeHTTPProxy {
+				plan.NetworkProxySessionID = binding.NetworkProxySessionID
+				plan.ActiveModes = []Mode{ModeHTTPProxy}
+			}
 			adapter := &fakeActivationAdapter{}
 
 			got := ActivateDelivery(ActivationRequest{
@@ -72,9 +76,121 @@ func TestActivateDeliveryUsesInjectedFakeAdapterForEveryMode(t *testing.T) {
 			assertPlanModes(t, got.RequestedModes, []Mode{mode})
 			assertPlanModes(t, got.ActiveModes, []Mode{mode})
 			assertActivationBindingStatus(t, got, binding.ID, mode, StatusActive)
+			assertActivationBindingService(t, got, binding.ID, binding.ServiceID)
 			assertActivationNoLeak(t, got)
 		})
 	}
+}
+
+func TestActivateDeliveryHTTPProxyRequiresSafeSessionBinding(t *testing.T) {
+	tests := []struct {
+		name       string
+		configure  func(*PlanConstructionRequest)
+		wantActive bool
+		rejected   []string
+	}{
+		{
+			name: "safe activation",
+			configure: func(request *PlanConstructionRequest) {
+				request.NetworkProxySession = planNetworkProxySessionFixture()
+			},
+			wantActive: true,
+		},
+		{
+			name: "missing session",
+			configure: func(request *PlanConstructionRequest) {
+				request.Bindings[0].NetworkProxySessionID = ""
+			},
+		},
+		{
+			name: "unsafe session",
+			configure: func(request *PlanConstructionRequest) {
+				rawSession := "/tmp/credential-proxy.sock"
+				request.Bindings[0].NetworkProxySessionID = ""
+				request.NetworkProxySession = &sandbox.SandboxNetworkProxySessionMetadata{
+					ID:     rawSession,
+					Source: sandbox.SandboxNetworkPolicyDecisionSourceRun,
+				}
+			},
+			rejected: []string{"/tmp/credential-proxy.sock"},
+		},
+		{
+			name: "mismatched session",
+			configure: func(request *PlanConstructionRequest) {
+				request.Bindings[0].NetworkProxySessionID = "network-proxy-session-other"
+				request.NetworkProxySession = planNetworkProxySessionFixture()
+			},
+		},
+		{
+			name: "policy disallowed",
+			configure: func(request *PlanConstructionRequest) {
+				request.Bindings[0].PolicySnapshotID = "policy-snapshot-other"
+				request.NetworkProxySession = planNetworkProxySessionFixture()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binding := planBindingFixture(ModeHTTPProxy)
+			request := planConstructionRequestFixture(binding)
+			tt.configure(&request)
+			plan := BuildDeliveryPlan(request)
+			adapter := &fakeActivationAdapter{}
+
+			got := ActivateDelivery(ActivationRequest{
+				Plan:     plan,
+				Bindings: request.Bindings,
+			}, adapter)
+
+			if len(adapter.calls) != 1 {
+				t.Fatalf("adapter calls = %d, want 1 fake activation attempt", len(adapter.calls))
+			}
+			if tt.wantActive {
+				if got.Status != StatusActive {
+					t.Fatalf("activation status = %q, want active", got.Status)
+				}
+				assertPlanModes(t, got.ActiveModes, []Mode{ModeHTTPProxy})
+				assertActivationBindingStatus(t, got, binding.ID, ModeHTTPProxy, StatusActive)
+				assertActivationBindingService(t, got, binding.ID, binding.ServiceID)
+				if got.Warnings != nil {
+					t.Fatalf("activation warnings = %#v, want none for safe http_proxy activation", got.Warnings)
+				}
+			} else {
+				if got.Status != StatusSkipped {
+					t.Fatalf("activation status = %q, want skipped fail-closed result", got.Status)
+				}
+				assertPlanModes(t, got.ActiveModes, nil)
+				assertActivationWarning(t, got, WarningActivationSkipped, ReasonMissingServiceBinding, ModeHTTPProxy)
+				assertActivationBindingStatus(t, got, binding.ID, ModeHTTPProxy, StatusSkipped)
+			}
+			assertActivationNoLeak(t, got, tt.rejected...)
+		})
+	}
+}
+
+func TestActivateDeliveryHTTPProxyAdapterFailureFailsClosedWithSafeBindingMetadata(t *testing.T) {
+	binding := planBindingFixture(ModeHTTPProxy)
+	request := planConstructionRequestFixture(binding)
+	request.NetworkProxySession = planNetworkProxySessionFixture()
+	plan := BuildDeliveryPlan(request)
+	adapter := &fakeActivationAdapter{
+		err: errors.New("proxy adapter failed for https://proxy.example.invalid with Authorization Bearer ghp_raw_secret_value"),
+	}
+
+	got := ActivateDelivery(ActivationRequest{
+		Plan:     plan,
+		Bindings: request.Bindings,
+	}, adapter)
+
+	if got.Status != StatusFailed {
+		t.Fatalf("activation status = %q, want failed", got.Status)
+	}
+	assertPlanModes(t, got.ActiveModes, nil)
+	assertActivationError(t, got, ErrorActivationFailed, "adapter")
+	assertActivationBindingStatus(t, got, binding.ID, ModeHTTPProxy, StatusFailed)
+	assertActivationBindingService(t, got, binding.ID, binding.ServiceID)
+	assertActivationNoLeak(t, got, "https://proxy.example.invalid", "proxy.example.invalid", "Authorization", "ghp_raw_secret_value")
 }
 
 func TestActivateDeliveryAdapterFailureRedactsRawValuesAcrossDurablePayloads(t *testing.T) {
@@ -189,7 +305,9 @@ func fakeActiveActivationResult(request ActivationRequest) ActivationResult {
 		activeModes.add(binding.DeliveryMode)
 		result.Bindings = append(result.Bindings, BindingActivationResult{
 			BindingID:    binding.ID,
+			ServiceID:    binding.ServiceID,
 			DeliveryMode: binding.DeliveryMode,
+			Outcome:      StatusActive,
 			Status:       StatusActive,
 			ReasonCode:   ReasonRequested,
 		})
@@ -230,10 +348,27 @@ func assertActivationBindingStatus(t *testing.T, activation ActivationResult, bi
 
 	for _, binding := range activation.Bindings {
 		if binding.BindingID == bindingID && binding.DeliveryMode == mode && binding.Status == status {
+			if binding.Outcome != status {
+				t.Fatalf("activation binding outcome = %q, want %q in %#v", binding.Outcome, status, binding)
+			}
 			return
 		}
 	}
 	t.Fatalf("activation bindings = %#v, want binding %q mode %q status %q", activation.Bindings, bindingID, mode, status)
+}
+
+func assertActivationBindingService(t *testing.T, activation ActivationResult, bindingID string, serviceID string) {
+	t.Helper()
+
+	for _, binding := range activation.Bindings {
+		if binding.BindingID == bindingID {
+			if binding.ServiceID != serviceID {
+				t.Fatalf("activation binding service = %q, want %q in %#v", binding.ServiceID, serviceID, binding)
+			}
+			return
+		}
+	}
+	t.Fatalf("activation bindings = %#v, want binding %q service %q", activation.Bindings, bindingID, serviceID)
 }
 
 func assertActivationNoLeak(t *testing.T, value any, rejectedValues ...string) {

@@ -152,10 +152,11 @@ func TestCredentialDeliverySanitizeDropsUnsafeOptionalMetadata(t *testing.T) {
 	}
 
 	plan := SanitizePlanMetadata(Plan{
-		ID:             "delivery-plan-01",
-		RequestID:      "https://example.invalid/request",
-		RequestedModes: []Mode{ModeEnv, Mode("https://example.invalid/mode"), Mode("TOKEN=value")},
-		ActiveModes:    []Mode{ModeHTTPProxy},
+		ID:                    "delivery-plan-01",
+		RequestID:             "https://example.invalid/request",
+		NetworkProxySessionID: "/tmp/credential-proxy.sock",
+		RequestedModes:        []Mode{ModeEnv, Mode("https://example.invalid/mode"), Mode("TOKEN=value")},
+		ActiveModes:           []Mode{ModeHTTPProxy},
 		Warnings: []Warning{{
 			Code:      WarningBindingOmitted,
 			BindingID: "https://example.invalid/binding",
@@ -168,7 +169,7 @@ func TestCredentialDeliverySanitizeDropsUnsafeOptionalMetadata(t *testing.T) {
 			Mode:      Mode("TOKEN=value"),
 		}},
 	})
-	if plan.RequestID != "" || !reflect.DeepEqual(plan.RequestedModes, []Mode{ModeEnv}) {
+	if plan.RequestID != "" || plan.NetworkProxySessionID != "" || !reflect.DeepEqual(plan.RequestedModes, []Mode{ModeEnv}) {
 		t.Fatalf("plan optional metadata = %#v, want unsafe request id and modes dropped", plan)
 	}
 	if plan.Warnings[0].BindingID != "" || plan.Warnings[0].Mode != "" {
@@ -190,6 +191,7 @@ func TestCredentialDeliverySanitizeDropsUnsafeOptionalMetadata(t *testing.T) {
 	)
 	assertCredentialDeliverySanitizeNoUnsafeLeak(t, plan,
 		"https://example.invalid/request",
+		"/tmp/credential-proxy.sock",
 		"https://example.invalid/mode",
 		"https://example.invalid/binding",
 		"https://example.invalid/field",
@@ -227,6 +229,21 @@ func TestCredentialDeliverySanitizeRemovesUnsafeRequiredRecords(t *testing.T) {
 				PlanID: "/Users/alice/plan.json",
 			}),
 			want: ActivationResult{},
+		},
+		{
+			name: "activation binding optional metadata unsafe",
+			got: SanitizeBindingActivationResultMetadata(BindingActivationResult{
+				BindingID:    "binding-01",
+				ServiceID:    "api.example.invalid",
+				DeliveryMode: ModeHTTPProxy,
+				Outcome:      Status("TOKEN=value"),
+				Status:       StatusActive,
+			}),
+			want: BindingActivationResult{
+				BindingID:    "binding-01",
+				DeliveryMode: ModeHTTPProxy,
+				Status:       StatusActive,
+			},
 		},
 		{
 			name: "warning code unsafe",

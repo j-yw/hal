@@ -132,6 +132,7 @@ func SanitizePlanMetadata(plan Plan) Plan {
 		return Plan{}
 	}
 	sanitized.RequestID = sanitizeIdentifier(sanitized.RequestID)
+	sanitized.NetworkProxySessionID = sanitizeIdentifier(sanitized.NetworkProxySessionID)
 	sanitized.RequestedModes = sanitizeOptionalModeRecords(sanitized.RequestedModes)
 	sanitized.ActiveModes = sanitizeOptionalModeRecords(sanitized.ActiveModes)
 	sanitized.Status = sanitizeStatusValue(sanitized.Status)
@@ -163,10 +164,12 @@ func SanitizeActivationResultMetadata(result ActivationResult) ActivationResult 
 func SanitizeBindingActivationResultMetadata(result BindingActivationResult) BindingActivationResult {
 	sanitized := NormalizeBindingActivationResultMetadata(result)
 	sanitized.BindingID = sanitizeIdentifier(sanitized.BindingID)
+	sanitized.ServiceID = sanitizeIdentifier(sanitized.ServiceID)
 	sanitized.DeliveryMode = sanitizeRequiredModeValue(sanitized.DeliveryMode)
 	if sanitized.BindingID == "" || sanitized.DeliveryMode == "" {
 		return BindingActivationResult{}
 	}
+	sanitized.Outcome = sanitizeStatusValue(sanitized.Outcome)
 	sanitized.Status = sanitizeStatusValue(sanitized.Status)
 	sanitized.ReasonCode = sanitizeReasonCodeValue(sanitized.ReasonCode)
 	return sanitized
