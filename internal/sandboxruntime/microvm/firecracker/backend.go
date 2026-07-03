@@ -38,8 +38,8 @@ var (
 // BootAcceptanceWaiter, and LiveProcessManager are all explicitly injected.
 // GuestReadinessWaiter is optional and remains inert until an explicit live
 // start path chooses to call it. GuestTransport is optional and only used for
-// Exec after the controller is live-start enabled and target guest readiness is
-// ready. Raw paths are not exposed on returned targets.
+// guest operations after the controller is live-start enabled and target guest
+// readiness is ready. Raw paths are not exposed on returned targets.
 type BackendOptions struct {
 	BaseStateDir         string
 	ProcessAdapter       ProcessAdapter
@@ -388,7 +388,7 @@ func (c firecrackerController) Inspect(_ context.Context, req microvm.Controller
 }
 
 func (c firecrackerController) Exec(ctx context.Context, req microvm.ControllerExecRequest) (*sandboxruntime.ExecResult, error) {
-	if !c.canDelegateGuestExec(req.Target) {
+	if !c.canDelegateGuestTransport(req.Target) {
 		return nil, unsupportedFirecrackerOperation(req.Operation)
 	}
 	result, err := c.guestTransport.Exec(processContext(ctx), GuestExecRequest{
@@ -406,15 +406,26 @@ func (c firecrackerController) Exec(ctx context.Context, req microvm.ControllerE
 	return result, nil
 }
 
-func (firecrackerController) CopyIn(_ context.Context, req microvm.ControllerCopyRequest) error {
-	return unsupportedFirecrackerOperation(req.Operation)
+func (c firecrackerController) CopyIn(ctx context.Context, req microvm.ControllerCopyRequest) error {
+	if !c.canDelegateGuestTransport(req.Target) {
+		return unsupportedFirecrackerOperation(req.Operation)
+	}
+	err := c.guestTransport.CopyIn(processContext(ctx), GuestCopyRequest{
+		Target:          req.Target,
+		SourcePath:      req.SourcePath,
+		DestinationPath: req.DestinationPath,
+	})
+	if err != nil {
+		return newGuestTransportCopyInFailure(req.Operation, err)
+	}
+	return nil
 }
 
 func (firecrackerController) CopyOut(_ context.Context, req microvm.ControllerCopyRequest) error {
 	return unsupportedFirecrackerOperation(req.Operation)
 }
 
-func (c firecrackerController) canDelegateGuestExec(target sandboxruntime.Target) bool {
+func (c firecrackerController) canDelegateGuestTransport(target sandboxruntime.Target) bool {
 	if !c.liveStart || c.guestTransport == nil || target.Runtime.Metadata == nil {
 		return false
 	}
@@ -742,6 +753,19 @@ func newGuestTransportExecFailure(operation string, cause error) *microvm.Operat
 	err := microvm.NewBackendOperationFailedError(operation, sanitizedGuestTransportCause{cause: cause})
 	err.Field = "guestTransport"
 	err.Message = "guest transport exec failed"
+	return err
+}
+
+func newGuestTransportCopyInFailure(operation string, cause error) *microvm.OperationError {
+	if strings.TrimSpace(operation) == "" {
+		operation = microvm.OperationCopyIn
+	}
+	if cause == nil {
+		cause = errors.New("guest transport copy in failed")
+	}
+	err := microvm.NewBackendOperationFailedError(operation, sanitizedGuestTransportCause{cause: cause})
+	err.Field = "guestTransport"
+	err.Message = "guest transport copy in failed"
 	return err
 }
 

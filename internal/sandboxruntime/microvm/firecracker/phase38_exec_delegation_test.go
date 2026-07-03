@@ -189,11 +189,178 @@ func TestPhase38FirecrackerExecTransportFailureIsWrappedAndSanitized(t *testing.
 	}
 }
 
+func TestPhase38FirecrackerCopyInRequiresLiveGuestTransportAndReadyGuestReadiness(t *testing.T) {
+	readyTarget := phase38ExecTarget(sandboxruntime.NewRuntimeGuestReadinessMetadata(
+		sandboxruntime.RuntimeGuestReadinessStateReady,
+		"vsock",
+		[]string{"ready"},
+	))
+
+	t.Run("default backend", func(t *testing.T) {
+		controller := phase38CopyInController(t, NewBackend(BackendOptions{}), readyTarget)
+		err := controller.CopyIn(context.Background(), microvm.ControllerCopyRequest{
+			Operation:       microvm.OperationCopyIn,
+			Target:          readyTarget,
+			SourcePath:      "/Users/alice/private/input-token-ghp_secret.txt",
+			DestinationPath: "/workspace/input-token-ghp_secret.txt",
+		})
+		assertFirecrackerUnsupportedOperationError(t, err, microvm.OperationCopyIn)
+		assertFirecrackerErrorDoesNotLeak(t, err, "/Users/alice", "private", "ghp_secret", "input-token-ghp_secret.txt")
+	})
+
+	t.Run("live backend without guest transport", func(t *testing.T) {
+		controller := phase38CopyInController(t, NewBackend(BackendOptions{LiveStart: true}), readyTarget)
+		err := controller.CopyIn(context.Background(), microvm.ControllerCopyRequest{
+			Operation:       microvm.OperationCopyIn,
+			Target:          readyTarget,
+			SourcePath:      "/safe/input.txt",
+			DestinationPath: "/workspace/input.txt",
+		})
+		assertFirecrackerUnsupportedOperationError(t, err, microvm.OperationCopyIn)
+	})
+
+	tests := []struct {
+		name      string
+		readiness *sandboxruntime.RuntimeGuestReadinessMetadata
+	}{
+		{name: "absent readiness"},
+		{
+			name: "waiting readiness",
+			readiness: sandboxruntime.NewRuntimeGuestReadinessMetadata(
+				sandboxruntime.RuntimeGuestReadinessStateWaiting,
+				"vsock",
+				[]string{"waiting"},
+			),
+		},
+		{
+			name: "not configured readiness",
+			readiness: sandboxruntime.NewRuntimeGuestReadinessMetadata(
+				sandboxruntime.RuntimeGuestReadinessStateNotConfigured,
+				"vsock",
+				[]string{"not_configured"},
+			),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := &phase38RecordingGuestTransport{}
+			target := phase38ExecTarget(tt.readiness)
+			controller := phase38CopyInController(t, NewBackend(BackendOptions{
+				GuestTransport: transport,
+				LiveStart:      true,
+			}), target)
+
+			err := controller.CopyIn(context.Background(), microvm.ControllerCopyRequest{
+				Operation:       microvm.OperationCopyIn,
+				Target:          target,
+				SourcePath:      "/safe/input.txt",
+				DestinationPath: "/workspace/input.txt",
+			})
+			assertFirecrackerUnsupportedOperationError(t, err, microvm.OperationCopyIn)
+			if transport.copyInCalls != 0 {
+				t.Fatalf("guest transport CopyIn calls = %d, want none", transport.copyInCalls)
+			}
+		})
+	}
+}
+
+func TestPhase38FirecrackerCopyInDelegatesToInjectedGuestTransportWhenReady(t *testing.T) {
+	transport := &phase38RecordingGuestTransport{}
+	target := phase38ExecTarget(sandboxruntime.NewRuntimeGuestReadinessMetadata(
+		sandboxruntime.RuntimeGuestReadinessStateReady,
+		"vsock",
+		[]string{"ready", "probe_ok"},
+	))
+	controller := phase38CopyInController(t, NewBackend(BackendOptions{
+		GuestTransport: transport,
+		LiveStart:      true,
+	}), target)
+	source := "/Users/alice/project/input.txt"
+	destination := "/workspace/project/input.txt"
+
+	err := controller.CopyIn(context.Background(), microvm.ControllerCopyRequest{
+		Operation:       microvm.OperationCopyIn,
+		Target:          target,
+		SourcePath:      source,
+		DestinationPath: destination,
+	})
+	if err != nil {
+		t.Fatalf("CopyIn() error = %v, want nil", err)
+	}
+	if transport.copyInCalls != 1 {
+		t.Fatalf("guest transport CopyIn calls = %d, want 1", transport.copyInCalls)
+	}
+	got := transport.copyInRequest
+	if !reflect.DeepEqual(got.Target, target) {
+		t.Fatalf("transport Target = %#v, want %#v", got.Target, target)
+	}
+	if got.SourcePath != source {
+		t.Fatalf("transport SourcePath = %q, want %q", got.SourcePath, source)
+	}
+	if got.DestinationPath != destination {
+		t.Fatalf("transport DestinationPath = %q, want %q", got.DestinationPath, destination)
+	}
+}
+
+func TestPhase38FirecrackerCopyInTransportFailureIsWrappedAndSanitized(t *testing.T) {
+	transportErr := errors.New("copy in failed source=/Users/alice/private/input-token-ghp_secret.txt destination=/workspace/private/input-token-ghp_secret.txt endpoint=unix:///tmp/firecracker.sock socket=/tmp/firecracker.sock token=ghp_secret pid=4242")
+	transport := &phase38RecordingGuestTransport{copyInErr: transportErr}
+	target := phase38ExecTarget(sandboxruntime.NewRuntimeGuestReadinessMetadata(
+		sandboxruntime.RuntimeGuestReadinessStateReady,
+		"vsock",
+		[]string{"ready"},
+	))
+	controller := phase38CopyInController(t, NewBackend(BackendOptions{
+		GuestTransport: transport,
+		LiveStart:      true,
+	}), target)
+
+	err := controller.CopyIn(context.Background(), microvm.ControllerCopyRequest{
+		Operation:       microvm.OperationCopyIn,
+		Target:          target,
+		SourcePath:      "/Users/alice/private/input-token-ghp_secret.txt",
+		DestinationPath: "/workspace/private/input-token-ghp_secret.txt",
+	})
+	if err == nil {
+		t.Fatal("CopyIn() error = nil, want wrapped transport failure")
+	}
+	if !errors.Is(err, transportErr) {
+		t.Fatalf("errors.Is(CopyIn() error, transportErr) = false for %v", err)
+	}
+	assertFirecrackerStartOperationError(t, err, microvm.ErrorCodeBackendOperationFailed, microvm.OperationCopyIn, "guestTransport")
+	publicText := err.Error()
+	if !strings.Contains(publicText, "guest transport copy in failed") {
+		t.Fatalf("CopyIn() error = %q, want sanitized guest transport failure", publicText)
+	}
+	assertFirecrackerErrorDoesNotLeak(t, err,
+		"/Users/alice",
+		"private",
+		"ghp_secret",
+		"input-token-ghp_secret.txt",
+		"/tmp",
+		"firecracker.sock",
+		"unix://",
+		"4242",
+	)
+	encoded, marshalErr := json.Marshal(target)
+	if marshalErr != nil {
+		t.Fatalf("Marshal(target) error = %v", marshalErr)
+	}
+	for _, unsafe := range []string{"ghp_secret", "/Users/alice", "firecracker.sock", "unix://", "4242"} {
+		if strings.Contains(string(encoded), unsafe) {
+			t.Fatalf("runtime metadata leaked unsafe fragment %q in %s", unsafe, encoded)
+		}
+	}
+}
+
 type phase38RecordingGuestTransport struct {
-	execCalls   int
-	execRequest GuestExecRequest
-	result      *sandboxruntime.ExecResult
-	err         error
+	execCalls     int
+	copyInCalls   int
+	execRequest   GuestExecRequest
+	copyInRequest GuestCopyRequest
+	result        *sandboxruntime.ExecResult
+	err           error
+	copyInErr     error
 }
 
 func (transport *phase38RecordingGuestTransport) Exec(_ context.Context, req GuestExecRequest) (*sandboxruntime.ExecResult, error) {
@@ -208,8 +375,10 @@ func (transport *phase38RecordingGuestTransport) Exec(_ context.Context, req Gue
 	return &sandboxruntime.ExecResult{ExitCode: 0}, nil
 }
 
-func (transport *phase38RecordingGuestTransport) CopyIn(context.Context, GuestCopyRequest) error {
-	return nil
+func (transport *phase38RecordingGuestTransport) CopyIn(_ context.Context, req GuestCopyRequest) error {
+	transport.copyInCalls++
+	transport.copyInRequest = req
+	return transport.copyInErr
 }
 
 func (transport *phase38RecordingGuestTransport) CopyOut(context.Context, GuestCopyRequest) error {
@@ -220,6 +389,19 @@ func phase38ExecController(t *testing.T, backend *Backend, target sandboxruntime
 	t.Helper()
 	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
 		Operation: microvm.OperationExec,
+		Config:    validMicroVMConfig(),
+		Target:    target,
+	})
+	if err != nil {
+		t.Fatalf("Controller() error = %v, want nil", err)
+	}
+	return controller
+}
+
+func phase38CopyInController(t *testing.T, backend *Backend, target sandboxruntime.Target) microvm.Controller {
+	t.Helper()
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+		Operation: microvm.OperationCopyIn,
 		Config:    validMicroVMConfig(),
 		Target:    target,
 	})
