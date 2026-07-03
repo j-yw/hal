@@ -100,6 +100,19 @@ func TestPhase36FirecrackerExplicitLiveDriverGuardCoversRequiredSurfaces(t *test
 	}
 }
 
+func TestPhase36ExplicitSandboxdFirecrackerLiveDriverPathAllowsOnlyExplicitLiveDriver(t *testing.T) {
+	_, file := phase39ReadExplicitSandboxdFirecrackerLiveDriver(t)
+	if !phase39ImportsFirecrackerHost(file) {
+		t.Fatalf("%s does not import %s", phase39ExplicitSandboxdFirecrackerLiveDriverPath, phase39FirecrackerHostImportPath)
+	}
+	if message := phase36FirecrackerLiveDriverImportBoundaryMessage(phase39ExplicitSandboxdFirecrackerLiveDriverPath, phase39FirecrackerHostImportPath); message == "" {
+		t.Fatalf("Phase 36 live-driver import guard did not reject %s outside the explicit sandboxd exception", phase39FirecrackerHostImportPath)
+	}
+	if message := phase36FirecrackerLiveDriverSourceBoundaryMessage(phase39ExplicitSandboxdFirecrackerLiveDriverPath, file); message == "" {
+		t.Fatalf("Phase 36 live-driver source guard did not detect explicit sandboxd Firecracker live-driver construction")
+	}
+}
+
 func TestPhase36FirecrackerExplicitLiveDriverGuardRejectsFixtures(t *testing.T) {
 	importFixtures := []struct {
 		name       string

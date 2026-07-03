@@ -103,6 +103,21 @@ func TestPhase38FirecrackerLiveGuestTransportGuardCoversRequiredDefaultSurfaces(
 	}
 }
 
+func TestPhase38ExplicitSandboxdFirecrackerLiveDriverPathDoesNotWireGuestTransport(t *testing.T) {
+	source, _ := phase39ReadExplicitSandboxdFirecrackerLiveDriver(t)
+	for _, marker := range []string{
+		"WithGuestTransport",
+		"NewGuestTransport",
+		"GuestTransport",
+		"GuestExecRequest",
+		"GuestCopyRequest",
+	} {
+		if strings.Contains(source, marker) {
+			t.Fatalf("%s contains guest transport marker %q; the Phase 39 sandboxd exception is only for explicit live-driver construction", phase39ExplicitSandboxdFirecrackerLiveDriverPath, marker)
+		}
+	}
+}
+
 func TestPhase38RunAutoFactoryDefaultsDoNotSelectFirecrackerRuntimeOrGuestTransport(t *testing.T) {
 	runReq, err := parseRunSandboxRequest(nil, runSandboxOptions{})
 	if err != nil {
