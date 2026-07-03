@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworker"
 )
 
@@ -187,6 +188,54 @@ func TestSandboxHostFromWorkerMetadataMapsRuntimeCapabilityWithoutDefaultDenyOve
 	}
 	if result.EnforcementMode != sandbox.SandboxNetworkEnforcementModeNone {
 		t.Fatalf("enforcement mode = %q, want %q", result.EnforcementMode, sandbox.SandboxNetworkEnforcementModeNone)
+	}
+}
+
+func TestSandboxHostFromWorkerMetadataMapsExplicitNetworkEnforcementCapability(t *testing.T) {
+	policy := sandboxworker.SecurityPolicy{
+		Requested: sandboxworker.SecurityControls{
+			NetworkPolicy:      sandboxworker.NetworkPolicyDenyByDefault,
+			NetworkEnforcement: sandboxworker.NetworkEnforcementFirewall,
+		},
+		Enforced: sandboxworker.SecurityControls{
+			NetworkPolicy:      sandboxworker.NetworkPolicyDenyByDefault,
+			NetworkEnforcement: sandboxworker.NetworkEnforcementFirewall,
+			NetworkEnforcementCapability: &sandboxruntime.RuntimeNetworkEnforcementCapability{
+				Supported:                  true,
+				Modes:                      []string{sandboxworker.NetworkEnforcementFirewall},
+				SupportsDomainRules:        true,
+				SupportsEndpointRules:      true,
+				SupportsDefaultDenyPosture: true,
+			},
+		},
+	}
+	host, err := sandboxHostFromWorkerMetadata(sandboxHostWorkerMetadataRequest{
+		WorkerID:   "worker-001",
+		SocketPath: "/tmp/hal-sandboxworker.sock",
+		Status: &sandboxworker.Status{
+			WorkerID: "worker-001",
+			HostKind: sandboxworker.HostKindLocal,
+			Health:   sandboxworker.WorkerHealth{Status: sandboxworker.HealthStatusHealthy},
+			Security: policy,
+		},
+	})
+	if err != nil {
+		t.Fatalf("sandboxHostFromWorkerMetadata() error = %v", err)
+	}
+	result := host.Security.Network.PolicyResult
+	if result == nil {
+		t.Fatal("policyResult = nil, want explicit worker network policy result")
+	}
+	if !result.Capability.Supported ||
+		strings.Join(result.Capability.Modes, ",") != sandbox.SandboxNetworkEnforcementModeFirewall ||
+		!result.Capability.SupportsDefaultDenyPosture {
+		t.Fatalf("capability = %#v, want explicit firewall default-deny support", result.Capability)
+	}
+	if result.Effective.Preset != sandbox.SandboxNetworkPolicyPresetDenyByDefault {
+		t.Fatalf("effective preset = %q, want deny_by_default", result.Effective.Preset)
+	}
+	if result.EnforcementMode != sandbox.SandboxNetworkEnforcementModeFirewall {
+		t.Fatalf("enforcement mode = %q, want firewall", result.EnforcementMode)
 	}
 }
 

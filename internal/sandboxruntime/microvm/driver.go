@@ -7,6 +7,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
 )
 
 const (
@@ -26,9 +27,12 @@ type DriverReasonCode string
 // DriverOptions configures the microVM runtime shell. Config is durable
 // backend-neutral input; Detector and Backend are live dependencies.
 type DriverOptions struct {
-	Config             Config
-	CapabilityDetector CapabilityDetector
-	Backend            Backend
+	Config                   Config
+	CapabilityDetector       CapabilityDetector
+	Backend                  Backend
+	NetworkEnforcement       *NetworkEnforcementPlanning
+	NetworkEnforcementPlan   *networkenforcement.Plan
+	NetworkEnforcementResult *networkenforcement.Result
 }
 
 // RuntimeMetadata identifies the driver posture before target-specific
@@ -42,6 +46,7 @@ type RuntimeMetadata struct {
 	BackendConfigured    bool
 	Availability         CapabilityAvailability
 	ReasonCode           DriverReasonCode
+	NetworkEnforcement   *sandboxruntime.RuntimeNetworkEnforcementMetadata
 }
 
 // Driver is the microVM runtime adapter shell. It exposes the sandboxruntime
@@ -69,6 +74,7 @@ func NewDriver(options DriverOptions) *Driver {
 
 	report := detector.DetectMicroVMCapability(CapabilityDetectionRequest{Config: config})
 	metadata := metadataFromCapability(report, options.Backend != nil)
+	metadata.NetworkEnforcement = networkEnforcementMetadataFromDriverOptions(options)
 
 	return &Driver{
 		backend:  options.Backend,
@@ -90,6 +96,7 @@ func (d *Driver) Metadata() RuntimeMetadata {
 	}
 	metadata := d.metadata
 	metadata.Capability = cloneCapabilityReport(metadata.Capability)
+	metadata.NetworkEnforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(metadata.NetworkEnforcement)
 	return metadata
 }
 
@@ -415,6 +422,7 @@ func cloneRuntimeMetadata(metadata *sandboxruntime.RuntimeMetadata) *sandboxrunt
 	copied.OperationPlan = cloneRuntimeOperationPlan(metadata.OperationPlan)
 	copied.ProcessLaunch = cloneRuntimeProcessLaunchMetadata(metadata.ProcessLaunch)
 	copied.GuestReadiness = sandboxruntime.SanitizeRuntimeGuestReadinessMetadata(metadata.GuestReadiness)
+	copied.NetworkEnforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(metadata.NetworkEnforcement)
 	return &copied
 }
 

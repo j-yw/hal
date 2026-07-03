@@ -2,10 +2,13 @@ package sandboxworker
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 func TestServiceStatusReportsStateAndRegisteredDrivers(t *testing.T) {
@@ -221,6 +224,155 @@ func TestServiceMicroVMCapabilityReportsConservativeRuntimeMetadata(t *testing.T
 		}
 	}
 	assertMicroVMRuntimeDriverSecurityPolicy(t, driver.Security)
+}
+
+func TestServiceMicroVMCapabilityOutputDoesNotClaimDefaultNetworkEnforcement(t *testing.T) {
+	registry, err := NewDriverRegistry(&fakeWorkerRuntimeDriver{id: RuntimeDriverMicroVM})
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+	service, err := NewService(ServiceOptions{
+		WorkerID: "worker-microvm",
+		Registry: registry,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+
+	capabilities := service.Capabilities()
+	if err := capabilities.Validate(); err != nil {
+		t.Fatalf("Capabilities().Validate() error: %v", err)
+	}
+	if len(capabilities.RuntimeDrivers) != 1 {
+		t.Fatalf("runtime drivers = %#v, want exactly one microVM driver", capabilities.RuntimeDrivers)
+	}
+	driver := capabilities.RuntimeDrivers[0]
+	if driver.ID != RuntimeDriverMicroVM {
+		t.Fatalf("runtime driver ID = %q, want %q", driver.ID, RuntimeDriverMicroVM)
+	}
+	assertCapabilityDoesNotClaimNetworkEnforcement(t, "worker", capabilities.Security)
+	assertMicroVMCapabilityDoesNotRequestNetworkEnforcement(t, "runtime driver", driver.Security)
+	assertCapabilityDoesNotClaimNetworkEnforcement(t, "runtime driver", driver.Security)
+	if driver.NetworkEnforcement != nil ||
+		driver.Security.Requested.NetworkEnforcementCapability != nil ||
+		driver.Security.Enforced.NetworkEnforcementCapability != nil {
+		t.Fatalf("unconfigured microVM capability included network enforcement metadata: %#v", driver)
+	}
+}
+
+func TestServiceCapabilitiesCanIncludeExplicitNetworkEnforcementCapability(t *testing.T) {
+	registry, err := NewDriverRegistry(&fakeWorkerRuntimeDriver{id: RuntimeDriverMicroVM})
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+	metadata := &sandboxruntime.RuntimeNetworkEnforcementMetadata{
+		Plan: &sandboxruntime.RuntimeNetworkEnforcementPlanMetadata{
+			ID:               "network-plan-worker",
+			Source:           "worker",
+			Operation:        "prepare_network",
+			PolicySnapshotID: "policy-snapshot-worker",
+			PolicyPreset:     "deny_by_default",
+			DefaultPosture:   "deny_by_default",
+			Mechanisms:       []string{"proxy", "firewall"},
+			Operations:       []string{"default_deny", "allowlist", "/tmp/raw-rules.sock"},
+		},
+		Result: &sandboxruntime.RuntimeNetworkEnforcementResultMetadata{
+			PlanID:          "network-plan-worker",
+			AdapterID:       "fake-worker-adapter",
+			Outcome:         "success",
+			EnforcementMode: NetworkEnforcementProxyFirewall,
+			Mechanisms:      []string{"proxy", "firewall"},
+			Operations:      []string{"proxy_route", "firewall_apply"},
+			Capability: &sandboxruntime.RuntimeNetworkEnforcementCapability{
+				Supported:                  true,
+				Modes:                      []string{NetworkEnforcementProxyFirewall},
+				SupportsDomainRules:        true,
+				SupportsEndpointRules:      true,
+				SupportsPrivateRangeRules:  true,
+				SupportsMetadataEndpoint:   true,
+				SupportsDefaultDenyPosture: true,
+			},
+			ReasonCode: "applied",
+		},
+	}
+	capability := &sandboxruntime.RuntimeNetworkEnforcementCapability{
+		Supported:                  true,
+		Modes:                      []string{NetworkEnforcementProxyFirewall},
+		SupportsDomainRules:        true,
+		SupportsEndpointRules:      true,
+		SupportsPrivateRangeRules:  true,
+		SupportsMetadataEndpoint:   true,
+		SupportsDefaultDenyPosture: true,
+	}
+	service, err := NewService(ServiceOptions{
+		WorkerID: "worker-explicit-network",
+		Registry: registry,
+		RuntimeDrivers: map[string]RuntimeDriver{
+			RuntimeDriverMicroVM: {
+				ID:             RuntimeDriverMicroVM,
+				HostKind:       HostKindLocal,
+				IsolationLevel: IsolationLevelVM,
+				Operations:     microVMRuntimeDriverOperations,
+				Security: SecurityPolicy{
+					Requested: SecurityControls{
+						NetworkPolicy:      NetworkPolicyDenyByDefault,
+						NetworkEnforcement: NetworkEnforcementProxyFirewall,
+						IsolationLevel:     IsolationLevelVM,
+					},
+					Enforced: SecurityControls{
+						NetworkPolicy:                NetworkPolicyDenyByDefault,
+						NetworkEnforcement:           NetworkEnforcementProxyFirewall,
+						NetworkEnforcementCapability: capability,
+						IsolationLevel:               IsolationLevelVM,
+					},
+				},
+				NetworkEnforcement: metadata,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+
+	capabilities := service.Capabilities()
+	if err := capabilities.Validate(); err != nil {
+		t.Fatalf("Capabilities().Validate() error: %v", err)
+	}
+	if len(capabilities.RuntimeDrivers) != 1 {
+		t.Fatalf("runtime drivers = %#v, want one microVM driver", capabilities.RuntimeDrivers)
+	}
+	driver := capabilities.RuntimeDrivers[0]
+	if driver.NetworkEnforcement == nil || driver.NetworkEnforcement.Result == nil {
+		t.Fatalf("driver networkEnforcement = %#v, want explicit result metadata", driver.NetworkEnforcement)
+	}
+	if driver.NetworkEnforcement.Result.EnforcementMode != NetworkEnforcementProxyFirewall ||
+		driver.NetworkEnforcement.Result.Capability == nil ||
+		!driver.NetworkEnforcement.Result.Capability.SupportsDefaultDenyPosture {
+		t.Fatalf("driver networkEnforcement result = %#v, want proxy_firewall capability", driver.NetworkEnforcement.Result)
+	}
+	if driver.Security.Enforced.NetworkEnforcementCapability == nil ||
+		!driver.Security.Enforced.NetworkEnforcementCapability.Supported {
+		t.Fatalf("driver security capability = %#v, want explicit supported capability", driver.Security.Enforced.NetworkEnforcementCapability)
+	}
+
+	encoded, err := json.Marshal(capabilities)
+	if err != nil {
+		t.Fatalf("Marshal(capabilities) error: %v", err)
+	}
+	publicText := string(encoded)
+	for _, unsafe := range []string{
+		"/tmp/",
+		"raw-rules.sock",
+		"token",
+		"secret",
+		"://",
+		"production",
+		"egress",
+	} {
+		if strings.Contains(publicText, unsafe) {
+			t.Fatalf("capabilities leaked or claimed %q in %s", unsafe, publicText)
+		}
+	}
 }
 
 func TestServiceMicroVMWorkerIORequestsAreRejectedBeforeDriverDispatch(t *testing.T) {
@@ -573,5 +725,31 @@ func assertMicroVMRuntimeDriverSecurityPolicy(t *testing.T, policy SecurityPolic
 	}
 	if policy.Enforced.IsolationLevel != IsolationLevelVM {
 		t.Fatalf("microVM enforced isolationLevel = %q, want %q", policy.Enforced.IsolationLevel, IsolationLevelVM)
+	}
+}
+
+func assertMicroVMCapabilityDoesNotRequestNetworkEnforcement(t *testing.T, label string, policy SecurityPolicy) {
+	t.Helper()
+	if policy.Requested.NetworkPolicy != NetworkPolicyBestEffort {
+		t.Fatalf("%s requested networkPolicy = %q, want %q", label, policy.Requested.NetworkPolicy, NetworkPolicyBestEffort)
+	}
+	if policy.Requested.NetworkEnforcement != NetworkEnforcementNone {
+		t.Fatalf("%s requested networkEnforcement = %q, want %q", label, policy.Requested.NetworkEnforcement, NetworkEnforcementNone)
+	}
+}
+
+func assertCapabilityDoesNotClaimNetworkEnforcement(t *testing.T, label string, policy SecurityPolicy) {
+	t.Helper()
+	if err := policy.Validate(); err != nil {
+		t.Fatalf("%s security policy Validate() error: %v", label, err)
+	}
+	if policy.Enforced.NetworkPolicy != NetworkPolicyBestEffort {
+		t.Fatalf("%s enforced networkPolicy = %q, want %q", label, policy.Enforced.NetworkPolicy, NetworkPolicyBestEffort)
+	}
+	if policy.Enforced.NetworkPolicy == NetworkPolicyDenyByDefault {
+		t.Fatalf("%s enforced networkPolicy claims deny-by-default enforcement: %#v", label, policy)
+	}
+	if policy.Enforced.NetworkEnforcement != NetworkEnforcementNone {
+		t.Fatalf("%s enforced networkEnforcement = %q, want %q", label, policy.Enforced.NetworkEnforcement, NetworkEnforcementNone)
 	}
 }

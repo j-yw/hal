@@ -17,6 +17,7 @@ func defaultSandboxdMicroVMDriver(config sandboxdMicroVMConfig) (sandboxruntime.
 	return firecrackerhost.NewLiveDriver(firecrackerhost.LiveDriverOptions{
 		Config:               config.Config,
 		BaseStateDir:         config.StateDir,
+		NetworkEnforcement:   config.NetworkEnforcementPlanning,
 		BootAcceptancePoller: firecrackerhost.NewAPISocketBootAcceptancePoller(),
 		BootTimeout:          config.BootAcceptanceTimeout,
 		BootPollInterval:     config.BootAcceptancePollInterval,

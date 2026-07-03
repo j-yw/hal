@@ -79,6 +79,8 @@ type sandboxdMicroVMConfig struct {
 	GuestReadinessPollInterval    time.Duration
 	GuestReadinessProbeConfigured bool
 	GuestAgentEndpoint            string
+	NetworkEnforcementPlanning    *microvm.NetworkEnforcementPlanning
+	NetworkEnforcement            *sandboxruntime.RuntimeNetworkEnforcementMetadata
 }
 
 type sandboxdRequest struct {
@@ -333,7 +335,7 @@ func runSandboxdWithDeps(ctx context.Context, req sandboxdRequest, out io.Writer
 	}
 	deps = normalizeSandboxdDeps(deps)
 
-	registry, driverIDs, err := sandboxdDriverRegistry(ctx, req, deps)
+	registry, driverIDs, runtimeDrivers, err := sandboxdDriverRegistry(ctx, req, deps)
 	if err != nil {
 		return err
 	}
@@ -345,7 +347,7 @@ func runSandboxdWithDeps(ctx context.Context, req sandboxdRequest, out io.Writer
 		Capacity: sandboxworker.WorkerCapacity{
 			MaxConcurrentSandboxes: req.MaxConcurrent,
 		},
-		RuntimeDrivers: sandboxdRuntimeDriverDescriptors(req),
+		RuntimeDrivers: runtimeDrivers,
 	}
 	service, err := deps.newService(serviceOptions)
 	if err != nil {
@@ -389,57 +391,64 @@ func normalizeSandboxdDeps(deps sandboxdDeps) sandboxdDeps {
 	return deps
 }
 
-func sandboxdDriverRegistry(ctx context.Context, req sandboxdRequest, deps sandboxdDeps) (*sandboxworker.DriverRegistry, []string, error) {
+func sandboxdDriverRegistry(ctx context.Context, req sandboxdRequest, deps sandboxdDeps) (*sandboxworker.DriverRegistry, []string, map[string]sandboxworker.RuntimeDriver, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	registry := &sandboxworker.DriverRegistry{}
 	driverIDs := make([]string, 0, len(req.Drivers))
+	runtimeDrivers := map[string]sandboxworker.RuntimeDriver{}
 	seen := map[string]bool{}
 	for _, driverID := range req.Drivers {
 		switch driverID {
 		case sandboxruntime.DriverRootlessPodman:
 			if seen[driverID] {
-				return nil, nil, fmt.Errorf("sandboxd driver %q is registered more than once", driverID)
+				return nil, nil, nil, fmt.Errorf("sandboxd driver %q is registered more than once", driverID)
 			}
 			if err := deps.rootlessPodmanAvailable(ctx, req.PodmanPath); err != nil {
-				return nil, nil, sandboxdRuntimeUnavailableError{driverID: driverID, err: err}
+				return nil, nil, nil, sandboxdRuntimeUnavailableError{driverID: driverID, err: err}
 			}
 			driver := deps.newRootlessPodmanDriver(req.PodmanPath)
 			if err := registry.Register(driver); err != nil {
-				return nil, nil, fmt.Errorf("register sandboxd driver %q: %w", driverID, err)
+				return nil, nil, nil, fmt.Errorf("register sandboxd driver %q: %w", driverID, err)
 			}
 			seen[driverID] = true
 			driverIDs = append(driverIDs, driverID)
 		case sandboxruntime.DriverMicroVM:
 			if seen[driverID] {
-				return nil, nil, fmt.Errorf("sandboxd driver %q is registered more than once", driverID)
+				return nil, nil, nil, fmt.Errorf("sandboxd driver %q is registered more than once", driverID)
 			}
 			if deps.newMicroVMDriver == nil {
-				return nil, nil, fmt.Errorf("sandboxd driver %q is unsupported", driverID)
+				return nil, nil, nil, fmt.Errorf("sandboxd driver %q is unsupported", driverID)
 			}
 			if err := validateSandboxdMicroVMConfig(req.MicroVM); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			if deps.validateMicroVMConfig != nil {
 				if err := deps.validateMicroVMConfig(req.MicroVM); err != nil {
-					return nil, nil, err
+					return nil, nil, nil, err
 				}
 			}
 			driver, err := deps.newMicroVMDriver(req.MicroVM)
 			if err != nil {
-				return nil, nil, fmt.Errorf("create sandboxd driver %q: %w", driverID, err)
+				return nil, nil, nil, fmt.Errorf("create sandboxd driver %q: %w", driverID, err)
 			}
 			if err := registry.Register(driver); err != nil {
-				return nil, nil, fmt.Errorf("register sandboxd driver %q: %w", driverID, err)
+				return nil, nil, nil, fmt.Errorf("register sandboxd driver %q: %w", driverID, err)
+			}
+			if descriptor, ok := sandboxdMicroVMRuntimeDriverDescriptorFromDriver(req.MicroVM, driver); ok {
+				runtimeDrivers[driverID] = descriptor
 			}
 			seen[driverID] = true
 			driverIDs = append(driverIDs, driverID)
 		default:
-			return nil, nil, fmt.Errorf("sandboxd driver %q is unsupported", driverID)
+			return nil, nil, nil, fmt.Errorf("sandboxd driver %q is unsupported", driverID)
 		}
 	}
-	return registry, driverIDs, nil
+	if len(runtimeDrivers) == 0 {
+		runtimeDrivers = nil
+	}
+	return registry, driverIDs, runtimeDrivers, nil
 }
 
 func sandboxdDriverSupportedByDeps(driverID string, deps sandboxdDeps) bool {
@@ -548,6 +557,7 @@ func sanitizeSandboxdMicroVMConfig(config sandboxdMicroVMConfig) sandboxdMicroVM
 		config.StateDir = filepath.Clean(config.StateDir)
 	}
 	config.GuestAgentEndpoint = strings.TrimSpace(config.GuestAgentEndpoint)
+	config.NetworkEnforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(config.NetworkEnforcement)
 	return config
 }
 
@@ -674,34 +684,155 @@ func sandboxdMicroVMAssetFlag(role assets.AssetRole) string {
 }
 
 func sandboxdRuntimeDriverDescriptors(req sandboxdRequest) map[string]sandboxworker.RuntimeDriver {
-	if !sandboxdDriverRequested(req.Drivers, sandboxruntime.DriverMicroVM) || strings.TrimSpace(req.MicroVM.GuestAgentEndpoint) == "" {
+	if !sandboxdDriverRequested(req.Drivers, sandboxruntime.DriverMicroVM) {
 		return nil
 	}
+	enforcement := sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(req.MicroVM.NetworkEnforcement)
+	if strings.TrimSpace(req.MicroVM.GuestAgentEndpoint) == "" && enforcement == nil {
+		return nil
+	}
+	operations := sandboxdMicroVMOperationsDefault()
+	if strings.TrimSpace(req.MicroVM.GuestAgentEndpoint) != "" {
+		operations = sandboxdMicroVMOperationsWithGuestAgent()
+	}
 	return map[string]sandboxworker.RuntimeDriver{
-		sandboxruntime.DriverMicroVM: sandboxdMicroVMRuntimeDriverDescriptor(sandboxdMicroVMOperationsWithGuestAgent()),
+		sandboxruntime.DriverMicroVM: sandboxdMicroVMRuntimeDriverDescriptor(
+			operations,
+			enforcement,
+		),
 	}
 }
 
-func sandboxdMicroVMRuntimeDriverDescriptor(operations []string) sandboxworker.RuntimeDriver {
+func sandboxdMicroVMRuntimeDriverDescriptor(operations []string, enforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata) sandboxworker.RuntimeDriver {
+	enforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(enforcement)
 	return sandboxworker.RuntimeDriver{
-		ID:             sandboxruntime.DriverMicroVM,
-		HostKind:       sandboxworker.HostKindLocal,
-		IsolationLevel: sandboxworker.IsolationLevelVM,
-		Operations:     cloneSandboxdStringSlice(operations),
-		Security: sandboxworker.SecurityPolicy{
-			Requested: sandboxworker.SecurityControls{
-				NetworkPolicy:       sandboxworker.NetworkPolicyBestEffort,
-				NetworkEnforcement:  sandboxworker.NetworkEnforcementNone,
-				IsolationLevel:      sandboxworker.IsolationLevelVM,
-				CredentialProxyMode: false,
-			},
-			Enforced: sandboxworker.SecurityControls{
-				NetworkPolicy:       sandboxworker.NetworkPolicyBestEffort,
-				NetworkEnforcement:  sandboxworker.NetworkEnforcementNone,
-				IsolationLevel:      sandboxworker.IsolationLevelVM,
-				CredentialProxyMode: false,
-			},
+		ID:                 sandboxruntime.DriverMicroVM,
+		HostKind:           sandboxworker.HostKindLocal,
+		IsolationLevel:     sandboxworker.IsolationLevelVM,
+		Operations:         cloneSandboxdStringSlice(operations),
+		Security:           sandboxdMicroVMRuntimeDriverSecurity(enforcement),
+		NetworkEnforcement: enforcement,
+	}
+}
+
+type sandboxdMicroVMMetadataDriver interface {
+	Metadata() microvm.RuntimeMetadata
+}
+
+func sandboxdMicroVMRuntimeDriverDescriptorFromDriver(config sandboxdMicroVMConfig, driver sandboxruntime.Driver) (sandboxworker.RuntimeDriver, bool) {
+	enforcement := sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(config.NetworkEnforcement)
+	if metadataDriver, ok := driver.(sandboxdMicroVMMetadataDriver); ok {
+		driverMetadata := metadataDriver.Metadata()
+		if driverMetadata.NetworkEnforcement != nil {
+			enforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(driverMetadata.NetworkEnforcement)
+		}
+	}
+	if strings.TrimSpace(config.GuestAgentEndpoint) == "" && enforcement == nil {
+		return sandboxworker.RuntimeDriver{}, false
+	}
+	operations := sandboxdMicroVMOperationsDefault()
+	if strings.TrimSpace(config.GuestAgentEndpoint) != "" {
+		operations = sandboxdMicroVMOperationsWithGuestAgent()
+	}
+	return sandboxdMicroVMRuntimeDriverDescriptor(operations, enforcement), true
+}
+
+func sandboxdMicroVMRuntimeDriverSecurity(enforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata) sandboxworker.SecurityPolicy {
+	policy := sandboxworker.SecurityPolicy{
+		Requested: sandboxworker.SecurityControls{
+			NetworkPolicy:       sandboxworker.NetworkPolicyBestEffort,
+			NetworkEnforcement:  sandboxworker.NetworkEnforcementNone,
+			IsolationLevel:      sandboxworker.IsolationLevelVM,
+			CredentialProxyMode: false,
 		},
+		Enforced: sandboxworker.SecurityControls{
+			NetworkPolicy:       sandboxworker.NetworkPolicyBestEffort,
+			NetworkEnforcement:  sandboxworker.NetworkEnforcementNone,
+			IsolationLevel:      sandboxworker.IsolationLevelVM,
+			CredentialProxyMode: false,
+		},
+	}
+	enforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(enforcement)
+	if enforcement == nil {
+		return policy
+	}
+	if enforcement.Plan != nil && enforcement.Plan.DefaultPosture == sandboxworker.NetworkPolicyDenyByDefault {
+		policy.Requested.NetworkPolicy = sandboxworker.NetworkPolicyDenyByDefault
+		if requestedMode := sandboxdNetworkEnforcementModeFromPlan(enforcement.Plan); requestedMode != "" {
+			policy.Requested.NetworkEnforcement = requestedMode
+		}
+	}
+	if enforcement.Result == nil || enforcement.Result.Outcome != "success" {
+		return policy
+	}
+	capability := sandboxruntime.SanitizeRuntimeNetworkEnforcementCapability(enforcement.Result.Capability)
+	if capability == nil {
+		return policy
+	}
+	policy.Enforced.NetworkEnforcementCapability = capability
+	mode := sandboxdNetworkEnforcementMode(enforcement.Result.EnforcementMode)
+	if mode != "" {
+		policy.Enforced.NetworkEnforcement = mode
+	}
+	if capability.SupportsDefaultDenyPosture && sandboxdNetworkEnforcementModeCanEnforce(mode) {
+		policy.Enforced.NetworkPolicy = sandboxworker.NetworkPolicyDenyByDefault
+	}
+	return policy
+}
+
+func sandboxdNetworkEnforcementModeFromPlan(plan *sandboxruntime.RuntimeNetworkEnforcementPlanMetadata) string {
+	if plan == nil {
+		return ""
+	}
+	hasProxy := false
+	hasFirewall := false
+	hasRuntime := false
+	for _, mechanism := range plan.Mechanisms {
+		switch mechanism {
+		case sandboxworker.NetworkEnforcementProxy:
+			hasProxy = true
+		case sandboxworker.NetworkEnforcementFirewall:
+			hasFirewall = true
+		case sandboxworker.NetworkEnforcementRuntime:
+			hasRuntime = true
+		}
+	}
+	switch {
+	case hasProxy && hasFirewall:
+		return sandboxworker.NetworkEnforcementProxyFirewall
+	case hasFirewall:
+		return sandboxworker.NetworkEnforcementFirewall
+	case hasProxy:
+		return sandboxworker.NetworkEnforcementProxy
+	case hasRuntime:
+		return sandboxworker.NetworkEnforcementRuntime
+	default:
+		return ""
+	}
+}
+
+func sandboxdNetworkEnforcementMode(mode string) string {
+	switch mode {
+	case sandboxworker.NetworkEnforcementBestEffort,
+		sandboxworker.NetworkEnforcementProxy,
+		sandboxworker.NetworkEnforcementFirewall,
+		sandboxworker.NetworkEnforcementRuntime,
+		sandboxworker.NetworkEnforcementProxyFirewall:
+		return mode
+	default:
+		return ""
+	}
+}
+
+func sandboxdNetworkEnforcementModeCanEnforce(mode string) bool {
+	switch mode {
+	case sandboxworker.NetworkEnforcementProxy,
+		sandboxworker.NetworkEnforcementFirewall,
+		sandboxworker.NetworkEnforcementRuntime,
+		sandboxworker.NetworkEnforcementProxyFirewall:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -715,6 +846,16 @@ func sandboxdMicroVMOperationsWithGuestAgent() []string {
 		sandboxworker.OperationExec,
 		sandboxworker.OperationCopyIn,
 		sandboxworker.OperationCopyOut,
+	}
+}
+
+func sandboxdMicroVMOperationsDefault() []string {
+	return []string{
+		sandboxworker.OperationCreate,
+		sandboxworker.OperationStart,
+		sandboxworker.OperationStop,
+		sandboxworker.OperationDelete,
+		sandboxworker.OperationInspect,
 	}
 }
 

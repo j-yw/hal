@@ -736,6 +736,7 @@ func cloneFirecrackerRuntimeMetadata(metadata *sandboxruntime.RuntimeMetadata) *
 	copied.OperationPlan = cloneFirecrackerRuntimeOperationPlan(metadata.OperationPlan)
 	copied.ProcessLaunch = cloneRuntimeProcessLaunchMetadata(metadata.ProcessLaunch)
 	copied.GuestReadiness = sandboxruntime.SanitizeRuntimeGuestReadinessMetadata(metadata.GuestReadiness)
+	copied.NetworkEnforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(metadata.NetworkEnforcement)
 	return &copied
 }
 
