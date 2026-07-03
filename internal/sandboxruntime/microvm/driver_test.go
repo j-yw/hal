@@ -147,6 +147,48 @@ func TestDefaultConstructorsDoNotConfigureOrSelectFirecrackerHost(t *testing.T) 
 	}
 }
 
+func TestPhase37MicroVMNewRemainsInertForFirecrackerGuestReadiness(t *testing.T) {
+	driver := New()
+	if driver == nil {
+		t.Fatal("New() = nil, want default microVM driver")
+	}
+	if driver.backend != nil {
+		t.Fatalf("New() backend = %T, want nil default backend", driver.backend)
+	}
+
+	metadata := driver.Metadata()
+	if metadata.BackendConfigured {
+		t.Fatal("BackendConfigured = true, want false for inert default microVM construction")
+	}
+	if metadata.Availability == CapabilityAvailabilityAvailable {
+		t.Fatalf("Availability = %q, want unavailable without an explicit backend", metadata.Availability)
+	}
+	if metadata.ReasonCode == DriverReasonAvailable {
+		t.Fatalf("ReasonCode = %q, want non-live default construction reason", metadata.ReasonCode)
+	}
+	if metadata.IsolationLevel != sandbox.SandboxIsolationLevelVM {
+		t.Fatalf("IsolationLevel = %q, want driver-level %q metadata", metadata.IsolationLevel, sandbox.SandboxIsolationLevelVM)
+	}
+
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("Marshal(metadata) error = %v", err)
+	}
+	publicText := strings.ToLower(string(encoded))
+	for _, marker := range []string{
+		"guestreadiness",
+		"guest_readiness",
+		"guest readiness",
+		"guestreadinesswaiter",
+		"livestart",
+		"firecrackerhost",
+	} {
+		if strings.Contains(publicText, marker) {
+			t.Fatalf("default microVM metadata configured live guest readiness marker %q in %s", marker, publicText)
+		}
+	}
+}
+
 func TestDefaultProductionDriverDetectsCapabilityAndStartsUnavailable(t *testing.T) {
 	driver := New()
 	metadata := driver.Metadata()
