@@ -89,6 +89,35 @@ func TestPhase34DefaultFirecrackerGuardCoversRequiredSurfaces(t *testing.T) {
 }
 
 func TestPhase34DefaultFirecrackerGuardRejectsLiveBootFixtures(t *testing.T) {
+	importFixtures := []struct {
+		name       string
+		importPath string
+		want       string
+	}{
+		{
+			name:       "internal Firecracker live adapter package",
+			importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker",
+			want:       "Firecracker adapter package",
+		},
+		{
+			name:       "Firecracker SDK package",
+			importPath: "github.com/firecracker-microvm/firecracker-go-sdk",
+			want:       "Firecracker SDK package",
+		},
+	}
+	for _, tt := range importFixtures {
+		t.Run(tt.name, func(t *testing.T) {
+			message := phase33DefaultFirecrackerImportBoundaryMessage("fixture.go", tt.importPath)
+			if !strings.Contains(message, tt.want) || !strings.Contains(message, tt.importPath) {
+				t.Fatalf("boundary message = %q, want %q rejection for %q", message, tt.want, tt.importPath)
+			}
+			phase34Message := phase34DefaultFirecrackerBoundaryMessage("fixture.go", phase34LegacyFirecrackerBoundaryDetail("fixture.go", message))
+			if !strings.Contains(phase34Message, "Phase 34") || !strings.Contains(phase34Message, tt.want) {
+				t.Fatalf("phase 34 boundary message = %q, want Phase 34 rejection for %q", phase34Message, tt.want)
+			}
+		})
+	}
+
 	sourceFixtures := []struct {
 		name   string
 		source string

@@ -29,6 +29,42 @@ func TestPhase34DefaultBackendOptionsKeepLiveBootPlanningOnly(t *testing.T) {
 	}
 }
 
+func TestPhase34BackendOptionsZeroValueKeepsLiveStartDefaultOff(t *testing.T) {
+	var options BackendOptions
+	if options.LiveStart {
+		t.Fatal("zero-value BackendOptions.LiveStart = true, want false")
+	}
+
+	backend := NewBackend(options)
+	if backend.liveStart {
+		t.Fatal("NewBackend(BackendOptions{}) enabled liveStart, want default-off")
+	}
+
+	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+		Operation: microvm.OperationCreate,
+		Config:    validMicroVMConfig(),
+		Name:      "phase34-zero-live-start",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Controller() error = %v, want nil", err)
+	}
+	firecrackerController, ok := controller.(firecrackerController)
+	if !ok {
+		t.Fatalf("Controller() type = %T, want firecrackerController", controller)
+	}
+	if firecrackerController.liveStart {
+		t.Fatal("Controller() inherited liveStart from BackendOptions{} as true, want false")
+	}
+}
+
 func TestPhase34LiveBootRequiresCompleteOptionsBeforeProcessStart(t *testing.T) {
 	deps := &phase34LiveBootDependencyProbe{}
 	backend := NewBackend(BackendOptions{
