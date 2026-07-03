@@ -195,6 +195,39 @@ func unsafeCredentialDeliveryFreeformMetadata(value string) bool {
 	if value != strings.TrimSpace(value) || credentialDeliveryContainsControl(value) || credentialDeliveryAllDigits(value) {
 		return true
 	}
+	if credentialDeliveryContainsUnsafeMetadataMarker(value) {
+		return true
+	}
+	return strings.Contains(value, ".") || strings.ContainsAny(value, "/\\?#\"'`{}[]()<>|;&=$:@")
+}
+
+func unsafeCredentialDeliveryFieldPath(value string) bool {
+	if value == "" {
+		return false
+	}
+	if value != strings.TrimSpace(value) || credentialDeliveryContainsControl(value) || credentialDeliveryAllDigits(value) {
+		return true
+	}
+	if credentialDeliveryContainsUnsafeMetadataMarker(value) {
+		return true
+	}
+	if value[0] == '.' || value[len(value)-1] == '.' || strings.Contains(value, "..") {
+		return true
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.':
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+func credentialDeliveryContainsUnsafeMetadataMarker(value string) bool {
 	lower := strings.ToLower(value)
 	for _, marker := range []string{
 		"://",
@@ -227,7 +260,7 @@ func unsafeCredentialDeliveryFreeformMetadata(value string) bool {
 			return true
 		}
 	}
-	return strings.Contains(value, ".") || strings.ContainsAny(value, "/\\?#\"'`{}[]()<>|;&=$:@")
+	return false
 }
 
 func credentialDeliveryContainsControl(value string) bool {
@@ -292,6 +325,34 @@ func validReasonCode(value ReasonCode) bool {
 		ReasonCompatibilityMode,
 		ReasonDisabled,
 		ReasonUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+func validWarningCode(value WarningCode) bool {
+	switch value {
+	case WarningUnsupportedMode,
+		WarningBindingOmitted,
+		WarningActivationSkipped,
+		WarningAdapterUnavailable,
+		WarningLegacyAuthCompatibility:
+		return true
+	default:
+		return false
+	}
+}
+
+func validErrorCode(value ErrorCode) bool {
+	switch value {
+	case ErrorMissingRequiredField,
+		ErrorUnsupportedMode,
+		ErrorUnsupportedCategory,
+		ErrorUnsafeReference,
+		ErrorUnsafeMetadata,
+		ErrorDuplicateBinding,
+		ErrorActivationFailed:
 		return true
 	default:
 		return false
