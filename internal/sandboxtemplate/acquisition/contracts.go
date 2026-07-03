@@ -37,7 +37,16 @@ type ResolveErrorCode string
 const (
 	ResolveErrorCodeResolverUnavailable ResolveErrorCode = "resolver_unavailable"
 	ResolveErrorCodeUnsupportedSource   ResolveErrorCode = "unsupported_source"
+	ResolveErrorCodeInvalidSource       ResolveErrorCode = "invalid_source"
+	ResolveErrorCodeReadFailed          ResolveErrorCode = "read_failed"
+	ResolveErrorCodeDecodeFailed        ResolveErrorCode = "decode_failed"
+	ResolveErrorCodeValidationFailed    ResolveErrorCode = "validation_failed"
 )
+
+var ErrInvalidSource = errors.New("sandbox template acquisition source is invalid")
+var ErrLocalTemplateReadFailed = errors.New("local template document read failed")
+var ErrTemplateDecodeFailed = errors.New("sandbox template document decode failed")
+var ErrTemplateValidationFailed = errors.New("sandbox template document validation failed")
 
 // ResolveError carries stable, redaction-safe acquisition failure metadata.
 type ResolveError struct {
@@ -84,6 +93,12 @@ type TemplateSource struct {
 type ResolveResult struct {
 	Template sandboxtemplate.Template `json:"template"`
 	Lock     TemplateLock             `json:"lock"`
+}
+
+// Resolver resolves a sandbox template source into normalized template
+// metadata and redaction-safe acquisition lock metadata.
+type Resolver interface {
+	Resolve(context.Context, ResolveRequest) (ResolveResult, error)
 }
 
 // TemplateLock records the immutable identity proven during acquisition.
@@ -152,10 +167,6 @@ type LocalResolver struct{}
 
 func NewLocalResolver() LocalResolver {
 	return LocalResolver{}
-}
-
-func (LocalResolver) Resolve(context.Context, ResolveRequest) (ResolveResult, error) {
-	return ResolveResult{}, ErrResolverUnavailable
 }
 
 // OCIResolver resolves OCI-like template artifacts through an injected
