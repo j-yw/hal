@@ -223,7 +223,8 @@ func sandboxSecurityCapabilityReadinessGateCounts(diagnostics SandboxSecurityCap
 		}
 		if item.WouldBlockStrictGate {
 			counts.StrictBlocking++
-			if candidate, priority := sandboxSecurityCapabilityReadinessGateStrictReason(item, classification); priority > reasonPriority {
+			if candidate, priority := sandboxSecurityCapabilityReadinessGateStrictReason(item, classification); priority > reasonPriority ||
+				(priority == reasonPriority && sandboxSecurityCapabilityReadinessGatePreferReason(candidate, reason)) {
 				reason = candidate
 				reasonPriority = priority
 			}
@@ -285,6 +286,29 @@ func sandboxSecurityCapabilityReadinessGateStrictReason(item SandboxSecurityCapa
 		return SandboxSecurityCapabilityReadinessGateReasonCode(reason), priority
 	}
 	return fallback, priority
+}
+
+func sandboxSecurityCapabilityReadinessGatePreferReason(candidate, current SandboxSecurityCapabilityReadinessGateReasonCode) bool {
+	if !sandboxSecurityCapabilityReadinessGateGenericReason(candidate) &&
+		sandboxSecurityCapabilityReadinessGateGenericReason(current) {
+		return true
+	}
+	return false
+}
+
+func sandboxSecurityCapabilityReadinessGateGenericReason(reason SandboxSecurityCapabilityReadinessGateReasonCode) bool {
+	switch SandboxSecurityCapabilityReasonCode(reason) {
+	case SandboxSecurityCapabilityReasonMetadataOnly,
+		SandboxSecurityCapabilityReasonCapabilityMissing,
+		SandboxSecurityCapabilityReasonModeUnsupported,
+		SandboxSecurityCapabilityReasonCapabilityBlocked,
+		SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+		SandboxSecurityCapabilityReasonMetadataDeliveryUnproven,
+		SandboxSecurityCapabilityReasonReadinessMissing:
+		return true
+	default:
+		return false
+	}
 }
 
 func sandboxSecurityCapabilityReadinessGateItemClassification(item SandboxSecurityCapabilityReadinessDiagnosticItem) SandboxSecurityCapabilityDiagnosticClassification {

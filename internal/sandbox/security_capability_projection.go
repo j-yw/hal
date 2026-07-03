@@ -49,6 +49,8 @@ func ProjectSandboxWorkerRuntimeCapabilityReadinessInput(projection SandboxWorke
 		input.WorkerPostures,
 		sandboxSecurityCapabilityProjectionWorkerRuntimePosture(projection.Host, projection.Runtime, projection.WorkerRouting),
 	)
+	input.Ready = sandboxSecurityCapabilityProjectionAppendWorkspaceProof(input.Ready, projection.Workspace)
+	input.Ready = sandboxSecurityCapabilityProjectionAppendTemplateLockProof(input.Ready, sandboxSecurityCapabilityProjectionTemplateLock(projection.TemplateLock, projection.Runtime))
 	for _, posture := range projection.WorkerPostures {
 		input.WorkerPostures = sandboxSecurityCapabilityProjectionAppendWorkerPosture(input.WorkerPostures, posture)
 	}
@@ -67,6 +69,8 @@ func ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(projection Sand
 	}
 	input.Requested = sandboxSecurityCapabilityProjectionRequestedNetworkPolicyResult(input.Requested, projection.NetworkPolicyResult)
 	input.Ready = sandboxSecurityCapabilityProjectionMetadataOnlyNetworkPolicyResult(input.Ready, projection.NetworkPolicyResult)
+	input.Ready = sandboxSecurityCapabilityProjectionAppendNetworkEnforcementProof(input.Ready, projection.NetworkEnforcementProof)
+	input.Ready = sandboxSecurityCapabilityProjectionAppendCredentialDeliveryProof(input.Ready, projection.CredentialDelivery)
 	for _, ready := range projection.Ready {
 		input.Ready = sandboxSecurityCapabilityProjectionAppendUnique(input.Ready, ready)
 	}
@@ -116,6 +120,7 @@ func MergeSandboxSecurityCapabilityReadinessInputs(inputs ...SandboxSecurityCapa
 // command or factory metadata.
 func EvaluateProjectedSandboxSecurityCapabilityReadiness(inputs ...SandboxSecurityCapabilityReadinessInput) *SandboxSecurityCapabilityReadinessOutput {
 	input := MergeSandboxSecurityCapabilityReadinessInputs(inputs...)
+	input = sandboxSecurityCapabilityProjectionAppendMissingProofs(input)
 	output := EvaluateSandboxSecurityCapabilityReadiness(input)
 	sanitized := SanitizeSandboxSecurityCapabilityReadinessOutput(output)
 	if len(sanitized.Results) == 0 {
@@ -293,6 +298,294 @@ func sandboxSecurityCapabilityProjectionSecretMode(mode string) (SandboxSecurity
 	}
 }
 
+func sandboxSecurityCapabilityProjectionAppendNetworkEnforcementProof(records []SandboxSecurityCapabilityMetadata, proof *SandboxNetworkEnforcementProofMetadata) []SandboxSecurityCapabilityMetadata {
+	if proof == nil {
+		return records
+	}
+	sanitized := SanitizeSandboxNetworkEnforcementProofMetadata(*proof)
+	status, reason := sandboxSecurityCapabilityProjectionNetworkProofReadiness(sanitized)
+	return sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
+		SandboxSecurityCapabilityFamilyNetworkPolicy,
+		SandboxSecurityCapabilityNetworkDenyByDefault,
+		sandboxSecurityCapabilitySafeNetworkMode(SandboxSecurityCapabilityNetworkDenyByDefault, sanitized.ResultEnforcementMode),
+		SandboxSecurityCapabilitySourceRuntime,
+		status,
+		reason,
+	)
+}
+
+func sandboxSecurityCapabilityProjectionNetworkProofReadiness(proof SandboxNetworkEnforcementProofMetadata) (SandboxSecurityCapabilityReadinessState, SandboxSecurityCapabilityReasonCode) {
+	if proof.NetworkProxySessionID == "" || proof.PolicySnapshotID == "" || proof.NetworkEnforcementPlanID == "" {
+		return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonNetworkEnforcementMissing
+	}
+	if proof.ProxyLifecycleStatus == "failed" || proof.ResultOutcome == "failure" {
+		return SandboxSecurityCapabilityReadinessBlocked, SandboxSecurityCapabilityReasonNetworkEnforcementFailed
+	}
+	if proof.ResultOutcome == "best_effort" || proof.ResultEnforcementMode == SandboxNetworkEnforcementModeBestEffort {
+		return SandboxSecurityCapabilityReadinessMetadataOnly, SandboxSecurityCapabilityReasonNetworkEnforcementBestEffort
+	}
+	if proof.ResultOutcome == "unsupported" || !proof.ResultSupported {
+		return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonNetworkEnforcementUnsupported
+	}
+	if proof.ProxyLifecycleStatus != "active" || proof.ProxyLifecycleReasonCode != "active" {
+		return SandboxSecurityCapabilityReadinessMetadataOnly, SandboxSecurityCapabilityReasonNetworkEnforcementPartial
+	}
+	if proof.ResultOutcome == "success" && proof.ResultEnforcementMode == SandboxNetworkEnforcementModeProxyFirewall {
+		return SandboxSecurityCapabilityReadinessReady, SandboxSecurityCapabilityReasonNetworkEnforcementConfirmed
+	}
+	return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonNetworkEnforcementUnsupported
+}
+
+func sandboxSecurityCapabilityProjectionAppendCredentialDeliveryProof(records []SandboxSecurityCapabilityMetadata, status *SandboxCredentialDeliveryStatusMetadata) []SandboxSecurityCapabilityMetadata {
+	if status == nil {
+		return records
+	}
+	sanitized := SanitizeSandboxCredentialDeliveryStatusMetadata(*status)
+	if sanitized.ID == "" {
+		return records
+	}
+	if sanitized.Status == "active" && sanitized.ActivationID != "" && len(sanitized.ActiveModes) > 0 {
+		for _, mode := range sanitized.ActiveModes {
+			family, capability, sanitizedMode, ok := sandboxSecurityCapabilityProjectionSecretMode(mode)
+			if !ok {
+				continue
+			}
+			records = sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
+				family,
+				capability,
+				sanitizedMode,
+				SandboxSecurityCapabilitySourceWorker,
+				SandboxSecurityCapabilityReadinessReady,
+				SandboxSecurityCapabilityReasonCredentialActivationConfirmed,
+			)
+		}
+		return records
+	}
+	for _, mode := range sanitized.RequestedModes {
+		family, capability, sanitizedMode, ok := sandboxSecurityCapabilityProjectionSecretMode(mode)
+		if !ok {
+			continue
+		}
+		records = sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
+			family,
+			capability,
+			sanitizedMode,
+			SandboxSecurityCapabilitySourceMetadata,
+			SandboxSecurityCapabilityReadinessMetadataOnly,
+			SandboxSecurityCapabilityReasonCredentialActivationMissing,
+		)
+	}
+	return records
+}
+
+func sandboxSecurityCapabilityProjectionAppendWorkspaceProof(records []SandboxSecurityCapabilityMetadata, workspace *SandboxWorkspace) []SandboxSecurityCapabilityMetadata {
+	if workspace == nil {
+		return records
+	}
+	switch workspace.Mode {
+	case SandboxWorkspaceModeClone:
+		switch workspace.InputSource {
+		case SandboxWorkspaceInputSourceRemoteRef, SandboxWorkspaceInputSourceGitBundle:
+			return sandboxSecurityCapabilityProjectionAppendWorkspaceEvidence(records, SandboxSecurityCapabilityReadinessReady, SandboxSecurityCapabilityReasonWorkspaceIsolationConfirmed)
+		default:
+			return records
+		}
+	case SandboxWorkspaceModeCopy:
+		return sandboxSecurityCapabilityProjectionAppendWorkspaceEvidence(records, SandboxSecurityCapabilityReadinessReady, SandboxSecurityCapabilityReasonWorkspaceIsolationConfirmed)
+	case SandboxWorkspaceModeDirect:
+		return sandboxSecurityCapabilityProjectionAppendWorkspaceEvidence(records, SandboxSecurityCapabilityReadinessBlocked, SandboxSecurityCapabilityReasonWorkspaceDirectHostWorktree)
+	default:
+		return records
+	}
+}
+
+func sandboxSecurityCapabilityProjectionAppendWorkspaceEvidence(records []SandboxSecurityCapabilityMetadata, status SandboxSecurityCapabilityReadinessState, reason SandboxSecurityCapabilityReasonCode) []SandboxSecurityCapabilityMetadata {
+	return sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
+		SandboxSecurityCapabilityFamilyWorkspace,
+		SandboxSecurityCapabilityIsolatedWorkspace,
+		"",
+		SandboxSecurityCapabilitySourceWorker,
+		status,
+		reason,
+	)
+}
+
+func sandboxSecurityCapabilityProjectionTemplateLock(explicit *SandboxTemplateLockMetadata, runtime *SandboxRuntimeState) *SandboxTemplateLockMetadata {
+	if explicit != nil {
+		return SanitizeSandboxTemplateLockMetadata(explicit)
+	}
+	if runtime != nil {
+		return SanitizeSandboxTemplateLockMetadata(runtime.TemplateLock)
+	}
+	return nil
+}
+
+func sandboxSecurityCapabilityProjectionAppendTemplateLockProof(records []SandboxSecurityCapabilityMetadata, lock *SandboxTemplateLockMetadata) []SandboxSecurityCapabilityMetadata {
+	if lock == nil {
+		return records
+	}
+	status := SandboxSecurityCapabilityReadinessMetadataOnly
+	reason := SandboxSecurityCapabilityReasonTemplateLockDigestMissing
+	if sandboxSecurityCapabilityProjectionTemplateLockComplete(lock) {
+		status = SandboxSecurityCapabilityReadinessReady
+		reason = SandboxSecurityCapabilityReasonTemplateLockDigestConfirmed
+	}
+	return sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
+		SandboxSecurityCapabilityFamilyTemplate,
+		SandboxSecurityCapabilityTemplateLockDigest,
+		"",
+		SandboxSecurityCapabilitySourceRuntime,
+		status,
+		reason,
+	)
+}
+
+func sandboxSecurityCapabilityProjectionTemplateLockComplete(lock *SandboxTemplateLockMetadata) bool {
+	lock = SanitizeSandboxTemplateLockMetadata(lock)
+	if lock == nil {
+		return false
+	}
+	for _, entry := range []*SandboxTemplateLockEntryMetadata{
+		lock.Document,
+		lock.TemplateReference,
+		lock.RuntimeImage,
+		lock.SourceArtifact,
+	} {
+		if !sandboxSecurityCapabilityProjectionTemplateLockEntryComplete(entry) {
+			return false
+		}
+	}
+	return true
+}
+
+func sandboxSecurityCapabilityProjectionTemplateLockEntryComplete(entry *SandboxTemplateLockEntryMetadata) bool {
+	return entry != nil &&
+		entry.Status == SandboxTemplateLockStatusLocked &&
+		entry.DigestAlgorithm != "" &&
+		entry.DigestValue != ""
+}
+
+func sandboxSecurityCapabilityProjectionAppendMissingProofs(input SandboxSecurityCapabilityReadinessInput) SandboxSecurityCapabilityReadinessInput {
+	input = SanitizeSandboxSecurityCapabilityReadinessInput(input)
+	for _, requested := range input.Requested {
+		if sandboxSecurityCapabilityProjectionHasEvidence(requested, input.Ready) {
+			continue
+		}
+		input.Ready = sandboxSecurityCapabilityProjectionAppendRequestedMetadataProof(input.Ready, input, requested)
+		if sandboxSecurityCapabilityProjectionHasEvidence(requested, input.Ready) {
+			continue
+		}
+		input.Ready = sandboxSecurityCapabilityProjectionAppendMissingProof(input.Ready, requested)
+	}
+	return SanitizeSandboxSecurityCapabilityReadinessInput(input)
+}
+
+func sandboxSecurityCapabilityProjectionHasEvidence(requested SandboxSecurityCapabilityMetadata, records []SandboxSecurityCapabilityMetadata) bool {
+	for _, record := range records {
+		if !sandboxSecurityCapabilitySameRequest(requested, record) &&
+			!sandboxSecurityCapabilitySameProjectedEvidenceTarget(requested, record) {
+			continue
+		}
+		if sandboxSecurityCapabilityExplicitReadyMetadata(record) ||
+			sandboxSecurityCapabilityExplicitBlockerMetadata(record) ||
+			sandboxSecurityCapabilityExplicitMetadataOnlyMetadata(record) ||
+			sandboxSecurityCapabilityExplicitUnsupportedMetadata(record) {
+			return true
+		}
+	}
+	return false
+}
+
+func sandboxSecurityCapabilityProjectionAppendRequestedMetadataProof(records []SandboxSecurityCapabilityMetadata, input SandboxSecurityCapabilityReadinessInput, requested SandboxSecurityCapabilityMetadata) []SandboxSecurityCapabilityMetadata {
+	switch requested.Family {
+	case SandboxSecurityCapabilityFamilyNetworkPolicy:
+		if requested.Capability == SandboxSecurityCapabilityNetworkDenyByDefault &&
+			requested.Mode != "" &&
+			sandboxSecurityCapabilityProjectionHasPlannedNetworkMetadata(input, requested) {
+			return sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
+				requested.Family,
+				requested.Capability,
+				requested.Mode,
+				SandboxSecurityCapabilitySourceMetadata,
+				SandboxSecurityCapabilityReadinessMetadataOnly,
+				SandboxSecurityCapabilityReasonNetworkEnforcementPlannedOnly,
+			)
+		}
+	case SandboxSecurityCapabilityFamilySecretDelivery:
+		if sandboxSecurityCapabilityProjectionHasCredentialMetadata(input) {
+			return sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
+				requested.Family,
+				requested.Capability,
+				requested.Mode,
+				SandboxSecurityCapabilitySourceMetadata,
+				SandboxSecurityCapabilityReadinessMetadataOnly,
+				SandboxSecurityCapabilityReasonCredentialActivationMissing,
+			)
+		}
+	}
+	return records
+}
+
+func sandboxSecurityCapabilityProjectionHasPlannedNetworkMetadata(input SandboxSecurityCapabilityReadinessInput, requested SandboxSecurityCapabilityMetadata) bool {
+	for _, record := range input.Ready {
+		if !sandboxSecurityCapabilitySameRequest(requested, record) {
+			continue
+		}
+		if record.Status == SandboxSecurityCapabilityReadinessMetadataOnly &&
+			record.ReasonCode == SandboxSecurityCapabilityReasonMetadataEnforcementUnproven {
+			return true
+		}
+	}
+	return input.NetworkProxySession != nil || len(input.NetworkPolicyDecisionLogs) > 0
+}
+
+func sandboxSecurityCapabilityProjectionHasCredentialMetadata(input SandboxSecurityCapabilityReadinessInput) bool {
+	return input.CredentialProxyPlan != nil ||
+		input.CredentialProxySession != nil ||
+		len(input.CredentialProxyBindings) > 0
+}
+
+func sandboxSecurityCapabilityProjectionAppendMissingProof(records []SandboxSecurityCapabilityMetadata, requested SandboxSecurityCapabilityMetadata) []SandboxSecurityCapabilityMetadata {
+	switch requested.Family {
+	case SandboxSecurityCapabilityFamilyNetworkPolicy:
+		if requested.Capability == SandboxSecurityCapabilityNetworkDenyByDefault && requested.Mode != "" {
+			return sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
+				requested.Family,
+				requested.Capability,
+				requested.Mode,
+				SandboxSecurityCapabilitySourceMetadata,
+				SandboxSecurityCapabilityReadinessUnsupported,
+				SandboxSecurityCapabilityReasonNetworkEnforcementMissing,
+			)
+		}
+	case SandboxSecurityCapabilityFamilySecretDelivery:
+		return records
+	case SandboxSecurityCapabilityFamilyTemplate:
+		if requested.Capability == SandboxSecurityCapabilityTemplateLockDigest {
+			return sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
+				requested.Family,
+				requested.Capability,
+				requested.Mode,
+				SandboxSecurityCapabilitySourceMetadata,
+				SandboxSecurityCapabilityReadinessMetadataOnly,
+				SandboxSecurityCapabilityReasonTemplateLockDigestMissing,
+			)
+		}
+	case SandboxSecurityCapabilityFamilyWorkspace:
+		if requested.Capability == SandboxSecurityCapabilityIsolatedWorkspace {
+			return sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
+				requested.Family,
+				requested.Capability,
+				requested.Mode,
+				SandboxSecurityCapabilitySourceMetadata,
+				SandboxSecurityCapabilityReadinessUnsupported,
+				SandboxSecurityCapabilityReasonWorkspaceIsolationMissing,
+			)
+		}
+	}
+	return records
+}
+
 func sandboxSecurityCapabilityProjectionWorkerRuntimePosture(host *SandboxHost, runtime *SandboxRuntimeState, routing *WorkerRoutingMetadata) SandboxSecurityCapabilityWorkerPostureMetadata {
 	posture := SandboxSecurityCapabilityWorkerPostureMetadata{}
 	if host != nil {
@@ -402,6 +695,21 @@ func sandboxSecurityCapabilityProjectionAppendMetadataOnly(records []SandboxSecu
 		ReasonCode:   reason,
 		WarningCodes: []SandboxSecurityCapabilityWarningCode{SandboxSecurityCapabilityWarningMetadataNotCapability},
 	})
+}
+
+func sandboxSecurityCapabilityProjectionAppendSafeEvidence(records []SandboxSecurityCapabilityMetadata, family SandboxSecurityCapabilityFamily, capability SandboxSecurityCapabilityName, mode string, source SandboxSecurityCapabilitySource, status SandboxSecurityCapabilityReadinessState, reason SandboxSecurityCapabilityReasonCode) []SandboxSecurityCapabilityMetadata {
+	record, ok := sanitizeSandboxSecurityCapabilityInputMetadata(SandboxSecurityCapabilityMetadata{
+		Family:     family,
+		Capability: capability,
+		Mode:       mode,
+		Source:     source,
+		Status:     status,
+		ReasonCode: reason,
+	}, false)
+	if !ok {
+		return records
+	}
+	return sandboxSecurityCapabilityProjectionAppendUnique(records, record)
 }
 
 func sandboxSecurityCapabilityProjectionAppendUnique(records []SandboxSecurityCapabilityMetadata, record SandboxSecurityCapabilityMetadata) []SandboxSecurityCapabilityMetadata {

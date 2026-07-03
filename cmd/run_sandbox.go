@@ -1317,7 +1317,9 @@ func runSandboxManifestCapabilityReadiness(security *sandbox.SandboxSecurity, ma
 		inputs = append(inputs, sandbox.ProjectSandboxWorkerRuntimeCapabilityReadinessInput(sandbox.SandboxWorkerRuntimeCapabilityReadinessProjection{
 			Host:          runSandboxManifestReadinessHost(manifest, target),
 			Runtime:       runSandboxManifestReadinessRuntime(manifest, target),
+			Workspace:     runSandboxManifestReadinessWorkspace(manifest, target),
 			WorkerRouting: runSandboxManifestReadinessWorkerRouting(manifest),
+			TemplateLock:  runSandboxManifestReadinessTemplateLock(manifest, target),
 		}))
 	}
 	if target != nil && runSandboxManifestHasPolicyProxyCredentialReadinessInputs(manifest) {
@@ -1328,6 +1330,7 @@ func runSandboxManifestCapabilityReadiness(security *sandbox.SandboxSecurity, ma
 			CredentialProxyPlan:       manifest.CredentialProxyPlan,
 			CredentialProxySession:    manifest.CredentialProxySession,
 			CredentialProxyBindings:   manifest.CredentialProxyBindings,
+			CredentialDelivery:        manifest.CredentialDelivery,
 		}))
 	}
 	if len(inputs) == 0 {
@@ -1356,11 +1359,34 @@ func runSandboxManifestReadinessRuntime(manifest *sandboxexecution.Manifest, tar
 	return nil
 }
 
+func runSandboxManifestReadinessWorkspace(manifest *sandboxexecution.Manifest, target *sandbox.SandboxState) *sandbox.SandboxWorkspace {
+	if manifest != nil && manifest.Workspace != nil {
+		return manifest.Workspace
+	}
+	if target != nil {
+		return target.Workspace
+	}
+	return nil
+}
+
 func runSandboxManifestReadinessWorkerRouting(manifest *sandboxexecution.Manifest) *sandbox.WorkerRoutingMetadata {
 	if manifest == nil {
 		return nil
 	}
 	return manifest.WorkerRouting
+}
+
+func runSandboxManifestReadinessTemplateLock(manifest *sandboxexecution.Manifest, target *sandbox.SandboxState) *sandbox.SandboxTemplateLockMetadata {
+	if manifest != nil && manifest.TemplateLock != nil {
+		return manifest.TemplateLock
+	}
+	if manifest != nil && manifest.Runtime != nil && manifest.Runtime.TemplateLock != nil {
+		return manifest.Runtime.TemplateLock
+	}
+	if target != nil && target.Runtime != nil {
+		return target.Runtime.TemplateLock
+	}
+	return nil
 }
 
 func runSandboxManifestReadinessPolicyResult(security *sandbox.SandboxSecurity) *sandbox.SandboxNetworkPolicyResult {
@@ -1376,7 +1402,8 @@ func runSandboxManifestHasPolicyProxyCredentialReadinessInputs(manifest *sandbox
 			len(manifest.NetworkPolicyDecisionLogs) > 0 ||
 			manifest.CredentialProxyPlan != nil ||
 			manifest.CredentialProxySession != nil ||
-			len(manifest.CredentialProxyBindings) > 0)
+			len(manifest.CredentialProxyBindings) > 0 ||
+			manifest.CredentialDelivery != nil)
 }
 
 func mergeSandboxManifestTargetSecretModes(security *sandbox.SandboxSecurity, req sandbox.SecurityEvaluationRequest, target *sandbox.SandboxState) {
