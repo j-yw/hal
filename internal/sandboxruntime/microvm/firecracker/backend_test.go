@@ -109,8 +109,8 @@ func TestBackendCreateMetadataDoesNotClaimUnsupportedFirecrackerCapabilities(t *
 		t.Fatalf("Create() error = %v, want nil", err)
 	}
 
-	if target.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelVM {
-		t.Fatalf("backend target isolationLevel = %q, want %q", target.Runtime.IsolationLevel, sandbox.SandboxIsolationLevelVM)
+	if target.Runtime.IsolationLevel != "" {
+		t.Fatalf("backend target isolationLevel = %q, want empty direct backend metadata; microVM driver applies %q", target.Runtime.IsolationLevel, sandbox.SandboxIsolationLevelVM)
 	}
 	if target.Runtime.Metadata == nil {
 		t.Fatal("runtime metadata = nil, want Firecracker capability metadata")
@@ -1044,9 +1044,6 @@ func assertFirecrackerOwnedRuntimeMetadata(t *testing.T, target *sandboxruntime.
 	}
 	if target.Runtime.Driver != sandboxruntime.DriverMicroVM {
 		t.Fatalf("runtime Driver = %q, want %q", target.Runtime.Driver, sandboxruntime.DriverMicroVM)
-	}
-	if target.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelVM {
-		t.Fatalf("runtime IsolationLevel = %q, want %q", target.Runtime.IsolationLevel, sandbox.SandboxIsolationLevelVM)
 	}
 	if target.Runtime.Metadata.Backend != BackendID {
 		t.Fatalf("runtime metadata Backend = %q, want %q", target.Runtime.Metadata.Backend, BackendID)
