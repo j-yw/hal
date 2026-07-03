@@ -3,7 +3,6 @@ package cmd
 import (
 	"strings"
 
-	"github.com/jywlabs/hal/internal/credentialdelivery"
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
@@ -164,132 +163,12 @@ func sandboxManifestCredentialDeliveryStatus(projection sandbox.SandboxCredentia
 	if projection.Plan == nil {
 		return nil
 	}
-	plan := credentialdelivery.Plan{
-		ID:                    projection.Plan.ID,
-		NetworkProxySessionID: projection.Plan.NetworkProxySessionID,
-		RequestedModes:        sandboxCredentialDeliveryModes(req.RequestedSecretModes),
-		Status:                credentialDeliveryStatusFromCredentialProxyStatus(projection.Plan.Status),
-		BindingCount:          projection.Plan.BindingCount,
-	}
-	if plan.Status == "" {
-		plan.Status = credentialdelivery.StatusPlanned
-	}
-	if req.CompatibilityAuthSync {
-		plan.RequestedModes = append(plan.RequestedModes, credentialdelivery.ModeLegacyAuthSync)
-	}
-	if len(plan.RequestedModes) == 0 && len(projection.Bindings) > 0 {
-		plan.RequestedModes = credentialDeliveryModesFromCredentialProxyBindings(projection.Bindings)
-	}
-	status := credentialdelivery.StatusMetadataFromPlan(plan)
-	if status.ID == "" {
-		return nil
-	}
-	return sandboxCredentialDeliveryStatusMetadata(status)
-}
-
-func sandboxCredentialDeliveryStatusMetadata(status credentialdelivery.StatusMetadata) *sandbox.SandboxCredentialDeliveryStatusMetadata {
-	sanitized := sandbox.SanitizeSandboxCredentialDeliveryStatusMetadata(sandbox.SandboxCredentialDeliveryStatusMetadata{
-		ID:             status.ID,
-		RequestID:      status.RequestID,
-		PlanID:         status.PlanID,
-		ActivationID:   status.ActivationID,
-		RequestedModes: credentialDeliveryModeStrings(status.RequestedModes),
-		ActiveModes:    credentialDeliveryModeStrings(status.ActiveModes),
-		Status:         string(status.Status),
-		ReasonCode:     string(status.ReasonCode),
-		WarningCount:   status.WarningCount,
-		ErrorCount:     status.ErrorCount,
+	return sandbox.ProjectSandboxCredentialDeliveryStatusMetadata(sandbox.SandboxCredentialDeliveryStatusProjectionRequest{
+		Plan:                  projection.Plan,
+		Bindings:              projection.Bindings,
+		RequestedModes:        req.RequestedSecretModes,
+		CompatibilityAuthSync: req.CompatibilityAuthSync,
 	})
-	if sanitized.ID == "" {
-		return nil
-	}
-	return &sanitized
-}
-
-func credentialDeliveryModeStrings(modes []credentialdelivery.Mode) []string {
-	if len(modes) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(modes))
-	for _, mode := range modes {
-		if mode != "" {
-			out = append(out, string(mode))
-		}
-	}
-	return out
-}
-
-func sandboxCredentialDeliveryModes(modes []string) []credentialdelivery.Mode {
-	if len(modes) == 0 {
-		return nil
-	}
-	out := make([]credentialdelivery.Mode, 0, len(modes))
-	for _, mode := range modes {
-		if deliveryMode := sandboxCredentialDeliveryMode(mode); deliveryMode != "" && !credentialDeliveryModeContains(out, deliveryMode) {
-			out = append(out, deliveryMode)
-		}
-	}
-	return out
-}
-
-func credentialDeliveryModesFromCredentialProxyBindings(bindings []sandbox.SandboxCredentialProxyBindingMetadata) []credentialdelivery.Mode {
-	if len(bindings) == 0 {
-		return nil
-	}
-	out := make([]credentialdelivery.Mode, 0, len(bindings))
-	for _, binding := range sandbox.SanitizeSandboxCredentialProxyBindingMetadataRecords(bindings) {
-		if deliveryMode := sandboxCredentialDeliveryMode(string(binding.DeliveryMode)); deliveryMode != "" && !credentialDeliveryModeContains(out, deliveryMode) {
-			out = append(out, deliveryMode)
-		}
-	}
-	return out
-}
-
-func sandboxCredentialDeliveryMode(mode string) credentialdelivery.Mode {
-	switch strings.TrimSpace(mode) {
-	case sandbox.SandboxSecretModeHTTPProxy:
-		return credentialdelivery.ModeHTTPProxy
-	case sandbox.SandboxSecretModeSSHAgent:
-		return credentialdelivery.ModeSSHAgent
-	case sandbox.SandboxSecretModeFileTmpfs:
-		return credentialdelivery.ModeFileTmpfs
-	case sandbox.SandboxSecretModeEnv:
-		return credentialdelivery.ModeEnv
-	case sandbox.SandboxSecretModeLegacyAuthSync:
-		return credentialdelivery.ModeLegacyAuthSync
-	default:
-		return ""
-	}
-}
-
-func credentialDeliveryModeContains(modes []credentialdelivery.Mode, mode credentialdelivery.Mode) bool {
-	for _, existing := range modes {
-		if existing == mode {
-			return true
-		}
-	}
-	return false
-}
-
-func credentialDeliveryStatusFromCredentialProxyStatus(status sandbox.SandboxCredentialProxyStatus) credentialdelivery.Status {
-	switch status {
-	case sandbox.SandboxCredentialProxyStatusPlanned:
-		return credentialdelivery.StatusPlanned
-	case sandbox.SandboxCredentialProxyStatusReady:
-		return credentialdelivery.StatusReady
-	case sandbox.SandboxCredentialProxyStatusActive:
-		return credentialdelivery.StatusReady
-	case sandbox.SandboxCredentialProxyStatusCompleted:
-		return credentialdelivery.StatusCompleted
-	case sandbox.SandboxCredentialProxyStatusSkipped:
-		return credentialdelivery.StatusSkipped
-	case sandbox.SandboxCredentialProxyStatusFailed:
-		return credentialdelivery.StatusFailed
-	case sandbox.SandboxCredentialProxyStatusDisabled:
-		return credentialdelivery.StatusDisabled
-	default:
-		return ""
-	}
 }
 
 func sandboxManifestSanitizedCredentialProxyProjection(projection sandbox.SandboxCredentialProxyProjection) sandbox.SandboxCredentialProxyProjection {

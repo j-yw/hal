@@ -18,6 +18,48 @@ type SandboxCredentialDeliveryStatusMetadata struct {
 	ErrorCount     int      `json:"errorCount,omitempty"`
 }
 
+// SandboxCredentialDeliveryStatusProjectionRequest describes safe command or
+// factory inputs for projecting plan-only credential delivery status metadata.
+type SandboxCredentialDeliveryStatusProjectionRequest struct {
+	Plan                  *SandboxCredentialProxyPlanMetadata
+	Bindings              []SandboxCredentialProxyBindingMetadata
+	RequestedModes        []string
+	CompatibilityAuthSync bool
+}
+
+// ProjectSandboxCredentialDeliveryStatusMetadata derives a durable-safe,
+// plan-only credential delivery summary from credential proxy metadata.
+func ProjectSandboxCredentialDeliveryStatusMetadata(req SandboxCredentialDeliveryStatusProjectionRequest) *SandboxCredentialDeliveryStatusMetadata {
+	if req.Plan == nil {
+		return nil
+	}
+	plan := SanitizeSandboxCredentialProxyPlanMetadata(*req.Plan)
+	if plan.ID == "" {
+		return nil
+	}
+	requestedModes := normalizeSandboxSecretModes(req.RequestedModes)
+	if req.CompatibilityAuthSync {
+		requestedModes = appendSandboxSecretMode(requestedModes, SandboxSecretModeLegacyAuthSync)
+	}
+	if len(requestedModes) == 0 && len(req.Bindings) > 0 {
+		requestedModes = sandboxCredentialDeliveryModesFromCredentialProxyBindings(req.Bindings)
+	}
+	status := sandboxCredentialDeliveryStatusFromCredentialProxyStatus(plan.Status)
+	if status == "" {
+		status = "planned"
+	}
+	sanitized := SanitizeSandboxCredentialDeliveryStatusMetadata(SandboxCredentialDeliveryStatusMetadata{
+		ID:             plan.ID,
+		PlanID:         plan.ID,
+		RequestedModes: requestedModes,
+		Status:         status,
+	})
+	if sanitized.ID == "" {
+		return nil
+	}
+	return &sanitized
+}
+
 // SanitizeSandboxCredentialDeliveryStatusMetadata returns a durable-safe copy
 // of compact credential delivery metadata.
 func SanitizeSandboxCredentialDeliveryStatusMetadata(status SandboxCredentialDeliveryStatusMetadata) SandboxCredentialDeliveryStatusMetadata {
@@ -99,4 +141,36 @@ func nonNegativeCredentialDeliveryCount(value int) int {
 		return 0
 	}
 	return value
+}
+
+func sandboxCredentialDeliveryModesFromCredentialProxyBindings(bindings []SandboxCredentialProxyBindingMetadata) []string {
+	if len(bindings) == 0 {
+		return nil
+	}
+	var out []string
+	for _, binding := range SanitizeSandboxCredentialProxyBindingMetadataRecords(bindings) {
+		out = appendSandboxSecretMode(out, string(binding.DeliveryMode))
+	}
+	return out
+}
+
+func sandboxCredentialDeliveryStatusFromCredentialProxyStatus(status SandboxCredentialProxyStatus) string {
+	switch SandboxCredentialProxyStatus(strings.TrimSpace(strings.ToLower(string(status)))) {
+	case SandboxCredentialProxyStatusPlanned:
+		return "planned"
+	case SandboxCredentialProxyStatusReady:
+		return "ready"
+	case SandboxCredentialProxyStatusActive:
+		return "ready"
+	case SandboxCredentialProxyStatusCompleted:
+		return "completed"
+	case SandboxCredentialProxyStatusSkipped:
+		return "skipped"
+	case SandboxCredentialProxyStatusFailed:
+		return "failed"
+	case SandboxCredentialProxyStatusDisabled:
+		return "disabled"
+	default:
+		return ""
+	}
 }
