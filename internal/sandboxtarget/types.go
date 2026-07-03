@@ -20,13 +20,14 @@ const (
 // data-only so command packages can construct it without coupling selection to
 // Cobra, worker clients, runtime drivers, or live provider calls.
 type Request struct {
-	Purpose        Purpose
-	SandboxName    string
-	HostID         string
-	RuntimeDriver  string
-	IsolationLevel string
-	Project        ProjectContext
-	Fallback       FallbackPolicy
+	Purpose                   Purpose
+	SandboxName               string
+	HostID                    string
+	RuntimeDriver             string
+	IsolationLevel            string
+	SecurityReadinessGateMode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode
+	Project                   ProjectContext
+	Fallback                  FallbackPolicy
 }
 
 // ProjectContext carries repository context that can influence deterministic
@@ -96,13 +97,14 @@ func (r Request) HasIsolationConstraint() bool {
 // metadata only. Selector implementations can fill whichever selected metadata
 // is known without constructing live clients or runtime drivers.
 type Result struct {
-	Sandbox      *sandbox.SandboxState
-	Host         *sandbox.SandboxHost
-	Runtime      *sandboxruntime.RuntimeState
-	Provisioning *ProvisioningPlan
-	Source       SourceMetadata
-	Fallback     FallbackMetadata
-	Failure      *Failure
+	Sandbox               *sandbox.SandboxState
+	Host                  *sandbox.SandboxHost
+	Runtime               *sandboxruntime.RuntimeState
+	Provisioning          *ProvisioningPlan
+	SecurityReadinessGate *sandbox.SandboxSecurityCapabilityReadinessGateDecision
+	Source                SourceMetadata
+	Fallback              FallbackMetadata
+	Failure               *Failure
 }
 
 // Selected reports whether the result carries any selected target metadata.
