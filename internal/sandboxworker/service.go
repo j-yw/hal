@@ -222,8 +222,8 @@ func runtimeDriverCapabilityFromDescriptors(driverID string, descriptors map[str
 	if descriptor, ok := descriptors[driverID]; ok {
 		descriptor.ID = strings.TrimSpace(defaultString(descriptor.ID, driverID))
 		descriptor.Operations = cloneStringSlice(descriptor.Operations)
-		descriptor.Security = cloneSecurityPolicy(descriptor.Security)
 		descriptor.NetworkEnforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(descriptor.NetworkEnforcement)
+		descriptor.Security = projectRuntimeDriverSecurityPolicy(descriptor.Security, descriptor.NetworkEnforcement)
 		return descriptor
 	}
 
@@ -406,6 +406,153 @@ func cloneSecurityControls(controls SecurityControls) SecurityControls {
 	controls.CredentialModes = cloneStringSlice(controls.CredentialModes)
 	controls.NetworkEnforcementCapability = sandboxruntime.SanitizeRuntimeNetworkEnforcementCapability(controls.NetworkEnforcementCapability)
 	return controls
+}
+
+func projectRuntimeDriverSecurityPolicy(policy SecurityPolicy, enforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata) SecurityPolicy {
+	projected := cloneSecurityPolicy(policy)
+	enforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(enforcement)
+	if enforcement != nil && enforcement.Plan != nil && enforcement.Plan.DefaultPosture == NetworkPolicyDenyByDefault {
+		projected.Requested.NetworkPolicy = NetworkPolicyDenyByDefault
+	}
+	if enforcement != nil && enforcement.Plan != nil &&
+		projected.Requested.NetworkPolicy == "" &&
+		enforcement.Plan.PolicyPreset == NetworkPolicyDenyByDefault {
+		projected.Requested.NetworkPolicy = NetworkPolicyDenyByDefault
+	}
+
+	if enforcement != nil || runtimeDriverSecurityHasNetworkEnforcementClaim(projected.Enforced) {
+		clearRuntimeDriverEnforcedNetworkControls(&projected.Enforced)
+	}
+	if !runtimeDriverNetworkEnforcementActiveSuccess(enforcement) {
+		return projected
+	}
+
+	capability := sandboxruntime.SanitizeRuntimeNetworkEnforcementCapability(enforcement.Result.Capability)
+	mode := runtimeDriverNetworkEnforcementMode(enforcement.Result.EnforcementMode)
+	if capability == nil || !runtimeDriverNetworkEnforcementModeCanEnforce(mode) {
+		return projected
+	}
+	projected.Enforced.NetworkEnforcementCapability = capability
+	projected.Enforced.NetworkEnforcement = mode
+	if capability.SupportsDefaultDenyPosture {
+		projected.Enforced.NetworkPolicy = NetworkPolicyDenyByDefault
+	}
+	return projected
+}
+
+func runtimeDriverSecurityHasNetworkEnforcementClaim(controls SecurityControls) bool {
+	if controls.NetworkPolicy == NetworkPolicyDenyByDefault || controls.NetworkEnforcementCapability != nil {
+		return true
+	}
+	switch controls.NetworkEnforcement {
+	case NetworkEnforcementBestEffort,
+		NetworkEnforcementRuntime,
+		NetworkEnforcementProxy,
+		NetworkEnforcementFirewall,
+		NetworkEnforcementProxyFirewall:
+		return true
+	default:
+		return false
+	}
+}
+
+func clearRuntimeDriverEnforcedNetworkControls(controls *SecurityControls) {
+	if controls == nil {
+		return
+	}
+	controls.NetworkPolicy = NetworkPolicyBestEffort
+	controls.NetworkEnforcement = NetworkEnforcementNone
+	controls.NetworkEnforcementCapability = nil
+}
+
+func runtimeDriverNetworkEnforcementActiveSuccess(enforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata) bool {
+	enforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(enforcement)
+	if enforcement == nil || enforcement.Result == nil || enforcement.Result.Outcome != "success" {
+		return false
+	}
+	mode := runtimeDriverNetworkEnforcementMode(enforcement.Result.EnforcementMode)
+	if !runtimeDriverNetworkEnforcementModeCanEnforce(mode) {
+		return false
+	}
+	if sandboxruntime.SanitizeRuntimeNetworkEnforcementCapability(enforcement.Result.Capability) == nil {
+		return false
+	}
+	return runtimeDriverNetworkEnforcementOrchestrationActive(enforcement.Orchestration, mode)
+}
+
+func runtimeDriverNetworkEnforcementOrchestrationActive(orchestration *sandboxruntime.RuntimeNetworkEnforcementOrchestrationMetadata, mode string) bool {
+	if orchestration == nil ||
+		orchestration.Status != "active" ||
+		orchestration.ReasonCode != "active" ||
+		len(orchestration.WarningCodes) > 0 {
+		return false
+	}
+	proxyActive := runtimeDriverNetworkEnforcementLifecycleActive(orchestration.Proxy)
+	ruleActive := false
+	for i := range orchestration.Rules {
+		rule := &orchestration.Rules[i]
+		if !runtimeDriverNetworkEnforcementLifecycleActive(rule) {
+			return false
+		}
+		if runtimeDriverNetworkEnforcementLifecycleHasMechanism(rule, NetworkEnforcementFirewall) ||
+			runtimeDriverNetworkEnforcementLifecycleHasMechanism(rule, NetworkEnforcementRuntime) {
+			ruleActive = true
+		}
+	}
+	switch mode {
+	case NetworkEnforcementProxyFirewall:
+		return proxyActive && ruleActive
+	case NetworkEnforcementProxy:
+		return proxyActive
+	case NetworkEnforcementFirewall, NetworkEnforcementRuntime:
+		return ruleActive
+	default:
+		return false
+	}
+}
+
+func runtimeDriverNetworkEnforcementLifecycleActive(lifecycle *sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata) bool {
+	return lifecycle != nil &&
+		lifecycle.Status == "active" &&
+		lifecycle.ReasonCode == "active" &&
+		len(lifecycle.WarningCodes) == 0
+}
+
+func runtimeDriverNetworkEnforcementLifecycleHasMechanism(lifecycle *sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata, mechanism string) bool {
+	if lifecycle == nil {
+		return false
+	}
+	for _, candidate := range lifecycle.Mechanisms {
+		if candidate == mechanism {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeDriverNetworkEnforcementMode(mode string) string {
+	switch mode {
+	case NetworkEnforcementBestEffort,
+		NetworkEnforcementProxy,
+		NetworkEnforcementFirewall,
+		NetworkEnforcementRuntime,
+		NetworkEnforcementProxyFirewall:
+		return mode
+	default:
+		return ""
+	}
+}
+
+func runtimeDriverNetworkEnforcementModeCanEnforce(mode string) bool {
+	switch mode {
+	case NetworkEnforcementProxy,
+		NetworkEnforcementFirewall,
+		NetworkEnforcementRuntime,
+		NetworkEnforcementProxyFirewall:
+		return true
+	default:
+		return false
+	}
 }
 
 func cloneStringSlice(values []string) []string {
