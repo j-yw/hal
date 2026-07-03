@@ -34,6 +34,7 @@ type sandboxdDeps struct {
 	rootlessPodmanAvailable         func(context.Context, string) error
 	newRootlessPodmanDriver         func(string) sandboxruntime.Driver
 	newMicroVMDriver                func(sandboxdMicroVMConfig) (sandboxruntime.Driver, error)
+	validateMicroVMConfig           func(sandboxdMicroVMConfig) error
 	microVMGuestReadinessConfigured bool
 	workerID                        func() string
 }
@@ -63,6 +64,7 @@ type sandboxdMicroVMFlags struct {
 	bootAcceptancePollInterval time.Duration
 	guestReadinessTimeout      time.Duration
 	guestReadinessPollInterval time.Duration
+	guestAgentEndpoint         string
 }
 
 type sandboxdMicroVMConfig struct {
@@ -73,6 +75,7 @@ type sandboxdMicroVMConfig struct {
 	GuestReadinessTimeout         time.Duration
 	GuestReadinessPollInterval    time.Duration
 	GuestReadinessProbeConfigured bool
+	GuestAgentEndpoint            string
 }
 
 type sandboxdRequest struct {
@@ -160,6 +163,7 @@ func registerSandboxdMicroVMFlags(cmd *cobra.Command, flags *sandboxdFlags, deps
 	cmd.Flags().StringVar(&flags.microVM.guestWorkDir, "microvm-guest-workdir", flags.microVM.guestWorkDir, "guest workdir for the microvm driver")
 	cmd.Flags().DurationVar(&flags.microVM.bootAcceptanceTimeout, "firecracker-boot-timeout", flags.microVM.bootAcceptanceTimeout, "host-side Firecracker boot acceptance timeout; 0 uses the live driver default")
 	cmd.Flags().DurationVar(&flags.microVM.bootAcceptancePollInterval, "firecracker-boot-poll-interval", flags.microVM.bootAcceptancePollInterval, "host-side Firecracker boot acceptance poll interval; 0 uses the live driver default")
+	cmd.Flags().StringVar(&flags.microVM.guestAgentEndpoint, "firecracker-guest-agent-endpoint", flags.microVM.guestAgentEndpoint, "optional local Unix socket endpoint for Firecracker guest-agent exec and copy transport")
 	if deps.microVMGuestReadinessConfigured {
 		cmd.Flags().DurationVar(&flags.microVM.guestReadinessTimeout, "firecracker-guest-readiness-timeout", flags.microVM.guestReadinessTimeout, "guest readiness timeout for configured microvm readiness probes; 0 uses the live driver default")
 		cmd.Flags().DurationVar(&flags.microVM.guestReadinessPollInterval, "firecracker-guest-readiness-poll-interval", flags.microVM.guestReadinessPollInterval, "guest readiness poll interval for configured microvm readiness probes; 0 uses the live driver default")
@@ -177,6 +181,7 @@ func defaultSandboxdDeps() sandboxdDeps {
 		rootlessPodmanAvailable: defaultSandboxdRootlessPodmanAvailable,
 		newRootlessPodmanDriver: defaultSandboxdRootlessPodmanDriver,
 		newMicroVMDriver:        defaultSandboxdMicroVMDriver,
+		validateMicroVMConfig:   defaultSandboxdMicroVMConfigValidator,
 		workerID:                defaultSandboxdWorkerID,
 	}
 }
@@ -289,6 +294,13 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 		if err := validateSandboxdMicroVMConfig(req.MicroVM); err != nil {
 			return sandboxdRequest{}, err
 		}
+		validateLiveConfig := deps.validateMicroVMConfig
+		if validateLiveConfig == nil {
+			validateLiveConfig = defaultSandboxdMicroVMConfigValidator
+		}
+		if err := validateLiveConfig(req.MicroVM); err != nil {
+			return sandboxdRequest{}, err
+		}
 	}
 	for _, driverID := range req.Drivers {
 		if !sandboxdDriverSupportedByDeps(driverID, deps) {
@@ -314,7 +326,7 @@ func runSandboxdWithDeps(ctx context.Context, req sandboxdRequest, out io.Writer
 	if err != nil {
 		return err
 	}
-	service, err := deps.newService(sandboxworker.ServiceOptions{
+	serviceOptions := sandboxworker.ServiceOptions{
 		WorkerID:   req.WorkerID,
 		HostKind:   sandboxworker.HostKindLocal,
 		SocketPath: req.SocketPath,
@@ -322,7 +334,9 @@ func runSandboxdWithDeps(ctx context.Context, req sandboxdRequest, out io.Writer
 		Capacity: sandboxworker.WorkerCapacity{
 			MaxConcurrentSandboxes: req.MaxConcurrent,
 		},
-	})
+		RuntimeDrivers: sandboxdRuntimeDriverDescriptors(req),
+	}
+	service, err := deps.newService(serviceOptions)
 	if err != nil {
 		return fmt.Errorf("create sandboxd worker service: %w", err)
 	}
@@ -354,6 +368,9 @@ func normalizeSandboxdDeps(deps sandboxdDeps) sandboxdDeps {
 	}
 	if deps.newRootlessPodmanDriver == nil {
 		deps.newRootlessPodmanDriver = defaults.newRootlessPodmanDriver
+	}
+	if deps.validateMicroVMConfig == nil {
+		deps.validateMicroVMConfig = defaults.validateMicroVMConfig
 	}
 	if deps.workerID == nil {
 		deps.workerID = defaults.workerID
@@ -389,6 +406,14 @@ func sandboxdDriverRegistry(ctx context.Context, req sandboxdRequest, deps sandb
 			}
 			if deps.newMicroVMDriver == nil {
 				return nil, nil, fmt.Errorf("sandboxd driver %q is unsupported", driverID)
+			}
+			if err := validateSandboxdMicroVMConfig(req.MicroVM); err != nil {
+				return nil, nil, err
+			}
+			if deps.validateMicroVMConfig != nil {
+				if err := deps.validateMicroVMConfig(req.MicroVM); err != nil {
+					return nil, nil, err
+				}
 			}
 			driver, err := deps.newMicroVMDriver(req.MicroVM)
 			if err != nil {
@@ -456,6 +481,9 @@ func sandboxdMicroVMConfigFromCommand(cmd *cobra.Command, fallback sandboxdMicro
 	if flags.bootAcceptancePollInterval, err = cmd.Flags().GetDuration("firecracker-boot-poll-interval"); err != nil {
 		return sandboxdMicroVMConfig{}, err
 	}
+	if flags.guestAgentEndpoint, err = cmd.Flags().GetString("firecracker-guest-agent-endpoint"); err != nil {
+		return sandboxdMicroVMConfig{}, err
+	}
 	if cmd.Flags().Lookup("firecracker-guest-readiness-timeout") != nil {
 		if flags.guestReadinessTimeout, err = cmd.Flags().GetDuration("firecracker-guest-readiness-timeout"); err != nil {
 			return sandboxdMicroVMConfig{}, err
@@ -489,6 +517,7 @@ func sandboxdMicroVMConfigFromFlags(flags sandboxdMicroVMFlags, deps sandboxdDep
 		GuestReadinessTimeout:         flags.guestReadinessTimeout,
 		GuestReadinessPollInterval:    flags.guestReadinessPollInterval,
 		GuestReadinessProbeConfigured: deps.microVMGuestReadinessConfigured,
+		GuestAgentEndpoint:            flags.guestAgentEndpoint,
 	}
 }
 
@@ -507,6 +536,7 @@ func sanitizeSandboxdMicroVMConfig(config sandboxdMicroVMConfig) sandboxdMicroVM
 	if config.StateDir != "" {
 		config.StateDir = filepath.Clean(config.StateDir)
 	}
+	config.GuestAgentEndpoint = strings.TrimSpace(config.GuestAgentEndpoint)
 	return config
 }
 
@@ -559,6 +589,51 @@ func validateSandboxdMicroVMConfig(config sandboxdMicroVMConfig) error {
 		return fmt.Errorf("sandboxd --driver microvm config is invalid: %w", err)
 	}
 	return nil
+}
+
+func sandboxdRuntimeDriverDescriptors(req sandboxdRequest) map[string]sandboxworker.RuntimeDriver {
+	if !sandboxdDriverRequested(req.Drivers, sandboxruntime.DriverMicroVM) || strings.TrimSpace(req.MicroVM.GuestAgentEndpoint) == "" {
+		return nil
+	}
+	return map[string]sandboxworker.RuntimeDriver{
+		sandboxruntime.DriverMicroVM: sandboxdMicroVMRuntimeDriverDescriptor(sandboxdMicroVMOperationsWithGuestAgent()),
+	}
+}
+
+func sandboxdMicroVMRuntimeDriverDescriptor(operations []string) sandboxworker.RuntimeDriver {
+	return sandboxworker.RuntimeDriver{
+		ID:             sandboxruntime.DriverMicroVM,
+		HostKind:       sandboxworker.HostKindLocal,
+		IsolationLevel: sandboxworker.IsolationLevelVM,
+		Operations:     cloneSandboxdStringSlice(operations),
+		Security: sandboxworker.SecurityPolicy{
+			Requested: sandboxworker.SecurityControls{
+				NetworkPolicy:       sandboxworker.NetworkPolicyBestEffort,
+				NetworkEnforcement:  sandboxworker.NetworkEnforcementNone,
+				IsolationLevel:      sandboxworker.IsolationLevelVM,
+				CredentialProxyMode: false,
+			},
+			Enforced: sandboxworker.SecurityControls{
+				NetworkPolicy:       sandboxworker.NetworkPolicyBestEffort,
+				NetworkEnforcement:  sandboxworker.NetworkEnforcementNone,
+				IsolationLevel:      sandboxworker.IsolationLevelVM,
+				CredentialProxyMode: false,
+			},
+		},
+	}
+}
+
+func sandboxdMicroVMOperationsWithGuestAgent() []string {
+	return []string{
+		sandboxworker.OperationCreate,
+		sandboxworker.OperationStart,
+		sandboxworker.OperationStop,
+		sandboxworker.OperationDelete,
+		sandboxworker.OperationInspect,
+		sandboxworker.OperationExec,
+		sandboxworker.OperationCopyIn,
+		sandboxworker.OperationCopyOut,
+	}
 }
 
 func validateSandboxdMicroVMPathFlag(flag, path string) error {

@@ -103,17 +103,23 @@ func TestPhase38FirecrackerLiveGuestTransportGuardCoversRequiredDefaultSurfaces(
 	}
 }
 
-func TestPhase38ExplicitSandboxdFirecrackerLiveDriverPathDoesNotWireGuestTransport(t *testing.T) {
+func TestPhase38ExplicitSandboxdFirecrackerLiveDriverPathAllowsConfiguredGuestTransport(t *testing.T) {
 	source, _ := phase39ReadExplicitSandboxdFirecrackerLiveDriver(t)
 	for _, marker := range []string{
+		"NewGuestTransportFromEndpoint",
+		"GuestTransport:",
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("%s missing configured guest transport marker %q", phase39ExplicitSandboxdFirecrackerLiveDriverPath, marker)
+		}
+	}
+	for _, marker := range []string{
 		"WithGuestTransport",
-		"NewGuestTransport",
-		"GuestTransport",
 		"GuestExecRequest",
 		"GuestCopyRequest",
 	} {
 		if strings.Contains(source, marker) {
-			t.Fatalf("%s contains guest transport marker %q; the Phase 39 sandboxd exception is only for explicit live-driver construction", phase39ExplicitSandboxdFirecrackerLiveDriverPath, marker)
+			t.Fatalf("%s contains guest transport marker %q outside endpoint-based live-driver wiring", phase39ExplicitSandboxdFirecrackerLiveDriverPath, marker)
 		}
 	}
 }
