@@ -159,6 +159,191 @@ func TestPlanJSONOmitsAbsentOptionalSections(t *testing.T) {
 	}
 }
 
+func TestPlanJSONRedactsUnsafeDynamicValues(t *testing.T) {
+	got := mustMarshalPlanObject(t, Plan{
+		ID:        "https://api.internal.example.com:443/plan?token=ghp_secret",
+		Source:    PlanSource(" RUNTIME "),
+		Operation: "connect https://api.internal.example.com:443/query?credential=secret",
+		PolicySnapshot: &PolicySnapshotIdentity{
+			ID:        "policy-snapshot-01",
+			Version:   "https://api.internal.example.com/v1?token=ghp_secret",
+			Preset:    PolicyPreset(" ALLOW_LISTED "),
+			RuleSetID: "/Users/alice/.ssh/rules.json",
+		},
+		DefaultPosture: DefaultPosture(" DENY_BY_DEFAULT "),
+		Allowlist: &AllowlistPlan{
+			Mode:      AllowlistMode(" ENFORCE "),
+			RuleSetID: "rules-01",
+			RuleIDs: []string{
+				"rule-safe-01",
+				"api.internal.example.com",
+				"127.0.0.1:443",
+				"/tmp/proxy.sock",
+				"Authorization: Bearer ghp_secret",
+			},
+			RuleCategories: []AllowlistRuleCategory{
+				AllowlistRuleCategoryDomain,
+				AllowlistRuleCategory("https://api.internal.example.com/category?token=secret"),
+			},
+			Operations: []string{
+				"connect",
+				"resolve",
+				"https://api.internal.example.com/path?token=ghp_secret",
+			},
+		},
+		Category: &CategoryPosturePlan{
+			PrivateNetwork:   Posture(" BLOCK "),
+			MetadataEndpoint: Posture("http://169.254.169.254/latest?credential=secret"),
+		},
+		RawProtocols: &RawProtocolPlan{
+			TCP:  PostureBlock,
+			UDP:  Posture("443"),
+			ICMP: Posture(" AUDIT "),
+		},
+		Proxy: &ProxyRoutingIntent{
+			HTTP:           ProxyRoutingMode(" ROUTE_VIA_PROXY "),
+			HTTPS:          ProxyRoutingModeBlock,
+			ProxySessionID: "proxy-session-01",
+			Mechanism:      EnforcementMechanism(" PROXY "),
+			Operations: []string{
+				"http_connect",
+				"https_connect",
+				"connect api.internal.example.com:443?token=secret",
+				"/tmp/proxy.sock",
+				"X-Api-Key",
+			},
+		},
+		Firewall: &FirewallIntent{
+			Mode:      FirewallIntentMode(" APPLY "),
+			Mechanism: EnforcementMechanismFirewall,
+			Operations: []string{
+				"default_deny",
+				"block_private_network",
+				"/Users/alice/.ssh/id_rsa",
+				"password=hunter2",
+			},
+		},
+	})
+
+	if _, ok := got["id"]; ok {
+		t.Fatalf("unsafe plan id survived redaction: %#v", got)
+	}
+	if _, ok := got["operation"]; ok {
+		t.Fatalf("unsafe plan operation survived redaction: %#v", got)
+	}
+	if got["source"] != string(PlanSourceRuntime) {
+		t.Fatalf("source = %#v, want normalized runtime", got["source"])
+	}
+	if got["defaultPosture"] != string(DefaultPostureDenyByDefault) {
+		t.Fatalf("defaultPosture = %#v, want deny_by_default", got["defaultPosture"])
+	}
+
+	policySnapshot := requirePlanObject(t, got["policySnapshot"])
+	assertPlanObjectKeys(t, policySnapshot, []string{"id", "preset"})
+	if policySnapshot["id"] != "policy-snapshot-01" {
+		t.Fatalf("policy snapshot id = %#v, want safe id preserved", policySnapshot["id"])
+	}
+	if policySnapshot["preset"] != string(PolicyPresetAllowListed) {
+		t.Fatalf("policy snapshot preset = %#v, want allow_listed", policySnapshot["preset"])
+	}
+
+	allowlist := requirePlanObject(t, got["allowlist"])
+	assertPlanObjectKeys(t, allowlist, []string{"mode", "ruleSetId", "ruleIds", "ruleCategories", "operations"})
+	assertPlanStringArray(t, allowlist["ruleIds"], []string{"rule-safe-01"})
+	assertPlanStringArray(t, allowlist["ruleCategories"], []string{string(AllowlistRuleCategoryDomain)})
+	assertPlanStringArray(t, allowlist["operations"], []string{"connect", "resolve"})
+
+	category := requirePlanObject(t, got["category"])
+	assertPlanObjectKeys(t, category, []string{"privateNetwork"})
+	if category["privateNetwork"] != string(PostureBlock) {
+		t.Fatalf("privateNetwork = %#v, want block", category["privateNetwork"])
+	}
+
+	rawProtocols := requirePlanObject(t, got["rawProtocols"])
+	assertPlanObjectKeys(t, rawProtocols, []string{"tcp", "icmp"})
+	if rawProtocols["tcp"] != string(PostureBlock) || rawProtocols["icmp"] != string(PostureAudit) {
+		t.Fatalf("rawProtocols = %#v, want sanitized tcp block and icmp audit", rawProtocols)
+	}
+
+	proxy := requirePlanObject(t, got["proxy"])
+	assertPlanObjectKeys(t, proxy, []string{"http", "https", "proxySessionId", "mechanism", "operations"})
+	if proxy["proxySessionId"] != "proxy-session-01" {
+		t.Fatalf("proxy session id = %#v, want safe id preserved", proxy["proxySessionId"])
+	}
+	assertPlanStringArray(t, proxy["operations"], []string{"http_connect", "https_connect"})
+
+	firewall := requirePlanObject(t, got["firewall"])
+	assertPlanObjectKeys(t, firewall, []string{"mode", "mechanism", "operations"})
+	assertPlanStringArray(t, firewall["operations"], []string{"default_deny", "block_private_network"})
+}
+
+func TestPlanJSONDropsUnsafePolicySnapshotAndProxySessionIdentifiers(t *testing.T) {
+	got := mustMarshalPlanObject(t, Plan{
+		ID: "network-plan-03",
+		PolicySnapshot: &PolicySnapshotIdentity{
+			ID:        "https://policy.internal.example.com/snapshot?token=secret",
+			Version:   "v1",
+			Preset:    PolicyPresetDenyByDefault,
+			RuleSetID: "rules-01",
+		},
+		Proxy: &ProxyRoutingIntent{
+			HTTP:           ProxyRoutingModeRouteViaProxy,
+			ProxySessionID: "/tmp/proxy.sock?token=secret",
+			Mechanism:      EnforcementMechanismProxy,
+		},
+	})
+
+	if _, ok := got["policySnapshot"]; ok {
+		t.Fatalf("unsafe policy snapshot id should omit policySnapshot: %#v", got)
+	}
+	proxy := requirePlanObject(t, got["proxy"])
+	assertPlanObjectKeys(t, proxy, []string{"http", "mechanism"})
+	if _, ok := proxy["proxySessionId"]; ok {
+		t.Fatalf("unsafe proxy session id survived redaction: %#v", proxy)
+	}
+}
+
+func TestPlanJSONOmitsSectionsEmptiedByRedaction(t *testing.T) {
+	got := mustMarshalPlanObject(t, Plan{
+		ID: "network-plan-04",
+		PolicySnapshot: &PolicySnapshotIdentity{
+			ID:        "https://policy.internal.example.com/snapshot?token=secret",
+			Version:   "/Users/alice/policy-version",
+			RuleSetID: "api.internal.example.com",
+		},
+		Allowlist: &AllowlistPlan{
+			Mode:       AllowlistMode("https://api.internal.example.com/mode"),
+			RuleSetID:  "/tmp/rules.json",
+			RuleIDs:    []string{"api.internal.example.com", "443", "Authorization: Bearer ghp_secret"},
+			Operations: []string{"/tmp/proxy.sock", "password=hunter2"},
+			RuleCategories: []AllowlistRuleCategory{
+				AllowlistRuleCategory("https://api.internal.example.com/category"),
+			},
+		},
+		Category: &CategoryPosturePlan{
+			PrivateNetwork:   Posture("api.internal.example.com"),
+			MetadataEndpoint: Posture("token=secret"),
+		},
+		RawProtocols: &RawProtocolPlan{
+			TCP:  Posture("443"),
+			UDP:  Posture("https://api.internal.example.com/udp"),
+			ICMP: Posture("/Users/alice/icmp"),
+		},
+		Proxy: &ProxyRoutingIntent{
+			HTTP:           ProxyRoutingMode("https://api.internal.example.com/proxy"),
+			ProxySessionID: "api.internal.example.com:443",
+			Operations:     []string{"connect?token=secret", "/tmp/proxy.sock"},
+		},
+		Firewall: &FirewallIntent{
+			Mode:       FirewallIntentMode("https://api.internal.example.com/firewall"),
+			Mechanism:  EnforcementMechanism("password=hunter2"),
+			Operations: []string{"/Users/alice/.ssh/id_rsa", "Authorization: Bearer ghp_secret"},
+		},
+	})
+
+	assertPlanObjectKeys(t, got, []string{"id"})
+}
+
 func TestPlanPublicSchemaContainsNoUnsafeFields(t *testing.T) {
 	contractTypes := []reflect.Type{
 		reflect.TypeOf(PolicySnapshotIdentity{}),
@@ -239,10 +424,20 @@ func mustMarshalPlanObject(t *testing.T, value any) map[string]any {
 	if err := json.Unmarshal(payload, &object); err != nil {
 		t.Fatalf("Unmarshal(%s) error: %v", payload, err)
 	}
+	payloadLower := strings.ToLower(string(payload))
 	for _, forbidden := range forbiddenPlanPayloadFragments() {
-		if strings.Contains(string(payload), forbidden) {
+		if strings.Contains(payloadLower, strings.ToLower(forbidden)) {
 			t.Fatalf("plan JSON %s leaked forbidden fragment %q", payload, forbidden)
 		}
+	}
+	return object
+}
+
+func requirePlanObject(t *testing.T, value any) map[string]any {
+	t.Helper()
+	object, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("value %#v is %T, want object", value, value)
 	}
 	return object
 }
@@ -264,6 +459,26 @@ func assertPlanObjectKeys(t *testing.T, value any, wantKeys []string) {
 			if strings.Contains(strings.ToLower(key), forbidden) {
 				t.Fatalf("JSON key %q exposes forbidden raw field fragment %q", key, forbidden)
 			}
+		}
+	}
+}
+
+func assertPlanStringArray(t *testing.T, value any, want []string) {
+	t.Helper()
+	array, ok := value.([]any)
+	if !ok {
+		t.Fatalf("value %#v is %T, want array", value, value)
+	}
+	if len(array) != len(want) {
+		t.Fatalf("array = %#v, want %#v", array, want)
+	}
+	for i := range want {
+		got, ok := array[i].(string)
+		if !ok {
+			t.Fatalf("array[%d] = %#v (%T), want string %q", i, array[i], array[i], want[i])
+		}
+		if got != want[i] {
+			t.Fatalf("array[%d] = %q, want %q", i, got, want[i])
 		}
 	}
 }
@@ -296,16 +511,33 @@ func forbiddenPlanRawFieldNameFragments() []string {
 
 func forbiddenPlanPayloadFragments() []string {
 	return []string{
+		"api.internal.example.com",
 		"example.com",
+		"localhost",
 		"127.0.0.1",
 		"169.254.169.254",
 		":443",
+		"\"443\"",
+		"8080",
 		"http://",
 		"https://",
+		"?token",
+		"token=",
+		"secret=",
+		"credential=",
+		"query=",
+		"/Users/",
+		".ssh",
 		"/tmp/",
-		"socketPath",
-		"Authorization",
+		".sock",
+		"socketpath",
+		"authorization",
+		"bearer",
+		"cookie",
+		"x-api-key",
 		"token",
 		"secret",
+		"password",
+		"credential",
 	}
 }
