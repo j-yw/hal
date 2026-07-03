@@ -147,15 +147,104 @@ func TestCredentialDeliveryImportBoundaryCoversProductionFiles(t *testing.T) {
 	}
 	for _, path := range []string{
 		"activation.go",
+		"activation_fake.go",
 		"binding_validation.go",
 		"contracts.go",
 		"normalization.go",
+		"planning.go",
+		"projection.go",
 		"request_validation.go",
 		"sanitize.go",
+		"secret_resolution.go",
 	} {
 		if !found[path] {
 			t.Fatalf("import-boundary guard files = %#v, want %s covered", paths, path)
 		}
+	}
+}
+
+func TestCredentialDeliveryActivationImportBoundariesCoverCoreAndDefaultFakePaths(t *testing.T) {
+	paths := credentialDeliveryActivationBoundaryFiles(t)
+
+	fset := token.NewFileSet()
+	for _, path := range paths {
+		file, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("ParseFile(%s) error: %v", path, err)
+		}
+		for _, spec := range file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("unquote import %s in %s: %v", spec.Path.Value, path, err)
+			}
+			if message := credentialDeliveryImportBoundaryMessage(path, importPath); message != "" {
+				t.Fatal(message)
+			}
+		}
+	}
+}
+
+func TestCredentialDeliveryDefaultFakeActivationPathsRejectLiveDependencies(t *testing.T) {
+	for _, importPath := range []string{
+		"github.com/jywlabs/hal/cmd",
+		"github.com/jywlabs/hal/internal/factory",
+		"github.com/jywlabs/hal/internal/sandbox/provider/daytona",
+		"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman",
+		"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker",
+		"github.com/jywlabs/hal/internal/sandboxworker",
+		"net",
+		"net/http",
+		"net/http/httputil",
+		"os",
+		"os/exec",
+		"path/filepath",
+		"syscall",
+		"golang.org/x/sys/unix",
+		"golang.org/x/net/proxy",
+		"golang.org/x/crypto/ssh/agent",
+		"github.com/spf13/afero",
+		"github.com/docker/docker/client",
+		"github.com/containers/podman/v5/pkg/bindings",
+		"github.com/firecracker-microvm/firecracker-go-sdk",
+		"github.com/aws/aws-sdk-go-v2/service/secretsmanager",
+	} {
+		t.Run(importPath, func(t *testing.T) {
+			message := credentialDeliveryImportBoundaryMessage("activation_fake.go", importPath)
+			if !strings.Contains(message, importPath) {
+				t.Fatalf("boundary message = %q, want rejected default fake activation import %q", message, importPath)
+			}
+		})
+	}
+}
+
+func TestCredentialDeliveryActivationImportBoundaryAllowsMetadataHelpersOnly(t *testing.T) {
+	for _, importPath := range []string{
+		"encoding/json",
+		"strings",
+		"github.com/jywlabs/hal/internal/sandbox",
+	} {
+		t.Run(importPath, func(t *testing.T) {
+			if message := credentialDeliveryImportBoundaryMessage("activation.go", importPath); message != "" {
+				t.Fatalf("import %q unexpectedly failed activation boundary check: %s", importPath, message)
+			}
+		})
+	}
+
+	for _, importPath := range []string{
+		"context",
+		"io",
+		"net/url",
+		"os",
+		"github.com/jywlabs/hal/internal/credentialdelivery/live",
+		"github.com/jywlabs/hal/internal/sandboxruntime",
+		"gopkg.in/yaml.v3",
+	} {
+		t.Run(importPath, func(t *testing.T) {
+			message := credentialDeliveryImportBoundaryMessage("activation.go", importPath)
+			if !strings.Contains(message, importPath) {
+				t.Fatalf("boundary message = %q, want rejected activation import path %q", message, importPath)
+			}
+		})
 	}
 }
 
@@ -332,6 +421,46 @@ const (
 	}
 }
 
+func TestCredentialDeliveryOptionalLiveHarnessGateIsBuildTaggedAndExplicit(t *testing.T) {
+	sourceBytes, err := os.ReadFile("credential_delivery_live_test.go")
+	if err != nil {
+		t.Fatalf("ReadFile(credential_delivery_live_test.go) error: %v", err)
+	}
+	source := string(sourceBytes)
+	for _, marker := range []string{
+		"//go:build credential_delivery_live",
+		"HAL_CREDENTIAL_DELIVERY_LIVE",
+		"HAL_CREDENTIAL_DELIVERY_LIVE_HTTP_PROXY",
+		"HAL_CREDENTIAL_DELIVERY_LIVE_FILE_TMPFS",
+		"HAL_CREDENTIAL_DELIVERY_LIVE_SSH_AGENT",
+		"HAL_CREDENTIAL_DELIVERY_LIVE_ENV",
+		"t.Skip",
+		"credential delivery live harness is an opt-in placeholder",
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("credential delivery optional live harness missing marker %q", marker)
+		}
+	}
+	for _, forbidden := range []string{
+		"//go:build integration",
+		"//go:build worker_integration",
+		"//go:build podman_integration",
+		"//go:build firecracker_live",
+		"//go:build network_enforcement_live",
+		"net.Listen(",
+		"http.ListenAndServe(",
+		"exec.Command(",
+		"os.WriteFile(",
+		"os.Setenv(",
+		"agent.NewClient(",
+		"MountTmpfs(",
+	} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("credential delivery optional live harness contains forbidden marker %q", forbidden)
+		}
+	}
+}
+
 func credentialDeliveryBoundaryFiles(t *testing.T) []string {
 	t.Helper()
 
@@ -353,6 +482,21 @@ func credentialDeliveryBoundaryFiles(t *testing.T) []string {
 		t.Fatal("no credential delivery files matched import-boundary guard")
 	}
 	return out
+}
+
+func credentialDeliveryActivationBoundaryFiles(t *testing.T) []string {
+	t.Helper()
+
+	paths := []string{"activation.go", "activation_fake.go"}
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			t.Fatalf("activation import-boundary guard should scan production files only, got %s", path)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("activation import-boundary file %s unavailable: %v", path, err)
+		}
+	}
+	return paths
 }
 
 func credentialDeliveryImportBoundaryMessage(fileName, importPath string) string {

@@ -16,7 +16,7 @@ import (
 func TestActivateDeliveryWithoutAdapterDoesNotActivatePlanActiveModes(t *testing.T) {
 	binding := planBindingFixture(ModeHTTPProxy)
 	request := planConstructionRequestFixture(binding)
-	request.NetworkProxySession = planNetworkProxySessionFixture()
+	configureHTTPProxyProof(&request)
 	plan := BuildDeliveryPlan(request)
 	assertPlanModes(t, plan.ActiveModes, []Mode{ModeHTTPProxy})
 
@@ -51,8 +51,17 @@ func TestActivateDeliveryUsesInjectedFakeAdapterForEveryMode(t *testing.T) {
 				Status:         StatusPlanned,
 			}
 			if mode == ModeHTTPProxy {
-				plan.NetworkProxySessionID = binding.NetworkProxySessionID
-				plan.ActiveModes = []Mode{ModeHTTPProxy}
+				request := planConstructionRequestFixture(binding)
+				configureHTTPProxyProof(&request)
+				plan = BuildDeliveryPlan(request)
+			}
+			wantStatus := StatusActive
+			wantBindingStatus := StatusActive
+			wantActiveModes := []Mode{mode}
+			if mode == ModeLegacyAuthSync {
+				wantStatus = StatusSkipped
+				wantBindingStatus = StatusSkipped
+				wantActiveModes = nil
 			}
 			adapter := &fakeActivationAdapter{}
 
@@ -70,14 +79,147 @@ func TestActivateDeliveryUsesInjectedFakeAdapterForEveryMode(t *testing.T) {
 			if adapter.calls[0].Bindings[0].ID != binding.ID || adapter.calls[0].Bindings[0].DeliveryMode != mode {
 				t.Fatalf("adapter input bindings = %#v, want sanitized binding metadata", adapter.calls[0].Bindings)
 			}
-			if got.Status != StatusActive {
-				t.Fatalf("activation status = %q, want active", got.Status)
+			if got.Status != wantStatus {
+				t.Fatalf("activation status = %q, want %q", got.Status, wantStatus)
 			}
 			assertPlanModes(t, got.RequestedModes, []Mode{mode})
-			assertPlanModes(t, got.ActiveModes, []Mode{mode})
-			assertActivationBindingStatus(t, got, binding.ID, mode, StatusActive)
+			assertPlanModes(t, got.ActiveModes, wantActiveModes)
+			assertActivationBindingStatus(t, got, binding.ID, mode, wantBindingStatus)
 			assertActivationBindingService(t, got, binding.ID, binding.ServiceID)
+			if mode == ModeLegacyAuthSync {
+				assertActivationWarning(t, got, WarningLegacyAuthCompatibility, ReasonCompatibilityMode, ModeLegacyAuthSync)
+			}
 			assertActivationNoLeak(t, got)
+		})
+	}
+}
+
+func TestActivateDeliverySanitizesAdapterBoundaryAndResultContractsForSupportedModes(t *testing.T) {
+	rawEndpoint := "https://proxy.example.invalid:8443/credential?token=raw"
+	rawPath := "/Users/v/.ssh/id_rsa"
+	rawSocket := "/var/run/ssh-agent.sock"
+	rawEnvValue := "GITHUB_TOKEN=ghp_raw_secret_value"
+	rawHeader := "Authorization: Bearer ghp_raw_secret_value"
+	rawCommand := "ssh-agent -a /tmp/agent.sock"
+	rejectedValues := []string{rawEndpoint, rawPath, rawSocket, rawEnvValue, rawHeader, rawCommand, "proxy.example.invalid", "token=raw"}
+
+	for _, mode := range SupportedModes() {
+		t.Run(string(mode), func(t *testing.T) {
+			binding := planBindingFixture(mode)
+			binding.ID = "binding-" + string(mode)
+			binding.RequestID = rawEndpoint
+			binding.PolicySnapshotID = rawPath
+			binding.ServiceLabels = []string{"source-control", rawHeader}
+			binding.DomainLabels = []string{"github", rawCommand}
+			binding.DestinationCategory = DestinationCategory(rawEndpoint)
+			if mode == ModeHTTPProxy {
+				binding.NetworkProxySessionID = "network-proxy-session-01"
+				binding.PolicySnapshotID = "policy-snapshot-01"
+			} else {
+				binding.NetworkProxySessionID = rawSocket
+			}
+
+			plan := Plan{
+				ID:             "delivery-plan-" + string(mode),
+				RequestID:      rawEndpoint,
+				RequestedModes: []Mode{mode},
+				ActiveModes:    []Mode{Mode(rawEnvValue)},
+				Status:         StatusPlanned,
+				Warnings: []Warning{{
+					Code:       WarningAdapterUnavailable,
+					ReasonCode: ReasonActivationUnavailable,
+					BindingID:  rawSocket,
+					Mode:       mode,
+				}},
+			}
+			if mode == ModeHTTPProxy {
+				planBinding := binding
+				planBinding.RequestID = "delivery-request-01"
+				planBinding.ServiceLabels = []string{"source-control"}
+				planBinding.DomainLabels = []string{"github"}
+				planBinding.DestinationCategory = DestinationPublicInternet
+				request := planConstructionRequestFixture(planBinding)
+				configureHTTPProxyProof(&request)
+				plan = BuildDeliveryPlan(request)
+				plan.ActiveModes = append(plan.ActiveModes, Mode(rawEnvValue))
+			}
+
+			unsafeBinding := Binding{
+				ID:           "binding-unsafe-" + string(mode),
+				SecretRef:    rawEnvValue,
+				ServiceID:    rawSocket,
+				DeliveryMode: mode,
+			}
+			adapter := &fakeActivationAdapter{
+				result: ActivationResult{
+					ID:             rawEndpoint,
+					PlanID:         rawPath,
+					RequestedModes: []Mode{Mode(rawHeader)},
+					ActiveModes:    []Mode{mode, Mode(rawEnvValue)},
+					Bindings: []BindingActivationResult{
+						{
+							BindingID:    binding.ID,
+							ServiceID:    rawSocket,
+							DeliveryMode: mode,
+							Outcome:      StatusActive,
+							Status:       StatusActive,
+							ReasonCode:   ReasonRequested,
+						},
+						{
+							BindingID:    rawSocket,
+							DeliveryMode: mode,
+							Outcome:      StatusActive,
+							Status:       StatusActive,
+						},
+					},
+					Status: StatusActive,
+					Warnings: []Warning{{
+						Code:       WarningAdapterUnavailable,
+						ReasonCode: ReasonActivationUnavailable,
+						BindingID:  rawHeader,
+						Mode:       mode,
+					}},
+				},
+			}
+
+			got := ActivateDelivery(ActivationRequest{
+				ActivationID: " " + rawCommand + " ",
+				Plan:         plan,
+				Bindings:     []Binding{binding, unsafeBinding},
+			}, adapter)
+
+			if len(adapter.calls) != 1 {
+				t.Fatalf("adapter calls = %d, want 1", len(adapter.calls))
+			}
+			call := adapter.calls[0]
+			if call.ActivationID != plan.ID+"-activation" {
+				t.Fatalf("adapter activation ID = %q, want sanitized default", call.ActivationID)
+			}
+			if len(call.Bindings) != 1 {
+				t.Fatalf("adapter bindings = %#v, want only safe binding", call.Bindings)
+			}
+			if call.Bindings[0].ID != binding.ID || call.Bindings[0].DeliveryMode != mode {
+				t.Fatalf("adapter binding = %#v, want safe %s binding", call.Bindings[0], mode)
+			}
+			assertPlanModes(t, call.Plan.RequestedModes, []Mode{mode})
+			assertActivationNoLeak(t, call, rejectedValues...)
+
+			assertPlanModes(t, got.RequestedModes, []Mode{mode})
+			if mode == ModeLegacyAuthSync {
+				if got.Status != StatusSkipped {
+					t.Fatalf("legacy activation status = %q, want skipped compatibility metadata", got.Status)
+				}
+				assertPlanModes(t, got.ActiveModes, nil)
+				assertActivationBindingStatus(t, got, binding.ID, mode, StatusSkipped)
+				assertActivationWarning(t, got, WarningLegacyAuthCompatibility, ReasonCompatibilityMode, ModeLegacyAuthSync)
+			} else {
+				if got.Status != StatusActive {
+					t.Fatalf("activation status = %q, want active", got.Status)
+				}
+				assertPlanModes(t, got.ActiveModes, []Mode{mode})
+				assertActivationBindingStatus(t, got, binding.ID, mode, StatusActive)
+			}
+			assertActivationNoLeak(t, got, rejectedValues...)
 		})
 	}
 }
@@ -92,7 +234,7 @@ func TestActivateDeliveryHTTPProxyRequiresSafeSessionBinding(t *testing.T) {
 		{
 			name: "safe activation",
 			configure: func(request *PlanConstructionRequest) {
-				request.NetworkProxySession = planNetworkProxySessionFixture()
+				configureHTTPProxyProof(request)
 			},
 			wantActive: true,
 		},
@@ -111,21 +253,22 @@ func TestActivateDeliveryHTTPProxyRequiresSafeSessionBinding(t *testing.T) {
 					ID:     rawSession,
 					Source: sandbox.SandboxNetworkPolicyDecisionSourceRun,
 				}
+				request.NetworkEnforcementProof = planNetworkEnforcementProofFixture()
 			},
 			rejected: []string{"/tmp/credential-proxy.sock"},
 		},
 		{
 			name: "mismatched session",
 			configure: func(request *PlanConstructionRequest) {
+				configureHTTPProxyProof(request)
 				request.Bindings[0].NetworkProxySessionID = "network-proxy-session-other"
-				request.NetworkProxySession = planNetworkProxySessionFixture()
 			},
 		},
 		{
 			name: "policy disallowed",
 			configure: func(request *PlanConstructionRequest) {
+				configureHTTPProxyProof(request)
 				request.Bindings[0].PolicySnapshotID = "policy-snapshot-other"
-				request.NetworkProxySession = planNetworkProxySessionFixture()
 			},
 		},
 	}
@@ -169,10 +312,172 @@ func TestActivateDeliveryHTTPProxyRequiresSafeSessionBinding(t *testing.T) {
 	}
 }
 
+func TestActivateDeliveryHTTPProxyRequiresBrokerAndNetworkProofs(t *testing.T) {
+	binding := planBindingFixture(ModeHTTPProxy)
+	activePlanRequest := planConstructionRequestFixture(binding)
+	configureHTTPProxyProof(&activePlanRequest)
+	activePlan := BuildDeliveryPlan(activePlanRequest)
+	tests := []struct {
+		name string
+		plan Plan
+	}{
+		{
+			name: "broker only",
+			plan: func() Plan {
+				plan := cloneHTTPProxyProofPlan(activePlan)
+				plan.HTTPProxyProof.NetworkEnforcement = nil
+				return plan
+			}(),
+		},
+		{
+			name: "network only",
+			plan: Plan{
+				ID:                    "delivery-plan-network-only",
+				NetworkProxySessionID: "network-proxy-session-01",
+				HTTPProxyProof: &HTTPProxyProof{
+					BindingID:          binding.ID,
+					SecretID:           binding.SecretRef,
+					NetworkEnforcement: planNetworkEnforcementProofFixture(),
+				},
+				RequestedModes: []Mode{ModeHTTPProxy},
+				ActiveModes:    []Mode{ModeHTTPProxy},
+				Status:         StatusPlanned,
+			},
+		},
+		{
+			name: "credential proxy plan only",
+			plan: Plan{
+				ID:                    "delivery-plan-proxy-plan-only",
+				NetworkProxySessionID: "network-proxy-session-01",
+				HTTPProxyProof: &HTTPProxyProof{
+					BindingID:             binding.ID,
+					SecretID:              binding.SecretRef,
+					SecretBrokerSessionID: "secret-broker-session-01",
+					CredentialProxyPlanID: "credential-proxy-plan-01",
+					NetworkEnforcement:    planNetworkEnforcementProofFixture(),
+				},
+				RequestedModes: []Mode{ModeHTTPProxy},
+				ActiveModes:    []Mode{ModeHTTPProxy},
+				Status:         StatusPlanned,
+			},
+		},
+		{
+			name: "session id only",
+			plan: Plan{
+				ID:                    "delivery-plan-session-only",
+				NetworkProxySessionID: "network-proxy-session-01",
+				RequestedModes:        []Mode{ModeHTTPProxy},
+				ActiveModes:           []Mode{ModeHTTPProxy},
+				Status:                StatusPlanned,
+			},
+		},
+		{
+			name: "requested mode only",
+			plan: Plan{
+				ID:             "delivery-plan-requested-only",
+				RequestedModes: []Mode{ModeHTTPProxy},
+				Status:         StatusPlanned,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ActivateDelivery(ActivationRequest{
+				Plan:     tt.plan,
+				Bindings: []Binding{binding},
+			}, &fakeActivationAdapter{})
+
+			if got.Status != StatusSkipped {
+				t.Fatalf("activation status = %q, want skipped fail-closed result", got.Status)
+			}
+			assertPlanModes(t, got.ActiveModes, nil)
+			assertActivationWarning(t, got, WarningActivationSkipped, ReasonMissingServiceBinding, ModeHTTPProxy)
+			assertActivationBindingStatus(t, got, binding.ID, ModeHTTPProxy, StatusSkipped)
+			assertActivationNoLeak(t, got)
+		})
+	}
+}
+
+func cloneHTTPProxyProofPlan(plan Plan) Plan {
+	clone := plan
+	if plan.HTTPProxyProof != nil {
+		proof := *plan.HTTPProxyProof
+		if plan.HTTPProxyProof.NetworkEnforcement != nil {
+			network := *plan.HTTPProxyProof.NetworkEnforcement
+			proof.NetworkEnforcement = &network
+		}
+		clone.HTTPProxyProof = &proof
+	}
+	return clone
+}
+
+func TestActivateDeliveryHTTPProxyDowngradesMismatchedProofIdentifiers(t *testing.T) {
+	binding := planBindingFixture(ModeHTTPProxy)
+	request := planConstructionRequestFixture(binding)
+	configureHTTPProxyProof(&request)
+	activePlan := BuildDeliveryPlan(request)
+	tests := []struct {
+		name      string
+		configure func(*Plan)
+	}{
+		{
+			name: "binding mismatch",
+			configure: func(plan *Plan) {
+				plan.HTTPProxyProof.BindingID = "binding-other"
+			},
+		},
+		{
+			name: "policy mismatch",
+			configure: func(plan *Plan) {
+				plan.HTTPProxyProof.NetworkEnforcement.PolicySnapshotID = "policy-snapshot-other"
+			},
+		},
+		{
+			name: "broker mismatch",
+			configure: func(plan *Plan) {
+				plan.HTTPProxyProof.SecretBrokerSessionID = ""
+			},
+		},
+		{
+			name: "proxy mismatch",
+			configure: func(plan *Plan) {
+				plan.HTTPProxyProof.NetworkEnforcement.NetworkProxySessionID = "network-proxy-session-other"
+			},
+		},
+		{
+			name: "result unsupported",
+			configure: func(plan *Plan) {
+				plan.HTTPProxyProof.NetworkEnforcement.ResultSupported = false
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan := cloneHTTPProxyProofPlan(activePlan)
+			tt.configure(&plan)
+
+			got := ActivateDelivery(ActivationRequest{
+				Plan:     plan,
+				Bindings: []Binding{binding},
+			}, &fakeActivationAdapter{})
+
+			if got.Status != StatusSkipped {
+				t.Fatalf("activation status = %q, want skipped for mismatched proof", got.Status)
+			}
+			assertPlanModes(t, got.ActiveModes, nil)
+			assertActivationBindingStatus(t, got, binding.ID, ModeHTTPProxy, StatusSkipped)
+			assertActivationWarning(t, got, WarningActivationSkipped, ReasonMissingServiceBinding, ModeHTTPProxy)
+			assertActivationNoLeak(t, got)
+		})
+	}
+}
+
 func TestActivateDeliveryHTTPProxyAdapterFailureFailsClosedWithSafeBindingMetadata(t *testing.T) {
 	binding := planBindingFixture(ModeHTTPProxy)
 	request := planConstructionRequestFixture(binding)
-	request.NetworkProxySession = planNetworkProxySessionFixture()
+	configureHTTPProxyProof(&request)
 	plan := BuildDeliveryPlan(request)
 	adapter := &fakeActivationAdapter{
 		err: errors.New("proxy adapter failed for https://proxy.example.invalid with Authorization Bearer ghp_raw_secret_value"),

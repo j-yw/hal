@@ -3,10 +3,13 @@ package cmd
 import (
 	"strings"
 
+	"github.com/jywlabs/hal/internal/credentialdelivery"
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
 )
+
+type credentialDeliveryActivationResult = credentialdelivery.ActivationResult
 
 func applyRunSandboxCredentialProxyMetadata(manifest *sandboxexecution.Manifest, req runSandboxRequest) {
 	if manifest == nil {
@@ -16,7 +19,7 @@ func applyRunSandboxCredentialProxyMetadata(manifest *sandboxexecution.Manifest,
 	manifest.CredentialProxyPlan = credentialProxy.Plan
 	manifest.CredentialProxySession = credentialProxy.Session
 	manifest.CredentialProxyBindings = credentialProxy.Bindings
-	manifest.CredentialDelivery = sandboxManifestCredentialDeliveryStatus(credentialProxy, req.Security)
+	manifest.CredentialDelivery = sandboxManifestCredentialDeliveryStatus(credentialProxy, req.Security, req.CredentialDeliveryActivation)
 }
 
 func applyAutoSandboxCredentialProxyMetadata(manifest *sandboxexecution.Manifest, req autoSandboxRequest) {
@@ -27,7 +30,7 @@ func applyAutoSandboxCredentialProxyMetadata(manifest *sandboxexecution.Manifest
 	manifest.CredentialProxyPlan = credentialProxy.Plan
 	manifest.CredentialProxySession = credentialProxy.Session
 	manifest.CredentialProxyBindings = credentialProxy.Bindings
-	manifest.CredentialDelivery = sandboxManifestCredentialDeliveryStatus(credentialProxy, req.Security)
+	manifest.CredentialDelivery = sandboxManifestCredentialDeliveryStatus(credentialProxy, req.Security, req.CredentialDeliveryActivation)
 }
 
 func applyFactorySandboxCredentialProxyMetadata(metadata *factory.SandboxMetadata, req factorySandboxExecutorRequest, record factory.RunRecord, networkProxySession *sandbox.SandboxNetworkProxySessionMetadata) {
@@ -38,7 +41,7 @@ func applyFactorySandboxCredentialProxyMetadata(metadata *factory.SandboxMetadat
 	metadata.CredentialProxyPlan = credentialProxy.Plan
 	metadata.CredentialProxySession = credentialProxy.Session
 	metadata.CredentialProxyBindings = credentialProxy.Bindings
-	metadata.CredentialDelivery = sandboxManifestCredentialDeliveryStatus(credentialProxy, req.Security)
+	metadata.CredentialDelivery = sandboxManifestCredentialDeliveryStatus(credentialProxy, req.Security, req.CredentialDeliveryActivation)
 	factorySandboxSanitizeCredentialProxyMetadata(metadata)
 }
 
@@ -159,16 +162,97 @@ func sandboxManifestCredentialProxySecretDeliveryIntent(req sandbox.SecurityEval
 	}
 }
 
-func sandboxManifestCredentialDeliveryStatus(projection sandbox.SandboxCredentialProxyProjection, req sandbox.SecurityEvaluationRequest) *sandbox.SandboxCredentialDeliveryStatusMetadata {
-	if projection.Plan == nil {
-		return nil
-	}
-	return sandbox.ProjectSandboxCredentialDeliveryStatusMetadata(sandbox.SandboxCredentialDeliveryStatusProjectionRequest{
+func sandboxManifestCredentialDeliveryStatus(projection sandbox.SandboxCredentialProxyProjection, req sandbox.SecurityEvaluationRequest, activation credentialDeliveryActivationResult) *sandbox.SandboxCredentialDeliveryStatusMetadata {
+	planStatus := sandbox.ProjectSandboxCredentialDeliveryStatusMetadata(sandbox.SandboxCredentialDeliveryStatusProjectionRequest{
 		Plan:                  projection.Plan,
 		Bindings:              projection.Bindings,
 		RequestedModes:        req.RequestedSecretModes,
 		CompatibilityAuthSync: req.CompatibilityAuthSync,
 	})
+	if activationStatus := sandboxManifestCredentialDeliveryActivationStatus(planStatus, activation); activationStatus != nil {
+		return activationStatus
+	}
+	return planStatus
+}
+
+func sandboxManifestCredentialDeliveryActivationStatus(planStatus *sandbox.SandboxCredentialDeliveryStatusMetadata, activation credentialDeliveryActivationResult) *sandbox.SandboxCredentialDeliveryStatusMetadata {
+	if credentialdelivery.SanitizeActivationResultMetadata(activation).ID == "" {
+		return nil
+	}
+	plan := sandboxCredentialDeliveryPlanFromStatus(planStatus)
+	if plan.ID == "" {
+		sanitizedActivation := credentialdelivery.SanitizeActivationResultMetadata(activation)
+		plan.ID = sanitizedActivation.PlanID
+		plan.RequestedModes = sanitizedActivation.RequestedModes
+		plan.Status = credentialdelivery.StatusPlanned
+	}
+	status := credentialdelivery.StatusMetadataFromActivation(plan, activation)
+	return sandboxCredentialDeliveryStatusFromCredentialDelivery(status)
+}
+
+func sandboxCredentialDeliveryPlanFromStatus(status *sandbox.SandboxCredentialDeliveryStatusMetadata) credentialdelivery.Plan {
+	if status == nil {
+		return credentialdelivery.Plan{}
+	}
+	sanitized := sandbox.SanitizeSandboxCredentialDeliveryStatusMetadata(*status)
+	if sanitized.ID == "" {
+		return credentialdelivery.Plan{}
+	}
+	planID := sanitized.PlanID
+	if planID == "" {
+		planID = sanitized.ID
+	}
+	return credentialdelivery.Plan{
+		ID:             planID,
+		RequestID:      sanitized.RequestID,
+		RequestedModes: sandboxCredentialDeliveryModesFromStrings(sanitized.RequestedModes),
+		Status:         credentialdelivery.Status(sanitized.Status),
+	}
+}
+
+func sandboxCredentialDeliveryStatusFromCredentialDelivery(status credentialdelivery.StatusMetadata) *sandbox.SandboxCredentialDeliveryStatusMetadata {
+	sanitized := credentialdelivery.SanitizeStatusMetadata(status)
+	if sanitized.ID == "" {
+		return nil
+	}
+	out := sandbox.SanitizeSandboxCredentialDeliveryStatusMetadata(sandbox.SandboxCredentialDeliveryStatusMetadata{
+		ID:             sanitized.ID,
+		RequestID:      sanitized.RequestID,
+		PlanID:         sanitized.PlanID,
+		ActivationID:   sanitized.ActivationID,
+		RequestedModes: sandboxCredentialDeliveryModeStrings(sanitized.RequestedModes),
+		ActiveModes:    sandboxCredentialDeliveryModeStrings(sanitized.ActiveModes),
+		Status:         string(sanitized.Status),
+		ReasonCode:     string(sanitized.ReasonCode),
+		WarningCount:   sanitized.WarningCount,
+		ErrorCount:     sanitized.ErrorCount,
+	})
+	if out.ID == "" {
+		return nil
+	}
+	return &out
+}
+
+func sandboxCredentialDeliveryModesFromStrings(modes []string) []credentialdelivery.Mode {
+	if modes == nil {
+		return nil
+	}
+	out := make([]credentialdelivery.Mode, 0, len(modes))
+	for _, mode := range modes {
+		out = append(out, credentialdelivery.Mode(mode))
+	}
+	return out
+}
+
+func sandboxCredentialDeliveryModeStrings(modes []credentialdelivery.Mode) []string {
+	if modes == nil {
+		return nil
+	}
+	out := make([]string, 0, len(modes))
+	for _, mode := range modes {
+		out = append(out, string(mode))
+	}
+	return out
 }
 
 func sandboxManifestSanitizedCredentialProxyProjection(projection sandbox.SandboxCredentialProxyProjection) sandbox.SandboxCredentialProxyProjection {

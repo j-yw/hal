@@ -12,6 +12,8 @@ type PlanConstructionRequest struct {
 	ResolvedBindings        []ResolvedBindingSecretMetadata
 	PolicySnapshot          *sandbox.SandboxNetworkPolicySnapshotIdentity
 	NetworkProxySession     *sandbox.SandboxNetworkProxySessionMetadata
+	NetworkEnforcementProof *sandbox.SandboxNetworkEnforcementProofMetadata
+	CredentialProxyPlan     *sandbox.SandboxCredentialProxyPlanMetadata
 	CredentialProxySession  *sandbox.SandboxCredentialProxySessionMetadata
 	CredentialProxyBindings []sandbox.SandboxCredentialProxyBindingMetadata
 }
@@ -38,7 +40,10 @@ func BuildDeliveryPlan(request PlanConstructionRequest) Plan {
 		return SanitizePlanMetadata(plan)
 	}
 	if requestedModes.contains(ModeHTTPProxy) {
-		plan.NetworkProxySessionID = activeHTTPProxyPlanSessionID(bindings, resolvedByBindingID, proxyContext)
+		if proof := activeHTTPProxyPlanProof(bindings, resolvedByBindingID, proxyContext); proof != nil {
+			plan.HTTPProxyProof = proof
+			plan.NetworkProxySessionID = proof.NetworkEnforcement.NetworkProxySessionID
+		}
 	}
 	if plan.NetworkProxySessionID != "" {
 		plan.ActiveModes = []Mode{ModeHTTPProxy}
@@ -108,7 +113,7 @@ func countPlanBindingsWithBrokerMetadata(bindings []Binding, resolvedByBindingID
 	return count
 }
 
-func activeHTTPProxyPlanSessionID(bindings []Binding, resolvedByBindingID map[string]ResolvedBindingSecretMetadata, proxyContext planProxyContext) string {
+func activeHTTPProxyPlanProof(bindings []Binding, resolvedByBindingID map[string]ResolvedBindingSecretMetadata, proxyContext planProxyContext) *HTTPProxyProof {
 	for _, binding := range bindings {
 		if binding.DeliveryMode != ModeHTTPProxy {
 			continue
@@ -120,14 +125,11 @@ func activeHTTPProxyPlanSessionID(bindings []Binding, resolvedByBindingID map[st
 		if !proxyContext.policyAllows(binding.PolicySnapshotID) {
 			continue
 		}
-		if sessionID := proxyContext.networkProxySessionForBinding(binding.NetworkProxySessionID); sessionID != "" {
-			return sessionID
-		}
-		if proxyContext.hasCredentialProxyBinding(resolved.BrokerSecret.ID) {
-			return proxyContext.defaultNetworkProxySessionID()
+		if proof := proxyContext.httpProxyActivationProof(binding, resolved); proof != nil {
+			return proof
 		}
 	}
-	return ""
+	return nil
 }
 
 func resolvedPlanBindingMatches(binding Binding, resolved ResolvedBindingSecretMetadata) bool {
@@ -187,17 +189,21 @@ func (p *Plan) addPlanError(code ErrorCode, field, bindingID string, mode Mode, 
 }
 
 type planProxyContext struct {
-	networkProxySessionID     string
-	credentialProxySessionID  string
-	credentialProxyNetworkID  string
-	policySnapshotIDs         map[string]struct{}
-	credentialProxySecretRefs map[string]struct{}
+	networkProxySessionID    string
+	networkEnforcementProof  sandbox.SandboxNetworkEnforcementProofMetadata
+	credentialProxyPlanID    string
+	credentialProxyPlanReady bool
+	credentialProxySessionID string
+	secretBrokerSessionID    string
+	credentialProxyNetworkID string
+	policySnapshotIDs        map[string]struct{}
+	credentialProxyBindings  map[string]sandbox.SandboxCredentialProxyBindingMetadata
 }
 
 func newPlanProxyContext(request PlanConstructionRequest) planProxyContext {
 	context := planProxyContext{
-		policySnapshotIDs:         make(map[string]struct{}),
-		credentialProxySecretRefs: make(map[string]struct{}),
+		policySnapshotIDs:       make(map[string]struct{}),
+		credentialProxyBindings: make(map[string]sandbox.SandboxCredentialProxyBindingMetadata),
 	}
 	context.addPolicySnapshot(request.PolicySnapshot)
 	if request.NetworkProxySession != nil {
@@ -207,10 +213,25 @@ func newPlanProxyContext(request PlanConstructionRequest) planProxyContext {
 		}
 		context.addPolicySnapshot(session.PolicySnapshot)
 	}
+	if request.NetworkEnforcementProof != nil {
+		context.networkEnforcementProof = sandbox.SanitizeSandboxNetworkEnforcementProofMetadata(*request.NetworkEnforcementProof)
+	}
+	if request.CredentialProxyPlan != nil {
+		plan := sandbox.SanitizeSandboxCredentialProxyPlanMetadata(*request.CredentialProxyPlan)
+		if plan.ID != "" {
+			context.credentialProxyPlanID = plan.ID
+			context.credentialProxyPlanReady = usableCredentialProxyStatus(plan.Status) &&
+				plan.Mode == sandbox.SandboxCredentialProxyModeBrokeredNetworkReference
+			context.secretBrokerSessionID = plan.SecretBrokerSessionID
+			context.credentialProxyNetworkID = plan.NetworkProxySessionID
+			context.addPolicySnapshot(plan.PolicySnapshot)
+		}
+	}
 	if request.CredentialProxySession != nil {
 		session := sandbox.SanitizeSandboxCredentialProxySessionMetadata(*request.CredentialProxySession)
-		if session.ID != "" {
+		if session.ID != "" && context.credentialProxySessionCorrelates(session) {
 			context.credentialProxySessionID = session.ID
+			context.secretBrokerSessionID = session.SecretBrokerSessionID
 			context.credentialProxyNetworkID = session.NetworkProxySessionID
 			context.addPolicySnapshot(session.PolicySnapshot)
 		}
@@ -219,8 +240,8 @@ func newPlanProxyContext(request PlanConstructionRequest) planProxyContext {
 	if len(context.policySnapshotIDs) == 0 {
 		context.policySnapshotIDs = nil
 	}
-	if len(context.credentialProxySecretRefs) == 0 {
-		context.credentialProxySecretRefs = nil
+	if len(context.credentialProxyBindings) == 0 {
+		context.credentialProxyBindings = nil
 	}
 	return context
 }
@@ -244,35 +265,55 @@ func (c *planProxyContext) addCredentialProxyBindings(bindings []sandbox.Sandbox
 		binding := sandbox.SanitizeSandboxCredentialProxyBindingMetadata(raw)
 		if binding.ID == "" ||
 			binding.DeliveryMode != sandbox.SandboxCredentialProxyDeliveryModeHTTPProxy ||
-			!c.credentialProxyBindingSessionMatches(binding) ||
+			!c.credentialProxyBindingPlanSessionMatches(binding) ||
 			!usableCredentialProxyBinding(binding) {
 			continue
 		}
-		c.credentialProxySecretRefs[binding.SecretID] = struct{}{}
+		c.credentialProxyBindings[binding.SecretID] = binding
 	}
 }
 
-func (c planProxyContext) credentialProxyBindingSessionMatches(binding sandbox.SandboxCredentialProxyBindingMetadata) bool {
-	if c.credentialProxySessionID != "" {
-		return binding.SessionID == "" || binding.SessionID == c.credentialProxySessionID
-	}
-	return c.networkProxySessionID != "" || c.credentialProxyNetworkID != ""
-}
-
-func usableCredentialProxyBinding(binding sandbox.SandboxCredentialProxyBindingMetadata) bool {
-	switch binding.Outcome {
-	case sandbox.SandboxCredentialProxyBindingOutcomeOmitted,
-		sandbox.SandboxCredentialProxyBindingOutcomeSkipped,
-		sandbox.SandboxCredentialProxyBindingOutcomeFailed:
+func (c planProxyContext) credentialProxySessionCorrelates(session sandbox.SandboxCredentialProxySessionMetadata) bool {
+	if !c.credentialProxyPlanReady ||
+		c.credentialProxyPlanID == "" ||
+		session.PlanID != c.credentialProxyPlanID ||
+		session.SecretBrokerSessionID == "" ||
+		session.NetworkProxySessionID == "" ||
+		!usableCredentialProxyStatus(session.Status) {
 		return false
 	}
-	switch binding.Status {
-	case sandbox.SandboxCredentialProxyStatusDisabled,
-		sandbox.SandboxCredentialProxyStatusSkipped,
-		sandbox.SandboxCredentialProxyStatusFailed:
+	if c.secretBrokerSessionID != "" && session.SecretBrokerSessionID != c.secretBrokerSessionID {
+		return false
+	}
+	if c.credentialProxyNetworkID != "" && session.NetworkProxySessionID != c.credentialProxyNetworkID {
 		return false
 	}
 	return true
+}
+
+func (c planProxyContext) credentialProxyBindingPlanSessionMatches(binding sandbox.SandboxCredentialProxyBindingMetadata) bool {
+	if !c.credentialProxyPlanReady || c.credentialProxyPlanID == "" || c.credentialProxySessionID == "" {
+		return false
+	}
+	return binding.PlanID == c.credentialProxyPlanID && binding.SessionID == c.credentialProxySessionID
+}
+
+func usableCredentialProxyBinding(binding sandbox.SandboxCredentialProxyBindingMetadata) bool {
+	if binding.Outcome != sandbox.SandboxCredentialProxyBindingOutcomeBound {
+		return false
+	}
+	return usableCredentialProxyStatus(binding.Status)
+}
+
+func usableCredentialProxyStatus(status sandbox.SandboxCredentialProxyStatus) bool {
+	switch status {
+	case sandbox.SandboxCredentialProxyStatusReady,
+		sandbox.SandboxCredentialProxyStatusActive,
+		sandbox.SandboxCredentialProxyStatusCompleted:
+		return true
+	default:
+		return false
+	}
 }
 
 func (c planProxyContext) policyAllows(bindingPolicySnapshotID string) bool {
@@ -301,15 +342,40 @@ func (c planProxyContext) defaultNetworkProxySessionID() string {
 	return c.networkProxySessionID
 }
 
-func (c planProxyContext) hasCredentialProxyBinding(secretRef string) bool {
-	if len(c.credentialProxySecretRefs) == 0 {
-		return false
+func (c planProxyContext) httpProxyActivationProof(binding Binding, resolved ResolvedBindingSecretMetadata) *HTTPProxyProof {
+	credentialBinding, ok := c.credentialProxyBindings[resolved.BrokerSecret.ID]
+	if !ok || c.secretBrokerSessionID == "" {
+		return nil
 	}
-	if c.networkProxySessionID == "" && c.credentialProxyNetworkID == "" {
-		return false
+	networkSessionID := c.networkProxySessionForBinding(binding.NetworkProxySessionID)
+	if networkSessionID == "" && credentialBinding.SessionID == c.credentialProxySessionID {
+		networkSessionID = c.defaultNetworkProxySessionID()
 	}
-	_, ok := c.credentialProxySecretRefs[secretRef]
-	return ok
+	if networkSessionID == "" ||
+		c.networkEnforcementProof.NetworkProxySessionID != networkSessionID ||
+		c.networkEnforcementProof.PolicySnapshotID == "" ||
+		!sandbox.SandboxNetworkEnforcementProofProvesActiveHTTPProxy(c.networkEnforcementProof) {
+		return nil
+	}
+	if binding.PolicySnapshotID == "" || c.networkEnforcementProof.PolicySnapshotID != binding.PolicySnapshotID {
+		return nil
+	}
+	if credentialBinding.SecretID != resolved.BrokerSecret.ID {
+		return nil
+	}
+	proof := SanitizeHTTPProxyProofMetadata(HTTPProxyProof{
+		BindingID:                binding.ID,
+		SecretID:                 resolved.BrokerSecret.ID,
+		SecretBrokerSessionID:    c.secretBrokerSessionID,
+		CredentialProxyPlanID:    c.credentialProxyPlanID,
+		CredentialProxySessionID: c.credentialProxySessionID,
+		CredentialProxyBindingID: credentialBinding.ID,
+		NetworkEnforcement:       &c.networkEnforcementProof,
+	})
+	if proof.BindingID == "" || proof.NetworkEnforcement == nil {
+		return nil
+	}
+	return &proof
 }
 
 type planModeSet struct {

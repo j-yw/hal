@@ -62,7 +62,7 @@ func TestBuildDeliveryPlanReportsRequestedAndActiveModesForEveryDeliveryMode(t *
 			binding := planBindingFixture(tt.mode)
 			request := planConstructionRequestFixture(binding)
 			if tt.proxyReady {
-				request.NetworkProxySession = planNetworkProxySessionFixture()
+				configureHTTPProxyProof(&request)
 			} else {
 				binding.NetworkProxySessionID = ""
 				request.Bindings = []Binding{binding}
@@ -106,16 +106,29 @@ func TestBuildDeliveryPlanPrefersHTTPProxyWithSafeCredentialProxySessionBinding(
 			Source:         sandbox.SandboxNetworkPolicyDecisionSourceRun,
 			PolicySnapshot: planPolicySnapshotFixture(),
 		},
+		NetworkEnforcementProof: planNetworkEnforcementProofFixture(),
+		CredentialProxyPlan: &sandbox.SandboxCredentialProxyPlanMetadata{
+			ID:                    "credential-proxy-plan-01",
+			Source:                sandbox.SandboxCredentialProxySourceRun,
+			SecretBrokerSessionID: "secret-broker-session-01",
+			NetworkProxySessionID: "network-proxy-session-01",
+			PolicySnapshot:        planPolicySnapshotFixture(),
+			BindingCount:          1,
+			Mode:                  sandbox.SandboxCredentialProxyModeBrokeredNetworkReference,
+			Status:                sandbox.SandboxCredentialProxyStatusReady,
+		},
 		CredentialProxySession: &sandbox.SandboxCredentialProxySessionMetadata{
 			ID:                    "credential-proxy-session-01",
 			PlanID:                "credential-proxy-plan-01",
 			Source:                sandbox.SandboxCredentialProxySourceRun,
 			NetworkProxySessionID: "network-proxy-session-01",
+			SecretBrokerSessionID: "secret-broker-session-01",
 			PolicySnapshot:        planPolicySnapshotFixture(),
 			Status:                sandbox.SandboxCredentialProxyStatusReady,
 		},
 		CredentialProxyBindings: []sandbox.SandboxCredentialProxyBindingMetadata{{
 			ID:           "credential-proxy-binding-01",
+			PlanID:       "credential-proxy-plan-01",
 			SessionID:    "credential-proxy-session-01",
 			SecretID:     binding.SecretRef,
 			DeliveryMode: sandbox.SandboxCredentialProxyDeliveryModeHTTPProxy,
@@ -130,6 +143,9 @@ func TestBuildDeliveryPlanPrefersHTTPProxyWithSafeCredentialProxySessionBinding(
 	assertPlanModes(t, got.ActiveModes, []Mode{ModeHTTPProxy})
 	if got.NetworkProxySessionID != "network-proxy-session-01" {
 		t.Fatalf("network proxy session id = %q, want safe credential proxy session network reference", got.NetworkProxySessionID)
+	}
+	if got.HTTPProxyProof == nil || got.HTTPProxyProof.NetworkEnforcement == nil {
+		t.Fatalf("http proxy proof = %#v, want broker and network proof metadata", got.HTTPProxyProof)
 	}
 	assertPlanWarning(t, got, WarningLegacyAuthCompatibility, ReasonCompatibilityMode, ModeLegacyAuthSync)
 	if len(got.Warnings) != 1 {
@@ -162,6 +178,126 @@ func TestBuildDeliveryPlanRecordsHTTPProxyRequestedButInactiveWithoutSafeProxyBi
 	}
 	assertPlanWarning(t, got, WarningActivationSkipped, ReasonMissingServiceBinding, ModeHTTPProxy)
 	assertPlanNoUnsafeLeak(t, got, "https://proxy.example.invalid/session?token=value", "proxy.example.invalid", "token=value")
+}
+
+func TestBuildDeliveryPlanHTTPProxyRequiresBrokerAndNetworkProofs(t *testing.T) {
+	binding := planBindingFixture(ModeHTTPProxy)
+	tests := []struct {
+		name      string
+		configure func(*PlanConstructionRequest)
+	}{
+		{
+			name: "broker only",
+			configure: func(request *PlanConstructionRequest) {
+				configureHTTPProxyProof(request)
+				request.NetworkEnforcementProof = nil
+			},
+		},
+		{
+			name: "network only",
+			configure: func(request *PlanConstructionRequest) {
+				request.NetworkProxySession = planNetworkProxySessionFixture()
+				request.NetworkEnforcementProof = planNetworkEnforcementProofFixture()
+				request.CredentialProxyPlan = nil
+				request.CredentialProxySession = nil
+				request.CredentialProxyBindings = nil
+			},
+		},
+		{
+			name: "credential proxy plan only",
+			configure: func(request *PlanConstructionRequest) {
+				configureHTTPProxyProof(request)
+				request.CredentialProxySession = nil
+				request.CredentialProxyBindings = nil
+				request.NetworkEnforcementProof = nil
+			},
+		},
+		{
+			name: "session id only",
+			configure: func(request *PlanConstructionRequest) {
+				request.NetworkProxySession = planNetworkProxySessionFixture()
+			},
+		},
+		{
+			name:      "requested mode only",
+			configure: func(request *PlanConstructionRequest) {},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := planConstructionRequestFixture(binding)
+			tt.configure(&request)
+
+			got := BuildDeliveryPlan(request)
+
+			assertPlanValid(t, got)
+			assertPlanModes(t, got.RequestedModes, []Mode{ModeHTTPProxy})
+			assertPlanModes(t, got.ActiveModes, nil)
+			if got.NetworkProxySessionID != "" || got.HTTPProxyProof != nil {
+				t.Fatalf("plan = %#v, want no active http_proxy proof", got)
+			}
+			assertPlanWarning(t, got, WarningActivationSkipped, ReasonMissingServiceBinding, ModeHTTPProxy)
+			assertPlanNoUnsafeLeak(t, got)
+		})
+	}
+}
+
+func TestBuildDeliveryPlanHTTPProxyDowngradesMismatchedProofIdentifiers(t *testing.T) {
+	binding := planBindingFixture(ModeHTTPProxy)
+	tests := []struct {
+		name      string
+		configure func(*PlanConstructionRequest)
+	}{
+		{
+			name: "plan mismatch",
+			configure: func(request *PlanConstructionRequest) {
+				request.CredentialProxyBindings[0].PlanID = "credential-proxy-plan-other"
+			},
+		},
+		{
+			name: "binding mismatch",
+			configure: func(request *PlanConstructionRequest) {
+				request.CredentialProxyBindings[0].SecretID = "env:OTHER_TOKEN"
+			},
+		},
+		{
+			name: "policy mismatch",
+			configure: func(request *PlanConstructionRequest) {
+				request.NetworkEnforcementProof.PolicySnapshotID = "policy-snapshot-other"
+			},
+		},
+		{
+			name: "broker mismatch",
+			configure: func(request *PlanConstructionRequest) {
+				request.CredentialProxySession.SecretBrokerSessionID = "secret-broker-session-other"
+			},
+		},
+		{
+			name: "proxy mismatch",
+			configure: func(request *PlanConstructionRequest) {
+				request.NetworkEnforcementProof.NetworkProxySessionID = "network-proxy-session-other"
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := planConstructionRequestFixture(binding)
+			configureHTTPProxyProof(&request)
+			tt.configure(&request)
+
+			got := BuildDeliveryPlan(request)
+
+			assertPlanValid(t, got)
+			assertPlanModes(t, got.ActiveModes, nil)
+			if got.NetworkProxySessionID != "" || got.HTTPProxyProof != nil {
+				t.Fatalf("plan = %#v, want mismatched proof downgraded", got)
+			}
+			assertPlanWarning(t, got, WarningActivationSkipped, ReasonMissingServiceBinding, ModeHTTPProxy)
+			assertPlanNoUnsafeLeak(t, got)
+		})
+	}
 }
 
 func planConstructionRequestFixture(binding Binding) PlanConstructionRequest {
@@ -201,6 +337,57 @@ func planNetworkProxySessionFixture() *sandbox.SandboxNetworkProxySessionMetadat
 		Source:         sandbox.SandboxNetworkPolicyDecisionSourceRun,
 		PolicySnapshot: planPolicySnapshotFixture(),
 	}
+}
+
+func planNetworkEnforcementProofFixture() *sandbox.SandboxNetworkEnforcementProofMetadata {
+	return &sandbox.SandboxNetworkEnforcementProofMetadata{
+		NetworkProxySessionID:    "network-proxy-session-01",
+		PolicySnapshotID:         "policy-snapshot-01",
+		NetworkEnforcementPlanID: "network-enforcement-plan-01",
+		ProxyLifecycleStatus:     "active",
+		ProxyLifecycleReasonCode: "active",
+		ResultOutcome:            "success",
+		ResultEnforcementMode:    sandbox.SandboxNetworkEnforcementModeProxyFirewall,
+		ResultSupported:          true,
+	}
+}
+
+func configureHTTPProxyProof(request *PlanConstructionRequest) {
+	if len(request.Bindings) == 0 {
+		return
+	}
+	binding := request.Bindings[0]
+	request.NetworkProxySession = planNetworkProxySessionFixture()
+	request.NetworkEnforcementProof = planNetworkEnforcementProofFixture()
+	request.CredentialProxyPlan = &sandbox.SandboxCredentialProxyPlanMetadata{
+		ID:                    "credential-proxy-plan-01",
+		Source:                sandbox.SandboxCredentialProxySourceRun,
+		SecretBrokerSessionID: "secret-broker-session-01",
+		NetworkProxySessionID: "network-proxy-session-01",
+		PolicySnapshot:        planPolicySnapshotFixture(),
+		BindingCount:          1,
+		Mode:                  sandbox.SandboxCredentialProxyModeBrokeredNetworkReference,
+		Status:                sandbox.SandboxCredentialProxyStatusReady,
+	}
+	request.CredentialProxySession = &sandbox.SandboxCredentialProxySessionMetadata{
+		ID:                    "credential-proxy-session-01",
+		PlanID:                "credential-proxy-plan-01",
+		Source:                sandbox.SandboxCredentialProxySourceRun,
+		SecretBrokerSessionID: "secret-broker-session-01",
+		NetworkProxySessionID: "network-proxy-session-01",
+		PolicySnapshot:        planPolicySnapshotFixture(),
+		Status:                sandbox.SandboxCredentialProxyStatusReady,
+	}
+	request.CredentialProxyBindings = []sandbox.SandboxCredentialProxyBindingMetadata{{
+		ID:           "credential-proxy-binding-01",
+		PlanID:       "credential-proxy-plan-01",
+		SessionID:    "credential-proxy-session-01",
+		SecretID:     binding.SecretRef,
+		DeliveryMode: sandbox.SandboxCredentialProxyDeliveryModeHTTPProxy,
+		Outcome:      sandbox.SandboxCredentialProxyBindingOutcomeBound,
+		Status:       sandbox.SandboxCredentialProxyStatusReady,
+		ReasonCode:   sandbox.SandboxCredentialProxyReasonRequested,
+	}}
 }
 
 func planPolicySnapshotFixture() *sandbox.SandboxNetworkPolicySnapshotIdentity {

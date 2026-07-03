@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jywlabs/hal/internal/credentialdelivery"
 	"github.com/jywlabs/hal/internal/sandbox"
 )
 
@@ -235,6 +236,118 @@ func TestProjectCredentialProxyMetadataFromSafeSecretBrokerNetworkAndSecurityInt
 	}
 }
 
+func TestFactoryCredentialProxyMetadataCanSatisfyHTTPProxyActivationProof(t *testing.T) {
+	broker := NewInMemorySecretBroker()
+	session, err := broker.CreateSession(SecretBrokerSessionRequest{
+		ID: "secret-broker-session-http-proxy",
+		ResolvedSecrets: []ResolvedRunSecret{{
+			Name:     "GITHUB_TOKEN",
+			Source:   RunSecretSourceEnv,
+			Required: true,
+			Value:    "ghp_factory_http_proxy_secret",
+		}},
+		RequestedDeliveryModes: []string{SecretBrokerDeliveryModeHTTPProxy},
+		ActiveDeliveryModes:    []string{SecretBrokerDeliveryModeHTTPProxy},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() unexpected error: %v", err)
+	}
+	binding := credentialdelivery.Binding{
+		ID:                    "binding-http-proxy",
+		PolicySnapshotID:      "policy-snapshot-01",
+		SecretRef:             session.Secrets[0].ID,
+		NetworkProxySessionID: "network-proxy-session-01",
+		ServiceID:             "service-source-control",
+		DestinationCategory:   credentialdelivery.DestinationPublicInternet,
+		DeliveryMode:          credentialdelivery.ModeHTTPProxy,
+		Status:                credentialdelivery.StatusPlanned,
+		ReasonCode:            credentialdelivery.ReasonRequested,
+	}
+	networkSession := sandbox.SandboxNetworkProxySessionMetadata{
+		ID:     "network-proxy-session-01",
+		Source: sandbox.SandboxNetworkPolicyDecisionSourceFactory,
+		PolicySnapshot: &sandbox.SandboxNetworkPolicySnapshotIdentity{
+			ID:     "policy-snapshot-01",
+			Preset: sandbox.SandboxNetworkPolicyPresetDenyByDefault,
+		},
+		EnforcementMode: sandbox.SandboxNetworkEnforcementModeProxyFirewall,
+	}
+	credentialPlan := CredentialProxyPlanMetadataFromSecretBrokerSession(SecretBrokerCredentialProxyPlanRequest{
+		ID:      "credential-proxy-plan-01",
+		Source:  sandbox.SandboxCredentialProxySourceFactory,
+		Session: session,
+		Status:  sandbox.SandboxCredentialProxyStatusReady,
+	})
+	credentialPlan.NetworkProxySessionID = networkSession.ID
+	credentialPlan.PolicySnapshot = networkSession.PolicySnapshot
+	credentialPlan.Mode = sandbox.SandboxCredentialProxyModeBrokeredNetworkReference
+	credentialPlan = sandbox.SanitizeSandboxCredentialProxyPlanMetadata(credentialPlan)
+	credentialSession := CredentialProxySessionMetadataFromSecretBrokerSession(SecretBrokerCredentialProxySessionRequest{
+		ID:      "credential-proxy-session-01",
+		PlanID:  credentialPlan.ID,
+		Source:  sandbox.SandboxCredentialProxySourceFactory,
+		Session: session,
+		Status:  sandbox.SandboxCredentialProxyStatusReady,
+	})
+	credentialSession.NetworkProxySessionID = networkSession.ID
+	credentialSession.PolicySnapshot = networkSession.PolicySnapshot
+	credentialSession = sandbox.SanitizeSandboxCredentialProxySessionMetadata(credentialSession)
+	credentialBinding := CredentialProxyBindingMetadataFromSecretBrokerSecret(SecretBrokerCredentialProxyBindingRequest{
+		ID:                  "credential-proxy-binding-01",
+		PlanID:              credentialPlan.ID,
+		SessionID:           credentialSession.ID,
+		Secret:              session.Secrets[0],
+		DeliveryMode:        SecretBrokerDeliveryModeHTTPProxy,
+		RequestCategory:     sandbox.SandboxCredentialProxyRequestSourceControl,
+		DestinationCategory: sandbox.SandboxNetworkPolicyDestinationPublicInternet,
+		Outcome:             sandbox.SandboxCredentialProxyBindingOutcomeBound,
+		Status:              sandbox.SandboxCredentialProxyStatusReady,
+		ReasonCode:          sandbox.SandboxCredentialProxyReasonRequested,
+	})
+	request := credentialdelivery.PlanConstructionRequest{
+		PlanID:              "delivery-plan-01",
+		RequestID:           "delivery-request-01",
+		RequestedModes:      []credentialdelivery.Mode{credentialdelivery.ModeHTTPProxy},
+		Bindings:            []credentialdelivery.Binding{binding},
+		ResolvedBindings:    []credentialdelivery.ResolvedBindingSecretMetadata{factoryResolvedHTTPProxyBinding(binding)},
+		PolicySnapshot:      networkSession.PolicySnapshot,
+		NetworkProxySession: &networkSession,
+		NetworkEnforcementProof: &sandbox.SandboxNetworkEnforcementProofMetadata{
+			NetworkProxySessionID:    networkSession.ID,
+			PolicySnapshotID:         "policy-snapshot-01",
+			NetworkEnforcementPlanID: "network-enforcement-plan-01",
+			ProxyLifecycleStatus:     "active",
+			ProxyLifecycleReasonCode: "active",
+			ResultOutcome:            "success",
+			ResultEnforcementMode:    sandbox.SandboxNetworkEnforcementModeProxyFirewall,
+			ResultSupported:          true,
+		},
+		CredentialProxyPlan:     &credentialPlan,
+		CredentialProxySession:  &credentialSession,
+		CredentialProxyBindings: []sandbox.SandboxCredentialProxyBindingMetadata{credentialBinding},
+	}
+
+	active := credentialdelivery.BuildDeliveryPlan(request)
+	if active.HTTPProxyProof == nil || active.NetworkProxySessionID != networkSession.ID {
+		t.Fatalf("active plan = %#v, want http_proxy proof from factory broker metadata", active)
+	}
+	withoutBroker := request
+	withoutBroker.CredentialProxySession = nil
+	inactive := credentialdelivery.BuildDeliveryPlan(withoutBroker)
+	if inactive.HTTPProxyProof != nil || len(inactive.ActiveModes) != 0 {
+		t.Fatalf("inactive plan = %#v, want broker removal to fail closed", inactive)
+	}
+
+	data, err := json.Marshal(struct {
+		Active   credentialdelivery.Plan `json:"active"`
+		Inactive credentialdelivery.Plan `json:"inactive"`
+	}{Active: active, Inactive: inactive})
+	if err != nil {
+		t.Fatalf("json.Marshal(plans) error: %v", err)
+	}
+	assertCredentialProxyFactoryNoRawPayload(t, string(data), "ghp_factory_http_proxy_secret", "credentialValue", "Authorization", "Bearer")
+}
+
 func TestProjectCredentialProxyMetadataPreservesExplicitEmptyBrokerMetadata(t *testing.T) {
 	session := SecretBrokerSessionMetadata{
 		ID:      "secret-broker-session-empty",
@@ -258,6 +371,20 @@ func TestProjectCredentialProxyMetadataPreservesExplicitEmptyBrokerMetadata(t *t
 	}
 	if len(projection.Bindings) != 0 {
 		t.Fatalf("projection.Bindings = %#v, want empty", projection.Bindings)
+	}
+}
+
+func factoryResolvedHTTPProxyBinding(binding credentialdelivery.Binding) credentialdelivery.ResolvedBindingSecretMetadata {
+	return credentialdelivery.ResolvedBindingSecretMetadata{
+		BindingID:    binding.ID,
+		SecretRef:    binding.SecretRef,
+		DeliveryMode: binding.DeliveryMode,
+		BrokerSecret: credentialdelivery.BrokerSecretMetadata{
+			ID:       binding.SecretRef,
+			Source:   "broker",
+			Required: true,
+			Present:  true,
+		},
 	}
 }
 

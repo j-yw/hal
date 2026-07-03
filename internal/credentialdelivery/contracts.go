@@ -3,7 +3,11 @@
 // identifiers and enum-like state, not secret material or live adapter details.
 package credentialdelivery
 
-import "strconv"
+import (
+	"strconv"
+
+	"github.com/jywlabs/hal/internal/sandbox"
+)
 
 // Mode is a stable metadata identifier for a supported delivery mode.
 type Mode string
@@ -190,12 +194,25 @@ type Plan struct {
 	ID                    string           `json:"id"`
 	RequestID             string           `json:"requestId,omitempty"`
 	NetworkProxySessionID string           `json:"networkProxySessionId,omitempty"`
+	HTTPProxyProof        *HTTPProxyProof  `json:"httpProxyProof,omitempty"`
 	RequestedModes        []Mode           `json:"requestedModes,omitempty"`
 	ActiveModes           []Mode           `json:"activeModes,omitempty"`
 	BindingCount          int              `json:"bindingCount,omitempty"`
 	Status                Status           `json:"status,omitempty"`
 	Warnings              []Warning        `json:"warnings,omitempty"`
 	Errors                []SanitizedError `json:"errors,omitempty"`
+}
+
+// HTTPProxyProof records the safe broker and network-enforcement proof IDs
+// that allow an http_proxy binding to become active after adapter activation.
+type HTTPProxyProof struct {
+	BindingID                string                                          `json:"bindingId,omitempty"`
+	SecretID                 string                                          `json:"secretId,omitempty"`
+	SecretBrokerSessionID    string                                          `json:"secretBrokerSessionId,omitempty"`
+	CredentialProxyPlanID    string                                          `json:"credentialProxyPlanId,omitempty"`
+	CredentialProxySessionID string                                          `json:"credentialProxySessionId,omitempty"`
+	CredentialProxyBindingID string                                          `json:"credentialProxyBindingId,omitempty"`
+	NetworkEnforcement       *sandbox.SandboxNetworkEnforcementProofMetadata `json:"networkEnforcement,omitempty"`
 }
 
 // ActivationRequest is the redaction-safe adapter input for an activation

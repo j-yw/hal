@@ -136,6 +136,101 @@ var forbiddenSandboxruntimeNetworkEnforcementImports = []sandboxruntimeForbidden
 	},
 }
 
+var forbiddenSandboxruntimeCredentialDeliveryActivationImports = []sandboxruntimeForbiddenImport{
+	{name: "cmd package", match: moduleImportMatcher("github.com/jywlabs/hal/cmd")},
+	{name: "factory orchestration package", match: moduleImportMatcher("github.com/jywlabs/hal/internal/factory")},
+	{name: "worker package", match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxworker")},
+	{name: "credential delivery activation implementation package", match: moduleImportMatcher("github.com/jywlabs/hal/internal/credentialdelivery")},
+	{name: "concrete provider package", match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandbox/provider")},
+	{name: "concrete runtime package", match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman")},
+	{name: "concrete runtime package", match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/sshmachine")},
+	{name: "concrete runtime package", match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/microvm")},
+	{
+		name: "network client or HTTP server package",
+		match: func(importPath string) bool {
+			switch importPath {
+			case "net", "net/http", "net/http/httputil", "net/rpc", "net/smtp":
+				return true
+			default:
+				return strings.HasPrefix(importPath, "net/http/") ||
+					strings.HasPrefix(importPath, "google.golang.org/grpc") ||
+					strings.HasPrefix(importPath, "github.com/gorilla/websocket")
+			}
+		},
+	},
+	{
+		name: "process execution package",
+		match: func(importPath string) bool {
+			return importPath == "os/exec"
+		},
+	},
+	{
+		name: "HTTP proxy implementation package",
+		match: func(importPath string) bool {
+			return strings.HasPrefix(importPath, "golang.org/x/net/proxy") ||
+				strings.HasPrefix(importPath, "github.com/elazarl/goproxy") ||
+				strings.HasPrefix(importPath, "github.com/armon/go-socks5")
+		},
+	},
+	{
+		name: "SSH agent implementation package",
+		match: func(importPath string) bool {
+			return strings.HasPrefix(importPath, "golang.org/x/crypto/ssh") ||
+				strings.HasPrefix(importPath, "github.com/gliderlabs/ssh")
+		},
+	},
+	{
+		name: "tmpfs, mount, or filesystem mutation package",
+		match: func(importPath string) bool {
+			switch importPath {
+			case "io/fs", "os", "os/user", "path/filepath", "plugin", "syscall":
+				return true
+			default:
+				return strings.HasPrefix(importPath, "github.com/spf13/afero") ||
+					strings.HasPrefix(importPath, "golang.org/x/sys") ||
+					strings.HasPrefix(importPath, "bazil.org/fuse") ||
+					strings.HasPrefix(importPath, "github.com/hanwen/go-fuse")
+			}
+		},
+	},
+	{
+		name: "Docker or Podman package",
+		match: func(importPath string) bool {
+			return strings.HasPrefix(importPath, "github.com/docker/docker") ||
+				strings.HasPrefix(importPath, "github.com/containers/podman") ||
+				strings.HasPrefix(importPath, "github.com/containers/image") ||
+				strings.HasPrefix(importPath, "github.com/containers/storage") ||
+				strings.HasPrefix(importPath, "github.com/containers/buildah")
+		},
+	},
+	{
+		name: "KVM or microVM SDK package",
+		match: func(importPath string) bool {
+			lower := strings.ToLower(importPath)
+			return strings.Contains(lower, "firecracker") ||
+				strings.Contains(lower, "cloud-hypervisor") ||
+				strings.Contains(lower, "cloudhypervisor") ||
+				strings.Contains(lower, "libvirt") ||
+				strings.Contains(lower, "qemu") ||
+				strings.Contains(lower, "kvm")
+		},
+	},
+	{
+		name: "cloud SDK package",
+		match: func(importPath string) bool {
+			return strings.HasPrefix(importPath, "github.com/digitalocean/godo") ||
+				strings.HasPrefix(importPath, "github.com/aws/aws-sdk-go") ||
+				strings.HasPrefix(importPath, "github.com/aws/aws-sdk-go-v2") ||
+				strings.HasPrefix(importPath, "github.com/Azure/azure-sdk-for-go") ||
+				strings.HasPrefix(importPath, "github.com/hetznercloud/hcloud-go") ||
+				strings.HasPrefix(importPath, "github.com/linode/linodego") ||
+				strings.HasPrefix(importPath, "github.com/vultr/govultr") ||
+				strings.HasPrefix(importPath, "cloud.google.com/go") ||
+				strings.HasPrefix(importPath, "google.golang.org/api")
+		},
+	},
+}
+
 func TestSandboxruntimeImportsStayCommandAgnostic(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -162,6 +257,91 @@ func TestSandboxruntimeImportsStayCommandAgnostic(t *testing.T) {
 				t.Fatal(message)
 			}
 		}
+	}
+}
+
+func TestSandboxruntimeCredentialDeliveryActivationImportsStayMetadataOnly(t *testing.T) {
+	fset := token.NewFileSet()
+	for _, path := range []string{"credential_delivery.go"} {
+		file, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("ParseFile(%s) error: %v", path, err)
+		}
+		for _, spec := range file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("unquote import %s in %s: %v", spec.Path.Value, path, err)
+			}
+			if message := sandboxruntimeCredentialDeliveryActivationImportBoundaryMessage(path, importPath); message != "" {
+				t.Fatal(message)
+			}
+		}
+	}
+}
+
+func TestSandboxruntimeCredentialDeliveryActivationForbiddenImportListCoversLiveSurfaces(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		importPath string
+		want       string
+	}{
+		{name: "cmd", importPath: "github.com/jywlabs/hal/cmd", want: "cmd package"},
+		{name: "factory", importPath: "github.com/jywlabs/hal/internal/factory", want: "factory orchestration package"},
+		{name: "credential delivery activation implementation", importPath: "github.com/jywlabs/hal/internal/credentialdelivery", want: "credential delivery activation implementation package"},
+		{name: "worker", importPath: "github.com/jywlabs/hal/internal/sandboxworker", want: "worker package"},
+		{name: "provider", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/daytona", want: "concrete provider package"},
+		{name: "rootless Podman runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman", want: "concrete runtime package"},
+		{name: "microVM runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker", want: "concrete runtime package"},
+		{name: "network", importPath: "net", want: "network client or HTTP server package"},
+		{name: "HTTP", importPath: "net/http", want: "network client or HTTP server package"},
+		{name: "process", importPath: "os/exec", want: "process execution package"},
+		{name: "filesystem mutation", importPath: "os", want: "tmpfs, mount, or filesystem mutation package"},
+		{name: "path helper", importPath: "path/filepath", want: "tmpfs, mount, or filesystem mutation package"},
+		{name: "tmpfs mount", importPath: "golang.org/x/sys/unix", want: "tmpfs, mount, or filesystem mutation package"},
+		{name: "HTTP proxy", importPath: "golang.org/x/net/proxy", want: "HTTP proxy implementation package"},
+		{name: "SSH agent", importPath: "golang.org/x/crypto/ssh/agent", want: "SSH agent implementation package"},
+		{name: "Docker", importPath: "github.com/docker/docker/client", want: "Docker or Podman package"},
+		{name: "Podman", importPath: "github.com/containers/podman/v5/pkg/bindings", want: "Docker or Podman package"},
+		{name: "Firecracker", importPath: "github.com/firecracker-microvm/firecracker-go-sdk", want: "KVM or microVM SDK package"},
+		{name: "cloud SDK", importPath: "github.com/aws/aws-sdk-go-v2/service/secretsmanager", want: "cloud SDK package"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			message := sandboxruntimeCredentialDeliveryActivationImportBoundaryMessage("credential_delivery.go", tt.importPath)
+			if !strings.Contains(message, tt.want) || !strings.Contains(message, tt.importPath) {
+				t.Fatalf("boundary message = %q, want %q rejection for %q", message, tt.want, tt.importPath)
+			}
+		})
+	}
+}
+
+func TestSandboxruntimeCredentialDeliveryActivationAllowsMetadataHelpersOnly(t *testing.T) {
+	for _, importPath := range []string{
+		"encoding/json",
+		"strings",
+	} {
+		t.Run(importPath, func(t *testing.T) {
+			if message := sandboxruntimeCredentialDeliveryActivationImportBoundaryMessage("credential_delivery.go", importPath); message != "" {
+				t.Fatalf("import %q unexpectedly failed activation metadata boundary check: %s", importPath, message)
+			}
+		})
+	}
+
+	for _, importPath := range []string{
+		"context",
+		"errors",
+		"fmt",
+		"io",
+		"time",
+		"github.com/jywlabs/hal/internal/credentialdelivery",
+		"github.com/jywlabs/hal/internal/sandbox",
+		"gopkg.in/yaml.v3",
+	} {
+		t.Run(importPath, func(t *testing.T) {
+			message := sandboxruntimeCredentialDeliveryActivationImportBoundaryMessage("credential_delivery.go", importPath)
+			if !strings.Contains(message, importPath) {
+				t.Fatalf("boundary message = %q, want rejected activation metadata import path %q", message, importPath)
+			}
+		})
 	}
 }
 
@@ -274,6 +454,35 @@ func TestSandboxruntimeImportBoundaryMessageIncludesPackageAndForbiddenImport(t 
 	}
 	if !strings.Contains(message, importPath) {
 		t.Fatalf("message %q does not include forbidden import path %q", message, importPath)
+	}
+}
+
+func sandboxruntimeCredentialDeliveryActivationImportBoundaryMessage(fileName, importPath string) string {
+	if forbidden := sandboxruntimeCredentialDeliveryActivationForbiddenImportFor(importPath); forbidden != nil {
+		return fmt.Sprintf("package %s file %s imports forbidden %s %q", sandboxruntimePackagePath, fileName, forbidden.name, importPath)
+	}
+	if sandboxruntimeCredentialDeliveryActivationAllowedImport(importPath) {
+		return ""
+	}
+	return fmt.Sprintf("package %s file %s imports unsupported dependency %q; keep credential delivery activation metadata on approved standard-library helpers only", sandboxruntimePackagePath, fileName, importPath)
+}
+
+func sandboxruntimeCredentialDeliveryActivationForbiddenImportFor(importPath string) *sandboxruntimeForbiddenImport {
+	for i := range forbiddenSandboxruntimeCredentialDeliveryActivationImports {
+		if forbiddenSandboxruntimeCredentialDeliveryActivationImports[i].match(importPath) {
+			return &forbiddenSandboxruntimeCredentialDeliveryActivationImports[i]
+		}
+	}
+	return nil
+}
+
+func sandboxruntimeCredentialDeliveryActivationAllowedImport(importPath string) bool {
+	switch importPath {
+	case "encoding/json",
+		"strings":
+		return true
+	default:
+		return false
 	}
 }
 

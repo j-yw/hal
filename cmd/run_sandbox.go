@@ -55,25 +55,26 @@ type runSandboxOptions struct {
 }
 
 type runSandboxRequest struct {
-	ExecutionID               string
-	JSON                      bool
-	Iterations                int
-	SandboxName               string
-	SandboxHostID             string
-	SandboxRuntime            string
-	ProjectDir                string
-	WorkDir                   string
-	RepoRemote                string
-	BaseBranch                string
-	RunBranch                 string
-	RemoteCommand             []string
-	Flags                     runSandboxRunFlags
-	SyncOut                   sandboxSyncOutOptions
-	Workspace                 *sandbox.SandboxWorkspace
-	WorkspacePlan             *sandboxworkspace.Plan
-	Security                  sandbox.SecurityEvaluationRequest
-	NetworkProxySession       *sandbox.SandboxNetworkProxySessionMetadata
-	NetworkPolicyDecisionLogs []sandbox.SandboxNetworkPolicyDecisionLogRecord
+	ExecutionID                  string
+	JSON                         bool
+	Iterations                   int
+	SandboxName                  string
+	SandboxHostID                string
+	SandboxRuntime               string
+	ProjectDir                   string
+	WorkDir                      string
+	RepoRemote                   string
+	BaseBranch                   string
+	RunBranch                    string
+	RemoteCommand                []string
+	Flags                        runSandboxRunFlags
+	SyncOut                      sandboxSyncOutOptions
+	Workspace                    *sandbox.SandboxWorkspace
+	WorkspacePlan                *sandboxworkspace.Plan
+	Security                     sandbox.SecurityEvaluationRequest
+	NetworkProxySession          *sandbox.SandboxNetworkProxySessionMetadata
+	NetworkPolicyDecisionLogs    []sandbox.SandboxNetworkPolicyDecisionLogRecord
+	CredentialDeliveryActivation credentialDeliveryActivationResult
 }
 
 type runSandboxExecutionResult struct {

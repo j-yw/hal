@@ -71,6 +71,21 @@ type SandboxNetworkProxySessionMetadata struct {
 	EnforcementMode string                                `json:"enforcementMode,omitempty"`
 }
 
+// SandboxNetworkEnforcementProofMetadata captures the safe Phase 45 proof
+// labels required before metadata-only proxy references can be treated as live
+// network enforcement. It carries no endpoints, sockets, rules, processes, or
+// raw destinations.
+type SandboxNetworkEnforcementProofMetadata struct {
+	NetworkProxySessionID    string `json:"networkProxySessionId,omitempty"`
+	PolicySnapshotID         string `json:"policySnapshotId,omitempty"`
+	NetworkEnforcementPlanID string `json:"networkEnforcementPlanId,omitempty"`
+	ProxyLifecycleStatus     string `json:"proxyLifecycleStatus,omitempty"`
+	ProxyLifecycleReasonCode string `json:"proxyLifecycleReasonCode,omitempty"`
+	ResultOutcome            string `json:"resultOutcome,omitempty"`
+	ResultEnforcementMode    string `json:"resultEnforcementMode,omitempty"`
+	ResultSupported          bool   `json:"resultSupported,omitempty"`
+}
+
 // SandboxNetworkPolicyRequestSummary is the sanitized request surface available
 // to policy decision logs.
 type SandboxNetworkPolicyRequestSummary struct {

@@ -58,26 +58,27 @@ type autoSandboxOptions struct {
 }
 
 type autoSandboxRequest struct {
-	ExecutionID               string
-	JSON                      bool
-	Args                      []string
-	SandboxName               string
-	SandboxHostID             string
-	SandboxRuntime            string
-	ProjectDir                string
-	WorkDir                   string
-	RepoRemote                string
-	BaseBranch                string
-	RunBranch                 string
-	RemoteCommand             []string
-	Env                       map[string]string
-	Flags                     autoSandboxOptions
-	SyncOut                   sandboxSyncOutOptions
-	Workspace                 *sandbox.SandboxWorkspace
-	WorkspacePlan             *sandboxworkspace.Plan
-	Security                  sandbox.SecurityEvaluationRequest
-	NetworkProxySession       *sandbox.SandboxNetworkProxySessionMetadata
-	NetworkPolicyDecisionLogs []sandbox.SandboxNetworkPolicyDecisionLogRecord
+	ExecutionID                  string
+	JSON                         bool
+	Args                         []string
+	SandboxName                  string
+	SandboxHostID                string
+	SandboxRuntime               string
+	ProjectDir                   string
+	WorkDir                      string
+	RepoRemote                   string
+	BaseBranch                   string
+	RunBranch                    string
+	RemoteCommand                []string
+	Env                          map[string]string
+	Flags                        autoSandboxOptions
+	SyncOut                      sandboxSyncOutOptions
+	Workspace                    *sandbox.SandboxWorkspace
+	WorkspacePlan                *sandboxworkspace.Plan
+	Security                     sandbox.SecurityEvaluationRequest
+	NetworkProxySession          *sandbox.SandboxNetworkProxySessionMetadata
+	NetworkPolicyDecisionLogs    []sandbox.SandboxNetworkPolicyDecisionLogRecord
+	CredentialDeliveryActivation credentialDeliveryActivationResult
 }
 
 type autoSandboxExecutionResult struct {

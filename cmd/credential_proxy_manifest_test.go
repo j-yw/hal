@@ -823,6 +823,9 @@ func findCredentialProxyPersistenceFieldViolations(t *testing.T) []string {
 					if !phase26IsCredentialProxyJSONField(jsonName) {
 						continue
 					}
+					if phase26ApprovedCredentialProxyReferenceField(file.Name.Name, typeSpec.Name.Name, jsonName) {
+						continue
+					}
 					if !phase26ApprovedCredentialProxySurface(file.Name.Name, typeSpec.Name.Name) {
 						pos := fset.Position(field.Pos())
 						violations = append(violations, pos.String()+": "+file.Name.Name+"."+typeSpec.Name.Name+" has unapproved credential proxy JSON field "+jsonName)
@@ -873,6 +876,18 @@ func assertNoDirectCredentialProxyJSONFields(t *testing.T, label string, typ ref
 func phase26ApprovedCredentialProxySurface(pkgName, typeName string) bool {
 	return (pkgName == "sandboxexecution" && typeName == "Manifest") ||
 		(pkgName == "factory" && typeName == "SandboxMetadata")
+}
+
+func phase26ApprovedCredentialProxyReferenceField(pkgName, typeName, jsonName string) bool {
+	if pkgName != "credentialdelivery" || typeName != "HTTPProxyProof" {
+		return false
+	}
+	switch jsonName {
+	case "credentialProxyPlanId", "credentialProxySessionId", "credentialProxyBindingId":
+		return true
+	default:
+		return false
+	}
 }
 
 func phase26IsCredentialProxyJSONField(name string) bool {
@@ -931,6 +946,7 @@ func phase26CredentialProxyPlumbingGuardTargets() []phase26CredentialProxyPlumbi
 			path: "credential_proxy_plumbing.go",
 			allowedImports: []string{
 				"strings",
+				"github.com/jywlabs/hal/internal/credentialdelivery",
 				"github.com/jywlabs/hal/internal/factory",
 				"github.com/jywlabs/hal/internal/sandbox",
 				"github.com/jywlabs/hal/internal/sandboxexecution",
