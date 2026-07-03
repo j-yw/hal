@@ -152,6 +152,45 @@ func SanitizeSandboxNetworkProxySessionMetadata(session SandboxNetworkProxySessi
 	return sanitized
 }
 
+// SanitizeSandboxNetworkEnforcementProofMetadata returns a normalized safe
+// copy of active-enforcement proof labels. Unsafe IDs or unsupported status
+// labels are cleared so callers can fail closed.
+func SanitizeSandboxNetworkEnforcementProofMetadata(proof SandboxNetworkEnforcementProofMetadata) SandboxNetworkEnforcementProofMetadata {
+	sanitized := normalizeSandboxNetworkEnforcementProofMetadata(proof)
+	sanitized.NetworkProxySessionID = sanitizeSandboxNetworkProxyIdentifier(sanitized.NetworkProxySessionID)
+	sanitized.PolicySnapshotID = sanitizeSandboxNetworkProxyIdentifier(sanitized.PolicySnapshotID)
+	sanitized.NetworkEnforcementPlanID = sanitizeSandboxNetworkProxyIdentifier(sanitized.NetworkEnforcementPlanID)
+	sanitized.ProxyLifecycleStatus = sanitizeSandboxNetworkEnforcementLifecycleStatus(sanitized.ProxyLifecycleStatus)
+	sanitized.ProxyLifecycleReasonCode = sanitizeSandboxNetworkEnforcementLifecycleReasonCode(sanitized.ProxyLifecycleReasonCode)
+	sanitized.ResultOutcome = sanitizeSandboxNetworkEnforcementResultOutcome(sanitized.ResultOutcome)
+	sanitized.ResultEnforcementMode = sanitizeSandboxNetworkProxyEnforcementModeValue(sanitized.ResultEnforcementMode)
+	return sanitized
+}
+
+// SandboxNetworkEnforcementProofProvesActiveHTTPProxy returns true only for
+// sanitized proof metadata that shows an active proxy lifecycle and a
+// successful supported proxy-capable enforcement result.
+func SandboxNetworkEnforcementProofProvesActiveHTTPProxy(proof SandboxNetworkEnforcementProofMetadata) bool {
+	sanitized := SanitizeSandboxNetworkEnforcementProofMetadata(proof)
+	if sanitized.NetworkProxySessionID == "" ||
+		sanitized.PolicySnapshotID == "" ||
+		sanitized.NetworkEnforcementPlanID == "" {
+		return false
+	}
+	if sanitized.ProxyLifecycleStatus != "active" ||
+		sanitized.ProxyLifecycleReasonCode != "active" ||
+		sanitized.ResultOutcome != "success" ||
+		!sanitized.ResultSupported {
+		return false
+	}
+	switch sanitized.ResultEnforcementMode {
+	case SandboxNetworkEnforcementModeProxy, SandboxNetworkEnforcementModeProxyFirewall:
+		return true
+	default:
+		return false
+	}
+}
+
 // SanitizeSandboxNetworkPolicyDecisionLogRecord returns a normalized copy of a
 // policy decision-log record safe for durable manifests and records.
 func SanitizeSandboxNetworkPolicyDecisionLogRecord(record SandboxNetworkPolicyDecisionLogRecord) SandboxNetworkPolicyDecisionLogRecord {
@@ -202,6 +241,19 @@ func normalizeSandboxNetworkProxySessionMetadata(session SandboxNetworkProxySess
 		}
 	}
 	return normalized
+}
+
+func normalizeSandboxNetworkEnforcementProofMetadata(proof SandboxNetworkEnforcementProofMetadata) SandboxNetworkEnforcementProofMetadata {
+	return SandboxNetworkEnforcementProofMetadata{
+		NetworkProxySessionID:    strings.TrimSpace(proof.NetworkProxySessionID),
+		PolicySnapshotID:         strings.TrimSpace(proof.PolicySnapshotID),
+		NetworkEnforcementPlanID: strings.TrimSpace(proof.NetworkEnforcementPlanID),
+		ProxyLifecycleStatus:     strings.ToLower(strings.TrimSpace(proof.ProxyLifecycleStatus)),
+		ProxyLifecycleReasonCode: strings.ToLower(strings.TrimSpace(proof.ProxyLifecycleReasonCode)),
+		ResultOutcome:            strings.ToLower(strings.TrimSpace(proof.ResultOutcome)),
+		ResultEnforcementMode:    normalizeSandboxNetworkProxyEnforcementMode(proof.ResultEnforcementMode),
+		ResultSupported:          proof.ResultSupported,
+	}
 }
 
 func normalizeSandboxNetworkPolicyDecisionLogRecord(record SandboxNetworkPolicyDecisionLogRecord) SandboxNetworkPolicyDecisionLogRecord {
@@ -322,6 +374,36 @@ func sanitizeSandboxNetworkProxyEnforcementModeValue(mode string) string {
 		return ""
 	}
 	return mode
+}
+
+func sanitizeSandboxNetworkEnforcementLifecycleStatus(status string) string {
+	status = strings.ToLower(strings.TrimSpace(status))
+	switch status {
+	case "requested", "planned", "prepared", "starting", "applying", "active", "rolling_back", "cleaning_up", "stopped", "failed", "skipped":
+		return status
+	default:
+		return ""
+	}
+}
+
+func sanitizeSandboxNetworkEnforcementLifecycleReasonCode(reason string) string {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	switch reason {
+	case "prepared", "started", "applied", "active", "stopped", "skipped", "adapter_unsupported", "adapter_failed", "capability_missing", "cleanup_failed", "rollback_failed", "active_check_failed":
+		return reason
+	default:
+		return ""
+	}
+}
+
+func sanitizeSandboxNetworkEnforcementResultOutcome(outcome string) string {
+	outcome = strings.ToLower(strings.TrimSpace(outcome))
+	switch outcome {
+	case "success", "best_effort", "unsupported", "failure":
+		return outcome
+	default:
+		return ""
+	}
 }
 
 func sanitizeSandboxNetworkProxyLabel(value string) string {

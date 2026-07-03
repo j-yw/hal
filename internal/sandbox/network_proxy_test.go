@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -95,6 +96,115 @@ func TestNetworkProxySessionMetadataJSONSchema(t *testing.T) {
 		"preset",
 		"ruleSetId",
 	})
+}
+
+func TestNetworkEnforcementProofMetadataSanitizesActiveProxyProof(t *testing.T) {
+	proof := SanitizeSandboxNetworkEnforcementProofMetadata(SandboxNetworkEnforcementProofMetadata{
+		NetworkProxySessionID:    " network-proxy-session-01 ",
+		PolicySnapshotID:         " policy-snapshot-01 ",
+		NetworkEnforcementPlanID: " network-plan-01 ",
+		ProxyLifecycleStatus:     " ACTIVE ",
+		ProxyLifecycleReasonCode: " ACTIVE ",
+		ResultOutcome:            " SUCCESS ",
+		ResultEnforcementMode:    " PROXY_FIREWALL ",
+		ResultSupported:          true,
+	})
+
+	if proof.NetworkProxySessionID != "network-proxy-session-01" ||
+		proof.PolicySnapshotID != "policy-snapshot-01" ||
+		proof.NetworkEnforcementPlanID != "network-plan-01" ||
+		proof.ProxyLifecycleStatus != "active" ||
+		proof.ProxyLifecycleReasonCode != "active" ||
+		proof.ResultOutcome != "success" ||
+		proof.ResultEnforcementMode != SandboxNetworkEnforcementModeProxyFirewall ||
+		!proof.ResultSupported {
+		t.Fatalf("proof = %#v, want sanitized active proof", proof)
+	}
+	if !SandboxNetworkEnforcementProofProvesActiveHTTPProxy(proof) {
+		t.Fatalf("proof = %#v, want active http proxy enforcement proof", proof)
+	}
+
+	got := mustMarshalObject(t, proof)
+	assertObjectKeys(t, got, []string{
+		"networkProxySessionId",
+		"policySnapshotId",
+		"networkEnforcementPlanId",
+		"proxyLifecycleStatus",
+		"proxyLifecycleReasonCode",
+		"resultOutcome",
+		"resultEnforcementMode",
+		"resultSupported",
+	}, forbiddenNetworkProxyRawFieldNames())
+}
+
+func TestNetworkEnforcementProofMetadataDoesNotTreatRequestedOrPartialMetadataAsActive(t *testing.T) {
+	active := SandboxNetworkEnforcementProofMetadata{
+		NetworkProxySessionID:    "network-proxy-session-01",
+		PolicySnapshotID:         "policy-snapshot-01",
+		NetworkEnforcementPlanID: "network-plan-01",
+		ProxyLifecycleStatus:     "active",
+		ProxyLifecycleReasonCode: "active",
+		ResultOutcome:            "success",
+		ResultEnforcementMode:    SandboxNetworkEnforcementModeProxyFirewall,
+		ResultSupported:          true,
+	}
+	tests := []struct {
+		name      string
+		configure func(*SandboxNetworkEnforcementProofMetadata)
+	}{
+		{
+			name: "session id only",
+			configure: func(proof *SandboxNetworkEnforcementProofMetadata) {
+				*proof = SandboxNetworkEnforcementProofMetadata{NetworkProxySessionID: "network-proxy-session-01"}
+			},
+		},
+		{
+			name: "proxy lifecycle requested",
+			configure: func(proof *SandboxNetworkEnforcementProofMetadata) {
+				proof.ProxyLifecycleStatus = "requested"
+			},
+		},
+		{
+			name: "best effort result",
+			configure: func(proof *SandboxNetworkEnforcementProofMetadata) {
+				proof.ResultOutcome = "best_effort"
+			},
+		},
+		{
+			name: "unsupported result",
+			configure: func(proof *SandboxNetworkEnforcementProofMetadata) {
+				proof.ResultSupported = false
+			},
+		},
+		{
+			name: "firewall only result",
+			configure: func(proof *SandboxNetworkEnforcementProofMetadata) {
+				proof.ResultEnforcementMode = SandboxNetworkEnforcementModeFirewall
+			},
+		},
+		{
+			name: "unsafe identifiers",
+			configure: func(proof *SandboxNetworkEnforcementProofMetadata) {
+				proof.NetworkProxySessionID = "https://proxy.example.invalid/session?token=value"
+				proof.PolicySnapshotID = "/tmp/policy"
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proof := active
+			tt.configure(&proof)
+			if SandboxNetworkEnforcementProofProvesActiveHTTPProxy(proof) {
+				t.Fatalf("proof = %#v, want non-active http proxy proof", proof)
+			}
+			data, err := json.Marshal(SanitizeSandboxNetworkEnforcementProofMetadata(proof))
+			if err != nil {
+				t.Fatalf("json.Marshal(proof) error: %v", err)
+			}
+			assertNetworkProxyPayloadExcludes(t, string(data), "https://", "example.invalid", "/tmp/", "token=value")
+		})
+	}
 }
 
 func TestNetworkPolicyDecisionLogRecordJSONSchema(t *testing.T) {
@@ -232,5 +342,18 @@ func forbiddenNetworkProxyRawFieldNameFragments() []string {
 		"socketpath",
 		"credential",
 		"secret",
+	}
+}
+
+func assertNetworkProxyPayloadExcludes(t *testing.T, payload string, forbiddenValues ...string) {
+	t.Helper()
+
+	for _, forbidden := range forbiddenValues {
+		if forbidden == "" {
+			continue
+		}
+		if strings.Contains(payload, forbidden) {
+			t.Fatalf("payload leaked forbidden value %q in %s", forbidden, payload)
+		}
 	}
 }

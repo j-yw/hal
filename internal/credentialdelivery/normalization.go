@@ -1,6 +1,10 @@
 package credentialdelivery
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/jywlabs/hal/internal/sandbox"
+)
 
 // NormalizeRequestMetadata returns a deterministic copy of credential delivery
 // request metadata before validation or persistence.
@@ -110,6 +114,7 @@ func NormalizePlanMetadata(plan Plan) Plan {
 		ID:                    strings.TrimSpace(plan.ID),
 		RequestID:             strings.TrimSpace(plan.RequestID),
 		NetworkProxySessionID: strings.TrimSpace(plan.NetworkProxySessionID),
+		HTTPProxyProof:        NormalizeHTTPProxyProofMetadataPtr(plan.HTTPProxyProof),
 		RequestedModes:        normalizeModeRecords(plan.RequestedModes),
 		ActiveModes:           normalizeModeRecords(plan.ActiveModes),
 		BindingCount:          plan.BindingCount,
@@ -117,6 +122,34 @@ func NormalizePlanMetadata(plan Plan) Plan {
 		Warnings:              NormalizeWarningMetadataRecords(plan.Warnings),
 		Errors:                NormalizeSanitizedErrorRecords(plan.Errors),
 	}
+}
+
+// NormalizeHTTPProxyProofMetadata returns a deterministic copy of safe
+// http_proxy activation proof metadata before validation or persistence.
+func NormalizeHTTPProxyProofMetadata(proof HTTPProxyProof) HTTPProxyProof {
+	normalized := HTTPProxyProof{
+		BindingID:                strings.TrimSpace(proof.BindingID),
+		SecretID:                 strings.TrimSpace(proof.SecretID),
+		SecretBrokerSessionID:    strings.TrimSpace(proof.SecretBrokerSessionID),
+		CredentialProxyPlanID:    strings.TrimSpace(proof.CredentialProxyPlanID),
+		CredentialProxySessionID: strings.TrimSpace(proof.CredentialProxySessionID),
+		CredentialProxyBindingID: strings.TrimSpace(proof.CredentialProxyBindingID),
+	}
+	if proof.NetworkEnforcement != nil {
+		network := sandbox.SanitizeSandboxNetworkEnforcementProofMetadata(*proof.NetworkEnforcement)
+		normalized.NetworkEnforcement = &network
+	}
+	return normalized
+}
+
+// NormalizeHTTPProxyProofMetadataPtr returns a normalized pointer copy while
+// preserving nil inputs.
+func NormalizeHTTPProxyProofMetadataPtr(proof *HTTPProxyProof) *HTTPProxyProof {
+	if proof == nil {
+		return nil
+	}
+	normalized := NormalizeHTTPProxyProofMetadata(*proof)
+	return &normalized
 }
 
 // NormalizeActivationResultMetadata returns a deterministic copy of durable

@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/sandbox"
 )
 
 func TestSupportedModes(t *testing.T) {
@@ -224,10 +226,28 @@ func TestPlanJSONContract(t *testing.T) {
 		ID:                    "delivery-plan-01",
 		RequestID:             "delivery-request-01",
 		NetworkProxySessionID: "network-proxy-session-01",
-		RequestedModes:        []Mode{ModeHTTPProxy, ModeLegacyAuthSync},
-		ActiveModes:           []Mode{ModeHTTPProxy},
-		BindingCount:          2,
-		Status:                StatusPlanned,
+		HTTPProxyProof: &HTTPProxyProof{
+			BindingID:                "binding-01",
+			SecretID:                 "secret-ref-01",
+			SecretBrokerSessionID:    "secret-broker-session-01",
+			CredentialProxyPlanID:    "credential-proxy-plan-01",
+			CredentialProxySessionID: "credential-proxy-session-01",
+			CredentialProxyBindingID: "credential-proxy-binding-01",
+			NetworkEnforcement: &sandbox.SandboxNetworkEnforcementProofMetadata{
+				NetworkProxySessionID:    "network-proxy-session-01",
+				PolicySnapshotID:         "policy-snapshot-01",
+				NetworkEnforcementPlanID: "network-enforcement-plan-01",
+				ProxyLifecycleStatus:     "active",
+				ProxyLifecycleReasonCode: "active",
+				ResultOutcome:            "success",
+				ResultEnforcementMode:    sandbox.SandboxNetworkEnforcementModeProxyFirewall,
+				ResultSupported:          true,
+			},
+		},
+		RequestedModes: []Mode{ModeHTTPProxy, ModeLegacyAuthSync},
+		ActiveModes:    []Mode{ModeHTTPProxy},
+		BindingCount:   2,
+		Status:         StatusPlanned,
 		Warnings: []Warning{{
 			Code:       WarningLegacyAuthCompatibility,
 			ReasonCode: ReasonCompatibilityMode,
@@ -245,6 +265,7 @@ func TestPlanJSONContract(t *testing.T) {
 		"id",
 		"requestId",
 		"networkProxySessionId",
+		"httpProxyProof",
 		"requestedModes",
 		"activeModes",
 		"bindingCount",
@@ -252,17 +273,80 @@ func TestPlanJSONContract(t *testing.T) {
 		"warnings",
 		"errors",
 	}, forbiddenRawFieldNames())
+	assertObjectKeys(t, got["httpProxyProof"].(map[string]any), []string{
+		"bindingId",
+		"secretId",
+		"secretBrokerSessionId",
+		"credentialProxyPlanId",
+		"credentialProxySessionId",
+		"credentialProxyBindingId",
+		"networkEnforcement",
+	}, forbiddenRawFieldNames())
 
 	minimal := mustMarshalObject(t, Plan{ID: "delivery-plan-02"})
 	assertObjectKeys(t, minimal, []string{"id"}, []string{
 		"requestId",
 		"networkProxySessionId",
+		"httpProxyProof",
 		"requestedModes",
 		"activeModes",
 		"bindingCount",
 		"status",
 		"warnings",
 		"errors",
+	})
+}
+
+func TestHTTPProxyProofJSONContract(t *testing.T) {
+	proof := HTTPProxyProof{
+		BindingID:                "binding-01",
+		SecretID:                 "secret-ref-01",
+		SecretBrokerSessionID:    "secret-broker-session-01",
+		CredentialProxyPlanID:    "credential-proxy-plan-01",
+		CredentialProxySessionID: "credential-proxy-session-01",
+		CredentialProxyBindingID: "credential-proxy-binding-01",
+		NetworkEnforcement: &sandbox.SandboxNetworkEnforcementProofMetadata{
+			NetworkProxySessionID:    "network-proxy-session-01",
+			PolicySnapshotID:         "policy-snapshot-01",
+			NetworkEnforcementPlanID: "network-enforcement-plan-01",
+			ProxyLifecycleStatus:     "active",
+			ProxyLifecycleReasonCode: "active",
+			ResultOutcome:            "success",
+			ResultEnforcementMode:    sandbox.SandboxNetworkEnforcementModeProxyFirewall,
+			ResultSupported:          true,
+		},
+	}
+
+	got := mustMarshalObject(t, proof)
+	assertObjectKeys(t, got, []string{
+		"bindingId",
+		"secretId",
+		"secretBrokerSessionId",
+		"credentialProxyPlanId",
+		"credentialProxySessionId",
+		"credentialProxyBindingId",
+		"networkEnforcement",
+	}, forbiddenRawFieldNames())
+	assertObjectKeys(t, got["networkEnforcement"].(map[string]any), []string{
+		"networkProxySessionId",
+		"policySnapshotId",
+		"networkEnforcementPlanId",
+		"proxyLifecycleStatus",
+		"proxyLifecycleReasonCode",
+		"resultOutcome",
+		"resultEnforcementMode",
+		"resultSupported",
+	}, forbiddenRawFieldNames())
+
+	minimal := mustMarshalObject(t, HTTPProxyProof{})
+	assertObjectKeys(t, minimal, []string{}, []string{
+		"bindingId",
+		"secretId",
+		"secretBrokerSessionId",
+		"credentialProxyPlanId",
+		"credentialProxySessionId",
+		"credentialProxyBindingId",
+		"networkEnforcement",
 	})
 }
 
@@ -518,12 +602,22 @@ func TestJSONTagsAreStable(t *testing.T) {
 		{field: "ID", name: "id"},
 		{field: "RequestID", name: "requestId", omitempty: true},
 		{field: "NetworkProxySessionID", name: "networkProxySessionId", omitempty: true},
+		{field: "HTTPProxyProof", name: "httpProxyProof", omitempty: true},
 		{field: "RequestedModes", name: "requestedModes", omitempty: true},
 		{field: "ActiveModes", name: "activeModes", omitempty: true},
 		{field: "BindingCount", name: "bindingCount", omitempty: true},
 		{field: "Status", name: "status", omitempty: true},
 		{field: "Warnings", name: "warnings", omitempty: true},
 		{field: "Errors", name: "errors", omitempty: true},
+	})
+	assertJSONTags(t, reflect.TypeOf(HTTPProxyProof{}), []jsonTagExpectation{
+		{field: "BindingID", name: "bindingId", omitempty: true},
+		{field: "SecretID", name: "secretId", omitempty: true},
+		{field: "SecretBrokerSessionID", name: "secretBrokerSessionId", omitempty: true},
+		{field: "CredentialProxyPlanID", name: "credentialProxyPlanId", omitempty: true},
+		{field: "CredentialProxySessionID", name: "credentialProxySessionId", omitempty: true},
+		{field: "CredentialProxyBindingID", name: "credentialProxyBindingId", omitempty: true},
+		{field: "NetworkEnforcement", name: "networkEnforcement", omitempty: true},
 	})
 	assertJSONTags(t, reflect.TypeOf(ActivationRequest{}), []jsonTagExpectation{
 		{field: "ActivationID", name: "activationId", omitempty: true},
@@ -589,6 +683,7 @@ func TestContractsExposeNoRawValueFields(t *testing.T) {
 		reflect.TypeOf(ResolvedBindingSecretMetadata{}),
 		reflect.TypeOf(SecretResolutionResult{}),
 		reflect.TypeOf(Plan{}),
+		reflect.TypeOf(HTTPProxyProof{}),
 		reflect.TypeOf(ActivationRequest{}),
 		reflect.TypeOf(ActivationResult{}),
 		reflect.TypeOf(BindingActivationResult{}),

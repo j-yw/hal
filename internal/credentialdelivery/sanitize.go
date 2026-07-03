@@ -1,5 +1,7 @@
 package credentialdelivery
 
+import "github.com/jywlabs/hal/internal/sandbox"
+
 // SanitizeRequestMetadata returns a durable-safe copy of credential delivery
 // request metadata. A missing or unsafe required ID returns the zero value so
 // callers can omit the record before persistence.
@@ -133,12 +135,64 @@ func SanitizePlanMetadata(plan Plan) Plan {
 	}
 	sanitized.RequestID = sanitizeIdentifier(sanitized.RequestID)
 	sanitized.NetworkProxySessionID = sanitizeIdentifier(sanitized.NetworkProxySessionID)
+	sanitized.HTTPProxyProof = SanitizeHTTPProxyProofMetadataPtr(sanitized.HTTPProxyProof)
 	sanitized.RequestedModes = sanitizeOptionalModeRecords(sanitized.RequestedModes)
 	sanitized.ActiveModes = sanitizeOptionalModeRecords(sanitized.ActiveModes)
 	sanitized.Status = sanitizeStatusValue(sanitized.Status)
 	sanitized.Warnings = SanitizeWarningMetadataRecords(sanitized.Warnings)
 	sanitized.Errors = SanitizeSanitizedErrorRecords(sanitized.Errors)
 	return sanitized
+}
+
+// SanitizeHTTPProxyProofMetadata returns a durable-safe copy of activation
+// proof metadata. Unsafe optional proof fields are cleared so activation fails
+// closed unless every required proof predicate matches.
+func SanitizeHTTPProxyProofMetadata(proof HTTPProxyProof) HTTPProxyProof {
+	sanitized := NormalizeHTTPProxyProofMetadata(proof)
+	sanitized.BindingID = sanitizeIdentifier(sanitized.BindingID)
+	sanitized.SecretID = sanitizeSecretReference(sanitized.SecretID)
+	sanitized.SecretBrokerSessionID = sanitizeIdentifier(sanitized.SecretBrokerSessionID)
+	sanitized.CredentialProxyPlanID = sanitizeIdentifier(sanitized.CredentialProxyPlanID)
+	sanitized.CredentialProxySessionID = sanitizeIdentifier(sanitized.CredentialProxySessionID)
+	sanitized.CredentialProxyBindingID = sanitizeIdentifier(sanitized.CredentialProxyBindingID)
+	if sanitized.NetworkEnforcement != nil {
+		network := sandbox.SanitizeSandboxNetworkEnforcementProofMetadata(*sanitized.NetworkEnforcement)
+		if network.NetworkProxySessionID == "" &&
+			network.PolicySnapshotID == "" &&
+			network.NetworkEnforcementPlanID == "" &&
+			network.ProxyLifecycleStatus == "" &&
+			network.ProxyLifecycleReasonCode == "" &&
+			network.ResultOutcome == "" &&
+			network.ResultEnforcementMode == "" &&
+			!network.ResultSupported {
+			sanitized.NetworkEnforcement = nil
+		} else {
+			sanitized.NetworkEnforcement = &network
+		}
+	}
+	if sanitized.BindingID == "" &&
+		sanitized.SecretID == "" &&
+		sanitized.SecretBrokerSessionID == "" &&
+		sanitized.CredentialProxyPlanID == "" &&
+		sanitized.CredentialProxySessionID == "" &&
+		sanitized.CredentialProxyBindingID == "" &&
+		sanitized.NetworkEnforcement == nil {
+		return HTTPProxyProof{}
+	}
+	return sanitized
+}
+
+// SanitizeHTTPProxyProofMetadataPtr returns nil when proof metadata is absent
+// or completely unsafe.
+func SanitizeHTTPProxyProofMetadataPtr(proof *HTTPProxyProof) *HTTPProxyProof {
+	if proof == nil {
+		return nil
+	}
+	sanitized := SanitizeHTTPProxyProofMetadata(*proof)
+	if sanitized == (HTTPProxyProof{}) {
+		return nil
+	}
+	return &sanitized
 }
 
 // SanitizeActivationResultMetadata returns a durable-safe copy of delivery

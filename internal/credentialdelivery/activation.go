@@ -3,6 +3,8 @@ package credentialdelivery
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/jywlabs/hal/internal/sandbox"
 )
 
 // ActivationAdapter is the narrow boundary for credential delivery activation.
@@ -331,6 +333,21 @@ func httpProxyActivationAllowed(plan Plan, binding Binding) bool {
 	if !activationModeRecordsContain(plan.RequestedModes, ModeHTTPProxy) ||
 		!activationModeRecordsContain(plan.ActiveModes, ModeHTTPProxy) ||
 		plan.NetworkProxySessionID == "" {
+		return false
+	}
+	proof := SanitizeHTTPProxyProofMetadataPtr(plan.HTTPProxyProof)
+	if proof == nil ||
+		proof.NetworkEnforcement == nil ||
+		proof.BindingID != binding.ID ||
+		proof.SecretID != binding.SecretRef ||
+		proof.NetworkEnforcement.NetworkProxySessionID != plan.NetworkProxySessionID ||
+		proof.NetworkEnforcement.PolicySnapshotID == "" ||
+		proof.NetworkEnforcement.PolicySnapshotID != binding.PolicySnapshotID ||
+		proof.SecretBrokerSessionID == "" ||
+		proof.CredentialProxyPlanID == "" ||
+		proof.CredentialProxySessionID == "" ||
+		proof.CredentialProxyBindingID == "" ||
+		!sandbox.SandboxNetworkEnforcementProofProvesActiveHTTPProxy(*proof.NetworkEnforcement) {
 		return false
 	}
 	return binding.NetworkProxySessionID == "" || binding.NetworkProxySessionID == plan.NetworkProxySessionID
