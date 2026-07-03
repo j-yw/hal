@@ -60,7 +60,7 @@ func TestPhase36SandboxdDefaultsDoNotImportOrConstructExplicitFirecrackerLiveDri
 	}
 }
 
-func TestPhase36ExplicitLiveDriverGuardCoversRequiredSurfaces(t *testing.T) {
+func TestPhase36FirecrackerExplicitLiveDriverGuardCoversRequiredSurfaces(t *testing.T) {
 	all := append([]string{}, phase35DefaultCLIProductionFiles(t)...)
 	all = append(all, phase35FactoryProductionFiles(t)...)
 	all = append(all, phase35ProductionFilesInDirs(t, filepath.Join("..", "internal", "sandboxexec"))...)
@@ -100,7 +100,7 @@ func TestPhase36ExplicitLiveDriverGuardCoversRequiredSurfaces(t *testing.T) {
 	}
 }
 
-func TestPhase36ExplicitLiveDriverGuardRejectsFixtures(t *testing.T) {
+func TestPhase36FirecrackerExplicitLiveDriverGuardRejectsFixtures(t *testing.T) {
 	importFixtures := []struct {
 		name       string
 		importPath string
