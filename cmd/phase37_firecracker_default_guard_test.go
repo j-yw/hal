@@ -103,11 +103,18 @@ func TestPhase37FirecrackerGuestReadinessGuardCoversRequiredDefaultSurfaces(t *t
 	}
 }
 
-func TestPhase37ExplicitSandboxdFirecrackerLiveDriverPathDoesNotWireGuestReadiness(t *testing.T) {
+func TestPhase37ExplicitSandboxdFirecrackerLiveDriverPathAllowsConfiguredGuestReadiness(t *testing.T) {
 	source, _ := phase39ReadExplicitSandboxdFirecrackerLiveDriver(t)
 	for _, marker := range []string{
+		"NewGuestAgentEndpointAdapters",
+		"GuestReadinessProbe:",
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("%s missing configured guest readiness marker %q", phase39ExplicitSandboxdFirecrackerLiveDriverPath, marker)
+		}
+	}
+	for _, marker := range []string{
 		"GuestReadinessWaiter",
-		"GuestReadinessProbe",
 		"WithGuestReadinessProbe",
 		"WithGuestReadinessTimeout",
 		"WithGuestReadinessPollInterval",
@@ -119,7 +126,7 @@ func TestPhase37ExplicitSandboxdFirecrackerLiveDriverPathDoesNotWireGuestReadine
 		"GuestReadiness:",
 	} {
 		if strings.Contains(source, marker) {
-			t.Fatalf("%s contains guest readiness marker %q; the Phase 39 sandboxd exception is only for explicit live-driver construction", phase39ExplicitSandboxdFirecrackerLiveDriverPath, marker)
+			t.Fatalf("%s contains guest readiness marker %q outside endpoint-based live-driver wiring", phase39ExplicitSandboxdFirecrackerLiveDriverPath, marker)
 		}
 	}
 }
