@@ -87,6 +87,7 @@ func TestManifestJSONFieldsAndSandboxMetadataTypes(t *testing.T) {
 	assertFieldType(t, manifestType, "CredentialProxyPlan", reflect.TypeOf((*sandbox.SandboxCredentialProxyPlanMetadata)(nil)))
 	assertFieldType(t, manifestType, "CredentialProxySession", reflect.TypeOf((*sandbox.SandboxCredentialProxySessionMetadata)(nil)))
 	assertFieldType(t, manifestType, "CredentialProxyBindings", reflect.TypeOf([]sandbox.SandboxCredentialProxyBindingMetadata(nil)))
+	assertFieldType(t, manifestType, "CredentialDelivery", reflect.TypeOf((*sandbox.SandboxCredentialDeliveryStatusMetadata)(nil)))
 	assertFieldType(t, manifestType, "Lease", reflect.TypeOf((*sandbox.SandboxLeaseRef)(nil)))
 	assertFieldType(t, manifestType, "WorkerRouting", reflect.TypeOf((*sandbox.WorkerRoutingMetadata)(nil)))
 
@@ -194,6 +195,13 @@ func TestManifestJSONFieldsAndSandboxMetadataTypes(t *testing.T) {
 			Status:              sandbox.SandboxCredentialProxyStatusActive,
 			ReasonCode:          sandbox.SandboxCredentialProxyReasonRequested,
 		}},
+		CredentialDelivery: &sandbox.SandboxCredentialDeliveryStatusMetadata{
+			ID:             "credential-plan-01",
+			PlanID:         "credential-plan-01",
+			RequestedModes: []string{sandbox.SandboxSecretModeHTTPProxy},
+			Status:         "planned",
+			WarningCount:   1,
+		},
 		Lease: &sandbox.SandboxLeaseRef{
 			ID:            "lease-1",
 			HostID:        "host-1",
@@ -244,7 +252,7 @@ func TestManifestJSONFieldsAndSandboxMetadataTypes(t *testing.T) {
 		"id", "purpose", "sandboxName", "projectDir", "command", "workDir",
 		"status", "startedAt", "finishedAt", "workspace", "host", "runtime",
 		"security", "networkProxySession", "networkPolicyDecisionLogs",
-		"credentialProxyPlan", "credentialProxySession", "credentialProxyBindings",
+		"credentialProxyPlan", "credentialProxySession", "credentialProxyBindings", "credentialDelivery",
 		"lease", "workerRouting", "artifacts", "artifactMetadata",
 	})
 	proxySession, ok := got["networkProxySession"].(map[string]any)
@@ -280,6 +288,16 @@ func TestManifestJSONFieldsAndSandboxMetadataTypes(t *testing.T) {
 		"id", "planId", "sessionId", "secretId", "deliveryMode", "requestCategory",
 		"destinationCategory", "outcome", "status", "reasonCode",
 	})
+	credentialDelivery, ok := got["credentialDelivery"].(map[string]any)
+	if !ok {
+		t.Fatalf("credentialDelivery should be an object, got %T", got["credentialDelivery"])
+	}
+	assertJSONKeys(t, credentialDelivery, []string{
+		"id", "planId", "requestedModes", "status", "warningCount",
+	})
+	if _, ok := credentialDelivery["activeModes"]; ok {
+		t.Fatalf("plan-only credentialDelivery must not include activeModes: %#v", credentialDelivery)
+	}
 	lease, ok := got["lease"].(map[string]any)
 	if !ok {
 		t.Fatalf("lease should be an object, got %T", got["lease"])
@@ -347,6 +365,9 @@ func TestManifestUnmarshalWithoutArtifactMetadata(t *testing.T) {
 	}
 	if len(manifest.CredentialProxyBindings) != 0 {
 		t.Fatalf("CredentialProxyBindings = %#v, want empty for legacy manifest", manifest.CredentialProxyBindings)
+	}
+	if manifest.CredentialDelivery != nil {
+		t.Fatalf("CredentialDelivery = %#v, want nil for legacy manifest", manifest.CredentialDelivery)
 	}
 	if len(manifest.Artifacts) != 1 || manifest.Artifacts[0].StoredPath != "exec-1/artifacts/log.txt" {
 		t.Fatalf("legacy artifacts = %#v, want preserved artifact", manifest.Artifacts)

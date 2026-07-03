@@ -70,6 +70,22 @@ type RuntimeMetadata struct {
 	ProcessLaunch      *RuntimeProcessLaunchMetadata      `json:"processLaunch,omitempty"`
 	GuestReadiness     *RuntimeGuestReadinessMetadata     `json:"guestReadiness,omitempty"`
 	NetworkEnforcement *RuntimeNetworkEnforcementMetadata `json:"networkEnforcement,omitempty"`
+	CredentialDelivery *RuntimeCredentialDeliveryMetadata `json:"credentialDelivery,omitempty"`
+}
+
+// RuntimeCredentialDeliveryMetadata is a stdlib-only compact credential
+// delivery summary for runtime and worker protocol surfaces.
+type RuntimeCredentialDeliveryMetadata struct {
+	ID             string   `json:"id,omitempty"`
+	RequestID      string   `json:"requestId,omitempty"`
+	PlanID         string   `json:"planId,omitempty"`
+	ActivationID   string   `json:"activationId,omitempty"`
+	RequestedModes []string `json:"requestedModes,omitempty"`
+	ActiveModes    []string `json:"activeModes,omitempty"`
+	Status         string   `json:"status,omitempty"`
+	ReasonCode     string   `json:"reasonCode,omitempty"`
+	WarningCount   int      `json:"warningCount,omitempty"`
+	ErrorCount     int      `json:"errorCount,omitempty"`
 }
 
 // RuntimeProcessLaunchMetadata captures sanitized process-launch state labels.

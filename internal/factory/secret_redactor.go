@@ -172,6 +172,18 @@ func (r RunSecretRedactor) redactSandboxMetadata(sandbox *SandboxMetadata) *Sand
 	safe.CredentialProxyPlan = r.redactSandboxCredentialProxyPlanMetadata(safe.CredentialProxyPlan)
 	safe.CredentialProxySession = r.redactSandboxCredentialProxySessionMetadata(safe.CredentialProxySession)
 	safe.CredentialProxyBindings = r.redactSandboxCredentialProxyBindingMetadata(safe.CredentialProxyBindings)
+	safe.CredentialDelivery = r.redactCredentialDeliveryStatusMetadata(safe.CredentialDelivery)
+	return &safe
+}
+
+func (r RunSecretRedactor) redactCredentialDeliveryStatusMetadata(status *sandbox.SandboxCredentialDeliveryStatusMetadata) *sandbox.SandboxCredentialDeliveryStatusMetadata {
+	if status == nil {
+		return nil
+	}
+	safe := sandbox.SanitizeSandboxCredentialDeliveryStatusMetadata(*status)
+	if safe.ID == "" {
+		return nil
+	}
 	return &safe
 }
 
