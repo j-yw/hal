@@ -105,11 +105,12 @@ type HostCost struct {
 
 // SandboxRuntimeState represents durable Sandbox Runtime v2 runtime metadata.
 type SandboxRuntimeState struct {
-	Driver         string `json:"driver"`
-	IsolationLevel string `json:"isolationLevel"`
-	RuntimeID      string `json:"runtimeId"`
-	Image          string `json:"image"`
-	WorkerID       string `json:"workerId"`
+	Driver         string                       `json:"driver"`
+	IsolationLevel string                       `json:"isolationLevel"`
+	RuntimeID      string                       `json:"runtimeId"`
+	Image          string                       `json:"image"`
+	WorkerID       string                       `json:"workerId"`
+	TemplateLock   *SandboxTemplateLockMetadata `json:"templateLock,omitempty"`
 }
 
 // SandboxWorkspace represents durable Sandbox Runtime v2 workspace metadata.
