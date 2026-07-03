@@ -106,7 +106,7 @@ func TestPhase38FirecrackerLiveGuestTransportGuardCoversRequiredDefaultSurfaces(
 func TestPhase38ExplicitSandboxdFirecrackerLiveDriverPathAllowsConfiguredGuestTransport(t *testing.T) {
 	source, _ := phase39ReadExplicitSandboxdFirecrackerLiveDriver(t)
 	for _, marker := range []string{
-		"NewGuestTransportFromEndpoint",
+		"NewGuestAgentEndpointAdapters",
 		"GuestTransport:",
 	} {
 		if !strings.Contains(source, marker) {

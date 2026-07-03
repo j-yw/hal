@@ -30,6 +30,7 @@ hal sandboxd [flags]
       --firecracker-boot-poll-interval duration   host-side Firecracker boot acceptance poll interval; 0 uses the live driver default
       --firecracker-boot-timeout duration         host-side Firecracker boot acceptance timeout; 0 uses the live driver default
       --firecracker-executable string             Firecracker executable path for the microvm driver
+      --firecracker-guest-agent-endpoint string   optional local Unix socket endpoint for Firecracker guest-agent readiness, exec, and copy transport
       --firecracker-initrd string                 optional initrd image path for the microvm driver
       --firecracker-jailer string                 optional Firecracker jailer executable path for the microvm driver
       --firecracker-kernel string                 kernel image path for the microvm driver

@@ -27,6 +27,31 @@ func TestNewGuestTransportFromEndpointBuildsGuestAgentTransport(t *testing.T) {
 	}
 }
 
+func TestNewGuestAgentEndpointAdaptersBuildTransportAndReadinessProbe(t *testing.T) {
+	adapters, err := NewGuestAgentEndpointAdapters(GuestAgentEndpointOptions{
+		Endpoint: "unix:///tmp/hal-guest-agent.sock",
+	})
+	if err != nil {
+		t.Fatalf("NewGuestAgentEndpointAdapters() error = %v, want nil", err)
+	}
+	if _, ok := adapters.GuestTransport.(*GuestAgentTransport); !ok {
+		t.Fatalf("GuestTransport = %T, want *GuestAgentTransport", adapters.GuestTransport)
+	}
+	if _, ok := adapters.GuestReadinessProbe.(*GuestAgentReadinessProbe); !ok {
+		t.Fatalf("GuestReadinessProbe = %T, want *GuestAgentReadinessProbe", adapters.GuestReadinessProbe)
+	}
+}
+
+func TestNewGuestAgentEndpointAdaptersIsOptional(t *testing.T) {
+	adapters, err := NewGuestAgentEndpointAdapters(GuestAgentEndpointOptions{})
+	if err != nil {
+		t.Fatalf("NewGuestAgentEndpointAdapters() error = %v, want nil", err)
+	}
+	if adapters.GuestTransport != nil || adapters.GuestReadinessProbe != nil {
+		t.Fatalf("NewGuestAgentEndpointAdapters() = %#v, want zero adapters without endpoint", adapters)
+	}
+}
+
 func TestValidateGuestAgentEndpointRejectsUnsafeEndpointWithoutRawDetails(t *testing.T) {
 	err := ValidateGuestAgentEndpoint("vsock://3:1024/path?token=ghp_secret")
 	if err == nil {

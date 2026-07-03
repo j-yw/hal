@@ -336,6 +336,80 @@ func TestNewLiveDriverStartUsesOptionalGuestReadinessProbe(t *testing.T) {
 	assertLiveFirecrackerMetadataDoesNotOverclaim(t, started.Runtime.Metadata)
 }
 
+func TestNewLiveDriverGuestAgentReadinessFailureCleansUpFakeHostProcess(t *testing.T) {
+	readinessErr := errors.New("dial unix /Users/alice/private/guest-agent.sock endpoint=https://guest.internal:9443/status token=ghp_secret docker=/var/run/docker.sock")
+	baseStateDir := filepath.Join(t.TempDir(), "firecracker-state")
+	cleanupFS := newFakeCleanupFilesystem()
+	process := &fakeHostProcess{rawPID: 424242}
+	runner := &fakeHostProcessRunner{processes: []HostProcess{process}}
+	poller := &fakeBootAcceptancePoller{result: firecracker.BootAcceptanceResult{
+		ProcessAccepted:    true,
+		APISocketAvailable: true,
+	}}
+	client := &recordingGuestAgentReadinessClient{err: readinessErr}
+	probe := NewGuestAgentReadinessProbe(GuestAgentReadinessProbeOptions{Client: client})
+
+	driver, err := NewLiveDriver(LiveDriverOptions{
+		Config:               liveDriverValidConfig(),
+		BaseStateDir:         baseStateDir,
+		CapabilityDetector:   liveDriverAvailableDetector{},
+		HostProcessRunner:    runner,
+		BootAcceptancePoller: poller,
+		GuestReadinessProbe:  probe,
+		CleanupFilesystem:    cleanupFS,
+	})
+	if err != nil {
+		t.Fatalf("NewLiveDriver() error = %v, want nil", err)
+	}
+	created, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "firecracker-live-agent-readiness-failure"})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	paths, err := firecracker.PlanPaths(firecracker.PathPlanRequest{
+		RuntimeID:    created.Runtime.RuntimeID,
+		BaseStateDir: baseStateDir,
+	})
+	if err != nil {
+		t.Fatalf("PlanPaths() error = %v, want nil", err)
+	}
+	cleanupFS.addDir(paths.StateDir)
+	cleanupFS.addFile(paths.ConfigPath)
+	cleanupFS.addFile(paths.LogPath)
+	cleanupFS.addFile(paths.MetricsPath)
+
+	started, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: *created})
+
+	if err == nil {
+		t.Fatal("Start() error = nil, want guest-agent readiness failure")
+	}
+	if started != nil {
+		t.Fatalf("Start() target = %#v, want nil after guest-agent readiness failure", started)
+	}
+	if !errors.Is(err, readinessErr) {
+		t.Fatalf("errors.Is(Start() error, readinessErr) = false for %v", err)
+	}
+	if runner.calls != 1 || poller.calls != 1 || client.calls != 1 {
+		t.Fatalf("live calls = runner:%d boot:%d readiness:%d, want one call each", runner.calls, poller.calls, client.calls)
+	}
+	if process.killCalls != 1 || process.waitCalls != 1 || process.signalCalls != 0 {
+		t.Fatalf("fake process cleanup calls = signal:%d kill:%d wait:%d, want kill+wait cleanup", process.signalCalls, process.killCalls, process.waitCalls)
+	}
+	if !reflect.DeepEqual(cleanupFS.removeCalls, []string{paths.StateDir}) {
+		t.Fatalf("cleanup RemoveAll calls = %#v, want only state dir %q", cleanupFS.removeCalls, paths.StateDir)
+	}
+	if cleanupFS.exists(paths.StateDir) {
+		t.Fatalf("cleanup left Firecracker state dir %q in fake filesystem", paths.StateDir)
+	}
+	assertLiveDriverErrorDoesNotLeak(t, err,
+		"/Users/alice",
+		"guest-agent.sock",
+		"guest.internal",
+		"9443",
+		"ghp_secret",
+		"/var/run/docker.sock",
+	)
+}
+
 func TestNewLiveDriverDelegatesGuestOperationsThroughOptionalGuestTransportAfterReadiness(t *testing.T) {
 	baseStateDir := filepath.Join(t.TempDir(), "firecracker-state")
 	process := &fakeHostProcess{rawPID: 424242}
@@ -765,6 +839,16 @@ func assertLiveFirecrackerMetadataDoesNotOverclaim(t *testing.T, metadata *sandb
 	} {
 		if strings.Contains(publicText, unsupported) {
 			t.Fatalf("live Firecracker metadata claims unsupported capability %q in %s", unsupported, publicText)
+		}
+	}
+}
+
+func assertLiveDriverErrorDoesNotLeak(t *testing.T, err error, forbidden ...string) {
+	t.Helper()
+	publicText := strings.ToLower(err.Error())
+	for _, fragment := range forbidden {
+		if strings.Contains(publicText, strings.ToLower(fragment)) {
+			t.Fatalf("error leaked %q in %q", fragment, publicText)
 		}
 	}
 }

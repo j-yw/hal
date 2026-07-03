@@ -17,11 +17,19 @@ type GuestAgentEndpointOptions struct {
 	MaxResponseBytes int64
 }
 
-// NewGuestTransportFromEndpoint validates a configured endpoint and returns
-// the Firecracker guest transport backed by the guest-agent protocol client.
-func NewGuestTransportFromEndpoint(options GuestAgentEndpointOptions) (firecracker.GuestTransport, error) {
+// GuestAgentEndpointAdapters are the Firecracker host adapters derived from a
+// single configured guest-agent protocol endpoint.
+type GuestAgentEndpointAdapters struct {
+	GuestTransport      firecracker.GuestTransport
+	GuestReadinessProbe GuestReadinessProbe
+}
+
+// NewGuestAgentEndpointAdapters validates a configured endpoint and returns
+// Firecracker guest transport plus readiness probe adapters backed by the same
+// guest-agent protocol client.
+func NewGuestAgentEndpointAdapters(options GuestAgentEndpointOptions) (GuestAgentEndpointAdapters, error) {
 	if strings.TrimSpace(options.Endpoint) == "" {
-		return nil, nil
+		return GuestAgentEndpointAdapters{}, nil
 	}
 	transport, err := newGuestAgentUnixSocketTransport(guestAgentUnixSocketTransportOptions{
 		endpoint:      options.Endpoint,
@@ -29,7 +37,7 @@ func NewGuestTransportFromEndpoint(options GuestAgentEndpointOptions) (firecrack
 		responseLimit: options.MaxResponseBytes,
 	})
 	if err != nil {
-		return nil, err
+		return GuestAgentEndpointAdapters{}, err
 	}
 	client, err := guestagent.NewClient(guestagent.ClientOptions{
 		Transport:        transport,
@@ -37,9 +45,25 @@ func NewGuestTransportFromEndpoint(options GuestAgentEndpointOptions) (firecrack
 		MaxResponseBytes: options.MaxResponseBytes,
 	})
 	if err != nil {
+		return GuestAgentEndpointAdapters{}, err
+	}
+	return GuestAgentEndpointAdapters{
+		GuestTransport: NewGuestAgentTransport(GuestAgentTransportOptions{Client: client}),
+		GuestReadinessProbe: NewGuestAgentReadinessProbe(GuestAgentReadinessProbeOptions{
+			Client:    client,
+			Transport: "unix",
+		}),
+	}, nil
+}
+
+// NewGuestTransportFromEndpoint validates a configured endpoint and returns
+// the Firecracker guest transport backed by the guest-agent protocol client.
+func NewGuestTransportFromEndpoint(options GuestAgentEndpointOptions) (firecracker.GuestTransport, error) {
+	adapters, err := NewGuestAgentEndpointAdapters(options)
+	if err != nil {
 		return nil, err
 	}
-	return NewGuestAgentTransport(GuestAgentTransportOptions{Client: client}), nil
+	return adapters.GuestTransport, nil
 }
 
 // ValidateGuestAgentEndpoint validates endpoint metadata without constructing

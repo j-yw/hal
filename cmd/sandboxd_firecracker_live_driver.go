@@ -8,7 +8,7 @@ import (
 )
 
 func defaultSandboxdMicroVMDriver(config sandboxdMicroVMConfig) (sandboxruntime.Driver, error) {
-	guestAgent, err := firecrackerhost.NewGuestTransportFromEndpoint(firecrackerhost.GuestAgentEndpointOptions{
+	guestAgent, err := firecrackerhost.NewGuestAgentEndpointAdapters(firecrackerhost.GuestAgentEndpointOptions{
 		Endpoint: config.GuestAgentEndpoint,
 	})
 	if err != nil {
@@ -20,7 +20,10 @@ func defaultSandboxdMicroVMDriver(config sandboxdMicroVMConfig) (sandboxruntime.
 		BootAcceptancePoller: firecrackerhost.NewAPISocketBootAcceptancePoller(),
 		BootTimeout:          config.BootAcceptanceTimeout,
 		BootPollInterval:     config.BootAcceptancePollInterval,
-		GuestTransport:       guestAgent,
+		GuestTimeout:         config.GuestReadinessTimeout,
+		GuestPollInterval:    config.GuestReadinessPollInterval,
+		GuestReadinessProbe:  guestAgent.GuestReadinessProbe,
+		GuestTransport:       guestAgent.GuestTransport,
 	})
 }
 

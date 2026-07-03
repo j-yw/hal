@@ -163,7 +163,7 @@ func registerSandboxdMicroVMFlags(cmd *cobra.Command, flags *sandboxdFlags, deps
 	cmd.Flags().StringVar(&flags.microVM.guestWorkDir, "microvm-guest-workdir", flags.microVM.guestWorkDir, "guest workdir for the microvm driver")
 	cmd.Flags().DurationVar(&flags.microVM.bootAcceptanceTimeout, "firecracker-boot-timeout", flags.microVM.bootAcceptanceTimeout, "host-side Firecracker boot acceptance timeout; 0 uses the live driver default")
 	cmd.Flags().DurationVar(&flags.microVM.bootAcceptancePollInterval, "firecracker-boot-poll-interval", flags.microVM.bootAcceptancePollInterval, "host-side Firecracker boot acceptance poll interval; 0 uses the live driver default")
-	cmd.Flags().StringVar(&flags.microVM.guestAgentEndpoint, "firecracker-guest-agent-endpoint", flags.microVM.guestAgentEndpoint, "optional local Unix socket endpoint for Firecracker guest-agent exec and copy transport")
+	cmd.Flags().StringVar(&flags.microVM.guestAgentEndpoint, "firecracker-guest-agent-endpoint", flags.microVM.guestAgentEndpoint, "optional local Unix socket endpoint for Firecracker guest-agent readiness, exec, and copy transport")
 	if deps.microVMGuestReadinessConfigured {
 		cmd.Flags().DurationVar(&flags.microVM.guestReadinessTimeout, "firecracker-guest-readiness-timeout", flags.microVM.guestReadinessTimeout, "guest readiness timeout for configured microvm readiness probes; 0 uses the live driver default")
 		cmd.Flags().DurationVar(&flags.microVM.guestReadinessPollInterval, "firecracker-guest-readiness-poll-interval", flags.microVM.guestReadinessPollInterval, "guest readiness poll interval for configured microvm readiness probes; 0 uses the live driver default")
