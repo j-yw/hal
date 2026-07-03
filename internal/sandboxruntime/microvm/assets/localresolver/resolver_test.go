@@ -250,6 +250,29 @@ func TestResolveLocalAssetsPublicErrorsDoNotLeakRejectedInput(t *testing.T) {
 	}
 }
 
+func TestValidateOpenedResolverFileRejectsChangedPathAfterLstat(t *testing.T) {
+	firstPath := writeResolverTestFile(t, "first-vmlinux", "kernel-one")
+	secondPath := writeResolverTestFile(t, "second-vmlinux", "kernel-two")
+
+	firstInfo, err := os.Lstat(firstPath)
+	if err != nil {
+		t.Fatalf("Lstat(first) error: %v", err)
+	}
+	secondFile, err := os.Open(secondPath)
+	if err != nil {
+		t.Fatalf("Open(second) error: %v", err)
+	}
+	defer secondFile.Close()
+	secondInfo, err := secondFile.Stat()
+	if err != nil {
+		t.Fatalf("Stat(second) error: %v", err)
+	}
+
+	err = validateOpenedResolverFile(firstInfo, secondInfo, "assets[0].path", assets.AssetRoleKernel)
+	assertResolverError(t, err, ErrorCodeSymlinkRejected, "assets[0].path")
+	assertResolverErrorDoesNotLeak(t, err, firstPath, secondPath)
+}
+
 func validResolverRequest(kernelPath, rootfsPath string) ResolveRequest {
 	return ResolveRequest{
 		ID:                 "phase41-launch",

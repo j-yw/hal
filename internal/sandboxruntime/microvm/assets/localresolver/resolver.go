@@ -197,8 +197,8 @@ func digestReadableRegularFile(path string, field string, role assets.AssetRole)
 	if err != nil {
 		return "", 0, newResolverError(ErrorCodeFileUnavailable, field, role, "asset file is not readable", ErrFileUnavailable)
 	}
-	if !openedInfo.Mode().IsRegular() {
-		return "", 0, newResolverError(ErrorCodeUnsupportedFileType, field, role, "asset file must be a regular file", ErrUnsupportedFileType)
+	if err := validateOpenedResolverFile(info, openedInfo, field, role); err != nil {
+		return "", 0, err
 	}
 
 	hash := sha256.New()
@@ -207,6 +207,19 @@ func digestReadableRegularFile(path string, field string, role assets.AssetRole)
 		return "", 0, newResolverError(ErrorCodeFileUnavailable, field, role, "asset file could not be read", ErrFileUnavailable)
 	}
 	return hex.EncodeToString(hash.Sum(nil)), sizeBytes, nil
+}
+
+func validateOpenedResolverFile(lstatInfo os.FileInfo, openedInfo os.FileInfo, field string, role assets.AssetRole) error {
+	if lstatInfo == nil || openedInfo == nil {
+		return newResolverError(ErrorCodeFileUnavailable, field, role, "asset file is not readable", ErrFileUnavailable)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return newResolverError(ErrorCodeUnsupportedFileType, field, role, "asset file must be a regular file", ErrUnsupportedFileType)
+	}
+	if !os.SameFile(lstatInfo, openedInfo) {
+		return newResolverError(ErrorCodeSymlinkRejected, field, role, "asset file changed while being resolved", ErrSymlinkRejected)
+	}
+	return nil
 }
 
 func expectedKindForRole(role assets.AssetRole) (assets.AssetKind, bool) {
