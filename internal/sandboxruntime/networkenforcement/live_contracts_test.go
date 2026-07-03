@@ -350,6 +350,7 @@ func TestLiveLifecyclePublicSchemaContainsNoUnsafeFields(t *testing.T) {
 	contractTypes := []reflect.Type{
 		reflect.TypeOf(LiveLifecycleMetadata{}),
 		reflect.TypeOf(ProxyListenerLifecycleMetadata{}),
+		reflect.TypeOf(ProxyListenerLifecycleResult{}),
 		reflect.TypeOf(RuleLifecycleMetadata{}),
 	}
 
