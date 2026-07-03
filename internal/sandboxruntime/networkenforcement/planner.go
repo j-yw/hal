@@ -3,6 +3,12 @@ package networkenforcement
 const (
 	planOperationDefaultDeny           = "default_deny"
 	planOperationAllowlist             = "allowlist"
+	planOperationAllowlistDomain       = "allowlist_domain"
+	planOperationAllowlistEndpoint     = "allowlist_endpoint"
+	planOperationAllowlistPrivateRange = "allowlist_private_range"
+	planOperationAllowlistMetadata     = "allowlist_metadata_endpoint"
+	planOperationAllowlistLoopback     = "allowlist_loopback"
+	planOperationAllowlistLinkLocal    = "allowlist_link_local"
 	planOperationBlockPrivateNetwork   = "block_private_network"
 	planOperationBlockMetadataEndpoint = "block_metadata_endpoint"
 	planOperationBlockRawProtocols     = "block_raw_protocols"
@@ -10,9 +16,10 @@ const (
 	planOperationHTTPSConnect          = "https_connect"
 )
 
-// PlanRequest contains safe metadata inputs for pure network enforcement plan
-// construction. It intentionally omits raw destinations, sockets, processes,
-// host runtime handles, and adapter state.
+// PlanRequest contains inputs for pure network enforcement plan construction.
+// AllowlistRules may carry validation-only raw policy values, but BuildPlan
+// never copies those values into the public Plan. The request intentionally
+// omits sockets, processes, host runtime handles, and adapter state.
 type PlanRequest struct {
 	ID              string
 	Source          PlanSource
@@ -22,7 +29,8 @@ type PlanRequest struct {
 }
 
 // RequestedNetworkPosture describes the network posture requested by policy
-// metadata using only redaction-safe identifiers and enums.
+// data. Except for validation-only AllowlistRules values, fields are
+// redaction-safe identifiers and enums.
 type RequestedNetworkPosture struct {
 	Preset            PolicyPreset
 	DefaultPosture    DefaultPosture
@@ -30,6 +38,7 @@ type RequestedNetworkPosture struct {
 	RuleSetID         string
 	RuleIDs           []string
 	RuleCategories    []AllowlistRuleCategory
+	AllowlistRules    []AllowlistRule
 	PrivateNetwork    Posture
 	MetadataEndpoint  Posture
 	TCP               Posture
@@ -41,6 +50,14 @@ type RequestedNetworkPosture struct {
 	ProxyMechanism    EnforcementMechanism
 	FirewallMode      FirewallIntentMode
 	FirewallMechanism EnforcementMechanism
+}
+
+// AllowlistRule is validation-only requested policy input. Value may contain
+// raw policy data and is never copied into a public Plan.
+type AllowlistRule struct {
+	ID       string
+	Category AllowlistRuleCategory
+	Value    string
 }
 
 // BuildPlan derives a sanitized network enforcement plan from requested policy
@@ -100,8 +117,9 @@ func buildAllowlistPlan(requested RequestedNetworkPosture) *AllowlistPlan {
 	}
 
 	ruleSetID := sanitizeIdentifier(requested.RuleSetID)
-	ruleIDs := sanitizeIdentifierList(requested.RuleIDs)
-	ruleCategories := sanitizeAllowlistRuleCategoryList(requested.RuleCategories)
+	normalizedRules := NormalizeAllowlistRules(requested.AllowlistRules)
+	ruleIDs := appendSanitizedIdentifiers(sanitizeIdentifierList(requested.RuleIDs), normalizedRules.RuleIDs...)
+	ruleCategories := mergeAllowlistRuleCategories(requested.RuleCategories, normalizedRules.RuleCategories)
 	if mode == "" && ruleSetID == "" && len(ruleIDs) == 0 && len(ruleCategories) == 0 {
 		return nil
 	}
@@ -110,6 +128,7 @@ func buildAllowlistPlan(requested RequestedNetworkPosture) *AllowlistPlan {
 	if mode == AllowlistModeEnforce || mode == AllowlistModeAudit || len(ruleIDs) > 0 || len(ruleCategories) > 0 {
 		operations = append(operations, planOperationAllowlist)
 	}
+	operations = append(operations, operationsForAllowlistRuleCategories(ruleCategories)...)
 	return &AllowlistPlan{
 		Mode:           mode,
 		RuleSetID:      ruleSetID,

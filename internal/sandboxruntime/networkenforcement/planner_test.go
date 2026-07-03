@@ -1,7 +1,9 @@
 package networkenforcement
 
 import (
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -168,11 +170,166 @@ func TestBuildPlanIsDeterministicAndDoesNotShareRequestSlices(t *testing.T) {
 	if !reflect.DeepEqual(first.Allowlist.RuleCategories, []AllowlistRuleCategory{AllowlistRuleCategoryDomain, AllowlistRuleCategoryEndpoint}) {
 		t.Fatalf("RuleCategories = %#v, want copied categories", first.Allowlist.RuleCategories)
 	}
-	if !reflect.DeepEqual(first.Allowlist.Operations, []string{planOperationAllowlist}) {
+	if !reflect.DeepEqual(first.Allowlist.Operations, []string{planOperationAllowlist, planOperationAllowlistDomain, planOperationAllowlistEndpoint}) {
 		t.Fatalf("Allowlist.Operations = %#v, want allowlist operation", first.Allowlist.Operations)
 	}
 	if first.Category == nil || first.Category.PrivateNetwork != PostureBlock || first.Category.MetadataEndpoint != PostureBlock {
 		t.Fatalf("Category = %#v, want allow_listed preset to block private network and metadata endpoint", first.Category)
+	}
+}
+
+func TestNormalizeAllowlistRulesSupportsSafeRuleCategories(t *testing.T) {
+	result := NormalizeAllowlistRules([]AllowlistRule{
+		{ID: "rule-domain", Category: AllowlistRuleCategoryDomain, Value: "api.example.com"},
+		{ID: "rule-endpoint", Category: AllowlistRuleCategoryEndpoint, Value: "api.example.com:443"},
+		{ID: "rule-private", Category: AllowlistRuleCategoryPrivateRange, Value: "10.0.0.0/8"},
+		{ID: "rule-metadata", Category: AllowlistRuleCategoryMetadataEndpoint, Value: "169.254.169.254"},
+		{ID: "rule-loopback", Category: AllowlistRuleCategoryLoopback, Value: "127.0.0.1"},
+		{ID: "rule-link-local", Category: AllowlistRuleCategoryLinkLocal, Value: "fe80::/10"},
+	})
+
+	if !result.Valid {
+		t.Fatalf("NormalizeAllowlistRules valid = false, errors = %#v", result.Errors)
+	}
+	assertPlanStringArrayFromStrings(t, result.RuleIDs, []string{
+		"rule-domain",
+		"rule-endpoint",
+		"rule-private",
+		"rule-metadata",
+		"rule-loopback",
+		"rule-link-local",
+	})
+	if !reflect.DeepEqual(result.RuleCategories, []AllowlistRuleCategory{
+		AllowlistRuleCategoryDomain,
+		AllowlistRuleCategoryEndpoint,
+		AllowlistRuleCategoryPrivateRange,
+		AllowlistRuleCategoryMetadataEndpoint,
+		AllowlistRuleCategoryLoopback,
+		AllowlistRuleCategoryLinkLocal,
+	}) {
+		t.Fatalf("RuleCategories = %#v, want supported categories in stable order", result.RuleCategories)
+	}
+	assertPlanStringArrayFromStrings(t, result.Operations, []string{
+		planOperationAllowlistDomain,
+		planOperationAllowlistEndpoint,
+		planOperationAllowlistPrivateRange,
+		planOperationAllowlistMetadata,
+		planOperationAllowlistLoopback,
+		planOperationAllowlistLinkLocal,
+	})
+}
+
+func TestBuildPlanNormalizesAllowlistRulesWithoutExposingRawValues(t *testing.T) {
+	plan := BuildPlan(PlanRequest{
+		ID:        "network-plan-allowlist-rules",
+		Source:    PlanSourceRuntime,
+		Operation: "prepare_network",
+		RequestedPolicy: RequestedNetworkPosture{
+			Preset:        PolicyPresetAllowListed,
+			AllowlistMode: AllowlistModeEnforce,
+			RuleSetID:     "rules-allowlist",
+			AllowlistRules: []AllowlistRule{
+				{ID: "rule-domain", Category: AllowlistRuleCategoryDomain, Value: "api.example.com"},
+				{ID: "rule-endpoint", Category: AllowlistRuleCategoryEndpoint, Value: "api.example.com:443"},
+				{ID: "rule-private", Category: AllowlistRuleCategoryPrivateRange, Value: "10.0.0.0/8"},
+				{ID: "rule-metadata", Category: AllowlistRuleCategoryMetadataEndpoint, Value: "169.254.169.254"},
+			},
+		},
+	})
+
+	if plan.Allowlist == nil {
+		t.Fatal("Allowlist = nil, want normalized rule metadata")
+	}
+	assertPlanStringArrayFromStrings(t, plan.Allowlist.RuleIDs, []string{"rule-domain", "rule-endpoint", "rule-private", "rule-metadata"})
+	if !reflect.DeepEqual(plan.Allowlist.RuleCategories, []AllowlistRuleCategory{
+		AllowlistRuleCategoryDomain,
+		AllowlistRuleCategoryEndpoint,
+		AllowlistRuleCategoryPrivateRange,
+		AllowlistRuleCategoryMetadataEndpoint,
+	}) {
+		t.Fatalf("RuleCategories = %#v, want normalized safe categories", plan.Allowlist.RuleCategories)
+	}
+	assertPlanStringArrayFromStrings(t, plan.Allowlist.Operations, []string{
+		planOperationAllowlist,
+		planOperationAllowlistDomain,
+		planOperationAllowlistEndpoint,
+		planOperationAllowlistPrivateRange,
+		planOperationAllowlistMetadata,
+	})
+
+	got := mustMarshalPlanObject(t, plan)
+	allowlist := requirePlanObject(t, got["allowlist"])
+	assertPlanStringArray(t, allowlist["ruleCategories"], []string{
+		string(AllowlistRuleCategoryDomain),
+		string(AllowlistRuleCategoryEndpoint),
+		string(AllowlistRuleCategoryPrivateRange),
+		string(AllowlistRuleCategoryMetadataEndpoint),
+	})
+	assertPlanStringArray(t, allowlist["operations"], []string{
+		planOperationAllowlist,
+		planOperationAllowlistDomain,
+		planOperationAllowlistEndpoint,
+		planOperationAllowlistPrivateRange,
+		planOperationAllowlistMetadata,
+	})
+}
+
+func TestNormalizeAllowlistRulesRejectsUnsafeValuesWithSanitizedErrors(t *testing.T) {
+	result := NormalizeAllowlistRules([]AllowlistRule{
+		{ID: "rule-safe", Category: AllowlistRuleCategoryDomain, Value: "safe.example.com"},
+		{ID: "rule-url", Category: AllowlistRuleCategoryDomain, Value: "https://api.example.com/path?token=secret"},
+		{ID: "rule-wildcard", Category: AllowlistRuleCategoryDomain, Value: "*.example.com"},
+		{ID: "rule-endpoint", Category: AllowlistRuleCategoryEndpoint, Value: "api.example.com:not-a-port"},
+		{ID: "rule-private", Category: AllowlistRuleCategoryPrivateRange, Value: "203.0.113.0/24"},
+		{ID: "rule-invalid-category", Category: AllowlistRuleCategory("https://api.example.com/category?token=secret"), Value: "api.example.com"},
+	})
+
+	if result.Valid {
+		t.Fatalf("NormalizeAllowlistRules valid = true, want errors")
+	}
+	if len(result.Errors) != 5 {
+		t.Fatalf("Errors = %#v, want five sanitized errors", result.Errors)
+	}
+	wantCodes := []AllowlistRuleValidationCode{
+		AllowlistRuleValidationUnsafeValue,
+		AllowlistRuleValidationUnsupportedWildcard,
+		AllowlistRuleValidationMalformedEndpoint,
+		AllowlistRuleValidationNonPrivateRange,
+		AllowlistRuleValidationInvalidCategory,
+	}
+	for i, want := range wantCodes {
+		if result.Errors[i].Code != want {
+			t.Fatalf("Errors[%d].Code = %q, want %q in %#v", i, result.Errors[i].Code, want, result.Errors)
+		}
+		if strings.Contains(strings.ToLower(result.Errors[i].Error()), "example.com") ||
+			strings.Contains(strings.ToLower(result.Errors[i].Error()), "token") ||
+			strings.Contains(strings.ToLower(result.Errors[i].Message), "example.com") ||
+			strings.Contains(strings.ToLower(result.Errors[i].Message), "token") {
+			t.Fatalf("error leaked raw rule value: %#v", result.Errors[i])
+		}
+	}
+	assertPlanStringArrayFromStrings(t, result.RuleIDs, []string{"rule-safe"})
+	if !reflect.DeepEqual(result.RuleCategories, []AllowlistRuleCategory{AllowlistRuleCategoryDomain}) {
+		t.Fatalf("RuleCategories = %#v, want only valid safe category", result.RuleCategories)
+	}
+
+	payload, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal normalization result error: %v", err)
+	}
+	payloadLower := strings.ToLower(string(payload))
+	for _, forbidden := range []string{
+		"api.example.com",
+		"safe.example.com",
+		"203.0.113.0",
+		"not-a-port",
+		"https://",
+		"?token",
+		"secret",
+	} {
+		if strings.Contains(payloadLower, forbidden) {
+			t.Fatalf("normalization result JSON %s leaked forbidden fragment %q", payload, forbidden)
+		}
 	}
 }
 
@@ -237,6 +394,9 @@ func clonePlanRequestForPlannerTest(request PlanRequest) PlanRequest {
 	}
 	if len(request.RequestedPolicy.RuleCategories) > 0 {
 		out.RequestedPolicy.RuleCategories = append([]AllowlistRuleCategory(nil), request.RequestedPolicy.RuleCategories...)
+	}
+	if len(request.RequestedPolicy.AllowlistRules) > 0 {
+		out.RequestedPolicy.AllowlistRules = append([]AllowlistRule(nil), request.RequestedPolicy.AllowlistRules...)
 	}
 	return out
 }
