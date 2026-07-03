@@ -12,6 +12,7 @@ import (
 )
 
 const sandboxruntimePackagePath = "github.com/jywlabs/hal/internal/sandboxruntime"
+const sandboxruntimeNetworkEnforcementPackagePath = "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
 
 var forbiddenSandboxruntimeImports = []sandboxruntimeForbiddenImport{
 	{
@@ -39,6 +40,99 @@ var forbiddenSandboxruntimeImports = []sandboxruntimeForbiddenImport{
 	{
 		name:  "command-specific loop code",
 		match: moduleImportMatcher("github.com/jywlabs/hal/internal/loop"),
+	},
+}
+
+var forbiddenSandboxruntimeNetworkEnforcementImports = []sandboxruntimeForbiddenImport{
+	{name: "cmd package", match: moduleImportMatcher("github.com/jywlabs/hal/cmd")},
+	{name: "factory package", match: moduleImportMatcher("github.com/jywlabs/hal/internal/factory")},
+	{name: "worker package", match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxworker")},
+	{name: "execution package", match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxexec")},
+	{name: "execution record package", match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxexecution")},
+	{name: "target package", match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxtarget")},
+	{name: "workspace package", match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxworkspace")},
+	{
+		name: "concrete runtime package",
+		match: func(importPath string) bool {
+			return strings.HasPrefix(importPath, "github.com/jywlabs/hal/internal/sandboxruntime/") &&
+				importPath != sandboxruntimeNetworkEnforcementPackagePath
+		},
+	},
+	{
+		name: "network package",
+		match: func(importPath string) bool {
+			switch importPath {
+			case "net", "net/http", "net/http/httputil", "net/rpc", "net/smtp":
+				return true
+			default:
+				return strings.HasPrefix(importPath, "net/http/") ||
+					strings.HasPrefix(importPath, "google.golang.org/grpc")
+			}
+		},
+	},
+	{
+		name: "process or privilege package",
+		match: func(importPath string) bool {
+			return importPath == "os" ||
+				importPath == "os/exec" ||
+				importPath == "os/user" ||
+				importPath == "syscall" ||
+				strings.HasPrefix(importPath, "golang.org/x/sys")
+		},
+	},
+	{
+		name: "proxy implementation package",
+		match: func(importPath string) bool {
+			lower := strings.ToLower(importPath)
+			return strings.Contains(lower, "proxy") ||
+				strings.Contains(lower, "socks5")
+		},
+	},
+	{
+		name: "firewall implementation package",
+		match: func(importPath string) bool {
+			lower := strings.ToLower(importPath)
+			return strings.Contains(lower, "firewall") ||
+				strings.Contains(lower, "iptables") ||
+				strings.Contains(lower, "nftables") ||
+				strings.Contains(lower, "pfctl")
+		},
+	},
+	{
+		name: "Docker or Podman package",
+		match: func(importPath string) bool {
+			return strings.HasPrefix(importPath, "github.com/docker/docker") ||
+				strings.HasPrefix(importPath, "github.com/containers/podman") ||
+				strings.HasPrefix(importPath, "github.com/containers/image") ||
+				strings.HasPrefix(importPath, "github.com/containers/storage") ||
+				strings.HasPrefix(importPath, "github.com/containers/buildah")
+		},
+	},
+	{
+		name: "microVM backend SDK package",
+		match: func(importPath string) bool {
+			lower := strings.ToLower(importPath)
+			return strings.Contains(lower, "firecracker") ||
+				strings.Contains(lower, "cloud-hypervisor") ||
+				strings.Contains(lower, "cloudhypervisor") ||
+				strings.Contains(lower, "libvirt") ||
+				strings.Contains(lower, "qemu") ||
+				strings.Contains(lower, "kvm")
+		},
+	},
+	{
+		name: "cloud SDK package",
+		match: func(importPath string) bool {
+			return strings.HasPrefix(importPath, "github.com/digitalocean/godo") ||
+				strings.HasPrefix(importPath, "github.com/aws/aws-sdk-go") ||
+				strings.HasPrefix(importPath, "github.com/aws/aws-sdk-go-v2") ||
+				strings.HasPrefix(importPath, "github.com/Azure/azure-sdk-for-go") ||
+				strings.HasPrefix(importPath, "github.com/hetznercloud/hcloud-go") ||
+				strings.HasPrefix(importPath, "github.com/linode/linodego") ||
+				strings.HasPrefix(importPath, "github.com/vultr/govultr") ||
+				strings.HasPrefix(importPath, "cloud.google.com/go") ||
+				strings.HasPrefix(importPath, "google.golang.org/api")
+		},
 	},
 }
 
@@ -71,6 +165,87 @@ func TestSandboxruntimeImportsStayCommandAgnostic(t *testing.T) {
 	}
 }
 
+func TestSandboxruntimeNetworkEnforcementProjectionImportsStayMetadataOnly(t *testing.T) {
+	fset := token.NewFileSet()
+	for _, path := range []string{"network_enforcement.go"} {
+		file, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("ParseFile(%s) error: %v", path, err)
+		}
+		for _, spec := range file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("unquote import %s in %s: %v", spec.Path.Value, path, err)
+			}
+			if message := sandboxruntimeNetworkEnforcementImportBoundaryMessage(path, importPath); message != "" {
+				t.Fatal(message)
+			}
+		}
+	}
+}
+
+func TestSandboxruntimeNetworkEnforcementForbiddenImportListCoversLiveSurfaces(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		importPath string
+		want       string
+	}{
+		{name: "cmd", importPath: "github.com/jywlabs/hal/cmd", want: "cmd package"},
+		{name: "factory", importPath: "github.com/jywlabs/hal/internal/factory", want: "factory package"},
+		{name: "worker", importPath: "github.com/jywlabs/hal/internal/sandboxworker", want: "worker package"},
+		{name: "microVM runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm", want: "concrete runtime package"},
+		{name: "network", importPath: "net", want: "network package"},
+		{name: "HTTP", importPath: "net/http", want: "network package"},
+		{name: "gRPC", importPath: "google.golang.org/grpc", want: "network package"},
+		{name: "process", importPath: "os/exec", want: "process or privilege package"},
+		{name: "proxy", importPath: "golang.org/x/net/proxy", want: "proxy implementation package"},
+		{name: "firewall", importPath: "github.com/coreos/go-iptables/iptables", want: "firewall implementation package"},
+		{name: "Docker", importPath: "github.com/docker/docker/client", want: "Docker or Podman package"},
+		{name: "Podman", importPath: "github.com/containers/podman/v5/pkg/bindings", want: "Docker or Podman package"},
+		{name: "Firecracker", importPath: "github.com/firecracker-microvm/firecracker-go-sdk", want: "microVM backend SDK package"},
+		{name: "KVM", importPath: "github.com/example/kvm-driver", want: "microVM backend SDK package"},
+		{name: "cloud SDK", importPath: "github.com/aws/aws-sdk-go-v2/service/ec2", want: "cloud SDK package"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			message := sandboxruntimeNetworkEnforcementImportBoundaryMessage("network_enforcement.go", tt.importPath)
+			if !strings.Contains(message, tt.want) || !strings.Contains(message, tt.importPath) {
+				t.Fatalf("boundary message = %q, want %q rejection for %q", message, tt.want, tt.importPath)
+			}
+		})
+	}
+}
+
+func TestSandboxruntimeNetworkEnforcementAllowsProjectionContractsOnly(t *testing.T) {
+	for _, importPath := range []string{
+		"encoding/json",
+		"strings",
+		"github.com/jywlabs/hal/internal/sandbox",
+		sandboxruntimeNetworkEnforcementPackagePath,
+	} {
+		t.Run(importPath, func(t *testing.T) {
+			if message := sandboxruntimeNetworkEnforcementImportBoundaryMessage("network_enforcement.go", importPath); message != "" {
+				t.Fatalf("import %q unexpectedly failed boundary check: %s", importPath, message)
+			}
+		})
+	}
+
+	for _, importPath := range []string{
+		"context",
+		"io",
+		"os",
+		"plugin",
+		"github.com/jywlabs/hal/internal/template",
+		"gopkg.in/yaml.v3",
+	} {
+		t.Run(importPath, func(t *testing.T) {
+			message := sandboxruntimeNetworkEnforcementImportBoundaryMessage("network_enforcement.go", importPath)
+			if !strings.Contains(message, importPath) {
+				t.Fatalf("boundary message = %q, want rejected import path %q", message, importPath)
+			}
+		})
+	}
+}
+
 func TestSandboxruntimeForbiddenImportListCoversCommandCouplingSurfaces(t *testing.T) {
 	for _, tt := range []struct {
 		name       string
@@ -99,6 +274,37 @@ func TestSandboxruntimeImportBoundaryMessageIncludesPackageAndForbiddenImport(t 
 	}
 	if !strings.Contains(message, importPath) {
 		t.Fatalf("message %q does not include forbidden import path %q", message, importPath)
+	}
+}
+
+func sandboxruntimeNetworkEnforcementImportBoundaryMessage(fileName, importPath string) string {
+	if forbidden := sandboxruntimeNetworkEnforcementForbiddenImportFor(importPath); forbidden != nil {
+		return fmt.Sprintf("package %s file %s imports forbidden %s %q", sandboxruntimePackagePath, fileName, forbidden.name, importPath)
+	}
+	if sandboxruntimeNetworkEnforcementAllowedImport(importPath) {
+		return ""
+	}
+	return fmt.Sprintf("package %s file %s imports unsupported dependency %q; keep network enforcement projection on safe metadata helpers and sandbox contract packages only", sandboxruntimePackagePath, fileName, importPath)
+}
+
+func sandboxruntimeNetworkEnforcementForbiddenImportFor(importPath string) *sandboxruntimeForbiddenImport {
+	for i := range forbiddenSandboxruntimeNetworkEnforcementImports {
+		if forbiddenSandboxruntimeNetworkEnforcementImports[i].match(importPath) {
+			return &forbiddenSandboxruntimeNetworkEnforcementImports[i]
+		}
+	}
+	return nil
+}
+
+func sandboxruntimeNetworkEnforcementAllowedImport(importPath string) bool {
+	switch importPath {
+	case "encoding/json",
+		"strings",
+		"github.com/jywlabs/hal/internal/sandbox",
+		sandboxruntimeNetworkEnforcementPackagePath:
+		return true
+	default:
+		return false
 	}
 }
 

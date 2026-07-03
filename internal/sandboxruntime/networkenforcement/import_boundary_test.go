@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -28,6 +29,9 @@ var forbiddenNetworkEnforcementImports = []networkEnforcementForbiddenImport{
 		match: func(importPath string) bool {
 			return importPath == "net" ||
 				importPath == "net/http" ||
+				importPath == "net/http/httputil" ||
+				importPath == "net/rpc" ||
+				importPath == "net/smtp" ||
 				strings.HasPrefix(importPath, "net/http/") ||
 				strings.HasPrefix(importPath, "google.golang.org/grpc")
 		},
@@ -39,6 +43,24 @@ var forbiddenNetworkEnforcementImports = []networkEnforcementForbiddenImport{
 				importPath == "os/user" ||
 				importPath == "syscall" ||
 				strings.HasPrefix(importPath, "golang.org/x/sys")
+		},
+	},
+	{
+		name: "proxy implementation package",
+		match: func(importPath string) bool {
+			lower := strings.ToLower(importPath)
+			return strings.Contains(lower, "proxy") ||
+				strings.Contains(lower, "socks5")
+		},
+	},
+	{
+		name: "firewall implementation package",
+		match: func(importPath string) bool {
+			lower := strings.ToLower(importPath)
+			return strings.Contains(lower, "firewall") ||
+				strings.Contains(lower, "iptables") ||
+				strings.Contains(lower, "nftables") ||
+				strings.Contains(lower, "pfctl")
 		},
 	},
 	{
@@ -71,6 +93,8 @@ var forbiddenNetworkEnforcementImports = []networkEnforcementForbiddenImport{
 				strings.HasPrefix(importPath, "github.com/aws/aws-sdk-go-v2") ||
 				strings.HasPrefix(importPath, "github.com/Azure/azure-sdk-for-go") ||
 				strings.HasPrefix(importPath, "github.com/hetznercloud/hcloud-go") ||
+				strings.HasPrefix(importPath, "github.com/linode/linodego") ||
+				strings.HasPrefix(importPath, "github.com/vultr/govultr") ||
 				strings.HasPrefix(importPath, "cloud.google.com/go") ||
 				strings.HasPrefix(importPath, "google.golang.org/api")
 		},
@@ -78,18 +102,10 @@ var forbiddenNetworkEnforcementImports = []networkEnforcementForbiddenImport{
 }
 
 func TestNetworkEnforcementProductionImportsStayDataOnly(t *testing.T) {
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("ReadDir(%s) error: %v", networkEnforcementPackagePath, err)
-	}
+	paths := networkEnforcementProductionFiles(t)
 
 	fset := token.NewFileSet()
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		path := filepath.Join(".", name)
+	for _, path := range paths {
 		file, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
 		if err != nil {
 			t.Fatalf("ParseFile(%s) error: %v", path, err)
@@ -102,6 +118,29 @@ func TestNetworkEnforcementProductionImportsStayDataOnly(t *testing.T) {
 			if message := networkEnforcementImportBoundaryMessage(path, importPath); message != "" {
 				t.Fatal(message)
 			}
+		}
+	}
+}
+
+func TestNetworkEnforcementImportBoundaryCoversPlanningAndAdapterFiles(t *testing.T) {
+	paths := networkEnforcementProductionFiles(t)
+	found := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			t.Fatalf("import-boundary guard should scan production files only, got %s", path)
+		}
+		found[path] = true
+	}
+	for _, path := range []string{
+		"adapter.go",
+		"allowlist_normalization.go",
+		"doc.go",
+		"plan.go",
+		"planner.go",
+		"redaction.go",
+	} {
+		if !found[path] {
+			t.Fatalf("import-boundary guard files = %#v, want %s covered", paths, path)
 		}
 	}
 }
@@ -120,10 +159,20 @@ func TestNetworkEnforcementForbiddenImportListCoversLiveSurfaces(t *testing.T) {
 		{name: "microVM runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm", want: "concrete runtime package"},
 		{name: "network", importPath: "net", want: "network package"},
 		{name: "HTTP", importPath: "net/http", want: "network package"},
+		{name: "HTTP utility", importPath: "net/http/httputil", want: "network package"},
+		{name: "gRPC", importPath: "google.golang.org/grpc", want: "network package"},
 		{name: "process", importPath: "os/exec", want: "process or privilege package"},
+		{name: "HTTP proxy", importPath: "golang.org/x/net/proxy", want: "proxy implementation package"},
+		{name: "SOCKS proxy", importPath: "github.com/armon/go-socks5", want: "proxy implementation package"},
+		{name: "firewall package", importPath: "github.com/example/firewallctl", want: "firewall implementation package"},
+		{name: "iptables", importPath: "github.com/coreos/go-iptables/iptables", want: "firewall implementation package"},
+		{name: "nftables", importPath: "github.com/google/nftables", want: "firewall implementation package"},
 		{name: "Docker", importPath: "github.com/docker/docker/client", want: "Docker or Podman package"},
+		{name: "Podman", importPath: "github.com/containers/podman/v5/pkg/bindings", want: "Docker or Podman package"},
 		{name: "Firecracker", importPath: "github.com/firecracker-microvm/firecracker-go-sdk", want: "microVM backend SDK package"},
+		{name: "KVM helper", importPath: "github.com/example/kvm-driver", want: "microVM backend SDK package"},
 		{name: "cloud SDK", importPath: "github.com/aws/aws-sdk-go-v2/service/ec2", want: "cloud SDK package"},
+		{name: "Google Cloud SDK", importPath: "cloud.google.com/go/compute/apiv1", want: "cloud SDK package"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			message := networkEnforcementImportBoundaryMessage("plan.go", tt.importPath)
@@ -134,12 +183,66 @@ func TestNetworkEnforcementForbiddenImportListCoversLiveSurfaces(t *testing.T) {
 	}
 }
 
+func TestNetworkEnforcementImportBoundaryAllowsMetadataHelpersOnly(t *testing.T) {
+	for _, importPath := range []string{
+		"context",
+		"encoding/json",
+		"fmt",
+		"net/netip",
+		"strconv",
+		"strings",
+	} {
+		t.Run(importPath, func(t *testing.T) {
+			if message := networkEnforcementImportBoundaryMessage("planner.go", importPath); message != "" {
+				t.Fatalf("import %q unexpectedly failed boundary check: %s", importPath, message)
+			}
+		})
+	}
+
+	for _, importPath := range []string{
+		"os",
+		"plugin",
+		"github.com/jywlabs/hal/internal/template",
+		"github.com/jywlabs/hal/internal/sandboxruntime/microvm",
+		"gopkg.in/yaml.v3",
+	} {
+		t.Run(importPath, func(t *testing.T) {
+			message := networkEnforcementImportBoundaryMessage("planner.go", importPath)
+			if !strings.Contains(message, importPath) {
+				t.Fatalf("boundary message = %q, want rejected import path %q", message, importPath)
+			}
+		})
+	}
+}
+
+func networkEnforcementProductionFiles(t *testing.T) []string {
+	t.Helper()
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("ReadDir(%s) error: %v", networkEnforcementPackagePath, err)
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		paths = append(paths, filepath.Join(".", name))
+	}
+	sort.Strings(paths)
+	if len(paths) == 0 {
+		t.Fatal("no network enforcement production files matched import-boundary guard")
+	}
+	return paths
+}
+
 func networkEnforcementImportBoundaryMessage(fileName, importPath string) string {
 	if forbidden := networkEnforcementForbiddenImportFor(importPath); forbidden != nil {
 		return fmt.Sprintf("package %s file %s imports forbidden %s %q", networkEnforcementPackagePath, fileName, forbidden.name, importPath)
 	}
-	if !networkEnforcementStandardLibraryImport(importPath) {
-		return fmt.Sprintf("package %s file %s imports non-standard-library dependency %q; keep enforcement plan contracts standard-library only", networkEnforcementPackagePath, fileName, importPath)
+	if !networkEnforcementAllowedImport(importPath) {
+		return fmt.Sprintf("package %s file %s imports unsupported dependency %q; keep enforcement plan contracts on safe metadata helper imports only", networkEnforcementPackagePath, fileName, importPath)
 	}
 	return ""
 }
@@ -164,9 +267,18 @@ func networkEnforcementConcreteRuntimeImport(importPath string) bool {
 	return strings.HasPrefix(importPath, prefix) && importPath != networkEnforcementPackagePath
 }
 
-func networkEnforcementStandardLibraryImport(importPath string) bool {
-	firstSegment := strings.Split(importPath, "/")[0]
-	return !strings.Contains(firstSegment, ".")
+func networkEnforcementAllowedImport(importPath string) bool {
+	switch importPath {
+	case "context",
+		"encoding/json",
+		"fmt",
+		"net/netip",
+		"strconv",
+		"strings":
+		return true
+	default:
+		return false
+	}
 }
 
 type networkEnforcementForbiddenImport struct {
