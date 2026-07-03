@@ -474,6 +474,16 @@ func TestFirecrackerDefaultTestBoundaryGuardsCoverLiveOperations(t *testing.T) {
 	}
 }
 
+func TestFirecrackerDefaultTestBoundaryExcludesOptInLiveTests(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "firecracker_live_integration_test.go")
+	if err := os.WriteFile(path, []byte("//go:build firecracker_live\n\npackage firecracker\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s) error: %v", path, err)
+	}
+	if firecrackerDefaultTestFile(t, path) {
+		t.Fatalf("%s matched default Firecracker test boundaries; firecracker_live tests must stay opt-in", path)
+	}
+}
+
 func TestPhase33FirecrackerLiveProcessCodeStaysInExplicitAdapterBoundary(t *testing.T) {
 	allowedFiles := map[string]bool{
 		"backend.go":         true,
@@ -616,7 +626,7 @@ func firecrackerDefaultTestFile(t *testing.T, path string) bool {
 			continue
 		}
 		if strings.HasPrefix(trimmed, "//go:build") || strings.HasPrefix(trimmed, "// +build") {
-			if strings.Contains(trimmed, "integration") {
+			if strings.Contains(trimmed, "integration") || strings.Contains(trimmed, "firecracker_live") {
 				return false
 			}
 			continue
