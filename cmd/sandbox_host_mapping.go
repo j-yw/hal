@@ -164,7 +164,7 @@ func sandboxSecurityFromWorkerPolicy(policy sandboxworker.SecurityPolicy) *sandb
 	if security.Network == nil && security.Secrets == nil {
 		return nil
 	}
-	return security
+	return sanitizeCommandSandboxSecurity(security)
 }
 
 func sandboxWorkerSecurityPolicyHasNetworkMetadata(policy sandboxworker.SecurityPolicy) bool {
@@ -220,8 +220,6 @@ func sandboxNetworkPolicyCapabilityFromWorkerControls(controls sandboxworker.Sec
 		sandbox.SandboxNetworkEnforcementModeProxyFirewall:
 		capability.Supported = true
 	}
-	capability.SupportsDefaultDenyPosture = capability.Supported &&
-		strings.TrimSpace(controls.NetworkPolicy) == sandboxworker.NetworkPolicyDenyByDefault
 	return capability
 }
 

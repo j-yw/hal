@@ -49,6 +49,93 @@ func TestSandboxSecurityMetadataIncludesEffectivePolicyResult(t *testing.T) {
 	}
 }
 
+func TestCommandSecurityMetadataDowngradesRequestedPolicyWithoutActiveRuntimeResult(t *testing.T) {
+	security := &sandbox.SandboxSecurity{
+		Network: &sandbox.SandboxNetworkSecurity{
+			PolicyRequested: sandbox.SandboxNetworkPolicyDenyByDefault,
+			PolicyEnforced:  sandbox.SandboxNetworkPolicyDenyByDefault,
+			EnforcementMode: sandbox.SandboxNetworkEnforcementModeProxyFirewall,
+		},
+	}
+	store := sandboxexecution.NewStore(t.TempDir())
+	startedAt := time.Date(2026, 7, 3, 17, 19, 0, 0, time.UTC)
+
+	err := saveRunSandboxManifest(store, runSandboxRequest{
+		ExecutionID: "run-requested-policy-only",
+		ProjectDir:  "/repo",
+		SandboxName: "requested-policy-only",
+	}, sandboxexecution.StatusRunning, startedAt, nil, &sandbox.SandboxState{
+		Name:     "requested-policy-only",
+		Provider: "fake",
+		Status:   sandbox.StatusRunning,
+		Security: security,
+	})
+	if err != nil {
+		t.Fatalf("saveRunSandboxManifest() error: %v", err)
+	}
+
+	manifest, err := store.LoadManifest("run-requested-policy-only")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	requireCommandNetworkSecurityDowngraded(t, manifest.Security.Network)
+
+	summary := newSandboxRuntimeSecuritySummary(security)
+	requireCommandRuntimeSummaryNetworkDowngraded(t, summary)
+
+	factoryMetadata := factorySandboxSecurityMetadata(security)
+	if factoryMetadata == nil || factoryMetadata.Network == nil {
+		t.Fatalf("factorySandboxSecurityMetadata() = %#v, want sanitized network metadata", factoryMetadata)
+	}
+	if factoryMetadata.Network.PolicyEnforced != sandbox.SandboxNetworkPolicyBestEffort ||
+		factoryMetadata.Network.EnforcementMode != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("factory network metadata = %#v, want downgraded enforced posture", factoryMetadata.Network)
+	}
+
+	encoded := mustMarshalSandboxSecurityMetadata(t, factory.SandboxMetadata{Security: factoryMetadata})
+	for _, forbidden := range []string{
+		`"policyEnforced":"deny_by_default"`,
+		`"enforcementMode":"proxy_firewall"`,
+		"listener",
+		"firewall command",
+		"secret-broker",
+		"processHandle",
+	} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("command security metadata overclaimed or leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestCommandSecurityMetadataPreservesActiveRuntimePolicyResult(t *testing.T) {
+	activeResult := testCommandActiveNetworkPolicyResult()
+	security := &sandbox.SandboxSecurity{
+		Network: &sandbox.SandboxNetworkSecurity{
+			PolicyRequested: sandbox.SandboxNetworkPolicyDenyByDefault,
+			PolicyEnforced:  sandbox.SandboxNetworkPolicyDenyByDefault,
+			EnforcementMode: sandbox.SandboxNetworkEnforcementModeProxyFirewall,
+			PolicyResult:    activeResult,
+		},
+	}
+
+	summary := newSandboxRuntimeSecuritySummary(security)
+	if summary.Enforced.NetworkPolicy == nil || *summary.Enforced.NetworkPolicy != sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("summary enforced network policy = %#v, want active deny-by-default", summary.Enforced.NetworkPolicy)
+	}
+	if summary.Enforced.NetworkEnforcement == nil || *summary.Enforced.NetworkEnforcement != sandbox.SandboxNetworkEnforcementModeProxyFirewall {
+		t.Fatalf("summary enforced network enforcement = %#v, want active proxy_firewall", summary.Enforced.NetworkEnforcement)
+	}
+
+	factoryMetadata := factorySandboxSecurityMetadata(security)
+	if factoryMetadata == nil || factoryMetadata.Network == nil {
+		t.Fatalf("factorySandboxSecurityMetadata() = %#v, want active network metadata", factoryMetadata)
+	}
+	if factoryMetadata.Network.PolicyEnforced != sandbox.SandboxNetworkPolicyDenyByDefault ||
+		factoryMetadata.Network.EnforcementMode != sandbox.SandboxNetworkEnforcementModeProxyFirewall {
+		t.Fatalf("factory network metadata = %#v, want active enforced posture", factoryMetadata.Network)
+	}
+}
+
 func TestSandboxSecurityCapabilityReadinessJSONFieldApprovedStructs(t *testing.T) {
 	for _, typ := range []reflect.Type{
 		reflect.TypeOf(sandbox.SandboxSecurity{}),
@@ -312,6 +399,54 @@ func testCommandSandboxCapabilityReadinessOutput() *sandbox.SandboxSecurityCapab
 			},
 			ReasonCode: sandbox.SandboxSecurityCapabilityReasonCapabilityConfirmed,
 		}},
+	}
+}
+
+func testCommandActiveNetworkPolicyResult() *sandbox.SandboxNetworkPolicyResult {
+	result := sandbox.EvaluateSandboxNetworkPolicy(
+		sandbox.SandboxNetworkPolicyIntent{Preset: sandbox.SandboxNetworkPolicyPresetDenyByDefault},
+		sandbox.SandboxNetworkPolicyEnforcementCapability{
+			Supported:                  true,
+			Modes:                      []string{sandbox.SandboxNetworkEnforcementModeProxyFirewall},
+			SupportsDomainRules:        true,
+			SupportsEndpointRules:      true,
+			SupportsPrivateRangeRules:  true,
+			SupportsMetadataEndpoint:   true,
+			SupportsDefaultDenyPosture: true,
+		},
+	)
+	return sandbox.CloneSandboxNetworkPolicyResultPtr(&result)
+}
+
+func requireCommandNetworkSecurityDowngraded(t *testing.T, network *sandbox.SandboxNetworkSecurity) {
+	t.Helper()
+	if network == nil {
+		t.Fatal("network security = nil")
+	}
+	if network.PolicyRequested != sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("policyRequested = %q, want requested deny-by-default preserved", network.PolicyRequested)
+	}
+	if network.PolicyEnforced != sandbox.SandboxNetworkPolicyBestEffort {
+		t.Fatalf("policyEnforced = %q, want downgraded best_effort", network.PolicyEnforced)
+	}
+	if network.EnforcementMode != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("enforcementMode = %q, want none", network.EnforcementMode)
+	}
+	if network.PolicyResult != nil && network.PolicyResult.EnforcementMode != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("policyResult = %#v, want no enforcing mode without active runtime metadata", network.PolicyResult)
+	}
+}
+
+func requireCommandRuntimeSummaryNetworkDowngraded(t *testing.T, summary SandboxRuntimeSecuritySummary) {
+	t.Helper()
+	if summary.Requested.NetworkPolicy == nil || *summary.Requested.NetworkPolicy != sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("summary requested network policy = %#v, want deny_by_default", summary.Requested.NetworkPolicy)
+	}
+	if summary.Enforced.NetworkPolicy == nil || *summary.Enforced.NetworkPolicy != sandbox.SandboxNetworkPolicyBestEffort {
+		t.Fatalf("summary enforced network policy = %#v, want best_effort", summary.Enforced.NetworkPolicy)
+	}
+	if summary.Enforced.NetworkEnforcement == nil || *summary.Enforced.NetworkEnforcement != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("summary enforced network enforcement = %#v, want none", summary.Enforced.NetworkEnforcement)
 	}
 }
 

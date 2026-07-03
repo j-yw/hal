@@ -1258,26 +1258,7 @@ func cloneSandboxRuntime(runtime *sandbox.SandboxRuntimeState) *sandbox.SandboxR
 }
 
 func cloneSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.SandboxSecurity {
-	if security == nil {
-		return nil
-	}
-	capabilityReadiness := sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness)
-	clone := &sandbox.SandboxSecurity{
-		CapabilityReadiness:            capabilityReadiness,
-		CapabilityReadinessDiagnostics: sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummaryPtr(capabilityReadiness),
-	}
-	if security.Network != nil {
-		network := *security.Network
-		network.PolicyResult = sandbox.CloneSandboxNetworkPolicyResultPtr(security.Network.PolicyResult)
-		clone.Network = &network
-	}
-	if security.Secrets != nil {
-		secrets := *security.Secrets
-		secrets.RequestedModes = append([]string(nil), security.Secrets.RequestedModes...)
-		secrets.ActiveModes = append([]string(nil), security.Secrets.ActiveModes...)
-		clone.Secrets = &secrets
-	}
-	return clone
+	return sanitizeCommandSandboxSecurity(security)
 }
 
 func sandboxManifestNetworkProxySession(session *sandbox.SandboxNetworkProxySessionMetadata) *sandbox.SandboxNetworkProxySessionMetadata {

@@ -660,6 +660,7 @@ func newSandboxRuntimeCapacitySummaryFromWorkerStatus(status *sandboxworker.Stat
 }
 
 func newSandboxRuntimeSecuritySummary(security *sandbox.SandboxSecurity) SandboxRuntimeSecuritySummary {
+	security = sanitizeCommandSandboxSecurity(security)
 	if security == nil {
 		return SandboxRuntimeSecuritySummary{
 			Requested: SandboxRuntimeSecurityControls{},
@@ -714,10 +715,24 @@ func newSandboxRuntimeSecuritySummaryFromWorkerPolicyAndRuntime(policy sandboxwo
 			Enforced:  SandboxRuntimeSecurityControls{},
 		}
 	}
+	policyResult := sandboxNetworkPolicyResultFromWorkerPolicy(policy)
+	requested := sandboxRuntimeSecurityControlsFromWorker(policy.Requested)
+	enforced := sandboxRuntimeSecurityControlsFromWorker(policy.Enforced)
+	if network := sanitizeCommandSandboxNetworkSecurity(&sandbox.SandboxNetworkSecurity{
+		PolicyRequested: strings.TrimSpace(policy.Requested.NetworkPolicy),
+		PolicyEnforced:  strings.TrimSpace(policy.Enforced.NetworkPolicy),
+		EnforcementMode: strings.TrimSpace(policy.Enforced.NetworkEnforcement),
+		PolicyResult:    policyResult,
+	}); network != nil {
+		requested.NetworkPolicy = sandboxRuntimeStringPtr(network.PolicyRequested)
+		enforced.NetworkPolicy = sandboxRuntimeStringPtr(network.PolicyEnforced)
+		enforced.NetworkEnforcement = sandboxRuntimeStringPtr(network.EnforcementMode)
+		policyResult = sandbox.CloneSandboxNetworkPolicyResultPtr(network.PolicyResult)
+	}
 	return SandboxRuntimeSecuritySummary{
-		Requested:                      sandboxRuntimeSecurityControlsFromWorker(policy.Requested),
-		Enforced:                       sandboxRuntimeSecurityControlsFromWorker(policy.Enforced),
-		NetworkPolicyResult:            sandboxNetworkPolicyResultFromWorkerPolicy(policy),
+		Requested:                      requested,
+		Enforced:                       enforced,
+		NetworkPolicyResult:            policyResult,
 		CapabilityReadiness:            capabilityReadiness,
 		CapabilityReadinessDiagnostics: sandboxRuntimeCapabilityReadinessDiagnostics(capabilityReadiness),
 	}

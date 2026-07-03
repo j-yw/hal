@@ -145,7 +145,7 @@ func factorySandboxReadinessSecurity(security *factory.SandboxSecurityMetadata) 
 	if out.Network == nil && out.Secrets == nil && out.CapabilityReadiness == nil {
 		return nil
 	}
-	return out
+	return sanitizeCommandSandboxSecurity(out)
 }
 
 func factorySandboxReadinessPolicyResult(security *sandbox.SandboxSecurity) *sandbox.SandboxNetworkPolicyResult {
