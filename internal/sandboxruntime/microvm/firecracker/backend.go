@@ -177,11 +177,11 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 		if err := renderLiveBootFiles(config); err != nil {
 			return nil, err
 		}
-		handle, err := StartProcess(ctx, c.processAdapter, operation.ProcessDescriptor)
+		liveLaunch, err := c.startLiveProcess(ctx, operation.ProcessDescriptor)
 		if err != nil {
 			return nil, err
 		}
-		processLaunch = NewProcessLaunchMetadata(ProcessLaunchStateAccepted, handle).RuntimeMetadata()
+		processLaunch = liveLaunch
 	}
 	return firecrackerStartTarget(req.Target, operation.ProcessDescriptor, processLaunch), nil
 }
@@ -200,6 +200,14 @@ func (c firecrackerController) validateLiveBootContract() error {
 	default:
 		return nil
 	}
+}
+
+func (c firecrackerController) startLiveProcess(ctx context.Context, descriptor ProcessCommandDescriptor) (*sandboxruntime.RuntimeProcessLaunchMetadata, error) {
+	handle, err := StartProcess(ctx, c.processAdapter, descriptor)
+	if err != nil {
+		return nil, err
+	}
+	return NewProcessLaunchMetadata(ProcessLaunchStateAccepted, handle).RuntimeMetadata(), nil
 }
 
 func (c firecrackerController) Stop(_ context.Context, req microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
