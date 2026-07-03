@@ -996,15 +996,15 @@ func (fakeLiveBootSafetyHooks) WaitForBootAcceptance(context.Context, bootAccept
 	}, nil
 }
 
-func (fakeLiveBootSafetyHooks) CleanupLiveProcess(context.Context, liveProcessRequest) error {
+func (fakeLiveBootSafetyHooks) CleanupLiveProcess(context.Context, LiveProcessRequest) error {
 	return nil
 }
 
-func (fakeLiveBootSafetyHooks) StopLiveProcess(context.Context, liveProcessRequest) error {
+func (fakeLiveBootSafetyHooks) StopLiveProcess(context.Context, LiveProcessRequest) error {
 	return nil
 }
 
-func (fakeLiveBootSafetyHooks) DeleteLiveProcess(context.Context, liveProcessRequest) error {
+func (fakeLiveBootSafetyHooks) DeleteLiveProcess(context.Context, LiveProcessRequest) error {
 	return nil
 }
 

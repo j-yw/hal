@@ -261,7 +261,7 @@ type phase34MetadataRedactionProbe struct {
 
 var _ ProcessStarter = (*phase34MetadataRedactionProbe)(nil)
 var _ bootAcceptanceWaiter = (*phase34MetadataRedactionProbe)(nil)
-var _ liveProcessManager = (*phase34MetadataRedactionProbe)(nil)
+var _ LiveProcessManager = (*phase34MetadataRedactionProbe)(nil)
 
 func (probe *phase34MetadataRedactionProbe) StartProcess(context.Context, ProcessRunnerStartRequest) (ProcessHandleMetadata, error) {
 	probe.startCalls++
@@ -279,17 +279,17 @@ func (probe *phase34MetadataRedactionProbe) WaitForBootAcceptance(context.Contex
 	}, nil
 }
 
-func (probe *phase34MetadataRedactionProbe) CleanupLiveProcess(context.Context, liveProcessRequest) error {
+func (probe *phase34MetadataRedactionProbe) CleanupLiveProcess(context.Context, LiveProcessRequest) error {
 	probe.cleanupCalls++
 	return nil
 }
 
-func (probe *phase34MetadataRedactionProbe) StopLiveProcess(context.Context, liveProcessRequest) error {
+func (probe *phase34MetadataRedactionProbe) StopLiveProcess(context.Context, LiveProcessRequest) error {
 	probe.stopCalls++
 	return nil
 }
 
-func (probe *phase34MetadataRedactionProbe) DeleteLiveProcess(context.Context, liveProcessRequest) error {
+func (probe *phase34MetadataRedactionProbe) DeleteLiveProcess(context.Context, LiveProcessRequest) error {
 	probe.deleteCalls++
 	return nil
 }

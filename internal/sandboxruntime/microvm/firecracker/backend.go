@@ -39,7 +39,7 @@ type BackendOptions struct {
 	BaseStateDir         string
 	ProcessAdapter       ProcessAdapter
 	BootAcceptanceWaiter bootAcceptanceWaiter
-	LiveProcessManager   liveProcessManager
+	LiveProcessManager   LiveProcessManager
 	LiveStart            bool
 }
 
@@ -57,13 +57,18 @@ type bootAcceptanceResult struct {
 	APISocketAvailable bool
 }
 
-type liveProcessManager interface {
-	CleanupLiveProcess(context.Context, liveProcessRequest) error
-	StopLiveProcess(context.Context, liveProcessRequest) error
-	DeleteLiveProcess(context.Context, liveProcessRequest) error
+// LiveProcessManager is the injected cleanup boundary for explicitly
+// live-started Firecracker host processes. Requests contain only sanitized
+// handle metadata and configured Firecracker state paths.
+type LiveProcessManager interface {
+	CleanupLiveProcess(context.Context, LiveProcessRequest) error
+	StopLiveProcess(context.Context, LiveProcessRequest) error
+	DeleteLiveProcess(context.Context, LiveProcessRequest) error
 }
 
-type liveProcessRequest struct {
+// LiveProcessRequest identifies the live-started Firecracker process and
+// Firecracker-owned state paths that may be used by cleanup implementations.
+type LiveProcessRequest struct {
 	Handle ProcessHandleMetadata
 	Paths  PathPlan
 }
@@ -74,7 +79,7 @@ type Backend struct {
 	baseStateDir         string
 	processAdapter       ProcessAdapter
 	bootAcceptanceWaiter bootAcceptanceWaiter
-	liveProcessManager   liveProcessManager
+	liveProcessManager   LiveProcessManager
 	liveStart            bool
 }
 
@@ -139,7 +144,7 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 	baseStateDir := ""
 	var adapter ProcessAdapter
 	var waiter bootAcceptanceWaiter
-	var manager liveProcessManager
+	var manager LiveProcessManager
 	if b != nil {
 		baseStateDir = b.baseStateDir
 		adapter = b.processAdapter
@@ -159,7 +164,7 @@ type firecrackerController struct {
 	baseStateDir         string
 	processAdapter       ProcessAdapter
 	bootAcceptanceWaiter bootAcceptanceWaiter
-	liveProcessManager   liveProcessManager
+	liveProcessManager   LiveProcessManager
 	liveStart            bool
 }
 
@@ -242,7 +247,7 @@ func (c firecrackerController) waitForBootAcceptance(ctx context.Context, handle
 }
 
 func (c firecrackerController) cleanupLiveProcessAfterBootAcceptanceFailure(ctx context.Context, handle ProcessHandleMetadata, paths PathPlan, acceptanceErr error) error {
-	cleanupErr := c.cleanupLiveProcess(ctx, liveProcessRequest{
+	cleanupErr := c.cleanupLiveProcess(ctx, LiveProcessRequest{
 		Handle: sanitizeProcessHandleMetadata(handle),
 		Paths:  paths,
 	})
@@ -252,7 +257,7 @@ func (c firecrackerController) cleanupLiveProcessAfterBootAcceptanceFailure(ctx 
 	return errors.Join(acceptanceErr, cleanupErr)
 }
 
-func (c firecrackerController) cleanupLiveProcess(ctx context.Context, req liveProcessRequest) error {
+func (c firecrackerController) cleanupLiveProcess(ctx context.Context, req LiveProcessRequest) error {
 	if c.liveProcessManager == nil {
 		return newLiveBootContractError("liveProcessManager", "live boot requires an injected live process manager")
 	}
@@ -279,7 +284,7 @@ func (c firecrackerController) Stop(ctx context.Context, req microvm.ControllerL
 	return firecrackerLifecycleTarget(req.Target, plan.Summary(), sandbox.StatusStopped), nil
 }
 
-func (c firecrackerController) stopLiveProcess(ctx context.Context, req liveProcessRequest) error {
+func (c firecrackerController) stopLiveProcess(ctx context.Context, req LiveProcessRequest) error {
 	if c.liveProcessManager == nil {
 		return newLiveBootContractError("liveProcessManager", "live boot requires an injected live process manager")
 	}
@@ -303,7 +308,7 @@ func (c firecrackerController) Delete(ctx context.Context, req microvm.Controlle
 	return nil
 }
 
-func (c firecrackerController) deleteLiveProcess(ctx context.Context, req liveProcessRequest) error {
+func (c firecrackerController) deleteLiveProcess(ctx context.Context, req LiveProcessRequest) error {
 	if c.liveProcessManager == nil {
 		return newLiveBootContractError("liveProcessManager", "live boot requires an injected live process manager")
 	}
@@ -454,15 +459,15 @@ func firecrackerLifecycleTarget(target sandboxruntime.Target, summary OperationP
 	return &planned
 }
 
-func liveProcessRequestFromTarget(target sandboxruntime.Target, paths PathPlan) (liveProcessRequest, bool) {
+func liveProcessRequestFromTarget(target sandboxruntime.Target, paths PathPlan) (LiveProcessRequest, bool) {
 	if target.Runtime.Metadata == nil {
-		return liveProcessRequest{}, false
+		return LiveProcessRequest{}, false
 	}
 	processLaunch := sanitizeRuntimeProcessLaunchMetadata(target.Runtime.Metadata.ProcessLaunch)
 	if processLaunch == nil || processLaunch.State != string(ProcessLaunchStateAccepted) {
-		return liveProcessRequest{}, false
+		return LiveProcessRequest{}, false
 	}
-	return liveProcessRequest{
+	return LiveProcessRequest{
 		Handle: sanitizeProcessHandleMetadata(ProcessHandleMetadata{
 			ID:     processLaunch.ProcessID,
 			Source: processLaunch.ProcessIDSource,

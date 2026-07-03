@@ -154,7 +154,8 @@ func TestPhase34StopDeleteUseLiveProcessManagerOnlyForLiveStartedTargets(t *test
 			ProcessAccepted:    true,
 			APISocketAvailable: true,
 		})
-		backend := phase34LiveBootAcceptanceBackend(filepath.Join(t.TempDir(), "firecracker-state"), deps)
+		stateRoot := filepath.Join(t.TempDir(), "firecracker-state")
+		backend := phase34LiveBootAcceptanceBackend(stateRoot, deps)
 		started, controller, err := phase34CreateStartAndController(t, backend, phase34LiveBootFakeConfig(t), "phase34-live-cleanup")
 		if err != nil {
 			t.Fatalf("Start() error = %v, want nil for accepted live-started target", err)
@@ -174,6 +175,7 @@ func TestPhase34StopDeleteUseLiveProcessManagerOnlyForLiveStartedTargets(t *test
 		if len(deps.stopRequests) != 1 || deps.stopRequests[0].Handle != deps.handle {
 			t.Fatalf("stop requests = %#v, want live process handle %#v", deps.stopRequests, deps.handle)
 		}
+		phase34AssertCleanupRequestScopedToStateRoot(t, deps.stopRequests[0], stateRoot)
 
 		if err := controller.Delete(context.Background(), microvm.ControllerLifecycleRequest{
 			Operation: microvm.OperationDelete,
@@ -188,6 +190,7 @@ func TestPhase34StopDeleteUseLiveProcessManagerOnlyForLiveStartedTargets(t *test
 		if len(deps.deleteRequests) != 1 || deps.deleteRequests[0].Handle != deps.handle {
 			t.Fatalf("delete requests = %#v, want live process handle %#v", deps.deleteRequests, deps.handle)
 		}
+		phase34AssertCleanupRequestScopedToStateRoot(t, deps.deleteRequests[0], stateRoot)
 	})
 
 	t.Run("planning-only target", func(t *testing.T) {
@@ -225,6 +228,105 @@ func TestPhase34StopDeleteUseLiveProcessManagerOnlyForLiveStartedTargets(t *test
 			t.Fatalf("live process calls for planning-only target = start:%d wait:%d cleanup:%d stop:%d delete:%d, want none",
 				deps.startCalls, deps.waitCalls, deps.cleanupCalls, deps.stopCalls, deps.deleteCalls)
 		}
+	})
+}
+
+func TestPhase34LiveProcessManagerFailuresAreSanitized(t *testing.T) {
+	unsafeManagerErr := errors.New("manager failed state=/Users/alice/private/firecracker-state/firecracker.sock endpoint=https://secret.example.test:8443/api token=ghp_secret pid=424242 OPENAI_API_KEY=sk-live-secret")
+
+	t.Run("acceptance cleanup", func(t *testing.T) {
+		deps := phase34NewBootAcceptanceCleanupProbe(phase34BootAcceptanceOutcome{
+			Err: errPhase34BootWaiterFailed,
+		})
+		deps.cleanupErr = unsafeManagerErr
+		backend := phase34LiveBootAcceptanceBackend(filepath.Join(t.TempDir(), "firecracker-state"), deps)
+
+		started, err := phase34CreateAndStart(t, backend, phase34LiveBootFakeConfig(t), "phase34-cleanup-failure")
+
+		if err == nil {
+			t.Fatal("Start() error = nil, want boot acceptance and cleanup failure")
+		}
+		if started != nil {
+			t.Fatalf("Start() target = %#v, want nil after cleanup failure", started)
+		}
+		if deps.cleanupCalls != 1 {
+			t.Fatalf("cleanup calls = %d, want one cleanup attempt", deps.cleanupCalls)
+		}
+		if !errors.Is(err, unsafeManagerErr) {
+			t.Fatalf("errors.Is(Start() error, managerErr) = false for %v", err)
+		}
+		phase34AssertLiveProcessManagerErrorRedacted(t, err)
+	})
+
+	t.Run("stop", func(t *testing.T) {
+		deps := phase34NewBootAcceptanceCleanupProbe(phase34BootAcceptanceOutcome{
+			ProcessAccepted:    true,
+			APISocketAvailable: true,
+		})
+		deps.stopErr = unsafeManagerErr
+		backend := phase34LiveBootAcceptanceBackend(filepath.Join(t.TempDir(), "firecracker-state"), deps)
+		started, controller, err := phase34CreateStartAndController(t, backend, phase34LiveBootFakeConfig(t), "phase34-stop-failure")
+		if err != nil {
+			t.Fatalf("Start() error = %v, want nil before stop failure", err)
+		}
+
+		stopped, err := controller.Stop(context.Background(), microvm.ControllerLifecycleRequest{
+			Operation: microvm.OperationStop,
+			Config:    phase34LiveBootFakeConfig(t),
+			Target:    *started,
+		})
+
+		if err == nil {
+			t.Fatal("Stop() error = nil, want live process manager failure")
+		}
+		if stopped != nil {
+			t.Fatalf("Stop() target = %#v, want nil after manager failure", stopped)
+		}
+		if deps.stopCalls != 1 {
+			t.Fatalf("stop calls = %d, want one stop attempt", deps.stopCalls)
+		}
+		if !errors.Is(err, unsafeManagerErr) {
+			t.Fatalf("errors.Is(Stop() error, managerErr) = false for %v", err)
+		}
+		phase34AssertLiveProcessManagerErrorRedacted(t, err)
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		deps := phase34NewBootAcceptanceCleanupProbe(phase34BootAcceptanceOutcome{
+			ProcessAccepted:    true,
+			APISocketAvailable: true,
+		})
+		backend := phase34LiveBootAcceptanceBackend(filepath.Join(t.TempDir(), "firecracker-state"), deps)
+		started, controller, err := phase34CreateStartAndController(t, backend, phase34LiveBootFakeConfig(t), "phase34-delete-failure")
+		if err != nil {
+			t.Fatalf("Start() error = %v, want nil before delete failure", err)
+		}
+		stopped, err := controller.Stop(context.Background(), microvm.ControllerLifecycleRequest{
+			Operation: microvm.OperationStop,
+			Config:    phase34LiveBootFakeConfig(t),
+			Target:    *started,
+		})
+		if err != nil {
+			t.Fatalf("Stop() error = %v, want nil before delete failure", err)
+		}
+		deps.deleteErr = unsafeManagerErr
+
+		err = controller.Delete(context.Background(), microvm.ControllerLifecycleRequest{
+			Operation: microvm.OperationDelete,
+			Config:    phase34LiveBootFakeConfig(t),
+			Target:    *stopped,
+		})
+
+		if err == nil {
+			t.Fatal("Delete() error = nil, want live process manager failure")
+		}
+		if deps.deleteCalls != 1 {
+			t.Fatalf("delete calls = %d, want one delete attempt", deps.deleteCalls)
+		}
+		if !errors.Is(err, unsafeManagerErr) {
+			t.Fatalf("errors.Is(Delete() error, managerErr) = false for %v", err)
+		}
+		phase34AssertLiveProcessManagerErrorRedacted(t, err)
 	})
 }
 
@@ -279,6 +381,10 @@ type phase34BootAcceptanceCleanupProbe struct {
 	handle  ProcessHandleMetadata
 	outcome phase34BootAcceptanceOutcome
 
+	cleanupErr error
+	stopErr    error
+	deleteErr  error
+
 	startCalls   int
 	waitCalls    int
 	cleanupCalls int
@@ -286,14 +392,14 @@ type phase34BootAcceptanceCleanupProbe struct {
 	deleteCalls  int
 
 	waitRequests    []bootAcceptanceRequest
-	cleanupRequests []liveProcessRequest
-	stopRequests    []liveProcessRequest
-	deleteRequests  []liveProcessRequest
+	cleanupRequests []LiveProcessRequest
+	stopRequests    []LiveProcessRequest
+	deleteRequests  []LiveProcessRequest
 }
 
 var _ ProcessStarter = (*phase34BootAcceptanceCleanupProbe)(nil)
 var _ bootAcceptanceWaiter = (*phase34BootAcceptanceCleanupProbe)(nil)
-var _ liveProcessManager = (*phase34BootAcceptanceCleanupProbe)(nil)
+var _ LiveProcessManager = (*phase34BootAcceptanceCleanupProbe)(nil)
 
 func phase34NewBootAcceptanceCleanupProbe(outcome phase34BootAcceptanceOutcome) *phase34BootAcceptanceCleanupProbe {
 	return &phase34BootAcceptanceCleanupProbe{
@@ -330,22 +436,22 @@ func (probe *phase34BootAcceptanceCleanupProbe) WaitForBootAcceptance(_ context.
 	}
 }
 
-func (probe *phase34BootAcceptanceCleanupProbe) CleanupLiveProcess(_ context.Context, req liveProcessRequest) error {
+func (probe *phase34BootAcceptanceCleanupProbe) CleanupLiveProcess(_ context.Context, req LiveProcessRequest) error {
 	probe.cleanupCalls++
 	probe.cleanupRequests = append(probe.cleanupRequests, req)
-	return nil
+	return probe.cleanupErr
 }
 
-func (probe *phase34BootAcceptanceCleanupProbe) StopLiveProcess(_ context.Context, req liveProcessRequest) error {
+func (probe *phase34BootAcceptanceCleanupProbe) StopLiveProcess(_ context.Context, req LiveProcessRequest) error {
 	probe.stopCalls++
 	probe.stopRequests = append(probe.stopRequests, req)
-	return nil
+	return probe.stopErr
 }
 
-func (probe *phase34BootAcceptanceCleanupProbe) DeleteLiveProcess(_ context.Context, req liveProcessRequest) error {
+func (probe *phase34BootAcceptanceCleanupProbe) DeleteLiveProcess(_ context.Context, req LiveProcessRequest) error {
 	probe.deleteCalls++
 	probe.deleteRequests = append(probe.deleteRequests, req)
-	return nil
+	return probe.deleteErr
 }
 
 func phase34LiveBootAcceptanceBackend(stateRoot string, deps *phase34BootAcceptanceCleanupProbe) *Backend {
@@ -438,7 +544,7 @@ func phase34WriteCallerOwnedFiles(t *testing.T, paths []string) {
 	}
 }
 
-func phase34AssertCleanupRequestScopedToStateRoot(t *testing.T, req liveProcessRequest, stateRoot string) {
+func phase34AssertCleanupRequestScopedToStateRoot(t *testing.T, req LiveProcessRequest, stateRoot string) {
 	t.Helper()
 
 	if req.Handle.ID == "" {
@@ -476,4 +582,64 @@ func phase34AssertCallerOwnedFilesRemain(t *testing.T, paths []string) {
 			t.Fatalf("caller-owned path %q was removed or changed by cleanup: %v", path, err)
 		}
 	}
+}
+
+func phase34AssertLiveProcessManagerErrorRedacted(t *testing.T, err error) {
+	t.Helper()
+
+	opErr := phase34FindLiveProcessManagerOperationError(err)
+	if opErr == nil {
+		t.Fatalf("live process manager error not found in chain: %v", err)
+	}
+	if opErr.Code != microvm.ErrorCodeBackendOperationFailed {
+		t.Fatalf("live process manager error code = %q, want %q", opErr.Code, microvm.ErrorCodeBackendOperationFailed)
+	}
+	if opErr.Operation != liveProcessManagerOperation {
+		t.Fatalf("live process manager operation = %q, want %q", opErr.Operation, liveProcessManagerOperation)
+	}
+
+	encoded, marshalErr := json.Marshal(err)
+	if marshalErr != nil {
+		t.Fatalf("Marshal(live process manager error) error = %v", marshalErr)
+	}
+	publicText := err.Error() + " " + string(encoded)
+	for unwrapped := errors.Unwrap(opErr); unwrapped != nil; unwrapped = errors.Unwrap(unwrapped) {
+		publicText += " " + unwrapped.Error()
+	}
+	assertFirecrackerErrorDoesNotLeak(t, errors.New(publicText),
+		"/Users/alice",
+		"private",
+		"firecracker.sock",
+		"secret.example.test",
+		"8443",
+		"ghp_secret",
+		"424242",
+		"pid=424242",
+		"OPENAI_API_KEY",
+		"sk-live-secret",
+	)
+}
+
+func phase34FindLiveProcessManagerOperationError(err error) *microvm.OperationError {
+	var opErr *microvm.OperationError
+	if errors.As(err, &opErr) && opErr.Operation == liveProcessManagerOperation {
+		return opErr
+	}
+	type multiUnwrapper interface {
+		Unwrap() []error
+	}
+	if joined, ok := err.(multiUnwrapper); ok {
+		for _, child := range joined.Unwrap() {
+			if found := phase34FindLiveProcessManagerOperationError(child); found != nil {
+				return found
+			}
+		}
+	}
+	type unwrapper interface {
+		Unwrap() error
+	}
+	if wrapped, ok := err.(unwrapper); ok {
+		return phase34FindLiveProcessManagerOperationError(wrapped.Unwrap())
+	}
+	return nil
 }

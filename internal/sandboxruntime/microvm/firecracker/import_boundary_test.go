@@ -107,6 +107,8 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 		"DefaultStateDir":                       true,
 		"GuestWorkDirMetadata":                  true,
 		"InspectOperationPlan":                  true,
+		"LiveProcessManager":                    true,
+		"LiveProcessRequest":                    true,
 		"MachineConfigPayload":                  true,
 		"NewBackend":                            true,
 		"OperationAction":                       true,
