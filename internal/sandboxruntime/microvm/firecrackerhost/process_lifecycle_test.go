@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"
 )
@@ -138,6 +141,188 @@ func TestProcessLifecycleManagerCleanupAndDeleteKillAndWait(t *testing.T) {
 	if deleteProcess.killCalls != 1 || deleteProcess.waitCalls != 1 {
 		t.Fatalf("delete was not idempotent after handle removal: kill=%d wait=%d", deleteProcess.killCalls, deleteProcess.waitCalls)
 	}
+}
+
+func TestProcessLifecycleManagerCleanupRemovesOnlyValidatedFirecrackerStateDir(t *testing.T) {
+	paths := cleanupPathPlanForTest("fc-cleanup-safe")
+	callerOwnedPath := filepath.Join(filepath.Dir(paths.StateDir), "caller-owned", firecracker.DefaultAPISocketPath)
+	filesystem := newFakeCleanupFilesystem()
+	filesystem.addDir(paths.StateDir)
+	filesystem.addFile(paths.APISocketPath)
+	filesystem.addFile(paths.ConfigPath)
+	filesystem.addFile(paths.LogPath)
+	filesystem.addFile(paths.MetricsPath)
+	filesystem.addDir(filepath.Dir(callerOwnedPath))
+	filesystem.addFile(callerOwnedPath)
+	process := &fakeHostProcess{rawPID: 3333}
+	manager := NewProcessLifecycleManager(
+		&fakeHostProcessRunner{processes: []HostProcess{process}},
+		WithProcessLifecycleCleanupFilesystem(filesystem),
+	)
+	handle, err := manager.StartProcess(context.Background(), firecracker.ProcessRunnerStartRequest{Executable: "firecracker"})
+	if err != nil {
+		t.Fatalf("StartProcess() error = %v, want nil", err)
+	}
+
+	if err := manager.CleanupLiveProcess(context.Background(), firecracker.LiveProcessRequest{Handle: handle, Paths: paths}); err != nil {
+		t.Fatalf("CleanupLiveProcess() error = %v, want nil", err)
+	}
+
+	if process.killCalls != 1 || process.waitCalls != 1 || process.signalCalls != 0 {
+		t.Fatalf("cleanup calls = signal:%d kill:%d wait:%d, want kill+wait only", process.signalCalls, process.killCalls, process.waitCalls)
+	}
+	if !reflect.DeepEqual(filesystem.removeCalls, []string{paths.StateDir}) {
+		t.Fatalf("RemoveAll calls = %#v, want only validated state dir %q", filesystem.removeCalls, paths.StateDir)
+	}
+	for _, removed := range []string{paths.StateDir, paths.APISocketPath, paths.ConfigPath, paths.LogPath, paths.MetricsPath} {
+		if filesystem.exists(removed) {
+			t.Fatalf("cleanup left Firecracker-owned path %q, want removed", removed)
+		}
+	}
+	if !filesystem.exists(callerOwnedPath) {
+		t.Fatalf("cleanup removed caller-owned path %q outside state dir", callerOwnedPath)
+	}
+
+	if err := manager.CleanupLiveProcess(context.Background(), firecracker.LiveProcessRequest{Handle: handle, Paths: paths}); err != nil {
+		t.Fatalf("CleanupLiveProcess(already-finished) error = %v, want nil", err)
+	}
+	if process.killCalls != 1 || process.waitCalls != 1 {
+		t.Fatalf("already-finished cleanup was not idempotent: kill=%d wait=%d", process.killCalls, process.waitCalls)
+	}
+	if !reflect.DeepEqual(filesystem.removeCalls, []string{paths.StateDir}) {
+		t.Fatalf("already-finished cleanup RemoveAll calls = %#v, want no second removal", filesystem.removeCalls)
+	}
+}
+
+func TestProcessLifecycleManagerDeleteUnknownHandleCleansValidatedStateIdempotently(t *testing.T) {
+	paths := cleanupPathPlanForTest("fc-delete-unknown")
+	filesystem := newFakeCleanupFilesystem()
+	filesystem.addDir(paths.StateDir)
+	filesystem.addFile(paths.APISocketPath)
+	filesystem.addFile(paths.ConfigPath)
+	filesystem.addFile(paths.LogPath)
+	filesystem.addFile(paths.MetricsPath)
+	manager := NewProcessLifecycleManager(nil, WithProcessLifecycleCleanupFilesystem(filesystem))
+	unknown := firecracker.ProcessHandleMetadata{ID: "fc-handle-999999999999", Source: processHandleSource}
+
+	if err := manager.DeleteLiveProcess(context.Background(), firecracker.LiveProcessRequest{Handle: unknown, Paths: paths}); err != nil {
+		t.Fatalf("DeleteLiveProcess(unknown) error = %v, want nil", err)
+	}
+	if filesystem.exists(paths.StateDir) {
+		t.Fatalf("DeleteLiveProcess(unknown) left state dir %q, want removed", paths.StateDir)
+	}
+
+	if err := manager.DeleteLiveProcess(context.Background(), firecracker.LiveProcessRequest{Handle: unknown, Paths: paths}); err != nil {
+		t.Fatalf("DeleteLiveProcess(unknown already removed) error = %v, want nil", err)
+	}
+	if !reflect.DeepEqual(filesystem.removeCalls, []string{paths.StateDir}) {
+		t.Fatalf("DeleteLiveProcess(unknown) RemoveAll calls = %#v, want one idempotent removal", filesystem.removeCalls)
+	}
+}
+
+func TestProcessLifecycleManagerCleanupRefusesUnsafePathPlans(t *testing.T) {
+	safePaths := cleanupPathPlanForTest("fc-refuse-unsafe")
+	outsideSocket := filepath.Join(filepath.Dir(safePaths.StateDir), "caller-owned", firecracker.DefaultAPISocketPath)
+	unsafeStateDir := filepath.Join(filepath.Dir(safePaths.StateDir), "caller-owned")
+	unsafeStatePaths := cleanupPathPlanForStateDir(unsafeStateDir)
+
+	tests := []struct {
+		name            string
+		paths           firecracker.PathPlan
+		unsafeFragments []string
+	}{
+		{
+			name: "support path outside state dir",
+			paths: firecracker.PathPlan{
+				StateDir:      safePaths.StateDir,
+				APISocketPath: outsideSocket,
+				ConfigPath:    safePaths.ConfigPath,
+				LogPath:       safePaths.LogPath,
+				MetricsPath:   safePaths.MetricsPath,
+			},
+			unsafeFragments: []string{outsideSocket, filepath.Dir(outsideSocket), firecracker.DefaultAPISocketPath},
+		},
+		{
+			name:            "state dir without generated firecracker runtime name",
+			paths:           unsafeStatePaths,
+			unsafeFragments: []string{unsafeStateDir, "caller-owned"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			process := &fakeHostProcess{rawPID: 4444}
+			filesystem := newFakeCleanupFilesystem()
+			filesystem.addDir(safePaths.StateDir)
+			filesystem.addFile(outsideSocket)
+			manager := NewProcessLifecycleManager(
+				&fakeHostProcessRunner{processes: []HostProcess{process}},
+				WithProcessLifecycleCleanupFilesystem(filesystem),
+			)
+			handle, err := manager.StartProcess(context.Background(), firecracker.ProcessRunnerStartRequest{Executable: "firecracker"})
+			if err != nil {
+				t.Fatalf("StartProcess() error = %v, want nil", err)
+			}
+
+			err = manager.CleanupLiveProcess(context.Background(), firecracker.LiveProcessRequest{Handle: handle, Paths: tt.paths})
+
+			if !errors.Is(err, ErrUnsafeCleanupPath) {
+				t.Fatalf("CleanupLiveProcess() error = %v, want ErrUnsafeCleanupPath", err)
+			}
+			if process.killCalls != 0 || process.waitCalls != 0 || process.signalCalls != 0 {
+				t.Fatalf("unsafe cleanup touched process: signal=%d kill=%d wait=%d", process.signalCalls, process.killCalls, process.waitCalls)
+			}
+			if len(filesystem.removeCalls) != 0 {
+				t.Fatalf("unsafe cleanup RemoveAll calls = %#v, want none", filesystem.removeCalls)
+			}
+			if !filesystem.exists(safePaths.StateDir) {
+				t.Fatalf("unsafe cleanup removed state dir %q", safePaths.StateDir)
+			}
+			assertProcessLifecyclePublicTextRedacted(t, err.Error(), tt.unsafeFragments...)
+		})
+	}
+}
+
+func TestProcessLifecycleManagerCleanupFilesystemErrorsAreSanitized(t *testing.T) {
+	paths := cleanupPathPlanForTest("fc-cleanup-error")
+	rawErr := errors.New("remove " + paths.StateDir + " with socket " + paths.APISocketPath + " failed OPENAI_API_KEY=sk-live-secret token=ghp_secret")
+	filesystem := newFakeCleanupFilesystem()
+	filesystem.addDir(paths.StateDir)
+	filesystem.removeErr = rawErr
+	process := &fakeHostProcess{rawPID: 5555}
+	manager := NewProcessLifecycleManager(
+		&fakeHostProcessRunner{processes: []HostProcess{process}},
+		WithProcessLifecycleCleanupFilesystem(filesystem),
+	)
+	handle, err := manager.StartProcess(context.Background(), firecracker.ProcessRunnerStartRequest{Executable: "firecracker"})
+	if err != nil {
+		t.Fatalf("StartProcess() error = %v, want nil", err)
+	}
+
+	err = manager.CleanupLiveProcess(context.Background(), firecracker.LiveProcessRequest{Handle: handle, Paths: paths})
+
+	if err == nil {
+		t.Fatal("CleanupLiveProcess() error = nil, want filesystem error")
+	}
+	if !errors.Is(err, rawErr) {
+		t.Fatalf("errors.Is(cleanup error, rawErr) = false for %v", err)
+	}
+	var lifecycleErr *ProcessLifecycleError
+	if !errors.As(err, &lifecycleErr) {
+		t.Fatalf("errors.As(%T) = false, want true", lifecycleErr)
+	}
+	if lifecycleErr.Operation != processOperationCleanup {
+		t.Fatalf("cleanup operation = %q, want %q", lifecycleErr.Operation, processOperationCleanup)
+	}
+	assertProcessLifecyclePublicTextRedacted(t, err.Error(),
+		paths.StateDir,
+		paths.APISocketPath,
+		filepath.Dir(paths.StateDir),
+		firecracker.DefaultAPISocketPath,
+		"OPENAI_API_KEY",
+		"sk-live-secret",
+		"ghp_secret",
+	)
 }
 
 func TestProcessLifecycleManagerLifecycleErrorsAreSanitized(t *testing.T) {
@@ -308,4 +493,104 @@ func rawProcessMetadataLeaked(value string, unsafeFragments ...string) bool {
 		}
 	}
 	return value != ""
+}
+
+func cleanupPathPlanForTest(runtimeID string) firecracker.PathPlan {
+	return cleanupPathPlanForStateDir(filepath.Join(os.TempDir(), "hal-firecrackerhost-cleanup-test", runtimeID))
+}
+
+func cleanupPathPlanForStateDir(stateDir string) firecracker.PathPlan {
+	return firecracker.PathPlan{
+		StateDir:      stateDir,
+		APISocketPath: filepath.Join(stateDir, firecracker.DefaultAPISocketPath),
+		ConfigPath:    filepath.Join(stateDir, firecracker.DefaultConfigPath),
+		LogPath:       filepath.Join(stateDir, firecracker.DefaultLogPath),
+		MetricsPath:   filepath.Join(stateDir, firecracker.DefaultMetricsPath),
+	}
+}
+
+type fakeCleanupFilesystem struct {
+	entries     map[string]fakeCleanupFileInfo
+	removeCalls []string
+	removeErr   error
+}
+
+func newFakeCleanupFilesystem() *fakeCleanupFilesystem {
+	return &fakeCleanupFilesystem{
+		entries: map[string]fakeCleanupFileInfo{},
+	}
+}
+
+func (filesystem *fakeCleanupFilesystem) Lstat(path string) (os.FileInfo, error) {
+	path = filepath.Clean(path)
+	if filesystem == nil {
+		return nil, os.ErrNotExist
+	}
+	info, ok := filesystem.entries[path]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return info, nil
+}
+
+func (filesystem *fakeCleanupFilesystem) RemoveAll(path string) error {
+	path = filepath.Clean(path)
+	filesystem.removeCalls = append(filesystem.removeCalls, path)
+	if filesystem.removeErr != nil {
+		return filesystem.removeErr
+	}
+	for existing := range filesystem.entries {
+		if existing == path || strings.HasPrefix(existing, path+string(filepath.Separator)) {
+			delete(filesystem.entries, existing)
+		}
+	}
+	return nil
+}
+
+func (filesystem *fakeCleanupFilesystem) addDir(path string) {
+	filesystem.entries[filepath.Clean(path)] = fakeCleanupFileInfo{
+		name: filepath.Base(path),
+		mode: os.ModeDir | 0o700,
+	}
+}
+
+func (filesystem *fakeCleanupFilesystem) addFile(path string) {
+	filesystem.entries[filepath.Clean(path)] = fakeCleanupFileInfo{
+		name: filepath.Base(path),
+		mode: 0o600,
+	}
+}
+
+func (filesystem *fakeCleanupFilesystem) exists(path string) bool {
+	_, ok := filesystem.entries[filepath.Clean(path)]
+	return ok
+}
+
+type fakeCleanupFileInfo struct {
+	name string
+	mode os.FileMode
+}
+
+func (info fakeCleanupFileInfo) Name() string {
+	return info.name
+}
+
+func (info fakeCleanupFileInfo) Size() int64 {
+	return 0
+}
+
+func (info fakeCleanupFileInfo) Mode() os.FileMode {
+	return info.mode
+}
+
+func (info fakeCleanupFileInfo) ModTime() time.Time {
+	return time.Time{}
+}
+
+func (info fakeCleanupFileInfo) IsDir() bool {
+	return info.mode.IsDir()
+}
+
+func (info fakeCleanupFileInfo) Sys() any {
+	return nil
 }
