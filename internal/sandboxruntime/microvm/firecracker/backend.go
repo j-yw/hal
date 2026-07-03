@@ -174,6 +174,9 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 	}
 	processLaunch := processBoundaryAvailableRuntimeMetadata()
 	if c.liveStart {
+		if err := renderLiveBootFiles(config); err != nil {
+			return nil, err
+		}
 		handle, err := StartProcess(ctx, c.processAdapter, operation.ProcessDescriptor)
 		if err != nil {
 			return nil, err

@@ -19,9 +19,11 @@ func TestPhase34LiveBootRendersBootFilesIntoStateDirBeforeLaunch(t *testing.T) {
 	config := phase34LiveBootFakeConfig(t)
 	starter := &phase34RenderLaunchStarter{}
 	backend := NewBackend(BackendOptions{
-		BaseStateDir:   stateRoot,
-		ProcessAdapter: ProcessLaunchAdapter{Starter: starter},
-		LiveStart:      true,
+		BaseStateDir:         stateRoot,
+		ProcessAdapter:       ProcessLaunchAdapter{Starter: starter},
+		BootAcceptanceWaiter: fakeLiveBootSafetyHooks{},
+		LiveProcessManager:   fakeLiveBootSafetyHooks{},
+		LiveStart:            true,
 	})
 	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
 		Operation: microvm.OperationCreate,
@@ -74,9 +76,11 @@ func TestPhase34LiveBootRenderFailurePreventsLaunchAndSanitizesError(t *testing.
 	config := phase34LiveBootFakeConfig(t)
 	starter := &phase34RenderLaunchStarter{}
 	backend := NewBackend(BackendOptions{
-		BaseStateDir:   stateRoot,
-		ProcessAdapter: ProcessLaunchAdapter{Starter: starter},
-		LiveStart:      true,
+		BaseStateDir:         stateRoot,
+		ProcessAdapter:       ProcessLaunchAdapter{Starter: starter},
+		BootAcceptanceWaiter: fakeLiveBootSafetyHooks{},
+		LiveProcessManager:   fakeLiveBootSafetyHooks{},
+		LiveStart:            true,
 	})
 	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
 		Operation: microvm.OperationCreate,
