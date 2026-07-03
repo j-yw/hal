@@ -123,7 +123,13 @@ func normalizeErrorCode(code ErrorCode) ErrorCode {
 		ErrorCodeInvalidTimeout,
 		ErrorCodeInvalidDeadline,
 		ErrorCodeOversizedPayloadMetadata,
-		ErrorCodeInvalidMetadata:
+		ErrorCodeInvalidMetadata,
+		ErrorCodeMalformedResponse,
+		ErrorCodeOversizedRequest,
+		ErrorCodeOversizedResponse,
+		ErrorCodeRequestCanceled,
+		ErrorCodeRequestTimeout,
+		ErrorCodeTransportFailure:
 		return code
 	default:
 		return ErrorCodeInvalidMetadata

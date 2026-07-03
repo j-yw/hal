@@ -138,7 +138,7 @@ func TestGuestAgentImportBoundaryCoversProductionFiles(t *testing.T) {
 		}
 		found[path] = true
 	}
-	for _, path := range []string{"contracts.go", "errors.go", "validation.go"} {
+	for _, path := range []string{"client.go", "contracts.go", "errors.go", "validation.go"} {
 		if !found[path] {
 			t.Fatalf("import-boundary guard files = %#v, want %s covered", paths, path)
 		}

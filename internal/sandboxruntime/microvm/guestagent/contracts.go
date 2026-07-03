@@ -40,6 +40,12 @@ const (
 	ErrorCodeInvalidDeadline            ErrorCode = "invalid_deadline"
 	ErrorCodeOversizedPayloadMetadata   ErrorCode = "oversized_payload_metadata"
 	ErrorCodeInvalidMetadata            ErrorCode = "invalid_metadata"
+	ErrorCodeMalformedResponse          ErrorCode = "malformed_response"
+	ErrorCodeOversizedRequest           ErrorCode = "oversized_request"
+	ErrorCodeOversizedResponse          ErrorCode = "oversized_response"
+	ErrorCodeRequestCanceled            ErrorCode = "request_canceled"
+	ErrorCodeRequestTimeout             ErrorCode = "request_timeout"
+	ErrorCodeTransportFailure           ErrorCode = "transport_failure"
 )
 
 const (

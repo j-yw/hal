@@ -26,6 +26,12 @@ func TestProtocolContractConstants(t *testing.T) {
 		{name: "unknown operation error", got: string(ErrorCodeUnknownOperation), want: "unknown_operation"},
 		{name: "malformed path error", got: string(ErrorCodeMalformedPath), want: "malformed_path"},
 		{name: "oversized payload error", got: string(ErrorCodeOversizedPayloadMetadata), want: "oversized_payload_metadata"},
+		{name: "malformed response error", got: string(ErrorCodeMalformedResponse), want: "malformed_response"},
+		{name: "oversized request error", got: string(ErrorCodeOversizedRequest), want: "oversized_request"},
+		{name: "oversized response error", got: string(ErrorCodeOversizedResponse), want: "oversized_response"},
+		{name: "request canceled error", got: string(ErrorCodeRequestCanceled), want: "request_canceled"},
+		{name: "request timeout error", got: string(ErrorCodeRequestTimeout), want: "request_timeout"},
+		{name: "transport failure error", got: string(ErrorCodeTransportFailure), want: "transport_failure"},
 	}
 
 	for _, tt := range tests {
