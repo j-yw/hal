@@ -17,6 +17,7 @@ type LiveDriverOptions struct {
 	Config               microvm.Config
 	BaseStateDir         string
 	CapabilityDetector   microvm.CapabilityDetector
+	NetworkEnforcement   *microvm.NetworkEnforcementPlanning
 	HostProcessRunner    HostProcessRunner
 	BootAcceptancePoller BootAcceptancePoller
 	GuestReadinessProbe  GuestReadinessProbe
@@ -42,6 +43,7 @@ func NewLiveDriver(options LiveDriverOptions) (*microvm.Driver, error) {
 		Config:             config,
 		CapabilityDetector: options.CapabilityDetector,
 		Backend:            firecracker.NewBackend(backendOptions),
+		NetworkEnforcement: options.NetworkEnforcement,
 	}), nil
 }
 

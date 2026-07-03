@@ -99,6 +99,33 @@ func TestSandboxdProductionCodeAvoidsUnsafeHostDependencies(t *testing.T) {
 	}
 }
 
+func TestSandboxdProductionCodeDoesNotOwnNetworkEnforcementPlanningOrSetup(t *testing.T) {
+	data, err := os.ReadFile("sandboxd.go")
+	if err != nil {
+		t.Fatalf("ReadFile(sandboxd.go) error: %v", err)
+	}
+	content := string(data)
+	for _, forbidden := range []struct {
+		needle string
+		reason string
+	}{
+		{needle: "networkenforcement.", reason: "planner or adapter package usage"},
+		{needle: "BuildNetworkEnforcementPlan", reason: "direct planner invocation"},
+		{needle: "RunPlanner", reason: "direct planner invocation"},
+		{needle: "RunAdapter", reason: "direct adapter invocation"},
+		{needle: "net.Listen(", reason: "network listener setup"},
+		{needle: "http.ListenAndServe", reason: "HTTP listener setup"},
+		{needle: "httputil.NewSingleHostReverseProxy", reason: "proxy setup"},
+		{needle: "iptables", reason: "firewall setup"},
+		{needle: "nftables", reason: "firewall setup"},
+		{needle: "pfctl", reason: "firewall setup"},
+	} {
+		if strings.Contains(content, forbidden.needle) {
+			t.Fatalf("sandboxd.go contains %q (%s); enforcement planning/setup must stay behind runtime boundaries", forbidden.needle, forbidden.reason)
+		}
+	}
+}
+
 func assertSandboxdSafetyIncludesWorkerIOSupport(t *testing.T, operations []string) {
 	t.Helper()
 

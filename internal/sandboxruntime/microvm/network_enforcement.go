@@ -1,9 +1,43 @@
 package microvm
 
 import (
+	"context"
+
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
 )
+
+// NetworkEnforcementPlanning is the explicit runtime-owned planning surface
+// for network enforcement metadata. A nil value keeps microVM construction
+// metadata-only and does not call a planner or adapter.
+type NetworkEnforcementPlanning struct {
+	Request networkenforcement.PlanRequest
+	Planner networkenforcement.Planner
+	Adapter networkenforcement.Adapter
+}
+
+func networkEnforcementMetadataFromDriverOptions(options DriverOptions) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
+	plan := options.NetworkEnforcementPlan
+	result := options.NetworkEnforcementResult
+	if options.NetworkEnforcement != nil {
+		planned, enforced := runNetworkEnforcementPlanning(context.Background(), options.NetworkEnforcement)
+		plan = planned
+		result = enforced
+	}
+	return networkEnforcementMetadataFromPlanResult(plan, result)
+}
+
+func runNetworkEnforcementPlanning(ctx context.Context, planning *NetworkEnforcementPlanning) (*networkenforcement.Plan, *networkenforcement.Result) {
+	if planning == nil {
+		return nil, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	plan := networkenforcement.RunPlanner(planning.Planner, planning.Request)
+	result := networkenforcement.RunAdapter(ctx, planning.Adapter, plan)
+	return &plan, &result
+}
 
 func networkEnforcementMetadataFromPlanResult(plan *networkenforcement.Plan, result *networkenforcement.Result) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
 	metadata := &sandboxruntime.RuntimeNetworkEnforcementMetadata{}

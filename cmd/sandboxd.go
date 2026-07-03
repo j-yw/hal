@@ -79,6 +79,7 @@ type sandboxdMicroVMConfig struct {
 	GuestReadinessPollInterval    time.Duration
 	GuestReadinessProbeConfigured bool
 	GuestAgentEndpoint            string
+	NetworkEnforcementPlanning    *microvm.NetworkEnforcementPlanning
 	NetworkEnforcement            *sandboxruntime.RuntimeNetworkEnforcementMetadata
 }
 
@@ -334,7 +335,7 @@ func runSandboxdWithDeps(ctx context.Context, req sandboxdRequest, out io.Writer
 	}
 	deps = normalizeSandboxdDeps(deps)
 
-	registry, driverIDs, err := sandboxdDriverRegistry(ctx, req, deps)
+	registry, driverIDs, runtimeDrivers, err := sandboxdDriverRegistry(ctx, req, deps)
 	if err != nil {
 		return err
 	}
@@ -346,7 +347,7 @@ func runSandboxdWithDeps(ctx context.Context, req sandboxdRequest, out io.Writer
 		Capacity: sandboxworker.WorkerCapacity{
 			MaxConcurrentSandboxes: req.MaxConcurrent,
 		},
-		RuntimeDrivers: sandboxdRuntimeDriverDescriptors(req),
+		RuntimeDrivers: runtimeDrivers,
 	}
 	service, err := deps.newService(serviceOptions)
 	if err != nil {
@@ -390,57 +391,64 @@ func normalizeSandboxdDeps(deps sandboxdDeps) sandboxdDeps {
 	return deps
 }
 
-func sandboxdDriverRegistry(ctx context.Context, req sandboxdRequest, deps sandboxdDeps) (*sandboxworker.DriverRegistry, []string, error) {
+func sandboxdDriverRegistry(ctx context.Context, req sandboxdRequest, deps sandboxdDeps) (*sandboxworker.DriverRegistry, []string, map[string]sandboxworker.RuntimeDriver, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	registry := &sandboxworker.DriverRegistry{}
 	driverIDs := make([]string, 0, len(req.Drivers))
+	runtimeDrivers := map[string]sandboxworker.RuntimeDriver{}
 	seen := map[string]bool{}
 	for _, driverID := range req.Drivers {
 		switch driverID {
 		case sandboxruntime.DriverRootlessPodman:
 			if seen[driverID] {
-				return nil, nil, fmt.Errorf("sandboxd driver %q is registered more than once", driverID)
+				return nil, nil, nil, fmt.Errorf("sandboxd driver %q is registered more than once", driverID)
 			}
 			if err := deps.rootlessPodmanAvailable(ctx, req.PodmanPath); err != nil {
-				return nil, nil, sandboxdRuntimeUnavailableError{driverID: driverID, err: err}
+				return nil, nil, nil, sandboxdRuntimeUnavailableError{driverID: driverID, err: err}
 			}
 			driver := deps.newRootlessPodmanDriver(req.PodmanPath)
 			if err := registry.Register(driver); err != nil {
-				return nil, nil, fmt.Errorf("register sandboxd driver %q: %w", driverID, err)
+				return nil, nil, nil, fmt.Errorf("register sandboxd driver %q: %w", driverID, err)
 			}
 			seen[driverID] = true
 			driverIDs = append(driverIDs, driverID)
 		case sandboxruntime.DriverMicroVM:
 			if seen[driverID] {
-				return nil, nil, fmt.Errorf("sandboxd driver %q is registered more than once", driverID)
+				return nil, nil, nil, fmt.Errorf("sandboxd driver %q is registered more than once", driverID)
 			}
 			if deps.newMicroVMDriver == nil {
-				return nil, nil, fmt.Errorf("sandboxd driver %q is unsupported", driverID)
+				return nil, nil, nil, fmt.Errorf("sandboxd driver %q is unsupported", driverID)
 			}
 			if err := validateSandboxdMicroVMConfig(req.MicroVM); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			if deps.validateMicroVMConfig != nil {
 				if err := deps.validateMicroVMConfig(req.MicroVM); err != nil {
-					return nil, nil, err
+					return nil, nil, nil, err
 				}
 			}
 			driver, err := deps.newMicroVMDriver(req.MicroVM)
 			if err != nil {
-				return nil, nil, fmt.Errorf("create sandboxd driver %q: %w", driverID, err)
+				return nil, nil, nil, fmt.Errorf("create sandboxd driver %q: %w", driverID, err)
 			}
 			if err := registry.Register(driver); err != nil {
-				return nil, nil, fmt.Errorf("register sandboxd driver %q: %w", driverID, err)
+				return nil, nil, nil, fmt.Errorf("register sandboxd driver %q: %w", driverID, err)
+			}
+			if descriptor, ok := sandboxdMicroVMRuntimeDriverDescriptorFromDriver(req.MicroVM, driver); ok {
+				runtimeDrivers[driverID] = descriptor
 			}
 			seen[driverID] = true
 			driverIDs = append(driverIDs, driverID)
 		default:
-			return nil, nil, fmt.Errorf("sandboxd driver %q is unsupported", driverID)
+			return nil, nil, nil, fmt.Errorf("sandboxd driver %q is unsupported", driverID)
 		}
 	}
-	return registry, driverIDs, nil
+	if len(runtimeDrivers) == 0 {
+		runtimeDrivers = nil
+	}
+	return registry, driverIDs, runtimeDrivers, nil
 }
 
 func sandboxdDriverSupportedByDeps(driverID string, deps sandboxdDeps) bool {
@@ -705,6 +713,28 @@ func sandboxdMicroVMRuntimeDriverDescriptor(operations []string, enforcement *sa
 		Security:           sandboxdMicroVMRuntimeDriverSecurity(enforcement),
 		NetworkEnforcement: enforcement,
 	}
+}
+
+type sandboxdMicroVMMetadataDriver interface {
+	Metadata() microvm.RuntimeMetadata
+}
+
+func sandboxdMicroVMRuntimeDriverDescriptorFromDriver(config sandboxdMicroVMConfig, driver sandboxruntime.Driver) (sandboxworker.RuntimeDriver, bool) {
+	enforcement := sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(config.NetworkEnforcement)
+	if metadataDriver, ok := driver.(sandboxdMicroVMMetadataDriver); ok {
+		driverMetadata := metadataDriver.Metadata()
+		if driverMetadata.NetworkEnforcement != nil {
+			enforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(driverMetadata.NetworkEnforcement)
+		}
+	}
+	if strings.TrimSpace(config.GuestAgentEndpoint) == "" && enforcement == nil {
+		return sandboxworker.RuntimeDriver{}, false
+	}
+	operations := sandboxdMicroVMOperationsDefault()
+	if strings.TrimSpace(config.GuestAgentEndpoint) != "" {
+		operations = sandboxdMicroVMOperationsWithGuestAgent()
+	}
+	return sandboxdMicroVMRuntimeDriverDescriptor(operations, enforcement), true
 }
 
 func sandboxdMicroVMRuntimeDriverSecurity(enforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata) sandboxworker.SecurityPolicy {

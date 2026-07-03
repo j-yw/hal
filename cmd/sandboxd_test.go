@@ -7,8 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
 	"github.com/jywlabs/hal/internal/sandboxworker"
 	"github.com/spf13/cobra"
 )
@@ -455,6 +458,119 @@ func TestSandboxdMicroVMDescriptorCanAdvertiseExplicitNetworkEnforcementCapabili
 		if strings.Contains(publicText, unsafe) {
 			t.Fatalf("descriptor leaked or claimed %q in %s", unsafe, publicText)
 		}
+	}
+}
+
+func TestSandboxdRuntimeRegistrationRequestsNetworkPlanOnlyForExplicitMicroVMPath(t *testing.T) {
+	request := sandboxdNetworkEnforcementPlanRequest()
+	var plannerCalls int
+	planner := networkenforcement.PlannerFunc(func(got networkenforcement.PlanRequest) networkenforcement.Plan {
+		plannerCalls++
+		if !reflect.DeepEqual(got, request) {
+			t.Fatalf("planner request = %#v, want %#v", got, request)
+		}
+		return networkenforcement.BuildPlan(got)
+	})
+	adapter := &recordingSandboxdNetworkEnforcementAdapter{
+		result: networkenforcement.Result{
+			AdapterID:       "fake-sandboxd-network-adapter",
+			Outcome:         networkenforcement.ResultOutcomeSuccess,
+			EnforcementMode: networkenforcement.ResultModeProxyFirewall,
+			Mechanisms: []networkenforcement.EnforcementMechanism{
+				networkenforcement.EnforcementMechanismProxy,
+				networkenforcement.EnforcementMechanismFirewall,
+			},
+			Operations: []string{"proxy_route", "firewall_apply"},
+			Capability: &networkenforcement.ResultCapability{
+				Supported:                  true,
+				Modes:                      []networkenforcement.ResultMode{networkenforcement.ResultModeProxyFirewall},
+				SupportsDefaultDenyPosture: true,
+			},
+			ReasonCode: networkenforcement.ResultReasonApplied,
+		},
+	}
+	planning := &microvm.NetworkEnforcementPlanning{
+		Request: request,
+		Planner: planner,
+		Adapter: adapter,
+	}
+
+	err := runSandboxdWithDeps(context.Background(), sandboxdRequest{
+		SocketPath:    "/tmp/rootless-only-network-planning.sock",
+		WorkerID:      "worker-rootless-only-network-planning",
+		Drivers:       []string{sandboxruntime.DriverRootlessPodman},
+		PodmanPath:    "fake-podman",
+		MicroVM:       sandboxdMicroVMConfig{NetworkEnforcementPlanning: planning},
+		MaxConcurrent: 1,
+	}, io.Discard, sandboxdDeps{
+		rootlessPodmanAvailable: func(context.Context, string) error {
+			return nil
+		},
+		newRootlessPodmanDriver: func(string) sandboxruntime.Driver {
+			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
+		},
+		newService: func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
+			if _, exists := options.RuntimeDrivers[sandboxruntime.DriverMicroVM]; exists {
+				t.Fatalf("rootless-only service carried microVM runtime descriptor: %#v", options.RuntimeDrivers)
+			}
+			return &recordingSandboxdHandler{}, nil
+		},
+		newServer: func(sandboxworker.ServerOptions) (sandboxdServer, error) {
+			return sandboxdServerFunc(func(context.Context) error { return nil }), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("rootless runSandboxdWithDeps() error = %v", err)
+	}
+	if plannerCalls != 0 || adapter.calls != 0 {
+		t.Fatalf("rootless planner calls=%d adapter calls=%d, want none", plannerCalls, adapter.calls)
+	}
+
+	var gotService sandboxworker.ServiceOptions
+	err = runSandboxdWithDeps(context.Background(), sandboxdRequest{
+		SocketPath:    "/tmp/microvm-network-planning.sock",
+		WorkerID:      "worker-microvm-network-planning",
+		Drivers:       []string{sandboxruntime.DriverMicroVM},
+		MicroVM:       sandboxdNetworkEnforcementMicroVMConfig(t, planning),
+		MaxConcurrent: 1,
+	}, io.Discard, sandboxdDeps{
+		newMicroVMDriver: defaultSandboxdDeps().newMicroVMDriver,
+		validateMicroVMConfig: func(config sandboxdMicroVMConfig) error {
+			return defaultSandboxdMicroVMConfigValidator(config)
+		},
+		newService: func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
+			gotService = options
+			return &recordingSandboxdHandler{}, nil
+		},
+		newServer: func(sandboxworker.ServerOptions) (sandboxdServer, error) {
+			return sandboxdServerFunc(func(context.Context) error { return nil }), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("microVM runSandboxdWithDeps() error = %v", err)
+	}
+	if plannerCalls != 1 || adapter.calls != 1 {
+		t.Fatalf("microVM planner calls=%d adapter calls=%d, want one explicit planning pass", plannerCalls, adapter.calls)
+	}
+
+	service, err := sandboxworker.NewService(gotService)
+	if err != nil {
+		t.Fatalf("NewService(gotService) error: %v", err)
+	}
+	capabilities := service.Capabilities()
+	if len(capabilities.RuntimeDrivers) != 1 {
+		t.Fatalf("runtime drivers = %#v, want one explicit microVM descriptor", capabilities.RuntimeDrivers)
+	}
+	driver := capabilities.RuntimeDrivers[0]
+	if driver.ID != sandboxruntime.DriverMicroVM {
+		t.Fatalf("runtime driver ID = %q, want %q", driver.ID, sandboxruntime.DriverMicroVM)
+	}
+	if driver.NetworkEnforcement == nil || driver.NetworkEnforcement.Plan == nil || driver.NetworkEnforcement.Result == nil {
+		t.Fatalf("NetworkEnforcement = %#v, want explicit planner/adapter metadata", driver.NetworkEnforcement)
+	}
+	if driver.NetworkEnforcement.Result.AdapterID != "fake-sandboxd-network-adapter" ||
+		driver.Security.Enforced.NetworkEnforcement != sandboxworker.NetworkEnforcementProxyFirewall {
+		t.Fatalf("driver capability = %#v, want explicit proxy/firewall enforcement capability", driver)
 	}
 }
 
@@ -1203,6 +1319,70 @@ func containsSandboxdTestString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+type recordingSandboxdNetworkEnforcementAdapter struct {
+	calls  int
+	plan   networkenforcement.Plan
+	result networkenforcement.Result
+}
+
+func (adapter *recordingSandboxdNetworkEnforcementAdapter) EnforceNetwork(_ context.Context, plan networkenforcement.SanitizedPlan) networkenforcement.Result {
+	adapter.calls++
+	adapter.plan = plan.Plan()
+	result := adapter.result
+	if result.PlanID == "" {
+		result.PlanID = adapter.plan.ID
+	}
+	if result.PolicySnapshot == nil {
+		result.PolicySnapshot = adapter.plan.PolicySnapshot
+	}
+	return result
+}
+
+func sandboxdNetworkEnforcementPlanRequest() networkenforcement.PlanRequest {
+	return networkenforcement.PlanRequest{
+		ID:        "network-plan-sandboxd-runtime",
+		Source:    networkenforcement.PlanSourceMicroVM,
+		Operation: "prepare_network",
+		PolicySnapshot: &networkenforcement.PolicySnapshotIdentity{
+			ID:        "policy-snapshot-sandboxd-runtime",
+			Preset:    networkenforcement.PolicyPresetDenyByDefault,
+			RuleSetID: "rules-sandboxd-runtime",
+		},
+		RequestedPolicy: networkenforcement.RequestedNetworkPosture{
+			Preset:            networkenforcement.PolicyPresetDenyByDefault,
+			RuleSetID:         "rules-sandboxd-runtime",
+			RuleIDs:           []string{"rule-sandboxd-runtime"},
+			PrivateNetwork:    networkenforcement.PostureBlock,
+			MetadataEndpoint:  networkenforcement.PostureBlock,
+			HTTP:              networkenforcement.ProxyRoutingModeRouteViaProxy,
+			HTTPS:             networkenforcement.ProxyRoutingModeBlock,
+			ProxyMechanism:    networkenforcement.EnforcementMechanismProxy,
+			FirewallMode:      networkenforcement.FirewallIntentModeApply,
+			FirewallMechanism: networkenforcement.EnforcementMechanismFirewall,
+		},
+	}
+}
+
+func sandboxdNetworkEnforcementMicroVMConfig(t *testing.T, planning *microvm.NetworkEnforcementPlanning) sandboxdMicroVMConfig {
+	t.Helper()
+
+	defaults := microvm.DefaultConfig()
+	return sandboxdMicroVMConfig{
+		Config: microvm.Config{
+			HypervisorPath:  "/usr/bin/firecracker",
+			KernelImagePath: "/opt/hal/images/vmlinux",
+			RootfsPath:      "/opt/hal/images/rootfs.ext4",
+			CPUCount:        defaults.CPUCount,
+			MemoryMiB:       defaults.MemoryMiB,
+			DiskSizeMiB:     defaults.DiskSizeMiB,
+			GuestWorkDir:    defaults.GuestWorkDir,
+			NetworkMode:     defaults.NetworkMode,
+		},
+		StateDir:                   filepath.Join(t.TempDir(), "firecracker-state"),
+		NetworkEnforcementPlanning: planning,
+	}
 }
 
 func writeSandboxdAssetFile(t *testing.T, name string, contents string) string {

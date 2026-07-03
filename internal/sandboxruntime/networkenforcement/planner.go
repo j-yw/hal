@@ -60,6 +60,39 @@ type AllowlistRule struct {
 	Value    string
 }
 
+// Planner is the narrow fakeable boundary for runtime-owned enforcement plan
+// construction. Implementations must stay side-effect free and return only
+// sanitized plan metadata.
+type Planner interface {
+	BuildNetworkEnforcementPlan(PlanRequest) Plan
+}
+
+// PlannerFunc adapts a pure function into a Planner.
+type PlannerFunc func(PlanRequest) Plan
+
+func (fn PlannerFunc) BuildNetworkEnforcementPlan(request PlanRequest) Plan {
+	if fn == nil {
+		return BuildPlan(request)
+	}
+	return fn(request)
+}
+
+// DefaultPlanner builds plans with the package's pure planner.
+type DefaultPlanner struct{}
+
+func (DefaultPlanner) BuildNetworkEnforcementPlan(request PlanRequest) Plan {
+	return BuildPlan(request)
+}
+
+// RunPlanner calls the injected planner boundary and sanitizes its public
+// output before runtime code consumes or reports it.
+func RunPlanner(planner Planner, request PlanRequest) Plan {
+	if planner == nil {
+		planner = DefaultPlanner{}
+	}
+	return SanitizePlan(planner.BuildNetworkEnforcementPlan(request))
+}
+
 // BuildPlan derives a sanitized network enforcement plan from requested policy
 // metadata only. It performs no network, firewall, runtime, worker, process, or
 // privilege operations.

@@ -14,6 +14,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
 )
 
 func TestNewLiveBackendOptionsComposesExplicitFirecrackerLiveDependencies(t *testing.T) {
@@ -556,6 +557,67 @@ func TestNewLiveDriverReportsHonestLiveFirecrackerRuntimeMetadata(t *testing.T) 
 	assertLiveFirecrackerProcessLaunchState(t, started, firecracker.ProcessLaunchStateAccepted)
 }
 
+func TestNewLiveDriverPassesExplicitNetworkEnforcementPlanningToMicroVMDriver(t *testing.T) {
+	request := firecrackerHostNetworkEnforcementPlanRequest()
+	var plannerCalls int
+	planner := networkenforcement.PlannerFunc(func(got networkenforcement.PlanRequest) networkenforcement.Plan {
+		plannerCalls++
+		if !reflect.DeepEqual(got, request) {
+			t.Fatalf("planner request = %#v, want %#v", got, request)
+		}
+		return networkenforcement.BuildPlan(got)
+	})
+	adapter := &recordingFirecrackerHostNetworkEnforcementAdapter{
+		result: networkenforcement.Result{
+			AdapterID:       "fake-firecrackerhost-network-adapter",
+			Outcome:         networkenforcement.ResultOutcomeSuccess,
+			EnforcementMode: networkenforcement.ResultModeFirewall,
+			Mechanisms:      []networkenforcement.EnforcementMechanism{networkenforcement.EnforcementMechanismFirewall},
+			Operations:      []string{"firewall_apply"},
+			Capability: &networkenforcement.ResultCapability{
+				Supported:                  true,
+				Modes:                      []networkenforcement.ResultMode{networkenforcement.ResultModeFirewall},
+				SupportsDefaultDenyPosture: true,
+			},
+			ReasonCode: networkenforcement.ResultReasonApplied,
+		},
+	}
+	runner := &fakeHostProcessRunner{}
+	poller := &fakeBootAcceptancePoller{}
+
+	driver, err := NewLiveDriver(LiveDriverOptions{
+		Config:               liveDriverValidConfig(),
+		BaseStateDir:         filepath.Join(t.TempDir(), "firecracker-state"),
+		CapabilityDetector:   liveDriverAvailableDetector{},
+		HostProcessRunner:    runner,
+		BootAcceptancePoller: poller,
+		NetworkEnforcement: &microvm.NetworkEnforcementPlanning{
+			Request: request,
+			Planner: planner,
+			Adapter: adapter,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewLiveDriver() error = %v, want nil", err)
+	}
+
+	if plannerCalls != 1 || adapter.calls != 1 {
+		t.Fatalf("planner calls=%d adapter calls=%d, want one explicit planning pass", plannerCalls, adapter.calls)
+	}
+	if runner.calls != 0 || poller.calls != 0 {
+		t.Fatalf("live calls before Start = runner:%d poller:%d, want none", runner.calls, poller.calls)
+	}
+	metadata := driver.Metadata().NetworkEnforcement
+	if metadata == nil || metadata.Plan == nil || metadata.Result == nil {
+		t.Fatalf("NetworkEnforcement = %#v, want explicit live-driver planning metadata", metadata)
+	}
+	if metadata.Plan.Source != string(networkenforcement.PlanSourceMicroVM) ||
+		metadata.Result.AdapterID != "fake-firecrackerhost-network-adapter" ||
+		metadata.Result.EnforcementMode != string(networkenforcement.ResultModeFirewall) {
+		t.Fatalf("NetworkEnforcement metadata = %#v, want explicit firewall capability", metadata)
+	}
+}
+
 func TestNewLiveDriverDoesNotReportAcceptedLaunchWhenBootAcceptanceFails(t *testing.T) {
 	process := &fakeHostProcess{rawPID: 424242}
 	runner := &fakeHostProcessRunner{processes: []HostProcess{process}}
@@ -761,6 +823,44 @@ func liveDriverAvailableCapabilityReport() microvm.CapabilityReport {
 		HypervisorExecutableAvailable:  &hypervisorAvailable,
 		Availability:                   microvm.CapabilityAvailabilityAvailable,
 		ReasonCode:                     microvm.CapabilityReasonAvailable,
+	}
+}
+
+type recordingFirecrackerHostNetworkEnforcementAdapter struct {
+	calls  int
+	plan   networkenforcement.Plan
+	result networkenforcement.Result
+}
+
+func (adapter *recordingFirecrackerHostNetworkEnforcementAdapter) EnforceNetwork(_ context.Context, plan networkenforcement.SanitizedPlan) networkenforcement.Result {
+	adapter.calls++
+	adapter.plan = plan.Plan()
+	result := adapter.result
+	if result.PlanID == "" {
+		result.PlanID = adapter.plan.ID
+	}
+	if result.PolicySnapshot == nil {
+		result.PolicySnapshot = adapter.plan.PolicySnapshot
+	}
+	return result
+}
+
+func firecrackerHostNetworkEnforcementPlanRequest() networkenforcement.PlanRequest {
+	return networkenforcement.PlanRequest{
+		ID:        "network-plan-firecrackerhost",
+		Source:    networkenforcement.PlanSourceMicroVM,
+		Operation: "prepare_network",
+		PolicySnapshot: &networkenforcement.PolicySnapshotIdentity{
+			ID:     "policy-snapshot-firecrackerhost",
+			Preset: networkenforcement.PolicyPresetDenyByDefault,
+		},
+		RequestedPolicy: networkenforcement.RequestedNetworkPosture{
+			Preset:            networkenforcement.PolicyPresetDenyByDefault,
+			PrivateNetwork:    networkenforcement.PostureBlock,
+			MetadataEndpoint:  networkenforcement.PostureBlock,
+			FirewallMode:      networkenforcement.FirewallIntentModeApply,
+			FirewallMechanism: networkenforcement.EnforcementMechanismFirewall,
+		},
 	}
 }
 

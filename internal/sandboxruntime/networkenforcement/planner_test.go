@@ -7,6 +7,58 @@ import (
 	"testing"
 )
 
+func TestRunPlannerUsesInjectedPlannerAndSanitizesOutput(t *testing.T) {
+	request := PlanRequest{
+		ID:        "network-plan-planner-01",
+		Source:    PlanSourceRuntime,
+		Operation: "prepare_network",
+	}
+	var calls int
+	var gotRequest PlanRequest
+	planner := PlannerFunc(func(request PlanRequest) Plan {
+		calls++
+		gotRequest = request
+		return Plan{
+			ID:        "network-plan-planner-unsafe",
+			Source:    PlanSource(" MICROVM "),
+			Operation: "prepare_network",
+			PolicySnapshot: &PolicySnapshotIdentity{
+				ID:     "policy-snapshot-planner",
+				Preset: PolicyPresetDenyByDefault,
+			},
+			Proxy: &ProxyRoutingIntent{
+				HTTP:           ProxyRoutingModeRouteViaProxy,
+				ProxySessionID: "proxy-session-planner",
+				Mechanism:      EnforcementMechanismProxy,
+				Operations:     []string{"http_connect", "/tmp/raw-proxy.sock"},
+			},
+		}
+	})
+
+	plan := RunPlanner(planner, request)
+
+	if calls != 1 {
+		t.Fatalf("planner calls = %d, want 1", calls)
+	}
+	if !reflect.DeepEqual(gotRequest, request) {
+		t.Fatalf("planner request = %#v, want %#v", gotRequest, request)
+	}
+	if plan.Source != PlanSourceMicroVM || plan.Operation != "prepare_network" {
+		t.Fatalf("plan identity = %#v, want sanitized injected planner output", plan)
+	}
+	if plan.Proxy == nil || !reflect.DeepEqual(plan.Proxy.Operations, []string{"http_connect"}) {
+		t.Fatalf("plan proxy operations = %#v, want unsafe operation dropped", plan.Proxy)
+	}
+
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("Marshal(plan) error: %v", err)
+	}
+	if strings.Contains(string(encoded), "/tmp/") || strings.Contains(string(encoded), "raw-proxy") {
+		t.Fatalf("RunPlanner output leaked unsafe planner metadata: %s", encoded)
+	}
+}
+
 func TestBuildPlanConstructsDefaultDenyPrivateAndMetadataPosture(t *testing.T) {
 	request := PlanRequest{
 		ID:        "network-plan-builder-01",

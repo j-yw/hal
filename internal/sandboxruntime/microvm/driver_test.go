@@ -475,6 +475,91 @@ func TestDriverMetadataProjectsExplicitNetworkEnforcementAdapterSuccessAndFailur
 	}
 }
 
+func TestDriverNetworkEnforcementPlanningUsesInjectedBoundaryOnlyWhenConfigured(t *testing.T) {
+	request := microVMNetworkEnforcementTestPlanRequest()
+	var plannerCalls int
+	planner := networkenforcement.PlannerFunc(func(got networkenforcement.PlanRequest) networkenforcement.Plan {
+		plannerCalls++
+		if !reflect.DeepEqual(got, request) {
+			t.Fatalf("planner request = %#v, want %#v", got, request)
+		}
+		return networkenforcement.BuildPlan(got)
+	})
+	adapter := &recordingMicroVMNetworkEnforcementAdapter{
+		result: networkenforcement.Result{
+			AdapterID:       "fake-runtime-planning-adapter",
+			Outcome:         networkenforcement.ResultOutcomeSuccess,
+			EnforcementMode: networkenforcement.ResultModeProxyFirewall,
+			Mechanisms: []networkenforcement.EnforcementMechanism{
+				networkenforcement.EnforcementMechanismProxy,
+				networkenforcement.EnforcementMechanismFirewall,
+			},
+			Operations: []string{"proxy_route", "firewall_apply"},
+			Capability: &networkenforcement.ResultCapability{
+				Supported:                  true,
+				Modes:                      []networkenforcement.ResultMode{networkenforcement.ResultModeProxyFirewall},
+				SupportsDefaultDenyPosture: true,
+			},
+			ReasonCode: networkenforcement.ResultReasonApplied,
+		},
+	}
+
+	driver := NewDriver(DriverOptions{
+		CapabilityDetector: fixedCapabilityDetector(availableCapabilityReport()),
+		NetworkEnforcement: &NetworkEnforcementPlanning{
+			Request: request,
+			Planner: planner,
+			Adapter: adapter,
+		},
+	})
+
+	if plannerCalls != 1 {
+		t.Fatalf("planner calls = %d, want 1 for explicit network enforcement planning", plannerCalls)
+	}
+	if adapter.calls != 1 || adapter.plan.ID != request.ID {
+		t.Fatalf("adapter calls=%d plan=%#v, want sanitized planned input", adapter.calls, adapter.plan)
+	}
+	metadata := driver.Metadata().NetworkEnforcement
+	if metadata == nil || metadata.Plan == nil || metadata.Result == nil {
+		t.Fatalf("NetworkEnforcement = %#v, want planned metadata and adapter result", metadata)
+	}
+	if metadata.Plan.ID != request.ID || metadata.Result.AdapterID != "fake-runtime-planning-adapter" {
+		t.Fatalf("NetworkEnforcement metadata = %#v, want explicit planner/adapter output", metadata)
+	}
+	if metadata.Result.EnforcementMode != string(networkenforcement.ResultModeProxyFirewall) ||
+		metadata.Result.Capability == nil ||
+		!metadata.Result.Capability.SupportsDefaultDenyPosture {
+		t.Fatalf("NetworkEnforcement result = %#v, want explicit proxy/firewall capability", metadata.Result)
+	}
+
+	defaultDriver := NewDriver(DriverOptions{
+		CapabilityDetector: fixedCapabilityDetector(availableCapabilityReport()),
+	})
+	if got := defaultDriver.Metadata().NetworkEnforcement; got != nil {
+		t.Fatalf("default NetworkEnforcement = %#v, want nil without explicit planning", got)
+	}
+}
+
+func TestDriverNetworkEnforcementPlanningWithoutAdapterFailsClosed(t *testing.T) {
+	request := microVMNetworkEnforcementTestPlanRequest()
+	driver := NewDriver(DriverOptions{
+		CapabilityDetector: fixedCapabilityDetector(availableCapabilityReport()),
+		NetworkEnforcement: &NetworkEnforcementPlanning{
+			Request: request,
+		},
+	})
+
+	metadata := driver.Metadata().NetworkEnforcement
+	if metadata == nil || metadata.Plan == nil || metadata.Result == nil {
+		t.Fatalf("NetworkEnforcement = %#v, want plan and unsupported result", metadata)
+	}
+	if metadata.Result.Outcome != string(networkenforcement.ResultOutcomeUnsupported) ||
+		metadata.Result.EnforcementMode != string(networkenforcement.ResultModeNone) ||
+		metadata.Result.Capability != nil {
+		t.Fatalf("NetworkEnforcement result = %#v, want fail-closed unsupported metadata", metadata.Result)
+	}
+}
+
 func TestDriverExecDelegatesThroughControllerAndStreamsOutput(t *testing.T) {
 	config := minimalValidConfig()
 	controller := &fakeController{
@@ -972,8 +1057,31 @@ func (adapter microVMNetworkEnforcementFakeAdapter) EnforceNetwork(_ context.Con
 	return result
 }
 
+type recordingMicroVMNetworkEnforcementAdapter struct {
+	calls  int
+	plan   networkenforcement.Plan
+	result networkenforcement.Result
+}
+
+func (adapter *recordingMicroVMNetworkEnforcementAdapter) EnforceNetwork(_ context.Context, plan networkenforcement.SanitizedPlan) networkenforcement.Result {
+	adapter.calls++
+	adapter.plan = plan.Plan()
+	result := adapter.result
+	if result.PlanID == "" {
+		result.PlanID = adapter.plan.ID
+	}
+	if result.PolicySnapshot == nil {
+		result.PolicySnapshot = adapter.plan.PolicySnapshot
+	}
+	return result
+}
+
 func microVMNetworkEnforcementTestPlan() networkenforcement.Plan {
-	return networkenforcement.BuildPlan(networkenforcement.PlanRequest{
+	return networkenforcement.BuildPlan(microVMNetworkEnforcementTestPlanRequest())
+}
+
+func microVMNetworkEnforcementTestPlanRequest() networkenforcement.PlanRequest {
+	return networkenforcement.PlanRequest{
 		ID:        "network-plan-microvm",
 		Source:    networkenforcement.PlanSourceMicroVM,
 		Operation: "prepare_network",
@@ -995,7 +1103,7 @@ func microVMNetworkEnforcementTestPlan() networkenforcement.Plan {
 			FirewallMode:      networkenforcement.FirewallIntentModeApply,
 			FirewallMechanism: networkenforcement.EnforcementMechanismFirewall,
 		},
-	})
+	}
 }
 
 type fakeBackend struct {

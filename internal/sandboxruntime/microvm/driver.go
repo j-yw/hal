@@ -30,6 +30,7 @@ type DriverOptions struct {
 	Config                   Config
 	CapabilityDetector       CapabilityDetector
 	Backend                  Backend
+	NetworkEnforcement       *NetworkEnforcementPlanning
 	NetworkEnforcementPlan   *networkenforcement.Plan
 	NetworkEnforcementResult *networkenforcement.Result
 }
@@ -73,10 +74,7 @@ func NewDriver(options DriverOptions) *Driver {
 
 	report := detector.DetectMicroVMCapability(CapabilityDetectionRequest{Config: config})
 	metadata := metadataFromCapability(report, options.Backend != nil)
-	metadata.NetworkEnforcement = networkEnforcementMetadataFromPlanResult(
-		options.NetworkEnforcementPlan,
-		options.NetworkEnforcementResult,
-	)
+	metadata.NetworkEnforcement = networkEnforcementMetadataFromDriverOptions(options)
 
 	return &Driver{
 		backend:  options.Backend,
