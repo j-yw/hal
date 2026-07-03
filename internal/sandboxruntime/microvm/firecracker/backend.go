@@ -24,28 +24,60 @@ const (
 // BackendOptions configures the Firecracker backend. BaseStateDir is used only
 // to derive target-specific path plans. ProcessAdapter prepares process
 // descriptors, and LiveStart must be set explicitly before the backend calls
-// StartProcess through that injected boundary. Raw paths are not exposed on
-// returned targets.
+// StartProcess through that injected boundary. BootAcceptanceWaiter and
+// LiveProcessManager are fakeable host-side live boot contracts for later
+// phases. Raw paths are not exposed on returned targets.
 type BackendOptions struct {
-	BaseStateDir   string
-	ProcessAdapter ProcessAdapter
-	LiveStart      bool
+	BaseStateDir         string
+	ProcessAdapter       ProcessAdapter
+	BootAcceptanceWaiter bootAcceptanceWaiter
+	LiveProcessManager   liveProcessManager
+	LiveStart            bool
+}
+
+type bootAcceptanceWaiter interface {
+	WaitForBootAcceptance(context.Context, bootAcceptanceRequest) (bootAcceptanceResult, error)
+}
+
+type bootAcceptanceRequest struct {
+	Handle    ProcessHandleMetadata
+	APISocket OperationPathReference
+}
+
+type bootAcceptanceResult struct {
+	ProcessAccepted    bool
+	APISocketAvailable bool
+}
+
+type liveProcessManager interface {
+	CleanupLiveProcess(context.Context, liveProcessRequest) error
+	StopLiveProcess(context.Context, liveProcessRequest) error
+	DeleteLiveProcess(context.Context, liveProcessRequest) error
+}
+
+type liveProcessRequest struct {
+	Handle ProcessHandleMetadata
+	Paths  PathPlan
 }
 
 // Backend implements the microVM backend boundary for Firecracker target
 // creation metadata and fake-safe start planning.
 type Backend struct {
-	baseStateDir   string
-	processAdapter ProcessAdapter
-	liveStart      bool
+	baseStateDir         string
+	processAdapter       ProcessAdapter
+	bootAcceptanceWaiter bootAcceptanceWaiter
+	liveProcessManager   liveProcessManager
+	liveStart            bool
 }
 
 // NewBackend constructs an explicitly injected Firecracker backend.
 func NewBackend(options BackendOptions) *Backend {
 	return &Backend{
-		baseStateDir:   strings.TrimSpace(options.BaseStateDir),
-		processAdapter: options.ProcessAdapter,
-		liveStart:      options.LiveStart,
+		baseStateDir:         strings.TrimSpace(options.BaseStateDir),
+		processAdapter:       options.ProcessAdapter,
+		bootAcceptanceWaiter: options.BootAcceptanceWaiter,
+		liveProcessManager:   options.LiveProcessManager,
+		liveStart:            options.LiveStart,
 	}
 }
 
@@ -98,24 +130,32 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 	}
 	baseStateDir := ""
 	var adapter ProcessAdapter
+	var waiter bootAcceptanceWaiter
+	var manager liveProcessManager
 	if b != nil {
 		baseStateDir = b.baseStateDir
 		adapter = b.processAdapter
+		waiter = b.bootAcceptanceWaiter
+		manager = b.liveProcessManager
 	}
 	if adapter == nil {
 		adapter = startPlanningProcessAdapter{}
 	}
 	return firecrackerController{
-		baseStateDir:   baseStateDir,
-		processAdapter: adapter,
-		liveStart:      b != nil && b.liveStart,
+		baseStateDir:         baseStateDir,
+		processAdapter:       adapter,
+		bootAcceptanceWaiter: waiter,
+		liveProcessManager:   manager,
+		liveStart:            b != nil && b.liveStart,
 	}, nil
 }
 
 type firecrackerController struct {
-	baseStateDir   string
-	processAdapter ProcessAdapter
-	liveStart      bool
+	baseStateDir         string
+	processAdapter       ProcessAdapter
+	bootAcceptanceWaiter bootAcceptanceWaiter
+	liveProcessManager   liveProcessManager
+	liveStart            bool
 }
 
 func (c firecrackerController) Start(ctx context.Context, req microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
