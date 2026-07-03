@@ -64,6 +64,9 @@ func TestNewLiveBackendOptionsComposesExplicitFirecrackerLiveDependencies(t *tes
 	if options.GuestReadinessWaiter != nil {
 		t.Fatalf("GuestReadinessWaiter = %T, want nil until a guest readiness probe is supplied", options.GuestReadinessWaiter)
 	}
+	if options.GuestTransport != nil {
+		t.Fatalf("GuestTransport = %T, want nil until a guest transport is supplied", options.GuestTransport)
+	}
 
 	lifecycle, ok := hostAdapter.processRunner.(*ProcessLifecycleManager)
 	if !ok {
@@ -134,6 +137,29 @@ func TestNewLiveBackendOptionsConfiguresOptionalGuestReadinessProbe(t *testing.T
 	}
 	if hostAdapter.guestInterval != 75*time.Millisecond {
 		t.Fatalf("adapter guest interval = %s, want 75ms", hostAdapter.guestInterval)
+	}
+}
+
+func TestNewLiveBackendOptionsConfiguresOptionalGuestTransport(t *testing.T) {
+	baseStateDir := filepath.Join(t.TempDir(), "firecracker-state")
+	transport := &fakeLiveGuestTransport{}
+
+	options, err := NewLiveBackendOptions(LiveDriverOptions{
+		Config:               liveDriverValidConfig(),
+		BaseStateDir:         baseStateDir,
+		HostProcessRunner:    &fakeHostProcessRunner{},
+		BootAcceptancePoller: &fakeBootAcceptancePoller{},
+		GuestTransport:       transport,
+	})
+	if err != nil {
+		t.Fatalf("NewLiveBackendOptions() error = %v, want nil", err)
+	}
+
+	if options.GuestTransport != transport {
+		t.Fatalf("GuestTransport = %T, want supplied fake guest transport", options.GuestTransport)
+	}
+	if options.GuestReadinessWaiter != nil {
+		t.Fatalf("GuestReadinessWaiter = %T, want nil without explicit readiness probe", options.GuestReadinessWaiter)
 	}
 }
 
@@ -308,6 +334,100 @@ func TestNewLiveDriverStartUsesOptionalGuestReadinessProbe(t *testing.T) {
 		t.Fatalf("GuestReadiness.Labels = %#v, want sanitized labels", readiness.Labels)
 	}
 	assertLiveFirecrackerMetadataDoesNotOverclaim(t, started.Runtime.Metadata)
+}
+
+func TestNewLiveDriverDelegatesGuestOperationsThroughOptionalGuestTransportAfterReadiness(t *testing.T) {
+	baseStateDir := filepath.Join(t.TempDir(), "firecracker-state")
+	process := &fakeHostProcess{rawPID: 424242}
+	runner := &fakeHostProcessRunner{processes: []HostProcess{process}}
+	poller := &fakeBootAcceptancePoller{result: firecracker.BootAcceptanceResult{
+		ProcessAccepted:    true,
+		APISocketAvailable: true,
+	}}
+	probe := &fakeGuestReadinessProbe{result: firecracker.NewGuestReadinessResult(
+		sandboxruntime.RuntimeGuestReadinessStateReady,
+		"vsock",
+		[]string{"ready"},
+	)}
+	transport := &fakeLiveGuestTransport{result: &sandboxruntime.ExecResult{ExitCode: 17}}
+
+	driver, err := NewLiveDriver(LiveDriverOptions{
+		Config:               liveDriverValidConfig(),
+		BaseStateDir:         baseStateDir,
+		CapabilityDetector:   liveDriverAvailableDetector{},
+		HostProcessRunner:    runner,
+		BootAcceptancePoller: poller,
+		GuestReadinessProbe:  probe,
+		GuestTransport:       transport,
+		CleanupFilesystem:    newFakeCleanupFilesystem(),
+	})
+	if err != nil {
+		t.Fatalf("NewLiveDriver() error = %v, want nil", err)
+	}
+
+	created, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "firecracker-live-guest-transport"})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	_, err = driver.Exec(context.Background(), sandboxruntime.ExecRequest{
+		Target: *created,
+		Args:   []string{"true"},
+	})
+	assertLiveDriverUnsupportedGuestOperation(t, err, microvm.OperationExec)
+	if transport.execCalls != 0 || transport.copyInCalls != 0 || transport.copyOutCalls != 0 {
+		t.Fatalf("guest transport calls before guest readiness = exec:%d copyIn:%d copyOut:%d, want none", transport.execCalls, transport.copyInCalls, transport.copyOutCalls)
+	}
+
+	started, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: *created})
+	if err != nil {
+		t.Fatalf("Start() error = %v, want nil through fake live dependencies", err)
+	}
+
+	result, err := driver.Exec(context.Background(), sandboxruntime.ExecRequest{
+		Target:  *started,
+		Args:    []string{"printf", "ok"},
+		Env:     map[string]string{"SAFE": "value"},
+		WorkDir: "/workspace/project",
+	})
+	if err != nil {
+		t.Fatalf("Exec() error = %v, want nil through injected fake guest transport", err)
+	}
+	if result == nil || result.ExitCode != 17 {
+		t.Fatalf("Exec() result = %#v, want fake transport exit code 17", result)
+	}
+	if err := driver.CopyIn(context.Background(), sandboxruntime.CopyRequest{
+		Target:          *started,
+		SourcePath:      "/host/input.txt",
+		DestinationPath: "/guest/input.txt",
+	}); err != nil {
+		t.Fatalf("CopyIn() error = %v, want nil through injected fake guest transport", err)
+	}
+	if err := driver.CopyOut(context.Background(), sandboxruntime.CopyRequest{
+		Target:          *started,
+		SourcePath:      "/guest/output.txt",
+		DestinationPath: "/host/output.txt",
+	}); err != nil {
+		t.Fatalf("CopyOut() error = %v, want nil through injected fake guest transport", err)
+	}
+
+	if transport.execCalls != 1 || transport.copyInCalls != 1 || transport.copyOutCalls != 1 {
+		t.Fatalf("guest transport calls = exec:%d copyIn:%d copyOut:%d, want one call each", transport.execCalls, transport.copyInCalls, transport.copyOutCalls)
+	}
+	if !reflect.DeepEqual(transport.execRequest.Args, []string{"printf", "ok"}) {
+		t.Fatalf("exec args = %#v, want delegated args", transport.execRequest.Args)
+	}
+	if transport.execRequest.WorkDir != "/workspace/project" {
+		t.Fatalf("exec workdir = %q, want delegated workdir", transport.execRequest.WorkDir)
+	}
+	if !reflect.DeepEqual(transport.execRequest.Env, map[string]string{"SAFE": "value"}) {
+		t.Fatalf("exec env = %#v, want delegated env", transport.execRequest.Env)
+	}
+	if transport.copyInRequest.SourcePath != "/host/input.txt" || transport.copyInRequest.DestinationPath != "/guest/input.txt" {
+		t.Fatalf("copy-in request = %#v, want delegated source and destination paths", transport.copyInRequest)
+	}
+	if transport.copyOutRequest.SourcePath != "/guest/output.txt" || transport.copyOutRequest.DestinationPath != "/host/output.txt" {
+		t.Fatalf("copy-out request = %#v, want delegated source and destination paths", transport.copyOutRequest)
+	}
 }
 
 func TestNewLiveDriverReportsHonestLiveFirecrackerRuntimeMetadata(t *testing.T) {
@@ -605,6 +725,23 @@ func assertLiveFirecrackerProcessLaunchState(t *testing.T, target *sandboxruntim
 	}
 }
 
+func assertLiveDriverUnsupportedGuestOperation(t *testing.T, err error, operation string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s error = nil, want unavailable guest transport capability", operation)
+	}
+	var operationErr *microvm.OperationError
+	if !errors.As(err, &operationErr) {
+		t.Fatalf("%s error = %T %v, want *microvm.OperationError", operation, err, err)
+	}
+	if operationErr.Code != microvm.ErrorCodeUnavailableCapability {
+		t.Fatalf("%s error code = %q, want %q", operation, operationErr.Code, microvm.ErrorCodeUnavailableCapability)
+	}
+	if operationErr.Operation != operation {
+		t.Fatalf("%s error operation = %q, want %q", operation, operationErr.Operation, operation)
+	}
+}
+
 func assertLiveFirecrackerMetadataDoesNotOverclaim(t *testing.T, metadata *sandboxruntime.RuntimeMetadata) {
 	t.Helper()
 	encoded, err := json.Marshal(metadata)
@@ -631,4 +768,35 @@ func assertLiveFirecrackerMetadataDoesNotOverclaim(t *testing.T, metadata *sandb
 			t.Fatalf("live Firecracker metadata claims unsupported capability %q in %s", unsupported, publicText)
 		}
 	}
+}
+
+type fakeLiveGuestTransport struct {
+	execCalls      int
+	copyInCalls    int
+	copyOutCalls   int
+	execRequest    firecracker.GuestExecRequest
+	copyInRequest  firecracker.GuestCopyRequest
+	copyOutRequest firecracker.GuestCopyRequest
+	result         *sandboxruntime.ExecResult
+}
+
+func (transport *fakeLiveGuestTransport) Exec(_ context.Context, req firecracker.GuestExecRequest) (*sandboxruntime.ExecResult, error) {
+	transport.execCalls++
+	transport.execRequest = req
+	if transport.result != nil {
+		return transport.result, nil
+	}
+	return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+}
+
+func (transport *fakeLiveGuestTransport) CopyIn(_ context.Context, req firecracker.GuestCopyRequest) error {
+	transport.copyInCalls++
+	transport.copyInRequest = req
+	return nil
+}
+
+func (transport *fakeLiveGuestTransport) CopyOut(_ context.Context, req firecracker.GuestCopyRequest) error {
+	transport.copyOutCalls++
+	transport.copyOutRequest = req
+	return nil
 }
