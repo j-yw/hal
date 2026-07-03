@@ -20,6 +20,7 @@ type LiveDriverOptions struct {
 	HostProcessRunner    HostProcessRunner
 	BootAcceptancePoller BootAcceptancePoller
 	GuestReadinessProbe  GuestReadinessProbe
+	GuestTransport       firecracker.GuestTransport
 	Clock                Clock
 	Sleeper              Sleeper
 	BootTimeout          time.Duration
@@ -74,6 +75,7 @@ func newLiveBackendOptions(options LiveDriverOptions) (microvm.Config, firecrack
 		BootAcceptanceWaiter: adapter,
 		LiveProcessManager:   adapter,
 		LiveStart:            true,
+		GuestTransport:       options.GuestTransport,
 	}
 	if options.GuestReadinessProbe != nil {
 		backendOptions.GuestReadinessWaiter = adapter

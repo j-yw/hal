@@ -37,13 +37,16 @@ var (
 // descriptors. LiveStart permits StartProcess only when ProcessAdapter,
 // BootAcceptanceWaiter, and LiveProcessManager are all explicitly injected.
 // GuestReadinessWaiter is optional and remains inert until an explicit live
-// start path chooses to call it. Raw paths are not exposed on returned targets.
+// start path chooses to call it. GuestTransport is optional and only used for
+// guest operations after the controller is live-start enabled and target guest
+// readiness is ready. Raw paths are not exposed on returned targets.
 type BackendOptions struct {
 	BaseStateDir         string
 	ProcessAdapter       ProcessAdapter
 	BootAcceptanceWaiter BootAcceptanceWaiter
 	LiveProcessManager   LiveProcessManager
 	GuestReadinessWaiter GuestReadinessWaiter
+	GuestTransport       GuestTransport
 	LiveStart            bool
 }
 
@@ -91,6 +94,7 @@ type Backend struct {
 	bootAcceptanceWaiter BootAcceptanceWaiter
 	liveProcessManager   LiveProcessManager
 	guestReadinessWaiter GuestReadinessWaiter
+	guestTransport       GuestTransport
 	liveStart            bool
 }
 
@@ -102,6 +106,7 @@ func NewBackend(options BackendOptions) *Backend {
 		bootAcceptanceWaiter: options.BootAcceptanceWaiter,
 		liveProcessManager:   options.LiveProcessManager,
 		guestReadinessWaiter: options.GuestReadinessWaiter,
+		guestTransport:       options.GuestTransport,
 		liveStart:            options.LiveStart,
 	}
 }
@@ -158,12 +163,14 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 	var waiter BootAcceptanceWaiter
 	var manager LiveProcessManager
 	var guestWaiter GuestReadinessWaiter
+	var guestTransport GuestTransport
 	if b != nil {
 		baseStateDir = b.baseStateDir
 		adapter = b.processAdapter
 		waiter = b.bootAcceptanceWaiter
 		manager = b.liveProcessManager
 		guestWaiter = b.guestReadinessWaiter
+		guestTransport = b.guestTransport
 	}
 	return firecrackerController{
 		baseStateDir:         baseStateDir,
@@ -171,6 +178,7 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 		bootAcceptanceWaiter: waiter,
 		liveProcessManager:   manager,
 		guestReadinessWaiter: guestWaiter,
+		guestTransport:       guestTransport,
 		liveStart:            b != nil && b.liveStart,
 	}, nil
 }
@@ -181,6 +189,7 @@ type firecrackerController struct {
 	bootAcceptanceWaiter BootAcceptanceWaiter
 	liveProcessManager   LiveProcessManager
 	guestReadinessWaiter GuestReadinessWaiter
+	guestTransport       GuestTransport
 	liveStart            bool
 }
 
@@ -378,16 +387,61 @@ func (c firecrackerController) Inspect(_ context.Context, req microvm.Controller
 	return firecrackerLifecycleTarget(req.Target, plan.Summary(), ""), nil
 }
 
-func (firecrackerController) Exec(_ context.Context, req microvm.ControllerExecRequest) (*sandboxruntime.ExecResult, error) {
-	return nil, unsupportedFirecrackerOperation(req.Operation)
+func (c firecrackerController) Exec(ctx context.Context, req microvm.ControllerExecRequest) (*sandboxruntime.ExecResult, error) {
+	if !c.canDelegateGuestTransport(req.Target) {
+		return nil, unsupportedFirecrackerOperation(req.Operation)
+	}
+	result, err := c.guestTransport.Exec(processContext(ctx), GuestExecRequest{
+		Target:  req.Target,
+		Args:    req.Args,
+		Env:     req.Env,
+		WorkDir: req.WorkDir,
+		Stdin:   req.Stdin,
+		Stdout:  req.Stdout,
+		Stderr:  req.Stderr,
+	})
+	if err != nil {
+		return nil, newGuestTransportExecFailure(req.Operation, err)
+	}
+	return result, nil
 }
 
-func (firecrackerController) CopyIn(_ context.Context, req microvm.ControllerCopyRequest) error {
-	return unsupportedFirecrackerOperation(req.Operation)
+func (c firecrackerController) CopyIn(ctx context.Context, req microvm.ControllerCopyRequest) error {
+	if !c.canDelegateGuestTransport(req.Target) {
+		return unsupportedFirecrackerOperation(req.Operation)
+	}
+	err := c.guestTransport.CopyIn(processContext(ctx), GuestCopyRequest{
+		Target:          req.Target,
+		SourcePath:      req.SourcePath,
+		DestinationPath: req.DestinationPath,
+	})
+	if err != nil {
+		return newGuestTransportCopyInFailure(req.Operation, err)
+	}
+	return nil
 }
 
-func (firecrackerController) CopyOut(_ context.Context, req microvm.ControllerCopyRequest) error {
-	return unsupportedFirecrackerOperation(req.Operation)
+func (c firecrackerController) CopyOut(ctx context.Context, req microvm.ControllerCopyRequest) error {
+	if !c.canDelegateGuestTransport(req.Target) {
+		return unsupportedFirecrackerOperation(req.Operation)
+	}
+	err := c.guestTransport.CopyOut(processContext(ctx), GuestCopyRequest{
+		Target:          req.Target,
+		SourcePath:      req.SourcePath,
+		DestinationPath: req.DestinationPath,
+	})
+	if err != nil {
+		return newGuestTransportCopyOutFailure(req.Operation, err)
+	}
+	return nil
+}
+
+func (c firecrackerController) canDelegateGuestTransport(target sandboxruntime.Target) bool {
+	if !c.liveStart || c.guestTransport == nil || target.Runtime.Metadata == nil {
+		return false
+	}
+	readiness := sandboxruntime.SanitizeRuntimeGuestReadinessMetadata(target.Runtime.Metadata.GuestReadiness)
+	return readiness != nil && readiness.State == sandboxruntime.RuntimeGuestReadinessStateReady
 }
 
 type firecrackerStartOperation struct {
@@ -698,6 +752,57 @@ func unsupportedFirecrackerOperation(operation string) error {
 		operation = "firecracker_backend"
 	}
 	return microvm.NewUnavailableCapabilityError(operation, errors.New("firecracker backend operation is not supported in this phase"))
+}
+
+func newGuestTransportExecFailure(operation string, cause error) *microvm.OperationError {
+	if strings.TrimSpace(operation) == "" {
+		operation = microvm.OperationExec
+	}
+	if cause == nil {
+		cause = errors.New("guest transport exec failed")
+	}
+	err := microvm.NewBackendOperationFailedError(operation, sanitizedGuestTransportCause{cause: cause})
+	err.Field = "guestTransport"
+	err.Message = "guest transport exec failed"
+	return err
+}
+
+func newGuestTransportCopyInFailure(operation string, cause error) *microvm.OperationError {
+	if strings.TrimSpace(operation) == "" {
+		operation = microvm.OperationCopyIn
+	}
+	if cause == nil {
+		cause = errors.New("guest transport copy in failed")
+	}
+	err := microvm.NewBackendOperationFailedError(operation, sanitizedGuestTransportCause{cause: cause})
+	err.Field = "guestTransport"
+	err.Message = "guest transport copy in failed"
+	return err
+}
+
+func newGuestTransportCopyOutFailure(operation string, cause error) *microvm.OperationError {
+	if strings.TrimSpace(operation) == "" {
+		operation = microvm.OperationCopyOut
+	}
+	if cause == nil {
+		cause = errors.New("guest transport copy out failed")
+	}
+	err := microvm.NewBackendOperationFailedError(operation, sanitizedGuestTransportCause{cause: cause})
+	err.Field = "guestTransport"
+	err.Message = "guest transport copy out failed"
+	return err
+}
+
+type sanitizedGuestTransportCause struct {
+	cause error
+}
+
+func (err sanitizedGuestTransportCause) Error() string {
+	return "guest transport failed"
+}
+
+func (err sanitizedGuestTransportCause) Is(target error) bool {
+	return target != nil && errors.Is(err.cause, target)
 }
 
 func newLiveBootContractError(field, message string) *microvm.OperationError {

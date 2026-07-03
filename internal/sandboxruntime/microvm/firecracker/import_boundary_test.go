@@ -24,9 +24,13 @@ var forbiddenFirecrackerProductionImports = []firecrackerForbiddenImport{
 	},
 	{name: "cmd package", match: firecrackerModuleImportMatcher("github.com/jywlabs/hal/cmd")},
 	{name: "factory record package", match: firecrackerModuleImportMatcher("github.com/jywlabs/hal/internal/factory")},
+	{name: "sandboxexec package", match: firecrackerModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxexec")},
+	{name: "sandboxexecution package", match: firecrackerModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxexecution")},
+	{name: "sandboxworker package", match: firecrackerModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxworker")},
 	{name: "PRD package", match: firecrackerModuleImportMatcher("github.com/jywlabs/hal/internal/prd")},
 	{name: "command-specific compound package", match: firecrackerModuleImportMatcher("github.com/jywlabs/hal/internal/compound")},
 	{name: "command-specific loop package", match: firecrackerModuleImportMatcher("github.com/jywlabs/hal/internal/loop")},
+	{name: "concrete runtime provider package", match: firecrackerConcreteRuntimeImportMatcher},
 	{
 		name: "Docker or Podman package",
 		match: func(importPath string) bool {
@@ -111,6 +115,9 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 		"GuestReadinessRequest":                 true,
 		"GuestReadinessResult":                  true,
 		"GuestReadinessWaiter":                  true,
+		"GuestCopyRequest":                      true,
+		"GuestExecRequest":                      true,
+		"GuestTransport":                        true,
 		"GuestWorkDirMetadata":                  true,
 		"InspectOperationPlan":                  true,
 		"LiveProcessManager":                    true,
@@ -283,6 +290,12 @@ func TestFirecrackerForbiddenImportListCoversRequiredBoundaries(t *testing.T) {
 		{name: "Cobra", importPath: "github.com/spf13/cobra", want: "Cobra package"},
 		{name: "cmd package", importPath: "github.com/jywlabs/hal/cmd", want: "cmd package"},
 		{name: "factory records", importPath: "github.com/jywlabs/hal/internal/factory", want: "factory record package"},
+		{name: "sandboxexec", importPath: "github.com/jywlabs/hal/internal/sandboxexec", want: "sandboxexec package"},
+		{name: "sandboxexecution", importPath: "github.com/jywlabs/hal/internal/sandboxexecution", want: "sandboxexecution package"},
+		{name: "sandboxworker", importPath: "github.com/jywlabs/hal/internal/sandboxworker", want: "sandboxworker package"},
+		{name: "concrete rootless runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman", want: "concrete runtime provider package"},
+		{name: "concrete SSH runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine", want: "concrete runtime provider package"},
+		{name: "Firecracker host adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecrackerhost", want: "concrete runtime provider package"},
 		{name: "PRD logic", importPath: "github.com/jywlabs/hal/internal/prd", want: "PRD package"},
 		{name: "Docker", importPath: "github.com/docker/docker/client", want: "Docker or Podman package"},
 		{name: "Podman", importPath: "github.com/containers/podman/v5/pkg/bindings", want: "Docker or Podman package"},
@@ -691,6 +704,19 @@ func firecrackerModuleImportMatcher(prefix string) func(string) bool {
 	return func(importPath string) bool {
 		return importPath == prefix || strings.HasPrefix(importPath, prefix+"/")
 	}
+}
+
+func firecrackerConcreteRuntimeImportMatcher(importPath string) bool {
+	for _, prefix := range []string{
+		"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman",
+		"github.com/jywlabs/hal/internal/sandboxruntime/sshmachine",
+		"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecrackerhost",
+	} {
+		if importPath == prefix || strings.HasPrefix(importPath, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func firecrackerProductionCallBoundaryMessage(fileName string, file *ast.File) string {
