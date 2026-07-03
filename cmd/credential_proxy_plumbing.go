@@ -149,7 +149,7 @@ func sandboxManifestCredentialProxySecretDeliveryIntent(req sandbox.SecurityEval
 	requestedModes := append([]string(nil), req.RequestedSecretModes...)
 	activeModes := append([]string(nil), req.ActiveSecretModes...)
 	if req.CompatibilityAuthSync {
-		activeModes = append(activeModes, sandbox.SandboxSecretModeLegacyAuthSync)
+		requestedModes = append(requestedModes, sandbox.SandboxSecretModeLegacyAuthSync)
 	}
 	if len(requestedModes) == 0 && len(activeModes) == 0 {
 		return nil
