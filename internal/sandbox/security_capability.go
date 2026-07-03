@@ -21,6 +21,8 @@ const (
 	SandboxSecurityCapabilityFamilyCredentialProxy SandboxSecurityCapabilityFamily = "credential_proxy"
 	SandboxSecurityCapabilityFamilySecretDelivery  SandboxSecurityCapabilityFamily = "secret_delivery"
 	SandboxSecurityCapabilityFamilyIsolation       SandboxSecurityCapabilityFamily = "isolation"
+	SandboxSecurityCapabilityFamilyWorkspace       SandboxSecurityCapabilityFamily = "workspace"
+	SandboxSecurityCapabilityFamilyTemplate        SandboxSecurityCapabilityFamily = "template"
 )
 
 // SandboxSecurityCapabilityName identifies a requested or ready capability
@@ -38,6 +40,9 @@ const (
 	SandboxSecurityCapabilitySecretSSHAgent             SandboxSecurityCapabilityName = "secret_ssh_agent"
 	SandboxSecurityCapabilitySecretHTTPProxy            SandboxSecurityCapabilityName = "secret_http_proxy"
 	SandboxSecurityCapabilityIsolationMicroVM           SandboxSecurityCapabilityName = "isolation_microvm"
+	SandboxSecurityCapabilityIsolatedWorkspace          SandboxSecurityCapabilityName = "isolated_workspace"
+	SandboxSecurityCapabilityDirectHostWorktree         SandboxSecurityCapabilityName = "direct_host_worktree"
+	SandboxSecurityCapabilityTemplateLockDigest         SandboxSecurityCapabilityName = "template_lock_digest"
 )
 
 // SandboxSecurityCapabilitySource identifies where capability metadata came
@@ -56,14 +61,32 @@ const (
 type SandboxSecurityCapabilityReasonCode string
 
 const (
-	SandboxSecurityCapabilityReasonMetadataOnly                SandboxSecurityCapabilityReasonCode = "metadata_only"
-	SandboxSecurityCapabilityReasonCapabilityMissing           SandboxSecurityCapabilityReasonCode = "capability_missing"
-	SandboxSecurityCapabilityReasonModeUnsupported             SandboxSecurityCapabilityReasonCode = "mode_unsupported"
-	SandboxSecurityCapabilityReasonCapabilityBlocked           SandboxSecurityCapabilityReasonCode = "capability_blocked"
-	SandboxSecurityCapabilityReasonCapabilityConfirmed         SandboxSecurityCapabilityReasonCode = "capability_confirmed"
-	SandboxSecurityCapabilityReasonMetadataEnforcementUnproven SandboxSecurityCapabilityReasonCode = "metadata_enforcement_unproven"
-	SandboxSecurityCapabilityReasonMetadataDeliveryUnproven    SandboxSecurityCapabilityReasonCode = "metadata_delivery_unproven"
-	SandboxSecurityCapabilityReasonUnknown                     SandboxSecurityCapabilityReasonCode = "unknown"
+	SandboxSecurityCapabilityReasonMetadataOnly                  SandboxSecurityCapabilityReasonCode = "metadata_only"
+	SandboxSecurityCapabilityReasonCapabilityMissing             SandboxSecurityCapabilityReasonCode = "capability_missing"
+	SandboxSecurityCapabilityReasonModeUnsupported               SandboxSecurityCapabilityReasonCode = "mode_unsupported"
+	SandboxSecurityCapabilityReasonCapabilityBlocked             SandboxSecurityCapabilityReasonCode = "capability_blocked"
+	SandboxSecurityCapabilityReasonCapabilityConfirmed           SandboxSecurityCapabilityReasonCode = "capability_confirmed"
+	SandboxSecurityCapabilityReasonMetadataEnforcementUnproven   SandboxSecurityCapabilityReasonCode = "metadata_enforcement_unproven"
+	SandboxSecurityCapabilityReasonMetadataDeliveryUnproven      SandboxSecurityCapabilityReasonCode = "metadata_delivery_unproven"
+	SandboxSecurityCapabilityReasonReadinessMissing              SandboxSecurityCapabilityReasonCode = "readiness_missing"
+	SandboxSecurityCapabilityReasonMicroVMReadinessMissing       SandboxSecurityCapabilityReasonCode = "microvm_readiness_missing"
+	SandboxSecurityCapabilityReasonMicroVMSupportMissing         SandboxSecurityCapabilityReasonCode = "microvm_support_missing"
+	SandboxSecurityCapabilityReasonWorkspaceIsolationMissing     SandboxSecurityCapabilityReasonCode = "workspace_isolation_missing"
+	SandboxSecurityCapabilityReasonWorkspaceDirectHostWorktree   SandboxSecurityCapabilityReasonCode = "workspace_direct_host_worktree"
+	SandboxSecurityCapabilityReasonNetworkEnforcementMissing     SandboxSecurityCapabilityReasonCode = "network_enforcement_missing"
+	SandboxSecurityCapabilityReasonNetworkEnforcementPlannedOnly SandboxSecurityCapabilityReasonCode = "network_enforcement_planned_only"
+	SandboxSecurityCapabilityReasonNetworkEnforcementBestEffort  SandboxSecurityCapabilityReasonCode = "network_enforcement_best_effort"
+	SandboxSecurityCapabilityReasonNetworkEnforcementPartial     SandboxSecurityCapabilityReasonCode = "network_enforcement_partial"
+	SandboxSecurityCapabilityReasonNetworkEnforcementUnsupported SandboxSecurityCapabilityReasonCode = "network_enforcement_unsupported"
+	SandboxSecurityCapabilityReasonNetworkEnforcementFailed      SandboxSecurityCapabilityReasonCode = "network_enforcement_failed"
+	SandboxSecurityCapabilityReasonCredentialActivationMissing   SandboxSecurityCapabilityReasonCode = "credential_activation_missing"
+	SandboxSecurityCapabilityReasonTemplateLockDigestMissing     SandboxSecurityCapabilityReasonCode = "template_lock_digest_missing"
+	SandboxSecurityCapabilityReasonMicroVMReadinessConfirmed     SandboxSecurityCapabilityReasonCode = "microvm_readiness_confirmed"
+	SandboxSecurityCapabilityReasonWorkspaceIsolationConfirmed   SandboxSecurityCapabilityReasonCode = "workspace_isolation_confirmed"
+	SandboxSecurityCapabilityReasonNetworkEnforcementConfirmed   SandboxSecurityCapabilityReasonCode = "network_enforcement_confirmed"
+	SandboxSecurityCapabilityReasonCredentialActivationConfirmed SandboxSecurityCapabilityReasonCode = "credential_activation_confirmed"
+	SandboxSecurityCapabilityReasonTemplateLockDigestConfirmed   SandboxSecurityCapabilityReasonCode = "template_lock_digest_confirmed"
+	SandboxSecurityCapabilityReasonUnknown                       SandboxSecurityCapabilityReasonCode = "unknown"
 )
 
 // SandboxSecurityCapabilityWarningCode is a safe warning label for readiness

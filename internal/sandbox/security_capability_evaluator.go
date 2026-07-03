@@ -405,7 +405,9 @@ func sandboxSecurityCapabilityKnownFamily(family SandboxSecurityCapabilityFamily
 		SandboxSecurityCapabilityFamilyNetworkProxy,
 		SandboxSecurityCapabilityFamilyCredentialProxy,
 		SandboxSecurityCapabilityFamilySecretDelivery,
-		SandboxSecurityCapabilityFamilyIsolation:
+		SandboxSecurityCapabilityFamilyIsolation,
+		SandboxSecurityCapabilityFamilyWorkspace,
+		SandboxSecurityCapabilityFamilyTemplate:
 		return true
 	default:
 		return false
@@ -423,7 +425,10 @@ func sandboxSecurityCapabilityKnownCapability(capability SandboxSecurityCapabili
 		SandboxSecurityCapabilitySecretFileTmpfs,
 		SandboxSecurityCapabilitySecretSSHAgent,
 		SandboxSecurityCapabilitySecretHTTPProxy,
-		SandboxSecurityCapabilityIsolationMicroVM:
+		SandboxSecurityCapabilityIsolationMicroVM,
+		SandboxSecurityCapabilityIsolatedWorkspace,
+		SandboxSecurityCapabilityDirectHostWorktree,
+		SandboxSecurityCapabilityTemplateLockDigest:
 		return true
 	default:
 		return false

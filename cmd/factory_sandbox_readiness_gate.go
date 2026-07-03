@@ -77,6 +77,6 @@ func cloneFactorySandboxReadinessGateCounts(counts *sandbox.SandboxSecurityCapab
 	if counts == nil {
 		return nil
 	}
-	clone := *counts
+	clone := sandboxSecurityReadinessGateCountsClone(*counts)
 	return &clone
 }

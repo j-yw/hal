@@ -5,9 +5,10 @@ package sandbox
 type SandboxSecurityCapabilityReadinessGatePolicyMode string
 
 const (
-	SandboxSecurityCapabilityReadinessGatePolicyModeOff      SandboxSecurityCapabilityReadinessGatePolicyMode = "off"
-	SandboxSecurityCapabilityReadinessGatePolicyModeAdvisory SandboxSecurityCapabilityReadinessGatePolicyMode = "advisory"
-	SandboxSecurityCapabilityReadinessGatePolicyModeStrict   SandboxSecurityCapabilityReadinessGatePolicyMode = "strict"
+	SandboxSecurityCapabilityReadinessGatePolicyModeOff           SandboxSecurityCapabilityReadinessGatePolicyMode = "off"
+	SandboxSecurityCapabilityReadinessGatePolicyModeCompatibility SandboxSecurityCapabilityReadinessGatePolicyMode = "compatibility"
+	SandboxSecurityCapabilityReadinessGatePolicyModeAdvisory      SandboxSecurityCapabilityReadinessGatePolicyMode = "advisory"
+	SandboxSecurityCapabilityReadinessGatePolicyModeStrict        SandboxSecurityCapabilityReadinessGatePolicyMode = "strict"
 )
 
 // SandboxSecurityCapabilityReadinessGateOutcome is the stable machine result
@@ -36,6 +37,7 @@ type SandboxSecurityCapabilityReadinessGateReasonCode string
 
 const (
 	SandboxSecurityCapabilityReadinessGateReasonPolicyOff             SandboxSecurityCapabilityReadinessGateReasonCode = "policy_off"
+	SandboxSecurityCapabilityReadinessGateReasonPolicyCompatibility   SandboxSecurityCapabilityReadinessGateReasonCode = "policy_compatibility"
 	SandboxSecurityCapabilityReadinessGateReasonPolicyAdvisory        SandboxSecurityCapabilityReadinessGateReasonCode = "policy_advisory"
 	SandboxSecurityCapabilityReadinessGateReasonReadinessReady        SandboxSecurityCapabilityReadinessGateReasonCode = "readiness_ready"
 	SandboxSecurityCapabilityReadinessGateReasonReadinessMissing      SandboxSecurityCapabilityReadinessGateReasonCode = "readiness_missing"
@@ -49,14 +51,15 @@ const (
 // SandboxSecurityCapabilityReadinessGateCounts carries aggregate diagnostic
 // counts only. It must not include raw policy values or runtime metadata.
 type SandboxSecurityCapabilityReadinessGateCounts struct {
-	Total          int `json:"total,omitempty"`
-	Ready          int `json:"ready,omitempty"`
-	Advisory       int `json:"advisory,omitempty"`
-	Blocked        int `json:"blocked,omitempty"`
-	Missing        int `json:"missing,omitempty"`
-	MetadataOnly   int `json:"metadataOnly,omitempty"`
-	Unsupported    int `json:"unsupported,omitempty"`
-	StrictBlocking int `json:"strictBlocking,omitempty"`
+	Total            int                                         `json:"total,omitempty"`
+	Ready            int                                         `json:"ready,omitempty"`
+	Advisory         int                                         `json:"advisory,omitempty"`
+	Blocked          int                                         `json:"blocked,omitempty"`
+	Missing          int                                         `json:"missing,omitempty"`
+	MetadataOnly     int                                         `json:"metadataOnly,omitempty"`
+	Unsupported      int                                         `json:"unsupported,omitempty"`
+	StrictBlocking   int                                         `json:"strictBlocking,omitempty"`
+	ReasonCodeCounts map[SandboxSecurityCapabilityReasonCode]int `json:"reasonCodeCounts,omitempty"`
 }
 
 // SandboxSecurityCapabilityReadinessGateDecision is the additive,
@@ -126,6 +129,23 @@ func EvaluateSandboxSecurityCapabilityReadinessGate(mode SandboxSecurityCapabili
 			SandboxSecurityCapabilityReadinessGateReasonReadinessReady,
 			counts,
 		)
+	case SandboxSecurityCapabilityReadinessGatePolicyModeCompatibility:
+		if counts.StrictBlocking > 0 {
+			return sandboxSecurityCapabilityReadinessGateDecision(
+				SandboxSecurityCapabilityReadinessGateCodeAdvisory,
+				SandboxSecurityCapabilityReadinessGateOutcomeAdvisory,
+				policyMode,
+				SandboxSecurityCapabilityReadinessGateReasonPolicyCompatibility,
+				counts,
+			)
+		}
+		return sandboxSecurityCapabilityReadinessGateDecision(
+			SandboxSecurityCapabilityReadinessGateCodeAllowed,
+			SandboxSecurityCapabilityReadinessGateOutcomeAllowed,
+			policyMode,
+			SandboxSecurityCapabilityReadinessGateReasonReadinessReady,
+			counts,
+		)
 	default:
 		return sandboxSecurityCapabilityReadinessGateDecision(
 			SandboxSecurityCapabilityReadinessGateCodeAllowed,
@@ -140,6 +160,7 @@ func EvaluateSandboxSecurityCapabilityReadinessGate(mode SandboxSecurityCapabili
 func normalizeSandboxSecurityCapabilityReadinessGatePolicyMode(mode SandboxSecurityCapabilityReadinessGatePolicyMode) SandboxSecurityCapabilityReadinessGatePolicyMode {
 	switch mode {
 	case SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+		SandboxSecurityCapabilityReadinessGatePolicyModeCompatibility,
 		SandboxSecurityCapabilityReadinessGatePolicyModeAdvisory:
 		return mode
 	default:
@@ -164,7 +185,15 @@ func sandboxSecurityCapabilityReadinessGateDecision(
 }
 
 func sandboxSecurityCapabilityReadinessGateCountsPtr(counts SandboxSecurityCapabilityReadinessGateCounts) *SandboxSecurityCapabilityReadinessGateCounts {
-	if counts == (SandboxSecurityCapabilityReadinessGateCounts{}) {
+	if counts.Total == 0 &&
+		counts.Ready == 0 &&
+		counts.Advisory == 0 &&
+		counts.Blocked == 0 &&
+		counts.Missing == 0 &&
+		counts.MetadataOnly == 0 &&
+		counts.Unsupported == 0 &&
+		counts.StrictBlocking == 0 &&
+		len(counts.ReasonCodeCounts) == 0 {
 		return nil
 	}
 	return &counts
@@ -194,17 +223,19 @@ func sandboxSecurityCapabilityReadinessGateCounts(diagnostics SandboxSecurityCap
 		}
 		if item.WouldBlockStrictGate {
 			counts.StrictBlocking++
-			if candidate, priority := sandboxSecurityCapabilityReadinessGateReason(classification); priority > reasonPriority {
+			if candidate, priority := sandboxSecurityCapabilityReadinessGateStrictReason(item, classification); priority > reasonPriority {
 				reason = candidate
 				reasonPriority = priority
 			}
 		}
+		sandboxSecurityCapabilityReadinessGateIncrementReasonCode(&counts, sandboxSecurityCapabilityReadinessGateItemReasonCode(item, classification))
 	}
 
 	if counts.Total == 0 {
 		counts.Total = 1
 		counts.Missing = 1
 		counts.StrictBlocking = 1
+		sandboxSecurityCapabilityReadinessGateIncrementReasonCode(&counts, SandboxSecurityCapabilityReasonReadinessMissing)
 		return counts, SandboxSecurityCapabilityReadinessGateReasonReadinessMissing
 	}
 	if diagnostics.WouldBlockStrictGate && counts.StrictBlocking == 0 {
@@ -215,6 +246,45 @@ func sandboxSecurityCapabilityReadinessGateCounts(diagnostics SandboxSecurityCap
 		return counts, SandboxSecurityCapabilityReadinessGateReasonStrictBlockRequired
 	}
 	return counts, reason
+}
+
+func sandboxSecurityCapabilityReadinessGateIncrementReasonCode(counts *SandboxSecurityCapabilityReadinessGateCounts, reason SandboxSecurityCapabilityReasonCode) {
+	reason = sanitizeSandboxSecurityCapabilityReasonCodeValue(reason)
+	if reason == "" {
+		return
+	}
+	if counts.ReasonCodeCounts == nil {
+		counts.ReasonCodeCounts = make(map[SandboxSecurityCapabilityReasonCode]int)
+	}
+	counts.ReasonCodeCounts[reason]++
+}
+
+func sandboxSecurityCapabilityReadinessGateItemReasonCode(item SandboxSecurityCapabilityReadinessDiagnosticItem, classification SandboxSecurityCapabilityDiagnosticClassification) SandboxSecurityCapabilityReasonCode {
+	if reason := sanitizeSandboxSecurityCapabilityReasonCodeValue(item.ReasonCode); reason != "" {
+		return reason
+	}
+	switch classification {
+	case SandboxSecurityCapabilityDiagnosticClassificationReady:
+		return SandboxSecurityCapabilityReasonCapabilityConfirmed
+	case SandboxSecurityCapabilityDiagnosticClassificationMetadataOnly:
+		return SandboxSecurityCapabilityReasonMetadataOnly
+	case SandboxSecurityCapabilityDiagnosticClassificationUnsupported:
+		return SandboxSecurityCapabilityReasonCapabilityMissing
+	case SandboxSecurityCapabilityDiagnosticClassificationBlocked:
+		return SandboxSecurityCapabilityReasonCapabilityBlocked
+	case SandboxSecurityCapabilityDiagnosticClassificationReadinessMissing:
+		return SandboxSecurityCapabilityReasonReadinessMissing
+	default:
+		return ""
+	}
+}
+
+func sandboxSecurityCapabilityReadinessGateStrictReason(item SandboxSecurityCapabilityReadinessDiagnosticItem, classification SandboxSecurityCapabilityDiagnosticClassification) (SandboxSecurityCapabilityReadinessGateReasonCode, int) {
+	fallback, priority := sandboxSecurityCapabilityReadinessGateReason(classification)
+	if reason := sandboxSecurityCapabilityReadinessGateItemReasonCode(item, classification); reason != "" {
+		return SandboxSecurityCapabilityReadinessGateReasonCode(reason), priority
+	}
+	return fallback, priority
 }
 
 func sandboxSecurityCapabilityReadinessGateItemClassification(item SandboxSecurityCapabilityReadinessDiagnosticItem) SandboxSecurityCapabilityDiagnosticClassification {
