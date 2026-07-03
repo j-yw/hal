@@ -223,6 +223,35 @@ func TestServiceMicroVMCapabilityReportsConservativeRuntimeMetadata(t *testing.T
 	assertMicroVMRuntimeDriverSecurityPolicy(t, driver.Security)
 }
 
+func TestServiceMicroVMCapabilityOutputDoesNotClaimDefaultNetworkEnforcement(t *testing.T) {
+	registry, err := NewDriverRegistry(&fakeWorkerRuntimeDriver{id: RuntimeDriverMicroVM})
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+	service, err := NewService(ServiceOptions{
+		WorkerID: "worker-microvm",
+		Registry: registry,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+
+	capabilities := service.Capabilities()
+	if err := capabilities.Validate(); err != nil {
+		t.Fatalf("Capabilities().Validate() error: %v", err)
+	}
+	if len(capabilities.RuntimeDrivers) != 1 {
+		t.Fatalf("runtime drivers = %#v, want exactly one microVM driver", capabilities.RuntimeDrivers)
+	}
+	driver := capabilities.RuntimeDrivers[0]
+	if driver.ID != RuntimeDriverMicroVM {
+		t.Fatalf("runtime driver ID = %q, want %q", driver.ID, RuntimeDriverMicroVM)
+	}
+	assertCapabilityDoesNotClaimNetworkEnforcement(t, "worker", capabilities.Security)
+	assertMicroVMCapabilityDoesNotRequestNetworkEnforcement(t, "runtime driver", driver.Security)
+	assertCapabilityDoesNotClaimNetworkEnforcement(t, "runtime driver", driver.Security)
+}
+
 func TestServiceMicroVMWorkerIORequestsAreRejectedBeforeDriverDispatch(t *testing.T) {
 	driver := &fakeWorkerRuntimeDriver{id: RuntimeDriverMicroVM}
 	registry, err := NewDriverRegistry(driver)
@@ -573,5 +602,31 @@ func assertMicroVMRuntimeDriverSecurityPolicy(t *testing.T, policy SecurityPolic
 	}
 	if policy.Enforced.IsolationLevel != IsolationLevelVM {
 		t.Fatalf("microVM enforced isolationLevel = %q, want %q", policy.Enforced.IsolationLevel, IsolationLevelVM)
+	}
+}
+
+func assertMicroVMCapabilityDoesNotRequestNetworkEnforcement(t *testing.T, label string, policy SecurityPolicy) {
+	t.Helper()
+	if policy.Requested.NetworkPolicy != NetworkPolicyBestEffort {
+		t.Fatalf("%s requested networkPolicy = %q, want %q", label, policy.Requested.NetworkPolicy, NetworkPolicyBestEffort)
+	}
+	if policy.Requested.NetworkEnforcement != NetworkEnforcementNone {
+		t.Fatalf("%s requested networkEnforcement = %q, want %q", label, policy.Requested.NetworkEnforcement, NetworkEnforcementNone)
+	}
+}
+
+func assertCapabilityDoesNotClaimNetworkEnforcement(t *testing.T, label string, policy SecurityPolicy) {
+	t.Helper()
+	if err := policy.Validate(); err != nil {
+		t.Fatalf("%s security policy Validate() error: %v", label, err)
+	}
+	if policy.Enforced.NetworkPolicy != NetworkPolicyBestEffort {
+		t.Fatalf("%s enforced networkPolicy = %q, want %q", label, policy.Enforced.NetworkPolicy, NetworkPolicyBestEffort)
+	}
+	if policy.Enforced.NetworkPolicy == NetworkPolicyDenyByDefault {
+		t.Fatalf("%s enforced networkPolicy claims deny-by-default enforcement: %#v", label, policy)
+	}
+	if policy.Enforced.NetworkEnforcement != NetworkEnforcementNone {
+		t.Fatalf("%s enforced networkEnforcement = %q, want %q", label, policy.Enforced.NetworkEnforcement, NetworkEnforcementNone)
 	}
 }

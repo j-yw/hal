@@ -165,6 +165,50 @@ func TestSandboxdCommandParsesFlagsAndUsesInjectedDependencies(t *testing.T) {
 	}
 }
 
+func TestSandboxdDefaultCapabilitiesDoNotClaimNetworkPolicyEnforcement(t *testing.T) {
+	var gotService sandboxworker.ServiceOptions
+	cmd, _, _ := newTestSandboxdCommand(sandboxdDeps{
+		newService: func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
+			gotService = options
+			return &recordingSandboxdHandler{}, nil
+		},
+		newServer: func(options sandboxworker.ServerOptions) (sandboxdServer, error) {
+			return sandboxdServerFunc(func(context.Context) error { return nil }), nil
+		},
+		rootlessPodmanAvailable: func(context.Context, string) error {
+			return nil
+		},
+		newRootlessPodmanDriver: func(string) sandboxruntime.Driver {
+			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
+		},
+		workerID: func() string {
+			return "worker-default-security"
+		},
+	})
+	cmd.SetArgs([]string{"--socket", "/tmp/default-security-sandboxd.sock", "--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("sandboxd Execute() error: %v", err)
+	}
+	service, err := sandboxworker.NewService(gotService)
+	if err != nil {
+		t.Fatalf("NewService(gotService) error: %v", err)
+	}
+	capabilities := service.Capabilities()
+	if err := capabilities.Validate(); err != nil {
+		t.Fatalf("Capabilities().Validate() error: %v", err)
+	}
+	assertSandboxdDefaultCapabilitySecurity(t, "worker", capabilities.Security)
+	if len(capabilities.RuntimeDrivers) != 1 {
+		t.Fatalf("runtime drivers = %#v, want exactly one default rootless driver", capabilities.RuntimeDrivers)
+	}
+	driver := capabilities.RuntimeDrivers[0]
+	if driver.ID != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("default runtime driver ID = %q, want %q", driver.ID, sandboxruntime.DriverRootlessPodman)
+	}
+	assertSandboxdDefaultCapabilitySecurity(t, "runtime driver", driver.Security)
+}
+
 func TestSandboxdCommandUsesDefaultWorkerIDDependency(t *testing.T) {
 	var gotService sandboxworker.ServiceOptions
 	cmd, stdout, _ := newTestSandboxdCommand(sandboxdDeps{
@@ -1060,6 +1104,25 @@ func assertSandboxdMicroVMCapabilitySecurity(t *testing.T, policy sandboxworker.
 	if policy.Requested.IsolationLevel != sandboxworker.IsolationLevelVM ||
 		policy.Enforced.IsolationLevel != sandboxworker.IsolationLevelVM {
 		t.Fatalf("microVM isolation policy = %#v, want VM isolation", policy)
+	}
+}
+
+func assertSandboxdDefaultCapabilitySecurity(t *testing.T, label string, policy sandboxworker.SecurityPolicy) {
+	t.Helper()
+	if err := policy.Validate(); err != nil {
+		t.Fatalf("%s security policy Validate() error: %v", label, err)
+	}
+	if policy.Requested.NetworkPolicy != sandboxworker.NetworkPolicyDenyByDefault {
+		t.Fatalf("%s requested networkPolicy = %q, want %q", label, policy.Requested.NetworkPolicy, sandboxworker.NetworkPolicyDenyByDefault)
+	}
+	if policy.Enforced.NetworkPolicy != sandboxworker.NetworkPolicyBestEffort {
+		t.Fatalf("%s enforced networkPolicy = %q, want %q", label, policy.Enforced.NetworkPolicy, sandboxworker.NetworkPolicyBestEffort)
+	}
+	if policy.Enforced.NetworkPolicy == sandboxworker.NetworkPolicyDenyByDefault {
+		t.Fatalf("%s enforced networkPolicy claims deny-by-default enforcement: %#v", label, policy)
+	}
+	if policy.Enforced.NetworkEnforcement != sandboxworker.NetworkEnforcementNone {
+		t.Fatalf("%s enforced networkEnforcement = %q, want %q", label, policy.Enforced.NetworkEnforcement, sandboxworker.NetworkEnforcementNone)
 	}
 }
 
