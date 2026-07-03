@@ -28,6 +28,32 @@ func SupportedModes() []Mode {
 	}
 }
 
+// DestinationCategory is a safe destination class for binding metadata. It
+// intentionally excludes raw hosts, IPs, ports, URLs, paths, and socket names.
+type DestinationCategory string
+
+const (
+	DestinationPublicInternet  DestinationCategory = "public_internet"
+	DestinationPrivateNetwork  DestinationCategory = "private_network"
+	DestinationMetadataService DestinationCategory = "metadata_service"
+	DestinationLoopback        DestinationCategory = "loopback"
+	DestinationUnixSocket      DestinationCategory = "unix_socket"
+	DestinationUnknown         DestinationCategory = "unknown"
+)
+
+// SupportedDestinationCategories returns the exact credential delivery
+// destination classes Hal recognizes for persisted binding metadata.
+func SupportedDestinationCategories() []DestinationCategory {
+	return []DestinationCategory{
+		DestinationPublicInternet,
+		DestinationPrivateNetwork,
+		DestinationMetadataService,
+		DestinationLoopback,
+		DestinationUnixSocket,
+		DestinationUnknown,
+	}
+}
+
 // Source identifies where delivery metadata was produced.
 type Source string
 
@@ -85,7 +111,9 @@ type ErrorCode string
 const (
 	ErrorMissingRequiredField ErrorCode = "missing_required_field"
 	ErrorUnsupportedMode      ErrorCode = "unsupported_mode"
+	ErrorUnsupportedCategory  ErrorCode = "unsupported_category"
 	ErrorUnsafeReference      ErrorCode = "unsafe_reference"
+	ErrorUnsafeMetadata       ErrorCode = "unsafe_metadata"
 	ErrorDuplicateBinding     ErrorCode = "duplicate_binding"
 	ErrorActivationFailed     ErrorCode = "activation_failed"
 )
@@ -102,17 +130,22 @@ type Request struct {
 }
 
 // Binding identifies one safe secret reference and the delivery mode requested
-// for it. ServiceID is an opaque safe service identifier, not a transport
-// endpoint.
+// for it. ServiceID, labels, policy snapshot IDs, plan IDs, and proxy session
+// IDs are durable metadata only; they are not raw transport endpoints.
 type Binding struct {
-	ID           string     `json:"id"`
-	RequestID    string     `json:"requestId,omitempty"`
-	PlanID       string     `json:"planId,omitempty"`
-	SecretRef    string     `json:"secretRef"`
-	ServiceID    string     `json:"serviceId,omitempty"`
-	DeliveryMode Mode       `json:"deliveryMode"`
-	Status       Status     `json:"status,omitempty"`
-	ReasonCode   ReasonCode `json:"reasonCode,omitempty"`
+	ID                    string              `json:"id"`
+	RequestID             string              `json:"requestId,omitempty"`
+	PlanID                string              `json:"planId,omitempty"`
+	PolicySnapshotID      string              `json:"policySnapshotId,omitempty"`
+	SecretRef             string              `json:"secretRef"`
+	NetworkProxySessionID string              `json:"networkProxySessionId,omitempty"`
+	ServiceID             string              `json:"serviceId,omitempty"`
+	ServiceLabels         []string            `json:"serviceLabels,omitempty"`
+	DomainLabels          []string            `json:"domainLabels,omitempty"`
+	DestinationCategory   DestinationCategory `json:"destinationCategory,omitempty"`
+	DeliveryMode          Mode                `json:"deliveryMode"`
+	Status                Status              `json:"status,omitempty"`
+	ReasonCode            ReasonCode          `json:"reasonCode,omitempty"`
 }
 
 // Plan is a durable delivery plan summary produced before activation.
@@ -193,4 +226,11 @@ func (e SanitizedError) Error() string {
 		location += "[" + strconv.Itoa(*e.Index) + "]"
 	}
 	return "credential delivery " + code + " at " + location
+}
+
+// ValidationResult is the deterministic output of pure credential delivery
+// metadata validation. Errors must identify safe fields and indexes only.
+type ValidationResult struct {
+	Valid  bool             `json:"valid"`
+	Errors []SanitizedError `json:"errors,omitempty"`
 }

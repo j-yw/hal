@@ -39,6 +39,40 @@ func TestSupportedModes(t *testing.T) {
 	}
 }
 
+func TestSupportedDestinationCategories(t *testing.T) {
+	want := []DestinationCategory{
+		DestinationPublicInternet,
+		DestinationPrivateNetwork,
+		DestinationMetadataService,
+		DestinationLoopback,
+		DestinationUnixSocket,
+		DestinationUnknown,
+	}
+	if got := SupportedDestinationCategories(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("SupportedDestinationCategories() = %#v, want %#v", got, want)
+	}
+
+	tests := []struct {
+		name string
+		got  DestinationCategory
+		want string
+	}{
+		{name: "public internet", got: DestinationPublicInternet, want: "public_internet"},
+		{name: "private network", got: DestinationPrivateNetwork, want: "private_network"},
+		{name: "metadata service", got: DestinationMetadataService, want: "metadata_service"},
+		{name: "loopback", got: DestinationLoopback, want: "loopback"},
+		{name: "unix socket", got: DestinationUnixSocket, want: "unix_socket"},
+		{name: "unknown", got: DestinationUnknown, want: "unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if string(tt.got) != tt.want {
+				t.Fatalf("destination category = %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
+
 func TestContractConstants(t *testing.T) {
 	tests := []struct {
 		name string
@@ -73,7 +107,9 @@ func TestContractConstants(t *testing.T) {
 		{name: "warning legacy auth compatibility", got: string(WarningLegacyAuthCompatibility), want: "legacy_auth_compatibility"},
 		{name: "error missing required field", got: string(ErrorMissingRequiredField), want: "missing_required_field"},
 		{name: "error unsupported mode", got: string(ErrorUnsupportedMode), want: "unsupported_mode"},
+		{name: "error unsupported category", got: string(ErrorUnsupportedCategory), want: "unsupported_category"},
 		{name: "error unsafe reference", got: string(ErrorUnsafeReference), want: "unsafe_reference"},
+		{name: "error unsafe metadata", got: string(ErrorUnsafeMetadata), want: "unsafe_metadata"},
 		{name: "error duplicate binding", got: string(ErrorDuplicateBinding), want: "duplicate_binding"},
 		{name: "error activation failed", got: string(ErrorActivationFailed), want: "activation_failed"},
 	}
@@ -94,12 +130,17 @@ func TestRequestJSONContract(t *testing.T) {
 		RequestedModes: []Mode{ModeHTTPProxy, ModeSSHAgent},
 		ActiveModes:    []Mode{ModeHTTPProxy},
 		Bindings: []Binding{{
-			ID:           "binding-01",
-			SecretRef:    "secret-ref-01",
-			ServiceID:    "service-01",
-			DeliveryMode: ModeHTTPProxy,
-			Status:       StatusRequested,
-			ReasonCode:   ReasonRequested,
+			ID:                    "binding-01",
+			PolicySnapshotID:      "policy-snapshot-01",
+			SecretRef:             "secret-ref-01",
+			NetworkProxySessionID: "network-proxy-session-01",
+			ServiceID:             "service-01",
+			ServiceLabels:         []string{"source-control"},
+			DomainLabels:          []string{"github"},
+			DestinationCategory:   DestinationPublicInternet,
+			DeliveryMode:          ModeHTTPProxy,
+			Status:                StatusRequested,
+			ReasonCode:            ReasonRequested,
 		}},
 		Status: StatusRequested,
 	}
@@ -125,22 +166,32 @@ func TestRequestJSONContract(t *testing.T) {
 
 func TestBindingJSONContract(t *testing.T) {
 	binding := Binding{
-		ID:           "binding-01",
-		RequestID:    "delivery-request-01",
-		PlanID:       "delivery-plan-01",
-		SecretRef:    "secret-ref-01",
-		ServiceID:    "service-01",
-		DeliveryMode: ModeFileTmpfs,
-		Status:       StatusPlanned,
-		ReasonCode:   ReasonRequested,
+		ID:                    "binding-01",
+		RequestID:             "delivery-request-01",
+		PlanID:                "delivery-plan-01",
+		PolicySnapshotID:      "policy-snapshot-01",
+		SecretRef:             "secret-ref-01",
+		NetworkProxySessionID: "network-proxy-session-01",
+		ServiceID:             "service-01",
+		ServiceLabels:         []string{"source-control", "package-registry"},
+		DomainLabels:          []string{"github", "registry"},
+		DestinationCategory:   DestinationPrivateNetwork,
+		DeliveryMode:          ModeFileTmpfs,
+		Status:                StatusPlanned,
+		ReasonCode:            ReasonRequested,
 	}
 	got := mustMarshalObject(t, binding)
 	assertObjectKeys(t, got, []string{
 		"id",
 		"requestId",
 		"planId",
+		"policySnapshotId",
 		"secretRef",
+		"networkProxySessionId",
 		"serviceId",
+		"serviceLabels",
+		"domainLabels",
+		"destinationCategory",
 		"deliveryMode",
 		"status",
 		"reasonCode",
@@ -154,7 +205,12 @@ func TestBindingJSONContract(t *testing.T) {
 	assertObjectKeys(t, minimal, []string{"id", "secretRef", "deliveryMode"}, []string{
 		"requestId",
 		"planId",
+		"policySnapshotId",
+		"networkProxySessionId",
 		"serviceId",
+		"serviceLabels",
+		"domainLabels",
+		"destinationCategory",
 		"status",
 		"reasonCode",
 	})
@@ -337,8 +393,13 @@ func TestJSONTagsAreStable(t *testing.T) {
 		{field: "ID", name: "id"},
 		{field: "RequestID", name: "requestId", omitempty: true},
 		{field: "PlanID", name: "planId", omitempty: true},
+		{field: "PolicySnapshotID", name: "policySnapshotId", omitempty: true},
 		{field: "SecretRef", name: "secretRef"},
+		{field: "NetworkProxySessionID", name: "networkProxySessionId", omitempty: true},
 		{field: "ServiceID", name: "serviceId", omitempty: true},
+		{field: "ServiceLabels", name: "serviceLabels", omitempty: true},
+		{field: "DomainLabels", name: "domainLabels", omitempty: true},
+		{field: "DestinationCategory", name: "destinationCategory", omitempty: true},
 		{field: "DeliveryMode", name: "deliveryMode"},
 		{field: "Status", name: "status", omitempty: true},
 		{field: "ReasonCode", name: "reasonCode", omitempty: true},
@@ -395,6 +456,10 @@ func TestJSONTagsAreStable(t *testing.T) {
 		{field: "Index", name: "index", omitempty: true},
 		{field: "ReasonCode", name: "reasonCode", omitempty: true},
 	})
+	assertJSONTags(t, reflect.TypeOf(ValidationResult{}), []jsonTagExpectation{
+		{field: "Valid", name: "valid"},
+		{field: "Errors", name: "errors", omitempty: true},
+	})
 }
 
 func TestContractsExposeNoRawValueFields(t *testing.T) {
@@ -407,6 +472,7 @@ func TestContractsExposeNoRawValueFields(t *testing.T) {
 		reflect.TypeOf(StatusMetadata{}),
 		reflect.TypeOf(Warning{}),
 		reflect.TypeOf(SanitizedError{}),
+		reflect.TypeOf(ValidationResult{}),
 	}
 	for _, typ := range contractTypes {
 		t.Run(typ.Name(), func(t *testing.T) {
