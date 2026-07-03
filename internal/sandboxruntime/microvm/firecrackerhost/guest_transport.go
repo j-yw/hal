@@ -2,11 +2,17 @@ package firecrackerhost
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"
@@ -103,10 +109,10 @@ func (transport *GuestAgentTransport) Exec(ctx context.Context, req firecracker.
 	if err := validateGuestAgentTransportStreamLimit(guestagent.OperationExec, "stderr", response.Stderr, transport.execStderrLimit()); err != nil {
 		return result, err
 	}
-	if err := writeGuestAgentTransportOutput(req.Stdout, "stdout", response.Stdout.Data); err != nil {
+	if err := writeGuestAgentTransportOutput(req.Stdout, "stdout", response.Stdout); err != nil {
 		return result, guestAgentTransportProtocolError(guestagent.ErrorCodeTransportFailure, guestagent.OperationExec, "stdout", err)
 	}
-	if err := writeGuestAgentTransportOutput(req.Stderr, "stderr", response.Stderr.Data); err != nil {
+	if err := writeGuestAgentTransportOutput(req.Stderr, "stderr", response.Stderr); err != nil {
 		return result, guestAgentTransportProtocolError(guestagent.ErrorCodeTransportFailure, guestagent.OperationExec, "stderr", err)
 	}
 	return result, nil
@@ -125,10 +131,18 @@ func (transport *GuestAgentTransport) CopyIn(ctx context.Context, req firecracke
 		DestinationPath: req.DestinationPath,
 		Payload: guestagent.PayloadMetadata{
 			MaxBytes: transport.copyInPayloadLimit(),
-			Encoding: guestagent.PayloadEncodingRaw,
+			Encoding: guestagent.PayloadEncodingBase64,
 		},
 		Timing: transport.timingMetadata(),
 	}
+	if err := guestagent.ValidateCopyInRequest(protocolReq); err != nil {
+		return err
+	}
+	payload, err := readGuestAgentTransportCopyInPayload(req.SourcePath, transport.copyInPayloadLimit())
+	if err != nil {
+		return err
+	}
+	protocolReq.Payload = payload
 	if err := guestagent.ValidateCopyInRequest(protocolReq); err != nil {
 		return err
 	}
@@ -145,7 +159,16 @@ func (transport *GuestAgentTransport) CopyIn(ctx context.Context, req firecracke
 	if err := guestagent.ValidateCopyInResponse(*response); err != nil {
 		return err
 	}
-	return validateGuestAgentTransportPayloadLimit(guestagent.OperationCopyIn, "written", response.Written, transport.copyInPayloadLimit())
+	if err := validateGuestAgentTransportPayloadLimit(guestagent.OperationCopyIn, "written", response.Written, transport.copyInPayloadLimit()); err != nil {
+		return err
+	}
+	if response.Written.SizeBytes != protocolReq.Payload.SizeBytes {
+		return guestAgentTransportProtocolError(guestagent.ErrorCodeInvalidMetadata, guestagent.OperationCopyIn, "written.sizeBytes", errors.New("guest agent copy_in acknowledgement size mismatch"))
+	}
+	if response.Written.Digest != "" && !strings.EqualFold(response.Written.Digest, protocolReq.Payload.Digest) {
+		return guestAgentTransportProtocolError(guestagent.ErrorCodeInvalidMetadata, guestagent.OperationCopyIn, "written.digest", errors.New("guest agent copy_in acknowledgement digest mismatch"))
+	}
+	return nil
 }
 
 // CopyOut translates a Firecracker copy-out request to the guest-agent copy-out
@@ -156,13 +179,17 @@ func (transport *GuestAgentTransport) CopyOut(ctx context.Context, req firecrack
 	if err != nil {
 		return err
 	}
+	destinationPath, err := validateGuestAgentTransportHostPath(guestagent.OperationCopyOut, "destinationPath", req.DestinationPath)
+	if err != nil {
+		return err
+	}
 	protocolReq := guestagent.CopyOutRequest{
 		ProtocolVersion: guestagent.ProtocolVersionV1,
 		Operation:       guestagent.OperationCopyOut,
 		SourcePath:      req.SourcePath,
 		Payload: guestagent.PayloadMetadata{
 			MaxBytes: transport.copyOutPayloadLimit(),
-			Encoding: guestagent.PayloadEncodingRaw,
+			Encoding: guestagent.PayloadEncodingBase64,
 		},
 		Timing: transport.timingMetadata(),
 	}
@@ -182,7 +209,14 @@ func (transport *GuestAgentTransport) CopyOut(ctx context.Context, req firecrack
 	if err := guestagent.ValidateCopyOutResponse(*response); err != nil {
 		return err
 	}
-	return validateGuestAgentTransportPayloadLimit(guestagent.OperationCopyOut, "payload", response.Payload, transport.copyOutPayloadLimit())
+	if err := validateGuestAgentTransportPayloadLimit(guestagent.OperationCopyOut, "payload", response.Payload, transport.copyOutPayloadLimit()); err != nil {
+		return err
+	}
+	data, err := decodeGuestAgentTransportPayload(guestagent.OperationCopyOut, "payload", response.Payload, transport.copyOutPayloadLimit())
+	if err != nil {
+		return err
+	}
+	return writeGuestAgentTransportCopyOutDestination(destinationPath, data)
 }
 
 func (transport *GuestAgentTransport) execRequest(req firecracker.GuestExecRequest) (guestagent.ExecRequest, error) {
@@ -201,8 +235,15 @@ func (transport *GuestAgentTransport) execRequest(req firecracker.GuestExecReque
 		Timing: transport.timingMetadata(),
 	}
 	if req.Stdin != nil {
+		stdin, err := readGuestAgentTransportBounded(req.Stdin, transport.execStdinLimit(), guestagent.OperationExec, "stdin", "read exec stdin")
+		if err != nil {
+			return guestagent.ExecRequest{}, err
+		}
 		protocolReq.Stdin = &guestagent.StreamMetadata{
-			MaxBytes: transport.execStdinLimit(),
+			SizeBytes: int64(len(stdin)),
+			MaxBytes:  transport.execStdinLimit(),
+			Data:      base64.StdEncoding.EncodeToString(stdin),
+			Encoding:  guestagent.PayloadEncodingBase64,
 		}
 	}
 	if err := guestagent.ValidateExecRequest(protocolReq); err != nil {
@@ -252,8 +293,153 @@ func guestAgentTransportSecretEnvName(name string) bool {
 	return false
 }
 
+func readGuestAgentTransportCopyInPayload(sourcePath string, limit int64) (guestagent.PayloadMetadata, error) {
+	sourcePath, err := validateGuestAgentTransportHostPath(guestagent.OperationCopyIn, "sourcePath", sourcePath)
+	if err != nil {
+		return guestagent.PayloadMetadata{}, err
+	}
+	info, err := os.Lstat(sourcePath)
+	if err != nil {
+		code := guestagent.ErrorCodeTransportFailure
+		if os.IsNotExist(err) {
+			code = guestagent.ErrorCodeMalformedPath
+		}
+		return guestagent.PayloadMetadata{}, guestAgentTransportProtocolError(code, guestagent.OperationCopyIn, "sourcePath", errors.New("copy_in source is unavailable"))
+	}
+	if !info.Mode().IsRegular() {
+		return guestagent.PayloadMetadata{}, guestAgentTransportProtocolError(guestagent.ErrorCodeMalformedPath, guestagent.OperationCopyIn, "sourcePath", errors.New("copy_in source must be a regular file"))
+	}
+	if info.Size() > limit {
+		return guestagent.PayloadMetadata{}, guestAgentTransportProtocolError(guestagent.ErrorCodeOversizedPayloadMetadata, guestagent.OperationCopyIn, "payload", errors.New("copy_in source exceeds configured payload limit"))
+	}
+
+	file, err := os.Open(sourcePath)
+	if err != nil {
+		return guestagent.PayloadMetadata{}, guestAgentTransportProtocolError(guestagent.ErrorCodeTransportFailure, guestagent.OperationCopyIn, "sourcePath", errors.New("copy_in source is unreadable"))
+	}
+	defer file.Close()
+
+	data, err := readGuestAgentTransportBounded(file, limit, guestagent.OperationCopyIn, "payload", "read copy_in source")
+	if err != nil {
+		return guestagent.PayloadMetadata{}, err
+	}
+	return guestAgentTransportPayloadFromBytes(data, limit), nil
+}
+
+func readGuestAgentTransportBounded(reader io.Reader, limit int64, operation guestagent.Operation, field, action string) ([]byte, error) {
+	if reader == nil {
+		return nil, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, guestAgentTransportProtocolError(guestagent.ErrorCodeTransportFailure, operation, field, fmt.Errorf("%s failed", action))
+	}
+	if int64(len(data)) > limit {
+		return nil, guestAgentTransportProtocolError(guestagent.ErrorCodeOversizedPayloadMetadata, operation, field, errors.New("payload exceeds configured byte limit"))
+	}
+	return data, nil
+}
+
+func validateGuestAgentTransportHostPath(operation guestagent.Operation, field, value string) (string, error) {
+	path := strings.TrimSpace(value)
+	if path == "" {
+		return "", guestAgentTransportProtocolError(guestagent.ErrorCodeMissingRequiredField, operation, field, errors.New("host path is required"))
+	}
+	if !utf8.ValidString(path) ||
+		containsGuestAgentTransportControl(path) ||
+		strings.Contains(path, "://") ||
+		strings.Contains(path, "\\") ||
+		!filepath.IsAbs(path) ||
+		path == string(filepath.Separator) ||
+		filepath.Clean(path) != path ||
+		containsGuestAgentTransportParentSegment(path) {
+		return "", guestAgentTransportProtocolError(guestagent.ErrorCodeMalformedPath, operation, field, errors.New("host path is unsafe"))
+	}
+	return path, nil
+}
+
+func containsGuestAgentTransportParentSegment(path string) bool {
+	for _, segment := range strings.Split(path, string(filepath.Separator)) {
+		if segment == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+func containsGuestAgentTransportControl(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+func guestAgentTransportPayloadFromBytes(data []byte, limit int64) guestagent.PayloadMetadata {
+	sum := sha256.Sum256(data)
+	return guestagent.PayloadMetadata{
+		SizeBytes: int64(len(data)),
+		MaxBytes:  limit,
+		Digest:    "sha256:" + hex.EncodeToString(sum[:]),
+		Encoding:  guestagent.PayloadEncodingBase64,
+		Data:      base64.StdEncoding.EncodeToString(data),
+	}
+}
+
+func decodeGuestAgentTransportPayload(operation guestagent.Operation, field string, payload guestagent.PayloadMetadata, limit int64) ([]byte, error) {
+	if payload.Encoding != guestagent.PayloadEncodingBase64 {
+		return nil, guestAgentTransportProtocolError(guestagent.ErrorCodeInvalidMetadata, operation, field+".encoding", errors.New("guest agent payload encoding is unsupported"))
+	}
+	if payload.Data == "" && payload.SizeBytes > 0 {
+		return nil, guestAgentTransportProtocolError(guestagent.ErrorCodeInvalidMetadata, operation, field+".data", errors.New("guest agent payload data is missing"))
+	}
+	data, err := base64.StdEncoding.DecodeString(payload.Data)
+	if err != nil {
+		return nil, guestAgentTransportProtocolError(guestagent.ErrorCodeInvalidMetadata, operation, field+".data", errors.New("guest agent payload data is malformed"))
+	}
+	if int64(len(data)) != payload.SizeBytes {
+		return nil, guestAgentTransportProtocolError(guestagent.ErrorCodeInvalidMetadata, operation, field+".sizeBytes", errors.New("guest agent payload size mismatch"))
+	}
+	if int64(len(data)) > limit {
+		return nil, guestAgentTransportProtocolError(guestagent.ErrorCodeOversizedPayloadMetadata, operation, field, errors.New("guest agent payload exceeds configured limit"))
+	}
+	if payload.Digest != "" && !strings.EqualFold(payload.Digest, guestAgentTransportDigest(data)) {
+		return nil, guestAgentTransportProtocolError(guestagent.ErrorCodeInvalidMetadata, operation, field+".digest", errors.New("guest agent payload digest mismatch"))
+	}
+	return data, nil
+}
+
+func decodeGuestAgentTransportStream(operation guestagent.Operation, field string, stream guestagent.StreamMetadata) ([]byte, error) {
+	switch stream.Encoding {
+	case "", guestagent.PayloadEncodingRaw:
+		return []byte(stream.Data), nil
+	case guestagent.PayloadEncodingBase64:
+		data, err := base64.StdEncoding.DecodeString(stream.Data)
+		if err != nil {
+			return nil, guestAgentTransportProtocolError(guestagent.ErrorCodeInvalidMetadata, operation, field+".data", errors.New("guest agent stream data is malformed"))
+		}
+		return data, nil
+	default:
+		return nil, guestAgentTransportProtocolError(guestagent.ErrorCodeInvalidMetadata, operation, field+".encoding", errors.New("guest agent stream encoding is unsupported"))
+	}
+}
+
+func guestAgentTransportDigest(data []byte) string {
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
 func validateGuestAgentTransportStreamLimit(operation guestagent.Operation, field string, metadata guestagent.StreamMetadata, limit int64) error {
-	if metadata.MaxBytes > limit || metadata.SizeBytes > limit || int64(len(metadata.Data)) > limit {
+	dataSize := int64(0)
+	if metadata.Data != "" {
+		data, err := decodeGuestAgentTransportStream(operation, field, metadata)
+		if err != nil {
+			return err
+		}
+		dataSize = int64(len(data))
+	}
+	if metadata.MaxBytes > limit || metadata.SizeBytes > limit || dataSize > limit {
 		return guestAgentTransportProtocolError(guestagent.ErrorCodeOversizedPayloadMetadata, operation, field, errors.New("guest agent stream exceeds configured limit"))
 	}
 	return nil
@@ -266,12 +452,73 @@ func validateGuestAgentTransportPayloadLimit(operation guestagent.Operation, fie
 	return nil
 }
 
-func writeGuestAgentTransportOutput(writer io.Writer, stream, data string) error {
-	if writer == nil || data == "" {
+func writeGuestAgentTransportOutput(writer io.Writer, stream string, metadata guestagent.StreamMetadata) error {
+	if writer == nil || metadata.Data == "" {
 		return nil
 	}
-	if _, err := io.WriteString(writer, data); err != nil {
+	data, err := decodeGuestAgentTransportStream(guestagent.OperationExec, stream, metadata)
+	if err != nil {
+		return err
+	}
+	if _, err := writer.Write(data); err != nil {
 		return fmt.Errorf("write exec %s: %w", stream, err)
+	}
+	return nil
+}
+
+func writeGuestAgentTransportCopyOutDestination(destinationPath string, data []byte) error {
+	if err := validateGuestAgentTransportCopyOutDestination(destinationPath); err != nil {
+		return err
+	}
+	destinationDir := filepath.Dir(destinationPath)
+	tmp, err := os.CreateTemp(destinationDir, "."+filepath.Base(destinationPath)+".tmp-*")
+	if err != nil {
+		return guestAgentTransportProtocolError(guestagent.ErrorCodeTransportFailure, guestagent.OperationCopyOut, "destinationPath", errors.New("prepare copy_out destination"))
+	}
+	tmpPath := tmp.Name()
+	removeTmp := true
+	defer func() {
+		if removeTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return guestAgentTransportProtocolError(guestagent.ErrorCodeTransportFailure, guestagent.OperationCopyOut, "destinationPath", fmt.Errorf("write copy_out destination: %w", err))
+	}
+	if err := tmp.Close(); err != nil {
+		return guestAgentTransportProtocolError(guestagent.ErrorCodeTransportFailure, guestagent.OperationCopyOut, "destinationPath", fmt.Errorf("write copy_out destination: %w", err))
+	}
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		return guestAgentTransportProtocolError(guestagent.ErrorCodeTransportFailure, guestagent.OperationCopyOut, "destinationPath", errors.New("write copy_out destination"))
+	}
+	if err := os.Rename(tmpPath, destinationPath); err != nil {
+		return guestAgentTransportProtocolError(guestagent.ErrorCodeTransportFailure, guestagent.OperationCopyOut, "destinationPath", errors.New("write copy_out destination"))
+	}
+	removeTmp = false
+	return nil
+}
+
+func validateGuestAgentTransportCopyOutDestination(destinationPath string) error {
+	destinationDir := filepath.Dir(destinationPath)
+	if info, err := os.Lstat(destinationDir); err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return guestAgentTransportProtocolError(guestagent.ErrorCodeMalformedPath, guestagent.OperationCopyOut, "destinationPath", errors.New("copy_out destination directory is unsafe"))
+		}
+	} else if os.IsNotExist(err) {
+		if err := os.MkdirAll(destinationDir, 0o700); err != nil {
+			return guestAgentTransportProtocolError(guestagent.ErrorCodeTransportFailure, guestagent.OperationCopyOut, "destinationPath", errors.New("prepare copy_out destination"))
+		}
+	} else {
+		return guestAgentTransportProtocolError(guestagent.ErrorCodeTransportFailure, guestagent.OperationCopyOut, "destinationPath", errors.New("prepare copy_out destination"))
+	}
+	if info, err := os.Lstat(destinationPath); err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return guestAgentTransportProtocolError(guestagent.ErrorCodeMalformedPath, guestagent.OperationCopyOut, "destinationPath", errors.New("copy_out destination is unsafe"))
+		}
+	} else if !os.IsNotExist(err) {
+		return guestAgentTransportProtocolError(guestagent.ErrorCodeTransportFailure, guestagent.OperationCopyOut, "destinationPath", errors.New("prepare copy_out destination"))
 	}
 	return nil
 }

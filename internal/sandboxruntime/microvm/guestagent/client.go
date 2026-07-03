@@ -127,7 +127,7 @@ func (client *Client) CopyIn(ctx context.Context, request CopyInRequest) (*CopyI
 	return &response, nil
 }
 
-// CopyOut asks the guest agent to produce bounded payload metadata from a guest
+// CopyOut asks the guest agent to produce bounded payload content from a guest
 // path.
 func (client *Client) CopyOut(ctx context.Context, request CopyOutRequest) (*CopyOutResponse, error) {
 	request.ProtocolVersion = ProtocolVersionV1

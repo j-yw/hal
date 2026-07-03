@@ -69,7 +69,7 @@ func TestProtocolDTOJSONShapes(t *testing.T) {
 			{Name: "GITHUB_TOKEN", Source: EnvironmentSourceSecret},
 		},
 		WorkDir: "/workspace/project",
-		Stdin:   &StreamMetadata{SizeBytes: 7, MaxBytes: 1024},
+		Stdin:   &StreamMetadata{SizeBytes: 5, MaxBytes: 1024, Data: "c3RkaW4=", Encoding: PayloadEncodingBase64},
 		Stdout:  StreamMetadata{MaxBytes: 2048},
 		Stderr:  StreamMetadata{MaxBytes: 2048},
 		Timing:  &TimingMetadata{DeadlineUnixMillis: 1893456000000},
@@ -77,7 +77,7 @@ func TestProtocolDTOJSONShapes(t *testing.T) {
 	assertExactObjectKeys(t, execRequest, []string{
 		"protocolVersion", "operation", "args", "env", "workDir", "stdin", "stdout", "stderr", "timing",
 	})
-	assertNestedObjectKeys(t, execRequest, "stdin", []string{"sizeBytes", "maxBytes"})
+	assertNestedObjectKeys(t, execRequest, "stdin", []string{"sizeBytes", "maxBytes", "data", "encoding"})
 	assertNestedObjectKeys(t, execRequest, "stdout", []string{"maxBytes"})
 	assertNestedObjectKeys(t, execRequest, "stderr", []string{"maxBytes"})
 	assertNestedObjectKeys(t, execRequest, "timing", []string{"deadlineUnixMillis"})
@@ -107,12 +107,13 @@ func TestProtocolDTOJSONShapes(t *testing.T) {
 			SizeBytes: 12,
 			MaxBytes:  1024,
 			Digest:    "sha256:abc123",
-			Encoding:  PayloadEncodingRaw,
+			Encoding:  PayloadEncodingBase64,
+			Data:      "Y29weSBwYXlsb2Fk",
 		},
 		Timing: &TimingMetadata{TimeoutMillis: 1000},
 	})
 	assertExactObjectKeys(t, copyInRequest, []string{"protocolVersion", "operation", "destinationPath", "payload", "timing"})
-	assertNestedObjectKeys(t, copyInRequest, "payload", []string{"sizeBytes", "maxBytes", "digest", "encoding"})
+	assertNestedObjectKeys(t, copyInRequest, "payload", []string{"sizeBytes", "maxBytes", "digest", "encoding", "data"})
 
 	copyInResponse := mustMarshalObject(t, CopyInResponse{
 		ProtocolVersion: ProtocolVersionV1,
@@ -132,9 +133,10 @@ func TestProtocolDTOJSONShapes(t *testing.T) {
 	copyOutResponse := mustMarshalObject(t, CopyOutResponse{
 		ProtocolVersion: ProtocolVersionV1,
 		Operation:       OperationCopyOut,
-		Payload:         PayloadMetadata{SizeBytes: 12, MaxBytes: 1024, Encoding: PayloadEncodingBase64},
+		Payload:         PayloadMetadata{SizeBytes: 12, MaxBytes: 1024, Encoding: PayloadEncodingBase64, Data: "Y29weSBwYXlsb2Fk"},
 	})
 	assertExactObjectKeys(t, copyOutResponse, []string{"protocolVersion", "operation", "payload"})
+	assertNestedObjectKeys(t, copyOutResponse, "payload", []string{"sizeBytes", "maxBytes", "encoding", "data"})
 }
 
 func TestProtocolDTOsDoNotCarryRawEnvironmentValues(t *testing.T) {

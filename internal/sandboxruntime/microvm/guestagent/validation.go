@@ -1,6 +1,7 @@
 package guestagent
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -37,10 +38,10 @@ func ValidateExecRequest(request ExecRequest) error {
 		return err
 	}
 	if request.Stdin != nil {
-		if request.Stdin.Data != "" {
-			return newValidationError(ErrorCodeInvalidMetadata, request.Operation, "stdin.data", "stream data is not accepted in request metadata")
-		}
 		if err := validateStreamMetadata(request.Operation, "stdin", *request.Stdin, true); err != nil {
+			return err
+		}
+		if err := validateRequiredBase64StreamData(request.Operation, "stdin", *request.Stdin); err != nil {
 			return err
 		}
 	}
@@ -82,6 +83,12 @@ func ValidateCopyInRequest(request CopyInRequest) error {
 	if err := validatePayloadMetadata(request.Operation, "payload", request.Payload, true); err != nil {
 		return err
 	}
+	if err := validatePayloadBase64Encoding(request.Operation, "payload", request.Payload); err != nil {
+		return err
+	}
+	if err := validateRequiredPayloadData(request.Operation, "payload", request.Payload); err != nil {
+		return err
+	}
 	return validateTiming(request.Operation, request.Timing)
 }
 
@@ -89,7 +96,10 @@ func ValidateCopyInResponse(response CopyInResponse) error {
 	if err := validateHeader(response.ProtocolVersion, response.Operation, OperationCopyIn); err != nil {
 		return err
 	}
-	return validatePayloadMetadata(response.Operation, "written", response.Written, true)
+	if err := validatePayloadMetadata(response.Operation, "written", response.Written, true); err != nil {
+		return err
+	}
+	return validateNoPayloadData(response.Operation, "written", response.Written)
 }
 
 func ValidateCopyOutRequest(request CopyOutRequest) error {
@@ -102,6 +112,12 @@ func ValidateCopyOutRequest(request CopyOutRequest) error {
 	if err := validatePayloadMetadata(request.Operation, "payload", request.Payload, true); err != nil {
 		return err
 	}
+	if err := validatePayloadBase64Encoding(request.Operation, "payload", request.Payload); err != nil {
+		return err
+	}
+	if err := validateNoPayloadData(request.Operation, "payload", request.Payload); err != nil {
+		return err
+	}
 	return validateTiming(request.Operation, request.Timing)
 }
 
@@ -109,7 +125,13 @@ func ValidateCopyOutResponse(response CopyOutResponse) error {
 	if err := validateHeader(response.ProtocolVersion, response.Operation, OperationCopyOut); err != nil {
 		return err
 	}
-	return validatePayloadMetadata(response.Operation, "payload", response.Payload, true)
+	if err := validatePayloadMetadata(response.Operation, "payload", response.Payload, true); err != nil {
+		return err
+	}
+	if err := validatePayloadBase64Encoding(response.Operation, "payload", response.Payload); err != nil {
+		return err
+	}
+	return validateRequiredPayloadData(response.Operation, "payload", response.Payload)
 }
 
 func validateHeader(version ProtocolVersion, operation Operation, want Operation) error {
@@ -275,19 +297,10 @@ func validateStreamMetadata(operation Operation, field string, metadata StreamMe
 		return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, field+".sizeBytes", "stream size exceeds declared limit")
 	}
 	if metadata.Data != "" {
-		if !utf8.ValidString(metadata.Data) {
-			return newValidationError(ErrorCodeInvalidMetadata, operation, field+".data", "stream data contains invalid characters")
-		}
-		dataBytes := int64(len(metadata.Data))
-		if dataBytes > MaxStreamMetadataBytes {
-			return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, field+".data", "stream data exceeds protocol limit")
-		}
-		if metadata.MaxBytes > 0 && dataBytes > metadata.MaxBytes {
-			return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, field+".data", "stream data exceeds declared limit")
-		}
-		if metadata.SizeBytes > 0 && dataBytes > metadata.SizeBytes {
-			return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, field+".data", "stream data exceeds declared size")
-		}
+		return validateEncodedData(operation, field, metadata.Data, metadata.Encoding, metadata.SizeBytes, metadata.MaxBytes, MaxStreamMetadataBytes, "stream")
+	}
+	if metadata.Encoding != "" && !validPayloadEncoding(metadata.Encoding) {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, field+".encoding", "stream encoding is unsupported")
 	}
 	return nil
 }
@@ -314,7 +327,89 @@ func validatePayloadMetadata(operation Operation, field string, metadata Payload
 	if metadata.Encoding != "" && !validPayloadEncoding(metadata.Encoding) {
 		return newValidationError(ErrorCodeInvalidMetadata, operation, field+".encoding", "payload encoding is unsupported")
 	}
+	if metadata.Data != "" {
+		if metadata.Encoding != PayloadEncodingBase64 {
+			return newValidationError(ErrorCodeInvalidMetadata, operation, field+".encoding", "payload data must be base64 encoded")
+		}
+		return validateEncodedData(operation, field, metadata.Data, metadata.Encoding, metadata.SizeBytes, metadata.MaxBytes, MaxCopyPayloadMetadataBytes, "payload")
+	}
 	return nil
+}
+
+func validateRequiredBase64StreamData(operation Operation, field string, metadata StreamMetadata) error {
+	if metadata.Data == "" && metadata.SizeBytes > 0 {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, field+".data", "stream data is required for declared content")
+	}
+	if metadata.Data != "" && metadata.Encoding != PayloadEncodingBase64 {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, field+".encoding", "stream data must be base64 encoded")
+	}
+	return nil
+}
+
+func validatePayloadBase64Encoding(operation Operation, field string, metadata PayloadMetadata) error {
+	if metadata.Encoding != PayloadEncodingBase64 {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, field+".encoding", "payload encoding must be base64")
+	}
+	return nil
+}
+
+func validateRequiredPayloadData(operation Operation, field string, metadata PayloadMetadata) error {
+	if metadata.Data == "" && metadata.SizeBytes > 0 {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, field+".data", "payload data is required for declared content")
+	}
+	return nil
+}
+
+func validateNoPayloadData(operation Operation, field string, metadata PayloadMetadata) error {
+	if metadata.Data != "" {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, field+".data", "payload data is not accepted for this message")
+	}
+	return nil
+}
+
+func validateEncodedData(operation Operation, field, data string, encoding PayloadEncoding, sizeBytes, maxBytes, maximumBytes int64, kind string) error {
+	if !utf8.ValidString(data) {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, field+".data", kind+" data contains invalid characters")
+	}
+	decodedSize := int64(len(data))
+	switch PayloadEncoding(strings.TrimSpace(string(encoding))) {
+	case "", PayloadEncodingRaw:
+	case PayloadEncodingBase64:
+		if len(data) > maxBase64EncodedPayloadLength(maxBytes, maximumBytes) {
+			return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, field+".data", kind+" data exceeds encoded limit")
+		}
+		decoded, err := base64.StdEncoding.DecodeString(data)
+		if err != nil {
+			return newValidationError(ErrorCodeInvalidMetadata, operation, field+".data", kind+" data is not valid base64")
+		}
+		decodedSize = int64(len(decoded))
+	default:
+		return newValidationError(ErrorCodeInvalidMetadata, operation, field+".encoding", kind+" data encoding is unsupported")
+	}
+	if decodedSize > maximumBytes {
+		return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, field+".data", kind+" data exceeds protocol limit")
+	}
+	if maxBytes > 0 && decodedSize > maxBytes {
+		return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, field+".data", kind+" data exceeds declared limit")
+	}
+	if sizeBytes > 0 && decodedSize != sizeBytes {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, field+".sizeBytes", kind+" size does not match decoded data")
+	}
+	if sizeBytes == 0 && decodedSize > 0 && encoding == PayloadEncodingBase64 {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, field+".sizeBytes", kind+" size is required for encoded data")
+	}
+	return nil
+}
+
+func maxBase64EncodedPayloadLength(limitBytes, maximumBytes int64) int {
+	if limitBytes <= 0 || limitBytes > maximumBytes {
+		limitBytes = maximumBytes
+	}
+	maxInt := int(^uint(0) >> 1)
+	if limitBytes > int64(maxInt/4*3) {
+		return maxInt
+	}
+	return base64.StdEncoding.EncodedLen(int(limitBytes))
 }
 
 func validPayloadDigest(digest string) bool {

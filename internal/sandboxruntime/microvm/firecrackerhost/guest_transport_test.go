@@ -3,8 +3,11 @@ package firecrackerhost
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -89,8 +92,15 @@ func TestGuestAgentTransportExecDelegatesBoundedProtocolRequestAndPropagatesOutp
 	if got.WorkDir != "/workspace/project" {
 		t.Fatalf("workDir = %q, want guest workdir", got.WorkDir)
 	}
-	if got.Stdin == nil || got.Stdin.MaxBytes != 8 {
-		t.Fatalf("stdin metadata = %#v, want bounded stdin metadata", got.Stdin)
+	if got.Stdin == nil || got.Stdin.MaxBytes != 8 || got.Stdin.SizeBytes != 5 || got.Stdin.Encoding != guestagent.PayloadEncodingBase64 {
+		t.Fatalf("stdin metadata = %#v, want bounded base64 stdin payload", got.Stdin)
+	}
+	stdin, err := base64.StdEncoding.DecodeString(got.Stdin.Data)
+	if err != nil {
+		t.Fatalf("stdin payload is not base64: %v", err)
+	}
+	if string(stdin) != "stdin" {
+		t.Fatalf("stdin payload = %q, want request stdin bytes", string(stdin))
 	}
 	if got.Stdout.MaxBytes != 32 || got.Stderr.MaxBytes != 16 {
 		t.Fatalf("output limits = stdout %d stderr %d, want configured limits", got.Stdout.MaxBytes, got.Stderr.MaxBytes)
@@ -107,12 +117,17 @@ func TestGuestAgentTransportExecDelegatesBoundedProtocolRequestAndPropagatesOutp
 	}
 }
 
-func TestGuestAgentTransportCopyInDelegatesGuestDestinationOnly(t *testing.T) {
+func TestGuestAgentTransportCopyInSendsBoundedHostSourceBytes(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "input.txt")
+	payload := []byte("copy-in payload\n")
+	if err := os.WriteFile(sourcePath, payload, 0o600); err != nil {
+		t.Fatalf("WriteFile(source) error: %v", err)
+	}
 	client := &recordingGuestAgentClient{
 		copyInResponse: &guestagent.CopyInResponse{
 			ProtocolVersion: guestagent.ProtocolVersionV1,
 			Operation:       guestagent.OperationCopyIn,
-			Written:         guestagent.PayloadMetadata{SizeBytes: 12, MaxBytes: 64, Encoding: guestagent.PayloadEncodingRaw},
+			Written:         guestagent.PayloadMetadata{SizeBytes: int64(len(payload)), MaxBytes: 64, Digest: guestAgentTransportDigest(payload), Encoding: guestagent.PayloadEncodingBase64},
 		},
 	}
 	transport := NewGuestAgentTransport(GuestAgentTransportOptions{
@@ -122,7 +137,7 @@ func TestGuestAgentTransportCopyInDelegatesGuestDestinationOnly(t *testing.T) {
 
 	err := transport.CopyIn(context.Background(), firecracker.GuestCopyRequest{
 		Target:          sandboxruntime.Target{ID: "fc-alpha"},
-		SourcePath:      "/Users/alice/private/input-token-ghp_secret.txt",
+		SourcePath:      sourcePath,
 		DestinationPath: "/workspace/input.txt",
 	})
 	if err != nil {
@@ -138,17 +153,26 @@ func TestGuestAgentTransportCopyInDelegatesGuestDestinationOnly(t *testing.T) {
 	if got.DestinationPath != "/workspace/input.txt" {
 		t.Fatalf("copy_in destination = %q, want guest destination", got.DestinationPath)
 	}
-	if got.Payload.MaxBytes != 64 || got.Payload.Encoding != guestagent.PayloadEncodingRaw {
-		t.Fatalf("copy_in payload metadata = %#v, want configured raw payload limit", got.Payload)
+	if got.Payload.MaxBytes != 64 || got.Payload.SizeBytes != int64(len(payload)) || got.Payload.Encoding != guestagent.PayloadEncodingBase64 || got.Payload.Digest != guestAgentTransportDigest(payload) {
+		t.Fatalf("copy_in payload metadata = %#v, want configured base64 payload", got.Payload)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(got.Payload.Data)
+	if err != nil {
+		t.Fatalf("copy_in payload data is not base64: %v", err)
+	}
+	if !bytes.Equal(decoded, payload) {
+		t.Fatalf("copy_in payload = %q, want host source bytes", string(decoded))
 	}
 }
 
-func TestGuestAgentTransportCopyOutDelegatesGuestSourceOnly(t *testing.T) {
+func TestGuestAgentTransportCopyOutWritesBoundedGuestPayloadBytes(t *testing.T) {
+	destinationPath := filepath.Join(t.TempDir(), "nested", "output.txt")
+	payload := []byte("copy-out payload\n")
 	client := &recordingGuestAgentClient{
 		copyOutResponse: &guestagent.CopyOutResponse{
 			ProtocolVersion: guestagent.ProtocolVersionV1,
 			Operation:       guestagent.OperationCopyOut,
-			Payload:         guestagent.PayloadMetadata{SizeBytes: 18, MaxBytes: 96, Encoding: guestagent.PayloadEncodingRaw},
+			Payload:         guestAgentTransportPayloadFromBytes(payload, 96),
 		},
 	}
 	transport := NewGuestAgentTransport(GuestAgentTransportOptions{
@@ -159,7 +183,7 @@ func TestGuestAgentTransportCopyOutDelegatesGuestSourceOnly(t *testing.T) {
 	err := transport.CopyOut(context.Background(), firecracker.GuestCopyRequest{
 		Target:          sandboxruntime.Target{ID: "fc-alpha"},
 		SourcePath:      "/workspace/output.txt",
-		DestinationPath: "/Users/alice/private/output-token-ghp_secret.txt",
+		DestinationPath: destinationPath,
 	})
 	if err != nil {
 		t.Fatalf("CopyOut() error = %v, want nil", err)
@@ -174,8 +198,15 @@ func TestGuestAgentTransportCopyOutDelegatesGuestSourceOnly(t *testing.T) {
 	if got.SourcePath != "/workspace/output.txt" {
 		t.Fatalf("copy_out source = %q, want guest source", got.SourcePath)
 	}
-	if got.Payload.MaxBytes != 96 || got.Payload.Encoding != guestagent.PayloadEncodingRaw {
-		t.Fatalf("copy_out payload metadata = %#v, want configured raw payload limit", got.Payload)
+	if got.Payload.MaxBytes != 96 || got.Payload.Encoding != guestagent.PayloadEncodingBase64 || got.Payload.Data != "" {
+		t.Fatalf("copy_out payload metadata = %#v, want configured base64 payload request without data", got.Payload)
+	}
+	written, err := os.ReadFile(destinationPath)
+	if err != nil {
+		t.Fatalf("ReadFile(copy_out destination) error: %v", err)
+	}
+	if !bytes.Equal(written, payload) {
+		t.Fatalf("copy_out destination = %q, want guest payload bytes", string(written))
 	}
 }
 
@@ -206,6 +237,111 @@ func TestGuestAgentTransportExecRejectsOutputAboveConfiguredLimitsBeforeWriting(
 	if stdout.String() != "" {
 		t.Fatalf("stdout = %q, want no data written after limit violation", stdout.String())
 	}
+}
+
+func TestGuestAgentTransportExecRejectsOversizedStdinBeforeDispatch(t *testing.T) {
+	client := validRecordingGuestAgentClient()
+	transport := NewGuestAgentTransport(GuestAgentTransportOptions{
+		Client:              client,
+		ExecStdinLimitBytes: 8,
+	})
+	req := validGuestAgentTransportExecRequest()
+	req.Stdin = strings.NewReader("123456789")
+
+	result, err := transport.Exec(context.Background(), req)
+	if result != nil {
+		t.Fatalf("Exec() result = %#v, want nil before dispatch", result)
+	}
+	requireGuestAgentProtocolErrorCode(t, err, guestagent.ErrorCodeOversizedPayloadMetadata)
+	if client.execCalls != 0 {
+		t.Fatalf("guest-agent Exec calls = %d, want no dispatch for oversized stdin", client.execCalls)
+	}
+	assertGuestAgentTransportErrorDoesNotLeak(t, err, "123456789")
+}
+
+func TestGuestAgentTransportCopyInRejectsUnsafeOrOversizedSourceBeforeDispatch(t *testing.T) {
+	tempDir := t.TempDir()
+	missingPath := filepath.Join(tempDir, "missing-token-ghp_secret.txt")
+	directoryPath := filepath.Join(tempDir, "directory")
+	if err := os.Mkdir(directoryPath, 0o700); err != nil {
+		t.Fatalf("Mkdir(directory) error: %v", err)
+	}
+	oversizedPath := filepath.Join(tempDir, "oversized.txt")
+	if err := os.WriteFile(oversizedPath, []byte("123456789"), 0o600); err != nil {
+		t.Fatalf("WriteFile(oversized) error: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		sourcePath string
+		wantCode   guestagent.ErrorCode
+	}{
+		{name: "missing", sourcePath: missingPath, wantCode: guestagent.ErrorCodeMalformedPath},
+		{name: "directory", sourcePath: directoryPath, wantCode: guestagent.ErrorCodeMalformedPath},
+		{name: "too large", sourcePath: oversizedPath, wantCode: guestagent.ErrorCodeOversizedPayloadMetadata},
+		{name: "relative", sourcePath: "relative/token-ghp_secret.txt", wantCode: guestagent.ErrorCodeMalformedPath},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := validRecordingGuestAgentClient()
+			transport := NewGuestAgentTransport(GuestAgentTransportOptions{
+				Client:                  client,
+				CopyInPayloadLimitBytes: 8,
+			})
+			err := transport.CopyIn(context.Background(), firecracker.GuestCopyRequest{
+				SourcePath:      tt.sourcePath,
+				DestinationPath: "/workspace/input.txt",
+			})
+			requireGuestAgentProtocolErrorCode(t, err, tt.wantCode)
+			if client.copyInCalls != 0 {
+				t.Fatalf("guest-agent CopyIn calls = %d, want no dispatch for invalid source", client.copyInCalls)
+			}
+			assertGuestAgentTransportErrorDoesNotLeak(t, err, tt.sourcePath, "ghp_secret", "123456789")
+		})
+	}
+}
+
+func TestGuestAgentTransportCopyOutRejectsUnsafeDestinationBeforeDispatch(t *testing.T) {
+	client := validRecordingGuestAgentClient()
+	transport := NewGuestAgentTransport(GuestAgentTransportOptions{Client: client})
+
+	err := transport.CopyOut(context.Background(), firecracker.GuestCopyRequest{
+		SourcePath:      "/workspace/output.txt",
+		DestinationPath: "relative/output-token-ghp_secret.txt",
+	})
+	requireGuestAgentProtocolErrorCode(t, err, guestagent.ErrorCodeMalformedPath)
+	if client.copyOutCalls != 0 {
+		t.Fatalf("guest-agent CopyOut calls = %d, want no dispatch for unsafe destination", client.copyOutCalls)
+	}
+	assertGuestAgentTransportErrorDoesNotLeak(t, err, "relative/output-token-ghp_secret.txt", "ghp_secret")
+}
+
+func TestGuestAgentTransportCopyOutRejectsMalformedPayloadBeforeWritingDestination(t *testing.T) {
+	destinationPath := filepath.Join(t.TempDir(), "output-token-ghp_secret.txt")
+	client := validRecordingGuestAgentClient()
+	client.copyOutResponse = &guestagent.CopyOutResponse{
+		ProtocolVersion: guestagent.ProtocolVersionV1,
+		Operation:       guestagent.OperationCopyOut,
+		Payload:         guestagent.PayloadMetadata{SizeBytes: 4, MaxBytes: 64, Encoding: guestagent.PayloadEncodingBase64},
+	}
+	transport := NewGuestAgentTransport(GuestAgentTransportOptions{
+		Client:                   client,
+		CopyOutPayloadLimitBytes: 64,
+	})
+
+	err := transport.CopyOut(context.Background(), firecracker.GuestCopyRequest{
+		SourcePath:      "/workspace/output.txt",
+		DestinationPath: destinationPath,
+	})
+	requireGuestAgentProtocolErrorCode(t, err, guestagent.ErrorCodeInvalidMetadata)
+	if client.copyOutCalls != 1 {
+		t.Fatalf("guest-agent CopyOut calls = %d, want one dispatch before malformed response", client.copyOutCalls)
+	}
+	if _, statErr := os.Stat(destinationPath); !os.IsNotExist(statErr) {
+		t.Fatalf("copy_out destination stat error = %v, want no destination written", statErr)
+	}
+	assertGuestAgentTransportErrorDoesNotLeak(t, err, destinationPath, "ghp_secret")
 }
 
 func TestGuestAgentTransportRejectsMalformedGuestPathsBeforeDispatch(t *testing.T) {
@@ -342,7 +478,7 @@ func validRecordingGuestAgentClient() *recordingGuestAgentClient {
 		copyOutResponse: &guestagent.CopyOutResponse{
 			ProtocolVersion: guestagent.ProtocolVersionV1,
 			Operation:       guestagent.OperationCopyOut,
-			Payload:         guestagent.PayloadMetadata{MaxBytes: DefaultGuestAgentCopyPayloadLimitBytes, Encoding: guestagent.PayloadEncodingRaw},
+			Payload:         guestagent.PayloadMetadata{MaxBytes: DefaultGuestAgentCopyPayloadLimitBytes, Encoding: guestagent.PayloadEncodingBase64},
 		},
 	}
 }

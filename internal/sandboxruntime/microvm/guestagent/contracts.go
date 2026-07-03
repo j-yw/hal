@@ -89,19 +89,22 @@ type TimingMetadata struct {
 // StreamMetadata describes bounded command I/O. Data is optional bounded
 // stream content used only when a protocol operation returns captured output.
 type StreamMetadata struct {
-	SizeBytes int64  `json:"sizeBytes,omitempty"`
-	MaxBytes  int64  `json:"maxBytes,omitempty"`
-	Truncated bool   `json:"truncated,omitempty"`
-	Data      string `json:"data,omitempty"`
+	SizeBytes int64           `json:"sizeBytes,omitempty"`
+	MaxBytes  int64           `json:"maxBytes,omitempty"`
+	Truncated bool            `json:"truncated,omitempty"`
+	Data      string          `json:"data,omitempty"`
+	Encoding  PayloadEncoding `json:"encoding,omitempty"`
 }
 
-// PayloadMetadata describes a bounded copy payload without carrying payload
-// bytes or host-local paths.
+// PayloadMetadata describes a bounded copy payload without carrying host-local
+// paths. Data, when present, is encoded according to Encoding for JSON wire
+// safety; SizeBytes always describes decoded payload bytes.
 type PayloadMetadata struct {
 	SizeBytes int64           `json:"sizeBytes,omitempty"`
 	MaxBytes  int64           `json:"maxBytes,omitempty"`
 	Digest    string          `json:"digest,omitempty"`
 	Encoding  PayloadEncoding `json:"encoding,omitempty"`
+	Data      string          `json:"data,omitempty"`
 }
 
 // EnvironmentEntry describes an environment variable by name and source only.

@@ -2,6 +2,7 @@ package guestagent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,6 +45,9 @@ func TestClientUsesFakeTransportForReadinessExecAndCopyRequests(t *testing.T) {
 				if decoded.WorkDir != "/workspace/project" || decoded.Stdout.MaxBytes != 1024 || decoded.Stderr.MaxBytes != 1024 {
 					t.Fatalf("exec request = %#v, want bounded metadata", decoded)
 				}
+				if decoded.Stdin == nil || decoded.Stdin.Encoding != PayloadEncodingBase64 || decoded.Stdin.Data == "" {
+					t.Fatalf("exec stdin = %#v, want bounded base64 content", decoded.Stdin)
+				}
 				return encodeClientResponse(t, ExecResponse{
 					ProtocolVersion: ProtocolVersionV1,
 					Operation:       OperationExec,
@@ -54,13 +58,13 @@ func TestClientUsesFakeTransportForReadinessExecAndCopyRequests(t *testing.T) {
 			case OperationCopyIn:
 				var decoded CopyInRequest
 				decodeClientRequest(t, request.Encoded, &decoded)
-				if decoded.DestinationPath != "/workspace/input.txt" || decoded.Payload.SizeBytes != 12 {
-					t.Fatalf("copy_in request = %#v, want guest destination and payload metadata", decoded)
+				if decoded.DestinationPath != "/workspace/input.txt" || decoded.Payload.SizeBytes != 12 || decoded.Payload.Data == "" || decoded.Payload.Encoding != PayloadEncodingBase64 {
+					t.Fatalf("copy_in request = %#v, want guest destination and payload content", decoded)
 				}
 				return encodeClientResponse(t, CopyInResponse{
 					ProtocolVersion: ProtocolVersionV1,
 					Operation:       OperationCopyIn,
-					Written:         PayloadMetadata{SizeBytes: 12, MaxBytes: 1024, Encoding: PayloadEncodingRaw},
+					Written:         PayloadMetadata{SizeBytes: 12, MaxBytes: 1024, Encoding: PayloadEncodingBase64},
 				}), nil
 			case OperationCopyOut:
 				var decoded CopyOutRequest
@@ -71,7 +75,7 @@ func TestClientUsesFakeTransportForReadinessExecAndCopyRequests(t *testing.T) {
 				return encodeClientResponse(t, CopyOutResponse{
 					ProtocolVersion: ProtocolVersionV1,
 					Operation:       OperationCopyOut,
-					Payload:         PayloadMetadata{SizeBytes: 18, MaxBytes: 2048, Encoding: PayloadEncodingBase64},
+					Payload:         PayloadMetadata{SizeBytes: 18, MaxBytes: 2048, Encoding: PayloadEncodingBase64, Data: base64.StdEncoding.EncodeToString([]byte("copy-out-payload!!"))},
 				}), nil
 			default:
 				t.Fatalf("unexpected operation %q", request.Operation)
@@ -101,7 +105,7 @@ func TestClientUsesFakeTransportForReadinessExecAndCopyRequests(t *testing.T) {
 
 	copyInResponse, err := client.CopyIn(context.Background(), CopyInRequest{
 		DestinationPath: "/workspace/input.txt",
-		Payload:         PayloadMetadata{SizeBytes: 12, MaxBytes: 1024, Encoding: PayloadEncodingRaw},
+		Payload:         PayloadMetadata{SizeBytes: 12, MaxBytes: 1024, Encoding: PayloadEncodingBase64, Data: base64.StdEncoding.EncodeToString([]byte("copy payload"))},
 	})
 	if err != nil {
 		t.Fatalf("CopyIn() error: %v", err)

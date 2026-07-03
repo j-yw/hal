@@ -10,9 +10,10 @@ boundaries without changing the default lifecycle-only microVM posture.
 protocol contract. The stable protocol version is `guest-agent-v1`, with
 operation identifiers for `readiness`, `exec`, `copy_in`, and `copy_out`.
 Request and response DTOs carry bounded command arguments, environment names
-and safe sources, guest paths, stream metadata, payload metadata, and timeout or
-deadline metadata. Environment values, credential values, host paths, URLs,
-headers, request bodies, and Docker socket details are not protocol fields.
+and safe sources, guest paths, stream metadata, payload metadata, base64 stream
+or copy payload content, and timeout or deadline metadata. Environment values,
+credential values, host paths, URLs, headers, request bodies, and Docker socket
+details are not protocol fields.
 
 The guest-agent client dispatches readiness, exec, copy-in, and copy-out only
 through an injected `guestagent.Transport`. The client enforces encoded request
@@ -24,9 +25,11 @@ socket, or start guest processes.
 `internal/sandboxruntime/microvm/firecrackerhost` owns the Phase 40 host-side
 adapters. `GuestAgentTransport` satisfies the existing
 `firecracker.GuestTransport` interface and translates Firecracker guest exec and
-copy requests into guest-agent protocol requests. Copy-in sends only the guest
-destination path. Copy-out sends only the guest source path. Host-local copy
-paths, raw environment values, and stdin bytes do not cross the protocol
+copy requests into guest-agent protocol requests. Exec stdin, copy-in, and
+copy-out payloads are bounded and base64 encoded on the JSON wire. Copy-in
+sends only the guest destination path plus bounded payload content. Copy-out
+sends only the guest source path and receives bounded payload content.
+Host-local copy paths and raw environment values do not cross the protocol
 boundary.
 
 `GuestAgentReadinessProbe` adapts guest-agent readiness responses onto the

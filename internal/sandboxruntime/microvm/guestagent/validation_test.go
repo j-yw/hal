@@ -58,7 +58,7 @@ func TestValidateProtocolRequestsAndResponsesAcceptValidContracts(t *testing.T) 
 					ProtocolVersion: ProtocolVersionV1,
 					Operation:       OperationCopyIn,
 					DestinationPath: "/workspace/input.txt",
-					Payload:         PayloadMetadata{SizeBytes: 12, MaxBytes: 1024, Digest: "sha256:abc123", Encoding: PayloadEncodingRaw},
+					Payload:         PayloadMetadata{SizeBytes: 12, MaxBytes: 1024, Digest: "sha256:abc123", Encoding: PayloadEncodingBase64, Data: "Y29weSBwYXlsb2Fk"},
 					Timing:          &TimingMetadata{TimeoutMillis: 1000},
 				})
 			},
@@ -90,7 +90,7 @@ func TestValidateProtocolRequestsAndResponsesAcceptValidContracts(t *testing.T) 
 				return ValidateCopyOutResponse(CopyOutResponse{
 					ProtocolVersion: ProtocolVersionV1,
 					Operation:       OperationCopyOut,
-					Payload:         PayloadMetadata{SizeBytes: 12, MaxBytes: 1024, Encoding: PayloadEncodingBase64},
+					Payload:         PayloadMetadata{SizeBytes: 12, MaxBytes: 1024, Encoding: PayloadEncodingBase64, Data: "Y29weSBwYXlsb2Fk"},
 				})
 			},
 		},
@@ -200,10 +200,18 @@ func TestValidateProtocolRequestsRejectInvalidMetadata(t *testing.T) {
 			wantField: "stdout",
 		},
 		{
-			name:      "request stream data",
-			err:       ValidateExecRequest(withExecRequest(func(req *ExecRequest) { req.Stdin.Data = "request-body" })),
+			name:      "metadata only stdin content",
+			err:       ValidateExecRequest(withExecRequest(func(req *ExecRequest) { req.Stdin.Data = "" })),
 			wantCode:  ErrorCodeInvalidMetadata,
 			wantField: "stdin.data",
+		},
+		{
+			name: "raw stdin content",
+			err: ValidateExecRequest(withExecRequest(func(req *ExecRequest) {
+				req.Stdin = &StreamMetadata{SizeBytes: 12, MaxBytes: 1024, Data: "request-body", Encoding: PayloadEncodingRaw}
+			})),
+			wantCode:  ErrorCodeInvalidMetadata,
+			wantField: "stdin.encoding",
 		},
 		{
 			name: "malformed copy path",
@@ -226,6 +234,27 @@ func TestValidateProtocolRequestsRejectInvalidMetadata(t *testing.T) {
 			}),
 			wantCode:  ErrorCodeOversizedPayloadMetadata,
 			wantField: "payload",
+		},
+		{
+			name: "metadata only copy payload content",
+			err: ValidateCopyInRequest(CopyInRequest{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyIn,
+				DestinationPath: "/workspace/input.txt",
+				Payload:         PayloadMetadata{SizeBytes: 1, MaxBytes: 1024, Encoding: PayloadEncodingBase64},
+			}),
+			wantCode:  ErrorCodeInvalidMetadata,
+			wantField: "payload.data",
+		},
+		{
+			name: "malformed copy payload data",
+			err: ValidateCopyOutResponse(CopyOutResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyOut,
+				Payload:         PayloadMetadata{SizeBytes: 1, MaxBytes: 1024, Encoding: PayloadEncodingBase64, Data: "not-base64"},
+			}),
+			wantCode:  ErrorCodeInvalidMetadata,
+			wantField: "payload.data",
 		},
 	}
 
@@ -310,7 +339,7 @@ func validExecRequest() ExecRequest {
 		Args:            []string{"sh", "-lc", "printf ok"},
 		Env:             []EnvironmentEntry{{Name: "HAL_MODE", Source: EnvironmentSourceLiteral}},
 		WorkDir:         "/workspace/project",
-		Stdin:           &StreamMetadata{SizeBytes: 4, MaxBytes: 1024},
+		Stdin:           &StreamMetadata{SizeBytes: 4, MaxBytes: 1024, Data: "c3RkaQ==", Encoding: PayloadEncodingBase64},
 		Stdout:          StreamMetadata{MaxBytes: 1024},
 		Stderr:          StreamMetadata{MaxBytes: 1024},
 		Timing:          &TimingMetadata{TimeoutMillis: 5000},
