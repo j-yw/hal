@@ -421,6 +421,46 @@ const (
 	}
 }
 
+func TestCredentialDeliveryOptionalLiveHarnessGateIsBuildTaggedAndExplicit(t *testing.T) {
+	sourceBytes, err := os.ReadFile("credential_delivery_live_test.go")
+	if err != nil {
+		t.Fatalf("ReadFile(credential_delivery_live_test.go) error: %v", err)
+	}
+	source := string(sourceBytes)
+	for _, marker := range []string{
+		"//go:build credential_delivery_live",
+		"HAL_CREDENTIAL_DELIVERY_LIVE",
+		"HAL_CREDENTIAL_DELIVERY_LIVE_HTTP_PROXY",
+		"HAL_CREDENTIAL_DELIVERY_LIVE_FILE_TMPFS",
+		"HAL_CREDENTIAL_DELIVERY_LIVE_SSH_AGENT",
+		"HAL_CREDENTIAL_DELIVERY_LIVE_ENV",
+		"t.Skip",
+		"credential delivery live harness is an opt-in placeholder",
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("credential delivery optional live harness missing marker %q", marker)
+		}
+	}
+	for _, forbidden := range []string{
+		"//go:build integration",
+		"//go:build worker_integration",
+		"//go:build podman_integration",
+		"//go:build firecracker_live",
+		"//go:build network_enforcement_live",
+		"net.Listen(",
+		"http.ListenAndServe(",
+		"exec.Command(",
+		"os.WriteFile(",
+		"os.Setenv(",
+		"agent.NewClient(",
+		"MountTmpfs(",
+	} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("credential delivery optional live harness contains forbidden marker %q", forbidden)
+		}
+	}
+}
+
 func credentialDeliveryBoundaryFiles(t *testing.T) []string {
 	t.Helper()
 

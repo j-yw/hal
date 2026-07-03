@@ -51,6 +51,23 @@ absent. Existing optional live network-enforcement coverage remains behind
 `HAL_NETWORK_ENFORCEMENT_LIVE_FIREWALL=1`. Those optional checks are not part
 of the Phase 46 default command examples.
 
+Credential delivery live-harness coverage is a placeholder behind the
+`credential_delivery_live` build tag. It is excluded from default Phase 46
+verification and default `go test ./...`. Its prerequisite gate skips unless
+`HAL_CREDENTIAL_DELIVERY_LIVE=1` and at least one mode gate is set:
+`HAL_CREDENTIAL_DELIVERY_LIVE_HTTP_PROXY=1`,
+`HAL_CREDENTIAL_DELIVERY_LIVE_FILE_TMPFS=1`,
+`HAL_CREDENTIAL_DELIVERY_LIVE_SSH_AGENT=1`, or
+`HAL_CREDENTIAL_DELIVERY_LIVE_ENV=1`.
+
+After those opt-ins are present, the current placeholder still skips because no
+live delivery adapter is implemented in this phase.
+
+The credential delivery live harness does not imply production availability,
+secure default mode selection, live credential injection, proxy credential
+injection, tmpfs delivery, SSH-agent forwarding, or environment delivery. It is
+only an explicit future integration-test gate.
+
 ## Focused Verification Commands
 
 Run runtime metadata redaction guards:
