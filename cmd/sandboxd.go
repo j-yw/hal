@@ -770,10 +770,11 @@ func sandboxdMicroVMRuntimeDriverSecurity(enforcement *sandboxruntime.RuntimeNet
 		return policy
 	}
 	policy.Enforced.NetworkEnforcementCapability = capability
-	if mode := sandboxdNetworkEnforcementMode(enforcement.Result.EnforcementMode); mode != "" {
+	mode := sandboxdNetworkEnforcementMode(enforcement.Result.EnforcementMode)
+	if mode != "" {
 		policy.Enforced.NetworkEnforcement = mode
 	}
-	if capability.SupportsDefaultDenyPosture {
+	if capability.SupportsDefaultDenyPosture && sandboxdNetworkEnforcementModeCanEnforce(mode) {
 		policy.Enforced.NetworkPolicy = sandboxworker.NetworkPolicyDenyByDefault
 	}
 	return policy
@@ -820,6 +821,18 @@ func sandboxdNetworkEnforcementMode(mode string) string {
 		return mode
 	default:
 		return ""
+	}
+}
+
+func sandboxdNetworkEnforcementModeCanEnforce(mode string) bool {
+	switch mode {
+	case sandboxworker.NetworkEnforcementProxy,
+		sandboxworker.NetworkEnforcementFirewall,
+		sandboxworker.NetworkEnforcementRuntime,
+		sandboxworker.NetworkEnforcementProxyFirewall:
+		return true
+	default:
+		return false
 	}
 }
 

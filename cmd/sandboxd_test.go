@@ -461,6 +461,41 @@ func TestSandboxdMicroVMDescriptorCanAdvertiseExplicitNetworkEnforcementCapabili
 	}
 }
 
+func TestSandboxdMicroVMDescriptorDoesNotClaimDefaultDenyWithoutEnforcingMode(t *testing.T) {
+	descriptor := sandboxdMicroVMRuntimeDriverDescriptor(sandboxdMicroVMOperationsDefault(), &sandboxruntime.RuntimeNetworkEnforcementMetadata{
+		Plan: &sandboxruntime.RuntimeNetworkEnforcementPlanMetadata{
+			ID:             "network-plan-sandboxd",
+			Source:         "microvm",
+			Operation:      "prepare_network",
+			PolicyPreset:   "deny_by_default",
+			DefaultPosture: "deny_by_default",
+			Mechanisms:     []string{"proxy", "firewall"},
+		},
+		Result: &sandboxruntime.RuntimeNetworkEnforcementResultMetadata{
+			PlanID:          "network-plan-sandboxd",
+			AdapterID:       "fake-sandboxd-adapter",
+			Outcome:         "success",
+			EnforcementMode: "none",
+			Capability: &sandboxruntime.RuntimeNetworkEnforcementCapability{
+				Supported:                  true,
+				Modes:                      []string{"proxy_firewall"},
+				SupportsDefaultDenyPosture: true,
+			},
+			ReasonCode: "applied",
+		},
+	})
+	if err := descriptor.Validate(); err != nil {
+		t.Fatalf("descriptor Validate() error: %v", err)
+	}
+	if descriptor.Security.Requested.NetworkPolicy != sandboxworker.NetworkPolicyDenyByDefault {
+		t.Fatalf("requested security = %#v, want deny-by-default request from plan", descriptor.Security.Requested)
+	}
+	if descriptor.Security.Enforced.NetworkPolicy != sandboxworker.NetworkPolicyBestEffort ||
+		descriptor.Security.Enforced.NetworkEnforcement != sandboxworker.NetworkEnforcementNone {
+		t.Fatalf("enforced security = %#v, want no deny-by-default claim without an enforcing mode", descriptor.Security.Enforced)
+	}
+}
+
 func TestSandboxdRuntimeRegistrationRequestsNetworkPlanOnlyForExplicitMicroVMPath(t *testing.T) {
 	request := sandboxdNetworkEnforcementPlanRequest()
 	var plannerCalls int

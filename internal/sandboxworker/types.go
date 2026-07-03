@@ -556,7 +556,10 @@ func validateRequestedSecurityControls(controls SecurityControls) error {
 func validateEnforcedSecurityControls(controls SecurityControls) error {
 	capability := sandboxruntime.SanitizeRuntimeNetworkEnforcementCapability(controls.NetworkEnforcementCapability)
 	if controls.NetworkPolicy != "" && controls.NetworkPolicy != NetworkPolicyBestEffort {
-		if controls.NetworkPolicy == NetworkPolicyDenyByDefault && capability != nil && capability.SupportsDefaultDenyPosture {
+		if controls.NetworkPolicy == NetworkPolicyDenyByDefault &&
+			capability != nil &&
+			capability.SupportsDefaultDenyPosture &&
+			networkEnforcementCapabilitySupportsMode(capability, controls.NetworkEnforcement) {
 			// Explicit capability metadata can prove deny-by-default support.
 		} else {
 			return fmt.Errorf("networkPolicy %q overstates worker enforcement", controls.NetworkPolicy)

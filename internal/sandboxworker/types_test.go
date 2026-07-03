@@ -444,6 +444,12 @@ func TestWorkerSecurityPolicyAllowsExplicitNetworkEnforcementCapability(t *testi
 	if err := withoutCapability.Validate(); err == nil {
 		t.Fatal("Validate() error = nil, want explicit capability required for proxy_firewall enforcement")
 	}
+
+	withoutEnforcingMode := policy
+	withoutEnforcingMode.Enforced.NetworkEnforcement = NetworkEnforcementNone
+	if err := withoutEnforcingMode.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want enforcing mode required for deny-by-default enforcement")
+	}
 }
 
 func TestWorkerRuntimeDriverAllowsVMIsolationMetadata(t *testing.T) {
