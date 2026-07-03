@@ -1181,6 +1181,7 @@ func TestSandboxMetadataCredentialProxyMetadataTypesAndJSONShape(t *testing.T) {
 		{name: "CredentialProxyPlan", typ: reflect.TypeOf((*sandbox.SandboxCredentialProxyPlanMetadata)(nil))},
 		{name: "CredentialProxySession", typ: reflect.TypeOf((*sandbox.SandboxCredentialProxySessionMetadata)(nil))},
 		{name: "CredentialProxyBindings", typ: reflect.TypeOf([]sandbox.SandboxCredentialProxyBindingMetadata(nil))},
+		{name: "CredentialDelivery", typ: reflect.TypeOf((*sandbox.SandboxCredentialDeliveryStatusMetadata)(nil))},
 	} {
 		got, ok := metadataType.FieldByName(field.name)
 		if !ok {
@@ -1240,6 +1241,12 @@ func TestSandboxMetadataCredentialProxyMetadataTypesAndJSONShape(t *testing.T) {
 		CredentialProxyPlan:     &plan,
 		CredentialProxySession:  &session,
 		CredentialProxyBindings: []sandbox.SandboxCredentialProxyBindingMetadata{binding},
+		CredentialDelivery: &sandbox.SandboxCredentialDeliveryStatusMetadata{
+			ID:             "credential-plan-01",
+			PlanID:         "credential-plan-01",
+			RequestedModes: []string{sandbox.SandboxSecretModeHTTPProxy},
+			Status:         "planned",
+		},
 	}
 
 	data, err := json.Marshal(metadata)
@@ -1253,7 +1260,7 @@ func TestSandboxMetadataCredentialProxyMetadataTypesAndJSONShape(t *testing.T) {
 	}
 	requireExactJSONKeys(t, raw, []string{
 		"name", "provider", "status",
-		"credentialProxyPlan", "credentialProxySession", "credentialProxyBindings",
+		"credentialProxyPlan", "credentialProxySession", "credentialProxyBindings", "credentialDelivery",
 	})
 	requireJSONKeysAbsent(t, raw, []string{"credentialProxy"})
 

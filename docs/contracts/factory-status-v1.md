@@ -118,6 +118,7 @@ When `sandbox` is present:
 | `credentialProxyPlan` | object | no | Sanitized credential proxy plan metadata; safe identifiers and enum-like metadata only |
 | `credentialProxySession` | object | no | Sanitized credential proxy session metadata; safe identifiers and enum-like metadata only |
 | `credentialProxyBindings` | array | no | Sanitized credential proxy binding metadata; safe identifiers, safe secret references, and enum-like metadata only |
+| `credentialDelivery` | object | no | Sanitized credential delivery status metadata; requested versus active mode labels only |
 | `lease` | object | no | Redaction-safe Sandbox Runtime v2 lease summary metadata |
 | `workerRouting` | object | no | Redaction-safe worker-backed execution route metadata |
 
@@ -217,6 +218,21 @@ When `sandbox.security.secrets` is present:
 |-------|------|----------|-------------|
 | `requestedModes` | array | no | Requested secret delivery mode identifiers; mode names are safe summaries only |
 | `activeModes` | array | no | Active secret delivery mode identifiers; mode names are safe summaries only |
+
+When `sandbox.credentialDelivery` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | yes | Safe credential delivery status identifier |
+| `requestId` | string | no | Safe request identifier |
+| `planId` | string | no | Safe delivery plan identifier |
+| `activationId` | string | no | Safe activation identifier |
+| `requestedModes` | array | no | Requested delivery mode identifiers; mode names are safe summaries only |
+| `activeModes` | array | no | Active delivery mode identifiers; omitted for plan-only metadata |
+| `status` | string | no | Sanitized lifecycle status, such as `planned`, `ready`, `active`, `completed`, `skipped`, `failed`, or `disabled` |
+| `reasonCode` | string | no | Sanitized reason code |
+| `warningCount` | number | no | Count of sanitized warning records |
+| `errorCount` | number | no | Count of sanitized error records |
 
 When `sandbox.lease` is present:
 

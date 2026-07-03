@@ -332,6 +332,39 @@ func TestWorkerSecurityPolicyDistinguishesRequestedFromEnforcedControls(t *testi
 	}
 }
 
+func TestWorkerSecurityControlsCarryOptionalCredentialDeliveryMetadata(t *testing.T) {
+	controlsType := reflect.TypeOf(SecurityControls{})
+	assertFieldType(t, controlsType, "CredentialDelivery", reflect.TypeOf((*sandboxruntime.RuntimeCredentialDeliveryMetadata)(nil)))
+
+	controls := SecurityControls{
+		CredentialModes: []string{CredentialModeLegacyAuthSync},
+		CredentialDelivery: &sandboxruntime.RuntimeCredentialDeliveryMetadata{
+			ID:             "credential-plan-01",
+			PlanID:         "credential-plan-01",
+			RequestedModes: []string{"legacy_auth_sync"},
+			Status:         "planned",
+		},
+	}
+	encoded, err := json.Marshal(controls)
+	if err != nil {
+		t.Fatalf("Marshal(SecurityControls) error = %v", err)
+	}
+	publicText := string(encoded)
+	for _, want := range []string{
+		`"credentialModes":["legacy_auth_sync"]`,
+		`"credentialDelivery":`,
+		`"requestedModes":["legacy_auth_sync"]`,
+		`"status":"planned"`,
+	} {
+		if !strings.Contains(publicText, want) {
+			t.Fatalf("SecurityControls JSON %s missing %s", publicText, want)
+		}
+	}
+	if strings.Contains(publicText, "activeModes") {
+		t.Fatalf("plan-only credentialDelivery must not include activeModes: %s", publicText)
+	}
+}
+
 func TestWorkerSecurityPolicyRejectsOverstatedCapabilityClaims(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -573,5 +606,16 @@ func assertWorkerProtocolTypeOmitsReadinessGateFields(t *testing.T, typ reflect.
 				t.Fatalf("%s.%s exposes readiness gate field %q", typ.Name(), field.Name, forbidden)
 			}
 		}
+	}
+}
+
+func assertFieldType(t *testing.T, typ reflect.Type, fieldName string, want reflect.Type) {
+	t.Helper()
+	field, ok := typ.FieldByName(fieldName)
+	if !ok {
+		t.Fatalf("%s.%s field missing", typ, fieldName)
+	}
+	if field.Type != want {
+		t.Fatalf("%s.%s type = %v, want %v", typ, fieldName, field.Type, want)
 	}
 }

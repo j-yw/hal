@@ -351,6 +351,39 @@ func TestRuntimeMetadataIncludesOptionalNetworkEnforcementMetadata(t *testing.T)
 	}
 }
 
+func TestRuntimeMetadataIncludesOptionalCredentialDeliveryMetadata(t *testing.T) {
+	metadataType := reflect.TypeOf(RuntimeMetadata{})
+	assertFieldType(t, metadataType, "CredentialDelivery", reflect.TypeOf((*RuntimeCredentialDeliveryMetadata)(nil)))
+
+	metadata := RuntimeMetadata{
+		Backend: "microvm",
+		CredentialDelivery: &RuntimeCredentialDeliveryMetadata{
+			ID:             "credential-plan-01",
+			PlanID:         "credential-plan-01",
+			RequestedModes: []string{"http_proxy"},
+			Status:         "planned",
+		},
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("Marshal(RuntimeMetadata) error = %v", err)
+	}
+	publicText := string(encoded)
+	for _, want := range []string{
+		`"credentialDelivery":`,
+		`"id":"credential-plan-01"`,
+		`"requestedModes":["http_proxy"]`,
+		`"status":"planned"`,
+	} {
+		if !strings.Contains(publicText, want) {
+			t.Fatalf("RuntimeMetadata JSON %s missing %s", publicText, want)
+		}
+	}
+	if strings.Contains(publicText, "activeModes") {
+		t.Fatalf("plan-only credentialDelivery must not include activeModes: %s", publicText)
+	}
+}
+
 func TestRuntimeNetworkEnforcementMetadataSanitizesUnsafeValues(t *testing.T) {
 	metadata := SanitizeRuntimeNetworkEnforcementMetadata(&RuntimeNetworkEnforcementMetadata{
 		Plan: &RuntimeNetworkEnforcementPlanMetadata{

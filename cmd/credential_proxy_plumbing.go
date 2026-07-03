@@ -16,6 +16,7 @@ func applyRunSandboxCredentialProxyMetadata(manifest *sandboxexecution.Manifest,
 	manifest.CredentialProxyPlan = credentialProxy.Plan
 	manifest.CredentialProxySession = credentialProxy.Session
 	manifest.CredentialProxyBindings = credentialProxy.Bindings
+	manifest.CredentialDelivery = sandboxManifestCredentialDeliveryStatus(credentialProxy, req.Security)
 }
 
 func applyAutoSandboxCredentialProxyMetadata(manifest *sandboxexecution.Manifest, req autoSandboxRequest) {
@@ -26,6 +27,7 @@ func applyAutoSandboxCredentialProxyMetadata(manifest *sandboxexecution.Manifest
 	manifest.CredentialProxyPlan = credentialProxy.Plan
 	manifest.CredentialProxySession = credentialProxy.Session
 	manifest.CredentialProxyBindings = credentialProxy.Bindings
+	manifest.CredentialDelivery = sandboxManifestCredentialDeliveryStatus(credentialProxy, req.Security)
 }
 
 func applyFactorySandboxCredentialProxyMetadata(metadata *factory.SandboxMetadata, req factorySandboxExecutorRequest, record factory.RunRecord, networkProxySession *sandbox.SandboxNetworkProxySessionMetadata) {
@@ -36,6 +38,7 @@ func applyFactorySandboxCredentialProxyMetadata(metadata *factory.SandboxMetadat
 	metadata.CredentialProxyPlan = credentialProxy.Plan
 	metadata.CredentialProxySession = credentialProxy.Session
 	metadata.CredentialProxyBindings = credentialProxy.Bindings
+	metadata.CredentialDelivery = sandboxManifestCredentialDeliveryStatus(credentialProxy, req.Security)
 	factorySandboxSanitizeCredentialProxyMetadata(metadata)
 }
 
@@ -145,7 +148,7 @@ func sandboxManifestCredentialProxySecretDeliveryIntent(req sandbox.SecurityEval
 	requestedModes := append([]string(nil), req.RequestedSecretModes...)
 	activeModes := append([]string(nil), req.ActiveSecretModes...)
 	if req.CompatibilityAuthSync {
-		activeModes = append(activeModes, sandbox.SandboxSecretModeLegacyAuthSync)
+		requestedModes = append(requestedModes, sandbox.SandboxSecretModeLegacyAuthSync)
 	}
 	if len(requestedModes) == 0 && len(activeModes) == 0 {
 		return nil
@@ -154,6 +157,18 @@ func sandboxManifestCredentialProxySecretDeliveryIntent(req sandbox.SecurityEval
 		RequestedModes: requestedModes,
 		ActiveModes:    activeModes,
 	}
+}
+
+func sandboxManifestCredentialDeliveryStatus(projection sandbox.SandboxCredentialProxyProjection, req sandbox.SecurityEvaluationRequest) *sandbox.SandboxCredentialDeliveryStatusMetadata {
+	if projection.Plan == nil {
+		return nil
+	}
+	return sandbox.ProjectSandboxCredentialDeliveryStatusMetadata(sandbox.SandboxCredentialDeliveryStatusProjectionRequest{
+		Plan:                  projection.Plan,
+		Bindings:              projection.Bindings,
+		RequestedModes:        req.RequestedSecretModes,
+		CompatibilityAuthSync: req.CompatibilityAuthSync,
+	})
 }
 
 func sandboxManifestSanitizedCredentialProxyProjection(projection sandbox.SandboxCredentialProxyProjection) sandbox.SandboxCredentialProxyProjection {
@@ -195,4 +210,12 @@ func factorySandboxSanitizeCredentialProxyMetadata(metadata *factory.SandboxMeta
 		}
 	}
 	metadata.CredentialProxyBindings = sandbox.SanitizeSandboxCredentialProxyBindingMetadataRecords(metadata.CredentialProxyBindings)
+	if metadata.CredentialDelivery != nil {
+		status := sandbox.SanitizeSandboxCredentialDeliveryStatusMetadata(*metadata.CredentialDelivery)
+		if status.ID == "" {
+			metadata.CredentialDelivery = nil
+		} else {
+			metadata.CredentialDelivery = &status
+		}
+	}
 }

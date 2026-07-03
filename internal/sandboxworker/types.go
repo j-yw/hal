@@ -166,6 +166,7 @@ type SecurityControls struct {
 	NetworkEnforcement           string                                              `json:"networkEnforcement,omitempty"`
 	NetworkEnforcementCapability *sandboxruntime.RuntimeNetworkEnforcementCapability `json:"networkEnforcementCapability,omitempty"`
 	CredentialModes              []string                                            `json:"credentialModes,omitempty"`
+	CredentialDelivery           *sandboxruntime.RuntimeCredentialDeliveryMetadata   `json:"credentialDelivery,omitempty"`
 	IsolationLevel               string                                              `json:"isolationLevel,omitempty"`
 	CredentialProxyMode          bool                                                `json:"credentialProxyMode,omitempty"`
 }
