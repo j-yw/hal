@@ -15,6 +15,8 @@ import (
 const (
 	targetRuntimeIDPrefix = "fc-"
 
+	liveBootContractOperation = "firecracker_live_boot"
+
 	targetCapabilityCreation              = "target_creation"
 	targetCapabilityDeterministicIdentity = "deterministic_identity"
 	targetCapabilityPathRoleMetadata      = "path_role_metadata"
@@ -23,10 +25,9 @@ const (
 
 // BackendOptions configures the Firecracker backend. BaseStateDir is used only
 // to derive target-specific path plans. ProcessAdapter prepares process
-// descriptors, and LiveStart must be set explicitly before the backend calls
-// StartProcess through that injected boundary. BootAcceptanceWaiter and
-// LiveProcessManager are fakeable host-side live boot contracts for later
-// phases. Raw paths are not exposed on returned targets.
+// descriptors. LiveStart permits StartProcess only when ProcessAdapter,
+// BootAcceptanceWaiter, and LiveProcessManager are all explicitly injected. Raw
+// paths are not exposed on returned targets.
 type BackendOptions struct {
 	BaseStateDir         string
 	ProcessAdapter       ProcessAdapter
@@ -138,9 +139,6 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 		waiter = b.bootAcceptanceWaiter
 		manager = b.liveProcessManager
 	}
-	if adapter == nil {
-		adapter = startPlanningProcessAdapter{}
-	}
 	return firecrackerController{
 		baseStateDir:         baseStateDir,
 		processAdapter:       adapter,
@@ -159,11 +157,18 @@ type firecrackerController struct {
 }
 
 func (c firecrackerController) Start(ctx context.Context, req microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
+	if err := c.validateLiveBootContract(); err != nil {
+		return nil, err
+	}
 	config, err := c.startBackendConfig(req.Config, req.Target)
 	if err != nil {
 		return nil, err
 	}
-	operation, err := planFirecrackerStartOperation(ctx, c.processAdapter, config)
+	adapter := c.processAdapter
+	if adapter == nil {
+		adapter = startPlanningProcessAdapter{}
+	}
+	operation, err := planFirecrackerStartOperation(ctx, adapter, config)
 	if err != nil {
 		return nil, err
 	}
@@ -176,6 +181,22 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 		processLaunch = NewProcessLaunchMetadata(ProcessLaunchStateAccepted, handle).RuntimeMetadata()
 	}
 	return firecrackerStartTarget(req.Target, operation.ProcessDescriptor, processLaunch), nil
+}
+
+func (c firecrackerController) validateLiveBootContract() error {
+	if !c.liveStart {
+		return nil
+	}
+	switch {
+	case c.processAdapter == nil:
+		return newLiveBootContractError("processAdapter", "live boot requires an injected process adapter")
+	case c.bootAcceptanceWaiter == nil:
+		return newLiveBootContractError("bootAcceptanceWaiter", "live boot requires an injected host-side acceptance waiter")
+	case c.liveProcessManager == nil:
+		return newLiveBootContractError("liveProcessManager", "live boot requires an injected live process manager")
+	default:
+		return nil
+	}
 }
 
 func (c firecrackerController) Stop(_ context.Context, req microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
@@ -479,6 +500,13 @@ func unsupportedFirecrackerOperation(operation string) error {
 		operation = "firecracker_backend"
 	}
 	return microvm.NewUnavailableCapabilityError(operation, errors.New("firecracker backend operation is not supported in this phase"))
+}
+
+func newLiveBootContractError(field, message string) *microvm.OperationError {
+	err := microvm.NewInvalidConfigError(liveBootContractOperation, microvm.ErrInvalidConfig)
+	err.Field = strings.TrimSpace(field)
+	err.Message = strings.TrimSpace(message)
+	return err
 }
 
 func firecrackerRuntimeID(name string) string {

@@ -292,11 +292,17 @@ func TestBackendStartPublicJSONRedactsPlanningAndLiveLaunchMetadata(t *testing.T
 			config.RootfsPath = "/Users/alice/private/images/rootfs-secret.ext4"
 			config.InitrdPath = "/Users/alice/private/images/initrd-secret.img"
 			config.ImageLabel = "template-token-ghp_secret"
-			backend := NewBackend(BackendOptions{
+			options := BackendOptions{
 				BaseStateDir:   firecrackerPathTestBase("alice", "private", "live-start-json-state"),
 				ProcessAdapter: tt.adapter,
 				LiveStart:      tt.liveStart,
-			})
+			}
+			if tt.liveStart {
+				safety := fakeLiveBootSafetyHooks{}
+				options.BootAcceptanceWaiter = safety
+				options.LiveProcessManager = safety
+			}
+			backend := NewBackend(options)
 			created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
 				Operation: microvm.OperationCreate,
 				Config:    config,
@@ -480,9 +486,11 @@ func TestBackendLiveStartOptionCallsInjectedAdapterAfterPlanRendered(t *testing.
 		},
 	}
 	backend := NewBackend(BackendOptions{
-		BaseStateDir:   firecrackerPathTestBase("live-start-state"),
-		ProcessAdapter: adapter,
-		LiveStart:      true,
+		BaseStateDir:         firecrackerPathTestBase("live-start-state"),
+		ProcessAdapter:       adapter,
+		BootAcceptanceWaiter: fakeLiveBootSafetyHooks{},
+		LiveProcessManager:   fakeLiveBootSafetyHooks{},
+		LiveStart:            true,
 	})
 	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
 		Operation: microvm.OperationCreate,
@@ -545,9 +553,11 @@ func TestBackendLiveStartReturnsSanitizedRunnerFailure(t *testing.T) {
 		},
 	}
 	backend := NewBackend(BackendOptions{
-		BaseStateDir:   firecrackerPathTestBase("live-start-failure-state"),
-		ProcessAdapter: ProcessLaunchAdapter{Starter: starter},
-		LiveStart:      true,
+		BaseStateDir:         firecrackerPathTestBase("live-start-failure-state"),
+		ProcessAdapter:       ProcessLaunchAdapter{Starter: starter},
+		BootAcceptanceWaiter: fakeLiveBootSafetyHooks{},
+		LiveProcessManager:   fakeLiveBootSafetyHooks{},
+		LiveStart:            true,
 	})
 	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
 		Operation: microvm.OperationCreate,
@@ -974,6 +984,27 @@ func TestMicroVMDriverCreateCanUseInjectedFirecrackerBackend(t *testing.T) {
 	if started.Runtime.Metadata.OperationPlan.Action != string(OperationActionStart) {
 		t.Fatalf("started operation action = %q, want %q", started.Runtime.Metadata.OperationPlan.Action, OperationActionStart)
 	}
+}
+
+type fakeLiveBootSafetyHooks struct{}
+
+func (fakeLiveBootSafetyHooks) WaitForBootAcceptance(context.Context, bootAcceptanceRequest) (bootAcceptanceResult, error) {
+	return bootAcceptanceResult{
+		ProcessAccepted:    true,
+		APISocketAvailable: true,
+	}, nil
+}
+
+func (fakeLiveBootSafetyHooks) CleanupLiveProcess(context.Context, liveProcessRequest) error {
+	return nil
+}
+
+func (fakeLiveBootSafetyHooks) StopLiveProcess(context.Context, liveProcessRequest) error {
+	return nil
+}
+
+func (fakeLiveBootSafetyHooks) DeleteLiveProcess(context.Context, liveProcessRequest) error {
+	return nil
 }
 
 func assertFirecrackerCreatedTarget(t *testing.T, target *sandboxruntime.Target, wantName string) {
