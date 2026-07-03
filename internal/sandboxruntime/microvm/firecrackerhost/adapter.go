@@ -52,6 +52,8 @@ type Adapter struct {
 	poller        BootAcceptancePoller
 	clock         Clock
 	sleeper       Sleeper
+	bootTimeout   time.Duration
+	bootInterval  time.Duration
 	cleanup       LiveProcessCleanup
 }
 
@@ -63,8 +65,10 @@ type Option func(*Adapter)
 // dependencies are injected.
 func NewAdapter(options ...Option) *Adapter {
 	adapter := &Adapter{
-		clock:   systemClock{},
-		sleeper: contextSleeper{},
+		clock:        systemClock{},
+		sleeper:      contextSleeper{},
+		bootTimeout:  defaultBootAcceptanceTimeout,
+		bootInterval: defaultBootAcceptancePollInterval,
 	}
 	for _, option := range options {
 		if option != nil {
@@ -107,6 +111,26 @@ func WithSleeper(sleeper Sleeper) Option {
 	}
 }
 
+// WithBootAcceptanceTimeout injects the maximum host-side wait duration used
+// by WaitForBootAcceptance.
+func WithBootAcceptanceTimeout(timeout time.Duration) Option {
+	return func(adapter *Adapter) {
+		if timeout > 0 {
+			adapter.bootTimeout = timeout
+		}
+	}
+}
+
+// WithBootAcceptancePollInterval injects the delay between deterministic
+// host-side acceptance polls.
+func WithBootAcceptancePollInterval(interval time.Duration) Option {
+	return func(adapter *Adapter) {
+		if interval > 0 {
+			adapter.bootInterval = interval
+		}
+	}
+}
+
 // WithLiveProcessCleanup injects the host cleanup manager used by cleanup,
 // stop, and delete operations.
 func WithLiveProcessCleanup(cleanup LiveProcessCleanup) Option {
@@ -124,13 +148,13 @@ func (adapter *Adapter) StartProcess(ctx context.Context, req firecracker.Proces
 	return adapter.processRunner.StartProcess(nonNilContext(ctx), req)
 }
 
-// WaitForBootAcceptance delegates host-side process and API socket acceptance
-// checks to the injected poller.
+// WaitForBootAcceptance polls host-side process and API socket acceptance
+// through injected dependencies.
 func (adapter *Adapter) WaitForBootAcceptance(ctx context.Context, req firecracker.BootAcceptanceRequest) (firecracker.BootAcceptanceResult, error) {
 	if adapter == nil || adapter.poller == nil {
 		return firecracker.BootAcceptanceResult{}, dependencyNotConfigured("bootAcceptancePoller")
 	}
-	return adapter.poller.PollBootAcceptance(nonNilContext(ctx), req)
+	return adapter.waitForBootAcceptance(nonNilContext(ctx), req)
 }
 
 // CleanupLiveProcess delegates cleanup of a live Firecracker process to the
