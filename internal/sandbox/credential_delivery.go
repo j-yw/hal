@@ -22,10 +22,10 @@ type SandboxCredentialDeliveryStatusMetadata struct {
 // of compact credential delivery metadata.
 func SanitizeSandboxCredentialDeliveryStatusMetadata(status SandboxCredentialDeliveryStatusMetadata) SandboxCredentialDeliveryStatusMetadata {
 	sanitized := SandboxCredentialDeliveryStatusMetadata{
-		ID:             sanitizeSandboxCredentialProxyIdentifier(strings.TrimSpace(status.ID)),
-		RequestID:      sanitizeSandboxCredentialProxyIdentifier(strings.TrimSpace(status.RequestID)),
-		PlanID:         sanitizeSandboxCredentialProxyIdentifier(strings.TrimSpace(status.PlanID)),
-		ActivationID:   sanitizeSandboxCredentialProxyIdentifier(strings.TrimSpace(status.ActivationID)),
+		ID:             sanitizeSandboxCredentialDeliveryIdentifier(status.ID),
+		RequestID:      sanitizeSandboxCredentialDeliveryIdentifier(status.RequestID),
+		PlanID:         sanitizeSandboxCredentialDeliveryIdentifier(status.PlanID),
+		ActivationID:   sanitizeSandboxCredentialDeliveryIdentifier(status.ActivationID),
 		RequestedModes: normalizeSandboxSecretModes(status.RequestedModes),
 		ActiveModes:    normalizeSandboxSecretModes(status.ActiveModes),
 		Status:         sanitizeSandboxCredentialDeliveryStatus(status.Status),
@@ -37,6 +37,36 @@ func SanitizeSandboxCredentialDeliveryStatusMetadata(status SandboxCredentialDel
 		return SandboxCredentialDeliveryStatusMetadata{}
 	}
 	return sanitized
+}
+
+func sanitizeSandboxCredentialDeliveryIdentifier(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if sandboxCredentialDeliveryIdentifierLooksUnsafe(trimmed) {
+		return ""
+	}
+	sanitized := sanitizeSandboxCredentialProxyIdentifier(trimmed)
+	if sandboxCredentialDeliveryIdentifierLooksUnsafe(sanitized) {
+		return ""
+	}
+	return sanitized
+}
+
+func sandboxCredentialDeliveryIdentifierLooksUnsafe(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	if lower == "" {
+		return false
+	}
+	if strings.HasPrefix(lower, "sk-") ||
+		strings.HasPrefix(lower, "ghp_") ||
+		strings.HasPrefix(lower, "github_pat_") {
+		return true
+	}
+	for _, marker := range []string{"/", "\\", ":", "=", "@", "://", ".invalid", ".com", ".net", ".org", "authorization", "bearer"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func sanitizeSandboxCredentialDeliveryStatus(status string) string {
