@@ -146,6 +146,7 @@ func TestCredentialDeliveryImportBoundaryCoversProductionFiles(t *testing.T) {
 		found[path] = true
 	}
 	for _, path := range []string{
+		"activation.go",
 		"binding_validation.go",
 		"contracts.go",
 		"normalization.go",

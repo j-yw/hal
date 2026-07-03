@@ -316,6 +316,34 @@ func TestSecretResolutionJSONContracts(t *testing.T) {
 	assertObjectKeys(t, minimal, []string{"valid"}, []string{"bindings", "warnings", "errors"})
 }
 
+func TestActivationRequestJSONContract(t *testing.T) {
+	request := ActivationRequest{
+		ActivationID: "activation-01",
+		Plan: Plan{
+			ID:             "delivery-plan-01",
+			RequestedModes: []Mode{ModeHTTPProxy},
+			Status:         StatusPlanned,
+		},
+		Bindings: []Binding{{
+			ID:           "binding-01",
+			SecretRef:    "env:GITHUB_TOKEN",
+			DeliveryMode: ModeHTTPProxy,
+			Status:       StatusPlanned,
+		}},
+	}
+	got := mustMarshalObject(t, request)
+	assertObjectKeys(t, got, []string{
+		"activationId",
+		"plan",
+		"bindings",
+	}, forbiddenRawFieldNames())
+
+	minimal := mustMarshalObject(t, ActivationRequest{
+		Plan: Plan{ID: "delivery-plan-02"},
+	})
+	assertObjectKeys(t, minimal, []string{"plan"}, []string{"activationId", "bindings"})
+}
+
 func TestActivationResultJSONContract(t *testing.T) {
 	activation := ActivationResult{
 		ID:             "activation-01",
@@ -491,6 +519,11 @@ func TestJSONTagsAreStable(t *testing.T) {
 		{field: "Warnings", name: "warnings", omitempty: true},
 		{field: "Errors", name: "errors", omitempty: true},
 	})
+	assertJSONTags(t, reflect.TypeOf(ActivationRequest{}), []jsonTagExpectation{
+		{field: "ActivationID", name: "activationId", omitempty: true},
+		{field: "Plan", name: "plan"},
+		{field: "Bindings", name: "bindings", omitempty: true},
+	})
 	assertJSONTags(t, reflect.TypeOf(ActivationResult{}), []jsonTagExpectation{
 		{field: "ID", name: "id"},
 		{field: "PlanID", name: "planId"},
@@ -548,6 +581,7 @@ func TestContractsExposeNoRawValueFields(t *testing.T) {
 		reflect.TypeOf(ResolvedBindingSecretMetadata{}),
 		reflect.TypeOf(SecretResolutionResult{}),
 		reflect.TypeOf(Plan{}),
+		reflect.TypeOf(ActivationRequest{}),
 		reflect.TypeOf(ActivationResult{}),
 		reflect.TypeOf(BindingActivationResult{}),
 		reflect.TypeOf(StatusMetadata{}),

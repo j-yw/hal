@@ -197,6 +197,15 @@ type Plan struct {
 	Errors         []SanitizedError `json:"errors,omitempty"`
 }
 
+// ActivationRequest is the redaction-safe adapter input for an activation
+// attempt. It contains a sanitized plan and binding metadata only, never secret
+// values or live delivery handles.
+type ActivationRequest struct {
+	ActivationID string    `json:"activationId,omitempty"`
+	Plan         Plan      `json:"plan"`
+	Bindings     []Binding `json:"bindings,omitempty"`
+}
+
 // ActivationResult records the redaction-safe outcome of an activation attempt.
 type ActivationResult struct {
 	ID             string                    `json:"id"`
