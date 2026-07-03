@@ -14,6 +14,7 @@ import (
 )
 
 const microVMPackagePath = "github.com/jywlabs/hal/internal/sandboxruntime/microvm"
+const microVMFirecrackerHostPackagePath = "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecrackerhost"
 
 var forbiddenMicroVMProductionImports = []microVMForbiddenImport{
 	{
@@ -30,6 +31,7 @@ var forbiddenMicroVMProductionImports = []microVMForbiddenImport{
 	{name: "sandbox target package", match: microVMModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxtarget")},
 	{name: "sandbox workspace package", match: microVMModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxworkspace")},
 	{name: "concrete provider adapter package", match: microVMModuleImportMatcher("github.com/jywlabs/hal/internal/sandbox/provider")},
+	{name: "Firecracker host adapter package", match: microVMModuleImportMatcher(microVMFirecrackerHostPackagePath)},
 	{
 		name: "concrete sibling runtime adapter package",
 		match: func(importPath string) bool {
@@ -157,6 +159,7 @@ func TestMicroVMForbiddenImportListCoversRequiredBoundaries(t *testing.T) {
 		{name: "rootless Podman runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman", want: "concrete sibling runtime adapter package"},
 		{name: "SSH-machine runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine", want: "concrete sibling runtime adapter package"},
 		{name: "Firecracker backend subpackage", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker", want: "concrete sibling runtime adapter package"},
+		{name: "Firecracker host adapter package", importPath: microVMFirecrackerHostPackagePath, want: "Firecracker host adapter package"},
 		{name: "standard network package", importPath: "net", want: "network socket or RPC package"},
 		{name: "standard HTTP package", importPath: "net/http", want: "network socket or RPC package"},
 		{name: "gRPC package", importPath: "google.golang.org/grpc", want: "network socket or RPC package"},
@@ -269,6 +272,37 @@ func TestMicroVMProductionSourceOmitsLiveBackendOperations(t *testing.T) {
 		if message := microVMProductionCallBoundaryMessage(path, file); message != "" {
 			t.Fatal(message)
 		}
+	}
+}
+
+func TestMicroVMProductionSourceDoesNotSelectFirecrackerHostByDefault(t *testing.T) {
+	for _, path := range microVMProductionBoundaryFiles(t) {
+		source, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error: %v", path, err)
+		}
+		if message := microVMFirecrackerHostSourceBoundaryMessage(path, string(source)); message != "" {
+			t.Fatal(message)
+		}
+	}
+}
+
+func TestMicroVMFirecrackerHostDefaultGuardRejectsSelectionFixtures(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{name: "package selection literal", source: `package microvm; const defaultBackend = "firecrackerhost"`, want: "Firecracker host adapter selection"},
+		{name: "dash selection literal", source: `package microvm; const defaultBackend = "firecracker-host"`, want: "Firecracker host adapter selection"},
+		{name: "underscore selection literal", source: `package microvm; const defaultBackend = "firecracker_host"`, want: "Firecracker host adapter selection"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			message := microVMFirecrackerHostSourceBoundaryMessage(tt.name+".go", tt.source)
+			if !strings.Contains(message, tt.want) {
+				t.Fatalf("boundary message = %q, want %q", message, tt.want)
+			}
+		})
 	}
 }
 
@@ -432,6 +466,16 @@ func microVMProductionCallBoundaryMessage(fileName string, file *ast.File) strin
 	}, func(selector, reason string) string {
 		return fmt.Sprintf("%s calls %s (%s); live backend operations must stay behind future explicit integration boundaries", fileName, selector, reason)
 	})
+}
+
+func microVMFirecrackerHostSourceBoundaryMessage(fileName, source string) string {
+	lowerSource := strings.ToLower(source)
+	for _, marker := range []string{"firecrackerhost", "firecracker-host", "firecracker_host"} {
+		if strings.Contains(lowerSource, marker) {
+			return fmt.Sprintf("%s contains Firecracker host adapter selection marker %q; default microVM construction must not select firecrackerhost without explicit live prerequisites", fileName, marker)
+		}
+	}
+	return ""
 }
 
 func microVMDefaultTestCallBoundaryMessage(fileName string, file *ast.File) string {
