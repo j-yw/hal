@@ -154,6 +154,40 @@ func TestPhase37GuestReadinessFailureCleansUpLiveStartedProcessAndRedactsError(t
 	)
 }
 
+func TestPhase37GuestReadinessFailureCleanupIgnoresCanceledStartContext(t *testing.T) {
+	deps := newPhase37GuestReadinessDeps()
+	deps.readinessErr = context.Canceled
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.guestReadinessHook = cancel
+	backend := phase37GuestReadinessBackend(t, deps, true)
+
+	created, controller := phase37CreateController(t, backend, validMicroVMConfig(), "phase37-guest-readiness-canceled")
+	started, err := controller.Start(ctx, microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    *created,
+	})
+
+	if err == nil {
+		t.Fatal("Start() error = nil, want guest readiness context failure")
+	}
+	if started != nil {
+		t.Fatalf("Start() target = %#v, want nil after guest readiness context failure", started)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("errors.Is(Start() error, context.Canceled) = false for %v", err)
+	}
+	if !reflect.DeepEqual(deps.events, []string{"start", "boot_acceptance", "guest_readiness", "cleanup"}) {
+		t.Fatalf("live start events = %#v, want guest readiness context failure followed by cleanup", deps.events)
+	}
+	if deps.cleanupCalls != 1 {
+		t.Fatalf("cleanup calls = %d, want cleanup after canceled readiness", deps.cleanupCalls)
+	}
+	if deps.cleanupContextErr != nil {
+		t.Fatalf("cleanup context error = %v, want uncanceled cleanup context", deps.cleanupContextErr)
+	}
+}
+
 func phase37GuestReadinessBackend(t *testing.T, deps *phase37GuestReadinessDeps, includeGuestWaiter bool) *Backend {
 	t.Helper()
 
@@ -210,11 +244,12 @@ func assertPhase37AcceptedLiveStartWithoutGuestReadiness(t *testing.T, target *s
 type phase37GuestReadinessDeps struct {
 	handle ProcessHandleMetadata
 
-	bootResult      BootAcceptanceResult
-	bootErr         error
-	readinessResult GuestReadinessResult
-	readinessErr    error
-	cleanupErr      error
+	bootResult         BootAcceptanceResult
+	bootErr            error
+	readinessResult    GuestReadinessResult
+	readinessErr       error
+	guestReadinessHook func()
+	cleanupErr         error
 
 	events              []string
 	startCalls          int
@@ -226,6 +261,7 @@ type phase37GuestReadinessDeps struct {
 
 	guestReadinessRequest GuestReadinessRequest
 	cleanupRequests       []LiveProcessRequest
+	cleanupContextErr     error
 }
 
 var _ ProcessStarter = (*phase37GuestReadinessDeps)(nil)
@@ -267,13 +303,17 @@ func (deps *phase37GuestReadinessDeps) WaitForGuestReadiness(_ context.Context, 
 	deps.guestReadinessCalls++
 	deps.events = append(deps.events, "guest_readiness")
 	deps.guestReadinessRequest = req
+	if deps.guestReadinessHook != nil {
+		deps.guestReadinessHook()
+	}
 	return deps.readinessResult, deps.readinessErr
 }
 
-func (deps *phase37GuestReadinessDeps) CleanupLiveProcess(_ context.Context, req LiveProcessRequest) error {
+func (deps *phase37GuestReadinessDeps) CleanupLiveProcess(ctx context.Context, req LiveProcessRequest) error {
 	deps.cleanupCalls++
 	deps.events = append(deps.events, "cleanup")
 	deps.cleanupRequests = append(deps.cleanupRequests, req)
+	deps.cleanupContextErr = ctx.Err()
 	return deps.cleanupErr
 }
 

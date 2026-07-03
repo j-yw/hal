@@ -292,7 +292,7 @@ func (c firecrackerController) waitForGuestReadiness(ctx context.Context, handle
 }
 
 func (c firecrackerController) cleanupLiveProcessAfterStartFailure(ctx context.Context, handle ProcessHandleMetadata, paths PathPlan, startErr error) error {
-	cleanupErr := c.cleanupLiveProcess(ctx, LiveProcessRequest{
+	cleanupErr := c.cleanupLiveProcess(liveStartCleanupContext(ctx), LiveProcessRequest{
 		Handle: sanitizeProcessHandleMetadata(handle),
 		Paths:  paths,
 	})
@@ -300,6 +300,13 @@ func (c firecrackerController) cleanupLiveProcessAfterStartFailure(ctx context.C
 		return startErr
 	}
 	return errors.Join(startErr, cleanupErr)
+}
+
+func liveStartCleanupContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return context.WithoutCancel(ctx)
 }
 
 func (c firecrackerController) cleanupLiveProcess(ctx context.Context, req LiveProcessRequest) error {

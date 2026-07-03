@@ -197,6 +197,11 @@ func TestRuntimeGuestReadinessMetadataSanitizesUnsafeValues(t *testing.T) {
 			"exec_support",
 			"copy_support",
 			"credential_proxy",
+			"template_ready",
+			"image_ready",
+			"provisioned",
+			"guest_agent",
+			"ssh_ready",
 		},
 	})
 	if metadata == nil {
@@ -227,6 +232,11 @@ func TestRuntimeGuestReadinessMetadataSanitizesUnsafeValues(t *testing.T) {
 		"exec_support",
 		"copy_support",
 		"credential_proxy",
+		"template_ready",
+		"image_ready",
+		"provisioned",
+		"guest_agent",
+		"ssh_ready",
 		"token=",
 	} {
 		if strings.Contains(publicText, unsafe) {
@@ -262,6 +272,10 @@ func TestRuntimeGuestReadinessMetadataDoesNotClaimExecOrCopySupport(t *testing.T
 		"guest_agent",
 		"guest_command",
 		"file_transfer",
+		"template",
+		"image",
+		"provision",
+		"ssh",
 	} {
 		if strings.Contains(publicText, unsupported) {
 			t.Fatalf("guest readiness metadata claims unsupported capability %q in %s", unsupported, publicText)
