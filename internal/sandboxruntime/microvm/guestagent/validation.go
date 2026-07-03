@@ -1,0 +1,338 @@
+package guestagent
+
+import (
+	"fmt"
+	"strings"
+	"unicode/utf8"
+)
+
+func ValidateReadinessRequest(request ReadinessRequest) error {
+	if err := validateHeader(request.ProtocolVersion, request.Operation, OperationReadiness); err != nil {
+		return err
+	}
+	return validateTiming(request.Operation, request.Timing)
+}
+
+func ValidateReadinessResponse(response ReadinessResponse) error {
+	if err := validateHeader(response.ProtocolVersion, response.Operation, OperationReadiness); err != nil {
+		return err
+	}
+	if response.Status != "" && !validReadinessStatus(response.Status) {
+		return newValidationError(ErrorCodeInvalidMetadata, response.Operation, "status", "readiness status is unsupported")
+	}
+	return nil
+}
+
+func ValidateExecRequest(request ExecRequest) error {
+	if err := validateHeader(request.ProtocolVersion, request.Operation, OperationExec); err != nil {
+		return err
+	}
+	if err := validateCommandArgs(request.Operation, request.Args); err != nil {
+		return err
+	}
+	if err := validateEnvironment(request.Operation, request.Env); err != nil {
+		return err
+	}
+	if err := validateGuestPath(request.Operation, "workDir", request.WorkDir); err != nil {
+		return err
+	}
+	if request.Stdin != nil {
+		if err := validateStreamMetadata(request.Operation, "stdin", *request.Stdin, true); err != nil {
+			return err
+		}
+	}
+	if err := validateStreamMetadata(request.Operation, "stdout", request.Stdout, true); err != nil {
+		return err
+	}
+	if err := validateStreamMetadata(request.Operation, "stderr", request.Stderr, true); err != nil {
+		return err
+	}
+	return validateTiming(request.Operation, request.Timing)
+}
+
+func ValidateExecResponse(response ExecResponse) error {
+	if err := validateHeader(response.ProtocolVersion, response.Operation, OperationExec); err != nil {
+		return err
+	}
+	if response.ExitCode < 0 {
+		return newValidationError(ErrorCodeInvalidMetadata, response.Operation, "exitCode", "exit code must be non-negative")
+	}
+	if err := validateStreamMetadata(response.Operation, "stdout", response.Stdout, true); err != nil {
+		return err
+	}
+	return validateStreamMetadata(response.Operation, "stderr", response.Stderr, true)
+}
+
+func ValidateCopyInRequest(request CopyInRequest) error {
+	if err := validateHeader(request.ProtocolVersion, request.Operation, OperationCopyIn); err != nil {
+		return err
+	}
+	if err := validateGuestPath(request.Operation, "destinationPath", request.DestinationPath); err != nil {
+		return err
+	}
+	if err := validatePayloadMetadata(request.Operation, "payload", request.Payload, true); err != nil {
+		return err
+	}
+	return validateTiming(request.Operation, request.Timing)
+}
+
+func ValidateCopyInResponse(response CopyInResponse) error {
+	if err := validateHeader(response.ProtocolVersion, response.Operation, OperationCopyIn); err != nil {
+		return err
+	}
+	return validatePayloadMetadata(response.Operation, "written", response.Written, true)
+}
+
+func ValidateCopyOutRequest(request CopyOutRequest) error {
+	if err := validateHeader(request.ProtocolVersion, request.Operation, OperationCopyOut); err != nil {
+		return err
+	}
+	if err := validateGuestPath(request.Operation, "sourcePath", request.SourcePath); err != nil {
+		return err
+	}
+	if err := validatePayloadMetadata(request.Operation, "payload", request.Payload, true); err != nil {
+		return err
+	}
+	return validateTiming(request.Operation, request.Timing)
+}
+
+func ValidateCopyOutResponse(response CopyOutResponse) error {
+	if err := validateHeader(response.ProtocolVersion, response.Operation, OperationCopyOut); err != nil {
+		return err
+	}
+	return validatePayloadMetadata(response.Operation, "payload", response.Payload, true)
+}
+
+func validateHeader(version ProtocolVersion, operation Operation, want Operation) error {
+	if strings.TrimSpace(string(version)) == "" {
+		return newValidationError(ErrorCodeMissingRequiredField, want, "protocolVersion", "protocol version is required")
+	}
+	if ProtocolVersion(strings.TrimSpace(string(version))) != ProtocolVersionV1 {
+		return newValidationError(ErrorCodeUnsupportedProtocolVersion, want, "protocolVersion", "protocol version is unsupported")
+	}
+	if strings.TrimSpace(string(operation)) == "" {
+		return newValidationError(ErrorCodeMissingRequiredField, want, "operation", "operation is required")
+	}
+	if !validOperation(operation) {
+		return newValidationError(ErrorCodeUnknownOperation, "", "operation", "operation is unsupported")
+	}
+	if operation != want {
+		return newValidationError(ErrorCodeOperationMismatch, operation, "operation", "operation does not match DTO type")
+	}
+	return nil
+}
+
+func validOperation(operation Operation) bool {
+	switch Operation(strings.TrimSpace(string(operation))) {
+	case OperationReadiness, OperationExec, OperationCopyIn, OperationCopyOut:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateTiming(operation Operation, timing *TimingMetadata) error {
+	if timing == nil {
+		return nil
+	}
+	if timing.TimeoutMillis < 0 {
+		return newValidationError(ErrorCodeInvalidTimeout, operation, "timing.timeoutMillis", "timeout must be positive")
+	}
+	if timing.TimeoutMillis > MaxTimeoutMillis {
+		return newValidationError(ErrorCodeInvalidTimeout, operation, "timing.timeoutMillis", "timeout exceeds protocol limit")
+	}
+	if timing.DeadlineUnixMillis < 0 {
+		return newValidationError(ErrorCodeInvalidDeadline, operation, "timing.deadlineUnixMillis", "deadline must be positive")
+	}
+	if timing.DeadlineUnixMillis > 0 && timing.DeadlineUnixMillis < MinDeadlineUnixMillis {
+		return newValidationError(ErrorCodeInvalidDeadline, operation, "timing.deadlineUnixMillis", "deadline is outside supported range")
+	}
+	if timing.DeadlineUnixMillis > MaxDeadlineUnixMillis {
+		return newValidationError(ErrorCodeInvalidDeadline, operation, "timing.deadlineUnixMillis", "deadline exceeds supported range")
+	}
+	if timing.TimeoutMillis > 0 && timing.DeadlineUnixMillis > 0 {
+		return newValidationError(ErrorCodeInvalidDeadline, operation, "timing", "timeout and deadline are mutually exclusive")
+	}
+	return nil
+}
+
+func validateCommandArgs(operation Operation, args []string) error {
+	if len(args) == 0 {
+		return newValidationError(ErrorCodeMissingRequiredField, operation, "args", "command args are required")
+	}
+	if len(args) > MaxCommandArgs {
+		return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, "args", "command args exceed protocol limit")
+	}
+	for i, arg := range args {
+		field := fmt.Sprintf("args[%d]", i)
+		if i == 0 && strings.TrimSpace(arg) == "" {
+			return newValidationError(ErrorCodeMissingRequiredField, operation, field, "command executable is required")
+		}
+		if containsControl(arg) || !utf8.ValidString(arg) {
+			return newValidationError(ErrorCodeInvalidMetadata, operation, field, "command arg contains invalid characters")
+		}
+		if len(arg) > MaxCommandArgBytes {
+			return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, field, "command arg exceeds protocol limit")
+		}
+	}
+	return nil
+}
+
+func validateEnvironment(operation Operation, entries []EnvironmentEntry) error {
+	if len(entries) > MaxEnvironmentEntries {
+		return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, "env", "environment metadata exceeds protocol limit")
+	}
+	for i, entry := range entries {
+		nameField := fmt.Sprintf("env[%d].name", i)
+		if !validEnvironmentName(entry.Name) {
+			return newValidationError(ErrorCodeInvalidMetadata, operation, nameField, "environment name is invalid")
+		}
+		if entry.Source != "" && !validEnvironmentSource(entry.Source) {
+			return newValidationError(ErrorCodeInvalidMetadata, operation, fmt.Sprintf("env[%d].source", i), "environment source is unsupported")
+		}
+	}
+	return nil
+}
+
+func validEnvironmentName(name string) bool {
+	if name == "" || name != strings.TrimSpace(name) || len(name) > 128 {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'A' && r <= 'Z':
+		case r == '_':
+		case r >= '0' && r <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func validEnvironmentSource(source EnvironmentSource) bool {
+	switch EnvironmentSource(strings.TrimSpace(string(source))) {
+	case EnvironmentSourceLiteral,
+		EnvironmentSourceSecret,
+		EnvironmentSourceInherited,
+		EnvironmentSourceGenerated:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateGuestPath(operation Operation, field, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return newValidationError(ErrorCodeMissingRequiredField, operation, field, "guest path is required")
+	}
+	if value != strings.TrimSpace(value) ||
+		len(value) > MaxGuestPathBytes ||
+		containsControl(value) ||
+		!utf8.ValidString(value) ||
+		!strings.HasPrefix(value, "/") ||
+		strings.Contains(value, "\\") ||
+		strings.Contains(value, "://") ||
+		strings.Contains(value, "//") ||
+		containsParentPathSegment(value) {
+		return newValidationError(ErrorCodeMalformedPath, operation, field, "guest path must be absolute and normalized")
+	}
+	return nil
+}
+
+func containsParentPathSegment(value string) bool {
+	for _, segment := range strings.Split(value, "/") {
+		if segment == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+func validateStreamMetadata(operation Operation, field string, metadata StreamMetadata, requireMax bool) error {
+	if metadata.SizeBytes < 0 {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, field+".sizeBytes", "stream size must be non-negative")
+	}
+	if metadata.MaxBytes < 0 {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, field+".maxBytes", "stream limit must be non-negative")
+	}
+	if requireMax && metadata.MaxBytes == 0 {
+		return newValidationError(ErrorCodeMissingRequiredField, operation, field+".maxBytes", "stream byte limit is required")
+	}
+	if metadata.SizeBytes > MaxStreamMetadataBytes || metadata.MaxBytes > MaxStreamMetadataBytes {
+		return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, field, "stream metadata exceeds protocol limit")
+	}
+	if metadata.MaxBytes > 0 && metadata.SizeBytes > metadata.MaxBytes {
+		return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, field+".sizeBytes", "stream size exceeds declared limit")
+	}
+	return nil
+}
+
+func validatePayloadMetadata(operation Operation, field string, metadata PayloadMetadata, requireMax bool) error {
+	if metadata.SizeBytes < 0 {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, field+".sizeBytes", "payload size must be non-negative")
+	}
+	if metadata.MaxBytes < 0 {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, field+".maxBytes", "payload limit must be non-negative")
+	}
+	if requireMax && metadata.MaxBytes == 0 {
+		return newValidationError(ErrorCodeMissingRequiredField, operation, field+".maxBytes", "payload byte limit is required")
+	}
+	if metadata.SizeBytes > MaxCopyPayloadMetadataBytes || metadata.MaxBytes > MaxCopyPayloadMetadataBytes {
+		return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, field, "payload metadata exceeds protocol limit")
+	}
+	if metadata.MaxBytes > 0 && metadata.SizeBytes > metadata.MaxBytes {
+		return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, field+".sizeBytes", "payload size exceeds declared limit")
+	}
+	if metadata.Digest != "" && !validPayloadDigest(metadata.Digest) {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, field+".digest", "payload digest is invalid")
+	}
+	if metadata.Encoding != "" && !validPayloadEncoding(metadata.Encoding) {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, field+".encoding", "payload encoding is unsupported")
+	}
+	return nil
+}
+
+func validPayloadDigest(digest string) bool {
+	if digest != strings.TrimSpace(digest) || len(digest) > 128 || containsControl(digest) {
+		return false
+	}
+	for _, r := range digest {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == ':' || r == '-' || r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func validPayloadEncoding(encoding PayloadEncoding) bool {
+	switch PayloadEncoding(strings.TrimSpace(string(encoding))) {
+	case PayloadEncodingRaw, PayloadEncodingBase64, PayloadEncodingChunked:
+		return true
+	default:
+		return false
+	}
+}
+
+func validReadinessStatus(status ReadinessStatus) bool {
+	switch ReadinessStatus(strings.TrimSpace(string(status))) {
+	case ReadinessStatusReady, ReadinessStatusNotReady:
+		return true
+	default:
+		return false
+	}
+}
+
+func containsControl(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
