@@ -79,6 +79,7 @@ type sandboxdMicroVMConfig struct {
 	GuestReadinessPollInterval    time.Duration
 	GuestReadinessProbeConfigured bool
 	GuestAgentEndpoint            string
+	NetworkEnforcement            *sandboxruntime.RuntimeNetworkEnforcementMetadata
 }
 
 type sandboxdRequest struct {
@@ -548,6 +549,7 @@ func sanitizeSandboxdMicroVMConfig(config sandboxdMicroVMConfig) sandboxdMicroVM
 		config.StateDir = filepath.Clean(config.StateDir)
 	}
 	config.GuestAgentEndpoint = strings.TrimSpace(config.GuestAgentEndpoint)
+	config.NetworkEnforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(config.NetworkEnforcement)
 	return config
 }
 
@@ -674,34 +676,120 @@ func sandboxdMicroVMAssetFlag(role assets.AssetRole) string {
 }
 
 func sandboxdRuntimeDriverDescriptors(req sandboxdRequest) map[string]sandboxworker.RuntimeDriver {
-	if !sandboxdDriverRequested(req.Drivers, sandboxruntime.DriverMicroVM) || strings.TrimSpace(req.MicroVM.GuestAgentEndpoint) == "" {
+	if !sandboxdDriverRequested(req.Drivers, sandboxruntime.DriverMicroVM) {
 		return nil
 	}
+	enforcement := sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(req.MicroVM.NetworkEnforcement)
+	if strings.TrimSpace(req.MicroVM.GuestAgentEndpoint) == "" && enforcement == nil {
+		return nil
+	}
+	operations := sandboxdMicroVMOperationsDefault()
+	if strings.TrimSpace(req.MicroVM.GuestAgentEndpoint) != "" {
+		operations = sandboxdMicroVMOperationsWithGuestAgent()
+	}
 	return map[string]sandboxworker.RuntimeDriver{
-		sandboxruntime.DriverMicroVM: sandboxdMicroVMRuntimeDriverDescriptor(sandboxdMicroVMOperationsWithGuestAgent()),
+		sandboxruntime.DriverMicroVM: sandboxdMicroVMRuntimeDriverDescriptor(
+			operations,
+			enforcement,
+		),
 	}
 }
 
-func sandboxdMicroVMRuntimeDriverDescriptor(operations []string) sandboxworker.RuntimeDriver {
+func sandboxdMicroVMRuntimeDriverDescriptor(operations []string, enforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata) sandboxworker.RuntimeDriver {
+	enforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(enforcement)
 	return sandboxworker.RuntimeDriver{
-		ID:             sandboxruntime.DriverMicroVM,
-		HostKind:       sandboxworker.HostKindLocal,
-		IsolationLevel: sandboxworker.IsolationLevelVM,
-		Operations:     cloneSandboxdStringSlice(operations),
-		Security: sandboxworker.SecurityPolicy{
-			Requested: sandboxworker.SecurityControls{
-				NetworkPolicy:       sandboxworker.NetworkPolicyBestEffort,
-				NetworkEnforcement:  sandboxworker.NetworkEnforcementNone,
-				IsolationLevel:      sandboxworker.IsolationLevelVM,
-				CredentialProxyMode: false,
-			},
-			Enforced: sandboxworker.SecurityControls{
-				NetworkPolicy:       sandboxworker.NetworkPolicyBestEffort,
-				NetworkEnforcement:  sandboxworker.NetworkEnforcementNone,
-				IsolationLevel:      sandboxworker.IsolationLevelVM,
-				CredentialProxyMode: false,
-			},
+		ID:                 sandboxruntime.DriverMicroVM,
+		HostKind:           sandboxworker.HostKindLocal,
+		IsolationLevel:     sandboxworker.IsolationLevelVM,
+		Operations:         cloneSandboxdStringSlice(operations),
+		Security:           sandboxdMicroVMRuntimeDriverSecurity(enforcement),
+		NetworkEnforcement: enforcement,
+	}
+}
+
+func sandboxdMicroVMRuntimeDriverSecurity(enforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata) sandboxworker.SecurityPolicy {
+	policy := sandboxworker.SecurityPolicy{
+		Requested: sandboxworker.SecurityControls{
+			NetworkPolicy:       sandboxworker.NetworkPolicyBestEffort,
+			NetworkEnforcement:  sandboxworker.NetworkEnforcementNone,
+			IsolationLevel:      sandboxworker.IsolationLevelVM,
+			CredentialProxyMode: false,
 		},
+		Enforced: sandboxworker.SecurityControls{
+			NetworkPolicy:       sandboxworker.NetworkPolicyBestEffort,
+			NetworkEnforcement:  sandboxworker.NetworkEnforcementNone,
+			IsolationLevel:      sandboxworker.IsolationLevelVM,
+			CredentialProxyMode: false,
+		},
+	}
+	enforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(enforcement)
+	if enforcement == nil {
+		return policy
+	}
+	if enforcement.Plan != nil && enforcement.Plan.DefaultPosture == sandboxworker.NetworkPolicyDenyByDefault {
+		policy.Requested.NetworkPolicy = sandboxworker.NetworkPolicyDenyByDefault
+		if requestedMode := sandboxdNetworkEnforcementModeFromPlan(enforcement.Plan); requestedMode != "" {
+			policy.Requested.NetworkEnforcement = requestedMode
+		}
+	}
+	if enforcement.Result == nil || enforcement.Result.Outcome != "success" {
+		return policy
+	}
+	capability := sandboxruntime.SanitizeRuntimeNetworkEnforcementCapability(enforcement.Result.Capability)
+	if capability == nil {
+		return policy
+	}
+	policy.Enforced.NetworkEnforcementCapability = capability
+	if mode := sandboxdNetworkEnforcementMode(enforcement.Result.EnforcementMode); mode != "" {
+		policy.Enforced.NetworkEnforcement = mode
+	}
+	if capability.SupportsDefaultDenyPosture {
+		policy.Enforced.NetworkPolicy = sandboxworker.NetworkPolicyDenyByDefault
+	}
+	return policy
+}
+
+func sandboxdNetworkEnforcementModeFromPlan(plan *sandboxruntime.RuntimeNetworkEnforcementPlanMetadata) string {
+	if plan == nil {
+		return ""
+	}
+	hasProxy := false
+	hasFirewall := false
+	hasRuntime := false
+	for _, mechanism := range plan.Mechanisms {
+		switch mechanism {
+		case sandboxworker.NetworkEnforcementProxy:
+			hasProxy = true
+		case sandboxworker.NetworkEnforcementFirewall:
+			hasFirewall = true
+		case sandboxworker.NetworkEnforcementRuntime:
+			hasRuntime = true
+		}
+	}
+	switch {
+	case hasProxy && hasFirewall:
+		return sandboxworker.NetworkEnforcementProxyFirewall
+	case hasFirewall:
+		return sandboxworker.NetworkEnforcementFirewall
+	case hasProxy:
+		return sandboxworker.NetworkEnforcementProxy
+	case hasRuntime:
+		return sandboxworker.NetworkEnforcementRuntime
+	default:
+		return ""
+	}
+}
+
+func sandboxdNetworkEnforcementMode(mode string) string {
+	switch mode {
+	case sandboxworker.NetworkEnforcementBestEffort,
+		sandboxworker.NetworkEnforcementProxy,
+		sandboxworker.NetworkEnforcementFirewall,
+		sandboxworker.NetworkEnforcementRuntime,
+		sandboxworker.NetworkEnforcementProxyFirewall:
+		return mode
+	default:
+		return ""
 	}
 }
 
@@ -715,6 +803,16 @@ func sandboxdMicroVMOperationsWithGuestAgent() []string {
 		sandboxworker.OperationExec,
 		sandboxworker.OperationCopyIn,
 		sandboxworker.OperationCopyOut,
+	}
+}
+
+func sandboxdMicroVMOperationsDefault() []string {
+	return []string{
+		sandboxworker.OperationCreate,
+		sandboxworker.OperationStart,
+		sandboxworker.OperationStop,
+		sandboxworker.OperationDelete,
+		sandboxworker.OperationInspect,
 	}
 }
 

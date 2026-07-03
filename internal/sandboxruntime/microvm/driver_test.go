@@ -12,6 +12,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
 )
 
 func TestDriverSatisfiesSandboxruntimeDriver(t *testing.T) {
@@ -120,6 +121,9 @@ func TestDefaultConstructorsDoNotConfigureOrSelectFirecrackerHost(t *testing.T) 
 			}
 			if metadata.ReasonCode == DriverReasonAvailable {
 				t.Fatalf("ReasonCode = %q, want a non-live default constructor reason", metadata.ReasonCode)
+			}
+			if metadata.NetworkEnforcement != nil {
+				t.Fatalf("NetworkEnforcement = %#v, want nil without explicit enforcement plan/result", metadata.NetworkEnforcement)
 			}
 
 			encoded, err := json.Marshal(metadata)
@@ -374,6 +378,100 @@ func TestApplyRuntimeMetadataSanitizesGuestReadinessMetadata(t *testing.T) {
 		if strings.Contains(publicText, unsafe) {
 			t.Fatalf("applied target leaked unsafe guest readiness fragment %q in %s", unsafe, publicText)
 		}
+	}
+}
+
+func TestDriverMetadataProjectsExplicitNetworkEnforcementAdapterSuccessAndFailure(t *testing.T) {
+	plan := microVMNetworkEnforcementTestPlan()
+	successAdapter := microVMNetworkEnforcementFakeAdapter{
+		result: networkenforcement.Result{
+			AdapterID:       "fake-microvm-adapter",
+			Outcome:         networkenforcement.ResultOutcomeSuccess,
+			EnforcementMode: networkenforcement.ResultModeProxyFirewall,
+			Mechanisms: []networkenforcement.EnforcementMechanism{
+				networkenforcement.EnforcementMechanismProxy,
+				networkenforcement.EnforcementMechanismFirewall,
+			},
+			Operations: []string{"proxy_route", "firewall_apply"},
+			Capability: &networkenforcement.ResultCapability{
+				Supported:                  true,
+				Modes:                      []networkenforcement.ResultMode{networkenforcement.ResultModeProxyFirewall},
+				SupportsDomainRules:        true,
+				SupportsEndpointRules:      true,
+				SupportsPrivateRangeRules:  true,
+				SupportsMetadataEndpoint:   true,
+				SupportsDefaultDenyPosture: true,
+			},
+			ReasonCode: networkenforcement.ResultReasonApplied,
+		},
+	}
+	success := networkenforcement.RunAdapter(context.Background(), successAdapter, plan)
+	successDriver := NewDriver(DriverOptions{
+		CapabilityDetector:       fixedCapabilityDetector(availableCapabilityReport()),
+		NetworkEnforcementPlan:   &plan,
+		NetworkEnforcementResult: &success,
+	})
+
+	successMetadata := successDriver.Metadata()
+	if successMetadata.Availability == CapabilityAvailabilityAvailable {
+		t.Fatalf("Availability = %q, want no production-ready runtime without backend", successMetadata.Availability)
+	}
+	if successMetadata.NetworkEnforcement == nil ||
+		successMetadata.NetworkEnforcement.Plan == nil ||
+		successMetadata.NetworkEnforcement.Result == nil {
+		t.Fatalf("NetworkEnforcement = %#v, want projected plan and result", successMetadata.NetworkEnforcement)
+	}
+	result := successMetadata.NetworkEnforcement.Result
+	if result.Outcome != string(networkenforcement.ResultOutcomeSuccess) ||
+		result.EnforcementMode != string(networkenforcement.ResultModeProxyFirewall) ||
+		result.Capability == nil ||
+		!result.Capability.SupportsDefaultDenyPosture {
+		t.Fatalf("NetworkEnforcement result = %#v, want proxy_firewall capability", result)
+	}
+	encoded, err := json.Marshal(successMetadata)
+	if err != nil {
+		t.Fatalf("Marshal(success metadata) error: %v", err)
+	}
+	publicText := strings.ToLower(string(encoded))
+	for _, forbidden := range []string{"production", "egress", "://", "/tmp/", "token", "secret"} {
+		if strings.Contains(publicText, forbidden) {
+			t.Fatalf("success metadata leaked or claimed %q in %s", forbidden, publicText)
+		}
+	}
+
+	failureAdapter := microVMNetworkEnforcementFakeAdapter{
+		result: networkenforcement.Result{
+			AdapterID:       "fake-failing-adapter",
+			Outcome:         networkenforcement.ResultOutcomeFailure,
+			EnforcementMode: networkenforcement.ResultModeProxyFirewall,
+			Operations: []string{
+				"firewall_apply",
+				"/tmp/firewall.sock",
+			},
+			Capability: &networkenforcement.ResultCapability{
+				Supported:                  true,
+				Modes:                      []networkenforcement.ResultMode{networkenforcement.ResultModeProxyFirewall},
+				SupportsDefaultDenyPosture: true,
+			},
+			ReasonCode:   networkenforcement.ResultReasonAdapterFailed,
+			WarningCodes: []networkenforcement.ResultWarningCode{networkenforcement.ResultWarningSanitizedAdapterError},
+		},
+	}
+	failure := networkenforcement.RunAdapter(context.Background(), failureAdapter, plan)
+	failureDriver := NewDriver(DriverOptions{
+		CapabilityDetector:       fixedCapabilityDetector(availableCapabilityReport()),
+		NetworkEnforcementPlan:   &plan,
+		NetworkEnforcementResult: &failure,
+	})
+	failureMetadata := failureDriver.Metadata()
+	if failureMetadata.NetworkEnforcement == nil || failureMetadata.NetworkEnforcement.Result == nil {
+		t.Fatalf("failure NetworkEnforcement = %#v, want fail-closed result", failureMetadata.NetworkEnforcement)
+	}
+	failureResult := failureMetadata.NetworkEnforcement.Result
+	if failureResult.Outcome != string(networkenforcement.ResultOutcomeFailure) ||
+		failureResult.EnforcementMode != string(networkenforcement.ResultModeNone) ||
+		failureResult.Capability != nil {
+		t.Fatalf("failure result = %#v, want none mode and cleared capability", failureResult)
 	}
 }
 
@@ -856,6 +954,47 @@ func assertNoBackendCalls(t *testing.T, backend *fakeBackend) {
 func fixedCapabilityDetector(report CapabilityReport) CapabilityDetector {
 	return CapabilityDetectorFunc(func(CapabilityDetectionRequest) CapabilityReport {
 		return report
+	})
+}
+
+type microVMNetworkEnforcementFakeAdapter struct {
+	result networkenforcement.Result
+}
+
+func (adapter microVMNetworkEnforcementFakeAdapter) EnforceNetwork(_ context.Context, plan networkenforcement.SanitizedPlan) networkenforcement.Result {
+	result := adapter.result
+	if result.PlanID == "" {
+		result.PlanID = plan.Plan().ID
+	}
+	if result.PolicySnapshot == nil {
+		result.PolicySnapshot = plan.Plan().PolicySnapshot
+	}
+	return result
+}
+
+func microVMNetworkEnforcementTestPlan() networkenforcement.Plan {
+	return networkenforcement.BuildPlan(networkenforcement.PlanRequest{
+		ID:        "network-plan-microvm",
+		Source:    networkenforcement.PlanSourceMicroVM,
+		Operation: "prepare_network",
+		PolicySnapshot: &networkenforcement.PolicySnapshotIdentity{
+			ID:        "policy-snapshot-microvm",
+			Preset:    networkenforcement.PolicyPresetDenyByDefault,
+			RuleSetID: "rules-microvm",
+		},
+		RequestedPolicy: networkenforcement.RequestedNetworkPosture{
+			Preset:            networkenforcement.PolicyPresetDenyByDefault,
+			RuleSetID:         "rules-microvm",
+			RuleIDs:           []string{"rule-domain"},
+			RuleCategories:    []networkenforcement.AllowlistRuleCategory{networkenforcement.AllowlistRuleCategoryDomain},
+			PrivateNetwork:    networkenforcement.PostureBlock,
+			MetadataEndpoint:  networkenforcement.PostureBlock,
+			HTTP:              networkenforcement.ProxyRoutingModeRouteViaProxy,
+			HTTPS:             networkenforcement.ProxyRoutingModeBlock,
+			ProxyMechanism:    networkenforcement.EnforcementMechanismProxy,
+			FirewallMode:      networkenforcement.FirewallIntentModeApply,
+			FirewallMechanism: networkenforcement.EnforcementMechanismFirewall,
+		},
 	})
 }
 

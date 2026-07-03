@@ -388,6 +388,76 @@ func TestSandboxdCommandRegistersLiveMicroVMDriverWithExplicitInputs(t *testing.
 	}
 }
 
+func TestSandboxdMicroVMDescriptorCanAdvertiseExplicitNetworkEnforcementCapability(t *testing.T) {
+	descriptor := sandboxdMicroVMRuntimeDriverDescriptor(sandboxdMicroVMOperationsDefault(), &sandboxruntime.RuntimeNetworkEnforcementMetadata{
+		Plan: &sandboxruntime.RuntimeNetworkEnforcementPlanMetadata{
+			ID:               "network-plan-sandboxd",
+			Source:           "microvm",
+			Operation:        "prepare_network",
+			PolicySnapshotID: "policy-snapshot-sandboxd",
+			PolicyPreset:     "deny_by_default",
+			DefaultPosture:   "deny_by_default",
+			Mechanisms:       []string{"proxy", "firewall"},
+			Operations:       []string{"default_deny", "allowlist", "/tmp/raw-rules.sock"},
+		},
+		Result: &sandboxruntime.RuntimeNetworkEnforcementResultMetadata{
+			PlanID:          "network-plan-sandboxd",
+			AdapterID:       "fake-sandboxd-adapter",
+			Outcome:         "success",
+			EnforcementMode: "proxy_firewall",
+			Mechanisms:      []string{"proxy", "firewall"},
+			Operations:      []string{"proxy_route", "firewall_apply"},
+			Capability: &sandboxruntime.RuntimeNetworkEnforcementCapability{
+				Supported:                  true,
+				Modes:                      []string{"proxy_firewall"},
+				SupportsDomainRules:        true,
+				SupportsEndpointRules:      true,
+				SupportsDefaultDenyPosture: true,
+			},
+			ReasonCode: "applied",
+		},
+	})
+	if err := descriptor.Validate(); err != nil {
+		t.Fatalf("descriptor Validate() error: %v", err)
+	}
+	if descriptor.NetworkEnforcement == nil || descriptor.NetworkEnforcement.Result == nil {
+		t.Fatalf("NetworkEnforcement = %#v, want explicit metadata", descriptor.NetworkEnforcement)
+	}
+	if descriptor.Security.Requested.NetworkPolicy != sandboxworker.NetworkPolicyDenyByDefault ||
+		descriptor.Security.Requested.NetworkEnforcement != sandboxworker.NetworkEnforcementProxyFirewall {
+		t.Fatalf("requested security = %#v, want explicit deny/proxy_firewall request", descriptor.Security.Requested)
+	}
+	if descriptor.Security.Enforced.NetworkPolicy != sandboxworker.NetworkPolicyDenyByDefault ||
+		descriptor.Security.Enforced.NetworkEnforcement != sandboxworker.NetworkEnforcementProxyFirewall ||
+		descriptor.Security.Enforced.NetworkEnforcementCapability == nil {
+		t.Fatalf("enforced security = %#v, want explicit confirmed capability", descriptor.Security.Enforced)
+	}
+	if containsSandboxdTestString(descriptor.Operations, sandboxworker.OperationExec) ||
+		containsSandboxdTestString(descriptor.Operations, sandboxworker.OperationCopyIn) ||
+		containsSandboxdTestString(descriptor.Operations, sandboxworker.OperationCopyOut) {
+		t.Fatalf("descriptor operations = %#v, want no guest-agent operations from network metadata alone", descriptor.Operations)
+	}
+
+	encoded, err := json.Marshal(descriptor)
+	if err != nil {
+		t.Fatalf("Marshal(descriptor) error: %v", err)
+	}
+	publicText := string(encoded)
+	for _, unsafe := range []string{
+		"/tmp/",
+		"raw-rules.sock",
+		"token",
+		"secret",
+		"://",
+		"production",
+		"egress",
+	} {
+		if strings.Contains(publicText, unsafe) {
+			t.Fatalf("descriptor leaked or claimed %q in %s", unsafe, publicText)
+		}
+	}
+}
+
 func TestSandboxdCommandRegistersLiveMicroVMGuestAgentTransportCapabilities(t *testing.T) {
 	handler := &recordingSandboxdHandler{}
 	var gotService sandboxworker.ServiceOptions

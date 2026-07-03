@@ -3,6 +3,8 @@ package sandboxworker
 import (
 	"fmt"
 	"strings"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 const (
@@ -47,8 +49,12 @@ const (
 	NetworkPolicyDenyByDefault = "deny_by_default"
 	NetworkPolicyBestEffort    = "best_effort"
 
-	NetworkEnforcementNone    = "none"
-	NetworkEnforcementRuntime = "runtime"
+	NetworkEnforcementNone          = "none"
+	NetworkEnforcementBestEffort    = "best_effort"
+	NetworkEnforcementRuntime       = "runtime"
+	NetworkEnforcementProxy         = "proxy"
+	NetworkEnforcementFirewall      = "firewall"
+	NetworkEnforcementProxyFirewall = "proxy_firewall"
 
 	CredentialModeEnv            = "env"
 	CredentialModeFileTmpfs      = "file_tmpfs"
@@ -139,11 +145,12 @@ type Capabilities struct {
 // RuntimeDriver is the worker protocol's command-agnostic runtime driver
 // descriptor.
 type RuntimeDriver struct {
-	ID             string         `json:"id"`
-	HostKind       string         `json:"hostKind"`
-	IsolationLevel string         `json:"isolationLevel"`
-	Operations     []string       `json:"operations,omitempty"`
-	Security       SecurityPolicy `json:"security"`
+	ID                 string                                            `json:"id"`
+	HostKind           string                                            `json:"hostKind"`
+	IsolationLevel     string                                            `json:"isolationLevel"`
+	Operations         []string                                          `json:"operations,omitempty"`
+	Security           SecurityPolicy                                    `json:"security"`
+	NetworkEnforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata `json:"networkEnforcement,omitempty"`
 }
 
 // SecurityPolicy separates requested controls from controls the worker
@@ -155,11 +162,12 @@ type SecurityPolicy struct {
 
 // SecurityControls captures network, credential, and isolation controls.
 type SecurityControls struct {
-	NetworkPolicy       string   `json:"networkPolicy,omitempty"`
-	NetworkEnforcement  string   `json:"networkEnforcement,omitempty"`
-	CredentialModes     []string `json:"credentialModes,omitempty"`
-	IsolationLevel      string   `json:"isolationLevel,omitempty"`
-	CredentialProxyMode bool     `json:"credentialProxyMode,omitempty"`
+	NetworkPolicy                string                                              `json:"networkPolicy,omitempty"`
+	NetworkEnforcement           string                                              `json:"networkEnforcement,omitempty"`
+	NetworkEnforcementCapability *sandboxruntime.RuntimeNetworkEnforcementCapability `json:"networkEnforcementCapability,omitempty"`
+	CredentialModes              []string                                            `json:"credentialModes,omitempty"`
+	IsolationLevel               string                                              `json:"isolationLevel,omitempty"`
+	CredentialProxyMode          bool                                                `json:"credentialProxyMode,omitempty"`
 }
 
 // Target is the worker protocol target shape used by lifecycle and inspect
@@ -460,6 +468,9 @@ func (driver RuntimeDriver) Validate() error {
 	if err := driver.Security.Validate(); err != nil {
 		return fmt.Errorf("runtime driver security: %w", err)
 	}
+	if driver.NetworkEnforcement != nil && sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(driver.NetworkEnforcement) == nil {
+		return fmt.Errorf("runtime driver networkEnforcement is invalid")
+	}
 	return nil
 }
 
@@ -530,6 +541,9 @@ func validateRequestedSecurityControls(controls SecurityControls) error {
 	if controls.NetworkEnforcement != "" && !validRequestedNetworkEnforcement(controls.NetworkEnforcement) {
 		return fmt.Errorf("networkEnforcement %q is unsupported", controls.NetworkEnforcement)
 	}
+	if err := validateNetworkEnforcementCapability(controls.NetworkEnforcementCapability); err != nil {
+		return err
+	}
 	if controls.IsolationLevel != "" && !validRequestedIsolationLevel(controls.IsolationLevel) {
 		return fmt.Errorf("isolationLevel %q is unsupported", controls.IsolationLevel)
 	}
@@ -540,11 +554,26 @@ func validateRequestedSecurityControls(controls SecurityControls) error {
 }
 
 func validateEnforcedSecurityControls(controls SecurityControls) error {
+	capability := sandboxruntime.SanitizeRuntimeNetworkEnforcementCapability(controls.NetworkEnforcementCapability)
 	if controls.NetworkPolicy != "" && controls.NetworkPolicy != NetworkPolicyBestEffort {
-		return fmt.Errorf("networkPolicy %q overstates worker enforcement", controls.NetworkPolicy)
+		if controls.NetworkPolicy == NetworkPolicyDenyByDefault && capability != nil && capability.SupportsDefaultDenyPosture {
+			// Explicit capability metadata can prove deny-by-default support.
+		} else {
+			return fmt.Errorf("networkPolicy %q overstates worker enforcement", controls.NetworkPolicy)
+		}
+	}
+	if err := validateNetworkEnforcementCapability(controls.NetworkEnforcementCapability); err != nil {
+		return err
 	}
 	switch controls.NetworkEnforcement {
 	case "", NetworkEnforcementNone, NetworkEnforcementRuntime:
+	case NetworkEnforcementBestEffort,
+		NetworkEnforcementProxy,
+		NetworkEnforcementFirewall,
+		NetworkEnforcementProxyFirewall:
+		if !networkEnforcementCapabilitySupportsMode(capability, controls.NetworkEnforcement) {
+			return fmt.Errorf("networkEnforcement %q overstates worker enforcement", controls.NetworkEnforcement)
+		}
 	default:
 		return fmt.Errorf("networkEnforcement %q overstates worker enforcement", controls.NetworkEnforcement)
 	}
@@ -555,6 +584,29 @@ func validateEnforcedSecurityControls(controls SecurityControls) error {
 		return fmt.Errorf("isolationLevel %q overstates worker isolation", controls.IsolationLevel)
 	}
 	return validateCredentialModes(controls.CredentialModes, true)
+}
+
+func validateNetworkEnforcementCapability(capability *sandboxruntime.RuntimeNetworkEnforcementCapability) error {
+	if capability == nil {
+		return nil
+	}
+	if sandboxruntime.SanitizeRuntimeNetworkEnforcementCapability(capability) == nil {
+		return fmt.Errorf("networkEnforcementCapability is invalid")
+	}
+	return nil
+}
+
+func networkEnforcementCapabilitySupportsMode(capability *sandboxruntime.RuntimeNetworkEnforcementCapability, mode string) bool {
+	if capability == nil || !capability.Supported {
+		return false
+	}
+	mode = strings.TrimSpace(mode)
+	for _, supported := range capability.Modes {
+		if strings.TrimSpace(supported) == mode {
+			return true
+		}
+	}
+	return false
 }
 
 func validateCredentialModes(modes []string, enforced bool) error {
@@ -581,7 +633,12 @@ func validRequestedNetworkPolicy(policy string) bool {
 
 func validRequestedNetworkEnforcement(mode string) bool {
 	switch mode {
-	case NetworkEnforcementNone, NetworkEnforcementRuntime:
+	case NetworkEnforcementNone,
+		NetworkEnforcementBestEffort,
+		NetworkEnforcementRuntime,
+		NetworkEnforcementProxy,
+		NetworkEnforcementFirewall,
+		NetworkEnforcementProxyFirewall:
 		return true
 	default:
 		return false

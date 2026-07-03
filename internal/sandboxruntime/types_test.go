@@ -287,6 +287,171 @@ func TestRuntimeGuestReadinessMetadataDoesNotClaimExecOrCopySupport(t *testing.T
 	}
 }
 
+func TestRuntimeMetadataIncludesOptionalNetworkEnforcementMetadata(t *testing.T) {
+	metadataType := reflect.TypeOf(RuntimeMetadata{})
+	assertFieldType(t, metadataType, "NetworkEnforcement", reflect.TypeOf((*RuntimeNetworkEnforcementMetadata)(nil)))
+
+	networkType := reflect.TypeOf(RuntimeNetworkEnforcementMetadata{})
+	assertFieldType(t, networkType, "Plan", reflect.TypeOf((*RuntimeNetworkEnforcementPlanMetadata)(nil)))
+	assertFieldType(t, networkType, "Result", reflect.TypeOf((*RuntimeNetworkEnforcementResultMetadata)(nil)))
+
+	resultType := reflect.TypeOf(RuntimeNetworkEnforcementResultMetadata{})
+	assertFieldType(t, resultType, "Capability", reflect.TypeOf((*RuntimeNetworkEnforcementCapability)(nil)))
+
+	metadata := RuntimeMetadata{
+		Backend: "microvm",
+		NetworkEnforcement: SanitizeRuntimeNetworkEnforcementMetadata(&RuntimeNetworkEnforcementMetadata{
+			Plan: &RuntimeNetworkEnforcementPlanMetadata{
+				ID:               "network-plan-01",
+				Source:           "microvm",
+				Operation:        "prepare_network",
+				PolicySnapshotID: "policy-snapshot-01",
+				PolicyPreset:     "deny_by_default",
+				DefaultPosture:   "deny_by_default",
+				Mechanisms:       []string{"proxy", "firewall"},
+				Operations:       []string{"default_deny", "allowlist"},
+			},
+			Result: &RuntimeNetworkEnforcementResultMetadata{
+				PlanID:           "network-plan-01",
+				AdapterID:        "fake-adapter-01",
+				Outcome:          "success",
+				EnforcementMode:  "proxy_firewall",
+				Mechanisms:       []string{"proxy", "firewall"},
+				Operations:       []string{"proxy_route", "firewall_apply"},
+				PolicySnapshotID: "policy-snapshot-01",
+				PolicyPreset:     "deny_by_default",
+				Capability: &RuntimeNetworkEnforcementCapability{
+					Supported:                  true,
+					Modes:                      []string{"proxy_firewall"},
+					SupportsDomainRules:        true,
+					SupportsEndpointRules:      true,
+					SupportsDefaultDenyPosture: true,
+				},
+				ReasonCode: "applied",
+			},
+		}),
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("Marshal(RuntimeMetadata) error = %v", err)
+	}
+	publicText := string(encoded)
+	for _, want := range []string{
+		`"networkEnforcement":`,
+		`"plan":`,
+		`"result":`,
+		`"source":"microvm"`,
+		`"outcome":"success"`,
+		`"enforcementMode":"proxy_firewall"`,
+		`"supportsDefaultDenyPosture":true`,
+	} {
+		if !strings.Contains(publicText, want) {
+			t.Fatalf("RuntimeMetadata JSON %s missing %s", publicText, want)
+		}
+	}
+}
+
+func TestRuntimeNetworkEnforcementMetadataSanitizesUnsafeValues(t *testing.T) {
+	metadata := SanitizeRuntimeNetworkEnforcementMetadata(&RuntimeNetworkEnforcementMetadata{
+		Plan: &RuntimeNetworkEnforcementPlanMetadata{
+			ID:               "https://plan.example.test/path?token=secret",
+			Source:           " MICROVM ",
+			Operation:        "prepare_network",
+			PolicySnapshotID: "/Users/alice/policy.json",
+			PolicyPreset:     " DENY_BY_DEFAULT ",
+			DefaultPosture:   " DENY_BY_DEFAULT ",
+			Mechanisms:       []string{" FIREWALL ", "https://proxy.example.test"},
+			Operations:       []string{"default_deny", "/tmp/rules.sock", "Authorization"},
+		},
+		Result: &RuntimeNetworkEnforcementResultMetadata{
+			PlanID:          "network-plan-01",
+			AdapterID:       "adapter=secret",
+			Outcome:         " SUCCESS ",
+			EnforcementMode: " FIREWALL ",
+			Mechanisms:      []string{" FIREWALL ", "unix:///tmp/firewall.sock"},
+			Operations:      []string{"firewall_apply", "token=raw-secret"},
+			PolicyPreset:    " DENY_BY_DEFAULT ",
+			Capability: &RuntimeNetworkEnforcementCapability{
+				Supported:                  true,
+				Modes:                      []string{" FIREWALL ", "https://bad.example.test"},
+				SupportsDefaultDenyPosture: true,
+			},
+			ReasonCode:   " APPLIED ",
+			WarningCodes: []string{"partial_enforcement", "https://warning.example.test"},
+		},
+	})
+	if metadata == nil || metadata.Plan == nil || metadata.Result == nil {
+		t.Fatalf("SanitizeRuntimeNetworkEnforcementMetadata() = %#v, want plan and result", metadata)
+	}
+	if metadata.Plan.ID != "" || metadata.Plan.PolicySnapshotID != "" {
+		t.Fatalf("plan identity = %#v, want unsafe IDs cleared", metadata.Plan)
+	}
+	if metadata.Plan.Source != "microvm" ||
+		metadata.Plan.PolicyPreset != "deny_by_default" ||
+		!reflect.DeepEqual(metadata.Plan.Mechanisms, []string{"firewall"}) ||
+		!reflect.DeepEqual(metadata.Plan.Operations, []string{"default_deny"}) {
+		t.Fatalf("plan metadata = %#v, want sanitized safe labels", metadata.Plan)
+	}
+	if metadata.Result.AdapterID != "" ||
+		metadata.Result.EnforcementMode != "firewall" ||
+		metadata.Result.Capability == nil ||
+		!reflect.DeepEqual(metadata.Result.Capability.Modes, []string{"firewall"}) ||
+		!reflect.DeepEqual(metadata.Result.WarningCodes, []string{"partial_enforcement"}) {
+		t.Fatalf("result metadata = %#v, want sanitized safe result", metadata.Result)
+	}
+
+	encoded, err := json.Marshal(RuntimeMetadata{NetworkEnforcement: metadata})
+	if err != nil {
+		t.Fatalf("Marshal(RuntimeMetadata) error = %v", err)
+	}
+	publicText := string(encoded)
+	for _, unsafe := range []string{
+		"example.test",
+		"/Users/alice",
+		"/tmp/",
+		"rules.sock",
+		"token",
+		"secret",
+		"Authorization",
+		"://",
+		"production",
+		"egress",
+	} {
+		if strings.Contains(publicText, unsafe) {
+			t.Fatalf("network enforcement metadata leaked or claimed %q in %s", unsafe, publicText)
+		}
+	}
+}
+
+func TestRuntimeNetworkEnforcementFailureClearsCapabilityUpgrade(t *testing.T) {
+	metadata := SanitizeRuntimeNetworkEnforcementMetadata(&RuntimeNetworkEnforcementMetadata{
+		Result: &RuntimeNetworkEnforcementResultMetadata{
+			PlanID:          "network-plan-01",
+			Outcome:         "failure",
+			EnforcementMode: "proxy_firewall",
+			Capability: &RuntimeNetworkEnforcementCapability{
+				Supported:                  true,
+				Modes:                      []string{"proxy_firewall"},
+				SupportsDefaultDenyPosture: true,
+			},
+			ReasonCode:   "adapter_failed",
+			WarningCodes: []string{"sanitized_adapter_error"},
+		},
+	})
+	if metadata == nil || metadata.Result == nil {
+		t.Fatalf("metadata = %#v, want sanitized failure result", metadata)
+	}
+	if metadata.Result.EnforcementMode != "none" {
+		t.Fatalf("failure enforcementMode = %q, want none", metadata.Result.EnforcementMode)
+	}
+	if metadata.Result.Capability != nil {
+		t.Fatalf("failure capability = %#v, want cleared capability upgrade", metadata.Result.Capability)
+	}
+	if metadata.Result.ReasonCode != "adapter_failed" {
+		t.Fatalf("failure reasonCode = %q, want adapter_failed", metadata.Result.ReasonCode)
+	}
+}
+
 func assertFieldType(t *testing.T, typ reflect.Type, fieldName string, want reflect.Type) {
 	t.Helper()
 	field, ok := typ.FieldByName(fieldName)

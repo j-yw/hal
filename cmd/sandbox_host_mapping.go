@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworker"
 )
 
@@ -169,8 +170,10 @@ func sandboxSecurityFromWorkerPolicy(policy sandboxworker.SecurityPolicy) *sandb
 func sandboxWorkerSecurityPolicyHasNetworkMetadata(policy sandboxworker.SecurityPolicy) bool {
 	return strings.TrimSpace(policy.Requested.NetworkPolicy) != "" ||
 		strings.TrimSpace(policy.Requested.NetworkEnforcement) != "" ||
+		policy.Requested.NetworkEnforcementCapability != nil ||
 		strings.TrimSpace(policy.Enforced.NetworkPolicy) != "" ||
-		strings.TrimSpace(policy.Enforced.NetworkEnforcement) != ""
+		strings.TrimSpace(policy.Enforced.NetworkEnforcement) != "" ||
+		policy.Enforced.NetworkEnforcementCapability != nil
 }
 
 func sandboxNetworkPolicyResultFromWorkerPolicy(policy sandboxworker.SecurityPolicy) *sandbox.SandboxNetworkPolicyResult {
@@ -197,6 +200,16 @@ func sandboxNetworkPolicyIntentFromWorkerPolicy(policy string) sandbox.SandboxNe
 func sandboxNetworkPolicyCapabilityFromWorkerControls(controls sandboxworker.SecurityControls) sandbox.SandboxNetworkPolicyEnforcementCapability {
 	mode := sandboxNetworkEnforcementModeFromWorker(controls.NetworkEnforcement)
 	capability := sandbox.SandboxNetworkPolicyEnforcementCapability{}
+	if runtimeCapability := sandboxruntime.SanitizeRuntimeNetworkEnforcementCapability(controls.NetworkEnforcementCapability); runtimeCapability != nil {
+		capability.Supported = runtimeCapability.Supported
+		capability.Modes = sandboxNetworkEnforcementModesFromRuntimeCapability(runtimeCapability.Modes)
+		capability.SupportsDomainRules = runtimeCapability.SupportsDomainRules
+		capability.SupportsEndpointRules = runtimeCapability.SupportsEndpointRules
+		capability.SupportsPrivateRangeRules = runtimeCapability.SupportsPrivateRangeRules
+		capability.SupportsMetadataEndpoint = runtimeCapability.SupportsMetadataEndpoint
+		capability.SupportsDefaultDenyPosture = runtimeCapability.SupportsDefaultDenyPosture
+		return capability
+	}
 	if mode != "" {
 		capability.Modes = []string{mode}
 	}
@@ -210,6 +223,16 @@ func sandboxNetworkPolicyCapabilityFromWorkerControls(controls sandboxworker.Sec
 	capability.SupportsDefaultDenyPosture = capability.Supported &&
 		strings.TrimSpace(controls.NetworkPolicy) == sandboxworker.NetworkPolicyDenyByDefault
 	return capability
+}
+
+func sandboxNetworkEnforcementModesFromRuntimeCapability(modes []string) []string {
+	out := make([]string, 0, len(modes))
+	for _, mode := range modes {
+		if safe := sandboxNetworkEnforcementModeFromWorker(mode); safe != "" {
+			out = append(out, safe)
+		}
+	}
+	return sortedUniqueStrings(out)
 }
 
 func sandboxNetworkEnforcementModeFromWorker(mode string) string {
@@ -244,11 +267,13 @@ func sandboxHostWorkerSecurityPolicy(status *sandboxworker.Status, capabilities 
 func zeroSandboxHostWorkerSecurityPolicy(policy sandboxworker.SecurityPolicy) bool {
 	return policy.Requested.NetworkPolicy == "" &&
 		policy.Requested.NetworkEnforcement == "" &&
+		policy.Requested.NetworkEnforcementCapability == nil &&
 		len(policy.Requested.CredentialModes) == 0 &&
 		policy.Requested.IsolationLevel == "" &&
 		!policy.Requested.CredentialProxyMode &&
 		policy.Enforced.NetworkPolicy == "" &&
 		policy.Enforced.NetworkEnforcement == "" &&
+		policy.Enforced.NetworkEnforcementCapability == nil &&
 		len(policy.Enforced.CredentialModes) == 0 &&
 		policy.Enforced.IsolationLevel == "" &&
 		!policy.Enforced.CredentialProxyMode

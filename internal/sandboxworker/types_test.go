@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 func TestWorkerProtocolDefaultsAndValidation(t *testing.T) {
@@ -410,6 +412,37 @@ func TestWorkerSecurityPolicyRejectsOverstatedCapabilityClaims(t *testing.T) {
 				t.Fatalf("Validate() error = %q, want substring %q", err.Error(), tt.want)
 			}
 		})
+	}
+}
+
+func TestWorkerSecurityPolicyAllowsExplicitNetworkEnforcementCapability(t *testing.T) {
+	policy := SecurityPolicy{
+		Requested: SecurityControls{
+			NetworkPolicy:      NetworkPolicyDenyByDefault,
+			NetworkEnforcement: NetworkEnforcementProxyFirewall,
+			IsolationLevel:     IsolationLevelVM,
+		},
+		Enforced: SecurityControls{
+			NetworkPolicy:      NetworkPolicyDenyByDefault,
+			NetworkEnforcement: NetworkEnforcementProxyFirewall,
+			NetworkEnforcementCapability: &sandboxruntime.RuntimeNetworkEnforcementCapability{
+				Supported:                  true,
+				Modes:                      []string{NetworkEnforcementProxyFirewall},
+				SupportsDomainRules:        true,
+				SupportsEndpointRules:      true,
+				SupportsDefaultDenyPosture: true,
+			},
+			IsolationLevel: IsolationLevelVM,
+		},
+	}
+	if err := policy.Validate(); err != nil {
+		t.Fatalf("Validate() unexpected error: %v", err)
+	}
+
+	withoutCapability := policy
+	withoutCapability.Enforced.NetworkEnforcementCapability = nil
+	if err := withoutCapability.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want explicit capability required for proxy_firewall enforcement")
 	}
 }
 

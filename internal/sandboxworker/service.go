@@ -3,6 +3,8 @@ package sandboxworker
 import (
 	"fmt"
 	"strings"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 var defaultSupportedOperations = []string{
@@ -221,6 +223,7 @@ func runtimeDriverCapabilityFromDescriptors(driverID string, descriptors map[str
 		descriptor.ID = strings.TrimSpace(defaultString(descriptor.ID, driverID))
 		descriptor.Operations = cloneStringSlice(descriptor.Operations)
 		descriptor.Security = cloneSecurityPolicy(descriptor.Security)
+		descriptor.NetworkEnforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(descriptor.NetworkEnforcement)
 		return descriptor
 	}
 
@@ -386,6 +389,7 @@ func cloneRuntimeDriverMap(drivers map[string]RuntimeDriver) map[string]RuntimeD
 	for id, driver := range drivers {
 		driver.Operations = cloneStringSlice(driver.Operations)
 		driver.Security = cloneSecurityPolicy(driver.Security)
+		driver.NetworkEnforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(driver.NetworkEnforcement)
 		clone[strings.TrimSpace(id)] = driver
 	}
 	return clone
@@ -400,6 +404,7 @@ func cloneSecurityPolicy(policy SecurityPolicy) SecurityPolicy {
 
 func cloneSecurityControls(controls SecurityControls) SecurityControls {
 	controls.CredentialModes = cloneStringSlice(controls.CredentialModes)
+	controls.NetworkEnforcementCapability = sandboxruntime.SanitizeRuntimeNetworkEnforcementCapability(controls.NetworkEnforcementCapability)
 	return controls
 }
 
@@ -428,6 +433,7 @@ func zeroSecurityPolicy(policy SecurityPolicy) bool {
 func zeroSecurityControls(controls SecurityControls) bool {
 	return controls.NetworkPolicy == "" &&
 		controls.NetworkEnforcement == "" &&
+		controls.NetworkEnforcementCapability == nil &&
 		len(controls.CredentialModes) == 0 &&
 		controls.IsolationLevel == "" &&
 		!controls.CredentialProxyMode

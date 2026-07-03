@@ -16,6 +16,7 @@ import (
 const microVMPackagePath = "github.com/jywlabs/hal/internal/sandboxruntime/microvm"
 const microVMAssetsPackagePath = "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
 const microVMFirecrackerHostPackagePath = "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecrackerhost"
+const networkEnforcementPackagePath = "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
 
 var forbiddenMicroVMProductionImports = []microVMForbiddenImport{
 	{
@@ -38,7 +39,8 @@ var forbiddenMicroVMProductionImports = []microVMForbiddenImport{
 		match: func(importPath string) bool {
 			return strings.HasPrefix(importPath, "github.com/jywlabs/hal/internal/sandboxruntime/") &&
 				importPath != microVMPackagePath &&
-				importPath != microVMAssetsPackagePath
+				importPath != microVMAssetsPackagePath &&
+				importPath != networkEnforcementPackagePath
 		},
 	},
 	{
@@ -204,6 +206,7 @@ func TestMicroVMImportBoundaryAllowsOnlyCurrentContracts(t *testing.T) {
 		"github.com/jywlabs/hal/internal/sandbox",
 		"github.com/jywlabs/hal/internal/sandboxruntime",
 		microVMAssetsPackagePath,
+		networkEnforcementPackagePath,
 	} {
 		t.Run(importPath, func(t *testing.T) {
 			if message := microVMProductionImportBoundaryMessage("capability.go", importPath); message != "" {
@@ -431,7 +434,8 @@ func microVMAllowedProductionImport(importPath string) bool {
 	return microVMIsStandardLibraryImport(importPath) ||
 		importPath == "github.com/jywlabs/hal/internal/sandbox" ||
 		importPath == "github.com/jywlabs/hal/internal/sandboxruntime" ||
-		importPath == microVMAssetsPackagePath
+		importPath == microVMAssetsPackagePath ||
+		importPath == networkEnforcementPackagePath
 }
 
 func microVMAllowedTestImport(importPath string) bool {

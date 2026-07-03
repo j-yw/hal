@@ -63,12 +63,13 @@ type RuntimeState struct {
 // RuntimeMetadata captures optional runtime-specific target metadata using only
 // redaction-safe labels.
 type RuntimeMetadata struct {
-	Backend          string                         `json:"backend,omitempty"`
-	CapabilityLabels []string                       `json:"capabilityLabels,omitempty"`
-	PathRoles        []string                       `json:"pathRoles,omitempty"`
-	OperationPlan    *RuntimeOperationPlan          `json:"operationPlan,omitempty"`
-	ProcessLaunch    *RuntimeProcessLaunchMetadata  `json:"processLaunch,omitempty"`
-	GuestReadiness   *RuntimeGuestReadinessMetadata `json:"guestReadiness,omitempty"`
+	Backend            string                             `json:"backend,omitempty"`
+	CapabilityLabels   []string                           `json:"capabilityLabels,omitempty"`
+	PathRoles          []string                           `json:"pathRoles,omitempty"`
+	OperationPlan      *RuntimeOperationPlan              `json:"operationPlan,omitempty"`
+	ProcessLaunch      *RuntimeProcessLaunchMetadata      `json:"processLaunch,omitempty"`
+	GuestReadiness     *RuntimeGuestReadinessMetadata     `json:"guestReadiness,omitempty"`
+	NetworkEnforcement *RuntimeNetworkEnforcementMetadata `json:"networkEnforcement,omitempty"`
 }
 
 // RuntimeProcessLaunchMetadata captures sanitized process-launch state labels.
@@ -89,6 +90,58 @@ type RuntimeGuestReadinessMetadata struct {
 	State     RuntimeGuestReadinessState `json:"state,omitempty"`
 	Transport string                     `json:"transport,omitempty"`
 	Labels    []string                   `json:"labels,omitempty"`
+}
+
+// RuntimeNetworkEnforcementMetadata captures sanitized network enforcement
+// plan/result capability metadata. It is capability reporting only and does
+// not imply production egress, proxy listeners, firewall mutation, or guest
+// network readiness.
+type RuntimeNetworkEnforcementMetadata struct {
+	Plan   *RuntimeNetworkEnforcementPlanMetadata   `json:"plan,omitempty"`
+	Result *RuntimeNetworkEnforcementResultMetadata `json:"result,omitempty"`
+}
+
+// RuntimeNetworkEnforcementPlanMetadata carries safe plan identity and intent
+// labels without raw destinations, sockets, rule bodies, or firewall commands.
+type RuntimeNetworkEnforcementPlanMetadata struct {
+	ID               string   `json:"id,omitempty"`
+	Source           string   `json:"source,omitempty"`
+	Operation        string   `json:"operation,omitempty"`
+	PolicySnapshotID string   `json:"policySnapshotId,omitempty"`
+	PolicyPreset     string   `json:"policyPreset,omitempty"`
+	DefaultPosture   string   `json:"defaultPosture,omitempty"`
+	Mechanisms       []string `json:"mechanisms,omitempty"`
+	Operations       []string `json:"operations,omitempty"`
+}
+
+// RuntimeNetworkEnforcementResultMetadata carries safe adapter result labels.
+// Unsupported and failure results must not contain enforcing capability claims.
+type RuntimeNetworkEnforcementResultMetadata struct {
+	PlanID           string                               `json:"planId,omitempty"`
+	AdapterID        string                               `json:"adapterId,omitempty"`
+	Outcome          string                               `json:"outcome,omitempty"`
+	EnforcementMode  string                               `json:"enforcementMode,omitempty"`
+	Mechanisms       []string                             `json:"mechanisms,omitempty"`
+	Operations       []string                             `json:"operations,omitempty"`
+	PolicySnapshotID string                               `json:"policySnapshotId,omitempty"`
+	PolicyPreset     string                               `json:"policyPreset,omitempty"`
+	Capability       *RuntimeNetworkEnforcementCapability `json:"capability,omitempty"`
+	ReasonCode       string                               `json:"reasonCode,omitempty"`
+	WarningCodes     []string                             `json:"warningCodes,omitempty"`
+}
+
+// RuntimeNetworkEnforcementCapability captures policy-shape capability labels
+// proven by explicit configuration or an adapter result.
+type RuntimeNetworkEnforcementCapability struct {
+	Supported                  bool     `json:"supported,omitempty"`
+	Modes                      []string `json:"modes,omitempty"`
+	SupportsDomainRules        bool     `json:"supportsDomainRules,omitempty"`
+	SupportsEndpointRules      bool     `json:"supportsEndpointRules,omitempty"`
+	SupportsPrivateRangeRules  bool     `json:"supportsPrivateRangeRules,omitempty"`
+	SupportsMetadataEndpoint   bool     `json:"supportsMetadataEndpoint,omitempty"`
+	SupportsLoopbackRules      bool     `json:"supportsLoopbackRules,omitempty"`
+	SupportsLinkLocalRules     bool     `json:"supportsLinkLocalRules,omitempty"`
+	SupportsDefaultDenyPosture bool     `json:"supportsDefaultDenyPosture,omitempty"`
 }
 
 // RuntimeOperationPlan is a sanitized runtime-operation plan. It carries only
