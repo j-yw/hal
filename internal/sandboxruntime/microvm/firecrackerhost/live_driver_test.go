@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -135,6 +136,138 @@ func TestNewLiveDriverUsesExplicitBackendAndCapabilityOverride(t *testing.T) {
 	}
 }
 
+func TestNewLiveDriverStartUsesFakeHostRunnerAndBootAcceptance(t *testing.T) {
+	baseStateDir := filepath.Join(t.TempDir(), "firecracker-state")
+	process := &fakeHostProcess{rawPID: 424242}
+	runner := &fakeHostProcessRunner{processes: []HostProcess{process}}
+	poller := &fakeBootAcceptancePoller{result: firecracker.BootAcceptanceResult{
+		ProcessAccepted:    true,
+		APISocketAvailable: true,
+	}}
+
+	driver, err := NewLiveDriver(LiveDriverOptions{
+		Config:               liveDriverValidConfig(),
+		BaseStateDir:         baseStateDir,
+		CapabilityDetector:   liveDriverAvailableDetector{},
+		HostProcessRunner:    runner,
+		BootAcceptancePoller: poller,
+		CleanupFilesystem:    newFakeCleanupFilesystem(),
+	})
+	if err != nil {
+		t.Fatalf("NewLiveDriver() error = %v, want nil", err)
+	}
+
+	created, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "firecracker-live-start"})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	if runner.calls != 0 || poller.calls != 0 {
+		t.Fatalf("Create() live calls = runner:%d poller:%d, want none before Start", runner.calls, poller.calls)
+	}
+
+	started, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: *created})
+	if err != nil {
+		t.Fatalf("Start() error = %v, want nil through fake live dependencies", err)
+	}
+	if started == nil || started.Runtime.Metadata == nil || started.Runtime.Metadata.ProcessLaunch == nil {
+		t.Fatalf("Start() target = %#v, want live process launch metadata", started)
+	}
+	launch := started.Runtime.Metadata.ProcessLaunch
+	if launch.State != string(firecracker.ProcessLaunchStateAccepted) {
+		t.Fatalf("ProcessLaunch.State = %q, want %q", launch.State, firecracker.ProcessLaunchStateAccepted)
+	}
+
+	if runner.calls != 1 {
+		t.Fatalf("fake host runner calls = %d, want one live start", runner.calls)
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("fake host runner requests = %#v, want one request", runner.requests)
+	}
+	if runner.requests[0].Executable != liveDriverValidConfig().HypervisorPath {
+		t.Fatalf("runner executable = %q, want configured Firecracker executable", runner.requests[0].Executable)
+	}
+	if len(runner.requests[0].Environment) != 0 {
+		t.Fatalf("runner environment = %#v, want no environment delivery", runner.requests[0].Environment)
+	}
+	if poller.calls != 1 {
+		t.Fatalf("boot acceptance poller calls = %d, want one host-side acceptance poll", poller.calls)
+	}
+	if poller.req.Handle.ID != launch.ProcessID || poller.req.Handle.Source != launch.ProcessIDSource {
+		t.Fatalf("poller handle = %#v, launch metadata = %#v, want same sanitized fake handle", poller.req.Handle, launch)
+	}
+	if poller.req.APISocket.Role != firecracker.OperationPathRoleAPISocket {
+		t.Fatalf("poller API socket role = %q, want %q", poller.req.APISocket.Role, firecracker.OperationPathRoleAPISocket)
+	}
+	assertLiveDriverPathUnderBaseStateDir(t, poller.req.APISocket.Path, baseStateDir)
+	if process.signalCalls != 0 || process.killCalls != 0 || process.waitCalls != 0 {
+		t.Fatalf("fake process cleanup calls after accepted start = signal:%d kill:%d wait:%d, want none", process.signalCalls, process.killCalls, process.waitCalls)
+	}
+}
+
+func TestNewLiveDriverBootAcceptanceFailureCleansUpFakeHostProcess(t *testing.T) {
+	acceptanceErr := errors.New("fake boot acceptance failed at /Users/alice/private/firecracker.sock token=ghp_secret")
+	baseStateDir := filepath.Join(t.TempDir(), "firecracker-state")
+	cleanupFS := newFakeCleanupFilesystem()
+	process := &fakeHostProcess{rawPID: 424242}
+	runner := &fakeHostProcessRunner{processes: []HostProcess{process}}
+	poller := &fakeBootAcceptancePoller{err: acceptanceErr}
+
+	driver, err := NewLiveDriver(LiveDriverOptions{
+		Config:               liveDriverValidConfig(),
+		BaseStateDir:         baseStateDir,
+		CapabilityDetector:   liveDriverAvailableDetector{},
+		HostProcessRunner:    runner,
+		BootAcceptancePoller: poller,
+		CleanupFilesystem:    cleanupFS,
+	})
+	if err != nil {
+		t.Fatalf("NewLiveDriver() error = %v, want nil", err)
+	}
+	created, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "firecracker-live-cleanup"})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	paths, err := firecracker.PlanPaths(firecracker.PathPlanRequest{
+		RuntimeID:    created.Runtime.RuntimeID,
+		BaseStateDir: baseStateDir,
+	})
+	if err != nil {
+		t.Fatalf("PlanPaths() error = %v, want nil", err)
+	}
+	cleanupFS.addDir(paths.StateDir)
+	cleanupFS.addFile(paths.APISocketPath)
+	cleanupFS.addFile(paths.ConfigPath)
+	cleanupFS.addFile(paths.LogPath)
+	cleanupFS.addFile(paths.MetricsPath)
+
+	started, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: *created})
+
+	if err == nil {
+		t.Fatal("Start() error = nil, want boot acceptance failure")
+	}
+	if started != nil {
+		t.Fatalf("Start() target = %#v, want nil after boot acceptance failure", started)
+	}
+	if !errors.Is(err, acceptanceErr) {
+		t.Fatalf("errors.Is(Start() error, acceptanceErr) = false for %v", err)
+	}
+	if runner.calls != 1 {
+		t.Fatalf("fake host runner calls = %d, want one process start before cleanup", runner.calls)
+	}
+	if poller.calls != 1 {
+		t.Fatalf("boot acceptance poller calls = %d, want one failed acceptance poll", poller.calls)
+	}
+	if process.killCalls != 1 || process.waitCalls != 1 || process.signalCalls != 0 {
+		t.Fatalf("fake process cleanup calls = signal:%d kill:%d wait:%d, want kill+wait cleanup", process.signalCalls, process.killCalls, process.waitCalls)
+	}
+	if !reflect.DeepEqual(cleanupFS.removeCalls, []string{paths.StateDir}) {
+		t.Fatalf("cleanup RemoveAll calls = %#v, want only state dir %q", cleanupFS.removeCalls, paths.StateDir)
+	}
+	if cleanupFS.exists(paths.StateDir) {
+		t.Fatalf("cleanup left Firecracker state dir %q in fake filesystem", paths.StateDir)
+	}
+}
+
 func TestNewLiveBackendOptionsRejectsInvalidExplicitInputs(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -182,6 +315,15 @@ func TestNewLiveBackendOptionsRejectsInvalidExplicitInputs(t *testing.T) {
 				t.Fatalf("OperationError.Field = %q, want %q", operationErr.Field, tt.field)
 			}
 		})
+	}
+}
+
+func assertLiveDriverPathUnderBaseStateDir(t *testing.T, path, baseStateDir string) {
+	t.Helper()
+
+	rel, err := filepath.Rel(filepath.Clean(baseStateDir), filepath.Clean(path))
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		t.Fatalf("path %q is not under base state dir %q", path, baseStateDir)
 	}
 }
 
