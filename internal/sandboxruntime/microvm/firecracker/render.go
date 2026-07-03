@@ -29,6 +29,11 @@ type liveBootMetricsConfig struct {
 }
 
 func renderLiveBootFiles(config BackendConfig) error {
+	if config.LaunchDescriptor != nil {
+		if _, err := firecrackerLaunchDescriptorAssets(config.LaunchDescriptor, liveBootRenderOperation); err != nil {
+			return err
+		}
+	}
 	paths, err := validateLiveBootRenderPaths(config.Paths)
 	if err != nil {
 		return err

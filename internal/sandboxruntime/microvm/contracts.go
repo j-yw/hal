@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
 )
 
 const (
@@ -64,20 +66,21 @@ type ErrorCode string
 // Config contains backend-neutral microVM runtime configuration. Path fields
 // are host-local inputs and must not be copied into public error strings.
 type Config struct {
-	KernelImagePath string      `json:"kernelImagePath,omitempty"`
-	RootfsPath      string      `json:"rootfsPath,omitempty"`
-	InitrdPath      string      `json:"initrdPath,omitempty"`
-	JailerPath      string      `json:"jailerPath,omitempty"`
-	HypervisorPath  string      `json:"hypervisorPath,omitempty"`
-	CPUCount        int         `json:"cpuCount,omitempty"`
-	MemoryMiB       int         `json:"memoryMiB,omitempty"`
-	DiskSizeMiB     int         `json:"diskSizeMiB,omitempty"`
-	GuestWorkDir    string      `json:"guestWorkDir,omitempty"`
-	NetworkMode     NetworkMode `json:"networkMode,omitempty"`
-	ImageLabel      string      `json:"imageLabel,omitempty"`
-	ImageDigest     string      `json:"imageDigest,omitempty"`
-	TemplateLabel   string      `json:"templateLabel,omitempty"`
-	TemplateDigest  string      `json:"templateDigest,omitempty"`
+	KernelImagePath  string                   `json:"kernelImagePath,omitempty"`
+	RootfsPath       string                   `json:"rootfsPath,omitempty"`
+	InitrdPath       string                   `json:"initrdPath,omitempty"`
+	JailerPath       string                   `json:"jailerPath,omitempty"`
+	HypervisorPath   string                   `json:"hypervisorPath,omitempty"`
+	LaunchDescriptor *assets.LaunchDescriptor `json:"launchDescriptor,omitempty"`
+	CPUCount         int                      `json:"cpuCount,omitempty"`
+	MemoryMiB        int                      `json:"memoryMiB,omitempty"`
+	DiskSizeMiB      int                      `json:"diskSizeMiB,omitempty"`
+	GuestWorkDir     string                   `json:"guestWorkDir,omitempty"`
+	NetworkMode      NetworkMode              `json:"networkMode,omitempty"`
+	ImageLabel       string                   `json:"imageLabel,omitempty"`
+	ImageDigest      string                   `json:"imageDigest,omitempty"`
+	TemplateLabel    string                   `json:"templateLabel,omitempty"`
+	TemplateDigest   string                   `json:"templateDigest,omitempty"`
 }
 
 // Options groups backend-neutral microVM runtime options.

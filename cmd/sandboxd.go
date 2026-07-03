@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +18,8 @@ import (
 	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets/localresolver"
 	"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"
 	"github.com/jywlabs/hal/internal/sandboxworker"
 	"github.com/spf13/cobra"
@@ -291,6 +294,14 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 		return sandboxdRequest{}, fmt.Errorf("sandboxd requires at least one --driver")
 	}
 	if sandboxdDriverRequested(req.Drivers, sandboxruntime.DriverMicroVM) {
+		if missing := sandboxdMissingMicroVMConfigFlags(req.MicroVM); len(missing) > 0 {
+			return sandboxdRequest{}, fmt.Errorf("sandboxd --driver microvm requires %s", sandboxdJoinFlagList(missing))
+		}
+		resolvedMicroVM, err := resolveSandboxdMicroVMLaunchAssets(req.MicroVM)
+		if err != nil {
+			return sandboxdRequest{}, err
+		}
+		req.MicroVM = resolvedMicroVM
 		if err := validateSandboxdMicroVMConfig(req.MicroVM); err != nil {
 			return sandboxdRequest{}, err
 		}
@@ -550,13 +561,24 @@ func validateSandboxdMicroVMConfig(config sandboxdMicroVMConfig) error {
 		path string
 	}{
 		{flag: "--firecracker-executable", path: config.Config.HypervisorPath},
-		{flag: "--firecracker-kernel", path: config.Config.KernelImagePath},
-		{flag: "--firecracker-rootfs", path: config.Config.RootfsPath},
-		{flag: "--firecracker-initrd", path: config.Config.InitrdPath},
 		{flag: "--firecracker-jailer", path: config.Config.JailerPath},
 	} {
 		if err := validateSandboxdMicroVMPathFlag(value.flag, value.path); err != nil {
 			return err
+		}
+	}
+	if config.Config.LaunchDescriptor == nil {
+		for _, value := range []struct {
+			flag string
+			path string
+		}{
+			{flag: "--firecracker-kernel", path: config.Config.KernelImagePath},
+			{flag: "--firecracker-rootfs", path: config.Config.RootfsPath},
+			{flag: "--firecracker-initrd", path: config.Config.InitrdPath},
+		} {
+			if err := validateSandboxdMicroVMPathFlag(value.flag, value.path); err != nil {
+				return err
+			}
 		}
 	}
 	if sandboxdPathHasControl(config.StateDir) {
@@ -589,6 +611,66 @@ func validateSandboxdMicroVMConfig(config sandboxdMicroVMConfig) error {
 		return fmt.Errorf("sandboxd --driver microvm config is invalid: %w", err)
 	}
 	return nil
+}
+
+func resolveSandboxdMicroVMLaunchAssets(config sandboxdMicroVMConfig) (sandboxdMicroVMConfig, error) {
+	request := localresolver.ResolveRequest{
+		ID:                 "sandboxd-firecracker-launch",
+		Labels:             []assets.SafeLabel{"sandboxd", "firecracker"},
+		LockedAtUnixMillis: time.Now().UTC().UnixMilli(),
+		Assets: []localresolver.AssetRequest{
+			{
+				ID:   "kernel",
+				Role: assets.AssetRoleKernel,
+				Kind: assets.AssetKindKernelImage,
+				Path: config.Config.KernelImagePath,
+			},
+			{
+				ID:   "rootfs",
+				Role: assets.AssetRoleRootfs,
+				Kind: assets.AssetKindRootfsImage,
+				Path: config.Config.RootfsPath,
+			},
+		},
+	}
+	if strings.TrimSpace(config.Config.InitrdPath) != "" {
+		request.Assets = append(request.Assets, localresolver.AssetRequest{
+			ID:   "initrd",
+			Role: assets.AssetRoleInitrd,
+			Kind: assets.AssetKindInitrdImage,
+			Path: config.Config.InitrdPath,
+		})
+	}
+
+	descriptor, err := localresolver.Resolve(request)
+	if err != nil {
+		return sandboxdMicroVMConfig{}, sandboxdMicroVMLaunchAssetResolveError(err)
+	}
+	config.Config.LaunchDescriptor = &descriptor
+	return config, nil
+}
+
+func sandboxdMicroVMLaunchAssetResolveError(err error) error {
+	var resolverErr *localresolver.Error
+	if errors.As(err, &resolverErr) {
+		if flag := sandboxdMicroVMAssetFlag(resolverErr.Role); flag != "" {
+			return fmt.Errorf("sandboxd %s is invalid: %w", flag, err)
+		}
+	}
+	return fmt.Errorf("sandboxd microvm launch assets are invalid: %w", err)
+}
+
+func sandboxdMicroVMAssetFlag(role assets.AssetRole) string {
+	switch role {
+	case assets.AssetRoleKernel:
+		return "--firecracker-kernel"
+	case assets.AssetRoleRootfs:
+		return "--firecracker-rootfs"
+	case assets.AssetRoleInitrd:
+		return "--firecracker-initrd"
+	default:
+		return ""
+	}
 }
 
 func sandboxdRuntimeDriverDescriptors(req sandboxdRequest) map[string]sandboxworker.RuntimeDriver {

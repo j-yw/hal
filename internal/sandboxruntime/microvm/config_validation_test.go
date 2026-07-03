@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
 )
 
 func TestValidateConfigAcceptsMinimalNoLiveNetworking(t *testing.T) {
@@ -24,6 +26,18 @@ func TestValidateConfigDoesNotRequireLiveBackendState(t *testing.T) {
 
 	if err := ValidateConfig(config); err != nil {
 		t.Fatalf("ValidateConfig() error = %v, want nil for path-only validation", err)
+	}
+}
+
+func TestValidateConfigAcceptsLaunchDescriptorWithoutLegacyImagePaths(t *testing.T) {
+	descriptor := validConfigLaunchDescriptorForTest()
+	config := minimalValidConfig()
+	config.KernelImagePath = " \t "
+	config.RootfsPath = ""
+	config.LaunchDescriptor = &descriptor
+
+	if err := ValidateConfig(config); err != nil {
+		t.Fatalf("ValidateConfig() error = %v, want nil for descriptor-backed config", err)
 	}
 }
 
@@ -113,6 +127,49 @@ func TestValidateConfigRejectsUnsupportedNetworkMode(t *testing.T) {
 
 	err := ValidateConfig(config)
 	assertInvalidConfigError(t, err, "networkMode", "network mode is unsupported")
+}
+
+func TestValidateConfigRejectsInvalidLaunchDescriptor(t *testing.T) {
+	descriptor := validConfigLaunchDescriptorForTest()
+	descriptor.Assets[0].ID = "https://secret.example.test/kernel?token=ghp_secret"
+	config := minimalValidConfig()
+	config.LaunchDescriptor = &descriptor
+
+	err := ValidateConfig(config)
+	assertInvalidConfigError(t, err, "launchDescriptor.assets.0.id", "launch asset descriptor is invalid (unsafe_id): asset id must be a safe identifier")
+}
+
+func TestValidateConfigLaunchDescriptorErrorsAreSanitized(t *testing.T) {
+	descriptor := validConfigLaunchDescriptorForTest()
+	descriptor.ID = "token=ghp_secret"
+	descriptor.Labels = []assets.SafeLabel{"https://deploy.example.test/secret-template"}
+	descriptor.Assets[0].Source.HostPath.Path = "/Users/alice/private/vmlinux"
+	config := minimalValidConfig()
+	config.KernelImagePath = "/Users/alice/private/vmlinux"
+	config.RootfsPath = "/var/folders/secret/rootfs.ext4"
+	config.LaunchDescriptor = &descriptor
+
+	err := ValidateConfig(config)
+	assertInvalidConfigError(t, err, "launchDescriptor.id", "launch asset descriptor is invalid (unsafe_id): descriptor id must be a safe identifier")
+
+	encoded, marshalErr := json.Marshal(err)
+	if marshalErr != nil {
+		t.Fatalf("Marshal(validation error) error: %v", marshalErr)
+	}
+	publicText := err.Error() + " " + string(encoded)
+	for _, unsafe := range []string{
+		"ghp_secret",
+		"deploy.example.test",
+		"secret-template",
+		"/Users/alice",
+		"/var/folders",
+		"rootfs.ext4",
+		"vmlinux",
+	} {
+		if strings.Contains(publicText, unsafe) {
+			t.Fatalf("descriptor validation error leaked unsafe fragment %q in %q", unsafe, publicText)
+		}
+	}
 }
 
 func TestValidateConfigErrorStringsAreSanitized(t *testing.T) {

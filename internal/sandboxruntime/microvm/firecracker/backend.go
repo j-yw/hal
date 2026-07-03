@@ -689,9 +689,36 @@ func runtimeOperationPayloads(payloads []OperationPayloadReference) []sandboxrun
 		out = append(out, sandboxruntime.RuntimeOperationPayload{
 			Role:    string(payload.Role),
 			APIPath: payload.APIPath,
+			Assets:  runtimeOperationPayloadAssets(payload.Assets),
 		})
 	}
 	return out
+}
+
+func runtimeOperationPayloadAssets(assets []OperationPayloadAssetMetadata) []sandboxruntime.RuntimeOperationPayloadAsset {
+	if len(assets) == 0 {
+		return nil
+	}
+	out := make([]sandboxruntime.RuntimeOperationPayloadAsset, 0, len(assets))
+	for _, asset := range assets {
+		out = append(out, sandboxruntime.RuntimeOperationPayloadAsset{
+			AssetRole: asset.AssetRole,
+			ID:        asset.ID,
+			Labels:    cloneStringSlice(asset.Labels),
+			Digest:    runtimeOperationPayloadDigest(asset.Digest),
+		})
+	}
+	return out
+}
+
+func runtimeOperationPayloadDigest(digest *OperationPayloadDigestMetadata) *sandboxruntime.RuntimeOperationPayloadDigest {
+	if digest == nil {
+		return nil
+	}
+	return &sandboxruntime.RuntimeOperationPayloadDigest{
+		Algorithm: digest.Algorithm,
+		Value:     digest.Value,
+	}
 }
 
 func cloneFirecrackerTarget(target sandboxruntime.Target) sandboxruntime.Target {
@@ -719,7 +746,7 @@ func cloneFirecrackerRuntimeOperationPlan(plan *sandboxruntime.RuntimeOperationP
 	copied := *plan
 	copied.Environment = append([]sandboxruntime.RuntimeOperationEnvironment(nil), plan.Environment...)
 	copied.PathRoles = cloneStringSlice(plan.PathRoles)
-	copied.Payloads = append([]sandboxruntime.RuntimeOperationPayload(nil), plan.Payloads...)
+	copied.Payloads = cloneFirecrackerRuntimeOperationPayloads(plan.Payloads)
 	copied.ProcessDescriptor = cloneFirecrackerRuntimeProcessDescriptor(plan.ProcessDescriptor)
 	return &copied
 }
@@ -732,8 +759,36 @@ func cloneFirecrackerRuntimeProcessDescriptor(descriptor *sandboxruntime.Runtime
 	copied.Argv = append([]sandboxruntime.RuntimeOperationArgument(nil), descriptor.Argv...)
 	copied.Environment = append([]sandboxruntime.RuntimeOperationEnvironment(nil), descriptor.Environment...)
 	copied.PathRoles = cloneStringSlice(descriptor.PathRoles)
-	copied.Payloads = append([]sandboxruntime.RuntimeOperationPayload(nil), descriptor.Payloads...)
+	copied.Payloads = cloneFirecrackerRuntimeOperationPayloads(descriptor.Payloads)
 	return &copied
+}
+
+func cloneFirecrackerRuntimeOperationPayloads(payloads []sandboxruntime.RuntimeOperationPayload) []sandboxruntime.RuntimeOperationPayload {
+	if payloads == nil {
+		return nil
+	}
+	out := make([]sandboxruntime.RuntimeOperationPayload, len(payloads))
+	for i, payload := range payloads {
+		out[i] = payload
+		out[i].Assets = cloneFirecrackerRuntimeOperationPayloadAssets(payload.Assets)
+	}
+	return out
+}
+
+func cloneFirecrackerRuntimeOperationPayloadAssets(assets []sandboxruntime.RuntimeOperationPayloadAsset) []sandboxruntime.RuntimeOperationPayloadAsset {
+	if assets == nil {
+		return nil
+	}
+	out := make([]sandboxruntime.RuntimeOperationPayloadAsset, len(assets))
+	for i, asset := range assets {
+		out[i] = asset
+		out[i].Labels = cloneStringSlice(asset.Labels)
+		if asset.Digest != nil {
+			digest := *asset.Digest
+			out[i].Digest = &digest
+		}
+	}
+	return out
 }
 
 func sanitizeRuntimeProcessLaunchMetadata(metadata *sandboxruntime.RuntimeProcessLaunchMetadata) *sandboxruntime.RuntimeProcessLaunchMetadata {

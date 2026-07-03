@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
 )
 
 func TestConfigContractFieldsAndJSONNames(t *testing.T) {
@@ -16,6 +18,7 @@ func TestConfigContractFieldsAndJSONNames(t *testing.T) {
 	assertConfigField(t, configType, "InitrdPath", reflect.TypeOf(""), `json:"initrdPath,omitempty"`)
 	assertConfigField(t, configType, "JailerPath", reflect.TypeOf(""), `json:"jailerPath,omitempty"`)
 	assertConfigField(t, configType, "HypervisorPath", reflect.TypeOf(""), `json:"hypervisorPath,omitempty"`)
+	assertConfigField(t, configType, "LaunchDescriptor", reflect.TypeOf((*assets.LaunchDescriptor)(nil)), `json:"launchDescriptor,omitempty"`)
 	assertConfigField(t, configType, "CPUCount", reflect.TypeOf(0), `json:"cpuCount,omitempty"`)
 	assertConfigField(t, configType, "MemoryMiB", reflect.TypeOf(0), `json:"memoryMiB,omitempty"`)
 	assertConfigField(t, configType, "DiskSizeMiB", reflect.TypeOf(0), `json:"diskSizeMiB,omitempty"`)
@@ -31,21 +34,23 @@ func TestConfigContractFieldsAndJSONNames(t *testing.T) {
 }
 
 func TestConfigJSONIncludesMicroVMRuntimeInputs(t *testing.T) {
+	descriptor := validConfigLaunchDescriptorForTest()
 	config := Config{
-		KernelImagePath: "/opt/hal/images/vmlinux",
-		RootfsPath:      "/opt/hal/images/rootfs.ext4",
-		InitrdPath:      "/opt/hal/images/initrd.img",
-		JailerPath:      "/usr/bin/firecracker-jailer",
-		HypervisorPath:  "/usr/bin/cloud-hypervisor",
-		CPUCount:        4,
-		MemoryMiB:       4096,
-		DiskSizeMiB:     16384,
-		GuestWorkDir:    "/workspace/project",
-		NetworkMode:     NetworkModeNoLiveNetworking,
-		ImageLabel:      "ubuntu-24.04",
-		ImageDigest:     "sha256:abc123",
-		TemplateLabel:   "hal-agent",
-		TemplateDigest:  "sha256:def456",
+		KernelImagePath:  "/opt/hal/images/vmlinux",
+		RootfsPath:       "/opt/hal/images/rootfs.ext4",
+		InitrdPath:       "/opt/hal/images/initrd.img",
+		JailerPath:       "/usr/bin/firecracker-jailer",
+		HypervisorPath:   "/usr/bin/cloud-hypervisor",
+		LaunchDescriptor: &descriptor,
+		CPUCount:         4,
+		MemoryMiB:        4096,
+		DiskSizeMiB:      16384,
+		GuestWorkDir:     "/workspace/project",
+		NetworkMode:      NetworkModeNoLiveNetworking,
+		ImageLabel:       "ubuntu-24.04",
+		ImageDigest:      "sha256:abc123",
+		TemplateLabel:    "hal-agent",
+		TemplateDigest:   "sha256:def456",
 	}
 
 	encoded, err := json.Marshal(config)
@@ -59,6 +64,11 @@ func TestConfigJSONIncludesMicroVMRuntimeInputs(t *testing.T) {
 		`"initrdPath":`,
 		`"jailerPath":`,
 		`"hypervisorPath":`,
+		`"launchDescriptor":`,
+		`"assets":`,
+		`"role":"kernel"`,
+		`"role":"rootfs"`,
+		`"digest":{"algorithm":"sha256","value":"`,
 		`"cpuCount":4`,
 		`"memoryMiB":4096`,
 		`"diskSizeMiB":16384`,
@@ -72,6 +82,16 @@ func TestConfigJSONIncludesMicroVMRuntimeInputs(t *testing.T) {
 		if !strings.Contains(payload, want) {
 			t.Fatalf("Config JSON %s missing %s", payload, want)
 		}
+	}
+}
+
+func TestConfigJSONOmitsAbsentLaunchDescriptor(t *testing.T) {
+	encoded, err := json.Marshal(minimalValidConfig())
+	if err != nil {
+		t.Fatalf("Marshal(Config) error: %v", err)
+	}
+	if strings.Contains(string(encoded), "launchDescriptor") {
+		t.Fatalf("Config JSON = %s, want launchDescriptor omitted when absent", encoded)
 	}
 }
 
@@ -105,6 +125,41 @@ func TestDefaultConfigUsesNoLiveNetworking(t *testing.T) {
 	}
 	if effective.MemoryMiB != defaultConfig.MemoryMiB || effective.DiskSizeMiB != defaultConfig.DiskSizeMiB {
 		t.Fatalf("EffectiveConfig() = %#v, want memory/disk defaults", effective)
+	}
+}
+
+func TestApplyDefaultsPreservesLaunchDescriptorAndLegacyImageMetadata(t *testing.T) {
+	descriptor := validConfigLaunchDescriptorForTest()
+	config := Config{
+		LaunchDescriptor: &descriptor,
+		ImageLabel:       "ubuntu-24.04",
+		ImageDigest:      "sha256:abc123",
+		TemplateLabel:    "hal-agent",
+		TemplateDigest:   "sha256:def456",
+	}
+
+	effective := ApplyDefaults(config)
+	if effective.CPUCount != DefaultCPUCount {
+		t.Fatalf("CPUCount = %d, want default %d", effective.CPUCount, DefaultCPUCount)
+	}
+	if effective.MemoryMiB != DefaultMemoryMiB {
+		t.Fatalf("MemoryMiB = %d, want default %d", effective.MemoryMiB, DefaultMemoryMiB)
+	}
+	if effective.DiskSizeMiB != DefaultDiskSizeMiB {
+		t.Fatalf("DiskSizeMiB = %d, want default %d", effective.DiskSizeMiB, DefaultDiskSizeMiB)
+	}
+	if effective.GuestWorkDir != DefaultGuestWorkDir {
+		t.Fatalf("GuestWorkDir = %q, want %q", effective.GuestWorkDir, DefaultGuestWorkDir)
+	}
+	if effective.NetworkMode != DefaultNetworkMode {
+		t.Fatalf("NetworkMode = %q, want %q", effective.NetworkMode, DefaultNetworkMode)
+	}
+	if !reflect.DeepEqual(effective.LaunchDescriptor, &descriptor) {
+		t.Fatalf("LaunchDescriptor = %#v, want preserved descriptor", effective.LaunchDescriptor)
+	}
+	if effective.ImageLabel != "ubuntu-24.04" || effective.ImageDigest != "sha256:abc123" ||
+		effective.TemplateLabel != "hal-agent" || effective.TemplateDigest != "sha256:def456" {
+		t.Fatalf("legacy image/template metadata was not preserved: %#v", effective)
 	}
 }
 
@@ -226,6 +281,52 @@ func TestOperationErrorConstructorsUseStableCodes(t *testing.T) {
 				t.Fatal("OperationError.Error() returned empty string")
 			}
 		})
+	}
+}
+
+func validConfigLaunchDescriptorForTest() assets.LaunchDescriptor {
+	return assets.LaunchDescriptor{
+		ID:     "phase41-launch",
+		Labels: []assets.SafeLabel{"ubuntu-24.04"},
+		Assets: []assets.LaunchAsset{
+			{
+				ID:   "kernel",
+				Role: assets.AssetRoleKernel,
+				Kind: assets.AssetKindKernelImage,
+				Source: assets.AssetSource{
+					Type: assets.SourceTypeLocalFile,
+					HostPath: &assets.HostPathMetadata{
+						Path: "/opt/hal/images/vmlinux",
+						Role: assets.HostPathRoleResolvedLocalAsset,
+					},
+				},
+				Lock: configTestLockMetadata(strings.Repeat("a", 64)),
+			},
+			{
+				ID:   "rootfs",
+				Role: assets.AssetRoleRootfs,
+				Kind: assets.AssetKindRootfsImage,
+				Source: assets.AssetSource{
+					Type: assets.SourceTypeLocalFile,
+					HostPath: &assets.HostPathMetadata{
+						Path: "/opt/hal/images/rootfs.ext4",
+						Role: assets.HostPathRoleResolvedLocalAsset,
+					},
+				},
+				Lock: configTestLockMetadata(strings.Repeat("1", 64)),
+			},
+		},
+	}
+}
+
+func configTestLockMetadata(value string) assets.LockMetadata {
+	return assets.LockMetadata{
+		Digest: assets.DigestMetadata{
+			Algorithm: assets.DigestAlgorithmSHA256,
+			Value:     value,
+		},
+		SizeBytes:          4096,
+		LockedAtUnixMillis: 1783015200000,
 	}
 }
 

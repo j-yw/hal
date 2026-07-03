@@ -469,7 +469,28 @@ func cloneRuntimeOperationPayloads(values []sandboxruntime.RuntimeOperationPaylo
 	if values == nil {
 		return nil
 	}
-	return append([]sandboxruntime.RuntimeOperationPayload(nil), values...)
+	out := make([]sandboxruntime.RuntimeOperationPayload, len(values))
+	for i, value := range values {
+		out[i] = value
+		out[i].Assets = cloneRuntimeOperationPayloadAssets(value.Assets)
+	}
+	return out
+}
+
+func cloneRuntimeOperationPayloadAssets(values []sandboxruntime.RuntimeOperationPayloadAsset) []sandboxruntime.RuntimeOperationPayloadAsset {
+	if values == nil {
+		return nil
+	}
+	out := make([]sandboxruntime.RuntimeOperationPayloadAsset, len(values))
+	for i, value := range values {
+		out[i] = value
+		out[i].Labels = cloneStringSlice(value.Labels)
+		if value.Digest != nil {
+			digest := *value.Digest
+			out[i].Digest = &digest
+		}
+	}
+	return out
 }
 
 func cloneCapabilityReport(report CapabilityReport) CapabilityReport {

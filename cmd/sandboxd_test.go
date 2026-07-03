@@ -3,14 +3,19 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
 	"github.com/jywlabs/hal/internal/sandboxworker"
 	"github.com/spf13/cobra"
 )
@@ -255,6 +260,8 @@ func TestSandboxdCommandRegistersLiveMicroVMDriverWithExplicitInputs(t *testing.
 	handler := &recordingSandboxdHandler{}
 	var gotService sandboxworker.ServiceOptions
 	var gotDriver sandboxruntime.Driver
+	kernelPath := writeSandboxdAssetFile(t, "vmlinux", "kernel-bytes")
+	rootfsPath := writeSandboxdAssetFile(t, "rootfs.ext4", "rootfs-bytes")
 
 	deps := defaultSandboxdDeps()
 	deps.newService = func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
@@ -276,8 +283,8 @@ func TestSandboxdCommandRegistersLiveMicroVMDriverWithExplicitInputs(t *testing.
 		"--worker-id", "worker-live-microvm",
 		"--driver", sandboxruntime.DriverMicroVM,
 		"--firecracker-executable", "/usr/bin/firecracker",
-		"--firecracker-kernel", "/opt/hal/images/vmlinux",
-		"--firecracker-rootfs", "/opt/hal/images/rootfs.ext4",
+		"--firecracker-kernel", kernelPath,
+		"--firecracker-rootfs", rootfsPath,
 		"--firecracker-state-dir", t.TempDir(),
 		"--json",
 	})
@@ -341,6 +348,8 @@ func TestSandboxdCommandRegistersLiveMicroVMGuestAgentTransportCapabilities(t *t
 	handler := &recordingSandboxdHandler{}
 	var gotService sandboxworker.ServiceOptions
 	var gotDriver sandboxruntime.Driver
+	kernelPath := writeSandboxdAssetFile(t, "vmlinux", "kernel-bytes")
+	rootfsPath := writeSandboxdAssetFile(t, "rootfs.ext4", "rootfs-bytes")
 
 	deps := defaultSandboxdDeps()
 	deps.newService = func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
@@ -362,8 +371,8 @@ func TestSandboxdCommandRegistersLiveMicroVMGuestAgentTransportCapabilities(t *t
 		"--worker-id", "worker-live-microvm",
 		"--driver", sandboxruntime.DriverMicroVM,
 		"--firecracker-executable", "/usr/bin/firecracker",
-		"--firecracker-kernel", "/opt/hal/images/vmlinux",
-		"--firecracker-rootfs", "/opt/hal/images/rootfs.ext4",
+		"--firecracker-kernel", kernelPath,
+		"--firecracker-rootfs", rootfsPath,
 		"--firecracker-state-dir", t.TempDir(),
 		"--firecracker-guest-agent-endpoint", "unix:///tmp/hal-guest-agent.sock",
 		"--json",
@@ -412,6 +421,8 @@ func TestSandboxdCommandRejectsInvalidGuestAgentEndpointBeforeMicroVMDriverConst
 	driverConstructed := false
 	serviceCalled := false
 	serverCalled := false
+	kernelPath := writeSandboxdAssetFile(t, "vmlinux", "kernel-bytes")
+	rootfsPath := writeSandboxdAssetFile(t, "rootfs.ext4", "rootfs-bytes")
 	deps := defaultSandboxdDeps()
 	deps.newMicroVMDriver = func(config sandboxdMicroVMConfig) (sandboxruntime.Driver, error) {
 		driverConstructed = true
@@ -432,8 +443,8 @@ func TestSandboxdCommandRejectsInvalidGuestAgentEndpointBeforeMicroVMDriverConst
 		"--worker-id", "worker-live-microvm",
 		"--driver", sandboxruntime.DriverMicroVM,
 		"--firecracker-executable", "/usr/bin/firecracker",
-		"--firecracker-kernel", "/opt/hal/images/vmlinux",
-		"--firecracker-rootfs", "/opt/hal/images/rootfs.ext4",
+		"--firecracker-kernel", kernelPath,
+		"--firecracker-rootfs", rootfsPath,
 		"--firecracker-state-dir", t.TempDir(),
 		"--firecracker-guest-agent-endpoint", "tcp://guest.internal:8080/path?token=ghp_secret",
 	})
@@ -465,6 +476,9 @@ func TestSandboxdCommandRegistersMicroVMOnlyWithInjectedFactory(t *testing.T) {
 	var gotMicroVM sandboxdMicroVMConfig
 	microVMConstructed := false
 	rootlessAvailabilityCalled := false
+	kernelPath := writeSandboxdAssetFile(t, "vmlinux", "kernel-bytes")
+	rootfsPath := writeSandboxdAssetFile(t, "rootfs.ext4", "rootfs-bytes")
+	initrdPath := writeSandboxdAssetFile(t, "initrd.img", "initrd-bytes")
 
 	cmd, stdout, _ := newTestSandboxdCommand(sandboxdDeps{
 		newService: func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
@@ -492,9 +506,9 @@ func TestSandboxdCommandRegistersMicroVMOnlyWithInjectedFactory(t *testing.T) {
 		"--worker-id", "worker-microvm",
 		"--driver", sandboxruntime.DriverMicroVM,
 		"--firecracker-executable", " /usr/bin/firecracker ",
-		"--firecracker-kernel", " /opt/hal/images/vmlinux ",
-		"--firecracker-rootfs", " /opt/hal/images/rootfs.ext4 ",
-		"--firecracker-initrd", " /opt/hal/images/initrd.img ",
+		"--firecracker-kernel", " " + kernelPath + " ",
+		"--firecracker-rootfs", " " + rootfsPath + " ",
+		"--firecracker-initrd", " " + initrdPath + " ",
 		"--firecracker-jailer", " /usr/bin/firecracker-jailer ",
 		"--firecracker-state-dir", " /tmp/hal-firecracker-state ",
 		"--microvm-cpu-count", "4",
@@ -519,13 +533,13 @@ func TestSandboxdCommandRegistersMicroVMOnlyWithInjectedFactory(t *testing.T) {
 	if gotMicroVM.Config.HypervisorPath != "/usr/bin/firecracker" {
 		t.Fatalf("microVM firecracker executable = %q", gotMicroVM.Config.HypervisorPath)
 	}
-	if gotMicroVM.Config.KernelImagePath != "/opt/hal/images/vmlinux" {
+	if gotMicroVM.Config.KernelImagePath != kernelPath {
 		t.Fatalf("microVM kernel image = %q", gotMicroVM.Config.KernelImagePath)
 	}
-	if gotMicroVM.Config.RootfsPath != "/opt/hal/images/rootfs.ext4" {
+	if gotMicroVM.Config.RootfsPath != rootfsPath {
 		t.Fatalf("microVM rootfs image = %q", gotMicroVM.Config.RootfsPath)
 	}
-	if gotMicroVM.Config.InitrdPath != "/opt/hal/images/initrd.img" {
+	if gotMicroVM.Config.InitrdPath != initrdPath {
 		t.Fatalf("microVM initrd image = %q", gotMicroVM.Config.InitrdPath)
 	}
 	if gotMicroVM.Config.JailerPath != "/usr/bin/firecracker-jailer" {
@@ -565,6 +579,134 @@ func TestSandboxdCommandRegistersMicroVMOnlyWithInjectedFactory(t *testing.T) {
 	}
 }
 
+func TestSandboxdCommandResolvesExplicitFirecrackerLaunchAssetsBeforeDriverConstruction(t *testing.T) {
+	kernelPath := writeSandboxdAssetFile(t, "vmlinux", "kernel-bytes")
+	rootfsPath := writeSandboxdAssetFile(t, "rootfs.ext4", "rootfs-bytes")
+	initrdPath := writeSandboxdAssetFile(t, "initrd.img", "initrd-bytes")
+
+	var gotMicroVM sandboxdMicroVMConfig
+	microVMConstructed := false
+	cmd, _, _ := newTestSandboxdCommand(sandboxdDeps{
+		newService: func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
+			return &recordingSandboxdHandler{}, nil
+		},
+		newServer: func(options sandboxworker.ServerOptions) (sandboxdServer, error) {
+			return sandboxdServerFunc(func(context.Context) error { return nil }), nil
+		},
+		newMicroVMDriver: func(config sandboxdMicroVMConfig) (sandboxruntime.Driver, error) {
+			microVMConstructed = true
+			gotMicroVM = config
+			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverMicroVM}, nil
+		},
+		workerID: func() string {
+			return "unused-default-worker"
+		},
+	})
+	cmd.SetArgs([]string{
+		"--socket", "/tmp/microvm-resolved-assets.sock",
+		"--worker-id", "worker-microvm-assets",
+		"--driver", sandboxruntime.DriverMicroVM,
+		"--firecracker-executable", " /usr/bin/firecracker ",
+		"--firecracker-kernel", " " + kernelPath + " ",
+		"--firecracker-rootfs", rootfsPath,
+		"--firecracker-initrd", initrdPath,
+		"--firecracker-jailer", " /usr/bin/firecracker-jailer ",
+		"--firecracker-state-dir", t.TempDir(),
+		"--json",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("sandboxd Execute() error: %v", err)
+	}
+	if !microVMConstructed {
+		t.Fatal("microVM driver factory was not called")
+	}
+	if gotMicroVM.Config.LaunchDescriptor == nil {
+		t.Fatal("microVM launch descriptor = nil, want resolver-backed descriptor before driver construction")
+	}
+	if gotMicroVM.Config.HypervisorPath != "/usr/bin/firecracker" {
+		t.Fatalf("firecracker executable = %q", gotMicroVM.Config.HypervisorPath)
+	}
+	if gotMicroVM.Config.JailerPath != "/usr/bin/firecracker-jailer" {
+		t.Fatalf("firecracker jailer = %q", gotMicroVM.Config.JailerPath)
+	}
+	if gotMicroVM.Config.KernelImagePath != kernelPath || gotMicroVM.Config.RootfsPath != rootfsPath || gotMicroVM.Config.InitrdPath != initrdPath {
+		t.Fatalf("legacy path fields = kernel:%q rootfs:%q initrd:%q", gotMicroVM.Config.KernelImagePath, gotMicroVM.Config.RootfsPath, gotMicroVM.Config.InitrdPath)
+	}
+
+	descriptor := gotMicroVM.Config.LaunchDescriptor
+	if err := assets.ValidateLaunchDescriptor(*descriptor); err != nil {
+		t.Fatalf("launch descriptor validation error: %v", err)
+	}
+	if descriptor.ID != "sandboxd-firecracker-launch" {
+		t.Fatalf("descriptor ID = %q, want sandboxd-firecracker-launch", descriptor.ID)
+	}
+	assertSandboxdResolvedAsset(t, *descriptor, assets.AssetRoleKernel, assets.AssetKindKernelImage, kernelPath, "kernel-bytes")
+	assertSandboxdResolvedAsset(t, *descriptor, assets.AssetRoleRootfs, assets.AssetKindRootfsImage, rootfsPath, "rootfs-bytes")
+	assertSandboxdResolvedAsset(t, *descriptor, assets.AssetRoleInitrd, assets.AssetKindInitrdImage, initrdPath, "initrd-bytes")
+}
+
+func TestSandboxdCommandRejectsUnavailableLaunchAssetBeforeMicroVMDriverConstruction(t *testing.T) {
+	rootfsPath := writeSandboxdAssetFile(t, "rootfs.ext4", "rootfs-bytes")
+	missingKernelPath := filepath.Join(t.TempDir(), "missing-vmlinux")
+
+	driverConstructed := false
+	serviceCalled := false
+	serverCalled := false
+	cmd, _, _ := newTestSandboxdCommand(sandboxdDeps{
+		newService: func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
+			serviceCalled = true
+			return &recordingSandboxdHandler{}, nil
+		},
+		newServer: func(options sandboxworker.ServerOptions) (sandboxdServer, error) {
+			serverCalled = true
+			return sandboxdServerFunc(func(context.Context) error { return nil }), nil
+		},
+		newMicroVMDriver: func(config sandboxdMicroVMConfig) (sandboxruntime.Driver, error) {
+			driverConstructed = true
+			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverMicroVM}, nil
+		},
+		workerID: func() string {
+			return "unused-default-worker"
+		},
+	})
+	cmd.SetArgs([]string{
+		"--socket", "/tmp/microvm-missing-asset.sock",
+		"--worker-id", "worker-microvm-assets",
+		"--driver", sandboxruntime.DriverMicroVM,
+		"--firecracker-executable", "/usr/bin/firecracker",
+		"--firecracker-kernel", missingKernelPath,
+		"--firecracker-rootfs", rootfsPath,
+		"--firecracker-state-dir", t.TempDir(),
+	})
+
+	err := cmd.Execute()
+	var exitErr *ExitCodeError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("Execute() error = %T, want ExitCodeError", err)
+	}
+	if exitErr.Code != ExitCodeValidation {
+		t.Fatalf("exit code = %d, want %d", exitErr.Code, ExitCodeValidation)
+	}
+	if exitErr.Err == nil {
+		t.Fatal("exit error detail is nil, want launch asset resolver detail")
+	}
+	detail := exitErr.Err.Error()
+	for _, want := range []string{"--firecracker-kernel", "local asset resolver failed", "file_unavailable"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("exit error = %q, want %q", detail, want)
+		}
+	}
+	for _, leaked := range []string{missingKernelPath, filepath.Base(missingKernelPath), rootfsPath, filepath.Base(rootfsPath)} {
+		if strings.Contains(detail, leaked) {
+			t.Fatalf("exit error leaked %q: %q", leaked, detail)
+		}
+	}
+	if driverConstructed || serviceCalled || serverCalled {
+		t.Fatalf("driverConstructed=%v serviceCalled=%v serverCalled=%v, want all false", driverConstructed, serviceCalled, serverCalled)
+	}
+}
+
 func TestSandboxdMicroVMValidationRejectsUnsafeLivePaths(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -577,7 +719,7 @@ func TestSandboxdMicroVMValidationRejectsUnsafeLivePaths(t *testing.T) {
 			name:      "relative kernel",
 			flag:      "--firecracker-kernel",
 			value:     "relative/vmlinux",
-			want:      "--firecracker-kernel must be an absolute path",
+			want:      "--firecracker-kernel is invalid",
 			forbidden: []string{"relative/vmlinux"},
 		},
 		{
@@ -607,13 +749,15 @@ func TestSandboxdMicroVMValidationRejectsUnsafeLivePaths(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			serviceCalled := false
 			serverCalled := false
+			kernelPath := writeSandboxdAssetFile(t, "vmlinux", "kernel-bytes")
+			rootfsPath := writeSandboxdAssetFile(t, "rootfs.ext4", "rootfs-bytes")
 			args := []string{
 				"--socket", "/tmp/microvm-invalid-path.sock",
 				"--worker-id", "worker-microvm",
 				"--driver", sandboxruntime.DriverMicroVM,
 				"--firecracker-executable", "/usr/bin/firecracker",
-				"--firecracker-kernel", "/opt/hal/images/vmlinux",
-				"--firecracker-rootfs", "/opt/hal/images/rootfs.ext4",
+				"--firecracker-kernel", kernelPath,
+				"--firecracker-rootfs", rootfsPath,
 				"--firecracker-state-dir", "/tmp/hal-firecracker-state",
 			}
 			for i := 0; i < len(args)-1; i++ {
@@ -926,6 +1070,60 @@ func containsSandboxdTestString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func writeSandboxdAssetFile(t *testing.T, name string, contents string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write sandboxd asset %q: %v", name, err)
+	}
+	return path
+}
+
+func assertSandboxdResolvedAsset(t *testing.T, descriptor assets.LaunchDescriptor, role assets.AssetRole, kind assets.AssetKind, path string, contents string) {
+	t.Helper()
+
+	for _, asset := range descriptor.Assets {
+		if asset.Role != role {
+			continue
+		}
+		if asset.Kind != kind {
+			t.Fatalf("%s kind = %q, want %q", role, asset.Kind, kind)
+		}
+		if asset.Source.Type != assets.SourceTypeLocalFile {
+			t.Fatalf("%s source type = %q, want local_file", role, asset.Source.Type)
+		}
+		if asset.Source.HostPath == nil {
+			t.Fatalf("%s host path = nil, want resolved path", role)
+		}
+		if asset.Source.HostPath.Path != path {
+			t.Fatalf("%s host path = %q, want %q", role, asset.Source.HostPath.Path, path)
+		}
+		if asset.Source.HostPath.Role != assets.HostPathRoleResolvedLocalAsset {
+			t.Fatalf("%s host path role = %q, want %q", role, asset.Source.HostPath.Role, assets.HostPathRoleResolvedLocalAsset)
+		}
+		if asset.Lock.Digest.Algorithm != assets.DigestAlgorithmSHA256 {
+			t.Fatalf("%s digest algorithm = %q, want sha256", role, asset.Lock.Digest.Algorithm)
+		}
+		if asset.Lock.Digest.Value != sandboxdSHA256Hex(contents) {
+			t.Fatalf("%s digest = %q, want %q", role, asset.Lock.Digest.Value, sandboxdSHA256Hex(contents))
+		}
+		if asset.Lock.SizeBytes != int64(len(contents)) {
+			t.Fatalf("%s size = %d, want %d", role, asset.Lock.SizeBytes, len(contents))
+		}
+		if asset.Lock.LockedAtUnixMillis <= 0 {
+			t.Fatalf("%s lockedAt = %d, want positive resolver timestamp", role, asset.Lock.LockedAtUnixMillis)
+		}
+		return
+	}
+	t.Fatalf("descriptor missing %s asset: %#v", role, descriptor.Assets)
+}
+
+func sandboxdSHA256Hex(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
 type fakeSandboxdRuntimeDriver struct {
