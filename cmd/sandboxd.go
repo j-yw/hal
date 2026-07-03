@@ -176,6 +176,7 @@ func defaultSandboxdDeps() sandboxdDeps {
 		},
 		rootlessPodmanAvailable: defaultSandboxdRootlessPodmanAvailable,
 		newRootlessPodmanDriver: defaultSandboxdRootlessPodmanDriver,
+		newMicroVMDriver:        defaultSandboxdMicroVMDriver,
 		workerID:                defaultSandboxdWorkerID,
 	}
 }

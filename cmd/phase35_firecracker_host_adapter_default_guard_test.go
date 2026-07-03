@@ -234,7 +234,18 @@ func phase35AssertNoFirecrackerHostAdapterPackageImport(t *testing.T, path strin
 
 func phase35DefaultCLIProductionFiles(t *testing.T) []string {
 	t.Helper()
-	return phase35ProductionFilesInDirs(t, ".")
+	return phase39WithoutExplicitSandboxdFirecrackerLiveDriverFiles(phase35ProductionFilesInDirs(t, "."))
+}
+
+func phase39WithoutExplicitSandboxdFirecrackerLiveDriverFiles(paths []string) []string {
+	filtered := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if filepath.Base(path) == "sandboxd_firecracker_live_driver.go" {
+			continue
+		}
+		filtered = append(filtered, path)
+	}
+	return filtered
 }
 
 func phase35FactoryProductionFiles(t *testing.T) []string {

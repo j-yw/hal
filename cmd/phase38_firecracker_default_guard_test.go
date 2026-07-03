@@ -262,11 +262,11 @@ func TestPhase38DefaultMicroVMAndSandboxdMetadataDoNotClaimLiveGuestTransport(t 
 		t.Fatalf("default sandboxd drivers = %#v, want only rootless_podman", flags.drivers)
 	}
 	deps := defaultSandboxdDeps()
-	if deps.newMicroVMDriver != nil {
-		t.Fatal("default sandboxd newMicroVMDriver is configured; Firecracker live guest transport must remain opt-in")
+	if deps.newMicroVMDriver == nil {
+		t.Fatal("default sandboxd newMicroVMDriver is nil; explicit Firecracker microVM registration should be available only when --driver microvm is requested")
 	}
-	if sandboxdDriverSupportedByDeps(sandboxruntime.DriverMicroVM, deps) {
-		t.Fatal("default sandboxd reports microVM supported without an injected backend factory")
+	if !sandboxdDriverSupportedByDeps(sandboxruntime.DriverMicroVM, deps) {
+		t.Fatal("default sandboxd reports microVM unsupported despite explicit --driver microvm live-driver support")
 	}
 }
 

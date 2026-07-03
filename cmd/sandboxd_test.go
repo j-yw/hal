@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
 	"github.com/jywlabs/hal/internal/sandboxworker"
 	"github.com/spf13/cobra"
 )
@@ -241,11 +242,71 @@ func TestSandboxdDefaultsDoNotRegisterMicroVMFactory(t *testing.T) {
 	}
 
 	deps := defaultSandboxdDeps()
-	if deps.newMicroVMDriver != nil {
-		t.Fatal("default sandboxd newMicroVMDriver is configured, want nil until an explicit Firecracker backend factory is injected")
+	if deps.newMicroVMDriver == nil {
+		t.Fatal("default sandboxd newMicroVMDriver is nil, want explicit microVM constructor available for --driver microvm")
 	}
-	if sandboxdDriverSupportedByDeps(sandboxruntime.DriverMicroVM, deps) {
-		t.Fatal("sandboxd reports microVM supported by default deps, want unsupported without injected backend factory")
+	if !sandboxdDriverSupportedByDeps(sandboxruntime.DriverMicroVM, deps) {
+		t.Fatal("sandboxd reports microVM unsupported by default deps, want support gated by explicit --driver microvm inputs")
+	}
+}
+
+func TestSandboxdCommandRegistersLiveMicroVMDriverWithExplicitInputs(t *testing.T) {
+	handler := &recordingSandboxdHandler{}
+	var gotService sandboxworker.ServiceOptions
+	var gotDriver sandboxruntime.Driver
+
+	deps := defaultSandboxdDeps()
+	deps.newService = func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
+		gotService = options
+		driver, err := options.Registry.Lookup(sandboxruntime.DriverMicroVM)
+		if err != nil {
+			return nil, err
+		}
+		gotDriver = driver
+		return handler, nil
+	}
+	deps.newServer = func(options sandboxworker.ServerOptions) (sandboxdServer, error) {
+		return sandboxdServerFunc(func(context.Context) error { return nil }), nil
+	}
+
+	cmd, stdout, _ := newTestSandboxdCommand(deps)
+	cmd.SetArgs([]string{
+		"--socket", "/tmp/live-microvm-sandboxd.sock",
+		"--worker-id", "worker-live-microvm",
+		"--driver", sandboxruntime.DriverMicroVM,
+		"--firecracker-executable", "/usr/bin/firecracker",
+		"--firecracker-kernel", "/opt/hal/images/vmlinux",
+		"--firecracker-rootfs", "/opt/hal/images/rootfs.ext4",
+		"--firecracker-state-dir", t.TempDir(),
+		"--json",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("sandboxd Execute() error: %v", err)
+	}
+	if gotService.Registry == nil {
+		t.Fatal("service registry is nil")
+	}
+	if gotDriver == nil {
+		t.Fatal("microVM driver was not registered")
+	}
+	if gotDriver.ID() != sandboxruntime.DriverMicroVM {
+		t.Fatalf("registered driver ID = %q, want %q", gotDriver.ID(), sandboxruntime.DriverMicroVM)
+	}
+	microVMDriver, ok := gotDriver.(*microvm.Driver)
+	if !ok {
+		t.Fatalf("registered microVM driver = %T, want *microvm.Driver", gotDriver)
+	}
+	if !microVMDriver.Metadata().BackendConfigured {
+		t.Fatal("registered microVM driver BackendConfigured = false, want live Firecracker backend configured")
+	}
+
+	var started sandboxdStartedOutput
+	if err := json.Unmarshal(stdout.Bytes(), &started); err != nil {
+		t.Fatalf("startup JSON = %q, unmarshal error: %v", stdout.String(), err)
+	}
+	if got := strings.Join(started.Drivers, ","); got != sandboxruntime.DriverMicroVM {
+		t.Fatalf("startup drivers = %q, want %q", got, sandboxruntime.DriverMicroVM)
 	}
 }
 
