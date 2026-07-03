@@ -108,6 +108,8 @@ func sanitizeRuntimeGuestReadinessToken(value string) string {
 		"network",
 		"proxy",
 		"template",
+		"vendor",
+		"secure",
 		"kit",
 		"image",
 		"provision",

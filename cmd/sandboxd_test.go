@@ -34,6 +34,7 @@ func TestSandboxdCommandRegisteredWithoutDisruptingSandboxCommands(t *testing.T)
 		"firecracker-initrd",
 		"firecracker-jailer",
 		"firecracker-state-dir",
+		"firecracker-guest-agent-endpoint",
 		"microvm-cpu-count",
 		"microvm-memory-mib",
 		"microvm-disk-mib",
@@ -336,6 +337,128 @@ func TestSandboxdCommandRegistersLiveMicroVMDriverWithExplicitInputs(t *testing.
 	}
 }
 
+func TestSandboxdCommandRegistersLiveMicroVMGuestAgentTransportCapabilities(t *testing.T) {
+	handler := &recordingSandboxdHandler{}
+	var gotService sandboxworker.ServiceOptions
+	var gotDriver sandboxruntime.Driver
+
+	deps := defaultSandboxdDeps()
+	deps.newService = func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
+		gotService = options
+		driver, err := options.Registry.Lookup(sandboxruntime.DriverMicroVM)
+		if err != nil {
+			return nil, err
+		}
+		gotDriver = driver
+		return handler, nil
+	}
+	deps.newServer = func(options sandboxworker.ServerOptions) (sandboxdServer, error) {
+		return sandboxdServerFunc(func(context.Context) error { return nil }), nil
+	}
+
+	cmd, _, _ := newTestSandboxdCommand(deps)
+	cmd.SetArgs([]string{
+		"--socket", "/tmp/live-microvm-guest-agent-sandboxd.sock",
+		"--worker-id", "worker-live-microvm",
+		"--driver", sandboxruntime.DriverMicroVM,
+		"--firecracker-executable", "/usr/bin/firecracker",
+		"--firecracker-kernel", "/opt/hal/images/vmlinux",
+		"--firecracker-rootfs", "/opt/hal/images/rootfs.ext4",
+		"--firecracker-state-dir", t.TempDir(),
+		"--firecracker-guest-agent-endpoint", "unix:///tmp/hal-guest-agent.sock",
+		"--json",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("sandboxd Execute() error: %v", err)
+	}
+	if gotDriver == nil || gotDriver.ID() != sandboxruntime.DriverMicroVM {
+		t.Fatalf("registered microVM driver = %#v", gotDriver)
+	}
+	microVMDriver, ok := gotDriver.(*microvm.Driver)
+	if !ok {
+		t.Fatalf("registered microVM driver = %T, want *microvm.Driver", gotDriver)
+	}
+	if !microVMDriver.Metadata().BackendConfigured {
+		t.Fatal("registered microVM driver BackendConfigured = false, want live Firecracker backend configured")
+	}
+
+	service, err := sandboxworker.NewService(gotService)
+	if err != nil {
+		t.Fatalf("NewService(gotService) error: %v", err)
+	}
+	capabilities := service.Capabilities()
+	for _, want := range []string{sandboxworker.OperationExec, sandboxworker.OperationCopyIn, sandboxworker.OperationCopyOut} {
+		if !containsSandboxdTestString(capabilities.SupportedOperations, want) {
+			t.Fatalf("sandboxd supportedOperations = %#v, want configured guest agent operation %q", capabilities.SupportedOperations, want)
+		}
+	}
+	if len(capabilities.RuntimeDrivers) != 1 {
+		t.Fatalf("sandboxd capabilities runtime drivers = %#v, want one microVM driver", capabilities.RuntimeDrivers)
+	}
+	driver := capabilities.RuntimeDrivers[0]
+	if driver.ID != sandboxruntime.DriverMicroVM {
+		t.Fatalf("sandboxd capability driver ID = %q, want %q", driver.ID, sandboxruntime.DriverMicroVM)
+	}
+	for _, want := range []string{sandboxworker.OperationCreate, sandboxworker.OperationStart, sandboxworker.OperationStop, sandboxworker.OperationDelete, sandboxworker.OperationInspect, sandboxworker.OperationExec, sandboxworker.OperationCopyIn, sandboxworker.OperationCopyOut} {
+		if !containsSandboxdTestString(driver.Operations, want) {
+			t.Fatalf("sandboxd microVM operations = %#v, want %q", driver.Operations, want)
+		}
+	}
+	assertSandboxdMicroVMCapabilitySecurity(t, driver.Security)
+}
+
+func TestSandboxdCommandRejectsInvalidGuestAgentEndpointBeforeMicroVMDriverConstruction(t *testing.T) {
+	driverConstructed := false
+	serviceCalled := false
+	serverCalled := false
+	deps := defaultSandboxdDeps()
+	deps.newMicroVMDriver = func(config sandboxdMicroVMConfig) (sandboxruntime.Driver, error) {
+		driverConstructed = true
+		return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverMicroVM}, nil
+	}
+	deps.newService = func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
+		serviceCalled = true
+		return &recordingSandboxdHandler{}, nil
+	}
+	deps.newServer = func(options sandboxworker.ServerOptions) (sandboxdServer, error) {
+		serverCalled = true
+		return sandboxdServerFunc(func(context.Context) error { return nil }), nil
+	}
+
+	cmd, _, _ := newTestSandboxdCommand(deps)
+	cmd.SetArgs([]string{
+		"--socket", "/tmp/invalid-guest-agent-sandboxd.sock",
+		"--worker-id", "worker-live-microvm",
+		"--driver", sandboxruntime.DriverMicroVM,
+		"--firecracker-executable", "/usr/bin/firecracker",
+		"--firecracker-kernel", "/opt/hal/images/vmlinux",
+		"--firecracker-rootfs", "/opt/hal/images/rootfs.ext4",
+		"--firecracker-state-dir", t.TempDir(),
+		"--firecracker-guest-agent-endpoint", "tcp://guest.internal:8080/path?token=ghp_secret",
+	})
+
+	err := cmd.Execute()
+	var exitErr *ExitCodeError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("Execute() error = %T, want ExitCodeError", err)
+	}
+	if exitErr.Code != ExitCodeValidation {
+		t.Fatalf("exit code = %d, want %d", exitErr.Code, ExitCodeValidation)
+	}
+	if exitErr.Err == nil || !strings.Contains(exitErr.Err.Error(), "--firecracker-guest-agent-endpoint") {
+		t.Fatalf("exit error = %#v, want guest agent endpoint detail", exitErr.Err)
+	}
+	for _, leaked := range []string{"tcp://", "guest.internal", "8080", "token=ghp_secret", "ghp_secret"} {
+		if strings.Contains(exitErr.Err.Error(), leaked) {
+			t.Fatalf("exit error leaked %q: %q", leaked, exitErr.Err.Error())
+		}
+	}
+	if driverConstructed || serviceCalled || serverCalled {
+		t.Fatalf("driverConstructed=%v serviceCalled=%v serverCalled=%v, want all false", driverConstructed, serviceCalled, serverCalled)
+	}
+}
+
 func TestSandboxdCommandRegistersMicroVMOnlyWithInjectedFactory(t *testing.T) {
 	handler := &recordingSandboxdHandler{}
 	var gotService sandboxworker.ServiceOptions
@@ -567,6 +690,7 @@ func TestSandboxdMicroVMValidationDoesNotRunForRootlessPodmanOnly(t *testing.T) 
 		"--driver", sandboxruntime.DriverRootlessPodman,
 		"--microvm-cpu-count", "-1",
 		"--firecracker-boot-timeout", "-1s",
+		"--firecracker-guest-agent-endpoint", "tcp://guest.internal:8080/path?token=ghp_secret",
 	})
 
 	if err := cmd.Execute(); err != nil {
@@ -574,6 +698,26 @@ func TestSandboxdMicroVMValidationDoesNotRunForRootlessPodmanOnly(t *testing.T) 
 	}
 	if got := strings.Join(gotService.Registry.DriverIDs(), ","); got != sandboxruntime.DriverRootlessPodman {
 		t.Fatalf("service registry driver IDs = %q, want %q", got, sandboxruntime.DriverRootlessPodman)
+	}
+	service, err := sandboxworker.NewService(gotService)
+	if err != nil {
+		t.Fatalf("NewService(gotService) error: %v", err)
+	}
+	capabilities := service.Capabilities()
+	if len(capabilities.RuntimeDrivers) != 1 {
+		t.Fatalf("rootless capabilities runtime drivers = %#v, want one rootless driver", capabilities.RuntimeDrivers)
+	}
+	driver := capabilities.RuntimeDrivers[0]
+	if driver.ID != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("rootless capability driver ID = %q, want %q", driver.ID, sandboxruntime.DriverRootlessPodman)
+	}
+	for _, want := range []string{sandboxworker.OperationExec, sandboxworker.OperationCopyIn, sandboxworker.OperationCopyOut} {
+		if !containsSandboxdTestString(driver.Operations, want) {
+			t.Fatalf("rootless Podman operations = %#v, want unchanged %q operation", driver.Operations, want)
+		}
+	}
+	if _, exists := gotService.RuntimeDrivers[sandboxruntime.DriverMicroVM]; exists {
+		t.Fatalf("rootless-only service carried microVM runtime descriptor: %#v", gotService.RuntimeDrivers)
 	}
 }
 
