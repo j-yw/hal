@@ -95,6 +95,58 @@ func TestDefaultDriverConstructionIsUnavailableWithoutBackendPrerequisites(t *te
 	assertOperationError(t, err, ErrorCodeBackendNotConfigured, "create")
 }
 
+func TestDefaultConstructorsDoNotConfigureOrSelectFirecrackerHost(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		construct func() *Driver
+	}{
+		{name: "New", construct: New},
+		{name: "NewDriver zero options", construct: func() *Driver {
+			return NewDriver(DriverOptions{})
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := tt.construct()
+			if driver == nil {
+				t.Fatal("default constructor returned nil driver")
+			}
+
+			metadata := driver.Metadata()
+			if metadata.BackendConfigured {
+				t.Fatal("BackendConfigured = true, want false for default microVM construction")
+			}
+			if metadata.Availability == CapabilityAvailabilityAvailable {
+				t.Fatalf("Availability = %q, want unavailable without an explicit backend", metadata.Availability)
+			}
+			if metadata.ReasonCode == DriverReasonAvailable {
+				t.Fatalf("ReasonCode = %q, want a non-live default constructor reason", metadata.ReasonCode)
+			}
+
+			encoded, err := json.Marshal(metadata)
+			if err != nil {
+				t.Fatalf("Marshal metadata error: %v", err)
+			}
+			if strings.Contains(strings.ToLower(string(encoded)), "firecrackerhost") {
+				t.Fatalf("default constructor metadata selected firecrackerhost: %s", encoded)
+			}
+
+			_, err = driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "microvm-default"})
+			if err == nil {
+				t.Fatal("Create() succeeded with default constructor, want unavailable or backend-not-configured")
+			}
+			var operationErr *OperationError
+			if !errors.As(err, &operationErr) {
+				t.Fatalf("Create() error = %T %v, want *OperationError", err, err)
+			}
+			switch operationErr.Code {
+			case ErrorCodeUnavailableCapability, ErrorCodeBackendNotConfigured:
+			default:
+				t.Fatalf("Create() error code = %q, want %q or %q", operationErr.Code, ErrorCodeUnavailableCapability, ErrorCodeBackendNotConfigured)
+			}
+		})
+	}
+}
+
 func TestDefaultProductionDriverDetectsCapabilityAndStartsUnavailable(t *testing.T) {
 	driver := New()
 	metadata := driver.Metadata()
