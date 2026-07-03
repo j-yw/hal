@@ -4,6 +4,8 @@ package firecracker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -435,7 +437,7 @@ type firecrackerLiveProcess struct {
 }
 
 var _ ProcessStarter = (*firecrackerLiveProcessHarness)(nil)
-var _ bootAcceptanceWaiter = (*firecrackerLiveProcessHarness)(nil)
+var _ BootAcceptanceWaiter = (*firecrackerLiveProcessHarness)(nil)
 var _ LiveProcessManager = (*firecrackerLiveProcessHarness)(nil)
 
 func newFirecrackerLiveProcessHarness(waitTimeout, stopTimeout time.Duration) *firecrackerLiveProcessHarness {
@@ -462,8 +464,9 @@ func (harness *firecrackerLiveProcessHarness) StartProcess(ctx context.Context, 
 		return ProcessHandleMetadata{}, err
 	}
 
+	handleID := firecrackerLiveOpaqueHandleID(cmd.Process.Pid)
 	handle := ProcessHandleMetadata{
-		ID:     strconv.Itoa(cmd.Process.Pid),
+		ID:     handleID,
 		Source: "firecracker_live_test",
 	}
 	process := &firecrackerLiveProcess{
@@ -480,10 +483,15 @@ func (harness *firecrackerLiveProcessHarness) StartProcess(ctx context.Context, 
 	return handle, nil
 }
 
-func (harness *firecrackerLiveProcessHarness) WaitForBootAcceptance(ctx context.Context, req bootAcceptanceRequest) (bootAcceptanceResult, error) {
+func firecrackerLiveOpaqueHandleID(pid int) string {
+	sum := sha256.Sum256([]byte(strconv.Itoa(pid)))
+	return "fc-live-" + hex.EncodeToString(sum[:])[:16]
+}
+
+func (harness *firecrackerLiveProcessHarness) WaitForBootAcceptance(ctx context.Context, req BootAcceptanceRequest) (BootAcceptanceResult, error) {
 	process := harness.lookup(req.Handle.ID)
 	if process == nil {
-		return bootAcceptanceResult{ProcessAccepted: false}, nil
+		return BootAcceptanceResult{ProcessAccepted: false}, nil
 	}
 
 	deadline := time.NewTimer(harness.waitTimeout)
@@ -496,20 +504,20 @@ func (harness *firecrackerLiveProcessHarness) WaitForBootAcceptance(ctx context.
 		case err := <-process.done:
 			harness.remove(req.Handle.ID)
 			if err != nil {
-				return bootAcceptanceResult{}, fmt.Errorf("firecracker process exited before host-side API socket acceptance: %w", err)
+				return BootAcceptanceResult{}, fmt.Errorf("firecracker process exited before host-side API socket acceptance: %w", err)
 			}
-			return bootAcceptanceResult{}, errors.New("firecracker process exited before host-side API socket acceptance")
+			return BootAcceptanceResult{}, errors.New("firecracker process exited before host-side API socket acceptance")
 		case <-ctx.Done():
-			return bootAcceptanceResult{}, ctx.Err()
+			return BootAcceptanceResult{}, ctx.Err()
 		case <-deadline.C:
-			return bootAcceptanceResult{}, context.DeadlineExceeded
+			return BootAcceptanceResult{}, context.DeadlineExceeded
 		case <-ticker.C:
 			available, err := firecrackerLiveAPISocketAvailable(req.APISocket.Path)
 			if err != nil {
-				return bootAcceptanceResult{}, err
+				return BootAcceptanceResult{}, err
 			}
 			if available {
-				return bootAcceptanceResult{
+				return BootAcceptanceResult{
 					ProcessAccepted:    true,
 					APISocketAvailable: true,
 				}, nil

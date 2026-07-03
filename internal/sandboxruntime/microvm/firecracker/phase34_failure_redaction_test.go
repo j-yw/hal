@@ -229,7 +229,7 @@ type phase34FailureRedactionDeps struct {
 }
 
 var _ ProcessStarter = (*phase34FailureRedactionDeps)(nil)
-var _ bootAcceptanceWaiter = (*phase34FailureRedactionDeps)(nil)
+var _ BootAcceptanceWaiter = (*phase34FailureRedactionDeps)(nil)
 var _ LiveProcessManager = (*phase34FailureRedactionDeps)(nil)
 
 func phase34NewFailureRedactionDeps() *phase34FailureRedactionDeps {
@@ -249,12 +249,12 @@ func (deps *phase34FailureRedactionDeps) StartProcess(context.Context, ProcessRu
 	return deps.handle, nil
 }
 
-func (deps *phase34FailureRedactionDeps) WaitForBootAcceptance(context.Context, bootAcceptanceRequest) (bootAcceptanceResult, error) {
+func (deps *phase34FailureRedactionDeps) WaitForBootAcceptance(context.Context, BootAcceptanceRequest) (BootAcceptanceResult, error) {
 	deps.waitCalls++
 	if deps.waitErr != nil {
-		return bootAcceptanceResult{}, deps.waitErr
+		return BootAcceptanceResult{}, deps.waitErr
 	}
-	return bootAcceptanceResult{
+	return BootAcceptanceResult{
 		ProcessAccepted:    true,
 		APISocketAvailable: true,
 	}, nil

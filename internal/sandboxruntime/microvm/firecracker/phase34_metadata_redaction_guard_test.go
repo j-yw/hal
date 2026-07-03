@@ -260,7 +260,7 @@ type phase34MetadataRedactionProbe struct {
 }
 
 var _ ProcessStarter = (*phase34MetadataRedactionProbe)(nil)
-var _ bootAcceptanceWaiter = (*phase34MetadataRedactionProbe)(nil)
+var _ BootAcceptanceWaiter = (*phase34MetadataRedactionProbe)(nil)
 var _ LiveProcessManager = (*phase34MetadataRedactionProbe)(nil)
 
 func (probe *phase34MetadataRedactionProbe) StartProcess(context.Context, ProcessRunnerStartRequest) (ProcessHandleMetadata, error) {
@@ -271,9 +271,9 @@ func (probe *phase34MetadataRedactionProbe) StartProcess(context.Context, Proces
 	return probe.handle, nil
 }
 
-func (probe *phase34MetadataRedactionProbe) WaitForBootAcceptance(context.Context, bootAcceptanceRequest) (bootAcceptanceResult, error) {
+func (probe *phase34MetadataRedactionProbe) WaitForBootAcceptance(context.Context, BootAcceptanceRequest) (BootAcceptanceResult, error) {
 	probe.waitCalls++
-	return bootAcceptanceResult{
+	return BootAcceptanceResult{
 		ProcessAccepted:    true,
 		APISocketAvailable: true,
 	}, nil

@@ -989,8 +989,8 @@ func TestMicroVMDriverCreateCanUseInjectedFirecrackerBackend(t *testing.T) {
 
 type fakeLiveBootSafetyHooks struct{}
 
-func (fakeLiveBootSafetyHooks) WaitForBootAcceptance(context.Context, bootAcceptanceRequest) (bootAcceptanceResult, error) {
-	return bootAcceptanceResult{
+func (fakeLiveBootSafetyHooks) WaitForBootAcceptance(context.Context, BootAcceptanceRequest) (BootAcceptanceResult, error) {
+	return BootAcceptanceResult{
 		ProcessAccepted:    true,
 		APISocketAvailable: true,
 	}, nil

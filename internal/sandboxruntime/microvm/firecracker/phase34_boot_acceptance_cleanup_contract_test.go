@@ -391,14 +391,14 @@ type phase34BootAcceptanceCleanupProbe struct {
 	stopCalls    int
 	deleteCalls  int
 
-	waitRequests    []bootAcceptanceRequest
+	waitRequests    []BootAcceptanceRequest
 	cleanupRequests []LiveProcessRequest
 	stopRequests    []LiveProcessRequest
 	deleteRequests  []LiveProcessRequest
 }
 
 var _ ProcessStarter = (*phase34BootAcceptanceCleanupProbe)(nil)
-var _ bootAcceptanceWaiter = (*phase34BootAcceptanceCleanupProbe)(nil)
+var _ BootAcceptanceWaiter = (*phase34BootAcceptanceCleanupProbe)(nil)
 var _ LiveProcessManager = (*phase34BootAcceptanceCleanupProbe)(nil)
 
 func phase34NewBootAcceptanceCleanupProbe(outcome phase34BootAcceptanceOutcome) *phase34BootAcceptanceCleanupProbe {
@@ -416,20 +416,20 @@ func (probe *phase34BootAcceptanceCleanupProbe) StartProcess(context.Context, Pr
 	return probe.handle, nil
 }
 
-func (probe *phase34BootAcceptanceCleanupProbe) WaitForBootAcceptance(_ context.Context, req bootAcceptanceRequest) (bootAcceptanceResult, error) {
+func (probe *phase34BootAcceptanceCleanupProbe) WaitForBootAcceptance(_ context.Context, req BootAcceptanceRequest) (BootAcceptanceResult, error) {
 	probe.waitCalls++
 	probe.waitRequests = append(probe.waitRequests, req)
 	switch {
 	case probe.outcome.Err != nil:
-		return bootAcceptanceResult{}, probe.outcome.Err
+		return BootAcceptanceResult{}, probe.outcome.Err
 	case probe.outcome.Timeout:
-		return bootAcceptanceResult{}, context.DeadlineExceeded
+		return BootAcceptanceResult{}, context.DeadlineExceeded
 	case !probe.outcome.ProcessAccepted:
-		return bootAcceptanceResult{}, errPhase34ProcessNotAccepted
+		return BootAcceptanceResult{}, errPhase34ProcessNotAccepted
 	case !probe.outcome.APISocketAvailable:
-		return bootAcceptanceResult{}, errPhase34APISocketUnavailable
+		return BootAcceptanceResult{}, errPhase34APISocketUnavailable
 	default:
-		return bootAcceptanceResult{
+		return BootAcceptanceResult{
 			ProcessAccepted:    true,
 			APISocketAvailable: true,
 		}, nil

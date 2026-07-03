@@ -38,21 +38,27 @@ var (
 type BackendOptions struct {
 	BaseStateDir         string
 	ProcessAdapter       ProcessAdapter
-	BootAcceptanceWaiter bootAcceptanceWaiter
+	BootAcceptanceWaiter BootAcceptanceWaiter
 	LiveProcessManager   LiveProcessManager
 	LiveStart            bool
 }
 
-type bootAcceptanceWaiter interface {
-	WaitForBootAcceptance(context.Context, bootAcceptanceRequest) (bootAcceptanceResult, error)
+// BootAcceptanceWaiter is the injected host-side readiness boundary for an
+// explicitly live-started Firecracker process.
+type BootAcceptanceWaiter interface {
+	WaitForBootAcceptance(context.Context, BootAcceptanceRequest) (BootAcceptanceResult, error)
 }
 
-type bootAcceptanceRequest struct {
+// BootAcceptanceRequest carries the sanitized process handle and API socket
+// path reference used to wait for host-side Firecracker acceptance.
+type BootAcceptanceRequest struct {
 	Handle    ProcessHandleMetadata
 	APISocket OperationPathReference
 }
 
-type bootAcceptanceResult struct {
+// BootAcceptanceResult reports host-side process and API socket acceptance. It
+// does not imply guest boot readiness or guest command availability.
+type BootAcceptanceResult struct {
 	ProcessAccepted    bool
 	APISocketAvailable bool
 }
@@ -78,7 +84,7 @@ type LiveProcessRequest struct {
 type Backend struct {
 	baseStateDir         string
 	processAdapter       ProcessAdapter
-	bootAcceptanceWaiter bootAcceptanceWaiter
+	bootAcceptanceWaiter BootAcceptanceWaiter
 	liveProcessManager   LiveProcessManager
 	liveStart            bool
 }
@@ -143,7 +149,7 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 	}
 	baseStateDir := ""
 	var adapter ProcessAdapter
-	var waiter bootAcceptanceWaiter
+	var waiter BootAcceptanceWaiter
 	var manager LiveProcessManager
 	if b != nil {
 		baseStateDir = b.baseStateDir
@@ -163,7 +169,7 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 type firecrackerController struct {
 	baseStateDir         string
 	processAdapter       ProcessAdapter
-	bootAcceptanceWaiter bootAcceptanceWaiter
+	bootAcceptanceWaiter BootAcceptanceWaiter
 	liveProcessManager   LiveProcessManager
 	liveStart            bool
 }
@@ -227,7 +233,7 @@ func (c firecrackerController) startLiveProcess(ctx context.Context, descriptor 
 }
 
 func (c firecrackerController) waitForBootAcceptance(ctx context.Context, handle ProcessHandleMetadata, paths PathPlan) (*sandboxruntime.RuntimeProcessLaunchMetadata, error) {
-	result, err := c.bootAcceptanceWaiter.WaitForBootAcceptance(processContext(ctx), bootAcceptanceRequest{
+	result, err := c.bootAcceptanceWaiter.WaitForBootAcceptance(processContext(ctx), BootAcceptanceRequest{
 		Handle: sanitizeProcessHandleMetadata(handle),
 		APISocket: OperationPathReference{
 			Role: OperationPathRoleAPISocket,
