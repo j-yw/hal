@@ -86,11 +86,13 @@ type TimingMetadata struct {
 	DeadlineUnixMillis int64 `json:"deadlineUnixMillis,omitempty"`
 }
 
-// StreamMetadata describes bounded command I/O without carrying stream bytes.
+// StreamMetadata describes bounded command I/O. Data is optional bounded
+// stream content used only when a protocol operation returns captured output.
 type StreamMetadata struct {
-	SizeBytes int64 `json:"sizeBytes,omitempty"`
-	MaxBytes  int64 `json:"maxBytes,omitempty"`
-	Truncated bool  `json:"truncated,omitempty"`
+	SizeBytes int64  `json:"sizeBytes,omitempty"`
+	MaxBytes  int64  `json:"maxBytes,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
+	Data      string `json:"data,omitempty"`
 }
 
 // PayloadMetadata describes a bounded copy payload without carrying payload

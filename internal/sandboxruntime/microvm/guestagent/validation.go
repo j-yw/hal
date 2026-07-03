@@ -37,12 +37,21 @@ func ValidateExecRequest(request ExecRequest) error {
 		return err
 	}
 	if request.Stdin != nil {
+		if request.Stdin.Data != "" {
+			return newValidationError(ErrorCodeInvalidMetadata, request.Operation, "stdin.data", "stream data is not accepted in request metadata")
+		}
 		if err := validateStreamMetadata(request.Operation, "stdin", *request.Stdin, true); err != nil {
 			return err
 		}
 	}
+	if request.Stdout.Data != "" {
+		return newValidationError(ErrorCodeInvalidMetadata, request.Operation, "stdout.data", "stream data is not accepted in request metadata")
+	}
 	if err := validateStreamMetadata(request.Operation, "stdout", request.Stdout, true); err != nil {
 		return err
+	}
+	if request.Stderr.Data != "" {
+		return newValidationError(ErrorCodeInvalidMetadata, request.Operation, "stderr.data", "stream data is not accepted in request metadata")
 	}
 	if err := validateStreamMetadata(request.Operation, "stderr", request.Stderr, true); err != nil {
 		return err
@@ -264,6 +273,21 @@ func validateStreamMetadata(operation Operation, field string, metadata StreamMe
 	}
 	if metadata.MaxBytes > 0 && metadata.SizeBytes > metadata.MaxBytes {
 		return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, field+".sizeBytes", "stream size exceeds declared limit")
+	}
+	if metadata.Data != "" {
+		if !utf8.ValidString(metadata.Data) {
+			return newValidationError(ErrorCodeInvalidMetadata, operation, field+".data", "stream data contains invalid characters")
+		}
+		dataBytes := int64(len(metadata.Data))
+		if dataBytes > MaxStreamMetadataBytes {
+			return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, field+".data", "stream data exceeds protocol limit")
+		}
+		if metadata.MaxBytes > 0 && dataBytes > metadata.MaxBytes {
+			return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, field+".data", "stream data exceeds declared limit")
+		}
+		if metadata.SizeBytes > 0 && dataBytes > metadata.SizeBytes {
+			return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, field+".data", "stream data exceeds declared size")
+		}
 	}
 	return nil
 }

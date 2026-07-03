@@ -200,6 +200,12 @@ func TestValidateProtocolRequestsRejectInvalidMetadata(t *testing.T) {
 			wantField: "stdout",
 		},
 		{
+			name:      "request stream data",
+			err:       ValidateExecRequest(withExecRequest(func(req *ExecRequest) { req.Stdin.Data = "request-body" })),
+			wantCode:  ErrorCodeInvalidMetadata,
+			wantField: "stdin.data",
+		},
+		{
 			name: "malformed copy path",
 			err: ValidateCopyInRequest(CopyInRequest{
 				ProtocolVersion: ProtocolVersionV1,
@@ -228,6 +234,17 @@ func TestValidateProtocolRequestsRejectInvalidMetadata(t *testing.T) {
 			assertProtocolError(t, tt.err, tt.wantCode, tt.wantField)
 		})
 	}
+}
+
+func TestValidateProtocolResponsesRejectStreamDataAboveDeclaredLimit(t *testing.T) {
+	err := ValidateExecResponse(ExecResponse{
+		ProtocolVersion: ProtocolVersionV1,
+		Operation:       OperationExec,
+		ExitCode:        0,
+		Stdout:          StreamMetadata{Data: "abcdef", MaxBytes: 5},
+		Stderr:          StreamMetadata{MaxBytes: 5},
+	})
+	assertProtocolError(t, err, ErrorCodeOversizedPayloadMetadata, "stdout.data")
 }
 
 func TestProtocolErrorsAreRedactionSafeInStringsAndJSON(t *testing.T) {
