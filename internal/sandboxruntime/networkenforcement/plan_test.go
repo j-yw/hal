@@ -363,18 +363,24 @@ func TestPlanPublicSchemaContainsNoUnsafeFields(t *testing.T) {
 				if field.PkgPath != "" {
 					continue
 				}
-				jsonName := strings.Split(field.Tag.Get("json"), ",")[0]
-				if jsonName == "" || jsonName == "-" {
-					t.Fatalf("%s.%s must have a public JSON name", typ.Name(), field.Name)
-				}
-				if !strings.Contains(field.Tag.Get("json"), "omitempty") {
-					t.Fatalf("%s.%s json tag %q must use omitempty for additive schema fields", typ.Name(), field.Name, field.Tag.Get("json"))
-				}
+				jsonName := planJSONName(t, typ.Name(), field)
 				assertSafePlanFieldName(t, typ.Name(), field.Name, jsonName)
 				assertSafePlanFieldType(t, typ.Name(), field)
 			}
 		})
 	}
+}
+
+func planJSONName(t *testing.T, typeName string, field reflect.StructField) string {
+	t.Helper()
+	jsonName := strings.Split(field.Tag.Get("json"), ",")[0]
+	if jsonName == "" || jsonName == "-" {
+		t.Fatalf("%s.%s must have a public JSON name", typeName, field.Name)
+	}
+	if !strings.Contains(field.Tag.Get("json"), "omitempty") {
+		t.Fatalf("%s.%s json tag %q must use omitempty for additive schema fields", typeName, field.Name, field.Tag.Get("json"))
+	}
+	return jsonName
 }
 
 func assertSafePlanFieldName(t *testing.T, typeName, fieldName, jsonName string) {
@@ -408,6 +414,8 @@ func assertSafePlanFieldType(t *testing.T, typeName string, field reflect.Struct
 			reflect.TypeOf(RawProtocolPlan{}),
 			reflect.TypeOf(ProxyRoutingIntent{}),
 			reflect.TypeOf(FirewallIntent{}),
+			reflect.TypeOf(ProxyListenerLifecycleMetadata{}),
+			reflect.TypeOf(RuleLifecycleMetadata{}),
 			reflect.TypeOf(ResultCapability{}):
 			return
 		default:
@@ -489,6 +497,7 @@ func forbiddenPlanRawFieldNameFragments() []string {
 	return []string{
 		"address",
 		"body",
+		"command",
 		"credential",
 		"destination",
 		"env",
@@ -501,6 +510,7 @@ func forbiddenPlanRawFieldNameFragments() []string {
 		"packet",
 		"peer",
 		"port",
+		"process",
 		"remotepath",
 		"secret",
 		"socket",

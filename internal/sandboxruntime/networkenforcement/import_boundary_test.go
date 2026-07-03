@@ -135,6 +135,7 @@ func TestNetworkEnforcementImportBoundaryCoversPlanningAndAdapterFiles(t *testin
 		"adapter.go",
 		"allowlist_normalization.go",
 		"doc.go",
+		"live_contracts.go",
 		"plan.go",
 		"planner.go",
 		"redaction.go",
