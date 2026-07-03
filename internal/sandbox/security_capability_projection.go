@@ -19,7 +19,9 @@ func ProjectSandboxSecurityCapabilityReadinessInput(security *SandboxSecurity) S
 type SandboxWorkerRuntimeCapabilityReadinessProjection struct {
 	Host           *SandboxHost
 	Runtime        *SandboxRuntimeState
+	Workspace      *SandboxWorkspace
 	WorkerRouting  *WorkerRoutingMetadata
+	TemplateLock   *SandboxTemplateLockMetadata
 	WorkerPostures []SandboxSecurityCapabilityWorkerPostureMetadata
 	Ready          []SandboxSecurityCapabilityMetadata
 }
@@ -31,10 +33,12 @@ type SandboxPolicyProxyCredentialCapabilityReadinessProjection struct {
 	Ready                     []SandboxSecurityCapabilityMetadata
 	NetworkPolicyResult       *SandboxNetworkPolicyResult
 	NetworkProxySession       *SandboxNetworkProxySessionMetadata
+	NetworkEnforcementProof   *SandboxNetworkEnforcementProofMetadata
 	NetworkPolicyDecisionLogs []SandboxNetworkPolicyDecisionLogRecord
 	CredentialProxyPlan       *SandboxCredentialProxyPlanMetadata
 	CredentialProxySession    *SandboxCredentialProxySessionMetadata
 	CredentialProxyBindings   []SandboxCredentialProxyBindingMetadata
+	CredentialDelivery        *SandboxCredentialDeliveryStatusMetadata
 }
 
 // ProjectSandboxWorkerRuntimeCapabilityReadinessInput maps durable
