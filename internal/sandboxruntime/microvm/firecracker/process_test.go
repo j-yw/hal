@@ -41,6 +41,30 @@ func TestPrepareStartCommandUsesInjectedProcessAdapterOnly(t *testing.T) {
 	}
 }
 
+func TestPrepareStartCommandRejectsDescriptorThatDivergesFromStartPlan(t *testing.T) {
+	plan := validFirecrackerStartOperationPlan(t)
+	adapter := &fakeProcessAdapter{
+		prepare: func(context.Context, ProcessStartCommandRequest) (ProcessCommandDescriptor, error) {
+			descriptor, err := ProcessCommandDescriptorFromStartPlan(plan)
+			if err != nil {
+				t.Fatalf("ProcessCommandDescriptorFromStartPlan() error = %v, want nil", err)
+			}
+			descriptor.Paths[1].Path = "/tmp/phase34-different-firecracker-config.json"
+			argv, err := processStartArgv(descriptor.Executable, descriptor.Paths)
+			if err != nil {
+				t.Fatalf("processStartArgv() error = %v, want nil", err)
+			}
+			descriptor.Argv = argv
+			return descriptor, nil
+		},
+	}
+
+	_, err := PrepareStartCommand(context.Background(), adapter, plan)
+
+	assertFirecrackerProcessBoundaryError(t, err, "descriptor")
+	assertFirecrackerErrorDoesNotLeak(t, err, "phase34-different-firecracker-config.json")
+}
+
 func TestStartProcessCallsOnlyInjectedProcessAdapter(t *testing.T) {
 	plan := validFirecrackerStartOperationPlan(t)
 	descriptor, err := ProcessCommandDescriptorFromStartPlan(plan)

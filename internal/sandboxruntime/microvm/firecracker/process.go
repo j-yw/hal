@@ -74,6 +74,9 @@ func PrepareStartCommand(ctx context.Context, adapter ProcessAdapter, plan Start
 	if err := validateProcessCommandDescriptor(descriptor); err != nil {
 		return ProcessCommandDescriptor{}, err
 	}
+	if err := validateProcessCommandDescriptorMatchesPlan(descriptor, plan); err != nil {
+		return ProcessCommandDescriptor{}, err
+	}
 	return descriptor, nil
 }
 
@@ -165,6 +168,22 @@ func validateProcessCommandDescriptor(descriptor ProcessCommandDescriptor) error
 		return newProcessBoundaryError("environment", "process environment metadata is not supported")
 	}
 	return validateProcessPayloadReferences(descriptor.Payloads)
+}
+
+func validateProcessCommandDescriptorMatchesPlan(descriptor ProcessCommandDescriptor, plan StartOperationPlan) error {
+	expected, err := ProcessCommandDescriptorFromStartPlan(plan)
+	if err != nil {
+		return err
+	}
+	if descriptor.Action != expected.Action ||
+		descriptor.Executable != expected.Executable ||
+		!equalStringSlices(descriptor.Argv, expected.Argv) ||
+		!equalOperationEnvironment(descriptor.Environment, expected.Environment) ||
+		!equalOperationPathReferences(descriptor.Paths, expected.Paths) ||
+		!equalOperationPayloadReferences(descriptor.Payloads, expected.Payloads) {
+		return newProcessBoundaryError("descriptor", "process descriptor does not match start plan")
+	}
+	return nil
 }
 
 func validateProcessPathReferences(paths []OperationPathReference) error {
@@ -357,6 +376,42 @@ func cloneStringSlice(in []string) []string {
 }
 
 func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalOperationEnvironment(a, b []OperationEnvironmentMetadata) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalOperationPathReferences(a, b []OperationPathReference) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalOperationPayloadReferences(a, b []OperationPayloadReference) bool {
 	if len(a) != len(b) {
 		return false
 	}
