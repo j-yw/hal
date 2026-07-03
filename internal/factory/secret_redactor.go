@@ -97,6 +97,12 @@ func (r RunSecretRedactor) RedactArtifactReference(artifact ArtifactReference) A
 // values removed from durable string metadata.
 func (r RunSecretRedactor) RedactRunRecord(record RunRecord) RunRecord {
 	if len(r.secretValues) == 0 {
+		if record.Sandbox != nil {
+			safe := *record.Sandbox
+			safe.NetworkProxySession = r.redactSandboxNetworkProxySessionMetadata(safe.NetworkProxySession)
+			safe.CredentialDelivery = r.redactCredentialDeliveryStatusMetadata(safe.CredentialDelivery)
+			record.Sandbox = &safe
+		}
 		return record
 	}
 	record.Source = r.redactSourceMetadata(record.Source)
@@ -120,11 +126,13 @@ func (r RunSecretRedactor) RedactRunRecord(record RunRecord) RunRecord {
 // removed from durable timeline output fields.
 func (r RunSecretRedactor) RedactEventRecord(event EventRecord) EventRecord {
 	if len(r.secretValues) == 0 {
+		event.NetworkPolicyDecisionLogs = sandbox.SanitizeSandboxNetworkPolicyDecisionLogRecords(event.NetworkPolicyDecisionLogs)
 		return event
 	}
 	event.Message = r.RedactString(event.Message)
 	event.Summary = r.RedactString(event.Summary)
 	event.Metadata = r.redactArtifactSummary(event.Metadata)
+	event.NetworkPolicyDecisionLogs = r.redactSandboxNetworkPolicyDecisionLogRecords(event.NetworkPolicyDecisionLogs)
 	return event
 }
 
@@ -169,6 +177,7 @@ func (r RunSecretRedactor) redactSandboxMetadata(sandbox *SandboxMetadata) *Sand
 	safe.SSHCommand = r.RedactString(safe.SSHCommand)
 	safe.CleanupCommand = r.RedactString(safe.CleanupCommand)
 	safe.Handoff = r.RedactString(safe.Handoff)
+	safe.NetworkProxySession = r.redactSandboxNetworkProxySessionMetadata(safe.NetworkProxySession)
 	safe.CredentialProxyPlan = r.redactSandboxCredentialProxyPlanMetadata(safe.CredentialProxyPlan)
 	safe.CredentialProxySession = r.redactSandboxCredentialProxySessionMetadata(safe.CredentialProxySession)
 	safe.CredentialProxyBindings = r.redactSandboxCredentialProxyBindingMetadata(safe.CredentialProxyBindings)
@@ -196,6 +205,20 @@ func (r RunSecretRedactor) redactSandboxConnectionMetadata(connection *SandboxCo
 	safe.PublicIP = r.RedactString(safe.PublicIP)
 	safe.TailscaleIP = r.RedactString(safe.TailscaleIP)
 	safe.TailscaleHostname = r.RedactString(safe.TailscaleHostname)
+	return &safe
+}
+
+func (r RunSecretRedactor) redactSandboxNetworkProxySessionMetadata(session *sandbox.SandboxNetworkProxySessionMetadata) *sandbox.SandboxNetworkProxySessionMetadata {
+	if session == nil {
+		return nil
+	}
+	safe := sandbox.SanitizeSandboxNetworkProxySessionMetadata(*session)
+	if safe.ID == "" && safe.Source == "" && safe.PolicySnapshot == nil && safe.EnforcementMode == "" {
+		return nil
+	}
+	safe.ID = r.RedactString(safe.ID)
+	safe.EnforcementMode = r.RedactString(safe.EnforcementMode)
+	safe.PolicySnapshot = r.redactSandboxNetworkPolicySnapshotIdentity(safe.PolicySnapshot)
 	return &safe
 }
 
@@ -263,6 +286,27 @@ func (r RunSecretRedactor) redactSandboxNetworkPolicySnapshotIdentity(snapshot *
 	safe.Preset = sandbox.SandboxNetworkPolicyPreset(r.RedactString(string(safe.Preset)))
 	safe.RuleSetID = r.RedactString(safe.RuleSetID)
 	return &safe
+}
+
+func (r RunSecretRedactor) redactSandboxNetworkPolicyDecisionLogRecords(records []sandbox.SandboxNetworkPolicyDecisionLogRecord) []sandbox.SandboxNetworkPolicyDecisionLogRecord {
+	records = sandbox.SanitizeSandboxNetworkPolicyDecisionLogRecords(records)
+	if len(records) == 0 {
+		return nil
+	}
+	safe := make([]sandbox.SandboxNetworkPolicyDecisionLogRecord, len(records))
+	for i, record := range records {
+		record.ID = r.RedactString(record.ID)
+		record.ProxySessionID = r.RedactString(record.ProxySessionID)
+		record.PolicySnapshot = r.redactSandboxNetworkPolicySnapshotIdentity(record.PolicySnapshot)
+		if record.Request != nil {
+			request := *record.Request
+			request.ID = r.RedactString(request.ID)
+			request.Operation = r.RedactString(request.Operation)
+			record.Request = &request
+		}
+		safe[i] = record
+	}
+	return safe
 }
 
 func (r RunSecretRedactor) redactArtifactReferences(artifacts []ArtifactReference) []ArtifactReference {
