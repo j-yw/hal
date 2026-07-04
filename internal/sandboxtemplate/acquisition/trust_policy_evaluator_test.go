@@ -133,19 +133,23 @@ func TestEvaluateTrustPolicyStrictRejectsMissingTemplateDocumentIdentity(t *test
 	}
 }
 
-func TestEvaluateTrustPolicyStrictTrustsDigestPinnedLockAndProvenanceEvidence(t *testing.T) {
+func TestEvaluateTrustPolicyStrictTrustsMatchingLockAndProvenanceEvidence(t *testing.T) {
 	tmpl := trustPolicyTemplateWithRequiredReferences(false)
 	lock := trustPolicyDocumentLock()
 	lock.References = []acquisition.ReferenceLock{
 		trustPolicyReferenceLock("metadata.reference", sandboxtemplate.ReferenceKindOCIArtifact, "b"),
+		trustPolicyReferenceLock("runtime.image", sandboxtemplate.ReferenceKindOCIImage, "c"),
 		trustPolicyReferenceLock("runtime.launch.descriptorRef", sandboxtemplate.ReferenceKindOCIArtifact, "d"),
 		trustPolicyReferenceLock("workspace.ref", sandboxtemplate.ReferenceKindGit, "e"),
 		trustPolicyReferenceLock("network.policySnapshotReference", sandboxtemplate.ReferenceKindOCIArtifact, "f"),
 	}
-	provenance := acquisition.TemplateLock{
-		References: []acquisition.ReferenceLock{
-			trustPolicyReferenceLock("runtime.image", sandboxtemplate.ReferenceKindOCIImage, "c"),
-		},
+	provenance := trustPolicyDocumentLock()
+	provenance.References = []acquisition.ReferenceLock{
+		trustPolicyReferenceLock("metadata.reference", sandboxtemplate.ReferenceKindOCIArtifact, "b"),
+		trustPolicyReferenceLock("runtime.image", sandboxtemplate.ReferenceKindOCIImage, "c"),
+		trustPolicyReferenceLock("runtime.launch.descriptorRef", sandboxtemplate.ReferenceKindOCIArtifact, "d"),
+		trustPolicyReferenceLock("workspace.ref", sandboxtemplate.ReferenceKindGit, "e"),
+		trustPolicyReferenceLock("network.policySnapshotReference", sandboxtemplate.ReferenceKindOCIArtifact, "f"),
 	}
 
 	result := acquisition.EvaluateTrustPolicy(tmpl, acquisition.TrustPolicyRequest{
@@ -161,6 +165,96 @@ func TestEvaluateTrustPolicyStrictTrustsDigestPinnedLockAndProvenanceEvidence(t 
 	if len(result.Errors) != 0 || len(result.Warnings) != 0 {
 		t.Fatalf("policy findings = errors %#v warnings %#v, want none", result.Errors, result.Warnings)
 	}
+}
+
+func TestEvaluateTrustPolicyStrictRejectsMissingRequiredLockEntryEvenWithProvenance(t *testing.T) {
+	tmpl := trustPolicyTemplateWithRequiredReferences(false)
+	lock := trustPolicyDocumentLock()
+	provenance := trustPolicyDocumentLock()
+	provenance.References = []acquisition.ReferenceLock{
+		trustPolicyReferenceLock("runtime.image", sandboxtemplate.ReferenceKindOCIImage, "c"),
+	}
+
+	result := acquisition.EvaluateTrustPolicy(tmpl, acquisition.TrustPolicyRequest{
+		Mode: acquisition.TrustPolicyModeStrict,
+		RequiredReferences: []acquisition.TrustPolicyReferenceRequirement{
+			{Field: "runtime.image", Kind: sandboxtemplate.ReferenceKindOCIImage},
+		},
+		Lock:       &lock,
+		Provenance: &provenance,
+	})
+
+	if result.Decision != acquisition.TrustPolicyDecisionRejected {
+		t.Fatalf("decision = %q, want rejected: %#v", result.Decision, result)
+	}
+	if len(result.Errors) != 1 {
+		t.Fatalf("errors = %#v, want one missing lock entry error", result.Errors)
+	}
+	err := result.Errors[0]
+	if err.Code != acquisition.TrustPolicyErrorMissingDigestPin {
+		t.Fatalf("code = %q, want missing_digest_pin", err.Code)
+	}
+	if err.Field != "requiredReferences" || err.ReferenceField != "runtime.image" {
+		t.Fatalf("error field/reference = %q/%q, want requiredReferences/runtime.image", err.Field, err.ReferenceField)
+	}
+	if err.ReferenceIndex == nil || *err.ReferenceIndex != 0 {
+		t.Fatalf("reference index = %#v, want 0", err.ReferenceIndex)
+	}
+	if err.ReasonCode != acquisition.LockReasonMutableReference {
+		t.Fatalf("reason = %q, want mutable_reference", err.ReasonCode)
+	}
+	assertTrustPolicyResultOmitsFragments(t, result, "ghcr.io/acme/go-agent:latest", "token=", "registryAuth")
+}
+
+func TestEvaluateTrustPolicyStrictRejectsProvenanceDigestMismatch(t *testing.T) {
+	tmpl := trustPolicyTemplateWithRequiredReferences(false)
+	tmpl.Runtime.Image.Ref = "ghcr.io/acme/go-agent:latest?token=sk-live-template"
+	lock := trustPolicyDocumentLock()
+	lock.References = []acquisition.ReferenceLock{
+		trustPolicyReferenceLock("runtime.image", sandboxtemplate.ReferenceKindOCIImage, "c"),
+	}
+	provenance := trustPolicyDocumentLock()
+	provenance.References = []acquisition.ReferenceLock{
+		trustPolicyReferenceLock("runtime.image", sandboxtemplate.ReferenceKindOCIImage, "d"),
+	}
+
+	result := acquisition.EvaluateTrustPolicy(tmpl, acquisition.TrustPolicyRequest{
+		Mode: acquisition.TrustPolicyModeStrict,
+		RequiredReferences: []acquisition.TrustPolicyReferenceRequirement{
+			{Field: "runtime.image", Kind: sandboxtemplate.ReferenceKindOCIImage},
+		},
+		Lock:       &lock,
+		Provenance: &provenance,
+	})
+
+	if result.Decision != acquisition.TrustPolicyDecisionRejected {
+		t.Fatalf("decision = %q, want rejected: %#v", result.Decision, result)
+	}
+	if len(result.Errors) != 1 {
+		t.Fatalf("errors = %#v, want one lock/provenance mismatch", result.Errors)
+	}
+	err := result.Errors[0]
+	if err.Code != acquisition.TrustPolicyErrorLockProvenanceMismatch {
+		t.Fatalf("code = %q, want lock_provenance_mismatch", err.Code)
+	}
+	if err.Field != "requiredReferences" || err.ReferenceField != "runtime.image" {
+		t.Fatalf("error field/reference = %q/%q, want requiredReferences/runtime.image", err.Field, err.ReferenceField)
+	}
+	if err.ReferenceIndex == nil || *err.ReferenceIndex != 0 {
+		t.Fatalf("reference index = %#v, want 0", err.ReferenceIndex)
+	}
+	if err.ReasonCode != acquisition.LockReasonImmutableDigest {
+		t.Fatalf("reason = %q, want immutable_digest", err.ReasonCode)
+	}
+	assertTrustPolicyResultOmitsFragments(t, result,
+		"/Users/v/private-template.yaml",
+		"ghcr.io/acme/go-agent:latest",
+		"token=",
+		"sk-live-template",
+		"registryAuth",
+		"authorization",
+		"user:password",
+	)
 }
 
 func TestEvaluateTrustPolicyAdvisoryReportsWarningsWithoutRejecting(t *testing.T) {
