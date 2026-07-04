@@ -622,6 +622,107 @@ func TestRuntimeNetworkEnforcementFailureClearsCapabilityUpgrade(t *testing.T) {
 	}
 }
 
+func TestRuntimeNetworkEnforcementProxyOnlyProofCannotClaimProxyFirewall(t *testing.T) {
+	metadata := SanitizeRuntimeNetworkEnforcementMetadata(&RuntimeNetworkEnforcementMetadata{
+		Plan: &RuntimeNetworkEnforcementPlanMetadata{
+			ID:               "network-plan-proxy-only",
+			Source:           "microvm",
+			Operation:        "prepare_network",
+			PolicySnapshotID: "policy-snapshot-proxy-only",
+			PolicyPreset:     "deny_by_default",
+			DefaultPosture:   "deny_by_default",
+			Mechanisms:       []string{"proxy", "firewall"},
+			Operations:       []string{"default_deny", "provider=firecracker", "argv=--api-sock=/tmp/fc.sock"},
+		},
+		Orchestration: &RuntimeNetworkEnforcementOrchestrationMetadata{
+			PlanID:           "network-plan-proxy-only",
+			AdapterID:        "policy-proxy-adapter",
+			Status:           "active",
+			Mechanisms:       []string{"proxy"},
+			Operations:       []string{"start_proxy", "listen 127.0.0.1:8080", "/tmp/policy-proxy.sock"},
+			PolicySnapshotID: "policy-snapshot-proxy-only",
+			PolicyPreset:     "deny_by_default",
+			Proxy: &RuntimeNetworkEnforcementLifecycleMetadata{
+				ID:               "proxy-session-proxy-only",
+				PlanID:           "network-plan-proxy-only",
+				AdapterID:        "policy-proxy-adapter",
+				Status:           "active",
+				Mechanisms:       []string{"proxy"},
+				Operations:       []string{"active_proxy", "curl http://localhost:8080"},
+				PolicySnapshotID: "policy-snapshot-proxy-only",
+				PolicyPreset:     "deny_by_default",
+				CapabilityLabels: []string{"proxy_active", "provider=firecracker"},
+				ReasonCode:       "active",
+			},
+			CapabilityLabels: []string{"proxy_active", "host_path_/Users/alice"},
+			ReasonCode:       "active",
+		},
+		Result: &RuntimeNetworkEnforcementResultMetadata{
+			PlanID:           "network-plan-proxy-only",
+			AdapterID:        "policy-proxy-adapter",
+			Outcome:          "success",
+			EnforcementMode:  "proxy_firewall",
+			Mechanisms:       []string{"proxy"},
+			Operations:       []string{"proxy_route", "argv=--netns=/tmp/netns", "provider=firecracker"},
+			PolicySnapshotID: "policy-snapshot-proxy-only",
+			PolicyPreset:     "deny_by_default",
+			Capability: &RuntimeNetworkEnforcementCapability{
+				Supported:                  true,
+				Modes:                      []string{"proxy_firewall"},
+				SupportsDomainRules:        true,
+				SupportsEndpointRules:      true,
+				SupportsDefaultDenyPosture: true,
+			},
+			ReasonCode: "applied",
+		},
+	})
+	if metadata == nil || metadata.Orchestration == nil || metadata.Result == nil {
+		t.Fatalf("metadata = %#v, want sanitized proxy-only status", metadata)
+	}
+	if metadata.Orchestration.Proxy == nil ||
+		metadata.Orchestration.Proxy.Status != "active" ||
+		!reflect.DeepEqual(metadata.Orchestration.Proxy.CapabilityLabels, []string{"proxy_active"}) {
+		t.Fatalf("orchestration proxy = %#v, want sanitized active proxy proof", metadata.Orchestration.Proxy)
+	}
+	if len(metadata.Orchestration.Rules) != 0 {
+		t.Fatalf("orchestration rules = %#v, want no firewall/runtime rule proof", metadata.Orchestration.Rules)
+	}
+	if metadata.Result.EnforcementMode != "proxy" {
+		t.Fatalf("result enforcementMode = %q, want proxy-only downgrade", metadata.Result.EnforcementMode)
+	}
+	if metadata.Result.Capability == nil ||
+		!reflect.DeepEqual(metadata.Result.Capability.Modes, []string{"proxy"}) ||
+		metadata.Result.Capability.SupportsDefaultDenyPosture {
+		t.Fatalf("result capability = %#v, want proxy-only capability without default-deny posture", metadata.Result.Capability)
+	}
+
+	encoded, err := json.Marshal(RuntimeMetadata{NetworkEnforcement: metadata})
+	if err != nil {
+		t.Fatalf("Marshal(RuntimeMetadata) error = %v", err)
+	}
+	publicText := string(encoded)
+	for _, unsafe := range []string{
+		"proxy_firewall",
+		"supportsDefaultDenyPosture",
+		"127.0.0.1",
+		"localhost",
+		"8080",
+		"/tmp",
+		".sock",
+		"--api-sock",
+		"--netns",
+		"provider",
+		"firecracker",
+		"/Users/alice",
+		"host_path",
+		"://",
+	} {
+		if strings.Contains(publicText, unsafe) {
+			t.Fatalf("proxy-only runtime status leaked or overclaimed %q in %s", unsafe, publicText)
+		}
+	}
+}
+
 func TestRuntimeNetworkEnforcementProjectionDowngradesNonEnforcingResults(t *testing.T) {
 	safePlan := &RuntimeNetworkEnforcementPlanMetadata{
 		ID:               "network-plan-downgrade",

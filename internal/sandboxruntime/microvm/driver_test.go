@@ -540,6 +540,71 @@ func TestDriverNetworkEnforcementPlanningUsesInjectedBoundaryOnlyWhenConfigured(
 	}
 }
 
+func TestDriverMetadataProjectsProxyOnlyProofWithoutProxyFirewallClaim(t *testing.T) {
+	plan := microVMNetworkEnforcementTestPlan()
+	proof := networkenforcement.NewPolicyProxyLifecycleProof(
+		networkenforcement.NewSanitizedPlan(plan),
+		networkenforcement.PolicyProxyLifecycleOperationActiveCheck,
+		networkenforcement.LifecycleStatusActive,
+		networkenforcement.LifecycleReasonActive,
+	)
+	proof.AdapterID = "policy-proxy-adapter"
+	result := networkenforcement.ResultFromPolicyProxyLifecycleProof(plan, proof)
+	orchestration := microVMNetworkEnforcementProxyOnlyActiveOrchestration(plan)
+	driver := NewDriver(DriverOptions{
+		CapabilityDetector:              fixedCapabilityDetector(availableCapabilityReport()),
+		NetworkEnforcementPlan:          &plan,
+		NetworkEnforcementOrchestration: &orchestration,
+		NetworkEnforcementResult:        &result,
+	})
+
+	metadata := driver.Metadata().NetworkEnforcement
+	if metadata == nil || metadata.Result == nil || metadata.Orchestration == nil {
+		t.Fatalf("NetworkEnforcement = %#v, want proxy-only result and orchestration metadata", metadata)
+	}
+	if metadata.Result.EnforcementMode != string(networkenforcement.ResultModeProxy) {
+		t.Fatalf("EnforcementMode = %q, want proxy", metadata.Result.EnforcementMode)
+	}
+	if metadata.Result.Capability == nil ||
+		!reflect.DeepEqual(metadata.Result.Capability.Modes, []string{string(networkenforcement.ResultModeProxy)}) ||
+		metadata.Result.Capability.SupportsDefaultDenyPosture {
+		t.Fatalf("Capability = %#v, want proxy-only capability without default-deny posture", metadata.Result.Capability)
+	}
+	if metadata.Orchestration.Proxy == nil ||
+		metadata.Orchestration.Proxy.Status != string(networkenforcement.LifecycleStatusActive) ||
+		!reflect.DeepEqual(metadata.Orchestration.Proxy.CapabilityLabels, []string{"proxy_active"}) {
+		t.Fatalf("Orchestration.Proxy = %#v, want sanitized active proxy proof", metadata.Orchestration.Proxy)
+	}
+	if len(metadata.Orchestration.Rules) != 0 {
+		t.Fatalf("Orchestration.Rules = %#v, want no firewall/runtime rule proof", metadata.Orchestration.Rules)
+	}
+
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("Marshal(NetworkEnforcement) error = %v", err)
+	}
+	publicText := string(encoded)
+	for _, unsafe := range []string{
+		"proxy_firewall",
+		"supportsDefaultDenyPosture",
+		"127.0.0.1",
+		"localhost",
+		"8080",
+		"/tmp",
+		".sock",
+		"--api-sock",
+		"provider",
+		"firecracker",
+		"Authorization",
+		"secret",
+		"://",
+	} {
+		if strings.Contains(publicText, unsafe) {
+			t.Fatalf("proxy-only driver status leaked or overclaimed %q in %s", unsafe, publicText)
+		}
+	}
+}
+
 func TestDriverNetworkEnforcementPlanningWithoutAdapterFailsClosed(t *testing.T) {
 	request := microVMNetworkEnforcementTestPlanRequest()
 	driver := NewDriver(DriverOptions{
@@ -1223,6 +1288,35 @@ func microVMNetworkEnforcementTestOrchestration(plan networkenforcement.Plan) ne
 			networkenforcement.LifecycleWarningMetadataOnlyFallback,
 			networkenforcement.LifecycleWarningCode("https://warning.example.test"),
 		},
+	}
+}
+
+func microVMNetworkEnforcementProxyOnlyActiveOrchestration(plan networkenforcement.Plan) networkenforcement.LiveLifecycleMetadata {
+	return networkenforcement.LiveLifecycleMetadata{
+		PlanID:     plan.ID,
+		AdapterID:  "policy-proxy-adapter",
+		Status:     networkenforcement.LifecycleStatusActive,
+		Mechanisms: []networkenforcement.EnforcementMechanism{networkenforcement.EnforcementMechanismProxy},
+		Operations: []string{
+			"start_proxy",
+			"listen 127.0.0.1:8080",
+			"/tmp/policy-proxy.sock",
+			"provider=firecracker",
+		},
+		PolicySnapshot: plan.PolicySnapshot,
+		Proxy: &networkenforcement.ProxyListenerLifecycleMetadata{
+			ID:               "proxy-session-microvm",
+			PlanID:           plan.ID,
+			AdapterID:        "policy-proxy-adapter",
+			Status:           networkenforcement.LifecycleStatusActive,
+			Mechanisms:       []networkenforcement.EnforcementMechanism{networkenforcement.EnforcementMechanismProxy},
+			Operations:       []string{"active_proxy", "curl http://localhost:8080", "argv=--api-sock=/tmp/fc.sock"},
+			PolicySnapshot:   plan.PolicySnapshot,
+			CapabilityLabels: []string{"proxy_active", "provider=firecracker"},
+			ReasonCode:       networkenforcement.LifecycleReasonActive,
+		},
+		CapabilityLabels: []string{"proxy_active", "Authorization=Bearer-secret"},
+		ReasonCode:       networkenforcement.LifecycleReasonActive,
 	}
 }
 
