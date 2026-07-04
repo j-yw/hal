@@ -13,7 +13,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxexecution"
 )
 
-func TestCredentialDeliveryProjectionAcrossRunAutoAndFactoryIsPlanOnly(t *testing.T) {
+func TestCredentialDeliveryProjectionAcrossRunAutoIsPlanOnlyAndFactoryOmitsWithoutActivation(t *testing.T) {
 	networkProxySession := &sandbox.SandboxNetworkProxySessionMetadata{
 		ID:     "network-proxy-session-01",
 		Source: sandbox.SandboxNetworkPolicyDecisionSourceRun,
@@ -43,7 +43,9 @@ func TestCredentialDeliveryProjectionAcrossRunAutoAndFactoryIsPlanOnly(t *testin
 	applyFactorySandboxCredentialProxyMetadata(factoryMetadata, factorySandboxExecutorRequest{
 		Security: security,
 	}, factory.RunRecord{RunID: "factory-run-01"}, networkProxySession)
-	assertPlanOnlyCredentialDeliveryStatus(t, "factory", factoryMetadata.CredentialDelivery, sandbox.SandboxSecretModeHTTPProxy)
+	if factoryMetadata.CredentialDelivery != nil {
+		t.Fatalf("factory credentialDelivery = %#v, want omitted without activation result", factoryMetadata.CredentialDelivery)
+	}
 }
 
 func TestCredentialDeliveryActivationProjectionAcrossRunAutoAndFactory(t *testing.T) {

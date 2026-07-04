@@ -41,7 +41,7 @@ func applyFactorySandboxCredentialProxyMetadata(metadata *factory.SandboxMetadat
 	metadata.CredentialProxyPlan = credentialProxy.Plan
 	metadata.CredentialProxySession = credentialProxy.Session
 	metadata.CredentialProxyBindings = credentialProxy.Bindings
-	metadata.CredentialDelivery = sandboxManifestCredentialDeliveryStatus(credentialProxy, req.Security, req.CredentialDeliveryActivation)
+	metadata.CredentialDelivery = factorySandboxCredentialDeliveryActivationStatus(credentialProxy, req.Security, req.CredentialDeliveryActivation)
 	factorySandboxSanitizeCredentialProxyMetadata(metadata)
 }
 
@@ -173,6 +173,16 @@ func sandboxManifestCredentialDeliveryStatus(projection sandbox.SandboxCredentia
 		return activationStatus
 	}
 	return planStatus
+}
+
+func factorySandboxCredentialDeliveryActivationStatus(projection sandbox.SandboxCredentialProxyProjection, req sandbox.SecurityEvaluationRequest, activation credentialDeliveryActivationResult) *sandbox.SandboxCredentialDeliveryStatusMetadata {
+	planStatus := sandbox.ProjectSandboxCredentialDeliveryStatusMetadata(sandbox.SandboxCredentialDeliveryStatusProjectionRequest{
+		Plan:                  projection.Plan,
+		Bindings:              projection.Bindings,
+		RequestedModes:        req.RequestedSecretModes,
+		CompatibilityAuthSync: req.CompatibilityAuthSync,
+	})
+	return sandboxManifestCredentialDeliveryActivationStatus(planStatus, activation)
 }
 
 func sandboxManifestCredentialDeliveryActivationStatus(planStatus *sandbox.SandboxCredentialDeliveryStatusMetadata, activation credentialDeliveryActivationResult) *sandbox.SandboxCredentialDeliveryStatusMetadata {
