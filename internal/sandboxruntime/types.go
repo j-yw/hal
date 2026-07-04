@@ -72,6 +72,18 @@ type RuntimeMetadata struct {
 	NetworkEnforcement *RuntimeNetworkEnforcementMetadata `json:"networkEnforcement,omitempty"`
 	CredentialDelivery *RuntimeCredentialDeliveryMetadata `json:"credentialDelivery,omitempty"`
 	TemplateLock       *RuntimeTemplateLockMetadata       `json:"templateLock,omitempty"`
+	TemplateStatus     *RuntimeTemplateStatusMetadata     `json:"templateStatus,omitempty"`
+}
+
+// RuntimeTemplateStatusMetadata is a compact selected-template projection for
+// status consumers. It carries only labels already present in sanitized
+// template lock and trust policy metadata.
+type RuntimeTemplateStatusMetadata struct {
+	LockStatus       string   `json:"lockStatus,omitempty"`
+	TrustMode        string   `json:"trustMode,omitempty"`
+	TrustDecision    string   `json:"trustDecision,omitempty"`
+	ProvenanceLabels []string `json:"provenanceLabels,omitempty"`
+	ReasonCodes      []string `json:"reasonCodes,omitempty"`
 }
 
 // RuntimeCredentialDeliveryMetadata is a stdlib-only compact credential

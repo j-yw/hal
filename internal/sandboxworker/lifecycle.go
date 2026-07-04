@@ -132,6 +132,7 @@ func runtimeTargetFromWorkerTarget(target Target) sandboxruntime.Target {
 			Image:          strings.TrimSpace(target.Runtime.Image),
 			WorkerID:       strings.TrimSpace(target.Runtime.WorkerID),
 			IsolationLevel: strings.TrimSpace(target.Runtime.IsolationLevel),
+			Metadata:       sandboxruntime.SanitizeRuntimeMetadata(target.Runtime.Metadata),
 		},
 	}
 }
@@ -147,6 +148,7 @@ func workerTargetFromRuntimeTarget(target sandboxruntime.Target, fallbackDriver 
 			Image:          strings.TrimSpace(target.Runtime.Image),
 			WorkerID:       strings.TrimSpace(target.Runtime.WorkerID),
 			IsolationLevel: strings.TrimSpace(target.Runtime.IsolationLevel),
+			Metadata:       sandboxruntime.SanitizeRuntimeMetadata(target.Runtime.Metadata),
 		},
 	}
 }

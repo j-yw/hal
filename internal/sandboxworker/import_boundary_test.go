@@ -45,6 +45,10 @@ var forbiddenSandboxworkerImports = []sandboxworkerForbiddenImport{
 		match: sandboxworkerModuleImportMatcher("github.com/jywlabs/hal/internal/sandbox"),
 	},
 	{
+		name:  "template acquisition implementation package",
+		match: sandboxworkerModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxtemplate/acquisition"),
+	},
+	{
 		name:  "concrete SSH-machine runtime adapter",
 		match: sandboxworkerModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"),
 	},
@@ -319,6 +323,7 @@ func TestSandboxworkerForbiddenImportListCoversCommandCouplingSurfaces(t *testin
 		{name: "command-specific auto code", importPath: "github.com/jywlabs/hal/internal/compound"},
 		{name: "command-specific loop code", importPath: "github.com/jywlabs/hal/internal/loop"},
 		{name: "durable sandbox state packages", importPath: "github.com/jywlabs/hal/internal/sandbox"},
+		{name: "template acquisition implementation", importPath: "github.com/jywlabs/hal/internal/sandboxtemplate/acquisition"},
 		{name: "concrete SSH-machine runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"},
 		{name: "concrete rootless Podman runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"},
 	} {

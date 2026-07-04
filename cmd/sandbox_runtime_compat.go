@@ -34,6 +34,7 @@ func sandboxStateFromRuntimeTarget(target sandboxruntime.Target) *sandbox.Sandbo
 			RuntimeID:      target.Runtime.RuntimeID,
 			Image:          target.Runtime.Image,
 			WorkerID:       target.Runtime.WorkerID,
+			TemplateLock:   sandboxTemplateLockFromRuntimeMetadata(target.Runtime.Metadata),
 		}
 	}
 	return state
@@ -59,6 +60,7 @@ func sandboxRuntimeTargetFromState(target *sandbox.SandboxState) sandboxruntime.
 			Image:          target.Runtime.Image,
 			WorkerID:       target.Runtime.WorkerID,
 			IsolationLevel: target.Runtime.IsolationLevel,
+			Metadata:       sandboxRuntimeMetadataFromState(target.Runtime),
 		}
 	}
 	if info := sandbox.ConnectInfoFromState(target); info != nil {
@@ -91,7 +93,116 @@ func hasRuntimeState(runtime sandboxruntime.RuntimeState) bool {
 		strings.TrimSpace(runtime.IsolationLevel) != "" ||
 		strings.TrimSpace(runtime.RuntimeID) != "" ||
 		strings.TrimSpace(runtime.Image) != "" ||
-		strings.TrimSpace(runtime.WorkerID) != ""
+		strings.TrimSpace(runtime.WorkerID) != "" ||
+		runtime.Metadata != nil
+}
+
+func sandboxRuntimeMetadataFromState(runtime *sandbox.SandboxRuntimeState) *sandboxruntime.RuntimeMetadata {
+	if runtime == nil {
+		return nil
+	}
+	return sandboxruntime.SanitizeRuntimeMetadata(&sandboxruntime.RuntimeMetadata{
+		TemplateLock: sandboxRuntimeTemplateLockFromSandbox(runtime.TemplateLock),
+	})
+}
+
+func sandboxRuntimeTemplateLockFromSandbox(lock *sandbox.SandboxTemplateLockMetadata) *sandboxruntime.RuntimeTemplateLockMetadata {
+	lock = sandbox.SanitizeSandboxTemplateLockMetadata(lock)
+	if lock == nil {
+		return nil
+	}
+	return sandboxruntime.SanitizeRuntimeTemplateLockMetadata(&sandboxruntime.RuntimeTemplateLockMetadata{
+		Document:          sandboxRuntimeTemplateLockEntryFromSandbox(lock.Document),
+		TemplateReference: sandboxRuntimeTemplateLockEntryFromSandbox(lock.TemplateReference),
+		RuntimeImage:      sandboxRuntimeTemplateLockEntryFromSandbox(lock.RuntimeImage),
+		SourceArtifact:    sandboxRuntimeTemplateLockEntryFromSandbox(lock.SourceArtifact),
+		TrustPolicy:       sandboxRuntimeTemplateTrustPolicyFromSandbox(lock.TrustPolicy),
+	})
+}
+
+func sandboxRuntimeTemplateLockEntryFromSandbox(entry *sandbox.SandboxTemplateLockEntryMetadata) *sandboxruntime.RuntimeTemplateLockEntryMetadata {
+	if entry == nil {
+		return nil
+	}
+	return &sandboxruntime.RuntimeTemplateLockEntryMetadata{
+		SourceKind:      entry.SourceKind,
+		ReferenceKind:   entry.ReferenceKind,
+		Status:          entry.Status,
+		DigestAlgorithm: entry.DigestAlgorithm,
+		DigestValue:     entry.DigestValue,
+		SizeBytes:       entry.SizeBytes,
+		LockedAt:        entry.LockedAt,
+		WarningCodes:    append([]string(nil), entry.WarningCodes...),
+		ReasonCode:      entry.ReasonCode,
+	}
+}
+
+func sandboxRuntimeTemplateTrustPolicyFromSandbox(policy *sandbox.SandboxTemplateTrustPolicyMetadata) *sandboxruntime.RuntimeTemplateTrustPolicyMetadata {
+	if policy == nil {
+		return nil
+	}
+	return &sandboxruntime.RuntimeTemplateTrustPolicyMetadata{
+		Mode:            policy.Mode,
+		Decision:        policy.Decision,
+		SourceKind:      policy.SourceKind,
+		ReferenceKind:   policy.ReferenceKind,
+		Status:          policy.Status,
+		DigestAlgorithm: policy.DigestAlgorithm,
+		DigestValue:     policy.DigestValue,
+		WarningCodes:    append([]string(nil), policy.WarningCodes...),
+		ErrorCodes:      append([]string(nil), policy.ErrorCodes...),
+		ReasonCodes:     append([]string(nil), policy.ReasonCodes...),
+	}
+}
+
+func sandboxTemplateLockFromRuntimeMetadata(metadata *sandboxruntime.RuntimeMetadata) *sandbox.SandboxTemplateLockMetadata {
+	metadata = sandboxruntime.SanitizeRuntimeMetadata(metadata)
+	if metadata == nil || metadata.TemplateLock == nil {
+		return nil
+	}
+	lock := metadata.TemplateLock
+	return sandbox.SanitizeSandboxTemplateLockMetadata(&sandbox.SandboxTemplateLockMetadata{
+		Document:          sandboxTemplateLockEntryFromRuntime(lock.Document),
+		TemplateReference: sandboxTemplateLockEntryFromRuntime(lock.TemplateReference),
+		RuntimeImage:      sandboxTemplateLockEntryFromRuntime(lock.RuntimeImage),
+		SourceArtifact:    sandboxTemplateLockEntryFromRuntime(lock.SourceArtifact),
+		TrustPolicy:       sandboxTemplateTrustPolicyFromRuntime(lock.TrustPolicy),
+	})
+}
+
+func sandboxTemplateLockEntryFromRuntime(entry *sandboxruntime.RuntimeTemplateLockEntryMetadata) *sandbox.SandboxTemplateLockEntryMetadata {
+	if entry == nil {
+		return nil
+	}
+	return &sandbox.SandboxTemplateLockEntryMetadata{
+		SourceKind:      entry.SourceKind,
+		ReferenceKind:   entry.ReferenceKind,
+		Status:          entry.Status,
+		DigestAlgorithm: entry.DigestAlgorithm,
+		DigestValue:     entry.DigestValue,
+		SizeBytes:       entry.SizeBytes,
+		LockedAt:        entry.LockedAt,
+		WarningCodes:    append([]string(nil), entry.WarningCodes...),
+		ReasonCode:      entry.ReasonCode,
+	}
+}
+
+func sandboxTemplateTrustPolicyFromRuntime(policy *sandboxruntime.RuntimeTemplateTrustPolicyMetadata) *sandbox.SandboxTemplateTrustPolicyMetadata {
+	if policy == nil {
+		return nil
+	}
+	return &sandbox.SandboxTemplateTrustPolicyMetadata{
+		Mode:            policy.Mode,
+		Decision:        policy.Decision,
+		SourceKind:      policy.SourceKind,
+		ReferenceKind:   policy.ReferenceKind,
+		Status:          policy.Status,
+		DigestAlgorithm: policy.DigestAlgorithm,
+		DigestValue:     policy.DigestValue,
+		WarningCodes:    append([]string(nil), policy.WarningCodes...),
+		ErrorCodes:      append([]string(nil), policy.ErrorCodes...),
+		ReasonCodes:     append([]string(nil), policy.ReasonCodes...),
+	}
 }
 
 func sandboxRuntimeDriverFromState(target *sandbox.SandboxState) string {
