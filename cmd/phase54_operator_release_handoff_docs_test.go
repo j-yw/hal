@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -88,6 +89,65 @@ func TestPhase54OperatorReleaseHandoffExplainsSkipAndDefaultBoundaries(t *testin
 	}
 }
 
+func TestPhase54OperatorReleaseHandoffDoesNotOverclaimDefaultEnforcement(t *testing.T) {
+	doc := phase50ReadFile(t, phase54OperatorReleaseHandoffDocPath())
+	if claim := phase54HandoffDefaultEnforcementOverclaim(doc); claim != "" {
+		t.Fatalf("Phase 54 handoff document overclaims default enforcement: %s", claim)
+	}
+}
+
+func TestPhase54OperatorReleaseHandoffOverclaimGuardFixtures(t *testing.T) {
+	unsafe := []struct {
+		name string
+		doc  string
+		want string
+	}{
+		{
+			name: "default network proxy firewall enforcement",
+			doc:  "## Release Notes\n\nDefault CI enforces live network proxy and firewall behavior for all runs.\n",
+			want: "default live network proxy/firewall enforcement",
+		},
+		{
+			name: "credential broker default agent delivery",
+			doc:  "## Release Notes\n\nCredential broker delivery is default agent behavior for Phase 54.\n",
+			want: "credential broker delivery default",
+		},
+		{
+			name: "template trust production default",
+			doc:  "## Release Notes\n\nTemplate/kits provenance and trust policy are fully operationalized as production defaults.\n",
+			want: "template/kits provenance or trust-policy production default",
+		},
+		{
+			name: "requested metadata deny by default",
+			doc:  "## Release Notes\n\nRequested metadata is enough to claim deny-by-default network security.\n",
+			want: "deny-by-default network security from requested metadata",
+		},
+	}
+	for _, tc := range unsafe {
+		t.Run(tc.name, func(t *testing.T) {
+			claim := phase54HandoffDefaultEnforcementOverclaim(tc.doc)
+			if !strings.Contains(claim, tc.want) {
+				t.Fatalf("fixture claim = %q, want marker %q", claim, tc.want)
+			}
+		})
+	}
+
+	futureWork := `## Future Work
+
+- Future work must add explicit live network proxy/firewall enforcement before
+  any default CI or packaging claim.
+- Credential broker delivery as default agent behavior still needs production
+  hardening beyond metadata/projection.
+- Template/kits provenance and trust policy exist, but production default
+  operationalization still needs rollout decisions.
+- Release/CI must not claim deny-by-default network security merely because
+  requested metadata exists.
+`
+	if claim := phase54HandoffDefaultEnforcementOverclaim(futureWork); claim != "" {
+		t.Fatalf("future-work fixture should be allowed, got claim %q", claim)
+	}
+}
+
 func TestPhase54OperatorReleaseHandoffIncludesPreMergeChecklist(t *testing.T) {
 	doc := phase50ReadFile(t, phase54OperatorReleaseHandoffDocPath())
 	normalized := strings.Join(strings.Fields(doc), " ")
@@ -108,6 +168,161 @@ func TestPhase54OperatorReleaseHandoffIncludesPreMergeChecklist(t *testing.T) {
 
 func phase54OperatorReleaseHandoffDocPath() string {
 	return filepath.Join("..", "docs", "design", "sandbox-runtime-v2-phase54-operator-release-handoff.md")
+}
+
+func phase54HandoffDefaultEnforcementOverclaim(doc string) string {
+	currentHeading := ""
+	var recent []string
+	for index, raw := range strings.Split(doc, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			currentHeading = line
+			recent = phase54HandoffAppendRecent(recent, line)
+			continue
+		}
+
+		windowParts := []string{currentHeading}
+		windowParts = append(windowParts, recent...)
+		windowParts = append(windowParts, line)
+		normalized := phase54HandoffNormalizeClaimText(strings.Join(windowParts, " "))
+		if !phase54HandoffAllowedClaimContext(normalized) {
+			if claim := phase54HandoffUnsafeDefaultClaim(normalized); claim != "" {
+				return claim + " near line " + strconv.Itoa(index+1) + ": " + line
+			}
+		}
+		recent = phase54HandoffAppendRecent(recent, line)
+	}
+	return ""
+}
+
+func phase54HandoffAppendRecent(recent []string, line string) []string {
+	recent = append(recent, line)
+	if len(recent) > 3 {
+		return recent[len(recent)-3:]
+	}
+	return recent
+}
+
+func phase54HandoffNormalizeClaimText(text string) string {
+	replacer := strings.NewReplacer(
+		"`", "",
+		"*", " ",
+		"_", " ",
+		"-", " ",
+		"/", " ",
+		",", " ",
+		";", " ",
+		":", " ",
+		".", " ",
+		"(", " ",
+		")", " ",
+	)
+	return strings.Join(strings.Fields(strings.ToLower(replacer.Replace(text))), " ")
+}
+
+func phase54HandoffAllowedClaimContext(text string) bool {
+	for _, marker := range []string{
+		"not enabled by default",
+		"does not enable",
+		"do not enable",
+		"must not",
+		"not claim",
+		"not part of default",
+		"outside default",
+		"outside this default",
+		"outside the default",
+		"opt in",
+		"optional",
+		"manual operator",
+		"prepared live infrastructure",
+		"skip",
+		"future work",
+		"future phase",
+		"future phases",
+		"still needs",
+		"needs production hardening",
+		"needs rollout",
+		"remaining",
+		"not fully operationalized",
+		"not operationalized",
+		"gap audit",
+		"after phase 54",
+		"new wave",
+		"deliberately enabled",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func phase54HandoffUnsafeDefaultClaim(text string) string {
+	if phase54HandoffContainsDefaultContext(text) &&
+		phase54HandoffContainsAny(text, []string{
+			"network proxy", "proxy firewall", "live proxy", "live firewall", "firewall", "network enforcement",
+		}) &&
+		phase54HandoffContainsAny(text, []string{
+			"enforce", "enforced", "enforces", "enforcement", "enable", "enabled", "requires", "required", "default on", "runs live", "starts live", "activates live",
+		}) {
+		return "default live network proxy/firewall enforcement claim"
+	}
+
+	if strings.Contains(text, "credential broker") &&
+		strings.Contains(text, "delivery") &&
+		phase54HandoffContainsAny(text, []string{
+			"default agent", "default for agents", "agent default", "agent behavior", "default behavior", "production default", "enabled by default", "by default",
+		}) {
+		return "credential broker delivery default claim"
+	}
+
+	if phase54HandoffContainsAny(text, []string{"template", "kits"}) &&
+		phase54HandoffContainsAny(text, []string{"provenance", "trust policy", "trust"}) &&
+		phase54HandoffContainsAny(text, []string{
+			"fully operationalized", "operationalized", "production default", "production defaults", "enabled by default", "by default", "default behavior",
+		}) {
+		return "template/kits provenance or trust-policy production default claim"
+	}
+
+	if strings.Contains(text, "deny by default") &&
+		phase54HandoffContainsAny(text, []string{
+			"requested metadata", "requested policy metadata", "requested network policy", "requested intent",
+		}) &&
+		phase54HandoffContainsAny(text, []string{
+			"claim", "proves", "proven", "based only", "sufficient", "enforced", "security",
+		}) {
+		return "deny-by-default network security from requested metadata claim"
+	}
+
+	return ""
+}
+
+func phase54HandoffContainsDefaultContext(text string) bool {
+	return phase54HandoffContainsAny(text, []string{
+		"default ci",
+		"routine ci",
+		"default verification",
+		"default package",
+		"package verification",
+		"pre merge gate",
+		"default path",
+		"production default",
+		"enabled by default",
+		"by default",
+		"default on",
+	})
+}
+
+func phase54HandoffContainsAny(text string, markers []string) bool {
+	for _, marker := range markers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func phase54OperatorOptionalDocumentedCommands(doc string) map[string]bool {
