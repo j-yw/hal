@@ -663,6 +663,7 @@ func phase50ApprovedLiveMarkerFiles() map[string]bool {
 		"cmd/sandboxd.go":                                                                      true,
 		"cmd/sandboxd_safety_test.go":                                                          true,
 		"cmd/secure_default_runtime_docs_red_test.go":                                          true,
+		"internal/credentialdelivery/activation_diagnostics_test.go":                           true,
 		"internal/credentialdelivery/import_boundary_test.go":                                  true,
 		"internal/livegate/contracts.go":                                                       true,
 		"internal/livegate/contracts_test.go":                                                  true,
