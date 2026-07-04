@@ -23,13 +23,14 @@ func commandSandboxNetworkEnforcementProofFromRuntimeMetadata(metadata *sandboxr
 		proof.PolicySnapshotID = metadata.Plan.PolicySnapshotID
 	}
 	if metadata.Orchestration != nil {
+		orchestrationActive := commandSandboxRuntimeNetworkEnforcementOrchestrationActive(metadata.Orchestration)
 		if proof.NetworkEnforcementPlanID == "" {
 			proof.NetworkEnforcementPlanID = metadata.Orchestration.PlanID
 		}
 		if proof.PolicySnapshotID == "" {
 			proof.PolicySnapshotID = metadata.Orchestration.PolicySnapshotID
 		}
-		if metadata.Orchestration.Proxy != nil {
+		if orchestrationActive && metadata.Orchestration.Proxy != nil {
 			proxy := metadata.Orchestration.Proxy
 			proof.NetworkProxySessionID = proxy.ID
 			proof.ProxyLifecycleStatus = proxy.Status
@@ -41,7 +42,7 @@ func commandSandboxNetworkEnforcementProofFromRuntimeMetadata(metadata *sandboxr
 				proof.PolicySnapshotID = proxy.PolicySnapshotID
 			}
 		}
-		if !commandSandboxRuntimeNetworkEnforcementMetadataHasWarnings(metadata) {
+		if orchestrationActive && !commandSandboxRuntimeNetworkEnforcementMetadataHasWarnings(metadata) {
 			if rule := commandSandboxRuntimeNetworkEnforcementFirewallRule(metadata.Orchestration.Rules); rule != nil {
 				proof.FirewallLifecycleStatus = rule.Status
 				proof.FirewallLifecycleReasonCode = rule.ReasonCode
@@ -130,6 +131,13 @@ func commandSandboxRuntimeNetworkEnforcementMetadataHasWarnings(metadata *sandbo
 		}
 	}
 	return false
+}
+
+func commandSandboxRuntimeNetworkEnforcementOrchestrationActive(orchestration *sandboxruntime.RuntimeNetworkEnforcementOrchestrationMetadata) bool {
+	return orchestration != nil &&
+		orchestration.Status == "active" &&
+		orchestration.ReasonCode == "active" &&
+		len(orchestration.WarningCodes) == 0
 }
 
 func commandSandboxRuntimeNetworkEnforcementFirewallRule(rules []sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata) *sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata {
