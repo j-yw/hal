@@ -47,6 +47,34 @@ func TestLiveE2ENetworkEnforcementReadinessAllowsProxyFirewallOnlyWithActiveLife
 	assertLiveE2ENetworkReadinessNoUnsafeFragments(t, "ready metadata", result)
 }
 
+func TestLiveE2ENetworkEnforcementReadinessSkipsWhenCapabilityMetadataAbsent(t *testing.T) {
+	result := ProjectLiveE2ENetworkEnforcementReadiness(LiveE2ENetworkEnforcementReadinessInput{
+		LiveMarker:     true,
+		ProxyMarker:    true,
+		FirewallMarker: true,
+	})
+
+	if !result.ShouldSkipLiveAction() {
+		t.Fatalf("ShouldSkipLiveAction() = false, want true for absent proxy/firewall capability metadata: %#v", result)
+	}
+	requireLiveE2EPreflightDiagnostic(t, result.Diagnostics, LiveE2EPrerequisiteNetworkProxyCapability)
+	requireLiveE2EPreflightDiagnostic(t, result.Diagnostics, LiveE2EPrerequisiteFirewallCapability)
+	if result.NetworkEnforcement != nil {
+		t.Fatalf("networkEnforcement = %#v, want omitted while capability metadata is absent", result.NetworkEnforcement)
+	}
+	message := LiveE2ENetworkEnforcementReadinessSkipMessage(result)
+	for _, want := range []string{
+		"microVM live E2E network enforcement skipped",
+		"network_proxy_capability:network_proxy_unavailable",
+		"firewall_capability:firewall_unavailable",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("skip message = %q, want fragment %q", message, want)
+		}
+	}
+	assertLiveE2ENetworkReadinessNoUnsafeFragments(t, "absent capability metadata", result, message)
+}
+
 func TestLiveE2ENetworkEnforcementReadinessReportsProxyOnlyWithoutFullSecureDefault(t *testing.T) {
 	for _, tt := range []struct {
 		name    string

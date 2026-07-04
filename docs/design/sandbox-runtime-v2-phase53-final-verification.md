@@ -61,9 +61,11 @@ env HAL_FIRECRACKER_LIVE=<set> HAL_FIRECRACKER_LIVE_FIRECRACKER=<set> HAL_FIRECR
 ```
 
 The live command is optional, tagged, and safe to skip when prerequisites are
-missing. Missing Firecracker, KVM, proxy, firewall, credential delivery, env
+missing. Missing Firecracker, KVM, root privileges, proxy capability, firewall
+capability, sandboxd, credentials, registry access, credential delivery, env
 delivery mode, or template trust prerequisites must produce sanitized skip
-diagnostics before live execution starts.
+diagnostics before live execution starts. Skip diagnostics name required marker
+names and prerequisite labels only, never marker values.
 
 ## Non-Goals
 

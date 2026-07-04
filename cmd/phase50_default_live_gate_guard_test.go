@@ -669,6 +669,7 @@ func phase50ApprovedLiveMarkerFiles() map[string]bool {
 		"cmd/sandbox_default_fake_only_guard_test.go":                true,
 		"cmd/sandbox_runtime_compat.go":                              true,
 		"cmd/sandbox_worker_execution_documentation_test.go":         true,
+		"cmd/us015_prepared_host_live_e2e_boundary_test.go":          true,
 		"cmd/sandboxd.go":                                                                      true,
 		"cmd/sandboxd_safety_test.go":                                                          true,
 		"cmd/secure_default_runtime_docs_red_test.go":                                          true,
