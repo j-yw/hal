@@ -154,6 +154,7 @@ those inputs are available.
 |-------|------|-------------|
 | `requested` | object | Requested security controls, or an empty object when unknown |
 | `enforced` | object | Actually enforced security controls, or an empty object when unknown |
+| `networkEnforcementProof` | object | Optional sanitized proof summary for runtime network enforcement; omitted when no safe proof metadata is available |
 | `capabilityReadiness` | object | Optional security capability readiness output when projected metadata is available |
 | `capabilityReadinessDiagnostics` | object | Optional advisory diagnostic summary derived from sanitized readiness metadata |
 | `securityReadinessGate` | object | Optional strict/advisory secure-default decision with safe outcome, reason, and aggregate counts |
@@ -181,6 +182,11 @@ Requested deny-by-default metadata alone does not prove live deny-by-default enf
 Requested credential modes alone do not prove active credential delivery.
 Template references without locked digest metadata do not prove digest-locked templates.
 Requested VM isolation alone does not prove VM isolation.
+`networkEnforcementProof` contains only safe IDs, lifecycle labels, result
+outcome/mode/support flags, and warning counts. It never includes endpoints,
+socket paths, host paths, firewall rules, provider details, credentials, or
+environment values, and it reports `proxy_firewall` only when active proxy plus
+firewall proof is present.
 
 ## Diagnostics And Errors
 

@@ -17,6 +17,7 @@ func commandSandboxNetworkEnforcementProofFromRuntimeMetadata(metadata *sandboxr
 		ResultOutcome:         metadata.Result.Outcome,
 		ResultEnforcementMode: commandSandboxNetworkEnforcementModeLabel(metadata.Result.EnforcementMode),
 		ResultSupported:       commandSandboxRuntimeNetworkEnforcementResultSupported(metadata.Result),
+		WarningCount:          commandSandboxRuntimeNetworkEnforcementWarningCount(metadata),
 	}
 	if metadata.Plan != nil {
 		proof.NetworkEnforcementPlanID = metadata.Plan.ID
@@ -110,27 +111,32 @@ func commandSandboxRuntimeNetworkEnforcementResultSupported(result *sandboxrunti
 }
 
 func commandSandboxRuntimeNetworkEnforcementMetadataHasWarnings(metadata *sandboxruntime.RuntimeNetworkEnforcementMetadata) bool {
+	return commandSandboxRuntimeNetworkEnforcementWarningCount(metadata) > 0
+}
+
+func commandSandboxRuntimeNetworkEnforcementWarningCount(metadata *sandboxruntime.RuntimeNetworkEnforcementMetadata) int {
 	if metadata == nil {
-		return false
+		return 0
 	}
+	count := 0
 	if metadata.Result != nil && len(metadata.Result.WarningCodes) > 0 {
-		return true
+		count += len(metadata.Result.WarningCodes)
 	}
 	if metadata.Orchestration == nil {
-		return false
+		return count
 	}
 	if len(metadata.Orchestration.WarningCodes) > 0 {
-		return true
+		count += len(metadata.Orchestration.WarningCodes)
 	}
 	if metadata.Orchestration.Proxy != nil && len(metadata.Orchestration.Proxy.WarningCodes) > 0 {
-		return true
+		count += len(metadata.Orchestration.Proxy.WarningCodes)
 	}
 	for _, rule := range metadata.Orchestration.Rules {
 		if len(rule.WarningCodes) > 0 {
-			return true
+			count += len(rule.WarningCodes)
 		}
 	}
-	return false
+	return count
 }
 
 func commandSandboxRuntimeNetworkEnforcementOrchestrationActive(orchestration *sandboxruntime.RuntimeNetworkEnforcementOrchestrationMetadata) bool {

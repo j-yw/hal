@@ -158,6 +158,7 @@ type SandboxRuntimeReadiness struct {
 type SandboxRuntimeSecuritySummary struct {
 	Requested                      SandboxRuntimeSecurityControls                               `json:"requested"`
 	Enforced                       SandboxRuntimeSecurityControls                               `json:"enforced"`
+	NetworkEnforcementProof        *sandbox.SandboxNetworkEnforcementProofMetadata              `json:"networkEnforcementProof,omitempty"`
 	NetworkPolicyResult            *sandbox.SandboxNetworkPolicyResult                          `json:"networkPolicyResult,omitempty"`
 	CapabilityReadiness            *sandbox.SandboxSecurityCapabilityReadinessOutput            `json:"capabilityReadiness,omitempty"`
 	CapabilityReadinessDiagnostics *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary `json:"capabilityReadinessDiagnostics,omitempty"`
@@ -1007,8 +1008,9 @@ func newSandboxRuntimeSecuritySummaryFromWorkerPolicyAndRuntime(policy sandboxwo
 		enforcement = policy.NetworkEnforcement
 	}
 	proof := commandSandboxNetworkEnforcementProofFromRuntimeMetadata(enforcement)
+	proofSummary := sandboxRuntimeNetworkEnforcementProofSummary(proof)
 	capabilityReadiness := sandboxRuntimeCapabilityReadinessFromWorkerPolicy(policy, runtime, proof)
-	if sandboxRuntimeWorkerSecurityPolicyEmpty(policy) && capabilityReadiness == nil {
+	if sandboxRuntimeWorkerSecurityPolicyEmpty(policy) && capabilityReadiness == nil && proofSummary == nil {
 		return SandboxRuntimeSecuritySummary{
 			Requested: SandboxRuntimeSecurityControls{},
 			Enforced:  SandboxRuntimeSecurityControls{},
@@ -1031,11 +1033,40 @@ func newSandboxRuntimeSecuritySummaryFromWorkerPolicyAndRuntime(policy sandboxwo
 	return SandboxRuntimeSecuritySummary{
 		Requested:                      requested,
 		Enforced:                       enforced,
+		NetworkEnforcementProof:        proofSummary,
 		NetworkPolicyResult:            policyResult,
 		CapabilityReadiness:            capabilityReadiness,
 		CapabilityReadinessDiagnostics: sandboxRuntimeCapabilityReadinessDiagnostics(capabilityReadiness),
 		SecurityReadinessGate:          sandboxRuntimeSecurityReadinessGate(nil, capabilityReadiness),
 	}
+}
+
+func sandboxRuntimeNetworkEnforcementProofSummary(proof *sandbox.SandboxNetworkEnforcementProofMetadata) *sandbox.SandboxNetworkEnforcementProofMetadata {
+	proof = commandSandboxSanitizedNetworkEnforcementProof(proof)
+	if proof == nil {
+		return nil
+	}
+	summary := *proof
+	if sandbox.SandboxNetworkEnforcementProofProvesActiveProxyFirewall(summary) {
+		return &summary
+	}
+	if summary.ResultEnforcementMode == sandbox.SandboxNetworkEnforcementModeProxy &&
+		sandbox.SandboxNetworkEnforcementProofProvesActiveHTTPProxy(summary) {
+		return &summary
+	}
+
+	if summary.ResultOutcome == "success" {
+		summary.ResultOutcome = "best_effort"
+	}
+	switch summary.ResultEnforcementMode {
+	case sandbox.SandboxNetworkEnforcementModeProxy,
+		sandbox.SandboxNetworkEnforcementModeFirewall,
+		sandbox.SandboxNetworkEnforcementModeRuntime,
+		sandbox.SandboxNetworkEnforcementModeProxyFirewall:
+		summary.ResultEnforcementMode = sandbox.SandboxNetworkEnforcementModeNone
+	}
+	summary.ResultSupported = false
+	return commandSandboxSanitizedNetworkEnforcementProof(&summary)
 }
 
 func sandboxRuntimeCapabilityReadinessDiagnostics(readiness *sandbox.SandboxSecurityCapabilityReadinessOutput) *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary {

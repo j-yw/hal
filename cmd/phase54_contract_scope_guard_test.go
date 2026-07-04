@@ -218,7 +218,7 @@ func TestPhase54NoSchemaOrContractExpansionRequired(t *testing.T) {
 			label: "SandboxRuntimeSecuritySummary",
 			typ:   reflect.TypeOf(SandboxRuntimeSecuritySummary{}),
 			want: []string{
-				"requested", "enforced", "networkPolicyResult,omitempty", "capabilityReadiness,omitempty",
+				"requested", "enforced", "networkEnforcementProof,omitempty", "networkPolicyResult,omitempty", "capabilityReadiness,omitempty",
 				"capabilityReadinessDiagnostics,omitempty", "securityReadinessGate,omitempty",
 			},
 		},

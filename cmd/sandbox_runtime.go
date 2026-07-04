@@ -644,6 +644,9 @@ func sandboxRuntimeSecuritySummaryHuman(security SandboxRuntimeSecuritySummary) 
 	if isolationLevel := sandboxRuntimeStringPtrValue(security.Enforced.IsolationLevel, ""); isolationLevel != "" {
 		parts = append(parts, "enforced isolation "+isolationLevel)
 	}
+	if proof := sandboxRuntimeNetworkEnforcementProofHuman(security.NetworkEnforcementProof); proof != "" {
+		parts = append(parts, proof)
+	}
 	if security.Requested.CredentialProxyMode != nil {
 		parts = append(parts, fmt.Sprintf("requested credential proxy %t", *security.Requested.CredentialProxyMode))
 	}
@@ -655,6 +658,58 @@ func sandboxRuntimeSecuritySummaryHuman(security SandboxRuntimeSecuritySummary) 
 	}
 	if len(parts) == 0 {
 		return "unknown"
+	}
+	return strings.Join(parts, "; ")
+}
+
+func sandboxRuntimeNetworkEnforcementProofHuman(proof *sandbox.SandboxNetworkEnforcementProofMetadata) string {
+	proof = sandboxRuntimeNetworkEnforcementProofSummary(proof)
+	if proof == nil {
+		return ""
+	}
+	parts := make([]string, 0, 8)
+	if outcome := strings.TrimSpace(proof.ResultOutcome); outcome != "" {
+		result := "network proof result " + outcome
+		if mode := strings.TrimSpace(proof.ResultEnforcementMode); mode != "" {
+			result += " via " + mode
+		}
+		if proof.ResultSupported {
+			result += " supported"
+		}
+		parts = append(parts, result)
+	}
+	if status := strings.TrimSpace(proof.ProxyLifecycleStatus); status != "" {
+		proxy := "proxy " + status
+		if reason := strings.TrimSpace(proof.ProxyLifecycleReasonCode); reason != "" {
+			proxy += " reason=" + reason
+		}
+		parts = append(parts, proxy)
+	}
+	if status := strings.TrimSpace(proof.FirewallLifecycleStatus); status != "" {
+		firewall := "firewall " + status
+		if reason := strings.TrimSpace(proof.FirewallLifecycleReasonCode); reason != "" {
+			firewall += " reason=" + reason
+		}
+		parts = append(parts, firewall)
+	}
+	if proof.WarningCount > 0 {
+		parts = append(parts, fmt.Sprintf("warnings=%d", proof.WarningCount))
+	}
+	ids := make([]string, 0, 3)
+	if id := strings.TrimSpace(proof.NetworkEnforcementPlanID); id != "" {
+		ids = append(ids, "plan="+id)
+	}
+	if id := strings.TrimSpace(proof.PolicySnapshotID); id != "" {
+		ids = append(ids, "policySnapshot="+id)
+	}
+	if id := strings.TrimSpace(proof.NetworkProxySessionID); id != "" {
+		ids = append(ids, "proxySession="+id)
+	}
+	if len(ids) > 0 {
+		parts = append(parts, strings.Join(ids, ","))
+	}
+	if len(parts) == 0 {
+		return ""
 	}
 	return strings.Join(parts, "; ")
 }
