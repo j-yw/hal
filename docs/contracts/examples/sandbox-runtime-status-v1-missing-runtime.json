@@ -16,6 +16,10 @@
     "hostKind": null,
     "isolationLevel": null
   },
+  "selectedTemplate": {
+    "state": "absent",
+    "present": false
+  },
   "source": {
     "mode": "cached",
     "requestedLive": false,

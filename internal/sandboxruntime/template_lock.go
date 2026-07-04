@@ -126,12 +126,44 @@ func (metadata *RuntimeTemplateLockMetadata) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// SanitizeRuntimeMetadata returns a redaction-safe runtime metadata copy. When
+// a template lock is present and no explicit template status is supplied, the
+// compact status projection is derived from the sanitized lock.
+func SanitizeRuntimeMetadata(metadata *RuntimeMetadata) *RuntimeMetadata {
+	if metadata == nil {
+		return nil
+	}
+	sanitized := *metadata
+	sanitized.CredentialDelivery = SanitizeRuntimeCredentialDeliveryMetadata(metadata.CredentialDelivery)
+	sanitized.NetworkEnforcement = SanitizeRuntimeNetworkEnforcementMetadata(metadata.NetworkEnforcement)
+	sanitized.TemplateLock = SanitizeRuntimeTemplateLockMetadata(metadata.TemplateLock)
+	if sanitized.TemplateLock != nil {
+		sanitized.TemplateStatus = ProjectRuntimeTemplateStatusMetadata(sanitized.TemplateLock)
+	} else {
+		sanitized.TemplateStatus = SanitizeRuntimeTemplateStatusMetadata(metadata.TemplateStatus)
+	}
+	if sanitized.Backend == "" &&
+		len(sanitized.CapabilityLabels) == 0 &&
+		len(sanitized.PathRoles) == 0 &&
+		sanitized.OperationPlan == nil &&
+		sanitized.ProcessLaunch == nil &&
+		sanitized.GuestReadiness == nil &&
+		sanitized.NetworkEnforcement == nil &&
+		sanitized.CredentialDelivery == nil &&
+		sanitized.TemplateLock == nil &&
+		sanitized.TemplateStatus == nil {
+		return nil
+	}
+	return &sanitized
+}
+
 func (metadata RuntimeMetadata) MarshalJSON() ([]byte, error) {
 	type runtimeMetadataJSON RuntimeMetadata
-	encoded := runtimeMetadataJSON(metadata)
-	encoded.CredentialDelivery = SanitizeRuntimeCredentialDeliveryMetadata(metadata.CredentialDelivery)
-	encoded.TemplateLock = SanitizeRuntimeTemplateLockMetadata(metadata.TemplateLock)
-	return json.Marshal(encoded)
+	sanitized := SanitizeRuntimeMetadata(&metadata)
+	if sanitized == nil {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(runtimeMetadataJSON(*sanitized))
 }
 
 func (metadata *RuntimeMetadata) UnmarshalJSON(data []byte) error {
@@ -140,9 +172,12 @@ func (metadata *RuntimeMetadata) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
-	decoded.CredentialDelivery = SanitizeRuntimeCredentialDeliveryMetadata(decoded.CredentialDelivery)
-	decoded.TemplateLock = SanitizeRuntimeTemplateLockMetadata(decoded.TemplateLock)
-	*metadata = RuntimeMetadata(decoded)
+	sanitized := SanitizeRuntimeMetadata((*RuntimeMetadata)(&decoded))
+	if sanitized == nil {
+		*metadata = RuntimeMetadata{}
+		return nil
+	}
+	*metadata = *sanitized
 	return nil
 }
 
@@ -152,6 +187,234 @@ func (metadata *RuntimeMetadata) SetTemplateLock(lock *RuntimeTemplateLockMetada
 		return
 	}
 	metadata.TemplateLock = SanitizeRuntimeTemplateLockMetadata(lock)
+	metadata.TemplateStatus = ProjectRuntimeTemplateStatusMetadata(metadata.TemplateLock)
+}
+
+// CloneRuntimeTemplateLockMetadata returns a sanitized copy of runtime-local
+// template lock metadata for durable runtime surfaces.
+func CloneRuntimeTemplateLockMetadata(metadata *RuntimeTemplateLockMetadata) *RuntimeTemplateLockMetadata {
+	return SanitizeRuntimeTemplateLockMetadata(metadata)
+}
+
+// SanitizeRuntimeTemplateStatusMetadata returns a compact, redaction-safe
+// selected-template status copy for status and worker protocol projections.
+func SanitizeRuntimeTemplateStatusMetadata(metadata *RuntimeTemplateStatusMetadata) *RuntimeTemplateStatusMetadata {
+	if metadata == nil {
+		return nil
+	}
+	sanitized := &RuntimeTemplateStatusMetadata{
+		LockStatus:       sanitizeRuntimeTemplateLockStatus(metadata.LockStatus),
+		TrustMode:        sanitizeRuntimeTemplateTrustPolicyMode(metadata.TrustMode),
+		TrustDecision:    sanitizeRuntimeTemplateTrustPolicyDecision(metadata.TrustDecision),
+		ProvenanceLabels: sanitizeRuntimeTemplateStatusProvenanceLabels(metadata.ProvenanceLabels),
+		ReasonCodes:      sanitizeRuntimeTemplateStatusReasonCodes(metadata.ReasonCodes),
+	}
+	if sanitized.LockStatus == "" &&
+		sanitized.TrustMode == "" &&
+		sanitized.TrustDecision == "" &&
+		len(sanitized.ProvenanceLabels) == 0 &&
+		len(sanitized.ReasonCodes) == 0 {
+		return nil
+	}
+	return sanitized
+}
+
+func (metadata RuntimeTemplateStatusMetadata) MarshalJSON() ([]byte, error) {
+	type runtimeTemplateStatusMetadataJSON RuntimeTemplateStatusMetadata
+	sanitized := SanitizeRuntimeTemplateStatusMetadata(&metadata)
+	if sanitized == nil {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(runtimeTemplateStatusMetadataJSON(*sanitized))
+}
+
+func (metadata *RuntimeTemplateStatusMetadata) UnmarshalJSON(data []byte) error {
+	type runtimeTemplateStatusMetadataJSON RuntimeTemplateStatusMetadata
+	var decoded runtimeTemplateStatusMetadataJSON
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	sanitized := SanitizeRuntimeTemplateStatusMetadata((*RuntimeTemplateStatusMetadata)(&decoded))
+	if sanitized == nil {
+		*metadata = RuntimeTemplateStatusMetadata{}
+		return nil
+	}
+	*metadata = *sanitized
+	return nil
+}
+
+// ProjectRuntimeTemplateStatusMetadata derives compact provenance and trust
+// labels from already-sanitized runtime template lock metadata.
+func ProjectRuntimeTemplateStatusMetadata(lock *RuntimeTemplateLockMetadata) *RuntimeTemplateStatusMetadata {
+	lock = SanitizeRuntimeTemplateLockMetadata(lock)
+	if lock == nil {
+		return nil
+	}
+	status := &RuntimeTemplateStatusMetadata{
+		LockStatus:       runtimeTemplateStatusLockStatus(lock),
+		ProvenanceLabels: runtimeTemplateStatusProvenanceLabels(lock),
+		ReasonCodes:      runtimeTemplateStatusReasonCodes(lock),
+	}
+	if lock.TrustPolicy != nil {
+		status.TrustMode = lock.TrustPolicy.Mode
+		status.TrustDecision = lock.TrustPolicy.Decision
+		if status.LockStatus == "" {
+			status.LockStatus = lock.TrustPolicy.Status
+		}
+	}
+	return SanitizeRuntimeTemplateStatusMetadata(status)
+}
+
+func runtimeTemplateStatusLockStatus(lock *RuntimeTemplateLockMetadata) string {
+	if lock == nil {
+		return ""
+	}
+	statuses := []string{}
+	for _, entry := range []*RuntimeTemplateLockEntryMetadata{
+		lock.Document,
+		lock.TemplateReference,
+		lock.RuntimeImage,
+		lock.SourceArtifact,
+	} {
+		if entry != nil && entry.Status != "" {
+			statuses = append(statuses, entry.Status)
+		}
+	}
+	if lock.TrustPolicy != nil && lock.TrustPolicy.Status != "" {
+		statuses = append(statuses, lock.TrustPolicy.Status)
+	}
+	locked := false
+	for _, status := range statuses {
+		switch status {
+		case runtimeTemplateLockStatusUnresolved:
+			return runtimeTemplateLockStatusUnresolved
+		case runtimeTemplateLockStatusLocked:
+			locked = true
+		}
+	}
+	if locked {
+		return runtimeTemplateLockStatusLocked
+	}
+	return ""
+}
+
+func runtimeTemplateStatusProvenanceLabels(lock *RuntimeTemplateLockMetadata) []string {
+	if lock == nil {
+		return nil
+	}
+	labels := make([]string, 0, 4)
+	labels = appendRuntimeTemplateStatusProvenanceLabel(labels, "document", lock.Document)
+	labels = appendRuntimeTemplateStatusProvenanceLabel(labels, "template_reference", lock.TemplateReference)
+	labels = appendRuntimeTemplateStatusProvenanceLabel(labels, "runtime_image", lock.RuntimeImage)
+	labels = appendRuntimeTemplateStatusProvenanceLabel(labels, "source_artifact", lock.SourceArtifact)
+	return sanitizeRuntimeTemplateStatusProvenanceLabels(labels)
+}
+
+func appendRuntimeTemplateStatusProvenanceLabel(labels []string, label string, entry *RuntimeTemplateLockEntryMetadata) []string {
+	if entry == nil {
+		return labels
+	}
+	if entry.SourceKind == "" &&
+		entry.ReferenceKind == "" &&
+		entry.Status == "" &&
+		entry.DigestAlgorithm == "" &&
+		entry.DigestValue == "" &&
+		entry.ReasonCode == "" &&
+		len(entry.WarningCodes) == 0 {
+		return labels
+	}
+	return append(labels, label)
+}
+
+func runtimeTemplateStatusReasonCodes(lock *RuntimeTemplateLockMetadata) []string {
+	if lock == nil {
+		return nil
+	}
+	codes := []string{}
+	if lock.TrustPolicy != nil {
+		codes = append(codes, lock.TrustPolicy.ReasonCodes...)
+		codes = append(codes, lock.TrustPolicy.ErrorCodes...)
+		codes = append(codes, lock.TrustPolicy.WarningCodes...)
+	}
+	for _, entry := range []*RuntimeTemplateLockEntryMetadata{
+		lock.Document,
+		lock.TemplateReference,
+		lock.RuntimeImage,
+		lock.SourceArtifact,
+	} {
+		if entry == nil {
+			continue
+		}
+		codes = append(codes, entry.ReasonCode)
+		codes = append(codes, entry.WarningCodes...)
+	}
+	return sanitizeRuntimeTemplateStatusReasonCodes(codes)
+}
+
+func sanitizeRuntimeTemplateStatusProvenanceLabels(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	sanitized := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		label := sanitizeRuntimeTemplateStatusProvenanceLabel(value)
+		if label == "" || seen[label] {
+			continue
+		}
+		sanitized = append(sanitized, label)
+		seen[label] = true
+	}
+	if len(sanitized) == 0 {
+		return nil
+	}
+	return sanitized
+}
+
+func sanitizeRuntimeTemplateStatusProvenanceLabel(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "document":
+		return "document"
+	case "template_reference":
+		return "template_reference"
+	case "runtime_image":
+		return "runtime_image"
+	case "source_artifact":
+		return "source_artifact"
+	default:
+		return ""
+	}
+}
+
+func sanitizeRuntimeTemplateStatusReasonCodes(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	sanitized := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		code := sanitizeRuntimeTemplateStatusReasonCode(value)
+		if code == "" || seen[code] {
+			continue
+		}
+		sanitized = append(sanitized, code)
+		seen[code] = true
+		if len(sanitized) == runtimeTemplateLockMaxWarningCodes {
+			break
+		}
+	}
+	if len(sanitized) == 0 {
+		return nil
+	}
+	return sanitized
+}
+
+func sanitizeRuntimeTemplateStatusReasonCode(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if runtimeTemplateLockAllowedReasonCode(normalized) {
+		return normalized
+	}
+	return sanitizeRuntimeTemplateTrustPolicyCode(normalized)
 }
 
 func sanitizeRuntimeTemplateLockEntryMetadata(entry *RuntimeTemplateLockEntryMetadata) *RuntimeTemplateLockEntryMetadata {

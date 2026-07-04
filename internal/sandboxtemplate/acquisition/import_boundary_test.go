@@ -55,8 +55,10 @@ func TestSandboxTemplateAcquisitionImportBoundaryCoversProductionFiles(t *testin
 		}
 		found[filepath.Base(path)] = true
 	}
-	if !found["contracts.go"] {
-		t.Fatalf("sandbox template acquisition import-boundary guard files = %#v, want contracts.go covered", paths)
+	for _, want := range []string{"contracts.go", "source_intake.go"} {
+		if !found[want] {
+			t.Fatalf("sandbox template acquisition import-boundary guard files = %#v, want %s covered", paths, want)
+		}
 	}
 }
 

@@ -598,7 +598,8 @@ func sandboxSecurityCapabilityReadyReasonCode(reason SandboxSecurityCapabilityRe
 		SandboxSecurityCapabilityReasonWorkspaceIsolationConfirmed,
 		SandboxSecurityCapabilityReasonNetworkEnforcementConfirmed,
 		SandboxSecurityCapabilityReasonCredentialActivationConfirmed,
-		SandboxSecurityCapabilityReasonTemplateLockDigestConfirmed:
+		SandboxSecurityCapabilityReasonTemplateLockDigestConfirmed,
+		SandboxSecurityCapabilityReasonSelectedTemplateTrustConfirmed:
 		return true
 	default:
 		return false
@@ -616,7 +617,10 @@ func sandboxSecurityCapabilityProjectedBlockerReasonCode(reason SandboxSecurityC
 	switch sanitizeSandboxSecurityCapabilityReasonCodeValue(reason) {
 	case SandboxSecurityCapabilityReasonMicroVMSupportMissing,
 		SandboxSecurityCapabilityReasonWorkspaceDirectHostWorktree,
-		SandboxSecurityCapabilityReasonNetworkEnforcementFailed:
+		SandboxSecurityCapabilityReasonNetworkEnforcementFailed,
+		SandboxSecurityCapabilityReasonSelectedTemplateTrustRejected,
+		SandboxSecurityCapabilityReasonSelectedTemplateProvenanceUnresolved,
+		SandboxSecurityCapabilityReasonSelectedTemplateProvenanceMismatch:
 		return true
 	default:
 		return false
@@ -630,7 +634,8 @@ func sandboxSecurityCapabilityMetadataOnlyReasonCode(reason SandboxSecurityCapab
 		SandboxSecurityCapabilityReasonNetworkEnforcementBestEffort,
 		SandboxSecurityCapabilityReasonNetworkEnforcementPartial,
 		SandboxSecurityCapabilityReasonCredentialActivationMissing,
-		SandboxSecurityCapabilityReasonTemplateLockDigestMissing:
+		SandboxSecurityCapabilityReasonTemplateLockDigestMissing,
+		SandboxSecurityCapabilityReasonSelectedTemplateTrustAdvisoryOnly:
 		return true
 	default:
 		return false
@@ -646,7 +651,9 @@ func sandboxSecurityCapabilityUnsupportedEvidenceReasonCode(reason SandboxSecuri
 		SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
 		SandboxSecurityCapabilityReasonWorkspaceIsolationMissing,
 		SandboxSecurityCapabilityReasonNetworkEnforcementMissing,
-		SandboxSecurityCapabilityReasonNetworkEnforcementUnsupported:
+		SandboxSecurityCapabilityReasonNetworkEnforcementUnsupported,
+		SandboxSecurityCapabilityReasonSelectedTemplateEvidenceMissing,
+		SandboxSecurityCapabilityReasonSelectedTemplateTrustUnavailable:
 		return true
 	default:
 		return false
@@ -682,7 +689,8 @@ func sandboxSecurityCapabilityKnownCapability(capability SandboxSecurityCapabili
 		SandboxSecurityCapabilityIsolationMicroVM,
 		SandboxSecurityCapabilityIsolatedWorkspace,
 		SandboxSecurityCapabilityDirectHostWorktree,
-		SandboxSecurityCapabilityTemplateLockDigest:
+		SandboxSecurityCapabilityTemplateLockDigest,
+		SandboxSecurityCapabilitySelectedTemplateTrust:
 		return true
 	default:
 		return false

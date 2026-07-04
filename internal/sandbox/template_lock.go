@@ -162,6 +162,17 @@ func (state *SandboxRuntimeState) SetTemplateLock(metadata *SandboxTemplateLockM
 	state.TemplateLock = SanitizeSandboxTemplateLockMetadata(metadata)
 }
 
+// CloneSandboxRuntimeState returns a copy of runtime state with durable
+// template lock metadata re-sanitized for persistence.
+func CloneSandboxRuntimeState(state *SandboxRuntimeState) *SandboxRuntimeState {
+	if state == nil {
+		return nil
+	}
+	clone := *state
+	clone.TemplateLock = SanitizeSandboxTemplateLockMetadata(state.TemplateLock)
+	return &clone
+}
+
 func sanitizeSandboxTemplateLockEntryMetadata(entry *SandboxTemplateLockEntryMetadata) *SandboxTemplateLockEntryMetadata {
 	if entry == nil {
 		return nil

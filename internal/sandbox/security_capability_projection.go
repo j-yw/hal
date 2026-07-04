@@ -50,7 +50,15 @@ func ProjectSandboxWorkerRuntimeCapabilityReadinessInput(projection SandboxWorke
 		sandboxSecurityCapabilityProjectionWorkerRuntimePosture(projection.Host, projection.Runtime, projection.WorkerRouting),
 	)
 	input.Ready = sandboxSecurityCapabilityProjectionAppendWorkspaceProof(input.Ready, projection.Workspace)
-	input.Ready = sandboxSecurityCapabilityProjectionAppendTemplateLockProof(input.Ready, sandboxSecurityCapabilityProjectionTemplateLock(projection.TemplateLock, projection.Runtime))
+	templateLock := sandboxSecurityCapabilityProjectionTemplateLock(projection.TemplateLock, projection.Runtime)
+	if sandboxSecurityCapabilityProjectionTemplateTrustRequirementConfigured(templateLock) {
+		input.Requested = sandboxSecurityCapabilityProjectionAppendUnique(input.Requested, SandboxSecurityCapabilityMetadata{
+			Family:     SandboxSecurityCapabilityFamilyTemplate,
+			Capability: SandboxSecurityCapabilitySelectedTemplateTrust,
+			Source:     SandboxSecurityCapabilitySourceRequested,
+		})
+	}
+	input.Ready = sandboxSecurityCapabilityProjectionAppendTemplateLockProof(input.Ready, templateLock)
 	for _, posture := range projection.WorkerPostures {
 		input.WorkerPostures = sandboxSecurityCapabilityProjectionAppendWorkerPosture(input.WorkerPostures, posture)
 	}
@@ -58,6 +66,11 @@ func ProjectSandboxWorkerRuntimeCapabilityReadinessInput(projection SandboxWorke
 		input.Ready = sandboxSecurityCapabilityProjectionAppendUnique(input.Ready, ready)
 	}
 	return SanitizeSandboxSecurityCapabilityReadinessInput(input)
+}
+
+func sandboxSecurityCapabilityProjectionTemplateTrustRequirementConfigured(lock *SandboxTemplateLockMetadata) bool {
+	lock = SanitizeSandboxTemplateLockMetadata(lock)
+	return lock != nil && lock.TrustPolicy != nil
 }
 
 // ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput maps durable
@@ -469,6 +482,7 @@ func sandboxSecurityCapabilityProjectionTemplateLock(explicit *SandboxTemplateLo
 }
 
 func sandboxSecurityCapabilityProjectionAppendTemplateLockProof(records []SandboxSecurityCapabilityMetadata, lock *SandboxTemplateLockMetadata) []SandboxSecurityCapabilityMetadata {
+	lock = SanitizeSandboxTemplateLockMetadata(lock)
 	if lock == nil {
 		return records
 	}
@@ -478,7 +492,7 @@ func sandboxSecurityCapabilityProjectionAppendTemplateLockProof(records []Sandbo
 		status = SandboxSecurityCapabilityReadinessReady
 		reason = SandboxSecurityCapabilityReasonTemplateLockDigestConfirmed
 	}
-	return sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
+	records = sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
 		SandboxSecurityCapabilityFamilyTemplate,
 		SandboxSecurityCapabilityTemplateLockDigest,
 		"",
@@ -486,6 +500,95 @@ func sandboxSecurityCapabilityProjectionAppendTemplateLockProof(records []Sandbo
 		status,
 		reason,
 	)
+	trustStatus, trustReason := sandboxSecurityCapabilityProjectionSelectedTemplateTrustReadiness(lock)
+	return sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
+		SandboxSecurityCapabilityFamilyTemplate,
+		SandboxSecurityCapabilitySelectedTemplateTrust,
+		"",
+		SandboxSecurityCapabilitySourceRuntime,
+		trustStatus,
+		trustReason,
+	)
+}
+
+func sandboxSecurityCapabilityProjectionSelectedTemplateTrustReadiness(lock *SandboxTemplateLockMetadata) (SandboxSecurityCapabilityReadinessState, SandboxSecurityCapabilityReasonCode) {
+	lock = SanitizeSandboxTemplateLockMetadata(lock)
+	if lock == nil {
+		return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonSelectedTemplateEvidenceMissing
+	}
+	if sandboxSecurityCapabilityTemplateTrustHasPolicyCode(lock, SandboxTemplateTrustPolicyCodeLockProvenanceMismatch) {
+		return SandboxSecurityCapabilityReadinessBlocked, SandboxSecurityCapabilityReasonSelectedTemplateProvenanceMismatch
+	}
+	if sandboxSecurityCapabilityTemplateLockHasUnresolvedProvenance(lock) {
+		return SandboxSecurityCapabilityReadinessBlocked, SandboxSecurityCapabilityReasonSelectedTemplateProvenanceUnresolved
+	}
+	if lock.TrustPolicy == nil {
+		return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonSelectedTemplateEvidenceMissing
+	}
+	if lock.TrustPolicy.Decision == SandboxTemplateTrustPolicyDecisionRejected {
+		return SandboxSecurityCapabilityReadinessBlocked, SandboxSecurityCapabilityReasonSelectedTemplateTrustRejected
+	}
+	if lock.TrustPolicy.Decision == SandboxTemplateTrustPolicyDecisionUnavailable {
+		return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonSelectedTemplateTrustUnavailable
+	}
+	if lock.TrustPolicy.Mode == SandboxTemplateTrustPolicyModeAdvisory ||
+		lock.TrustPolicy.Decision == SandboxTemplateTrustPolicyDecisionAdvisory {
+		return SandboxSecurityCapabilityReadinessMetadataOnly, SandboxSecurityCapabilityReasonSelectedTemplateTrustAdvisoryOnly
+	}
+	if lock.TrustPolicy.Mode != SandboxTemplateTrustPolicyModeStrict ||
+		lock.TrustPolicy.Decision != SandboxTemplateTrustPolicyDecisionTrusted {
+		return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonSelectedTemplateEvidenceMissing
+	}
+	if !sandboxSecurityCapabilityProjectionTemplateLockComplete(lock) ||
+		!sandboxSecurityCapabilityTemplateTrustPolicyComplete(lock.TrustPolicy) {
+		return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonSelectedTemplateEvidenceMissing
+	}
+	return SandboxSecurityCapabilityReadinessReady, SandboxSecurityCapabilityReasonSelectedTemplateTrustConfirmed
+}
+
+func sandboxSecurityCapabilityTemplateLockHasUnresolvedProvenance(lock *SandboxTemplateLockMetadata) bool {
+	if lock == nil {
+		return false
+	}
+	if lock.TrustPolicy != nil && lock.TrustPolicy.Status == SandboxTemplateLockStatusUnresolved {
+		return true
+	}
+	for _, entry := range []*SandboxTemplateLockEntryMetadata{
+		lock.Document,
+		lock.TemplateReference,
+		lock.RuntimeImage,
+		lock.SourceArtifact,
+	} {
+		if entry != nil && entry.Status == SandboxTemplateLockStatusUnresolved {
+			return true
+		}
+	}
+	return false
+}
+
+func sandboxSecurityCapabilityTemplateTrustPolicyComplete(policy *SandboxTemplateTrustPolicyMetadata) bool {
+	return policy != nil &&
+		policy.Status == SandboxTemplateLockStatusLocked &&
+		policy.DigestAlgorithm != "" &&
+		policy.DigestValue != ""
+}
+
+func sandboxSecurityCapabilityTemplateTrustHasPolicyCode(lock *SandboxTemplateLockMetadata, code string) bool {
+	if lock == nil || lock.TrustPolicy == nil {
+		return false
+	}
+	for _, codes := range [][]string{
+		lock.TrustPolicy.ReasonCodes,
+		lock.TrustPolicy.ErrorCodes,
+		lock.TrustPolicy.WarningCodes,
+	} {
+		for _, candidate := range codes {
+			if candidate == code {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func sandboxSecurityCapabilityProjectionTemplateLockComplete(lock *SandboxTemplateLockMetadata) bool {
@@ -621,6 +724,17 @@ func sandboxSecurityCapabilityProjectionAppendMissingProof(records []SandboxSecu
 				SandboxSecurityCapabilitySourceMetadata,
 				SandboxSecurityCapabilityReadinessMetadataOnly,
 				SandboxSecurityCapabilityReasonTemplateLockDigestMissing,
+			)
+		}
+		if requested.Capability == SandboxSecurityCapabilitySelectedTemplateTrust {
+			return sandboxSecurityCapabilityProjectionAppendSafeEvidenceWithID(records,
+				requested.ID,
+				requested.Family,
+				requested.Capability,
+				requested.Mode,
+				SandboxSecurityCapabilitySourceMetadata,
+				SandboxSecurityCapabilityReadinessUnsupported,
+				SandboxSecurityCapabilityReasonSelectedTemplateEvidenceMissing,
 			)
 		}
 	case SandboxSecurityCapabilityFamilyWorkspace:

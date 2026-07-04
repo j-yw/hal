@@ -208,8 +208,12 @@ func sanitizeTemplateProvenanceSourceKind(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case string(SourceKindLocalFile):
 		return string(SourceKindLocalFile)
+	case string(SourceKindGit):
+		return string(SourceKindGit)
 	case string(SourceKindOCIArtifact):
 		return string(SourceKindOCIArtifact)
+	case string(SourceKindUnsupported):
+		return string(SourceKindUnsupported)
 	case templateProvenanceSourceKindTemplateReference:
 		return templateProvenanceSourceKindTemplateReference
 	case templateProvenanceSourceKindRuntimeImage:

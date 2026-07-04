@@ -111,14 +111,15 @@ type Error struct {
 
 // Status describes observable worker readiness without embedding command state.
 type Status struct {
-	ProtocolVersion         string         `json:"protocolVersion,omitempty"`
-	WorkerID                string         `json:"workerId"`
-	HostKind                string         `json:"hostKind"`
-	SocketPath              string         `json:"socketPath,omitempty"`
-	SupportedRuntimeDrivers []string       `json:"supportedRuntimeDrivers,omitempty"`
-	Health                  WorkerHealth   `json:"health"`
-	Capacity                WorkerCapacity `json:"capacity"`
-	Security                SecurityPolicy `json:"security"`
+	ProtocolVersion         string                          `json:"protocolVersion,omitempty"`
+	WorkerID                string                          `json:"workerId"`
+	HostKind                string                          `json:"hostKind"`
+	SocketPath              string                          `json:"socketPath,omitempty"`
+	SupportedRuntimeDrivers []string                        `json:"supportedRuntimeDrivers,omitempty"`
+	Health                  WorkerHealth                    `json:"health"`
+	Capacity                WorkerCapacity                  `json:"capacity"`
+	Security                SecurityPolicy                  `json:"security"`
+	Metadata                *sandboxruntime.RuntimeMetadata `json:"metadata,omitempty"`
 }
 
 // WorkerHealth reports worker health using a small stable vocabulary.
@@ -136,11 +137,12 @@ type WorkerCapacity struct {
 // Capabilities describes supported protocol operations, runtime drivers, and
 // honest security posture.
 type Capabilities struct {
-	ProtocolVersion     string          `json:"protocolVersion,omitempty"`
-	WorkerID            string          `json:"workerId"`
-	SupportedOperations []string        `json:"supportedOperations,omitempty"`
-	RuntimeDrivers      []RuntimeDriver `json:"runtimeDrivers,omitempty"`
-	Security            SecurityPolicy  `json:"security"`
+	ProtocolVersion     string                          `json:"protocolVersion,omitempty"`
+	WorkerID            string                          `json:"workerId"`
+	SupportedOperations []string                        `json:"supportedOperations,omitempty"`
+	RuntimeDrivers      []RuntimeDriver                 `json:"runtimeDrivers,omitempty"`
+	Security            SecurityPolicy                  `json:"security"`
+	Metadata            *sandboxruntime.RuntimeMetadata `json:"metadata,omitempty"`
 }
 
 // RuntimeDriver is the worker protocol's command-agnostic runtime driver
@@ -152,6 +154,7 @@ type RuntimeDriver struct {
 	Operations         []string                                          `json:"operations,omitempty"`
 	Security           SecurityPolicy                                    `json:"security"`
 	NetworkEnforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata `json:"networkEnforcement,omitempty"`
+	Metadata           *sandboxruntime.RuntimeMetadata                   `json:"metadata,omitempty"`
 }
 
 // SecurityPolicy separates requested controls from controls the worker
@@ -205,11 +208,12 @@ type Target struct {
 // RuntimeTarget captures runtime identity without importing durable sandbox
 // records or concrete adapters.
 type RuntimeTarget struct {
-	Driver         string `json:"driver"`
-	RuntimeID      string `json:"runtimeId,omitempty"`
-	Image          string `json:"image,omitempty"`
-	WorkerID       string `json:"workerId,omitempty"`
-	IsolationLevel string `json:"isolationLevel,omitempty"`
+	Driver         string                          `json:"driver"`
+	RuntimeID      string                          `json:"runtimeId,omitempty"`
+	Image          string                          `json:"image,omitempty"`
+	WorkerID       string                          `json:"workerId,omitempty"`
+	IsolationLevel string                          `json:"isolationLevel,omitempty"`
+	Metadata       *sandboxruntime.RuntimeMetadata `json:"metadata,omitempty"`
 }
 
 // CreateRequest describes a worker-backed target creation request.

@@ -19,6 +19,8 @@ const (
 	trustPolicyMissingDocumentDigestMessage = "template document digest is not locked"
 	trustPolicyProvenanceMismatchMessage    = "required reference provenance does not match locked digest"
 	trustPolicyDocumentMismatchMessage      = "template document provenance does not match locked digest"
+	trustPolicyResolverUnavailableMessage   = "resolver is unavailable"
+	trustPolicyUnsupportedSourceMessage     = "template source is unsupported"
 )
 
 // EvaluateTrustPolicy evaluates sanitized template metadata against strict or
@@ -47,6 +49,7 @@ func EvaluateTrustPolicy(template sandboxtemplate.Template, request TrustPolicyR
 		evaluation.requireReferenceDigestPin(safeTemplate, request.Lock, request.Provenance, i, requirement)
 	}
 
+	evaluation.requireStrictTrustedEvidence(request.Lock, request.Provenance)
 	evaluation.finalize()
 	return evaluation.result
 }
@@ -66,6 +69,14 @@ func normalizeTrustPolicyMode(mode TrustPolicyMode) TrustPolicyMode {
 }
 
 func (e *trustPolicyEvaluation) requireTemplateDocumentIdentity(lock *TemplateLock, provenance *TemplateLock) {
+	if reason := trustPolicyTemplateLockBlockingReason(lock); reason != "" {
+		e.addUnavailableFinding(trustPolicyFieldTemplateDocumentLock, "", nil, reason)
+		return
+	}
+	if reason := trustPolicyTemplateLockBlockingReason(provenance); reason != "" {
+		e.addUnavailableFinding(trustPolicyFieldTemplateDocumentLock, "", nil, reason)
+		return
+	}
 	if trustPolicyDocumentLocked(lock) {
 		if provenance != nil && !trustPolicyDocumentMatches(lock.Document, provenance.Document) {
 			e.addFinding(
@@ -183,6 +194,39 @@ func (e *trustPolicyEvaluation) requireReferenceDigestPin(template sandboxtempla
 	lockReference, hasLockReference := trustPolicyReferenceLockEntry(lock, field, requirement.Kind)
 	provenanceReference, hasProvenanceReference := trustPolicyReferenceLockEntry(provenance, field, requirement.Kind)
 	if hasLockReference {
+		if lockReference.Status == LockStatusUnresolved {
+			if reason := trustPolicyBlockingReason(lockReference.ReasonCode); reason != "" {
+				e.addUnavailableFinding(
+					trustPolicyFieldRequiredReferences,
+					field,
+					&referenceIndex,
+					reason,
+				)
+				return
+			}
+			e.addFinding(
+				TrustPolicyErrorUnresolvedLockEntry,
+				TrustPolicyWarningUnresolvedLockEntry,
+				trustPolicyFieldRequiredReferences,
+				field,
+				&referenceIndex,
+				trustPolicyReferenceReason(lockReference, LockReasonMutableReference),
+				trustPolicyUnresolvedLockMessage,
+			)
+			return
+		}
+		if !sandboxtemplate.ReferenceDigestPinned(ref) {
+			e.addFinding(
+				TrustPolicyErrorMutableReference,
+				TrustPolicyWarningMutableReference,
+				trustPolicyFieldRequiredReferences,
+				field,
+				&referenceIndex,
+				LockReasonMutableReference,
+				trustPolicyMissingDigestMessage,
+			)
+			return
+		}
 		if trustPolicyReferenceLockDigestPinned(lockReference) {
 			if provenance != nil && (!hasProvenanceReference || !trustPolicyReferenceLockDigestPinned(provenanceReference) || !trustPolicyDigestEqual(lockReference.Digest, provenanceReference.Digest)) {
 				e.addFinding(
@@ -197,22 +241,41 @@ func (e *trustPolicyEvaluation) requireReferenceDigestPin(template sandboxtempla
 			}
 			return
 		}
-		if lockReference.Status == LockStatusUnresolved {
-			e.addFinding(
-				TrustPolicyErrorUnresolvedLockEntry,
-				TrustPolicyWarningUnresolvedLockEntry,
+		e.addFinding(
+			TrustPolicyErrorMissingDigestPin,
+			TrustPolicyWarningMissingDigestPin,
+			trustPolicyFieldRequiredReferences,
+			field,
+			&referenceIndex,
+			trustPolicyReferenceReason(lockReference, LockReasonImmutableDigest),
+			trustPolicyMissingDigestMessage,
+		)
+		return
+	}
+	if hasProvenanceReference && provenanceReference.Status == LockStatusUnresolved {
+		if reason := trustPolicyBlockingReason(provenanceReference.ReasonCode); reason != "" {
+			e.addUnavailableFinding(
 				trustPolicyFieldRequiredReferences,
 				field,
 				&referenceIndex,
-				LockReasonMutableReference,
-				trustPolicyUnresolvedLockMessage,
+				reason,
 			)
 			return
 		}
-	}
-	if lock != nil {
 		e.addFinding(
-			TrustPolicyErrorMissingDigestPin,
+			TrustPolicyErrorUnresolvedLockEntry,
+			TrustPolicyWarningUnresolvedLockEntry,
+			trustPolicyFieldRequiredReferences,
+			field,
+			&referenceIndex,
+			trustPolicyReferenceReason(provenanceReference, LockReasonMutableReference),
+			trustPolicyUnresolvedLockMessage,
+		)
+		return
+	}
+	if !sandboxtemplate.ReferenceDigestPinned(ref) {
+		e.addFinding(
+			TrustPolicyErrorMutableReference,
 			TrustPolicyWarningMutableReference,
 			trustPolicyFieldRequiredReferences,
 			field,
@@ -222,19 +285,19 @@ func (e *trustPolicyEvaluation) requireReferenceDigestPin(template sandboxtempla
 		)
 		return
 	}
-	if hasProvenanceReference && trustPolicyReferenceLockDigestPinned(provenanceReference) {
-		return
-	}
-	if hasProvenanceReference && provenanceReference.Status == LockStatusUnresolved {
+	if lock != nil {
 		e.addFinding(
-			TrustPolicyErrorUnresolvedLockEntry,
-			TrustPolicyWarningUnresolvedLockEntry,
+			TrustPolicyErrorMissingDigestPin,
+			TrustPolicyWarningMissingDigestPin,
 			trustPolicyFieldRequiredReferences,
 			field,
 			&referenceIndex,
 			LockReasonMutableReference,
-			trustPolicyUnresolvedLockMessage,
+			trustPolicyMissingDigestMessage,
 		)
+		return
+	}
+	if hasProvenanceReference && trustPolicyReferenceLockDigestPinned(provenanceReference) {
 		return
 	}
 	if sandboxtemplate.ReferenceDigestPinned(ref) {
@@ -250,6 +313,23 @@ func (e *trustPolicyEvaluation) requireReferenceDigestPin(template sandboxtempla
 		LockReasonMutableReference,
 		trustPolicyMissingDigestMessage,
 	)
+}
+
+func (e *trustPolicyEvaluation) requireStrictTrustedEvidence(lock *TemplateLock, provenance *TemplateLock) {
+	if e.mode != TrustPolicyModeStrict || len(e.result.Errors) > 0 || len(e.result.Warnings) > 0 {
+		return
+	}
+	if lock == nil || provenance == nil || !trustPolicyDocumentMatches(lock.Document, provenance.Document) {
+		e.addFinding(
+			TrustPolicyErrorLockProvenanceMismatch,
+			TrustPolicyWarningLockProvenanceMismatch,
+			trustPolicyFieldTemplateDocumentLock,
+			"",
+			nil,
+			LockReasonDocumentDigest,
+			trustPolicyDocumentMismatchMessage,
+		)
+	}
 }
 
 func trustPolicyKnownReferenceField(field string) string {
@@ -369,6 +449,56 @@ func trustPolicyDigestEqual(left *sandboxtemplate.DigestMetadata, right *sandbox
 		left.Value == right.Value
 }
 
+func trustPolicyTemplateLockBlockingReason(lock *TemplateLock) LockReasonCode {
+	if lock == nil {
+		return ""
+	}
+	if lock.SourceKind == SourceKindUnsupported {
+		return LockReasonUnsupportedSource
+	}
+	for _, warning := range lock.Warnings {
+		if reason := trustPolicyBlockingReason(warning); reason != "" {
+			return reason
+		}
+	}
+	return trustPolicyBlockingReason(lock.Document.ReasonCode)
+}
+
+func trustPolicyBlockingReason(reason LockReasonCode) LockReasonCode {
+	switch reason {
+	case LockReasonResolverUnavailable, LockReasonUnsupportedSource:
+		return reason
+	default:
+		return ""
+	}
+}
+
+func trustPolicyReferenceReason(reference ReferenceLock, fallback LockReasonCode) LockReasonCode {
+	if templateProvenanceAllowedReasonCode(string(reference.ReasonCode)) {
+		return reference.ReasonCode
+	}
+	return fallback
+}
+
+func (e *trustPolicyEvaluation) addUnavailableFinding(field string, referenceField string, referenceIndex *int, reason LockReasonCode) {
+	errorCode, warningCode, message, ok := trustPolicyUnavailableFinding(reason)
+	if !ok {
+		return
+	}
+	e.addFinding(errorCode, warningCode, field, referenceField, referenceIndex, reason, message)
+}
+
+func trustPolicyUnavailableFinding(reason LockReasonCode) (TrustPolicyErrorCode, TrustPolicyWarningCode, string, bool) {
+	switch reason {
+	case LockReasonResolverUnavailable:
+		return TrustPolicyErrorResolverUnavailable, TrustPolicyWarningResolverUnavailable, trustPolicyResolverUnavailableMessage, true
+	case LockReasonUnsupportedSource:
+		return TrustPolicyErrorUnsupportedSource, TrustPolicyWarningUnsupportedSource, trustPolicyUnsupportedSourceMessage, true
+	default:
+		return "", "", "", false
+	}
+}
+
 func (e *trustPolicyEvaluation) addFinding(errorCode TrustPolicyErrorCode, warningCode TrustPolicyWarningCode, field string, referenceField string, referenceIndex *int, reason LockReasonCode, message string) {
 	if e.mode == TrustPolicyModeAdvisory {
 		warning := TrustPolicyWarning{
@@ -402,6 +532,8 @@ func (e *trustPolicyEvaluation) addFinding(errorCode TrustPolicyErrorCode, warni
 
 func (e *trustPolicyEvaluation) finalize() {
 	switch {
+	case e.mode == TrustPolicyModeAdvisory:
+		e.result.Decision = TrustPolicyDecisionAdvisory
 	case len(e.result.Errors) > 0:
 		e.result.Decision = TrustPolicyDecisionRejected
 	case len(e.result.Warnings) > 0:

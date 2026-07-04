@@ -9,7 +9,8 @@ import (
 func (manifest Manifest) MarshalJSON() ([]byte, error) {
 	type manifestJSON Manifest
 	encoded := manifestJSON(manifest)
-	encoded.TemplateLock = sandbox.SanitizeSandboxTemplateLockMetadata(manifest.TemplateLock)
+	encoded.Runtime = sandbox.CloneSandboxRuntimeState(manifest.Runtime)
+	encoded.TemplateLock = manifestTemplateLockForPersistence(manifest.TemplateLock, manifest.Runtime)
 	return json.Marshal(encoded)
 }
 
@@ -19,7 +20,8 @@ func (manifest *Manifest) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
-	decoded.TemplateLock = sandbox.SanitizeSandboxTemplateLockMetadata(decoded.TemplateLock)
+	decoded.Runtime = sandbox.CloneSandboxRuntimeState(decoded.Runtime)
+	decoded.TemplateLock = manifestTemplateLockForPersistence(decoded.TemplateLock, decoded.Runtime)
 	*manifest = Manifest(decoded)
 	return nil
 }
@@ -30,4 +32,27 @@ func (manifest *Manifest) SetTemplateLock(metadata *sandbox.SandboxTemplateLockM
 		return
 	}
 	manifest.TemplateLock = sandbox.SanitizeSandboxTemplateLockMetadata(metadata)
+}
+
+// SetTemplateLockFromRuntime adopts sanitized selected-template metadata from
+// runtime state onto the manifest's existing durable templateLock surface.
+func (manifest *Manifest) SetTemplateLockFromRuntime(runtime *sandbox.SandboxRuntimeState) {
+	if manifest == nil {
+		return
+	}
+	if runtime == nil {
+		manifest.TemplateLock = nil
+		return
+	}
+	manifest.TemplateLock = sandbox.SanitizeSandboxTemplateLockMetadata(runtime.TemplateLock)
+}
+
+func manifestTemplateLockForPersistence(explicit *sandbox.SandboxTemplateLockMetadata, runtime *sandbox.SandboxRuntimeState) *sandbox.SandboxTemplateLockMetadata {
+	if sanitized := sandbox.SanitizeSandboxTemplateLockMetadata(explicit); sanitized != nil {
+		return sanitized
+	}
+	if runtime == nil {
+		return nil
+	}
+	return sandbox.SanitizeSandboxTemplateLockMetadata(runtime.TemplateLock)
 }

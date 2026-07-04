@@ -1324,11 +1324,7 @@ func cloneSandboxHost(host *sandbox.SandboxHost) *sandbox.SandboxHost {
 }
 
 func cloneSandboxRuntime(runtime *sandbox.SandboxRuntimeState) *sandbox.SandboxRuntimeState {
-	if runtime == nil {
-		return nil
-	}
-	clone := *runtime
-	return &clone
+	return sandbox.CloneSandboxRuntimeState(runtime)
 }
 
 func cloneSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.SandboxSecurity {

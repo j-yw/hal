@@ -49,6 +49,7 @@ type Service struct {
 	health            WorkerHealth
 	capacity          WorkerCapacity
 	security          SecurityPolicy
+	metadata          *sandboxruntime.RuntimeMetadata
 	supportedOps      []string
 	driverDescriptors map[string]RuntimeDriver
 }
@@ -66,6 +67,7 @@ type ServiceOptions struct {
 	Security SecurityPolicy
 
 	NetworkEnforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata
+	Metadata           *sandboxruntime.RuntimeMetadata
 
 	SupportedOperations []string
 	RuntimeDrivers      map[string]RuntimeDriver
@@ -124,6 +126,7 @@ func NewService(options ServiceOptions) (*Service, error) {
 		health:            health,
 		capacity:          capacity,
 		security:          cloneSecurityPolicy(security),
+		metadata:          sandboxruntime.SanitizeRuntimeMetadata(options.Metadata),
 		supportedOps:      supportedOps,
 		driverDescriptors: descriptors,
 	}
@@ -149,6 +152,7 @@ func (service *Service) Status() Status {
 		Health:                  service.health,
 		Capacity:                service.capacity,
 		Security:                cloneSecurityPolicy(service.security),
+		Metadata:                sandboxruntime.SanitizeRuntimeMetadata(service.metadata),
 	}
 }
 
@@ -166,6 +170,7 @@ func (service *Service) Capabilities() Capabilities {
 		SupportedOperations: cloneStringSlice(service.supportedOps),
 		RuntimeDrivers:      drivers,
 		Security:            cloneSecurityPolicy(service.security),
+		Metadata:            sandboxruntime.SanitizeRuntimeMetadata(service.metadata),
 	}
 }
 
@@ -226,6 +231,7 @@ func runtimeDriverCapabilityFromDescriptors(driverID string, descriptors map[str
 		descriptor.ID = strings.TrimSpace(defaultString(descriptor.ID, driverID))
 		descriptor.Operations = cloneStringSlice(descriptor.Operations)
 		descriptor.NetworkEnforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(descriptor.NetworkEnforcement)
+		descriptor.Metadata = sandboxruntime.SanitizeRuntimeMetadata(descriptor.Metadata)
 		descriptor.Security = projectRuntimeDriverSecurityPolicyForDriver(descriptor.ID, descriptor.Security, descriptor.NetworkEnforcement)
 		return descriptor
 	}
@@ -393,6 +399,7 @@ func cloneRuntimeDriverMap(drivers map[string]RuntimeDriver) map[string]RuntimeD
 		driver.Operations = cloneStringSlice(driver.Operations)
 		driver.Security = cloneSecurityPolicy(driver.Security)
 		driver.NetworkEnforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(driver.NetworkEnforcement)
+		driver.Metadata = sandboxruntime.SanitizeRuntimeMetadata(driver.Metadata)
 		clone[strings.TrimSpace(id)] = driver
 	}
 	return clone

@@ -41,6 +41,10 @@ var forbiddenSandboxruntimeImports = []sandboxruntimeForbiddenImport{
 		name:  "command-specific loop code",
 		match: moduleImportMatcher("github.com/jywlabs/hal/internal/loop"),
 	},
+	{
+		name:  "template acquisition implementation package",
+		match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxtemplate/acquisition"),
+	},
 }
 
 var forbiddenSandboxruntimeNetworkEnforcementImports = []sandboxruntimeForbiddenImport{
@@ -478,6 +482,7 @@ func TestSandboxruntimeForbiddenImportListCoversCommandCouplingSurfaces(t *testi
 		{name: "PRD packages", importPath: "github.com/jywlabs/hal/internal/prd"},
 		{name: "command-specific auto code", importPath: "github.com/jywlabs/hal/internal/compound"},
 		{name: "command-specific loop code", importPath: "github.com/jywlabs/hal/internal/loop"},
+		{name: "template acquisition implementation", importPath: "github.com/jywlabs/hal/internal/sandboxtemplate/acquisition"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if forbidden := sandboxruntimeForbiddenImportFor(tt.importPath); forbidden == nil {

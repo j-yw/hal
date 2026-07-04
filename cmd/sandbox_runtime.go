@@ -74,7 +74,14 @@ func newSandboxRuntimeCommand(deps sandboxRuntimeDeps) *cobra.Command {
 Runtime inspection is read-only. These commands report cached durable metadata by
 default and only attempt live worker inspection when a supported --live flag is
 explicitly requested. Output avoids raw socket paths, hostnames, credentials,
-URL query strings, temp paths, and sensitive endpoint details.`,
+URL query strings, temp paths, and sensitive endpoint details.
+
+Selected-template output is a sanitized status projection. It summarizes template
+identity, trust decision, provenance status, locked digest, and blocked
+readiness reason codes without exposing raw references. Template acquisition and
+trust evaluation remain in the internal template packages; live acquisition is
+not performed by these status commands and fake-only acquisition boundaries are
+preserved.`,
 		Example: `  # Compatibility advisory mode reports diagnostics without claiming live protection.
   hal sandbox runtime list local-worker
   hal sandbox runtime list local-worker --json
@@ -114,7 +121,13 @@ Secure-default readiness is reported truthfully. Strict secure-default readiness
 uses security.securityReadinessGate to show whether strict mode reports blocked
 decisions when required proof is missing, and compatibility mode reports advisory
 diagnostics without claiming live protection, and proof-complete allowed states
-include reason-code counts.`,
+include reason-code counts.
+
+Each runtime entry includes selectedTemplate status with sanitized template
+identity, trust decision, provenance status, locked digest, and blocked readiness
+reason codes. Runtime listing does not acquire templates or contact live
+template sources; acquisition remains fake/local unless an explicit lower-level
+template acquisition path is invoked.`,
 		Example: `  # Cached compatibility advisory metadata.
   hal sandbox runtime list local-worker
   hal sandbox runtime list local-worker --json
@@ -158,7 +171,12 @@ Secure-default readiness is reported truthfully. Strict secure-default readiness
 uses security.securityReadinessGate to show whether strict mode reports blocked
 decisions when required proof is missing, and compatibility mode reports advisory
 diagnostics without claiming live protection, and proof-complete allowed states
-include reason-code counts.`,
+include reason-code counts.
+
+The selectedTemplate field summarizes sanitized template identity, trust
+decision, provenance status, locked digest, and blocked readiness reason codes
+for the requested runtime. Runtime status formats existing metadata only; it
+does not parse template references or perform template acquisition.`,
 		Example: `  # Human output shows compatibility advisory or strict allowed/blocked status.
   hal sandbox runtime status local-worker rootless_podman
   hal sandbox runtime status local-worker rootless_podman --json
@@ -471,7 +489,7 @@ func renderSandboxRuntimeListResponse(out io.Writer, resp SandboxRuntimeListResp
 		return err
 	}
 	runtimeTable := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(runtimeTable, "ID\tHOST KIND\tISOLATION\tOPERATIONS"); err != nil {
+	if _, err := fmt.Fprintln(runtimeTable, "ID\tHOST KIND\tISOLATION\tOPERATIONS\tSELECTED TEMPLATE"); err != nil {
 		return err
 	}
 	for _, runtimeEntry := range resp.Runtimes {
@@ -481,7 +499,8 @@ func renderSandboxRuntimeListResponse(out io.Writer, resp SandboxRuntimeListResp
 		if operations == "" {
 			operations = "unknown"
 		}
-		if _, err := fmt.Fprintf(runtimeTable, "%s\t%s\t%s\t%s\n", runtimeEntry.ID, hostKind, isolationLevel, operations); err != nil {
+		selectedTemplate := sandboxRuntimeSelectedTemplateHuman(runtimeEntry.SelectedTemplate)
+		if _, err := fmt.Fprintf(runtimeTable, "%s\t%s\t%s\t%s\t%s\n", runtimeEntry.ID, hostKind, isolationLevel, operations, selectedTemplate); err != nil {
 			return err
 		}
 	}
@@ -522,6 +541,7 @@ func renderSandboxRuntimeStatusResponse(out io.Writer, resp SandboxRuntimeStatus
 		{"Runtime ID", sandboxHostDisplayValue(resp.Runtime.ID, "unknown")},
 		{"Runtime host kind", sandboxRuntimeStringPtrValue(resp.Runtime.HostKind, "unknown")},
 		{"Runtime isolation", sandboxRuntimeStringPtrValue(resp.Runtime.IsolationLevel, "unknown")},
+		{"Selected template", sandboxRuntimeSelectedTemplateHuman(resp.SelectedTemplate)},
 		{"Readiness", readiness},
 		{"Supported operations", operations},
 		{"Capacity", sandboxHostDisplayValue(resp.Capacity.Summary, "unknown")},
@@ -732,6 +752,40 @@ func sandboxRuntimeSecurityReadinessGateReasonCountsHuman(counts map[sandbox.San
 		return ""
 	}
 	return "reason codes " + strings.Join(reasons, ",")
+}
+
+func sandboxRuntimeSelectedTemplateHuman(summary SandboxRuntimeSelectedTemplate) string {
+	parts := []string{sandboxHostDisplayValue(summary.State, "absent")}
+	if trust := strings.TrimSpace(summary.TrustDecision); trust != "" {
+		parts = append(parts, "trust "+trust)
+	}
+	if digest := sandboxRuntimeSelectedTemplateDigestHuman(summary.Digest); digest != "" {
+		parts = append(parts, digest)
+	}
+	if provenance := strings.TrimSpace(summary.ProvenanceStatus); provenance != "" {
+		parts = append(parts, "provenance "+provenance)
+	}
+	if len(summary.BlockedReadinessReasonCodes) > 0 {
+		parts = append(parts, "blocked reasons "+strings.Join(sortedUniqueStrings(summary.BlockedReadinessReasonCodes), ","))
+	} else {
+		parts = append(parts, "blocked reasons none")
+	}
+	return strings.Join(parts, "; ")
+}
+
+func sandboxRuntimeSelectedTemplateDigestHuman(digest *SandboxRuntimeSelectedTemplateDigest) string {
+	if digest == nil {
+		return ""
+	}
+	algorithm := strings.TrimSpace(digest.Algorithm)
+	value := strings.TrimSpace(digest.Value)
+	if algorithm == "" || value == "" {
+		return ""
+	}
+	if len(value) > 16 {
+		value = value[:16] + "..."
+	}
+	return algorithm + ":" + value
 }
 
 func sandboxRuntimeStringPtrValue(value *string, fallback string) string {

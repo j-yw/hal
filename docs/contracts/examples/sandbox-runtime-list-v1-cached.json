@@ -24,6 +24,10 @@
       "hostKind": null,
       "isolationLevel": null,
       "supportedOperations": [],
+      "selectedTemplate": {
+        "state": "absent",
+        "present": false
+      },
       "security": {
         "requested": {},
         "enforced": {}
@@ -35,6 +39,10 @@
       "hostKind": null,
       "isolationLevel": null,
       "supportedOperations": [],
+      "selectedTemplate": {
+        "state": "absent",
+        "present": false
+      },
       "security": {
         "requested": {},
         "enforced": {}

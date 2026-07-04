@@ -467,6 +467,7 @@ func TestSandboxRuntimeTargetFromStatePreservesDurableRuntimeMetadata(t *testing
 			Image:          "localhost/hal:test",
 			WorkerID:       "worker-a",
 			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+			TemplateLock:   us004CommandTemplateLockFixture(),
 		},
 	})
 
@@ -476,6 +477,23 @@ func TestSandboxRuntimeTargetFromStatePreservesDurableRuntimeMetadata(t *testing
 		target.Runtime.WorkerID != "worker-a" ||
 		target.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelContainer {
 		t.Fatalf("runtime target metadata = %#v, want durable runtime metadata preserved", target.Runtime)
+	}
+	if target.Runtime.Metadata == nil || target.Runtime.Metadata.TemplateLock == nil || target.Runtime.Metadata.TemplateStatus == nil {
+		t.Fatalf("runtime target selected-template metadata = %#v, want lock and projected status", target.Runtime.Metadata)
+	}
+	if got := target.Runtime.Metadata.TemplateStatus.TrustDecision; got != sandbox.SandboxTemplateTrustPolicyDecisionRejected {
+		t.Fatalf("runtime target template trust decision = %q, want rejected", got)
+	}
+	if got := target.Runtime.Metadata.TemplateStatus.LockStatus; got != sandbox.SandboxTemplateLockStatusUnresolved {
+		t.Fatalf("runtime target template lock status = %q, want unresolved", got)
+	}
+
+	state := sandboxStateFromRuntimeTarget(target)
+	if state.Runtime == nil || state.Runtime.TemplateLock == nil || state.Runtime.TemplateLock.TrustPolicy == nil {
+		t.Fatalf("sandbox state template lock = %#v, want round-trip lock metadata", state.Runtime)
+	}
+	if got := state.Runtime.TemplateLock.TrustPolicy.Decision; got != sandbox.SandboxTemplateTrustPolicyDecisionRejected {
+		t.Fatalf("round-trip trust decision = %q, want rejected", got)
 	}
 }
 
