@@ -96,6 +96,26 @@ func TestPhase54OperatorReleaseHandoffDoesNotOverclaimDefaultEnforcement(t *test
 	}
 }
 
+func TestPhase54OperatorReleaseHandoffDocumentsSecureDefaultGapAudit(t *testing.T) {
+	doc := phase50ReadFile(t, phase54OperatorReleaseHandoffDocPath())
+	normalized := strings.Join(strings.Fields(doc), " ")
+
+	for _, want := range []string{
+		"## Production Secure-Default Gap Audit",
+		"Default-on network proxy/firewall enforcement is not complete unless a runtime actually enforces it.",
+		"Requested policy metadata, readiness projection, or live-gate documentation alone is not runtime enforcement.",
+		"Credential broker delivery as default agent behavior still needs production hardening beyond metadata/projection before it can be treated as a default agent path.",
+		"Template/kits provenance and trust policy exist, but operational production defaulting still needs rollout decisions",
+		"Release/CI must not claim deny-by-default network security merely because requested metadata exists.",
+		"A deny-by-default claim requires runtime evidence from the selected runtime path.",
+		"This is multi-day future work and should be split into a new wave after Phase 54",
+	} {
+		if !strings.Contains(doc, want) && !strings.Contains(normalized, want) {
+			t.Fatalf("Phase 54 handoff secure-default gap audit missing %q", want)
+		}
+	}
+}
+
 func TestPhase54OperatorReleaseHandoffOverclaimGuardFixtures(t *testing.T) {
 	unsafe := []struct {
 		name string

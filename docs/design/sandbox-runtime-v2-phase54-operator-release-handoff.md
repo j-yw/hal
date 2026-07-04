@@ -120,6 +120,25 @@ Phase 54 intentionally does not enable these by default:
 - sandbox image builds, tag-triggered release publishing, or Homebrew tap
   updates from the local verification path.
 
+## Production Secure-Default Gap Audit
+
+The remaining secure-default work is future work after Phase 54:
+
+- Default-on network proxy/firewall enforcement is not complete unless a
+  runtime actually enforces it. Requested policy metadata, readiness
+  projection, or live-gate documentation alone is not runtime enforcement.
+- Credential broker delivery as default agent behavior still needs production
+  hardening beyond metadata/projection before it can be treated as a default
+  agent path.
+- Template/kits provenance and trust policy exist, but operational production
+  defaulting still needs rollout decisions for which kits are trusted, how
+  policy updates are governed, and when operators deliberately enable them.
+- Release/CI must not claim deny-by-default network security merely because
+  requested metadata exists. A deny-by-default claim requires runtime evidence
+  from the selected runtime path.
+- This is multi-day future work and should be split into a new wave after Phase
+  54 rather than hidden in the final packaging and CI handoff.
+
 ## Pre-PR And Pre-Merge Checklist
 
 - Confirm the branch is
