@@ -151,6 +151,70 @@ func TestProjectSecureDefaultReadinessInputRejectsIncompleteNetworkProofs(t *tes
 	}
 }
 
+func TestProjectSecureDefaultReadinessInputDowngradesOneSidedProxyFirewallProofs(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*SandboxNetworkEnforcementProofMetadata)
+	}{
+		{
+			name: "proxy active without firewall readiness",
+			configure: func(proof *SandboxNetworkEnforcementProofMetadata) {
+				proof.FirewallLifecycleStatus = ""
+				proof.FirewallLifecycleReasonCode = ""
+			},
+		},
+		{
+			name: "firewall active without proxy readiness",
+			configure: func(proof *SandboxNetworkEnforcementProofMetadata) {
+				proof.ProxyLifecycleStatus = ""
+				proof.ProxyLifecycleReasonCode = ""
+			},
+		},
+		{
+			name: "firewall blocked while proxy active",
+			configure: func(proof *SandboxNetworkEnforcementProofMetadata) {
+				proof.FirewallLifecycleStatus = "requested"
+				proof.FirewallLifecycleReasonCode = "prepared"
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proof := secureDefaultProjectionNetworkProof(SandboxNetworkEnforcementProofMetadata{
+				ResultOutcome:         "success",
+				ResultEnforcementMode: SandboxNetworkEnforcementModeProxyFirewall,
+				ResultSupported:       true,
+			})
+			tt.configure(proof)
+
+			output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
+				secureDefaultProjectionRequestedNetworkInput(),
+				ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+					NetworkEnforcementProof: proof,
+				}),
+			)
+
+			result := requireSecureDefaultProjectionResult(t, output,
+				SandboxSecurityCapabilityReadinessMetadataOnly,
+				SandboxSecurityCapabilityFamilyNetworkPolicy,
+				SandboxSecurityCapabilityNetworkDenyByDefault,
+				SandboxSecurityCapabilityReasonNetworkEnforcementPartial,
+			)
+			requireSecureDefaultProjectionResultMode(t, result, SandboxNetworkEnforcementModeProxyFirewall)
+			requireSecureDefaultProjectionStrictGate(t, output,
+				SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+				SandboxSecurityCapabilityReadinessGateReasonCode(SandboxSecurityCapabilityReasonNetworkEnforcementPartial),
+				SandboxSecurityCapabilityReasonNetworkEnforcementPartial,
+			)
+			requireSecureDefaultProjectionNoReadyResult(t, output,
+				SandboxSecurityCapabilityFamilyNetworkPolicy,
+				SandboxSecurityCapabilityNetworkDenyByDefault,
+			)
+		})
+	}
+}
+
 func TestProjectSecureDefaultReadinessInputRequiresActiveCredentialActivationProof(t *testing.T) {
 	output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
 		secureDefaultProjectionRequestedSecretInput(SandboxSecretModeHTTPProxy),
@@ -517,14 +581,16 @@ func secureDefaultProjectionRequestedWorkspaceInput() SandboxSecurityCapabilityR
 
 func secureDefaultProjectionNetworkProof(overrides SandboxNetworkEnforcementProofMetadata) *SandboxNetworkEnforcementProofMetadata {
 	proof := SandboxNetworkEnforcementProofMetadata{
-		NetworkProxySessionID:    "network-proxy-session-proof",
-		PolicySnapshotID:         "policy-snapshot-proof",
-		NetworkEnforcementPlanID: "network-enforcement-plan-proof",
-		ProxyLifecycleStatus:     "active",
-		ProxyLifecycleReasonCode: "active",
-		ResultOutcome:            "success",
-		ResultEnforcementMode:    SandboxNetworkEnforcementModeProxyFirewall,
-		ResultSupported:          true,
+		NetworkProxySessionID:       "network-proxy-session-proof",
+		PolicySnapshotID:            "policy-snapshot-proof",
+		NetworkEnforcementPlanID:    "network-enforcement-plan-proof",
+		ProxyLifecycleStatus:        "active",
+		ProxyLifecycleReasonCode:    "active",
+		FirewallLifecycleStatus:     "active",
+		FirewallLifecycleReasonCode: "active",
+		ResultOutcome:               "success",
+		ResultEnforcementMode:       SandboxNetworkEnforcementModeProxyFirewall,
+		ResultSupported:             true,
 	}
 	if overrides.NetworkProxySessionID != "" {
 		proof.NetworkProxySessionID = overrides.NetworkProxySessionID
@@ -540,6 +606,12 @@ func secureDefaultProjectionNetworkProof(overrides SandboxNetworkEnforcementProo
 	}
 	if overrides.ProxyLifecycleReasonCode != "" {
 		proof.ProxyLifecycleReasonCode = overrides.ProxyLifecycleReasonCode
+	}
+	if overrides.FirewallLifecycleStatus != "" {
+		proof.FirewallLifecycleStatus = overrides.FirewallLifecycleStatus
+	}
+	if overrides.FirewallLifecycleReasonCode != "" {
+		proof.FirewallLifecycleReasonCode = overrides.FirewallLifecycleReasonCode
 	}
 	if overrides.ResultOutcome != "" {
 		proof.ResultOutcome = overrides.ResultOutcome

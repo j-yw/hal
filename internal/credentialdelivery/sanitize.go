@@ -163,6 +163,8 @@ func SanitizeHTTPProxyProofMetadata(proof HTTPProxyProof) HTTPProxyProof {
 			network.NetworkEnforcementPlanID == "" &&
 			network.ProxyLifecycleStatus == "" &&
 			network.ProxyLifecycleReasonCode == "" &&
+			network.FirewallLifecycleStatus == "" &&
+			network.FirewallLifecycleReasonCode == "" &&
 			network.ResultOutcome == "" &&
 			network.ResultEnforcementMode == "" &&
 			!network.ResultSupported {

@@ -162,6 +162,8 @@ func SanitizeSandboxNetworkEnforcementProofMetadata(proof SandboxNetworkEnforcem
 	sanitized.NetworkEnforcementPlanID = sanitizeSandboxNetworkProxyIdentifier(sanitized.NetworkEnforcementPlanID)
 	sanitized.ProxyLifecycleStatus = sanitizeSandboxNetworkEnforcementLifecycleStatus(sanitized.ProxyLifecycleStatus)
 	sanitized.ProxyLifecycleReasonCode = sanitizeSandboxNetworkEnforcementLifecycleReasonCode(sanitized.ProxyLifecycleReasonCode)
+	sanitized.FirewallLifecycleStatus = sanitizeSandboxNetworkEnforcementLifecycleStatus(sanitized.FirewallLifecycleStatus)
+	sanitized.FirewallLifecycleReasonCode = sanitizeSandboxNetworkEnforcementLifecycleReasonCode(sanitized.FirewallLifecycleReasonCode)
 	sanitized.ResultOutcome = sanitizeSandboxNetworkEnforcementResultOutcome(sanitized.ResultOutcome)
 	sanitized.ResultEnforcementMode = sanitizeSandboxNetworkProxyEnforcementModeValue(sanitized.ResultEnforcementMode)
 	return sanitized
@@ -172,13 +174,10 @@ func SanitizeSandboxNetworkEnforcementProofMetadata(proof SandboxNetworkEnforcem
 // successful supported proxy-capable enforcement result.
 func SandboxNetworkEnforcementProofProvesActiveHTTPProxy(proof SandboxNetworkEnforcementProofMetadata) bool {
 	sanitized := SanitizeSandboxNetworkEnforcementProofMetadata(proof)
-	if sanitized.NetworkProxySessionID == "" ||
-		sanitized.PolicySnapshotID == "" ||
-		sanitized.NetworkEnforcementPlanID == "" {
+	if !sandboxNetworkEnforcementProofHasRequiredIDs(sanitized) {
 		return false
 	}
-	if sanitized.ProxyLifecycleStatus != "active" ||
-		sanitized.ProxyLifecycleReasonCode != "active" ||
+	if !sandboxNetworkEnforcementProofHasActiveProxy(sanitized) ||
 		sanitized.ResultOutcome != "success" ||
 		!sanitized.ResultSupported {
 		return false
@@ -189,6 +188,35 @@ func SandboxNetworkEnforcementProofProvesActiveHTTPProxy(proof SandboxNetworkEnf
 	default:
 		return false
 	}
+}
+
+// SandboxNetworkEnforcementProofProvesActiveProxyFirewall returns true only
+// when sanitized proof metadata shows both proxy and firewall lifecycles active
+// and the result explicitly supports proxy_firewall enforcement.
+func SandboxNetworkEnforcementProofProvesActiveProxyFirewall(proof SandboxNetworkEnforcementProofMetadata) bool {
+	sanitized := SanitizeSandboxNetworkEnforcementProofMetadata(proof)
+	return sandboxNetworkEnforcementProofHasRequiredIDs(sanitized) &&
+		sandboxNetworkEnforcementProofHasActiveProxy(sanitized) &&
+		sandboxNetworkEnforcementProofHasActiveFirewall(sanitized) &&
+		sanitized.ResultOutcome == "success" &&
+		sanitized.ResultEnforcementMode == SandboxNetworkEnforcementModeProxyFirewall &&
+		sanitized.ResultSupported
+}
+
+func sandboxNetworkEnforcementProofHasRequiredIDs(proof SandboxNetworkEnforcementProofMetadata) bool {
+	return proof.NetworkProxySessionID != "" &&
+		proof.PolicySnapshotID != "" &&
+		proof.NetworkEnforcementPlanID != ""
+}
+
+func sandboxNetworkEnforcementProofHasActiveProxy(proof SandboxNetworkEnforcementProofMetadata) bool {
+	return proof.ProxyLifecycleStatus == "active" &&
+		proof.ProxyLifecycleReasonCode == "active"
+}
+
+func sandboxNetworkEnforcementProofHasActiveFirewall(proof SandboxNetworkEnforcementProofMetadata) bool {
+	return proof.FirewallLifecycleStatus == "active" &&
+		proof.FirewallLifecycleReasonCode == "active"
 }
 
 // SanitizeSandboxNetworkPolicyDecisionLogRecord returns a normalized copy of a
@@ -245,14 +273,16 @@ func normalizeSandboxNetworkProxySessionMetadata(session SandboxNetworkProxySess
 
 func normalizeSandboxNetworkEnforcementProofMetadata(proof SandboxNetworkEnforcementProofMetadata) SandboxNetworkEnforcementProofMetadata {
 	return SandboxNetworkEnforcementProofMetadata{
-		NetworkProxySessionID:    strings.TrimSpace(proof.NetworkProxySessionID),
-		PolicySnapshotID:         strings.TrimSpace(proof.PolicySnapshotID),
-		NetworkEnforcementPlanID: strings.TrimSpace(proof.NetworkEnforcementPlanID),
-		ProxyLifecycleStatus:     strings.ToLower(strings.TrimSpace(proof.ProxyLifecycleStatus)),
-		ProxyLifecycleReasonCode: strings.ToLower(strings.TrimSpace(proof.ProxyLifecycleReasonCode)),
-		ResultOutcome:            strings.ToLower(strings.TrimSpace(proof.ResultOutcome)),
-		ResultEnforcementMode:    normalizeSandboxNetworkProxyEnforcementMode(proof.ResultEnforcementMode),
-		ResultSupported:          proof.ResultSupported,
+		NetworkProxySessionID:       strings.TrimSpace(proof.NetworkProxySessionID),
+		PolicySnapshotID:            strings.TrimSpace(proof.PolicySnapshotID),
+		NetworkEnforcementPlanID:    strings.TrimSpace(proof.NetworkEnforcementPlanID),
+		ProxyLifecycleStatus:        strings.ToLower(strings.TrimSpace(proof.ProxyLifecycleStatus)),
+		ProxyLifecycleReasonCode:    strings.ToLower(strings.TrimSpace(proof.ProxyLifecycleReasonCode)),
+		FirewallLifecycleStatus:     strings.ToLower(strings.TrimSpace(proof.FirewallLifecycleStatus)),
+		FirewallLifecycleReasonCode: strings.ToLower(strings.TrimSpace(proof.FirewallLifecycleReasonCode)),
+		ResultOutcome:               strings.ToLower(strings.TrimSpace(proof.ResultOutcome)),
+		ResultEnforcementMode:       normalizeSandboxNetworkProxyEnforcementMode(proof.ResultEnforcementMode),
+		ResultSupported:             proof.ResultSupported,
 	}
 }
 

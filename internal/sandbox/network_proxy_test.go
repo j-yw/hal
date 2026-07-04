@@ -100,14 +100,16 @@ func TestNetworkProxySessionMetadataJSONSchema(t *testing.T) {
 
 func TestNetworkEnforcementProofMetadataSanitizesActiveProxyProof(t *testing.T) {
 	proof := SanitizeSandboxNetworkEnforcementProofMetadata(SandboxNetworkEnforcementProofMetadata{
-		NetworkProxySessionID:    " network-proxy-session-01 ",
-		PolicySnapshotID:         " policy-snapshot-01 ",
-		NetworkEnforcementPlanID: " network-plan-01 ",
-		ProxyLifecycleStatus:     " ACTIVE ",
-		ProxyLifecycleReasonCode: " ACTIVE ",
-		ResultOutcome:            " SUCCESS ",
-		ResultEnforcementMode:    " PROXY_FIREWALL ",
-		ResultSupported:          true,
+		NetworkProxySessionID:       " network-proxy-session-01 ",
+		PolicySnapshotID:            " policy-snapshot-01 ",
+		NetworkEnforcementPlanID:    " network-plan-01 ",
+		ProxyLifecycleStatus:        " ACTIVE ",
+		ProxyLifecycleReasonCode:    " ACTIVE ",
+		FirewallLifecycleStatus:     " ACTIVE ",
+		FirewallLifecycleReasonCode: " ACTIVE ",
+		ResultOutcome:               " SUCCESS ",
+		ResultEnforcementMode:       " PROXY_FIREWALL ",
+		ResultSupported:             true,
 	})
 
 	if proof.NetworkProxySessionID != "network-proxy-session-01" ||
@@ -115,6 +117,8 @@ func TestNetworkEnforcementProofMetadataSanitizesActiveProxyProof(t *testing.T) 
 		proof.NetworkEnforcementPlanID != "network-plan-01" ||
 		proof.ProxyLifecycleStatus != "active" ||
 		proof.ProxyLifecycleReasonCode != "active" ||
+		proof.FirewallLifecycleStatus != "active" ||
+		proof.FirewallLifecycleReasonCode != "active" ||
 		proof.ResultOutcome != "success" ||
 		proof.ResultEnforcementMode != SandboxNetworkEnforcementModeProxyFirewall ||
 		!proof.ResultSupported {
@@ -122,6 +126,9 @@ func TestNetworkEnforcementProofMetadataSanitizesActiveProxyProof(t *testing.T) 
 	}
 	if !SandboxNetworkEnforcementProofProvesActiveHTTPProxy(proof) {
 		t.Fatalf("proof = %#v, want active http proxy enforcement proof", proof)
+	}
+	if !SandboxNetworkEnforcementProofProvesActiveProxyFirewall(proof) {
+		t.Fatalf("proof = %#v, want active proxy/firewall enforcement proof", proof)
 	}
 
 	got := mustMarshalObject(t, proof)
@@ -131,6 +138,8 @@ func TestNetworkEnforcementProofMetadataSanitizesActiveProxyProof(t *testing.T) 
 		"networkEnforcementPlanId",
 		"proxyLifecycleStatus",
 		"proxyLifecycleReasonCode",
+		"firewallLifecycleStatus",
+		"firewallLifecycleReasonCode",
 		"resultOutcome",
 		"resultEnforcementMode",
 		"resultSupported",
@@ -139,14 +148,16 @@ func TestNetworkEnforcementProofMetadataSanitizesActiveProxyProof(t *testing.T) 
 
 func TestNetworkEnforcementProofMetadataDoesNotTreatRequestedOrPartialMetadataAsActive(t *testing.T) {
 	active := SandboxNetworkEnforcementProofMetadata{
-		NetworkProxySessionID:    "network-proxy-session-01",
-		PolicySnapshotID:         "policy-snapshot-01",
-		NetworkEnforcementPlanID: "network-plan-01",
-		ProxyLifecycleStatus:     "active",
-		ProxyLifecycleReasonCode: "active",
-		ResultOutcome:            "success",
-		ResultEnforcementMode:    SandboxNetworkEnforcementModeProxyFirewall,
-		ResultSupported:          true,
+		NetworkProxySessionID:       "network-proxy-session-01",
+		PolicySnapshotID:            "policy-snapshot-01",
+		NetworkEnforcementPlanID:    "network-plan-01",
+		ProxyLifecycleStatus:        "active",
+		ProxyLifecycleReasonCode:    "active",
+		FirewallLifecycleStatus:     "active",
+		FirewallLifecycleReasonCode: "active",
+		ResultOutcome:               "success",
+		ResultEnforcementMode:       SandboxNetworkEnforcementModeProxyFirewall,
+		ResultSupported:             true,
 	}
 	tests := []struct {
 		name      string
@@ -162,6 +173,12 @@ func TestNetworkEnforcementProofMetadataDoesNotTreatRequestedOrPartialMetadataAs
 			name: "proxy lifecycle requested",
 			configure: func(proof *SandboxNetworkEnforcementProofMetadata) {
 				proof.ProxyLifecycleStatus = "requested"
+			},
+		},
+		{
+			name: "firewall lifecycle requested",
+			configure: func(proof *SandboxNetworkEnforcementProofMetadata) {
+				proof.FirewallLifecycleStatus = "requested"
 			},
 		},
 		{
@@ -195,8 +212,8 @@ func TestNetworkEnforcementProofMetadataDoesNotTreatRequestedOrPartialMetadataAs
 		t.Run(tt.name, func(t *testing.T) {
 			proof := active
 			tt.configure(&proof)
-			if SandboxNetworkEnforcementProofProvesActiveHTTPProxy(proof) {
-				t.Fatalf("proof = %#v, want non-active http proxy proof", proof)
+			if SandboxNetworkEnforcementProofProvesActiveProxyFirewall(proof) {
+				t.Fatalf("proof = %#v, want non-active proxy/firewall proof", proof)
 			}
 			data, err := json.Marshal(SanitizeSandboxNetworkEnforcementProofMetadata(proof))
 			if err != nil {

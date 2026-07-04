@@ -14,6 +14,7 @@ func TestGateCategoryConstantsAreStable(t *testing.T) {
 		got  string
 		want string
 	}{
+		{name: "microvm e2e", got: string(GateCategoryMicroVME2E), want: "microvm_e2e"},
 		{name: "firecracker", got: string(GateCategoryFirecracker), want: "firecracker"},
 		{name: "network enforcement", got: string(GateCategoryNetworkEnforcement), want: "network_enforcement"},
 		{name: "credential delivery", got: string(GateCategoryCredentialDelivery), want: "credential_delivery"},
@@ -36,14 +37,25 @@ func TestLiveGateContractConstantsAreStable(t *testing.T) {
 		got  string
 		want string
 	}{
+		{name: "build tag microvm e2e", got: string(BuildTagMicroVME2ELive), want: "microvm_e2e_live"},
 		{name: "build tag firecracker", got: string(BuildTagFirecrackerLive), want: "firecracker_live"},
 		{name: "build tag network", got: string(BuildTagNetworkEnforcementLive), want: "network_enforcement_live"},
 		{name: "build tag credential", got: string(BuildTagCredentialDeliveryLive), want: "credential_delivery_live"},
 		{name: "build tag worker", got: string(BuildTagWorkerIntegrationLive), want: "worker_integration"},
 		{name: "build tag podman", got: string(BuildTagPodmanIntegrationLive), want: "podman_integration"},
 		{name: "env firecracker", got: string(EnvVarFirecrackerLive), want: "HAL_FIRECRACKER_LIVE"},
+		{name: "env firecracker binary", got: string(EnvVarFirecrackerLiveFirecracker), want: "HAL_FIRECRACKER_LIVE_FIRECRACKER"},
+		{name: "env firecracker kernel", got: string(EnvVarFirecrackerLiveKernel), want: "HAL_FIRECRACKER_LIVE_KERNEL"},
+		{name: "env firecracker rootfs", got: string(EnvVarFirecrackerLiveRootfs), want: "HAL_FIRECRACKER_LIVE_ROOTFS"},
 		{name: "env network", got: string(EnvVarNetworkEnforcementLive), want: "HAL_NETWORK_ENFORCEMENT_LIVE"},
+		{name: "env network proxy", got: string(EnvVarNetworkEnforcementLiveProxy), want: "HAL_NETWORK_ENFORCEMENT_LIVE_PROXY"},
+		{name: "env network firewall", got: string(EnvVarNetworkEnforcementLiveFirewall), want: "HAL_NETWORK_ENFORCEMENT_LIVE_FIREWALL"},
 		{name: "env credential", got: string(EnvVarCredentialDeliveryLive), want: "HAL_CREDENTIAL_DELIVERY_LIVE"},
+		{name: "env credential http proxy", got: string(EnvVarCredentialDeliveryLiveHTTPProxy), want: "HAL_CREDENTIAL_DELIVERY_LIVE_HTTP_PROXY"},
+		{name: "env credential file tmpfs", got: string(EnvVarCredentialDeliveryLiveFileTmpfs), want: "HAL_CREDENTIAL_DELIVERY_LIVE_FILE_TMPFS"},
+		{name: "env credential ssh agent", got: string(EnvVarCredentialDeliveryLiveSSHAgent), want: "HAL_CREDENTIAL_DELIVERY_LIVE_SSH_AGENT"},
+		{name: "env credential env", got: string(EnvVarCredentialDeliveryLiveEnv), want: "HAL_CREDENTIAL_DELIVERY_LIVE_ENV"},
+		{name: "env template trust", got: string(EnvVarTemplateTrustLive), want: "HAL_TEMPLATE_TRUST_LIVE"},
 		{name: "env worker", got: string(EnvVarWorkerIntegrationLive), want: "HAL_WORKER_INTEGRATION_LIVE"},
 		{name: "env podman", got: string(EnvVarPodmanIntegrationLive), want: "HAL_PODMAN_INTEGRATION_LIVE"},
 		{name: "capability firecracker", got: string(CapabilityFirecrackerMicroVM), want: "firecracker_microvm"},
