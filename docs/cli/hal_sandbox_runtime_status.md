@@ -11,6 +11,12 @@ request a supported local worker capability refresh for this response. Use
 --json for machine-readable output following the sandbox-runtime-status-v1
 contract.
 
+Secure-default readiness is reported truthfully. Strict secure-default readiness
+uses security.securityReadinessGate to show whether strict mode reports blocked
+decisions when required proof is missing, and compatibility mode reports advisory
+diagnostics without claiming live protection, and proof-complete allowed states
+include reason-code counts.
+
 ```
 hal sandbox runtime status HOST_ID RUNTIME_ID [flags]
 ```
@@ -18,8 +24,11 @@ hal sandbox runtime status HOST_ID RUNTIME_ID [flags]
 ### Examples
 
 ```
+  # Human output shows compatibility advisory or strict allowed/blocked status.
   hal sandbox runtime status local-worker rootless_podman
   hal sandbox runtime status local-worker rootless_podman --json
+
+  # Optional live refresh for the response; live validation remains explicit.
   hal sandbox runtime status local-worker rootless_podman --live
   hal sandbox runtime status local-worker rootless_podman --live --json
 ```
