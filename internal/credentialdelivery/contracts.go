@@ -275,6 +275,28 @@ type ActivationProofReference struct {
 	DeliveryMode Mode   `json:"deliveryMode"`
 }
 
+// CredentialActivationDiagnosticSummary is a compact, redaction-safe view of
+// credential activation state for diagnostics. It carries mode, status, proof,
+// reason, and warning metadata only.
+type CredentialActivationDiagnosticSummary struct {
+	RequestedModes []Mode                               `json:"requestedModes,omitempty"`
+	ActiveModes    []Mode                               `json:"activeModes,omitempty"`
+	Status         Status                               `json:"status,omitempty"`
+	ReasonCode     ReasonCode                           `json:"reasonCode,omitempty"`
+	ProofIDs       []string                             `json:"proofIds,omitempty"`
+	Warnings       []Warning                            `json:"warnings,omitempty"`
+	Items          []CredentialActivationDiagnosticItem `json:"items,omitempty"`
+}
+
+// CredentialActivationDiagnosticItem captures one safe per-mode diagnostic.
+type CredentialActivationDiagnosticItem struct {
+	DeliveryMode Mode        `json:"deliveryMode,omitempty"`
+	Status       Status      `json:"status,omitempty"`
+	ReasonCode   ReasonCode  `json:"reasonCode,omitempty"`
+	ProofID      string      `json:"proofId,omitempty"`
+	WarningCode  WarningCode `json:"warningCode,omitempty"`
+}
+
 // StatusMetadata is a compact delivery lifecycle summary for durable surfaces.
 type StatusMetadata struct {
 	ID             string     `json:"id"`
@@ -309,16 +331,17 @@ type SanitizedError struct {
 }
 
 func (e SanitizedError) Error() string {
-	code := string(e.Code)
+	safe := SanitizeSanitizedError(e)
+	code := string(safe.Code)
 	if code == "" {
 		code = "credential_delivery_error"
 	}
 	location := "metadata"
-	if e.Field != "" {
-		location = e.Field
+	if safe.Field != "" {
+		location = safe.Field
 	}
-	if e.Index != nil {
-		location += "[" + strconv.Itoa(*e.Index) + "]"
+	if safe.Index != nil {
+		location += "[" + strconv.Itoa(*safe.Index) + "]"
 	}
 	return "credential delivery " + code + " at " + location
 }

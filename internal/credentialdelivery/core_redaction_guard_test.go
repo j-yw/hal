@@ -198,6 +198,8 @@ func credentialDeliveryCoreRedactionGuardTypes() []reflect.Type {
 		reflect.TypeOf(ActivationResult{}),
 		reflect.TypeOf(BindingActivationResult{}),
 		reflect.TypeOf(ActivationProofReference{}),
+		reflect.TypeOf(CredentialActivationDiagnosticSummary{}),
+		reflect.TypeOf(CredentialActivationDiagnosticItem{}),
 		reflect.TypeOf(StatusMetadata{}),
 		reflect.TypeOf(Warning{}),
 		reflect.TypeOf(SanitizedError{}),
