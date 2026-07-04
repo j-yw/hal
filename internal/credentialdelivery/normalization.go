@@ -115,6 +115,7 @@ func NormalizePlanMetadata(plan Plan) Plan {
 		RequestID:             strings.TrimSpace(plan.RequestID),
 		NetworkProxySessionID: strings.TrimSpace(plan.NetworkProxySessionID),
 		HTTPProxyProof:        NormalizeHTTPProxyProofMetadataPtr(plan.HTTPProxyProof),
+		SSHAgentProof:         NormalizeSSHAgentProofMetadataPtr(plan.SSHAgentProof),
 		RequestedModes:        normalizeModeRecords(plan.RequestedModes),
 		ActiveModes:           normalizeModeRecords(plan.ActiveModes),
 		BindingCount:          plan.BindingCount,
@@ -149,6 +150,36 @@ func NormalizeHTTPProxyProofMetadataPtr(proof *HTTPProxyProof) *HTTPProxyProof {
 		return nil
 	}
 	normalized := NormalizeHTTPProxyProofMetadata(*proof)
+	return &normalized
+}
+
+// NormalizeSSHAgentProofMetadata returns a deterministic copy of safe
+// ssh_agent activation proof metadata before validation or persistence.
+func NormalizeSSHAgentProofMetadata(proof SSHAgentProof) SSHAgentProof {
+	return SSHAgentProof{
+		BindingID:             strings.TrimSpace(proof.BindingID),
+		SecretID:              strings.TrimSpace(proof.SecretID),
+		SecretBrokerSessionID: strings.TrimSpace(proof.SecretBrokerSessionID),
+		DeliveryPlanID:        strings.TrimSpace(proof.DeliveryPlanID),
+		DeliverySessionID:     strings.TrimSpace(proof.DeliverySessionID),
+		DeliveryBindingID:     strings.TrimSpace(proof.DeliveryBindingID),
+		HandoffID:             strings.TrimSpace(proof.HandoffID),
+		HandoffStatus:         normalizeStatus(proof.HandoffStatus),
+		HandoffReasonCode:     normalizeReasonCode(proof.HandoffReasonCode),
+		CapabilityID:          strings.TrimSpace(proof.CapabilityID),
+		CapabilityMode:        normalizeMode(proof.CapabilityMode),
+		CapabilityStatus:      normalizeStatus(proof.CapabilityStatus),
+		CapabilityReady:       proof.CapabilityReady,
+	}
+}
+
+// NormalizeSSHAgentProofMetadataPtr returns a normalized pointer copy while
+// preserving nil inputs.
+func NormalizeSSHAgentProofMetadataPtr(proof *SSHAgentProof) *SSHAgentProof {
+	if proof == nil {
+		return nil
+	}
+	normalized := NormalizeSSHAgentProofMetadata(*proof)
 	return &normalized
 }
 

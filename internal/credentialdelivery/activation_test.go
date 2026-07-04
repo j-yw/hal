@@ -54,6 +54,8 @@ func TestActivateDeliveryUsesInjectedFakeAdapterForEveryMode(t *testing.T) {
 				request := planConstructionRequestFixture(binding)
 				configureHTTPProxyProof(&request)
 				plan = BuildDeliveryPlan(request)
+			} else if mode == ModeSSHAgent {
+				plan = sshAgentProofPlanFixture(binding)
 			}
 			wantStatus := StatusActive
 			wantBindingStatus := StatusActive
@@ -140,6 +142,10 @@ func TestActivateDeliverySanitizesAdapterBoundaryAndResultContractsForSupportedM
 				request := planConstructionRequestFixture(planBinding)
 				configureHTTPProxyProof(&request)
 				plan = BuildDeliveryPlan(request)
+				plan.ActiveModes = append(plan.ActiveModes, Mode(rawEnvValue))
+			} else if mode == ModeSSHAgent {
+				plan = sshAgentProofPlanFixture(binding)
+				plan.RequestID = rawEndpoint
 				plan.ActiveModes = append(plan.ActiveModes, Mode(rawEnvValue))
 			}
 

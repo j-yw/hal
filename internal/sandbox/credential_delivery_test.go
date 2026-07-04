@@ -67,3 +67,18 @@ func TestProjectSandboxCredentialDeliveryStatusMetadataFallsBackToBindingModes(t
 		t.Fatalf("requested modes = %#v, want ssh agent from bindings", status.RequestedModes)
 	}
 }
+
+func TestCredentialActivationProofReasonCodesAreDurableSafe(t *testing.T) {
+	for _, reason := range []string{"missing_activation_proof", "unsupported_capability"} {
+		t.Run(reason, func(t *testing.T) {
+			status := SanitizeSandboxCredentialDeliveryStatusMetadata(SandboxCredentialDeliveryStatusMetadata{
+				ID:         "credential-delivery-ssh-agent",
+				Status:     "skipped",
+				ReasonCode: reason,
+			})
+			if status.ReasonCode != reason {
+				t.Fatalf("reason = %q, want %q", status.ReasonCode, reason)
+			}
+		})
+	}
+}

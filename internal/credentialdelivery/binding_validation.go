@@ -326,6 +326,8 @@ func validReasonCode(value ReasonCode) bool {
 		ReasonUnsupportedMode,
 		ReasonMissingSecretReference,
 		ReasonMissingServiceBinding,
+		ReasonMissingActivationProof,
+		ReasonUnsupportedCapability,
 		ReasonActivationUnavailable,
 		ReasonCompatibilityMode,
 		ReasonDisabled,

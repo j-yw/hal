@@ -136,6 +136,7 @@ func SanitizePlanMetadata(plan Plan) Plan {
 	sanitized.RequestID = sanitizeIdentifier(sanitized.RequestID)
 	sanitized.NetworkProxySessionID = sanitizeIdentifier(sanitized.NetworkProxySessionID)
 	sanitized.HTTPProxyProof = SanitizeHTTPProxyProofMetadataPtr(sanitized.HTTPProxyProof)
+	sanitized.SSHAgentProof = SanitizeSSHAgentProofMetadataPtr(sanitized.SSHAgentProof)
 	sanitized.RequestedModes = sanitizeOptionalModeRecords(sanitized.RequestedModes)
 	sanitized.ActiveModes = sanitizeOptionalModeRecords(sanitized.ActiveModes)
 	sanitized.Status = sanitizeStatusValue(sanitized.Status)
@@ -190,6 +191,42 @@ func SanitizeHTTPProxyProofMetadataPtr(proof *HTTPProxyProof) *HTTPProxyProof {
 	}
 	sanitized := SanitizeHTTPProxyProofMetadata(*proof)
 	if sanitized == (HTTPProxyProof{}) {
+		return nil
+	}
+	return &sanitized
+}
+
+// SanitizeSSHAgentProofMetadata returns a durable-safe copy of ssh_agent
+// handoff proof metadata. Unsafe optional proof fields are cleared so
+// activation fails closed without preserving raw socket or key details.
+func SanitizeSSHAgentProofMetadata(proof SSHAgentProof) SSHAgentProof {
+	sanitized := NormalizeSSHAgentProofMetadata(proof)
+	sanitized.BindingID = sanitizeIdentifier(sanitized.BindingID)
+	sanitized.SecretID = sanitizeSecretReference(sanitized.SecretID)
+	if sanitized.BindingID == "" || sanitized.SecretID == "" {
+		return SSHAgentProof{}
+	}
+	sanitized.SecretBrokerSessionID = sanitizeIdentifier(sanitized.SecretBrokerSessionID)
+	sanitized.DeliveryPlanID = sanitizeIdentifier(sanitized.DeliveryPlanID)
+	sanitized.DeliverySessionID = sanitizeIdentifier(sanitized.DeliverySessionID)
+	sanitized.DeliveryBindingID = sanitizeIdentifier(sanitized.DeliveryBindingID)
+	sanitized.HandoffID = sanitizeIdentifier(sanitized.HandoffID)
+	sanitized.HandoffStatus = sanitizeStatusValue(sanitized.HandoffStatus)
+	sanitized.HandoffReasonCode = sanitizeReasonCodeValue(sanitized.HandoffReasonCode)
+	sanitized.CapabilityID = sanitizeIdentifier(sanitized.CapabilityID)
+	sanitized.CapabilityMode = sanitizeOptionalModeValue(sanitized.CapabilityMode)
+	sanitized.CapabilityStatus = sanitizeStatusValue(sanitized.CapabilityStatus)
+	return sanitized
+}
+
+// SanitizeSSHAgentProofMetadataPtr returns nil when proof metadata is absent
+// or required binding/secret identity is unsafe.
+func SanitizeSSHAgentProofMetadataPtr(proof *SSHAgentProof) *SSHAgentProof {
+	if proof == nil {
+		return nil
+	}
+	sanitized := SanitizeSSHAgentProofMetadata(*proof)
+	if sanitized == (SSHAgentProof{}) {
 		return nil
 	}
 	return &sanitized

@@ -179,6 +179,7 @@ func finalizeAdapterActivationResult(input ActivationRequest, raw ActivationResu
 	normalized.ProofRefs = activationProofRefsForInput(input, normalized.ProofRefs)
 	normalized.Bindings = activationBindingResultsForInput(input, normalized.Bindings, normalized.ProofRefs)
 	normalized.Warnings = appendHTTPProxyActivationWarnings(input, adapterActiveModes, normalized.Bindings, normalized.Warnings)
+	normalized.Warnings = appendSSHAgentActivationWarnings(input, adapterActiveModes, normalized.Bindings, normalized.Warnings)
 	normalized.Warnings = appendLegacyAuthCompatibilityWarnings(input, normalized.Warnings)
 	normalized.ActiveModes = activationActiveModesForInput(input, normalized)
 
@@ -292,6 +293,14 @@ func activationBindingResultsForInput(input ActivationRequest, raw []BindingActi
 			result.ReasonCode = ReasonMissingServiceBinding
 			result.ProofRef = ""
 		}
+		if result.DeliveryMode == ModeSSHAgent && result.Status == StatusActive {
+			reason := SSHAgentProofActivationReason(input.Plan, binding)
+			if reason != ReasonRequested {
+				result.Status = StatusSkipped
+				result.ReasonCode = reason
+				result.ProofRef = ""
+			}
+		}
 		if result.ReasonCode == "" {
 			result.ReasonCode = activationReasonForStatus(result.Status, nil)
 		}
@@ -352,7 +361,7 @@ func activationActiveModesForInput(input ActivationRequest, result ActivationRes
 	if len(input.Bindings) == 0 && (result.Status == "" || result.Status == StatusActive) {
 		for _, mode := range result.ActiveModes {
 			mode = normalizeMode(mode)
-			if mode == ModeHTTPProxy || mode == ModeLegacyAuthSync {
+			if mode == ModeHTTPProxy || mode == ModeSSHAgent || mode == ModeLegacyAuthSync {
 				continue
 			}
 			if requested.contains(mode) {
@@ -484,6 +493,54 @@ func httpProxyActivationAllowed(plan Plan, binding Binding) bool {
 	return binding.NetworkProxySessionID == "" || binding.NetworkProxySessionID == plan.NetworkProxySessionID
 }
 
+// SSHAgentProofActivationReason returns ReasonRequested only when sanitized
+// plan proof metadata proves an existing ssh_agent handoff for the binding.
+func SSHAgentProofActivationReason(plan Plan, binding Binding) ReasonCode {
+	plan = SanitizePlanMetadata(plan)
+	binding = SanitizeBindingMetadata(binding)
+	if binding.ID == "" || binding.DeliveryMode != ModeSSHAgent {
+		return ReasonUnsupportedMode
+	}
+	if !activationModeRecordsContain(plan.RequestedModes, ModeSSHAgent) ||
+		!activationModeRecordsContain(plan.ActiveModes, ModeSSHAgent) {
+		return ReasonMissingActivationProof
+	}
+	proof := SanitizeSSHAgentProofMetadataPtr(plan.SSHAgentProof)
+	if proof == nil ||
+		proof.BindingID != binding.ID ||
+		proof.SecretID != binding.SecretRef ||
+		proof.SecretBrokerSessionID == "" ||
+		proof.DeliveryPlanID == "" ||
+		proof.DeliverySessionID == "" ||
+		proof.DeliveryBindingID == "" ||
+		proof.HandoffID == "" ||
+		proof.CapabilityID == "" {
+		return ReasonMissingActivationProof
+	}
+	if proof.CapabilityMode != ModeSSHAgent ||
+		!proof.CapabilityReady ||
+		!sshAgentProofStatusReady(proof.HandoffStatus) ||
+		!sshAgentProofStatusReady(proof.CapabilityStatus) {
+		return ReasonUnsupportedCapability
+	}
+	return ReasonRequested
+}
+
+// SSHAgentProofAllowsActivation reports whether sanitized plan metadata proves
+// a safe ssh_agent handoff for one binding.
+func SSHAgentProofAllowsActivation(plan Plan, binding Binding) bool {
+	return SSHAgentProofActivationReason(plan, binding) == ReasonRequested
+}
+
+func sshAgentProofStatusReady(status Status) bool {
+	switch status {
+	case StatusReady, StatusActive, StatusCompleted:
+		return true
+	default:
+		return false
+	}
+}
+
 func appendHTTPProxyActivationWarnings(input ActivationRequest, adapterActiveModes []Mode, bindings []BindingActivationResult, warnings []Warning) []Warning {
 	if !activationModeRecordsContain(input.Plan.RequestedModes, ModeHTTPProxy) {
 		return warnings
@@ -497,6 +554,24 @@ func appendHTTPProxyActivationWarnings(input ActivationRequest, adapterActiveMod
 			Code:       WarningActivationSkipped,
 			ReasonCode: ReasonMissingServiceBinding,
 			Mode:       ModeHTTPProxy,
+		})
+	}
+	return warnings
+}
+
+func appendSSHAgentActivationWarnings(input ActivationRequest, adapterActiveModes []Mode, bindings []BindingActivationResult, warnings []Warning) []Warning {
+	if !activationModeRecordsContain(input.Plan.RequestedModes, ModeSSHAgent) {
+		return warnings
+	}
+	if activationHasActiveBindingForMode(bindings, ModeSSHAgent) {
+		return warnings
+	}
+	if activationHasSkippedBindingForMode(bindings, ModeSSHAgent) ||
+		activationModeRecordsContain(adapterActiveModes, ModeSSHAgent) {
+		return appendActivationWarningIfMissing(warnings, Warning{
+			Code:       WarningActivationSkipped,
+			ReasonCode: activationSkippedReasonForMode(bindings, ModeSSHAgent, ReasonMissingActivationProof),
+			Mode:       ModeSSHAgent,
 		})
 	}
 	return warnings
@@ -520,6 +595,15 @@ func appendActivationWarningIfMissing(warnings []Warning, warning Warning) []War
 		}
 	}
 	return append(warnings, warning)
+}
+
+func activationSkippedReasonForMode(bindings []BindingActivationResult, mode Mode, fallback ReasonCode) ReasonCode {
+	for _, binding := range SanitizeBindingActivationResultMetadataRecords(bindings) {
+		if binding.DeliveryMode == mode && binding.Status == StatusSkipped && binding.ReasonCode != "" {
+			return binding.ReasonCode
+		}
+	}
+	return fallback
 }
 
 func activationHasActiveBindingForMode(bindings []BindingActivationResult, mode Mode) bool {

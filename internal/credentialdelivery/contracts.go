@@ -92,6 +92,8 @@ const (
 	ReasonUnsupportedMode        ReasonCode = "unsupported_mode"
 	ReasonMissingSecretReference ReasonCode = "missing_secret_reference"
 	ReasonMissingServiceBinding  ReasonCode = "missing_service_binding"
+	ReasonMissingActivationProof ReasonCode = "missing_activation_proof"
+	ReasonUnsupportedCapability  ReasonCode = "unsupported_capability"
 	ReasonActivationUnavailable  ReasonCode = "activation_unavailable"
 	ReasonCompatibilityMode      ReasonCode = "compatibility_mode"
 	ReasonDisabled               ReasonCode = "disabled"
@@ -195,6 +197,7 @@ type Plan struct {
 	RequestID             string           `json:"requestId,omitempty"`
 	NetworkProxySessionID string           `json:"networkProxySessionId,omitempty"`
 	HTTPProxyProof        *HTTPProxyProof  `json:"httpProxyProof,omitempty"`
+	SSHAgentProof         *SSHAgentProof   `json:"sshAgentProof,omitempty"`
 	RequestedModes        []Mode           `json:"requestedModes,omitempty"`
 	ActiveModes           []Mode           `json:"activeModes,omitempty"`
 	BindingCount          int              `json:"bindingCount,omitempty"`
@@ -213,6 +216,24 @@ type HTTPProxyProof struct {
 	CredentialProxySessionID string                                          `json:"credentialProxySessionId,omitempty"`
 	CredentialProxyBindingID string                                          `json:"credentialProxyBindingId,omitempty"`
 	NetworkEnforcement       *sandbox.SandboxNetworkEnforcementProofMetadata `json:"networkEnforcement,omitempty"`
+}
+
+// SSHAgentProof records existing safe handoff and capability proof IDs that
+// allow an ssh_agent binding to become active after adapter activation.
+type SSHAgentProof struct {
+	BindingID             string     `json:"bindingId,omitempty"`
+	SecretID              string     `json:"secretId,omitempty"`
+	SecretBrokerSessionID string     `json:"secretBrokerSessionId,omitempty"`
+	DeliveryPlanID        string     `json:"deliveryPlanId,omitempty"`
+	DeliverySessionID     string     `json:"deliverySessionId,omitempty"`
+	DeliveryBindingID     string     `json:"deliveryBindingId,omitempty"`
+	HandoffID             string     `json:"handoffId,omitempty"`
+	HandoffStatus         Status     `json:"handoffStatus,omitempty"`
+	HandoffReasonCode     ReasonCode `json:"handoffReasonCode,omitempty"`
+	CapabilityID          string     `json:"capabilityId,omitempty"`
+	CapabilityMode        Mode       `json:"capabilityMode,omitempty"`
+	CapabilityStatus      Status     `json:"capabilityStatus,omitempty"`
+	CapabilityReady       bool       `json:"capabilityReady,omitempty"`
 }
 
 // ActivationRequest is the redaction-safe adapter input for an activation
