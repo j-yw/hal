@@ -7,14 +7,17 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/livegate"
 )
 
 const (
-	credentialDeliveryLiveEnvEnabled   = "HAL_CREDENTIAL_DELIVERY_LIVE"
-	credentialDeliveryLiveEnvHTTPProxy = "HAL_CREDENTIAL_DELIVERY_LIVE_HTTP_PROXY"
-	credentialDeliveryLiveEnvFileTmpfs = "HAL_CREDENTIAL_DELIVERY_LIVE_FILE_TMPFS"
-	credentialDeliveryLiveEnvSSHAgent  = "HAL_CREDENTIAL_DELIVERY_LIVE_SSH_AGENT"
-	credentialDeliveryLiveEnvEnv       = "HAL_CREDENTIAL_DELIVERY_LIVE_ENV"
+	credentialDeliveryLiveGateID       livegate.GateID = "credential-delivery-live"
+	credentialDeliveryLiveEnvEnabled                   = string(livegate.EnvVarCredentialDeliveryLive)
+	credentialDeliveryLiveEnvHTTPProxy                 = "HAL_CREDENTIAL_DELIVERY_LIVE_HTTP_PROXY"
+	credentialDeliveryLiveEnvFileTmpfs                 = "HAL_CREDENTIAL_DELIVERY_LIVE_FILE_TMPFS"
+	credentialDeliveryLiveEnvSSHAgent                  = "HAL_CREDENTIAL_DELIVERY_LIVE_SSH_AGENT"
+	credentialDeliveryLiveEnvEnv                       = "HAL_CREDENTIAL_DELIVERY_LIVE_ENV"
 )
 
 type credentialDeliveryLivePrerequisites struct {
@@ -28,6 +31,7 @@ type credentialDeliveryLiveModeGate struct {
 }
 
 func TestCredentialDeliveryLiveHarnessRequiresExplicitOptIn(t *testing.T) {
+	requireCredentialDeliveryLiveGate(t, os.Getenv)
 	prereqs, skip := credentialDeliveryLivePrerequisitesFromEnv(os.Getenv)
 	if skip != "" {
 		t.Skip(skip)
@@ -41,14 +45,16 @@ func TestCredentialDeliveryLiveHarnessRequiresExplicitOptIn(t *testing.T) {
 
 func TestCredentialDeliveryLivePrerequisiteSkipMessagesAreSanitized(t *testing.T) {
 	tests := []struct {
-		name string
-		env  map[string]string
-		want string
+		name             string
+		env              map[string]string
+		want             []string
+		sharedGateOutput bool
 	}{
 		{
-			name: "global opt-in missing",
-			env:  map[string]string{},
-			want: credentialDeliveryLiveEnvEnabled + "=1",
+			name:             "global opt-in missing",
+			env:              map[string]string{},
+			want:             []string{credentialDeliveryLiveEnvEnabled, string(livegate.SkipReasonMissingEnvVar)},
+			sharedGateOutput: true,
 		},
 		{
 			name: "mode opt-in missing",
@@ -59,7 +65,12 @@ func TestCredentialDeliveryLivePrerequisiteSkipMessagesAreSanitized(t *testing.T
 				credentialDeliveryLiveEnvSSHAgent:  "/tmp/agent.sock",
 				credentialDeliveryLiveEnvEnv:       "Authorization: Bearer ghp_secret",
 			},
-			want: credentialDeliveryLiveEnvHTTPProxy + "=1",
+			want: []string{
+				credentialDeliveryLiveEnvHTTPProxy + "=1",
+				credentialDeliveryLiveEnvFileTmpfs + "=1",
+				credentialDeliveryLiveEnvSSHAgent + "=1",
+				credentialDeliveryLiveEnvEnv + "=1",
+			},
 		},
 	}
 
@@ -71,8 +82,13 @@ func TestCredentialDeliveryLivePrerequisiteSkipMessagesAreSanitized(t *testing.T
 			if skip == "" {
 				t.Fatal("skip message is empty, want sanitized prerequisite guidance")
 			}
-			if !strings.Contains(skip, tt.want) {
-				t.Fatalf("skip message = %q, want marker %q", skip, tt.want)
+			for _, want := range tt.want {
+				if !strings.Contains(skip, want) {
+					t.Fatalf("skip message = %q, want marker %q", skip, want)
+				}
+			}
+			if tt.sharedGateOutput {
+				livegate.AssertLiveGateSkipMessageRedactionSafe(t, skip)
 			}
 			assertCredentialDeliveryLiveSkipMessageSanitized(t, skip)
 		})
@@ -103,8 +119,8 @@ func TestCredentialDeliveryLivePrerequisitesAcceptAnyModeGate(t *testing.T) {
 }
 
 func credentialDeliveryLivePrerequisitesFromEnv(getenv func(string) string) (credentialDeliveryLivePrerequisites, string) {
-	if !credentialDeliveryLiveEnvFlag(getenv, credentialDeliveryLiveEnvEnabled) {
-		return credentialDeliveryLivePrerequisites{}, credentialDeliveryLiveSkipMessage(credentialDeliveryLiveEnvEnabled)
+	if skip := credentialDeliveryLiveGateSkipMessageFromEnv(getenv); skip != "" {
+		return credentialDeliveryLivePrerequisites{}, skip
 	}
 
 	var modes []Mode
@@ -122,6 +138,48 @@ func credentialDeliveryLivePrerequisitesFromEnv(getenv func(string) string) (cre
 	}, ""
 }
 
+func requireCredentialDeliveryLiveGate(t *testing.T, getenv func(string) string) livegate.GatePreflightResult {
+	t.Helper()
+	return livegate.RequireLiveGate(t, livegate.TestGateInput{
+		GateID:                credentialDeliveryLiveGateID,
+		Gate:                  credentialDeliveryLiveGate(),
+		ExpectedEnvVars:       []livegate.EnvVarName{livegate.EnvVarCredentialDeliveryLive},
+		EnabledBuildTags:      []livegate.BuildTagName{livegate.BuildTagCredentialDeliveryLive},
+		PresentEnvVars:        credentialDeliveryLivePresentEnvVars(getenv),
+		AvailableCapabilities: []livegate.CapabilityID{livegate.CapabilityCredentialDelivery},
+	})
+}
+
+func credentialDeliveryLiveGateSkipMessageFromEnv(getenv func(string) string) string {
+	result := livegate.PreflightGate(livegate.GateEvaluationInput{
+		Gate:                  credentialDeliveryLiveGate(),
+		EnabledBuildTags:      []livegate.BuildTagName{livegate.BuildTagCredentialDeliveryLive},
+		PresentEnvVars:        credentialDeliveryLivePresentEnvVars(getenv),
+		AvailableCapabilities: []livegate.CapabilityID{livegate.CapabilityCredentialDelivery},
+	})
+	if !result.ShouldSkipLiveAction() {
+		return ""
+	}
+	return livegate.LiveGateSkipMessage(result)
+}
+
+func credentialDeliveryLiveGate() livegate.Gate {
+	return livegate.Gate{
+		ID:           credentialDeliveryLiveGateID,
+		Category:     livegate.GateCategoryCredentialDelivery,
+		BuildTags:    []livegate.BuildTagName{livegate.BuildTagCredentialDeliveryLive},
+		EnvVars:      []livegate.EnvVarName{livegate.EnvVarCredentialDeliveryLive},
+		Capabilities: []livegate.CapabilityID{livegate.CapabilityCredentialDelivery},
+	}
+}
+
+func credentialDeliveryLivePresentEnvVars(getenv func(string) string) []livegate.EnvVarName {
+	if credentialDeliveryLiveEnvFlag(getenv, credentialDeliveryLiveEnvEnabled) {
+		return []livegate.EnvVarName{livegate.EnvVarCredentialDeliveryLive}
+	}
+	return nil
+}
+
 func credentialDeliveryLiveModeEnvGates() []credentialDeliveryLiveModeGate {
 	return []credentialDeliveryLiveModeGate{
 		{mode: ModeHTTPProxy, envName: credentialDeliveryLiveEnvHTTPProxy},
@@ -133,10 +191,6 @@ func credentialDeliveryLiveModeEnvGates() []credentialDeliveryLiveModeGate {
 
 func credentialDeliveryLiveEnvFlag(getenv func(string) string, name string) bool {
 	return strings.TrimSpace(getenv(name)) == "1"
-}
-
-func credentialDeliveryLiveSkipMessage(name string) string {
-	return fmt.Sprintf("%s=1 is required for credential delivery live tests", name)
 }
 
 func credentialDeliveryLiveModeSkipMessage() string {
