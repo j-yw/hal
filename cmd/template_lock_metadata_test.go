@@ -26,6 +26,7 @@ var phase47TemplateLockStructuralKeys = map[string]bool{
 	"templateReference": true,
 	"runtimeImage":      true,
 	"sourceArtifact":    true,
+	"trustPolicy":       true,
 }
 
 var phase47TemplateLockLeafKeys = map[string]bool{
@@ -36,8 +37,12 @@ var phase47TemplateLockLeafKeys = map[string]bool{
 	"digestValue":     true,
 	"sizeBytes":       true,
 	"lockedAt":        true,
+	"mode":            true,
+	"decision":        true,
+	"errorCodes":      true,
 	"warningCodes":    true,
 	"reasonCode":      true,
+	"reasonCodes":     true,
 }
 
 var phase47TemplateLockReasonCodes = map[string]bool{
@@ -50,6 +55,15 @@ var phase47TemplateLockReasonCodes = map[string]bool{
 	"unresolved_mutable_reference": true,
 	"resolver_unavailable":         true,
 	"unsupported_source":           true,
+}
+
+var phase52TemplateLockTrustPolicyCodes = map[string]bool{
+	"mutable_reference":        true,
+	"missing_digest_pin":       true,
+	"unresolved_lock_entry":    true,
+	"lock_provenance_mismatch": true,
+	"unsupported_source":       true,
+	"resolver_unavailable":     true,
 }
 
 func TestPhase47TemplateLockDurableSurfacesRequireOptionalMetadata(t *testing.T) {
@@ -190,6 +204,38 @@ func TestPhase47TemplateLockUnresolvedMutableReferenceIsPersistedSafely(t *testi
 					t.Fatalf("%s unresolved runtimeImage includes %s: %#v", surface.label, digestKey, runtimeImage)
 				}
 			}
+		})
+	}
+}
+
+func TestPhase52TemplateLockTrustPolicyMetadataPersistsSafely(t *testing.T) {
+	lockWithTrust := phase52TemplateLockTrustPolicyPayload()
+	for _, surface := range phase47TemplateLockDurableSurfaces() {
+		t.Run(surface.label, func(t *testing.T) {
+			requirePhase47TemplateLockSurfaceField(t, surface.typ)
+			encoded := phase47RoundTripSurfaceJSON(t, surface.label, surface.typ, surface.payloadWithLock(lockWithTrust))
+			assertPhase47TemplateLockPayloadOmitsForbiddenFragments(t, surface.label, encoded)
+
+			lock := phase47TemplateLockObjectFromJSON(t, surface.label, encoded)
+			assertPhase47TemplateLockAllowedShape(t, surface.label, lock)
+			trust := requirePhase47TemplateLockCategory(t, surface.label, lock, "trustPolicy")
+			wantFields := map[string]any{
+				"mode":            "strict",
+				"decision":        "rejected",
+				"sourceKind":      "oci_artifact",
+				"referenceKind":   "oci_artifact",
+				"status":          "locked",
+				"digestAlgorithm": "sha256",
+				"digestValue":     strings.Repeat("e", 64),
+			}
+			for key, want := range wantFields {
+				if got := trust[key]; got != want {
+					t.Fatalf("%s templateLock.trustPolicy.%s = %#v, want %#v; trust=%#v", surface.label, key, got, want, trust)
+				}
+			}
+			assertPhase52TemplateTrustPolicyCodeArray(t, surface.label, trust, "warningCodes", []string{"lock_provenance_mismatch", "resolver_unavailable"})
+			assertPhase52TemplateTrustPolicyCodeArray(t, surface.label, trust, "errorCodes", []string{"missing_digest_pin", "unresolved_lock_entry"})
+			assertPhase47TemplateLockReasonCodeArray(t, surface.label, trust, "reasonCodes", []string{"immutable_digest", "mutable_reference"})
 		})
 	}
 }
@@ -351,6 +397,34 @@ func phase47TemplateLockUnresolvedPayload() string {
 	}`
 }
 
+func phase52TemplateLockTrustPolicyPayload() string {
+	return `{
+		"document": {
+			"sourceKind": "oci_artifact",
+			"referenceKind": "oci_artifact",
+			"status": "locked",
+			"digestAlgorithm": "sha256",
+			"digestValue": "` + strings.Repeat("a", 64) + `",
+			"reasonCode": "document_digest"
+		},
+		"trustPolicy": {
+			"mode": "strict",
+			"decision": "rejected",
+			"sourceKind": "oci_artifact",
+			"referenceKind": "oci_artifact",
+			"status": "locked",
+			"digestAlgorithm": "sha256",
+			"digestValue": "` + strings.Repeat("e", 64) + `",
+			"warningCodes": ["lock_provenance_mismatch", "resolver_unavailable", "token=ghp_phase47_secret"],
+			"errorCodes": ["missing_digest_pin", "unresolved_lock_entry", "sk-live-template"],
+			"reasonCodes": ["immutable_digest", "mutable_reference", "/Users/v/private-token-template.yaml"],
+			"rawRegistryEndpoint": "https://fixture-user:super-secret-password@registry.invalid/acme/template:latest?token=ghp_phase47_secret",
+			"credentialValue": "providerCredential=sk-live-template",
+			"annotations": {"unsafe": "registry.invalid"}
+		}
+	}`
+}
+
 func requirePhase47TemplateLockSurfaceField(t *testing.T, typ reflect.Type) reflect.StructField {
 	t.Helper()
 	field, ok := typ.FieldByName("TemplateLock")
@@ -451,6 +525,10 @@ func assertPhase47TemplateLockBoundedCode(t *testing.T, label string, category s
 			t.Fatalf("%s templateLock.%s reasonCode = %#v, want bounded reason code", label, category, value)
 		}
 	case "warningCodes":
+		if category == "trustPolicy" {
+			assertPhase52TemplateTrustPolicyCodeArray(t, label, map[string]any{key: value}, key, nil)
+			return
+		}
 		codes, ok := value.([]any)
 		if !ok {
 			t.Fatalf("%s templateLock.%s warningCodes = %#v, want array", label, category, value)
@@ -461,6 +539,62 @@ func assertPhase47TemplateLockBoundedCode(t *testing.T, label string, category s
 				t.Fatalf("%s templateLock.%s warningCodes contains %#v, want bounded warning code", label, category, rawCode)
 			}
 		}
+	case "reasonCodes":
+		assertPhase47TemplateLockReasonCodeArray(t, label, map[string]any{key: value}, key, nil)
+	case "errorCodes":
+		assertPhase52TemplateTrustPolicyCodeArray(t, label, map[string]any{key: value}, key, nil)
+	}
+}
+
+func assertPhase47TemplateLockReasonCodeArray(t *testing.T, label string, entry map[string]any, key string, want []string) {
+	t.Helper()
+	raw, ok := entry[key]
+	if !ok {
+		if len(want) == 0 {
+			return
+		}
+		t.Fatalf("%s templateLock trust policy missing %s; entry=%#v", label, key, entry)
+	}
+	codes, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("%s templateLock trust policy %s = %#v, want array", label, key, raw)
+	}
+	got := make([]string, 0, len(codes))
+	for _, rawCode := range codes {
+		code, ok := rawCode.(string)
+		if !ok || !phase47TemplateLockReasonCodes[code] {
+			t.Fatalf("%s templateLock trust policy %s contains %#v, want bounded reason code", label, key, rawCode)
+		}
+		got = append(got, code)
+	}
+	if want != nil && !reflect.DeepEqual(got, want) {
+		t.Fatalf("%s templateLock trust policy %s = %#v, want %#v", label, key, got, want)
+	}
+}
+
+func assertPhase52TemplateTrustPolicyCodeArray(t *testing.T, label string, entry map[string]any, key string, want []string) {
+	t.Helper()
+	raw, ok := entry[key]
+	if !ok {
+		if len(want) == 0 {
+			return
+		}
+		t.Fatalf("%s templateLock trust policy missing %s; entry=%#v", label, key, entry)
+	}
+	codes, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("%s templateLock trust policy %s = %#v, want array", label, key, raw)
+	}
+	got := make([]string, 0, len(codes))
+	for _, rawCode := range codes {
+		code, ok := rawCode.(string)
+		if !ok || !phase52TemplateLockTrustPolicyCodes[code] {
+			t.Fatalf("%s templateLock trust policy %s contains %#v, want bounded trust policy code", label, key, rawCode)
+		}
+		got = append(got, code)
+	}
+	if want != nil && !reflect.DeepEqual(got, want) {
+		t.Fatalf("%s templateLock trust policy %s = %#v, want %#v", label, key, got, want)
 	}
 }
 

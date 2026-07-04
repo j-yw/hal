@@ -21,6 +21,21 @@ const (
 
 	runtimeTemplateLockStatusLocked     = "locked"
 	runtimeTemplateLockStatusUnresolved = "unresolved"
+
+	runtimeTemplateTrustPolicyModeStrict   = "strict"
+	runtimeTemplateTrustPolicyModeAdvisory = "advisory"
+
+	runtimeTemplateTrustPolicyDecisionTrusted     = "trusted"
+	runtimeTemplateTrustPolicyDecisionRejected    = "rejected"
+	runtimeTemplateTrustPolicyDecisionAdvisory    = "advisory"
+	runtimeTemplateTrustPolicyDecisionUnavailable = "unavailable"
+
+	runtimeTemplateTrustPolicyCodeMutableReference       = "mutable_reference"
+	runtimeTemplateTrustPolicyCodeMissingDigestPin       = "missing_digest_pin"
+	runtimeTemplateTrustPolicyCodeUnresolvedLockEntry    = "unresolved_lock_entry"
+	runtimeTemplateTrustPolicyCodeLockProvenanceMismatch = "lock_provenance_mismatch"
+	runtimeTemplateTrustPolicyCodeUnsupportedSource      = "unsupported_source"
+	runtimeTemplateTrustPolicyCodeResolverUnavailable    = "resolver_unavailable"
 )
 
 const runtimeTemplateLockMaxWarningCodes = 8
@@ -28,10 +43,11 @@ const runtimeTemplateLockMaxWarningCodes = 8
 // RuntimeTemplateLockMetadata mirrors the durable template lock JSON shape in
 // internal/sandbox while keeping this root runtime package stdlib-only.
 type RuntimeTemplateLockMetadata struct {
-	Document          *RuntimeTemplateLockEntryMetadata `json:"document,omitempty"`
-	TemplateReference *RuntimeTemplateLockEntryMetadata `json:"templateReference,omitempty"`
-	RuntimeImage      *RuntimeTemplateLockEntryMetadata `json:"runtimeImage,omitempty"`
-	SourceArtifact    *RuntimeTemplateLockEntryMetadata `json:"sourceArtifact,omitempty"`
+	Document          *RuntimeTemplateLockEntryMetadata   `json:"document,omitempty"`
+	TemplateReference *RuntimeTemplateLockEntryMetadata   `json:"templateReference,omitempty"`
+	RuntimeImage      *RuntimeTemplateLockEntryMetadata   `json:"runtimeImage,omitempty"`
+	SourceArtifact    *RuntimeTemplateLockEntryMetadata   `json:"sourceArtifact,omitempty"`
+	TrustPolicy       *RuntimeTemplateTrustPolicyMetadata `json:"trustPolicy,omitempty"`
 }
 
 // RuntimeTemplateLockEntryMetadata preserves only bounded identity and reason
@@ -48,6 +64,21 @@ type RuntimeTemplateLockEntryMetadata struct {
 	ReasonCode      string   `json:"reasonCode,omitempty"`
 }
 
+// RuntimeTemplateTrustPolicyMetadata carries bounded policy outcome labels for
+// runtime selection callers without source refs, paths, endpoints, or secrets.
+type RuntimeTemplateTrustPolicyMetadata struct {
+	Mode            string   `json:"mode,omitempty"`
+	Decision        string   `json:"decision,omitempty"`
+	SourceKind      string   `json:"sourceKind,omitempty"`
+	ReferenceKind   string   `json:"referenceKind,omitempty"`
+	Status          string   `json:"status,omitempty"`
+	DigestAlgorithm string   `json:"digestAlgorithm,omitempty"`
+	DigestValue     string   `json:"digestValue,omitempty"`
+	WarningCodes    []string `json:"warningCodes,omitempty"`
+	ErrorCodes      []string `json:"errorCodes,omitempty"`
+	ReasonCodes     []string `json:"reasonCodes,omitempty"`
+}
+
 // SanitizeRuntimeTemplateLockMetadata returns a durable-safe copy of runtime
 // template lock metadata, or nil when no safe lock information remains.
 func SanitizeRuntimeTemplateLockMetadata(metadata *RuntimeTemplateLockMetadata) *RuntimeTemplateLockMetadata {
@@ -59,11 +90,13 @@ func SanitizeRuntimeTemplateLockMetadata(metadata *RuntimeTemplateLockMetadata) 
 		TemplateReference: sanitizeRuntimeTemplateLockEntryMetadata(metadata.TemplateReference),
 		RuntimeImage:      sanitizeRuntimeTemplateLockEntryMetadata(metadata.RuntimeImage),
 		SourceArtifact:    sanitizeRuntimeTemplateLockEntryMetadata(metadata.SourceArtifact),
+		TrustPolicy:       sanitizeRuntimeTemplateTrustPolicyMetadata(metadata.TrustPolicy),
 	}
 	if sanitized.Document == nil &&
 		sanitized.TemplateReference == nil &&
 		sanitized.RuntimeImage == nil &&
-		sanitized.SourceArtifact == nil {
+		sanitized.SourceArtifact == nil &&
+		sanitized.TrustPolicy == nil {
 		return nil
 	}
 	return sanitized
@@ -151,6 +184,38 @@ func sanitizeRuntimeTemplateLockEntryMetadata(entry *RuntimeTemplateLockEntryMet
 	return sanitized
 }
 
+func sanitizeRuntimeTemplateTrustPolicyMetadata(policy *RuntimeTemplateTrustPolicyMetadata) *RuntimeTemplateTrustPolicyMetadata {
+	if policy == nil {
+		return nil
+	}
+	sanitized := &RuntimeTemplateTrustPolicyMetadata{
+		Mode:          sanitizeRuntimeTemplateTrustPolicyMode(policy.Mode),
+		Decision:      sanitizeRuntimeTemplateTrustPolicyDecision(policy.Decision),
+		SourceKind:    sanitizeRuntimeTemplateLockSourceKind(policy.SourceKind),
+		ReferenceKind: sanitizeRuntimeTemplateLockReferenceKind(policy.ReferenceKind),
+		Status:        sanitizeRuntimeTemplateLockStatus(policy.Status),
+		WarningCodes:  sanitizeRuntimeTemplateTrustPolicyCodes(policy.WarningCodes),
+		ErrorCodes:    sanitizeRuntimeTemplateTrustPolicyCodes(policy.ErrorCodes),
+		ReasonCodes:   sanitizeRuntimeTemplateLockReasonCodes(policy.ReasonCodes),
+	}
+	if sanitized.Status == runtimeTemplateLockStatusLocked {
+		sanitized.DigestAlgorithm, sanitized.DigestValue = sanitizeRuntimeTemplateLockDigest(policy.DigestAlgorithm, policy.DigestValue)
+	}
+	if sanitized.Mode == "" &&
+		sanitized.Decision == "" &&
+		sanitized.SourceKind == "" &&
+		sanitized.ReferenceKind == "" &&
+		sanitized.Status == "" &&
+		sanitized.DigestAlgorithm == "" &&
+		sanitized.DigestValue == "" &&
+		len(sanitized.WarningCodes) == 0 &&
+		len(sanitized.ErrorCodes) == 0 &&
+		len(sanitized.ReasonCodes) == 0 {
+		return nil
+	}
+	return sanitized
+}
+
 func sanitizeRuntimeTemplateLockSourceKind(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case runtimeTemplateLockSourceKindLocalFile:
@@ -191,6 +256,32 @@ func sanitizeRuntimeTemplateLockStatus(value string) string {
 		return runtimeTemplateLockStatusLocked
 	case runtimeTemplateLockStatusUnresolved:
 		return runtimeTemplateLockStatusUnresolved
+	default:
+		return ""
+	}
+}
+
+func sanitizeRuntimeTemplateTrustPolicyMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case runtimeTemplateTrustPolicyModeStrict:
+		return runtimeTemplateTrustPolicyModeStrict
+	case runtimeTemplateTrustPolicyModeAdvisory:
+		return runtimeTemplateTrustPolicyModeAdvisory
+	default:
+		return ""
+	}
+}
+
+func sanitizeRuntimeTemplateTrustPolicyDecision(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case runtimeTemplateTrustPolicyDecisionTrusted:
+		return runtimeTemplateTrustPolicyDecisionTrusted
+	case runtimeTemplateTrustPolicyDecisionRejected:
+		return runtimeTemplateTrustPolicyDecisionRejected
+	case runtimeTemplateTrustPolicyDecisionAdvisory:
+		return runtimeTemplateTrustPolicyDecisionAdvisory
+	case runtimeTemplateTrustPolicyDecisionUnavailable:
+		return runtimeTemplateTrustPolicyDecisionUnavailable
 	default:
 		return ""
 	}
@@ -283,6 +374,67 @@ func sanitizeRuntimeTemplateLockWarningCodes(values []string) []string {
 		return nil
 	}
 	return sanitized
+}
+
+func sanitizeRuntimeTemplateLockReasonCodes(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	sanitized := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		code := sanitizeRuntimeTemplateLockReasonCode(value)
+		if code == "" || seen[code] {
+			continue
+		}
+		sanitized = append(sanitized, code)
+		seen[code] = true
+		if len(sanitized) == runtimeTemplateLockMaxWarningCodes {
+			break
+		}
+	}
+	if len(sanitized) == 0 {
+		return nil
+	}
+	return sanitized
+}
+
+func sanitizeRuntimeTemplateTrustPolicyCodes(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	sanitized := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		code := sanitizeRuntimeTemplateTrustPolicyCode(value)
+		if code == "" || seen[code] {
+			continue
+		}
+		sanitized = append(sanitized, code)
+		seen[code] = true
+		if len(sanitized) == runtimeTemplateLockMaxWarningCodes {
+			break
+		}
+	}
+	if len(sanitized) == 0 {
+		return nil
+	}
+	return sanitized
+}
+
+func sanitizeRuntimeTemplateTrustPolicyCode(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case runtimeTemplateTrustPolicyCodeMutableReference,
+		runtimeTemplateTrustPolicyCodeMissingDigestPin,
+		runtimeTemplateTrustPolicyCodeUnresolvedLockEntry,
+		runtimeTemplateTrustPolicyCodeLockProvenanceMismatch,
+		runtimeTemplateTrustPolicyCodeUnsupportedSource,
+		runtimeTemplateTrustPolicyCodeResolverUnavailable:
+		return normalized
+	default:
+		return ""
+	}
 }
 
 func runtimeTemplateLockAllowedReasonCode(code string) bool {

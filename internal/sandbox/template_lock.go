@@ -31,6 +31,21 @@ const (
 	SandboxTemplateLockReasonUnresolvedMutableReference = "unresolved_mutable_reference"
 	SandboxTemplateLockReasonResolverUnavailable        = "resolver_unavailable"
 	SandboxTemplateLockReasonUnsupportedSource          = "unsupported_source"
+
+	SandboxTemplateTrustPolicyModeStrict   = "strict"
+	SandboxTemplateTrustPolicyModeAdvisory = "advisory"
+
+	SandboxTemplateTrustPolicyDecisionTrusted     = "trusted"
+	SandboxTemplateTrustPolicyDecisionRejected    = "rejected"
+	SandboxTemplateTrustPolicyDecisionAdvisory    = "advisory"
+	SandboxTemplateTrustPolicyDecisionUnavailable = "unavailable"
+
+	SandboxTemplateTrustPolicyCodeMutableReference       = "mutable_reference"
+	SandboxTemplateTrustPolicyCodeMissingDigestPin       = "missing_digest_pin"
+	SandboxTemplateTrustPolicyCodeUnresolvedLockEntry    = "unresolved_lock_entry"
+	SandboxTemplateTrustPolicyCodeLockProvenanceMismatch = "lock_provenance_mismatch"
+	SandboxTemplateTrustPolicyCodeUnsupportedSource      = "unsupported_source"
+	SandboxTemplateTrustPolicyCodeResolverUnavailable    = "resolver_unavailable"
 )
 
 const sandboxTemplateLockMaxWarningCodes = 8
@@ -38,10 +53,11 @@ const sandboxTemplateLockMaxWarningCodes = 8
 // SandboxTemplateLockMetadata is the durable redaction-safe template
 // acquisition lock shape shared by sandbox, execution, and factory records.
 type SandboxTemplateLockMetadata struct {
-	Document          *SandboxTemplateLockEntryMetadata `json:"document,omitempty"`
-	TemplateReference *SandboxTemplateLockEntryMetadata `json:"templateReference,omitempty"`
-	RuntimeImage      *SandboxTemplateLockEntryMetadata `json:"runtimeImage,omitempty"`
-	SourceArtifact    *SandboxTemplateLockEntryMetadata `json:"sourceArtifact,omitempty"`
+	Document          *SandboxTemplateLockEntryMetadata   `json:"document,omitempty"`
+	TemplateReference *SandboxTemplateLockEntryMetadata   `json:"templateReference,omitempty"`
+	RuntimeImage      *SandboxTemplateLockEntryMetadata   `json:"runtimeImage,omitempty"`
+	SourceArtifact    *SandboxTemplateLockEntryMetadata   `json:"sourceArtifact,omitempty"`
+	TrustPolicy       *SandboxTemplateTrustPolicyMetadata `json:"trustPolicy,omitempty"`
 }
 
 // SandboxTemplateLockEntryMetadata preserves only bounded identity and reason
@@ -58,6 +74,21 @@ type SandboxTemplateLockEntryMetadata struct {
 	ReasonCode      string   `json:"reasonCode,omitempty"`
 }
 
+// SandboxTemplateTrustPolicyMetadata carries bounded policy outcome labels for
+// callers that need to require trusted template locks.
+type SandboxTemplateTrustPolicyMetadata struct {
+	Mode            string   `json:"mode,omitempty"`
+	Decision        string   `json:"decision,omitempty"`
+	SourceKind      string   `json:"sourceKind,omitempty"`
+	ReferenceKind   string   `json:"referenceKind,omitempty"`
+	Status          string   `json:"status,omitempty"`
+	DigestAlgorithm string   `json:"digestAlgorithm,omitempty"`
+	DigestValue     string   `json:"digestValue,omitempty"`
+	WarningCodes    []string `json:"warningCodes,omitempty"`
+	ErrorCodes      []string `json:"errorCodes,omitempty"`
+	ReasonCodes     []string `json:"reasonCodes,omitempty"`
+}
+
 // SanitizeSandboxTemplateLockMetadata returns a durable-safe copy of template
 // lock metadata, or nil when no safe lock information remains.
 func SanitizeSandboxTemplateLockMetadata(metadata *SandboxTemplateLockMetadata) *SandboxTemplateLockMetadata {
@@ -69,11 +100,13 @@ func SanitizeSandboxTemplateLockMetadata(metadata *SandboxTemplateLockMetadata) 
 		TemplateReference: sanitizeSandboxTemplateLockEntryMetadata(metadata.TemplateReference),
 		RuntimeImage:      sanitizeSandboxTemplateLockEntryMetadata(metadata.RuntimeImage),
 		SourceArtifact:    sanitizeSandboxTemplateLockEntryMetadata(metadata.SourceArtifact),
+		TrustPolicy:       sanitizeSandboxTemplateTrustPolicyMetadata(metadata.TrustPolicy),
 	}
 	if sanitized.Document == nil &&
 		sanitized.TemplateReference == nil &&
 		sanitized.RuntimeImage == nil &&
-		sanitized.SourceArtifact == nil {
+		sanitized.SourceArtifact == nil &&
+		sanitized.TrustPolicy == nil {
 		return nil
 	}
 	return sanitized
@@ -159,6 +192,38 @@ func sanitizeSandboxTemplateLockEntryMetadata(entry *SandboxTemplateLockEntryMet
 	return sanitized
 }
 
+func sanitizeSandboxTemplateTrustPolicyMetadata(policy *SandboxTemplateTrustPolicyMetadata) *SandboxTemplateTrustPolicyMetadata {
+	if policy == nil {
+		return nil
+	}
+	sanitized := &SandboxTemplateTrustPolicyMetadata{
+		Mode:          sanitizeSandboxTemplateTrustPolicyMode(policy.Mode),
+		Decision:      sanitizeSandboxTemplateTrustPolicyDecision(policy.Decision),
+		SourceKind:    sanitizeSandboxTemplateLockSourceKind(policy.SourceKind),
+		ReferenceKind: sanitizeSandboxTemplateLockReferenceKind(policy.ReferenceKind),
+		Status:        sanitizeSandboxTemplateLockStatus(policy.Status),
+		WarningCodes:  sanitizeSandboxTemplateTrustPolicyCodes(policy.WarningCodes),
+		ErrorCodes:    sanitizeSandboxTemplateTrustPolicyCodes(policy.ErrorCodes),
+		ReasonCodes:   sanitizeSandboxTemplateLockReasonCodes(policy.ReasonCodes),
+	}
+	if sanitized.Status == SandboxTemplateLockStatusLocked {
+		sanitized.DigestAlgorithm, sanitized.DigestValue = sanitizeSandboxTemplateLockDigest(policy.DigestAlgorithm, policy.DigestValue)
+	}
+	if sanitized.Mode == "" &&
+		sanitized.Decision == "" &&
+		sanitized.SourceKind == "" &&
+		sanitized.ReferenceKind == "" &&
+		sanitized.Status == "" &&
+		sanitized.DigestAlgorithm == "" &&
+		sanitized.DigestValue == "" &&
+		len(sanitized.WarningCodes) == 0 &&
+		len(sanitized.ErrorCodes) == 0 &&
+		len(sanitized.ReasonCodes) == 0 {
+		return nil
+	}
+	return sanitized
+}
+
 func sanitizeSandboxTemplateLockSourceKind(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case SandboxTemplateLockSourceKindLocalFile:
@@ -199,6 +264,32 @@ func sanitizeSandboxTemplateLockStatus(value string) string {
 		return SandboxTemplateLockStatusLocked
 	case SandboxTemplateLockStatusUnresolved:
 		return SandboxTemplateLockStatusUnresolved
+	default:
+		return ""
+	}
+}
+
+func sanitizeSandboxTemplateTrustPolicyMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case SandboxTemplateTrustPolicyModeStrict:
+		return SandboxTemplateTrustPolicyModeStrict
+	case SandboxTemplateTrustPolicyModeAdvisory:
+		return SandboxTemplateTrustPolicyModeAdvisory
+	default:
+		return ""
+	}
+}
+
+func sanitizeSandboxTemplateTrustPolicyDecision(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case SandboxTemplateTrustPolicyDecisionTrusted:
+		return SandboxTemplateTrustPolicyDecisionTrusted
+	case SandboxTemplateTrustPolicyDecisionRejected:
+		return SandboxTemplateTrustPolicyDecisionRejected
+	case SandboxTemplateTrustPolicyDecisionAdvisory:
+		return SandboxTemplateTrustPolicyDecisionAdvisory
+	case SandboxTemplateTrustPolicyDecisionUnavailable:
+		return SandboxTemplateTrustPolicyDecisionUnavailable
 	default:
 		return ""
 	}
@@ -291,6 +382,67 @@ func sanitizeSandboxTemplateLockWarningCodes(values []string) []string {
 		return nil
 	}
 	return sanitized
+}
+
+func sanitizeSandboxTemplateLockReasonCodes(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	sanitized := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		code := sanitizeSandboxTemplateLockReasonCode(value)
+		if code == "" || seen[code] {
+			continue
+		}
+		sanitized = append(sanitized, code)
+		seen[code] = true
+		if len(sanitized) == sandboxTemplateLockMaxWarningCodes {
+			break
+		}
+	}
+	if len(sanitized) == 0 {
+		return nil
+	}
+	return sanitized
+}
+
+func sanitizeSandboxTemplateTrustPolicyCodes(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	sanitized := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		code := sanitizeSandboxTemplateTrustPolicyCode(value)
+		if code == "" || seen[code] {
+			continue
+		}
+		sanitized = append(sanitized, code)
+		seen[code] = true
+		if len(sanitized) == sandboxTemplateLockMaxWarningCodes {
+			break
+		}
+	}
+	if len(sanitized) == 0 {
+		return nil
+	}
+	return sanitized
+}
+
+func sanitizeSandboxTemplateTrustPolicyCode(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case SandboxTemplateTrustPolicyCodeMutableReference,
+		SandboxTemplateTrustPolicyCodeMissingDigestPin,
+		SandboxTemplateTrustPolicyCodeUnresolvedLockEntry,
+		SandboxTemplateTrustPolicyCodeLockProvenanceMismatch,
+		SandboxTemplateTrustPolicyCodeUnsupportedSource,
+		SandboxTemplateTrustPolicyCodeResolverUnavailable:
+		return normalized
+	default:
+		return ""
+	}
 }
 
 func sandboxTemplateLockAllowedReasonCode(code string) bool {
