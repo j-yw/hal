@@ -157,8 +157,19 @@ type RuntimeDriver struct {
 // SecurityPolicy separates requested controls from controls the worker
 // actually enforces.
 type SecurityPolicy struct {
-	Requested SecurityControls `json:"requested"`
-	Enforced  SecurityControls `json:"enforced"`
+	Requested          SecurityControls                                  `json:"requested"`
+	Enforced           SecurityControls                                  `json:"enforced"`
+	NetworkEnforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata `json:"networkEnforcement,omitempty"`
+}
+
+func (policy SecurityPolicy) MarshalJSON() ([]byte, error) {
+	type securityPolicyJSON SecurityPolicy
+	sanitized := securityPolicyJSON{
+		Requested:          cloneSecurityControls(policy.Requested),
+		Enforced:           cloneSecurityControls(policy.Enforced),
+		NetworkEnforcement: sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(policy.NetworkEnforcement),
+	}
+	return json.Marshal(sanitized)
 }
 
 // SecurityControls captures network, credential, and isolation controls.
@@ -492,6 +503,9 @@ func (policy SecurityPolicy) Validate() error {
 	}
 	if err := validateEnforcedSecurityControls(policy.Enforced); err != nil {
 		return fmt.Errorf("enforced controls: %w", err)
+	}
+	if policy.NetworkEnforcement != nil && sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(policy.NetworkEnforcement) == nil {
+		return fmt.Errorf("networkEnforcement is invalid")
 	}
 	return nil
 }

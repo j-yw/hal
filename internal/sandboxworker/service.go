@@ -65,6 +65,8 @@ type ServiceOptions struct {
 	Capacity WorkerCapacity
 	Security SecurityPolicy
 
+	NetworkEnforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata
+
 	SupportedOperations []string
 	RuntimeDrivers      map[string]RuntimeDriver
 }
@@ -107,6 +109,7 @@ func NewService(options ServiceOptions) (*Service, error) {
 	if zeroSecurityPolicy(security) {
 		security = DefaultWorkerSecurityPolicy()
 	}
+	security = projectWorkerSecurityPolicy(security, options.NetworkEnforcement)
 
 	descriptors := cloneRuntimeDriverMap(options.RuntimeDrivers)
 	supportedOps := cloneStringSlice(options.SupportedOperations)
@@ -397,8 +400,9 @@ func cloneRuntimeDriverMap(drivers map[string]RuntimeDriver) map[string]RuntimeD
 
 func cloneSecurityPolicy(policy SecurityPolicy) SecurityPolicy {
 	return SecurityPolicy{
-		Requested: cloneSecurityControls(policy.Requested),
-		Enforced:  cloneSecurityControls(policy.Enforced),
+		Requested:          cloneSecurityControls(policy.Requested),
+		Enforced:           cloneSecurityControls(policy.Enforced),
+		NetworkEnforcement: sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(policy.NetworkEnforcement),
 	}
 }
 
@@ -409,8 +413,24 @@ func cloneSecurityControls(controls SecurityControls) SecurityControls {
 }
 
 func projectRuntimeDriverSecurityPolicy(policy SecurityPolicy, enforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata) SecurityPolicy {
+	return projectNetworkEnforcementSecurityPolicy(policy, enforcement, false)
+}
+
+func projectWorkerSecurityPolicy(policy SecurityPolicy, enforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata) SecurityPolicy {
+	if enforcement == nil {
+		enforcement = policy.NetworkEnforcement
+	}
+	return projectNetworkEnforcementSecurityPolicy(policy, enforcement, true)
+}
+
+func projectNetworkEnforcementSecurityPolicy(policy SecurityPolicy, enforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata, includeProof bool) SecurityPolicy {
 	projected := cloneSecurityPolicy(policy)
 	enforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(enforcement)
+	if includeProof {
+		projected.NetworkEnforcement = enforcement
+	} else {
+		projected.NetworkEnforcement = nil
+	}
 	if enforcement != nil && enforcement.Plan != nil && enforcement.Plan.DefaultPosture == NetworkPolicyDenyByDefault {
 		projected.Requested.NetworkPolicy = NetworkPolicyDenyByDefault
 	}
@@ -574,7 +594,9 @@ func stringSliceContains(values []string, want string) bool {
 }
 
 func zeroSecurityPolicy(policy SecurityPolicy) bool {
-	return zeroSecurityControls(policy.Requested) && zeroSecurityControls(policy.Enforced)
+	return zeroSecurityControls(policy.Requested) &&
+		zeroSecurityControls(policy.Enforced) &&
+		policy.NetworkEnforcement == nil
 }
 
 func zeroSecurityControls(controls SecurityControls) bool {
