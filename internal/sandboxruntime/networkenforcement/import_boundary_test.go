@@ -146,6 +146,9 @@ func TestNetworkEnforcementImportBoundaryCoversPlanningAndAdapterFiles(t *testin
 		"planner.go",
 		"policy_proxy_service.go",
 		"redaction.go",
+		"rule_proof_adapter.go",
+		"rule_proof_live.go",
+		"rule_proof_live_default.go",
 		"rule_lifecycle.go",
 	} {
 		if !found[path] {
