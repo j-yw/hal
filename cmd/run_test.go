@@ -416,3 +416,51 @@ func TestOutputRunJSONError(t *testing.T) {
 		t.Fatalf("contractVersion = %d, want 1", jr.ContractVersion)
 	}
 }
+
+func TestUS007RunProgressOutputRedactsStoryAndErrorInputs(t *testing.T) {
+	const (
+		githubToken   = "ghp_US007RunToken1234567890"
+		openAIToken   = "sk-us007RunToken1234567890"
+		localKeyPath  = "/Users/alice/.ssh/id_ed25519"
+		credentialURL = "https://user:pass@example.invalid/repo.git?token=ghp_US007RunRemote1234567890"
+	)
+	result := loop.Result{
+		Iterations:       2,
+		Success:          false,
+		Error:            errors.New("engine failed with " + openAIToken + " while reading " + localKeyPath),
+		CompletedStories: 1,
+		TotalStories:     3,
+		LastStoryID:      "US-007-" + githubToken,
+		LastStoryTitle:   "Verify progress from " + credentialURL,
+		Duration:         3 * time.Second,
+	}
+
+	var human bytes.Buffer
+	showRunSummary(&human, result)
+	assertUS007PublicOutputRedacted(t, "human run summary", human.String(), githubToken, openAIToken, localKeyPath, credentialURL, "user:pass@example.invalid", "ghp_US007RunRemote1234567890")
+	if !strings.Contains(human.String(), "[redacted]") {
+		t.Fatalf("human run summary missing stable redaction marker:\n%s", human.String())
+	}
+
+	var jsonOut bytes.Buffer
+	if err := outputRunJSON(&jsonOut, result, "US-007-"+githubToken, false, "codex"); err != nil {
+		t.Fatalf("outputRunJSON() error = %v", err)
+	}
+	assertUS007PublicOutputRedacted(t, "run JSON", jsonOut.String(), githubToken, openAIToken, localKeyPath, credentialURL, "user:pass@example.invalid", "ghp_US007RunRemote1234567890")
+	var decoded RunResult
+	if err := json.Unmarshal(jsonOut.Bytes(), &decoded); err != nil {
+		t.Fatalf("run JSON decode error: %v\n%s", err, jsonOut.String())
+	}
+	if !strings.Contains(decoded.Error, "[redacted]") || !strings.Contains(decoded.LastStoryID, "[redacted]") || !strings.Contains(decoded.StoryID, "[redacted]") {
+		t.Fatalf("run JSON fields missing stable redaction markers: %#v", decoded)
+	}
+}
+
+func assertUS007PublicOutputRedacted(t *testing.T, label, output string, forbidden ...string) {
+	t.Helper()
+	for _, value := range forbidden {
+		if strings.Contains(output, value) {
+			t.Fatalf("%s leaked forbidden value %q:\n%s", label, value, output)
+		}
+	}
+}

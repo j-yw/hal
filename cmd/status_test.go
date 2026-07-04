@@ -310,6 +310,63 @@ sandbox:
 	assertNoLiveProviderStatusRecommendation(t, jsonResult.NextAction)
 }
 
+func TestUS007RunStatusRedactsWorkflowAndProgressInputs(t *testing.T) {
+	const (
+		githubToken        = "ghp_US007StatusToken1234567890"
+		openAIToken        = "sk-us007StatusToken1234567890"
+		localKeyPath       = "/Users/alice/.ssh/id_ed25519"
+		credentialURL      = "https://user:pass@example.invalid/repo.git?token=ghp_US007StatusRemote1234567890"
+		progressOnlySecret = "ghp_US007ProgressOnly1234567890"
+	)
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(.hal) error: %v", err)
+	}
+	writeStatusTestFile(t, filepath.Join(halDir, template.ConfigFile), "engine: codex-"+githubToken+"\n")
+	writeStatusTestFile(t, filepath.Join(halDir, template.ProgressFile), "Progress used "+progressOnlySecret+" from "+localKeyPath+" and "+credentialURL+"\n")
+	writeStatusTestFile(t, filepath.Join(halDir, template.PRDFile), `{
+  "branchName": "hal/status-`+githubToken+`",
+  "stories": [
+    {"id": "US-001", "title": "Done", "status": "passed"},
+    {"id": "US-007-`+openAIToken+`", "title": "Check `+credentialURL+` and `+localKeyPath+`", "status": "pending"}
+  ]
+}`)
+
+	var jsonOut bytes.Buffer
+	if err := runStatusFn(dir, true, &jsonOut); err != nil {
+		t.Fatalf("runStatusFn(json) error = %v", err)
+	}
+	jsonResult := decodeStatusJSON(t, jsonOut.String())
+	if jsonResult.Manual == nil || jsonResult.Manual.NextStory == nil {
+		t.Fatalf("manual detail missing from JSON: %#v", jsonResult.Manual)
+	}
+	if !strings.Contains(jsonOut.String(), "[redacted]") {
+		t.Fatalf("status JSON missing stable redaction marker:\n%s", jsonOut.String())
+	}
+
+	var humanOut bytes.Buffer
+	if err := runStatusFn(dir, false, &humanOut); err != nil {
+		t.Fatalf("runStatusFn(human) error = %v", err)
+	}
+	if !strings.Contains(humanOut.String(), "[redacted]") {
+		t.Fatalf("human status missing stable redaction marker:\n%s", humanOut.String())
+	}
+
+	forbidden := []string{
+		githubToken,
+		openAIToken,
+		localKeyPath,
+		credentialURL,
+		progressOnlySecret,
+		"user:pass@example.invalid",
+		"ghp_US007StatusRemote1234567890",
+	}
+	assertStatusOutputOmits(t, "status JSON", jsonOut.String(), forbidden)
+	assertStatusOutputOmits(t, "human status", humanOut.String(), forbidden)
+	assertNoLiveProviderStatusRecommendation(t, jsonResult.NextAction)
+}
+
 func TestRunStatusFn_HumanOutput(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, template.HalDir)
