@@ -142,6 +142,55 @@ func TestPhase19SandboxRuntimeImportBoundaryGuardsCoverRuntimePackages(t *testin
 	}
 }
 
+func TestUS006DefaultFakeOnlyE2ETestStaysInDefaultSuite(t *testing.T) {
+	source := phase19ReadFile(t, "default_fake_only_e2e_test.go")
+	header := phase19SourceHeader(source)
+	for _, tag := range []string{
+		"integration",
+		"worker_integration",
+		"podman_integration",
+		"firecracker_live",
+		"network_enforcement_live",
+		"credential_delivery_live",
+	} {
+		if strings.Contains(header, tag) {
+			t.Fatalf("cmd/default_fake_only_e2e_test.go uses build tag %q; US-006 default E2E guardrails must run under go test ./cmd", tag)
+		}
+	}
+	for _, marker := range []string{
+		"func TestUS006DefaultFakeOnlyE2ERunAutoAndFactoryPaths(",
+		"runRunSandboxWithWriter(",
+		"runAutoSandboxWithWriter(",
+		"runFactorySandboxExecutorWithDeps(",
+		"forbiddenProviderExecWithEnv",
+		"forbiddenProviderScript",
+		"forbiddenBootstrap",
+		"forbiddenWorkerRuntime",
+		"us006RequireExecutionManifestFakeOnly",
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("cmd/default_fake_only_e2e_test.go missing US-006 default fake-only guard marker %q", marker)
+		}
+	}
+	for _, forbidden := range []string{
+		"//go:build integration",
+		"//go:build worker_integration",
+		"//go:build podman_integration",
+		"//go:build firecracker_live",
+		"HAL_WORKER_INTEGRATION_",
+		"HAL_PODMAN_TEST_IMAGE",
+		"HAL_FIRECRACKER_LIVE",
+		"HAL_NETWORK_ENFORCEMENT_LIVE",
+		"HAL_CREDENTIAL_DELIVERY_LIVE",
+		"SSH_AUTH_SOCK",
+		"OPENAI_API_KEY=",
+	} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("cmd/default_fake_only_e2e_test.go contains forbidden live/default dependency marker %q", forbidden)
+		}
+	}
+}
+
 func phase19GoTestFiles(t *testing.T, repoRoot string) []string {
 	t.Helper()
 	var files []string
