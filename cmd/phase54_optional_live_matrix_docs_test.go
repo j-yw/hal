@@ -1,6 +1,12 @@
 package cmd
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -12,6 +18,7 @@ const (
 	phase54CredentialLiveCommand    = "env HAL_CREDENTIAL_DELIVERY_LIVE=<set> HAL_CREDENTIAL_DELIVERY_LIVE_ENV=<set> go test -tags=credential_delivery_live -count=1 -timeout=120s ./internal/credentialdelivery -run 'TestCredentialDeliveryLiveHarnessRequiresExplicitOptIn|TestCredentialDeliveryLivePrerequisiteSkipMessagesAreSanitized|TestCredentialDeliveryLivePrerequisitesAcceptAnyModeGate'"
 	phase54TrustPolicyCommand       = "go test -count=1 -timeout=180s ./internal/sandboxtemplate/acquisition -run 'Test(TrustPolicy|EvaluateTrustPolicy|ProjectTemplateProvenance|ProjectRuntimeTemplateLockMetadata|SandboxTemplateAcquisitionImportBoundaryAllowsTrustPolicyRuntimeMetadataProjection)'"
 	phase54TemplateGuardCommand     = "go test -count=1 -timeout=180s ./cmd -run 'TestPhase52Template'"
+	phase54OptionalLiveGuardFile    = "cmd/phase54_optional_live_matrix_docs_test.go"
 )
 
 func TestPhase54OptionalLiveVerificationMatrixDocumentsSuites(t *testing.T) {
@@ -101,6 +108,87 @@ func TestPhase54OptionalLiveVerificationMatrixCommandsAreExactAndRedactionSafe(t
 	}
 }
 
+func TestPhase54OptionalLiveVerificationMatrixReusesPhase53FinalLiveE2ECommand(t *testing.T) {
+	doc := phase50ReadFile(t, phase54ReleasePackageDesignDocPath())
+	phase53Doc := readPhase53FinalVerificationDoc(t)
+	phase53FinalDocRef := "docs/design/" + phase53FinalVerificationDocPath
+
+	if !strings.Contains(doc, phase53FinalDocRef) {
+		t.Fatalf("%s must reference %s before documenting the composed live E2E command", phase50SafeDisplayPath(phase54ReleasePackageDesignDocPath()), phase53FinalDocRef)
+	}
+	if !strings.Contains(phase53Doc, phase53LiveE2ECommand) {
+		t.Fatalf("%s no longer contains the canonical Phase 53 live E2E command", phase53FinalDocRef)
+	}
+
+	var composedCommands []string
+	for command := range phase54OptionalLiveDocumentedCommands(doc) {
+		if strings.Contains(command, "TestMicroVMLiveE2EComposedLiveExecutionPath") ||
+			strings.Contains(command, "microvm_e2e_live") {
+			composedCommands = append(composedCommands, command)
+		}
+	}
+	if len(composedCommands) != 1 {
+		t.Fatalf("Phase 54 optional live matrix documented composed live E2E commands = %#v, want exactly one", composedCommands)
+	}
+	if composedCommands[0] != phase53LiveE2ECommand {
+		t.Fatalf("Phase 54 composed live E2E command diverged from Phase 53 final verification:\n got: %q\nwant: %q", composedCommands[0], phase53LiveE2ECommand)
+	}
+}
+
+func TestPhase54OptionalLiveVerificationMatrixCommandSelectorsMatchTestsAndPackages(t *testing.T) {
+	doc := phase50ReadFile(t, phase54ReleasePackageDesignDocPath())
+	commands := phase54OptionalLiveDocumentedCommands(doc)
+
+	for command := range commands {
+		packages := phase54CommandPackageSelectors(command)
+		if len(packages) == 0 {
+			t.Fatalf("Phase 54 optional live command %q has no package selector", command)
+		}
+		for _, packageSelector := range packages {
+			phase54AssertPackageSelectorExists(t, packageSelector, command)
+		}
+		runSelector, ok := phase54CommandRunSelector(command)
+		if !ok {
+			continue
+		}
+		for _, packageSelector := range packages {
+			phase54AssertRunSelectorMatchesPackageTests(t, runSelector, packageSelector, command)
+		}
+	}
+}
+
+func TestPhase54DocumentedFocusedGoTestSelectorsMatchTestsAndPackages(t *testing.T) {
+	for _, docPath := range []string{
+		phase54ReleasePackageDesignDocPath(),
+		phase54OperatorReleaseHandoffDocPath(),
+	} {
+		doc := phase50ReadFile(t, docPath)
+		for command := range phase34DocumentedShellCommands(doc) {
+			runSelector, ok := phase54CommandRunSelector(command)
+			if !ok || runSelector == "^$" {
+				continue
+			}
+			packages := phase54CommandPackageSelectors(command)
+			if len(packages) == 0 {
+				t.Fatalf("%s focused go test command %q has no package selector", phase50SafeDisplayPath(docPath), command)
+			}
+			for _, packageSelector := range packages {
+				phase54AssertPackageSelectorExists(t, packageSelector, command)
+				phase54AssertRunSelectorMatchesPackageTests(t, runSelector, packageSelector, command)
+			}
+		}
+	}
+}
+
+func TestPhase54OptionalLiveVerificationMatrixGuardFileStaysInLiveMarkerAllowlists(t *testing.T) {
+	if !phase50ApprovedLiveMarkerFiles()[phase54OptionalLiveGuardFile] {
+		t.Fatalf("%s must stay in the Phase 50 live marker allowlist because it documents optional live marker names", phase54OptionalLiveGuardFile)
+	}
+	if !us010ApprovedLiveE2EGuardFiles()[phase54OptionalLiveGuardFile] {
+		t.Fatalf("%s must stay in the Phase 53 live E2E marker allowlist because it documents the composed live E2E command", phase54OptionalLiveGuardFile)
+	}
+}
+
 func TestPhase54OptionalLiveVerificationMatrixExplainsSkipBehavior(t *testing.T) {
 	doc := phase50ReadFile(t, phase54ReleasePackageDesignDocPath())
 	normalized := strings.Join(strings.Fields(doc), " ")
@@ -119,8 +207,26 @@ func TestPhase54OptionalLiveVerificationMatrixExplainsSkipBehavior(t *testing.T)
 
 func phase54OptionalLiveDocumentedCommands(doc string) map[string]bool {
 	commands := make(map[string]bool)
-	for _, command := range phase50ManualDocumentedShellCommands(doc) {
-		commands[command] = true
+	inOptionalLiveSection := false
+	optionalLiveHeadingDepth := 0
+	for _, raw := range strings.Split(doc, "\n") {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "#") {
+			depth := phase54MarkdownHeadingDepth(line)
+			lower := strings.ToLower(line)
+			if inOptionalLiveSection && depth <= optionalLiveHeadingDepth {
+				inOptionalLiveSection = false
+				optionalLiveHeadingDepth = 0
+			}
+			if strings.Contains(lower, "optional") && strings.Contains(lower, "live") && strings.Contains(lower, "verification") {
+				inOptionalLiveSection = true
+				optionalLiveHeadingDepth = depth
+			}
+			continue
+		}
+		if inOptionalLiveSection && phase54IsShellCommandLine(line) {
+			commands[line] = true
+		}
 	}
 	return commands
 }
@@ -161,4 +267,102 @@ func phase54AssertOptionalLiveCommandRedactionSafe(t *testing.T, command string)
 			t.Fatalf("Phase 54 optional live command %q uses non-placeholder environment assignment %q", command, field)
 		}
 	}
+}
+
+func phase54CommandPackageSelectors(command string) []string {
+	var packages []string
+	for _, field := range strings.Fields(command) {
+		field = strings.Trim(field, "'\"")
+		if strings.HasPrefix(field, "./") {
+			packages = append(packages, field)
+		}
+	}
+	return packages
+}
+
+func phase54CommandRunSelector(command string) (string, bool) {
+	fields := strings.Fields(command)
+	for i, field := range fields {
+		field = strings.Trim(field, "\"")
+		if strings.HasPrefix(field, "-run=") {
+			return phase54TrimShellQuotes(strings.TrimPrefix(field, "-run=")), true
+		}
+		if field == "-run" && i+1 < len(fields) {
+			return phase54TrimShellQuotes(fields[i+1]), true
+		}
+	}
+	return "", false
+}
+
+func phase54TrimShellQuotes(value string) string {
+	return strings.Trim(value, "'\"")
+}
+
+func phase54AssertPackageSelectorExists(t *testing.T, packageSelector, command string) {
+	t.Helper()
+	dir := phase54PackageSelectorDir(t, packageSelector)
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("Phase 54 optional live command %q uses missing package selector %q: %v", command, packageSelector, err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("Phase 54 optional live command %q uses non-directory package selector %q", command, packageSelector)
+	}
+}
+
+func phase54AssertRunSelectorMatchesPackageTests(t *testing.T, runSelector, packageSelector, command string) {
+	t.Helper()
+	re, err := regexp.Compile(runSelector)
+	if err != nil {
+		t.Fatalf("Phase 54 optional live command %q has invalid -run selector %q: %v", command, runSelector, err)
+	}
+	for _, testName := range phase54PackageTestNames(t, packageSelector) {
+		if re.MatchString(testName) {
+			return
+		}
+	}
+	t.Fatalf("Phase 54 optional live command %q -run selector %q matched no tests in %s", command, runSelector, packageSelector)
+}
+
+func phase54PackageTestNames(t *testing.T, packageSelector string) []string {
+	t.Helper()
+	dir := phase54PackageSelectorDir(t, packageSelector)
+	paths, err := filepath.Glob(filepath.Join(dir, "*_test.go"))
+	if err != nil {
+		t.Fatalf("Glob(%s/*_test.go) error: %v", phase50SafeDisplayPath(dir), err)
+	}
+	if len(paths) == 0 {
+		t.Fatalf("Phase 54 optional live package selector %s contains no test files", packageSelector)
+	}
+
+	var names []string
+	for _, path := range paths {
+		source, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error: %v", phase50SafeDisplayPath(path), err)
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, source, 0)
+		if err != nil {
+			t.Fatalf("ParseFile(%s) error: %v", phase50SafeDisplayPath(path), err)
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil || !strings.HasPrefix(fn.Name.Name, "Test") {
+				continue
+			}
+			names = append(names, fn.Name.Name)
+		}
+	}
+	if len(names) == 0 {
+		t.Fatalf("Phase 54 optional live package selector %s contains no Test functions", packageSelector)
+	}
+	return names
+}
+
+func phase54PackageSelectorDir(t *testing.T, packageSelector string) string {
+	t.Helper()
+	if !strings.HasPrefix(packageSelector, "./") || strings.Contains(packageSelector, "...") {
+		t.Fatalf("Phase 54 optional live command uses unsupported package selector %q", packageSelector)
+	}
+	return filepath.Join("..", filepath.FromSlash(strings.TrimPrefix(packageSelector, "./")))
 }

@@ -38,6 +38,11 @@ placeholders in command examples and do not record environment values, host
 paths, socket paths, provider handles, ports, URLs, credentials, tokens, or
 machine-specific command arguments in verification notes.
 
+The composed microVM live E2E command below intentionally reuses the Phase 53
+final verification command from
+`docs/design/sandbox-runtime-v2-phase53-final-verification.md`. Keep it identical
+to that Phase 53 optional command instead of introducing a second variant.
+
 Run the focused live-gate and live-marker guard suite without live tags or live
 environment markers:
 
