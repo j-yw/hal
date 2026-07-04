@@ -329,7 +329,26 @@ func SanitizeStatusMetadata(status StatusMetadata) StatusMetadata {
 	sanitized.ActiveModes = sanitizeOptionalModeRecords(sanitized.ActiveModes)
 	sanitized.Status = sanitizeStatusValue(sanitized.Status)
 	sanitized.ReasonCode = sanitizeReasonCodeValue(sanitized.ReasonCode)
+	if sanitized.Status == StatusActive && sanitized.ActivationID != "" {
+		sanitized.ActiveProofs = sanitizeStatusActiveProofSummaries(sanitized.ID, sanitized.PlanID, sanitized.ActivationID, sanitized.ActiveProofs)
+	} else {
+		sanitized.ActiveProofs = nil
+	}
 	return sanitized
+}
+
+func sanitizeStatusActiveProofSummaries(id, planID, activationID string, proofs []sandbox.SandboxCredentialDeliveryProofSummary) []sandbox.SandboxCredentialDeliveryProofSummary {
+	if len(proofs) == 0 {
+		return nil
+	}
+	status := sandbox.SanitizeSandboxCredentialDeliveryStatusMetadata(sandbox.SandboxCredentialDeliveryStatusMetadata{
+		ID:           id,
+		PlanID:       planID,
+		ActivationID: activationID,
+		Status:       string(StatusActive),
+		ActiveProofs: proofs,
+	})
+	return status.ActiveProofs
 }
 
 // SanitizeWarningMetadata returns a durable-safe copy of warning metadata.

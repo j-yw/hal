@@ -300,16 +300,17 @@ type CredentialActivationDiagnosticItem struct {
 
 // StatusMetadata is a compact delivery lifecycle summary for durable surfaces.
 type StatusMetadata struct {
-	ID             string     `json:"id"`
-	RequestID      string     `json:"requestId,omitempty"`
-	PlanID         string     `json:"planId,omitempty"`
-	ActivationID   string     `json:"activationId,omitempty"`
-	RequestedModes []Mode     `json:"requestedModes,omitempty"`
-	ActiveModes    []Mode     `json:"activeModes,omitempty"`
-	Status         Status     `json:"status,omitempty"`
-	ReasonCode     ReasonCode `json:"reasonCode,omitempty"`
-	WarningCount   int        `json:"warningCount,omitempty"`
-	ErrorCount     int        `json:"errorCount,omitempty"`
+	ID             string                                          `json:"id"`
+	RequestID      string                                          `json:"requestId,omitempty"`
+	PlanID         string                                          `json:"planId,omitempty"`
+	ActivationID   string                                          `json:"activationId,omitempty"`
+	RequestedModes []Mode                                          `json:"requestedModes,omitempty"`
+	ActiveModes    []Mode                                          `json:"activeModes,omitempty"`
+	ActiveProofs   []sandbox.SandboxCredentialDeliveryProofSummary `json:"activeProofs,omitempty"`
+	Status         Status                                          `json:"status,omitempty"`
+	ReasonCode     ReasonCode                                      `json:"reasonCode,omitempty"`
+	WarningCount   int                                             `json:"warningCount,omitempty"`
+	ErrorCount     int                                             `json:"errorCount,omitempty"`
 }
 
 // Warning contains safe metadata about a non-fatal delivery planning or

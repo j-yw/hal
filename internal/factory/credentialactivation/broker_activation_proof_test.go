@@ -42,6 +42,71 @@ func TestBrokerActivationProofRefsMatchSupportedModeProofMetadata(t *testing.T) 
 	})
 }
 
+func TestUS003BrokerActivationStatusProjectsStrictProofSummaries(t *testing.T) {
+	tests := []struct {
+		name       string
+		request    credentialdelivery.ActivationRequest
+		adapter    credentialdelivery.ActivationAdapter
+		mode       credentialdelivery.Mode
+		bindingID  string
+		wantSource string
+	}{
+		{
+			name:       "http proxy",
+			request:    phase51HTTPProxyActivationRequest(),
+			adapter:    NewHTTPProxyHandoffAdapter(HTTPProxyHandoffOptions{Enabled: true}),
+			mode:       credentialdelivery.ModeHTTPProxy,
+			bindingID:  "binding-http-proxy-one",
+			wantSource: "credential_proxy",
+		},
+		{
+			name:       "ssh agent",
+			request:    phase51SSHAgentActivationRequest(),
+			adapter:    NewSSHAgentHandoffAdapter(SSHAgentHandoffOptions{Enabled: true}),
+			mode:       credentialdelivery.ModeSSHAgent,
+			bindingID:  "binding-ssh-one",
+			wantSource: "handoff",
+		},
+		{
+			name:    "file tmpfs",
+			request: phase51FileTmpfsActivationRequest(),
+			adapter: NewFileTmpfsSimulationAdapter(FileTmpfsSimulationOptions{
+				Enabled:               true,
+				Broker:                phase58TmpfsBrokerSession(t, []string{halfactory.SecretBrokerDeliveryModeFileTmpfs}, []string{halfactory.SecretBrokerDeliveryModeFileTmpfs}),
+				SecretBrokerSessionID: "broker-session-tmpfs",
+			}),
+			mode:       credentialdelivery.ModeFileTmpfs,
+			bindingID:  "binding-tmpfs-one",
+			wantSource: "simulation",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			activation := credentialdelivery.ActivateDelivery(tt.request, tt.adapter)
+			status := credentialdelivery.StatusMetadataFromActivation(tt.request.Plan, activation)
+
+			if status.Status != credentialdelivery.StatusActive {
+				t.Fatalf("status = %#v, want active brokered credential delivery", status)
+			}
+			found := false
+			for _, proof := range status.ActiveProofs {
+				if proof.BindingID != tt.bindingID {
+					continue
+				}
+				found = true
+				if proof.ProofID == "" || proof.DeliveryMode != string(tt.mode) || proof.Status != string(credentialdelivery.StatusActive) || proof.Source != tt.wantSource {
+					t.Fatalf("proof = %#v, want sanitized active %q proof from %q", proof, tt.mode, tt.wantSource)
+				}
+			}
+			if !found {
+				t.Fatalf("active proofs = %#v, want binding %q proof", status.ActiveProofs, tt.bindingID)
+			}
+			assertBrokerActivationNoLeak(t, status)
+		})
+	}
+}
+
 func TestBrokerActivationMissingProofOrSessionDataFailsClosed(t *testing.T) {
 	t.Run("http_proxy missing credential proxy session", func(t *testing.T) {
 		request := phase51HTTPProxyActivationRequest()

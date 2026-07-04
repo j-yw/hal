@@ -86,7 +86,7 @@ func ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(projection Sand
 	input.Requested = sandboxSecurityCapabilityProjectionRequestedCredentialBindings(input.Requested, projection.CredentialProxyBindings)
 	input.Ready = sandboxSecurityCapabilityProjectionMetadataOnlyNetworkPolicyResult(input.Ready, projection.NetworkPolicyResult)
 	input.Ready = sandboxSecurityCapabilityProjectionAppendNetworkEnforcementProof(input.Ready, projection.NetworkEnforcementProof)
-	input.Ready = sandboxSecurityCapabilityProjectionAppendCredentialDeliveryProof(input.Ready, projection.CredentialDelivery)
+	input.Ready = sandboxSecurityCapabilityProjectionAppendCredentialDeliveryProof(input.Ready, projection.CredentialDelivery, projection.CredentialProxyBindings)
 	for _, ready := range projection.Ready {
 		input.Ready = sandboxSecurityCapabilityProjectionAppendUnique(input.Ready, ready)
 	}
@@ -407,7 +407,7 @@ func sandboxSecurityCapabilityProjectionMicroVMIsolationProofReadiness(proof San
 	return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonMicroVMReadinessMissing
 }
 
-func sandboxSecurityCapabilityProjectionAppendCredentialDeliveryProof(records []SandboxSecurityCapabilityMetadata, status *SandboxCredentialDeliveryStatusMetadata) []SandboxSecurityCapabilityMetadata {
+func sandboxSecurityCapabilityProjectionAppendCredentialDeliveryProof(records []SandboxSecurityCapabilityMetadata, status *SandboxCredentialDeliveryStatusMetadata, bindings []SandboxCredentialProxyBindingMetadata) []SandboxSecurityCapabilityMetadata {
 	if status == nil {
 		return records
 	}
@@ -415,10 +415,16 @@ func sandboxSecurityCapabilityProjectionAppendCredentialDeliveryProof(records []
 	if sanitized.ID == "" {
 		return records
 	}
-	if sanitized.Status == "active" && sanitized.ActivationID != "" && len(sanitized.ActiveProofs) > 0 {
+	configuredBindings := sandboxSecurityCapabilityProjectionConfiguredCredentialBindings(bindings)
+	if sanitized.Status == "active" && sanitized.ActivationID != "" && len(sanitized.ActiveProofs) > 0 && sanitized.WarningCount == 0 && sanitized.ErrorCount == 0 {
+		before := len(records)
 		for _, proof := range sanitized.ActiveProofs {
 			family, capability, sanitizedMode, ok := sandboxSecurityCapabilityProjectionSecretMode(proof.DeliveryMode)
-			if !ok || proof.BindingID == "" {
+			if !ok || proof.BindingID == "" || !sandboxSecurityCapabilityProjectionCredentialProofSourceAllowed(proof) {
+				continue
+			}
+			binding, ok := configuredBindings[proof.BindingID]
+			if !ok || string(binding.DeliveryMode) != sanitizedMode {
 				continue
 			}
 			records = sandboxSecurityCapabilityProjectionAppendSafeEvidenceWithID(records,
@@ -431,24 +437,30 @@ func sandboxSecurityCapabilityProjectionAppendCredentialDeliveryProof(records []
 				SandboxSecurityCapabilityReasonCredentialActivationConfirmed,
 			)
 		}
-		return records
+		if len(records) > before {
+			return records
+		}
 	}
-	if sanitized.Status == "active" && sanitized.ActivationID != "" && len(sanitized.ActiveModes) > 0 {
-		for _, mode := range sanitized.ActiveModes {
-			family, capability, sanitizedMode, ok := sandboxSecurityCapabilityProjectionSecretMode(mode)
-			if !ok {
+	if sanitized.Status == "active" && sanitized.ActivationID != "" && len(sanitized.ActiveProofs) > 0 && sanitized.WarningCount > 0 {
+		before := len(records)
+		for _, proof := range sanitized.ActiveProofs {
+			family, capability, sanitizedMode, ok := sandboxSecurityCapabilityProjectionSecretMode(proof.DeliveryMode)
+			if !ok || proof.BindingID == "" {
 				continue
 			}
-			records = sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
+			records = sandboxSecurityCapabilityProjectionAppendSafeEvidenceWithID(records,
+				proof.BindingID,
 				family,
 				capability,
 				sanitizedMode,
-				SandboxSecurityCapabilitySourceWorker,
-				SandboxSecurityCapabilityReadinessReady,
-				SandboxSecurityCapabilityReasonCredentialActivationConfirmed,
+				SandboxSecurityCapabilitySourceMetadata,
+				SandboxSecurityCapabilityReadinessUnsupported,
+				SandboxSecurityCapabilityReasonWarningBearing,
 			)
 		}
-		return records
+		if len(records) > before {
+			return records
+		}
 	}
 	for _, mode := range sanitized.RequestedModes {
 		family, capability, sanitizedMode, ok := sandboxSecurityCapabilityProjectionSecretMode(mode)
@@ -465,6 +477,62 @@ func sandboxSecurityCapabilityProjectionAppendCredentialDeliveryProof(records []
 		)
 	}
 	return records
+}
+
+func sandboxSecurityCapabilityProjectionConfiguredCredentialBindings(bindings []SandboxCredentialProxyBindingMetadata) map[string]SandboxCredentialProxyBindingMetadata {
+	sanitized := SanitizeSandboxCredentialProxyBindingMetadataRecords(bindings)
+	if len(sanitized) == 0 {
+		return nil
+	}
+	out := make(map[string]SandboxCredentialProxyBindingMetadata, len(sanitized))
+	for _, binding := range sanitized {
+		if !sandboxSecurityCapabilityProjectionCredentialBindingCanAcceptProof(binding) {
+			continue
+		}
+		out[binding.ID] = binding
+	}
+	return out
+}
+
+func sandboxSecurityCapabilityProjectionCredentialBindingCanAcceptProof(binding SandboxCredentialProxyBindingMetadata) bool {
+	if binding.ID == "" {
+		return false
+	}
+	if _, _, _, ok := sandboxSecurityCapabilityProjectionSecretMode(string(binding.DeliveryMode)); !ok {
+		return false
+	}
+	switch binding.Status {
+	case "", SandboxCredentialProxyStatusReady, SandboxCredentialProxyStatusActive, SandboxCredentialProxyStatusCompleted:
+	default:
+		return false
+	}
+	switch binding.Outcome {
+	case "", SandboxCredentialProxyBindingOutcomeBound:
+		return true
+	default:
+		return false
+	}
+}
+
+func sandboxSecurityCapabilityProjectionCredentialProofSourceAllowed(proof SandboxCredentialDeliveryProofSummary) bool {
+	switch proof.DeliveryMode {
+	case SandboxSecretModeHTTPProxy:
+		switch proof.Source {
+		case "broker", "secret_broker", "credential_proxy", "network_proxy":
+			return true
+		}
+	case SandboxSecretModeSSHAgent:
+		switch proof.Source {
+		case "broker", "secret_broker", "handoff":
+			return true
+		}
+	case SandboxSecretModeFileTmpfs:
+		switch proof.Source {
+		case "broker", "secret_broker", "simulation":
+			return true
+		}
+	}
+	return false
 }
 
 func sandboxSecurityCapabilityProjectionRequestedCredentialBindings(records []SandboxSecurityCapabilityMetadata, bindings []SandboxCredentialProxyBindingMetadata) []SandboxSecurityCapabilityMetadata {

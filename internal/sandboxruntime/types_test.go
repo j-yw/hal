@@ -453,7 +453,19 @@ func TestRuntimeCredentialDeliveryMetadataProjectsActiveModesOnlyFromSanitizedAc
 		PlanID:         "credential-plan-activation",
 		RequestedModes: []credentialdelivery.Mode{credentialdelivery.ModeHTTPProxy, credentialdelivery.ModeLegacyAuthSync},
 		ActiveModes:    []credentialdelivery.Mode{credentialdelivery.ModeHTTPProxy, credentialdelivery.ModeLegacyAuthSync},
-		Status:         credentialdelivery.StatusActive,
+		Bindings: []credentialdelivery.BindingActivationResult{{
+			BindingID:    "binding-http-proxy",
+			DeliveryMode: credentialdelivery.ModeHTTPProxy,
+			Status:       credentialdelivery.StatusActive,
+			ReasonCode:   credentialdelivery.ReasonRequested,
+			ProofRef:     "credential-proof-http-proxy",
+		}},
+		ProofRefs: []credentialdelivery.ActivationProofReference{{
+			ProofID:      "credential-proof-http-proxy",
+			BindingID:    "binding-http-proxy",
+			DeliveryMode: credentialdelivery.ModeHTTPProxy,
+		}},
+		Status: credentialdelivery.StatusActive,
 	}))
 	sanitizedActive := SanitizeRuntimeCredentialDeliveryMetadata(active)
 	if sanitizedActive == nil {

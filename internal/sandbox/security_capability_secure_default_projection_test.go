@@ -489,17 +489,14 @@ func TestProjectSecureDefaultReadinessInputRequiresActiveCredentialActivationPro
 		}),
 	)
 
-	result := requireSecureDefaultProjectionResult(t, output,
-		SandboxSecurityCapabilityReadinessReady,
+	requireSecureDefaultProjectionStrictGate(t, output,
+		SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+		SandboxSecurityCapabilityReadinessGateReasonCode(SandboxSecurityCapabilityReasonCredentialActivationMissing),
+		SandboxSecurityCapabilityReasonCredentialActivationMissing,
+	)
+	requireSecureDefaultProjectionNoReadyResult(t, output,
 		SandboxSecurityCapabilityFamilySecretDelivery,
 		SandboxSecurityCapabilitySecretHTTPProxy,
-		SandboxSecurityCapabilityReasonCredentialActivationConfirmed,
-	)
-	requireSecureDefaultProjectionResultMode(t, result, SandboxSecretModeHTTPProxy)
-	requireSecureDefaultProjectionStrictGate(t, output,
-		SandboxSecurityCapabilityReadinessGateOutcomeAllowed,
-		SandboxSecurityCapabilityReadinessGateReasonReadinessReady,
-		SandboxSecurityCapabilityReasonCredentialActivationConfirmed,
 	)
 }
 
@@ -551,7 +548,9 @@ func TestProjectSecureDefaultReadinessInputBlocksConfiguredBindingsWithoutMatchi
 	tests := []struct {
 		name        string
 		bindingMode string
+		binding     *SandboxCredentialProxyBindingMetadata
 		status      *SandboxCredentialDeliveryStatusMetadata
+		wantReason  SandboxSecurityCapabilityReasonCode
 	}{
 		{
 			name:        "requested configured binding only",
@@ -580,6 +579,41 @@ func TestProjectSecureDefaultReadinessInputBlocksConfiguredBindingsWithoutMatchi
 			},
 		},
 		{
+			name:        "failed activation with stale proof metadata",
+			bindingMode: SandboxSecretModeHTTPProxy,
+			status: &SandboxCredentialDeliveryStatusMetadata{
+				ID:             "credential-delivery-failed",
+				PlanID:         "credential-delivery-plan",
+				ActivationID:   "credential-delivery-activation",
+				RequestedModes: []string{SandboxSecretModeHTTPProxy},
+				ActiveModes:    []string{SandboxSecretModeHTTPProxy},
+				ActiveProofs: []SandboxCredentialDeliveryProofSummary{
+					secureDefaultProjectionCredentialProof("binding-http-proxy", SandboxSecretModeHTTPProxy, "broker"),
+				},
+				Status:     "failed",
+				ReasonCode: "missing_activation_proof",
+				ErrorCount: 1,
+			},
+		},
+		{
+			name:        "warning-bearing active proof",
+			bindingMode: SandboxSecretModeHTTPProxy,
+			status: &SandboxCredentialDeliveryStatusMetadata{
+				ID:             "credential-delivery-warning",
+				PlanID:         "credential-delivery-plan",
+				ActivationID:   "credential-delivery-activation",
+				RequestedModes: []string{SandboxSecretModeHTTPProxy},
+				ActiveModes:    []string{SandboxSecretModeHTTPProxy},
+				ActiveProofs: []SandboxCredentialDeliveryProofSummary{
+					secureDefaultProjectionCredentialProof("binding-http-proxy", SandboxSecretModeHTTPProxy, "broker"),
+				},
+				Status:       "active",
+				ReasonCode:   "requested",
+				WarningCount: 1,
+			},
+			wantReason: SandboxSecurityCapabilityReasonWarningBearing,
+		},
+		{
 			name:        "wrong binding proof",
 			bindingMode: SandboxSecretModeHTTPProxy,
 			status: secureDefaultProjectionCredentialDeliveryStatus(
@@ -597,6 +631,32 @@ func TestProjectSecureDefaultReadinessInputBlocksConfiguredBindingsWithoutMatchi
 					secureDefaultProjectionCredentialProof("binding-http-proxy", SandboxSecretModeSSHAgent, "handoff"),
 				},
 				SandboxSecretModeSSHAgent,
+			),
+		},
+		{
+			name:        "provider internal proof source",
+			bindingMode: SandboxSecretModeHTTPProxy,
+			status: secureDefaultProjectionCredentialDeliveryStatus(
+				[]SandboxCredentialDeliveryProofSummary{
+					secureDefaultProjectionCredentialProof("binding-http-proxy", SandboxSecretModeHTTPProxy, "adapter"),
+				},
+				SandboxSecretModeHTTPProxy,
+			),
+		},
+		{
+			name:        "unbound configured binding",
+			bindingMode: SandboxSecretModeHTTPProxy,
+			binding: func() *SandboxCredentialProxyBindingMetadata {
+				binding := secureDefaultProjectionCredentialBinding("binding-http-proxy", SandboxSecretModeHTTPProxy)
+				binding.Outcome = SandboxCredentialProxyBindingOutcomePlanned
+				binding.Status = SandboxCredentialProxyStatusPlanned
+				return &binding
+			}(),
+			status: secureDefaultProjectionCredentialDeliveryStatus(
+				[]SandboxCredentialDeliveryProofSummary{
+					secureDefaultProjectionCredentialProof("binding-http-proxy", SandboxSecretModeHTTPProxy, "broker"),
+				},
+				SandboxSecretModeHTTPProxy,
 			),
 		},
 		{
@@ -624,10 +684,18 @@ func TestProjectSecureDefaultReadinessInputBlocksConfiguredBindingsWithoutMatchi
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			bindingID := "binding-" + strings.ReplaceAll(tt.bindingMode, "_", "-")
+			binding := secureDefaultProjectionCredentialBinding(bindingID, tt.bindingMode)
+			if tt.binding != nil {
+				binding = *tt.binding
+			}
+			wantReason := tt.wantReason
+			if wantReason == "" {
+				wantReason = SandboxSecurityCapabilityReasonCredentialActivationMissing
+			}
 			output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
 				ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(SandboxPolicyProxyCredentialCapabilityReadinessProjection{
 					CredentialProxyBindings: []SandboxCredentialProxyBindingMetadata{
-						secureDefaultProjectionCredentialBinding(bindingID, tt.bindingMode),
+						binding,
 					},
 					CredentialDelivery: tt.status,
 				}),
@@ -635,8 +703,8 @@ func TestProjectSecureDefaultReadinessInputBlocksConfiguredBindingsWithoutMatchi
 
 			requireSecureDefaultProjectionStrictGate(t, output,
 				SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
-				SandboxSecurityCapabilityReadinessGateReasonCode(SandboxSecurityCapabilityReasonCredentialActivationMissing),
-				SandboxSecurityCapabilityReasonCredentialActivationMissing,
+				SandboxSecurityCapabilityReadinessGateReasonCode(wantReason),
+				wantReason,
 			)
 			requireSecureDefaultProjectionNoReadyResult(t, output,
 				SandboxSecurityCapabilityFamilySecretDelivery,
