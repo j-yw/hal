@@ -57,7 +57,7 @@ func BuildPolicyProxyDecisionLogRecord(input PolicyProxyDecisionLogInput) Policy
 		RuleID:              decision.RuleID,
 		Action:              decision.Action,
 		ReasonCode:          decision.ReasonCode,
-		DestinationCategory: decision.RuleCategory,
+		DestinationCategory: policyProxyDecisionLogDestinationCategory(decision, input.Request),
 		Count:               1,
 	}
 	return SanitizePolicyProxyDecisionLogRecord(record)
@@ -160,6 +160,26 @@ func policyProxyDecisionPolicySnapshotID(snapshot *PolicySnapshotIdentity) strin
 		return ""
 	}
 	return snapshot.ID
+}
+
+func policyProxyDecisionLogDestinationCategory(decision PolicyProxyDecision, request PolicyProxyDecisionRequest) AllowlistRuleCategory {
+	if category := sanitizeAllowlistRuleCategory(decision.RuleCategory); category != "" {
+		return category
+	}
+	target := policyProxyRequestTargetFromRequest(request)
+	if !target.valid {
+		return ""
+	}
+	if category := policyProxyUnsafeDestinationCategory(target); category != "" {
+		return category
+	}
+	if target.hasPort && validAllowlistEndpointHost(target.host) && validAllowlistEndpointPort(target.port) {
+		return AllowlistRuleCategoryEndpoint
+	}
+	if validAllowlistDomainName(target.host) {
+		return AllowlistRuleCategoryDomain
+	}
+	return ""
 }
 
 func appendPolicyProxyDestinationCategoryCounter(counters []PolicyProxyDestinationCategoryCounter, category AllowlistRuleCategory, count int) []PolicyProxyDestinationCategoryCounter {

@@ -2,6 +2,7 @@ package networkenforcement
 
 import (
 	"encoding/json"
+	"net/netip"
 	"strings"
 )
 
@@ -80,7 +81,17 @@ func EvaluatePolicyProxyDecision(policy PolicyProxyDecisionPolicy, request Polic
 	}
 
 	target := policyProxyRequestTargetFromRequest(request)
-	if !target.valid || !policyProxyDecisionAllowlistEnabled(plan) {
+	if !target.valid {
+		return SanitizePolicyProxyDecision(decision)
+	}
+
+	if category := policyProxyBlockedUnsafeDestinationCategory(plan, target); category != "" {
+		decision.RuleCategory = category
+		decision.ReasonCode = PolicyProxyDecisionReasonUnsafeDestinationBlocked
+		return SanitizePolicyProxyDecision(decision)
+	}
+
+	if !policyProxyDecisionAllowlistEnabled(plan) {
 		return SanitizePolicyProxyDecision(decision)
 	}
 
@@ -297,4 +308,71 @@ func policyProxyEndpointRuleMatchesTarget(value string, target policyProxyReques
 		return false
 	}
 	return target.host == normalizePolicyProxyHost(host) && target.port == strings.TrimSpace(port)
+}
+
+func policyProxyBlockedUnsafeDestinationCategory(plan Plan, target policyProxyRequestTarget) AllowlistRuleCategory {
+	if !target.valid {
+		return ""
+	}
+	category := policyProxyUnsafeDestinationCategory(target)
+	if category == "" || !policyProxyPlanBlocksUnsafeDestinationCategory(plan, category) {
+		return ""
+	}
+	return category
+}
+
+func policyProxyUnsafeDestinationCategory(target policyProxyRequestTarget) AllowlistRuleCategory {
+	host := normalizePolicyProxyHost(target.host)
+	if host == "" {
+		return ""
+	}
+	if policyProxyHostIsMetadataEndpoint(host) {
+		return AllowlistRuleCategoryMetadataEndpoint
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return ""
+	}
+	switch {
+	case addr.IsLoopback():
+		return AllowlistRuleCategoryLoopback
+	case addr.IsLinkLocalUnicast():
+		return AllowlistRuleCategoryLinkLocal
+	case addr.IsPrivate():
+		return AllowlistRuleCategoryPrivateRange
+	default:
+		return ""
+	}
+}
+
+func policyProxyHostIsMetadataEndpoint(host string) bool {
+	if isAllowlistMetadataEndpointValue(host) {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	for _, metadataAddr := range allowlistMetadataAddrs() {
+		if addr == metadataAddr {
+			return true
+		}
+	}
+	return false
+}
+
+func policyProxyPlanBlocksUnsafeDestinationCategory(plan Plan, category AllowlistRuleCategory) bool {
+	if plan.Category == nil {
+		return false
+	}
+	switch sanitizeAllowlistRuleCategory(category) {
+	case AllowlistRuleCategoryMetadataEndpoint:
+		return sanitizePosture(plan.Category.MetadataEndpoint) == PostureBlock
+	case AllowlistRuleCategoryPrivateRange,
+		AllowlistRuleCategoryLoopback,
+		AllowlistRuleCategoryLinkLocal:
+		return sanitizePosture(plan.Category.PrivateNetwork) == PostureBlock
+	default:
+		return false
+	}
 }
