@@ -190,6 +190,10 @@ func sandboxManifestCredentialDeliveryActivationStatus(planStatus *sandbox.Sandb
 	return sandboxCredentialDeliveryStatusFromCredentialDelivery(status)
 }
 
+func sandboxCredentialDeliveryActivationResultPresent(activation credentialDeliveryActivationResult) bool {
+	return sandboxCommandJSONCredentialDeliveryStatus(sandboxManifestCredentialDeliveryActivationStatus(nil, activation)) != nil
+}
+
 func sandboxCredentialDeliveryPlanFromStatus(status *sandbox.SandboxCredentialDeliveryStatusMetadata) credentialdelivery.Plan {
 	if status == nil {
 		return credentialdelivery.Plan{}
