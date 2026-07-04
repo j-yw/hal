@@ -24,9 +24,10 @@ const (
 type PolicyProxyDecisionReasonCode string
 
 const (
-	PolicyProxyDecisionReasonAllowRuleMatched       PolicyProxyDecisionReasonCode = "allow_rule_matched"
-	PolicyProxyDecisionReasonDefaultDenyNoAllowRule PolicyProxyDecisionReasonCode = "default_deny_no_allow_rule"
-	PolicyProxyDecisionReasonProxyUnsupported       PolicyProxyDecisionReasonCode = "policy_proxy_unsupported"
+	PolicyProxyDecisionReasonAllowRuleMatched         PolicyProxyDecisionReasonCode = "allow_rule_matched"
+	PolicyProxyDecisionReasonDefaultDenyNoAllowRule   PolicyProxyDecisionReasonCode = "default_deny_no_allow_rule"
+	PolicyProxyDecisionReasonUnsafeDestinationBlocked PolicyProxyDecisionReasonCode = "unsafe_destination_blocked"
+	PolicyProxyDecisionReasonProxyUnsupported         PolicyProxyDecisionReasonCode = "policy_proxy_unsupported"
 )
 
 // PolicyProxyDecisionPolicy carries the sanitized plan plus validation-only
@@ -123,6 +124,7 @@ func sanitizePolicyProxyDecisionReasonCode(value PolicyProxyDecisionReasonCode) 
 	switch normalized {
 	case PolicyProxyDecisionReasonAllowRuleMatched,
 		PolicyProxyDecisionReasonDefaultDenyNoAllowRule,
+		PolicyProxyDecisionReasonUnsafeDestinationBlocked,
 		PolicyProxyDecisionReasonProxyUnsupported:
 		return normalized
 	default:
