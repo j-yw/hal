@@ -70,6 +70,25 @@ func TestPhase60OperatorVerificationDocumentOmitsMarkerValuesAndSensitiveExample
 	}
 }
 
+func TestPhase60FinalVerificationRecordDocumentsExecutableResults(t *testing.T) {
+	doc := readPhase60OperatorVerificationDoc(t)
+	for _, command := range phase60ExpectedFakeOnlyReleaseGateCommands() {
+		phase60AssertVerificationRecordResult(t, doc, command, "passed")
+	}
+	for _, command := range phase60ExpectedOptionalLiveCommands() {
+		phase60AssertVerificationRecordResult(t, doc, command, "skipped; sanitized prerequisite reason: prepared-host live markers were not provided")
+	}
+	for _, want := range []string{
+		"US-018 recorded final code verification on 2026-07-04 UTC.",
+		"Final acceptance: accepted from the recorded code verification commands above;",
+		"PRD post-run validation was not used.",
+	} {
+		if !strings.Contains(doc, want) {
+			t.Fatalf("Phase 60 final verification record missing %q", want)
+		}
+	}
+}
+
 func TestPhase60OperatorVerificationSafetyGuardRejectsFixtures(t *testing.T) {
 	for _, tt := range []struct {
 		name string
@@ -325,6 +344,14 @@ func phase60OperatorVerificationDocUnsafeDetail(doc string) string {
 		return "host endpoint example"
 	default:
 		return ""
+	}
+}
+
+func phase60AssertVerificationRecordResult(t *testing.T, doc, command, result string) {
+	t.Helper()
+	want := "- `" + command + "`: " + result + "."
+	if !strings.Contains(doc, want) {
+		t.Fatalf("Phase 60 final verification record missing result line %q", want)
 	}
 }
 

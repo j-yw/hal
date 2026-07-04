@@ -163,3 +163,26 @@ and any optional live checks separately. A skipped optional live command should
 be recorded as skipped with a sanitized prerequisite reason. Final Phase 60
 acceptance must be based on code verification commands, not PRD post-run
 validation.
+
+## Final Code Verification Record
+
+US-018 recorded final code verification on 2026-07-04 UTC.
+
+Default code verification results:
+
+- `go test ./...`: passed.
+- `go test -count=1 -run '^$' ./...`: passed.
+- `go vet ./...`: passed.
+- `make docs-check`: passed.
+- `make build`: passed.
+- `git diff --check`: passed.
+
+Skipped prepared-host diagnostics:
+
+- `go test -tags=firecracker_live -count=1 -timeout=120s ./internal/sandboxruntime/microvm/firecracker ./internal/sandboxruntime/microvm/firecrackerhost`: skipped; sanitized prerequisite reason: prepared-host live markers were not provided.
+- `go test -tags=network_enforcement_live -count=1 -timeout=120s ./internal/sandboxruntime/networkenforcement -run 'TestNetworkEnforcementLiveHarnessRequiresExplicitOptIn|TestNetworkEnforcementLivePrerequisiteSkipMessagesAreClearAndRedacted'`: skipped; sanitized prerequisite reason: prepared-host live markers were not provided.
+- `go test -tags=credential_delivery_live -count=1 -timeout=120s ./internal/credentialdelivery -run 'TestCredentialDeliveryLiveHarnessRequiresExplicitOptIn|TestCredentialDeliveryLivePrerequisiteSkipMessagesAreSanitized|TestCredentialDeliveryLivePrerequisitesAcceptAnyModeGate'`: skipped; sanitized prerequisite reason: prepared-host live markers were not provided.
+- `go test -tags=microvm_e2e_live,firecracker_live,network_enforcement_live,credential_delivery_live -count=1 -timeout=180s ./internal/sandboxruntime/microvm -run TestMicroVMLiveE2EComposedLiveExecutionPath`: skipped; sanitized prerequisite reason: prepared-host live markers were not provided.
+
+Final acceptance: accepted from the recorded code verification commands above;
+PRD post-run validation was not used.
