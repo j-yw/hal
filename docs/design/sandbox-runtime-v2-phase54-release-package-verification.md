@@ -1,8 +1,33 @@
 # Sandbox Runtime v2 Phase 54 Release Package Verification
 
 Phase 54 US-002 guards the release build and package command surface for this
-branch. The branch build artifact is the Hal CLI binary, produced locally as
-`./hal`.
+branch. Phase 54 US-003 defines the default fake-only CI matrix for routine
+verification on ordinary developer and CI hosts. The branch build artifact is
+the Hal CLI binary, produced locally as `./hal`.
+
+## Default CI Matrix
+
+Default CI is fake-only. It must not require live runtime prerequisites such as
+Firecracker, KVM, Docker/Podman, sandboxd, cloud provider access, registry
+credentials, proxy listeners, firewall mutation, real API secrets, live
+environment markers, or tagged live test suites.
+
+The default matrix is:
+
+```sh
+go test ./...
+go vet ./...
+make docs-check
+make build
+git diff --check
+```
+
+These commands validate tests, vet, generated CLI documentation drift, the local
+Hal binary build, and whitespace. Optional live suites stay outside default CI
+and must be documented as explicit opt-in operator checks.
+
+Phase 54 planning workflow references use plain `hal convert`; they do not
+require `hal convert --granular`.
 
 ## Expected Build Command
 

@@ -270,6 +270,48 @@ func TestPhase54ReleasePackageDocumentationIdentifiesBuildCommand(t *testing.T) 
 	}
 }
 
+func TestPhase54DefaultCIDocumentationDefinesFakeOnlyMatrix(t *testing.T) {
+	doc := phase50ReadFile(t, phase54ReleasePackageDesignDocPath())
+	normalized := strings.Join(strings.Fields(doc), " ")
+	for _, want := range []string{
+		"Default CI is fake-only.",
+		"must not require live runtime prerequisites",
+		"tagged live test suites",
+		"Phase 54 planning workflow references use plain `hal convert`",
+		"do not require `hal convert --granular`",
+	} {
+		if !strings.Contains(doc, want) && !strings.Contains(normalized, want) {
+			t.Fatalf("%s must document default fake-only CI matrix requirement %q", phase50SafeDisplayPath(phase54ReleasePackageDesignDocPath()), want)
+		}
+	}
+
+	commands := phase34DocumentedShellCommands(doc)
+	for _, want := range phase54DefaultCICommands() {
+		if !commands[want] {
+			t.Fatalf("%s default CI matrix missing command line %q", phase50SafeDisplayPath(phase54ReleasePackageDesignDocPath()), want)
+		}
+	}
+	for _, command := range phase54DefaultDocumentedCommands(doc) {
+		if marker := phase54ForbiddenDefaultCommandMarker(command); marker != "" {
+			t.Fatalf("%s default CI command %q contains live or tagged-suite marker %q", phase50SafeDisplayPath(phase54ReleasePackageDesignDocPath()), command, marker)
+		}
+	}
+}
+
+func TestPhase54GitHubChecksJobMatchesDefaultCIMatrix(t *testing.T) {
+	body := phase54GitHubWorkflowJobBody(t, "checks")
+	for _, want := range phase54DefaultCICommands() {
+		if !strings.Contains(body, "run: "+want) {
+			t.Fatalf(".github/workflows/ci.yml checks job must run %q; body:\n%s", want, body)
+		}
+	}
+	for _, marker := range phase54ForbiddenDefaultCommandMarkers() {
+		if strings.Contains(body, marker) {
+			t.Fatalf(".github/workflows/ci.yml checks job must stay fake-only; found marker %q in:\n%s", marker, body)
+		}
+	}
+}
+
 func TestPhase54ReleasePackageDocumentationStaysDefaultSafe(t *testing.T) {
 	doc := phase50ReadFile(t, phase54ReleasePackageDesignDocPath())
 	normalized := strings.Join(strings.Fields(doc), " ")
@@ -512,6 +554,41 @@ func phase54ForbiddenDefaultCommandMarkers() []string {
 		"hal sandboxd",
 		"--live",
 	}
+}
+
+func phase54DefaultCICommands() []string {
+	return []string{
+		"go test ./...",
+		"go vet ./...",
+		"make docs-check",
+		"make build",
+		"git diff --check",
+	}
+}
+
+func phase54GitHubWorkflowJobBody(t *testing.T, job string) string {
+	t.Helper()
+	source := phase50ReadFile(t, filepath.Join("..", ".github", "workflows", "ci.yml"))
+	lines := strings.Split(source, "\n")
+	jobPrefix := "  " + job + ":"
+	var body []string
+	inJob := false
+	for _, line := range lines {
+		if !inJob {
+			if line == jobPrefix {
+				inJob = true
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "    ") && strings.TrimSpace(line) != "" {
+			break
+		}
+		body = append(body, line)
+	}
+	if !inJob {
+		t.Fatalf(".github/workflows/ci.yml job %q not found", job)
+	}
+	return strings.Join(body, "\n")
 }
 
 func phase54MakefileTargetBody(t *testing.T, target string) string {
