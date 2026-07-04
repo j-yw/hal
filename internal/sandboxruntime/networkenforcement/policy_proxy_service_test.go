@@ -3,6 +3,8 @@ package networkenforcement
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -247,6 +249,153 @@ func TestPolicyProxyLifecycleProofSanitizesUnsafeAdapterMetadata(t *testing.T) {
 	assertPolicyProxyServiceJSONOmitsRawValues(t, proof, "127.0.0.1:8080", "/tmp/proxy.sock", "token=secret")
 }
 
+func TestPolicyProxyLifecycleServiceStartActiveAndStopProofSequence(t *testing.T) {
+	adapter := &recordingProxyListenerAdapter{
+		metadata: map[string]ProxyListenerLifecycleMetadata{
+			"prepare_proxy": policyProxyServiceListenerMetadata(LifecycleStatusPrepared, LifecycleReasonPrepared, "prepare_proxy"),
+			"start_proxy":   policyProxyServiceListenerMetadata(LifecycleStatusStarting, LifecycleReasonStarted, "start_proxy"),
+			"active_proxy":  policyProxyServiceListenerMetadata(LifecycleStatusActive, LifecycleReasonActive, "active_proxy"),
+			"stop_proxy":    policyProxyServiceListenerMetadata(LifecycleStatusStopped, LifecycleReasonStopped, "stop_proxy"),
+		},
+	}
+	service := PolicyProxyLifecycleService{Adapter: adapter}
+
+	started, err := service.StartPolicyProxy(context.Background(), NewPolicyProxyLifecycleRequest(policyProxyServicePlan(), PolicyProxyLifecycleProof{}, PolicyProxyLifecycleProof{}))
+	if err != nil {
+		t.Fatalf("StartPolicyProxy() error = %v, want nil", err)
+	}
+	active, err := service.ActivePolicyProxy(context.Background(), NewPolicyProxyLifecycleRequest(policyProxyServicePlan(), started, started))
+	if err != nil {
+		t.Fatalf("ActivePolicyProxy() error = %v, want nil", err)
+	}
+	stopped, err := service.StopPolicyProxy(context.Background(), NewPolicyProxyLifecycleRequest(policyProxyServicePlan(), started, active))
+	if err != nil {
+		t.Fatalf("StopPolicyProxy() error = %v, want nil", err)
+	}
+
+	assertProxyListenerCalls(t, adapter.calls, []string{"prepare_proxy", "start_proxy", "active_proxy", "stop_proxy"})
+	assertPolicyProxyLifecycleProof(t, started, policyProxyLifecycleProofExpectation{
+		operation: PolicyProxyLifecycleOperationStart,
+		status:    LifecycleStatusStarting,
+		reason:    LifecycleReasonStarted,
+	})
+	assertPolicyProxyLifecycleProof(t, active, policyProxyLifecycleProofExpectation{
+		operation:        PolicyProxyLifecycleOperationActiveCheck,
+		status:           LifecycleStatusActive,
+		reason:           LifecycleReasonActive,
+		mechanisms:       []EnforcementMechanism{EnforcementMechanismProxy},
+		capabilityLabels: []string{"proxy_active"},
+	})
+	assertPolicyProxyLifecycleProof(t, stopped, policyProxyLifecycleProofExpectation{
+		operation: PolicyProxyLifecycleOperationStop,
+		status:    LifecycleStatusStopped,
+		reason:    LifecycleReasonStopped,
+	})
+	assertPolicyProxyServiceJSONOmitsRawValues(t, struct {
+		Start  PolicyProxyLifecycleProof `json:"start"`
+		Active PolicyProxyLifecycleProof `json:"active"`
+		Stop   PolicyProxyLifecycleProof `json:"stop"`
+	}{Start: started, Active: active, Stop: stopped}, "127.0.0.1:8080", "/tmp/proxy.sock", "token=secret")
+}
+
+func TestPolicyProxyLifecycleServiceFailuresClearEnforcingClaims(t *testing.T) {
+	startFailure := &recordingProxyListenerAdapter{
+		failures: map[string]error{"start_proxy": errors.New("listen 127.0.0.1:8080 on /tmp/proxy.sock token=secret")},
+	}
+	started, err := (PolicyProxyLifecycleService{Adapter: startFailure}).StartPolicyProxy(context.Background(), NewPolicyProxyLifecycleRequest(policyProxyServicePlan(), PolicyProxyLifecycleProof{}, PolicyProxyLifecycleProof{}))
+	if err == nil {
+		t.Fatal("StartPolicyProxy() error = nil, want sanitized start failure")
+	}
+	assertProxyListenerCalls(t, startFailure.calls, []string{"prepare_proxy", "start_proxy", "stop_proxy"})
+	assertPolicyProxyLifecycleProof(t, started, policyProxyLifecycleProofExpectation{
+		operation: PolicyProxyLifecycleOperationStart,
+		status:    LifecycleStatusFailed,
+		reason:    LifecycleReasonAdapterFailed,
+		warnings:  []LifecycleWarningCode{LifecycleWarningSanitizedAdapterError},
+	})
+	assertPolicyProxyLifecycleProofClearsEnforcingClaims(t, started)
+	assertPolicyProxyLifecycleErrorSanitized(t, err, started)
+
+	missing, err := (PolicyProxyLifecycleService{}).StartPolicyProxy(context.Background(), NewPolicyProxyLifecycleRequest(policyProxyServicePlan(), PolicyProxyLifecycleProof{}, PolicyProxyLifecycleProof{}))
+	if err == nil {
+		t.Fatal("missing adapter StartPolicyProxy() error = nil, want unsupported error")
+	}
+	assertPolicyProxyLifecycleProof(t, missing, policyProxyLifecycleProofExpectation{
+		operation: PolicyProxyLifecycleOperationStart,
+		status:    LifecycleStatusFailed,
+		reason:    LifecycleReasonAdapterUnsupported,
+		warnings:  []LifecycleWarningCode{LifecycleWarningSanitizedAdapterError},
+	})
+	assertPolicyProxyLifecycleProofClearsEnforcingClaims(t, missing)
+	assertPolicyProxyLifecycleErrorSanitized(t, err, missing)
+
+	deniedActive := &recordingProxyListenerAdapter{
+		metadata: map[string]ProxyListenerLifecycleMetadata{
+			"active_proxy": {
+				ID:               "proxy-live-service",
+				PlanID:           "network-plan-policy-proxy-service",
+				AdapterID:        "fake-policy-proxy",
+				Status:           LifecycleStatusSkipped,
+				Mechanisms:       []EnforcementMechanism{EnforcementMechanismProxy},
+				Operations:       []string{"active_proxy", "connect 127.0.0.1:8080"},
+				PolicySnapshot:   &PolicySnapshotIdentity{ID: "policy-proxy-service", Preset: PolicyPresetAllowListed},
+				CapabilityLabels: []string{"proxy_active", "runtime_socket"},
+				ReasonCode:       LifecycleReasonCapabilityMissing,
+			},
+		},
+	}
+	active, err := (PolicyProxyLifecycleService{Adapter: deniedActive}).ActivePolicyProxy(context.Background(), NewPolicyProxyLifecycleRequest(policyProxyServicePlan(), PolicyProxyLifecycleProof{}, PolicyProxyLifecycleProof{}))
+	if err == nil {
+		t.Fatal("denied ActivePolicyProxy() error = nil, want active-check failure")
+	}
+	assertProxyListenerCalls(t, deniedActive.calls, []string{"active_proxy"})
+	assertPolicyProxyLifecycleProof(t, active, policyProxyLifecycleProofExpectation{
+		operation: PolicyProxyLifecycleOperationActiveCheck,
+		status:    LifecycleStatusFailed,
+		reason:    LifecycleReasonActiveCheckFailed,
+		warnings:  []LifecycleWarningCode{LifecycleWarningSanitizedAdapterError, LifecycleWarningActiveCheckFailed},
+	})
+	assertPolicyProxyLifecycleProofClearsEnforcingClaims(t, active)
+	assertPolicyProxyLifecycleErrorSanitized(t, err, active)
+}
+
+func TestPolicyProxyLifecycleServiceStopCleanupWarningClearsEnforcingClaims(t *testing.T) {
+	adapter := &recordingProxyListenerAdapter{
+		failures: map[string]error{"stop_proxy": errors.New("close /tmp/proxy.sock bound to 127.0.0.1:8080")},
+	}
+	service := PolicyProxyLifecycleService{Adapter: adapter}
+	active := PolicyProxyLifecycleProof{
+		PlanID:           "network-plan-policy-proxy-service",
+		ProxySessionID:   "proxy-live-service",
+		AdapterID:        "fake-policy-proxy",
+		Operation:        PolicyProxyLifecycleOperationActiveCheck,
+		Status:           LifecycleStatusActive,
+		Mechanisms:       []EnforcementMechanism{EnforcementMechanismProxy},
+		Operations:       []PolicyProxyLifecycleOperation{PolicyProxyLifecycleOperationActiveCheck},
+		PolicySnapshot:   &PolicySnapshotIdentity{ID: "policy-proxy-service", Preset: PolicyPresetAllowListed},
+		CapabilityLabels: []string{"proxy_active"},
+		ReasonCode:       LifecycleReasonActive,
+	}
+
+	stopped, err := service.StopPolicyProxy(context.Background(), NewPolicyProxyLifecycleRequest(policyProxyServicePlan(), PolicyProxyLifecycleProof{}, active))
+	if err != nil {
+		t.Fatalf("StopPolicyProxy() error = %v, want nil because cleanup failure is warning metadata", err)
+	}
+
+	assertProxyListenerCalls(t, adapter.calls, []string{"stop_proxy"})
+	assertPolicyProxyLifecycleProof(t, stopped, policyProxyLifecycleProofExpectation{
+		operation: PolicyProxyLifecycleOperationStop,
+		status:    LifecycleStatusStopped,
+		reason:    LifecycleReasonStopped,
+		warnings: []LifecycleWarningCode{
+			LifecycleWarningCleanupFailed,
+			LifecycleWarningSanitizedAdapterError,
+		},
+	})
+	assertPolicyProxyLifecycleProofClearsEnforcingClaims(t, stopped)
+	assertPolicyProxyServiceJSONOmitsRawValues(t, stopped, "127.0.0.1:8080", "/tmp/proxy.sock")
+}
+
 func policyProxyServicePlan() Plan {
 	return BuildPlan(PlanRequest{
 		ID:        "network-plan-policy-proxy-service",
@@ -272,6 +421,74 @@ func policyProxyServicePlan() Plan {
 			},
 		},
 	})
+}
+
+func policyProxyServiceListenerMetadata(status LifecycleStatus, reason LifecycleReasonCode, operation string) ProxyListenerLifecycleMetadata {
+	return ProxyListenerLifecycleMetadata{
+		ID:               "proxy-live-service",
+		PlanID:           "network-plan-policy-proxy-service",
+		AdapterID:        "fake-policy-proxy",
+		Status:           status,
+		Mechanisms:       []EnforcementMechanism{EnforcementMechanismProxy, EnforcementMechanismFirewall},
+		Operations:       []string{operation, "listen 127.0.0.1:8080"},
+		PolicySnapshot:   &PolicySnapshotIdentity{ID: "policy-proxy-service", Preset: PolicyPresetAllowListed},
+		CapabilityLabels: []string{"proxy_active", "runtime_socket"},
+		ReasonCode:       reason,
+	}
+}
+
+type policyProxyLifecycleProofExpectation struct {
+	operation        PolicyProxyLifecycleOperation
+	status           LifecycleStatus
+	reason           LifecycleReasonCode
+	mechanisms       []EnforcementMechanism
+	capabilityLabels []string
+	warnings         []LifecycleWarningCode
+}
+
+func assertPolicyProxyLifecycleProof(t *testing.T, got PolicyProxyLifecycleProof, want policyProxyLifecycleProofExpectation) {
+	t.Helper()
+	if got.PlanID != "network-plan-policy-proxy-service" {
+		t.Fatalf("PlanID = %q, want network-plan-policy-proxy-service in %#v", got.PlanID, got)
+	}
+	if got.ProxySessionID == "" {
+		t.Fatalf("ProxySessionID is empty, want sanitized proxy session id in %#v", got)
+	}
+	if got.Operation != want.operation {
+		t.Fatalf("Operation = %q, want %q in %#v", got.Operation, want.operation, got)
+	}
+	if got.Status != want.status {
+		t.Fatalf("Status = %q, want %q in %#v", got.Status, want.status, got)
+	}
+	if got.ReasonCode != want.reason {
+		t.Fatalf("ReasonCode = %q, want %q in %#v", got.ReasonCode, want.reason, got)
+	}
+	assertPlanStringArrayFromStrings(t, lifecycleOperationsToStrings(got.Operations), []string{string(want.operation)})
+	if !reflect.DeepEqual(got.Mechanisms, want.mechanisms) {
+		t.Fatalf("Mechanisms = %#v, want %#v in %#v", got.Mechanisms, want.mechanisms, got)
+	}
+	if !reflect.DeepEqual(got.CapabilityLabels, want.capabilityLabels) {
+		t.Fatalf("CapabilityLabels = %#v, want %#v in %#v", got.CapabilityLabels, want.capabilityLabels, got)
+	}
+	if !reflect.DeepEqual(got.WarningCodes, want.warnings) {
+		t.Fatalf("WarningCodes = %#v, want %#v in %#v", got.WarningCodes, want.warnings, got)
+	}
+}
+
+func assertPolicyProxyLifecycleProofClearsEnforcingClaims(t *testing.T, proof PolicyProxyLifecycleProof) {
+	t.Helper()
+	if proof.Status == LifecycleStatusActive || len(proof.Mechanisms) != 0 || len(proof.CapabilityLabels) != 0 {
+		t.Fatalf("proof retained enforcing claims: %#v", proof)
+	}
+}
+
+func assertPolicyProxyLifecycleErrorSanitized(t *testing.T, err error, proof PolicyProxyLifecycleProof) {
+	t.Helper()
+	payload, marshalErr := json.Marshal(proof)
+	if marshalErr != nil {
+		t.Fatalf("Marshal(lifecycle proof) error: %v", marshalErr)
+	}
+	assertLifecyclePayloadSanitized(t, err.Error()+" "+string(payload), "policy proxy lifecycle failure")
 }
 
 func assertPolicyProxyServiceJSONOmitsRawValues(t *testing.T, value any, forbiddenValues ...string) {
