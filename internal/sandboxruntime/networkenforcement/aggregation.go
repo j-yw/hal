@@ -40,29 +40,37 @@ func AggregateLiveEnforcementResult(plan Plan, listener *ProxyListenerLifecycleR
 	listenerResult := sanitizeAggregateListenerResult(listener)
 	ruleResult := sanitizeAggregateRuleResult(rules)
 
-	warnings := aggregateResultWarnings(listenerResult, ruleResult)
 	mechanisms := aggregateResultMechanisms(input, listenerResult, ruleResult)
 	operations := aggregateResultOperations(listenerResult, ruleResult)
 	policySnapshot := sanitizePolicySnapshotIdentityPtr(input.PolicySnapshot)
-
-	if aggregatePlanAllowsStrongEnforcement(input) &&
+	strongLifecycle := aggregatePlanAllowsStrongEnforcement(input) &&
 		aggregateListenerActive(listenerResult) &&
-		aggregateRulesActive(ruleResult) {
-		mode := aggregateStrongResultMode(ruleResult)
-		if resultModeCanEnforce(mode) {
-			return SanitizeResult(Result{
-				PlanID:          input.ID,
-				AdapterID:       liveEnforcementAggregationAdapterID,
-				Outcome:         ResultOutcomeSuccess,
-				EnforcementMode: mode,
-				Mechanisms:      mechanisms,
-				Operations:      operations,
-				PolicySnapshot:  policySnapshot,
-				Capability:      aggregateResultCapability(input, mode),
-				ReasonCode:      ResultReasonApplied,
-				WarningCodes:    warnings,
-			})
-		}
+		aggregateRulesActive(ruleResult)
+	strongMode := ResultModeNone
+	strongCapabilityCompatible := false
+	if strongLifecycle {
+		strongMode = aggregateStrongResultMode(ruleResult)
+		strongCapabilityCompatible = resultModeCanEnforce(strongMode) &&
+			aggregateRuleCapabilityCompatibleWithPlan(input, ruleResult)
+	}
+	warnings := aggregateResultWarnings(listenerResult, ruleResult)
+	if strongLifecycle && resultModeCanEnforce(strongMode) && !strongCapabilityCompatible {
+		warnings = appendResultWarnings(warnings, ResultWarningCapabilityDowngraded)
+	}
+
+	if strongLifecycle && strongCapabilityCompatible {
+		return SanitizeResult(Result{
+			PlanID:          input.ID,
+			AdapterID:       liveEnforcementAggregationAdapterID,
+			Outcome:         ResultOutcomeSuccess,
+			EnforcementMode: strongMode,
+			Mechanisms:      mechanisms,
+			Operations:      operations,
+			PolicySnapshot:  policySnapshot,
+			Capability:      aggregateResultCapability(input, strongMode),
+			ReasonCode:      ResultReasonApplied,
+			WarningCodes:    warnings,
+		})
 	}
 
 	if aggregateBestEffortPlan(input) &&
@@ -187,6 +195,74 @@ func aggregateStrongResultMode(rules *RuleLifecycleResult) ResultMode {
 		}
 	}
 	return ResultModeNone
+}
+
+func aggregateRuleCapabilityCompatibleWithPlan(plan Plan, rules *RuleLifecycleResult) bool {
+	if rules == nil || rules.Active == nil {
+		return false
+	}
+	labels := sanitizeIdentifierList(rules.Active.CapabilityLabels)
+	if plan.DefaultPosture == DefaultPostureDenyByDefault &&
+		!aggregateRuleCapabilityHasAnyLabel(labels, planOperationDefaultDeny, "default_deny_active") {
+		return false
+	}
+	if plan.Allowlist != nil {
+		for _, category := range plan.Allowlist.RuleCategories {
+			if !aggregateRuleCapabilitySupportsCategory(labels, category) {
+				return false
+			}
+		}
+	}
+	if plan.Category != nil {
+		if plan.Category.PrivateNetwork == PostureBlock &&
+			!aggregateRuleCapabilityHasAnyLabel(labels, "private_range_rules", planOperationAllowlistPrivateRange, planOperationBlockPrivateNetwork) {
+			return false
+		}
+		if plan.Category.MetadataEndpoint == PostureBlock &&
+			!aggregateRuleCapabilityHasAnyLabel(labels, "metadata_endpoint", "metadata_endpoint_rules", planOperationAllowlistMetadata, planOperationBlockMetadataEndpoint) {
+			return false
+		}
+	}
+	if plan.RawProtocols != nil &&
+		(plan.RawProtocols.TCP == PostureBlock || plan.RawProtocols.UDP == PostureBlock || plan.RawProtocols.ICMP == PostureBlock) &&
+		!aggregateRuleCapabilityHasAnyLabel(labels, "raw_protocols", planOperationBlockRawProtocols) {
+		return false
+	}
+	return true
+}
+
+func aggregateRuleCapabilitySupportsCategory(labels []string, category AllowlistRuleCategory) bool {
+	switch category {
+	case AllowlistRuleCategoryDomain:
+		return aggregateRuleCapabilityHasAnyLabel(labels, "domain_rules", planOperationAllowlistDomain)
+	case AllowlistRuleCategoryEndpoint:
+		return aggregateRuleCapabilityHasAnyLabel(labels, "endpoint_rules", planOperationAllowlistEndpoint)
+	case AllowlistRuleCategoryPrivateRange:
+		return aggregateRuleCapabilityHasAnyLabel(labels, "private_range_rules", planOperationAllowlistPrivateRange, planOperationBlockPrivateNetwork)
+	case AllowlistRuleCategoryMetadataEndpoint:
+		return aggregateRuleCapabilityHasAnyLabel(labels, "metadata_endpoint", "metadata_endpoint_rules", planOperationAllowlistMetadata, planOperationBlockMetadataEndpoint)
+	case AllowlistRuleCategoryLoopback:
+		return aggregateRuleCapabilityHasAnyLabel(labels, "loopback_rules", planOperationAllowlistLoopback)
+	case AllowlistRuleCategoryLinkLocal:
+		return aggregateRuleCapabilityHasAnyLabel(labels, "link_local_rules", planOperationAllowlistLinkLocal)
+	default:
+		return false
+	}
+}
+
+func aggregateRuleCapabilityHasAnyLabel(labels []string, candidates ...string) bool {
+	for _, candidate := range candidates {
+		current := sanitizeIdentifier(candidate)
+		if current == "" {
+			continue
+		}
+		for _, label := range labels {
+			if label == current {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func aggregateResultMechanisms(plan Plan, listener *ProxyListenerLifecycleResult, rules *RuleLifecycleResult) []EnforcementMechanism {
