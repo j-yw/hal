@@ -917,7 +917,33 @@ func sanitizeSandboxOutputSummary(value string, target *sandbox.SandboxState) st
 		return ""
 	}
 	redactor := sandboxRedactor(false, nil, target)
-	return sanitizeCredentialedRemoteReferences(redactor.Redact(value))
+	return sanitizeSandboxOutputSummaryLines(sanitizeCredentialedRemoteReferences(redactor.Redact(value)))
+}
+
+func sanitizeSandboxOutputSummaryLines(value string) string {
+	if value == "" {
+		return ""
+	}
+	var out strings.Builder
+	for len(value) > 0 {
+		line := value
+		suffix := ""
+		if idx := strings.IndexByte(value, '\n'); idx >= 0 {
+			line = value[:idx]
+			suffix = "\n"
+			value = value[idx+1:]
+		} else {
+			value = ""
+		}
+		if strings.HasSuffix(line, "\r") {
+			line = strings.TrimSuffix(line, "\r")
+			suffix = "\r" + suffix
+		}
+		safeLine := sanitizeFactoryLogText(line)
+		out.WriteString(safeLine)
+		out.WriteString(suffix)
+	}
+	return out.String()
 }
 
 func (deps runSandboxDeps) resolveRunSandboxTarget(ctx context.Context, req runSandboxRequest, out io.Writer) (*sandbox.SandboxState, error) {

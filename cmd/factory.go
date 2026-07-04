@@ -5389,8 +5389,10 @@ func factoryArtifactStringNeedsRedaction(value string) bool {
 			if parsed.User != nil {
 				return true
 			}
-			if host := strings.TrimSpace(parsed.Hostname()); host != "" && net.ParseIP(host) != nil {
-				return true
+			if host := strings.TrimSpace(parsed.Hostname()); host != "" {
+				if net.ParseIP(host) != nil || factoryArtifactEndpointHostNeedsRedaction(host) {
+					return true
+				}
 			}
 			for key := range parsed.Query() {
 				if factoryArtifactSecretKey(key) {
@@ -5409,7 +5411,51 @@ func factoryArtifactStringNeedsRedaction(value string) bool {
 		return r == ' ' || r == '\t' || r == '\n' || r == '/' || r == ',' || r == ';' || r == '=' || r == '(' || r == ')' || r == '[' || r == ']'
 	})
 	for _, field := range fields {
-		if net.ParseIP(strings.Trim(field, "[]")) != nil {
+		field = strings.Trim(field, "\"'<>[](){}.,;")
+		if net.ParseIP(strings.Trim(field, "[]")) != nil || factoryArtifactFieldHasSecretPrefix(field) {
+			return true
+		}
+	}
+	return false
+}
+
+func factoryArtifactEndpointHostNeedsRedaction(host string) bool {
+	host = strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]"))
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	for _, suffix := range []string{
+		".internal",
+		".internal.invalid",
+		".invalid",
+		".local",
+		".test",
+	} {
+		if strings.HasSuffix(host, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func factoryArtifactFieldHasSecretPrefix(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	for _, prefix := range []string{
+		"ghp_",
+		"github_pat_",
+		"gho_",
+		"ghu_",
+		"ghs_",
+		"ghr_",
+		"glpat",
+		"sk-",
+		"xoxb-",
+		"xoxp-",
+	} {
+		if strings.HasPrefix(lower, prefix) {
 			return true
 		}
 	}
