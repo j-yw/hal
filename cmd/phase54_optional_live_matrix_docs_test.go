@@ -28,7 +28,7 @@ func TestPhase54OptionalLiveVerificationMatrixDocumentsSuites(t *testing.T) {
 	for _, want := range []string{
 		"## Optional Live Verification Matrix",
 		"These commands are optional operator-run checks for prepared live infrastructure.",
-		"They are not default CI, not release package prerequisites, and not post-run PRD validation.",
+		"They are not part of the fake-only checks job, not release package prerequisites, and not post-run PRD validation.",
 		"Run the focused live-gate and live-marker guard suite without live tags or live environment markers:",
 		"Run Firecracker host/process and microVM live checks only on a prepared host:",
 		"Run network enforcement live checks only when proxy and firewall/runtime-rule prerequisites are deliberately enabled:",

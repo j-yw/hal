@@ -270,30 +270,34 @@ func TestPhase54ReleasePackageDocumentationIdentifiesBuildCommand(t *testing.T) 
 	}
 }
 
-func TestPhase54DefaultCIDocumentationDefinesFakeOnlyMatrix(t *testing.T) {
+func TestPhase54DefaultChecksDocumentationDefinesFakeOnlyMatrix(t *testing.T) {
 	doc := phase50ReadFile(t, phase54ReleasePackageDesignDocPath())
 	normalized := strings.Join(strings.Fields(doc), " ")
 	for _, want := range []string{
-		"Default CI is fake-only.",
+		"The GitHub Actions `checks` job and the local release verification path are fake-only.",
 		"must not require live runtime prerequisites",
 		"tagged live test suites",
+		"This boundary is intentionally narrower than the entire GitHub Actions workflow.",
+		"`sandbox-test` and `integration-test` jobs",
+		"outside the Phase 54 fake-only checks/package verification boundary",
+		"must not be described as fake-only default verification",
 		"Phase 54 planning workflow references use plain `hal convert`",
 		"do not require `hal convert --granular`",
 	} {
 		if !strings.Contains(doc, want) && !strings.Contains(normalized, want) {
-			t.Fatalf("%s must document default fake-only CI matrix requirement %q", phase50SafeDisplayPath(phase54ReleasePackageDesignDocPath()), want)
+			t.Fatalf("%s must document default fake-only checks matrix requirement %q", phase50SafeDisplayPath(phase54ReleasePackageDesignDocPath()), want)
 		}
 	}
 
 	commands := phase34DocumentedShellCommands(doc)
 	for _, want := range phase54DefaultCICommands() {
 		if !commands[want] {
-			t.Fatalf("%s default CI matrix missing command line %q", phase50SafeDisplayPath(phase54ReleasePackageDesignDocPath()), want)
+			t.Fatalf("%s default checks matrix missing command line %q", phase50SafeDisplayPath(phase54ReleasePackageDesignDocPath()), want)
 		}
 	}
 	for _, command := range phase54DefaultDocumentedCommands(doc) {
 		if marker := phase54ForbiddenDefaultCommandMarker(command); marker != "" {
-			t.Fatalf("%s default CI command %q contains live or tagged-suite marker %q", phase50SafeDisplayPath(phase54ReleasePackageDesignDocPath()), command, marker)
+			t.Fatalf("%s default checks command %q contains live or tagged-suite marker %q", phase50SafeDisplayPath(phase54ReleasePackageDesignDocPath()), command, marker)
 		}
 	}
 }
@@ -308,6 +312,37 @@ func TestPhase54GitHubChecksJobMatchesDefaultCIMatrix(t *testing.T) {
 	for _, marker := range phase54ForbiddenDefaultCommandMarkers() {
 		if strings.Contains(body, marker) {
 			t.Fatalf(".github/workflows/ci.yml checks job must stay fake-only; found marker %q in:\n%s", marker, body)
+		}
+	}
+}
+
+func TestPhase54ReleaseDocsDiscloseConditionalWorkflowJobsOutsideFakeOnlyBoundary(t *testing.T) {
+	workflow := phase50ReadFile(t, filepath.Join("..", ".github", "workflows", "ci.yml"))
+	for _, want := range []string{
+		"  sandbox-test:",
+		"  integration-test:",
+		"docker/build-push-action",
+		"go test -tags=integration",
+	} {
+		if !strings.Contains(workflow, want) {
+			t.Fatalf(".github/workflows/ci.yml missing conditional workflow marker %q", want)
+		}
+	}
+
+	for _, path := range []string{
+		phase54ReleasePackageDesignDocPath(),
+		phase54OperatorReleaseHandoffDocPath(),
+	} {
+		doc := phase50ReadFile(t, path)
+		normalized := strings.Join(strings.Fields(doc), " ")
+		for _, want := range []string{
+			"conditional `sandbox-test` and `integration-test` jobs",
+			"outside the Phase 54 fake-only checks/package verification boundary",
+			"must not",
+		} {
+			if !strings.Contains(doc, want) && !strings.Contains(normalized, want) {
+				t.Fatalf("%s must disclose conditional workflow boundary %q", phase50SafeDisplayPath(path), want)
+			}
 		}
 	}
 }

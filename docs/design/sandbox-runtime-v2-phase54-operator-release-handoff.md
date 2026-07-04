@@ -1,8 +1,9 @@
 # Sandbox Runtime v2 Phase 54 Operator Release Handoff
 
 Phase 54 is the final release-operator handoff for the Sandbox Runtime v2
-production-hardening wave. It fans in the completed package, default CI, and
-optional live verification work for this branch before opening or merging a PR.
+production-hardening wave. It fans in the completed package, default checks and
+local verification, and optional live verification work for this branch before
+opening or merging a PR.
 
 ## Completed Wave Summary
 
@@ -11,11 +12,11 @@ optional live verification work for this branch before opening or merging a PR.
   the release verification pass.
 - US-002 documented and guarded the release package surface. The local release
   build artifact is the Hal CLI binary at `./hal`, produced by `make build`.
-- US-003 defined the default CI matrix as deterministic and fake-only for
+- US-003 defined the default checks matrix as deterministic and fake-only for
   ordinary developer and CI hosts.
-- US-004 separated optional live verification from default CI and documented
-  the exact opt-in live tags, environment marker names, and safe placeholder
-  command lines.
+- US-004 separated optional live verification from the fake-only checks/package
+  verification boundary and documented the exact opt-in live tags, environment
+  marker names, and safe placeholder command lines.
 
 Use `docs/design/sandbox-runtime-v2-phase54-release-package-verification.md`
 for the package and matrix details. Use
@@ -47,11 +48,19 @@ Firecracker, Docker/Podman, sandboxd, cloud provider access, registry
 credentials, proxy listeners, firewall mutation, real API secrets, live
 environment markers, or tagged live suites.
 
+This statement covers the local verification commands above and the GitHub
+Actions `checks` job. The broader `.github/workflows/ci.yml` workflow still has
+conditional `sandbox-test` and `integration-test` jobs that may build and
+smoke-test the sandbox image or run integration-tagged package tests when path
+filters match. Those jobs are outside the Phase 54 fake-only checks/package
+verification boundary and must not be represented as fake-only default
+verification.
+
 ## Optional Live Verification Commands
 
 These commands are manual operator checks for prepared live infrastructure.
-They are not part of default CI, package verification, or the required
-pre-merge gate.
+They are not part of the fake-only checks job, package verification, or the
+required pre-merge gate.
 
 Run the focused live-gate and live-marker guard suite:
 
@@ -117,8 +126,9 @@ Phase 54 intentionally does not enable these by default:
 - credential broker delivery as default agent behavior;
 - template/kits provenance, acquisition, or trust-policy behavior as a
   production default;
-- sandbox image builds, tag-triggered release publishing, or Homebrew tap
-  updates from the local verification path.
+- sandbox image builds, conditional integration-tagged workflow jobs,
+  tag-triggered release publishing, or Homebrew tap updates from the local
+  verification path.
 
 ## Production Secure-Default Gap Audit
 
@@ -152,7 +162,7 @@ The remaining secure-default work is future work after Phase 54:
   guard tests.
 - Decide explicitly whether optional live checks are in scope for the PR. If
   skipped, record that they were skipped because they are manual prepared-host
-  diagnostics, not default CI.
+  diagnostics, not the fake-only checks/package verification path.
 - If optional live checks are run, record only build tag names, environment
   marker names, commands, pass or skip status, and sanitized diagnostics. Do not
   record environment values, host paths, socket paths, URLs, ports, provider

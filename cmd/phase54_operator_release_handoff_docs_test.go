@@ -9,17 +9,18 @@ import (
 
 func TestPhase54OperatorReleaseHandoffSummarizesCompletedWave(t *testing.T) {
 	doc := phase50ReadFile(t, phase54OperatorReleaseHandoffDocPath())
+	normalized := strings.Join(strings.Fields(doc), " ")
 
 	for _, want := range []string{
 		"# Sandbox Runtime v2 Phase 54 Operator Release Handoff",
 		"US-001 locked the release scope",
 		"US-002 documented and guarded the release package surface",
-		"US-003 defined the default CI matrix as deterministic and fake-only",
-		"US-004 separated optional live verification from default CI",
+		"US-003 defined the default checks matrix as deterministic and fake-only",
+		"US-004 separated optional live verification from the fake-only checks/package verification boundary",
 		"docs/design/sandbox-runtime-v2-phase54-release-package-verification.md",
 		"docs/design/sandbox-runtime-v2-phase53-final-verification.md",
 	} {
-		if !strings.Contains(doc, want) {
+		if !strings.Contains(doc, want) && !strings.Contains(normalized, want) {
 			t.Fatalf("%s missing handoff summary %q", phase50SafeDisplayPath(phase54OperatorReleaseHandoffDocPath()), want)
 		}
 	}
@@ -27,6 +28,7 @@ func TestPhase54OperatorReleaseHandoffSummarizesCompletedWave(t *testing.T) {
 
 func TestPhase54OperatorReleaseHandoffDocumentsDefaultVerification(t *testing.T) {
 	doc := phase50ReadFile(t, phase54OperatorReleaseHandoffDocPath())
+	normalized := strings.Join(strings.Fields(doc), " ")
 	commands := map[string]bool{}
 	for _, command := range phase54DefaultDocumentedCommands(doc) {
 		commands[command] = true
@@ -44,9 +46,11 @@ func TestPhase54OperatorReleaseHandoffDocumentsDefaultVerification(t *testing.T)
 		"go test -count=1 ./cmd -run TestPhase54OperatorReleaseHandoff",
 		"go test -count=1 ./cmd -run TestPhase54",
 		"The default verification path is fake-only.",
+		"The broader `.github/workflows/ci.yml` workflow still has conditional `sandbox-test` and `integration-test` jobs",
+		"outside the Phase 54 fake-only checks/package verification boundary",
 		"tagged live suites",
 	} {
-		if !strings.Contains(doc, want) {
+		if !strings.Contains(doc, want) && !strings.Contains(normalized, want) {
 			t.Fatalf("Phase 54 handoff default verification missing %q", want)
 		}
 	}

@@ -1,18 +1,20 @@
 # Sandbox Runtime v2 Phase 54 Release Package Verification
 
 Phase 54 US-002 guards the release build and package command surface for this
-branch. Phase 54 US-003 defines the default fake-only CI matrix for routine
-verification on ordinary developer and CI hosts. The branch build artifact is
-the Hal CLI binary, produced locally as `./hal`.
+branch. Phase 54 US-003 defines the default fake-only checks and local
+verification matrix for routine verification on ordinary developer and CI
+hosts. The branch build artifact is the Hal CLI binary, produced locally as
+`./hal`.
 
-## Default CI Matrix
+## Default Checks Matrix
 
-Default CI is fake-only. It must not require live runtime prerequisites such as
-Firecracker, KVM, Docker/Podman, sandboxd, cloud provider access, registry
-credentials, proxy listeners, firewall mutation, real API secrets, live
-environment markers, or tagged live test suites.
+The GitHub Actions `checks` job and the local release verification path are
+fake-only. They must not require live runtime prerequisites such as Firecracker,
+KVM, Docker/Podman, sandboxd, cloud provider access, registry credentials,
+proxy listeners, firewall mutation, real API secrets, live environment markers,
+or tagged live test suites.
 
-The default matrix is:
+The default checks matrix is:
 
 ```sh
 go test ./...
@@ -23,8 +25,16 @@ git diff --check
 ```
 
 These commands validate tests, vet, generated CLI documentation drift, the local
-Hal binary build, and whitespace. Optional live suites stay outside default CI
-and must be documented as explicit opt-in operator checks.
+Hal binary build, and whitespace. Optional live suites stay outside the
+fake-only checks/package verification boundary and must be documented as
+explicit opt-in operator checks.
+
+This boundary is intentionally narrower than the entire GitHub Actions workflow.
+`.github/workflows/ci.yml` also contains conditional `sandbox-test` and
+`integration-test` jobs. Those legacy workflow jobs may build and smoke-test the
+sandbox image or run integration-tagged package tests when their path filters
+match. They are outside the Phase 54 fake-only checks/package verification
+boundary and must not be described as fake-only default verification.
 
 Phase 54 planning workflow references use plain `hal convert`; they do not
 require `hal convert --granular`.
@@ -32,11 +42,12 @@ require `hal convert --granular`.
 ## Optional Live Verification Matrix
 
 These commands are optional operator-run checks for prepared live
-infrastructure. They are not default CI, not release package prerequisites, and
-not post-run PRD validation. Keep marker names as names only; use `<set>`
-placeholders in command examples and do not record environment values, host
-paths, socket paths, provider handles, ports, URLs, credentials, tokens, or
-machine-specific command arguments in verification notes.
+infrastructure. They are not part of the fake-only checks job, not release
+package prerequisites, and not post-run PRD validation. Keep marker names as
+names only; use `<set>` placeholders in command examples and do not record
+environment values, host paths, socket paths, provider handles, ports, URLs,
+credentials, tokens, or machine-specific command arguments in verification
+notes.
 
 The composed microVM live E2E command below intentionally reuses the Phase 53
 final verification command from
