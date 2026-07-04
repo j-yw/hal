@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -291,6 +292,109 @@ func TestUS002ProjectSecureDefaultReadinessRequiresActiveMicroVMIsolationProof(t
 	}
 }
 
+func TestUS004ProjectSecureDefaultReadinessRejectsMissingOrWeakMicroVMIsolationProof(t *testing.T) {
+	missingGuestReadiness := secureDefaultProjectionMicroVMProof(SandboxMicroVMIsolationProofMetadata{})
+	missingGuestReadiness.GuestReadinessState = ""
+
+	tests := []struct {
+		name       string
+		projection SandboxWorkerRuntimeCapabilityReadinessProjection
+		input      SandboxSecurityCapabilityReadinessInput
+		wantReason SandboxSecurityCapabilityReasonCode
+	}{
+		{
+			name:       "missing proof",
+			wantReason: SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
+		},
+		{
+			name: "planned proof metadata",
+			projection: SandboxWorkerRuntimeCapabilityReadinessProjection{
+				MicroVMIsolationProof: secureDefaultProjectionMicroVMProof(SandboxMicroVMIsolationProofMetadata{
+					RuntimeStatus: "planned",
+				}),
+			},
+			wantReason: SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
+		},
+		{
+			name: "compatibility runtime metadata",
+			projection: SandboxWorkerRuntimeCapabilityReadinessProjection{
+				MicroVMIsolationProof: secureDefaultProjectionMicroVMProof(SandboxMicroVMIsolationProofMetadata{
+					RuntimeDriver:   SandboxRuntimeDriverRootlessPodman,
+					IsolationLevel:  SandboxIsolationLevelContainer,
+					ResultSupported: true,
+				}),
+			},
+			wantReason: SandboxSecurityCapabilityReasonMicroVMSupportMissing,
+		},
+		{
+			name: "fake-only metadata support",
+			input: SandboxSecurityCapabilityReadinessInput{
+				Ready: []SandboxSecurityCapabilityMetadata{{
+					ID:         "https://worker.internal.invalid/proof?token=raw-us004-token",
+					Family:     SandboxSecurityCapabilityFamilyIsolation,
+					Capability: SandboxSecurityCapabilityIsolationMicroVM,
+					Source:     SandboxSecurityCapabilitySourceMetadata,
+					Status:     SandboxSecurityCapabilityReadinessReady,
+					ReasonCode: SandboxSecurityCapabilityReasonMicroVMReadinessConfirmed,
+				}},
+			},
+			wantReason: SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
+		},
+		{
+			name: "missing guest readiness",
+			projection: SandboxWorkerRuntimeCapabilityReadinessProjection{
+				MicroVMIsolationProof: missingGuestReadiness,
+			},
+			wantReason: SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
+		},
+		{
+			name: "fake-only guest readiness not configured",
+			projection: SandboxWorkerRuntimeCapabilityReadinessProjection{
+				MicroVMIsolationProof: secureDefaultProjectionMicroVMProof(SandboxMicroVMIsolationProofMetadata{
+					GuestReadinessState: "not_configured",
+				}),
+			},
+			wantReason: SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
+		},
+		{
+			name: "historical launch attempt",
+			projection: SandboxWorkerRuntimeCapabilityReadinessProjection{
+				MicroVMIsolationProof: secureDefaultProjectionMicroVMProof(SandboxMicroVMIsolationProofMetadata{
+					ProcessLaunchState: "attempted",
+				}),
+			},
+			wantReason: SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
+				secureDefaultProjectionRequestedMicroVMInput(),
+				tt.input,
+				ProjectSandboxWorkerRuntimeCapabilityReadinessInput(tt.projection),
+			)
+
+			requireSecureDefaultProjectionResult(t, output,
+				sandboxSecurityCapabilityStateForUS004MicroVMReason(tt.wantReason),
+				SandboxSecurityCapabilityFamilyIsolation,
+				SandboxSecurityCapabilityIsolationMicroVM,
+				tt.wantReason,
+			)
+			requireSecureDefaultProjectionNoReadyResult(t, output,
+				SandboxSecurityCapabilityFamilyIsolation,
+				SandboxSecurityCapabilityIsolationMicroVM,
+			)
+			requireSecureDefaultProjectionStrictGate(t, output,
+				SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+				SandboxSecurityCapabilityReadinessGateReasonCode(tt.wantReason),
+				tt.wantReason,
+			)
+			assertUS004MicroVMReadinessEvidenceSanitized(t, output)
+		})
+	}
+}
+
 func TestUS002ProjectSecureDefaultReadinessAcceptsActiveMicroVMIsolationProof(t *testing.T) {
 	output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
 		secureDefaultProjectionRequestedMicroVMInput(),
@@ -313,6 +417,13 @@ func TestUS002ProjectSecureDefaultReadinessAcceptsActiveMicroVMIsolationProof(t 
 		SandboxSecurityCapabilityReadinessGateReasonReadinessReady,
 		SandboxSecurityCapabilityReasonMicroVMReadinessConfirmed,
 	)
+}
+
+func sandboxSecurityCapabilityStateForUS004MicroVMReason(reason SandboxSecurityCapabilityReasonCode) SandboxSecurityCapabilityReadinessState {
+	if reason == SandboxSecurityCapabilityReasonMicroVMSupportMissing {
+		return SandboxSecurityCapabilityReadinessBlocked
+	}
+	return SandboxSecurityCapabilityReadinessUnsupported
 }
 
 func TestUS002ProjectSecureDefaultReadinessClassifiesNetworkProofReasons(t *testing.T) {
@@ -1379,6 +1490,41 @@ func requireSecureDefaultProjectionStrictGate(t *testing.T, output *SandboxSecur
 	}
 	if decision.Counts == nil || decision.Counts.ReasonCodeCounts[countedReason] == 0 {
 		t.Fatalf("strict readiness gate reason counts = %#v, want count for %s", decision.Counts, countedReason)
+	}
+}
+
+func assertUS004MicroVMReadinessEvidenceSanitized(t *testing.T, output *SandboxSecurityCapabilityReadinessOutput) {
+	t.Helper()
+	var readiness SandboxSecurityCapabilityReadinessOutput
+	if output != nil {
+		readiness = *output
+	}
+	decision := EvaluateSandboxSecurityCapabilityReadinessGateFromOutput(SandboxSecurityCapabilityReadinessGatePolicyModeStrict, readiness)
+	payload, err := json.Marshal(struct {
+		Readiness SandboxSecurityCapabilityReadinessOutput       `json:"readiness"`
+		Decision  SandboxSecurityCapabilityReadinessGateDecision `json:"decision"`
+	}{
+		Readiness: readiness,
+		Decision:  decision,
+	})
+	if err != nil {
+		t.Fatalf("Marshal(US-004 readiness evidence) error = %v", err)
+	}
+	for _, fragment := range []string{
+		"https://",
+		"worker.internal.invalid",
+		"raw-us004-token",
+		"token=",
+		"/tmp",
+		"/Users/",
+		".sock",
+		"firecracker",
+		"provider",
+		"secret",
+	} {
+		if strings.Contains(string(payload), fragment) {
+			t.Fatalf("US-004 MicroVM readiness diagnostics leaked %q in %s", fragment, payload)
+		}
 	}
 }
 

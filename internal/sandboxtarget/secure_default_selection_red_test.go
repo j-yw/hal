@@ -187,6 +187,74 @@ func TestUS003SelectStrictSecureDefaultRejectsMissingOrWeakTargetSelectionProof(
 	}
 }
 
+func TestUS004SelectStrictSecureDefaultRejectsMissingOrWeakMicroVMReadinessProof(t *testing.T) {
+	tests := []struct {
+		name        string
+		fixture     securedefaultfixtures.EvidenceSet
+		wantReasons []string
+	}{
+		{
+			name:    "missing microVM readiness evidence",
+			fixture: securedefaultfixtures.CompleteAcceptedEvidenceSet(securedefaultfixtures.OmitProof(securedefaultfixtures.ProofMicroVMReadiness)),
+			wantReasons: strictSecureDefaultSafeReasons(
+				string(sandbox.SandboxSecurityCapabilityReasonMicroVMReadinessMissing),
+			),
+		},
+		{
+			name:    "planned microVM metadata",
+			fixture: securedefaultfixtures.CompleteAcceptedEvidenceSet(securedefaultfixtures.DowngradeProof(securedefaultfixtures.ProofMicroVMReadiness, securedefaultfixtures.DowngradePlanned)),
+			wantReasons: strictSecureDefaultSafeReasons(
+				string(sandbox.SandboxSecurityCapabilityReasonMicroVMReadinessMissing),
+			),
+		},
+		{
+			name:    "compatibility microVM metadata",
+			fixture: securedefaultfixtures.CompleteAcceptedEvidenceSet(securedefaultfixtures.DowngradeProof(securedefaultfixtures.ProofMicroVMReadiness, securedefaultfixtures.DowngradeCompatibility)),
+			wantReasons: strictSecureDefaultSafeReasons(
+				string(sandbox.SandboxSecurityCapabilityReasonMicroVMSupportMissing),
+			),
+		},
+		{
+			name:    "fake-only microVM metadata",
+			fixture: securedefaultfixtures.CompleteAcceptedEvidenceSet(securedefaultfixtures.DowngradeProof(securedefaultfixtures.ProofMicroVMReadiness, securedefaultfixtures.DowngradeFakeOnly)),
+			wantReasons: strictSecureDefaultSafeReasons(
+				string(sandbox.SandboxSecurityCapabilityReasonMicroVMReadinessMissing),
+			),
+		},
+		{
+			name:    "historical microVM metadata",
+			fixture: securedefaultfixtures.CompleteAcceptedEvidenceSet(securedefaultfixtures.DowngradeProof(securedefaultfixtures.ProofMicroVMReadiness, securedefaultfixtures.DowngradeHistorical)),
+			wantReasons: strictSecureDefaultSafeReasons(
+				string(sandbox.SandboxSecurityCapabilityReasonMicroVMReadinessMissing),
+			),
+		},
+	}
+
+	accepted := securedefaultfixtures.CompleteAcceptedEvidenceSet().Gate
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target := strictSecureDefaultFixtureSandbox("us004-"+strings.ReplaceAll(tt.name, " ", "-"), tt.fixture)
+			target.Security.SecurityReadinessGate = &accepted
+
+			result := Select(Request{
+				SandboxName:               target.Name,
+				SecurityReadinessGateMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+				Fallback:                  FallbackPolicy{Disabled: true},
+			}, CachedState{
+				LoadSandbox: func(name string) (*sandbox.SandboxState, error) {
+					if name != target.Name {
+						t.Fatalf("loaded sandbox name = %q, want %q", name, target.Name)
+					}
+					return target, nil
+				},
+			})
+
+			requireStrictSecureDefaultSelectionBlocked(t, result, tt.wantReasons, strictSecureDefaultForbiddenFragments()...)
+			requireStrictSecureDefaultSelectionBlockedBeforeAcceptedDecision(t, result, tt.wantReasons)
+		})
+	}
+}
+
 func TestSelectStrictSecureDefaultRejectsWarningBearingReadyEvidence(t *testing.T) {
 	target := strictSecureDefaultCompatibilitySandbox(
 		"strict-warning-ready",
@@ -381,6 +449,29 @@ func requireFailureOmitsFragments(t *testing.T, failure *Failure, forbidden ...s
 		if strings.Contains(payload, fragment) {
 			t.Fatalf("target-selection failure leaked %q: %s", fragment, payload)
 		}
+	}
+}
+
+func requireStrictSecureDefaultSelectionBlockedBeforeAcceptedDecision(t *testing.T, result Result, wantReasons []string) {
+	t.Helper()
+	if result.SecurityReadinessGate == nil {
+		t.Fatal("security readiness gate = nil, want strict blocked decision")
+	}
+	if result.SecurityReadinessGate.Outcome == sandbox.SandboxSecurityCapabilityReadinessGateOutcomeAllowed ||
+		result.SecurityReadinessGate.Code == sandbox.SandboxSecurityCapabilityReadinessGateCodeAllowed ||
+		result.SecurityReadinessGate.Reason == sandbox.SandboxSecurityCapabilityReadinessGateReasonReadinessReady {
+		t.Fatalf("security readiness gate = %#v, want MicroVM rejection before accepted decision", result.SecurityReadinessGate)
+	}
+	if result.SecurityReadinessGate.PolicyMode != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict ||
+		result.SecurityReadinessGate.Outcome != sandbox.SandboxSecurityCapabilityReadinessGateOutcomeBlocked {
+		t.Fatalf("security readiness gate = %#v, want strict blocked decision", result.SecurityReadinessGate)
+	}
+	if result.SecurityReadinessGate.Counts == nil || result.SecurityReadinessGate.Counts.StrictBlocking == 0 {
+		t.Fatalf("security readiness gate counts = %#v, want strict blocking count", result.SecurityReadinessGate.Counts)
+	}
+	message := targetSelectionReadinessGateFailureMessage(*result.SecurityReadinessGate)
+	if !strictSecureDefaultMessageHasAnyReason(message, wantReasons) {
+		t.Fatalf("security readiness gate message = %q, want one of safe reason codes %#v", message, wantReasons)
 	}
 }
 

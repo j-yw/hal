@@ -205,6 +205,26 @@ func TestNetworkProofDowngradeVariantsStayIncomplete(t *testing.T) {
 	}
 }
 
+func TestMicroVMProofDowngradeVariantsStayIncomplete(t *testing.T) {
+	for _, downgrade := range []Downgrade{
+		DowngradePlanned,
+		DowngradeCompatibility,
+		DowngradeFakeOnly,
+		DowngradeHistorical,
+		DowngradeUnsupported,
+		DowngradeWarningBearing,
+	} {
+		t.Run(string(downgrade), func(t *testing.T) {
+			fixture := CompleteAcceptedEvidenceSet(DowngradeProof(ProofMicroVMReadiness, downgrade))
+			if fixture.Gate.Outcome != sandbox.SandboxSecurityCapabilityReadinessGateOutcomeBlocked {
+				t.Fatalf("gate outcome for microVM downgrade %s = %q, want blocked: %#v", downgrade, fixture.Gate.Outcome, fixture.Gate)
+			}
+			requireNoReadyResult(t, fixture.Readiness, sandbox.SandboxSecurityCapabilityFamilyIsolation, sandbox.SandboxSecurityCapabilityIsolationMicroVM)
+			assertFixtureDataSafe(t, fixture)
+		})
+	}
+}
+
 func TestFixtureDataContainsOnlySanitizedEvidenceMetadata(t *testing.T) {
 	fixtures := []EvidenceSet{
 		CompleteAcceptedEvidenceSet(),

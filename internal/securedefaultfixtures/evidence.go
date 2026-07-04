@@ -44,6 +44,9 @@ const (
 	DowngradeBestEffort     Downgrade = "best_effort"
 	DowngradeFailed         Downgrade = "failed"
 	DowngradeAdvisory       Downgrade = "advisory"
+	DowngradePlanned        Downgrade = "planned"
+	DowngradeFakeOnly       Downgrade = "fake_only"
+	DowngradeHistorical     Downgrade = "historical"
 )
 
 // Option customizes a fake secure-default evidence set.
@@ -403,6 +406,17 @@ func downgradedMicroVMProof(downgrade Downgrade) *sandbox.SandboxMicroVMIsolatio
 		proof.RuntimeDriver = sandbox.SandboxRuntimeDriverRootlessPodman
 		proof.IsolationLevel = sandbox.SandboxIsolationLevelContainer
 		proof.ResultSupported = false
+	case DowngradeCompatibility:
+		proof.RuntimeDriver = sandbox.SandboxRuntimeDriverSSHMachine
+		proof.IsolationLevel = sandbox.SandboxIsolationLevelHost
+		proof.ResultSupported = false
+	case DowngradePlanned, DowngradeMetadataOnly:
+		proof.RuntimeStatus = "planned"
+	case DowngradeFakeOnly:
+		proof.GuestReadinessState = "not_configured"
+		proof.ProcessLaunchState = "boundary_available"
+	case DowngradeHistorical:
+		proof.ProcessLaunchState = "attempted"
 	case DowngradeWarningBearing:
 		proof.WarningCount = 1
 	default:
