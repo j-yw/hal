@@ -145,13 +145,18 @@ func TestCoreRedactionGuardCredentialDeliverySanitizersDropUnsafeValues(t *testi
 					ActiveModes:    []Mode{ModeHTTPProxy},
 					Bindings: []BindingActivationResult{{
 						BindingID:    unsafeValue,
-						ServiceID:    unsafeValue,
 						DeliveryMode: ModeHTTPProxy,
-						Outcome:      StatusActive,
 						Status:       StatusActive,
 						ReasonCode:   ReasonRequested,
+						ProofRef:     unsafeValue,
 					}},
-					Status: StatusActive,
+					ProofRefs: []ActivationProofReference{{
+						ProofID:      unsafeValue,
+						BindingID:    unsafeValue,
+						DeliveryMode: ModeHTTPProxy,
+					}},
+					Status:     StatusActive,
+					ReasonCode: ReasonRequested,
 				}),
 			}
 			data, err := json.Marshal(payload)
@@ -176,6 +181,7 @@ func credentialDeliveryCoreRedactionGuardTypes() []reflect.Type {
 		reflect.TypeOf(ActivationRequest{}),
 		reflect.TypeOf(ActivationResult{}),
 		reflect.TypeOf(BindingActivationResult{}),
+		reflect.TypeOf(ActivationProofReference{}),
 		reflect.TypeOf(StatusMetadata{}),
 		reflect.TypeOf(Warning{}),
 		reflect.TypeOf(SanitizedError{}),
@@ -214,6 +220,8 @@ func credentialDeliveryCoreRedactionUnsafeName(name string) bool {
 		"activemodes",
 		"status",
 		"warningcode",
+		"proofid",
+		"proofref",
 		"reasoncode",
 		"errorcount",
 		"warningcount",

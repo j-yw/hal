@@ -439,23 +439,23 @@ func TestActivationResultJSONContract(t *testing.T) {
 		ActiveModes:    []Mode{ModeHTTPProxy},
 		Bindings: []BindingActivationResult{{
 			BindingID:    "binding-01",
-			ServiceID:    "service-01",
 			DeliveryMode: ModeHTTPProxy,
-			Outcome:      StatusActive,
 			Status:       StatusActive,
 			ReasonCode:   ReasonRequested,
+			ProofRef:     "proof-ref-01",
 		}},
-		Status: StatusActive,
+		ProofRefs: []ActivationProofReference{{
+			ProofID:      "proof-ref-01",
+			BindingID:    "binding-01",
+			DeliveryMode: ModeHTTPProxy,
+		}},
+		Status:     StatusActive,
+		ReasonCode: ReasonRequested,
 		Warnings: []Warning{{
 			Code:       WarningActivationSkipped,
 			BindingID:  "binding-02",
 			ReasonCode: ReasonActivationUnavailable,
 			Mode:       ModeSSHAgent,
-		}},
-		Errors: []SanitizedError{{
-			Code:      ErrorActivationFailed,
-			BindingID: "binding-03",
-			Mode:      ModeFileTmpfs,
 		}},
 	}
 	got := mustMarshalObject(t, activation)
@@ -465,9 +465,10 @@ func TestActivationResultJSONContract(t *testing.T) {
 		"requestedModes",
 		"activeModes",
 		"bindings",
+		"proofRefs",
 		"status",
+		"reasonCode",
 		"warnings",
-		"errors",
 	}, forbiddenRawFieldNames())
 
 	minimal := mustMarshalObject(t, ActivationResult{
@@ -478,9 +479,10 @@ func TestActivationResultJSONContract(t *testing.T) {
 		"requestedModes",
 		"activeModes",
 		"bindings",
+		"proofRefs",
 		"status",
+		"reasonCode",
 		"warnings",
-		"errors",
 	})
 }
 
@@ -630,17 +632,22 @@ func TestJSONTagsAreStable(t *testing.T) {
 		{field: "RequestedModes", name: "requestedModes", omitempty: true},
 		{field: "ActiveModes", name: "activeModes", omitempty: true},
 		{field: "Bindings", name: "bindings", omitempty: true},
+		{field: "ProofRefs", name: "proofRefs", omitempty: true},
 		{field: "Status", name: "status", omitempty: true},
+		{field: "ReasonCode", name: "reasonCode", omitempty: true},
 		{field: "Warnings", name: "warnings", omitempty: true},
-		{field: "Errors", name: "errors", omitempty: true},
 	})
 	assertJSONTags(t, reflect.TypeOf(BindingActivationResult{}), []jsonTagExpectation{
 		{field: "BindingID", name: "bindingId"},
-		{field: "ServiceID", name: "serviceId", omitempty: true},
 		{field: "DeliveryMode", name: "deliveryMode"},
-		{field: "Outcome", name: "outcome", omitempty: true},
 		{field: "Status", name: "status", omitempty: true},
 		{field: "ReasonCode", name: "reasonCode", omitempty: true},
+		{field: "ProofRef", name: "proofRef", omitempty: true},
+	})
+	assertJSONTags(t, reflect.TypeOf(ActivationProofReference{}), []jsonTagExpectation{
+		{field: "ProofID", name: "proofId"},
+		{field: "BindingID", name: "bindingId", omitempty: true},
+		{field: "DeliveryMode", name: "deliveryMode"},
 	})
 	assertJSONTags(t, reflect.TypeOf(StatusMetadata{}), []jsonTagExpectation{
 		{field: "ID", name: "id"},
@@ -687,6 +694,7 @@ func TestContractsExposeNoRawValueFields(t *testing.T) {
 		reflect.TypeOf(ActivationRequest{}),
 		reflect.TypeOf(ActivationResult{}),
 		reflect.TypeOf(BindingActivationResult{}),
+		reflect.TypeOf(ActivationProofReference{}),
 		reflect.TypeOf(StatusMetadata{}),
 		reflect.TypeOf(Warning{}),
 		reflect.TypeOf(SanitizedError{}),
@@ -716,20 +724,20 @@ func TestSerializedMetadataContainsNoUnsafeRawFieldNames(t *testing.T) {
 		ActiveModes:    []Mode{ModeHTTPProxy},
 		Bindings: []BindingActivationResult{{
 			BindingID:    "binding-01",
-			ServiceID:    "service-01",
 			DeliveryMode: ModeHTTPProxy,
-			Outcome:      StatusActive,
 			Status:       StatusActive,
+			ReasonCode:   ReasonRequested,
+			ProofRef:     "proof-ref-01",
 		}},
-		Status: StatusActive,
+		ProofRefs: []ActivationProofReference{{
+			ProofID:      "proof-ref-01",
+			BindingID:    "binding-01",
+			DeliveryMode: ModeHTTPProxy,
+		}},
+		Status:     StatusActive,
+		ReasonCode: ReasonRequested,
 		Warnings: []Warning{{
 			Code:       WarningAdapterUnavailable,
-			ReasonCode: ReasonActivationUnavailable,
-		}},
-		Errors: []SanitizedError{{
-			Code:       ErrorActivationFailed,
-			Field:      "binding",
-			BindingID:  "binding-01",
 			ReasonCode: ReasonActivationUnavailable,
 		}},
 	}

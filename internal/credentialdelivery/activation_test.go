@@ -85,7 +85,6 @@ func TestActivateDeliveryUsesInjectedFakeAdapterForEveryMode(t *testing.T) {
 			assertPlanModes(t, got.RequestedModes, []Mode{mode})
 			assertPlanModes(t, got.ActiveModes, wantActiveModes)
 			assertActivationBindingStatus(t, got, binding.ID, mode, wantBindingStatus)
-			assertActivationBindingService(t, got, binding.ID, binding.ServiceID)
 			if mode == ModeLegacyAuthSync {
 				assertActivationWarning(t, got, WarningLegacyAuthCompatibility, ReasonCompatibilityMode, ModeLegacyAuthSync)
 			}
@@ -159,16 +158,13 @@ func TestActivateDeliverySanitizesAdapterBoundaryAndResultContractsForSupportedM
 					Bindings: []BindingActivationResult{
 						{
 							BindingID:    binding.ID,
-							ServiceID:    rawSocket,
 							DeliveryMode: mode,
-							Outcome:      StatusActive,
 							Status:       StatusActive,
 							ReasonCode:   ReasonRequested,
 						},
 						{
 							BindingID:    rawSocket,
 							DeliveryMode: mode,
-							Outcome:      StatusActive,
 							Status:       StatusActive,
 						},
 					},
@@ -295,7 +291,6 @@ func TestActivateDeliveryHTTPProxyRequiresSafeSessionBinding(t *testing.T) {
 				}
 				assertPlanModes(t, got.ActiveModes, []Mode{ModeHTTPProxy})
 				assertActivationBindingStatus(t, got, binding.ID, ModeHTTPProxy, StatusActive)
-				assertActivationBindingService(t, got, binding.ID, binding.ServiceID)
 				if got.Warnings != nil {
 					t.Fatalf("activation warnings = %#v, want none for safe http_proxy activation", got.Warnings)
 				}
@@ -492,9 +487,8 @@ func TestActivateDeliveryHTTPProxyAdapterFailureFailsClosedWithSafeBindingMetada
 		t.Fatalf("activation status = %q, want failed", got.Status)
 	}
 	assertPlanModes(t, got.ActiveModes, nil)
-	assertActivationError(t, got, ErrorActivationFailed, "adapter")
+	assertActivationReason(t, got, ReasonActivationUnavailable)
 	assertActivationBindingStatus(t, got, binding.ID, ModeHTTPProxy, StatusFailed)
-	assertActivationBindingService(t, got, binding.ID, binding.ServiceID)
 	assertActivationNoLeak(t, got, "https://proxy.example.invalid", "proxy.example.invalid", "Authorization", "ghp_raw_secret_value")
 }
 
@@ -523,7 +517,7 @@ func TestActivateDeliveryAdapterFailureRedactsRawValuesAcrossDurablePayloads(t *
 		t.Fatalf("activation status = %q, want failed", activation.Status)
 	}
 	assertPlanModes(t, activation.ActiveModes, nil)
-	assertActivationError(t, activation, ErrorActivationFailed, "adapter")
+	assertActivationReason(t, activation, ReasonActivationUnavailable)
 	assertActivationBindingStatus(t, activation, binding.ID, ModeEnv, StatusFailed)
 
 	runtimeMetadata := sandboxruntime.RuntimeMetadata{
@@ -554,20 +548,18 @@ func TestActivateDeliveryAdapterFailureRedactsRawValuesAcrossDurablePayloads(t *
 		RunID:   "factory-run-01",
 		Stream:  factory.LogStreamStderr,
 		Source:  factory.LogSourceEngine,
-		Text:    activation.Errors[0].Error(),
+		Text:    "credential delivery activation failed closed: " + string(activation.ReasonCode),
 		Summary: "credential delivery activation failed closed",
 	}}
 
 	payload := struct {
 		JSON            ActivationResult               `json:"json"`
-		Errors          []SanitizedError               `json:"errors"`
 		Logs            []factory.LogChunk             `json:"logs"`
 		RuntimeMetadata sandboxruntime.RuntimeMetadata `json:"runtimeMetadata"`
 		Manifest        sandboxexecution.Manifest      `json:"manifest"`
 		FactoryTimeline factory.EventRecord            `json:"factoryTimeline"`
 	}{
 		JSON:            activation,
-		Errors:          activation.Errors,
 		Logs:            logs,
 		RuntimeMetadata: runtimeMetadata,
 		Manifest:        manifest,
@@ -575,9 +567,6 @@ func TestActivateDeliveryAdapterFailureRedactsRawValuesAcrossDurablePayloads(t *
 	}
 
 	assertActivationNoLeak(t, payload, rawSecret, providerDetail, rawSocketPath, "secrets.example.invalid", "adapter failed")
-	for _, err := range activation.Errors {
-		assertActivationNoLeak(t, err.Error(), rawSecret, providerDetail, rawSocketPath, "secrets.example.invalid", "adapter failed")
-	}
 }
 
 type fakeActivationAdapter struct {
@@ -610,9 +599,7 @@ func fakeActiveActivationResult(request ActivationRequest) ActivationResult {
 		activeModes.add(binding.DeliveryMode)
 		result.Bindings = append(result.Bindings, BindingActivationResult{
 			BindingID:    binding.ID,
-			ServiceID:    binding.ServiceID,
 			DeliveryMode: binding.DeliveryMode,
-			Outcome:      StatusActive,
 			Status:       StatusActive,
 			ReasonCode:   ReasonRequested,
 		})
@@ -637,15 +624,13 @@ func assertActivationWarning(t *testing.T, activation ActivationResult, code War
 	t.Fatalf("activation warnings = %#v, want code %q reason %q mode %q", activation.Warnings, code, reason, mode)
 }
 
-func assertActivationError(t *testing.T, activation ActivationResult, code ErrorCode, field string) {
+func assertActivationReason(t *testing.T, activation ActivationResult, reason ReasonCode) {
 	t.Helper()
 
-	for _, err := range activation.Errors {
-		if err.Code == code && err.Field == field {
-			return
-		}
+	if activation.ReasonCode == reason {
+		return
 	}
-	t.Fatalf("activation errors = %#v, want code %q field %q", activation.Errors, code, field)
+	t.Fatalf("activation reason = %q, want %q in %#v", activation.ReasonCode, reason, activation)
 }
 
 func assertActivationBindingStatus(t *testing.T, activation ActivationResult, bindingID string, mode Mode, status Status) {
@@ -653,27 +638,10 @@ func assertActivationBindingStatus(t *testing.T, activation ActivationResult, bi
 
 	for _, binding := range activation.Bindings {
 		if binding.BindingID == bindingID && binding.DeliveryMode == mode && binding.Status == status {
-			if binding.Outcome != status {
-				t.Fatalf("activation binding outcome = %q, want %q in %#v", binding.Outcome, status, binding)
-			}
 			return
 		}
 	}
 	t.Fatalf("activation bindings = %#v, want binding %q mode %q status %q", activation.Bindings, bindingID, mode, status)
-}
-
-func assertActivationBindingService(t *testing.T, activation ActivationResult, bindingID string, serviceID string) {
-	t.Helper()
-
-	for _, binding := range activation.Bindings {
-		if binding.BindingID == bindingID {
-			if binding.ServiceID != serviceID {
-				t.Fatalf("activation binding service = %q, want %q in %#v", binding.ServiceID, serviceID, binding)
-			}
-			return
-		}
-	}
-	t.Fatalf("activation bindings = %#v, want binding %q service %q", activation.Bindings, bindingID, serviceID)
 }
 
 func assertActivationNoLeak(t *testing.T, value any, rejectedValues ...string) {

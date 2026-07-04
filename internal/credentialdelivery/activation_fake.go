@@ -85,9 +85,7 @@ func fakeActivationResultFromRequest(request ActivationRequest, adapter *FakeAct
 		modeResult := fakeActivationModeResultFor(adapter, binding.DeliveryMode)
 		result.Bindings = append(result.Bindings, BindingActivationResult{
 			BindingID:    binding.ID,
-			ServiceID:    binding.ServiceID,
 			DeliveryMode: binding.DeliveryMode,
-			Outcome:      modeResult.Status,
 			Status:       modeResult.Status,
 			ReasonCode:   modeResult.ReasonCode,
 		})
@@ -104,13 +102,7 @@ func fakeActivationResultFromRequest(request ActivationRequest, adapter *FakeAct
 			})
 		}
 		if modeResult.Status == StatusFailed {
-			result.Errors = append(result.Errors, SanitizedError{
-				Code:       ErrorActivationFailed,
-				Field:      "adapter",
-				BindingID:  binding.ID,
-				Mode:       binding.DeliveryMode,
-				ReasonCode: modeResult.ReasonCode,
-			})
+			result.ReasonCode = modeResult.ReasonCode
 		}
 	}
 
@@ -129,18 +121,16 @@ func fakeActivationResultFromRequest(request ActivationRequest, adapter *FakeAct
 				})
 			}
 			if modeResult.Status == StatusFailed {
-				result.Errors = append(result.Errors, SanitizedError{
-					Code:       ErrorActivationFailed,
-					Field:      "adapter",
-					Mode:       mode,
-					ReasonCode: modeResult.ReasonCode,
-				})
+				result.ReasonCode = modeResult.ReasonCode
 			}
 		}
 	}
 
 	result.ActiveModes = activeModes.ordered()
 	result.Status = statuses.status()
+	if result.ReasonCode == "" {
+		result.ReasonCode = fakeActivationReasonForStatus(result.Status)
+	}
 	return result
 }
 

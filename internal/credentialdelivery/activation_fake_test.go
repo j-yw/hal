@@ -70,7 +70,7 @@ func TestFakeActivationAdapterSupportsNonHTTPModeStatusesWithoutLiveMutation(t *
 					assertPlanModes(t, got.ActiveModes, nil)
 				}
 				if status == StatusFailed {
-					assertActivationError(t, got, ErrorActivationFailed, "adapter")
+					assertActivationReason(t, got, ReasonActivationUnavailable)
 				}
 				if status == StatusSkipped {
 					assertActivationWarning(t, got, WarningActivationSkipped, ReasonActivationUnavailable, mode)

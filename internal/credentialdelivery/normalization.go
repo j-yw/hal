@@ -161,9 +161,10 @@ func NormalizeActivationResultMetadata(result ActivationResult) ActivationResult
 		RequestedModes: normalizeModeRecords(result.RequestedModes),
 		ActiveModes:    normalizeModeRecords(result.ActiveModes),
 		Bindings:       NormalizeBindingActivationResultMetadataRecords(result.Bindings),
+		ProofRefs:      NormalizeActivationProofReferenceMetadataRecords(result.ProofRefs),
 		Status:         normalizeStatus(result.Status),
+		ReasonCode:     normalizeReasonCode(result.ReasonCode),
 		Warnings:       NormalizeWarningMetadataRecords(result.Warnings),
-		Errors:         NormalizeSanitizedErrorRecords(result.Errors),
 	}
 }
 
@@ -172,11 +173,10 @@ func NormalizeActivationResultMetadata(result ActivationResult) ActivationResult
 func NormalizeBindingActivationResultMetadata(result BindingActivationResult) BindingActivationResult {
 	return BindingActivationResult{
 		BindingID:    strings.TrimSpace(result.BindingID),
-		ServiceID:    strings.TrimSpace(result.ServiceID),
 		DeliveryMode: normalizeMode(result.DeliveryMode),
-		Outcome:      normalizeStatus(result.Outcome),
 		Status:       normalizeStatus(result.Status),
 		ReasonCode:   normalizeReasonCode(result.ReasonCode),
+		ProofRef:     strings.TrimSpace(result.ProofRef),
 	}
 }
 
@@ -189,6 +189,29 @@ func NormalizeBindingActivationResultMetadataRecords(results []BindingActivation
 	normalized := make([]BindingActivationResult, len(results))
 	for i, result := range results {
 		normalized[i] = NormalizeBindingActivationResultMetadata(result)
+	}
+	return normalized
+}
+
+// NormalizeActivationProofReferenceMetadata returns a deterministic copy of one
+// activation proof reference before validation or persistence.
+func NormalizeActivationProofReferenceMetadata(reference ActivationProofReference) ActivationProofReference {
+	return ActivationProofReference{
+		ProofID:      strings.TrimSpace(reference.ProofID),
+		BindingID:    strings.TrimSpace(reference.BindingID),
+		DeliveryMode: normalizeMode(reference.DeliveryMode),
+	}
+}
+
+// NormalizeActivationProofReferenceMetadataRecords returns normalized proof
+// references while preserving nil versus explicit empty slices.
+func NormalizeActivationProofReferenceMetadataRecords(references []ActivationProofReference) []ActivationProofReference {
+	if references == nil {
+		return nil
+	}
+	normalized := make([]ActivationProofReference, len(references))
+	for i, reference := range references {
+		normalized[i] = NormalizeActivationProofReferenceMetadata(reference)
 	}
 	return normalized
 }

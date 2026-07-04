@@ -226,24 +226,32 @@ type ActivationRequest struct {
 
 // ActivationResult records the redaction-safe outcome of an activation attempt.
 type ActivationResult struct {
-	ID             string                    `json:"id"`
-	PlanID         string                    `json:"planId"`
-	RequestedModes []Mode                    `json:"requestedModes,omitempty"`
-	ActiveModes    []Mode                    `json:"activeModes,omitempty"`
-	Bindings       []BindingActivationResult `json:"bindings,omitempty"`
-	Status         Status                    `json:"status,omitempty"`
-	Warnings       []Warning                 `json:"warnings,omitempty"`
-	Errors         []SanitizedError          `json:"errors,omitempty"`
+	ID             string                     `json:"id"`
+	PlanID         string                     `json:"planId"`
+	RequestedModes []Mode                     `json:"requestedModes,omitempty"`
+	ActiveModes    []Mode                     `json:"activeModes,omitempty"`
+	Bindings       []BindingActivationResult  `json:"bindings,omitempty"`
+	ProofRefs      []ActivationProofReference `json:"proofRefs,omitempty"`
+	Status         Status                     `json:"status,omitempty"`
+	ReasonCode     ReasonCode                 `json:"reasonCode,omitempty"`
+	Warnings       []Warning                  `json:"warnings,omitempty"`
 }
 
 // BindingActivationResult records the activation state for one planned binding.
 type BindingActivationResult struct {
 	BindingID    string     `json:"bindingId"`
-	ServiceID    string     `json:"serviceId,omitempty"`
 	DeliveryMode Mode       `json:"deliveryMode"`
-	Outcome      Status     `json:"outcome,omitempty"`
 	Status       Status     `json:"status,omitempty"`
 	ReasonCode   ReasonCode `json:"reasonCode,omitempty"`
+	ProofRef     string     `json:"proofRef,omitempty"`
+}
+
+// ActivationProofReference records a safe proof identifier associated with a
+// binding and delivery mode. It is not a raw adapter handle or transport path.
+type ActivationProofReference struct {
+	ProofID      string `json:"proofId"`
+	BindingID    string `json:"bindingId,omitempty"`
+	DeliveryMode Mode   `json:"deliveryMode"`
 }
 
 // StatusMetadata is a compact delivery lifecycle summary for durable surfaces.

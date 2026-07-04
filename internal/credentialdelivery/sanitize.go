@@ -207,9 +207,10 @@ func SanitizeActivationResultMetadata(result ActivationResult) ActivationResult 
 	sanitized.RequestedModes = sanitizeOptionalModeRecords(sanitized.RequestedModes)
 	sanitized.ActiveModes = sanitizeOptionalModeRecords(sanitized.ActiveModes)
 	sanitized.Bindings = SanitizeBindingActivationResultMetadataRecords(sanitized.Bindings)
+	sanitized.ProofRefs = SanitizeActivationProofReferenceMetadataRecords(sanitized.ProofRefs)
 	sanitized.Status = sanitizeStatusValue(sanitized.Status)
+	sanitized.ReasonCode = sanitizeReasonCodeValue(sanitized.ReasonCode)
 	sanitized.Warnings = SanitizeWarningMetadataRecords(sanitized.Warnings)
-	sanitized.Errors = SanitizeSanitizedErrorRecords(sanitized.Errors)
 	return sanitized
 }
 
@@ -218,14 +219,13 @@ func SanitizeActivationResultMetadata(result ActivationResult) ActivationResult 
 func SanitizeBindingActivationResultMetadata(result BindingActivationResult) BindingActivationResult {
 	sanitized := NormalizeBindingActivationResultMetadata(result)
 	sanitized.BindingID = sanitizeIdentifier(sanitized.BindingID)
-	sanitized.ServiceID = sanitizeIdentifier(sanitized.ServiceID)
 	sanitized.DeliveryMode = sanitizeRequiredModeValue(sanitized.DeliveryMode)
 	if sanitized.BindingID == "" || sanitized.DeliveryMode == "" {
 		return BindingActivationResult{}
 	}
-	sanitized.Outcome = sanitizeStatusValue(sanitized.Outcome)
 	sanitized.Status = sanitizeStatusValue(sanitized.Status)
 	sanitized.ReasonCode = sanitizeReasonCodeValue(sanitized.ReasonCode)
+	sanitized.ProofRef = sanitizeIdentifier(sanitized.ProofRef)
 	return sanitized
 }
 
@@ -239,6 +239,36 @@ func SanitizeBindingActivationResultMetadataRecords(results []BindingActivationR
 	for _, result := range results {
 		record := SanitizeBindingActivationResultMetadata(result)
 		if record.BindingID != "" {
+			sanitized = append(sanitized, record)
+		}
+	}
+	return sanitized
+}
+
+// SanitizeActivationProofReferenceMetadata returns a durable-safe copy of one
+// activation proof reference. Unsafe required metadata returns zero.
+func SanitizeActivationProofReferenceMetadata(reference ActivationProofReference) ActivationProofReference {
+	sanitized := NormalizeActivationProofReferenceMetadata(reference)
+	originalBindingID := sanitized.BindingID
+	sanitized.ProofID = sanitizeIdentifier(sanitized.ProofID)
+	sanitized.BindingID = sanitizeIdentifier(sanitized.BindingID)
+	sanitized.DeliveryMode = sanitizeRequiredModeValue(sanitized.DeliveryMode)
+	if sanitized.ProofID == "" || sanitized.DeliveryMode == "" || (originalBindingID != "" && sanitized.BindingID == "") {
+		return ActivationProofReference{}
+	}
+	return sanitized
+}
+
+// SanitizeActivationProofReferenceMetadataRecords returns durable-safe proof
+// references while preserving nil versus explicit empty input slices.
+func SanitizeActivationProofReferenceMetadataRecords(references []ActivationProofReference) []ActivationProofReference {
+	if references == nil {
+		return nil
+	}
+	sanitized := make([]ActivationProofReference, 0, len(references))
+	for _, reference := range references {
+		record := SanitizeActivationProofReferenceMetadata(reference)
+		if record.ProofID != "" {
 			sanitized = append(sanitized, record)
 		}
 	}

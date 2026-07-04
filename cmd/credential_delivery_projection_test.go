@@ -322,9 +322,7 @@ func (credentialDeliveryProjectionActivationAdapter) ActivateCredentialDelivery(
 	for _, binding := range request.Bindings {
 		result.Bindings = append(result.Bindings, credentialdelivery.BindingActivationResult{
 			BindingID:    binding.ID,
-			ServiceID:    binding.ServiceID,
 			DeliveryMode: binding.DeliveryMode,
-			Outcome:      credentialdelivery.StatusActive,
 			Status:       credentialdelivery.StatusActive,
 			ReasonCode:   credentialdelivery.ReasonRequested,
 		})

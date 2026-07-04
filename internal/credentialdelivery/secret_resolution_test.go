@@ -234,11 +234,11 @@ func TestResolveBindingSecretMetadataDoesNotLeakRawValuesAcrossDurablePayloads(t
 		Errors:   resolution.Errors,
 	})
 	activation := SanitizeActivationResultMetadata(ActivationResult{
-		ID:       "delivery-activation-01",
-		PlanID:   plan.ID,
-		Status:   StatusFailed,
-		Warnings: resolution.Warnings,
-		Errors:   resolution.Errors,
+		ID:         "delivery-activation-01",
+		PlanID:     plan.ID,
+		Status:     StatusFailed,
+		ReasonCode: ReasonMissingSecretReference,
+		Warnings:   resolution.Warnings,
 	})
 	runtimeMetadata := sandboxruntime.RuntimeMetadata{
 		CapabilityLabels: []string{"credential-delivery-resolution-failed"},
