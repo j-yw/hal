@@ -196,6 +196,27 @@ func TestNetworkEnforcementForbiddenImportListCoversLiveSurfaces(t *testing.T) {
 	}
 }
 
+func TestPhase56NetworkEnforcementImportBoundaryRejectsCommandFactoryAndCobra(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		importPath string
+		want       string
+	}{
+		{name: "command package", importPath: "github.com/jywlabs/hal/cmd", want: "cmd package"},
+		{name: "command subpackage", importPath: "github.com/jywlabs/hal/cmd/internal", want: "cmd package"},
+		{name: "factory package", importPath: "github.com/jywlabs/hal/internal/factory", want: "factory package"},
+		{name: "factory subpackage", importPath: "github.com/jywlabs/hal/internal/factory/store", want: "factory package"},
+		{name: "Cobra", importPath: "github.com/spf13/cobra", want: "Cobra package"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			message := networkEnforcementImportBoundaryMessage("phase56.go", tt.importPath)
+			if !strings.Contains(message, tt.want) || !strings.Contains(message, tt.importPath) {
+				t.Fatalf("boundary message = %q, want %q rejection for %q", message, tt.want, tt.importPath)
+			}
+		})
+	}
+}
+
 func TestNetworkEnforcementImportBoundaryAllowsMetadataHelpersOnly(t *testing.T) {
 	for _, importPath := range []string{
 		"context",
