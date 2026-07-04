@@ -199,6 +199,66 @@ func TestTrustPolicyJSONOmitsOptionalMetadata(t *testing.T) {
 	assertFirstAcquisitionArrayObjectKeys(t, resultRaw, "warnings", []string{"code"})
 }
 
+func TestTrustPolicyFindingsSanitizeCallerProvidedJSON(t *testing.T) {
+	index := -1
+	result := acquisition.TrustPolicyResult{
+		Decision: acquisition.TrustPolicyDecisionRejected,
+		Errors: []acquisition.TrustPolicyError{{
+			Code:           acquisition.TrustPolicyErrorCode("ghp_secret_code"),
+			Field:          "/Users/v/private-template.yaml",
+			ReferenceField: "ghcr.io/acme/go-agent:latest?token=sk-live-template",
+			ReferenceIndex: &index,
+			SourceKind:     acquisition.SourceKind("https://user:password@example.invalid/template"),
+			ReasonCode:     acquisition.LockReasonCode("authorization"),
+			Message:        "failed for /Users/v/private-template.yaml token=sk-live-template",
+		}},
+		Warnings: []acquisition.TrustPolicyWarning{{
+			Code:           acquisition.TrustPolicyWarningCode("registryAuth"),
+			Field:          "requiredReferences",
+			ReferenceField: "runtime.image",
+			SourceKind:     acquisition.SourceKindOCIArtifact,
+			ReasonCode:     acquisition.LockReasonMutableReference,
+			Message:        "required reference is not digest pinned",
+		}},
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal(TrustPolicyResult) error = %v", err)
+	}
+	text := string(data)
+	assertAcquisitionTextOmitsFragments(t, text,
+		"ghp_secret_code",
+		"/Users/v/private-template.yaml",
+		"ghcr.io/acme/go-agent:latest",
+		"token=sk-live-template",
+		"user:password",
+		"registryAuth",
+		"authorization",
+	)
+	if !strings.Contains(text, `"field":"requiredReferences"`) || !strings.Contains(text, `"message":"required reference is not digest pinned"`) {
+		t.Fatalf("sanitized trust policy JSON %s missing safe warning metadata", text)
+	}
+
+	var decoded acquisition.TrustPolicyResult
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal(TrustPolicyResult) error = %v", err)
+	}
+	roundTrip, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatalf("Marshal(decoded TrustPolicyResult) error = %v", err)
+	}
+	assertAcquisitionTextOmitsFragments(t, string(roundTrip),
+		"ghp_secret_code",
+		"/Users/v/private-template.yaml",
+		"ghcr.io/acme/go-agent:latest",
+		"token=sk-live-template",
+		"user:password",
+		"registryAuth",
+		"authorization",
+	)
+}
+
 func TestTrustPolicyContractsAvoidUnsafeRawMetadataSurface(t *testing.T) {
 	unsafeNames := []string{
 		"localPath",
