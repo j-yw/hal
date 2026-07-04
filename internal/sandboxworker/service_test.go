@@ -508,12 +508,15 @@ func TestServiceStatusProjectsProxyActiveNetworkEnforcementProof(t *testing.T) {
 		t.Fatalf("proxy lifecycle status = %q, want active", status.Security.NetworkEnforcement.Orchestration.Proxy.Status)
 	}
 
-	encoded, err := json.Marshal(status)
+	response := service.StatusResponse("status-proxy-active")
+	encoded, err := json.Marshal(response)
 	if err != nil {
-		t.Fatalf("Marshal(status) error: %v", err)
+		t.Fatalf("Marshal(StatusResponse) error: %v", err)
 	}
 	publicText := string(encoded)
 	for _, want := range []string{
+		`"operation":"status"`,
+		`"status"`,
 		`"networkEnforcement":"proxy"`,
 		`"networkEnforcement"`,
 		`"status":"active"`,
@@ -532,12 +535,24 @@ func TestServiceStatusDoesNotUpgradeNetworkEnforcementWithoutActiveSuccessfulPro
 		metadata *sandboxruntime.RuntimeNetworkEnforcementMetadata
 	}{
 		{
+			name:     "missing proof",
+			metadata: nil,
+		},
+		{
 			name:     "missing result",
 			metadata: workerStatusProxyNetworkMetadata("worker-proxy-missing-result", "active", nil),
 		},
 		{
+			name:     "missing proxy lifecycle proof",
+			metadata: workerStatusProxyNetworkMetadataWithoutProxyLifecycle("worker-proxy-missing-proof"),
+		},
+		{
 			name:     "failed result",
 			metadata: workerStatusProxyNetworkMetadata("worker-proxy-failed", "active", workerStatusProxyNetworkResult("failure", NetworkEnforcementProxy, workerStatusProxyCapability(), "adapter_failed")),
+		},
+		{
+			name:     "failed proxy lifecycle proof",
+			metadata: workerStatusProxyNetworkMetadataWithProxyLifecycleStatus("worker-proxy-lifecycle-failed", "failed"),
 		},
 		{
 			name:     "inactive proxy lifecycle",
@@ -738,6 +753,19 @@ func workerStatusProxyNetworkMetadata(planID, proxyStatus string, result *sandbo
 		},
 		Result: result,
 	}
+}
+
+func workerStatusProxyNetworkMetadataWithoutProxyLifecycle(planID string) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
+	metadata := workerStatusProxyNetworkMetadata(planID, "active", workerStatusProxyNetworkResult("success", NetworkEnforcementProxy, workerStatusProxyCapability(), "applied"))
+	metadata.Orchestration.Proxy = nil
+	return metadata
+}
+
+func workerStatusProxyNetworkMetadataWithProxyLifecycleStatus(planID, proxyStatus string) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
+	metadata := workerStatusProxyNetworkMetadata(planID, "active", workerStatusProxyNetworkResult("success", NetworkEnforcementProxy, workerStatusProxyCapability(), "applied"))
+	metadata.Orchestration.Proxy.Status = proxyStatus
+	metadata.Orchestration.Proxy.ReasonCode = proxyStatus
+	return metadata
 }
 
 func workerStatusProxyNetworkResult(outcome, mode string, capability *sandboxruntime.RuntimeNetworkEnforcementCapability, reason string) *sandboxruntime.RuntimeNetworkEnforcementResultMetadata {
