@@ -128,6 +128,7 @@ func sandboxSecurityCapabilityReadinessMissingDiagnosticSummary() SandboxSecurit
 		Classification:       SandboxSecurityCapabilityDiagnosticClassificationReadinessMissing,
 		AdvisoryOnly:         true,
 		WouldBlockStrictGate: true,
+		ReasonCode:           SandboxSecurityCapabilityReasonReadinessMissing,
 	}
 	return SandboxSecurityCapabilityReadinessDiagnosticSummary{
 		Status:               SandboxSecurityCapabilityDiagnosticSummaryStatusUnknown,
