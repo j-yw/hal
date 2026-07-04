@@ -143,7 +143,8 @@ func sanitizeTrustPolicyFindingMessage(message string) string {
 		trustPolicyMissingDocumentDigestMessage,
 		trustPolicyProvenanceMismatchMessage,
 		trustPolicyDocumentMismatchMessage,
-		"resolver is unavailable":
+		trustPolicyResolverUnavailableMessage,
+		trustPolicyUnsupportedSourceMessage:
 		return message
 	default:
 		return ""
