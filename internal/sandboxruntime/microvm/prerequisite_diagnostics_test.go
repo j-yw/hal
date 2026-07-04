@@ -95,6 +95,14 @@ func TestMissingLiveE2EPrerequisiteDiagnosticsMapDistinctSafeReasonCodes(t *test
 			reason:       LiveE2EReasonTemplateTrustMarkerMissing,
 			message:      "Set the template trust marker before running template trust checks.",
 		},
+		{
+			name:         "template trust metadata",
+			category:     "template trust",
+			prerequisite: LiveE2EPrerequisiteTemplateTrustMetadata,
+			component:    LiveE2EComponentTemplateTrust,
+			reason:       LiveE2EReasonTemplateTrustUnavailable,
+			message:      "Provide trusted template provenance metadata before running template trust checks.",
+		},
 	}
 
 	seenReasons := map[LiveE2EReasonCode]LiveE2EPrerequisiteName{}

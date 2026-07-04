@@ -31,8 +31,9 @@ func TestMicroVME2ELiveGateComposesExistingLiveGateRequirements(t *testing.T) {
 		EnvVarNetworkEnforcementLiveProxy,
 		EnvVarNetworkEnforcementLiveFirewall,
 		EnvVarCredentialDeliveryLive,
+		EnvVarTemplateTrustLive,
 	}) {
-		t.Fatalf("env vars = %#v, want existing component live markers", gate.EnvVars)
+		t.Fatalf("env vars = %#v, want component live markers plus template trust marker", gate.EnvVars)
 	}
 	if !reflect.DeepEqual(gate.Capabilities, []CapabilityID{
 		CapabilityFirecrackerMicroVM,

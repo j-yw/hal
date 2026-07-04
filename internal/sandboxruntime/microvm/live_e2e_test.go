@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jywlabs/hal/internal/livegate"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 func TestMicroVMLiveE2EHarnessRequiresComposedLiveGates(t *testing.T) {
@@ -24,6 +25,11 @@ func TestMicroVMLiveE2EHarnessRequiresComposedLiveGates(t *testing.T) {
 	credentialDelivery := requireMicroVMLiveE2ECredentialDeliveryProjection(t, os.Getenv)
 	if !credentialDelivery.CanRunLiveAction() {
 		t.Fatalf("microVM live E2E credential delivery projection = %#v, want allowed or skipped before this point", credentialDelivery)
+	}
+
+	templateTrust := requireMicroVMLiveE2ETemplateTrustProjection(t, os.Getenv)
+	if !templateTrust.CanRunLiveAction() {
+		t.Fatalf("microVM live E2E template trust projection = %#v, want allowed or skipped before this point", templateTrust)
 	}
 
 	preflight := requireMicroVMLiveE2EFirecrackerPreflight(t, os.Getenv)
@@ -141,6 +147,69 @@ func microVMLiveE2ECredentialDeliveryModeForEnv(envVar livegate.EnvVarName) stri
 		return "env"
 	default:
 		return ""
+	}
+}
+
+func requireMicroVMLiveE2ETemplateTrustProjection(t *testing.T, getenv func(string) string) LiveE2ETemplateTrustProjectionResult {
+	t.Helper()
+	result := ProjectLiveE2ETemplateTrustMetadata(LiveE2ETemplateTrustProjectionInput{
+		LiveMarker:    microVMLiveE2EEnvPresent(getenv, livegate.EnvVarTemplateTrustLive),
+		TemplateID:    "microvm-live-template",
+		TrustPolicyID: "microvm-live-template-trust-policy",
+		TemplateLock:  microVMLiveE2ETemplateTrustLock(),
+	})
+	if !result.ShouldSkipLiveAction() {
+		return result
+	}
+	message := LiveE2ETemplateTrustProjectionSkipMessage(result)
+	livegate.AssertLiveGateSkipMessageRedactionSafe(t, message)
+	t.Skip(message)
+	return result
+}
+
+func microVMLiveE2ETemplateTrustLock() *sandboxruntime.RuntimeTemplateLockMetadata {
+	return &sandboxruntime.RuntimeTemplateLockMetadata{
+		Document: &sandboxruntime.RuntimeTemplateLockEntryMetadata{
+			SourceKind:      "oci_artifact",
+			ReferenceKind:   "oci_artifact",
+			Status:          "locked",
+			DigestAlgorithm: "sha256",
+			DigestValue:     strings.Repeat("a", 64),
+			ReasonCode:      "document_digest",
+		},
+		TemplateReference: &sandboxruntime.RuntimeTemplateLockEntryMetadata{
+			SourceKind:      "template_reference",
+			ReferenceKind:   "oci_artifact",
+			Status:          "locked",
+			DigestAlgorithm: "sha256",
+			DigestValue:     strings.Repeat("b", 64),
+			ReasonCode:      "template_reference_digest",
+		},
+		RuntimeImage: &sandboxruntime.RuntimeTemplateLockEntryMetadata{
+			SourceKind:      "runtime_image",
+			ReferenceKind:   "oci_image",
+			Status:          "locked",
+			DigestAlgorithm: "sha256",
+			DigestValue:     strings.Repeat("c", 64),
+			ReasonCode:      "runtime_image_digest",
+		},
+		SourceArtifact: &sandboxruntime.RuntimeTemplateLockEntryMetadata{
+			SourceKind:      "source_artifact",
+			ReferenceKind:   "git",
+			Status:          "locked",
+			DigestAlgorithm: "sha256",
+			DigestValue:     strings.Repeat("d", 64),
+			ReasonCode:      "source_artifact_digest",
+		},
+		TrustPolicy: &sandboxruntime.RuntimeTemplateTrustPolicyMetadata{
+			Mode:            "strict",
+			Decision:        "trusted",
+			SourceKind:      "oci_artifact",
+			ReferenceKind:   "oci_artifact",
+			Status:          "locked",
+			DigestAlgorithm: "sha256",
+			DigestValue:     strings.Repeat("a", 64),
+		},
 	}
 }
 

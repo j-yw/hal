@@ -99,8 +99,12 @@ func TestUS003MicroVMLiveE2EHarnessComposesExistingLiveGateHelpers(t *testing.T)
 		"livegate.MicroVME2ELiveGate",
 		"livegate.MicroVME2ERequiredEnvVars",
 		"livegate.CredentialDeliveryLiveModeEnvVars",
+		"livegate.EnvVarTemplateTrustLive",
 		"microVMLiveE2EEnabledBuildTags",
 		"microVMLiveE2EPresentEnvVars",
+		"requireMicroVMLiveE2ETemplateTrustProjection",
+		"ProjectLiveE2ETemplateTrustMetadata",
+		"LiveE2ETemplateTrustProjectionSkipMessage",
 		"t.Skip",
 	} {
 		if !strings.Contains(harness, marker) {
@@ -124,6 +128,7 @@ func TestUS003MicroVMLiveE2EHarnessComposesExistingLiveGateHelpers(t *testing.T)
 		"EnvVarCredentialDeliveryLiveFileTmpfs",
 		"EnvVarCredentialDeliveryLiveSSHAgent",
 		"EnvVarCredentialDeliveryLiveEnv",
+		"EnvVarTemplateTrustLive",
 		"CapabilityFirecrackerMicroVM",
 		"CapabilityNetworkEnforcement",
 		"CapabilityCredentialDelivery",

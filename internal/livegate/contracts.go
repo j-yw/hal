@@ -51,6 +51,7 @@ const (
 	EnvVarCredentialDeliveryLiveFileTmpfs EnvVarName = "HAL_CREDENTIAL_DELIVERY_LIVE_FILE_TMPFS"
 	EnvVarCredentialDeliveryLiveSSHAgent  EnvVarName = "HAL_CREDENTIAL_DELIVERY_LIVE_SSH_AGENT"
 	EnvVarCredentialDeliveryLiveEnv       EnvVarName = "HAL_CREDENTIAL_DELIVERY_LIVE_ENV"
+	EnvVarTemplateTrustLive               EnvVarName = "HAL_TEMPLATE_TRUST_LIVE"
 	EnvVarWorkerIntegrationLive           EnvVarName = "HAL_WORKER_INTEGRATION_LIVE"
 	EnvVarPodmanIntegrationLive           EnvVarName = "HAL_PODMAN_INTEGRATION_LIVE"
 )

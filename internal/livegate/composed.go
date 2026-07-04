@@ -28,7 +28,8 @@ func MicroVME2ERequiredBuildTags() []BuildTagName {
 
 // MicroVME2ERequiredEnvVars returns the shared all-of environment markers.
 // Credential delivery mode selection remains an any-of check using
-// CredentialDeliveryLiveModeEnvVars.
+// CredentialDeliveryLiveModeEnvVars. Template trust metadata is validated by
+// the microVM harness projection after this marker is present.
 func MicroVME2ERequiredEnvVars() []EnvVarName {
 	return []EnvVarName{
 		EnvVarFirecrackerLive,
@@ -39,6 +40,7 @@ func MicroVME2ERequiredEnvVars() []EnvVarName {
 		EnvVarNetworkEnforcementLiveProxy,
 		EnvVarNetworkEnforcementLiveFirewall,
 		EnvVarCredentialDeliveryLive,
+		EnvVarTemplateTrustLive,
 	}
 }
 

@@ -55,6 +55,7 @@ func TestLiveGateContractConstantsAreStable(t *testing.T) {
 		{name: "env credential file tmpfs", got: string(EnvVarCredentialDeliveryLiveFileTmpfs), want: "HAL_CREDENTIAL_DELIVERY_LIVE_FILE_TMPFS"},
 		{name: "env credential ssh agent", got: string(EnvVarCredentialDeliveryLiveSSHAgent), want: "HAL_CREDENTIAL_DELIVERY_LIVE_SSH_AGENT"},
 		{name: "env credential env", got: string(EnvVarCredentialDeliveryLiveEnv), want: "HAL_CREDENTIAL_DELIVERY_LIVE_ENV"},
+		{name: "env template trust", got: string(EnvVarTemplateTrustLive), want: "HAL_TEMPLATE_TRUST_LIVE"},
 		{name: "env worker", got: string(EnvVarWorkerIntegrationLive), want: "HAL_WORKER_INTEGRATION_LIVE"},
 		{name: "env podman", got: string(EnvVarPodmanIntegrationLive), want: "HAL_PODMAN_INTEGRATION_LIVE"},
 		{name: "capability firecracker", got: string(CapabilityFirecrackerMicroVM), want: "firecracker_microvm"},

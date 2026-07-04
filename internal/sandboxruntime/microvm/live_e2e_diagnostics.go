@@ -13,6 +13,7 @@ const (
 	LiveE2EPrerequisiteCredentialMarker      LiveE2EPrerequisiteName = "credential_delivery_marker"
 	LiveE2EPrerequisiteCredentialEnvMarker   LiveE2EPrerequisiteName = "credential_delivery_env_marker"
 	LiveE2EPrerequisiteTemplateTrustMarker   LiveE2EPrerequisiteName = "template_trust_marker"
+	LiveE2EPrerequisiteTemplateTrustMetadata LiveE2EPrerequisiteName = "template_trust_metadata"
 )
 
 // LiveE2EPrerequisiteName identifies a required live E2E setup item without
@@ -176,6 +177,13 @@ func liveE2EPrerequisiteSpecFor(prerequisite LiveE2EPrerequisiteName) (liveE2EPr
 			reasonCode:   LiveE2EReasonTemplateTrustMarkerMissing,
 			message:      "Set the template trust marker before running template trust checks.",
 		}, true
+	case LiveE2EPrerequisiteTemplateTrustMetadata:
+		return liveE2EPrerequisiteSpec{
+			prerequisite: LiveE2EPrerequisiteTemplateTrustMetadata,
+			component:    LiveE2EComponentTemplateTrust,
+			reasonCode:   LiveE2EReasonTemplateTrustUnavailable,
+			message:      "Provide trusted template provenance metadata before running template trust checks.",
+		}, true
 	default:
 		return liveE2EPrerequisiteSpec{}, false
 	}
@@ -192,7 +200,8 @@ func sanitizeLiveE2EPrerequisiteName(value LiveE2EPrerequisiteName) LiveE2EPrere
 		LiveE2EPrerequisiteFirewallMarker,
 		LiveE2EPrerequisiteCredentialMarker,
 		LiveE2EPrerequisiteCredentialEnvMarker,
-		LiveE2EPrerequisiteTemplateTrustMarker:
+		LiveE2EPrerequisiteTemplateTrustMarker,
+		LiveE2EPrerequisiteTemplateTrustMetadata:
 		return LiveE2EPrerequisiteName(normalizeLiveE2EEnum(string(value)))
 	default:
 		return ""
