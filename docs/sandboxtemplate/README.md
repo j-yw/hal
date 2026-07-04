@@ -16,6 +16,35 @@ sanitized template metadata plus redaction-safe lock metadata; it still does
 not perform live pulls, contact registries, clone repositories, start runtimes,
 or deliver credentials.
 
+Phase 59 selected-template semantics carry the acquired template through
+durable runtime, worker, and command status metadata. The `selectedTemplate`
+status is a sanitized projection of the template lock, digest, provenance, and
+`trustPolicy` decision; it can be `trusted`, `unresolved`, `rejected`, or
+`absent`. This status explains why a runtime may be blocked for strict
+secure-default readiness, but it is not a global runtime or template selector.
+
+Phase 59 accepts local paths, Git URLs, and OCI/artifact references through the
+same safe source/reference vocabulary. Local input is represented as
+`local_file`, Git input is represented as `git`, and OCI/artifact input is
+represented as `oci_artifact`. Public lock, provenance, worker, runtime, and
+status output keeps only safe source kind, reference kind, digest, status,
+warning/error code, reason code, and trust-policy metadata.
+
+## Fake-only acquisition
+
+Git and OCI acquisition use injected adapters/fakes in default verification.
+Default acquisition may read local fixture documents, classify Git and OCI
+references, and resolve injected fixture metadata, but it does not clone Git
+repositories, fetch Git remotes, contact live OCI registries, use Docker or
+Podman, read cloud credentials, start worker daemons, start `hal sandboxd`, or
+run `hal run` as part of template acquisition.
+
+Templates alone do not prove deny-by-default network enforcement, credential
+delivery, live runtime isolation proof, or strict secure-default readiness.
+They provide selected-template trust and provenance input that other explicit
+proof surfaces must combine with before any strict secure-default claim is
+allowed.
+
 ## YAML Example
 
 ```yaml
