@@ -47,6 +47,59 @@ func TestLiveE2ENetworkEnforcementReadinessAllowsProxyFirewallOnlyWithActiveLife
 	assertLiveE2ENetworkReadinessNoUnsafeFragments(t, "ready metadata", result)
 }
 
+func TestLiveE2ENetworkEnforcementReadinessReportsProxyOnlyWithoutFullSecureDefault(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		outcome string
+		mode    string
+	}{
+		{name: "compatibility proxy mode", outcome: "success", mode: "proxy"},
+		{name: "advisory best-effort mode", outcome: "best_effort", mode: "best_effort"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ProjectLiveE2ENetworkEnforcementReadiness(LiveE2ENetworkEnforcementReadinessInput{
+				LiveMarker:         true,
+				ProxyMarker:        true,
+				FirewallMarker:     true,
+				NetworkEnforcement: liveE2ENetworkEnforcementProxyOnlyMetadata(tt.outcome, tt.mode),
+			})
+
+			if result.CanRunLiveAction() {
+				t.Fatalf("CanRunLiveAction() = true, want blocked full secure-default readiness: %#v", result)
+			}
+			if !result.ShouldFailLiveAction() {
+				t.Fatalf("ShouldFailLiveAction() = false, want explicit partial readiness failure: %#v", result)
+			}
+			if !liveE2EReadinessReady(result.NetworkProxy) {
+				t.Fatalf("NetworkProxy = %#v, want proxy readiness preserved", result.NetworkProxy)
+			}
+			if result.Firewall == nil ||
+				result.Firewall.Status != LiveE2EReadinessUnavailable ||
+				result.ReasonCode != LiveE2EReasonFirewallUnavailable {
+				t.Fatalf("firewall/reason = %#v/%q, want firewall unavailable", result.Firewall, result.ReasonCode)
+			}
+			if result.NetworkEnforcement == nil ||
+				result.NetworkEnforcement.Orchestration == nil ||
+				result.NetworkEnforcement.Orchestration.Proxy == nil ||
+				result.NetworkEnforcement.Orchestration.Proxy.Status != "active" {
+				t.Fatalf("NetworkEnforcement = %#v, want sanitized active proxy proof", result.NetworkEnforcement)
+			}
+			if len(result.NetworkEnforcement.Orchestration.Rules) != 0 {
+				t.Fatalf("Rules = %#v, want no firewall/runtime rule proof", result.NetworkEnforcement.Orchestration.Rules)
+			}
+			if result.NetworkEnforcement.Result == nil ||
+				result.NetworkEnforcement.Result.EnforcementMode != tt.mode {
+				t.Fatalf("Result = %#v, want mode %q preserved", result.NetworkEnforcement.Result, tt.mode)
+			}
+			if result.NetworkEnforcement.Result.Capability != nil &&
+				result.NetworkEnforcement.Result.Capability.SupportsDefaultDenyPosture {
+				t.Fatalf("Capability = %#v, want no full default-deny capability", result.NetworkEnforcement.Result.Capability)
+			}
+			assertLiveE2ENetworkReadinessNoUnsafeFragments(t, tt.name, result)
+		})
+	}
+}
+
 func TestLiveE2ENetworkEnforcementReadinessFailsSanitizedForInconsistentClaims(t *testing.T) {
 	metadata := liveE2ENetworkEnforcementReadyMetadata()
 	metadata.Orchestration.Rules = nil
@@ -188,6 +241,62 @@ func liveE2ENetworkEnforcementReadyMetadata() *sandboxruntime.RuntimeNetworkEnfo
 	})
 }
 
+func liveE2ENetworkEnforcementProxyOnlyMetadata(outcome, mode string) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
+	return sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(&sandboxruntime.RuntimeNetworkEnforcementMetadata{
+		Plan: &sandboxruntime.RuntimeNetworkEnforcementPlanMetadata{
+			ID:               "live-e2e-proxy-only-plan",
+			Source:           "microvm",
+			Operation:        "live_e2e",
+			PolicySnapshotID: "live-e2e-proxy-only-policy",
+			PolicyPreset:     "deny_by_default",
+			DefaultPosture:   "deny_by_default",
+			Mechanisms:       []string{"proxy", "firewall"},
+			Operations:       []string{"default_deny", "provider=firecracker", "argv=--api-sock=/tmp/fc.sock"},
+		},
+		Orchestration: &sandboxruntime.RuntimeNetworkEnforcementOrchestrationMetadata{
+			PlanID:           "live-e2e-proxy-only-plan",
+			AdapterID:        "live-e2e-proxy-only-adapter",
+			Status:           "active",
+			Mechanisms:       []string{"proxy"},
+			Operations:       []string{"start_proxy", "listen 127.0.0.1:8080"},
+			PolicySnapshotID: "live-e2e-proxy-only-policy",
+			PolicyPreset:     "deny_by_default",
+			Proxy: &sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata{
+				ID:               "live-e2e-proxy-only",
+				PlanID:           "live-e2e-proxy-only-plan",
+				AdapterID:        "live-e2e-proxy-only-adapter",
+				Status:           "active",
+				Mechanisms:       []string{"proxy"},
+				Operations:       []string{"active_proxy", "curl http://localhost:8080", "/tmp/policy-proxy.sock"},
+				PolicySnapshotID: "live-e2e-proxy-only-policy",
+				PolicyPreset:     "deny_by_default",
+				CapabilityLabels: []string{"proxy_active", "provider=firecracker"},
+				ReasonCode:       "active",
+			},
+			CapabilityLabels: []string{"proxy_active", "host_path_/Users/alice"},
+			ReasonCode:       "active",
+		},
+		Result: &sandboxruntime.RuntimeNetworkEnforcementResultMetadata{
+			PlanID:           "live-e2e-proxy-only-plan",
+			AdapterID:        "live-e2e-proxy-only-adapter",
+			Outcome:          outcome,
+			EnforcementMode:  mode,
+			Mechanisms:       []string{"proxy"},
+			Operations:       []string{"proxy_route", "Authorization: Bearer ghp_secret"},
+			PolicySnapshotID: "live-e2e-proxy-only-policy",
+			PolicyPreset:     "deny_by_default",
+			Capability: &sandboxruntime.RuntimeNetworkEnforcementCapability{
+				Supported:                  true,
+				Modes:                      []string{mode, "proxy_firewall"},
+				SupportsDomainRules:        true,
+				SupportsEndpointRules:      true,
+				SupportsDefaultDenyPosture: true,
+			},
+			ReasonCode: "applied",
+		},
+	})
+}
+
 func assertLiveE2ENetworkReadinessNoUnsafeFragments(t *testing.T, label string, values ...any) {
 	t.Helper()
 	var publicText strings.Builder
@@ -216,6 +325,10 @@ func assertLiveE2ENetworkReadinessNoUnsafeFragments(t *testing.T, label string, 
 		"Bearer",
 		"token=",
 		"ghp_secret",
+		"provider",
+		"firecracker",
+		"--api-sock",
+		"/Users/alice",
 		"iptables",
 		"nft",
 		"pfctl",

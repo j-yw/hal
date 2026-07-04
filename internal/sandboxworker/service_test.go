@@ -463,6 +463,143 @@ func TestServiceRuntimeDriverDescriptorProjectsNetworkSecurityFromActiveMetadata
 	}
 }
 
+func TestServiceStatusProjectsProxyActiveNetworkEnforcementProof(t *testing.T) {
+	service, err := NewService(ServiceOptions{
+		WorkerID:           "worker-proxy-active",
+		NetworkEnforcement: workerStatusProxyNetworkMetadata("worker-proxy-active", "active", workerStatusProxyNetworkResult("success", NetworkEnforcementProxy, workerStatusProxyCapability(), "applied")),
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+
+	status := service.Status()
+	if err := status.Validate(); err != nil {
+		t.Fatalf("Status().Validate() error: %v", err)
+	}
+	if status.Security.NetworkEnforcement == nil ||
+		status.Security.NetworkEnforcement.Orchestration == nil ||
+		status.Security.NetworkEnforcement.Orchestration.Proxy == nil ||
+		status.Security.NetworkEnforcement.Result == nil {
+		t.Fatalf("status security networkEnforcement = %#v, want sanitized proxy-active proof", status.Security.NetworkEnforcement)
+	}
+	if status.Security.Requested.NetworkPolicy != NetworkPolicyDenyByDefault {
+		t.Fatalf("requested networkPolicy = %q, want %q", status.Security.Requested.NetworkPolicy, NetworkPolicyDenyByDefault)
+	}
+	if status.Security.Enforced.NetworkPolicy != NetworkPolicyBestEffort {
+		t.Fatalf("enforced networkPolicy = %q, want proxy-only partial enforcement to remain %q", status.Security.Enforced.NetworkPolicy, NetworkPolicyBestEffort)
+	}
+	if status.Security.Enforced.NetworkEnforcement != NetworkEnforcementProxy {
+		t.Fatalf("enforced networkEnforcement = %q, want proxy-only enforcement", status.Security.Enforced.NetworkEnforcement)
+	}
+	if status.Security.Enforced.NetworkEnforcement == NetworkEnforcementProxyFirewall {
+		t.Fatalf("status security overstated proxy_firewall enforcement: %#v", status.Security)
+	}
+	if status.Security.Enforced.NetworkEnforcementCapability == nil ||
+		!reflect.DeepEqual(status.Security.Enforced.NetworkEnforcementCapability.Modes, []string{NetworkEnforcementProxy}) {
+		t.Fatalf("enforced network capability = %#v, want sanitized proxy-only capability", status.Security.Enforced.NetworkEnforcementCapability)
+	}
+	if status.Security.Enforced.NetworkEnforcementCapability.SupportsDefaultDenyPosture {
+		t.Fatalf("enforced network capability = %#v, want proxy-only proof without full default-deny claim", status.Security.Enforced.NetworkEnforcementCapability)
+	}
+	if status.Security.NetworkEnforcement.Result.EnforcementMode != NetworkEnforcementProxy {
+		t.Fatalf("networkEnforcement result mode = %q, want %q", status.Security.NetworkEnforcement.Result.EnforcementMode, NetworkEnforcementProxy)
+	}
+	if status.Security.NetworkEnforcement.Orchestration.Proxy.Status != "active" {
+		t.Fatalf("proxy lifecycle status = %q, want active", status.Security.NetworkEnforcement.Orchestration.Proxy.Status)
+	}
+
+	response := service.StatusResponse("status-proxy-active")
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("Marshal(StatusResponse) error: %v", err)
+	}
+	publicText := string(encoded)
+	for _, want := range []string{
+		`"operation":"status"`,
+		`"status"`,
+		`"networkEnforcement":"proxy"`,
+		`"networkEnforcement"`,
+		`"status":"active"`,
+		`"proxy_active"`,
+	} {
+		if !strings.Contains(publicText, want) {
+			t.Fatalf("status JSON %s missing %s", publicText, want)
+		}
+	}
+	assertWorkerStatusNetworkProofRedacted(t, publicText)
+}
+
+func TestServiceStatusDoesNotUpgradeNetworkEnforcementWithoutActiveSuccessfulProxyProof(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata *sandboxruntime.RuntimeNetworkEnforcementMetadata
+	}{
+		{
+			name:     "missing proof",
+			metadata: nil,
+		},
+		{
+			name:     "missing result",
+			metadata: workerStatusProxyNetworkMetadata("worker-proxy-missing-result", "active", nil),
+		},
+		{
+			name:     "missing proxy lifecycle proof",
+			metadata: workerStatusProxyNetworkMetadataWithoutProxyLifecycle("worker-proxy-missing-proof"),
+		},
+		{
+			name:     "failed result",
+			metadata: workerStatusProxyNetworkMetadata("worker-proxy-failed", "active", workerStatusProxyNetworkResult("failure", NetworkEnforcementProxy, workerStatusProxyCapability(), "adapter_failed")),
+		},
+		{
+			name:     "failed proxy lifecycle proof",
+			metadata: workerStatusProxyNetworkMetadataWithProxyLifecycleStatus("worker-proxy-lifecycle-failed", "failed"),
+		},
+		{
+			name:     "inactive proxy lifecycle",
+			metadata: workerStatusProxyNetworkMetadata("worker-proxy-prepared", "prepared", workerStatusProxyNetworkResult("success", NetworkEnforcementProxy, workerStatusProxyCapability(), "applied")),
+		},
+		{
+			name:     "proxy firewall result without rule proof",
+			metadata: workerStatusProxyNetworkMetadata("worker-proxy-firewall-without-rules", "active", workerStatusProxyFirewallNetworkResultWithoutRuleProof()),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service, err := NewService(ServiceOptions{
+				WorkerID:           "worker-" + strings.ReplaceAll(tt.name, " ", "-"),
+				NetworkEnforcement: tt.metadata,
+			})
+			if err != nil {
+				t.Fatalf("NewService() error: %v", err)
+			}
+
+			status := service.Status()
+			if err := status.Validate(); err != nil {
+				t.Fatalf("Status().Validate() error: %v", err)
+			}
+			if status.Security.Enforced.NetworkPolicy != NetworkPolicyBestEffort {
+				t.Fatalf("enforced networkPolicy = %q, want conservative best_effort", status.Security.Enforced.NetworkPolicy)
+			}
+			if status.Security.Enforced.NetworkEnforcement != NetworkEnforcementNone {
+				t.Fatalf("enforced networkEnforcement = %q, want no enforcement upgrade", status.Security.Enforced.NetworkEnforcement)
+			}
+			if status.Security.Enforced.NetworkEnforcementCapability != nil {
+				t.Fatalf("enforced capability = %#v, want nil without active successful proof", status.Security.Enforced.NetworkEnforcementCapability)
+			}
+			if status.Security.Enforced.NetworkEnforcement == NetworkEnforcementProxyFirewall {
+				t.Fatalf("status security overstated proxy_firewall enforcement: %#v", status.Security)
+			}
+
+			encoded, err := json.Marshal(status)
+			if err != nil {
+				t.Fatalf("Marshal(status) error: %v", err)
+			}
+			assertWorkerStatusNetworkProofRedacted(t, string(encoded))
+		})
+	}
+}
+
 func TestServiceCapabilitiesCanIncludeExplicitNetworkEnforcementCapability(t *testing.T) {
 	registry, err := NewDriverRegistry(&fakeWorkerRuntimeDriver{id: RuntimeDriverMicroVM})
 	if err != nil {
@@ -575,6 +712,136 @@ func TestServiceCapabilitiesCanIncludeExplicitNetworkEnforcementCapability(t *te
 	} {
 		if strings.Contains(publicText, unsafe) {
 			t.Fatalf("capabilities leaked or claimed %q in %s", unsafe, publicText)
+		}
+	}
+}
+
+func workerStatusProxyNetworkMetadata(planID, proxyStatus string, result *sandboxruntime.RuntimeNetworkEnforcementResultMetadata) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
+	return &sandboxruntime.RuntimeNetworkEnforcementMetadata{
+		Plan: &sandboxruntime.RuntimeNetworkEnforcementPlanMetadata{
+			ID:               planID,
+			Source:           "worker",
+			Operation:        "prepare_network",
+			PolicySnapshotID: planID + "-snapshot",
+			PolicyPreset:     "deny_by_default",
+			DefaultPosture:   "deny_by_default",
+			Mechanisms:       []string{"proxy", "https://api.internal.example.com", "token=secret"},
+			Operations:       []string{"default_deny", "connect 10.0.0.5:443", "/tmp/proxy.sock"},
+		},
+		Orchestration: &sandboxruntime.RuntimeNetworkEnforcementOrchestrationMetadata{
+			PlanID:           planID,
+			AdapterID:        "worker-proxy-adapter",
+			Status:           proxyStatus,
+			Mechanisms:       []string{"proxy", "169.254.169.254"},
+			Operations:       []string{"active_proxy", "curl https://api.internal.example.com", "OPENAI_API_KEY"},
+			PolicySnapshotID: planID + "-snapshot",
+			PolicyPreset:     "deny_by_default",
+			Proxy: &sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata{
+				ID:               planID + "-proxy",
+				PlanID:           planID,
+				AdapterID:        "worker-proxy-adapter",
+				Status:           proxyStatus,
+				Mechanisms:       []string{"proxy"},
+				Operations:       []string{"active_proxy", "listen 127.0.0.1:8080", "Authorization: Bearer secret"},
+				PolicySnapshotID: planID + "-snapshot",
+				PolicyPreset:     "deny_by_default",
+				CapabilityLabels: []string{"proxy_active", "token_holder"},
+				ReasonCode:       proxyStatus,
+			},
+			CapabilityLabels: []string{"proxy_active", "token_holder"},
+			ReasonCode:       proxyStatus,
+		},
+		Result: result,
+	}
+}
+
+func workerStatusProxyNetworkMetadataWithoutProxyLifecycle(planID string) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
+	metadata := workerStatusProxyNetworkMetadata(planID, "active", workerStatusProxyNetworkResult("success", NetworkEnforcementProxy, workerStatusProxyCapability(), "applied"))
+	metadata.Orchestration.Proxy = nil
+	return metadata
+}
+
+func workerStatusProxyNetworkMetadataWithProxyLifecycleStatus(planID, proxyStatus string) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
+	metadata := workerStatusProxyNetworkMetadata(planID, "active", workerStatusProxyNetworkResult("success", NetworkEnforcementProxy, workerStatusProxyCapability(), "applied"))
+	metadata.Orchestration.Proxy.Status = proxyStatus
+	metadata.Orchestration.Proxy.ReasonCode = proxyStatus
+	return metadata
+}
+
+func workerStatusProxyNetworkResult(outcome, mode string, capability *sandboxruntime.RuntimeNetworkEnforcementCapability, reason string) *sandboxruntime.RuntimeNetworkEnforcementResultMetadata {
+	return &sandboxruntime.RuntimeNetworkEnforcementResultMetadata{
+		PlanID:           "worker-proxy-result",
+		AdapterID:        "worker-proxy-adapter",
+		Outcome:          outcome,
+		EnforcementMode:  mode,
+		Mechanisms:       []string{"proxy"},
+		Operations:       []string{"proxy_route", "connect https://api.internal.example.com:443", "/tmp/proxy.sock", "GITHUB_TOKEN"},
+		PolicySnapshotID: "worker-proxy-result-snapshot",
+		PolicyPreset:     "deny_by_default",
+		Capability:       capability,
+		ReasonCode:       reason,
+	}
+}
+
+func workerStatusProxyFirewallNetworkResultWithoutRuleProof() *sandboxruntime.RuntimeNetworkEnforcementResultMetadata {
+	return &sandboxruntime.RuntimeNetworkEnforcementResultMetadata{
+		PlanID:           "worker-proxy-firewall-result",
+		AdapterID:        "worker-proxy-adapter",
+		Outcome:          "success",
+		EnforcementMode:  NetworkEnforcementProxyFirewall,
+		Mechanisms:       []string{"proxy", "firewall"},
+		Operations:       []string{"proxy_route", "iptables -A OUTPUT", "/tmp/firewall.rules"},
+		PolicySnapshotID: "worker-proxy-firewall-result-snapshot",
+		PolicyPreset:     "deny_by_default",
+		Capability: &sandboxruntime.RuntimeNetworkEnforcementCapability{
+			Supported:                  true,
+			Modes:                      []string{NetworkEnforcementProxyFirewall},
+			SupportsDomainRules:        true,
+			SupportsEndpointRules:      true,
+			SupportsPrivateRangeRules:  true,
+			SupportsMetadataEndpoint:   true,
+			SupportsLoopbackRules:      true,
+			SupportsLinkLocalRules:     true,
+			SupportsDefaultDenyPosture: true,
+		},
+		ReasonCode: "applied",
+	}
+}
+
+func workerStatusProxyCapability() *sandboxruntime.RuntimeNetworkEnforcementCapability {
+	return &sandboxruntime.RuntimeNetworkEnforcementCapability{
+		Supported:                  true,
+		Modes:                      []string{NetworkEnforcementProxy, "https://api.internal.example.com"},
+		SupportsDomainRules:        true,
+		SupportsEndpointRules:      true,
+		SupportsPrivateRangeRules:  true,
+		SupportsMetadataEndpoint:   true,
+		SupportsLoopbackRules:      true,
+		SupportsLinkLocalRules:     true,
+		SupportsDefaultDenyPosture: true,
+	}
+}
+
+func assertWorkerStatusNetworkProofRedacted(t *testing.T, publicText string) {
+	t.Helper()
+	for _, unsafe := range []string{
+		"api.internal.example.com",
+		"10.0.0.5",
+		"127.0.0.1",
+		"169.254.169.254",
+		"Authorization",
+		"Bearer",
+		"OPENAI_API_KEY",
+		"GITHUB_TOKEN",
+		"token",
+		"secret",
+		"/tmp/",
+		"proxy.sock",
+		"firewall.rules",
+		"://",
+	} {
+		if strings.Contains(publicText, unsafe) {
+			t.Fatalf("worker status JSON leaked unsafe value %q in %s", unsafe, publicText)
 		}
 	}
 }

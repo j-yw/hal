@@ -38,6 +38,12 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from prod55-secure-default-network-enforcement (2026-07-04)
+
+- Worker status network enforcement projection belongs in `internal/sandboxworker` through `projectWorkerSecurityPolicy`; include sanitized `RuntimeNetworkEnforcementMetadata` on worker status only, upgrade to proxy-only enforcement only when the result is successful and the proxy lifecycle proof is active, and never upgrade to `proxy_firewall` without active firewall/runtime rule proof.
+- Runtime driver capability projection should continue using `projectRuntimeDriverSecurityPolicy`, which strips proof metadata from driver descriptors and keeps enforcement claims conservative unless explicit sanitized capability plus active proof supports them.
+- Sandbox runtime status JSON projection belongs in `cmd` as a status/summary boundary: consume worker-projected `RuntimeDriver.Security`, sanitize through `sanitizeCommandSandboxNetworkSecurity`, preserve proxy-only partial enforcement as `networkEnforcement=proxy` with `networkPolicy=best_effort`, and do not add proxy decision behavior or raw `RuntimeNetworkEnforcementMetadata` proof fields to the command response.
+
 ## Patterns from phase53-live-proxy-firewall-microvm-e2e (2026-07-04)
 
 - Phase 53 final verification docs live in `docs/design/sandbox-runtime-v2-phase53-final-verification.md` and are guarded by `cmd/phase53_final_verification_test.go`; keep focused commands, broad quality gates, fake-only default scope, and the optional tagged live E2E command boundary in sync.

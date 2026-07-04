@@ -183,7 +183,7 @@ func liveE2ENetworkEnforcementMarkerDiagnostics(input LiveE2ENetworkEnforcementR
 }
 
 func liveE2ENetworkProxyReadiness(metadata *sandboxruntime.RuntimeNetworkEnforcementMetadata) (LiveE2EReadinessStatus, LiveE2EReasonCode) {
-	if liveE2ENetworkEnforcementResultReady(metadata) &&
+	if liveE2ENetworkProxyResultReady(metadata) &&
 		liveE2ENetworkEnforcementLifecycleActive(metadata) &&
 		liveE2ENetworkProxyLifecycleActive(metadata) {
 		return LiveE2EReadinessReady, LiveE2EReasonReady
@@ -198,6 +198,25 @@ func liveE2EFirewallReadiness(metadata *sandboxruntime.RuntimeNetworkEnforcement
 		return LiveE2EReadinessReady, LiveE2EReasonReady
 	}
 	return LiveE2EReadinessUnavailable, LiveE2EReasonFirewallUnavailable
+}
+
+func liveE2ENetworkProxyResultReady(metadata *sandboxruntime.RuntimeNetworkEnforcementMetadata) bool {
+	if metadata == nil || metadata.Result == nil {
+		return false
+	}
+	result := metadata.Result
+	if result.Outcome != "success" && result.Outcome != "best_effort" {
+		return false
+	}
+	if !liveE2EStringListContains(result.Mechanisms, "proxy") {
+		return false
+	}
+	switch result.EnforcementMode {
+	case "proxy", "proxy_firewall", "best_effort":
+		return true
+	default:
+		return false
+	}
 }
 
 func liveE2ENetworkEnforcementResultReady(metadata *sandboxruntime.RuntimeNetworkEnforcementMetadata) bool {

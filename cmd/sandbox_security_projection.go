@@ -121,13 +121,23 @@ func sanitizeCommandSandboxNetworkSecurity(network *sandbox.SandboxNetworkSecuri
 		out.EnforcementMode = commandSandboxNetworkEnforcementModeLabel(result.EnforcementMode)
 		out.PolicyEnforced = commandSandboxNetworkPolicyLabelFromIntent(result.Effective)
 	} else if commandSandboxNetworkSecurityHasAnyMetadata(out) {
+		partialMode := commandSandboxNetworkPartialEnforcementMode(out.EnforcementMode)
 		out.PolicyEnforced = sandbox.SandboxNetworkPolicyBestEffort
-		out.EnforcementMode = sandbox.SandboxNetworkEnforcementModeNone
+		out.EnforcementMode = partialMode
 	}
 	if !commandSandboxNetworkSecurityHasAnyMetadata(out) {
 		return nil
 	}
 	return out
+}
+
+func commandSandboxNetworkPartialEnforcementMode(mode string) string {
+	switch commandSandboxNetworkEnforcementModeLabel(mode) {
+	case sandbox.SandboxNetworkEnforcementModeProxy:
+		return sandbox.SandboxNetworkEnforcementModeProxy
+	default:
+		return sandbox.SandboxNetworkEnforcementModeNone
+	}
 }
 
 func commandSandboxNetworkSecurityHasAnyMetadata(network *sandbox.SandboxNetworkSecurity) bool {

@@ -224,6 +224,7 @@ func sanitizeRuntimeNetworkEnforcementResultMetadata(metadata *RuntimeNetworkEnf
 	}
 	outcome := sanitizeRuntimeNetworkEnforcementOutcome(metadata.Outcome)
 	mode := sanitizeRuntimeNetworkEnforcementMode(metadata.EnforcementMode)
+	mechanisms := sanitizeRuntimeNetworkEnforcementMechanismList(metadata.Mechanisms)
 	if outcome == "" && runtimeNetworkEnforcementModeCanEnforce(mode) {
 		outcome = "success"
 	}
@@ -239,12 +240,14 @@ func sanitizeRuntimeNetworkEnforcementResultMetadata(metadata *RuntimeNetworkEnf
 	if outcome == "success" && !runtimeNetworkEnforcementModeCanEnforce(mode) {
 		mode = "none"
 	}
+	mode = runtimeNetworkEnforcementModeConsistentWithMechanisms(mode, mechanisms)
 	reason := sanitizeRuntimeNetworkEnforcementReasonCode(metadata.ReasonCode)
 	warnings := sanitizeRuntimeNetworkEnforcementWarningCodeList(metadata.WarningCodes)
 	if outcome == "success" && runtimeNetworkEnforcementResultHasDowngradeSignal(reason, warnings) {
 		mode = "none"
 	}
 	capability := SanitizeRuntimeNetworkEnforcementCapability(metadata.Capability)
+	capability = runtimeNetworkEnforcementCapabilityConsistentWithMode(capability, mode)
 	if outcome != "success" ||
 		!runtimeNetworkEnforcementModeCanEnforce(mode) ||
 		runtimeNetworkEnforcementResultHasDowngradeSignal(reason, warnings) {
@@ -256,7 +259,7 @@ func sanitizeRuntimeNetworkEnforcementResultMetadata(metadata *RuntimeNetworkEnf
 		AdapterID:        sanitizeRuntimeNetworkEnforcementID(metadata.AdapterID),
 		Outcome:          outcome,
 		EnforcementMode:  mode,
-		Mechanisms:       sanitizeRuntimeNetworkEnforcementMechanismList(metadata.Mechanisms),
+		Mechanisms:       mechanisms,
 		Operations:       sanitizeRuntimeNetworkEnforcementIDList(metadata.Operations),
 		PolicySnapshotID: sanitizeRuntimeNetworkEnforcementID(metadata.PolicySnapshotID),
 		PolicyPreset:     sanitizeRuntimeNetworkEnforcementPolicyPreset(metadata.PolicyPreset),
@@ -283,6 +286,55 @@ func sanitizeRuntimeNetworkEnforcementResultMetadata(metadata *RuntimeNetworkEnf
 	return sanitized
 }
 
+func runtimeNetworkEnforcementModeConsistentWithMechanisms(mode string, mechanisms []string) string {
+	if mode != "proxy_firewall" {
+		return mode
+	}
+	hasProxy := runtimeNetworkEnforcementStringListContains(mechanisms, "proxy")
+	hasFirewall := runtimeNetworkEnforcementStringListContains(mechanisms, "firewall")
+	hasRuntime := runtimeNetworkEnforcementStringListContains(mechanisms, "runtime")
+	switch {
+	case hasProxy && hasFirewall:
+		return mode
+	case hasRuntime:
+		return "runtime"
+	case hasProxy:
+		return "proxy"
+	case hasFirewall:
+		return "firewall"
+	default:
+		return "none"
+	}
+}
+
+func runtimeNetworkEnforcementCapabilityConsistentWithMode(capability *RuntimeNetworkEnforcementCapability, mode string) *RuntimeNetworkEnforcementCapability {
+	if capability == nil {
+		return nil
+	}
+	copied := *capability
+	copied.Modes = runtimeNetworkEnforcementCapabilityModesForMode(capability.Modes, mode, capability.Supported)
+	if mode == "proxy" || mode == "best_effort" || mode == "none" {
+		copied.SupportsDefaultDenyPosture = false
+	}
+	return SanitizeRuntimeNetworkEnforcementCapability(&copied)
+}
+
+func runtimeNetworkEnforcementCapabilityModesForMode(values []string, mode string, supported bool) []string {
+	if mode == "" || mode == "none" || mode == "best_effort" {
+		return nil
+	}
+	var out []string
+	for _, value := range values {
+		if sanitizeRuntimeNetworkEnforcementMode(value) == mode && !runtimeNetworkEnforcementStringListContains(out, mode) {
+			out = append(out, mode)
+		}
+	}
+	if len(out) == 0 && supported && runtimeNetworkEnforcementModeCanEnforce(mode) {
+		out = append(out, mode)
+	}
+	return out
+}
+
 func runtimeNetworkEnforcementResultHasDowngradeSignal(reason string, warnings []string) bool {
 	switch reason {
 	case "best_effort", "adapter_unsupported", "adapter_failed", "capability_missing", "mode_unavailable":
@@ -291,6 +343,15 @@ func runtimeNetworkEnforcementResultHasDowngradeSignal(reason string, warnings [
 	for _, warning := range warnings {
 		switch warning {
 		case "partial_enforcement", "unsupported_mode", "capability_downgraded", "metadata_only_fallback", "sanitized_adapter_error":
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeNetworkEnforcementStringListContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
 			return true
 		}
 	}
