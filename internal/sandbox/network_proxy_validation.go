@@ -166,6 +166,7 @@ func SanitizeSandboxNetworkEnforcementProofMetadata(proof SandboxNetworkEnforcem
 	sanitized.FirewallLifecycleReasonCode = sanitizeSandboxNetworkEnforcementLifecycleReasonCode(sanitized.FirewallLifecycleReasonCode)
 	sanitized.ResultOutcome = sanitizeSandboxNetworkEnforcementResultOutcome(sanitized.ResultOutcome)
 	sanitized.ResultEnforcementMode = sanitizeSandboxNetworkProxyEnforcementModeValue(sanitized.ResultEnforcementMode)
+	sanitized.WarningCount = sanitizeSandboxNetworkEnforcementWarningCount(sanitized.WarningCount)
 	return sanitized
 }
 
@@ -179,7 +180,8 @@ func SandboxNetworkEnforcementProofProvesActiveHTTPProxy(proof SandboxNetworkEnf
 	}
 	if !sandboxNetworkEnforcementProofHasActiveProxy(sanitized) ||
 		sanitized.ResultOutcome != "success" ||
-		!sanitized.ResultSupported {
+		!sanitized.ResultSupported ||
+		sanitized.WarningCount > 0 {
 		return false
 	}
 	switch sanitized.ResultEnforcementMode {
@@ -200,7 +202,22 @@ func SandboxNetworkEnforcementProofProvesActiveProxyFirewall(proof SandboxNetwor
 		sandboxNetworkEnforcementProofHasActiveFirewall(sanitized) &&
 		sanitized.ResultOutcome == "success" &&
 		sanitized.ResultEnforcementMode == SandboxNetworkEnforcementModeProxyFirewall &&
-		sanitized.ResultSupported
+		sanitized.ResultSupported &&
+		sanitized.WarningCount == 0
+}
+
+func sandboxNetworkEnforcementProofEmpty(proof SandboxNetworkEnforcementProofMetadata) bool {
+	return proof.NetworkProxySessionID == "" &&
+		proof.PolicySnapshotID == "" &&
+		proof.NetworkEnforcementPlanID == "" &&
+		proof.ProxyLifecycleStatus == "" &&
+		proof.ProxyLifecycleReasonCode == "" &&
+		proof.FirewallLifecycleStatus == "" &&
+		proof.FirewallLifecycleReasonCode == "" &&
+		proof.ResultOutcome == "" &&
+		proof.ResultEnforcementMode == "" &&
+		!proof.ResultSupported &&
+		proof.WarningCount == 0
 }
 
 func sandboxNetworkEnforcementProofHasRequiredIDs(proof SandboxNetworkEnforcementProofMetadata) bool {
@@ -283,6 +300,7 @@ func normalizeSandboxNetworkEnforcementProofMetadata(proof SandboxNetworkEnforce
 		ResultOutcome:               strings.ToLower(strings.TrimSpace(proof.ResultOutcome)),
 		ResultEnforcementMode:       normalizeSandboxNetworkProxyEnforcementMode(proof.ResultEnforcementMode),
 		ResultSupported:             proof.ResultSupported,
+		WarningCount:                proof.WarningCount,
 	}
 }
 
@@ -434,6 +452,16 @@ func sanitizeSandboxNetworkEnforcementResultOutcome(outcome string) string {
 	default:
 		return ""
 	}
+}
+
+func sanitizeSandboxNetworkEnforcementWarningCount(count int) int {
+	if count < 0 {
+		return 0
+	}
+	if count > 1000 {
+		return 1000
+	}
+	return count
 }
 
 func sanitizeSandboxNetworkProxyLabel(value string) string {

@@ -86,6 +86,7 @@ type SandboxNetworkEnforcementProofMetadata struct {
 	ResultOutcome               string `json:"resultOutcome,omitempty"`
 	ResultEnforcementMode       string `json:"resultEnforcementMode,omitempty"`
 	ResultSupported             bool   `json:"resultSupported,omitempty"`
+	WarningCount                int    `json:"warningCount,omitempty"`
 }
 
 // SandboxNetworkPolicyRequestSummary is the sanitized request surface available

@@ -17,13 +17,14 @@ func ProjectSandboxSecurityCapabilityReadinessInput(security *SandboxSecurity) S
 // SandboxWorkerRuntimeCapabilityReadinessProjection carries durable
 // worker/runtime posture labels into readiness input.
 type SandboxWorkerRuntimeCapabilityReadinessProjection struct {
-	Host           *SandboxHost
-	Runtime        *SandboxRuntimeState
-	Workspace      *SandboxWorkspace
-	WorkerRouting  *WorkerRoutingMetadata
-	TemplateLock   *SandboxTemplateLockMetadata
-	WorkerPostures []SandboxSecurityCapabilityWorkerPostureMetadata
-	Ready          []SandboxSecurityCapabilityMetadata
+	Host                  *SandboxHost
+	Runtime               *SandboxRuntimeState
+	Workspace             *SandboxWorkspace
+	WorkerRouting         *WorkerRoutingMetadata
+	TemplateLock          *SandboxTemplateLockMetadata
+	MicroVMIsolationProof *SandboxMicroVMIsolationProofMetadata
+	WorkerPostures        []SandboxSecurityCapabilityWorkerPostureMetadata
+	Ready                 []SandboxSecurityCapabilityMetadata
 }
 
 // SandboxPolicyProxyCredentialCapabilityReadinessProjection carries durable
@@ -50,6 +51,7 @@ func ProjectSandboxWorkerRuntimeCapabilityReadinessInput(projection SandboxWorke
 		sandboxSecurityCapabilityProjectionWorkerRuntimePosture(projection.Host, projection.Runtime, projection.WorkerRouting),
 	)
 	input.Ready = sandboxSecurityCapabilityProjectionAppendWorkspaceProof(input.Ready, projection.Workspace)
+	input.Ready = sandboxSecurityCapabilityProjectionAppendMicroVMIsolationProof(input.Ready, projection.MicroVMIsolationProof)
 	templateLock := sandboxSecurityCapabilityProjectionTemplateLock(projection.TemplateLock, projection.Runtime)
 	if sandboxSecurityCapabilityProjectionTemplateTrustRequirementConfigured(templateLock) {
 		input.Requested = sandboxSecurityCapabilityProjectionAppendUnique(input.Requested, SandboxSecurityCapabilityMetadata{
@@ -329,6 +331,9 @@ func sandboxSecurityCapabilityProjectionAppendNetworkEnforcementProof(records []
 		return records
 	}
 	sanitized := SanitizeSandboxNetworkEnforcementProofMetadata(*proof)
+	if sandboxNetworkEnforcementProofEmpty(sanitized) {
+		return records
+	}
 	status, reason := sandboxSecurityCapabilityProjectionNetworkProofReadiness(sanitized)
 	return sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
 		SandboxSecurityCapabilityFamilyNetworkPolicy,
@@ -350,6 +355,9 @@ func sandboxSecurityCapabilityProjectionNetworkProofReadiness(proof SandboxNetwo
 	if proof.ResultOutcome == "best_effort" || proof.ResultEnforcementMode == SandboxNetworkEnforcementModeBestEffort {
 		return SandboxSecurityCapabilityReadinessMetadataOnly, SandboxSecurityCapabilityReasonNetworkEnforcementBestEffort
 	}
+	if proof.WarningCount > 0 {
+		return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonWarningBearing
+	}
 	if proof.ResultOutcome == "unsupported" || !proof.ResultSupported {
 		return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonNetworkEnforcementUnsupported
 	}
@@ -359,7 +367,44 @@ func sandboxSecurityCapabilityProjectionNetworkProofReadiness(proof SandboxNetwo
 	if SandboxNetworkEnforcementProofProvesActiveProxyFirewall(proof) {
 		return SandboxSecurityCapabilityReadinessReady, SandboxSecurityCapabilityReasonNetworkEnforcementConfirmed
 	}
+	if proof.ResultOutcome == "success" && proof.ResultSupported {
+		return SandboxSecurityCapabilityReadinessMetadataOnly, SandboxSecurityCapabilityReasonNetworkEnforcementPartial
+	}
 	return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonNetworkEnforcementUnsupported
+}
+
+func sandboxSecurityCapabilityProjectionAppendMicroVMIsolationProof(records []SandboxSecurityCapabilityMetadata, proof *SandboxMicroVMIsolationProofMetadata) []SandboxSecurityCapabilityMetadata {
+	if proof == nil {
+		return records
+	}
+	sanitized := SanitizeSandboxMicroVMIsolationProofMetadata(*proof)
+	if sandboxMicroVMIsolationProofEmpty(sanitized) {
+		return records
+	}
+	status, reason := sandboxSecurityCapabilityProjectionMicroVMIsolationProofReadiness(sanitized)
+	return sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
+		SandboxSecurityCapabilityFamilyIsolation,
+		SandboxSecurityCapabilityIsolationMicroVM,
+		"",
+		SandboxSecurityCapabilitySourceRuntime,
+		status,
+		reason,
+	)
+}
+
+func sandboxSecurityCapabilityProjectionMicroVMIsolationProofReadiness(proof SandboxMicroVMIsolationProofMetadata) (SandboxSecurityCapabilityReadinessState, SandboxSecurityCapabilityReasonCode) {
+	if proof.RuntimeDriver != SandboxRuntimeDriverMicroVM ||
+		proof.IsolationLevel != SandboxIsolationLevelVM ||
+		!proof.ResultSupported {
+		return SandboxSecurityCapabilityReadinessBlocked, SandboxSecurityCapabilityReasonMicroVMSupportMissing
+	}
+	if proof.WarningCount > 0 {
+		return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonWarningBearing
+	}
+	if SandboxMicroVMIsolationProofProvesActiveVMIsolation(&proof) {
+		return SandboxSecurityCapabilityReadinessReady, SandboxSecurityCapabilityReasonMicroVMReadinessConfirmed
+	}
+	return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonMicroVMReadinessMissing
 }
 
 func sandboxSecurityCapabilityProjectionAppendCredentialDeliveryProof(records []SandboxSecurityCapabilityMetadata, status *SandboxCredentialDeliveryStatusMetadata) []SandboxSecurityCapabilityMetadata {
@@ -649,6 +694,19 @@ func sandboxSecurityCapabilityProjectionHasEvidence(requested SandboxSecurityCap
 
 func sandboxSecurityCapabilityProjectionAppendRequestedMetadataProof(records []SandboxSecurityCapabilityMetadata, input SandboxSecurityCapabilityReadinessInput, requested SandboxSecurityCapabilityMetadata) []SandboxSecurityCapabilityMetadata {
 	switch requested.Family {
+	case SandboxSecurityCapabilityFamilyIsolation:
+		if requested.Capability == SandboxSecurityCapabilityIsolationMicroVM &&
+			sandboxSecurityCapabilityProjectionHasMicroVMMetadata(input) {
+			return sandboxSecurityCapabilityProjectionAppendSafeEvidenceWithID(records,
+				requested.ID,
+				requested.Family,
+				requested.Capability,
+				requested.Mode,
+				SandboxSecurityCapabilitySourceMetadata,
+				SandboxSecurityCapabilityReadinessUnsupported,
+				SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
+			)
+		}
 	case SandboxSecurityCapabilityFamilyNetworkPolicy:
 		if requested.Capability == SandboxSecurityCapabilityNetworkDenyByDefault &&
 			requested.Mode != "" &&
@@ -692,6 +750,22 @@ func sandboxSecurityCapabilityProjectionHasPlannedNetworkMetadata(input SandboxS
 	return input.NetworkProxySession != nil || len(input.NetworkPolicyDecisionLogs) > 0
 }
 
+func sandboxSecurityCapabilityProjectionHasMicroVMMetadata(input SandboxSecurityCapabilityReadinessInput) bool {
+	for _, record := range input.Ready {
+		if record.Family == SandboxSecurityCapabilityFamilyIsolation &&
+			record.Capability == SandboxSecurityCapabilityIsolationMicroVM {
+			return true
+		}
+	}
+	for _, posture := range input.WorkerPostures {
+		if posture.RuntimeDriver == SandboxRuntimeDriverMicroVM ||
+			posture.IsolationLevel == SandboxIsolationLevelVM {
+			return true
+		}
+	}
+	return false
+}
+
 func sandboxSecurityCapabilityProjectionHasCredentialMetadata(input SandboxSecurityCapabilityReadinessInput) bool {
 	return input.CredentialProxyPlan != nil ||
 		input.CredentialProxySession != nil ||
@@ -700,6 +774,18 @@ func sandboxSecurityCapabilityProjectionHasCredentialMetadata(input SandboxSecur
 
 func sandboxSecurityCapabilityProjectionAppendMissingProof(records []SandboxSecurityCapabilityMetadata, requested SandboxSecurityCapabilityMetadata) []SandboxSecurityCapabilityMetadata {
 	switch requested.Family {
+	case SandboxSecurityCapabilityFamilyIsolation:
+		if requested.Capability == SandboxSecurityCapabilityIsolationMicroVM {
+			return sandboxSecurityCapabilityProjectionAppendSafeEvidenceWithID(records,
+				requested.ID,
+				requested.Family,
+				requested.Capability,
+				requested.Mode,
+				SandboxSecurityCapabilitySourceMetadata,
+				SandboxSecurityCapabilityReadinessUnsupported,
+				SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
+			)
+		}
 	case SandboxSecurityCapabilityFamilyNetworkPolicy:
 		if requested.Capability == SandboxSecurityCapabilityNetworkDenyByDefault && requested.Mode != "" {
 			return sandboxSecurityCapabilityProjectionAppendSafeEvidenceWithID(records,
