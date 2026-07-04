@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/sandbox"
 )
 
 // FactoryRunResponse is the machine-readable JSON output for hal factory run --json.
@@ -21,6 +22,11 @@ type FactoryRunResponse struct {
 	Telemetry       *factory.RunTelemetry         `json:"telemetry,omitempty"`
 	EventSummary    FactoryRunEventSummary        `json:"eventSummary"`
 	Failure         *FactoryRunFailure            `json:"failure"`
+}
+
+type factoryRunResponseWithSecurityReadinessGate struct {
+	FactoryRunResponse
+	SecurityReadinessGate *sandbox.SandboxSecurityCapabilityReadinessGateDecision `json:"securityReadinessGate,omitempty"`
 }
 
 // FactoryRunNextAction suggests what to do after a local factory run.
@@ -69,13 +75,39 @@ func renderFactoryRunJSON(out io.Writer, resp FactoryRunResponse) error {
 	return nil
 }
 
+func renderFactoryRunJSONWithSecurityReadinessGate(out io.Writer, resp FactoryRunResponse, gate *sandbox.SandboxSecurityCapabilityReadinessGateDecision) error {
+	gate = sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(gate)
+	if gate == nil {
+		return renderFactoryRunJSON(out, resp)
+	}
+	resp = normalizeFactoryRunResponse(resp)
+	data, err := json.MarshalIndent(factoryRunResponseWithSecurityReadinessGate{
+		FactoryRunResponse:    resp,
+		SecurityReadinessGate: gate,
+	}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal factory run result: %w", err)
+	}
+	fmt.Fprintln(out, string(data))
+	return nil
+}
+
 func renderFactoryRunSummary(out io.Writer, resp FactoryRunResponse) error {
+	return renderFactoryRunSummaryWithSecurityReadinessGate(out, resp, nil)
+}
+
+func renderFactoryRunSummaryWithSecurityReadinessGate(out io.Writer, resp FactoryRunResponse, gate *sandbox.SandboxSecurityCapabilityReadinessGateDecision) error {
 	resp = normalizeFactoryRunResponse(resp)
 	if _, err := fmt.Fprintf(out, "Run ID: %s\n", resp.RunID); err != nil {
 		return fmt.Errorf("write factory run summary: %w", err)
 	}
 	if _, err := fmt.Fprintf(out, "Status: %s\n", resp.Status); err != nil {
 		return fmt.Errorf("write factory run summary: %w", err)
+	}
+	if readiness := factorySecurityReadinessGateHuman(gate); readiness != "" {
+		if _, err := fmt.Fprintf(out, "%s\n", readiness); err != nil {
+			return fmt.Errorf("write factory run summary: %w", err)
+		}
 	}
 
 	if resp.Failure != nil {
@@ -117,6 +149,10 @@ func newFactoryRunResponse(record factory.RunRecord, events []factory.EventRecor
 		EventSummary:    newFactoryRunEventSummary(events),
 		Failure:         newFactoryRunFailure(record),
 	}
+}
+
+func factorySecurityReadinessGateHuman(gate *sandbox.SandboxSecurityCapabilityReadinessGateDecision) string {
+	return sandboxRuntimeSecurityReadinessGateHuman(gate)
 }
 
 func newFactoryRunArtifactReferences(artifacts []factory.ArtifactReference) []FactoryRunArtifactReference {

@@ -386,29 +386,30 @@ type FactoryStatusResponse struct {
 // FactoryStatusRun is the safe run surface for hal factory status --json. It
 // mirrors factory.RunRecord but uses sanitized artifact summaries.
 type FactoryStatusRun struct {
-	RunID           string                           `json:"runId"`
-	Status          string                           `json:"status"`
-	ExecutorMode    string                           `json:"executorMode,omitempty"`
-	Engine          string                           `json:"engine,omitempty"`
-	Source          factory.SourceMetadata           `json:"source"`
-	RepoPath        string                           `json:"repoPath"`
-	RepoRemote      string                           `json:"repoRemote"`
-	BranchName      string                           `json:"branchName"`
-	BaseBranch      string                           `json:"baseBranch"`
-	Policy          *factory.FactoryPolicy           `json:"policy,omitempty"`
-	PolicyDecisions []factory.PolicyDecisionMetadata `json:"policyDecisions,omitempty"`
-	SandboxName     string                           `json:"sandboxName,omitempty"`
-	Sandbox         *factory.SandboxMetadata         `json:"sandbox,omitempty"`
-	CurrentStep     string                           `json:"currentStep"`
-	CreatedAt       time.Time                        `json:"createdAt"`
-	UpdatedAt       time.Time                        `json:"updatedAt"`
-	FinishedAt      *time.Time                       `json:"finishedAt,omitempty"`
-	Secrets         []factory.RunSecretMetadata      `json:"secrets,omitempty"`
-	Artifacts       []FactoryArtifactSummary         `json:"artifacts,omitempty"`
-	Verification    *factory.VerificationRecord      `json:"verification,omitempty"`
-	Telemetry       *factory.RunTelemetry            `json:"telemetry,omitempty"`
-	Failure         *factory.FailureSummary          `json:"failure,omitempty"`
-	Handoff         *factory.HandoffSummary          `json:"handoff,omitempty"`
+	RunID                 string                                                  `json:"runId"`
+	Status                string                                                  `json:"status"`
+	ExecutorMode          string                                                  `json:"executorMode,omitempty"`
+	Engine                string                                                  `json:"engine,omitempty"`
+	Source                factory.SourceMetadata                                  `json:"source"`
+	RepoPath              string                                                  `json:"repoPath"`
+	RepoRemote            string                                                  `json:"repoRemote"`
+	BranchName            string                                                  `json:"branchName"`
+	BaseBranch            string                                                  `json:"baseBranch"`
+	Policy                *factory.FactoryPolicy                                  `json:"policy,omitempty"`
+	PolicyDecisions       []factory.PolicyDecisionMetadata                        `json:"policyDecisions,omitempty"`
+	SandboxName           string                                                  `json:"sandboxName,omitempty"`
+	Sandbox               *factory.SandboxMetadata                                `json:"sandbox,omitempty"`
+	SecurityReadinessGate *sandbox.SandboxSecurityCapabilityReadinessGateDecision `json:"securityReadinessGate,omitempty"`
+	CurrentStep           string                                                  `json:"currentStep"`
+	CreatedAt             time.Time                                               `json:"createdAt"`
+	UpdatedAt             time.Time                                               `json:"updatedAt"`
+	FinishedAt            *time.Time                                              `json:"finishedAt,omitempty"`
+	Secrets               []factory.RunSecretMetadata                             `json:"secrets,omitempty"`
+	Artifacts             []FactoryArtifactSummary                                `json:"artifacts,omitempty"`
+	Verification          *factory.VerificationRecord                             `json:"verification,omitempty"`
+	Telemetry             *factory.RunTelemetry                                   `json:"telemetry,omitempty"`
+	Failure               *factory.FailureSummary                                 `json:"failure,omitempty"`
+	Handoff               *factory.HandoffSummary                                 `json:"handoff,omitempty"`
 }
 
 // FactoryArtifactsResponse is the machine-readable JSON output for
@@ -448,21 +449,22 @@ type FactoryArtifactsSummary struct {
 // FactoryRunSummary is the list surface for one factory run. It intentionally
 // excludes full artifact records and event timelines so list output stays small.
 type FactoryRunSummary struct {
-	RunID         string                  `json:"runId"`
-	Status        string                  `json:"status"`
-	Source        factory.SourceMetadata  `json:"source"`
-	RepoPath      string                  `json:"repoPath"`
-	RepoRemote    string                  `json:"repoRemote"`
-	BranchName    string                  `json:"branchName"`
-	BaseBranch    string                  `json:"baseBranch"`
-	SandboxName   string                  `json:"sandboxName,omitempty"`
-	CurrentStep   string                  `json:"currentStep"`
-	CreatedAt     time.Time               `json:"createdAt"`
-	UpdatedAt     time.Time               `json:"updatedAt"`
-	FinishedAt    *time.Time              `json:"finishedAt,omitempty"`
-	ArtifactCount int                     `json:"artifactCount"`
-	Telemetry     *factory.RunTelemetry   `json:"telemetry,omitempty"`
-	Failure       *factory.FailureSummary `json:"failure,omitempty"`
+	RunID                 string                                                  `json:"runId"`
+	Status                string                                                  `json:"status"`
+	Source                factory.SourceMetadata                                  `json:"source"`
+	RepoPath              string                                                  `json:"repoPath"`
+	RepoRemote            string                                                  `json:"repoRemote"`
+	BranchName            string                                                  `json:"branchName"`
+	BaseBranch            string                                                  `json:"baseBranch"`
+	SandboxName           string                                                  `json:"sandboxName,omitempty"`
+	SecurityReadinessGate *sandbox.SandboxSecurityCapabilityReadinessGateDecision `json:"securityReadinessGate,omitempty"`
+	CurrentStep           string                                                  `json:"currentStep"`
+	CreatedAt             time.Time                                               `json:"createdAt"`
+	UpdatedAt             time.Time                                               `json:"updatedAt"`
+	FinishedAt            *time.Time                                              `json:"finishedAt,omitempty"`
+	ArtifactCount         int                                                     `json:"artifactCount"`
+	Telemetry             *factory.RunTelemetry                                   `json:"telemetry,omitempty"`
+	Failure               *factory.FailureSummary                                 `json:"failure,omitempty"`
 }
 
 func validateFactoryRunArgs(cmd *cobra.Command, args []string) error {
@@ -4562,29 +4564,30 @@ func renderFactoryLogsJSON(out io.Writer, runID string, chunks []factory.LogChun
 
 func newFactoryStatusRun(record factory.RunRecord, events []factory.EventRecord, handoff *factory.HandoffSummary) FactoryStatusRun {
 	return FactoryStatusRun{
-		RunID:           record.RunID,
-		Status:          record.Status,
-		ExecutorMode:    record.ExecutorMode,
-		Engine:          record.Engine,
-		Source:          record.Source,
-		RepoPath:        record.RepoPath,
-		RepoRemote:      record.RepoRemote,
-		BranchName:      record.BranchName,
-		BaseBranch:      record.BaseBranch,
-		Policy:          factoryPolicySnapshotPointer(record.Policy),
-		PolicyDecisions: factoryPolicyDecisionsFromEvents(events),
-		SandboxName:     record.SandboxName,
-		Sandbox:         record.Sandbox,
-		CurrentStep:     record.CurrentStep,
-		CreatedAt:       record.CreatedAt,
-		UpdatedAt:       record.UpdatedAt,
-		FinishedAt:      record.FinishedAt,
-		Secrets:         record.Secrets,
-		Artifacts:       newFactoryArtifactSummaries(record.Artifacts),
-		Verification:    record.Verification,
-		Telemetry:       factory.DeriveRunTelemetry(record, events),
-		Failure:         normalizedFactoryFailureSummary(record.Failure),
-		Handoff:         handoff,
+		RunID:                 record.RunID,
+		Status:                record.Status,
+		ExecutorMode:          record.ExecutorMode,
+		Engine:                record.Engine,
+		Source:                record.Source,
+		RepoPath:              record.RepoPath,
+		RepoRemote:            record.RepoRemote,
+		BranchName:            record.BranchName,
+		BaseBranch:            record.BaseBranch,
+		Policy:                factoryPolicySnapshotPointer(record.Policy),
+		PolicyDecisions:       factoryPolicyDecisionsFromEvents(events),
+		SandboxName:           record.SandboxName,
+		Sandbox:               record.Sandbox,
+		SecurityReadinessGate: factory.SecurityReadinessGateDecision(record),
+		CurrentStep:           record.CurrentStep,
+		CreatedAt:             record.CreatedAt,
+		UpdatedAt:             record.UpdatedAt,
+		FinishedAt:            record.FinishedAt,
+		Secrets:               record.Secrets,
+		Artifacts:             newFactoryArtifactSummaries(record.Artifacts),
+		Verification:          record.Verification,
+		Telemetry:             factory.DeriveRunTelemetry(record, events),
+		Failure:               normalizedFactoryFailureSummary(record.Failure),
+		Handoff:               handoff,
 	}
 }
 
@@ -4971,29 +4974,31 @@ func renderFactoryRunResult(out io.Writer, store factory.Store, runID string, js
 		events = []factory.EventRecord{}
 	}
 	resp := newFactoryRunResponse(*record, events)
+	gate := factory.SecurityReadinessGateDecision(*record)
 	if jsonMode {
-		return renderFactoryRunJSON(out, resp)
+		return renderFactoryRunJSONWithSecurityReadinessGate(out, resp, gate)
 	}
-	return renderFactoryRunSummary(out, resp)
+	return renderFactoryRunSummaryWithSecurityReadinessGate(out, resp, gate)
 }
 
 func summarizeFactoryRun(record factory.RunRecord) FactoryRunSummary {
 	return FactoryRunSummary{
-		RunID:         record.RunID,
-		Status:        record.Status,
-		Source:        record.Source,
-		RepoPath:      record.RepoPath,
-		RepoRemote:    record.RepoRemote,
-		BranchName:    record.BranchName,
-		BaseBranch:    record.BaseBranch,
-		SandboxName:   record.SandboxName,
-		CurrentStep:   record.CurrentStep,
-		CreatedAt:     record.CreatedAt,
-		UpdatedAt:     record.UpdatedAt,
-		FinishedAt:    record.FinishedAt,
-		ArtifactCount: len(record.Artifacts),
-		Telemetry:     factory.DeriveRunTelemetry(record, nil),
-		Failure:       normalizedFactoryFailureSummary(record.Failure),
+		RunID:                 record.RunID,
+		Status:                record.Status,
+		Source:                record.Source,
+		RepoPath:              record.RepoPath,
+		RepoRemote:            record.RepoRemote,
+		BranchName:            record.BranchName,
+		BaseBranch:            record.BaseBranch,
+		SandboxName:           record.SandboxName,
+		SecurityReadinessGate: factory.SecurityReadinessGateDecision(record),
+		CurrentStep:           record.CurrentStep,
+		CreatedAt:             record.CreatedAt,
+		UpdatedAt:             record.UpdatedAt,
+		FinishedAt:            record.FinishedAt,
+		ArtifactCount:         len(record.Artifacts),
+		Telemetry:             factory.DeriveRunTelemetry(record, nil),
+		Failure:               normalizedFactoryFailureSummary(record.Failure),
 	}
 }
 
@@ -5061,6 +5066,9 @@ func renderFactoryStatusTable(out io.Writer, record factory.RunRecord, events []
 	fmt.Fprintf(out, "Branch: %s\n", record.BranchName)
 	fmt.Fprintf(out, "Step: %s\n", record.CurrentStep)
 	fmt.Fprintf(out, "Updated: %s\n", formatFactoryListTime(record.UpdatedAt))
+	if readiness := factorySecurityReadinessGateHuman(factory.SecurityReadinessGateDecision(record)); readiness != "" {
+		fmt.Fprintf(out, "%s\n", readiness)
+	}
 	renderFactoryStatusTelemetry(out, record, telemetry)
 	renderFactoryHandoffDetails(out, handoff)
 	fmt.Fprintf(out, "Timeline events: %d\n", len(events))
