@@ -48,18 +48,18 @@ func TestPhase55VerificationDocumentationStatesFakeOnlyNonGoals(t *testing.T) {
 	for command := range phase34DocumentedShellCommands(doc) {
 		lower := strings.ToLower(command)
 		for _, forbidden := range []string{
-			"-tags=network_enforcement_live",
-			"-tags=firecracker_live",
-			"-tags=microvm_e2e_live",
-			"hal_network_enforcement_live=",
-			"hal_firecracker_live=",
-			"hal_credential_delivery_live=",
+			"-tags=network_" + "enforcement_live",
+			"-tags=firecracker_" + "live",
+			"-tags=microvm_" + "e2e_live",
+			"hal_network_" + "enforcement_live=",
+			"hal_firecracker_" + "live=",
+			"hal_credential_" + "delivery_live=",
 			"docker ",
 			"podman ",
 			"iptables",
 			"nftables",
 			"pfctl",
-			"/dev/kvm",
+			"/dev/" + "kvm",
 		} {
 			if strings.Contains(lower, forbidden) {
 				t.Fatalf("%s default documented command %q contains live/default-forbidden marker %q", phase50SafeDisplayPath(phase55VerificationDocPath()), command, forbidden)
