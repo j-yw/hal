@@ -711,6 +711,7 @@ func sandboxSecurityCapabilityKnownReasonCode(reason SandboxSecurityCapabilityRe
 		SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
 		SandboxSecurityCapabilityReasonMetadataDeliveryUnproven,
 		SandboxSecurityCapabilityReasonReadinessMissing,
+		SandboxSecurityCapabilityReasonWarningBearing,
 		SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
 		SandboxSecurityCapabilityReasonMicroVMSupportMissing,
 		SandboxSecurityCapabilityReasonWorkspaceIsolationMissing,
