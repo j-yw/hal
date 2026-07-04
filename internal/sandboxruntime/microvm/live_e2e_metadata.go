@@ -25,26 +25,27 @@ const (
 )
 
 const (
-	LiveE2EReasonReady                           LiveE2EReasonCode = "ready"
-	LiveE2EReasonNotRequested                    LiveE2EReasonCode = "not_requested"
-	LiveE2EReasonBuildTagMissing                 LiveE2EReasonCode = "build_tag_missing"
-	LiveE2EReasonLiveMarkerMissing               LiveE2EReasonCode = "live_marker_missing"
-	LiveE2EReasonFirecrackerMarkerMissing        LiveE2EReasonCode = "firecracker_marker_missing"
-	LiveE2EReasonFirecrackerBinaryMissing        LiveE2EReasonCode = "firecracker_binary_missing"
-	LiveE2EReasonFirecrackerKernelMissing        LiveE2EReasonCode = "firecracker_kernel_missing"
-	LiveE2EReasonFirecrackerRootfsMissing        LiveE2EReasonCode = "firecracker_rootfs_missing"
-	LiveE2EReasonFirecrackerUnavailable          LiveE2EReasonCode = "firecracker_unavailable"
-	LiveE2EReasonKVMCapabilityMissing            LiveE2EReasonCode = "kvm_capability_missing"
-	LiveE2EReasonKVMDeviceMissing                LiveE2EReasonCode = "kvm_device_missing"
-	LiveE2EReasonKVMUnreadable                   LiveE2EReasonCode = "kvm_unreadable"
-	LiveE2EReasonNetworkProxyMarkerMissing       LiveE2EReasonCode = "network_proxy_marker_missing"
-	LiveE2EReasonNetworkProxyUnavailable         LiveE2EReasonCode = "network_proxy_unavailable"
-	LiveE2EReasonFirewallMarkerMissing           LiveE2EReasonCode = "firewall_marker_missing"
-	LiveE2EReasonFirewallUnavailable             LiveE2EReasonCode = "firewall_unavailable"
-	LiveE2EReasonCredentialDeliveryMarkerMissing LiveE2EReasonCode = "credential_delivery_marker_missing"
-	LiveE2EReasonCredentialDeliveryUnavailable   LiveE2EReasonCode = "credential_delivery_unavailable"
-	LiveE2EReasonTemplateTrustMarkerMissing      LiveE2EReasonCode = "template_trust_marker_missing"
-	LiveE2EReasonTemplateTrustUnavailable        LiveE2EReasonCode = "template_trust_unavailable"
+	LiveE2EReasonReady                              LiveE2EReasonCode = "ready"
+	LiveE2EReasonNotRequested                       LiveE2EReasonCode = "not_requested"
+	LiveE2EReasonBuildTagMissing                    LiveE2EReasonCode = "build_tag_missing"
+	LiveE2EReasonLiveMarkerMissing                  LiveE2EReasonCode = "live_marker_missing"
+	LiveE2EReasonFirecrackerMarkerMissing           LiveE2EReasonCode = "firecracker_marker_missing"
+	LiveE2EReasonFirecrackerBinaryMissing           LiveE2EReasonCode = "firecracker_binary_missing"
+	LiveE2EReasonFirecrackerKernelMissing           LiveE2EReasonCode = "firecracker_kernel_missing"
+	LiveE2EReasonFirecrackerRootfsMissing           LiveE2EReasonCode = "firecracker_rootfs_missing"
+	LiveE2EReasonFirecrackerUnavailable             LiveE2EReasonCode = "firecracker_unavailable"
+	LiveE2EReasonKVMCapabilityMissing               LiveE2EReasonCode = "kvm_capability_missing"
+	LiveE2EReasonKVMDeviceMissing                   LiveE2EReasonCode = "kvm_device_missing"
+	LiveE2EReasonKVMUnreadable                      LiveE2EReasonCode = "kvm_unreadable"
+	LiveE2EReasonNetworkProxyMarkerMissing          LiveE2EReasonCode = "network_proxy_marker_missing"
+	LiveE2EReasonNetworkProxyUnavailable            LiveE2EReasonCode = "network_proxy_unavailable"
+	LiveE2EReasonFirewallMarkerMissing              LiveE2EReasonCode = "firewall_marker_missing"
+	LiveE2EReasonFirewallUnavailable                LiveE2EReasonCode = "firewall_unavailable"
+	LiveE2EReasonCredentialDeliveryMarkerMissing    LiveE2EReasonCode = "credential_delivery_marker_missing"
+	LiveE2EReasonCredentialDeliveryEnvMarkerMissing LiveE2EReasonCode = "credential_delivery_env_marker_missing"
+	LiveE2EReasonCredentialDeliveryUnavailable      LiveE2EReasonCode = "credential_delivery_unavailable"
+	LiveE2EReasonTemplateTrustMarkerMissing         LiveE2EReasonCode = "template_trust_marker_missing"
+	LiveE2EReasonTemplateTrustUnavailable           LiveE2EReasonCode = "template_trust_unavailable"
 )
 
 const (
@@ -228,6 +229,7 @@ func sanitizeLiveE2EReasonCode(value LiveE2EReasonCode) LiveE2EReasonCode {
 		LiveE2EReasonFirewallMarkerMissing,
 		LiveE2EReasonFirewallUnavailable,
 		LiveE2EReasonCredentialDeliveryMarkerMissing,
+		LiveE2EReasonCredentialDeliveryEnvMarkerMissing,
 		LiveE2EReasonCredentialDeliveryUnavailable,
 		LiveE2EReasonTemplateTrustMarkerMissing,
 		LiveE2EReasonTemplateTrustUnavailable:

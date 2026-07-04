@@ -11,6 +11,7 @@ const (
 	LiveE2EPrerequisiteNetworkProxyMarker    LiveE2EPrerequisiteName = "network_proxy_marker"
 	LiveE2EPrerequisiteFirewallMarker        LiveE2EPrerequisiteName = "firewall_marker"
 	LiveE2EPrerequisiteCredentialMarker      LiveE2EPrerequisiteName = "credential_delivery_marker"
+	LiveE2EPrerequisiteCredentialEnvMarker   LiveE2EPrerequisiteName = "credential_delivery_env_marker"
 	LiveE2EPrerequisiteTemplateTrustMarker   LiveE2EPrerequisiteName = "template_trust_marker"
 )
 
@@ -161,6 +162,13 @@ func liveE2EPrerequisiteSpecFor(prerequisite LiveE2EPrerequisiteName) (liveE2EPr
 			reasonCode:   LiveE2EReasonCredentialDeliveryMarkerMissing,
 			message:      "Set the credential delivery live marker before running credential delivery checks.",
 		}, true
+	case LiveE2EPrerequisiteCredentialEnvMarker:
+		return liveE2EPrerequisiteSpec{
+			prerequisite: LiveE2EPrerequisiteCredentialEnvMarker,
+			component:    LiveE2EComponentCredentialDelivery,
+			reasonCode:   LiveE2EReasonCredentialDeliveryEnvMarkerMissing,
+			message:      "Set the credential delivery env marker before running env credential delivery checks.",
+		}, true
 	case LiveE2EPrerequisiteTemplateTrustMarker:
 		return liveE2EPrerequisiteSpec{
 			prerequisite: LiveE2EPrerequisiteTemplateTrustMarker,
@@ -183,6 +191,7 @@ func sanitizeLiveE2EPrerequisiteName(value LiveE2EPrerequisiteName) LiveE2EPrere
 		LiveE2EPrerequisiteNetworkProxyMarker,
 		LiveE2EPrerequisiteFirewallMarker,
 		LiveE2EPrerequisiteCredentialMarker,
+		LiveE2EPrerequisiteCredentialEnvMarker,
 		LiveE2EPrerequisiteTemplateTrustMarker:
 		return LiveE2EPrerequisiteName(normalizeLiveE2EEnum(string(value)))
 	default:

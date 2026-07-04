@@ -80,6 +80,14 @@ func TestMissingLiveE2EPrerequisiteDiagnosticsMapDistinctSafeReasonCodes(t *test
 			message:      "Set the credential delivery live marker before running credential delivery checks.",
 		},
 		{
+			name:         "credential delivery env marker",
+			category:     "credential delivery",
+			prerequisite: LiveE2EPrerequisiteCredentialEnvMarker,
+			component:    LiveE2EComponentCredentialDelivery,
+			reason:       LiveE2EReasonCredentialDeliveryEnvMarkerMissing,
+			message:      "Set the credential delivery env marker before running env credential delivery checks.",
+		},
+		{
 			name:         "template trust marker",
 			category:     "template trust",
 			prerequisite: LiveE2EPrerequisiteTemplateTrustMarker,

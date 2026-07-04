@@ -32,19 +32,20 @@ func TestLiveE2EMetadataContractFieldsAndJSONNames(t *testing.T) {
 
 func TestLiveE2EReasonCodesCoverRequiredPrerequisites(t *testing.T) {
 	required := map[string]LiveE2EReasonCode{
-		"firecracker live marker":     LiveE2EReasonFirecrackerMarkerMissing,
-		"firecracker binary":          LiveE2EReasonFirecrackerBinaryMissing,
-		"firecracker kernel":          LiveE2EReasonFirecrackerKernelMissing,
-		"firecracker rootfs":          LiveE2EReasonFirecrackerRootfsMissing,
-		"kvm capability":              LiveE2EReasonKVMCapabilityMissing,
-		"network proxy marker":        LiveE2EReasonNetworkProxyMarkerMissing,
-		"firewall marker":             LiveE2EReasonFirewallMarkerMissing,
-		"credential delivery marker":  LiveE2EReasonCredentialDeliveryMarkerMissing,
-		"template trust marker":       LiveE2EReasonTemplateTrustMarkerMissing,
-		"network proxy unavailable":   LiveE2EReasonNetworkProxyUnavailable,
-		"firewall unavailable":        LiveE2EReasonFirewallUnavailable,
-		"credential delivery blocked": LiveE2EReasonCredentialDeliveryUnavailable,
-		"template trust unavailable":  LiveE2EReasonTemplateTrustUnavailable,
+		"firecracker live marker":        LiveE2EReasonFirecrackerMarkerMissing,
+		"firecracker binary":             LiveE2EReasonFirecrackerBinaryMissing,
+		"firecracker kernel":             LiveE2EReasonFirecrackerKernelMissing,
+		"firecracker rootfs":             LiveE2EReasonFirecrackerRootfsMissing,
+		"kvm capability":                 LiveE2EReasonKVMCapabilityMissing,
+		"network proxy marker":           LiveE2EReasonNetworkProxyMarkerMissing,
+		"firewall marker":                LiveE2EReasonFirewallMarkerMissing,
+		"credential delivery marker":     LiveE2EReasonCredentialDeliveryMarkerMissing,
+		"credential delivery env marker": LiveE2EReasonCredentialDeliveryEnvMarkerMissing,
+		"template trust marker":          LiveE2EReasonTemplateTrustMarkerMissing,
+		"network proxy unavailable":      LiveE2EReasonNetworkProxyUnavailable,
+		"firewall unavailable":           LiveE2EReasonFirewallUnavailable,
+		"credential delivery blocked":    LiveE2EReasonCredentialDeliveryUnavailable,
+		"template trust unavailable":     LiveE2EReasonTemplateTrustUnavailable,
 	}
 
 	seen := map[LiveE2EReasonCode]string{}

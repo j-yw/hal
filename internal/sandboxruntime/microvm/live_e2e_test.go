@@ -21,6 +21,10 @@ func TestMicroVMLiveE2EHarnessRequiresComposedLiveGates(t *testing.T) {
 		livegate.AssertLiveGateSkipMessageRedactionSafe(t, message)
 		t.Skip(message)
 	}
+	credentialDelivery := requireMicroVMLiveE2ECredentialDeliveryProjection(t, os.Getenv)
+	if !credentialDelivery.CanRunLiveAction() {
+		t.Fatalf("microVM live E2E credential delivery projection = %#v, want allowed or skipped before this point", credentialDelivery)
+	}
 
 	preflight := requireMicroVMLiveE2EFirecrackerPreflight(t, os.Getenv)
 	if !preflight.CanRunLiveAction() {
@@ -93,6 +97,51 @@ func microVMLiveE2ECredentialDeliveryModeSkipMessage() string {
 		markers = append(markers, string(envVar))
 	}
 	return "microVM live E2E credential delivery requires one credential delivery mode marker: " + strings.Join(markers, ", ")
+}
+
+func requireMicroVMLiveE2ECredentialDeliveryProjection(t *testing.T, getenv func(string) string) LiveE2ECredentialDeliveryProjectionResult {
+	t.Helper()
+	mode := microVMLiveE2ECredentialDeliveryMode(getenv)
+	result := ProjectLiveE2ECredentialDeliveryMetadata(LiveE2ECredentialDeliveryProjectionInput{
+		LiveMarker:        microVMLiveE2EEnvPresent(getenv, livegate.EnvVarCredentialDeliveryLive),
+		EnvDeliveryMarker: microVMLiveE2EEnvPresent(getenv, livegate.EnvVarCredentialDeliveryLiveEnv),
+		CredentialDelivery: LiveE2ECredentialDeliveryMetadata{
+			ID:             "microvm-live-credential-delivery",
+			RequestID:      "microvm-live-credential-request",
+			PlanID:         "microvm-live-credential-plan",
+			ActivationID:   "microvm-live-credential-activation",
+			RequestedModes: []string{mode},
+			ActiveModes:    []string{mode},
+			Status:         "active",
+			ReasonCode:     "requested",
+		},
+	})
+	if !result.ShouldSkipLiveAction() {
+		return result
+	}
+	message := LiveE2ECredentialDeliveryProjectionSkipMessage(result)
+	livegate.AssertLiveGateSkipMessageRedactionSafe(t, message)
+	t.Skip(message)
+	return result
+}
+
+func microVMLiveE2ECredentialDeliveryMode(getenv func(string) string) string {
+	return microVMLiveE2ECredentialDeliveryModeForEnv(microVMLiveE2ECredentialDeliveryModeEnv(getenv))
+}
+
+func microVMLiveE2ECredentialDeliveryModeForEnv(envVar livegate.EnvVarName) string {
+	switch envVar {
+	case livegate.EnvVarCredentialDeliveryLiveHTTPProxy:
+		return "http_proxy"
+	case livegate.EnvVarCredentialDeliveryLiveFileTmpfs:
+		return "file_tmpfs"
+	case livegate.EnvVarCredentialDeliveryLiveSSHAgent:
+		return "ssh_agent"
+	case livegate.EnvVarCredentialDeliveryLiveEnv:
+		return "env"
+	default:
+		return ""
+	}
 }
 
 func requireMicroVMLiveE2EFirecrackerPreflight(t *testing.T, getenv func(string) string) LiveE2EFirecrackerPreflightResult {
