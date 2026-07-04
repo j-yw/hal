@@ -215,6 +215,7 @@ func factoryCoreRedactionUnsafeName(name string) bool {
 		"requestedmodes",
 		"activemodes",
 		"security",
+		"securityreadinessgate",
 		"status",
 		"warningcode",
 		"warningcodes",

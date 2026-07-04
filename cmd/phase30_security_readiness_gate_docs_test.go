@@ -21,21 +21,21 @@ func TestPhase30SecurityReadinessGateVerificationDocs(t *testing.T) {
 		"`internal/sandbox/security_capability_gate.go`",
 		"`SandboxSecurityCapabilityReadinessGateDecision`",
 		"The supported policy modes are `off`, `advisory`, and `strict`.",
-		"`hal run --sandbox` and `hal auto --sandbox` remain advisory-only for readiness diagnostics in Phase 30.",
-		"No run/auto config hook currently represents `off`, `advisory`, and `strict` readiness-gate policy modes before workspace planning, auth sync, or remote execution.",
+		"`hal run --sandbox` and `hal auto --sandbox` attach readiness-gate decisions from local `sandbox.securityReadinessGatePolicyMode` when configured.",
+		"`compound.LoadSandboxConfig` maps `sandbox.networkPolicy`, `sandbox.secrets`, and `sandbox.securityReadinessGatePolicyMode` into command security settings.",
 		"`factory.policy.securityReadinessGatePolicyMode` is the accepted explicit policy surface",
 		"Factory sandbox execution evaluates the gate after sanitized factory sandbox security metadata and readiness diagnostics have been attached to the run record, and before remote bootstrap, runtime driver resolution, or remote execution.",
-		"Run and auto sandbox execution keep using advisory readiness diagnostics only.",
+		"Run and auto sandbox execution record compatibility-mode advisory gate metadata by default and block when strict gate mode is configured or policy-required.",
 		"go test -timeout=120s ./internal/sandbox -run 'TestSecurityCapabilityReadinessGate'",
 		"go test -timeout=120s ./internal/factory -run 'Test(FactoryPolicy.*SecurityReadinessGate|LoadPolicyConfig.*SecurityReadinessGate|PolicyDecisionMetadataSecurityReadinessGate)'",
 		"go test -timeout=120s ./cmd -run 'TestRunFactorySandboxExecutor(StrictReadinessGateBlocksBeforeRemoteExecution|AdvisoryReadinessGateRecordsWithoutBlocking)'",
-		"go test -timeout=120s ./cmd -run 'Test(Run|Auto)SandboxLocalReadinessGateConfigRemainsAdvisoryOnly|TestRunAutoReadinessGateNonWiringDocumented'",
+		"go test -timeout=120s ./cmd -run 'Test(Run|Auto)SandboxLocalReadinessGateConfigPropagatesDecision|TestRunAutoReadinessGateWiringDocumented'",
 		"go test -timeout=120s ./cmd -run 'Test(Run|Auto)SandboxDefaultReadinessGateDoesNotTriggerSchedulerLeaseOrLiveRefresh'",
 		"go test -timeout=120s ./internal/sandboxtarget -run 'Test(ScheduleIgnoresStrictBlockingSecurityReadinessForFilteringAndLease|ScheduleCapacityRejectionIgnoresStrictBlockingSecurityReadiness|SelectExplicitSandboxDoesNotRejectStrictBlockingSecurityReadiness)'",
 		"go test -timeout=120s ./internal/sandboxexec -run 'TestRunDoesNotRejectWorkerTargetWithStrictBlockingSecurityReadiness'",
 		"go test -timeout=120s ./internal/sandboxworker -run 'TestWorkerProtocolOmitsSecurityReadinessGateDecisionFields'",
 		"go test -timeout=120s ./cmd -run 'TestPhase30SecurityReadinessGate'",
-		"pure evaluator, policy config parsing, factory strict/advisory behavior, default non-blocking run/auto behavior, scheduler and target-selection non-wiring, sandboxexec non-rejection, worker protocol non-expansion, and documentation guard coverage",
+		"pure evaluator, policy config parsing, factory strict/advisory behavior, run/auto strict/advisory wiring, default compatibility behavior, scheduler and target-selection regression coverage, sandboxexec non-rejection, worker protocol non-expansion, and documentation guard coverage",
 		"go test -count=1 -timeout=420s ./...",
 		"go test -count=1 -timeout=300s -run '^$' ./...",
 		"go vet ./...",
@@ -50,7 +50,6 @@ func TestPhase30SecurityReadinessGateVerificationDocs(t *testing.T) {
 		"No lease rejection based on readiness diagnostics is included in Phase 30.",
 		"No live enforcement is included in Phase 30.",
 		"No worker protocol changes are included in Phase 30.",
-		"No run/auto strict readiness-gate mode is wired in Phase 30.",
 	}
 	for _, want := range required {
 		if !strings.Contains(doc, want) && !strings.Contains(normalizedDoc, want) {
@@ -72,7 +71,6 @@ func TestPhase30SecurityReadinessGateVerificationDocs(t *testing.T) {
 		"worker protocol changes are implemented",
 		"worker daemon behavior is implemented",
 		"runtime/provider integrations are implemented",
-		"Run/auto strict readiness-gate mode is wired in Phase 30",
 	}
 	for _, claim := range unsupportedClaims {
 		if strings.Contains(doc, claim) || strings.Contains(normalizedDoc, claim) {
@@ -100,7 +98,6 @@ func TestPhase30SecurityReadinessGateFakeOnlyVerification(t *testing.T) {
 		"No worker daemon behavior is included in Phase 30.",
 		"No runtime/provider integrations are included in Phase 30.",
 		"No Docker, Podman, KVM, or microVM runtime requirement is included in Phase 30.",
-		"No run/auto strict readiness-gate mode is wired in Phase 30.",
 		"go test -timeout=120s ./cmd -run 'TestPhase30SecurityReadinessGate'",
 	}
 	for _, want := range required {
@@ -258,9 +255,9 @@ func phase30RequiredFocusedTests() []phase30FocusedTest {
 		{pkg: "./internal/factory", file: filepath.Join("..", "internal", "factory", "types_test.go"), testName: "TestPolicyDecisionMetadataSecurityReadinessGateOptionalFields"},
 		{pkg: "./cmd", file: "factory_sandbox_readiness_test.go", testName: "TestRunFactorySandboxExecutorStrictReadinessGateBlocksBeforeRemoteExecution"},
 		{pkg: "./cmd", file: "factory_sandbox_readiness_test.go", testName: "TestRunFactorySandboxExecutorAdvisoryReadinessGateRecordsWithoutBlocking"},
-		{pkg: "./cmd", file: "sandbox_readiness_gate_non_wiring_test.go", testName: "TestRunSandboxLocalReadinessGateConfigRemainsAdvisoryOnly"},
-		{pkg: "./cmd", file: "sandbox_readiness_gate_non_wiring_test.go", testName: "TestAutoSandboxLocalReadinessGateConfigRemainsAdvisoryOnly"},
-		{pkg: "./cmd", file: "sandbox_readiness_gate_non_wiring_test.go", testName: "TestRunAutoReadinessGateNonWiringDocumented"},
+		{pkg: "./cmd", file: "sandbox_readiness_gate_non_wiring_test.go", testName: "TestRunSandboxLocalReadinessGateConfigPropagatesDecision"},
+		{pkg: "./cmd", file: "sandbox_readiness_gate_non_wiring_test.go", testName: "TestAutoSandboxLocalReadinessGateConfigPropagatesDecision"},
+		{pkg: "./cmd", file: "sandbox_readiness_gate_non_wiring_test.go", testName: "TestRunAutoReadinessGateWiringDocumented"},
 		{pkg: "./cmd", file: "run_sandbox_capability_readiness_test.go", testName: "TestRunSandboxDefaultReadinessGateDoesNotTriggerSchedulerLeaseOrLiveRefresh"},
 		{pkg: "./cmd", file: "auto_sandbox_readiness_test.go", testName: "TestAutoSandboxDefaultReadinessGateDoesNotTriggerSchedulerLeaseOrLiveRefresh"},
 		{pkg: "./cmd", file: "phase30_security_readiness_gate_docs_test.go", testName: "TestPhase30SecurityReadinessGateVerificationDocs"},

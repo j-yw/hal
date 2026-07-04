@@ -199,6 +199,120 @@ func sandboxSecurityCapabilityReadinessGateCountsPtr(counts SandboxSecurityCapab
 	return &counts
 }
 
+// CloneSandboxSecurityCapabilityReadinessGateDecisionPtr returns nil for nil or
+// empty input, or a durable-safe deep copy for optional security metadata.
+func CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(decision *SandboxSecurityCapabilityReadinessGateDecision) *SandboxSecurityCapabilityReadinessGateDecision {
+	if decision == nil {
+		return nil
+	}
+	cloned := SanitizeSandboxSecurityCapabilityReadinessGateDecision(*decision)
+	if sandboxSecurityCapabilityReadinessGateDecisionEmpty(cloned) {
+		return nil
+	}
+	return &cloned
+}
+
+// SanitizeSandboxSecurityCapabilityReadinessGateDecision keeps only stable,
+// redaction-safe readiness gate labels and aggregate counts.
+func SanitizeSandboxSecurityCapabilityReadinessGateDecision(decision SandboxSecurityCapabilityReadinessGateDecision) SandboxSecurityCapabilityReadinessGateDecision {
+	return SandboxSecurityCapabilityReadinessGateDecision{
+		Code:       sanitizeSandboxSecurityCapabilityReadinessGateCode(decision.Code),
+		Outcome:    sanitizeSandboxSecurityCapabilityReadinessGateOutcome(decision.Outcome),
+		PolicyMode: normalizeSandboxSecurityCapabilityReadinessGatePolicyMode(decision.PolicyMode),
+		Reason:     sanitizeSandboxSecurityCapabilityReadinessGateReason(decision.Reason),
+		Counts:     sanitizeSandboxSecurityCapabilityReadinessGateCounts(decision.Counts),
+	}
+}
+
+func sanitizeSandboxSecurityCapabilityReadinessGateCode(code SandboxSecurityCapabilityReadinessGateCode) SandboxSecurityCapabilityReadinessGateCode {
+	switch code {
+	case SandboxSecurityCapabilityReadinessGateCodeAllowed,
+		SandboxSecurityCapabilityReadinessGateCodeAdvisory,
+		SandboxSecurityCapabilityReadinessGateCodeBlocked:
+		return code
+	default:
+		return ""
+	}
+}
+
+func sanitizeSandboxSecurityCapabilityReadinessGateOutcome(outcome SandboxSecurityCapabilityReadinessGateOutcome) SandboxSecurityCapabilityReadinessGateOutcome {
+	switch outcome {
+	case SandboxSecurityCapabilityReadinessGateOutcomeAllowed,
+		SandboxSecurityCapabilityReadinessGateOutcomeAdvisory,
+		SandboxSecurityCapabilityReadinessGateOutcomeBlocked:
+		return outcome
+	default:
+		return ""
+	}
+}
+
+func sanitizeSandboxSecurityCapabilityReadinessGateReason(reason SandboxSecurityCapabilityReadinessGateReasonCode) SandboxSecurityCapabilityReadinessGateReasonCode {
+	switch reason {
+	case SandboxSecurityCapabilityReadinessGateReasonPolicyOff,
+		SandboxSecurityCapabilityReadinessGateReasonPolicyCompatibility,
+		SandboxSecurityCapabilityReadinessGateReasonPolicyAdvisory,
+		SandboxSecurityCapabilityReadinessGateReasonReadinessReady,
+		SandboxSecurityCapabilityReadinessGateReasonReadinessMissing,
+		SandboxSecurityCapabilityReadinessGateReasonMetadataOnly,
+		SandboxSecurityCapabilityReadinessGateReasonCapabilityUnsupported,
+		SandboxSecurityCapabilityReadinessGateReasonCapabilityBlocked,
+		SandboxSecurityCapabilityReadinessGateReasonStrictBlockRequired,
+		SandboxSecurityCapabilityReadinessGateReasonUnknown:
+		return reason
+	default:
+		if capabilityReason := sanitizeSandboxSecurityCapabilityReasonCodeValue(SandboxSecurityCapabilityReasonCode(reason)); capabilityReason != "" {
+			return SandboxSecurityCapabilityReadinessGateReasonCode(capabilityReason)
+		}
+		return ""
+	}
+}
+
+func sanitizeSandboxSecurityCapabilityReadinessGateCounts(counts *SandboxSecurityCapabilityReadinessGateCounts) *SandboxSecurityCapabilityReadinessGateCounts {
+	if counts == nil {
+		return nil
+	}
+	cloned := SandboxSecurityCapabilityReadinessGateCounts{
+		Total:          nonNegativeSandboxSecurityCapabilityReadinessGateCount(counts.Total),
+		Ready:          nonNegativeSandboxSecurityCapabilityReadinessGateCount(counts.Ready),
+		Advisory:       nonNegativeSandboxSecurityCapabilityReadinessGateCount(counts.Advisory),
+		Blocked:        nonNegativeSandboxSecurityCapabilityReadinessGateCount(counts.Blocked),
+		Missing:        nonNegativeSandboxSecurityCapabilityReadinessGateCount(counts.Missing),
+		MetadataOnly:   nonNegativeSandboxSecurityCapabilityReadinessGateCount(counts.MetadataOnly),
+		Unsupported:    nonNegativeSandboxSecurityCapabilityReadinessGateCount(counts.Unsupported),
+		StrictBlocking: nonNegativeSandboxSecurityCapabilityReadinessGateCount(counts.StrictBlocking),
+	}
+	if len(counts.ReasonCodeCounts) > 0 {
+		cloned.ReasonCodeCounts = make(map[SandboxSecurityCapabilityReasonCode]int, len(counts.ReasonCodeCounts))
+		for reason, count := range counts.ReasonCodeCounts {
+			safeReason := sanitizeSandboxSecurityCapabilityReasonCodeValue(reason)
+			safeCount := nonNegativeSandboxSecurityCapabilityReadinessGateCount(count)
+			if safeReason == "" || safeCount == 0 {
+				continue
+			}
+			cloned.ReasonCodeCounts[safeReason] = safeCount
+		}
+		if len(cloned.ReasonCodeCounts) == 0 {
+			cloned.ReasonCodeCounts = nil
+		}
+	}
+	return sandboxSecurityCapabilityReadinessGateCountsPtr(cloned)
+}
+
+func nonNegativeSandboxSecurityCapabilityReadinessGateCount(count int) int {
+	if count < 0 {
+		return 0
+	}
+	return count
+}
+
+func sandboxSecurityCapabilityReadinessGateDecisionEmpty(decision SandboxSecurityCapabilityReadinessGateDecision) bool {
+	return decision.Code == "" &&
+		decision.Outcome == "" &&
+		decision.PolicyMode == SandboxSecurityCapabilityReadinessGatePolicyModeOff &&
+		decision.Reason == "" &&
+		decision.Counts == nil
+}
+
 func sandboxSecurityCapabilityReadinessGateCounts(diagnostics SandboxSecurityCapabilityReadinessDiagnosticSummary) (SandboxSecurityCapabilityReadinessGateCounts, SandboxSecurityCapabilityReadinessGateReasonCode) {
 	var counts SandboxSecurityCapabilityReadinessGateCounts
 	reason := SandboxSecurityCapabilityReadinessGateReasonReadinessReady

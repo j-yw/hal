@@ -36,6 +36,22 @@ type sandboxCommandTargetDeps struct {
 	provision      func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
 }
 
+type sandboxCommandSecurityReadinessGateError struct {
+	cause    error
+	decision sandbox.SandboxSecurityCapabilityReadinessGateDecision
+}
+
+func (e sandboxCommandSecurityReadinessGateError) Error() string {
+	if e.cause == nil {
+		return ""
+	}
+	return e.cause.Error()
+}
+
+func (e sandboxCommandSecurityReadinessGateError) Unwrap() error {
+	return e.cause
+}
+
 func resolveSandboxCommandTarget(ctx context.Context, req sandboxCommandTargetRequest, deps sandboxCommandTargetDeps) (*sandbox.SandboxState, error) {
 	if !sandboxCommandHasTargetSelectionConstraint(req) {
 		target, err := resolveSandboxCommandLegacyTarget(ctx, req, deps)
@@ -62,7 +78,14 @@ func resolveSandboxCommandTarget(ctx context.Context, req sandboxCommandTargetRe
 		ListHosts:     deps.listHosts,
 	})
 	if result.Failed() {
-		return nil, sandboxCommandTargetFailureError(result.Failure)
+		err := sandboxCommandTargetFailureError(result.Failure)
+		if result.SecurityReadinessGate != nil {
+			return nil, sandboxCommandSecurityReadinessGateError{
+				cause:    err,
+				decision: *result.SecurityReadinessGate,
+			}
+		}
+		return nil, err
 	}
 	if err := validateSandboxCommandWorkerRuntime(result); err != nil {
 		return nil, err
@@ -95,6 +118,14 @@ func resolveSandboxCommandTarget(ctx context.Context, req sandboxCommandTargetRe
 		return nil, err
 	}
 	return applySandboxCommandSelectedMetadata(target, result), nil
+}
+
+func sandboxCommandSecurityReadinessGateDecisionFromError(err error) *sandbox.SandboxSecurityCapabilityReadinessGateDecision {
+	var gateErr sandboxCommandSecurityReadinessGateError
+	if !errors.As(err, &gateErr) {
+		return nil
+	}
+	return sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(&gateErr.decision)
 }
 
 func sandboxCommandTargetFailureError(failure *sandboxtarget.Failure) error {
@@ -165,9 +196,10 @@ func sandboxCommandTargetSelectionGateMode(req sandboxCommandTargetRequest) sand
 	if req.SecurityReadinessGateMode != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict {
 		return ""
 	}
-	if strings.TrimSpace(req.SandboxName) != "" ||
-		strings.TrimSpace(req.SandboxHostID) != "" ||
-		strings.TrimSpace(req.SandboxRuntime) != "" {
+	if req.Purpose == sandbox.SandboxLeasePurposeFactory &&
+		(strings.TrimSpace(req.SandboxName) != "" ||
+			strings.TrimSpace(req.SandboxHostID) != "" ||
+			strings.TrimSpace(req.SandboxRuntime) != "") {
 		return ""
 	}
 	return sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict

@@ -187,6 +187,7 @@ When `sandbox.security` is present:
 | `secrets` | object | no | Redaction-safe secret delivery summary |
 | `capabilityReadiness` | object | no | Additive security capability readiness output with redaction-safe result metadata |
 | `capabilityReadinessDiagnostics` | object | no | Additive advisory diagnostics derived from redaction-safe capability readiness output |
+| `securityReadinessGate` | object | no | Additive redaction-safe secure-default readiness gate decision with stable reason codes and aggregate counts |
 
 When `sandbox.security.network` is present:
 

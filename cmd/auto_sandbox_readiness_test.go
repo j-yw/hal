@@ -386,12 +386,7 @@ func TestAutoSandboxDefaultReadinessGateDoesNotTriggerSchedulerLeaseOrLiveRefres
 	if manifest.Lease != nil {
 		t.Fatalf("Lease = %#v, want nil without scheduler acquisition", manifest.Lease)
 	}
-	encoded := mustMarshalSandboxSecurityMetadata(t, manifest)
-	for _, forbidden := range []string{"security_readiness_gate", "readinessGate", "policyField", "policyMode"} {
-		if strings.Contains(encoded, forbidden) {
-			t.Fatalf("default auto manifest recorded readiness gate metadata %q: %s", forbidden, encoded)
-		}
-	}
+	us007AssertAdvisorySecurityReadinessGate(t, "default auto manifest", manifest.Security)
 }
 
 func autoSandboxCapabilityReadinessTarget() *sandbox.SandboxState {

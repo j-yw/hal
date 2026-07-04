@@ -9,12 +9,28 @@ import (
 	"github.com/jywlabs/hal/internal/template"
 )
 
+type configuredSandboxSecuritySettings struct {
+	Request           sandbox.SecurityEvaluationRequest
+	ReadinessGateMode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode
+}
+
 func loadConfiguredSandboxSecurityRequest(projectDir, runtimeDriver string) (sandbox.SecurityEvaluationRequest, error) {
+	settings, err := loadConfiguredSandboxSecuritySettings(projectDir, runtimeDriver)
+	if err != nil {
+		return sandbox.SecurityEvaluationRequest{}, err
+	}
+	return settings.Request, nil
+}
+
+func loadConfiguredSandboxSecuritySettings(projectDir, runtimeDriver string) (configuredSandboxSecuritySettings, error) {
 	cfg, err := compound.LoadSandboxConfig(projectDir)
 	if err != nil {
-		return sandbox.SecurityEvaluationRequest{}, sanitizeSandboxSecurityConfigLoadError(projectDir, err)
+		return configuredSandboxSecuritySettings{}, sanitizeSandboxSecurityConfigLoadError(projectDir, err)
 	}
-	return sandboxSecurityRequestFromConfig(cfg, runtimeDriver), nil
+	return configuredSandboxSecuritySettings{
+		Request:           sandboxSecurityRequestFromConfig(cfg, runtimeDriver),
+		ReadinessGateMode: sandboxSecurityReadinessGateModeFromConfig(cfg),
+	}, nil
 }
 
 func sandboxSecurityRequestFromConfig(cfg *compound.SandboxConfig, runtimeDriver string) sandbox.SecurityEvaluationRequest {
@@ -35,6 +51,13 @@ func sandboxSecurityRequestFromConfig(cfg *compound.SandboxConfig, runtimeDriver
 		}
 	}
 	return sandbox.MapSandboxSecurityIntent(intent)
+}
+
+func sandboxSecurityReadinessGateModeFromConfig(cfg *compound.SandboxConfig) sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.SecurityReadinessGatePolicyMode
 }
 
 func sandboxSecurityRequestOrDefault(req sandbox.SecurityEvaluationRequest, runtimeDriver string) sandbox.SecurityEvaluationRequest {

@@ -14,6 +14,7 @@ func sanitizeCommandSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.
 	clone := &sandbox.SandboxSecurity{
 		CapabilityReadiness:            capabilityReadiness,
 		CapabilityReadinessDiagnostics: sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummaryPtr(capabilityReadiness),
+		SecurityReadinessGate:          sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate),
 		Network:                        sanitizeCommandSandboxNetworkSecurity(security.Network),
 	}
 	if security.Secrets != nil {
@@ -22,10 +23,52 @@ func sanitizeCommandSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.
 		secrets.ActiveModes = append([]string(nil), security.Secrets.ActiveModes...)
 		clone.Secrets = &secrets
 	}
-	if clone.Network == nil && clone.Secrets == nil && clone.CapabilityReadiness == nil {
+	if clone.Network == nil && clone.Secrets == nil && clone.CapabilityReadiness == nil && clone.SecurityReadinessGate == nil {
 		return nil
 	}
 	return clone
+}
+
+func applyCommandSandboxSecurityReadinessGate(security *sandbox.SandboxSecurity, mode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode, explicitDecision *sandbox.SandboxSecurityCapabilityReadinessGateDecision) *sandbox.SandboxSecurity {
+	if explicitDecision != nil {
+		if security == nil {
+			security = &sandbox.SandboxSecurity{}
+		}
+		security.SecurityReadinessGate = sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(explicitDecision)
+		return sanitizeCommandSandboxSecurity(security)
+	}
+
+	effectiveMode := commandSandboxSecurityReadinessGateMode(mode)
+	if effectiveMode == sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeOff {
+		return security
+	}
+	if security == nil || security.CapabilityReadinessDiagnostics == nil {
+		if effectiveMode != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict {
+			return security
+		}
+		if security == nil {
+			security = &sandbox.SandboxSecurity{}
+		}
+		decision := sandbox.EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(effectiveMode, nil)
+		security.SecurityReadinessGate = sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(&decision)
+		return sanitizeCommandSandboxSecurity(security)
+	}
+
+	decision := sandbox.EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(effectiveMode, security.CapabilityReadinessDiagnostics)
+	security.SecurityReadinessGate = sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(&decision)
+	return sanitizeCommandSandboxSecurity(security)
+}
+
+func commandSandboxSecurityReadinessGateMode(mode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode) sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode {
+	switch mode {
+	case sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+		sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeAdvisory,
+		sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeCompatibility,
+		sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeOff:
+		return mode
+	default:
+		return sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeCompatibility
+	}
 }
 
 func sanitizeCommandSandboxNetworkSecurity(network *sandbox.SandboxNetworkSecurity) *sandbox.SandboxNetworkSecurity {

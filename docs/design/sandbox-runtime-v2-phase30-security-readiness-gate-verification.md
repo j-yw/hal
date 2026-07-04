@@ -27,34 +27,29 @@ strict policy hook.
 
 ## Run/Auto Strict Mode Hook Decision
 
-`hal run --sandbox` and `hal auto --sandbox` remain advisory-only for readiness diagnostics in Phase 30.
+`hal run --sandbox` and `hal auto --sandbox` attach readiness-gate decisions
+from local `sandbox.securityReadinessGatePolicyMode` when configured.
 
-The run/auto sandbox security request path was inspected. Both commands load
-local sandbox configuration through `compound.LoadSandboxConfig` before
-workspace planning and remote execution, and `compound.LoadSandboxConfig` maps
-`sandbox.networkPolicy` and `sandbox.secrets` into
-`sandbox.SecurityEvaluationRequest`. Those typed config surfaces describe
-requested network policy metadata and secret delivery metadata only.
+The run/auto sandbox security request path loads local sandbox configuration
+through `compound.LoadSandboxConfig` before workspace planning and remote
+execution. `compound.LoadSandboxConfig` maps `sandbox.networkPolicy`,
+`sandbox.secrets`, and `sandbox.securityReadinessGatePolicyMode` into command
+security settings. `sandbox.networkPolicy` and `sandbox.secrets` continue to
+describe requested policy and secret metadata; the readiness-gate mode remains
+a separate policy selector.
 
-No run/auto config hook currently represents `off`, `advisory`, and `strict`
-readiness-gate policy modes before workspace planning, auth sync, or remote
-execution. Reusing `sandbox.networkPolicy`, `sandbox.secrets`, or `auto.mode:
-strict` would conflate unrelated policy concepts: `auto.mode` is the compound
-review/CI policy preset and does not apply to `hal run --sandbox`.
-
-Because no clean existing run/auto hook exists, run/auto strict readiness mode
-is not wired in Phase 30. Default behavior and advisory readiness diagnostics
-remain non-blocking. No run or auto command flag is added for readiness-gate
-strict mode. Non-factory sandbox manifests do not persist readiness gate
-policy-decision metadata. The factory policy hook
-`factory.policy.securityReadinessGatePolicyMode` is the accepted explicit
-policy surface, so factory is the first strict blocking path.
+Default run/auto behavior remains compatibility-mode advisory metadata. Strict
+run/auto readiness-gate decisions block before remote command execution.
+Advisory decisions persist without blocking. No run or auto command flag is
+added for readiness-gate strict mode.
 
 ## Command And Factory Wiring
 
 Factory policy configuration accepts `factory.policy.securityReadinessGatePolicyMode`
 as the Phase 30 opt-in policy surface. Missing configuration remains equivalent
 to `off` while preserving `omitempty` behavior on durable policy snapshots.
+`factory.policy.securityReadinessGatePolicyMode` is the accepted explicit
+policy surface.
 
 Factory sandbox execution evaluates the gate after sanitized factory sandbox
 security metadata and readiness diagnostics have been attached to the run
@@ -64,10 +59,11 @@ policy decision event, fails the run at `prepare_inputs`, and returns an error
 containing only safe gate metadata. In `advisory` mode, the same policy
 decision metadata is recorded without blocking execution.
 
-Run and auto sandbox execution keep using advisory readiness diagnostics only.
-They do not add readiness-gate command flags, remote arguments, manifest gate
-fields, scheduler calls, lease acquisition, live provider refreshes, or worker
-runtime resolution on the default path.
+Run and auto sandbox execution record compatibility-mode advisory gate metadata
+by default and block when strict gate mode is configured or policy-required.
+They do not add readiness-gate command flags, remote arguments, scheduler
+calls, lease acquisition, live provider refreshes, or worker runtime resolution
+on the default compatibility path.
 
 ## Focused Verification Commands
 
@@ -89,10 +85,10 @@ Run the factory strict/advisory gate coverage:
 go test -timeout=120s ./cmd -run 'TestRunFactorySandboxExecutor(StrictReadinessGateBlocksBeforeRemoteExecution|AdvisoryReadinessGateRecordsWithoutBlocking)'
 ```
 
-Run the run/auto advisory-only non-wiring coverage:
+Run the run/auto readiness-gate propagation coverage:
 
 ```bash
-go test -timeout=120s ./cmd -run 'Test(Run|Auto)SandboxLocalReadinessGateConfigRemainsAdvisoryOnly|TestRunAutoReadinessGateNonWiringDocumented'
+go test -timeout=120s ./cmd -run 'Test(Run|Auto)SandboxLocalReadinessGateConfigPropagatesDecision|TestRunAutoReadinessGateWiringDocumented'
 ```
 
 Run default run/auto non-blocking and no scheduler/lease/live-refresh coverage:
@@ -117,10 +113,10 @@ go test -timeout=120s ./cmd -run 'TestPhase30SecurityReadinessGate'
 ```
 
 These focused commands are fake-only. They cover the pure evaluator, policy
-config parsing, factory strict/advisory behavior, default non-blocking
-run/auto behavior, scheduler and target-selection non-wiring, sandboxexec
-non-rejection, worker protocol non-expansion, and documentation guard
-coverage.
+config parsing, factory strict/advisory behavior, run/auto strict/advisory
+wiring, default compatibility behavior, scheduler and target-selection
+regression coverage, sandboxexec non-rejection, worker protocol non-expansion,
+and documentation guard coverage.
 
 ## Broad Verification Commands
 
@@ -168,13 +164,12 @@ No worker protocol changes are included in Phase 30.
 No worker daemon behavior is included in Phase 30.
 No runtime/provider integrations are included in Phase 30.
 No Docker, Podman, KVM, or microVM runtime requirement is included in Phase 30.
-No run/auto strict readiness-gate mode is wired in Phase 30.
 No broad CLI UX changes are included in Phase 30.
 
 Future phases are responsible for any scheduler readiness filtering, target
 rejection, lease rejection, live enforcement, worker protocol changes,
-runtime/provider integrations, run/auto strict-mode policy surface, or broad
-CLI UX changes based on security readiness diagnostics.
+runtime/provider integrations, or broad CLI UX changes based on security
+readiness diagnostics.
 
 ## Review Notes
 

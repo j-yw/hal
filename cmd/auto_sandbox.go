@@ -76,6 +76,8 @@ type autoSandboxRequest struct {
 	Workspace                    *sandbox.SandboxWorkspace
 	WorkspacePlan                *sandboxworkspace.Plan
 	Security                     sandbox.SecurityEvaluationRequest
+	SecurityReadinessGateMode    sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode
+	SecurityReadinessGate        *sandbox.SandboxSecurityCapabilityReadinessGateDecision
 	NetworkProxySession          *sandbox.SandboxNetworkProxySessionMetadata
 	NetworkPolicyDecisionLogs    []sandbox.SandboxNetworkPolicyDecisionLogRecord
 	CredentialDeliveryActivation credentialDeliveryActivationResult
@@ -238,7 +240,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 		return err
 	}
 	req.ProjectDir = filepath.Clean(absProjectDir)
-	securityReq, err := loadConfiguredSandboxSecurityRequest(req.ProjectDir, req.SandboxRuntime)
+	securitySettings, err := loadConfiguredSandboxSecuritySettings(req.ProjectDir, req.SandboxRuntime)
 	if err != nil {
 		err = fmt.Errorf("load sandbox security config: %w", err)
 		if opts.JSON {
@@ -246,7 +248,8 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 		}
 		return err
 	}
-	req.Security = securityReq
+	req.Security = securitySettings.Request
+	req.SecurityReadinessGateMode = securitySettings.ReadinessGateMode
 	req.RemoteCommand = buildAutoSandboxRemoteCommand(req)
 	if err := saveAutoSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, nil); err != nil {
 		if opts.JSON {
@@ -257,6 +260,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 
 	failBeforeRemote := func(cause error) error {
 		finishedAt := deps.now().UTC()
+		applyAutoSandboxSecurityReadinessGateError(&req, cause)
 		_ = saveAutoSandboxManifest(store, req, sandboxexecution.StatusFailed, startedAt, &finishedAt, nil)
 		if opts.JSON {
 			return outputAutoSandboxJSONError(out, args, opts, cause.Error())
@@ -300,7 +304,10 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 			}); err != nil {
 				return err
 			}
-			return saveAutoSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, target)
+			if err := saveAutoSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, target); err != nil {
+				return err
+			}
+			return enforceSandboxExecutionSecurityReadinessGate(store, req.ExecutionID)
 		},
 	})
 	if execResult.Result != nil {
@@ -323,6 +330,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 				req.SandboxName = strings.TrimSpace(target.Name)
 			}
 		}
+		applyAutoSandboxSecurityReadinessGateError(&req, execErr)
 	}
 
 	if isSandboxRunPhaseError(execErr) {
@@ -791,15 +799,16 @@ func (deps autoSandboxDeps) resolveAutoSandboxTarget(ctx context.Context, req au
 		listSandboxes = sandboxCommandListSandboxesFromDefault(deps.resolveDefault)
 	}
 	target, err := resolveSandboxCommandTarget(ctx, sandboxCommandTargetRequest{
-		Purpose:             sandbox.SandboxLeasePurposeAuto,
-		SandboxName:         req.SandboxName,
-		SandboxHostID:       req.SandboxHostID,
-		SandboxRuntime:      req.SandboxRuntime,
-		ProjectDir:          req.ProjectDir,
-		Repository:          req.RepoRemote,
-		Branch:              req.RunBranch,
-		ProvisionRepository: req.RepoRemote,
-		Out:                 out,
+		Purpose:                   sandbox.SandboxLeasePurposeAuto,
+		SandboxName:               req.SandboxName,
+		SandboxHostID:             req.SandboxHostID,
+		SandboxRuntime:            req.SandboxRuntime,
+		SecurityReadinessGateMode: req.SecurityReadinessGateMode,
+		ProjectDir:                req.ProjectDir,
+		Repository:                req.RepoRemote,
+		Branch:                    req.RunBranch,
+		ProvisionRepository:       req.RepoRemote,
+		Out:                       out,
 	}, sandboxCommandTargetDeps{
 		loadSandbox:    deps.loadSandbox,
 		listSandboxes:  listSandboxes,
@@ -912,6 +921,7 @@ func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxReques
 	}
 	manifest.Security = sandboxManifestSecurity(req.Security, target)
 	applyAutoSandboxCapabilityReadinessMetadata(manifest)
+	manifest.Security = applyCommandSandboxSecurityReadinessGate(manifest.Security, req.SecurityReadinessGateMode, req.SecurityReadinessGate)
 	preserveSandboxManifestArtifacts(store, manifest)
 	return store.SaveManifest(manifest)
 }
@@ -921,6 +931,16 @@ func autoSandboxManifestWorkspace(req autoSandboxRequest) *sandbox.SandboxWorksp
 		return sandboxCommandPersistentWorkspace(req.Workspace)
 	}
 	return cloneSandboxWorkspace(req.Workspace)
+}
+
+func applyAutoSandboxSecurityReadinessGateError(req *autoSandboxRequest, err error) {
+	if req == nil {
+		return
+	}
+	if decision := sandboxCommandSecurityReadinessGateDecisionFromError(err); decision != nil {
+		req.SecurityReadinessGateMode = decision.PolicyMode
+		req.SecurityReadinessGate = nil
+	}
 }
 
 func buildAutoSandboxRemoteCommand(req autoSandboxRequest) []string {

@@ -1879,7 +1879,7 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 	previousSandbox := record.Sandbox
 	if existing, err := store.LoadRun(record.RunID); err == nil && existing != nil {
 		record.Artifacts = existing.Artifacts
-		if previousSandbox == nil {
+		if previousSandbox == nil || (previousSandbox.Security == nil && existing.Sandbox != nil && existing.Sandbox.Security != nil) {
 			previousSandbox = existing.Sandbox
 		}
 	}
@@ -1890,6 +1890,11 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 		record.Sandbox = factorySandboxFailureMetadataWithPersistentOverlay(metadata, previousSandbox)
 	} else if strings.TrimSpace(record.SandboxName) == "" && record.Sandbox == nil {
 		record.SandboxName, record.Sandbox = factorySandboxMetadataFromName("")
+	} else if target == nil && previousSandbox != nil {
+		record.Sandbox = previousSandbox
+		if strings.TrimSpace(record.SandboxName) == "" {
+			record.SandboxName = strings.TrimSpace(previousSandbox.Name)
+		}
 	}
 	record.Status = factory.RunStatusFailed
 	record.CurrentStep = step
@@ -2217,6 +2222,7 @@ func factorySandboxSecurityMetadata(security *sandbox.SandboxSecurity) *factory.
 	metadata := &factory.SandboxSecurityMetadata{
 		CapabilityReadiness:            capabilityReadiness,
 		CapabilityReadinessDiagnostics: factorySandboxCapabilityReadinessDiagnostics(capabilityReadiness),
+		SecurityReadinessGate:          sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate),
 	}
 	if security.Network != nil {
 		metadata.Network = &factory.SandboxNetworkSecurityMetadata{
@@ -2232,7 +2238,7 @@ func factorySandboxSecurityMetadata(security *sandbox.SandboxSecurity) *factory.
 			ActiveModes:    append([]string(nil), security.Secrets.ActiveModes...),
 		}
 	}
-	if metadata.Network == nil && metadata.Secrets == nil && metadata.CapabilityReadiness == nil {
+	if metadata.Network == nil && metadata.Secrets == nil && metadata.CapabilityReadiness == nil && metadata.SecurityReadinessGate == nil {
 		return nil
 	}
 	return metadata
@@ -2321,6 +2327,9 @@ func factorySandboxSecurityTimelineMetadata(security *factory.SandboxSecurityMet
 			out["capabilityReadinessDiagnostics"] = diagnostics
 		}
 	}
+	if gate := sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate); gate != nil {
+		out["securityReadinessGate"] = gate
+	}
 	if len(out) == 0 {
 		return nil
 	}
@@ -2353,6 +2362,7 @@ func cloneFactorySandboxSecurityMetadata(security *factory.SandboxSecurityMetada
 	clone := &factory.SandboxSecurityMetadata{
 		CapabilityReadiness:            capabilityReadiness,
 		CapabilityReadinessDiagnostics: factorySandboxCapabilityReadinessDiagnostics(capabilityReadiness),
+		SecurityReadinessGate:          sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate),
 	}
 	if security.Network != nil {
 		clone.Network = &factory.SandboxNetworkSecurityMetadata{
@@ -2368,7 +2378,7 @@ func cloneFactorySandboxSecurityMetadata(security *factory.SandboxSecurityMetada
 			ActiveModes:    append([]string(nil), security.Secrets.ActiveModes...),
 		}
 	}
-	if clone.Network == nil && clone.Secrets == nil && clone.CapabilityReadiness == nil {
+	if clone.Network == nil && clone.Secrets == nil && clone.CapabilityReadiness == nil && clone.SecurityReadinessGate == nil {
 		return nil
 	}
 	return clone
@@ -2380,9 +2390,10 @@ func sanitizeFactorySandboxSecurityMetadata(security *factory.SandboxSecurityMet
 	}
 	network := factorySandboxNetworkSecurityToSandbox(security.Network)
 	sanitized := sanitizeCommandSandboxSecurity(&sandbox.SandboxSecurity{
-		Network:             network,
-		CapabilityReadiness: sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness),
-		Secrets:             factorySandboxSecretSecurityToSandbox(security.Secrets),
+		Network:               network,
+		CapabilityReadiness:   sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness),
+		SecurityReadinessGate: sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate),
+		Secrets:               factorySandboxSecretSecurityToSandbox(security.Secrets),
 	})
 	if sanitized == nil {
 		return nil

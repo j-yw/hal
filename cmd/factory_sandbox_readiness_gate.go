@@ -34,6 +34,9 @@ func enforceFactorySandboxReadinessGate(store factory.Store, deps factorySandbox
 	if decision.PolicyMode == sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeOff {
 		return nil
 	}
+	if err := recordFactorySandboxReadinessGateDecision(store, record, decision); err != nil {
+		return fmt.Errorf("record factory sandbox readiness gate decision metadata: %w", err)
+	}
 	metadata := factorySandboxReadinessGatePolicyDecisionMetadata(decision)
 	if err := recordFactoryPolicyDecision(store, record.RunID, deps.now().UTC(), metadata); err != nil {
 		return fmt.Errorf("record factory sandbox readiness gate policy decision: %w", err)
@@ -51,6 +54,20 @@ func factorySandboxReadinessGateDiagnostics(record *factory.RunRecord) *sandbox.
 		return nil
 	}
 	return record.Sandbox.Security.CapabilityReadinessDiagnostics
+}
+
+func recordFactorySandboxReadinessGateDecision(store factory.Store, record *factory.RunRecord, decision sandbox.SandboxSecurityCapabilityReadinessGateDecision) error {
+	if record == nil || strings.TrimSpace(record.RunID) == "" {
+		return nil
+	}
+	if record.Sandbox == nil {
+		record.Sandbox = &factory.SandboxMetadata{}
+	}
+	if record.Sandbox.Security == nil {
+		record.Sandbox.Security = &factory.SandboxSecurityMetadata{}
+	}
+	record.Sandbox.Security.SecurityReadinessGate = sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(&decision)
+	return store.SaveRun(record)
 }
 
 func factorySandboxReadinessGatePolicyDecisionMetadata(decision sandbox.SandboxSecurityCapabilityReadinessGateDecision) factory.PolicyDecisionMetadata {
