@@ -14,21 +14,22 @@ const liveDriverConstructionOperation = "firecracker_live_driver"
 // live-start-capable Firecracker microVM driver. Config.HypervisorPath carries
 // the Firecracker executable path through the existing microVM config contract.
 type LiveDriverOptions struct {
-	Config               microvm.Config
-	BaseStateDir         string
-	CapabilityDetector   microvm.CapabilityDetector
-	NetworkEnforcement   *microvm.NetworkEnforcementPlanning
-	HostProcessRunner    HostProcessRunner
-	BootAcceptancePoller BootAcceptancePoller
-	GuestReadinessProbe  GuestReadinessProbe
-	GuestTransport       firecracker.GuestTransport
-	Clock                Clock
-	Sleeper              Sleeper
-	BootTimeout          time.Duration
-	BootPollInterval     time.Duration
-	GuestTimeout         time.Duration
-	GuestPollInterval    time.Duration
-	CleanupFilesystem    CleanupFilesystem
+	Config                 microvm.Config
+	BaseStateDir           string
+	CapabilityDetector     microvm.CapabilityDetector
+	NetworkEnforcement     *microvm.NetworkEnforcementPlanning
+	NetworkEnforcementLive *microvm.NetworkEnforcementLiveOptions
+	HostProcessRunner      HostProcessRunner
+	BootAcceptancePoller   BootAcceptancePoller
+	GuestReadinessProbe    GuestReadinessProbe
+	GuestTransport         firecracker.GuestTransport
+	Clock                  Clock
+	Sleeper                Sleeper
+	BootTimeout            time.Duration
+	BootPollInterval       time.Duration
+	GuestTimeout           time.Duration
+	GuestPollInterval      time.Duration
+	CleanupFilesystem      CleanupFilesystem
 }
 
 // NewLiveDriver constructs an explicitly live-start-capable Firecracker
@@ -43,7 +44,7 @@ func NewLiveDriver(options LiveDriverOptions) (*microvm.Driver, error) {
 		Config:             config,
 		CapabilityDetector: options.CapabilityDetector,
 		Backend:            firecracker.NewBackend(backendOptions),
-		NetworkEnforcement: options.NetworkEnforcement,
+		NetworkEnforcement: liveDriverNetworkEnforcement(options),
 	}), nil
 }
 
@@ -109,6 +110,17 @@ func liveDriverHostProcessRunner(options LiveDriverOptions) HostProcessRunner {
 		return options.HostProcessRunner
 	}
 	return NewOSExecProcessRunner()
+}
+
+func liveDriverNetworkEnforcement(options LiveDriverOptions) *microvm.NetworkEnforcementPlanning {
+	if options.NetworkEnforcement != nil {
+		return options.NetworkEnforcement
+	}
+	if options.NetworkEnforcementLive == nil {
+		return nil
+	}
+	liveOptions := *options.NetworkEnforcementLive
+	return microvm.NewLiveNetworkEnforcementPlanning(liveOptions)
 }
 
 func liveDriverLifecycleOptions(options LiveDriverOptions) []ProcessLifecycleOption {

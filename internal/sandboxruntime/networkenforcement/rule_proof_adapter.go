@@ -243,6 +243,12 @@ func ruleProofLiveGateAllows(gate RuleProofLiveGateInput, mechanism EnforcementM
 	}
 }
 
+// RuleProofLiveGateAllows reports whether the explicit live build/env gate is
+// complete for a firewall or runtime rule proof adapter.
+func RuleProofLiveGateAllows(gate RuleProofLiveGateInput, mechanism EnforcementMechanism) bool {
+	return ruleProofLiveGateAllows(gate, mechanism)
+}
+
 func ruleProofLiveGateWarnings(gate RuleProofLiveGateInput, mechanism EnforcementMechanism) []LifecycleWarningCode {
 	if ruleProofLiveGateAllows(gate, mechanism) {
 		return nil

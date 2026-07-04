@@ -17,31 +17,122 @@ type NetworkEnforcementPlanning struct {
 	Orchestration *networkenforcement.LiveLifecycleMetadata
 }
 
+// NetworkEnforcementLiveOptions configures the fakeable live microVM network
+// enforcement path. The caller must provide both a proxy listener adapter and
+// a firewall/runtime rule runner, plus explicit build/env gate metadata.
+type NetworkEnforcementLiveOptions struct {
+	Request              networkenforcement.PlanRequest
+	Planner              networkenforcement.Planner
+	ProxyListener        networkenforcement.ProxyListenerAdapter
+	RuleRunner           networkenforcement.RuleProofStepRunner
+	RuleMechanism        networkenforcement.EnforcementMechanism
+	RuleAdapterID        string
+	RuleCapabilityLabels []string
+	RuleGate             networkenforcement.RuleProofLiveGateInput
+}
+
+type networkEnforcementLifecycleAdapter interface {
+	EnforceNetworkWithLifecycle(context.Context, networkenforcement.SanitizedPlan) networkenforcement.LiveEnforcementRun
+}
+
+// NewLiveNetworkEnforcementPlanning builds the default live wiring surface. It
+// uses the package build tag state from networkenforcement, so default builds
+// remain metadata-only even when caller-supplied environment gates are true.
+func NewLiveNetworkEnforcementPlanning(options NetworkEnforcementLiveOptions) *NetworkEnforcementPlanning {
+	options.RuleGate.BuildTagEnabled = networkenforcement.RuleProofLiveBuildTagEnabled()
+	return NewGatedNetworkEnforcementPlanning(options)
+}
+
+// NewGatedNetworkEnforcementPlanning builds the fakeable live wiring surface
+// from explicit gate metadata. It is useful for tests and higher-level runtime
+// code that has already projected build/env gates into safe booleans.
+func NewGatedNetworkEnforcementPlanning(options NetworkEnforcementLiveOptions) *NetworkEnforcementPlanning {
+	return &NetworkEnforcementPlanning{
+		Request: options.Request,
+		Planner: options.Planner,
+		Adapter: networkEnforcementLiveAdapter(options),
+	}
+}
+
 func networkEnforcementMetadataFromDriverOptions(options DriverOptions) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
 	plan := options.NetworkEnforcementPlan
 	orchestration := options.NetworkEnforcementOrchestration
 	result := options.NetworkEnforcementResult
 	if options.NetworkEnforcement != nil {
-		planned, enforced := runNetworkEnforcementPlanning(context.Background(), options.NetworkEnforcement)
+		planned, enforced, lifecycle := runNetworkEnforcementPlanning(context.Background(), options.NetworkEnforcement)
 		plan = planned
 		result = enforced
 		if options.NetworkEnforcement.Orchestration != nil {
 			orchestration = options.NetworkEnforcement.Orchestration
+		} else if lifecycle != nil {
+			orchestration = lifecycle
 		}
 	}
 	return networkEnforcementMetadataFromPlanResultOrchestration(plan, orchestration, result)
 }
 
-func runNetworkEnforcementPlanning(ctx context.Context, planning *NetworkEnforcementPlanning) (*networkenforcement.Plan, *networkenforcement.Result) {
+func runNetworkEnforcementPlanning(ctx context.Context, planning *NetworkEnforcementPlanning) (*networkenforcement.Plan, *networkenforcement.Result, *networkenforcement.LiveLifecycleMetadata) {
 	if planning == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	plan := networkenforcement.RunPlanner(planning.Planner, planning.Request)
-	result := networkenforcement.RunAdapter(ctx, planning.Adapter, plan)
-	return &plan, &result
+	result, lifecycle := runNetworkEnforcementAdapter(ctx, planning.Adapter, plan)
+	return &plan, &result, lifecycle
+}
+
+func runNetworkEnforcementAdapter(ctx context.Context, adapter networkenforcement.Adapter, plan networkenforcement.Plan) (networkenforcement.Result, *networkenforcement.LiveLifecycleMetadata) {
+	if liveAdapter, ok := adapter.(networkEnforcementLifecycleAdapter); ok {
+		run := liveAdapter.EnforceNetworkWithLifecycle(ctx, networkenforcement.NewSanitizedPlan(plan))
+		result := networkenforcement.SanitizeResult(run.Result)
+		lifecycle := networkenforcement.SanitizeLiveLifecycleMetadata(run.Lifecycle)
+		return result, &lifecycle
+	}
+	result := networkenforcement.RunAdapter(ctx, adapter, plan)
+	return result, nil
+}
+
+func networkEnforcementLiveAdapter(options NetworkEnforcementLiveOptions) networkenforcement.Adapter {
+	mechanism := networkEnforcementLiveRuleMechanism(options.RuleMechanism)
+	if !networkenforcement.RuleProofLiveGateAllows(options.RuleGate, mechanism) ||
+		options.ProxyListener == nil ||
+		options.RuleRunner == nil {
+		return networkenforcement.LiveEnforcementRunner{}
+	}
+	return networkenforcement.LiveEnforcementRunner{
+		Listener: networkenforcement.ProxyListenerLifecycleRunner{
+			Adapter: options.ProxyListener,
+		},
+		Rules: networkenforcement.RuleLifecycleRunner{
+			Adapter: networkEnforcementLiveRuleAdapter(options, mechanism),
+		},
+	}
+}
+
+func networkEnforcementLiveRuleAdapter(options NetworkEnforcementLiveOptions, mechanism networkenforcement.EnforcementMechanism) networkenforcement.RuleLifecycleAdapter {
+	input := networkenforcement.RuleProofLiveAdapterInput{
+		AdapterID:        options.RuleAdapterID,
+		Runner:           options.RuleRunner,
+		Gate:             options.RuleGate,
+		CapabilityLabels: options.RuleCapabilityLabels,
+	}
+	switch mechanism {
+	case networkenforcement.EnforcementMechanismRuntime:
+		return networkenforcement.NewGatedRuntimeRuleProofAdapter(input)
+	default:
+		return networkenforcement.NewGatedFirewallRuleProofAdapter(input)
+	}
+}
+
+func networkEnforcementLiveRuleMechanism(mechanism networkenforcement.EnforcementMechanism) networkenforcement.EnforcementMechanism {
+	switch mechanism {
+	case networkenforcement.EnforcementMechanismRuntime:
+		return networkenforcement.EnforcementMechanismRuntime
+	default:
+		return networkenforcement.EnforcementMechanismFirewall
+	}
 }
 
 func networkEnforcementMetadataFromPlanResult(plan *networkenforcement.Plan, result *networkenforcement.Result) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
