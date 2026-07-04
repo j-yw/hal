@@ -22,6 +22,11 @@ func TestMicroVMLiveE2EHarnessRequiresComposedLiveGates(t *testing.T) {
 		t.Skip(message)
 	}
 
+	preflight := requireMicroVMLiveE2EFirecrackerPreflight(t, os.Getenv)
+	if !preflight.CanRunLiveAction() {
+		t.Fatalf("microVM live E2E Firecracker preflight result = %#v, want allowed or skipped before this point", preflight)
+	}
+
 	t.Skip("microVM live E2E harness gates are satisfied; live actions are implemented by later stories")
 }
 
@@ -88,4 +93,22 @@ func microVMLiveE2ECredentialDeliveryModeSkipMessage() string {
 		markers = append(markers, string(envVar))
 	}
 	return "microVM live E2E credential delivery requires one credential delivery mode marker: " + strings.Join(markers, ", ")
+}
+
+func requireMicroVMLiveE2EFirecrackerPreflight(t *testing.T, getenv func(string) string) LiveE2EFirecrackerPreflightResult {
+	t.Helper()
+	result := PreflightLiveE2EFirecrackerRuntime(LiveE2EFirecrackerPreflightInput{
+		FirecrackerLiveMarker:   microVMLiveE2EEnvPresent(getenv, livegate.EnvVarFirecrackerLive),
+		FirecrackerBinaryMarker: getenv(string(livegate.EnvVarFirecrackerLiveFirecracker)),
+		KernelMarker:            getenv(string(livegate.EnvVarFirecrackerLiveKernel)),
+		RootfsMarker:            getenv(string(livegate.EnvVarFirecrackerLiveRootfs)),
+	})
+	if !result.ShouldSkipLiveAction() {
+		return result
+	}
+
+	message := LiveE2EFirecrackerPreflightSkipMessage(result)
+	livegate.AssertLiveGateSkipMessageRedactionSafe(t, message)
+	t.Skip(message)
+	return result
 }

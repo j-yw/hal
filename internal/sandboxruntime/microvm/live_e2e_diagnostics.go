@@ -3,14 +3,15 @@ package microvm
 import "encoding/json"
 
 const (
-	LiveE2EPrerequisiteFirecrackerBinary   LiveE2EPrerequisiteName = "firecracker_binary"
-	LiveE2EPrerequisiteFirecrackerKernel   LiveE2EPrerequisiteName = "firecracker_kernel"
-	LiveE2EPrerequisiteFirecrackerRootfs   LiveE2EPrerequisiteName = "firecracker_rootfs"
-	LiveE2EPrerequisiteKVMCapability       LiveE2EPrerequisiteName = "kvm_capability"
-	LiveE2EPrerequisiteNetworkProxyMarker  LiveE2EPrerequisiteName = "network_proxy_marker"
-	LiveE2EPrerequisiteFirewallMarker      LiveE2EPrerequisiteName = "firewall_marker"
-	LiveE2EPrerequisiteCredentialMarker    LiveE2EPrerequisiteName = "credential_delivery_marker"
-	LiveE2EPrerequisiteTemplateTrustMarker LiveE2EPrerequisiteName = "template_trust_marker"
+	LiveE2EPrerequisiteFirecrackerLiveMarker LiveE2EPrerequisiteName = "firecracker_marker"
+	LiveE2EPrerequisiteFirecrackerBinary     LiveE2EPrerequisiteName = "firecracker_binary"
+	LiveE2EPrerequisiteFirecrackerKernel     LiveE2EPrerequisiteName = "firecracker_kernel"
+	LiveE2EPrerequisiteFirecrackerRootfs     LiveE2EPrerequisiteName = "firecracker_rootfs"
+	LiveE2EPrerequisiteKVMCapability         LiveE2EPrerequisiteName = "kvm_capability"
+	LiveE2EPrerequisiteNetworkProxyMarker    LiveE2EPrerequisiteName = "network_proxy_marker"
+	LiveE2EPrerequisiteFirewallMarker        LiveE2EPrerequisiteName = "firewall_marker"
+	LiveE2EPrerequisiteCredentialMarker      LiveE2EPrerequisiteName = "credential_delivery_marker"
+	LiveE2EPrerequisiteTemplateTrustMarker   LiveE2EPrerequisiteName = "template_trust_marker"
 )
 
 // LiveE2EPrerequisiteName identifies a required live E2E setup item without
@@ -104,6 +105,13 @@ type liveE2EPrerequisiteSpec struct {
 
 func liveE2EPrerequisiteSpecFor(prerequisite LiveE2EPrerequisiteName) (liveE2EPrerequisiteSpec, bool) {
 	switch sanitizeLiveE2EPrerequisiteName(prerequisite) {
+	case LiveE2EPrerequisiteFirecrackerLiveMarker:
+		return liveE2EPrerequisiteSpec{
+			prerequisite: LiveE2EPrerequisiteFirecrackerLiveMarker,
+			component:    LiveE2EComponentFirecracker,
+			reasonCode:   LiveE2EReasonFirecrackerMarkerMissing,
+			message:      "Set the Firecracker live marker before running the live E2E harness.",
+		}, true
 	case LiveE2EPrerequisiteFirecrackerBinary:
 		return liveE2EPrerequisiteSpec{
 			prerequisite: LiveE2EPrerequisiteFirecrackerBinary,
@@ -167,7 +175,8 @@ func liveE2EPrerequisiteSpecFor(prerequisite LiveE2EPrerequisiteName) (liveE2EPr
 
 func sanitizeLiveE2EPrerequisiteName(value LiveE2EPrerequisiteName) LiveE2EPrerequisiteName {
 	switch LiveE2EPrerequisiteName(normalizeLiveE2EEnum(string(value))) {
-	case LiveE2EPrerequisiteFirecrackerBinary,
+	case LiveE2EPrerequisiteFirecrackerLiveMarker,
+		LiveE2EPrerequisiteFirecrackerBinary,
 		LiveE2EPrerequisiteFirecrackerKernel,
 		LiveE2EPrerequisiteFirecrackerRootfs,
 		LiveE2EPrerequisiteKVMCapability,

@@ -16,6 +16,14 @@ func TestMissingLiveE2EPrerequisiteDiagnosticsMapDistinctSafeReasonCodes(t *test
 		message      string
 	}{
 		{
+			name:         "firecracker live marker",
+			category:     "microvm",
+			prerequisite: LiveE2EPrerequisiteFirecrackerLiveMarker,
+			component:    LiveE2EComponentFirecracker,
+			reason:       LiveE2EReasonFirecrackerMarkerMissing,
+			message:      "Set the Firecracker live marker before running the live E2E harness.",
+		},
+		{
 			name:         "firecracker binary",
 			category:     "microvm",
 			prerequisite: LiveE2EPrerequisiteFirecrackerBinary,
