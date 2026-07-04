@@ -107,7 +107,7 @@ func TestCommandSecurityMetadataDowngradesRequestedPolicyWithoutActiveRuntimeRes
 	}
 }
 
-func TestCommandSecurityMetadataPreservesActiveRuntimePolicyResult(t *testing.T) {
+func TestCommandSecurityMetadataDowngradesActiveRuntimePolicyResultWithoutProof(t *testing.T) {
 	activeResult := testCommandActiveNetworkPolicyResult()
 	security := &sandbox.SandboxSecurity{
 		Network: &sandbox.SandboxNetworkSecurity{
@@ -119,20 +119,15 @@ func TestCommandSecurityMetadataPreservesActiveRuntimePolicyResult(t *testing.T)
 	}
 
 	summary := newSandboxRuntimeSecuritySummary(security)
-	if summary.Enforced.NetworkPolicy == nil || *summary.Enforced.NetworkPolicy != sandbox.SandboxNetworkPolicyDenyByDefault {
-		t.Fatalf("summary enforced network policy = %#v, want active deny-by-default", summary.Enforced.NetworkPolicy)
-	}
-	if summary.Enforced.NetworkEnforcement == nil || *summary.Enforced.NetworkEnforcement != sandbox.SandboxNetworkEnforcementModeProxyFirewall {
-		t.Fatalf("summary enforced network enforcement = %#v, want active proxy_firewall", summary.Enforced.NetworkEnforcement)
-	}
+	requireCommandRuntimeSummaryNetworkDowngraded(t, summary)
 
 	factoryMetadata := factorySandboxSecurityMetadata(security)
 	if factoryMetadata == nil || factoryMetadata.Network == nil {
-		t.Fatalf("factorySandboxSecurityMetadata() = %#v, want active network metadata", factoryMetadata)
+		t.Fatalf("factorySandboxSecurityMetadata() = %#v, want downgraded network metadata", factoryMetadata)
 	}
-	if factoryMetadata.Network.PolicyEnforced != sandbox.SandboxNetworkPolicyDenyByDefault ||
-		factoryMetadata.Network.EnforcementMode != sandbox.SandboxNetworkEnforcementModeProxyFirewall {
-		t.Fatalf("factory network metadata = %#v, want active enforced posture", factoryMetadata.Network)
+	if factoryMetadata.Network.PolicyEnforced != sandbox.SandboxNetworkPolicyBestEffort ||
+		factoryMetadata.Network.EnforcementMode != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("factory network metadata = %#v, want downgraded enforced posture", factoryMetadata.Network)
 	}
 }
 

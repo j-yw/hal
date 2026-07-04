@@ -1,0 +1,123 @@
+package cmd
+
+import (
+	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
+)
+
+func commandSandboxNetworkEnforcementProofFromRuntimeMetadata(metadata *sandboxruntime.RuntimeNetworkEnforcementMetadata) *sandbox.SandboxNetworkEnforcementProofMetadata {
+	metadata = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(metadata)
+	if metadata == nil || metadata.Result == nil {
+		return nil
+	}
+	proof := sandbox.SandboxNetworkEnforcementProofMetadata{
+		ResultOutcome:         metadata.Result.Outcome,
+		ResultEnforcementMode: commandSandboxNetworkEnforcementModeLabel(metadata.Result.EnforcementMode),
+		ResultSupported:       commandSandboxRuntimeNetworkEnforcementResultSupported(metadata.Result),
+	}
+	if metadata.Plan != nil {
+		proof.NetworkEnforcementPlanID = metadata.Plan.ID
+		proof.PolicySnapshotID = metadata.Plan.PolicySnapshotID
+	}
+	if metadata.Orchestration != nil {
+		if proof.NetworkEnforcementPlanID == "" {
+			proof.NetworkEnforcementPlanID = metadata.Orchestration.PlanID
+		}
+		if proof.PolicySnapshotID == "" {
+			proof.PolicySnapshotID = metadata.Orchestration.PolicySnapshotID
+		}
+		if metadata.Orchestration.Proxy != nil {
+			proxy := metadata.Orchestration.Proxy
+			proof.NetworkProxySessionID = proxy.ID
+			proof.ProxyLifecycleStatus = proxy.Status
+			proof.ProxyLifecycleReasonCode = proxy.ReasonCode
+			if proof.NetworkEnforcementPlanID == "" {
+				proof.NetworkEnforcementPlanID = proxy.PlanID
+			}
+			if proof.PolicySnapshotID == "" {
+				proof.PolicySnapshotID = proxy.PolicySnapshotID
+			}
+		}
+		if !commandSandboxRuntimeNetworkEnforcementMetadataHasWarnings(metadata) {
+			if rule := commandSandboxRuntimeNetworkEnforcementFirewallRule(metadata.Orchestration.Rules); rule != nil {
+				proof.FirewallLifecycleStatus = rule.Status
+				proof.FirewallLifecycleReasonCode = rule.ReasonCode
+				if proof.NetworkEnforcementPlanID == "" {
+					proof.NetworkEnforcementPlanID = rule.PlanID
+				}
+				if proof.PolicySnapshotID == "" {
+					proof.PolicySnapshotID = rule.PolicySnapshotID
+				}
+			}
+		}
+	}
+	if metadata.Result.PolicySnapshotID != "" {
+		proof.PolicySnapshotID = metadata.Result.PolicySnapshotID
+	}
+	if metadata.Result.PlanID != "" {
+		proof.NetworkEnforcementPlanID = metadata.Result.PlanID
+	}
+	if commandSandboxRuntimeNetworkEnforcementMetadataHasWarnings(metadata) {
+		proof.ResultOutcome = "best_effort"
+		proof.ResultSupported = false
+	}
+	sanitized := sandbox.SanitizeSandboxNetworkEnforcementProofMetadata(proof)
+	if sanitized.NetworkProxySessionID == "" &&
+		sanitized.PolicySnapshotID == "" &&
+		sanitized.NetworkEnforcementPlanID == "" &&
+		sanitized.ProxyLifecycleStatus == "" &&
+		sanitized.ProxyLifecycleReasonCode == "" &&
+		sanitized.FirewallLifecycleStatus == "" &&
+		sanitized.FirewallLifecycleReasonCode == "" &&
+		sanitized.ResultOutcome == "" &&
+		sanitized.ResultEnforcementMode == "" &&
+		!sanitized.ResultSupported {
+		return nil
+	}
+	return &sanitized
+}
+
+func commandSandboxRuntimeNetworkEnforcementResultSupported(result *sandboxruntime.RuntimeNetworkEnforcementResultMetadata) bool {
+	if result == nil {
+		return false
+	}
+	capability := sandboxruntime.SanitizeRuntimeNetworkEnforcementCapability(result.Capability)
+	return capability != nil && capability.Supported
+}
+
+func commandSandboxRuntimeNetworkEnforcementMetadataHasWarnings(metadata *sandboxruntime.RuntimeNetworkEnforcementMetadata) bool {
+	if metadata == nil {
+		return false
+	}
+	if metadata.Result != nil && len(metadata.Result.WarningCodes) > 0 {
+		return true
+	}
+	if metadata.Orchestration == nil {
+		return false
+	}
+	if len(metadata.Orchestration.WarningCodes) > 0 {
+		return true
+	}
+	if metadata.Orchestration.Proxy != nil && len(metadata.Orchestration.Proxy.WarningCodes) > 0 {
+		return true
+	}
+	for _, rule := range metadata.Orchestration.Rules {
+		if len(rule.WarningCodes) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func commandSandboxRuntimeNetworkEnforcementFirewallRule(rules []sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata) *sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata {
+	for i := range rules {
+		rule := &rules[i]
+		for _, mechanism := range rule.Mechanisms {
+			switch commandSandboxNetworkEnforcementModeLabel(mechanism) {
+			case sandbox.SandboxNetworkEnforcementModeFirewall, sandbox.SandboxNetworkEnforcementModeRuntime:
+				return rule
+			}
+		}
+	}
+	return nil
+}

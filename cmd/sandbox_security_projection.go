@@ -7,6 +7,10 @@ import (
 )
 
 func sanitizeCommandSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.SandboxSecurity {
+	return sanitizeCommandSandboxSecurityWithNetworkProof(security, nil)
+}
+
+func sanitizeCommandSandboxSecurityWithNetworkProof(security *sandbox.SandboxSecurity, proof *sandbox.SandboxNetworkEnforcementProofMetadata) *sandbox.SandboxSecurity {
 	if security == nil {
 		return nil
 	}
@@ -19,7 +23,7 @@ func sanitizeCommandSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.
 		CapabilityReadiness:            capabilityReadiness,
 		CapabilityReadinessDiagnostics: capabilityReadinessDiagnostics,
 		SecurityReadinessGate:          sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate),
-		Network:                        sanitizeCommandSandboxNetworkSecurity(security.Network),
+		Network:                        sanitizeCommandSandboxNetworkSecurityWithProof(security.Network, proof),
 	}
 	if security.Secrets != nil {
 		secrets := *security.Secrets
@@ -104,9 +108,14 @@ func commandSandboxSecurityReadinessGateMode(mode sandbox.SandboxSecurityCapabil
 }
 
 func sanitizeCommandSandboxNetworkSecurity(network *sandbox.SandboxNetworkSecurity) *sandbox.SandboxNetworkSecurity {
+	return sanitizeCommandSandboxNetworkSecurityWithProof(network, nil)
+}
+
+func sanitizeCommandSandboxNetworkSecurityWithProof(network *sandbox.SandboxNetworkSecurity, proof *sandbox.SandboxNetworkEnforcementProofMetadata) *sandbox.SandboxNetworkSecurity {
 	if network == nil {
 		return nil
 	}
+	proof = commandSandboxSanitizedNetworkEnforcementProof(proof)
 	result := sandbox.CloneSandboxNetworkPolicyResultPtr(network.PolicyResult)
 	out := &sandbox.SandboxNetworkSecurity{
 		PolicyRequested: commandSandboxNetworkPolicyLabel(network.PolicyRequested),
@@ -117,13 +126,14 @@ func sanitizeCommandSandboxNetworkSecurity(network *sandbox.SandboxNetworkSecuri
 	if out.PolicyRequested == "" && result != nil {
 		out.PolicyRequested = commandSandboxNetworkPolicyLabelFromIntent(result.Requested)
 	}
-	if commandSandboxNetworkSecurityHasActiveResult(out) {
+	if commandSandboxNetworkSecurityHasActiveResult(out, proof) {
 		out.EnforcementMode = commandSandboxNetworkEnforcementModeLabel(result.EnforcementMode)
 		out.PolicyEnforced = commandSandboxNetworkPolicyLabelFromIntent(result.Effective)
 	} else if commandSandboxNetworkSecurityHasAnyMetadata(out) {
-		partialMode := commandSandboxNetworkPartialEnforcementMode(out.EnforcementMode)
+		partialMode := commandSandboxNetworkPartialEnforcementMode(out.EnforcementMode, proof)
 		out.PolicyEnforced = sandbox.SandboxNetworkPolicyBestEffort
 		out.EnforcementMode = partialMode
+		out.PolicyResult = commandSandboxNetworkBestEffortPolicyResult(out.PolicyResult, out.PolicyRequested)
 	}
 	if !commandSandboxNetworkSecurityHasAnyMetadata(out) {
 		return nil
@@ -131,12 +141,73 @@ func sanitizeCommandSandboxNetworkSecurity(network *sandbox.SandboxNetworkSecuri
 	return out
 }
 
-func commandSandboxNetworkPartialEnforcementMode(mode string) string {
+func commandSandboxSanitizedNetworkEnforcementProof(proof *sandbox.SandboxNetworkEnforcementProofMetadata) *sandbox.SandboxNetworkEnforcementProofMetadata {
+	if proof == nil {
+		return nil
+	}
+	sanitized := sandbox.SanitizeSandboxNetworkEnforcementProofMetadata(*proof)
+	if sanitized.NetworkProxySessionID == "" &&
+		sanitized.PolicySnapshotID == "" &&
+		sanitized.NetworkEnforcementPlanID == "" &&
+		sanitized.ProxyLifecycleStatus == "" &&
+		sanitized.ProxyLifecycleReasonCode == "" &&
+		sanitized.FirewallLifecycleStatus == "" &&
+		sanitized.FirewallLifecycleReasonCode == "" &&
+		sanitized.ResultOutcome == "" &&
+		sanitized.ResultEnforcementMode == "" &&
+		!sanitized.ResultSupported {
+		return nil
+	}
+	return &sanitized
+}
+
+func commandSandboxNetworkPartialEnforcementMode(mode string, proof *sandbox.SandboxNetworkEnforcementProofMetadata) string {
 	switch commandSandboxNetworkEnforcementModeLabel(mode) {
 	case sandbox.SandboxNetworkEnforcementModeProxy:
-		return sandbox.SandboxNetworkEnforcementModeProxy
+		if proof != nil && sandbox.SandboxNetworkEnforcementProofProvesActiveHTTPProxy(*proof) {
+			return sandbox.SandboxNetworkEnforcementModeProxy
+		}
+		return sandbox.SandboxNetworkEnforcementModeNone
+	case sandbox.SandboxNetworkEnforcementModeProxyFirewall:
+		if proof != nil &&
+			proof.ResultEnforcementMode == sandbox.SandboxNetworkEnforcementModeProxy &&
+			sandbox.SandboxNetworkEnforcementProofProvesActiveHTTPProxy(*proof) {
+			return sandbox.SandboxNetworkEnforcementModeProxy
+		}
+		return sandbox.SandboxNetworkEnforcementModeNone
 	default:
 		return sandbox.SandboxNetworkEnforcementModeNone
+	}
+}
+
+func commandSandboxNetworkBestEffortPolicyResult(result *sandbox.SandboxNetworkPolicyResult, requestedPolicy string) *sandbox.SandboxNetworkPolicyResult {
+	if result == nil {
+		return nil
+	}
+	cloned := sandbox.CloneSandboxNetworkPolicyResult(*result)
+	requested := cloned.Requested
+	if requested.Preset == "" && len(requested.Rules) == 0 {
+		switch commandSandboxNetworkPolicyLabel(requestedPolicy) {
+		case sandbox.SandboxNetworkPolicyDenyByDefault:
+			requested = sandbox.SandboxNetworkPolicyIntent{Preset: sandbox.SandboxNetworkPolicyPresetDenyByDefault}
+		case sandbox.SandboxNetworkPolicyBestEffort:
+			requested = sandbox.SandboxNetworkPolicyIntent{Preset: sandbox.SandboxNetworkPolicyPresetLegacyDefault}
+		}
+	}
+	capability := cloned.Capability
+	capability.SupportsDefaultDenyPosture = false
+	downgraded := sandbox.EvaluateSandboxNetworkPolicy(requested, capability)
+	return sandbox.CloneSandboxNetworkPolicyResultPtr(&downgraded)
+}
+
+func commandSandboxNetworkResultModeCanClaimActiveDefaultDeny(mode string) bool {
+	switch mode {
+	case sandbox.SandboxNetworkEnforcementModeFirewall,
+		sandbox.SandboxNetworkEnforcementModeRuntime,
+		sandbox.SandboxNetworkEnforcementModeProxyFirewall:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -150,13 +221,20 @@ func commandSandboxNetworkSecurityHasAnyMetadata(network *sandbox.SandboxNetwork
 		network.PolicyResult != nil
 }
 
-func commandSandboxNetworkSecurityHasActiveResult(network *sandbox.SandboxNetworkSecurity) bool {
+func commandSandboxNetworkSecurityHasActiveResult(network *sandbox.SandboxNetworkSecurity, proof *sandbox.SandboxNetworkEnforcementProofMetadata) bool {
 	if network == nil || network.PolicyResult == nil {
 		return false
 	}
 	result := network.PolicyResult
 	mode := commandSandboxNetworkEnforcementModeLabel(result.EnforcementMode)
 	if !commandSandboxNetworkEnforcementModeCanEnforce(mode) {
+		return false
+	}
+	if !commandSandboxNetworkResultModeCanClaimActiveDefaultDeny(mode) {
+		return false
+	}
+	if mode == sandbox.SandboxNetworkEnforcementModeProxyFirewall &&
+		(proof == nil || !sandbox.SandboxNetworkEnforcementProofProvesActiveProxyFirewall(*proof)) {
 		return false
 	}
 	if len(result.Warnings) > 0 {

@@ -146,6 +146,10 @@ func sandboxHostSecurityFromWorker(status *sandboxworker.Status, capabilities *s
 }
 
 func sandboxSecurityFromWorkerPolicy(policy sandboxworker.SecurityPolicy) *sandbox.SandboxSecurity {
+	return sandboxSecurityFromWorkerPolicyWithNetworkProof(policy, commandSandboxNetworkEnforcementProofFromRuntimeMetadata(policy.NetworkEnforcement))
+}
+
+func sandboxSecurityFromWorkerPolicyWithNetworkProof(policy sandboxworker.SecurityPolicy, proof *sandbox.SandboxNetworkEnforcementProofMetadata) *sandbox.SandboxSecurity {
 	security := &sandbox.SandboxSecurity{}
 	if sandboxWorkerSecurityPolicyHasNetworkMetadata(policy) {
 		security.Network = &sandbox.SandboxNetworkSecurity{
@@ -164,7 +168,7 @@ func sandboxSecurityFromWorkerPolicy(policy sandboxworker.SecurityPolicy) *sandb
 	if security.Network == nil && security.Secrets == nil {
 		return nil
 	}
-	return sanitizeCommandSandboxSecurity(security)
+	return sanitizeCommandSandboxSecurityWithNetworkProof(security, proof)
 }
 
 func sandboxWorkerSecurityPolicyHasNetworkMetadata(policy sandboxworker.SecurityPolicy) bool {
