@@ -108,6 +108,7 @@ const (
 	WarningBindingOmitted          WarningCode = "binding_omitted"
 	WarningActivationSkipped       WarningCode = "activation_skipped"
 	WarningAdapterUnavailable      WarningCode = "adapter_unavailable"
+	WarningCompatibilityMode       WarningCode = "compatibility_mode"
 	WarningLegacyAuthCompatibility WarningCode = "legacy_auth_compatibility"
 )
 

@@ -344,6 +344,7 @@ func validWarningCode(value WarningCode) bool {
 		WarningBindingOmitted,
 		WarningActivationSkipped,
 		WarningAdapterUnavailable,
+		WarningCompatibilityMode,
 		WarningLegacyAuthCompatibility:
 		return true
 	default:

@@ -29,7 +29,11 @@ func BuildDeliveryPlan(request PlanConstructionRequest) Plan {
 	requestedModes := newPlanModeSet()
 
 	addRequestedPlanModes(&plan, requestedModes, request.RequestedModes)
+	hasExplicitRequestedModes := len(request.RequestedModes) > 0
 	bindings := validatedPlanBindings(&plan, requestedModes, request.Bindings)
+	if !hasExplicitRequestedModes {
+		addSecureDefaultPlanModesForServiceDomainBindings(requestedModes, bindings)
+	}
 	resolvedByBindingID := resolvedPlanBindingsByID(request.ResolvedBindings)
 	proxyContext := newPlanProxyContext(request)
 
@@ -150,11 +154,17 @@ func addPlanModeWarnings(plan *Plan, requestedModes *planModeSet, httpProxyActiv
 					Mode:       ModeHTTPProxy,
 				})
 			}
-		case ModeSSHAgent, ModeFileTmpfs, ModeEnv:
+		case ModeSSHAgent, ModeFileTmpfs:
 			plan.Warnings = append(plan.Warnings, Warning{
 				Code:       WarningAdapterUnavailable,
 				ReasonCode: ReasonActivationUnavailable,
 				Mode:       mode,
+			})
+		case ModeEnv:
+			plan.Warnings = append(plan.Warnings, Warning{
+				Code:       WarningCompatibilityMode,
+				ReasonCode: ReasonCompatibilityMode,
+				Mode:       ModeEnv,
 			})
 		case ModeLegacyAuthSync:
 			plan.Warnings = append(plan.Warnings, Warning{
@@ -163,6 +173,38 @@ func addPlanModeWarnings(plan *Plan, requestedModes *planModeSet, httpProxyActiv
 				Mode:       ModeLegacyAuthSync,
 			})
 		}
+	}
+}
+
+func addSecureDefaultPlanModesForServiceDomainBindings(modes *planModeSet, bindings []Binding) {
+	for _, binding := range bindings {
+		if !bindingHasSafeServiceDomainMetadata(binding) {
+			continue
+		}
+		modes.add(ModeHTTPProxy)
+		modes.add(ModeSSHAgent)
+		modes.add(ModeFileTmpfs)
+		return
+	}
+}
+
+func bindingHasSafeServiceDomainMetadata(binding Binding) bool {
+	binding = SanitizeBindingMetadata(binding)
+	if binding.ID == "" {
+		return false
+	}
+	if binding.ServiceID != "" || len(binding.ServiceLabels) > 0 || len(binding.DomainLabels) > 0 {
+		return true
+	}
+	switch binding.DestinationCategory {
+	case DestinationPublicInternet,
+		DestinationPrivateNetwork,
+		DestinationMetadataService,
+		DestinationLoopback,
+		DestinationUnixSocket:
+		return true
+	default:
+		return false
 	}
 }
 
