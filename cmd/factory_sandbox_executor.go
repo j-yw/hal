@@ -366,6 +366,9 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			if err := recordFactorySandboxSecurityPolicyEvent(store, deps, &record, target, req.NetworkPolicyDecisionLogs, secretRedactor); err != nil {
 				return fmt.Errorf("record factory sandbox security metadata: %w", err)
 			}
+			if err := recordFactorySandboxCredentialDeliveryActivationLog(store, deps, &record, secretRedactor); err != nil {
+				return fmt.Errorf("record factory sandbox credential activation status: %w", err)
+			}
 			if err := enforceFactorySandboxReadinessGate(store, deps, req, &record, secretRedactor); err != nil {
 				return err
 			}
@@ -1942,6 +1945,7 @@ func factorySandboxFailureMetadataWithPersistentOverlay(metadata *factory.Sandbo
 	if len(previous.CredentialProxyBindings) > 0 {
 		metadata.CredentialProxyBindings = append([]sandbox.SandboxCredentialProxyBindingMetadata(nil), previous.CredentialProxyBindings...)
 	}
+	metadata.CredentialDelivery = previous.CredentialDelivery
 	factorySandboxSanitizeCredentialProxyMetadata(metadata)
 	return metadata
 }
@@ -2271,19 +2275,23 @@ func recordFactorySandboxSecurityPolicyEvent(store factory.Store, deps factorySa
 		return nil
 	}
 	sandboxName, provider := factorySandboxPolicyEventTargetIdentity(record, target)
+	metadata := map[string]any{
+		"policyField": "sandbox.security",
+		"decision":    factory.PolicyDecisionAllowedExecution,
+		"outcome":     factory.PolicyOutcomeAllowed,
+		"reason":      "compatibility runtime security metadata recorded",
+		"source":      "remote_sandbox",
+		"sandboxName": sandboxName,
+		"provider":    provider,
+		"security":    factorySandboxSecurityTimelineMetadata(security),
+	}
+	if status := factorySandboxCredentialDeliveryActivationStatusFromRecord(record); status != nil {
+		metadata["credentialDelivery"] = *status
+	}
 	event := redactFactoryTimelineEvent(factoryTimelineEvent{
-		EventType: factory.EventTypePolicyDecision,
-		Summary:   "Sandbox security policy evaluated",
-		Metadata: map[string]any{
-			"policyField": "sandbox.security",
-			"decision":    factory.PolicyDecisionAllowedExecution,
-			"outcome":     factory.PolicyOutcomeAllowed,
-			"reason":      "compatibility runtime security metadata recorded",
-			"source":      "remote_sandbox",
-			"sandboxName": sandboxName,
-			"provider":    provider,
-			"security":    factorySandboxSecurityTimelineMetadata(security),
-		},
+		EventType:                 factory.EventTypePolicyDecision,
+		Summary:                   "Sandbox security policy evaluated",
+		Metadata:                  metadata,
 		NetworkPolicyDecisionLogs: decisionLogs,
 	}, redactor)
 	events, err := store.LoadEvents(record.RunID)
@@ -2299,6 +2307,42 @@ func recordFactorySandboxSecurityPolicyEvent(store factory.Store, deps factorySa
 		Metadata:                  event.Metadata,
 		NetworkPolicyDecisionLogs: event.NetworkPolicyDecisionLogs,
 	})
+}
+
+func recordFactorySandboxCredentialDeliveryActivationLog(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, redactor factory.RunSecretRedactor) error {
+	if record == nil || strings.TrimSpace(record.RunID) == "" || deps.appendLog == nil {
+		return nil
+	}
+	status := factorySandboxCredentialDeliveryActivationStatusFromRecord(record)
+	if status == nil {
+		return nil
+	}
+	chunk := factory.LogChunk{
+		RunID:     record.RunID,
+		Stream:    factory.LogStreamSummary,
+		Source:    factory.LogSourceRemoteSandbox,
+		Summary:   factorySandboxCredentialDeliveryActivationLogSummary(status),
+		CreatedAt: deps.now().UTC(),
+	}
+	chunk = redactor.RedactLogChunk(chunk)
+	chunk.Text = sanitizeFactoryLogText(chunk.Text)
+	chunk.Summary = sanitizeFactoryLogText(chunk.Summary)
+	return deps.appendLog(store, &chunk)
+}
+
+func factorySandboxCredentialDeliveryActivationStatusFromRecord(record *factory.RunRecord) *sandbox.SandboxCredentialDeliveryStatusMetadata {
+	if record == nil || record.Sandbox == nil {
+		return nil
+	}
+	return sandboxCommandJSONCredentialDeliveryStatus(record.Sandbox.CredentialDelivery)
+}
+
+func factorySandboxCredentialDeliveryActivationLogSummary(status *sandbox.SandboxCredentialDeliveryStatusMetadata) string {
+	state := "recorded"
+	if status != nil && strings.TrimSpace(status.Status) != "" {
+		state = strings.TrimSpace(status.Status)
+	}
+	return "Credential delivery activation " + state
 }
 
 func factorySandboxSecurityTimelineMetadata(security *factory.SandboxSecurityMetadata) map[string]any {

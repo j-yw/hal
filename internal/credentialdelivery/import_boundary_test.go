@@ -150,6 +150,7 @@ func TestCredentialDeliveryImportBoundaryCoversProductionFiles(t *testing.T) {
 		"activation_fake.go",
 		"binding_validation.go",
 		"contracts.go",
+		"diagnostics.go",
 		"normalization.go",
 		"planning.go",
 		"projection.go",

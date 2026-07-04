@@ -163,7 +163,7 @@ func phase43RequiredFocusedTests() []phase34FocusedTest {
 	return []phase34FocusedTest{
 		{pkg: "./internal/credentialdelivery", file: filepath.Join("..", "internal", "credentialdelivery", "projection_test.go"), testName: "TestStatusMetadataFromPlanDoesNotProjectActiveModes"},
 		{pkg: "./internal/credentialdelivery", file: filepath.Join("..", "internal", "credentialdelivery", "projection_test.go"), testName: "TestStatusMetadataFromActivationProjectsActiveModesOnlyForActiveResult"},
-		{pkg: "./cmd", file: "credential_delivery_projection_test.go", testName: "TestCredentialDeliveryProjectionAcrossRunAutoAndFactoryIsPlanOnly"},
+		{pkg: "./cmd", file: "credential_delivery_projection_test.go", testName: "TestCredentialDeliveryProjectionAcrossRunAutoIsPlanOnlyAndFactoryOmitsWithoutActivation"},
 		{pkg: "./cmd", file: "credential_delivery_projection_test.go", testName: "TestCredentialDeliveryProjectionRepresentsLegacyAuthSyncAsRequestedOnly"},
 		{pkg: "./cmd", file: "credential_delivery_projection_test.go", testName: "TestCredentialProxyIntentKeepsLegacyAuthSyncRequestedOnly"},
 		{pkg: "./cmd", file: "credential_delivery_redaction_test.go", testName: "TestCredentialDeliveryRedactionAcrossDurableSurfaces"},

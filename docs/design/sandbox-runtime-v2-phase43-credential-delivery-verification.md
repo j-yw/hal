@@ -134,7 +134,7 @@ Credential delivery package coverage:
 
 Command boundary coverage:
 
-- `TestCredentialDeliveryProjectionAcrossRunAutoAndFactoryIsPlanOnly`
+- `TestCredentialDeliveryProjectionAcrossRunAutoIsPlanOnlyAndFactoryOmitsWithoutActivation`
 - `TestCredentialDeliveryProjectionRepresentsLegacyAuthSyncAsRequestedOnly`
 - `TestCredentialProxyIntentKeepsLegacyAuthSyncRequestedOnly`
 - `TestCredentialDeliveryRedactionAcrossDurableSurfaces`

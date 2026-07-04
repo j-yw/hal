@@ -98,6 +98,8 @@ func TestContractConstants(t *testing.T) {
 		{name: "reason unsupported mode", got: string(ReasonUnsupportedMode), want: "unsupported_mode"},
 		{name: "reason missing secret reference", got: string(ReasonMissingSecretReference), want: "missing_secret_reference"},
 		{name: "reason missing service binding", got: string(ReasonMissingServiceBinding), want: "missing_service_binding"},
+		{name: "reason missing activation proof", got: string(ReasonMissingActivationProof), want: "missing_activation_proof"},
+		{name: "reason unsupported capability", got: string(ReasonUnsupportedCapability), want: "unsupported_capability"},
 		{name: "reason activation unavailable", got: string(ReasonActivationUnavailable), want: "activation_unavailable"},
 		{name: "reason compatibility mode", got: string(ReasonCompatibilityMode), want: "compatibility_mode"},
 		{name: "reason disabled", got: string(ReasonDisabled), want: "disabled"},
@@ -244,6 +246,21 @@ func TestPlanJSONContract(t *testing.T) {
 				ResultSupported:          true,
 			},
 		},
+		SSHAgentProof: &SSHAgentProof{
+			BindingID:             "binding-02",
+			SecretID:              "env:GITHUB_TOKEN",
+			SecretBrokerSessionID: "secret-broker-session-01",
+			DeliveryPlanID:        "delivery-plan-proof-01",
+			DeliverySessionID:     "delivery-session-proof-01",
+			DeliveryBindingID:     "delivery-binding-proof-02",
+			HandoffID:             "ssh-agent-handoff-01",
+			HandoffStatus:         StatusReady,
+			HandoffReasonCode:     ReasonRequested,
+			CapabilityID:          "ssh-agent-capability-01",
+			CapabilityMode:        ModeSSHAgent,
+			CapabilityStatus:      StatusReady,
+			CapabilityReady:       true,
+		},
 		RequestedModes: []Mode{ModeHTTPProxy, ModeLegacyAuthSync},
 		ActiveModes:    []Mode{ModeHTTPProxy},
 		BindingCount:   2,
@@ -266,6 +283,7 @@ func TestPlanJSONContract(t *testing.T) {
 		"requestId",
 		"networkProxySessionId",
 		"httpProxyProof",
+		"sshAgentProof",
 		"requestedModes",
 		"activeModes",
 		"bindingCount",
@@ -282,12 +300,28 @@ func TestPlanJSONContract(t *testing.T) {
 		"credentialProxyBindingId",
 		"networkEnforcement",
 	}, forbiddenRawFieldNames())
+	assertObjectKeys(t, got["sshAgentProof"].(map[string]any), []string{
+		"bindingId",
+		"secretId",
+		"secretBrokerSessionId",
+		"deliveryPlanId",
+		"deliverySessionId",
+		"deliveryBindingId",
+		"handoffId",
+		"handoffStatus",
+		"handoffReasonCode",
+		"capabilityId",
+		"capabilityMode",
+		"capabilityStatus",
+		"capabilityReady",
+	}, forbiddenRawFieldNames())
 
 	minimal := mustMarshalObject(t, Plan{ID: "delivery-plan-02"})
 	assertObjectKeys(t, minimal, []string{"id"}, []string{
 		"requestId",
 		"networkProxySessionId",
 		"httpProxyProof",
+		"sshAgentProof",
 		"requestedModes",
 		"activeModes",
 		"bindingCount",
@@ -347,6 +381,58 @@ func TestHTTPProxyProofJSONContract(t *testing.T) {
 		"credentialProxySessionId",
 		"credentialProxyBindingId",
 		"networkEnforcement",
+	})
+}
+
+func TestSSHAgentProofJSONContract(t *testing.T) {
+	proof := SSHAgentProof{
+		BindingID:             "binding-01",
+		SecretID:              "env:GITHUB_TOKEN",
+		SecretBrokerSessionID: "secret-broker-session-01",
+		DeliveryPlanID:        "delivery-plan-proof-01",
+		DeliverySessionID:     "delivery-session-proof-01",
+		DeliveryBindingID:     "delivery-binding-proof-01",
+		HandoffID:             "ssh-agent-handoff-01",
+		HandoffStatus:         StatusReady,
+		HandoffReasonCode:     ReasonRequested,
+		CapabilityID:          "ssh-agent-capability-01",
+		CapabilityMode:        ModeSSHAgent,
+		CapabilityStatus:      StatusReady,
+		CapabilityReady:       true,
+	}
+
+	got := mustMarshalObject(t, proof)
+	assertObjectKeys(t, got, []string{
+		"bindingId",
+		"secretId",
+		"secretBrokerSessionId",
+		"deliveryPlanId",
+		"deliverySessionId",
+		"deliveryBindingId",
+		"handoffId",
+		"handoffStatus",
+		"handoffReasonCode",
+		"capabilityId",
+		"capabilityMode",
+		"capabilityStatus",
+		"capabilityReady",
+	}, forbiddenRawFieldNames())
+
+	minimal := mustMarshalObject(t, SSHAgentProof{})
+	assertObjectKeys(t, minimal, []string{}, []string{
+		"bindingId",
+		"secretId",
+		"secretBrokerSessionId",
+		"deliveryPlanId",
+		"deliverySessionId",
+		"deliveryBindingId",
+		"handoffId",
+		"handoffStatus",
+		"handoffReasonCode",
+		"capabilityId",
+		"capabilityMode",
+		"capabilityStatus",
+		"capabilityReady",
 	})
 }
 
@@ -439,23 +525,23 @@ func TestActivationResultJSONContract(t *testing.T) {
 		ActiveModes:    []Mode{ModeHTTPProxy},
 		Bindings: []BindingActivationResult{{
 			BindingID:    "binding-01",
-			ServiceID:    "service-01",
 			DeliveryMode: ModeHTTPProxy,
-			Outcome:      StatusActive,
 			Status:       StatusActive,
 			ReasonCode:   ReasonRequested,
+			ProofRef:     "proof-ref-01",
 		}},
-		Status: StatusActive,
+		ProofRefs: []ActivationProofReference{{
+			ProofID:      "proof-ref-01",
+			BindingID:    "binding-01",
+			DeliveryMode: ModeHTTPProxy,
+		}},
+		Status:     StatusActive,
+		ReasonCode: ReasonRequested,
 		Warnings: []Warning{{
 			Code:       WarningActivationSkipped,
 			BindingID:  "binding-02",
 			ReasonCode: ReasonActivationUnavailable,
 			Mode:       ModeSSHAgent,
-		}},
-		Errors: []SanitizedError{{
-			Code:      ErrorActivationFailed,
-			BindingID: "binding-03",
-			Mode:      ModeFileTmpfs,
 		}},
 	}
 	got := mustMarshalObject(t, activation)
@@ -465,9 +551,10 @@ func TestActivationResultJSONContract(t *testing.T) {
 		"requestedModes",
 		"activeModes",
 		"bindings",
+		"proofRefs",
 		"status",
+		"reasonCode",
 		"warnings",
-		"errors",
 	}, forbiddenRawFieldNames())
 
 	minimal := mustMarshalObject(t, ActivationResult{
@@ -478,9 +565,10 @@ func TestActivationResultJSONContract(t *testing.T) {
 		"requestedModes",
 		"activeModes",
 		"bindings",
+		"proofRefs",
 		"status",
+		"reasonCode",
 		"warnings",
-		"errors",
 	})
 }
 
@@ -603,6 +691,7 @@ func TestJSONTagsAreStable(t *testing.T) {
 		{field: "RequestID", name: "requestId", omitempty: true},
 		{field: "NetworkProxySessionID", name: "networkProxySessionId", omitempty: true},
 		{field: "HTTPProxyProof", name: "httpProxyProof", omitempty: true},
+		{field: "SSHAgentProof", name: "sshAgentProof", omitempty: true},
 		{field: "RequestedModes", name: "requestedModes", omitempty: true},
 		{field: "ActiveModes", name: "activeModes", omitempty: true},
 		{field: "BindingCount", name: "bindingCount", omitempty: true},
@@ -619,6 +708,21 @@ func TestJSONTagsAreStable(t *testing.T) {
 		{field: "CredentialProxyBindingID", name: "credentialProxyBindingId", omitempty: true},
 		{field: "NetworkEnforcement", name: "networkEnforcement", omitempty: true},
 	})
+	assertJSONTags(t, reflect.TypeOf(SSHAgentProof{}), []jsonTagExpectation{
+		{field: "BindingID", name: "bindingId", omitempty: true},
+		{field: "SecretID", name: "secretId", omitempty: true},
+		{field: "SecretBrokerSessionID", name: "secretBrokerSessionId", omitempty: true},
+		{field: "DeliveryPlanID", name: "deliveryPlanId", omitempty: true},
+		{field: "DeliverySessionID", name: "deliverySessionId", omitempty: true},
+		{field: "DeliveryBindingID", name: "deliveryBindingId", omitempty: true},
+		{field: "HandoffID", name: "handoffId", omitempty: true},
+		{field: "HandoffStatus", name: "handoffStatus", omitempty: true},
+		{field: "HandoffReasonCode", name: "handoffReasonCode", omitempty: true},
+		{field: "CapabilityID", name: "capabilityId", omitempty: true},
+		{field: "CapabilityMode", name: "capabilityMode", omitempty: true},
+		{field: "CapabilityStatus", name: "capabilityStatus", omitempty: true},
+		{field: "CapabilityReady", name: "capabilityReady", omitempty: true},
+	})
 	assertJSONTags(t, reflect.TypeOf(ActivationRequest{}), []jsonTagExpectation{
 		{field: "ActivationID", name: "activationId", omitempty: true},
 		{field: "Plan", name: "plan"},
@@ -630,17 +734,22 @@ func TestJSONTagsAreStable(t *testing.T) {
 		{field: "RequestedModes", name: "requestedModes", omitempty: true},
 		{field: "ActiveModes", name: "activeModes", omitempty: true},
 		{field: "Bindings", name: "bindings", omitempty: true},
+		{field: "ProofRefs", name: "proofRefs", omitempty: true},
 		{field: "Status", name: "status", omitempty: true},
+		{field: "ReasonCode", name: "reasonCode", omitempty: true},
 		{field: "Warnings", name: "warnings", omitempty: true},
-		{field: "Errors", name: "errors", omitempty: true},
 	})
 	assertJSONTags(t, reflect.TypeOf(BindingActivationResult{}), []jsonTagExpectation{
 		{field: "BindingID", name: "bindingId"},
-		{field: "ServiceID", name: "serviceId", omitempty: true},
 		{field: "DeliveryMode", name: "deliveryMode"},
-		{field: "Outcome", name: "outcome", omitempty: true},
 		{field: "Status", name: "status", omitempty: true},
 		{field: "ReasonCode", name: "reasonCode", omitempty: true},
+		{field: "ProofRef", name: "proofRef", omitempty: true},
+	})
+	assertJSONTags(t, reflect.TypeOf(ActivationProofReference{}), []jsonTagExpectation{
+		{field: "ProofID", name: "proofId"},
+		{field: "BindingID", name: "bindingId", omitempty: true},
+		{field: "DeliveryMode", name: "deliveryMode"},
 	})
 	assertJSONTags(t, reflect.TypeOf(StatusMetadata{}), []jsonTagExpectation{
 		{field: "ID", name: "id"},
@@ -684,9 +793,11 @@ func TestContractsExposeNoRawValueFields(t *testing.T) {
 		reflect.TypeOf(SecretResolutionResult{}),
 		reflect.TypeOf(Plan{}),
 		reflect.TypeOf(HTTPProxyProof{}),
+		reflect.TypeOf(SSHAgentProof{}),
 		reflect.TypeOf(ActivationRequest{}),
 		reflect.TypeOf(ActivationResult{}),
 		reflect.TypeOf(BindingActivationResult{}),
+		reflect.TypeOf(ActivationProofReference{}),
 		reflect.TypeOf(StatusMetadata{}),
 		reflect.TypeOf(Warning{}),
 		reflect.TypeOf(SanitizedError{}),
@@ -716,20 +827,20 @@ func TestSerializedMetadataContainsNoUnsafeRawFieldNames(t *testing.T) {
 		ActiveModes:    []Mode{ModeHTTPProxy},
 		Bindings: []BindingActivationResult{{
 			BindingID:    "binding-01",
-			ServiceID:    "service-01",
 			DeliveryMode: ModeHTTPProxy,
-			Outcome:      StatusActive,
 			Status:       StatusActive,
+			ReasonCode:   ReasonRequested,
+			ProofRef:     "proof-ref-01",
 		}},
-		Status: StatusActive,
+		ProofRefs: []ActivationProofReference{{
+			ProofID:      "proof-ref-01",
+			BindingID:    "binding-01",
+			DeliveryMode: ModeHTTPProxy,
+		}},
+		Status:     StatusActive,
+		ReasonCode: ReasonRequested,
 		Warnings: []Warning{{
 			Code:       WarningAdapterUnavailable,
-			ReasonCode: ReasonActivationUnavailable,
-		}},
-		Errors: []SanitizedError{{
-			Code:       ErrorActivationFailed,
-			Field:      "binding",
-			BindingID:  "binding-01",
 			ReasonCode: ReasonActivationUnavailable,
 		}},
 	}

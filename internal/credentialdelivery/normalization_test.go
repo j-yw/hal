@@ -74,15 +74,19 @@ func TestCredentialDeliveryNormalizationTrimsReferencesAndLowercasesEnums(t *tes
 		RequestedModes: []Mode{" FILE_TMPFS "},
 		Bindings: []BindingActivationResult{{
 			BindingID:    " Binding-01 ",
-			ServiceID:    " Service-01 ",
 			DeliveryMode: Mode(" FILE_TMPFS "),
-			Outcome:      Status(" ACTIVE "),
 			Status:       Status(" ACTIVE "),
 			ReasonCode:   ReasonCode(" REQUESTED "),
+			ProofRef:     " Proof-Ref-01 ",
+		}},
+		ProofRefs: []ActivationProofReference{{
+			ProofID:      " Proof-Ref-01 ",
+			BindingID:    " Binding-01 ",
+			DeliveryMode: Mode(" FILE_TMPFS "),
 		}},
 		Status: Status(" ACTIVE "),
 	})
-	if activation.ID != "Activation-01" || activation.PlanID != "DeliveryPlan-01" || activation.Bindings[0].ServiceID != "Service-01" || activation.Bindings[0].DeliveryMode != ModeFileTmpfs || activation.Bindings[0].Outcome != StatusActive {
+	if activation.ID != "Activation-01" || activation.PlanID != "DeliveryPlan-01" || activation.Bindings[0].ProofRef != "Proof-Ref-01" || activation.Bindings[0].DeliveryMode != ModeFileTmpfs || activation.ProofRefs[0].ProofID != "Proof-Ref-01" {
 		t.Fatalf("activation metadata = %#v, want normalized activation result", activation)
 	}
 }

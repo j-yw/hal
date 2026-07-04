@@ -38,6 +38,17 @@ func TestFakeActivationAdapterSupportsNonHTTPModeStatusesWithoutLiveMutation(t *
 						Mode:       mode,
 					}},
 				}
+				if mode == ModeSSHAgent {
+					plan = sshAgentProofPlanFixture(binding)
+					plan.ID = "delivery-plan-" + string(mode) + "-" + string(status)
+					plan.RequestID = rawCommandLine
+					plan.Warnings = []Warning{{
+						Code:       WarningAdapterUnavailable,
+						ReasonCode: ReasonActivationUnavailable,
+						BindingID:  rawSocketPath,
+						Mode:       mode,
+					}}
+				}
 				adapter := NewFakeActivationAdapter(FakeActivationModeResult{
 					Mode:   mode,
 					Status: status,
@@ -70,7 +81,7 @@ func TestFakeActivationAdapterSupportsNonHTTPModeStatusesWithoutLiveMutation(t *
 					assertPlanModes(t, got.ActiveModes, nil)
 				}
 				if status == StatusFailed {
-					assertActivationError(t, got, ErrorActivationFailed, "adapter")
+					assertActivationReason(t, got, ReasonActivationUnavailable)
 				}
 				if status == StatusSkipped {
 					assertActivationWarning(t, got, WarningActivationSkipped, ReasonActivationUnavailable, mode)

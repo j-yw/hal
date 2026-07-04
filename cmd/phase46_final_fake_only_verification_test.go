@@ -153,7 +153,7 @@ func phase46FinalRequiredFocusedTests() []phase34FocusedTest {
 		phase46FinalFocusedTest("./internal/sandboxruntime", "internal/sandboxruntime/import_boundary_test.go", "TestSandboxruntimeCredentialDeliveryActivationImportsStayMetadataOnly"),
 		phase46FinalFocusedTest("./internal/sandboxworker", "internal/sandboxworker/phase46_redaction_guard_test.go", "TestPhase46WorkerMetadataRedactionGuards"),
 		phase46FinalFocusedTest("./internal/sandboxworker", "internal/sandboxworker/import_boundary_test.go", "TestSandboxworkerCredentialDeliveryDefaultMetadataImportsStayFakeOnly"),
-		{pkg: "./cmd", file: "credential_delivery_projection_test.go", testName: "TestCredentialDeliveryProjectionAcrossRunAutoAndFactoryIsPlanOnly"},
+		{pkg: "./cmd", file: "credential_delivery_projection_test.go", testName: "TestCredentialDeliveryProjectionAcrossRunAutoIsPlanOnlyAndFactoryOmitsWithoutActivation"},
 		{pkg: "./cmd", file: "credential_delivery_projection_test.go", testName: "TestCredentialDeliveryHTTPProxyProjectionRequiresProvenActivationResult"},
 		{pkg: "./cmd", file: "credential_delivery_projection_test.go", testName: "TestCredentialProxyIntentKeepsLegacyAuthSyncRequestedOnly"},
 		{pkg: "./cmd", file: "phase46_redaction_guard_test.go", testName: "TestPhase46SandboxExecutionManifestRedactionGuards"},

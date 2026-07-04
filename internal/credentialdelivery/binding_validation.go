@@ -229,6 +229,11 @@ func unsafeCredentialDeliveryFieldPath(value string) bool {
 
 func credentialDeliveryContainsUnsafeMetadataMarker(value string) bool {
 	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "ghp_") ||
+		strings.HasPrefix(lower, "github_pat_") ||
+		strings.HasPrefix(lower, "sk-") {
+		return true
+	}
 	for _, marker := range []string{
 		"://",
 		"authorization",
@@ -321,6 +326,8 @@ func validReasonCode(value ReasonCode) bool {
 		ReasonUnsupportedMode,
 		ReasonMissingSecretReference,
 		ReasonMissingServiceBinding,
+		ReasonMissingActivationProof,
+		ReasonUnsupportedCapability,
 		ReasonActivationUnavailable,
 		ReasonCompatibilityMode,
 		ReasonDisabled,

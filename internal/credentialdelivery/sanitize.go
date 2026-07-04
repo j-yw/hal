@@ -136,6 +136,7 @@ func SanitizePlanMetadata(plan Plan) Plan {
 	sanitized.RequestID = sanitizeIdentifier(sanitized.RequestID)
 	sanitized.NetworkProxySessionID = sanitizeIdentifier(sanitized.NetworkProxySessionID)
 	sanitized.HTTPProxyProof = SanitizeHTTPProxyProofMetadataPtr(sanitized.HTTPProxyProof)
+	sanitized.SSHAgentProof = SanitizeSSHAgentProofMetadataPtr(sanitized.SSHAgentProof)
 	sanitized.RequestedModes = sanitizeOptionalModeRecords(sanitized.RequestedModes)
 	sanitized.ActiveModes = sanitizeOptionalModeRecords(sanitized.ActiveModes)
 	sanitized.Status = sanitizeStatusValue(sanitized.Status)
@@ -195,6 +196,42 @@ func SanitizeHTTPProxyProofMetadataPtr(proof *HTTPProxyProof) *HTTPProxyProof {
 	return &sanitized
 }
 
+// SanitizeSSHAgentProofMetadata returns a durable-safe copy of ssh_agent
+// handoff proof metadata. Unsafe optional proof fields are cleared so
+// activation fails closed without preserving raw socket or key details.
+func SanitizeSSHAgentProofMetadata(proof SSHAgentProof) SSHAgentProof {
+	sanitized := NormalizeSSHAgentProofMetadata(proof)
+	sanitized.BindingID = sanitizeIdentifier(sanitized.BindingID)
+	sanitized.SecretID = sanitizeSecretReference(sanitized.SecretID)
+	if sanitized.BindingID == "" || sanitized.SecretID == "" {
+		return SSHAgentProof{}
+	}
+	sanitized.SecretBrokerSessionID = sanitizeIdentifier(sanitized.SecretBrokerSessionID)
+	sanitized.DeliveryPlanID = sanitizeIdentifier(sanitized.DeliveryPlanID)
+	sanitized.DeliverySessionID = sanitizeIdentifier(sanitized.DeliverySessionID)
+	sanitized.DeliveryBindingID = sanitizeIdentifier(sanitized.DeliveryBindingID)
+	sanitized.HandoffID = sanitizeIdentifier(sanitized.HandoffID)
+	sanitized.HandoffStatus = sanitizeStatusValue(sanitized.HandoffStatus)
+	sanitized.HandoffReasonCode = sanitizeReasonCodeValue(sanitized.HandoffReasonCode)
+	sanitized.CapabilityID = sanitizeIdentifier(sanitized.CapabilityID)
+	sanitized.CapabilityMode = sanitizeOptionalModeValue(sanitized.CapabilityMode)
+	sanitized.CapabilityStatus = sanitizeStatusValue(sanitized.CapabilityStatus)
+	return sanitized
+}
+
+// SanitizeSSHAgentProofMetadataPtr returns nil when proof metadata is absent
+// or required binding/secret identity is unsafe.
+func SanitizeSSHAgentProofMetadataPtr(proof *SSHAgentProof) *SSHAgentProof {
+	if proof == nil {
+		return nil
+	}
+	sanitized := SanitizeSSHAgentProofMetadata(*proof)
+	if sanitized == (SSHAgentProof{}) {
+		return nil
+	}
+	return &sanitized
+}
+
 // SanitizeActivationResultMetadata returns a durable-safe copy of delivery
 // activation metadata. Missing or unsafe required IDs return the zero value.
 func SanitizeActivationResultMetadata(result ActivationResult) ActivationResult {
@@ -207,9 +244,10 @@ func SanitizeActivationResultMetadata(result ActivationResult) ActivationResult 
 	sanitized.RequestedModes = sanitizeOptionalModeRecords(sanitized.RequestedModes)
 	sanitized.ActiveModes = sanitizeOptionalModeRecords(sanitized.ActiveModes)
 	sanitized.Bindings = SanitizeBindingActivationResultMetadataRecords(sanitized.Bindings)
+	sanitized.ProofRefs = SanitizeActivationProofReferenceMetadataRecords(sanitized.ProofRefs)
 	sanitized.Status = sanitizeStatusValue(sanitized.Status)
+	sanitized.ReasonCode = sanitizeReasonCodeValue(sanitized.ReasonCode)
 	sanitized.Warnings = SanitizeWarningMetadataRecords(sanitized.Warnings)
-	sanitized.Errors = SanitizeSanitizedErrorRecords(sanitized.Errors)
 	return sanitized
 }
 
@@ -218,14 +256,13 @@ func SanitizeActivationResultMetadata(result ActivationResult) ActivationResult 
 func SanitizeBindingActivationResultMetadata(result BindingActivationResult) BindingActivationResult {
 	sanitized := NormalizeBindingActivationResultMetadata(result)
 	sanitized.BindingID = sanitizeIdentifier(sanitized.BindingID)
-	sanitized.ServiceID = sanitizeIdentifier(sanitized.ServiceID)
 	sanitized.DeliveryMode = sanitizeRequiredModeValue(sanitized.DeliveryMode)
 	if sanitized.BindingID == "" || sanitized.DeliveryMode == "" {
 		return BindingActivationResult{}
 	}
-	sanitized.Outcome = sanitizeStatusValue(sanitized.Outcome)
 	sanitized.Status = sanitizeStatusValue(sanitized.Status)
 	sanitized.ReasonCode = sanitizeReasonCodeValue(sanitized.ReasonCode)
+	sanitized.ProofRef = sanitizeIdentifier(sanitized.ProofRef)
 	return sanitized
 }
 
@@ -239,6 +276,36 @@ func SanitizeBindingActivationResultMetadataRecords(results []BindingActivationR
 	for _, result := range results {
 		record := SanitizeBindingActivationResultMetadata(result)
 		if record.BindingID != "" {
+			sanitized = append(sanitized, record)
+		}
+	}
+	return sanitized
+}
+
+// SanitizeActivationProofReferenceMetadata returns a durable-safe copy of one
+// activation proof reference. Unsafe required metadata returns zero.
+func SanitizeActivationProofReferenceMetadata(reference ActivationProofReference) ActivationProofReference {
+	sanitized := NormalizeActivationProofReferenceMetadata(reference)
+	originalBindingID := sanitized.BindingID
+	sanitized.ProofID = sanitizeIdentifier(sanitized.ProofID)
+	sanitized.BindingID = sanitizeIdentifier(sanitized.BindingID)
+	sanitized.DeliveryMode = sanitizeRequiredModeValue(sanitized.DeliveryMode)
+	if sanitized.ProofID == "" || sanitized.DeliveryMode == "" || (originalBindingID != "" && sanitized.BindingID == "") {
+		return ActivationProofReference{}
+	}
+	return sanitized
+}
+
+// SanitizeActivationProofReferenceMetadataRecords returns durable-safe proof
+// references while preserving nil versus explicit empty input slices.
+func SanitizeActivationProofReferenceMetadataRecords(references []ActivationProofReference) []ActivationProofReference {
+	if references == nil {
+		return nil
+	}
+	sanitized := make([]ActivationProofReference, 0, len(references))
+	for _, reference := range references {
+		record := SanitizeActivationProofReferenceMetadata(reference)
+		if record.ProofID != "" {
 			sanitized = append(sanitized, record)
 		}
 	}

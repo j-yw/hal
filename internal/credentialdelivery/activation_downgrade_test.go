@@ -39,9 +39,7 @@ func TestActivateDeliveryDowngradesUnavailableAndUnsupportedModes(t *testing.T) 
 				ActiveModes:    []Mode{ModeEnv},
 				Bindings: []BindingActivationResult{{
 					BindingID:    binding.ID,
-					ServiceID:    binding.ServiceID,
 					DeliveryMode: ModeEnv,
-					Outcome:      StatusReady,
 					Status:       StatusReady,
 					ReasonCode:   ReasonActivationUnavailable,
 				}},
@@ -80,7 +78,7 @@ func TestActivateDeliveryDowngradesUnavailableAndUnsupportedModes(t *testing.T) 
 			t.Fatalf("activation status = %q, want failed", got.Status)
 		}
 		assertPlanModes(t, got.ActiveModes, nil)
-		assertActivationError(t, got, ErrorActivationFailed, "adapter")
+		assertActivationReason(t, got, ReasonActivationUnavailable)
 		assertActivationBindingStatus(t, got, binding.ID, ModeEnv, StatusFailed)
 		assertActivationNoLeak(t, got, "raw adapter failed", "ghp_raw_secret_value")
 	})
@@ -112,8 +110,7 @@ func TestActivateDeliveryMalformedModeDowngradesWithSanitizedDiagnostics(t *test
 		t.Fatalf("activation status = %q, want failed for malformed mode metadata", got.Status)
 	}
 	assertPlanModes(t, got.ActiveModes, nil)
-	assertActivationError(t, got, ErrorUnsupportedMode, "plan.requestedModes")
-	assertActivationError(t, got, ErrorUnsafeMetadata, "plan.requestedModes")
+	assertActivationReason(t, got, ReasonUnsupportedMode)
 	assertActivationNoLeak(t, got, string(rawUnsupportedMode), string(rawMalformedMode), "tokens.example.invalid", "ghp_raw_secret_value")
 }
 
@@ -136,7 +133,8 @@ func TestActivateDeliveryHTTPProxyMissingPhase45SuccessMetadataStaysNonActive(t 
 	}
 	assertPlanModes(t, got.RequestedModes, []Mode{ModeHTTPProxy})
 	assertPlanModes(t, got.ActiveModes, nil)
-	assertActivationWarning(t, got, WarningActivationSkipped, ReasonMissingServiceBinding, ModeHTTPProxy)
+	assertActivationReason(t, got, ReasonUnsupportedCapability)
+	assertActivationWarning(t, got, WarningActivationSkipped, ReasonUnsupportedCapability, ModeHTTPProxy)
 	assertActivationBindingStatus(t, got, binding.ID, ModeHTTPProxy, StatusSkipped)
 	assertActivationNoLeak(t, got)
 }

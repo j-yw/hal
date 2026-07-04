@@ -3641,6 +3641,13 @@ func redactFactoryTimelineMetadata(metadata map[string]any, redactor factory.Run
 	safe := make(map[string]any, len(metadata))
 	for key, value := range metadata {
 		safeKey := redactFactoryString(key, redactor)
+		if factoryTimelineMetadataCredentialDeliveryKey(key) || factoryTimelineMetadataCredentialDeliveryKey(safeKey) {
+			status := sanitizeFactoryTimelineCredentialDeliveryMetadataValue(value)
+			if status != nil {
+				safe[safeKey] = *status
+			}
+			continue
+		}
 		if omitFactoryTimelineMetadataEntry(key, safeKey, reflect.ValueOf(value)) {
 			continue
 		}
@@ -3815,7 +3822,7 @@ func reflectString(value reflect.Value) string {
 }
 
 func factoryTimelineMetadataKeyOmitted(key string) bool {
-	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.TrimSpace(key)))
+	normalized := normalizeFactoryTimelineMetadataKey(key)
 	if strings.HasPrefix(normalized, "credentialproxy") {
 		return true
 	}
@@ -3835,6 +3842,36 @@ func factoryTimelineMetadataKeyOmitted(key string) bool {
 	default:
 		return false
 	}
+}
+
+func factoryTimelineMetadataCredentialDeliveryKey(key string) bool {
+	return normalizeFactoryTimelineMetadataKey(key) == "credentialdelivery"
+}
+
+func normalizeFactoryTimelineMetadataKey(key string) string {
+	return strings.ToLower(strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.TrimSpace(key)))
+}
+
+func sanitizeFactoryTimelineCredentialDeliveryMetadataValue(value any) *sandbox.SandboxCredentialDeliveryStatusMetadata {
+	var status sandbox.SandboxCredentialDeliveryStatusMetadata
+	switch typed := value.(type) {
+	case sandbox.SandboxCredentialDeliveryStatusMetadata:
+		status = typed
+	case *sandbox.SandboxCredentialDeliveryStatusMetadata:
+		if typed == nil {
+			return nil
+		}
+		status = *typed
+	default:
+		data, err := json.Marshal(value)
+		if err != nil {
+			return nil
+		}
+		if err := json.Unmarshal(data, &status); err != nil {
+			return nil
+		}
+	}
+	return sandboxCommandJSONCredentialDeliveryStatus(&status)
 }
 
 func factoryTimelineMetadataValueOmitted(value reflect.Value) bool {

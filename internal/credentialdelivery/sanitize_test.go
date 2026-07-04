@@ -234,10 +234,10 @@ func TestCredentialDeliverySanitizeRemovesUnsafeRequiredRecords(t *testing.T) {
 			name: "activation binding optional metadata unsafe",
 			got: SanitizeBindingActivationResultMetadata(BindingActivationResult{
 				BindingID:    "binding-01",
-				ServiceID:    "api.example.invalid",
 				DeliveryMode: ModeHTTPProxy,
-				Outcome:      Status("TOKEN=value"),
 				Status:       StatusActive,
+				ReasonCode:   ReasonCode("TOKEN=value"),
+				ProofRef:     "api.example.invalid",
 			}),
 			want: BindingActivationResult{
 				BindingID:    "binding-01",

@@ -36,7 +36,7 @@ func StatusMetadataFromActivation(plan Plan, activation ActivationResult) Status
 		Status:         sanitizedActivation.Status,
 		ReasonCode:     activationStatusReason(sanitizedActivation),
 		WarningCount:   len(sanitizedActivation.Warnings),
-		ErrorCount:     len(sanitizedActivation.Errors),
+		ErrorCount:     activationFailureCount(sanitizedActivation),
 	}
 	if status.RequestedModes == nil {
 		status.RequestedModes = sanitizedPlan.RequestedModes
@@ -54,9 +54,16 @@ func StatusMetadataFromActivation(plan Plan, activation ActivationResult) Status
 	return SanitizeStatusMetadata(status)
 }
 
+func activationFailureCount(activation ActivationResult) int {
+	if activation.Status == StatusFailed {
+		return 1
+	}
+	return 0
+}
+
 func activationStatusReason(activation ActivationResult) ReasonCode {
-	if len(activation.Errors) > 0 {
-		return activation.Errors[0].ReasonCode
+	if activation.ReasonCode != "" {
+		return activation.ReasonCode
 	}
 	if len(activation.Warnings) > 0 {
 		return activation.Warnings[0].ReasonCode

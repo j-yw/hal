@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 )
@@ -251,14 +252,18 @@ func persistSandboxSyncOutApplyMetadata(store sandboxexecution.Store, executionI
 }
 
 func outputSandboxSyncOutAugmentedJSON(out io.Writer, remoteJSON []byte, store sandboxexecution.Store, executionID string) error {
+	return outputSandboxAugmentedJSON(out, remoteJSON, store, executionID)
+}
+
+func outputSandboxAugmentedJSON(out io.Writer, remoteJSON []byte, store sandboxexecution.Store, executionID string) error {
 	if out == nil {
 		out = io.Discard
 	}
 	manifest, err := store.LoadManifest(executionID)
-	if err != nil || (manifest.SyncOut == nil && manifest.SyncOutApply == nil) {
+	if err != nil || !sandboxManifestHasCommandJSONAugmentation(manifest) {
 		return writeSandboxCapturedJSON(out, remoteJSON)
 	}
-	augmented, ok := sandboxSyncOutAugmentJSON(remoteJSON, manifest)
+	augmented, ok := sandboxAugmentJSON(remoteJSON, manifest)
 	if !ok {
 		return writeSandboxCapturedJSON(out, remoteJSON)
 	}
@@ -275,6 +280,10 @@ func writeSandboxCapturedJSON(out io.Writer, data []byte) error {
 }
 
 func sandboxSyncOutAugmentJSON(remoteJSON []byte, manifest *sandboxexecution.Manifest) ([]byte, bool) {
+	return sandboxAugmentJSON(remoteJSON, manifest)
+}
+
+func sandboxAugmentJSON(remoteJSON []byte, manifest *sandboxexecution.Manifest) ([]byte, bool) {
 	if len(bytes.TrimSpace(remoteJSON)) == 0 || manifest == nil {
 		return nil, false
 	}
@@ -294,11 +303,34 @@ func sandboxSyncOutAugmentJSON(remoteJSON []byte, manifest *sandboxexecution.Man
 	if manifest.SyncOutApply != nil {
 		raw["syncOutApply"] = manifest.SyncOutApply
 	}
+	if credentialDelivery := sandboxCommandJSONCredentialDeliveryStatus(manifest.CredentialDelivery); credentialDelivery != nil {
+		raw["credentialDelivery"] = credentialDelivery
+	}
 	data, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return nil, false
 	}
 	return data, true
+}
+
+func sandboxManifestHasCommandJSONAugmentation(manifest *sandboxexecution.Manifest) bool {
+	if manifest == nil {
+		return false
+	}
+	return manifest.SyncOut != nil ||
+		manifest.SyncOutApply != nil ||
+		sandboxCommandJSONCredentialDeliveryStatus(manifest.CredentialDelivery) != nil
+}
+
+func sandboxCommandJSONCredentialDeliveryStatus(status *sandbox.SandboxCredentialDeliveryStatusMetadata) *sandbox.SandboxCredentialDeliveryStatusMetadata {
+	if status == nil {
+		return nil
+	}
+	sanitized := sandbox.SanitizeSandboxCredentialDeliveryStatusMetadata(*status)
+	if sanitized.ID == "" || sanitized.PlanID == "" || sanitized.ActivationID == "" || sanitized.Status == "" {
+		return nil
+	}
+	return &sanitized
 }
 
 func sandboxSyncOutPrimaryHandoffReason(reasons []sandboxworkspace.SyncOutApplyEligibilityReason) sandboxworkspace.SyncOutApplyEligibilityReason {

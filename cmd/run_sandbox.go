@@ -336,7 +336,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 	var target *sandbox.SandboxState
 	commandOut := out
 	var capturedJSON bytes.Buffer
-	augmentJSON := opts.JSON && req.SyncOut.Enabled
+	augmentJSON := opts.JSON && (req.SyncOut.Enabled || sandboxCredentialDeliveryActivationResultPresent(req.CredentialDeliveryActivation))
 	if augmentJSON {
 		commandOut = &capturedJSON
 	}
@@ -417,7 +417,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 		execErr = manifestErr
 	}
 	if augmentJSON && execResult.RemoteStarted {
-		if outputErr := outputSandboxSyncOutAugmentedJSON(out, capturedJSON.Bytes(), store, req.ExecutionID); outputErr != nil {
+		if outputErr := outputSandboxAugmentedJSON(out, capturedJSON.Bytes(), store, req.ExecutionID); outputErr != nil {
 			execErr = errors.Join(execErr, outputErr)
 		}
 	}

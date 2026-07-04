@@ -92,6 +92,8 @@ const (
 	ReasonUnsupportedMode        ReasonCode = "unsupported_mode"
 	ReasonMissingSecretReference ReasonCode = "missing_secret_reference"
 	ReasonMissingServiceBinding  ReasonCode = "missing_service_binding"
+	ReasonMissingActivationProof ReasonCode = "missing_activation_proof"
+	ReasonUnsupportedCapability  ReasonCode = "unsupported_capability"
 	ReasonActivationUnavailable  ReasonCode = "activation_unavailable"
 	ReasonCompatibilityMode      ReasonCode = "compatibility_mode"
 	ReasonDisabled               ReasonCode = "disabled"
@@ -195,6 +197,7 @@ type Plan struct {
 	RequestID             string           `json:"requestId,omitempty"`
 	NetworkProxySessionID string           `json:"networkProxySessionId,omitempty"`
 	HTTPProxyProof        *HTTPProxyProof  `json:"httpProxyProof,omitempty"`
+	SSHAgentProof         *SSHAgentProof   `json:"sshAgentProof,omitempty"`
 	RequestedModes        []Mode           `json:"requestedModes,omitempty"`
 	ActiveModes           []Mode           `json:"activeModes,omitempty"`
 	BindingCount          int              `json:"bindingCount,omitempty"`
@@ -215,6 +218,24 @@ type HTTPProxyProof struct {
 	NetworkEnforcement       *sandbox.SandboxNetworkEnforcementProofMetadata `json:"networkEnforcement,omitempty"`
 }
 
+// SSHAgentProof records existing safe handoff and capability proof IDs that
+// allow an ssh_agent binding to become active after adapter activation.
+type SSHAgentProof struct {
+	BindingID             string     `json:"bindingId,omitempty"`
+	SecretID              string     `json:"secretId,omitempty"`
+	SecretBrokerSessionID string     `json:"secretBrokerSessionId,omitempty"`
+	DeliveryPlanID        string     `json:"deliveryPlanId,omitempty"`
+	DeliverySessionID     string     `json:"deliverySessionId,omitempty"`
+	DeliveryBindingID     string     `json:"deliveryBindingId,omitempty"`
+	HandoffID             string     `json:"handoffId,omitempty"`
+	HandoffStatus         Status     `json:"handoffStatus,omitempty"`
+	HandoffReasonCode     ReasonCode `json:"handoffReasonCode,omitempty"`
+	CapabilityID          string     `json:"capabilityId,omitempty"`
+	CapabilityMode        Mode       `json:"capabilityMode,omitempty"`
+	CapabilityStatus      Status     `json:"capabilityStatus,omitempty"`
+	CapabilityReady       bool       `json:"capabilityReady,omitempty"`
+}
+
 // ActivationRequest is the redaction-safe adapter input for an activation
 // attempt. It contains a sanitized plan and binding metadata only, never secret
 // values or live delivery handles.
@@ -226,24 +247,54 @@ type ActivationRequest struct {
 
 // ActivationResult records the redaction-safe outcome of an activation attempt.
 type ActivationResult struct {
-	ID             string                    `json:"id"`
-	PlanID         string                    `json:"planId"`
-	RequestedModes []Mode                    `json:"requestedModes,omitempty"`
-	ActiveModes    []Mode                    `json:"activeModes,omitempty"`
-	Bindings       []BindingActivationResult `json:"bindings,omitempty"`
-	Status         Status                    `json:"status,omitempty"`
-	Warnings       []Warning                 `json:"warnings,omitempty"`
-	Errors         []SanitizedError          `json:"errors,omitempty"`
+	ID             string                     `json:"id"`
+	PlanID         string                     `json:"planId"`
+	RequestedModes []Mode                     `json:"requestedModes,omitempty"`
+	ActiveModes    []Mode                     `json:"activeModes,omitempty"`
+	Bindings       []BindingActivationResult  `json:"bindings,omitempty"`
+	ProofRefs      []ActivationProofReference `json:"proofRefs,omitempty"`
+	Status         Status                     `json:"status,omitempty"`
+	ReasonCode     ReasonCode                 `json:"reasonCode,omitempty"`
+	Warnings       []Warning                  `json:"warnings,omitempty"`
 }
 
 // BindingActivationResult records the activation state for one planned binding.
 type BindingActivationResult struct {
 	BindingID    string     `json:"bindingId"`
-	ServiceID    string     `json:"serviceId,omitempty"`
 	DeliveryMode Mode       `json:"deliveryMode"`
-	Outcome      Status     `json:"outcome,omitempty"`
 	Status       Status     `json:"status,omitempty"`
 	ReasonCode   ReasonCode `json:"reasonCode,omitempty"`
+	ProofRef     string     `json:"proofRef,omitempty"`
+}
+
+// ActivationProofReference records a safe proof identifier associated with a
+// binding and delivery mode. It is not a raw adapter handle or transport path.
+type ActivationProofReference struct {
+	ProofID      string `json:"proofId"`
+	BindingID    string `json:"bindingId,omitempty"`
+	DeliveryMode Mode   `json:"deliveryMode"`
+}
+
+// CredentialActivationDiagnosticSummary is a compact, redaction-safe view of
+// credential activation state for diagnostics. It carries mode, status, proof,
+// reason, and warning metadata only.
+type CredentialActivationDiagnosticSummary struct {
+	RequestedModes []Mode                               `json:"requestedModes,omitempty"`
+	ActiveModes    []Mode                               `json:"activeModes,omitempty"`
+	Status         Status                               `json:"status,omitempty"`
+	ReasonCode     ReasonCode                           `json:"reasonCode,omitempty"`
+	ProofIDs       []string                             `json:"proofIds,omitempty"`
+	Warnings       []Warning                            `json:"warnings,omitempty"`
+	Items          []CredentialActivationDiagnosticItem `json:"items,omitempty"`
+}
+
+// CredentialActivationDiagnosticItem captures one safe per-mode diagnostic.
+type CredentialActivationDiagnosticItem struct {
+	DeliveryMode Mode        `json:"deliveryMode,omitempty"`
+	Status       Status      `json:"status,omitempty"`
+	ReasonCode   ReasonCode  `json:"reasonCode,omitempty"`
+	ProofID      string      `json:"proofId,omitempty"`
+	WarningCode  WarningCode `json:"warningCode,omitempty"`
 }
 
 // StatusMetadata is a compact delivery lifecycle summary for durable surfaces.
@@ -280,16 +331,17 @@ type SanitizedError struct {
 }
 
 func (e SanitizedError) Error() string {
-	code := string(e.Code)
+	safe := SanitizeSanitizedError(e)
+	code := string(safe.Code)
 	if code == "" {
 		code = "credential_delivery_error"
 	}
 	location := "metadata"
-	if e.Field != "" {
-		location = e.Field
+	if safe.Field != "" {
+		location = safe.Field
 	}
-	if e.Index != nil {
-		location += "[" + strconv.Itoa(*e.Index) + "]"
+	if safe.Index != nil {
+		location += "[" + strconv.Itoa(*safe.Index) + "]"
 	}
 	return "credential delivery " + code + " at " + location
 }

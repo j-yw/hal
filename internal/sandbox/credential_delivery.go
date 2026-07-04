@@ -126,6 +126,8 @@ func sanitizeSandboxCredentialDeliveryReasonCode(reason string) string {
 		"unsupported_mode",
 		"missing_secret_reference",
 		"missing_service_binding",
+		"missing_activation_proof",
+		"unsupported_capability",
 		"activation_unavailable",
 		"compatibility_mode",
 		"disabled",
