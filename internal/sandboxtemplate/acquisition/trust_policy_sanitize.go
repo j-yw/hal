@@ -118,7 +118,7 @@ func sanitizeTrustPolicyReferenceField(field string) string {
 
 func sanitizeTrustPolicySourceKind(kind SourceKind) SourceKind {
 	switch kind {
-	case SourceKindLocalFile, SourceKindOCIArtifact:
+	case SourceKindLocalFile, SourceKindGit, SourceKindOCIArtifact, SourceKindUnsupported:
 		return kind
 	default:
 		return ""

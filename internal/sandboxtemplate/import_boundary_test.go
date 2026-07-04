@@ -53,7 +53,7 @@ func TestSandboxTemplateImportBoundaryCoversProductionFiles(t *testing.T) {
 		}
 		found[filepath.Base(path)] = true
 	}
-	for _, want := range []string{"contracts.go", "decode.go", "normalize.go", "validation.go", "sanitize.go", "projection.go"} {
+	for _, want := range []string{"contracts.go", "decode.go", "normalize.go", "validation.go", "sanitize.go", "projection.go", "reference_intake.go"} {
 		if !found[want] {
 			t.Fatalf("sandbox template import-boundary guard files = %#v, want %s covered", paths, want)
 		}
@@ -151,7 +151,7 @@ func sandboxTemplateForbiddenImportMessage(fileName, importPath string) string {
 
 func sandboxTemplateAllowedImport(fileName, importPath string) bool {
 	switch importPath {
-	case "encoding/json", "fmt", "sort", "strings":
+	case "encoding/json", "fmt", "net/url", "sort", "strings":
 		return true
 	case "gopkg.in/yaml.v3":
 		return fileName == "decode.go"
