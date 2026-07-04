@@ -108,6 +108,7 @@ func TestContractConstants(t *testing.T) {
 		{name: "warning binding omitted", got: string(WarningBindingOmitted), want: "binding_omitted"},
 		{name: "warning activation skipped", got: string(WarningActivationSkipped), want: "activation_skipped"},
 		{name: "warning adapter unavailable", got: string(WarningAdapterUnavailable), want: "adapter_unavailable"},
+		{name: "warning compatibility mode", got: string(WarningCompatibilityMode), want: "compatibility_mode"},
 		{name: "warning legacy auth compatibility", got: string(WarningLegacyAuthCompatibility), want: "legacy_auth_compatibility"},
 		{name: "error missing required field", got: string(ErrorMissingRequiredField), want: "missing_required_field"},
 		{name: "error missing secret reference", got: string(ErrorMissingSecretReference), want: "missing_secret_reference"},

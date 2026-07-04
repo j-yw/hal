@@ -197,7 +197,7 @@ func sandboxManifestCredentialDeliveryActivationStatus(planStatus *sandbox.Sandb
 		plan.Status = credentialdelivery.StatusPlanned
 	}
 	status := credentialdelivery.StatusMetadataFromActivation(plan, activation)
-	return sandboxCredentialDeliveryStatusFromCredentialDelivery(status)
+	return sandboxCredentialDeliveryStatusFromCredentialDelivery(status, activation)
 }
 
 func sandboxCredentialDeliveryActivationResultPresent(activation credentialDeliveryActivationResult) bool {
@@ -224,18 +224,19 @@ func sandboxCredentialDeliveryPlanFromStatus(status *sandbox.SandboxCredentialDe
 	}
 }
 
-func sandboxCredentialDeliveryStatusFromCredentialDelivery(status credentialdelivery.StatusMetadata) *sandbox.SandboxCredentialDeliveryStatusMetadata {
+func sandboxCredentialDeliveryStatusFromCredentialDelivery(status credentialdelivery.StatusMetadata, activation credentialDeliveryActivationResult) *sandbox.SandboxCredentialDeliveryStatusMetadata {
 	sanitized := credentialdelivery.SanitizeStatusMetadata(status)
 	if sanitized.ID == "" {
 		return nil
 	}
-	out := sandbox.SanitizeSandboxCredentialDeliveryStatusMetadata(sandbox.SandboxCredentialDeliveryStatusMetadata{
+	out := sandbox.SanitizeSandboxCredentialDeliverySurfaceStatusMetadata(sandbox.SandboxCredentialDeliveryStatusMetadata{
 		ID:             sanitized.ID,
 		RequestID:      sanitized.RequestID,
 		PlanID:         sanitized.PlanID,
 		ActivationID:   sanitized.ActivationID,
 		RequestedModes: sandboxCredentialDeliveryModeStrings(sanitized.RequestedModes),
 		ActiveModes:    sandboxCredentialDeliveryModeStrings(sanitized.ActiveModes),
+		ActiveProofs:   sandboxCredentialDeliveryActiveProofSummaries(activation),
 		Status:         string(sanitized.Status),
 		ReasonCode:     string(sanitized.ReasonCode),
 		WarningCount:   sanitized.WarningCount,
@@ -245,6 +246,75 @@ func sandboxCredentialDeliveryStatusFromCredentialDelivery(status credentialdeli
 		return nil
 	}
 	return &out
+}
+
+func sandboxCredentialDeliveryActiveProofSummaries(activation credentialDeliveryActivationResult) []sandbox.SandboxCredentialDeliveryProofSummary {
+	sanitized := credentialdelivery.SanitizeActivationResultMetadata(activation)
+	if sanitized.ID == "" || sanitized.Status != credentialdelivery.StatusActive {
+		return nil
+	}
+	activeBindings := sandboxCredentialDeliveryActiveProofBindings(sanitized)
+	if len(activeBindings) == 0 {
+		return nil
+	}
+	proofs := make([]sandbox.SandboxCredentialDeliveryProofSummary, 0, len(sanitized.ProofRefs))
+	for _, proof := range sanitized.ProofRefs {
+		binding, ok := activeBindings[proof.ProofID]
+		if !ok || binding.DeliveryMode != proof.DeliveryMode {
+			continue
+		}
+		if proof.BindingID != "" && proof.BindingID != binding.BindingID {
+			continue
+		}
+		source := sandboxCredentialDeliveryProofSource(proof.DeliveryMode)
+		if source == "" {
+			continue
+		}
+		proofs = append(proofs, sandbox.SandboxCredentialDeliveryProofSummary{
+			ProofID:      proof.ProofID,
+			BindingID:    binding.BindingID,
+			DeliveryMode: string(proof.DeliveryMode),
+			Status:       string(credentialdelivery.StatusActive),
+			Source:       source,
+		})
+	}
+	return sandbox.SanitizeSandboxCredentialDeliverySurfaceStatusMetadata(sandbox.SandboxCredentialDeliveryStatusMetadata{
+		ID:           sanitized.ID,
+		PlanID:       sanitized.PlanID,
+		ActivationID: sanitized.ID,
+		Status:       string(sanitized.Status),
+		ActiveProofs: proofs,
+	}).ActiveProofs
+}
+
+func sandboxCredentialDeliveryActiveProofBindings(activation credentialdelivery.ActivationResult) map[string]credentialdelivery.BindingActivationResult {
+	if len(activation.Bindings) == 0 {
+		return nil
+	}
+	bindings := make(map[string]credentialdelivery.BindingActivationResult, len(activation.Bindings))
+	for _, binding := range activation.Bindings {
+		if binding.Status != credentialdelivery.StatusActive || binding.ProofRef == "" {
+			continue
+		}
+		if sandboxCredentialDeliveryProofSource(binding.DeliveryMode) == "" {
+			continue
+		}
+		bindings[binding.ProofRef] = binding
+	}
+	return bindings
+}
+
+func sandboxCredentialDeliveryProofSource(mode credentialdelivery.Mode) string {
+	switch mode {
+	case credentialdelivery.ModeHTTPProxy:
+		return "credential_proxy"
+	case credentialdelivery.ModeSSHAgent:
+		return "handoff"
+	case credentialdelivery.ModeFileTmpfs:
+		return "simulation"
+	default:
+		return ""
+	}
 }
 
 func sandboxCredentialDeliveryModesFromStrings(modes []string) []credentialdelivery.Mode {

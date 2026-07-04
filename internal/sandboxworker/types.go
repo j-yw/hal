@@ -634,7 +634,7 @@ func validateCredentialDeliveryMetadata(metadata *sandboxruntime.RuntimeCredenti
 	if metadata == nil {
 		return nil
 	}
-	if sandboxruntime.SanitizeRuntimeCredentialDeliveryMetadata(metadata) == nil {
+	if !sandboxruntime.RuntimeCredentialDeliveryMetadataValid(metadata) {
 		return fmt.Errorf("credentialDelivery is invalid")
 	}
 	return nil

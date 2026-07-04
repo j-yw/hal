@@ -348,6 +348,7 @@ func phase51TmpfsBrokerSession(t *testing.T) *halfactory.InMemorySecretBroker {
 			{Name: "PHASE51_TMPFS_THREE", Source: halfactory.RunSecretSourceEnv, Required: true, Value: "PHASE51_SECRET_VALUE"},
 		},
 		RequestedDeliveryModes: []string{halfactory.SecretBrokerDeliveryModeFileTmpfs},
+		ActiveDeliveryModes:    []string{halfactory.SecretBrokerDeliveryModeFileTmpfs},
 	})
 	if err != nil {
 		t.Fatalf("CreateSession() error = %v", err)

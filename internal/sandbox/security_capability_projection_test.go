@@ -321,22 +321,28 @@ func TestProjectSandboxPolicyProxyCredentialCapabilityReadinessInputMetadataOnly
 	}
 
 	output := EvaluateSandboxSecurityCapabilityReadiness(got)
-	if len(output.Results) != 5 {
-		t.Fatalf("readiness output result count = %d, want 5: %#v", len(output.Results), output.Results)
+	if len(output.Results) != 6 {
+		t.Fatalf("readiness output result count = %d, want 6: %#v", len(output.Results), output.Results)
 	}
-	assertSecurityCapabilityMetadataOnlyResult(t, output.Results[0],
+	assertSecurityCapabilityUnsupportedResult(t, output.Results[0],
+		SandboxSecurityCapabilityFamilySecretDelivery,
+		SandboxSecurityCapabilitySecretHTTPProxy,
+		SandboxSecretModeHTTPProxy,
+		SandboxSecurityCapabilityReasonCapabilityMissing,
+	)
+	assertSecurityCapabilityMetadataOnlyResult(t, output.Results[1],
 		SandboxSecurityCapabilityFamilyNetworkProxy,
 		SandboxSecurityCapabilityNetworkProxyEnforcement,
 		SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
 	)
-	assertSecurityCapabilityMetadataOnlyResult(t, output.Results[1],
+	assertSecurityCapabilityMetadataOnlyResult(t, output.Results[2],
 		SandboxSecurityCapabilityFamilyNetworkPolicy,
 		SandboxSecurityCapabilityNetworkDenyByDefault,
 		SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
 	)
-	for i, result := range output.Results[2:] {
+	for i, result := range output.Results[3:] {
 		if result.State == SandboxSecurityCapabilityReadinessReady {
-			t.Fatalf("credential proxy metadata-only result[%d] inferred ready: %#v", i+2, result)
+			t.Fatalf("credential proxy metadata-only result[%d] inferred ready: %#v", i+3, result)
 		}
 		assertSecurityCapabilityMetadataOnlyResult(t, result,
 			SandboxSecurityCapabilityFamilyCredentialProxy,

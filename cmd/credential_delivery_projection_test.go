@@ -85,6 +85,88 @@ func TestCredentialDeliveryActivationProjectionAcrossRunAutoAndFactory(t *testin
 	assertActiveCredentialDeliveryStatus(t, "factory", factoryMetadata.CredentialDelivery, sandbox.SandboxSecretModeHTTPProxy)
 }
 
+func TestCredentialDeliveryActivationProjectionRequiresActiveProofSummaries(t *testing.T) {
+	tests := []struct {
+		name string
+		mode credentialdelivery.Mode
+	}{
+		{name: "http proxy", mode: credentialdelivery.ModeHTTPProxy},
+		{name: "ssh agent", mode: credentialdelivery.ModeSSHAgent},
+		{name: "file tmpfs", mode: credentialdelivery.ModeFileTmpfs},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withoutProof := sandboxManifestCredentialDeliveryActivationStatus(
+				credentialDeliveryProjectionPlanStatus(tt.mode),
+				credentialDeliveryProjectionRawActivation(tt.mode, false),
+			)
+			if withoutProof == nil {
+				t.Fatal("credentialDelivery without proof = nil")
+			}
+			if withoutProof.Status == "active" {
+				t.Fatalf("status without proof = %#v, want non-active secure-default summary", withoutProof)
+			}
+			if len(withoutProof.ActiveModes) != 0 || len(withoutProof.ActiveProofs) != 0 {
+				t.Fatalf("without proof active metadata = modes %#v proofs %#v, want omitted", withoutProof.ActiveModes, withoutProof.ActiveProofs)
+			}
+
+			withProof := sandboxManifestCredentialDeliveryActivationStatus(
+				credentialDeliveryProjectionPlanStatus(tt.mode),
+				credentialDeliveryProjectionRawActivation(tt.mode, true),
+			)
+			assertActiveCredentialDeliveryStatus(t, tt.name, withProof, string(tt.mode))
+			if len(withProof.ActiveProofs) != 1 {
+				t.Fatalf("active proofs = %#v, want one sanitized proof summary", withProof.ActiveProofs)
+			}
+			proof := withProof.ActiveProofs[0]
+			if proof.ProofID != credentialDeliveryProjectionProofID(tt.mode) ||
+				proof.BindingID != credentialDeliveryProjectionBindingID(tt.mode) ||
+				proof.DeliveryMode != string(tt.mode) ||
+				proof.Status != "active" {
+				t.Fatalf("active proof = %#v, want safe matching proof summary", proof)
+			}
+
+			output := sandbox.EvaluateProjectedSandboxSecurityCapabilityReadiness(
+				sandbox.ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(sandbox.SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+					CredentialProxyBindings: []sandbox.SandboxCredentialProxyBindingMetadata{{
+						ID:           credentialDeliveryProjectionBindingID(tt.mode),
+						PlanID:       "credential-proxy-plan-" + strings.ReplaceAll(string(tt.mode), "_", "-"),
+						SecretID:     "env:GITHUB_TOKEN",
+						DeliveryMode: sandbox.SandboxCredentialProxyDeliveryMode(tt.mode),
+						Status:       sandbox.SandboxCredentialProxyStatusReady,
+					}},
+					CredentialDelivery: withProof,
+				}),
+			)
+			gate := sandbox.EvaluateSandboxSecurityCapabilityReadinessGateFromOutput(sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict, *output)
+			if gate.Outcome != sandbox.SandboxSecurityCapabilityReadinessGateOutcomeAllowed {
+				t.Fatalf("readiness gate = %#v, want active proof to satisfy strict credential readiness", gate)
+			}
+		})
+	}
+}
+
+func TestCredentialDeliveryCompatibilityModesRemainRequestedOnlyOnCommandSurfaces(t *testing.T) {
+	for _, mode := range []credentialdelivery.Mode{credentialdelivery.ModeEnv, credentialdelivery.ModeLegacyAuthSync} {
+		t.Run(string(mode), func(t *testing.T) {
+			status := sandboxManifestCredentialDeliveryActivationStatus(
+				credentialDeliveryProjectionPlanStatus(mode),
+				credentialDeliveryProjectionRawActivation(mode, true),
+			)
+			if status == nil {
+				t.Fatal("credentialDelivery = nil")
+			}
+			if status.Status == "active" || len(status.ActiveModes) != 0 || len(status.ActiveProofs) != 0 {
+				t.Fatalf("compatibility credentialDelivery = %#v, want requested/fallback metadata only", status)
+			}
+			if len(status.RequestedModes) != 1 || status.RequestedModes[0] != string(mode) {
+				t.Fatalf("requested modes = %#v, want explicit compatibility mode %q", status.RequestedModes, mode)
+			}
+		})
+	}
+}
+
 func TestCredentialDeliveryHTTPProxyProjectionRequiresProvenActivationResult(t *testing.T) {
 	activation := credentialDeliveryProjectionHTTPProxyActivationResult(t, false)
 	if activation.Status == credentialdelivery.StatusActive || len(activation.ActiveModes) != 0 {
@@ -454,6 +536,56 @@ func credentialDeliveryProjectionHTTPProxyActivationResult(t *testing.T, proven 
 	return result
 }
 
+func credentialDeliveryProjectionPlanStatus(mode credentialdelivery.Mode) *sandbox.SandboxCredentialDeliveryStatusMetadata {
+	safeMode := strings.ReplaceAll(string(mode), "_", "-")
+	return &sandbox.SandboxCredentialDeliveryStatusMetadata{
+		ID:             "credential-status-" + safeMode,
+		RequestID:      "credential-request-" + safeMode,
+		PlanID:         "credential-plan-" + safeMode,
+		RequestedModes: []string{string(mode)},
+		Status:         "planned",
+	}
+}
+
+func credentialDeliveryProjectionRawActivation(mode credentialdelivery.Mode, withProof bool) credentialdelivery.ActivationResult {
+	bindingID := credentialDeliveryProjectionBindingID(mode)
+	proofID := ""
+	var proofs []credentialdelivery.ActivationProofReference
+	if withProof {
+		proofID = credentialDeliveryProjectionProofID(mode)
+		proofs = []credentialdelivery.ActivationProofReference{{
+			ProofID:      proofID,
+			BindingID:    bindingID,
+			DeliveryMode: mode,
+		}}
+	}
+	safeMode := strings.ReplaceAll(string(mode), "_", "-")
+	return credentialdelivery.ActivationResult{
+		ID:             "credential-activation-" + safeMode,
+		PlanID:         "credential-plan-" + safeMode,
+		RequestedModes: []credentialdelivery.Mode{mode},
+		ActiveModes:    []credentialdelivery.Mode{mode},
+		Bindings: []credentialdelivery.BindingActivationResult{{
+			BindingID:    bindingID,
+			DeliveryMode: mode,
+			Status:       credentialdelivery.StatusActive,
+			ReasonCode:   credentialdelivery.ReasonRequested,
+			ProofRef:     proofID,
+		}},
+		ProofRefs:  proofs,
+		Status:     credentialdelivery.StatusActive,
+		ReasonCode: credentialdelivery.ReasonRequested,
+	}
+}
+
+func credentialDeliveryProjectionBindingID(mode credentialdelivery.Mode) string {
+	return "credential-binding-" + strings.ReplaceAll(string(mode), "_", "-")
+}
+
+func credentialDeliveryProjectionProofID(mode credentialdelivery.Mode) string {
+	return "credential-proof-" + strings.ReplaceAll(string(mode), "_", "-")
+}
+
 type credentialDeliveryProjectionActivationAdapter struct{}
 
 func (credentialDeliveryProjectionActivationAdapter) ActivateCredentialDelivery(input credentialdelivery.SanitizedActivationRequest) (credentialdelivery.ActivationResult, error) {
@@ -466,11 +598,18 @@ func (credentialDeliveryProjectionActivationAdapter) ActivateCredentialDelivery(
 		Status:         credentialdelivery.StatusActive,
 	}
 	for _, binding := range request.Bindings {
+		proofID := "credential-proof-" + binding.ID
 		result.Bindings = append(result.Bindings, credentialdelivery.BindingActivationResult{
 			BindingID:    binding.ID,
 			DeliveryMode: binding.DeliveryMode,
 			Status:       credentialdelivery.StatusActive,
 			ReasonCode:   credentialdelivery.ReasonRequested,
+			ProofRef:     proofID,
+		})
+		result.ProofRefs = append(result.ProofRefs, credentialdelivery.ActivationProofReference{
+			ProofID:      proofID,
+			BindingID:    binding.ID,
+			DeliveryMode: binding.DeliveryMode,
 		})
 	}
 	return result, nil

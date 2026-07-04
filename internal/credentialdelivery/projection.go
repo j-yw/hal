@@ -78,7 +78,7 @@ func secureActiveStatusModes(modes []Mode) []Mode {
 	active := newPlanModeSet()
 	for _, mode := range modes {
 		mode = normalizeMode(mode)
-		if mode == ModeLegacyAuthSync {
+		if mode == ModeEnv || mode == ModeLegacyAuthSync {
 			continue
 		}
 		active.add(mode)

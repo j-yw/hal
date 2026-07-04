@@ -43,10 +43,10 @@ func TestBuildDeliveryPlanReportsRequestedAndActiveModesForEveryDeliveryMode(t *
 			wantReason:  ReasonActivationUnavailable,
 		},
 		{
-			name:        "env waits for adapter activation",
+			name:        "env stays compatibility only",
 			mode:        ModeEnv,
-			wantWarning: WarningAdapterUnavailable,
-			wantReason:  ReasonActivationUnavailable,
+			wantWarning: WarningCompatibilityMode,
+			wantReason:  ReasonCompatibilityMode,
 		},
 		{
 			name:        "legacy auth sync stays compatibility only",
