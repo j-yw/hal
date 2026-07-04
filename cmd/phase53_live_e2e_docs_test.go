@@ -95,6 +95,72 @@ func TestPhase53LiveE2EDocumentedCommandIsNarrowAndRedactionSafe(t *testing.T) {
 	phase53AssertLiveE2ECommandRedactionSafe(t, command)
 }
 
+func TestPhase53LiveE2EDocumentationListsRequiredOptInMarkers(t *testing.T) {
+	doc := readPhase53LiveE2EDoc(t)
+
+	for _, buildTag := range []string{
+		"`microvm_e2e_live`",
+		"`firecracker_live`",
+		"`network_enforcement_live`",
+		"`credential_delivery_live`",
+	} {
+		if !strings.Contains(doc, buildTag) {
+			t.Fatalf("phase 53 live E2E documentation missing required build tag %s", buildTag)
+		}
+	}
+
+	for _, envVar := range []string{
+		"`HAL_FIRECRACKER_LIVE`",
+		"`HAL_FIRECRACKER_LIVE_FIRECRACKER`",
+		"`HAL_FIRECRACKER_LIVE_KERNEL`",
+		"`HAL_FIRECRACKER_LIVE_ROOTFS`",
+		"`HAL_NETWORK_ENFORCEMENT_LIVE`",
+		"`HAL_NETWORK_ENFORCEMENT_LIVE_PROXY`",
+		"`HAL_NETWORK_ENFORCEMENT_LIVE_FIREWALL`",
+		"`HAL_CREDENTIAL_DELIVERY_LIVE`",
+		"`HAL_CREDENTIAL_DELIVERY_LIVE_ENV`",
+		"`HAL_TEMPLATE_TRUST_LIVE`",
+	} {
+		if !strings.Contains(doc, envVar) {
+			t.Fatalf("phase 53 live E2E documentation missing required env marker %s", envVar)
+		}
+	}
+
+	for _, want := range []string{
+		"The marker list is intentionally names-only.",
+		"example secret values",
+		"credential material",
+		"absolute host paths",
+		"proxy endpoints",
+		"firewall rules",
+		"Firecracker command-line",
+	} {
+		if !strings.Contains(doc, want) {
+			t.Fatalf("phase 53 live E2E documentation missing redaction guidance %q", want)
+		}
+	}
+}
+
+func TestPhase53LiveE2EDocumentationExplainsSkipAndValidationBoundaries(t *testing.T) {
+	doc := readPhase53LiveE2EDoc(t)
+
+	for _, want := range []string{
+		"Missing build tags, marker variables, Firecracker launch assets, KVM host",
+		"capability, network proxy readiness, firewall readiness, credential delivery",
+		"activation, credential mode selection, env-delivery marker, or template trust",
+		"metadata produce sanitized skips before live execution starts.",
+		"`go test ./...` remains fake-only.",
+		"firewall, credential delivery, template trust, live build tags, or live",
+		"environment markers.",
+		"This live E2E command is an explicit operator diagnostic for prepared live",
+		"hosts. It must not be used as post-run PRD validation.",
+	} {
+		if !strings.Contains(doc, want) {
+			t.Fatalf("phase 53 live E2E documentation missing skip or validation boundary %q", want)
+		}
+	}
+}
+
 func readPhase53LiveE2EDoc(t *testing.T) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "docs", "design", phase53LiveE2EDocPath))
