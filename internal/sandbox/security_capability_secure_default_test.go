@@ -36,6 +36,115 @@ const (
 	secureDefaultCapabilityTemplateLockDigest SandboxSecurityCapabilityName = "template_lock_digest"
 )
 
+func TestUS001SecureDefaultDiagnosticSummariesExposeSafeReadinessDecisions(t *testing.T) {
+	tests := []struct {
+		name             string
+		mode             SandboxSecurityCapabilityReadinessGatePolicyMode
+		output           SandboxSecurityCapabilityReadinessOutput
+		wantStatus       SandboxSecurityCapabilityDiagnosticSummaryStatus
+		wantSeverity     SandboxSecurityCapabilityDiagnosticSeverity
+		wantWouldBlock   bool
+		wantDecision     SandboxSecurityCapabilityReadinessGateDecision
+		wantReasonCounts map[SandboxSecurityCapabilityReasonCode]int
+	}{
+		{
+			name:           "missing proof is actionable",
+			mode:           SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+			output:         secureDefaultUS001MissingProofReadinessOutput(),
+			wantStatus:     SandboxSecurityCapabilityDiagnosticSummaryStatusUnknown,
+			wantSeverity:   SandboxSecurityCapabilityDiagnosticSeverityWarning,
+			wantWouldBlock: true,
+			wantDecision: SandboxSecurityCapabilityReadinessGateDecision{
+				Code:       SandboxSecurityCapabilityReadinessGateCodeBlocked,
+				Outcome:    SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+				PolicyMode: SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+				Reason:     SandboxSecurityCapabilityReadinessGateReasonReadinessMissing,
+				Counts:     &SandboxSecurityCapabilityReadinessGateCounts{Total: 1, Missing: 1, StrictBlocking: 1},
+			},
+			wantReasonCounts: map[SandboxSecurityCapabilityReasonCode]int{
+				SandboxSecurityCapabilityReasonReadinessMissing: 1,
+			},
+		},
+		{
+			name:           "compatibility reports advisory instead of claiming live proof",
+			mode:           SandboxSecurityCapabilityReadinessGatePolicyModeCompatibility,
+			output:         secureDefaultUS001MetadataOnlyReadinessOutput(),
+			wantStatus:     SandboxSecurityCapabilityDiagnosticSummaryStatusAdvisory,
+			wantSeverity:   SandboxSecurityCapabilityDiagnosticSeverityWarning,
+			wantWouldBlock: true,
+			wantDecision: SandboxSecurityCapabilityReadinessGateDecision{
+				Code:       SandboxSecurityCapabilityReadinessGateCodeAdvisory,
+				Outcome:    SandboxSecurityCapabilityReadinessGateOutcomeAdvisory,
+				PolicyMode: SandboxSecurityCapabilityReadinessGatePolicyModeCompatibility,
+				Reason:     SandboxSecurityCapabilityReadinessGateReasonPolicyCompatibility,
+				Counts:     &SandboxSecurityCapabilityReadinessGateCounts{Total: 1, Advisory: 1, MetadataOnly: 1, StrictBlocking: 1},
+			},
+			wantReasonCounts: map[SandboxSecurityCapabilityReasonCode]int{
+				SandboxSecurityCapabilityReasonNetworkEnforcementPlannedOnly: 1,
+			},
+		},
+		{
+			name:           "strict blocks incomplete proof",
+			mode:           SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+			output:         secureDefaultUS001BlockedReadinessOutput(),
+			wantStatus:     SandboxSecurityCapabilityDiagnosticSummaryStatusBlocked,
+			wantSeverity:   SandboxSecurityCapabilityDiagnosticSeverityWarning,
+			wantWouldBlock: true,
+			wantDecision: SandboxSecurityCapabilityReadinessGateDecision{
+				Code:       SandboxSecurityCapabilityReadinessGateCodeBlocked,
+				Outcome:    SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+				PolicyMode: SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+				Reason:     SandboxSecurityCapabilityReadinessGateReasonCode(SandboxSecurityCapabilityReasonWorkspaceDirectHostWorktree),
+				Counts:     &SandboxSecurityCapabilityReadinessGateCounts{Total: 1, Blocked: 1, StrictBlocking: 1},
+			},
+			wantReasonCounts: map[SandboxSecurityCapabilityReasonCode]int{
+				SandboxSecurityCapabilityReasonWorkspaceDirectHostWorktree: 1,
+			},
+		},
+		{
+			name:           "strict allows proof-complete readiness",
+			mode:           SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+			output:         secureDefaultUS001ProofCompleteReadinessOutput(),
+			wantStatus:     SandboxSecurityCapabilityDiagnosticSummaryStatusReady,
+			wantSeverity:   SandboxSecurityCapabilityDiagnosticSeverityInfo,
+			wantWouldBlock: false,
+			wantDecision: SandboxSecurityCapabilityReadinessGateDecision{
+				Code:       SandboxSecurityCapabilityReadinessGateCodeAllowed,
+				Outcome:    SandboxSecurityCapabilityReadinessGateOutcomeAllowed,
+				PolicyMode: SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+				Reason:     SandboxSecurityCapabilityReadinessGateReasonReadinessReady,
+				Counts:     &SandboxSecurityCapabilityReadinessGateCounts{Total: 5, Ready: 5},
+			},
+			wantReasonCounts: map[SandboxSecurityCapabilityReasonCode]int{
+				SandboxSecurityCapabilityReasonMicroVMReadinessConfirmed:     1,
+				SandboxSecurityCapabilityReasonWorkspaceIsolationConfirmed:   1,
+				SandboxSecurityCapabilityReasonNetworkEnforcementConfirmed:   1,
+				SandboxSecurityCapabilityReasonCredentialActivationConfirmed: 1,
+				SandboxSecurityCapabilityReasonTemplateLockDigestConfirmed:   1,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			diagnostics := DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(tt.output)
+			decision := EvaluateSandboxSecurityCapabilityReadinessGate(tt.mode, diagnostics)
+
+			secureDefaultAssertUS001Diagnostics(t, diagnostics, tt.wantStatus, tt.wantSeverity, tt.wantWouldBlock, tt.wantDecision.Counts.Total)
+			secureDefaultAssertGateDecision(t, decision, tt.wantDecision)
+			secureDefaultAssertReasonCodeCounts(t, decision, tt.wantReasonCounts)
+			secureDefaultAssertUS001DiagnosticSurface(t, diagnostics, decision)
+			assertSecurityCapabilityJSONExcludes(t, struct {
+				CapabilityReadinessDiagnostics SandboxSecurityCapabilityReadinessDiagnosticSummary `json:"capabilityReadinessDiagnostics"`
+				SecurityReadinessGate          SandboxSecurityCapabilityReadinessGateDecision      `json:"securityReadinessGate"`
+			}{
+				CapabilityReadinessDiagnostics: diagnostics,
+				SecurityReadinessGate:          decision,
+			}, secureDefaultUS001UnsafeValues()...)
+		})
+	}
+}
+
 func TestSecureDefaultReadinessStrictBlocksMissingAndIncompleteProofs(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -377,6 +486,211 @@ func TestSecureDefaultReadinessDiagnosticsAndDecisionsAreRedactionSafe(t *testin
 	assertSecurityCapabilityJSONExcludes(t, diagnostics, rawValues...)
 	assertSecurityCapabilityJSONExcludes(t, decision, rawValues...)
 	assertSecurityCapabilityReadinessGateDecisionContainsOnlySafeFields(t, decision)
+}
+
+func secureDefaultAssertUS001Diagnostics(
+	t *testing.T,
+	got SandboxSecurityCapabilityReadinessDiagnosticSummary,
+	status SandboxSecurityCapabilityDiagnosticSummaryStatus,
+	severity SandboxSecurityCapabilityDiagnosticSeverity,
+	wouldBlock bool,
+	wantTotal int,
+) {
+	t.Helper()
+
+	if got.Status != status {
+		t.Fatalf("capabilityReadinessDiagnostics.status = %q, want %q", got.Status, status)
+	}
+	if got.Total != wantTotal {
+		t.Fatalf("capabilityReadinessDiagnostics.total = %d, want %d", got.Total, wantTotal)
+	}
+	if got.HighestSeverity != severity {
+		t.Fatalf("capabilityReadinessDiagnostics.highestSeverity = %q, want %q", got.HighestSeverity, severity)
+	}
+	if !got.AdvisoryOnly {
+		t.Fatalf("capabilityReadinessDiagnostics.advisoryOnly = false, want true")
+	}
+	if got.WouldBlockStrictGate != wouldBlock {
+		t.Fatalf("capabilityReadinessDiagnostics.wouldBlockStrictGate = %t, want %t", got.WouldBlockStrictGate, wouldBlock)
+	}
+	if len(got.Items) != wantTotal {
+		t.Fatalf("capabilityReadinessDiagnostics.items = %d entries, want %d: %#v", len(got.Items), wantTotal, got.Items)
+	}
+	for i, item := range got.Items {
+		if item.Code == "" || item.Severity == "" || item.Classification == "" || item.ReasonCode == "" {
+			t.Fatalf("diagnostic item[%d] missing actionable safe labels: %#v", i, item)
+		}
+		assertSecurityCapabilitySafeEnumValue(t, string(item.Code))
+		assertSecurityCapabilitySafeEnumValue(t, string(item.Severity))
+		assertSecurityCapabilitySafeEnumValue(t, string(item.Classification))
+		assertSecurityCapabilitySafeEnumValue(t, string(item.ReasonCode))
+	}
+}
+
+func secureDefaultAssertUS001DiagnosticSurface(t *testing.T, diagnostics SandboxSecurityCapabilityReadinessDiagnosticSummary, decision SandboxSecurityCapabilityReadinessGateDecision) {
+	t.Helper()
+
+	diagnosticsJSON := secureDefaultMustMarshalObject(t, diagnostics)
+	for _, field := range []string{"status", "total", "highestSeverity", "advisoryOnly", "wouldBlockStrictGate", "items"} {
+		if _, ok := diagnosticsJSON[field]; !ok {
+			t.Fatalf("capabilityReadinessDiagnostics missing field %q: %#v", field, diagnosticsJSON)
+		}
+	}
+	items, ok := diagnosticsJSON["items"].([]any)
+	if !ok || len(items) == 0 {
+		t.Fatalf("capabilityReadinessDiagnostics.items = %#v, want non-empty array", diagnosticsJSON["items"])
+	}
+	for i, rawItem := range items {
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			t.Fatalf("capabilityReadinessDiagnostics.items[%d] = %#v, want object", i, rawItem)
+		}
+		for _, field := range []string{"code", "severity", "classification", "advisoryOnly", "wouldBlockStrictGate", "reasonCode"} {
+			if _, ok := item[field]; !ok {
+				t.Fatalf("capabilityReadinessDiagnostics.items[%d] missing field %q: %#v", i, field, item)
+			}
+		}
+	}
+
+	gateJSON := secureDefaultMustMarshalObject(t, decision)
+	for _, field := range []string{"code", "outcome", "policyMode", "reason", "counts"} {
+		if _, ok := gateJSON[field]; !ok {
+			t.Fatalf("securityReadinessGate missing field %q: %#v", field, gateJSON)
+		}
+	}
+	counts, ok := gateJSON["counts"].(map[string]any)
+	if !ok {
+		t.Fatalf("securityReadinessGate.counts = %#v, want object", gateJSON["counts"])
+	}
+	if _, ok := counts["total"]; !ok {
+		t.Fatalf("securityReadinessGate.counts missing aggregate total: %#v", counts)
+	}
+	if _, ok := counts["reasonCodeCounts"]; !ok {
+		t.Fatalf("securityReadinessGate.counts missing reasonCodeCounts: %#v", counts)
+	}
+}
+
+func secureDefaultUS001MissingProofReadinessOutput() SandboxSecurityCapabilityReadinessOutput {
+	rawValues := secureDefaultUS001UnsafeValues()
+	return SandboxSecurityCapabilityReadinessOutput{Results: []SandboxSecurityCapabilityReadinessResult{
+		{
+			State:      SandboxSecurityCapabilityReadinessReady,
+			ReasonCode: SandboxSecurityCapabilityReasonCode(rawValues[7]),
+			Requested: &SandboxSecurityCapabilityMetadata{
+				ID:         rawValues[0],
+				Family:     SandboxSecurityCapabilityFamily(rawValues[1]),
+				Capability: SandboxSecurityCapabilityName(rawValues[2]),
+				Source:     SandboxSecurityCapabilitySourceRequested,
+			},
+			Ready: &SandboxSecurityCapabilityMetadata{
+				ID:         rawValues[6],
+				Family:     SandboxSecurityCapabilityFamily(rawValues[1]),
+				Capability: SandboxSecurityCapabilityName(rawValues[2]),
+				Source:     SandboxSecurityCapabilitySourceRuntime,
+				Status:     SandboxSecurityCapabilityReadinessReady,
+				ReasonCode: SandboxSecurityCapabilityReasonCode(rawValues[3]),
+			},
+		},
+	}}
+}
+
+func secureDefaultUS001MetadataOnlyReadinessOutput() SandboxSecurityCapabilityReadinessOutput {
+	rawValues := secureDefaultUS001UnsafeValues()
+	return SandboxSecurityCapabilityReadinessOutput{Results: []SandboxSecurityCapabilityReadinessResult{
+		{
+			State:      SandboxSecurityCapabilityReadinessMetadataOnly,
+			ReasonCode: SandboxSecurityCapabilityReasonNetworkEnforcementPlannedOnly,
+			Metadata: &SandboxSecurityCapabilityMetadata{
+				ID:         rawValues[0],
+				Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+				Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+				Source:     SandboxSecurityCapabilitySourceMetadata,
+				Status:     SandboxSecurityCapabilityReadinessMetadataOnly,
+				ReasonCode: SandboxSecurityCapabilityReasonNetworkEnforcementPlannedOnly,
+				WarningCodes: []SandboxSecurityCapabilityWarningCode{
+					SandboxSecurityCapabilityWarningCode(rawValues[7]),
+				},
+			},
+		},
+	}}
+}
+
+func secureDefaultUS001BlockedReadinessOutput() SandboxSecurityCapabilityReadinessOutput {
+	rawValues := secureDefaultUS001UnsafeValues()
+	return SandboxSecurityCapabilityReadinessOutput{Results: []SandboxSecurityCapabilityReadinessResult{
+		{
+			State:      SandboxSecurityCapabilityReadinessBlocked,
+			ReasonCode: SandboxSecurityCapabilityReasonWorkspaceDirectHostWorktree,
+			Requested: &SandboxSecurityCapabilityMetadata{
+				ID:         rawValues[4],
+				Family:     SandboxSecurityCapabilityFamilyWorkspace,
+				Capability: SandboxSecurityCapabilityDirectHostWorktree,
+				Source:     SandboxSecurityCapabilitySourceRequested,
+				Status:     SandboxSecurityCapabilityReadinessBlocked,
+				ReasonCode: SandboxSecurityCapabilityReasonWorkspaceDirectHostWorktree,
+			},
+			Ready: &SandboxSecurityCapabilityMetadata{
+				ID:         rawValues[6],
+				Family:     SandboxSecurityCapabilityFamilyWorkspace,
+				Capability: SandboxSecurityCapabilityDirectHostWorktree,
+				Source:     SandboxSecurityCapabilitySourceRuntime,
+				Status:     SandboxSecurityCapabilityReadinessBlocked,
+				ReasonCode: SandboxSecurityCapabilityReasonWorkspaceDirectHostWorktree,
+				WarningCodes: []SandboxSecurityCapabilityWarningCode{
+					SandboxSecurityCapabilityWarningCode(rawValues[5]),
+				},
+			},
+		},
+	}}
+}
+
+func secureDefaultUS001ProofCompleteReadinessOutput() SandboxSecurityCapabilityReadinessOutput {
+	return SandboxSecurityCapabilityReadinessOutput{Results: []SandboxSecurityCapabilityReadinessResult{
+		secureDefaultUS001ReadyReadinessResult(SandboxSecurityCapabilityFamilyIsolation, SandboxSecurityCapabilityIsolationMicroVM, SandboxSecurityCapabilityReasonMicroVMReadinessConfirmed),
+		secureDefaultUS001ReadyReadinessResult(SandboxSecurityCapabilityFamilyWorkspace, SandboxSecurityCapabilityIsolatedWorkspace, SandboxSecurityCapabilityReasonWorkspaceIsolationConfirmed),
+		secureDefaultUS001ReadyReadinessResult(SandboxSecurityCapabilityFamilyNetworkPolicy, SandboxSecurityCapabilityNetworkDenyByDefault, SandboxSecurityCapabilityReasonNetworkEnforcementConfirmed),
+		secureDefaultUS001ReadyReadinessResult(SandboxSecurityCapabilityFamilySecretDelivery, SandboxSecurityCapabilitySecretHTTPProxy, SandboxSecurityCapabilityReasonCredentialActivationConfirmed),
+		secureDefaultUS001ReadyReadinessResult(SandboxSecurityCapabilityFamilyTemplate, SandboxSecurityCapabilityTemplateLockDigest, SandboxSecurityCapabilityReasonTemplateLockDigestConfirmed),
+	}}
+}
+
+func secureDefaultUS001ReadyReadinessResult(family SandboxSecurityCapabilityFamily, capability SandboxSecurityCapabilityName, reason SandboxSecurityCapabilityReasonCode) SandboxSecurityCapabilityReadinessResult {
+	rawValues := secureDefaultUS001UnsafeValues()
+	return SandboxSecurityCapabilityReadinessResult{
+		State:      SandboxSecurityCapabilityReadinessReady,
+		ReasonCode: reason,
+		Requested: &SandboxSecurityCapabilityMetadata{
+			ID:         rawValues[8],
+			Family:     family,
+			Capability: capability,
+			Source:     SandboxSecurityCapabilitySourceRequested,
+		},
+		Ready: &SandboxSecurityCapabilityMetadata{
+			ID:         rawValues[5],
+			Family:     family,
+			Capability: capability,
+			Source:     SandboxSecurityCapabilitySourceRuntime,
+			Status:     SandboxSecurityCapabilityReadinessReady,
+			ReasonCode: reason,
+			WarningCodes: []SandboxSecurityCapabilityWarningCode{
+				SandboxSecurityCapabilityWarningCode(rawValues[3]),
+			},
+		},
+	}
+}
+
+func secureDefaultUS001UnsafeValues() []string {
+	return []string{
+		"https://worker.internal.invalid:8443/control?token=us001-token",
+		"worker.internal.invalid",
+		"credential_value=us001-credential",
+		"GITHUB_TOKEN=us001-secret",
+		"/Users/alice/private/us001-worktree",
+		"/private/var/run/us001-firewall.sock",
+		"/private/var/run/us001-proxy.sock",
+		"Authorization: Bearer us001-header-token",
+		"ghcr.io/acme/private-template:latest?token=us001-template-token",
+	}
 }
 
 func secureDefaultReadinessDiagnostics(items ...SandboxSecurityCapabilityReadinessDiagnosticItem) SandboxSecurityCapabilityReadinessDiagnosticSummary {

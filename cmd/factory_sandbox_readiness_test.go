@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"reflect"
 	"strings"
@@ -572,6 +573,175 @@ func TestRunFactorySandboxExecutorAdvisoryReadinessGateRecordsWithoutBlocking(t 
 	)
 }
 
+func TestUS005FactoryStrictDefaultSecureDefaultBlocksBeforeSecretsAndSandboxSetup(t *testing.T) {
+	now := time.Date(2026, 7, 4, 1, 5, 0, 0, time.UTC)
+	projectDir := t.TempDir()
+	store := factory.NewStore(t.TempDir())
+	policy := factory.DefaultFactoryPolicy()
+	policy.SecurityReadinessGatePolicyMode = sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict
+	record := us005FactoryRunRecord("run-us005-factory-strict-default", projectDir, now, policy)
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error = %v", err)
+	}
+
+	lookupCalled := false
+	result, err := executeFactoryRun(context.Background(), projectDir, factoryRunRequest{
+		Sandbox:    true,
+		BaseBranch: "main",
+		Secrets: []factory.RunSecretInput{{
+			Name:     "US005_FACTORY_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+		}},
+	}, io.Discard, store, record, factoryRunDeps{
+		now: func() time.Time { return now },
+		lookupEnv: func(name string) (string, bool) {
+			lookupCalled = true
+			t.Fatalf("lookupEnv(%q) should not run before strict secure-default block", name)
+			return "", false
+		},
+		runSandbox: func(context.Context, factorySandboxExecutorRequest) error {
+			t.Fatal("sandbox executor should not run after strict secure-default default gate blocks")
+			return nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			t.Fatal("provider resolution should not run after strict secure-default default gate blocks")
+			return nil, nil
+		},
+		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+			t.Fatal("provider exec should not run after strict secure-default default gate blocks")
+			return nil
+		},
+		runProviderExecWithEnv: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error {
+			t.Fatal("provider exec with env should not run after strict secure-default default gate blocks")
+			return nil
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+	}, policy, "codex")
+	if err == nil {
+		t.Fatal("executeFactoryRun() error = nil, want strict secure-default block")
+	}
+	if lookupCalled {
+		t.Fatal("secret lookup ran before strict secure-default block")
+	}
+	if result.Record.RunID != record.RunID {
+		t.Fatalf("result record runID = %q, want %q", result.Record.RunID, record.RunID)
+	}
+	if !strings.Contains(err.Error(), "factory security readiness gate blocked") ||
+		!strings.Contains(err.Error(), string(sandbox.SandboxSecurityCapabilityReadinessGateReasonReadinessMissing)) {
+		t.Fatalf("strict secure-default error = %q, want safe readiness-missing gate error", err.Error())
+	}
+
+	storedRun, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error = %v", err)
+	}
+	if storedRun.Status != factory.RunStatusFailed || storedRun.CurrentStep != "prepare_inputs" {
+		t.Fatalf("stored run status/step = %s/%s, want failed/prepare_inputs", storedRun.Status, storedRun.CurrentStep)
+	}
+	if storedRun.Sandbox == nil || storedRun.Sandbox.Security == nil || storedRun.Sandbox.Security.CapabilityReadinessDiagnostics == nil {
+		t.Fatalf("stored sandbox security = %#v, want readiness diagnostics", storedRun.Sandbox)
+	}
+	expected := sandbox.EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(
+		sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+		storedRun.Sandbox.Security.CapabilityReadinessDiagnostics,
+	)
+	gate := us007RequireSecurityReadinessGate(t, "US-005 strict default factory record", storedRun.Sandbox.Security)
+	us007AssertSecurityReadinessGateDecision(t, "US-005 strict default factory record", gate, expected)
+	us007AssertSecureDefaultDecisionSafe(t, "US-005 strict default factory record", storedRun.Sandbox.Security, "US005_FACTORY_TOKEN")
+
+	event := us007RequireFactoryReadinessGateEvent(t, store, record.RunID)
+	us007AssertFactoryPolicyEventMatchesDecision(t, event, expected)
+	us007AssertSecureDefaultDecisionSafe(t, "US-005 strict default policy event", event.Metadata, "US005_FACTORY_TOKEN")
+
+	var statusOut bytes.Buffer
+	if err := runFactoryStatusWithDeps(&statusOut, record.RunID, true, factoryStatusDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	}); err != nil {
+		t.Fatalf("runFactoryStatusWithDeps() error = %v", err)
+	}
+	var statusResp FactoryStatusResponse
+	if err := json.Unmarshal(statusOut.Bytes(), &statusResp); err != nil {
+		t.Fatalf("json.Unmarshal(factory status) error = %v\nraw: %s", err, statusOut.String())
+	}
+	if statusResp.Run.Sandbox == nil || statusResp.Run.Sandbox.Security == nil {
+		t.Fatalf("factory status sandbox security = %#v", statusResp.Run.Sandbox)
+	}
+	statusGate := us007RequireSecurityReadinessGate(t, "US-005 strict default factory status", statusResp.Run.Sandbox.Security)
+	us007AssertSecurityReadinessGateDecision(t, "US-005 strict default factory status", statusGate, expected)
+	us007AssertSecureDefaultDecisionSafe(t, "US-005 strict default factory status", statusResp.Run.Sandbox.Security, "US005_FACTORY_TOKEN")
+}
+
+func TestUS005FactoryPolicySecurityReadinessModesPropagateToSandboxExecutor(t *testing.T) {
+	stopAfterSandboxRequest := errors.New("stop after sandbox request")
+	tests := []struct {
+		name        string
+		mode        sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode
+		wantMode    sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode
+		runtimeFlag string
+	}{
+		{
+			name:     "unset",
+			wantMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeOff,
+		},
+		{
+			name:     "advisory",
+			mode:     sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeAdvisory,
+			wantMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeAdvisory,
+		},
+		{
+			name:        "strict explicit runtime",
+			mode:        sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+			wantMode:    sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+			runtimeFlag: sandbox.SandboxRuntimeDriverRootlessPodman,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 7, 4, 1, 15, 0, 0, time.UTC)
+			projectDir := t.TempDir()
+			store := factory.NewStore(t.TempDir())
+			policy := factory.DefaultFactoryPolicy()
+			policy.SecurityReadinessGatePolicyMode = tt.mode
+			record := us005FactoryRunRecord("run-us005-factory-"+strings.ReplaceAll(tt.name, " ", "-"), projectDir, now, policy)
+			if err := store.SaveRun(&record); err != nil {
+				t.Fatalf("SaveRun() error = %v", err)
+			}
+
+			var gotMode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode
+			var sandboxCalled bool
+			_, err := executeFactoryRun(context.Background(), projectDir, factoryRunRequest{
+				Sandbox:        true,
+				BaseBranch:     "main",
+				SandboxRuntime: tt.runtimeFlag,
+			}, io.Discard, store, record, factoryRunDeps{
+				now: func() time.Time { return now },
+				lookupEnv: func(string) (string, bool) {
+					return "", false
+				},
+				runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+					sandboxCalled = true
+					gotMode = req.SecurityReadinessGateMode
+					return stopAfterSandboxRequest
+				},
+				statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+				doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+			}, policy, "codex")
+			if err == nil || !strings.Contains(err.Error(), stopAfterSandboxRequest.Error()) {
+				t.Fatalf("executeFactoryRun() error = %v, want sandbox sentinel", err)
+			}
+			if !sandboxCalled {
+				t.Fatal("sandbox executor was not called")
+			}
+			if gotMode != tt.wantMode {
+				t.Fatalf("SecurityReadinessGateMode = %q, want %q", gotMode, tt.wantMode)
+			}
+		})
+	}
+}
+
 func requireFactorySandboxReadinessGatePolicyEvent(t *testing.T, events []factory.EventRecord, wantMode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode, wantDecision, wantOutcome string, wantCode sandbox.SandboxSecurityCapabilityReadinessGateCode) factory.EventRecord {
 	t.Helper()
 	for _, event := range events {
@@ -610,6 +780,22 @@ func requireFactorySandboxReadinessGatePolicyEvent(t *testing.T, events []factor
 	}
 	t.Fatalf("readiness gate policy event not found in %#v", events)
 	return factory.EventRecord{}
+}
+
+func us005FactoryRunRecord(runID, projectDir string, now time.Time, policy factory.FactoryPolicy) factory.RunRecord {
+	return factory.RunRecord{
+		RunID:        runID,
+		Status:       factory.RunStatusRunning,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		RepoPath:     projectDir,
+		RepoRemote:   "git@github.com:example/repo.git",
+		BranchName:   "hal/us005-factory-secure-default",
+		BaseBranch:   "main",
+		CurrentStep:  "run",
+		Policy:       &policy,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
 }
 
 func factorySandboxReadinessDiagnosticsFixture(t *testing.T) (phase26CredentialProxyUnsafeValueFixture, factorySandboxExecutorRequest, *factory.SandboxMetadata, *sandbox.SandboxState) {

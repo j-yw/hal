@@ -49,6 +49,29 @@ func enforceFactorySandboxReadinessGate(store factory.Store, deps factorySandbox
 	return factorySandboxRecordedError("prepare factory sandbox inputs", nil, blockErr, redactor)
 }
 
+func enforceFactoryRunStrictDefaultSandboxReadinessGate(store factory.Store, deps factoryRunDeps, record *factory.RunRecord, redactor factory.RunSecretRedactor) error {
+	if record == nil || strings.TrimSpace(record.RunID) == "" {
+		return nil
+	}
+	if record.Sandbox == nil {
+		record.Sandbox = &factory.SandboxMetadata{}
+	}
+	if record.Sandbox.Security == nil {
+		record.Sandbox.Security = &factory.SandboxSecurityMetadata{}
+	}
+	if record.Sandbox.Security.CapabilityReadinessDiagnostics == nil {
+		diagnostics := sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(sandbox.SandboxSecurityCapabilityReadinessOutput{})
+		record.Sandbox.Security.CapabilityReadinessDiagnostics = &diagnostics
+	}
+	return enforceFactorySandboxReadinessGate(store, factorySandboxExecutorDeps{
+		now:         deps.now,
+		saveRun:     saveFactorySandboxRunRecord,
+		appendEvent: appendFactorySandboxTimelineEvent,
+	}, factorySandboxExecutorRequest{
+		SecurityReadinessGateMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+	}, record, redactor)
+}
+
 func factorySandboxReadinessGateDiagnostics(record *factory.RunRecord) *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary {
 	if record == nil || record.Sandbox == nil || record.Sandbox.Security == nil {
 		return nil

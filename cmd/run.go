@@ -14,6 +14,7 @@ import (
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/loop"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
+	"github.com/jywlabs/hal/internal/status"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
@@ -514,9 +515,11 @@ func showRunSummary(out io.Writer, result loop.Result) {
 
 	// Show last story worked on
 	if result.LastStoryID != "" {
-		storyLabel := engine.StyleInfo.Render(result.LastStoryID)
-		if result.LastStoryTitle != "" {
-			storyLabel += " — " + result.LastStoryTitle
+		storyID := sanitizeRunPublicString(result.LastStoryID)
+		storyTitle := sanitizeRunPublicString(result.LastStoryTitle)
+		storyLabel := engine.StyleInfo.Render(storyID)
+		if storyTitle != "" {
+			storyLabel += " — " + storyTitle
 		}
 		fmt.Fprintf(out, "%s %s\n", engine.StyleBold.Render("Last story:"), storyLabel)
 	}
@@ -543,6 +546,7 @@ func formatRunDuration(d time.Duration) string {
 }
 
 func outputRunJSONError(out io.Writer, errMsg string) error {
+	errMsg = sanitizeRunPublicString(errMsg)
 	jr := RunResult{
 		ContractVersion: 1,
 		OK:              false,
@@ -558,9 +562,9 @@ func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun boo
 	jr := RunResult{
 		ContractVersion: 1,
 		OK:              result.Success,
-		Engine:          engineName,
+		Engine:          sanitizeRunPublicString(engineName),
 		Iterations:      result.Iterations,
-		StoryID:         storyID,
+		StoryID:         sanitizeRunPublicString(storyID),
 		DryRun:          dryRun,
 		Complete:        result.Complete,
 	}
@@ -568,7 +572,7 @@ func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun boo
 		jr.Duration = result.Duration.Round(time.Second).String()
 	}
 	if result.LastStoryID != "" {
-		jr.LastStoryID = result.LastStoryID
+		jr.LastStoryID = sanitizeRunPublicString(result.LastStoryID)
 	}
 
 	// Story progress from loop result
@@ -581,7 +585,7 @@ func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun boo
 	}
 
 	if result.Error != nil {
-		jr.Error = result.Error.Error()
+		jr.Error = sanitizeRunPublicString(result.Error.Error())
 	}
 
 	if result.Complete {
@@ -613,6 +617,10 @@ func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun boo
 	}
 	fmt.Fprintln(out, string(data))
 	return nil
+}
+
+func sanitizeRunPublicString(value string) string {
+	return status.SanitizePublicString(value)
 }
 
 func withTimeoutOverride(cfg *engine.EngineConfig, timeout time.Duration) *engine.EngineConfig {

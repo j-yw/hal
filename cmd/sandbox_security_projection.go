@@ -11,9 +11,13 @@ func sanitizeCommandSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.
 		return nil
 	}
 	capabilityReadiness := sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness)
+	capabilityReadinessDiagnostics := sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummaryPtr(capabilityReadiness)
+	if capabilityReadinessDiagnostics == nil {
+		capabilityReadinessDiagnostics = cloneCommandSandboxSecurityCapabilityReadinessDiagnostics(security.CapabilityReadinessDiagnostics)
+	}
 	clone := &sandbox.SandboxSecurity{
 		CapabilityReadiness:            capabilityReadiness,
-		CapabilityReadinessDiagnostics: sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummaryPtr(capabilityReadiness),
+		CapabilityReadinessDiagnostics: capabilityReadinessDiagnostics,
 		SecurityReadinessGate:          sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate),
 		Network:                        sanitizeCommandSandboxNetworkSecurity(security.Network),
 	}
@@ -27,6 +31,18 @@ func sanitizeCommandSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.
 		return nil
 	}
 	return clone
+}
+
+func cloneCommandSandboxSecurityCapabilityReadinessDiagnostics(diagnostics *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary) *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary {
+	if diagnostics == nil {
+		return nil
+	}
+	clone := *diagnostics
+	clone.Items = append([]sandbox.SandboxSecurityCapabilityReadinessDiagnosticItem(nil), diagnostics.Items...)
+	for i := range clone.Items {
+		clone.Items[i].WarningCodes = append([]sandbox.SandboxSecurityCapabilityWarningCode(nil), diagnostics.Items[i].WarningCodes...)
+	}
+	return &clone
 }
 
 func applyCommandSandboxSecurityReadinessGate(security *sandbox.SandboxSecurity, mode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode, explicitDecision *sandbox.SandboxSecurityCapabilityReadinessGateDecision) *sandbox.SandboxSecurity {
@@ -43,13 +59,18 @@ func applyCommandSandboxSecurityReadinessGate(security *sandbox.SandboxSecurity,
 		return security
 	}
 	if security == nil || security.CapabilityReadinessDiagnostics == nil {
-		if effectiveMode != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict {
+		if !commandSandboxSecurityReadinessGateModeHasExplicitMissingDiagnostics(mode) &&
+			effectiveMode != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict {
 			return security
 		}
 		if security == nil {
 			security = &sandbox.SandboxSecurity{}
 		}
-		decision := sandbox.EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(effectiveMode, nil)
+		if commandSandboxSecurityReadinessGateModeHasExplicitMissingDiagnostics(mode) {
+			diagnostics := sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(sandbox.SandboxSecurityCapabilityReadinessOutput{})
+			security.CapabilityReadinessDiagnostics = &diagnostics
+		}
+		decision := sandbox.EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(effectiveMode, security.CapabilityReadinessDiagnostics)
 		security.SecurityReadinessGate = sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(&decision)
 		return sanitizeCommandSandboxSecurity(security)
 	}
@@ -57,6 +78,17 @@ func applyCommandSandboxSecurityReadinessGate(security *sandbox.SandboxSecurity,
 	decision := sandbox.EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(effectiveMode, security.CapabilityReadinessDiagnostics)
 	security.SecurityReadinessGate = sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(&decision)
 	return sanitizeCommandSandboxSecurity(security)
+}
+
+func commandSandboxSecurityReadinessGateModeHasExplicitMissingDiagnostics(mode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode) bool {
+	switch mode {
+	case sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+		sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeAdvisory,
+		sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeCompatibility:
+		return true
+	default:
+		return false
+	}
 }
 
 func commandSandboxSecurityReadinessGateMode(mode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode) sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode {

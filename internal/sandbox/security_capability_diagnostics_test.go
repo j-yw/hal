@@ -170,6 +170,7 @@ func TestSecurityCapabilityReadinessDiagnosticsDeriveStateMatrix(t *testing.T) {
 					severity:       SandboxSecurityCapabilityDiagnosticSeverityWarning,
 					classification: SandboxSecurityCapabilityDiagnosticClassificationReadinessMissing,
 					wouldBlock:     true,
+					reason:         SandboxSecurityCapabilityReasonReadinessMissing,
 				},
 			},
 		},

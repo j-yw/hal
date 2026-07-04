@@ -216,6 +216,9 @@ func redactSandboxArtifactError(err error, redactor RunSecretRedactor) error {
 		return nil
 	}
 	message := redactor.RedactString(err.Error())
+	if message == err.Error() && sandboxArtifactErrorMessageNeedsRedaction(message) {
+		message = RunSecretRedactionPlaceholder
+	}
 	if message == err.Error() {
 		return err
 	}
@@ -223,6 +226,16 @@ func redactSandboxArtifactError(err error, redactor RunSecretRedactor) error {
 		message: message,
 		cause:   err,
 	}
+}
+
+func sandboxArtifactErrorMessageNeedsRedaction(message string) bool {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return false
+	}
+	return handoffStringNeedsRedaction(message) ||
+		handoffStringContainsAbsolutePath(message) ||
+		handoffURLQueryValueNeedsRedaction(message)
 }
 
 func sandboxArtifactPathInsideDir(root, candidate string) bool {
