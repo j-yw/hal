@@ -126,7 +126,7 @@ func (r OCIResolver) Resolve(ctx context.Context, request ResolveRequest) (Resol
 func resolverUnavailableError() *ResolveError {
 	return &ResolveError{
 		Code:    ResolveErrorCodeResolverUnavailable,
-		Message: "oci artifact resolver is unavailable",
+		Message: "template acquisition resolver is unavailable",
 		Err:     ErrResolverUnavailable,
 	}
 }
