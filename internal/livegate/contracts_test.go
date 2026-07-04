@@ -63,6 +63,9 @@ func TestLiveGateContractConstantsAreStable(t *testing.T) {
 		{name: "remediation enable build tag", got: string(RemediationEnableBuildTag), want: "enable_build_tag"},
 		{name: "remediation set env var", got: string(RemediationSetEnvVar), want: "set_env_var"},
 		{name: "remediation install capability", got: string(RemediationInstallCapability), want: "install_capability"},
+		{name: "remediation template build tags", got: string(RemediationTemplateGoTestBuildTags), want: "go test -tags={{build_tags}} ./..."},
+		{name: "remediation template env vars", got: string(RemediationTemplateGoTestEnvVars), want: "env {{env_vars}}=<set> go test ./..."},
+		{name: "remediation template build tags and env vars", got: string(RemediationTemplateGoTestBuildTagsEnvVars), want: "env {{env_vars}}=<set> go test -tags={{build_tags}} ./..."},
 	}
 
 	for _, tt := range tests {
@@ -107,11 +110,12 @@ func TestLiveGateJSONContainsOnlySafeContractFields(t *testing.T) {
 			},
 		},
 		Remediation: &RemediationMetadata{
-			ReasonCode:    SkipReasonMissingEnvVar,
-			BuildTags:     []BuildTagName{BuildTagFirecrackerLive},
-			EnvVars:       []EnvVarName{EnvVarFirecrackerLive},
-			Capabilities:  []CapabilityID{CapabilityFirecrackerMicroVM},
-			CommandLabels: []RemediationCommandLabel{RemediationEnableBuildTag, RemediationSetEnvVar},
+			ReasonCode:       SkipReasonMissingEnvVar,
+			BuildTags:        []BuildTagName{BuildTagFirecrackerLive},
+			EnvVars:          []EnvVarName{EnvVarFirecrackerLive},
+			Capabilities:     []CapabilityID{CapabilityFirecrackerMicroVM},
+			CommandLabels:    []RemediationCommandLabel{RemediationEnableBuildTag, RemediationSetEnvVar},
+			CommandTemplates: []RemediationCommandTemplate{RemediationTemplateGoTestBuildTagsEnvVars},
 		},
 	})
 
@@ -135,8 +139,9 @@ func TestLiveGateJSONContainsOnlySafeContractFields(t *testing.T) {
 	requirement := requireLiveGateObject(t, requirements[0])
 	assertLiveGateObjectKeys(t, requirement, []string{"status", "buildTag", "reasonCode", "remediation"})
 	remediation := requireLiveGateObject(t, got["remediation"])
-	assertLiveGateObjectKeys(t, remediation, []string{"reasonCode", "buildTags", "envVars", "capabilities", "commandLabels"})
+	assertLiveGateObjectKeys(t, remediation, []string{"reasonCode", "buildTags", "envVars", "capabilities", "commandLabels", "commandTemplates"})
 	assertLiveGateStringArray(t, remediation["commandLabels"], []string{"enable_build_tag", "set_env_var"})
+	assertLiveGateStringArray(t, remediation["commandTemplates"], []string{"env {{env_vars}}=<set> go test -tags={{build_tags}} ./..."})
 }
 
 func TestLiveGateJSONRedactsUnsafeDynamicValues(t *testing.T) {
@@ -166,11 +171,12 @@ func TestLiveGateJSONRedactsUnsafeDynamicValues(t *testing.T) {
 				Capability: CapabilityID("firecracker_microvm"),
 				ReasonCode: SkipReasonCode(" MISSING_ENV_VAR "),
 				Remediation: &RemediationMetadata{
-					ReasonCode:    SkipReasonCode(" MISSING_BUILD_TAG "),
-					BuildTags:     []BuildTagName{BuildTagFirecrackerLive, BuildTagName("-tags=firecracker_live")},
-					EnvVars:       []EnvVarName{EnvVarFirecrackerLive, EnvVarName("HAL_FIRECRACKER_LIVE=1")},
-					Capabilities:  []CapabilityID{CapabilityFirecrackerMicroVM, CapabilityID("firecracker --api-sock /tmp/fc.sock")},
-					CommandLabels: []RemediationCommandLabel{RemediationEnableBuildTag, RemediationCommandLabel("go test -tags firecracker_live ./...")},
+					ReasonCode:       SkipReasonCode(" MISSING_BUILD_TAG "),
+					BuildTags:        []BuildTagName{BuildTagFirecrackerLive, BuildTagName("-tags=firecracker_live")},
+					EnvVars:          []EnvVarName{EnvVarFirecrackerLive, EnvVarName("HAL_FIRECRACKER_LIVE=1")},
+					Capabilities:     []CapabilityID{CapabilityFirecrackerMicroVM, CapabilityID("firecracker --api-sock /tmp/fc.sock")},
+					CommandLabels:    []RemediationCommandLabel{RemediationEnableBuildTag, RemediationCommandLabel("go test -tags firecracker_live ./...")},
+					CommandTemplates: []RemediationCommandTemplate{RemediationTemplateGoTestBuildTagsEnvVars, RemediationCommandTemplate("HAL_FIRECRACKER_LIVE=1 go test --api-sock /tmp/fc.sock")},
 				},
 			},
 		},
@@ -191,6 +197,10 @@ func TestLiveGateJSONRedactsUnsafeDynamicValues(t *testing.T) {
 			CommandLabels: []RemediationCommandLabel{
 				RemediationInstallCapability,
 				RemediationCommandLabel("curl http://127.0.0.1:8080"),
+			},
+			CommandTemplates: []RemediationCommandTemplate{
+				RemediationTemplateGoTestEnvVars,
+				RemediationCommandTemplate("curl http://127.0.0.1:8080"),
 			},
 		},
 	})
@@ -241,8 +251,8 @@ func TestLiveGateJSONRedactsUnsafeDynamicValues(t *testing.T) {
 		"Bearer",
 		"HAL_FIRECRACKER_LIVE=1",
 		"-tags=firecracker_live",
-		"go test -tags",
 		"curl ",
+		"--api-sock",
 	} {
 		if strings.Contains(string(encoded), unsafe) {
 			t.Fatalf("sanitized gate JSON leaked unsafe fragment %q in %s", unsafe, encoded)
@@ -270,7 +280,8 @@ func TestLiveGateJSONOmitsSectionsEmptiedByRedaction(t *testing.T) {
 			},
 		},
 		Remediation: &RemediationMetadata{
-			CommandLabels: []RemediationCommandLabel{RemediationCommandLabel("curl http://127.0.0.1:8080")},
+			CommandLabels:    []RemediationCommandLabel{RemediationCommandLabel("curl http://127.0.0.1:8080")},
+			CommandTemplates: []RemediationCommandTemplate{RemediationCommandTemplate("curl http://127.0.0.1:8080")},
 		},
 	})
 
@@ -283,6 +294,7 @@ func TestLiveGatePublicSchemaContainsNoUnsafeFields(t *testing.T) {
 		reflect.TypeOf(Requirement{}),
 		reflect.TypeOf(CapabilityRequirement{}),
 		reflect.TypeOf(RemediationMetadata{}),
+		reflect.TypeOf(GatePreflightResult{}),
 	}
 
 	for _, typ := range contractTypes {

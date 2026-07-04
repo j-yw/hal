@@ -87,6 +87,17 @@ const (
 	RemediationInstallCapability RemediationCommandLabel = "install_capability"
 )
 
+// RemediationCommandTemplate is an allowlisted command shape with placeholders
+// for safe metadata. It never includes environment values or machine-specific
+// paths.
+type RemediationCommandTemplate string
+
+const (
+	RemediationTemplateGoTestBuildTags        RemediationCommandTemplate = "go test -tags={{build_tags}} ./..."
+	RemediationTemplateGoTestEnvVars          RemediationCommandTemplate = "env {{env_vars}}=<set> go test ./..."
+	RemediationTemplateGoTestBuildTagsEnvVars RemediationCommandTemplate = "env {{env_vars}}=<set> go test -tags={{build_tags}} ./..."
+)
+
 // Gate is the public live gate contract shared by future evaluators and test
 // helpers. It carries only safe identifiers, enum-like values, and remediation
 // labels.
@@ -121,13 +132,38 @@ type CapabilityRequirement struct {
 }
 
 // RemediationMetadata exposes safe hints a caller can render when a live gate
-// skips. CommandLabels are labels only, not shell commands.
+// skips. CommandLabels are labels only. CommandTemplates are allowlisted
+// templates with placeholders, not caller-provided command lines.
 type RemediationMetadata struct {
-	ReasonCode    SkipReasonCode            `json:"reasonCode,omitempty"`
-	BuildTags     []BuildTagName            `json:"buildTags,omitempty"`
-	EnvVars       []EnvVarName              `json:"envVars,omitempty"`
-	Capabilities  []CapabilityID            `json:"capabilities,omitempty"`
-	CommandLabels []RemediationCommandLabel `json:"commandLabels,omitempty"`
+	ReasonCode       SkipReasonCode               `json:"reasonCode,omitempty"`
+	BuildTags        []BuildTagName               `json:"buildTags,omitempty"`
+	EnvVars          []EnvVarName                 `json:"envVars,omitempty"`
+	Capabilities     []CapabilityID               `json:"capabilities,omitempty"`
+	CommandLabels    []RemediationCommandLabel    `json:"commandLabels,omitempty"`
+	CommandTemplates []RemediationCommandTemplate `json:"commandTemplates,omitempty"`
+}
+
+// GateEvaluationInput contains all information the evaluator is allowed to use.
+// Callers must provide environment presence and capability availability
+// explicitly; the evaluator never reads process state or probes the host.
+type GateEvaluationInput struct {
+	Gate                  Gate
+	EnabledBuildTags      []BuildTagName
+	PresentEnvVars        []EnvVarName
+	AvailableCapabilities []CapabilityID
+}
+
+// GatePreflightResult is the skip-safe decision a caller must inspect before
+// performing an optional live action.
+type GatePreflightResult struct {
+	GateID                 GateID                  `json:"gateId,omitempty"`
+	Category               GateCategory            `json:"category,omitempty"`
+	ActionAllowed          bool                    `json:"actionAllowed"`
+	Status                 RequirementStatus       `json:"status,omitempty"`
+	SkipReason             SkipReasonCode          `json:"skipReason,omitempty"`
+	Requirements           []Requirement           `json:"requirements,omitempty"`
+	CapabilityRequirements []CapabilityRequirement `json:"capabilityRequirements,omitempty"`
+	Remediation            *RemediationMetadata    `json:"remediation,omitempty"`
 }
 
 func (g Gate) MarshalJSON() ([]byte, error) {
@@ -152,6 +188,12 @@ func (r RemediationMetadata) MarshalJSON() ([]byte, error) {
 	type remediationMetadataJSON RemediationMetadata
 	sanitized := SanitizeRemediationMetadata(r)
 	return json.Marshal(remediationMetadataJSON(sanitized))
+}
+
+func (r GatePreflightResult) MarshalJSON() ([]byte, error) {
+	type gatePreflightResultJSON GatePreflightResult
+	sanitized := SanitizeGatePreflightResult(r)
+	return json.Marshal(gatePreflightResultJSON(sanitized))
 }
 
 // SanitizeGate returns a redaction-safe copy that is suitable for durable JSON.
@@ -193,11 +235,40 @@ func SanitizeCapabilityRequirement(r CapabilityRequirement) CapabilityRequiremen
 // SanitizeRemediationMetadata returns a redaction-safe remediation copy.
 func SanitizeRemediationMetadata(r RemediationMetadata) RemediationMetadata {
 	return RemediationMetadata{
-		ReasonCode:    sanitizeSkipReasonCode(r.ReasonCode),
-		BuildTags:     sanitizeBuildTagList(r.BuildTags),
-		EnvVars:       sanitizeEnvVarList(r.EnvVars),
-		Capabilities:  sanitizeCapabilityIDList(r.Capabilities),
-		CommandLabels: sanitizeRemediationCommandLabelList(r.CommandLabels),
+		ReasonCode:       sanitizeSkipReasonCode(r.ReasonCode),
+		BuildTags:        sanitizeBuildTagList(r.BuildTags),
+		EnvVars:          sanitizeEnvVarList(r.EnvVars),
+		Capabilities:     sanitizeCapabilityIDList(r.Capabilities),
+		CommandLabels:    sanitizeRemediationCommandLabelList(r.CommandLabels),
+		CommandTemplates: sanitizeRemediationCommandTemplateList(r.CommandTemplates),
+	}
+}
+
+// SanitizeGatePreflightResult returns a redaction-safe preflight result copy.
+func SanitizeGatePreflightResult(r GatePreflightResult) GatePreflightResult {
+	status := sanitizeRequirementStatus(r.Status)
+	skipReason := sanitizeSkipReasonCode(r.SkipReason)
+	requirements := sanitizeRequirementList(r.Requirements)
+	capabilityRequirements := sanitizeCapabilityRequirementList(r.CapabilityRequirements)
+	remediation := sanitizeRemediationMetadataPtr(r.Remediation)
+	actionAllowed := r.ActionAllowed &&
+		status == RequirementStatusSatisfied &&
+		skipReason == "" &&
+		remediation == nil &&
+		!requirementsBlockLiveAction(requirements) &&
+		!capabilityRequirementsBlockLiveAction(capabilityRequirements)
+	if !actionAllowed && status == RequirementStatusSatisfied {
+		status = RequirementStatusSkipped
+	}
+	return GatePreflightResult{
+		GateID:                 sanitizeGateID(r.GateID),
+		Category:               sanitizeGateCategory(r.Category),
+		ActionAllowed:          actionAllowed,
+		Status:                 status,
+		SkipReason:             skipReason,
+		Requirements:           requirements,
+		CapabilityRequirements: capabilityRequirements,
+		Remediation:            remediation,
 	}
 }
 
@@ -270,6 +341,18 @@ func sanitizeRemediationCommandLabel(value RemediationCommandLabel) RemediationC
 	return RemediationCommandLabel(sanitizeSafeLabel(string(value)))
 }
 
+func sanitizeRemediationCommandTemplate(value RemediationCommandTemplate) RemediationCommandTemplate {
+	normalized := RemediationCommandTemplate(strings.TrimSpace(string(value)))
+	switch normalized {
+	case RemediationTemplateGoTestBuildTags,
+		RemediationTemplateGoTestEnvVars,
+		RemediationTemplateGoTestBuildTagsEnvVars:
+		return normalized
+	default:
+		return ""
+	}
+}
+
 func sanitizeBuildTagList(values []BuildTagName) []BuildTagName {
 	if len(values) == 0 {
 		return nil
@@ -338,6 +421,23 @@ func sanitizeRemediationCommandLabelList(values []RemediationCommandLabel) []Rem
 	return out
 }
 
+func sanitizeRemediationCommandTemplateList(values []RemediationCommandTemplate) []RemediationCommandTemplate {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]RemediationCommandTemplate, 0, len(values))
+	for _, value := range values {
+		sanitized := sanitizeRemediationCommandTemplate(value)
+		if sanitized != "" {
+			out = append(out, sanitized)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func sanitizeRequirementList(values []Requirement) []Requirement {
 	if len(values) == 0 {
 		return nil
@@ -346,6 +446,23 @@ func sanitizeRequirementList(values []Requirement) []Requirement {
 	for _, value := range values {
 		sanitized := SanitizeRequirement(value)
 		if !requirementEmpty(sanitized) {
+			out = append(out, sanitized)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func sanitizeCapabilityRequirementList(values []CapabilityRequirement) []CapabilityRequirement {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]CapabilityRequirement, 0, len(values))
+	for _, value := range values {
+		sanitized := SanitizeCapabilityRequirement(value)
+		if !capabilityRequirementEmpty(sanitized) {
 			out = append(out, sanitized)
 		}
 	}
@@ -375,12 +492,44 @@ func requirementEmpty(r Requirement) bool {
 		r.Remediation == nil
 }
 
+func capabilityRequirementEmpty(r CapabilityRequirement) bool {
+	return r.ID == "" &&
+		r.Status == "" &&
+		r.ReasonCode == "" &&
+		r.Remediation == nil
+}
+
 func remediationMetadataEmpty(r RemediationMetadata) bool {
 	return r.ReasonCode == "" &&
 		len(r.BuildTags) == 0 &&
 		len(r.EnvVars) == 0 &&
 		len(r.Capabilities) == 0 &&
-		len(r.CommandLabels) == 0
+		len(r.CommandLabels) == 0 &&
+		len(r.CommandTemplates) == 0
+}
+
+func requirementsBlockLiveAction(requirements []Requirement) bool {
+	for _, requirement := range requirements {
+		if requirement.ReasonCode != "" {
+			return true
+		}
+		if !requirementEmpty(requirement) && requirement.Status != RequirementStatusSatisfied {
+			return true
+		}
+	}
+	return false
+}
+
+func capabilityRequirementsBlockLiveAction(requirements []CapabilityRequirement) bool {
+	for _, requirement := range requirements {
+		if requirement.ReasonCode != "" {
+			return true
+		}
+		if !capabilityRequirementEmpty(requirement) && requirement.Status != RequirementStatusSatisfied {
+			return true
+		}
+	}
+	return false
 }
 
 func sanitizeSafeLabel(value string) string {
