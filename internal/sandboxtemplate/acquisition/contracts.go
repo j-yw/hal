@@ -19,11 +19,15 @@ const (
 )
 
 const (
-	LockReasonMutableReference    LockReasonCode = "mutable_reference"
-	LockReasonImmutableDigest     LockReasonCode = "immutable_digest"
-	LockReasonDocumentDigest      LockReasonCode = "document_digest"
-	LockReasonResolverUnavailable LockReasonCode = "resolver_unavailable"
-	LockReasonUnsupportedSource   LockReasonCode = "unsupported_source"
+	LockReasonMutableReference           LockReasonCode = "mutable_reference"
+	LockReasonImmutableDigest            LockReasonCode = "immutable_digest"
+	LockReasonDocumentDigest             LockReasonCode = "document_digest"
+	LockReasonTemplateReferenceDigest    LockReasonCode = "template_reference_digest"
+	LockReasonRuntimeImageDigest         LockReasonCode = "runtime_image_digest"
+	LockReasonSourceArtifactDigest       LockReasonCode = "source_artifact_digest"
+	LockReasonUnresolvedMutableReference LockReasonCode = "unresolved_mutable_reference"
+	LockReasonResolverUnavailable        LockReasonCode = "resolver_unavailable"
+	LockReasonUnsupportedSource          LockReasonCode = "unsupported_source"
 )
 
 var ErrResolverUnavailable = errors.New("local template acquisition resolver is unavailable")
