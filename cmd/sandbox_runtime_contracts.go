@@ -682,7 +682,7 @@ func newSandboxRuntimeSelectedTemplate(metadata *sandboxruntime.RuntimeMetadata,
 	summary.ReferenceKind = referenceKind
 	summary.Digest = sandboxRuntimeSelectedTemplateDigest(lock)
 	if summary.ReadinessStatus == "" {
-		summary.ReadinessStatus, summary.BlockedReadinessReasonCodes = sandboxRuntimeSelectedTemplateFallbackReadiness(summary)
+		summary.ReadinessStatus, summary.BlockedReadinessReasonCodes = sandboxRuntimeSelectedTemplateFallbackReadiness(summary, lock)
 	}
 	summary.State = sandboxRuntimeSelectedTemplateState(summary)
 	return summary
@@ -755,12 +755,12 @@ func sandboxRuntimeSelectedTemplateReadinessResult(result sandbox.SandboxSecurit
 	return false
 }
 
-func sandboxRuntimeSelectedTemplateFallbackReadiness(summary SandboxRuntimeSelectedTemplate) (string, []string) {
+func sandboxRuntimeSelectedTemplateFallbackReadiness(summary SandboxRuntimeSelectedTemplate, lock *sandboxruntime.RuntimeTemplateLockMetadata) (string, []string) {
 	if !summary.Present {
 		return "", nil
 	}
 	switch {
-	case summary.State == "unresolved" || summary.LockStatus == sandbox.SandboxTemplateLockStatusUnresolved:
+	case summary.LockStatus == sandbox.SandboxTemplateLockStatusUnresolved:
 		return string(sandbox.SandboxSecurityCapabilityReadinessBlocked), []string{string(sandbox.SandboxSecurityCapabilityReasonSelectedTemplateProvenanceUnresolved)}
 	case summary.TrustDecision == sandbox.SandboxTemplateTrustPolicyDecisionRejected:
 		return string(sandbox.SandboxSecurityCapabilityReadinessBlocked), []string{string(sandbox.SandboxSecurityCapabilityReasonSelectedTemplateTrustRejected)}
@@ -768,11 +768,58 @@ func sandboxRuntimeSelectedTemplateFallbackReadiness(summary SandboxRuntimeSelec
 		return string(sandbox.SandboxSecurityCapabilityReadinessMetadataOnly), []string{string(sandbox.SandboxSecurityCapabilityReasonSelectedTemplateTrustAdvisoryOnly)}
 	case summary.TrustDecision == sandbox.SandboxTemplateTrustPolicyDecisionUnavailable:
 		return string(sandbox.SandboxSecurityCapabilityReadinessUnsupported), []string{string(sandbox.SandboxSecurityCapabilityReasonSelectedTemplateTrustUnavailable)}
-	case summary.State == "trusted" || summary.TrustDecision == sandbox.SandboxTemplateTrustPolicyDecisionTrusted:
+	case summary.TrustDecision == sandbox.SandboxTemplateTrustPolicyDecisionTrusted:
+		if sandboxRuntimeSelectedTemplateLockWarningBearing(lock) {
+			return string(sandbox.SandboxSecurityCapabilityReadinessUnsupported), []string{string(sandbox.SandboxSecurityCapabilityReasonWarningBearing)}
+		}
+		if summary.TrustMode != sandbox.SandboxTemplateTrustPolicyModeStrict ||
+			!sandboxRuntimeSelectedTemplateDigestLocked(lock) {
+			return string(sandbox.SandboxSecurityCapabilityReadinessUnsupported), []string{string(sandbox.SandboxSecurityCapabilityReasonSelectedTemplateEvidenceMissing)}
+		}
 		return string(sandbox.SandboxSecurityCapabilityReadinessReady), nil
 	default:
 		return "", nil
 	}
+}
+
+func sandboxRuntimeSelectedTemplateDigestLocked(lock *sandboxruntime.RuntimeTemplateLockMetadata) bool {
+	lock = sandboxruntime.SanitizeRuntimeTemplateLockMetadata(lock)
+	if lock == nil || sandboxRuntimeSelectedTemplateTrustDigest(lock.TrustPolicy) == nil {
+		return false
+	}
+	for _, entry := range []*sandboxruntime.RuntimeTemplateLockEntryMetadata{
+		lock.Document,
+		lock.TemplateReference,
+		lock.RuntimeImage,
+		lock.SourceArtifact,
+	} {
+		if sandboxRuntimeSelectedTemplateEntryDigest("lock_entry", entry) == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func sandboxRuntimeSelectedTemplateLockWarningBearing(lock *sandboxruntime.RuntimeTemplateLockMetadata) bool {
+	lock = sandboxruntime.SanitizeRuntimeTemplateLockMetadata(lock)
+	if lock == nil {
+		return false
+	}
+	if policy := lock.TrustPolicy; policy != nil &&
+		(len(policy.WarningCodes) > 0 || len(policy.ErrorCodes) > 0 || len(policy.ReasonCodes) > 0) {
+		return true
+	}
+	for _, entry := range []*sandboxruntime.RuntimeTemplateLockEntryMetadata{
+		lock.Document,
+		lock.TemplateReference,
+		lock.RuntimeImage,
+		lock.SourceArtifact,
+	} {
+		if entry != nil && len(entry.WarningCodes) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func sandboxRuntimeSelectedTemplateIdentity(lock *sandboxruntime.RuntimeTemplateLockMetadata) (string, string) {
