@@ -533,6 +533,166 @@ func TestUS002ProjectSecureDefaultReadinessClassifiesNetworkProofReasons(t *test
 	}
 }
 
+func TestUS005ProjectSecureDefaultReadinessRejectsWeakNetworkEnforcementProof(t *testing.T) {
+	enforced := true
+	tests := []struct {
+		name       string
+		input      SandboxSecurityCapabilityReadinessInput
+		projection SandboxPolicyProxyCredentialCapabilityReadinessProjection
+		wantState  SandboxSecurityCapabilityReadinessState
+		wantReason SandboxSecurityCapabilityReasonCode
+	}{
+		{
+			name:       "missing proof",
+			wantState:  SandboxSecurityCapabilityReadinessUnsupported,
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementMissing,
+		},
+		{
+			name: "proxy only proof",
+			projection: SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+				NetworkEnforcementProof: secureDefaultProjectionNetworkProof(SandboxNetworkEnforcementProofMetadata{
+					FirewallLifecycleStatus:     "planned",
+					FirewallLifecycleReasonCode: "prepared",
+					ResultOutcome:               "success",
+					ResultEnforcementMode:       SandboxNetworkEnforcementModeProxy,
+					ResultSupported:             true,
+				}),
+			},
+			wantState:  SandboxSecurityCapabilityReadinessMetadataOnly,
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementPartial,
+		},
+		{
+			name: "firewall only proof",
+			projection: SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+				NetworkEnforcementProof: secureDefaultProjectionNetworkProof(SandboxNetworkEnforcementProofMetadata{
+					ProxyLifecycleStatus:     "planned",
+					ProxyLifecycleReasonCode: "prepared",
+					ResultOutcome:            "success",
+					ResultEnforcementMode:    SandboxNetworkEnforcementModeFirewall,
+					ResultSupported:          true,
+				}),
+			},
+			wantState:  SandboxSecurityCapabilityReadinessMetadataOnly,
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementPartial,
+		},
+		{
+			name: "best effort proof",
+			projection: SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+				NetworkEnforcementProof: secureDefaultProjectionNetworkProof(SandboxNetworkEnforcementProofMetadata{
+					ResultOutcome:         "best_effort",
+					ResultEnforcementMode: SandboxNetworkEnforcementModeBestEffort,
+					ResultSupported:       true,
+				}),
+			},
+			wantState:  SandboxSecurityCapabilityReadinessMetadataOnly,
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementBestEffort,
+		},
+		{
+			name: "audit only proof",
+			projection: SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+				NetworkEnforcementProof: secureDefaultProjectionNetworkProof(SandboxNetworkEnforcementProofMetadata{
+					ResultOutcome:         "audit_only",
+					ResultEnforcementMode: SandboxNetworkEnforcementModeProxyFirewall,
+					ResultSupported:       true,
+				}),
+			},
+			wantState:  SandboxSecurityCapabilityReadinessUnsupported,
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementUnsupported,
+		},
+		{
+			name: "compatibility policy result",
+			projection: SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+				NetworkPolicyResult: &SandboxNetworkPolicyResult{
+					Requested:       SandboxNetworkPolicyIntent{Preset: SandboxNetworkPolicyPresetDenyByDefault},
+					Effective:       SandboxNetworkPolicyIntent{Preset: SandboxNetworkPolicyPresetLegacyDefault},
+					EnforcementMode: SandboxNetworkEnforcementModeBestEffort,
+					Capability: SandboxNetworkPolicyEnforcementCapability{
+						Supported: false,
+						Modes:     []string{SandboxNetworkEnforcementModeBestEffort},
+					},
+				},
+			},
+			wantState:  SandboxSecurityCapabilityReadinessUnsupported,
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementMissing,
+		},
+		{
+			name: "planned metadata",
+			projection: SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+				NetworkProxySession: &SandboxNetworkProxySessionMetadata{
+					ID:              "network-proxy-session-planned",
+					Source:          SandboxNetworkPolicyDecisionSourceWorker,
+					EnforcementMode: SandboxNetworkEnforcementModeProxyFirewall,
+					PolicySnapshot: &SandboxNetworkPolicySnapshotIdentity{
+						ID:     "policy-snapshot-planned",
+						Preset: SandboxNetworkPolicyPresetDenyByDefault,
+					},
+				},
+			},
+			wantState:  SandboxSecurityCapabilityReadinessMetadataOnly,
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementPlannedOnly,
+		},
+		{
+			name: "audit only decision metadata",
+			projection: SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+				NetworkPolicyDecisionLogs: []SandboxNetworkPolicyDecisionLogRecord{{
+					ID:              "decision-audit-only",
+					Source:          SandboxNetworkPolicyDecisionSourceWorker,
+					Outcome:         SandboxNetworkPolicyDecisionOutcomeAuditOnly,
+					ReasonCode:      SandboxNetworkPolicyDecisionReasonAuditOnly,
+					PolicyPreset:    SandboxNetworkPolicyPresetDenyByDefault,
+					EnforcementMode: SandboxNetworkEnforcementModeBestEffort,
+					Enforced:        &enforced,
+				}},
+			},
+			wantState:  SandboxSecurityCapabilityReadinessUnsupported,
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementMissing,
+		},
+		{
+			name: "historical metadata",
+			input: SandboxSecurityCapabilityReadinessInput{
+				Ready: []SandboxSecurityCapabilityMetadata{{
+					ID:         "https://api.internal.example.com:8443/proof?token=raw-token",
+					Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+					Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+					Mode:       "iptables -A OUTPUT -d 10.0.0.1 -j DROP",
+					Source:     SandboxSecurityCapabilitySourceMetadata,
+					Status:     SandboxSecurityCapabilityReadinessReady,
+					ReasonCode: SandboxSecurityCapabilityReasonNetworkEnforcementConfirmed,
+				}},
+			},
+			wantState:  SandboxSecurityCapabilityReadinessUnsupported,
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementMissing,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
+				secureDefaultProjectionRequestedNetworkInput(),
+				tt.input,
+				ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(tt.projection),
+			)
+
+			requireSecureDefaultProjectionResult(t, output,
+				tt.wantState,
+				SandboxSecurityCapabilityFamilyNetworkPolicy,
+				SandboxSecurityCapabilityNetworkDenyByDefault,
+				tt.wantReason,
+			)
+			requireSecureDefaultProjectionNoReadyResult(t, output,
+				SandboxSecurityCapabilityFamilyNetworkPolicy,
+				SandboxSecurityCapabilityNetworkDenyByDefault,
+			)
+			requireSecureDefaultProjectionStrictGate(t, output,
+				SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+				SandboxSecurityCapabilityReadinessGateReasonCode(tt.wantReason),
+				tt.wantReason,
+			)
+			assertUS005NetworkReadinessEvidenceSanitized(t, output)
+		})
+	}
+}
+
 func TestUS002ProjectSecureDefaultReadinessKeepsDiagnosticNetworkMetadataNonAuthoritative(t *testing.T) {
 	output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
 		secureDefaultProjectionRequestedNetworkInput(),
@@ -1490,6 +1650,49 @@ func requireSecureDefaultProjectionStrictGate(t *testing.T, output *SandboxSecur
 	}
 	if decision.Counts == nil || decision.Counts.ReasonCodeCounts[countedReason] == 0 {
 		t.Fatalf("strict readiness gate reason counts = %#v, want count for %s", decision.Counts, countedReason)
+	}
+}
+
+func assertUS005NetworkReadinessEvidenceSanitized(t *testing.T, output *SandboxSecurityCapabilityReadinessOutput) {
+	t.Helper()
+	var readiness SandboxSecurityCapabilityReadinessOutput
+	if output != nil {
+		readiness = *output
+	}
+	diagnostics := DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(readiness)
+	decision := EvaluateSandboxSecurityCapabilityReadinessGate(SandboxSecurityCapabilityReadinessGatePolicyModeStrict, diagnostics)
+	payload, err := json.Marshal(struct {
+		Readiness   SandboxSecurityCapabilityReadinessOutput            `json:"readiness"`
+		Diagnostics SandboxSecurityCapabilityReadinessDiagnosticSummary `json:"diagnostics"`
+		Decision    SandboxSecurityCapabilityReadinessGateDecision      `json:"decision"`
+	}{
+		Readiness:   readiness,
+		Diagnostics: diagnostics,
+		Decision:    decision,
+	})
+	if err != nil {
+		t.Fatalf("Marshal(US-005 network readiness evidence) error = %v", err)
+	}
+	for _, fragment := range []string{
+		"https://",
+		"api.internal.example.com",
+		"10.0.0.1",
+		":8443",
+		"/tmp",
+		".sock",
+		"Authorization",
+		"Bearer",
+		"body=",
+		"GET /",
+		"token=",
+		"secret",
+		"iptables",
+		"nftables",
+		"pfctl",
+	} {
+		if strings.Contains(string(payload), fragment) {
+			t.Fatalf("US-005 network readiness evidence leaked forbidden fragment %q: %s", fragment, payload)
+		}
 	}
 }
 

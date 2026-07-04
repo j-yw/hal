@@ -1,11 +1,14 @@
 package cmd
 
 import (
+	"strings"
+
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 func commandSandboxNetworkEnforcementProofFromRuntimeMetadata(metadata *sandboxruntime.RuntimeNetworkEnforcementMetadata) *sandbox.SandboxNetworkEnforcementProofMetadata {
+	rawResultOutcome := commandSandboxRuntimeNetworkEnforcementRawResultOutcome(metadata)
 	metadata = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(metadata)
 	if metadata == nil || metadata.Result == nil {
 		return nil
@@ -61,6 +64,10 @@ func commandSandboxNetworkEnforcementProofFromRuntimeMetadata(metadata *sandboxr
 		proof.ResultOutcome = "best_effort"
 		proof.ResultSupported = false
 	}
+	if commandSandboxRuntimeNetworkEnforcementRawOutcomeIsUnsupported(rawResultOutcome) {
+		proof.ResultOutcome = "unsupported"
+		proof.ResultSupported = false
+	}
 	sanitized := sandbox.SanitizeSandboxNetworkEnforcementProofMetadata(proof)
 	if sanitized.NetworkProxySessionID == "" &&
 		sanitized.PolicySnapshotID == "" &&
@@ -75,6 +82,22 @@ func commandSandboxNetworkEnforcementProofFromRuntimeMetadata(metadata *sandboxr
 		return nil
 	}
 	return &sanitized
+}
+
+func commandSandboxRuntimeNetworkEnforcementRawResultOutcome(metadata *sandboxruntime.RuntimeNetworkEnforcementMetadata) string {
+	if metadata == nil || metadata.Result == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(metadata.Result.Outcome))
+}
+
+func commandSandboxRuntimeNetworkEnforcementRawOutcomeIsUnsupported(outcome string) bool {
+	switch outcome {
+	case "", "success", "best_effort", "unsupported", "failure":
+		return false
+	default:
+		return true
+	}
 }
 
 func commandSandboxRuntimeNetworkEnforcementResultSupported(result *sandboxruntime.RuntimeNetworkEnforcementResultMetadata) bool {
