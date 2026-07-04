@@ -112,7 +112,7 @@ func DowngradeProof(proof Proof, downgrades ...Downgrade) Option {
 		b.states[proof] = ProofStateDowngraded
 		b.downgrades[proof] = downgrade
 		if proof == ProofStrictTargetSelection {
-			b.gateMode = sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeCompatibility
+			b.gateMode = targetSelectionGateModeForDowngrade(downgrade)
 		}
 	}
 }
@@ -193,10 +193,16 @@ func CompleteAcceptedEvidenceSet(opts ...Option) EvidenceSet {
 	}
 	diagnostics := sandbox.ProjectSandboxSecureDefaultReadinessDiagnostics(readiness)
 	gate := sandbox.EvaluateSandboxSecurityCapabilityReadinessGate(b.gateMode, diagnostics)
+	if b.state(ProofStrictTargetSelection) == ProofStateDowngraded {
+		gate = downgradedTargetSelectionGate(gate, b.downgrade(ProofStrictTargetSelection))
+	}
+	strictTargetSelection := b.state(ProofStrictTargetSelection) == ProofStateComplete &&
+		b.gateMode == sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict &&
+		gate.Outcome == sandbox.SandboxSecurityCapabilityReadinessGateOutcomeAllowed
 
 	return EvidenceSet{
 		GateMode:              b.gateMode,
-		StrictTargetSelection: b.gateMode == sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+		StrictTargetSelection: strictTargetSelection,
 		ProofStates:           b.proofStates(),
 		Downgrades:            b.proofDowngrades(),
 		Requested:             sandbox.SanitizeSandboxSecurityCapabilityReadinessInput(requested),
@@ -306,6 +312,38 @@ func knownProof(proof Proof) bool {
 		}
 	}
 	return false
+}
+
+func targetSelectionGateModeForDowngrade(downgrade Downgrade) sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode {
+	switch downgrade {
+	case DowngradeAdvisory:
+		return sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeAdvisory
+	case DowngradeWarningBearing:
+		return sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict
+	default:
+		return sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeCompatibility
+	}
+}
+
+func downgradedTargetSelectionGate(gate sandbox.SandboxSecurityCapabilityReadinessGateDecision, downgrade Downgrade) sandbox.SandboxSecurityCapabilityReadinessGateDecision {
+	if downgrade != DowngradeWarningBearing {
+		return gate
+	}
+	return sandbox.SanitizeSandboxSecurityCapabilityReadinessGateDecision(sandbox.SandboxSecurityCapabilityReadinessGateDecision{
+		Code:       sandbox.SandboxSecurityCapabilityReadinessGateCodeBlocked,
+		Outcome:    sandbox.SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+		PolicyMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+		Reason:     sandbox.SandboxSecurityCapabilityReadinessGateReasonCode(sandbox.SandboxSecurityCapabilityReasonWarningBearing),
+		Counts: &sandbox.SandboxSecurityCapabilityReadinessGateCounts{
+			Total:          1,
+			Advisory:       1,
+			Unsupported:    1,
+			StrictBlocking: 1,
+			ReasonCodeCounts: map[sandbox.SandboxSecurityCapabilityReasonCode]int{
+				sandbox.SandboxSecurityCapabilityReasonWarningBearing: 1,
+			},
+		},
+	})
 }
 
 func requestedSecureDefaultInput() sandbox.SandboxSecurityCapabilityReadinessInput {

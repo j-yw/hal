@@ -525,6 +525,7 @@ func cloneSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.SandboxSec
 	cloned := *security
 	cloned.CapabilityReadiness = sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness)
 	cloned.CapabilityReadinessDiagnostics = sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummaryPtr(cloned.CapabilityReadiness)
+	cloned.SecurityReadinessGate = sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate)
 	if security.Network != nil {
 		network := *security.Network
 		network.PolicyResult = sandbox.CloneSandboxNetworkPolicyResultPtr(security.Network.PolicyResult)
@@ -855,7 +856,14 @@ func applyTargetSelectionSecurityReadinessGate(req Request, result Result, mode 
 func targetSelectionSecurityReadinessGateDecision(req Request, result Result, mode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode) sandbox.SandboxSecurityCapabilityReadinessGateDecision {
 	if targetSelectionReadinessGateIsStrict(mode) {
 		if output := targetSelectionSecurityReadinessOutput(req, result); output != nil {
-			return sandbox.EvaluateSandboxSecureDefaultReadiness(*output)
+			decision := sandbox.EvaluateSandboxSecureDefaultReadiness(*output)
+			if decision.Outcome == sandbox.SandboxSecurityCapabilityReadinessGateOutcomeBlocked {
+				return decision
+			}
+			if proof := targetSelectionStrictTargetSelectionProof(result); !targetSelectionStrictTargetSelectionProofAllows(proof) {
+				return targetSelectionStrictTargetSelectionProofBlockedDecision(proof)
+			}
+			return decision
 		}
 		return sandbox.EvaluateSandboxSecureDefaultReadiness(sandbox.SandboxSecurityCapabilityReadinessOutput{})
 	}
@@ -897,6 +905,117 @@ func targetSelectionSecurityReadinessOutput(req Request, result Result) *sandbox
 		return nil
 	}
 	return &output
+}
+
+func targetSelectionStrictTargetSelectionProof(result Result) *sandbox.SandboxSecurityCapabilityReadinessGateDecision {
+	target := targetSelectionResultTarget(result)
+	if target == nil {
+		return nil
+	}
+	if proof := targetSelectionSecurityReadinessGate(target.Security); proof != nil {
+		return proof
+	}
+	if target.Host != nil {
+		return targetSelectionSecurityReadinessGate(target.Host.Security)
+	}
+	return nil
+}
+
+func targetSelectionSecurityReadinessGate(security *sandbox.SandboxSecurity) *sandbox.SandboxSecurityCapabilityReadinessGateDecision {
+	if security == nil {
+		return nil
+	}
+	return sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate)
+}
+
+func targetSelectionStrictTargetSelectionProofAllows(proof *sandbox.SandboxSecurityCapabilityReadinessGateDecision) bool {
+	if proof == nil {
+		return false
+	}
+	decision := sandbox.SanitizeSandboxSecurityCapabilityReadinessGateDecision(*proof)
+	if decision.PolicyMode != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict ||
+		decision.Outcome != sandbox.SandboxSecurityCapabilityReadinessGateOutcomeAllowed ||
+		decision.Code != sandbox.SandboxSecurityCapabilityReadinessGateCodeAllowed ||
+		decision.Reason != sandbox.SandboxSecurityCapabilityReadinessGateReasonReadinessReady ||
+		decision.Counts == nil ||
+		decision.Counts.Total == 0 ||
+		decision.Counts.Ready == 0 {
+		return false
+	}
+	return decision.Counts.StrictBlocking == 0 &&
+		decision.Counts.Missing == 0 &&
+		decision.Counts.MetadataOnly == 0 &&
+		decision.Counts.Unsupported == 0 &&
+		decision.Counts.Blocked == 0 &&
+		decision.Counts.ReasonCodeCounts[sandbox.SandboxSecurityCapabilityReasonWarningBearing] == 0
+}
+
+func targetSelectionStrictTargetSelectionProofBlockedDecision(proof *sandbox.SandboxSecurityCapabilityReadinessGateDecision) sandbox.SandboxSecurityCapabilityReadinessGateDecision {
+	if proof == nil {
+		return sandbox.EvaluateSandboxSecureDefaultReadiness(sandbox.SandboxSecurityCapabilityReadinessOutput{})
+	}
+	decision := sandbox.SanitizeSandboxSecurityCapabilityReadinessGateDecision(*proof)
+	reason := targetSelectionStrictTargetSelectionProofBlockReason(decision)
+	counts := targetSelectionStrictTargetSelectionProofBlockCounts(decision, reason)
+	return sandbox.SanitizeSandboxSecurityCapabilityReadinessGateDecision(sandbox.SandboxSecurityCapabilityReadinessGateDecision{
+		Code:       sandbox.SandboxSecurityCapabilityReadinessGateCodeBlocked,
+		Outcome:    sandbox.SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+		PolicyMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+		Reason:     reason,
+		Counts:     counts,
+	})
+}
+
+func targetSelectionStrictTargetSelectionProofBlockReason(decision sandbox.SandboxSecurityCapabilityReadinessGateDecision) sandbox.SandboxSecurityCapabilityReadinessGateReasonCode {
+	if decision.Counts != nil && decision.Counts.ReasonCodeCounts[sandbox.SandboxSecurityCapabilityReasonWarningBearing] > 0 {
+		return sandbox.SandboxSecurityCapabilityReadinessGateReasonCode(sandbox.SandboxSecurityCapabilityReasonWarningBearing)
+	}
+	if decision.Reason != "" && decision.Reason != sandbox.SandboxSecurityCapabilityReadinessGateReasonReadinessReady {
+		return decision.Reason
+	}
+	switch decision.PolicyMode {
+	case sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeOff:
+		return sandbox.SandboxSecurityCapabilityReadinessGateReasonPolicyOff
+	case sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeCompatibility:
+		return sandbox.SandboxSecurityCapabilityReadinessGateReasonPolicyCompatibility
+	case sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeAdvisory:
+		return sandbox.SandboxSecurityCapabilityReadinessGateReasonPolicyAdvisory
+	default:
+		return sandbox.SandboxSecurityCapabilityReadinessGateReasonStrictBlockRequired
+	}
+}
+
+func targetSelectionStrictTargetSelectionProofBlockCounts(decision sandbox.SandboxSecurityCapabilityReadinessGateDecision, reason sandbox.SandboxSecurityCapabilityReadinessGateReasonCode) *sandbox.SandboxSecurityCapabilityReadinessGateCounts {
+	counts := sandbox.SandboxSecurityCapabilityReadinessGateCounts{Total: 1, StrictBlocking: 1}
+	if decision.Counts != nil {
+		counts = *decision.Counts
+		if len(decision.Counts.ReasonCodeCounts) > 0 {
+			counts.ReasonCodeCounts = make(map[sandbox.SandboxSecurityCapabilityReasonCode]int, len(decision.Counts.ReasonCodeCounts))
+			for reasonCode, count := range decision.Counts.ReasonCodeCounts {
+				counts.ReasonCodeCounts[reasonCode] = count
+			}
+		}
+	}
+	if counts.Total == 0 {
+		counts.Total = 1
+	}
+	if counts.StrictBlocking == 0 {
+		counts.StrictBlocking = 1
+	}
+	if reason == sandbox.SandboxSecurityCapabilityReadinessGateReasonReadinessMissing {
+		counts.Missing = max(counts.Missing, 1)
+		if counts.ReasonCodeCounts == nil {
+			counts.ReasonCodeCounts = map[sandbox.SandboxSecurityCapabilityReasonCode]int{}
+		}
+		counts.ReasonCodeCounts[sandbox.SandboxSecurityCapabilityReasonReadinessMissing] = max(counts.ReasonCodeCounts[sandbox.SandboxSecurityCapabilityReasonReadinessMissing], 1)
+	}
+	if reason == sandbox.SandboxSecurityCapabilityReadinessGateReasonCode(sandbox.SandboxSecurityCapabilityReasonWarningBearing) {
+		if counts.ReasonCodeCounts == nil {
+			counts.ReasonCodeCounts = map[sandbox.SandboxSecurityCapabilityReasonCode]int{}
+		}
+		counts.ReasonCodeCounts[sandbox.SandboxSecurityCapabilityReasonWarningBearing] = max(counts.ReasonCodeCounts[sandbox.SandboxSecurityCapabilityReasonWarningBearing], 1)
+	}
+	return &counts
 }
 
 func targetSelectionResultTarget(result Result) *sandbox.SandboxState {

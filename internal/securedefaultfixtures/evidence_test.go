@@ -138,6 +138,53 @@ func TestEvidenceSetCanDowngradeEachProofIndependently(t *testing.T) {
 	}
 }
 
+func TestTargetSelectionProofDowngradeVariantsStayWeak(t *testing.T) {
+	tests := []struct {
+		name       string
+		downgrade  Downgrade
+		wantMode   sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode
+		wantGate   sandbox.SandboxSecurityCapabilityReadinessGateOutcome
+		wantReason sandbox.SandboxSecurityCapabilityReadinessGateReasonCode
+	}{
+		{
+			name:       "compatibility",
+			downgrade:  DowngradeCompatibility,
+			wantMode:   sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeCompatibility,
+			wantGate:   sandbox.SandboxSecurityCapabilityReadinessGateOutcomeAllowed,
+			wantReason: sandbox.SandboxSecurityCapabilityReadinessGateReasonReadinessReady,
+		},
+		{
+			name:       "advisory",
+			downgrade:  DowngradeAdvisory,
+			wantMode:   sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeAdvisory,
+			wantGate:   sandbox.SandboxSecurityCapabilityReadinessGateOutcomeAllowed,
+			wantReason: sandbox.SandboxSecurityCapabilityReadinessGateReasonReadinessReady,
+		},
+		{
+			name:       "warning bearing",
+			downgrade:  DowngradeWarningBearing,
+			wantMode:   sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+			wantGate:   sandbox.SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+			wantReason: sandbox.SandboxSecurityCapabilityReadinessGateReasonCode(sandbox.SandboxSecurityCapabilityReasonWarningBearing),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := CompleteAcceptedEvidenceSet(DowngradeProof(ProofStrictTargetSelection, tt.downgrade))
+			if fixture.StrictTargetSelection {
+				t.Fatalf("StrictTargetSelection = true, want false for %s target-selection proof", tt.downgrade)
+			}
+			if fixture.GateMode != tt.wantMode {
+				t.Fatalf("GateMode = %q, want %q", fixture.GateMode, tt.wantMode)
+			}
+			if fixture.Gate.Outcome != tt.wantGate || fixture.Gate.Reason != tt.wantReason {
+				t.Fatalf("Gate = %#v, want outcome=%s reason=%s", fixture.Gate, tt.wantGate, tt.wantReason)
+			}
+			assertFixtureDataSafe(t, fixture)
+		})
+	}
+}
+
 func TestNetworkProofDowngradeVariantsStayIncomplete(t *testing.T) {
 	for _, downgrade := range []Downgrade{
 		DowngradeProxyOnly,

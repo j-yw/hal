@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/securedefaultfixtures"
 )
 
 func TestSelectStrictSecureDefaultRejectsMicroVMTargetWithoutCachedReadiness(t *testing.T) {
@@ -132,6 +133,57 @@ func TestSelectStrictSecureDefaultDefaultSelectionAllowsProofCompleteRunningTarg
 		result.SecurityReadinessGate.Outcome != sandbox.SandboxSecurityCapabilityReadinessGateOutcomeAllowed ||
 		result.SecurityReadinessGate.Code != sandbox.SandboxSecurityCapabilityReadinessGateCodeAllowed {
 		t.Fatalf("security readiness gate = %#v, want strict allowed decision", result.SecurityReadinessGate)
+	}
+}
+
+func TestUS003SelectStrictSecureDefaultRejectsMissingOrWeakTargetSelectionProof(t *testing.T) {
+	tests := []struct {
+		name        string
+		fixture     securedefaultfixtures.EvidenceSet
+		wantReasons []string
+	}{
+		{
+			name:    "missing strict target-selection proof",
+			fixture: securedefaultfixtures.CompleteAcceptedEvidenceSet(securedefaultfixtures.OmitProof(securedefaultfixtures.ProofStrictTargetSelection)),
+			wantReasons: strictSecureDefaultSafeReasons(
+				string(sandbox.SandboxSecurityCapabilityReadinessGateReasonPolicyOff),
+				string(sandbox.SandboxSecurityCapabilityReadinessGateReasonReadinessMissing),
+			),
+		},
+		{
+			name:    "advisory-only target-selection metadata",
+			fixture: securedefaultfixtures.CompleteAcceptedEvidenceSet(securedefaultfixtures.DowngradeProof(securedefaultfixtures.ProofStrictTargetSelection, securedefaultfixtures.DowngradeAdvisory)),
+			wantReasons: strictSecureDefaultSafeReasons(
+				string(sandbox.SandboxSecurityCapabilityReadinessGateReasonPolicyAdvisory),
+			),
+		},
+		{
+			name:    "warning-bearing target-selection metadata",
+			fixture: securedefaultfixtures.CompleteAcceptedEvidenceSet(securedefaultfixtures.DowngradeProof(securedefaultfixtures.ProofStrictTargetSelection, securedefaultfixtures.DowngradeWarningBearing)),
+			wantReasons: strictSecureDefaultSafeReasons(
+				string(sandbox.SandboxSecurityCapabilityReasonWarningBearing),
+			),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target := strictSecureDefaultFixtureSandbox("us003-"+strings.ReplaceAll(tt.name, " ", "-"), tt.fixture)
+
+			result := Select(Request{
+				SandboxName:               target.Name,
+				SecurityReadinessGateMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+				Fallback:                  FallbackPolicy{Disabled: true},
+			}, CachedState{
+				LoadSandbox: func(name string) (*sandbox.SandboxState, error) {
+					if name != target.Name {
+						t.Fatalf("loaded sandbox name = %q, want %q", name, target.Name)
+					}
+					return target, nil
+				},
+			})
+
+			requireStrictSecureDefaultSelectionBlocked(t, result, tt.wantReasons, strictSecureDefaultForbiddenFragments()...)
+		})
 	}
 }
 
@@ -381,7 +433,7 @@ func strictSecureDefaultProofCompleteSandbox(name string) *sandbox.SandboxState 
 }
 
 func strictSecureDefaultProofCompleteSecurity() *sandbox.SandboxSecurity {
-	return strictSecureDefaultSecurityFromReadiness(sandbox.SandboxSecurityCapabilityReadinessOutput{
+	security := strictSecureDefaultSecurityFromReadiness(sandbox.SandboxSecurityCapabilityReadinessOutput{
 		Results: []sandbox.SandboxSecurityCapabilityReadinessResult{
 			strictSecureDefaultReadyResult(
 				sandbox.SandboxSecurityCapabilityFamilyIsolation,
@@ -415,6 +467,19 @@ func strictSecureDefaultProofCompleteSecurity() *sandbox.SandboxSecurity {
 			),
 		},
 	})
+	gate := sandbox.EvaluateSandboxSecureDefaultReadiness(*security.CapabilityReadiness)
+	security.SecurityReadinessGate = &gate
+	return security
+}
+
+func strictSecureDefaultFixtureSandbox(name string, fixture securedefaultfixtures.EvidenceSet) *sandbox.SandboxState {
+	target := strictSecureDefaultMicroVMSandbox(name)
+	security := fixture.Security()
+	security.Network = nil
+	security.Secrets = nil
+	target.Security = security
+	target.Host.Security = nil
+	return target
 }
 
 func strictSecureDefaultWarningBearingReadySecurity() *sandbox.SandboxSecurity {
