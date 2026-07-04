@@ -288,10 +288,13 @@ func activationBindingResultsForInput(input ActivationRequest, raw []BindingActi
 				result.ReasonCode = ReasonCompatibilityMode
 			}
 		}
-		if result.DeliveryMode == ModeHTTPProxy && result.Status == StatusActive && !httpProxyActivationAllowed(input.Plan, binding) {
-			result.Status = StatusSkipped
-			result.ReasonCode = ReasonMissingServiceBinding
-			result.ProofRef = ""
+		if result.DeliveryMode == ModeHTTPProxy && result.Status == StatusActive {
+			reason := HTTPProxyProofActivationReason(input.Plan, binding)
+			if reason != ReasonRequested {
+				result.Status = StatusSkipped
+				result.ReasonCode = reason
+				result.ProofRef = ""
+			}
 		}
 		if result.DeliveryMode == ModeSSHAgent && result.Status == StatusActive {
 			reason := SSHAgentProofActivationReason(input.Plan, binding)
@@ -467,13 +470,25 @@ func activationReasonForStatus(status Status, warnings []Warning) ReasonCode {
 }
 
 func httpProxyActivationAllowed(plan Plan, binding Binding) bool {
-	if binding.DeliveryMode != ModeHTTPProxy || binding.ServiceID == "" {
-		return false
+	return HTTPProxyProofActivationReason(plan, binding) == ReasonRequested
+}
+
+// HTTPProxyProofActivationReason returns ReasonRequested only when sanitized
+// plan proof metadata proves an existing http_proxy credential and network
+// proxy handoff for the binding.
+func HTTPProxyProofActivationReason(plan Plan, binding Binding) ReasonCode {
+	plan = SanitizePlanMetadata(plan)
+	binding = SanitizeBindingMetadata(binding)
+	if binding.ID == "" || binding.DeliveryMode != ModeHTTPProxy {
+		return ReasonUnsupportedMode
+	}
+	if binding.ServiceID == "" {
+		return ReasonMissingServiceBinding
 	}
 	if !activationModeRecordsContain(plan.RequestedModes, ModeHTTPProxy) ||
 		!activationModeRecordsContain(plan.ActiveModes, ModeHTTPProxy) ||
 		plan.NetworkProxySessionID == "" {
-		return false
+		return ReasonMissingActivationProof
 	}
 	proof := SanitizeHTTPProxyProofMetadataPtr(plan.HTTPProxyProof)
 	if proof == nil ||
@@ -486,11 +501,32 @@ func httpProxyActivationAllowed(plan Plan, binding Binding) bool {
 		proof.SecretBrokerSessionID == "" ||
 		proof.CredentialProxyPlanID == "" ||
 		proof.CredentialProxySessionID == "" ||
-		proof.CredentialProxyBindingID == "" ||
-		!sandbox.SandboxNetworkEnforcementProofProvesActiveHTTPProxy(*proof.NetworkEnforcement) {
-		return false
+		proof.CredentialProxyBindingID == "" {
+		return ReasonMissingActivationProof
 	}
-	return binding.NetworkProxySessionID == "" || binding.NetworkProxySessionID == plan.NetworkProxySessionID
+	if binding.NetworkProxySessionID != "" && binding.NetworkProxySessionID != plan.NetworkProxySessionID {
+		return ReasonMissingActivationProof
+	}
+	if !httpProxyNetworkProofHasRequiredIDs(*proof.NetworkEnforcement) {
+		return ReasonMissingActivationProof
+	}
+	if !sandbox.SandboxNetworkEnforcementProofProvesActiveHTTPProxy(*proof.NetworkEnforcement) {
+		return ReasonUnsupportedCapability
+	}
+	return ReasonRequested
+}
+
+// HTTPProxyProofAllowsActivation reports whether sanitized plan metadata proves
+// safe http_proxy handoff readiness for one binding.
+func HTTPProxyProofAllowsActivation(plan Plan, binding Binding) bool {
+	return HTTPProxyProofActivationReason(plan, binding) == ReasonRequested
+}
+
+func httpProxyNetworkProofHasRequiredIDs(proof sandbox.SandboxNetworkEnforcementProofMetadata) bool {
+	sanitized := sandbox.SanitizeSandboxNetworkEnforcementProofMetadata(proof)
+	return sanitized.NetworkProxySessionID != "" &&
+		sanitized.PolicySnapshotID != "" &&
+		sanitized.NetworkEnforcementPlanID != ""
 }
 
 // SSHAgentProofActivationReason returns ReasonRequested only when sanitized
@@ -548,15 +584,36 @@ func appendHTTPProxyActivationWarnings(input ActivationRequest, adapterActiveMod
 	if activationHasActiveBindingForMode(bindings, ModeHTTPProxy) {
 		return warnings
 	}
+	reason := httpProxyActivationSkippedReason(input, adapterActiveModes, bindings)
+	if reason == "" {
+		return warnings
+	}
 	if activationHasSkippedBindingForMode(bindings, ModeHTTPProxy) ||
 		activationModeRecordsContain(adapterActiveModes, ModeHTTPProxy) {
 		return appendActivationWarningIfMissing(warnings, Warning{
 			Code:       WarningActivationSkipped,
-			ReasonCode: ReasonMissingServiceBinding,
+			ReasonCode: reason,
 			Mode:       ModeHTTPProxy,
 		})
 	}
 	return warnings
+}
+
+func httpProxyActivationSkippedReason(input ActivationRequest, adapterActiveModes []Mode, bindings []BindingActivationResult) ReasonCode {
+	for _, binding := range SanitizeBindingActivationResultMetadataRecords(bindings) {
+		if binding.DeliveryMode == ModeHTTPProxy && binding.Status == StatusSkipped && binding.ReasonCode != "" {
+			return binding.ReasonCode
+		}
+	}
+	if !activationModeRecordsContain(adapterActiveModes, ModeHTTPProxy) {
+		return ""
+	}
+	for _, binding := range SanitizeBindingMetadataRecords(input.Bindings) {
+		if binding.DeliveryMode == ModeHTTPProxy {
+			return HTTPProxyProofActivationReason(input.Plan, binding)
+		}
+	}
+	return ReasonMissingActivationProof
 }
 
 func appendSSHAgentActivationWarnings(input ActivationRequest, adapterActiveModes []Mode, bindings []BindingActivationResult, warnings []Warning) []Warning {

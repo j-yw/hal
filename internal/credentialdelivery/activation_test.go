@@ -231,6 +231,7 @@ func TestActivateDeliveryHTTPProxyRequiresSafeSessionBinding(t *testing.T) {
 		name       string
 		configure  func(*PlanConstructionRequest)
 		wantActive bool
+		wantReason ReasonCode
 		rejected   []string
 	}{
 		{
@@ -301,11 +302,16 @@ func TestActivateDeliveryHTTPProxyRequiresSafeSessionBinding(t *testing.T) {
 					t.Fatalf("activation warnings = %#v, want none for safe http_proxy activation", got.Warnings)
 				}
 			} else {
+				wantReason := tt.wantReason
+				if wantReason == "" {
+					wantReason = ReasonMissingActivationProof
+				}
 				if got.Status != StatusSkipped {
 					t.Fatalf("activation status = %q, want skipped fail-closed result", got.Status)
 				}
 				assertPlanModes(t, got.ActiveModes, nil)
-				assertActivationWarning(t, got, WarningActivationSkipped, ReasonMissingServiceBinding, ModeHTTPProxy)
+				assertActivationReason(t, got, wantReason)
+				assertActivationWarning(t, got, WarningActivationSkipped, wantReason, ModeHTTPProxy)
 				assertActivationBindingStatus(t, got, binding.ID, ModeHTTPProxy, StatusSkipped)
 			}
 			assertActivationNoLeak(t, got, tt.rejected...)
@@ -393,7 +399,8 @@ func TestActivateDeliveryHTTPProxyRequiresBrokerAndNetworkProofs(t *testing.T) {
 				t.Fatalf("activation status = %q, want skipped fail-closed result", got.Status)
 			}
 			assertPlanModes(t, got.ActiveModes, nil)
-			assertActivationWarning(t, got, WarningActivationSkipped, ReasonMissingServiceBinding, ModeHTTPProxy)
+			assertActivationReason(t, got, ReasonMissingActivationProof)
+			assertActivationWarning(t, got, WarningActivationSkipped, ReasonMissingActivationProof, ModeHTTPProxy)
 			assertActivationBindingStatus(t, got, binding.ID, ModeHTTPProxy, StatusSkipped)
 			assertActivationNoLeak(t, got)
 		})
@@ -421,36 +428,42 @@ func TestActivateDeliveryHTTPProxyDowngradesMismatchedProofIdentifiers(t *testin
 	tests := []struct {
 		name      string
 		configure func(*Plan)
+		reason    ReasonCode
 	}{
 		{
 			name: "binding mismatch",
 			configure: func(plan *Plan) {
 				plan.HTTPProxyProof.BindingID = "binding-other"
 			},
+			reason: ReasonMissingActivationProof,
 		},
 		{
 			name: "policy mismatch",
 			configure: func(plan *Plan) {
 				plan.HTTPProxyProof.NetworkEnforcement.PolicySnapshotID = "policy-snapshot-other"
 			},
+			reason: ReasonMissingActivationProof,
 		},
 		{
 			name: "broker mismatch",
 			configure: func(plan *Plan) {
 				plan.HTTPProxyProof.SecretBrokerSessionID = ""
 			},
+			reason: ReasonMissingActivationProof,
 		},
 		{
 			name: "proxy mismatch",
 			configure: func(plan *Plan) {
 				plan.HTTPProxyProof.NetworkEnforcement.NetworkProxySessionID = "network-proxy-session-other"
 			},
+			reason: ReasonMissingActivationProof,
 		},
 		{
 			name: "result unsupported",
 			configure: func(plan *Plan) {
 				plan.HTTPProxyProof.NetworkEnforcement.ResultSupported = false
 			},
+			reason: ReasonUnsupportedCapability,
 		},
 	}
 
@@ -468,8 +481,9 @@ func TestActivateDeliveryHTTPProxyDowngradesMismatchedProofIdentifiers(t *testin
 				t.Fatalf("activation status = %q, want skipped for mismatched proof", got.Status)
 			}
 			assertPlanModes(t, got.ActiveModes, nil)
+			assertActivationReason(t, got, tt.reason)
 			assertActivationBindingStatus(t, got, binding.ID, ModeHTTPProxy, StatusSkipped)
-			assertActivationWarning(t, got, WarningActivationSkipped, ReasonMissingServiceBinding, ModeHTTPProxy)
+			assertActivationWarning(t, got, WarningActivationSkipped, tt.reason, ModeHTTPProxy)
 			assertActivationNoLeak(t, got)
 		})
 	}

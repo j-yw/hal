@@ -503,6 +503,24 @@ func TestRuntimeCredentialDeliveryMetadataProjectsActiveModesOnlyFromSanitizedAc
 	}
 }
 
+func TestRuntimeCredentialDeliveryMetadataPreservesCredentialActivationProofReasonCodes(t *testing.T) {
+	for _, reason := range []string{"missing_activation_proof", "unsupported_capability"} {
+		t.Run(reason, func(t *testing.T) {
+			sanitized := SanitizeRuntimeCredentialDeliveryMetadata(&RuntimeCredentialDeliveryMetadata{
+				ID:         "credential-status-proof",
+				Status:     "skipped",
+				ReasonCode: reason,
+			})
+			if sanitized == nil {
+				t.Fatal("credentialDelivery = nil")
+			}
+			if sanitized.ReasonCode != reason {
+				t.Fatalf("reason = %q, want %q", sanitized.ReasonCode, reason)
+			}
+		})
+	}
+}
+
 func TestRuntimeNetworkEnforcementMetadataSanitizesUnsafeValues(t *testing.T) {
 	metadata := SanitizeRuntimeNetworkEnforcementMetadata(&RuntimeNetworkEnforcementMetadata{
 		Plan: &RuntimeNetworkEnforcementPlanMetadata{

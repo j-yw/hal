@@ -129,6 +129,72 @@ func TestCredentialActivationProofSSHAgentSanitizesUnsafeMetadata(t *testing.T) 
 	}
 }
 
+func TestHTTPProxyCredentialActivationProofReportsSupportedNetworkAndCredentialProxyMetadata(t *testing.T) {
+	binding := httpProxyProofBindingFixture()
+	plan := httpProxyProofPlanFixture(binding)
+
+	if reason := HTTPProxyProofActivationReason(plan, binding); reason != ReasonRequested {
+		t.Fatalf("HTTPProxyProofActivationReason() = %q, want %q", reason, ReasonRequested)
+	}
+	if !HTTPProxyProofAllowsActivation(plan, binding) {
+		t.Fatal("HTTPProxyProofAllowsActivation() = false, want true")
+	}
+}
+
+func TestHTTPProxyCredentialActivationProofMissingMetadataFailsClosed(t *testing.T) {
+	binding := httpProxyProofBindingFixture()
+	plan := httpProxyProofPlanFixture(binding)
+	plan.HTTPProxyProof = nil
+
+	if reason := HTTPProxyProofActivationReason(plan, binding); reason != ReasonMissingActivationProof {
+		t.Fatalf("HTTPProxyProofActivationReason() = %q, want %q", reason, ReasonMissingActivationProof)
+	}
+	if HTTPProxyProofAllowsActivation(plan, binding) {
+		t.Fatal("HTTPProxyProofAllowsActivation() = true, want false without proof metadata")
+	}
+}
+
+func TestHTTPProxyCredentialActivationProofUnsupportedCapabilityFailsClosed(t *testing.T) {
+	binding := httpProxyProofBindingFixture()
+	tests := []struct {
+		name      string
+		configure func(*HTTPProxyProof)
+	}{
+		{
+			name: "network result unsupported",
+			configure: func(proof *HTTPProxyProof) {
+				proof.NetworkEnforcement.ResultSupported = false
+			},
+		},
+		{
+			name: "non proxy enforcement mode",
+			configure: func(proof *HTTPProxyProof) {
+				proof.NetworkEnforcement.ResultEnforcementMode = "firewall"
+			},
+		},
+		{
+			name: "inactive proxy lifecycle",
+			configure: func(proof *HTTPProxyProof) {
+				proof.NetworkEnforcement.ProxyLifecycleStatus = "requested"
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan := httpProxyProofPlanFixture(binding)
+			tt.configure(plan.HTTPProxyProof)
+
+			if reason := HTTPProxyProofActivationReason(plan, binding); reason != ReasonUnsupportedCapability {
+				t.Fatalf("HTTPProxyProofActivationReason() = %q, want %q", reason, ReasonUnsupportedCapability)
+			}
+			if HTTPProxyProofAllowsActivation(plan, binding) {
+				t.Fatal("HTTPProxyProofAllowsActivation() = true, want false for unsupported proof metadata")
+			}
+		})
+	}
+}
+
 func sshAgentProofBindingFixture() Binding {
 	binding := planBindingFixture(ModeSSHAgent)
 	binding.ID = "binding-ssh"
@@ -160,4 +226,20 @@ func sshAgentProofPlanFixture(binding Binding) Plan {
 		},
 		Status: StatusPlanned,
 	}
+}
+
+func httpProxyProofBindingFixture() Binding {
+	binding := planBindingFixture(ModeHTTPProxy)
+	binding.ID = "binding-http-proxy"
+	binding.SecretRef = "env:PHASE51_HTTP_PROXY_ONE"
+	binding.PolicySnapshotID = "policy-snapshot-01"
+	binding.NetworkProxySessionID = "network-proxy-session-01"
+	binding.ServiceID = "service-http-proxy"
+	return binding
+}
+
+func httpProxyProofPlanFixture(binding Binding) Plan {
+	request := planConstructionRequestFixture(binding)
+	configureHTTPProxyProof(&request)
+	return BuildDeliveryPlan(request)
 }

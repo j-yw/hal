@@ -133,7 +133,8 @@ func TestActivateDeliveryHTTPProxyMissingPhase45SuccessMetadataStaysNonActive(t 
 	}
 	assertPlanModes(t, got.RequestedModes, []Mode{ModeHTTPProxy})
 	assertPlanModes(t, got.ActiveModes, nil)
-	assertActivationWarning(t, got, WarningActivationSkipped, ReasonMissingServiceBinding, ModeHTTPProxy)
+	assertActivationReason(t, got, ReasonUnsupportedCapability)
+	assertActivationWarning(t, got, WarningActivationSkipped, ReasonUnsupportedCapability, ModeHTTPProxy)
 	assertActivationBindingStatus(t, got, binding.ID, ModeHTTPProxy, StatusSkipped)
 	assertActivationNoLeak(t, got)
 }

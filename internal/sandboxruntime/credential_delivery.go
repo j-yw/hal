@@ -100,7 +100,7 @@ func sanitizeRuntimeCredentialDeliveryStatus(value string) string {
 
 func sanitizeRuntimeCredentialDeliveryReason(value string) string {
 	switch normalizeRuntimeCredentialDeliveryEnum(value) {
-	case "requested", "unsupported_mode", "missing_secret_reference", "missing_service_binding", "activation_unavailable", "compatibility_mode", "disabled", "unknown":
+	case "requested", "unsupported_mode", "missing_secret_reference", "missing_service_binding", "missing_activation_proof", "unsupported_capability", "activation_unavailable", "compatibility_mode", "disabled", "unknown":
 		return normalizeRuntimeCredentialDeliveryEnum(value)
 	default:
 		return ""
