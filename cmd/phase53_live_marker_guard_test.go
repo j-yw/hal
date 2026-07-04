@@ -231,6 +231,7 @@ func us010ApprovedLiveE2EGuardFiles() map[string]bool {
 		"cmd/phase53_live_marker_guard_test.go":                                                true,
 		"cmd/phase54_optional_live_matrix_docs_test.go":                                        true,
 		"cmd/phase56_live_gate_docs_test.go":                                                   true,
+		"cmd/phase60_operator_verification_docs_test.go":                                       true,
 		"cmd/sandbox_default_fake_only_guard_test.go":                                          true,
 		"cmd/secure_default_runtime_docs_red_test.go":                                          true,
 		"cmd/us015_prepared_host_live_e2e_boundary_test.go":                                    true,

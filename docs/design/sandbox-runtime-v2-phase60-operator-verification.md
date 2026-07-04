@@ -103,6 +103,14 @@ The composed microVM live E2E gate requires these environment marker names:
 - `HAL_CREDENTIAL_DELIVERY_LIVE`
 - `HAL_TEMPLATE_TRUST_LIVE`
 
+Standalone Firecracker checks also recognize these optional Firecracker marker
+names:
+
+- `HAL_FIRECRACKER_LIVE_INITRD`
+- `HAL_FIRECRACKER_LIVE_TIMEOUT`
+- `HAL_FIRECRACKER_LIVE_CPU_COUNT`
+- `HAL_FIRECRACKER_LIVE_MEMORY_MIB`
+
 Credential delivery also requires at least one delivery mode marker name:
 
 - `HAL_CREDENTIAL_DELIVERY_LIVE_HTTP_PROXY`
