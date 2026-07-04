@@ -724,6 +724,146 @@ func TestFactorySandboxDefaultCommandKeepsWorkerRouteInactiveInRecord(t *testing
 	}
 }
 
+func TestResolveSandboxCommandTargetStrictMicroVMRejectsMissingReadinessBeforeDirectHostCompatibility(t *testing.T) {
+	target := strictCommandMicroVMTargetWithoutReadiness("cmd-strict-microvm")
+	var provisionCalled bool
+
+	resolved, err := resolveSandboxCommandTarget(context.Background(), sandboxCommandTargetRequest{
+		Purpose:             sandbox.SandboxLeasePurposeRun,
+		SandboxName:         target.Name,
+		SandboxRuntime:      sandbox.SandboxRuntimeDriverMicroVM,
+		ProjectDir:          "/Users/alice/private/worktree",
+		Repository:          "https://alice:ghp_strict_secret@example.test/org/private-repo.git",
+		Branch:              "feature/strict-microvm",
+		ProvisionRepository: "https://alice:ghp_strict_secret@example.test/org/private-repo.git",
+	}, sandboxCommandTargetDeps{
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{strictCommandMicroVMHost()}, nil
+		},
+		listSandboxes: func() ([]*sandbox.SandboxState, error) {
+			t.Fatal("listSandboxes should not run for explicit strict microVM target selection")
+			return nil, nil
+		},
+		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+			t.Fatal("resolveDefault should not run for explicit strict microVM target selection")
+			return nil, "", nil
+		},
+		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+			provisionCalled = true
+			return nil, nil
+		},
+	})
+
+	if err == nil {
+		t.Fatalf("resolveSandboxCommandTarget() target = %#v, error = nil, want strict secure-default readiness failure", resolved)
+	}
+	if resolved != nil {
+		t.Fatalf("resolved target = %#v, want nil after strict secure-default rejection", resolved)
+	}
+	if provisionCalled {
+		t.Fatal("provision ran after strict secure-default rejection")
+	}
+	requireStrictCommandTargetSelectionErrorSafe(t, err.Error(), strictCommandTargetForbiddenFragments()...)
+}
+
+func TestRunFactorySandboxExecutorStrictSecureDefaultDoesNotResolveCompatibilityDefaultTargets(t *testing.T) {
+	tests := []struct {
+		name   string
+		target *sandbox.SandboxState
+	}{
+		{
+			name:   "ssh machine",
+			target: strictCommandCompatibilityDefaultTarget("factory-strict-ssh", sandbox.SandboxRuntimeDriverSSHMachine, sandbox.SandboxIsolationLevelHost, nil),
+		},
+		{
+			name:   "rootless worker",
+			target: strictCommandCompatibilityDefaultTarget("factory-strict-rootless", sandbox.SandboxRuntimeDriverRootlessPodman, sandbox.SandboxIsolationLevelContainer, nil),
+		},
+		{
+			name: "direct host workspace",
+			target: strictCommandCompatibilityDefaultTarget("factory-strict-direct", sandbox.SandboxRuntimeDriverMicroVM, sandbox.SandboxIsolationLevelVM, &sandbox.SandboxWorkspace{
+				Mode:        sandbox.SandboxWorkspaceModeDirect,
+				InputSource: sandbox.SandboxWorkspaceInputSourceCopy,
+				Repo:        "https://alice:ghp_strict_secret@example.test/org/private-repo.git",
+				Branch:      "feature/direct-host",
+				SyncRef:     "/Users/alice/private/worktree",
+			}),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := factory.NewStore(t.TempDir())
+			now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+			runID := "run-strict-target-" + strings.ReplaceAll(tt.name, " ", "-")
+			var resolveDefaultCalls int
+			var remoteOutput bytes.Buffer
+
+			err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+				ProjectDir:                "/Users/alice/private/worktree",
+				SecurityReadinessGateMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+				RunRecord: factory.RunRecord{
+					RunID:      runID,
+					RepoRemote: "https://alice:ghp_strict_secret@example.test/org/private-repo.git",
+					BaseBranch: "main",
+					BranchName: "feature/strict-target-selection",
+					Status:     factory.RunStatusRunning,
+					Policy: &factory.FactoryPolicy{
+						SecurityReadinessGatePolicyMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+					},
+				},
+				RemoteAuto:          factoryRunAutoRequest{BaseBranch: "main"},
+				RemoteOutput:        &remoteOutput,
+				DeferSuccessCleanup: true,
+			}, factorySandboxExecutorDeps{
+				defaultStore: func() (factory.Store, error) { return store, nil },
+				now:          func() time.Time { return now },
+				resolveDefault: func(filter func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+					resolveDefaultCalls++
+					if !filter(tt.target) {
+						t.Fatalf("running-sandbox filter rejected fixture target %#v", tt.target)
+					}
+					return tt.target, tt.target.Name, nil
+				},
+				listHosts: func() ([]*sandbox.SandboxHost, error) {
+					return []*sandbox.SandboxHost{strictCommandMicroVMHost()}, nil
+				},
+				loadSandbox: func(string) (*sandbox.SandboxState, error) {
+					t.Fatal("loadSandbox should not run for strict secure-default default selection")
+					return nil, nil
+				},
+				provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+					t.Fatal("provision should not run for strict secure-default default selection")
+					return nil, nil
+				},
+				resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+					t.Fatal("runtime driver should not be constructed after strict target-selection rejection")
+					return nil, nil
+				},
+				bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+					t.Fatal("bootstrap should not run after strict target-selection rejection")
+					return factory.BootstrapResult{}, nil
+				},
+				engineAuthFiles: func() []factorySandboxAuthFile { return nil },
+			})
+
+			if err == nil {
+				t.Fatal("runFactorySandboxExecutorWithDeps() error = nil, want strict target-selection rejection")
+			}
+			requireStrictCommandTargetSelectionErrorSafe(t, err.Error(), strictCommandTargetForbiddenFragments()...)
+			if resolveDefaultCalls != 0 {
+				t.Fatalf("resolveDefault calls = %d, want 0 so strict secure-default selection cannot fall back to %s compatibility", resolveDefaultCalls, tt.name)
+			}
+		})
+	}
+}
+
 func TestWorkerMicroVMRunSandboxJSONFailsWithRuntimeUnsupportedClassification(t *testing.T) {
 	startedAt := time.Date(2026, 7, 1, 7, 0, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(time.Second)
@@ -3391,6 +3531,126 @@ func defaultRegressionWorkerHostWithoutEndpoint() *sandbox.SandboxHost {
 		SupportedRuntimes: []string{
 			sandboxruntime.DriverRootlessPodman,
 		},
+	}
+}
+
+func strictCommandMicroVMHost() *sandbox.SandboxHost {
+	return &sandbox.SandboxHost{
+		ID:       "strict-microvm-host",
+		Name:     "strict microvm host",
+		Kind:     sandbox.SandboxHostKindLocal,
+		Endpoint: workerUnsafeRemoteEndpoint(),
+		SupportedRuntimes: []string{
+			sandboxruntime.DriverMicroVM,
+		},
+		Health: &sandbox.HostHealth{
+			Status:  "healthy",
+			Message: "token=secret",
+		},
+	}
+}
+
+func strictCommandMicroVMTargetWithoutReadiness(name string) *sandbox.SandboxState {
+	return &sandbox.SandboxState{
+		Name:     name,
+		Provider: "local",
+		Status:   sandbox.StatusRunning,
+		Host: &sandbox.SandboxHost{
+			ID:       "strict-microvm-host",
+			Name:     "strict microvm host",
+			Kind:     sandbox.SandboxHostKindLocal,
+			Endpoint: workerUnsafeRemoteEndpoint(),
+		},
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandboxruntime.DriverMicroVM,
+			IsolationLevel: sandbox.SandboxIsolationLevelVM,
+			RuntimeID:      "strict-runtime-secret",
+			Image:          "ghcr.io/private/raw-strict-microvm-image:latest",
+		},
+		Workspace: &sandbox.SandboxWorkspace{
+			Mode:        sandbox.SandboxWorkspaceModeDirect,
+			InputSource: sandbox.SandboxWorkspaceInputSourceCopy,
+			Repo:        "https://alice:ghp_strict_secret@example.test/org/private-repo.git",
+			Branch:      "feature/direct-host",
+			SyncRef:     "/Users/alice/private/worktree",
+		},
+	}
+}
+
+func strictCommandCompatibilityDefaultTarget(name, runtimeDriver, isolationLevel string, workspace *sandbox.SandboxWorkspace) *sandbox.SandboxState {
+	hostKind := sandbox.SandboxHostKindSSH
+	if runtimeDriver == sandbox.SandboxRuntimeDriverRootlessPodman {
+		hostKind = sandbox.SandboxHostKindWorker
+	}
+	return &sandbox.SandboxState{
+		Name:     name,
+		Provider: "compat",
+		Status:   sandbox.StatusRunning,
+		Host: &sandbox.SandboxHost{
+			ID:       "strict-compat-host",
+			Name:     "strict compat host",
+			Kind:     hostKind,
+			Endpoint: workerUnsafeRemoteEndpoint(),
+		},
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         runtimeDriver,
+			IsolationLevel: isolationLevel,
+			RuntimeID:      "strict-compat-runtime-secret",
+			Image:          "ghcr.io/private/raw-strict-compat-image:latest",
+		},
+		Workspace: workspace,
+	}
+}
+
+func requireStrictCommandTargetSelectionErrorSafe(t *testing.T, message string, forbidden ...string) {
+	t.Helper()
+	if !strings.Contains(message, string(sandbox.SandboxSecurityCapabilityReadinessGateCodeBlocked)) {
+		t.Fatalf("target-selection error = %q, want safe strict readiness code %q", message, sandbox.SandboxSecurityCapabilityReadinessGateCodeBlocked)
+	}
+	if !strictCommandTargetSelectionErrorHasSafeReason(message) {
+		t.Fatalf("target-selection error = %q, want a safe strict readiness reason code", message)
+	}
+	for _, fragment := range forbidden {
+		if strings.TrimSpace(fragment) == "" {
+			continue
+		}
+		if strings.Contains(message, fragment) {
+			t.Fatalf("target-selection error leaked %q: %s", fragment, message)
+		}
+	}
+}
+
+func strictCommandTargetSelectionErrorHasSafeReason(message string) bool {
+	for _, reason := range []string{
+		string(sandbox.SandboxSecurityCapabilityReadinessGateReasonReadinessMissing),
+		string(sandbox.SandboxSecurityCapabilityReadinessGateReasonCapabilityUnsupported),
+		string(sandbox.SandboxSecurityCapabilityReadinessGateReasonCapabilityBlocked),
+		string(sandbox.SandboxSecurityCapabilityReasonMetadataEnforcementUnproven),
+		string(sandbox.SandboxSecurityCapabilityReasonMicroVMReadinessMissing),
+		string(sandbox.SandboxSecurityCapabilityReasonMicroVMSupportMissing),
+		string(sandbox.SandboxSecurityCapabilityReasonWorkspaceDirectHostWorktree),
+	} {
+		if strings.Contains(message, reason) {
+			return true
+		}
+	}
+	return false
+}
+
+func strictCommandTargetForbiddenFragments() []string {
+	return []string{
+		"ssh://",
+		"deploy:secret",
+		"example.test",
+		"token=secret",
+		"ghp_strict_secret",
+		"/tmp/private",
+		"/Users/alice",
+		"ghcr.io/private",
+		"raw-strict-microvm-image",
+		"raw-strict-compat-image",
+		"strict-runtime-secret",
+		"strict-compat-runtime-secret",
 	}
 }
 

@@ -26,7 +26,9 @@ func applyAutoSandboxCapabilityReadinessMetadata(manifest *sandboxexecution.Mani
 		sandbox.ProjectSandboxWorkerRuntimeCapabilityReadinessInput(sandbox.SandboxWorkerRuntimeCapabilityReadinessProjection{
 			Host:          manifest.Host,
 			Runtime:       manifest.Runtime,
+			Workspace:     manifest.Workspace,
 			WorkerRouting: manifest.WorkerRouting,
+			TemplateLock:  manifest.TemplateLock,
 		}),
 		sandbox.ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(sandbox.SandboxPolicyProxyCredentialCapabilityReadinessProjection{
 			NetworkPolicyResult:       autoSandboxManifestNetworkPolicyResult(manifest.Security),
@@ -35,6 +37,7 @@ func applyAutoSandboxCapabilityReadinessMetadata(manifest *sandboxexecution.Mani
 			CredentialProxyPlan:       manifest.CredentialProxyPlan,
 			CredentialProxySession:    manifest.CredentialProxySession,
 			CredentialProxyBindings:   manifest.CredentialProxyBindings,
+			CredentialDelivery:        manifest.CredentialDelivery,
 		}),
 	)
 	applyAutoSandboxReadinessDiagnostics(manifest.Security)

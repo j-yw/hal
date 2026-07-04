@@ -14,17 +14,18 @@ import (
 )
 
 type sandboxCommandTargetRequest struct {
-	Purpose              string
-	SandboxName          string
-	SandboxHostID        string
-	SandboxRuntime       string
-	ProjectDir           string
-	Repository           string
-	Branch               string
-	ProvisionRepository  string
-	LoadContext          string
-	Out                  io.Writer
-	WrapProvisionFailure bool
+	Purpose                   string
+	SandboxName               string
+	SandboxHostID             string
+	SandboxRuntime            string
+	SecurityReadinessGateMode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode
+	ProjectDir                string
+	Repository                string
+	Branch                    string
+	ProvisionRepository       string
+	LoadContext               string
+	Out                       io.Writer
+	WrapProvisionFailure      bool
 }
 
 type sandboxCommandTargetDeps struct {
@@ -33,6 +34,22 @@ type sandboxCommandTargetDeps struct {
 	listHosts      func() ([]*sandbox.SandboxHost, error)
 	resolveDefault func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
 	provision      func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
+}
+
+type sandboxCommandSecurityReadinessGateError struct {
+	cause    error
+	decision sandbox.SandboxSecurityCapabilityReadinessGateDecision
+}
+
+func (e sandboxCommandSecurityReadinessGateError) Error() string {
+	if e.cause == nil {
+		return ""
+	}
+	return e.cause.Error()
+}
+
+func (e sandboxCommandSecurityReadinessGateError) Unwrap() error {
+	return e.cause
 }
 
 func resolveSandboxCommandTarget(ctx context.Context, req sandboxCommandTargetRequest, deps sandboxCommandTargetDeps) (*sandbox.SandboxState, error) {
@@ -44,10 +61,11 @@ func resolveSandboxCommandTarget(ctx context.Context, req sandboxCommandTargetRe
 		return sandboxCommandLegacyCompatibilityTarget(target), nil
 	}
 	result := sandboxtarget.Select(sandboxtarget.Request{
-		Purpose:       sandboxtarget.Purpose(req.Purpose),
-		SandboxName:   req.SandboxName,
-		HostID:        req.SandboxHostID,
-		RuntimeDriver: req.SandboxRuntime,
+		Purpose:                   sandboxtarget.Purpose(req.Purpose),
+		SandboxName:               req.SandboxName,
+		HostID:                    req.SandboxHostID,
+		RuntimeDriver:             req.SandboxRuntime,
+		SecurityReadinessGateMode: sandboxCommandTargetSelectionGateMode(req),
 		Project: sandboxtarget.ProjectContext{
 			Dir:        req.ProjectDir,
 			Repository: req.Repository,
@@ -60,7 +78,14 @@ func resolveSandboxCommandTarget(ctx context.Context, req sandboxCommandTargetRe
 		ListHosts:     deps.listHosts,
 	})
 	if result.Failed() {
-		return nil, sandboxCommandTargetFailureError(result.Failure)
+		err := sandboxCommandTargetFailureError(result.Failure)
+		if result.SecurityReadinessGate != nil {
+			return nil, sandboxCommandSecurityReadinessGateError{
+				cause:    err,
+				decision: *result.SecurityReadinessGate,
+			}
+		}
+		return nil, err
 	}
 	if err := validateSandboxCommandWorkerRuntime(result); err != nil {
 		return nil, err
@@ -93,6 +118,14 @@ func resolveSandboxCommandTarget(ctx context.Context, req sandboxCommandTargetRe
 		return nil, err
 	}
 	return applySandboxCommandSelectedMetadata(target, result), nil
+}
+
+func sandboxCommandSecurityReadinessGateDecisionFromError(err error) *sandbox.SandboxSecurityCapabilityReadinessGateDecision {
+	var gateErr sandboxCommandSecurityReadinessGateError
+	if !errors.As(err, &gateErr) {
+		return nil
+	}
+	return sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(&gateErr.decision)
 }
 
 func sandboxCommandTargetFailureError(failure *sandboxtarget.Failure) error {
@@ -154,7 +187,22 @@ func validateSandboxCommandProvisioning(req sandboxCommandTargetRequest, result 
 }
 
 func sandboxCommandHasTargetSelectionConstraint(req sandboxCommandTargetRequest) bool {
-	return strings.TrimSpace(req.SandboxHostID) != "" || strings.TrimSpace(req.SandboxRuntime) != ""
+	return strings.TrimSpace(req.SandboxHostID) != "" ||
+		strings.TrimSpace(req.SandboxRuntime) != "" ||
+		sandboxCommandTargetSelectionGateMode(req) == sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict
+}
+
+func sandboxCommandTargetSelectionGateMode(req sandboxCommandTargetRequest) sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode {
+	if req.SecurityReadinessGateMode != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict {
+		return ""
+	}
+	if req.Purpose == sandbox.SandboxLeasePurposeFactory &&
+		(strings.TrimSpace(req.SandboxName) != "" ||
+			strings.TrimSpace(req.SandboxHostID) != "" ||
+			strings.TrimSpace(req.SandboxRuntime) != "") {
+		return ""
+	}
+	return sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict
 }
 
 func resolveSandboxCommandLegacyTarget(ctx context.Context, req sandboxCommandTargetRequest, deps sandboxCommandTargetDeps) (*sandbox.SandboxState, error) {

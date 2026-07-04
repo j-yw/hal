@@ -17,6 +17,14 @@ func EvaluateSandboxSecurityCapabilityReadiness(input SandboxSecurityCapabilityR
 			results = append(results, sandboxSecurityCapabilityReadyResult(requested, ready))
 			continue
 		}
+		if metadata, ok := sandboxSecurityCapabilityFindExplicitMetadataOnly(requested, input.Ready); ok {
+			results = append(results, sandboxSecurityCapabilityMetadataOnlyEvidenceResult(metadata))
+			continue
+		}
+		if unsupported, ok := sandboxSecurityCapabilityFindExplicitUnsupported(requested, input.Ready); ok {
+			results = append(results, sandboxSecurityCapabilityUnsupportedEvidenceResult(requested, unsupported))
+			continue
+		}
 		results = append(results, sandboxSecurityCapabilityUnsupportedResult(requested, input.Ready))
 	}
 
@@ -183,7 +191,8 @@ func sandboxSecurityCapabilityFindExplicitSupport(requested SandboxSecurityCapab
 
 func sandboxSecurityCapabilityFindExplicitBlocker(requested SandboxSecurityCapabilityMetadata, ready []SandboxSecurityCapabilityMetadata) (SandboxSecurityCapabilityMetadata, bool) {
 	for _, candidate := range ready {
-		if !sandboxSecurityCapabilitySameRequest(requested, candidate) {
+		if !sandboxSecurityCapabilitySameRequest(requested, candidate) &&
+			!sandboxSecurityCapabilitySameProjectedEvidenceTarget(requested, candidate) {
 			continue
 		}
 		if !sandboxSecurityCapabilityExplicitBlockerMetadata(candidate) {
@@ -194,8 +203,36 @@ func sandboxSecurityCapabilityFindExplicitBlocker(requested SandboxSecurityCapab
 	return SandboxSecurityCapabilityMetadata{}, false
 }
 
+func sandboxSecurityCapabilityFindExplicitMetadataOnly(requested SandboxSecurityCapabilityMetadata, ready []SandboxSecurityCapabilityMetadata) (SandboxSecurityCapabilityMetadata, bool) {
+	for _, candidate := range ready {
+		if !sandboxSecurityCapabilitySameRequest(requested, candidate) &&
+			!sandboxSecurityCapabilitySameProjectedEvidenceTarget(requested, candidate) {
+			continue
+		}
+		if !sandboxSecurityCapabilityExplicitMetadataOnlyMetadata(candidate) {
+			continue
+		}
+		return candidate, true
+	}
+	return SandboxSecurityCapabilityMetadata{}, false
+}
+
+func sandboxSecurityCapabilityFindExplicitUnsupported(requested SandboxSecurityCapabilityMetadata, ready []SandboxSecurityCapabilityMetadata) (SandboxSecurityCapabilityMetadata, bool) {
+	for _, candidate := range ready {
+		if !sandboxSecurityCapabilitySameRequest(requested, candidate) &&
+			!sandboxSecurityCapabilitySameProjectedEvidenceTarget(requested, candidate) {
+			continue
+		}
+		if !sandboxSecurityCapabilityExplicitUnsupportedMetadata(candidate) {
+			continue
+		}
+		return candidate, true
+	}
+	return SandboxSecurityCapabilityMetadata{}, false
+}
+
 func sandboxSecurityCapabilityBlockedResult(requested, blocker SandboxSecurityCapabilityMetadata) SandboxSecurityCapabilityReadinessResult {
-	reason := SandboxSecurityCapabilityReasonCapabilityBlocked
+	reason := sandboxSecurityCapabilityBlockedReason(blocker.ReasonCode)
 	warnings := sandboxSecurityCapabilityBlockedWarnings(blocker.WarningCodes)
 	requestedContext := sandboxSecurityCapabilityBlockedRequestedContext(requested, reason, warnings)
 	blockerContext := sandboxSecurityCapabilityBlockedReadyContext(blocker, reason, warnings)
@@ -209,7 +246,7 @@ func sandboxSecurityCapabilityBlockedResult(requested, blocker SandboxSecurityCa
 }
 
 func sandboxSecurityCapabilityReadyResult(requested, ready SandboxSecurityCapabilityMetadata) SandboxSecurityCapabilityReadinessResult {
-	reason := SandboxSecurityCapabilityReasonCapabilityConfirmed
+	reason := sandboxSecurityCapabilityReadyReason(ready.ReasonCode)
 	requestedContext := sandboxSecurityCapabilityReadyRequestedContext(requested, reason)
 	readyContext := sandboxSecurityCapabilityReadyContext(ready, reason)
 	return SandboxSecurityCapabilityReadinessResult{
@@ -217,6 +254,38 @@ func sandboxSecurityCapabilityReadyResult(requested, ready SandboxSecurityCapabi
 		Requested:  &requestedContext,
 		Ready:      &readyContext,
 		ReasonCode: reason,
+	}
+}
+
+func sandboxSecurityCapabilityMetadataOnlyEvidenceResult(metadata SandboxSecurityCapabilityMetadata) SandboxSecurityCapabilityReadinessResult {
+	reason := sandboxSecurityCapabilityMetadataOnlyReason(metadata.ReasonCode)
+	warnings := []SandboxSecurityCapabilityWarningCode{SandboxSecurityCapabilityWarningMetadataNotCapability}
+	context := SandboxSecurityCapabilityMetadata{
+		Family:       metadata.Family,
+		Capability:   metadata.Capability,
+		Mode:         sandboxSecurityCapabilitySafeMode(metadata.Family, metadata.Capability, metadata.Mode),
+		Source:       metadata.Source,
+		Status:       SandboxSecurityCapabilityReadinessMetadataOnly,
+		ReasonCode:   reason,
+		WarningCodes: append([]SandboxSecurityCapabilityWarningCode(nil), warnings...),
+	}
+	return SandboxSecurityCapabilityReadinessResult{
+		State:        SandboxSecurityCapabilityReadinessMetadataOnly,
+		Metadata:     &context,
+		ReasonCode:   reason,
+		WarningCodes: warnings,
+	}
+}
+
+func sandboxSecurityCapabilityUnsupportedEvidenceResult(requested, unsupported SandboxSecurityCapabilityMetadata) SandboxSecurityCapabilityReadinessResult {
+	reason := sandboxSecurityCapabilityUnsupportedEvidenceReason(unsupported.ReasonCode)
+	warnings := sandboxSecurityCapabilityUnsupportedWarnings(reason)
+	requestedContext := sandboxSecurityCapabilityUnsupportedRequestedContext(requested, reason, warnings)
+	return SandboxSecurityCapabilityReadinessResult{
+		State:        SandboxSecurityCapabilityReadinessUnsupported,
+		Requested:    &requestedContext,
+		ReasonCode:   reason,
+		WarningCodes: warnings,
 	}
 }
 
@@ -352,6 +421,22 @@ func sandboxSecurityCapabilitySameRequest(requested, candidate SandboxSecurityCa
 		sandboxSecurityCapabilityModeCompatible(requested.Mode, candidate.Mode)
 }
 
+func sandboxSecurityCapabilitySameProjectedEvidenceTarget(requested, candidate SandboxSecurityCapabilityMetadata) bool {
+	if candidate.Family != requested.Family || candidate.Capability != requested.Capability {
+		return false
+	}
+	switch candidate.Status {
+	case SandboxSecurityCapabilityReadinessBlocked:
+		return sandboxSecurityCapabilityProjectedBlockerReasonCode(candidate.ReasonCode)
+	case SandboxSecurityCapabilityReadinessMetadataOnly:
+		return sandboxSecurityCapabilityMetadataOnlyReasonCode(candidate.ReasonCode)
+	case SandboxSecurityCapabilityReadinessUnsupported:
+		return sandboxSecurityCapabilityUnsupportedEvidenceReasonCode(candidate.ReasonCode)
+	default:
+		return false
+	}
+}
+
 func sandboxSecurityCapabilityModeCompatible(requestedMode, candidateMode string) bool {
 	requestedMode = strings.ToLower(strings.TrimSpace(requestedMode))
 	candidateMode = strings.ToLower(strings.TrimSpace(candidateMode))
@@ -368,7 +453,7 @@ func sandboxSecurityCapabilityExplicitReadyMetadata(candidate SandboxSecurityCap
 	if !sandboxSecurityCapabilityKnownFamily(candidate.Family) || !sandboxSecurityCapabilityKnownCapability(candidate.Capability) {
 		return false
 	}
-	if candidate.ReasonCode != "" && candidate.ReasonCode != SandboxSecurityCapabilityReasonCapabilityConfirmed {
+	if !sandboxSecurityCapabilityReadyReasonCode(candidate.ReasonCode) {
 		return false
 	}
 	return candidate.Mode == "" || sandboxSecurityCapabilitySafeMode(candidate.Family, candidate.Capability, candidate.Mode) == candidate.Mode
@@ -384,7 +469,39 @@ func sandboxSecurityCapabilityExplicitBlockerMetadata(candidate SandboxSecurityC
 	if !sandboxSecurityCapabilityKnownFamily(candidate.Family) || !sandboxSecurityCapabilityKnownCapability(candidate.Capability) {
 		return false
 	}
-	if candidate.ReasonCode != "" && candidate.ReasonCode != SandboxSecurityCapabilityReasonCapabilityBlocked {
+	if !sandboxSecurityCapabilityBlockedReasonCode(candidate.ReasonCode) {
+		return false
+	}
+	return candidate.Mode == "" || sandboxSecurityCapabilitySafeMode(candidate.Family, candidate.Capability, candidate.Mode) == candidate.Mode
+}
+
+func sandboxSecurityCapabilityExplicitMetadataOnlyMetadata(candidate SandboxSecurityCapabilityMetadata) bool {
+	if candidate.Status != SandboxSecurityCapabilityReadinessMetadataOnly {
+		return false
+	}
+	if !sandboxSecurityCapabilityEvidenceSource(candidate.Source) {
+		return false
+	}
+	if !sandboxSecurityCapabilityKnownFamily(candidate.Family) || !sandboxSecurityCapabilityKnownCapability(candidate.Capability) {
+		return false
+	}
+	if !sandboxSecurityCapabilityMetadataOnlyReasonCode(candidate.ReasonCode) {
+		return false
+	}
+	return candidate.Mode == "" || sandboxSecurityCapabilitySafeMode(candidate.Family, candidate.Capability, candidate.Mode) == candidate.Mode
+}
+
+func sandboxSecurityCapabilityExplicitUnsupportedMetadata(candidate SandboxSecurityCapabilityMetadata) bool {
+	if candidate.Status != SandboxSecurityCapabilityReadinessUnsupported {
+		return false
+	}
+	if !sandboxSecurityCapabilityEvidenceSource(candidate.Source) {
+		return false
+	}
+	if !sandboxSecurityCapabilityKnownFamily(candidate.Family) || !sandboxSecurityCapabilityKnownCapability(candidate.Capability) {
+		return false
+	}
+	if !sandboxSecurityCapabilityUnsupportedEvidenceReasonCode(candidate.ReasonCode) {
 		return false
 	}
 	return candidate.Mode == "" || sandboxSecurityCapabilitySafeMode(candidate.Family, candidate.Capability, candidate.Mode) == candidate.Mode
@@ -399,13 +516,117 @@ func sandboxSecurityCapabilityExplicitSupportSource(source SandboxSecurityCapabi
 	}
 }
 
+func sandboxSecurityCapabilityEvidenceSource(source SandboxSecurityCapabilitySource) bool {
+	switch source {
+	case SandboxSecurityCapabilitySourceMetadata,
+		SandboxSecurityCapabilitySourceRuntime,
+		SandboxSecurityCapabilitySourceWorker:
+		return true
+	default:
+		return false
+	}
+}
+
+func sandboxSecurityCapabilityReadyReason(reason SandboxSecurityCapabilityReasonCode) SandboxSecurityCapabilityReasonCode {
+	if sandboxSecurityCapabilityReadyReasonCode(reason) && reason != "" {
+		return reason
+	}
+	return SandboxSecurityCapabilityReasonCapabilityConfirmed
+}
+
+func sandboxSecurityCapabilityBlockedReason(reason SandboxSecurityCapabilityReasonCode) SandboxSecurityCapabilityReasonCode {
+	if sandboxSecurityCapabilityBlockedReasonCode(reason) && reason != "" {
+		return reason
+	}
+	return SandboxSecurityCapabilityReasonCapabilityBlocked
+}
+
+func sandboxSecurityCapabilityMetadataOnlyReason(reason SandboxSecurityCapabilityReasonCode) SandboxSecurityCapabilityReasonCode {
+	if sandboxSecurityCapabilityMetadataOnlyReasonCode(reason) && reason != "" {
+		return reason
+	}
+	return SandboxSecurityCapabilityReasonMetadataOnly
+}
+
+func sandboxSecurityCapabilityUnsupportedEvidenceReason(reason SandboxSecurityCapabilityReasonCode) SandboxSecurityCapabilityReasonCode {
+	if sandboxSecurityCapabilityUnsupportedEvidenceReasonCode(reason) && reason != "" {
+		return reason
+	}
+	return SandboxSecurityCapabilityReasonCapabilityMissing
+}
+
+func sandboxSecurityCapabilityReadyReasonCode(reason SandboxSecurityCapabilityReasonCode) bool {
+	switch sanitizeSandboxSecurityCapabilityReasonCodeValue(reason) {
+	case "",
+		SandboxSecurityCapabilityReasonCapabilityConfirmed,
+		SandboxSecurityCapabilityReasonMicroVMReadinessConfirmed,
+		SandboxSecurityCapabilityReasonWorkspaceIsolationConfirmed,
+		SandboxSecurityCapabilityReasonNetworkEnforcementConfirmed,
+		SandboxSecurityCapabilityReasonCredentialActivationConfirmed,
+		SandboxSecurityCapabilityReasonTemplateLockDigestConfirmed:
+		return true
+	default:
+		return false
+	}
+}
+
+func sandboxSecurityCapabilityBlockedReasonCode(reason SandboxSecurityCapabilityReasonCode) bool {
+	if reason == "" || reason == SandboxSecurityCapabilityReasonCapabilityBlocked {
+		return true
+	}
+	return sandboxSecurityCapabilityProjectedBlockerReasonCode(reason)
+}
+
+func sandboxSecurityCapabilityProjectedBlockerReasonCode(reason SandboxSecurityCapabilityReasonCode) bool {
+	switch sanitizeSandboxSecurityCapabilityReasonCodeValue(reason) {
+	case SandboxSecurityCapabilityReasonMicroVMSupportMissing,
+		SandboxSecurityCapabilityReasonWorkspaceDirectHostWorktree,
+		SandboxSecurityCapabilityReasonNetworkEnforcementFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func sandboxSecurityCapabilityMetadataOnlyReasonCode(reason SandboxSecurityCapabilityReasonCode) bool {
+	switch sanitizeSandboxSecurityCapabilityReasonCodeValue(reason) {
+	case "",
+		SandboxSecurityCapabilityReasonNetworkEnforcementPlannedOnly,
+		SandboxSecurityCapabilityReasonNetworkEnforcementBestEffort,
+		SandboxSecurityCapabilityReasonNetworkEnforcementPartial,
+		SandboxSecurityCapabilityReasonCredentialActivationMissing,
+		SandboxSecurityCapabilityReasonTemplateLockDigestMissing:
+		return true
+	default:
+		return false
+	}
+}
+
+func sandboxSecurityCapabilityUnsupportedEvidenceReasonCode(reason SandboxSecurityCapabilityReasonCode) bool {
+	switch sanitizeSandboxSecurityCapabilityReasonCodeValue(reason) {
+	case "",
+		SandboxSecurityCapabilityReasonCapabilityMissing,
+		SandboxSecurityCapabilityReasonModeUnsupported,
+		SandboxSecurityCapabilityReasonReadinessMissing,
+		SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
+		SandboxSecurityCapabilityReasonWorkspaceIsolationMissing,
+		SandboxSecurityCapabilityReasonNetworkEnforcementMissing,
+		SandboxSecurityCapabilityReasonNetworkEnforcementUnsupported:
+		return true
+	default:
+		return false
+	}
+}
+
 func sandboxSecurityCapabilityKnownFamily(family SandboxSecurityCapabilityFamily) bool {
 	switch family {
 	case SandboxSecurityCapabilityFamilyNetworkPolicy,
 		SandboxSecurityCapabilityFamilyNetworkProxy,
 		SandboxSecurityCapabilityFamilyCredentialProxy,
 		SandboxSecurityCapabilityFamilySecretDelivery,
-		SandboxSecurityCapabilityFamilyIsolation:
+		SandboxSecurityCapabilityFamilyIsolation,
+		SandboxSecurityCapabilityFamilyWorkspace,
+		SandboxSecurityCapabilityFamilyTemplate:
 		return true
 	default:
 		return false
@@ -423,7 +644,10 @@ func sandboxSecurityCapabilityKnownCapability(capability SandboxSecurityCapabili
 		SandboxSecurityCapabilitySecretFileTmpfs,
 		SandboxSecurityCapabilitySecretSSHAgent,
 		SandboxSecurityCapabilitySecretHTTPProxy,
-		SandboxSecurityCapabilityIsolationMicroVM:
+		SandboxSecurityCapabilityIsolationMicroVM,
+		SandboxSecurityCapabilityIsolatedWorkspace,
+		SandboxSecurityCapabilityDirectHostWorktree,
+		SandboxSecurityCapabilityTemplateLockDigest:
 		return true
 	default:
 		return false

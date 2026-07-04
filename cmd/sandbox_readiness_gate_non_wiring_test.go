@@ -18,7 +18,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 )
 
-func TestRunSandboxLocalReadinessGateConfigRemainsAdvisoryOnly(t *testing.T) {
+func TestRunSandboxLocalReadinessGateConfigPropagatesDecision(t *testing.T) {
 	for _, mode := range []string{"strict", "advisory"} {
 		t.Run(mode, func(t *testing.T) {
 			startedAt := time.Date(2026, 7, 2, 12, 10, 0, 0, time.UTC)
@@ -64,7 +64,11 @@ func TestRunSandboxLocalReadinessGateConfigRemainsAdvisoryOnly(t *testing.T) {
 					}, nil
 				},
 			})
-			if err != nil {
+			if mode == "strict" {
+				if err == nil {
+					t.Fatalf("runRunSandboxWithWriter() error = nil for strict config, want readiness gate block\nstdout=%s\nstderr=%s", out.String(), errOut.String())
+				}
+			} else if err != nil {
 				t.Fatalf("runRunSandboxWithWriter() unexpected error for %s config: %v\nstdout=%s\nstderr=%s", mode, err, out.String(), errOut.String())
 			}
 			if !executed {
@@ -75,16 +79,26 @@ func TestRunSandboxLocalReadinessGateConfigRemainsAdvisoryOnly(t *testing.T) {
 			}
 
 			manifest := mustLoadSandboxExecutionManifest(t, store, "run-local-readiness-gate-"+mode)
-			if manifest.Status != sandboxexecution.StatusSucceeded {
-				t.Fatalf("Status = %q, want succeeded", manifest.Status)
+			wantStatus := sandboxexecution.StatusSucceeded
+			wantOutcome := sandbox.SandboxSecurityCapabilityReadinessGateOutcomeAdvisory
+			wantCode := sandbox.SandboxSecurityCapabilityReadinessGateCodeAdvisory
+			wantMode := sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeAdvisory
+			if mode == "strict" {
+				wantStatus = sandboxexecution.StatusFailed
+				wantOutcome = sandbox.SandboxSecurityCapabilityReadinessGateOutcomeBlocked
+				wantCode = sandbox.SandboxSecurityCapabilityReadinessGateCodeBlocked
+				wantMode = sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict
+			}
+			if manifest.Status != wantStatus {
+				t.Fatalf("Status = %q, want %q", manifest.Status, wantStatus)
 			}
 			requireAdvisoryOnlyReadinessDiagnostics(t, manifest.Security)
-			assertRunAutoReadinessGateMetadataAbsent(t, manifest)
+			requireRunAutoReadinessGateDecision(t, manifest.Security, wantMode, wantOutcome, wantCode)
 		})
 	}
 }
 
-func TestAutoSandboxLocalReadinessGateConfigRemainsAdvisoryOnly(t *testing.T) {
+func TestAutoSandboxLocalReadinessGateConfigPropagatesDecision(t *testing.T) {
 	for _, mode := range []string{"strict", "advisory"} {
 		t.Run(mode, func(t *testing.T) {
 			startedAt := time.Date(2026, 7, 2, 12, 20, 0, 0, time.UTC)
@@ -131,7 +145,11 @@ func TestAutoSandboxLocalReadinessGateConfigRemainsAdvisoryOnly(t *testing.T) {
 					}, nil
 				},
 			})
-			if err != nil {
+			if mode == "strict" {
+				if err == nil {
+					t.Fatalf("runAutoSandboxWithWriter() error = nil for strict config, want readiness gate block\nstdout=%s\nstderr=%s", out.String(), errOut.String())
+				}
+			} else if err != nil {
 				t.Fatalf("runAutoSandboxWithWriter() unexpected error for %s config: %v\nstdout=%s\nstderr=%s", mode, err, out.String(), errOut.String())
 			}
 			if !executed {
@@ -142,16 +160,26 @@ func TestAutoSandboxLocalReadinessGateConfigRemainsAdvisoryOnly(t *testing.T) {
 			}
 
 			manifest := mustLoadSandboxExecutionManifest(t, store, "auto-local-readiness-gate-"+mode)
-			if manifest.Status != sandboxexecution.StatusSucceeded {
-				t.Fatalf("Status = %q, want succeeded", manifest.Status)
+			wantStatus := sandboxexecution.StatusSucceeded
+			wantOutcome := sandbox.SandboxSecurityCapabilityReadinessGateOutcomeAdvisory
+			wantCode := sandbox.SandboxSecurityCapabilityReadinessGateCodeAdvisory
+			wantMode := sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeAdvisory
+			if mode == "strict" {
+				wantStatus = sandboxexecution.StatusFailed
+				wantOutcome = sandbox.SandboxSecurityCapabilityReadinessGateOutcomeBlocked
+				wantCode = sandbox.SandboxSecurityCapabilityReadinessGateCodeBlocked
+				wantMode = sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict
+			}
+			if manifest.Status != wantStatus {
+				t.Fatalf("Status = %q, want %q", manifest.Status, wantStatus)
 			}
 			requireAdvisoryOnlyReadinessDiagnostics(t, manifest.Security)
-			assertRunAutoReadinessGateMetadataAbsent(t, manifest)
+			requireRunAutoReadinessGateDecision(t, manifest.Security, wantMode, wantOutcome, wantCode)
 		})
 	}
 }
 
-func TestRunAutoReadinessGateNonWiringDocumented(t *testing.T) {
+func TestRunAutoReadinessGateWiringDocumented(t *testing.T) {
 	docPath := filepath.Join("..", "docs", "design", "sandbox-runtime-v2-phase30-security-readiness-gate-verification.md")
 	data, err := os.ReadFile(docPath)
 	if err != nil {
@@ -160,10 +188,10 @@ func TestRunAutoReadinessGateNonWiringDocumented(t *testing.T) {
 	doc := string(data)
 	normalizedDoc := strings.Join(strings.Fields(doc), " ")
 	required := []string{
-		"`hal run --sandbox` and `hal auto --sandbox` remain advisory-only for readiness diagnostics in Phase 30.",
-		"factory is the first strict blocking path",
-		"`compound.LoadSandboxConfig` maps `sandbox.networkPolicy` and `sandbox.secrets` into `sandbox.SecurityEvaluationRequest`.",
-		"No run/auto config hook currently represents `off`, `advisory`, and `strict` readiness-gate policy modes before workspace planning, auth sync, or remote execution.",
+		"`hal run --sandbox` and `hal auto --sandbox` attach readiness-gate decisions from local `sandbox.securityReadinessGatePolicyMode` when configured.",
+		"`compound.LoadSandboxConfig` maps `sandbox.networkPolicy`, `sandbox.secrets`, and `sandbox.securityReadinessGatePolicyMode` into command security settings.",
+		"Strict run/auto readiness-gate decisions block before remote command execution.",
+		"Default run/auto behavior remains compatibility-mode advisory metadata.",
 		"No run or auto command flag is added for readiness-gate strict mode.",
 	}
 	for _, want := range required {
@@ -229,18 +257,16 @@ func requireAdvisoryOnlyReadinessDiagnostics(t *testing.T, security *sandbox.San
 	}
 }
 
-func assertRunAutoReadinessGateMetadataAbsent(t *testing.T, value any) {
+func requireRunAutoReadinessGateDecision(t *testing.T, security *sandbox.SandboxSecurity, wantMode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode, wantOutcome sandbox.SandboxSecurityCapabilityReadinessGateOutcome, wantCode sandbox.SandboxSecurityCapabilityReadinessGateCode) {
 	t.Helper()
-	encoded := mustMarshalSandboxSecurityMetadata(t, value)
-	for _, forbidden := range []string{
-		"securityReadinessGatePolicyMode",
-		"security_readiness_gate",
-		"readinessGate",
-		"policyField",
-		"policyMode",
-	} {
-		if strings.Contains(encoded, forbidden) {
-			t.Fatalf("run/auto manifest recorded readiness gate metadata %q: %s", forbidden, encoded)
-		}
+	if security == nil || security.SecurityReadinessGate == nil {
+		t.Fatalf("Security = %#v, want readiness gate decision", security)
+	}
+	gate := security.SecurityReadinessGate
+	if gate.PolicyMode != wantMode || gate.Outcome != wantOutcome || gate.Code != wantCode {
+		t.Fatalf("securityReadinessGate = %#v, want mode=%s outcome=%s code=%s", gate, wantMode, wantOutcome, wantCode)
+	}
+	if gate.Counts == nil || gate.Counts.StrictBlocking == 0 || len(gate.Counts.ReasonCodeCounts) == 0 {
+		t.Fatalf("securityReadinessGate counts = %#v, want strict-blocking aggregate counts", gate.Counts)
 	}
 }

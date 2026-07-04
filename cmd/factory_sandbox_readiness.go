@@ -42,7 +42,9 @@ func factorySandboxCapabilityReadiness(req factorySandboxExecutorRequest, metada
 		inputs = append(inputs, sandbox.ProjectSandboxWorkerRuntimeCapabilityReadinessInput(sandbox.SandboxWorkerRuntimeCapabilityReadinessProjection{
 			Host:          factorySandboxReadinessHost(metadata, target),
 			Runtime:       factorySandboxReadinessRuntime(metadata, target),
+			Workspace:     factorySandboxReadinessWorkspace(metadata, target),
 			WorkerRouting: metadata.WorkerRouting,
+			TemplateLock:  factorySandboxReadinessTemplateLock(metadata, target),
 		}))
 	}
 	if factorySandboxHasPolicyProxyCredentialReadinessInputs(req, metadata) {
@@ -53,6 +55,7 @@ func factorySandboxCapabilityReadiness(req factorySandboxExecutorRequest, metada
 			CredentialProxyPlan:       metadata.CredentialProxyPlan,
 			CredentialProxySession:    metadata.CredentialProxySession,
 			CredentialProxyBindings:   append([]sandbox.SandboxCredentialProxyBindingMetadata(nil), metadata.CredentialProxyBindings...),
+			CredentialDelivery:        metadata.CredentialDelivery,
 		}))
 	}
 	if len(inputs) == 0 {
@@ -106,7 +109,8 @@ func factorySandboxSecurityRequestHasReadinessIntent(req factorySandboxExecutorR
 func factorySandboxShouldProjectWorkerRuntimeReadiness(req factorySandboxExecutorRequest, metadata *factory.SandboxMetadata) bool {
 	return sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) ||
 		factorySandboxSecurityRequestHasReadinessIntent(req) ||
-		factorySandboxHasPolicyProxyCredentialReadinessInputs(req, metadata)
+		factorySandboxHasPolicyProxyCredentialReadinessInputs(req, metadata) ||
+		factorySandboxHasWorkspaceTemplateReadinessInputs(metadata)
 }
 
 func factorySandboxHasPolicyProxyCredentialReadinessInputs(req factorySandboxExecutorRequest, metadata *factory.SandboxMetadata) bool {
@@ -117,7 +121,13 @@ func factorySandboxHasPolicyProxyCredentialReadinessInputs(req factorySandboxExe
 		len(req.NetworkPolicyDecisionLogs) > 0 ||
 		metadata.CredentialProxyPlan != nil ||
 		metadata.CredentialProxySession != nil ||
-		len(metadata.CredentialProxyBindings) > 0
+		len(metadata.CredentialProxyBindings) > 0 ||
+		metadata.CredentialDelivery != nil
+}
+
+func factorySandboxHasWorkspaceTemplateReadinessInputs(metadata *factory.SandboxMetadata) bool {
+	return metadata != nil &&
+		(metadata.Workspace != nil || metadata.TemplateLock != nil)
 }
 
 func factorySandboxReadinessSecurity(security *factory.SandboxSecurityMetadata) *sandbox.SandboxSecurity {
@@ -127,6 +137,7 @@ func factorySandboxReadinessSecurity(security *factory.SandboxSecurityMetadata) 
 	out := &sandbox.SandboxSecurity{
 		CapabilityReadiness:            sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness),
 		CapabilityReadinessDiagnostics: factorySandboxCapabilityReadinessDiagnostics(security.CapabilityReadiness),
+		SecurityReadinessGate:          sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate),
 	}
 	if security.Network != nil {
 		out.Network = &sandbox.SandboxNetworkSecurity{
@@ -142,7 +153,7 @@ func factorySandboxReadinessSecurity(security *factory.SandboxSecurityMetadata) 
 			ActiveModes:    append([]string(nil), security.Secrets.ActiveModes...),
 		}
 	}
-	if out.Network == nil && out.Secrets == nil && out.CapabilityReadiness == nil {
+	if out.Network == nil && out.Secrets == nil && out.CapabilityReadiness == nil && out.SecurityReadinessGate == nil {
 		return nil
 	}
 	return sanitizeCommandSandboxSecurity(out)
@@ -183,4 +194,29 @@ func factorySandboxReadinessRuntime(metadata *factory.SandboxMetadata, target *s
 		Image:          metadata.Runtime.Image,
 		WorkerID:       metadata.Runtime.WorkerID,
 	}
+}
+
+func factorySandboxReadinessWorkspace(metadata *factory.SandboxMetadata, target *sandbox.SandboxState) *sandbox.SandboxWorkspace {
+	if target != nil && target.Workspace != nil {
+		return target.Workspace
+	}
+	if metadata == nil || metadata.Workspace == nil {
+		return nil
+	}
+	return &sandbox.SandboxWorkspace{
+		Mode:        metadata.Workspace.Mode,
+		InputSource: metadata.Workspace.InputSource,
+		Branch:      metadata.Workspace.Branch,
+		SyncRef:     metadata.Workspace.SyncRef,
+	}
+}
+
+func factorySandboxReadinessTemplateLock(metadata *factory.SandboxMetadata, target *sandbox.SandboxState) *sandbox.SandboxTemplateLockMetadata {
+	if metadata != nil && metadata.TemplateLock != nil {
+		return metadata.TemplateLock
+	}
+	if target != nil && target.Runtime != nil && target.Runtime.TemplateLock != nil {
+		return target.Runtime.TemplateLock
+	}
+	return nil
 }

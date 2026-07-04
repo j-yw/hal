@@ -14,6 +14,7 @@ func TestSecurityCapabilityReadinessGateContractConstants(t *testing.T) {
 		want string
 	}{
 		{name: "policy off", got: string(SandboxSecurityCapabilityReadinessGatePolicyModeOff), want: "off"},
+		{name: "policy compatibility", got: string(SandboxSecurityCapabilityReadinessGatePolicyModeCompatibility), want: "compatibility"},
 		{name: "policy advisory", got: string(SandboxSecurityCapabilityReadinessGatePolicyModeAdvisory), want: "advisory"},
 		{name: "policy strict", got: string(SandboxSecurityCapabilityReadinessGatePolicyModeStrict), want: "strict"},
 		{name: "outcome allowed", got: string(SandboxSecurityCapabilityReadinessGateOutcomeAllowed), want: "allowed"},
@@ -23,6 +24,7 @@ func TestSecurityCapabilityReadinessGateContractConstants(t *testing.T) {
 		{name: "code advisory", got: string(SandboxSecurityCapabilityReadinessGateCodeAdvisory), want: "security_readiness_gate_advisory"},
 		{name: "code blocked", got: string(SandboxSecurityCapabilityReadinessGateCodeBlocked), want: "security_readiness_gate_blocked"},
 		{name: "reason policy off", got: string(SandboxSecurityCapabilityReadinessGateReasonPolicyOff), want: "policy_off"},
+		{name: "reason policy compatibility", got: string(SandboxSecurityCapabilityReadinessGateReasonPolicyCompatibility), want: "policy_compatibility"},
 		{name: "reason policy advisory", got: string(SandboxSecurityCapabilityReadinessGateReasonPolicyAdvisory), want: "policy_advisory"},
 		{name: "reason readiness ready", got: string(SandboxSecurityCapabilityReadinessGateReasonReadinessReady), want: "readiness_ready"},
 		{name: "reason readiness missing", got: string(SandboxSecurityCapabilityReadinessGateReasonReadinessMissing), want: "readiness_missing"},
@@ -141,7 +143,7 @@ func TestSecurityCapabilityReadinessGate(t *testing.T) {
 				SandboxSecurityCapabilityReadinessGateCodeBlocked,
 				SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
 				SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
-				SandboxSecurityCapabilityReadinessGateReasonMetadataOnly,
+				SandboxSecurityCapabilityReadinessGateReasonCode(SandboxSecurityCapabilityReasonMetadataEnforcementUnproven),
 				SandboxSecurityCapabilityReadinessGateCounts{Total: 1, Advisory: 1, MetadataOnly: 1, StrictBlocking: 1},
 			),
 		},
@@ -153,7 +155,7 @@ func TestSecurityCapabilityReadinessGate(t *testing.T) {
 				SandboxSecurityCapabilityReadinessGateCodeBlocked,
 				SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
 				SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
-				SandboxSecurityCapabilityReadinessGateReasonCapabilityUnsupported,
+				SandboxSecurityCapabilityReadinessGateReasonCode(SandboxSecurityCapabilityReasonModeUnsupported),
 				SandboxSecurityCapabilityReadinessGateCounts{Total: 1, Advisory: 1, Unsupported: 1, StrictBlocking: 1},
 			),
 		},
@@ -297,6 +299,10 @@ func TestSecurityCapabilityReadinessGateDecisionJSONSchema(t *testing.T) {
 			MetadataOnly:   1,
 			Unsupported:    1,
 			StrictBlocking: 4,
+			ReasonCodeCounts: map[SandboxSecurityCapabilityReasonCode]int{
+				SandboxSecurityCapabilityReasonCapabilityBlocked: 1,
+				SandboxSecurityCapabilityReasonCapabilityMissing: 2,
+			},
 		},
 	}
 
@@ -323,6 +329,7 @@ func TestSecurityCapabilityReadinessGateDecisionJSONSchema(t *testing.T) {
 		"metadataOnly",
 		"unsupported",
 		"strictBlocking",
+		"reasonCodeCounts",
 	}, forbiddenSecurityCapabilityReadinessGateRawFieldNames())
 	assertSecurityCapabilityReadinessGateJSONNumber(t, counts, "total", 7)
 	assertSecurityCapabilityReadinessGateJSONNumber(t, counts, "ready", 1)
@@ -332,6 +339,13 @@ func TestSecurityCapabilityReadinessGateDecisionJSONSchema(t *testing.T) {
 	assertSecurityCapabilityReadinessGateJSONNumber(t, counts, "metadataOnly", 1)
 	assertSecurityCapabilityReadinessGateJSONNumber(t, counts, "unsupported", 1)
 	assertSecurityCapabilityReadinessGateJSONNumber(t, counts, "strictBlocking", 4)
+	reasonCodeCounts := counts["reasonCodeCounts"].(map[string]any)
+	assertObjectKeys(t, reasonCodeCounts, []string{
+		"capability_blocked",
+		"capability_missing",
+	}, forbiddenSecurityCapabilityReadinessGateRawFieldNames())
+	assertSecurityCapabilityReadinessGateJSONNumber(t, reasonCodeCounts, "capability_blocked", 1)
+	assertSecurityCapabilityReadinessGateJSONNumber(t, reasonCodeCounts, "capability_missing", 2)
 }
 
 func TestSecurityCapabilityReadinessGateDefaultOmitsOptionalJSONFields(t *testing.T) {
@@ -363,6 +377,7 @@ func TestSecurityCapabilityReadinessGateJSONTagsAreStable(t *testing.T) {
 		{field: "MetadataOnly", name: "metadataOnly", omitempty: true},
 		{field: "Unsupported", name: "unsupported", omitempty: true},
 		{field: "StrictBlocking", name: "strictBlocking", omitempty: true},
+		{field: "ReasonCodeCounts", name: "reasonCodeCounts", omitempty: true},
 	})
 
 	assertSecurityCapabilityJSONTags(t, reflect.TypeOf(SandboxSecurityCapabilityReadinessGateDecision{}), []securityCapabilityJSONTagExpectation{
@@ -464,9 +479,29 @@ func assertSecurityCapabilityReadinessGateDecision(t *testing.T, got, want Sandb
 	if got.Reason != want.Reason {
 		t.Fatalf("reason = %q, want %q", got.Reason, want.Reason)
 	}
-	if !reflect.DeepEqual(got.Counts, want.Counts) {
+	if !securityCapabilityReadinessGateCountsEqual(got.Counts, want.Counts) {
 		t.Fatalf("counts = %#v, want %#v", got.Counts, want.Counts)
 	}
+}
+
+func securityCapabilityReadinessGateCountsEqual(got, want *SandboxSecurityCapabilityReadinessGateCounts) bool {
+	if got == nil || want == nil {
+		return got == want
+	}
+	if got.Total != want.Total ||
+		got.Ready != want.Ready ||
+		got.Advisory != want.Advisory ||
+		got.Blocked != want.Blocked ||
+		got.Missing != want.Missing ||
+		got.MetadataOnly != want.MetadataOnly ||
+		got.Unsupported != want.Unsupported ||
+		got.StrictBlocking != want.StrictBlocking {
+		return false
+	}
+	if want.ReasonCodeCounts == nil {
+		return true
+	}
+	return reflect.DeepEqual(got.ReasonCodeCounts, want.ReasonCodeCounts)
 }
 
 func assertSecurityCapabilityReadinessGateDecisionContainsOnlySafeFields(t *testing.T, decision SandboxSecurityCapabilityReadinessGateDecision) {
@@ -495,6 +530,8 @@ func assertSecurityCapabilityReadinessGateJSONOnlySafeFields(t *testing.T, value
 				assertSecurityCapabilitySafeEnumValue(t, requireSecurityCapabilityJSONString(t, child, childPath))
 			case "counts":
 				assertSecurityCapabilityReadinessGateJSONOnlySafeFields(t, child, childPath)
+			case "reasonCodeCounts":
+				assertSecurityCapabilityReadinessGateReasonCodeCountsJSONOnlySafeFields(t, child, childPath)
 			case "total", "ready", "advisory", "blocked", "missing", "metadataOnly", "unsupported", "strictBlocking":
 				if _, ok := child.(float64); !ok {
 					t.Fatalf("%s = %#v, want JSON number", childPath, child)
@@ -505,6 +542,21 @@ func assertSecurityCapabilityReadinessGateJSONOnlySafeFields(t *testing.T, value
 		}
 	default:
 		t.Fatalf("%s = %#v, want gate JSON object", path, value)
+	}
+}
+
+func assertSecurityCapabilityReadinessGateReasonCodeCountsJSONOnlySafeFields(t *testing.T, value any, path string) {
+	t.Helper()
+
+	object, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("%s = %#v, want reason-code count object", path, value)
+	}
+	for key, child := range object {
+		assertSecurityCapabilitySafeEnumValue(t, key)
+		if _, ok := child.(float64); !ok {
+			t.Fatalf("%s.%s = %#v, want JSON number", path, key, child)
+		}
 	}
 }
 

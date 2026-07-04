@@ -75,8 +75,12 @@ Runtime inspection is read-only. These commands report cached durable metadata b
 default and only attempt live worker inspection when a supported --live flag is
 explicitly requested. Output avoids raw socket paths, hostnames, credentials,
 URL query strings, temp paths, and sensitive endpoint details.`,
-		Example: `  hal sandbox runtime list local-worker
+		Example: `  # Compatibility advisory mode reports diagnostics without claiming live protection.
+  hal sandbox runtime list local-worker
   hal sandbox runtime list local-worker --json
+
+  # Strict secure-default readiness is visible in security.securityReadinessGate.
+  # Strict mode reports blocked decisions when required proof is missing.
   hal sandbox runtime list local-worker --live
   hal sandbox runtime status local-worker rootless_podman
   hal sandbox runtime status local-worker rootless_podman --json`,
@@ -104,9 +108,18 @@ func newSandboxRuntimeListCommand(deps sandboxRuntimeDeps) *cobra.Command {
 
 Cached mode is the default and reads only durable host metadata. Use --live to
 request a supported local worker capability refresh for this response. Use --json
-for machine-readable output following the sandbox-runtime-list-v1 contract.`,
-		Example: `  hal sandbox runtime list local-worker
+for machine-readable output following the sandbox-runtime-list-v1 contract.
+
+Secure-default readiness is reported truthfully. Strict secure-default readiness
+uses security.securityReadinessGate to show whether strict mode reports blocked
+decisions when required proof is missing, and compatibility mode reports advisory
+diagnostics without claiming live protection, and proof-complete allowed states
+include reason-code counts.`,
+		Example: `  # Cached compatibility advisory metadata.
+  hal sandbox runtime list local-worker
   hal sandbox runtime list local-worker --json
+
+  # Optional live refresh for the response; live validation remains explicit.
   hal sandbox runtime list local-worker --live
   hal sandbox runtime list local-worker --live --json`,
 		Args: exactArgsValidation(1),
@@ -139,9 +152,18 @@ func newSandboxRuntimeStatusCommand(deps sandboxRuntimeDeps) *cobra.Command {
 Cached mode is the default and reads only durable host metadata. Use --live to
 request a supported local worker capability refresh for this response. Use
 --json for machine-readable output following the sandbox-runtime-status-v1
-contract.`,
-		Example: `  hal sandbox runtime status local-worker rootless_podman
+contract.
+
+Secure-default readiness is reported truthfully. Strict secure-default readiness
+uses security.securityReadinessGate to show whether strict mode reports blocked
+decisions when required proof is missing, and compatibility mode reports advisory
+diagnostics without claiming live protection, and proof-complete allowed states
+include reason-code counts.`,
+		Example: `  # Human output shows compatibility advisory or strict allowed/blocked status.
+  hal sandbox runtime status local-worker rootless_podman
   hal sandbox runtime status local-worker rootless_podman --json
+
+  # Optional live refresh for the response; live validation remains explicit.
   hal sandbox runtime status local-worker rootless_podman --live
   hal sandbox runtime status local-worker rootless_podman --live --json`,
 		Args: exactArgsValidation(2),
@@ -608,10 +630,98 @@ func sandboxRuntimeSecuritySummaryHuman(security SandboxRuntimeSecuritySummary) 
 	if security.Enforced.CredentialProxyMode != nil {
 		parts = append(parts, fmt.Sprintf("enforced credential proxy %t", *security.Enforced.CredentialProxyMode))
 	}
+	if readiness := sandboxRuntimeSecurityReadinessGateHuman(security.SecurityReadinessGate); readiness != "" {
+		parts = append(parts, readiness)
+	}
 	if len(parts) == 0 {
 		return "unknown"
 	}
 	return strings.Join(parts, "; ")
+}
+
+func sandboxRuntimeSecurityReadinessGateHuman(gate *sandbox.SandboxSecurityCapabilityReadinessGateDecision) string {
+	gate = sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(gate)
+	if gate == nil {
+		return ""
+	}
+
+	policyMode := strings.TrimSpace(string(gate.PolicyMode))
+	outcome := strings.TrimSpace(string(gate.Outcome))
+	if policyMode == "" || outcome == "" {
+		return ""
+	}
+
+	parts := []string{"Secure default readiness: " + policyMode + " " + outcome}
+	if gate.Counts != nil {
+		counts := gate.Counts
+		switch {
+		case outcome == string(sandbox.SandboxSecurityCapabilityReadinessGateOutcomeAllowed) && counts.StrictBlocking == 0 && counts.Ready > 0:
+			parts = append(parts, "proof-complete")
+		case counts.StrictBlocking > 0:
+			parts = append(parts, "strict secure-default would block")
+		}
+		if countsSummary := sandboxRuntimeSecurityReadinessGateCountsHuman(counts); countsSummary != "" {
+			parts = append(parts, countsSummary)
+		}
+		if reasonSummary := sandboxRuntimeSecurityReadinessGateReasonCountsHuman(counts.ReasonCodeCounts); reasonSummary != "" {
+			parts = append(parts, reasonSummary)
+		}
+	}
+	if reason := strings.TrimSpace(string(gate.Reason)); reason != "" {
+		parts = append(parts, "reason="+reason)
+	}
+	return strings.Join(parts, "; ")
+}
+
+func sandboxRuntimeSecurityReadinessGateCountsHuman(counts *sandbox.SandboxSecurityCapabilityReadinessGateCounts) string {
+	if counts == nil {
+		return ""
+	}
+	parts := make([]string, 0, 7)
+	if counts.Total > 0 {
+		parts = append(parts, fmt.Sprintf("total=%d", counts.Total))
+	}
+	if counts.Ready > 0 {
+		parts = append(parts, fmt.Sprintf("ready=%d", counts.Ready))
+	}
+	if counts.Advisory > 0 {
+		parts = append(parts, fmt.Sprintf("advisory=%d", counts.Advisory))
+	}
+	if counts.Blocked > 0 {
+		parts = append(parts, fmt.Sprintf("blocked=%d", counts.Blocked))
+	}
+	if counts.MetadataOnly > 0 {
+		parts = append(parts, fmt.Sprintf("metadataOnly=%d", counts.MetadataOnly))
+	}
+	if counts.Unsupported > 0 {
+		parts = append(parts, fmt.Sprintf("unsupported=%d", counts.Unsupported))
+	}
+	if counts.StrictBlocking > 0 {
+		parts = append(parts, fmt.Sprintf("strictBlocking=%d", counts.StrictBlocking))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "counts " + strings.Join(parts, ",")
+}
+
+func sandboxRuntimeSecurityReadinessGateReasonCountsHuman(counts map[sandbox.SandboxSecurityCapabilityReasonCode]int) string {
+	if len(counts) == 0 {
+		return ""
+	}
+	reasons := make([]string, 0, len(counts))
+	for reason, count := range counts {
+		reasonLabel := strings.TrimSpace(string(reason))
+		if reasonLabel == "" || count <= 0 {
+			continue
+		}
+		reasons = append(reasons, fmt.Sprintf("%s=%d", reasonLabel, count))
+	}
+	reasons = sortedUniqueStrings(reasons)
+	if len(reasons) == 0 {
+		return ""
+	}
+	return "reason codes " + strings.Join(reasons, ",")
 }
 
 func sandboxRuntimeStringPtrValue(value *string, fallback string) string {

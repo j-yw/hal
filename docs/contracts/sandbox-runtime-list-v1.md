@@ -101,11 +101,18 @@ policy. The contract must not imply deny-by-default networking, firewall or
 proxy enforcement, credential proxy support, or microVM isolation unless those
 claims are present in durable metadata or live worker capabilities.
 
+Secure-default readiness fields are redaction-safe status metadata. They report
+strict secure-default readiness decisions, compatibility advisory diagnostics,
+blocked reasons, allowed proof summaries, and aggregate reason-code counts when
+those inputs are available.
+
 | Field | Type | Description |
 |-------|------|-------------|
 | `requested` | object | Requested security controls, or an empty object when unknown |
 | `enforced` | object | Actually enforced security controls, or an empty object when unknown |
 | `capabilityReadiness` | object | Optional security capability readiness output when projected metadata is available |
+| `capabilityReadinessDiagnostics` | object | Optional advisory diagnostic summary derived from sanitized readiness metadata |
+| `securityReadinessGate` | object | Optional strict/advisory secure-default decision with safe outcome, reason, and aggregate counts |
 
 Known control fields:
 
@@ -116,6 +123,20 @@ Known control fields:
 | `credentialModes` | array | Credential delivery modes, or an empty array |
 | `credentialProxyMode` | boolean | Whether credential proxying is reported as active |
 | `isolationLevel` | string | Isolation level, such as `"host"`, `"container"`, or `"vm"` |
+
+## Secure-Default Readiness
+
+`securityReadinessGate` is optional and additive. It contains only safe enum-like
+metadata: `code`, `outcome`, `policyMode`, `reason`, and `counts`. Strict
+secure-default readiness means strict mode reports blocked decisions when
+required proof is missing, and compatibility mode reports advisory diagnostics
+without claiming live protection. Proof-complete allowed decisions include
+reason-code counts so callers can see which proof families were satisfied.
+
+Requested deny-by-default metadata alone does not prove live deny-by-default enforcement.
+Requested credential modes alone do not prove active credential delivery.
+Template references without locked digest metadata do not prove digest-locked templates.
+Requested VM isolation alone does not prove VM isolation.
 
 ## Diagnostics And Errors
 

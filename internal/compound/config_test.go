@@ -1416,7 +1416,7 @@ func TestSandboxSecretConfig(t *testing.T) {
 	})
 }
 
-func TestSandboxConfigPreservesPolicyAndSecretMetadata(t *testing.T) {
+func TestSandboxConfigPreservesPolicySecretAndReadinessGateMetadata(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
 	if err := os.MkdirAll(halDir, 0755); err != nil {
@@ -1427,6 +1427,7 @@ auto:
   reportsDir: custom/reports
 sandbox:
   provider: daytona
+  securityReadinessGatePolicyMode: " Strict "
   env:
     EXISTING: keep
   networkPolicy:
@@ -1467,5 +1468,8 @@ sandbox:
 	}
 	if loaded.Secrets == nil || !reflect.DeepEqual(loaded.Secrets.RequestedModes, []string{sandbox.SandboxSecretModeEnv}) {
 		t.Fatalf("Secrets = %#v, want env request preserved", loaded.Secrets)
+	}
+	if loaded.SecurityReadinessGatePolicyMode != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict {
+		t.Fatalf("SecurityReadinessGatePolicyMode = %q, want strict", loaded.SecurityReadinessGatePolicyMode)
 	}
 }

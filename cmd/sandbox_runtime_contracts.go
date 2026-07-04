@@ -132,6 +132,7 @@ type SandboxRuntimeSecuritySummary struct {
 	NetworkPolicyResult            *sandbox.SandboxNetworkPolicyResult                          `json:"networkPolicyResult,omitempty"`
 	CapabilityReadiness            *sandbox.SandboxSecurityCapabilityReadinessOutput            `json:"capabilityReadiness,omitempty"`
 	CapabilityReadinessDiagnostics *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary `json:"capabilityReadinessDiagnostics,omitempty"`
+	SecurityReadinessGate          *sandbox.SandboxSecurityCapabilityReadinessGateDecision      `json:"securityReadinessGate,omitempty"`
 }
 
 // SandboxRuntimeSecurityControls captures safe security posture metadata.
@@ -689,6 +690,7 @@ func newSandboxRuntimeSecuritySummary(security *sandbox.SandboxSecurity) Sandbox
 		NetworkPolicyResult:            policyResult,
 		CapabilityReadiness:            capabilityReadiness,
 		CapabilityReadinessDiagnostics: sandboxRuntimeCapabilityReadinessDiagnostics(capabilityReadiness),
+		SecurityReadinessGate:          sandboxRuntimeSecurityReadinessGate(security, capabilityReadiness),
 	}
 }
 
@@ -735,6 +737,7 @@ func newSandboxRuntimeSecuritySummaryFromWorkerPolicyAndRuntime(policy sandboxwo
 		NetworkPolicyResult:            policyResult,
 		CapabilityReadiness:            capabilityReadiness,
 		CapabilityReadinessDiagnostics: sandboxRuntimeCapabilityReadinessDiagnostics(capabilityReadiness),
+		SecurityReadinessGate:          sandboxRuntimeSecurityReadinessGate(nil, capabilityReadiness),
 	}
 }
 
@@ -745,6 +748,23 @@ func sandboxRuntimeCapabilityReadinessDiagnostics(readiness *sandbox.SandboxSecu
 	}
 	summary := sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(*readiness)
 	return &summary
+}
+
+func sandboxRuntimeSecurityReadinessGate(security *sandbox.SandboxSecurity, readiness *sandbox.SandboxSecurityCapabilityReadinessOutput) *sandbox.SandboxSecurityCapabilityReadinessGateDecision {
+	if security != nil {
+		if gate := sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate); gate != nil {
+			return gate
+		}
+	}
+	diagnostics := sandboxRuntimeCapabilityReadinessDiagnostics(readiness)
+	if diagnostics == nil {
+		return nil
+	}
+	decision := sandbox.EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(
+		sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeCompatibility,
+		diagnostics,
+	)
+	return sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(&decision)
 }
 
 func sandboxRuntimeCapabilityReadinessFromSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.SandboxSecurityCapabilityReadinessOutput {

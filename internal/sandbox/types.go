@@ -128,6 +128,7 @@ type SandboxSecurity struct {
 	Secrets                        *SandboxSecretSecurity                               `json:"secrets,omitempty"`
 	CapabilityReadiness            *SandboxSecurityCapabilityReadinessOutput            `json:"capabilityReadiness,omitempty"`
 	CapabilityReadinessDiagnostics *SandboxSecurityCapabilityReadinessDiagnosticSummary `json:"capabilityReadinessDiagnostics,omitempty"`
+	SecurityReadinessGate          *SandboxSecurityCapabilityReadinessGateDecision      `json:"securityReadinessGate,omitempty"`
 }
 
 // SandboxNetworkSecurity describes network policy metadata for a sandbox.

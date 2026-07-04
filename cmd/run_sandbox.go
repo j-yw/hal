@@ -72,6 +72,8 @@ type runSandboxRequest struct {
 	Workspace                    *sandbox.SandboxWorkspace
 	WorkspacePlan                *sandboxworkspace.Plan
 	Security                     sandbox.SecurityEvaluationRequest
+	SecurityReadinessGateMode    sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode
+	SecurityReadinessGate        *sandbox.SandboxSecurityCapabilityReadinessGateDecision
 	NetworkProxySession          *sandbox.SandboxNetworkProxySessionMetadata
 	NetworkPolicyDecisionLogs    []sandbox.SandboxNetworkPolicyDecisionLogRecord
 	CredentialDeliveryActivation credentialDeliveryActivationResult
@@ -297,7 +299,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 		return err
 	}
 	req.ProjectDir = projectDir
-	securityReq, err := loadConfiguredSandboxSecurityRequest(projectDir, req.SandboxRuntime)
+	securitySettings, err := loadConfiguredSandboxSecuritySettings(projectDir, req.SandboxRuntime)
 	if err != nil {
 		err = fmt.Errorf("load sandbox security config: %w", err)
 		if opts.JSON {
@@ -305,7 +307,8 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 		}
 		return err
 	}
-	req.Security = securityReq
+	req.Security = securitySettings.Request
+	req.SecurityReadinessGateMode = securitySettings.ReadinessGateMode
 	if err := saveRunSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, nil); err != nil {
 		if opts.JSON {
 			return outputRunJSONError(out, err.Error())
@@ -315,6 +318,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 
 	failBeforeRemote := func(cause error) error {
 		finishedAt := deps.now().UTC()
+		applyRunSandboxSecurityReadinessGateError(&req, cause)
 		_ = saveRunSandboxManifest(store, req, sandboxexecution.StatusFailed, startedAt, &finishedAt, nil)
 		if opts.JSON {
 			return outputRunJSONError(out, cause.Error())
@@ -351,7 +355,10 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 			}); err != nil {
 				return err
 			}
-			return saveRunSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, target)
+			if err := saveRunSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, target); err != nil {
+				return err
+			}
+			return enforceSandboxExecutionSecurityReadinessGate(store, req.ExecutionID)
 		},
 	})
 	if execResult.Result != nil {
@@ -369,6 +376,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 				req.SandboxName = strings.TrimSpace(target.Name)
 			}
 		}
+		applyRunSandboxSecurityReadinessGateError(&req, execErr)
 	}
 
 	if isSandboxRunPhaseError(execErr) {
@@ -937,15 +945,16 @@ func (deps runSandboxDeps) resolveRunSandboxTarget(ctx context.Context, req runS
 		listSandboxes = sandboxCommandListSandboxesFromDefault(deps.resolveDefault)
 	}
 	target, err := resolveSandboxCommandTarget(ctx, sandboxCommandTargetRequest{
-		Purpose:             sandbox.SandboxLeasePurposeRun,
-		SandboxName:         req.SandboxName,
-		SandboxHostID:       req.SandboxHostID,
-		SandboxRuntime:      req.SandboxRuntime,
-		ProjectDir:          req.ProjectDir,
-		Repository:          req.RepoRemote,
-		Branch:              req.RunBranch,
-		ProvisionRepository: req.RepoRemote,
-		Out:                 out,
+		Purpose:                   sandbox.SandboxLeasePurposeRun,
+		SandboxName:               req.SandboxName,
+		SandboxHostID:             req.SandboxHostID,
+		SandboxRuntime:            req.SandboxRuntime,
+		SecurityReadinessGateMode: req.SecurityReadinessGateMode,
+		ProjectDir:                req.ProjectDir,
+		Repository:                req.RepoRemote,
+		Branch:                    req.RunBranch,
+		ProvisionRepository:       req.RepoRemote,
+		Out:                       out,
 	}, sandboxCommandTargetDeps{
 		loadSandbox:    deps.loadSandbox,
 		listSandboxes:  listSandboxes,
@@ -1128,6 +1137,7 @@ func saveRunSandboxManifest(store sandboxexecution.Store, req runSandboxRequest,
 		}
 	}
 	manifest.Security = runSandboxManifestSecurity(req, manifest, target)
+	manifest.Security = applyCommandSandboxSecurityReadinessGate(manifest.Security, req.SecurityReadinessGateMode, req.SecurityReadinessGate)
 	preserveSandboxManifestArtifacts(store, manifest)
 	return store.SaveManifest(manifest)
 }
@@ -1137,6 +1147,43 @@ func runSandboxManifestWorkspace(req runSandboxRequest) *sandbox.SandboxWorkspac
 		return sandboxCommandPersistentWorkspace(req.Workspace)
 	}
 	return cloneSandboxWorkspace(req.Workspace)
+}
+
+func applyRunSandboxSecurityReadinessGateError(req *runSandboxRequest, err error) {
+	if req == nil {
+		return
+	}
+	if decision := sandboxCommandSecurityReadinessGateDecisionFromError(err); decision != nil {
+		req.SecurityReadinessGateMode = decision.PolicyMode
+		req.SecurityReadinessGate = nil
+	}
+}
+
+type sandboxExecutionSecurityReadinessGateBlockedError struct {
+	decision sandbox.SandboxSecurityCapabilityReadinessGateDecision
+}
+
+func (e sandboxExecutionSecurityReadinessGateBlockedError) Error() string {
+	return fmt.Sprintf("security readiness gate blocked: policyMode=%s outcome=%s code=%s reason=%s",
+		e.decision.PolicyMode,
+		e.decision.Outcome,
+		e.decision.Code,
+		e.decision.Reason,
+	)
+}
+
+func enforceSandboxExecutionSecurityReadinessGate(store sandboxexecution.Store, executionID string) error {
+	manifest, err := store.LoadManifest(executionID)
+	if err != nil || manifest == nil || manifest.Security == nil || manifest.Security.SecurityReadinessGate == nil {
+		return err
+	}
+	decision := sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(manifest.Security.SecurityReadinessGate)
+	if decision == nil ||
+		decision.PolicyMode != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict ||
+		decision.Outcome != sandbox.SandboxSecurityCapabilityReadinessGateOutcomeBlocked {
+		return nil
+	}
+	return sandboxExecutionSecurityReadinessGateBlockedError{decision: *decision}
 }
 
 func workerRootlessManifestHost(host *sandbox.SandboxHost) *sandbox.SandboxHost {
@@ -1317,7 +1364,9 @@ func runSandboxManifestCapabilityReadiness(security *sandbox.SandboxSecurity, ma
 		inputs = append(inputs, sandbox.ProjectSandboxWorkerRuntimeCapabilityReadinessInput(sandbox.SandboxWorkerRuntimeCapabilityReadinessProjection{
 			Host:          runSandboxManifestReadinessHost(manifest, target),
 			Runtime:       runSandboxManifestReadinessRuntime(manifest, target),
+			Workspace:     runSandboxManifestReadinessWorkspace(manifest, target),
 			WorkerRouting: runSandboxManifestReadinessWorkerRouting(manifest),
+			TemplateLock:  runSandboxManifestReadinessTemplateLock(manifest, target),
 		}))
 	}
 	if target != nil && runSandboxManifestHasPolicyProxyCredentialReadinessInputs(manifest) {
@@ -1328,6 +1377,7 @@ func runSandboxManifestCapabilityReadiness(security *sandbox.SandboxSecurity, ma
 			CredentialProxyPlan:       manifest.CredentialProxyPlan,
 			CredentialProxySession:    manifest.CredentialProxySession,
 			CredentialProxyBindings:   manifest.CredentialProxyBindings,
+			CredentialDelivery:        manifest.CredentialDelivery,
 		}))
 	}
 	if len(inputs) == 0 {
@@ -1356,11 +1406,34 @@ func runSandboxManifestReadinessRuntime(manifest *sandboxexecution.Manifest, tar
 	return nil
 }
 
+func runSandboxManifestReadinessWorkspace(manifest *sandboxexecution.Manifest, target *sandbox.SandboxState) *sandbox.SandboxWorkspace {
+	if manifest != nil && manifest.Workspace != nil {
+		return manifest.Workspace
+	}
+	if target != nil {
+		return target.Workspace
+	}
+	return nil
+}
+
 func runSandboxManifestReadinessWorkerRouting(manifest *sandboxexecution.Manifest) *sandbox.WorkerRoutingMetadata {
 	if manifest == nil {
 		return nil
 	}
 	return manifest.WorkerRouting
+}
+
+func runSandboxManifestReadinessTemplateLock(manifest *sandboxexecution.Manifest, target *sandbox.SandboxState) *sandbox.SandboxTemplateLockMetadata {
+	if manifest != nil && manifest.TemplateLock != nil {
+		return manifest.TemplateLock
+	}
+	if manifest != nil && manifest.Runtime != nil && manifest.Runtime.TemplateLock != nil {
+		return manifest.Runtime.TemplateLock
+	}
+	if target != nil && target.Runtime != nil {
+		return target.Runtime.TemplateLock
+	}
+	return nil
 }
 
 func runSandboxManifestReadinessPolicyResult(security *sandbox.SandboxSecurity) *sandbox.SandboxNetworkPolicyResult {
@@ -1376,7 +1449,8 @@ func runSandboxManifestHasPolicyProxyCredentialReadinessInputs(manifest *sandbox
 			len(manifest.NetworkPolicyDecisionLogs) > 0 ||
 			manifest.CredentialProxyPlan != nil ||
 			manifest.CredentialProxySession != nil ||
-			len(manifest.CredentialProxyBindings) > 0)
+			len(manifest.CredentialProxyBindings) > 0 ||
+			manifest.CredentialDelivery != nil)
 }
 
 func mergeSandboxManifestTargetSecretModes(security *sandbox.SandboxSecurity, req sandbox.SecurityEvaluationRequest, target *sandbox.SandboxState) {

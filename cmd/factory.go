@@ -4583,10 +4583,10 @@ func sandboxSecurityReadinessGateCountsFromFactoryMetadata(value any) *sandbox.S
 		if counts == nil {
 			return nil
 		}
-		clone := *counts
+		clone := sandboxSecurityReadinessGateCountsClone(*counts)
 		return &clone
 	case sandbox.SandboxSecurityCapabilityReadinessGateCounts:
-		clone := counts
+		clone := sandboxSecurityReadinessGateCountsClone(counts)
 		return &clone
 	case map[string]any:
 		return sandboxSecurityReadinessGateCountsFromMap(counts)
@@ -4602,16 +4602,17 @@ func sandboxSecurityReadinessGateCountsFromMap(values map[string]any) *sandbox.S
 		return nil
 	}
 	counts := sandbox.SandboxSecurityCapabilityReadinessGateCounts{
-		Total:          intFromFactoryMetadata(values["total"]),
-		Ready:          intFromFactoryMetadata(values["ready"]),
-		Advisory:       intFromFactoryMetadata(values["advisory"]),
-		Blocked:        intFromFactoryMetadata(values["blocked"]),
-		Missing:        intFromFactoryMetadata(values["missing"]),
-		MetadataOnly:   intFromFactoryMetadata(values["metadataOnly"]),
-		Unsupported:    intFromFactoryMetadata(values["unsupported"]),
-		StrictBlocking: intFromFactoryMetadata(values["strictBlocking"]),
+		Total:            intFromFactoryMetadata(values["total"]),
+		Ready:            intFromFactoryMetadata(values["ready"]),
+		Advisory:         intFromFactoryMetadata(values["advisory"]),
+		Blocked:          intFromFactoryMetadata(values["blocked"]),
+		Missing:          intFromFactoryMetadata(values["missing"]),
+		MetadataOnly:     intFromFactoryMetadata(values["metadataOnly"]),
+		Unsupported:      intFromFactoryMetadata(values["unsupported"]),
+		StrictBlocking:   intFromFactoryMetadata(values["strictBlocking"]),
+		ReasonCodeCounts: sandboxSecurityReadinessGateReasonCodeCountsFromFactoryMetadata(values["reasonCodeCounts"]),
 	}
-	if counts == (sandbox.SandboxSecurityCapabilityReadinessGateCounts{}) {
+	if sandboxSecurityReadinessGateCountsEmpty(counts) {
 		return nil
 	}
 	return &counts
@@ -4631,10 +4632,126 @@ func sandboxSecurityReadinessGateCountsFromIntMap(values map[string]int) *sandbo
 		Unsupported:    values["unsupported"],
 		StrictBlocking: values["strictBlocking"],
 	}
-	if counts == (sandbox.SandboxSecurityCapabilityReadinessGateCounts{}) {
+	if sandboxSecurityReadinessGateCountsEmpty(counts) {
 		return nil
 	}
 	return &counts
+}
+
+func sandboxSecurityReadinessGateCountsClone(counts sandbox.SandboxSecurityCapabilityReadinessGateCounts) sandbox.SandboxSecurityCapabilityReadinessGateCounts {
+	clone := counts
+	if len(counts.ReasonCodeCounts) > 0 {
+		clone.ReasonCodeCounts = make(map[sandbox.SandboxSecurityCapabilityReasonCode]int, len(counts.ReasonCodeCounts))
+		for reason, count := range counts.ReasonCodeCounts {
+			if safeReason, ok := sandboxSecurityReadinessGateReasonCodeFromString(string(reason)); ok && count > 0 {
+				clone.ReasonCodeCounts[safeReason] = count
+			}
+		}
+		if len(clone.ReasonCodeCounts) == 0 {
+			clone.ReasonCodeCounts = nil
+		}
+	}
+	return clone
+}
+
+func sandboxSecurityReadinessGateCountsEmpty(counts sandbox.SandboxSecurityCapabilityReadinessGateCounts) bool {
+	return counts.Total == 0 &&
+		counts.Ready == 0 &&
+		counts.Advisory == 0 &&
+		counts.Blocked == 0 &&
+		counts.Missing == 0 &&
+		counts.MetadataOnly == 0 &&
+		counts.Unsupported == 0 &&
+		counts.StrictBlocking == 0 &&
+		len(counts.ReasonCodeCounts) == 0
+}
+
+func sandboxSecurityReadinessGateReasonCodeCountsFromFactoryMetadata(value any) map[sandbox.SandboxSecurityCapabilityReasonCode]int {
+	switch counts := value.(type) {
+	case map[string]any:
+		return sandboxSecurityReadinessGateReasonCodeCountsFromAnyMap(counts)
+	case map[string]int:
+		return sandboxSecurityReadinessGateReasonCodeCountsFromIntMap(counts)
+	case map[sandbox.SandboxSecurityCapabilityReasonCode]int:
+		return sandboxSecurityReadinessGateCountsClone(sandbox.SandboxSecurityCapabilityReadinessGateCounts{ReasonCodeCounts: counts}).ReasonCodeCounts
+	default:
+		return nil
+	}
+}
+
+func sandboxSecurityReadinessGateReasonCodeCountsFromAnyMap(values map[string]any) map[sandbox.SandboxSecurityCapabilityReasonCode]int {
+	if len(values) == 0 {
+		return nil
+	}
+	counts := make(map[sandbox.SandboxSecurityCapabilityReasonCode]int, len(values))
+	for rawReason, rawCount := range values {
+		reason, ok := sandboxSecurityReadinessGateReasonCodeFromString(rawReason)
+		if !ok {
+			continue
+		}
+		count := intFromFactoryMetadata(rawCount)
+		if count <= 0 {
+			continue
+		}
+		counts[reason] = count
+	}
+	if len(counts) == 0 {
+		return nil
+	}
+	return counts
+}
+
+func sandboxSecurityReadinessGateReasonCodeCountsFromIntMap(values map[string]int) map[sandbox.SandboxSecurityCapabilityReasonCode]int {
+	if len(values) == 0 {
+		return nil
+	}
+	counts := make(map[sandbox.SandboxSecurityCapabilityReasonCode]int, len(values))
+	for rawReason, count := range values {
+		reason, ok := sandboxSecurityReadinessGateReasonCodeFromString(rawReason)
+		if !ok || count <= 0 {
+			continue
+		}
+		counts[reason] = count
+	}
+	if len(counts) == 0 {
+		return nil
+	}
+	return counts
+}
+
+func sandboxSecurityReadinessGateReasonCodeFromString(value string) (sandbox.SandboxSecurityCapabilityReasonCode, bool) {
+	reason := sandbox.SandboxSecurityCapabilityReasonCode(strings.ToLower(strings.TrimSpace(value)))
+	switch reason {
+	case sandbox.SandboxSecurityCapabilityReasonMetadataOnly,
+		sandbox.SandboxSecurityCapabilityReasonCapabilityMissing,
+		sandbox.SandboxSecurityCapabilityReasonModeUnsupported,
+		sandbox.SandboxSecurityCapabilityReasonCapabilityBlocked,
+		sandbox.SandboxSecurityCapabilityReasonCapabilityConfirmed,
+		sandbox.SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
+		sandbox.SandboxSecurityCapabilityReasonMetadataDeliveryUnproven,
+		sandbox.SandboxSecurityCapabilityReasonReadinessMissing,
+		sandbox.SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
+		sandbox.SandboxSecurityCapabilityReasonMicroVMSupportMissing,
+		sandbox.SandboxSecurityCapabilityReasonWorkspaceIsolationMissing,
+		sandbox.SandboxSecurityCapabilityReasonWorkspaceDirectHostWorktree,
+		sandbox.SandboxSecurityCapabilityReasonNetworkEnforcementMissing,
+		sandbox.SandboxSecurityCapabilityReasonNetworkEnforcementPlannedOnly,
+		sandbox.SandboxSecurityCapabilityReasonNetworkEnforcementBestEffort,
+		sandbox.SandboxSecurityCapabilityReasonNetworkEnforcementPartial,
+		sandbox.SandboxSecurityCapabilityReasonNetworkEnforcementUnsupported,
+		sandbox.SandboxSecurityCapabilityReasonNetworkEnforcementFailed,
+		sandbox.SandboxSecurityCapabilityReasonCredentialActivationMissing,
+		sandbox.SandboxSecurityCapabilityReasonTemplateLockDigestMissing,
+		sandbox.SandboxSecurityCapabilityReasonMicroVMReadinessConfirmed,
+		sandbox.SandboxSecurityCapabilityReasonWorkspaceIsolationConfirmed,
+		sandbox.SandboxSecurityCapabilityReasonNetworkEnforcementConfirmed,
+		sandbox.SandboxSecurityCapabilityReasonCredentialActivationConfirmed,
+		sandbox.SandboxSecurityCapabilityReasonTemplateLockDigestConfirmed,
+		sandbox.SandboxSecurityCapabilityReasonUnknown:
+		return reason, true
+	default:
+		return "", false
+	}
 }
 
 func intFromFactoryMetadata(value any) int {

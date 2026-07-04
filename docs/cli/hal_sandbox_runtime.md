@@ -18,8 +18,12 @@ hal sandbox runtime [flags]
 ### Examples
 
 ```
+  # Compatibility advisory mode reports diagnostics without claiming live protection.
   hal sandbox runtime list local-worker
   hal sandbox runtime list local-worker --json
+
+  # Strict secure-default readiness is visible in security.securityReadinessGate.
+  # Strict mode reports blocked decisions when required proof is missing.
   hal sandbox runtime list local-worker --live
   hal sandbox runtime status local-worker rootless_podman
   hal sandbox runtime status local-worker rootless_podman --json

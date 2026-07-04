@@ -311,6 +311,7 @@ type SandboxSecurityMetadata struct {
 	Secrets                        *SandboxSecretSecurityMetadata                               `json:"secrets,omitempty"`
 	CapabilityReadiness            *sandbox.SandboxSecurityCapabilityReadinessOutput            `json:"capabilityReadiness,omitempty"`
 	CapabilityReadinessDiagnostics *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary `json:"capabilityReadinessDiagnostics,omitempty"`
+	SecurityReadinessGate          *sandbox.SandboxSecurityCapabilityReadinessGateDecision      `json:"securityReadinessGate,omitempty"`
 }
 
 // SandboxNetworkSecurityMetadata captures redaction-safe sandbox network policy details.

@@ -132,14 +132,15 @@ type LightsailConfig struct {
 
 // SandboxConfig contains sandbox configuration including provider selection and env vars.
 type SandboxConfig struct {
-	Provider          string                              `yaml:"provider"`
-	TailscaleLockdown bool                                `yaml:"tailscaleLockdown"`
-	Env               map[string]string                   `yaml:"env"`
-	Hetzner           HetznerConfig                       `yaml:"hetzner"`
-	DigitalOcean      DigitalOceanConfig                  `yaml:"digitalocean"`
-	Lightsail         LightsailConfig                     `yaml:"lightsail"`
-	NetworkPolicy     *sandbox.SandboxNetworkPolicyIntent `yaml:"networkPolicy,omitempty"`
-	Secrets           *SandboxSecretConfig                `yaml:"secrets,omitempty"`
+	Provider                        string                                                   `yaml:"provider"`
+	TailscaleLockdown               bool                                                     `yaml:"tailscaleLockdown"`
+	Env                             map[string]string                                        `yaml:"env"`
+	Hetzner                         HetznerConfig                                            `yaml:"hetzner"`
+	DigitalOcean                    DigitalOceanConfig                                       `yaml:"digitalocean"`
+	Lightsail                       LightsailConfig                                          `yaml:"lightsail"`
+	NetworkPolicy                   *sandbox.SandboxNetworkPolicyIntent                      `yaml:"networkPolicy,omitempty"`
+	Secrets                         *SandboxSecretConfig                                     `yaml:"secrets,omitempty"`
+	SecurityReadinessGatePolicyMode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode `yaml:"securityReadinessGatePolicyMode,omitempty"`
 }
 
 // SandboxSecretConfig contains requested and active secret delivery mode
@@ -464,8 +465,9 @@ func LoadSandboxConfig(dir string) (*SandboxConfig, error) {
 				Bundle           *string `yaml:"bundle"`
 				KeyPairName      *string `yaml:"keyPairName"`
 			} `yaml:"lightsail"`
-			NetworkPolicy *sandbox.SandboxNetworkPolicyIntent `yaml:"networkPolicy"`
-			Secrets       *SandboxSecretConfig                `yaml:"secrets"`
+			NetworkPolicy                   *sandbox.SandboxNetworkPolicyIntent                       `yaml:"networkPolicy"`
+			Secrets                         *SandboxSecretConfig                                      `yaml:"secrets"`
+			SecurityReadinessGatePolicyMode *sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode `yaml:"securityReadinessGatePolicyMode"`
 		} `yaml:"sandbox"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
@@ -529,6 +531,13 @@ func LoadSandboxConfig(dir string) (*SandboxConfig, error) {
 		}
 		cfg.Secrets = secrets
 	}
+	if raw.Sandbox.SecurityReadinessGatePolicyMode != nil {
+		mode, err := normalizeSandboxSecurityReadinessGatePolicyModeConfig(*raw.Sandbox.SecurityReadinessGatePolicyMode)
+		if err != nil {
+			return nil, err
+		}
+		cfg.SecurityReadinessGatePolicyMode = mode
+	}
 
 	return cfg, nil
 }
@@ -581,6 +590,19 @@ func normalizeSandboxSecretConfig(secrets SandboxSecretConfig) (*SandboxSecretCo
 		RequestedModes: append([]string(nil), metadata.RequestedModes...),
 		ActiveModes:    append([]string(nil), metadata.ActiveModes...),
 	}, nil
+}
+
+func normalizeSandboxSecurityReadinessGatePolicyModeConfig(mode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode) (sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode, error) {
+	normalized := sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode(strings.ToLower(strings.TrimSpace(string(mode))))
+	if normalized == "" {
+		return "", nil
+	}
+	for _, supported := range factory.SupportedSecurityReadinessGatePolicyModes() {
+		if normalized == supported {
+			return normalized, nil
+		}
+	}
+	return "", fmt.Errorf("sandbox.securityReadinessGatePolicyMode must be one of off, advisory, strict")
 }
 
 // SaveSandboxConfig merges the given SandboxConfig into .hal/config.yaml without
@@ -673,6 +695,9 @@ func SaveSandboxConfig(dir string, sandbox *SandboxConfig) error {
 	}
 	if sandbox.Secrets != nil {
 		sandboxMap["secrets"] = sandbox.Secrets
+	}
+	if sandbox.SecurityReadinessGatePolicyMode != "" {
+		sandboxMap["securityReadinessGatePolicyMode"] = sandbox.SecurityReadinessGatePolicyMode
 	}
 
 	existing["sandbox"] = sandboxMap
