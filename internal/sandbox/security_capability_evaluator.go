@@ -648,6 +648,7 @@ func sandboxSecurityCapabilityUnsupportedEvidenceReasonCode(reason SandboxSecuri
 		SandboxSecurityCapabilityReasonCapabilityMissing,
 		SandboxSecurityCapabilityReasonModeUnsupported,
 		SandboxSecurityCapabilityReasonReadinessMissing,
+		SandboxSecurityCapabilityReasonWarningBearing,
 		SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
 		SandboxSecurityCapabilityReasonWorkspaceIsolationMissing,
 		SandboxSecurityCapabilityReasonNetworkEnforcementMissing,

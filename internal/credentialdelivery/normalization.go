@@ -257,11 +257,29 @@ func NormalizeStatusMetadata(status StatusMetadata) StatusMetadata {
 		ActivationID:   strings.TrimSpace(status.ActivationID),
 		RequestedModes: normalizeModeRecords(status.RequestedModes),
 		ActiveModes:    normalizeModeRecords(status.ActiveModes),
+		ActiveProofs:   normalizeStatusActiveProofSummaries(status.ActiveProofs),
 		Status:         normalizeStatus(status.Status),
 		ReasonCode:     normalizeReasonCode(status.ReasonCode),
 		WarningCount:   status.WarningCount,
 		ErrorCount:     status.ErrorCount,
 	}
+}
+
+func normalizeStatusActiveProofSummaries(proofs []sandbox.SandboxCredentialDeliveryProofSummary) []sandbox.SandboxCredentialDeliveryProofSummary {
+	if proofs == nil {
+		return nil
+	}
+	normalized := make([]sandbox.SandboxCredentialDeliveryProofSummary, len(proofs))
+	for i, proof := range proofs {
+		normalized[i] = sandbox.SandboxCredentialDeliveryProofSummary{
+			ProofID:      strings.TrimSpace(proof.ProofID),
+			BindingID:    strings.TrimSpace(proof.BindingID),
+			DeliveryMode: strings.TrimSpace(proof.DeliveryMode),
+			Status:       strings.TrimSpace(proof.Status),
+			Source:       strings.TrimSpace(proof.Source),
+		}
+	}
+	return normalized
 }
 
 // NormalizeWarningMetadata returns a deterministic copy of redaction-safe

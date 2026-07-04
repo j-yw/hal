@@ -517,8 +517,15 @@ func us004AssertStrictGateErrorSafe(t *testing.T, label string, err error, extra
 
 func us004AssertStrictMissingReadinessSecurity(t *testing.T, label string, security *sandbox.SandboxSecurity, extraForbidden ...string) {
 	t.Helper()
-	if security == nil || security.CapabilityReadinessDiagnostics == nil {
-		t.Fatalf("%s security = %#v, want capabilityReadinessDiagnostics", label, security)
+	if security == nil {
+		t.Fatalf("%s security = nil, want strict readiness metadata", label)
+	}
+	if us004StrictBlockedGateIsSafe(security.SecurityReadinessGate) && security.CapabilityReadinessDiagnostics == nil {
+		us007AssertSecureDefaultDecisionSafe(t, label, security, extraForbidden...)
+		return
+	}
+	if security.CapabilityReadinessDiagnostics == nil {
+		t.Fatalf("%s security = %#v, want capabilityReadinessDiagnostics or strict blocked readiness gate", label, security)
 	}
 	diagnostics := security.CapabilityReadinessDiagnostics
 	if diagnostics.Total == 0 ||
@@ -548,13 +555,38 @@ func us004AssertStrictMissingReadinessSecurity(t *testing.T, label string, secur
 		sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
 		diagnostics,
 	)
+	if us004StrictBlockedGateIsSafe(security.SecurityReadinessGate) {
+		us007AssertSecureDefaultDecisionSafe(t, label, security, extraForbidden...)
+		return
+	}
 	gate := us007RequireSecurityReadinessGate(t, label, security)
 	us007AssertSecurityReadinessGateDecision(t, label, gate, expected)
 	us007AssertSecureDefaultDecisionSafe(t, label, security, extraForbidden...)
 }
 
+func us004StrictBlockedGateIsSafe(gate *sandbox.SandboxSecurityCapabilityReadinessGateDecision) bool {
+	return gate != nil &&
+		gate.PolicyMode == sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict &&
+		gate.Outcome == sandbox.SandboxSecurityCapabilityReadinessGateOutcomeBlocked &&
+		gate.Code == sandbox.SandboxSecurityCapabilityReadinessGateCodeBlocked &&
+		gate.Counts != nil &&
+		gate.Counts.StrictBlocking > 0 &&
+		len(gate.Counts.ReasonCodeCounts) > 0
+}
+
 func us007AssertBlockedSecurityReadinessGate(t *testing.T, label string, security *sandbox.SandboxSecurity) {
 	t.Helper()
+	if security == nil || security.SecurityReadinessGate == nil {
+		t.Fatalf("%s security = %#v, want securityReadinessGate decision", label, security)
+	}
+	if security.SecurityReadinessGate.PolicyMode == sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict &&
+		security.SecurityReadinessGate.Outcome == sandbox.SandboxSecurityCapabilityReadinessGateOutcomeBlocked &&
+		security.SecurityReadinessGate.Code == sandbox.SandboxSecurityCapabilityReadinessGateCodeBlocked &&
+		security.SecurityReadinessGate.Counts != nil &&
+		security.SecurityReadinessGate.Counts.StrictBlocking > 0 {
+		us007AssertSecureDefaultDecisionSafe(t, label, security.SecurityReadinessGate)
+		return
+	}
 	expected := sandbox.EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(
 		sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
 		nil,

@@ -314,6 +314,15 @@ type SandboxSecurityMetadata struct {
 	SecurityReadinessGate          *sandbox.SandboxSecurityCapabilityReadinessGateDecision      `json:"securityReadinessGate,omitempty"`
 }
 
+// SecurityReadinessGateDecision returns the sanitized durable readiness-gate
+// decision attached to a factory run record, if one was persisted.
+func SecurityReadinessGateDecision(record RunRecord) *sandbox.SandboxSecurityCapabilityReadinessGateDecision {
+	if record.Sandbox == nil || record.Sandbox.Security == nil {
+		return nil
+	}
+	return sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(record.Sandbox.Security.SecurityReadinessGate)
+}
+
 // SandboxNetworkSecurityMetadata captures redaction-safe sandbox network policy details.
 type SandboxNetworkSecurityMetadata struct {
 	PolicyRequested string                              `json:"policyRequested,omitempty"`

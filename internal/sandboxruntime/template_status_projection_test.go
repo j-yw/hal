@@ -166,6 +166,56 @@ func TestUS005RuntimeMetadataDerivesTemplateStatusWhenOnlyLockIsPresent(t *testi
 	}
 }
 
+func TestUS004RuntimeTemplateProjectionCarriesOnlySanitizedTrustAndDigestLabels(t *testing.T) {
+	lock := us005RuntimeTemplateLockTrusted()
+	lock.TemplateReference.WarningCodes = []string{
+		"mutable_reference",
+		"https://registry.example.test/template:latest?token=ghp_us004_secret",
+	}
+	lock.TrustPolicy.WarningCodes = []string{
+		"missing_digest_pin",
+		"/Users/alice/private-template.yaml",
+	}
+	lock.TrustPolicy.ReasonCodes = []string{
+		"mutable_reference",
+		"Authorization: Bearer ghp_us004_secret",
+	}
+	metadata := RuntimeMetadata{
+		Backend:      "microvm",
+		TemplateLock: lock,
+		TemplateStatus: &RuntimeTemplateStatusMetadata{
+			LockStatus:       "unresolved",
+			TrustMode:        "advisory",
+			TrustDecision:    "advisory",
+			ProvenanceLabels: []string{"provider.internal", "document"},
+			ReasonCodes:      []string{"https://registry.example.test/private?token=ghp_us004_secret"},
+		},
+	}
+
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("Marshal(RuntimeMetadata) error = %v", err)
+	}
+	publicText := string(encoded)
+	for _, want := range []string{
+		`"templateLock":`,
+		`"templateStatus":`,
+		`"lockStatus":"locked"`,
+		`"trustMode":"strict"`,
+		`"trustDecision":"trusted"`,
+		`"digestAlgorithm":"sha256"`,
+		`"digestValue":"` + strings.Repeat("e", 64) + `"`,
+		`"provenanceLabels":["document","template_reference","runtime_image","source_artifact"]`,
+		`"mutable_reference"`,
+		`"missing_digest_pin"`,
+	} {
+		if !strings.Contains(publicText, want) {
+			t.Fatalf("RuntimeMetadata JSON %s missing %s", publicText, want)
+		}
+	}
+	assertUS005RuntimeTemplateProjectionNoUnsafeFragments(t, publicText)
+}
+
 func us005RuntimeTemplateLockTrusted() *RuntimeTemplateLockMetadata {
 	return &RuntimeTemplateLockMetadata{
 		Document:          us005RuntimeTemplateLockEntry("local_file", "local", "document_digest", "a", "locked"),

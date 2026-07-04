@@ -49,6 +49,7 @@ func TestSecurityCapabilityReadinessContractConstants(t *testing.T) {
 		{name: "reason metadata enforcement unproven", got: string(SandboxSecurityCapabilityReasonMetadataEnforcementUnproven), want: "metadata_enforcement_unproven"},
 		{name: "reason metadata delivery unproven", got: string(SandboxSecurityCapabilityReasonMetadataDeliveryUnproven), want: "metadata_delivery_unproven"},
 		{name: "reason readiness missing", got: string(SandboxSecurityCapabilityReasonReadinessMissing), want: "readiness_missing"},
+		{name: "reason warning bearing", got: string(SandboxSecurityCapabilityReasonWarningBearing), want: "warning_bearing"},
 		{name: "reason microvm readiness missing", got: string(SandboxSecurityCapabilityReasonMicroVMReadinessMissing), want: "microvm_readiness_missing"},
 		{name: "reason microvm support missing", got: string(SandboxSecurityCapabilityReasonMicroVMSupportMissing), want: "microvm_support_missing"},
 		{name: "reason workspace isolation missing", got: string(SandboxSecurityCapabilityReasonWorkspaceIsolationMissing), want: "workspace_isolation_missing"},

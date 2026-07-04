@@ -93,6 +93,94 @@ func TestUS006SelectedTemplateTrustReadinessInput(t *testing.T) {
 	}
 }
 
+func TestUS004SelectedTemplateStrictReadinessRequiresDigestLockedTrustedEvidence(t *testing.T) {
+	tests := []struct {
+		name       string
+		lock       *SandboxTemplateLockMetadata
+		wantState  SandboxSecurityCapabilityReadinessState
+		wantReason SandboxSecurityCapabilityReasonCode
+	}{
+		{
+			name:       "trusted digest-locked evidence is accepted",
+			lock:       us006SelectedTemplateTrustedLock(),
+			wantState:  SandboxSecurityCapabilityReadinessReady,
+			wantReason: SandboxSecurityCapabilityReasonSelectedTemplateTrustConfirmed,
+		},
+		{
+			name:       "missing selected-template evidence blocks",
+			lock:       nil,
+			wantState:  SandboxSecurityCapabilityReadinessUnsupported,
+			wantReason: SandboxSecurityCapabilityReasonSelectedTemplateEvidenceMissing,
+		},
+		{
+			name:       "unresolved provenance blocks",
+			lock:       us006SelectedTemplateUnresolvedLock(),
+			wantState:  SandboxSecurityCapabilityReadinessBlocked,
+			wantReason: SandboxSecurityCapabilityReasonSelectedTemplateProvenanceUnresolved,
+		},
+		{
+			name:       "rejected trust blocks",
+			lock:       us006SelectedTemplateRejectedLock(),
+			wantState:  SandboxSecurityCapabilityReadinessBlocked,
+			wantReason: SandboxSecurityCapabilityReasonSelectedTemplateTrustRejected,
+		},
+		{
+			name:       "advisory-only trust blocks",
+			lock:       us006SelectedTemplateAdvisoryLock(),
+			wantState:  SandboxSecurityCapabilityReadinessMetadataOnly,
+			wantReason: SandboxSecurityCapabilityReasonSelectedTemplateTrustAdvisoryOnly,
+		},
+		{
+			name:       "digest-missing lock metadata blocks",
+			lock:       us004SelectedTemplateDigestMissingLock(),
+			wantState:  SandboxSecurityCapabilityReadinessUnsupported,
+			wantReason: SandboxSecurityCapabilityReasonSelectedTemplateEvidenceMissing,
+		},
+		{
+			name:       "warning-bearing metadata blocks",
+			lock:       us004SelectedTemplateWarningBearingLock(),
+			wantState:  SandboxSecurityCapabilityReadinessUnsupported,
+			wantReason: SandboxSecurityCapabilityReasonWarningBearing,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
+				us006SelectedTemplateRequirement(),
+				ProjectSandboxWorkerRuntimeCapabilityReadinessInput(SandboxWorkerRuntimeCapabilityReadinessProjection{
+					TemplateLock: tt.lock,
+				}),
+			)
+			requireUS006SelectedTemplateResult(t, output, tt.wantState, tt.wantReason)
+			decision := EvaluateSandboxSecureDefaultReadiness(*output)
+			if tt.wantState == SandboxSecurityCapabilityReadinessReady {
+				if decision.Outcome != SandboxSecurityCapabilityReadinessGateOutcomeAllowed {
+					t.Fatalf("strict decision = %#v, want allowed", decision)
+				}
+				return
+			}
+			if decision.Outcome != SandboxSecurityCapabilityReadinessGateOutcomeBlocked {
+				t.Fatalf("strict decision = %#v, want blocked", decision)
+			}
+			if got := decision.Counts.ReasonCodeCounts[tt.wantReason]; got != 1 {
+				t.Fatalf("strict reason count[%s] = %d, want 1; counts=%#v", tt.wantReason, got, decision.Counts)
+			}
+			assertUS006SelectedTemplateJSONSafe(t, output, decision)
+		})
+	}
+}
+
+func TestUS004UnconfiguredTemplateRequirementDoesNotInventReadiness(t *testing.T) {
+	input := ProjectSandboxWorkerRuntimeCapabilityReadinessInput(SandboxWorkerRuntimeCapabilityReadinessProjection{})
+	if len(input.Requested) != 0 {
+		t.Fatalf("requested readiness = %#v, want no selected-template requirement without configured evidence", input.Requested)
+	}
+	if output := EvaluateProjectedSandboxSecurityCapabilityReadiness(input); output != nil {
+		t.Fatalf("readiness output = %#v, want nil without configured template requirement", output)
+	}
+}
+
 func TestUS006SelectedTemplateTrustAdvisoryModesExposeDiagnosticsOnly(t *testing.T) {
 	output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
 		us006SelectedTemplateRequirement(),
@@ -318,11 +406,27 @@ func us006SelectedTemplateLockEntry(sourceKind, referenceKind, reasonCode, diges
 		DigestValue:     strings.Repeat(digestSeed, 64),
 		LockedAt:        "2026-07-04T06:18:17Z",
 		ReasonCode:      reasonCode,
-		WarningCodes: []string{
-			reasonCode,
-			"token=ghp_us006_secret",
-		},
 	}
+}
+
+func us004SelectedTemplateDigestMissingLock() *SandboxTemplateLockMetadata {
+	lock := us006SelectedTemplateTrustedLock()
+	lock.TemplateReference.DigestAlgorithm = ""
+	lock.TemplateReference.DigestValue = ""
+	return SanitizeSandboxTemplateLockMetadata(lock)
+}
+
+func us004SelectedTemplateWarningBearingLock() *SandboxTemplateLockMetadata {
+	lock := us006SelectedTemplateTrustedLock()
+	lock.TemplateReference.WarningCodes = []string{
+		SandboxTemplateLockReasonMutableReference,
+		"token=ghp_us004_secret",
+	}
+	lock.TrustPolicy.WarningCodes = []string{
+		SandboxTemplateTrustPolicyCodeMutableReference,
+		"https://registry.example.test/template:latest?token=ghp_us004_secret",
+	}
+	return SanitizeSandboxTemplateLockMetadata(lock)
 }
 
 func TestUS006SelectedTemplateTrustReadinessInputIsDeterministic(t *testing.T) {

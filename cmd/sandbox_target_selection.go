@@ -52,6 +52,10 @@ func (e sandboxCommandSecurityReadinessGateError) Unwrap() error {
 	return e.cause
 }
 
+func (e sandboxCommandSecurityReadinessGateError) securityReadinessGateDecision() *sandbox.SandboxSecurityCapabilityReadinessGateDecision {
+	return sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(&e.decision)
+}
+
 func resolveSandboxCommandTarget(ctx context.Context, req sandboxCommandTargetRequest, deps sandboxCommandTargetDeps) (*sandbox.SandboxState, error) {
 	if !sandboxCommandHasTargetSelectionConstraint(req) {
 		target, err := resolveSandboxCommandLegacyTarget(ctx, req, deps)
@@ -91,7 +95,7 @@ func resolveSandboxCommandTarget(ctx context.Context, req sandboxCommandTargetRe
 		return nil, err
 	}
 	if result.Sandbox != nil {
-		return result.Sandbox, nil
+		return applySandboxCommandSelectedMetadata(result.Sandbox, result), nil
 	}
 	if !result.NeedsProvisioning() {
 		return nil, fmt.Errorf("sandbox target selection returned no sandbox")
@@ -121,6 +125,19 @@ func resolveSandboxCommandTarget(ctx context.Context, req sandboxCommandTargetRe
 }
 
 func sandboxCommandSecurityReadinessGateDecisionFromError(err error) *sandbox.SandboxSecurityCapabilityReadinessGateDecision {
+	if decision := sandboxCommandTargetSelectionSecurityReadinessGateDecisionFromError(err); decision != nil {
+		return decision
+	}
+	var carrier interface {
+		securityReadinessGateDecision() *sandbox.SandboxSecurityCapabilityReadinessGateDecision
+	}
+	if errors.As(err, &carrier) {
+		return carrier.securityReadinessGateDecision()
+	}
+	return nil
+}
+
+func sandboxCommandTargetSelectionSecurityReadinessGateDecisionFromError(err error) *sandbox.SandboxSecurityCapabilityReadinessGateDecision {
 	var gateErr sandboxCommandSecurityReadinessGateError
 	if !errors.As(err, &gateErr) {
 		return nil
@@ -276,6 +293,12 @@ func applySandboxCommandSelectedMetadata(target *sandbox.SandboxState, result sa
 			Image:          result.Runtime.Image,
 			WorkerID:       result.Runtime.WorkerID,
 		}
+	}
+	if result.SecurityReadinessGate != nil {
+		if target.Security == nil {
+			target.Security = &sandbox.SandboxSecurity{}
+		}
+		target.Security.SecurityReadinessGate = sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(result.SecurityReadinessGate)
 	}
 	return target
 }

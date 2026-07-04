@@ -306,6 +306,9 @@ func sandboxAugmentJSON(remoteJSON []byte, manifest *sandboxexecution.Manifest) 
 	if credentialDelivery := sandboxCommandJSONCredentialDeliveryStatus(manifest.CredentialDelivery); credentialDelivery != nil {
 		raw["credentialDelivery"] = credentialDelivery
 	}
+	if readinessGate := sandboxCommandJSONSecurityReadinessGate(manifest.Security); readinessGate != nil {
+		raw["securityReadinessGate"] = readinessGate
+	}
 	data, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return nil, false
@@ -319,7 +322,15 @@ func sandboxManifestHasCommandJSONAugmentation(manifest *sandboxexecution.Manife
 	}
 	return manifest.SyncOut != nil ||
 		manifest.SyncOutApply != nil ||
-		sandboxCommandJSONCredentialDeliveryStatus(manifest.CredentialDelivery) != nil
+		sandboxCommandJSONCredentialDeliveryStatus(manifest.CredentialDelivery) != nil ||
+		sandboxCommandJSONSecurityReadinessGate(manifest.Security) != nil
+}
+
+func sandboxCommandJSONSecurityReadinessGate(security *sandbox.SandboxSecurity) *sandbox.SandboxSecurityCapabilityReadinessGateDecision {
+	if security == nil {
+		return nil
+	}
+	return sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate)
 }
 
 func sandboxCommandJSONCredentialDeliveryStatus(status *sandbox.SandboxCredentialDeliveryStatusMetadata) *sandbox.SandboxCredentialDeliveryStatusMetadata {

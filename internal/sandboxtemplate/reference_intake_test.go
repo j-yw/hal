@@ -156,3 +156,60 @@ func TestClassifyTemplateReferenceRejectsMalformedAndUnsupportedInputsSafely(t *
 		})
 	}
 }
+
+func TestUS004TemplateReferenceClassificationSeparatesDigestLockedAndMutableInput(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	tests := []struct {
+		name             string
+		input            string
+		wantStatus       TemplateReferenceStatus
+		wantDigestLocked bool
+		wantMutable      bool
+		wantReason       TemplateReferenceReasonCode
+	}{
+		{
+			name:             "digest locked oci template",
+			input:            "registry.example.io/acme/templates/codex-go@sha256:" + digest,
+			wantStatus:       TemplateReferenceStatusAccepted,
+			wantDigestLocked: true,
+			wantReason:       TemplateReferenceReasonDigestPinned,
+		},
+		{
+			name:        "mutable oci template remains advisory input",
+			input:       "registry.example.io/acme/templates/codex-go:latest",
+			wantStatus:  TemplateReferenceStatusAccepted,
+			wantMutable: true,
+			wantReason:  TemplateReferenceReasonMutableReference,
+		},
+		{
+			name:       "malformed digest is not digest locked",
+			input:      "registry.example.io/acme/templates/codex-go@sha256:not-a-digest",
+			wantStatus: TemplateReferenceStatusMalformed,
+			wantReason: TemplateReferenceReasonMalformedDigest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ClassifyTemplateReference(tt.input)
+			if got.Status != tt.wantStatus {
+				t.Fatalf("status = %q, want %q: %#v", got.Status, tt.wantStatus, got)
+			}
+			if got.DigestPinned != tt.wantDigestLocked || got.Mutable != tt.wantMutable {
+				t.Fatalf("digestPinned/mutable = %v/%v, want %v/%v: %#v", got.DigestPinned, got.Mutable, tt.wantDigestLocked, tt.wantMutable, got)
+			}
+			if got.ReasonCode != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", got.ReasonCode, tt.wantReason)
+			}
+			data, err := json.Marshal(got)
+			if err != nil {
+				t.Fatalf("Marshal(classification) error = %v", err)
+			}
+			for _, forbidden := range []string{"not-a-digest", "token=", "Authorization", "/Users/"} {
+				if strings.Contains(string(data), forbidden) {
+					t.Fatalf("classification leaked %q: %s", forbidden, data)
+				}
+			}
+		})
+	}
+}

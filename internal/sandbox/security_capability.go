@@ -70,6 +70,7 @@ const (
 	SandboxSecurityCapabilityReasonMetadataEnforcementUnproven          SandboxSecurityCapabilityReasonCode = "metadata_enforcement_unproven"
 	SandboxSecurityCapabilityReasonMetadataDeliveryUnproven             SandboxSecurityCapabilityReasonCode = "metadata_delivery_unproven"
 	SandboxSecurityCapabilityReasonReadinessMissing                     SandboxSecurityCapabilityReasonCode = "readiness_missing"
+	SandboxSecurityCapabilityReasonWarningBearing                       SandboxSecurityCapabilityReasonCode = "warning_bearing"
 	SandboxSecurityCapabilityReasonMicroVMReadinessMissing              SandboxSecurityCapabilityReasonCode = "microvm_readiness_missing"
 	SandboxSecurityCapabilityReasonMicroVMSupportMissing                SandboxSecurityCapabilityReasonCode = "microvm_support_missing"
 	SandboxSecurityCapabilityReasonWorkspaceIsolationMissing            SandboxSecurityCapabilityReasonCode = "workspace_isolation_missing"

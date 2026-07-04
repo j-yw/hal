@@ -221,6 +221,7 @@ func sandboxCoreRedactionGuardTypes() []reflect.Type {
 		reflect.TypeOf(SandboxNetworkPolicySnapshotIdentity{}),
 		reflect.TypeOf(SandboxNetworkProxySessionMetadata{}),
 		reflect.TypeOf(SandboxNetworkEnforcementProofMetadata{}),
+		reflect.TypeOf(SandboxMicroVMIsolationProofMetadata{}),
 		reflect.TypeOf(SandboxNetworkPolicyRequestSummary{}),
 		reflect.TypeOf(SandboxNetworkPolicyDecisionLogRecord{}),
 		reflect.TypeOf(SandboxNetworkProxyValidationError{}),

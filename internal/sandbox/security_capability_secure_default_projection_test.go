@@ -128,7 +128,7 @@ func TestProjectSecureDefaultReadinessInputRejectsIncompleteNetworkProofs(t *tes
 					ResultSupported:       true,
 				}),
 			},
-			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementUnsupported,
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementPartial,
 		},
 	}
 
@@ -215,6 +215,264 @@ func TestProjectSecureDefaultReadinessInputDowngradesOneSidedProxyFirewallProofs
 	}
 }
 
+func TestUS002ProjectSecureDefaultReadinessRequiresActiveMicroVMIsolationProof(t *testing.T) {
+	tests := []struct {
+		name       string
+		projection SandboxWorkerRuntimeCapabilityReadinessProjection
+		wantReason SandboxSecurityCapabilityReasonCode
+	}{
+		{
+			name: "runtime posture is metadata only",
+			projection: SandboxWorkerRuntimeCapabilityReadinessProjection{
+				Runtime: &SandboxRuntimeState{
+					Driver:         SandboxRuntimeDriverMicroVM,
+					IsolationLevel: SandboxIsolationLevelVM,
+				},
+			},
+			wantReason: SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
+		},
+		{
+			name: "worker routing posture is metadata only",
+			projection: SandboxWorkerRuntimeCapabilityReadinessProjection{
+				WorkerRouting: &WorkerRoutingMetadata{
+					RuntimeDriverID: SandboxRuntimeDriverMicroVM,
+					IsolationLevel:  SandboxIsolationLevelVM,
+				},
+			},
+			wantReason: SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
+		},
+		{
+			name: "container isolation proof cannot satisfy microvm",
+			projection: SandboxWorkerRuntimeCapabilityReadinessProjection{
+				MicroVMIsolationProof: secureDefaultProjectionMicroVMProof(SandboxMicroVMIsolationProofMetadata{
+					RuntimeDriver:   SandboxRuntimeDriverRootlessPodman,
+					IsolationLevel:  SandboxIsolationLevelContainer,
+					ResultSupported: true,
+				}),
+			},
+			wantReason: SandboxSecurityCapabilityReasonMicroVMSupportMissing,
+		},
+		{
+			name: "planned microvm proof is not active evidence",
+			projection: SandboxWorkerRuntimeCapabilityReadinessProjection{
+				MicroVMIsolationProof: secureDefaultProjectionMicroVMProof(SandboxMicroVMIsolationProofMetadata{
+					RuntimeStatus: "planned",
+				}),
+			},
+			wantReason: SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
+		},
+		{
+			name: "warning bearing microvm proof blocks strict readiness",
+			projection: SandboxWorkerRuntimeCapabilityReadinessProjection{
+				MicroVMIsolationProof: secureDefaultProjectionMicroVMProof(SandboxMicroVMIsolationProofMetadata{
+					WarningCount: 1,
+				}),
+			},
+			wantReason: SandboxSecurityCapabilityReasonWarningBearing,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
+				secureDefaultProjectionRequestedMicroVMInput(),
+				ProjectSandboxWorkerRuntimeCapabilityReadinessInput(tt.projection),
+			)
+			requireSecureDefaultProjectionStrictGate(t, output,
+				SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+				SandboxSecurityCapabilityReadinessGateReasonCode(tt.wantReason),
+				tt.wantReason,
+			)
+			requireSecureDefaultProjectionNoReadyResult(t, output,
+				SandboxSecurityCapabilityFamilyIsolation,
+				SandboxSecurityCapabilityIsolationMicroVM,
+			)
+		})
+	}
+}
+
+func TestUS002ProjectSecureDefaultReadinessAcceptsActiveMicroVMIsolationProof(t *testing.T) {
+	output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
+		secureDefaultProjectionRequestedMicroVMInput(),
+		ProjectSandboxWorkerRuntimeCapabilityReadinessInput(SandboxWorkerRuntimeCapabilityReadinessProjection{
+			MicroVMIsolationProof: secureDefaultProjectionMicroVMProof(SandboxMicroVMIsolationProofMetadata{}),
+		}),
+	)
+
+	result := requireSecureDefaultProjectionResult(t, output,
+		SandboxSecurityCapabilityReadinessReady,
+		SandboxSecurityCapabilityFamilyIsolation,
+		SandboxSecurityCapabilityIsolationMicroVM,
+		SandboxSecurityCapabilityReasonMicroVMReadinessConfirmed,
+	)
+	if result.Ready == nil || result.Ready.Source != SandboxSecurityCapabilitySourceRuntime {
+		t.Fatalf("microvm ready context = %#v, want runtime proof source", result.Ready)
+	}
+	requireSecureDefaultProjectionStrictGate(t, output,
+		SandboxSecurityCapabilityReadinessGateOutcomeAllowed,
+		SandboxSecurityCapabilityReadinessGateReasonReadinessReady,
+		SandboxSecurityCapabilityReasonMicroVMReadinessConfirmed,
+	)
+}
+
+func TestUS002ProjectSecureDefaultReadinessClassifiesNetworkProofReasons(t *testing.T) {
+	tests := []struct {
+		name       string
+		proof      *SandboxNetworkEnforcementProofMetadata
+		projection SandboxPolicyProxyCredentialCapabilityReadinessProjection
+		wantReason SandboxSecurityCapabilityReasonCode
+	}{
+		{
+			name:       "missing proof",
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementMissing,
+		},
+		{
+			name: "planned only lifecycle metadata",
+			projection: SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+				NetworkProxySession: &SandboxNetworkProxySessionMetadata{
+					ID:              "network-proxy-session-planned",
+					Source:          SandboxNetworkPolicyDecisionSourceWorker,
+					EnforcementMode: SandboxNetworkEnforcementModeProxyFirewall,
+					PolicySnapshot: &SandboxNetworkPolicySnapshotIdentity{
+						ID:     "policy-snapshot-planned",
+						Preset: SandboxNetworkPolicyPresetDenyByDefault,
+					},
+				},
+			},
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementPlannedOnly,
+		},
+		{
+			name: "best effort proof",
+			proof: secureDefaultProjectionNetworkProof(SandboxNetworkEnforcementProofMetadata{
+				ResultOutcome:         "best_effort",
+				ResultEnforcementMode: SandboxNetworkEnforcementModeBestEffort,
+				ResultSupported:       true,
+			}),
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementBestEffort,
+		},
+		{
+			name: "proxy only proof is partial",
+			proof: secureDefaultProjectionNetworkProof(SandboxNetworkEnforcementProofMetadata{
+				FirewallLifecycleStatus:     "planned",
+				FirewallLifecycleReasonCode: "prepared",
+				ResultOutcome:               "success",
+				ResultEnforcementMode:       SandboxNetworkEnforcementModeProxy,
+				ResultSupported:             true,
+			}),
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementPartial,
+		},
+		{
+			name: "firewall rule only proof is partial",
+			proof: secureDefaultProjectionNetworkProof(SandboxNetworkEnforcementProofMetadata{
+				ProxyLifecycleStatus:     "planned",
+				ProxyLifecycleReasonCode: "prepared",
+				ResultOutcome:            "success",
+				ResultEnforcementMode:    SandboxNetworkEnforcementModeFirewall,
+				ResultSupported:          true,
+			}),
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementPartial,
+		},
+		{
+			name: "unsupported proof",
+			proof: secureDefaultProjectionNetworkProof(SandboxNetworkEnforcementProofMetadata{
+				ResultOutcome:         "unsupported",
+				ResultEnforcementMode: SandboxNetworkEnforcementModeProxyFirewall,
+				ResultSupported:       false,
+			}),
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementUnsupported,
+		},
+		{
+			name: "failed proof",
+			proof: secureDefaultProjectionNetworkProof(SandboxNetworkEnforcementProofMetadata{
+				ProxyLifecycleStatus:     "failed",
+				ProxyLifecycleReasonCode: "adapter_failed",
+				ResultOutcome:            "failure",
+				ResultEnforcementMode:    SandboxNetworkEnforcementModeProxyFirewall,
+				ResultSupported:          false,
+			}),
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementFailed,
+		},
+		{
+			name: "warning bearing proof",
+			proof: secureDefaultProjectionNetworkProof(SandboxNetworkEnforcementProofMetadata{
+				WarningCount: 1,
+			}),
+			wantReason: SandboxSecurityCapabilityReasonWarningBearing,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			projection := tt.projection
+			projection.NetworkEnforcementProof = tt.proof
+			output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
+				secureDefaultProjectionRequestedNetworkInput(),
+				ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(projection),
+			)
+			requireSecureDefaultProjectionStrictGate(t, output,
+				SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+				SandboxSecurityCapabilityReadinessGateReasonCode(tt.wantReason),
+				tt.wantReason,
+			)
+			requireSecureDefaultProjectionNoReadyResult(t, output,
+				SandboxSecurityCapabilityFamilyNetworkPolicy,
+				SandboxSecurityCapabilityNetworkDenyByDefault,
+			)
+		})
+	}
+}
+
+func TestUS002ProjectSecureDefaultReadinessKeepsDiagnosticNetworkMetadataNonAuthoritative(t *testing.T) {
+	output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
+		secureDefaultProjectionRequestedNetworkInput(),
+		ProjectSandboxWorkerRuntimeCapabilityReadinessInput(SandboxWorkerRuntimeCapabilityReadinessProjection{
+			WorkerPostures: []SandboxSecurityCapabilityWorkerPostureMetadata{{
+				RuntimeDriver:      SandboxRuntimeDriverMicroVM,
+				IsolationLevel:     SandboxIsolationLevelVM,
+				NetworkPolicy:      SandboxNetworkPolicyDenyByDefault,
+				NetworkEnforcement: SandboxNetworkEnforcementModeProxyFirewall,
+			}},
+		}),
+		ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+			NetworkPolicyResult: &SandboxNetworkPolicyResult{
+				Requested:       SandboxNetworkPolicyIntent{Preset: SandboxNetworkPolicyPresetDenyByDefault},
+				Effective:       SandboxNetworkPolicyIntent{Preset: SandboxNetworkPolicyPresetDenyByDefault},
+				EnforcementMode: SandboxNetworkEnforcementModeProxyFirewall,
+				Capability: SandboxNetworkPolicyEnforcementCapability{
+					Supported:                  true,
+					Modes:                      []string{SandboxNetworkEnforcementModeProxyFirewall},
+					SupportsDefaultDenyPosture: true,
+				},
+			},
+			NetworkPolicyDecisionLogs: []SandboxNetworkPolicyDecisionLogRecord{{
+				ID:              "network-decision-denied",
+				Source:          SandboxNetworkPolicyDecisionSourceWorker,
+				Outcome:         SandboxNetworkPolicyDecisionOutcomeDenied,
+				ReasonCode:      SandboxNetworkPolicyDecisionReasonDefaultDeny,
+				PolicyPreset:    SandboxNetworkPolicyPresetDenyByDefault,
+				EnforcementMode: SandboxNetworkEnforcementModeProxyFirewall,
+			}},
+		}),
+	)
+
+	requireSecureDefaultProjectionStrictGate(t, output,
+		SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+		SandboxSecurityCapabilityReadinessGateReasonCode(SandboxSecurityCapabilityReasonNetworkEnforcementPlannedOnly),
+		SandboxSecurityCapabilityReasonNetworkEnforcementPlannedOnly,
+	)
+	requireSecureDefaultProjectionNoReadyResult(t, output,
+		SandboxSecurityCapabilityFamilyNetworkPolicy,
+		SandboxSecurityCapabilityNetworkDenyByDefault,
+	)
+	assertSecurityCapabilityJSONExcludes(t, output,
+		"iptables",
+		"pfctl",
+		"/tmp/firewall.sock",
+		"provider=firecracker",
+		"Authorization: Bearer",
+	)
+}
+
 func TestProjectSecureDefaultReadinessInputRequiresActiveCredentialActivationProof(t *testing.T) {
 	output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
 		secureDefaultProjectionRequestedSecretInput(SandboxSecretModeHTTPProxy),
@@ -231,17 +489,14 @@ func TestProjectSecureDefaultReadinessInputRequiresActiveCredentialActivationPro
 		}),
 	)
 
-	result := requireSecureDefaultProjectionResult(t, output,
-		SandboxSecurityCapabilityReadinessReady,
+	requireSecureDefaultProjectionStrictGate(t, output,
+		SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+		SandboxSecurityCapabilityReadinessGateReasonCode(SandboxSecurityCapabilityReasonCredentialActivationMissing),
+		SandboxSecurityCapabilityReasonCredentialActivationMissing,
+	)
+	requireSecureDefaultProjectionNoReadyResult(t, output,
 		SandboxSecurityCapabilityFamilySecretDelivery,
 		SandboxSecurityCapabilitySecretHTTPProxy,
-		SandboxSecurityCapabilityReasonCredentialActivationConfirmed,
-	)
-	requireSecureDefaultProjectionResultMode(t, result, SandboxSecretModeHTTPProxy)
-	requireSecureDefaultProjectionStrictGate(t, output,
-		SandboxSecurityCapabilityReadinessGateOutcomeAllowed,
-		SandboxSecurityCapabilityReadinessGateReasonReadinessReady,
-		SandboxSecurityCapabilityReasonCredentialActivationConfirmed,
 	)
 }
 
@@ -293,7 +548,9 @@ func TestProjectSecureDefaultReadinessInputBlocksConfiguredBindingsWithoutMatchi
 	tests := []struct {
 		name        string
 		bindingMode string
+		binding     *SandboxCredentialProxyBindingMetadata
 		status      *SandboxCredentialDeliveryStatusMetadata
+		wantReason  SandboxSecurityCapabilityReasonCode
 	}{
 		{
 			name:        "requested configured binding only",
@@ -322,6 +579,41 @@ func TestProjectSecureDefaultReadinessInputBlocksConfiguredBindingsWithoutMatchi
 			},
 		},
 		{
+			name:        "failed activation with stale proof metadata",
+			bindingMode: SandboxSecretModeHTTPProxy,
+			status: &SandboxCredentialDeliveryStatusMetadata{
+				ID:             "credential-delivery-failed",
+				PlanID:         "credential-delivery-plan",
+				ActivationID:   "credential-delivery-activation",
+				RequestedModes: []string{SandboxSecretModeHTTPProxy},
+				ActiveModes:    []string{SandboxSecretModeHTTPProxy},
+				ActiveProofs: []SandboxCredentialDeliveryProofSummary{
+					secureDefaultProjectionCredentialProof("binding-http-proxy", SandboxSecretModeHTTPProxy, "broker"),
+				},
+				Status:     "failed",
+				ReasonCode: "missing_activation_proof",
+				ErrorCount: 1,
+			},
+		},
+		{
+			name:        "warning-bearing active proof",
+			bindingMode: SandboxSecretModeHTTPProxy,
+			status: &SandboxCredentialDeliveryStatusMetadata{
+				ID:             "credential-delivery-warning",
+				PlanID:         "credential-delivery-plan",
+				ActivationID:   "credential-delivery-activation",
+				RequestedModes: []string{SandboxSecretModeHTTPProxy},
+				ActiveModes:    []string{SandboxSecretModeHTTPProxy},
+				ActiveProofs: []SandboxCredentialDeliveryProofSummary{
+					secureDefaultProjectionCredentialProof("binding-http-proxy", SandboxSecretModeHTTPProxy, "broker"),
+				},
+				Status:       "active",
+				ReasonCode:   "requested",
+				WarningCount: 1,
+			},
+			wantReason: SandboxSecurityCapabilityReasonWarningBearing,
+		},
+		{
 			name:        "wrong binding proof",
 			bindingMode: SandboxSecretModeHTTPProxy,
 			status: secureDefaultProjectionCredentialDeliveryStatus(
@@ -339,6 +631,32 @@ func TestProjectSecureDefaultReadinessInputBlocksConfiguredBindingsWithoutMatchi
 					secureDefaultProjectionCredentialProof("binding-http-proxy", SandboxSecretModeSSHAgent, "handoff"),
 				},
 				SandboxSecretModeSSHAgent,
+			),
+		},
+		{
+			name:        "provider internal proof source",
+			bindingMode: SandboxSecretModeHTTPProxy,
+			status: secureDefaultProjectionCredentialDeliveryStatus(
+				[]SandboxCredentialDeliveryProofSummary{
+					secureDefaultProjectionCredentialProof("binding-http-proxy", SandboxSecretModeHTTPProxy, "adapter"),
+				},
+				SandboxSecretModeHTTPProxy,
+			),
+		},
+		{
+			name:        "unbound configured binding",
+			bindingMode: SandboxSecretModeHTTPProxy,
+			binding: func() *SandboxCredentialProxyBindingMetadata {
+				binding := secureDefaultProjectionCredentialBinding("binding-http-proxy", SandboxSecretModeHTTPProxy)
+				binding.Outcome = SandboxCredentialProxyBindingOutcomePlanned
+				binding.Status = SandboxCredentialProxyStatusPlanned
+				return &binding
+			}(),
+			status: secureDefaultProjectionCredentialDeliveryStatus(
+				[]SandboxCredentialDeliveryProofSummary{
+					secureDefaultProjectionCredentialProof("binding-http-proxy", SandboxSecretModeHTTPProxy, "broker"),
+				},
+				SandboxSecretModeHTTPProxy,
 			),
 		},
 		{
@@ -366,10 +684,18 @@ func TestProjectSecureDefaultReadinessInputBlocksConfiguredBindingsWithoutMatchi
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			bindingID := "binding-" + strings.ReplaceAll(tt.bindingMode, "_", "-")
+			binding := secureDefaultProjectionCredentialBinding(bindingID, tt.bindingMode)
+			if tt.binding != nil {
+				binding = *tt.binding
+			}
+			wantReason := tt.wantReason
+			if wantReason == "" {
+				wantReason = SandboxSecurityCapabilityReasonCredentialActivationMissing
+			}
 			output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
 				ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(SandboxPolicyProxyCredentialCapabilityReadinessProjection{
 					CredentialProxyBindings: []SandboxCredentialProxyBindingMetadata{
-						secureDefaultProjectionCredentialBinding(bindingID, tt.bindingMode),
+						binding,
 					},
 					CredentialDelivery: tt.status,
 				}),
@@ -377,8 +703,8 @@ func TestProjectSecureDefaultReadinessInputBlocksConfiguredBindingsWithoutMatchi
 
 			requireSecureDefaultProjectionStrictGate(t, output,
 				SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
-				SandboxSecurityCapabilityReadinessGateReasonCode(SandboxSecurityCapabilityReasonCredentialActivationMissing),
-				SandboxSecurityCapabilityReasonCredentialActivationMissing,
+				SandboxSecurityCapabilityReadinessGateReasonCode(wantReason),
+				wantReason,
 			)
 			requireSecureDefaultProjectionNoReadyResult(t, output,
 				SandboxSecurityCapabilityFamilySecretDelivery,
@@ -789,6 +1115,16 @@ func secureDefaultProjectionRequestedNetworkInput() SandboxSecurityCapabilityRea
 	}
 }
 
+func secureDefaultProjectionRequestedMicroVMInput() SandboxSecurityCapabilityReadinessInput {
+	return SandboxSecurityCapabilityReadinessInput{
+		Requested: []SandboxSecurityCapabilityMetadata{{
+			Family:     SandboxSecurityCapabilityFamilyIsolation,
+			Capability: SandboxSecurityCapabilityIsolationMicroVM,
+			Source:     SandboxSecurityCapabilitySourceRequested,
+		}},
+	}
+}
+
 func secureDefaultProjectionRequestedSecretInput(mode string) SandboxSecurityCapabilityReadinessInput {
 	return SandboxSecurityCapabilityReadinessInput{
 		Requested: []SandboxSecurityCapabilityMetadata{{
@@ -913,7 +1249,46 @@ func secureDefaultProjectionNetworkProof(overrides SandboxNetworkEnforcementProo
 	if overrides.ResultEnforcementMode != "" {
 		proof.ResultEnforcementMode = overrides.ResultEnforcementMode
 	}
-	proof.ResultSupported = overrides.ResultSupported
+	if overrides.WarningCount != 0 {
+		proof.WarningCount = overrides.WarningCount
+	}
+	if !overrides.ResultSupported && overrides.ResultOutcome == "unsupported" {
+		proof.ResultSupported = false
+	}
+	return &proof
+}
+
+func secureDefaultProjectionMicroVMProof(overrides SandboxMicroVMIsolationProofMetadata) *SandboxMicroVMIsolationProofMetadata {
+	proof := SandboxMicroVMIsolationProofMetadata{
+		RuntimeDriver:       SandboxRuntimeDriverMicroVM,
+		IsolationLevel:      SandboxIsolationLevelVM,
+		RuntimeStatus:       "running",
+		GuestReadinessState: "ready",
+		ProcessLaunchState:  "accepted",
+		ResultSupported:     true,
+		WarningCount:        0,
+	}
+	if overrides.RuntimeDriver != "" {
+		proof.RuntimeDriver = overrides.RuntimeDriver
+	}
+	if overrides.IsolationLevel != "" {
+		proof.IsolationLevel = overrides.IsolationLevel
+	}
+	if overrides.RuntimeStatus != "" {
+		proof.RuntimeStatus = overrides.RuntimeStatus
+	}
+	if overrides.GuestReadinessState != "" {
+		proof.GuestReadinessState = overrides.GuestReadinessState
+	}
+	if overrides.ProcessLaunchState != "" {
+		proof.ProcessLaunchState = overrides.ProcessLaunchState
+	}
+	if overrides.ResultSupported {
+		proof.ResultSupported = true
+	}
+	if overrides.WarningCount != 0 {
+		proof.WarningCount = overrides.WarningCount
+	}
 	return &proof
 }
 

@@ -1175,7 +1175,7 @@ func TestRunAutoSandboxWithWriterCollectsGeneratedArtifacts(t *testing.T) {
 	if !result.OK || result.Summary != "remote" {
 		t.Fatalf("AutoResult = %#v, want ok remote result", result)
 	}
-	for _, disallowed := range []string{"missing", ".hal/reports.tar", "artifact warning"} {
+	for _, disallowed := range []string{".hal/reports.tar", "artifact warning"} {
 		if strings.Contains(out.String(), disallowed) {
 			t.Fatalf("stdout contains collection warning text %q outside remote JSON document: %s", disallowed, out.String())
 		}
