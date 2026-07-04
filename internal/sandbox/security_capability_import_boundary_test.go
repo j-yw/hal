@@ -33,7 +33,11 @@ var forbiddenSandboxSecurityCapabilityImports = []sandboxSecurityCapabilityForbi
 	{name: "sandbox execution record package", match: sandboxSecurityCapabilityModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxexecution")},
 	{name: "sandbox target package", match: sandboxSecurityCapabilityModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxtarget")},
 	{name: "sandbox workspace package", match: sandboxSecurityCapabilityModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxworkspace")},
+	{name: "credential activation implementation package", match: sandboxSecurityCapabilityModuleImportMatcher("github.com/jywlabs/hal/internal/credentialdelivery")},
+	{name: "template acquisition implementation package", match: sandboxSecurityCapabilityModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxtemplate/acquisition")},
 	{name: "concrete provider adapter package", match: sandboxSecurityCapabilityModuleImportMatcher("github.com/jywlabs/hal/internal/sandbox/provider")},
+	{name: "live network enforcement implementation package", match: sandboxSecurityCapabilityModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement")},
+	{name: "concrete microVM runtime package", match: sandboxSecurityCapabilityModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/microvm")},
 	{
 		name: "concrete runtime adapter package",
 		match: func(importPath string) bool {
@@ -149,6 +153,7 @@ func TestSecurityCapabilityImportBoundaryCoversProductionMetadataFiles(t *testin
 		"security_capability.go",
 		"security_capability_diagnostics.go",
 		"security_capability_evaluator.go",
+		"security_capability_gate.go",
 		"security_capability_sanitize.go",
 		"credential_proxy_projection.go",
 	} {
@@ -175,7 +180,12 @@ func TestSecurityCapabilityForbiddenImportListCoversRequiredBoundaries(t *testin
 		{name: "sandbox execution record packages", importPath: "github.com/jywlabs/hal/internal/sandboxexecution"},
 		{name: "sandbox target packages", importPath: "github.com/jywlabs/hal/internal/sandboxtarget"},
 		{name: "sandbox workspace packages", importPath: "github.com/jywlabs/hal/internal/sandboxworkspace"},
+		{name: "credential activation implementation", importPath: "github.com/jywlabs/hal/internal/credentialdelivery"},
+		{name: "template acquisition implementation", importPath: "github.com/jywlabs/hal/internal/sandboxtemplate/acquisition"},
 		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/daytona"},
+		{name: "live network enforcement implementation", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"},
+		{name: "concrete microVM runtime implementation", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm"},
+		{name: "concrete Firecracker runtime implementation", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"},
 		{name: "concrete SSH-machine runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"},
 		{name: "concrete rootless Podman runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"},
 		{name: "standard network package", importPath: "net"},
@@ -289,6 +299,10 @@ func TestSecurityCapabilitySourceGuardCoversRequiredLiveBehaviorMarkers(t *testi
 		{name: "worker client", source: `sandboxworker.NewClientDriver(opts)`, want: "sandboxworker."},
 		{name: "provider constructor", source: `NewProvider(config)`, want: "NewProvider"},
 		{name: "credential injection", source: `injectCredential(target, value)`, want: "injectCredential"},
+		{name: "network proxy start", source: `StartNetworkProxy(plan)`, want: "StartNetworkProxy"},
+		{name: "firewall rule apply", source: `ApplyFirewallRules(plan)`, want: "ApplyFirewallRules"},
+		{name: "credential activation", source: `ActivateCredential(binding)`, want: "ActivateCredential"},
+		{name: "template acquisition", source: `AcquireTemplate(ref)`, want: "AcquireTemplate"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			message := sandboxSecurityCapabilitySourceBoundaryMessage("security_capability.go", sandboxSecurityCapabilityFunctionSource(tt.source))
@@ -444,14 +458,23 @@ func sandboxSecurityCapabilityForbiddenIdentifierMarker(name string) string {
 		"NewWorkerClient",
 		"StartProxy",
 		"RunProxy",
+		"StartNetworkProxy",
+		"RunNetworkProxy",
 		"StartFirewall",
 		"ApplyFirewall",
+		"ApplyFirewallRules",
 		"MountTmpfs",
 		"WriteTmpfs",
+		"ActivateCredential",
+		"ActivateCredentials",
 		"DeliverCredential",
 		"DeliverCredentials",
 		"InjectCredential",
 		"InjectCredentials",
+		"AcquireTemplate",
+		"ResolveTemplate",
+		"PullTemplate",
+		"PullImage",
 		"injectCredential",
 		"injectCredentials":
 		return name
