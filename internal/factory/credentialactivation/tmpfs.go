@@ -65,8 +65,12 @@ func (a *FileTmpfsSimulationAdapter) ActivateCredentialDelivery(input credential
 	if a.broker == nil || a.secretBrokerSessionID == "" {
 		return tmpfsFailedResult(request, credentialdelivery.ReasonActivationUnavailable), nil
 	}
-	if _, ok := a.broker.SessionMetadata(a.secretBrokerSessionID); !ok {
+	session, ok := a.broker.SessionMetadata(a.secretBrokerSessionID)
+	if !ok {
 		return tmpfsFailedResult(request, credentialdelivery.ReasonActivationUnavailable), nil
+	}
+	if !tmpfsSessionSupportsActiveFileTmpfs(session) {
+		return tmpfsFailedResult(request, credentialdelivery.ReasonMissingActivationProof), nil
 	}
 
 	resolution := a.resolve(request)
@@ -139,7 +143,7 @@ func (a *FileTmpfsSimulationAdapter) resolve(request credentialdelivery.Activati
 			continue
 		}
 
-		proofID := tmpfsSimulationProofID(request.ActivationID, binding.ID)
+		proofID := tmpfsSimulationProofID(a.secretBrokerSessionID, binding.ID)
 		resolution.active = true
 		resolution.proofs = append(resolution.proofs, credentialdelivery.ActivationProofReference{
 			ProofID:      proofID,
@@ -166,6 +170,23 @@ func (a *FileTmpfsSimulationAdapter) secretPresent(secretRef string) bool {
 	}
 	resolved, ok := a.broker.LookupSecretByID(a.secretBrokerSessionID, secretRef)
 	return ok && strings.TrimSpace(resolved.Value) != ""
+}
+
+func tmpfsSessionSupportsActiveFileTmpfs(session halfactory.SecretBrokerSessionMetadata) bool {
+	if session.DeliveryModes == nil {
+		return false
+	}
+	return tmpfsDeliveryModesContain(session.DeliveryModes.RequestedModes, halfactory.SecretBrokerDeliveryModeFileTmpfs) &&
+		tmpfsDeliveryModesContain(session.DeliveryModes.ActiveModes, halfactory.SecretBrokerDeliveryModeFileTmpfs)
+}
+
+func tmpfsDeliveryModesContain(modes []string, want string) bool {
+	for _, mode := range modes {
+		if strings.TrimSpace(mode) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func tmpfsDisabledResult(request credentialdelivery.ActivationRequest) credentialdelivery.ActivationResult {

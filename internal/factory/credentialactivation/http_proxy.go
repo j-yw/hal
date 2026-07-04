@@ -118,7 +118,23 @@ func resolveHTTPProxyHandoff(request credentialdelivery.ActivationRequest) httpP
 			continue
 		}
 
-		proofID := httpProxyHandoffProofID(request.ActivationID, binding.ID)
+		proofID := httpProxyHandoffProofID(request.Plan, binding)
+		if proofID == "" {
+			resolution.reason = credentialdelivery.ReasonMissingActivationProof
+			resolution.bindings = append(resolution.bindings, credentialdelivery.BindingActivationResult{
+				BindingID:    binding.ID,
+				DeliveryMode: credentialdelivery.ModeHTTPProxy,
+				Status:       credentialdelivery.StatusSkipped,
+				ReasonCode:   credentialdelivery.ReasonMissingActivationProof,
+			})
+			resolution.warnings = appendHTTPProxyWarningIfMissing(resolution.warnings, credentialdelivery.Warning{
+				Code:       credentialdelivery.WarningActivationSkipped,
+				ReasonCode: credentialdelivery.ReasonMissingActivationProof,
+				BindingID:  binding.ID,
+				Mode:       credentialdelivery.ModeHTTPProxy,
+			})
+			continue
+		}
 		resolution.active = true
 		resolution.proofs = append(resolution.proofs, credentialdelivery.ActivationProofReference{
 			ProofID:      proofID,
@@ -218,8 +234,12 @@ func appendHTTPProxyWarningIfMissing(warnings []credentialdelivery.Warning, warn
 	return append(warnings, warning)
 }
 
-func httpProxyHandoffProofID(activationID, bindingID string) string {
-	return httpProxySafeIdentifier(activationID + "-" + bindingID + "-http-proxy-handoff-proof")
+func httpProxyHandoffProofID(plan credentialdelivery.Plan, binding credentialdelivery.Binding) string {
+	proof := credentialdelivery.SanitizeHTTPProxyProofMetadataPtr(plan.HTTPProxyProof)
+	if proof == nil || proof.BindingID != binding.ID {
+		return ""
+	}
+	return httpProxySafeIdentifier(proof.CredentialProxyBindingID)
 }
 
 func httpProxySafeIdentifier(value string) string {

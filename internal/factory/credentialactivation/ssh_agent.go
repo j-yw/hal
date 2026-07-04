@@ -118,7 +118,23 @@ func resolveSSHAgentHandoff(request credentialdelivery.ActivationRequest) sshAge
 			continue
 		}
 
-		proofID := sshAgentHandoffProofID(request.ActivationID, binding.ID)
+		proofID := sshAgentHandoffProofID(request.Plan, binding)
+		if proofID == "" {
+			resolution.reason = credentialdelivery.ReasonMissingActivationProof
+			resolution.bindings = append(resolution.bindings, credentialdelivery.BindingActivationResult{
+				BindingID:    binding.ID,
+				DeliveryMode: credentialdelivery.ModeSSHAgent,
+				Status:       credentialdelivery.StatusSkipped,
+				ReasonCode:   credentialdelivery.ReasonMissingActivationProof,
+			})
+			resolution.warnings = appendSSHAgentWarningIfMissing(resolution.warnings, credentialdelivery.Warning{
+				Code:       credentialdelivery.WarningActivationSkipped,
+				ReasonCode: credentialdelivery.ReasonMissingActivationProof,
+				BindingID:  binding.ID,
+				Mode:       credentialdelivery.ModeSSHAgent,
+			})
+			continue
+		}
 		resolution.active = true
 		resolution.proofs = append(resolution.proofs, credentialdelivery.ActivationProofReference{
 			ProofID:      proofID,
@@ -218,8 +234,12 @@ func appendSSHAgentWarningIfMissing(warnings []credentialdelivery.Warning, warni
 	return append(warnings, warning)
 }
 
-func sshAgentHandoffProofID(activationID, bindingID string) string {
-	return sshAgentSafeIdentifier(activationID + "-" + bindingID + "-ssh-agent-handoff-proof")
+func sshAgentHandoffProofID(plan credentialdelivery.Plan, binding credentialdelivery.Binding) string {
+	proof := credentialdelivery.SanitizeSSHAgentProofMetadataPtr(plan.SSHAgentProof)
+	if proof == nil || proof.BindingID != binding.ID {
+		return ""
+	}
+	return sshAgentSafeIdentifier(proof.HandoffID)
 }
 
 func sshAgentSafeIdentifier(value string) string {
