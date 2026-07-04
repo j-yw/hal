@@ -80,18 +80,19 @@ const (
 
 // AutoResult is the machine-readable output of hal auto --json.
 type AutoResult struct {
-	ContractVersion    int                                              `json:"contractVersion"`
-	OK                 bool                                             `json:"ok"`
-	EntryMode          string                                           `json:"entryMode"`
-	Resumed            bool                                             `json:"resumed"`
-	Duration           string                                           `json:"duration,omitempty"`
-	Steps              AutoSteps                                        `json:"steps"`
-	CredentialDelivery *sandbox.SandboxCredentialDeliveryStatusMetadata `json:"credentialDelivery,omitempty"`
-	SyncOut            *sandboxworkspace.SyncOutSummary                 `json:"syncOut,omitempty"`
-	SyncOutApply       *sandboxworkspace.SafeApplyResult                `json:"syncOutApply,omitempty"`
-	Error              string                                           `json:"error,omitempty"`
-	Summary            string                                           `json:"summary"`
-	NextAction         *AutoNextAction                                  `json:"nextAction,omitempty"`
+	ContractVersion       int                                                     `json:"contractVersion"`
+	OK                    bool                                                    `json:"ok"`
+	EntryMode             string                                                  `json:"entryMode"`
+	Resumed               bool                                                    `json:"resumed"`
+	Duration              string                                                  `json:"duration,omitempty"`
+	Steps                 AutoSteps                                               `json:"steps"`
+	CredentialDelivery    *sandbox.SandboxCredentialDeliveryStatusMetadata        `json:"credentialDelivery,omitempty"`
+	SyncOut               *sandboxworkspace.SyncOutSummary                        `json:"syncOut,omitempty"`
+	SyncOutApply          *sandboxworkspace.SafeApplyResult                       `json:"syncOutApply,omitempty"`
+	SecurityReadinessGate *sandbox.SandboxSecurityCapabilityReadinessGateDecision `json:"securityReadinessGate,omitempty"`
+	Error                 string                                                  `json:"error,omitempty"`
+	Summary               string                                                  `json:"summary"`
+	NextAction            *AutoNextAction                                         `json:"nextAction,omitempty"`
 }
 
 // AutoStep captures status and optional telemetry for one pipeline step.

@@ -50,22 +50,23 @@ var (
 
 // RunResult is the machine-readable output of hal run --json.
 type RunResult struct {
-	ContractVersion    int                                              `json:"contractVersion"`
-	OK                 bool                                             `json:"ok"`
-	Engine             string                                           `json:"engine,omitempty"`
-	Iterations         int                                              `json:"iterations"`
-	Complete           bool                                             `json:"complete"`
-	StoryID            string                                           `json:"storyId,omitempty"`
-	LastStoryID        string                                           `json:"lastStoryId,omitempty"`
-	DryRun             bool                                             `json:"dryRun,omitempty"`
-	Duration           string                                           `json:"duration,omitempty"`
-	PRD                *RunPRDInfo                                      `json:"prd,omitempty"`
-	CredentialDelivery *sandbox.SandboxCredentialDeliveryStatusMetadata `json:"credentialDelivery,omitempty"`
-	SyncOut            *sandboxworkspace.SyncOutSummary                 `json:"syncOut,omitempty"`
-	SyncOutApply       *sandboxworkspace.SafeApplyResult                `json:"syncOutApply,omitempty"`
-	NextAction         *RunNextAction                                   `json:"nextAction,omitempty"`
-	Error              string                                           `json:"error,omitempty"`
-	Summary            string                                           `json:"summary"`
+	ContractVersion       int                                                     `json:"contractVersion"`
+	OK                    bool                                                    `json:"ok"`
+	Engine                string                                                  `json:"engine,omitempty"`
+	Iterations            int                                                     `json:"iterations"`
+	Complete              bool                                                    `json:"complete"`
+	StoryID               string                                                  `json:"storyId,omitempty"`
+	LastStoryID           string                                                  `json:"lastStoryId,omitempty"`
+	DryRun                bool                                                    `json:"dryRun,omitempty"`
+	Duration              string                                                  `json:"duration,omitempty"`
+	PRD                   *RunPRDInfo                                             `json:"prd,omitempty"`
+	CredentialDelivery    *sandbox.SandboxCredentialDeliveryStatusMetadata        `json:"credentialDelivery,omitempty"`
+	SyncOut               *sandboxworkspace.SyncOutSummary                        `json:"syncOut,omitempty"`
+	SyncOutApply          *sandboxworkspace.SafeApplyResult                       `json:"syncOutApply,omitempty"`
+	SecurityReadinessGate *sandbox.SandboxSecurityCapabilityReadinessGateDecision `json:"securityReadinessGate,omitempty"`
+	NextAction            *RunNextAction                                          `json:"nextAction,omitempty"`
+	Error                 string                                                  `json:"error,omitempty"`
+	Summary               string                                                  `json:"summary"`
 }
 
 // RunPRDInfo provides PRD state at the time the run completed.
@@ -548,12 +549,17 @@ func formatRunDuration(d time.Duration) string {
 }
 
 func outputRunJSONError(out io.Writer, errMsg string) error {
+	return outputRunJSONErrorWithReadinessGate(out, errMsg, nil)
+}
+
+func outputRunJSONErrorWithReadinessGate(out io.Writer, errMsg string, gate *sandbox.SandboxSecurityCapabilityReadinessGateDecision) error {
 	errMsg = sanitizeRunPublicString(errMsg)
 	jr := RunResult{
-		ContractVersion: 1,
-		OK:              false,
-		Error:           errMsg,
-		Summary:         errMsg,
+		ContractVersion:       1,
+		OK:                    false,
+		Error:                 errMsg,
+		Summary:               errMsg,
+		SecurityReadinessGate: sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(gate),
 	}
 	data, _ := json.MarshalIndent(jr, "", "  ")
 	fmt.Fprintln(out, string(data))

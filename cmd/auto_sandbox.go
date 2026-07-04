@@ -263,7 +263,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 		applyAutoSandboxSecurityReadinessGateError(&req, cause)
 		_ = saveAutoSandboxManifest(store, req, sandboxexecution.StatusFailed, startedAt, &finishedAt, nil)
 		if opts.JSON {
-			return outputAutoSandboxJSONError(out, args, opts, cause.Error())
+			return outputAutoSandboxJSONErrorWithReadinessGate(out, args, opts, cause.Error(), sandboxCommandSecurityReadinessGateDecisionFromError(cause))
 		}
 		return autoSandboxExitValidation(cmd, cause)
 	}
@@ -285,7 +285,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 	var target *sandbox.SandboxState
 	commandOut := out
 	var capturedJSON bytes.Buffer
-	augmentJSON := opts.JSON && (req.SyncOut.Enabled || sandboxCredentialDeliveryActivationResultPresent(req.CredentialDeliveryActivation))
+	augmentJSON := opts.JSON
 	if augmentJSON {
 		commandOut = &capturedJSON
 	}
@@ -377,7 +377,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 	}
 	if execErr != nil {
 		if opts.JSON && !execResult.RemoteStarted {
-			return outputAutoSandboxJSONError(out, args, opts, execErr.Error())
+			return outputAutoSandboxJSONErrorWithReadinessGate(out, args, opts, execErr.Error(), sandboxCommandSecurityReadinessGateDecisionFromError(execErr))
 		}
 		return execErr
 	}
@@ -921,9 +921,22 @@ func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxReques
 	}
 	manifest.Security = sandboxManifestSecurity(req.Security, target)
 	applyAutoSandboxCapabilityReadinessMetadata(manifest)
-	manifest.Security = applyCommandSandboxSecurityReadinessGate(manifest.Security, req.SecurityReadinessGateMode, req.SecurityReadinessGate)
+	manifest.Security = applyCommandSandboxSecurityReadinessGate(manifest.Security, req.SecurityReadinessGateMode, autoSandboxManifestSecurityReadinessGate(req, target))
 	preserveSandboxManifestArtifacts(store, manifest)
 	return store.SaveManifest(manifest)
+}
+
+func autoSandboxManifestSecurityReadinessGate(req autoSandboxRequest, target *sandbox.SandboxState) *sandbox.SandboxSecurityCapabilityReadinessGateDecision {
+	if req.SecurityReadinessGate != nil {
+		return sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(req.SecurityReadinessGate)
+	}
+	if target == nil || target.Security == nil {
+		return nil
+	}
+	if target.Security.CapabilityReadiness == nil && target.Security.CapabilityReadinessDiagnostics == nil {
+		return nil
+	}
+	return sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(target.Security.SecurityReadinessGate)
 }
 
 func autoSandboxManifestWorkspace(req autoSandboxRequest) *sandbox.SandboxWorkspace {
@@ -937,9 +950,9 @@ func applyAutoSandboxSecurityReadinessGateError(req *autoSandboxRequest, err err
 	if req == nil {
 		return
 	}
-	if decision := sandboxCommandSecurityReadinessGateDecisionFromError(err); decision != nil {
+	if decision := sandboxCommandTargetSelectionSecurityReadinessGateDecisionFromError(err); decision != nil {
 		req.SecurityReadinessGateMode = decision.PolicyMode
-		req.SecurityReadinessGate = nil
+		req.SecurityReadinessGate = decision
 	}
 }
 
@@ -1010,11 +1023,16 @@ func autoSandboxRemoteProjectPath(projectDir string, value string) string {
 }
 
 func outputAutoSandboxJSONError(out io.Writer, args []string, opts autoSandboxOptions, errMsg string) error {
+	return outputAutoSandboxJSONErrorWithReadinessGate(out, args, opts, errMsg, nil)
+}
+
+func outputAutoSandboxJSONErrorWithReadinessGate(out io.Writer, args []string, opts autoSandboxOptions, errMsg string, gate *sandbox.SandboxSecurityCapabilityReadinessGateDecision) error {
 	entryMode := determineAutoEntryMode("")
 	if !opts.Resume && len(args) > 0 && strings.TrimSpace(args[0]) != "" {
 		entryMode = autoEntryModeMarkdownPath
 	}
 	jr := autoFailureResult(entryMode, opts.Resume, errMsg, errMsg, autoFailurePipeline, false, "", "")
+	jr.SecurityReadinessGate = sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(gate)
 	return outputAutoJSON(out, jr)
 }
 

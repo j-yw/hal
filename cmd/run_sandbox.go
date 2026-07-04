@@ -321,7 +321,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 		applyRunSandboxSecurityReadinessGateError(&req, cause)
 		_ = saveRunSandboxManifest(store, req, sandboxexecution.StatusFailed, startedAt, &finishedAt, nil)
 		if opts.JSON {
-			return outputRunJSONError(out, cause.Error())
+			return outputRunJSONErrorWithReadinessGate(out, cause.Error(), sandboxCommandSecurityReadinessGateDecisionFromError(cause))
 		}
 		return runSandboxExitValidation(cmd, cause)
 	}
@@ -336,7 +336,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 	var target *sandbox.SandboxState
 	commandOut := out
 	var capturedJSON bytes.Buffer
-	augmentJSON := opts.JSON && (req.SyncOut.Enabled || sandboxCredentialDeliveryActivationResultPresent(req.CredentialDeliveryActivation))
+	augmentJSON := opts.JSON
 	if augmentJSON {
 		commandOut = &capturedJSON
 	}
@@ -423,7 +423,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 	}
 	if execErr != nil {
 		if opts.JSON && !execResult.RemoteStarted {
-			return outputRunJSONError(out, execErr.Error())
+			return outputRunJSONErrorWithReadinessGate(out, execErr.Error(), sandboxCommandSecurityReadinessGateDecisionFromError(execErr))
 		}
 		return execErr
 	}
@@ -1163,9 +1163,22 @@ func saveRunSandboxManifest(store sandboxexecution.Store, req runSandboxRequest,
 		}
 	}
 	manifest.Security = runSandboxManifestSecurity(req, manifest, target)
-	manifest.Security = applyCommandSandboxSecurityReadinessGate(manifest.Security, req.SecurityReadinessGateMode, req.SecurityReadinessGate)
+	manifest.Security = applyCommandSandboxSecurityReadinessGate(manifest.Security, req.SecurityReadinessGateMode, runSandboxManifestSecurityReadinessGate(req, target))
 	preserveSandboxManifestArtifacts(store, manifest)
 	return store.SaveManifest(manifest)
+}
+
+func runSandboxManifestSecurityReadinessGate(req runSandboxRequest, target *sandbox.SandboxState) *sandbox.SandboxSecurityCapabilityReadinessGateDecision {
+	if req.SecurityReadinessGate != nil {
+		return sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(req.SecurityReadinessGate)
+	}
+	if target == nil || target.Security == nil {
+		return nil
+	}
+	if target.Security.CapabilityReadiness == nil && target.Security.CapabilityReadinessDiagnostics == nil {
+		return nil
+	}
+	return sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(target.Security.SecurityReadinessGate)
 }
 
 func runSandboxManifestWorkspace(req runSandboxRequest) *sandbox.SandboxWorkspace {
@@ -1179,9 +1192,9 @@ func applyRunSandboxSecurityReadinessGateError(req *runSandboxRequest, err error
 	if req == nil {
 		return
 	}
-	if decision := sandboxCommandSecurityReadinessGateDecisionFromError(err); decision != nil {
+	if decision := sandboxCommandTargetSelectionSecurityReadinessGateDecisionFromError(err); decision != nil {
 		req.SecurityReadinessGateMode = decision.PolicyMode
-		req.SecurityReadinessGate = nil
+		req.SecurityReadinessGate = decision
 	}
 }
 
@@ -1190,12 +1203,19 @@ type sandboxExecutionSecurityReadinessGateBlockedError struct {
 }
 
 func (e sandboxExecutionSecurityReadinessGateBlockedError) Error() string {
+	if summary := sandboxRuntimeSecurityReadinessGateHuman(&e.decision); summary != "" {
+		return "security readiness gate blocked: " + summary
+	}
 	return fmt.Sprintf("security readiness gate blocked: policyMode=%s outcome=%s code=%s reason=%s",
 		e.decision.PolicyMode,
 		e.decision.Outcome,
 		e.decision.Code,
 		e.decision.Reason,
 	)
+}
+
+func (e sandboxExecutionSecurityReadinessGateBlockedError) securityReadinessGateDecision() *sandbox.SandboxSecurityCapabilityReadinessGateDecision {
+	return sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(&e.decision)
 }
 
 func enforceSandboxExecutionSecurityReadinessGate(store sandboxexecution.Store, executionID string) error {
