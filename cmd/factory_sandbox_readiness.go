@@ -88,6 +88,7 @@ func applyFactorySandboxCapabilityReadinessDiagnostics(security *factory.Sandbox
 	if security == nil {
 		return
 	}
+	providedDiagnostics := cloneCommandSandboxSecurityCapabilityReadinessDiagnostics(security.CapabilityReadinessDiagnostics)
 	readiness := sanitizedFactorySandboxCapabilityReadiness(security.CapabilityReadiness)
 	if readiness == nil {
 		security.CapabilityReadiness = nil
@@ -95,7 +96,10 @@ func applyFactorySandboxCapabilityReadinessDiagnostics(security *factory.Sandbox
 		return
 	}
 	security.CapabilityReadiness = readiness
-	security.CapabilityReadinessDiagnostics = factorySandboxCapabilityReadinessDiagnostics(readiness)
+	security.CapabilityReadinessDiagnostics = providedDiagnostics
+	if security.CapabilityReadinessDiagnostics == nil {
+		security.CapabilityReadinessDiagnostics = factorySandboxCapabilityReadinessDiagnostics(readiness)
+	}
 }
 
 func factorySandboxSecurityRequestHasReadinessIntent(req factorySandboxExecutorRequest) bool {

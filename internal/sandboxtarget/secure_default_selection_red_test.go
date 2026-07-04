@@ -1,11 +1,13 @@
 package sandboxtarget
 
 import (
+	"encoding/json"
 	"io/fs"
 	"strings"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/securedefaultfixtures"
 )
 
 func TestSelectStrictSecureDefaultRejectsMicroVMTargetWithoutCachedReadiness(t *testing.T) {
@@ -132,6 +134,189 @@ func TestSelectStrictSecureDefaultDefaultSelectionAllowsProofCompleteRunningTarg
 		result.SecurityReadinessGate.Outcome != sandbox.SandboxSecurityCapabilityReadinessGateOutcomeAllowed ||
 		result.SecurityReadinessGate.Code != sandbox.SandboxSecurityCapabilityReadinessGateCodeAllowed {
 		t.Fatalf("security readiness gate = %#v, want strict allowed decision", result.SecurityReadinessGate)
+	}
+}
+
+func TestUS003SelectStrictSecureDefaultRejectsMissingOrWeakTargetSelectionProof(t *testing.T) {
+	tests := []struct {
+		name        string
+		fixture     securedefaultfixtures.EvidenceSet
+		wantReasons []string
+	}{
+		{
+			name:    "missing strict target-selection proof",
+			fixture: securedefaultfixtures.CompleteAcceptedEvidenceSet(securedefaultfixtures.OmitProof(securedefaultfixtures.ProofStrictTargetSelection)),
+			wantReasons: strictSecureDefaultSafeReasons(
+				string(sandbox.SandboxSecurityCapabilityReadinessGateReasonPolicyOff),
+				string(sandbox.SandboxSecurityCapabilityReadinessGateReasonReadinessMissing),
+			),
+		},
+		{
+			name:    "advisory-only target-selection metadata",
+			fixture: securedefaultfixtures.CompleteAcceptedEvidenceSet(securedefaultfixtures.DowngradeProof(securedefaultfixtures.ProofStrictTargetSelection, securedefaultfixtures.DowngradeAdvisory)),
+			wantReasons: strictSecureDefaultSafeReasons(
+				string(sandbox.SandboxSecurityCapabilityReadinessGateReasonPolicyAdvisory),
+			),
+		},
+		{
+			name:    "warning-bearing target-selection metadata",
+			fixture: securedefaultfixtures.CompleteAcceptedEvidenceSet(securedefaultfixtures.DowngradeProof(securedefaultfixtures.ProofStrictTargetSelection, securedefaultfixtures.DowngradeWarningBearing)),
+			wantReasons: strictSecureDefaultSafeReasons(
+				string(sandbox.SandboxSecurityCapabilityReasonWarningBearing),
+			),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target := strictSecureDefaultFixtureSandbox("us003-"+strings.ReplaceAll(tt.name, " ", "-"), tt.fixture)
+
+			result := Select(Request{
+				SandboxName:               target.Name,
+				SecurityReadinessGateMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+				Fallback:                  FallbackPolicy{Disabled: true},
+			}, CachedState{
+				LoadSandbox: func(name string) (*sandbox.SandboxState, error) {
+					if name != target.Name {
+						t.Fatalf("loaded sandbox name = %q, want %q", name, target.Name)
+					}
+					return target, nil
+				},
+			})
+
+			requireStrictSecureDefaultSelectionBlocked(t, result, tt.wantReasons, strictSecureDefaultForbiddenFragments()...)
+		})
+	}
+}
+
+func TestUS004SelectStrictSecureDefaultRejectsMissingOrWeakMicroVMReadinessProof(t *testing.T) {
+	tests := []struct {
+		name        string
+		fixture     securedefaultfixtures.EvidenceSet
+		wantReasons []string
+	}{
+		{
+			name:    "missing microVM readiness evidence",
+			fixture: securedefaultfixtures.CompleteAcceptedEvidenceSet(securedefaultfixtures.OmitProof(securedefaultfixtures.ProofMicroVMReadiness)),
+			wantReasons: strictSecureDefaultSafeReasons(
+				string(sandbox.SandboxSecurityCapabilityReasonMicroVMReadinessMissing),
+			),
+		},
+		{
+			name:    "planned microVM metadata",
+			fixture: securedefaultfixtures.CompleteAcceptedEvidenceSet(securedefaultfixtures.DowngradeProof(securedefaultfixtures.ProofMicroVMReadiness, securedefaultfixtures.DowngradePlanned)),
+			wantReasons: strictSecureDefaultSafeReasons(
+				string(sandbox.SandboxSecurityCapabilityReasonMicroVMReadinessMissing),
+			),
+		},
+		{
+			name:    "compatibility microVM metadata",
+			fixture: securedefaultfixtures.CompleteAcceptedEvidenceSet(securedefaultfixtures.DowngradeProof(securedefaultfixtures.ProofMicroVMReadiness, securedefaultfixtures.DowngradeCompatibility)),
+			wantReasons: strictSecureDefaultSafeReasons(
+				string(sandbox.SandboxSecurityCapabilityReasonMicroVMSupportMissing),
+			),
+		},
+		{
+			name:    "fake-only microVM metadata",
+			fixture: securedefaultfixtures.CompleteAcceptedEvidenceSet(securedefaultfixtures.DowngradeProof(securedefaultfixtures.ProofMicroVMReadiness, securedefaultfixtures.DowngradeFakeOnly)),
+			wantReasons: strictSecureDefaultSafeReasons(
+				string(sandbox.SandboxSecurityCapabilityReasonMicroVMReadinessMissing),
+			),
+		},
+		{
+			name:    "historical microVM metadata",
+			fixture: securedefaultfixtures.CompleteAcceptedEvidenceSet(securedefaultfixtures.DowngradeProof(securedefaultfixtures.ProofMicroVMReadiness, securedefaultfixtures.DowngradeHistorical)),
+			wantReasons: strictSecureDefaultSafeReasons(
+				string(sandbox.SandboxSecurityCapabilityReasonMicroVMReadinessMissing),
+			),
+		},
+	}
+
+	accepted := securedefaultfixtures.CompleteAcceptedEvidenceSet().Gate
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target := strictSecureDefaultFixtureSandbox("us004-"+strings.ReplaceAll(tt.name, " ", "-"), tt.fixture)
+			target.Security.SecurityReadinessGate = &accepted
+
+			result := Select(Request{
+				SandboxName:               target.Name,
+				SecurityReadinessGateMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+				Fallback:                  FallbackPolicy{Disabled: true},
+			}, CachedState{
+				LoadSandbox: func(name string) (*sandbox.SandboxState, error) {
+					if name != target.Name {
+						t.Fatalf("loaded sandbox name = %q, want %q", name, target.Name)
+					}
+					return target, nil
+				},
+			})
+
+			requireStrictSecureDefaultSelectionBlocked(t, result, tt.wantReasons, strictSecureDefaultForbiddenFragments()...)
+			requireStrictSecureDefaultSelectionBlockedBeforeAcceptedDecision(t, result, tt.wantReasons)
+		})
+	}
+}
+
+func TestUS008SelectStrictSecureDefaultAcceptsCompleteSanitizedEvidenceSet(t *testing.T) {
+	fixture := securedefaultfixtures.CompleteAcceptedEvidenceSet()
+	if !fixture.StrictTargetSelection {
+		t.Fatalf("fixture strict target selection = false, want active strict target-selection proof")
+	}
+
+	target := strictSecureDefaultFixtureSandbox("us008-proof-complete", fixture)
+	result := selectUS008StrictFixtureTarget(t, target)
+
+	if result.Failed() || result.NeedsProvisioning() || result.Sandbox != target {
+		var failure string
+		if result.Failure != nil {
+			failure = result.Failure.Error()
+		}
+		t.Fatalf("result = %#v failure = %q, want complete secure-default evidence accepted", result, failure)
+	}
+	if result.SecurityReadinessGate == nil {
+		t.Fatal("security readiness gate = nil, want accepted decision")
+	}
+	if result.SecurityReadinessGate.PolicyMode != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict ||
+		result.SecurityReadinessGate.Outcome != sandbox.SandboxSecurityCapabilityReadinessGateOutcomeAllowed ||
+		result.SecurityReadinessGate.Code != sandbox.SandboxSecurityCapabilityReadinessGateCodeAllowed ||
+		result.SecurityReadinessGate.Reason != sandbox.SandboxSecurityCapabilityReadinessGateReasonReadinessReady {
+		t.Fatalf("security readiness gate = %#v, want strict allowed decision", result.SecurityReadinessGate)
+	}
+
+	us008RequireAcceptedProofReason(t, result.SecurityReadinessGate, sandbox.SandboxSecurityCapabilityReasonMicroVMReadinessConfirmed)
+	us008RequireAcceptedProofReason(t, result.SecurityReadinessGate, sandbox.SandboxSecurityCapabilityReasonWorkspaceIsolationConfirmed)
+	us008RequireAcceptedProofReason(t, result.SecurityReadinessGate, sandbox.SandboxSecurityCapabilityReasonNetworkEnforcementConfirmed)
+	us008RequireAcceptedProofReason(t, result.SecurityReadinessGate, sandbox.SandboxSecurityCapabilityReasonCredentialActivationConfirmed)
+	us008RequireAcceptedProofReason(t, result.SecurityReadinessGate, sandbox.SandboxSecurityCapabilityReasonTemplateLockDigestConfirmed)
+	us008RequireAcceptedProofReason(t, result.SecurityReadinessGate, sandbox.SandboxSecurityCapabilityReasonSelectedTemplateTrustConfirmed)
+	us008AssertSecureDefaultDecisionSafe(t, "accepted secure-default decision", result.SecurityReadinessGate, result.Sandbox.Security, fixture.Input, fixture.Readiness)
+}
+
+func TestUS008SelectStrictSecureDefaultRejectsAcceptedFixtureWithAnyProofRemoved(t *testing.T) {
+	for _, proof := range securedefaultfixtures.RequiredProofs() {
+		t.Run(string(proof), func(t *testing.T) {
+			fixture := securedefaultfixtures.CompleteAcceptedEvidenceSet(securedefaultfixtures.OmitProof(proof))
+			target := strictSecureDefaultFixtureSandbox("us008-missing-"+string(proof), fixture)
+			result := selectUS008StrictFixtureTarget(t, target)
+
+			if result.NeedsProvisioning() {
+				t.Fatalf("result = %#v, want strict rejection instead of provisioning", result)
+			}
+			if !result.Failed() {
+				t.Fatalf("result = %#v, want rejection after removing %s proof", result, proof)
+			}
+			if result.SecurityReadinessGate == nil ||
+				result.SecurityReadinessGate.PolicyMode != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict ||
+				result.SecurityReadinessGate.Outcome != sandbox.SandboxSecurityCapabilityReadinessGateOutcomeBlocked ||
+				result.SecurityReadinessGate.Code != sandbox.SandboxSecurityCapabilityReadinessGateCodeBlocked ||
+				result.SecurityReadinessGate.Reason == "" ||
+				result.SecurityReadinessGate.Reason == sandbox.SandboxSecurityCapabilityReadinessGateReasonReadinessReady {
+				t.Fatalf("security readiness gate = %#v, want strict blocked decision after removing %s proof", result.SecurityReadinessGate, proof)
+			}
+			if result.SecurityReadinessGate.Counts == nil || result.SecurityReadinessGate.Counts.StrictBlocking == 0 {
+				t.Fatalf("security readiness gate counts = %#v, want strict blocker after removing %s proof", result.SecurityReadinessGate.Counts, proof)
+			}
+			us008AssertSecureDefaultDecisionSafe(t, "rejected secure-default decision", result.SecurityReadinessGate, result.Failure, fixture.Input, fixture.Readiness)
+		})
 	}
 }
 
@@ -275,6 +460,72 @@ func TestSelectCompatibilitySecureDefaultReadinessRemainsAdvisoryAndTruthful(t *
 	}
 }
 
+func selectUS008StrictFixtureTarget(t *testing.T, target *sandbox.SandboxState) Result {
+	t.Helper()
+	return Select(Request{
+		SandboxName:               target.Name,
+		SecurityReadinessGateMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+		Fallback:                  FallbackPolicy{Disabled: true},
+	}, CachedState{
+		LoadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loaded sandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+	})
+}
+
+func us008RequireAcceptedProofReason(t *testing.T, decision *sandbox.SandboxSecurityCapabilityReadinessGateDecision, reason sandbox.SandboxSecurityCapabilityReasonCode) {
+	t.Helper()
+	if decision == nil || decision.Counts == nil {
+		t.Fatalf("security readiness gate = %#v, want counts containing %s", decision, reason)
+	}
+	if got := decision.Counts.ReasonCodeCounts[reason]; got < 1 {
+		t.Fatalf("security readiness gate reason counts = %#v, want %s proof", decision.Counts.ReasonCodeCounts, reason)
+	}
+}
+
+func us008AssertSecureDefaultDecisionSafe(t *testing.T, label string, values ...any) {
+	t.Helper()
+	for _, value := range values {
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("json.Marshal(%s) error = %v", label, err)
+		}
+		payload := string(data)
+		for _, fragment := range us008ForbiddenSecureDefaultEvidenceFragments() {
+			if strings.Contains(payload, fragment) {
+				t.Fatalf("%s leaked forbidden fragment %q: %s", label, fragment, payload)
+			}
+		}
+	}
+}
+
+func us008ForbiddenSecureDefaultEvidenceFragments() []string {
+	return append(strictSecureDefaultForbiddenFragments(),
+		"://",
+		"/private/",
+		".sock",
+		"Authorization",
+		"Bearer",
+		"raw-",
+		"ghp_",
+		"github_pat_",
+		"GITHUB_TOKEN",
+		"SERVICE_TOKEN",
+		"token=",
+		"credential_value",
+		"secret_value",
+		"iptables",
+		"nft ",
+		"firewall-rule",
+		"provider",
+		"registry",
+		"template.yaml",
+	)
+}
+
 func requireStrictSecureDefaultSelectionBlocked(t *testing.T, result Result, wantReasons []string, forbidden ...string) {
 	t.Helper()
 	if result.NeedsProvisioning() {
@@ -332,6 +583,29 @@ func requireFailureOmitsFragments(t *testing.T, failure *Failure, forbidden ...s
 	}
 }
 
+func requireStrictSecureDefaultSelectionBlockedBeforeAcceptedDecision(t *testing.T, result Result, wantReasons []string) {
+	t.Helper()
+	if result.SecurityReadinessGate == nil {
+		t.Fatal("security readiness gate = nil, want strict blocked decision")
+	}
+	if result.SecurityReadinessGate.Outcome == sandbox.SandboxSecurityCapabilityReadinessGateOutcomeAllowed ||
+		result.SecurityReadinessGate.Code == sandbox.SandboxSecurityCapabilityReadinessGateCodeAllowed ||
+		result.SecurityReadinessGate.Reason == sandbox.SandboxSecurityCapabilityReadinessGateReasonReadinessReady {
+		t.Fatalf("security readiness gate = %#v, want MicroVM rejection before accepted decision", result.SecurityReadinessGate)
+	}
+	if result.SecurityReadinessGate.PolicyMode != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict ||
+		result.SecurityReadinessGate.Outcome != sandbox.SandboxSecurityCapabilityReadinessGateOutcomeBlocked {
+		t.Fatalf("security readiness gate = %#v, want strict blocked decision", result.SecurityReadinessGate)
+	}
+	if result.SecurityReadinessGate.Counts == nil || result.SecurityReadinessGate.Counts.StrictBlocking == 0 {
+		t.Fatalf("security readiness gate counts = %#v, want strict blocking count", result.SecurityReadinessGate.Counts)
+	}
+	message := targetSelectionReadinessGateFailureMessage(*result.SecurityReadinessGate)
+	if !strictSecureDefaultMessageHasAnyReason(message, wantReasons) {
+		t.Fatalf("security readiness gate message = %q, want one of safe reason codes %#v", message, wantReasons)
+	}
+}
+
 func strictSecureDefaultMicroVMHost() *sandbox.SandboxHost {
 	return &sandbox.SandboxHost{
 		ID:       "microvm-host",
@@ -381,7 +655,7 @@ func strictSecureDefaultProofCompleteSandbox(name string) *sandbox.SandboxState 
 }
 
 func strictSecureDefaultProofCompleteSecurity() *sandbox.SandboxSecurity {
-	return strictSecureDefaultSecurityFromReadiness(sandbox.SandboxSecurityCapabilityReadinessOutput{
+	security := strictSecureDefaultSecurityFromReadiness(sandbox.SandboxSecurityCapabilityReadinessOutput{
 		Results: []sandbox.SandboxSecurityCapabilityReadinessResult{
 			strictSecureDefaultReadyResult(
 				sandbox.SandboxSecurityCapabilityFamilyIsolation,
@@ -415,6 +689,19 @@ func strictSecureDefaultProofCompleteSecurity() *sandbox.SandboxSecurity {
 			),
 		},
 	})
+	gate := sandbox.EvaluateSandboxSecureDefaultReadiness(*security.CapabilityReadiness)
+	security.SecurityReadinessGate = &gate
+	return security
+}
+
+func strictSecureDefaultFixtureSandbox(name string, fixture securedefaultfixtures.EvidenceSet) *sandbox.SandboxState {
+	target := strictSecureDefaultMicroVMSandbox(name)
+	security := fixture.Security()
+	security.Network = nil
+	security.Secrets = nil
+	target.Security = security
+	target.Host.Security = nil
+	return target
 }
 
 func strictSecureDefaultWarningBearingReadySecurity() *sandbox.SandboxSecurity {

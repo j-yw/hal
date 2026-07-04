@@ -139,6 +139,10 @@ from default package builds. When required environment markers are absent, live
 gate tests skip with sanitized missing-prerequisite messages before
 Firecracker launch, listener or firewall mutation, credential delivery,
 template trust live execution, provider probing, or any runtime state change.
+Missing KVM, Firecracker, root privileges, firewall capability, proxy
+capability, sandboxd, credentials, registry access, credential delivery mode,
+or template trust prerequisites also remain sanitized skip outcomes for
+operator-run live checks.
 The standalone network enforcement and credential delivery live harnesses
 currently remain opt-in placeholders after their gates are satisfied; the
 composed microVM live E2E command is the only documented live execution path.

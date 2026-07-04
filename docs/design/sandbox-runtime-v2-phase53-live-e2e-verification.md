@@ -34,6 +34,20 @@ example secret values, credential material, absolute host paths, socket paths,
 provider config, proxy endpoints, firewall rules, or Firecracker command-line
 arguments.
 
+## Prepared-Host Prerequisite Boundary
+
+The prepared-host prerequisite boundary includes KVM, Firecracker, root
+privileges needed by host firewall or runtime-rule setup, firewall capability,
+proxy capability, sandboxd availability for daemon-routed live checks,
+credentials, registry access, credential delivery mode selection, and template
+trust metadata. Missing prerequisites produce sanitized skips before the live
+E2E harness starts Firecracker, opens proxy listeners, mutates firewall or
+runtime rules, activates credentials, contacts registries, or depends on
+sandboxd.
+
+Skip messages name marker variables and prerequisite labels only; they must not
+print marker values.
+
 ## Live Command
 
 ```sh
@@ -47,7 +61,11 @@ The test composes the shared live gate, Firecracker microVM preflight, network p
 Missing build tags, marker variables, Firecracker launch assets, KVM host
 capability, network proxy readiness, firewall readiness, credential delivery
 activation, credential mode selection, env-delivery marker, or template trust
-metadata produce sanitized skips before live execution starts.
+metadata produce sanitized skips before live execution starts. Missing root
+privileges, proxy capability, firewall capability, sandboxd, credentials, or
+registry access also stay skip-only prerequisite outcomes unless a tagged live
+test has already received explicit partial proof that conflicts with the
+secure-default claim.
 
 Explicit readiness claims that do not prove active proxy plus active firewall under a `proxy_firewall` default-deny result fail with sanitized diagnostics.
 Failure output uses safe component names, statuses, reason codes, and

@@ -3,17 +3,19 @@ package microvm
 import "encoding/json"
 
 const (
-	LiveE2EPrerequisiteFirecrackerLiveMarker LiveE2EPrerequisiteName = "firecracker_marker"
-	LiveE2EPrerequisiteFirecrackerBinary     LiveE2EPrerequisiteName = "firecracker_binary"
-	LiveE2EPrerequisiteFirecrackerKernel     LiveE2EPrerequisiteName = "firecracker_kernel"
-	LiveE2EPrerequisiteFirecrackerRootfs     LiveE2EPrerequisiteName = "firecracker_rootfs"
-	LiveE2EPrerequisiteKVMCapability         LiveE2EPrerequisiteName = "kvm_capability"
-	LiveE2EPrerequisiteNetworkProxyMarker    LiveE2EPrerequisiteName = "network_proxy_marker"
-	LiveE2EPrerequisiteFirewallMarker        LiveE2EPrerequisiteName = "firewall_marker"
-	LiveE2EPrerequisiteCredentialMarker      LiveE2EPrerequisiteName = "credential_delivery_marker"
-	LiveE2EPrerequisiteCredentialEnvMarker   LiveE2EPrerequisiteName = "credential_delivery_env_marker"
-	LiveE2EPrerequisiteTemplateTrustMarker   LiveE2EPrerequisiteName = "template_trust_marker"
-	LiveE2EPrerequisiteTemplateTrustMetadata LiveE2EPrerequisiteName = "template_trust_metadata"
+	LiveE2EPrerequisiteFirecrackerLiveMarker  LiveE2EPrerequisiteName = "firecracker_marker"
+	LiveE2EPrerequisiteFirecrackerBinary      LiveE2EPrerequisiteName = "firecracker_binary"
+	LiveE2EPrerequisiteFirecrackerKernel      LiveE2EPrerequisiteName = "firecracker_kernel"
+	LiveE2EPrerequisiteFirecrackerRootfs      LiveE2EPrerequisiteName = "firecracker_rootfs"
+	LiveE2EPrerequisiteKVMCapability          LiveE2EPrerequisiteName = "kvm_capability"
+	LiveE2EPrerequisiteNetworkProxyMarker     LiveE2EPrerequisiteName = "network_proxy_marker"
+	LiveE2EPrerequisiteNetworkProxyCapability LiveE2EPrerequisiteName = "network_proxy_capability"
+	LiveE2EPrerequisiteFirewallMarker         LiveE2EPrerequisiteName = "firewall_marker"
+	LiveE2EPrerequisiteFirewallCapability     LiveE2EPrerequisiteName = "firewall_capability"
+	LiveE2EPrerequisiteCredentialMarker       LiveE2EPrerequisiteName = "credential_delivery_marker"
+	LiveE2EPrerequisiteCredentialEnvMarker    LiveE2EPrerequisiteName = "credential_delivery_env_marker"
+	LiveE2EPrerequisiteTemplateTrustMarker    LiveE2EPrerequisiteName = "template_trust_marker"
+	LiveE2EPrerequisiteTemplateTrustMetadata  LiveE2EPrerequisiteName = "template_trust_metadata"
 )
 
 // LiveE2EPrerequisiteName identifies a required live E2E setup item without
@@ -149,12 +151,26 @@ func liveE2EPrerequisiteSpecFor(prerequisite LiveE2EPrerequisiteName) (liveE2EPr
 			reasonCode:   LiveE2EReasonNetworkProxyMarkerMissing,
 			message:      "Set the network proxy live marker before claiming proxy enforcement readiness.",
 		}, true
+	case LiveE2EPrerequisiteNetworkProxyCapability:
+		return liveE2EPrerequisiteSpec{
+			prerequisite: LiveE2EPrerequisiteNetworkProxyCapability,
+			component:    LiveE2EComponentNetworkProxy,
+			reasonCode:   LiveE2EReasonNetworkProxyUnavailable,
+			message:      "Provide active network proxy capability metadata before running the live E2E harness.",
+		}, true
 	case LiveE2EPrerequisiteFirewallMarker:
 		return liveE2EPrerequisiteSpec{
 			prerequisite: LiveE2EPrerequisiteFirewallMarker,
 			component:    LiveE2EComponentFirewall,
 			reasonCode:   LiveE2EReasonFirewallMarkerMissing,
 			message:      "Set the firewall live marker before claiming firewall enforcement readiness.",
+		}, true
+	case LiveE2EPrerequisiteFirewallCapability:
+		return liveE2EPrerequisiteSpec{
+			prerequisite: LiveE2EPrerequisiteFirewallCapability,
+			component:    LiveE2EComponentFirewall,
+			reasonCode:   LiveE2EReasonFirewallUnavailable,
+			message:      "Provide active firewall capability metadata before running the live E2E harness.",
 		}, true
 	case LiveE2EPrerequisiteCredentialMarker:
 		return liveE2EPrerequisiteSpec{
@@ -197,7 +213,9 @@ func sanitizeLiveE2EPrerequisiteName(value LiveE2EPrerequisiteName) LiveE2EPrere
 		LiveE2EPrerequisiteFirecrackerRootfs,
 		LiveE2EPrerequisiteKVMCapability,
 		LiveE2EPrerequisiteNetworkProxyMarker,
+		LiveE2EPrerequisiteNetworkProxyCapability,
 		LiveE2EPrerequisiteFirewallMarker,
+		LiveE2EPrerequisiteFirewallCapability,
 		LiveE2EPrerequisiteCredentialMarker,
 		LiveE2EPrerequisiteCredentialEnvMarker,
 		LiveE2EPrerequisiteTemplateTrustMarker,

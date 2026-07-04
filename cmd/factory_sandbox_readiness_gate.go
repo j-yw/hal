@@ -27,10 +27,7 @@ func enforceFactorySandboxReadinessGate(store factory.Store, deps factorySandbox
 	if record == nil || strings.TrimSpace(record.RunID) == "" {
 		return nil
 	}
-	decision := sandbox.EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(
-		req.SecurityReadinessGateMode,
-		factorySandboxReadinessGateDiagnostics(record),
-	)
+	decision := factorySandboxReadinessGateDecision(req, record)
 	if decision.PolicyMode == sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeOff {
 		return nil
 	}
@@ -77,6 +74,18 @@ func factorySandboxReadinessGateDiagnostics(record *factory.RunRecord) *sandbox.
 		return nil
 	}
 	return record.Sandbox.Security.CapabilityReadinessDiagnostics
+}
+
+func factorySandboxReadinessGateDecision(req factorySandboxExecutorRequest, record *factory.RunRecord) sandbox.SandboxSecurityCapabilityReadinessGateDecision {
+	if record != nil {
+		if decision := factory.SecurityReadinessGateDecision(*record); decision != nil && decision.PolicyMode == req.SecurityReadinessGateMode {
+			return *decision
+		}
+	}
+	return sandbox.EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(
+		req.SecurityReadinessGateMode,
+		factorySandboxReadinessGateDiagnostics(record),
+	)
 }
 
 func recordFactorySandboxReadinessGateDecision(store factory.Store, record *factory.RunRecord, decision sandbox.SandboxSecurityCapabilityReadinessGateDecision) error {

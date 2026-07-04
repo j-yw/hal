@@ -63,6 +63,51 @@ func TestUS005SandboxRuntimeStatusJSONRequiresActiveDualNetworkProof(t *testing.
 			wantStrictBlocking: true,
 		},
 		{
+			name:               "firewall only proof is rejected",
+			security:           us005StrictWorkerSecurityPolicy(),
+			enforcement:        us005FirewallOnlyNetworkMetadata("us005-firewall-only"),
+			wantNetworkPolicy:  sandbox.SandboxNetworkPolicyBestEffort,
+			wantEnforcement:    sandbox.SandboxNetworkEnforcementModeNone,
+			wantNetworkReady:   false,
+			wantStrictBlocking: true,
+		},
+		{
+			name:               "best effort metadata is rejected",
+			security:           us005StrictWorkerSecurityPolicy(),
+			enforcement:        us005BestEffortProxyFirewallNetworkMetadata("us005-best-effort"),
+			wantNetworkPolicy:  sandbox.SandboxNetworkPolicyBestEffort,
+			wantEnforcement:    sandbox.SandboxNetworkEnforcementModeNone,
+			wantNetworkReady:   false,
+			wantStrictBlocking: true,
+		},
+		{
+			name:               "audit only metadata is rejected",
+			security:           us005StrictWorkerSecurityPolicy(),
+			enforcement:        us005AuditOnlyProxyFirewallNetworkMetadata("us005-audit-only"),
+			wantNetworkPolicy:  sandbox.SandboxNetworkPolicyBestEffort,
+			wantEnforcement:    sandbox.SandboxNetworkEnforcementModeNone,
+			wantNetworkReady:   false,
+			wantStrictBlocking: true,
+		},
+		{
+			name:               "planned metadata is rejected",
+			security:           us005StrictWorkerSecurityPolicy(),
+			enforcement:        us005ProxyFirewallNetworkMetadataWithLifecycleStatus("us005-planned", "planned", "prepared"),
+			wantNetworkPolicy:  sandbox.SandboxNetworkPolicyBestEffort,
+			wantEnforcement:    sandbox.SandboxNetworkEnforcementModeNone,
+			wantNetworkReady:   false,
+			wantStrictBlocking: true,
+		},
+		{
+			name:               "historical metadata is rejected",
+			security:           us005StrictWorkerSecurityPolicy(),
+			enforcement:        us005ProxyFirewallNetworkMetadataWithLifecycleStatus("us005-historical", "stopped", "stopped"),
+			wantNetworkPolicy:  sandbox.SandboxNetworkPolicyBestEffort,
+			wantEnforcement:    sandbox.SandboxNetworkEnforcementModeNone,
+			wantNetworkReady:   false,
+			wantStrictBlocking: true,
+		},
+		{
 			name:               "missing rule proof",
 			security:           us005StrictWorkerSecurityPolicy(),
 			enforcement:        us005ProxyFirewallNetworkMetadataWithoutRuleProof("us005-missing-rule"),
@@ -374,6 +419,15 @@ func us005ProxyFirewallNetworkMetadataWithRuleStatus(planID, status, reason stri
 	return metadata
 }
 
+func us005ProxyFirewallNetworkMetadataWithLifecycleStatus(planID, status, reason string) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
+	metadata := us005ProxyFirewallNetworkMetadataWithRuleStatus(planID, status, reason)
+	metadata.Orchestration.Status = status
+	metadata.Orchestration.ReasonCode = reason
+	metadata.Orchestration.Proxy.Status = status
+	metadata.Orchestration.Proxy.ReasonCode = reason
+	return metadata
+}
+
 func us005ProxyFirewallNetworkMetadataWithRuleWarning(planID string) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
 	metadata := us005ProxyFirewallNetworkMetadata(planID)
 	metadata.Orchestration.Rules[0].WarningCodes = []string{"partial_lifecycle"}
@@ -394,6 +448,47 @@ func us005UnsupportedProxyFirewallNetworkMetadata(planID string) *sandboxruntime
 
 func us005ProxyOnlyNetworkMetadata(planID string) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
 	return us005BaseNetworkMetadata(planID, sandboxworker.NetworkEnforcementProxy, us005ProxyOnlyRuntimeCapability())
+}
+
+func us005FirewallOnlyNetworkMetadata(planID string) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
+	metadata := us005BaseNetworkMetadata(planID, sandboxworker.NetworkEnforcementFirewall, &sandboxruntime.RuntimeNetworkEnforcementCapability{
+		Supported:                  true,
+		Modes:                      []string{sandboxworker.NetworkEnforcementFirewall},
+		SupportsDomainRules:        true,
+		SupportsEndpointRules:      true,
+		SupportsPrivateRangeRules:  true,
+		SupportsMetadataEndpoint:   true,
+		SupportsLoopbackRules:      true,
+		SupportsLinkLocalRules:     true,
+		SupportsDefaultDenyPosture: true,
+	})
+	metadata.Orchestration.Proxy = nil
+	metadata.Orchestration.Rules = []sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata{{
+		ID:               planID + "-firewall-rule",
+		PlanID:           planID,
+		AdapterID:        "runtime-firewall-rule-proof",
+		Status:           "active",
+		Mechanisms:       []string{sandboxworker.NetworkEnforcementFirewall},
+		Operations:       []string{"rule_proof"},
+		PolicySnapshotID: planID + "-snapshot",
+		PolicyPreset:     sandboxworker.NetworkPolicyDenyByDefault,
+		ReasonCode:       "active",
+	}}
+	return metadata
+}
+
+func us005BestEffortProxyFirewallNetworkMetadata(planID string) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
+	metadata := us005ProxyFirewallNetworkMetadata(planID)
+	metadata.Result.Outcome = "best_effort"
+	metadata.Result.ReasonCode = "best_effort"
+	return metadata
+}
+
+func us005AuditOnlyProxyFirewallNetworkMetadata(planID string) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
+	metadata := us005ProxyFirewallNetworkMetadata(planID)
+	metadata.Result.Outcome = "audit_only"
+	metadata.Result.ReasonCode = "audit_only"
+	return metadata
 }
 
 func us005BaseNetworkMetadata(planID, mode string, capability *sandboxruntime.RuntimeNetworkEnforcementCapability) *sandboxruntime.RuntimeNetworkEnforcementMetadata {

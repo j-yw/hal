@@ -45,14 +45,15 @@ func EvaluateSandboxSecurityCapabilityReadiness(input SandboxSecurityCapabilityR
 			SandboxSecurityCapabilityReasonMetadataEnforcementUnproven,
 		))
 	}
-	if input.CredentialProxyPlan != nil {
+	credentialProxyHasExplicitSupport := sandboxSecurityCapabilityCredentialProxyHasExplicitSupport(input)
+	if input.CredentialProxyPlan != nil && !credentialProxyHasExplicitSupport {
 		results = append(results, sandboxSecurityCapabilityMetadataOnlyResult(
 			SandboxSecurityCapabilityFamilyCredentialProxy,
 			SandboxSecurityCapabilityCredentialProxy,
 			SandboxSecurityCapabilityReasonMetadataDeliveryUnproven,
 		))
 	}
-	if input.CredentialProxySession != nil {
+	if input.CredentialProxySession != nil && !credentialProxyHasExplicitSupport {
 		results = append(results, sandboxSecurityCapabilityMetadataOnlyResult(
 			SandboxSecurityCapabilityFamilyCredentialProxy,
 			SandboxSecurityCapabilityCredentialProxy,
@@ -71,6 +72,15 @@ func EvaluateSandboxSecurityCapabilityReadiness(input SandboxSecurityCapabilityR
 	}
 
 	return SanitizeSandboxSecurityCapabilityReadinessOutput(SandboxSecurityCapabilityReadinessOutput{Results: results})
+}
+
+func sandboxSecurityCapabilityCredentialProxyHasExplicitSupport(input SandboxSecurityCapabilityReadinessInput) bool {
+	for _, binding := range input.CredentialProxyBindings {
+		if sandboxSecurityCapabilityCredentialBindingHasExplicitSupport(binding, input.Ready) {
+			return true
+		}
+	}
+	return false
 }
 
 func sandboxSecurityCapabilityWorkerPostureResults(posture SandboxSecurityCapabilityWorkerPostureMetadata) []SandboxSecurityCapabilityReadinessResult {

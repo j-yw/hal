@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -130,6 +131,59 @@ func TestUS007RuntimeStatusHumanOutputShowsAbsentSelectedTemplate(t *testing.T) 
 	}
 }
 
+func TestUS007SelectedTemplateFallbackReadinessFailsClosedWithoutDigestLockedTrustEvidence(t *testing.T) {
+	tests := []struct {
+		name       string
+		metadata   *sandboxruntime.RuntimeMetadata
+		wantReason string
+	}{
+		{
+			name: "status-only trusted metadata is not proof",
+			metadata: &sandboxruntime.RuntimeMetadata{
+				TemplateStatus: &sandboxruntime.RuntimeTemplateStatusMetadata{
+					LockStatus:       sandbox.SandboxTemplateLockStatusLocked,
+					TrustMode:        sandbox.SandboxTemplateTrustPolicyModeStrict,
+					TrustDecision:    sandbox.SandboxTemplateTrustPolicyDecisionTrusted,
+					ProvenanceLabels: []string{"template_reference"},
+					ReasonCodes:      []string{"https://registry.example.test/template:latest?token=ghp_us007_secret"},
+				},
+			},
+			wantReason: string(sandbox.SandboxSecurityCapabilityReasonSelectedTemplateEvidenceMissing),
+		},
+		{
+			name:       "trusted policy without digest is not proof",
+			metadata:   us007RuntimeMetadataFromSelectedTemplateLock(us007SelectedTemplateTrustPolicyDigestMissingLock()),
+			wantReason: string(sandbox.SandboxSecurityCapabilityReasonSelectedTemplateEvidenceMissing),
+		},
+		{
+			name:       "trusted template reference without digest is not proof",
+			metadata:   us007RuntimeMetadataFromSelectedTemplateLock(us007SelectedTemplateReferenceDigestMissingLock()),
+			wantReason: string(sandbox.SandboxSecurityCapabilityReasonSelectedTemplateEvidenceMissing),
+		},
+		{
+			name:       "warning-bearing trusted metadata is not proof",
+			metadata:   us007RuntimeMetadataFromSelectedTemplateLock(us007SelectedTemplateWarningBearingLock()),
+			wantReason: string(sandbox.SandboxSecurityCapabilityReasonWarningBearing),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			summary := newSandboxRuntimeSelectedTemplate(tt.metadata, SandboxRuntimeSecuritySummary{})
+			if !summary.Present {
+				t.Fatalf("selectedTemplate = %#v, want present diagnostic metadata", summary)
+			}
+			if summary.ReadinessStatus != string(sandbox.SandboxSecurityCapabilityReadinessUnsupported) {
+				t.Fatalf("selectedTemplate.readinessStatus = %q, want unsupported; summary=%#v", summary.ReadinessStatus, summary)
+			}
+			if !containsUS007String(summary.BlockedReadinessReasonCodes, tt.wantReason) {
+				t.Fatalf("selectedTemplate.blockedReadinessReasonCodes = %#v, want %q", summary.BlockedReadinessReasonCodes, tt.wantReason)
+			}
+			us007AssertNoUnsafeTemplateFragments(t, us007MarshalSelectedTemplate(t, summary))
+		})
+	}
+}
+
 func TestUS007SandboxStatusHumanOutputShowsSelectedTemplate(t *testing.T) {
 	setupStatusTest(t)
 	saveStatusTestInstance(t, &sandbox.SandboxState{
@@ -248,6 +302,48 @@ func us007RuntimeCommand(t *testing.T, hostID string, lock *sandbox.SandboxTempl
 		return client, nil
 	}
 	return newTestSandboxRuntimeCommand(deps)
+}
+
+func us007RuntimeMetadataFromSelectedTemplateLock(lock *sandbox.SandboxTemplateLockMetadata) *sandboxruntime.RuntimeMetadata {
+	return &sandboxruntime.RuntimeMetadata{
+		TemplateLock: sandboxRuntimeTemplateLockFromSandbox(lock),
+	}
+}
+
+func us007SelectedTemplateTrustPolicyDigestMissingLock() *sandbox.SandboxTemplateLockMetadata {
+	lock := us006CommandSelectedTemplateTrustedLock()
+	lock.TrustPolicy.DigestAlgorithm = ""
+	lock.TrustPolicy.DigestValue = ""
+	return sandbox.SanitizeSandboxTemplateLockMetadata(lock)
+}
+
+func us007SelectedTemplateReferenceDigestMissingLock() *sandbox.SandboxTemplateLockMetadata {
+	lock := us006CommandSelectedTemplateTrustedLock()
+	lock.TemplateReference.DigestAlgorithm = ""
+	lock.TemplateReference.DigestValue = ""
+	return sandbox.SanitizeSandboxTemplateLockMetadata(lock)
+}
+
+func us007SelectedTemplateWarningBearingLock() *sandbox.SandboxTemplateLockMetadata {
+	lock := us006CommandSelectedTemplateTrustedLock()
+	lock.TemplateReference.WarningCodes = []string{
+		sandbox.SandboxTemplateLockReasonMutableReference,
+		"https://registry.example.test/template:latest?token=ghp_us007_secret",
+	}
+	lock.TrustPolicy.WarningCodes = []string{
+		sandbox.SandboxTemplateTrustPolicyCodeMutableReference,
+		"Authorization: Bearer ghp_us007_secret",
+	}
+	return sandbox.SanitizeSandboxTemplateLockMetadata(lock)
+}
+
+func us007MarshalSelectedTemplate(t *testing.T, summary SandboxRuntimeSelectedTemplate) string {
+	t.Helper()
+	data, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("Marshal(selectedTemplate) error = %v", err)
+	}
+	return string(data)
 }
 
 func containsUS007String(values []string, want string) bool {

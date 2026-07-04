@@ -57,9 +57,11 @@ func TestPhase53FinalOptionalLiveCommandIsTaggedAndSafeToSkip(t *testing.T) {
 		"It is not part of the default quality gate matrix:",
 		phase53LiveE2ECommand,
 		"The live command is optional, tagged, and safe to skip when prerequisites are missing.",
-		"Missing Firecracker, KVM, proxy, firewall, credential delivery, env",
+		"Missing Firecracker, KVM, root privileges, proxy capability, firewall",
+		"capability, sandboxd, credentials, registry access, credential delivery, env",
 		"delivery mode, or template trust prerequisites must produce sanitized skip",
 		"diagnostics before live execution starts.",
+		"Skip diagnostics name required marker names and prerequisite labels only, never marker values.",
 	} {
 		if !strings.Contains(doc, want) && !strings.Contains(normalizedDoc, want) {
 			t.Fatalf("phase 53 final verification documentation missing optional live command boundary %q", want)

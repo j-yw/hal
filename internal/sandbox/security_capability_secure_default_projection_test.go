@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -291,6 +292,109 @@ func TestUS002ProjectSecureDefaultReadinessRequiresActiveMicroVMIsolationProof(t
 	}
 }
 
+func TestUS004ProjectSecureDefaultReadinessRejectsMissingOrWeakMicroVMIsolationProof(t *testing.T) {
+	missingGuestReadiness := secureDefaultProjectionMicroVMProof(SandboxMicroVMIsolationProofMetadata{})
+	missingGuestReadiness.GuestReadinessState = ""
+
+	tests := []struct {
+		name       string
+		projection SandboxWorkerRuntimeCapabilityReadinessProjection
+		input      SandboxSecurityCapabilityReadinessInput
+		wantReason SandboxSecurityCapabilityReasonCode
+	}{
+		{
+			name:       "missing proof",
+			wantReason: SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
+		},
+		{
+			name: "planned proof metadata",
+			projection: SandboxWorkerRuntimeCapabilityReadinessProjection{
+				MicroVMIsolationProof: secureDefaultProjectionMicroVMProof(SandboxMicroVMIsolationProofMetadata{
+					RuntimeStatus: "planned",
+				}),
+			},
+			wantReason: SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
+		},
+		{
+			name: "compatibility runtime metadata",
+			projection: SandboxWorkerRuntimeCapabilityReadinessProjection{
+				MicroVMIsolationProof: secureDefaultProjectionMicroVMProof(SandboxMicroVMIsolationProofMetadata{
+					RuntimeDriver:   SandboxRuntimeDriverRootlessPodman,
+					IsolationLevel:  SandboxIsolationLevelContainer,
+					ResultSupported: true,
+				}),
+			},
+			wantReason: SandboxSecurityCapabilityReasonMicroVMSupportMissing,
+		},
+		{
+			name: "fake-only metadata support",
+			input: SandboxSecurityCapabilityReadinessInput{
+				Ready: []SandboxSecurityCapabilityMetadata{{
+					ID:         "https://worker.internal.invalid/proof?token=raw-us004-token",
+					Family:     SandboxSecurityCapabilityFamilyIsolation,
+					Capability: SandboxSecurityCapabilityIsolationMicroVM,
+					Source:     SandboxSecurityCapabilitySourceMetadata,
+					Status:     SandboxSecurityCapabilityReadinessReady,
+					ReasonCode: SandboxSecurityCapabilityReasonMicroVMReadinessConfirmed,
+				}},
+			},
+			wantReason: SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
+		},
+		{
+			name: "missing guest readiness",
+			projection: SandboxWorkerRuntimeCapabilityReadinessProjection{
+				MicroVMIsolationProof: missingGuestReadiness,
+			},
+			wantReason: SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
+		},
+		{
+			name: "fake-only guest readiness not configured",
+			projection: SandboxWorkerRuntimeCapabilityReadinessProjection{
+				MicroVMIsolationProof: secureDefaultProjectionMicroVMProof(SandboxMicroVMIsolationProofMetadata{
+					GuestReadinessState: "not_configured",
+				}),
+			},
+			wantReason: SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
+		},
+		{
+			name: "historical launch attempt",
+			projection: SandboxWorkerRuntimeCapabilityReadinessProjection{
+				MicroVMIsolationProof: secureDefaultProjectionMicroVMProof(SandboxMicroVMIsolationProofMetadata{
+					ProcessLaunchState: "attempted",
+				}),
+			},
+			wantReason: SandboxSecurityCapabilityReasonMicroVMReadinessMissing,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
+				secureDefaultProjectionRequestedMicroVMInput(),
+				tt.input,
+				ProjectSandboxWorkerRuntimeCapabilityReadinessInput(tt.projection),
+			)
+
+			requireSecureDefaultProjectionResult(t, output,
+				sandboxSecurityCapabilityStateForUS004MicroVMReason(tt.wantReason),
+				SandboxSecurityCapabilityFamilyIsolation,
+				SandboxSecurityCapabilityIsolationMicroVM,
+				tt.wantReason,
+			)
+			requireSecureDefaultProjectionNoReadyResult(t, output,
+				SandboxSecurityCapabilityFamilyIsolation,
+				SandboxSecurityCapabilityIsolationMicroVM,
+			)
+			requireSecureDefaultProjectionStrictGate(t, output,
+				SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+				SandboxSecurityCapabilityReadinessGateReasonCode(tt.wantReason),
+				tt.wantReason,
+			)
+			assertUS004MicroVMReadinessEvidenceSanitized(t, output)
+		})
+	}
+}
+
 func TestUS002ProjectSecureDefaultReadinessAcceptsActiveMicroVMIsolationProof(t *testing.T) {
 	output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
 		secureDefaultProjectionRequestedMicroVMInput(),
@@ -313,6 +417,13 @@ func TestUS002ProjectSecureDefaultReadinessAcceptsActiveMicroVMIsolationProof(t 
 		SandboxSecurityCapabilityReadinessGateReasonReadinessReady,
 		SandboxSecurityCapabilityReasonMicroVMReadinessConfirmed,
 	)
+}
+
+func sandboxSecurityCapabilityStateForUS004MicroVMReason(reason SandboxSecurityCapabilityReasonCode) SandboxSecurityCapabilityReadinessState {
+	if reason == SandboxSecurityCapabilityReasonMicroVMSupportMissing {
+		return SandboxSecurityCapabilityReadinessBlocked
+	}
+	return SandboxSecurityCapabilityReadinessUnsupported
 }
 
 func TestUS002ProjectSecureDefaultReadinessClassifiesNetworkProofReasons(t *testing.T) {
@@ -422,6 +533,166 @@ func TestUS002ProjectSecureDefaultReadinessClassifiesNetworkProofReasons(t *test
 	}
 }
 
+func TestUS005ProjectSecureDefaultReadinessRejectsWeakNetworkEnforcementProof(t *testing.T) {
+	enforced := true
+	tests := []struct {
+		name       string
+		input      SandboxSecurityCapabilityReadinessInput
+		projection SandboxPolicyProxyCredentialCapabilityReadinessProjection
+		wantState  SandboxSecurityCapabilityReadinessState
+		wantReason SandboxSecurityCapabilityReasonCode
+	}{
+		{
+			name:       "missing proof",
+			wantState:  SandboxSecurityCapabilityReadinessUnsupported,
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementMissing,
+		},
+		{
+			name: "proxy only proof",
+			projection: SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+				NetworkEnforcementProof: secureDefaultProjectionNetworkProof(SandboxNetworkEnforcementProofMetadata{
+					FirewallLifecycleStatus:     "planned",
+					FirewallLifecycleReasonCode: "prepared",
+					ResultOutcome:               "success",
+					ResultEnforcementMode:       SandboxNetworkEnforcementModeProxy,
+					ResultSupported:             true,
+				}),
+			},
+			wantState:  SandboxSecurityCapabilityReadinessMetadataOnly,
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementPartial,
+		},
+		{
+			name: "firewall only proof",
+			projection: SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+				NetworkEnforcementProof: secureDefaultProjectionNetworkProof(SandboxNetworkEnforcementProofMetadata{
+					ProxyLifecycleStatus:     "planned",
+					ProxyLifecycleReasonCode: "prepared",
+					ResultOutcome:            "success",
+					ResultEnforcementMode:    SandboxNetworkEnforcementModeFirewall,
+					ResultSupported:          true,
+				}),
+			},
+			wantState:  SandboxSecurityCapabilityReadinessMetadataOnly,
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementPartial,
+		},
+		{
+			name: "best effort proof",
+			projection: SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+				NetworkEnforcementProof: secureDefaultProjectionNetworkProof(SandboxNetworkEnforcementProofMetadata{
+					ResultOutcome:         "best_effort",
+					ResultEnforcementMode: SandboxNetworkEnforcementModeBestEffort,
+					ResultSupported:       true,
+				}),
+			},
+			wantState:  SandboxSecurityCapabilityReadinessMetadataOnly,
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementBestEffort,
+		},
+		{
+			name: "audit only proof",
+			projection: SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+				NetworkEnforcementProof: secureDefaultProjectionNetworkProof(SandboxNetworkEnforcementProofMetadata{
+					ResultOutcome:         "audit_only",
+					ResultEnforcementMode: SandboxNetworkEnforcementModeProxyFirewall,
+					ResultSupported:       true,
+				}),
+			},
+			wantState:  SandboxSecurityCapabilityReadinessUnsupported,
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementUnsupported,
+		},
+		{
+			name: "compatibility policy result",
+			projection: SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+				NetworkPolicyResult: &SandboxNetworkPolicyResult{
+					Requested:       SandboxNetworkPolicyIntent{Preset: SandboxNetworkPolicyPresetDenyByDefault},
+					Effective:       SandboxNetworkPolicyIntent{Preset: SandboxNetworkPolicyPresetLegacyDefault},
+					EnforcementMode: SandboxNetworkEnforcementModeBestEffort,
+					Capability: SandboxNetworkPolicyEnforcementCapability{
+						Supported: false,
+						Modes:     []string{SandboxNetworkEnforcementModeBestEffort},
+					},
+				},
+			},
+			wantState:  SandboxSecurityCapabilityReadinessUnsupported,
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementMissing,
+		},
+		{
+			name: "planned metadata",
+			projection: SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+				NetworkProxySession: &SandboxNetworkProxySessionMetadata{
+					ID:              "network-proxy-session-planned",
+					Source:          SandboxNetworkPolicyDecisionSourceWorker,
+					EnforcementMode: SandboxNetworkEnforcementModeProxyFirewall,
+					PolicySnapshot: &SandboxNetworkPolicySnapshotIdentity{
+						ID:     "policy-snapshot-planned",
+						Preset: SandboxNetworkPolicyPresetDenyByDefault,
+					},
+				},
+			},
+			wantState:  SandboxSecurityCapabilityReadinessMetadataOnly,
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementPlannedOnly,
+		},
+		{
+			name: "audit only decision metadata",
+			projection: SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+				NetworkPolicyDecisionLogs: []SandboxNetworkPolicyDecisionLogRecord{{
+					ID:              "decision-audit-only",
+					Source:          SandboxNetworkPolicyDecisionSourceWorker,
+					Outcome:         SandboxNetworkPolicyDecisionOutcomeAuditOnly,
+					ReasonCode:      SandboxNetworkPolicyDecisionReasonAuditOnly,
+					PolicyPreset:    SandboxNetworkPolicyPresetDenyByDefault,
+					EnforcementMode: SandboxNetworkEnforcementModeBestEffort,
+					Enforced:        &enforced,
+				}},
+			},
+			wantState:  SandboxSecurityCapabilityReadinessUnsupported,
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementMissing,
+		},
+		{
+			name: "historical metadata",
+			input: SandboxSecurityCapabilityReadinessInput{
+				Ready: []SandboxSecurityCapabilityMetadata{{
+					ID:         "https://api.internal.example.com:8443/proof?token=raw-token",
+					Family:     SandboxSecurityCapabilityFamilyNetworkPolicy,
+					Capability: SandboxSecurityCapabilityNetworkDenyByDefault,
+					Mode:       "iptables -A OUTPUT -d 10.0.0.1 -j DROP",
+					Source:     SandboxSecurityCapabilitySourceMetadata,
+					Status:     SandboxSecurityCapabilityReadinessReady,
+					ReasonCode: SandboxSecurityCapabilityReasonNetworkEnforcementConfirmed,
+				}},
+			},
+			wantState:  SandboxSecurityCapabilityReadinessUnsupported,
+			wantReason: SandboxSecurityCapabilityReasonNetworkEnforcementMissing,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
+				secureDefaultProjectionRequestedNetworkInput(),
+				tt.input,
+				ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(tt.projection),
+			)
+
+			requireSecureDefaultProjectionResult(t, output,
+				tt.wantState,
+				SandboxSecurityCapabilityFamilyNetworkPolicy,
+				SandboxSecurityCapabilityNetworkDenyByDefault,
+				tt.wantReason,
+			)
+			requireSecureDefaultProjectionNoReadyResult(t, output,
+				SandboxSecurityCapabilityFamilyNetworkPolicy,
+				SandboxSecurityCapabilityNetworkDenyByDefault,
+			)
+			requireSecureDefaultProjectionStrictGate(t, output,
+				SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+				SandboxSecurityCapabilityReadinessGateReasonCode(tt.wantReason),
+				tt.wantReason,
+			)
+			assertUS005NetworkReadinessEvidenceSanitized(t, output)
+		})
+	}
+}
+
 func TestUS002ProjectSecureDefaultReadinessKeepsDiagnosticNetworkMetadataNonAuthoritative(t *testing.T) {
 	output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
 		secureDefaultProjectionRequestedNetworkInput(),
@@ -515,17 +786,16 @@ func TestProjectSecureDefaultReadinessInputRequiresBrokeredCredentialProofForCon
 		t.Run(tt.name, func(t *testing.T) {
 			bindingID := "binding-" + strings.ReplaceAll(tt.mode, "_", "-")
 			output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
-				ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(SandboxPolicyProxyCredentialCapabilityReadinessProjection{
-					CredentialProxyBindings: []SandboxCredentialProxyBindingMetadata{
-						secureDefaultProjectionCredentialBinding(bindingID, tt.mode),
-					},
-					CredentialDelivery: secureDefaultProjectionCredentialDeliveryStatus(
-						[]SandboxCredentialDeliveryProofSummary{
-							secureDefaultProjectionCredentialProof(bindingID, tt.mode, tt.proofSource),
-						},
-						tt.mode,
+				ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(
+					secureDefaultProjectionBrokeredCredentialProjection(bindingID, tt.mode,
+						secureDefaultProjectionCredentialDeliveryStatus(
+							[]SandboxCredentialDeliveryProofSummary{
+								secureDefaultProjectionCredentialProof(bindingID, tt.mode, tt.proofSource),
+							},
+							tt.mode,
+						),
 					),
-				}),
+				),
 			)
 
 			result := requireSecureDefaultProjectionResult(t, output,
@@ -539,6 +809,78 @@ func TestProjectSecureDefaultReadinessInputRequiresBrokeredCredentialProofForCon
 				SandboxSecurityCapabilityReadinessGateOutcomeAllowed,
 				SandboxSecurityCapabilityReadinessGateReasonReadinessReady,
 				SandboxSecurityCapabilityReasonCredentialActivationConfirmed,
+			)
+		})
+	}
+}
+
+func TestUS006ProjectSecureDefaultReadinessRejectsPartialBrokeredCredentialProof(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*SandboxPolicyProxyCredentialCapabilityReadinessProjection)
+	}{
+		{
+			name: "missing credential proxy plan",
+			configure: func(projection *SandboxPolicyProxyCredentialCapabilityReadinessProjection) {
+				projection.CredentialProxyPlan = nil
+			},
+		},
+		{
+			name: "advisory-only plan mode",
+			configure: func(projection *SandboxPolicyProxyCredentialCapabilityReadinessProjection) {
+				projection.CredentialProxyPlan.Mode = SandboxCredentialProxyModeMetadataOnly
+			},
+		},
+		{
+			name: "planned credential proxy plan",
+			configure: func(projection *SandboxPolicyProxyCredentialCapabilityReadinessProjection) {
+				projection.CredentialProxyPlan.Status = SandboxCredentialProxyStatusPlanned
+			},
+		},
+		{
+			name: "missing broker session proof",
+			configure: func(projection *SandboxPolicyProxyCredentialCapabilityReadinessProjection) {
+				projection.CredentialProxySession.SecretBrokerSessionID = ""
+			},
+		},
+		{
+			name: "warning-bearing credential proxy session",
+			configure: func(projection *SandboxPolicyProxyCredentialCapabilityReadinessProjection) {
+				projection.CredentialProxySession.WarningCode = SandboxCredentialProxyWarningMissingSecretBrokerSession
+			},
+		},
+		{
+			name: "binding not correlated with session",
+			configure: func(projection *SandboxPolicyProxyCredentialCapabilityReadinessProjection) {
+				projection.CredentialProxyBindings[0].SessionID = "credential-session-other"
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bindingID := "binding-http-proxy"
+			projection := secureDefaultProjectionBrokeredCredentialProjection(bindingID, SandboxSecretModeHTTPProxy,
+				secureDefaultProjectionCredentialDeliveryStatus(
+					[]SandboxCredentialDeliveryProofSummary{
+						secureDefaultProjectionCredentialProof(bindingID, SandboxSecretModeHTTPProxy, "broker"),
+					},
+					SandboxSecretModeHTTPProxy,
+				),
+			)
+			tt.configure(&projection)
+			output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
+				ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(projection),
+			)
+
+			requireSecureDefaultProjectionStrictGate(t, output,
+				SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+				SandboxSecurityCapabilityReadinessGateReasonCode(SandboxSecurityCapabilityReasonCredentialActivationMissing),
+				SandboxSecurityCapabilityReasonCredentialActivationMissing,
+			)
+			requireSecureDefaultProjectionNoReadyResult(t, output,
+				SandboxSecurityCapabilityFamilySecretDelivery,
+				SandboxSecurityCapabilitySecretHTTPProxy,
 			)
 		})
 	}
@@ -693,12 +1035,9 @@ func TestProjectSecureDefaultReadinessInputBlocksConfiguredBindingsWithoutMatchi
 				wantReason = SandboxSecurityCapabilityReasonCredentialActivationMissing
 			}
 			output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
-				ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(SandboxPolicyProxyCredentialCapabilityReadinessProjection{
-					CredentialProxyBindings: []SandboxCredentialProxyBindingMetadata{
-						binding,
-					},
-					CredentialDelivery: tt.status,
-				}),
+				ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(
+					secureDefaultProjectionBrokeredCredentialProjection(binding.ID, tt.bindingMode, tt.status, binding),
+				),
 			)
 
 			requireSecureDefaultProjectionStrictGate(t, output,
@@ -723,61 +1062,64 @@ func TestProjectSecureDefaultReadinessInputSanitizesConfiguredCredentialRequirem
 	rawTokenID := "github_pat_raw_token_value"
 	rawSecretValue := "GITHUB_TOKEN=ghp_raw_secret_value"
 
-	output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
-		ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(SandboxPolicyProxyCredentialCapabilityReadinessProjection{
-			CredentialProxyBindings: []SandboxCredentialProxyBindingMetadata{
+	projection := secureDefaultProjectionBrokeredCredentialProjection("binding-http-proxy", SandboxSecretModeHTTPProxy,
+		secureDefaultProjectionCredentialDeliveryStatus(
+			[]SandboxCredentialDeliveryProofSummary{
 				{
-					ID:                  "binding-http-proxy",
-					PlanID:              "credential-plan-http-proxy",
-					SecretID:            "env:SERVICE_TOKEN",
-					DeliveryMode:        SandboxCredentialProxyDeliveryModeHTTPProxy,
-					RequestCategory:     SandboxCredentialProxyRequestNetworkAuth,
-					DestinationCategory: SandboxNetworkPolicyDestinationCategory(rawServiceDomain),
-					Status:              SandboxCredentialProxyStatusReady,
-					ReasonCode:          SandboxCredentialProxyReasonCode(rawHeader),
+					ProofID:      rawURL,
+					BindingID:    "binding-http-proxy",
+					DeliveryMode: SandboxSecretModeHTTPProxy,
+					Status:       "active",
+					Source:       "broker",
 				},
 				{
-					ID:           rawServiceDomain,
-					PlanID:       rawSocket,
-					SecretID:     rawSecretValue,
-					DeliveryMode: SandboxCredentialProxyDeliveryModeHTTPProxy,
+					ProofID:      "credential-proof-unsafe-binding",
+					BindingID:    rawPath,
+					DeliveryMode: SandboxSecretModeHTTPProxy,
+					Status:       "active",
+					Source:       "broker",
 				},
+				{
+					ProofID:      rawTokenID,
+					BindingID:    "binding-http-proxy",
+					DeliveryMode: SandboxSecretModeHTTPProxy,
+					Status:       "active",
+					Source:       "broker",
+				},
+				{
+					ProofID:      "credential-proof-unsafe-source",
+					BindingID:    "binding-http-proxy",
+					DeliveryMode: SandboxSecretModeHTTPProxy,
+					Status:       "active",
+					Source:       rawHeader,
+				},
+				secureDefaultProjectionCredentialProof("binding-http-proxy", SandboxSecretModeHTTPProxy, "broker"),
 			},
-			CredentialDelivery: secureDefaultProjectionCredentialDeliveryStatus(
-				[]SandboxCredentialDeliveryProofSummary{
-					{
-						ProofID:      rawURL,
-						BindingID:    "binding-http-proxy",
-						DeliveryMode: SandboxSecretModeHTTPProxy,
-						Status:       "active",
-						Source:       "broker",
-					},
-					{
-						ProofID:      "credential-proof-unsafe-binding",
-						BindingID:    rawPath,
-						DeliveryMode: SandboxSecretModeHTTPProxy,
-						Status:       "active",
-						Source:       "broker",
-					},
-					{
-						ProofID:      rawTokenID,
-						BindingID:    "binding-http-proxy",
-						DeliveryMode: SandboxSecretModeHTTPProxy,
-						Status:       "active",
-						Source:       "broker",
-					},
-					{
-						ProofID:      "credential-proof-unsafe-source",
-						BindingID:    "binding-http-proxy",
-						DeliveryMode: SandboxSecretModeHTTPProxy,
-						Status:       "active",
-						Source:       rawHeader,
-					},
-					secureDefaultProjectionCredentialProof("binding-http-proxy", SandboxSecretModeHTTPProxy, "broker"),
-				},
-				SandboxSecretModeHTTPProxy,
-			),
-		}),
+			SandboxSecretModeHTTPProxy,
+		),
+	)
+	projection.CredentialProxyBindings = append(projection.CredentialProxyBindings,
+		SandboxCredentialProxyBindingMetadata{
+			ID:                  "binding-http-proxy",
+			PlanID:              "credential-plan-brokered",
+			SessionID:           "credential-session-brokered",
+			SecretID:            "env:SERVICE_TOKEN",
+			DeliveryMode:        SandboxCredentialProxyDeliveryModeHTTPProxy,
+			RequestCategory:     SandboxCredentialProxyRequestNetworkAuth,
+			DestinationCategory: SandboxNetworkPolicyDestinationCategory(rawServiceDomain),
+			Status:              SandboxCredentialProxyStatusReady,
+			Outcome:             SandboxCredentialProxyBindingOutcomeBound,
+			ReasonCode:          SandboxCredentialProxyReasonCode(rawHeader),
+		},
+		SandboxCredentialProxyBindingMetadata{
+			ID:           rawServiceDomain,
+			PlanID:       rawSocket,
+			SecretID:     rawSecretValue,
+			DeliveryMode: SandboxCredentialProxyDeliveryModeHTTPProxy,
+		},
+	)
+	output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
+		ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(projection),
 	)
 
 	requireSecureDefaultProjectionStrictGate(t, output,
@@ -1156,20 +1498,53 @@ func secureDefaultProjectionSecretCapability(mode string) SandboxSecurityCapabil
 func secureDefaultProjectionCredentialBinding(bindingID, mode string) SandboxCredentialProxyBindingMetadata {
 	return SandboxCredentialProxyBindingMetadata{
 		ID:                  bindingID,
-		PlanID:              "credential-plan-" + bindingID,
+		PlanID:              "credential-plan-brokered",
+		SessionID:           "credential-session-brokered",
 		SecretID:            "env:SERVICE_TOKEN",
 		DeliveryMode:        SandboxCredentialProxyDeliveryMode(mode),
 		RequestCategory:     SandboxCredentialProxyRequestNetworkAuth,
 		DestinationCategory: SandboxNetworkPolicyDestinationPublicInternet,
+		Outcome:             SandboxCredentialProxyBindingOutcomeBound,
 		Status:              SandboxCredentialProxyStatusReady,
 		ReasonCode:          SandboxCredentialProxyReasonRequested,
+	}
+}
+
+func secureDefaultProjectionBrokeredCredentialProjection(bindingID, mode string, status *SandboxCredentialDeliveryStatusMetadata, bindings ...SandboxCredentialProxyBindingMetadata) SandboxPolicyProxyCredentialCapabilityReadinessProjection {
+	bindingRecords := bindings
+	if len(bindingRecords) == 0 {
+		bindingRecords = []SandboxCredentialProxyBindingMetadata{
+			secureDefaultProjectionCredentialBinding(bindingID, mode),
+		}
+	}
+	return SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+		CredentialProxyPlan: &SandboxCredentialProxyPlanMetadata{
+			ID:                    "credential-plan-brokered",
+			Source:                SandboxCredentialProxySourceWorker,
+			SecretBrokerSessionID: "secret-broker-session-brokered",
+			NetworkProxySessionID: "network-proxy-session-brokered",
+			BindingCount:          len(bindingRecords),
+			Mode:                  SandboxCredentialProxyModeBrokeredNetworkReference,
+			Status:                SandboxCredentialProxyStatusReady,
+		},
+		CredentialProxySession: &SandboxCredentialProxySessionMetadata{
+			ID:                    "credential-session-brokered",
+			PlanID:                "credential-plan-brokered",
+			Source:                SandboxCredentialProxySourceWorker,
+			SecretBrokerSessionID: "secret-broker-session-brokered",
+			NetworkProxySessionID: "network-proxy-session-brokered",
+			Status:                SandboxCredentialProxyStatusActive,
+			ReasonCode:            SandboxCredentialProxyReasonRequested,
+		},
+		CredentialProxyBindings: bindingRecords,
+		CredentialDelivery:      status,
 	}
 }
 
 func secureDefaultProjectionCredentialDeliveryStatus(proofs []SandboxCredentialDeliveryProofSummary, modes ...string) *SandboxCredentialDeliveryStatusMetadata {
 	return &SandboxCredentialDeliveryStatusMetadata{
 		ID:             "credential-delivery-active",
-		PlanID:         "credential-delivery-plan",
+		PlanID:         "credential-plan-brokered",
 		ActivationID:   "credential-delivery-activation",
 		RequestedModes: modes,
 		ActiveModes:    modes,
@@ -1379,6 +1754,84 @@ func requireSecureDefaultProjectionStrictGate(t *testing.T, output *SandboxSecur
 	}
 	if decision.Counts == nil || decision.Counts.ReasonCodeCounts[countedReason] == 0 {
 		t.Fatalf("strict readiness gate reason counts = %#v, want count for %s", decision.Counts, countedReason)
+	}
+}
+
+func assertUS005NetworkReadinessEvidenceSanitized(t *testing.T, output *SandboxSecurityCapabilityReadinessOutput) {
+	t.Helper()
+	var readiness SandboxSecurityCapabilityReadinessOutput
+	if output != nil {
+		readiness = *output
+	}
+	diagnostics := DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(readiness)
+	decision := EvaluateSandboxSecurityCapabilityReadinessGate(SandboxSecurityCapabilityReadinessGatePolicyModeStrict, diagnostics)
+	payload, err := json.Marshal(struct {
+		Readiness   SandboxSecurityCapabilityReadinessOutput            `json:"readiness"`
+		Diagnostics SandboxSecurityCapabilityReadinessDiagnosticSummary `json:"diagnostics"`
+		Decision    SandboxSecurityCapabilityReadinessGateDecision      `json:"decision"`
+	}{
+		Readiness:   readiness,
+		Diagnostics: diagnostics,
+		Decision:    decision,
+	})
+	if err != nil {
+		t.Fatalf("Marshal(US-005 network readiness evidence) error = %v", err)
+	}
+	for _, fragment := range []string{
+		"https://",
+		"api.internal.example.com",
+		"10.0.0.1",
+		":8443",
+		"/tmp",
+		".sock",
+		"Authorization",
+		"Bearer",
+		"body=",
+		"GET /",
+		"token=",
+		"secret",
+		"iptables",
+		"nftables",
+		"pfctl",
+	} {
+		if strings.Contains(string(payload), fragment) {
+			t.Fatalf("US-005 network readiness evidence leaked forbidden fragment %q: %s", fragment, payload)
+		}
+	}
+}
+
+func assertUS004MicroVMReadinessEvidenceSanitized(t *testing.T, output *SandboxSecurityCapabilityReadinessOutput) {
+	t.Helper()
+	var readiness SandboxSecurityCapabilityReadinessOutput
+	if output != nil {
+		readiness = *output
+	}
+	decision := EvaluateSandboxSecurityCapabilityReadinessGateFromOutput(SandboxSecurityCapabilityReadinessGatePolicyModeStrict, readiness)
+	payload, err := json.Marshal(struct {
+		Readiness SandboxSecurityCapabilityReadinessOutput       `json:"readiness"`
+		Decision  SandboxSecurityCapabilityReadinessGateDecision `json:"decision"`
+	}{
+		Readiness: readiness,
+		Decision:  decision,
+	})
+	if err != nil {
+		t.Fatalf("Marshal(US-004 readiness evidence) error = %v", err)
+	}
+	for _, fragment := range []string{
+		"https://",
+		"worker.internal.invalid",
+		"raw-us004-token",
+		"token=",
+		"/tmp",
+		"/Users/",
+		".sock",
+		"firecracker",
+		"provider",
+		"secret",
+	} {
+		if strings.Contains(string(payload), fragment) {
+			t.Fatalf("US-004 MicroVM readiness diagnostics leaked %q in %s", fragment, payload)
+		}
 	}
 }
 

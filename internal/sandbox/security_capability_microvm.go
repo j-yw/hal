@@ -120,7 +120,7 @@ func sandboxMicroVMIsolationRuntimeStatusActive(status string) bool {
 }
 
 func sandboxMicroVMIsolationGuestReadinessReady(state string) bool {
-	return state == "" || state == "ready"
+	return state == "ready"
 }
 
 func sandboxMicroVMIsolationProcessLaunchReady(state string) bool {

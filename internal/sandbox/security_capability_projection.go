@@ -86,7 +86,7 @@ func ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(projection Sand
 	input.Requested = sandboxSecurityCapabilityProjectionRequestedCredentialBindings(input.Requested, projection.CredentialProxyBindings)
 	input.Ready = sandboxSecurityCapabilityProjectionMetadataOnlyNetworkPolicyResult(input.Ready, projection.NetworkPolicyResult)
 	input.Ready = sandboxSecurityCapabilityProjectionAppendNetworkEnforcementProof(input.Ready, projection.NetworkEnforcementProof)
-	input.Ready = sandboxSecurityCapabilityProjectionAppendCredentialDeliveryProof(input.Ready, projection.CredentialDelivery, projection.CredentialProxyBindings)
+	input.Ready = sandboxSecurityCapabilityProjectionAppendCredentialDeliveryProof(input.Ready, projection.CredentialDelivery, projection.CredentialProxyPlan, projection.CredentialProxySession, projection.CredentialProxyBindings)
 	for _, ready := range projection.Ready {
 		input.Ready = sandboxSecurityCapabilityProjectionAppendUnique(input.Ready, ready)
 	}
@@ -407,7 +407,7 @@ func sandboxSecurityCapabilityProjectionMicroVMIsolationProofReadiness(proof San
 	return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonMicroVMReadinessMissing
 }
 
-func sandboxSecurityCapabilityProjectionAppendCredentialDeliveryProof(records []SandboxSecurityCapabilityMetadata, status *SandboxCredentialDeliveryStatusMetadata, bindings []SandboxCredentialProxyBindingMetadata) []SandboxSecurityCapabilityMetadata {
+func sandboxSecurityCapabilityProjectionAppendCredentialDeliveryProof(records []SandboxSecurityCapabilityMetadata, status *SandboxCredentialDeliveryStatusMetadata, plan *SandboxCredentialProxyPlanMetadata, session *SandboxCredentialProxySessionMetadata, bindings []SandboxCredentialProxyBindingMetadata) []SandboxSecurityCapabilityMetadata {
 	if status == nil {
 		return records
 	}
@@ -415,7 +415,7 @@ func sandboxSecurityCapabilityProjectionAppendCredentialDeliveryProof(records []
 	if sanitized.ID == "" {
 		return records
 	}
-	configuredBindings := sandboxSecurityCapabilityProjectionConfiguredCredentialBindings(bindings)
+	configuredBindings := sandboxSecurityCapabilityProjectionConfiguredCredentialBindings(plan, session, bindings)
 	if sanitized.Status == "active" && sanitized.ActivationID != "" && len(sanitized.ActiveProofs) > 0 && sanitized.WarningCount == 0 && sanitized.ErrorCount == 0 {
 		before := len(records)
 		for _, proof := range sanitized.ActiveProofs {
@@ -479,7 +479,12 @@ func sandboxSecurityCapabilityProjectionAppendCredentialDeliveryProof(records []
 	return records
 }
 
-func sandboxSecurityCapabilityProjectionConfiguredCredentialBindings(bindings []SandboxCredentialProxyBindingMetadata) map[string]SandboxCredentialProxyBindingMetadata {
+func sandboxSecurityCapabilityProjectionConfiguredCredentialBindings(plan *SandboxCredentialProxyPlanMetadata, session *SandboxCredentialProxySessionMetadata, bindings []SandboxCredentialProxyBindingMetadata) map[string]SandboxCredentialProxyBindingMetadata {
+	planContext := sandboxSecurityCapabilityProjectionCredentialProofPlan(plan)
+	sessionContext := sandboxSecurityCapabilityProjectionCredentialProofSession(session, planContext)
+	if planContext.ID == "" || sessionContext.ID == "" {
+		return nil
+	}
 	sanitized := SanitizeSandboxCredentialProxyBindingMetadataRecords(bindings)
 	if len(sanitized) == 0 {
 		return nil
@@ -489,9 +494,54 @@ func sandboxSecurityCapabilityProjectionConfiguredCredentialBindings(bindings []
 		if !sandboxSecurityCapabilityProjectionCredentialBindingCanAcceptProof(binding) {
 			continue
 		}
+		if binding.PlanID != planContext.ID || binding.SessionID != sessionContext.ID {
+			continue
+		}
 		out[binding.ID] = binding
 	}
 	return out
+}
+
+func sandboxSecurityCapabilityProjectionCredentialProofPlan(plan *SandboxCredentialProxyPlanMetadata) SandboxCredentialProxyPlanMetadata {
+	if plan == nil {
+		return SandboxCredentialProxyPlanMetadata{}
+	}
+	sanitized := SanitizeSandboxCredentialProxyPlanMetadata(*plan)
+	if sanitized.ID == "" || sanitized.SecretBrokerSessionID == "" {
+		return SandboxCredentialProxyPlanMetadata{}
+	}
+	switch sanitized.Mode {
+	case SandboxCredentialProxyModeSecretBrokerReference,
+		SandboxCredentialProxyModeBrokeredNetworkReference:
+	default:
+		return SandboxCredentialProxyPlanMetadata{}
+	}
+	if !sandboxSecurityCapabilityProjectionCredentialProxyStatusCanProveDelivery(sanitized.Status) {
+		return SandboxCredentialProxyPlanMetadata{}
+	}
+	return sanitized
+}
+
+func sandboxSecurityCapabilityProjectionCredentialProofSession(session *SandboxCredentialProxySessionMetadata, plan SandboxCredentialProxyPlanMetadata) SandboxCredentialProxySessionMetadata {
+	if session == nil || plan.ID == "" {
+		return SandboxCredentialProxySessionMetadata{}
+	}
+	sanitized := SanitizeSandboxCredentialProxySessionMetadata(*session)
+	if sanitized.ID == "" ||
+		sanitized.PlanID != plan.ID ||
+		sanitized.SecretBrokerSessionID == "" ||
+		sanitized.SecretBrokerSessionID != plan.SecretBrokerSessionID ||
+		sanitized.WarningCode != "" ||
+		!sandboxSecurityCapabilityProjectionCredentialProxyStatusCanProveDelivery(sanitized.Status) {
+		return SandboxCredentialProxySessionMetadata{}
+	}
+	if plan.NetworkProxySessionID != "" && sanitized.NetworkProxySessionID != "" && sanitized.NetworkProxySessionID != plan.NetworkProxySessionID {
+		return SandboxCredentialProxySessionMetadata{}
+	}
+	if plan.Mode == SandboxCredentialProxyModeBrokeredNetworkReference && (plan.NetworkProxySessionID == "" || sanitized.NetworkProxySessionID == "") {
+		return SandboxCredentialProxySessionMetadata{}
+	}
+	return sanitized
 }
 
 func sandboxSecurityCapabilityProjectionCredentialBindingCanAcceptProof(binding SandboxCredentialProxyBindingMetadata) bool {
@@ -502,12 +552,23 @@ func sandboxSecurityCapabilityProjectionCredentialBindingCanAcceptProof(binding 
 		return false
 	}
 	switch binding.Status {
-	case "", SandboxCredentialProxyStatusReady, SandboxCredentialProxyStatusActive, SandboxCredentialProxyStatusCompleted:
+	case SandboxCredentialProxyStatusReady, SandboxCredentialProxyStatusActive, SandboxCredentialProxyStatusCompleted:
 	default:
 		return false
 	}
 	switch binding.Outcome {
-	case "", SandboxCredentialProxyBindingOutcomeBound:
+	case SandboxCredentialProxyBindingOutcomeBound:
+		return true
+	default:
+		return false
+	}
+}
+
+func sandboxSecurityCapabilityProjectionCredentialProxyStatusCanProveDelivery(status SandboxCredentialProxyStatus) bool {
+	switch status {
+	case SandboxCredentialProxyStatusReady,
+		SandboxCredentialProxyStatusActive,
+		SandboxCredentialProxyStatusCompleted:
 		return true
 	default:
 		return false

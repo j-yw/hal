@@ -39,6 +39,9 @@ func ProjectLiveE2ENetworkEnforcementReadiness(input LiveE2ENetworkEnforcementRe
 	}
 
 	metadata := sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(input.NetworkEnforcement)
+	if diagnostics := liveE2ENetworkEnforcementCapabilityDiagnostics(metadata); len(diagnostics) > 0 {
+		return liveE2ENetworkEnforcementReadinessSkipped(diagnostics)
+	}
 	proxyStatus, proxyReason := liveE2ENetworkProxyReadiness(metadata)
 	firewallStatus, firewallReason := liveE2EFirewallReadiness(metadata)
 	status := LiveE2EReadinessReady
@@ -180,6 +183,26 @@ func liveE2ENetworkEnforcementMarkerDiagnostics(input LiveE2ENetworkEnforcementR
 		diagnostics = append(diagnostics, BuildMissingLiveE2EPrerequisiteDiagnostic(LiveE2EPrerequisiteFirewallMarker))
 	}
 	return sanitizeLiveE2EPrerequisiteDiagnostics(diagnostics)
+}
+
+func liveE2ENetworkEnforcementCapabilityDiagnostics(metadata *sandboxruntime.RuntimeNetworkEnforcementMetadata) []LiveE2EPrerequisiteDiagnostic {
+	if metadata != nil && (metadata.Result != nil || metadata.Orchestration != nil) {
+		return nil
+	}
+	return sanitizeLiveE2EPrerequisiteDiagnostics([]LiveE2EPrerequisiteDiagnostic{
+		liveE2EUnavailablePrerequisiteDiagnostic(
+			LiveE2EPrerequisiteNetworkProxyCapability,
+			LiveE2EComponentNetworkProxy,
+			LiveE2EReasonNetworkProxyUnavailable,
+			"Network proxy capability metadata is unavailable for the live E2E harness.",
+		),
+		liveE2EUnavailablePrerequisiteDiagnostic(
+			LiveE2EPrerequisiteFirewallCapability,
+			LiveE2EComponentFirewall,
+			LiveE2EReasonFirewallUnavailable,
+			"Firewall capability metadata is unavailable for the live E2E harness.",
+		),
+	})
 }
 
 func liveE2ENetworkProxyReadiness(metadata *sandboxruntime.RuntimeNetworkEnforcementMetadata) (LiveE2EReadinessStatus, LiveE2EReasonCode) {

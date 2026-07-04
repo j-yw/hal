@@ -628,7 +628,7 @@ func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun boo
 }
 
 func sanitizeRunPublicString(value string) string {
-	return status.SanitizePublicString(value)
+	return sanitizeFactorySandboxFailureText(status.SanitizePublicString(value))
 }
 
 func withTimeoutOverride(cfg *engine.EngineConfig, timeout time.Duration) *engine.EngineConfig {
