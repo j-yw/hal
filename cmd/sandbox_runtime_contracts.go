@@ -830,12 +830,14 @@ func sandboxRuntimeSecurityWithoutNetworkReadyMetadata(security *sandbox.Sandbox
 func sandboxRuntimeStateFromWorkerDriver(driver sandboxworker.RuntimeDriver) *sandbox.SandboxRuntimeState {
 	runtimeID := strings.TrimSpace(driver.ID)
 	isolationLevel := strings.TrimSpace(driver.IsolationLevel)
-	if runtimeID == "" && isolationLevel == "" {
+	templateLock := sandboxTemplateLockFromRuntimeMetadata(driver.Metadata)
+	if runtimeID == "" && isolationLevel == "" && templateLock == nil {
 		return nil
 	}
 	return &sandbox.SandboxRuntimeState{
 		Driver:         runtimeID,
 		IsolationLevel: isolationLevel,
+		TemplateLock:   templateLock,
 	}
 }
 
