@@ -16,6 +16,12 @@ decisions when required proof is missing, and compatibility mode reports advisor
 diagnostics without claiming live protection, and proof-complete allowed states
 include reason-code counts.
 
+Each runtime entry includes selectedTemplate status with sanitized template
+identity, trust decision, provenance status, locked digest, and blocked readiness
+reason codes. Runtime listing does not acquire templates or contact live
+template sources; acquisition remains fake/local unless an explicit lower-level
+template acquisition path is invoked.
+
 ```
 hal sandbox runtime list HOST_ID [flags]
 ```

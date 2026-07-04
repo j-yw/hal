@@ -212,7 +212,7 @@ func TestPhase54NoSchemaOrContractExpansionRequired(t *testing.T) {
 		{
 			label: "SandboxRuntimeStatusResponse",
 			typ:   reflect.TypeOf(SandboxRuntimeStatusResponse{}),
-			want:  []string{"contractType", "contractVersion", "host", "runtime", "source", "supportedOperations", "capacity", "readiness", "security", "diagnostics", "errors"},
+			want:  []string{"contractType", "contractVersion", "host", "runtime", "selectedTemplate", "source", "supportedOperations", "capacity", "readiness", "security", "diagnostics", "errors"},
 		},
 		{
 			label: "SandboxRuntimeSecuritySummary",

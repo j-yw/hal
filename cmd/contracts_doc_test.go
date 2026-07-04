@@ -236,9 +236,14 @@ func TestContractDocsIncludeSandboxRuntimeListFields(t *testing.T) {
 			t.Errorf("sandbox-runtime-list-v1.md missing source field %q", field)
 		}
 	}
-	for _, field := range []string{"hostKind", "isolationLevel", "supportedOperations"} {
+	for _, field := range []string{"hostKind", "isolationLevel", "supportedOperations", "selectedTemplate"} {
 		if !strings.Contains(content, "`"+field+"`") {
 			t.Errorf("sandbox-runtime-list-v1.md missing runtime field %q", field)
+		}
+	}
+	for _, field := range []string{"state", "present", "sourceKind", "referenceKind", "lockStatus", "trustMode", "trustDecision", "digest", "provenanceStatus", "blockedReadinessReasonCodes"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-list-v1.md missing selectedTemplate field %q", field)
 		}
 	}
 	for _, field := range []string{"cpuCores", "memoryMb", "diskGb", "maxConcurrentSandboxes", "activeSandboxes"} {
@@ -291,7 +296,7 @@ func TestContractDocsIncludeSandboxRuntimeStatusFields(t *testing.T) {
 	normalizedContent := strings.Join(strings.Fields(content), " ")
 
 	for _, field := range []string{
-		"contractType", "contractVersion", "host", "runtime", "source",
+		"contractType", "contractVersion", "host", "runtime", "selectedTemplate", "source",
 		"supportedOperations", "capacity", "readiness", "security",
 		"diagnostics", "errors",
 	} {
@@ -307,6 +312,11 @@ func TestContractDocsIncludeSandboxRuntimeStatusFields(t *testing.T) {
 	for _, field := range []string{"hostKind", "isolationLevel"} {
 		if !strings.Contains(content, "`"+field+"`") {
 			t.Errorf("sandbox-runtime-status-v1.md missing runtime field %q", field)
+		}
+	}
+	for _, field := range []string{"state", "present", "sourceKind", "referenceKind", "lockStatus", "trustMode", "trustDecision", "digest", "provenanceStatus", "blockedReadinessReasonCodes"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-status-v1.md missing selectedTemplate field %q", field)
 		}
 	}
 	for _, field := range []string{"mode", "requestedLive", "cacheUpdated", "refreshedAt"} {
@@ -1470,9 +1480,15 @@ func requireRuntimeListExampleRawKeys(t *testing.T, raw map[string]interface{}) 
 			"hostKind",
 			"isolationLevel",
 			"supportedOperations",
+			"selectedTemplate",
 			"security",
 			"diagnostics",
 		})
+		selectedTemplate, ok := runtimeEntry["selectedTemplate"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("runtimes[%d].selectedTemplate should be an object, got %T", i, runtimeEntry["selectedTemplate"])
+		}
+		requireRuntimeSelectedTemplateExampleKeys(t, selectedTemplate)
 	}
 
 	capacity, ok := raw["capacity"].(map[string]interface{})
@@ -1493,6 +1509,22 @@ func requireRuntimeListExampleRawKeys(t *testing.T, raw map[string]interface{}) 
 		t.Fatalf("security should be an object, got %T", raw["security"])
 	}
 	requireExactKeys(t, security, []string{"requested", "enforced"})
+}
+
+func requireRuntimeSelectedTemplateExampleKeys(t *testing.T, selectedTemplate map[string]interface{}) {
+	t.Helper()
+	for _, key := range []string{"state", "present"} {
+		if _, ok := selectedTemplate[key]; !ok {
+			t.Fatalf("selectedTemplate missing required key %q: %#v", key, selectedTemplate)
+		}
+	}
+	if digest, ok := selectedTemplate["digest"]; ok {
+		digestObject, ok := digest.(map[string]interface{})
+		if !ok {
+			t.Fatalf("selectedTemplate.digest should be an object, got %T", digest)
+		}
+		requireExactKeys(t, digestObject, []string{"algorithm", "value", "source"})
+	}
 }
 
 func requireRuntimeListExampleSafe(t *testing.T, path string) {
@@ -1528,6 +1560,7 @@ func TestSandboxRuntimeStatusContractExamplesMatchSchema(t *testing.T) {
 				"contractVersion",
 				"host",
 				"runtime",
+				"selectedTemplate",
 				"source",
 				"supportedOperations",
 				"capacity",
@@ -1615,6 +1648,11 @@ func requireRuntimeStatusExampleRawKeys(t *testing.T, raw map[string]interface{}
 		t.Fatalf("runtime should be an object, got %T", raw["runtime"])
 	}
 	requireExactKeys(t, runtimeEntry, []string{"id", "hostKind", "isolationLevel"})
+	selectedTemplate, ok := raw["selectedTemplate"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("selectedTemplate should be an object, got %T", raw["selectedTemplate"])
+	}
+	requireRuntimeSelectedTemplateExampleKeys(t, selectedTemplate)
 
 	source, ok := raw["source"].(map[string]interface{})
 	if !ok {

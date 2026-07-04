@@ -21,6 +21,7 @@ These fields are always present, including JSON error documents.
 | `contractVersion` | string | Always `"sandbox-runtime-status-v1"` for this contract |
 | `host` | object | Safe host identity and endpoint summary |
 | `runtime` | object | Requested runtime identity and safe capability identity metadata |
+| `selectedTemplate` | object | Sanitized selected-template status for the requested runtime |
 | `source` | object | Indicates whether runtime metadata came from cached durable state, a live refresh, or an unsupported live request |
 | `supportedOperations` | array | Sorted runtime operation ids, or an empty array when unknown |
 | `capacity` | object | Host or runtime capacity summary from durable or live metadata |
@@ -56,6 +57,36 @@ sensitive endpoint details are omitted.
 | `id` | string | Requested runtime driver id, such as `"rootless_podman"` or `"ssh_machine"` |
 | `hostKind` | string or null | Runtime host kind from live capabilities, or `null` when cached durable metadata only confirms registration |
 | `isolationLevel` | string or null | Runtime isolation level from live capabilities, or `null` when unknown |
+
+## Selected Template
+
+`selectedTemplate` is always present. It is a status projection only: command
+code formats already-sanitized runtime metadata and readiness diagnostics, while
+template reference parsing, acquisition, provenance locking, and trust-policy
+decisions remain in internal template packages. Runtime status does not acquire
+templates or contact live template sources; default acquisition coverage remains
+fake/local.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `state` | string | `"trusted"`, `"unresolved"`, `"rejected"`, `"advisory"`, `"unavailable"`, `"absent"`, or `"unknown"` |
+| `present` | boolean | Whether selected-template metadata was present |
+| `sourceKind` | string | Optional safe source kind such as `"local_file"` or `"template_reference"` |
+| `referenceKind` | string | Optional safe reference kind such as `"local"`, `"git"`, or `"oci_artifact"` |
+| `lockStatus` | string | Optional lock status, such as `"locked"` or `"unresolved"` |
+| `trustMode` | string | Optional trust-policy mode, such as `"strict"` or `"advisory"` |
+| `trustDecision` | string | Optional trust decision, such as `"trusted"` or `"rejected"` |
+| `digest` | object | Optional locked digest with `algorithm`, `value`, and safe digest `source` |
+| `provenanceStatus` | string | Optional provenance status derived from lock metadata |
+| `provenanceLabels` | array | Optional safe provenance categories, not raw references |
+| `readinessStatus` | string | Optional selected-template readiness state |
+| `blockedReadinessReasonCodes` | array | Optional strict-readiness blocking reason codes such as `selected_template_trust_rejected` |
+| `reasonCodes` | array | Optional sanitized lock/trust reason codes |
+
+Selected-template JSON never includes raw references, local paths, credentials,
+URL query strings, endpoints, or socket paths. A locked digest is safe identity
+metadata and does not imply network enforcement, credential delivery, or live
+runtime proof by itself.
 
 ## Source
 

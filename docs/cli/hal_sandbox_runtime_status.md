@@ -17,6 +17,11 @@ decisions when required proof is missing, and compatibility mode reports advisor
 diagnostics without claiming live protection, and proof-complete allowed states
 include reason-code counts.
 
+The selectedTemplate field summarizes sanitized template identity, trust
+decision, provenance status, locked digest, and blocked readiness reason codes
+for the requested runtime. Runtime status formats existing metadata only; it
+does not parse template references or perform template acquisition.
+
 ```
 hal sandbox runtime status HOST_ID RUNTIME_ID [flags]
 ```

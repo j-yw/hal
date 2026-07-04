@@ -33,6 +33,34 @@
         "start",
         "stop"
       ],
+      "selectedTemplate": {
+        "state": "trusted",
+        "present": true,
+        "sourceKind": "local_file",
+        "referenceKind": "local",
+        "lockStatus": "locked",
+        "trustMode": "strict",
+        "trustDecision": "trusted",
+        "digest": {
+          "algorithm": "sha256",
+          "value": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "source": "trust_policy"
+        },
+        "provenanceStatus": "locked",
+        "provenanceLabels": [
+          "document",
+          "template_reference",
+          "runtime_image",
+          "source_artifact"
+        ],
+        "readinessStatus": "ready",
+        "reasonCodes": [
+          "document_digest",
+          "template_reference_digest",
+          "runtime_image_digest",
+          "source_artifact_digest"
+        ]
+      },
       "security": {
         "requested": {
           "networkPolicy": "deny_by_default",
@@ -70,6 +98,10 @@
         "start",
         "stop"
       ],
+      "selectedTemplate": {
+        "state": "absent",
+        "present": false
+      },
       "security": {
         "requested": {
           "networkPolicy": "deny_by_default",

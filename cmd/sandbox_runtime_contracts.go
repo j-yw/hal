@@ -52,17 +52,18 @@ type SandboxRuntimeListResponse struct {
 // SandboxRuntimeStatusResponse is the machine-readable JSON output for
 // hal sandbox runtime status <host-id> <runtime-id> --json.
 type SandboxRuntimeStatusResponse struct {
-	ContractType        string                        `json:"contractType"`
-	ContractVersion     string                        `json:"contractVersion"`
-	Host                SandboxRuntimeHost            `json:"host"`
-	Runtime             SandboxRuntimeStatusRuntime   `json:"runtime"`
-	Source              SandboxRuntimeSource          `json:"source"`
-	SupportedOperations []string                      `json:"supportedOperations"`
-	Capacity            SandboxRuntimeCapacitySummary `json:"capacity"`
-	Readiness           SandboxRuntimeReadiness       `json:"readiness"`
-	Security            SandboxRuntimeSecuritySummary `json:"security"`
-	Diagnostics         []SandboxRuntimeDiagnostic    `json:"diagnostics"`
-	Errors              []SandboxRuntimeError         `json:"errors"`
+	ContractType        string                         `json:"contractType"`
+	ContractVersion     string                         `json:"contractVersion"`
+	Host                SandboxRuntimeHost             `json:"host"`
+	Runtime             SandboxRuntimeStatusRuntime    `json:"runtime"`
+	SelectedTemplate    SandboxRuntimeSelectedTemplate `json:"selectedTemplate"`
+	Source              SandboxRuntimeSource           `json:"source"`
+	SupportedOperations []string                       `json:"supportedOperations"`
+	Capacity            SandboxRuntimeCapacitySummary  `json:"capacity"`
+	Readiness           SandboxRuntimeReadiness        `json:"readiness"`
+	Security            SandboxRuntimeSecuritySummary  `json:"security"`
+	Diagnostics         []SandboxRuntimeDiagnostic     `json:"diagnostics"`
+	Errors              []SandboxRuntimeError          `json:"errors"`
 }
 
 // SandboxRuntimeHost identifies the inspected host without exposing raw
@@ -100,12 +101,39 @@ type SandboxRuntimeStatusRuntime struct {
 
 // SandboxRuntimeListEntry summarizes a runtime driver available on a host.
 type SandboxRuntimeListEntry struct {
-	ID                  string                        `json:"id"`
-	HostKind            *string                       `json:"hostKind"`
-	IsolationLevel      *string                       `json:"isolationLevel"`
-	SupportedOperations []string                      `json:"supportedOperations"`
-	Security            SandboxRuntimeSecuritySummary `json:"security"`
-	Diagnostics         []SandboxRuntimeDiagnostic    `json:"diagnostics"`
+	ID                  string                         `json:"id"`
+	HostKind            *string                        `json:"hostKind"`
+	IsolationLevel      *string                        `json:"isolationLevel"`
+	SupportedOperations []string                       `json:"supportedOperations"`
+	SelectedTemplate    SandboxRuntimeSelectedTemplate `json:"selectedTemplate"`
+	Security            SandboxRuntimeSecuritySummary  `json:"security"`
+	Diagnostics         []SandboxRuntimeDiagnostic     `json:"diagnostics"`
+}
+
+// SandboxRuntimeSelectedTemplate summarizes the selected sandbox runtime
+// template without raw references, paths, endpoints, or credential-bearing
+// source details.
+type SandboxRuntimeSelectedTemplate struct {
+	State                       string                                `json:"state"`
+	Present                     bool                                  `json:"present"`
+	SourceKind                  string                                `json:"sourceKind,omitempty"`
+	ReferenceKind               string                                `json:"referenceKind,omitempty"`
+	LockStatus                  string                                `json:"lockStatus,omitempty"`
+	TrustMode                   string                                `json:"trustMode,omitempty"`
+	TrustDecision               string                                `json:"trustDecision,omitempty"`
+	Digest                      *SandboxRuntimeSelectedTemplateDigest `json:"digest,omitempty"`
+	ProvenanceStatus            string                                `json:"provenanceStatus,omitempty"`
+	ProvenanceLabels            []string                              `json:"provenanceLabels,omitempty"`
+	ReadinessStatus             string                                `json:"readinessStatus,omitempty"`
+	BlockedReadinessReasonCodes []string                              `json:"blockedReadinessReasonCodes,omitempty"`
+	ReasonCodes                 []string                              `json:"reasonCodes,omitempty"`
+}
+
+// SandboxRuntimeSelectedTemplateDigest identifies a locked template digest.
+type SandboxRuntimeSelectedTemplateDigest struct {
+	Algorithm string `json:"algorithm"`
+	Value     string `json:"value"`
+	Source    string `json:"source"`
 }
 
 // SandboxRuntimeCapacitySummary is a safe host capacity summary.
@@ -300,16 +328,18 @@ func newSandboxRuntimeStatusLiveResponse(host *sandbox.SandboxHost, runtimeID st
 		return SandboxRuntimeStatusResponse{}, false
 	}
 	refreshedAt = refreshedAt.UTC()
+	security := newSandboxRuntimeSecuritySummaryFromWorkerDriver(driver)
 	return SandboxRuntimeStatusResponse{
 		ContractType:        SandboxRuntimeStatusContractType,
 		ContractVersion:     SandboxRuntimeStatusContractVersion,
 		Host:                newSandboxRuntimeHost(host),
 		Runtime:             newSandboxRuntimeStatusRuntimeFromWorkerDriver(runtimeID, driver),
+		SelectedTemplate:    newSandboxRuntimeSelectedTemplate(driver.Metadata, security),
 		Source:              newSandboxRuntimeStatusLiveSource(refreshedAt),
 		SupportedOperations: sandboxRuntimeWorkerOperations(driver.Operations),
 		Capacity:            newSandboxRuntimeCapacitySummaryFromWorkerStatus(status, sandboxRuntimeHostCapacity(host)),
 		Readiness:           newSandboxRuntimeReadinessFromWorkerStatus(status, refreshedAt),
-		Security:            newSandboxRuntimeSecuritySummaryFromWorkerDriver(driver),
+		Security:            security,
 		Diagnostics:         []SandboxRuntimeDiagnostic{},
 		Errors:              []SandboxRuntimeError{},
 	}, true
@@ -317,11 +347,13 @@ func newSandboxRuntimeStatusLiveResponse(host *sandbox.SandboxHost, runtimeID st
 
 func newSandboxRuntimeStatusLiveRuntimeNotFoundResponse(host *sandbox.SandboxHost, runtimeID string, status *sandboxworker.Status, capabilities *sandboxworker.Capabilities, refreshedAt time.Time) SandboxRuntimeStatusResponse {
 	refreshedAt = refreshedAt.UTC()
+	security := newSandboxRuntimeSecuritySummaryFromWorkerCapabilities(capabilities)
 	return SandboxRuntimeStatusResponse{
 		ContractType:        SandboxRuntimeStatusContractType,
 		ContractVersion:     SandboxRuntimeStatusContractVersion,
 		Host:                newSandboxRuntimeHost(host),
 		Runtime:             newSandboxRuntimeStatusRuntime(runtimeID),
+		SelectedTemplate:    newSandboxRuntimeSelectedTemplate(nil, security),
 		Source:              newSandboxRuntimeStatusLiveSource(refreshedAt),
 		SupportedOperations: []string{},
 		Capacity:            newSandboxRuntimeCapacitySummaryFromWorkerStatus(status, sandboxRuntimeHostCapacity(host)),
@@ -330,7 +362,7 @@ func newSandboxRuntimeStatusLiveRuntimeNotFoundResponse(host *sandbox.SandboxHos
 			CheckedAt: &refreshedAt,
 			Summary:   "runtime is not advertised by this worker",
 		},
-		Security:    newSandboxRuntimeSecuritySummaryFromWorkerCapabilities(capabilities),
+		Security:    security,
 		Diagnostics: []SandboxRuntimeDiagnostic{},
 		Errors: []SandboxRuntimeError{
 			{
@@ -394,6 +426,7 @@ func newSandboxRuntimeStatusResponse(host *sandbox.SandboxHost, runtimeID string
 		ContractVersion:     SandboxRuntimeStatusContractVersion,
 		Host:                newSandboxRuntimeHost(host),
 		Runtime:             newSandboxRuntimeStatusRuntime(runtimeID),
+		SelectedTemplate:    newSandboxRuntimeSelectedTemplate(nil, security),
 		Source:              source,
 		SupportedOperations: []string{},
 		Capacity:            newSandboxRuntimeCapacitySummary(sandboxRuntimeHostCapacity(host)),
@@ -550,6 +583,7 @@ func newSandboxRuntimeListEntries(runtimeIDs []string) []SandboxRuntimeListEntry
 			HostKind:            nil,
 			IsolationLevel:      nil,
 			SupportedOperations: []string{},
+			SelectedTemplate:    newSandboxRuntimeSelectedTemplate(nil, newSandboxRuntimeSecuritySummary(nil)),
 			Security:            newSandboxRuntimeSecuritySummary(nil),
 			Diagnostics:         []SandboxRuntimeDiagnostic{},
 		})
@@ -597,12 +631,14 @@ func newSandboxRuntimeListEntriesFromWorkerCapabilities(capabilities *sandboxwor
 		if operations == nil {
 			operations = []string{}
 		}
+		security := newSandboxRuntimeSecuritySummaryFromWorkerDriver(driver)
 		entries = append(entries, SandboxRuntimeListEntry{
 			ID:                  runtimeID,
 			HostKind:            sandboxRuntimeStringPtr(driver.HostKind),
 			IsolationLevel:      sandboxRuntimeStringPtr(driver.IsolationLevel),
 			SupportedOperations: operations,
-			Security:            newSandboxRuntimeSecuritySummaryFromWorkerDriver(driver),
+			SelectedTemplate:    newSandboxRuntimeSelectedTemplate(driver.Metadata, security),
+			Security:            security,
 			Diagnostics:         []SandboxRuntimeDiagnostic{},
 		})
 	}
@@ -610,6 +646,215 @@ func newSandboxRuntimeListEntriesFromWorkerCapabilities(capabilities *sandboxwor
 		return []SandboxRuntimeListEntry{}
 	}
 	return entries
+}
+
+func newSandboxRuntimeSelectedTemplate(metadata *sandboxruntime.RuntimeMetadata, security SandboxRuntimeSecuritySummary) SandboxRuntimeSelectedTemplate {
+	metadata = sandboxruntime.SanitizeRuntimeMetadata(metadata)
+	var lock *sandboxruntime.RuntimeTemplateLockMetadata
+	var status *sandboxruntime.RuntimeTemplateStatusMetadata
+	if metadata != nil {
+		lock = metadata.TemplateLock
+		status = metadata.TemplateStatus
+	}
+
+	readinessStatus, blockedReasons := sandboxRuntimeSelectedTemplateReadiness(security.CapabilityReadiness)
+	summary := SandboxRuntimeSelectedTemplate{
+		State:                       "absent",
+		Present:                     false,
+		ReadinessStatus:             readinessStatus,
+		BlockedReadinessReasonCodes: blockedReasons,
+	}
+	if lock == nil && status == nil {
+		return summary
+	}
+
+	summary.Present = true
+	if status != nil {
+		summary.LockStatus = strings.TrimSpace(status.LockStatus)
+		summary.TrustMode = strings.TrimSpace(status.TrustMode)
+		summary.TrustDecision = strings.TrimSpace(status.TrustDecision)
+		summary.ProvenanceStatus = strings.TrimSpace(status.LockStatus)
+		summary.ProvenanceLabels = sandboxRuntimeStringSlice(status.ProvenanceLabels)
+		summary.ReasonCodes = sandboxRuntimeStringSlice(status.ReasonCodes)
+	}
+	sourceKind, referenceKind := sandboxRuntimeSelectedTemplateIdentity(lock)
+	summary.SourceKind = sourceKind
+	summary.ReferenceKind = referenceKind
+	summary.Digest = sandboxRuntimeSelectedTemplateDigest(lock)
+	if summary.ReadinessStatus == "" {
+		summary.ReadinessStatus, summary.BlockedReadinessReasonCodes = sandboxRuntimeSelectedTemplateFallbackReadiness(summary)
+	}
+	summary.State = sandboxRuntimeSelectedTemplateState(summary)
+	return summary
+}
+
+func newSandboxRuntimeSelectedTemplateFromSandboxLock(lock *sandbox.SandboxTemplateLockMetadata, security *sandbox.SandboxSecurity) SandboxRuntimeSelectedTemplate {
+	runtimeMetadata := sandboxruntime.SanitizeRuntimeMetadata(&sandboxruntime.RuntimeMetadata{
+		TemplateLock: sandboxRuntimeTemplateLockFromSandbox(lock),
+	})
+	return newSandboxRuntimeSelectedTemplate(runtimeMetadata, newSandboxRuntimeSecuritySummary(security))
+}
+
+func sandboxRuntimeSelectedTemplateState(summary SandboxRuntimeSelectedTemplate) string {
+	if !summary.Present {
+		return "absent"
+	}
+	if summary.LockStatus == sandbox.SandboxTemplateLockStatusUnresolved {
+		return "unresolved"
+	}
+	switch summary.TrustDecision {
+	case sandbox.SandboxTemplateTrustPolicyDecisionTrusted:
+		return "trusted"
+	case sandbox.SandboxTemplateTrustPolicyDecisionRejected:
+		return "rejected"
+	case sandbox.SandboxTemplateTrustPolicyDecisionAdvisory:
+		return "advisory"
+	case sandbox.SandboxTemplateTrustPolicyDecisionUnavailable:
+		return "unavailable"
+	}
+	if summary.LockStatus != "" {
+		return summary.LockStatus
+	}
+	return "unknown"
+}
+
+func sandboxRuntimeSelectedTemplateReadiness(readiness *sandbox.SandboxSecurityCapabilityReadinessOutput) (string, []string) {
+	readiness = sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(readiness)
+	if readiness == nil {
+		return "", nil
+	}
+	for _, result := range readiness.Results {
+		if !sandboxRuntimeSelectedTemplateReadinessResult(result) {
+			continue
+		}
+		status := strings.TrimSpace(string(result.State))
+		reasons := []string{}
+		if result.State != sandbox.SandboxSecurityCapabilityReadinessReady {
+			if reason := strings.TrimSpace(string(result.ReasonCode)); reason != "" {
+				reasons = append(reasons, reason)
+			}
+		}
+		return status, sortedUniqueStrings(reasons)
+	}
+	return "", nil
+}
+
+func sandboxRuntimeSelectedTemplateReadinessResult(result sandbox.SandboxSecurityCapabilityReadinessResult) bool {
+	if result.Requested != nil &&
+		result.Requested.Family == sandbox.SandboxSecurityCapabilityFamilyTemplate &&
+		result.Requested.Capability == sandbox.SandboxSecurityCapabilitySelectedTemplateTrust {
+		return true
+	}
+	for _, metadata := range []*sandbox.SandboxSecurityCapabilityMetadata{result.Metadata, result.Ready} {
+		if metadata != nil &&
+			metadata.Family == sandbox.SandboxSecurityCapabilityFamilyTemplate &&
+			metadata.Capability == sandbox.SandboxSecurityCapabilitySelectedTemplateTrust {
+			return true
+		}
+	}
+	return false
+}
+
+func sandboxRuntimeSelectedTemplateFallbackReadiness(summary SandboxRuntimeSelectedTemplate) (string, []string) {
+	if !summary.Present {
+		return "", nil
+	}
+	switch {
+	case summary.State == "unresolved" || summary.LockStatus == sandbox.SandboxTemplateLockStatusUnresolved:
+		return string(sandbox.SandboxSecurityCapabilityReadinessBlocked), []string{string(sandbox.SandboxSecurityCapabilityReasonSelectedTemplateProvenanceUnresolved)}
+	case summary.TrustDecision == sandbox.SandboxTemplateTrustPolicyDecisionRejected:
+		return string(sandbox.SandboxSecurityCapabilityReadinessBlocked), []string{string(sandbox.SandboxSecurityCapabilityReasonSelectedTemplateTrustRejected)}
+	case summary.TrustDecision == sandbox.SandboxTemplateTrustPolicyDecisionAdvisory:
+		return string(sandbox.SandboxSecurityCapabilityReadinessMetadataOnly), []string{string(sandbox.SandboxSecurityCapabilityReasonSelectedTemplateTrustAdvisoryOnly)}
+	case summary.TrustDecision == sandbox.SandboxTemplateTrustPolicyDecisionUnavailable:
+		return string(sandbox.SandboxSecurityCapabilityReadinessUnsupported), []string{string(sandbox.SandboxSecurityCapabilityReasonSelectedTemplateTrustUnavailable)}
+	case summary.State == "trusted" || summary.TrustDecision == sandbox.SandboxTemplateTrustPolicyDecisionTrusted:
+		return string(sandbox.SandboxSecurityCapabilityReadinessReady), nil
+	default:
+		return "", nil
+	}
+}
+
+func sandboxRuntimeSelectedTemplateIdentity(lock *sandboxruntime.RuntimeTemplateLockMetadata) (string, string) {
+	lock = sandboxruntime.SanitizeRuntimeTemplateLockMetadata(lock)
+	if lock == nil {
+		return "", ""
+	}
+	if lock.TrustPolicy != nil {
+		sourceKind := strings.TrimSpace(lock.TrustPolicy.SourceKind)
+		referenceKind := strings.TrimSpace(lock.TrustPolicy.ReferenceKind)
+		if sourceKind != "" || referenceKind != "" {
+			return sourceKind, referenceKind
+		}
+	}
+	for _, entry := range []*sandboxruntime.RuntimeTemplateLockEntryMetadata{
+		lock.TemplateReference,
+		lock.Document,
+		lock.RuntimeImage,
+		lock.SourceArtifact,
+	} {
+		if entry == nil {
+			continue
+		}
+		sourceKind := strings.TrimSpace(entry.SourceKind)
+		referenceKind := strings.TrimSpace(entry.ReferenceKind)
+		if sourceKind != "" || referenceKind != "" {
+			return sourceKind, referenceKind
+		}
+	}
+	return "", ""
+}
+
+func sandboxRuntimeSelectedTemplateDigest(lock *sandboxruntime.RuntimeTemplateLockMetadata) *SandboxRuntimeSelectedTemplateDigest {
+	lock = sandboxruntime.SanitizeRuntimeTemplateLockMetadata(lock)
+	if lock == nil {
+		return nil
+	}
+	if digest := sandboxRuntimeSelectedTemplateTrustDigest(lock.TrustPolicy); digest != nil {
+		return digest
+	}
+	for _, candidate := range []struct {
+		source string
+		entry  *sandboxruntime.RuntimeTemplateLockEntryMetadata
+	}{
+		{source: "template_reference", entry: lock.TemplateReference},
+		{source: "document", entry: lock.Document},
+		{source: "runtime_image", entry: lock.RuntimeImage},
+		{source: "source_artifact", entry: lock.SourceArtifact},
+	} {
+		if digest := sandboxRuntimeSelectedTemplateEntryDigest(candidate.source, candidate.entry); digest != nil {
+			return digest
+		}
+	}
+	return nil
+}
+
+func sandboxRuntimeSelectedTemplateTrustDigest(policy *sandboxruntime.RuntimeTemplateTrustPolicyMetadata) *SandboxRuntimeSelectedTemplateDigest {
+	if policy == nil || policy.Status != sandbox.SandboxTemplateLockStatusLocked {
+		return nil
+	}
+	return sandboxRuntimeSelectedTemplateDigestFields("trust_policy", policy.DigestAlgorithm, policy.DigestValue)
+}
+
+func sandboxRuntimeSelectedTemplateEntryDigest(source string, entry *sandboxruntime.RuntimeTemplateLockEntryMetadata) *SandboxRuntimeSelectedTemplateDigest {
+	if entry == nil || entry.Status != sandbox.SandboxTemplateLockStatusLocked {
+		return nil
+	}
+	return sandboxRuntimeSelectedTemplateDigestFields(source, entry.DigestAlgorithm, entry.DigestValue)
+}
+
+func sandboxRuntimeSelectedTemplateDigestFields(source, algorithm, value string) *SandboxRuntimeSelectedTemplateDigest {
+	algorithm = strings.TrimSpace(algorithm)
+	value = strings.TrimSpace(value)
+	source = strings.TrimSpace(source)
+	if algorithm == "" || value == "" || source == "" {
+		return nil
+	}
+	return &SandboxRuntimeSelectedTemplateDigest{
+		Algorithm: algorithm,
+		Value:     value,
+		Source:    source,
+	}
 }
 
 func newSandboxRuntimeCapacitySummary(capacity *sandbox.HostCapacity) SandboxRuntimeCapacitySummary {
