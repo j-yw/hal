@@ -79,9 +79,10 @@ func (r RuleLifecycleRunner) Apply(ctx context.Context, plan Plan) (RuleLifecycl
 		Active:    active,
 	})
 	if err != nil {
-		failed := failedRuleLifecycle(input, requested, planned, ruleOperationPlan, LifecycleReasonAdapterFailed, nil)
-		result = ruleLifecycleResultWithActive(result, failed, LifecycleReasonAdapterFailed)
-		return SanitizeRuleLifecycleResult(result), ruleLifecycleError{operation: ruleOperationPlan, reason: LifecycleReasonAdapterFailed}
+		reason := ruleLifecycleReasonForError(err, LifecycleReasonAdapterFailed)
+		failed := failedRuleLifecycle(input, requested, planned, ruleOperationPlan, reason, nil)
+		result = ruleLifecycleResultWithActive(result, failed, reason)
+		return SanitizeRuleLifecycleResult(result), ruleLifecycleError{operation: ruleOperationPlan, reason: reason}
 	}
 	active = completedRuleLifecycleStep(input, requested, planned, ruleOperationPlan, LifecycleStatusPlanned, LifecycleReasonPrepared)
 
@@ -91,10 +92,11 @@ func (r RuleLifecycleRunner) Apply(ctx context.Context, plan Plan) (RuleLifecycl
 		Active:    active,
 	})
 	if err != nil {
-		failed := failedRuleLifecycle(input, requested, applied, ruleOperationApply, LifecycleReasonAdapterFailed, nil)
+		reason := ruleLifecycleReasonForError(err, LifecycleReasonAdapterFailed)
+		failed := failedRuleLifecycle(input, requested, applied, ruleOperationApply, reason, nil)
 		failed.WarningCodes = appendLifecycleWarnings(failed.WarningCodes, r.rollbackAfterRuleFailure(ctx, sanitizedPlan, requested, failed)...)
-		result = ruleLifecycleResultWithActive(result, failed, LifecycleReasonAdapterFailed)
-		return SanitizeRuleLifecycleResult(result), ruleLifecycleError{operation: ruleOperationApply, reason: LifecycleReasonAdapterFailed}
+		result = ruleLifecycleResultWithActive(result, failed, reason)
+		return SanitizeRuleLifecycleResult(result), ruleLifecycleError{operation: ruleOperationApply, reason: reason}
 	}
 	active = completedRuleLifecycleStep(input, requested, applied, ruleOperationApply, LifecycleStatusApplying, LifecycleReasonApplied)
 
@@ -104,10 +106,14 @@ func (r RuleLifecycleRunner) Apply(ctx context.Context, plan Plan) (RuleLifecycl
 		Active:    active,
 	})
 	if err != nil {
-		failed := failedRuleLifecycle(input, requested, checked, ruleOperationActive, LifecycleReasonActiveCheckFailed, nil)
+		reason := LifecycleReasonActiveCheckFailed
+		if ruleLifecycleReasonForError(err, "") == LifecycleReasonAdapterUnsupported {
+			reason = LifecycleReasonAdapterUnsupported
+		}
+		failed := failedRuleLifecycle(input, requested, checked, ruleOperationActive, reason, nil)
 		failed.WarningCodes = appendLifecycleWarnings(failed.WarningCodes, r.rollbackAfterRuleFailure(ctx, sanitizedPlan, requested, active)...)
-		result = ruleLifecycleResultWithActive(result, failed, LifecycleReasonActiveCheckFailed)
-		return SanitizeRuleLifecycleResult(result), ruleLifecycleError{operation: ruleOperationActive, reason: LifecycleReasonAdapterFailed, label: LifecycleReasonActiveCheckFailed}
+		result = ruleLifecycleResultWithActive(result, failed, reason)
+		return SanitizeRuleLifecycleResult(result), ruleLifecycleError{operation: ruleOperationActive, reason: LifecycleReasonAdapterFailed, label: reason}
 	}
 	active = completedRuleLifecycleStep(input, requested, checked, ruleOperationActive, LifecycleStatusActive, LifecycleReasonActive)
 	result = ruleLifecycleResultWithActive(result, active, LifecycleReasonActive)
@@ -206,6 +212,22 @@ func (e ruleLifecycleError) Error() string {
 		message += " " + string(label)
 	}
 	return message
+}
+
+type ruleLifecycleReasonError interface {
+	ruleLifecycleReasonCode() LifecycleReasonCode
+}
+
+func ruleLifecycleReasonForError(err error, fallback LifecycleReasonCode) LifecycleReasonCode {
+	if err == nil {
+		return fallback
+	}
+	if reasonErr, ok := err.(ruleLifecycleReasonError); ok {
+		if reason := sanitizeLifecycleReasonCode(reasonErr.ruleLifecycleReasonCode()); reason != "" {
+			return reason
+		}
+	}
+	return fallback
 }
 
 func (r RuleLifecycleRunner) rollbackAfterRuleFailure(ctx context.Context, plan SanitizedPlan, requested, active RuleLifecycleMetadata) []LifecycleWarningCode {

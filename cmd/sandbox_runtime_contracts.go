@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworker"
 )
 
@@ -702,15 +703,19 @@ func newSandboxRuntimeSecuritySummaryFromWorkerCapabilities(capabilities *sandbo
 }
 
 func newSandboxRuntimeSecuritySummaryFromWorkerDriver(driver sandboxworker.RuntimeDriver) SandboxRuntimeSecuritySummary {
-	return newSandboxRuntimeSecuritySummaryFromWorkerPolicyAndRuntime(driver.Security, sandboxRuntimeStateFromWorkerDriver(driver))
+	return newSandboxRuntimeSecuritySummaryFromWorkerPolicyAndRuntime(driver.Security, sandboxRuntimeStateFromWorkerDriver(driver), driver.NetworkEnforcement)
 }
 
 func newSandboxRuntimeSecuritySummaryFromWorkerPolicy(policy sandboxworker.SecurityPolicy) SandboxRuntimeSecuritySummary {
-	return newSandboxRuntimeSecuritySummaryFromWorkerPolicyAndRuntime(policy, nil)
+	return newSandboxRuntimeSecuritySummaryFromWorkerPolicyAndRuntime(policy, nil, policy.NetworkEnforcement)
 }
 
-func newSandboxRuntimeSecuritySummaryFromWorkerPolicyAndRuntime(policy sandboxworker.SecurityPolicy, runtime *sandbox.SandboxRuntimeState) SandboxRuntimeSecuritySummary {
-	capabilityReadiness := sandboxRuntimeCapabilityReadinessFromWorkerPolicy(policy, runtime)
+func newSandboxRuntimeSecuritySummaryFromWorkerPolicyAndRuntime(policy sandboxworker.SecurityPolicy, runtime *sandbox.SandboxRuntimeState, enforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata) SandboxRuntimeSecuritySummary {
+	if enforcement == nil {
+		enforcement = policy.NetworkEnforcement
+	}
+	proof := commandSandboxNetworkEnforcementProofFromRuntimeMetadata(enforcement)
+	capabilityReadiness := sandboxRuntimeCapabilityReadinessFromWorkerPolicy(policy, runtime, proof)
 	if sandboxRuntimeWorkerSecurityPolicyEmpty(policy) && capabilityReadiness == nil {
 		return SandboxRuntimeSecuritySummary{
 			Requested: SandboxRuntimeSecurityControls{},
@@ -720,12 +725,12 @@ func newSandboxRuntimeSecuritySummaryFromWorkerPolicyAndRuntime(policy sandboxwo
 	policyResult := sandboxNetworkPolicyResultFromWorkerPolicy(policy)
 	requested := sandboxRuntimeSecurityControlsFromWorker(policy.Requested)
 	enforced := sandboxRuntimeSecurityControlsFromWorker(policy.Enforced)
-	if network := sanitizeCommandSandboxNetworkSecurity(&sandbox.SandboxNetworkSecurity{
+	if network := sanitizeCommandSandboxNetworkSecurityWithProof(&sandbox.SandboxNetworkSecurity{
 		PolicyRequested: strings.TrimSpace(policy.Requested.NetworkPolicy),
 		PolicyEnforced:  strings.TrimSpace(policy.Enforced.NetworkPolicy),
 		EnforcementMode: strings.TrimSpace(policy.Enforced.NetworkEnforcement),
 		PolicyResult:    policyResult,
-	}); network != nil {
+	}, proof); network != nil {
 		requested.NetworkPolicy = sandboxRuntimeStringPtr(network.PolicyRequested)
 		enforced.NetworkPolicy = sandboxRuntimeStringPtr(network.PolicyEnforced)
 		enforced.NetworkEnforcement = sandboxRuntimeStringPtr(network.EnforcementMode)
@@ -779,14 +784,47 @@ func sandboxRuntimeCapabilityReadinessFromSandboxSecurity(security *sandbox.Sand
 	)
 }
 
-func sandboxRuntimeCapabilityReadinessFromWorkerPolicy(policy sandboxworker.SecurityPolicy, runtime *sandbox.SandboxRuntimeState) *sandbox.SandboxSecurityCapabilityReadinessOutput {
-	return sandbox.EvaluateProjectedSandboxSecurityCapabilityReadiness(
-		sandbox.ProjectSandboxSecurityCapabilityReadinessInput(sandboxSecurityFromWorkerPolicy(policy)),
+func sandboxRuntimeCapabilityReadinessFromWorkerPolicy(policy sandboxworker.SecurityPolicy, runtime *sandbox.SandboxRuntimeState, proof *sandbox.SandboxNetworkEnforcementProofMetadata) *sandbox.SandboxSecurityCapabilityReadinessOutput {
+	security := sandboxSecurityFromWorkerPolicyWithNetworkProof(policy, proof)
+	if commandSandboxNetworkProofHasProxyFirewallResult(proof) {
+		security = sandboxRuntimeSecurityWithoutNetworkReadyMetadata(security)
+	}
+	posture := sandboxRuntimeWorkerPostureFromPolicy(policy)
+	if commandSandboxNetworkProofHasProxyFirewallResult(proof) {
+		posture.NetworkPolicy = ""
+		posture.NetworkEnforcement = ""
+	}
+	inputs := []sandbox.SandboxSecurityCapabilityReadinessInput{
+		sandbox.ProjectSandboxSecurityCapabilityReadinessInput(security),
 		sandbox.ProjectSandboxWorkerRuntimeCapabilityReadinessInput(sandbox.SandboxWorkerRuntimeCapabilityReadinessProjection{
 			Runtime:        runtime,
-			WorkerPostures: []sandbox.SandboxSecurityCapabilityWorkerPostureMetadata{sandboxRuntimeWorkerPostureFromPolicy(policy)},
+			WorkerPostures: []sandbox.SandboxSecurityCapabilityWorkerPostureMetadata{posture},
 		}),
-	)
+	}
+	if proof != nil {
+		inputs = append(inputs, sandbox.ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(sandbox.SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+			NetworkEnforcementProof: proof,
+		}))
+	}
+	return sandbox.EvaluateProjectedSandboxSecurityCapabilityReadiness(inputs...)
+}
+
+func commandSandboxNetworkProofHasProxyFirewallResult(proof *sandbox.SandboxNetworkEnforcementProofMetadata) bool {
+	return proof != nil && proof.ResultEnforcementMode == sandbox.SandboxNetworkEnforcementModeProxyFirewall
+}
+
+func sandboxRuntimeSecurityWithoutNetworkReadyMetadata(security *sandbox.SandboxSecurity) *sandbox.SandboxSecurity {
+	if security == nil || security.Network == nil {
+		return security
+	}
+	clone := cloneSandboxSecurity(security)
+	if clone == nil || clone.Network == nil {
+		return clone
+	}
+	clone.Network.PolicyEnforced = ""
+	clone.Network.EnforcementMode = ""
+	clone.Network.PolicyResult = nil
+	return clone
 }
 
 func sandboxRuntimeStateFromWorkerDriver(driver sandboxworker.RuntimeDriver) *sandbox.SandboxRuntimeState {

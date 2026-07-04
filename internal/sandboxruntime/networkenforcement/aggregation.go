@@ -12,24 +12,41 @@ type LiveEnforcementRunner struct {
 	Rules    RuleLifecycleRunner
 }
 
+// LiveEnforcementRun carries the aggregated adapter result plus sanitized
+// lifecycle proof for status projections that need active proxy/rule metadata.
+type LiveEnforcementRun struct {
+	Result    Result
+	Lifecycle LiveLifecycleMetadata
+}
+
 // EnforceNetwork implements Adapter using the live lifecycle runners. The
 // orchestration remains fake-only: concrete listener, firewall, or runtime
 // mutation can only happen behind injected lifecycle adapters.
 func (r LiveEnforcementRunner) EnforceNetwork(ctx context.Context, plan SanitizedPlan) Result {
+	return r.EnforceNetworkWithLifecycle(ctx, plan).Result
+}
+
+// EnforceNetworkWithLifecycle coordinates the same live lifecycle work as
+// EnforceNetwork while retaining the sanitized proxy/rule proof that command
+// and worker status projections consume later.
+func (r LiveEnforcementRunner) EnforceNetworkWithLifecycle(ctx context.Context, plan SanitizedPlan) LiveEnforcementRun {
 	input := plan.Plan()
 	listener, listenerErr := r.Listener.Start(ctx, input)
 	if listenerErr != nil {
-		return AggregateLiveEnforcementResult(input, &listener, nil)
+		result := AggregateLiveEnforcementResult(input, &listener, nil)
+		return liveEnforcementRun(input, result, &listener, nil)
 	}
 
 	rules, ruleErr := r.Rules.Apply(ctx, input)
 	if ruleErr != nil {
 		stopped, _ := r.Listener.Stop(ctx, input, listener.Active)
 		listener = aggregateListenerCleanupWarnings(listener, stopped)
-		return AggregateLiveEnforcementResult(input, &listener, &rules)
+		result := AggregateLiveEnforcementResult(input, &listener, &rules)
+		return liveEnforcementRun(input, result, &listener, &rules)
 	}
 
-	return AggregateLiveEnforcementResult(input, &listener, &rules)
+	result := AggregateLiveEnforcementResult(input, &listener, &rules)
+	return liveEnforcementRun(input, result, &listener, &rules)
 }
 
 // AggregateLiveEnforcementResult combines sanitized listener and
@@ -40,29 +57,37 @@ func AggregateLiveEnforcementResult(plan Plan, listener *ProxyListenerLifecycleR
 	listenerResult := sanitizeAggregateListenerResult(listener)
 	ruleResult := sanitizeAggregateRuleResult(rules)
 
-	warnings := aggregateResultWarnings(listenerResult, ruleResult)
 	mechanisms := aggregateResultMechanisms(input, listenerResult, ruleResult)
 	operations := aggregateResultOperations(listenerResult, ruleResult)
 	policySnapshot := sanitizePolicySnapshotIdentityPtr(input.PolicySnapshot)
-
-	if aggregatePlanAllowsStrongEnforcement(input) &&
+	strongLifecycle := aggregatePlanAllowsStrongEnforcement(input) &&
 		aggregateListenerActive(listenerResult) &&
-		aggregateRulesActive(ruleResult) {
-		mode := aggregateStrongResultMode(ruleResult)
-		if resultModeCanEnforce(mode) {
-			return SanitizeResult(Result{
-				PlanID:          input.ID,
-				AdapterID:       liveEnforcementAggregationAdapterID,
-				Outcome:         ResultOutcomeSuccess,
-				EnforcementMode: mode,
-				Mechanisms:      mechanisms,
-				Operations:      operations,
-				PolicySnapshot:  policySnapshot,
-				Capability:      aggregateResultCapability(input, mode),
-				ReasonCode:      ResultReasonApplied,
-				WarningCodes:    warnings,
-			})
-		}
+		aggregateRulesActive(ruleResult)
+	strongMode := ResultModeNone
+	strongCapabilityCompatible := false
+	if strongLifecycle {
+		strongMode = aggregateStrongResultMode(ruleResult)
+		strongCapabilityCompatible = resultModeCanEnforce(strongMode) &&
+			aggregateRuleCapabilityCompatibleWithPlan(input, ruleResult)
+	}
+	warnings := aggregateResultWarnings(listenerResult, ruleResult)
+	if strongLifecycle && resultModeCanEnforce(strongMode) && !strongCapabilityCompatible {
+		warnings = appendResultWarnings(warnings, ResultWarningCapabilityDowngraded)
+	}
+
+	if strongLifecycle && strongCapabilityCompatible {
+		return SanitizeResult(Result{
+			PlanID:          input.ID,
+			AdapterID:       liveEnforcementAggregationAdapterID,
+			Outcome:         ResultOutcomeSuccess,
+			EnforcementMode: strongMode,
+			Mechanisms:      mechanisms,
+			Operations:      operations,
+			PolicySnapshot:  policySnapshot,
+			Capability:      aggregateResultCapability(input, strongMode),
+			ReasonCode:      ResultReasonApplied,
+			WarningCodes:    warnings,
+		})
 	}
 
 	if aggregateBestEffortPlan(input) &&
@@ -114,6 +139,155 @@ func aggregateListenerCleanupWarnings(started, stopped ProxyListenerLifecycleRes
 		started.Active.WarningCodes = appendLifecycleWarnings(started.Active.WarningCodes, stopped.WarningCodes...)
 	}
 	return SanitizeProxyListenerLifecycleResult(started)
+}
+
+func liveEnforcementRun(plan Plan, result Result, listener *ProxyListenerLifecycleResult, rules *RuleLifecycleResult) LiveEnforcementRun {
+	result = SanitizeResult(result)
+	if result.PlanID == "" {
+		result.PlanID = SanitizePlan(plan).ID
+	}
+	lifecycle := liveLifecycleMetadataFromRun(plan, result, listener, rules)
+	return LiveEnforcementRun{
+		Result:    SanitizeResult(result),
+		Lifecycle: lifecycle,
+	}
+}
+
+func liveLifecycleMetadataFromRun(plan Plan, result Result, listener *ProxyListenerLifecycleResult, rules *RuleLifecycleResult) LiveLifecycleMetadata {
+	input := SanitizePlan(plan)
+	result = SanitizeResult(result)
+	policySnapshot := result.PolicySnapshot
+	if policySnapshot == nil {
+		policySnapshot = input.PolicySnapshot
+	}
+	metadata := LiveLifecycleMetadata{
+		PlanID:         liveLifecyclePlanID(input, result),
+		AdapterID:      result.AdapterID,
+		Status:         liveLifecycleStatusFromResult(result),
+		Mechanisms:     liveLifecycleMechanisms(input, result),
+		Operations:     sanitizeIdentifierList(result.Operations),
+		PolicySnapshot: policySnapshot,
+		Proxy:          liveLifecycleProxyMetadata(listener),
+		Rules:          liveLifecycleRuleMetadata(rules),
+		ReasonCode:     liveLifecycleReasonFromResult(result),
+		WarningCodes:   liveLifecycleWarningsFromResult(result.WarningCodes),
+	}
+	metadata.CapabilityLabels = liveLifecycleCapabilityLabels(metadata.Proxy, metadata.Rules)
+	return SanitizeLiveLifecycleMetadata(metadata)
+}
+
+func liveLifecyclePlanID(plan Plan, result Result) string {
+	if result.PlanID != "" {
+		return result.PlanID
+	}
+	return plan.ID
+}
+
+func liveLifecycleStatusFromResult(result Result) LifecycleStatus {
+	switch result.Outcome {
+	case ResultOutcomeSuccess:
+		if resultModeCanEnforce(result.EnforcementMode) {
+			return LifecycleStatusActive
+		}
+		return LifecycleStatusFailed
+	case ResultOutcomeBestEffort:
+		return LifecycleStatusActive
+	case ResultOutcomeUnsupported, ResultOutcomeFailure:
+		return LifecycleStatusFailed
+	default:
+		return LifecycleStatusFailed
+	}
+}
+
+func liveLifecycleReasonFromResult(result Result) LifecycleReasonCode {
+	switch result.ReasonCode {
+	case ResultReasonApplied:
+		return LifecycleReasonActive
+	case ResultReasonAdapterUnsupported:
+		return LifecycleReasonAdapterUnsupported
+	case ResultReasonCapabilityMissing, ResultReasonModeUnavailable:
+		return LifecycleReasonCapabilityMissing
+	case ResultReasonAdapterFailed:
+		return LifecycleReasonAdapterFailed
+	case ResultReasonBestEffort:
+		return LifecycleReasonPrepared
+	default:
+		return ""
+	}
+}
+
+func liveLifecycleWarningsFromResult(values []ResultWarningCode) []LifecycleWarningCode {
+	var warnings []LifecycleWarningCode
+	for _, value := range sanitizeResultWarningCodeList(values) {
+		switch value {
+		case ResultWarningPartialEnforcement, ResultWarningCapabilityDowngraded:
+			warnings = appendLifecycleWarnings(warnings, LifecycleWarningPartialLifecycle)
+		case ResultWarningUnsupportedMode:
+			warnings = appendLifecycleWarnings(warnings, LifecycleWarningUnsupportedMechanism)
+		case ResultWarningMetadataOnlyFallback:
+			warnings = appendLifecycleWarnings(warnings, LifecycleWarningMetadataOnlyFallback)
+		case ResultWarningSanitizedAdapterError:
+			warnings = appendLifecycleWarnings(warnings, LifecycleWarningSanitizedAdapterError)
+		}
+	}
+	return warnings
+}
+
+func liveLifecycleMechanisms(plan Plan, result Result) []EnforcementMechanism {
+	mechanisms := sanitizeEnforcementMechanismList(result.Mechanisms)
+	if len(mechanisms) > 0 {
+		return mechanisms
+	}
+	return aggregateResultMechanisms(plan, nil, nil)
+}
+
+func liveLifecycleProxyMetadata(listener *ProxyListenerLifecycleResult) *ProxyListenerLifecycleMetadata {
+	if listener == nil {
+		return nil
+	}
+	if listener.Active != nil {
+		metadata := sanitizeProxyListenerOnlyMetadata(*listener.Active)
+		if !proxyListenerLifecycleMetadataEmpty(metadata) {
+			return &metadata
+		}
+	}
+	if listener.Requested != nil {
+		metadata := sanitizeProxyListenerOnlyMetadata(*listener.Requested)
+		if !proxyListenerLifecycleMetadataEmpty(metadata) {
+			return &metadata
+		}
+	}
+	return nil
+}
+
+func liveLifecycleRuleMetadata(rules *RuleLifecycleResult) []RuleLifecycleMetadata {
+	if rules == nil {
+		return nil
+	}
+	if rules.Active != nil {
+		metadata := sanitizeRuleLifecycleOnlyMetadata(*rules.Active)
+		if !ruleLifecycleMetadataEmpty(metadata) {
+			return []RuleLifecycleMetadata{metadata}
+		}
+	}
+	if rules.Requested != nil {
+		metadata := sanitizeRuleLifecycleOnlyMetadata(*rules.Requested)
+		if !ruleLifecycleMetadataEmpty(metadata) {
+			return []RuleLifecycleMetadata{metadata}
+		}
+	}
+	return nil
+}
+
+func liveLifecycleCapabilityLabels(proxy *ProxyListenerLifecycleMetadata, rules []RuleLifecycleMetadata) []string {
+	var labels []string
+	if proxy != nil {
+		labels = appendSanitizedIdentifiers(labels, proxy.CapabilityLabels...)
+	}
+	for _, rule := range rules {
+		labels = appendSanitizedIdentifiers(labels, rule.CapabilityLabels...)
+	}
+	return sanitizeIdentifierList(labels)
 }
 
 func sanitizeAggregateListenerResult(result *ProxyListenerLifecycleResult) *ProxyListenerLifecycleResult {
@@ -187,6 +361,74 @@ func aggregateStrongResultMode(rules *RuleLifecycleResult) ResultMode {
 		}
 	}
 	return ResultModeNone
+}
+
+func aggregateRuleCapabilityCompatibleWithPlan(plan Plan, rules *RuleLifecycleResult) bool {
+	if rules == nil || rules.Active == nil {
+		return false
+	}
+	labels := sanitizeIdentifierList(rules.Active.CapabilityLabels)
+	if plan.DefaultPosture == DefaultPostureDenyByDefault &&
+		!aggregateRuleCapabilityHasAnyLabel(labels, planOperationDefaultDeny, "default_deny_active") {
+		return false
+	}
+	if plan.Allowlist != nil {
+		for _, category := range plan.Allowlist.RuleCategories {
+			if !aggregateRuleCapabilitySupportsCategory(labels, category) {
+				return false
+			}
+		}
+	}
+	if plan.Category != nil {
+		if plan.Category.PrivateNetwork == PostureBlock &&
+			!aggregateRuleCapabilityHasAnyLabel(labels, "private_range_rules", planOperationAllowlistPrivateRange, planOperationBlockPrivateNetwork) {
+			return false
+		}
+		if plan.Category.MetadataEndpoint == PostureBlock &&
+			!aggregateRuleCapabilityHasAnyLabel(labels, "metadata_endpoint", "metadata_endpoint_rules", planOperationAllowlistMetadata, planOperationBlockMetadataEndpoint) {
+			return false
+		}
+	}
+	if plan.RawProtocols != nil &&
+		(plan.RawProtocols.TCP == PostureBlock || plan.RawProtocols.UDP == PostureBlock || plan.RawProtocols.ICMP == PostureBlock) &&
+		!aggregateRuleCapabilityHasAnyLabel(labels, "raw_protocols", planOperationBlockRawProtocols) {
+		return false
+	}
+	return true
+}
+
+func aggregateRuleCapabilitySupportsCategory(labels []string, category AllowlistRuleCategory) bool {
+	switch category {
+	case AllowlistRuleCategoryDomain:
+		return aggregateRuleCapabilityHasAnyLabel(labels, "domain_rules", planOperationAllowlistDomain)
+	case AllowlistRuleCategoryEndpoint:
+		return aggregateRuleCapabilityHasAnyLabel(labels, "endpoint_rules", planOperationAllowlistEndpoint)
+	case AllowlistRuleCategoryPrivateRange:
+		return aggregateRuleCapabilityHasAnyLabel(labels, "private_range_rules", planOperationAllowlistPrivateRange, planOperationBlockPrivateNetwork)
+	case AllowlistRuleCategoryMetadataEndpoint:
+		return aggregateRuleCapabilityHasAnyLabel(labels, "metadata_endpoint", "metadata_endpoint_rules", planOperationAllowlistMetadata, planOperationBlockMetadataEndpoint)
+	case AllowlistRuleCategoryLoopback:
+		return aggregateRuleCapabilityHasAnyLabel(labels, "loopback_rules", planOperationAllowlistLoopback)
+	case AllowlistRuleCategoryLinkLocal:
+		return aggregateRuleCapabilityHasAnyLabel(labels, "link_local_rules", planOperationAllowlistLinkLocal)
+	default:
+		return false
+	}
+}
+
+func aggregateRuleCapabilityHasAnyLabel(labels []string, candidates ...string) bool {
+	for _, candidate := range candidates {
+		current := sanitizeIdentifier(candidate)
+		if current == "" {
+			continue
+		}
+		for _, label := range labels {
+			if label == current {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func aggregateResultMechanisms(plan Plan, listener *ProxyListenerLifecycleResult, rules *RuleLifecycleResult) []EnforcementMechanism {
