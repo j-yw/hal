@@ -87,6 +87,12 @@ func Select(req Request, cache CachedState) Result {
 		return applyTargetSelectionSecurityReadinessGate(req, result, gateMode)
 	}
 	if targetSelectionReadinessGateIsStrict(gateMode) {
+		if targetSelectionAllowsStrictDefaultRunningSandbox(policy) {
+			result, selected := selectDefaultRunningSandbox(req, cache, policy)
+			if selected || result.Failed() {
+				return applyTargetSelectionSecurityReadinessGate(req, result, gateMode)
+			}
+		}
 		return targetSelectionSecurityReadinessGateFailure(req,
 			sandbox.EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(gateMode, nil),
 		)
@@ -818,6 +824,10 @@ func targetSelectionReadinessGateIsStrict(mode sandbox.SandboxSecurityCapability
 	return mode == sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict
 }
 
+func targetSelectionAllowsStrictDefaultRunningSandbox(policy FallbackPolicy) bool {
+	return !policy.Disabled && policy.AllowDefaultRunningSandbox && !policy.AllowBranchProvisioning
+}
+
 func targetSelectionBlocksStrictProvisioning(req Request, mode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode) bool {
 	return targetSelectionReadinessGateIsStrict(mode) &&
 		(req.SecurityReadinessGateMode == sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict ||
@@ -834,10 +844,7 @@ func applyTargetSelectionSecurityReadinessGate(req Request, result Result, mode 
 	if result.Failed() || mode == sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeOff {
 		return result
 	}
-	decision := sandbox.EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(
-		mode,
-		targetSelectionSecurityReadinessDiagnostics(req, result),
-	)
+	decision := targetSelectionSecurityReadinessGateDecision(req, result, mode)
 	result.SecurityReadinessGate = targetSelectionCloneReadinessGateDecision(decision)
 	if decision.Outcome != sandbox.SandboxSecurityCapabilityReadinessGateOutcomeBlocked {
 		return result
@@ -845,21 +852,51 @@ func applyTargetSelectionSecurityReadinessGate(req Request, result Result, mode 
 	return targetSelectionSecurityReadinessGateFailure(req, decision)
 }
 
+func targetSelectionSecurityReadinessGateDecision(req Request, result Result, mode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode) sandbox.SandboxSecurityCapabilityReadinessGateDecision {
+	if targetSelectionReadinessGateIsStrict(mode) {
+		if output := targetSelectionSecurityReadinessOutput(req, result); output != nil {
+			return sandbox.EvaluateSandboxSecureDefaultReadiness(*output)
+		}
+		return sandbox.EvaluateSandboxSecureDefaultReadiness(sandbox.SandboxSecurityCapabilityReadinessOutput{})
+	}
+	return sandbox.EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(
+		mode,
+		targetSelectionSecurityReadinessDiagnostics(req, result),
+	)
+}
+
 func targetSelectionSecurityReadinessDiagnostics(req Request, result Result) *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary {
+	output := targetSelectionSecurityReadinessOutput(req, result)
+	if output == nil {
+		return nil
+	}
+	summary := sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(*output)
+	return &summary
+}
+
+func targetSelectionSecurityReadinessOutput(req Request, result Result) *sandbox.SandboxSecurityCapabilityReadinessOutput {
 	target := targetSelectionResultTarget(result)
 	if target == nil {
 		return nil
 	}
-	var items []sandbox.SandboxSecurityCapabilityReadinessDiagnosticItem
-	items = targetSelectionAppendSecurityReadinessItems(items, target.Security)
+	var results []sandbox.SandboxSecurityCapabilityReadinessResult
+	results = targetSelectionAppendSecurityReadinessResults(results, target.Security)
 	if target.Host != nil {
-		items = targetSelectionAppendSecurityReadinessItems(items, target.Host.Security)
+		results = targetSelectionAppendSecurityReadinessResults(results, target.Host.Security)
 	}
 	if output := targetSelectionProjectedSecurityReadiness(req, target); output != nil {
-		summary := sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(*output)
-		items = append(items, summary.Items...)
+		results = append(results, output.Results...)
 	}
-	return targetSelectionCombinedSecurityReadinessDiagnostics(items)
+	if len(results) == 0 {
+		return nil
+	}
+	output := sandbox.SanitizeSandboxSecurityCapabilityReadinessOutput(sandbox.SandboxSecurityCapabilityReadinessOutput{
+		Results: results,
+	})
+	if len(output.Results) == 0 {
+		return nil
+	}
+	return &output
 }
 
 func targetSelectionResultTarget(result Result) *sandbox.SandboxState {
@@ -879,16 +916,15 @@ func targetSelectionResultTarget(result Result) *sandbox.SandboxState {
 	return target
 }
 
-func targetSelectionAppendSecurityReadinessItems(items []sandbox.SandboxSecurityCapabilityReadinessDiagnosticItem, security *sandbox.SandboxSecurity) []sandbox.SandboxSecurityCapabilityReadinessDiagnosticItem {
+func targetSelectionAppendSecurityReadinessResults(results []sandbox.SandboxSecurityCapabilityReadinessResult, security *sandbox.SandboxSecurity) []sandbox.SandboxSecurityCapabilityReadinessResult {
 	if security == nil {
-		return items
+		return results
 	}
 	readiness := sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness)
 	if readiness == nil {
-		return items
+		return results
 	}
-	summary := sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(*readiness)
-	return append(items, summary.Items...)
+	return append(results, readiness.Results...)
 }
 
 func targetSelectionProjectedSecurityReadiness(req Request, target *sandbox.SandboxState) *sandbox.SandboxSecurityCapabilityReadinessOutput {
@@ -911,12 +947,24 @@ func targetSelectionProjectedSecurityReadiness(req Request, target *sandbox.Sand
 		sandbox.ProjectSandboxSecurityCapabilityReadinessInput(target.Security),
 		targetSelectionHostSecurityReadinessInput(host),
 		targetSelectionRequestedSecureDefaultReadinessInput(req, target),
-		sandbox.ProjectSandboxWorkerRuntimeCapabilityReadinessInput(sandbox.SandboxWorkerRuntimeCapabilityReadinessProjection{
-			Host:      host,
-			Runtime:   runtime,
-			Workspace: workspace,
-		}),
+		sandbox.ProjectSandboxWorkerRuntimeCapabilityReadinessInput(
+			targetSelectionWorkerRuntimeSecurityReadinessProjection(target, host, runtime, workspace),
+		),
 	)
+}
+
+func targetSelectionWorkerRuntimeSecurityReadinessProjection(target *sandbox.SandboxState, host *sandbox.SandboxHost, runtime *sandbox.SandboxRuntimeState, workspace *sandbox.SandboxWorkspace) sandbox.SandboxWorkerRuntimeCapabilityReadinessProjection {
+	if targetSelectionHasSecurityCapabilityReadinessResult(target, sandbox.SandboxSecurityCapabilityFamilyIsolation, sandbox.SandboxSecurityCapabilityIsolationMicroVM) && runtime != nil {
+		runtimeCopy := *runtime
+		runtimeCopy.Driver = ""
+		runtimeCopy.IsolationLevel = ""
+		runtime = &runtimeCopy
+	}
+	return sandbox.SandboxWorkerRuntimeCapabilityReadinessProjection{
+		Host:      host,
+		Runtime:   runtime,
+		Workspace: workspace,
+	}
 }
 
 func targetSelectionHostSecurityReadinessInput(host *sandbox.SandboxHost) sandbox.SandboxSecurityCapabilityReadinessInput {
@@ -932,12 +980,12 @@ func targetSelectionRequestedSecureDefaultReadinessInput(req Request, target *sa
 		return input
 	}
 	if targetSelectionTargetRequiresMicroVMProof(req, target) {
-		input.Requested = append(input.Requested, sandbox.SandboxSecurityCapabilityMetadata{
-			Family:     sandbox.SandboxSecurityCapabilityFamilyIsolation,
-			Capability: sandbox.SandboxSecurityCapabilityIsolationMicroVM,
-			Source:     sandbox.SandboxSecurityCapabilitySourceRequested,
-		})
 		if !targetSelectionHasSecurityCapabilityReadinessResult(target, sandbox.SandboxSecurityCapabilityFamilyIsolation, sandbox.SandboxSecurityCapabilityIsolationMicroVM) {
+			input.Requested = append(input.Requested, sandbox.SandboxSecurityCapabilityMetadata{
+				Family:     sandbox.SandboxSecurityCapabilityFamilyIsolation,
+				Capability: sandbox.SandboxSecurityCapabilityIsolationMicroVM,
+				Source:     sandbox.SandboxSecurityCapabilitySourceRequested,
+			})
 			input.Ready = append(input.Ready, sandbox.SandboxSecurityCapabilityMetadata{
 				Family:     sandbox.SandboxSecurityCapabilityFamilyIsolation,
 				Capability: sandbox.SandboxSecurityCapabilityIsolationMicroVM,
@@ -998,66 +1046,6 @@ func targetSelectionSecurityHasCapabilityReadinessResult(security *sandbox.Sandb
 
 func targetSelectionCapabilityMatches(metadata *sandbox.SandboxSecurityCapabilityMetadata, family sandbox.SandboxSecurityCapabilityFamily, capability sandbox.SandboxSecurityCapabilityName) bool {
 	return metadata != nil && metadata.Family == family && metadata.Capability == capability
-}
-
-func targetSelectionCombinedSecurityReadinessDiagnostics(items []sandbox.SandboxSecurityCapabilityReadinessDiagnosticItem) *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary {
-	if len(items) == 0 {
-		return nil
-	}
-	items = append([]sandbox.SandboxSecurityCapabilityReadinessDiagnosticItem(nil), items...)
-	sort.SliceStable(items, func(i, j int) bool {
-		if items[i].Family == items[j].Family {
-			if items[i].Capability == items[j].Capability {
-				if items[i].Classification == items[j].Classification {
-					return items[i].ReasonCode < items[j].ReasonCode
-				}
-				return items[i].Classification < items[j].Classification
-			}
-			return items[i].Capability < items[j].Capability
-		}
-		return items[i].Family < items[j].Family
-	})
-	summary := sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary{
-		Status:       sandbox.SandboxSecurityCapabilityDiagnosticSummaryStatusReady,
-		Total:        len(items),
-		AdvisoryOnly: true,
-		Items:        items,
-	}
-	for _, item := range items {
-		if item.WouldBlockStrictGate {
-			summary.WouldBlockStrictGate = true
-		}
-		if targetSelectionDiagnosticSeverityRank(item.Severity) > targetSelectionDiagnosticSeverityRank(summary.HighestSeverity) {
-			summary.HighestSeverity = item.Severity
-		}
-		switch item.Classification {
-		case sandbox.SandboxSecurityCapabilityDiagnosticClassificationBlocked:
-			summary.Status = sandbox.SandboxSecurityCapabilityDiagnosticSummaryStatusBlocked
-		case sandbox.SandboxSecurityCapabilityDiagnosticClassificationMetadataOnly,
-			sandbox.SandboxSecurityCapabilityDiagnosticClassificationUnsupported,
-			sandbox.SandboxSecurityCapabilityDiagnosticClassificationReadinessMissing:
-			if summary.Status != sandbox.SandboxSecurityCapabilityDiagnosticSummaryStatusBlocked {
-				summary.Status = sandbox.SandboxSecurityCapabilityDiagnosticSummaryStatusAdvisory
-			}
-		}
-	}
-	if summary.HighestSeverity == "" {
-		summary.HighestSeverity = sandbox.SandboxSecurityCapabilityDiagnosticSeverityInfo
-	}
-	return &summary
-}
-
-func targetSelectionDiagnosticSeverityRank(severity sandbox.SandboxSecurityCapabilityDiagnosticSeverity) int {
-	switch severity {
-	case sandbox.SandboxSecurityCapabilityDiagnosticSeverityError:
-		return 3
-	case sandbox.SandboxSecurityCapabilityDiagnosticSeverityWarning:
-		return 2
-	case sandbox.SandboxSecurityCapabilityDiagnosticSeverityInfo:
-		return 1
-	default:
-		return 0
-	}
 }
 
 func targetSelectionSecurityReadinessGateFailure(req Request, decision sandbox.SandboxSecurityCapabilityReadinessGateDecision) Result {
