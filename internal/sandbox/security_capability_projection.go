@@ -318,7 +318,7 @@ func sandboxSecurityCapabilityProjectionNetworkProofReadiness(proof SandboxNetwo
 	if proof.NetworkProxySessionID == "" || proof.PolicySnapshotID == "" || proof.NetworkEnforcementPlanID == "" {
 		return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonNetworkEnforcementMissing
 	}
-	if proof.ProxyLifecycleStatus == "failed" || proof.ResultOutcome == "failure" {
+	if proof.ProxyLifecycleStatus == "failed" || proof.FirewallLifecycleStatus == "failed" || proof.ResultOutcome == "failure" {
 		return SandboxSecurityCapabilityReadinessBlocked, SandboxSecurityCapabilityReasonNetworkEnforcementFailed
 	}
 	if proof.ResultOutcome == "best_effort" || proof.ResultEnforcementMode == SandboxNetworkEnforcementModeBestEffort {
@@ -327,10 +327,10 @@ func sandboxSecurityCapabilityProjectionNetworkProofReadiness(proof SandboxNetwo
 	if proof.ResultOutcome == "unsupported" || !proof.ResultSupported {
 		return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonNetworkEnforcementUnsupported
 	}
-	if proof.ProxyLifecycleStatus != "active" || proof.ProxyLifecycleReasonCode != "active" {
+	if !sandboxNetworkEnforcementProofHasActiveProxy(proof) || !sandboxNetworkEnforcementProofHasActiveFirewall(proof) {
 		return SandboxSecurityCapabilityReadinessMetadataOnly, SandboxSecurityCapabilityReasonNetworkEnforcementPartial
 	}
-	if proof.ResultOutcome == "success" && proof.ResultEnforcementMode == SandboxNetworkEnforcementModeProxyFirewall {
+	if SandboxNetworkEnforcementProofProvesActiveProxyFirewall(proof) {
 		return SandboxSecurityCapabilityReadinessReady, SandboxSecurityCapabilityReasonNetworkEnforcementConfirmed
 	}
 	return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonNetworkEnforcementUnsupported

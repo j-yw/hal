@@ -119,6 +119,51 @@ func TestMicroVME2ELiveGateSkipsUntilAllTagsEnvsAndCapabilitiesArePresent(t *tes
 	}
 }
 
+func TestMicroVME2ELiveGateSkipsWhenOnlyOneNetworkEnforcementSideMarkerIsPresent(t *testing.T) {
+	gate := MicroVME2ELiveGate()
+
+	for _, tt := range []struct {
+		name    string
+		present EnvVarName
+		missing EnvVarName
+	}{
+		{
+			name:    "proxy marker without firewall marker",
+			present: EnvVarNetworkEnforcementLiveProxy,
+			missing: EnvVarNetworkEnforcementLiveFirewall,
+		},
+		{
+			name:    "firewall marker without proxy marker",
+			present: EnvVarNetworkEnforcementLiveFirewall,
+			missing: EnvVarNetworkEnforcementLiveProxy,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := PreflightGate(GateEvaluationInput{
+				Gate:                  gate,
+				EnabledBuildTags:      MicroVME2ERequiredBuildTags(),
+				PresentEnvVars:        microVME2ERequiredEnvVarsExcept(tt.missing),
+				AvailableCapabilities: MicroVME2ERequiredCapabilities(),
+			})
+			if !result.ShouldSkipLiveAction() {
+				t.Fatal("one-sided network enforcement marker allowed live action")
+			}
+			if result.SkipReason != SkipReasonMissingEnvVar {
+				t.Fatalf("SkipReason = %q, want %q", result.SkipReason, SkipReasonMissingEnvVar)
+			}
+			presentRequirement := requireRequirementForEnvVar(t, result.Requirements, tt.present)
+			if presentRequirement.Status != RequirementStatusSatisfied {
+				t.Fatalf("present side requirement = %#v, want satisfied", presentRequirement)
+			}
+			missingRequirement := requireRequirementForEnvVar(t, result.Requirements, tt.missing)
+			if missingRequirement.Status != RequirementStatusMissing ||
+				missingRequirement.ReasonCode != SkipReasonMissingEnvVar {
+				t.Fatalf("missing side requirement = %#v, want missing env var", missingRequirement)
+			}
+		})
+	}
+}
+
 func microVME2ERequiredEnvVarsExcept(excluded EnvVarName) []EnvVarName {
 	var out []EnvVarName
 	for _, envVar := range MicroVME2ERequiredEnvVars() {

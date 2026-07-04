@@ -76,14 +76,16 @@ type SandboxNetworkProxySessionMetadata struct {
 // network enforcement. It carries no endpoints, sockets, rules, processes, or
 // raw destinations.
 type SandboxNetworkEnforcementProofMetadata struct {
-	NetworkProxySessionID    string `json:"networkProxySessionId,omitempty"`
-	PolicySnapshotID         string `json:"policySnapshotId,omitempty"`
-	NetworkEnforcementPlanID string `json:"networkEnforcementPlanId,omitempty"`
-	ProxyLifecycleStatus     string `json:"proxyLifecycleStatus,omitempty"`
-	ProxyLifecycleReasonCode string `json:"proxyLifecycleReasonCode,omitempty"`
-	ResultOutcome            string `json:"resultOutcome,omitempty"`
-	ResultEnforcementMode    string `json:"resultEnforcementMode,omitempty"`
-	ResultSupported          bool   `json:"resultSupported,omitempty"`
+	NetworkProxySessionID       string `json:"networkProxySessionId,omitempty"`
+	PolicySnapshotID            string `json:"policySnapshotId,omitempty"`
+	NetworkEnforcementPlanID    string `json:"networkEnforcementPlanId,omitempty"`
+	ProxyLifecycleStatus        string `json:"proxyLifecycleStatus,omitempty"`
+	ProxyLifecycleReasonCode    string `json:"proxyLifecycleReasonCode,omitempty"`
+	FirewallLifecycleStatus     string `json:"firewallLifecycleStatus,omitempty"`
+	FirewallLifecycleReasonCode string `json:"firewallLifecycleReasonCode,omitempty"`
+	ResultOutcome               string `json:"resultOutcome,omitempty"`
+	ResultEnforcementMode       string `json:"resultEnforcementMode,omitempty"`
+	ResultSupported             bool   `json:"resultSupported,omitempty"`
 }
 
 // SandboxNetworkPolicyRequestSummary is the sanitized request surface available
