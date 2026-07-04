@@ -84,3 +84,90 @@ func TestPhase50OptionalLivePlaceholderTestsStayOutsideDefaultSuiteAndUseSharedG
 		}
 	}
 }
+
+func TestUS003MicroVMLiveE2EHarnessComposesExistingLiveGateHelpers(t *testing.T) {
+	harnessPath := filepath.Join("..", "internal", "sandboxruntime", "microvm", "live_e2e_test.go")
+	harness := phase19ReadFile(t, harnessPath)
+	composedGate := phase19ReadFile(t, filepath.Join("..", "internal", "livegate", "composed.go"))
+
+	if !phase19HasBuildTag(harness, "microvm_e2e_live") {
+		t.Fatalf("%s must stay behind the dedicated microvm_e2e_live build tag", phase34FirecrackerDisplayPath(t, harnessPath))
+	}
+	for _, marker := range []string{
+		"github.com/jywlabs/hal/internal/livegate",
+		"livegate.RequireLiveGate",
+		"livegate.MicroVME2ELiveGate",
+		"livegate.MicroVME2ERequiredEnvVars",
+		"livegate.CredentialDeliveryLiveModeEnvVars",
+		"microVMLiveE2EEnabledBuildTags",
+		"microVMLiveE2EPresentEnvVars",
+		"t.Skip",
+	} {
+		if !strings.Contains(harness, marker) {
+			t.Fatalf("%s missing composed live gate marker %q", phase34FirecrackerDisplayPath(t, harnessPath), marker)
+		}
+	}
+	for _, marker := range []string{
+		"BuildTagMicroVME2ELive",
+		"BuildTagFirecrackerLive",
+		"BuildTagNetworkEnforcementLive",
+		"BuildTagCredentialDeliveryLive",
+		"EnvVarFirecrackerLive",
+		"EnvVarFirecrackerLiveFirecracker",
+		"EnvVarFirecrackerLiveKernel",
+		"EnvVarFirecrackerLiveRootfs",
+		"EnvVarNetworkEnforcementLive",
+		"EnvVarNetworkEnforcementLiveProxy",
+		"EnvVarNetworkEnforcementLiveFirewall",
+		"EnvVarCredentialDeliveryLive",
+		"EnvVarCredentialDeliveryLiveHTTPProxy",
+		"EnvVarCredentialDeliveryLiveFileTmpfs",
+		"EnvVarCredentialDeliveryLiveSSHAgent",
+		"EnvVarCredentialDeliveryLiveEnv",
+		"CapabilityFirecrackerMicroVM",
+		"CapabilityNetworkEnforcement",
+		"CapabilityCredentialDelivery",
+	} {
+		if !strings.Contains(composedGate, marker) {
+			t.Fatalf("internal/livegate/composed.go missing composed live contract marker %q", marker)
+		}
+	}
+
+	for _, req := range []struct {
+		path      string
+		buildTag  string
+		component string
+	}{
+		{path: "live_e2e_firecracker_tag_on_test.go", buildTag: "firecracker_live", component: "Firecracker"},
+		{path: "live_e2e_firecracker_tag_off_test.go", buildTag: "!firecracker_live", component: "Firecracker"},
+		{path: "live_e2e_network_enforcement_tag_on_test.go", buildTag: "network_enforcement_live", component: "network enforcement"},
+		{path: "live_e2e_network_enforcement_tag_off_test.go", buildTag: "!network_enforcement_live", component: "network enforcement"},
+		{path: "live_e2e_credential_delivery_tag_on_test.go", buildTag: "credential_delivery_live", component: "credential delivery"},
+		{path: "live_e2e_credential_delivery_tag_off_test.go", buildTag: "!credential_delivery_live", component: "credential delivery"},
+	} {
+		path := filepath.Join("..", "internal", "sandboxruntime", "microvm", req.path)
+		source := phase19ReadFile(t, path)
+		if !phase19HasBuildTag(source, "microvm_e2e_live") || !strings.Contains(phase19SourceHeader(source), req.buildTag) {
+			t.Fatalf("%s must detect %s build tag state behind microvm_e2e_live", phase34FirecrackerDisplayPath(t, path), req.component)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker",
+		"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement",
+		"github.com/jywlabs/hal/internal/credentialdelivery",
+		"net.Listen(",
+		"http.ListenAndServe(",
+		"exec.Command(",
+		"os/exec",
+		"NewBackend(",
+		"LiveStart: true",
+		"EnforceNetwork(",
+		"ActivateCredential",
+		"iptables",
+	} {
+		if strings.Contains(harness, forbidden) {
+			t.Fatalf("%s contains forbidden live action marker %q", phase34FirecrackerDisplayPath(t, harnessPath), forbidden)
+		}
+	}
+}

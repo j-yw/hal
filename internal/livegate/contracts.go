@@ -13,6 +13,7 @@ type GateID string
 type GateCategory string
 
 const (
+	GateCategoryMicroVME2E         GateCategory = "microvm_e2e"
 	GateCategoryFirecracker        GateCategory = "firecracker"
 	GateCategoryNetworkEnforcement GateCategory = "network_enforcement"
 	GateCategoryCredentialDelivery GateCategory = "credential_delivery"
@@ -25,6 +26,7 @@ const (
 type BuildTagName string
 
 const (
+	BuildTagMicroVME2ELive         BuildTagName = "microvm_e2e_live"
 	BuildTagFirecrackerLive        BuildTagName = "firecracker_live"
 	BuildTagNetworkEnforcementLive BuildTagName = "network_enforcement_live"
 	BuildTagCredentialDeliveryLive BuildTagName = "credential_delivery_live"
@@ -37,11 +39,20 @@ const (
 type EnvVarName string
 
 const (
-	EnvVarFirecrackerLive        EnvVarName = "HAL_FIRECRACKER_LIVE"
-	EnvVarNetworkEnforcementLive EnvVarName = "HAL_NETWORK_ENFORCEMENT_LIVE"
-	EnvVarCredentialDeliveryLive EnvVarName = "HAL_CREDENTIAL_DELIVERY_LIVE"
-	EnvVarWorkerIntegrationLive  EnvVarName = "HAL_WORKER_INTEGRATION_LIVE"
-	EnvVarPodmanIntegrationLive  EnvVarName = "HAL_PODMAN_INTEGRATION_LIVE"
+	EnvVarFirecrackerLive                 EnvVarName = "HAL_FIRECRACKER_LIVE"
+	EnvVarFirecrackerLiveFirecracker      EnvVarName = "HAL_FIRECRACKER_LIVE_FIRECRACKER"
+	EnvVarFirecrackerLiveKernel           EnvVarName = "HAL_FIRECRACKER_LIVE_KERNEL"
+	EnvVarFirecrackerLiveRootfs           EnvVarName = "HAL_FIRECRACKER_LIVE_ROOTFS"
+	EnvVarNetworkEnforcementLive          EnvVarName = "HAL_NETWORK_ENFORCEMENT_LIVE"
+	EnvVarNetworkEnforcementLiveProxy     EnvVarName = "HAL_NETWORK_ENFORCEMENT_LIVE_PROXY"
+	EnvVarNetworkEnforcementLiveFirewall  EnvVarName = "HAL_NETWORK_ENFORCEMENT_LIVE_FIREWALL"
+	EnvVarCredentialDeliveryLive          EnvVarName = "HAL_CREDENTIAL_DELIVERY_LIVE"
+	EnvVarCredentialDeliveryLiveHTTPProxy EnvVarName = "HAL_CREDENTIAL_DELIVERY_LIVE_HTTP_PROXY"
+	EnvVarCredentialDeliveryLiveFileTmpfs EnvVarName = "HAL_CREDENTIAL_DELIVERY_LIVE_FILE_TMPFS"
+	EnvVarCredentialDeliveryLiveSSHAgent  EnvVarName = "HAL_CREDENTIAL_DELIVERY_LIVE_SSH_AGENT"
+	EnvVarCredentialDeliveryLiveEnv       EnvVarName = "HAL_CREDENTIAL_DELIVERY_LIVE_ENV"
+	EnvVarWorkerIntegrationLive           EnvVarName = "HAL_WORKER_INTEGRATION_LIVE"
+	EnvVarPodmanIntegrationLive           EnvVarName = "HAL_PODMAN_INTEGRATION_LIVE"
 )
 
 // CapabilityID identifies a declared live capability without importing the
@@ -279,7 +290,8 @@ func sanitizeGateID(value GateID) GateID {
 func sanitizeGateCategory(value GateCategory) GateCategory {
 	normalized := GateCategory(normalizeEnum(string(value)))
 	switch normalized {
-	case GateCategoryFirecracker,
+	case GateCategoryMicroVME2E,
+		GateCategoryFirecracker,
 		GateCategoryNetworkEnforcement,
 		GateCategoryCredentialDelivery,
 		GateCategoryWorkerIntegration,

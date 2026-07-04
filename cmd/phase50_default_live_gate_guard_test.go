@@ -65,6 +65,7 @@ func TestPhase50OptionalLiveTestFilesStayBuildTagged(t *testing.T) {
 		{path: filepath.Join("..", "internal", "engine", "codex", "integration_test.go"), tag: "integration"},
 		{path: filepath.Join("..", "internal", "engine", "pi", "live_test.go"), tag: "integration"},
 		{path: filepath.Join("..", "internal", "sandboxruntime", "rootlesspodman", "podman_integration_test.go"), tag: "podman_integration"},
+		{path: filepath.Join("..", "internal", "sandboxruntime", "microvm", "live_e2e_test.go"), tag: "microvm_e2e_live"},
 		{path: filepath.Join("..", "internal", "sandboxruntime", "microvm", "firecrackerhost", "real_process_runner_live_test.go"), tag: "firecracker_live"},
 		{path: filepath.Join("..", "internal", "sandboxruntime", "microvm", "firecracker", "firecracker_live_integration_test.go"), tag: "firecracker_live"},
 		{path: filepath.Join("..", "internal", "sandboxruntime", "networkenforcement", "network_enforcement_live_test.go"), tag: "network_enforcement_live"},
@@ -573,6 +574,7 @@ func phase50LiveOnlyMarkers() []phase50LiveOnlyMarker {
 		{token: "HAL_CREDENTIAL_DELIVERY_LIVE", label: "credential delivery optional live env marker"},
 		{token: phase50WorkerIntegrationEnvPrefix, label: "worker integration env marker"},
 		{token: phase50PodmanEnvPrefix, label: "Podman optional live env marker"},
+		{token: "microvm_e2e_live", label: "microVM live E2E optional build-tag marker"},
 		{token: "firecracker_live", label: "Firecracker optional live build-tag marker"},
 		{token: "network_enforcement_live", label: "network enforcement optional live build-tag marker"},
 		{token: "credential_delivery_live", label: "credential delivery optional live build-tag marker"},
@@ -590,6 +592,7 @@ func phase50LiveOnlyMarkers() []phase50LiveOnlyMarker {
 func phase50HasOptionalLiveBuildTag(source string) bool {
 	for _, tag := range []string{
 		"integration",
+		"microvm_e2e_live",
 		"worker_integration",
 		"podman_integration",
 		"firecracker_live",
