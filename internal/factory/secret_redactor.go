@@ -126,6 +126,7 @@ func (r RunSecretRedactor) RedactRunRecord(record RunRecord) RunRecord {
 // removed from durable timeline output fields.
 func (r RunSecretRedactor) RedactEventRecord(event EventRecord) EventRecord {
 	if len(r.secretValues) == 0 {
+		event.Metadata = r.redactArtifactSummary(event.Metadata)
 		event.NetworkPolicyDecisionLogs = sandbox.SanitizeSandboxNetworkPolicyDecisionLogRecords(event.NetworkPolicyDecisionLogs)
 		return event
 	}
@@ -189,7 +190,7 @@ func (r RunSecretRedactor) redactCredentialDeliveryStatusMetadata(status *sandbo
 	if status == nil {
 		return nil
 	}
-	safe := sandbox.SanitizeSandboxCredentialDeliveryStatusMetadata(*status)
+	safe := sandbox.SanitizeSandboxCredentialDeliverySurfaceStatusMetadata(*status)
 	if safe.ID == "" {
 		return nil
 	}
@@ -396,9 +397,41 @@ func (r RunSecretRedactor) redactArtifactSummary(summary map[string]any) map[str
 	}
 	out := make(map[string]any, len(summary))
 	for key, value := range summary {
-		out[r.RedactString(key)] = r.redactArtifactValue(value)
+		safeKey := r.RedactString(key)
+		if runSecretRedactorMetadataKeyOmitted(key) || runSecretRedactorMetadataKeyOmitted(safeKey) {
+			continue
+		}
+		if runSecretRedactorCredentialDeliveryKey(key) || runSecretRedactorCredentialDeliveryKey(safeKey) {
+			if status := r.redactCredentialDeliveryStatusMetadataValue(value); status != nil {
+				out[safeKey] = *status
+			}
+			continue
+		}
+		out[safeKey] = r.redactArtifactValue(value)
 	}
 	return out
+}
+
+func (r RunSecretRedactor) redactCredentialDeliveryStatusMetadataValue(value any) *sandbox.SandboxCredentialDeliveryStatusMetadata {
+	var status sandbox.SandboxCredentialDeliveryStatusMetadata
+	switch typed := value.(type) {
+	case sandbox.SandboxCredentialDeliveryStatusMetadata:
+		status = typed
+	case *sandbox.SandboxCredentialDeliveryStatusMetadata:
+		if typed == nil {
+			return nil
+		}
+		status = *typed
+	default:
+		data, err := json.Marshal(value)
+		if err != nil {
+			return nil
+		}
+		if err := json.Unmarshal(data, &status); err != nil {
+			return nil
+		}
+	}
+	return r.redactCredentialDeliveryStatusMetadata(&status)
 }
 
 func (r RunSecretRedactor) redactArtifactValue(value any) any {
@@ -409,6 +442,31 @@ func (r RunSecretRedactor) redactArtifactValue(value any) any {
 		return r.redactArtifactSummary(v)
 	default:
 		return r.redactArtifactReflectValue(reflect.ValueOf(value))
+	}
+}
+
+func runSecretRedactorCredentialDeliveryKey(key string) bool {
+	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.TrimSpace(key)))
+	return normalized == "credentialdelivery"
+}
+
+func runSecretRedactorMetadataKeyOmitted(key string) bool {
+	switch strings.ToLower(strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.TrimSpace(key))) {
+	case "providerpayload",
+		"rawproviderpayload",
+		"authorizationheader",
+		"rawheader",
+		"headers",
+		"socketpath",
+		"hostpath",
+		"localpath",
+		"servicedomain",
+		"servicedomains",
+		"rawurl",
+		"upstreamurl":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -445,7 +503,11 @@ func (r RunSecretRedactor) redactArtifactReflectValue(value reflect.Value) any {
 			if key.Kind() != reflect.String {
 				continue
 			}
-			out[r.RedactString(key.String())] = r.redactArtifactReflectValue(iter.Value())
+			safeKey := r.RedactString(key.String())
+			if runSecretRedactorMetadataKeyOmitted(key.String()) || runSecretRedactorMetadataKeyOmitted(safeKey) {
+				continue
+			}
+			out[safeKey] = r.redactArtifactReflectValue(iter.Value())
 		}
 		return out
 	default:

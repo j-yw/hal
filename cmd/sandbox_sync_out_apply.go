@@ -326,7 +326,7 @@ func sandboxCommandJSONCredentialDeliveryStatus(status *sandbox.SandboxCredentia
 	if status == nil {
 		return nil
 	}
-	sanitized := sandbox.SanitizeSandboxCredentialDeliveryStatusMetadata(*status)
+	sanitized := sandbox.SanitizeSandboxCredentialDeliverySurfaceStatusMetadata(*status)
 	if sanitized.ID == "" || sanitized.PlanID == "" || sanitized.ActivationID == "" || sanitized.Status == "" {
 		return nil
 	}

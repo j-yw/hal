@@ -98,6 +98,29 @@ func SanitizeSandboxCredentialDeliveryStatusMetadata(status SandboxCredentialDel
 	return sanitized
 }
 
+// SanitizeSandboxCredentialDeliverySurfaceStatusMetadata returns the command
+// and factory-safe credential delivery status shape. Active secure-default
+// delivery is exposed only when sanitized active proof summaries exist.
+func SanitizeSandboxCredentialDeliverySurfaceStatusMetadata(status SandboxCredentialDeliveryStatusMetadata) SandboxCredentialDeliveryStatusMetadata {
+	sanitized := SanitizeSandboxCredentialDeliveryStatusMetadata(status)
+	if sanitized.ID == "" {
+		return SandboxCredentialDeliveryStatusMetadata{}
+	}
+	if sanitized.Status == "active" && sanitized.ActivationID != "" && len(sanitized.ActiveProofs) > 0 {
+		sanitized.ActiveModes = sandboxCredentialDeliveryProofModes(sanitized.ActiveProofs)
+		return sanitized
+	}
+	sanitized.ActiveModes = nil
+	sanitized.ActiveProofs = nil
+	if sanitized.Status == "active" {
+		sanitized.Status = "skipped"
+		if sanitized.ReasonCode == "" || sanitized.ReasonCode == "requested" {
+			sanitized.ReasonCode = "missing_activation_proof"
+		}
+	}
+	return sanitized
+}
+
 func sanitizeSandboxCredentialDeliveryIdentifier(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if sandboxCredentialDeliveryIdentifierLooksUnsafe(trimmed) {
@@ -221,6 +244,17 @@ func mergeSandboxCredentialDeliveryActiveProofModes(modes []string, proofs []San
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+func sandboxCredentialDeliveryProofModes(proofs []SandboxCredentialDeliveryProofSummary) []string {
+	if len(proofs) == 0 {
+		return nil
+	}
+	var out []string
+	for _, proof := range proofs {
+		out = appendSandboxSecretMode(out, proof.DeliveryMode)
 	}
 	return out
 }
