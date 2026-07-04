@@ -1,6 +1,9 @@
 package networkenforcement
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // PolicyProxyRequestKind identifies the sanitized request class evaluated at
 // the policy proxy boundary.
@@ -57,20 +60,39 @@ type PolicyProxyDecision struct {
 	ReasonCode     PolicyProxyDecisionReasonCode `json:"reasonCode,omitempty"`
 }
 
-// EvaluatePolicyProxyDecision is a fail-closed placeholder for the policy
-// proxy decision engine. Later implementation must replace this unsupported
-// result with allowlist/default-deny evaluation while preserving sanitized
-// decision metadata.
+// EvaluatePolicyProxyDecision evaluates one HTTP(S) policy proxy request
+// against the sanitized enforcement plan's allowlist metadata. Raw rule values
+// and request destinations are used only for in-memory matching and are never
+// copied into the returned decision.
 func EvaluatePolicyProxyDecision(policy PolicyProxyDecisionPolicy, request PolicyProxyDecisionRequest) PolicyProxyDecision {
 	plan := SanitizePlan(policy.Plan)
+	requestKind := sanitizePolicyProxyRequestKind(request.Kind)
 	decision := PolicyProxyDecision{
 		Action:         PolicyProxyDecisionActionDeny,
-		RequestKind:    sanitizePolicyProxyRequestKind(request.Kind),
+		RequestKind:    requestKind,
 		PolicySnapshot: sanitizePolicySnapshotIdentityPtr(plan.PolicySnapshot),
-		ReasonCode:     PolicyProxyDecisionReasonProxyUnsupported,
+		RuleSetID:      policyProxyDecisionRuleSetID(plan),
+		ReasonCode:     PolicyProxyDecisionReasonDefaultDenyNoAllowRule,
 	}
-	if plan.Allowlist != nil {
-		decision.RuleSetID = plan.Allowlist.RuleSetID
+	if requestKind == "" {
+		decision.ReasonCode = PolicyProxyDecisionReasonProxyUnsupported
+		return SanitizePolicyProxyDecision(decision)
+	}
+
+	target := policyProxyRequestTargetFromRequest(request)
+	if !target.valid || !policyProxyDecisionAllowlistEnabled(plan) {
+		return SanitizePolicyProxyDecision(decision)
+	}
+
+	for _, rule := range policy.AllowlistRules {
+		if !policyProxyPlanSupportsRule(plan, rule) || !policyProxyRuleMatchesTarget(rule, target) {
+			continue
+		}
+		decision.Action = PolicyProxyDecisionActionAllow
+		decision.RuleID = sanitizeIdentifier(rule.ID)
+		decision.RuleCategory = sanitizeAllowlistRuleCategory(rule.Category)
+		decision.ReasonCode = PolicyProxyDecisionReasonAllowRuleMatched
+		break
 	}
 	return SanitizePolicyProxyDecision(decision)
 }
@@ -130,4 +152,149 @@ func sanitizePolicyProxyDecisionReasonCode(value PolicyProxyDecisionReasonCode) 
 	default:
 		return ""
 	}
+}
+
+type policyProxyRequestTarget struct {
+	host    string
+	port    string
+	hasPort bool
+	valid   bool
+}
+
+func policyProxyRequestTargetFromRequest(request PolicyProxyDecisionRequest) policyProxyRequestTarget {
+	switch sanitizePolicyProxyRequestKind(request.Kind) {
+	case PolicyProxyRequestKindHTTPConnect:
+		return parsePolicyProxyRequestTarget(request.Authority)
+	case PolicyProxyRequestKindHTTPRequestHost:
+		return parsePolicyProxyRequestTarget(request.Host)
+	default:
+		return policyProxyRequestTarget{}
+	}
+}
+
+func parsePolicyProxyRequestTarget(value string) policyProxyRequestTarget {
+	value = strings.TrimSpace(value)
+	if value == "" || unsafeAllowlistRuleValue(value) {
+		return policyProxyRequestTarget{}
+	}
+	host, port, hasPort := splitPolicyProxyRequestTarget(value)
+	host = normalizePolicyProxyHost(host)
+	if host == "" {
+		return policyProxyRequestTarget{}
+	}
+	return policyProxyRequestTarget{
+		host:    host,
+		port:    port,
+		hasPort: hasPort,
+		valid:   true,
+	}
+}
+
+func splitPolicyProxyRequestTarget(value string) (host string, port string, hasPort bool) {
+	if strings.HasPrefix(value, "[") {
+		end := strings.Index(value, "]")
+		if end <= 1 {
+			return value, "", false
+		}
+		host = value[1:end]
+		if len(value) > end+1 && value[end+1] == ':' {
+			port = strings.TrimSpace(value[end+2:])
+			return host, port, port != ""
+		}
+		return host, "", false
+	}
+
+	if strings.Count(value, ":") != 1 {
+		return value, "", false
+	}
+	parts := strings.SplitN(value, ":", 2)
+	host = strings.TrimSpace(parts[0])
+	port = strings.TrimSpace(parts[1])
+	if host == "" || port == "" {
+		return value, "", false
+	}
+	return host, port, true
+}
+
+func normalizePolicyProxyHost(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func policyProxyDecisionAllowlistEnabled(plan Plan) bool {
+	return plan.Allowlist != nil && plan.Allowlist.Mode == AllowlistModeEnforce
+}
+
+func policyProxyDecisionRuleSetID(plan Plan) string {
+	if plan.Allowlist != nil && plan.Allowlist.RuleSetID != "" {
+		return plan.Allowlist.RuleSetID
+	}
+	if plan.PolicySnapshot != nil {
+		return plan.PolicySnapshot.RuleSetID
+	}
+	return ""
+}
+
+func policyProxyPlanSupportsRule(plan Plan, rule AllowlistRule) bool {
+	if !policyProxyDecisionAllowlistEnabled(plan) || plan.Allowlist == nil {
+		return false
+	}
+	category := sanitizeAllowlistRuleCategory(rule.Category)
+	if category == "" || !policyProxyAllowlistHasCategory(plan.Allowlist.RuleCategories, category) {
+		return false
+	}
+	if code, _ := validateAllowlistRuleValue(category, rule.Value); code != "" {
+		return false
+	}
+	ruleID := sanitizeIdentifier(rule.ID)
+	if ruleID == "" || !policyProxyAllowlistHasRuleID(plan.Allowlist.RuleIDs, ruleID) {
+		return false
+	}
+	return true
+}
+
+func policyProxyAllowlistHasCategory(categories []AllowlistRuleCategory, want AllowlistRuleCategory) bool {
+	for _, category := range categories {
+		if sanitizeAllowlistRuleCategory(category) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func policyProxyAllowlistHasRuleID(ruleIDs []string, want string) bool {
+	for _, ruleID := range ruleIDs {
+		if sanitizeIdentifier(ruleID) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func policyProxyRuleMatchesTarget(rule AllowlistRule, target policyProxyRequestTarget) bool {
+	switch sanitizeAllowlistRuleCategory(rule.Category) {
+	case AllowlistRuleCategoryDomain:
+		return policyProxyDomainRuleMatchesTarget(rule.Value, target)
+	case AllowlistRuleCategoryEndpoint:
+		return policyProxyEndpointRuleMatchesTarget(rule.Value, target)
+	default:
+		return false
+	}
+}
+
+func policyProxyDomainRuleMatchesTarget(value string, target policyProxyRequestTarget) bool {
+	if code, _ := validateAllowlistDomainRuleValue(value); code != "" {
+		return false
+	}
+	return target.host == normalizePolicyProxyHost(value)
+}
+
+func policyProxyEndpointRuleMatchesTarget(value string, target policyProxyRequestTarget) bool {
+	if code, _ := validateAllowlistEndpointRuleValue(value); code != "" || !target.hasPort {
+		return false
+	}
+	host, port, ok := splitAllowlistEndpoint(value)
+	if !ok {
+		return false
+	}
+	return target.host == normalizePolicyProxyHost(host) && target.port == strings.TrimSpace(port)
 }
