@@ -604,6 +604,10 @@ func sandboxSecurityCapabilityProjectionAppendTemplateLockProof(records []Sandbo
 	if sandboxSecurityCapabilityProjectionTemplateLockComplete(lock) {
 		status = SandboxSecurityCapabilityReadinessReady
 		reason = SandboxSecurityCapabilityReasonTemplateLockDigestConfirmed
+		if sandboxSecurityCapabilityTemplateLockWarningBearing(lock) {
+			status = SandboxSecurityCapabilityReadinessUnsupported
+			reason = SandboxSecurityCapabilityReasonWarningBearing
+		}
 	}
 	records = sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
 		SandboxSecurityCapabilityFamilyTemplate,
@@ -656,7 +660,36 @@ func sandboxSecurityCapabilityProjectionSelectedTemplateTrustReadiness(lock *San
 		!sandboxSecurityCapabilityTemplateTrustPolicyComplete(lock.TrustPolicy) {
 		return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonSelectedTemplateEvidenceMissing
 	}
+	if sandboxSecurityCapabilityTemplateLockWarningBearing(lock) {
+		return SandboxSecurityCapabilityReadinessUnsupported, SandboxSecurityCapabilityReasonWarningBearing
+	}
 	return SandboxSecurityCapabilityReadinessReady, SandboxSecurityCapabilityReasonSelectedTemplateTrustConfirmed
+}
+
+func sandboxSecurityCapabilityTemplateLockWarningBearing(lock *SandboxTemplateLockMetadata) bool {
+	lock = SanitizeSandboxTemplateLockMetadata(lock)
+	if lock == nil {
+		return false
+	}
+	if sandboxSecurityCapabilityTemplateTrustPolicyWarningBearing(lock.TrustPolicy) {
+		return true
+	}
+	for _, entry := range []*SandboxTemplateLockEntryMetadata{
+		lock.Document,
+		lock.TemplateReference,
+		lock.RuntimeImage,
+		lock.SourceArtifact,
+	} {
+		if entry != nil && len(entry.WarningCodes) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func sandboxSecurityCapabilityTemplateTrustPolicyWarningBearing(policy *SandboxTemplateTrustPolicyMetadata) bool {
+	return policy != nil &&
+		(len(policy.WarningCodes) > 0 || len(policy.ErrorCodes) > 0 || len(policy.ReasonCodes) > 0)
 }
 
 func sandboxSecurityCapabilityTemplateLockHasUnresolvedProvenance(lock *SandboxTemplateLockMetadata) bool {

@@ -192,6 +192,53 @@ func TestUS005WorkerTargetRoundTripPreservesRuntimeTemplateMetadata(t *testing.T
 	}
 }
 
+func TestUS004WorkerProtocolCarriesOnlySanitizedTemplateTrustProjection(t *testing.T) {
+	lock := us005WorkerTemplateLockTrusted()
+	lock.RuntimeImage.WarningCodes = []string{
+		"mutable_reference",
+		"https://registry.example.test/image:latest?token=ghp_us004_secret",
+	}
+	lock.TrustPolicy.WarningCodes = []string{
+		"missing_digest_pin",
+		"/Users/alice/private-template.yaml",
+	}
+	lock.TrustPolicy.ReasonCodes = []string{
+		"mutable_reference",
+		"Authorization: Bearer ghp_us004_secret",
+	}
+	status := Status{
+		ProtocolVersion:         ProtocolVersion,
+		WorkerID:                "worker-us004",
+		HostKind:                HostKindLocal,
+		SupportedRuntimeDrivers: []string{RuntimeDriverMicroVM},
+		Health:                  WorkerHealth{Status: HealthStatusHealthy},
+		Capacity:                WorkerCapacity{MaxConcurrentSandboxes: 1},
+		Security:                honestSecurityPolicy(),
+		Metadata:                us005WorkerRuntimeMetadata(lock),
+	}
+
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatalf("Marshal(worker status) error = %v", err)
+	}
+	publicText := string(encoded)
+	for _, want := range []string{
+		`"templateLock":`,
+		`"templateStatus":`,
+		`"lockStatus":"locked"`,
+		`"trustMode":"strict"`,
+		`"trustDecision":"trusted"`,
+		`"digestValue":"` + strings.Repeat("e", 64) + `"`,
+		`"mutable_reference"`,
+		`"missing_digest_pin"`,
+	} {
+		if !strings.Contains(publicText, want) {
+			t.Fatalf("worker status JSON %s missing %s", publicText, want)
+		}
+	}
+	assertUS005WorkerTemplateProjectionNoUnsafeFragments(t, "status", publicText)
+}
+
 func us005WorkerRuntimeMetadata(lock *sandboxruntime.RuntimeTemplateLockMetadata) *sandboxruntime.RuntimeMetadata {
 	return &sandboxruntime.RuntimeMetadata{TemplateLock: lock}
 }

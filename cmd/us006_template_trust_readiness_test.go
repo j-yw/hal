@@ -189,6 +189,5 @@ func us006CommandTemplateLockEntry(sourceKind, referenceKind, reasonCode, digest
 		DigestValue:     strings.Repeat(digestSeed, 64),
 		LockedAt:        "2026-07-04T06:18:17Z",
 		ReasonCode:      reasonCode,
-		WarningCodes:    []string{reasonCode, "token=ghp_us006_secret"},
 	}
 }
