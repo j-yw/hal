@@ -67,10 +67,17 @@ type TrustPolicyReferenceRequirement struct {
 // TrustPolicyResult is the redaction-safe output shape for template trust
 // policy evaluation.
 type TrustPolicyResult struct {
-	Mode     TrustPolicyMode      `json:"mode,omitempty"`
-	Decision TrustPolicyDecision  `json:"decision"`
-	Errors   []TrustPolicyError   `json:"errors,omitempty"`
-	Warnings []TrustPolicyWarning `json:"warnings,omitempty"`
+	Mode        TrustPolicyMode                 `json:"mode,omitempty"`
+	Decision    TrustPolicyDecision             `json:"decision"`
+	Enforcement *TrustPolicyEnforcementMetadata `json:"enforcement,omitempty"`
+	Errors      []TrustPolicyError              `json:"errors,omitempty"`
+	Warnings    []TrustPolicyWarning            `json:"warnings,omitempty"`
+}
+
+// TrustPolicyEnforcementMetadata makes advisory evaluation explicit in durable
+// policy output without implying that mutable references were trusted.
+type TrustPolicyEnforcementMetadata struct {
+	StrictlyEnforced bool `json:"strictlyEnforced"`
 }
 
 // TrustPolicyError identifies a policy rejection without echoing rejected

@@ -64,8 +64,12 @@ func TestTrustPolicyContractFieldsAndJSONTags(t *testing.T) {
 	resultType := reflect.TypeOf(acquisition.TrustPolicyResult{})
 	assertAcquisitionField(t, resultType, "Mode", reflect.TypeOf(acquisition.TrustPolicyMode("")), `json:"mode,omitempty"`)
 	assertAcquisitionField(t, resultType, "Decision", reflect.TypeOf(acquisition.TrustPolicyDecision("")), `json:"decision"`)
+	assertAcquisitionField(t, resultType, "Enforcement", reflect.TypeOf((*acquisition.TrustPolicyEnforcementMetadata)(nil)), `json:"enforcement,omitempty"`)
 	assertAcquisitionField(t, resultType, "Errors", reflect.TypeOf([]acquisition.TrustPolicyError{}), `json:"errors,omitempty"`)
 	assertAcquisitionField(t, resultType, "Warnings", reflect.TypeOf([]acquisition.TrustPolicyWarning{}), `json:"warnings,omitempty"`)
+
+	enforcementType := reflect.TypeOf(acquisition.TrustPolicyEnforcementMetadata{})
+	assertAcquisitionField(t, enforcementType, "StrictlyEnforced", reflect.TypeOf(false), `json:"strictlyEnforced"`)
 
 	errorType := reflect.TypeOf(acquisition.TrustPolicyError{})
 	assertAcquisitionField(t, errorType, "Code", reflect.TypeOf(acquisition.TrustPolicyErrorCode("")), `json:"code"`)
@@ -130,8 +134,9 @@ func TestTrustPolicyJSONShapeIncludesOnlySafePolicyMetadata(t *testing.T) {
 	assertNestedAcquisitionKeys(t, requestRaw, "source", []string{"kind", "referenceKind", "digest"})
 
 	result := acquisition.TrustPolicyResult{
-		Mode:     acquisition.TrustPolicyModeStrict,
-		Decision: acquisition.TrustPolicyDecisionRejected,
+		Mode:        acquisition.TrustPolicyModeStrict,
+		Decision:    acquisition.TrustPolicyDecisionRejected,
+		Enforcement: &acquisition.TrustPolicyEnforcementMetadata{StrictlyEnforced: true},
 		Errors: []acquisition.TrustPolicyError{{
 			Code:           acquisition.TrustPolicyErrorMissingDigestPin,
 			Field:          "requiredReferences",
@@ -150,7 +155,8 @@ func TestTrustPolicyJSONShapeIncludesOnlySafePolicyMetadata(t *testing.T) {
 	}
 
 	resultRaw := mustAcquisitionObject(t, result)
-	assertAcquisitionObjectKeys(t, resultRaw, []string{"mode", "decision", "errors", "warnings"})
+	assertAcquisitionObjectKeys(t, resultRaw, []string{"mode", "decision", "enforcement", "errors", "warnings"})
+	assertNestedAcquisitionKeys(t, resultRaw, "enforcement", []string{"strictlyEnforced"})
 	assertFirstAcquisitionArrayObjectKeys(t, resultRaw, "errors", []string{"code", "field", "referenceField", "referenceIndex", "sourceKind", "reasonCode", "message"})
 	assertFirstAcquisitionArrayObjectKeys(t, resultRaw, "warnings", []string{"code", "field", "sourceKind", "message"})
 
@@ -212,6 +218,7 @@ func TestTrustPolicyContractsAvoidUnsafeRawMetadataSurface(t *testing.T) {
 		reflect.TypeOf(acquisition.TrustPolicySource{}),
 		reflect.TypeOf(acquisition.TrustPolicyReferenceRequirement{}),
 		reflect.TypeOf(acquisition.TrustPolicyResult{}),
+		reflect.TypeOf(acquisition.TrustPolicyEnforcementMetadata{}),
 		reflect.TypeOf(acquisition.TrustPolicyError{}),
 		reflect.TypeOf(acquisition.TrustPolicyWarning{}),
 	} {

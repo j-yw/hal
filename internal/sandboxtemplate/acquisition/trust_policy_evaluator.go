@@ -28,6 +28,9 @@ func EvaluateTrustPolicy(template sandboxtemplate.Template, request TrustPolicyR
 		mode: mode,
 		result: TrustPolicyResult{
 			Mode: mode,
+			Enforcement: &TrustPolicyEnforcementMetadata{
+				StrictlyEnforced: mode == TrustPolicyModeStrict,
+			},
 		},
 	}
 
@@ -148,7 +151,7 @@ func (e *trustPolicyEvaluation) requireReferenceDigestPin(template sandboxtempla
 
 	e.addFinding(
 		TrustPolicyErrorMissingDigestPin,
-		TrustPolicyWarningMissingDigestPin,
+		TrustPolicyWarningMutableReference,
 		trustPolicyFieldRequiredReferences,
 		field,
 		&referenceIndex,
