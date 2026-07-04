@@ -245,6 +245,247 @@ func TestProjectSecureDefaultReadinessInputRequiresActiveCredentialActivationPro
 	)
 }
 
+func TestProjectSecureDefaultReadinessInputRequiresBrokeredCredentialProofForConfiguredBindings(t *testing.T) {
+	tests := []struct {
+		name        string
+		mode        string
+		proofSource string
+	}{
+		{name: "http proxy proof", mode: SandboxSecretModeHTTPProxy, proofSource: "broker"},
+		{name: "ssh agent proof", mode: SandboxSecretModeSSHAgent, proofSource: "handoff"},
+		{name: "file tmpfs proof", mode: SandboxSecretModeFileTmpfs, proofSource: "simulation"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bindingID := "binding-" + strings.ReplaceAll(tt.mode, "_", "-")
+			output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
+				ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+					CredentialProxyBindings: []SandboxCredentialProxyBindingMetadata{
+						secureDefaultProjectionCredentialBinding(bindingID, tt.mode),
+					},
+					CredentialDelivery: secureDefaultProjectionCredentialDeliveryStatus(
+						[]SandboxCredentialDeliveryProofSummary{
+							secureDefaultProjectionCredentialProof(bindingID, tt.mode, tt.proofSource),
+						},
+						tt.mode,
+					),
+				}),
+			)
+
+			result := requireSecureDefaultProjectionResult(t, output,
+				SandboxSecurityCapabilityReadinessReady,
+				SandboxSecurityCapabilityFamilySecretDelivery,
+				secureDefaultProjectionSecretCapability(tt.mode),
+				SandboxSecurityCapabilityReasonCredentialActivationConfirmed,
+			)
+			requireSecureDefaultProjectionResultMode(t, result, tt.mode)
+			requireSecureDefaultProjectionStrictGate(t, output,
+				SandboxSecurityCapabilityReadinessGateOutcomeAllowed,
+				SandboxSecurityCapabilityReadinessGateReasonReadinessReady,
+				SandboxSecurityCapabilityReasonCredentialActivationConfirmed,
+			)
+		})
+	}
+}
+
+func TestProjectSecureDefaultReadinessInputBlocksConfiguredBindingsWithoutMatchingBrokerProof(t *testing.T) {
+	tests := []struct {
+		name        string
+		bindingMode string
+		status      *SandboxCredentialDeliveryStatusMetadata
+	}{
+		{
+			name:        "requested configured binding only",
+			bindingMode: SandboxSecretModeHTTPProxy,
+		},
+		{
+			name:        "plan only credential delivery status",
+			bindingMode: SandboxSecretModeHTTPProxy,
+			status: &SandboxCredentialDeliveryStatusMetadata{
+				ID:             "credential-delivery-planned",
+				PlanID:         "credential-delivery-plan",
+				RequestedModes: []string{SandboxSecretModeHTTPProxy},
+				Status:         "planned",
+			},
+		},
+		{
+			name:        "metadata-only active mode without proof",
+			bindingMode: SandboxSecretModeHTTPProxy,
+			status: &SandboxCredentialDeliveryStatusMetadata{
+				ID:             "credential-delivery-active-mode-only",
+				PlanID:         "credential-delivery-plan",
+				ActivationID:   "credential-delivery-activation",
+				RequestedModes: []string{SandboxSecretModeHTTPProxy},
+				ActiveModes:    []string{SandboxSecretModeHTTPProxy},
+				Status:         "active",
+			},
+		},
+		{
+			name:        "wrong binding proof",
+			bindingMode: SandboxSecretModeHTTPProxy,
+			status: secureDefaultProjectionCredentialDeliveryStatus(
+				[]SandboxCredentialDeliveryProofSummary{
+					secureDefaultProjectionCredentialProof("binding-other-service", SandboxSecretModeHTTPProxy, "broker"),
+				},
+				SandboxSecretModeHTTPProxy,
+			),
+		},
+		{
+			name:        "wrong mode proof",
+			bindingMode: SandboxSecretModeHTTPProxy,
+			status: secureDefaultProjectionCredentialDeliveryStatus(
+				[]SandboxCredentialDeliveryProofSummary{
+					secureDefaultProjectionCredentialProof("binding-http-proxy", SandboxSecretModeSSHAgent, "handoff"),
+				},
+				SandboxSecretModeSSHAgent,
+			),
+		},
+		{
+			name:        "env compatibility proof",
+			bindingMode: SandboxSecretModeEnv,
+			status: secureDefaultProjectionCredentialDeliveryStatus(
+				[]SandboxCredentialDeliveryProofSummary{
+					secureDefaultProjectionCredentialProof("binding-env", SandboxSecretModeEnv, "broker"),
+				},
+				SandboxSecretModeEnv,
+			),
+		},
+		{
+			name:        "legacy auth sync compatibility proof",
+			bindingMode: SandboxSecretModeLegacyAuthSync,
+			status: secureDefaultProjectionCredentialDeliveryStatus(
+				[]SandboxCredentialDeliveryProofSummary{
+					secureDefaultProjectionCredentialProof("binding-legacy-auth-sync", SandboxSecretModeLegacyAuthSync, "broker"),
+				},
+				SandboxSecretModeLegacyAuthSync,
+			),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bindingID := "binding-" + strings.ReplaceAll(tt.bindingMode, "_", "-")
+			output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
+				ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+					CredentialProxyBindings: []SandboxCredentialProxyBindingMetadata{
+						secureDefaultProjectionCredentialBinding(bindingID, tt.bindingMode),
+					},
+					CredentialDelivery: tt.status,
+				}),
+			)
+
+			requireSecureDefaultProjectionStrictGate(t, output,
+				SandboxSecurityCapabilityReadinessGateOutcomeBlocked,
+				SandboxSecurityCapabilityReadinessGateReasonCode(SandboxSecurityCapabilityReasonCredentialActivationMissing),
+				SandboxSecurityCapabilityReasonCredentialActivationMissing,
+			)
+			requireSecureDefaultProjectionNoReadyResult(t, output,
+				SandboxSecurityCapabilityFamilySecretDelivery,
+				secureDefaultProjectionSecretCapability(tt.bindingMode),
+			)
+		})
+	}
+}
+
+func TestProjectSecureDefaultReadinessInputSanitizesConfiguredCredentialRequirementDiagnostics(t *testing.T) {
+	rawServiceDomain := "api.github.com"
+	rawURL := "https://api.github.example.invalid/private?token=ghp_raw_token"
+	rawPath := "/Users/v/project/.hal/credential.sock"
+	rawHeader := "Authorization: Bearer ghp_raw_token"
+	rawSocket := "/private/tmp/credential-proxy.sock"
+	rawTokenID := "github_pat_raw_token_value"
+	rawSecretValue := "GITHUB_TOKEN=ghp_raw_secret_value"
+
+	output := EvaluateProjectedSandboxSecurityCapabilityReadiness(
+		ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+			CredentialProxyBindings: []SandboxCredentialProxyBindingMetadata{
+				{
+					ID:                  "binding-http-proxy",
+					PlanID:              "credential-plan-http-proxy",
+					SecretID:            "env:SERVICE_TOKEN",
+					DeliveryMode:        SandboxCredentialProxyDeliveryModeHTTPProxy,
+					RequestCategory:     SandboxCredentialProxyRequestNetworkAuth,
+					DestinationCategory: SandboxNetworkPolicyDestinationCategory(rawServiceDomain),
+					Status:              SandboxCredentialProxyStatusReady,
+					ReasonCode:          SandboxCredentialProxyReasonCode(rawHeader),
+				},
+				{
+					ID:           rawServiceDomain,
+					PlanID:       rawSocket,
+					SecretID:     rawSecretValue,
+					DeliveryMode: SandboxCredentialProxyDeliveryModeHTTPProxy,
+				},
+			},
+			CredentialDelivery: secureDefaultProjectionCredentialDeliveryStatus(
+				[]SandboxCredentialDeliveryProofSummary{
+					{
+						ProofID:      rawURL,
+						BindingID:    "binding-http-proxy",
+						DeliveryMode: SandboxSecretModeHTTPProxy,
+						Status:       "active",
+						Source:       "broker",
+					},
+					{
+						ProofID:      "credential-proof-unsafe-binding",
+						BindingID:    rawPath,
+						DeliveryMode: SandboxSecretModeHTTPProxy,
+						Status:       "active",
+						Source:       "broker",
+					},
+					{
+						ProofID:      rawTokenID,
+						BindingID:    "binding-http-proxy",
+						DeliveryMode: SandboxSecretModeHTTPProxy,
+						Status:       "active",
+						Source:       "broker",
+					},
+					{
+						ProofID:      "credential-proof-unsafe-source",
+						BindingID:    "binding-http-proxy",
+						DeliveryMode: SandboxSecretModeHTTPProxy,
+						Status:       "active",
+						Source:       rawHeader,
+					},
+					secureDefaultProjectionCredentialProof("binding-http-proxy", SandboxSecretModeHTTPProxy, "broker"),
+				},
+				SandboxSecretModeHTTPProxy,
+			),
+		}),
+	)
+
+	requireSecureDefaultProjectionStrictGate(t, output,
+		SandboxSecurityCapabilityReadinessGateOutcomeAllowed,
+		SandboxSecurityCapabilityReadinessGateReasonReadinessReady,
+		SandboxSecurityCapabilityReasonCredentialActivationConfirmed,
+	)
+	var readiness SandboxSecurityCapabilityReadinessOutput
+	if output != nil {
+		readiness = *output
+	}
+	diagnostics := DeriveSandboxSecurityCapabilityReadinessDiagnosticSummary(readiness)
+	decision := EvaluateSandboxSecurityCapabilityReadinessGate(SandboxSecurityCapabilityReadinessGatePolicyModeStrict, diagnostics)
+	assertSecurityCapabilityJSONExcludes(t, struct {
+		Output      SandboxSecurityCapabilityReadinessOutput            `json:"output"`
+		Diagnostics SandboxSecurityCapabilityReadinessDiagnosticSummary `json:"diagnostics"`
+		Decision    SandboxSecurityCapabilityReadinessGateDecision      `json:"decision"`
+	}{
+		Output:      readiness,
+		Diagnostics: diagnostics,
+		Decision:    decision,
+	},
+		rawServiceDomain,
+		rawURL,
+		rawPath,
+		rawHeader,
+		rawSocket,
+		rawTokenID,
+		rawSecretValue,
+		"ghp_raw_token",
+		"ghp_raw_secret_value",
+	)
+}
+
 func TestProjectSecureDefaultReadinessInputRejectsCredentialPlanSessionBindingWithoutActivation(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -556,6 +797,59 @@ func secureDefaultProjectionRequestedSecretInput(mode string) SandboxSecurityCap
 			Mode:       mode,
 			Source:     SandboxSecurityCapabilitySourceRequested,
 		}},
+	}
+}
+
+func secureDefaultProjectionSecretCapability(mode string) SandboxSecurityCapabilityName {
+	switch mode {
+	case SandboxSecretModeFileTmpfs:
+		return SandboxSecurityCapabilitySecretFileTmpfs
+	case SandboxSecretModeSSHAgent:
+		return SandboxSecurityCapabilitySecretSSHAgent
+	case SandboxSecretModeHTTPProxy:
+		return SandboxSecurityCapabilitySecretHTTPProxy
+	case SandboxSecretModeEnv:
+		return SandboxSecurityCapabilitySecretEnv
+	case SandboxSecretModeLegacyAuthSync:
+		return SandboxSecurityCapabilitySecretEnv
+	default:
+		return SandboxSecurityCapabilitySecretHTTPProxy
+	}
+}
+
+func secureDefaultProjectionCredentialBinding(bindingID, mode string) SandboxCredentialProxyBindingMetadata {
+	return SandboxCredentialProxyBindingMetadata{
+		ID:                  bindingID,
+		PlanID:              "credential-plan-" + bindingID,
+		SecretID:            "env:SERVICE_TOKEN",
+		DeliveryMode:        SandboxCredentialProxyDeliveryMode(mode),
+		RequestCategory:     SandboxCredentialProxyRequestNetworkAuth,
+		DestinationCategory: SandboxNetworkPolicyDestinationPublicInternet,
+		Status:              SandboxCredentialProxyStatusReady,
+		ReasonCode:          SandboxCredentialProxyReasonRequested,
+	}
+}
+
+func secureDefaultProjectionCredentialDeliveryStatus(proofs []SandboxCredentialDeliveryProofSummary, modes ...string) *SandboxCredentialDeliveryStatusMetadata {
+	return &SandboxCredentialDeliveryStatusMetadata{
+		ID:             "credential-delivery-active",
+		PlanID:         "credential-delivery-plan",
+		ActivationID:   "credential-delivery-activation",
+		RequestedModes: modes,
+		ActiveModes:    modes,
+		ActiveProofs:   proofs,
+		Status:         "active",
+		ReasonCode:     "requested",
+	}
+}
+
+func secureDefaultProjectionCredentialProof(bindingID, mode, source string) SandboxCredentialDeliveryProofSummary {
+	return SandboxCredentialDeliveryProofSummary{
+		ProofID:      "credential-proof-" + bindingID + "-" + strings.ReplaceAll(mode, "_", "-"),
+		BindingID:    bindingID,
+		DeliveryMode: mode,
+		Status:       "active",
+		Source:       source,
 	}
 }
 

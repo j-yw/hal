@@ -6,16 +6,28 @@ import "strings"
 // lifecycle summary for durable sandbox and factory surfaces. It carries only
 // safe identifiers, mode labels, status labels, and counts.
 type SandboxCredentialDeliveryStatusMetadata struct {
-	ID             string   `json:"id"`
-	RequestID      string   `json:"requestId,omitempty"`
-	PlanID         string   `json:"planId,omitempty"`
-	ActivationID   string   `json:"activationId,omitempty"`
-	RequestedModes []string `json:"requestedModes,omitempty"`
-	ActiveModes    []string `json:"activeModes,omitempty"`
-	Status         string   `json:"status,omitempty"`
-	ReasonCode     string   `json:"reasonCode,omitempty"`
-	WarningCount   int      `json:"warningCount,omitempty"`
-	ErrorCount     int      `json:"errorCount,omitempty"`
+	ID             string                                  `json:"id"`
+	RequestID      string                                  `json:"requestId,omitempty"`
+	PlanID         string                                  `json:"planId,omitempty"`
+	ActivationID   string                                  `json:"activationId,omitempty"`
+	RequestedModes []string                                `json:"requestedModes,omitempty"`
+	ActiveModes    []string                                `json:"activeModes,omitempty"`
+	ActiveProofs   []SandboxCredentialDeliveryProofSummary `json:"activeProofs,omitempty"`
+	Status         string                                  `json:"status,omitempty"`
+	ReasonCode     string                                  `json:"reasonCode,omitempty"`
+	WarningCount   int                                     `json:"warningCount,omitempty"`
+	ErrorCount     int                                     `json:"errorCount,omitempty"`
+}
+
+// SandboxCredentialDeliveryProofSummary is the readiness-consumable active
+// proof shape for brokered credential delivery. It carries only safe proof and
+// binding identifiers plus enum-like mode/status/source labels.
+type SandboxCredentialDeliveryProofSummary struct {
+	ProofID      string `json:"proofId"`
+	BindingID    string `json:"bindingId,omitempty"`
+	DeliveryMode string `json:"deliveryMode"`
+	Status       string `json:"status,omitempty"`
+	Source       string `json:"source,omitempty"`
 }
 
 // SandboxCredentialDeliveryStatusProjectionRequest describes safe command or
@@ -63,6 +75,7 @@ func ProjectSandboxCredentialDeliveryStatusMetadata(req SandboxCredentialDeliver
 // SanitizeSandboxCredentialDeliveryStatusMetadata returns a durable-safe copy
 // of compact credential delivery metadata.
 func SanitizeSandboxCredentialDeliveryStatusMetadata(status SandboxCredentialDeliveryStatusMetadata) SandboxCredentialDeliveryStatusMetadata {
+	sanitizedStatus := sanitizeSandboxCredentialDeliveryStatus(status.Status)
 	sanitized := SandboxCredentialDeliveryStatusMetadata{
 		ID:             sanitizeSandboxCredentialDeliveryIdentifier(status.ID),
 		RequestID:      sanitizeSandboxCredentialDeliveryIdentifier(status.RequestID),
@@ -70,13 +83,17 @@ func SanitizeSandboxCredentialDeliveryStatusMetadata(status SandboxCredentialDel
 		ActivationID:   sanitizeSandboxCredentialDeliveryIdentifier(status.ActivationID),
 		RequestedModes: normalizeSandboxSecretModes(status.RequestedModes),
 		ActiveModes:    normalizeSandboxSecretModes(status.ActiveModes),
-		Status:         sanitizeSandboxCredentialDeliveryStatus(status.Status),
+		Status:         sanitizedStatus,
 		ReasonCode:     sanitizeSandboxCredentialDeliveryReasonCode(status.ReasonCode),
 		WarningCount:   nonNegativeCredentialDeliveryCount(status.WarningCount),
 		ErrorCount:     nonNegativeCredentialDeliveryCount(status.ErrorCount),
 	}
 	if sanitized.ID == "" {
 		return SandboxCredentialDeliveryStatusMetadata{}
+	}
+	if sanitizedStatus == "active" && sanitized.ActivationID != "" {
+		sanitized.ActiveProofs = sanitizeSandboxCredentialDeliveryProofSummaries(status.ActiveProofs)
+		sanitized.ActiveModes = mergeSandboxCredentialDeliveryActiveProofModes(sanitized.ActiveModes, sanitized.ActiveProofs)
 	}
 	return sanitized
 }
@@ -118,6 +135,94 @@ func sanitizeSandboxCredentialDeliveryStatus(status string) string {
 	default:
 		return ""
 	}
+}
+
+func sanitizeSandboxCredentialDeliveryProofSummaries(values []SandboxCredentialDeliveryProofSummary) []SandboxCredentialDeliveryProofSummary {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]SandboxCredentialDeliveryProofSummary, 0, len(values))
+	for _, value := range values {
+		proof := sanitizeSandboxCredentialDeliveryProofSummary(value)
+		if proof.ProofID == "" {
+			continue
+		}
+		key := proof.ProofID + "\x00" + proof.BindingID + "\x00" + proof.DeliveryMode
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, proof)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func sanitizeSandboxCredentialDeliveryProofSummary(proof SandboxCredentialDeliveryProofSummary) SandboxCredentialDeliveryProofSummary {
+	mode := sanitizeSandboxCredentialDeliveryProofMode(proof.DeliveryMode)
+	if mode == "" {
+		return SandboxCredentialDeliveryProofSummary{}
+	}
+	status := sanitizeSandboxCredentialDeliveryStatus(proof.Status)
+	if status != "active" {
+		return SandboxCredentialDeliveryProofSummary{}
+	}
+	proofID := sanitizeSandboxCredentialDeliveryIdentifier(proof.ProofID)
+	if proofID == "" {
+		return SandboxCredentialDeliveryProofSummary{}
+	}
+	originalBindingID := strings.TrimSpace(proof.BindingID)
+	bindingID := sanitizeSandboxCredentialDeliveryIdentifier(originalBindingID)
+	if originalBindingID != "" && bindingID == "" {
+		return SandboxCredentialDeliveryProofSummary{}
+	}
+	originalSource := strings.TrimSpace(proof.Source)
+	source := sanitizeSandboxCredentialDeliveryProofSource(originalSource)
+	if originalSource != "" && source == "" {
+		return SandboxCredentialDeliveryProofSummary{}
+	}
+	return SandboxCredentialDeliveryProofSummary{
+		ProofID:      proofID,
+		BindingID:    bindingID,
+		DeliveryMode: mode,
+		Status:       status,
+		Source:       source,
+	}
+}
+
+func sanitizeSandboxCredentialDeliveryProofMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case SandboxSecretModeHTTPProxy, SandboxSecretModeSSHAgent, SandboxSecretModeFileTmpfs:
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return ""
+	}
+}
+
+func sanitizeSandboxCredentialDeliveryProofSource(source string) string {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "broker", "secret_broker", "credential_proxy", "network_proxy", "handoff", "simulation", "adapter", "runtime", "worker":
+		return strings.ToLower(strings.TrimSpace(source))
+	default:
+		return ""
+	}
+}
+
+func mergeSandboxCredentialDeliveryActiveProofModes(modes []string, proofs []SandboxCredentialDeliveryProofSummary) []string {
+	if len(proofs) == 0 {
+		return modes
+	}
+	out := append([]string(nil), modes...)
+	for _, proof := range proofs {
+		out = appendSandboxSecretMode(out, proof.DeliveryMode)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func sanitizeSandboxCredentialDeliveryReasonCode(reason string) string {

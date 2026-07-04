@@ -59,7 +59,10 @@ func EvaluateSandboxSecurityCapabilityReadiness(input SandboxSecurityCapabilityR
 			SandboxSecurityCapabilityReasonMetadataDeliveryUnproven,
 		))
 	}
-	for range input.CredentialProxyBindings {
+	for _, binding := range input.CredentialProxyBindings {
+		if sandboxSecurityCapabilityCredentialBindingHasExplicitSupport(binding, input.Ready) {
+			continue
+		}
 		results = append(results, sandboxSecurityCapabilityMetadataOnlyResult(
 			SandboxSecurityCapabilityFamilyCredentialProxy,
 			SandboxSecurityCapabilityCredentialProxy,
@@ -156,6 +159,25 @@ func sandboxSecurityCapabilityWorkerPostureResults(posture SandboxSecurityCapabi
 		))
 	}
 	return results
+}
+
+func sandboxSecurityCapabilityCredentialBindingHasExplicitSupport(binding SandboxCredentialProxyBindingMetadata, ready []SandboxSecurityCapabilityMetadata) bool {
+	binding = SanitizeSandboxCredentialProxyBindingMetadata(binding)
+	if binding.ID == "" {
+		return false
+	}
+	family, capability, mode, ok := sandboxSecurityCapabilityProjectionCredentialBindingSecretMode(string(binding.DeliveryMode))
+	if !ok {
+		return false
+	}
+	_, ok = sandboxSecurityCapabilityFindExplicitSupport(SandboxSecurityCapabilityMetadata{
+		ID:         binding.ID,
+		Family:     family,
+		Capability: capability,
+		Mode:       mode,
+		Source:     SandboxSecurityCapabilitySourceRequested,
+	}, ready)
+	return ok
 }
 
 func sandboxSecurityCapabilityWorkerNetworkPosturePresent(posture SandboxSecurityCapabilityWorkerPostureMetadata) bool {
@@ -324,6 +346,9 @@ func sandboxSecurityCapabilityUnsupportedReason(requested SandboxSecurityCapabil
 		if candidate.Family != requested.Family || candidate.Capability != requested.Capability {
 			continue
 		}
+		if !sandboxSecurityCapabilityIDCompatible(requested.ID, candidate.ID) {
+			continue
+		}
 		if !sandboxSecurityCapabilityExplicitSupportOrBlockerMetadata(candidate) {
 			continue
 		}
@@ -418,11 +443,15 @@ func sandboxSecurityCapabilityUnsupportedRequestedContext(requested SandboxSecur
 func sandboxSecurityCapabilitySameRequest(requested, candidate SandboxSecurityCapabilityMetadata) bool {
 	return candidate.Family == requested.Family &&
 		candidate.Capability == requested.Capability &&
+		sandboxSecurityCapabilityIDCompatible(requested.ID, candidate.ID) &&
 		sandboxSecurityCapabilityModeCompatible(requested.Mode, candidate.Mode)
 }
 
 func sandboxSecurityCapabilitySameProjectedEvidenceTarget(requested, candidate SandboxSecurityCapabilityMetadata) bool {
 	if candidate.Family != requested.Family || candidate.Capability != requested.Capability {
+		return false
+	}
+	if !sandboxSecurityCapabilityIDCompatible(requested.ID, candidate.ID) {
 		return false
 	}
 	switch candidate.Status {
@@ -435,6 +464,12 @@ func sandboxSecurityCapabilitySameProjectedEvidenceTarget(requested, candidate S
 	default:
 		return false
 	}
+}
+
+func sandboxSecurityCapabilityIDCompatible(requestedID, candidateID string) bool {
+	requestedID = sanitizeSandboxSecurityCapabilityIdentifier(requestedID)
+	candidateID = sanitizeSandboxSecurityCapabilityIdentifier(candidateID)
+	return requestedID == "" || requestedID == candidateID
 }
 
 func sandboxSecurityCapabilityModeCompatible(requestedMode, candidateMode string) bool {

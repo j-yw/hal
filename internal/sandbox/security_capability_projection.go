@@ -68,6 +68,7 @@ func ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(projection Sand
 		input.Requested = sandboxSecurityCapabilityProjectionAppendUnique(input.Requested, requested)
 	}
 	input.Requested = sandboxSecurityCapabilityProjectionRequestedNetworkPolicyResult(input.Requested, projection.NetworkPolicyResult)
+	input.Requested = sandboxSecurityCapabilityProjectionRequestedCredentialBindings(input.Requested, projection.CredentialProxyBindings)
 	input.Ready = sandboxSecurityCapabilityProjectionMetadataOnlyNetworkPolicyResult(input.Ready, projection.NetworkPolicyResult)
 	input.Ready = sandboxSecurityCapabilityProjectionAppendNetworkEnforcementProof(input.Ready, projection.NetworkEnforcementProof)
 	input.Ready = sandboxSecurityCapabilityProjectionAppendCredentialDeliveryProof(input.Ready, projection.CredentialDelivery)
@@ -298,6 +299,18 @@ func sandboxSecurityCapabilityProjectionSecretMode(mode string) (SandboxSecurity
 	}
 }
 
+func sandboxSecurityCapabilityProjectionCredentialBindingSecretMode(mode string) (SandboxSecurityCapabilityFamily, SandboxSecurityCapabilityName, string, bool) {
+	family, capability, sanitizedMode, ok := sandboxSecurityCapabilityProjectionSecretMode(mode)
+	if ok {
+		return family, capability, sanitizedMode, true
+	}
+	modes := sanitizeSandboxSecurityCapabilitySecretModes([]string{mode})
+	if len(modes) == 0 || modes[0] != SandboxSecretModeLegacyAuthSync {
+		return "", "", "", false
+	}
+	return SandboxSecurityCapabilityFamilySecretDelivery, SandboxSecurityCapabilitySecretEnv, SandboxSecretModeLegacyAuthSync, true
+}
+
 func sandboxSecurityCapabilityProjectionAppendNetworkEnforcementProof(records []SandboxSecurityCapabilityMetadata, proof *SandboxNetworkEnforcementProofMetadata) []SandboxSecurityCapabilityMetadata {
 	if proof == nil {
 		return records
@@ -344,6 +357,24 @@ func sandboxSecurityCapabilityProjectionAppendCredentialDeliveryProof(records []
 	if sanitized.ID == "" {
 		return records
 	}
+	if sanitized.Status == "active" && sanitized.ActivationID != "" && len(sanitized.ActiveProofs) > 0 {
+		for _, proof := range sanitized.ActiveProofs {
+			family, capability, sanitizedMode, ok := sandboxSecurityCapabilityProjectionSecretMode(proof.DeliveryMode)
+			if !ok || proof.BindingID == "" {
+				continue
+			}
+			records = sandboxSecurityCapabilityProjectionAppendSafeEvidenceWithID(records,
+				proof.BindingID,
+				family,
+				capability,
+				sanitizedMode,
+				SandboxSecurityCapabilitySourceWorker,
+				SandboxSecurityCapabilityReadinessReady,
+				SandboxSecurityCapabilityReasonCredentialActivationConfirmed,
+			)
+		}
+		return records
+	}
 	if sanitized.Status == "active" && sanitized.ActivationID != "" && len(sanitized.ActiveModes) > 0 {
 		for _, mode := range sanitized.ActiveModes {
 			family, capability, sanitizedMode, ok := sandboxSecurityCapabilityProjectionSecretMode(mode)
@@ -374,6 +405,23 @@ func sandboxSecurityCapabilityProjectionAppendCredentialDeliveryProof(records []
 			SandboxSecurityCapabilityReadinessMetadataOnly,
 			SandboxSecurityCapabilityReasonCredentialActivationMissing,
 		)
+	}
+	return records
+}
+
+func sandboxSecurityCapabilityProjectionRequestedCredentialBindings(records []SandboxSecurityCapabilityMetadata, bindings []SandboxCredentialProxyBindingMetadata) []SandboxSecurityCapabilityMetadata {
+	for _, binding := range SanitizeSandboxCredentialProxyBindingMetadataRecords(bindings) {
+		family, capability, mode, ok := sandboxSecurityCapabilityProjectionCredentialBindingSecretMode(string(binding.DeliveryMode))
+		if !ok {
+			continue
+		}
+		records = sandboxSecurityCapabilityProjectionAppendUnique(records, SandboxSecurityCapabilityMetadata{
+			ID:         binding.ID,
+			Family:     family,
+			Capability: capability,
+			Mode:       mode,
+			Source:     SandboxSecurityCapabilitySourceRequested,
+		})
 	}
 	return records
 }
@@ -502,7 +550,8 @@ func sandboxSecurityCapabilityProjectionAppendRequestedMetadataProof(records []S
 		if requested.Capability == SandboxSecurityCapabilityNetworkDenyByDefault &&
 			requested.Mode != "" &&
 			sandboxSecurityCapabilityProjectionHasPlannedNetworkMetadata(input, requested) {
-			return sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
+			return sandboxSecurityCapabilityProjectionAppendSafeEvidenceWithID(records,
+				requested.ID,
 				requested.Family,
 				requested.Capability,
 				requested.Mode,
@@ -513,7 +562,8 @@ func sandboxSecurityCapabilityProjectionAppendRequestedMetadataProof(records []S
 		}
 	case SandboxSecurityCapabilityFamilySecretDelivery:
 		if sandboxSecurityCapabilityProjectionHasCredentialMetadata(input) {
-			return sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
+			return sandboxSecurityCapabilityProjectionAppendSafeEvidenceWithID(records,
+				requested.ID,
 				requested.Family,
 				requested.Capability,
 				requested.Mode,
@@ -549,7 +599,8 @@ func sandboxSecurityCapabilityProjectionAppendMissingProof(records []SandboxSecu
 	switch requested.Family {
 	case SandboxSecurityCapabilityFamilyNetworkPolicy:
 		if requested.Capability == SandboxSecurityCapabilityNetworkDenyByDefault && requested.Mode != "" {
-			return sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
+			return sandboxSecurityCapabilityProjectionAppendSafeEvidenceWithID(records,
+				requested.ID,
 				requested.Family,
 				requested.Capability,
 				requested.Mode,
@@ -562,7 +613,8 @@ func sandboxSecurityCapabilityProjectionAppendMissingProof(records []SandboxSecu
 		return records
 	case SandboxSecurityCapabilityFamilyTemplate:
 		if requested.Capability == SandboxSecurityCapabilityTemplateLockDigest {
-			return sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
+			return sandboxSecurityCapabilityProjectionAppendSafeEvidenceWithID(records,
+				requested.ID,
 				requested.Family,
 				requested.Capability,
 				requested.Mode,
@@ -573,7 +625,8 @@ func sandboxSecurityCapabilityProjectionAppendMissingProof(records []SandboxSecu
 		}
 	case SandboxSecurityCapabilityFamilyWorkspace:
 		if requested.Capability == SandboxSecurityCapabilityIsolatedWorkspace {
-			return sandboxSecurityCapabilityProjectionAppendSafeEvidence(records,
+			return sandboxSecurityCapabilityProjectionAppendSafeEvidenceWithID(records,
+				requested.ID,
 				requested.Family,
 				requested.Capability,
 				requested.Mode,
@@ -698,7 +751,12 @@ func sandboxSecurityCapabilityProjectionAppendMetadataOnly(records []SandboxSecu
 }
 
 func sandboxSecurityCapabilityProjectionAppendSafeEvidence(records []SandboxSecurityCapabilityMetadata, family SandboxSecurityCapabilityFamily, capability SandboxSecurityCapabilityName, mode string, source SandboxSecurityCapabilitySource, status SandboxSecurityCapabilityReadinessState, reason SandboxSecurityCapabilityReasonCode) []SandboxSecurityCapabilityMetadata {
+	return sandboxSecurityCapabilityProjectionAppendSafeEvidenceWithID(records, "", family, capability, mode, source, status, reason)
+}
+
+func sandboxSecurityCapabilityProjectionAppendSafeEvidenceWithID(records []SandboxSecurityCapabilityMetadata, id string, family SandboxSecurityCapabilityFamily, capability SandboxSecurityCapabilityName, mode string, source SandboxSecurityCapabilitySource, status SandboxSecurityCapabilityReadinessState, reason SandboxSecurityCapabilityReasonCode) []SandboxSecurityCapabilityMetadata {
 	record, ok := sanitizeSandboxSecurityCapabilityInputMetadata(SandboxSecurityCapabilityMetadata{
+		ID:         id,
 		Family:     family,
 		Capability: capability,
 		Mode:       mode,
@@ -722,7 +780,8 @@ func sandboxSecurityCapabilityProjectionAppendUnique(records []SandboxSecurityCa
 }
 
 func sandboxSecurityCapabilityProjectionSameMetadata(a, b SandboxSecurityCapabilityMetadata) bool {
-	return a.Family == b.Family &&
+	return a.ID == b.ID &&
+		a.Family == b.Family &&
 		a.Capability == b.Capability &&
 		a.Mode == b.Mode &&
 		a.Source == b.Source &&
