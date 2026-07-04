@@ -108,6 +108,17 @@ func SanitizePolicyProxyDecisionLogRecord(record PolicyProxyDecisionLogRecord) P
 	}
 }
 
+func sanitizePolicyProxyDecisionLogRecordPtr(record *PolicyProxyDecisionLogRecord) *PolicyProxyDecisionLogRecord {
+	if record == nil {
+		return nil
+	}
+	sanitized := SanitizePolicyProxyDecisionLogRecord(*record)
+	if policyProxyDecisionLogRecordEmpty(sanitized) {
+		return nil
+	}
+	return &sanitized
+}
+
 // SanitizePolicyProxyDecisionLogCounters returns redaction-safe aggregate
 // counters.
 func SanitizePolicyProxyDecisionLogCounters(counters PolicyProxyDecisionLogCounters) PolicyProxyDecisionLogCounters {
@@ -193,6 +204,16 @@ func appendPolicyProxyDestinationCategoryCounter(counters []PolicyProxyDestinati
 		DestinationCategory: category,
 		Count:               count,
 	})
+}
+
+func policyProxyDecisionLogRecordEmpty(record PolicyProxyDecisionLogRecord) bool {
+	return record.PolicySnapshotID == "" &&
+		record.RuleSetID == "" &&
+		record.RuleID == "" &&
+		record.Action == "" &&
+		record.ReasonCode == "" &&
+		record.DestinationCategory == "" &&
+		record.Count == 0
 }
 
 func sanitizeDecisionLogCount(count int) int {

@@ -12,13 +12,11 @@ var _ PolicyProxyService = (*recordingPolicyProxyService)(nil)
 type recordingPolicyProxyService struct{}
 
 func (*recordingPolicyProxyService) EvaluateConnectAuthority(_ context.Context, request PolicyProxyConnectAuthorityRequest) (PolicyProxyServiceDecisionResult, error) {
-	decision := EvaluatePolicyProxyDecision(request.Policy.DecisionPolicy(), request.DecisionRequest())
-	return NewPolicyProxyServiceDecisionResult(request.Policy, decision), nil
+	return EvaluatePolicyProxyServiceDecisionResult(request.Policy, request.DecisionRequest()), nil
 }
 
 func (*recordingPolicyProxyService) EvaluateHTTPRequestHost(_ context.Context, request PolicyProxyHTTPRequestHostRequest) (PolicyProxyServiceDecisionResult, error) {
-	decision := EvaluatePolicyProxyDecision(request.Policy.DecisionPolicy(), request.DecisionRequest())
-	return NewPolicyProxyServiceDecisionResult(request.Policy, decision), nil
+	return EvaluatePolicyProxyServiceDecisionResult(request.Policy, request.DecisionRequest()), nil
 }
 
 func (*recordingPolicyProxyService) StartPolicyProxy(_ context.Context, request PolicyProxyLifecycleRequest) (PolicyProxyLifecycleProof, error) {
@@ -84,6 +82,78 @@ func TestPolicyProxyServiceDecisionResultMetadataIsSanitized(t *testing.T) {
 	}
 
 	assertPolicyProxyServiceJSONOmitsRawValues(t, result, "raw.example.com", "token=secret")
+}
+
+func TestPolicyProxyServiceDecisionResultIncludesSanitizedDecisionLogs(t *testing.T) {
+	policy := NewPolicyProxyPolicyInput(policyProxyServicePlan(), []AllowlistRule{
+		{ID: "rule-api-endpoint", Category: AllowlistRuleCategoryEndpoint, Value: "api.example.com:443"},
+		{ID: "rule-updates-domain", Category: AllowlistRuleCategoryDomain, Value: "updates.example.com"},
+	})
+	service := &recordingPolicyProxyService{}
+
+	allowed, err := service.EvaluateConnectAuthority(context.Background(), NewPolicyProxyConnectAuthorityRequest(policy, "api.example.com:443"))
+	if err != nil {
+		t.Fatalf("EvaluateConnectAuthority() error = %v", err)
+	}
+	denied, err := service.EvaluateHTTPRequestHost(context.Background(), NewPolicyProxyHTTPRequestHostRequest(policy, "blocked.example.com"))
+	if err != nil {
+		t.Fatalf("EvaluateHTTPRequestHost() error = %v", err)
+	}
+
+	assertPolicyProxyServiceDecisionLog(t, allowed.DecisionLog, policyProxyServiceDecisionLogExpectation{
+		action:              PolicyProxyDecisionActionAllow,
+		ruleID:              "rule-api-endpoint",
+		reason:              PolicyProxyDecisionReasonAllowRuleMatched,
+		destinationCategory: AllowlistRuleCategoryEndpoint,
+	})
+	assertPolicyProxyServiceDecisionLog(t, denied.DecisionLog, policyProxyServiceDecisionLogExpectation{
+		action:              PolicyProxyDecisionActionDeny,
+		reason:              PolicyProxyDecisionReasonDefaultDenyNoAllowRule,
+		destinationCategory: AllowlistRuleCategoryDomain,
+	})
+
+	logs := []PolicyProxyDecisionLogRecord{*allowed.DecisionLog, *denied.DecisionLog}
+	counters := SummarizePolicyProxyDecisionLogRecords(logs)
+	if counters.Total != 2 || counters.Allowed != 1 || counters.Denied != 1 {
+		t.Fatalf("decision log counters = %#v, want total=2 allowed=1 denied=1", counters)
+	}
+	assertPolicyProxyServiceJSONOmitsRawValues(t, struct {
+		Allowed  PolicyProxyServiceDecisionResult `json:"allowed"`
+		Denied   PolicyProxyServiceDecisionResult `json:"denied"`
+		Counters PolicyProxyDecisionLogCounters   `json:"counters"`
+	}{Allowed: allowed, Denied: denied, Counters: counters}, "api.example.com", "blocked.example.com")
+}
+
+func TestPolicyProxyServiceDecisionResultSanitizesProvidedDecisionLog(t *testing.T) {
+	policy := NewPolicyProxyPolicyInput(policyProxyServicePlan(), nil)
+	result := NewPolicyProxyServiceDecisionResultWithDecisionLog(policy, PolicyProxyDecision{
+		Action:      PolicyProxyDecisionActionDeny,
+		RequestKind: PolicyProxyRequestKindHTTPRequestHost,
+		RuleID:      "safe-rule-id",
+		ReasonCode:  PolicyProxyDecisionReasonDefaultDenyNoAllowRule,
+	}, PolicyProxyDecisionLogRecord{
+		PolicySnapshotID:    "https://policy.example.com/snapshots?token=secret",
+		RuleSetID:           "rules-proxy-service",
+		RuleID:              "/Users/v/work/rescience/hal/.hal/raw-rule.json",
+		Action:              PolicyProxyDecisionAction(" deny "),
+		ReasonCode:          PolicyProxyDecisionReasonCode(" default_deny_no_allow_rule "),
+		DestinationCategory: AllowlistRuleCategory(" domain "),
+		Count:               -10,
+	})
+
+	if result.DecisionLog == nil {
+		t.Fatal("DecisionLog = nil, want sanitized durable-safe record")
+	}
+	if result.DecisionLog.PolicySnapshotID != "policy-proxy-service" {
+		t.Fatalf("DecisionLog.PolicySnapshotID = %q, want policy snapshot id defaulted from sanitized decision", result.DecisionLog.PolicySnapshotID)
+	}
+	if result.DecisionLog.RuleID != "safe-rule-id" {
+		t.Fatalf("DecisionLog.RuleID = %q, want unsafe log rule id replaced by sanitized decision rule id", result.DecisionLog.RuleID)
+	}
+	if result.DecisionLog.Count != 1 {
+		t.Fatalf("DecisionLog.Count = %d, want default count 1", result.DecisionLog.Count)
+	}
+	assertPolicyProxyServiceJSONOmitsRawValues(t, result, "policy.example.com", "token=secret", "/Users/v/work/rescience/hal/.hal/raw-rule.json")
 }
 
 func TestPolicyProxyLifecycleProofSupportsStartActiveAndStopWithoutListenerAddresses(t *testing.T) {
@@ -196,6 +266,10 @@ func policyProxyServicePlan() Plan {
 			HTTPS:          ProxyRoutingModeRouteViaProxy,
 			ProxySessionID: "proxy-service-session",
 			ProxyMechanism: EnforcementMechanismProxy,
+			AllowlistRules: []AllowlistRule{
+				{ID: "rule-api-endpoint", Category: AllowlistRuleCategoryEndpoint, Value: "api.example.com:443"},
+				{ID: "rule-updates-domain", Category: AllowlistRuleCategoryDomain, Value: "updates.example.com"},
+			},
 		},
 	})
 }
@@ -211,6 +285,41 @@ func assertPolicyProxyServiceJSONOmitsRawValues(t *testing.T, value any, forbidd
 		if strings.Contains(lowerPayload, strings.ToLower(forbidden)) {
 			t.Fatalf("payload leaked raw value %q: %s", forbidden, payload)
 		}
+	}
+}
+
+type policyProxyServiceDecisionLogExpectation struct {
+	action              PolicyProxyDecisionAction
+	ruleID              string
+	reason              PolicyProxyDecisionReasonCode
+	destinationCategory AllowlistRuleCategory
+}
+
+func assertPolicyProxyServiceDecisionLog(t *testing.T, got *PolicyProxyDecisionLogRecord, want policyProxyServiceDecisionLogExpectation) {
+	t.Helper()
+	if got == nil {
+		t.Fatal("DecisionLog = nil, want sanitized durable-safe record")
+	}
+	if got.PolicySnapshotID != "policy-proxy-service" {
+		t.Fatalf("DecisionLog.PolicySnapshotID = %q, want policy-proxy-service in %#v", got.PolicySnapshotID, got)
+	}
+	if got.RuleSetID != "rules-proxy-service" {
+		t.Fatalf("DecisionLog.RuleSetID = %q, want rules-proxy-service in %#v", got.RuleSetID, got)
+	}
+	if got.RuleID != want.ruleID {
+		t.Fatalf("DecisionLog.RuleID = %q, want %q in %#v", got.RuleID, want.ruleID, got)
+	}
+	if got.Action != want.action {
+		t.Fatalf("DecisionLog.Action = %q, want %q in %#v", got.Action, want.action, got)
+	}
+	if got.ReasonCode != want.reason {
+		t.Fatalf("DecisionLog.ReasonCode = %q, want %q in %#v", got.ReasonCode, want.reason, got)
+	}
+	if got.DestinationCategory != want.destinationCategory {
+		t.Fatalf("DecisionLog.DestinationCategory = %q, want %q in %#v", got.DestinationCategory, want.destinationCategory, got)
+	}
+	if got.Count != 1 {
+		t.Fatalf("DecisionLog.Count = %d, want 1 in %#v", got.Count, got)
 	}
 }
 

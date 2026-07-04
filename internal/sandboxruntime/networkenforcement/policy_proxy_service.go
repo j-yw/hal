@@ -135,15 +135,39 @@ func (r PolicyProxyHTTPRequestHostRequest) MarshalJSON() ([]byte, error) {
 }
 
 // PolicyProxyServiceDecisionResult exposes only sanitized policy proxy
-// decision metadata plus the sanitized plan identity used for evaluation.
+// decision metadata plus the sanitized plan identity and optional durable-safe
+// decision log record used for evaluation.
 type PolicyProxyServiceDecisionResult struct {
-	PlanID   string              `json:"planId,omitempty"`
-	Decision PolicyProxyDecision `json:"decision,omitempty"`
+	PlanID      string                        `json:"planId,omitempty"`
+	Decision    PolicyProxyDecision           `json:"decision,omitempty"`
+	DecisionLog *PolicyProxyDecisionLogRecord `json:"decisionLog,omitempty"`
 }
 
 // NewPolicyProxyServiceDecisionResult joins a policy input and decision into
 // sanitized service result metadata.
 func NewPolicyProxyServiceDecisionResult(policy PolicyProxyPolicyInput, decision PolicyProxyDecision) PolicyProxyServiceDecisionResult {
+	return newPolicyProxyServiceDecisionResult(policy, decision, nil)
+}
+
+// EvaluatePolicyProxyServiceDecisionResult evaluates a validation-only request
+// and returns sanitized decision plus durable-safe decision-log metadata.
+func EvaluatePolicyProxyServiceDecisionResult(policy PolicyProxyPolicyInput, request PolicyProxyDecisionRequest) PolicyProxyServiceDecisionResult {
+	decisionPolicy := policy.DecisionPolicy()
+	decision := EvaluatePolicyProxyDecision(decisionPolicy, request)
+	log := BuildPolicyProxyDecisionLogRecord(PolicyProxyDecisionLogInput{
+		Policy:  decisionPolicy,
+		Request: request,
+	})
+	return NewPolicyProxyServiceDecisionResultWithDecisionLog(policy, decision, log)
+}
+
+// NewPolicyProxyServiceDecisionResultWithDecisionLog joins a policy input,
+// decision, and decision-log record into sanitized service result metadata.
+func NewPolicyProxyServiceDecisionResultWithDecisionLog(policy PolicyProxyPolicyInput, decision PolicyProxyDecision, decisionLog PolicyProxyDecisionLogRecord) PolicyProxyServiceDecisionResult {
+	return newPolicyProxyServiceDecisionResult(policy, decision, &decisionLog)
+}
+
+func newPolicyProxyServiceDecisionResult(policy PolicyProxyPolicyInput, decision PolicyProxyDecision, decisionLog *PolicyProxyDecisionLogRecord) PolicyProxyServiceDecisionResult {
 	plan := policy.PlanMetadata()
 	if decision.PolicySnapshot == nil {
 		decision.PolicySnapshot = plan.PolicySnapshot
@@ -151,18 +175,24 @@ func NewPolicyProxyServiceDecisionResult(policy PolicyProxyPolicyInput, decision
 	if decision.RuleSetID == "" && plan.Allowlist != nil {
 		decision.RuleSetID = plan.Allowlist.RuleSetID
 	}
-	return SanitizePolicyProxyServiceDecisionResult(PolicyProxyServiceDecisionResult{
+	result := PolicyProxyServiceDecisionResult{
 		PlanID:   plan.ID,
 		Decision: decision,
-	})
+	}
+	if decisionLog != nil {
+		log := policyProxyServiceDecisionLogWithDecisionDefaults(decision, *decisionLog)
+		result.DecisionLog = &log
+	}
+	return SanitizePolicyProxyServiceDecisionResult(result)
 }
 
 // SanitizePolicyProxyServiceDecisionResult returns redaction-safe policy proxy
 // service decision metadata.
 func SanitizePolicyProxyServiceDecisionResult(result PolicyProxyServiceDecisionResult) PolicyProxyServiceDecisionResult {
 	return PolicyProxyServiceDecisionResult{
-		PlanID:   sanitizeIdentifier(result.PlanID),
-		Decision: SanitizePolicyProxyDecision(result.Decision),
+		PlanID:      sanitizeIdentifier(result.PlanID),
+		Decision:    SanitizePolicyProxyDecision(result.Decision),
+		DecisionLog: sanitizePolicyProxyDecisionLogRecordPtr(result.DecisionLog),
 	}
 }
 
@@ -171,6 +201,25 @@ func (r PolicyProxyServiceDecisionResult) MarshalJSON() ([]byte, error) {
 	type policyProxyServiceDecisionResultJSON PolicyProxyServiceDecisionResult
 	sanitized := SanitizePolicyProxyServiceDecisionResult(r)
 	return json.Marshal(policyProxyServiceDecisionResultJSON(sanitized))
+}
+
+func policyProxyServiceDecisionLogWithDecisionDefaults(decision PolicyProxyDecision, decisionLog PolicyProxyDecisionLogRecord) PolicyProxyDecisionLogRecord {
+	sanitizedDecision := SanitizePolicyProxyDecision(decision)
+	log := SanitizePolicyProxyDecisionLogRecord(decisionLog)
+	if policySnapshotID := policyProxyDecisionPolicySnapshotID(sanitizedDecision.PolicySnapshot); policySnapshotID != "" {
+		log.PolicySnapshotID = policySnapshotID
+	}
+	log.RuleSetID = sanitizedDecision.RuleSetID
+	log.RuleID = sanitizedDecision.RuleID
+	log.Action = sanitizedDecision.Action
+	log.ReasonCode = sanitizedDecision.ReasonCode
+	if log.DestinationCategory == "" {
+		log.DestinationCategory = sanitizedDecision.RuleCategory
+	}
+	if log.Count == 0 && sanitizedDecision.Action != "" {
+		log.Count = 1
+	}
+	return SanitizePolicyProxyDecisionLogRecord(log)
 }
 
 // PolicyProxyLifecycleOperation identifies the proxy lifecycle proof step
