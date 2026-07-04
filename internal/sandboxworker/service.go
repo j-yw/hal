@@ -226,7 +226,7 @@ func runtimeDriverCapabilityFromDescriptors(driverID string, descriptors map[str
 		descriptor.ID = strings.TrimSpace(defaultString(descriptor.ID, driverID))
 		descriptor.Operations = cloneStringSlice(descriptor.Operations)
 		descriptor.NetworkEnforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(descriptor.NetworkEnforcement)
-		descriptor.Security = projectRuntimeDriverSecurityPolicy(descriptor.Security, descriptor.NetworkEnforcement)
+		descriptor.Security = projectRuntimeDriverSecurityPolicyForDriver(descriptor.ID, descriptor.Security, descriptor.NetworkEnforcement)
 		return descriptor
 	}
 
@@ -416,6 +416,15 @@ func projectRuntimeDriverSecurityPolicy(policy SecurityPolicy, enforcement *sand
 	return projectNetworkEnforcementSecurityPolicy(policy, enforcement, false)
 }
 
+func projectRuntimeDriverSecurityPolicyForDriver(driverID string, policy SecurityPolicy, enforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata) SecurityPolicy {
+	projected := projectRuntimeDriverSecurityPolicy(policy, enforcement)
+	if strings.TrimSpace(driverID) == RuntimeDriverMicroVM {
+		return projected
+	}
+	clearRuntimeDriverEnforcedNetworkControls(&projected.Enforced)
+	return projected
+}
+
 func projectWorkerSecurityPolicy(policy SecurityPolicy, enforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata) SecurityPolicy {
 	if enforcement == nil {
 		enforcement = policy.NetworkEnforcement
@@ -452,10 +461,24 @@ func projectNetworkEnforcementSecurityPolicy(policy SecurityPolicy, enforcement 
 	if capability == nil || !runtimeDriverNetworkEnforcementModeCanEnforce(mode) {
 		return projected
 	}
-	projected.Enforced.NetworkEnforcementCapability = capability
-	projected.Enforced.NetworkEnforcement = mode
-	if capability.SupportsDefaultDenyPosture {
+
+	switch mode {
+	case NetworkEnforcementProxy:
+		proxyCapability := runtimeDriverNetworkEnforcementProxyCapability(capability)
+		if proxyCapability == nil {
+			return projected
+		}
+		projected.Enforced.NetworkEnforcementCapability = proxyCapability
+		projected.Enforced.NetworkEnforcement = NetworkEnforcementProxy
+	case NetworkEnforcementProxyFirewall:
+		if !runtimeDriverNetworkEnforcementStrictDualProof(enforcement, capability) {
+			return projected
+		}
+		projected.Enforced.NetworkEnforcementCapability = capability
+		projected.Enforced.NetworkEnforcement = NetworkEnforcementProxyFirewall
 		projected.Enforced.NetworkPolicy = NetworkPolicyDenyByDefault
+	default:
+		return projected
 	}
 	return projected
 }
@@ -487,7 +510,10 @@ func clearRuntimeDriverEnforcedNetworkControls(controls *SecurityControls) {
 
 func runtimeDriverNetworkEnforcementActiveSuccess(enforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata) bool {
 	enforcement = sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(enforcement)
-	if enforcement == nil || enforcement.Result == nil || enforcement.Result.Outcome != "success" {
+	if enforcement == nil ||
+		enforcement.Result == nil ||
+		enforcement.Result.Outcome != "success" ||
+		len(enforcement.Result.WarningCodes) > 0 {
 		return false
 	}
 	mode := runtimeDriverNetworkEnforcementMode(enforcement.Result.EnforcementMode)
@@ -509,14 +535,16 @@ func runtimeDriverNetworkEnforcementOrchestrationActive(orchestration *sandboxru
 	}
 	proxyActive := runtimeDriverNetworkEnforcementLifecycleActive(orchestration.Proxy)
 	ruleActive := false
-	for i := range orchestration.Rules {
-		rule := &orchestration.Rules[i]
-		if !runtimeDriverNetworkEnforcementLifecycleActive(rule) {
-			return false
-		}
-		if runtimeDriverNetworkEnforcementLifecycleHasMechanism(rule, NetworkEnforcementFirewall) ||
-			runtimeDriverNetworkEnforcementLifecycleHasMechanism(rule, NetworkEnforcementRuntime) {
-			ruleActive = true
+	if mode != NetworkEnforcementProxy {
+		for i := range orchestration.Rules {
+			rule := &orchestration.Rules[i]
+			if !runtimeDriverNetworkEnforcementLifecycleActive(rule) {
+				return false
+			}
+			if runtimeDriverNetworkEnforcementLifecycleHasMechanism(rule, NetworkEnforcementFirewall) ||
+				runtimeDriverNetworkEnforcementLifecycleHasMechanism(rule, NetworkEnforcementRuntime) {
+				ruleActive = true
+			}
 		}
 	}
 	switch mode {
@@ -529,6 +557,31 @@ func runtimeDriverNetworkEnforcementOrchestrationActive(orchestration *sandboxru
 	default:
 		return false
 	}
+}
+
+func runtimeDriverNetworkEnforcementStrictDualProof(enforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata, capability *sandboxruntime.RuntimeNetworkEnforcementCapability) bool {
+	if enforcement == nil ||
+		enforcement.Result == nil ||
+		runtimeDriverNetworkEnforcementMode(enforcement.Result.EnforcementMode) != NetworkEnforcementProxyFirewall ||
+		len(enforcement.Result.WarningCodes) > 0 {
+		return false
+	}
+	if capability == nil ||
+		!capability.SupportsDefaultDenyPosture ||
+		!networkEnforcementCapabilitySupportsMode(capability, NetworkEnforcementProxyFirewall) {
+		return false
+	}
+	return runtimeDriverNetworkEnforcementOrchestrationActive(enforcement.Orchestration, NetworkEnforcementProxyFirewall)
+}
+
+func runtimeDriverNetworkEnforcementProxyCapability(capability *sandboxruntime.RuntimeNetworkEnforcementCapability) *sandboxruntime.RuntimeNetworkEnforcementCapability {
+	if !networkEnforcementCapabilitySupportsMode(capability, NetworkEnforcementProxy) {
+		return nil
+	}
+	proxyCapability := *capability
+	proxyCapability.Modes = []string{NetworkEnforcementProxy}
+	proxyCapability.SupportsDefaultDenyPosture = false
+	return sandboxruntime.SanitizeRuntimeNetworkEnforcementCapability(&proxyCapability)
 }
 
 func runtimeDriverNetworkEnforcementLifecycleActive(lifecycle *sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata) bool {
