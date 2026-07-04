@@ -256,6 +256,81 @@ func TestPhase54DefaultDocsDoNotRequireLiveRuntimePrerequisites(t *testing.T) {
 	}
 }
 
+func TestPhase54ReleasePackageDocumentationIdentifiesBuildCommand(t *testing.T) {
+	for _, path := range phase54ReleasePackageDocPaths() {
+		doc := phase50ReadFile(t, path)
+		for _, want := range []string{
+			"make build",
+			"./hal",
+		} {
+			if !strings.Contains(doc, want) {
+				t.Fatalf("%s must document %q for the Phase 54 release package surface", phase50SafeDisplayPath(path), want)
+			}
+		}
+	}
+}
+
+func TestPhase54ReleasePackageDocumentationStaysDefaultSafe(t *testing.T) {
+	doc := phase50ReadFile(t, phase54ReleasePackageDesignDocPath())
+	normalized := strings.Join(strings.Fields(doc), " ")
+	for _, want := range []string{
+		"root",
+		"KVM",
+		"Firecracker",
+		"Docker/Podman",
+		"sandboxd",
+		"cloud provider",
+		"registry credentials",
+		"proxy listeners",
+		"firewall mutation",
+		"real API secrets",
+	} {
+		if !strings.Contains(normalized, want) {
+			t.Fatalf("%s must name default-safe package/build prerequisite %q", phase50SafeDisplayPath(phase54ReleasePackageDesignDocPath()), want)
+		}
+	}
+}
+
+func TestPhase54ReleaseMakefileBuildSurfaceStaysLocalHalBinaryOnly(t *testing.T) {
+	body := phase54MakefileTargetBody(t, "build")
+	for _, want := range []string{
+		"go build $(LDFLAGS) -o $(BINARY_NAME) .",
+		"Built ./$(BINARY_NAME)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("Makefile build target must contain %q; body:\n%s", want, body)
+		}
+	}
+	if marker := phase54ForbiddenReleasePackageMakefileMarker(body); marker != "" {
+		t.Fatalf("Makefile build target must stay local and fake-only; found marker %q in:\n%s", marker, body)
+	}
+}
+
+func TestPhase54ReleaseCheckSurfaceDoesNotPublishOrReadCredentials(t *testing.T) {
+	body := phase54MakefileTargetBody(t, "release-check")
+	if !strings.Contains(body, "goreleaser check") {
+		t.Fatalf("Makefile release-check target must validate GoReleaser config with goreleaser check; body:\n%s", body)
+	}
+	for _, forbidden := range []string{
+		"release --clean",
+		"release --snapshot",
+		"HOMEBREW_TAP_TOKEN",
+		"GITHUB_TOKEN",
+		"docker",
+		"podman",
+		"firecracker",
+		"/dev/" + "kvm",
+		"sandboxd",
+		"iptables",
+		"pfctl",
+		"curl ",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("Makefile release-check target must not publish, read credentials, or invoke live prerequisites; found %q in:\n%s", forbidden, body)
+		}
+	}
+}
+
 func TestPhase54PackageGuardsStayFakeOnlyByDefault(t *testing.T) {
 	for _, path := range phase54CommandGuardFiles(t) {
 		source := phase50ReadFile(t, path)
@@ -288,8 +363,22 @@ func phase54DesignDocPaths(t *testing.T) []string {
 	if err != nil {
 		t.Fatalf("Glob(phase54 design docs) error: %v", err)
 	}
+	if len(paths) == 0 {
+		t.Fatal("Phase 54 docs guard matched no docs/design/*phase54*.md files")
+	}
 	sort.Strings(paths)
 	return paths
+}
+
+func phase54ReleasePackageDocPaths() []string {
+	return []string{
+		filepath.Join("..", "README.md"),
+		phase54ReleasePackageDesignDocPath(),
+	}
+}
+
+func phase54ReleasePackageDesignDocPath() string {
+	return filepath.Join("..", "docs", "design", "sandbox-runtime-v2-phase54-release-package-verification.md")
 }
 
 func phase54CommandGuardFiles(t *testing.T) []string {
@@ -414,12 +503,70 @@ func phase54ForbiddenDefaultCommandMarkers() []string {
 		"docker ",
 		"podman ",
 		"firecracker ",
+		"make sandbox-build",
+		"make sandbox-test",
+		"make sandbox-shell",
 		"/dev/" + "kvm",
 		"curl ",
 		"sudo ",
 		"hal sandboxd",
 		"--live",
 	}
+}
+
+func phase54MakefileTargetBody(t *testing.T, target string) string {
+	t.Helper()
+	source := phase50ReadFile(t, filepath.Join("..", "Makefile"))
+	lines := strings.Split(source, "\n")
+	var body []string
+	inTarget := false
+	targetPrefix := target + ":"
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !inTarget {
+			if strings.HasPrefix(line, targetPrefix) {
+				inTarget = true
+			}
+			continue
+		}
+		if trimmed == "" {
+			body = append(body, line)
+			continue
+		}
+		if !strings.HasPrefix(line, "\t") && !strings.HasPrefix(line, " ") {
+			break
+		}
+		body = append(body, line)
+	}
+	if !inTarget {
+		t.Fatalf("Makefile target %q not found", target)
+	}
+	return strings.Join(body, "\n")
+}
+
+func phase54ForbiddenReleasePackageMakefileMarker(body string) string {
+	normalized := strings.ToLower(body)
+	for _, marker := range []string{
+		"docker",
+		"podman",
+		"firecracker",
+		"/dev/" + "kvm",
+		"sandboxd",
+		"iptables",
+		"pfctl",
+		"nft ",
+		"curl ",
+		"http://",
+		"https://",
+		"registry",
+		"token",
+		"secret",
+	} {
+		if strings.Contains(normalized, marker) {
+			return marker
+		}
+	}
+	return ""
 }
 
 func TestPhase54ContractScopeGuardRejectsUnsafeFixtures(t *testing.T) {
@@ -451,5 +598,10 @@ func run() {
 	file := phase50ParseGoSource(t, fixture, source)
 	if message := phase50DefaultLivePrerequisiteBoundaryMessage(fixture, file); !strings.Contains(message, "Firecracker process") {
 		t.Fatalf("fixture boundary message = %q, want Firecracker process", message)
+	}
+
+	unsafeMakefileBody := "\n\t@docker build -t hal-sandbox .\n"
+	if marker := phase54ForbiddenReleasePackageMakefileMarker(unsafeMakefileBody); marker != "docker" {
+		t.Fatalf("unsafe Makefile fixture marker = %q, want docker", marker)
 	}
 }

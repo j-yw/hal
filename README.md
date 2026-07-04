@@ -429,6 +429,14 @@ go test -tags=integration ./internal/engine/codex/...
 
 Release tags use `vX.Y.Z`. Pushing a `v*` tag triggers the release workflow and GoReleaser. The Homebrew cask is published through `j-yw/homebrew-tap`.
 
+For release/package verification on this branch, build the distributable Hal CLI surface with:
+
+```bash
+make build
+```
+
+This produces `./hal` with version metadata. The default build/package check is local Go compilation; it does not build sandbox images and must not require root, KVM, Firecracker, Docker/Podman, sandboxd, cloud or registry credentials, proxy listeners, firewall mutation, or real API secrets.
+
 ## License
 
 [MIT](LICENSE)
