@@ -32,12 +32,17 @@ func TestMicroVMLiveE2EHarnessRequiresComposedLiveGates(t *testing.T) {
 		t.Fatalf("microVM live E2E template trust projection = %#v, want allowed or skipped before this point", templateTrust)
 	}
 
+	networkReadiness := requireMicroVMLiveE2ENetworkEnforcementReadiness(t, os.Getenv)
+	if !networkReadiness.CanRunLiveAction() {
+		t.Fatalf("microVM live E2E network enforcement readiness = %#v, want allowed or skipped before this point", networkReadiness)
+	}
+
 	preflight := requireMicroVMLiveE2EFirecrackerPreflight(t, os.Getenv)
 	if !preflight.CanRunLiveAction() {
 		t.Fatalf("microVM live E2E Firecracker preflight result = %#v, want allowed or skipped before this point", preflight)
 	}
 
-	t.Skip("microVM live E2E harness gates are satisfied; live actions are implemented by later stories")
+	t.Log("microVM live E2E harness gates and readiness projections are satisfied")
 }
 
 func requireMicroVMLiveE2EGate(t *testing.T, getenv func(string) string) livegate.GatePreflightResult {
@@ -164,6 +169,28 @@ func requireMicroVMLiveE2ETemplateTrustProjection(t *testing.T, getenv func(stri
 	message := LiveE2ETemplateTrustProjectionSkipMessage(result)
 	livegate.AssertLiveGateSkipMessageRedactionSafe(t, message)
 	t.Skip(message)
+	return result
+}
+
+func requireMicroVMLiveE2ENetworkEnforcementReadiness(t *testing.T, getenv func(string) string) LiveE2ENetworkEnforcementReadinessResult {
+	t.Helper()
+	result := ProjectLiveE2ENetworkEnforcementReadiness(LiveE2ENetworkEnforcementReadinessInput{
+		LiveMarker:         microVMLiveE2EEnvPresent(getenv, livegate.EnvVarNetworkEnforcementLive),
+		ProxyMarker:        microVMLiveE2EEnvPresent(getenv, livegate.EnvVarNetworkEnforcementLiveProxy),
+		FirewallMarker:     microVMLiveE2EEnvPresent(getenv, livegate.EnvVarNetworkEnforcementLiveFirewall),
+		NetworkEnforcement: liveE2ENetworkEnforcementReadyMetadata(),
+	})
+	if result.CanRunLiveAction() {
+		return result
+	}
+	if result.ShouldSkipLiveAction() {
+		message := LiveE2ENetworkEnforcementReadinessSkipMessage(result)
+		livegate.AssertLiveGateSkipMessageRedactionSafe(t, message)
+		t.Skip(message)
+	}
+	message := LiveE2ENetworkEnforcementReadinessFailureMessage(result)
+	livegate.AssertLiveGateSkipMessageRedactionSafe(t, message)
+	t.Fatalf("%s", message)
 	return result
 }
 

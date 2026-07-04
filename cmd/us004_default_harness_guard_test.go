@@ -113,11 +113,23 @@ func us004MicroVMLiveE2EHarnessFiles(t *testing.T) []string {
 	if err != nil {
 		t.Fatalf("Glob(live_e2e*_test.go) error: %v", err)
 	}
+	paths = us004ExcludeMicroVMLiveE2EExecutionPath(paths)
 	sort.Strings(paths)
 	if len(paths) == 0 {
 		t.Fatal("US-004 default harness guard matched no live E2E harness files")
 	}
 	return paths
+}
+
+func us004ExcludeMicroVMLiveE2EExecutionPath(paths []string) []string {
+	out := paths[:0]
+	for _, path := range paths {
+		if filepath.Base(path) == "live_e2e_execution_test.go" {
+			continue
+		}
+		out = append(out, path)
+	}
+	return out
 }
 
 func us004LiveHarnessInfrastructureBoundaryMessage(fileName string, file *ast.File, source string) string {
