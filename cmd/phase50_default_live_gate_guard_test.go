@@ -653,6 +653,7 @@ func phase50ApprovedLiveMarkerFiles() map[string]bool {
 		"cmd/phase49_final_code_verification_test.go":                true,
 		"cmd/phase49_live_provider_gates_test.go":                    true,
 		"cmd/phase50_default_live_gate_guard_test.go":                true,
+		"cmd/phase50_manual_live_opt_in_docs_test.go":                true,
 		"cmd/phase50_optional_live_placeholders_test.go":             true,
 		"cmd/sandbox_default_fake_only_guard_test.go":                true,
 		"cmd/sandbox_runtime_compat.go":                              true,
