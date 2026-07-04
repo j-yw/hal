@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
@@ -307,6 +309,176 @@ func TestUS007RunAndAutoStrictSecureDefaultSelectionBlocksAndPersistsDecision(t 
 	us007AssertBlockedSecurityReadinessGate(t, "auto strict manifest", autoManifest.Security)
 }
 
+func TestUS004RunAndAutoConfiguredStrictSecureDefaultBlocksBeforeLiveWork(t *testing.T) {
+	t.Setenv("HAL_CONFIG_HOME", t.TempDir())
+
+	startedAt := time.Date(2026, 7, 4, 0, 40, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	writeUnsupportedRunAutoReadinessGateConfig(t, projectDir, string(sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict))
+
+	t.Run("run", func(t *testing.T) {
+		store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "run-executions"))
+		var out bytes.Buffer
+		var errOut bytes.Buffer
+		err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+			Base:        "main",
+			BaseChanged: true,
+		}, &out, &errOut, runSandboxDeps{
+			defaultStore: func() (sandboxexecution.Store, error) { return store, nil },
+			newExecutionID: func(time.Time) string {
+				return "run-us004-configured-strict-missing-readiness"
+			},
+			now:        runSandboxTestClock(startedAt, finishedAt),
+			workingDir: func() (string, error) { return projectDir, nil },
+			planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+				return us007WorkspacePlan(projectDir), nil
+			},
+			loadSandbox: func(string) (*sandbox.SandboxState, error) {
+				t.Fatal("run loadSandbox should not run after configured strict secure-default gate blocks missing readiness")
+				return nil, nil
+			},
+			listSandboxes: func() ([]*sandbox.SandboxState, error) {
+				t.Fatal("run listSandboxes should not run after configured strict secure-default gate blocks missing readiness")
+				return nil, nil
+			},
+			listHosts: func() ([]*sandbox.SandboxHost, error) {
+				t.Fatal("run listHosts should not run after configured strict secure-default gate blocks missing readiness")
+				return nil, nil
+			},
+			resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+				t.Fatal("run default target resolution should not run after configured strict secure-default gate blocks missing readiness")
+				return nil, "", nil
+			},
+			provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+				t.Fatal("run provisioning should not run after configured strict secure-default gate blocks missing readiness")
+				return nil, nil
+			},
+			resolveProvider: func(string) (sandbox.Provider, error) {
+				t.Fatal("run provider resolution should not run after configured strict secure-default gate blocks missing readiness")
+				return nil, nil
+			},
+			resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+				t.Fatal("run runtime driver should not be constructed after configured strict secure-default gate blocks missing readiness")
+				return nil, nil
+			},
+			resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+				t.Fatal("run worker runtime resolver should not run after configured strict secure-default gate blocks missing readiness")
+				return nil, nil
+			},
+			engineAuthFiles: func() []factorySandboxAuthFile {
+				t.Fatal("run credential discovery should not run after configured strict secure-default gate blocks missing readiness")
+				return nil
+			},
+			bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+				t.Fatal("run bootstrap should not run after configured strict secure-default gate blocks missing readiness")
+				return factory.BootstrapResult{}, nil
+			},
+			runProviderExecWithEnv: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error {
+				t.Fatal("run provider exec should not run after configured strict secure-default gate blocks missing readiness")
+				return nil
+			},
+			runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
+				t.Fatal("run provider script should not run after configured strict secure-default gate blocks missing readiness")
+				return nil
+			},
+			materializeWorkspace: func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
+				t.Fatal("run workspace materialization should not run after configured strict secure-default gate blocks missing readiness")
+				return sandboxworkspace.MaterializationResult{}, nil
+			},
+		})
+		if err == nil {
+			t.Fatalf("runRunSandboxWithWriter() error = nil, want configured strict secure-default block\nstdout=%s\nstderr=%s", out.String(), errOut.String())
+		}
+		us004AssertStrictGateErrorSafe(t, "run strict configured error", err, projectDir)
+		manifest := mustLoadSandboxExecutionManifest(t, store, "run-us004-configured-strict-missing-readiness")
+		if manifest.Status != sandboxexecution.StatusFailed {
+			t.Fatalf("run manifest status = %q, want failed strict block", manifest.Status)
+		}
+		us004AssertStrictMissingReadinessSecurity(t, "run strict configured manifest", manifest.Security, projectDir, us007UnsafeRemote())
+	})
+
+	t.Run("auto", func(t *testing.T) {
+		store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "auto-executions"))
+		var out bytes.Buffer
+		var errOut bytes.Buffer
+		err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
+			Base:        "main",
+			BaseChanged: true,
+		}, &out, &errOut, autoSandboxDeps{
+			defaultStore: func() (sandboxexecution.Store, error) { return store, nil },
+			newExecutionID: func(time.Time) string {
+				return "auto-us004-configured-strict-missing-readiness"
+			},
+			now: runSandboxTestClock(startedAt, finishedAt),
+			planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+				return us007WorkspacePlan(projectDir), nil
+			},
+			loadSandbox: func(string) (*sandbox.SandboxState, error) {
+				t.Fatal("auto loadSandbox should not run after configured strict secure-default gate blocks missing readiness")
+				return nil, nil
+			},
+			listSandboxes: func() ([]*sandbox.SandboxState, error) {
+				t.Fatal("auto listSandboxes should not run after configured strict secure-default gate blocks missing readiness")
+				return nil, nil
+			},
+			listHosts: func() ([]*sandbox.SandboxHost, error) {
+				t.Fatal("auto listHosts should not run after configured strict secure-default gate blocks missing readiness")
+				return nil, nil
+			},
+			resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+				t.Fatal("auto default target resolution should not run after configured strict secure-default gate blocks missing readiness")
+				return nil, "", nil
+			},
+			provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
+				t.Fatal("auto provisioning should not run after configured strict secure-default gate blocks missing readiness")
+				return nil, nil
+			},
+			resolveProvider: func(string) (sandbox.Provider, error) {
+				t.Fatal("auto provider resolution should not run after configured strict secure-default gate blocks missing readiness")
+				return nil, nil
+			},
+			resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+				t.Fatal("auto runtime driver should not be constructed after configured strict secure-default gate blocks missing readiness")
+				return nil, nil
+			},
+			resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+				t.Fatal("auto worker runtime resolver should not run after configured strict secure-default gate blocks missing readiness")
+				return nil, nil
+			},
+			engineAuthFiles: func() []factorySandboxAuthFile {
+				t.Fatal("auto credential discovery should not run after configured strict secure-default gate blocks missing readiness")
+				return nil
+			},
+			bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+				t.Fatal("auto bootstrap should not run after configured strict secure-default gate blocks missing readiness")
+				return factory.BootstrapResult{}, nil
+			},
+			runProviderExecWithEnv: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error {
+				t.Fatal("auto provider exec should not run after configured strict secure-default gate blocks missing readiness")
+				return nil
+			},
+			runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
+				t.Fatal("auto provider script should not run after configured strict secure-default gate blocks missing readiness")
+				return nil
+			},
+			materializeWorkspace: func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
+				t.Fatal("auto workspace materialization should not run after configured strict secure-default gate blocks missing readiness")
+				return sandboxworkspace.MaterializationResult{}, nil
+			},
+		})
+		if err == nil {
+			t.Fatalf("runAutoSandboxWithWriter() error = nil, want configured strict secure-default block\nstdout=%s\nstderr=%s", out.String(), errOut.String())
+		}
+		us004AssertStrictGateErrorSafe(t, "auto strict configured error", err, projectDir)
+		manifest := mustLoadSandboxExecutionManifest(t, store, "auto-us004-configured-strict-missing-readiness")
+		if manifest.Status != sandboxexecution.StatusFailed {
+			t.Fatalf("auto manifest status = %q, want failed strict block", manifest.Status)
+		}
+		us004AssertStrictMissingReadinessSecurity(t, "auto strict configured manifest", manifest.Security, projectDir, us007UnsafeRemote())
+	})
+}
+
 func us007AssertAdvisorySecurityReadinessGate(t *testing.T, label string, security *sandbox.SandboxSecurity) {
 	t.Helper()
 	if security == nil || security.CapabilityReadinessDiagnostics == nil {
@@ -322,6 +494,63 @@ func us007AssertAdvisorySecurityReadinessGate(t *testing.T, label string, securi
 	gate := us007RequireSecurityReadinessGate(t, label, security)
 	us007AssertSecurityReadinessGateDecision(t, label, gate, expected)
 	us007AssertSecureDefaultDecisionSafe(t, label, gate)
+}
+
+func us004AssertStrictGateErrorSafe(t *testing.T, label string, err error, extraForbidden ...string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s error = nil", label)
+	}
+	message := err.Error()
+	for _, want := range []string{
+		"security readiness gate blocked",
+		string(sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict),
+		string(sandbox.SandboxSecurityCapabilityReadinessGateCodeBlocked),
+		string(sandbox.SandboxSecurityCapabilityReadinessGateReasonReadinessMissing),
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("%s error = %q, want safe marker %q", label, message, want)
+		}
+	}
+	us007AssertSecureDefaultDecisionSafe(t, label, message, extraForbidden...)
+}
+
+func us004AssertStrictMissingReadinessSecurity(t *testing.T, label string, security *sandbox.SandboxSecurity, extraForbidden ...string) {
+	t.Helper()
+	if security == nil || security.CapabilityReadinessDiagnostics == nil {
+		t.Fatalf("%s security = %#v, want capabilityReadinessDiagnostics", label, security)
+	}
+	diagnostics := security.CapabilityReadinessDiagnostics
+	if diagnostics.Total == 0 ||
+		diagnostics.HighestSeverity != sandbox.SandboxSecurityCapabilityDiagnosticSeverityWarning ||
+		!diagnostics.AdvisoryOnly ||
+		!diagnostics.WouldBlockStrictGate ||
+		len(diagnostics.Items) == 0 {
+		t.Fatalf("%s capabilityReadinessDiagnostics = %#v, want strict-blocking diagnostic summary", label, diagnostics)
+	}
+	for i, item := range diagnostics.Items {
+		if item.Code == "" ||
+			item.Severity != sandbox.SandboxSecurityCapabilityDiagnosticSeverityWarning ||
+			item.Classification == "" ||
+			item.ReasonCode == "" ||
+			!item.AdvisoryOnly ||
+			!item.WouldBlockStrictGate {
+			t.Fatalf("%s diagnostic item[%d] = %#v, want safe strict-blocking diagnostic", label, i, item)
+		}
+	}
+	encoded := us007JSONString(t, security)
+	for _, field := range []string{"capabilityReadinessDiagnostics", "securityReadinessGate"} {
+		if !strings.Contains(encoded, field) {
+			t.Fatalf("%s security JSON = %s, want %s", label, encoded, field)
+		}
+	}
+	expected := sandbox.EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(
+		sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+		diagnostics,
+	)
+	gate := us007RequireSecurityReadinessGate(t, label, security)
+	us007AssertSecurityReadinessGateDecision(t, label, gate, expected)
+	us007AssertSecureDefaultDecisionSafe(t, label, security, extraForbidden...)
 }
 
 func us007AssertBlockedSecurityReadinessGate(t *testing.T, label string, security *sandbox.SandboxSecurity) {
