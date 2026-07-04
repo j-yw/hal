@@ -138,6 +138,7 @@ func TestNetworkEnforcementImportBoundaryCoversPlanningAndAdapterFiles(t *testin
 		"doc.go",
 		"listener_lifecycle.go",
 		"live_contracts.go",
+		"policy_proxy_decision_log.go",
 		"plan.go",
 		"policy_proxy_decision.go",
 		"planner.go",
