@@ -154,6 +154,12 @@ func (metadata *RuntimeMetadata) SetTemplateLock(lock *RuntimeTemplateLockMetada
 	metadata.TemplateLock = SanitizeRuntimeTemplateLockMetadata(lock)
 }
 
+// CloneRuntimeTemplateLockMetadata returns a sanitized copy of runtime-local
+// template lock metadata for durable runtime surfaces.
+func CloneRuntimeTemplateLockMetadata(metadata *RuntimeTemplateLockMetadata) *RuntimeTemplateLockMetadata {
+	return SanitizeRuntimeTemplateLockMetadata(metadata)
+}
+
 func sanitizeRuntimeTemplateLockEntryMetadata(entry *RuntimeTemplateLockEntryMetadata) *RuntimeTemplateLockEntryMetadata {
 	if entry == nil {
 		return nil

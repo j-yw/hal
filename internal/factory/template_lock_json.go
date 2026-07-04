@@ -31,3 +31,16 @@ func (metadata *SandboxMetadata) SetTemplateLock(lock *sandbox.SandboxTemplateLo
 	}
 	metadata.TemplateLock = sandbox.SanitizeSandboxTemplateLockMetadata(lock)
 }
+
+// SetTemplateLockFromRuntime adopts sanitized selected-template metadata from
+// sandbox runtime state onto the existing factory sandbox metadata surface.
+func (metadata *SandboxMetadata) SetTemplateLockFromRuntime(runtime *sandbox.SandboxRuntimeState) {
+	if metadata == nil {
+		return
+	}
+	if runtime == nil {
+		metadata.TemplateLock = nil
+		return
+	}
+	metadata.TemplateLock = sandbox.SanitizeSandboxTemplateLockMetadata(runtime.TemplateLock)
+}

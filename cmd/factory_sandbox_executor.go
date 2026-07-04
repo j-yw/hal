@@ -2074,6 +2074,7 @@ func factorySandboxMetadataFromState(instance *sandbox.SandboxState) (string, *f
 		Security:       factorySandboxSecurityMetadataFromState(instance),
 		Lease:          factorySandboxLeaseMetadataFromState(instance),
 	}
+	metadata.SetTemplateLockFromRuntime(instance.Runtime)
 	if selectedWorkerRootlessSandboxState(instance) {
 		metadata.WorkerRouting = sandboxWorkerRoutingMetadataFromState(instance)
 	}
