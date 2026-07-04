@@ -314,7 +314,7 @@ func newSandboxRuntimeStatusLiveResponse(host *sandbox.SandboxHost, runtimeID st
 	}, true
 }
 
-func newSandboxRuntimeStatusLiveRuntimeNotFoundResponse(host *sandbox.SandboxHost, runtimeID string, status *sandboxworker.Status, refreshedAt time.Time) SandboxRuntimeStatusResponse {
+func newSandboxRuntimeStatusLiveRuntimeNotFoundResponse(host *sandbox.SandboxHost, runtimeID string, status *sandboxworker.Status, capabilities *sandboxworker.Capabilities, refreshedAt time.Time) SandboxRuntimeStatusResponse {
 	refreshedAt = refreshedAt.UTC()
 	return SandboxRuntimeStatusResponse{
 		ContractType:        SandboxRuntimeStatusContractType,
@@ -329,7 +329,7 @@ func newSandboxRuntimeStatusLiveRuntimeNotFoundResponse(host *sandbox.SandboxHos
 			CheckedAt: &refreshedAt,
 			Summary:   "runtime is not advertised by this worker",
 		},
-		Security:    newSandboxRuntimeSecuritySummary(nil),
+		Security:    newSandboxRuntimeSecuritySummaryFromWorkerCapabilities(capabilities),
 		Diagnostics: []SandboxRuntimeDiagnostic{},
 		Errors: []SandboxRuntimeError{
 			{
@@ -373,7 +373,7 @@ func newSandboxRuntimeStatusRuntimeNotFoundResponse(host *sandbox.SandboxHost, r
 		Status:    SandboxRuntimeReadinessUnavailable,
 		CheckedAt: nil,
 		Summary:   "runtime is not registered for this host",
-	}, newSandboxRuntimeSecuritySummary(nil), nil, []SandboxRuntimeError{
+	}, newSandboxRuntimeSecuritySummary(sandboxRuntimeHostSecurity(host)), nil, []SandboxRuntimeError{
 		{
 			Code:    SandboxRuntimeStatusErrorRuntimeNotFound,
 			Message: "runtime is not registered for this host",

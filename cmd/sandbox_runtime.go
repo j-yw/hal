@@ -378,7 +378,7 @@ func runSandboxRuntimeStatusLive(ctx context.Context, req sandboxRuntimeStatusRe
 			message: fmt.Sprintf("runtime %q is not advertised by this worker", runtimeID),
 		}
 		if req.JSON {
-			resp := newSandboxRuntimeStatusLiveRuntimeNotFoundResponse(host, runtimeID, status, refreshedAt)
+			resp := newSandboxRuntimeStatusLiveRuntimeNotFoundResponse(host, runtimeID, status, capabilities, refreshedAt)
 			if renderErr := renderSandboxRuntimeStatusResponseJSON(out, resp); renderErr != nil {
 				return renderErr
 			}
@@ -670,7 +670,17 @@ func sandboxRuntimeSecurityReadinessGateHuman(gate *sandbox.SandboxSecurityCapab
 	if reason := strings.TrimSpace(string(gate.Reason)); reason != "" {
 		parts = append(parts, "reason="+reason)
 	}
+	if remediation := sandboxRuntimeSecurityReadinessGateRemediationHuman(gate); remediation != "" {
+		parts = append(parts, remediation)
+	}
 	return strings.Join(parts, "; ")
+}
+
+func sandboxRuntimeSecurityReadinessGateRemediationHuman(gate *sandbox.SandboxSecurityCapabilityReadinessGateDecision) string {
+	if gate == nil || gate.Counts == nil || gate.Counts.StrictBlocking <= 0 {
+		return ""
+	}
+	return "remediation=provide missing secure-default proof or configuration before strict mode"
 }
 
 func sandboxRuntimeSecurityReadinessGateCountsHuman(counts *sandbox.SandboxSecurityCapabilityReadinessGateCounts) string {
