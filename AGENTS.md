@@ -38,6 +38,11 @@
 - PRs should explain the change, link the PRD/issue, and list tests run (e.g., `make test`).
 - Include screenshots only for CLI output or UX changes.
 
+## Patterns from phase53-live-proxy-firewall-microvm-e2e (2026-07-04)
+
+- Phase 53 final verification docs live in `docs/design/sandbox-runtime-v2-phase53-final-verification.md` and are guarded by `cmd/phase53_final_verification_test.go`; keep focused commands, broad quality gates, fake-only default scope, and the optional tagged live E2E command boundary in sync.
+- Phase 53 cmd guard tests that mention live E2E markers must be allowlisted in both `cmd/phase50_default_live_gate_guard_test.go` and `cmd/phase53_live_marker_guard_test.go`, because Phase 50 still guards optional live marker placement while US-010 guards Phase 53 live E2E marker isolation.
+
 ## Patterns from phase33-firecracker-process-launch-adapter (2026-07-03)
 
 - Phase 33 Firecracker live process launch code belongs only in `internal/sandboxruntime/microvm/firecracker`; default `NewBackend(BackendOptions{})` and backends with an injected adapter but without `LiveStart: true` must remain planning-only.

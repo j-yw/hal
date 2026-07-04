@@ -226,6 +226,7 @@ func us010ApprovedLiveE2EGuardFiles() map[string]bool {
 		"cmd/phase50_default_live_gate_guard_test.go":                                          true,
 		"cmd/phase50_manual_live_opt_in_docs_test.go":                                          true,
 		"cmd/phase50_optional_live_placeholders_test.go":                                       true,
+		"cmd/phase53_final_verification_test.go":                                               true,
 		"cmd/phase53_live_e2e_docs_test.go":                                                    true,
 		"cmd/phase53_live_marker_guard_test.go":                                                true,
 		"cmd/sandbox_default_fake_only_guard_test.go":                                          true,
