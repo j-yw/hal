@@ -214,9 +214,10 @@ func CloneSandboxNetworkPolicyResult(result SandboxNetworkPolicyResult) SandboxN
 	out := result
 	out.Requested = cloneSandboxNetworkPolicyIntentWithoutRuleValues(result.Requested)
 	out.Effective = cloneSandboxNetworkPolicyIntentWithoutRuleValues(result.Effective)
+	out.EnforcementMode = sanitizeSandboxNetworkPolicyEnforcementMode(result.EnforcementMode)
 	out.Capability = CloneSandboxNetworkPolicyEnforcementCapability(result.Capability)
 	if len(result.Warnings) > 0 {
-		out.Warnings = append([]SandboxNetworkPolicyWarning(nil), result.Warnings...)
+		out.Warnings = sanitizeSandboxNetworkPolicyWarnings(result.Warnings)
 	}
 	return out
 }
@@ -269,7 +270,100 @@ func cloneSandboxNetworkPolicyIntentWithoutRuleValues(intent SandboxNetworkPolic
 func cloneSandboxNetworkPolicyEnforcementCapability(capability SandboxNetworkPolicyEnforcementCapability) SandboxNetworkPolicyEnforcementCapability {
 	out := capability
 	if len(capability.Modes) > 0 {
-		out.Modes = append([]string(nil), capability.Modes...)
+		out.Modes = make([]string, 0, len(capability.Modes))
+		seen := make(map[string]struct{}, len(capability.Modes))
+		for _, mode := range capability.Modes {
+			safeMode := sanitizeSandboxNetworkPolicyEnforcementMode(mode)
+			if safeMode == "" {
+				continue
+			}
+			if _, ok := seen[safeMode]; ok {
+				continue
+			}
+			seen[safeMode] = struct{}{}
+			out.Modes = append(out.Modes, safeMode)
+		}
+		if len(out.Modes) == 0 {
+			out.Modes = nil
+		}
 	}
 	return out
+}
+
+func sanitizeSandboxNetworkPolicyEnforcementMode(mode string) string {
+	switch strings.TrimSpace(mode) {
+	case SandboxNetworkEnforcementModeNone,
+		SandboxNetworkEnforcementModeBestEffort,
+		SandboxNetworkEnforcementModeProxy,
+		SandboxNetworkEnforcementModeFirewall,
+		SandboxNetworkEnforcementModeRuntime,
+		SandboxNetworkEnforcementModeProxyFirewall:
+		return strings.TrimSpace(mode)
+	default:
+		return ""
+	}
+}
+
+func sanitizeSandboxNetworkPolicyWarnings(warnings []SandboxNetworkPolicyWarning) []SandboxNetworkPolicyWarning {
+	if len(warnings) == 0 {
+		return nil
+	}
+	out := make([]SandboxNetworkPolicyWarning, 0, len(warnings))
+	for _, warning := range warnings {
+		safeWarning, ok := sanitizeSandboxNetworkPolicyWarning(warning)
+		if ok {
+			out = append(out, safeWarning)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func sanitizeSandboxNetworkPolicyWarning(warning SandboxNetworkPolicyWarning) (SandboxNetworkPolicyWarning, bool) {
+	reason := warning.Reason
+	if !validSandboxNetworkPolicyWarningReason(reason) {
+		reason = ""
+	}
+	code := warning.Code
+	if !validSandboxNetworkPolicyWarningCode(code) {
+		code = ""
+	}
+	if code == "" && reason == "" {
+		return SandboxNetworkPolicyWarning{}, false
+	}
+	safe := SandboxNetworkPolicyWarning{
+		Code:   code,
+		Reason: reason,
+	}
+	if validSandboxNetworkPolicyPreset(SandboxNetworkPolicyPreset(warning.Policy)) {
+		safe.Policy = strings.TrimSpace(warning.Policy)
+	}
+	if safe.Reason != "" {
+		safe.Message = sandboxNetworkPolicyWarningMessage(safe.Reason)
+	}
+	return safe, true
+}
+
+func validSandboxNetworkPolicyWarningCode(code SandboxNetworkPolicyWarningCode) bool {
+	switch code {
+	case SandboxNetworkPolicyWarningUnsupportedEnforcement:
+		return true
+	default:
+		return false
+	}
+}
+
+func validSandboxNetworkPolicyWarningReason(reason SandboxNetworkPolicyWarningReason) bool {
+	switch reason {
+	case SandboxNetworkPolicyWarningReasonEnforcementUnsupported,
+		SandboxNetworkPolicyWarningReasonModeUnavailable,
+		SandboxNetworkPolicyWarningReasonDefaultDenyUnsupported,
+		SandboxNetworkPolicyWarningReasonRuleKindUnsupported,
+		SandboxNetworkPolicyWarningReasonPresetUnsupported:
+		return true
+	default:
+		return false
+	}
 }

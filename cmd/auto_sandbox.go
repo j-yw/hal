@@ -1027,6 +1027,7 @@ func outputAutoSandboxJSONError(out io.Writer, args []string, opts autoSandboxOp
 }
 
 func outputAutoSandboxJSONErrorWithReadinessGate(out io.Writer, args []string, opts autoSandboxOptions, errMsg string, gate *sandbox.SandboxSecurityCapabilityReadinessGateDecision) error {
+	errMsg = sanitizeRunPublicString(errMsg)
 	entryMode := determineAutoEntryMode("")
 	if !opts.Resume && len(args) > 0 && strings.TrimSpace(args[0]) != "" {
 		entryMode = autoEntryModeMarkdownPath

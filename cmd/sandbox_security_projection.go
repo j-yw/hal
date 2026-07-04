@@ -25,16 +25,54 @@ func sanitizeCommandSandboxSecurityWithNetworkProof(security *sandbox.SandboxSec
 		SecurityReadinessGate:          sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate),
 		Network:                        sanitizeCommandSandboxNetworkSecurityWithProof(security.Network, proof),
 	}
-	if security.Secrets != nil {
-		secrets := *security.Secrets
-		secrets.RequestedModes = append([]string(nil), security.Secrets.RequestedModes...)
-		secrets.ActiveModes = append([]string(nil), security.Secrets.ActiveModes...)
-		clone.Secrets = &secrets
-	}
+	clone.Secrets = sanitizeCommandSandboxSecretSecurity(security.Secrets)
 	if clone.Network == nil && clone.Secrets == nil && clone.CapabilityReadiness == nil && clone.SecurityReadinessGate == nil {
 		return nil
 	}
 	return clone
+}
+
+func sanitizeCommandSandboxSecretSecurity(secrets *sandbox.SandboxSecretSecurity) *sandbox.SandboxSecretSecurity {
+	if secrets == nil {
+		return nil
+	}
+	out := &sandbox.SandboxSecretSecurity{
+		RequestedModes: sanitizeCommandSandboxSecretModes(secrets.RequestedModes),
+		ActiveModes:    sanitizeCommandSandboxSecretModes(secrets.ActiveModes),
+	}
+	if len(out.RequestedModes) == 0 && len(out.ActiveModes) == 0 {
+		return nil
+	}
+	return out
+}
+
+func sanitizeCommandSandboxSecretModes(modes []string) []string {
+	if len(modes) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(modes))
+	seen := make(map[string]struct{}, len(modes))
+	for _, mode := range modes {
+		mode = strings.TrimSpace(mode)
+		switch mode {
+		case sandbox.SandboxSecretModeEnv,
+			sandbox.SandboxSecretModeFileTmpfs,
+			sandbox.SandboxSecretModeSSHAgent,
+			sandbox.SandboxSecretModeHTTPProxy,
+			sandbox.SandboxSecretModeLegacyAuthSync:
+		default:
+			continue
+		}
+		if _, ok := seen[mode]; ok {
+			continue
+		}
+		seen[mode] = struct{}{}
+		out = append(out, mode)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func cloneCommandSandboxSecurityCapabilityReadinessDiagnostics(diagnostics *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary) *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary {
