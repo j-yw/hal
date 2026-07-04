@@ -584,22 +584,32 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		}
 	}
 
-	req, record, err := resolveFactoryRunExecutionSecrets(req, record, deps)
-	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
-	if err != nil {
-		redactor = factory.NewRunSecretRedactor(resolveFactoryRunRedactionSecrets(req.Secrets, deps.lookupEnv))
-		return failFactoryRunSetup(store, record, deps.now(), err, redactor)
-	}
 	if req.Sandbox && strings.TrimSpace(req.BaseBranch) == "" {
-		return failFactoryRunSetup(store, record, deps.now(), fmt.Errorf("--base is required when --sandbox is set"), redactor)
+		return failFactoryRunSetup(store, record, deps.now(), fmt.Errorf("--base is required when --sandbox is set"), factory.RunSecretRedactor{})
 	}
 	var sandboxSecurity sandbox.SecurityEvaluationRequest
 	if req.Sandbox {
 		var err error
 		sandboxSecurity, err = loadConfiguredSandboxSecurityRequest(dir, req.SandboxRuntime)
 		if err != nil {
-			return failFactoryRunSetup(store, record, deps.now(), fmt.Errorf("load factory sandbox security config: %w", err), redactor)
+			return failFactoryRunSetup(store, record, deps.now(), fmt.Errorf("load factory sandbox security config: %w", err), factory.RunSecretRedactor{})
 		}
+		if factoryRunStrictDefaultSandboxReadinessGateApplies(req, policy) {
+			if err := enforceFactoryRunStrictDefaultSandboxReadinessGate(store, deps, &record, factory.RunSecretRedactor{}); err != nil {
+				failedRecord := record
+				if stored, loadErr := store.LoadRun(record.RunID); loadErr == nil && stored != nil {
+					failedRecord = *stored
+				}
+				return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
+			}
+		}
+	}
+
+	req, record, err := resolveFactoryRunExecutionSecrets(req, record, deps)
+	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
+	if err != nil {
+		redactor = factory.NewRunSecretRedactor(resolveFactoryRunRedactionSecrets(req.Secrets, deps.lookupEnv))
+		return failFactoryRunSetup(store, record, deps.now(), err, redactor)
 	}
 
 	runningRecord, err := markFactoryRunInProgressWithRedactor(store, record, deps.now(), redactor)
@@ -802,6 +812,13 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		return factoryRunExecutionResult{Record: completedRecord}, err
 	}
 	return factoryRunExecutionResult{Record: completedRecord, Render: true}, nil
+}
+
+func factoryRunStrictDefaultSandboxReadinessGateApplies(req factoryRunRequest, policy factory.FactoryPolicy) bool {
+	return req.Sandbox &&
+		policy.EffectiveSecurityReadinessGatePolicyMode() == sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict &&
+		strings.TrimSpace(req.SandboxHostID) == "" &&
+		strings.TrimSpace(req.SandboxRuntime) == ""
 }
 
 func normalizeFactoryRunExecutionDeps(deps factoryRunExecutionDeps) factoryRunExecutionDeps {
