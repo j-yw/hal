@@ -29,11 +29,27 @@ func SanitizeRuntimeCredentialDeliveryMetadata(metadata *RuntimeCredentialDelive
 	}
 	if status == "active" && sanitized.ActivationID != "" {
 		sanitized.ActiveModes = sanitizeRuntimeCredentialDeliveryModeList(metadata.ActiveModes, false)
+		sanitized.ActiveProofs = sanitizeRuntimeCredentialDeliveryProofSummaries(metadata.ActiveProofs)
+		sanitized.ActiveModes = mergeRuntimeCredentialDeliveryActiveProofModes(sanitized.ActiveModes, sanitized.ActiveProofs)
 	}
-	if status == "active" && len(sanitized.ActiveModes) == 0 {
+	if status == "active" && len(sanitized.ActiveModes) == 0 && len(sanitized.ActiveProofs) == 0 {
 		sanitized.Status = "skipped"
 	}
 	return sanitized
+}
+
+// RuntimeCredentialDeliveryMetadataValid reports whether metadata is already
+// acceptable for worker/runtime protocol surfaces. Compatibility proof claims
+// are metadata-only and are ignored; unsafe secure-mode proof summaries are
+// invalid so worker validation can fail closed.
+func RuntimeCredentialDeliveryMetadataValid(metadata *RuntimeCredentialDeliveryMetadata) bool {
+	if metadata == nil {
+		return true
+	}
+	if SanitizeRuntimeCredentialDeliveryMetadata(metadata) == nil {
+		return false
+	}
+	return runtimeCredentialDeliveryProofSummariesValid(metadata.ActiveProofs)
 }
 
 func (metadata RuntimeCredentialDeliveryMetadata) MarshalJSON() ([]byte, error) {
@@ -83,6 +99,125 @@ func sanitizeRuntimeCredentialDeliveryModeList(values []string, includeCompatibi
 func sanitizeRuntimeCredentialDeliveryMode(value string) string {
 	switch normalizeRuntimeCredentialDeliveryEnum(value) {
 	case "http_proxy", "ssh_agent", "file_tmpfs", "env", "legacy_auth_sync":
+		return normalizeRuntimeCredentialDeliveryEnum(value)
+	default:
+		return ""
+	}
+}
+
+func sanitizeRuntimeCredentialDeliveryProofSummaries(values []RuntimeCredentialDeliveryProofSummary) []RuntimeCredentialDeliveryProofSummary {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]RuntimeCredentialDeliveryProofSummary, 0, len(values))
+	for _, value := range values {
+		proof := sanitizeRuntimeCredentialDeliveryProofSummary(value)
+		if proof.ProofID == "" {
+			continue
+		}
+		key := proof.ProofID + "\x00" + proof.BindingID + "\x00" + proof.DeliveryMode
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, proof)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func sanitizeRuntimeCredentialDeliveryProofSummary(proof RuntimeCredentialDeliveryProofSummary) RuntimeCredentialDeliveryProofSummary {
+	mode := sanitizeRuntimeCredentialDeliveryMode(proof.DeliveryMode)
+	if !runtimeCredentialDeliverySecureProofMode(mode) {
+		return RuntimeCredentialDeliveryProofSummary{}
+	}
+	status := sanitizeRuntimeCredentialDeliveryStatus(proof.Status)
+	if status != "active" {
+		return RuntimeCredentialDeliveryProofSummary{}
+	}
+	proofID := sanitizeRuntimeCredentialDeliveryID(proof.ProofID)
+	if proofID == "" {
+		return RuntimeCredentialDeliveryProofSummary{}
+	}
+	originalBindingID := strings.TrimSpace(proof.BindingID)
+	bindingID := sanitizeRuntimeCredentialDeliveryID(proof.BindingID)
+	if originalBindingID != "" && bindingID == "" {
+		return RuntimeCredentialDeliveryProofSummary{}
+	}
+	originalSource := strings.TrimSpace(proof.Source)
+	source := sanitizeRuntimeCredentialDeliveryProofSource(proof.Source)
+	if originalSource != "" && source == "" {
+		return RuntimeCredentialDeliveryProofSummary{}
+	}
+	return RuntimeCredentialDeliveryProofSummary{
+		ProofID:      proofID,
+		BindingID:    bindingID,
+		DeliveryMode: mode,
+		Status:       status,
+		Source:       source,
+	}
+}
+
+func runtimeCredentialDeliveryProofSummariesValid(values []RuntimeCredentialDeliveryProofSummary) bool {
+	for _, value := range values {
+		mode := sanitizeRuntimeCredentialDeliveryMode(value.DeliveryMode)
+		if !runtimeCredentialDeliverySecureProofMode(mode) {
+			continue
+		}
+		status := sanitizeRuntimeCredentialDeliveryStatus(value.Status)
+		if status != "active" {
+			continue
+		}
+		if sanitizeRuntimeCredentialDeliveryProofSummary(value).ProofID == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func mergeRuntimeCredentialDeliveryActiveProofModes(modes []string, proofs []RuntimeCredentialDeliveryProofSummary) []string {
+	if len(proofs) == 0 {
+		return modes
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(modes)+len(proofs))
+	for _, mode := range modes {
+		mode = sanitizeRuntimeCredentialDeliveryMode(mode)
+		if mode == "" || mode == "legacy_auth_sync" || seen[mode] {
+			continue
+		}
+		seen[mode] = true
+		out = append(out, mode)
+	}
+	for _, proof := range proofs {
+		mode := sanitizeRuntimeCredentialDeliveryMode(proof.DeliveryMode)
+		if mode == "" || seen[mode] {
+			continue
+		}
+		seen[mode] = true
+		out = append(out, mode)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func runtimeCredentialDeliverySecureProofMode(mode string) bool {
+	switch mode {
+	case "http_proxy", "ssh_agent", "file_tmpfs":
+		return true
+	default:
+		return false
+	}
+}
+
+func sanitizeRuntimeCredentialDeliveryProofSource(value string) string {
+	switch normalizeRuntimeCredentialDeliveryEnum(value) {
+	case "broker", "secret_broker", "credential_proxy", "network_proxy", "handoff", "simulation", "adapter", "runtime", "worker":
 		return normalizeRuntimeCredentialDeliveryEnum(value)
 	default:
 		return ""

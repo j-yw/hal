@@ -77,16 +77,29 @@ type RuntimeMetadata struct {
 // RuntimeCredentialDeliveryMetadata is a stdlib-only compact credential
 // delivery summary for runtime and worker protocol surfaces.
 type RuntimeCredentialDeliveryMetadata struct {
-	ID             string   `json:"id,omitempty"`
-	RequestID      string   `json:"requestId,omitempty"`
-	PlanID         string   `json:"planId,omitempty"`
-	ActivationID   string   `json:"activationId,omitempty"`
-	RequestedModes []string `json:"requestedModes,omitempty"`
-	ActiveModes    []string `json:"activeModes,omitempty"`
-	Status         string   `json:"status,omitempty"`
-	ReasonCode     string   `json:"reasonCode,omitempty"`
-	WarningCount   int      `json:"warningCount,omitempty"`
-	ErrorCount     int      `json:"errorCount,omitempty"`
+	ID             string                                  `json:"id,omitempty"`
+	RequestID      string                                  `json:"requestId,omitempty"`
+	PlanID         string                                  `json:"planId,omitempty"`
+	ActivationID   string                                  `json:"activationId,omitempty"`
+	RequestedModes []string                                `json:"requestedModes,omitempty"`
+	ActiveModes    []string                                `json:"activeModes,omitempty"`
+	ActiveProofs   []RuntimeCredentialDeliveryProofSummary `json:"activeProofs,omitempty"`
+	Status         string                                  `json:"status,omitempty"`
+	ReasonCode     string                                  `json:"reasonCode,omitempty"`
+	WarningCount   int                                     `json:"warningCount,omitempty"`
+	ErrorCount     int                                     `json:"errorCount,omitempty"`
+}
+
+// RuntimeCredentialDeliveryProofSummary is the readiness-consumable proof
+// shape for secure-default credential delivery. It carries only safe IDs and
+// labels, never live handles, secret values, sockets, host paths, URLs, or
+// provider payloads.
+type RuntimeCredentialDeliveryProofSummary struct {
+	ProofID      string `json:"proofId"`
+	BindingID    string `json:"bindingId,omitempty"`
+	DeliveryMode string `json:"deliveryMode"`
+	Status       string `json:"status,omitempty"`
+	Source       string `json:"source,omitempty"`
 }
 
 // RuntimeProcessLaunchMetadata captures sanitized process-launch state labels.

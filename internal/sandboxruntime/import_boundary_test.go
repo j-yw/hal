@@ -197,6 +197,7 @@ var forbiddenSandboxruntimeCredentialDeliveryActivationImports = []sandboxruntim
 		name: "Docker or Podman package",
 		match: func(importPath string) bool {
 			return strings.HasPrefix(importPath, "github.com/docker/docker") ||
+				strings.HasPrefix(importPath, "github.com/docker/go-connections") ||
 				strings.HasPrefix(importPath, "github.com/containers/podman") ||
 				strings.HasPrefix(importPath, "github.com/containers/image") ||
 				strings.HasPrefix(importPath, "github.com/containers/storage") ||
@@ -227,6 +228,40 @@ var forbiddenSandboxruntimeCredentialDeliveryActivationImports = []sandboxruntim
 				strings.HasPrefix(importPath, "github.com/vultr/govultr") ||
 				strings.HasPrefix(importPath, "cloud.google.com/go") ||
 				strings.HasPrefix(importPath, "google.golang.org/api")
+		},
+	},
+	{
+		name: "live credential provider package",
+		match: func(importPath string) bool {
+			lower := strings.ToLower(importPath)
+			return strings.Contains(lower, "credentialprovider") ||
+				strings.Contains(lower, "credential-provider") ||
+				strings.Contains(lower, "providercredential") ||
+				strings.Contains(lower, "provider-credential")
+		},
+	},
+	{
+		name: "keychain or keyring package",
+		match: func(importPath string) bool {
+			lower := strings.ToLower(importPath)
+			return strings.Contains(lower, "keychain") ||
+				strings.Contains(lower, "keyring")
+		},
+	},
+	{
+		name: "Vault package",
+		match: func(importPath string) bool {
+			lower := strings.ToLower(importPath)
+			return strings.Contains(lower, "hashicorp/vault") ||
+				strings.Contains(lower, "/vault")
+		},
+	},
+	{
+		name: "1Password package",
+		match: func(importPath string) bool {
+			lower := strings.ToLower(importPath)
+			return strings.Contains(lower, "1password") ||
+				strings.Contains(lower, "onepassword")
 		},
 	},
 }
@@ -301,9 +336,15 @@ func TestSandboxruntimeCredentialDeliveryActivationForbiddenImportListCoversLive
 		{name: "HTTP proxy", importPath: "golang.org/x/net/proxy", want: "HTTP proxy implementation package"},
 		{name: "SSH agent", importPath: "golang.org/x/crypto/ssh/agent", want: "SSH agent implementation package"},
 		{name: "Docker", importPath: "github.com/docker/docker/client", want: "Docker or Podman package"},
+		{name: "Docker socket", importPath: "github.com/docker/go-connections/sockets", want: "Docker or Podman package"},
 		{name: "Podman", importPath: "github.com/containers/podman/v5/pkg/bindings", want: "Docker or Podman package"},
 		{name: "Firecracker", importPath: "github.com/firecracker-microvm/firecracker-go-sdk", want: "KVM or microVM SDK package"},
 		{name: "cloud SDK", importPath: "github.com/aws/aws-sdk-go-v2/service/secretsmanager", want: "cloud SDK package"},
+		{name: "live credential provider", importPath: "github.com/jywlabs/hal/internal/providercredentials", want: "live credential provider package"},
+		{name: "keychain", importPath: "github.com/keybase/go-keychain", want: "keychain or keyring package"},
+		{name: "keyring", importPath: "github.com/zalando/go-keyring", want: "keychain or keyring package"},
+		{name: "Vault", importPath: "github.com/hashicorp/vault/api", want: "Vault package"},
+		{name: "1Password", importPath: "github.com/1Password/connect-sdk-go/onepassword", want: "1Password package"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			message := sandboxruntimeCredentialDeliveryActivationImportBoundaryMessage("credential_delivery.go", tt.importPath)
