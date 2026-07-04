@@ -129,11 +129,15 @@ func TestCredentialDeliveryActivationProjectionRequiresActiveProofSummaries(t *t
 
 			output := sandbox.EvaluateProjectedSandboxSecurityCapabilityReadiness(
 				sandbox.ProjectSandboxPolicyProxyCredentialCapabilityReadinessInput(sandbox.SandboxPolicyProxyCredentialCapabilityReadinessProjection{
+					CredentialProxyPlan:    credentialDeliveryProjectionCredentialProxyPlan(tt.mode),
+					CredentialProxySession: credentialDeliveryProjectionCredentialProxySession(tt.mode),
 					CredentialProxyBindings: []sandbox.SandboxCredentialProxyBindingMetadata{{
 						ID:           credentialDeliveryProjectionBindingID(tt.mode),
-						PlanID:       "credential-proxy-plan-" + strings.ReplaceAll(string(tt.mode), "_", "-"),
+						PlanID:       credentialDeliveryProjectionCredentialProxyPlanID(tt.mode),
+						SessionID:    credentialDeliveryProjectionCredentialProxySessionID(tt.mode),
 						SecretID:     "env:GITHUB_TOKEN",
 						DeliveryMode: sandbox.SandboxCredentialProxyDeliveryMode(tt.mode),
+						Outcome:      sandbox.SandboxCredentialProxyBindingOutcomeBound,
 						Status:       sandbox.SandboxCredentialProxyStatusReady,
 					}},
 					CredentialDelivery: withProof,
@@ -584,6 +588,46 @@ func credentialDeliveryProjectionBindingID(mode credentialdelivery.Mode) string 
 
 func credentialDeliveryProjectionProofID(mode credentialdelivery.Mode) string {
 	return "credential-proof-" + strings.ReplaceAll(string(mode), "_", "-")
+}
+
+func credentialDeliveryProjectionCredentialProxyPlan(mode credentialdelivery.Mode) *sandbox.SandboxCredentialProxyPlanMetadata {
+	return &sandbox.SandboxCredentialProxyPlanMetadata{
+		ID:                    credentialDeliveryProjectionCredentialProxyPlanID(mode),
+		Source:                sandbox.SandboxCredentialProxySourceWorker,
+		SecretBrokerSessionID: credentialDeliveryProjectionSecretBrokerSessionID(mode),
+		NetworkProxySessionID: credentialDeliveryProjectionNetworkProxySessionID(mode),
+		BindingCount:          1,
+		Mode:                  sandbox.SandboxCredentialProxyModeBrokeredNetworkReference,
+		Status:                sandbox.SandboxCredentialProxyStatusReady,
+	}
+}
+
+func credentialDeliveryProjectionCredentialProxySession(mode credentialdelivery.Mode) *sandbox.SandboxCredentialProxySessionMetadata {
+	return &sandbox.SandboxCredentialProxySessionMetadata{
+		ID:                    credentialDeliveryProjectionCredentialProxySessionID(mode),
+		PlanID:                credentialDeliveryProjectionCredentialProxyPlanID(mode),
+		Source:                sandbox.SandboxCredentialProxySourceWorker,
+		SecretBrokerSessionID: credentialDeliveryProjectionSecretBrokerSessionID(mode),
+		NetworkProxySessionID: credentialDeliveryProjectionNetworkProxySessionID(mode),
+		Status:                sandbox.SandboxCredentialProxyStatusActive,
+		ReasonCode:            sandbox.SandboxCredentialProxyReasonRequested,
+	}
+}
+
+func credentialDeliveryProjectionCredentialProxyPlanID(mode credentialdelivery.Mode) string {
+	return "credential-proxy-plan-" + strings.ReplaceAll(string(mode), "_", "-")
+}
+
+func credentialDeliveryProjectionCredentialProxySessionID(mode credentialdelivery.Mode) string {
+	return "credential-proxy-session-" + strings.ReplaceAll(string(mode), "_", "-")
+}
+
+func credentialDeliveryProjectionSecretBrokerSessionID(mode credentialdelivery.Mode) string {
+	return "secret-broker-session-" + strings.ReplaceAll(string(mode), "_", "-")
+}
+
+func credentialDeliveryProjectionNetworkProxySessionID(mode credentialdelivery.Mode) string {
+	return "network-proxy-session-" + strings.ReplaceAll(string(mode), "_", "-")
 }
 
 type credentialDeliveryProjectionActivationAdapter struct{}

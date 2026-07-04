@@ -205,6 +205,27 @@ func TestNetworkProofDowngradeVariantsStayIncomplete(t *testing.T) {
 	}
 }
 
+func TestCredentialDeliveryProofDowngradeVariantsStayIncomplete(t *testing.T) {
+	for _, downgrade := range []Downgrade{
+		DowngradeMetadataOnly,
+		DowngradeAdvisory,
+		DowngradePlanned,
+		DowngradeWarningBearing,
+		DowngradePartial,
+		DowngradeFailed,
+		DowngradeUnsupported,
+	} {
+		t.Run(string(downgrade), func(t *testing.T) {
+			fixture := CompleteAcceptedEvidenceSet(DowngradeProof(ProofCredentialDelivery, downgrade))
+			if fixture.Gate.Outcome != sandbox.SandboxSecurityCapabilityReadinessGateOutcomeBlocked {
+				t.Fatalf("gate outcome for credential delivery downgrade %s = %q, want blocked: %#v", downgrade, fixture.Gate.Outcome, fixture.Gate)
+			}
+			requireNoReadyResult(t, fixture.Readiness, sandbox.SandboxSecurityCapabilityFamilySecretDelivery, sandbox.SandboxSecurityCapabilitySecretHTTPProxy)
+			assertFixtureDataSafe(t, fixture)
+		})
+	}
+}
+
 func TestMicroVMProofDowngradeVariantsStayIncomplete(t *testing.T) {
 	for _, downgrade := range []Downgrade{
 		DowngradePlanned,

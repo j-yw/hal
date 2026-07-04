@@ -44,6 +44,7 @@ const (
 	DowngradeBestEffort     Downgrade = "best_effort"
 	DowngradeFailed         Downgrade = "failed"
 	DowngradeAdvisory       Downgrade = "advisory"
+	DowngradePartial        Downgrade = "partial"
 	DowngradePlanned        Downgrade = "planned"
 	DowngradeFakeOnly       Downgrade = "fake_only"
 	DowngradeHistorical     Downgrade = "historical"
@@ -175,13 +176,18 @@ func CompleteAcceptedEvidenceSet(opts ...Option) EvidenceSet {
 		policyProxyCredential.NetworkEnforcementProof = downgradedNetworkProof(b.downgrade(ProofProxyFirewallEnforcement))
 	}
 
-	policyProxyCredential.CredentialProxyBindings = []sandbox.SandboxCredentialProxyBindingMetadata{
-		credentialBinding(),
-	}
+	policyProxyCredential.CredentialProxyPlan = credentialProxyPlan()
+	policyProxyCredential.CredentialProxySession = credentialProxySession()
+	policyProxyCredential.CredentialProxyBindings = []sandbox.SandboxCredentialProxyBindingMetadata{credentialBinding()}
 	switch b.state(ProofCredentialDelivery) {
 	case ProofStateComplete:
 		policyProxyCredential.CredentialDelivery = completeCredentialDeliveryStatus()
 	case ProofStateDowngraded:
+		if b.downgrade(ProofCredentialDelivery) == DowngradePartial {
+			session := *policyProxyCredential.CredentialProxySession
+			session.SecretBrokerSessionID = ""
+			policyProxyCredential.CredentialProxySession = &session
+		}
 		policyProxyCredential.CredentialDelivery = downgradedCredentialDeliveryStatus(b.downgrade(ProofCredentialDelivery))
 	}
 
@@ -495,6 +501,7 @@ func credentialBinding() sandbox.SandboxCredentialProxyBindingMetadata {
 	return sandbox.SandboxCredentialProxyBindingMetadata{
 		ID:                  "credential-binding-http-proxy",
 		PlanID:              "credential-plan-http-proxy",
+		SessionID:           "credential-session-http-proxy",
 		SecretID:            "secret-service-ref",
 		DeliveryMode:        sandbox.SandboxCredentialProxyDeliveryModeHTTPProxy,
 		RequestCategory:     sandbox.SandboxCredentialProxyRequestNetworkAuth,
@@ -502,6 +509,30 @@ func credentialBinding() sandbox.SandboxCredentialProxyBindingMetadata {
 		Outcome:             sandbox.SandboxCredentialProxyBindingOutcomeBound,
 		Status:              sandbox.SandboxCredentialProxyStatusReady,
 		ReasonCode:          sandbox.SandboxCredentialProxyReasonRequested,
+	}
+}
+
+func credentialProxyPlan() *sandbox.SandboxCredentialProxyPlanMetadata {
+	return &sandbox.SandboxCredentialProxyPlanMetadata{
+		ID:                    "credential-plan-http-proxy",
+		Source:                sandbox.SandboxCredentialProxySourceWorker,
+		SecretBrokerSessionID: "secret-broker-session-proof",
+		NetworkProxySessionID: "network-proxy-session-proof",
+		Mode:                  sandbox.SandboxCredentialProxyModeBrokeredNetworkReference,
+		Status:                sandbox.SandboxCredentialProxyStatusReady,
+		BindingCount:          1,
+	}
+}
+
+func credentialProxySession() *sandbox.SandboxCredentialProxySessionMetadata {
+	return &sandbox.SandboxCredentialProxySessionMetadata{
+		ID:                    "credential-session-http-proxy",
+		PlanID:                "credential-plan-http-proxy",
+		Source:                sandbox.SandboxCredentialProxySourceWorker,
+		SecretBrokerSessionID: "secret-broker-session-proof",
+		NetworkProxySessionID: "network-proxy-session-proof",
+		Status:                sandbox.SandboxCredentialProxyStatusActive,
+		ReasonCode:            sandbox.SandboxCredentialProxyReasonRequested,
 	}
 }
 
@@ -527,6 +558,12 @@ func completeCredentialDeliveryStatus() *sandbox.SandboxCredentialDeliveryStatus
 func downgradedCredentialDeliveryStatus(downgrade Downgrade) *sandbox.SandboxCredentialDeliveryStatusMetadata {
 	status := *completeCredentialDeliveryStatus()
 	switch downgrade {
+	case DowngradeAdvisory:
+		status.Status = "ready"
+		status.ActivationID = ""
+		status.ActiveModes = nil
+		status.ActiveProofs = nil
+		status.ReasonCode = "requested"
 	case DowngradeWarningBearing:
 		status.WarningCount = 1
 	case DowngradeFailed, DowngradeBlocked:
@@ -538,6 +575,8 @@ func downgradedCredentialDeliveryStatus(downgrade Downgrade) *sandbox.SandboxCre
 		status.ActiveModes = nil
 		status.ActiveProofs = nil
 		status.ReasonCode = "unsupported_capability"
+	case DowngradePartial:
+		status.ReasonCode = "missing_activation_proof"
 	default:
 		status.Status = "planned"
 		status.ActivationID = ""
