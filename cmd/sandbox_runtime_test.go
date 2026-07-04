@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworker"
 	"github.com/spf13/cobra"
 )
@@ -1469,6 +1470,141 @@ func TestSandboxRuntimeStatusLiveWorkerRuntimeRefreshesCapabilitiesWithoutPersis
 	}
 }
 
+func TestUS012SandboxRuntimeStatusJSONProjectsProxyOnlyNetworkEnforcement(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:                "worker-proxy",
+		Name:              "proxy-builder",
+		Kind:              sandbox.SandboxHostKindWorker,
+		Endpoint:          "unix:///tmp/private/us012-worker-proxy.sock",
+		SupportedRuntimes: []string{sandboxworker.RuntimeDriverRootlessPodman},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	refreshedAt := time.Date(2026, 7, 4, 12, 15, 0, 0, time.UTC)
+	fakeClient := &fakeSandboxHostWorkerClient{
+		status: us012WorkerStatus("worker-proxy"),
+		capabilities: &sandboxworker.Capabilities{
+			WorkerID: "worker-proxy",
+			RuntimeDrivers: []sandboxworker.RuntimeDriver{{
+				ID:                 sandboxworker.RuntimeDriverRootlessPodman,
+				HostKind:           sandboxworker.HostKindLocal,
+				IsolationLevel:     sandboxworker.IsolationLevelContainer,
+				Operations:         []string{sandboxworker.OperationStart},
+				Security:           us012ProxyOnlyRuntimeSecurity(),
+				NetworkEnforcement: us012ProxyActiveNetworkMetadata("us012-proxy-active"),
+			}},
+		},
+	}
+
+	deps := defaultSandboxRuntimeDeps()
+	deps.now = func() time.Time { return refreshedAt }
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		return fakeClient, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxRuntimeCommand(deps)
+	cmd.SetArgs([]string{"status", "worker-proxy", sandboxworker.RuntimeDriverRootlessPodman, "--live", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+	if fakeClient.statusCalls != 1 || fakeClient.capabilitiesCalls != 1 {
+		t.Fatalf("worker calls status=%d capabilities=%d, want one each", fakeClient.statusCalls, fakeClient.capabilitiesCalls)
+	}
+
+	resp := decodeOneSandboxRuntimeStatusJSON(t, stdout.Bytes())
+	if resp.Source.Mode != SandboxRuntimeSourceLiveRefreshed || !resp.Source.RequestedLive || resp.Source.CacheUpdated {
+		t.Fatalf("source = %#v, want live-refreshed without cache update", resp.Source)
+	}
+	if resp.Security.Requested.NetworkPolicy == nil || *resp.Security.Requested.NetworkPolicy != sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("requested security = %#v, want deny-by-default request", resp.Security.Requested)
+	}
+	if resp.Security.Enforced.NetworkEnforcement == nil || *resp.Security.Enforced.NetworkEnforcement != sandbox.SandboxNetworkEnforcementModeProxy {
+		t.Fatalf("enforced security = %#v, want proxy-only enforcement", resp.Security.Enforced)
+	}
+	if resp.Security.Enforced.NetworkPolicy == nil || *resp.Security.Enforced.NetworkPolicy != sandbox.SandboxNetworkPolicyBestEffort {
+		t.Fatalf("enforced security = %#v, want best-effort policy while proxy-only proof lacks firewall/runtime rule proof", resp.Security.Enforced)
+	}
+	if sandboxRuntimeStringPtrEquals(resp.Security.Enforced.NetworkEnforcement, sandbox.SandboxNetworkEnforcementModeProxyFirewall) ||
+		sandboxRuntimeStringPtrEquals(resp.Security.Enforced.NetworkPolicy, sandbox.SandboxNetworkPolicyDenyByDefault) {
+		t.Fatalf("runtime status overclaimed strict network enforcement: %#v", resp.Security.Enforced)
+	}
+	requireRuntimeCapabilityReadinessResult(t,
+		resp.Security.CapabilityReadiness,
+		sandbox.SandboxSecurityCapabilityReadinessMetadataOnly,
+		sandbox.SandboxSecurityCapabilityFamilyNetworkProxy,
+		sandbox.SandboxSecurityCapabilityNetworkProxyEnforcement,
+	)
+	requireRuntimeCapabilityReadinessDiagnostic(t,
+		resp.Security.CapabilityReadinessDiagnostics,
+		sandbox.SandboxSecurityCapabilityDiagnosticClassificationMetadataOnly,
+		sandbox.SandboxSecurityCapabilityFamilyNetworkProxy,
+		sandbox.SandboxSecurityCapabilityNetworkProxyEnforcement,
+		true,
+	)
+	if resp.Security.SecurityReadinessGate == nil || resp.Security.SecurityReadinessGate.Counts == nil ||
+		resp.Security.SecurityReadinessGate.Counts.StrictBlocking == 0 {
+		t.Fatalf("securityReadinessGate = %#v, want strict secure-default blocking metadata", resp.Security.SecurityReadinessGate)
+	}
+	if resp.Security.SecurityReadinessGate.Outcome == sandbox.SandboxSecurityCapabilityReadinessGateOutcomeAllowed {
+		t.Fatalf("securityReadinessGate = %#v, want proxy-only proof to stay below full secure-default readiness", resp.Security.SecurityReadinessGate)
+	}
+	us012AssertRuntimeStatusJSONRedacted(t, stdout.String())
+}
+
+func TestUS012SandboxRuntimeStatusJSONDoesNotUpgradeProxyWithoutProjectedCapability(t *testing.T) {
+	setSandboxHostRegistryHome(t)
+	if err := sandbox.SaveHost(&sandbox.SandboxHost{
+		ID:                "worker-proxy-missing-proof",
+		Name:              "proxy-builder",
+		Kind:              sandbox.SandboxHostKindWorker,
+		Endpoint:          "unix:///tmp/private/us012-missing-proof.sock",
+		SupportedRuntimes: []string{sandboxworker.RuntimeDriverRootlessPodman},
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	fakeClient := &fakeSandboxHostWorkerClient{
+		status: us012WorkerStatus("worker-proxy-missing-proof"),
+		capabilities: &sandboxworker.Capabilities{
+			WorkerID: "worker-proxy-missing-proof",
+			RuntimeDrivers: []sandboxworker.RuntimeDriver{{
+				ID:                 sandboxworker.RuntimeDriverRootlessPodman,
+				HostKind:           sandboxworker.HostKindLocal,
+				IsolationLevel:     sandboxworker.IsolationLevelContainer,
+				Operations:         []string{sandboxworker.OperationStart},
+				Security:           us012ProxyWithoutCapabilitySecurity(),
+				NetworkEnforcement: us012ProxyFailedNetworkMetadata("us012-proxy-failed"),
+			}},
+		},
+	}
+	deps := defaultSandboxRuntimeDeps()
+	deps.now = func() time.Time { return time.Date(2026, 7, 4, 12, 30, 0, 0, time.UTC) }
+	deps.newWorkerClient = func(string) (sandboxHostWorkerClient, error) {
+		return fakeClient, nil
+	}
+
+	cmd, stdout, stderr := newTestSandboxRuntimeCommand(deps)
+	cmd.SetArgs([]string{"status", "worker-proxy-missing-proof", sandboxworker.RuntimeDriverRootlessPodman, "--live", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; stderr=%q", err, stderr.String())
+	}
+
+	resp := decodeOneSandboxRuntimeStatusJSON(t, stdout.Bytes())
+	if resp.Security.Enforced.NetworkEnforcement == nil || *resp.Security.Enforced.NetworkEnforcement != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("enforced security = %#v, want no proxy upgrade without projected capability", resp.Security.Enforced)
+	}
+	if resp.Security.Enforced.NetworkPolicy == nil || *resp.Security.Enforced.NetworkPolicy != sandbox.SandboxNetworkPolicyBestEffort {
+		t.Fatalf("enforced security = %#v, want best-effort policy without active proof", resp.Security.Enforced)
+	}
+	if sandboxRuntimeStringPtrEquals(resp.Security.Enforced.NetworkEnforcement, sandbox.SandboxNetworkEnforcementModeProxy) ||
+		sandboxRuntimeStringPtrEquals(resp.Security.Enforced.NetworkEnforcement, sandbox.SandboxNetworkEnforcementModeProxyFirewall) {
+		t.Fatalf("runtime status overclaimed failed proxy proof: %#v", resp.Security.Enforced)
+	}
+	us012AssertRuntimeStatusJSONRedacted(t, stdout.String())
+}
+
 func TestSandboxRuntimeStatusLiveWorkerMissingRuntimeEmitsEndpointSafeErrorDocument(t *testing.T) {
 	setSandboxHostRegistryHome(t)
 	if err := sandbox.SaveHost(&sandbox.SandboxHost{
@@ -2292,6 +2428,157 @@ func sandboxRuntimeTestWorkerSecurity(isolationLevel string) sandboxworker.Secur
 			},
 			IsolationLevel: isolationLevel,
 		},
+	}
+}
+
+func us012WorkerStatus(workerID string) *sandboxworker.Status {
+	return &sandboxworker.Status{
+		WorkerID: workerID,
+		HostKind: sandboxworker.HostKindLocal,
+		Health: sandboxworker.WorkerHealth{
+			Status: sandboxworker.HealthStatusHealthy,
+		},
+		Security: sandboxworker.DefaultWorkerSecurityPolicy(),
+	}
+}
+
+func us012ProxyOnlyRuntimeSecurity() sandboxworker.SecurityPolicy {
+	return sandboxworker.SecurityPolicy{
+		Requested: sandboxworker.SecurityControls{
+			NetworkPolicy:      sandboxworker.NetworkPolicyDenyByDefault,
+			NetworkEnforcement: sandboxworker.NetworkEnforcementRuntime,
+			IsolationLevel:     sandboxworker.IsolationLevelContainer,
+		},
+		Enforced: sandboxworker.SecurityControls{
+			NetworkPolicy:      sandboxworker.NetworkPolicyBestEffort,
+			NetworkEnforcement: sandboxworker.NetworkEnforcementProxy,
+			NetworkEnforcementCapability: &sandboxruntime.RuntimeNetworkEnforcementCapability{
+				Supported:                 true,
+				Modes:                     []string{sandboxworker.NetworkEnforcementProxy, "https://api.internal.example.com"},
+				SupportsDomainRules:       true,
+				SupportsEndpointRules:     true,
+				SupportsPrivateRangeRules: true,
+				SupportsMetadataEndpoint:  true,
+				SupportsLoopbackRules:     true,
+				SupportsLinkLocalRules:    true,
+			},
+			IsolationLevel: sandboxworker.IsolationLevelContainer,
+		},
+	}
+}
+
+func us012ProxyWithoutCapabilitySecurity() sandboxworker.SecurityPolicy {
+	security := us012ProxyOnlyRuntimeSecurity()
+	security.Enforced.NetworkEnforcement = sandboxworker.NetworkEnforcementNone
+	security.Enforced.NetworkEnforcementCapability = nil
+	return security
+}
+
+func us012ProxyActiveNetworkMetadata(planID string) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
+	return us012ProxyNetworkMetadata(planID, "active", &sandboxruntime.RuntimeNetworkEnforcementResultMetadata{
+		PlanID:           planID,
+		AdapterID:        "worker-proxy-adapter",
+		Outcome:          "success",
+		EnforcementMode:  sandboxworker.NetworkEnforcementProxy,
+		Mechanisms:       []string{sandboxworker.NetworkEnforcementProxy},
+		Operations:       []string{"proxy_route", "connect https://api.internal.example.com:443", "/tmp/us012-proxy.sock", "GITHUB_TOKEN"},
+		PolicySnapshotID: planID + "-snapshot",
+		PolicyPreset:     sandboxworker.NetworkPolicyDenyByDefault,
+		Capability:       us012ProxyRuntimeCapability(),
+		ReasonCode:       "applied",
+	})
+}
+
+func us012ProxyFailedNetworkMetadata(planID string) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
+	return us012ProxyNetworkMetadata(planID, "failed", &sandboxruntime.RuntimeNetworkEnforcementResultMetadata{
+		PlanID:           planID,
+		AdapterID:        "worker-proxy-adapter",
+		Outcome:          "failure",
+		EnforcementMode:  sandboxworker.NetworkEnforcementProxy,
+		Mechanisms:       []string{sandboxworker.NetworkEnforcementProxy},
+		Operations:       []string{"proxy_route", "connect https://api.internal.example.com:443", "/tmp/us012-proxy.sock", "GITHUB_TOKEN"},
+		PolicySnapshotID: planID + "-snapshot",
+		PolicyPreset:     sandboxworker.NetworkPolicyDenyByDefault,
+		Capability:       us012ProxyRuntimeCapability(),
+		ReasonCode:       "adapter_failed",
+		WarningCodes:     []string{"sanitized_adapter_error"},
+	})
+}
+
+func us012ProxyNetworkMetadata(planID, proxyStatus string, result *sandboxruntime.RuntimeNetworkEnforcementResultMetadata) *sandboxruntime.RuntimeNetworkEnforcementMetadata {
+	return &sandboxruntime.RuntimeNetworkEnforcementMetadata{
+		Plan: &sandboxruntime.RuntimeNetworkEnforcementPlanMetadata{
+			ID:               planID,
+			Source:           "worker",
+			Operation:        "prepare_network",
+			PolicySnapshotID: planID + "-snapshot",
+			PolicyPreset:     sandboxworker.NetworkPolicyDenyByDefault,
+			DefaultPosture:   sandboxworker.NetworkPolicyDenyByDefault,
+			Mechanisms:       []string{sandboxworker.NetworkEnforcementProxy, "https://api.internal.example.com", "token=secret"},
+			Operations:       []string{"default_deny", "connect 10.0.0.5:443", "/tmp/us012-proxy.sock"},
+		},
+		Orchestration: &sandboxruntime.RuntimeNetworkEnforcementOrchestrationMetadata{
+			PlanID:           planID,
+			AdapterID:        "worker-proxy-adapter",
+			Status:           proxyStatus,
+			Mechanisms:       []string{sandboxworker.NetworkEnforcementProxy, "169.254.169.254"},
+			Operations:       []string{"active_proxy", "curl https://api.internal.example.com", "OPENAI_API_KEY"},
+			PolicySnapshotID: planID + "-snapshot",
+			PolicyPreset:     sandboxworker.NetworkPolicyDenyByDefault,
+			Proxy: &sandboxruntime.RuntimeNetworkEnforcementLifecycleMetadata{
+				ID:               planID + "-proxy",
+				PlanID:           planID,
+				AdapterID:        "worker-proxy-adapter",
+				Status:           proxyStatus,
+				Mechanisms:       []string{sandboxworker.NetworkEnforcementProxy},
+				Operations:       []string{"active_proxy", "listen 127.0.0.1:8080", "Authorization: Bearer secret"},
+				PolicySnapshotID: planID + "-snapshot",
+				PolicyPreset:     sandboxworker.NetworkPolicyDenyByDefault,
+				CapabilityLabels: []string{"proxy_active", "token_holder"},
+				ReasonCode:       proxyStatus,
+			},
+			CapabilityLabels: []string{"proxy_active", "token_holder"},
+			ReasonCode:       proxyStatus,
+		},
+		Result: result,
+	}
+}
+
+func us012ProxyRuntimeCapability() *sandboxruntime.RuntimeNetworkEnforcementCapability {
+	return &sandboxruntime.RuntimeNetworkEnforcementCapability{
+		Supported:                 true,
+		Modes:                     []string{sandboxworker.NetworkEnforcementProxy, "https://api.internal.example.com"},
+		SupportsDomainRules:       true,
+		SupportsEndpointRules:     true,
+		SupportsPrivateRangeRules: true,
+		SupportsMetadataEndpoint:  true,
+		SupportsLoopbackRules:     true,
+		SupportsLinkLocalRules:    true,
+	}
+}
+
+func us012AssertRuntimeStatusJSONRedacted(t *testing.T, output string) {
+	t.Helper()
+	for _, forbidden := range []string{
+		"/tmp/private",
+		"us012-worker-proxy.sock",
+		"us012-missing-proof.sock",
+		"api.internal.example.com",
+		"10.0.0.5",
+		"127.0.0.1",
+		"169.254.169.254",
+		"Authorization",
+		"Bearer",
+		"OPENAI_API_KEY",
+		"GITHUB_TOKEN",
+		"token",
+		"secret",
+		"/tmp/us012-proxy.sock",
+		"://",
+	} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("runtime status JSON leaked forbidden proxy proof fragment %q:\n%s", forbidden, output)
+		}
 	}
 }
 
