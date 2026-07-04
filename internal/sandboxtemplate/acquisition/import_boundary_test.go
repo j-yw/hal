@@ -133,6 +133,26 @@ func TestSandboxTemplateAcquisitionImportBoundaryAllowsFakeSafeParsingAndContrac
 	}
 }
 
+func TestSandboxTemplateAcquisitionImportBoundaryAllowsTrustPolicyRuntimeMetadataProjection(t *testing.T) {
+	if message := sandboxTemplateAcquisitionImportBoundaryMessage("trust_policy_runtime.go", "github.com/jywlabs/hal/internal/sandboxruntime"); message != "" {
+		t.Fatalf("trust policy runtime metadata import rejected: %s", message)
+	}
+	if message := sandboxTemplateAcquisitionImportBoundaryMessage("trust_policy_runtime.go", "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"); !strings.Contains(message, "concrete runtime package") {
+		t.Fatalf("concrete runtime import message = %q, want rejection", message)
+	}
+
+	const metadataProjectionSource = `func f() { _ = sandboxruntime.RuntimeTemplateLockMetadata{} }`
+	if message := sandboxTemplateAcquisitionSourceBoundaryMessage("trust_policy_runtime.go", metadataProjectionSource); message != "" {
+		t.Fatalf("trust policy runtime metadata source rejected: %s", message)
+	}
+	if message := sandboxTemplateAcquisitionSourceBoundaryMessage("trust_policy_runtime.go", `func f() { _ = sandboxruntime.NewDriver(target) }`); !strings.Contains(message, "sandboxruntime.") {
+		t.Fatalf("trust policy runtime startup source message = %q, want sandboxruntime marker rejection", message)
+	}
+	if message := sandboxTemplateAcquisitionSourceBoundaryMessage("contracts.go", metadataProjectionSource); !strings.Contains(message, "sandboxruntime.") {
+		t.Fatalf("default acquisition source marker message = %q, want sandboxruntime marker rejection", message)
+	}
+}
+
 func TestSandboxTemplateAcquisitionImportBoundaryDistinguishesFakeOCIContractsFromLiveClients(t *testing.T) {
 	for _, importPath := range []string{
 		"github.com/google/go-containerregistry/pkg/v1/remote",
@@ -240,6 +260,9 @@ func sandboxTemplateAcquisitionProductionFiles(t *testing.T) []string {
 }
 
 func sandboxTemplateAcquisitionImportBoundaryMessage(fileName, importPath string) string {
+	if sandboxTemplateAcquisitionTrustPolicyRuntimeMetadataImport(fileName, importPath) {
+		return ""
+	}
 	if forbidden := sandboxTemplateAcquisitionForbiddenImportFor(importPath); forbidden != nil {
 		return sandboxTemplateAcquisitionPackagePath + " file " + fileName + " imports forbidden " + forbidden.name + " " + strconv.Quote(importPath)
 	}
@@ -250,6 +273,16 @@ func sandboxTemplateAcquisitionImportBoundaryMessage(fileName, importPath string
 		return sandboxTemplateAcquisitionPackagePath + " file " + fileName + " imports unapproved internal package " + strconv.Quote(importPath)
 	}
 	return sandboxTemplateAcquisitionPackagePath + " file " + fileName + " imports unapproved dependency " + strconv.Quote(importPath) + "; default acquisition must stay fake-safe"
+}
+
+func sandboxTemplateAcquisitionTrustPolicyRuntimeMetadataImport(fileName, importPath string) bool {
+	return sandboxTemplateAcquisitionTrustPolicyFile(fileName) &&
+		importPath == "github.com/jywlabs/hal/internal/sandboxruntime"
+}
+
+func sandboxTemplateAcquisitionTrustPolicyFile(fileName string) bool {
+	base := filepath.Base(fileName)
+	return strings.HasPrefix(base, "trust_policy") && strings.HasSuffix(base, ".go")
 }
 
 func sandboxTemplateAcquisitionAllowedImport(importPath string) bool {
@@ -417,9 +450,31 @@ var sandboxTemplateAcquisitionForbiddenImports = []sandboxTemplateAcquisitionFor
 
 func sandboxTemplateAcquisitionSourceBoundaryMessage(fileName, source string) string {
 	for _, marker := range sandboxTemplateAcquisitionForbiddenSourceMarkers() {
+		if marker == "sandboxruntime." && sandboxTemplateAcquisitionTrustPolicyFile(fileName) {
+			if message := sandboxTemplateAcquisitionTrustPolicyRuntimeSourceBoundaryMessage(fileName, source); message != "" {
+				return message
+			}
+			continue
+		}
 		if strings.Contains(source, marker) {
 			return sandboxTemplateAcquisitionPackagePath + " file " + fileName + " contains forbidden default acquisition live behavior marker " + strconv.Quote(marker)
 		}
+	}
+	return ""
+}
+
+func sandboxTemplateAcquisitionTrustPolicyRuntimeSourceBoundaryMessage(fileName, source string) string {
+	candidate := source
+	for _, selector := range []string{
+		"sandboxruntime.RuntimeTemplateLockMetadata",
+		"sandboxruntime.RuntimeTemplateLockEntryMetadata",
+		"sandboxruntime.RuntimeTemplateTrustPolicyMetadata",
+		"sandboxruntime.SanitizeRuntimeTemplateLockMetadata",
+	} {
+		candidate = strings.ReplaceAll(candidate, selector, "")
+	}
+	if strings.Contains(candidate, "sandboxruntime.") {
+		return sandboxTemplateAcquisitionPackagePath + " file " + fileName + " contains forbidden default acquisition live behavior marker " + strconv.Quote("sandboxruntime.")
 	}
 	return ""
 }
