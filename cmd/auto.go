@@ -13,6 +13,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 	"github.com/jywlabs/hal/internal/template"
@@ -44,6 +45,7 @@ const (
 	autoFactoryMaxRunAttemptsEnv       = "HAL_FACTORY_MAX_RUN_ATTEMPTS"
 	autoFactoryMaxReviewFixAttemptsEnv = "HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS"
 	autoFactoryMaxCIFixAttemptsEnv     = "HAL_FACTORY_MAX_CI_FIX_ATTEMPTS"
+	autoFactoryCIPolicyEnv             = "HAL_FACTORY_CI_POLICY"
 )
 
 type autoEntryMode string
@@ -70,6 +72,7 @@ type autoFactoryAttemptPolicy struct {
 }
 
 type autoFactoryAttemptPolicyContextKey struct{}
+type autoFactoryCIPolicyContextKey struct{}
 
 const (
 	autoStepStatusCompleted autoStepStatus = "completed"
@@ -557,6 +560,14 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
+	factoryCIPolicy, err := autoFactoryCIPolicyForRun(ctx)
+	if err != nil {
+		if jsonMode {
+			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
+			return outputAutoJSON(out, jr)
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
 
 	if err := compound.MigrateLegacyAutoPRD(dir, errOut); err != nil {
 		if jsonMode {
@@ -706,6 +717,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 		Resume:            resume,
 		DryRun:            dryRun,
 		SkipCI:            policy.skipCI,
+		CIPolicy:          factoryCIPolicy,
 		SkipReview:        policy.skipReview,
 		ReviewCleanStreak: policy.reviewCleanStreak,
 		ReviewMaxCycles:   policy.reviewMaxCycles,
@@ -781,6 +793,13 @@ func contextWithAutoFactoryAttemptPolicy(ctx context.Context, policy autoFactory
 	return context.WithValue(ctx, autoFactoryAttemptPolicyContextKey{}, policy)
 }
 
+func contextWithAutoFactoryCIPolicy(ctx context.Context, policy string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, autoFactoryCIPolicyContextKey{}, strings.TrimSpace(policy))
+}
+
 func autoFactoryAttemptPolicyForRun(ctx context.Context) (autoFactoryAttemptPolicy, error) {
 	if ctx != nil {
 		if policy, ok := ctx.Value(autoFactoryAttemptPolicyContextKey{}).(autoFactoryAttemptPolicy); ok {
@@ -828,6 +847,28 @@ func validateAutoFactoryAttemptPolicy(policy autoFactoryAttemptPolicy) error {
 		return fmt.Errorf("%s must be greater than or equal to 0", autoFactoryMaxCIFixAttemptsEnv)
 	}
 	return nil
+}
+
+func autoFactoryCIPolicyForRun(ctx context.Context) (string, error) {
+	if ctx != nil {
+		if policy, ok := ctx.Value(autoFactoryCIPolicyContextKey{}).(string); ok {
+			return validateAutoFactoryCIPolicy(policy)
+		}
+	}
+	return validateAutoFactoryCIPolicy(os.Getenv(autoFactoryCIPolicyEnv))
+}
+
+func validateAutoFactoryCIPolicy(policy string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(policy))
+	if normalized == "" {
+		return "", nil
+	}
+	for _, supported := range factory.SupportedCIPolicies() {
+		if normalized == supported {
+			return normalized, nil
+		}
+	}
+	return "", fmt.Errorf("%s must be one of %s", autoFactoryCIPolicyEnv, strings.Join(factory.SupportedCIPolicies(), ", "))
 }
 
 func autoSuccessResult(entryMode autoEntryMode, resumed bool, skipCI bool, skipReview bool, ciState *compound.CIState, summary string, convertMode string, duration time.Duration) AutoResult {
@@ -1427,6 +1468,15 @@ func applyAutoSuccessCIState(ci *AutoStep, ciState *compound.CIState) {
 
 	status := strings.TrimSpace(ciState.Status)
 	if status == "" || status == "passed" {
+		return
+	}
+	if status == "unavailable" {
+		ci.Status = autoStepStatusSkipped
+		reason := strings.TrimSpace(ciState.Reason)
+		if reason == "" {
+			reason = "ci_unavailable"
+		}
+		ci.Reason = reason
 		return
 	}
 

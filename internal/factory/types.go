@@ -12,11 +12,12 @@ import (
 
 // Run status values.
 const (
-	RunStatusPending   = "pending"
-	RunStatusRunning   = "running"
-	RunStatusSucceeded = "succeeded"
-	RunStatusFailed    = "failed"
-	RunStatusCanceled  = "canceled"
+	RunStatusPending               = "pending"
+	RunStatusRunning               = "running"
+	RunStatusSucceeded             = "succeeded"
+	RunStatusSucceededWithWarnings = "succeeded_with_warnings"
+	RunStatusFailed                = "failed"
+	RunStatusCanceled              = "canceled"
 )
 
 // Executor mode values.

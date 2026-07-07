@@ -15,6 +15,14 @@ const (
 	CleanupBehaviorPreserve  = "preserve"
 	CleanupBehaviorOnSuccess = "on_success"
 	CleanupBehaviorAlways    = "always"
+
+	CIPolicyRequired          = "required"
+	CIPolicySkipIfUnavailable = "skip-if-unavailable"
+	CIPolicyDisabled          = "disabled"
+
+	PublishPolicyNone = "none"
+	PublishPolicyPush = "push"
+	PublishPolicyPR   = "pr"
 )
 
 var supportedSecurityReadinessGatePolicyModes = []sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode{
@@ -35,6 +43,8 @@ type FactoryPolicy struct {
 	PRCreationAllowed               bool                                                     `json:"prCreationAllowed" yaml:"prCreationAllowed"`
 	MergeAllowed                    bool                                                     `json:"mergeAllowed" yaml:"mergeAllowed"` // gates non-dry-run merge automation
 	CleanupBehavior                 string                                                   `json:"cleanupBehavior" yaml:"cleanupBehavior"`
+	CIPolicy                        string                                                   `json:"ciPolicy" yaml:"ciPolicy"`
+	PublishPolicy                   string                                                   `json:"publishPolicy" yaml:"publishPolicy"`
 	SecurityReadinessGatePolicyMode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode `json:"securityReadinessGatePolicyMode,omitempty" yaml:"securityReadinessGatePolicyMode,omitempty"`
 }
 
@@ -47,6 +57,18 @@ func SupportedPolicyEngines() []string {
 // validation accepts.
 func SupportedCleanupBehaviors() []string {
 	return []string{CleanupBehaviorPreserve, CleanupBehaviorOnSuccess, CleanupBehaviorAlways}
+}
+
+// SupportedCIPolicies returns the CI policy identifiers policy validation
+// accepts.
+func SupportedCIPolicies() []string {
+	return []string{CIPolicyRequired, CIPolicySkipIfUnavailable, CIPolicyDisabled}
+}
+
+// SupportedPublishPolicies returns the publish policy identifiers policy
+// validation accepts.
+func SupportedPublishPolicies() []string {
+	return []string{PublishPolicyNone, PublishPolicyPush, PublishPolicyPR}
 }
 
 // SupportedSecurityReadinessGatePolicyModes returns the readiness gate mode
@@ -68,6 +90,8 @@ func DefaultFactoryPolicy() FactoryPolicy {
 		PRCreationAllowed:    true,
 		MergeAllowed:         true,
 		CleanupBehavior:      CleanupBehaviorPreserve,
+		CIPolicy:             CIPolicySkipIfUnavailable,
+		PublishPolicy:        PublishPolicyNone,
 	}
 }
 
@@ -116,6 +140,18 @@ func (p *FactoryPolicy) Validate() error {
 		return fmt.Errorf("factory.policy.cleanupBehavior must be one of %s", strings.Join(SupportedCleanupBehaviors(), ", "))
 	}
 	p.CleanupBehavior = cleanupBehavior
+
+	ciPolicy := strings.ToLower(strings.TrimSpace(p.CIPolicy))
+	if !containsString(SupportedCIPolicies(), ciPolicy) {
+		return fmt.Errorf("factory.policy.ciPolicy must be one of %s", strings.Join(SupportedCIPolicies(), ", "))
+	}
+	p.CIPolicy = ciPolicy
+
+	publishPolicy := strings.ToLower(strings.TrimSpace(p.PublishPolicy))
+	if !containsString(SupportedPublishPolicies(), publishPolicy) {
+		return fmt.Errorf("factory.policy.publishPolicy must be one of %s", strings.Join(SupportedPublishPolicies(), ", "))
+	}
+	p.PublishPolicy = publishPolicy
 
 	readinessGateMode := strings.ToLower(strings.TrimSpace(string(p.SecurityReadinessGatePolicyMode)))
 	if readinessGateMode != "" {

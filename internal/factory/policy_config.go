@@ -19,6 +19,8 @@ type rawPolicyConfig struct {
 	PRCreationAllowed               *bool                                                     `yaml:"prCreationAllowed"`
 	MergeAllowed                    *bool                                                     `yaml:"mergeAllowed"`
 	CleanupBehavior                 *string                                                   `yaml:"cleanupBehavior"`
+	CIPolicy                        *string                                                   `yaml:"ciPolicy"`
+	PublishPolicy                   *string                                                   `yaml:"publishPolicy"`
 	SecurityReadinessGatePolicyMode *sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode `yaml:"securityReadinessGatePolicyMode"`
 }
 
@@ -82,6 +84,12 @@ func mergePolicyConfig(policy *FactoryPolicy, raw rawPolicyConfig) {
 	}
 	if raw.CleanupBehavior != nil {
 		policy.CleanupBehavior = *raw.CleanupBehavior
+	}
+	if raw.CIPolicy != nil {
+		policy.CIPolicy = *raw.CIPolicy
+	}
+	if raw.PublishPolicy != nil {
+		policy.PublishPolicy = *raw.PublishPolicy
 	}
 	if raw.SecurityReadinessGatePolicyMode != nil {
 		policy.SecurityReadinessGatePolicyMode = *raw.SecurityReadinessGatePolicyMode

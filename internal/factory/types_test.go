@@ -21,6 +21,7 @@ func TestRunStatusConstants(t *testing.T) {
 		{name: "pending", got: RunStatusPending, want: "pending"},
 		{name: "running", got: RunStatusRunning, want: "running"},
 		{name: "succeeded", got: RunStatusSucceeded, want: "succeeded"},
+		{name: "succeeded with warnings", got: RunStatusSucceededWithWarnings, want: "succeeded_with_warnings"},
 		{name: "failed", got: RunStatusFailed, want: "failed"},
 		{name: "canceled", got: RunStatusCanceled, want: "canceled"},
 	}

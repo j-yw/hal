@@ -21,6 +21,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/doctor"
 	"github.com/jywlabs/hal/internal/engine"
@@ -48,8 +49,12 @@ var factoryLogsJSONFlag bool
 var factoryRunReportFlag string
 var factoryRunBaseFlag string
 var factoryRunSecretEnvFlags []string
+var factoryRunCIPolicyFlag string
+var factoryRunNoCIFlag bool
+var factoryRunPublishFlag string
 var factoryRunJSONFlag bool
 var factoryRunSandboxFlag bool
+var factoryRunSandboxNameFlag string
 var factoryRunSandboxHostFlag string
 var factoryRunSandboxRuntimeFlag string
 var factoryOpenExecFlag bool
@@ -163,7 +168,11 @@ func init() {
 	factoryRunCmd.Flags().StringVar(&factoryRunReportFlag, "report", "", "Start from an analysis report path")
 	factoryRunCmd.Flags().StringVar(&factoryRunBaseFlag, "base", "", "Target base branch for follow-up review or CI")
 	factoryRunCmd.Flags().StringArrayVar(&factoryRunSecretEnvFlags, "secret-env", nil, "Required environment variable secret for the run (repeatable)")
+	factoryRunCmd.Flags().StringVar(&factoryRunCIPolicyFlag, "ci-policy", "", "CI policy for factory runs (required, skip-if-unavailable, disabled)")
+	factoryRunCmd.Flags().BoolVar(&factoryRunNoCIFlag, "no-ci", false, "Alias for --ci-policy disabled")
+	factoryRunCmd.Flags().StringVar(&factoryRunPublishFlag, "publish", "", "Host publish policy after factory execution (none, push, pr)")
 	factoryRunCmd.Flags().BoolVar(&factoryRunSandboxFlag, "sandbox", false, "Run the factory executor in a managed sandbox")
+	factoryRunCmd.Flags().StringVar(&factoryRunSandboxNameFlag, "sandbox-name", "", "Sandbox name for --sandbox execution")
 	factoryRunCmd.Flags().StringVar(&factoryRunSandboxHostFlag, sandboxHostFlagName, "", "Cached sandbox host ID for target selection")
 	factoryRunCmd.Flags().StringVar(&factoryRunSandboxRuntimeFlag, sandboxRuntimeFlagName, "", "Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)")
 	factoryRunCmd.Flags().BoolVar(&factoryRunJSONFlag, "json", false, "Output machine-readable JSON (factory-run-v1 contract)")
@@ -243,6 +252,8 @@ type factoryRunDeps struct {
 	doctorSnapshot         func(string) (factorySnapshotArtifact, error)
 	sandboxCopier          factory.SandboxArtifactCopier
 	sandboxRequests        func(string, factory.RunRecord) []factory.SandboxArtifactRequest
+	runGit                 func(context.Context, string, ...string) (string, error)
+	pushAndCreatePRInDir   func(context.Context, string, ci.PushOptions) (ci.PushResult, error)
 }
 
 type factoryRunPipelineRequest struct {
@@ -253,6 +264,7 @@ type factoryRunPipelineRequest struct {
 	Store          factory.Store
 	Engine         string
 	AttemptPolicy  autoFactoryAttemptPolicy
+	CIPolicy       string
 	SkipCI         bool
 	Now            func() time.Time
 	RecordProgress func(factoryRunProgressEvent) error
@@ -283,13 +295,18 @@ var defaultFactoryRunDeps = factoryRunDeps{
 	cleanupSandbox:         cleanupFactorySandbox,
 	statusSnapshot:         defaultFactoryStatusSnapshot,
 	doctorSnapshot:         defaultFactoryDoctorSnapshot,
+	runGit:                 runFactoryGitInDir,
+	pushAndCreatePRInDir:   ci.PushAndCreatePRInDir,
 }
 
 type factoryRunRequest struct {
 	MarkdownPath   string
 	ReportPath     string
 	BaseBranch     string
+	CIPolicy       string
+	PublishPolicy  string
 	Sandbox        bool
+	SandboxName    string
 	SandboxHostID  string
 	SandboxRuntime string
 	JSON           bool
@@ -305,6 +322,7 @@ type factoryRunAutoRequest struct {
 	BaseBranch    string
 	Engine        string
 	AttemptPolicy autoFactoryAttemptPolicy
+	CIPolicy      string
 	SkipCI        bool
 }
 
@@ -357,9 +375,19 @@ type factoryPROutcomeArtifact struct {
 type factoryCIOutcomeArtifact struct {
 	Status       string `json:"status,omitempty"`
 	Reason       string `json:"reason,omitempty"`
+	Policy       string `json:"policy,omitempty"`
 	FixAttempts  int    `json:"fixAttempts,omitempty"`
 	FixesApplied int    `json:"fixesApplied,omitempty"`
 	BranchName   string `json:"branchName,omitempty"`
+}
+
+type factoryPublishOutcomeArtifact struct {
+	Policy          string          `json:"policy,omitempty"`
+	BranchName      string          `json:"branchName,omitempty"`
+	RecoveredBundle string          `json:"recoveredBundle,omitempty"`
+	Pushed          bool            `json:"pushed"`
+	PullRequest     *ci.PullRequest `json:"pullRequest,omitempty"`
+	Summary         string          `json:"summary,omitempty"`
 }
 
 // FactoryLogsResponse is the machine-readable JSON output for
@@ -542,6 +570,9 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	if err != nil {
 		return failFactoryRunCreationWithRedactor(store, record, out, req.JSON, deps.now(), fmt.Errorf("load factory policy: %w", err), nil, initialRedactor)
 	}
+	if err := applyFactoryRunPolicyOverrides(&creationPolicy, req); err != nil {
+		return failFactoryRunCreationWithRedactor(store, record, out, req.JSON, deps.now(), err, nil, initialRedactor)
+	}
 	record, err = persistFactoryRunPolicySnapshotWithRedactor(store, record, creationPolicy, initialRedactor)
 	if err != nil {
 		return failFactoryRunCreationWithRedactor(store, record, out, req.JSON, deps.now(), err, nil, initialRedactor)
@@ -633,6 +664,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		Store:         store,
 		Engine:        engineName,
 		AttemptPolicy: autoFactoryAttemptPolicyFromFactoryPolicy(policy),
+		CIPolicy:      policy.CIPolicy,
 		SkipCI:        factoryPolicySkipsCI(policy),
 		Now:           deps.now,
 		RecordProgress: func(event factoryRunProgressEvent) error {
@@ -650,12 +682,14 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		remoteAuto := factoryRunAutoRequestFromFactoryRequest(req)
 		remoteAuto.Engine = engineName
 		remoteAuto.AttemptPolicy = autoFactoryAttemptPolicyFromFactoryPolicy(policy)
+		remoteAuto.CIPolicy = policy.CIPolicy
 		remoteAuto.SkipCI = factoryPolicySkipsCI(policy)
 		runErr = deps.runSandbox(ctx, factorySandboxExecutorRequest{
 			ProjectDir:                dir,
 			RunRecord:                 runningRecord,
 			ResolvedSecrets:           req.ResolvedSecrets,
 			RemoteAuto:                remoteAuto,
+			SandboxName:               req.SandboxName,
 			SandboxHostID:             req.SandboxHostID,
 			SandboxRuntime:            req.SandboxRuntime,
 			Security:                  sandboxSecurity,
@@ -719,6 +753,13 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		}
 		return factoryRunExecutionResult{Record: failedRecord, Render: true}, runErr
 	}
+	if req.Sandbox {
+		if reloadedRecord, loadErr := store.LoadRun(runningRecord.RunID); loadErr != nil {
+			return factoryRunExecutionResult{Record: runningRecord}, fmt.Errorf("reload factory run after sandbox execution: %w", loadErr)
+		} else if reloadedRecord != nil {
+			runningRecord = *reloadedRecord
+		}
+	}
 
 	pipelineCompletedAt := deps.now()
 	if err := recordFactoryRunPipelineSucceeded(store, runningRecord.RunID, pipelineCompletedAt); err != nil {
@@ -763,7 +804,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		}
 		return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
 	}
-	if req.Sandbox && !sandboxArtifactsCollected && !factoryRunDefersSandboxSuccessCleanup(policy) {
+	if req.Sandbox && !sandboxArtifactsCollected && (!factoryRunDefersSandboxSuccessCleanup(policy) || factoryPublishPolicyRequiresHostArtifacts(policy)) {
 		if err := collectAndStoreFactorySandboxArtifacts(ctx, store, dir, req, completedRecord, deps); err != nil {
 			return failFactoryRunAfterArtifactCollectionFailure(ctx, store, dir, req, out, completedRecord, deps, policy, err)
 		}
@@ -773,6 +814,33 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		} else if reloadedRecord != nil {
 			completedRecord = *reloadedRecord
 		}
+	}
+	completedRecord, err = publishFactoryRunAfterVerifiedSuccess(ctx, store, dir, req, completedRecord, deps, policy, redactor)
+	if err != nil {
+		failedAt := deps.now()
+		failedRecord, failureErr := markFactoryRunFailedWithRedactor(store, completedRecord, failedAt, err, redactor)
+		var recordErrs []error
+		if failureErr != nil {
+			recordErrs = append(recordErrs, failureErr)
+		}
+		if eventErr := recordFactoryRunPublishFailedWithRedactor(store, failedRecord.RunID, failedAt, err, redactor); eventErr != nil {
+			recordErrs = append(recordErrs, fmt.Errorf("record factory publish failure event: %w", eventErr))
+		}
+		if failedRecord.Failure != nil {
+			if eventErr := recordFactoryRunFailureClassified(store, failedRecord.RunID, failedAt, *failedRecord.Failure); eventErr != nil {
+				recordErrs = append(recordErrs, fmt.Errorf("record factory failure classification event: %w", eventErr))
+			}
+		}
+		if artifactRecord, artifactErr := recordFactoryRunRecordArtifactWithRedactor(store, failedRecord, redactor); artifactErr != nil {
+			recordErrs = append(recordErrs, artifactErr)
+		} else {
+			failedRecord = artifactRecord
+		}
+		err = redactFactoryRunError(err, redactor)
+		if len(recordErrs) > 0 {
+			return factoryRunExecutionResult{Record: failedRecord}, redactFactoryRunJoinedError(err, recordErrs, redactor)
+		}
+		return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
 	}
 	completedRecord, cleanedUp, err := cleanupFactoryRunSandboxAfterVerifiedSuccess(ctx, store, dir, req, out, completedRecord, deps, policy)
 	if err != nil {
@@ -916,6 +984,12 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 	if deps.doctorSnapshot == nil {
 		deps.doctorSnapshot = defaultFactoryRunDeps.doctorSnapshot
 	}
+	if deps.runGit == nil {
+		deps.runGit = defaultFactoryRunDeps.runGit
+	}
+	if deps.pushAndCreatePRInDir == nil {
+		deps.pushAndCreatePRInDir = defaultFactoryRunDeps.pushAndCreatePRInDir
+	}
 	if deps.sandboxRequests == nil {
 		if customProviderExec && deps.sandboxCopier == nil {
 			deps.sandboxRequests = func(string, factory.RunRecord) []factory.SandboxArtifactRequest { return nil }
@@ -995,7 +1069,7 @@ func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps)
 		return factory.RunRecord{}, fmt.Errorf("resolve repository remote: %w", err)
 	}
 
-	return factory.RunRecord{
+	record := factory.RunRecord{
 		RunID:        runID,
 		Status:       factory.RunStatusPending,
 		ExecutorMode: factoryExecutorModeFromRequest(req),
@@ -1009,7 +1083,11 @@ func newFactoryRunRecord(dir string, req factoryRunRequest, deps factoryRunDeps)
 		CreatedAt:    now,
 		UpdatedAt:    now,
 		Telemetry:    factoryRunEngineTelemetry(dir, deps),
-	}, nil
+	}
+	if req.Sandbox {
+		record.SandboxName, record.Sandbox = factorySandboxMetadataFromName(strings.TrimSpace(req.SandboxName))
+	}
+	return record, nil
 }
 
 func resolveFactoryRunBranchName(dir string, req factoryRunRequest, deps factoryRunDeps) (string, error) {
@@ -1221,7 +1299,20 @@ func recordFactoryRunPreExecutionPolicyDecisions(store factory.Store, runID stri
 }
 
 func factoryPolicySkipsCI(policy factory.FactoryPolicy) bool {
-	return !policy.PRCreationAllowed
+	return !policy.PRCreationAllowed || strings.TrimSpace(policy.CIPolicy) == factory.CIPolicyDisabled
+}
+
+func applyFactoryRunPolicyOverrides(policy *factory.FactoryPolicy, req factoryRunRequest) error {
+	if policy == nil {
+		return fmt.Errorf("factory policy is nil")
+	}
+	if ciPolicy := strings.TrimSpace(req.CIPolicy); ciPolicy != "" {
+		policy.CIPolicy = ciPolicy
+	}
+	if publishPolicy := strings.TrimSpace(req.PublishPolicy); publishPolicy != "" {
+		policy.PublishPolicy = publishPolicy
+	}
+	return policy.Validate()
 }
 
 func factoryRunDefersSandboxSuccessCleanup(policy factory.FactoryPolicy) bool {
@@ -2153,12 +2244,14 @@ func materializeFactoryOutcomeArtifacts(dir string, startedAt time.Time) ([]fact
 		artifact, tempPath, err := materializeFactoryJSONArtifact("ci-outcome", "factory/ci-outcome.json", factoryCIOutcomeArtifact{
 			Status:       strings.TrimSpace(state.CI.Status),
 			Reason:       strings.TrimSpace(state.CI.Reason),
+			Policy:       strings.TrimSpace(state.CI.Policy),
 			FixAttempts:  state.CI.FixAttempts,
 			FixesApplied: state.CI.FixesApplied,
 			BranchName:   strings.TrimSpace(state.BranchName),
 		}, map[string]any{
 			"outcomeKind": "ci",
 			"status":      strings.TrimSpace(state.CI.Status),
+			"policy":      strings.TrimSpace(state.CI.Policy),
 		})
 		if err != nil {
 			cleanup()
@@ -2285,7 +2378,7 @@ func markFactoryRunSucceeded(store factory.Store, record factory.RunRecord, now 
 
 func markFactoryRunSucceededWithRedactor(store factory.Store, record factory.RunRecord, now time.Time, redactor factory.RunSecretRedactor) (factory.RunRecord, error) {
 	finishedAt := now.UTC()
-	record.Status = factory.RunStatusSucceeded
+	record.Status = factoryRunSucceededStatus(record)
 	record.CurrentStep = "done"
 	record.UpdatedAt = finishedAt
 	record.FinishedAt = &finishedAt
@@ -2295,6 +2388,23 @@ func markFactoryRunSucceededWithRedactor(store factory.Store, record factory.Run
 		return factory.RunRecord{}, fmt.Errorf("mark factory run succeeded: %w", err)
 	}
 	return safeRecord, nil
+}
+
+func factoryRunSucceededStatus(record factory.RunRecord) string {
+	for _, artifact := range record.Artifacts {
+		if artifact.Summary == nil {
+			continue
+		}
+		if outcomeKind, _ := artifact.Summary["outcomeKind"].(string); strings.TrimSpace(outcomeKind) != "ci" {
+			continue
+		}
+		status, _ := artifact.Summary["status"].(string)
+		switch strings.TrimSpace(status) {
+		case "unavailable", "skipped":
+			return factory.RunStatusSucceededWithWarnings
+		}
+	}
+	return factory.RunStatusSucceeded
 }
 
 func markFactoryRunFailed(store factory.Store, record factory.RunRecord, now time.Time, pipelineErr error) (factory.RunRecord, error) {
@@ -2594,6 +2704,225 @@ func collectFactoryRunArtifacts(store factory.Store, dir string, req factoryRunR
 	return collector.artifacts
 }
 
+func factoryPublishPolicyRequiresHostArtifacts(policy factory.FactoryPolicy) bool {
+	return strings.TrimSpace(policy.PublishPolicy) == factory.PublishPolicyPush ||
+		strings.TrimSpace(policy.PublishPolicy) == factory.PublishPolicyPR
+}
+
+func publishFactoryRunAfterVerifiedSuccess(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, redactor factory.RunSecretRedactor) (factory.RunRecord, error) {
+	publishPolicy := strings.TrimSpace(policy.PublishPolicy)
+	if publishPolicy == "" || publishPolicy == factory.PublishPolicyNone {
+		return record, nil
+	}
+	if publishPolicy != factory.PublishPolicyPush && publishPolicy != factory.PublishPolicyPR {
+		return record, fmt.Errorf("factory publish policy %q is unsupported", publishPolicy)
+	}
+
+	if err := recordFactoryRunPublishStarted(store, record.RunID, deps.now(), publishPolicy); err != nil {
+		return record, err
+	}
+
+	branchName := strings.TrimSpace(record.BranchName)
+	recoveredBundle := ""
+	if req.Sandbox {
+		appliedBranch, bundlePath, err := applyFactorySandboxRecoveryBundle(ctx, store, dir, record, deps)
+		if err != nil {
+			return record, err
+		}
+		branchName = appliedBranch
+		recoveredBundle = bundlePath
+	}
+	if branchName == "" {
+		return record, fmt.Errorf("factory publish requires a branch name")
+	}
+
+	result, err := publishFactoryRunBranch(ctx, dir, req, record, deps, publishPolicy, branchName)
+	if err != nil {
+		return record, err
+	}
+	updatedRecord, err := recordFactoryPublishOutcomeArtifact(store, record, publishPolicy, recoveredBundle, result, redactor)
+	if err != nil {
+		return record, err
+	}
+	if err := recordFactoryRunPublishSucceeded(store, updatedRecord.RunID, deps.now(), publishPolicy, result); err != nil {
+		return updatedRecord, err
+	}
+	return updatedRecord, nil
+}
+
+func applyFactorySandboxRecoveryBundle(ctx context.Context, store factory.Store, dir string, record factory.RunRecord, deps factoryRunDeps) (string, string, error) {
+	branchName := strings.TrimSpace(record.BranchName)
+	if branchName == "" {
+		return "", "", fmt.Errorf("apply sandbox recovery bundle: branch name is required")
+	}
+	if deps.runGit == nil {
+		return "", "", fmt.Errorf("apply sandbox recovery bundle: git dependency is required")
+	}
+	if _, err := deps.runGit(ctx, dir, "check-ref-format", "--branch", branchName); err != nil {
+		return "", "", fmt.Errorf("apply sandbox recovery bundle: invalid branch %q: %w", branchName, err)
+	}
+	artifact, ok := factoryRunRecoveryBundleArtifact(record)
+	if !ok {
+		return "", "", fmt.Errorf("apply sandbox recovery bundle: recovery bundle artifact is unavailable")
+	}
+	bundlePath, err := store.ResolveArtifactPath(record.RunID, artifact.StoredPath)
+	if err != nil {
+		return "", "", fmt.Errorf("apply sandbox recovery bundle: resolve artifact path: %w", err)
+	}
+	if _, err := deps.runGit(ctx, dir, "fetch", "--no-tags", bundlePath, "HEAD"); err != nil {
+		return "", "", fmt.Errorf("apply sandbox recovery bundle: fetch bundle: %w", err)
+	}
+	exists := factoryRunBranchExists(ctx, dir, branchName, deps)
+	if exists {
+		if _, err := deps.runGit(ctx, dir, "checkout", branchName); err != nil {
+			return "", "", fmt.Errorf("apply sandbox recovery bundle: checkout branch %q: %w", branchName, err)
+		}
+		if _, err := deps.runGit(ctx, dir, "merge", "--ff-only", "FETCH_HEAD"); err != nil {
+			return "", "", fmt.Errorf("apply sandbox recovery bundle: fast-forward branch %q: %w", branchName, err)
+		}
+		return branchName, artifact.StoredPath, nil
+	}
+	if _, err := deps.runGit(ctx, dir, "checkout", "-b", branchName, "FETCH_HEAD"); err != nil {
+		return "", "", fmt.Errorf("apply sandbox recovery bundle: create branch %q: %w", branchName, err)
+	}
+	return branchName, artifact.StoredPath, nil
+}
+
+func factoryRunBranchExists(ctx context.Context, dir, branchName string, deps factoryRunDeps) bool {
+	if deps.runGit == nil {
+		return false
+	}
+	_, err := deps.runGit(ctx, dir, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName)
+	return err == nil
+}
+
+func factoryRunRecoveryBundleArtifact(record factory.RunRecord) (factory.ArtifactReference, bool) {
+	for _, artifact := range record.Artifacts {
+		if artifact.Partial || strings.TrimSpace(artifact.StoredPath) == "" {
+			continue
+		}
+		if summaryString(artifact.Summary, "outcomeKind") == "recovery_bundle" {
+			return artifact, true
+		}
+		if artifact.ID == "sandbox-recovery-bundle" || artifact.Name == "sandbox-recovery-bundle" {
+			return artifact, true
+		}
+	}
+	return factory.ArtifactReference{}, false
+}
+
+func summaryString(summary map[string]any, key string) string {
+	if len(summary) == 0 {
+		return ""
+	}
+	switch value := summary[key].(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case fmt.Stringer:
+		return strings.TrimSpace(value.String())
+	default:
+		if value == nil {
+			return ""
+		}
+		return strings.TrimSpace(fmt.Sprint(value))
+	}
+}
+
+func factoryStringSliceContains(values []string, want string) bool {
+	want = strings.TrimSpace(want)
+	for _, value := range values {
+		if strings.TrimSpace(value) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func publishFactoryRunBranch(ctx context.Context, dir string, req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps, publishPolicy, branchName string) (ci.PushResult, error) {
+	switch publishPolicy {
+	case factory.PublishPolicyPush:
+		if deps.runGit == nil {
+			return ci.PushResult{}, fmt.Errorf("factory publish push requires git dependency")
+		}
+		if _, err := deps.runGit(ctx, dir, "push", "-u", "origin", branchName); err != nil {
+			return ci.PushResult{}, fmt.Errorf("factory publish push branch %q: %w", branchName, err)
+		}
+		return ci.PushResult{
+			ContractVersion: ci.PushContractVersion,
+			Branch:          branchName,
+			Pushed:          true,
+			Summary:         fmt.Sprintf("pushed branch %s", branchName),
+		}, nil
+	case factory.PublishPolicyPR:
+		if deps.pushAndCreatePRInDir == nil {
+			return ci.PushResult{}, fmt.Errorf("factory publish pr requires push dependency")
+		}
+		result, err := deps.pushAndCreatePRInDir(ctx, dir, ci.PushOptions{
+			BaseRef: strings.TrimSpace(req.BaseBranch),
+			Title:   factoryPublishPRTitle(record),
+			Body:    factoryPublishPRBody(record),
+		})
+		if err != nil {
+			return ci.PushResult{}, fmt.Errorf("factory publish pull request for branch %q: %w", branchName, err)
+		}
+		return result, nil
+	default:
+		return ci.PushResult{}, fmt.Errorf("factory publish policy %q is unsupported", publishPolicy)
+	}
+}
+
+func recordFactoryPublishOutcomeArtifact(store factory.Store, record factory.RunRecord, publishPolicy, recoveredBundle string, result ci.PushResult, redactor factory.RunSecretRedactor) (factory.RunRecord, error) {
+	var pr *ci.PullRequest
+	if strings.TrimSpace(result.PullRequest.URL) != "" || result.PullRequest.Number != 0 || strings.TrimSpace(result.PullRequest.HeadRef) != "" {
+		copied := result.PullRequest
+		pr = &copied
+	}
+	artifact, tempPath, err := materializeFactoryJSONArtifact("publish-outcome", "factory/publish-outcome.json", factoryPublishOutcomeArtifact{
+		Policy:          publishPolicy,
+		BranchName:      result.Branch,
+		RecoveredBundle: recoveredBundle,
+		Pushed:          result.Pushed,
+		PullRequest:     pr,
+		Summary:         result.Summary,
+	}, map[string]any{
+		"outcomeKind": "publish",
+		"policy":      publishPolicy,
+		"branch":      result.Branch,
+		"pushed":      result.Pushed,
+	})
+	if err != nil {
+		return record, err
+	}
+	defer func() { _ = os.Remove(tempPath) }()
+	if _, err := store.SaveArtifactFileWithRedactor(record.RunID, artifact, tempPath, redactor); err != nil {
+		return record, fmt.Errorf("store factory publish outcome artifact: %w", err)
+	}
+	updatedRecord, err := store.LoadRun(record.RunID)
+	if err != nil {
+		return record, fmt.Errorf("reload factory run after publish artifact: %w", err)
+	}
+	return *updatedRecord, nil
+}
+
+func factoryPublishPRTitle(record factory.RunRecord) string {
+	branchName := strings.TrimSpace(record.BranchName)
+	if branchName == "" {
+		return ""
+	}
+	return "hal factory: " + branchName
+}
+
+func factoryPublishPRBody(record factory.RunRecord) string {
+	parts := []string{"Automated pull request created by `hal factory run`."}
+	if runID := strings.TrimSpace(record.RunID); runID != "" {
+		parts = append(parts, "", "Factory run: `"+runID+"`")
+	}
+	if sandboxName := strings.TrimSpace(record.SandboxName); sandboxName != "" {
+		parts = append(parts, "Sandbox: `"+sandboxName+"`")
+	}
+	return strings.Join(parts, "\n")
+}
+
 func recordFactoryRunRecordArtifact(store factory.Store, record factory.RunRecord) (factory.RunRecord, error) {
 	return recordFactoryRunRecordArtifactWithRedactor(store, record, factory.RunSecretRedactor{})
 }
@@ -2807,6 +3136,24 @@ func defaultFactorySandboxArtifactRequests(_ string, record factory.RunRecord) [
 			Optional:   true,
 			Summary:    summary,
 		},
+		{
+			ID:         "sandbox-recovery-patch",
+			Name:       "sandbox-recovery-patch",
+			Type:       "patch",
+			RemotePath: filepath.ToSlash(filepath.Join(template.HalDir, "recovery", "git-format-patch.patch")),
+			Path:       filepath.ToSlash(filepath.Join("factory", "git-format-patch.patch")),
+			Optional:   true,
+			Summary:    factorySandboxArtifactSummary(summary, "outcomeKind", "recovery_patch"),
+		},
+		{
+			ID:         "sandbox-recovery-bundle",
+			Name:       "sandbox-recovery-bundle",
+			Type:       "bundle",
+			RemotePath: filepath.ToSlash(filepath.Join(template.HalDir, "recovery", "git-bundle.bundle")),
+			Path:       filepath.ToSlash(filepath.Join("factory", "git-bundle.bundle")),
+			Optional:   true,
+			Summary:    factorySandboxArtifactSummary(summary, "outcomeKind", "recovery_bundle"),
+		},
 	}
 	if sourcePath := strings.TrimSpace(record.Source.Path); sourcePath != "" {
 		requests = append([]factory.SandboxArtifactRequest{{
@@ -2820,6 +3167,15 @@ func defaultFactorySandboxArtifactRequests(_ string, record factory.RunRecord) [
 		}}, requests...)
 	}
 	return requests
+}
+
+func factorySandboxArtifactSummary(base map[string]any, key string, value any) map[string]any {
+	out := make(map[string]any, len(base)+1)
+	for k, v := range base {
+		out[k] = v
+	}
+	out[key] = value
+	return out
 }
 
 type factoryArtifactCollector struct {
@@ -3534,6 +3890,48 @@ func recordFactoryRunVerificationSucceeded(store factory.Store, runID string, no
 	})
 }
 
+func recordFactoryRunPublishStarted(store factory.Store, runID string, now time.Time, publishPolicy string) error {
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepStarted,
+		Summary:   "Factory publish started",
+		Metadata: map[string]any{
+			"step":   factory.RunDurationStepFinalization,
+			"status": factory.RunStatusRunning,
+			"policy": strings.TrimSpace(publishPolicy),
+		},
+	})
+}
+
+func recordFactoryRunPublishSucceeded(store factory.Store, runID string, now time.Time, publishPolicy string, result ci.PushResult) error {
+	metadata := map[string]any{
+		"step":   factory.RunDurationStepFinalization,
+		"status": factory.RunStatusSucceeded,
+		"policy": strings.TrimSpace(publishPolicy),
+		"branch": strings.TrimSpace(result.Branch),
+		"pushed": result.Pushed,
+	}
+	if prURL := strings.TrimSpace(result.PullRequest.URL); prURL != "" {
+		metadata["pullRequestUrl"] = prURL
+	}
+	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepEnded,
+		Summary:   "Factory publish completed",
+		Metadata:  metadata,
+	})
+}
+
+func recordFactoryRunPublishFailedWithRedactor(store factory.Store, runID string, now time.Time, publishErr error, redactor factory.RunSecretRedactor) error {
+	return appendFactoryRunTimelineEventWithRedactor(store, runID, now, factoryTimelineEvent{
+		EventType: factory.EventTypeStepEnded,
+		Summary:   "Factory publish failed",
+		Metadata: map[string]any{
+			"step":   factory.RunDurationStepFinalization,
+			"status": factory.RunStatusFailed,
+			"error":  sanitizeFactoryArtifactEventError(publishErr, redactor),
+		},
+	}, redactor)
+}
+
 func recordFactoryRunSetupFailed(store factory.Store, runID string, now time.Time, setupErr error) error {
 	return recordFactoryRunSetupFailedWithRedactor(store, runID, now, setupErr, factory.RunSecretRedactor{})
 }
@@ -4058,6 +4456,7 @@ func runFactoryRunPipelineWithDeps(ctx context.Context, req factoryRunPipelineRe
 	autoReq.WorkDir = strings.TrimSpace(req.WorkDir)
 	autoReq.Engine = strings.TrimSpace(req.Engine)
 	autoReq.AttemptPolicy = req.AttemptPolicy
+	autoReq.CIPolicy = strings.TrimSpace(req.CIPolicy)
 	autoReq.SkipCI = req.SkipCI
 	now := req.Now
 	if now == nil {
@@ -4084,6 +4483,7 @@ func factoryRunAutoRequestFromFactoryRequest(req factoryRunRequest) factoryRunAu
 	autoReq := factoryRunAutoRequest{
 		ReportPath: strings.TrimSpace(req.ReportPath),
 		BaseBranch: strings.TrimSpace(req.BaseBranch),
+		CIPolicy:   strings.TrimSpace(req.CIPolicy),
 	}
 	if markdownPath := strings.TrimSpace(req.MarkdownPath); markdownPath != "" {
 		autoReq.Args = []string{markdownPath}
@@ -4096,6 +4496,7 @@ func runAutoForFactoryRun(ctx context.Context, req factoryRunAutoRequest) error 
 		ctx = context.Background()
 	}
 	ctx = contextWithAutoFactoryAttemptPolicy(ctx, req.AttemptPolicy)
+	ctx = contextWithAutoFactoryCIPolicy(ctx, req.CIPolicy)
 
 	cmd, err := factoryRunAutoCommand(ctx, req)
 	if err != nil {
@@ -4143,8 +4544,16 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 	reportPath := factoryRunReportFlag
 	baseBranch := factoryRunBaseFlag
 	secretEnv := append([]string(nil), factoryRunSecretEnvFlags...)
+	ciPolicy := factoryRunCIPolicyFlag
+	ciPolicyChanged := false
+	noCI := factoryRunNoCIFlag
+	noCIChanged := false
+	publishPolicy := factoryRunPublishFlag
+	publishPolicyChanged := false
 	jsonMode := factoryRunJSONFlag
 	sandboxMode := factoryRunSandboxFlag
+	sandboxName := factoryRunSandboxNameFlag
+	sandboxNameChanged := false
 	sandboxHost := factoryRunSandboxHostFlag
 	sandboxHostChanged := strings.TrimSpace(factoryRunSandboxHostFlag) != ""
 	sandboxRuntime := factoryRunSandboxRuntimeFlag
@@ -4172,6 +4581,30 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 			}
 			secretEnv = value
 		}
+		if cmd.Flags().Lookup("ci-policy") != nil {
+			value, err := cmd.Flags().GetString("ci-policy")
+			if err != nil {
+				return factoryRunRequest{}, err
+			}
+			ciPolicy = value
+			ciPolicyChanged = cmd.Flags().Changed("ci-policy")
+		}
+		if cmd.Flags().Lookup("no-ci") != nil {
+			value, err := cmd.Flags().GetBool("no-ci")
+			if err != nil {
+				return factoryRunRequest{}, err
+			}
+			noCI = value
+			noCIChanged = cmd.Flags().Changed("no-ci")
+		}
+		if cmd.Flags().Lookup("publish") != nil {
+			value, err := cmd.Flags().GetString("publish")
+			if err != nil {
+				return factoryRunRequest{}, err
+			}
+			publishPolicy = value
+			publishPolicyChanged = cmd.Flags().Changed("publish")
+		}
 		if cmd.Flags().Lookup("json") != nil {
 			value, err := cmd.Flags().GetBool("json")
 			if err != nil {
@@ -4185,6 +4618,14 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 				return factoryRunRequest{}, err
 			}
 			sandboxMode = value
+		}
+		if cmd.Flags().Lookup("sandbox-name") != nil {
+			value, err := cmd.Flags().GetString("sandbox-name")
+			if err != nil {
+				return factoryRunRequest{}, err
+			}
+			sandboxName = value
+			sandboxNameChanged = cmd.Flags().Changed("sandbox-name")
 		}
 		if cmd.Flags().Lookup(sandboxHostFlagName) != nil {
 			value, err := cmd.Flags().GetString(sandboxHostFlagName)
@@ -4209,7 +4650,7 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 		HostChanged:    sandboxHostChanged,
 		RuntimeDriver:  sandboxRuntime,
 		RuntimeChanged: sandboxRuntimeChanged,
-	})
+	}, sandboxName, sandboxNameChanged, ciPolicy, ciPolicyChanged, noCI, noCIChanged, publishPolicy, publishPolicyChanged)
 	if err != nil {
 		return factoryRunRequest{}, exitWithCode(cmd, ExitCodeValidation, err)
 	}
@@ -4221,10 +4662,10 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 }
 
 func parseFactoryRunRequest(args []string, reportPath, baseBranch string, jsonMode bool, sandboxMode bool) (factoryRunRequest, error) {
-	return parseFactoryRunRequestWithTarget(args, reportPath, baseBranch, jsonMode, sandboxMode, sandboxTargetFlagValues{})
+	return parseFactoryRunRequestWithTarget(args, reportPath, baseBranch, jsonMode, sandboxMode, sandboxTargetFlagValues{}, "", false, "", false, false, false, "", false)
 }
 
-func parseFactoryRunRequestWithTarget(args []string, reportPath, baseBranch string, jsonMode bool, sandboxMode bool, targetFlags sandboxTargetFlagValues) (factoryRunRequest, error) {
+func parseFactoryRunRequestWithTarget(args []string, reportPath, baseBranch string, jsonMode bool, sandboxMode bool, targetFlags sandboxTargetFlagValues, sandboxName string, sandboxNameChanged bool, ciPolicy string, ciPolicyChanged bool, noCI bool, noCIChanged bool, publishPolicy string, publishPolicyChanged bool) (factoryRunRequest, error) {
 	if len(args) > 1 {
 		return factoryRunRequest{}, fmt.Errorf("accepts at most 1 arg(s), received %d", len(args))
 	}
@@ -4233,6 +4674,49 @@ func parseFactoryRunRequestWithTarget(args []string, reportPath, baseBranch stri
 	}
 	if sandboxMode && strings.TrimSpace(baseBranch) == "" {
 		return factoryRunRequest{}, fmt.Errorf("--base is required when --sandbox is set")
+	}
+	sandboxName = strings.TrimSpace(sandboxName)
+	if !sandboxNameChanged {
+		sandboxName = ""
+	}
+	if sandboxNameChanged {
+		if sandboxName == "" {
+			return factoryRunRequest{}, fmt.Errorf("--sandbox-name must not be empty")
+		}
+		if !sandboxMode {
+			return factoryRunRequest{}, fmt.Errorf("--sandbox-name requires --sandbox")
+		}
+	}
+	ciPolicy = strings.ToLower(strings.TrimSpace(ciPolicy))
+	if !ciPolicyChanged {
+		ciPolicy = ""
+	}
+	if noCIChanged && noCI {
+		if ciPolicyChanged && ciPolicy != "" && ciPolicy != factory.CIPolicyDisabled {
+			return factoryRunRequest{}, fmt.Errorf("--no-ci cannot be combined with --ci-policy %s", ciPolicy)
+		}
+		ciPolicy = factory.CIPolicyDisabled
+		ciPolicyChanged = true
+	}
+	if ciPolicyChanged {
+		if ciPolicy == "" {
+			return factoryRunRequest{}, fmt.Errorf("--ci-policy must not be empty")
+		}
+		if !factoryStringSliceContains(factory.SupportedCIPolicies(), ciPolicy) {
+			return factoryRunRequest{}, fmt.Errorf("--ci-policy must be one of %s", strings.Join(factory.SupportedCIPolicies(), ", "))
+		}
+	}
+	publishPolicy = strings.ToLower(strings.TrimSpace(publishPolicy))
+	if !publishPolicyChanged {
+		publishPolicy = ""
+	}
+	if publishPolicyChanged {
+		if publishPolicy == "" {
+			return factoryRunRequest{}, fmt.Errorf("--publish must not be empty")
+		}
+		if !factoryStringSliceContains(factory.SupportedPublishPolicies(), publishPolicy) {
+			return factoryRunRequest{}, fmt.Errorf("--publish must be one of %s", strings.Join(factory.SupportedPublishPolicies(), ", "))
+		}
 	}
 	parsedTargetFlags, err := parseSandboxTargetFlagValues(targetFlags)
 	if err != nil {
@@ -4245,7 +4729,10 @@ func parseFactoryRunRequestWithTarget(args []string, reportPath, baseBranch stri
 	req := factoryRunRequest{
 		ReportPath:     reportPath,
 		BaseBranch:     baseBranch,
+		CIPolicy:       ciPolicy,
+		PublishPolicy:  publishPolicy,
 		Sandbox:        sandboxMode,
+		SandboxName:    sandboxName,
 		SandboxHostID:  parsedTargetFlags.HostID,
 		SandboxRuntime: parsedTargetFlags.RuntimeDriver,
 		JSON:           jsonMode,
@@ -5613,6 +6100,26 @@ func readGitRemoteOptionalInDir(dir string) (string, error) {
 		return "", fmt.Errorf("read git remote origin: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+func runFactoryGitInDir(ctx context.Context, dir string, args ...string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	gitArgs := append([]string(nil), args...)
+	if strings.TrimSpace(dir) != "" {
+		gitArgs = append([]string{"-C", dir}, gitArgs...)
+	}
+	cmd := exec.CommandContext(ctx, "git", gitArgs...)
+	output, err := cmd.CombinedOutput()
+	trimmed := strings.TrimSpace(string(output))
+	if err != nil {
+		if trimmed == "" {
+			return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		}
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, trimmed)
+	}
+	return trimmed, nil
 }
 
 func sanitizeFactoryRunRecordCredentialedRemote(record factory.RunRecord) factory.RunRecord {

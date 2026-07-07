@@ -53,6 +53,7 @@ type ReviewState struct {
 type CIState struct {
 	Status       string `json:"status,omitempty"`
 	Reason       string `json:"reason,omitempty"`
+	Policy       string `json:"policy,omitempty"`
 	FixAttempts  int    `json:"fixAttempts,omitempty"`
 	FixesApplied int    `json:"fixesApplied,omitempty"`
 	PRURL        string `json:"prUrl,omitempty"`
@@ -82,6 +83,14 @@ const (
 	StepExplode = StepConvert
 	StepLoop    = StepRun
 	StepPR      = StepCI
+)
+
+// Factory-provided CI policy values. Empty policy preserves the legacy required
+// behavior for direct hal auto use.
+const (
+	CIPolicyRequired          = "required"
+	CIPolicySkipIfUnavailable = "skip-if-unavailable"
+	CIPolicyDisabled          = "disabled"
 )
 
 // ReviewResult contains the output of a review operation.

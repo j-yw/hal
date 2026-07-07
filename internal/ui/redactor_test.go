@@ -44,6 +44,36 @@ func TestRedactor_ShowAddressesStillRedactsSecrets(t *testing.T) {
 	}
 }
 
+func TestRedactor_PreservesCSSPseudoSelectors(t *testing.T) {
+	r := Redactor{}
+	input := `.collection-ripple::before { content: ""; }
+.collection-ripple::after { content: ""; }
+li::marker { color: red; }
+main::-webkit-scrollbar { width: 8px; }`
+
+	got := r.Redact(input)
+	if got != input {
+		t.Fatalf("Redact() changed CSS pseudo selectors:\n got: %q\nwant: %q", got, input)
+	}
+	if strings.Contains(got, addressPlaceholder) {
+		t.Fatalf("Redact() inserted address placeholder into CSS selectors: %q", got)
+	}
+}
+
+func TestRedactor_StillRedactsIPv6Addresses(t *testing.T) {
+	r := Redactor{}
+	got := r.Redact("v6=2001:db8::1 bracket=[2001:db8::2]")
+
+	for _, unwanted := range []string{"2001:db8::1", "2001:db8::2"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("Redact() leaked IPv6 address %q in %q", unwanted, got)
+		}
+	}
+	if strings.Count(got, addressPlaceholder) != 2 {
+		t.Fatalf("Redact() address placeholders = %d, want 2 in %q", strings.Count(got, addressPlaceholder), got)
+	}
+}
+
 func TestRedactingWriter_RedactsAcrossSplitWrites(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewRedactingWriter(&buf, Redactor{})
@@ -64,6 +94,27 @@ func TestRedactingWriter_RedactsAcrossSplitWrites(t *testing.T) {
 	}
 	if !strings.Contains(got, addressPlaceholder) {
 		t.Fatalf("RedactingWriter output missing redaction placeholder: %q", got)
+	}
+}
+
+func TestRedactingWriter_PreservesCSSPseudoSelectorAcrossSplitWrites(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewRedactingWriter(&buf, Redactor{})
+
+	if _, err := w.Write([]byte(".collection-ripple:")); err != nil {
+		t.Fatalf("Write() first chunk error: %v", err)
+	}
+	if _, err := w.Write([]byte(":before { content: \"\"; }")); err != nil {
+		t.Fatalf("Write() second chunk error: %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush() error: %v", err)
+	}
+
+	got := buf.String()
+	want := `.collection-ripple::before { content: ""; }`
+	if got != want {
+		t.Fatalf("RedactingWriter changed CSS selector: got %q, want %q", got, want)
 	}
 }
 

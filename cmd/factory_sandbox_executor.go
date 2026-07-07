@@ -81,6 +81,7 @@ type factorySandboxExecutorDeps struct {
 	runProviderExec        func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
 	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
+	generateRecovery       func(context.Context, factorySandboxRecoveryArtifactRequest) error
 	engineAuthFiles        func() []factorySandboxAuthFile
 	bootstrap              func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
 	cleanupSandbox         func(context.Context, factorySandboxCleanupRequest) error
@@ -111,6 +112,7 @@ var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
 	runProviderExec:        runFactorySandboxProviderExec,
 	runProviderScript:      runFactorySandboxProviderScript,
 	runProviderExecWithEnv: runFactorySandboxProviderExecWithEnv,
+	generateRecovery:       generateFactorySandboxRecoveryArtifacts,
 	engineAuthFiles:        factorySandboxEngineAuthFiles,
 	bootstrap:              factory.BootstrapWorkspace,
 	cleanupSandbox:         cleanupFactorySandbox,
@@ -129,9 +131,11 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 	customDefaultStore := deps.defaultStore != nil
 	customResolveDefault := deps.resolveDefault != nil
 	customRuntimeResolver := deps.resolveRuntimeDriver != nil
+	customLoadSandbox := deps.loadSandbox != nil
 	customRunProviderExec := deps.runProviderExec != nil
 	customRunProviderScript := deps.runProviderScript != nil
 	customRunProviderExecWithEnv := deps.runProviderExecWithEnv != nil
+	customGenerateRecovery := deps.generateRecovery != nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactorySandboxExecutorDeps.defaultStore
 	}
@@ -139,7 +143,13 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 		deps.now = defaultFactorySandboxExecutorDeps.now
 	}
 	if deps.resolveDefault == nil {
-		deps.resolveDefault = defaultFactorySandboxExecutorDeps.resolveDefault
+		if customLoadSandbox {
+			deps.resolveDefault = func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+				return nil, "", errors.New("no running sandboxes")
+			}
+		} else {
+			deps.resolveDefault = defaultFactorySandboxExecutorDeps.resolveDefault
+		}
 	}
 	if deps.loadSandbox == nil {
 		deps.loadSandbox = defaultFactorySandboxExecutorDeps.loadSandbox
@@ -196,6 +206,13 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 			}
 		} else {
 			deps.runProviderExecWithEnv = defaultFactorySandboxExecutorDeps.runProviderExecWithEnv
+		}
+	}
+	if deps.generateRecovery == nil {
+		if customGenerateRecovery || customRuntimeResolver || customRunProviderExec || customRunProviderScript || customRunProviderExecWithEnv {
+			deps.generateRecovery = func(context.Context, factorySandboxRecoveryArtifactRequest) error { return nil }
+		} else {
+			deps.generateRecovery = defaultFactorySandboxExecutorDeps.generateRecovery
 		}
 	}
 	if deps.engineAuthFiles == nil {
@@ -437,10 +454,86 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		returnErr = handleFactorySandboxExecutorError(ctx, store, deps, req, &record, target, execErr, secretRedactor)
 		return returnErr
 	}
+	if err := deps.generateRecovery(ctx, factorySandboxRecoveryArtifactRequest{
+		Deps:         deps,
+		Record:       record,
+		Target:       target,
+		Provider:     provider,
+		RemoteOutput: remoteOutput,
+	}); err != nil {
+		if remoteOutput != nil {
+			_ = remoteOutput.appendExecutorEvent(factory.EventTypeArtifactSync, "Sandbox recovery artifact generation skipped", map[string]any{
+				"status": "warning",
+				"reason": "recovery_generation_failed",
+			})
+		}
+	}
 	if !req.DeferSuccessCleanup {
 		cleanupSucceeded = true
 	}
 	return nil
+}
+
+type factorySandboxRecoveryArtifactRequest struct {
+	Deps         factorySandboxExecutorDeps
+	Record       factory.RunRecord
+	Target       *sandbox.SandboxState
+	Provider     sandbox.Provider
+	RemoteOutput *factorySandboxTimelineWriter
+}
+
+func generateFactorySandboxRecoveryArtifacts(ctx context.Context, req factorySandboxRecoveryArtifactRequest) error {
+	workspaceDir := factorySandboxRemoteWorkspaceDir(req.Record)
+	if workspaceDir == "" || req.Target == nil || req.Provider == nil || req.Deps.runProviderScript == nil {
+		return nil
+	}
+	script := factorySandboxRecoveryArtifactScript(workspaceDir, req.Record.BaseBranch)
+	if strings.TrimSpace(script) == "" {
+		return nil
+	}
+	out := io.Discard
+	if req.RemoteOutput != nil {
+		out = req.RemoteOutput
+	}
+	if err := req.Deps.runProviderScript(ctx, req.Provider, sandbox.ConnectInfoFromState(req.Target), script, out); err != nil {
+		return err
+	}
+	if req.RemoteOutput != nil {
+		return req.RemoteOutput.appendExecutorEvent(factory.EventTypeArtifactSync, "Sandbox recovery artifacts generated", map[string]any{
+			"status": "generated",
+		})
+	}
+	return nil
+}
+
+func factorySandboxRecoveryArtifactScript(workspaceDir, baseBranch string) string {
+	workspaceDir = strings.TrimSpace(workspaceDir)
+	if workspaceDir == "" {
+		return ""
+	}
+	baseBranch = strings.TrimSpace(baseBranch)
+	var script strings.Builder
+	script.WriteString("set -eu\n")
+	script.WriteString("cd " + shellQuote(workspaceDir) + "\n")
+	script.WriteString("mkdir -p .hal/recovery\n")
+	script.WriteString("git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0\n")
+	script.WriteString("git rev-parse HEAD > .hal/recovery/head.txt 2>/dev/null || true\n")
+	script.WriteString("git branch --show-current > .hal/recovery/branch.txt 2>/dev/null || true\n")
+	script.WriteString("base_ref=''\n")
+	if baseBranch != "" {
+		script.WriteString("for candidate in " + shellQuote(baseBranch) + " " + shellQuote("origin/"+baseBranch) + "; do\n")
+		script.WriteString("  if git rev-parse --verify \"$candidate^{commit}\" >/dev/null 2>&1; then base_ref=\"$candidate\"; break; fi\n")
+		script.WriteString("done\n")
+	}
+	script.WriteString("if [ -z \"$base_ref\" ]; then base_ref=\"$(git rev-list --max-parents=0 HEAD 2>/dev/null | tail -n 1 || true)\"; fi\n")
+	script.WriteString("if [ -n \"$base_ref\" ]; then\n")
+	script.WriteString("  git format-patch --stdout \"$base_ref\"..HEAD > .hal/recovery/git-format-patch.patch 2>/dev/null || git diff --binary --no-ext-diff \"$base_ref\"..HEAD > .hal/recovery/git-format-patch.patch 2>/dev/null || true\n")
+	script.WriteString("  git bundle create .hal/recovery/git-bundle.bundle HEAD \"$base_ref\"..HEAD >/dev/null 2>&1 || rm -f .hal/recovery/git-bundle.bundle\n")
+	script.WriteString("else\n")
+	script.WriteString("  git diff --binary --no-ext-diff > .hal/recovery/git-format-patch.patch 2>/dev/null || true\n")
+	script.WriteString("fi\n")
+	script.WriteString("[ -s .hal/recovery/git-format-patch.patch ] || rm -f .hal/recovery/git-format-patch.patch\n")
+	return script.String()
 }
 
 func (deps factorySandboxExecutorDeps) resolveFactorySandboxRuntimeDriver(req factorySandboxExecutorRequest, target sandboxruntime.Target, selectedTarget *sandbox.SandboxState) (sandboxruntime.Driver, bool, error) {
@@ -1373,14 +1466,18 @@ func factorySandboxRemoteAutoArgs(req factoryRunAutoRequest) []string {
 }
 
 func factorySandboxRemoteAutoScript(req factoryRunAutoRequest) string {
-	return factorySandboxRemoteHalScriptWithEnv(factorySandboxRemoteAutoArgs(req), factorySandboxRemoteAutoEnv(req.AttemptPolicy))
+	return factorySandboxRemoteHalScriptWithEnv(factorySandboxRemoteAutoArgs(req), factorySandboxRemoteAutoEnv(req))
 }
 
-func factorySandboxRemoteAutoEnv(policy autoFactoryAttemptPolicy) []string {
-	env := make([]string, 0, 3)
+func factorySandboxRemoteAutoEnv(req factoryRunAutoRequest) []string {
+	policy := req.AttemptPolicy
+	env := make([]string, 0, 4)
 	env = append(env, fmt.Sprintf("%s=%d", autoFactoryMaxRunAttemptsEnv, policy.MaxRunAttempts))
 	env = append(env, fmt.Sprintf("%s=%d", autoFactoryMaxReviewFixAttemptsEnv, policy.MaxReviewFixAttempts))
 	env = append(env, fmt.Sprintf("%s=%d", autoFactoryMaxCIFixAttemptsEnv, policy.MaxCIFixAttempts))
+	if ciPolicy := strings.TrimSpace(req.CIPolicy); ciPolicy != "" {
+		env = append(env, fmt.Sprintf("%s=%s", autoFactoryCIPolicyEnv, shellQuote(ciPolicy)))
+	}
 	return env
 }
 

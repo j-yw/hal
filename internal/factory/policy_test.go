@@ -41,6 +41,12 @@ func TestDefaultFactoryPolicy(t *testing.T) {
 	if policy.CleanupBehavior != CleanupBehaviorPreserve {
 		t.Errorf("CleanupBehavior = %q, want %q", policy.CleanupBehavior, CleanupBehaviorPreserve)
 	}
+	if policy.CIPolicy != CIPolicySkipIfUnavailable {
+		t.Errorf("CIPolicy = %q, want %q", policy.CIPolicy, CIPolicySkipIfUnavailable)
+	}
+	if policy.PublishPolicy != PublishPolicyNone {
+		t.Errorf("PublishPolicy = %q, want %q", policy.PublishPolicy, PublishPolicyNone)
+	}
 	if policy.SecurityReadinessGatePolicyMode != "" {
 		t.Errorf("SecurityReadinessGatePolicyMode = %q, want empty default", policy.SecurityReadinessGatePolicyMode)
 	}
@@ -108,6 +114,34 @@ func TestFactoryPolicyValidateRejectsInvalidValues(t *testing.T) {
 			wantErr: "factory.policy.cleanupBehavior must be one of preserve, on_success, always",
 		},
 		{
+			name: "unknown ci policy",
+			mutate: func(policy *FactoryPolicy) {
+				policy.CIPolicy = "best-effort"
+			},
+			wantErr: "factory.policy.ciPolicy must be one of required, skip-if-unavailable, disabled",
+		},
+		{
+			name: "empty ci policy",
+			mutate: func(policy *FactoryPolicy) {
+				policy.CIPolicy = ""
+			},
+			wantErr: "factory.policy.ciPolicy must be one of required, skip-if-unavailable, disabled",
+		},
+		{
+			name: "unknown publish policy",
+			mutate: func(policy *FactoryPolicy) {
+				policy.PublishPolicy = "release"
+			},
+			wantErr: "factory.policy.publishPolicy must be one of none, push, pr",
+		},
+		{
+			name: "empty publish policy",
+			mutate: func(policy *FactoryPolicy) {
+				policy.PublishPolicy = ""
+			},
+			wantErr: "factory.policy.publishPolicy must be one of none, push, pr",
+		},
+		{
 			name: "unknown security readiness gate policy mode",
 			mutate: func(policy *FactoryPolicy) {
 				policy.SecurityReadinessGatePolicyMode = sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode("enforce")
@@ -137,6 +171,8 @@ func TestFactoryPolicyValidateNormalizesEnums(t *testing.T) {
 	policy := DefaultFactoryPolicy()
 	policy.AllowedEngines = []string{" CODEX ", "Claude", "pi"}
 	policy.CleanupBehavior = " ON_SUCCESS "
+	policy.CIPolicy = " REQUIRED "
+	policy.PublishPolicy = " PR "
 	policy.SecurityReadinessGatePolicyMode = sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode(" STRICT ")
 
 	if err := policy.Validate(); err != nil {
@@ -149,8 +185,33 @@ func TestFactoryPolicyValidateNormalizesEnums(t *testing.T) {
 	if policy.CleanupBehavior != CleanupBehaviorOnSuccess {
 		t.Fatalf("CleanupBehavior = %q, want %q", policy.CleanupBehavior, CleanupBehaviorOnSuccess)
 	}
+	if policy.CIPolicy != CIPolicyRequired {
+		t.Fatalf("CIPolicy = %q, want %q", policy.CIPolicy, CIPolicyRequired)
+	}
+	if policy.PublishPolicy != PublishPolicyPR {
+		t.Fatalf("PublishPolicy = %q, want %q", policy.PublishPolicy, PublishPolicyPR)
+	}
 	if policy.SecurityReadinessGatePolicyMode != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict {
 		t.Fatalf("SecurityReadinessGatePolicyMode = %q, want %q", policy.SecurityReadinessGatePolicyMode, sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict)
+	}
+}
+
+func TestFactoryPolicyCIPolicyAndPublishPolicyJSONFields(t *testing.T) {
+	policy := DefaultFactoryPolicy()
+	data, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatalf("marshal default policy: %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal default policy: %v", err)
+	}
+	if got := raw["ciPolicy"]; got != CIPolicySkipIfUnavailable {
+		t.Fatalf("ciPolicy = %#v, want %q in %s", got, CIPolicySkipIfUnavailable, data)
+	}
+	if got := raw["publishPolicy"]; got != PublishPolicyNone {
+		t.Fatalf("publishPolicy = %#v, want %q in %s", got, PublishPolicyNone, data)
 	}
 }
 
@@ -266,6 +327,8 @@ func TestLoadPolicyConfigPreservesExplicitStrictValues(t *testing.T) {
     prCreationAllowed: false
     mergeAllowed: false
     cleanupBehavior: always
+    ciPolicy: required
+    publishPolicy: pr
     securityReadinessGatePolicyMode: strict
 `)
 
@@ -284,6 +347,8 @@ func TestLoadPolicyConfigPreservesExplicitStrictValues(t *testing.T) {
 		PRCreationAllowed:               false,
 		MergeAllowed:                    false,
 		CleanupBehavior:                 CleanupBehaviorAlways,
+		CIPolicy:                        CIPolicyRequired,
+		PublishPolicy:                   PublishPolicyPR,
 		SecurityReadinessGatePolicyMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
 	}
 	assertFactoryPolicy(t, got, want)
@@ -302,6 +367,8 @@ func TestLoadPolicyConfigPreservesExplicitZeroAndEmptyValues(t *testing.T) {
     prCreationAllowed: false
     mergeAllowed: false
     cleanupBehavior: preserve
+    ciPolicy: disabled
+    publishPolicy: none
     securityReadinessGatePolicyMode: ""
 `)
 
@@ -320,8 +387,31 @@ func TestLoadPolicyConfigPreservesExplicitZeroAndEmptyValues(t *testing.T) {
 		PRCreationAllowed:    false,
 		MergeAllowed:         false,
 		CleanupBehavior:      CleanupBehaviorPreserve,
+		CIPolicy:             CIPolicyDisabled,
+		PublishPolicy:        PublishPolicyNone,
 	}
 	assertFactoryPolicy(t, got, want)
+}
+
+func TestLoadPolicyConfigNormalizesCIPolicyAndPublishPolicy(t *testing.T) {
+	dir := t.TempDir()
+	writeFactoryConfig(t, dir, `factory:
+  policy:
+    ciPolicy: " Required "
+    publishPolicy: " Push "
+`)
+
+	got, err := LoadPolicyConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadPolicyConfig() unexpected error: %v", err)
+	}
+
+	if got.CIPolicy != CIPolicyRequired {
+		t.Fatalf("CIPolicy = %q, want %q", got.CIPolicy, CIPolicyRequired)
+	}
+	if got.PublishPolicy != PublishPolicyPush {
+		t.Fatalf("PublishPolicy = %q, want %q", got.PublishPolicy, PublishPolicyPush)
+	}
 }
 
 func TestLoadPolicyConfigNormalizesSecurityReadinessGatePolicyMode(t *testing.T) {
@@ -375,6 +465,22 @@ func TestLoadPolicyConfigRejectsInvalidConfiguredValues(t *testing.T) {
     cleanupBehavior: ""
 `,
 			wantErr: "factory.policy.cleanupBehavior",
+		},
+		{
+			name: "unknown ci policy",
+			yaml: `factory:
+  policy:
+    ciPolicy: optional
+`,
+			wantErr: "factory.policy.ciPolicy",
+		},
+		{
+			name: "unknown publish policy",
+			yaml: `factory:
+  policy:
+    publishPolicy: tag
+`,
+			wantErr: "factory.policy.publishPolicy",
 		},
 		{
 			name: "unknown security readiness gate policy mode",

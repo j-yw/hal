@@ -141,7 +141,7 @@ func TestPhase38RunAutoFactoryDefaultsDoNotSelectFirecrackerRuntimeOrGuestTransp
 		t.Fatalf("auto sandbox default runtime = %q, want empty default", autoReq.SandboxRuntime)
 	}
 
-	factoryReq, err := parseFactoryRunRequestWithTarget([]string{".hal/prd-feature.md"}, "", "main", false, true, sandboxTargetFlagValues{})
+	factoryReq, err := parseFactoryRunRequestWithTarget([]string{".hal/prd-feature.md"}, "", "main", false, true, sandboxTargetFlagValues{}, "", false, "", false, false, false, "", false)
 	if err != nil {
 		t.Fatalf("parseFactoryRunRequestWithTarget() error = %v", err)
 	}

@@ -282,6 +282,7 @@ type RunOptions struct {
 	Resume            bool   // Continue from last saved state
 	DryRun            bool   // Show what would happen without executing
 	SkipCI            bool   // Skip CI step (push + draft PR) at the end
+	CIPolicy          string // Factory CI policy; empty preserves required behavior
 	SkipReview        bool   // Skip review gate before CI
 	ReviewCleanStreak int    // Consecutive clean review cycles required to pass
 	ReviewMaxCycles   int    // Maximum review cycles before failing the gate
@@ -1451,8 +1452,9 @@ func (p *Pipeline) migrateAutoProgress() error {
 func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
 	p.display.ShowInfo("   Step: ci\n")
 
-	if opts.SkipCI {
-		state.CI = &CIState{Status: "skipped", Reason: "skip_ci_flag"}
+	ciPolicy := ciPolicyForRun(opts)
+	if opts.SkipCI || ciPolicy == CIPolicyDisabled {
+		state.CI = &CIState{Status: "skipped", Reason: "skip_ci_flag", Policy: ciPolicy}
 		p.recordCIState(state.CI)
 		p.display.ShowInfo("   Skipping CI step (--no-ci)\n")
 		state.Step = StepReport
@@ -1480,7 +1482,17 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	}
 
 	if err := checkCIDependencies(); err != nil {
-		state.CI = &CIState{Status: "failed", Reason: "ci_unavailable"}
+		if ciPolicySkipsUnavailable(ciPolicy) {
+			state.CI = &CIState{Status: "unavailable", Reason: "ci_unavailable", Policy: ciPolicy}
+			p.recordCIState(state.CI)
+			p.display.ShowInfo("   CI dependencies unavailable (%v); continuing because CI policy is %s\n", err, ciPolicy)
+			state.Step = StepReport
+			if saveErr := p.saveState(state); saveErr != nil {
+				return fmt.Errorf("failed to save CI unavailable state: %w", saveErr)
+			}
+			return nil
+		}
+		state.CI = &CIState{Status: "failed", Reason: "ci_unavailable", Policy: ciPolicy}
 		p.recordCIState(state.CI)
 		p.display.ShowInfo("   CI dependencies unavailable (%v); stopping at CI step\n", err)
 		state.Step = StepCI
@@ -1559,6 +1571,7 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	if state.CI == nil {
 		state.CI = &CIState{}
 	}
+	state.CI.Policy = ciPolicy
 	state.CI.PRURL = prURL
 	state.CI.PRNumber = pushResult.PullRequest.Number
 	state.CI.PRTitle = strings.TrimSpace(pushResult.PullRequest.Title)
@@ -1584,6 +1597,18 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	}
 
 	if !status.ChecksDiscovered {
+		if ciPolicySkipsUnavailable(ciPolicy) {
+			p.display.ShowInfo("   No CI checks discovered; continuing because CI policy is %s\n", ciPolicy)
+			state.CI.Status = "unavailable"
+			state.CI.Reason = ci.WaitTerminalReasonNoChecksDetected
+			state.CI.Policy = ciPolicy
+			p.recordCIState(state.CI)
+			state.Step = StepReport
+			if saveErr := p.saveState(state); saveErr != nil {
+				return fmt.Errorf("failed to save CI no-checks state: %w", saveErr)
+			}
+			return nil
+		}
 		p.display.ShowInfo("   No CI checks discovered; stopping at CI step\n")
 		state.CI.Status = ci.StatusPending
 		state.CI.Reason = ci.WaitTerminalReasonNoChecksDetected
@@ -1744,6 +1769,24 @@ func ciFixMaxAttemptsForRun(state *PipelineState, opts RunOptions) int {
 		return maxAttempts
 	}
 	return maxCIFixAttempts
+}
+
+func ciPolicyForRun(opts RunOptions) string {
+	if opts.SkipCI {
+		return CIPolicyDisabled
+	}
+	switch strings.ToLower(strings.TrimSpace(opts.CIPolicy)) {
+	case CIPolicyDisabled:
+		return CIPolicyDisabled
+	case CIPolicySkipIfUnavailable:
+		return CIPolicySkipIfUnavailable
+	default:
+		return CIPolicyRequired
+	}
+}
+
+func ciPolicySkipsUnavailable(policy string) bool {
+	return strings.TrimSpace(policy) == CIPolicySkipIfUnavailable
 }
 
 func ciFixPolicyLimitError(attempts, limit int) *PolicyLimitError {
