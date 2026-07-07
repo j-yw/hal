@@ -825,14 +825,8 @@ func collectRunSandboxGeneratedArtifacts(ctx context.Context, store sandboxexecu
 		Target:             result.Result.Target,
 		RemoteWorkspaceDir: req.WorkDir,
 	}
-	if _, err := sandboxexecution.CollectRecoveryArtifacts(ctx, collectionReq); err != nil {
-		if handled, warningErr := appendSandboxArtifactCopyWarning(store, req.ExecutionID, err); handled {
-			if warningErr != nil {
-				return fmt.Errorf("collect run sandbox recovery artifacts: %w", warningErr)
-			}
-		} else {
-			return fmt.Errorf("collect run sandbox recovery artifacts: %w", err)
-		}
+	if _, err := sandboxexecution.CollectRecoveryArtifactsBestEffort(ctx, collectionReq); err != nil {
+		return fmt.Errorf("collect run sandbox recovery artifacts: %w", err)
 	}
 	if _, err := sandboxexecution.CollectReportsArchiveArtifacts(ctx, sandboxexecution.ReportsArchiveCollectionRequest{
 		ExecutionID:        req.ExecutionID,

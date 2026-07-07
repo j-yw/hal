@@ -1749,6 +1749,71 @@ func TestRunRunSandboxWithWriterCollectsGeneratedArtifacts(t *testing.T) {
 	}
 }
 
+func TestCollectRunSandboxGeneratedArtifactsKeepsRecoveryGenerationBestEffort(t *testing.T) {
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	if err := store.SaveManifest(&sandboxexecution.Manifest{
+		ID:        "run-recovery-best-effort",
+		Purpose:   sandboxexecution.PurposeRun,
+		Status:    sandboxexecution.StatusRunning,
+		StartedAt: time.Date(2026, 7, 7, 12, 30, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+
+	const workspace = "/root/workspace/repo"
+	var recoveryCopyOut bool
+	driver := fakeRunSandboxRuntimeDriver{
+		exec: func(_ context.Context, got sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			script := ""
+			if len(got.Args) >= 3 && got.Args[0] == "sh" && got.Args[1] == "-c" {
+				script = got.Args[2]
+			}
+			if got.WorkDir == workspace && strings.Contains(script, "workspace.patch") {
+				return nil, errors.New("chdir /root/workspace/repo: no such file or directory")
+			}
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+		copyOut: func(_ context.Context, got sandboxruntime.CopyRequest) error {
+			if strings.Contains(got.SourcePath, "workspace.patch") {
+				recoveryCopyOut = true
+			}
+			if err := os.MkdirAll(filepath.Dir(got.DestinationPath), 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(got.DestinationPath, []byte("payload for "+got.SourcePath), 0o600)
+		},
+	}
+
+	err := collectRunSandboxGeneratedArtifacts(context.Background(), store, runSandboxRequest{
+		ExecutionID: "run-recovery-best-effort",
+		WorkDir:     workspace,
+	}, runSandboxExecutionResult{
+		RuntimeDriver: driver,
+		Result: &sandboxexec.Result{Target: sandboxruntime.Target{
+			Name: "run-recovery-best-effort-box",
+			Runtime: sandboxruntime.RuntimeState{
+				Driver: sandboxruntime.DriverSSHMachine,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("collectRunSandboxGeneratedArtifacts() error = %v, want best-effort recovery warning", err)
+	}
+	if recoveryCopyOut {
+		t.Fatal("recovery patch copy-out should not run after recovery generation failure")
+	}
+	manifest, err := store.LoadManifest("run-recovery-best-effort")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if manifest.ArtifactMetadata == nil || len(manifest.ArtifactMetadata.Warnings) == 0 {
+		t.Fatalf("artifact metadata = %#v, want recovery warning", manifest.ArtifactMetadata)
+	}
+	if got := manifest.ArtifactMetadata.Warnings[0].Phase; got != "recovery-generation" {
+		t.Fatalf("warning phase = %q, want recovery-generation", got)
+	}
+}
+
 func TestRunRunSandboxWithWriterRecordsArtifactCopyWarningsAtCommandBoundary(t *testing.T) {
 	startedAt := time.Date(2026, 7, 1, 9, 10, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(5 * time.Second)
@@ -1849,14 +1914,18 @@ func TestRunRunSandboxWithWriterRecordsArtifactCopyWarningsAtCommandBoundary(t *
 	if manifest.ArtifactMetadata == nil {
 		t.Fatal("ArtifactMetadata = nil, want warning metadata")
 	}
-	if len(manifest.ArtifactMetadata.Partial) != 0 {
-		t.Fatalf("partial = %#v, want no partial entries for command-boundary copy warning", manifest.ArtifactMetadata.Partial)
+	if len(manifest.ArtifactMetadata.Partial) != 1 {
+		t.Fatalf("partial = %#v, want one recovery partial entry", manifest.ArtifactMetadata.Partial)
+	}
+	if manifest.ArtifactMetadata.Partial[0].Path != ".hal/recovery/workspace.patch" ||
+		manifest.ArtifactMetadata.Partial[0].StoredPath != "" {
+		t.Fatalf("partial = %#v, want safe recovery display path without stored path", manifest.ArtifactMetadata.Partial[0])
 	}
 	if len(manifest.ArtifactMetadata.Warnings) != 1 {
-		t.Fatalf("warnings = %#v, want one copy-out warning", manifest.ArtifactMetadata.Warnings)
+		t.Fatalf("warnings = %#v, want one recovery copy-out warning", manifest.ArtifactMetadata.Warnings)
 	}
 	warning := manifest.ArtifactMetadata.Warnings[0]
-	if warning.Phase != sandboxexecution.ArtifactWarningPhaseCopyOut ||
+	if warning.Phase != "recovery-copyout" ||
 		warning.Message != "sandbox execution recovery artifact copy failed" ||
 		warning.Artifact.Path != ".hal/recovery/workspace.patch" ||
 		warning.Artifact.StoredPath != "" {
