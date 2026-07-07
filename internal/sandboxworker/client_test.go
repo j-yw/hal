@@ -444,12 +444,22 @@ func TestServerHandlesSingleJSONRequestResponsePerUnixConnection(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Decode(second response) error = nil with response %#v, want closed single-response connection", secondResp)
 	}
-	if !errors.Is(err, io.EOF) && !strings.Contains(err.Error(), "closed") {
+	if !isClosedSingleResponseConnectionError(err) {
 		t.Fatalf("Decode(second response) error = %v, want EOF or closed connection", err)
 	}
 	if got := handled.Load(); got != 1 {
 		t.Fatalf("handled requests = %d, want exactly one request per connection", got)
 	}
+}
+
+func isClosedSingleResponseConnectionError(err error) bool {
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	message := err.Error()
+	// Linux can return ECONNRESET when the server closes a Unix socket with an
+	// unread extra request buffered; that still proves no second response was served.
+	return strings.Contains(message, "closed") || strings.Contains(message, "connection reset by peer")
 }
 
 func TestClientUsesInjectedTransportAndPropagatesContext(t *testing.T) {
