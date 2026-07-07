@@ -3,8 +3,11 @@ package factory
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -204,5 +207,54 @@ func TestBootstrapRefreshHalRequiresWorkspaceDir(t *testing.T) {
 	_, err := BootstrapRefreshHal(context.Background(), BootstrapRequest{}, BootstrapHalDeps{})
 	if !errors.Is(err, errBootstrapWorkspaceDirRequired) {
 		t.Fatalf("BootstrapRefreshHal() error = %v, want %v", err, errBootstrapWorkspaceDirRequired)
+	}
+}
+
+func TestBootstrapInstallHalScriptUsesExistingHalForNonHalWorkspace(t *testing.T) {
+	tempDir := t.TempDir()
+	homeDir := filepath.Join(tempDir, "home")
+	fakeBin := filepath.Join(tempDir, "bin")
+	workDir := filepath.Join(tempDir, "project")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("mkdir work dir: %v", err)
+	}
+	fakeHal := filepath.Join(fakeBin, "hal")
+	if err := os.WriteFile(fakeHal, []byte("#!/bin/sh\necho fake-hal-version\n"), 0o755); err != nil {
+		t.Fatalf("write fake hal: %v", err)
+	}
+
+	cmd := exec.Command("sh", "-lc", bootstrapInstallHalScript)
+	cmd.Dir = workDir
+	cmd.Env = append(os.Environ(),
+		"HOME="+homeDir,
+		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bootstrap install script error = %v\noutput:\n%s", err, string(output))
+	}
+	if !strings.Contains(string(output), "fake-hal-version") {
+		t.Fatalf("output = %q, want existing hal version", string(output))
+	}
+	installed := filepath.Join(homeDir, ".local", "bin", "hal")
+	if _, err := os.Stat(installed); err != nil {
+		t.Fatalf("installed hal stat error = %v", err)
+	}
+}
+
+func TestBootstrapInstallHalScriptDocumentsHalModuleBuildGate(t *testing.T) {
+	for _, want := range []string{
+		"go list -m",
+		"github.com/jywlabs/hal",
+		"github.com/ReScienceLab/hal",
+		"install_existing_hal",
+		"workspace is not a Hal source checkout",
+	} {
+		if !strings.Contains(bootstrapInstallHalScript, want) {
+			t.Fatalf("bootstrapInstallHalScript missing %q", want)
+		}
 	}
 }
