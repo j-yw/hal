@@ -51,6 +51,44 @@ func ValidateExecutorMode(executorMode string) (string, error) {
 	return "", fmt.Errorf("unsupported factory executor mode %q (supported: %s)", trimmedExecutorMode, strings.Join(SupportedExecutorModes(), ", "))
 }
 
+// Publish runner values.
+const (
+	PublishRunnerHost    = "host"
+	PublishRunnerSandbox = "sandbox"
+	PublishRunnerAuto    = "auto"
+)
+
+// SupportedPublishRunners returns the durable publish runner modes.
+func SupportedPublishRunners() []string {
+	return []string{PublishRunnerHost, PublishRunnerSandbox, PublishRunnerAuto}
+}
+
+// NormalizePublishRunner trims and lowercases publish runner metadata.
+func NormalizePublishRunner(publishRunner string) string {
+	return strings.ToLower(strings.TrimSpace(publishRunner))
+}
+
+// ValidatePublishRunner normalizes and validates a durable publish runner mode.
+func ValidatePublishRunner(publishRunner string) (string, error) {
+	normalizedPublishRunner := NormalizePublishRunner(publishRunner)
+	if normalizedPublishRunner == "" {
+		return "", fmt.Errorf("factory publish runner is required")
+	}
+	if isSupportedPublishRunner(normalizedPublishRunner) {
+		return normalizedPublishRunner, nil
+	}
+	return "", fmt.Errorf("unsupported factory publish runner %q (supported: %s)", normalizedPublishRunner, strings.Join(SupportedPublishRunners(), ", "))
+}
+
+func isSupportedPublishRunner(publishRunner string) bool {
+	for _, supported := range SupportedPublishRunners() {
+		if publishRunner == supported {
+			return true
+		}
+	}
+	return false
+}
+
 // Queue status values.
 const (
 	QueueStatusQueued    = "queued"
@@ -273,16 +311,29 @@ type RecoveryOutcome struct {
 }
 
 type PublishOutcome struct {
-	Status          string     `json:"status,omitempty"`
-	Policy          string     `json:"policy,omitempty"`
-	BranchName      string     `json:"branchName,omitempty"`
-	RecoveredBundle string     `json:"recoveredBundle,omitempty"`
-	Pushed          bool       `json:"pushed,omitempty"`
-	PullRequestURL  string     `json:"pullRequestUrl,omitempty"`
-	PullRequestID   int        `json:"pullRequestId,omitempty"`
-	AllowUnverified bool       `json:"allowUnverified,omitempty"`
-	Source          string     `json:"source,omitempty"`
-	CompletedAt     *time.Time `json:"completedAt,omitempty"`
+	Status          string           `json:"status,omitempty"`
+	Policy          string           `json:"policy,omitempty"`
+	Runner          string           `json:"runner,omitempty"`
+	BranchName      string           `json:"branchName,omitempty"`
+	Commit          string           `json:"commit,omitempty"`
+	RecoveredBundle string           `json:"recoveredBundle,omitempty"`
+	Pushed          bool             `json:"pushed,omitempty"`
+	PullRequestURL  string           `json:"pullRequestUrl,omitempty"`
+	PullRequestID   int              `json:"pullRequestId,omitempty"`
+	CredentialMode  string           `json:"credentialMode,omitempty"`
+	FallbackFrom    string           `json:"fallbackFrom,omitempty"`
+	Attempts        []PublishAttempt `json:"attempts,omitempty"`
+	AllowUnverified bool             `json:"allowUnverified,omitempty"`
+	Source          string           `json:"source,omitempty"`
+	CompletedAt     *time.Time       `json:"completedAt,omitempty"`
+}
+
+type PublishAttempt struct {
+	Runner      string     `json:"runner,omitempty"`
+	Status      string     `json:"status,omitempty"`
+	Error       string     `json:"error,omitempty"`
+	StartedAt   *time.Time `json:"startedAt,omitempty"`
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
 }
 
 // RunSecretInput describes one secret required by a factory run. For
@@ -812,8 +863,7 @@ func DerivePostRunState(record RunRecord) *PostRunState {
 			state.Recovery = &recovery
 		}
 		if record.PostRun.Publish != nil {
-			publish := *record.PostRun.Publish
-			state.Publish = &publish
+			state.Publish = clonePublishOutcome(record.PostRun.Publish)
 		}
 	}
 	if state.Publish == nil {
@@ -859,23 +909,62 @@ func derivePublishOutcomeFromArtifacts(artifacts []ArtifactReference) *PublishOu
 			continue
 		}
 		completedAt := artifact.CreatedAt
+		status := summaryString(artifact.Summary, "status")
+		if status == "" {
+			status = RunStatusSucceeded
+		}
 		outcome := &PublishOutcome{
-			Status:      RunStatusSucceeded,
+			Status:      status,
 			Policy:      summaryString(artifact.Summary, "policy"),
-			BranchName:  summaryString(artifact.Summary, "branch"),
+			BranchName:  summaryStringAny(artifact.Summary, "branch", "branchName"),
 			Pushed:      summaryBool(artifact.Summary, "pushed"),
 			Source:      "artifact",
 			CompletedAt: completedAt,
 		}
+		if runner := normalizePublishRunnerSummaryValue(summaryString(artifact.Summary, "runner")); runner != "" {
+			outcome.Runner = runner
+		}
+		if fallbackFrom := normalizePublishRunnerSummaryValue(summaryString(artifact.Summary, "fallbackFrom")); fallbackFrom != "" {
+			outcome.FallbackFrom = fallbackFrom
+		}
+		if credentialMode := summaryString(artifact.Summary, "credentialMode"); credentialMode != "" {
+			outcome.CredentialMode = credentialMode
+		}
+		if commit := summaryString(artifact.Summary, "commit"); commit != "" {
+			outcome.Commit = commit
+		}
 		if pullRequestURL := summaryString(artifact.Summary, "pullRequestUrl"); pullRequestURL != "" {
 			outcome.PullRequestURL = pullRequestURL
+		}
+		if pullRequestID := summaryInt(artifact.Summary, "pullRequestId"); pullRequestID != 0 {
+			outcome.PullRequestID = pullRequestID
 		}
 		if recoveredBundle := summaryString(artifact.Summary, "recoveredBundle"); recoveredBundle != "" {
 			outcome.RecoveredBundle = recoveredBundle
 		}
+		if attempts := summaryPublishAttempts(artifact.Summary, "attempts"); len(attempts) > 0 {
+			outcome.Attempts = attempts
+		}
 		return outcome
 	}
 	return nil
+}
+
+func normalizePublishRunnerSummaryValue(value string) string {
+	normalized := NormalizePublishRunner(value)
+	if !isSupportedPublishRunner(normalized) {
+		return ""
+	}
+	return normalized
+}
+
+func summaryStringAny(summary map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := summaryString(summary, key); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func summaryString(summary map[string]any, key string) string {
@@ -893,6 +982,42 @@ func summaryString(summary map[string]any, key string) string {
 	return strings.TrimSpace(text)
 }
 
+func summaryInt(summary map[string]any, key string) int {
+	if len(summary) == 0 {
+		return 0
+	}
+	value, ok := summary[key]
+	if !ok {
+		return 0
+	}
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int8:
+		return int(typed)
+	case int16:
+		return int(typed)
+	case int32:
+		return int(typed)
+	case int64:
+		return int(typed)
+	case uint:
+		return int(typed)
+	case uint8:
+		return int(typed)
+	case uint16:
+		return int(typed)
+	case uint32:
+		return int(typed)
+	case uint64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	default:
+		return 0
+	}
+}
+
 func summaryBool(summary map[string]any, key string) bool {
 	if len(summary) == 0 {
 		return false
@@ -903,6 +1028,138 @@ func summaryBool(summary map[string]any, key string) bool {
 	}
 	enabled, ok := value.(bool)
 	return ok && enabled
+}
+
+func summaryPublishAttempts(summary map[string]any, key string) []PublishAttempt {
+	if len(summary) == 0 {
+		return nil
+	}
+	value, ok := summary[key]
+	if !ok {
+		return nil
+	}
+
+	switch typed := value.(type) {
+	case []PublishAttempt:
+		return normalizePublishAttempts(typed)
+	case []*PublishAttempt:
+		attempts := make([]PublishAttempt, 0, len(typed))
+		for _, attempt := range typed {
+			if attempt == nil {
+				continue
+			}
+			attempts = append(attempts, *attempt)
+		}
+		return normalizePublishAttempts(attempts)
+	case []map[string]any:
+		attempts := make([]PublishAttempt, 0, len(typed))
+		for _, item := range typed {
+			if attempt, ok := publishAttemptFromSummaryMap(item); ok {
+				attempts = append(attempts, attempt)
+			}
+		}
+		return attempts
+	case []any:
+		attempts := make([]PublishAttempt, 0, len(typed))
+		for _, item := range typed {
+			switch attemptValue := item.(type) {
+			case PublishAttempt:
+				if attempt, ok := normalizePublishAttempt(attemptValue); ok {
+					attempts = append(attempts, attempt)
+				}
+			case *PublishAttempt:
+				if attemptValue == nil {
+					continue
+				}
+				if attempt, ok := normalizePublishAttempt(*attemptValue); ok {
+					attempts = append(attempts, attempt)
+				}
+			case map[string]any:
+				if attempt, ok := publishAttemptFromSummaryMap(attemptValue); ok {
+					attempts = append(attempts, attempt)
+				}
+			}
+		}
+		return attempts
+	default:
+		return nil
+	}
+}
+
+func publishAttemptFromSummaryMap(summary map[string]any) (PublishAttempt, bool) {
+	attempt := PublishAttempt{
+		Runner:      normalizePublishRunnerSummaryValue(summaryString(summary, "runner")),
+		Status:      summaryString(summary, "status"),
+		Error:       summaryString(summary, "error"),
+		StartedAt:   summaryTime(summary, "startedAt"),
+		CompletedAt: summaryTime(summary, "completedAt"),
+	}
+	return normalizePublishAttempt(attempt)
+}
+
+func normalizePublishAttempts(attempts []PublishAttempt) []PublishAttempt {
+	if len(attempts) == 0 {
+		return nil
+	}
+	out := make([]PublishAttempt, 0, len(attempts))
+	for _, attempt := range attempts {
+		if normalized, ok := normalizePublishAttempt(attempt); ok {
+			out = append(out, normalized)
+		}
+	}
+	return out
+}
+
+func normalizePublishAttempt(attempt PublishAttempt) (PublishAttempt, bool) {
+	attempt.Runner = normalizePublishRunnerSummaryValue(attempt.Runner)
+	attempt.Status = strings.TrimSpace(attempt.Status)
+	attempt.Error = strings.TrimSpace(attempt.Error)
+	if attempt.StartedAt != nil && attempt.StartedAt.IsZero() {
+		attempt.StartedAt = nil
+	}
+	if attempt.CompletedAt != nil && attempt.CompletedAt.IsZero() {
+		attempt.CompletedAt = nil
+	}
+	if attempt.Runner == "" && attempt.Status == "" && attempt.Error == "" && attempt.StartedAt == nil && attempt.CompletedAt == nil {
+		return PublishAttempt{}, false
+	}
+	return attempt, true
+}
+
+func summaryTime(summary map[string]any, key string) *time.Time {
+	if len(summary) == 0 {
+		return nil
+	}
+	return timeFromSummaryValue(summary[key])
+}
+
+func timeFromSummaryValue(value any) *time.Time {
+	switch typed := value.(type) {
+	case time.Time:
+		if typed.IsZero() {
+			return nil
+		}
+		copied := typed
+		return &copied
+	case *time.Time:
+		if typed == nil || typed.IsZero() {
+			return nil
+		}
+		copied := *typed
+		return &copied
+	case string:
+		text := strings.TrimSpace(typed)
+		if text == "" {
+			return nil
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, text)
+		if err != nil {
+			return nil
+		}
+		return &parsed
+	default:
+		return nil
+	}
 }
 
 func deriveOutcomeFromEvents(events []EventRecord, kind string) string {
@@ -1024,4 +1281,36 @@ func cloneRunTelemetry(src *RunTelemetry) *RunTelemetry {
 		dst.ArtifactCount = &artifactCount
 	}
 	return &dst
+}
+
+func clonePublishOutcome(src *PublishOutcome) *PublishOutcome {
+	if src == nil {
+		return nil
+	}
+
+	dst := *src
+	if src.CompletedAt != nil {
+		completedAt := *src.CompletedAt
+		dst.CompletedAt = &completedAt
+	}
+	if len(src.Attempts) > 0 {
+		dst.Attempts = make([]PublishAttempt, len(src.Attempts))
+		for i, attempt := range src.Attempts {
+			dst.Attempts[i] = clonePublishAttempt(attempt)
+		}
+	}
+	return &dst
+}
+
+func clonePublishAttempt(src PublishAttempt) PublishAttempt {
+	dst := src
+	if src.StartedAt != nil {
+		startedAt := *src.StartedAt
+		dst.StartedAt = &startedAt
+	}
+	if src.CompletedAt != nil {
+		completedAt := *src.CompletedAt
+		dst.CompletedAt = &completedAt
+	}
+	return dst
 }

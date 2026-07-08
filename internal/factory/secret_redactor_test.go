@@ -96,6 +96,39 @@ func TestRunSecretRedactorRedactsURLEncodedValues(t *testing.T) {
 	}
 }
 
+func TestRunSecretRedactorRedactsPostRunPublishPullRequestURL(t *testing.T) {
+	secretValue := "ghp_publish_url_secret_789"
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{
+		{Name: "GITHUB_TOKEN", Source: RunSecretSourceEnv, Required: true, Value: secretValue},
+	})
+
+	record := RunRecord{
+		RunID:  "run-post-run-publish-redaction",
+		Status: RunStatusSucceeded,
+		PostRun: &PostRunState{
+			Publish: &PublishOutcome{
+				Status:         RunStatusSucceeded,
+				Policy:         PublishPolicyPR,
+				BranchName:     "hal/redact-publish-url",
+				PullRequestURL: "https://github.com/jywlabs/hal/pull/9?token=" + secretValue,
+				Source:         "manual",
+			},
+		},
+	}
+
+	safe := redactor.RedactRunRecord(record)
+	data, err := json.Marshal(safe)
+	if err != nil {
+		t.Fatalf("json.Marshal(redacted record) error: %v", err)
+	}
+	if strings.Contains(string(data), secretValue) {
+		t.Fatalf("redacted postRun publish leaked secret value: %s", data)
+	}
+	if !strings.Contains(string(data), RunSecretRedactionPlaceholder) {
+		t.Fatalf("redacted postRun publish missing placeholder: %s", data)
+	}
+}
+
 func TestRunSecretRedactorRedactsArtifactSummaryTypedCollections(t *testing.T) {
 	redactor := NewRunSecretRedactor([]ResolvedRunSecret{
 		{Name: "GITHUB_TOKEN", Source: RunSecretSourceEnv, Required: true, Value: "ghp_factory_secret_value_123"},
@@ -440,6 +473,58 @@ func TestRunSecretRedactorPreservesRunRecordControlFields(t *testing.T) {
 	if got.Failure.Message != "failed with "+RunSecretRedactionPlaceholder {
 		t.Fatalf("Failure.Message = %q, want redacted output", got.Failure.Message)
 	}
+}
+
+func TestRunSecretRedactorRedactsPublishOutcomeMetadata(t *testing.T) {
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{
+		{Name: "PUBLISH_SECRET", Source: RunSecretSourceEnv, Required: true, Value: "secret-fragment"},
+	})
+
+	got := redactor.RedactRunRecord(RunRecord{
+		PostRun: &PostRunState{
+			Publish: &PublishOutcome{
+				Status:          RunStatusSucceeded,
+				Policy:          "pr",
+				BranchName:      "hal/secret-fragment",
+				RecoveredBundle: "recovery/secret-fragment",
+				PullRequestURL:  "https://github.com/jywlabs/secret-fragment/pull/42",
+				Runner:          PublishRunnerSandbox,
+				FallbackFrom:    PublishRunnerHost,
+				CredentialMode:  "env-secret-fragment",
+				Commit:          "abc123-secret-fragment",
+				Attempts: []PublishAttempt{{
+					Runner: PublishRunnerSandbox,
+					Status: RunStatusFailed,
+					Error:  "sandbox publish failed: secret-fragment",
+				}},
+				Source: "manual-secret-fragment",
+			},
+		},
+	})
+
+	if got.PostRun == nil || got.PostRun.Publish == nil {
+		t.Fatalf("PostRun.Publish = %#v, want redacted publish outcome", got.PostRun)
+	}
+	publish := got.PostRun.Publish
+	if publish.Runner != PublishRunnerSandbox || publish.FallbackFrom != PublishRunnerHost {
+		t.Fatalf("publish runner metadata = %#v", publish)
+	}
+	if publish.BranchName != "hal/"+RunSecretRedactionPlaceholder {
+		t.Fatalf("BranchName = %q, want redacted branch", publish.BranchName)
+	}
+	if publish.CredentialMode != "env-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("CredentialMode = %q, want redacted credential mode", publish.CredentialMode)
+	}
+	if publish.Commit != "abc123-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("Commit = %q, want redacted commit metadata", publish.Commit)
+	}
+	if len(publish.Attempts) != 1 {
+		t.Fatalf("attempts = %#v, want one redacted attempt", publish.Attempts)
+	}
+	if publish.Attempts[0].Error != "sandbox publish failed: "+RunSecretRedactionPlaceholder {
+		t.Fatalf("attempt error = %q, want redacted error", publish.Attempts[0].Error)
+	}
+	assertFactoryCredentialDeliveryRedactionAbsent(t, got, []string{"secret-fragment"})
 }
 
 func TestRunSecretRedactorRedactsSandboxMetadataName(t *testing.T) {

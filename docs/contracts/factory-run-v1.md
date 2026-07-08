@@ -19,11 +19,14 @@ This contract does not change the existing `.hal/prd.json`, `.hal/auto-state.jso
 | `version` | string | Hal CLI version that produced the result |
 | `runId` | string | Stable factory run identifier |
 | `status` | string | Final or current run lifecycle status; see status values below |
+| `runner` | object | Optional execution runner summary, including the actual host or sandbox runner used for post-run publish work |
+| `publishFrom` | string | Optional normalized publish source request: `host`, `sandbox`, or `auto` |
 | `nextAction` | object or null | Recommended follow-up action |
 | `artifacts` | array | Artifact references captured for this run |
 | `telemetry` | object | Optional compact observability summary including durations, engine, sandbox, outcomes, artifact count, cost estimate, and failure classification |
 | `eventSummary` | object | Summary of timeline events recorded for this run |
 | `failure` | object or null | Failure details when the run failed |
+| `postRun` | object | Optional post-run outcomes such as recovery and publish results |
 
 `artifacts` is always present. Empty artifact state is represented as an empty
 array. `eventSummary` is always present. `telemetry` uses `omitempty` and is
@@ -36,11 +39,40 @@ connection display fields, SSH command, cleanup command, or diagnostic handoff
 should follow `nextAction.command` and read the durable `factory-status-v1` run
 record.
 
-Sandbox-backed runs do not duplicate full sandbox metadata in this compact
-result surface. Consumers that need the sandbox name, provider, lifecycle
-status, safe connection display fields, SSH command, cleanup command, or
-diagnostic handoff should follow `nextAction.command` and read the durable
-`factory-status-v1` run record.
+## Runner And Publish Metadata
+
+When `runner` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `mode` | string | yes | Runner that performed publish-capable work: `host` or `sandbox` |
+| `sandboxName` | string | no | Sandbox name when `mode` is `sandbox` |
+
+`publishFrom` records the normalized operator request. `auto` lets Hal try the
+sandbox publisher for sandbox-backed runs and fall back to host-side recovery
+publish when needed. `host` publishes from the host worktree. `sandbox` runs the
+publish command inside the stored sandbox workspace.
+
+The `postRun` object may contain a `publish` object. When
+`postRun.publish` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `status` | string | no | Publish lifecycle status |
+| `policy` | string | no | Publish policy used: `push` or `pr` |
+| `branchName` | string | no | Branch that was pushed or used for the pull request |
+| `recoveredBundle` | string | no | Store-relative recovery bundle used before host publish |
+| `pushed` | boolean | no | Whether a branch push completed |
+| `pullRequestUrl` | string | no | Pull request URL when a PR was created |
+| `pullRequestId` | integer | no | Pull request number when available |
+| `allowUnverified` | boolean | no | Whether an unverified stored run was explicitly allowed |
+| `runner` | string | no | Actual publish runner: `host` or `sandbox` |
+| `fallbackFrom` | string | no | Failed runner that caused fallback, usually `sandbox` when `publishFrom` was `auto` |
+| `credentialMode` | string | no | Credential delivery mode used by the publisher, such as `env` |
+| `commit` | string | no | Commit hash observed by the sandbox publisher |
+| `attempts` | array | no | Per-runner publish attempts with `runner`, `status`, optional `error`, `startedAt`, and `completedAt` |
+| `source` | string | no | Publish initiator such as `automatic` or `manual` |
+| `completedAt` | string | no | RFC3339 timestamp when publish metadata was recorded |
 
 ## Next Action
 

@@ -380,9 +380,23 @@ func (r RunSecretRedactor) redactPostRunState(postRun *PostRunState) *PostRunSta
 		publish := *postRun.Publish
 		publish.Status = r.RedactString(publish.Status)
 		publish.Policy = r.RedactString(publish.Policy)
+		publish.Runner = r.RedactString(publish.Runner)
 		publish.BranchName = r.RedactString(publish.BranchName)
+		publish.Commit = r.RedactString(publish.Commit)
 		publish.RecoveredBundle = r.RedactString(publish.RecoveredBundle)
 		publish.PullRequestURL = r.RedactString(publish.PullRequestURL)
+		publish.CredentialMode = r.RedactString(publish.CredentialMode)
+		publish.FallbackFrom = r.RedactString(publish.FallbackFrom)
+		if len(postRun.Publish.Attempts) > 0 {
+			publish.Attempts = make([]PublishAttempt, len(postRun.Publish.Attempts))
+			for i, attempt := range postRun.Publish.Attempts {
+				attempt = clonePublishAttempt(attempt)
+				attempt.Runner = r.RedactString(attempt.Runner)
+				attempt.Status = r.RedactString(attempt.Status)
+				attempt.Error = r.RedactString(attempt.Error)
+				publish.Attempts[i] = attempt
+			}
+		}
 		publish.Source = r.RedactString(publish.Source)
 		safe.Publish = &publish
 	}

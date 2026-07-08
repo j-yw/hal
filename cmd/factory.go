@@ -54,6 +54,7 @@ var factoryRunSecretEnvFlags []string
 var factoryRunCIPolicyFlag string
 var factoryRunNoCIFlag bool
 var factoryRunPublishFlag string
+var factoryRunPublishFromFlag string
 var factoryRunJSONFlag bool
 var factoryRunSandboxFlag bool
 var factoryRunSandboxNameFlag string
@@ -63,8 +64,16 @@ var factoryOpenExecFlag bool
 var factoryOpenJSONFlag bool
 var factoryRecoverJSONFlag bool
 var factoryPublishPolicyFlag string
+var factoryPublishFromFlag string
+var factoryPublishSecretEnvFlags []string
 var factoryPublishAllowUnverifiedFlag bool
 var factoryPublishJSONFlag bool
+var factoryPublishBranchPolicyFlag string
+var factoryPublishBranchBaseFlag string
+var factoryPublishBranchBranchFlag string
+var factoryPublishBranchTitleFlag string
+var factoryPublishBranchBodyFlag string
+var factoryPublishBranchJSONFlag bool
 
 var factoryCmd = &cobra.Command{
 	Use:   "factory",
@@ -194,6 +203,13 @@ the operator explicitly acknowledges the unverified result.`,
 	RunE: runFactoryPublish,
 }
 
+var factoryPublishBranchCmd = &cobra.Command{
+	Use:    "_publish-branch",
+	Hidden: true,
+	Args:   noArgsValidation(),
+	RunE:   runFactoryPublishBranch,
+}
+
 func init() {
 	factoryRunCmd.Flags().StringVar(&factoryRunReportFlag, "report", "", "Start from an analysis report path")
 	factoryRunCmd.Flags().StringVar(&factoryRunBaseFlag, "base", "", "Target base branch for follow-up review or CI")
@@ -201,6 +217,7 @@ func init() {
 	factoryRunCmd.Flags().StringVar(&factoryRunCIPolicyFlag, "ci-policy", "", "CI policy for factory runs (required, skip-if-unavailable, disabled)")
 	factoryRunCmd.Flags().BoolVar(&factoryRunNoCIFlag, "no-ci", false, "Alias for --ci-policy disabled")
 	factoryRunCmd.Flags().StringVar(&factoryRunPublishFlag, "publish", "", "Host publish policy after factory execution (none, push, pr)")
+	factoryRunCmd.Flags().StringVar(&factoryRunPublishFromFlag, "publish-from", factory.PublishRunnerHost, "Publish runner after factory execution (host, sandbox, auto)")
 	factoryRunCmd.Flags().BoolVar(&factoryRunSandboxFlag, "sandbox", false, "Run the factory executor in a managed sandbox")
 	factoryRunCmd.Flags().StringVar(&factoryRunSandboxNameFlag, "sandbox-name", "", "Sandbox name for --sandbox execution")
 	factoryRunCmd.Flags().StringVar(&factoryRunSandboxHostFlag, sandboxHostFlagName, "", "Cached sandbox host ID for target selection")
@@ -214,8 +231,16 @@ func init() {
 	factoryOpenCmd.Flags().BoolVar(&factoryOpenJSONFlag, "json", false, "Output machine-readable JSON (factory-open-v1 contract)")
 	factoryRecoverCmd.Flags().BoolVar(&factoryRecoverJSONFlag, "json", false, "Output machine-readable JSON (factory-recover-v1 contract)")
 	factoryPublishCmd.Flags().StringVar(&factoryPublishPolicyFlag, "policy", "", "Publish policy for stored run (push, pr)")
+	factoryPublishCmd.Flags().StringVar(&factoryPublishFromFlag, "publish-from", factory.PublishRunnerHost, "Publish runner for stored run (host, sandbox, auto)")
+	factoryPublishCmd.Flags().StringArrayVar(&factoryPublishSecretEnvFlags, "secret-env", nil, "Required environment variable secret for sandbox publish (repeatable)")
 	factoryPublishCmd.Flags().BoolVar(&factoryPublishAllowUnverifiedFlag, "allow-unverified", false, "Allow publishing a failed or incomplete stored run")
 	factoryPublishCmd.Flags().BoolVar(&factoryPublishJSONFlag, "json", false, "Output machine-readable JSON (factory-publish-v1 contract)")
+	factoryPublishBranchCmd.Flags().StringVar(&factoryPublishBranchPolicyFlag, "policy", "", "Publish policy for current branch (push, pr)")
+	factoryPublishBranchCmd.Flags().StringVar(&factoryPublishBranchBaseFlag, "base", "", "Target base branch for pull request creation")
+	factoryPublishBranchCmd.Flags().StringVar(&factoryPublishBranchBranchFlag, "branch", "", "Expected current branch to publish")
+	factoryPublishBranchCmd.Flags().StringVar(&factoryPublishBranchTitleFlag, "title", "", "Pull request title")
+	factoryPublishBranchCmd.Flags().StringVar(&factoryPublishBranchBodyFlag, "body", "", "Pull request body")
+	factoryPublishBranchCmd.Flags().BoolVar(&factoryPublishBranchJSONFlag, "json", false, "Output machine-readable JSON")
 	configureFactoryTriggerCommand()
 	configureFactoryQueueCommands()
 	factoryCmd.AddCommand(factoryRunCmd)
@@ -226,6 +251,7 @@ func init() {
 	factoryCmd.AddCommand(factoryArtifactsCmd)
 	factoryCmd.AddCommand(factoryRecoverCmd)
 	factoryCmd.AddCommand(factoryPublishCmd)
+	factoryCmd.AddCommand(factoryPublishBranchCmd)
 	factoryCmd.AddCommand(factoryTriggerCmd)
 	factoryCmd.AddCommand(factoryQueueCmd)
 	rootCmd.AddCommand(factoryCmd)
@@ -278,29 +304,33 @@ var defaultFactoryRecoverDeps = factoryRecoverDeps{
 }
 
 type factoryPublishDeps struct {
-	defaultStore         func() (factory.Store, error)
-	workingDir           func() (string, error)
-	now                  func() time.Time
-	runGit               func(context.Context, string, ...string) (string, error)
-	pushAndCreatePRInDir func(context.Context, string, ci.PushOptions) (ci.PushResult, error)
-	loadSandbox          func(string) (*sandbox.SandboxState, error)
-	resolveProvider      func(string, string) (sandbox.Provider, error)
-	runProviderExec      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
-	runProviderExecIO    func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer, io.Writer) error
-	sandboxRequests      func(string, factory.RunRecord) []factory.SandboxArtifactRequest
+	defaultStore           func() (factory.Store, error)
+	workingDir             func() (string, error)
+	now                    func() time.Time
+	lookupEnv              func(string) (string, bool)
+	runGit                 func(context.Context, string, ...string) (string, error)
+	pushAndCreatePRInDir   func(context.Context, string, ci.PushOptions) (ci.PushResult, error)
+	loadSandbox            func(string) (*sandbox.SandboxState, error)
+	resolveProvider        func(string, string) (sandbox.Provider, error)
+	runProviderExec        func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+	runProviderExecIO      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer, io.Writer) error
+	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
+	sandboxRequests        func(string, factory.RunRecord) []factory.SandboxArtifactRequest
 }
 
 var defaultFactoryPublishDeps = factoryPublishDeps{
-	defaultStore:         factory.DefaultStore,
-	workingDir:           os.Getwd,
-	now:                  time.Now,
-	runGit:               runFactoryGitInDir,
-	pushAndCreatePRInDir: ci.PushAndCreatePRInDir,
-	loadSandbox:          sandbox.LoadActiveInstance,
-	resolveProvider:      resolveProviderWithFallback,
-	runProviderExec:      runFactorySandboxProviderExec,
-	runProviderExecIO:    runFactorySandboxProviderExecIO,
-	sandboxRequests:      defaultFactorySandboxArtifactRequests,
+	defaultStore:           factory.DefaultStore,
+	workingDir:             os.Getwd,
+	now:                    time.Now,
+	lookupEnv:              os.LookupEnv,
+	runGit:                 runFactoryGitInDir,
+	pushAndCreatePRInDir:   ci.PushAndCreatePRInDir,
+	loadSandbox:            sandbox.LoadActiveInstance,
+	resolveProvider:        resolveProviderWithFallback,
+	runProviderExec:        runFactorySandboxProviderExec,
+	runProviderExecIO:      runFactorySandboxProviderExecIO,
+	runProviderExecWithEnv: runFactorySandboxProviderExecWithEnv,
+	sandboxRequests:        defaultFactorySandboxArtifactRequests,
 }
 
 type factoryRunDeps struct {
@@ -383,6 +413,7 @@ type factoryRunRequest struct {
 	BaseBranch     string
 	CIPolicy       string
 	PublishPolicy  string
+	PublishFrom    string
 	Sandbox        bool
 	SandboxName    string
 	SandboxHostID  string
@@ -463,12 +494,17 @@ type factoryCIOutcomeArtifact struct {
 }
 
 type factoryPublishOutcomeArtifact struct {
-	Policy          string          `json:"policy,omitempty"`
-	BranchName      string          `json:"branchName,omitempty"`
-	RecoveredBundle string          `json:"recoveredBundle,omitempty"`
-	Pushed          bool            `json:"pushed"`
-	PullRequest     *ci.PullRequest `json:"pullRequest,omitempty"`
-	Summary         string          `json:"summary,omitempty"`
+	Policy          string                   `json:"policy,omitempty"`
+	Runner          string                   `json:"runner,omitempty"`
+	FallbackFrom    string                   `json:"fallbackFrom,omitempty"`
+	CredentialMode  string                   `json:"credentialMode,omitempty"`
+	BranchName      string                   `json:"branchName,omitempty"`
+	Commit          string                   `json:"commit,omitempty"`
+	RecoveredBundle string                   `json:"recoveredBundle,omitempty"`
+	Pushed          bool                     `json:"pushed"`
+	PullRequest     *ci.PullRequest          `json:"pullRequest,omitempty"`
+	Attempts        []factory.PublishAttempt `json:"attempts,omitempty"`
+	Summary         string                   `json:"summary,omitempty"`
 }
 
 // FactoryLogsResponse is the machine-readable JSON output for
@@ -558,6 +594,8 @@ type FactoryPublishResponse struct {
 	PipelineStatus  string                   `json:"pipelineStatus,omitempty"`
 	PublishStatus   string                   `json:"publishStatus,omitempty"`
 	Policy          string                   `json:"policy"`
+	PublishFrom     string                   `json:"publishFrom,omitempty"`
+	Runner          string                   `json:"runner,omitempty"`
 	AllowUnverified bool                     `json:"allowUnverified,omitempty"`
 	BranchName      string                   `json:"branchName"`
 	PullRequestURL  string                   `json:"pullRequestUrl,omitempty"`
@@ -930,7 +968,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		}
 		return factoryRunExecutionResult{Record: failedRecord, Render: true}, err
 	}
-	if req.Sandbox && !sandboxArtifactsCollected && (!factoryRunDefersSandboxSuccessCleanup(policy) || factoryPublishPolicyRequiresHostArtifacts(policy)) {
+	if req.Sandbox && !sandboxArtifactsCollected && (!factoryRunDefersSandboxSuccessCleanup(policy) || factoryPublishRequiresPrePublishSandboxArtifacts(policy, req)) {
 		if err := collectAndStoreFactorySandboxArtifacts(ctx, store, dir, req, completedRecord, deps); err != nil {
 			return failFactoryRunAfterArtifactCollectionFailure(ctx, store, dir, req, out, completedRecord, deps, policy, err)
 		}
@@ -2856,6 +2894,17 @@ func factoryPublishPolicyRequiresHostArtifacts(policy factory.FactoryPolicy) boo
 		strings.TrimSpace(policy.PublishPolicy) == factory.PublishPolicyPR
 }
 
+func factoryPublishRequiresPrePublishSandboxArtifacts(policy factory.FactoryPolicy, req factoryRunRequest) bool {
+	if !factoryPublishPolicyRequiresHostArtifacts(policy) {
+		return false
+	}
+	publishFrom := strings.TrimSpace(req.PublishFrom)
+	if publishFrom == "" {
+		publishFrom = factory.PublishRunnerHost
+	}
+	return publishFrom == factory.PublishRunnerHost
+}
+
 func publishFactoryRunAfterVerifiedSuccess(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, redactor factory.RunSecretRedactor, source string, allowUnverified bool) (factory.RunRecord, error) {
 	publishPolicy := strings.TrimSpace(policy.PublishPolicy)
 	if publishPolicy == "" || publishPolicy == factory.PublishPolicyNone {
@@ -2864,14 +2913,78 @@ func publishFactoryRunAfterVerifiedSuccess(ctx context.Context, store factory.St
 	if publishPolicy != factory.PublishPolicyPush && publishPolicy != factory.PublishPolicyPR {
 		return record, fmt.Errorf("factory publish policy %q is unsupported", publishPolicy)
 	}
+	publishFrom := strings.TrimSpace(req.PublishFrom)
+	if publishFrom == "" {
+		publishFrom = factory.PublishRunnerHost
+	}
+	normalizedPublishFrom, err := factory.ValidatePublishRunner(publishFrom)
+	if err != nil {
+		return record, err
+	}
+	publishFrom = normalizedPublishFrom
 
-	if err := recordFactoryRunPublishStarted(store, record.RunID, deps.now(), publishPolicy); err != nil {
+	if err := recordFactoryRunPublishStarted(store, record.RunID, deps.now(), publishPolicy, publishFrom); err != nil {
 		return record, err
 	}
 
-	updatedRecord, err := ensureFactorySandboxRecoveryBundleForPublish(ctx, store, dir, req, record, deps, policy)
+	result, err := publishFactoryRunWithRunner(ctx, store, dir, req, record, deps, policy, publishFrom, publishPolicy, redactor)
 	if err != nil {
 		return record, err
+	}
+	updatedRecord, err := recordFactoryPublishOutcomeArtifact(store, record, publishPolicy, result.RecoveredBundle, result.Push, redactor, source, allowUnverified, deps.now(), result.Runner, result.FallbackFrom, result.CredentialMode, result.Commit, result.Attempts)
+	if err != nil {
+		return record, err
+	}
+	if err := recordFactoryRunPublishSucceeded(store, updatedRecord.RunID, deps.now(), publishPolicy, result.Runner, result.Push); err != nil {
+		return updatedRecord, err
+	}
+	return updatedRecord, nil
+}
+
+type factoryPublishRunnerResult struct {
+	Runner          string
+	FallbackFrom    string
+	CredentialMode  string
+	Commit          string
+	RecoveredBundle string
+	Push            ci.PushResult
+	Attempts        []factory.PublishAttempt
+}
+
+func publishFactoryRunWithRunner(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, publishFrom, publishPolicy string, redactor factory.RunSecretRedactor) (factoryPublishRunnerResult, error) {
+	switch publishFrom {
+	case factory.PublishRunnerHost:
+		return publishFactoryRunWithHostRunner(ctx, store, dir, req, record, deps, policy, publishPolicy, nil)
+	case factory.PublishRunnerSandbox:
+		return publishFactoryRunWithSandboxRunner(ctx, dir, req, record, deps, publishPolicy, nil)
+	case factory.PublishRunnerAuto:
+		if !req.Sandbox {
+			return publishFactoryRunWithHostRunner(ctx, store, dir, req, record, deps, policy, publishPolicy, nil)
+		}
+		startedAt := deps.now()
+		sandboxResult, err := publishFactoryRunWithSandboxRunner(ctx, dir, req, record, deps, publishPolicy, nil)
+		if err == nil {
+			return sandboxResult, nil
+		}
+		completedAt := deps.now()
+		failedAttempt := factory.PublishAttempt{
+			Runner:      factory.PublishRunnerSandbox,
+			Status:      factory.RunStatusFailed,
+			Error:       redactFactoryString(err.Error(), redactor),
+			StartedAt:   &startedAt,
+			CompletedAt: &completedAt,
+		}
+		return publishFactoryRunWithHostRunner(ctx, store, dir, req, record, deps, policy, publishPolicy, []factory.PublishAttempt{failedAttempt})
+	default:
+		return factoryPublishRunnerResult{}, fmt.Errorf("factory publish runner %q is unsupported", publishFrom)
+	}
+}
+
+func publishFactoryRunWithHostRunner(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, publishPolicy string, priorAttempts []factory.PublishAttempt) (factoryPublishRunnerResult, error) {
+	startedAt := deps.now()
+	updatedRecord, err := ensureFactorySandboxRecoveryBundleForPublish(ctx, store, dir, req, record, deps, policy)
+	if err != nil {
+		return factoryPublishRunnerResult{}, err
 	}
 	record = updatedRecord
 
@@ -2880,27 +2993,342 @@ func publishFactoryRunAfterVerifiedSuccess(ctx context.Context, store factory.St
 	if req.Sandbox {
 		appliedBranch, bundlePath, err := applyFactorySandboxRecoveryBundle(ctx, store, dir, record, deps)
 		if err != nil {
-			return record, err
+			return factoryPublishRunnerResult{}, err
 		}
 		branchName = appliedBranch
 		recoveredBundle = bundlePath
 	}
 	if branchName == "" {
-		return record, fmt.Errorf("factory publish requires a branch name")
+		return factoryPublishRunnerResult{}, fmt.Errorf("factory publish requires a branch name")
 	}
 
 	result, err := publishFactoryRunBranch(ctx, dir, req, record, deps, publishPolicy, branchName)
+	completedAt := deps.now()
 	if err != nil {
-		return record, err
+		return factoryPublishRunnerResult{}, err
 	}
-	updatedRecord, err = recordFactoryPublishOutcomeArtifact(store, record, publishPolicy, recoveredBundle, result, redactor, source, allowUnverified, deps.now())
+	attempts := append([]factory.PublishAttempt(nil), priorAttempts...)
+	attempts = append(attempts, factory.PublishAttempt{
+		Runner:      factory.PublishRunnerHost,
+		Status:      factory.RunStatusSucceeded,
+		StartedAt:   &startedAt,
+		CompletedAt: &completedAt,
+	})
+	out := factoryPublishRunnerResult{
+		Runner:          factory.PublishRunnerHost,
+		RecoveredBundle: recoveredBundle,
+		Push:            result,
+		Attempts:        attempts,
+	}
+	if len(priorAttempts) > 0 {
+		out.FallbackFrom = factory.PublishRunnerSandbox
+	}
+	return out, nil
+}
+
+func publishFactoryRunWithSandboxRunner(ctx context.Context, dir string, req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps, publishPolicy string, priorAttempts []factory.PublishAttempt) (factoryPublishRunnerResult, error) {
+	if !req.Sandbox && record.ExecutorMode != factory.ExecutorModeSandbox {
+		return factoryPublishRunnerResult{}, fmt.Errorf("--publish-from sandbox requires a sandbox-backed factory run")
+	}
+	if deps.loadSandbox == nil {
+		return factoryPublishRunnerResult{}, fmt.Errorf("factory sandbox publish requires sandbox load dependency")
+	}
+	if deps.resolveProvider == nil {
+		return factoryPublishRunnerResult{}, fmt.Errorf("factory sandbox publish requires provider dependency")
+	}
+	if deps.runProviderExecWithEnv == nil {
+		return factoryPublishRunnerResult{}, fmt.Errorf("factory sandbox publish requires provider exec dependency")
+	}
+	sandboxName := factoryRunSandboxName(record)
+	if sandboxName == "" {
+		sandboxName = strings.TrimSpace(req.SandboxName)
+	}
+	if sandboxName == "" {
+		return factoryPublishRunnerResult{}, fmt.Errorf("factory sandbox publish requires sandbox metadata")
+	}
+	target, err := deps.loadSandbox(sandboxName)
 	if err != nil {
-		return record, err
+		return factoryPublishRunnerResult{}, fmt.Errorf("load sandbox %q for publish: %w", sandboxName, err)
 	}
-	if err := recordFactoryRunPublishSucceeded(store, updatedRecord.RunID, deps.now(), publishPolicy, result); err != nil {
-		return updatedRecord, err
+	if target == nil {
+		return factoryPublishRunnerResult{}, fmt.Errorf("load sandbox %q for publish: not found", sandboxName)
 	}
-	return updatedRecord, nil
+	provider, err := deps.resolveProvider(dir, target.Provider)
+	if err != nil {
+		return factoryPublishRunnerResult{}, fmt.Errorf("resolve sandbox provider %q for publish: %w", target.Provider, err)
+	}
+	branchName := strings.TrimSpace(record.BranchName)
+	if branchName == "" {
+		return factoryPublishRunnerResult{}, fmt.Errorf("factory sandbox publish requires a branch name")
+	}
+	args, err := factorySandboxRemotePublishArgs(record, req, publishPolicy, branchName)
+	if err != nil {
+		return factoryPublishRunnerResult{}, err
+	}
+	startedAt := deps.now()
+	var out bytes.Buffer
+	execErr := deps.runProviderExecWithEnv(ctx, provider, sandbox.ConnectInfoFromState(target), args, factorySandboxResolvedSecretEnv(req.ResolvedSecrets), &out)
+	result, parseErr := parseFactorySandboxPublishResult(out.Bytes())
+	completedAt := deps.now()
+	if parseErr != nil {
+		if execErr != nil {
+			return factoryPublishRunnerResult{}, fmt.Errorf("remote sandbox publish command failed (%w) and output was not valid publish JSON: %v", execErr, parseErr)
+		}
+		return factoryPublishRunnerResult{}, parseErr
+	}
+	if !result.OK {
+		if strings.TrimSpace(result.Error) != "" {
+			return factoryPublishRunnerResult{}, fmt.Errorf("remote sandbox publish failed: %s", strings.TrimSpace(result.Error))
+		}
+		return factoryPublishRunnerResult{}, fmt.Errorf("remote sandbox publish failed")
+	}
+	if execErr != nil {
+		return factoryPublishRunnerResult{}, fmt.Errorf("remote sandbox publish command failed: %w", execErr)
+	}
+	attempts := append([]factory.PublishAttempt(nil), priorAttempts...)
+	attempts = append(attempts, factory.PublishAttempt{
+		Runner:      factory.PublishRunnerSandbox,
+		Status:      factory.RunStatusSucceeded,
+		StartedAt:   &startedAt,
+		CompletedAt: &completedAt,
+	})
+	return factoryPublishRunnerResult{
+		Runner:         factory.PublishRunnerSandbox,
+		CredentialMode: factoryPublishCredentialMode(req.ResolvedSecrets),
+		Commit:         strings.TrimSpace(result.Commit),
+		Push:           result.Push,
+		Attempts:       attempts,
+	}, nil
+}
+
+type factorySandboxPublishResult struct {
+	ContractVersion string        `json:"contractVersion"`
+	OK              bool          `json:"ok"`
+	Push            ci.PushResult `json:"push,omitempty"`
+	Commit          string        `json:"commit,omitempty"`
+	Error           string        `json:"error,omitempty"`
+}
+
+type factoryPublishBranchRequest struct {
+	Policy     string
+	BranchName string
+	BaseBranch string
+	Title      string
+	Body       string
+	JSON       bool
+}
+
+type factoryPublishBranchDeps struct {
+	runGit               func(context.Context, string, ...string) (string, error)
+	pushAndCreatePRInDir func(context.Context, string, ci.PushOptions) (ci.PushResult, error)
+}
+
+func runFactoryPublishBranch(cmd *cobra.Command, args []string) error {
+	out := io.Writer(os.Stdout)
+	req := factoryPublishBranchRequest{
+		Policy:     factoryPublishBranchPolicyFlag,
+		BranchName: factoryPublishBranchBranchFlag,
+		BaseBranch: factoryPublishBranchBaseFlag,
+		Title:      factoryPublishBranchTitleFlag,
+		Body:       factoryPublishBranchBodyFlag,
+		JSON:       factoryPublishBranchJSONFlag,
+	}
+	if cmd != nil {
+		out = cmd.OutOrStdout()
+		if cmd.Flags().Lookup("policy") != nil {
+			value, err := cmd.Flags().GetString("policy")
+			if err != nil {
+				return err
+			}
+			req.Policy = value
+		}
+		if cmd.Flags().Lookup("branch") != nil {
+			value, err := cmd.Flags().GetString("branch")
+			if err != nil {
+				return err
+			}
+			req.BranchName = value
+		}
+		if cmd.Flags().Lookup("base") != nil {
+			value, err := cmd.Flags().GetString("base")
+			if err != nil {
+				return err
+			}
+			req.BaseBranch = value
+		}
+		if cmd.Flags().Lookup("title") != nil {
+			value, err := cmd.Flags().GetString("title")
+			if err != nil {
+				return err
+			}
+			req.Title = value
+		}
+		if cmd.Flags().Lookup("body") != nil {
+			value, err := cmd.Flags().GetString("body")
+			if err != nil {
+				return err
+			}
+			req.Body = value
+		}
+		if cmd.Flags().Lookup("json") != nil {
+			value, err := cmd.Flags().GetBool("json")
+			if err != nil {
+				return err
+			}
+			req.JSON = value
+		}
+	}
+	ctx := context.Background()
+	if cmd != nil {
+		ctx = cmd.Context()
+	}
+	return runFactoryPublishBranchWithDeps(ctx, ".", req, out, factoryPublishBranchDeps{
+		runGit:               runFactoryGitInDir,
+		pushAndCreatePRInDir: ci.PushAndCreatePRInDir,
+	})
+}
+
+func runFactoryPublishBranchWithDeps(ctx context.Context, dir string, req factoryPublishBranchRequest, out io.Writer, deps factoryPublishBranchDeps) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if out == nil {
+		out = io.Discard
+	}
+	if deps.runGit == nil {
+		return fmt.Errorf("factory publish branch git dependency is required")
+	}
+	render := func(resp factorySandboxPublishResult) error {
+		if strings.TrimSpace(resp.ContractVersion) == "" {
+			resp.ContractVersion = "factory-publish-branch-v1"
+		}
+		data, err := json.MarshalIndent(resp, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal factory publish branch: %w", err)
+		}
+		fmt.Fprintln(out, string(data))
+		return nil
+	}
+	fail := func(err error) error {
+		if req.JSON {
+			return render(factorySandboxPublishResult{OK: false, Error: err.Error()})
+		}
+		return err
+	}
+	result, commit, err := publishFactoryBranchFromWorkspace(ctx, dir, req, deps)
+	if err != nil {
+		return fail(err)
+	}
+	if !req.JSON {
+		_, err = fmt.Fprintf(out, "Published branch %s with policy %s\n", result.Branch, strings.ToLower(strings.TrimSpace(req.Policy)))
+		return err
+	}
+	return render(factorySandboxPublishResult{
+		OK:     true,
+		Push:   result,
+		Commit: commit,
+	})
+}
+
+func publishFactoryBranchFromWorkspace(ctx context.Context, dir string, req factoryPublishBranchRequest, deps factoryPublishBranchDeps) (ci.PushResult, string, error) {
+	publishPolicy := strings.ToLower(strings.TrimSpace(req.Policy))
+	if publishPolicy == "" {
+		return ci.PushResult{}, "", fmt.Errorf("--policy is required and must be one of %s", strings.Join([]string{factory.PublishPolicyPush, factory.PublishPolicyPR}, ", "))
+	}
+	if publishPolicy != factory.PublishPolicyPush && publishPolicy != factory.PublishPolicyPR {
+		return ci.PushResult{}, "", fmt.Errorf("--policy must be one of %s", strings.Join([]string{factory.PublishPolicyPush, factory.PublishPolicyPR}, ", "))
+	}
+	branchName := strings.TrimSpace(req.BranchName)
+	if branchName == "" {
+		return ci.PushResult{}, "", fmt.Errorf("--branch is required")
+	}
+	if _, err := deps.runGit(ctx, dir, "check-ref-format", "--branch", branchName); err != nil {
+		return ci.PushResult{}, "", fmt.Errorf("invalid branch %q: %w", branchName, err)
+	}
+	if err := ensureFactoryPublishWorkspaceBranch(ctx, dir, branchName, deps); err != nil {
+		return ci.PushResult{}, "", err
+	}
+	var result ci.PushResult
+	switch publishPolicy {
+	case factory.PublishPolicyPush:
+		if _, err := deps.runGit(ctx, dir, "push", "-u", "origin", branchName); err != nil {
+			return ci.PushResult{}, "", fmt.Errorf("factory publish push branch %q: %w", branchName, err)
+		}
+		result = ci.PushResult{
+			ContractVersion: ci.PushContractVersion,
+			Branch:          branchName,
+			Pushed:          true,
+			Summary:         fmt.Sprintf("pushed branch %s", branchName),
+		}
+	case factory.PublishPolicyPR:
+		if deps.pushAndCreatePRInDir == nil {
+			return ci.PushResult{}, "", fmt.Errorf("factory publish pr requires push dependency")
+		}
+		pushResult, err := deps.pushAndCreatePRInDir(ctx, dir, ci.PushOptions{
+			BaseRef: strings.TrimSpace(req.BaseBranch),
+			Title:   strings.TrimSpace(req.Title),
+			Body:    req.Body,
+		})
+		if err != nil {
+			return ci.PushResult{}, "", fmt.Errorf("factory publish pull request for branch %q: %w", branchName, err)
+		}
+		if strings.TrimSpace(pushResult.Branch) == "" {
+			pushResult.Branch = branchName
+		}
+		result = pushResult
+	}
+	commit, _ := deps.runGit(ctx, dir, "rev-parse", "HEAD")
+	return result, strings.TrimSpace(commit), nil
+}
+
+func ensureFactoryPublishWorkspaceBranch(ctx context.Context, dir, branchName string, deps factoryPublishBranchDeps) error {
+	current, err := deps.runGit(ctx, dir, "branch", "--show-current")
+	if err != nil {
+		return fmt.Errorf("resolve current branch before publish: %w", err)
+	}
+	if strings.TrimSpace(current) == branchName {
+		return nil
+	}
+	if _, err := deps.runGit(ctx, dir, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName); err == nil {
+		if _, checkoutErr := deps.runGit(ctx, dir, "checkout", branchName); checkoutErr != nil {
+			return fmt.Errorf("checkout branch %q before publish: %w", branchName, checkoutErr)
+		}
+		return nil
+	}
+	if _, err := deps.runGit(ctx, dir, "checkout", "-b", branchName); err != nil {
+		return fmt.Errorf("create branch %q before publish: %w", branchName, err)
+	}
+	return nil
+}
+
+func factorySandboxRemotePublishArgs(record factory.RunRecord, req factoryRunRequest, publishPolicy, branchName string) ([]string, error) {
+	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
+	if workspaceDir == "" {
+		return nil, errFactorySandboxWorkspaceRequired
+	}
+	args := []string{
+		"factory", "_publish-branch",
+		"--policy", publishPolicy,
+		"--branch", branchName,
+		"--base", strings.TrimSpace(req.BaseBranch),
+		"--title", factoryPublishPRTitle(record),
+		"--body", factoryPublishPRBody(record),
+		"--json",
+	}
+	publishScript := "set -eu\ncd " + shellQuote(workspaceDir) + "\n" + factorySandboxRemoteHalScript(args) + " 2>/tmp/hal-factory-publish-stderr"
+	return []string{"sh", "-lc", publishScript}, nil
+}
+
+func parseFactorySandboxPublishResult(data []byte) (*factorySandboxPublishResult, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("parse remote sandbox publish JSON: empty output")
+	}
+	var result factorySandboxPublishResult
+	if err := json.Unmarshal(trimmed, &result); err != nil {
+		return nil, fmt.Errorf("parse remote sandbox publish JSON: %w", err)
+	}
+	return &result, nil
 }
 
 func ensureFactorySandboxRecoveryBundleForPublish(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy) (factory.RunRecord, error) {
@@ -3066,7 +3494,7 @@ func publishFactoryRunBranch(ctx context.Context, dir string, req factoryRunRequ
 	}
 }
 
-func recordFactoryPublishOutcomeArtifact(store factory.Store, record factory.RunRecord, publishPolicy, recoveredBundle string, result ci.PushResult, redactor factory.RunSecretRedactor, source string, allowUnverified bool, completedAt time.Time) (factory.RunRecord, error) {
+func recordFactoryPublishOutcomeArtifact(store factory.Store, record factory.RunRecord, publishPolicy, recoveredBundle string, result ci.PushResult, redactor factory.RunSecretRedactor, source string, allowUnverified bool, completedAt time.Time, runner, fallbackFrom, credentialMode, commit string, attempts []factory.PublishAttempt) (factory.RunRecord, error) {
 	var pr *ci.PullRequest
 	if strings.TrimSpace(result.PullRequest.URL) != "" || result.PullRequest.Number != 0 || strings.TrimSpace(result.PullRequest.HeadRef) != "" {
 		copied := result.PullRequest
@@ -3080,17 +3508,27 @@ func recordFactoryPublishOutcomeArtifact(store factory.Store, record factory.Run
 	}
 	artifact, tempPath, err := materializeFactoryJSONArtifact("publish-outcome", "factory/publish-outcome.json", factoryPublishOutcomeArtifact{
 		Policy:          publishPolicy,
+		Runner:          runner,
+		FallbackFrom:    fallbackFrom,
+		CredentialMode:  credentialMode,
 		BranchName:      result.Branch,
+		Commit:          commit,
 		RecoveredBundle: recoveredBundle,
 		Pushed:          result.Pushed,
 		PullRequest:     pr,
+		Attempts:        attempts,
 		Summary:         result.Summary,
 	}, map[string]any{
-		"outcomeKind": "publish",
-		"policy":      publishPolicy,
-		"branch":      result.Branch,
-		"pushed":      result.Pushed,
-		"status":      factory.RunStatusSucceeded,
+		"outcomeKind":    "publish",
+		"policy":         publishPolicy,
+		"runner":         runner,
+		"fallbackFrom":   fallbackFrom,
+		"credentialMode": credentialMode,
+		"branch":         result.Branch,
+		"branchName":     result.Branch,
+		"commit":         commit,
+		"pushed":         result.Pushed,
+		"status":         factory.RunStatusSucceeded,
 	})
 	if err != nil {
 		return record, err
@@ -3100,6 +3538,12 @@ func recordFactoryPublishOutcomeArtifact(store factory.Store, record factory.Run
 	}
 	if recoveredBundle != "" {
 		artifact.Summary["recoveredBundle"] = recoveredBundle
+	}
+	if pullRequestID != 0 {
+		artifact.Summary["pullRequestId"] = pullRequestID
+	}
+	if len(attempts) > 0 {
+		artifact.Summary["attempts"] = attempts
 	}
 	defer func() { _ = os.Remove(tempPath) }()
 	if _, err := store.SaveArtifactFileWithRedactor(record.RunID, artifact, tempPath, redactor); err != nil {
@@ -3116,11 +3560,16 @@ func recordFactoryPublishOutcomeArtifact(store factory.Store, record factory.Run
 	updatedRecord.PostRun.Publish = &factory.PublishOutcome{
 		Status:          factory.RunStatusSucceeded,
 		Policy:          strings.TrimSpace(publishPolicy),
+		Runner:          strings.TrimSpace(runner),
 		BranchName:      strings.TrimSpace(result.Branch),
+		Commit:          strings.TrimSpace(commit),
 		RecoveredBundle: strings.TrimSpace(recoveredBundle),
 		Pushed:          result.Pushed,
 		PullRequestURL:  pullRequestURL,
 		PullRequestID:   pullRequestID,
+		CredentialMode:  strings.TrimSpace(credentialMode),
+		FallbackFrom:    strings.TrimSpace(fallbackFrom),
+		Attempts:        append([]factory.PublishAttempt(nil), attempts...),
 		AllowUnverified: allowUnverified,
 		Source:          strings.TrimSpace(source),
 		CompletedAt:     &completedAt,
@@ -4131,7 +4580,7 @@ func recordFactoryRunVerificationSucceeded(store factory.Store, runID string, no
 	})
 }
 
-func recordFactoryRunPublishStarted(store factory.Store, runID string, now time.Time, publishPolicy string) error {
+func recordFactoryRunPublishStarted(store factory.Store, runID string, now time.Time, publishPolicy string, runner string) error {
 	return appendFactoryRunTimelineEvent(store, runID, now, factoryTimelineEvent{
 		EventType: factory.EventTypeStepStarted,
 		Summary:   "Factory publish started",
@@ -4139,15 +4588,17 @@ func recordFactoryRunPublishStarted(store factory.Store, runID string, now time.
 			"step":   factory.RunDurationStepFinalization,
 			"status": factory.RunStatusRunning,
 			"policy": strings.TrimSpace(publishPolicy),
+			"runner": strings.TrimSpace(runner),
 		},
 	})
 }
 
-func recordFactoryRunPublishSucceeded(store factory.Store, runID string, now time.Time, publishPolicy string, result ci.PushResult) error {
+func recordFactoryRunPublishSucceeded(store factory.Store, runID string, now time.Time, publishPolicy string, runner string, result ci.PushResult) error {
 	metadata := map[string]any{
 		"step":   factory.RunDurationStepFinalization,
 		"status": factory.RunStatusSucceeded,
 		"policy": strings.TrimSpace(publishPolicy),
+		"runner": strings.TrimSpace(runner),
 		"branch": strings.TrimSpace(result.Branch),
 		"pushed": result.Pushed,
 	}
@@ -4887,6 +5338,8 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 	noCIChanged := false
 	publishPolicy := factoryRunPublishFlag
 	publishPolicyChanged := false
+	publishFrom := factoryRunPublishFromFlag
+	publishFromChanged := false
 	jsonMode := factoryRunJSONFlag
 	sandboxMode := factoryRunSandboxFlag
 	sandboxName := factoryRunSandboxNameFlag
@@ -4942,6 +5395,14 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 			publishPolicy = value
 			publishPolicyChanged = cmd.Flags().Changed("publish")
 		}
+		if cmd.Flags().Lookup("publish-from") != nil {
+			value, err := cmd.Flags().GetString("publish-from")
+			if err != nil {
+				return factoryRunRequest{}, err
+			}
+			publishFrom = value
+			publishFromChanged = cmd.Flags().Changed("publish-from")
+		}
 		if cmd.Flags().Lookup("json") != nil {
 			value, err := cmd.Flags().GetBool("json")
 			if err != nil {
@@ -4982,12 +5443,12 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 		}
 	}
 
-	req, err := parseFactoryRunRequestWithTarget(args, reportPath, baseBranch, jsonMode, sandboxMode, sandboxTargetFlagValues{
+	req, err := parseFactoryRunRequestWithTargetAndPublishFrom(args, reportPath, baseBranch, jsonMode, sandboxMode, sandboxTargetFlagValues{
 		HostID:         sandboxHost,
 		HostChanged:    sandboxHostChanged,
 		RuntimeDriver:  sandboxRuntime,
 		RuntimeChanged: sandboxRuntimeChanged,
-	}, sandboxName, sandboxNameChanged, ciPolicy, ciPolicyChanged, noCI, noCIChanged, publishPolicy, publishPolicyChanged)
+	}, sandboxName, sandboxNameChanged, ciPolicy, ciPolicyChanged, noCI, noCIChanged, publishPolicy, publishPolicyChanged, publishFrom, publishFromChanged)
 	if err != nil {
 		return factoryRunRequest{}, exitWithCode(cmd, ExitCodeValidation, err)
 	}
@@ -5003,6 +5464,10 @@ func parseFactoryRunRequest(args []string, reportPath, baseBranch string, jsonMo
 }
 
 func parseFactoryRunRequestWithTarget(args []string, reportPath, baseBranch string, jsonMode bool, sandboxMode bool, targetFlags sandboxTargetFlagValues, sandboxName string, sandboxNameChanged bool, ciPolicy string, ciPolicyChanged bool, noCI bool, noCIChanged bool, publishPolicy string, publishPolicyChanged bool) (factoryRunRequest, error) {
+	return parseFactoryRunRequestWithTargetAndPublishFrom(args, reportPath, baseBranch, jsonMode, sandboxMode, targetFlags, sandboxName, sandboxNameChanged, ciPolicy, ciPolicyChanged, noCI, noCIChanged, publishPolicy, publishPolicyChanged, "", false)
+}
+
+func parseFactoryRunRequestWithTargetAndPublishFrom(args []string, reportPath, baseBranch string, jsonMode bool, sandboxMode bool, targetFlags sandboxTargetFlagValues, sandboxName string, sandboxNameChanged bool, ciPolicy string, ciPolicyChanged bool, noCI bool, noCIChanged bool, publishPolicy string, publishPolicyChanged bool, publishFrom string, publishFromChanged bool) (factoryRunRequest, error) {
 	if len(args) > 1 {
 		return factoryRunRequest{}, fmt.Errorf("accepts at most 1 arg(s), received %d", len(args))
 	}
@@ -5055,6 +5520,13 @@ func parseFactoryRunRequestWithTarget(args []string, reportPath, baseBranch stri
 			return factoryRunRequest{}, fmt.Errorf("--publish must be one of %s", strings.Join(factory.SupportedPublishPolicies(), ", "))
 		}
 	}
+	normalizedPublishFrom, err := normalizeFactoryPublishFrom(publishFrom, publishFromChanged)
+	if err != nil {
+		return factoryRunRequest{}, err
+	}
+	if normalizedPublishFrom == factory.PublishRunnerSandbox && !sandboxMode {
+		return factoryRunRequest{}, fmt.Errorf("--publish-from sandbox requires --sandbox")
+	}
 	parsedTargetFlags, err := parseSandboxTargetFlagValues(targetFlags)
 	if err != nil {
 		return factoryRunRequest{}, err
@@ -5068,6 +5540,7 @@ func parseFactoryRunRequestWithTarget(args []string, reportPath, baseBranch stri
 		BaseBranch:     baseBranch,
 		CIPolicy:       ciPolicy,
 		PublishPolicy:  publishPolicy,
+		PublishFrom:    normalizedPublishFrom,
 		Sandbox:        sandboxMode,
 		SandboxName:    sandboxName,
 		SandboxHostID:  parsedTargetFlags.HostID,
@@ -5100,6 +5573,17 @@ func parseFactoryRunSecretEnvFlags(values []string) ([]factory.RunSecretInput, e
 		})
 	}
 	return secrets, nil
+}
+
+func normalizeFactoryPublishFrom(value string, changed bool) (string, error) {
+	if !changed && strings.TrimSpace(value) == "" {
+		return "", nil
+	}
+	normalized, err := factory.ValidatePublishRunner(value)
+	if err != nil {
+		return "", fmt.Errorf("--publish-from must be one of %s", strings.Join(factory.SupportedPublishRunners(), ", "))
+	}
+	return normalized, nil
 }
 
 func isFactoryRunSecretEnvName(name string) bool {
@@ -5305,6 +5789,8 @@ func runFactoryRecover(cmd *cobra.Command, args []string) error {
 func runFactoryPublish(cmd *cobra.Command, args []string) error {
 	out := io.Writer(os.Stdout)
 	policy := factoryPublishPolicyFlag
+	publishFrom := factoryPublishFromFlag
+	secretEnv := append([]string(nil), factoryPublishSecretEnvFlags...)
 	allowUnverified := factoryPublishAllowUnverifiedFlag
 	jsonMode := factoryPublishJSONFlag
 
@@ -5316,6 +5802,20 @@ func runFactoryPublish(cmd *cobra.Command, args []string) error {
 				return err
 			}
 			policy = value
+		}
+		if cmd.Flags().Lookup("publish-from") != nil {
+			value, err := cmd.Flags().GetString("publish-from")
+			if err != nil {
+				return err
+			}
+			publishFrom = value
+		}
+		if cmd.Flags().Lookup("secret-env") != nil {
+			value, err := cmd.Flags().GetStringArray("secret-env")
+			if err != nil {
+				return err
+			}
+			secretEnv = value
 		}
 		if cmd.Flags().Lookup("allow-unverified") != nil {
 			value, err := cmd.Flags().GetBool("allow-unverified")
@@ -5339,6 +5839,8 @@ func runFactoryPublish(cmd *cobra.Command, args []string) error {
 	}
 	return runFactoryPublishWithDeps(ctx, out, args[0], factoryPublishRequest{
 		Policy:          policy,
+		PublishFrom:     publishFrom,
+		SecretEnv:       secretEnv,
 		AllowUnverified: allowUnverified,
 		JSON:            jsonMode,
 	}, defaultFactoryPublishDeps)
@@ -5446,6 +5948,10 @@ func runFactoryRecoverWithDeps(ctx context.Context, out io.Writer, runID string,
 
 type factoryPublishRequest struct {
 	Policy          string
+	PublishFrom     string
+	SecretEnv       []string
+	Secrets         []factory.RunSecretInput
+	ResolvedSecrets []factory.ResolvedRunSecret
 	AllowUnverified bool
 	JSON            bool
 }
@@ -5466,8 +5972,8 @@ func runFactoryPublishWithDeps(ctx context.Context, out io.Writer, runID string,
 	if deps.now == nil {
 		deps.now = time.Now
 	}
-	if deps.runGit == nil {
-		return fmt.Errorf("factory publish git dependency is required")
+	if deps.lookupEnv == nil {
+		deps.lookupEnv = os.LookupEnv
 	}
 	fail := func(status string, err error) error {
 		if !req.JSON {
@@ -5479,6 +5985,7 @@ func runFactoryPublishWithDeps(ctx context.Context, out io.Writer, runID string,
 			RunID:           runID,
 			Status:          status,
 			Policy:          strings.ToLower(strings.TrimSpace(req.Policy)),
+			PublishFrom:     strings.ToLower(strings.TrimSpace(req.PublishFrom)),
 			AllowUnverified: req.AllowUnverified,
 			Error:           err.Error(),
 		})
@@ -5490,6 +5997,28 @@ func runFactoryPublishWithDeps(ctx context.Context, out io.Writer, runID string,
 	}
 	if publishPolicy != factory.PublishPolicyPush && publishPolicy != factory.PublishPolicyPR {
 		return fail("", fmt.Errorf("--policy must be one of %s", strings.Join([]string{factory.PublishPolicyPush, factory.PublishPolicyPR}, ", ")))
+	}
+	publishFrom, err := normalizeFactoryPublishFrom(req.PublishFrom, strings.TrimSpace(req.PublishFrom) != "")
+	if err != nil {
+		return fail("", err)
+	}
+	if publishFrom == "" {
+		publishFrom = factory.PublishRunnerHost
+	}
+	req.PublishFrom = publishFrom
+	if (publishFrom == factory.PublishRunnerHost || publishFrom == factory.PublishRunnerAuto) && deps.runGit == nil {
+		return fail("", fmt.Errorf("factory publish git dependency is required"))
+	}
+	secrets, err := parseFactoryRunSecretEnvFlags(req.SecretEnv)
+	if err != nil {
+		return fail("", err)
+	}
+	req.Secrets = secrets
+	resolvedSecrets, _, secretErr := factory.ResolveRunSecrets(req.Secrets, deps.lookupEnv)
+	req.ResolvedSecrets = resolvedSecrets
+	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
+	if secretErr != nil {
+		return fail("", redactFactoryRunError(secretErr, redactor))
 	}
 
 	store, err := deps.defaultStore()
@@ -5512,22 +6041,26 @@ func runFactoryPublishWithDeps(ctx context.Context, out io.Writer, runID string,
 	}
 
 	updatedRecord, err := publishFactoryRunAfterVerifiedSuccess(ctx, store, dir, factoryRunRequest{
-		Sandbox:     record.ExecutorMode == factory.ExecutorModeSandbox,
-		SandboxName: record.SandboxName,
-		BaseBranch:  record.BaseBranch,
+		Sandbox:         record.ExecutorMode == factory.ExecutorModeSandbox,
+		SandboxName:     record.SandboxName,
+		BaseBranch:      record.BaseBranch,
+		PublishFrom:     req.PublishFrom,
+		ResolvedSecrets: req.ResolvedSecrets,
 	}, *record, factoryRunDeps{
-		now:                  deps.now,
-		loadSandbox:          deps.loadSandbox,
-		resolveProvider:      deps.resolveProvider,
-		runProviderExec:      deps.runProviderExec,
-		runProviderExecIO:    deps.runProviderExecIO,
-		sandboxRequests:      deps.sandboxRequests,
-		runGit:               deps.runGit,
-		pushAndCreatePRInDir: deps.pushAndCreatePRInDir,
-	}, factory.FactoryPolicy{PublishPolicy: publishPolicy}, factory.RunSecretRedactor{}, "manual", req.AllowUnverified)
+		now:                    deps.now,
+		loadSandbox:            deps.loadSandbox,
+		resolveProvider:        deps.resolveProvider,
+		runProviderExec:        deps.runProviderExec,
+		runProviderExecIO:      deps.runProviderExecIO,
+		runProviderExecWithEnv: deps.runProviderExecWithEnv,
+		sandboxRequests:        deps.sandboxRequests,
+		runGit:                 deps.runGit,
+		pushAndCreatePRInDir:   deps.pushAndCreatePRInDir,
+	}, factory.FactoryPolicy{PublishPolicy: publishPolicy}, redactor, "manual", req.AllowUnverified)
 	if err != nil {
-		return fail(record.Status, err)
+		return fail(record.Status, redactFactoryRunError(err, redactor))
 	}
+	postRun := factory.DerivePostRunState(updatedRecord)
 	resp := FactoryPublishResponse{
 		ContractVersion: FactoryPublishContractVersion,
 		OK:              true,
@@ -5535,11 +6068,13 @@ func runFactoryPublishWithDeps(ctx context.Context, out io.Writer, runID string,
 		Status:          updatedRecord.Status,
 		DisplayStatus:   factory.DeriveDisplayStatus(updatedRecord),
 		PipelineStatus:  updatedRecord.Status,
-		PublishStatus:   factoryPublishStatus(factory.DerivePostRunState(updatedRecord)),
+		PublishStatus:   factoryPublishStatus(postRun),
 		Policy:          publishPolicy,
+		PublishFrom:     req.PublishFrom,
+		Runner:          factoryPublishRunner(postRun),
 		AllowUnverified: req.AllowUnverified,
 		BranchName:      strings.TrimSpace(updatedRecord.BranchName),
-		PullRequestURL:  factoryPublishPullRequestURL(factory.DerivePostRunState(updatedRecord)),
+		PullRequestURL:  factoryPublishPullRequestURL(postRun),
 		Artifacts:       newFactoryArtifactSummaries(updatedRecord.Artifacts),
 	}
 	if req.JSON {
@@ -6105,6 +6640,33 @@ func factoryPublishStatus(postRun *factory.PostRunState) string {
 		return ""
 	}
 	return strings.TrimSpace(postRun.Publish.Status)
+}
+
+func factoryPublishRunner(postRun *factory.PostRunState) string {
+	if postRun == nil || postRun.Publish == nil {
+		return ""
+	}
+	return strings.TrimSpace(postRun.Publish.Runner)
+}
+
+func factoryPublishCredentialMode(secrets []factory.ResolvedRunSecret) string {
+	for _, secret := range secrets {
+		if strings.TrimSpace(secret.Source) == factory.RunSecretSourceEnv && strings.TrimSpace(secret.Value) != "" {
+			return factory.SecretBrokerDeliveryModeEnv
+		}
+	}
+	return ""
+}
+
+func factoryPublishCommitForDir(ctx context.Context, dir string, deps factoryRunDeps) string {
+	if deps.runGit == nil {
+		return ""
+	}
+	commit, err := deps.runGit(ctx, dir, "rev-parse", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(commit)
 }
 
 func factoryPublishPullRequestURL(postRun *factory.PostRunState) string {

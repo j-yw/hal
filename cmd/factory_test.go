@@ -540,7 +540,7 @@ func TestFactoryRunCommandRegisteredWithInputFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("factory run command missing: %v", err)
 	}
-	for _, flagName := range []string{"report", "base", "secret-env", "ci-policy", "no-ci", "publish", "sandbox", "sandbox-name", "sandbox-host", "sandbox-runtime", "json"} {
+	for _, flagName := range []string{"report", "base", "secret-env", "ci-policy", "no-ci", "publish", "publish-from", "sandbox", "sandbox-name", "sandbox-host", "sandbox-runtime", "json"} {
 		if cmd.Flags().Lookup(flagName) == nil {
 			t.Fatalf("factory run should expose --%s flag", flagName)
 		}
@@ -631,6 +631,60 @@ func TestFactoryRunRequestFromCommandParsesTargetSelectionFlags(t *testing.T) {
 	}
 	if req.SandboxRuntime != sandboxruntime.DriverRootlessPodman {
 		t.Fatalf("SandboxRuntime = %q, want %q", req.SandboxRuntime, sandboxruntime.DriverRootlessPodman)
+	}
+}
+
+func TestFactoryRunRequestFromCommandParsesPublishFrom(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().String("publish", "", "")
+	cmd.Flags().String("publish-from", factory.PublishRunnerHost, "")
+	cmd.Flags().Bool("sandbox", false, "")
+	cmd.Flags().String("sandbox-host", "", "")
+	cmd.Flags().String("sandbox-runtime", "", "")
+	cmd.Flags().Bool("json", false, "")
+	for flag, value := range map[string]string{
+		"base":         "main",
+		"publish":      factory.PublishPolicyPR,
+		"publish-from": factory.PublishRunnerSandbox,
+		"sandbox":      "true",
+	} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("Set(%s) error: %v", flag, err)
+		}
+	}
+
+	req, err := factoryRunRequestFromCommand(cmd, []string{".hal/prd-feature.md"})
+	if err != nil {
+		t.Fatalf("factoryRunRequestFromCommand() unexpected error: %v", err)
+	}
+	if req.PublishPolicy != factory.PublishPolicyPR || req.PublishFrom != factory.PublishRunnerSandbox {
+		t.Fatalf("publish request fields = policy %q from %q", req.PublishPolicy, req.PublishFrom)
+	}
+}
+
+func TestFactoryRunRequestFromCommandRejectsSandboxPublishFromWithoutSandbox(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().String("publish-from", factory.PublishRunnerHost, "")
+	cmd.Flags().Bool("sandbox", false, "")
+	cmd.Flags().String("sandbox-host", "", "")
+	cmd.Flags().String("sandbox-runtime", "", "")
+	cmd.Flags().Bool("json", false, "")
+	if err := cmd.Flags().Set("publish-from", factory.PublishRunnerSandbox); err != nil {
+		t.Fatalf("Set(publish-from) error: %v", err)
+	}
+
+	_, err := factoryRunRequestFromCommand(cmd, []string{".hal/prd-feature.md"})
+	if err == nil {
+		t.Fatal("factoryRunRequestFromCommand() error = nil")
+	}
+	if !strings.Contains(err.Error(), "--publish-from sandbox requires --sandbox") {
+		t.Fatalf("factoryRunRequestFromCommand() error = %q", err.Error())
 	}
 }
 
@@ -2410,6 +2464,212 @@ func TestPublishFactoryRunAfterVerifiedSuccessPROpensFromHostBranch(t *testing.T
 	requireFactoryPublishOutcomeArtifact(t, got, factory.PublishPolicyPR, "hal/game-polish", true)
 }
 
+func TestPublishFactoryRunAfterVerifiedSuccessSandboxPublishesRemotely(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	dir := t.TempDir()
+	now := time.Date(2026, 7, 8, 13, 0, 0, 0, time.UTC)
+	target := &sandbox.SandboxState{
+		Name:     "dev",
+		Provider: "digitalocean",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	record := factory.RunRecord{
+		RunID:        "run-publish-sandbox",
+		Status:       factory.RunStatusRunning,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		RepoRemote:   "git@github.com:example/game.git",
+		BranchName:   "hal/sandbox-publish",
+		BaseBranch:   "main",
+		SandboxName:  target.Name,
+		Sandbox:      &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status},
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var capturedArgs []string
+	var capturedEnv map[string]string
+	got, err := publishFactoryRunAfterVerifiedSuccess(context.Background(), store, dir, factoryRunRequest{
+		Sandbox:     true,
+		SandboxName: target.Name,
+		BaseBranch:  "main",
+		PublishFrom: factory.PublishRunnerSandbox,
+		ResolvedSecrets: []factory.ResolvedRunSecret{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+			Value:    "test-secret-token",
+		}},
+	}, record, factoryRunDeps{
+		now: func() time.Time { return now },
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(gotDir, provider string) (sandbox.Provider, error) {
+			if gotDir != dir {
+				t.Fatalf("resolveProvider dir = %q, want %q", gotDir, dir)
+			}
+			if provider != target.Provider {
+				t.Fatalf("resolveProvider provider = %q, want %q", provider, target.Provider)
+			}
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, info *sandbox.ConnectInfo, args []string, env map[string]string, out io.Writer) error {
+			if info == nil || info.Name != target.Name {
+				t.Fatalf("connect info = %#v, want sandbox %q", info, target.Name)
+			}
+			capturedArgs = append([]string(nil), args...)
+			capturedEnv = map[string]string{}
+			for key, value := range env {
+				capturedEnv[key] = value
+			}
+			result := ci.PushResult{
+				ContractVersion: ci.PushContractVersion,
+				Branch:          "hal/sandbox-publish",
+				Pushed:          true,
+				PullRequest: ci.PullRequest{
+					Number:  9,
+					URL:     "https://github.com/example/game/pull/9",
+					HeadRef: "hal/sandbox-publish",
+					BaseRef: "main",
+				},
+			}
+			return json.NewEncoder(out).Encode(factorySandboxPublishResult{
+				ContractVersion: "factory-publish-branch-v1",
+				OK:              true,
+				Push:            result,
+				Commit:          "abc123def456",
+			})
+		},
+		runGit: func(context.Context, string, ...string) (string, error) {
+			t.Fatal("host git should not be called for sandbox publish")
+			return "", nil
+		},
+	}, factory.FactoryPolicy{PublishPolicy: factory.PublishPolicyPR}, factory.RunSecretRedactor{}, "automatic", false)
+	if err != nil {
+		t.Fatalf("publishFactoryRunAfterVerifiedSuccess() error = %v", err)
+	}
+	if !strings.Contains(strings.Join(capturedArgs, " "), "_publish-branch") {
+		t.Fatalf("remote publish args = %#v, want hidden publish command", capturedArgs)
+	}
+	if capturedEnv["GITHUB_TOKEN"] != "test-secret-token" {
+		t.Fatalf("remote env did not include resolved secret: %#v", capturedEnv)
+	}
+	requireFactoryPublishOutcomeArtifact(t, got, factory.PublishPolicyPR, "hal/sandbox-publish", true)
+	postRun := factory.DerivePostRunState(got)
+	if postRun == nil || postRun.Publish == nil {
+		t.Fatalf("derived postRun publish missing: %#v", postRun)
+	}
+	if postRun.Publish.Runner != factory.PublishRunnerSandbox || postRun.Publish.CredentialMode != factory.SecretBrokerDeliveryModeEnv || postRun.Publish.Commit != "abc123def456" {
+		t.Fatalf("postRun publish = %#v", postRun.Publish)
+	}
+	if len(postRun.Publish.Attempts) != 1 || postRun.Publish.Attempts[0].Runner != factory.PublishRunnerSandbox || postRun.Publish.Attempts[0].Status != factory.RunStatusSucceeded {
+		t.Fatalf("publish attempts = %#v", postRun.Publish.Attempts)
+	}
+}
+
+func TestPublishFactoryRunAfterVerifiedSuccessAutoFallsBackToHost(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	dir := t.TempDir()
+	now := time.Date(2026, 7, 8, 13, 30, 0, 0, time.UTC)
+	target := &sandbox.SandboxState{
+		Name:     "auto",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	record := factory.RunRecord{
+		RunID:        "run-publish-auto-fallback",
+		Status:       factory.RunStatusRunning,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		RepoRemote:   "git@github.com:example/game.git",
+		BranchName:   "hal/auto-fallback",
+		BaseBranch:   "main",
+		SandboxName:  target.Name,
+		Sandbox:      &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status},
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	record = saveFactoryRecoveryBundleArtifact(t, store, record)
+
+	var gitCalls [][]string
+	got, err := publishFactoryRunAfterVerifiedSuccess(context.Background(), store, dir, factoryRunRequest{
+		Sandbox:     true,
+		SandboxName: target.Name,
+		BaseBranch:  "main",
+		PublishFrom: factory.PublishRunnerAuto,
+	}, record, factoryRunDeps{
+		now: func() time.Time { return now },
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, _ map[string]string, out io.Writer) error {
+			return json.NewEncoder(out).Encode(factorySandboxPublishResult{
+				ContractVersion: "factory-publish-branch-v1",
+				OK:              false,
+				Error:           "simulated sandbox publish failure",
+			})
+		},
+		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
+			if gotDir != dir {
+				t.Fatalf("git dir = %q, want %q", gotDir, dir)
+			}
+			gitCalls = append(gitCalls, append([]string(nil), args...))
+			switch {
+			case reflect.DeepEqual(args, []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/auto-fallback"}):
+				return "", errors.New("missing branch")
+			default:
+				return "", nil
+			}
+		},
+	}, factory.FactoryPolicy{PublishPolicy: factory.PublishPolicyPush}, factory.RunSecretRedactor{}, "automatic", false)
+	if err != nil {
+		t.Fatalf("publishFactoryRunAfterVerifiedSuccess() error = %v", err)
+	}
+	wantCalls := [][]string{
+		{"check-ref-format", "--branch", "hal/auto-fallback"},
+		{"fetch", "--no-tags", mustFactoryRecoveryBundleStoredPath(t, store, record), "HEAD"},
+		{"show-ref", "--verify", "--quiet", "refs/heads/hal/auto-fallback"},
+		{"checkout", "-b", "hal/auto-fallback", "FETCH_HEAD"},
+		{"push", "-u", "origin", "hal/auto-fallback"},
+	}
+	if !reflect.DeepEqual(gitCalls, wantCalls) {
+		t.Fatalf("git calls = %#v, want %#v", gitCalls, wantCalls)
+	}
+	requireFactoryPublishOutcomeArtifact(t, got, factory.PublishPolicyPush, "hal/auto-fallback", true)
+	postRun := factory.DerivePostRunState(got)
+	if postRun == nil || postRun.Publish == nil {
+		t.Fatalf("derived postRun publish missing: %#v", postRun)
+	}
+	if postRun.Publish.Runner != factory.PublishRunnerHost || postRun.Publish.FallbackFrom != factory.PublishRunnerSandbox {
+		t.Fatalf("postRun publish runner fields = %#v", postRun.Publish)
+	}
+	if len(postRun.Publish.Attempts) != 2 {
+		t.Fatalf("publish attempts = %#v, want sandbox failure then host success", postRun.Publish.Attempts)
+	}
+	if postRun.Publish.Attempts[0].Runner != factory.PublishRunnerSandbox || postRun.Publish.Attempts[0].Status != factory.RunStatusFailed {
+		t.Fatalf("first publish attempt = %#v", postRun.Publish.Attempts[0])
+	}
+	if postRun.Publish.Attempts[1].Runner != factory.PublishRunnerHost || postRun.Publish.Attempts[1].Status != factory.RunStatusSucceeded {
+		t.Fatalf("second publish attempt = %#v", postRun.Publish.Attempts[1])
+	}
+}
+
 func TestRunFactoryRecoverAppliesBundleWithoutPublishing(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	dir := t.TempDir()
@@ -2701,6 +2961,100 @@ func TestRunFactoryPublishAllowsFailedRunWithRecoveryBundleWhenExplicit(t *testi
 	}
 	if resp.ContractVersion != FactoryPublishContractVersion || resp.Policy != factory.PublishPolicyPush || !resp.AllowUnverified {
 		t.Fatalf("publish response = %#v", resp)
+	}
+}
+
+func TestRunFactoryPublishPublishesFromSandboxWhenRequested(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	dir := t.TempDir()
+	now := time.Date(2026, 7, 8, 14, 0, 0, 0, time.UTC)
+	target := &sandbox.SandboxState{
+		Name:     "manual-sandbox",
+		Provider: "digitalocean",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	record := factory.RunRecord{
+		RunID:        "run-manual-sandbox-publish",
+		Status:       factory.RunStatusSucceeded,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		SandboxName:  target.Name,
+		Sandbox:      &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status},
+		RepoRemote:   "git@github.com:j-yw/test-keyboard-game.git",
+		BranchName:   "hal/manual-sandbox",
+		BaseBranch:   "main",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := runFactoryPublishWithDeps(context.Background(), &out, record.RunID, factoryPublishRequest{
+		Policy:      factory.PublishPolicyPR,
+		PublishFrom: factory.PublishRunnerSandbox,
+		JSON:        true,
+	}, factoryPublishDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		workingDir:   func() (string, error) { return dir, nil },
+		now:          func() time.Time { return now },
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, env map[string]string, out io.Writer) error {
+			if len(env) != 0 {
+				t.Fatalf("manual sandbox publish env = %#v, want no persisted secrets", env)
+			}
+			if !strings.Contains(strings.Join(args, " "), "_publish-branch") {
+				t.Fatalf("remote publish args = %#v, want hidden publish command", args)
+			}
+			result := ci.PushResult{
+				ContractVersion: ci.PushContractVersion,
+				Branch:          "hal/manual-sandbox",
+				Pushed:          true,
+				PullRequest: ci.PullRequest{
+					Number:  12,
+					URL:     "https://github.com/j-yw/test-keyboard-game/pull/12",
+					HeadRef: "hal/manual-sandbox",
+					BaseRef: "main",
+				},
+			}
+			return json.NewEncoder(out).Encode(factorySandboxPublishResult{
+				ContractVersion: "factory-publish-branch-v1",
+				OK:              true,
+				Push:            result,
+				Commit:          "def456abc123",
+			})
+		},
+		runGit: func(context.Context, string, ...string) (string, error) {
+			t.Fatal("host git should not be called for manual sandbox publish")
+			return "", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryPublishWithDeps() error = %v", err)
+	}
+	var resp FactoryPublishResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal(publish response) error = %v; output = %s", err, out.String())
+	}
+	if !resp.OK || resp.PublishFrom != factory.PublishRunnerSandbox || resp.Runner != factory.PublishRunnerSandbox || resp.PullRequestURL != "https://github.com/j-yw/test-keyboard-game/pull/12" {
+		t.Fatalf("publish response = %#v", resp)
+	}
+	updated, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error = %v", err)
+	}
+	postRun := factory.DerivePostRunState(*updated)
+	if postRun == nil || postRun.Publish == nil || postRun.Publish.Commit != "def456abc123" {
+		t.Fatalf("postRun publish = %#v", postRun)
 	}
 }
 

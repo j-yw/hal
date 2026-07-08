@@ -110,6 +110,76 @@ func TestValidateExecutorMode(t *testing.T) {
 	}
 }
 
+func TestPublishRunnerConstants(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "host", got: PublishRunnerHost, want: "host"},
+		{name: "sandbox", got: PublishRunnerSandbox, want: "sandbox"},
+		{name: "auto", got: PublishRunnerAuto, want: "auto"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("publish runner = %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSupportedPublishRunners(t *testing.T) {
+	want := []string{PublishRunnerHost, PublishRunnerSandbox, PublishRunnerAuto}
+	if got := SupportedPublishRunners(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("SupportedPublishRunners() = %#v, want %#v", got, want)
+	}
+}
+
+func TestNormalizePublishRunner(t *testing.T) {
+	if got := NormalizePublishRunner(" Sandbox "); got != PublishRunnerSandbox {
+		t.Fatalf("NormalizePublishRunner() = %q, want %q", got, PublishRunnerSandbox)
+	}
+}
+
+func TestValidatePublishRunner(t *testing.T) {
+	tests := []struct {
+		name    string
+		runner  string
+		want    string
+		wantErr string
+	}{
+		{name: "host", runner: PublishRunnerHost, want: PublishRunnerHost},
+		{name: "sandbox", runner: " Sandbox ", want: PublishRunnerSandbox},
+		{name: "auto", runner: "AUTO", want: PublishRunnerAuto},
+		{name: "empty", wantErr: "factory publish runner is required"},
+		{name: "unsupported", runner: "remote", wantErr: `unsupported factory publish runner "remote" (supported: host, sandbox, auto)`},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ValidatePublishRunner(tt.runner)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("ValidatePublishRunner() error = nil, want %q", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("ValidatePublishRunner() error = %q, want %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ValidatePublishRunner() unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("ValidatePublishRunner() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestQueueStatusConstants(t *testing.T) {
 	tests := []struct {
 		name string
@@ -631,9 +701,175 @@ func TestDeriveRunTelemetryPrefersVerificationResultOutcome(t *testing.T) {
 	}
 }
 
+func TestDerivePostRunStateDerivesLegacyPublishArtifact(t *testing.T) {
+	completedAt := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	record := RunRecord{
+		RunID: "run-legacy-publish-artifact",
+		Artifacts: []ArtifactReference{{
+			Name:      "publish-outcome",
+			Type:      "json",
+			CreatedAt: &completedAt,
+			Summary: map[string]any{
+				"policy":          "pr",
+				"branch":          "hal/legacy-publish",
+				"pushed":          true,
+				"pullRequestUrl":  "https://github.com/jywlabs/hal/pull/42",
+				"recoveredBundle": "recovery/run-legacy-publish-artifact",
+			},
+		}},
+	}
+
+	got := DerivePostRunState(record)
+	if got == nil || got.Publish == nil {
+		t.Fatalf("DerivePostRunState() = %#v, want publish outcome", got)
+	}
+	publish := got.Publish
+	if publish.Status != RunStatusSucceeded {
+		t.Fatalf("publish status = %q, want legacy default %q", publish.Status, RunStatusSucceeded)
+	}
+	if publish.Policy != "pr" || publish.BranchName != "hal/legacy-publish" || !publish.Pushed {
+		t.Fatalf("publish outcome = %#v, want legacy policy/branch/pushed", publish)
+	}
+	if publish.PullRequestURL != "https://github.com/jywlabs/hal/pull/42" {
+		t.Fatalf("pullRequestUrl = %q", publish.PullRequestURL)
+	}
+	if publish.RecoveredBundle != "recovery/run-legacy-publish-artifact" {
+		t.Fatalf("recoveredBundle = %q", publish.RecoveredBundle)
+	}
+	if publish.Source != "artifact" {
+		t.Fatalf("source = %q, want artifact", publish.Source)
+	}
+	if publish.CompletedAt == nil || !publish.CompletedAt.Equal(completedAt) {
+		t.Fatalf("completedAt = %#v, want %s", publish.CompletedAt, completedAt)
+	}
+	if got.Recovery == nil || got.Recovery.RecoveredBundle != publish.RecoveredBundle {
+		t.Fatalf("derived recovery = %#v, want recovery from recovered bundle", got.Recovery)
+	}
+}
+
+func TestDerivePostRunStateDerivesSandboxPublishArtifactMetadata(t *testing.T) {
+	startedAt := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	attemptCompletedAt := startedAt.Add(30 * time.Second)
+	completedAt := startedAt.Add(time.Minute)
+	record := RunRecord{
+		RunID: "run-sandbox-publish-artifact",
+		Artifacts: []ArtifactReference{{
+			Name:      "publish-outcome",
+			Type:      "json",
+			CreatedAt: &completedAt,
+			Summary: map[string]any{
+				"outcomeKind":    "publish",
+				"status":         RunStatusSucceeded,
+				"policy":         "pr",
+				"branchName":     "hal/sandbox-publish",
+				"pushed":         true,
+				"pullRequestUrl": "https://github.com/jywlabs/hal/pull/77",
+				"pullRequestId":  77,
+				"runner":         " SANDBOX ",
+				"fallbackFrom":   " HOST ",
+				"credentialMode": "env",
+				"commit":         "abc123def456",
+				"attempts": []any{
+					map[string]any{
+						"runner":      " sandbox ",
+						"status":      RunStatusFailed,
+						"error":       "sandbox publish failed",
+						"startedAt":   startedAt.Format(time.RFC3339Nano),
+						"completedAt": attemptCompletedAt.Format(time.RFC3339Nano),
+					},
+					map[string]any{
+						"runner":      PublishRunnerHost,
+						"status":      RunStatusSucceeded,
+						"startedAt":   attemptCompletedAt,
+						"completedAt": completedAt,
+					},
+				},
+			},
+		}},
+	}
+
+	got := DerivePostRunState(record)
+	if got == nil || got.Publish == nil {
+		t.Fatalf("DerivePostRunState() = %#v, want publish outcome", got)
+	}
+	publish := got.Publish
+	if publish.Runner != PublishRunnerSandbox {
+		t.Fatalf("runner = %q, want %q", publish.Runner, PublishRunnerSandbox)
+	}
+	if publish.FallbackFrom != PublishRunnerHost {
+		t.Fatalf("fallbackFrom = %q, want %q", publish.FallbackFrom, PublishRunnerHost)
+	}
+	if publish.CredentialMode != "env" || publish.Commit != "abc123def456" {
+		t.Fatalf("publish credential/commit metadata = %#v", publish)
+	}
+	if publish.BranchName != "hal/sandbox-publish" || publish.PullRequestID != 77 {
+		t.Fatalf("publish branch/pr metadata = %#v", publish)
+	}
+	if len(publish.Attempts) != 2 {
+		t.Fatalf("attempts len = %d, want 2: %#v", len(publish.Attempts), publish.Attempts)
+	}
+	firstAttempt := publish.Attempts[0]
+	if firstAttempt.Runner != PublishRunnerSandbox || firstAttempt.Status != RunStatusFailed || firstAttempt.Error != "sandbox publish failed" {
+		t.Fatalf("first attempt = %#v", firstAttempt)
+	}
+	if firstAttempt.StartedAt == nil || !firstAttempt.StartedAt.Equal(startedAt) {
+		t.Fatalf("first startedAt = %#v, want %s", firstAttempt.StartedAt, startedAt)
+	}
+	if firstAttempt.CompletedAt == nil || !firstAttempt.CompletedAt.Equal(attemptCompletedAt) {
+		t.Fatalf("first completedAt = %#v, want %s", firstAttempt.CompletedAt, attemptCompletedAt)
+	}
+	secondAttempt := publish.Attempts[1]
+	if secondAttempt.Runner != PublishRunnerHost || secondAttempt.Status != RunStatusSucceeded {
+		t.Fatalf("second attempt = %#v", secondAttempt)
+	}
+}
+
+func TestDerivePostRunStatePrefersExplicitPublishOutcome(t *testing.T) {
+	startedAt := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	record := RunRecord{
+		RunID: "run-explicit-publish",
+		PostRun: &PostRunState{Publish: &PublishOutcome{
+			Status: RunStatusSucceeded,
+			Runner: PublishRunnerHost,
+			Attempts: []PublishAttempt{{
+				Runner:    PublishRunnerHost,
+				Status:    RunStatusSucceeded,
+				StartedAt: &startedAt,
+			}},
+		}},
+		Artifacts: []ArtifactReference{{
+			Name: "publish-outcome",
+			Type: "json",
+			Summary: map[string]any{
+				"outcomeKind": "publish",
+				"runner":      PublishRunnerSandbox,
+			},
+		}},
+	}
+
+	got := DerivePostRunState(record)
+	if got == nil || got.Publish == nil {
+		t.Fatalf("DerivePostRunState() = %#v, want explicit publish outcome", got)
+	}
+	if got.Publish.Runner != PublishRunnerHost {
+		t.Fatalf("runner = %q, want explicit %q", got.Publish.Runner, PublishRunnerHost)
+	}
+	if len(got.Publish.Attempts) != 1 || got.Publish.Attempts[0].Runner != PublishRunnerHost {
+		t.Fatalf("attempts = %#v, want explicit attempts", got.Publish.Attempts)
+	}
+	record.PostRun.Publish.Attempts[0].Runner = PublishRunnerSandbox
+	if got.Publish.Attempts[0].Runner != PublishRunnerHost {
+		t.Fatalf("derived attempts aliased source record: %#v", got.Publish.Attempts)
+	}
+}
+
 func TestFactoryTypesHaveJSONTags(t *testing.T) {
 	types := []reflect.Type{
 		reflect.TypeOf(RunRecord{}),
+		reflect.TypeOf(PostRunState{}),
+		reflect.TypeOf(RecoveryOutcome{}),
+		reflect.TypeOf(PublishOutcome{}),
+		reflect.TypeOf(PublishAttempt{}),
 		reflect.TypeOf(RunSecretInput{}),
 		reflect.TypeOf(RunSecretMetadata{}),
 		reflect.TypeOf(SandboxHostMetadata{}),
@@ -689,6 +925,75 @@ func TestFactoryTypesHaveJSONTags(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPublishOutcomeJSONFields(t *testing.T) {
+	startedAt := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	completedAt := startedAt.Add(time.Minute)
+	original := PublishOutcome{
+		Status:          RunStatusSucceeded,
+		Policy:          "pr",
+		BranchName:      "hal/sandbox-publish",
+		RecoveredBundle: "recovery/run-sandbox-publish",
+		Pushed:          true,
+		PullRequestURL:  "https://github.com/jywlabs/hal/pull/42",
+		PullRequestID:   42,
+		AllowUnverified: true,
+		Runner:          PublishRunnerSandbox,
+		FallbackFrom:    PublishRunnerHost,
+		CredentialMode:  "env",
+		Commit:          "abc123def456",
+		Attempts: []PublishAttempt{{
+			Runner:      PublishRunnerSandbox,
+			Status:      RunStatusFailed,
+			Error:       "sandbox publish failed",
+			StartedAt:   &startedAt,
+			CompletedAt: &completedAt,
+		}},
+		Source:      "artifact",
+		CompletedAt: &completedAt,
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	raw := mustJSONMapFromBytes(t, data)
+	requireExactJSONKeys(t, raw, []string{
+		"status",
+		"policy",
+		"branchName",
+		"recoveredBundle",
+		"pushed",
+		"pullRequestUrl",
+		"pullRequestId",
+		"allowUnverified",
+		"runner",
+		"fallbackFrom",
+		"credentialMode",
+		"commit",
+		"attempts",
+		"source",
+		"completedAt",
+	})
+	attempt := firstJSONMapArrayObjectMust(t, raw, "attempts")
+	requireExactJSONKeys(t, attempt, []string{"runner", "status", "error", "startedAt", "completedAt"})
+
+	var decoded PublishOutcome
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(round-trip) error = %v", err)
+	}
+	if !reflect.DeepEqual(decoded, original) {
+		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", decoded, original)
+	}
+}
+
+func TestPublishOutcomeOptionalFieldsOmitted(t *testing.T) {
+	data, err := json.Marshal(PublishOutcome{})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	requireExactJSONKeys(t, mustJSONMapFromBytes(t, data), nil)
 }
 
 func TestSandboxHostRuntimeWorkspaceMetadataJSONTags(t *testing.T) {
@@ -2675,6 +2980,16 @@ func firstJSONMapArrayObject(t *testing.T, values map[string]any, key string) (m
 	}
 	first, ok := items[0].(map[string]any)
 	return first, ok
+}
+
+func firstJSONMapArrayObjectMust(t *testing.T, values map[string]any, key string) map[string]any {
+	t.Helper()
+
+	first, ok := firstJSONMapArrayObject(t, values, key)
+	if !ok {
+		t.Fatalf("%s[0] should be an object, got %#v", key, values[key])
+	}
+	return first
 }
 
 func networkProxyRedactionTestValues() []string {

@@ -43,6 +43,8 @@ These fields use `omitempty` and are only present when the value is non-zero.
 | `engine` | string | Engine snapshot resolved at factory run creation time, such as `codex`, `claude`, or `pi` |
 | `policy` | object | Factory policy snapshot applied to the run |
 | `policyDecisions` | array | Policy decisions recorded from the run timeline |
+| `runner` | object | Redaction-safe runner summary for post-run publish-capable work |
+| `publishFrom` | string | Normalized publish source request: `host`, `sandbox`, or `auto` |
 | `sandboxName` | string | Sandbox name used for the run |
 | `sandbox` | object | Redaction-safe sandbox execution metadata for sandbox-backed runs |
 | `finishedAt` | string | RFC 3339 timestamp of terminal completion |
@@ -52,9 +54,45 @@ These fields use `omitempty` and are only present when the value is non-zero.
 | `failure` | object | Terminal failure summary when the run failed or stopped on a recoverable error |
 | `handoff` | object | Redaction-safe human handoff and next-action guidance for failed runs with actionable follow-up |
 | `secrets` | array | Redaction-safe run-scoped secret metadata; raw values are never stored |
+| `postRun` | object | Post-run recovery and publish outcomes recorded after the original pipeline state |
 
 `sandboxName` is retained as a compatibility summary field. New consumers
 should read `sandbox.name` when the `sandbox` object is present.
+
+## Runner And Post-Run Publish Metadata
+
+When `runner` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `mode` | string | yes | Runner that performed publish-capable work: `host` or `sandbox` |
+| `sandboxName` | string | no | Sandbox name when `mode` is `sandbox` |
+
+`publishFrom` records the normalized operator request. `auto` lets Hal try the
+sandbox publisher for sandbox-backed runs and fall back to host-side recovery
+publish when needed. `host` publishes from the host worktree. `sandbox` runs the
+publish command inside the stored sandbox workspace.
+
+The `postRun` object may contain a `publish` object. When
+`postRun.publish` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `status` | string | no | Publish lifecycle status |
+| `policy` | string | no | Publish policy used: `push` or `pr` |
+| `branchName` | string | no | Branch that was pushed or used for the pull request |
+| `recoveredBundle` | string | no | Store-relative recovery bundle used before host publish |
+| `pushed` | boolean | no | Whether a branch push completed |
+| `pullRequestUrl` | string | no | Pull request URL when a PR was created |
+| `pullRequestId` | integer | no | Pull request number when available |
+| `allowUnverified` | boolean | no | Whether an unverified stored run was explicitly allowed |
+| `runner` | string | no | Actual publish runner: `host` or `sandbox` |
+| `fallbackFrom` | string | no | Failed runner that caused fallback, usually `sandbox` when `publishFrom` was `auto` |
+| `credentialMode` | string | no | Credential delivery mode used by the publisher, such as `env` |
+| `commit` | string | no | Commit hash observed by the sandbox publisher |
+| `attempts` | array | no | Per-runner publish attempts with `runner`, `status`, optional `error`, `startedAt`, and `completedAt` |
+| `source` | string | no | Publish initiator such as `automatic` or `manual` |
+| `completedAt` | string | no | RFC3339 timestamp when publish metadata was recorded |
 
 ## Policy Metadata
 
