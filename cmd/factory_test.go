@@ -2704,6 +2704,132 @@ func TestRunFactoryPublishAllowsFailedRunWithRecoveryBundleWhenExplicit(t *testi
 	}
 }
 
+func TestRunFactoryPublishCollectsSandboxRecoveryBundleBeforeManualPublish(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	dir := t.TempDir()
+	now := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	target := &sandbox.SandboxState{
+		Name:     "dev",
+		Provider: "digitalocean",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	record := factory.RunRecord{
+		RunID:        "run-publish-collect",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		SandboxName:  target.Name,
+		Sandbox:      &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status},
+		RepoRemote:   "git@github.com:j-yw/test-keyboard-game.git",
+		BranchName:   "hal/wasd-movement-controls",
+		BaseBranch:   "hal/time-attack-mode",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
+	var bundleCopied bool
+	var gitCalls [][]string
+	var out bytes.Buffer
+	err := runFactoryPublishWithDeps(context.Background(), &out, record.RunID, factoryPublishRequest{
+		Policy:          factory.PublishPolicyPR,
+		AllowUnverified: true,
+		JSON:            true,
+	}, factoryPublishDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		workingDir:   func() (string, error) { return dir, nil },
+		now:          func() time.Time { return now },
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		sandboxRequests: defaultFactorySandboxArtifactRequests,
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, info *sandbox.ConnectInfo, args []string, out io.Writer) error {
+			if info == nil || info.Name != target.Name {
+				t.Fatalf("connect info = %#v, want sandbox %q", info, target.Name)
+			}
+			switch {
+			case isFactorySandboxArtifactCopyArgs(args, workspaceDir, ".hal/recovery/git-bundle.bundle"):
+				bundleCopied = true
+				_, err := io.WriteString(out, "bundle bytes\n")
+				return err
+			case isFactorySandboxArtifactCopyArgs(args, workspaceDir, ".hal/recovery/git-format-patch.patch"):
+				_, err := io.WriteString(out, "patch bytes\n")
+				return err
+			case isFactorySandboxArtifactCopyArgs(args, workspaceDir, ".hal/auto-state.json"):
+				_, err := io.WriteString(out, `{"step":"done"}`+"\n")
+				return err
+			default:
+				return factory.ErrSandboxArtifactNotFound
+			}
+		},
+		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
+			if gotDir != dir {
+				t.Fatalf("git dir = %q, want %q", gotDir, dir)
+			}
+			gitCalls = append(gitCalls, append([]string(nil), args...))
+			switch {
+			case reflect.DeepEqual(args, []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/wasd-movement-controls"}):
+				return "", errors.New("missing branch")
+			default:
+				return "", nil
+			}
+		},
+		pushAndCreatePRInDir: func(_ context.Context, gotDir string, opts ci.PushOptions) (ci.PushResult, error) {
+			if gotDir != dir {
+				t.Fatalf("push dir = %q, want %q", gotDir, dir)
+			}
+			if opts.BaseRef != "hal/time-attack-mode" {
+				t.Fatalf("push base = %q, want hal/time-attack-mode", opts.BaseRef)
+			}
+			return ci.PushResult{
+				Branch: "hal/wasd-movement-controls",
+				Pushed: true,
+				PullRequest: ci.PullRequest{
+					Number:  4,
+					URL:     "https://github.com/j-yw/test-keyboard-game/pull/4",
+					HeadRef: "hal/wasd-movement-controls",
+					BaseRef: "hal/time-attack-mode",
+				},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryPublishWithDeps() error = %v", err)
+	}
+	if !bundleCopied {
+		t.Fatal("recovery bundle was not copied before manual publish")
+	}
+	updated, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	bundle := requireStoredFactoryArtifactPath(t, store, updated.RunID, updated.Artifacts, "factory/git-bundle.bundle")
+	if got := readStoredFactoryArtifact(t, store, updated.RunID, bundle); got != "bundle bytes\n" {
+		t.Fatalf("stored recovery bundle = %q", got)
+	}
+	wantFetch := []string{"fetch", "--no-tags", mustFactoryRecoveryBundleStoredPath(t, store, *updated), "HEAD"}
+	if len(gitCalls) < 2 || !reflect.DeepEqual(gitCalls[1], wantFetch) {
+		t.Fatalf("git calls = %#v, want second call %#v", gitCalls, wantFetch)
+	}
+	requireFactoryPublishOutcomeArtifact(t, *updated, factory.PublishPolicyPR, "hal/wasd-movement-controls", true)
+	var resp FactoryPublishResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal(publish response) error = %v; output = %s", err, out.String())
+	}
+	if !resp.OK || resp.Policy != factory.PublishPolicyPR || resp.BranchName != "hal/wasd-movement-controls" {
+		t.Fatalf("publish response = %#v", resp)
+	}
+}
+
 func saveFactoryRecoveryBundleArtifact(t *testing.T, store factory.Store, record factory.RunRecord) factory.RunRecord {
 	t.Helper()
 	sourcePath := filepath.Join(t.TempDir(), "git-bundle.bundle")

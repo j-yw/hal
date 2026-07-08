@@ -283,6 +283,11 @@ type factoryPublishDeps struct {
 	now                  func() time.Time
 	runGit               func(context.Context, string, ...string) (string, error)
 	pushAndCreatePRInDir func(context.Context, string, ci.PushOptions) (ci.PushResult, error)
+	loadSandbox          func(string) (*sandbox.SandboxState, error)
+	resolveProvider      func(string, string) (sandbox.Provider, error)
+	runProviderExec      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
+	runProviderExecIO    func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer, io.Writer) error
+	sandboxRequests      func(string, factory.RunRecord) []factory.SandboxArtifactRequest
 }
 
 var defaultFactoryPublishDeps = factoryPublishDeps{
@@ -291,6 +296,11 @@ var defaultFactoryPublishDeps = factoryPublishDeps{
 	now:                  time.Now,
 	runGit:               runFactoryGitInDir,
 	pushAndCreatePRInDir: ci.PushAndCreatePRInDir,
+	loadSandbox:          sandbox.LoadActiveInstance,
+	resolveProvider:      resolveProviderWithFallback,
+	runProviderExec:      runFactorySandboxProviderExec,
+	runProviderExecIO:    runFactorySandboxProviderExecIO,
+	sandboxRequests:      defaultFactorySandboxArtifactRequests,
 }
 
 type factoryRunDeps struct {
@@ -5454,10 +5464,16 @@ func runFactoryPublishWithDeps(ctx context.Context, out io.Writer, runID string,
 	}
 
 	updatedRecord, err := publishFactoryRunAfterVerifiedSuccess(ctx, store, dir, factoryRunRequest{
-		Sandbox:    record.ExecutorMode == factory.ExecutorModeSandbox,
-		BaseBranch: record.BaseBranch,
+		Sandbox:     record.ExecutorMode == factory.ExecutorModeSandbox,
+		SandboxName: record.SandboxName,
+		BaseBranch:  record.BaseBranch,
 	}, *record, factoryRunDeps{
 		now:                  deps.now,
+		loadSandbox:          deps.loadSandbox,
+		resolveProvider:      deps.resolveProvider,
+		runProviderExec:      deps.runProviderExec,
+		runProviderExecIO:    deps.runProviderExecIO,
+		sandboxRequests:      deps.sandboxRequests,
 		runGit:               deps.runGit,
 		pushAndCreatePRInDir: deps.pushAndCreatePRInDir,
 	}, factory.FactoryPolicy{PublishPolicy: publishPolicy}, factory.RunSecretRedactor{})
