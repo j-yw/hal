@@ -258,8 +258,13 @@ func buildCIHeaderCtx() engine.HeaderContext {
 	}
 }
 
-func loadCIProjectConfig() (*projectconfig.Config, error) {
-	cfg, err := projectconfig.Load(".")
+func loadCIProjectConfig(ctx context.Context) (*projectconfig.Config, error) {
+	configDir := "."
+	if root, err := ciRepoRoot(ctx); err == nil && strings.TrimSpace(root) != "" {
+		configDir = root
+	}
+
+	cfg, err := projectconfig.Load(configDir)
 	if err != nil {
 		return nil, fmt.Errorf("load project config: %w", err)
 	}
@@ -573,7 +578,7 @@ func runCIStatus(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
-	cfg, err := loadCIProjectConfig()
+	cfg, err := loadCIProjectConfig(ctx)
 	if err != nil {
 		return err
 	}
@@ -705,7 +710,7 @@ func runCIFix(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
-	cfg, err := loadCIProjectConfig()
+	cfg, err := loadCIProjectConfig(ctx)
 	if err != nil {
 		return err
 	}
@@ -933,7 +938,7 @@ func runCIMerge(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
-	cfg, err := loadCIProjectConfig()
+	cfg, err := loadCIProjectConfig(ctx)
 	if err != nil {
 		return err
 	}
