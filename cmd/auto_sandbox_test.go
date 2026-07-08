@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxexec"
@@ -1778,6 +1779,22 @@ func TestRunAutoSandboxWithWriterForwardsFactoryAttemptPolicyEnv(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotEnv, want) {
 		t.Fatalf("remote env = %#v, want %#v", gotEnv, want)
+	}
+}
+
+func TestAutoSandboxFactoryAttemptEnvForwardsRuntimeStatePolicy(t *testing.T) {
+	ctx := contextWithAutoFactoryRuntimeStatePolicy(context.Background(), "checkpoint")
+
+	got, err := autoSandboxFactoryAttemptEnv(ctx)
+	if err != nil {
+		t.Fatalf("autoSandboxFactoryAttemptEnv() unexpected error: %v", err)
+	}
+
+	want := map[string]string{
+		autoFactoryRuntimeStatePolicyEnv: compound.RuntimeStatePolicyCheckpointFactoryState,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("factory env = %#v, want %#v", got, want)
 	}
 }
 

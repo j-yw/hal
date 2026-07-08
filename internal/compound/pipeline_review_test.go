@@ -690,6 +690,236 @@ func TestRunReviewStep_FinalVerificationFailure_BlocksGate(t *testing.T) {
 	}
 }
 
+func TestRunReviewStep_StrictRuntimeStateDirtyFailsFinalVerification(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+
+	state := &PipelineState{
+		Step:       StepReview,
+		BaseBranch: "develop",
+		BranchName: "hal/review-runtime-strict",
+		StartedAt:  time.Now(),
+	}
+
+	origReviewLoop := runReviewLoopWithDisplay
+	runReviewLoopWithDisplay = func(ctx context.Context, eng engine.Engine, display *engine.Display, baseBranch string, requestedIterations int) (*ReviewLoopResult, error) {
+		return &ReviewLoopResult{Iterations: []ReviewLoopIteration{{Iteration: 1, ValidIssues: 0, FixesApplied: 0}}}, nil
+	}
+	t.Cleanup(func() {
+		runReviewLoopWithDisplay = origReviewLoop
+	})
+
+	origChanges := workingTreeChangesInDirFn
+	workingTreeChangesInDirFn = func(string) ([]string, error) {
+		return []string{filepath.ToSlash(filepath.Join(template.HalDir, template.PRDFile))}, nil
+	}
+	t.Cleanup(func() {
+		workingTreeChangesInDirFn = origChanges
+	})
+
+	err := pipeline.runReviewStep(context.Background(), state, RunOptions{})
+	if err == nil {
+		t.Fatal("expected runReviewStep to fail when runtime state is dirty without checkpoint policy")
+	}
+	if !strings.Contains(err.Error(), "working tree is dirty") {
+		t.Fatalf("error = %q, want dirty worktree failure", err.Error())
+	}
+}
+
+func TestRunReviewStep_CheckpointRuntimeStateCommitsAllowedFiles(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+
+	state := &PipelineState{
+		Step:       StepReview,
+		BaseBranch: "develop",
+		BranchName: "hal/review-runtime-checkpoint",
+		StartedAt:  time.Now(),
+	}
+	pipeline.currentBranch = func(string) (string, error) {
+		return state.BranchName, nil
+	}
+
+	origReviewLoop := runReviewLoopWithDisplay
+	runReviewLoopWithDisplay = func(ctx context.Context, eng engine.Engine, display *engine.Display, baseBranch string, requestedIterations int) (*ReviewLoopResult, error) {
+		return &ReviewLoopResult{Iterations: []ReviewLoopIteration{{Iteration: 1, ValidIssues: 0, FixesApplied: 0}}}, nil
+	}
+	t.Cleanup(func() {
+		runReviewLoopWithDisplay = origReviewLoop
+	})
+
+	origChanges := workingTreeChangesInDirFn
+	changeCalls := 0
+	workingTreeChangesInDirFn = func(string) ([]string, error) {
+		changeCalls++
+		if changeCalls == 1 {
+			return []string{
+				filepath.ToSlash(filepath.Join(template.HalDir, template.PRDFile)),
+				filepath.ToSlash(filepath.Join(template.HalDir, template.ProgressFile)),
+				filepath.ToSlash(filepath.Join(template.HalDir, template.AutoStateFile)),
+				filepath.ToSlash(filepath.Join(template.HalDir, "archive", "feature", "prd.md")),
+			}, nil
+		}
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		workingTreeChangesInDirFn = origChanges
+	})
+
+	addCalled := false
+	origAdd := gitAddAllInDirFn
+	gitAddAllInDirFn = func(ctx context.Context, gotDir string) error {
+		addCalled = true
+		if gotDir != dir {
+			t.Fatalf("git add dir = %q, want %q", gotDir, dir)
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		gitAddAllInDirFn = origAdd
+	})
+
+	commitCalled := false
+	origCommit := gitCommitInDirFn
+	gitCommitInDirFn = func(ctx context.Context, gotDir, message string) error {
+		commitCalled = true
+		if gotDir != dir {
+			t.Fatalf("git commit dir = %q, want %q", gotDir, dir)
+		}
+		if message != "chore: checkpoint Hal factory runtime state" {
+			t.Fatalf("git commit message = %q, want checkpoint message", message)
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		gitCommitInDirFn = origCommit
+	})
+
+	err := pipeline.runReviewStep(context.Background(), state, RunOptions{RuntimeStatePolicy: RuntimeStatePolicyCheckpointFactoryState})
+	if err != nil {
+		t.Fatalf("runReviewStep returned error: %v", err)
+	}
+	if !addCalled {
+		t.Fatal("expected runtime state checkpoint to stage changes")
+	}
+	if !commitCalled {
+		t.Fatal("expected runtime state checkpoint commit")
+	}
+	if state.Step != StepCI {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepCI)
+	}
+	if state.Review == nil || state.Review.Status != "passed" {
+		t.Fatalf("state.Review = %+v, want passed", state.Review)
+	}
+}
+
+func TestRunReviewStep_CheckpointRuntimeStateFailsUnexpectedDirtyFile(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+
+	state := &PipelineState{
+		Step:       StepReview,
+		BaseBranch: "develop",
+		BranchName: "hal/review-runtime-unexpected",
+		StartedAt:  time.Now(),
+	}
+
+	origReviewLoop := runReviewLoopWithDisplay
+	runReviewLoopWithDisplay = func(ctx context.Context, eng engine.Engine, display *engine.Display, baseBranch string, requestedIterations int) (*ReviewLoopResult, error) {
+		return &ReviewLoopResult{Iterations: []ReviewLoopIteration{{Iteration: 1, ValidIssues: 0, FixesApplied: 0}}}, nil
+	}
+	t.Cleanup(func() {
+		runReviewLoopWithDisplay = origReviewLoop
+	})
+
+	origChanges := workingTreeChangesInDirFn
+	workingTreeChangesInDirFn = func(string) ([]string, error) {
+		return []string{
+			filepath.ToSlash(filepath.Join(template.HalDir, template.AutoStateFile)),
+			"app/page.tsx",
+		}, nil
+	}
+	t.Cleanup(func() {
+		workingTreeChangesInDirFn = origChanges
+	})
+
+	origAdd := gitAddAllInDirFn
+	gitAddAllInDirFn = func(context.Context, string) error {
+		t.Fatal("git add should not run when unexpected files are dirty")
+		return nil
+	}
+	t.Cleanup(func() {
+		gitAddAllInDirFn = origAdd
+	})
+
+	err := pipeline.runReviewStep(context.Background(), state, RunOptions{RuntimeStatePolicy: RuntimeStatePolicyCheckpointFactoryState})
+	if err == nil {
+		t.Fatal("expected runReviewStep to fail when unexpected files are dirty")
+	}
+	if !strings.Contains(err.Error(), "unexpected dirty files: app/page.tsx") {
+		t.Fatalf("error = %q, want unexpected dirty file details", err.Error())
+	}
+}
+
+func TestRunReviewStep_CheckpointRuntimeStateStillHonorsBranchInvariant(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, runStepTestEngine{}, engine.NewDisplay(io.Discard), dir)
+
+	state := &PipelineState{
+		Step:       StepReview,
+		BaseBranch: "develop",
+		BranchName: "hal/review-runtime-branch",
+		StartedAt:  time.Now(),
+	}
+	pipeline.currentBranch = func(string) (string, error) {
+		return "hal/other-branch", nil
+	}
+
+	origReviewLoop := runReviewLoopWithDisplay
+	runReviewLoopWithDisplay = func(ctx context.Context, eng engine.Engine, display *engine.Display, baseBranch string, requestedIterations int) (*ReviewLoopResult, error) {
+		return &ReviewLoopResult{Iterations: []ReviewLoopIteration{{Iteration: 1, ValidIssues: 0, FixesApplied: 0}}}, nil
+	}
+	t.Cleanup(func() {
+		runReviewLoopWithDisplay = origReviewLoop
+	})
+
+	origChanges := workingTreeChangesInDirFn
+	changeCalls := 0
+	workingTreeChangesInDirFn = func(string) ([]string, error) {
+		changeCalls++
+		if changeCalls == 1 {
+			return []string{filepath.ToSlash(filepath.Join(template.HalDir, template.AutoStateFile))}, nil
+		}
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		workingTreeChangesInDirFn = origChanges
+	})
+
+	origAdd := gitAddAllInDirFn
+	gitAddAllInDirFn = func(context.Context, string) error { return nil }
+	t.Cleanup(func() {
+		gitAddAllInDirFn = origAdd
+	})
+	origCommit := gitCommitInDirFn
+	gitCommitInDirFn = func(context.Context, string, string) error { return nil }
+	t.Cleanup(func() {
+		gitCommitInDirFn = origCommit
+	})
+
+	err := pipeline.runReviewStep(context.Background(), state, RunOptions{RuntimeStatePolicy: RuntimeStatePolicyCheckpointFactoryState})
+	if err == nil {
+		t.Fatal("expected runReviewStep to fail on branch invariant")
+	}
+	if !strings.Contains(err.Error(), "current branch \"hal/other-branch\" does not match pipeline state branch \"hal/review-runtime-branch\"") {
+		t.Fatalf("error = %q, want branch invariant failure", err.Error())
+	}
+}
+
 func TestRunReviewStep_MaxReviewFixAttemptsAllowsCleanValidationAfterLimit(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultAutoConfig()

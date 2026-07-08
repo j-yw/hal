@@ -46,6 +46,7 @@ const (
 	autoFactoryMaxReviewFixAttemptsEnv = "HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS"
 	autoFactoryMaxCIFixAttemptsEnv     = "HAL_FACTORY_MAX_CI_FIX_ATTEMPTS"
 	autoFactoryCIPolicyEnv             = "HAL_FACTORY_CI_POLICY"
+	autoFactoryRuntimeStatePolicyEnv   = "HAL_FACTORY_RUNTIME_STATE_POLICY"
 )
 
 type autoEntryMode string
@@ -73,6 +74,7 @@ type autoFactoryAttemptPolicy struct {
 
 type autoFactoryAttemptPolicyContextKey struct{}
 type autoFactoryCIPolicyContextKey struct{}
+type autoFactoryRuntimeStatePolicyContextKey struct{}
 
 const (
 	autoStepStatusCompleted autoStepStatus = "completed"
@@ -568,6 +570,14 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
+	factoryRuntimeStatePolicy, err := autoFactoryRuntimeStatePolicyForRun(ctx)
+	if err != nil {
+		if jsonMode {
+			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
+			return outputAutoJSON(out, jr)
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
 
 	if err := compound.MigrateLegacyAutoPRD(dir, errOut); err != nil {
 		if jsonMode {
@@ -714,17 +724,18 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 
 	// Run options
 	opts := compound.RunOptions{
-		Resume:            resume,
-		DryRun:            dryRun,
-		SkipCI:            policy.skipCI,
-		CIPolicy:          factoryCIPolicy,
-		SkipReview:        policy.skipReview,
-		ReviewCleanStreak: policy.reviewCleanStreak,
-		ReviewMaxCycles:   policy.reviewMaxCycles,
-		ReportPath:        reportPath,
-		SourceMarkdown:    sourceMarkdown,
-		ConvertMode:       resolvedConvertMode,
-		BaseBranch:        baseBranch,
+		Resume:             resume,
+		DryRun:             dryRun,
+		SkipCI:             policy.skipCI,
+		CIPolicy:           factoryCIPolicy,
+		RuntimeStatePolicy: factoryRuntimeStatePolicy,
+		SkipReview:         policy.skipReview,
+		ReviewCleanStreak:  policy.reviewCleanStreak,
+		ReviewMaxCycles:    policy.reviewMaxCycles,
+		ReportPath:         reportPath,
+		SourceMarkdown:     sourceMarkdown,
+		ConvertMode:        resolvedConvertMode,
+		BaseBranch:         baseBranch,
 
 		MaxRunAttempts:       factoryAttemptPolicy.MaxRunAttempts,
 		MaxReviewFixAttempts: factoryAttemptPolicy.MaxReviewFixAttempts,
@@ -800,6 +811,13 @@ func contextWithAutoFactoryCIPolicy(ctx context.Context, policy string) context.
 	return context.WithValue(ctx, autoFactoryCIPolicyContextKey{}, strings.TrimSpace(policy))
 }
 
+func contextWithAutoFactoryRuntimeStatePolicy(ctx context.Context, policy string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, autoFactoryRuntimeStatePolicyContextKey{}, strings.TrimSpace(policy))
+}
+
 func autoFactoryAttemptPolicyForRun(ctx context.Context) (autoFactoryAttemptPolicy, error) {
 	if ctx != nil {
 		if policy, ok := ctx.Value(autoFactoryAttemptPolicyContextKey{}).(autoFactoryAttemptPolicy); ok {
@@ -869,6 +887,29 @@ func validateAutoFactoryCIPolicy(policy string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%s must be one of %s", autoFactoryCIPolicyEnv, strings.Join(factory.SupportedCIPolicies(), ", "))
+}
+
+func autoFactoryRuntimeStatePolicyForRun(ctx context.Context) (string, error) {
+	if ctx != nil {
+		if policy, ok := ctx.Value(autoFactoryRuntimeStatePolicyContextKey{}).(string); ok {
+			return validateAutoFactoryRuntimeStatePolicy(policy)
+		}
+	}
+	return validateAutoFactoryRuntimeStatePolicy(os.Getenv(autoFactoryRuntimeStatePolicyEnv))
+}
+
+func validateAutoFactoryRuntimeStatePolicy(policy string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(policy))
+	switch normalized {
+	case "":
+		return "", nil
+	case compound.RuntimeStatePolicyStrict:
+		return compound.RuntimeStatePolicyStrict, nil
+	case "checkpoint", compound.RuntimeStatePolicyCheckpointFactoryState:
+		return compound.RuntimeStatePolicyCheckpointFactoryState, nil
+	default:
+		return "", fmt.Errorf("%s must be one of strict, checkpoint", autoFactoryRuntimeStatePolicyEnv)
+	}
 }
 
 func autoSuccessResult(entryMode autoEntryMode, resumed bool, skipCI bool, skipReview bool, ciState *compound.CIState, summary string, convertMode string, duration time.Duration) AutoResult {

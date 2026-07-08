@@ -1036,14 +1036,23 @@ func autoSandboxFactoryAttemptEnv(ctx context.Context) (map[string]string, error
 	if err != nil {
 		return nil, err
 	}
-	if policy.MaxRunAttempts == 0 && policy.MaxReviewFixAttempts == 0 && policy.MaxCIFixAttempts == 0 {
+	runtimeStatePolicy, err := autoFactoryRuntimeStatePolicyForRun(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if policy.MaxRunAttempts == 0 && policy.MaxReviewFixAttempts == 0 && policy.MaxCIFixAttempts == 0 && runtimeStatePolicy == "" {
 		return nil, nil
 	}
-	return map[string]string{
-		autoFactoryMaxRunAttemptsEnv:       strconv.Itoa(policy.MaxRunAttempts),
-		autoFactoryMaxReviewFixAttemptsEnv: strconv.Itoa(policy.MaxReviewFixAttempts),
-		autoFactoryMaxCIFixAttemptsEnv:     strconv.Itoa(policy.MaxCIFixAttempts),
-	}, nil
+	env := map[string]string{}
+	if policy.MaxRunAttempts != 0 || policy.MaxReviewFixAttempts != 0 || policy.MaxCIFixAttempts != 0 {
+		env[autoFactoryMaxRunAttemptsEnv] = strconv.Itoa(policy.MaxRunAttempts)
+		env[autoFactoryMaxReviewFixAttemptsEnv] = strconv.Itoa(policy.MaxReviewFixAttempts)
+		env[autoFactoryMaxCIFixAttemptsEnv] = strconv.Itoa(policy.MaxCIFixAttempts)
+	}
+	if runtimeStatePolicy != "" {
+		env[autoFactoryRuntimeStatePolicyEnv] = runtimeStatePolicy
+	}
+	return env, nil
 }
 
 func defaultAutoSandboxExecutionID(now time.Time) string {

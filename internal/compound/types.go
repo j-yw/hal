@@ -93,6 +93,13 @@ const (
 	CIPolicyDisabled          = "disabled"
 )
 
+// Factory-provided runtime state policies. Empty policy preserves strict
+// direct hal auto behavior.
+const (
+	RuntimeStatePolicyStrict                 = "strict"
+	RuntimeStatePolicyCheckpointFactoryState = "checkpoint_factory_state"
+)
+
 // ReviewResult contains the output of a review operation.
 type ReviewResult struct {
 	ReportPath      string   `json:"reportPath"`

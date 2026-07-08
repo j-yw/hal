@@ -279,17 +279,18 @@ func (p *Pipeline) recordCIState(ci *CIState) {
 
 // RunOptions contains options for the pipeline Run method.
 type RunOptions struct {
-	Resume            bool   // Continue from last saved state
-	DryRun            bool   // Show what would happen without executing
-	SkipCI            bool   // Skip CI step (push + draft PR) at the end
-	CIPolicy          string // Factory CI policy; empty preserves required behavior
-	SkipReview        bool   // Skip review gate before CI
-	ReviewCleanStreak int    // Consecutive clean review cycles required to pass
-	ReviewMaxCycles   int    // Maximum review cycles before failing the gate
-	ReportPath        string // Specific report file to use (skips find latest)
-	SourceMarkdown    string // Positional markdown path (skips analyze/spec)
-	ConvertMode       string // Resolved convert mode for this run (standard|granular)
-	BaseBranch        string // Base branch for creating work branch / PR target
+	Resume             bool   // Continue from last saved state
+	DryRun             bool   // Show what would happen without executing
+	SkipCI             bool   // Skip CI step (push + draft PR) at the end
+	CIPolicy           string // Factory CI policy; empty preserves required behavior
+	RuntimeStatePolicy string // Factory runtime-state policy; empty preserves strict behavior
+	SkipReview         bool   // Skip review gate before CI
+	ReviewCleanStreak  int    // Consecutive clean review cycles required to pass
+	ReviewMaxCycles    int    // Maximum review cycles before failing the gate
+	ReportPath         string // Specific report file to use (skips find latest)
+	SourceMarkdown     string // Positional markdown path (skips analyze/spec)
+	ConvertMode        string // Resolved convert mode for this run (standard|granular)
+	BaseBranch         string // Base branch for creating work branch / PR target
 
 	MaxRunAttempts       int // Optional factory policy cap; 0 means no policy cap
 	MaxReviewFixAttempts int // Optional factory policy cap; 0 means no policy cap
@@ -1269,6 +1270,13 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 					}
 					state.Review.PendingFixes = false
 				}
+				if err := p.checkpointRuntimeStateForFinalVerification(ctx, opts); err != nil {
+					state.Review.Status = "failed"
+					if saveErr := p.saveState(state); saveErr != nil {
+						return fmt.Errorf("review gate blocked: final verification failed: %w (also failed to save state: %v)", err, saveErr)
+					}
+					return fmt.Errorf("review gate blocked: final verification failed: %w", err)
+				}
 				if err := p.runFinalVerification(ctx, state); err != nil {
 					state.Review.Status = "failed"
 					if saveErr := p.saveState(state); saveErr != nil {
@@ -1382,6 +1390,61 @@ func (p *Pipeline) finalizeReviewFixes(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (p *Pipeline) checkpointRuntimeStateForFinalVerification(ctx context.Context, opts RunOptions) error {
+	switch strings.ToLower(strings.TrimSpace(opts.RuntimeStatePolicy)) {
+	case "", RuntimeStatePolicyStrict:
+		return nil
+	case RuntimeStatePolicyCheckpointFactoryState:
+	default:
+		return fmt.Errorf("unsupported runtime state policy %q", opts.RuntimeStatePolicy)
+	}
+
+	paths, err := workingTreeChangesInDirFn(p.dir)
+	if err != nil {
+		return err
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+
+	unexpected := unexpectedFactoryRuntimeStatePaths(paths)
+	if len(unexpected) > 0 {
+		return fmt.Errorf("runtime state checkpoint blocked: unexpected dirty files: %s", strings.Join(unexpected, ", "))
+	}
+
+	p.display.ShowInfo("   Checkpointing Hal factory runtime state before final verification\n")
+	if err := gitAddAllInDirFn(ctx, p.dir); err != nil {
+		return fmt.Errorf("stage Hal factory runtime state checkpoint: %w", err)
+	}
+	if err := gitCommitInDirFn(ctx, p.dir, "chore: checkpoint Hal factory runtime state"); err != nil {
+		return fmt.Errorf("commit Hal factory runtime state checkpoint: %w", err)
+	}
+	return nil
+}
+
+func unexpectedFactoryRuntimeStatePaths(paths []string) []string {
+	unexpected := make([]string, 0)
+	for _, path := range paths {
+		if !isFactoryRuntimeStatePath(path) {
+			unexpected = append(unexpected, path)
+		}
+	}
+	return unexpected
+}
+
+func isFactoryRuntimeStatePath(path string) bool {
+	normalized := filepath.ToSlash(strings.TrimSpace(path))
+	normalized = strings.TrimPrefix(normalized, "./")
+	switch normalized {
+	case filepath.ToSlash(filepath.Join(template.HalDir, template.PRDFile)),
+		filepath.ToSlash(filepath.Join(template.HalDir, template.ProgressFile)),
+		filepath.ToSlash(filepath.Join(template.HalDir, template.AutoStateFile)):
+		return true
+	default:
+		return strings.HasPrefix(normalized, filepath.ToSlash(filepath.Join(template.HalDir, "archive"))+"/")
+	}
 }
 
 func (p *Pipeline) runFinalVerification(ctx context.Context, state *PipelineState) error {
