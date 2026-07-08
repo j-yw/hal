@@ -525,22 +525,26 @@ type FactoryArtifactsResponse struct {
 // hal factory recover <run-id> --json.
 type FactoryRecoverResponse struct {
 	ContractVersion string `json:"contractVersion"`
+	OK              bool   `json:"ok"`
 	RunID           string `json:"runId"`
 	Status          string `json:"status"`
 	BranchName      string `json:"branchName"`
 	RecoveredBundle string `json:"recoveredBundle,omitempty"`
+	Error           string `json:"error,omitempty"`
 }
 
 // FactoryPublishResponse is the machine-readable JSON output for
 // hal factory publish <run-id> --json.
 type FactoryPublishResponse struct {
 	ContractVersion string                   `json:"contractVersion"`
+	OK              bool                     `json:"ok"`
 	RunID           string                   `json:"runId"`
 	Status          string                   `json:"status"`
 	Policy          string                   `json:"policy"`
 	AllowUnverified bool                     `json:"allowUnverified,omitempty"`
 	BranchName      string                   `json:"branchName"`
 	Artifacts       []FactoryArtifactSummary `json:"artifacts,omitempty"`
+	Error           string                   `json:"error,omitempty"`
 }
 
 // FactoryArtifactSummary is the safe artifact list surface for one stored
@@ -2822,6 +2826,12 @@ func publishFactoryRunAfterVerifiedSuccess(ctx context.Context, store factory.St
 		return record, err
 	}
 
+	updatedRecord, err := ensureFactorySandboxRecoveryBundleForPublish(ctx, store, dir, req, record, deps, policy)
+	if err != nil {
+		return record, err
+	}
+	record = updatedRecord
+
 	branchName := strings.TrimSpace(record.BranchName)
 	recoveredBundle := ""
 	if req.Sandbox {
@@ -2840,7 +2850,7 @@ func publishFactoryRunAfterVerifiedSuccess(ctx context.Context, store factory.St
 	if err != nil {
 		return record, err
 	}
-	updatedRecord, err := recordFactoryPublishOutcomeArtifact(store, record, publishPolicy, recoveredBundle, result, redactor)
+	updatedRecord, err = recordFactoryPublishOutcomeArtifact(store, record, publishPolicy, recoveredBundle, result, redactor)
 	if err != nil {
 		return record, err
 	}
@@ -2848,6 +2858,48 @@ func publishFactoryRunAfterVerifiedSuccess(ctx context.Context, store factory.St
 		return updatedRecord, err
 	}
 	return updatedRecord, nil
+}
+
+func ensureFactorySandboxRecoveryBundleForPublish(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy) (factory.RunRecord, error) {
+	if !req.Sandbox || !factoryPublishPolicyRequiresHostArtifacts(policy) {
+		return record, nil
+	}
+	if updatedRecord, err := store.LoadRun(record.RunID); err != nil {
+		return record, fmt.Errorf("reload factory run before sandbox recovery artifact collection: %w", err)
+	} else if updatedRecord != nil {
+		record = *updatedRecord
+	}
+	if _, ok := factoryRunRecoveryBundleArtifact(record); ok {
+		return record, nil
+	}
+	if !factoryRunCanCollectSandboxArtifacts(deps) {
+		return record, nil
+	}
+	collectionRecord := record
+	collectionRecord.ExecutorMode = factory.ExecutorModeSandbox
+	if strings.TrimSpace(collectionRecord.SandboxName) == "" {
+		collectionRecord.SandboxName = strings.TrimSpace(req.SandboxName)
+	}
+	if err := collectAndStoreFactorySandboxArtifacts(ctx, store, dir, req, collectionRecord, deps); err != nil {
+		return record, fmt.Errorf("collect sandbox recovery artifacts before publish: %w", err)
+	}
+	updatedRecord, err := store.LoadRun(record.RunID)
+	if err != nil {
+		return record, fmt.Errorf("reload factory run after sandbox recovery artifact collection: %w", err)
+	}
+	if updatedRecord == nil {
+		return record, nil
+	}
+	return *updatedRecord, nil
+}
+
+func factoryRunCanCollectSandboxArtifacts(deps factoryRunDeps) bool {
+	if deps.sandboxCopier != nil {
+		return true
+	}
+	return deps.loadSandbox != nil &&
+		deps.resolveProvider != nil &&
+		(deps.runProviderExec != nil || deps.runProviderExecIO != nil)
 }
 
 func applyFactorySandboxRecoveryBundle(ctx context.Context, store factory.Store, dir string, record factory.RunRecord, deps factoryRunDeps) (string, string, error) {
@@ -5262,21 +5314,33 @@ func runFactoryRecoverWithDeps(ctx context.Context, out io.Writer, runID string,
 	if deps.runGit == nil {
 		return fmt.Errorf("factory recover git dependency is required")
 	}
+	fail := func(status string, err error) error {
+		if !jsonMode {
+			return err
+		}
+		return renderFactoryRecoverJSON(out, FactoryRecoverResponse{
+			ContractVersion: FactoryRecoverContractVersion,
+			OK:              false,
+			RunID:           runID,
+			Status:          status,
+			Error:           err.Error(),
+		})
+	}
 
 	store, err := deps.defaultStore()
 	if err != nil {
-		return fmt.Errorf("open factory store: %w", err)
+		return fail("", fmt.Errorf("open factory store: %w", err))
 	}
 	record, err := store.LoadRun(runID)
 	if errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("factory run %q not found", runID)
+		return fail("", fmt.Errorf("factory run %q not found", runID))
 	}
 	if err != nil {
-		return fmt.Errorf("load factory run %q: %w", runID, err)
+		return fail("", fmt.Errorf("load factory run %q: %w", runID, err))
 	}
 	dir, err := deps.workingDir()
 	if err != nil {
-		return fmt.Errorf("resolve working directory: %w", err)
+		return fail(record.Status, fmt.Errorf("resolve working directory: %w", err))
 	}
 
 	branchName, bundlePath, err := applyFactorySandboxRecoveryBundle(ctx, store, dir, *record, factoryRunDeps{
@@ -5284,10 +5348,11 @@ func runFactoryRecoverWithDeps(ctx context.Context, out io.Writer, runID string,
 		runGit: deps.runGit,
 	})
 	if err != nil {
-		return err
+		return fail(record.Status, err)
 	}
 	resp := FactoryRecoverResponse{
 		ContractVersion: FactoryRecoverContractVersion,
+		OK:              true,
 		RunID:           record.RunID,
 		Status:          record.Status,
 		BranchName:      branchName,
@@ -5325,32 +5390,46 @@ func runFactoryPublishWithDeps(ctx context.Context, out io.Writer, runID string,
 	if deps.runGit == nil {
 		return fmt.Errorf("factory publish git dependency is required")
 	}
+	fail := func(status string, err error) error {
+		if !req.JSON {
+			return err
+		}
+		return renderFactoryPublishJSON(out, FactoryPublishResponse{
+			ContractVersion: FactoryPublishContractVersion,
+			OK:              false,
+			RunID:           runID,
+			Status:          status,
+			Policy:          strings.ToLower(strings.TrimSpace(req.Policy)),
+			AllowUnverified: req.AllowUnverified,
+			Error:           err.Error(),
+		})
+	}
 
 	publishPolicy := strings.ToLower(strings.TrimSpace(req.Policy))
 	if publishPolicy == "" {
-		return fmt.Errorf("--policy is required and must be one of %s", strings.Join([]string{factory.PublishPolicyPush, factory.PublishPolicyPR}, ", "))
+		return fail("", fmt.Errorf("--policy is required and must be one of %s", strings.Join([]string{factory.PublishPolicyPush, factory.PublishPolicyPR}, ", ")))
 	}
 	if publishPolicy != factory.PublishPolicyPush && publishPolicy != factory.PublishPolicyPR {
-		return fmt.Errorf("--policy must be one of %s", strings.Join([]string{factory.PublishPolicyPush, factory.PublishPolicyPR}, ", "))
+		return fail("", fmt.Errorf("--policy must be one of %s", strings.Join([]string{factory.PublishPolicyPush, factory.PublishPolicyPR}, ", ")))
 	}
 
 	store, err := deps.defaultStore()
 	if err != nil {
-		return fmt.Errorf("open factory store: %w", err)
+		return fail("", fmt.Errorf("open factory store: %w", err))
 	}
 	record, err := store.LoadRun(runID)
 	if errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("factory run %q not found", runID)
+		return fail("", fmt.Errorf("factory run %q not found", runID))
 	}
 	if err != nil {
-		return fmt.Errorf("load factory run %q: %w", runID, err)
+		return fail("", fmt.Errorf("load factory run %q: %w", runID, err))
 	}
 	if !factoryRunIsVerifiedForManualPublish(*record) && !req.AllowUnverified {
-		return fmt.Errorf("factory run %q is %s and may be unverified; rerun with --allow-unverified to publish it", record.RunID, record.Status)
+		return fail(record.Status, fmt.Errorf("factory run %q is %s and may be unverified; rerun with --allow-unverified to publish it", record.RunID, record.Status))
 	}
 	dir, err := deps.workingDir()
 	if err != nil {
-		return fmt.Errorf("resolve working directory: %w", err)
+		return fail(record.Status, fmt.Errorf("resolve working directory: %w", err))
 	}
 
 	updatedRecord, err := publishFactoryRunAfterVerifiedSuccess(ctx, store, dir, factoryRunRequest{
@@ -5362,10 +5441,11 @@ func runFactoryPublishWithDeps(ctx context.Context, out io.Writer, runID string,
 		pushAndCreatePRInDir: deps.pushAndCreatePRInDir,
 	}, factory.FactoryPolicy{PublishPolicy: publishPolicy}, factory.RunSecretRedactor{})
 	if err != nil {
-		return err
+		return fail(record.Status, err)
 	}
 	resp := FactoryPublishResponse{
 		ContractVersion: FactoryPublishContractVersion,
+		OK:              true,
 		RunID:           updatedRecord.RunID,
 		Status:          updatedRecord.Status,
 		Policy:          publishPolicy,
