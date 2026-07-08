@@ -27,6 +27,7 @@ import (
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/prd"
+	"github.com/jywlabs/hal/internal/projectconfig"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/status"
 	"github.com/jywlabs/hal/internal/template"
@@ -422,6 +423,22 @@ type factoryRunRequest struct {
 	Secrets        []factory.RunSecretInput
 
 	ResolvedSecrets []factory.ResolvedRunSecret
+}
+
+type factoryRunConfigFlagChanges struct {
+	Base           bool
+	Sandbox        bool
+	SandboxName    bool
+	SandboxHost    bool
+	SandboxRuntime bool
+	PublishFrom    bool
+	SecretEnv      bool
+}
+
+type factoryPublishConfigFlagChanges struct {
+	Policy      bool
+	PublishFrom bool
+	SecretEnv   bool
 }
 
 type factoryRunAutoRequest struct {
@@ -5328,10 +5345,76 @@ func factoryRunAutoEngine(engineName string) string {
 	return engineName
 }
 
+func loadFactoryCommandConfig(projectDir string) (*projectconfig.Config, error) {
+	cfg, err := projectconfig.Load(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("load project config: %w", err)
+	}
+	return cfg, nil
+}
+
+func applyFactoryRunConfigDefaults(req factoryRunRequest, secretEnv []string, changes factoryRunConfigFlagChanges, cfg *projectconfig.Config) (factoryRunRequest, []string, factoryRunConfigFlagChanges) {
+	if cfg == nil {
+		return req, secretEnv, changes
+	}
+
+	defaults := cfg.Factory
+	if !changes.Base && defaults.Base.Set {
+		req.BaseBranch = defaults.Base.Value
+	}
+	if !changes.Sandbox && defaults.Executor.Set && defaults.Executor.Value == factory.ExecutorModeSandbox {
+		req.Sandbox = true
+	}
+	if !changes.PublishFrom && defaults.PublishFrom.Set {
+		req.PublishFrom = defaults.PublishFrom.Value
+		changes.PublishFrom = true
+	}
+	if !changes.SecretEnv && defaults.SecretEnv.Set {
+		secretEnv = append([]string(nil), defaults.SecretEnv.Value...)
+	}
+	if req.Sandbox {
+		if !changes.SandboxName && defaults.SandboxName.Set {
+			req.SandboxName = defaults.SandboxName.Value
+			changes.SandboxName = true
+		}
+		if !changes.SandboxHost && defaults.SandboxHost.Set {
+			req.SandboxHostID = defaults.SandboxHost.Value
+			changes.SandboxHost = true
+		}
+		if !changes.SandboxRuntime && defaults.SandboxRuntime.Set {
+			req.SandboxRuntime = defaults.SandboxRuntime.Value
+			changes.SandboxRuntime = true
+		}
+	}
+
+	return req, secretEnv, changes
+}
+
+func applyFactoryPublishConfigDefaults(req factoryPublishRequest, changes factoryPublishConfigFlagChanges, cfg *projectconfig.Config, policy *factory.FactoryPolicy) factoryPublishRequest {
+	if cfg != nil {
+		defaults := cfg.Factory
+		if !changes.PublishFrom && defaults.PublishFrom.Set {
+			req.PublishFrom = defaults.PublishFrom.Value
+		}
+		if !changes.SecretEnv && defaults.SecretEnv.Set {
+			req.SecretEnv = append([]string(nil), defaults.SecretEnv.Value...)
+		}
+	}
+	if !changes.Policy && policy != nil {
+		switch strings.TrimSpace(policy.PublishPolicy) {
+		case factory.PublishPolicyPush, factory.PublishPolicyPR:
+			req.Policy = policy.PublishPolicy
+		}
+	}
+	return req
+}
+
 func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRunRequest, error) {
 	reportPath := factoryRunReportFlag
 	baseBranch := factoryRunBaseFlag
 	secretEnv := append([]string(nil), factoryRunSecretEnvFlags...)
+	baseChanged := strings.TrimSpace(factoryRunBaseFlag) != ""
+	secretEnvChanged := len(factoryRunSecretEnvFlags) > 0
 	ciPolicy := factoryRunCIPolicyFlag
 	ciPolicyChanged := false
 	noCI := factoryRunNoCIFlag
@@ -5342,6 +5425,7 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 	publishFromChanged := false
 	jsonMode := factoryRunJSONFlag
 	sandboxMode := factoryRunSandboxFlag
+	sandboxChanged := factoryRunSandboxFlag
 	sandboxName := factoryRunSandboxNameFlag
 	sandboxNameChanged := false
 	sandboxHost := factoryRunSandboxHostFlag
@@ -5363,6 +5447,7 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 				return factoryRunRequest{}, err
 			}
 			baseBranch = value
+			baseChanged = cmd.Flags().Changed("base")
 		}
 		if cmd.Flags().Lookup("secret-env") != nil {
 			value, err := cmd.Flags().GetStringArray("secret-env")
@@ -5370,6 +5455,7 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 				return factoryRunRequest{}, err
 			}
 			secretEnv = value
+			secretEnvChanged = cmd.Flags().Changed("secret-env")
 		}
 		if cmd.Flags().Lookup("ci-policy") != nil {
 			value, err := cmd.Flags().GetString("ci-policy")
@@ -5416,6 +5502,7 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 				return factoryRunRequest{}, err
 			}
 			sandboxMode = value
+			sandboxChanged = cmd.Flags().Changed("sandbox")
 		}
 		if cmd.Flags().Lookup("sandbox-name") != nil {
 			value, err := cmd.Flags().GetString("sandbox-name")
@@ -5442,6 +5529,37 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 			sandboxRuntimeChanged = cmd.Flags().Changed(sandboxRuntimeFlagName)
 		}
 	}
+
+	cfg, err := loadFactoryCommandConfig(".")
+	if err != nil {
+		return factoryRunRequest{}, err
+	}
+	defaultedReq, secretEnv, defaultChanges := applyFactoryRunConfigDefaults(factoryRunRequest{
+		BaseBranch:     baseBranch,
+		PublishFrom:    publishFrom,
+		Sandbox:        sandboxMode,
+		SandboxName:    sandboxName,
+		SandboxHostID:  sandboxHost,
+		SandboxRuntime: sandboxRuntime,
+	}, secretEnv, factoryRunConfigFlagChanges{
+		Base:           baseChanged,
+		Sandbox:        sandboxChanged,
+		SandboxName:    sandboxNameChanged,
+		SandboxHost:    sandboxHostChanged,
+		SandboxRuntime: sandboxRuntimeChanged,
+		PublishFrom:    publishFromChanged,
+		SecretEnv:      secretEnvChanged,
+	}, cfg)
+	baseBranch = defaultedReq.BaseBranch
+	publishFrom = defaultedReq.PublishFrom
+	sandboxMode = defaultedReq.Sandbox
+	sandboxName = defaultedReq.SandboxName
+	sandboxNameChanged = defaultChanges.SandboxName
+	sandboxHost = defaultedReq.SandboxHostID
+	sandboxHostChanged = defaultChanges.SandboxHost
+	sandboxRuntime = defaultedReq.SandboxRuntime
+	sandboxRuntimeChanged = defaultChanges.SandboxRuntime
+	publishFromChanged = defaultChanges.PublishFrom
 
 	req, err := parseFactoryRunRequestWithTargetAndPublishFrom(args, reportPath, baseBranch, jsonMode, sandboxMode, sandboxTargetFlagValues{
 		HostID:         sandboxHost,
@@ -5788,62 +5906,97 @@ func runFactoryRecover(cmd *cobra.Command, args []string) error {
 
 func runFactoryPublish(cmd *cobra.Command, args []string) error {
 	out := io.Writer(os.Stdout)
-	policy := factoryPublishPolicyFlag
-	publishFrom := factoryPublishFromFlag
-	secretEnv := append([]string(nil), factoryPublishSecretEnvFlags...)
-	allowUnverified := factoryPublishAllowUnverifiedFlag
-	jsonMode := factoryPublishJSONFlag
-
 	if cmd != nil {
 		out = cmd.OutOrStdout()
-		if cmd.Flags().Lookup("policy") != nil {
-			value, err := cmd.Flags().GetString("policy")
-			if err != nil {
-				return err
-			}
-			policy = value
-		}
-		if cmd.Flags().Lookup("publish-from") != nil {
-			value, err := cmd.Flags().GetString("publish-from")
-			if err != nil {
-				return err
-			}
-			publishFrom = value
-		}
-		if cmd.Flags().Lookup("secret-env") != nil {
-			value, err := cmd.Flags().GetStringArray("secret-env")
-			if err != nil {
-				return err
-			}
-			secretEnv = value
-		}
-		if cmd.Flags().Lookup("allow-unverified") != nil {
-			value, err := cmd.Flags().GetBool("allow-unverified")
-			if err != nil {
-				return err
-			}
-			allowUnverified = value
-		}
-		if cmd.Flags().Lookup("json") != nil {
-			value, err := cmd.Flags().GetBool("json")
-			if err != nil {
-				return err
-			}
-			jsonMode = value
-		}
+	}
+
+	req, err := factoryPublishRequestFromCommand(cmd)
+	if err != nil {
+		return err
 	}
 
 	ctx := context.Background()
 	if cmd != nil {
 		ctx = cmd.Context()
 	}
-	return runFactoryPublishWithDeps(ctx, out, args[0], factoryPublishRequest{
+	return runFactoryPublishWithDeps(ctx, out, args[0], req, defaultFactoryPublishDeps)
+}
+
+func factoryPublishRequestFromCommand(cmd *cobra.Command) (factoryPublishRequest, error) {
+	policy := factoryPublishPolicyFlag
+	policyChanged := strings.TrimSpace(factoryPublishPolicyFlag) != ""
+	publishFrom := factoryPublishFromFlag
+	publishFromChanged := false
+	secretEnv := append([]string(nil), factoryPublishSecretEnvFlags...)
+	secretEnvChanged := len(factoryPublishSecretEnvFlags) > 0
+	allowUnverified := factoryPublishAllowUnverifiedFlag
+	jsonMode := factoryPublishJSONFlag
+
+	if cmd != nil {
+		if cmd.Flags().Lookup("policy") != nil {
+			value, err := cmd.Flags().GetString("policy")
+			if err != nil {
+				return factoryPublishRequest{}, err
+			}
+			policy = value
+			policyChanged = cmd.Flags().Changed("policy")
+		}
+		if cmd.Flags().Lookup("publish-from") != nil {
+			value, err := cmd.Flags().GetString("publish-from")
+			if err != nil {
+				return factoryPublishRequest{}, err
+			}
+			publishFrom = value
+			publishFromChanged = cmd.Flags().Changed("publish-from")
+		}
+		if cmd.Flags().Lookup("secret-env") != nil {
+			value, err := cmd.Flags().GetStringArray("secret-env")
+			if err != nil {
+				return factoryPublishRequest{}, err
+			}
+			secretEnv = value
+			secretEnvChanged = cmd.Flags().Changed("secret-env")
+		}
+		if cmd.Flags().Lookup("allow-unverified") != nil {
+			value, err := cmd.Flags().GetBool("allow-unverified")
+			if err != nil {
+				return factoryPublishRequest{}, err
+			}
+			allowUnverified = value
+		}
+		if cmd.Flags().Lookup("json") != nil {
+			value, err := cmd.Flags().GetBool("json")
+			if err != nil {
+				return factoryPublishRequest{}, err
+			}
+			jsonMode = value
+		}
+	}
+
+	cfg, err := loadFactoryCommandConfig(".")
+	if err != nil {
+		return factoryPublishRequest{}, err
+	}
+	var policyConfig *factory.FactoryPolicy
+	if !policyChanged {
+		policyConfig, err = factory.LoadPolicyConfig(".")
+		if err != nil {
+			return factoryPublishRequest{}, fmt.Errorf("load factory policy: %w", err)
+		}
+	}
+	req := factoryPublishRequest{
 		Policy:          policy,
 		PublishFrom:     publishFrom,
 		SecretEnv:       secretEnv,
 		AllowUnverified: allowUnverified,
 		JSON:            jsonMode,
-	}, defaultFactoryPublishDeps)
+	}
+	req = applyFactoryPublishConfigDefaults(req, factoryPublishConfigFlagChanges{
+		Policy:      policyChanged,
+		PublishFrom: publishFromChanged,
+		SecretEnv:   secretEnvChanged,
+	}, cfg, policyConfig)
+	return req, nil
 }
 
 func runFactoryLogsWithDeps(out io.Writer, runID string, jsonMode bool, deps factoryLogsDeps) error {

@@ -430,6 +430,103 @@ func TestFactoryTriggerRequestFromCommandRejectsSecretEnvAssignments(t *testing.
 	}
 }
 
+func TestFactoryTriggerRequestFromCommandLoadsProjectConfigDefaults(t *testing.T) {
+	repoDir := t.TempDir()
+	halDir := filepath.Join(repoDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "config.yaml", `
+factory:
+  defaults:
+    base: develop
+    executor: sandbox
+    secretEnv:
+      - GITHUB_TOKEN
+`)
+
+	cmd := newFactoryTriggerRequestTestCommand()
+	if err := cmd.Flags().Set("repo", repoDir); err != nil {
+		t.Fatalf("Set(repo) error: %v", err)
+	}
+	if err := cmd.Flags().Set("prd", ".hal/prd-feature.md"); err != nil {
+		t.Fatalf("Set(prd) error: %v", err)
+	}
+
+	req, err := factoryTriggerRequestFromCommand(cmd)
+	if err != nil {
+		t.Fatalf("factoryTriggerRequestFromCommand() unexpected error: %v", err)
+	}
+	if req.BaseBranch != "develop" {
+		t.Fatalf("BaseBranch = %q, want develop", req.BaseBranch)
+	}
+	if req.ExecutorMode != factory.ExecutorModeSandbox {
+		t.Fatalf("ExecutorMode = %q, want %q", req.ExecutorMode, factory.ExecutorModeSandbox)
+	}
+	wantSecrets := []factory.RunSecretInput{{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true}}
+	if !reflect.DeepEqual(req.Secrets, wantSecrets) {
+		t.Fatalf("Secrets = %#v, want %#v", req.Secrets, wantSecrets)
+	}
+}
+
+func TestFactoryTriggerRequestFromCommandCLIOverridesProjectConfigDefaults(t *testing.T) {
+	repoDir := t.TempDir()
+	halDir := filepath.Join(repoDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "config.yaml", `
+factory:
+  defaults:
+    base: develop
+    executor: sandbox
+    secretEnv:
+      - GITHUB_TOKEN
+`)
+
+	cmd := newFactoryTriggerRequestTestCommand()
+	for flag, value := range map[string]string{
+		"repo":       repoDir,
+		"prd":        ".hal/prd-feature.md",
+		"base":       "main",
+		"executor":   factory.ExecutorModeLocal,
+		"secret-env": "NPM_TOKEN",
+	} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("Set(%s) error: %v", flag, err)
+		}
+	}
+
+	req, err := factoryTriggerRequestFromCommand(cmd)
+	if err != nil {
+		t.Fatalf("factoryTriggerRequestFromCommand() unexpected error: %v", err)
+	}
+	if req.BaseBranch != "main" {
+		t.Fatalf("BaseBranch = %q, want main", req.BaseBranch)
+	}
+	if req.ExecutorMode != factory.ExecutorModeLocal {
+		t.Fatalf("ExecutorMode = %q, want %q", req.ExecutorMode, factory.ExecutorModeLocal)
+	}
+	wantSecrets := []factory.RunSecretInput{{Name: "NPM_TOKEN", Source: factory.RunSecretSourceEnv, Required: true}}
+	if !reflect.DeepEqual(req.Secrets, wantSecrets) {
+		t.Fatalf("Secrets = %#v, want %#v", req.Secrets, wantSecrets)
+	}
+}
+
+func newFactoryTriggerRequestTestCommand() *cobra.Command {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("repo", ".", "")
+	cmd.Flags().String("prd", "", "")
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().Bool("discover-report", false, "")
+	cmd.Flags().String("reports-dir", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().String("executor", factory.ExecutorModeLocal, "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().Bool("json", false, "")
+	return cmd
+}
+
 func TestRunFactoryTriggerWithDepsPersistsSecretRequirementsForQueueWorker(t *testing.T) {
 	repoDir := t.TempDir()
 	halDir := filepath.Join(repoDir, ".hal")

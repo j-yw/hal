@@ -19,6 +19,7 @@ import (
 	"github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/projectconfig"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/verify"
@@ -708,6 +709,170 @@ func TestFactoryRunRequestFromCommandRejectsTargetSelectionFlagsWithoutSandbox(t
 	if !strings.Contains(err.Error(), "--sandbox-runtime requires --sandbox") {
 		t.Fatalf("error = %q, want sandbox-runtime require sandbox", err.Error())
 	}
+}
+
+func TestFactoryRunRequestFromCommandLoadsProjectConfigDefaults(t *testing.T) {
+	chdirFactoryConfigTestProject(t, `
+factory:
+  defaults:
+    base: develop
+    executor: sandbox
+    sandboxName: dev
+    sandboxHost: local-worker
+    sandboxRuntime: ssh_machine
+    publishFrom: sandbox
+    secretEnv:
+      - GITHUB_TOKEN
+`)
+
+	cmd := newFactoryRunRequestTestCommand()
+	req, err := factoryRunRequestFromCommand(cmd, []string{".hal/prd-feature.md"})
+	if err != nil {
+		t.Fatalf("factoryRunRequestFromCommand() unexpected error: %v", err)
+	}
+	if req.BaseBranch != "develop" {
+		t.Fatalf("BaseBranch = %q, want develop", req.BaseBranch)
+	}
+	if !req.Sandbox {
+		t.Fatal("Sandbox = false, want true from factory.defaults.executor")
+	}
+	if req.SandboxName != "dev" {
+		t.Fatalf("SandboxName = %q, want dev", req.SandboxName)
+	}
+	if req.SandboxHostID != "local-worker" {
+		t.Fatalf("SandboxHostID = %q, want local-worker", req.SandboxHostID)
+	}
+	if req.SandboxRuntime != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("SandboxRuntime = %q, want %q", req.SandboxRuntime, sandboxruntime.DriverSSHMachine)
+	}
+	if req.PublishFrom != factory.PublishRunnerSandbox {
+		t.Fatalf("PublishFrom = %q, want %q", req.PublishFrom, factory.PublishRunnerSandbox)
+	}
+	wantSecrets := []factory.RunSecretInput{{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true}}
+	if !reflect.DeepEqual(req.Secrets, wantSecrets) {
+		t.Fatalf("Secrets = %#v, want %#v", req.Secrets, wantSecrets)
+	}
+}
+
+func TestFactoryRunRequestFromCommandCLIOverridesProjectConfigDefaults(t *testing.T) {
+	chdirFactoryConfigTestProject(t, `
+factory:
+  defaults:
+    base: develop
+    executor: sandbox
+    publishFrom: sandbox
+    secretEnv:
+      - GITHUB_TOKEN
+`)
+
+	cmd := newFactoryRunRequestTestCommand()
+	for flag, value := range map[string]string{
+		"base":         "main",
+		"sandbox":      "false",
+		"publish-from": factory.PublishRunnerHost,
+		"secret-env":   "NPM_TOKEN",
+	} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("Set(%s) error: %v", flag, err)
+		}
+	}
+
+	req, err := factoryRunRequestFromCommand(cmd, []string{".hal/prd-feature.md"})
+	if err != nil {
+		t.Fatalf("factoryRunRequestFromCommand() unexpected error: %v", err)
+	}
+	if req.BaseBranch != "main" {
+		t.Fatalf("BaseBranch = %q, want main", req.BaseBranch)
+	}
+	if req.Sandbox {
+		t.Fatal("Sandbox = true, want explicit CLI false to win over config executor")
+	}
+	if req.PublishFrom != factory.PublishRunnerHost {
+		t.Fatalf("PublishFrom = %q, want %q", req.PublishFrom, factory.PublishRunnerHost)
+	}
+	wantSecrets := []factory.RunSecretInput{{Name: "NPM_TOKEN", Source: factory.RunSecretSourceEnv, Required: true}}
+	if !reflect.DeepEqual(req.Secrets, wantSecrets) {
+		t.Fatalf("Secrets = %#v, want %#v", req.Secrets, wantSecrets)
+	}
+}
+
+func TestApplyFactoryRunConfigDefaultsKeepsSandboxTargetCLIOverrides(t *testing.T) {
+	cfg := &projectconfig.Config{Factory: projectconfig.FactoryDefaults{
+		SandboxName:    projectconfig.Value[string]{Value: "config-dev", Set: true},
+		SandboxHost:    projectconfig.Value[string]{Value: "config-worker", Set: true},
+		SandboxRuntime: projectconfig.Value[string]{Value: sandboxruntime.DriverSSHMachine, Set: true},
+	}}
+	req, _, _ := applyFactoryRunConfigDefaults(factoryRunRequest{
+		Sandbox:        true,
+		SandboxName:    "cli-dev",
+		SandboxHostID:  "cli-worker",
+		SandboxRuntime: sandboxruntime.DriverRootlessPodman,
+	}, nil, factoryRunConfigFlagChanges{
+		Sandbox:        true,
+		SandboxName:    true,
+		SandboxHost:    true,
+		SandboxRuntime: true,
+	}, cfg)
+
+	if req.SandboxName != "cli-dev" {
+		t.Fatalf("SandboxName = %q, want cli-dev", req.SandboxName)
+	}
+	if req.SandboxHostID != "cli-worker" {
+		t.Fatalf("SandboxHostID = %q, want cli-worker", req.SandboxHostID)
+	}
+	if req.SandboxRuntime != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("SandboxRuntime = %q, want %q", req.SandboxRuntime, sandboxruntime.DriverRootlessPodman)
+	}
+}
+
+func newFactoryRunRequestTestCommand() *cobra.Command {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().String("ci-policy", "", "")
+	cmd.Flags().Bool("no-ci", false, "")
+	cmd.Flags().String("publish", "", "")
+	cmd.Flags().String("publish-from", factory.PublishRunnerHost, "")
+	cmd.Flags().Bool("sandbox", false, "")
+	cmd.Flags().String("sandbox-name", "", "")
+	cmd.Flags().String(sandboxHostFlagName, "", "")
+	cmd.Flags().String(sandboxRuntimeFlagName, "", "")
+	cmd.Flags().Bool("json", false, "")
+	return cmd
+}
+
+func newFactoryPublishRequestTestCommand() *cobra.Command {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("policy", "", "")
+	cmd.Flags().String("publish-from", factory.PublishRunnerHost, "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().Bool("allow-unverified", false, "")
+	cmd.Flags().Bool("json", false, "")
+	return cmd
+}
+
+func chdirFactoryConfigTestProject(t *testing.T, config string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "config.yaml", strings.TrimLeft(config, "\n"))
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir config project: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(cwd)
+	})
+	return dir
 }
 
 func TestFactoryRunArgsValidationRejectsReportWithPositionalBeforeExecution(t *testing.T) {
@@ -2769,6 +2934,94 @@ func TestRunFactoryRecoverJSONReportsMissingRecoveryBundle(t *testing.T) {
 	}
 	if resp.ContractVersion != FactoryRecoverContractVersion || resp.OK || !strings.Contains(resp.Error, "recovery bundle artifact is unavailable") {
 		t.Fatalf("recover error response = %#v", resp)
+	}
+}
+
+func TestFactoryPublishRequestFromCommandLoadsProjectConfigDefaults(t *testing.T) {
+	chdirFactoryConfigTestProject(t, `
+factory:
+  defaults:
+    publishFrom: sandbox
+    secretEnv:
+      - GITHUB_TOKEN
+  policy:
+    publishPolicy: pr
+`)
+
+	req, err := factoryPublishRequestFromCommand(newFactoryPublishRequestTestCommand())
+	if err != nil {
+		t.Fatalf("factoryPublishRequestFromCommand() unexpected error: %v", err)
+	}
+	if req.Policy != factory.PublishPolicyPR {
+		t.Fatalf("Policy = %q, want %q", req.Policy, factory.PublishPolicyPR)
+	}
+	if req.PublishFrom != factory.PublishRunnerSandbox {
+		t.Fatalf("PublishFrom = %q, want %q", req.PublishFrom, factory.PublishRunnerSandbox)
+	}
+	if !reflect.DeepEqual(req.SecretEnv, []string{"GITHUB_TOKEN"}) {
+		t.Fatalf("SecretEnv = %#v, want GITHUB_TOKEN", req.SecretEnv)
+	}
+	if req.AllowUnverified {
+		t.Fatal("AllowUnverified = true, want flag-only false default")
+	}
+}
+
+func TestFactoryPublishRequestFromCommandCLIOverridesProjectConfigDefaults(t *testing.T) {
+	chdirFactoryConfigTestProject(t, `
+factory:
+  defaults:
+    publishFrom: sandbox
+    secretEnv:
+      - GITHUB_TOKEN
+  policy:
+    publishPolicy: pr
+`)
+
+	cmd := newFactoryPublishRequestTestCommand()
+	for flag, value := range map[string]string{
+		"policy":       factory.PublishPolicyPush,
+		"publish-from": factory.PublishRunnerHost,
+		"secret-env":   "NPM_TOKEN",
+	} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("Set(%s) error: %v", flag, err)
+		}
+	}
+	if err := cmd.Flags().Set("allow-unverified", "true"); err != nil {
+		t.Fatalf("Set(allow-unverified) error: %v", err)
+	}
+
+	req, err := factoryPublishRequestFromCommand(cmd)
+	if err != nil {
+		t.Fatalf("factoryPublishRequestFromCommand() unexpected error: %v", err)
+	}
+	if req.Policy != factory.PublishPolicyPush {
+		t.Fatalf("Policy = %q, want %q", req.Policy, factory.PublishPolicyPush)
+	}
+	if req.PublishFrom != factory.PublishRunnerHost {
+		t.Fatalf("PublishFrom = %q, want %q", req.PublishFrom, factory.PublishRunnerHost)
+	}
+	if !reflect.DeepEqual(req.SecretEnv, []string{"NPM_TOKEN"}) {
+		t.Fatalf("SecretEnv = %#v, want NPM_TOKEN", req.SecretEnv)
+	}
+	if !req.AllowUnverified {
+		t.Fatal("AllowUnverified = false, want explicit CLI true")
+	}
+}
+
+func TestFactoryPublishRequestFromCommandIgnoresPolicyNoneDefault(t *testing.T) {
+	chdirFactoryConfigTestProject(t, `
+factory:
+  policy:
+    publishPolicy: none
+`)
+
+	req, err := factoryPublishRequestFromCommand(newFactoryPublishRequestTestCommand())
+	if err != nil {
+		t.Fatalf("factoryPublishRequestFromCommand() unexpected error: %v", err)
+	}
+	if req.Policy != "" {
+		t.Fatalf("Policy = %q, want empty so --policy remains required", req.Policy)
 	}
 }
 
