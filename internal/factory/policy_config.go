@@ -13,6 +13,7 @@ type rawPolicyConfig struct {
 	SandboxRequired                 *bool                                                     `yaml:"sandboxRequired"`
 	AllowedEngines                  *[]string                                                 `yaml:"allowedEngines"`
 	MaxRunAttempts                  *int                                                      `yaml:"maxRunAttempts"`
+	MaxCommandRetries               *int                                                      `yaml:"maxCommandRetries"`
 	MaxReviewFixAttempts            *int                                                      `yaml:"maxReviewFixAttempts"`
 	MaxCIFixAttempts                *int                                                      `yaml:"maxCiFixAttempts"`
 	VerificationRequired            *bool                                                     `yaml:"verificationRequired"`
@@ -66,6 +67,9 @@ func mergePolicyConfig(policy *FactoryPolicy, raw rawPolicyConfig) {
 	}
 	if raw.MaxRunAttempts != nil {
 		policy.MaxRunAttempts = *raw.MaxRunAttempts
+	}
+	if raw.MaxCommandRetries != nil {
+		policy.MaxCommandRetries = *raw.MaxCommandRetries
 	}
 	if raw.MaxReviewFixAttempts != nil {
 		policy.MaxReviewFixAttempts = *raw.MaxReviewFixAttempts

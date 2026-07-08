@@ -23,6 +23,9 @@ func TestDefaultFactoryPolicy(t *testing.T) {
 	if policy.MaxRunAttempts != 0 {
 		t.Errorf("MaxRunAttempts = %d, want 0", policy.MaxRunAttempts)
 	}
+	if policy.MaxCommandRetries != 0 {
+		t.Errorf("MaxCommandRetries = %d, want 0", policy.MaxCommandRetries)
+	}
 	if policy.MaxReviewFixAttempts != 0 {
 		t.Errorf("MaxReviewFixAttempts = %d, want 0", policy.MaxReviewFixAttempts)
 	}
@@ -70,6 +73,13 @@ func TestFactoryPolicyValidateRejectsInvalidValues(t *testing.T) {
 				policy.MaxRunAttempts = -1
 			},
 			wantErr: "factory.policy.maxRunAttempts must be greater than or equal to 0",
+		},
+		{
+			name: "negative max command retries",
+			mutate: func(policy *FactoryPolicy) {
+				policy.MaxCommandRetries = -1
+			},
+			wantErr: "factory.policy.maxCommandRetries must be greater than or equal to 0",
 		},
 		{
 			name: "negative max review fix attempts",
@@ -321,6 +331,7 @@ func TestLoadPolicyConfigPreservesExplicitStrictValues(t *testing.T) {
     allowedEngines:
       - codex
     maxRunAttempts: 2
+    maxCommandRetries: 5
     maxReviewFixAttempts: 3
     maxCiFixAttempts: 4
     verificationRequired: true
@@ -341,6 +352,7 @@ func TestLoadPolicyConfigPreservesExplicitStrictValues(t *testing.T) {
 		SandboxRequired:                 true,
 		AllowedEngines:                  []string{PolicyEngineCodex},
 		MaxRunAttempts:                  2,
+		MaxCommandRetries:               5,
 		MaxReviewFixAttempts:            3,
 		MaxCIFixAttempts:                4,
 		VerificationRequired:            true,
@@ -361,6 +373,7 @@ func TestLoadPolicyConfigPreservesExplicitZeroAndEmptyValues(t *testing.T) {
     sandboxRequired: false
     allowedEngines: []
     maxRunAttempts: 0
+    maxCommandRetries: 0
     maxReviewFixAttempts: 0
     maxCiFixAttempts: 0
     verificationRequired: false
@@ -381,6 +394,7 @@ func TestLoadPolicyConfigPreservesExplicitZeroAndEmptyValues(t *testing.T) {
 		SandboxRequired:      false,
 		AllowedEngines:       []string{},
 		MaxRunAttempts:       0,
+		MaxCommandRetries:    0,
 		MaxReviewFixAttempts: 0,
 		MaxCIFixAttempts:     0,
 		VerificationRequired: false,
@@ -447,6 +461,14 @@ func TestLoadPolicyConfigRejectsInvalidConfiguredValues(t *testing.T) {
     maxRunAttempts: -1
 `,
 			wantErr: "factory.policy.maxRunAttempts",
+		},
+		{
+			name: "negative command retry limit",
+			yaml: `factory:
+  policy:
+    maxCommandRetries: -1
+`,
+			wantErr: "factory.policy.maxCommandRetries",
 		},
 		{
 			name: "unsupported engine",

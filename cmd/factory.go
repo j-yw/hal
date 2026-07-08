@@ -40,6 +40,8 @@ const (
 	FactoryStatusContractVersion    = "factory-status-v1"
 	FactoryArtifactsContractVersion = "factory-artifacts-v1"
 	FactoryLogsContractVersion      = "factory-logs-v1"
+	FactoryRecoverContractVersion   = "factory-recover-v1"
+	FactoryPublishContractVersion   = "factory-publish-v1"
 )
 
 var factoryListJSONFlag bool
@@ -59,6 +61,10 @@ var factoryRunSandboxHostFlag string
 var factoryRunSandboxRuntimeFlag string
 var factoryOpenExecFlag bool
 var factoryOpenJSONFlag bool
+var factoryRecoverJSONFlag bool
+var factoryPublishPolicyFlag string
+var factoryPublishAllowUnverifiedFlag bool
+var factoryPublishJSONFlag bool
 
 var factoryCmd = &cobra.Command{
 	Use:   "factory",
@@ -164,6 +170,30 @@ contract. Log text is sanitized before display.`,
 	RunE: runFactoryLogs,
 }
 
+var factoryRecoverCmd = &cobra.Command{
+	Use:   "recover <run-id>",
+	Short: "Apply a stored sandbox recovery bundle locally",
+	Args:  exactArgsValidation(1),
+	Long: `Apply the recovery bundle collected from a stored sandbox factory run
+to the current local repository. This command does not push a branch or create
+a pull request.`,
+	Example: `  hal factory recover run-20260620-001
+  hal factory recover run-20260620-001 --json`,
+	RunE: runFactoryRecover,
+}
+
+var factoryPublishCmd = &cobra.Command{
+	Use:   "publish <run-id>",
+	Short: "Publish a stored factory run",
+	Args:  exactArgsValidation(1),
+	Long: `Publish the branch associated with a stored factory run. Succeeded runs can
+be published directly. Failed or incomplete runs require --allow-unverified so
+the operator explicitly acknowledges the unverified result.`,
+	Example: `  hal factory publish run-20260620-001 --policy push
+  hal factory publish run-20260620-001 --allow-unverified --policy pr --json`,
+	RunE: runFactoryPublish,
+}
+
 func init() {
 	factoryRunCmd.Flags().StringVar(&factoryRunReportFlag, "report", "", "Start from an analysis report path")
 	factoryRunCmd.Flags().StringVar(&factoryRunBaseFlag, "base", "", "Target base branch for follow-up review or CI")
@@ -182,6 +212,10 @@ func init() {
 	factoryLogsCmd.Flags().BoolVar(&factoryLogsJSONFlag, "json", false, "Output machine-readable JSON (factory-logs-v1 contract)")
 	factoryOpenCmd.Flags().BoolVar(&factoryOpenExecFlag, "exec", false, "Execute the suggested inspection or resume command")
 	factoryOpenCmd.Flags().BoolVar(&factoryOpenJSONFlag, "json", false, "Output machine-readable JSON (factory-open-v1 contract)")
+	factoryRecoverCmd.Flags().BoolVar(&factoryRecoverJSONFlag, "json", false, "Output machine-readable JSON (factory-recover-v1 contract)")
+	factoryPublishCmd.Flags().StringVar(&factoryPublishPolicyFlag, "policy", "", "Publish policy for stored run (push, pr)")
+	factoryPublishCmd.Flags().BoolVar(&factoryPublishAllowUnverifiedFlag, "allow-unverified", false, "Allow publishing a failed or incomplete stored run")
+	factoryPublishCmd.Flags().BoolVar(&factoryPublishJSONFlag, "json", false, "Output machine-readable JSON (factory-publish-v1 contract)")
 	configureFactoryTriggerCommand()
 	configureFactoryQueueCommands()
 	factoryCmd.AddCommand(factoryRunCmd)
@@ -190,6 +224,8 @@ func init() {
 	factoryCmd.AddCommand(factoryLogsCmd)
 	factoryCmd.AddCommand(factoryOpenCmd)
 	factoryCmd.AddCommand(factoryArtifactsCmd)
+	factoryCmd.AddCommand(factoryRecoverCmd)
+	factoryCmd.AddCommand(factoryPublishCmd)
 	factoryCmd.AddCommand(factoryTriggerCmd)
 	factoryCmd.AddCommand(factoryQueueCmd)
 	rootCmd.AddCommand(factoryCmd)
@@ -225,6 +261,36 @@ type factoryLogsDeps struct {
 
 var defaultFactoryLogsDeps = factoryLogsDeps{
 	defaultStore: factory.DefaultStore,
+}
+
+type factoryRecoverDeps struct {
+	defaultStore func() (factory.Store, error)
+	workingDir   func() (string, error)
+	now          func() time.Time
+	runGit       func(context.Context, string, ...string) (string, error)
+}
+
+var defaultFactoryRecoverDeps = factoryRecoverDeps{
+	defaultStore: factory.DefaultStore,
+	workingDir:   os.Getwd,
+	now:          time.Now,
+	runGit:       runFactoryGitInDir,
+}
+
+type factoryPublishDeps struct {
+	defaultStore         func() (factory.Store, error)
+	workingDir           func() (string, error)
+	now                  func() time.Time
+	runGit               func(context.Context, string, ...string) (string, error)
+	pushAndCreatePRInDir func(context.Context, string, ci.PushOptions) (ci.PushResult, error)
+}
+
+var defaultFactoryPublishDeps = factoryPublishDeps{
+	defaultStore:         factory.DefaultStore,
+	workingDir:           os.Getwd,
+	now:                  time.Now,
+	runGit:               runFactoryGitInDir,
+	pushAndCreatePRInDir: ci.PushAndCreatePRInDir,
 }
 
 type factoryRunDeps struct {
@@ -448,6 +514,28 @@ type FactoryArtifactsResponse struct {
 	Artifacts       []FactoryArtifactSummary `json:"artifacts"`
 	Warnings        []string                 `json:"warnings"`
 	Summary         FactoryArtifactsSummary  `json:"summary"`
+}
+
+// FactoryRecoverResponse is the machine-readable JSON output for
+// hal factory recover <run-id> --json.
+type FactoryRecoverResponse struct {
+	ContractVersion string `json:"contractVersion"`
+	RunID           string `json:"runId"`
+	Status          string `json:"status"`
+	BranchName      string `json:"branchName"`
+	RecoveredBundle string `json:"recoveredBundle,omitempty"`
+}
+
+// FactoryPublishResponse is the machine-readable JSON output for
+// hal factory publish <run-id> --json.
+type FactoryPublishResponse struct {
+	ContractVersion string                   `json:"contractVersion"`
+	RunID           string                   `json:"runId"`
+	Status          string                   `json:"status"`
+	Policy          string                   `json:"policy"`
+	AllowUnverified bool                     `json:"allowUnverified,omitempty"`
+	BranchName      string                   `json:"branchName"`
+	Artifacts       []FactoryArtifactSummary `json:"artifacts,omitempty"`
 }
 
 // FactoryArtifactSummary is the safe artifact list surface for one stored
@@ -714,7 +802,10 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		failedAt := deps.now()
 		failedRecord := runningRecord
 		var recordErrs []error
-		collectSandboxArtifacts := !sandboxArtifactsCollected && deps.sandboxCopier != nil
+		if currentRecord, loadErr := store.LoadRun(runningRecord.RunID); loadErr == nil && currentRecord != nil {
+			failedRecord = *currentRecord
+		}
+		collectSandboxArtifacts := !sandboxArtifactsCollected && failedRecord.ExecutorMode == factory.ExecutorModeSandbox
 		if artifactRecord, artifactErr := recordFactoryRunArtifacts(ctx, store, runningRecord.RunID, dir, req, artifactSnapshot, failedAt, deps, collectSandboxArtifacts, redactor); artifactErr != nil {
 			recordErrs = append(recordErrs, fmt.Errorf("record factory artifacts: %w", artifactErr))
 		} else {
@@ -749,7 +840,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		}
 		runErr = redactFactoryRunError(runErr, redactor)
 		if len(recordErrs) > 0 {
-			return factoryRunExecutionResult{Record: failedRecord}, redactFactoryRunJoinedError(runErr, recordErrs, redactor)
+			return factoryRunExecutionResult{Record: failedRecord, Render: true}, redactFactoryRunJoinedError(runErr, recordErrs, redactor)
 		}
 		return factoryRunExecutionResult{Record: failedRecord, Render: true}, runErr
 	}
@@ -3137,6 +3228,16 @@ func defaultFactorySandboxArtifactRequests(_ string, record factory.RunRecord) [
 			Summary:    summary,
 		},
 		{
+			ID:         "sandbox-recovery",
+			Name:       "sandbox-recovery",
+			Type:       "directory",
+			RemotePath: filepath.ToSlash(filepath.Join(template.HalDir, "recovery")),
+			Path:       filepath.ToSlash(filepath.Join(template.HalDir, "recovery")),
+			Directory:  true,
+			Optional:   true,
+			Summary:    factorySandboxArtifactSummary(summary, "outcomeKind", "recovery_directory"),
+		},
+		{
 			ID:         "sandbox-recovery-patch",
 			Name:       "sandbox-recovery-patch",
 			Type:       "patch",
@@ -4943,6 +5044,70 @@ func runFactoryLogs(cmd *cobra.Command, args []string) error {
 	return runFactoryLogsWithDeps(out, args[0], jsonMode, defaultFactoryLogsDeps)
 }
 
+func runFactoryRecover(cmd *cobra.Command, args []string) error {
+	out := io.Writer(os.Stdout)
+	jsonMode := factoryRecoverJSONFlag
+
+	if cmd != nil {
+		out = cmd.OutOrStdout()
+		if cmd.Flags().Lookup("json") != nil {
+			value, err := cmd.Flags().GetBool("json")
+			if err != nil {
+				return err
+			}
+			jsonMode = value
+		}
+	}
+
+	ctx := context.Background()
+	if cmd != nil {
+		ctx = cmd.Context()
+	}
+	return runFactoryRecoverWithDeps(ctx, out, args[0], jsonMode, defaultFactoryRecoverDeps)
+}
+
+func runFactoryPublish(cmd *cobra.Command, args []string) error {
+	out := io.Writer(os.Stdout)
+	policy := factoryPublishPolicyFlag
+	allowUnverified := factoryPublishAllowUnverifiedFlag
+	jsonMode := factoryPublishJSONFlag
+
+	if cmd != nil {
+		out = cmd.OutOrStdout()
+		if cmd.Flags().Lookup("policy") != nil {
+			value, err := cmd.Flags().GetString("policy")
+			if err != nil {
+				return err
+			}
+			policy = value
+		}
+		if cmd.Flags().Lookup("allow-unverified") != nil {
+			value, err := cmd.Flags().GetBool("allow-unverified")
+			if err != nil {
+				return err
+			}
+			allowUnverified = value
+		}
+		if cmd.Flags().Lookup("json") != nil {
+			value, err := cmd.Flags().GetBool("json")
+			if err != nil {
+				return err
+			}
+			jsonMode = value
+		}
+	}
+
+	ctx := context.Background()
+	if cmd != nil {
+		ctx = cmd.Context()
+	}
+	return runFactoryPublishWithDeps(ctx, out, args[0], factoryPublishRequest{
+		Policy:          policy,
+		AllowUnverified: allowUnverified,
+		JSON:            jsonMode,
+	}, defaultFactoryPublishDeps)
+}
+
 func runFactoryLogsWithDeps(out io.Writer, runID string, jsonMode bool, deps factoryLogsDeps) error {
 	if out == nil {
 		out = io.Discard
@@ -4971,6 +5136,147 @@ func runFactoryLogsWithDeps(out io.Writer, runID string, jsonMode bool, deps fac
 	}
 	renderFactoryLogsTable(out, runID, chunks)
 	return nil
+}
+
+func runFactoryRecoverWithDeps(ctx context.Context, out io.Writer, runID string, jsonMode bool, deps factoryRecoverDeps) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if out == nil {
+		out = io.Discard
+	}
+	if deps.defaultStore == nil {
+		return fmt.Errorf("factory store dependency is required")
+	}
+	if deps.workingDir == nil {
+		return fmt.Errorf("factory recover working directory dependency is required")
+	}
+	if deps.now == nil {
+		deps.now = time.Now
+	}
+	if deps.runGit == nil {
+		return fmt.Errorf("factory recover git dependency is required")
+	}
+
+	store, err := deps.defaultStore()
+	if err != nil {
+		return fmt.Errorf("open factory store: %w", err)
+	}
+	record, err := store.LoadRun(runID)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("factory run %q not found", runID)
+	}
+	if err != nil {
+		return fmt.Errorf("load factory run %q: %w", runID, err)
+	}
+	dir, err := deps.workingDir()
+	if err != nil {
+		return fmt.Errorf("resolve working directory: %w", err)
+	}
+
+	branchName, bundlePath, err := applyFactorySandboxRecoveryBundle(ctx, store, dir, *record, factoryRunDeps{
+		now:    deps.now,
+		runGit: deps.runGit,
+	})
+	if err != nil {
+		return err
+	}
+	resp := FactoryRecoverResponse{
+		ContractVersion: FactoryRecoverContractVersion,
+		RunID:           record.RunID,
+		Status:          record.Status,
+		BranchName:      branchName,
+		RecoveredBundle: bundlePath,
+	}
+	if jsonMode {
+		return renderFactoryRecoverJSON(out, resp)
+	}
+	_, err = fmt.Fprintf(out, "Recovered run %s onto branch %s\n", resp.RunID, resp.BranchName)
+	return err
+}
+
+type factoryPublishRequest struct {
+	Policy          string
+	AllowUnverified bool
+	JSON            bool
+}
+
+func runFactoryPublishWithDeps(ctx context.Context, out io.Writer, runID string, req factoryPublishRequest, deps factoryPublishDeps) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if out == nil {
+		out = io.Discard
+	}
+	if deps.defaultStore == nil {
+		return fmt.Errorf("factory store dependency is required")
+	}
+	if deps.workingDir == nil {
+		return fmt.Errorf("factory publish working directory dependency is required")
+	}
+	if deps.now == nil {
+		deps.now = time.Now
+	}
+	if deps.runGit == nil {
+		return fmt.Errorf("factory publish git dependency is required")
+	}
+
+	publishPolicy := strings.ToLower(strings.TrimSpace(req.Policy))
+	if publishPolicy == "" {
+		return fmt.Errorf("--policy is required and must be one of %s", strings.Join([]string{factory.PublishPolicyPush, factory.PublishPolicyPR}, ", "))
+	}
+	if publishPolicy != factory.PublishPolicyPush && publishPolicy != factory.PublishPolicyPR {
+		return fmt.Errorf("--policy must be one of %s", strings.Join([]string{factory.PublishPolicyPush, factory.PublishPolicyPR}, ", "))
+	}
+
+	store, err := deps.defaultStore()
+	if err != nil {
+		return fmt.Errorf("open factory store: %w", err)
+	}
+	record, err := store.LoadRun(runID)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("factory run %q not found", runID)
+	}
+	if err != nil {
+		return fmt.Errorf("load factory run %q: %w", runID, err)
+	}
+	if !factoryRunIsVerifiedForManualPublish(*record) && !req.AllowUnverified {
+		return fmt.Errorf("factory run %q is %s and may be unverified; rerun with --allow-unverified to publish it", record.RunID, record.Status)
+	}
+	dir, err := deps.workingDir()
+	if err != nil {
+		return fmt.Errorf("resolve working directory: %w", err)
+	}
+
+	updatedRecord, err := publishFactoryRunAfterVerifiedSuccess(ctx, store, dir, factoryRunRequest{
+		Sandbox:    record.ExecutorMode == factory.ExecutorModeSandbox,
+		BaseBranch: record.BaseBranch,
+	}, *record, factoryRunDeps{
+		now:                  deps.now,
+		runGit:               deps.runGit,
+		pushAndCreatePRInDir: deps.pushAndCreatePRInDir,
+	}, factory.FactoryPolicy{PublishPolicy: publishPolicy}, factory.RunSecretRedactor{})
+	if err != nil {
+		return err
+	}
+	resp := FactoryPublishResponse{
+		ContractVersion: FactoryPublishContractVersion,
+		RunID:           updatedRecord.RunID,
+		Status:          updatedRecord.Status,
+		Policy:          publishPolicy,
+		AllowUnverified: req.AllowUnverified,
+		BranchName:      strings.TrimSpace(updatedRecord.BranchName),
+		Artifacts:       newFactoryArtifactSummaries(updatedRecord.Artifacts),
+	}
+	if req.JSON {
+		return renderFactoryPublishJSON(out, resp)
+	}
+	_, err = fmt.Fprintf(out, "Published run %s with policy %s on branch %s\n", resp.RunID, resp.Policy, resp.BranchName)
+	return err
+}
+
+func factoryRunIsVerifiedForManualPublish(record factory.RunRecord) bool {
+	return record.Status == factory.RunStatusSucceeded || record.Status == factory.RunStatusSucceededWithWarnings
 }
 
 func runFactoryArtifactsWithDeps(out io.Writer, runID string, jsonMode bool, deps factoryArtifactsDeps) error {
@@ -5341,6 +5647,27 @@ func renderFactoryArtifactsJSON(out io.Writer, record factory.RunRecord) error {
 	data, err := json.MarshalIndent(resp, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal factory artifacts: %w", err)
+	}
+	fmt.Fprintln(out, string(data))
+	return nil
+}
+
+func renderFactoryRecoverJSON(out io.Writer, resp FactoryRecoverResponse) error {
+	data, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal factory recover: %w", err)
+	}
+	fmt.Fprintln(out, string(data))
+	return nil
+}
+
+func renderFactoryPublishJSON(out io.Writer, resp FactoryPublishResponse) error {
+	if resp.Artifacts == nil {
+		resp.Artifacts = []FactoryArtifactSummary{}
+	}
+	data, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal factory publish: %w", err)
 	}
 	fmt.Fprintln(out, string(data))
 	return nil

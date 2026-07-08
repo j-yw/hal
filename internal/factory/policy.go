@@ -37,6 +37,7 @@ type FactoryPolicy struct {
 	SandboxRequired                 bool                                                     `json:"sandboxRequired" yaml:"sandboxRequired"`
 	AllowedEngines                  []string                                                 `json:"allowedEngines" yaml:"allowedEngines"`
 	MaxRunAttempts                  int                                                      `json:"maxRunAttempts" yaml:"maxRunAttempts"`
+	MaxCommandRetries               int                                                      `json:"maxCommandRetries" yaml:"maxCommandRetries"`
 	MaxReviewFixAttempts            int                                                      `json:"maxReviewFixAttempts" yaml:"maxReviewFixAttempts"`
 	MaxCIFixAttempts                int                                                      `json:"maxCiFixAttempts" yaml:"maxCiFixAttempts"`
 	VerificationRequired            bool                                                     `json:"verificationRequired" yaml:"verificationRequired"`
@@ -84,6 +85,7 @@ func DefaultFactoryPolicy() FactoryPolicy {
 		SandboxRequired:      false,
 		AllowedEngines:       SupportedPolicyEngines(),
 		MaxRunAttempts:       0,
+		MaxCommandRetries:    0,
 		MaxReviewFixAttempts: 0,
 		MaxCIFixAttempts:     0,
 		VerificationRequired: false,
@@ -116,6 +118,9 @@ func (p FactoryPolicy) EffectiveSecurityReadinessGatePolicyMode() sandbox.Sandbo
 func (p *FactoryPolicy) Validate() error {
 	if p.MaxRunAttempts < 0 {
 		return fmt.Errorf("factory.policy.maxRunAttempts must be greater than or equal to 0")
+	}
+	if p.MaxCommandRetries < 0 {
+		return fmt.Errorf("factory.policy.maxCommandRetries must be greater than or equal to 0")
 	}
 	if p.MaxReviewFixAttempts < 0 {
 		return fmt.Errorf("factory.policy.maxReviewFixAttempts must be greater than or equal to 0")

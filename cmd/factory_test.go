@@ -2408,6 +2408,168 @@ func TestPublishFactoryRunAfterVerifiedSuccessPROpensFromHostBranch(t *testing.T
 	requireFactoryPublishOutcomeArtifact(t, got, factory.PublishPolicyPR, "hal/game-polish", true)
 }
 
+func TestRunFactoryRecoverAppliesBundleWithoutPublishing(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	dir := t.TempDir()
+	now := time.Date(2026, 7, 7, 9, 0, 0, 0, time.UTC)
+	record := factory.RunRecord{
+		RunID:        "run-recover",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		BranchName:   "hal/recoverable",
+		BaseBranch:   "main",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	record = saveFactoryRecoveryBundleArtifact(t, store, record)
+
+	var gitCalls [][]string
+	var out bytes.Buffer
+	err := runFactoryRecoverWithDeps(context.Background(), &out, record.RunID, true, factoryRecoverDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		workingDir:   func() (string, error) { return dir, nil },
+		now:          func() time.Time { return now },
+		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
+			if gotDir != dir {
+				t.Fatalf("git dir = %q, want %q", gotDir, dir)
+			}
+			gitCalls = append(gitCalls, append([]string(nil), args...))
+			switch {
+			case reflect.DeepEqual(args, []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/recoverable"}):
+				return "", errors.New("missing branch")
+			default:
+				return "", nil
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRecoverWithDeps() error = %v", err)
+	}
+	wantCalls := [][]string{
+		{"check-ref-format", "--branch", "hal/recoverable"},
+		{"fetch", "--no-tags", mustFactoryRecoveryBundleStoredPath(t, store, record), "HEAD"},
+		{"show-ref", "--verify", "--quiet", "refs/heads/hal/recoverable"},
+		{"checkout", "-b", "hal/recoverable", "FETCH_HEAD"},
+	}
+	if !reflect.DeepEqual(gitCalls, wantCalls) {
+		t.Fatalf("git calls = %#v, want %#v", gitCalls, wantCalls)
+	}
+	var resp FactoryRecoverResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal(recover response) error = %v", err)
+	}
+	if resp.ContractVersion != FactoryRecoverContractVersion || resp.BranchName != "hal/recoverable" || resp.RecoveredBundle == "" {
+		t.Fatalf("recover response = %#v", resp)
+	}
+}
+
+func TestRunFactoryPublishRefusesFailedRunWithoutAllowUnverified(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 7, 7, 9, 30, 0, 0, time.UTC)
+	record := factory.RunRecord{
+		RunID:        "run-publish-refuse",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		BranchName:   "hal/refuse",
+		BaseBranch:   "main",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	record = saveFactoryRecoveryBundleArtifact(t, store, record)
+
+	err := runFactoryPublishWithDeps(context.Background(), io.Discard, record.RunID, factoryPublishRequest{
+		Policy: factory.PublishPolicyPush,
+	}, factoryPublishDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		workingDir:   func() (string, error) { return t.TempDir(), nil },
+		now:          func() time.Time { return now },
+		runGit: func(context.Context, string, ...string) (string, error) {
+			t.Fatal("runGit should not be called without --allow-unverified")
+			return "", nil
+		},
+	})
+	if err == nil {
+		t.Fatal("runFactoryPublishWithDeps() error = nil, want refusal")
+	}
+	if !strings.Contains(err.Error(), "--allow-unverified") {
+		t.Fatalf("runFactoryPublishWithDeps() error = %q, want --allow-unverified", err.Error())
+	}
+}
+
+func TestRunFactoryPublishAllowsFailedRunWithRecoveryBundleWhenExplicit(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	dir := t.TempDir()
+	now := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
+	record := factory.RunRecord{
+		RunID:        "run-publish-allow",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		BranchName:   "hal/allow",
+		BaseBranch:   "main",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	record = saveFactoryRecoveryBundleArtifact(t, store, record)
+
+	var gitCalls [][]string
+	var out bytes.Buffer
+	err := runFactoryPublishWithDeps(context.Background(), &out, record.RunID, factoryPublishRequest{
+		Policy:          factory.PublishPolicyPush,
+		AllowUnverified: true,
+		JSON:            true,
+	}, factoryPublishDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		workingDir:   func() (string, error) { return dir, nil },
+		now:          func() time.Time { return now },
+		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
+			if gotDir != dir {
+				t.Fatalf("git dir = %q, want %q", gotDir, dir)
+			}
+			gitCalls = append(gitCalls, append([]string(nil), args...))
+			switch {
+			case reflect.DeepEqual(args, []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/allow"}):
+				return "", errors.New("missing branch")
+			default:
+				return "", nil
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryPublishWithDeps() error = %v", err)
+	}
+	wantCalls := [][]string{
+		{"check-ref-format", "--branch", "hal/allow"},
+		{"fetch", "--no-tags", mustFactoryRecoveryBundleStoredPath(t, store, record), "HEAD"},
+		{"show-ref", "--verify", "--quiet", "refs/heads/hal/allow"},
+		{"checkout", "-b", "hal/allow", "FETCH_HEAD"},
+		{"push", "-u", "origin", "hal/allow"},
+	}
+	if !reflect.DeepEqual(gitCalls, wantCalls) {
+		t.Fatalf("git calls = %#v, want %#v", gitCalls, wantCalls)
+	}
+	updated, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	requireFactoryPublishOutcomeArtifact(t, *updated, factory.PublishPolicyPush, "hal/allow", true)
+	var resp FactoryPublishResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal(publish response) error = %v", err)
+	}
+	if resp.ContractVersion != FactoryPublishContractVersion || resp.Policy != factory.PublishPolicyPush || !resp.AllowUnverified {
+		t.Fatalf("publish response = %#v", resp)
+	}
+}
+
 func saveFactoryRecoveryBundleArtifact(t *testing.T, store factory.Store, record factory.RunRecord) factory.RunRecord {
 	t.Helper()
 	sourcePath := filepath.Join(t.TempDir(), "git-bundle.bundle")
@@ -2466,6 +2628,78 @@ func requireFactoryPublishOutcomeArtifact(t *testing.T, record factory.RunRecord
 		return
 	}
 	t.Fatalf("publish outcome artifact missing from %#v", record.Artifacts)
+}
+
+func TestDefaultFactorySandboxArtifactRequestsIncludesRecoveryDirectory(t *testing.T) {
+	requests := defaultFactorySandboxArtifactRequests("", factory.RunRecord{
+		ExecutorMode: factory.ExecutorModeSandbox,
+		SandboxName:  "factory-sandbox",
+	})
+
+	var sawRecoveryDir, sawPatch, sawBundle bool
+	for _, request := range requests {
+		switch request.ID {
+		case "sandbox-recovery":
+			sawRecoveryDir = true
+			if !request.Optional || !request.Directory || request.Type != "directory" {
+				t.Fatalf("sandbox-recovery request = %#v", request)
+			}
+			if request.RemotePath != ".hal/recovery" || request.Path != ".hal/recovery" {
+				t.Fatalf("sandbox-recovery paths = %q/%q, want .hal/recovery", request.RemotePath, request.Path)
+			}
+			if summaryString(request.Summary, "outcomeKind") != "recovery_directory" {
+				t.Fatalf("sandbox-recovery summary = %#v", request.Summary)
+			}
+		case "sandbox-recovery-patch":
+			sawPatch = true
+		case "sandbox-recovery-bundle":
+			sawBundle = true
+		}
+	}
+	if !sawRecoveryDir || !sawPatch || !sawBundle {
+		t.Fatalf("requests missing recovery artifacts: dir=%v patch=%v bundle=%v in %#v", sawRecoveryDir, sawPatch, sawBundle, requests)
+	}
+}
+
+func TestFactoryRunNextActionSuggestsRecoverForFailedSandboxBundle(t *testing.T) {
+	record := factory.RunRecord{
+		RunID:        "run-recoverable",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		Artifacts: []factory.ArtifactReference{{
+			ID:         "sandbox-recovery-bundle",
+			Name:       "sandbox-recovery-bundle",
+			Type:       "bundle",
+			StoredPath: "artifacts/run-recoverable/factory/git-bundle.bundle",
+			Summary: map[string]any{
+				"outcomeKind": "recovery_bundle",
+			},
+		}},
+	}
+
+	nextAction := newFactoryRunNextAction(record)
+	if nextAction == nil {
+		t.Fatal("newFactoryRunNextAction() = nil, want recovery action")
+	}
+	if nextAction.Command != "hal factory recover run-recoverable" {
+		t.Fatalf("nextAction.command = %q, want recovery command", nextAction.Command)
+	}
+	if strings.Contains(nextAction.Command, "artifacts/") {
+		t.Fatalf("nextAction command exposes artifact path: %q", nextAction.Command)
+	}
+	failure := newFactoryRunFailure(factory.RunRecord{
+		RunID:        record.RunID,
+		Status:       record.Status,
+		ExecutorMode: record.ExecutorMode,
+		Artifacts:    record.Artifacts,
+		Failure: &factory.FailureSummary{
+			Message:          "remote pipeline failed",
+			SuggestedCommand: "hal sandbox ssh factory-recoverable",
+		},
+	})
+	if failure == nil || failure.SuggestedCommand != "hal factory recover run-recoverable" {
+		t.Fatalf("failure suggested command = %#v, want recovery command", failure)
+	}
 }
 
 func TestRunFactoryRunWithDepsRecordsMarkdownArtifacts(t *testing.T) {
@@ -3177,6 +3411,104 @@ func TestRunFactoryRunWithDepsCollectsPreservedSandboxArtifactsWithProviderExec(
 	record, err := store.LoadRun("run-sandbox-preserved-artifacts")
 	if err != nil {
 		t.Fatalf("LoadRun() error: %v", err)
+	}
+	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/auto-state.json")
+}
+
+func TestRunFactoryRunWithDepsCollectsFailedSandboxArtifactsWithProviderExecWithoutInjectedCopier(t *testing.T) {
+	dir := t.TempDir()
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 4, 4, 0, 0, time.UTC)
+	target := &sandbox.SandboxState{
+		Name:     "factory-failed",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	workspaceDir := factorySandboxRemoteWorkspaceDir(factory.RunRecord{RepoRemote: "git@github.com:jywlabs/hal.git"})
+	var artifactCopied bool
+	runFailure := errors.New("remote pipeline failed")
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		BaseBranch: "main",
+		Sandbox:    true,
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-failed-artifacts", nil },
+		now:          func() time.Time { return now },
+		workingDir:   func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		loadEngine: func(string) (string, error) {
+			return factory.PolicyEngineCodex, nil
+		},
+		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+			record := req.RunRecord
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = target.Name
+			record.Sandbox = &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status}
+			if err := store.SaveRun(&record); err != nil {
+				return err
+			}
+			return runFailure
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, info *sandbox.ConnectInfo, args []string, out io.Writer) error {
+			if info == nil || info.Name != target.Name {
+				t.Fatalf("connect info = %#v, want sandbox %q", info, target.Name)
+			}
+			if isFactorySandboxArtifactCopyArgs(args, workspaceDir, ".hal/auto-state.json") {
+				artifactCopied = true
+				_, err := io.WriteString(out, `{"step":"failed"}`+"\n")
+				return err
+			}
+			t.Fatalf("unexpected provider exec args = %#v", args)
+			return nil
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		sandboxRequests: func(_ string, record factory.RunRecord) []factory.SandboxArtifactRequest {
+			return []factory.SandboxArtifactRequest{{
+				ID:         "sandbox-auto-state",
+				Name:       "sandbox-auto-state",
+				Type:       "json",
+				RemotePath: ".hal/auto-state.json",
+				Path:       ".hal/auto-state.json",
+				Optional:   true,
+				Summary: map[string]any{
+					"executorMode": factory.ExecutorModeSandbox,
+					"sandboxName":  record.SandboxName,
+				},
+			}}
+		},
+	})
+	if err == nil {
+		t.Fatal("runFactoryRunWithDeps() error = nil, want sandbox failure")
+	}
+	if !strings.Contains(err.Error(), runFailure.Error()) {
+		t.Fatalf("runFactoryRunWithDeps() error = %q, want original failure", err.Error())
+	}
+	if !artifactCopied {
+		t.Fatal("sandbox artifact was not copied through provider exec on failure")
+	}
+	record, err := store.LoadRun("run-sandbox-failed-artifacts")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want %q", record.Status, factory.RunStatusFailed)
 	}
 	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/auto-state.json")
 }
