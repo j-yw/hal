@@ -320,6 +320,110 @@ func TestRunAutoWithDirSandboxFlagDispatchesToSandboxExecutor(t *testing.T) {
 	}
 }
 
+func TestRunAutoWithDirAppliesProjectConfigDefaultsToSandbox(t *testing.T) {
+	captured := captureAutoSandboxRequestWithConfig(t, `
+sandbox:
+  defaults:
+    name: auto-config-box
+    host: local-worker
+    runtime: rootless_podman
+    workspaceMode: clone
+    syncOut: true
+    apply: false
+auto:
+  base: develop
+`, []string{".hal/prd-feature.md"}, map[string]string{
+		"sandbox": "true",
+	})
+
+	if captured.SandboxName != "auto-config-box" {
+		t.Fatalf("SandboxName = %q, want auto-config-box", captured.SandboxName)
+	}
+	if captured.SandboxHostID != "local-worker" {
+		t.Fatalf("SandboxHostID = %q, want local-worker", captured.SandboxHostID)
+	}
+	if captured.SandboxRuntime != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("SandboxRuntime = %q, want %q", captured.SandboxRuntime, sandboxruntime.DriverRootlessPodman)
+	}
+	if !captured.SyncOut.Enabled || captured.SyncOut.Apply {
+		t.Fatalf("SyncOut = %#v, want enabled without apply", captured.SyncOut)
+	}
+	if captured.Flags.Base != "develop" || !captured.Flags.BaseChanged {
+		t.Fatalf("Base flags = %q changed=%v, want develop changed", captured.Flags.Base, captured.Flags.BaseChanged)
+	}
+	if captured.BaseBranch != "develop" {
+		t.Fatalf("BaseBranch = %q, want develop", captured.BaseBranch)
+	}
+	wantCommand := []string{"hal", "auto", ".hal/prd-feature.md", "--base", "develop"}
+	if !reflect.DeepEqual(captured.RemoteCommand, wantCommand) {
+		t.Fatalf("RemoteCommand = %#v, want %#v", captured.RemoteCommand, wantCommand)
+	}
+}
+
+func TestRunAutoWithDirCLIOverridesProjectConfigDefaults(t *testing.T) {
+	captured := captureAutoSandboxRequestWithConfig(t, `
+sandbox:
+  defaults:
+    name: auto-config-box
+    host: config-worker
+    runtime: ssh_machine
+    workspaceMode: clone
+    syncOut: true
+    apply: true
+auto:
+  base: develop
+`, []string{".hal/prd-feature.md"}, map[string]string{
+		"sandbox":              "true",
+		"sandbox-name":         "auto-flag-box",
+		sandboxHostFlagName:    "flag-worker",
+		sandboxRuntimeFlagName: sandboxruntime.DriverMicroVM,
+		sandboxSyncOutFlagName: "false",
+		sandboxApplyFlagName:   "false",
+		"base":                 "release",
+	})
+
+	if captured.SandboxName != "auto-flag-box" {
+		t.Fatalf("SandboxName = %q, want auto-flag-box", captured.SandboxName)
+	}
+	if captured.SandboxHostID != "flag-worker" {
+		t.Fatalf("SandboxHostID = %q, want flag-worker", captured.SandboxHostID)
+	}
+	if captured.SandboxRuntime != sandboxruntime.DriverMicroVM {
+		t.Fatalf("SandboxRuntime = %q, want %q", captured.SandboxRuntime, sandboxruntime.DriverMicroVM)
+	}
+	if captured.SyncOut.Enabled || captured.SyncOut.Apply {
+		t.Fatalf("SyncOut = %#v, want disabled by explicit false flags", captured.SyncOut)
+	}
+	if captured.Flags.Base != "release" || captured.BaseBranch != "release" {
+		t.Fatalf("base flags/request = %q/%q, want release", captured.Flags.Base, captured.BaseBranch)
+	}
+	wantCommand := []string{"hal", "auto", ".hal/prd-feature.md", "--base", "release"}
+	if !reflect.DeepEqual(captured.RemoteCommand, wantCommand) {
+		t.Fatalf("RemoteCommand = %#v, want %#v", captured.RemoteCommand, wantCommand)
+	}
+}
+
+func TestRunAutoWithDirProjectConfigSandboxDefaultsDoNotEnableSandbox(t *testing.T) {
+	projectDir := t.TempDir()
+	writeRunSandboxConfig(t, projectDir, `
+sandbox:
+  defaults:
+    name: auto-config-box
+    host: local-worker
+    runtime: rootless_podman
+    syncOut: true
+    apply: true
+`)
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd := newAutoSandboxTestCommand(&out, &errOut)
+	err := runAutoWithDir(cmd, nil, projectDir)
+	if err == nil || !strings.Contains(err.Error(), "no auto source found") {
+		t.Fatalf("runAutoWithDir() error = %v, want local auto source validation", err)
+	}
+}
+
 func TestRunAutoWithDirRejectsSandboxTargetFlagsWithoutSandbox(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer
@@ -1981,6 +2085,56 @@ func TestRunAutoSandboxWithWriterSavesOutputSummaryArtifacts(t *testing.T) {
 	if !strings.Contains(stderrPayload, "<address redacted>") {
 		t.Fatalf("stderr summary payload = %q, want redacted address marker", stderrPayload)
 	}
+}
+
+func captureAutoSandboxRequestWithConfig(t *testing.T, config string, args []string, flags map[string]string) autoSandboxRequest {
+	t.Helper()
+	startedAt := time.Date(2026, 7, 8, 11, 0, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	writeRunSandboxConfig(t, projectDir, config)
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	target := &sandbox.SandboxState{Name: "selected-auto", Provider: "test-provider", Status: sandbox.StatusRunning}
+	var captured autoSandboxRequest
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	originalDeps := defaultAutoSandboxDeps
+	defaultAutoSandboxDeps = autoSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "auto-config-defaults"
+		},
+		now: runSandboxTestClock(startedAt, finishedAt),
+		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+			return autoSandboxTestPlan(projectDir), nil
+		},
+		execute: func(_ context.Context, req autoSandboxRequest, _ io.Writer, _ io.Writer, hooks autoSandboxExecutionHooks) (autoSandboxExecutionResult, error) {
+			captured = req
+			if hooks.OnTargetReady != nil {
+				if err := hooks.OnTargetReady(target); err != nil {
+					return autoSandboxExecutionResult{}, err
+				}
+			}
+			return autoSandboxExecutionResult{Result: &sandboxexec.Result{Target: sandboxruntime.Target{Name: target.Name, Provider: target.Provider, Status: target.Status}}}, nil
+		},
+	}
+	t.Cleanup(func() {
+		defaultAutoSandboxDeps = originalDeps
+	})
+
+	cmd := newAutoSandboxTestCommand(&out, &errOut)
+	for flag, value := range flags {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("set %s: %v", flag, err)
+		}
+	}
+	if err := runAutoWithDir(cmd, args, projectDir); err != nil {
+		t.Fatalf("runAutoWithDir() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+	return captured
 }
 
 func newAutoSandboxTestCommand(out, errOut io.Writer) *cobra.Command {

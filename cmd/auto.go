@@ -466,6 +466,36 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	if skipPRChanged && !noCIChanged {
 		noCI = skipPR
 	}
+	projectCfg, err := loadCommandProjectConfig(dir)
+	if err != nil {
+		err = fmt.Errorf("failed to load project config: %w", err)
+		if jsonMode {
+			jr := autoFailureResult(autoEntryModeReportDiscovery, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
+			return outputAutoJSON(out, jr)
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+	applyAutoProjectConfigDefaults(projectCfg, &baseBranch, &baseChanged)
+	if sandboxMode {
+		sandboxDefaults := commandSandboxDefaultState{
+			SandboxName:           sandboxName,
+			SandboxNameChanged:    sandboxNameChanged,
+			SandboxHostID:         sandboxHost,
+			SandboxHostChanged:    sandboxHostChanged,
+			SandboxRuntime:        sandboxRuntime,
+			SandboxRuntimeChanged: sandboxRuntimeChanged,
+			SandboxSyncOut:        sandboxSyncOut,
+			SandboxSyncOutChanged: sandboxSyncOutChanged,
+			SandboxApply:          sandboxApply,
+			SandboxApplyChanged:   sandboxApplyChanged,
+		}
+		applyProjectSandboxDefaults(projectCfg, sandboxMode, &sandboxDefaults)
+		sandboxName = sandboxDefaults.SandboxName
+		sandboxHost = sandboxDefaults.SandboxHostID
+		sandboxRuntime = sandboxDefaults.SandboxRuntime
+		sandboxSyncOut = sandboxDefaults.SandboxSyncOut
+		sandboxApply = sandboxDefaults.SandboxApply
+	}
 	targetFlags, err := parseSandboxTargetFlagValues(sandboxTargetFlagValues{
 		HostID:         sandboxHost,
 		HostChanged:    sandboxHostChanged,

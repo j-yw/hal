@@ -2249,6 +2249,114 @@ func TestRunRunWithWriterSandboxFlagDispatchesToSandboxExecutor(t *testing.T) {
 	}
 }
 
+func TestRunRunWithWriterAppliesProjectConfigDefaultsToSandbox(t *testing.T) {
+	captured := captureRunSandboxRequestWithConfig(t, `
+sandbox:
+  defaults:
+    name: config-box
+    host: local-worker
+    runtime: rootless_podman
+    workspaceMode: clone
+    syncOut: true
+    apply: false
+run:
+  base: develop
+  timeout: 20m
+`, nil, map[string]string{
+		"sandbox": "true",
+	})
+
+	if captured.SandboxName != "config-box" {
+		t.Fatalf("SandboxName = %q, want config-box", captured.SandboxName)
+	}
+	if captured.SandboxHostID != "local-worker" {
+		t.Fatalf("SandboxHostID = %q, want local-worker", captured.SandboxHostID)
+	}
+	if captured.SandboxRuntime != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("SandboxRuntime = %q, want %q", captured.SandboxRuntime, sandboxruntime.DriverRootlessPodman)
+	}
+	if !captured.SyncOut.Enabled || captured.SyncOut.Apply {
+		t.Fatalf("SyncOut = %#v, want enabled without apply", captured.SyncOut)
+	}
+	if captured.Flags.Base != "develop" || !captured.Flags.BaseChanged {
+		t.Fatalf("Base flags = %q changed=%v, want develop changed", captured.Flags.Base, captured.Flags.BaseChanged)
+	}
+	if captured.Flags.Timeout != 20*time.Minute || !captured.Flags.TimeoutChanged {
+		t.Fatalf("Timeout flags = %v changed=%v, want 20m changed", captured.Flags.Timeout, captured.Flags.TimeoutChanged)
+	}
+	wantCommand := []string{"hal", "run", "--timeout", "20m0s", "--base", "develop"}
+	if !reflect.DeepEqual(captured.RemoteCommand, wantCommand) {
+		t.Fatalf("RemoteCommand = %#v, want %#v", captured.RemoteCommand, wantCommand)
+	}
+}
+
+func TestRunRunWithWriterCLIOverridesProjectConfigDefaults(t *testing.T) {
+	captured := captureRunSandboxRequestWithConfig(t, `
+sandbox:
+  defaults:
+    name: config-box
+    host: config-worker
+    runtime: ssh_machine
+    workspaceMode: clone
+    syncOut: true
+    apply: true
+run:
+  base: develop
+  timeout: 20m
+`, nil, map[string]string{
+		"sandbox":              "true",
+		"sandbox-name":         "flag-box",
+		sandboxHostFlagName:    "flag-worker",
+		sandboxRuntimeFlagName: sandboxruntime.DriverMicroVM,
+		sandboxSyncOutFlagName: "false",
+		sandboxApplyFlagName:   "false",
+		"base":                 "release",
+		"timeout":              "5m",
+	})
+
+	if captured.SandboxName != "flag-box" {
+		t.Fatalf("SandboxName = %q, want flag-box", captured.SandboxName)
+	}
+	if captured.SandboxHostID != "flag-worker" {
+		t.Fatalf("SandboxHostID = %q, want flag-worker", captured.SandboxHostID)
+	}
+	if captured.SandboxRuntime != sandboxruntime.DriverMicroVM {
+		t.Fatalf("SandboxRuntime = %q, want %q", captured.SandboxRuntime, sandboxruntime.DriverMicroVM)
+	}
+	if captured.SyncOut.Enabled || captured.SyncOut.Apply {
+		t.Fatalf("SyncOut = %#v, want disabled by explicit false flags", captured.SyncOut)
+	}
+	if captured.Flags.Base != "release" || captured.Flags.Timeout != 5*time.Minute {
+		t.Fatalf("run flags base/timeout = %q/%v, want release/5m", captured.Flags.Base, captured.Flags.Timeout)
+	}
+	wantCommand := []string{"hal", "run", "--timeout", "5m0s", "--base", "release"}
+	if !reflect.DeepEqual(captured.RemoteCommand, wantCommand) {
+		t.Fatalf("RemoteCommand = %#v, want %#v", captured.RemoteCommand, wantCommand)
+	}
+}
+
+func TestRunRunWithWriterProjectConfigSandboxDefaultsDoNotEnableSandbox(t *testing.T) {
+	projectDir := t.TempDir()
+	writeRunSandboxConfig(t, projectDir, `
+sandbox:
+  defaults:
+    name: config-box
+    host: local-worker
+    runtime: rootless_podman
+    syncOut: true
+    apply: true
+`)
+	t.Chdir(projectDir)
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd := newRunSandboxTestCommand(&out, &errOut)
+	err := runRunWithWriter(cmd, nil, &errOut)
+	if err == nil || !strings.Contains(err.Error(), "prd.json not found") {
+		t.Fatalf("runRunWithWriter() error = %v, want local run prd.json validation", err)
+	}
+}
+
 func TestRunSandboxCmdContextSplitsStdoutAndStderr(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -2285,6 +2393,58 @@ func newRunSandboxTestCommand(out, errOut io.Writer) *cobra.Command {
 	cmd.Flags().Bool(sandboxSyncOutFlagName, false, "")
 	cmd.Flags().Bool(sandboxApplyFlagName, false, "")
 	return cmd
+}
+
+func captureRunSandboxRequestWithConfig(t *testing.T, config string, args []string, flags map[string]string) runSandboxRequest {
+	t.Helper()
+	startedAt := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	projectDir := t.TempDir()
+	writeRunSandboxConfig(t, projectDir, config)
+	t.Chdir(projectDir)
+
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	target := &sandbox.SandboxState{Name: "selected-box", Provider: "test-provider", Status: sandbox.StatusRunning}
+	var captured runSandboxRequest
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	originalDeps := defaultRunSandboxDeps
+	defaultRunSandboxDeps = runSandboxDeps{
+		defaultStore: func() (sandboxexecution.Store, error) {
+			return store, nil
+		},
+		newExecutionID: func(time.Time) string {
+			return "run-config-defaults"
+		},
+		now:           runSandboxTestClock(startedAt, finishedAt),
+		workingDir:    func() (string, error) { return projectDir, nil },
+		repoRemote:    func(string) (string, error) { return "git@example.com:org/repo.git", nil },
+		currentBranch: func(string) (string, error) { return "feature/config-defaults", nil },
+		execute: func(_ context.Context, req runSandboxRequest, _ io.Writer, _ io.Writer, hooks runSandboxExecutionHooks) (runSandboxExecutionResult, error) {
+			captured = req
+			if hooks.OnTargetReady != nil {
+				if err := hooks.OnTargetReady(target); err != nil {
+					return runSandboxExecutionResult{}, err
+				}
+			}
+			return runSandboxExecutionResult{Result: &sandboxexec.Result{Target: sandboxruntime.Target{Name: target.Name, Provider: target.Provider, Status: target.Status}}}, nil
+		},
+	}
+	t.Cleanup(func() {
+		defaultRunSandboxDeps = originalDeps
+	})
+
+	cmd := newRunSandboxTestCommand(&out, &errOut)
+	for flag, value := range flags {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("set %s: %v", flag, err)
+		}
+	}
+	if err := runRunWithWriter(cmd, args, &errOut); err != nil {
+		t.Fatalf("runRunWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+	return captured
 }
 
 func runSandboxTestClock(times ...time.Time) func() time.Time {

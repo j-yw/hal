@@ -13,6 +13,7 @@ import (
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/loop"
+	"github.com/jywlabs/hal/internal/projectconfig"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 	"github.com/jywlabs/hal/internal/status"
@@ -343,6 +344,37 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 		}
 	}
 
+	projectCfg, err := loadCommandProjectConfig(".")
+	if err != nil {
+		err = fmt.Errorf("failed to load project config: %w", err)
+		if jsonMode {
+			return outputRunJSONError(out, err.Error())
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+	applyRunProjectConfigDefaults(projectCfg, &baseFlag, &baseChanged, &timeoutOverride, &timeoutChanged)
+	if sandboxMode {
+		sandboxDefaults := commandSandboxDefaultState{
+			SandboxName:           sandboxName,
+			SandboxNameChanged:    sandboxNameChanged,
+			PositionalSandboxName: runSandboxPositionalNamePresent(args),
+			SandboxHostID:         sandboxHost,
+			SandboxHostChanged:    sandboxHostChanged,
+			SandboxRuntime:        sandboxRuntime,
+			SandboxRuntimeChanged: sandboxRuntimeChanged,
+			SandboxSyncOut:        sandboxSyncOut,
+			SandboxSyncOutChanged: sandboxSyncOutChanged,
+			SandboxApply:          sandboxApply,
+			SandboxApplyChanged:   sandboxApplyChanged,
+		}
+		applyProjectSandboxDefaults(projectCfg, sandboxMode, &sandboxDefaults)
+		sandboxName = sandboxDefaults.SandboxName
+		sandboxHost = sandboxDefaults.SandboxHostID
+		sandboxRuntime = sandboxDefaults.SandboxRuntime
+		sandboxSyncOut = sandboxDefaults.SandboxSyncOut
+		sandboxApply = sandboxDefaults.SandboxApply
+	}
+
 	targetFlags, err := parseSandboxTargetFlagValues(sandboxTargetFlagValues{
 		HostID:         sandboxHost,
 		HostChanged:    sandboxHostChanged,
@@ -494,6 +526,78 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	}
 
 	return nil
+}
+
+func loadCommandProjectConfig(dir string) (*projectconfig.Config, error) {
+	return projectconfig.Load(dir)
+}
+
+func applyRunProjectConfigDefaults(cfg *projectconfig.Config, base *string, baseChanged *bool, timeout *time.Duration, timeoutChanged *bool) {
+	if cfg == nil {
+		return
+	}
+	if base != nil && baseChanged != nil && !*baseChanged && cfg.Run.Base.Set {
+		*base = cfg.Run.Base.Value
+		*baseChanged = true
+	}
+	if timeout != nil && timeoutChanged != nil && !*timeoutChanged && cfg.Run.Timeout.Set {
+		*timeout = cfg.Run.Timeout.Value
+		*timeoutChanged = true
+	}
+}
+
+func applyAutoProjectConfigDefaults(cfg *projectconfig.Config, base *string, baseChanged *bool) {
+	if cfg == nil {
+		return
+	}
+	if base != nil && baseChanged != nil && !*baseChanged && cfg.Auto.Base.Set {
+		*base = cfg.Auto.Base.Value
+		*baseChanged = true
+	}
+}
+
+type commandSandboxDefaultState struct {
+	SandboxName           string
+	SandboxNameChanged    bool
+	PositionalSandboxName bool
+	SandboxHostID         string
+	SandboxHostChanged    bool
+	SandboxRuntime        string
+	SandboxRuntimeChanged bool
+	SandboxSyncOut        bool
+	SandboxSyncOutChanged bool
+	SandboxApply          bool
+	SandboxApplyChanged   bool
+}
+
+func applyProjectSandboxDefaults(cfg *projectconfig.Config, sandboxMode bool, state *commandSandboxDefaultState) {
+	if cfg == nil || !sandboxMode || state == nil {
+		return
+	}
+	defaults := cfg.Sandbox
+	if !state.SandboxNameChanged && !state.PositionalSandboxName && defaults.Name.Set {
+		state.SandboxName = defaults.Name.Value
+	}
+	if !state.SandboxHostChanged && defaults.Host.Set {
+		state.SandboxHostID = defaults.Host.Value
+	}
+	if !state.SandboxRuntimeChanged && defaults.Runtime.Set {
+		state.SandboxRuntime = defaults.Runtime.Value
+	}
+	if !state.SandboxSyncOutChanged && defaults.SyncOut.Set {
+		state.SandboxSyncOut = defaults.SyncOut.Value
+	}
+	if !state.SandboxApplyChanged && defaults.Apply.Set {
+		state.SandboxApply = defaults.Apply.Value
+	}
+}
+
+func runSandboxPositionalNamePresent(args []string) bool {
+	if len(args) != 1 {
+		return false
+	}
+	positional := strings.TrimSpace(args[0])
+	return positional != "" && !isRunSandboxInteger(positional)
 }
 
 // showRunSummary renders a human-readable completion summary after the loop finishes.

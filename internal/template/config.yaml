@@ -42,10 +42,42 @@ maxRetries: 3
 #     timeout: 30m
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Command Defaults (optional)
+# ─────────────────────────────────────────────────────────────────────────────
+# These defaults are applied only when the matching CLI flag is omitted.
+# CLI flags always win over values from this file.
+#
+# run:
+#   # Default base branch for `hal run --base`.
+#   base: develop
+#
+#   # Per-engine session timeout for `hal run --timeout`.
+#   timeout: 20m
+#
+# sandbox:
+#   defaults:
+#     # Sandbox target defaults are used only when --sandbox is active.
+#     # They do not make `hal run` or `hal auto` enter sandbox mode by themselves.
+#     name: dev
+#     host: local-worker
+#     runtime: ssh_machine
+#
+#     # run/auto sandbox execution currently supports clone-mode command planning.
+#     workspaceMode: clone
+#
+#     # Collect sync-out metadata by default, but keep host apply opt-in.
+#     syncOut: true
+#     apply: false
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Auto Pipeline Settings (hal auto)
 # ─────────────────────────────────────────────────────────────────────────────
 
 auto:
+  # Default base branch for `hal auto --base` when omitted.
+  # Example: develop
+  # base: develop
+
   # Directory where analysis reports are stored.
   # The auto command looks here for reports to analyze.
   # Default: .hal/reports
@@ -106,7 +138,6 @@ auto:
 # ─────────────────────────────────────────────────────────────────────────────
 # Configure credentials for Daytona sandbox integration.
 # Run `hal sandbox setup` to set these interactively.
-#
-# daytona:
-#   apiKey: ""        # API key for Daytona server
-#   serverURL: ""     # Server URL (empty = SDK default)
+# Do not commit raw secret values in project templates. The provider receives:
+# - DAYTONA_API_KEY
+# - DAYTONA_SERVER_URL
