@@ -451,8 +451,22 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 				target = phaseErr.Target
 			}
 		}
+		if target != nil && provider != nil {
+			attemptFactorySandboxRecoveryArtifacts(ctx, deps, record, target, provider, remoteOutput)
+		}
 		returnErr = handleFactorySandboxExecutorError(ctx, store, deps, req, &record, target, execErr, secretRedactor)
 		return returnErr
+	}
+	attemptFactorySandboxRecoveryArtifacts(ctx, deps, record, target, provider, remoteOutput)
+	if !req.DeferSuccessCleanup {
+		cleanupSucceeded = true
+	}
+	return nil
+}
+
+func attemptFactorySandboxRecoveryArtifacts(ctx context.Context, deps factorySandboxExecutorDeps, record factory.RunRecord, target *sandbox.SandboxState, provider sandbox.Provider, remoteOutput *factorySandboxTimelineWriter) {
+	if deps.generateRecovery == nil {
+		return
 	}
 	if err := deps.generateRecovery(ctx, factorySandboxRecoveryArtifactRequest{
 		Deps:         deps,
@@ -468,10 +482,6 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			})
 		}
 	}
-	if !req.DeferSuccessCleanup {
-		cleanupSucceeded = true
-	}
-	return nil
 }
 
 type factorySandboxRecoveryArtifactRequest struct {
@@ -519,6 +529,13 @@ func factorySandboxRecoveryArtifactScript(workspaceDir, baseBranch string) strin
 	script.WriteString("git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0\n")
 	script.WriteString("git rev-parse HEAD > .hal/recovery/head.txt 2>/dev/null || true\n")
 	script.WriteString("git branch --show-current > .hal/recovery/branch.txt 2>/dev/null || true\n")
+	script.WriteString("git status --short --branch > .hal/recovery/status.txt 2>/dev/null || true\n")
+	script.WriteString("git log --oneline --decorate -20 > .hal/recovery/log.txt 2>/dev/null || true\n")
+	script.WriteString("git diff --binary --no-ext-diff > .hal/recovery/dirty.patch 2>/dev/null || true\n")
+	script.WriteString("git diff --cached --binary --no-ext-diff > .hal/recovery/staged.patch 2>/dev/null || true\n")
+	script.WriteString("for hal_file in .hal/auto-state.json .hal/prd.json .hal/progress.txt; do\n")
+	script.WriteString("  if [ -f \"$hal_file\" ]; then cp \"$hal_file\" \".hal/recovery/$(basename \"$hal_file\")\" 2>/dev/null || true; fi\n")
+	script.WriteString("done\n")
 	script.WriteString("base_ref=''\n")
 	if baseBranch != "" {
 		script.WriteString("for candidate in " + shellQuote(baseBranch) + " " + shellQuote("origin/"+baseBranch) + "; do\n")
@@ -533,6 +550,20 @@ func factorySandboxRecoveryArtifactScript(workspaceDir, baseBranch string) strin
 	script.WriteString("  git diff --binary --no-ext-diff > .hal/recovery/git-format-patch.patch 2>/dev/null || true\n")
 	script.WriteString("fi\n")
 	script.WriteString("[ -s .hal/recovery/git-format-patch.patch ] || rm -f .hal/recovery/git-format-patch.patch\n")
+	script.WriteString("[ -s .hal/recovery/dirty.patch ] || rm -f .hal/recovery/dirty.patch\n")
+	script.WriteString("[ -s .hal/recovery/staged.patch ] || rm -f .hal/recovery/staged.patch\n")
+	script.WriteString("json_escape() { printf '%s' \"$1\" | sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g'; }\n")
+	script.WriteString("head_value=\"$(cat .hal/recovery/head.txt 2>/dev/null || true)\"\n")
+	script.WriteString("branch_value=\"$(cat .hal/recovery/branch.txt 2>/dev/null || true)\"\n")
+	script.WriteString("created_at=\"$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date 2>/dev/null || true)\"\n")
+	script.WriteString("{\n")
+	script.WriteString("  printf '{\\n'\n")
+	script.WriteString("  printf '  \"baseBranch\": \"%s\",\\n' \"$(json_escape " + shellQuote(baseBranch) + ")\"\n")
+	script.WriteString("  printf '  \"head\": \"%s\",\\n' \"$(json_escape \"$head_value\")\"\n")
+	script.WriteString("  printf '  \"branch\": \"%s\",\\n' \"$(json_escape \"$branch_value\")\"\n")
+	script.WriteString("  printf '  \"createdAt\": \"%s\"\\n' \"$(json_escape \"$created_at\")\"\n")
+	script.WriteString("  printf '}\\n'\n")
+	script.WriteString("} > .hal/recovery/manifest.json 2>/dev/null || true\n")
 	return script.String()
 }
 

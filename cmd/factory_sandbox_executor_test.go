@@ -4190,6 +4190,148 @@ func TestRunFactorySandboxExecutorWithDepsRecordsRemoteExecutionFailureHandoff(t
 	}
 }
 
+func TestRunFactorySandboxExecutorWithDepsGeneratesRecoveryOnRunFailure(t *testing.T) {
+	now := time.Date(2026, 7, 8, 9, 0, 0, 0, time.UTC)
+	execErr := factorySandboxTestError("remote pipeline failed")
+	target := &sandbox.SandboxState{
+		Name:     "factory-recovery-failed",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+
+	var recoveryCalls int
+	var recoveryReq factorySandboxRecoveryArtifactRequest
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-recovery-failed",
+		RunRecord: factory.RunRecord{
+			RunID:       "run-recovery-on-failure",
+			Status:      factory.RunStatusRunning,
+			CurrentStep: "run",
+			RepoRemote:  "git@github.com:example/repo.git",
+			BaseBranch:  "main",
+		},
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return factory.NewStore(t.TempDir()), nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return fakeFactorySandboxRuntimeDriver{execFn: func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+				return &sandboxruntime.ExecResult{}, execErr
+			}}, nil
+		},
+		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			return factory.BootstrapResult{}, nil
+		},
+		generateRecovery: func(_ context.Context, req factorySandboxRecoveryArtifactRequest) error {
+			recoveryCalls++
+			recoveryReq = req
+			return nil
+		},
+	})
+	if err == nil || err.Error() != "execute factory sandbox command: remote pipeline failed" {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() error = %v, want original run failure", err)
+	}
+	if recoveryCalls != 1 {
+		t.Fatalf("generateRecovery calls = %d, want 1", recoveryCalls)
+	}
+	if recoveryReq.Record.RunID != "run-recovery-on-failure" || recoveryReq.Record.BaseBranch != "main" {
+		t.Fatalf("recovery record = %#v", recoveryReq.Record)
+	}
+	if recoveryReq.Target == nil || recoveryReq.Target.Name != "factory-recovery-failed" {
+		t.Fatalf("recovery target = %#v, want factory-recovery-failed", recoveryReq.Target)
+	}
+	if recoveryReq.Provider == nil {
+		t.Fatalf("recovery provider = nil, want resolved provider")
+	}
+}
+
+func TestRunFactorySandboxExecutorWithDepsKeepsRunFailureWhenRecoveryGenerationFails(t *testing.T) {
+	now := time.Date(2026, 7, 8, 9, 15, 0, 0, time.UTC)
+	execErr := factorySandboxTestError("remote command failed")
+	recoveryErr := errors.New("recovery artifact generation failed")
+	store := factory.NewStore(t.TempDir())
+	target := &sandbox.SandboxState{
+		Name:     "factory-recovery-warning",
+		Provider: "daytona",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+
+	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+		SandboxName: "factory-recovery-warning",
+		RunRecord: factory.RunRecord{
+			RunID:       "run-recovery-warning",
+			Status:      factory.RunStatusRunning,
+			CurrentStep: "run",
+			RepoRemote:  "git@github.com:example/repo.git",
+		},
+	}, factorySandboxExecutorDeps{
+		defaultStore:    func() (factory.Store, error) { return store, nil },
+		now:             func() time.Time { return now },
+		loadSandbox:     func(string) (*sandbox.SandboxState, error) { return target, nil },
+		resolveProvider: func(string) (sandbox.Provider, error) { return fakeFactorySandboxProvider{}, nil },
+		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return fakeFactorySandboxRuntimeDriver{execFn: func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+				return &sandboxruntime.ExecResult{}, execErr
+			}}, nil
+		},
+		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+			return factory.BootstrapResult{}, nil
+		},
+		generateRecovery: func(context.Context, factorySandboxRecoveryArtifactRequest) error {
+			return recoveryErr
+		},
+	})
+	if err == nil || err.Error() != "execute factory sandbox command: remote command failed" {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() error = %v, want original run failure", err)
+	}
+	if strings.Contains(err.Error(), recoveryErr.Error()) {
+		t.Fatalf("runFactorySandboxExecutorWithDeps() error included recovery failure: %v", err)
+	}
+	events, err := store.LoadEvents("run-recovery-warning")
+	if err != nil {
+		t.Fatalf("LoadEvents() error: %v", err)
+	}
+	var warning *factory.EventRecord
+	for i := range events {
+		if events[i].EventType == factory.EventTypeArtifactSync {
+			warning = &events[i]
+			break
+		}
+	}
+	if warning == nil {
+		t.Fatalf("artifact sync warning not recorded: %#v", events)
+	}
+	if warning.Summary != "Sandbox recovery artifact generation skipped" || warning.Metadata["status"] != "warning" || warning.Metadata["reason"] != "recovery_generation_failed" {
+		t.Fatalf("artifact sync warning = %#v", warning)
+	}
+}
+
+func TestFactorySandboxRecoveryArtifactScriptIncludesRichRecoveryFiles(t *testing.T) {
+	script := factorySandboxRecoveryArtifactScript("/workspace/repo", "main")
+	for _, want := range []string{
+		"git rev-parse HEAD > .hal/recovery/head.txt",
+		"git branch --show-current > .hal/recovery/branch.txt",
+		"git format-patch --stdout",
+		".hal/recovery/git-format-patch.patch",
+		"git bundle create .hal/recovery/git-bundle.bundle",
+		"git status --short --branch > .hal/recovery/status.txt",
+		"git log --oneline --decorate -20 > .hal/recovery/log.txt",
+		"git diff --binary --no-ext-diff > .hal/recovery/dirty.patch",
+		"git diff --cached --binary --no-ext-diff > .hal/recovery/staged.patch",
+		".hal/auto-state.json .hal/prd.json .hal/progress.txt",
+		".hal/recovery/manifest.json",
+		"\"baseBranch\"",
+		"\"createdAt\"",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("recovery script missing %q:\n%s", want, script)
+		}
+	}
+}
+
 func requireFactorySandboxSecurityMetadata(t *testing.T, security *factory.SandboxSecurityMetadata, wantActiveModes []string) {
 	t.Helper()
 	if security == nil {
