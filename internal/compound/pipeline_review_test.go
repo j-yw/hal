@@ -759,6 +759,7 @@ func TestRunReviewStep_CheckpointRuntimeStateCommitsAllowedFiles(t *testing.T) {
 				filepath.ToSlash(filepath.Join(template.HalDir, template.PRDFile)),
 				filepath.ToSlash(filepath.Join(template.HalDir, template.ProgressFile)),
 				filepath.ToSlash(filepath.Join(template.HalDir, template.AutoStateFile)),
+				filepath.ToSlash(filepath.Join(template.HalDir, "prd-ripple-combo-feedback.md")),
 				filepath.ToSlash(filepath.Join(template.HalDir, "archive", "feature", "prd.md")),
 			}, nil
 		}

@@ -1443,6 +1443,10 @@ func isFactoryRuntimeStatePath(path string) bool {
 		filepath.ToSlash(filepath.Join(template.HalDir, template.AutoStateFile)):
 		return true
 	default:
+		halPRDPrefix := filepath.ToSlash(filepath.Join(template.HalDir, "prd-"))
+		if strings.HasPrefix(normalized, halPRDPrefix) && strings.HasSuffix(normalized, ".md") && !strings.Contains(strings.TrimPrefix(normalized, filepath.ToSlash(template.HalDir)+"/"), "/") {
+			return true
+		}
 		return strings.HasPrefix(normalized, filepath.ToSlash(filepath.Join(template.HalDir, "archive"))+"/")
 	}
 }

@@ -33,6 +33,7 @@ var supportedSecurityReadinessGatePolicyModes = []sandbox.SandboxSecurityCapabil
 
 // FactoryPolicy captures durable autonomy boundaries for factory-created runs.
 // A zero attempt limit means there is no policy cap for that attempt category.
+// Command retries are retry counts after the first command attempt.
 type FactoryPolicy struct {
 	SandboxRequired                 bool                                                     `json:"sandboxRequired" yaml:"sandboxRequired"`
 	AllowedEngines                  []string                                                 `json:"allowedEngines" yaml:"allowedEngines"`
@@ -85,7 +86,7 @@ func DefaultFactoryPolicy() FactoryPolicy {
 		SandboxRequired:      false,
 		AllowedEngines:       SupportedPolicyEngines(),
 		MaxRunAttempts:       0,
-		MaxCommandRetries:    0,
+		MaxCommandRetries:    2,
 		MaxReviewFixAttempts: 0,
 		MaxCIFixAttempts:     0,
 		VerificationRequired: false,

@@ -790,10 +790,12 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 				t.Fatalf("sandbox runtime = %q, want %q", req.SandboxRuntime, sandboxruntime.DriverRootlessPodman)
 			}
 			wantAuto := factoryRunAutoRequest{
-				Args:       []string{".hal/prd-feature.md"},
-				BaseBranch: "main",
-				Engine:     factory.PolicyEngineCodex,
-				CIPolicy:   factory.CIPolicySkipIfUnavailable,
+				Args:               []string{".hal/prd-feature.md"},
+				BaseBranch:         "main",
+				Engine:             factory.PolicyEngineCodex,
+				MaxCommandRetries:  2,
+				CIPolicy:           factory.CIPolicySkipIfUnavailable,
+				RuntimeStatePolicy: compound.RuntimeStatePolicyCheckpointFactoryState,
 			}
 			if !reflect.DeepEqual(req.RemoteAuto, wantAuto) {
 				t.Fatalf("remote auto request = %#v, want %#v", req.RemoteAuto, wantAuto)
@@ -7104,6 +7106,8 @@ func TestRunFactoryRunPipelineWithDepsPassesMarkdownEntryToAuto(t *testing.T) {
 			MaxReviewFixAttempts: 2,
 			MaxCIFixAttempts:     3,
 		},
+		MaxCommandRetries:  2,
+		RuntimeStatePolicy: compound.RuntimeStatePolicyCheckpointFactoryState,
 		Request: factoryRunRequest{
 			MarkdownPath: " .hal/prd-feature.md ",
 			BaseBranch:   " develop ",
@@ -7135,6 +7139,8 @@ func TestRunFactoryRunPipelineWithDepsPassesMarkdownEntryToAuto(t *testing.T) {
 			MaxReviewFixAttempts: 2,
 			MaxCIFixAttempts:     3,
 		},
+		MaxCommandRetries:  2,
+		RuntimeStatePolicy: compound.RuntimeStatePolicyCheckpointFactoryState,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("auto request = %#v, want %#v", got, want)
@@ -7357,6 +7363,85 @@ func TestRunFactoryRunPipelineWithDepsRedactsCredentialedRemoteFromFailureLogChu
 	}
 	if !strings.Contains(chunks[1].Text, "https://"+factory.RunSecretRedactionPlaceholder+"@github.com/org/repo.git") {
 		t.Fatalf("failure log chunk text = %q, want credentialed remote redaction", chunks[1].Text)
+	}
+}
+
+func TestRunFactoryRunPipelineWithDepsRetriesWithResumeWhenStateExists(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("mkdir hal dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(halDir, "auto-state.json"), []byte(`{"step":"review"}`), 0644); err != nil {
+		t.Fatalf("write auto state: %v", err)
+	}
+
+	firstErr := errors.New("transient engine failure")
+	var got []factoryRunAutoRequest
+	err := runFactoryRunPipelineWithDeps(context.Background(), factoryRunPipelineRequest{
+		RunID:             "run-command-retry",
+		Store:             store,
+		WorkDir:           dir,
+		MaxCommandRetries: 2,
+		Request: factoryRunRequest{
+			MarkdownPath: ".hal/prd-feature.md",
+			ReportPath:   ".hal/reports/ignored.md",
+			BaseBranch:   "develop",
+		},
+	}, factoryRunPipelineDeps{
+		runAuto: func(_ context.Context, req factoryRunAutoRequest) error {
+			got = append(got, req)
+			if len(got) == 1 {
+				return firstErr
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunPipelineWithDeps() unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("auto calls = %d, want 2: %#v", len(got), got)
+	}
+	if got[0].Resume {
+		t.Fatalf("first auto request Resume = true, want false: %#v", got[0])
+	}
+	if !reflect.DeepEqual(got[0].Args, []string{".hal/prd-feature.md"}) {
+		t.Fatalf("first auto args = %#v", got[0].Args)
+	}
+	if !got[1].Resume {
+		t.Fatalf("second auto request Resume = false, want true: %#v", got[1])
+	}
+	if len(got[1].Args) != 0 || got[1].ReportPath != "" || got[1].BaseBranch != "" {
+		t.Fatalf("resume auto request replayed source inputs: %#v", got[1])
+	}
+}
+
+func TestRunFactoryRunPipelineWithDepsDoesNotRetryWithoutAutoState(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	dir := t.TempDir()
+	wantErr := errors.New("deterministic failure")
+	calls := 0
+	err := runFactoryRunPipelineWithDeps(context.Background(), factoryRunPipelineRequest{
+		RunID:             "run-command-no-retry",
+		Store:             store,
+		WorkDir:           dir,
+		MaxCommandRetries: 2,
+		Request: factoryRunRequest{
+			MarkdownPath: ".hal/prd-feature.md",
+		},
+	}, factoryRunPipelineDeps{
+		runAuto: func(context.Context, factoryRunAutoRequest) error {
+			calls++
+			return wantErr
+		},
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runFactoryRunPipelineWithDeps() error = %v, want %v", err, wantErr)
+	}
+	if calls != 1 {
+		t.Fatalf("auto calls = %d, want 1", calls)
 	}
 }
 

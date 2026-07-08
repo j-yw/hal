@@ -23,8 +23,8 @@ func TestDefaultFactoryPolicy(t *testing.T) {
 	if policy.MaxRunAttempts != 0 {
 		t.Errorf("MaxRunAttempts = %d, want 0", policy.MaxRunAttempts)
 	}
-	if policy.MaxCommandRetries != 0 {
-		t.Errorf("MaxCommandRetries = %d, want 0", policy.MaxCommandRetries)
+	if policy.MaxCommandRetries != 2 {
+		t.Errorf("MaxCommandRetries = %d, want 2", policy.MaxCommandRetries)
 	}
 	if policy.MaxReviewFixAttempts != 0 {
 		t.Errorf("MaxReviewFixAttempts = %d, want 0", policy.MaxReviewFixAttempts)

@@ -323,17 +323,19 @@ type factoryRunDeps struct {
 }
 
 type factoryRunPipelineRequest struct {
-	RunID          string
-	WorkDir        string
-	Request        factoryRunRequest
-	Record         factory.RunRecord
-	Store          factory.Store
-	Engine         string
-	AttemptPolicy  autoFactoryAttemptPolicy
-	CIPolicy       string
-	SkipCI         bool
-	Now            func() time.Time
-	RecordProgress func(factoryRunProgressEvent) error
+	RunID              string
+	WorkDir            string
+	Request            factoryRunRequest
+	Record             factory.RunRecord
+	Store              factory.Store
+	Engine             string
+	AttemptPolicy      autoFactoryAttemptPolicy
+	MaxCommandRetries  int
+	CIPolicy           string
+	RuntimeStatePolicy string
+	SkipCI             bool
+	Now                func() time.Time
+	RecordProgress     func(factoryRunProgressEvent) error
 }
 
 var defaultFactoryRunDeps = factoryRunDeps{
@@ -382,14 +384,17 @@ type factoryRunRequest struct {
 }
 
 type factoryRunAutoRequest struct {
-	WorkDir       string
-	Args          []string
-	ReportPath    string
-	BaseBranch    string
-	Engine        string
-	AttemptPolicy autoFactoryAttemptPolicy
-	CIPolicy      string
-	SkipCI        bool
+	WorkDir            string
+	Args               []string
+	ReportPath         string
+	BaseBranch         string
+	Engine             string
+	AttemptPolicy      autoFactoryAttemptPolicy
+	MaxCommandRetries  int
+	CIPolicy           string
+	RuntimeStatePolicy string
+	SkipCI             bool
+	Resume             bool
 }
 
 type factoryRunProgressEvent struct {
@@ -745,16 +750,18 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 	}
 
 	pipelineReq := factoryRunPipelineRequest{
-		RunID:         runningRecord.RunID,
-		WorkDir:       dir,
-		Request:       req,
-		Record:        runningRecord,
-		Store:         store,
-		Engine:        engineName,
-		AttemptPolicy: autoFactoryAttemptPolicyFromFactoryPolicy(policy),
-		CIPolicy:      policy.CIPolicy,
-		SkipCI:        factoryPolicySkipsCI(policy),
-		Now:           deps.now,
+		RunID:              runningRecord.RunID,
+		WorkDir:            dir,
+		Request:            req,
+		Record:             runningRecord,
+		Store:              store,
+		Engine:             engineName,
+		AttemptPolicy:      autoFactoryAttemptPolicyFromFactoryPolicy(policy),
+		MaxCommandRetries:  policy.MaxCommandRetries,
+		CIPolicy:           policy.CIPolicy,
+		RuntimeStatePolicy: compound.RuntimeStatePolicyCheckpointFactoryState,
+		SkipCI:             factoryPolicySkipsCI(policy),
+		Now:                deps.now,
 		RecordProgress: func(event factoryRunProgressEvent) error {
 			return recordFactoryRunProgressWithRedactor(store, runningRecord.RunID, deps.now(), event, redactor)
 		},
@@ -770,7 +777,9 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		remoteAuto := factoryRunAutoRequestFromFactoryRequest(req)
 		remoteAuto.Engine = engineName
 		remoteAuto.AttemptPolicy = autoFactoryAttemptPolicyFromFactoryPolicy(policy)
+		remoteAuto.MaxCommandRetries = policy.MaxCommandRetries
 		remoteAuto.CIPolicy = policy.CIPolicy
+		remoteAuto.RuntimeStatePolicy = compound.RuntimeStatePolicyCheckpointFactoryState
 		remoteAuto.SkipCI = factoryPolicySkipsCI(policy)
 		runErr = deps.runSandbox(ctx, factorySandboxExecutorRequest{
 			ProjectDir:                dir,
@@ -4557,7 +4566,9 @@ func runFactoryRunPipelineWithDeps(ctx context.Context, req factoryRunPipelineRe
 	autoReq.WorkDir = strings.TrimSpace(req.WorkDir)
 	autoReq.Engine = strings.TrimSpace(req.Engine)
 	autoReq.AttemptPolicy = req.AttemptPolicy
+	autoReq.MaxCommandRetries = req.MaxCommandRetries
 	autoReq.CIPolicy = strings.TrimSpace(req.CIPolicy)
+	autoReq.RuntimeStatePolicy = strings.TrimSpace(req.RuntimeStatePolicy)
 	autoReq.SkipCI = req.SkipCI
 	now := req.Now
 	if now == nil {
@@ -4567,11 +4578,26 @@ func runFactoryRunPipelineWithDeps(ctx context.Context, req factoryRunPipelineRe
 	if err := recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamSummary, factory.LogSourceLocalFactory, "", "Starting local hal auto pipeline", &startedAt); err != nil {
 		return err
 	}
-	err := deps.runAuto(ctx, autoReq)
-	if err != nil {
+	attempts := factoryCommandAttemptCount(autoReq.MaxCommandRetries)
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		runReq := autoReq
+		if attempt > 1 {
+			runReq = factoryRunResumeAutoRequest(autoReq)
+			retryAt := now()
+			_ = recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamSummary, factory.LogSourceLocalFactory, "", fmt.Sprintf("Retrying local hal auto pipeline (%d/%d)", attempt, attempts), &retryAt)
+		}
+		err = deps.runAuto(ctx, runReq)
+		if err == nil {
+			break
+		}
+		if attempt >= attempts || !factoryRunCanRetryLocalAuto(ctx, runReq.WorkDir, err) {
+			failedAt := now()
+			_ = recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamStderr, factory.LogSourceLocalFactory, redactor.RedactString(err.Error()), "Local hal auto pipeline failed", &failedAt)
+			return err
+		}
 		failedAt := now()
-		_ = recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamStderr, factory.LogSourceLocalFactory, redactor.RedactString(err.Error()), "Local hal auto pipeline failed", &failedAt)
-		return err
+		_ = recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamStderr, factory.LogSourceLocalFactory, redactor.RedactString(err.Error()), fmt.Sprintf("Local hal auto pipeline attempt %d failed; retrying with resume", attempt), &failedAt)
 	}
 	completedAt := now()
 	if err := recordFactoryRunLogChunk(req.Store, req.RunID, factory.LogStreamSummary, factory.LogSourceLocalFactory, "", "Local hal auto pipeline completed", &completedAt); err != nil {
@@ -4592,18 +4618,84 @@ func factoryRunAutoRequestFromFactoryRequest(req factoryRunRequest) factoryRunAu
 	return autoReq
 }
 
+func factoryRunResumeAutoRequest(req factoryRunAutoRequest) factoryRunAutoRequest {
+	resumeReq := req
+	resumeReq.Resume = true
+	resumeReq.Args = nil
+	resumeReq.ReportPath = ""
+	resumeReq.BaseBranch = ""
+	return resumeReq
+}
+
+func factoryCommandAttemptCount(maxRetries int) int {
+	if maxRetries < 0 {
+		return 1
+	}
+	return maxRetries + 1
+}
+
+func factoryRunCanRetryLocalAuto(ctx context.Context, workDir string, err error) bool {
+	if !factoryCommandErrorIsRetryable(ctx, err) {
+		return false
+	}
+	if strings.TrimSpace(workDir) == "" {
+		workDir = "."
+	}
+	statePath := filepath.Join(workDir, template.HalDir, template.AutoStateFile)
+	info, statErr := os.Stat(statePath)
+	return statErr == nil && !info.IsDir()
+}
+
+func factoryCommandErrorIsRetryable(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var limitErr *compound.PolicyLimitError
+	if errors.As(err, &limitErr) {
+		return false
+	}
+	errText := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"no saved state to resume from",
+		"post-convert branch invariant failed",
+		"current branch",
+		"unexpected dirty files",
+		"working tree is dirty",
+		"reached attempt limit",
+		"ci still failing",
+		"must be greater than or equal to 0",
+		"must be one of",
+	} {
+		if strings.Contains(errText, marker) {
+			return false
+		}
+	}
+	return true
+}
+
 func runAutoForFactoryRun(ctx context.Context, req factoryRunAutoRequest) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	ctx = contextWithAutoFactoryAttemptPolicy(ctx, req.AttemptPolicy)
 	ctx = contextWithAutoFactoryCIPolicy(ctx, req.CIPolicy)
+	ctx = contextWithAutoFactoryRuntimeStatePolicy(ctx, req.RuntimeStatePolicy)
 
 	cmd, err := factoryRunAutoCommand(ctx, req)
 	if err != nil {
 		return err
 	}
-	return runAutoWithDir(cmd, req.Args, req.WorkDir)
+	args := req.Args
+	if req.Resume {
+		args = nil
+	}
+	return runAutoWithDir(cmd, args, req.WorkDir)
 }
 
 func factoryRunAutoCommand(ctx context.Context, req factoryRunAutoRequest) (*cobra.Command, error) {
@@ -4612,14 +4704,23 @@ func factoryRunAutoCommand(ctx context.Context, req factoryRunAutoRequest) (*cob
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 	cmd.Flags().Bool("dry-run", false, "")
-	cmd.Flags().Bool("resume", false, "")
+	cmd.Flags().Bool("resume", req.Resume, "")
+	if req.Resume {
+		if err := cmd.Flags().Set("resume", "true"); err != nil {
+			return nil, err
+		}
+	}
 	cmd.Flags().Bool("no-ci", req.SkipCI, "")
 	cmd.Flags().Bool("skip-pr", false, "")
 	cmd.Flags().Bool("no-review", false, "")
 	cmd.Flags().String("mode", "", "")
 	cmd.Flags().Int("review-streak", 0, "")
 	cmd.Flags().Int("review-max", 0, "")
-	cmd.Flags().String("report", strings.TrimSpace(req.ReportPath), "")
+	reportPath := strings.TrimSpace(req.ReportPath)
+	if req.Resume {
+		reportPath = ""
+	}
+	cmd.Flags().String("report", reportPath, "")
 	engineName := factoryRunAutoEngine(req.Engine)
 	cmd.Flags().String("engine", engineName, "")
 	if strings.TrimSpace(req.Engine) != "" {
@@ -4627,7 +4728,11 @@ func factoryRunAutoCommand(ctx context.Context, req factoryRunAutoRequest) (*cob
 			return nil, err
 		}
 	}
-	cmd.Flags().String("base", strings.TrimSpace(req.BaseBranch), "")
+	baseBranch := strings.TrimSpace(req.BaseBranch)
+	if req.Resume {
+		baseBranch = ""
+	}
+	cmd.Flags().String("base", baseBranch, "")
 	cmd.Flags().Bool("json", false, "")
 
 	return cmd, nil

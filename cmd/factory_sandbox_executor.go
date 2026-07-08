@@ -294,6 +294,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		return provider, nil
 	}
 	var remoteOutput *factorySandboxTimelineWriter
+	preparedRemoteAuto := req.RemoteAuto
 	cleanupBehavior := factorySandboxCleanupBehavior(record)
 	if req.DeferSuccessCleanup && cleanupBehavior == factory.CleanupBehaviorOnSuccess {
 		cleanupBehavior = factory.CleanupBehaviorPreserve
@@ -431,6 +432,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			if err != nil {
 				return err
 			}
+			preparedRemoteAuto = remoteAuto
 			command.Command = factorySandboxRemoteCommandArgs(record, remoteAuto)
 			command.WorkDir = factorySandboxRemoteWorkspaceDir(record)
 			command.Env = factorySandboxResolvedSecretEnv(req.ResolvedSecrets)
@@ -439,7 +441,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			return nil
 		},
 		RunCommand: func(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {
-			return runFactorySandboxRuntimeExec(ctx, run, command)
+			return runFactorySandboxRuntimeExecWithRetries(ctx, run, command, record, preparedRemoteAuto, remoteOutput)
 		},
 		HandleEvent: func(_ context.Context, event sandboxexec.Event) error {
 			return handleFactorySandboxExecutorEvent(remoteOutput, event)
@@ -733,6 +735,60 @@ func runFactorySandboxRuntimeExec(ctx context.Context, run sandboxexec.RunContex
 		Env:    command.Env,
 	})
 	return err
+}
+
+func runFactorySandboxRuntimeExecWithRetries(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest, record factory.RunRecord, req factoryRunAutoRequest, remoteOutput *factorySandboxTimelineWriter) error {
+	attempts := factoryCommandAttemptCount(req.MaxCommandRetries)
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		runCommand := command
+		if attempt > 1 {
+			resumeReq := factoryRunResumeAutoRequest(req)
+			runCommand.Command = factorySandboxRemoteCommandArgs(record, resumeReq)
+			if remoteOutput != nil {
+				_ = remoteOutput.appendExecutorEvent(factory.EventTypeStepStarted, "Retrying remote sandbox execution", map[string]any{
+					"attempt":     attempt,
+					"maxAttempts": attempts,
+					"mode":        "resume",
+					"status":      factory.RunStatusRunning,
+				})
+			}
+		}
+		err = runFactorySandboxRuntimeExec(ctx, run, runCommand)
+		if err == nil {
+			return nil
+		}
+		if attempt >= attempts || !factorySandboxCanRetryRemoteAuto(ctx, run, command, err) {
+			return err
+		}
+		if remoteOutput != nil {
+			_ = remoteOutput.appendExecutorEvent(factory.EventTypeStepEnded, "Remote sandbox execution attempt failed; retrying with resume", map[string]any{
+				"attempt":     attempt,
+				"maxAttempts": attempts,
+				"status":      factory.RunStatusFailed,
+			})
+		}
+	}
+	return err
+}
+
+func factorySandboxCanRetryRemoteAuto(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest, err error) bool {
+	if !factoryCommandErrorIsRetryable(ctx, err) {
+		return false
+	}
+	if run.Driver == nil {
+		return false
+	}
+	workspaceDir := strings.TrimSpace(command.WorkDir)
+	if workspaceDir == "" {
+		return false
+	}
+	checkCommand := sandboxexec.CommandRequest{
+		Command: []string{"sh", "-c", "cd " + shellQuote(workspaceDir) + " && test -f .hal/auto-state.json"},
+		Stdout:  io.Discard,
+		Stderr:  io.Discard,
+	}
+	return runFactorySandboxRuntimeExec(ctx, run, checkCommand) == nil
 }
 
 func handleFactorySandboxExecutorError(ctx context.Context, store factory.Store, deps factorySandboxExecutorDeps, req factorySandboxExecutorRequest, record *factory.RunRecord, target *sandbox.SandboxState, err error, secretRedactor factory.RunSecretRedactor) error {
@@ -1476,16 +1532,20 @@ func appendFactorySandboxBootstrapTimeline(store factory.Store, deps factorySand
 
 func factorySandboxRemoteAutoArgs(req factoryRunAutoRequest) []string {
 	args := []string{"auto"}
-	for _, arg := range req.Args {
-		if trimmed := strings.TrimSpace(arg); trimmed != "" {
-			args = append(args, trimmed)
+	if req.Resume {
+		args = append(args, "--resume")
+	} else {
+		for _, arg := range req.Args {
+			if trimmed := strings.TrimSpace(arg); trimmed != "" {
+				args = append(args, trimmed)
+			}
 		}
-	}
-	if reportPath := strings.TrimSpace(req.ReportPath); reportPath != "" {
-		args = append(args, "--report", reportPath)
-	}
-	if baseBranch := strings.TrimSpace(req.BaseBranch); baseBranch != "" {
-		args = append(args, "--base", baseBranch)
+		if reportPath := strings.TrimSpace(req.ReportPath); reportPath != "" {
+			args = append(args, "--report", reportPath)
+		}
+		if baseBranch := strings.TrimSpace(req.BaseBranch); baseBranch != "" {
+			args = append(args, "--base", baseBranch)
+		}
 	}
 	if engineName := normalizeFactoryRunEngineName(req.Engine); engineName != "" {
 		args = append(args, "--engine", engineName)
@@ -1508,6 +1568,9 @@ func factorySandboxRemoteAutoEnv(req factoryRunAutoRequest) []string {
 	env = append(env, fmt.Sprintf("%s=%d", autoFactoryMaxCIFixAttemptsEnv, policy.MaxCIFixAttempts))
 	if ciPolicy := strings.TrimSpace(req.CIPolicy); ciPolicy != "" {
 		env = append(env, fmt.Sprintf("%s=%s", autoFactoryCIPolicyEnv, shellQuote(ciPolicy)))
+	}
+	if runtimeStatePolicy := strings.TrimSpace(req.RuntimeStatePolicy); runtimeStatePolicy != "" {
+		env = append(env, fmt.Sprintf("%s=%s", autoFactoryRuntimeStatePolicyEnv, shellQuote(runtimeStatePolicy)))
 	}
 	return env
 }

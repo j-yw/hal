@@ -19,6 +19,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
@@ -2916,6 +2917,91 @@ func TestFactorySandboxRemoteCommandArgsSelectsWorkspaceDirectory(t *testing.T) 
 	want := []string{"sh", "-c", wantScript}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("factorySandboxRemoteCommandArgs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestFactorySandboxRemoteCommandArgsResumeDoesNotReplaySourceInputs(t *testing.T) {
+	record := factory.RunRecord{
+		RepoRemote: "git@github.com:jywlabs/hal.git",
+	}
+	got := factorySandboxRemoteCommandArgs(record, factoryRunAutoRequest{
+		Resume:     true,
+		Args:       []string{".hal/prd-feature.md"},
+		ReportPath: ".hal/reports/analysis.md",
+		BaseBranch: "develop",
+		Engine:     "codex",
+		SkipCI:     true,
+	})
+	commandMetadata := strings.Join(got, " ")
+	for _, forbidden := range []string{".hal/prd-feature.md", ".hal/reports/analysis.md", "--base"} {
+		if strings.Contains(commandMetadata, forbidden) {
+			t.Fatalf("resume command replayed %q: %q", forbidden, commandMetadata)
+		}
+	}
+	for _, want := range []string{"'auto' '--resume'", "'--engine' 'codex'", "'--no-ci'"} {
+		if !strings.Contains(commandMetadata, want) {
+			t.Fatalf("resume command missing %q: %q", want, commandMetadata)
+		}
+	}
+}
+
+func TestFactorySandboxRemoteAutoEnvIncludesRuntimeStatePolicy(t *testing.T) {
+	got := factorySandboxRemoteAutoEnv(factoryRunAutoRequest{
+		RuntimeStatePolicy: "checkpoint_factory_state",
+	})
+	found := false
+	for _, entry := range got {
+		if entry == "HAL_FACTORY_RUNTIME_STATE_POLICY='checkpoint_factory_state'" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("factorySandboxRemoteAutoEnv() = %#v, want runtime state policy env", got)
+	}
+}
+
+func TestRunFactorySandboxRuntimeExecWithRetriesUsesResumeWhenAutoStateExists(t *testing.T) {
+	transientErr := errors.New("transient remote failure")
+	var commands [][]string
+	driver := fakeFactorySandboxRuntimeDriver{
+		execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			commands = append(commands, append([]string(nil), req.Args...))
+			joined := strings.Join(req.Args, " ")
+			switch len(commands) {
+			case 1:
+				return &sandboxruntime.ExecResult{}, transientErr
+			case 2:
+				if !strings.Contains(joined, "test -f .hal/auto-state.json") {
+					t.Fatalf("second command = %#v, want auto-state probe", req.Args)
+				}
+				return &sandboxruntime.ExecResult{}, nil
+			case 3:
+				if !strings.Contains(joined, "'auto' '--resume'") {
+					t.Fatalf("third command = %#v, want resume auto command", req.Args)
+				}
+				return &sandboxruntime.ExecResult{}, nil
+			default:
+				t.Fatalf("unexpected exec command %d: %#v", len(commands), req.Args)
+				return &sandboxruntime.ExecResult{}, nil
+			}
+		},
+	}
+	err := runFactorySandboxRuntimeExecWithRetries(context.Background(), sandboxexec.RunContext{
+		Driver: driver,
+		Target: sandboxruntime.Target{Name: "dev"},
+	}, sandboxexec.CommandRequest{
+		Command: []string{"sh", "-c", "hal auto .hal/prd-feature.md"},
+		WorkDir: "/root/workspace/repo",
+	}, factory.RunRecord{RepoPath: "/root/workspace/repo"}, factoryRunAutoRequest{
+		Args:              []string{".hal/prd-feature.md"},
+		MaxCommandRetries: 2,
+	}, nil)
+	if err != nil {
+		t.Fatalf("runFactorySandboxRuntimeExecWithRetries() unexpected error: %v", err)
+	}
+	if len(commands) != 3 {
+		t.Fatalf("exec commands = %d, want 3: %#v", len(commands), commands)
 	}
 }
 
