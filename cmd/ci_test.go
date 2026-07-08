@@ -1371,8 +1371,8 @@ func TestRunCIFix_DefersEngineResolutionWhenStatusNotFailing(t *testing.T) {
 	if err := os.MkdirAll(halDir, 0o755); err != nil {
 		t.Fatalf("mkdir .hal: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte("engine: ["), 0o644); err != nil {
-		t.Fatalf("write malformed config: %v", err)
+	if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte("engine: codex\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
 	}
 
 	newEngineCalled := false

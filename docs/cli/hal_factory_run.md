@@ -40,6 +40,7 @@ hal factory run [prd-path] [flags]
       --json                     Output machine-readable JSON (factory-run-v1 contract)
       --no-ci                    Alias for --ci-policy disabled
       --publish string           Host publish policy after factory execution (none, push, pr)
+      --publish-from string      Publish runner after factory execution (host, sandbox, auto) (default "host")
       --report string            Start from an analysis report path
       --sandbox                  Run the factory executor in a managed sandbox
       --sandbox-host string      Cached sandbox host ID for target selection
