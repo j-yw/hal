@@ -497,6 +497,9 @@ type FactoryStatusResponse struct {
 type FactoryStatusRun struct {
 	RunID                 string                                                  `json:"runId"`
 	Status                string                                                  `json:"status"`
+	DisplayStatus         string                                                  `json:"displayStatus,omitempty"`
+	PipelineStatus        string                                                  `json:"pipelineStatus,omitempty"`
+	PublishStatus         string                                                  `json:"publishStatus,omitempty"`
 	ExecutorMode          string                                                  `json:"executorMode,omitempty"`
 	Engine                string                                                  `json:"engine,omitempty"`
 	Source                factory.SourceMetadata                                  `json:"source"`
@@ -519,6 +522,7 @@ type FactoryStatusRun struct {
 	Telemetry             *factory.RunTelemetry                                   `json:"telemetry,omitempty"`
 	Failure               *factory.FailureSummary                                 `json:"failure,omitempty"`
 	Handoff               *factory.HandoffSummary                                 `json:"handoff,omitempty"`
+	PostRun               *factory.PostRunState                                   `json:"postRun,omitempty"`
 }
 
 // FactoryArtifactsResponse is the machine-readable JSON output for
@@ -550,9 +554,13 @@ type FactoryPublishResponse struct {
 	OK              bool                     `json:"ok"`
 	RunID           string                   `json:"runId"`
 	Status          string                   `json:"status"`
+	DisplayStatus   string                   `json:"displayStatus,omitempty"`
+	PipelineStatus  string                   `json:"pipelineStatus,omitempty"`
+	PublishStatus   string                   `json:"publishStatus,omitempty"`
 	Policy          string                   `json:"policy"`
 	AllowUnverified bool                     `json:"allowUnverified,omitempty"`
 	BranchName      string                   `json:"branchName"`
+	PullRequestURL  string                   `json:"pullRequestUrl,omitempty"`
 	Artifacts       []FactoryArtifactSummary `json:"artifacts,omitempty"`
 	Error           string                   `json:"error,omitempty"`
 }
@@ -586,6 +594,9 @@ type FactoryArtifactsSummary struct {
 type FactoryRunSummary struct {
 	RunID                 string                                                  `json:"runId"`
 	Status                string                                                  `json:"status"`
+	DisplayStatus         string                                                  `json:"displayStatus,omitempty"`
+	PipelineStatus        string                                                  `json:"pipelineStatus,omitempty"`
+	PublishStatus         string                                                  `json:"publishStatus,omitempty"`
 	Source                factory.SourceMetadata                                  `json:"source"`
 	RepoPath              string                                                  `json:"repoPath"`
 	RepoRemote            string                                                  `json:"repoRemote"`
@@ -600,6 +611,7 @@ type FactoryRunSummary struct {
 	ArtifactCount         int                                                     `json:"artifactCount"`
 	Telemetry             *factory.RunTelemetry                                   `json:"telemetry,omitempty"`
 	Failure               *factory.FailureSummary                                 `json:"failure,omitempty"`
+	PostRun               *factory.PostRunState                                   `json:"postRun,omitempty"`
 }
 
 func validateFactoryRunArgs(cmd *cobra.Command, args []string) error {
@@ -929,7 +941,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 			completedRecord = *reloadedRecord
 		}
 	}
-	completedRecord, err = publishFactoryRunAfterVerifiedSuccess(ctx, store, dir, req, completedRecord, deps, policy, redactor)
+	completedRecord, err = publishFactoryRunAfterVerifiedSuccess(ctx, store, dir, req, completedRecord, deps, policy, redactor, "automatic", false)
 	if err != nil {
 		failedAt := deps.now()
 		failedRecord, failureErr := markFactoryRunFailedWithRedactor(store, completedRecord, failedAt, err, redactor)
@@ -2844,7 +2856,7 @@ func factoryPublishPolicyRequiresHostArtifacts(policy factory.FactoryPolicy) boo
 		strings.TrimSpace(policy.PublishPolicy) == factory.PublishPolicyPR
 }
 
-func publishFactoryRunAfterVerifiedSuccess(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, redactor factory.RunSecretRedactor) (factory.RunRecord, error) {
+func publishFactoryRunAfterVerifiedSuccess(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, redactor factory.RunSecretRedactor, source string, allowUnverified bool) (factory.RunRecord, error) {
 	publishPolicy := strings.TrimSpace(policy.PublishPolicy)
 	if publishPolicy == "" || publishPolicy == factory.PublishPolicyNone {
 		return record, nil
@@ -2881,7 +2893,7 @@ func publishFactoryRunAfterVerifiedSuccess(ctx context.Context, store factory.St
 	if err != nil {
 		return record, err
 	}
-	updatedRecord, err = recordFactoryPublishOutcomeArtifact(store, record, publishPolicy, recoveredBundle, result, redactor)
+	updatedRecord, err = recordFactoryPublishOutcomeArtifact(store, record, publishPolicy, recoveredBundle, result, redactor, source, allowUnverified, deps.now())
 	if err != nil {
 		return record, err
 	}
@@ -3054,11 +3066,17 @@ func publishFactoryRunBranch(ctx context.Context, dir string, req factoryRunRequ
 	}
 }
 
-func recordFactoryPublishOutcomeArtifact(store factory.Store, record factory.RunRecord, publishPolicy, recoveredBundle string, result ci.PushResult, redactor factory.RunSecretRedactor) (factory.RunRecord, error) {
+func recordFactoryPublishOutcomeArtifact(store factory.Store, record factory.RunRecord, publishPolicy, recoveredBundle string, result ci.PushResult, redactor factory.RunSecretRedactor, source string, allowUnverified bool, completedAt time.Time) (factory.RunRecord, error) {
 	var pr *ci.PullRequest
 	if strings.TrimSpace(result.PullRequest.URL) != "" || result.PullRequest.Number != 0 || strings.TrimSpace(result.PullRequest.HeadRef) != "" {
 		copied := result.PullRequest
 		pr = &copied
+	}
+	pullRequestURL := ""
+	pullRequestID := 0
+	if pr != nil {
+		pullRequestURL = strings.TrimSpace(pr.URL)
+		pullRequestID = pr.Number
 	}
 	artifact, tempPath, err := materializeFactoryJSONArtifact("publish-outcome", "factory/publish-outcome.json", factoryPublishOutcomeArtifact{
 		Policy:          publishPolicy,
@@ -3072,9 +3090,16 @@ func recordFactoryPublishOutcomeArtifact(store factory.Store, record factory.Run
 		"policy":      publishPolicy,
 		"branch":      result.Branch,
 		"pushed":      result.Pushed,
+		"status":      factory.RunStatusSucceeded,
 	})
 	if err != nil {
 		return record, err
+	}
+	if pullRequestURL != "" {
+		artifact.Summary["pullRequestUrl"] = pullRequestURL
+	}
+	if recoveredBundle != "" {
+		artifact.Summary["recoveredBundle"] = recoveredBundle
 	}
 	defer func() { _ = os.Remove(tempPath) }()
 	if _, err := store.SaveArtifactFileWithRedactor(record.RunID, artifact, tempPath, redactor); err != nil {
@@ -3083,6 +3108,29 @@ func recordFactoryPublishOutcomeArtifact(store factory.Store, record factory.Run
 	updatedRecord, err := store.LoadRun(record.RunID)
 	if err != nil {
 		return record, fmt.Errorf("reload factory run after publish artifact: %w", err)
+	}
+	if updatedRecord.PostRun == nil {
+		updatedRecord.PostRun = &factory.PostRunState{}
+	}
+	completedAt = completedAt.UTC()
+	updatedRecord.PostRun.Publish = &factory.PublishOutcome{
+		Status:          factory.RunStatusSucceeded,
+		Policy:          strings.TrimSpace(publishPolicy),
+		BranchName:      strings.TrimSpace(result.Branch),
+		RecoveredBundle: strings.TrimSpace(recoveredBundle),
+		Pushed:          result.Pushed,
+		PullRequestURL:  pullRequestURL,
+		PullRequestID:   pullRequestID,
+		AllowUnverified: allowUnverified,
+		Source:          strings.TrimSpace(source),
+		CompletedAt:     &completedAt,
+	}
+	if err := store.SaveRunWithRedactor(updatedRecord, redactor); err != nil {
+		return record, fmt.Errorf("record factory post-run publish metadata: %w", err)
+	}
+	updatedRecord, err = store.LoadRun(record.RunID)
+	if err != nil {
+		return record, fmt.Errorf("reload factory run after post-run publish metadata: %w", err)
 	}
 	return *updatedRecord, nil
 }
@@ -5476,7 +5524,7 @@ func runFactoryPublishWithDeps(ctx context.Context, out io.Writer, runID string,
 		sandboxRequests:      deps.sandboxRequests,
 		runGit:               deps.runGit,
 		pushAndCreatePRInDir: deps.pushAndCreatePRInDir,
-	}, factory.FactoryPolicy{PublishPolicy: publishPolicy}, factory.RunSecretRedactor{})
+	}, factory.FactoryPolicy{PublishPolicy: publishPolicy}, factory.RunSecretRedactor{}, "manual", req.AllowUnverified)
 	if err != nil {
 		return fail(record.Status, err)
 	}
@@ -5485,9 +5533,13 @@ func runFactoryPublishWithDeps(ctx context.Context, out io.Writer, runID string,
 		OK:              true,
 		RunID:           updatedRecord.RunID,
 		Status:          updatedRecord.Status,
+		DisplayStatus:   factory.DeriveDisplayStatus(updatedRecord),
+		PipelineStatus:  updatedRecord.Status,
+		PublishStatus:   factoryPublishStatus(factory.DerivePostRunState(updatedRecord)),
 		Policy:          publishPolicy,
 		AllowUnverified: req.AllowUnverified,
 		BranchName:      strings.TrimSpace(updatedRecord.BranchName),
+		PullRequestURL:  factoryPublishPullRequestURL(factory.DerivePostRunState(updatedRecord)),
 		Artifacts:       newFactoryArtifactSummaries(updatedRecord.Artifacts),
 	}
 	if req.JSON {
@@ -5578,9 +5630,13 @@ func renderFactoryLogsJSON(out io.Writer, runID string, chunks []factory.LogChun
 }
 
 func newFactoryStatusRun(record factory.RunRecord, events []factory.EventRecord, handoff *factory.HandoffSummary) FactoryStatusRun {
+	postRun := factory.DerivePostRunState(record)
 	return FactoryStatusRun{
 		RunID:                 record.RunID,
 		Status:                record.Status,
+		DisplayStatus:         factory.DeriveDisplayStatus(record),
+		PipelineStatus:        record.Status,
+		PublishStatus:         factoryPublishStatus(postRun),
 		ExecutorMode:          record.ExecutorMode,
 		Engine:                record.Engine,
 		Source:                record.Source,
@@ -5603,6 +5659,7 @@ func newFactoryStatusRun(record factory.RunRecord, events []factory.EventRecord,
 		Telemetry:             factory.DeriveRunTelemetry(record, events),
 		Failure:               normalizedFactoryFailureSummary(record.Failure),
 		Handoff:               handoff,
+		PostRun:               postRun,
 	}
 }
 
@@ -6018,9 +6075,13 @@ func renderFactoryRunResult(out io.Writer, store factory.Store, runID string, js
 }
 
 func summarizeFactoryRun(record factory.RunRecord) FactoryRunSummary {
+	postRun := factory.DerivePostRunState(record)
 	return FactoryRunSummary{
 		RunID:                 record.RunID,
 		Status:                record.Status,
+		DisplayStatus:         factory.DeriveDisplayStatus(record),
+		PipelineStatus:        record.Status,
+		PublishStatus:         factoryPublishStatus(postRun),
 		Source:                record.Source,
 		RepoPath:              record.RepoPath,
 		RepoRemote:            record.RepoRemote,
@@ -6035,7 +6096,22 @@ func summarizeFactoryRun(record factory.RunRecord) FactoryRunSummary {
 		ArtifactCount:         len(record.Artifacts),
 		Telemetry:             factory.DeriveRunTelemetry(record, nil),
 		Failure:               normalizedFactoryFailureSummary(record.Failure),
+		PostRun:               postRun,
 	}
+}
+
+func factoryPublishStatus(postRun *factory.PostRunState) string {
+	if postRun == nil || postRun.Publish == nil {
+		return ""
+	}
+	return strings.TrimSpace(postRun.Publish.Status)
+}
+
+func factoryPublishPullRequestURL(postRun *factory.PostRunState) string {
+	if postRun == nil || postRun.Publish == nil {
+		return ""
+	}
+	return strings.TrimSpace(postRun.Publish.PullRequestURL)
 }
 
 func normalizedFactoryFailureSummary(failure *factory.FailureSummary) *factory.FailureSummary {
@@ -6086,7 +6162,7 @@ func renderFactoryListTable(out io.Writer, records []factory.RunRecord) {
 	for _, record := range records {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
 			record.RunID,
-			record.Status,
+			factoryHumanDisplayStatus(record),
 			record.BranchName,
 			record.CurrentStep,
 			formatFactoryListTime(record.UpdatedAt),
@@ -6097,11 +6173,16 @@ func renderFactoryListTable(out io.Writer, records []factory.RunRecord) {
 
 func renderFactoryStatusTable(out io.Writer, record factory.RunRecord, events []factory.EventRecord, handoff *factory.HandoffSummary) {
 	telemetry := factory.DeriveRunTelemetry(record, events)
+	postRun := factory.DerivePostRunState(record)
 	fmt.Fprintf(out, "Run ID: %s\n", record.RunID)
 	fmt.Fprintf(out, "Status: %s\n", record.Status)
+	if displayStatus := factory.DeriveDisplayStatus(record); displayStatus != "" && displayStatus != record.Status {
+		fmt.Fprintf(out, "Display status: %s\n", displayStatus)
+	}
 	fmt.Fprintf(out, "Branch: %s\n", record.BranchName)
 	fmt.Fprintf(out, "Step: %s\n", record.CurrentStep)
 	fmt.Fprintf(out, "Updated: %s\n", formatFactoryListTime(record.UpdatedAt))
+	renderFactoryStatusPostRun(out, postRun)
 	if readiness := factorySecurityReadinessGateHuman(factory.SecurityReadinessGateDecision(record)); readiness != "" {
 		fmt.Fprintf(out, "%s\n", readiness)
 	}
@@ -6132,6 +6213,41 @@ func renderFactoryStatusTable(out io.Writer, record factory.RunRecord, events []
 		)
 	}
 	_ = w.Flush()
+}
+
+func factoryHumanDisplayStatus(record factory.RunRecord) string {
+	displayStatus := factory.DeriveDisplayStatus(record)
+	if displayStatus == "" || displayStatus == record.Status {
+		return record.Status
+	}
+	if displayStatus == "failed_published" {
+		return "failed · published"
+	}
+	return displayStatus
+}
+
+func renderFactoryStatusPostRun(out io.Writer, postRun *factory.PostRunState) {
+	if postRun == nil || postRun.Publish == nil {
+		return
+	}
+	publish := postRun.Publish
+	status := strings.TrimSpace(publish.Status)
+	if status == "" {
+		status = "unknown"
+	}
+	policy := strings.TrimSpace(publish.Policy)
+	if policy == "" {
+		policy = "publish"
+	}
+	branch := strings.TrimSpace(publish.BranchName)
+	if branch != "" {
+		fmt.Fprintf(out, "Post-run publish: %s via %s on %s\n", status, policy, branch)
+	} else {
+		fmt.Fprintf(out, "Post-run publish: %s via %s\n", status, policy)
+	}
+	if publish.PullRequestURL != "" {
+		fmt.Fprintf(out, "PR: %s\n", publish.PullRequestURL)
+	}
 }
 
 func renderFactoryStatusTelemetry(out io.Writer, record factory.RunRecord, telemetry *factory.RunTelemetry) {

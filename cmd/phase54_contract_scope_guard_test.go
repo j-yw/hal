@@ -79,6 +79,7 @@ func TestPhase54NoSchemaOrContractExpansionRequired(t *testing.T) {
 				"branchName", "baseBranch", "policy,omitempty", "sandboxName,omitempty", "sandbox,omitempty",
 				"currentStep", "createdAt", "updatedAt", "finishedAt,omitempty", "artifacts,omitempty",
 				"verification,omitempty", "telemetry,omitempty", "failure,omitempty", "secrets,omitempty",
+				"postRun,omitempty",
 			},
 		},
 		{

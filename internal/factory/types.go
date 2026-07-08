@@ -253,6 +253,36 @@ type RunRecord struct {
 	Telemetry    *RunTelemetry       `json:"telemetry,omitempty"`
 	Failure      *FailureSummary     `json:"failure,omitempty"`
 	Secrets      []RunSecretMetadata `json:"secrets,omitempty"`
+	PostRun      *PostRunState       `json:"postRun,omitempty"`
+}
+
+// PostRunState captures operator actions that happen after the original
+// pipeline reaches a terminal state. It is intentionally separate from Status
+// so failed pipelines remain auditable after manual recovery or publish.
+type PostRunState struct {
+	Recovery *RecoveryOutcome `json:"recovery,omitempty"`
+	Publish  *PublishOutcome  `json:"publish,omitempty"`
+}
+
+type RecoveryOutcome struct {
+	Status          string     `json:"status,omitempty"`
+	RecoveredBundle string     `json:"recoveredBundle,omitempty"`
+	BranchName      string     `json:"branchName,omitempty"`
+	Source          string     `json:"source,omitempty"`
+	CompletedAt     *time.Time `json:"completedAt,omitempty"`
+}
+
+type PublishOutcome struct {
+	Status          string     `json:"status,omitempty"`
+	Policy          string     `json:"policy,omitempty"`
+	BranchName      string     `json:"branchName,omitempty"`
+	RecoveredBundle string     `json:"recoveredBundle,omitempty"`
+	Pushed          bool       `json:"pushed,omitempty"`
+	PullRequestURL  string     `json:"pullRequestUrl,omitempty"`
+	PullRequestID   int        `json:"pullRequestId,omitempty"`
+	AllowUnverified bool       `json:"allowUnverified,omitempty"`
+	Source          string     `json:"source,omitempty"`
+	CompletedAt     *time.Time `json:"completedAt,omitempty"`
 }
 
 // RunSecretInput describes one secret required by a factory run. For
@@ -772,6 +802,107 @@ func deriveOutcomeFromArtifacts(artifacts []ArtifactReference, kind string) stri
 		}
 	}
 	return ""
+}
+
+func DerivePostRunState(record RunRecord) *PostRunState {
+	var state PostRunState
+	if record.PostRun != nil {
+		if record.PostRun.Recovery != nil {
+			recovery := *record.PostRun.Recovery
+			state.Recovery = &recovery
+		}
+		if record.PostRun.Publish != nil {
+			publish := *record.PostRun.Publish
+			state.Publish = &publish
+		}
+	}
+	if state.Publish == nil {
+		state.Publish = derivePublishOutcomeFromArtifacts(record.Artifacts)
+	}
+	if state.Recovery == nil && state.Publish != nil && strings.TrimSpace(state.Publish.RecoveredBundle) != "" {
+		state.Recovery = &RecoveryOutcome{
+			Status:          RunStatusSucceeded,
+			RecoveredBundle: state.Publish.RecoveredBundle,
+			BranchName:      state.Publish.BranchName,
+			Source:          state.Publish.Source,
+			CompletedAt:     state.Publish.CompletedAt,
+		}
+	}
+	if state.Recovery == nil && state.Publish == nil {
+		return nil
+	}
+	return &state
+}
+
+func DeriveDisplayStatus(record RunRecord) string {
+	status := strings.TrimSpace(record.Status)
+	postRun := DerivePostRunState(record)
+	if postRun == nil || postRun.Publish == nil {
+		return status
+	}
+	if status == RunStatusFailed && strings.TrimSpace(postRun.Publish.Status) == RunStatusSucceeded {
+		return "failed_published"
+	}
+	if strings.TrimSpace(postRun.Publish.Status) != "" {
+		return status + "_publish_" + strings.TrimSpace(postRun.Publish.Status)
+	}
+	return status
+}
+
+func derivePublishOutcomeFromArtifacts(artifacts []ArtifactReference) *PublishOutcome {
+	for _, artifact := range artifacts {
+		if artifact.Partial {
+			continue
+		}
+		outcomeKind, _ := artifact.Summary["outcomeKind"].(string)
+		if strings.TrimSpace(outcomeKind) != "publish" && artifact.Name != "publish-outcome" {
+			continue
+		}
+		completedAt := artifact.CreatedAt
+		outcome := &PublishOutcome{
+			Status:      RunStatusSucceeded,
+			Policy:      summaryString(artifact.Summary, "policy"),
+			BranchName:  summaryString(artifact.Summary, "branch"),
+			Pushed:      summaryBool(artifact.Summary, "pushed"),
+			Source:      "artifact",
+			CompletedAt: completedAt,
+		}
+		if pullRequestURL := summaryString(artifact.Summary, "pullRequestUrl"); pullRequestURL != "" {
+			outcome.PullRequestURL = pullRequestURL
+		}
+		if recoveredBundle := summaryString(artifact.Summary, "recoveredBundle"); recoveredBundle != "" {
+			outcome.RecoveredBundle = recoveredBundle
+		}
+		return outcome
+	}
+	return nil
+}
+
+func summaryString(summary map[string]any, key string) string {
+	if len(summary) == 0 {
+		return ""
+	}
+	value, ok := summary[key]
+	if !ok {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(text)
+}
+
+func summaryBool(summary map[string]any, key string) bool {
+	if len(summary) == 0 {
+		return false
+	}
+	value, ok := summary[key]
+	if !ok {
+		return false
+	}
+	enabled, ok := value.(bool)
+	return ok && enabled
 }
 
 func deriveOutcomeFromEvents(events []EventRecord, kind string) string {

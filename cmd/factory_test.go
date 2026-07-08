@@ -2319,7 +2319,7 @@ func TestPublishFactoryRunAfterVerifiedSuccessPushAppliesSandboxBundle(t *testin
 	got, err := publishFactoryRunAfterVerifiedSuccess(context.Background(), store, dir, factoryRunRequest{
 		Sandbox:    true,
 		BaseBranch: "main",
-	}, record, deps, factory.FactoryPolicy{PublishPolicy: factory.PublishPolicyPush}, factory.RunSecretRedactor{})
+	}, record, deps, factory.FactoryPolicy{PublishPolicy: factory.PublishPolicyPush}, factory.RunSecretRedactor{}, "automatic", false)
 	if err != nil {
 		t.Fatalf("publishFactoryRunAfterVerifiedSuccess() error = %v", err)
 	}
@@ -2386,7 +2386,7 @@ func TestPublishFactoryRunAfterVerifiedSuccessPROpensFromHostBranch(t *testing.T
 	got, err := publishFactoryRunAfterVerifiedSuccess(context.Background(), store, dir, factoryRunRequest{
 		Sandbox:    true,
 		BaseBranch: "develop",
-	}, record, deps, factory.FactoryPolicy{PublishPolicy: factory.PublishPolicyPR}, factory.RunSecretRedactor{})
+	}, record, deps, factory.FactoryPolicy{PublishPolicy: factory.PublishPolicyPR}, factory.RunSecretRedactor{}, "automatic", false)
 	if err != nil {
 		t.Fatalf("publishFactoryRunAfterVerifiedSuccess() error = %v", err)
 	}
@@ -2827,6 +2827,66 @@ func TestRunFactoryPublishCollectsSandboxRecoveryBundleBeforeManualPublish(t *te
 	}
 	if !resp.OK || resp.Policy != factory.PublishPolicyPR || resp.BranchName != "hal/wasd-movement-controls" {
 		t.Fatalf("publish response = %#v", resp)
+	}
+	if resp.PipelineStatus != factory.RunStatusFailed || resp.PublishStatus != factory.RunStatusSucceeded || resp.DisplayStatus != "failed_published" {
+		t.Fatalf("publish response statuses = %#v", resp)
+	}
+	if resp.PullRequestURL != "https://github.com/j-yw/test-keyboard-game/pull/4" {
+		t.Fatalf("publish response pullRequestUrl = %q", resp.PullRequestURL)
+	}
+	if updated.PostRun == nil || updated.PostRun.Publish == nil {
+		t.Fatalf("updated postRun publish missing: %#v", updated.PostRun)
+	}
+	if updated.PostRun.Publish.Status != factory.RunStatusSucceeded ||
+		updated.PostRun.Publish.Source != "manual" ||
+		!updated.PostRun.Publish.AllowUnverified ||
+		updated.PostRun.Publish.PullRequestURL != "https://github.com/j-yw/test-keyboard-game/pull/4" {
+		t.Fatalf("updated postRun publish = %#v", updated.PostRun.Publish)
+	}
+}
+
+func TestFactoryStatusDerivesFailedPublishedDisplayFromPublishArtifact(t *testing.T) {
+	completedAt := time.Date(2026, 7, 8, 12, 30, 0, 0, time.UTC)
+	record := factory.RunRecord{
+		RunID:       "run-artifact-published",
+		Status:      factory.RunStatusFailed,
+		BranchName:  "hal/published",
+		BaseBranch:  "main",
+		CurrentStep: "verify",
+		CreatedAt:   completedAt.Add(-time.Minute),
+		UpdatedAt:   completedAt,
+		Artifacts: []factory.ArtifactReference{{
+			Name:      "publish-outcome",
+			Type:      "json",
+			Path:      "factory/publish-outcome.json",
+			CreatedAt: &completedAt,
+			Summary: map[string]any{
+				"outcomeKind":    "publish",
+				"policy":         factory.PublishPolicyPR,
+				"branch":         "hal/published",
+				"pushed":         true,
+				"pullRequestUrl": "https://github.com/example/repo/pull/12",
+			},
+		}},
+	}
+
+	statusRun := newFactoryStatusRun(record, nil, nil)
+	if statusRun.Status != factory.RunStatusFailed || statusRun.PipelineStatus != factory.RunStatusFailed {
+		t.Fatalf("status run pipeline fields = %#v", statusRun)
+	}
+	if statusRun.DisplayStatus != "failed_published" || statusRun.PublishStatus != factory.RunStatusSucceeded {
+		t.Fatalf("status run display fields = %#v", statusRun)
+	}
+	if statusRun.PostRun == nil || statusRun.PostRun.Publish == nil {
+		t.Fatalf("status run postRun missing: %#v", statusRun.PostRun)
+	}
+	if statusRun.PostRun.Publish.Source != "artifact" || statusRun.PostRun.Publish.PullRequestURL != "https://github.com/example/repo/pull/12" {
+		t.Fatalf("status run postRun publish = %#v", statusRun.PostRun.Publish)
+	}
+
+	summary := summarizeFactoryRun(record)
+	if summary.DisplayStatus != "failed_published" || summary.PublishStatus != factory.RunStatusSucceeded {
+		t.Fatalf("summary display fields = %#v", summary)
 	}
 }
 

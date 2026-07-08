@@ -103,6 +103,7 @@ func (r RunSecretRedactor) RedactRunRecord(record RunRecord) RunRecord {
 			safe.CredentialDelivery = r.redactCredentialDeliveryStatusMetadata(safe.CredentialDelivery)
 			record.Sandbox = &safe
 		}
+		record.PostRun = r.redactPostRunState(record.PostRun)
 		return record
 	}
 	record.Source = r.redactSourceMetadata(record.Source)
@@ -119,6 +120,7 @@ func (r RunSecretRedactor) RedactRunRecord(record RunRecord) RunRecord {
 	record.Telemetry = r.redactRunTelemetry(record.Telemetry)
 	record.Failure = r.redactFailureSummary(record.Failure)
 	record.Secrets = r.redactSecretMetadata(record.Secrets)
+	record.PostRun = r.redactPostRunState(record.PostRun)
 	return record
 }
 
@@ -357,6 +359,32 @@ func (r RunSecretRedactor) redactRunTelemetry(telemetry *RunTelemetry) *RunTelem
 		sandbox := *telemetry.Sandbox
 		sandbox.Size = r.RedactString(sandbox.Size)
 		safe.Sandbox = &sandbox
+	}
+	return &safe
+}
+
+func (r RunSecretRedactor) redactPostRunState(postRun *PostRunState) *PostRunState {
+	if postRun == nil {
+		return nil
+	}
+	safe := *postRun
+	if postRun.Recovery != nil {
+		recovery := *postRun.Recovery
+		recovery.Status = r.RedactString(recovery.Status)
+		recovery.RecoveredBundle = r.RedactString(recovery.RecoveredBundle)
+		recovery.BranchName = r.RedactString(recovery.BranchName)
+		recovery.Source = r.RedactString(recovery.Source)
+		safe.Recovery = &recovery
+	}
+	if postRun.Publish != nil {
+		publish := *postRun.Publish
+		publish.Status = r.RedactString(publish.Status)
+		publish.Policy = r.RedactString(publish.Policy)
+		publish.BranchName = r.RedactString(publish.BranchName)
+		publish.RecoveredBundle = r.RedactString(publish.RecoveredBundle)
+		publish.PullRequestURL = r.RedactString(publish.PullRequestURL)
+		publish.Source = r.RedactString(publish.Source)
+		safe.Publish = &publish
 	}
 	return &safe
 }
