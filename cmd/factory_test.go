@@ -3705,6 +3705,46 @@ func TestRunFactoryRunWithDepsCollectsProviderExecRecoveryBundleBeforePublish(t 
 	requireFactoryPublishOutcomeArtifact(t, *record, factory.PublishPolicyPR, "hal/factory-feature", true)
 }
 
+func TestNormalizeFactoryRunDepsKeepsDefaultSandboxArtifactRequestsForDefaultProviderExec(t *testing.T) {
+	deps := normalizeFactoryRunDeps(defaultFactoryRunDeps)
+	requests := deps.sandboxRequests("", factory.RunRecord{
+		ExecutorMode: factory.ExecutorModeSandbox,
+		SandboxName:  "dev",
+		RepoRemote:   "git@github.com:j-yw/test-keyboard-game.git",
+	})
+	if len(requests) == 0 {
+		t.Fatal("sandboxRequests returned no requests for default provider exec deps")
+	}
+	if _, ok := findFactorySandboxArtifactRequest(requests, "sandbox-recovery-bundle"); !ok {
+		t.Fatalf("default sandbox artifact requests = %#v, want recovery bundle request", requests)
+	}
+}
+
+func TestNormalizeFactoryRunDepsDisablesDefaultSandboxArtifactRequestsForCustomProviderExec(t *testing.T) {
+	deps := normalizeFactoryRunDeps(factoryRunDeps{
+		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+			return nil
+		},
+	})
+	requests := deps.sandboxRequests("", factory.RunRecord{
+		ExecutorMode: factory.ExecutorModeSandbox,
+		SandboxName:  "dev",
+		RepoRemote:   "git@github.com:j-yw/test-keyboard-game.git",
+	})
+	if len(requests) != 0 {
+		t.Fatalf("sandboxRequests returned %#v for custom provider exec deps, want none", requests)
+	}
+}
+
+func findFactorySandboxArtifactRequest(requests []factory.SandboxArtifactRequest, id string) (factory.SandboxArtifactRequest, bool) {
+	for _, request := range requests {
+		if request.ID == id || request.Name == id {
+			return request, true
+		}
+	}
+	return factory.SandboxArtifactRequest{}, false
+}
+
 func TestRunFactoryRunWithDepsCollectsFailedSandboxArtifactsWithProviderExecWithoutInjectedCopier(t *testing.T) {
 	dir := t.TempDir()
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))

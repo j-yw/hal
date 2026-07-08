@@ -1006,8 +1006,8 @@ func normalizeFactoryRunExecutionDeps(deps factoryRunExecutionDeps) factoryRunEx
 }
 
 func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
-	customRunProviderExec := deps.runProviderExec != nil
-	customProviderExec := deps.runProviderExec != nil || deps.runProviderExecIO != nil || deps.runProviderExecWithEnv != nil
+	customRunProviderExec := deps.runProviderExec != nil && !sameFactoryRunFunc(deps.runProviderExec, defaultFactoryRunDeps.runProviderExec)
+	customProviderExec := factoryRunProviderExecDepsAreCustom(deps)
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactoryRunDeps.defaultStore
 	}
@@ -1102,6 +1102,27 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 		}
 	}
 	return deps
+}
+
+func factoryRunProviderExecDepsAreCustom(deps factoryRunDeps) bool {
+	return (deps.runProviderExec != nil && !sameFactoryRunFunc(deps.runProviderExec, defaultFactoryRunDeps.runProviderExec)) ||
+		(deps.runProviderExecIO != nil && !sameFactoryRunFunc(deps.runProviderExecIO, defaultFactoryRunDeps.runProviderExecIO)) ||
+		(deps.runProviderExecWithEnv != nil && !sameFactoryRunFunc(deps.runProviderExecWithEnv, defaultFactoryRunDeps.runProviderExecWithEnv))
+}
+
+func sameFactoryRunFunc(left, right any) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	leftValue := reflect.ValueOf(left)
+	rightValue := reflect.ValueOf(right)
+	if leftValue.Kind() != reflect.Func || rightValue.Kind() != reflect.Func {
+		return false
+	}
+	if leftValue.IsNil() || rightValue.IsNil() {
+		return leftValue.IsNil() && rightValue.IsNil()
+	}
+	return leftValue.Pointer() == rightValue.Pointer()
 }
 
 func resolveFactoryRunExecutionSecrets(req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps) (factoryRunRequest, factory.RunRecord, error) {
