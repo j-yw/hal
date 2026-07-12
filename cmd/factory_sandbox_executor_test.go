@@ -1475,8 +1475,8 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecuti
 	if bootstrapReq.RepositoryURL != "git@github.com:example/repo.git" || bootstrapReq.BaseBranch != "main" || bootstrapReq.RunBranch != "hal/feature" || bootstrapReq.WorkspaceDir != workspaceDir {
 		t.Fatalf("bootstrap request = %#v", bootstrapReq)
 	}
-	if !bootstrapReq.Options.RefreshHal {
-		t.Fatalf("bootstrap refreshHal = false")
+	if bootstrapReq.Options.RefreshHal {
+		t.Fatal("factory sandbox bootstrap must preserve project templates")
 	}
 	if bootstrapDeps.Executor == nil {
 		t.Fatalf("bootstrap executor = nil")
@@ -1494,6 +1494,77 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecuti
 	if events[0].Sequence != 1 || events[1].Sequence != 2 || events[2].Sequence != 3 || events[3].Sequence != 4 {
 		t.Fatalf("event sequences = %d/%d/%d/%d, want 1/2/3/4", events[0].Sequence, events[1].Sequence, events[2].Sequence, events[3].Sequence)
 	}
+}
+
+func TestFactorySandboxBootstrapUsesNonDestructiveInitForPreparedWorkspace(t *testing.T) {
+	projectDir := t.TempDir()
+	setIsolatedCodexHomeFallback(t, projectDir)
+	halDir := filepath.Join(projectDir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(.hal) error = %v", err)
+	}
+	configPath := filepath.Join(halDir, "config.yaml")
+	customConfig := []byte("# project-owned config\nengine: pi\ncustomSetting: preserved\n")
+	if err := os.WriteFile(configPath, customConfig, 0o600); err != nil {
+		t.Fatalf("WriteFile(config.yaml) error = %v", err)
+	}
+	runFactorySandboxGitTest(t, projectDir, "init")
+	runFactorySandboxGitTest(t, projectDir, "add", ".hal/config.yaml")
+
+	record := factory.RunRecord{
+		RepoRemote: "git@github.com:example/repo.git",
+		BaseBranch: "main",
+		BranchName: "hal/feature",
+	}
+	req, ok := factorySandboxBootstrapRequest(record, nil)
+	if !ok {
+		t.Fatal("factorySandboxBootstrapRequest() ok = false")
+	}
+	req.WorkspaceDir = projectDir
+	executor := &recordingFactoryBootstrapExecutor{
+		run: func(command factory.BootstrapCommand) error {
+			if command.Name != "hal" || !reflect.DeepEqual(command.Args, []string{"init"}) {
+				return nil
+			}
+			previousDir, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			if err := os.Chdir(command.Dir); err != nil {
+				return err
+			}
+			defer os.Chdir(previousDir)
+			return runInitWithWriters(nil, nil, io.Discard, io.Discard)
+		},
+	}
+
+	_, err := factory.BootstrapRefreshHal(context.Background(), req, factory.BootstrapHalDeps{
+		Executor: executor,
+		Now:      func() time.Time { return time.Date(2026, 7, 12, 15, 0, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("BootstrapRefreshHal() error = %v", err)
+	}
+	if len(executor.commands) != 3 {
+		t.Fatalf("bootstrap commands = %#v, want install/init/links", executor.commands)
+	}
+	if install := executor.commands[0]; install.Name != "sh" || len(install.Args) != 2 || install.Args[0] != "-lc" || strings.TrimSpace(install.Args[1]) == "" {
+		t.Fatalf("install command = %#v, want non-empty sh -lc script", install)
+	}
+	if init := executor.commands[1]; init.Name != "hal" || !reflect.DeepEqual(init.Args, []string{"init"}) {
+		t.Fatalf("init command = %#v, want exact hal init", init)
+	}
+	if links := executor.commands[2]; links.Name != "hal" || !reflect.DeepEqual(links.Args, []string{"links", "refresh"}) {
+		t.Fatalf("links command = %#v, want exact hal links refresh", links)
+	}
+	gotConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile(config.yaml) error = %v", err)
+	}
+	if !bytes.Equal(gotConfig, customConfig) {
+		t.Fatalf("config.yaml changed during sandbox bootstrap\ngot: %q\nwant: %q", gotConfig, customConfig)
+	}
+	runFactorySandboxGitTest(t, projectDir, "ls-files", "--error-unmatch", ".hal/config.yaml")
 }
 
 func TestRunFactorySandboxExecutorWithDepsDoesNotPersistUnsanitizedBootstrapStreamingOutput(t *testing.T) {
@@ -4802,4 +4873,27 @@ func (p *capturingFactorySandboxProvider) Exec(_ *sandbox.ConnectInfo, args []st
 
 func (p *capturingFactorySandboxProvider) Status(context.Context, *sandbox.ConnectInfo, io.Writer) error {
 	return nil
+}
+
+type recordingFactoryBootstrapExecutor struct {
+	commands []factory.BootstrapCommand
+	run      func(factory.BootstrapCommand) error
+}
+
+func (e *recordingFactoryBootstrapExecutor) Run(_ context.Context, command factory.BootstrapCommand) (factory.BootstrapCommandResult, error) {
+	e.commands = append(e.commands, command)
+	if e.run != nil {
+		if err := e.run(command); err != nil {
+			return factory.BootstrapCommandResult{}, err
+		}
+	}
+	return factory.BootstrapCommandResult{ExitCode: 0}, nil
+}
+
+func runFactorySandboxGitTest(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s error = %v; output = %s", strings.Join(args, " "), err, output)
+	}
 }

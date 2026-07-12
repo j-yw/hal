@@ -1529,9 +1529,6 @@ func factorySandboxBootstrapRequest(record factory.RunRecord, secrets []factory.
 		WorkspaceDir:    workspaceDir,
 		RequiredEnvKeys: factorySandboxBootstrapRequiredEnvKeys(record.Secrets),
 		Env:             factorySandboxResolvedSecretEnv(secrets),
-		Options: factory.BootstrapOptions{
-			RefreshHal: true,
-		},
 	}
 	return factory.BootstrapRequestWithResolvedSecrets(request, secrets), true
 }
