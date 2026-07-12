@@ -93,6 +93,7 @@ type runSandboxExecutionHooks struct {
 
 type runSandboxDeps struct {
 	defaultStore                func() (sandboxexecution.Store, error)
+	durableLeaseStore           bool
 	newExecutionID              func(time.Time) string
 	now                         func() time.Time
 	workingDir                  func() (string, error)
@@ -125,6 +126,7 @@ type runSandboxDeps struct {
 
 var defaultRunSandboxDeps = runSandboxDeps{
 	defaultStore:        sandboxexecution.DefaultStore,
+	durableLeaseStore:   true,
 	newExecutionID:      defaultRunSandboxExecutionID,
 	now:                 time.Now,
 	workingDir:          os.Getwd,
@@ -432,12 +434,14 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 }
 
 func normalizeRunSandboxDeps(deps runSandboxDeps) runSandboxDeps {
-	customDefaultStore := deps.defaultStore != nil
+	customDefaultStore := deps.defaultStore != nil && !deps.durableLeaseStore
 	customResolveDefault := deps.resolveDefault != nil
 	customRuntimeResolver := deps.resolveRuntimeDriver != nil
 	useDefaultWorkspacePlanner := deps.planWorkspace == nil && deps.currentBranch == nil && deps.repoRemote == nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultRunSandboxDeps.defaultStore
+		deps.durableLeaseStore = defaultRunSandboxDeps.durableLeaseStore
+		customDefaultStore = !deps.durableLeaseStore
 	}
 	if deps.newExecutionID == nil {
 		deps.newExecutionID = defaultRunSandboxDeps.newExecutionID

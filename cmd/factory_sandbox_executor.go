@@ -65,6 +65,7 @@ type factorySandboxExecutorRequest struct {
 
 type factorySandboxExecutorDeps struct {
 	defaultStore           func() (factory.Store, error)
+	durableLeaseStore      bool
 	now                    func() time.Time
 	resolveDefault         func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
 	loadSandbox            func(string) (*sandbox.SandboxState, error)
@@ -94,6 +95,7 @@ type factorySandboxExecutorDeps struct {
 
 var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
 	defaultStore:        factory.DefaultStore,
+	durableLeaseStore:   true,
 	now:                 time.Now,
 	resolveDefault:      sandbox.ResolveDefault,
 	loadSandbox:         sandbox.LoadActiveInstance,
@@ -131,7 +133,7 @@ const factorySandboxCopyInputChunkEncodedBytes = 32 * 1024
 const factorySandboxRemoteWorkspaceRoot = "/root/workspace"
 
 func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factorySandboxExecutorDeps {
-	customDefaultStore := deps.defaultStore != nil
+	customDefaultStore := deps.defaultStore != nil && !deps.durableLeaseStore
 	customResolveDefault := deps.resolveDefault != nil
 	customRuntimeResolver := deps.resolveRuntimeDriver != nil
 	customLoadSandbox := deps.loadSandbox != nil
@@ -141,6 +143,8 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 	customGenerateRecovery := deps.generateRecovery != nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactorySandboxExecutorDeps.defaultStore
+		deps.durableLeaseStore = defaultFactorySandboxExecutorDeps.durableLeaseStore
+		customDefaultStore = !deps.durableLeaseStore
 	}
 	if deps.now == nil {
 		deps.now = defaultFactorySandboxExecutorDeps.now

@@ -238,6 +238,10 @@ func TestAcquireLeaseConflictsOnActiveResourceKey(t *testing.T) {
 	if !strings.Contains(err.Error(), "active lease") {
 		t.Fatalf("Acquire() conflict error = %q, want active lease", err.Error())
 	}
+	var conflict *SandboxLeaseConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("Acquire() conflict error type = %T, want *SandboxLeaseConflictError", err)
+	}
 	if _, statErr := os.Stat(filepath.Join(home, sandboxLeasesDirName, "lease-02.json")); !errors.Is(statErr, fs.ErrNotExist) {
 		t.Fatalf("conflicting lease file stat error = %v, want fs.ErrNotExist", statErr)
 	}

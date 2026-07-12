@@ -29,6 +29,14 @@ type SandboxLeaseStore struct {
 	now func() time.Time
 }
 
+// SandboxLeaseConflictError reports that a resource already has an active
+// lease. Its public message intentionally omits lease and resource identifiers.
+type SandboxLeaseConflictError struct{}
+
+func (*SandboxLeaseConflictError) Error() string {
+	return "resource already has an active lease"
+}
+
 // NewSandboxLeaseStore returns a lease store that uses now for deterministic
 // time-dependent operations.
 func NewSandboxLeaseStore(now func() time.Time) *SandboxLeaseStore {
@@ -55,6 +63,12 @@ func (s *SandboxLeaseStore) Acquire(req SandboxLeaseAcquireRequest, ttl time.Dur
 	if err := os.MkdirAll(leaseDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create sandbox leases dir: %w", err)
 	}
+	lock, err := lockSandboxLeaseStoreFile(filepath.Join(leaseDir, sandboxLeaseLockFileName))
+	if err != nil {
+		return nil, fmt.Errorf("acquire sandbox lease store lock: %w", err)
+	}
+	defer lock.Close()
+
 	if exists, err := registryFileExists(path); err != nil {
 		return nil, fmt.Errorf("check lease %q: %w", req.ID, err)
 	} else if exists {
@@ -110,7 +124,7 @@ func checkActiveLeaseConflict(leaseDir, requestedID, resourceKey string) error {
 			continue
 		}
 		if lease.Status == SandboxLeaseStatusActive && lease.ResourceKey == resourceKey {
-			return fmt.Errorf("resource %q already has active lease %q", resourceKey, lease.ID)
+			return &SandboxLeaseConflictError{}
 		}
 	}
 	return nil

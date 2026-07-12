@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -190,12 +191,34 @@ func acquireSandboxCommandLease(req sandboxCommandScheduledTargetRequest, target
 		RunID:       strings.TrimSpace(req.RunID),
 	}, ttl)
 	if err != nil {
+		var conflict *sandbox.SandboxLeaseConflictError
+		if errors.As(err, &conflict) {
+			return nil, sandboxCommandLeaseCapacityBlockedError(req, target)
+		}
 		return nil, sandboxCommandSchedulerOperationError{
 			message: "acquire sandbox lease failed",
 			cause:   err,
 		}
 	}
 	return lease, nil
+}
+
+func sandboxCommandLeaseCapacityBlockedError(req sandboxCommandScheduledTargetRequest, target *sandbox.SandboxState) error {
+	hostID := strings.TrimSpace(req.SandboxHostID)
+	if hostID == "" && target != nil && target.Host != nil {
+		hostID = strings.TrimSpace(target.Host.ID)
+	}
+	message := "no cached sandbox hosts have available capacity"
+	if hostID != "" {
+		message = fmt.Sprintf("host %q has no available cached capacity", hostID)
+	}
+	return sandboxCommandTargetFailureError(&sandboxtarget.Failure{
+		Reason:        sandboxtarget.FailureReasonCapacityBlocked,
+		Message:       message,
+		SandboxName:   strings.TrimSpace(req.SandboxName),
+		HostID:        hostID,
+		RuntimeDriver: strings.TrimSpace(req.SandboxRuntime),
+	})
 }
 
 func sandboxCommandLeaseHolder(req sandboxCommandScheduledTargetRequest) string {

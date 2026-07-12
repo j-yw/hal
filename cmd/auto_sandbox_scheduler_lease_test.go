@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,8 +17,133 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxtarget"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 )
+
+func TestSandboxCommandConcurrentNoNameSchedulingHonorsDurableHostCapacity(t *testing.T) {
+	t.Setenv("HAL_CONFIG_HOME", t.TempDir())
+	now := time.Date(2026, 7, 12, 15, 0, 0, 0, time.UTC)
+	host := autoSandboxSchedulerLeaseHost("worker-capacity-one", "worker capacity one")
+	host.Capacity.MaxConcurrentSandboxes = 1
+	projectDir := t.TempDir()
+
+	listLeases := sandboxCommandDefaultLeaseLister(func() time.Time { return now }, false)
+	acquireLease := sandboxCommandDefaultLeaseAcquirer(func() time.Time { return now }, false)
+	releaseLease := sandboxCommandDefaultLeaseReleaser(func() time.Time { return now }, false)
+
+	const contenders = 16
+	ready := make(chan struct{}, contenders)
+	releaseSnapshot := make(chan struct{})
+	barrierListLeases := func() ([]*sandbox.SandboxLease, error) {
+		leases, err := listLeases()
+		ready <- struct{}{}
+		<-releaseSnapshot
+		return leases, err
+	}
+
+	type result struct {
+		runID  string
+		target *sandbox.SandboxState
+		err    error
+	}
+	results := make(chan result, contenders)
+	var workers sync.WaitGroup
+	for i := 0; i < contenders; i++ {
+		runID := fmt.Sprintf("auto-capacity-%02d", i)
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			target, err := resolveSandboxCommandScheduledTarget(sandboxCommandScheduledTargetRequest{
+				Purpose:        sandbox.SandboxLeasePurposeAuto,
+				SandboxHostID:  host.ID,
+				SandboxRuntime: sandboxruntime.DriverRootlessPodman,
+				ProjectDir:     projectDir,
+				Branch:         "hal/concurrent-capacity",
+				RunID:          runID,
+			}, sandboxCommandScheduledTargetDeps{
+				listHosts: func() ([]*sandbox.SandboxHost, error) {
+					return []*sandbox.SandboxHost{host}, nil
+				},
+				listLeases:   barrierListLeases,
+				now:          func() time.Time { return now },
+				acquireLease: acquireLease,
+			})
+			results <- result{runID: runID, target: target, err: err}
+		}()
+	}
+	for i := 0; i < contenders; i++ {
+		<-ready
+	}
+	close(releaseSnapshot)
+	workers.Wait()
+	close(results)
+
+	var winner *sandbox.SandboxState
+	failures := 0
+	for got := range results {
+		if got.err == nil {
+			if winner != nil {
+				t.Fatalf("multiple capacity-one leases succeeded: first=%q second=%q", winner.Lease.RunID, got.runID)
+			}
+			winner = got.target
+			continue
+		}
+		failures++
+		var failure *sandboxtarget.Failure
+		if !errors.As(got.err, &failure) {
+			t.Fatalf("contender %q error type = %T (%v), want scheduler capacity failure", got.runID, got.err, got.err)
+		}
+		if failure.Reason != sandboxtarget.FailureReasonCapacityBlocked || !strings.Contains(got.err.Error(), "no available cached capacity") {
+			t.Fatalf("contender %q failure = %#v (%v), want capacity_blocked contract", got.runID, failure, got.err)
+		}
+	}
+	if winner == nil || winner.Lease == nil {
+		t.Fatal("capacity-one scheduling produced no winning durable lease")
+	}
+	if failures != contenders-1 {
+		t.Fatalf("capacity failures = %d, want %d", failures, contenders-1)
+	}
+
+	leases, err := listLeases()
+	if err != nil {
+		t.Fatalf("list durable leases: %v", err)
+	}
+	active := 0
+	for _, lease := range leases {
+		if lease.Status == sandbox.SandboxLeaseStatusActive && lease.ResourceKey == "host:"+host.ID {
+			active++
+		}
+	}
+	if active != 1 {
+		t.Fatalf("active host leases = %d, want 1", active)
+	}
+
+	if _, err := releaseLease(winner.Lease.ID); err != nil {
+		t.Fatalf("release winning lease: %v", err)
+	}
+	next, err := resolveSandboxCommandScheduledTarget(sandboxCommandScheduledTargetRequest{
+		Purpose:        sandbox.SandboxLeasePurposeAuto,
+		SandboxHostID:  host.ID,
+		SandboxRuntime: sandboxruntime.DriverRootlessPodman,
+		ProjectDir:     projectDir,
+		Branch:         "hal/after-capacity-release",
+		RunID:          "auto-capacity-after-release",
+	}, sandboxCommandScheduledTargetDeps{
+		listHosts: func() ([]*sandbox.SandboxHost, error) {
+			return []*sandbox.SandboxHost{host}, nil
+		},
+		listLeases:   listLeases,
+		now:          func() time.Time { return now },
+		acquireLease: acquireLease,
+	})
+	if err != nil {
+		t.Fatalf("scheduling after release: %v", err)
+	}
+	if next == nil || next.Lease == nil || next.Lease.ID != "auto-capacity-after-release" {
+		t.Fatalf("post-release target lease = %#v, want replacement lease", next)
+	}
+}
 
 func TestAutoSandboxExplicitSchedulerAcquiresLeaseAndPersistsManifest(t *testing.T) {
 	startedAt := time.Date(2026, 7, 1, 8, 20, 0, 0, time.UTC)

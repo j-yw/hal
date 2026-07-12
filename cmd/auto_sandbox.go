@@ -98,6 +98,7 @@ type autoSandboxExecutionHooks struct {
 
 type autoSandboxDeps struct {
 	defaultStore                func() (sandboxexecution.Store, error)
+	durableLeaseStore           bool
 	newExecutionID              func(time.Time) string
 	now                         func() time.Time
 	planWorkspace               func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error)
@@ -127,6 +128,7 @@ type autoSandboxDeps struct {
 
 var defaultAutoSandboxDeps = autoSandboxDeps{
 	defaultStore:        sandboxexecution.DefaultStore,
+	durableLeaseStore:   true,
 	newExecutionID:      defaultAutoSandboxExecutionID,
 	now:                 time.Now,
 	planWorkspace:       defaultRunSandboxWorkspacePlan,
@@ -386,11 +388,13 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 }
 
 func normalizeAutoSandboxDeps(deps autoSandboxDeps) autoSandboxDeps {
-	customDefaultStore := deps.defaultStore != nil
+	customDefaultStore := deps.defaultStore != nil && !deps.durableLeaseStore
 	customResolveDefault := deps.resolveDefault != nil
 	customRuntimeResolver := deps.resolveRuntimeDriver != nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultAutoSandboxDeps.defaultStore
+		deps.durableLeaseStore = defaultAutoSandboxDeps.durableLeaseStore
+		customDefaultStore = !deps.durableLeaseStore
 	}
 	if deps.newExecutionID == nil {
 		deps.newExecutionID = defaultAutoSandboxDeps.newExecutionID
