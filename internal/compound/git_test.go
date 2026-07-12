@@ -2,13 +2,64 @@ package compound
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestGitCommitInDirUsesFallbackIdentityWhenRepositoryHasNone(t *testing.T) {
+	requireGitCLI(t)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "global.gitconfig"))
+	repoDir := t.TempDir()
+	runGit(t, repoDir, "init")
+	runGit(t, repoDir, "config", "commit.gpgsign", "false")
+
+	writeFileInRepo(t, repoDir, "checkpoint.txt", "checkpoint\n")
+	runGit(t, repoDir, "add", "checkpoint.txt")
+	if err := GitCommitInDir(context.Background(), repoDir, "chore: checkpoint"); err != nil {
+		t.Fatalf("GitCommitInDir() error = %v", err)
+	}
+
+	if got := gitOutput(t, repoDir, "log", "-1", "--format=%an|%ae"); got != "Hal Factory|hal-factory@localhost" {
+		t.Fatalf("commit identity = %q, want Hal Factory fallback", got)
+	}
+}
+
+func TestGitCommitInDirPreservesConfiguredRepositoryIdentity(t *testing.T) {
+	requireGitCLI(t)
+	repoDir := t.TempDir()
+	runGit(t, repoDir, "init")
+	runGit(t, repoDir, "config", "user.name", "Repository Owner")
+	runGit(t, repoDir, "config", "user.email", "owner@example.com")
+	runGit(t, repoDir, "config", "commit.gpgsign", "false")
+
+	writeFileInRepo(t, repoDir, "checkpoint.txt", "checkpoint\n")
+	runGit(t, repoDir, "add", "checkpoint.txt")
+	if err := GitCommitInDir(context.Background(), repoDir, "chore: checkpoint"); err != nil {
+		t.Fatalf("GitCommitInDir() error = %v", err)
+	}
+
+	if got := gitOutput(t, repoDir, "log", "-1", "--format=%an|%ae"); got != "Repository Owner|owner@example.com" {
+		t.Fatalf("commit identity = %q, want configured repository identity", got)
+	}
+}
+
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
 
 func TestWorkingTreeChangesInDir_CleanRepo_ReturnsNil(t *testing.T) {
 	requireGitCLI(t)
