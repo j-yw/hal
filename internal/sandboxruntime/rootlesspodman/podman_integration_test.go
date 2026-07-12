@@ -73,7 +73,8 @@ func TestPodmanIntegrationLifecycleExecAndCopy(t *testing.T) {
 	var execOut bytes.Buffer
 	execResult, err := driver.Exec(ctx, sandboxruntime.ExecRequest{
 		Target: *target,
-		Args:   []string{"sh", "-c", "printf rootless-podman-exec"},
+		Args:   []string{"sh", "-c", "printf %s \"$HAL_PODMAN_EXEC_CANARY\""},
+		Env:    map[string]string{"HAL_PODMAN_EXEC_CANARY": "rootless-podman-exec"},
 		Stdout: &execOut,
 	})
 	if err != nil {

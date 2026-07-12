@@ -74,7 +74,7 @@ func (d *Driver) execArgs(ref string, commandArgs []string, env map[string]strin
 		args = append(args, "--workdir", trimmedWorkDir)
 	}
 	for _, key := range sortedMapKeys(env) {
-		args = append(args, "--env", key+"="+env[key])
+		args = append(args, "--env", key)
 	}
 	args = append(args, ref)
 	args = append(args, commandArgs...)

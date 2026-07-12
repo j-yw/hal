@@ -66,8 +66,8 @@ func TestExecUsesFakeRunnerAndStreamsIO(t *testing.T) {
 		"podman", "exec",
 		"--interactive",
 		"--workdir", "/workspace/project",
-		"--env", "HAL_A=1",
-		"--env", "HAL_B=2",
+		"--env", "HAL_A",
+		"--env", "HAL_B",
 		"runtime-id",
 		"sh", "-lc", "printf ok",
 	}
@@ -92,10 +92,42 @@ func TestExecUsesFakeRunnerAndStreamsIO(t *testing.T) {
 	if request.Stderr != stderr {
 		t.Fatalf("stderr writer was not forwarded")
 	}
+	argv := strings.Join(request.Args, "\x00")
+	for _, value := range env {
+		if strings.Contains(argv, value) {
+			t.Fatalf("exec args contain environment value %q: %#v", value, request.Args)
+		}
+	}
 
 	env["HAL_A"] = "mutated"
 	if request.Env["HAL_A"] != "1" {
 		t.Fatalf("env was not cloned before forwarding: %#v", request.Env)
+	}
+}
+
+func TestExecKeepsSecretEnvironmentValuesOutOfPodmanArgs(t *testing.T) {
+	const secret = "sentinel-secret-that-must-not-enter-argv"
+	runner := &streamingExecRunner{}
+	driver := rootlesspodman.New(rootlesspodman.Options{ExecRunner: runner})
+
+	if _, err := driver.Exec(context.Background(), sandboxruntime.ExecRequest{
+		Target: sandboxruntime.Target{Name: "hal-dev"},
+		Args:   []string{"sh", "-c", "test -n \"$GITHUB_TOKEN\""},
+		Env:    map[string]string{"GITHUB_TOKEN": secret},
+	}); err != nil {
+		t.Fatalf("Exec() unexpected error: %v", err)
+	}
+
+	request := runner.requests[0]
+	if got := request.Env["GITHUB_TOKEN"]; got != secret {
+		t.Fatalf("runner environment value = %q, want sentinel value", got)
+	}
+	if got := strings.Join(request.Args, "\x00"); strings.Contains(got, secret) {
+		t.Fatalf("exec args contain secret value: %#v", request.Args)
+	}
+	wantArgs := []string{"podman", "exec", "--env", "GITHUB_TOKEN", "hal-dev", "sh", "-c", "test -n \"$GITHUB_TOKEN\""}
+	if !reflect.DeepEqual(request.Args, wantArgs) {
+		t.Fatalf("exec args = %#v, want %#v", request.Args, wantArgs)
 	}
 }
 
