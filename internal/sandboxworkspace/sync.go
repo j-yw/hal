@@ -188,16 +188,14 @@ workspace=$1
 repo=$2
 parent=$(dirname "$workspace")
 mkdir -p "$parent"
-if [ -d "$workspace/.git" ]; then
-  if git -C "$workspace" remote get-url origin >/dev/null 2>&1; then
-    git -C "$workspace" remote set-url origin "$repo"
-  else
-    git -C "$workspace" remote add origin "$repo"
-  fi
-  git -C "$workspace" fetch --prune origin
-else
+if [ ! -d "$workspace/.git" ]; then
   rm -rf "$workspace"
-  git clone "$repo" "$workspace"
+  git init "$workspace"
+fi
+if git -C "$workspace" remote get-url origin >/dev/null 2>&1; then
+  git -C "$workspace" remote set-url origin "$repo"
+else
+  git -C "$workspace" remote add origin "$repo"
 fi`
 
 type MaterializationPhase string
