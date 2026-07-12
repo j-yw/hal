@@ -187,6 +187,26 @@ wait_for_socket() {
 	return 1
 }
 
+ensure_machine_ready() {
+	if podman info >/dev/null 2>&1; then
+		return
+	fi
+	if ! podman machine inspect "$MACHINE" >/dev/null 2>&1; then
+		echo "Podman machine is missing; run prepare first" >&2
+		exit 1
+	fi
+	podman machine start "$MACHINE" >/dev/null
+	i=0
+	until podman info >/dev/null 2>&1; do
+		if [ "$i" -ge 30 ]; then
+			echo "Podman machine started but its API did not become ready" >&2
+			exit 1
+		fi
+		i=$((i + 1))
+		sleep 1
+	done
+}
+
 prepare() {
 	require_command go
 	require_command podman
@@ -199,18 +219,7 @@ prepare() {
 			with_host_proxy podman machine init --cpus 4 --memory 4096 --disk-size 30 "$MACHINE"
 		fi
 	fi
-	if ! podman info >/dev/null 2>&1; then
-		podman machine start "$MACHINE" >/dev/null
-	fi
-	i=0
-	until podman info >/dev/null 2>&1; do
-		if [ "$i" -ge 30 ]; then
-			echo "Podman machine started but its API did not become ready" >&2
-			exit 1
-		fi
-		i=$((i + 1))
-		sleep 1
-	done
+	ensure_machine_ready
 	prefetch_base_image
 
 	(
@@ -238,6 +247,7 @@ start() {
 		echo "lab Hal binary is missing; run prepare first" >&2
 		exit 1
 	fi
+	ensure_machine_ready
 	if ! podman image exists "$IMAGE"; then
 		echo "lab image is missing; run prepare first" >&2
 		exit 1
