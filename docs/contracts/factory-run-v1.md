@@ -30,9 +30,10 @@ This contract does not change the existing `.hal/prd.json`, `.hal/auto-state.jso
 | `failure` | object or null | Failure details when the run failed |
 | `postRun` | object | Optional post-run outcomes such as recovery and publish results |
 
-`artifacts` is always present. Empty artifact state is represented as an empty
-array. `eventSummary` is always present. `telemetry` uses `omitempty` and is
-present only when run telemetry can be read or derived.
+`executorMode`, `baseBranch`, `artifacts`, and `eventSummary` are always present.
+An unavailable executor or unresolved base is represented as an empty string,
+and empty artifact state is represented as an empty array. `telemetry` uses
+`omitempty` and is present only when run telemetry can be read or derived.
 
 Sandbox-backed runs do not duplicate full sandbox metadata in this compact
 result surface. `telemetry.sandbox` may include provider and size for summary

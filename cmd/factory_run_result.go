@@ -17,8 +17,8 @@ type FactoryRunResponse struct {
 	Version         string                        `json:"version"`
 	RunID           string                        `json:"runId"`
 	Status          string                        `json:"status"`
-	ExecutorMode    string                        `json:"executorMode,omitempty"`
-	BaseBranch      string                        `json:"baseBranch,omitempty"`
+	ExecutorMode    string                        `json:"executorMode"`
+	BaseBranch      string                        `json:"baseBranch"`
 	NextAction      *FactoryRunNextAction         `json:"nextAction"`
 	Artifacts       []FactoryRunArtifactReference `json:"artifacts"`
 	Telemetry       *factory.RunTelemetry         `json:"telemetry,omitempty"`

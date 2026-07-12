@@ -9124,6 +9124,35 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 	requireFactoryFields(t, "factory run failure", failure, []string{"classification", "errorMessage", "suggestedCommand"})
 }
 
+func TestRenderFactoryRunJSONKeepsUnresolvedExecutorAndBaseFields(t *testing.T) {
+	resp := FactoryRunResponse{
+		ContractVersion: FactoryRunContractVersion,
+		Version:         "dev",
+		RunID:           "run-unresolved-effective-fields",
+		Status:          factory.RunStatusFailed,
+	}
+
+	var out bytes.Buffer
+	if err := renderFactoryRunJSON(&out, resp); err != nil {
+		t.Fatalf("renderFactoryRunJSON() error: %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, out.String())
+	}
+	requireExactKeys(t, raw, []string{
+		"contractVersion", "version", "runId", "status", "executorMode", "baseBranch", "nextAction",
+		"artifacts", "eventSummary", "failure",
+	})
+	if raw["executorMode"] != "" {
+		t.Fatalf("executorMode = %#v, want an explicit empty string", raw["executorMode"])
+	}
+	if raw["baseBranch"] != "" {
+		t.Fatalf("baseBranch = %#v, want an explicit empty string", raw["baseBranch"])
+	}
+}
+
 func TestFactoryRunResultSurfacesEffectiveExecutorAndBase(t *testing.T) {
 	record := factory.RunRecord{
 		RunID:        "run-effective-config",

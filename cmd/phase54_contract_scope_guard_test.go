@@ -158,7 +158,7 @@ func TestPhase54NoSchemaOrContractExpansionRequired(t *testing.T) {
 		{
 			label: "FactoryRunResponse",
 			typ:   reflect.TypeOf(FactoryRunResponse{}),
-			want:  []string{"contractVersion", "version", "runId", "status", "executorMode,omitempty", "baseBranch,omitempty", "nextAction", "artifacts", "telemetry,omitempty", "eventSummary", "failure"},
+			want:  []string{"contractVersion", "version", "runId", "status", "executorMode", "baseBranch", "nextAction", "artifacts", "telemetry,omitempty", "eventSummary", "failure"},
 		},
 		{
 			label: "FactoryListResponse",
