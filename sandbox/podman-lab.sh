@@ -37,6 +37,7 @@ export XDG_DATA_HOME="$LAB_ROOT/data"
 export XDG_CACHE_HOME="$LAB_ROOT/cache"
 export TMPDIR="$LAB_ROOT/tmp"
 export HOME="$LAB_ROOT/home"
+export CONTAINER_CONNECTION="$MACHINE"
 unset CODEX_HOME PI_HOME
 export PATH="$LAB_ROOT/bin:$PATH"
 if [ -n "$MACHINE_PROVIDER" ]; then
@@ -95,6 +96,10 @@ require_command() {
 	fi
 }
 
+lab_podman() {
+	podman --connection "$MACHINE" "$@"
+}
+
 with_host_proxy() {
 	if [ -z "$HOST_PROXY" ]; then
 		"$@"
@@ -115,7 +120,7 @@ with_guest_proxy() {
 
 prefetch_base_image() {
 	if [ -z "$GUEST_PROXY" ]; then
-		podman pull "$BASE_IMAGE"
+		lab_podman pull "$BASE_IMAGE"
 		return
 	fi
 	podman machine ssh "$MACHINE" env \
@@ -188,18 +193,18 @@ wait_for_socket() {
 }
 
 ensure_machine_ready() {
-	if podman info >/dev/null 2>&1; then
-		return
-	fi
 	if ! podman machine inspect "$MACHINE" >/dev/null 2>&1; then
 		echo "Podman machine is missing; run prepare first" >&2
 		exit 1
 	fi
-	podman machine start "$MACHINE" >/dev/null
+	if lab_podman info >/dev/null 2>&1; then
+		return
+	fi
+	podman machine start "$MACHINE" >/dev/null 2>&1 || true
 	i=0
-	until podman info >/dev/null 2>&1; do
+	until lab_podman info >/dev/null 2>&1; do
 		if [ "$i" -ge 30 ]; then
-			echo "Podman machine started but its API did not become ready" >&2
+			echo "Podman machine started but its named connection did not become ready" >&2
 			exit 1
 		fi
 		i=$((i + 1))
@@ -225,7 +230,7 @@ prepare() {
 	(
 		cd "$REPO_ROOT"
 		go build -o "$HAL_BIN" .
-		with_guest_proxy podman build --pull=never --retry 5 --retry-delay 5s -f sandbox/Dockerfile -t "$IMAGE" .
+		with_guest_proxy podman --connection "$MACHINE" build --pull=never --retry 5 --retry-delay 5s -f sandbox/Dockerfile -t "$IMAGE" .
 	)
 	cat >"$LAB_ROOT/manifest.txt" <<EOF
 lab_root=$LAB_ROOT
@@ -248,7 +253,7 @@ start() {
 		exit 1
 	fi
 	ensure_machine_ready
-	if ! podman image exists "$IMAGE"; then
+	if ! lab_podman image exists "$IMAGE"; then
 		echo "lab image is missing; run prepare first" >&2
 		exit 1
 	fi
@@ -300,7 +305,15 @@ status() {
 	require_command podman
 	ensure_dirs
 	echo "Lab root: $LAB_ROOT"
-	podman machine list
+	if podman machine inspect "$MACHINE"; then
+		if lab_podman info >/dev/null 2>&1; then
+			echo "Podman connection: $MACHINE (ready)"
+		else
+			echo "Podman connection: $MACHINE (unavailable)"
+		fi
+	else
+		echo "Podman machine: $MACHINE (missing)"
+	fi
 	if daemon_running; then
 		echo "sandboxd: running (PID $(cat "$PID_FILE"))"
 	else
@@ -341,7 +354,9 @@ destroy() {
 	fi
 	rm -f "$PID_FILE" "$SOCKET"
 	if command -v podman >/dev/null 2>&1; then
-		podman rm -af --filter label=dev.jywlabs.hal.runtime=rootless_podman >/dev/null 2>&1 || true
+		if lab_podman info >/dev/null 2>&1; then
+			lab_podman rm -af --filter label=dev.jywlabs.hal.runtime=rootless_podman >/dev/null 2>&1 || true
+		fi
 		podman machine stop "$MACHINE" >/dev/null 2>&1 || true
 		podman machine rm -f "$MACHINE" >/dev/null 2>&1 || true
 	fi
