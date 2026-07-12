@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
@@ -68,6 +69,9 @@ func TestUS008RunAutoAndFactoryFakeBackedE2ERedactionSurfaces(t *testing.T) {
 			engineAuthFiles:        probe.engineAuthFiles,
 			bootstrap:              probe.forbiddenBootstrap,
 			materializeWorkspace:   probe.materializeWorkspace,
+			prepareBundleCommandContext: func(context.Context, sandboxexec.PrepareContext, string, string, io.Writer) (sandboxworkspace.MaterializationOperation, error) {
+				return sandboxworkspace.MaterializationOperation{Phase: sandboxworkspace.MaterializationPhaseCommandConfig}, nil
+			},
 		})
 		if err != nil {
 			t.Fatalf("runRunSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
@@ -128,6 +132,9 @@ func TestUS008RunAutoAndFactoryFakeBackedE2ERedactionSurfaces(t *testing.T) {
 			engineAuthFiles:        probe.engineAuthFiles,
 			bootstrap:              probe.forbiddenBootstrap,
 			materializeWorkspace:   probe.materializeWorkspace,
+			prepareBundleCommandContext: func(context.Context, sandboxexec.PrepareContext, string, string, io.Writer) (sandboxworkspace.MaterializationOperation, error) {
+				return sandboxworkspace.MaterializationOperation{Phase: sandboxworkspace.MaterializationPhaseCommandConfig}, nil
+			},
 		})
 		if err != nil {
 			t.Fatalf("runAutoSandboxWithWriter() unexpected error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())

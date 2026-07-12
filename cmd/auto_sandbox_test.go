@@ -634,6 +634,10 @@ func TestRunAutoSandboxWithWriterGitBundlePlanMaterializesAndExecutes(t *testing
 			}
 			return sandboxworkspace.MaterializationResult{InputSource: sandbox.SandboxWorkspaceInputSourceGitBundle}, nil
 		},
+		prepareBundleCommandContext: func(context.Context, sandboxexec.PrepareContext, string, string, io.Writer) (sandboxworkspace.MaterializationOperation, error) {
+			order = append(order, "command_config")
+			return sandboxworkspace.MaterializationOperation{Phase: sandboxworkspace.MaterializationPhaseCommandConfig}, nil
+		},
 		engineAuthFiles: func() []factorySandboxAuthFile {
 			order = append(order, "auth")
 			return nil
@@ -649,7 +653,7 @@ func TestRunAutoSandboxWithWriterGitBundlePlanMaterializesAndExecutes(t *testing
 	if !materialized {
 		t.Fatal("materializeWorkspace was not called")
 	}
-	wantOrder := []string{"materialize_workspace", "auth", "runtime_exec", "recovery_generation", "reports_generation"}
+	wantOrder := []string{"materialize_workspace", "command_config", "auth", "runtime_exec", "recovery_generation", "reports_generation"}
 	if !reflect.DeepEqual(order, wantOrder) {
 		t.Fatalf("order = %#v, want %#v", order, wantOrder)
 	}
@@ -1774,6 +1778,13 @@ func TestExecuteAutoSandboxGitBundleWorkspaceUsesSharedMaterializer(t *testing.T
 			}
 			return sandboxworkspace.MaterializationResult{InputSource: sandbox.SandboxWorkspaceInputSourceGitBundle}, nil
 		},
+		prepareBundleCommandContext: func(_ context.Context, _ sandboxexec.PrepareContext, projectDir, workspaceDir string, _ io.Writer) (sandboxworkspace.MaterializationOperation, error) {
+			order = append(order, "command_config")
+			if projectDir != req.ProjectDir || workspaceDir != req.WorkDir {
+				t.Fatalf("command context dirs = %q, %q, want %q, %q", projectDir, workspaceDir, req.ProjectDir, req.WorkDir)
+			}
+			return sandboxworkspace.MaterializationOperation{Phase: sandboxworkspace.MaterializationPhaseCommandConfig}, nil
+		},
 		engineAuthFiles: func() []factorySandboxAuthFile {
 			order = append(order, "auth")
 			return nil
@@ -1798,7 +1809,7 @@ func TestExecuteAutoSandboxGitBundleWorkspaceUsesSharedMaterializer(t *testing.T
 	if !materialized {
 		t.Fatal("materializeWorkspace was not called")
 	}
-	wantOrder := []string{"resolve_runtime_driver", "materialize_workspace", "auth", "runtime_exec"}
+	wantOrder := []string{"resolve_runtime_driver", "materialize_workspace", "command_config", "auth", "runtime_exec"}
 	if !reflect.DeepEqual(order, wantOrder) {
 		t.Fatalf("order = %#v, want %#v", order, wantOrder)
 	}
