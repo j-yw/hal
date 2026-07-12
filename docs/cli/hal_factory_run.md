@@ -10,10 +10,12 @@ pipeline, or pass --sandbox to run the factory executor in a managed sandbox.
 Provide at most one positional PRD markdown path to start from an existing
 spec, or use --report <path> to start from an analysis report. The positional
 path and --report are mutually exclusive. Use --base <branch> to pass a target
-base branch to the executor. Sandbox mode requires --base so the remote
-workspace can be checked out deterministically. Use --secret-env to declare
-required environment variables that should be resolved only for this run. Use
---sandbox for remote sandbox-backed execution, and --json for machine-readable
+base branch to the executor. Executor/base precedence is: explicit flags override project config defaults,
+followed by a safe local fallback to the current branch.
+Sandbox execution still blocks when no base resolves; it never infers a base
+from the current sandbox workspace. Use --secret-env to declare required
+environment variables that should be resolved only for this run. Use --sandbox
+for remote sandbox-backed execution, and --json for machine-readable
 factory-run-v1 output.
 
 ```

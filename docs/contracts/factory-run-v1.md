@@ -19,6 +19,8 @@ This contract does not change the existing `.hal/prd.json`, `.hal/auto-state.jso
 | `version` | string | Hal CLI version that produced the result |
 | `runId` | string | Stable factory run identifier |
 | `status` | string | Final or current run lifecycle status; see status values below |
+| `executorMode` | string | Effective executor used for the run: `local` or `sandbox` |
+| `baseBranch` | string | Effective base branch passed to the executor |
 | `runner` | object | Optional execution runner summary, including the actual host or sandbox runner used for post-run publish work |
 | `publishFrom` | string | Optional normalized publish source request: `host`, `sandbox`, or `auto` |
 | `nextAction` | object or null | Recommended follow-up action |
@@ -38,6 +40,21 @@ purposes, but consumers that need the sandbox name, lifecycle status, safe
 connection display fields, SSH command, cleanup command, or diagnostic handoff
 should follow `nextAction.command` and read the durable `factory-status-v1` run
 record.
+
+## Effective Executor And Base
+
+`executorMode` and `baseBranch` report the resolved execution inputs, not only
+the flags typed for the command. Resolution follows this precedence:
+
+1. Explicit command flags such as `--sandbox` and `--base`.
+2. Project `factory.defaults.executor` and `factory.defaults.base` values.
+3. For local execution only, the current branch as a safe base fallback.
+
+Sandbox execution never falls back to the current sandbox workspace. If neither
+an explicit nor configured base resolves, the command fails before sandbox
+execution starts. A local result can contain an empty `baseBranch` only when the
+current branch could not be resolved; normal execution then reports the existing
+base-resolution failure rather than silently choosing another branch.
 
 ## Runner And Publish Metadata
 

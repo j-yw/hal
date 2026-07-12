@@ -676,7 +676,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			path:          "../docs/contracts/factory-run-v1.md",
 			contractValue: FactoryRunContractVersion,
 			requiredFields: []string{
-				"contractVersion", "version", "runId", "status", "nextAction", "artifacts",
+				"contractVersion", "version", "runId", "status", "executorMode", "baseBranch", "nextAction", "artifacts",
 				"runner", "publishFrom", "postRun", "publish", "telemetry", "eventSummary", "failure", "id", "command", "description", "total", "byType",
 				"lastEventType", "lastSummary", "totalDurationMs", "stepDurations", "engine", "sandbox",
 				"estimatedSandboxCost", "ciOutcome", "verificationOutcome", "failureCategory",
@@ -1266,12 +1266,18 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		var resp FactoryRunResponse
 		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-run-v1.json", &resp)
 
-		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "nextAction", "artifacts", "telemetry", "eventSummary", "failure"})
+		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "executorMode", "baseBranch", "nextAction", "artifacts", "telemetry", "eventSummary", "failure"})
 		if resp.ContractVersion != FactoryRunContractVersion {
 			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryRunContractVersion)
 		}
 		if resp.RunID == "" {
 			t.Fatal("factory run example should include a run ID")
+		}
+		if resp.ExecutorMode != factory.ExecutorModeSandbox {
+			t.Fatalf("factory run example executorMode = %q, want %q", resp.ExecutorMode, factory.ExecutorModeSandbox)
+		}
+		if resp.BaseBranch != "develop" {
+			t.Fatalf("factory run example baseBranch = %q, want develop", resp.BaseBranch)
 		}
 		if resp.NextAction == nil {
 			t.Fatal("factory run example should include nextAction")

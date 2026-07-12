@@ -676,6 +676,8 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 			Version:         "dev",
 			RunID:           record.RunID,
 			Status:          record.Status,
+			ExecutorMode:    factory.ExecutorModeSandbox,
+			BaseBranch:      "develop",
 			NextAction: &FactoryRunNextAction{
 				ID:          "inspect_factory_run",
 				Command:     "hal factory status run-contract --json",
@@ -695,7 +697,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 		}
 
 		raw := parseJSON(t, buf.Bytes())
-		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "nextAction", "artifacts", "telemetry", "eventSummary", "failure"})
+		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "executorMode", "baseBranch", "nextAction", "artifacts", "telemetry", "eventSummary", "failure"})
 		if raw["contractVersion"] != FactoryRunContractVersion {
 			t.Fatalf("factory run contractVersion = %v, want %q", raw["contractVersion"], FactoryRunContractVersion)
 		}

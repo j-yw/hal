@@ -928,6 +928,9 @@ func TestRunFactoryRunWithDepsDefaultsToLocalPipelineWithoutSandboxFlag(t *testi
 			if req.Record.ExecutorMode != factory.ExecutorModeLocal {
 				t.Fatalf("local executorMode = %q, want %q", req.Record.ExecutorMode, factory.ExecutorModeLocal)
 			}
+			if req.Record.BaseBranch != "hal/factory" || req.Request.BaseBranch != "hal/factory" {
+				t.Fatalf("effective base = record %q request %q, want hal/factory", req.Record.BaseBranch, req.Request.BaseBranch)
+			}
 			if req.Engine != factory.PolicyEngineClaude {
 				t.Fatalf("pipeline engine = %q, want %q", req.Engine, factory.PolicyEngineClaude)
 			}
@@ -8991,6 +8994,8 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 		Version:         "dev",
 		RunID:           "run-json-contract",
 		Status:          factory.RunStatusFailed,
+		ExecutorMode:    factory.ExecutorModeSandbox,
+		BaseBranch:      "develop",
 		NextAction: &FactoryRunNextAction{
 			ID:          "inspect_factory_run",
 			Command:     "hal factory status run-json-contract --json",
@@ -9064,9 +9069,15 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 		t.Fatalf("json.Unmarshal(raw) error: %v", err)
 	}
 	requireExactKeys(t, raw, []string{
-		"contractVersion", "version", "runId", "status", "nextAction",
+		"contractVersion", "version", "runId", "status", "executorMode", "baseBranch", "nextAction",
 		"artifacts", "telemetry", "eventSummary", "failure",
 	})
+	if decoded.ExecutorMode != factory.ExecutorModeSandbox {
+		t.Fatalf("executorMode = %q, want %q", decoded.ExecutorMode, factory.ExecutorModeSandbox)
+	}
+	if decoded.BaseBranch != "develop" {
+		t.Fatalf("baseBranch = %q, want develop", decoded.BaseBranch)
+	}
 
 	nextAction, ok := raw["nextAction"].(map[string]any)
 	if !ok {
@@ -9111,6 +9122,45 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 		t.Fatalf("failure should be an object, got %T", raw["failure"])
 	}
 	requireFactoryFields(t, "factory run failure", failure, []string{"classification", "errorMessage", "suggestedCommand"})
+}
+
+func TestFactoryRunResultSurfacesEffectiveExecutorAndBase(t *testing.T) {
+	record := factory.RunRecord{
+		RunID:        "run-effective-config",
+		Status:       factory.RunStatusSucceeded,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		BaseBranch:   "develop",
+	}
+
+	resp := newFactoryRunResponse(record, nil)
+	if resp.ExecutorMode != factory.ExecutorModeSandbox {
+		t.Fatalf("ExecutorMode = %q, want %q", resp.ExecutorMode, factory.ExecutorModeSandbox)
+	}
+	if resp.BaseBranch != "develop" {
+		t.Fatalf("BaseBranch = %q, want develop", resp.BaseBranch)
+	}
+
+	var out bytes.Buffer
+	if err := renderFactoryRunSummary(&out, resp); err != nil {
+		t.Fatalf("renderFactoryRunSummary() error: %v", err)
+	}
+	for _, want := range []string{"Executor: sandbox", "Base: develop"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("human output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestFactoryRunHelpExplainsExecutorAndBasePrecedence(t *testing.T) {
+	for _, want := range []string{
+		"explicit flags override project config defaults",
+		"safe local fallback",
+		"Sandbox execution still blocks when no base resolves",
+	} {
+		if !strings.Contains(factoryRunCmd.Long, want) {
+			t.Fatalf("factory run long help missing %q:\n%s", want, factoryRunCmd.Long)
+		}
+	}
 }
 
 func TestNewFactoryRunResponseDerivesTelemetryDurations(t *testing.T) {

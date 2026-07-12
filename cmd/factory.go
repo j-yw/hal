@@ -108,10 +108,12 @@ pipeline, or pass --sandbox to run the factory executor in a managed sandbox.
 Provide at most one positional PRD markdown path to start from an existing
 spec, or use --report <path> to start from an analysis report. The positional
 path and --report are mutually exclusive. Use --base <branch> to pass a target
-base branch to the executor. Sandbox mode requires --base so the remote
-workspace can be checked out deterministically. Use --secret-env to declare
-required environment variables that should be resolved only for this run. Use
---sandbox for remote sandbox-backed execution, and --json for machine-readable
+base branch to the executor. Executor/base precedence is: explicit flags override project config defaults,
+followed by a safe local fallback to the current branch.
+Sandbox execution still blocks when no base resolves; it never infers a base
+from the current sandbox workspace. Use --secret-env to declare required
+environment variables that should be resolved only for this run. Use --sandbox
+for remote sandbox-backed execution, and --json for machine-readable
 factory-run-v1 output.`,
 	Example: `  hal factory run .hal/prd-feature.md
   hal factory run --report .hal/reports/analysis.md
@@ -728,6 +730,7 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	if deps.runSandbox == nil {
 		return fmt.Errorf("factory sandbox executor dependency is required")
 	}
+	req = resolveFactoryRunEffectiveRequest(dir, req, deps)
 
 	store, err := deps.defaultStore()
 	if err != nil {
@@ -778,6 +781,18 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 		}
 	}
 	return execErr
+}
+
+func resolveFactoryRunEffectiveRequest(dir string, req factoryRunRequest, deps factoryRunDeps) factoryRunRequest {
+	req.BaseBranch = strings.TrimSpace(req.BaseBranch)
+	if req.BaseBranch != "" || req.Sandbox || deps.currentBranch == nil {
+		return req
+	}
+	baseBranch, err := deps.currentBranch(dir)
+	if err == nil {
+		req.BaseBranch = strings.TrimSpace(baseBranch)
+	}
+	return req
 }
 
 func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, out io.Writer, store factory.Store, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, engineName string) (factoryRunExecutionResult, error) {

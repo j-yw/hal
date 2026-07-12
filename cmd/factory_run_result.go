@@ -17,6 +17,8 @@ type FactoryRunResponse struct {
 	Version         string                        `json:"version"`
 	RunID           string                        `json:"runId"`
 	Status          string                        `json:"status"`
+	ExecutorMode    string                        `json:"executorMode,omitempty"`
+	BaseBranch      string                        `json:"baseBranch,omitempty"`
 	NextAction      *FactoryRunNextAction         `json:"nextAction"`
 	Artifacts       []FactoryRunArtifactReference `json:"artifacts"`
 	Telemetry       *factory.RunTelemetry         `json:"telemetry,omitempty"`
@@ -104,6 +106,20 @@ func renderFactoryRunSummaryWithSecurityReadinessGate(out io.Writer, resp Factor
 	if _, err := fmt.Fprintf(out, "Status: %s\n", resp.Status); err != nil {
 		return fmt.Errorf("write factory run summary: %w", err)
 	}
+	executorMode := strings.TrimSpace(resp.ExecutorMode)
+	if executorMode == "" {
+		executorMode = "(unknown)"
+	}
+	if _, err := fmt.Fprintf(out, "Executor: %s\n", executorMode); err != nil {
+		return fmt.Errorf("write factory run summary: %w", err)
+	}
+	baseBranch := strings.TrimSpace(resp.BaseBranch)
+	if baseBranch == "" {
+		baseBranch = "(unresolved)"
+	}
+	if _, err := fmt.Fprintf(out, "Base: %s\n", baseBranch); err != nil {
+		return fmt.Errorf("write factory run summary: %w", err)
+	}
 	if readiness := factorySecurityReadinessGateHuman(gate); readiness != "" {
 		if _, err := fmt.Fprintf(out, "%s\n", readiness); err != nil {
 			return fmt.Errorf("write factory run summary: %w", err)
@@ -143,6 +159,8 @@ func newFactoryRunResponse(record factory.RunRecord, events []factory.EventRecor
 		Version:         Version,
 		RunID:           record.RunID,
 		Status:          record.Status,
+		ExecutorMode:    strings.TrimSpace(record.ExecutorMode),
+		BaseBranch:      strings.TrimSpace(record.BaseBranch),
 		NextAction:      newFactoryRunNextAction(record),
 		Artifacts:       newFactoryRunArtifactReferences(record.Artifacts),
 		Telemetry:       factory.DeriveRunTelemetry(record, events),
