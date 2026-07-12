@@ -421,11 +421,6 @@ func TestServerHandlesSingleJSONRequestResponsePerUnixConnection(t *testing.T) {
 	if err := encoder.Encode(firstReq); err != nil {
 		t.Fatalf("Encode(first request) error: %v", err)
 	}
-	secondReq := firstReq
-	secondReq.RequestID = "req-002"
-	if err := encoder.Encode(secondReq); err != nil {
-		t.Fatalf("Encode(second request) error: %v", err)
-	}
 
 	decoder := json.NewDecoder(conn)
 	var firstResp Response
@@ -436,13 +431,21 @@ func TestServerHandlesSingleJSONRequestResponsePerUnixConnection(t *testing.T) {
 		t.Fatalf("first response = %#v, want only first request response", firstResp)
 	}
 
-	var secondResp Response
-	err = decoder.Decode(&secondResp)
-	if err == nil {
-		t.Fatalf("Decode(second response) error = nil with response %#v, want closed single-response connection", secondResp)
-	}
-	if !isClosedSingleResponseConnectionError(err) {
-		t.Fatalf("Decode(second response) error = %v, want EOF or closed connection", err)
+	secondReq := firstReq
+	secondReq.RequestID = "req-002"
+	if err := encoder.Encode(secondReq); err != nil {
+		if !isClosedSingleResponseConnectionError(err) {
+			t.Fatalf("Encode(second request) error = %v, want closed single-response connection", err)
+		}
+	} else {
+		var secondResp Response
+		err = decoder.Decode(&secondResp)
+		if err == nil {
+			t.Fatalf("Decode(second response) error = nil with response %#v, want closed single-response connection", secondResp)
+		}
+		if !isClosedSingleResponseConnectionError(err) {
+			t.Fatalf("Decode(second response) error = %v, want EOF or closed connection", err)
+		}
 	}
 	if got := handled.Load(); got != 1 {
 		t.Fatalf("handled requests = %d, want exactly one request per connection", got)
@@ -450,13 +453,15 @@ func TestServerHandlesSingleJSONRequestResponsePerUnixConnection(t *testing.T) {
 }
 
 func isClosedSingleResponseConnectionError(err error) bool {
-	if errors.Is(err, io.EOF) {
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
 		return true
 	}
 	message := err.Error()
-	// Linux can return ECONNRESET when the server closes a Unix socket with an
-	// unread extra request buffered; that still proves no second response was served.
-	return strings.Contains(message, "closed") || strings.Contains(message, "connection reset by peer")
+	// Unix sockets can report ECONNRESET or EPIPE depending on whether the peer
+	// closes before a buffered follow-up write reaches the server.
+	return strings.Contains(message, "closed") ||
+		strings.Contains(message, "connection reset by peer") ||
+		strings.Contains(message, "broken pipe")
 }
 
 func TestClientUsesInjectedTransportAndPropagatesContext(t *testing.T) {
