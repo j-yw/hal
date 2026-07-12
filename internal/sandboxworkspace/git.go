@@ -119,11 +119,7 @@ func (GitCLIInspector) VerifyBundle(ctx context.Context, req VerifyBundleRequest
 }
 
 func bundleCreateRevisions(plan Plan) []string {
-	positiveRef := bundlePositiveRef(plan)
-	if upstream := strings.TrimSpace(plan.Upstream); upstream != "" {
-		return []string{positiveRef, "^" + upstream}
-	}
-	return []string{positiveRef}
+	return []string{bundlePositiveRef(plan)}
 }
 
 func bundlePositiveRef(plan Plan) string {

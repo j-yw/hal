@@ -53,6 +53,35 @@ func TestGitCLIInspectorCreateBundleProducesUsableBundleForCleanUnpushedCommit(t
 	}
 }
 
+func TestGitCLIInspectorCreateBundleImportsIntoEmptyRepository(t *testing.T) {
+	requireGitCLI(t)
+	ctx := context.Background()
+	fixture := setupCleanUnpushedBundleRepo(t)
+
+	plan, err := (Planner{Git: GitCLIInspector{}}).Plan(ctx, Request{
+		ProjectDir:    fixture.projectDir,
+		WorkspaceMode: sandbox.SandboxWorkspaceModeClone,
+	})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	result, err := PrepareLocalBundle(ctx, GitCLIInspector{}, PrepareLocalBundleRequest{
+		Plan:      plan,
+		BundleDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("PrepareLocalBundle() error = %v", err)
+	}
+
+	sandboxDir := filepath.Join(t.TempDir(), "sandbox")
+	runGitTest(t, "", "init", sandboxDir)
+	runGitTest(t, sandboxDir, "fetch", result.LocalPath, result.SyncRef+":refs/heads/bundled")
+	gotHead := gitOutputTest(t, sandboxDir, "rev-parse", "refs/heads/bundled")
+	if gotHead != fixture.head {
+		t.Fatalf("bundled head = %q, want %q", gotHead, fixture.head)
+	}
+}
+
 func TestGitCLIInspectorVerifyBundleRejectsBundleWithoutPlannedCommit(t *testing.T) {
 	requireGitCLI(t)
 	ctx := context.Background()
