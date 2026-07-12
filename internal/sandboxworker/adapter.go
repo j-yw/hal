@@ -2,6 +2,7 @@ package sandboxworker
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -372,7 +373,8 @@ func clientDriverExecStdinPayload(stdin io.Reader) (*ExecStdinPayload, error) {
 		return nil, nil
 	}
 	return &ExecStdinPayload{
-		Data:       string(data),
+		Data:       base64.StdEncoding.EncodeToString(data),
+		Encoding:   CopyPayloadEncodingBase64,
 		SizeBytes:  int64(len(data)),
 		LimitBytes: MaxExecStdinBytes,
 	}, nil

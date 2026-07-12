@@ -2,6 +2,7 @@ package sandboxworker
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -19,16 +20,12 @@ func TestWorkerExecProtocolJSONContractPreservesRequestAndResponsePayloads(t *te
 		Operation:       OperationExec,
 		DriverID:        RuntimeDriverRootlessPodman,
 		Exec: &ExecRequest{
-			OperationID: "exec-001",
-			Target:      lifecycleWorkerTarget(RuntimeDriverRootlessPodman, "dev", "running"),
-			Args:        []string{"sh", "-lc", "printf ok"},
-			Env:         map[string]string{"HAL_SANDBOX": "1"},
-			WorkDir:     "/workspace/hal",
-			Stdin: &ExecStdinPayload{
-				Data:       "input\n",
-				SizeBytes:  6,
-				LimitBytes: MaxExecStdinBytes,
-			},
+			OperationID:      "exec-001",
+			Target:           lifecycleWorkerTarget(RuntimeDriverRootlessPodman, "dev", "running"),
+			Args:             []string{"sh", "-lc", "printf ok"},
+			Env:              map[string]string{"HAL_SANDBOX": "1"},
+			WorkDir:          "/workspace/hal",
+			Stdin:            workerExecStdinPayload("input\n", MaxExecStdinBytes),
 			StdoutLimitBytes: 128,
 			StderrLimitBytes: 64,
 		},
@@ -66,7 +63,7 @@ func TestWorkerExecProtocolJSONContractPreservesRequestAndResponsePayloads(t *te
 	if !ok {
 		t.Fatalf("stdin payload = %#v, want object", execPayload["stdin"])
 	}
-	assertJSONFields(t, stdinPayload, []string{"data", "sizeBytes", "limitBytes"})
+	assertJSONFields(t, stdinPayload, []string{"data", "encoding", "sizeBytes", "limitBytes"})
 
 	var decodedReq Request
 	if err := json.Unmarshal(data, &decodedReq); err != nil {
@@ -172,22 +169,14 @@ func TestWorkerExecRequestValidationRejectsUnsafePayloads(t *testing.T) {
 		{
 			name: "stdin limit exceeds maximum",
 			req: mutateExecRequest(validWorkerExecRequest(), func(req *ExecRequest) {
-				req.Stdin = &ExecStdinPayload{
-					Data:       "input",
-					SizeBytes:  5,
-					LimitBytes: MaxExecStdinBytes + 1,
-				}
+				req.Stdin = workerExecStdinPayload("input", MaxExecStdinBytes+1)
 			}),
 			want: "exceeds maximum",
 		},
 		{
 			name: "stdin data exceeds requested limit",
 			req: mutateExecRequest(validWorkerExecRequest(), func(req *ExecRequest) {
-				req.Stdin = &ExecStdinPayload{
-					Data:       "input",
-					SizeBytes:  5,
-					LimitBytes: 4,
-				}
+				req.Stdin = workerExecStdinPayload("input", 4)
 			}),
 			want: "requested limit",
 		},
@@ -311,11 +300,7 @@ func TestServiceExecRoutesRequestsThroughRegisteredDriver(t *testing.T) {
 	req.Exec.Args = []string{"sh", "-lc", "cat"}
 	req.Exec.Env = map[string]string{"HAL_SANDBOX": "1"}
 	req.Exec.WorkDir = " /workspace/hal "
-	req.Exec.Stdin = &ExecStdinPayload{
-		Data:       "input\n",
-		SizeBytes:  6,
-		LimitBytes: MaxExecStdinBytes,
-	}
+	req.Exec.Stdin = workerExecStdinPayload("input\n", MaxExecStdinBytes)
 
 	resp := service.HandleRequest(context.Background(), req)
 	if err := resp.Validate(); err != nil {
@@ -350,6 +335,15 @@ func TestServiceExecRoutesRequestsThroughRegisteredDriver(t *testing.T) {
 	}
 	if driver.stdinData != "input\n" {
 		t.Fatalf("driver stdin = %q, want request stdin", driver.stdinData)
+	}
+}
+
+func workerExecStdinPayload(data string, limit int64) *ExecStdinPayload {
+	return &ExecStdinPayload{
+		Data:       base64.StdEncoding.EncodeToString([]byte(data)),
+		Encoding:   CopyPayloadEncodingBase64,
+		SizeBytes:  int64(len([]byte(data))),
+		LimitBytes: limit,
 	}
 }
 

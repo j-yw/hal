@@ -3,6 +3,7 @@ package sandboxworker
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -90,7 +91,11 @@ func execStdinReader(payload *ExecStdinPayload) io.Reader {
 	if payload == nil {
 		return nil
 	}
-	return strings.NewReader(payload.Data)
+	data, err := base64.StdEncoding.DecodeString(payload.Data)
+	if err != nil {
+		return nil
+	}
+	return bytes.NewReader(data)
 }
 
 type boundedExecCapture struct {

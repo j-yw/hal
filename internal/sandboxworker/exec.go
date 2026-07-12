@@ -1,6 +1,7 @@
 package sandboxworker
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
 )
@@ -21,6 +22,7 @@ type ExecRequest struct {
 // ExecStdinPayload carries optional bounded stdin content for an exec request.
 type ExecStdinPayload struct {
 	Data       string `json:"data"`
+	Encoding   string `json:"encoding"`
 	SizeBytes  int64  `json:"sizeBytes"`
 	LimitBytes int64  `json:"limitBytes"`
 }
@@ -79,6 +81,12 @@ func (req ExecRequest) Validate() error {
 
 // Validate checks bounded stdin payload metadata.
 func (payload ExecStdinPayload) Validate() error {
+	if strings.TrimSpace(payload.Encoding) == "" {
+		return workerIOValidationError("exec stdin encoding is required")
+	}
+	if payload.Encoding != CopyPayloadEncodingBase64 {
+		return workerIOValidationError("exec stdin encoding %q is unsupported", payload.Encoding)
+	}
 	if err := validateWorkerIOPayload(workerIOPayloadValidation{
 		Field:           "exec stdin",
 		SizeBytes:       payload.SizeBytes,
@@ -88,7 +96,17 @@ func (payload ExecStdinPayload) Validate() error {
 	}); err != nil {
 		return err
 	}
-	return validatePayloadSizeMatchesData("exec stdin", payload.SizeBytes, payload.Data)
+	if len(payload.Data) > maxBase64EncodedPayloadLength(payload.LimitBytes) {
+		return workerIOValidationError("exec stdin data exceeds encoded limit for %d bytes", payload.LimitBytes)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(payload.Data)
+	if err != nil {
+		return workerIOValidationError("exec stdin data is not valid %s", CopyPayloadEncodingBase64)
+	}
+	if int64(len(decoded)) != payload.SizeBytes {
+		return workerIOValidationError("exec stdin sizeBytes %d does not match decoded data size %d bytes", payload.SizeBytes, len(decoded))
+	}
+	return nil
 }
 
 // Validate checks exec response output and optional command error metadata.

@@ -118,11 +118,8 @@ func TestClientIOMethodsRoundTripOverUnixSocket(t *testing.T) {
 	execReq.Args = []string{"sh", "-lc", "cat"}
 	execReq.Env = map[string]string{"HAL_SANDBOX": "1"}
 	execReq.WorkDir = " /workspace/hal "
-	execReq.Stdin = &ExecStdinPayload{
-		Data:       "input\n",
-		SizeBytes:  6,
-		LimitBytes: MaxExecStdinBytes,
-	}
+	stdinData := string([]byte{'i', 'n', 0xff, 0x00, '\n'})
+	execReq.Stdin = workerExecStdinPayload(stdinData, MaxExecStdinBytes)
 	execResp, err := client.Exec(context.Background(), "fake_runtime", execReq)
 	if err != nil {
 		t.Fatalf("Exec() error: %v", err)
@@ -130,8 +127,8 @@ func TestClientIOMethodsRoundTripOverUnixSocket(t *testing.T) {
 	if execResp.ExitCode != 42 || execResp.Stdout.Data != "hello\n" || execResp.Stderr.Data != "warn\n" {
 		t.Fatalf("Exec() response = %#v, want fake driver output over socket", execResp)
 	}
-	if driver.stdinData != "input\n" {
-		t.Fatalf("driver stdin = %q, want request stdin", driver.stdinData)
+	if driver.stdinData != stdinData {
+		t.Fatalf("driver stdin bytes = %v, want %v", []byte(driver.stdinData), []byte(stdinData))
 	}
 	if driver.execReq.WorkDir != "/workspace/hal" || driver.execReq.Env["HAL_SANDBOX"] != "1" {
 		t.Fatalf("driver exec request = %#v, want trimmed workdir and cloned env", driver.execReq)
@@ -625,11 +622,8 @@ func TestClientIOMethodsValidateRequestsBeforeDispatch(t *testing.T) {
 	}
 
 	execReq := *validWorkerExecRequest().Exec
-	execReq.Stdin = &ExecStdinPayload{
-		Data:       "oversized",
-		SizeBytes:  MaxExecStdinBytes + 1,
-		LimitBytes: MaxExecStdinBytes + 1,
-	}
+	execReq.Stdin = workerExecStdinPayload("oversized", MaxExecStdinBytes+1)
+	execReq.Stdin.SizeBytes = MaxExecStdinBytes + 1
 	if _, err := client.Exec(context.Background(), "fake_runtime", execReq); err == nil || !strings.Contains(err.Error(), "exec stdin") {
 		t.Fatalf("Exec(oversized stdin) error = %v, want validation error", err)
 	}

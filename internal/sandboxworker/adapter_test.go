@@ -3,6 +3,7 @@ package sandboxworker
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -191,7 +192,7 @@ func TestClientDriverExecForwardsToWorkerClientAndWritesBoundedOutput(t *testing
 	if req.WorkDir != "/workspace/hal" {
 		t.Fatalf("Exec() workdir = %q, want trimmed workdir", req.WorkDir)
 	}
-	if req.Stdin == nil || req.Stdin.Data != "stdin data" || req.Stdin.SizeBytes != 10 || req.Stdin.LimitBytes != MaxExecStdinBytes {
+	if req.Stdin == nil || req.Stdin.Data != base64.StdEncoding.EncodeToString([]byte("stdin data")) || req.Stdin.Encoding != CopyPayloadEncodingBase64 || req.Stdin.SizeBytes != 10 || req.Stdin.LimitBytes != MaxExecStdinBytes {
 		t.Fatalf("Exec() stdin payload = %#v, want bounded stdin payload", req.Stdin)
 	}
 	if req.StdoutLimitBytes != MaxExecStdoutCaptureBytes || req.StderrLimitBytes != MaxExecStderrCaptureBytes {
