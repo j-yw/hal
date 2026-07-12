@@ -3251,6 +3251,7 @@ type factoryPublishBranchRequest struct {
 
 type factoryPublishBranchDeps struct {
 	runGit               func(context.Context, string, ...string) (string, error)
+	pushBranchInDir      func(context.Context, string, string) error
 	pushAndCreatePRInDir func(context.Context, string, ci.PushOptions) (ci.PushResult, error)
 }
 
@@ -3315,6 +3316,7 @@ func runFactoryPublishBranch(cmd *cobra.Command, args []string) error {
 	}
 	return runFactoryPublishBranchWithDeps(ctx, ".", req, out, factoryPublishBranchDeps{
 		runGit:               runFactoryGitInDir,
+		pushBranchInDir:      ci.PushBranchInDir,
 		pushAndCreatePRInDir: ci.PushAndCreatePRInDir,
 	})
 }
@@ -3382,7 +3384,10 @@ func publishFactoryBranchFromWorkspace(ctx context.Context, dir string, req fact
 	var result ci.PushResult
 	switch publishPolicy {
 	case factory.PublishPolicyPush:
-		if _, err := deps.runGit(ctx, dir, "push", "-u", "origin", branchName); err != nil {
+		if deps.pushBranchInDir == nil {
+			return ci.PushResult{}, "", fmt.Errorf("factory publish push requires push dependency")
+		}
+		if err := deps.pushBranchInDir(ctx, dir, branchName); err != nil {
 			return ci.PushResult{}, "", fmt.Errorf("factory publish push branch %q: %w", branchName, err)
 		}
 		result = ci.PushResult{

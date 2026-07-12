@@ -2556,6 +2556,59 @@ func TestPublishFactoryRunAfterVerifiedSuccessPushAppliesSandboxBundle(t *testin
 	requireFactoryPublishOutcomeArtifact(t, got, factory.PublishPolicyPush, "hal/game-ripple", true)
 }
 
+func TestRunFactoryPublishBranchPushUsesPushDependency(t *testing.T) {
+	dir := t.TempDir()
+	var gitCalls [][]string
+	var pushedBranch string
+	var out bytes.Buffer
+
+	err := runFactoryPublishBranchWithDeps(context.Background(), dir, factoryPublishBranchRequest{
+		Policy:     factory.PublishPolicyPush,
+		BranchName: "hal/escape-to-pause",
+		JSON:       true,
+	}, &out, factoryPublishBranchDeps{
+		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
+			if gotDir != dir {
+				t.Fatalf("git dir = %q, want %q", gotDir, dir)
+			}
+			gitCalls = append(gitCalls, append([]string(nil), args...))
+			switch {
+			case reflect.DeepEqual(args, []string{"branch", "--show-current"}):
+				return "hal/escape-to-pause", nil
+			case reflect.DeepEqual(args, []string{"rev-parse", "HEAD"}):
+				return "abc123", nil
+			default:
+				return "", nil
+			}
+		},
+		pushBranchInDir: func(_ context.Context, gotDir, branch string) error {
+			if gotDir != dir {
+				t.Fatalf("push dir = %q, want %q", gotDir, dir)
+			}
+			pushedBranch = branch
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryPublishBranchWithDeps() error = %v", err)
+	}
+	if pushedBranch != "hal/escape-to-pause" {
+		t.Fatalf("pushed branch = %q, want hal/escape-to-pause", pushedBranch)
+	}
+	for _, call := range gitCalls {
+		if len(call) > 0 && call[0] == "push" {
+			t.Fatalf("plain git push was called instead of push dependency: %#v", gitCalls)
+		}
+	}
+	var result factorySandboxPublishResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("Unmarshal(publish result) error = %v; output = %s", err, out.String())
+	}
+	if !result.OK || !result.Push.Pushed || result.Commit != "abc123" {
+		t.Fatalf("publish result = %#v", result)
+	}
+}
+
 func TestPublishFactoryRunAfterVerifiedSuccessPROpensFromHostBranch(t *testing.T) {
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	dir := t.TempDir()
