@@ -102,6 +102,8 @@ type fakeCommandRunner struct {
 	copyRequests      []rootlesspodman.CommandRequest
 	resultByOperation map[string]rootlesspodman.CommandResult
 	errByOperation    map[string]error
+	copyResults       []rootlesspodman.CommandResult
+	copyErrors        []error
 }
 
 func (f *fakeCommandRunner) RunLifecycleCommand(_ context.Context, req rootlesspodman.CommandRequest) (rootlesspodman.CommandResult, error) {
@@ -116,6 +118,18 @@ func (f *fakeCommandRunner) RunExecCommand(_ context.Context, req rootlesspodman
 
 func (f *fakeCommandRunner) RunCopyCommand(_ context.Context, req rootlesspodman.CommandRequest) (rootlesspodman.CommandResult, error) {
 	f.copyRequests = append(f.copyRequests, req)
+	index := len(f.copyRequests) - 1
+	if index < len(f.copyResults) || index < len(f.copyErrors) {
+		result := rootlesspodman.CommandResult{ExitCode: 0}
+		if index < len(f.copyResults) {
+			result = f.copyResults[index]
+		}
+		var err error
+		if index < len(f.copyErrors) {
+			err = f.copyErrors[index]
+		}
+		return result, err
+	}
 	return f.commandResult(req.Operation)
 }
 

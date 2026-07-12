@@ -3,6 +3,7 @@ package rootlesspodman
 import (
 	"context"
 	"errors"
+	"path"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
@@ -26,6 +27,12 @@ func (d *Driver) CopyIn(ctx context.Context, req sandboxruntime.CopyRequest) err
 	ref, err := containerRef(req.Target)
 	if err != nil {
 		return operationError(OperationCopyIn, CommandResult{}, err)
+	}
+	if err := d.runCopyCommand(ctx, CommandRequest{
+		Operation: OperationCopyIn,
+		Args:      d.copyInPrepareParentArgs(ref, path.Dir(destinationPath)),
+	}); err != nil {
+		return err
 	}
 
 	return d.runCopyCommand(ctx, CommandRequest{
@@ -79,6 +86,10 @@ func (d *Driver) copyRunnerFor(operation string) (CopyCommandRunner, error) {
 
 func (d *Driver) copyInArgs(ref, sourcePath, destinationPath string) []string {
 	return []string{d.podmanPath, "cp", sourcePath, containerPath(ref, destinationPath)}
+}
+
+func (d *Driver) copyInPrepareParentArgs(ref, parentPath string) []string {
+	return []string{d.podmanPath, "exec", ref, "mkdir", "-p", "--", parentPath}
 }
 
 func (d *Driver) copyOutArgs(ref, sourcePath, destinationPath string) []string {

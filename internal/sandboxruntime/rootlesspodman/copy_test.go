@@ -47,18 +47,92 @@ func TestCopyCommandsUseFakeRunnerAndPodmanCPArgs(t *testing.T) {
 
 	wantOperations := []string{
 		rootlesspodman.OperationCopyIn,
+		rootlesspodman.OperationCopyIn,
 		rootlesspodman.OperationCopyOut,
 	}
 	if got := runner.copyOperations(); !reflect.DeepEqual(got, wantOperations) {
 		t.Fatalf("copy operations = %#v, want %#v", got, wantOperations)
 	}
-	wantArgsByOperation := map[string][]string{
-		rootlesspodman.OperationCopyIn:  {"podman", "cp", localSource, "runtime-id:" + containerDestination},
-		rootlesspodman.OperationCopyOut: {"podman", "cp", "runtime-id:" + containerSource, localDestination},
+	wantArgs := [][]string{
+		{"podman", "exec", "runtime-id", "mkdir", "-p", "--", "/workspace/project"},
+		{"podman", "cp", localSource, "runtime-id:" + containerDestination},
+		{"podman", "cp", "runtime-id:" + containerSource, localDestination},
 	}
-	for _, req := range runner.copyRequests {
-		if !reflect.DeepEqual(req.Args, wantArgsByOperation[req.Operation]) {
-			t.Fatalf("%s args = %#v, want %#v", req.Operation, req.Args, wantArgsByOperation[req.Operation])
+	for index, req := range runner.copyRequests {
+		if !reflect.DeepEqual(req.Args, wantArgs[index]) {
+			t.Fatalf("%s request %d args = %#v, want %#v", req.Operation, index, req.Args, wantArgs[index])
+		}
+	}
+}
+
+func TestCopyInCreatesNestedContainerParentWithoutShellInterpolation(t *testing.T) {
+	runner := &fakeCommandRunner{}
+	driver := rootlesspodman.New(rootlesspodman.Options{CopyRunner: runner})
+	destination := "/workspace/fresh parent/$(touch should-not-run);token/file.bundle"
+
+	if err := driver.CopyIn(context.Background(), sandboxruntime.CopyRequest{
+		Target:          sandboxruntime.Target{Name: "hal-dev"},
+		SourcePath:      "/tmp/input.bundle",
+		DestinationPath: destination,
+	}); err != nil {
+		t.Fatalf("CopyIn() unexpected error: %v", err)
+	}
+
+	want := [][]string{
+		{"podman", "exec", "hal-dev", "mkdir", "-p", "--", "/workspace/fresh parent/$(touch should-not-run);token"},
+		{"podman", "cp", "/tmp/input.bundle", "hal-dev:" + destination},
+	}
+	if len(runner.copyRequests) != len(want) {
+		t.Fatalf("copy command count = %d, want %d", len(runner.copyRequests), len(want))
+	}
+	for index, req := range runner.copyRequests {
+		if req.Operation != rootlesspodman.OperationCopyIn {
+			t.Fatalf("request %d operation = %q, want %q", index, req.Operation, rootlesspodman.OperationCopyIn)
+		}
+		if !reflect.DeepEqual(req.Args, want[index]) {
+			t.Fatalf("request %d args = %#v, want %#v", index, req.Args, want[index])
+		}
+	}
+}
+
+func TestCopyInStopsWhenContainerParentPreparationFails(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "input.bundle")
+	rawErr := errors.New("mkdir failed for " + sourcePath + " token=raw-secret")
+	runner := &fakeCommandRunner{
+		copyResults: []rootlesspodman.CommandResult{{
+			ExitCode: 125,
+			Stderr:   "cannot create /tmp/private-parent token=abcd1234",
+		}},
+		copyErrors: []error{rawErr},
+	}
+	driver := rootlesspodman.New(rootlesspodman.Options{CopyRunner: runner})
+
+	err := driver.CopyIn(context.Background(), sandboxruntime.CopyRequest{
+		Target:          sandboxruntime.Target{Name: "hal-dev"},
+		SourcePath:      sourcePath,
+		DestinationPath: "/workspace/fresh/input.bundle",
+	})
+	if err == nil {
+		t.Fatal("CopyIn() expected error, got nil")
+	}
+	if !errors.Is(err, rawErr) {
+		t.Fatalf("errors.Is(%v, rawErr) = false, want true", err)
+	}
+	if len(runner.copyRequests) != 1 {
+		t.Fatalf("copy command count = %d, want only failed parent preparation", len(runner.copyRequests))
+	}
+	if got := runner.copyRequests[0].Args; !reflect.DeepEqual(got, []string{"podman", "exec", "hal-dev", "mkdir", "-p", "--", "/workspace/fresh"}) {
+		t.Fatalf("parent preparation args = %#v", got)
+	}
+	message := err.Error()
+	for _, unsafe := range []string{sourcePath, "/tmp/private-parent", "raw-secret", "abcd1234"} {
+		if strings.Contains(message, unsafe) {
+			t.Fatalf("error message %q contains unsafe detail %q", message, unsafe)
+		}
+	}
+	for _, wantDetail := range []string{rootlesspodman.OperationCopyIn, "[redacted-path]", "token=[redacted]"} {
+		if !strings.Contains(message, wantDetail) {
+			t.Fatalf("error message %q does not include sanitized detail %q", message, wantDetail)
 		}
 	}
 }
