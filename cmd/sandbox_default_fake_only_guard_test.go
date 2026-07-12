@@ -95,7 +95,7 @@ func TestPhase19WorkerLiveRefreshCallSitesStayScoped(t *testing.T) {
 	want := map[string][]string{
 		"querySandboxHostWorkerMetadata":       {"sandbox_host.go"},
 		"querySandboxRuntimeLiveMetadata":      {"sandbox_runtime.go"},
-		"sandboxWorkerRuntimeDriverFromTarget": {"auto_sandbox.go", "factory_sandbox_executor.go", "run_sandbox.go"},
+		"sandboxWorkerRuntimeDriverFromTarget": {"auto_sandbox.go", "factory_sandbox_executor.go", "run_sandbox.go", "sandbox_worker_runtime.go"},
 	}
 	for name, wantFiles := range want {
 		got := callSites[name]

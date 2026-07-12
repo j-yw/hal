@@ -582,11 +582,20 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 				if err != nil {
 					return err
 				}
+				if autoSandboxWorkerRuntimeRouteSelected(req, prep.Target, selectedTarget) {
+					return deps.prepareAutoSandboxInputsRuntime(ctx, &req, prep)
+				}
 				provider, err := ensureProvider(prep.Target.Provider)
 				if err != nil {
 					return err
 				}
 				return deps.prepareAutoSandboxInputs(ctx, &req, provider, prep, prepOut)
+			}
+			if autoSandboxWorkerRuntimeRouteSelected(req, prep.Target, selectedTarget) {
+				if err := deps.bootstrapAutoSandboxWorkspaceRuntime(ctx, req, prep, prepOut); err != nil {
+					return err
+				}
+				return deps.prepareAutoSandboxInputsRuntime(ctx, &req, prep)
 			}
 			provider, err := ensureProvider(prep.Target.Provider)
 			if err != nil {
@@ -598,6 +607,11 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 			return deps.prepareAutoSandboxInputs(ctx, &req, provider, prep, prepOut)
 		},
 		PrepareAuth: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
+			if autoSandboxWorkerRuntimeRouteSelected(req, prep.Target, selectedTarget) {
+				return factorySandboxSyncEngineAuthRuntime(ctx, prep, factorySandboxExecutorDeps{
+					engineAuthFiles: deps.engineAuthFiles,
+				})
+			}
 			provider, err := ensureProvider(prep.Target.Provider)
 			if err != nil {
 				return err
@@ -848,6 +862,45 @@ func (deps autoSandboxDeps) bootstrapAutoSandboxWorkspace(ctx context.Context, r
 		},
 	})
 	return err
+}
+
+func (deps autoSandboxDeps) bootstrapAutoSandboxWorkspaceRuntime(ctx context.Context, req autoSandboxRequest, prep sandboxexec.PrepareContext, out io.Writer) error {
+	bootstrapReq := factory.BootstrapRequest{
+		RepositoryURL: req.RepoRemote,
+		BaseBranch:    req.BaseBranch,
+		RunBranch:     req.RunBranch,
+		WorkspaceDir:  req.WorkDir,
+		Options: factory.BootstrapOptions{
+			RefreshHal: true,
+		},
+	}
+	_, err := sandboxRuntimeBootstrapWorkspace(ctx, bootstrapReq, prep, out, deps.now, deps.bootstrap)
+	return err
+}
+
+func (deps autoSandboxDeps) prepareAutoSandboxInputsRuntime(ctx context.Context, req *autoSandboxRequest, prep sandboxexec.PrepareContext) error {
+	if req == nil {
+		return nil
+	}
+	if len(req.Args) > 0 {
+		remotePath, changed, err := factorySandboxCopyInputRuntime(ctx, prep, req.ProjectDir, req.Args[0], req.WorkDir)
+		if err != nil {
+			return err
+		}
+		if changed {
+			req.Args = append([]string{remotePath}, req.Args[1:]...)
+		}
+	}
+	if reportPath := strings.TrimSpace(req.Flags.Report); reportPath != "" {
+		remotePath, changed, err := factorySandboxCopyInputRuntime(ctx, prep, req.ProjectDir, reportPath, req.WorkDir)
+		if err != nil {
+			return err
+		}
+		if changed {
+			req.Flags.Report = remotePath
+		}
+	}
+	return nil
 }
 
 func (deps autoSandboxDeps) prepareAutoSandboxInputs(ctx context.Context, req *autoSandboxRequest, provider sandbox.Provider, prep sandboxexec.PrepareContext, out io.Writer) error {

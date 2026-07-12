@@ -2532,6 +2532,7 @@ func (f fakeRunSandboxGitInspector) InspectGit(context.Context, string) (sandbox
 
 type fakeRunSandboxRuntimeDriver struct {
 	id      string
+	create  func(context.Context, sandboxruntime.CreateRequest) (*sandboxruntime.Target, error)
 	start   func(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error)
 	exec    func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
 	copyIn  func(context.Context, sandboxruntime.CopyRequest) error
@@ -2545,8 +2546,19 @@ func (f fakeRunSandboxRuntimeDriver) ID() string {
 	return sandboxruntime.DriverSSHMachine
 }
 
-func (fakeRunSandboxRuntimeDriver) Create(context.Context, sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
-	return nil, nil
+func (f fakeRunSandboxRuntimeDriver) Create(ctx context.Context, req sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+	if f.create != nil {
+		return f.create(ctx, req)
+	}
+	return &sandboxruntime.Target{
+		ID:     req.Name + "-runtime",
+		Name:   req.Name,
+		Status: sandbox.StatusStopped,
+		Runtime: sandboxruntime.RuntimeState{
+			Driver:    f.ID(),
+			RuntimeID: req.Name + "-runtime",
+		},
+	}, nil
 }
 
 func (f fakeRunSandboxRuntimeDriver) Start(ctx context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {

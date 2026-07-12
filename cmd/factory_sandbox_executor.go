@@ -109,6 +109,9 @@ var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
 			return resolveProviderWithFallback(".", providerName)
 		})
 	},
+	resolveWorkerRuntime: func(req sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+		return sandboxWorkerRuntimeDriverFromTarget(req, sandboxWorkerRuntimeDriverFactories{})
+	},
 	runProviderExec:        runFactorySandboxProviderExec,
 	runProviderScript:      runFactorySandboxProviderScript,
 	runProviderExecWithEnv: runFactorySandboxProviderExecWithEnv,
@@ -270,6 +273,8 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	var target *sandbox.SandboxState
 	var selectedTarget *sandbox.SandboxState
 	var provider sandbox.Provider
+	var runtimeDriver sandboxruntime.Driver
+	var workerRuntimeSelected bool
 	leaseRelease := sandboxCommandLeaseReleaseTracker{releaseLease: deps.releaseLease}
 	defer func() {
 		leaseRelease.observe(target)
@@ -309,6 +314,27 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			deferredCleanupBehavior = factory.CleanupBehaviorPreserve
 		}
 		if !factorySandboxCleanupBehaviorWillRun(deferredCleanupBehavior, cleanupSucceeded) {
+			return
+		}
+		if workerRuntimeSelected && runtimeDriver != nil {
+			cleaned, cleanupErr := cleanupFactorySandboxRuntimeAfterRun(ctx, req, record, target, runtimeDriver, deferredCleanupBehavior, cleanupSucceeded)
+			if cleaned {
+				if recordErr := recordFactorySandboxCleanedUp(store, deps, &record, target, secretRedactor); recordErr != nil {
+					if cleanupErr != nil {
+						cleanupErr = errors.Join(cleanupErr, recordErr)
+					} else {
+						cleanupErr = recordErr
+					}
+				}
+			}
+			if cleanupErr != nil {
+				sanitizedCleanupErr := fmt.Errorf("%s", factorySandboxSanitizedError(target, fmt.Errorf("cleanup factory sandbox: %w", cleanupErr), secretRedactor))
+				if returnErr != nil {
+					returnErr = errors.Join(returnErr, sanitizedCleanupErr)
+					return
+				}
+				returnErr = sanitizedCleanupErr
+			}
 			return
 		}
 		cleanupProvider := provider
@@ -400,6 +426,10 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			if !handled {
 				driver, err = deps.resolveRuntimeDriver(target)
 			}
+			if err == nil {
+				runtimeDriver = driver
+				workerRuntimeSelected = handled
+			}
 			return driver, err
 		},
 		OnDriverReady: func(_ context.Context, ready sandboxruntime.Target, _ sandboxruntime.Driver) error {
@@ -409,6 +439,9 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			return nil
 		},
 		PrepareWorkspace: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
+			if factorySandboxWorkerRuntimeRouteSelected(req, prep.Target, selectedTarget) {
+				return prepareFactorySandboxWorkspaceRuntime(ctx, store, deps, &record, req, prep, remoteOutput)
+			}
 			provider, err := ensureProvider(prep.Target.Provider)
 			if err != nil {
 				return err
@@ -416,6 +449,9 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			return prepareFactorySandboxWorkspace(ctx, store, deps, &record, req, sandboxStateFromRuntimeTarget(prep.Target), provider, sandboxConnectInfoFromRuntimeTarget(prep.Target), remoteOutput)
 		},
 		PrepareAuth: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
+			if factorySandboxWorkerRuntimeRouteSelected(req, prep.Target, selectedTarget) {
+				return factorySandboxSyncEngineAuthRuntime(ctx, prep, deps)
+			}
 			provider, err := ensureProvider(prep.Target.Provider)
 			if err != nil {
 				return err
@@ -423,12 +459,18 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			return factorySandboxSyncEngineAuth(ctx, provider, sandboxStateFromRuntimeTarget(prep.Target), newFactorySandboxRemoteUserOutputWriter(remoteOutput), deps)
 		},
 		PrepareCommand: func(ctx context.Context, prep sandboxexec.PrepareContext, command *sandboxexec.CommandRequest) error {
-			provider, err := ensureProvider(prep.Target.Provider)
-			if err != nil {
-				return err
-			}
 			userOutput := newFactorySandboxRemoteUserOutputWriter(remoteOutput)
-			remoteAuto, err := factorySandboxPrepareRemoteInputs(ctx, req, provider, sandboxStateFromRuntimeTarget(prep.Target), userOutput, deps)
+			var remoteAuto factoryRunAutoRequest
+			var err error
+			if factorySandboxWorkerRuntimeRouteSelected(req, prep.Target, selectedTarget) {
+				remoteAuto, err = factorySandboxPrepareRemoteInputsRuntime(ctx, req, prep)
+			} else {
+				provider, providerErr := ensureProvider(prep.Target.Provider)
+				if providerErr != nil {
+					return providerErr
+				}
+				remoteAuto, err = factorySandboxPrepareRemoteInputs(ctx, req, provider, sandboxStateFromRuntimeTarget(prep.Target), userOutput, deps)
+			}
 			if err != nil {
 				return err
 			}
@@ -453,13 +495,19 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 				target = phaseErr.Target
 			}
 		}
-		if target != nil && provider != nil {
+		if target != nil && workerRuntimeSelected && runtimeDriver != nil {
+			attemptFactorySandboxRuntimeRecoveryArtifacts(ctx, deps, record, target, runtimeDriver, remoteOutput)
+		} else if target != nil && provider != nil {
 			attemptFactorySandboxRecoveryArtifacts(ctx, deps, record, target, provider, remoteOutput)
 		}
 		returnErr = handleFactorySandboxExecutorError(ctx, store, deps, req, &record, target, execErr, secretRedactor)
 		return returnErr
 	}
-	attemptFactorySandboxRecoveryArtifacts(ctx, deps, record, target, provider, remoteOutput)
+	if workerRuntimeSelected && runtimeDriver != nil {
+		attemptFactorySandboxRuntimeRecoveryArtifacts(ctx, deps, record, target, runtimeDriver, remoteOutput)
+	} else {
+		attemptFactorySandboxRecoveryArtifacts(ctx, deps, record, target, provider, remoteOutput)
+	}
 	if !req.DeferSuccessCleanup {
 		cleanupSucceeded = true
 	}
@@ -484,6 +532,41 @@ func attemptFactorySandboxRecoveryArtifacts(ctx context.Context, deps factorySan
 			})
 		}
 	}
+}
+
+func attemptFactorySandboxRuntimeRecoveryArtifacts(ctx context.Context, deps factorySandboxExecutorDeps, record factory.RunRecord, target *sandbox.SandboxState, driver sandboxruntime.Driver, remoteOutput *factorySandboxTimelineWriter) {
+	if err := generateFactorySandboxRuntimeRecoveryArtifacts(ctx, record, target, driver, remoteOutput); err != nil && remoteOutput != nil {
+		_ = remoteOutput.appendExecutorEvent(factory.EventTypeArtifactSync, "Sandbox recovery artifact generation skipped", map[string]any{
+			"status": "warning",
+			"reason": "recovery_generation_failed",
+		})
+	}
+}
+
+func generateFactorySandboxRuntimeRecoveryArtifacts(ctx context.Context, record factory.RunRecord, target *sandbox.SandboxState, driver sandboxruntime.Driver, remoteOutput *factorySandboxTimelineWriter) error {
+	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
+	if workspaceDir == "" || target == nil || driver == nil {
+		return nil
+	}
+	script := factorySandboxRecoveryArtifactScript(workspaceDir, record.BaseBranch)
+	if strings.TrimSpace(script) == "" {
+		return nil
+	}
+	_, err := driver.Exec(ctx, sandboxruntime.ExecRequest{
+		Target: sandboxRuntimeTargetFromState(target),
+		Args:   []string{"sh", "-c", script},
+		Stdout: io.Discard,
+		Stderr: io.Discard,
+	})
+	if err != nil {
+		return err
+	}
+	if remoteOutput != nil {
+		return remoteOutput.appendExecutorEvent(factory.EventTypeArtifactSync, "Sandbox recovery artifacts generated", map[string]any{
+			"status": "generated",
+		})
+	}
+	return nil
 }
 
 type factorySandboxRecoveryArtifactRequest struct {
@@ -884,6 +967,24 @@ func cleanupFactorySandboxAfterRun(ctx context.Context, deps factorySandboxExecu
 		Provider: provider,
 		Out:      out,
 	}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func cleanupFactorySandboxRuntimeAfterRun(ctx context.Context, req factorySandboxExecutorRequest, record factory.RunRecord, target *sandbox.SandboxState, driver sandboxruntime.Driver, behavior string, succeeded bool) (bool, error) {
+	if !factorySandboxCleanupBehaviorWillRun(behavior, succeeded) {
+		return false, nil
+	}
+	if req.BeforeCleanup != nil {
+		if err := req.BeforeCleanup(ctx, record); err != nil {
+			return false, fmt.Errorf("prepare factory sandbox cleanup: %w", err)
+		}
+	}
+	if target == nil || driver == nil {
+		return false, fmt.Errorf("sandbox runtime cleanup target and driver are required")
+	}
+	if err := driver.Delete(ctx, sandboxruntime.LifecycleRequest{Target: sandboxRuntimeTargetFromState(target)}); err != nil {
 		return false, err
 	}
 	return true, nil

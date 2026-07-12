@@ -152,6 +152,50 @@ func newSandboxWorkerRuntimeClient(socketPath string) (sandboxworker.RuntimeDriv
 	return sandboxworker.NewClient(sandboxworker.ClientOptions{SocketPath: strings.TrimSpace(socketPath)})
 }
 
+func resolveFactoryStoredSandboxRuntime(dir string, target *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+	return resolveFactoryStoredSandboxRuntimeWithDeps(dir, target, sandbox.LoadHost, sandboxWorkerRuntimeDriverFactories{})
+}
+
+func resolveFactoryStoredSandboxRuntimeWithDeps(
+	dir string,
+	target *sandbox.SandboxState,
+	loadHost func(string) (*sandbox.SandboxHost, error),
+	factories sandboxWorkerRuntimeDriverFactories,
+) (sandboxruntime.Driver, error) {
+	if target == nil {
+		return nil, fmt.Errorf("sandbox target is required")
+	}
+	runtimeTarget := sandboxRuntimeTargetFromState(target)
+	if target.Host != nil && strings.TrimSpace(target.Host.Kind) == sandbox.SandboxHostKindWorker {
+		if loadHost == nil {
+			return nil, fmt.Errorf("sandbox worker host loader is required")
+		}
+		hostID := strings.TrimSpace(target.Host.ID)
+		host, err := loadHost(hostID)
+		if err != nil {
+			return nil, fmt.Errorf("load sandbox worker host %q: %w", hostID, err)
+		}
+		if host == nil {
+			return nil, fmt.Errorf("load sandbox worker host %q: not found", hostID)
+		}
+		return sandboxWorkerRuntimeDriverFromTarget(sandboxWorkerRuntimeRequest{
+			Target: runtimeTarget,
+			Host:   host,
+		}, factories)
+	}
+	return sandboxRuntimeDriverFromTarget(runtimeTarget, func(providerName string) (sandbox.Provider, error) {
+		return resolveProviderWithFallback(dir, providerName)
+	})
+}
+
+func factorySandboxUsesWorkerRuntime(target *sandbox.SandboxState) bool {
+	return target != nil &&
+		target.Host != nil &&
+		strings.TrimSpace(target.Host.Kind) == sandbox.SandboxHostKindWorker &&
+		target.Runtime != nil &&
+		sandboxWorkerRuntimeDriverUsesWorkerBoundary(target.Runtime.Driver)
+}
+
 func sandboxWorkerRuntimeUnsupportedError(host *sandbox.SandboxHost, driverID, detail string) error {
 	hostID := ""
 	hostName := ""

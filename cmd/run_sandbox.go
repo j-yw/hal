@@ -722,6 +722,9 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 				})
 				return err
 			}
+			if runSandboxWorkerRuntimeRouteSelected(req, prep.Target, selectedTarget) {
+				return deps.bootstrapRunSandboxWorkspaceRuntime(ctx, req, prep, prepOut)
+			}
 			provider, err := ensureProvider(prep.Target.Provider)
 			if err != nil {
 				return err
@@ -729,6 +732,11 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 			return deps.bootstrapRunSandboxWorkspace(ctx, req, provider, prep, prepOut)
 		},
 		PrepareAuth: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
+			if runSandboxWorkerRuntimeRouteSelected(req, prep.Target, selectedTarget) {
+				return factorySandboxSyncEngineAuthRuntime(ctx, prep, factorySandboxExecutorDeps{
+					engineAuthFiles: deps.engineAuthFiles,
+				})
+			}
 			provider, err := ensureProvider(prep.Target.Provider)
 			if err != nil {
 				return err
@@ -1034,6 +1042,20 @@ func (deps runSandboxDeps) bootstrapRunSandboxWorkspace(ctx context.Context, req
 			return factorySandboxRemoteRepoExists(ctx, provider, connectInfo, deps.runProviderScript, path, req.RepoRemote)
 		},
 	})
+	return err
+}
+
+func (deps runSandboxDeps) bootstrapRunSandboxWorkspaceRuntime(ctx context.Context, req runSandboxRequest, prep sandboxexec.PrepareContext, out io.Writer) error {
+	bootstrapReq := factory.BootstrapRequest{
+		RepositoryURL: req.RepoRemote,
+		BaseBranch:    req.BaseBranch,
+		RunBranch:     req.RunBranch,
+		WorkspaceDir:  req.WorkDir,
+		Options: factory.BootstrapOptions{
+			RefreshHal: true,
+		},
+	}
+	_, err := sandboxRuntimeBootstrapWorkspace(ctx, bootstrapReq, prep, out, deps.now, deps.bootstrap)
 	return err
 }
 

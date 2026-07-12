@@ -875,11 +875,148 @@ func TestRunStartsStoppedRootlessPodmanTargetThroughRuntimeDriver(t *testing.T) 
 	if !driver.startCalled {
 		t.Fatal("runtime driver Start was not called for stopped rootless target")
 	}
+	if driver.createCalled {
+		t.Fatal("runtime driver Create was called for an existing stopped rootless target")
+	}
 	if result.Target.Status != sandbox.StatusRunning || target.Status != sandbox.StatusRunning || gotRunTarget.Status != sandbox.StatusRunning {
 		t.Fatalf("statuses result/target/run = %q/%q/%q, want running", result.Target.Status, target.Status, gotRunTarget.Status)
 	}
 	if result.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman || gotRunTarget.Runtime.Driver != sandboxruntime.DriverRootlessPodman {
 		t.Fatalf("runtime driver result/run = %#v/%#v", result.Target.Runtime, gotRunTarget.Runtime)
+	}
+}
+
+func TestRunPropagatesRuntimeCreateFailure(t *testing.T) {
+	target := &sandbox.SandboxState{
+		ID:       "logical-worker-target-1",
+		Name:     "worker-rootless",
+		Provider: "local",
+		Status:   sandbox.StatusStopped,
+		Host: &sandbox.SandboxHost{
+			ID:   "worker-1",
+			Name: "local worker",
+			Kind: sandbox.SandboxHostKindWorker,
+		},
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandboxruntime.DriverRootlessPodman,
+			WorkerID:       "worker-1",
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+		},
+	}
+	createErr := errors.New("worker create failed")
+	driver := &recordingRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		create: func(context.Context, sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+			return nil, createErr
+		},
+	}
+
+	_, err := Run(context.Background(), CommandRequest{SandboxName: "worker-rootless"}, Dependencies{
+		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return driver, nil
+		},
+		RunCommand: func(context.Context, RunContext, CommandRequest) error {
+			t.Fatal("RunCommand should not run after create failure")
+			return nil
+		},
+	})
+	phaseErr, ok := AsPhaseError(err)
+	if !ok || phaseErr.Phase != PhaseProvisionTarget || !errors.Is(err, createErr) {
+		t.Fatalf("error = %#v, want provision phase wrapping createErr", err)
+	}
+	if !driver.createCalled {
+		t.Fatal("runtime driver Create was not called")
+	}
+	if driver.startCalled {
+		t.Fatal("runtime driver Start was called after create failure")
+	}
+	if phaseErr.RuntimeDriver != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("runtime driver = %q, want rootless_podman", phaseErr.RuntimeDriver)
+	}
+}
+
+func TestRunCreatesUnmaterializedRootlessPodmanTargetBeforeStart(t *testing.T) {
+	target := &sandbox.SandboxState{
+		ID:       "logical-worker-target-1",
+		Name:     "worker-rootless",
+		Provider: "local",
+		Status:   sandbox.StatusStopped,
+		Host: &sandbox.SandboxHost{
+			ID:   "worker-1",
+			Name: "local worker",
+			Kind: sandbox.SandboxHostKindWorker,
+		},
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandboxruntime.DriverRootlessPodman,
+			WorkerID:       "worker-1",
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+		},
+	}
+	var calls []string
+	driver := &recordingRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		create: func(_ context.Context, req sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+			calls = append(calls, "create")
+			if req.Name != "worker-rootless" {
+				t.Fatalf("create name = %q, want worker-rootless", req.Name)
+			}
+			return &sandboxruntime.Target{
+				ID:     "container-1",
+				Name:   req.Name,
+				Status: sandbox.StatusStopped,
+				Runtime: sandboxruntime.RuntimeState{
+					Driver:    sandboxruntime.DriverRootlessPodman,
+					RuntimeID: "container-1",
+					Image:     "localhost/hal-agent:test",
+				},
+			}, nil
+		},
+		start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+			calls = append(calls, "start")
+			if req.Target.ID != "container-1" || req.Target.Runtime.RuntimeID != "container-1" {
+				t.Fatalf("start target = %#v, want created container identity", req.Target)
+			}
+			if req.Target.Runtime.WorkerID != "worker-1" || req.Target.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelContainer {
+				t.Fatalf("start runtime metadata = %#v, want selected worker metadata", req.Target.Runtime)
+			}
+			started := req.Target
+			started.Status = sandbox.StatusRunning
+			return &started, nil
+		},
+	}
+
+	result, err := Run(context.Background(), CommandRequest{
+		SandboxName: "worker-rootless",
+		Command:     []string{"printf", "sandbox-ok"},
+	}, Dependencies{
+		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return driver, nil
+		},
+		RunCommand: func(_ context.Context, run RunContext, _ CommandRequest) error {
+			calls = append(calls, "run")
+			if run.Target.Runtime.RuntimeID != "container-1" {
+				t.Fatalf("run target = %#v, want created runtime target", run.Target)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(calls, []string{"create", "start", "run"}) {
+		t.Fatalf("calls = %#v, want create/start/run", calls)
+	}
+	if result.Target.Status != sandbox.StatusRunning || result.Target.Runtime.WorkerID != "worker-1" {
+		t.Fatalf("result target = %#v, want running worker target", result.Target)
+	}
+	if target.ID != "container-1" || target.Runtime.RuntimeID != "container-1" || target.Runtime.WorkerID != "worker-1" {
+		t.Fatalf("durable target = %#v, want created worker target metadata", target)
 	}
 }
 
@@ -1103,6 +1240,19 @@ func TestRunStartFailurePreservesReturnedRuntimeTarget(t *testing.T) {
 	startErr := errors.New("worker start failed")
 	driver := &recordingRuntimeDriver{
 		id: sandboxruntime.DriverRootlessPodman,
+		create: func(_ context.Context, req sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+			return &sandboxruntime.Target{
+				ID:     "ctr-worker-rootless",
+				Name:   req.Name,
+				Status: sandbox.StatusStopped,
+				Runtime: sandboxruntime.RuntimeState{
+					Driver:         sandboxruntime.DriverRootlessPodman,
+					RuntimeID:      "ctr-worker-rootless",
+					Image:          "localhost/hal:test",
+					IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+				},
+			}, nil
+		},
 		start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
 			returned := req.Target
 			returned.Status = sandbox.StatusRunning
@@ -1146,6 +1296,9 @@ func TestRunStartFailurePreservesReturnedRuntimeTarget(t *testing.T) {
 		phaseErr.Target.Runtime.WorkerID != "worker-1" ||
 		phaseErr.Target.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelContainer {
 		t.Fatalf("phase target runtime = %#v, want returned worker rootless runtime metadata", phaseErr.Target.Runtime)
+	}
+	if !driver.deleteCalled {
+		t.Fatal("newly created runtime target was not deleted after start failure")
 	}
 }
 
@@ -1513,10 +1666,14 @@ func (fakeRuntimeDriver) CopyOut(context.Context, sandboxruntime.CopyRequest) er
 
 type recordingRuntimeDriver struct {
 	id           string
+	createCalled bool
 	startCalled  bool
+	deleteCalled bool
 	execCalled   bool
 	copyInCalled bool
+	create       func(context.Context, sandboxruntime.CreateRequest) (*sandboxruntime.Target, error)
 	start        func(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error)
+	delete       func(context.Context, sandboxruntime.LifecycleRequest) error
 	exec         func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
 	copyIn       func(context.Context, sandboxruntime.CopyRequest) error
 }
@@ -1528,7 +1685,11 @@ func (r *recordingRuntimeDriver) ID() string {
 	return sandboxruntime.DriverSSHMachine
 }
 
-func (r *recordingRuntimeDriver) Create(context.Context, sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+func (r *recordingRuntimeDriver) Create(ctx context.Context, req sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+	r.createCalled = true
+	if r.create != nil {
+		return r.create(ctx, req)
+	}
 	return nil, nil
 }
 
@@ -1546,7 +1707,11 @@ func (r *recordingRuntimeDriver) Stop(context.Context, sandboxruntime.LifecycleR
 	return nil, nil
 }
 
-func (r *recordingRuntimeDriver) Delete(context.Context, sandboxruntime.LifecycleRequest) error {
+func (r *recordingRuntimeDriver) Delete(ctx context.Context, req sandboxruntime.LifecycleRequest) error {
+	r.deleteCalled = true
+	if r.delete != nil {
+		return r.delete(ctx, req)
+	}
 	return nil
 }
 

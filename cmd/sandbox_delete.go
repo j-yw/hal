@@ -14,6 +14,7 @@ import (
 
 	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -34,7 +35,9 @@ When no arguments or flags are provided, the command auto-resolves:
 
 When --all is used without --yes, a confirmation prompt is shown.
 
-Resolved targets are de-duplicated and sorted by name before execution.`,
+Resolved targets are de-duplicated and sorted by name before execution.
+Worker-backed runtime targets are deleted through their registered sandboxd
+runtime driver; provider-backed targets retain their provider lifecycle path.`,
 	Example: `  hal sandbox delete my-sandbox
   hal sandbox delete api-backend frontend
   hal sandbox delete --all --yes
@@ -287,30 +290,64 @@ type deleteResult struct {
 	Err     error
 }
 
-// deleteOneTarget deletes a single sandbox, removes it from the registry, and reports the result.
-// If provider is nil, resolves from global config.
-func deleteOneTarget(target *sandbox.SandboxState, projectDir string, out io.Writer, provider sandbox.Provider) error {
+type sandboxDeleteResourceDeps struct {
+	resolveProvider func(string, string) (sandbox.Provider, error)
+	resolveRuntime  func(string, *sandbox.SandboxState) (sandboxruntime.Driver, error)
+}
+
+var defaultSandboxDeleteResourceDeps = sandboxDeleteResourceDeps{
+	resolveProvider: resolveProviderWithFallback,
+	resolveRuntime:  resolveFactoryStoredSandboxRuntime,
+}
+
+func deleteSandboxTargetResource(ctx context.Context, target *sandbox.SandboxState, projectDir string, out io.Writer, provider sandbox.Provider, deps sandboxDeleteResourceDeps) error {
+	if factorySandboxUsesWorkerRuntime(target) {
+		if deps.resolveRuntime == nil {
+			return fmt.Errorf("sandbox runtime resolver is required")
+		}
+		driver, err := deps.resolveRuntime(projectDir, target)
+		if err != nil {
+			return fmt.Errorf("resolving runtime for %q: %w", target.Name, err)
+		}
+		if err := driver.Delete(ctx, sandboxruntime.LifecycleRequest{
+			Target: sandboxRuntimeTargetFromState(target),
+			Stdout: out,
+			Stderr: out,
+		}); err != nil {
+			return err
+		}
+		return nil
+	}
+
 	p := provider
 	if p == nil {
+		if deps.resolveProvider == nil {
+			return fmt.Errorf("sandbox provider resolver is required")
+		}
 		var err error
-		p, err = resolveProviderWithFallback(projectDir, target.Provider)
+		p, err = deps.resolveProvider(projectDir, target.Provider)
 		if err != nil {
 			return fmt.Errorf("resolving provider for %q: %w", target.Name, err)
 		}
 	}
-
-	fmt.Fprintf(out, "Deleting sandbox %q...\n", target.Name)
-
-	ctx := context.Background()
 	info := deleteConnectInfo(target)
 	if err := validateDeleteConnectInfo(target, info); err != nil {
 		return err
 	}
+	return p.Delete(ctx, info, out)
+}
+
+// deleteOneTarget deletes a single sandbox, removes it from the registry, and reports the result.
+// If provider is nil, resolves from global config.
+func deleteOneTarget(target *sandbox.SandboxState, projectDir string, out io.Writer, provider sandbox.Provider) error {
+	fmt.Fprintf(out, "Deleting sandbox %q...\n", target.Name)
+
+	ctx := context.Background()
 	pendingRemoval, err := sandboxDeleteStageInstanceRemoval(target.Name)
 	if err != nil {
 		return fmt.Errorf("staging registry entry for %q: %w", target.Name, err)
 	}
-	if err := p.Delete(ctx, info, out); err != nil && !finalizeInterruptedDeleteRetry(target.Provider, pendingRemoval, err) {
+	if err := deleteSandboxTargetResource(ctx, target, projectDir, out, provider, defaultSandboxDeleteResourceDeps); err != nil && !finalizeInterruptedDeleteRetry(target.Provider, pendingRemoval, err) {
 		if rollbackErr := pendingRemoval.Rollback(); rollbackErr != nil {
 			return fmt.Errorf("sandbox delete failed for %q: %w (registry rollback failed: %v)", target.Name, err, rollbackErr)
 		}
@@ -344,28 +381,12 @@ func deleteMultipleTargets(targets []*sandbox.SandboxState, projectDir string, o
 	for _, target := range targets {
 		target := target // capture for goroutine
 		g.Go(func() error {
-			p := provider
-			if p == nil {
-				var err error
-				p, err = resolveProviderWithFallback(projectDir, target.Provider)
-				if err != nil {
-					mu.Lock()
-					fmt.Fprintf(out, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), target.Name, err)
-					results = append(results, deleteResult{Name: target.Name, Success: false, Err: err})
-					mu.Unlock()
-					return nil
-				}
-			}
-
 			ctx := context.Background()
-			info := deleteConnectInfo(target)
-			err := validateDeleteConnectInfo(target, info)
+			var err error
 			var pendingRemoval sandboxDeletePendingRemoval
+			pendingRemoval, err = sandboxDeleteStageInstanceRemoval(target.Name)
 			if err == nil {
-				pendingRemoval, err = sandboxDeleteStageInstanceRemoval(target.Name)
-			}
-			if err == nil {
-				err = p.Delete(ctx, info, io.Discard)
+				err = deleteSandboxTargetResource(ctx, target, projectDir, io.Discard, provider, defaultSandboxDeleteResourceDeps)
 				if err != nil {
 					if finalizeInterruptedDeleteRetry(target.Provider, pendingRemoval, err) {
 						err = nil

@@ -51,6 +51,12 @@ func TestNormalizeFactorySandboxExecutorDepsFillsProductionDefaults(t *testing.T
 	}
 }
 
+func TestDefaultFactorySandboxExecutorDependenciesIncludeWorkerRuntimeResolver(t *testing.T) {
+	if defaultFactorySandboxExecutorDeps.resolveWorkerRuntime == nil {
+		t.Fatal("default factory sandbox executor dependencies missing worker runtime resolver")
+	}
+}
+
 func TestFactorySandboxExecutorDepsExposeRuntimeDriverResolver(t *testing.T) {
 	field, ok := reflect.TypeOf(factorySandboxExecutorDeps{}).FieldByName("resolveRuntimeDriver")
 	if !ok {
@@ -2920,6 +2926,66 @@ func TestFactorySandboxRemoteCommandArgsSelectsWorkspaceDirectory(t *testing.T) 
 	}
 }
 
+func TestGenerateFactorySandboxRuntimeRecoveryArtifactsUsesRuntimeDriver(t *testing.T) {
+	record := factory.RunRecord{
+		RepoRemote:  "git@github.com:example/game.git",
+		BaseBranch:  "main",
+		BranchName:  "feature/runtime-recovery",
+		SandboxName: "worker-rootless",
+	}
+	target := workerRootlessCachedSandbox("worker-rootless")
+	var got sandboxruntime.ExecRequest
+	driver := fakeFactorySandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			got = req
+			return &sandboxruntime.ExecResult{}, nil
+		},
+	}
+
+	if err := generateFactorySandboxRuntimeRecoveryArtifacts(context.Background(), record, target, driver, nil); err != nil {
+		t.Fatalf("generateFactorySandboxRuntimeRecoveryArtifacts() error: %v", err)
+	}
+	if got.Target.Runtime.RuntimeID != target.Runtime.RuntimeID || got.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("runtime target = %#v, want selected worker target", got.Target)
+	}
+	script := strings.Join(got.Args, " ")
+	for _, want := range []string{factorySandboxRemoteWorkspaceDir(record), ".hal/recovery", "git bundle create"} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("recovery command missing %q: %q", want, script)
+		}
+	}
+}
+
+func TestCleanupFactorySandboxRuntimeAfterRunUsesRuntimeDelete(t *testing.T) {
+	target := workerRootlessCachedSandbox("worker-rootless")
+	var beforeCleanup bool
+	var deleted sandboxruntime.Target
+	driver := fakeFactorySandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		deleteFn: func(_ context.Context, req sandboxruntime.LifecycleRequest) error {
+			deleted = req.Target
+			return nil
+		},
+	}
+
+	cleaned, err := cleanupFactorySandboxRuntimeAfterRun(context.Background(), factorySandboxExecutorRequest{
+		BeforeCleanup: func(context.Context, factory.RunRecord) error {
+			beforeCleanup = true
+			return nil
+		},
+	}, factory.RunRecord{}, target, driver, factory.CleanupBehaviorAlways, false)
+	if err != nil {
+		t.Fatalf("cleanupFactorySandboxRuntimeAfterRun() error: %v", err)
+	}
+	if !cleaned || !beforeCleanup {
+		t.Fatalf("cleaned/beforeCleanup = %t/%t, want true/true", cleaned, beforeCleanup)
+	}
+	if deleted.Runtime.RuntimeID != target.Runtime.RuntimeID || deleted.Name != target.Name {
+		t.Fatalf("deleted target = %#v, want selected runtime target", deleted)
+	}
+}
+
 func TestFactorySandboxRemoteCommandArgsResumeDoesNotReplaySourceInputs(t *testing.T) {
 	record := factory.RunRecord{
 		RepoRemote: "git@github.com:jywlabs/hal.git",
@@ -4644,9 +4710,10 @@ func (fakeFactorySandboxProvider) Exec(*sandbox.ConnectInfo, []string) (*exec.Cm
 }
 
 type fakeFactorySandboxRuntimeDriver struct {
-	id      string
-	startFn func(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error)
-	execFn  func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
+	id       string
+	startFn  func(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error)
+	execFn   func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
+	deleteFn func(context.Context, sandboxruntime.LifecycleRequest) error
 }
 
 func (d fakeFactorySandboxRuntimeDriver) ID() string {
@@ -4673,7 +4740,10 @@ func (d fakeFactorySandboxRuntimeDriver) Stop(_ context.Context, req sandboxrunt
 	return &req.Target, nil
 }
 
-func (d fakeFactorySandboxRuntimeDriver) Delete(context.Context, sandboxruntime.LifecycleRequest) error {
+func (d fakeFactorySandboxRuntimeDriver) Delete(ctx context.Context, req sandboxruntime.LifecycleRequest) error {
+	if d.deleteFn != nil {
+		return d.deleteFn(ctx, req)
+	}
 	return nil
 }
 

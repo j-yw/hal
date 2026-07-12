@@ -100,6 +100,53 @@ func TestSandboxWorkerRuntimeResolverUsesInjectableRuntimeFactory(t *testing.T) 
 	}
 }
 
+func TestResolveFactoryStoredSandboxRuntimeHydratesWorkerHostFromRegistry(t *testing.T) {
+	target := &sandbox.SandboxState{
+		Name:   "worker-box",
+		Status: sandbox.StatusRunning,
+		Host: &sandbox.SandboxHost{
+			ID:   "worker-1",
+			Name: "worker one",
+			Kind: sandbox.SandboxHostKindWorker,
+		},
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:    sandboxruntime.DriverRootlessPodman,
+			RuntimeID: "container-1",
+			WorkerID:  "worker-1",
+		},
+	}
+	loaded := false
+	driver, err := resolveFactoryStoredSandboxRuntimeWithDeps(".", target, func(hostID string) (*sandbox.SandboxHost, error) {
+		loaded = true
+		if hostID != "worker-1" {
+			t.Fatalf("host ID = %q, want worker-1", hostID)
+		}
+		return &sandbox.SandboxHost{
+			ID:                hostID,
+			Name:              "worker one",
+			Kind:              sandbox.SandboxHostKindWorker,
+			Endpoint:          "unix:///tmp/private/worker-1.sock",
+			SupportedRuntimes: []string{sandboxruntime.DriverRootlessPodman},
+		}, nil
+	}, sandboxWorkerRuntimeDriverFactories{
+		newWorkerClient: func(string) (sandboxworker.RuntimeDriverClient, error) {
+			return fakeWorkerRuntimeDriverClient{}, nil
+		},
+		newRuntimeDriver: func(sandboxworker.ClientDriverOptions) (sandboxruntime.Driver, error) {
+			return fakeRuntimeResolverDriver{id: sandboxruntime.DriverRootlessPodman}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolveFactoryStoredSandboxRuntimeWithDeps() error = %v", err)
+	}
+	if !loaded {
+		t.Fatal("stored worker host was not loaded from the host registry")
+	}
+	if driver == nil || driver.ID() != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("driver = %#v, want rootless Podman worker driver", driver)
+	}
+}
+
 func TestSandboxWorkerRuntimeResolverUsesInjectedMicroVMWorkerFactory(t *testing.T) {
 	wantClient := fakeWorkerRuntimeDriverClient{}
 	var gotOptions sandboxworker.ClientDriverOptions

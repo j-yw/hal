@@ -29,6 +29,7 @@ import (
 	"github.com/jywlabs/hal/internal/prd"
 	"github.com/jywlabs/hal/internal/projectconfig"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/status"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/jywlabs/hal/internal/verify"
@@ -313,6 +314,7 @@ type factoryPublishDeps struct {
 	pushAndCreatePRInDir   func(context.Context, string, ci.PushOptions) (ci.PushResult, error)
 	loadSandbox            func(string) (*sandbox.SandboxState, error)
 	resolveProvider        func(string, string) (sandbox.Provider, error)
+	resolveSandboxRuntime  func(string, *sandbox.SandboxState) (sandboxruntime.Driver, error)
 	runProviderExec        func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
 	runProviderExecIO      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer, io.Writer) error
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
@@ -328,6 +330,7 @@ var defaultFactoryPublishDeps = factoryPublishDeps{
 	pushAndCreatePRInDir:   ci.PushAndCreatePRInDir,
 	loadSandbox:            sandbox.LoadActiveInstance,
 	resolveProvider:        resolveProviderWithFallback,
+	resolveSandboxRuntime:  resolveFactoryStoredSandboxRuntime,
 	runProviderExec:        runFactorySandboxProviderExec,
 	runProviderExecIO:      runFactorySandboxProviderExecIO,
 	runProviderExecWithEnv: runFactorySandboxProviderExecWithEnv,
@@ -351,6 +354,7 @@ type factoryRunDeps struct {
 	runVerify              func(context.Context, *verify.Config) (*verify.Result, error)
 	loadSandbox            func(string) (*sandbox.SandboxState, error)
 	resolveProvider        func(string, string) (sandbox.Provider, error)
+	resolveSandboxRuntime  func(string, *sandbox.SandboxState) (sandboxruntime.Driver, error)
 	runProviderExec        func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
 	runProviderExecIO      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer, io.Writer) error
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
@@ -398,6 +402,7 @@ var defaultFactoryRunDeps = factoryRunDeps{
 	runVerify:              verify.Run,
 	loadSandbox:            sandbox.LoadActiveInstance,
 	resolveProvider:        resolveProviderWithFallback,
+	resolveSandboxRuntime:  resolveFactoryStoredSandboxRuntime,
 	runProviderExec:        runFactorySandboxProviderExec,
 	runProviderExecIO:      runFactorySandboxProviderExecIO,
 	runProviderExecWithEnv: runFactorySandboxProviderExecWithEnv,
@@ -1133,6 +1138,9 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 	if deps.resolveProvider == nil {
 		deps.resolveProvider = defaultFactoryRunDeps.resolveProvider
 	}
+	if deps.resolveSandboxRuntime == nil {
+		deps.resolveSandboxRuntime = defaultFactoryRunDeps.resolveSandboxRuntime
+	}
 	if deps.runProviderExec == nil {
 		deps.runProviderExec = defaultFactoryRunDeps.runProviderExec
 	}
@@ -1563,6 +1571,9 @@ func cleanupFactoryRunDeferredSandbox(ctx context.Context, store factory.Store, 
 	if target == nil {
 		return record, false, nil
 	}
+	if factorySandboxUsesWorkerRuntime(target) {
+		return cleanupFactoryRunDeferredWorkerSandbox(ctx, store, dir, req, record, deps, policy, cleanupContext, target)
+	}
 	provider, err := deps.resolveProvider(dir, target.Provider)
 	if err != nil {
 		return record, false, fmt.Errorf("resolve sandbox provider %q for %s cleanup: %w", target.Provider, cleanupContext, err)
@@ -1611,6 +1622,39 @@ func cleanupFactoryRunDeferredSandbox(ctx context.Context, store factory.Store, 
 	return record, true, nil
 }
 
+func cleanupFactoryRunDeferredWorkerSandbox(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps, policy factory.FactoryPolicy, cleanupContext string, target *sandbox.SandboxState) (factory.RunRecord, bool, error) {
+	driver, err := deps.resolveSandboxRuntime(dir, target)
+	if err != nil {
+		return record, false, fmt.Errorf("resolve worker sandbox runtime for %s cleanup: %w", cleanupContext, err)
+	}
+	var artifactErr error
+	if deps.sandboxCopier == nil {
+		artifactErr = collectAndStoreFactorySandboxArtifacts(ctx, store, dir, req, record, deps)
+		if artifactErr != nil && !factoryRunCleansSandboxAfterFailure(policy) {
+			return record, false, artifactErr
+		}
+	}
+	deleteErr := driver.Delete(ctx, sandboxruntime.LifecycleRequest{Target: sandboxRuntimeTargetFromState(target)})
+	if deleteErr != nil {
+		cleanupErr := fmt.Errorf("cleanup factory sandbox after %s: %w", cleanupContext, deleteErr)
+		if artifactErr != nil {
+			return record, false, errors.Join(artifactErr, cleanupErr)
+		}
+		return record, false, cleanupErr
+	}
+	secretRedactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
+	if err := recordFactorySandboxCleanedUp(store, factorySandboxExecutorDeps{
+		now:     deps.now,
+		saveRun: saveFactorySandboxRunRecord,
+	}, &record, target, secretRedactor); err != nil {
+		if artifactErr != nil {
+			return record, true, errors.Join(artifactErr, err)
+		}
+		return record, true, err
+	}
+	return record, true, artifactErr
+}
+
 func collectAndStoreFactorySandboxArtifactsWithProviderExec(ctx context.Context, store factory.Store, dir string, req factoryRunRequest, record factory.RunRecord, deps factoryRunDeps, target *sandbox.SandboxState, provider sandbox.Provider) error {
 	requests := deps.sandboxRequests(dir, record)
 	if len(requests) == 0 {
@@ -1643,20 +1687,11 @@ func collectAndStoreFactorySandboxArtifactRequestsWithProviderExec(ctx context.C
 }
 
 func resolveFactorySandboxArtifactCollectionTarget(dir string, record factory.RunRecord, deps factoryRunDeps) (*sandbox.SandboxState, sandbox.Provider, error) {
-	name := strings.TrimSpace(record.SandboxName)
-	if name == "" && record.Sandbox != nil {
-		name = strings.TrimSpace(record.Sandbox.Name)
+	target, err := loadFactorySandboxArtifactCollectionTarget(record, deps)
+	if err != nil || target == nil {
+		return target, nil, err
 	}
-	if name == "" {
-		return nil, nil, nil
-	}
-	target, err := deps.loadSandbox(name)
-	if err != nil {
-		return nil, nil, fmt.Errorf("load factory sandbox for artifact collection %q: %w", name, err)
-	}
-	if target == nil {
-		return nil, nil, nil
-	}
+	name := strings.TrimSpace(target.Name)
 	providerName := strings.TrimSpace(target.Provider)
 	if providerName == "" && record.Sandbox != nil {
 		providerName = strings.TrimSpace(record.Sandbox.Provider)
@@ -1669,6 +1704,24 @@ func resolveFactorySandboxArtifactCollectionTarget(dir string, record factory.Ru
 		return nil, nil, fmt.Errorf("resolve sandbox provider %q for artifact collection: %w", providerName, err)
 	}
 	return target, provider, nil
+}
+
+func loadFactorySandboxArtifactCollectionTarget(record factory.RunRecord, deps factoryRunDeps) (*sandbox.SandboxState, error) {
+	name := strings.TrimSpace(record.SandboxName)
+	if name == "" && record.Sandbox != nil {
+		name = strings.TrimSpace(record.Sandbox.Name)
+	}
+	if name == "" {
+		return nil, nil
+	}
+	target, err := deps.loadSandbox(name)
+	if err != nil {
+		return nil, fmt.Errorf("load factory sandbox for artifact collection %q: %w", name, err)
+	}
+	if target == nil {
+		return nil, nil
+	}
+	return target, nil
 }
 
 func factorySandboxRemoteWorkspaceArtifactRequests(record factory.RunRecord, requests []factory.SandboxArtifactRequest) ([]factory.SandboxArtifactRequest, error) {
@@ -2077,16 +2130,39 @@ func runFactorySandboxRemoteVerification(ctx context.Context, store factory.Stor
 	if target == nil {
 		return nil, record, fmt.Errorf("load sandbox %q for verification: not found", sandboxName)
 	}
-	provider, err := deps.resolveProvider(dir, target.Provider)
-	if err != nil {
-		return nil, record, fmt.Errorf("resolve sandbox provider %q for verification: %w", target.Provider, err)
-	}
 	args, err := factorySandboxRemoteVerifyArgs(record)
 	if err != nil {
 		return nil, record, err
 	}
 	var out bytes.Buffer
-	execErr := deps.runProviderExecWithEnv(ctx, provider, sandbox.ConnectInfoFromState(target), args, factorySandboxResolvedSecretEnv(resolvedSecrets), &out)
+	var provider sandbox.Provider
+	var execErr error
+	if factorySandboxUsesWorkerRuntime(target) {
+		if deps.resolveSandboxRuntime == nil {
+			return nil, record, fmt.Errorf("sandbox verification requires runtime resolver")
+		}
+		driver, resolveErr := deps.resolveSandboxRuntime(dir, target)
+		if resolveErr != nil {
+			return nil, record, fmt.Errorf("resolve worker sandbox runtime for verification: %w", resolveErr)
+		}
+		var execResult *sandboxruntime.ExecResult
+		execResult, execErr = driver.Exec(ctx, sandboxruntime.ExecRequest{
+			Target: sandboxRuntimeTargetFromState(target),
+			Args:   args,
+			Env:    factorySandboxResolvedSecretEnv(resolvedSecrets),
+			Stdout: &out,
+			Stderr: io.Discard,
+		})
+		if execErr == nil && execResult != nil && execResult.ExitCode != 0 {
+			execErr = fmt.Errorf("sandbox runtime command exited with status %d", execResult.ExitCode)
+		}
+	} else {
+		provider, err = deps.resolveProvider(dir, target.Provider)
+		if err != nil {
+			return nil, record, fmt.Errorf("resolve sandbox provider %q for verification: %w", target.Provider, err)
+		}
+		execErr = deps.runProviderExecWithEnv(ctx, provider, sandbox.ConnectInfoFromState(target), args, factorySandboxResolvedSecretEnv(resolvedSecrets), &out)
+	}
 	result, parseErr := parseFactorySandboxVerifyResult(out.Bytes())
 	if parseErr != nil {
 		if execErr != nil {
@@ -2094,7 +2170,7 @@ func runFactorySandboxRemoteVerification(ctx context.Context, store factory.Stor
 		}
 		return nil, record, parseErr
 	}
-	if err := collectAndStoreFactorySandboxVerificationArtifacts(ctx, store, record, result.Artifacts, target, provider, deps, redactor); err != nil {
+	if err := collectAndStoreFactorySandboxVerificationArtifacts(ctx, store, dir, record, result.Artifacts, target, provider, deps, redactor); err != nil {
 		return nil, record, err
 	}
 	updatedRecord, err := store.LoadRun(record.RunID)
@@ -2135,7 +2211,7 @@ func parseFactorySandboxVerifyResult(data []byte) (*verify.Result, error) {
 	return &result, nil
 }
 
-func collectAndStoreFactorySandboxVerificationArtifacts(ctx context.Context, store factory.Store, record factory.RunRecord, artifacts []verify.ArtifactReference, target *sandbox.SandboxState, provider sandbox.Provider, deps factoryRunDeps, redactor factory.RunSecretRedactor) error {
+func collectAndStoreFactorySandboxVerificationArtifacts(ctx context.Context, store factory.Store, dir string, record factory.RunRecord, artifacts []verify.ArtifactReference, target *sandbox.SandboxState, provider sandbox.Provider, deps factoryRunDeps, redactor factory.RunSecretRedactor) error {
 	if len(artifacts) == 0 {
 		return nil
 	}
@@ -2179,14 +2255,30 @@ func collectAndStoreFactorySandboxVerificationArtifacts(ctx context.Context, sto
 	if len(requests) == 0 {
 		return nil
 	}
-	copier := factoryProviderExecSandboxArtifactCopier{
-		provider:          provider,
-		connectInfo:       sandbox.ConnectInfoFromState(target),
-		baseDir:           workspaceDir,
-		runProviderExec:   deps.runProviderExec,
-		runProviderExecIO: deps.runProviderExecIO,
+	var copier factory.SandboxArtifactCopier
+	if factorySandboxUsesWorkerRuntime(target) {
+		if deps.resolveSandboxRuntime == nil {
+			return fmt.Errorf("collect sandbox verification artifacts: runtime resolver is required")
+		}
+		driver, err := deps.resolveSandboxRuntime(dir, target)
+		if err != nil {
+			return fmt.Errorf("resolve worker sandbox runtime for verification artifacts: %w", err)
+		}
+		copier = &factoryRuntimeSandboxArtifactCopier{
+			driver:  driver,
+			target:  sandboxRuntimeTargetFromState(target),
+			baseDir: workspaceDir,
+		}
+	} else {
+		copier = &factoryProviderExecSandboxArtifactCopier{
+			provider:          provider,
+			connectInfo:       sandbox.ConnectInfoFromState(target),
+			baseDir:           workspaceDir,
+			runProviderExec:   deps.runProviderExec,
+			runProviderExecIO: deps.runProviderExecIO,
+		}
 	}
-	if _, err := factory.CollectSandboxArtifactsWithRedactor(ctx, store, record.RunID, &copier, requests, redactor); err != nil {
+	if _, err := factory.CollectSandboxArtifactsWithRedactor(ctx, store, record.RunID, copier, requests, redactor); err != nil {
 		return fmt.Errorf("collect sandbox verification artifacts: %w", err)
 	}
 	return nil
@@ -3050,12 +3142,6 @@ func publishFactoryRunWithSandboxRunner(ctx context.Context, dir string, req fac
 	if deps.loadSandbox == nil {
 		return factoryPublishRunnerResult{}, fmt.Errorf("factory sandbox publish requires sandbox load dependency")
 	}
-	if deps.resolveProvider == nil {
-		return factoryPublishRunnerResult{}, fmt.Errorf("factory sandbox publish requires provider dependency")
-	}
-	if deps.runProviderExecWithEnv == nil {
-		return factoryPublishRunnerResult{}, fmt.Errorf("factory sandbox publish requires provider exec dependency")
-	}
 	sandboxName := factoryRunSandboxName(record)
 	if sandboxName == "" {
 		sandboxName = strings.TrimSpace(req.SandboxName)
@@ -3070,10 +3156,6 @@ func publishFactoryRunWithSandboxRunner(ctx context.Context, dir string, req fac
 	if target == nil {
 		return factoryPublishRunnerResult{}, fmt.Errorf("load sandbox %q for publish: not found", sandboxName)
 	}
-	provider, err := deps.resolveProvider(dir, target.Provider)
-	if err != nil {
-		return factoryPublishRunnerResult{}, fmt.Errorf("resolve sandbox provider %q for publish: %w", target.Provider, err)
-	}
 	branchName := strings.TrimSpace(record.BranchName)
 	if branchName == "" {
 		return factoryPublishRunnerResult{}, fmt.Errorf("factory sandbox publish requires a branch name")
@@ -3084,7 +3166,39 @@ func publishFactoryRunWithSandboxRunner(ctx context.Context, dir string, req fac
 	}
 	startedAt := deps.now()
 	var out bytes.Buffer
-	execErr := deps.runProviderExecWithEnv(ctx, provider, sandbox.ConnectInfoFromState(target), args, factorySandboxResolvedSecretEnv(req.ResolvedSecrets), &out)
+	var execErr error
+	if factorySandboxUsesWorkerRuntime(target) {
+		if deps.resolveSandboxRuntime == nil {
+			return factoryPublishRunnerResult{}, fmt.Errorf("factory sandbox publish requires runtime resolver")
+		}
+		driver, resolveErr := deps.resolveSandboxRuntime(dir, target)
+		if resolveErr != nil {
+			return factoryPublishRunnerResult{}, fmt.Errorf("resolve worker sandbox runtime for publish: %w", resolveErr)
+		}
+		var execResult *sandboxruntime.ExecResult
+		execResult, execErr = driver.Exec(ctx, sandboxruntime.ExecRequest{
+			Target: sandboxRuntimeTargetFromState(target),
+			Args:   args,
+			Env:    factorySandboxResolvedSecretEnv(req.ResolvedSecrets),
+			Stdout: &out,
+			Stderr: io.Discard,
+		})
+		if execErr == nil && execResult != nil && execResult.ExitCode != 0 {
+			execErr = fmt.Errorf("sandbox runtime command exited with status %d", execResult.ExitCode)
+		}
+	} else {
+		if deps.resolveProvider == nil {
+			return factoryPublishRunnerResult{}, fmt.Errorf("factory sandbox publish requires provider dependency")
+		}
+		if deps.runProviderExecWithEnv == nil {
+			return factoryPublishRunnerResult{}, fmt.Errorf("factory sandbox publish requires provider exec dependency")
+		}
+		provider, resolveErr := deps.resolveProvider(dir, target.Provider)
+		if resolveErr != nil {
+			return factoryPublishRunnerResult{}, fmt.Errorf("resolve sandbox provider %q for publish: %w", target.Provider, resolveErr)
+		}
+		execErr = deps.runProviderExecWithEnv(ctx, provider, sandbox.ConnectInfoFromState(target), args, factorySandboxResolvedSecretEnv(req.ResolvedSecrets), &out)
+	}
 	result, parseErr := parseFactorySandboxPublishResult(out.Bytes())
 	completedAt := deps.now()
 	if parseErr != nil {
@@ -3386,8 +3500,8 @@ func factoryRunCanCollectSandboxArtifacts(deps factoryRunDeps) bool {
 		return true
 	}
 	return deps.loadSandbox != nil &&
-		deps.resolveProvider != nil &&
-		(deps.runProviderExec != nil || deps.runProviderExecIO != nil)
+		(deps.resolveSandboxRuntime != nil ||
+			(deps.resolveProvider != nil && (deps.runProviderExec != nil || deps.runProviderExecIO != nil)))
 }
 
 func applyFactorySandboxRecoveryBundle(ctx context.Context, store factory.Store, dir string, record factory.RunRecord, deps factoryRunDeps) (string, string, error) {
@@ -3762,6 +3876,30 @@ func collectAndStoreFactorySandboxArtifacts(ctx context.Context, store factory.S
 	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
 	if deps.sandboxCopier != nil {
 		if _, err := factory.CollectSandboxArtifactsWithRedactor(ctx, store, record.RunID, deps.sandboxCopier, requests, redactor); err != nil {
+			_ = recordFactoryRunArtifactSyncFailedWithRedactor(store, record.RunID, factoryRunDepsNow(deps), err, redactor)
+			return fmt.Errorf("collect sandbox factory artifacts: %w", err)
+		}
+		return nil
+	}
+	target, err := loadFactorySandboxArtifactCollectionTarget(record, deps)
+	if err != nil {
+		return err
+	}
+	if factorySandboxUsesWorkerRuntime(target) {
+		driver, err := deps.resolveSandboxRuntime(dir, target)
+		if err != nil {
+			return fmt.Errorf("resolve worker sandbox runtime for artifact collection: %w", err)
+		}
+		requests, err = factorySandboxRemoteWorkspaceArtifactRequests(record, requests)
+		if err != nil {
+			return err
+		}
+		copier := factoryRuntimeSandboxArtifactCopier{
+			driver:  driver,
+			target:  sandboxRuntimeTargetFromState(target),
+			baseDir: factorySandboxRemoteWorkspaceDir(record),
+		}
+		if _, err := factory.CollectSandboxArtifactsWithRedactor(ctx, store, record.RunID, &copier, requests, redactor); err != nil {
 			_ = recordFactoryRunArtifactSyncFailedWithRedactor(store, record.RunID, factoryRunDepsNow(deps), err, redactor)
 			return fmt.Errorf("collect sandbox factory artifacts: %w", err)
 		}
@@ -6203,6 +6341,7 @@ func runFactoryPublishWithDeps(ctx context.Context, out io.Writer, runID string,
 		now:                    deps.now,
 		loadSandbox:            deps.loadSandbox,
 		resolveProvider:        deps.resolveProvider,
+		resolveSandboxRuntime:  deps.resolveSandboxRuntime,
 		runProviderExec:        deps.runProviderExec,
 		runProviderExecIO:      deps.runProviderExecIO,
 		runProviderExecWithEnv: deps.runProviderExecWithEnv,

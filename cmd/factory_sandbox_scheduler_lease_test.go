@@ -28,6 +28,20 @@ func TestFactorySandboxExplicitSchedulerAcquiresLeaseAndPersistsRecord(t *testin
 
 	workerDriver := fakeRunSandboxRuntimeDriver{
 		id: sandboxruntime.DriverRootlessPodman,
+		create: func(_ context.Context, req sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+			if !acquireCalled {
+				t.Fatal("runtime Create ran before scheduler lease acquisition")
+			}
+			return &sandboxruntime.Target{
+				ID:     "runtime-factory-created",
+				Name:   req.Name,
+				Status: sandbox.StatusStopped,
+				Runtime: sandboxruntime.RuntimeState{
+					Driver:    sandboxruntime.DriverRootlessPodman,
+					RuntimeID: "runtime-factory-created",
+				},
+			}, nil
+		},
 		start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
 			if !acquireCalled {
 				t.Fatal("runtime Start ran before scheduler lease acquisition")

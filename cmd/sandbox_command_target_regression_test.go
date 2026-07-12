@@ -1823,7 +1823,8 @@ func TestWorkerRootlessRunSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) {
 			return nil, nil
 		},
 		resolveProvider: func(string) (sandbox.Provider, error) {
-			return fakeFactorySandboxProvider{}, nil
+			t.Fatal("legacy provider resolution should not run for worker-backed run preparation")
+			return nil, nil
 		},
 		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			t.Fatal("legacy runtime resolver should not run for explicit worker-backed run execution")
@@ -2055,7 +2056,8 @@ func TestWorkerRootlessAutoSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) 
 			return nil, nil
 		},
 		resolveProvider: func(string) (sandbox.Provider, error) {
-			return fakeFactorySandboxProvider{}, nil
+			t.Fatal("legacy provider resolution should not run for worker-backed auto preparation")
+			return nil, nil
 		},
 		resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			t.Fatal("legacy runtime resolver should not run for explicit worker-backed auto execution")
@@ -2127,6 +2129,10 @@ func TestWorkerRootlessRunSandboxStreamsOutputAndSummariesExcludePreparation(t *
 		id: sandboxruntime.DriverRootlessPodman,
 		exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 			if isWorkerOutputArtifactGenerationExec(req) {
+				return &sandboxruntime.ExecResult{}, nil
+			}
+			if isWorkerBootstrapProbeExec(req) {
+				_, _ = io.WriteString(req.Stdout, "run preparation output\n")
 				return &sandboxruntime.ExecResult{}, nil
 			}
 			_, _ = io.WriteString(req.Stdout, `{"contractVersion":1,"ok":true,"summary":"worker run stream"}`+"\n")
@@ -2234,6 +2240,10 @@ func TestWorkerRootlessAutoSandboxStreamsOutputAndSummariesExcludePreparation(t 
 		id: sandboxruntime.DriverRootlessPodman,
 		exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 			if isWorkerOutputArtifactGenerationExec(req) {
+				return &sandboxruntime.ExecResult{}, nil
+			}
+			if isWorkerBootstrapProbeExec(req) {
+				_, _ = io.WriteString(req.Stdout, "auto preparation output\n")
 				return &sandboxruntime.ExecResult{}, nil
 			}
 			_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSON("worker auto stream")+"\n")
@@ -2843,6 +2853,7 @@ func TestWorkerRootlessFactorySandboxUsesSharedWorkerRuntimeResolver(t *testing.
 	}
 	var out bytes.Buffer
 	var workerResolverCalls int
+	var bootstrapRuntimeCalls int
 
 	workerDriver := fakeRunSandboxRuntimeDriver{
 		id: sandboxruntime.DriverRootlessPodman,
@@ -2853,7 +2864,14 @@ func TestWorkerRootlessFactorySandboxUsesSharedWorkerRuntimeResolver(t *testing.
 			if req.Target.Runtime.WorkerID != "worker-1" {
 				t.Fatalf("Exec worker ID = %q, want worker-1", req.Target.Runtime.WorkerID)
 			}
-			_, _ = io.WriteString(req.Stdout, "worker-backed factory path\n")
+			joinedArgs := strings.Join(req.Args, " ")
+			if strings.Contains(joinedArgs, "bootstrap-runtime-probe") {
+				bootstrapRuntimeCalls++
+			} else if strings.Contains(joinedArgs, "hal-factory-verify-stderr") {
+				_, _ = io.WriteString(req.Stdout, `{"schemaVersion":"verify-v1","status":"pass","summary":{"total":0},"checks":[]}`+"\n")
+			} else {
+				_, _ = io.WriteString(req.Stdout, "worker-backed factory path\n")
+			}
 			return &sandboxruntime.ExecResult{}, nil
 		},
 	}
@@ -2907,7 +2925,8 @@ func TestWorkerRootlessFactorySandboxUsesSharedWorkerRuntimeResolver(t *testing.
 					return nil, nil
 				},
 				resolveProvider: func(string) (sandbox.Provider, error) {
-					return fakeFactorySandboxProvider{}, nil
+					t.Fatal("legacy provider resolution should not run for worker-backed factory preparation")
+					return nil, nil
 				},
 				resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 					t.Fatal("legacy runtime resolver should not run for explicit worker-backed factory execution")
@@ -2929,13 +2948,21 @@ func TestWorkerRootlessFactorySandboxUsesSharedWorkerRuntimeResolver(t *testing.
 					}
 					return workerDriver, nil
 				},
-				bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
-					return factory.BootstrapResult{}, nil
+				bootstrap: func(ctx context.Context, _ factory.BootstrapRequest, deps factory.BootstrapDeps) (factory.BootstrapResult, error) {
+					if deps.Executor == nil {
+						t.Fatal("worker-backed factory bootstrap executor is nil")
+					}
+					_, err := deps.Executor.Run(ctx, factory.BootstrapCommand{
+						Name: "printf",
+						Args: []string{"bootstrap-runtime-probe"},
+					})
+					return factory.BootstrapResult{}, err
 				},
 				engineAuthFiles: func() []factorySandboxAuthFile {
 					return nil
 				},
 				runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
+					t.Fatal("legacy provider script should not run for worker-backed factory preparation")
 					return nil
 				},
 			})
@@ -2943,11 +2970,15 @@ func TestWorkerRootlessFactorySandboxUsesSharedWorkerRuntimeResolver(t *testing.
 		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
 			return workerRootlessCachedSandbox(name), nil
 		},
+		resolveSandboxRuntime: func(string, *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+			return workerDriver, nil
+		},
 		resolveProvider: func(string, string) (sandbox.Provider, error) {
-			return fakeFactorySandboxProvider{}, nil
+			t.Fatal("legacy provider resolution should not run for worker-backed factory verification")
+			return nil, nil
 		},
 		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, _ map[string]string, out io.Writer) error {
-			_, _ = io.WriteString(out, `{"schemaVersion":"verify-v1","status":"pass","summary":{"total":0},"checks":[]}`+"\n")
+			t.Fatal("legacy provider exec should not run for worker-backed factory verification")
 			return nil
 		},
 		statusSnapshot: func(string) (factorySnapshotArtifact, error) {
@@ -2969,6 +3000,9 @@ func TestWorkerRootlessFactorySandboxUsesSharedWorkerRuntimeResolver(t *testing.
 	}
 	if workerResolverCalls != 1 {
 		t.Fatalf("worker resolver calls = %d, want 1", workerResolverCalls)
+	}
+	if bootstrapRuntimeCalls != 1 {
+		t.Fatalf("bootstrap runtime calls = %d, want 1", bootstrapRuntimeCalls)
 	}
 	if !strings.Contains(out.String(), "worker-backed factory path") {
 		t.Fatalf("output = %q, want worker-backed runtime output", out.String())
@@ -4261,6 +4295,10 @@ func isWorkerOutputArtifactGenerationExec(req sandboxruntime.ExecRequest) bool {
 	command := strings.Join(req.Args, "\n")
 	return strings.Contains(command, ".hal/recovery/workspace.patch") ||
 		strings.Contains(command, ".hal/reports.tar")
+}
+
+func isWorkerBootstrapProbeExec(req sandboxruntime.ExecRequest) bool {
+	return len(req.Args) == 3 && req.Args[0] == "sh" && req.Args[1] == "-c" && req.Args[2] == "true"
 }
 
 func bootstrapWithPreparationOutput() func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {

@@ -209,20 +209,53 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 		return nil, phaseError(PhaseResolveDriver, target, "", fmt.Errorf("sandbox runtime driver is required"))
 	}
 
-	if !targetRunning {
-		started, err := driver.Start(ctx, sandboxruntime.LifecycleRequest{
-			Target: runtimeTarget,
+	createdInRun := false
+	if !targetRunning && workerTargetNeedsCreate(target, runtimeTarget) {
+		created, err := driver.Create(ctx, sandboxruntime.CreateRequest{
+			Name:   runtimeTarget.Name,
 			Stdout: req.SetupStdout,
 			Stderr: req.SetupStderr,
 		})
 		if err != nil {
-			if started != nil {
-				target = applyRuntimeTargetToSandboxState(target, *started)
+			if created != nil {
+				runtimeTarget = mergeRuntimeTarget(runtimeTarget, *created)
+				target = applyRuntimeTargetToSandboxState(target, runtimeTarget)
 			}
-			return nil, phaseError(PhaseStartTarget, target, runtimeDriverID(driver), err)
+			return nil, phaseError(PhaseProvisionTarget, target, runtimeDriverID(driver), err)
 		}
-		if started == nil {
-			return nil, phaseError(PhaseStartTarget, target, runtimeDriverID(driver), fmt.Errorf("started sandbox target is required"))
+		if created == nil {
+			return nil, phaseError(PhaseProvisionTarget, target, runtimeDriverID(driver), fmt.Errorf("created sandbox target is required"))
+		}
+		runtimeTarget = mergeRuntimeTarget(runtimeTarget, *created)
+		target = applyRuntimeTargetToSandboxState(target, runtimeTarget)
+		targetRunning = strings.TrimSpace(runtimeTarget.Status) == sandbox.StatusRunning
+		createdInRun = true
+	}
+
+	if !targetRunning {
+		started, startErr := driver.Start(ctx, sandboxruntime.LifecycleRequest{
+			Target: runtimeTarget,
+			Stdout: req.SetupStdout,
+			Stderr: req.SetupStderr,
+		})
+		if startErr == nil && started == nil {
+			startErr = fmt.Errorf("started sandbox target is required")
+		}
+		if startErr != nil {
+			if started != nil {
+				runtimeTarget = mergeRuntimeTarget(runtimeTarget, *started)
+				target = applyRuntimeTargetToSandboxState(target, runtimeTarget)
+			}
+			if createdInRun {
+				if cleanupErr := driver.Delete(ctx, sandboxruntime.LifecycleRequest{
+					Target: runtimeTarget,
+					Stdout: req.SetupStdout,
+					Stderr: req.SetupStderr,
+				}); cleanupErr != nil {
+					startErr = errors.Join(startErr, fmt.Errorf("delete newly created sandbox target after start failure: %w", cleanupErr))
+				}
+			}
+			return nil, phaseError(PhaseStartTarget, target, runtimeDriverID(driver), startErr)
 		}
 		runtimeTarget = *started
 		target = applyRuntimeTargetToSandboxState(target, runtimeTarget)
@@ -308,6 +341,65 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 		Target:  runtimeTarget,
 		Command: cloneCommandRequest(req),
 	}, nil
+}
+
+func workerTargetNeedsCreate(state *sandbox.SandboxState, target sandboxruntime.Target) bool {
+	if strings.TrimSpace(target.Runtime.RuntimeID) != "" {
+		return false
+	}
+	return state != nil && state.Host != nil && strings.TrimSpace(state.Host.Kind) == sandbox.SandboxHostKindWorker
+}
+
+func mergeRuntimeTarget(selected, resolved sandboxruntime.Target) sandboxruntime.Target {
+	if strings.TrimSpace(resolved.ID) == "" {
+		resolved.ID = selected.ID
+	}
+	if strings.TrimSpace(resolved.Name) == "" {
+		resolved.Name = selected.Name
+	}
+	if strings.TrimSpace(resolved.Provider) == "" {
+		resolved.Provider = selected.Provider
+	}
+	if strings.TrimSpace(resolved.Status) == "" {
+		resolved.Status = selected.Status
+	}
+	if strings.TrimSpace(resolved.Runtime.Driver) == "" {
+		resolved.Runtime.Driver = selected.Runtime.Driver
+	}
+	if strings.TrimSpace(resolved.Runtime.RuntimeID) == "" {
+		resolved.Runtime.RuntimeID = selected.Runtime.RuntimeID
+	}
+	if strings.TrimSpace(resolved.Runtime.Image) == "" {
+		resolved.Runtime.Image = selected.Runtime.Image
+	}
+	if strings.TrimSpace(resolved.Runtime.WorkerID) == "" {
+		resolved.Runtime.WorkerID = selected.Runtime.WorkerID
+	}
+	if strings.TrimSpace(resolved.Runtime.IsolationLevel) == "" {
+		resolved.Runtime.IsolationLevel = selected.Runtime.IsolationLevel
+	}
+	if resolved.Runtime.Metadata == nil {
+		resolved.Runtime.Metadata = selected.Runtime.Metadata
+	}
+	if strings.TrimSpace(resolved.Connection.Address) == "" {
+		resolved.Connection.Address = selected.Connection.Address
+	}
+	if strings.TrimSpace(resolved.Connection.PublicIP) == "" {
+		resolved.Connection.PublicIP = selected.Connection.PublicIP
+	}
+	if strings.TrimSpace(resolved.Connection.TailscaleIP) == "" {
+		resolved.Connection.TailscaleIP = selected.Connection.TailscaleIP
+	}
+	if strings.TrimSpace(resolved.Connection.TailscaleHostname) == "" {
+		resolved.Connection.TailscaleHostname = selected.Connection.TailscaleHostname
+	}
+	if strings.TrimSpace(resolved.Connection.WorkspaceID) == "" {
+		resolved.Connection.WorkspaceID = selected.Connection.WorkspaceID
+	}
+	if !resolved.Connection.TailscaleLockdown {
+		resolved.Connection.TailscaleLockdown = selected.Connection.TailscaleLockdown
+	}
+	return resolved
 }
 
 func runRuntimeCommand(ctx context.Context, run RunContext, req CommandRequest) error {

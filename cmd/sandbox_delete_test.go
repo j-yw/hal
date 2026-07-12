@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/template"
 )
 
@@ -34,6 +35,33 @@ type mockDeletePendingRemoval struct {
 	commitErr     error
 	rollbackErr   error
 	alreadyStaged bool
+}
+
+func TestDeleteSandboxTargetResourceUsesWorkerRuntime(t *testing.T) {
+	target := workerRootlessCachedSandbox("worker-delete")
+	var deleted sandboxruntime.Target
+	driver := fakeFactorySandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		deleteFn: func(_ context.Context, req sandboxruntime.LifecycleRequest) error {
+			deleted = req.Target
+			return nil
+		},
+	}
+	err := deleteSandboxTargetResource(context.Background(), target, t.TempDir(), io.Discard, nil, sandboxDeleteResourceDeps{
+		resolveRuntime: func(string, *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+			return driver, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			t.Fatal("provider resolution should not run for worker delete")
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("deleteSandboxTargetResource() error: %v", err)
+	}
+	if deleted.Runtime.RuntimeID != target.Runtime.RuntimeID {
+		t.Fatalf("deleted target = %#v, want runtime ID %q", deleted, target.Runtime.RuntimeID)
+	}
 }
 
 func (m *mockDeletePendingRemoval) Commit() error {
