@@ -19,6 +19,7 @@ func TestSandboxdSafetyWiringUsesFakeableDepsAndHonestCapabilities(t *testing.T)
 		WorkerID:      "worker-safety",
 		Drivers:       []string{sandboxruntime.DriverRootlessPodman},
 		PodmanPath:    "fake-podman",
+		PodmanImage:   "localhost/hal-agent:test",
 		MaxConcurrent: 2,
 	}
 	var driverConstructed bool
@@ -26,13 +27,13 @@ func TestSandboxdSafetyWiringUsesFakeableDepsAndHonestCapabilities(t *testing.T)
 	var serverStarted bool
 
 	err := runSandboxdWithDeps(context.Background(), req, io.Discard, sandboxdDeps{
-		rootlessPodmanAvailable: func(context.Context, string) error {
+		rootlessPodmanAvailable: func(context.Context, sandboxdRootlessPodmanConfig) error {
 			return nil
 		},
-		newRootlessPodmanDriver: func(podmanPath string) sandboxruntime.Driver {
+		newRootlessPodmanDriver: func(config sandboxdRootlessPodmanConfig) sandboxruntime.Driver {
 			driverConstructed = true
-			if podmanPath != "fake-podman" {
-				t.Fatalf("podman path = %q, want fake-podman", podmanPath)
+			if config.PodmanPath != "fake-podman" || config.Image != "localhost/hal-agent:test" {
+				t.Fatalf("podman config = %#v, want fake executable and test image", config)
 			}
 			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
 		},

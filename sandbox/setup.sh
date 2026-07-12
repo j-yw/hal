@@ -21,9 +21,9 @@ set -euo pipefail
 # ── Version pins (single source of truth) ────────────────────────────────────
 GO_VERSION="${GO_VERSION:-1.25.7}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
-CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-latest}"
-PI_CODING_AGENT_VERSION="${PI_CODING_AGENT_VERSION:-latest}"
-CODEX_VERSION="${CODEX_VERSION:-latest}"
+CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-2.1.207}"
+PI_CODING_AGENT_VERSION="${PI_CODING_AGENT_VERSION:-0.73.1}"
+CODEX_VERSION="${CODEX_VERSION:-0.144.1}"
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -241,11 +241,10 @@ mkdir -p "${HOME_DIR}/.local/bin"
 
 # ── npm global tools ────────────────────────────────────────────────────────
 step "Claude Code, Pi, Codex (npm)"
-npm install -g \
+npm install -g --no-audit --no-fund \
   "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
   "@mariozechner/pi-coding-agent@${PI_CODING_AGENT_VERSION}" \
-  "@openai/codex@${CODEX_VERSION}" \
-  2>&1 | tail -3
+  "@openai/codex@${CODEX_VERSION}"
 ok "npm tools installed"
 
 # ── hal (from source) ───────────────────────────────────────────────────────

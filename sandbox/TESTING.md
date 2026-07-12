@@ -21,6 +21,42 @@ docker run --rm hal-sandbox /test.sh
 
 The `sandbox-build` and `sandbox-test` jobs in `.github/workflows/ci.yml` build the Docker image and run `/test.sh` on every push and PR to `main`, `develop`, `sandbox*`, and `compound/sandbox*` branches. The `sandbox-test` job uses path filtering — it only runs the smoke tests when files under `sandbox/` or the `Makefile` change.
 
+## Contained Podman lab
+
+Use `sandbox/podman-lab.sh` for local rootless Podman and `sandboxd` testing. The
+script owns an isolated home directory, Hal config root, XDG config/data/cache
+roots, temp root, local Hal binary, disposable repository clones, daemon socket,
+image, and named Podman machine. It does not install the feature binary or write
+runtime state to the normal user configuration. `seed-auth` explicitly copies
+supported Codex, Pi, and Claude auth files into the isolated home when live agent
+execution is required. A custom `HAL_SANDBOX_LAB_ROOT` must be absolute and use
+a `hal-sandbox-*` leaf directory so teardown cannot target a broad filesystem
+path.
+
+When host TUN/DNS routing cannot reach registries directly, set separate proxy
+URLs instead of disabling TLS. `HAL_SANDBOX_LAB_HOST_PROXY` is used only while
+the host downloads the Podman machine image. `HAL_SANDBOX_LAB_GUEST_PROXY` is
+used only for image build traffic inside the Podman VM. Neither value is stored
+in the lab manifest.
+
+```sh
+export HAL_SANDBOX_LAB_HOST_PROXY=http://127.0.0.1:PORT
+export HAL_SANDBOX_LAB_GUEST_PROXY=http://host.containers.internal:PORT
+make sandbox-lab-prepare
+make sandbox-lab-start
+./sandbox/podman-lab.sh seed-auth
+./sandbox/podman-lab.sh clone /path/to/browser-game browser-game
+./sandbox/podman-lab.sh run -- hal sandbox host status hal-lab-worker --live
+./sandbox/podman-lab.sh run -- hal factory run --sandbox --base main \
+  --sandbox-host hal-lab-worker --sandbox-runtime rootless_podman
+make sandbox-lab-destroy
+```
+
+Run `make sandbox-lab-destroy` after testing. It deletes registered lab
+sandboxes through Hal while the daemon is available, stops the daemon, removes
+remaining Hal-labeled containers, deletes the named Podman machine, and removes
+the lab root.
+
 ## Integration Tests (Daytona API)
 
 Integration tests exercise the full sandbox lifecycle against a live Daytona environment: snapshot create, sandbox start, status, exec, stop, delete, and state file management.

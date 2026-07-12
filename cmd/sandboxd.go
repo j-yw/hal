@@ -34,8 +34,8 @@ type sandboxdServer interface {
 type sandboxdDeps struct {
 	newService                      func(sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error)
 	newServer                       func(sandboxworker.ServerOptions) (sandboxdServer, error)
-	rootlessPodmanAvailable         func(context.Context, string) error
-	newRootlessPodmanDriver         func(string) sandboxruntime.Driver
+	rootlessPodmanAvailable         func(context.Context, sandboxdRootlessPodmanConfig) error
+	newRootlessPodmanDriver         func(sandboxdRootlessPodmanConfig) sandboxruntime.Driver
 	newMicroVMDriver                func(sandboxdMicroVMConfig) (sandboxruntime.Driver, error)
 	validateMicroVMConfig           func(sandboxdMicroVMConfig) error
 	microVMGuestReadinessConfigured bool
@@ -47,6 +47,7 @@ type sandboxdFlags struct {
 	workerID      string
 	drivers       []string
 	podmanPath    string
+	podmanImage   string
 	microVM       sandboxdMicroVMFlags
 	maxConcurrent int
 	json          bool
@@ -83,11 +84,17 @@ type sandboxdMicroVMConfig struct {
 	NetworkEnforcement            *sandboxruntime.RuntimeNetworkEnforcementMetadata
 }
 
+type sandboxdRootlessPodmanConfig struct {
+	PodmanPath string
+	Image      string
+}
+
 type sandboxdRequest struct {
 	SocketPath    string
 	WorkerID      string
 	Drivers       []string
 	PodmanPath    string
+	PodmanImage   string
 	MicroVM       sandboxdMicroVMConfig
 	MaxConcurrent int
 	JSON          bool
@@ -129,6 +136,7 @@ hal sandbox subcommands continue to manage durable sandbox records separately.`,
 	cmd.Flags().StringVar(&flags.workerID, "worker-id", flags.workerID, "worker identifier to report in daemon status")
 	cmd.Flags().StringSliceVar(&flags.drivers, "driver", flags.drivers, "runtime driver to register with the worker daemon")
 	cmd.Flags().StringVar(&flags.podmanPath, "podman", flags.podmanPath, "podman executable for the rootless_podman driver")
+	cmd.Flags().StringVar(&flags.podmanImage, "image", flags.podmanImage, "container image for the rootless_podman driver")
 	registerSandboxdMicroVMFlags(cmd, &flags, deps)
 	cmd.Flags().IntVar(&flags.maxConcurrent, "max-concurrent", flags.maxConcurrent, "maximum concurrent sandboxes reported by daemon capacity")
 	cmd.Flags().BoolVar(&flags.json, "json", flags.json, "Output machine-readable daemon startup status")
@@ -140,6 +148,7 @@ func defaultSandboxdFlags() sandboxdFlags {
 		socketPath:    defaultSandboxdSocketPath(),
 		drivers:       []string{sandboxruntime.DriverRootlessPodman},
 		podmanPath:    rootlesspodman.DefaultPodmanExecutable,
+		podmanImage:   rootlesspodman.DefaultImage,
 		microVM:       defaultSandboxdMicroVMFlags(),
 		maxConcurrent: 1,
 	}
@@ -191,28 +200,42 @@ func defaultSandboxdDeps() sandboxdDeps {
 	}
 }
 
-func defaultSandboxdRootlessPodmanAvailable(ctx context.Context, podmanPath string) error {
+func defaultSandboxdRootlessPodmanAvailable(ctx context.Context, config sandboxdRootlessPodmanConfig) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	podmanPath = strings.TrimSpace(podmanPath)
+	podmanPath := strings.TrimSpace(config.PodmanPath)
 	if podmanPath == "" {
 		podmanPath = rootlesspodman.DefaultPodmanExecutable
 	}
-	_, err := exec.LookPath(podmanPath)
-	return err
+	resolvedPath, err := exec.LookPath(podmanPath)
+	if err != nil {
+		return err
+	}
+	if err := exec.CommandContext(ctx, resolvedPath, "info", "--format", "json").Run(); err != nil {
+		return fmt.Errorf("podman service is unavailable: %w", err)
+	}
+	image := strings.TrimSpace(config.Image)
+	if image == "" {
+		return fmt.Errorf("podman image is required")
+	}
+	if err := exec.CommandContext(ctx, resolvedPath, "image", "exists", image).Run(); err != nil {
+		return fmt.Errorf("podman image is unavailable: %w", err)
+	}
+	return nil
 }
 
-func defaultSandboxdRootlessPodmanDriver(podmanPath string) sandboxruntime.Driver {
+func defaultSandboxdRootlessPodmanDriver(config sandboxdRootlessPodmanConfig) sandboxruntime.Driver {
 	runner := rootlesspodman.DefaultCommandRunner{}
 	return rootlesspodman.New(rootlesspodman.Options{
 		LifecycleRunner: runner,
 		ExecRunner:      runner,
 		CopyRunner:      runner,
-		PodmanPath:      podmanPath,
+		PodmanPath:      config.PodmanPath,
+		Image:           config.Image,
 	})
 }
 
@@ -246,6 +269,7 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 		WorkerID:      flags.workerID,
 		Drivers:       cloneSandboxdStringSlice(flags.drivers),
 		PodmanPath:    flags.podmanPath,
+		PodmanImage:   flags.podmanImage,
 		MicroVM:       sandboxdMicroVMConfigFromFlags(flags.microVM, deps),
 		MaxConcurrent: flags.maxConcurrent,
 		JSON:          flags.json,
@@ -264,6 +288,9 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 		if req.PodmanPath, err = cmd.Flags().GetString("podman"); err != nil {
 			return sandboxdRequest{}, err
 		}
+		if req.PodmanImage, err = cmd.Flags().GetString("image"); err != nil {
+			return sandboxdRequest{}, err
+		}
 		req.MicroVM, err = sandboxdMicroVMConfigFromCommand(cmd, flags.microVM, deps)
 		if err != nil {
 			return sandboxdRequest{}, err
@@ -279,6 +306,7 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 	req.SocketPath = strings.TrimSpace(req.SocketPath)
 	req.WorkerID = strings.TrimSpace(req.WorkerID)
 	req.PodmanPath = strings.TrimSpace(req.PodmanPath)
+	req.PodmanImage = strings.TrimSpace(req.PodmanImage)
 	req.Drivers = normalizedSandboxdDrivers(req.Drivers)
 	req.MicroVM = sanitizeSandboxdMicroVMConfig(req.MicroVM)
 
@@ -294,6 +322,9 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 	}
 	if len(req.Drivers) == 0 {
 		return sandboxdRequest{}, fmt.Errorf("sandboxd requires at least one --driver")
+	}
+	if sandboxdDriverRequested(req.Drivers, sandboxruntime.DriverRootlessPodman) && req.PodmanImage == "" {
+		return sandboxdRequest{}, fmt.Errorf("sandboxd --image is required for --driver rootless_podman")
 	}
 	if sandboxdDriverRequested(req.Drivers, sandboxruntime.DriverMicroVM) {
 		if missing := sandboxdMissingMicroVMConfigFlags(req.MicroVM); len(missing) > 0 {
@@ -405,10 +436,11 @@ func sandboxdDriverRegistry(ctx context.Context, req sandboxdRequest, deps sandb
 			if seen[driverID] {
 				return nil, nil, nil, fmt.Errorf("sandboxd driver %q is registered more than once", driverID)
 			}
-			if err := deps.rootlessPodmanAvailable(ctx, req.PodmanPath); err != nil {
+			config := sandboxdRootlessPodmanConfig{PodmanPath: req.PodmanPath, Image: req.PodmanImage}
+			if err := deps.rootlessPodmanAvailable(ctx, config); err != nil {
 				return nil, nil, nil, sandboxdRuntimeUnavailableError{driverID: driverID, err: err}
 			}
-			driver := deps.newRootlessPodmanDriver(req.PodmanPath)
+			driver := deps.newRootlessPodmanDriver(config)
 			if err := registry.Register(driver); err != nil {
 				return nil, nil, nil, fmt.Errorf("register sandboxd driver %q: %w", driverID, err)
 			}

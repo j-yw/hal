@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +37,7 @@ func TestSandboxdCommandRegisteredWithoutDisruptingSandboxCommands(t *testing.T)
 		"worker-id",
 		"driver",
 		"podman",
+		"image",
 		"firecracker-executable",
 		"firecracker-kernel",
 		"firecracker-rootfs",
@@ -76,12 +78,65 @@ func TestSandboxdCommandRegisteredWithoutDisruptingSandboxCommands(t *testing.T)
 	}
 }
 
+func TestDefaultSandboxdRootlessPodmanAvailableChecksServiceAndImage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake podman executable uses a POSIX shell")
+	}
+	dir := t.TempDir()
+	podmanPath := filepath.Join(dir, "podman-test")
+	logPath := filepath.Join(dir, "podman.log")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$PODMAN_TEST_LOG"
+if [ "$1" = "info" ]; then
+  [ "${PODMAN_TEST_FAIL_INFO:-}" = "1" ] && exit 1
+  exit 0
+fi
+if [ "$1" = "image" ] && [ "$2" = "exists" ]; then
+  [ "$3" = "localhost/hal-agent:test" ] || exit 1
+  [ "${PODMAN_TEST_FAIL_IMAGE:-}" = "1" ] && exit 1
+  exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(podmanPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("WriteFile(fake podman) error: %v", err)
+	}
+	t.Setenv("PODMAN_TEST_LOG", logPath)
+	config := sandboxdRootlessPodmanConfig{
+		PodmanPath: podmanPath,
+		Image:      "localhost/hal-agent:test",
+	}
+
+	if err := defaultSandboxdRootlessPodmanAvailable(context.Background(), config); err != nil {
+		t.Fatalf("defaultSandboxdRootlessPodmanAvailable() unexpected error: %v", err)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile(podman log) error: %v", err)
+	}
+	if got, want := string(logData), "info --format json\nimage exists localhost/hal-agent:test\n"; got != want {
+		t.Fatalf("podman calls = %q, want %q", got, want)
+	}
+
+	t.Setenv("PODMAN_TEST_FAIL_INFO", "1")
+	if err := defaultSandboxdRootlessPodmanAvailable(context.Background(), config); err == nil || !strings.Contains(err.Error(), "podman service is unavailable") {
+		t.Fatalf("service preflight error = %v, want unavailable service", err)
+	}
+	t.Setenv("PODMAN_TEST_FAIL_INFO", "")
+	t.Setenv("PODMAN_TEST_FAIL_IMAGE", "1")
+	if err := defaultSandboxdRootlessPodmanAvailable(context.Background(), config); err == nil || !strings.Contains(err.Error(), "podman image is unavailable") {
+		t.Fatalf("image preflight error = %v, want unavailable image", err)
+	}
+}
+
 func TestSandboxdCommandParsesFlagsAndUsesInjectedDependencies(t *testing.T) {
 	handler := &recordingSandboxdHandler{}
 	var gotService sandboxworker.ServiceOptions
 	var gotServer sandboxworker.ServerOptions
 	var gotAvailabilityPodmanPath string
+	var gotAvailabilityPodmanImage string
 	var gotPodmanPath string
+	var gotPodmanImage string
 	var gotServeContext context.Context
 
 	cmd, stdout, _ := newTestSandboxdCommand(sandboxdDeps{
@@ -96,12 +151,14 @@ func TestSandboxdCommandParsesFlagsAndUsesInjectedDependencies(t *testing.T) {
 				return nil
 			}), nil
 		},
-		rootlessPodmanAvailable: func(_ context.Context, podmanPath string) error {
-			gotAvailabilityPodmanPath = podmanPath
+		rootlessPodmanAvailable: func(_ context.Context, config sandboxdRootlessPodmanConfig) error {
+			gotAvailabilityPodmanPath = config.PodmanPath
+			gotAvailabilityPodmanImage = config.Image
 			return nil
 		},
-		newRootlessPodmanDriver: func(podmanPath string) sandboxruntime.Driver {
-			gotPodmanPath = podmanPath
+		newRootlessPodmanDriver: func(config sandboxdRootlessPodmanConfig) sandboxruntime.Driver {
+			gotPodmanPath = config.PodmanPath
+			gotPodmanImage = config.Image
 			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
 		},
 		workerID: func() string {
@@ -114,6 +171,7 @@ func TestSandboxdCommandParsesFlagsAndUsesInjectedDependencies(t *testing.T) {
 		"--worker-id", "worker-test",
 		"--driver", "rootless_podman",
 		"--podman", "podman-test",
+		"--image", "localhost/hal-agent:test",
 		"--max-concurrent", "3",
 		"--json",
 	})
@@ -145,6 +203,9 @@ func TestSandboxdCommandParsesFlagsAndUsesInjectedDependencies(t *testing.T) {
 	}
 	if gotPodmanPath != "podman-test" {
 		t.Fatalf("podman path = %q, want podman-test", gotPodmanPath)
+	}
+	if gotAvailabilityPodmanImage != "localhost/hal-agent:test" || gotPodmanImage != "localhost/hal-agent:test" {
+		t.Fatalf("podman images availability/driver = %q/%q, want localhost/hal-agent:test", gotAvailabilityPodmanImage, gotPodmanImage)
 	}
 	if gotServer.SocketPath != "/tmp/custom-sandboxd.sock" {
 		t.Fatalf("server socketPath = %q", gotServer.SocketPath)
@@ -178,10 +239,10 @@ func TestSandboxdDefaultCapabilitiesDoNotClaimNetworkPolicyEnforcement(t *testin
 		newServer: func(options sandboxworker.ServerOptions) (sandboxdServer, error) {
 			return sandboxdServerFunc(func(context.Context) error { return nil }), nil
 		},
-		rootlessPodmanAvailable: func(context.Context, string) error {
+		rootlessPodmanAvailable: func(context.Context, sandboxdRootlessPodmanConfig) error {
 			return nil
 		},
-		newRootlessPodmanDriver: func(string) sandboxruntime.Driver {
+		newRootlessPodmanDriver: func(sandboxdRootlessPodmanConfig) sandboxruntime.Driver {
 			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
 		},
 		workerID: func() string {
@@ -222,10 +283,10 @@ func TestSandboxdCommandUsesDefaultWorkerIDDependency(t *testing.T) {
 		newServer: func(options sandboxworker.ServerOptions) (sandboxdServer, error) {
 			return sandboxdServerFunc(func(context.Context) error { return nil }), nil
 		},
-		rootlessPodmanAvailable: func(context.Context, string) error {
+		rootlessPodmanAvailable: func(context.Context, sandboxdRootlessPodmanConfig) error {
 			return nil
 		},
-		newRootlessPodmanDriver: func(string) sandboxruntime.Driver {
+		newRootlessPodmanDriver: func(sandboxdRootlessPodmanConfig) sandboxruntime.Driver {
 			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
 		},
 		workerID: func() string {
@@ -659,10 +720,10 @@ func TestSandboxdRuntimeRegistrationRequestsNetworkPlanOnlyForExplicitMicroVMPat
 		MicroVM:       sandboxdMicroVMConfig{NetworkEnforcementPlanning: planning},
 		MaxConcurrent: 1,
 	}, io.Discard, sandboxdDeps{
-		rootlessPodmanAvailable: func(context.Context, string) error {
+		rootlessPodmanAvailable: func(context.Context, sandboxdRootlessPodmanConfig) error {
 			return nil
 		},
-		newRootlessPodmanDriver: func(string) sandboxruntime.Driver {
+		newRootlessPodmanDriver: func(sandboxdRootlessPodmanConfig) sandboxruntime.Driver {
 			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
 		},
 		newService: func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
@@ -874,7 +935,7 @@ func TestSandboxdCommandRegistersMicroVMOnlyWithInjectedFactory(t *testing.T) {
 		newServer: func(options sandboxworker.ServerOptions) (sandboxdServer, error) {
 			return sandboxdServerFunc(func(context.Context) error { return nil }), nil
 		},
-		rootlessPodmanAvailable: func(context.Context, string) error {
+		rootlessPodmanAvailable: func(context.Context, sandboxdRootlessPodmanConfig) error {
 			rootlessAvailabilityCalled = true
 			return nil
 		},
@@ -1206,10 +1267,10 @@ func TestSandboxdMicroVMValidationDoesNotRunForRootlessPodmanOnly(t *testing.T) 
 		newServer: func(options sandboxworker.ServerOptions) (sandboxdServer, error) {
 			return sandboxdServerFunc(func(context.Context) error { return nil }), nil
 		},
-		rootlessPodmanAvailable: func(context.Context, string) error {
+		rootlessPodmanAvailable: func(context.Context, sandboxdRootlessPodmanConfig) error {
 			return nil
 		},
-		newRootlessPodmanDriver: func(string) sandboxruntime.Driver {
+		newRootlessPodmanDriver: func(sandboxdRootlessPodmanConfig) sandboxruntime.Driver {
 			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
 		},
 		workerID: func() string {
@@ -1282,10 +1343,10 @@ func TestSandboxdRootlessPodmanUnavailableFailsBeforeService(t *testing.T) {
 	serverCalled := false
 
 	err := runSandboxdWithDeps(context.Background(), req, &stdout, sandboxdDeps{
-		rootlessPodmanAvailable: func(context.Context, string) error {
+		rootlessPodmanAvailable: func(context.Context, sandboxdRootlessPodmanConfig) error {
 			return errors.New("stat /tmp/private/podman failed token=raw-secret at ssh://deploy:secret@example.test/tmp/private")
 		},
-		newRootlessPodmanDriver: func(string) sandboxruntime.Driver {
+		newRootlessPodmanDriver: func(sandboxdRootlessPodmanConfig) sandboxruntime.Driver {
 			driverConstructed = true
 			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
 		},
@@ -1368,10 +1429,10 @@ func TestSandboxdCommandRendersServeErrors(t *testing.T) {
 				return errors.New("listen failed")
 			}), nil
 		},
-		rootlessPodmanAvailable: func(context.Context, string) error {
+		rootlessPodmanAvailable: func(context.Context, sandboxdRootlessPodmanConfig) error {
 			return nil
 		},
-		newRootlessPodmanDriver: func(string) sandboxruntime.Driver {
+		newRootlessPodmanDriver: func(sandboxdRootlessPodmanConfig) sandboxruntime.Driver {
 			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
 		},
 		workerID: func() string {

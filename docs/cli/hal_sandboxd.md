@@ -37,6 +37,7 @@ hal sandboxd [flags]
       --firecracker-rootfs string                 rootfs image path for the microvm driver
       --firecracker-state-dir string              state directory for the microvm driver
   -h, --help                                      help for sandboxd
+      --image string                              container image for the rootless_podman driver (default "ghcr.io/jywlabs/hal-agent:latest")
       --json                                      Output machine-readable daemon startup status
       --max-concurrent int                        maximum concurrent sandboxes reported by daemon capacity (default 1)
       --microvm-cpu-count int                     CPU count for the microvm driver (default 2)
