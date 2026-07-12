@@ -130,6 +130,19 @@ type RecoveryArtifactCollectionRequest struct {
 	TempDir            string
 }
 
+// CommittedSyncOutCollectionRequest carries the runtime context and prepared
+// workspace baseline needed to collect committed sandbox changes separately
+// from working-tree recovery state.
+type CommittedSyncOutCollectionRequest struct {
+	ExecutionID        string
+	Store              Store
+	Runtime            RuntimeArtifactCollector
+	Target             sandboxruntime.Target
+	RemoteWorkspaceDir string
+	SyncRef            string
+	TempDir            string
+}
+
 // ReportsArchiveCollectionRequest carries the runtime context needed to
 // generate and collect the standard non-factory sandbox reports archive.
 type ReportsArchiveCollectionRequest struct {
@@ -162,6 +175,15 @@ const (
 	recoveryGenerationWarningPhase = "recovery-generation"
 	recoveryCopyOutWarningPhase    = "recovery-copyout"
 	recoveryPersistWarningPhase    = "recovery-persist"
+
+	committedSyncOutArtifactName     = "Committed Patch"
+	committedSyncOutArtifactType     = "patch"
+	committedSyncOutArtifactDir      = "sync"
+	committedSyncOutArtifactFileName = "committed.patch"
+
+	committedSyncOutGenerationWarningPhase = "sync-out-generation"
+	committedSyncOutCopyOutWarningPhase    = "sync-out-copyout"
+	committedSyncOutPersistWarningPhase    = "sync-out-persist"
 
 	reportsArchiveID       = "reports-archive"
 	reportsArchiveName     = "Reports Archive"
@@ -334,6 +356,70 @@ func CollectRecoveryArtifactsBestEffort(ctx context.Context, req RecoveryArtifac
 	return appendRecoveryArtifactMetadata(req.Store, executionID, result)
 }
 
+// CollectCommittedSyncOutArtifactBestEffort generates a patch containing only
+// commits after the prepared workspace baseline. An empty patch is omitted;
+// generation, copy, and persistence failures become durable handoff warnings.
+func CollectCommittedSyncOutArtifactBestEffort(ctx context.Context, req CommittedSyncOutCollectionRequest) (RuntimeCollectionResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	executionID, err := validateExecutionID(req.ExecutionID)
+	if err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	if _, err := req.Store.LoadManifest(executionID); err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	if req.Runtime == nil {
+		return RuntimeCollectionResult{}, fmt.Errorf("sandbox execution artifact runtime is required")
+	}
+	artifact, err := committedSyncOutArtifactRequest(req.RemoteWorkspaceDir, req.SyncRef)
+	if err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	if err := validateRuntimeArtifactRequest(artifact); err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+
+	tempDir, err := os.MkdirTemp(req.TempDir, "hal-sandbox-sync-out-*")
+	if err != nil {
+		return RuntimeCollectionResult{}, fmt.Errorf("create sandbox execution sync-out temp dir: %w", redactPathError(err))
+	}
+	defer os.RemoveAll(tempDir)
+
+	result := RuntimeCollectionResult{}
+	if err := runRuntimeArtifactGeneration(ctx, req.Runtime, req.Target, *artifact.Generate); err != nil {
+		addRuntimeArtifactPartialWarning(&result.ArtifactMetadata, artifact, committedSyncOutGenerationWarningPhase, "sandbox committed sync-out artifact generation failed")
+		return appendCommittedSyncOutArtifactMetadata(req.Store, executionID, result)
+	}
+
+	localPath := filepath.Join(tempDir, filepath.Base(filepath.FromSlash(artifact.PayloadPath)))
+	if err := req.Runtime.CopyOut(ctx, sandboxruntime.CopyRequest{
+		Target:          req.Target,
+		SourcePath:      artifact.RemotePath,
+		DestinationPath: localPath,
+	}); err != nil {
+		addRuntimeArtifactPartialWarning(&result.ArtifactMetadata, artifact, committedSyncOutCopyOutWarningPhase, "sandbox committed sync-out artifact is missing")
+		return appendCommittedSyncOutArtifactMetadata(req.Store, executionID, result)
+	}
+	info, err := os.Stat(localPath)
+	if err != nil {
+		addRuntimeArtifactPartialWarning(&result.ArtifactMetadata, artifact, committedSyncOutPersistWarningPhase, "sandbox committed sync-out artifact inspection failed")
+		return appendCommittedSyncOutArtifactMetadata(req.Store, executionID, result)
+	}
+	if info.Size() == 0 {
+		return result, nil
+	}
+
+	collected, err := saveRuntimeArtifactFile(req.Store, executionID, artifact, localPath)
+	if err != nil {
+		addRuntimeArtifactPartialWarning(&result.ArtifactMetadata, artifact, committedSyncOutPersistWarningPhase, "sandbox committed sync-out artifact persistence failed")
+		return appendCommittedSyncOutArtifactMetadata(req.Store, executionID, result)
+	}
+	result.ArtifactMetadata.Collected = append(result.ArtifactMetadata.Collected, collected)
+	return appendCommittedSyncOutArtifactMetadata(req.Store, executionID, result)
+}
+
 // CollectReportsArchiveArtifacts creates a deterministic remote tar archive of
 // .hal/reports when it exists, copies it out through the runtime driver, stores
 // it under artifacts/, and records collected or partial metadata on the manifest.
@@ -469,6 +555,32 @@ func recoveryArtifactRequest(remoteWorkspaceDir string) (RuntimeArtifactRequest,
 	}, nil
 }
 
+func committedSyncOutArtifactRequest(remoteWorkspaceDir, syncRef string) (RuntimeArtifactRequest, error) {
+	remoteWorkspaceDir = strings.TrimSpace(remoteWorkspaceDir)
+	if remoteWorkspaceDir == "" {
+		return RuntimeArtifactRequest{}, fmt.Errorf("sandbox execution remote workspace dir is required")
+	}
+	syncRef = strings.TrimSpace(syncRef)
+	if syncRef == "" {
+		return RuntimeArtifactRequest{}, fmt.Errorf("sandbox committed sync-out ref is required")
+	}
+	displayPath := pathpkg.Join(template.HalDir, committedSyncOutArtifactDir, committedSyncOutArtifactFileName)
+	return RuntimeArtifactRequest{
+		Artifact: ArtifactMetadataEntry{
+			ID:   syncOutCommittedPatchID,
+			Name: committedSyncOutArtifactName,
+			Type: committedSyncOutArtifactType,
+			Path: displayPath,
+		},
+		PayloadPath: pathpkg.Join(committedSyncOutArtifactDir, committedSyncOutArtifactFileName),
+		RemotePath:  pathpkg.Join(remoteWorkspaceDir, displayPath),
+		Generate: &RuntimeArtifactGeneration{
+			Args:    []string{"sh", "-c", committedSyncOutPatchGenerationScript(), "hal-sync-out", syncRef},
+			WorkDir: remoteWorkspaceDir,
+		},
+	}, nil
+}
+
 func reportsArchiveArtifactRequest(remoteWorkspaceDir string) (RuntimeArtifactRequest, error) {
 	remoteWorkspaceDir = strings.TrimSpace(remoteWorkspaceDir)
 	if remoteWorkspaceDir == "" {
@@ -549,6 +661,23 @@ func recoveryPatchGenerationScript() string {
 		"\t: > \"$tmp_path\"",
 		"fi",
 		`mv "$tmp_path" "$recovery_path"`,
+	}, "\n")
+}
+
+func committedSyncOutPatchGenerationScript() string {
+	syncPath := pathpkg.Join(template.HalDir, committedSyncOutArtifactDir, committedSyncOutArtifactFileName)
+	tmpPath := syncPath + ".tmp"
+	return strings.Join([]string{
+		"set -eu",
+		`base_ref=$1`,
+		fmt.Sprintf("sync_path=%q", syncPath),
+		fmt.Sprintf("tmp_path=%q", tmpPath),
+		fmt.Sprintf("mkdir -p %q", pathpkg.Dir(syncPath)),
+		`rm -f "$tmp_path" "$sync_path"`,
+		`case "$base_ref" in ""|-*) echo "invalid sandbox sync-out base ref" >&2; exit 2 ;; esac`,
+		`base_commit=$(git rev-parse --verify "$base_ref^{commit}")`,
+		`git diff --binary --no-ext-diff "$base_commit"..HEAD -- > "$tmp_path"`,
+		`mv "$tmp_path" "$sync_path"`,
 	}, "\n")
 }
 
@@ -685,6 +814,13 @@ func addRuntimeArtifactPartialWarning(metadata *ArtifactMetadata, req RuntimeArt
 func appendRecoveryArtifactMetadata(store Store, executionID string, result RuntimeCollectionResult) (RuntimeCollectionResult, error) {
 	if err := store.AppendArtifactMetadata(executionID, result.ArtifactMetadata); err != nil {
 		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution recovery metadata: %w", err)
+	}
+	return result, nil
+}
+
+func appendCommittedSyncOutArtifactMetadata(store Store, executionID string, result RuntimeCollectionResult) (RuntimeCollectionResult, error) {
+	if err := store.AppendArtifactMetadata(executionID, result.ArtifactMetadata); err != nil {
+		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution committed sync-out metadata: %w", err)
 	}
 	return result, nil
 }

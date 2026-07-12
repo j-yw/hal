@@ -727,6 +727,18 @@ func collectAutoSandboxGeneratedArtifacts(ctx context.Context, store sandboxexec
 	if _, err := sandboxexecution.CollectRecoveryArtifactsBestEffort(ctx, collectionReq); err != nil {
 		return fmt.Errorf("collect auto sandbox recovery artifacts: %w", err)
 	}
+	if req.SyncOut.Enabled {
+		if _, err := sandboxexecution.CollectCommittedSyncOutArtifactBestEffort(ctx, sandboxexecution.CommittedSyncOutCollectionRequest{
+			ExecutionID:        req.ExecutionID,
+			Store:              store,
+			Runtime:            result.RuntimeDriver,
+			Target:             result.Result.Target,
+			RemoteWorkspaceDir: req.WorkDir,
+			SyncRef:            sandboxCommittedSyncOutBaseRef(req.Workspace, req.BaseBranch),
+		}); err != nil {
+			return fmt.Errorf("collect auto sandbox committed sync-out artifact: %w", err)
+		}
+	}
 	if _, err := sandboxexecution.CollectReportsArchiveArtifacts(ctx, sandboxexecution.ReportsArchiveCollectionRequest{
 		ExecutionID:        req.ExecutionID,
 		Store:              store,

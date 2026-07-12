@@ -31,6 +31,15 @@ type sandboxSyncOutApplyRequest struct {
 	Handoff     sandboxworkspace.SafeApplyResult
 }
 
+func sandboxCommittedSyncOutBaseRef(workspace *sandbox.SandboxWorkspace, fallback string) string {
+	if workspace != nil {
+		if syncRef := strings.TrimSpace(workspace.SyncRef); syncRef != "" {
+			return syncRef
+		}
+	}
+	return strings.TrimSpace(fallback)
+}
+
 func applyRunSandboxSyncOut(ctx context.Context, store sandboxexecution.Store, req runSandboxRequest, deps runSandboxDeps) error {
 	if !req.SyncOut.Enabled {
 		return nil

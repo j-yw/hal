@@ -1004,7 +1004,7 @@ func TestSandboxApplyPersistsRecoveryBeforeHostMutation(t *testing.T) {
 		if !errors.Is(err, applyErr) {
 			t.Fatalf("runRunSandboxWithWriter() error = %v, want apply error", err)
 		}
-		wantOrder := []string{"remote_run", "copy_core_prd", "copy_core_progress", "recovery_generation", "copy_recovery", "reports_generation", "copy_reports", "host_apply"}
+		wantOrder := []string{"remote_run", "copy_core_prd", "copy_core_progress", "recovery_generation", "copy_recovery", "committed_generation", "copy_committed", "reports_generation", "copy_reports", "host_apply"}
 		assertSandboxApplyOrder(t, order, wantOrder)
 		assertSandboxFinalManifestRetainsRecovery(t, store, "run-apply-order")
 	})
@@ -1083,7 +1083,7 @@ func TestSandboxApplyPersistsRecoveryBeforeHostMutation(t *testing.T) {
 		if !errors.Is(err, applyErr) {
 			t.Fatalf("runAutoSandboxWithWriter() error = %v, want apply error", err)
 		}
-		wantOrder := []string{"remote_run", "copy_core_prd", "copy_core_progress", "copy_core_auto_state", "recovery_generation", "copy_recovery", "reports_generation", "copy_reports", "host_apply"}
+		wantOrder := []string{"remote_run", "copy_core_prd", "copy_core_progress", "copy_core_auto_state", "recovery_generation", "copy_recovery", "committed_generation", "copy_committed", "reports_generation", "copy_reports", "host_apply"}
 		assertSandboxApplyOrder(t, order, wantOrder)
 		assertSandboxFinalManifestRetainsRecovery(t, store, "auto-apply-order")
 	})
@@ -1110,6 +1110,8 @@ func sandboxApplyOrderRuntimeDriver(t *testing.T, expectedWorkspace string, orde
 			switch {
 			case got.WorkDir == expectedWorkspace && strings.Contains(script, "workspace.patch"):
 				*order = append(*order, "recovery_generation")
+			case got.WorkDir == expectedWorkspace && strings.Contains(script, "committed.patch"):
+				*order = append(*order, "committed_generation")
 			case got.WorkDir == expectedWorkspace && strings.Contains(script, "reports.tar"):
 				*order = append(*order, "reports_generation")
 			default:
@@ -1140,6 +1142,8 @@ func sandboxApplyOrderCopyLabel(sourcePath string) string {
 		return "copy_core_auto_state"
 	case strings.HasSuffix(sourcePath, "/.hal/recovery/workspace.patch"):
 		return "copy_recovery"
+	case strings.HasSuffix(sourcePath, "/.hal/sync/committed.patch"):
+		return "copy_committed"
 	case strings.HasSuffix(sourcePath, "/.hal/reports.tar"):
 		return "copy_reports"
 	default:
@@ -1186,6 +1190,9 @@ func assertSandboxSyncOutApplyRequestHasDurableArtifacts(t *testing.T, got sandb
 	}
 	if len(got.Summary.Recovery.Artifacts) != 1 || got.Summary.Recovery.Artifacts[0].StoredPath == "" {
 		t.Fatalf("sync-out recovery artifacts = %#v, want one durable recovery artifact", got.Summary.Recovery.Artifacts)
+	}
+	if got.Summary.Committed.Patch == nil || got.Summary.Committed.Patch.StoredPath == "" || !got.Summary.Apply.Eligible {
+		t.Fatalf("sync-out committed artifacts = %#v, want eligible durable committed patch", got.Summary.Committed)
 	}
 	for _, path := range corePaths {
 		if !sandboxSyncOutSummaryHasCorePath(got.Summary, path) {

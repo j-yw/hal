@@ -565,6 +565,64 @@ func TestCollectRecoveryArtifactsGeneratesCopiesAndPersistsManifest(t *testing.T
 	}
 }
 
+func TestCollectCommittedSyncOutArtifactBestEffortGeneratesEligiblePatch(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.SaveManifest(testManifest("exec-sync", time.Date(2026, 7, 12, 1, 0, 0, 0, time.UTC))); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+	runtime := &recordingArtifactRuntime{}
+	target := sandboxruntime.Target{Name: "sync-box", Runtime: sandboxruntime.RuntimeState{Driver: sandboxruntime.DriverRootlessPodman}}
+
+	result, err := CollectCommittedSyncOutArtifactBestEffort(context.Background(), CommittedSyncOutCollectionRequest{
+		ExecutionID:        "exec-sync",
+		Store:              store,
+		Runtime:            runtime,
+		Target:             target,
+		RemoteWorkspaceDir: "/workspace/repo",
+		SyncRef:            "12e0bb5",
+	})
+	if err != nil {
+		t.Fatalf("CollectCommittedSyncOutArtifactBestEffort() error: %v", err)
+	}
+	if got, want := runtime.events, []string{"exec", "copy_out"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("runtime events = %#v, want %#v", got, want)
+	}
+	if len(runtime.execs) != 1 {
+		t.Fatalf("Exec calls = %d, want 1", len(runtime.execs))
+	}
+	exec := runtime.execs[0]
+	if len(exec.Args) != 5 || exec.Args[0] != "sh" || exec.Args[1] != "-c" || exec.Args[3] != "hal-sync-out" || exec.Args[4] != "12e0bb5" {
+		t.Fatalf("Exec args = %#v, want script with separate sync ref argument", exec.Args)
+	}
+	if !strings.Contains(exec.Args[2], `git diff --binary --no-ext-diff "$base_commit"..HEAD --`) {
+		t.Fatalf("generation script = %q, want committed-only diff from resolved base", exec.Args[2])
+	}
+	if exec.WorkDir != "/workspace/repo" {
+		t.Fatalf("Exec workdir = %q, want remote workspace", exec.WorkDir)
+	}
+	if len(result.ArtifactMetadata.Collected) != 1 {
+		t.Fatalf("collected = %#v, want committed patch", result.ArtifactMetadata.Collected)
+	}
+	artifact := result.ArtifactMetadata.Collected[0]
+	if artifact.ID != "committed-patch" || artifact.Path != ".hal/sync/committed.patch" || artifact.StoredPath != "exec-sync/artifacts/sync/committed.patch" {
+		t.Fatalf("artifact = %#v, want durable committed patch metadata", artifact)
+	}
+	manifest, err := store.LoadManifest("exec-sync")
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := BuildSyncOutSummaryFromArtifacts(manifest)
+	if summary.Committed.Patch == nil || summary.Committed.Patch.ApplyEligibility == nil || !summary.Committed.Patch.ApplyEligibility.Eligible || !summary.Apply.Eligible {
+		t.Fatalf("sync-out summary = %#v, want eligible committed patch", summary)
+	}
+	encoded := string(mustJSONBytes(t, manifest.ArtifactMetadata))
+	for _, forbidden := range []string{"/workspace/repo", "12e0bb5", runtime.copyOuts[0].DestinationPath} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("manifest metadata leaked command-local value %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 func TestCollectRecoveryArtifactsBestEffortRecordsPartialWarnings(t *testing.T) {
 	tests := []struct {
 		name       string
