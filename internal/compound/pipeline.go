@@ -1887,6 +1887,9 @@ func (p *Pipeline) runArchiveStep(ctx context.Context, state *PipelineState, opt
 		return nil
 	}
 
+	if err := p.checkpointRuntimeStateForFinalVerification(ctx, opts); err != nil {
+		return fmt.Errorf("archive gate blocked: %w", err)
+	}
 	if err := p.ensureCleanWorkingTree(); err != nil {
 		return fmt.Errorf("archive gate blocked: %w", err)
 	}
