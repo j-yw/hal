@@ -1,6 +1,7 @@
 package pi
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -390,6 +391,61 @@ func TestParser_ParseLine_AgentEnd_WithFailure(t *testing.T) {
 	}
 	if event.Data.Success {
 		t.Error("expected Success=false after tool error, got true")
+	}
+}
+
+func TestParser_ParseLine_MessageEnd_TerminalAssistantError(t *testing.T) {
+	p := NewParser()
+	secret := "sk-live-secret-value"
+	line := `{"type":"message_end","message":{"role":"assistant","content":[],"provider":"xai-auth","model":"grok-4.5","stopReason":"error","errorMessage":"No API key found for xai-auth: ` + secret + `"}}`
+
+	event := p.ParseLine([]byte(line))
+	if event == nil {
+		t.Fatal("expected terminal error event, got nil")
+	}
+	if event.Type != engine.EventError {
+		t.Fatalf("expected Type=EventError, got %v", event.Type)
+	}
+	if !p.HasFailure() {
+		t.Fatal("expected parser failure to be set")
+	}
+	if got := p.TerminalError(); got != "pi authentication failed; run pi and use /login for the selected provider, then retry" {
+		t.Fatalf("TerminalError() = %q", got)
+	}
+	if strings.Contains(event.Data.Message, secret) {
+		t.Fatalf("terminal error event leaked credential: %q", event.Data.Message)
+	}
+}
+
+func TestParser_ParseLine_AgentEnd_RecoversTerminalAssistantError(t *testing.T) {
+	p := NewParser()
+	line := `{"type":"agent_end","messages":[{"role":"assistant","content":[],"stopReason":"error","errorMessage":"WebSocket error"}]}`
+
+	event := p.ParseLine([]byte(line))
+	if event == nil {
+		t.Fatal("expected result event, got nil")
+	}
+	if event.Type != engine.EventResult {
+		t.Fatalf("expected Type=EventResult, got %v", event.Type)
+	}
+	if event.Data.Success {
+		t.Fatal("expected Success=false for terminal assistant error")
+	}
+	if got := p.TerminalError(); got != "pi provider request failed; check network connectivity and retry" {
+		t.Fatalf("TerminalError() = %q", got)
+	}
+}
+
+func TestParser_ParseLine_MessageEnd_NormalStopRemainsSuccessful(t *testing.T) {
+	p := NewParser()
+	p.ParseLine([]byte(`{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"stop"}}`))
+	event := p.ParseLine([]byte(`{"type":"agent_end","messages":[]}`))
+
+	if event == nil || event.Type != engine.EventResult || !event.Data.Success {
+		t.Fatalf("normal terminal result = %#v, want success", event)
+	}
+	if p.TerminalError() != "" {
+		t.Fatalf("TerminalError() = %q, want empty", p.TerminalError())
 	}
 }
 

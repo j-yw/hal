@@ -27,13 +27,14 @@ import (
 // Text content uses: text_start, text_delta, text_end.
 // Thinking/reasoning uses: thinking_start, thinking_delta, thinking_end.
 type Parser struct {
-	model       string
-	totalTokens int
-	hasFailure  bool
-	text        strings.Builder
-	isThinking  bool // tracks whether model is currently in a thinking block
-	now         func() time.Time
-	runStart    time.Time
+	model         string
+	totalTokens   int
+	hasFailure    bool
+	terminalError string
+	text          strings.Builder
+	isThinking    bool // tracks whether model is currently in a thinking block
+	now           func() time.Time
+	runStart      time.Time
 }
 
 // NewParser creates a new Pi output parser.
@@ -53,6 +54,13 @@ func (p *Parser) TotalTokens() int {
 // HasFailure returns true if any error was encountered.
 func (p *Parser) HasFailure() bool {
 	return p.hasFailure
+}
+
+// TerminalError returns safe user-facing guidance for a terminal assistant
+// failure. Provider error text is classified rather than returned verbatim
+// because it may contain credentials or sensitive request details.
+func (p *Parser) TerminalError() string {
+	return p.terminalError
 }
 
 // CollectedText returns all assistant text accumulated during parsing.
@@ -276,6 +284,13 @@ func (p *Parser) parseMessageEnd(raw map[string]interface{}) *engine.Event {
 	role, _ := msg["role"].(string)
 	if role == "assistant" {
 		p.accumulateUsage(msg)
+		if stopReason, errorMessage, failed := terminalAssistantFailure(msg); failed {
+			message := p.markTerminalFailure(stopReason, errorMessage)
+			return &engine.Event{
+				Type: engine.EventError,
+				Data: engine.EventData{Message: message},
+			}
+		}
 	}
 
 	return nil
@@ -334,6 +349,9 @@ func (p *Parser) parseAgentEnd(raw map[string]interface{}) *engine.Event {
 	// Fallback text recovery: some providers may not emit text_end events.
 	// In that case, extract text from the last assistant message in agent_end.
 	if messages, ok := raw["messages"].([]interface{}); ok {
+		if stopReason, errorMessage, failed := lastTerminalAssistantFailure(messages); failed {
+			p.markTerminalFailure(stopReason, errorMessage)
+		}
 		if finalText := extractLastAssistantText(messages); finalText != "" {
 			collected := p.text.String()
 			if !strings.Contains(collected, finalText) {
@@ -354,7 +372,79 @@ func (p *Parser) parseAgentEnd(raw map[string]interface{}) *engine.Event {
 			Success:    success,
 			Tokens:     p.totalTokens,
 			DurationMs: p.elapsedRunDurationMs(),
+			Message:    p.terminalError,
 		},
+	}
+}
+
+func (p *Parser) markTerminalFailure(stopReason, errorMessage string) string {
+	p.hasFailure = true
+	if p.terminalError == "" {
+		p.terminalError = sanitizePiTerminalError(stopReason, errorMessage)
+	}
+	return p.terminalError
+}
+
+func terminalAssistantFailure(msg map[string]interface{}) (stopReason, errorMessage string, failed bool) {
+	role, _ := msg["role"].(string)
+	if role != "assistant" {
+		return "", "", false
+	}
+
+	stopReason, _ = msg["stopReason"].(string)
+	if stopReason != "error" && stopReason != "aborted" {
+		return "", "", false
+	}
+
+	errorMessage, _ = msg["errorMessage"].(string)
+	return stopReason, errorMessage, true
+}
+
+func lastTerminalAssistantFailure(messages []interface{}) (stopReason, errorMessage string, failed bool) {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg, ok := messages[i].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if stopReason, errorMessage, failed := terminalAssistantFailure(msg); failed {
+			return stopReason, errorMessage, true
+		}
+	}
+	return "", "", false
+}
+
+func sanitizePiTerminalError(stopReason, errorMessage string) string {
+	message := strings.ToLower(errorMessage)
+
+	switch {
+	case strings.Contains(message, "api key"),
+		strings.Contains(message, "authentication"),
+		strings.Contains(message, "unauthorized"),
+		strings.Contains(message, "forbidden"),
+		strings.Contains(message, "oauth"),
+		strings.Contains(message, "credential"),
+		strings.Contains(message, "401"),
+		strings.Contains(message, "403"):
+		return "pi authentication failed; run pi and use /login for the selected provider, then retry"
+	case strings.Contains(message, "rate limit"),
+		strings.Contains(message, "quota"),
+		strings.Contains(message, "too many requests"),
+		strings.Contains(message, "429"):
+		return "pi provider rate limit or quota exceeded; retry later or check the provider account"
+	case strings.Contains(message, "websocket"),
+		strings.Contains(message, "network"),
+		strings.Contains(message, "connection"),
+		strings.Contains(message, "timed out"),
+		strings.Contains(message, "timeout"):
+		return "pi provider request failed; check network connectivity and retry"
+	case strings.Contains(message, "context length"),
+		strings.Contains(message, "context window"),
+		strings.Contains(message, "too many tokens"):
+		return "pi model context limit exceeded; reduce the prompt or choose a larger-context model"
+	case stopReason == "aborted":
+		return "pi request was aborted; retry unless cancellation was intentional"
+	default:
+		return "pi agent reported a terminal error; run pi directly for provider diagnostics"
 	}
 }
 

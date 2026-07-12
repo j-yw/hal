@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -144,6 +145,60 @@ exit 1
 	}
 	if resp != "" {
 		t.Fatalf("StreamPrompt() response = %q, want empty response", resp)
+	}
+}
+
+func TestStreamPrompt_ReturnsSanitizedTerminalAssistantErrorOnZeroExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	secret := "sk-live-secret-value"
+	binDir := t.TempDir()
+	writeFakePi(t, binDir, `#!/bin/sh
+printf '{"type":"session"}\n'
+printf '{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"No API key found: `+secret+`"}}\n'
+printf '{"type":"agent_end","messages":[{"role":"assistant","content":[],"stopReason":"error","errorMessage":"No API key found: `+secret+`"}]}\n'
+exit 0
+`)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
+	resp, err := eng.StreamPrompt(context.Background(), "test prompt", nil)
+	if err == nil {
+		t.Fatal("StreamPrompt() error = nil, want terminal assistant error")
+	}
+	if engine.RequiresOutputFallback(err) {
+		t.Fatalf("StreamPrompt() error = %v, terminal failures must not request output fallback", err)
+	}
+	if got := err.Error(); !strings.Contains(got, "pi authentication failed") || strings.Contains(got, secret) {
+		t.Fatalf("StreamPrompt() error = %q, want sanitized authentication guidance", got)
+	}
+	if resp != "" {
+		t.Fatalf("StreamPrompt() response = %q, want empty response", resp)
+	}
+}
+
+func TestPrompt_SanitizesProviderError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	secret := "sk-live-secret-value"
+	binDir := t.TempDir()
+	writeFakePi(t, binDir, "#!/bin/sh\nprintf 'No API key found: "+secret+"' >&2\nexit 1\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
+	resp, err := eng.Prompt(context.Background(), "test prompt")
+	if err == nil {
+		t.Fatal("Prompt() error = nil, want provider error")
+	}
+	if got := err.Error(); !strings.Contains(got, "pi authentication failed") || strings.Contains(got, secret) {
+		t.Fatalf("Prompt() error = %q, want sanitized authentication guidance", got)
+	}
+	if resp != "" {
+		t.Fatalf("Prompt() response = %q, want empty response", resp)
 	}
 }
 
