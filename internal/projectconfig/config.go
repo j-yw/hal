@@ -380,12 +380,14 @@ func normalizeSandboxRuntime(field, value string) (string, error) {
 func normalizeWorkspaceMode(field, value string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	switch normalized {
-	case sandbox.SandboxWorkspaceModeClone, sandbox.SandboxWorkspaceModeCopy:
+	case sandbox.SandboxWorkspaceModeClone:
 		return normalized, nil
+	case sandbox.SandboxWorkspaceModeCopy:
+		return "", fmt.Errorf("%s copy is not currently supported for hal run/auto; use clone", field)
 	case sandbox.SandboxWorkspaceModeDirect:
 		return "", fmt.Errorf("%s direct is not supported in project config", field)
 	default:
-		return "", fmt.Errorf("%s must be one of %s, %s", field, sandbox.SandboxWorkspaceModeClone, sandbox.SandboxWorkspaceModeCopy)
+		return "", fmt.Errorf("%s must be %s", field, sandbox.SandboxWorkspaceModeClone)
 	}
 }
 

@@ -265,6 +265,15 @@ sandbox:
 			wantErr: "sandbox.defaults.runtime",
 		},
 		{
+			name: "sandbox workspace mode copy",
+			yaml: `
+sandbox:
+  defaults:
+    workspaceMode: copy
+`,
+			wantErr: "sandbox.defaults.workspaceMode copy is not currently supported for hal run/auto; use clone",
+		},
+		{
 			name: "sandbox workspace mode direct",
 			yaml: `
 sandbox:

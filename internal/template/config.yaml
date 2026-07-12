@@ -111,7 +111,8 @@ maxRetries: 3
 #     host: local-worker
 #     runtime: ssh_machine
 #
-#     # run/auto sandbox execution currently supports clone-mode command planning.
+#     # run/auto sandbox execution currently supports only clone-mode command planning.
+#     # copy and direct are rejected during project config loading.
 #     workspaceMode: clone
 #
 #     # Collect sync-out metadata by default, but keep host apply opt-in.
