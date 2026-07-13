@@ -283,7 +283,7 @@ type RunOptions struct {
 	DryRun             bool   // Show what would happen without executing
 	SkipCI             bool   // Skip CI step (push + draft PR) at the end
 	CIPolicy           string // Factory CI policy; empty preserves required behavior
-	RuntimeStatePolicy string // Factory runtime-state policy; empty preserves strict behavior
+	RuntimeStatePolicy string // Internal runtime-state policy; empty preserves strict behavior
 	SkipReview         bool   // Skip review gate before CI
 	ReviewCleanStreak  int    // Consecutive clean review cycles required to pass
 	ReviewMaxCycles    int    // Maximum review cycles before failing the gate
