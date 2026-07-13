@@ -355,6 +355,51 @@ func setupTestHalDir(t *testing.T, stories []engine.UserStory) string {
 	return halDir
 }
 
+func TestRun_AllStoriesCompleteDoesNotExecuteEngine(t *testing.T) {
+	for _, dryRun := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dry_run_%t", dryRun), func(t *testing.T) {
+			halDir := setupTestHalDir(t, []engine.UserStory{{
+				ID:     "US-001",
+				Title:  "Already complete",
+				Passes: true,
+			}})
+			fe := &fakeEngine{results: []engine.Result{{
+				Success: false,
+				Error:   fmt.Errorf("engine must not execute for a complete PRD"),
+			}}}
+			var logBuf bytes.Buffer
+			runner := &Runner{
+				config: Config{
+					Dir:           halDir,
+					PRDFile:       template.PRDFile,
+					ProgressFile:  template.ProgressFile,
+					MaxIterations: 1,
+					Logger:        &logBuf,
+					MaxRetries:    0,
+					DryRun:        dryRun,
+				},
+				engine:  fe,
+				display: engine.NewDisplay(&logBuf),
+			}
+
+			result := runner.Run(context.Background())
+
+			if fe.calls != 0 {
+				t.Fatalf("engine calls = %d, want 0", fe.calls)
+			}
+			if !result.Success || !result.Complete || result.Error != nil {
+				t.Fatalf("result = %#v, want successful complete result", result)
+			}
+			if result.Iterations != 0 {
+				t.Fatalf("iterations = %d, want 0", result.Iterations)
+			}
+			if result.CompletedStories != 1 || result.TotalStories != 1 {
+				t.Fatalf("story progress = %d/%d, want 1/1", result.CompletedStories, result.TotalStories)
+			}
+		})
+	}
+}
+
 func TestFalseComplete_StopsAfterMaxFalseCompletes(t *testing.T) {
 	stories := []engine.UserStory{{
 		ID:                 "FIX-001",

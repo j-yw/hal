@@ -150,13 +150,17 @@ func (r *Runner) Run(ctx context.Context) (result Result) {
 		targetStory = prd.CurrentStory()
 	}
 
+	if targetStory == nil {
+		if r.config.DryRun {
+			r.display.ShowInfo("Dry-run mode: showing what would execute\n\n")
+		}
+		r.display.ShowSuccess("All stories are complete!")
+		return Result{Success: true, Complete: true}
+	}
+
 	// Handle dry-run mode
 	if r.config.DryRun {
 		r.display.ShowInfo("Dry-run mode: showing what would execute\n\n")
-		if targetStory == nil {
-			r.display.ShowSuccess("All stories are complete!")
-			return Result{Success: true, Complete: true}
-		}
 		r.display.ShowInfo("Next story to execute:\n")
 		r.display.ShowInfo("  ID:    %s\n", targetStory.ID)
 		r.display.ShowInfo("  Title: %s\n", targetStory.Title)
