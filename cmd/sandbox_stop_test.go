@@ -3,16 +3,19 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/spf13/cobra"
 )
 
@@ -87,6 +90,28 @@ func setupStopGlobalRegistry(t *testing.T, instances []*sandbox.SandboxState) {
 			t.Fatal(err)
 		}
 	}
+}
+
+func installWorkerStopRoutingDeps(t *testing.T, driver sandboxruntime.Driver) *atomic.Int32 {
+	t.Helper()
+	originalProvider := sandboxStopResolveProvider
+	originalRuntime := sandboxStopResolveRuntime
+	providerCalls := new(atomic.Int32)
+	sandboxStopResolveProvider = func(string) (sandbox.Provider, error) {
+		providerCalls.Add(1)
+		return nil, errors.New("legacy provider resolution must not run for worker stop")
+	}
+	sandboxStopResolveRuntime = func(target *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+		if !factorySandboxUsesWorkerRuntime(target) {
+			return nil, fmt.Errorf("target %q is not worker-backed", target.Name)
+		}
+		return driver, nil
+	}
+	t.Cleanup(func() {
+		sandboxStopResolveProvider = originalProvider
+		sandboxStopResolveRuntime = originalRuntime
+	})
+	return providerCalls
 }
 
 func TestResolveStopTargets_ExplicitNames(t *testing.T) {
@@ -436,6 +461,142 @@ func TestRunSandboxStop_ExplicitName(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Stopped my-sandbox") {
 		t.Errorf("output %q missing stopped message", out.String())
+	}
+}
+
+func TestRunSandboxStop_WorkerTargetUsesRuntimeAndPersistsReturnedMetadata(t *testing.T) {
+	target := workerLifecycleSandbox("worker-stop", sandbox.StatusRunning)
+	setupStopGlobalRegistry(t, []*sandbox.SandboxState{target})
+	stoppedAt := time.Date(2026, 7, 12, 19, 0, 0, 0, time.UTC)
+	originalNow := sandboxStopNow
+	sandboxStopNow = func() time.Time { return stoppedAt }
+	t.Cleanup(func() { sandboxStopNow = originalNow })
+
+	driver := &workerLifecycleRuntimeDriver{
+		stopFn: func(req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+			stopped := req.Target
+			stopped.Status = sandbox.StatusStopped
+			stopped.Runtime.RuntimeID = "ctr-stopped-worker-stop"
+			stopped.Runtime.Image = "localhost/hal:stopped"
+			return &stopped, nil
+		},
+	}
+	providerCalls := installWorkerStopRoutingDeps(t, driver)
+
+	var out bytes.Buffer
+	if err := runSandboxStop([]string{target.Name}, false, "", &out, nil); err != nil {
+		t.Fatalf("runSandboxStop() error: %v", err)
+	}
+	if providerCalls.Load() != 0 {
+		t.Fatalf("legacy provider resolution calls = %d, want 0", providerCalls.Load())
+	}
+	if got := driver.sortedStopNames(); strings.Join(got, ",") != target.Name {
+		t.Fatalf("runtime Stop calls = %v, want %v", got, []string{target.Name})
+	}
+
+	loaded, err := sandbox.LoadInstance(target.Name)
+	if err != nil {
+		t.Fatalf("LoadInstance(): %v", err)
+	}
+	if loaded.Status != sandbox.StatusStopped || loaded.StoppedAt == nil || !loaded.StoppedAt.Equal(stoppedAt) {
+		t.Fatalf("persisted lifecycle = status %q stoppedAt %v, want stopped at %v", loaded.Status, loaded.StoppedAt, stoppedAt)
+	}
+	if loaded.Runtime == nil || loaded.Runtime.RuntimeID != "ctr-stopped-worker-stop" || loaded.Runtime.Image != "localhost/hal:stopped" {
+		t.Fatalf("persisted runtime = %#v, want returned runtime metadata", loaded.Runtime)
+	}
+	if loaded.Host == nil || loaded.Host.ID != target.Host.ID || loaded.Workspace == nil || loaded.Workspace.Repo != target.Workspace.Repo {
+		t.Fatalf("persisted target lost durable worker metadata: %#v", loaded)
+	}
+}
+
+func TestRunSandboxStop_MultipleWorkerTargetsUseRuntimeAndPersistEach(t *testing.T) {
+	targets := []*sandbox.SandboxState{
+		workerLifecycleSandbox("worker-stop-a", sandbox.StatusRunning),
+		workerLifecycleSandbox("worker-stop-b", sandbox.StatusRunning),
+	}
+	setupStopGlobalRegistry(t, targets)
+
+	driver := &workerLifecycleRuntimeDriver{
+		stopFn: func(req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+			stopped := req.Target
+			stopped.Status = sandbox.StatusStopped
+			stopped.Runtime.RuntimeID = "ctr-stopped-" + req.Target.Name
+			return &stopped, nil
+		},
+	}
+	providerCalls := installWorkerStopRoutingDeps(t, driver)
+
+	if err := runSandboxStop([]string{targets[1].Name, targets[0].Name}, false, "", io.Discard, nil); err != nil {
+		t.Fatalf("runSandboxStop() error: %v", err)
+	}
+	if providerCalls.Load() != 0 {
+		t.Fatalf("legacy provider resolution calls = %d, want 0", providerCalls.Load())
+	}
+	wantNames := []string{targets[0].Name, targets[1].Name}
+	if got := driver.sortedStopNames(); strings.Join(got, ",") != strings.Join(wantNames, ",") {
+		t.Fatalf("runtime Stop calls = %v, want %v", got, wantNames)
+	}
+	for _, target := range targets {
+		loaded, err := sandbox.LoadInstance(target.Name)
+		if err != nil {
+			t.Fatalf("LoadInstance(%q): %v", target.Name, err)
+		}
+		if loaded.Status != sandbox.StatusStopped || loaded.Runtime == nil || loaded.Runtime.RuntimeID != "ctr-stopped-"+target.Name {
+			t.Fatalf("persisted target %q = %#v, want stopped returned runtime metadata", target.Name, loaded)
+		}
+	}
+}
+
+func TestRunSandboxStop_WorkerRuntimeFailurePreservesRunningState(t *testing.T) {
+	target := workerLifecycleSandbox("worker-stop-failure", sandbox.StatusRunning)
+	setupStopGlobalRegistry(t, []*sandbox.SandboxState{target})
+	driver := &workerLifecycleRuntimeDriver{
+		stopFn: func(sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+			return nil, errors.New("worker stop unavailable")
+		},
+	}
+	providerCalls := installWorkerStopRoutingDeps(t, driver)
+
+	err := runSandboxStop([]string{target.Name}, false, "", io.Discard, nil)
+	if err == nil || !strings.Contains(err.Error(), "sandbox stop failed") {
+		t.Fatalf("runSandboxStop() error = %v, want runtime stop failure", err)
+	}
+	if providerCalls.Load() != 0 {
+		t.Fatalf("legacy provider resolution calls = %d, want 0", providerCalls.Load())
+	}
+	loaded, loadErr := sandbox.LoadInstance(target.Name)
+	if loadErr != nil {
+		t.Fatalf("LoadInstance(): %v", loadErr)
+	}
+	if loaded.Status != sandbox.StatusRunning || loaded.StoppedAt != nil || loaded.Runtime == nil || loaded.Runtime.RuntimeID != target.Runtime.RuntimeID {
+		t.Fatalf("persisted target after failed stop = %#v, want original running state", loaded)
+	}
+}
+
+func TestRunSandboxStop_LegacyTargetDoesNotResolveWorkerRuntime(t *testing.T) {
+	setupStopGlobalRegistry(t, []*sandbox.SandboxState{{
+		Name:      "legacy-stop",
+		Provider:  "daytona",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: time.Now(),
+	}})
+	originalRuntime := sandboxStopResolveRuntime
+	var runtimeCalls atomic.Int32
+	sandboxStopResolveRuntime = func(*sandbox.SandboxState) (sandboxruntime.Driver, error) {
+		runtimeCalls.Add(1)
+		return nil, errors.New("worker runtime resolver should not run")
+	}
+	t.Cleanup(func() { sandboxStopResolveRuntime = originalRuntime })
+	provider := &mockStopProvider{}
+
+	if err := runSandboxStop([]string{"legacy-stop"}, false, "", io.Discard, provider); err != nil {
+		t.Fatalf("runSandboxStop() error: %v", err)
+	}
+	if runtimeCalls.Load() != 0 {
+		t.Fatalf("worker runtime resolver calls = %d, want 0", runtimeCalls.Load())
+	}
+	if got := provider.sortedStopCalls(); strings.Join(got, ",") != "legacy-stop" {
+		t.Fatalf("provider Stop calls = %v, want legacy-stop", got)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 
 	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -33,9 +34,9 @@ When no arguments or flags are provided, the command auto-resolves:
   - If multiple are stopped, an error lists the available choices.
 
 Explicit names are loaded from the registry regardless of cached lifecycle
-status, so stale registry state can be corrected by the provider's idempotent
-start operation. Resolved targets are de-duplicated and sorted by name before
-execution.`,
+status, so stale registry state can be corrected by the selected provider or
+runtime driver's idempotent start operation. Resolved targets are de-duplicated
+and sorted by name before execution.`,
 	Example: `  hal sandbox start my-sandbox
   hal sandbox start api-backend frontend
   hal sandbox start --all
@@ -59,6 +60,9 @@ var sandboxStartListInstances = sandbox.ListActiveInstances
 var sandboxStartLoadInstance = sandbox.LoadActiveInstance
 var sandboxStartResolveProvider = func(providerName string) (sandbox.Provider, error) {
 	return resolveProviderWithFallback(".", providerName)
+}
+var sandboxStartResolveRuntime = func(target *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+	return resolveFactoryStoredSandboxRuntime(".", target)
 }
 var sandboxStartForceWrite = sandbox.ForceWriteInstance
 var sandboxStartNow = func() time.Time { return time.Now() }
@@ -235,23 +239,33 @@ func filterStopped(instances []*sandbox.SandboxState) []*sandbox.SandboxState {
 }
 
 func startOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbox.Provider) error {
-	p := provider
-	if p == nil {
-		var err error
-		p, err = sandboxStartResolveProvider(target.Provider)
-		if err != nil {
-			return fmt.Errorf("resolving provider for %q: %w", target.Name, err)
-		}
-	}
-
 	fmt.Fprintf(out, "Starting sandbox %q...\n", target.Name)
 	ctx := context.Background()
-	info := sandbox.ConnectInfoFromState(target)
-	result, err := p.Start(ctx, info, out)
+	p, driver, err := resolveSandboxStartBackend(target, provider)
 	if err != nil {
-		return fmt.Errorf("sandbox start failed for %q: %w", target.Name, err)
+		return err
 	}
-	applyResolvedWorkspaceID(target, info)
+	var result *sandbox.LifecycleResult
+	if driver != nil {
+		started, startErr := driver.Start(ctx, sandboxruntime.LifecycleRequest{
+			Target: sandboxRuntimeTargetFromState(target),
+			Stdout: out,
+			Stderr: out,
+		})
+		if startErr != nil {
+			return fmt.Errorf("sandbox start failed for %q: %w", target.Name, startErr)
+		}
+		if err := applySandboxRuntimeLifecycleTarget(target, started); err != nil {
+			return fmt.Errorf("sandbox start failed for %q: %w", target.Name, err)
+		}
+	} else {
+		info := sandbox.ConnectInfoFromState(target)
+		result, err = p.Start(ctx, info, out)
+		if err != nil {
+			return fmt.Errorf("sandbox start failed for %q: %w", target.Name, err)
+		}
+		applyResolvedWorkspaceID(target, info)
+	}
 	if err := persistStartedState(target, result); err != nil {
 		if warning, ok := asLocalStateSyncWarning(err); ok {
 			fmt.Fprintf(out, "warning: failed to sync local sandbox state for %q: %v\n", target.Name, warning.Unwrap())
@@ -282,22 +296,26 @@ func startMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provid
 	for _, target := range targets {
 		target := target
 		g.Go(func() error {
-			p := provider
-			if p == nil {
-				var err error
-				p, err = sandboxStartResolveProvider(target.Provider)
-				if err != nil {
-					mu.Lock()
-					fmt.Fprintf(out, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), target.Name, err)
-					results = append(results, startResult{Name: target.Name, Success: false, Err: err})
-					mu.Unlock()
-					return nil
+			ctx := context.Background()
+			p, driver, err := resolveSandboxStartBackend(target, provider)
+			var result *sandbox.LifecycleResult
+			if err == nil && driver != nil {
+				var started *sandboxruntime.Target
+				started, err = driver.Start(ctx, sandboxruntime.LifecycleRequest{
+					Target: sandboxRuntimeTargetFromState(target),
+					Stdout: io.Discard,
+					Stderr: io.Discard,
+				})
+				if err == nil {
+					err = applySandboxRuntimeLifecycleTarget(target, started)
+				}
+			} else if err == nil {
+				info := sandbox.ConnectInfoFromState(target)
+				result, err = p.Start(ctx, info, io.Discard)
+				if err == nil {
+					applyResolvedWorkspaceID(target, info)
 				}
 			}
-
-			ctx := context.Background()
-			info := sandbox.ConnectInfoFromState(target)
-			result, err := p.Start(ctx, info, io.Discard)
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -306,7 +324,6 @@ func startMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provid
 				results = append(results, startResult{Name: target.Name, Success: false, Err: err})
 				return nil
 			}
-			applyResolvedWorkspaceID(target, info)
 			if regErr := persistStartedState(target, result); regErr != nil {
 				if warning, ok := asLocalStateSyncWarning(regErr); ok {
 					fmt.Fprintf(out, "warning: failed to sync local sandbox state for %q: %v\n", target.Name, warning.Unwrap())
@@ -339,6 +356,57 @@ func startMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provid
 	if failed > 0 {
 		return fmt.Errorf("%d/%d sandbox starts failed", failed, len(targets))
 	}
+	return nil
+}
+
+func resolveSandboxStartBackend(target *sandbox.SandboxState, provider sandbox.Provider) (sandbox.Provider, sandboxruntime.Driver, error) {
+	if factorySandboxUsesWorkerRuntime(target) {
+		driver, err := sandboxStartResolveRuntime(target)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving runtime for %q: %w", target.Name, err)
+		}
+		if driver == nil {
+			return nil, nil, fmt.Errorf("resolving runtime for %q: sandbox runtime driver is required", target.Name)
+		}
+		return nil, driver, nil
+	}
+	if provider != nil {
+		return provider, nil, nil
+	}
+	p, err := sandboxStartResolveProvider(target.Provider)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolving provider for %q: %w", target.Name, err)
+	}
+	return p, nil, nil
+}
+
+func applySandboxRuntimeLifecycleTarget(target *sandbox.SandboxState, updated *sandboxruntime.Target) error {
+	if target == nil {
+		return fmt.Errorf("sandbox target is required")
+	}
+	if updated == nil {
+		return fmt.Errorf("sandbox runtime returned no target")
+	}
+	state := sandboxStateFromRuntimeTarget(*updated)
+	if strings.TrimSpace(state.Status) != "" {
+		target.Status = state.Status
+	}
+	if state.Runtime != nil {
+		target.Runtime = state.Runtime
+	}
+	if strings.TrimSpace(state.WorkspaceID) != "" {
+		target.WorkspaceID = state.WorkspaceID
+	}
+	if strings.TrimSpace(state.IP) != "" {
+		target.IP = state.IP
+	}
+	if strings.TrimSpace(state.TailscaleIP) != "" {
+		target.TailscaleIP = state.TailscaleIP
+	}
+	if strings.TrimSpace(state.TailscaleHostname) != "" {
+		target.TailscaleHostname = state.TailscaleHostname
+	}
+	target.TailscaleLockdown = state.TailscaleLockdown
 	return nil
 }
 
