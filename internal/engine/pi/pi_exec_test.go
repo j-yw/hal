@@ -40,6 +40,52 @@ exit 1
 	}
 }
 
+func TestExecute_AllowsRecoveredPiErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	tests := []struct {
+		name   string
+		events string
+	}{
+		{
+			name: "assistant transport error",
+			events: `printf '{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"WebSocket connection failed: sk-live-test-secret"}}\n'
+printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"recovered"}],"stopReason":"stop"}}\n'
+printf '{"type":"agent_end","messages":[{"role":"assistant","content":[],"stopReason":"error","errorMessage":"WebSocket connection failed: sk-live-test-secret"},{"role":"assistant","content":[{"type":"text","text":"recovered"}],"stopReason":"stop"}]}\n'`,
+		},
+		{
+			name: "tool execution error",
+			events: `printf '{"type":"tool_execution_end","toolCallId":"tool1","toolName":"bash","result":{"content":[{"type":"text","text":"command exited 1"}]},"isError":true}\n'
+printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"used a fallback"}],"stopReason":"stop"}}\n'
+printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"toolCall","id":"tool1","name":"bash"}],"stopReason":"toolUse"},{"role":"toolResult","content":[{"type":"text","text":"command exited 1"}],"isError":true},{"role":"assistant","content":[{"type":"text","text":"used a fallback"}],"stopReason":"stop"}]}\n'`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			writeFakePi(t, binDir, "#!/bin/sh\nprintf '{\"type\":\"session\"}\\n'\n"+tt.events+"exit 1\n")
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
+			var buf bytes.Buffer
+			result := eng.Execute(context.Background(), "test prompt", engine.NewDisplay(&buf))
+
+			if result.Error != nil {
+				t.Fatalf("Execute() error = %v, want nil", result.Error)
+			}
+			if !result.Success {
+				t.Fatal("Execute() success = false after Pi recovered")
+			}
+			if strings.Contains(buf.String(), "sk-live-test-secret") {
+				t.Fatalf("display output leaked credential: %q", buf.String())
+			}
+		})
+	}
+}
+
 func TestRecoverExecuteResult_PrefersSuccessfulTerminalResultOverTimeout(t *testing.T) {
 	eng := New(nil)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)

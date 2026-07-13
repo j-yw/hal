@@ -51,7 +51,7 @@ func (p *Parser) TotalTokens() int {
 	return p.totalTokens
 }
 
-// HasFailure returns true if any error was encountered.
+// HasFailure returns true if the current terminal outcome is a failure.
 func (p *Parser) HasFailure() bool {
 	return p.hasFailure
 }
@@ -349,9 +349,7 @@ func (p *Parser) parseAgentEnd(raw map[string]interface{}) *engine.Event {
 	// Fallback text recovery: some providers may not emit text_end events.
 	// In that case, extract text from the last assistant message in agent_end.
 	if messages, ok := raw["messages"].([]interface{}); ok {
-		if stopReason, errorMessage, failed := lastTerminalAssistantFailure(messages); failed {
-			p.markTerminalFailure(stopReason, errorMessage)
-		}
+		p.reconcileTerminalOutcome(messages)
 		if finalText := extractLastAssistantText(messages); finalText != "" {
 			collected := p.text.String()
 			if !strings.Contains(collected, finalText) {
@@ -377,11 +375,24 @@ func (p *Parser) parseAgentEnd(raw map[string]interface{}) *engine.Event {
 	}
 }
 
+func (p *Parser) reconcileTerminalOutcome(messages []interface{}) {
+	msg, ok := lastAssistantMessage(messages)
+	if !ok {
+		return
+	}
+
+	// Pi may retry after an assistant or tool error. Once agent_end supplies a
+	// final assistant message, that message is authoritative for run success.
+	p.hasFailure = false
+	p.terminalError = ""
+	if stopReason, errorMessage, failed := terminalAssistantFailure(msg); failed {
+		p.markTerminalFailure(stopReason, errorMessage)
+	}
+}
+
 func (p *Parser) markTerminalFailure(stopReason, errorMessage string) string {
 	p.hasFailure = true
-	if p.terminalError == "" {
-		p.terminalError = sanitizePiTerminalError(stopReason, errorMessage)
-	}
+	p.terminalError = sanitizePiTerminalError(stopReason, errorMessage)
 	return p.terminalError
 }
 
@@ -400,17 +411,18 @@ func terminalAssistantFailure(msg map[string]interface{}) (stopReason, errorMess
 	return stopReason, errorMessage, true
 }
 
-func lastTerminalAssistantFailure(messages []interface{}) (stopReason, errorMessage string, failed bool) {
+func lastAssistantMessage(messages []interface{}) (map[string]interface{}, bool) {
 	for i := len(messages) - 1; i >= 0; i-- {
 		msg, ok := messages[i].(map[string]interface{})
 		if !ok {
 			continue
 		}
-		if stopReason, errorMessage, failed := terminalAssistantFailure(msg); failed {
-			return stopReason, errorMessage, true
+		role, _ := msg["role"].(string)
+		if role == "assistant" {
+			return msg, true
 		}
 	}
-	return "", "", false
+	return nil, false
 }
 
 func sanitizePiTerminalError(stopReason, errorMessage string) string {

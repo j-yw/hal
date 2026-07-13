@@ -436,6 +436,98 @@ func TestParser_ParseLine_AgentEnd_RecoversTerminalAssistantError(t *testing.T) 
 	}
 }
 
+func TestParser_ParseLine_AgentEnd_UsesFinalAssistantOutcomeAfterRecoverableTransportError(t *testing.T) {
+	p := NewParser()
+	secret := "sk-live-transport-secret"
+
+	errorEvent := p.ParseLine([]byte(`{"type":"message_end","message":{"role":"assistant","content":[],"provider":"xai","model":"grok-4.5","stopReason":"error","errorMessage":"WebSocket connection failed: ` + secret + `"}}`))
+	if errorEvent == nil || errorEvent.Type != engine.EventError {
+		t.Fatalf("recoverable message_end event = %#v, want visible error activity", errorEvent)
+	}
+	if strings.Contains(errorEvent.Data.Message, secret) {
+		t.Fatalf("recoverable error activity leaked credential: %q", errorEvent.Data.Message)
+	}
+
+	p.ParseLine([]byte(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"recovered"}],"provider":"xai","model":"grok-4.5","stopReason":"stop"}}`))
+	result := p.ParseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant","content":[],"stopReason":"error","errorMessage":"WebSocket connection failed: ` + secret + `"},{"role":"assistant","content":[{"type":"text","text":"recovered"}],"stopReason":"stop"}]}`))
+
+	if result == nil || result.Type != engine.EventResult || !result.Data.Success {
+		t.Fatalf("recovered agent_end result = %#v, want success", result)
+	}
+	if p.HasFailure() {
+		t.Fatal("HasFailure() = true after final successful assistant outcome")
+	}
+	if got := p.TerminalError(); got != "" {
+		t.Fatalf("TerminalError() = %q after recovery, want empty", got)
+	}
+	if got := p.CollectedText(); got != "recovered" {
+		t.Fatalf("CollectedText() = %q, want recovered final text", got)
+	}
+}
+
+func TestParser_ParseLine_AgentEnd_UsesFinalAssistantOutcomeAfterToolRecovery(t *testing.T) {
+	p := NewParser()
+
+	errorEvent := p.ParseLine([]byte(`{"type":"tool_execution_end","toolCallId":"tool1","toolName":"bash","result":{"content":[{"type":"text","text":"command exited 1"}]},"isError":true}`))
+	if errorEvent == nil || errorEvent.Type != engine.EventError {
+		t.Fatalf("tool_execution_end event = %#v, want visible error activity", errorEvent)
+	}
+
+	result := p.ParseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"toolCall","id":"tool1","name":"bash"}],"stopReason":"toolUse"},{"role":"toolResult","content":[{"type":"text","text":"command exited 1"}],"isError":true},{"role":"assistant","content":[{"type":"text","text":"used a fallback"}],"stopReason":"stop"}]}`))
+
+	if result == nil || result.Type != engine.EventResult || !result.Data.Success {
+		t.Fatalf("recovered tool agent_end result = %#v, want success", result)
+	}
+	if p.HasFailure() {
+		t.Fatal("HasFailure() = true after agent recovered from tool failure")
+	}
+	if got := p.TerminalError(); got != "" {
+		t.Fatalf("TerminalError() = %q after tool recovery, want empty", got)
+	}
+}
+
+func TestParser_ParseLine_AgentEnd_FinalFailureOverridesRecoverableError(t *testing.T) {
+	tests := []struct {
+		name         string
+		stopReason   string
+		errorMessage string
+		wantMessage  string
+	}{
+		{
+			name:         "error",
+			stopReason:   "error",
+			errorMessage: "No API key found: sk-live-final-secret",
+			wantMessage:  "pi authentication failed; run pi and use /login for the selected provider, then retry",
+		},
+		{
+			name:         "aborted",
+			stopReason:   "aborted",
+			errorMessage: "request aborted: sk-live-final-secret",
+			wantMessage:  "pi request was aborted; retry unless cancellation was intentional",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewParser()
+			p.ParseLine([]byte(`{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"WebSocket error: sk-live-recoverable-secret"}}`))
+
+			line := `{"type":"agent_end","messages":[{"role":"assistant","content":[],"stopReason":"error","errorMessage":"WebSocket error: sk-live-recoverable-secret"},{"role":"assistant","content":[],"stopReason":"` + tt.stopReason + `","errorMessage":"` + tt.errorMessage + `"}]}`
+			result := p.ParseLine([]byte(line))
+
+			if result == nil || result.Type != engine.EventResult || result.Data.Success {
+				t.Fatalf("final failure result = %#v, want failed result", result)
+			}
+			if got := p.TerminalError(); got != tt.wantMessage {
+				t.Fatalf("TerminalError() = %q, want %q", got, tt.wantMessage)
+			}
+			if strings.Contains(result.Data.Message, "sk-live-") {
+				t.Fatalf("final result leaked credential: %q", result.Data.Message)
+			}
+		})
+	}
+}
+
 func TestParser_ParseLine_MessageEnd_NormalStopRemainsSuccessful(t *testing.T) {
 	p := NewParser()
 	p.ParseLine([]byte(`{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"stop"}}`))
