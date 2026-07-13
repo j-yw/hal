@@ -462,6 +462,9 @@ func TestRunSandboxStop_ExplicitName(t *testing.T) {
 	if !strings.Contains(out.String(), "Stopped my-sandbox") {
 		t.Errorf("output %q missing stopped message", out.String())
 	}
+	if !strings.Contains(out.String(), "Billing: resources may still incur provider charges") {
+		t.Errorf("output %q missing legacy provider billing warning", out.String())
+	}
 }
 
 func TestRunSandboxStop_WorkerTargetUsesRuntimeAndPersistsReturnedMetadata(t *testing.T) {
@@ -506,6 +509,12 @@ func TestRunSandboxStop_WorkerTargetUsesRuntimeAndPersistsReturnedMetadata(t *te
 	}
 	if loaded.Host == nil || loaded.Host.ID != target.Host.ID || loaded.Workspace == nil || loaded.Workspace.Repo != target.Workspace.Repo {
 		t.Fatalf("persisted target lost durable worker metadata: %#v", loaded)
+	}
+	if !strings.Contains(out.String(), "Cleanup: hal sandbox delete "+target.Name) {
+		t.Fatalf("output = %q, want worker cleanup guidance", out.String())
+	}
+	if strings.Contains(out.String(), "Billing:") || strings.Contains(out.String(), "provider charges") {
+		t.Fatalf("output = %q, must not show cloud billing warning for local worker runtime", out.String())
 	}
 }
 

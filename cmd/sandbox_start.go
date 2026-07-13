@@ -282,6 +282,10 @@ func startOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbo
 	}
 
 	fmt.Fprintf(out, "%s Started %s\n", display.StyleSuccess.Render("[OK]"), target.Name)
+	if factorySandboxUsesWorkerRuntime(target) {
+		fmt.Fprintf(out, "  Runtime: %s\n", target.Runtime.Driver)
+		return nil
+	}
 	fmt.Fprintf(out, "  Access: %s\n", sandboxAccessLabel(target))
 	fmt.Fprintf(out, "  SSH:    %s\n", sandboxSSHCommand(target.Name))
 	return nil

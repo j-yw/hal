@@ -331,6 +331,10 @@ func stopOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbox
 	}
 
 	fmt.Fprintf(out, "%s Stopped %s\n", display.StyleSuccess.Render("[OK]"), target.Name)
+	if factorySandboxUsesWorkerRuntime(target) {
+		fmt.Fprintf(out, "  Cleanup: hal sandbox delete %s\n", target.Name)
+		return nil
+	}
 	fmt.Fprintf(out, "  Billing: resources may still incur provider charges\n")
 	return nil
 }

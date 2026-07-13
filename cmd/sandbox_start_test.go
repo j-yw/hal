@@ -336,6 +336,9 @@ func TestRunSandboxStart_StartsAndPersistsRunningState(t *testing.T) {
 	if !strings.Contains(out.String(), "Started worker") {
 		t.Fatalf("output = %q, want Started worker", out.String())
 	}
+	if !strings.Contains(out.String(), "SSH:    hal sandbox ssh worker") {
+		t.Fatalf("output = %q, want legacy provider SSH guidance", out.String())
+	}
 }
 
 func TestRunSandboxStart_WorkerTargetUsesRuntimeAndPersistsReturnedMetadata(t *testing.T) {
@@ -382,6 +385,12 @@ func TestRunSandboxStart_WorkerTargetUsesRuntimeAndPersistsReturnedMetadata(t *t
 	}
 	if loaded.Host == nil || loaded.Host.ID != target.Host.ID || loaded.Workspace == nil || loaded.Workspace.Repo != target.Workspace.Repo {
 		t.Fatalf("persisted target lost durable worker metadata: %#v", loaded)
+	}
+	if !strings.Contains(out.String(), "Runtime: "+sandboxruntime.DriverRootlessPodman) {
+		t.Fatalf("output = %q, want worker runtime metadata", out.String())
+	}
+	if strings.Contains(out.String(), "hal sandbox ssh") || strings.Contains(out.String(), "SSH:") {
+		t.Fatalf("output = %q, must not advertise provider-only SSH for worker runtime", out.String())
 	}
 }
 
