@@ -9,7 +9,9 @@ Open an interactive SSH session to a sandbox, or run a remote command.
 With just a name, opens an interactive shell that replaces the current process
 for provider-backed sandboxes. Worker-backed sandboxes require a command after
 -- because the sandboxd transport does not provide an interactive PTY.
-With arguments after --, runs the command in the sandbox and streams output.
+With arguments after --, runs the command in the sandbox. Provider SSH streams
+output; worker-backed commands return bounded stdout and stderr after completion
+and may be truncated at worker protocol limits.
 
 When no name is provided, the command auto-resolves:
   - If exactly one sandbox exists, it is selected automatically.

@@ -150,6 +150,6 @@ These fields use `omitempty` and are only present when the value is non-zero.
 - The `estimatedCost` field on individual sandboxes is omitted (not `null` or `0`) when hourly rate data is unavailable for the provider/size combination (e.g. Daytona).
 - The `totals.estimatedCost` field aggregates only sandboxes with known rates and is omitted when no sandbox has rate data.
 - Cost accrues from `createdAt` regardless of status, since cloud providers charge for allocated instances even when stopped.
-- The `--live` flag queries providers for fresh status before rendering but does not change the JSON structure.
+- The `--live` flag queries providers or worker runtimes for fresh status before rendering but does not change the JSON structure.
 - Human table output uses access states instead of raw network addresses. Use `--show-addresses` only when raw values are intentionally needed in human output.
 - New optional fields may be added in future versions with `omitempty`. Consumers should ignore unknown fields for forward compatibility.
