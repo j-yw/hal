@@ -92,34 +92,34 @@ type runSandboxExecutionHooks struct {
 }
 
 type runSandboxDeps struct {
-	defaultStore                func() (sandboxexecution.Store, error)
-	durableLeaseStore           bool
-	newExecutionID              func(time.Time) string
-	now                         func() time.Time
-	workingDir                  func() (string, error)
-	currentBranch               func(string) (string, error)
-	repoRemote                  func(string) (string, error)
-	planWorkspace               func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error)
-	loadSandbox                 func(string) (*sandbox.SandboxState, error)
-	listSandboxes               func() ([]*sandbox.SandboxState, error)
-	listHosts                   func() ([]*sandbox.SandboxHost, error)
-	listLeases                  func() ([]*sandbox.SandboxLease, error)
-	resolveDefault              func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
-	provision                   func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
-	acquireLease                func(sandbox.SandboxLeaseAcquireRequest, time.Duration) (*sandbox.SandboxLease, error)
-	releaseLease                func(string) (*sandbox.SandboxLease, error)
-	resolveProvider             func(string) (sandbox.Provider, error)
-	resolveRuntimeDriver        func(sandboxruntime.Target) (sandboxruntime.Driver, error)
-	resolveWorkerRuntime        func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error)
-	persistSandboxState         func(*sandbox.SandboxState) error
-	runProviderExecWithEnv      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
-	runProviderScript           func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
-	engineAuthFiles             func() []factorySandboxAuthFile
-	bootstrap                   func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
-	materializeWorkspace        func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error)
-	prepareBundleCommandContext func(context.Context, sandboxexec.PrepareContext, string, string, io.Writer) (sandboxworkspace.MaterializationOperation, error)
-	applySyncOut                sandboxSyncOutApplier
-	execute                     func(context.Context, runSandboxRequest, io.Writer, io.Writer, runSandboxExecutionHooks) (runSandboxExecutionResult, error)
+	defaultStore           func() (sandboxexecution.Store, error)
+	durableLeaseStore      bool
+	newExecutionID         func(time.Time) string
+	now                    func() time.Time
+	workingDir             func() (string, error)
+	currentBranch          func(string) (string, error)
+	repoRemote             func(string) (string, error)
+	planWorkspace          func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error)
+	loadSandbox            func(string) (*sandbox.SandboxState, error)
+	listSandboxes          func() ([]*sandbox.SandboxState, error)
+	listHosts              func() ([]*sandbox.SandboxHost, error)
+	listLeases             func() ([]*sandbox.SandboxLease, error)
+	resolveDefault         func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
+	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
+	acquireLease           func(sandbox.SandboxLeaseAcquireRequest, time.Duration) (*sandbox.SandboxLease, error)
+	releaseLease           func(string) (*sandbox.SandboxLease, error)
+	resolveProvider        func(string) (sandbox.Provider, error)
+	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
+	resolveWorkerRuntime   func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error)
+	persistSandboxState    func(*sandbox.SandboxState) error
+	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
+	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
+	engineAuthFiles        func() []factorySandboxAuthFile
+	bootstrap              func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
+	materializeWorkspace   func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error)
+	prepareCommandContext  func(context.Context, sandboxexec.PrepareContext, string, string, io.Writer) (sandboxworkspace.MaterializationOperation, error)
+	applySyncOut           sandboxSyncOutApplier
+	execute                func(context.Context, runSandboxRequest, io.Writer, io.Writer, runSandboxExecutionHooks) (runSandboxExecutionResult, error)
 
 	customRuntimeResolver bool
 }
@@ -513,8 +513,8 @@ func normalizeRunSandboxDeps(deps runSandboxDeps) runSandboxDeps {
 	if deps.materializeWorkspace == nil {
 		deps.materializeWorkspace = sandboxexec.MaterializeBundleWorkspace
 	}
-	if deps.prepareBundleCommandContext == nil {
-		deps.prepareBundleCommandContext = prepareSandboxBundleCommandContextRuntime
+	if deps.prepareCommandContext == nil {
+		deps.prepareCommandContext = prepareSandboxCommandContextRuntime
 	}
 	if deps.execute == nil {
 		deps.execute = deps.executeRunSandbox
@@ -731,20 +731,34 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 				if err != nil {
 					return err
 				}
-				if deps.prepareBundleCommandContext == nil {
-					return fmt.Errorf("sandbox bundle command context dependency is required")
+				if deps.prepareCommandContext == nil {
+					return fmt.Errorf("sandbox command context dependency is required")
 				}
-				_, err = deps.prepareBundleCommandContext(ctx, prep, req.ProjectDir, req.WorkDir, prepOut)
+				_, err = deps.prepareCommandContext(ctx, prep, req.ProjectDir, req.WorkDir, prepOut)
 				return err
 			}
 			if runSandboxWorkerRuntimeRouteSelected(req, prep.Target, selectedTarget) {
-				return deps.bootstrapRunSandboxWorkspaceRuntime(ctx, req, prep, prepOut)
+				if err := deps.bootstrapRunSandboxWorkspaceRuntime(ctx, req, prep, prepOut); err != nil {
+					return err
+				}
+				if deps.prepareCommandContext == nil {
+					return nil
+				}
+				_, err := deps.prepareCommandContext(ctx, prep, req.ProjectDir, req.WorkDir, prepOut)
+				return err
 			}
 			provider, err := ensureProvider(prep.Target.Provider)
 			if err != nil {
 				return err
 			}
-			return deps.bootstrapRunSandboxWorkspace(ctx, req, provider, prep, prepOut)
+			if err := deps.bootstrapRunSandboxWorkspace(ctx, req, provider, prep, prepOut); err != nil {
+				return err
+			}
+			if deps.prepareCommandContext == nil {
+				return nil
+			}
+			_, err = deps.prepareCommandContext(ctx, prep, req.ProjectDir, req.WorkDir, prepOut)
+			return err
 		},
 		PrepareAuth: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
 			if runSandboxWorkerRuntimeRouteSelected(req, prep.Target, selectedTarget) {
@@ -1063,7 +1077,8 @@ func (deps runSandboxDeps) bootstrapRunSandboxWorkspace(ctx context.Context, req
 		RunBranch:     req.RunBranch,
 		WorkspaceDir:  req.WorkDir,
 		Options: factory.BootstrapOptions{
-			RefreshHal: true,
+			RefreshHal:    true,
+			ExactUpstream: true,
 		},
 	}
 	connectInfo := sandboxConnectInfoFromRuntimeTarget(prep.Target)
@@ -1090,7 +1105,8 @@ func (deps runSandboxDeps) bootstrapRunSandboxWorkspaceRuntime(ctx context.Conte
 		RunBranch:     req.RunBranch,
 		WorkspaceDir:  req.WorkDir,
 		Options: factory.BootstrapOptions{
-			RefreshHal: true,
+			RefreshHal:    true,
+			ExactUpstream: true,
 		},
 	}
 	_, err := sandboxRuntimeBootstrapWorkspace(ctx, bootstrapReq, prep, out, deps.now, deps.bootstrap)

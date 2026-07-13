@@ -16,7 +16,7 @@ import (
 	"github.com/jywlabs/hal/internal/template"
 )
 
-var sandboxBundleCommandContextFiles = []string{
+var sandboxCommandContextFiles = []string{
 	template.ConfigFile,
 	template.PromptFile,
 	template.ProgressFile,
@@ -25,7 +25,7 @@ var sandboxBundleCommandContextFiles = []string{
 	template.AutoStateFile,
 }
 
-func prepareSandboxBundleCommandContextRuntime(ctx context.Context, prep sandboxexec.PrepareContext, projectDir, workspaceDir string, out io.Writer) (sandboxworkspace.MaterializationOperation, error) {
+func prepareSandboxCommandContextRuntime(ctx context.Context, prep sandboxexec.PrepareContext, projectDir, workspaceDir string, out io.Writer) (sandboxworkspace.MaterializationOperation, error) {
 	if prep.Driver == nil {
 		return sandboxworkspace.MaterializationOperation{}, fmt.Errorf("sandbox runtime driver is required")
 	}
@@ -40,12 +40,27 @@ func prepareSandboxBundleCommandContextRuntime(ctx context.Context, prep sandbox
 	if out == nil {
 		out = io.Discard
 	}
+	hasContext, err := hasSandboxCommandContext(projectDir)
+	if err != nil {
+		return sandboxworkspace.MaterializationOperation{}, err
+	}
+	if !hasContext {
+		return sandboxworkspace.MaterializationOperation{
+			Phase:   sandboxworkspace.MaterializationPhaseCommandConfig,
+			Summary: "prepared Hal command context (no host context files)",
+		}, nil
+	}
 
 	copied := 0
-	for _, name := range sandboxBundleCommandContextFiles {
+	reset := 0
+	for _, name := range sandboxCommandContextFiles {
 		sourcePath := filepath.Join(projectDir, template.HalDir, name)
 		info, err := os.Lstat(sourcePath)
 		if os.IsNotExist(err) {
+			if err := removeSandboxCommandContextFile(ctx, prep, workspaceDir, name); err != nil {
+				return sandboxworkspace.MaterializationOperation{}, err
+			}
+			reset++
 			continue
 		}
 		if err != nil {
@@ -75,8 +90,46 @@ func prepareSandboxBundleCommandContextRuntime(ctx context.Context, prep sandbox
 
 	return sandboxworkspace.MaterializationOperation{
 		Phase:   sandboxworkspace.MaterializationPhaseCommandConfig,
-		Summary: fmt.Sprintf("prepared Hal command context (%d preserved files)", copied),
+		Summary: fmt.Sprintf("prepared Hal command context (%d copied, %d reset)", copied, reset),
 	}, nil
+}
+
+func hasSandboxCommandContext(projectDir string) (bool, error) {
+	for _, name := range sandboxCommandContextFiles {
+		_, err := os.Lstat(filepath.Join(projectDir, template.HalDir, name))
+		if err == nil {
+			return true, nil
+		}
+		if !os.IsNotExist(err) {
+			return false, fmt.Errorf("inspect sandbox command context %q: %w", name, err)
+		}
+	}
+	return false, nil
+}
+
+func removeSandboxCommandContextFile(ctx context.Context, prep sandboxexec.PrepareContext, workspaceDir, name string) error {
+	halDir := pathpkg.Join(workspaceDir, template.HalDir)
+	destinationPath := pathpkg.Join(halDir, name)
+	script := strings.Join([]string{
+		"set -eu",
+		"hal_dir=" + shellQuote(halDir),
+		"destination=" + shellQuote(destinationPath),
+		`if [ -L "$hal_dir" ] || { [ -e "$hal_dir" ] && [ ! -d "$hal_dir" ]; }; then echo "sandbox .hal path is not a directory" >&2; exit 1; fi`,
+		`rm -f "$destination"`,
+	}, "\n")
+	result, err := prep.Driver.Exec(ctx, sandboxruntime.ExecRequest{
+		Target: prep.Target,
+		Args:   []string{"sh", "-c", script},
+		Stdout: io.Discard,
+		Stderr: io.Discard,
+	})
+	if err == nil && result != nil && result.ExitCode != 0 {
+		err = fmt.Errorf("reset exited with status %d", result.ExitCode)
+	}
+	if err != nil {
+		return fmt.Errorf("reset sandbox command context %q: %w", name, err)
+	}
+	return nil
 }
 
 func copySandboxBundleCommandContextFile(ctx context.Context, prep sandboxexec.PrepareContext, sourcePath, workspaceDir, name string) error {

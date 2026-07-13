@@ -674,7 +674,7 @@ func TestRunAutoSandboxWithWriterGitBundlePlanMaterializesAndExecutes(t *testing
 			}
 			return sandboxworkspace.MaterializationResult{InputSource: sandbox.SandboxWorkspaceInputSourceGitBundle}, nil
 		},
-		prepareBundleCommandContext: func(context.Context, sandboxexec.PrepareContext, string, string, io.Writer) (sandboxworkspace.MaterializationOperation, error) {
+		prepareCommandContext: func(context.Context, sandboxexec.PrepareContext, string, string, io.Writer) (sandboxworkspace.MaterializationOperation, error) {
 			order = append(order, "command_config")
 			return sandboxworkspace.MaterializationOperation{Phase: sandboxworkspace.MaterializationPhaseCommandConfig}, nil
 		},
@@ -1677,6 +1677,7 @@ func TestExecuteAutoSandboxCopiesExplicitInputsBeforeRemoteCommand(t *testing.T)
 		SyncRef:     "refs/remotes/origin/feature/auto-copy",
 	}
 	bootstrapped := false
+	commandContextPrepared := false
 
 	result, err := autoSandboxDeps{
 		resolveDefault: func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
@@ -1699,11 +1700,21 @@ func TestExecuteAutoSandboxCopiesExplicitInputsBeforeRemoteCommand(t *testing.T)
 			if got.RepositoryURL != req.RepoRemote || got.BaseBranch != req.BaseBranch || got.RunBranch != req.RunBranch || got.WorkspaceDir != req.WorkDir {
 				t.Fatalf("bootstrap request = %#v, want remote-ref workspace request", got)
 			}
+			if !got.Options.ExactUpstream {
+				t.Fatalf("bootstrap options = %#v, want exact-upstream reconciliation", got.Options)
+			}
 			return factory.BootstrapResult{}, nil
 		},
 		materializeWorkspace: func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
 			t.Fatal("materializeWorkspace should not run for remote-ref workspace")
 			return sandboxworkspace.MaterializationResult{}, nil
+		},
+		prepareCommandContext: func(_ context.Context, _ sandboxexec.PrepareContext, projectDir, gotWorkspaceDir string, _ io.Writer) (sandboxworkspace.MaterializationOperation, error) {
+			commandContextPrepared = true
+			if projectDir != req.ProjectDir || gotWorkspaceDir != req.WorkDir {
+				t.Fatalf("command context dirs = %q, %q, want %q, %q", projectDir, gotWorkspaceDir, req.ProjectDir, req.WorkDir)
+			}
+			return sandboxworkspace.MaterializationOperation{Phase: sandboxworkspace.MaterializationPhaseCommandConfig}, nil
 		},
 		engineAuthFiles: func() []factorySandboxAuthFile {
 			return nil
@@ -1721,6 +1732,9 @@ func TestExecuteAutoSandboxCopiesExplicitInputsBeforeRemoteCommand(t *testing.T)
 	}
 	if !bootstrapped {
 		t.Fatal("bootstrap was not called for remote-ref workspace")
+	}
+	if !commandContextPrepared {
+		t.Fatal("command context was not prepared for remote-ref workspace")
 	}
 	joinedArgs := strings.Join(execReq.Args, "\x00")
 	if !strings.Contains(joinedArgs, ".hal/factory-inputs/prd.md") {
@@ -1824,7 +1838,7 @@ func TestExecuteAutoSandboxGitBundleWorkspaceUsesSharedMaterializer(t *testing.T
 			}
 			return sandboxworkspace.MaterializationResult{InputSource: sandbox.SandboxWorkspaceInputSourceGitBundle}, nil
 		},
-		prepareBundleCommandContext: func(_ context.Context, _ sandboxexec.PrepareContext, projectDir, workspaceDir string, _ io.Writer) (sandboxworkspace.MaterializationOperation, error) {
+		prepareCommandContext: func(_ context.Context, _ sandboxexec.PrepareContext, projectDir, workspaceDir string, _ io.Writer) (sandboxworkspace.MaterializationOperation, error) {
 			order = append(order, "command_config")
 			if projectDir != req.ProjectDir || workspaceDir != req.WorkDir {
 				t.Fatalf("command context dirs = %q, %q, want %q, %q", projectDir, workspaceDir, req.ProjectDir, req.WorkDir)

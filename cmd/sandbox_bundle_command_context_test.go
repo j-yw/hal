@@ -15,7 +15,7 @@ import (
 	"github.com/jywlabs/hal/internal/template"
 )
 
-func TestPrepareSandboxBundleCommandContextRuntimePreservesAllowlistedFilesThenInitializes(t *testing.T) {
+func TestPrepareSandboxCommandContextRuntimePreservesAllowlistedFilesThenInitializes(t *testing.T) {
 	projectDir := t.TempDir()
 	halDir := filepath.Join(projectDir, template.HalDir)
 	if err := os.MkdirAll(halDir, 0o700); err != nil {
@@ -51,9 +51,9 @@ func TestPrepareSandboxBundleCommandContextRuntimePreservesAllowlistedFilesThenI
 		},
 	}
 
-	op, err := prepareSandboxBundleCommandContextRuntime(context.Background(), sandboxexecPrepareContext(driver), projectDir, "/workspace/repo", io.Discard)
+	op, err := prepareSandboxCommandContextRuntime(context.Background(), sandboxexecPrepareContext(driver), projectDir, "/workspace/repo", io.Discard)
 	if err != nil {
-		t.Fatalf("prepareSandboxBundleCommandContextRuntime() error = %v", err)
+		t.Fatalf("prepareSandboxCommandContextRuntime() error = %v", err)
 	}
 	if op.Phase != sandboxworkspace.MaterializationPhaseCommandConfig || !strings.Contains(op.Summary, "6") {
 		t.Fatalf("operation = %#v, want command_config summary with copied count", op)
@@ -84,7 +84,7 @@ func TestPrepareSandboxBundleCommandContextRuntimePreservesAllowlistedFilesThenI
 	}
 }
 
-func TestPrepareSandboxBundleCommandContextRuntimeRejectsSymlinkSource(t *testing.T) {
+func TestPrepareSandboxCommandContextRuntimeRejectsSymlinkSource(t *testing.T) {
 	projectDir := t.TempDir()
 	halDir := filepath.Join(projectDir, template.HalDir)
 	if err := os.MkdirAll(halDir, 0o700); err != nil {
@@ -103,9 +103,58 @@ func TestPrepareSandboxBundleCommandContextRuntimeRejectsSymlinkSource(t *testin
 			return nil
 		},
 	}
-	_, err := prepareSandboxBundleCommandContextRuntime(context.Background(), sandboxexecPrepareContext(driver), projectDir, "/workspace/repo", io.Discard)
+	_, err := prepareSandboxCommandContextRuntime(context.Background(), sandboxexecPrepareContext(driver), projectDir, "/workspace/repo", io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("error = %v, want safe non-regular source rejection", err)
+	}
+}
+
+func TestPrepareSandboxCommandContextRuntimeResetsMissingAllowlistedFiles(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, template.HalDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, template.HalDir, template.ConfigFile), []byte("engine: pi\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var copied []sandboxruntime.CopyRequest
+	var execs []sandboxruntime.ExecRequest
+	driver := fakeRunSandboxRuntimeDriver{
+		copyIn: func(_ context.Context, req sandboxruntime.CopyRequest) error {
+			copied = append(copied, req)
+			return nil
+		},
+		exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			execs = append(execs, req)
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+	}
+
+	op, err := prepareSandboxCommandContextRuntime(context.Background(), sandboxexecPrepareContext(driver), projectDir, "/workspace/repo", io.Discard)
+	if err != nil {
+		t.Fatalf("prepareSandboxCommandContextRuntime() error = %v", err)
+	}
+	if !strings.Contains(op.Summary, "1 copied, 5 reset") {
+		t.Fatalf("operation summary = %q, want reset count", op.Summary)
+	}
+	if len(copied) != 1 || filepath.Base(copied[0].SourcePath) != template.ConfigFile {
+		t.Fatalf("copied = %#v, want config only", copied)
+	}
+	if len(execs) != len(sandboxCommandContextFiles)+1 {
+		t.Fatalf("exec count = %d, want one install, five resets, and init", len(execs))
+	}
+	if got := strings.Join(execs[0].Args, " "); !strings.Contains(got, "mv") || !strings.Contains(got, template.ConfigFile) {
+		t.Fatalf("install command = %q, want config install", got)
+	}
+	for i, name := range sandboxCommandContextFiles[1:] {
+		joined := strings.Join(execs[i+1].Args, " ")
+		if !strings.Contains(joined, "rm -f") || !strings.Contains(joined, name) {
+			t.Fatalf("reset command %d = %#v, want removal for %q", i, execs[i+1].Args, name)
+		}
+	}
+	if got := strings.Join(execs[len(execs)-1].Args, " "); !strings.Contains(got, "hal init") {
+		t.Fatalf("final command = %q, want hal init", got)
 	}
 }
 

@@ -69,7 +69,7 @@ func TestUS008RunAutoAndFactoryFakeBackedE2ERedactionSurfaces(t *testing.T) {
 			engineAuthFiles:        probe.engineAuthFiles,
 			bootstrap:              probe.forbiddenBootstrap,
 			materializeWorkspace:   probe.materializeWorkspace,
-			prepareBundleCommandContext: func(context.Context, sandboxexec.PrepareContext, string, string, io.Writer) (sandboxworkspace.MaterializationOperation, error) {
+			prepareCommandContext: func(context.Context, sandboxexec.PrepareContext, string, string, io.Writer) (sandboxworkspace.MaterializationOperation, error) {
 				return sandboxworkspace.MaterializationOperation{Phase: sandboxworkspace.MaterializationPhaseCommandConfig}, nil
 			},
 		})
@@ -132,7 +132,7 @@ func TestUS008RunAutoAndFactoryFakeBackedE2ERedactionSurfaces(t *testing.T) {
 			engineAuthFiles:        probe.engineAuthFiles,
 			bootstrap:              probe.forbiddenBootstrap,
 			materializeWorkspace:   probe.materializeWorkspace,
-			prepareBundleCommandContext: func(context.Context, sandboxexec.PrepareContext, string, string, io.Writer) (sandboxworkspace.MaterializationOperation, error) {
+			prepareCommandContext: func(context.Context, sandboxexec.PrepareContext, string, string, io.Writer) (sandboxworkspace.MaterializationOperation, error) {
 				return sandboxworkspace.MaterializationOperation{Phase: sandboxworkspace.MaterializationPhaseCommandConfig}, nil
 			},
 		})
