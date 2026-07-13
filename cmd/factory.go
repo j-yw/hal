@@ -1675,6 +1675,12 @@ func collectAndStoreFactorySandboxArtifactsWithProviderExec(ctx context.Context,
 	if len(requests) == 0 {
 		return nil
 	}
+	requests, err := factorySandboxArtifactRequestsFromTimeline(store, record.RunID, requests)
+	if err != nil {
+		redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
+		_ = recordFactoryRunArtifactSyncFailedWithRedactor(store, record.RunID, factoryRunDepsNow(deps), err, redactor)
+		return fmt.Errorf("collect sandbox factory artifacts before cleanup: %w", err)
+	}
 	if err := collectAndStoreFactorySandboxArtifactRequestsWithProviderExec(ctx, store, req, record, deps, target, provider, requests); err != nil {
 		return fmt.Errorf("collect sandbox factory artifacts before cleanup: %w", err)
 	}
@@ -3894,6 +3900,11 @@ func collectAndStoreFactorySandboxArtifacts(ctx context.Context, store factory.S
 		return nil
 	}
 	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
+	requests, err := factorySandboxArtifactRequestsFromTimeline(store, record.RunID, requests)
+	if err != nil {
+		_ = recordFactoryRunArtifactSyncFailedWithRedactor(store, record.RunID, factoryRunDepsNow(deps), err, redactor)
+		return fmt.Errorf("collect sandbox factory artifacts: %w", err)
+	}
 	if deps.sandboxCopier != nil {
 		if _, err := factory.CollectSandboxArtifactsWithRedactor(ctx, store, record.RunID, deps.sandboxCopier, requests, redactor); err != nil {
 			_ = recordFactoryRunArtifactSyncFailedWithRedactor(store, record.RunID, factoryRunDepsNow(deps), err, redactor)
@@ -3936,6 +3947,67 @@ func collectAndStoreFactorySandboxArtifacts(ctx context.Context, store factory.S
 		return fmt.Errorf("collect sandbox factory artifacts: %w", err)
 	}
 	return nil
+}
+
+func factorySandboxArtifactRequestsFromTimeline(store factory.Store, runID string, requests []factory.SandboxArtifactRequest) ([]factory.SandboxArtifactRequest, error) {
+	coreFileByID := map[string]string{
+		"sandbox-prd":        template.PRDFile,
+		"sandbox-auto-state": template.AutoStateFile,
+		"sandbox-progress":   template.ProgressFile,
+	}
+	hasCoreRequest := false
+	for _, request := range requests {
+		if _, ok := coreFileByID[request.ID]; ok {
+			hasCoreRequest = true
+			break
+		}
+	}
+	if !hasCoreRequest {
+		return requests, nil
+	}
+
+	events, err := store.LoadEvents(runID)
+	if err != nil {
+		return nil, fmt.Errorf("load factory sandbox output for archive path: %w", err)
+	}
+	lines := make([]string, 0)
+	lastArchiveName := ""
+	const archivedStatePrefix = "Archived state to "
+	for _, event := range events {
+		source, _ := event.Metadata["source"].(string)
+		if event.EventType != factory.EventTypeCommandOutputSummary || source != factory.LogSourceRemoteSandbox {
+			continue
+		}
+		line := strings.TrimSpace(event.Message)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+		if strings.HasPrefix(line, archivedStatePrefix) {
+			lastArchiveName = strings.TrimSpace(strings.TrimPrefix(line, archivedStatePrefix))
+		}
+	}
+	if lastArchiveName != "" && (path.IsAbs(lastArchiveName) || strings.Contains(lastArchiveName, `\`) || path.Base(lastArchiveName) != lastArchiveName || lastArchiveName == "." || lastArchiveName == "..") {
+		return nil, fmt.Errorf("factory sandbox archive path is invalid")
+	}
+
+	archivePath, err := autoSandboxRemoteArchivePath(nil, strings.Join(lines, "\n"))
+	if err != nil {
+		return nil, fmt.Errorf("factory sandbox archive path is invalid: %w", err)
+	}
+	if archivePath == "" {
+		return requests, nil
+	}
+
+	rewritten := append([]factory.SandboxArtifactRequest(nil), requests...)
+	for i := range rewritten {
+		fileName, ok := coreFileByID[rewritten[i].ID]
+		if !ok {
+			continue
+		}
+		rewritten[i].RemotePath = path.Join(archivePath, fileName)
+	}
+	return rewritten, nil
 }
 
 func factoryRunDepsNow(deps factoryRunDeps) time.Time {
