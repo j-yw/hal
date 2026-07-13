@@ -1,7 +1,9 @@
 # Run Contract v1
 
-**Command:** `hal run --json`  
-**Contract Version:** 1  
+**Command:** `hal run --json`
+
+**Contract Version:** 1
+
 **Stability:** Stable for v1 fields listed below. New optional fields may be added; existing fields will not be renamed or removed.
 
 ## Required Top-Level Fields
