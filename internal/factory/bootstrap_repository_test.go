@@ -373,6 +373,7 @@ func TestBootstrapRepositoryCheckoutReusesExistingLocalRunBranch(t *testing.T) {
 func TestBootstrapRepositoryCheckoutExactUpstreamReconcilesExistingLocalRunBranch(t *testing.T) {
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "workspace is clean"},
 			{ExitCode: 0, OutputSummary: "managed engine links cleaned"},
 			{ExitCode: 0, OutputSummary: "repository fetched"},
 			{ExitCode: 0, OutputSummary: "base checked out"},
@@ -421,6 +422,12 @@ func TestBootstrapRepositoryCheckoutExactUpstreamReconcilesExistingLocalRunBranc
 	if result.CheckedOutBranch != runBranch {
 		t.Fatalf("checked out branch = %q, want %q", result.CheckedOutBranch, runBranch)
 	}
+	assertBootstrapCommand(t, executor.calls[0], BootstrapCommand{
+		Name: "sh",
+		Args: []string{"-c", bootstrapRequireCleanWorkspaceScript, "hal-bootstrap-clean-check", "73"},
+		Dir:  "/workspace/hal",
+		Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+	})
 
 	wantTail := []BootstrapCommand{
 		{
@@ -440,12 +447,95 @@ func TestBootstrapRepositoryCheckoutExactUpstreamReconcilesExistingLocalRunBranc
 		t.Fatalf("executor tail mismatch\n got: %#v\nwant: %#v", executor.calls[len(executor.calls)-2:], wantTail)
 	}
 	assertBootstrapStepNames(t, result.Steps, []string{
+		BootstrapStepCheckWorkspaceClean,
 		BootstrapStepCleanEngineLinks,
 		BootstrapStepFetchRepository,
 		BootstrapStepCheckoutBase,
 		BootstrapStepFetchRunBranch,
 		BootstrapStepCheckoutRun,
 	})
+}
+
+func TestBootstrapRepositoryCheckoutExactUpstreamRejectsDirtyWorkspaceBeforeMutation(t *testing.T) {
+	executor := &fakeBootstrapExecutor{
+		results: []BootstrapCommandResult{{
+			ExitCode:      bootstrapWorkspaceDirtyExitCode,
+			OutputSummary: "workspace has local changes",
+		}},
+	}
+	remoteProbes := 0
+	result, err := BootstrapRepositoryCheckout(context.Background(), BootstrapRequest{
+		RepositoryURL: "git@github.com:jywlabs/hal.git",
+		BaseBranch:    "main",
+		RunBranch:     "hal/direct-sandbox-run",
+		WorkspaceDir:  "/workspace/hal",
+		Options:       BootstrapOptions{ExactUpstream: true},
+	}, BootstrapRepositoryDeps{
+		Executor: executor,
+		Now:      incrementingClock(t, time.Date(2026, 7, 14, 5, 15, 0, 0, time.UTC)),
+		RepoExists: func(string) (bool, error) {
+			return true, nil
+		},
+		LocalBranchExists: func(context.Context, string, string) (bool, error) {
+			t.Fatal("local branch probe must not run after dirty workspace rejection")
+			return false, nil
+		},
+		RemoteBranchExists: func(context.Context, string, string) (bool, error) {
+			remoteProbes++
+			return true, nil
+		},
+	})
+	if !errors.Is(err, ErrBootstrapWorkspaceDirty) {
+		t.Fatalf("BootstrapRepositoryCheckout() error = %v, want ErrBootstrapWorkspaceDirty", err)
+	}
+	for _, want := range []string{"changes were preserved", "commit or stash", "reset/remove"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("BootstrapRepositoryCheckout() error = %q, want guidance %q", err, want)
+		}
+	}
+	if remoteProbes != 0 {
+		t.Fatalf("remote branch probes = %d, want zero", remoteProbes)
+	}
+	if len(executor.calls) != 1 {
+		t.Fatalf("executor calls = %#v, want clean check only", executor.calls)
+	}
+	if len(result.Steps) != 1 || result.Steps[0].Name != BootstrapStepCheckWorkspaceClean {
+		t.Fatalf("steps = %#v, want failed clean check only", result.Steps)
+	}
+	if result.Failure == nil || result.Failure.Category != BootstrapFailureCategoryRepo {
+		t.Fatalf("failure = %#v, want repository failure", result.Failure)
+	}
+	if !strings.Contains(result.Failure.Message, "changes were preserved") {
+		t.Fatalf("failure message = %q, want preservation guidance", result.Failure.Message)
+	}
+}
+
+func TestBootstrapRepositoryCommandsExactUpstreamChecksCleanBeforeMutation(t *testing.T) {
+	commands, err := bootstrapRepositoryCommands(BootstrapRequest{
+		BaseBranch:   "main",
+		WorkspaceDir: "/workspace/hal",
+		Options:      BootstrapOptions{ExactUpstream: true},
+	}, BootstrapRepositoryDeps{
+		RepoExists: func(string) (bool, error) { return true, nil },
+	}, "/workspace/hal")
+	if err != nil {
+		t.Fatalf("bootstrapRepositoryCommands() error = %v", err)
+	}
+	if len(commands) < 2 {
+		t.Fatalf("commands = %#v, want clean check before mutations", commands)
+	}
+	if commands[0].stepName != BootstrapStepCheckWorkspaceClean {
+		t.Fatalf("first step = %q, want %q", commands[0].stepName, BootstrapStepCheckWorkspaceClean)
+	}
+	assertBootstrapCommand(t, commands[0].command, BootstrapCommand{
+		Name: "sh",
+		Args: []string{"-c", bootstrapRequireCleanWorkspaceScript, "hal-bootstrap-clean-check", "73"},
+		Dir:  "/workspace/hal",
+		Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+	})
+	if commands[1].stepName != BootstrapStepCleanEngineLinks {
+		t.Fatalf("second step = %q, want first mutation %q", commands[1].stepName, BootstrapStepCleanEngineLinks)
+	}
 }
 
 func TestBootstrapRepositoryCheckoutResumesRemoteRunBranch(t *testing.T) {
@@ -980,6 +1070,13 @@ func assertBootstrapStepNames(t *testing.T, steps []BootstrapStepResult, want []
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("step names = %#v, want %#v", got, want)
+	}
+}
+
+func assertBootstrapCommand(t *testing.T, got BootstrapCommand, want BootstrapCommand) {
+	t.Helper()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("bootstrap command mismatch\n got: %#v\nwant: %#v", got, want)
 	}
 }
 

@@ -16,18 +16,26 @@ import (
 )
 
 const (
-	BootstrapStepCloneRepository  = "clone_repository"
-	BootstrapStepEnsureWorkspace  = "ensure_workspace_root"
-	BootstrapStepCleanEngineLinks = "clean_engine_links"
-	BootstrapStepFetchRepository  = "fetch_repository"
-	BootstrapStepCheckoutBase     = "checkout_base"
-	BootstrapStepCheckLocalRun    = "check_local_run_branch"
-	BootstrapStepCheckRemoteRun   = "check_remote_run_branch"
-	BootstrapStepFetchRunBranch   = "fetch_run_branch"
-	BootstrapStepCheckoutRun      = "checkout_run_branch"
-	BootstrapStepCreateRunBranch  = "create_run_branch"
+	BootstrapStepCloneRepository     = "clone_repository"
+	BootstrapStepEnsureWorkspace     = "ensure_workspace_root"
+	BootstrapStepCheckWorkspaceClean = "check_workspace_clean"
+	BootstrapStepCleanEngineLinks    = "clean_engine_links"
+	BootstrapStepFetchRepository     = "fetch_repository"
+	BootstrapStepCheckoutBase        = "checkout_base"
+	BootstrapStepCheckLocalRun       = "check_local_run_branch"
+	BootstrapStepCheckRemoteRun      = "check_remote_run_branch"
+	BootstrapStepFetchRunBranch      = "fetch_run_branch"
+	BootstrapStepCheckoutRun         = "checkout_run_branch"
+	BootstrapStepCreateRunBranch     = "create_run_branch"
 
-	bootstrapCleanEngineLinksScript = `git clean -fd -- .claude/skills/factory .pi/skills/factory && { git checkout -- .pi/skills/factory/SKILL.md 2>/dev/null || true; }`
+	bootstrapCleanEngineLinksScript      = `git clean -fd -- .claude/skills/factory .pi/skills/factory && { git checkout -- .pi/skills/factory/SKILL.md 2>/dev/null || true; }`
+	bootstrapRequireCleanWorkspaceScript = `set -eu
+dirty_exit=$1
+workspace_status=$(git status --porcelain --untracked-files=all)
+if [ -n "$workspace_status" ]; then
+  exit "$dirty_exit"
+fi`
+	bootstrapWorkspaceDirtyExitCode = 73
 	bootstrapGitHubTokenEnvKey      = "GITHUB_TOKEN"
 	bootstrapGHTokenEnvKey          = "GH_TOKEN"
 	bootstrapGitHubExtraHeaderKey   = "http.https://github.com/.extraheader"
@@ -38,6 +46,10 @@ var (
 	errBootstrapRepositoryURLRequired = errors.New("bootstrap repository URL is required")
 	errBootstrapBaseBranchRequired    = errors.New("bootstrap base branch is required")
 	errBootstrapWorkspaceDirRequired  = errors.New("bootstrap workspace dir is required")
+
+	// ErrBootstrapWorkspaceDirty is returned when exact-upstream reconciliation
+	// would overwrite changes in an existing remote workspace.
+	ErrBootstrapWorkspaceDirty = errors.New("bootstrap workspace is dirty")
 )
 
 // BootstrapBranchExistsFunc checks for a local or remote branch without tying
@@ -164,6 +176,14 @@ func runBootstrapRepositoryCommands(ctx context.Context, request BootstrapReques
 		}
 
 		step, commandResult, failure, err := RunBootstrapStep(ctx, deps.stepDeps(request), planned.stepName, planned.command)
+		if err != nil && planned.stepName == BootstrapStepCheckWorkspaceClean && commandResult.ExitCode == bootstrapWorkspaceDirtyExitCode {
+			err = bootstrapWorkspaceDirtyError()
+			failure = &BootstrapFailure{
+				Step:     planned.stepName,
+				Category: BootstrapFailureCategoryRepo,
+				Message:  err.Error(),
+			}
+		}
 		recordBootstrapStepResult(result, request, step, commandResult, failure)
 		if err != nil {
 			result.Failure = failure
@@ -188,6 +208,22 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 
 	commands := make([]bootstrapRepositoryCommand, 0, 2)
 	if exists {
+		if request.Options.ExactUpstream {
+			commands = append(commands, bootstrapRepositoryCommand{
+				stepName: BootstrapStepCheckWorkspaceClean,
+				command: BootstrapCommand{
+					Name: "sh",
+					Args: []string{
+						"-c",
+						bootstrapRequireCleanWorkspaceScript,
+						"hal-bootstrap-clean-check",
+						strconv.Itoa(bootstrapWorkspaceDirtyExitCode),
+					},
+					Dir: repoPath,
+					Env: bootstrapGitEnv(request),
+				},
+			})
+		}
 		commands = append(commands, bootstrapRepositoryCommand{
 			stepName: BootstrapStepCleanEngineLinks,
 			command: BootstrapCommand{
@@ -244,6 +280,10 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 	})
 
 	return commands, nil
+}
+
+func bootstrapWorkspaceDirtyError() error {
+	return fmt.Errorf("%w: changes were preserved; commit or stash changes in the remote workspace, or reset/remove the workspace before retrying", ErrBootstrapWorkspaceDirty)
 }
 
 func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, deps BootstrapRepositoryDeps, result *BootstrapResult, repoPath string) ([]bootstrapRepositoryCommand, error) {
