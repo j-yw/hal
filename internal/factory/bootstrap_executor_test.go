@@ -232,6 +232,35 @@ func TestBootstrapSanitizersRedactTimelineAndCommandRecords(t *testing.T) {
 	assertDoesNotContainSensitiveFixture(t, eventData, secret)
 }
 
+func TestBootstrapSanitizersRedactGHTokenBasicAuthCredential(t *testing.T) {
+	secret := "github_pat_gh_token_fallback_secret_12345"
+	credential := bootstrapGitHubBasicAuthCredential(secret)
+	request := BootstrapRequest{
+		Env: map[string]string{
+			"GH_TOKEN": secret,
+		},
+	}
+
+	result := SanitizeBootstrapCommandResult(request, BootstrapCommandResult{
+		OutputSummary: "git used AUTHORIZATION: basic " + credential,
+	})
+	event := SanitizeBootstrapTimelineEvent(request, BootstrapTimelineEvent{
+		CommandSummary: "git -c http.extraheader=AUTHORIZATION: basic " + credential + " fetch origin",
+		OutputSummary:  "remote rejected AUTHORIZATION: basic " + credential,
+	})
+
+	data, err := json.Marshal(struct {
+		Result BootstrapCommandResult `json:"result"`
+		Event  BootstrapTimelineEvent `json:"event"`
+	}{Result: result, Event: event})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if strings.Contains(string(data), secret) || strings.Contains(string(data), credential) {
+		t.Fatalf("sanitized bootstrap output leaked GH_TOKEN credential: %s", string(data))
+	}
+}
+
 func TestBootstrapSanitizersRedactEncodedSecretValues(t *testing.T) {
 	secret := "p@ss word"
 	request := BootstrapRequest{

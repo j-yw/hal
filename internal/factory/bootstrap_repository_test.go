@@ -624,6 +624,103 @@ func TestBootstrapGitEnvUsesGitHubTokenForGitHubSSHRemotes(t *testing.T) {
 	}
 }
 
+func TestBootstrapRepositoryCommandsUseGHTokenForGitHubCloneAndFetch(t *testing.T) {
+	const secret = "ghp_repository_bootstrap_gh_token"
+	tests := []struct {
+		name     string
+		exists   bool
+		wantStep string
+	}{
+		{name: "private clone", exists: false, wantStep: BootstrapStepCloneRepository},
+		{name: "private fetch", exists: true, wantStep: BootstrapStepFetchRepository},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := BootstrapRequest{
+				RepositoryURL: "https://github.com/jywlabs/private-repo.git",
+				BaseBranch:    "main",
+				WorkspaceDir:  "/workspace/private-repo",
+				Env: map[string]string{
+					"GH_TOKEN": secret,
+				},
+			}
+			commands, err := bootstrapRepositoryCommands(request, BootstrapRepositoryDeps{
+				RepoExists: func(string) (bool, error) { return tt.exists, nil },
+			}, request.WorkspaceDir)
+			if err != nil {
+				t.Fatalf("bootstrapRepositoryCommands() error: %v", err)
+			}
+
+			var got *BootstrapCommand
+			for i := range commands {
+				if commands[i].stepName == tt.wantStep {
+					got = &commands[i].command
+					break
+				}
+			}
+			if got == nil {
+				t.Fatalf("step %q not found in %#v", tt.wantStep, commands)
+			}
+			wantEnv := map[string]string{
+				"GIT_TERMINAL_PROMPT": "0",
+				"GIT_CONFIG_COUNT":    "1",
+				"GIT_CONFIG_KEY_0":    bootstrapGitHubExtraHeaderKey,
+				"GIT_CONFIG_VALUE_0":  bootstrapGitHubAuthHeader(secret),
+			}
+			if !reflect.DeepEqual(got.Env, wantEnv) {
+				t.Fatalf("%s env mismatch\n got: %#v\nwant: %#v", tt.wantStep, got.Env, wantEnv)
+			}
+		})
+	}
+}
+
+func TestBootstrapGitEnvGitHubTokenPrecedenceAndEmptyFallback(t *testing.T) {
+	const (
+		githubToken = "ghp_repository_bootstrap_github_token"
+		ghToken     = "ghp_repository_bootstrap_gh_token"
+	)
+	tests := []struct {
+		name      string
+		env       map[string]string
+		wantToken string
+	}{
+		{name: "GH_TOKEN fallback", env: map[string]string{"GH_TOKEN": ghToken}, wantToken: ghToken},
+		{name: "GITHUB_TOKEN precedence", env: map[string]string{"GITHUB_TOKEN": githubToken, "GH_TOKEN": ghToken}, wantToken: githubToken},
+		{name: "empty GITHUB_TOKEN falls back", env: map[string]string{"GITHUB_TOKEN": " \t ", "GH_TOKEN": ghToken}, wantToken: ghToken},
+		{name: "both empty", env: map[string]string{"GITHUB_TOKEN": " ", "GH_TOKEN": "\t"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := bootstrapGitEnv(BootstrapRequest{
+				RepositoryURL: "git@github.com:jywlabs/private-repo.git",
+				Env:           tt.env,
+			})
+			if tt.wantToken == "" {
+				want := map[string]string{"GIT_TERMINAL_PROMPT": "0"}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("bootstrapGitEnv() mismatch\n got: %#v\nwant: %#v", got, want)
+				}
+				return
+			}
+			want := map[string]string{
+				"GIT_TERMINAL_PROMPT": "0",
+				"GIT_CONFIG_COUNT":    "3",
+				"GIT_CONFIG_KEY_0":    bootstrapGitHubExtraHeaderKey,
+				"GIT_CONFIG_VALUE_0":  bootstrapGitHubAuthHeader(tt.wantToken),
+				"GIT_CONFIG_KEY_1":    bootstrapGitHubURLRewriteKey,
+				"GIT_CONFIG_VALUE_1":  "git@github.com:",
+				"GIT_CONFIG_KEY_2":    bootstrapGitHubURLRewriteKey,
+				"GIT_CONFIG_VALUE_2":  "ssh://git@github.com/",
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("bootstrapGitEnv() mismatch\n got: %#v\nwant: %#v", got, want)
+			}
+		})
+	}
+}
+
 func TestBootstrapGitEnvDoesNotUseGitHubTokenForUntrustedSSHRemote(t *testing.T) {
 	got := bootstrapGitEnv(BootstrapRequest{
 		RepositoryURL: "git@example.com:jywlabs/hal.git",

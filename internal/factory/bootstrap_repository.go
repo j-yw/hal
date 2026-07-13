@@ -29,6 +29,7 @@ const (
 
 	bootstrapCleanEngineLinksScript = `git clean -fd -- .claude/skills/factory .pi/skills/factory && { git checkout -- .pi/skills/factory/SKILL.md 2>/dev/null || true; }`
 	bootstrapGitHubTokenEnvKey      = "GITHUB_TOKEN"
+	bootstrapGHTokenEnvKey          = "GH_TOKEN"
 	bootstrapGitHubExtraHeaderKey   = "http.https://github.com/.extraheader"
 	bootstrapGitHubURLRewriteKey    = "url.https://github.com/.insteadOf"
 )
@@ -364,7 +365,7 @@ func bootstrapGitHubAuthConfigsForRequest(request BootstrapRequest) []bootstrapG
 }
 
 func bootstrapGitHubAuthHeaderForRequest(request BootstrapRequest) string {
-	token := strings.TrimSpace(request.Env[bootstrapGitHubTokenEnvKey])
+	token := bootstrapGitHubTokenForRequest(request)
 	if token == "" {
 		return ""
 	}
@@ -373,6 +374,15 @@ func bootstrapGitHubAuthHeaderForRequest(request BootstrapRequest) string {
 		return ""
 	}
 	return bootstrapGitHubAuthHeader(token)
+}
+
+func bootstrapGitHubTokenForRequest(request BootstrapRequest) string {
+	for _, key := range []string{bootstrapGitHubTokenEnvKey, bootstrapGHTokenEnvKey} {
+		if token := strings.TrimSpace(request.Env[key]); token != "" {
+			return token
+		}
+	}
+	return ""
 }
 
 func bootstrapShouldRewriteGitHubSSHForRequest(request BootstrapRequest) bool {
