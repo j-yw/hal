@@ -53,6 +53,80 @@ func TestGitCLIInspectorCreateBundleProducesUsableBundleForCleanUnpushedCommit(t
 	}
 }
 
+func TestGitCLIInspectorPlansBundleForCleanPublishedLocalOrigins(t *testing.T) {
+	requireGitCLI(t)
+	tests := []struct {
+		name          string
+		repositoryURL func(remoteDir, projectDir string) string
+	}{
+		{
+			name: "absolute path",
+			repositoryURL: func(remoteDir, _ string) string {
+				return remoteDir
+			},
+		},
+		{
+			name: "relative path",
+			repositoryURL: func(remoteDir, projectDir string) string {
+				relative, err := filepath.Rel(projectDir, remoteDir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return relative
+			},
+		},
+		{
+			name: "file URL",
+			repositoryURL: func(remoteDir, _ string) string {
+				return "file://" + filepath.ToSlash(remoteDir)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := setupCleanPublishedLocalOriginRepo(t)
+			repositoryURL := tt.repositoryURL(fixture.remoteDir, fixture.projectDir)
+			runGitTest(t, fixture.projectDir, "remote", "set-url", "origin", repositoryURL)
+
+			status, err := (GitCLIInspector{}).InspectGit(context.Background(), fixture.projectDir)
+			if err != nil {
+				t.Fatalf("InspectGit() error = %v", err)
+			}
+			if status.Repository != repositoryURL {
+				t.Fatalf("Repository = %q, want %q", status.Repository, repositoryURL)
+			}
+			if !status.HeadContainedInUpstream {
+				t.Fatal("HeadContainedInUpstream = false, want clean published HEAD")
+			}
+
+			plan, err := (Planner{Git: GitCLIInspector{}}).Plan(context.Background(), Request{
+				ProjectDir:    fixture.projectDir,
+				WorkspaceMode: sandbox.SandboxWorkspaceModeClone,
+			})
+			if err != nil {
+				t.Fatalf("Plan() error = %v", err)
+			}
+			if plan.InputSource != sandbox.SandboxWorkspaceInputSourceGitBundle || !plan.RequiresBundle {
+				t.Fatalf("plan = %#v, want required git bundle", plan)
+			}
+			if plan.SyncRef != fixture.head {
+				t.Fatalf("SyncRef = %q, want %q", plan.SyncRef, fixture.head)
+			}
+			bundle, err := PrepareLocalBundle(context.Background(), GitCLIInspector{}, PrepareLocalBundleRequest{
+				Plan:      plan,
+				BundleDir: t.TempDir(),
+			})
+			if err != nil {
+				t.Fatalf("PrepareLocalBundle() error = %v", err)
+			}
+			if _, err := os.Stat(bundle.LocalPath); err != nil {
+				t.Fatalf("bundle stat error = %v", err)
+			}
+		})
+	}
+}
+
 func TestGitCLIInspectorCreateBundleImportsIntoEmptyRepository(t *testing.T) {
 	requireGitCLI(t)
 	ctx := context.Background()
@@ -148,6 +222,29 @@ type gitBundleFixture struct {
 	remoteDir  string
 	base       string
 	head       string
+}
+
+func setupCleanPublishedLocalOriginRepo(t *testing.T) gitBundleFixture {
+	t.Helper()
+	root := t.TempDir()
+	remoteDir := filepath.Join(root, "remote.git")
+	projectDir := filepath.Join(root, "project")
+	runGitTest(t, "", "init", "--bare", remoteDir)
+	runGitTest(t, "", "clone", remoteDir, projectDir)
+	runGitTest(t, projectDir, "config", "user.email", "test@example.com")
+	runGitTest(t, projectDir, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(projectDir, "README.md"), []byte("published\n"), 0o600); err != nil {
+		t.Fatalf("write published file: %v", err)
+	}
+	runGitTest(t, projectDir, "add", "README.md")
+	runGitTest(t, projectDir, "commit", "-m", "published")
+	runGitTest(t, projectDir, "branch", "-M", "main")
+	runGitTest(t, projectDir, "push", "-u", "origin", "main")
+	return gitBundleFixture{
+		projectDir: projectDir,
+		remoteDir:  remoteDir,
+		head:       gitOutputTest(t, projectDir, "rev-parse", "HEAD"),
+	}
 }
 
 func setupCleanUnpushedBundleRepo(t *testing.T) gitBundleFixture {

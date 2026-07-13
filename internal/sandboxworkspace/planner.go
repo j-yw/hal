@@ -3,9 +3,11 @@ package sandboxworkspace
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 )
@@ -100,7 +102,7 @@ func planClone(req Request, status GitStatus) (Plan, error) {
 
 	plan := basePlan(req, status)
 	plan.Mode = sandbox.SandboxWorkspaceModeClone
-	if status.HeadContainedInUpstream && strings.TrimSpace(plan.Upstream) != "" {
+	if status.HeadContainedInUpstream && strings.TrimSpace(plan.Upstream) != "" && repositoryIsRemotelyAddressable(plan.Repository) {
 		plan.InputSource = sandbox.SandboxWorkspaceInputSourceRemoteRef
 		plan.SyncRef = upstreamSyncRef(status)
 		return plan, nil
@@ -110,6 +112,47 @@ func planClone(req Request, status GitStatus) (Plan, error) {
 	plan.RequiresBundle = true
 	plan.SyncRef = bundleSyncRef(status, plan.Branch)
 	return plan, nil
+}
+
+func repositoryIsRemotelyAddressable(repository string) bool {
+	repository = strings.TrimSpace(repository)
+	if repository == "" || strings.IndexFunc(repository, unicode.IsSpace) >= 0 || isWindowsDrivePath(repository) {
+		return false
+	}
+
+	if strings.Contains(repository, "://") {
+		parsed, err := url.Parse(repository)
+		if err != nil || strings.TrimSpace(parsed.Host) == "" {
+			return false
+		}
+		switch strings.ToLower(parsed.Scheme) {
+		case "git", "ssh", "git+ssh", "http", "https":
+			return true
+		default:
+			return false
+		}
+	}
+
+	separator := strings.LastIndex(repository, ":")
+	if separator <= 0 || separator == len(repository)-1 {
+		return false
+	}
+	authority := repository[:separator]
+	if strings.ContainsAny(authority, `/\\`) || strings.HasPrefix(authority, ".") || strings.HasPrefix(authority, "~") {
+		return false
+	}
+	if user, host, hasUser := strings.Cut(authority, "@"); hasUser && (user == "" || host == "") {
+		return false
+	}
+	return true
+}
+
+func isWindowsDrivePath(value string) bool {
+	if len(value) < 2 || value[1] != ':' {
+		return false
+	}
+	drive := value[0]
+	return (drive >= 'a' && drive <= 'z') || (drive >= 'A' && drive <= 'Z')
 }
 
 func planCopy(req Request, status GitStatus) Plan {

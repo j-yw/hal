@@ -64,6 +64,64 @@ func TestPlannerClonePlansRemoteRefForCleanHeadContainedInUpstream(t *testing.T)
 	}
 }
 
+func TestPlannerCloneSelectsInputSourceByRepositoryAddressability(t *testing.T) {
+	tests := []struct {
+		name       string
+		repository string
+		wantSource string
+	}{
+		{name: "GitHub SCP", repository: "git@github.com:jywlabs/hal.git", wantSource: sandbox.SandboxWorkspaceInputSourceRemoteRef},
+		{name: "host SCP without user", repository: "github.com:jywlabs/hal.git", wantSource: sandbox.SandboxWorkspaceInputSourceRemoteRef},
+		{name: "SSH URL", repository: "ssh://git@github.com/jywlabs/hal.git", wantSource: sandbox.SandboxWorkspaceInputSourceRemoteRef},
+		{name: "Git URL", repository: "git://github.com/jywlabs/hal.git", wantSource: sandbox.SandboxWorkspaceInputSourceRemoteRef},
+		{name: "Git SSH URL", repository: "git+ssh://git@github.com/jywlabs/hal.git", wantSource: sandbox.SandboxWorkspaceInputSourceRemoteRef},
+		{name: "HTTPS URL", repository: "https://github.com/jywlabs/hal.git", wantSource: sandbox.SandboxWorkspaceInputSourceRemoteRef},
+		{name: "HTTP URL", repository: "http://git.example.test/jywlabs/hal.git", wantSource: sandbox.SandboxWorkspaceInputSourceRemoteRef},
+		{name: "absolute POSIX path", repository: "/Users/test/work/hal.git", wantSource: sandbox.SandboxWorkspaceInputSourceGitBundle},
+		{name: "dot relative path", repository: "./hal.git", wantSource: sandbox.SandboxWorkspaceInputSourceGitBundle},
+		{name: "parent relative path", repository: "../hal.git", wantSource: sandbox.SandboxWorkspaceInputSourceGitBundle},
+		{name: "plain relative path", repository: "repos/hal.git", wantSource: sandbox.SandboxWorkspaceInputSourceGitBundle},
+		{name: "file URL", repository: "file:///Users/test/work/hal.git", wantSource: sandbox.SandboxWorkspaceInputSourceGitBundle},
+		{name: "file URL with host", repository: "file://fileserver/hal.git", wantSource: sandbox.SandboxWorkspaceInputSourceGitBundle},
+		{name: "Windows drive slash path", repository: `C:/work/hal.git`, wantSource: sandbox.SandboxWorkspaceInputSourceGitBundle},
+		{name: "Windows drive backslash path", repository: `C:\work\hal.git`, wantSource: sandbox.SandboxWorkspaceInputSourceGitBundle},
+		{name: "Windows drive relative path", repository: `C:work\hal.git`, wantSource: sandbox.SandboxWorkspaceInputSourceGitBundle},
+		{name: "Windows UNC path", repository: `\\server\share\hal.git`, wantSource: sandbox.SandboxWorkspaceInputSourceGitBundle},
+		{name: "malformed HTTPS URL", repository: "https:///hal.git", wantSource: sandbox.SandboxWorkspaceInputSourceGitBundle},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			projectDir := t.TempDir()
+			plan, err := (Planner{Git: &fakeGitInspector{status: GitStatus{
+				IsGitWorktree:           true,
+				Repository:              tt.repository,
+				Branch:                  "main",
+				Upstream:                "origin/main",
+				UpstreamRef:             "refs/remotes/origin/main",
+				HeadRef:                 "abc123",
+				HeadContainedInUpstream: true,
+			}}}).Plan(context.Background(), Request{
+				ProjectDir:    projectDir,
+				WorkspaceMode: sandbox.SandboxWorkspaceModeClone,
+			})
+			if err != nil {
+				t.Fatalf("Plan() error = %v", err)
+			}
+			if plan.InputSource != tt.wantSource {
+				t.Fatalf("InputSource = %q, want %q for %q", plan.InputSource, tt.wantSource, tt.repository)
+			}
+			wantBundle := tt.wantSource == sandbox.SandboxWorkspaceInputSourceGitBundle
+			if plan.RequiresBundle != wantBundle {
+				t.Fatalf("RequiresBundle = %t, want %t", plan.RequiresBundle, wantBundle)
+			}
+			if wantBundle && plan.SyncRef != "abc123" {
+				t.Fatalf("SyncRef = %q, want local HEAD", plan.SyncRef)
+			}
+		})
+	}
+}
+
 func TestPlannerCloneRejectsDirtyWorktreeStates(t *testing.T) {
 	tests := []struct {
 		name  string
