@@ -183,8 +183,22 @@ process_birth_fingerprint() {
 process_command_matches_pid() {
 	process_pid=$1
 	process_command=$(ps -p "$process_pid" -o command= 2>/dev/null) || return 1
-	case "$process_command" in
-		*"$HAL_BIN"*"sandboxd"*"--socket"*"$SOCKET"*) return 0 ;;
+	padded_command=" $process_command "
+	case "$padded_command" in
+		*" $HAL_BIN sandboxd "*) ;;
+		*) return 1 ;;
+	esac
+	case "$padded_command" in
+		*" --socket $SOCKET "*) return 0 ;;
+	esac
+	return 1
+}
+
+process_is_zombie() {
+	process_pid=$1
+	process_state=$(ps -p "$process_pid" -o stat= 2>/dev/null) || return 1
+	case "$process_state" in
+		*Z*) return 0 ;;
 	esac
 	return 1
 }
@@ -201,6 +215,7 @@ process_birth_matches() {
 	expected_birth=$2
 	[ -n "$expected_birth" ] || return 1
 	kill -0 "$process_pid" 2>/dev/null || return 1
+	process_is_zombie "$process_pid" && return 1
 	current_birth=$(process_birth_fingerprint "$process_pid")
 	[ -n "$current_birth" ] && [ "$current_birth" = "$expected_birth" ]
 }
@@ -320,6 +335,16 @@ read_daemon_pid() {
 	printf '%s\n' "$daemon_pid_value"
 }
 
+read_legacy_daemon_pid() {
+	[ -f "$PID_FILE" ] || return 1
+	legacy_daemon_pid=$(cat "$PID_FILE" 2>/dev/null) || return 1
+	case "$legacy_daemon_pid" in
+		''|*[!0-9]*) return 1 ;;
+	esac
+	[ "$legacy_daemon_pid" -gt 1 ] || return 1
+	printf '%s\n' "$legacy_daemon_pid"
+}
+
 read_daemon_birth() {
 	[ -f "$PID_FILE" ] || return 1
 	daemon_birth_value=$(sed -n 's/^birth=//p' "$PID_FILE" 2>/dev/null) || return 1
@@ -340,6 +365,26 @@ write_daemon_record() {
 		return 1
 	}
 	mv -f "$daemon_record_tmp" "$PID_FILE"
+}
+
+adopt_legacy_daemon_record() {
+	legacy_daemon_pid=$(read_legacy_daemon_pid) || return 1
+	if ! process_command_matches_pid "$legacy_daemon_pid"; then
+		return 1
+	fi
+	legacy_daemon_birth=$(process_birth_fingerprint "$legacy_daemon_pid")
+	if [ -z "$legacy_daemon_birth" ]; then
+		echo "matching legacy sandboxd PID could not be fingerprinted safely" >&2
+		return 2
+	fi
+	if ! process_identity_matches "$legacy_daemon_pid" "$legacy_daemon_birth"; then
+		return 1
+	fi
+	if write_daemon_record "$legacy_daemon_pid" "$legacy_daemon_birth"; then
+		return 0
+	fi
+	terminate_process_identity "$legacy_daemon_pid" "$legacy_daemon_birth"
+	return 1
 }
 
 daemon_record_matches_pid() {
@@ -398,6 +443,23 @@ terminate_process_identity() {
 	fi
 }
 
+terminate_process_birth_identity() {
+	process_pid=$1
+	process_birth=$2
+	if ! process_birth_matches "$process_pid" "$process_birth"; then
+		return
+	fi
+	kill "$process_pid" 2>/dev/null || true
+	i=0
+	while process_birth_matches "$process_pid" "$process_birth" && [ "$i" -lt 20 ]; do
+		i=$((i + 1))
+		sleep 0.25
+	done
+	if process_birth_matches "$process_pid" "$process_birth"; then
+		kill -9 "$process_pid" 2>/dev/null || true
+	fi
+}
+
 stop_daemon() {
 	daemon_pid_value=$(read_daemon_pid 2>/dev/null || true)
 	daemon_birth_value=$(read_daemon_birth 2>/dev/null || true)
@@ -416,20 +478,35 @@ remove_stale_daemon_state() {
 	rm -f "$PID_FILE" "$SOCKET"
 }
 
-record_launched_daemon() {
+capture_launched_daemon_birth() {
 	launched_daemon_pid=$1
-	launched_daemon_birth=
 	i=0
 	while [ "$i" -lt 20 ]; do
 		if ! kill -0 "$launched_daemon_pid" 2>/dev/null; then
 			return 1
 		fi
+		launched_daemon_birth=$(process_birth_fingerprint "$launched_daemon_pid")
+		if [ -n "$launched_daemon_birth" ] && process_birth_matches "$launched_daemon_pid" "$launched_daemon_birth"; then
+			printf '%s\n' "$launched_daemon_birth"
+			return
+		fi
+		i=$((i + 1))
+		sleep 0.05
+	done
+	return 1
+}
+
+record_launched_daemon() {
+	launched_daemon_pid=$1
+	launched_daemon_birth=$2
+	i=0
+	while [ "$i" -lt 20 ]; do
+		if ! process_birth_matches "$launched_daemon_pid" "$launched_daemon_birth"; then
+			return 1
+		fi
 		if process_command_matches_pid "$launched_daemon_pid"; then
-			launched_daemon_birth=$(process_birth_fingerprint "$launched_daemon_pid")
-			if [ -n "$launched_daemon_birth" ]; then
-				write_daemon_record "$launched_daemon_pid" "$launched_daemon_birth"
-				return
-			fi
+			write_daemon_record "$launched_daemon_pid" "$launched_daemon_birth"
+			return
 		fi
 		i=$((i + 1))
 		sleep 0.05
@@ -505,6 +582,11 @@ start() {
 		echo "lab image is missing; run prepare first" >&2
 		exit 1
 	fi
+	legacy_adoption_status=0
+	adopt_legacy_daemon_record || legacy_adoption_status=$?
+	if [ "$legacy_adoption_status" -eq 2 ]; then
+		return 1
+	fi
 	if daemon_running; then
 		if worker_rpc_ready; then
 			echo "sandboxd is running with PID $(read_daemon_pid)"
@@ -523,16 +605,25 @@ start() {
 		--image "$IMAGE" \
 		</dev/null >>"$LOG_FILE" 2>&1 &
 	daemon_pid_value=$!
-	if ! record_launched_daemon "$daemon_pid_value"; then
-		if [ -n "${launched_daemon_birth:-}" ]; then
-			terminate_process_identity "$daemon_pid_value" "$launched_daemon_birth"
-		fi
+	if ! launched_daemon_birth=$(capture_launched_daemon_birth "$daemon_pid_value"); then
+		# The unreaped background job still owns this PID, so it cannot be reused.
+		kill "$daemon_pid_value" 2>/dev/null || true
+		wait "$daemon_pid_value" 2>/dev/null || true
+		rm -f "$PID_FILE" "$SOCKET"
+		echo "sandboxd exited before its process birth could be captured; see $LOG_FILE" >&2
+		return 1
+	fi
+	if ! record_launched_daemon "$daemon_pid_value" "$launched_daemon_birth"; then
+		terminate_process_birth_identity "$daemon_pid_value" "$launched_daemon_birth"
+		wait "$daemon_pid_value" 2>/dev/null || true
 		rm -f "$PID_FILE" "$SOCKET"
 		echo "sandboxd did not establish a verifiable process identity; see $LOG_FILE" >&2
 		return 1
 	fi
 	if ! wait_for_worker_rpc; then
-		stop_daemon
+		terminate_process_birth_identity "$daemon_pid_value" "$launched_daemon_birth"
+		wait "$daemon_pid_value" 2>/dev/null || true
+		rm -f "$PID_FILE" "$SOCKET"
 		return 1
 	fi
 	echo "sandboxd is running with PID $(read_daemon_pid)"

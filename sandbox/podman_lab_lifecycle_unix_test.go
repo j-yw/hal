@@ -78,6 +78,107 @@ func TestPodmanLabStartSurvivesShellExitAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestPodmanLabStartAdoptsMatchingLegacyPIDRecord(t *testing.T) {
+	env := newPodmanLabTestEnv(t)
+	writePodmanLabHalStub(t, env)
+	if err := os.WriteFile(env.statePath, []byte("ready"), 0o600); err != nil {
+		t.Fatalf("WriteFile(machine state) error = %v", err)
+	}
+	runDir := filepath.Join(env.labRoot, "run")
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll(run dir) error = %v", err)
+	}
+	socketPath := filepath.Join(runDir, "sandboxd.sock")
+	daemon := exec.Command(filepath.Join(env.labRoot, "bin", "hal"),
+		"sandboxd", "--socket", socketPath,
+		"--worker-id", "hal-lab-worker",
+		"--driver", "rootless_podman",
+		"--image", "localhost/hal-agent:hal-lab")
+	daemon.Env = append(os.Environ(),
+		"HAL_TEST_LOG="+env.halLogPath,
+		"HAL_TEST_DAEMON_PID="+env.halPIDPath,
+		"HAL_TEST_DAEMON_READY="+env.halReady,
+		"HAL_TEST_START_DELAY=0",
+	)
+	if err := daemon.Start(); err != nil {
+		t.Fatalf("start legacy sandboxd: %v", err)
+	}
+	daemonDone := make(chan error, 1)
+	go func() { daemonDone <- daemon.Wait() }()
+	daemonWaited := false
+	t.Cleanup(func() {
+		_ = daemon.Process.Kill()
+		if !daemonWaited {
+			select {
+			case <-daemonDone:
+			case <-time.After(3 * time.Second):
+			}
+		}
+		stopPodmanLabDaemon(t, env)
+	})
+	waitForPodmanLabFile(t, env.halReady)
+	legacyPID := daemon.Process.Pid
+	if err := os.WriteFile(filepath.Join(runDir, "sandboxd.pid"), []byte(strconv.Itoa(legacyPID)+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(legacy PID) error = %v", err)
+	}
+
+	runPodmanLabScript(t, env, "start")
+	if got := readPodmanLabPID(t, env); got != legacyPID {
+		t.Fatalf("start replaced matching legacy daemon PID %d with %d", legacyPID, got)
+	}
+	record, err := os.ReadFile(filepath.Join(runDir, "sandboxd.pid"))
+	if err != nil {
+		t.Fatalf("ReadFile(adopted PID record) error = %v", err)
+	}
+	if !strings.Contains(string(record), "pid=") || !strings.Contains(string(record), "birth=") {
+		t.Fatalf("legacy PID was not upgraded atomically:\n%s", record)
+	}
+	log := readPodmanLabLog(t, env.halLogPath)
+	if got := strings.Count(log, "sandboxd --socket "); got != 1 {
+		t.Fatalf("matching legacy daemon launch count = %d, want 1:\n%s", got, log)
+	}
+
+	runPodmanLabScript(t, env, "destroy")
+	select {
+	case <-daemonDone:
+		daemonWaited = true
+	case <-time.After(3 * time.Second):
+		t.Fatalf("adopted legacy daemon %d did not exit during destroy", legacyPID)
+	}
+}
+
+func TestPodmanLabStartCleansUpCommandVerificationTimeout(t *testing.T) {
+	env := newPodmanLabTestEnv(t)
+	writePodmanLabHalStub(t, env)
+	writePodmanLabPSCommandMismatchStub(t, env)
+	if err := os.WriteFile(env.statePath, []byte("ready"), 0o600); err != nil {
+		t.Fatalf("WriteFile(machine state) error = %v", err)
+	}
+	t.Cleanup(func() {
+		if data, err := os.ReadFile(env.halPIDPath); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+
+	cmd := newPodmanLabCommand(env, "start")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("start with command mismatch unexpectedly succeeded: %s", output)
+	}
+	launchedPID := readIntegerFile(t, env.halPIDPath)
+	waitForProcessExit(t, launchedPID)
+	for _, path := range []string{
+		filepath.Join(env.labRoot, "run", "sandboxd.pid"),
+		filepath.Join(env.labRoot, "run", "sandboxd.sock"),
+	} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("startup failure left stale state %s: %v", path, err)
+		}
+	}
+}
+
 func TestPodmanLabConcurrentStartsLaunchOneDaemon(t *testing.T) {
 	env := newPodmanLabTestEnv(t)
 	env.halStartDelay = "0.5"

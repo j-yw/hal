@@ -93,6 +93,7 @@ type podmanLabTestEnv struct {
 	halPIDPath    string
 	halReady      string
 	halStartDelay string
+	realPS        string
 }
 
 func newPodmanLabTestEnv(t *testing.T) podmanLabTestEnv {
@@ -102,6 +103,10 @@ func newPodmanLabTestEnv(t *testing.T) podmanLabTestEnv {
 		t.Fatal("runtime.Caller() failed")
 	}
 	root := t.TempDir()
+	realPS, err := exec.LookPath("ps")
+	if err != nil {
+		t.Fatalf("LookPath(ps) error = %v", err)
+	}
 	binDir := filepath.Join(root, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(fake bin) error = %v", err)
@@ -117,6 +122,7 @@ func newPodmanLabTestEnv(t *testing.T) podmanLabTestEnv {
 		halPIDPath:    filepath.Join(root, "hal-daemon.pid"),
 		halReady:      filepath.Join(root, "hal-daemon.ready"),
 		halStartDelay: "0",
+		realPS:        realPS,
 	}
 	if err := os.MkdirAll(env.hostHome, 0o700); err != nil {
 		t.Fatalf("MkdirAll(host home) error = %v", err)
@@ -189,6 +195,26 @@ exit 0
 `)
 }
 
+func writePodmanLabPSCommandMismatchStub(t *testing.T, env podmanLabTestEnv) {
+	t.Helper()
+	writePodmanLabExecutable(t, filepath.Join(env.binDir, "ps"), `#!/bin/sh
+set -eu
+requested_output=
+previous=
+for argument in "$@"; do
+	if [ "$previous" = "-o" ]; then
+		requested_output=$argument
+	fi
+	previous=$argument
+done
+if [ "$requested_output" = "command=" ]; then
+	printf '%s\n' "sleep 60"
+	exit 0
+fi
+exec "$PODMAN_TEST_REAL_PS" "$@"
+`)
+}
+
 func writePodmanLabGoStub(t *testing.T, binDir string) {
 	t.Helper()
 	writePodmanLabExecutable(t, filepath.Join(binDir, "go"), `#!/bin/sh
@@ -247,6 +273,7 @@ func newPodmanLabCommand(env podmanLabTestEnv, command string) *exec.Cmd {
 		"HAL_TEST_DAEMON_PID="+env.halPIDPath,
 		"HAL_TEST_DAEMON_READY="+env.halReady,
 		"HAL_TEST_START_DELAY="+env.halStartDelay,
+		"PODMAN_TEST_REAL_PS="+env.realPS,
 	)
 	return cmd
 }
