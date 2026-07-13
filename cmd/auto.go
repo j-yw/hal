@@ -203,6 +203,12 @@ Agent-safe usage:
 - --sandbox currently rejects --resume until sandbox resume state rewriting is implemented.
 - Use --json for the auto-v2 machine-readable contract.
 
+Exit status with --json:
+- 0 when ok=true
+- 2 when validation or preflight fails after emitting ok=false JSON
+- 4 when pipeline execution finishes with ok=false
+- Sandbox execution preserves the inner hal command's nonzero status
+
 Examples:
   hal auto                           # Uses auto.sourcePriority discovery + auto.convertMode policy
   hal auto .hal/prd-feature.md       # Start from a specific markdown PRD
@@ -471,7 +477,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 		err = fmt.Errorf("failed to load project config: %w", err)
 		if jsonMode {
 			jr := autoFailureResult(autoEntryModeReportDiscovery, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
-			return outputAutoJSON(out, jr)
+			return outputAutoValidationJSON(cmd, out, jr)
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
@@ -517,7 +523,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	if err != nil {
 		if jsonMode {
 			jr := autoFailureResult(autoEntryModeReportDiscovery, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
-			return outputAutoJSON(out, jr)
+			return outputAutoValidationJSON(cmd, out, jr)
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
@@ -588,7 +594,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	if err != nil {
 		if jsonMode {
 			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
-			return outputAutoJSON(out, jr)
+			return outputAutoValidationJSON(cmd, out, jr)
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
@@ -596,7 +602,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	if err != nil {
 		if jsonMode {
 			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
-			return outputAutoJSON(out, jr)
+			return outputAutoValidationJSON(cmd, out, jr)
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
@@ -604,7 +610,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	if err != nil {
 		if jsonMode {
 			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
-			return outputAutoJSON(out, jr)
+			return outputAutoValidationJSON(cmd, out, jr)
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
@@ -612,7 +618,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	if err := compound.MigrateLegacyAutoPRD(dir, errOut); err != nil {
 		if jsonMode {
 			jr := autoFailureResult(entryMode, resume, "failed to migrate legacy auto-prd.json: "+err.Error(), "failed to migrate legacy auto-prd.json: "+err.Error(), autoFailurePipeline, false, "", "")
-			return outputAutoJSON(out, jr)
+			return outputAutoValidationJSON(cmd, out, jr)
 		}
 		return fmt.Errorf("failed to migrate legacy auto-prd.json: %w", err)
 	}
@@ -622,7 +628,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	if err != nil {
 		if jsonMode {
 			jr := autoFailureResult(entryMode, resume, "failed to load config: "+err.Error(), "failed to load config: "+err.Error(), autoFailureConfig, false, "", "")
-			return outputAutoJSON(out, jr)
+			return outputAutoValidationJSON(cmd, out, jr)
 		}
 		return fmt.Errorf("failed to load config: %w", err)
 	}
@@ -648,7 +654,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 			}
 			if jsonMode {
 				jr := autoFailureResult(attemptedEntryMode, false, resolveErr.Error(), resolveErr.Error(), autoFailureNoSource, false, "", convertModeTelemetry)
-				return outputAutoJSON(out, jr)
+				return outputAutoValidationJSON(cmd, out, jr)
 			}
 			return resolveErr
 		}
@@ -680,7 +686,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	if err != nil {
 		if jsonMode {
 			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureConfig, false, "", convertModeTelemetry)
-			return outputAutoJSON(out, jr)
+			return outputAutoValidationJSON(cmd, out, jr)
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
@@ -689,7 +695,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	if err != nil {
 		if jsonMode {
 			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureEngine, false, "", convertModeTelemetry)
-			return outputAutoJSON(out, jr)
+			return outputAutoValidationJSON(cmd, out, jr)
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
@@ -700,7 +706,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	if err != nil {
 		if jsonMode {
 			jr := autoFailureResult(entryMode, resume, "failed to create engine: "+err.Error(), "failed to create engine: "+err.Error(), autoFailureEngine, false, "", convertModeTelemetry)
-			return outputAutoJSON(out, jr)
+			return outputAutoValidationJSON(cmd, out, jr)
 		}
 		return fmt.Errorf("failed to create engine: %w", err)
 	}
@@ -739,7 +745,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 		if !pipeline.HasState() {
 			if jsonMode {
 				jr := autoFailureResult(entryMode, resume, "no saved state to resume from", "no saved state to resume from", autoFailureNoResumeState, false, "", convertModeTelemetry)
-				return outputAutoJSON(out, jr)
+				return outputAutoValidationJSON(cmd, out, jr)
 			}
 			return fmt.Errorf("no saved state to resume from")
 		}
@@ -783,7 +789,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 			jr := autoFailureResult(entryMode, resume, summary, err.Error(), autoFailurePipeline, pipeline.HasState(), failedStep, convertModeTelemetry, time.Since(autoStart))
 			applyAutoFailurePolicySkips(&jr.Steps, failedStep, policy.skipCI, policy.skipReview)
 			applyAutoFailureCIState(&jr.Steps, failedStep, pipeline.LastCIState())
-			return outputAutoJSON(out, jr)
+			return outputAutoJSONForCommand(cmd, out, jr)
 		}
 		return err
 	}
@@ -798,7 +804,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 			summary = fmt.Sprintf("Auto pipeline completed on branch %s.", autoBranch)
 		}
 		jr := autoSuccessResult(entryMode, resume, policy.skipCI, policy.skipReview, pipeline.LastCIState(), summary, convertModeTelemetry, elapsed)
-		return outputAutoJSON(out, jr)
+		return outputAutoJSONForCommand(cmd, out, jr)
 	}
 
 	// Show pipeline summary
@@ -819,11 +825,34 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 }
 
 func outputAutoJSON(out io.Writer, jr AutoResult) error {
+	return writeAutoJSON(out, jr)
+}
+
+func outputAutoJSONForCommand(cmd *cobra.Command, out io.Writer, jr AutoResult) error {
+	if err := outputAutoJSON(out, jr); err != nil {
+		return err
+	}
+	if !jr.OK {
+		return exitWithCode(cmd, ExitCodeExpectedNonZero, nil)
+	}
+	return nil
+}
+
+func outputAutoValidationJSON(cmd *cobra.Command, out io.Writer, jr AutoResult) error {
+	if err := outputAutoJSON(out, jr); err != nil {
+		return err
+	}
+	return exitWithCode(cmd, ExitCodeValidation, nil)
+}
+
+func writeAutoJSON(out io.Writer, jr AutoResult) error {
 	data, err := json.MarshalIndent(jr, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal auto result: %w", err)
 	}
-	fmt.Fprintln(out, string(data))
+	if _, err := fmt.Fprintln(out, string(data)); err != nil {
+		return fmt.Errorf("write auto result: %w", err)
+	}
 	return nil
 }
 

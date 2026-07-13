@@ -1,0 +1,20 @@
+{
+  "contractVersion": 1,
+  "ok": true,
+  "engine": "pi",
+  "iterations": 2,
+  "complete": false,
+  "lastStoryId": "US-002",
+  "duration": "42s",
+  "prd": {
+    "path": ".hal/prd.json",
+    "completedStories": 2,
+    "totalStories": 4
+  },
+  "summary": "Completed 2 iteration(s). Stories remain.",
+  "nextAction": {
+    "id": "run_manual",
+    "command": "hal run",
+    "description": "Continue executing the remaining stories."
+  }
+}

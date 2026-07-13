@@ -1557,3 +1557,38 @@ func TestMachineContractFields_AutoV2Examples(t *testing.T) {
 		})
 	}
 }
+
+func TestMachineContractFields_RunV1Examples(t *testing.T) {
+	testCases := []struct {
+		name   string
+		path   string
+		wantOK bool
+	}{
+		{name: "success", path: filepath.Join("..", "docs", "contracts", "examples", "run-v1-success.json"), wantOK: true},
+		{name: "failure", path: filepath.Join("..", "docs", "contracts", "examples", "run-v1-failure.json"), wantOK: false},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := os.ReadFile(tc.path)
+			if err != nil {
+				t.Fatalf("read %s: %v", tc.path, err)
+			}
+			var raw map[string]any
+			if err := json.Unmarshal(data, &raw); err != nil {
+				t.Fatalf("decode %s: %v", tc.path, err)
+			}
+			for _, field := range []string{"contractVersion", "ok", "iterations", "complete", "summary"} {
+				if _, ok := raw[field]; !ok {
+					t.Fatalf("example %s missing required field %q", tc.path, field)
+				}
+			}
+			if raw["contractVersion"] != float64(1) || raw["ok"] != tc.wantOK {
+				t.Fatalf("example %s version/ok = %v/%v, want 1/%v", tc.path, raw["contractVersion"], raw["ok"], tc.wantOK)
+			}
+			var result RunResult
+			if err := json.Unmarshal(data, &result); err != nil {
+				t.Fatalf("decode %s as RunResult: %v", tc.path, err)
+			}
+		})
+	}
+}

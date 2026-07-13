@@ -1,0 +1,16 @@
+{
+  "contractVersion": 1,
+  "ok": false,
+  "engine": "pi",
+  "iterations": 1,
+  "complete": false,
+  "lastStoryId": "US-003",
+  "duration": "19s",
+  "error": "engine session failed",
+  "summary": "Failed after 1 iteration(s).",
+  "nextAction": {
+    "id": "run_manual",
+    "command": "hal run",
+    "description": "Retry the run."
+  }
+}

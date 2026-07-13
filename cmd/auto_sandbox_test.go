@@ -520,9 +520,7 @@ func TestRunAutoSandboxWithWriterJSONWorkspacePreflightFailure(t *testing.T) {
 			return autoSandboxExecutionResult{}, errors.New("execute should not run")
 		},
 	})
-	if err != nil {
-		t.Fatalf("runAutoSandboxWithWriter() error = %v, want nil JSON error result", err)
-	}
+	requireRenderedJSONExitCode(t, err, ExitCodeValidation)
 	if executeCalled {
 		t.Fatal("execute should not run after workspace preflight failure")
 	}
@@ -730,9 +728,7 @@ func TestRunAutoSandboxWithWriterPreflightFailureNormalizesManifestCommand(t *te
 			return autoSandboxExecutionResult{}, nil
 		},
 	})
-	if err != nil {
-		t.Fatalf("runAutoSandboxWithWriter() error = %v, want nil JSON error result", err)
-	}
+	requireRenderedJSONExitCode(t, err, ExitCodeValidation)
 	manifest, err := store.LoadManifest("auto-preflight-normalized-command")
 	if err != nil {
 		t.Fatalf("LoadManifest() error: %v", err)
@@ -755,9 +751,7 @@ func TestRunAutoSandboxWithWriterRejectsResumeUntilStateRewriteExists(t *testing
 		JSON:          true,
 		JSONChanged:   true,
 	}, &out, io.Discard, autoSandboxDeps{})
-	if err != nil {
-		t.Fatalf("runAutoSandboxWithWriter() error = %v, want nil JSON error result", err)
-	}
+	requireRenderedJSONExitCode(t, err, ExitCodeValidation)
 	assertAutoJSONContractV2(t, out.Bytes())
 	var result AutoResult
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {

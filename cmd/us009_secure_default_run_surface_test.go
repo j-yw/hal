@@ -83,8 +83,12 @@ func TestUS009RunSandboxJSONAndManifestUseSharedSecureDefaultDecision(t *testing
 					}, nil
 				},
 			})
-			if err != nil {
-				t.Fatalf("runRunSandboxWithWriter() error = %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+			if tt.wantOK {
+				if err != nil {
+					t.Fatalf("runRunSandboxWithWriter() error = %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+				}
+			} else {
+				requireRenderedJSONExitCode(t, err, ExitCodeValidation)
 			}
 
 			var result RunResult

@@ -42,6 +42,12 @@ Agent-safe usage:
 - --sandbox currently rejects --resume until sandbox resume state rewriting is implemented.
 - Use --json for the auto-v2 machine-readable contract.
 
+Exit status with --json:
+- 0 when ok=true
+- 2 when validation or preflight fails after emitting ok=false JSON
+- 4 when pipeline execution finishes with ok=false
+- Sandbox execution preserves the inner hal command's nonzero status
+
 Examples:
   hal auto                           # Uses auto.sourcePriority discovery + auto.convertMode policy
   hal auto .hal/prd-feature.md       # Start from a specific markdown PRD

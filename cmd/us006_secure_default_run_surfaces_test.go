@@ -74,9 +74,7 @@ func TestUS006RunSandboxStrictSelectionJSONRendersAndPersistsDecision(t *testing
 			return nil
 		},
 	})
-	if err != nil {
-		t.Fatalf("runRunSandboxWithWriter() error = %v, want JSON error result\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
-	}
+	requireRenderedJSONExitCode(t, err, ExitCodeValidation)
 
 	var result RunResult
 	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
@@ -153,9 +151,7 @@ func TestUS006AutoSandboxStrictSelectionJSONRendersAndPersistsDecision(t *testin
 			return nil
 		},
 	})
-	if err != nil {
-		t.Fatalf("runAutoSandboxWithWriter() error = %v, want JSON error result\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
-	}
+	requireRenderedJSONExitCode(t, err, ExitCodeValidation)
 
 	var result AutoResult
 	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)

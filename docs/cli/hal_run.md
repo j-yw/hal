@@ -17,6 +17,12 @@ The loop spawns fresh AI instances that:
 With --json, outputs machine-readable result JSON suitable for agent
 orchestration and tooling integration.
 
+Exit status with --json:
+- 0 when ok=true, including successful runs with stories remaining
+- 2 when validation or preflight fails after emitting ok=false JSON
+- 4 when loop execution finishes with ok=false
+- Sandbox execution preserves the inner hal command's nonzero status
+
 Examples:
   hal run                          # Run with defaults (10 iterations)
   hal run 5                        # Run 5 iterations (positional)

@@ -8674,9 +8674,7 @@ func TestRunAutoForFactoryRunKeepsDirectAutoBehaviorIsolated(t *testing.T) {
 	if err := jsonCmd.Flags().Set("json", "true"); err != nil {
 		t.Fatalf("set json flag: %v", err)
 	}
-	if err := runAuto(jsonCmd, nil); err != nil {
-		t.Fatalf("direct runAuto JSON returned error after factory wrapper: %v", err)
-	}
+	requireRenderedJSONExitCode(t, runAuto(jsonCmd, nil), ExitCodeValidation)
 	assertAutoJSONContractV2(t, jsonOut.Bytes())
 
 	reportPath := filepath.Join(".", "report.md")

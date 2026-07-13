@@ -36,6 +36,7 @@ func TestContractDocsExist(t *testing.T) {
 		{"sandbox-host-status-v1", "../docs/contracts/sandbox-host-status-v1.md"},
 		{"sandbox-runtime-list-v1", "../docs/contracts/sandbox-runtime-list-v1.md"},
 		{"sandbox-runtime-status-v1", "../docs/contracts/sandbox-runtime-status-v1.md"},
+		{"run-v1", "../docs/contracts/run-v1.md"},
 		{"auto-v2", "../docs/contracts/auto-v2.md"},
 		{"ci-push-v1", "../docs/contracts/ci-push-v1.md"},
 		{"ci-status-v1", "../docs/contracts/ci-status-v1.md"},
@@ -61,6 +62,29 @@ func TestContractDocsExist(t *testing.T) {
 				t.Fatalf("contract doc %s is missing at %s", doc.name, doc.path)
 			}
 		})
+	}
+}
+
+func TestContractDocsIncludeRunV1FieldsAndExamples(t *testing.T) {
+	data, err := os.ReadFile("../docs/contracts/run-v1.md")
+	if err != nil {
+		t.Fatalf("read run-v1.md: %v", err)
+	}
+	content := string(data)
+	for _, field := range []string{"contractVersion", "ok", "iterations", "complete", "summary"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("run-v1.md missing required field %q", field)
+		}
+	}
+	for _, value := range []string{"Contract Version:** 1", "run-v1-success.json", "run-v1-failure.json", "| `2` |", "| `4` |"} {
+		if !strings.Contains(content, value) {
+			t.Errorf("run-v1.md missing contract detail %q", value)
+		}
+	}
+	for _, path := range []string{"../docs/contracts/examples/run-v1-success.json", "../docs/contracts/examples/run-v1-failure.json"} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("run v1 example missing at %s: %v", path, err)
+		}
 	}
 }
 

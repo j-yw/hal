@@ -16,6 +16,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func TestRunCommandHelpDescribesJSONExitStatus(t *testing.T) {
+	for _, phrase := range []string{"Exit status with --json", "successful runs with stories remaining", "2 when validation or preflight fails", "4 when loop execution finishes", "preserves the inner hal command's nonzero status"} {
+		if !strings.Contains(runCmd.Long, phrase) {
+			t.Fatalf("run help should describe JSON process status %q: %q", phrase, runCmd.Long)
+		}
+	}
+}
+
 func TestRunRun_DryRun_AllowsMissingGitRepoWithoutBase(t *testing.T) {
 	dir := t.TempDir()
 

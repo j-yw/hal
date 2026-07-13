@@ -100,6 +100,12 @@ The loop spawns fresh AI instances that:
 With --json, outputs machine-readable result JSON suitable for agent
 orchestration and tooling integration.
 
+Exit status with --json:
+- 0 when ok=true, including successful runs with stories remaining
+- 2 when validation or preflight fails after emitting ok=false JSON
+- 4 when loop execution finishes with ok=false
+- Sandbox execution preserves the inner hal command's nonzero status
+
 Examples:
   hal run                          # Run with defaults (10 iterations)
   hal run 5                        # Run 5 iterations (positional)
@@ -348,7 +354,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	if err != nil {
 		err = fmt.Errorf("failed to load project config: %w", err)
 		if jsonMode {
-			return outputRunJSONError(out, err.Error())
+			return outputRunJSONErrorForCommand(cmd, out, err.Error())
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
@@ -395,7 +401,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	}
 	if err != nil {
 		if jsonMode {
-			return outputRunJSONError(out, err.Error())
+			return outputRunJSONErrorForCommand(cmd, out, err.Error())
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
@@ -442,13 +448,13 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	iterations, err := parseIterations(args, iterationsFlag, iterationsChanged, 10)
 	if err != nil {
 		if jsonMode {
-			return outputRunJSONError(out, err.Error())
+			return outputRunJSONErrorForCommand(cmd, out, err.Error())
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
 	if timeoutOverride < 0 {
 		if jsonMode {
-			return outputRunJSONError(out, "--timeout must be greater than or equal to 0")
+			return outputRunJSONErrorForCommand(cmd, out, "--timeout must be greater than or equal to 0")
 		}
 		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("--timeout must be greater than or equal to 0"))
 	}
@@ -457,7 +463,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	halDir := template.HalDir
 	if _, err := os.Stat(halDir); os.IsNotExist(err) {
 		if jsonMode {
-			return outputRunJSONError(out, ".hal/ not found. Run 'hal init' first")
+			return outputRunJSONErrorForCommand(cmd, out, ".hal/ not found. Run 'hal init' first")
 		}
 		return fmt.Errorf(".hal/ not found. Run 'hal init' first")
 	}
@@ -466,7 +472,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	prdPath := halDir + "/prd.json"
 	if _, err := os.Stat(prdPath); os.IsNotExist(err) {
 		if jsonMode {
-			return outputRunJSONError(out, "prd.json not found at "+prdPath+". Create your task list first")
+			return outputRunJSONErrorForCommand(cmd, out, "prd.json not found at "+prdPath+". Create your task list first")
 		}
 		return fmt.Errorf("prd.json not found at %s. Create your task list first", prdPath)
 	}
@@ -482,7 +488,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	resolvedEngine, err := resolveEngine(cmd, "engine", engineName, ".")
 	if err != nil {
 		if jsonMode {
-			return outputRunJSONError(out, err.Error())
+			return outputRunJSONErrorForCommand(cmd, out, err.Error())
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
@@ -491,13 +497,18 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 		engineCfg = withTimeoutOverride(engineCfg, timeoutOverride)
 	}
 
+	loopOut := out
+	if jsonMode {
+		loopOut = io.Discard
+	}
+
 	// Create and run the loop
 	runner, err := loop.New(loop.Config{
 		Dir:           halDir,
 		MaxIterations: iterations,
 		Engine:        resolvedEngine,
 		EngineConfig:  engineCfg,
-		Logger:        out,
+		Logger:        loopOut,
 		RetryDelay:    delay,
 		MaxRetries:    retries,
 		DryRun:        dryRun,
@@ -506,7 +517,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	})
 	if err != nil {
 		if jsonMode {
-			return outputRunJSONError(out, err.Error())
+			return outputRunJSONErrorForCommand(cmd, out, err.Error())
 		}
 		return err
 	}
@@ -514,7 +525,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	result := runner.Run(context.Background())
 
 	if jsonMode {
-		return outputRunJSON(out, result, story, dryRun, resolvedEngine)
+		return outputRunJSONForCommand(cmd, out, result, story, dryRun, resolvedEngine)
 	}
 
 	// Show completion summary in terminal mode
@@ -656,6 +667,13 @@ func outputRunJSONError(out io.Writer, errMsg string) error {
 	return outputRunJSONErrorWithReadinessGate(out, errMsg, nil)
 }
 
+func outputRunJSONErrorForCommand(cmd *cobra.Command, out io.Writer, errMsg string) error {
+	if err := outputRunJSONError(out, errMsg); err != nil {
+		return err
+	}
+	return exitWithCode(cmd, ExitCodeValidation, nil)
+}
+
 func outputRunJSONErrorWithReadinessGate(out io.Writer, errMsg string, gate *sandbox.SandboxSecurityCapabilityReadinessGateDecision) error {
 	errMsg = sanitizeRunPublicString(errMsg)
 	jr := RunResult{
@@ -665,9 +683,17 @@ func outputRunJSONErrorWithReadinessGate(out io.Writer, errMsg string, gate *san
 		Summary:               errMsg,
 		SecurityReadinessGate: sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(gate),
 	}
-	data, _ := json.MarshalIndent(jr, "", "  ")
-	fmt.Fprintln(out, string(data))
+	if err := writeRunJSON(out, jr); err != nil {
+		return err
+	}
 	return nil
+}
+
+func outputRunJSONErrorWithReadinessGateForCommand(cmd *cobra.Command, out io.Writer, errMsg string, gate *sandbox.SandboxSecurityCapabilityReadinessGateDecision) error {
+	if err := outputRunJSONErrorWithReadinessGate(out, errMsg, gate); err != nil {
+		return err
+	}
+	return exitWithCode(cmd, ExitCodeValidation, nil)
 }
 
 func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun bool, engineName string) error {
@@ -723,11 +749,30 @@ func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun boo
 		}
 	}
 
+	if err := writeRunJSON(out, jr); err != nil {
+		return err
+	}
+	return nil
+}
+
+func outputRunJSONForCommand(cmd *cobra.Command, out io.Writer, result loop.Result, storyID string, dryRun bool, engineName string) error {
+	if err := outputRunJSON(out, result, storyID, dryRun, engineName); err != nil {
+		return err
+	}
+	if !result.Success {
+		return exitWithCode(cmd, ExitCodeExpectedNonZero, nil)
+	}
+	return nil
+}
+
+func writeRunJSON(out io.Writer, jr RunResult) error {
 	data, err := json.MarshalIndent(jr, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal run result: %w", err)
 	}
-	fmt.Fprintln(out, string(data))
+	if _, err := fmt.Fprintln(out, string(data)); err != nil {
+		return fmt.Errorf("write run result: %w", err)
+	}
 	return nil
 }
 

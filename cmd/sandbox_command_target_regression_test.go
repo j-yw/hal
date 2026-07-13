@@ -911,9 +911,7 @@ func TestWorkerMicroVMRunSandboxJSONFailsWithRuntimeUnsupportedClassification(t 
 			return nil, nil
 		},
 	})
-	if err != nil {
-		t.Fatalf("runRunSandboxWithWriter() error = %v, want JSON error result", err)
-	}
+	requireRenderedJSONExitCode(t, err, ExitCodeValidation)
 	var result RunResult
 	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
 	requireWorkerMicroVMUnsupportedMessage(t, result.Error)
@@ -976,9 +974,7 @@ func TestWorkerMicroVMAutoSandboxJSONFailsWithRuntimeUnsupportedClassification(t
 			return nil, nil
 		},
 	})
-	if err != nil {
-		t.Fatalf("runAutoSandboxWithWriter() error = %v, want JSON error result", err)
-	}
+	requireRenderedJSONExitCode(t, err, ExitCodeValidation)
 	var result AutoResult
 	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
 	requireWorkerMicroVMUnsupportedMessage(t, result.Error)
@@ -1129,9 +1125,7 @@ func TestWorkerRootlessRunSandboxJSONMissingEndpointFailsBeforeProvisioning(t *t
 			return nil, nil
 		},
 	})
-	if err != nil {
-		t.Fatalf("runRunSandboxWithWriter() error = %v, want JSON error result", err)
-	}
+	requireRenderedJSONExitCode(t, err, ExitCodeValidation)
 	var result RunResult
 	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
 	requireWorkerEndpointInvalidMessage(t, result.Error, "configured endpoint: none")
@@ -1194,9 +1188,7 @@ func TestWorkerRootlessAutoSandboxJSONNonLocalEndpointFailsSafely(t *testing.T) 
 			return nil, nil
 		},
 	})
-	if err != nil {
-		t.Fatalf("runAutoSandboxWithWriter() error = %v, want JSON error result", err)
-	}
+	requireRenderedJSONExitCode(t, err, ExitCodeValidation)
 	var result AutoResult
 	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
 	requireWorkerEndpointInvalidMessage(t, result.Error, "configured endpoint: ssh endpoint")
@@ -1351,9 +1343,7 @@ func TestWorkerClientRunSandboxJSONFailureIsSanitized(t *testing.T) {
 			return nil, unsafeWorkerClientConnectionFailure()
 		},
 	})
-	if err != nil {
-		t.Fatalf("runRunSandboxWithWriter() error = %v, want JSON error result", err)
-	}
+	requireRenderedJSONExitCode(t, err, ExitCodeValidation)
 	var result RunResult
 	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
 	requireWorkerClientFailureMessage(t, result.Error)
@@ -1479,9 +1469,7 @@ func TestWorkerRootlessRunSandboxStartFailuresClassifyAndSanitizeOutput(t *testi
 
 				var message string
 				if mode.json {
-					if err != nil {
-						t.Fatalf("runRunSandboxWithWriter() error = %v, want JSON error result", err)
-					}
+					requireRenderedJSONExitCode(t, err, ExitCodeValidation)
 					var result RunResult
 					decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
 					if result.OK {
@@ -2590,7 +2578,6 @@ func TestWorkerRootlessRunSandboxCollectsRecoveryAfterRemoteFailure(t *testing.T
 	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
 	var out bytes.Buffer
 	var errOut bytes.Buffer
-	remoteErr := errors.New("worker run command failed")
 	var execCalls []string
 	var copyOuts []sandboxruntime.CopyRequest
 
@@ -2604,8 +2591,15 @@ func TestWorkerRootlessRunSandboxCollectsRecoveryAfterRemoteFailure(t *testing.T
 				execCalls = append(execCalls, "recovery_generation")
 				return &sandboxruntime.ExecResult{}, nil
 			}
-			execCalls = append(execCalls, "remote_run")
-			return nil, remoteErr
+			if isWorkerRunCommandExec(req) {
+				execCalls = append(execCalls, "remote_run")
+				if _, err := io.WriteString(req.Stdout, `{"contractVersion":1,"ok":false,"iterations":1,"complete":false,"error":"remote run failed","summary":"remote run failed"}`+"\n"); err != nil {
+					return nil, err
+				}
+				return &sandboxruntime.ExecResult{ExitCode: ExitCodeExpectedNonZero}, nil
+			}
+			t.Fatalf("unexpected worker exec args: %#v", req.Args)
+			return nil, nil
 		},
 		copyOut: func(_ context.Context, req sandboxruntime.CopyRequest) error {
 			copyOuts = append(copyOuts, req)
@@ -2620,6 +2614,8 @@ func TestWorkerRootlessRunSandboxCollectsRecoveryAfterRemoteFailure(t *testing.T
 	}
 
 	err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+		JSON:                  true,
+		JSONChanged:           true,
 		SandboxName:           "worker-rootless",
 		SandboxNameChanged:    true,
 		SandboxHostID:         "worker-1",
@@ -2676,8 +2672,11 @@ func TestWorkerRootlessRunSandboxCollectsRecoveryAfterRemoteFailure(t *testing.T
 			return nil
 		},
 	})
-	if !errors.Is(err, remoteErr) {
-		t.Fatalf("runRunSandboxWithWriter() error = %v, want original worker command failure", err)
+	requireRenderedJSONExitCode(t, err, ExitCodeExpectedNonZero)
+	var result RunResult
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
+	if result.OK {
+		t.Fatal("RunResult.OK = true, want false")
 	}
 	if !reflect.DeepEqual(execCalls, []string{"remote_run", "recovery_generation"}) {
 		t.Fatalf("exec calls = %#v, want remote failure followed by recovery generation", execCalls)
@@ -2715,7 +2714,6 @@ func TestWorkerRootlessAutoSandboxRecordsRecoveryWarningAfterFailedCopyOut(t *te
 	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
 	var out bytes.Buffer
 	var errOut bytes.Buffer
-	remoteErr := errors.New("worker auto command failed")
 	recoveryErr := errors.New(unsafeWorkerClientFailureDetail())
 	var execCalls []string
 	var copyOuts []sandboxruntime.CopyRequest
@@ -2732,7 +2730,10 @@ func TestWorkerRootlessAutoSandboxRecordsRecoveryWarningAfterFailedCopyOut(t *te
 			}
 			if isWorkerAutoCommandExec(req) {
 				execCalls = append(execCalls, "remote_auto")
-				return nil, remoteErr
+				if _, err := io.WriteString(req.Stdout, `{"contractVersion":2,"ok":false,"entryMode":"report_discovery","resumed":false,"steps":{},"error":"remote auto failed","summary":"remote auto failed"}`+"\n"); err != nil {
+					return nil, err
+				}
+				return &sandboxruntime.ExecResult{ExitCode: ExitCodeExpectedNonZero}, nil
 			}
 			t.Fatalf("unexpected worker exec args: %#v", req.Args)
 			return nil, nil
@@ -2747,6 +2748,8 @@ func TestWorkerRootlessAutoSandboxRecordsRecoveryWarningAfterFailedCopyOut(t *te
 	}
 
 	err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
+		JSON:                  true,
+		JSONChanged:           true,
 		SandboxName:           "worker-rootless",
 		SandboxNameChanged:    true,
 		SandboxHostID:         "worker-1",
@@ -2802,11 +2805,14 @@ func TestWorkerRootlessAutoSandboxRecordsRecoveryWarningAfterFailedCopyOut(t *te
 			return nil
 		},
 	})
-	if !errors.Is(err, remoteErr) {
-		t.Fatalf("runAutoSandboxWithWriter() error = %v, want original worker command failure", err)
-	}
+	requireRenderedJSONExitCode(t, err, ExitCodeExpectedNonZero)
 	if errors.Is(err, recoveryErr) {
 		t.Fatalf("runAutoSandboxWithWriter() error = %v, recovery copy-out failure should remain best-effort", err)
+	}
+	var result AutoResult
+	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
+	if result.OK {
+		t.Fatal("AutoResult.OK = true, want false")
 	}
 	if !reflect.DeepEqual(execCalls, []string{"remote_auto", "recovery_generation"}) {
 		t.Fatalf("exec calls = %#v, want remote failure followed by recovery generation", execCalls)
@@ -3340,9 +3346,7 @@ func TestWorkerClientAutoSandboxJSONProtocolFailureIsSanitized(t *testing.T) {
 			return nil, unsafeWorkerClientProtocolFailure()
 		},
 	})
-	if err != nil {
-		t.Fatalf("runAutoSandboxWithWriter() error = %v, want JSON error result", err)
-	}
+	requireRenderedJSONExitCode(t, err, ExitCodeValidation)
 	var result AutoResult
 	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
 	requireWorkerClientFailureMessage(t, result.Error)
@@ -4280,6 +4284,14 @@ func isWorkerAutoCommandExec(req sandboxruntime.ExecRequest) bool {
 	}
 	command := strings.Join(req.Args, "\n")
 	return strings.Contains(command, "'hal' 'auto'") || strings.Contains(command, "hal auto")
+}
+
+func isWorkerRunCommandExec(req sandboxruntime.ExecRequest) bool {
+	if len(req.Args) >= 2 && req.Args[0] == "hal" && req.Args[1] == "run" {
+		return true
+	}
+	command := strings.Join(req.Args, "\n")
+	return strings.Contains(command, "'hal' 'run'") || strings.Contains(command, "hal run")
 }
 
 func firstNonEmptyForTest(values ...string) string {

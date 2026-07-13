@@ -278,7 +278,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 	req, err := parseRunSandboxRequest(args, opts)
 	if err != nil {
 		if opts.JSON {
-			return outputRunJSONError(out, err.Error())
+			return outputRunJSONErrorForCommand(cmd, out, err.Error())
 		}
 		return runSandboxExitValidation(cmd, err)
 	}
@@ -288,7 +288,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 	store, storeErr := deps.defaultStore()
 	if storeErr != nil {
 		if opts.JSON {
-			return outputRunJSONError(out, fmt.Errorf("open sandbox execution store: %w", storeErr).Error())
+			return outputRunJSONErrorForCommand(cmd, out, fmt.Errorf("open sandbox execution store: %w", storeErr).Error())
 		}
 		return fmt.Errorf("open sandbox execution store: %w", storeErr)
 	}
@@ -297,7 +297,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 	if err != nil {
 		err = fmt.Errorf("resolve project directory: %w", err)
 		if opts.JSON {
-			return outputRunJSONError(out, err.Error())
+			return outputRunJSONErrorForCommand(cmd, out, err.Error())
 		}
 		return err
 	}
@@ -306,7 +306,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 	if err != nil {
 		err = fmt.Errorf("load sandbox security config: %w", err)
 		if opts.JSON {
-			return outputRunJSONError(out, err.Error())
+			return outputRunJSONErrorForCommand(cmd, out, err.Error())
 		}
 		return err
 	}
@@ -314,7 +314,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 	req.SecurityReadinessGateMode = securitySettings.ReadinessGateMode
 	if err := saveRunSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, nil); err != nil {
 		if opts.JSON {
-			return outputRunJSONError(out, err.Error())
+			return outputRunJSONErrorForCommand(cmd, out, err.Error())
 		}
 		return err
 	}
@@ -324,7 +324,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 		applyRunSandboxSecurityReadinessGateError(&req, cause)
 		_ = saveRunSandboxManifest(store, req, sandboxexecution.StatusFailed, startedAt, &finishedAt, nil)
 		if opts.JSON {
-			return outputRunJSONErrorWithReadinessGate(out, cause.Error(), sandboxCommandSecurityReadinessGateDecisionFromError(cause))
+			return outputRunJSONErrorWithReadinessGateForCommand(cmd, out, cause.Error(), sandboxCommandSecurityReadinessGateDecisionFromError(cause))
 		}
 		return runSandboxExitValidation(cmd, cause)
 	}
@@ -426,7 +426,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 	}
 	if execErr != nil {
 		if opts.JSON && !execResult.RemoteStarted {
-			return outputRunJSONErrorWithReadinessGate(out, execErr.Error(), sandboxCommandSecurityReadinessGateDecisionFromError(execErr))
+			return outputRunJSONErrorWithReadinessGateForCommand(cmd, out, execErr.Error(), sandboxCommandSecurityReadinessGateDecisionFromError(execErr))
 		}
 		return execErr
 	}
@@ -1032,7 +1032,7 @@ func runSandboxRuntimeExec(ctx context.Context, run sandboxexec.RunContext, comm
 	if run.Driver == nil {
 		return fmt.Errorf("sandbox runtime driver is required")
 	}
-	_, err := run.Driver.Exec(ctx, sandboxruntime.ExecRequest{
+	result, err := run.Driver.Exec(ctx, sandboxruntime.ExecRequest{
 		Target: run.Target,
 		Args:   runSandboxRemoteExecArgs(command),
 		Stdout: command.Stdout,
@@ -1040,7 +1040,20 @@ func runSandboxRuntimeExec(ctx context.Context, run sandboxexec.RunContext, comm
 		Stdin:  command.Stdin,
 		Env:    command.Env,
 	})
-	return err
+	if result == nil || result.ExitCode == 0 {
+		return err
+	}
+	if result.ExitCode > 0 {
+		exitErr := exitWithCode(nil, result.ExitCode, nil)
+		if err != nil {
+			return errors.Join(err, exitErr)
+		}
+		return exitErr
+	}
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("sandbox runtime command exited with status %d", result.ExitCode)
 }
 
 func (deps runSandboxDeps) bootstrapRunSandboxWorkspace(ctx context.Context, req runSandboxRequest, provider sandbox.Provider, prep sandboxexec.PrepareContext, out io.Writer) error {

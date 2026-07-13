@@ -215,7 +215,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 	req, err := parseAutoSandboxRequest(args, opts)
 	if err != nil {
 		if opts.JSON {
-			return outputAutoSandboxJSONError(out, args, opts, err.Error())
+			return outputAutoSandboxJSONErrorForCommand(cmd, out, args, opts, err.Error())
 		}
 		return autoSandboxExitValidation(cmd, err)
 	}
@@ -226,7 +226,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 	if storeErr != nil {
 		err := fmt.Errorf("open sandbox execution store: %w", storeErr)
 		if opts.JSON {
-			return outputAutoSandboxJSONError(out, args, opts, err.Error())
+			return outputAutoSandboxJSONErrorForCommand(cmd, out, args, opts, err.Error())
 		}
 		return err
 	}
@@ -239,7 +239,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 	if err != nil {
 		err := fmt.Errorf("resolve project directory: %w", err)
 		if opts.JSON {
-			return outputAutoSandboxJSONError(out, args, opts, err.Error())
+			return outputAutoSandboxJSONErrorForCommand(cmd, out, args, opts, err.Error())
 		}
 		return err
 	}
@@ -248,7 +248,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 	if err != nil {
 		err = fmt.Errorf("load sandbox security config: %w", err)
 		if opts.JSON {
-			return outputAutoSandboxJSONError(out, args, opts, err.Error())
+			return outputAutoSandboxJSONErrorForCommand(cmd, out, args, opts, err.Error())
 		}
 		return err
 	}
@@ -257,7 +257,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 	req.RemoteCommand = buildAutoSandboxRemoteCommand(req)
 	if err := saveAutoSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, nil); err != nil {
 		if opts.JSON {
-			return outputAutoSandboxJSONError(out, args, opts, err.Error())
+			return outputAutoSandboxJSONErrorForCommand(cmd, out, args, opts, err.Error())
 		}
 		return err
 	}
@@ -267,7 +267,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 		applyAutoSandboxSecurityReadinessGateError(&req, cause)
 		_ = saveAutoSandboxManifest(store, req, sandboxexecution.StatusFailed, startedAt, &finishedAt, nil)
 		if opts.JSON {
-			return outputAutoSandboxJSONErrorWithReadinessGate(out, args, opts, cause.Error(), sandboxCommandSecurityReadinessGateDecisionFromError(cause))
+			return outputAutoSandboxJSONErrorWithReadinessGateForCommand(cmd, out, args, opts, cause.Error(), sandboxCommandSecurityReadinessGateDecisionFromError(cause))
 		}
 		return autoSandboxExitValidation(cmd, cause)
 	}
@@ -381,7 +381,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 	}
 	if execErr != nil {
 		if opts.JSON && !execResult.RemoteStarted {
-			return outputAutoSandboxJSONErrorWithReadinessGate(out, args, opts, execErr.Error(), sandboxCommandSecurityReadinessGateDecisionFromError(execErr))
+			return outputAutoSandboxJSONErrorWithReadinessGateForCommand(cmd, out, args, opts, execErr.Error(), sandboxCommandSecurityReadinessGateDecisionFromError(execErr))
 		}
 		return execErr
 	}
@@ -1098,6 +1098,13 @@ func outputAutoSandboxJSONError(out io.Writer, args []string, opts autoSandboxOp
 	return outputAutoSandboxJSONErrorWithReadinessGate(out, args, opts, errMsg, nil)
 }
 
+func outputAutoSandboxJSONErrorForCommand(cmd *cobra.Command, out io.Writer, args []string, opts autoSandboxOptions, errMsg string) error {
+	if err := outputAutoSandboxJSONError(out, args, opts, errMsg); err != nil {
+		return err
+	}
+	return exitWithCode(cmd, ExitCodeValidation, nil)
+}
+
 func outputAutoSandboxJSONErrorWithReadinessGate(out io.Writer, args []string, opts autoSandboxOptions, errMsg string, gate *sandbox.SandboxSecurityCapabilityReadinessGateDecision) error {
 	errMsg = sanitizeRunPublicString(errMsg)
 	entryMode := determineAutoEntryMode("")
@@ -1107,6 +1114,13 @@ func outputAutoSandboxJSONErrorWithReadinessGate(out io.Writer, args []string, o
 	jr := autoFailureResult(entryMode, opts.Resume, errMsg, errMsg, autoFailurePipeline, false, "", "")
 	jr.SecurityReadinessGate = sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(gate)
 	return outputAutoJSON(out, jr)
+}
+
+func outputAutoSandboxJSONErrorWithReadinessGateForCommand(cmd *cobra.Command, out io.Writer, args []string, opts autoSandboxOptions, errMsg string, gate *sandbox.SandboxSecurityCapabilityReadinessGateDecision) error {
+	if err := outputAutoSandboxJSONErrorWithReadinessGate(out, args, opts, errMsg, gate); err != nil {
+		return err
+	}
+	return exitWithCode(cmd, ExitCodeValidation, nil)
 }
 
 func autoSandboxFactoryAttemptEnv(ctx context.Context) (map[string]string, error) {

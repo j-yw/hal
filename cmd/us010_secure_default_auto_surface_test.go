@@ -81,8 +81,12 @@ func TestUS010AutoSandboxJSONAndManifestUseSharedSecureDefaultDecision(t *testin
 					}, nil
 				},
 			})
-			if err != nil {
-				t.Fatalf("runAutoSandboxWithWriter() error = %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+			if tt.wantOK {
+				if err != nil {
+					t.Fatalf("runAutoSandboxWithWriter() error = %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+				}
+			} else {
+				requireRenderedJSONExitCode(t, err, ExitCodeValidation)
 			}
 
 			var result AutoResult

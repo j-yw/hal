@@ -67,6 +67,11 @@ func TestAutoCommand_HelpDescribesSourcePriority(t *testing.T) {
 	if !strings.Contains(autoCmd.Long, "--report report.md") {
 		t.Fatalf("auto examples should include --report usage: %q", autoCmd.Long)
 	}
+	for _, phrase := range []string{"Exit status with --json", "2 when validation or preflight fails", "4 when pipeline execution finishes", "preserves the inner hal command's nonzero status"} {
+		if !strings.Contains(autoCmd.Long, phrase) {
+			t.Fatalf("auto help should describe JSON process status %q: %q", phrase, autoCmd.Long)
+		}
+	}
 }
 
 func TestAutoCommand_ExposesOnlySinglePipelineRuntimeFlags(t *testing.T) {
@@ -266,9 +271,7 @@ func TestRunAuto_JSONNoReportsReturnsJSONOnly(t *testing.T) {
 		t.Fatalf("set json flag: %v", err)
 	}
 
-	if err := runAuto(cmd, nil); err != nil {
-		t.Fatalf("runAuto returned error: %v", err)
-	}
+	requireRenderedJSONExitCode(t, runAuto(cmd, nil), ExitCodeValidation)
 
 	assertAutoJSONContractV2(t, out.Bytes())
 
@@ -312,9 +315,7 @@ func TestRunAuto_JSONMissingMarkdownPathPreservesMarkdownEntryMode(t *testing.T)
 	}
 
 	missingPath := filepath.Join(".", "missing.md")
-	if err := runAuto(cmd, []string{missingPath}); err != nil {
-		t.Fatalf("runAuto returned error: %v", err)
-	}
+	requireRenderedJSONExitCode(t, runAuto(cmd, []string{missingPath}), ExitCodeValidation)
 
 	assertAutoJSONContractV2(t, out.Bytes())
 
@@ -389,9 +390,7 @@ func TestRunAuto_JSONResumeWithoutStateReturnsJSONOnly(t *testing.T) {
 		t.Fatalf("set resume flag: %v", err)
 	}
 
-	if err := runAuto(cmd, nil); err != nil {
-		t.Fatalf("runAuto returned error: %v", err)
-	}
+	requireRenderedJSONExitCode(t, runAuto(cmd, nil), ExitCodeValidation)
 
 	assertAutoJSONContractV2(t, out.Bytes())
 
@@ -633,9 +632,7 @@ func TestRunAuto_MigratesLegacyAutoPRDAtStartup(t *testing.T) {
 	var errOut bytes.Buffer
 	cmd.SetErr(&errOut)
 
-	if err := runAuto(cmd, nil); err != nil {
-		t.Fatalf("runAuto returned error: %v", err)
-	}
+	requireRenderedJSONExitCode(t, runAuto(cmd, nil), ExitCodeValidation)
 
 	assertAutoJSONContractV2(t, out.Bytes())
 
@@ -1155,10 +1152,7 @@ func TestOutputAutoJSON_FailureNextAction(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var out bytes.Buffer
 			jr := autoFailureResult(autoEntryModeReportDiscovery, false, "failed", "failed", tt.failure, tt.resumable, compound.StepValidate, compound.AutoConvertModeGranular)
-			err := outputAutoJSON(&out, jr)
-			if err != nil {
-				t.Fatalf("outputAutoJSON returned error: %v", err)
-			}
+			requireRenderedJSONExitCode(t, outputAutoJSONForCommand(nil, &out, jr), ExitCodeExpectedNonZero)
 
 			assertAutoJSONContractV2(t, out.Bytes())
 

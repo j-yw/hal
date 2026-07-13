@@ -372,6 +372,7 @@ Use JSON contracts when another tool or agent needs stable output.
 
 Primary contracts:
 
+- [`run-v1`](docs/contracts/run-v1.md): `hal run --json`
 - [`auto-v2`](docs/contracts/auto-v2.md): `hal auto --json`
 - [`status-v1`](docs/contracts/status-v1.md): `hal status --json`
 - [`doctor-v1`](docs/contracts/doctor-v1.md): `hal doctor --json`

@@ -652,9 +652,7 @@ func TestRunRunSandboxWithWriterJSONPreRemotePreflightFailures(t *testing.T) {
 					return runSandboxExecutionResult{}, errors.New("execute should not run")
 				},
 			})
-			if err != nil {
-				t.Fatalf("runRunSandboxWithWriter() error = %v, want nil JSON error result", err)
-			}
+			requireRenderedJSONExitCode(t, err, ExitCodeValidation)
 			if executeCalled {
 				t.Fatal("execute should not be called for pre-remote preflight failure")
 			}
@@ -743,9 +741,7 @@ func TestRunRunSandboxWithWriterWorkspacePlannerPreflightFailures(t *testing.T) 
 					return runSandboxExecutionResult{}, errors.New("execute should not run")
 				},
 			})
-			if err != nil {
-				t.Fatalf("runRunSandboxWithWriter() error = %v, want nil JSON error result", err)
-			}
+			requireRenderedJSONExitCode(t, err, ExitCodeValidation)
 			if executeCalled {
 				t.Fatal("execute should not run after workspace preflight failure")
 			}
@@ -989,9 +985,7 @@ func TestRunRunSandboxWithWriterJSONPreRemoteExecutionFailureIncludesTargetMetad
 			}, nil
 		},
 	})
-	if err != nil {
-		t.Fatalf("runRunSandboxWithWriter() error = %v, want nil JSON error result", err)
-	}
+	requireRenderedJSONExitCode(t, err, ExitCodeValidation)
 	var result RunResult
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 		t.Fatalf("stdout is not parseable RunResult JSON: %v\n%s", err, out.String())
@@ -1051,9 +1045,7 @@ func TestRunRunSandboxWithWriterJSONRuntimeDriverSetupFailureSynthesizesRunResul
 			return nil, errors.New("runtime driver setup failed")
 		},
 	})
-	if err != nil {
-		t.Fatalf("runRunSandboxWithWriter() error = %v, want nil JSON error result", err)
-	}
+	requireRenderedJSONExitCode(t, err, ExitCodeValidation)
 	var result RunResult
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 		t.Fatalf("stdout is not parseable RunResult JSON: %v\n%s", err, out.String())

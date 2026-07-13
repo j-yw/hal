@@ -68,6 +68,20 @@ Additional telemetry fields are optional per step, including:
 When convert fails, human-readable failure detail should be emitted via
 `steps.convert.error` (do not overload `steps.convert.reason` with error text).
 
+## Exit Status
+
+`hal auto --json` writes exactly one `auto-v2` JSON document to stdout. Process
+status and the document's `ok` field must be evaluated together:
+
+| Status | Meaning |
+|--------|---------|
+| `0` | The pipeline result has `ok=true` |
+| `2` | Validation or preflight failed; stdout contains `ok=false` JSON |
+| `4` | Pipeline execution finished with `ok=false` |
+
+Sandbox execution preserves the inner `hal auto --json` nonzero status. A
+rendered JSON failure does not also print the same error to stderr.
+
 ## Next Action Object
 
 When present:
