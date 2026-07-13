@@ -16,15 +16,16 @@ import (
 const sandboxCommandLeaseTTL = 30 * time.Minute
 
 type sandboxCommandScheduledTargetRequest struct {
-	Purpose        string
-	SandboxName    string
-	SandboxHostID  string
-	SandboxRuntime string
-	ProjectDir     string
-	Repository     string
-	Branch         string
-	RunID          string
-	Workspace      *sandbox.SandboxWorkspace
+	Purpose               string
+	SandboxName           string
+	SandboxHostID         string
+	SandboxRuntime        string
+	ProjectDir            string
+	Repository            string
+	Branch                string
+	RunID                 string
+	Workspace             *sandbox.SandboxWorkspace
+	RequireWorkerRootless bool
 }
 
 type sandboxCommandScheduledTargetDeps struct {
@@ -41,24 +42,23 @@ func resolveSandboxCommandExecutionTarget(
 	scheduledReq sandboxCommandScheduledTargetRequest,
 	scheduledDeps sandboxCommandScheduledTargetDeps,
 ) (*sandbox.SandboxState, error) {
-	if !sandboxWorkerRoutingRequested(targetReq.SandboxHostID, targetReq.SandboxRuntime) {
-		return resolveSandboxCommandTarget(ctx, targetReq, targetDeps)
-	}
-
+	workerRoutingRequested := sandboxWorkerRoutingRequested(targetReq.SandboxHostID, targetReq.SandboxRuntime)
 	name := strings.TrimSpace(targetReq.SandboxName)
 	if name == "" {
-		return resolveSandboxCommandScheduledTarget(scheduledReq, scheduledDeps)
+		if workerRoutingRequested {
+			return resolveSandboxCommandScheduledTarget(scheduledReq, scheduledDeps)
+		}
+		return resolveSandboxCommandTarget(ctx, targetReq, targetDeps)
+	}
+	if !workerRoutingRequested {
+		return resolveSandboxCommandTarget(ctx, targetReq, targetDeps)
 	}
 	if targetDeps.loadSandbox == nil {
 		return nil, fmt.Errorf("load %s %q: sandbox loader is required", sandboxCommandLoadContext(targetReq), name)
 	}
 
 	target, err := targetDeps.loadSandbox(name)
-	if errors.Is(err, fs.ErrNotExist) {
-		scheduledReq.SandboxName = name
-		return resolveSandboxCommandScheduledTarget(scheduledReq, scheduledDeps)
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("load %s %q: %w", sandboxCommandLoadContext(targetReq), name, err)
 	}
 
@@ -67,9 +67,69 @@ func resolveSandboxCommandExecutionTarget(
 		if strings.TrimSpace(requestedName) != name {
 			return nil, fs.ErrNotExist
 		}
+		if target == nil {
+			return nil, fs.ErrNotExist
+		}
 		return target, nil
 	}
+	if err == nil {
+		return resolveSandboxCommandTarget(ctx, targetReq, pinnedDeps)
+	}
+
+	// A missing explicit name changes identity only. Keep SSH provisioning and
+	// unsupported runtimes on their existing paths; synthesize only rootless workers.
+	runtimeDriver := strings.TrimSpace(targetReq.SandboxRuntime)
+	hostID := strings.TrimSpace(targetReq.SandboxHostID)
+	if runtimeDriver == sandboxruntime.DriverSSHMachine && hostID == "" {
+		return provisionSandboxCommandTarget(ctx, targetReq, targetDeps, name, targetReq.Branch, targetReq.ProvisionRepository)
+	}
+	if runtimeDriver == sandboxruntime.DriverRootlessPodman {
+		scheduledReq.SandboxName = name
+		scheduledReq.RequireWorkerRootless = true
+		return resolveSandboxCommandScheduledTarget(scheduledReq, scheduledDeps)
+	}
+	if runtimeDriver == "" && hostID != "" {
+		hosts, listErr := listSandboxCommandNamedTargetHosts(targetDeps, scheduledDeps)
+		pinnedHostLister := func() ([]*sandbox.SandboxHost, error) {
+			return hosts, listErr
+		}
+		pinnedDeps.listHosts = pinnedHostLister
+		scheduledDeps.listHosts = pinnedHostLister
+		if listErr == nil && sandboxCommandNamedRootlessWorkerHost(hosts, hostID) {
+			scheduledReq.SandboxName = name
+			scheduledReq.SandboxRuntime = sandboxruntime.DriverRootlessPodman
+			scheduledReq.RequireWorkerRootless = true
+			return resolveSandboxCommandScheduledTarget(scheduledReq, scheduledDeps)
+		}
+	}
 	return resolveSandboxCommandTarget(ctx, targetReq, pinnedDeps)
+}
+
+func listSandboxCommandNamedTargetHosts(targetDeps sandboxCommandTargetDeps, scheduledDeps sandboxCommandScheduledTargetDeps) ([]*sandbox.SandboxHost, error) {
+	listHosts := targetDeps.listHosts
+	if listHosts == nil {
+		listHosts = scheduledDeps.listHosts
+	}
+	if listHosts == nil {
+		return nil, fmt.Errorf("host lister is required")
+	}
+	return listHosts()
+}
+
+func sandboxCommandNamedRootlessWorkerHost(hosts []*sandbox.SandboxHost, hostID string) bool {
+	var match *sandbox.SandboxHost
+	for _, host := range hosts {
+		if host == nil || strings.TrimSpace(host.ID) != hostID {
+			continue
+		}
+		if match != nil {
+			return false
+		}
+		match = host
+	}
+	return match != nil &&
+		strings.TrimSpace(match.Kind) == sandbox.SandboxHostKindWorker &&
+		sandboxRuntimeHostSupportsRuntime(match, sandboxruntime.DriverRootlessPodman)
 }
 
 func resolveSandboxCommandScheduledTarget(req sandboxCommandScheduledTargetRequest, deps sandboxCommandScheduledTargetDeps) (*sandbox.SandboxState, error) {
@@ -104,6 +164,11 @@ func resolveSandboxCommandScheduledTarget(req sandboxCommandScheduledTargetReque
 	}); err != nil {
 		return nil, err
 	}
+	if req.RequireWorkerRootless {
+		if err := validateSandboxCommandScheduledWorkerRootlessTarget(target); err != nil {
+			return nil, err
+		}
+	}
 
 	if result.RequiresLease() {
 		lease, err := acquireSandboxCommandLease(req, target, result.Lease, deps)
@@ -114,6 +179,30 @@ func resolveSandboxCommandScheduledTarget(req sandboxCommandScheduledTargetReque
 	}
 
 	return target, nil
+}
+
+func validateSandboxCommandScheduledWorkerRootlessTarget(target *sandbox.SandboxState) error {
+	hostID := ""
+	if target != nil && target.Host != nil {
+		hostID = strings.TrimSpace(target.Host.ID)
+	}
+	if target == nil || target.Host == nil || strings.TrimSpace(target.Host.Kind) != sandbox.SandboxHostKindWorker {
+		return sandboxCommandTargetFailureError(&sandboxtarget.Failure{
+			Reason:        sandboxtarget.FailureReasonRuntimeUnsupported,
+			Message:       fmt.Sprintf("runtime_unsupported: host %q is not a worker-backed %s target", hostID, sandboxruntime.DriverRootlessPodman),
+			HostID:        hostID,
+			RuntimeDriver: sandboxruntime.DriverRootlessPodman,
+		})
+	}
+	if target.Runtime == nil || strings.TrimSpace(target.Runtime.Driver) != sandboxruntime.DriverRootlessPodman {
+		return sandboxCommandTargetFailureError(&sandboxtarget.Failure{
+			Reason:        sandboxtarget.FailureReasonRuntimeUnsupported,
+			Message:       fmt.Sprintf("runtime_unsupported: worker host %q does not provide runtime %q", hostID, sandboxruntime.DriverRootlessPodman),
+			HostID:        hostID,
+			RuntimeDriver: sandboxruntime.DriverRootlessPodman,
+		})
+	}
+	return nil
 }
 
 func sandboxCommandSchedulerWorkspace(workspace *sandbox.SandboxWorkspace) sandboxtarget.WorkspaceContext {
