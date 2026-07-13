@@ -1891,6 +1891,7 @@ func TestRunAutoSandboxWithWriterForwardsFactoryAttemptPolicyEnv(t *testing.T) {
 		autoFactoryMaxRunAttemptsEnv:       "2",
 		autoFactoryMaxReviewFixAttemptsEnv: "3",
 		autoFactoryMaxCIFixAttemptsEnv:     "4",
+		autoFactoryRuntimeStatePolicyEnv:   compound.RuntimeStatePolicyCheckpointHalState,
 	}
 	if !reflect.DeepEqual(gotEnv, want) {
 		t.Fatalf("remote env = %#v, want %#v", gotEnv, want)
@@ -1910,6 +1911,36 @@ func TestAutoSandboxFactoryAttemptEnvForwardsRuntimeStatePolicy(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("factory env = %#v, want %#v", got, want)
+	}
+}
+
+func TestAutoSandboxExecutionEnvDefaultsDirectSandboxRuntimeStatePolicy(t *testing.T) {
+	t.Setenv(autoFactoryRuntimeStatePolicyEnv, "")
+	got, err := autoSandboxExecutionEnv(context.Background())
+	if err != nil {
+		t.Fatalf("autoSandboxExecutionEnv() unexpected error: %v", err)
+	}
+
+	want := map[string]string{
+		autoFactoryRuntimeStatePolicyEnv: compound.RuntimeStatePolicyCheckpointHalState,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sandbox auto env = %#v, want %#v", got, want)
+	}
+}
+
+func TestAutoSandboxExecutionEnvPreservesExplicitStrictRuntimeStatePolicy(t *testing.T) {
+	ctx := contextWithAutoFactoryRuntimeStatePolicy(context.Background(), compound.RuntimeStatePolicyStrict)
+	got, err := autoSandboxExecutionEnv(ctx)
+	if err != nil {
+		t.Fatalf("autoSandboxExecutionEnv() unexpected error: %v", err)
+	}
+
+	want := map[string]string{
+		autoFactoryRuntimeStatePolicyEnv: compound.RuntimeStatePolicyStrict,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sandbox auto env = %#v, want %#v", got, want)
 	}
 }
 

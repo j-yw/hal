@@ -1393,10 +1393,15 @@ func (p *Pipeline) finalizeReviewFixes(ctx context.Context) error {
 }
 
 func (p *Pipeline) checkpointRuntimeStateForFinalVerification(ctx context.Context, opts RunOptions) error {
+	commitMessage := "chore: checkpoint Hal runtime state"
+	displayLabel := "Hal runtime state"
 	switch strings.ToLower(strings.TrimSpace(opts.RuntimeStatePolicy)) {
 	case "", RuntimeStatePolicyStrict:
 		return nil
 	case RuntimeStatePolicyCheckpointFactoryState:
+		commitMessage = "chore: checkpoint Hal factory runtime state"
+		displayLabel = "Hal factory runtime state"
+	case RuntimeStatePolicyCheckpointHalState:
 	default:
 		return fmt.Errorf("unsupported runtime state policy %q", opts.RuntimeStatePolicy)
 	}
@@ -1414,12 +1419,12 @@ func (p *Pipeline) checkpointRuntimeStateForFinalVerification(ctx context.Contex
 		return fmt.Errorf("runtime state checkpoint blocked: unexpected dirty files: %s", strings.Join(unexpected, ", "))
 	}
 
-	p.display.ShowInfo("   Checkpointing Hal factory runtime state before final verification\n")
+	p.display.ShowInfo("   Checkpointing %s before final verification\n", displayLabel)
 	if err := gitAddAllInDirFn(ctx, p.dir); err != nil {
-		return fmt.Errorf("stage Hal factory runtime state checkpoint: %w", err)
+		return fmt.Errorf("stage %s checkpoint: %w", displayLabel, err)
 	}
-	if err := gitCommitInDirFn(ctx, p.dir, "chore: checkpoint Hal factory runtime state"); err != nil {
-		return fmt.Errorf("commit Hal factory runtime state checkpoint: %w", err)
+	if err := gitCommitInDirFn(ctx, p.dir, commitMessage); err != nil {
+		return fmt.Errorf("commit %s checkpoint: %w", displayLabel, err)
 	}
 	return nil
 }

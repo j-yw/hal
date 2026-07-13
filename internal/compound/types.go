@@ -93,11 +93,12 @@ const (
 	CIPolicyDisabled          = "disabled"
 )
 
-// Factory-provided runtime state policies. Empty policy preserves strict
-// direct hal auto behavior.
+// Internal runtime state policies. Empty policy preserves strict direct hal
+// auto behavior.
 const (
 	RuntimeStatePolicyStrict                 = "strict"
 	RuntimeStatePolicyCheckpointFactoryState = "checkpoint_factory_state"
+	RuntimeStatePolicyCheckpointHalState     = "checkpoint_hal_state"
 )
 
 // ReviewResult contains the output of a review operation.

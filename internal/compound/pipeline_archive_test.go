@@ -235,6 +235,113 @@ func TestRunArchiveStep_CheckpointsFactoryStateAfterSkippedReviewAndReport(t *te
 	}
 }
 
+func TestRunArchiveStep_CheckpointsSandboxAutoStateAfterSkippedReview(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	writeCompoundFile(t, filepath.Join(halDir, template.PRDFile), `{"project":"archive","branchName":"hal/archive-sandbox-auto","userStories":[]}`)
+	writeCompoundFile(t, filepath.Join(halDir, template.ProgressFile), "sandbox auto progress")
+
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, nil, engine.NewDisplay(io.Discard), dir)
+	state := &PipelineState{
+		Step:       StepArchive,
+		BaseBranch: "main",
+		BranchName: "hal/archive-sandbox-auto",
+		StartedAt:  time.Now(),
+	}
+
+	origStatus := workingTreeChangesInDirFn
+	statusCalls := 0
+	workingTreeChangesInDirFn = func(string) ([]string, error) {
+		statusCalls++
+		if statusCalls == 1 {
+			return []string{
+				filepath.ToSlash(filepath.Join(template.HalDir, template.PRDFile)),
+				filepath.ToSlash(filepath.Join(template.HalDir, template.ProgressFile)),
+			}, nil
+		}
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		workingTreeChangesInDirFn = origStatus
+	})
+
+	addCalled := false
+	origAdd := gitAddAllInDirFn
+	gitAddAllInDirFn = func(context.Context, string) error {
+		addCalled = true
+		return nil
+	}
+	t.Cleanup(func() {
+		gitAddAllInDirFn = origAdd
+	})
+	commitCalled := false
+	origCommit := gitCommitInDirFn
+	gitCommitInDirFn = func(_ context.Context, gotDir, message string) error {
+		commitCalled = true
+		if gotDir != dir {
+			t.Fatalf("commit dir = %q, want %q", gotDir, dir)
+		}
+		if message != "chore: checkpoint Hal runtime state" {
+			t.Fatalf("commit message = %q, want sandbox auto checkpoint message", message)
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		gitCommitInDirFn = origCommit
+	})
+
+	err := pipeline.runArchiveStep(context.Background(), state, RunOptions{RuntimeStatePolicy: RuntimeStatePolicyCheckpointHalState})
+	if err != nil {
+		t.Fatalf("runArchiveStep returned error: %v", err)
+	}
+	if !addCalled || !commitCalled {
+		t.Fatalf("checkpoint add/commit = %t/%t, want true/true", addCalled, commitCalled)
+	}
+	if statusCalls != 2 {
+		t.Fatalf("working tree checks = %d, want checkpoint then archive gate", statusCalls)
+	}
+	if state.Step != StepDone {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepDone)
+	}
+}
+
+func TestSandboxAutoRuntimeCheckpointRejectsUnexpectedSourceAndConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, nil, engine.NewDisplay(io.Discard), dir)
+
+	origStatus := workingTreeChangesInDirFn
+	workingTreeChangesInDirFn = func(string) ([]string, error) {
+		return []string{
+			filepath.ToSlash(filepath.Join(template.HalDir, template.PRDFile)),
+			"src/game.ts",
+			filepath.ToSlash(filepath.Join(template.HalDir, template.ConfigFile)),
+		}, nil
+	}
+	t.Cleanup(func() {
+		workingTreeChangesInDirFn = origStatus
+	})
+	origAdd := gitAddAllInDirFn
+	gitAddAllInDirFn = func(context.Context, string) error {
+		t.Fatal("unexpected files must not be staged")
+		return nil
+	}
+	t.Cleanup(func() {
+		gitAddAllInDirFn = origAdd
+	})
+
+	err := pipeline.checkpointRuntimeStateForFinalVerification(context.Background(), RunOptions{RuntimeStatePolicy: RuntimeStatePolicyCheckpointHalState})
+	if err == nil {
+		t.Fatal("checkpointRuntimeStateForFinalVerification error = nil, want unexpected dirty files")
+	}
+	for _, want := range []string{"unexpected dirty files", "src/game.ts", ".hal/config.yaml"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("checkpoint error = %q, want %q", err, want)
+		}
+	}
+}
+
 func TestRunArchiveStep_FactoryCheckpointRejectsUnexpectedSourceAndConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultAutoConfig()

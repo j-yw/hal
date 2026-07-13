@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxexec"
@@ -271,7 +272,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 		return autoSandboxExitValidation(cmd, cause)
 	}
 
-	env, err := autoSandboxFactoryAttemptEnv(ctx)
+	env, err := autoSandboxExecutionEnv(ctx)
 	if err != nil {
 		return failBeforeRemote(err)
 	}
@@ -1131,6 +1132,21 @@ func autoSandboxFactoryAttemptEnv(ctx context.Context) (map[string]string, error
 	if runtimeStatePolicy != "" {
 		env[autoFactoryRuntimeStatePolicyEnv] = runtimeStatePolicy
 	}
+	return env, nil
+}
+
+func autoSandboxExecutionEnv(ctx context.Context) (map[string]string, error) {
+	env, err := autoSandboxFactoryAttemptEnv(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, explicitlyConfigured := env[autoFactoryRuntimeStatePolicyEnv]; explicitlyConfigured {
+		return env, nil
+	}
+	if env == nil {
+		env = map[string]string{}
+	}
+	env[autoFactoryRuntimeStatePolicyEnv] = compound.RuntimeStatePolicyCheckpointHalState
 	return env, nil
 }
 

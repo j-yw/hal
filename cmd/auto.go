@@ -937,8 +937,10 @@ func validateAutoFactoryRuntimeStatePolicy(policy string) (string, error) {
 		return compound.RuntimeStatePolicyStrict, nil
 	case "checkpoint", compound.RuntimeStatePolicyCheckpointFactoryState:
 		return compound.RuntimeStatePolicyCheckpointFactoryState, nil
+	case compound.RuntimeStatePolicyCheckpointHalState:
+		return compound.RuntimeStatePolicyCheckpointHalState, nil
 	default:
-		return "", fmt.Errorf("%s must be one of strict, checkpoint", autoFactoryRuntimeStatePolicyEnv)
+		return "", fmt.Errorf("%s must be one of strict, checkpoint, %s", autoFactoryRuntimeStatePolicyEnv, compound.RuntimeStatePolicyCheckpointHalState)
 	}
 }
 
