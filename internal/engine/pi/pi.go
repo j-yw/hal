@@ -151,12 +151,15 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 		}
 	}
 
-	// Parse success and completion from parser state
-	success := !parser.HasFailure()
+	// Process exit alone is not a successful Pi run boundary. Require a
+	// completed terminal assistant outcome from agent_end.
+	success := parser.HasTerminalOutcome() && !parser.HasFailure()
 	complete := strings.Contains(output, "<promise>COMPLETE</promise>")
 	var resultErr error
 	if parser.TerminalError() != "" {
 		resultErr = fmt.Errorf("execution failed: %s", parser.TerminalError())
+	} else if !parser.HasTerminalOutcome() {
+		resultErr = fmt.Errorf("execution failed: %s", incompletePiTerminalError)
 	}
 
 	return engine.Result{
@@ -276,6 +279,9 @@ func (e *Engine) StreamPrompt(ctx context.Context, prompt string, display *engin
 
 	if parser.TerminalError() != "" {
 		return "", fmt.Errorf("prompt failed: %s", parser.TerminalError())
+	}
+	if !parser.HasTerminalOutcome() {
+		return "", fmt.Errorf("prompt failed: %s", incompletePiTerminalError)
 	}
 
 	return collector.Text(), nil

@@ -22,7 +22,7 @@ func TestExecute_AllowsNonZeroAfterSuccessfulResult(t *testing.T) {
 	binDir := t.TempDir()
 	writeFakePi(t, binDir, `#!/bin/sh
 printf '{"type":"session"}\n'
-printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}]}]}\n'
+printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}]}\n'
 exit 1
 `)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -57,9 +57,9 @@ printf '{"type":"agent_end","messages":[{"role":"assistant","content":[],"stopRe
 		},
 		{
 			name: "tool execution error",
-			events: `printf '{"type":"tool_execution_end","toolCallId":"tool1","toolName":"bash","result":{"content":[{"type":"text","text":"command exited 1"}]},"isError":true}\n'
+			events: `printf '{"type":"tool_execution_end","toolCallId":"tool1","toolName":"bash","result":{"content":[{"type":"text","text":"command failed with sk-live-test-secret"}]},"isError":true}\n'
 printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"used a fallback"}],"stopReason":"stop"}}\n'
-printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"toolCall","id":"tool1","name":"bash"}],"stopReason":"toolUse"},{"role":"toolResult","content":[{"type":"text","text":"command exited 1"}],"isError":true},{"role":"assistant","content":[{"type":"text","text":"used a fallback"}],"stopReason":"stop"}]}\n'`,
+printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"toolCall","id":"tool1","name":"bash"}],"stopReason":"toolUse"},{"role":"toolResult","content":[{"type":"text","text":"command failed with sk-live-test-secret"}],"isError":true},{"role":"assistant","content":[{"type":"text","text":"used a fallback"}],"stopReason":"stop"}]}\n'`,
 		},
 	}
 
@@ -86,6 +86,77 @@ printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"
 	}
 }
 
+func TestExecute_RequiresAuthoritativeTerminalOutcome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	tests := []struct {
+		name   string
+		events string
+		exit   string
+	}{
+		{name: "missing agent end", events: `printf '{"type":"session"}\n'`, exit: "exit 0"},
+		{name: "malformed agent end", events: `printf '{"type":"agent_end","messages":['`, exit: "exit 0"},
+		{name: "missing messages", events: `printf '{"type":"agent_end"}\n'`, exit: "exit 0"},
+		{name: "empty messages zero exit", events: `printf '{"type":"agent_end","messages":[]}\n'`, exit: "exit 0"},
+		{name: "empty messages nonzero exit", events: `printf '{"type":"agent_end","messages":[]}\n'`, exit: "exit 1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			writeFakePi(t, binDir, "#!/bin/sh\n"+tt.events+"\n"+tt.exit+"\n")
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
+			result := eng.Execute(context.Background(), "test prompt", nil)
+			if result.Error == nil {
+				t.Fatalf("Execute() error = nil for incomplete terminal output: %q", result.Output)
+			}
+			if result.Success {
+				t.Fatal("Execute() success = true for incomplete terminal output")
+			}
+		})
+	}
+}
+
+func TestExecute_RejectsUnfinishedToolUseOnProcessFailureOrDeadline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	tests := []struct {
+		name        string
+		toolIsError string
+		termination string
+		timeout     time.Duration
+	}{
+		{name: "failed tool nonzero", toolIsError: "true", termination: "exit 1", timeout: 10 * time.Second},
+		{name: "successful tool nonzero", toolIsError: "false", termination: "exit 1", timeout: 10 * time.Second},
+		{name: "failed tool deadline", toolIsError: "true", termination: "sleep 5", timeout: 50 * time.Millisecond},
+		{name: "successful tool deadline", toolIsError: "false", termination: "sleep 5", timeout: 50 * time.Millisecond},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			events := `printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"toolCall","id":"tool1","name":"bash"}],"stopReason":"toolUse"},{"role":"toolResult","content":[{"type":"text","text":"tool result"}],"isError":` + tt.toolIsError + `}]}\n'`
+			writeFakePi(t, binDir, "#!/bin/sh\n"+events+"\n"+tt.termination+"\n")
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			eng := New(&engine.EngineConfig{Timeout: tt.timeout})
+			result := eng.Execute(context.Background(), "test prompt", nil)
+			if result.Error == nil {
+				t.Fatal("Execute() error = nil for unfinished tool use")
+			}
+			if result.Success {
+				t.Fatal("Execute() success = true for unfinished tool use")
+			}
+		})
+	}
+}
+
 func TestRecoverExecuteResult_PrefersSuccessfulTerminalResultOverTimeout(t *testing.T) {
 	eng := New(nil)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
@@ -95,7 +166,7 @@ func TestRecoverExecuteResult_PrefersSuccessfulTerminalResultOverTimeout(t *test
 	result, recovered := eng.recoverExecuteResult(
 		ctx,
 		100*time.Millisecond,
-		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}]}]}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}]}`,
 		25*time.Millisecond,
 		42,
 	)
@@ -121,7 +192,7 @@ func TestExecute_PreservesCanceledContextError(t *testing.T) {
 	binDir := t.TempDir()
 	writeFakePi(t, binDir, `#!/bin/sh
 printf '{"type":"session"}\n'
-printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}]}]}\n'
+printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}]}\n'
 sleep 5
 exit 1
 `)
@@ -168,7 +239,7 @@ func TestPrompt_ReturnsErrorOnNonZeroWithStdoutAndNoStderr(t *testing.T) {
 	}
 }
 
-func TestStreamPrompt_RequiresOutputFallbackOnEmptySuccessfulStream(t *testing.T) {
+func TestStreamPrompt_RejectsEmptyAgentEnd(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script fixture is unix-only")
 	}
@@ -184,10 +255,10 @@ exit 1
 	eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
 	resp, err := eng.StreamPrompt(context.Background(), "test prompt", nil)
 	if err == nil {
-		t.Fatal("StreamPrompt() error = nil, want output fallback error")
+		t.Fatal("StreamPrompt() error = nil, want incomplete terminal error")
 	}
-	if !engine.RequiresOutputFallback(err) {
-		t.Fatalf("StreamPrompt() error = %v, want output fallback error", err)
+	if engine.RequiresOutputFallback(err) || !strings.Contains(err.Error(), incompletePiTerminalError) {
+		t.Fatalf("StreamPrompt() error = %v, want incomplete terminal error", err)
 	}
 	if resp != "" {
 		t.Fatalf("StreamPrompt() response = %q, want empty response", resp)
@@ -258,7 +329,7 @@ func TestRecoverStreamPrompt_PrefersSuccessfulTerminalResultOverTimeout(t *testi
 		ctx,
 		100*time.Millisecond,
 		context.DeadlineExceeded,
-		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}]}]}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}]}`,
 		"done",
 		"",
 	)
@@ -273,7 +344,7 @@ func TestRecoverStreamPrompt_PrefersSuccessfulTerminalResultOverTimeout(t *testi
 	}
 }
 
-func TestRecoverStreamPrompt_RequiresOutputFallbackForEmptySuccessfulStream(t *testing.T) {
+func TestRecoverStreamPrompt_RejectsEmptyAgentEnd(t *testing.T) {
 	eng := New(nil)
 
 	resp, err, recovered := eng.recoverStreamPrompt(
@@ -287,8 +358,8 @@ func TestRecoverStreamPrompt_RequiresOutputFallbackForEmptySuccessfulStream(t *t
 	if !recovered {
 		t.Fatal("recoverStreamPrompt() recovered = false, want true")
 	}
-	if !engine.RequiresOutputFallback(err) {
-		t.Fatalf("recoverStreamPrompt() error = %v, want output fallback error", err)
+	if engine.RequiresOutputFallback(err) || !strings.Contains(err.Error(), incompletePiTerminalError) {
+		t.Fatalf("recoverStreamPrompt() error = %v, want incomplete terminal error", err)
 	}
 	if resp != "" {
 		t.Fatalf("recoverStreamPrompt() response = %q, want empty response", resp)
@@ -303,7 +374,7 @@ func TestStreamPrompt_PreservesCanceledContextError(t *testing.T) {
 	binDir := t.TempDir()
 	writeFakePi(t, binDir, `#!/bin/sh
 printf '{"type":"session"}\n'
-printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}]}]}\n'
+printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}]}\n'
 sleep 5
 exit 1
 `)

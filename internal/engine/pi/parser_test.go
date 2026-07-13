@@ -297,7 +297,8 @@ func TestParser_ParseLine_TextEnd_AccumulatesText(t *testing.T) {
 
 func TestParser_ParseLine_ToolExecutionEnd_Error(t *testing.T) {
 	p := NewParser()
-	line := `{"type":"tool_execution_end","toolCallId":"tool1","toolName":"bash","result":{"content":[{"type":"text","text":"command not found: foobar"}]},"isError":true}`
+	secret := "sk-live-tool-secret"
+	line := `{"type":"tool_execution_end","toolCallId":"tool1","toolName":"bash","result":{"content":[{"type":"text","text":"command failed with ` + secret + `"}]},"isError":true}`
 
 	event := p.ParseLine([]byte(line))
 	if event == nil {
@@ -306,8 +307,11 @@ func TestParser_ParseLine_ToolExecutionEnd_Error(t *testing.T) {
 	if event.Type != engine.EventError {
 		t.Errorf("expected Type=EventError, got %v", event.Type)
 	}
-	if event.Data.Message != "command not found: foobar" {
-		t.Errorf("expected Message=\"command not found: foobar\", got %q", event.Data.Message)
+	if event.Data.Message != "bash failed" {
+		t.Errorf("expected Message=\"bash failed\", got %q", event.Data.Message)
+	}
+	if strings.Contains(event.Data.Message, secret) {
+		t.Fatalf("tool error event leaked credential: %q", event.Data.Message)
 	}
 	if !p.HasFailure() {
 		t.Error("expected parser failure to be set")
@@ -329,7 +333,7 @@ func TestParser_ParseLine_ToolExecutionEnd_Success(t *testing.T) {
 
 func TestParser_ParseLine_AgentEnd(t *testing.T) {
 	p := NewParser()
-	line := `{"type":"agent_end","messages":[]}`
+	line := `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}]}`
 
 	event := p.ParseLine([]byte(line))
 	if event == nil {
@@ -343,6 +347,71 @@ func TestParser_ParseLine_AgentEnd(t *testing.T) {
 	}
 }
 
+func TestParser_ParseLine_AgentEnd_RequiresAuthoritativeTerminalOutcome(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+	}{
+		{name: "missing messages", line: `{"type":"agent_end"}`},
+		{name: "wrong messages type", line: `{"type":"agent_end","messages":{}}`},
+		{name: "empty messages", line: `{"type":"agent_end","messages":[]}`},
+		{name: "missing stop reason", line: `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"partial"}]}]}`},
+		{name: "trailing user", line: `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"},{"role":"user","content":[{"type":"text","text":"continue"}]}]}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewParser()
+			event := p.ParseLine([]byte(tt.line))
+			if event == nil || event.Type != engine.EventResult || event.Data.Success {
+				t.Fatalf("agent_end result = %#v, want failed result", event)
+			}
+			if p.HasTerminalOutcome() {
+				t.Fatal("HasTerminalOutcome() = true for incomplete agent_end")
+			}
+			if got := p.TerminalError(); got != "pi agent ended without a completed assistant response" {
+				t.Fatalf("TerminalError() = %q, want incomplete response guidance", got)
+			}
+		})
+	}
+}
+
+func TestParser_ParseLine_MalformedAgentEndDoesNotEstablishTerminalOutcome(t *testing.T) {
+	p := NewParser()
+	if event := p.ParseLine([]byte(`{"type":"agent_end","messages":[`)); event != nil {
+		t.Fatalf("malformed agent_end event = %#v, want nil", event)
+	}
+	if p.HasTerminalOutcome() {
+		t.Fatal("HasTerminalOutcome() = true after malformed agent_end")
+	}
+}
+
+func TestParser_ParseLine_AgentEnd_RejectsToolUseWithoutFinalAssistant(t *testing.T) {
+	tests := []struct {
+		name       string
+		toolResult string
+	}{
+		{name: "tool failed", toolResult: `{"role":"toolResult","content":[{"type":"text","text":"command exited 1"}],"isError":true}`},
+		{name: "tool succeeded", toolResult: `{"role":"toolResult","content":[{"type":"text","text":"ok"}],"isError":false}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewParser()
+			p.ParseLine([]byte(`{"type":"tool_execution_end","toolCallId":"tool1","toolName":"bash","result":{"content":[{"type":"text","text":"command exited 1"}]},"isError":true}`))
+			line := `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"toolCall","id":"tool1","name":"bash"}],"stopReason":"toolUse"},` + tt.toolResult + `]}`
+			result := p.ParseLine([]byte(line))
+
+			if result == nil || result.Type != engine.EventResult || result.Data.Success {
+				t.Fatalf("incomplete tool-use result = %#v, want failure", result)
+			}
+			if p.HasTerminalOutcome() {
+				t.Fatal("HasTerminalOutcome() = true without a final assistant response")
+			}
+		})
+	}
+}
+
 func TestParser_ParseLine_AgentEnd_IncludesDurationMs(t *testing.T) {
 	base := time.Unix(1700000200, 0)
 	now := base
@@ -351,7 +420,7 @@ func TestParser_ParseLine_AgentEnd_IncludesDurationMs(t *testing.T) {
 	p.runStart = base
 
 	now = base.Add(5 * time.Second)
-	line := `{"type":"agent_end","messages":[]}`
+	line := `{"type":"agent_end","messages":[{"role":"assistant","content":[],"stopReason":"stop"}]}`
 	event := p.ParseLine([]byte(line))
 	if event == nil {
 		t.Fatal("expected event, got nil")
@@ -366,7 +435,7 @@ func TestParser_ParseLine_AgentEnd_IncludesDurationMs(t *testing.T) {
 
 func TestParser_ParseLine_AgentEnd_RecoversTextFromMessages(t *testing.T) {
 	p := NewParser()
-	line := `{"type":"agent_end","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]},{"role":"assistant","content":[{"type":"thinking","thinking":"internal"},{"type":"text","text":"final answer"}]}]}`
+	line := `{"type":"agent_end","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]},{"role":"assistant","content":[{"type":"thinking","thinking":"internal"},{"type":"text","text":"final answer"}],"stopReason":"stop"}]}`
 
 	event := p.ParseLine([]byte(line))
 	if event == nil {

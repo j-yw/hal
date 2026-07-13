@@ -27,15 +27,19 @@ import (
 // Text content uses: text_start, text_delta, text_end.
 // Thinking/reasoning uses: thinking_start, thinking_delta, thinking_end.
 type Parser struct {
-	model         string
-	totalTokens   int
-	hasFailure    bool
-	terminalError string
-	text          strings.Builder
-	isThinking    bool // tracks whether model is currently in a thinking block
-	now           func() time.Time
-	runStart      time.Time
+	model                  string
+	totalTokens            int
+	hasFailure             bool
+	hasTerminalOutcome     bool
+	lastAssistantCompleted bool
+	terminalError          string
+	text                   strings.Builder
+	isThinking             bool // tracks whether model is currently in a thinking block
+	now                    func() time.Time
+	runStart               time.Time
 }
+
+const incompletePiTerminalError = "pi agent ended without a completed assistant response"
 
 // NewParser creates a new Pi output parser.
 func NewParser() *Parser {
@@ -54,6 +58,12 @@ func (p *Parser) TotalTokens() int {
 // HasFailure returns true if the current terminal outcome is a failure.
 func (p *Parser) HasFailure() bool {
 	return p.hasFailure
+}
+
+// HasTerminalOutcome reports whether agent_end established a completed final
+// assistant outcome. Process exit alone is not a successful Pi run boundary.
+func (p *Parser) HasTerminalOutcome() bool {
+	return p.hasTerminalOutcome
 }
 
 // TerminalError returns safe user-facing guidance for a terminal assistant
@@ -124,6 +134,7 @@ func (p *Parser) parseMessageStart(raw map[string]interface{}) *engine.Event {
 	if !ok {
 		return nil
 	}
+	p.lastAssistantCompleted = false
 
 	// Only care about assistant messages for model extraction.
 	role, _ := msg["role"].(string)
@@ -285,24 +296,30 @@ func (p *Parser) parseMessageEnd(raw map[string]interface{}) *engine.Event {
 	if role == "assistant" {
 		p.accumulateUsage(msg)
 		if stopReason, errorMessage, failed := terminalAssistantFailure(msg); failed {
+			p.lastAssistantCompleted = false
 			message := p.markTerminalFailure(stopReason, errorMessage)
 			return &engine.Event{
 				Type: engine.EventError,
 				Data: engine.EventData{Message: message},
 			}
 		}
+		p.lastAssistantCompleted = terminalAssistantCompleted(msg)
+	} else {
+		p.lastAssistantCompleted = false
 	}
 
 	return nil
 }
 
 func (p *Parser) parseToolExecutionStart(raw map[string]interface{}) *engine.Event {
+	p.lastAssistantCompleted = false
 	// We already show tool calls from toolcall_end; this is supplementary.
 	// Could show a spinner message here, but toolcall_end already handles it.
 	return nil
 }
 
 func (p *Parser) parseToolExecutionEnd(raw map[string]interface{}) *engine.Event {
+	p.lastAssistantCompleted = false
 	isError, _ := raw["isError"].(bool)
 	if !isError {
 		return nil
@@ -311,21 +328,9 @@ func (p *Parser) parseToolExecutionEnd(raw map[string]interface{}) *engine.Event
 	toolName, _ := raw["toolName"].(string)
 	p.hasFailure = true
 
-	// Extract error message from result
-	message := toolName + " failed"
-	if result, ok := raw["result"].(map[string]interface{}); ok {
-		if content, ok := result["content"].([]interface{}); ok {
-			for _, item := range content {
-				block, ok := item.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				if text, _ := block["text"].(string); text != "" {
-					message = truncate(text, 80)
-					break
-				}
-			}
-		}
+	message := "tool execution failed"
+	if toolName != "" {
+		message = toolName + " failed"
 	}
 
 	return &engine.Event{
@@ -346,6 +351,7 @@ func (p *Parser) parseTurnEnd(raw map[string]interface{}) *engine.Event {
 }
 
 func (p *Parser) parseAgentEnd(raw map[string]interface{}) *engine.Event {
+	p.hasTerminalOutcome = false
 	// Fallback text recovery: some providers may not emit text_end events.
 	// In that case, extract text from the last assistant message in agent_end.
 	if messages, ok := raw["messages"].([]interface{}); ok {
@@ -359,10 +365,12 @@ func (p *Parser) parseAgentEnd(raw map[string]interface{}) *engine.Event {
 				p.text.WriteString(finalText)
 			}
 		}
+	} else {
+		p.markIncompleteTerminalOutcome()
 	}
 
 	// agent_end is the final event. Emit a result.
-	success := !p.hasFailure
+	success := p.hasTerminalOutcome && !p.hasFailure
 
 	return &engine.Event{
 		Type: engine.EventResult,
@@ -376,18 +384,45 @@ func (p *Parser) parseAgentEnd(raw map[string]interface{}) *engine.Event {
 }
 
 func (p *Parser) reconcileTerminalOutcome(messages []interface{}) {
-	msg, ok := lastAssistantMessage(messages)
-	if !ok {
+	if len(messages) == 0 {
+		if p.lastAssistantCompleted {
+			p.markTerminalSuccess()
+			return
+		}
+		p.markIncompleteTerminalOutcome()
 		return
 	}
 
-	// Pi may retry after an assistant or tool error. Once agent_end supplies a
-	// final assistant message, that message is authoritative for run success.
-	p.hasFailure = false
-	p.terminalError = ""
+	msg, ok := messages[len(messages)-1].(map[string]interface{})
+	if !ok {
+		p.markIncompleteTerminalOutcome()
+		return
+	}
+
 	if stopReason, errorMessage, failed := terminalAssistantFailure(msg); failed {
 		p.markTerminalFailure(stopReason, errorMessage)
+		p.hasTerminalOutcome = true
+		return
 	}
+	if terminalAssistantCompleted(msg) {
+		p.markTerminalSuccess()
+		return
+	}
+	p.markIncompleteTerminalOutcome()
+}
+
+func (p *Parser) markTerminalSuccess() {
+	p.hasFailure = false
+	p.hasTerminalOutcome = true
+	p.lastAssistantCompleted = true
+	p.terminalError = ""
+}
+
+func (p *Parser) markIncompleteTerminalOutcome() {
+	p.hasFailure = true
+	p.hasTerminalOutcome = false
+	p.lastAssistantCompleted = false
+	p.terminalError = incompletePiTerminalError
 }
 
 func (p *Parser) markTerminalFailure(stopReason, errorMessage string) string {
@@ -411,18 +446,13 @@ func terminalAssistantFailure(msg map[string]interface{}) (stopReason, errorMess
 	return stopReason, errorMessage, true
 }
 
-func lastAssistantMessage(messages []interface{}) (map[string]interface{}, bool) {
-	for i := len(messages) - 1; i >= 0; i-- {
-		msg, ok := messages[i].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		role, _ := msg["role"].(string)
-		if role == "assistant" {
-			return msg, true
-		}
+func terminalAssistantCompleted(msg map[string]interface{}) bool {
+	role, _ := msg["role"].(string)
+	if role != "assistant" {
+		return false
 	}
-	return nil, false
+	stopReason, _ := msg["stopReason"].(string)
+	return stopReason == "stop" || stopReason == "end"
 }
 
 func sanitizePiTerminalError(stopReason, errorMessage string) string {
