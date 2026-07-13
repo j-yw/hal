@@ -231,6 +231,25 @@ func assertAutoJSONContractV2(t *testing.T, data []byte) {
 	}
 }
 
+func TestAutoSuccessResultIncludesArchivePath(t *testing.T) {
+	const archivePath = ".hal/archive/2026-07-14-keyboard-game-2"
+	result := autoSuccessResult(
+		autoEntryModeMarkdownPath,
+		false,
+		true,
+		true,
+		nil,
+		archivePath,
+		"Auto pipeline completed successfully.",
+		compound.AutoConvertModeStandard,
+		time.Second,
+	)
+
+	if got := result.Steps.Archive.Path; got != archivePath {
+		t.Fatalf("steps.archive.path = %q, want %q", got, archivePath)
+	}
+}
+
 func TestRunAuto_DryRunHeaderUsesAutoPipelineLabel(t *testing.T) {
 	chdirTemp(t)
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"
 )
 
 func TestCollectRuntimeArtifactsUsesExecAndCopyOutBoundary(t *testing.T) {
@@ -419,6 +420,76 @@ func TestCollectCoreStateArtifactsAutoCollectsAutoState(t *testing.T) {
 	}
 }
 
+func TestCollectCoreStateArtifactsAutoCollectsArchivedState(t *testing.T) {
+	store := newTestStore(t)
+	manifest := testManifest("exec-1", time.Date(2026, 6, 30, 1, 0, 0, 0, time.UTC))
+	manifest.Purpose = PurposeAuto
+	if err := store.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+	runtime := &recordingArtifactRuntime{}
+	const archivePath = ".hal/archive/2026-07-14-keyboard-game-2"
+
+	result, err := CollectCoreStateArtifacts(context.Background(), CoreStateCollectionRequest{
+		ExecutionID:        "exec-1",
+		Store:              store,
+		Runtime:            runtime,
+		Purpose:            PurposeAuto,
+		RemoteWorkspaceDir: "/workspace/repo",
+		RemoteArchivePath:  archivePath,
+	})
+	if err != nil {
+		t.Fatalf("CollectCoreStateArtifacts() error: %v", err)
+	}
+
+	wantSources := []string{
+		"/workspace/repo/" + archivePath + "/prd.json",
+		"/workspace/repo/" + archivePath + "/progress.txt",
+		"/workspace/repo/" + archivePath + "/auto-state.json",
+	}
+	if got := copyOutSources(runtime.copyOuts); !reflect.DeepEqual(got, wantSources) {
+		t.Fatalf("CopyOut sources = %#v, want archived sources %#v", got, wantSources)
+	}
+	if len(result.ArtifactMetadata.Collected) != 3 {
+		t.Fatalf("collected = %#v, want three core artifacts", result.ArtifactMetadata.Collected)
+	}
+	assertCollectedCoreArtifact(t, result.ArtifactMetadata.Collected[0], ".hal/prd.json", "exec-1/artifacts/core/hal-prd.json")
+	assertCollectedCoreArtifact(t, result.ArtifactMetadata.Collected[1], ".hal/progress.txt", "exec-1/artifacts/core/hal-progress.txt")
+	assertCollectedCoreArtifact(t, result.ArtifactMetadata.Collected[2], ".hal/auto-state.json", "exec-1/artifacts/core/hal-auto-state.json")
+}
+
+func TestCollectCoreStateArtifactsRejectsUnsafeAutoArchivePath(t *testing.T) {
+	tests := []string{
+		"/workspace/repo/.hal/archive/absolute",
+		".hal/archive/../outside",
+		"../.hal/archive/outside",
+		".hal/archive/nested/child",
+	}
+	for _, archivePath := range tests {
+		t.Run(archivePath, func(t *testing.T) {
+			store := newTestStore(t)
+			if err := store.SaveManifest(testManifest("exec-1", time.Now().UTC())); err != nil {
+				t.Fatalf("SaveManifest() error: %v", err)
+			}
+			runtime := &recordingArtifactRuntime{}
+			_, err := CollectCoreStateArtifacts(context.Background(), CoreStateCollectionRequest{
+				ExecutionID:        "exec-1",
+				Store:              store,
+				Runtime:            runtime,
+				Purpose:            PurposeAuto,
+				RemoteWorkspaceDir: "/workspace/repo",
+				RemoteArchivePath:  archivePath,
+			})
+			if err == nil || !strings.Contains(err.Error(), "archive path") {
+				t.Fatalf("CollectCoreStateArtifacts() error = %v, want archive path validation error", err)
+			}
+			if len(runtime.copyOuts) != 0 {
+				t.Fatalf("CopyOut calls = %#v, want none for unsafe archive path", runtime.copyOuts)
+			}
+		})
+	}
+}
+
 func TestCollectCoreStateArtifactsMissingRequiredPRDReturnsError(t *testing.T) {
 	store := newTestStore(t)
 	if err := store.SaveManifest(testManifest("exec-1", time.Date(2026, 6, 30, 1, 0, 0, 0, time.UTC))); err != nil {
@@ -459,6 +530,37 @@ func TestCollectCoreStateArtifactsMissingRequiredPRDReturnsError(t *testing.T) {
 	}
 	if loaded.ArtifactMetadata != nil {
 		t.Fatalf("manifest ArtifactMetadata = %#v, want no persisted metadata after fatal PRD failure", loaded.ArtifactMetadata)
+	}
+}
+
+func TestCollectCoreStateArtifactsRootFallbackPreservesPodmanCopyErrorWarning(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.SaveManifest(testManifest("exec-1", time.Now().UTC())); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+	runtime := &recordingArtifactRuntime{copyOutErr: &rootlesspodman.OperationError{
+		Driver:    sandboxruntime.DriverRootlessPodman,
+		Operation: rootlesspodman.OperationCopyOut,
+		ExitCode:  125,
+		Detail:    "source path does not exist",
+	}}
+
+	_, err := CollectCoreStateArtifacts(context.Background(), CoreStateCollectionRequest{
+		ExecutionID:        "exec-1",
+		Store:              store,
+		Runtime:            runtime,
+		Purpose:            PurposeAuto,
+		RemoteWorkspaceDir: "/workspace/repo",
+	})
+	var artifactErr *ArtifactCollectionError
+	if !errors.As(err, &artifactErr) {
+		t.Fatalf("CollectCoreStateArtifacts() error = %T %[1]v, want ArtifactCollectionError", err)
+	}
+	if got := artifactErr.Warning().Message; got != "sandbox execution artifact copy failed" {
+		t.Fatalf("warning message = %q, want generic Podman copy-out warning", got)
+	}
+	if got := runtime.copyOuts[0].SourcePath; got != "/workspace/repo/.hal/prd.json" {
+		t.Fatalf("CopyOut source = %q, want root fallback PRD", got)
 	}
 }
 

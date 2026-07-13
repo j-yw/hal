@@ -94,6 +94,7 @@ type Pipeline struct {
 	display         *engine.Display
 	dir             string
 	lastCIState     *CIState
+	lastArchivePath string
 	pushAndCreatePR func(context.Context, ci.PushOptions) (ci.PushResult, error)
 	currentBranch   func(string) (string, error)
 }
@@ -268,6 +269,15 @@ func (p *Pipeline) LastCIState() *CIState {
 	return &ci
 }
 
+// LastArchivePath returns the workspace-relative archive directory created by
+// the most recent successful pipeline run.
+func (p *Pipeline) LastArchivePath() string {
+	if p == nil {
+		return ""
+	}
+	return p.lastArchivePath
+}
+
 func (p *Pipeline) recordCIState(ci *CIState) {
 	if ci == nil {
 		p.lastCIState = nil
@@ -300,6 +310,7 @@ type RunOptions struct {
 // Run executes the compound pipeline from the current state or from the beginning.
 func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 	p.recordCIState(nil)
+	p.lastArchivePath = ""
 
 	// Load or create initial state
 	var state *PipelineState
@@ -1918,6 +1929,14 @@ func (p *Pipeline) runArchiveStep(ctx context.Context, state *PipelineState, opt
 	if err != nil {
 		return fmt.Errorf("failed to archive feature state: %w", err)
 	}
+	archivePath, err := filepath.Rel(p.dir, archiveDir)
+	if err != nil {
+		return fmt.Errorf("resolve archived state path: %w", err)
+	}
+	if archivePath == ".." || strings.HasPrefix(archivePath, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("resolve archived state path: archive is outside the pipeline workspace")
+	}
+	p.lastArchivePath = filepath.ToSlash(archivePath)
 	p.display.ShowInfo("   Archived state to %s\n", filepath.Base(archiveDir))
 
 	if err := p.clearState(); err != nil {

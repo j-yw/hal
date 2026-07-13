@@ -116,6 +116,7 @@ type CoreStateCollectionRequest struct {
 	Target             sandboxruntime.Target
 	Purpose            Purpose
 	RemoteWorkspaceDir string
+	RemoteArchivePath  string
 	TempDir            string
 }
 
@@ -511,7 +512,7 @@ func CollectCoreStateArtifacts(ctx context.Context, req CoreStateCollectionReque
 	if _, err := req.Store.LoadManifest(req.ExecutionID); err != nil {
 		return RuntimeCollectionResult{}, err
 	}
-	artifacts, err := coreStateArtifactRequests(req.Purpose, req.RemoteWorkspaceDir)
+	artifacts, err := coreStateArtifactRequests(req.Purpose, req.RemoteWorkspaceDir, req.RemoteArchivePath)
 	if err != nil {
 		return RuntimeCollectionResult{}, err
 	}
@@ -699,22 +700,53 @@ func runRuntimeArtifactGeneration(ctx context.Context, runtime RuntimeArtifactCo
 	return nil
 }
 
-func coreStateArtifactRequests(purpose Purpose, remoteWorkspaceDir string) ([]RuntimeArtifactRequest, error) {
+func coreStateArtifactRequests(purpose Purpose, remoteWorkspaceDir string, remoteArchivePath string) ([]RuntimeArtifactRequest, error) {
 	remoteWorkspaceDir = strings.TrimSpace(remoteWorkspaceDir)
 	if remoteWorkspaceDir == "" {
 		return nil, fmt.Errorf("sandbox execution remote workspace dir is required")
 	}
+	remoteStateDir := pathpkg.Join(remoteWorkspaceDir, template.HalDir)
+	if purpose == PurposeAuto && strings.TrimSpace(remoteArchivePath) != "" {
+		remoteArchivePath = strings.TrimSpace(remoteArchivePath)
+		if err := ValidateAutoArchivePath(remoteArchivePath); err != nil {
+			return nil, err
+		}
+		remoteStateDir = pathpkg.Join(remoteWorkspaceDir, remoteArchivePath)
+	}
 	artifacts := []RuntimeArtifactRequest{
-		coreStateArtifactRequest("prd", "PRD", "json", template.PRDFile, "hal-prd.json", remoteWorkspaceDir),
-		coreStateArtifactRequest("progress", "Progress", "text", template.ProgressFile, "hal-progress.txt", remoteWorkspaceDir),
+		coreStateArtifactRequest("prd", "PRD", "json", template.PRDFile, "hal-prd.json", remoteStateDir),
+		coreStateArtifactRequest("progress", "Progress", "text", template.ProgressFile, "hal-progress.txt", remoteStateDir),
 	}
 	if purpose == PurposeAuto {
-		artifacts = append(artifacts, coreStateArtifactRequest("auto-state", "Auto State", "json", template.AutoStateFile, "hal-auto-state.json", remoteWorkspaceDir))
+		artifacts = append(artifacts, coreStateArtifactRequest("auto-state", "Auto State", "json", template.AutoStateFile, "hal-auto-state.json", remoteStateDir))
 	}
 	return artifacts, nil
 }
 
-func coreStateArtifactRequest(id, name, artifactType, fileName, payloadName, remoteWorkspaceDir string) RuntimeArtifactRequest {
+// ValidateAutoArchivePath restricts a remote auto result to the single archive
+// directory shape produced by archive.CreateWithOptions.
+func ValidateAutoArchivePath(archivePath string) error {
+	archivePath = strings.TrimSpace(archivePath)
+	if archivePath == "" {
+		return nil
+	}
+	if strings.Contains(archivePath, "\\") {
+		return fmt.Errorf("sandbox auto archive path must use slash separators")
+	}
+	if pathpkg.IsAbs(archivePath) {
+		return fmt.Errorf("sandbox auto archive path must be relative")
+	}
+	if clean := pathpkg.Clean(archivePath); clean != archivePath {
+		return fmt.Errorf("sandbox auto archive path must be clean and traversal-free")
+	}
+	archiveRoot := pathpkg.Join(template.HalDir, "archive")
+	if pathpkg.Dir(archivePath) != archiveRoot || pathpkg.Base(archivePath) == "." {
+		return fmt.Errorf("sandbox auto archive path must name a direct child of %s", archiveRoot)
+	}
+	return nil
+}
+
+func coreStateArtifactRequest(id, name, artifactType, fileName, payloadName, remoteStateDir string) RuntimeArtifactRequest {
 	displayPath := pathpkg.Join(template.HalDir, fileName)
 	return RuntimeArtifactRequest{
 		Artifact: ArtifactMetadataEntry{
@@ -724,7 +756,7 @@ func coreStateArtifactRequest(id, name, artifactType, fileName, payloadName, rem
 			Path: displayPath,
 		},
 		PayloadPath: pathpkg.Join("core", payloadName),
-		RemotePath:  pathpkg.Join(remoteWorkspaceDir, displayPath),
+		RemotePath:  pathpkg.Join(remoteStateDir, fileName),
 	}
 }
 

@@ -803,7 +803,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 		if autoBranch != "" {
 			summary = fmt.Sprintf("Auto pipeline completed on branch %s.", autoBranch)
 		}
-		jr := autoSuccessResult(entryMode, resume, policy.skipCI, policy.skipReview, pipeline.LastCIState(), summary, convertModeTelemetry, elapsed)
+		jr := autoSuccessResult(entryMode, resume, policy.skipCI, policy.skipReview, pipeline.LastCIState(), pipeline.LastArchivePath(), summary, convertModeTelemetry, elapsed)
 		return outputAutoJSONForCommand(cmd, out, jr)
 	}
 
@@ -973,9 +973,10 @@ func validateAutoFactoryRuntimeStatePolicy(policy string) (string, error) {
 	}
 }
 
-func autoSuccessResult(entryMode autoEntryMode, resumed bool, skipCI bool, skipReview bool, ciState *compound.CIState, summary string, convertMode string, duration time.Duration) AutoResult {
+func autoSuccessResult(entryMode autoEntryMode, resumed bool, skipCI bool, skipReview bool, ciState *compound.CIState, archivePath string, summary string, convertMode string, duration time.Duration) AutoResult {
 	steps := autoStepsForSuccess(entryMode, skipCI, skipReview, ciState)
 	applyConvertModeTelemetry(&steps, convertMode)
+	steps.Archive.Path = strings.TrimSpace(archivePath)
 
 	jr := AutoResult{
 		ContractVersion: 2,

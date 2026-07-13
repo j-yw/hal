@@ -80,6 +80,10 @@ func TestRunArchiveStep_ExcludesLatestReportFromArchive(t *testing.T) {
 		t.Fatalf("archive entry count = %d, want 1", len(archiveEntries))
 	}
 	archiveDir := filepath.Join(halDir, "archive", archiveEntries[0].Name())
+	wantArchivePath := filepath.ToSlash(filepath.Join(template.HalDir, "archive", archiveEntries[0].Name()))
+	if got := pipeline.LastArchivePath(); got != wantArchivePath {
+		t.Fatalf("LastArchivePath() = %q, want %q", got, wantArchivePath)
+	}
 
 	if _, err := os.Stat(filepath.Join(archiveDir, template.PRDFile)); err != nil {
 		t.Fatalf("expected archived %s: %v", template.PRDFile, err)
@@ -92,6 +96,37 @@ func TestRunArchiveStep_ExcludesLatestReportFromArchive(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(archiveDir, "reports", "review-latest.md")); !os.IsNotExist(err) {
 		t.Fatalf("excluded report should not be archived, stat err=%v", err)
+	}
+}
+
+func TestRunArchiveStep_RecordsCollisionResolvedArchivePath(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	archiveName := time.Now().Format("2006-01-02") + "-collision"
+	writeCompoundFile(t, filepath.Join(halDir, template.PRDFile), `{"project":"archive","branchName":"hal/collision","userStories":[]}`)
+	writeCompoundFile(t, filepath.Join(halDir, template.ProgressFile), "progress")
+	if err := os.MkdirAll(filepath.Join(halDir, "archive", archiveName), 0o755); err != nil {
+		t.Fatalf("create colliding archive directory: %v", err)
+	}
+
+	cfg := DefaultAutoConfig()
+	pipeline := NewPipeline(&cfg, nil, engine.NewDisplay(io.Discard), dir)
+	origStatus := workingTreeChangesInDirFn
+	workingTreeChangesInDirFn = func(string) ([]string, error) { return nil, nil }
+	t.Cleanup(func() { workingTreeChangesInDirFn = origStatus })
+
+	state := &PipelineState{
+		Step:       StepArchive,
+		BranchName: "hal/collision",
+		StartedAt:  time.Now(),
+	}
+	if err := pipeline.runArchiveStep(context.Background(), state, RunOptions{}); err != nil {
+		t.Fatalf("runArchiveStep returned error: %v", err)
+	}
+
+	want := filepath.ToSlash(filepath.Join(template.HalDir, "archive", archiveName+"-2"))
+	if got := pipeline.LastArchivePath(); got != want {
+		t.Fatalf("LastArchivePath() = %q, want exact collision-resolved path %q", got, want)
 	}
 }
 

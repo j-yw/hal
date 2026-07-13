@@ -3,9 +3,11 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	pathpkg "path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,6 +20,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxexecution"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
+	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
 
@@ -340,8 +343,15 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 	if isSandboxRunPhaseError(execErr) {
 		_ = collectAutoSandboxRecoveryAfterCommandFailure(ctx, store, req, execResult, target)
 	}
+	remoteArchivePath := ""
 	if execErr == nil {
-		if collectErr := collectAutoSandboxCoreStateArtifacts(ctx, store, req, execResult); collectErr != nil {
+		remoteArchivePath, err = autoSandboxRemoteArchivePath(capturedJSON.Bytes(), execResult.StdoutSummary)
+		if err != nil {
+			execErr = fmt.Errorf("read remote auto archive path: %w", err)
+		}
+	}
+	if execErr == nil {
+		if collectErr := collectAutoSandboxCoreStateArtifacts(ctx, store, req, execResult, remoteArchivePath); collectErr != nil {
 			execErr = collectErr
 		}
 	}
@@ -694,7 +704,43 @@ func autoSandboxWorkerRuntimeRouteSelected(req autoSandboxRequest, target sandbo
 	return sandboxWorkerRuntimeRouteSelected(req.SandboxHostID, req.SandboxRuntime, target, selectedTarget)
 }
 
-func collectAutoSandboxCoreStateArtifacts(ctx context.Context, store sandboxexecution.Store, req autoSandboxRequest, result autoSandboxExecutionResult) error {
+func autoSandboxRemoteArchivePath(remoteJSON []byte, stdoutSummary string) (string, error) {
+	archivePath := ""
+	if len(bytes.TrimSpace(remoteJSON)) > 0 {
+		var remoteResult struct {
+			Steps struct {
+				Archive struct {
+					Path string `json:"path"`
+				} `json:"archive"`
+			} `json:"steps"`
+		}
+		decoder := json.NewDecoder(bytes.NewReader(remoteJSON))
+		if err := decoder.Decode(&remoteResult); err == nil {
+			var extra any
+			if err := decoder.Decode(&extra); err == io.EOF {
+				archivePath = strings.TrimSpace(remoteResult.Steps.Archive.Path)
+			}
+		}
+	}
+	if archivePath == "" {
+		const archivedStatePrefix = "Archived state to "
+		for _, line := range strings.Split(stdoutSummary, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, archivedStatePrefix) {
+				archiveName := strings.TrimSpace(strings.TrimPrefix(line, archivedStatePrefix))
+				if archiveName != "" {
+					archivePath = pathpkg.Join(template.HalDir, "archive", archiveName)
+				}
+			}
+		}
+	}
+	if err := sandboxexecution.ValidateAutoArchivePath(archivePath); err != nil {
+		return "", err
+	}
+	return archivePath, nil
+}
+
+func collectAutoSandboxCoreStateArtifacts(ctx context.Context, store sandboxexecution.Store, req autoSandboxRequest, result autoSandboxExecutionResult, remoteArchivePath string) error {
 	if result.Result == nil || result.RuntimeDriver == nil {
 		return nil
 	}
@@ -705,6 +751,7 @@ func collectAutoSandboxCoreStateArtifacts(ctx context.Context, store sandboxexec
 		Target:             result.Result.Target,
 		Purpose:            sandboxexecution.PurposeAuto,
 		RemoteWorkspaceDir: req.WorkDir,
+		RemoteArchivePath:  remoteArchivePath,
 	})
 	if err != nil {
 		if handled, warningErr := appendSandboxArtifactCopyWarning(store, req.ExecutionID, err); handled {

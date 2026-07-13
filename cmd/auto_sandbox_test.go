@@ -21,6 +21,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 	"github.com/spf13/cobra"
 )
@@ -64,6 +65,47 @@ func TestParseAutoSandboxRequestArgumentContract(t *testing.T) {
 	}
 	if !reflect.DeepEqual(unnamed.Args, []string{"dev-box"}) {
 		t.Fatalf("Args = %#v, want positional PRD path preserved", unnamed.Args)
+	}
+}
+
+func TestAutoSandboxRemoteArchivePath(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		stdout  string
+		want    string
+		wantErr bool
+	}{
+		{
+			name:    "valid collision resolved path",
+			payload: autoSandboxRemoteSuccessJSONWithArchivePath("remote", ".hal/archive/2026-07-14-keyboard-game-2"),
+			want:    ".hal/archive/2026-07-14-keyboard-game-2",
+		},
+		{
+			name:   "human output fallback",
+			stdout: "Step: archive\nArchived state to 2026-07-14-keyboard-game-2\n",
+			want:   ".hal/archive/2026-07-14-keyboard-game-2",
+		},
+		{name: "older result without path", payload: autoSandboxRemoteSuccessJSON("remote")},
+		{name: "absolute", payload: autoSandboxRemoteSuccessJSONWithArchivePath("remote", "/workspace/repo/.hal/archive/unsafe"), wantErr: true},
+		{name: "traversal", payload: autoSandboxRemoteSuccessJSONWithArchivePath("remote", ".hal/archive/../unsafe"), wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := autoSandboxRemoteArchivePath([]byte(tt.payload), tt.stdout)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("autoSandboxRemoteArchivePath() error = nil, want validation failure")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("autoSandboxRemoteArchivePath() error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("autoSandboxRemoteArchivePath() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -1187,9 +1229,9 @@ func TestRunAutoSandboxWithWriterCollectsGeneratedArtifacts(t *testing.T) {
 		BaseBranch: "main",
 	})
 	expectedSources := []string{
-		expectedWorkspace + "/.hal/prd.json",
-		expectedWorkspace + "/.hal/progress.txt",
-		expectedWorkspace + "/.hal/auto-state.json",
+		expectedWorkspace + "/.hal/archive/2026-07-14-keyboard-game-2/prd.json",
+		expectedWorkspace + "/.hal/archive/2026-07-14-keyboard-game-2/progress.txt",
+		expectedWorkspace + "/.hal/archive/2026-07-14-keyboard-game-2/auto-state.json",
 		expectedWorkspace + "/.hal/recovery/workspace.patch",
 		expectedWorkspace + "/.hal/reports.tar",
 	}
@@ -1211,12 +1253,22 @@ func TestRunAutoSandboxWithWriterCollectsGeneratedArtifacts(t *testing.T) {
 				if got.Target.Name != "auto-generated-artifacts-box" {
 					t.Fatalf("Exec target = %#v, want auto-generated-artifacts-box", got.Target)
 				}
-				_, _ = io.WriteString(got.Stdout, autoSandboxRemoteSuccessJSON("remote")+"\n")
+				_, _ = io.WriteString(got.Stdout, autoSandboxRemoteSuccessJSONWithArchivePath("remote", ".hal/archive/2026-07-14-keyboard-game-2")+"\n")
 			}
 			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
 		},
 		copyOut: func(_ context.Context, got sandboxruntime.CopyRequest) error {
 			copyOutSources = append(copyOutSources, got.SourcePath)
+			for _, rootCorePath := range []string{"/.hal/prd.json", "/.hal/progress.txt", "/.hal/auto-state.json"} {
+				if got.SourcePath == expectedWorkspace+rootCorePath {
+					return &rootlesspodman.OperationError{
+						Driver:    sandboxruntime.DriverRootlessPodman,
+						Operation: rootlesspodman.OperationCopyOut,
+						ExitCode:  125,
+						Detail:    "source path does not exist",
+					}
+				}
+			}
 			if got.SourcePath == expectedWorkspace+"/.hal/reports.tar" {
 				return os.ErrNotExist
 			}
@@ -2212,6 +2264,10 @@ func autoSandboxTestPlan(projectDir string) sandboxworkspace.Plan {
 
 func autoSandboxRemoteSuccessJSON(summary string) string {
 	return `{"contractVersion":2,"ok":true,"entryMode":"report_discovery","resumed":false,"steps":{"analyze":{"status":"completed"},"spec":{"status":"completed"},"branch":{"status":"completed"},"convert":{"status":"completed"},"validate":{"status":"completed"},"run":{"status":"completed"},"review":{"status":"skipped"},"report":{"status":"completed"},"ci":{"status":"skipped"},"archive":{"status":"skipped"}},"summary":"` + summary + `"}`
+}
+
+func autoSandboxRemoteSuccessJSONWithArchivePath(summary, archivePath string) string {
+	return `{"contractVersion":2,"ok":true,"entryMode":"report_discovery","resumed":false,"steps":{"analyze":{"status":"completed"},"spec":{"status":"completed"},"branch":{"status":"completed"},"convert":{"status":"completed"},"validate":{"status":"completed"},"run":{"status":"completed"},"review":{"status":"skipped"},"report":{"status":"completed"},"ci":{"status":"skipped"},"archive":{"status":"completed","path":"` + archivePath + `"}},"summary":"` + summary + `"}`
 }
 
 type capturingAutoSandboxProvider struct {

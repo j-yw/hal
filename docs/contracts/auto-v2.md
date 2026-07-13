@@ -60,6 +60,11 @@ Additional telemetry fields are optional per step, including:
 - `fixesApplied`
 - `prUrl`
 
+After a successful non-dry-run archive, `steps.archive.path` is the exact
+collision-resolved, workspace-relative archive directory (for example,
+`.hal/archive/2026-03-29-feature-2`). Dry runs and results from older Hal
+versions may omit it.
+
 `steps.convert.reason` is reserved for convert-mode telemetry and uses:
 
 - `standard`
