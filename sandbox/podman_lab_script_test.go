@@ -5,9 +5,40 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+func TestPodmanLabStartDetachesDaemonAndUsesLiveReadiness(t *testing.T) {
+	_, sourcePath, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller() failed")
+	}
+	scriptPath := filepath.Join(filepath.Dir(sourcePath), "podman-lab.sh")
+	data, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", scriptPath, err)
+	}
+	script := string(data)
+	for _, want := range []string{
+		`nohup "$HAL_BIN" sandboxd`,
+		`</dev/null`,
+		`>>"$LOG_FILE"`,
+		`-o lstart=`,
+		`mkdir "$LIFECYCLE_LOCK_DIR"`,
+		`remove_stale_lifecycle_lock`,
+		`"$HAL_BIN" sandbox host register worker "$WORKER_ID" --socket "$SOCKET" --live`,
+		`"$HAL_BIN" sandbox host status "$WORKER_ID" --live`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("podman-lab.sh missing lifecycle contract %q", want)
+		}
+	}
+	if strings.Contains(script, "wait_for_socket()") {
+		t.Error("podman-lab.sh must verify worker RPC readiness instead of socket existence alone")
+	}
+}
 
 func TestPodmanLabPrepareUsesNamedConnectionWhenDefaultIsHealthy(t *testing.T) {
 	env := newPodmanLabTestEnv(t)
@@ -52,12 +83,16 @@ func TestPodmanLabDestroyRemovesContainersOnlyOnNamedConnection(t *testing.T) {
 }
 
 type podmanLabTestEnv struct {
-	scriptPath string
-	binDir     string
-	labRoot    string
-	hostHome   string
-	logPath    string
-	statePath  string
+	scriptPath    string
+	binDir        string
+	labRoot       string
+	hostHome      string
+	logPath       string
+	statePath     string
+	halLogPath    string
+	halPIDPath    string
+	halReady      string
+	halStartDelay string
 }
 
 func newPodmanLabTestEnv(t *testing.T) podmanLabTestEnv {
@@ -72,12 +107,16 @@ func newPodmanLabTestEnv(t *testing.T) podmanLabTestEnv {
 		t.Fatalf("MkdirAll(fake bin) error = %v", err)
 	}
 	env := podmanLabTestEnv{
-		scriptPath: filepath.Join(filepath.Dir(sourcePath), "podman-lab.sh"),
-		binDir:     binDir,
-		labRoot:    filepath.Join(root, "hal-sandbox-binding"),
-		hostHome:   filepath.Join(root, "host-home"),
-		logPath:    filepath.Join(root, "podman.log"),
-		statePath:  filepath.Join(root, "machine-ready"),
+		scriptPath:    filepath.Join(filepath.Dir(sourcePath), "podman-lab.sh"),
+		binDir:        binDir,
+		labRoot:       filepath.Join(root, "hal-sandbox-binding"),
+		hostHome:      filepath.Join(root, "host-home"),
+		logPath:       filepath.Join(root, "podman.log"),
+		statePath:     filepath.Join(root, "machine-ready"),
+		halLogPath:    filepath.Join(root, "hal.log"),
+		halPIDPath:    filepath.Join(root, "hal-daemon.pid"),
+		halReady:      filepath.Join(root, "hal-daemon.ready"),
+		halStartDelay: "0",
 	}
 	if err := os.MkdirAll(env.hostHome, 0o700); err != nil {
 		t.Fatalf("MkdirAll(host home) error = %v", err)
@@ -112,6 +151,44 @@ exit 0
 	return env
 }
 
+func writePodmanLabHalStub(t *testing.T, env podmanLabTestEnv) {
+	t.Helper()
+	path := filepath.Join(env.labRoot, "bin", "hal")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll(fake Hal bin) error = %v", err)
+	}
+	writePodmanLabExecutable(t, path, `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$HAL_TEST_LOG"
+
+if [ "${1:-}" = "sandboxd" ]; then
+	printf '%s\n' "$$" > "$HAL_TEST_DAEMON_PID"
+	sleep "$HAL_TEST_START_DELAY"
+	: > "$HAL_TEST_DAEMON_READY"
+	trap 'rm -f "$HAL_TEST_DAEMON_READY"; exit 0' HUP INT TERM
+	while :; do
+		sleep 1
+	done
+fi
+
+if [ "${1:-}" = "sandbox" ] && [ "${2:-}" = "host" ] && [ "${3:-}" = "register" ]; then
+	[ -f "$HAL_TEST_DAEMON_READY" ] || exit 1
+	pid=$(cat "$HAL_TEST_DAEMON_PID")
+	kill -0 "$pid" 2>/dev/null
+	exit 0
+fi
+
+if [ "${1:-}" = "sandbox" ] && [ "${2:-}" = "host" ] && [ "${3:-}" = "status" ]; then
+	[ -f "$HAL_TEST_DAEMON_READY" ] || exit 1
+	pid=$(cat "$HAL_TEST_DAEMON_PID")
+	kill -0 "$pid" 2>/dev/null
+	exit 0
+fi
+
+exit 0
+`)
+}
+
 func writePodmanLabGoStub(t *testing.T, binDir string) {
 	t.Helper()
 	writePodmanLabExecutable(t, filepath.Join(binDir, "go"), `#!/bin/sh
@@ -141,6 +218,20 @@ func writePodmanLabExecutable(t *testing.T, path, content string) {
 
 func runPodmanLabScript(t *testing.T, env podmanLabTestEnv, command string) {
 	t.Helper()
+	_ = runPodmanLabScriptOutput(t, env, command)
+}
+
+func runPodmanLabScriptOutput(t *testing.T, env podmanLabTestEnv, command string) string {
+	t.Helper()
+	cmd := newPodmanLabCommand(env, command)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("podman-lab.sh %s error = %v; output = %s", command, err, output)
+	}
+	return string(output)
+}
+
+func newPodmanLabCommand(env podmanLabTestEnv, command string) *exec.Cmd {
 	cmd := exec.Command("sh", env.scriptPath, command)
 	cmd.Env = append(os.Environ(),
 		"HOME="+env.hostHome,
@@ -152,10 +243,36 @@ func runPodmanLabScript(t *testing.T, env podmanLabTestEnv, command string) {
 		"PODMAN_TEST_LOG="+env.logPath,
 		"PODMAN_TEST_MACHINE=lab-machine",
 		"PODMAN_TEST_STATE="+env.statePath,
+		"HAL_TEST_LOG="+env.halLogPath,
+		"HAL_TEST_DAEMON_PID="+env.halPIDPath,
+		"HAL_TEST_DAEMON_READY="+env.halReady,
+		"HAL_TEST_START_DELAY="+env.halStartDelay,
 	)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("podman-lab.sh %s error = %v; output = %s", command, err, output)
+	return cmd
+}
+
+func readPodmanLabPID(t *testing.T, env podmanLabTestEnv) int {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(env.labRoot, "run", "sandboxd.pid"))
+	if err != nil {
+		t.Fatalf("ReadFile(sandboxd.pid) error = %v", err)
 	}
+	pid, err := parsePodmanLabPID(data)
+	if err != nil {
+		t.Fatalf("invalid sandboxd PID %q: %v", data, err)
+	}
+	return pid
+}
+
+func parsePodmanLabPID(data []byte) (int, error) {
+	value := strings.TrimSpace(string(data))
+	for _, line := range strings.Split(value, "\n") {
+		if strings.HasPrefix(line, "pid=") {
+			value = strings.TrimPrefix(line, "pid=")
+			break
+		}
+	}
+	return strconv.Atoi(value)
 }
 
 func readPodmanLabLog(t *testing.T, path string) string {
