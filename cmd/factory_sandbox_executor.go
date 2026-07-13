@@ -1654,7 +1654,7 @@ func factorySandboxRemoteAutoScript(req factoryRunAutoRequest) string {
 
 func factorySandboxRemoteAutoEnv(req factoryRunAutoRequest) []string {
 	policy := req.AttemptPolicy
-	env := make([]string, 0, 4)
+	env := make([]string, 0, 10)
 	env = append(env, fmt.Sprintf("%s=%d", autoFactoryMaxRunAttemptsEnv, policy.MaxRunAttempts))
 	env = append(env, fmt.Sprintf("%s=%d", autoFactoryMaxReviewFixAttemptsEnv, policy.MaxReviewFixAttempts))
 	env = append(env, fmt.Sprintf("%s=%d", autoFactoryMaxCIFixAttemptsEnv, policy.MaxCIFixAttempts))
@@ -1664,6 +1664,7 @@ func factorySandboxRemoteAutoEnv(req factoryRunAutoRequest) []string {
 	if runtimeStatePolicy := strings.TrimSpace(req.RuntimeStatePolicy); runtimeStatePolicy != "" {
 		env = append(env, fmt.Sprintf("%s=%s", autoFactoryRuntimeStatePolicyEnv, shellQuote(runtimeStatePolicy)))
 	}
+	env = append(env, factoryAutoExecutionProfileEnv(req.ExecutionProfile)...)
 	return env
 }
 

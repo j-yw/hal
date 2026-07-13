@@ -614,6 +614,14 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
+	factoryExecutionProfile, err := factoryAutoExecutionProfileFromEnv(os.LookupEnv)
+	if err != nil {
+		if jsonMode {
+			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
+			return outputAutoValidationJSON(cmd, out, jr)
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
 
 	if err := compound.MigrateLegacyAutoPRD(dir, errOut); err != nil {
 		if jsonMode {
@@ -702,6 +710,14 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 
 	// Create engine with per-engine config
 	engineCfg := compound.LoadEngineConfig(dir, resolvedEngine)
+	engineCfg, err = applyFactoryAutoExecutionProfile(config, engineCfg, resolvedEngine, factoryExecutionProfile)
+	if err != nil {
+		if jsonMode {
+			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureConfig, false, "", convertModeTelemetry)
+			return outputAutoValidationJSON(cmd, out, jr)
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
 	eng, err := engine.NewWithConfig(resolvedEngine, engineCfg)
 	if err != nil {
 		if jsonMode {

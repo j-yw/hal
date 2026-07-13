@@ -350,6 +350,7 @@ type factoryRunDeps struct {
 	loadPolicy             func(string) (*factory.FactoryPolicy, error)
 	loadEngine             func(string) (string, error)
 	loadEngineConfig       func(string, string) *engine.EngineConfig
+	loadAutoConfig         func(string) (*compound.AutoConfig, error)
 	runPipeline            func(context.Context, factoryRunPipelineRequest) error
 	runSandbox             func(context.Context, factorySandboxExecutorRequest) error
 	loadVerify             func(string) (*verify.Config, error)
@@ -396,6 +397,7 @@ var defaultFactoryRunDeps = factoryRunDeps{
 	loadPolicy:       factory.LoadPolicyConfig,
 	loadEngine:       compound.LoadDefaultEngine,
 	loadEngineConfig: compound.LoadEngineConfig,
+	loadAutoConfig:   compound.LoadConfig,
 	runPipeline:      runFactoryRunPipeline,
 	runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
 		return runFactorySandboxExecutorWithDeps(ctx, req, defaultFactorySandboxExecutorDeps)
@@ -430,6 +432,8 @@ type factoryRunRequest struct {
 	Secrets        []factory.RunSecretInput
 
 	ResolvedSecrets []factory.ResolvedRunSecret
+
+	ExecutionProfile *factoryAutoExecutionProfile
 }
 
 type factoryRunConfigFlagChanges struct {
@@ -460,6 +464,7 @@ type factoryRunAutoRequest struct {
 	RuntimeStatePolicy string
 	SkipCI             bool
 	Resume             bool
+	ExecutionProfile   *factoryAutoExecutionProfile
 }
 
 type factoryRunProgressEvent struct {
@@ -766,6 +771,12 @@ func runFactoryRunWithDeps(ctx context.Context, dir string, req factoryRunReques
 	record, err = persistFactoryRunEngineSnapshotWithRedactor(store, record, engineName, initialRedactor)
 	if err != nil {
 		return failFactoryRunCreationWithRedactor(store, record, out, req.JSON, deps.now(), err, nil, initialRedactor)
+	}
+	if req.Sandbox {
+		req.ExecutionProfile, err = resolveFactoryAutoExecutionProfile(dir, engineName, deps)
+		if err != nil {
+			return failFactoryRunCreationWithRedactor(store, record, out, req.JSON, deps.now(), err, nil, initialRedactor)
+		}
 	}
 	if err := enforceFactoryRunCreationPolicyWithRedactor(store, record, out, req.JSON, deps, creationPolicy, engineName, initialRedactor); err != nil {
 		return err
@@ -1131,6 +1142,9 @@ func normalizeFactoryRunDeps(deps factoryRunDeps) factoryRunDeps {
 	}
 	if deps.loadEngineConfig == nil {
 		deps.loadEngineConfig = defaultFactoryRunDeps.loadEngineConfig
+	}
+	if deps.loadAutoConfig == nil {
+		deps.loadAutoConfig = defaultFactoryRunDeps.loadAutoConfig
 	}
 	if deps.lookupEnv == nil {
 		deps.lookupEnv = defaultFactoryRunDeps.lookupEnv
@@ -5437,9 +5451,10 @@ func runFactoryRunPipelineWithDeps(ctx context.Context, req factoryRunPipelineRe
 
 func factoryRunAutoRequestFromFactoryRequest(req factoryRunRequest) factoryRunAutoRequest {
 	autoReq := factoryRunAutoRequest{
-		ReportPath: strings.TrimSpace(req.ReportPath),
-		BaseBranch: strings.TrimSpace(req.BaseBranch),
-		CIPolicy:   strings.TrimSpace(req.CIPolicy),
+		ReportPath:       strings.TrimSpace(req.ReportPath),
+		BaseBranch:       strings.TrimSpace(req.BaseBranch),
+		CIPolicy:         strings.TrimSpace(req.CIPolicy),
+		ExecutionProfile: req.ExecutionProfile,
 	}
 	if markdownPath := strings.TrimSpace(req.MarkdownPath); markdownPath != "" {
 		autoReq.Args = []string{markdownPath}

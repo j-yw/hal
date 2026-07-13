@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -3095,6 +3096,52 @@ func TestFactorySandboxRemoteAutoEnvIncludesRuntimeStatePolicy(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("factorySandboxRemoteAutoEnv() = %#v, want runtime state policy env", got)
+	}
+}
+
+func TestFactorySandboxRemoteAutoEnvIncludesExactExecutionProfile(t *testing.T) {
+	got := factorySandboxRemoteAutoEnv(factoryRunAutoRequest{
+		ExecutionProfile: &factoryAutoExecutionProfile{
+			Engine:        "pi",
+			Provider:      "xai",
+			Model:         "grok-4.5",
+			Timeout:       75 * time.Second,
+			MaxIterations: 6,
+		},
+	})
+	wantEntries := []string{
+		autoFactoryExecutionProfileMarkerEnv + "='1'",
+		autoFactoryExecutionProfileEngineEnv + "='pi'",
+		autoFactoryExecutionProfileProviderEnv + "='xai'",
+		autoFactoryExecutionProfileModelEnv + "='grok-4.5'",
+		autoFactoryExecutionProfileTimeoutEnv + "='1m15s'",
+		autoFactoryExecutionProfileMaxIterationsEnv + "='6'",
+	}
+	for _, want := range wantEntries {
+		if !slices.Contains(got, want) {
+			t.Fatalf("factorySandboxRemoteAutoEnv() = %#v, missing %q", got, want)
+		}
+	}
+	joined := strings.Join(got, "\n")
+	for _, forbidden := range []string{"config.yaml", "apiKey", "oauth", "credential"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("execution profile env contains forbidden raw config/secret token %q: %s", forbidden, joined)
+		}
+	}
+}
+
+func TestFactoryRunResumeAutoRequestRetainsExecutionProfile(t *testing.T) {
+	profile := &factoryAutoExecutionProfile{Engine: "pi", Provider: "xai", Model: "grok-4.5", Timeout: time.Minute, MaxIterations: 3}
+	got := factoryRunResumeAutoRequest(factoryRunAutoRequest{
+		Args:             []string{".hal/prd.md"},
+		BaseBranch:       "main",
+		ExecutionProfile: profile,
+	})
+	if got.ExecutionProfile != profile {
+		t.Fatalf("resume execution profile = %#v, want original profile", got.ExecutionProfile)
+	}
+	if !got.Resume || got.Args != nil || got.BaseBranch != "" {
+		t.Fatalf("resume request = %#v, want resume inputs without source replay", got)
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/compound"
+	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/projectconfig"
 	"github.com/jywlabs/hal/internal/sandbox"
@@ -988,7 +989,15 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 			return "git@github.com:jywlabs/hal.git", nil
 		},
 		loadEngine: func(string) (string, error) {
-			return factory.PolicyEngineCodex, nil
+			return factory.PolicyEnginePi, nil
+		},
+		loadAutoConfig: func(string) (*compound.AutoConfig, error) {
+			cfg := compound.DefaultAutoConfig()
+			cfg.MaxIterations = 4
+			return &cfg, nil
+		},
+		loadEngineConfig: func(string, string) *engine.EngineConfig {
+			return &engine.EngineConfig{Provider: "xai", Model: "grok-4.5", Timeout: 2 * time.Minute}
 		},
 		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
 			t.Fatal("local pipeline should not be called with --sandbox")
@@ -1014,10 +1023,17 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 			wantAuto := factoryRunAutoRequest{
 				Args:               []string{".hal/prd-feature.md"},
 				BaseBranch:         "main",
-				Engine:             factory.PolicyEngineCodex,
+				Engine:             factory.PolicyEnginePi,
 				MaxCommandRetries:  2,
 				CIPolicy:           factory.CIPolicySkipIfUnavailable,
 				RuntimeStatePolicy: compound.RuntimeStatePolicyCheckpointFactoryState,
+				ExecutionProfile: &factoryAutoExecutionProfile{
+					Engine:        factory.PolicyEnginePi,
+					Provider:      "xai",
+					Model:         "grok-4.5",
+					Timeout:       2 * time.Minute,
+					MaxIterations: 4,
+				},
 			}
 			if !reflect.DeepEqual(req.RemoteAuto, wantAuto) {
 				t.Fatalf("remote auto request = %#v, want %#v", req.RemoteAuto, wantAuto)
