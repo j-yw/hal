@@ -95,6 +95,8 @@ func (p *Parser) ParseLine(line []byte) *engine.Event {
 	switch eventType {
 	case "session":
 		return p.parseSession(raw)
+	case "agent_start":
+		return p.parseAgentStart(raw)
 	case "message_start":
 		return p.parseMessageStart(raw)
 	case "message_update":
@@ -115,9 +117,8 @@ func (p *Parser) ParseLine(line []byte) *engine.Event {
 }
 
 func (p *Parser) parseSession(raw map[string]interface{}) *engine.Event {
-	if p.runStart.IsZero() {
-		p.markRunStart()
-	}
+	p.resetRunState()
+	p.model = ""
 
 	// Session event doesn't include model; we'll pick it up from message_start.
 	// Model left empty — the real model name arrives in the first assistant message_start.
@@ -127,6 +128,22 @@ func (p *Parser) parseSession(raw map[string]interface{}) *engine.Event {
 			Model: "",
 		},
 	}
+}
+
+func (p *Parser) parseAgentStart(raw map[string]interface{}) *engine.Event {
+	p.resetRunState()
+	return nil
+}
+
+func (p *Parser) resetRunState() {
+	p.totalTokens = 0
+	p.hasFailure = false
+	p.hasTerminalOutcome = false
+	p.lastAssistantCompleted = false
+	p.terminalError = ""
+	p.text.Reset()
+	p.isThinking = false
+	p.markRunStart()
 }
 
 func (p *Parser) parseMessageStart(raw map[string]interface{}) *engine.Event {
@@ -352,6 +369,10 @@ func (p *Parser) parseTurnEnd(raw map[string]interface{}) *engine.Event {
 
 func (p *Parser) parseAgentEnd(raw map[string]interface{}) *engine.Event {
 	p.hasTerminalOutcome = false
+	if willRetry, _ := raw["willRetry"].(bool); willRetry {
+		p.lastAssistantCompleted = false
+		return nil
+	}
 	// Fallback text recovery: some providers may not emit text_end events.
 	// In that case, extract text from the last assistant message in agent_end.
 	if messages, ok := raw["messages"].([]interface{}); ok {

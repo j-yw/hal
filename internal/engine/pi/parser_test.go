@@ -347,6 +347,57 @@ func TestParser_ParseLine_AgentEnd(t *testing.T) {
 	}
 }
 
+func TestParser_ParseLine_NewRunBoundaryInvalidatesTerminalOutcome(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+	}{
+		{name: "agent start", line: `{"type":"agent_start"}`},
+		{name: "new session", line: `{"type":"session"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewParser()
+			result := p.ParseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"stale"}],"stopReason":"stop"}]}`))
+			if result == nil || !result.Data.Success || !p.HasTerminalOutcome() {
+				t.Fatalf("initial result = %#v, want authoritative success", result)
+			}
+
+			p.ParseLine([]byte(tt.line))
+			if p.HasTerminalOutcome() {
+				t.Fatal("HasTerminalOutcome() = true after new run boundary")
+			}
+			if p.HasFailure() {
+				t.Fatal("HasFailure() = true at start of replacement run")
+			}
+			if got := p.TerminalError(); got != "" {
+				t.Fatalf("TerminalError() = %q after new run boundary, want empty", got)
+			}
+			if got := p.CollectedText(); got != "" {
+				t.Fatalf("CollectedText() = %q after new run boundary, want empty", got)
+			}
+		})
+	}
+}
+
+func TestParser_ParseLine_RetryableAgentEndIsNotTerminal(t *testing.T) {
+	p := NewParser()
+	event := p.ParseLine([]byte(`{"type":"agent_end","willRetry":true,"messages":[{"role":"assistant","content":[{"type":"text","text":"attempt"}],"stopReason":"stop"}]}`))
+	if event != nil {
+		t.Fatalf("retryable agent_end event = %#v, want no terminal result", event)
+	}
+	if p.HasTerminalOutcome() {
+		t.Fatal("HasTerminalOutcome() = true for retryable agent_end")
+	}
+
+	p.ParseLine([]byte(`{"type":"agent_start"}`))
+	result := p.ParseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"recovered"}],"stopReason":"stop"}]}`))
+	if result == nil || result.Type != engine.EventResult || !result.Data.Success || !p.HasTerminalOutcome() {
+		t.Fatalf("final retry result = %#v, want authoritative success", result)
+	}
+}
+
 func TestParser_ParseLine_AgentEnd_RequiresAuthoritativeTerminalOutcome(t *testing.T) {
 	tests := []struct {
 		name string

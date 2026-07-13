@@ -174,17 +174,13 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 
 func (e *Engine) parseResultStatus(output string) (hasResult bool, success bool) {
 	parser := NewParser()
-	success = true
 
 	for _, line := range strings.Split(output, "\n") {
-		event := parser.ParseLine([]byte(line))
-		if event != nil && event.Type == engine.EventResult {
-			hasResult = true
-			success = event.Data.Success
-		}
+		parser.ParseLine([]byte(line))
 	}
 
-	return hasResult, success
+	hasResult = parser.HasTerminalOutcome()
+	return hasResult, hasResult && !parser.HasFailure()
 }
 
 func (e *Engine) parseTerminalError(output string) string {

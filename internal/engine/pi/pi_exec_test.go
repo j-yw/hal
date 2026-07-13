@@ -157,6 +157,139 @@ func TestExecute_RejectsUnfinishedToolUseOnProcessFailureOrDeadline(t *testing.T
 	}
 }
 
+func TestExecute_DoesNotRecoverStaleResultAfterNewAgentStart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	tests := []struct {
+		name        string
+		termination string
+		timeout     time.Duration
+	}{
+		{name: "zero exit", termination: "exit 0", timeout: 10 * time.Second},
+		{name: "nonzero exit", termination: "exit 1", timeout: 10 * time.Second},
+		{name: "deadline", termination: "sleep 5", timeout: 50 * time.Millisecond},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			writeFakePi(t, binDir, `#!/bin/sh
+printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"stale"}],"stopReason":"stop"}]}\n'
+printf '{"type":"agent_start"}\n'
+`+tt.termination+"\n")
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			eng := New(&engine.EngineConfig{Timeout: tt.timeout})
+			result := eng.Execute(context.Background(), "test prompt", nil)
+			if result.Error == nil {
+				t.Fatal("Execute() error = nil after replacement run omitted agent_end")
+			}
+			if result.Success {
+				t.Fatal("Execute() success = true from stale prior agent_end")
+			}
+		})
+	}
+}
+
+func TestStreamPrompt_DoesNotRecoverStaleResultAfterNewAgentStart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	tests := []struct {
+		name        string
+		termination string
+		timeout     time.Duration
+	}{
+		{name: "zero exit", termination: "exit 0", timeout: 10 * time.Second},
+		{name: "nonzero exit", termination: "exit 1", timeout: 10 * time.Second},
+		{name: "deadline", termination: "sleep 5", timeout: 50 * time.Millisecond},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			writeFakePi(t, binDir, `#!/bin/sh
+printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"stale"}],"stopReason":"stop"}]}\n'
+printf '{"type":"agent_start"}\n'
+`+tt.termination+"\n")
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			eng := New(&engine.EngineConfig{Timeout: tt.timeout})
+			resp, err := eng.StreamPrompt(context.Background(), "test prompt", nil)
+			if err == nil {
+				t.Fatalf("StreamPrompt() error = nil with stale response %q", resp)
+			}
+			if resp != "" {
+				t.Fatalf("StreamPrompt() response = %q, want no stale text", resp)
+			}
+		})
+	}
+}
+
+func TestParseResultStatus_UsesLatestRunOnly(t *testing.T) {
+	eng := New(nil)
+	hasResult, success := eng.parseResultStatus(strings.Join([]string{
+		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"stale"}],"stopReason":"stop"}]}`,
+		`{"type":"agent_start"}`,
+	}, "\n"))
+	if hasResult || success {
+		t.Fatalf("parseResultStatus() = (%v, %v), want no current result", hasResult, success)
+	}
+}
+
+func TestExecute_DoesNotRecoverRetryableAgentEnd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	tests := []struct {
+		name        string
+		termination string
+		timeout     time.Duration
+	}{
+		{name: "nonzero exit", termination: "exit 1", timeout: 10 * time.Second},
+		{name: "deadline", termination: "sleep 5", timeout: 50 * time.Millisecond},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			writeFakePi(t, binDir, `#!/bin/sh
+printf '{"type":"agent_end","willRetry":true,"messages":[{"role":"assistant","content":[{"type":"text","text":"attempt"}],"stopReason":"stop"}]}\n'
+`+tt.termination+"\n")
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			eng := New(&engine.EngineConfig{Timeout: tt.timeout})
+			result := eng.Execute(context.Background(), "test prompt", nil)
+			if result.Error == nil || result.Success {
+				t.Fatalf("Execute() = %#v, want retryable agent_end failure", result)
+			}
+		})
+	}
+}
+
+func TestStreamPrompt_DoesNotRecoverRetryableAgentEnd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	binDir := t.TempDir()
+	writeFakePi(t, binDir, `#!/bin/sh
+printf '{"type":"agent_end","willRetry":true,"messages":[{"role":"assistant","content":[{"type":"text","text":"attempt"}],"stopReason":"stop"}]}\n'
+exit 1
+`)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
+	resp, err := eng.StreamPrompt(context.Background(), "test prompt", nil)
+	if err == nil || resp != "" {
+		t.Fatalf("StreamPrompt() = (%q, %v), want retryable agent_end failure", resp, err)
+	}
+}
+
 func TestRecoverExecuteResult_PrefersSuccessfulTerminalResultOverTimeout(t *testing.T) {
 	eng := New(nil)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
