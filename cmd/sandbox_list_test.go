@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1729,9 +1730,9 @@ func TestQueryLiveStatuses_Helper(t *testing.T) {
 		},
 	}
 
-	callCount := 0
+	var callCount atomic.Int32
 	resolve := func(name string) (sandbox.Provider, error) {
-		callCount++
+		callCount.Add(1)
 		return &liveTestProvider{statusErr: nil}, nil
 	}
 
@@ -1745,8 +1746,8 @@ func TestQueryLiveStatuses_Helper(t *testing.T) {
 		t.Errorf("instance[1] status = %q, want %q", instances[1].Status, sandbox.StatusStopped)
 	}
 	// Each instance should trigger a provider resolve
-	if callCount != 2 {
-		t.Errorf("expected 2 resolve calls, got %d", callCount)
+	if got := callCount.Load(); got != 2 {
+		t.Errorf("expected 2 resolve calls, got %d", got)
 	}
 }
 
