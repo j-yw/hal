@@ -186,11 +186,8 @@ func validateSandboxCommandWorkerRuntime(result sandboxtarget.Result) error {
 }
 
 func validateSandboxCommandProvisioning(req sandboxCommandTargetRequest, result sandboxtarget.Result) error {
-	if strings.TrimSpace(req.SandboxHostID) != "" || result.Host != nil {
+	if strings.TrimSpace(req.SandboxHostID) != "" {
 		hostID := strings.TrimSpace(req.SandboxHostID)
-		if hostID == "" && result.Host != nil {
-			hostID = result.Host.ID
-		}
 		return fmt.Errorf("requested sandbox host %q cannot be provisioned by the current SSH-machine compatibility path; create a matching sandbox first or omit --%s", hostID, sandboxHostFlagName)
 	}
 	if result.Runtime == nil {

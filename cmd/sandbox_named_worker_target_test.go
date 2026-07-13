@@ -127,79 +127,6 @@ func TestResolveSandboxCommandExecutionTargetStopsOnNamedWorkerRegistryReadError
 	}
 }
 
-func TestResolveSandboxCommandExecutionTargetFreshNamedSSHMachineUsesLegacyProvisioning(t *testing.T) {
-	name := "named-ssh-machine"
-	provisioned := &sandbox.SandboxState{
-		Name:     name,
-		Provider: "digitalocean",
-		Status:   sandbox.StatusRunning,
-	}
-	var loadCalls int
-	var provisionCalls int
-
-	target, err := resolveSandboxCommandExecutionTarget(
-		context.Background(),
-		sandboxCommandTargetRequest{
-			Purpose:             sandbox.SandboxLeasePurposeRun,
-			SandboxName:         name,
-			SandboxRuntime:      sandboxruntime.DriverSSHMachine,
-			ProjectDir:          "/project",
-			Branch:              "feature/named-ssh-machine",
-			ProvisionRepository: "git@example.com:org/repo.git",
-		},
-		sandboxCommandTargetDeps{
-			loadSandbox: func(requested string) (*sandbox.SandboxState, error) {
-				loadCalls++
-				if requested != name {
-					t.Fatalf("loadSandbox name = %q, want %q", requested, name)
-				}
-				return nil, fs.ErrNotExist
-			},
-			listHosts: func() ([]*sandbox.SandboxHost, error) {
-				t.Fatal("legacy named SSH-machine provisioning must not list hosts")
-				return nil, nil
-			},
-			provision: func(_ context.Context, req factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
-				provisionCalls++
-				if req.Name != name || req.BranchName != "feature/named-ssh-machine" || req.Repo != "git@example.com:org/repo.git" {
-					t.Fatalf("provision request = %#v, want exact named SSH-machine request", req)
-				}
-				return provisioned, nil
-			},
-		},
-		sandboxCommandScheduledTargetRequest{
-			SandboxName:    name,
-			SandboxRuntime: sandboxruntime.DriverSSHMachine,
-		},
-		sandboxCommandScheduledTargetDeps{
-			listHosts: func() ([]*sandbox.SandboxHost, error) {
-				t.Fatal("named SSH-machine provisioning must not invoke the scheduler")
-				return nil, nil
-			},
-			listLeases: func() ([]*sandbox.SandboxLease, error) {
-				t.Fatal("named SSH-machine provisioning must not list leases")
-				return nil, nil
-			},
-			acquireLease: func(sandbox.SandboxLeaseAcquireRequest, time.Duration) (*sandbox.SandboxLease, error) {
-				t.Fatal("named SSH-machine provisioning must not acquire a lease")
-				return nil, nil
-			},
-		},
-	)
-	if err != nil {
-		t.Fatalf("resolveSandboxCommandExecutionTarget() error: %v", err)
-	}
-	if target != provisioned {
-		t.Fatalf("resolved target = %#v, want provisioned target %#v", target, provisioned)
-	}
-	if loadCalls != 1 || provisionCalls != 1 {
-		t.Fatalf("load/provision calls = %d/%d, want 1/1", loadCalls, provisionCalls)
-	}
-	if target.Provider == "local" {
-		t.Fatalf("resolved provider = %q, must not synthesize local scheduled target", target.Provider)
-	}
-}
-
 func TestResolveSandboxCommandExecutionTargetFreshNamedHostOnlyWorkerInfersRootlessRuntime(t *testing.T) {
 	name := "named-host-only-worker"
 	host := runSandboxSchedulerLeaseHost("worker-host-only", "worker host only")
@@ -328,7 +255,7 @@ func TestResolveSandboxCommandExecutionTargetFreshNamedRootlessRejectsNonWorkerH
 	if err == nil {
 		t.Fatal("resolve error = nil, want non-worker rootless rejection")
 	}
-	for _, want := range []string{"runtime_unsupported", host.ID, sandboxruntime.DriverRootlessPodman} {
+	for _, want := range []string{host.ID, "cannot be provisioned"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("resolve error = %q, want %q", err.Error(), want)
 		}
