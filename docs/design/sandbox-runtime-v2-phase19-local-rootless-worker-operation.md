@@ -65,6 +65,15 @@ Select the worker/rootless target explicitly for `hal auto`:
 hal auto --sandbox --sandbox-host local-worker --sandbox-runtime rootless_podman
 ```
 
+To create or reuse an exact sandbox identity on that worker, add
+`--sandbox-name`. A missing name is created through the selected worker runtime;
+an existing name is validated against the requested host and runtime before it
+is reused:
+
+```sh
+hal auto --sandbox --sandbox-name local-worker-check --sandbox-host local-worker --sandbox-runtime rootless_podman
+```
+
 Select the worker/rootless target explicitly for `hal factory run`:
 
 ```sh

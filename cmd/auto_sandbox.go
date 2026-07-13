@@ -810,8 +810,32 @@ func collectAutoSandboxOutputSummaryArtifacts(store sandboxexecution.Store, req 
 }
 
 func (deps autoSandboxDeps) resolveAutoSandboxTarget(ctx context.Context, req autoSandboxRequest, out io.Writer) (*sandbox.SandboxState, error) {
-	if autoSandboxShouldUseScheduledTarget(req) {
-		return resolveSandboxCommandScheduledTarget(sandboxCommandScheduledTargetRequest{
+	listSandboxes := deps.listSandboxes
+	if listSandboxes == nil && deps.resolveDefault != nil {
+		listSandboxes = sandboxCommandListSandboxesFromDefault(deps.resolveDefault)
+	}
+	target, err := resolveSandboxCommandExecutionTarget(
+		ctx,
+		sandboxCommandTargetRequest{
+			Purpose:                   sandbox.SandboxLeasePurposeAuto,
+			SandboxName:               req.SandboxName,
+			SandboxHostID:             req.SandboxHostID,
+			SandboxRuntime:            req.SandboxRuntime,
+			SecurityReadinessGateMode: req.SecurityReadinessGateMode,
+			ProjectDir:                req.ProjectDir,
+			Repository:                req.RepoRemote,
+			Branch:                    req.RunBranch,
+			ProvisionRepository:       req.RepoRemote,
+			Out:                       out,
+		},
+		sandboxCommandTargetDeps{
+			loadSandbox:    deps.loadSandbox,
+			listSandboxes:  listSandboxes,
+			listHosts:      deps.listHosts,
+			resolveDefault: deps.resolveDefault,
+			provision:      deps.provision,
+		},
+		sandboxCommandScheduledTargetRequest{
 			Purpose:        sandbox.SandboxLeasePurposeAuto,
 			SandboxName:    req.SandboxName,
 			SandboxHostID:  req.SandboxHostID,
@@ -821,36 +845,14 @@ func (deps autoSandboxDeps) resolveAutoSandboxTarget(ctx context.Context, req au
 			Branch:         req.RunBranch,
 			RunID:          req.ExecutionID,
 			Workspace:      req.Workspace,
-		}, sandboxCommandScheduledTargetDeps{
+		},
+		sandboxCommandScheduledTargetDeps{
 			listHosts:    deps.listHosts,
 			listLeases:   deps.listLeases,
 			now:          deps.now,
 			acquireLease: deps.acquireLease,
-		})
-	}
-
-	listSandboxes := deps.listSandboxes
-	if listSandboxes == nil && deps.resolveDefault != nil {
-		listSandboxes = sandboxCommandListSandboxesFromDefault(deps.resolveDefault)
-	}
-	target, err := resolveSandboxCommandTarget(ctx, sandboxCommandTargetRequest{
-		Purpose:                   sandbox.SandboxLeasePurposeAuto,
-		SandboxName:               req.SandboxName,
-		SandboxHostID:             req.SandboxHostID,
-		SandboxRuntime:            req.SandboxRuntime,
-		SecurityReadinessGateMode: req.SecurityReadinessGateMode,
-		ProjectDir:                req.ProjectDir,
-		Repository:                req.RepoRemote,
-		Branch:                    req.RunBranch,
-		ProvisionRepository:       req.RepoRemote,
-		Out:                       out,
-	}, sandboxCommandTargetDeps{
-		loadSandbox:    deps.loadSandbox,
-		listSandboxes:  listSandboxes,
-		listHosts:      deps.listHosts,
-		resolveDefault: deps.resolveDefault,
-		provision:      deps.provision,
-	})
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -858,10 +860,6 @@ func (deps autoSandboxDeps) resolveAutoSandboxTarget(ctx context.Context, req au
 		target = sandboxCommandSSHMachineCompatWorkerTarget(target)
 	}
 	return target, nil
-}
-
-func autoSandboxShouldUseScheduledTarget(req autoSandboxRequest) bool {
-	return strings.TrimSpace(req.SandboxName) == "" && sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime)
 }
 
 func (deps autoSandboxDeps) bootstrapAutoSandboxWorkspace(ctx context.Context, req autoSandboxRequest, provider sandbox.Provider, prep sandboxexec.PrepareContext, out io.Writer) error {

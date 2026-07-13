@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,15 @@ import (
 )
 
 func TestFactorySandboxExplicitSchedulerAcquiresLeaseAndPersistsRecord(t *testing.T) {
+	testFactorySandboxExplicitSchedulerAcquiresLeaseAndPersistsRecord(t, "")
+}
+
+func TestFactorySandboxFreshNamedWorkerTargetAcquiresLeaseAndPersistsRecord(t *testing.T) {
+	testFactorySandboxExplicitSchedulerAcquiresLeaseAndPersistsRecord(t, "named-factory-worker")
+}
+
+func testFactorySandboxExplicitSchedulerAcquiresLeaseAndPersistsRecord(t *testing.T, sandboxName string) {
+	t.Helper()
 	t.Setenv("HAL_CONFIG_HOME", t.TempDir())
 
 	startedAt := time.Date(2026, 7, 1, 8, 40, 0, 0, time.UTC)
@@ -23,6 +33,8 @@ func TestFactorySandboxExplicitSchedulerAcquiresLeaseAndPersistsRecord(t *testin
 	host := factorySandboxSchedulerLeaseHost("worker-factory-scheduled", "worker factory scheduled")
 	var out bytes.Buffer
 	var acquireCalled bool
+	var createCalled bool
+	var releaseCalled bool
 	var workerResolverCalled bool
 	var persistedState *sandbox.SandboxState
 
@@ -32,6 +44,10 @@ func TestFactorySandboxExplicitSchedulerAcquiresLeaseAndPersistsRecord(t *testin
 			if !acquireCalled {
 				t.Fatal("runtime Create ran before scheduler lease acquisition")
 			}
+			if sandboxName != "" && req.Name != sandboxName {
+				t.Fatalf("runtime Create name = %q, want %q", req.Name, sandboxName)
+			}
+			createCalled = true
 			return &sandboxruntime.Target{
 				ID:     "runtime-factory-created",
 				Name:   req.Name,
@@ -62,6 +78,7 @@ func TestFactorySandboxExplicitSchedulerAcquiresLeaseAndPersistsRecord(t *testin
 
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
 		ProjectDir:     projectDir,
+		SandboxName:    sandboxName,
 		SandboxHostID:  "worker-factory-scheduled",
 		SandboxRuntime: sandboxruntime.DriverRootlessPodman,
 		RemoteOutput:   &out,
@@ -78,9 +95,14 @@ func TestFactorySandboxExplicitSchedulerAcquiresLeaseAndPersistsRecord(t *testin
 			return store, nil
 		},
 		now: runSandboxTestClock(startedAt, startedAt.Add(time.Second), startedAt.Add(2*time.Second), startedAt.Add(3*time.Second)),
-		loadSandbox: func(string) (*sandbox.SandboxState, error) {
-			t.Fatal("loadSandbox should not run for unnamed scheduled factory target")
-			return nil, nil
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if sandboxName == "" {
+				t.Fatal("loadSandbox should not run for unnamed scheduled factory target")
+			}
+			if name != sandboxName {
+				t.Fatalf("loadSandbox name = %q, want %q", name, sandboxName)
+			}
+			return nil, fs.ErrNotExist
 		},
 		listSandboxes: func() ([]*sandbox.SandboxState, error) {
 			t.Fatal("listSandboxes should not run for unnamed scheduled factory target")
@@ -124,6 +146,13 @@ func TestFactorySandboxExplicitSchedulerAcquiresLeaseAndPersistsRecord(t *testin
 				ExpiresAt:   startedAt.Add(ttl),
 				Status:      sandbox.SandboxLeaseStatusActive,
 			}, nil
+		},
+		releaseLease: func(id string) (*sandbox.SandboxLease, error) {
+			if id != "factory-scheduler-lease" {
+				t.Fatalf("release lease ID = %q, want factory-scheduler-lease", id)
+			}
+			releaseCalled = true
+			return &sandbox.SandboxLease{ID: id, Status: sandbox.SandboxLeaseStatusReleased}, nil
 		},
 		provision: func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error) {
 			t.Fatal("provision should not run for scheduled factory target")
@@ -169,6 +198,12 @@ func TestFactorySandboxExplicitSchedulerAcquiresLeaseAndPersistsRecord(t *testin
 	if !acquireCalled {
 		t.Fatal("lease was not acquired")
 	}
+	if !createCalled {
+		t.Fatal("runtime Create was not called")
+	}
+	if !releaseCalled {
+		t.Fatal("lease was not released")
+	}
 	if !workerResolverCalled {
 		t.Fatal("worker runtime resolver was not called")
 	}
@@ -182,6 +217,9 @@ func TestFactorySandboxExplicitSchedulerAcquiresLeaseAndPersistsRecord(t *testin
 	}
 	if record.Sandbox == nil {
 		t.Fatal("record.Sandbox = nil, want scheduled sandbox metadata")
+	}
+	if sandboxName != "" && (record.SandboxName != sandboxName || record.Sandbox.Name != sandboxName) {
+		t.Fatalf("record sandbox names = %q/%q, want %q", record.SandboxName, record.Sandbox.Name, sandboxName)
 	}
 	if record.Sandbox.Host == nil || record.Sandbox.Host.ID != "worker-factory-scheduled" {
 		t.Fatalf("record sandbox host = %#v, want selected host identity", record.Sandbox.Host)

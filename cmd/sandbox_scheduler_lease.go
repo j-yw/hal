@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 	"time"
 
@@ -30,6 +32,44 @@ type sandboxCommandScheduledTargetDeps struct {
 	listLeases   func() ([]*sandbox.SandboxLease, error)
 	now          func() time.Time
 	acquireLease func(sandbox.SandboxLeaseAcquireRequest, time.Duration) (*sandbox.SandboxLease, error)
+}
+
+func resolveSandboxCommandExecutionTarget(
+	ctx context.Context,
+	targetReq sandboxCommandTargetRequest,
+	targetDeps sandboxCommandTargetDeps,
+	scheduledReq sandboxCommandScheduledTargetRequest,
+	scheduledDeps sandboxCommandScheduledTargetDeps,
+) (*sandbox.SandboxState, error) {
+	if !sandboxWorkerRoutingRequested(targetReq.SandboxHostID, targetReq.SandboxRuntime) {
+		return resolveSandboxCommandTarget(ctx, targetReq, targetDeps)
+	}
+
+	name := strings.TrimSpace(targetReq.SandboxName)
+	if name == "" {
+		return resolveSandboxCommandScheduledTarget(scheduledReq, scheduledDeps)
+	}
+	if targetDeps.loadSandbox == nil {
+		return nil, fmt.Errorf("load %s %q: sandbox loader is required", sandboxCommandLoadContext(targetReq), name)
+	}
+
+	target, err := targetDeps.loadSandbox(name)
+	if errors.Is(err, fs.ErrNotExist) {
+		scheduledReq.SandboxName = name
+		return resolveSandboxCommandScheduledTarget(scheduledReq, scheduledDeps)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load %s %q: %w", sandboxCommandLoadContext(targetReq), name, err)
+	}
+
+	pinnedDeps := targetDeps
+	pinnedDeps.loadSandbox = func(requestedName string) (*sandbox.SandboxState, error) {
+		if strings.TrimSpace(requestedName) != name {
+			return nil, fs.ErrNotExist
+		}
+		return target, nil
+	}
+	return resolveSandboxCommandTarget(ctx, targetReq, pinnedDeps)
 }
 
 func resolveSandboxCommandScheduledTarget(req sandboxCommandScheduledTargetRequest, deps sandboxCommandScheduledTargetDeps) (*sandbox.SandboxState, error) {

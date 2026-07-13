@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,6 +19,16 @@ import (
 )
 
 func TestRunSandboxExplicitSchedulerAcquiresLeaseAndPersistsManifest(t *testing.T) {
+	testRunSandboxExplicitSchedulerAcquiresLeaseAndPersistsManifest(t, "")
+}
+
+func TestRunSandboxFreshNamedWorkerTargetAcquiresLeaseAndPersistsManifest(t *testing.T) {
+	testRunSandboxExplicitSchedulerAcquiresLeaseAndPersistsManifest(t, "named-run-worker")
+}
+
+func testRunSandboxExplicitSchedulerAcquiresLeaseAndPersistsManifest(t *testing.T, sandboxName string) {
+	t.Helper()
+
 	startedAt := time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(2 * time.Second)
 	projectDir := t.TempDir()
@@ -26,11 +37,31 @@ func TestRunSandboxExplicitSchedulerAcquiresLeaseAndPersistsManifest(t *testing.
 	var out bytes.Buffer
 	var errOut bytes.Buffer
 	var acquireCalled bool
+	var createCalled bool
+	var releaseCalled bool
 	var workerResolverCalled bool
 	var persistedState *sandbox.SandboxState
 
 	workerDriver := fakeRunSandboxRuntimeDriver{
 		id: sandboxruntime.DriverRootlessPodman,
+		create: func(_ context.Context, req sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+			if !acquireCalled {
+				t.Fatal("runtime Create ran before scheduler lease acquisition")
+			}
+			if sandboxName != "" && req.Name != sandboxName {
+				t.Fatalf("runtime Create name = %q, want %q", req.Name, sandboxName)
+			}
+			createCalled = true
+			return &sandboxruntime.Target{
+				ID:     req.Name + "-runtime",
+				Name:   req.Name,
+				Status: sandbox.StatusStopped,
+				Runtime: sandboxruntime.RuntimeState{
+					Driver:    sandboxruntime.DriverRootlessPodman,
+					RuntimeID: req.Name + "-runtime",
+				},
+			}, nil
+		},
 		start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
 			if !acquireCalled {
 				t.Fatal("runtime Start ran before scheduler lease acquisition")
@@ -50,6 +81,8 @@ func TestRunSandboxExplicitSchedulerAcquiresLeaseAndPersistsManifest(t *testing.
 	}
 
 	err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+		SandboxName:           sandboxName,
+		SandboxNameChanged:    sandboxName != "",
 		SandboxHostID:         "worker-scheduled",
 		SandboxHostChanged:    true,
 		SandboxRuntime:        sandboxruntime.DriverRootlessPodman,
@@ -65,6 +98,15 @@ func TestRunSandboxExplicitSchedulerAcquiresLeaseAndPersistsManifest(t *testing.
 		workingDir: func() (string, error) { return projectDir, nil },
 		planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
 			return workerRootlessBundlePlan(projectDir), nil
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if sandboxName == "" {
+				t.Fatal("loadSandbox should not run for unnamed scheduled target")
+			}
+			if name != sandboxName {
+				t.Fatalf("loadSandbox name = %q, want %q", name, sandboxName)
+			}
+			return nil, fs.ErrNotExist
 		},
 		listHosts: func() ([]*sandbox.SandboxHost, error) {
 			return []*sandbox.SandboxHost{host}, nil
@@ -100,6 +142,13 @@ func TestRunSandboxExplicitSchedulerAcquiresLeaseAndPersistsManifest(t *testing.
 				ExpiresAt:   startedAt.Add(ttl),
 				Status:      sandbox.SandboxLeaseStatusActive,
 			}, nil
+		},
+		releaseLease: func(id string) (*sandbox.SandboxLease, error) {
+			if id != "run-scheduler-lease" {
+				t.Fatalf("release lease ID = %q, want run-scheduler-lease", id)
+			}
+			releaseCalled = true
+			return &sandbox.SandboxLease{ID: id, Status: sandbox.SandboxLeaseStatusReleased}, nil
 		},
 		resolveProvider: func(string) (sandbox.Provider, error) {
 			return fakeFactorySandboxProvider{}, nil
@@ -141,6 +190,12 @@ func TestRunSandboxExplicitSchedulerAcquiresLeaseAndPersistsManifest(t *testing.
 	if !acquireCalled {
 		t.Fatal("lease was not acquired")
 	}
+	if !createCalled {
+		t.Fatal("runtime Create was not called")
+	}
+	if !releaseCalled {
+		t.Fatal("lease was not released")
+	}
 	if !workerResolverCalled {
 		t.Fatal("worker runtime resolver was not called")
 	}
@@ -154,6 +209,9 @@ func TestRunSandboxExplicitSchedulerAcquiresLeaseAndPersistsManifest(t *testing.
 	}
 	if manifest.Status != sandboxexecution.StatusSucceeded {
 		t.Fatalf("manifest status = %q, want succeeded", manifest.Status)
+	}
+	if sandboxName != "" && manifest.SandboxName != sandboxName {
+		t.Fatalf("manifest sandbox name = %q, want %q", manifest.SandboxName, sandboxName)
 	}
 	if manifest.Host == nil || manifest.Host.ID != "worker-scheduled" || manifest.Host.Endpoint != "" {
 		t.Fatalf("manifest host = %#v, want safe selected host identity", manifest.Host)

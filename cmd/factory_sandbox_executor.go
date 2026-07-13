@@ -689,8 +689,30 @@ func resolveFactorySandboxTarget(ctx context.Context, req factorySandboxExecutor
 	} else if strings.TrimSpace(record.SandboxName) != "" {
 		req.SandboxName = strings.TrimSpace(record.SandboxName)
 	}
-	if factorySandboxShouldUseScheduledTarget(req) {
-		target, err := resolveSandboxCommandScheduledTarget(sandboxCommandScheduledTargetRequest{
+	target, err := resolveSandboxCommandExecutionTarget(
+		ctx,
+		sandboxCommandTargetRequest{
+			Purpose:                   sandbox.SandboxLeasePurposeFactory,
+			SandboxName:               req.SandboxName,
+			SandboxHostID:             req.SandboxHostID,
+			SandboxRuntime:            req.SandboxRuntime,
+			SecurityReadinessGateMode: req.SecurityReadinessGateMode,
+			ProjectDir:                req.ProjectDir,
+			Repository:                provisionRepo,
+			Branch:                    record.BranchName,
+			ProvisionRepository:       provisionRepo,
+			LoadContext:               "factory sandbox",
+			Out:                       req.RemoteOutput,
+			WrapProvisionFailure:      true,
+		},
+		sandboxCommandTargetDeps{
+			loadSandbox:    deps.loadSandbox,
+			listSandboxes:  deps.listSandboxes,
+			listHosts:      deps.listHosts,
+			resolveDefault: deps.resolveDefault,
+			provision:      deps.provision,
+		},
+		sandboxCommandScheduledTargetRequest{
 			Purpose:        sandbox.SandboxLeasePurposeFactory,
 			SandboxName:    req.SandboxName,
 			SandboxHostID:  req.SandboxHostID,
@@ -700,54 +722,22 @@ func resolveFactorySandboxTarget(ctx context.Context, req factorySandboxExecutor
 			Branch:         record.BranchName,
 			RunID:          record.RunID,
 			Workspace:      factorySandboxWorkspaceStateFromRecord(*record),
-		}, sandboxCommandScheduledTargetDeps{
+		},
+		sandboxCommandScheduledTargetDeps{
 			listHosts:    deps.listHosts,
 			listLeases:   deps.listLeases,
 			now:          deps.now,
 			acquireLease: deps.acquireLease,
-		})
-		if err != nil {
-			return nil, err
-		}
-		if record.SandboxName == "" {
-			record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
-		}
-		return target, nil
-	}
-	target, err := resolveSandboxCommandTarget(ctx, sandboxCommandTargetRequest{
-		Purpose:                   sandbox.SandboxLeasePurposeFactory,
-		SandboxName:               req.SandboxName,
-		SandboxHostID:             req.SandboxHostID,
-		SandboxRuntime:            req.SandboxRuntime,
-		SecurityReadinessGateMode: req.SecurityReadinessGateMode,
-		ProjectDir:                req.ProjectDir,
-		Repository:                provisionRepo,
-		Branch:                    record.BranchName,
-		ProvisionRepository:       provisionRepo,
-		LoadContext:               "factory sandbox",
-		Out:                       req.RemoteOutput,
-		WrapProvisionFailure:      true,
-	}, sandboxCommandTargetDeps{
-		loadSandbox:    deps.loadSandbox,
-		listSandboxes:  deps.listSandboxes,
-		listHosts:      deps.listHosts,
-		resolveDefault: deps.resolveDefault,
-		provision:      deps.provision,
-	})
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
 	if !sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
 		target = sandboxCommandSSHMachineCompatWorkerTarget(target)
 	}
-	if record.SandboxName == "" {
-		record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
-	}
+	record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
 	return target, nil
-}
-
-func factorySandboxShouldUseScheduledTarget(req factorySandboxExecutorRequest) bool {
-	return strings.TrimSpace(req.SandboxName) == "" && sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime)
 }
 
 func prepareFactorySandboxWorkspace(ctx context.Context, store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, req factorySandboxExecutorRequest, target *sandbox.SandboxState, provider sandbox.Provider, connectInfo *sandbox.ConnectInfo, remoteOutput *factorySandboxTimelineWriter) error {
