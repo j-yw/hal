@@ -1862,6 +1862,7 @@ func TestBootstrapRequestJSONFields(t *testing.T) {
 			RefreshHal:         true,
 			InstallMissingCLIs: true,
 			DryRun:             true,
+			ExactUpstream:      true,
 		},
 	}
 
@@ -1901,7 +1902,7 @@ func TestBootstrapRequestJSONFields(t *testing.T) {
 	if !ok {
 		t.Fatalf("options should be an object, got %T", raw["options"])
 	}
-	for _, key := range []string{"refreshHal", "installMissingClis", "dryRun"} {
+	for _, key := range []string{"refreshHal", "installMissingClis", "dryRun", "exactUpstream"} {
 		if _, ok := options[key]; !ok {
 			t.Errorf("missing bootstrap option JSON field %q", key)
 		}

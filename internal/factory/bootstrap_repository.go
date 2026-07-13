@@ -257,7 +257,7 @@ func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, d
 	if err != nil {
 		return nil, fmt.Errorf("check local run branch %q: %w", runBranch, err)
 	}
-	if localExists {
+	if localExists && !request.Options.ExactUpstream {
 		return []bootstrapRepositoryCommand{
 			{
 				stepName: BootstrapStepCheckoutRun,
@@ -276,12 +276,18 @@ func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, d
 		return nil, fmt.Errorf("check remote run branch %q: %w", runBranch, err)
 	}
 	if remoteExists {
+		fetchRefspec := runBranch + ":refs/remotes/origin/" + runBranch
+		checkoutArgs := []string{"checkout", "-f", "--track", "origin/" + runBranch}
+		if request.Options.ExactUpstream {
+			fetchRefspec = "+" + fetchRefspec
+			checkoutArgs = []string{"checkout", "-f", "-B", runBranch, "origin/" + runBranch}
+		}
 		return []bootstrapRepositoryCommand{
 			{
 				stepName: BootstrapStepFetchRunBranch,
 				command: BootstrapCommand{
 					Name: "git",
-					Args: []string{"fetch", "origin", runBranch + ":refs/remotes/origin/" + runBranch},
+					Args: []string{"fetch", "origin", fetchRefspec},
 					Dir:  repoPath,
 					Env:  bootstrapGitEnv(request),
 				},
@@ -290,7 +296,20 @@ func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, d
 				stepName: BootstrapStepCheckoutRun,
 				command: BootstrapCommand{
 					Name: "git",
-					Args: []string{"checkout", "-f", "--track", "origin/" + runBranch},
+					Args: checkoutArgs,
+					Dir:  repoPath,
+					Env:  bootstrapGitEnv(request),
+				},
+			},
+		}, nil
+	}
+	if localExists {
+		return []bootstrapRepositoryCommand{
+			{
+				stepName: BootstrapStepCheckoutRun,
+				command: BootstrapCommand{
+					Name: "git",
+					Args: []string{"checkout", "-f", runBranch},
 					Dir:  repoPath,
 					Env:  bootstrapGitEnv(request),
 				},

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -183,12 +184,33 @@ type RemoteCommandResult struct {
 	ExitCode int
 }
 
+const remoteWorkspaceDirtyExitCode = 73
+
 const remoteWorkspaceInitScript = `set -eu
 workspace=$1
 repo=$2
+dirty_exit=$3
 parent=$(dirname "$workspace")
 mkdir -p "$parent"
-if [ ! -d "$workspace/.git" ]; then
+if [ -d "$workspace/.git" ] || [ -f "$workspace/.git" ]; then
+  if ! workspace_status=$(git -C "$workspace" status --porcelain --untracked-files=all); then
+    exit "$dirty_exit"
+  fi
+  if [ -n "$workspace_status" ]; then
+    exit "$dirty_exit"
+  fi
+else
+  if [ -e "$workspace" ]; then
+    if [ ! -d "$workspace" ]; then
+      exit "$dirty_exit"
+    fi
+    if ! workspace_entry=$(find "$workspace" -mindepth 1 -maxdepth 1 -print -quit); then
+      exit "$dirty_exit"
+    fi
+    if [ -n "$workspace_entry" ]; then
+      exit "$dirty_exit"
+    fi
+  fi
   rm -rf "$workspace"
   git init "$workspace"
 fi
@@ -402,8 +424,8 @@ func ApplyRemoteBundle(ctx context.Context, remote RemoteCommandRunner, req Appl
 		remoteBundleFetchCommand(req.Target, workspaceDir, bundle.RemotePath, syncRef, localRef),
 		remoteBundleCheckoutCommand(req.Target, workspaceDir, plan, localRef),
 	}
-	for _, command := range commands {
-		if err := execRemoteWorkspaceCommand(ctx, remote, command); err != nil {
+	for index, command := range commands {
+		if err := execRemoteWorkspaceCommand(ctx, remote, command, index == 0); err != nil {
 			return MaterializationResult{}, fmt.Errorf("workspace bundle apply: %w", err)
 		}
 	}
@@ -430,6 +452,7 @@ func remoteWorkspaceInitCommand(target RemoteTarget, workspaceDir string, reposi
 			"hal-workspace-apply",
 			workspaceDir,
 			repository,
+			strconv.Itoa(remoteWorkspaceDirtyExitCode),
 		},
 	}
 }
@@ -461,10 +484,13 @@ func remoteBundleCheckoutCommand(target RemoteTarget, workspaceDir string, plan 
 	}
 }
 
-func execRemoteWorkspaceCommand(ctx context.Context, remote RemoteCommandRunner, req RemoteCommandRequest) error {
+func execRemoteWorkspaceCommand(ctx context.Context, remote RemoteCommandRunner, req RemoteCommandRequest, detectDirtyWorkspace bool) error {
 	result, err := remote.Exec(ctx, req)
 	if err != nil {
 		return sanitizedRemoteCommandError("remote apply", err)
+	}
+	if detectDirtyWorkspace && result.ExitCode == remoteWorkspaceDirtyExitCode {
+		return fmt.Errorf("%w: changes were preserved; commit or stash changes in the sandbox workspace, or reset/remove the workspace before retrying", ErrRemoteWorkspaceDirty)
 	}
 	if result.ExitCode != 0 {
 		return fmt.Errorf("remote apply failed: exit code %d", result.ExitCode)

@@ -277,6 +277,7 @@ func TestBundleMaterializerCopiesThenAppliesRemoteBundle(t *testing.T) {
 		"hal-workspace-apply",
 		workspaceDir,
 		"git@github.com:jywlabs/hal.git",
+		fmt.Sprint(remoteWorkspaceDirtyExitCode),
 	})
 	assertRemoteArgs(t, remote.execRequests[1].Args, []string{
 		"git",
@@ -333,7 +334,7 @@ func TestRemoteWorkspaceInitInitializesRepositoryWithoutContactingOrigin(t *test
 	}
 }
 
-func TestRemoteWorkspaceInitReusesRepositoryWithoutContactingOrigin(t *testing.T) {
+func TestRemoteWorkspaceInitRejectsDirtyRepositoryWithoutMutation(t *testing.T) {
 	workspaceDir := filepath.Join(t.TempDir(), "workspace")
 	runGitWorkspaceTest(t, "init", workspaceDir)
 	runGitWorkspaceTest(t, "-C", workspaceDir, "remote", "add", "origin", "network-forbidden://old.example/repo.git")
@@ -343,13 +344,106 @@ func TestRemoteWorkspaceInitReusesRepositoryWithoutContactingOrigin(t *testing.T
 	}
 	repository := "network-forbidden://private.example/repo.git"
 
-	runRemoteWorkspaceInitTest(t, workspaceDir, repository)
+	cmd := exec.Command(
+		"sh",
+		"-lc",
+		remoteWorkspaceInitScript,
+		"hal-workspace-apply",
+		workspaceDir,
+		repository,
+		fmt.Sprint(remoteWorkspaceDirtyExitCode),
+	)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("remote workspace init error = nil, want dirty rejection; output = %s", output)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != remoteWorkspaceDirtyExitCode {
+		t.Fatalf("remote workspace init error = %v, want exit code %d; output = %s", err, remoteWorkspaceDirtyExitCode, output)
+	}
 
-	if got := gitOutputWorkspaceTest(t, workspaceDir, "remote", "get-url", "origin"); got != repository {
-		t.Fatalf("origin URL = %q, want %q", got, repository)
+	if got := gitOutputWorkspaceTest(t, workspaceDir, "remote", "get-url", "origin"); got != "network-forbidden://old.example/repo.git" {
+		t.Fatalf("origin URL = %q, want unchanged old origin", got)
 	}
 	if _, err := os.Stat(markerPath); err != nil {
-		t.Fatalf("reused workspace marker error = %v", err)
+		t.Fatalf("preserved workspace marker error = %v", err)
+	}
+}
+
+func TestRemoteBundleCheckoutReconcilesCleanWorkspaceToIncomingRef(t *testing.T) {
+	sourceDir := filepath.Join(t.TempDir(), "source")
+	runGitWorkspaceTest(t, "init", sourceDir)
+	configureGitIdentityWorkspaceTest(t, sourceDir)
+	if err := os.WriteFile(filepath.Join(sourceDir, "incoming.txt"), []byte("incoming\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(incoming) error = %v", err)
+	}
+	runGitWorkspaceTest(t, "-C", sourceDir, "add", "incoming.txt")
+	runGitWorkspaceTest(t, "-C", sourceDir, "commit", "-m", "incoming")
+	runGitWorkspaceTest(t, "-C", sourceDir, "branch", "-M", "phase/workspace")
+	incomingHead := gitOutputWorkspaceTest(t, sourceDir, "rev-parse", "HEAD")
+	bundlePath := filepath.Join(t.TempDir(), "incoming.bundle")
+	runGitWorkspaceTest(t, "-C", sourceDir, "bundle", "create", bundlePath, "refs/heads/phase/workspace")
+
+	workspaceDir := filepath.Join(t.TempDir(), "workspace")
+	runGitWorkspaceTest(t, "init", workspaceDir)
+	configureGitIdentityWorkspaceTest(t, workspaceDir)
+	oldPath := filepath.Join(workspaceDir, "old.txt")
+	if err := os.WriteFile(oldPath, []byte("old\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(old) error = %v", err)
+	}
+	runGitWorkspaceTest(t, "-C", workspaceDir, "add", "old.txt")
+	runGitWorkspaceTest(t, "-C", workspaceDir, "commit", "-m", "old")
+	runGitWorkspaceTest(t, "-C", workspaceDir, "branch", "-M", "phase/workspace")
+
+	runRemoteWorkspaceInitTest(t, workspaceDir, "network-forbidden://private.example/repo.git")
+	localRef := sandboxLocalBundleRef("incoming")
+	runRemoteWorkspaceCommandTest(t, remoteBundleFetchCommand(RemoteTarget{}, workspaceDir, bundlePath, "refs/heads/phase/workspace", localRef))
+	runRemoteWorkspaceCommandTest(t, remoteBundleCheckoutCommand(RemoteTarget{}, workspaceDir, Plan{Branch: "phase/workspace"}, localRef))
+
+	if got := gitOutputWorkspaceTest(t, workspaceDir, "rev-parse", "HEAD"); got != incomingHead {
+		t.Fatalf("workspace HEAD = %q, want incoming %q", got, incomingHead)
+	}
+	if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old tracked path stat error = %v, want removed", err)
+	}
+	data, err := os.ReadFile(filepath.Join(workspaceDir, "incoming.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile(incoming) error = %v", err)
+	}
+	if string(data) != "incoming\n" {
+		t.Fatalf("incoming content = %q", data)
+	}
+}
+
+func TestApplyRemoteBundleReturnsActionableDirtyWorkspaceErrorBeforeFetch(t *testing.T) {
+	remote := &recordingRemoteClient{
+		execResults: []RemoteCommandResult{{ExitCode: remoteWorkspaceDirtyExitCode}},
+	}
+	_, err := ApplyRemoteBundle(context.Background(), remote, ApplyRemoteBundleRequest{
+		Plan: Plan{
+			InputSource: sandbox.SandboxWorkspaceInputSourceGitBundle,
+			Repository:  "git@github.com:jywlabs/hal.git",
+			Branch:      "phase/workspace",
+			SyncRef:     "abc123",
+		},
+		Target: RemoteTarget{ID: "sandbox-1"},
+		Bundle: RemoteBundleResult{Bundle: &BundleMaterialization{
+			ID:         "abc123",
+			RemotePath: "/tmp/hal/bundles/abc123.bundle",
+			SyncRef:    "abc123",
+		}},
+		WorkspaceDir: "/workspace/hal",
+	})
+	if !errors.Is(err, ErrRemoteWorkspaceDirty) {
+		t.Fatalf("ApplyRemoteBundle() error = %v, want ErrRemoteWorkspaceDirty", err)
+	}
+	for _, want := range []string{"changes were preserved", "commit or stash", "reset/remove"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("ApplyRemoteBundle() error = %q, want actionable guidance %q", err, want)
+		}
+	}
+	if len(remote.execRequests) != 1 {
+		t.Fatalf("Exec calls = %d, want init check only", len(remote.execRequests))
 	}
 }
 
@@ -586,10 +680,25 @@ func stringSlicesEqual(a []string, b []string) bool {
 
 func runRemoteWorkspaceInitTest(t *testing.T, workspaceDir string, repository string) {
 	t.Helper()
-	cmd := exec.Command("sh", "-lc", remoteWorkspaceInitScript, "hal-workspace-apply", workspaceDir, repository)
+	cmd := exec.Command("sh", "-lc", remoteWorkspaceInitScript, "hal-workspace-apply", workspaceDir, repository, fmt.Sprint(remoteWorkspaceDirtyExitCode))
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("remote workspace init error = %v; output = %s", err, output)
 	}
+}
+
+func runRemoteWorkspaceCommandTest(t *testing.T, request RemoteCommandRequest) {
+	t.Helper()
+	cmd := exec.Command(request.Args[0], request.Args[1:]...)
+	cmd.Dir = request.WorkDir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("remote command %q error = %v; output = %s", request.Args, err, output)
+	}
+}
+
+func configureGitIdentityWorkspaceTest(t *testing.T, workspaceDir string) {
+	t.Helper()
+	runGitWorkspaceTest(t, "-C", workspaceDir, "config", "user.email", "workspace-test@example.test")
+	runGitWorkspaceTest(t, "-C", workspaceDir, "config", "user.name", "Workspace Test")
 }
 
 func runGitWorkspaceTest(t *testing.T, args ...string) {

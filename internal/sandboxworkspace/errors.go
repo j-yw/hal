@@ -46,6 +46,10 @@ var (
 	// a copied sandbox-local bundle path.
 	ErrRemoteBundleRequired = errors.New("remote bundle is required")
 
+	// ErrRemoteWorkspaceDirty is returned when applying a new bundle would
+	// overwrite changes already present in a reusable sandbox workspace.
+	ErrRemoteWorkspaceDirty = errors.New("remote workspace is dirty")
+
 	// ErrWorkspaceDirRequired is returned when remote workspace materialization
 	// is requested without a sandbox workspace directory.
 	ErrWorkspaceDirRequired = errors.New("workspace directory is required")

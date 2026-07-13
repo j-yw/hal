@@ -370,6 +370,84 @@ func TestBootstrapRepositoryCheckoutReusesExistingLocalRunBranch(t *testing.T) {
 	})
 }
 
+func TestBootstrapRepositoryCheckoutExactUpstreamReconcilesExistingLocalRunBranch(t *testing.T) {
+	executor := &fakeBootstrapExecutor{
+		results: []BootstrapCommandResult{
+			{ExitCode: 0, OutputSummary: "managed engine links cleaned"},
+			{ExitCode: 0, OutputSummary: "repository fetched"},
+			{ExitCode: 0, OutputSummary: "base checked out"},
+			{ExitCode: 0, OutputSummary: "remote run branch fetched"},
+			{ExitCode: 0, OutputSummary: "run branch reconciled"},
+		},
+	}
+
+	const runBranch = "hal/direct-sandbox-run"
+	req := BootstrapRequest{
+		RepositoryURL: "git@github.com:jywlabs/hal.git",
+		BaseBranch:    "main",
+		RunBranch:     runBranch,
+		WorkspaceDir:  "/workspace/hal",
+		Options: BootstrapOptions{
+			ExactUpstream: true,
+		},
+	}
+	remoteProbes := 0
+	result, err := BootstrapRepositoryCheckout(context.Background(), req, BootstrapRepositoryDeps{
+		Executor: executor,
+		Now:      incrementingClock(t, time.Date(2026, 7, 14, 5, 14, 0, 0, time.UTC)),
+		RepoExists: func(path string) (bool, error) {
+			return path == "/workspace/hal", nil
+		},
+		LocalBranchExists: func(_ context.Context, repoPath string, branch string) (bool, error) {
+			if repoPath != "/workspace/hal" || branch != runBranch {
+				t.Fatalf("local branch probe = (%q, %q)", repoPath, branch)
+			}
+			return true, nil
+		},
+		RemoteBranchExists: func(_ context.Context, repoPath string, branch string) (bool, error) {
+			remoteProbes++
+			if repoPath != "/workspace/hal" || branch != runBranch {
+				t.Fatalf("remote branch probe = (%q, %q)", repoPath, branch)
+			}
+			return true, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("BootstrapRepositoryCheckout() error = %v", err)
+	}
+	if remoteProbes != 1 {
+		t.Fatalf("remote branch probes = %d, want 1", remoteProbes)
+	}
+	if result.CheckedOutBranch != runBranch {
+		t.Fatalf("checked out branch = %q, want %q", result.CheckedOutBranch, runBranch)
+	}
+
+	wantTail := []BootstrapCommand{
+		{
+			Name: "git",
+			Args: []string{"fetch", "origin", "+" + runBranch + ":refs/remotes/origin/" + runBranch},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+		{
+			Name: "git",
+			Args: []string{"checkout", "-f", "-B", runBranch, "origin/" + runBranch},
+			Dir:  "/workspace/hal",
+			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		},
+	}
+	if !reflect.DeepEqual(executor.calls[len(executor.calls)-2:], wantTail) {
+		t.Fatalf("executor tail mismatch\n got: %#v\nwant: %#v", executor.calls[len(executor.calls)-2:], wantTail)
+	}
+	assertBootstrapStepNames(t, result.Steps, []string{
+		BootstrapStepCleanEngineLinks,
+		BootstrapStepFetchRepository,
+		BootstrapStepCheckoutBase,
+		BootstrapStepFetchRunBranch,
+		BootstrapStepCheckoutRun,
+	})
+}
+
 func TestBootstrapRepositoryCheckoutResumesRemoteRunBranch(t *testing.T) {
 	executor := &fakeBootstrapExecutor{
 		results: []BootstrapCommandResult{
