@@ -282,7 +282,7 @@ func startOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbo
 	}
 
 	fmt.Fprintf(out, "%s Started %s\n", display.StyleSuccess.Render("[OK]"), target.Name)
-	if factorySandboxUsesWorkerRuntime(target) {
+	if sandboxTargetUsesWorkerHost(target) {
 		fmt.Fprintf(out, "  Runtime: %s\n", target.Runtime.Driver)
 		return nil
 	}
@@ -364,7 +364,7 @@ func startMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provid
 }
 
 func resolveSandboxStartBackend(target *sandbox.SandboxState, provider sandbox.Provider) (sandbox.Provider, sandboxruntime.Driver, error) {
-	if factorySandboxUsesWorkerRuntime(target) {
+	if sandboxTargetUsesWorkerHost(target) {
 		driver, err := sandboxStartResolveRuntime(target)
 		if err != nil {
 			return nil, nil, fmt.Errorf("resolving runtime for %q: %w", target.Name, err)

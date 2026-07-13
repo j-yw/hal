@@ -128,6 +128,19 @@ func workerLifecycleSandbox(name, status string) *sandbox.SandboxState {
 	}
 }
 
+func saveWorkerLifecycleHost(t *testing.T, target *sandbox.SandboxState) {
+	t.Helper()
+	if target == nil || target.Host == nil {
+		t.Fatal("worker lifecycle target host is required")
+	}
+	host := *target.Host
+	host.Endpoint = "unix:///tmp/private/worker-1.sock"
+	host.SupportedRuntimes = []string{sandboxruntime.DriverRootlessPodman}
+	if err := sandbox.SaveHost(&host); err != nil {
+		t.Fatalf("SaveHost(): %v", err)
+	}
+}
+
 func installWorkerStartRoutingDeps(t *testing.T, driver sandboxruntime.Driver) *atomic.Int32 {
 	t.Helper()
 	originalProvider := sandboxStartResolveProvider
@@ -455,6 +468,67 @@ func TestRunSandboxStart_WorkerRuntimeFailurePreservesStoppedState(t *testing.T)
 	}
 	if loaded.Status != sandbox.StatusStopped || loaded.Runtime == nil || loaded.Runtime.RuntimeID != target.Runtime.RuntimeID {
 		t.Fatalf("persisted target after failed start = %#v, want original stopped state", loaded)
+	}
+}
+
+func TestRunSandboxStart_WorkerHostInvalidRuntimeMetadataNeverUsesProvider(t *testing.T) {
+	tests := []struct {
+		name       string
+		runtime    *sandbox.SandboxRuntimeState
+		wantDriver string
+	}{
+		{
+			name:       "missing runtime metadata",
+			wantDriver: sandboxruntime.DriverSSHMachine,
+		},
+		{
+			name: "unsupported runtime driver",
+			runtime: &sandbox.SandboxRuntimeState{
+				Driver: "unsupported_runtime",
+			},
+			wantDriver: "unsupported_runtime",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target := workerLifecycleSandbox("worker-start-invalid-runtime", sandbox.StatusStopped)
+			target.Runtime = tt.runtime
+			setupStopGlobalRegistry(t, []*sandbox.SandboxState{target})
+			saveWorkerLifecycleHost(t, target)
+
+			originalProvider := sandboxStartResolveProvider
+			originalRuntime := sandboxStartResolveRuntime
+			var providerResolverCalls atomic.Int32
+			var runtimeResolverCalls atomic.Int32
+			sandboxStartResolveProvider = func(string) (sandbox.Provider, error) {
+				providerResolverCalls.Add(1)
+				return nil, errors.New("provider resolver must not run for worker host")
+			}
+			sandboxStartResolveRuntime = func(target *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+				runtimeResolverCalls.Add(1)
+				return resolveFactoryStoredSandboxRuntime(".", target)
+			}
+			t.Cleanup(func() {
+				sandboxStartResolveProvider = originalProvider
+				sandboxStartResolveRuntime = originalRuntime
+			})
+
+			provider := &mockLifecycleStartProvider{}
+			err := runSandboxStart([]string{target.Name}, false, "", io.Discard, provider)
+			if err == nil || !strings.Contains(err.Error(), "runtime_unsupported") || !strings.Contains(err.Error(), tt.wantDriver) {
+				t.Fatalf("runSandboxStart() error = %v, want worker runtime metadata error for %q", err, tt.wantDriver)
+			}
+			if got := runtimeResolverCalls.Load(); got != 1 {
+				t.Fatalf("worker runtime resolver calls = %d, want 1", got)
+			}
+			if got := providerResolverCalls.Load(); got != 0 {
+				t.Fatalf("provider resolver calls = %d, want 0", got)
+			}
+			if got := provider.sortedStartCalls(); len(got) != 0 {
+				t.Fatalf("provider Start calls = %v, want none", got)
+			}
+		})
 	}
 }
 

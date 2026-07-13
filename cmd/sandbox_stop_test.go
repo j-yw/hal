@@ -582,6 +582,67 @@ func TestRunSandboxStop_WorkerRuntimeFailurePreservesRunningState(t *testing.T) 
 	}
 }
 
+func TestRunSandboxStop_WorkerHostInvalidRuntimeMetadataNeverUsesProvider(t *testing.T) {
+	tests := []struct {
+		name       string
+		runtime    *sandbox.SandboxRuntimeState
+		wantDriver string
+	}{
+		{
+			name:       "missing runtime metadata",
+			wantDriver: sandboxruntime.DriverSSHMachine,
+		},
+		{
+			name: "unsupported runtime driver",
+			runtime: &sandbox.SandboxRuntimeState{
+				Driver: "unsupported_runtime",
+			},
+			wantDriver: "unsupported_runtime",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target := workerLifecycleSandbox("worker-stop-invalid-runtime", sandbox.StatusRunning)
+			target.Runtime = tt.runtime
+			setupStopGlobalRegistry(t, []*sandbox.SandboxState{target})
+			saveWorkerLifecycleHost(t, target)
+
+			originalProvider := sandboxStopResolveProvider
+			originalRuntime := sandboxStopResolveRuntime
+			var providerResolverCalls atomic.Int32
+			var runtimeResolverCalls atomic.Int32
+			sandboxStopResolveProvider = func(string) (sandbox.Provider, error) {
+				providerResolverCalls.Add(1)
+				return nil, errors.New("provider resolver must not run for worker host")
+			}
+			sandboxStopResolveRuntime = func(target *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+				runtimeResolverCalls.Add(1)
+				return resolveFactoryStoredSandboxRuntime(".", target)
+			}
+			t.Cleanup(func() {
+				sandboxStopResolveProvider = originalProvider
+				sandboxStopResolveRuntime = originalRuntime
+			})
+
+			provider := &mockStopProvider{}
+			err := runSandboxStop([]string{target.Name}, false, "", io.Discard, provider)
+			if err == nil || !strings.Contains(err.Error(), "runtime_unsupported") || !strings.Contains(err.Error(), tt.wantDriver) {
+				t.Fatalf("runSandboxStop() error = %v, want worker runtime metadata error for %q", err, tt.wantDriver)
+			}
+			if got := runtimeResolverCalls.Load(); got != 1 {
+				t.Fatalf("worker runtime resolver calls = %d, want 1", got)
+			}
+			if got := providerResolverCalls.Load(); got != 0 {
+				t.Fatalf("provider resolver calls = %d, want 0", got)
+			}
+			if got := provider.sortedStopCalls(); len(got) != 0 {
+				t.Fatalf("provider Stop calls = %v, want none", got)
+			}
+		})
+	}
+}
+
 func TestRunSandboxStop_LegacyTargetDoesNotResolveWorkerRuntime(t *testing.T) {
 	setupStopGlobalRegistry(t, []*sandbox.SandboxState{{
 		Name:      "legacy-stop",

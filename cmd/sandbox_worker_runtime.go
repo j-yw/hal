@@ -189,11 +189,15 @@ func resolveFactoryStoredSandboxRuntimeWithDeps(
 }
 
 func factorySandboxUsesWorkerRuntime(target *sandbox.SandboxState) bool {
-	return target != nil &&
-		target.Host != nil &&
-		strings.TrimSpace(target.Host.Kind) == sandbox.SandboxHostKindWorker &&
+	return sandboxTargetUsesWorkerHost(target) &&
 		target.Runtime != nil &&
 		sandboxWorkerRuntimeDriverUsesWorkerBoundary(target.Runtime.Driver)
+}
+
+func sandboxTargetUsesWorkerHost(target *sandbox.SandboxState) bool {
+	return target != nil &&
+		target.Host != nil &&
+		strings.TrimSpace(target.Host.Kind) == sandbox.SandboxHostKindWorker
 }
 
 func sandboxWorkerRuntimeUnsupportedError(host *sandbox.SandboxHost, driverID, detail string) error {

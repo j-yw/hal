@@ -331,7 +331,7 @@ func stopOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbox
 	}
 
 	fmt.Fprintf(out, "%s Stopped %s\n", display.StyleSuccess.Render("[OK]"), target.Name)
-	if factorySandboxUsesWorkerRuntime(target) {
+	if sandboxTargetUsesWorkerHost(target) {
 		fmt.Fprintf(out, "  Cleanup: hal sandbox delete %s\n", target.Name)
 		return nil
 	}
@@ -396,7 +396,7 @@ func stopMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provide
 }
 
 func stopSandboxTargetResource(ctx context.Context, target *sandbox.SandboxState, out io.Writer, provider sandbox.Provider) error {
-	if factorySandboxUsesWorkerRuntime(target) {
+	if sandboxTargetUsesWorkerHost(target) {
 		driver, err := sandboxStopResolveRuntime(target)
 		if err != nil {
 			return fmt.Errorf("resolving runtime for %q: %w", target.Name, err)
