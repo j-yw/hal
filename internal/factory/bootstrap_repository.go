@@ -268,6 +268,11 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 	checkoutArgs := []string{"checkout", "-f", baseBranch}
 	if exists {
 		checkoutArgs = []string{"checkout", "-f", "-B", baseBranch, "origin/" + baseBranch}
+		if request.Options.ExactUpstream {
+			checkoutArgs = []string{"checkout", "-B", baseBranch, "origin/" + baseBranch}
+		}
+	} else if request.Options.ExactUpstream {
+		checkoutArgs = []string{"checkout", baseBranch}
 	}
 	commands = append(commands, bootstrapRepositoryCommand{
 		stepName: BootstrapStepCheckoutBase,
@@ -320,7 +325,7 @@ func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, d
 		checkoutArgs := []string{"checkout", "-f", "--track", "origin/" + runBranch}
 		if request.Options.ExactUpstream {
 			fetchRefspec = "+" + fetchRefspec
-			checkoutArgs = []string{"checkout", "-f", "-B", runBranch, "origin/" + runBranch}
+			checkoutArgs = []string{"checkout", "-B", runBranch, "origin/" + runBranch}
 		}
 		return []bootstrapRepositoryCommand{
 			{

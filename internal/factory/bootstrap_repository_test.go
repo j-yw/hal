@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -438,7 +439,7 @@ func TestBootstrapRepositoryCheckoutExactUpstreamReconcilesExistingLocalRunBranc
 		},
 		{
 			Name: "git",
-			Args: []string{"checkout", "-f", "-B", runBranch, "origin/" + runBranch},
+			Args: []string{"checkout", "-B", runBranch, "origin/" + runBranch},
 			Dir:  "/workspace/hal",
 			Env:  map[string]string{"GIT_TERMINAL_PROMPT": "0"},
 		},
@@ -454,6 +455,70 @@ func TestBootstrapRepositoryCheckoutExactUpstreamReconcilesExistingLocalRunBranc
 		BootstrapStepFetchRunBranch,
 		BootstrapStepCheckoutRun,
 	})
+}
+
+func TestBootstrapRepositoryCheckoutExactUpstreamPreservesEditIntroducedBeforeBaseCheckout(t *testing.T) {
+	repository := newExactUpstreamRaceRepository(t, false)
+	runGitCommand(t, repository.seedDir, "checkout", "main")
+	if err := os.WriteFile(repository.seedFile, []byte("upstream main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitCommand(t, repository.seedDir, "commit", "-am", "update main")
+	runGitCommand(t, repository.seedDir, "push", "origin", "main")
+
+	const interveningEdit = "intervening base edit\n"
+	executor := &mutatingGitBootstrapExecutor{
+		mutateBefore: func(command BootstrapCommand) error {
+			if reflect.DeepEqual(command.Args, []string{"checkout", "-B", "main", "origin/main"}) {
+				return os.WriteFile(repository.workspaceFile, []byte(interveningEdit), 0o644)
+			}
+			return nil
+		},
+	}
+	result, err := BootstrapRepositoryCheckout(context.Background(), BootstrapRequest{
+		RepositoryURL: repository.remoteDir,
+		BaseBranch:    "main",
+		WorkspaceDir:  repository.workspaceDir,
+		Options:       BootstrapOptions{ExactUpstream: true},
+	}, BootstrapRepositoryDeps{Executor: executor})
+	if err == nil {
+		t.Fatal("BootstrapRepositoryCheckout() error = nil, want intervening edit rejection")
+	}
+	assertFileContent(t, repository.workspaceFile, interveningEdit)
+	if result.Failure == nil || result.Failure.Step != BootstrapStepCheckoutBase {
+		t.Fatalf("failure = %#v, want checkout-base failure", result.Failure)
+	}
+	assertBootstrapCheckoutHasNoForceFlag(t, executor.calls, "main", "origin/main")
+}
+
+func TestBootstrapRepositoryCheckoutExactUpstreamPreservesEditIntroducedBeforeRemoteRunCheckout(t *testing.T) {
+	const runBranch = "hal/direct-sandbox-run"
+	repository := newExactUpstreamRaceRepository(t, true)
+
+	const interveningEdit = "intervening run edit\n"
+	executor := &mutatingGitBootstrapExecutor{
+		mutateBefore: func(command BootstrapCommand) error {
+			if reflect.DeepEqual(command.Args, []string{"checkout", "-B", runBranch, "origin/" + runBranch}) {
+				return os.WriteFile(repository.workspaceFile, []byte(interveningEdit), 0o644)
+			}
+			return nil
+		},
+	}
+	result, err := BootstrapRepositoryCheckout(context.Background(), BootstrapRequest{
+		RepositoryURL: repository.remoteDir,
+		BaseBranch:    "main",
+		RunBranch:     runBranch,
+		WorkspaceDir:  repository.workspaceDir,
+		Options:       BootstrapOptions{ExactUpstream: true},
+	}, BootstrapRepositoryDeps{Executor: executor})
+	if err == nil {
+		t.Fatal("BootstrapRepositoryCheckout() error = nil, want intervening edit rejection")
+	}
+	assertFileContent(t, repository.workspaceFile, interveningEdit)
+	if result.Failure == nil || result.Failure.Step != BootstrapStepCheckoutRun {
+		t.Fatalf("failure = %#v, want checkout-run failure", result.Failure)
+	}
+	assertBootstrapCheckoutHasNoForceFlag(t, executor.calls, runBranch, "origin/"+runBranch)
 }
 
 func TestBootstrapRepositoryCheckoutExactUpstreamRejectsDirtyWorkspaceBeforeMutation(t *testing.T) {
@@ -1071,6 +1136,126 @@ func assertBootstrapStepNames(t *testing.T, steps []BootstrapStepResult, want []
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("step names = %#v, want %#v", got, want)
 	}
+}
+
+type exactUpstreamRaceRepository struct {
+	remoteDir     string
+	seedDir       string
+	seedFile      string
+	workspaceDir  string
+	workspaceFile string
+}
+
+func newExactUpstreamRaceRepository(t *testing.T, withRunBranch bool) exactUpstreamRaceRepository {
+	t.Helper()
+	root := t.TempDir()
+	remoteDir := filepath.Join(root, "origin.git")
+	seedDir := filepath.Join(root, "seed")
+	workspaceDir := filepath.Join(root, "workspace")
+	runGitCommand(t, "", "init", "--bare", remoteDir)
+	runGitCommand(t, "", "init", seedDir)
+	runGitCommand(t, seedDir, "config", "user.email", "hal-test@example.com")
+	runGitCommand(t, seedDir, "config", "user.name", "Hal Test")
+	seedFile := filepath.Join(seedDir, "tracked.txt")
+	if err := os.WriteFile(seedFile, []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitCommand(t, seedDir, "add", "tracked.txt")
+	runGitCommand(t, seedDir, "commit", "-m", "base")
+	runGitCommand(t, seedDir, "branch", "-M", "main")
+	runGitCommand(t, seedDir, "remote", "add", "origin", remoteDir)
+	runGitCommand(t, seedDir, "push", "-u", "origin", "main")
+	if withRunBranch {
+		runGitCommand(t, seedDir, "checkout", "-b", "hal/direct-sandbox-run")
+		if err := os.WriteFile(seedFile, []byte("upstream run\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runGitCommand(t, seedDir, "commit", "-am", "add run branch")
+		runGitCommand(t, seedDir, "push", "origin", "hal/direct-sandbox-run")
+		runGitCommand(t, seedDir, "checkout", "main")
+	}
+	runGitCommand(t, "", "clone", "--branch", "main", remoteDir, workspaceDir)
+	return exactUpstreamRaceRepository{
+		remoteDir:     remoteDir,
+		seedDir:       seedDir,
+		seedFile:      seedFile,
+		workspaceDir:  workspaceDir,
+		workspaceFile: filepath.Join(workspaceDir, "tracked.txt"),
+	}
+}
+
+type mutatingGitBootstrapExecutor struct {
+	calls        []BootstrapCommand
+	mutateBefore func(BootstrapCommand) error
+}
+
+func (executor *mutatingGitBootstrapExecutor) Run(ctx context.Context, command BootstrapCommand) (BootstrapCommandResult, error) {
+	executor.calls = append(executor.calls, command)
+	if executor.mutateBefore != nil {
+		if err := executor.mutateBefore(command); err != nil {
+			return BootstrapCommandResult{}, err
+		}
+	}
+	process := exec.CommandContext(ctx, command.Name, command.Args...)
+	process.Dir = command.Dir
+	process.Env = append([]string(nil), os.Environ()...)
+	for key, value := range command.Env {
+		process.Env = append(process.Env, key+"="+value)
+	}
+	output, err := process.CombinedOutput()
+	result := BootstrapCommandResult{OutputSummary: string(output)}
+	if err == nil {
+		return result, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		result.ExitCode = exitErr.ExitCode()
+		return result, nil
+	}
+	return result, err
+}
+
+func runGitCommand(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = dir
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+}
+
+func assertFileContent(t *testing.T, filePath, want string) {
+	t.Helper()
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != want {
+		t.Fatalf("file content = %q, want %q", content, want)
+	}
+}
+
+func assertBootstrapCheckoutHasNoForceFlag(t *testing.T, calls []BootstrapCommand, branch, upstream string) {
+	t.Helper()
+	for _, call := range calls {
+		if call.Name != "git" || len(call.Args) == 0 || call.Args[0] != "checkout" || !testStringSliceContains(call.Args, branch) || !testStringSliceContains(call.Args, upstream) {
+			continue
+		}
+		if testStringSliceContains(call.Args, "-f") {
+			t.Fatalf("exact-upstream checkout args = %#v, must not force", call.Args)
+		}
+		return
+	}
+	t.Fatalf("exact-upstream checkout for %q from %q not found in %#v", branch, upstream, calls)
+}
+
+func testStringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func assertBootstrapCommand(t *testing.T, got BootstrapCommand, want BootstrapCommand) {
