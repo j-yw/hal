@@ -17,6 +17,7 @@ import (
 
 	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	ui "github.com/jywlabs/hal/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -39,7 +40,7 @@ Stopped sandboxes still accrue cost (cloud providers charge for allocated resour
 A dash (—) is shown when rate data is unavailable (e.g., Daytona provider).
 
 The default path reads local registry data only and does not call provider APIs.
-Use --live to fetch fresh status from each provider before rendering.
+Use --live to fetch fresh status from each provider or worker runtime before rendering.
 Use --json for machine-readable output following the sandbox-list-v1 contract.`,
 	Args: noArgsValidation(),
 	Example: `  hal sandbox list
@@ -74,7 +75,7 @@ Use --json for machine-readable output following the sandbox-list-v1 contract.`,
 
 func init() {
 	sandboxListCmd.Flags().BoolVar(&sandboxListJSONFlag, "json", false, "Output machine-readable JSON (sandbox-list-v1 contract)")
-	sandboxListCmd.Flags().BoolVar(&sandboxListLiveFlag, "live", false, "Fetch fresh status from each provider before rendering")
+	sandboxListCmd.Flags().BoolVar(&sandboxListLiveFlag, "live", false, "Fetch fresh status from each provider or worker runtime before rendering")
 	sandboxCmd.AddCommand(sandboxListCmd)
 }
 
@@ -89,6 +90,11 @@ const liveStatusTimeout = 10 * time.Second
 // for test injection.
 var sandboxListResolveProvider = func(providerName string) (sandbox.Provider, error) {
 	return resolveProviderWithFallback(".", providerName)
+}
+
+// sandboxListResolveRuntime resolves worker-backed runtime drivers for live inspection.
+var sandboxListResolveRuntime = func(target *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+	return resolveFactoryStoredSandboxRuntime(".", target)
 }
 
 // sandboxListInstances resolves active registry entries for the default local
@@ -203,7 +209,7 @@ func runSandboxListWithWriters(out, errOut io.Writer, jsonMode, liveMode bool) e
 		instances, filterWarnings = filterLiveListInstances(instances, sandboxListLoadActiveInstance)
 		liveWarnings = append(liveWarnings, filterWarnings...)
 		if len(instances) > 0 {
-			liveWarnings = append(liveWarnings, queryLiveStatuses(instances, sandboxListResolveProvider)...)
+			liveWarnings = append(liveWarnings, queryLiveStatusesWithRuntime(instances, sandboxListResolveProvider, sandboxListResolveRuntime)...)
 		}
 	}
 
@@ -241,13 +247,17 @@ func runSandboxListWithWriters(out, errOut io.Writer, jsonMode, liveMode bool) e
 // Instances are updated in-place. Each query has a 10s timeout.
 // Failures preserve the persisted status and are returned as warnings.
 func queryLiveStatuses(instances []*sandbox.SandboxState, resolve func(string) (sandbox.Provider, error)) []liveStatusWarning {
+	return queryLiveStatusesWithRuntime(instances, resolve, nil)
+}
+
+func queryLiveStatusesWithRuntime(instances []*sandbox.SandboxState, resolveProvider func(string) (sandbox.Provider, error), resolveRuntime func(*sandbox.SandboxState) (sandboxruntime.Driver, error)) []liveStatusWarning {
 	var wg sync.WaitGroup
 	warnings := make(chan liveStatusWarning, len(instances))
 	for _, inst := range instances {
 		wg.Add(1)
 		go func(inst *sandbox.SandboxState) {
 			defer wg.Done()
-			if err := queryOneStatus(inst, resolve); err != nil {
+			if err := queryOneStatusWithRuntime(inst, resolveProvider, resolveRuntime); err != nil {
 				warnings <- liveStatusWarning{Name: inst.Name, Err: err}
 			}
 		}(inst)
@@ -282,19 +292,37 @@ func filterLiveListInstances(instances []*sandbox.SandboxState, loadActive func(
 	return filtered, warnings
 }
 
-// queryOneStatus queries a single sandbox's provider for current status.
+// queryOneStatus queries a single provider-backed sandbox for current status.
 // Updates the instance's status in-place based on the query result.
 func queryOneStatus(inst *sandbox.SandboxState, resolve func(string) (sandbox.Provider, error)) error {
-	provider, err := resolve(inst.Provider)
-	if err != nil {
-		return err
-	}
+	return queryOneStatusWithRuntime(inst, resolve, nil)
+}
 
+func queryOneStatusWithRuntime(inst *sandbox.SandboxState, resolveProvider func(string) (sandbox.Provider, error), resolveRuntime func(*sandbox.SandboxState) (sandboxruntime.Driver, error)) error {
 	ctx, cancel := context.WithTimeout(context.Background(), liveStatusTimeout)
 	defer cancel()
 
-	info := sandbox.ConnectInfoFromState(inst)
-	liveStatus, err := queryProviderLiveStatus(ctx, provider, info)
+	var liveStatus liveStatusResult
+	var err error
+	if sandboxTargetUsesWorkerHost(inst) {
+		if resolveRuntime == nil {
+			return fmt.Errorf("sandbox runtime resolver is required")
+		}
+		driver, resolveErr := resolveRuntime(inst)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		liveStatus, err = queryRuntimeLiveStatus(ctx, driver, inst)
+	} else {
+		if resolveProvider == nil {
+			return fmt.Errorf("sandbox provider resolver is required")
+		}
+		provider, resolveErr := resolveProvider(inst.Provider)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		liveStatus, err = queryProviderLiveStatus(ctx, provider, sandbox.ConnectInfoFromState(inst))
+	}
 	if err != nil {
 		if err == errLiveStatusUnparseable {
 			return nil

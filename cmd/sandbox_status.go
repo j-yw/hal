@@ -12,6 +12,7 @@ import (
 
 	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/spf13/cobra"
 )
 
@@ -20,7 +21,7 @@ var sandboxStatusCmd = &cobra.Command{
 	Short: "Show sandbox status",
 	Long: `Show detailed status of a named sandbox, or list all sandboxes.
 
-When a NAME is provided, queries the provider for live status and displays
+When a NAME is provided, queries its provider or worker runtime for live status and displays
 identity, networking access state, lifecycle, config, runtime metadata, and
 labels. When selected-template runtime metadata is present, the human view shows
 sanitized trust, provenance, digest, and blocked readiness reason-code status.
@@ -60,6 +61,11 @@ var sandboxStatusLoadInstance = sandbox.LoadActiveInstance
 // sandboxStatusResolveProvider is injectable for testing.
 var sandboxStatusResolveProvider = func(providerName string) (sandbox.Provider, error) {
 	return resolveProviderWithFallback(".", providerName)
+}
+
+// sandboxStatusResolveRuntime resolves worker-backed runtime drivers for live inspection.
+var sandboxStatusResolveRuntime = func(target *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+	return resolveFactoryStoredSandboxRuntime(".", target)
 }
 
 // sandboxStatusLoadActiveInstance checks whether a sandbox still has an active
@@ -115,7 +121,7 @@ func runSandboxStatus(name string, out io.Writer, provider sandbox.Provider) err
 }
 
 // runSandboxStatusWithDeps contains the testable logic for the sandbox status command.
-// It loads the instance from the global registry, queries the provider for live status,
+// It loads the instance from the global registry, queries its management backend for live status,
 // and displays all SandboxState fields.
 func runSandboxStatusWithDeps(name string, out io.Writer, provider sandbox.Provider) error {
 	if err := runSandboxAutoMigrate(".", out); err != nil {
@@ -131,21 +137,27 @@ func runSandboxStatusWithDeps(name string, out io.Writer, provider sandbox.Provi
 		return fmt.Errorf("load sandbox %q from registry: %w", name, err)
 	}
 
-	// Resolve provider if not injected
-	p := provider
-	if p == nil {
-		p, err = sandboxStatusResolveProvider(instance.Provider)
-		if err != nil {
-			return fmt.Errorf("resolving provider for %q: %w", instance.Name, err)
-		}
-	}
-
-	// Query live status from provider
-	info := sandbox.ConnectInfoFromState(instance)
 	ctx, cancel := context.WithTimeout(context.Background(), liveStatusTimeout)
 	defer cancel()
 
-	liveStatus, liveErr := queryProviderLiveStatus(ctx, p, info)
+	var liveStatus liveStatusResult
+	var liveErr error
+	if sandboxTargetUsesWorkerHost(instance) {
+		driver, resolveErr := sandboxStatusResolveRuntime(instance)
+		if resolveErr != nil {
+			return fmt.Errorf("resolving runtime for %q: %w", instance.Name, resolveErr)
+		}
+		liveStatus, liveErr = queryRuntimeLiveStatus(ctx, driver, instance)
+	} else {
+		p := provider
+		if p == nil {
+			p, err = sandboxStatusResolveProvider(instance.Provider)
+			if err != nil {
+				return fmt.Errorf("resolving provider for %q: %w", instance.Name, err)
+			}
+		}
+		liveStatus, liveErr = queryProviderLiveStatus(ctx, p, sandbox.ConnectInfoFromState(instance))
+	}
 	var liveWarning error
 	if errors.Is(liveErr, errLiveStatusUnparseable) {
 		liveWarning = fmt.Errorf("provider status output was unparseable; using cached state")
@@ -221,34 +233,39 @@ func renderSandboxDetail(out io.Writer, inst *sandbox.SandboxState, liveErr, liv
 
 	fmt.Fprintln(out)
 
-	// Networking
+	// Networking and command transport
 	fmt.Fprintf(out, "%s\n", display.StyleBold.Render("Networking:"))
-	fmt.Fprintf(out, "  Access:             %s\n", sandboxAccessLabel(inst))
-	fmt.Fprintf(out, "  SSH command:        %s\n", display.StyleInfo.Render(sandboxSSHCommand(inst.Name)))
-	if inst.TailscaleLockdown {
-		fmt.Fprintf(out, "  Public SSH:         %s\n", display.StyleMuted.Render("blocked"))
-	} else if strings.TrimSpace(inst.IP) != "" {
-		fmt.Fprintf(out, "  Public SSH:         %s\n", display.StyleWarning.Render("available"))
+	if sandboxTargetUsesWorkerHost(inst) {
+		fmt.Fprintf(out, "  Access:             %s\n", display.StyleInfo.Render("sandboxd worker"))
+		fmt.Fprintf(out, "  Command transport:  %s\n", display.StyleInfo.Render(fmt.Sprintf("hal sandbox ssh %s -- <command>", inst.Name)))
 	} else {
-		fmt.Fprintf(out, "  Public SSH:         %s\n", display.StyleMuted.Render("unknown"))
-	}
-	if showAddresses {
-		if inst.IP != "" {
-			fmt.Fprintf(out, "  Public IP:          %s\n", display.StyleInfo.Render(inst.IP))
+		fmt.Fprintf(out, "  Access:             %s\n", sandboxAccessLabel(inst))
+		fmt.Fprintf(out, "  SSH command:        %s\n", display.StyleInfo.Render(sandboxSSHCommand(inst.Name)))
+		if inst.TailscaleLockdown {
+			fmt.Fprintf(out, "  Public SSH:         %s\n", display.StyleMuted.Render("blocked"))
+		} else if strings.TrimSpace(inst.IP) != "" {
+			fmt.Fprintf(out, "  Public SSH:         %s\n", display.StyleWarning.Render("available"))
 		} else {
-			fmt.Fprintf(out, "  Public IP:          %s\n", display.StyleMuted.Render("—"))
+			fmt.Fprintf(out, "  Public SSH:         %s\n", display.StyleMuted.Render("unknown"))
 		}
-		if inst.TailscaleIP != "" {
-			fmt.Fprintf(out, "  Tailscale IP:       %s\n", display.StyleInfo.Render(inst.TailscaleIP))
-		} else {
-			fmt.Fprintf(out, "  Tailscale IP:       %s\n", display.StyleMuted.Render("—"))
-		}
-		if inst.TailscaleHostname != "" {
-			fmt.Fprintf(out, "  Tailscale Hostname: %s\n", inst.TailscaleHostname)
-		}
-		preferredIP := sandbox.PreferredIP(inst)
-		if preferredIP != "" {
-			fmt.Fprintf(out, "  Active SSH address: %s\n", display.StyleSuccess.Render(preferredIP))
+		if showAddresses {
+			if inst.IP != "" {
+				fmt.Fprintf(out, "  Public IP:          %s\n", display.StyleInfo.Render(inst.IP))
+			} else {
+				fmt.Fprintf(out, "  Public IP:          %s\n", display.StyleMuted.Render("—"))
+			}
+			if inst.TailscaleIP != "" {
+				fmt.Fprintf(out, "  Tailscale IP:       %s\n", display.StyleInfo.Render(inst.TailscaleIP))
+			} else {
+				fmt.Fprintf(out, "  Tailscale IP:       %s\n", display.StyleMuted.Render("—"))
+			}
+			if inst.TailscaleHostname != "" {
+				fmt.Fprintf(out, "  Tailscale Hostname: %s\n", inst.TailscaleHostname)
+			}
+			preferredIP := sandbox.PreferredIP(inst)
+			if preferredIP != "" {
+				fmt.Fprintf(out, "  Active SSH address: %s\n", display.StyleSuccess.Render(preferredIP))
+			}
 		}
 	}
 

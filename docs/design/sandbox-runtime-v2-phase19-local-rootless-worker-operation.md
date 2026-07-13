@@ -39,6 +39,12 @@ hal sandboxd --socket /tmp/hal-sandboxd.sock --worker-id local-worker --driver r
 If Podman is not available, `hal sandboxd` reports `runtime_unavailable` and
 does not register the `rootless_podman` worker driver.
 
+Do not create a Podman container manually before running a Hal workflow.
+`hal sandboxd` exposes Podman through the worker runtime boundary, and the
+selected Hal command creates or reuses the container when it resolves the
+sandbox target. The daemon itself is an explicit local service: start it and
+register its host record before selecting that worker from another Hal command.
+
 ## Register The Worker Host
 
 Register the local daemon in the durable host registry:
@@ -83,6 +89,46 @@ hal factory run .hal/prd-feature.md --sandbox --base <base-branch> --sandbox-hos
 `--sandbox-host local-worker` selects the durable worker host. The runtime
 constraint keeps the command on the `rootless_podman` worker-backed route
 instead of an SSH-machine-compatible target.
+
+## Manage Worker Sandboxes
+
+Named management commands use the durable sandbox host kind to choose their
+backend. A worker-backed target is inspected and managed through `sandboxd`;
+provider-backed targets continue to use their cloud provider.
+
+Refresh one worker-backed target or a mixed registry of worker and provider
+targets:
+
+```sh
+hal sandbox status local-worker-check
+hal sandbox list --live
+hal sandbox list --live --json
+```
+
+If a live-list lookup fails, Hal keeps the cached registry status and prints a
+warning. In JSON mode, warnings go to stderr so stdout remains valid JSON.
+
+Run a command through the worker runtime transport:
+
+```sh
+hal sandbox ssh local-worker-check -- sh -lc 'pwd && git status --short'
+```
+
+The current worker protocol is bounded request/response execution and does not
+provide an interactive PTY. `hal sandbox ssh local-worker-check` therefore
+returns guidance to pass a command after `--`; it does not pretend to open an
+SSH shell.
+
+Lifecycle commands route through the same worker runtime:
+
+```sh
+hal sandbox stop local-worker-check
+hal sandbox start local-worker-check
+hal sandbox delete local-worker-check
+```
+
+Manual Podman commands are only needed to inspect or clean up resources after
+a failed experiment. They are not part of the normal Hal-managed lifecycle.
 
 ## Limitations
 

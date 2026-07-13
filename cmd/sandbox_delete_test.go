@@ -64,6 +64,28 @@ func TestDeleteSandboxTargetResourceUsesWorkerRuntime(t *testing.T) {
 	}
 }
 
+func TestDeleteSandboxTargetResourceMalformedWorkerDoesNotFallThroughToProvider(t *testing.T) {
+	target := workerManagementSandbox("worker-malformed-delete", sandbox.StatusRunning)
+	target.Runtime = nil
+	runtimeCalls := 0
+	err := deleteSandboxTargetResource(context.Background(), target, t.TempDir(), io.Discard, nil, sandboxDeleteResourceDeps{
+		resolveRuntime: func(string, *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+			runtimeCalls++
+			return nil, errors.New("worker runtime metadata is required")
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			t.Fatal("provider resolution should not run for malformed worker delete")
+			return nil, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "worker runtime metadata is required") {
+		t.Fatalf("delete error = %v", err)
+	}
+	if runtimeCalls != 1 {
+		t.Fatalf("runtime resolver calls = %d, want 1", runtimeCalls)
+	}
+}
+
 func (m *mockDeletePendingRemoval) Commit() error {
 	if m.inner != nil {
 		if err := m.inner.Commit(); err != nil {

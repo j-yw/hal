@@ -6,8 +6,9 @@ Manage sandbox environments
 
 Manage sandbox environments for isolated development.
 
-Supports multiple providers (Daytona, Hetzner, DigitalOcean, AWS Lightsail) — run
-'hal sandbox setup' to choose a provider and configure credentials.
+Supports multiple providers (Daytona, Hetzner, DigitalOcean, AWS Lightsail) and
+registered sandboxd worker hosts. Run 'hal sandbox setup' to choose a provider
+and configure cloud credentials.
 
 Human output redacts public cloud and Tailscale addresses by default. Use
 --show-addresses only when you intentionally need raw network addresses.
@@ -16,7 +17,7 @@ Side effects:
 - setup writes global sandbox config under HAL_CONFIG_HOME, XDG_CONFIG_HOME, or
   ~/.config/hal.
 - Lifecycle commands may create, start, stop, connect to, or delete remote cloud
-  resources and update the global sandbox registry.
+  resources or worker runtime instances and update the global sandbox registry.
 
 Subcommands:
   auth        Manage sandbox agent auth profiles

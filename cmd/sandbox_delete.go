@@ -301,7 +301,7 @@ var defaultSandboxDeleteResourceDeps = sandboxDeleteResourceDeps{
 }
 
 func deleteSandboxTargetResource(ctx context.Context, target *sandbox.SandboxState, projectDir string, out io.Writer, provider sandbox.Provider, deps sandboxDeleteResourceDeps) error {
-	if factorySandboxUsesWorkerRuntime(target) {
+	if sandboxTargetUsesWorkerHost(target) {
 		if deps.resolveRuntime == nil {
 			return fmt.Errorf("sandbox runtime resolver is required")
 		}

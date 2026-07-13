@@ -16,7 +16,7 @@ Stopped sandboxes still accrue cost (cloud providers charge for allocated resour
 A dash (—) is shown when rate data is unavailable (e.g., Daytona provider).
 
 The default path reads local registry data only and does not call provider APIs.
-Use --live to fetch fresh status from each provider before rendering.
+Use --live to fetch fresh status from each provider or worker runtime before rendering.
 Use --json for machine-readable output following the sandbox-list-v1 contract.
 
 ```
@@ -36,7 +36,7 @@ hal sandbox list [flags]
 ```
   -h, --help   help for list
       --json   Output machine-readable JSON (sandbox-list-v1 contract)
-      --live   Fetch fresh status from each provider before rendering
+      --live   Fetch fresh status from each provider or worker runtime before rendering
 ```
 
 ### Options inherited from parent commands

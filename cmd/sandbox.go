@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -22,8 +23,9 @@ var sandboxCmd = &cobra.Command{
 	Short: "Manage sandbox environments",
 	Long: `Manage sandbox environments for isolated development.
 
-Supports multiple providers (Daytona, Hetzner, DigitalOcean, AWS Lightsail) — run
-'hal sandbox setup' to choose a provider and configure credentials.
+Supports multiple providers (Daytona, Hetzner, DigitalOcean, AWS Lightsail) and
+registered sandboxd worker hosts. Run 'hal sandbox setup' to choose a provider
+and configure cloud credentials.
 
 Human output redacts public cloud and Tailscale addresses by default. Use
 --show-addresses only when you intentionally need raw network addresses.
@@ -32,7 +34,7 @@ Side effects:
 - setup writes global sandbox config under HAL_CONFIG_HOME, XDG_CONFIG_HOME, or
   ~/.config/hal.
 - Lifecycle commands may create, start, stop, connect to, or delete remote cloud
-  resources and update the global sandbox registry.
+  resources or worker runtime instances and update the global sandbox registry.
 
 Subcommands:
   auth        Manage sandbox agent auth profiles
@@ -114,7 +116,12 @@ func renderSandboxCobraError(cmd *cobra.Command, title string, err error) error 
 	if out != nil {
 		ui.NewDisplay(out).ShowCommandError(title, []ui.ValidationIssue{{Message: err.Error()}}, nil)
 	}
-	return exitWithCode(cmd, ExitCodeExpectedNonZero, nil)
+	exitCode := ExitCodeExpectedNonZero
+	var explicitExit *ExitCodeError
+	if errors.As(err, &explicitExit) && explicitExit.Code > 0 {
+		exitCode = explicitExit.Code
+	}
+	return exitWithCode(cmd, exitCode, nil)
 }
 
 func resolveProviderConfig(dir string) (string, sandbox.ProviderConfig, error) {
