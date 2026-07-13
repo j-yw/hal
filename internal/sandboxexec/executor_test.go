@@ -716,6 +716,101 @@ func TestRuntimeWorkspaceClientMapsCopyInAndExecToDriver(t *testing.T) {
 	}
 }
 
+func TestRuntimeWorkspaceClientPreservesCompletedNonzeroResultWhenDriverReturnsCommandError(t *testing.T) {
+	commandErr := errors.New("command failed")
+	driver := &recordingRuntimeDriver{
+		exec: func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			return &sandboxruntime.ExecResult{ExitCode: 73}, commandErr
+		},
+	}
+	client := RuntimeWorkspaceClient{Driver: driver}
+
+	result, err := client.Exec(context.Background(), sandboxworkspace.RemoteCommandRequest{Args: []string{"sh", "-c", "exit 73"}})
+	if err != nil {
+		t.Fatalf("Exec() error = %v, want completed command result", err)
+	}
+	if result.ExitCode != 73 {
+		t.Fatalf("Exec() result = %#v, want exit code 73", result)
+	}
+}
+
+func TestRuntimeWorkspaceClientPreservesInfrastructureErrorsWithoutCompletedResult(t *testing.T) {
+	infrastructureErr := errors.New("worker transport unavailable")
+	tests := []struct {
+		name   string
+		result *sandboxruntime.ExecResult
+	}{
+		{name: "no result", result: nil},
+		{name: "negative exit code", result: &sandboxruntime.ExecResult{ExitCode: -1}},
+		{name: "zero exit code with error", result: &sandboxruntime.ExecResult{ExitCode: 0}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := &recordingRuntimeDriver{
+				exec: func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+					return tt.result, infrastructureErr
+				},
+			}
+			client := RuntimeWorkspaceClient{Driver: driver}
+			result, err := client.Exec(context.Background(), sandboxworkspace.RemoteCommandRequest{Args: []string{"git", "status"}})
+			if !errors.Is(err, infrastructureErr) {
+				t.Fatalf("Exec() error = %v, want infrastructure error", err)
+			}
+			if result != (sandboxworkspace.RemoteCommandResult{}) {
+				t.Fatalf("Exec() result = %#v, want zero result on infrastructure failure", result)
+			}
+		})
+	}
+}
+
+func TestMaterializeBundleWorkspaceMapsDriverExit73ErrorToActionableDirtyWorkspace(t *testing.T) {
+	plan := sandboxworkspace.Plan{
+		Mode:           sandbox.SandboxWorkspaceModeClone,
+		InputSource:    sandbox.SandboxWorkspaceInputSourceGitBundle,
+		ProjectDir:     t.TempDir(),
+		Repository:     "git@example.com:org/repo.git",
+		Branch:         "feature/dirty",
+		SyncRef:        "abc123",
+		RequiresBundle: true,
+	}
+	target := sandboxruntime.Target{
+		ID:       "sandbox-dirty",
+		Name:     "dirty-box",
+		Provider: "local",
+		Runtime: sandboxruntime.RuntimeState{
+			Driver: sandboxruntime.DriverRootlessPodman,
+		},
+	}
+	execCalls := 0
+	driver := &recordingRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		exec: func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			execCalls++
+			return &sandboxruntime.ExecResult{ExitCode: 73}, errors.New("command failed")
+		},
+	}
+
+	_, err := MaterializeBundleWorkspace(context.Background(), PrepareContext{Target: target, Driver: driver}, WorkspaceMaterializationRequest{
+		Plan:                 &plan,
+		WorkspaceDir:         "/workspace/repo",
+		BundleDir:            t.TempDir(),
+		BundleDestinationDir: "/tmp/hal/bundles",
+		LocalGit:             &recordingWorkspaceLocalGit{},
+	})
+	if !errors.Is(err, sandboxworkspace.ErrRemoteWorkspaceDirty) {
+		t.Fatalf("MaterializeBundleWorkspace() error = %v, want ErrRemoteWorkspaceDirty", err)
+	}
+	for _, want := range []string{"changes were preserved", "commit or stash", "reset/remove"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("MaterializeBundleWorkspace() error = %q, want guidance %q", err, want)
+		}
+	}
+	if execCalls != 1 {
+		t.Fatalf("runtime Exec calls = %d, want dirty check only", execCalls)
+	}
+}
+
 func TestMaterializeBundleWorkspaceUsesRuntimeClientForRootlessPodman(t *testing.T) {
 	projectDir := t.TempDir()
 	bundleDir := t.TempDir()

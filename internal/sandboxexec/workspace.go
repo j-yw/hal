@@ -77,11 +77,17 @@ func (c RuntimeWorkspaceClient) Exec(ctx context.Context, req sandboxworkspace.R
 		Stdout:  writerOrDiscard(req.Stdout),
 		Stderr:  writerOrDiscard(req.Stderr),
 	})
+	if result != nil && result.ExitCode > 0 {
+		return sandboxworkspace.RemoteCommandResult{ExitCode: result.ExitCode}, nil
+	}
 	if err != nil {
 		return sandboxworkspace.RemoteCommandResult{}, err
 	}
 	if result == nil {
-		return sandboxworkspace.RemoteCommandResult{}, nil
+		return sandboxworkspace.RemoteCommandResult{}, fmt.Errorf("sandbox runtime exec result is required")
+	}
+	if result.ExitCode < 0 {
+		return sandboxworkspace.RemoteCommandResult{}, fmt.Errorf("sandbox runtime exec did not complete")
 	}
 	return sandboxworkspace.RemoteCommandResult{ExitCode: result.ExitCode}, nil
 }
