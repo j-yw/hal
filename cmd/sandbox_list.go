@@ -37,7 +37,7 @@ table also includes an ADDRESS column with the active SSH address.
 
 Estimated cost is based on embedded hourly rates and time since creation.
 Stopped sandboxes still accrue cost (cloud providers charge for allocated resources).
-A dash (—) is shown when rate data is unavailable (e.g., Daytona provider).
+A dash (—) is shown when rate data is unavailable for a provider/size combination.
 
 The default path reads local registry data only and does not call provider APIs.
 Use --live to fetch fresh status from each provider or worker runtime before rendering.
@@ -117,8 +117,6 @@ func resolveProviderFromGlobalConfig(providerName string) (sandbox.Provider, err
 	}
 
 	cfg := sandbox.ProviderConfig{
-		DaytonaAPIKey:             globalCfg.Daytona.APIKey,
-		DaytonaServerURL:          globalCfg.Daytona.ServerURL,
 		HetznerSSHKey:             globalCfg.Hetzner.SSHKey,
 		HetznerServerType:         globalCfg.Hetzner.ServerType,
 		HetznerImage:              globalCfg.Hetzner.Image,

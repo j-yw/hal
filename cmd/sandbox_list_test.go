@@ -119,27 +119,27 @@ func TestResolveProviderFromGlobalConfig_IgnoresProjectConfigWhenGlobalFileMissi
 		_ = os.Chdir(oldWD)
 	})
 
-	writeFile(t, filepath.Join(dir, template.HalDir), template.ConfigFile, `daytona:
-  apiKey: local-key
-  serverURL: https://daytona.example
-sandbox:
-  provider: daytona
+	writeFile(t, filepath.Join(dir, template.HalDir), template.ConfigFile, `sandbox:
+  provider: digitalocean
+  digitalocean:
+    sshKey: local-key
+    size: s-2vcpu-2gb
 `)
 
-	provider, err := resolveProviderFromGlobalConfig("daytona")
+	provider, err := resolveProviderFromGlobalConfig("digitalocean")
 	if err != nil {
 		t.Fatalf("resolveProviderFromGlobalConfig() error: %v", err)
 	}
 
-	daytonaProvider, ok := provider.(*sandbox.DaytonaProvider)
+	digitalOceanProvider, ok := provider.(*sandbox.DigitalOceanProvider)
 	if !ok {
-		t.Fatalf("provider type = %T, want *sandbox.DaytonaProvider", provider)
+		t.Fatalf("provider type = %T, want *sandbox.DigitalOceanProvider", provider)
 	}
-	if daytonaProvider.APIKey != "" {
-		t.Fatalf("APIKey = %q, want empty global default", daytonaProvider.APIKey)
+	if digitalOceanProvider.SSHKey != "" {
+		t.Fatalf("SSHKey = %q, want empty global default", digitalOceanProvider.SSHKey)
 	}
-	if daytonaProvider.ServerURL != "" {
-		t.Fatalf("ServerURL = %q, want empty global default", daytonaProvider.ServerURL)
+	if digitalOceanProvider.Size != "" {
+		t.Fatalf("Size = %q, want empty global default", digitalOceanProvider.Size)
 	}
 }
 
@@ -149,27 +149,27 @@ func TestResolveProviderWithFallback_UsesProjectConfigWhenGlobalFileMissing(t *t
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", dir)
 
-	writeFile(t, filepath.Join(dir, template.HalDir), template.ConfigFile, `daytona:
-  apiKey: local-key
-  serverURL: https://daytona.example
-sandbox:
-  provider: daytona
+	writeFile(t, filepath.Join(dir, template.HalDir), template.ConfigFile, `sandbox:
+  provider: digitalocean
+  digitalocean:
+    sshKey: local-key
+    size: s-2vcpu-2gb
 `)
 
-	provider, err := resolveProviderWithFallback(dir, "daytona")
+	provider, err := resolveProviderWithFallback(dir, "digitalocean")
 	if err != nil {
 		t.Fatalf("resolveProviderWithFallback() error: %v", err)
 	}
 
-	daytonaProvider, ok := provider.(*sandbox.DaytonaProvider)
+	digitalOceanProvider, ok := provider.(*sandbox.DigitalOceanProvider)
 	if !ok {
-		t.Fatalf("provider type = %T, want *sandbox.DaytonaProvider", provider)
+		t.Fatalf("provider type = %T, want *sandbox.DigitalOceanProvider", provider)
 	}
-	if daytonaProvider.APIKey != "local-key" {
-		t.Fatalf("APIKey = %q, want %q", daytonaProvider.APIKey, "local-key")
+	if digitalOceanProvider.SSHKey != "local-key" {
+		t.Fatalf("SSHKey = %q, want %q", digitalOceanProvider.SSHKey, "local-key")
 	}
-	if daytonaProvider.ServerURL != "https://daytona.example" {
-		t.Fatalf("ServerURL = %q, want %q", daytonaProvider.ServerURL, "https://daytona.example")
+	if digitalOceanProvider.Size != "s-2vcpu-2gb" {
+		t.Fatalf("Size = %q, want %q", digitalOceanProvider.Size, "s-2vcpu-2gb")
 	}
 }
 
@@ -340,7 +340,7 @@ func TestRunSandboxList_AutoMigratesLegacyState(t *testing.T) {
 		}
 		return sandbox.SaveInstance(&sandbox.SandboxState{
 			Name:      "migrated-box",
-			Provider:  "daytona",
+			Provider:  "retired-provider",
 			Status:    sandbox.StatusRunning,
 			CreatedAt: time.Now(),
 		})
@@ -366,7 +366,7 @@ func TestRunSandboxList_JSONNormalizesLegacyBlankStatusToRunning(t *testing.T) {
 	writeInstance(t, &sandbox.SandboxState{
 		ID:        "legacy-id",
 		Name:      "legacy-box",
-		Provider:  "daytona",
+		Provider:  "retired-provider",
 		Status:    "",
 		CreatedAt: now.Add(-2 * time.Hour),
 	})
@@ -405,7 +405,7 @@ func TestRunSandboxList_HumanOutputNormalizesLegacyBlankStatusToRunning(t *testi
 	writeInstance(t, &sandbox.SandboxState{
 		ID:        "legacy-id",
 		Name:      "legacy-box",
-		Provider:  "daytona",
+		Provider:  "retired-provider",
 		Status:    "",
 		CreatedAt: now.Add(-2 * time.Hour),
 	})
@@ -525,8 +525,8 @@ func TestRunSandboxList_UnknownCostProvider(t *testing.T) {
 
 	writeInstance(t, &sandbox.SandboxState{
 		ID:        "id-1",
-		Name:      "daytona-dev",
-		Provider:  "daytona",
+		Name:      "retired-provider-dev",
+		Provider:  "retired-provider",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: now.Add(-10 * time.Hour),
 	})
@@ -539,11 +539,11 @@ func TestRunSandboxList_UnknownCostProvider(t *testing.T) {
 
 	out := buf.String()
 
-	// Cost column should show "—" for daytona
+	// Cost column should show "—" for retired-provider
 	lines := strings.Split(out, "\n")
 	foundDash := false
 	for _, line := range lines {
-		if strings.Contains(line, "daytona-dev") && strings.Contains(line, "—") {
+		if strings.Contains(line, "retired-provider-dev") && strings.Contains(line, "—") {
 			foundDash = true
 			break
 		}
@@ -567,8 +567,8 @@ func TestRunSandboxList_MixedKnownAndUnknownCost(t *testing.T) {
 
 	writeInstance(t, &sandbox.SandboxState{
 		ID:        "id-1",
-		Name:      "daytona-dev",
-		Provider:  "daytona",
+		Name:      "retired-provider-dev",
+		Provider:  "retired-provider",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: now.Add(-10 * time.Hour),
 	})
@@ -1058,7 +1058,7 @@ func TestRunSandboxList_JSON_RequiredFieldKeys(t *testing.T) {
 	writeInstance(t, &sandbox.SandboxState{
 		ID:        "test-id",
 		Name:      "minimal",
-		Provider:  "daytona",
+		Provider:  "retired-provider",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: now.Add(-1 * time.Hour),
 	})
@@ -1113,7 +1113,7 @@ func TestRunSandboxList_JSON_OptionalFieldsOmitted(t *testing.T) {
 	writeInstance(t, &sandbox.SandboxState{
 		ID:        "test-id",
 		Name:      "minimal",
-		Provider:  "daytona",
+		Provider:  "retired-provider",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: now.Add(-1 * time.Hour),
 	})
@@ -1138,7 +1138,7 @@ func TestRunSandboxList_JSON_OptionalFieldsOmitted(t *testing.T) {
 		}
 	}
 
-	// Daytona has no cost data — estimatedCost should be omitted
+	// An unknown provider has no cost data, so estimatedCost should be omitted.
 	if _, ok := entry["estimatedCost"]; ok {
 		t.Error("expected estimatedCost to be omitted for unknown provider")
 	}
@@ -1182,7 +1182,7 @@ func TestRunSandboxList_JSON_MultipleSandboxes(t *testing.T) {
 	writeInstance(t, &sandbox.SandboxState{
 		ID:        "id-3",
 		Name:      "worker",
-		Provider:  "daytona",
+		Provider:  "retired-provider",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: now.Add(-6 * time.Hour),
 	})
@@ -1215,16 +1215,16 @@ func TestRunSandboxList_JSON_MultipleSandboxes(t *testing.T) {
 	// Estimated costs:
 	// api-backend: cx22 24h * 0.007 = $0.168 → $0.17
 	// frontend: s-2vcpu-4gb 48h * 0.036 = $1.728 → $1.73
-	// worker: daytona → unknown
+	// worker: retired-provider → unknown
 	// total = ~$1.90
 	if resp.Totals.EstimatedCost == nil {
 		t.Fatal("totals.estimatedCost should not be nil (some known costs)")
 	}
 
-	// Verify daytona sandbox has no cost
+	// Verify retired-provider sandbox has no cost
 	for _, s := range resp.Sandboxes {
-		if s.Provider == "daytona" && s.EstimatedCost != nil {
-			t.Error("daytona sandbox should not have estimatedCost")
+		if s.Provider == "retired-provider" && s.EstimatedCost != nil {
+			t.Error("retired-provider sandbox should not have estimatedCost")
 		}
 	}
 }
@@ -1641,7 +1641,7 @@ func TestRunSandboxList_JSONBackfillsLegacyID(t *testing.T) {
 	now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
 	writeInstance(t, &sandbox.SandboxState{
 		Name:        "legacy-box",
-		Provider:    "daytona",
+		Provider:    "retired-provider",
 		WorkspaceID: "ws-legacy",
 		Status:      sandbox.StatusRunning,
 		CreatedAt:   now,
@@ -1948,7 +1948,7 @@ func TestSandboxListCommand_UsesCommandOutputWriter(t *testing.T) {
 	setupListTest(t)
 	writeInstance(t, &sandbox.SandboxState{
 		Name:      "writer-box",
-		Provider:  "daytona",
+		Provider:  "retired-provider",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: time.Now(),
 	})

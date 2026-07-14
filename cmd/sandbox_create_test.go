@@ -111,7 +111,7 @@ func setupCreateTest(t *testing.T, dir string) {
 	t.Setenv("HAL_CONFIG_HOME", filepath.Join(dir, "globalcfg"))
 	// Write a minimal config
 	sandboxCfg := &compound.SandboxConfig{
-		Provider: "daytona",
+		Provider: "hetzner",
 		Env:      map[string]string{},
 	}
 	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
@@ -178,7 +178,7 @@ func TestConfiguredTailscaleHostname(t *testing.T) {
 
 func TestMergeGlobalCreateDefaults_MergesGlobalDefaultsWithLocalEnv(t *testing.T) {
 	localCfg := &compound.SandboxConfig{
-		Provider: "daytona",
+		Provider: "hetzner",
 		Env: map[string]string{
 			"KEEP":   "legacy",
 			"SHARED": "local",
@@ -251,8 +251,8 @@ func TestRunSandboxCreate_Success(t *testing.T) {
 	if instance.Status != sandbox.StatusRunning {
 		t.Errorf("instance.Status = %q, want %q", instance.Status, sandbox.StatusRunning)
 	}
-	if instance.Provider != "daytona" {
-		t.Errorf("instance.Provider = %q, want %q", instance.Provider, "daytona")
+	if instance.Provider != "hetzner" {
+		t.Errorf("instance.Provider = %q, want %q", instance.Provider, "hetzner")
 	}
 	if instance.WorkspaceID != "ws-123" {
 		t.Errorf("instance.WorkspaceID = %q, want %q", instance.WorkspaceID, "ws-123")
@@ -380,7 +380,7 @@ func TestRunSandboxCreate_EnvVarsFromConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	sandboxCfg := &compound.SandboxConfig{
-		Provider: "daytona",
+		Provider: "hetzner",
 		Env: map[string]string{
 			"GIT_TOKEN": "ghp_from_config",
 			"API_KEY":   "sk-from-config",
@@ -422,7 +422,7 @@ func TestRunSandboxCreate_OverridesLegacyTailscaleHostname(t *testing.T) {
 		t.Fatal(err)
 	}
 	sandboxCfg := &compound.SandboxConfig{
-		Provider: "daytona",
+		Provider: "hetzner",
 		Env: map[string]string{
 			"API_KEY":            "sk-from-config",
 			"TAILSCALE_AUTHKEY":  "tskey-auth-test",
@@ -461,7 +461,7 @@ func TestRunSandboxCreate_BatchOverridesLegacyTailscaleHostnamePerSandbox(t *tes
 		t.Fatal(err)
 	}
 	sandboxCfg := &compound.SandboxConfig{
-		Provider: "daytona",
+		Provider: "hetzner",
 		Env: map[string]string{
 			"TAILSCALE_AUTHKEY":  "tskey-auth-test",
 			"TAILSCALE_HOSTNAME": "legacy-shared-host",
@@ -508,7 +508,7 @@ func TestRunSandboxCreate_LockdownRequiresAuthKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	sandboxCfg := &compound.SandboxConfig{
-		Provider:          "daytona",
+		Provider:          "hetzner",
 		Env:               map[string]string{},
 		TailscaleLockdown: true,
 	}
@@ -743,7 +743,7 @@ func TestRunSandboxCreate_GlobalConfigOverridesLegacyRuntimeConfig(t *testing.T)
 	t.Setenv("HAL_CONFIG_HOME", filepath.Join(dir, "globalcfg"))
 
 	localCfg := &compound.SandboxConfig{
-		Provider: "daytona",
+		Provider: "hetzner",
 		Env: map[string]string{
 			"LOCAL_ONLY": "local",
 			"SHARED":     "local",
@@ -1344,7 +1344,7 @@ func TestRunSandboxCreate_AutoShutdownFlagOverridesConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	sandboxCfg := &compound.SandboxConfig{
-		Provider: "daytona",
+		Provider: "hetzner",
 		Env:      map[string]string{},
 	}
 	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
@@ -1353,7 +1353,7 @@ func TestRunSandboxCreate_AutoShutdownFlagOverridesConfig(t *testing.T) {
 
 	// Global config has auto-shutdown disabled
 	globalCfg := &sandbox.GlobalConfig{
-		Provider: "daytona",
+		Provider: "hetzner",
 		Defaults: sandbox.GlobalDefaults{AutoShutdown: false, IdleHours: 24},
 	}
 	if err := sandbox.SaveGlobalConfig(globalCfg); err != nil {
@@ -1393,7 +1393,7 @@ func TestRunSandboxCreate_IdleHoursFlagOverridesConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	sandboxCfg := &compound.SandboxConfig{
-		Provider: "daytona",
+		Provider: "hetzner",
 		Env:      map[string]string{},
 	}
 	if err := compound.SaveSandboxConfig(dir, sandboxCfg); err != nil {
@@ -1402,7 +1402,7 @@ func TestRunSandboxCreate_IdleHoursFlagOverridesConfig(t *testing.T) {
 
 	// Global config has default 48 hours
 	globalCfg := &sandbox.GlobalConfig{
-		Provider: "daytona",
+		Provider: "hetzner",
 		Defaults: sandbox.GlobalDefaults{AutoShutdown: true, IdleHours: 48},
 	}
 	if err := sandbox.SaveGlobalConfig(globalCfg); err != nil {
@@ -1549,7 +1549,7 @@ func TestBatchPreflightWithOptions_ForceDoesNotDeleteExistingTargets(t *testing.
 
 	if err := sandbox.SaveInstance(&sandbox.SandboxState{
 		Name:        "worker-02",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "ws-old",
 		Status:      sandbox.StatusRunning,
 	}); err != nil {
@@ -1558,7 +1558,7 @@ func TestBatchPreflightWithOptions_ForceDoesNotDeleteExistingTargets(t *testing.
 
 	mock := &mockProvider{}
 
-	targets, err := batchPreflightWithOptions("worker", 3, true, mock, "daytona", io.Discard)
+	targets, err := batchPreflightWithOptions("worker", 3, true, mock, "hetzner", io.Discard)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1600,7 +1600,7 @@ func TestBatchPreflightWithOptions_DetectsStagedRegistryBackup(t *testing.T) {
 
 	if err := sandbox.SaveInstance(&sandbox.SandboxState{
 		Name:        "worker-02",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "ws-old",
 		Status:      sandbox.StatusRunning,
 	}); err != nil {
@@ -1611,7 +1611,7 @@ func TestBatchPreflightWithOptions_DetectsStagedRegistryBackup(t *testing.T) {
 	}
 
 	mock := &mockProvider{}
-	targets, err := batchPreflightWithOptions("worker", 3, false, mock, "daytona", io.Discard)
+	targets, err := batchPreflightWithOptions("worker", 3, false, mock, "hetzner", io.Discard)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1629,7 +1629,7 @@ func TestBatchPreflightWithOptions_DeduplicatesActiveCollision(t *testing.T) {
 
 	if err := sandbox.SaveInstance(&sandbox.SandboxState{
 		Name:        "worker-02",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "ws-old",
 		Status:      sandbox.StatusRunning,
 	}); err != nil {
@@ -1637,7 +1637,7 @@ func TestBatchPreflightWithOptions_DeduplicatesActiveCollision(t *testing.T) {
 	}
 
 	mock := &mockProvider{}
-	targets, err := batchPreflightWithOptions("worker", 3, false, mock, "daytona", io.Discard)
+	targets, err := batchPreflightWithOptions("worker", 3, false, mock, "hetzner", io.Discard)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1655,7 +1655,7 @@ func TestRunSandboxCreate_BatchBlocksPendingRemovalBeforeCreate(t *testing.T) {
 
 	if err := sandbox.SaveInstance(&sandbox.SandboxState{
 		Name:        "worker-02",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "ws-old",
 		Status:      sandbox.StatusRunning,
 	}); err != nil {
@@ -1790,7 +1790,7 @@ func TestRunSandboxCreate_BatchForceReplacesExistingTargets(t *testing.T) {
 
 	if err := sandbox.SaveInstance(&sandbox.SandboxState{
 		Name:        "worker-02",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "ws-old",
 		Status:      sandbox.StatusRunning,
 	}); err != nil {
@@ -2257,13 +2257,18 @@ func TestRunSandboxCreate_ViaRunSandboxCreate(t *testing.T) {
 func TestRunSandboxCreate_ViaRunSandboxCreateNilDeps(t *testing.T) {
 	dir := t.TempDir()
 	setupCreateTest(t, dir)
+	if err := compound.SaveSandboxConfig(dir, &compound.SandboxConfig{Env: map[string]string{}}); err != nil {
+		t.Fatalf("SaveSandboxConfig() error: %v", err)
+	}
 
-	// With nil deps, runSandboxCreate passes nil provider and nil getBranch
-	// This should fail trying to resolve provider since no daytona config
+	// With nil deps and no configured provider, resolution must fail before any
+	// provider CLI can be invoked.
 	err := runSandboxCreate(dir, "sb", 0, false, false, "", "", nil, autoShutdownOpts{}, io.Discard, nil)
-	// Expected: resolving provider errors because daytona config is incomplete
 	if err == nil {
 		t.Fatal("expected error with nil deps (no provider configured), got nil")
+	}
+	if !strings.Contains(err.Error(), "hal sandbox setup") {
+		t.Fatalf("error = %q, want actionable setup guidance", err.Error())
 	}
 }
 
@@ -2305,11 +2310,11 @@ func TestApplySizeOverride(t *testing.T) {
 			},
 		},
 		{
-			name:     "daytona is no-op",
-			provider: "daytona",
+			name:     "unsupported provider is no-op",
+			provider: "retired-provider",
 			size:     "large",
 			check: func(t *testing.T, cfg *compound.SandboxConfig) {
-				// Daytona does not have a size field; verify no panic and no side effects
+				// Unknown providers have no size field; verify no side effects.
 				if cfg.Hetzner.ServerType != "" || cfg.DigitalOcean.Size != "" || cfg.Lightsail.Bundle != "" {
 					t.Error("unexpected side effect on non-active provider fields")
 				}
@@ -2335,7 +2340,7 @@ func TestRunSandboxCreate_CollisionWithoutForce(t *testing.T) {
 	// Pre-register a sandbox with the same name
 	existing := &sandbox.SandboxState{
 		Name:     "my-sandbox",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 	if err := sandbox.SaveInstance(existing); err != nil {
@@ -2375,7 +2380,7 @@ func TestRunSandboxCreate_StagedRegistryBackupRequiresForce(t *testing.T) {
 	existing := &sandbox.SandboxState{
 		ID:          "old-id",
 		Name:        "my-sandbox",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "ws-old",
 		Status:      sandbox.StatusRunning,
 	}
@@ -2420,7 +2425,7 @@ func TestRunSandboxCreate_ForceReplaceResumesStagedRegistryBackup(t *testing.T) 
 	existing := &sandbox.SandboxState{
 		ID:          "old-id-1234",
 		Name:        "my-sandbox",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "ws-old",
 		IP:          "10.0.0.1",
 		Status:      sandbox.StatusRunning,
@@ -2475,7 +2480,7 @@ func TestRunSandboxCreate_ForceReplaceSuccess(t *testing.T) {
 	existing := &sandbox.SandboxState{
 		ID:          "old-id-1234",
 		Name:        "my-sandbox",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "ws-old",
 		IP:          "10.0.0.1",
 		Status:      sandbox.StatusRunning,
@@ -2609,7 +2614,7 @@ func TestRunSandboxCreate_ForceDeleteFails(t *testing.T) {
 	existing := &sandbox.SandboxState{
 		ID:       "old-id",
 		Name:     "my-sandbox",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 	if err := sandbox.SaveInstance(existing); err != nil {
@@ -2654,7 +2659,7 @@ func TestRunSandboxCreate_ForceMissingDeleteFailsWithoutStagedRetry(t *testing.T
 	existing := &sandbox.SandboxState{
 		ID:       "old-id",
 		Name:     "my-sandbox",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 	if err := sandbox.SaveInstance(existing); err != nil {
@@ -2694,7 +2699,7 @@ func TestRunSandboxCreate_ForceNewID(t *testing.T) {
 	existing := &sandbox.SandboxState{
 		ID:       oldID,
 		Name:     "dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 	if err := sandbox.SaveInstance(existing); err != nil {
@@ -2829,7 +2834,7 @@ func TestRunSingleCreate_RegistrationFailureRollsBackCreatedSandbox(t *testing.T
 			TailscaleIP: "100.64.0.10",
 		},
 	}
-	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+	sandboxCfg := &compound.SandboxConfig{Provider: "hetzner", Env: map[string]string{}}
 
 	err := runSingleCreate(dir, "sb", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
 	if err == nil {
@@ -2885,7 +2890,7 @@ func TestRunSingleCreate_IDGenerationFailureSkipsProviderCreate(t *testing.T) {
 			TailscaleIP: "100.64.0.10",
 		},
 	}
-	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+	sandboxCfg := &compound.SandboxConfig{Provider: "hetzner", Env: map[string]string{}}
 
 	err := runSingleCreate(dir, "sb", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
 	if err == nil {
@@ -2914,7 +2919,7 @@ func TestRunSingleCreate_IDGenerationFailureSkipsForceDelete(t *testing.T) {
 	existing := &sandbox.SandboxState{
 		ID:          "old-id",
 		Name:        "sb",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "ws-old",
 		Status:      sandbox.StatusRunning,
 	}
@@ -2933,7 +2938,7 @@ func TestRunSingleCreate_IDGenerationFailureSkipsForceDelete(t *testing.T) {
 	mock := &mockProvider{
 		createResult: &sandbox.SandboxResult{Name: "sb", ID: "ws-new"},
 	}
-	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+	sandboxCfg := &compound.SandboxConfig{Provider: "hetzner", Env: map[string]string{}}
 
 	err := runSingleCreate(dir, "sb", true, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
 	if err == nil {
@@ -3001,7 +3006,7 @@ func TestRunSandboxCreate_ForceViaRunSandboxCreate(t *testing.T) {
 	existing := &sandbox.SandboxState{
 		ID:       "old-id",
 		Name:     "sb",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 	if err := sandbox.SaveInstance(existing); err != nil {
@@ -3046,7 +3051,7 @@ func TestRunBatchCreate_ConcurrentExecution(t *testing.T) {
 	}
 
 	targets := []string{"worker-01", "worker-02", "worker-03", "worker-04", "worker-05"}
-	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+	sandboxCfg := &compound.SandboxConfig{Provider: "hetzner", Env: map[string]string{}}
 
 	var out bytes.Buffer
 	err := runBatchCreate(dir, targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
@@ -3087,7 +3092,7 @@ func TestRunBatchCreate_PartialFailure(t *testing.T) {
 	}
 
 	targets := []string{"worker-01", "worker-02", "worker-03"}
-	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+	sandboxCfg := &compound.SandboxConfig{Provider: "hetzner", Env: map[string]string{}}
 
 	var out bytes.Buffer
 	err := runBatchCreate(dir, targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
@@ -3195,7 +3200,7 @@ func TestRunBatchCreate_SummaryFormatAllSuccess(t *testing.T) {
 	}
 
 	targets := []string{"worker-01", "worker-02"}
-	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+	sandboxCfg := &compound.SandboxConfig{Provider: "hetzner", Env: map[string]string{}}
 
 	var out bytes.Buffer
 	err := runBatchCreate(dir, targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
@@ -3223,7 +3228,7 @@ func TestRunBatchCreate_ExitCodeOnPartialFailure(t *testing.T) {
 	}
 
 	targets := []string{"worker-01", "worker-02"}
-	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+	sandboxCfg := &compound.SandboxConfig{Provider: "hetzner", Env: map[string]string{}}
 
 	err := runBatchCreate(dir, targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
 
@@ -3242,7 +3247,7 @@ func TestRunBatchCreate_ExitCodeOnAllSuccess(t *testing.T) {
 	}
 
 	targets := []string{"worker-01", "worker-02"}
-	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+	sandboxCfg := &compound.SandboxConfig{Provider: "hetzner", Env: map[string]string{}}
 
 	err := runBatchCreate(dir, targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
 
@@ -3264,7 +3269,7 @@ func TestRunBatchCreate_ProgressLinePerTarget(t *testing.T) {
 	}
 
 	targets := []string{"worker-01", "worker-02", "worker-03"}
-	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+	sandboxCfg := &compound.SandboxConfig{Provider: "hetzner", Env: map[string]string{}}
 
 	var out bytes.Buffer
 	_ = runBatchCreate(dir, targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), &out)
@@ -3306,7 +3311,7 @@ func TestCreateBatchTarget_RegistrationFailureRollsBackCreatedSandbox(t *testing
 			IP:   "203.0.113.20",
 		},
 	}
-	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+	sandboxCfg := &compound.SandboxConfig{Provider: "hetzner", Env: map[string]string{}}
 	env := map[string]string{}
 	identity, err := prepareSandboxCreateIdentity("worker-01", env)
 	if err != nil {
@@ -3449,7 +3454,7 @@ func TestRunBatchCreate_OnlySuccessfulPersisted(t *testing.T) {
 	}
 
 	targets := []string{"worker-01", "worker-02", "worker-03", "worker-04"}
-	sandboxCfg := &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+	sandboxCfg := &compound.SandboxConfig{Provider: "hetzner", Env: map[string]string{}}
 
 	_ = runBatchCreate(dir, targets, false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
 

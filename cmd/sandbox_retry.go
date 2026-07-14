@@ -25,14 +25,6 @@ var missingSandboxDeleteRules = map[string]missingSandboxDeleteRule{
 			"resource not found",
 		},
 	},
-	"daytona": {
-		markers: []string{
-			"404",
-			"api error: not found",
-			"sandbox not found",
-			"workspace not found",
-		},
-	},
 	"hetzner": {
 		markers: []string{
 			"404",

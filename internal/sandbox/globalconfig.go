@@ -44,7 +44,6 @@ type GlobalConfig struct {
 	Defaults          GlobalDefaults           `yaml:"defaults"`
 	Env               map[string]string        `yaml:"env"`
 	TailscaleLockdown bool                     `yaml:"tailscaleLockdown"`
-	Daytona           DaytonaGlobalConfig      `yaml:"daytona"`
 	DigitalOcean      DigitalOceanGlobalConfig `yaml:"digitalocean"`
 	Hetzner           HetznerGlobalConfig      `yaml:"hetzner"`
 	Lightsail         LightsailGlobalConfig    `yaml:"lightsail"`
@@ -54,12 +53,6 @@ type GlobalConfig struct {
 type GlobalDefaults struct {
 	AutoShutdown bool `yaml:"autoShutdown"`
 	IdleHours    int  `yaml:"idleHours"`
-}
-
-// DaytonaGlobalConfig contains Daytona-specific global settings.
-type DaytonaGlobalConfig struct {
-	APIKey    string `yaml:"apiKey"`
-	ServerURL string `yaml:"serverURL"`
 }
 
 // DigitalOceanGlobalConfig contains DigitalOcean-specific global settings.
@@ -90,7 +83,6 @@ type rawGlobalConfig struct {
 	Defaults          rawGlobalDefaults           `yaml:"defaults"`
 	Env               map[string]string           `yaml:"env"`
 	TailscaleLockdown *bool                       `yaml:"tailscaleLockdown"`
-	Daytona           rawDaytonaGlobalConfig      `yaml:"daytona"`
 	DigitalOcean      rawDigitalOceanGlobalConfig `yaml:"digitalocean"`
 	Hetzner           rawHetznerGlobalConfig      `yaml:"hetzner"`
 	Lightsail         rawLightsailGlobalConfig    `yaml:"lightsail"`
@@ -99,11 +91,6 @@ type rawGlobalConfig struct {
 type rawGlobalDefaults struct {
 	AutoShutdown *bool `yaml:"autoShutdown"`
 	IdleHours    *int  `yaml:"idleHours"`
-}
-
-type rawDaytonaGlobalConfig struct {
-	APIKey    *string `yaml:"apiKey"`
-	ServerURL *string `yaml:"serverURL"`
 }
 
 type rawDigitalOceanGlobalConfig struct {
@@ -127,7 +114,6 @@ type rawLightsailGlobalConfig struct {
 // DefaultGlobalConfig returns default sandbox global configuration.
 func DefaultGlobalConfig() GlobalConfig {
 	return GlobalConfig{
-		Provider: "daytona",
 		Defaults: GlobalDefaults{
 			AutoShutdown: true,
 			IdleHours:    48,
@@ -173,12 +159,6 @@ func LoadGlobalConfig() (*GlobalConfig, error) {
 	}
 	if raw.TailscaleLockdown != nil {
 		cfg.TailscaleLockdown = *raw.TailscaleLockdown
-	}
-	if raw.Daytona.APIKey != nil {
-		cfg.Daytona.APIKey = *raw.Daytona.APIKey
-	}
-	if raw.Daytona.ServerURL != nil {
-		cfg.Daytona.ServerURL = *raw.Daytona.ServerURL
 	}
 	if raw.DigitalOcean.SSHKey != nil {
 		cfg.DigitalOcean.SSHKey = *raw.DigitalOcean.SSHKey

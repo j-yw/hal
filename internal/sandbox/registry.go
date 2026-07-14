@@ -516,10 +516,6 @@ func normalizeRegistryInstance(instance *SandboxState, defaultName string) {
 		instance.Status = StatusRunning
 	}
 	provider := strings.TrimSpace(instance.Provider)
-	if provider == "" {
-		provider = "daytona"
-		instance.Provider = provider
-	}
 	if strings.TrimSpace(instance.WorkspaceID) == "" &&
 		provider == "digitalocean" {
 		if legacyID := strings.TrimSpace(instance.ID); isLegacyDigitalOceanDropletID(legacyID) {

@@ -264,21 +264,20 @@ func TestLoadState_LegacyWithoutProvider(t *testing.T) {
 	if state.Name != "legacy-sandbox" {
 		t.Errorf("Name: got %q, want %q", state.Name, "legacy-sandbox")
 	}
-	// Provider should be auto-migrated to "daytona" for legacy files
-	if state.Provider != "daytona" {
-		t.Errorf("Provider: got %q, want %q", state.Provider, "daytona")
+	if state.Provider != "" {
+		t.Errorf("Provider: got %q, want empty", state.Provider)
 	}
 	if state.IP != "" {
 		t.Errorf("IP: got %q, want empty for legacy state", state.IP)
 	}
 
-	// Verify the state was re-saved with provider field
+	// Verify a reread preserves the missing provider without assigning a new one.
 	reloaded, err := LoadState(halDir)
 	if err != nil {
 		t.Fatalf("LoadState (re-read) failed: %v", err)
 	}
-	if reloaded.Provider != "daytona" {
-		t.Errorf("Re-read Provider: got %q, want %q", reloaded.Provider, "daytona")
+	if reloaded.Provider != "" {
+		t.Errorf("Re-read Provider: got %q, want empty", reloaded.Provider)
 	}
 }
 

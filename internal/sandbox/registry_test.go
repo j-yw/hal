@@ -18,7 +18,7 @@ func TestSaveInstanceAndLoadInstance(t *testing.T) {
 	instance := &SandboxState{
 		ID:          "0195b8d6-0f40-7a3f-8c4e-cf7a99e8cc1f",
 		Name:        "api-backend",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "ws-123",
 		IP:          "100.64.1.10",
 		Status:      StatusRunning,
@@ -627,12 +627,12 @@ func TestLoadInstance_BackfillsMissingLegacyID(t *testing.T) {
 		{
 			name:     "workspace fallback",
 			filename: "workspace-box",
-			data:     "{\n  \"name\": \"workspace-box\",\n  \"provider\": \"daytona\",\n  \"workspaceId\": \"ws-123\",\n  \"status\": \"running\"\n}\n",
+			data:     "{\n  \"name\": \"workspace-box\",\n  \"provider\": \"hetzner\",\n  \"workspaceId\": \"ws-123\",\n  \"status\": \"running\"\n}\n",
 		},
 		{
 			name:     "name fallback",
 			filename: "name-box",
-			data:     "{\n  \"name\": \"name-box\",\n  \"provider\": \"daytona\",\n  \"status\": \"running\"\n}\n",
+			data:     "{\n  \"name\": \"name-box\",\n  \"provider\": \"hetzner\",\n  \"status\": \"running\"\n}\n",
 		},
 	}
 

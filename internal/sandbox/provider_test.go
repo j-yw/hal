@@ -11,27 +11,6 @@ import (
 	"time"
 )
 
-func TestProviderFromConfig_Daytona(t *testing.T) {
-	cfg := ProviderConfig{
-		DaytonaAPIKey:    "test-key",
-		DaytonaServerURL: "https://custom.daytona.local/api",
-	}
-	p, err := ProviderFromConfig("daytona", cfg)
-	if err != nil {
-		t.Fatalf("ProviderFromConfig(daytona) unexpected error: %v", err)
-	}
-	dp, ok := p.(*DaytonaProvider)
-	if !ok {
-		t.Fatalf("expected *DaytonaProvider, got %T", p)
-	}
-	if dp.APIKey != "test-key" {
-		t.Errorf("APIKey = %q, want %q", dp.APIKey, "test-key")
-	}
-	if dp.ServerURL != "https://custom.daytona.local/api" {
-		t.Errorf("ServerURL = %q, want %q", dp.ServerURL, "https://custom.daytona.local/api")
-	}
-}
-
 func TestProviderFromConfig_Hetzner(t *testing.T) {
 	cfg := ProviderConfig{
 		HetznerSSHKey:     "my-key",
@@ -57,17 +36,29 @@ func TestProviderFromConfig_Hetzner(t *testing.T) {
 	}
 }
 
-func TestProviderFromConfig_Unknown(t *testing.T) {
-	cfg := ProviderConfig{}
-	_, err := ProviderFromConfig("gcp", cfg)
+func TestProviderFromConfig_Missing(t *testing.T) {
+	_, err := ProviderFromConfig("  ", ProviderConfig{})
 	if err == nil {
-		t.Fatal("expected error for unknown provider, got nil")
+		t.Fatal("expected error for missing provider, got nil")
 	}
-	if !strings.Contains(err.Error(), "unknown sandbox provider") {
-		t.Errorf("error %q does not contain %q", err.Error(), "unknown sandbox provider")
+	if !strings.Contains(err.Error(), "not configured") || !strings.Contains(err.Error(), "hal sandbox setup") {
+		t.Fatalf("error = %q, want actionable setup guidance", err.Error())
 	}
-	if !strings.Contains(err.Error(), "gcp") {
-		t.Errorf("error %q does not mention the unknown provider name", err.Error())
+}
+
+func TestProviderFromConfig_Unsupported(t *testing.T) {
+	for _, provider := range []string{"gcp", "daytona"} {
+		t.Run(provider, func(t *testing.T) {
+			_, err := ProviderFromConfig(provider, ProviderConfig{})
+			if err == nil {
+				t.Fatal("expected error for unsupported provider, got nil")
+			}
+			if !strings.Contains(err.Error(), "unsupported sandbox provider") ||
+				!strings.Contains(err.Error(), provider) ||
+				!strings.Contains(err.Error(), "hal sandbox setup") {
+				t.Fatalf("error = %q, want provider name and setup guidance", err.Error())
+			}
+		})
 	}
 }
 
@@ -77,7 +68,6 @@ func TestProviderFromConfig_AllKnown(t *testing.T) {
 		provider string
 		wantType string
 	}{
-		{"daytona", "daytona", "*sandbox.DaytonaProvider"},
 		{"hetzner", "hetzner", "*sandbox.HetznerProvider"},
 		{"digitalocean", "digitalocean", "*sandbox.DigitalOceanProvider"},
 		{"lightsail", "lightsail", "*sandbox.LightsailProvider"},

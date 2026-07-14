@@ -909,7 +909,7 @@ func TestConfirmDeleteAllFlushesPromptBeforeRead(t *testing.T) {
 
 func TestRunSandboxDelete_ExplicitName(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "my-sandbox", Provider: "digitalocean", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{}
@@ -1421,14 +1421,14 @@ func TestRunSandboxDelete_RegistryPreservedOnProviderFailure(t *testing.T) {
 
 func TestRunSandboxDelete_RetryWithStagedRegistryEntryCommitsOnNotFound(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "my-sandbox", Provider: "digitalocean", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	if _, err := sandbox.StageInstanceRemoval("my-sandbox"); err != nil {
 		t.Fatalf("setup: stage instance removal: %v", err)
 	}
 
-	mock := &mockDeleteProvider{deleteErr: fmt.Errorf("API error: not found")}
+	mock := &mockDeleteProvider{deleteErr: fmt.Errorf("doctl compute droplet get failed: droplet not found")}
 	var out bytes.Buffer
 
 	err := runSandboxDelete([]string{"my-sandbox"}, false, false, "", nil, &out, mock)
@@ -1444,7 +1444,7 @@ func TestDeleteMultipleTargets_RetryWithStagedRegistryEntryCommitsOnNotFound(t *
 	projectDir := t.TempDir()
 	target := &sandbox.SandboxState{
 		Name:      "my-sandbox",
-		Provider:  "daytona",
+		Provider:  "digitalocean",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: time.Now(),
 	}
@@ -1454,7 +1454,7 @@ func TestDeleteMultipleTargets_RetryWithStagedRegistryEntryCommitsOnNotFound(t *
 		t.Fatalf("setup: stage instance removal: %v", err)
 	}
 
-	mock := &mockDeleteProvider{deleteErr: fmt.Errorf("API error: not found")}
+	mock := &mockDeleteProvider{deleteErr: fmt.Errorf("doctl compute droplet get failed: droplet not found")}
 	var out bytes.Buffer
 
 	err := deleteMultipleTargets([]*sandbox.SandboxState{target}, projectDir, &out, mock)

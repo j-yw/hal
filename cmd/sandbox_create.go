@@ -24,7 +24,7 @@ var sandboxCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Provision a new sandbox",
 	Args:  noArgsValidation(),
-	Long: `Provision a new sandbox using the configured provider (Daytona, Hetzner, DigitalOcean, or AWS Lightsail).
+	Long: `Provision a new sandbox using the configured provider (Hetzner, DigitalOcean, or AWS Lightsail).
 
 The sandbox name defaults to the current git branch (with slashes replaced by hyphens).
 Use --name to override the default name.
@@ -189,7 +189,7 @@ func resolveSandboxCreateConfig(projectDir string) (*compound.SandboxConfig, *sa
 		return nil, nil, false, fmt.Errorf("loading legacy sandbox config: %w", err)
 	}
 	if localCfg == nil {
-		localCfg = &compound.SandboxConfig{Provider: "daytona", Env: map[string]string{}}
+		localCfg = &compound.SandboxConfig{Env: map[string]string{}}
 	}
 	if localCfg.Env == nil {
 		localCfg.Env = map[string]string{}
@@ -315,7 +315,7 @@ func runSandboxCreateWithDepsAndCountOption(
 		return err
 	}
 
-	sandboxCfg, globalCfg, useGlobalConfig, err := resolveSandboxCreateConfig(dir)
+	sandboxCfg, globalCfg, _, err := resolveSandboxCreateConfig(dir)
 	if err != nil {
 		return err
 	}
@@ -329,23 +329,7 @@ func runSandboxCreateWithDepsAndCountOption(
 
 	// Resolve provider if not injected
 	if provider == nil {
-		daytonaAPIKey := ""
-		daytonaServerURL := ""
-		if useGlobalConfig && globalCfg != nil {
-			daytonaAPIKey = globalCfg.Daytona.APIKey
-			daytonaServerURL = globalCfg.Daytona.ServerURL
-		} else {
-			dayCfg, err := compound.LoadDaytonaConfig(dir)
-			if err != nil {
-				return fmt.Errorf("loading legacy daytona config: %w", err)
-			}
-			daytonaAPIKey = dayCfg.APIKey
-			daytonaServerURL = dayCfg.ServerURL
-		}
-
 		provCfg := sandbox.ProviderConfig{
-			DaytonaAPIKey:             daytonaAPIKey,
-			DaytonaServerURL:          daytonaServerURL,
 			HetznerSSHKey:             sandboxCfg.Hetzner.SSHKey,
 			HetznerServerType:         sandboxCfg.Hetzner.ServerType,
 			HetznerImage:              sandboxCfg.Hetzner.Image,
@@ -918,9 +902,7 @@ func mergeGlobalCreateDefaults(localCfg *compound.SandboxConfig, globalCfg *sand
 	}
 
 	if useGlobalConfig {
-		if provider := strings.TrimSpace(globalCfg.Provider); provider != "" {
-			localCfg.Provider = provider
-		}
+		localCfg.Provider = strings.TrimSpace(globalCfg.Provider)
 		if len(globalCfg.Env) > 0 || len(localCfg.Env) > 0 {
 			mergedEnv := make(map[string]string, len(globalCfg.Env)+len(localCfg.Env))
 			for k, v := range localCfg.Env {
