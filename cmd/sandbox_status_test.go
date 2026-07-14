@@ -276,7 +276,7 @@ func TestRunSandboxStatus_PersistsProviderReportedStatus(t *testing.T) {
 
 	saveStatusTestInstance(t, &sandbox.SandboxState{
 		Name:      "persisted-status",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: time.Now(),
 	})
@@ -350,7 +350,7 @@ func TestRunSandboxStatus_ContinuesWhenLocalSyncFails(t *testing.T) {
 	saveStatusTestInstance(t, &sandbox.SandboxState{
 		ID:        "id-1",
 		Name:      "warn-box",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: time.Now(),
 	})
@@ -393,7 +393,7 @@ func TestRunSandboxStatus_IgnoresStagedRemovalBackup(t *testing.T) {
 
 	saveStatusTestInstance(t, &sandbox.SandboxState{
 		Name:      "frontend",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: time.Now(),
 	})
@@ -473,7 +473,7 @@ func TestRunSandboxStatus_AutoMigratesLegacyState(t *testing.T) {
 		}
 		return sandbox.SaveInstance(&sandbox.SandboxState{
 			Name:      "migrated-box",
-			Provider:  "daytona",
+			Provider:  "hetzner",
 			Status:    sandbox.StatusRunning,
 			CreatedAt: time.Now(),
 		})
@@ -497,7 +497,7 @@ func TestRunSandboxStatus_MinimalFields(t *testing.T) {
 
 	saveStatusTestInstance(t, &sandbox.SandboxState{
 		Name:      "minimal",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: time.Now(),
 	})
@@ -512,7 +512,7 @@ func TestRunSandboxStatus_MinimalFields(t *testing.T) {
 
 	output := out.String()
 	assertContains(t, output, "Name:       minimal")
-	assertContains(t, output, "Provider:   daytona")
+	assertContains(t, output, "Provider:   hetzner")
 	assertContains(t, output, "Access:             unknown")
 	assertContains(t, output, "SSH command:        hal sandbox ssh minimal")
 	assertContains(t, output, "Public SSH:         unknown")
@@ -603,7 +603,7 @@ func TestRunSandboxStatus_NoArgsListDelegation(t *testing.T) {
 	})
 	saveStatusTestInstance(t, &sandbox.SandboxState{
 		Name:      "sb-two",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		Status:    sandbox.StatusStopped,
 		CreatedAt: time.Now(),
 	})
@@ -730,7 +730,7 @@ func TestSandboxStatusCommand_UsesCommandOutputWriterWhenListing(t *testing.T) {
 	setupListTest(t)
 	writeInstance(t, &sandbox.SandboxState{
 		Name:      "writer-box",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: time.Now(),
 	})

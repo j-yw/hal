@@ -208,7 +208,7 @@ func writeUnsupportedRunAutoReadinessGateConfig(t *testing.T, projectDir, mode s
 		t.Fatalf("create .hal dir: %v", err)
 	}
 	config := fmt.Sprintf(`sandbox:
-  provider: daytona
+  provider: hetzner
   securityReadinessGatePolicyMode: %s
   networkPolicy:
     preset: deny_by_default

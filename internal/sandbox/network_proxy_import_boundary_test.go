@@ -129,7 +129,7 @@ func TestNetworkProxyForbiddenImportListCoversRequiredBoundaries(t *testing.T) {
 		{name: "factory orchestration packages", importPath: "github.com/jywlabs/hal/internal/factory"},
 		{name: "compound packages", importPath: "github.com/jywlabs/hal/internal/compound"},
 		{name: "worker client packages", importPath: "github.com/jywlabs/hal/internal/sandboxworker"},
-		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/daytona"},
+		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/hetzner"},
 		{name: "concrete SSH-machine runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"},
 		{name: "concrete rootless Podman runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"},
 		{name: "standard net package", importPath: "net"},

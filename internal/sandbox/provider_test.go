@@ -47,7 +47,7 @@ func TestProviderFromConfig_Missing(t *testing.T) {
 }
 
 func TestProviderFromConfig_Unsupported(t *testing.T) {
-	for _, provider := range []string{"gcp", "daytona"} {
+	for _, provider := range []string{"gcp", "legacy-provider"} {
 		t.Run(provider, func(t *testing.T) {
 			_, err := ProviderFromConfig(provider, ProviderConfig{})
 			if err == nil {

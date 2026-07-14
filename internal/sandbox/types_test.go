@@ -22,7 +22,7 @@ func TestSandboxStateJSONTags(t *testing.T) {
 			state: SandboxState{
 				ID:           "019513a4-7e2b-7c1a-8a3e-1f2b3c4d5e6f",
 				Name:         "api-backend",
-				Provider:     "daytona",
+				Provider:     "hetzner",
 				IP:           "",
 				Status:       StatusRunning,
 				CreatedAt:    createdAt,
@@ -91,7 +91,7 @@ func TestSandboxStateUnmarshalsLegacyJSONWithoutRuntimeV2Metadata(t *testing.T) 
 	data := []byte(`{
 		"id": "019513a4-7e2b-7c1a-8a3e-1f2b3c4d5e6f",
 		"name": "api-backend",
-		"provider": "daytona",
+		"provider": "hetzner",
 		"workspaceId": "123456789",
 		"ip": "104.131.5.22",
 		"status": "running",
@@ -120,7 +120,7 @@ func TestSandboxStateOmitsNilRuntimeV2Metadata(t *testing.T) {
 	got := mustMarshalObject(t, SandboxState{
 		ID:           "019513a4-7e2b-7c1a-8a3e-1f2b3c4d5e6f",
 		Name:         "api-backend",
-		Provider:     "daytona",
+		Provider:     "hetzner",
 		Status:       StatusRunning,
 		CreatedAt:    time.Date(2026, 3, 21, 10, 0, 0, 0, time.UTC),
 		AutoShutdown: true,
@@ -135,7 +135,7 @@ func TestSandboxStateRuntimeV2MetadataJSONTags(t *testing.T) {
 	got := mustMarshalObject(t, SandboxState{
 		ID:           "019513a4-7e2b-7c1a-8a3e-1f2b3c4d5e6f",
 		Name:         "api-backend",
-		Provider:     "daytona",
+		Provider:     "hetzner",
 		Status:       StatusRunning,
 		CreatedAt:    time.Date(2026, 3, 21, 10, 0, 0, 0, time.UTC),
 		AutoShutdown: true,

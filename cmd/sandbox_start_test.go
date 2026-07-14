@@ -247,8 +247,8 @@ func TestSandboxStartCommandLifecycleFlagsOnly(t *testing.T) {
 
 func TestResolveStartTargets_ExplicitNamesIncludeRunningAndDedupe(t *testing.T) {
 	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "api", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "worker", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "api", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "worker", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 	})
 
 	targets, _, err := resolveStartTargets([]string{"worker", "api", "worker"}, false, "")
@@ -266,9 +266,9 @@ func TestResolveStartTargets_ExplicitNamesIncludeRunningAndDedupe(t *testing.T) 
 
 func TestResolveStartTargets_AllAndPatternFilterStopped(t *testing.T) {
 	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "api", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "worker-01", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
-		{Name: "worker-02", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "api", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "worker-01", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "worker-02", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 	})
 
 	allTargets, _, err := resolveStartTargets(nil, true, "")
@@ -290,7 +290,7 @@ func TestResolveStartTargets_AllAndPatternFilterStopped(t *testing.T) {
 
 func TestResolveStartTargets_NoStoppedGuidanceAndMultipleStopped(t *testing.T) {
 	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "api", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "api", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 	_, _, err := resolveStartTargets(nil, false, "")
 	if err == nil || err.Error() != "no stopped sandboxes; use 'hal sandbox create' to provision a new sandbox" {
@@ -298,8 +298,8 @@ func TestResolveStartTargets_NoStoppedGuidanceAndMultipleStopped(t *testing.T) {
 	}
 
 	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "one", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
-		{Name: "two", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "one", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "two", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 	})
 	_, _, err = resolveStartTargets(nil, false, "")
 	if err == nil || !strings.Contains(err.Error(), "multiple stopped sandboxes found: one, two") {
@@ -318,7 +318,7 @@ func TestRunSandboxStart_StartsAndPersistsRunningState(t *testing.T) {
 	stoppedAt := time.Now().Add(-time.Hour)
 	setupStopGlobalRegistry(t, []*sandbox.SandboxState{{
 		Name:      "worker",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		Status:    sandbox.StatusStopped,
 		StoppedAt: &stoppedAt,
 		CreatedAt: time.Now().Add(-2 * time.Hour),
@@ -535,7 +535,7 @@ func TestRunSandboxStart_WorkerHostInvalidRuntimeMetadataNeverUsesProvider(t *te
 func TestRunSandboxStart_LegacyTargetDoesNotResolveWorkerRuntime(t *testing.T) {
 	setupStopGlobalRegistry(t, []*sandbox.SandboxState{{
 		Name:      "legacy-start",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		Status:    sandbox.StatusStopped,
 		CreatedAt: time.Now(),
 	}})
@@ -589,7 +589,7 @@ func TestRunSandboxStart_LiveStatusRefreshPersistsChangedIP(t *testing.T) {
 func TestRunSandboxStart_ExplicitAlreadyRunningIsIdempotent(t *testing.T) {
 	setupStopGlobalRegistry(t, []*sandbox.SandboxState{{
 		Name:      "api",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: time.Now(),
 	}})
@@ -605,8 +605,8 @@ func TestRunSandboxStart_ExplicitAlreadyRunningIsIdempotent(t *testing.T) {
 
 func TestRunSandboxStart_PartialFailures(t *testing.T) {
 	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "one", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
-		{Name: "two", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "one", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "two", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 	})
 	provider := &mockLifecycleStartProvider{startErrByName: map[string]error{"two": errors.New("boom")}}
 
@@ -636,7 +636,7 @@ func TestRunSandboxStart_SyncsMatchingLocalState(t *testing.T) {
 	state := &sandbox.SandboxState{
 		ID:        "global-id",
 		Name:      "local-box",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		Status:    sandbox.StatusStopped,
 		StoppedAt: &stoppedAt,
 		CreatedAt: time.Now(),

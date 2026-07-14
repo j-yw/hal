@@ -182,7 +182,7 @@ func TestSecurityCapabilityForbiddenImportListCoversRequiredBoundaries(t *testin
 		{name: "sandbox workspace packages", importPath: "github.com/jywlabs/hal/internal/sandboxworkspace"},
 		{name: "credential activation implementation", importPath: "github.com/jywlabs/hal/internal/credentialdelivery"},
 		{name: "template acquisition implementation", importPath: "github.com/jywlabs/hal/internal/sandboxtemplate/acquisition"},
-		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/daytona"},
+		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/hetzner"},
 		{name: "live network enforcement implementation", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"},
 		{name: "concrete microVM runtime implementation", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm"},
 		{name: "concrete Firecracker runtime implementation", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"},

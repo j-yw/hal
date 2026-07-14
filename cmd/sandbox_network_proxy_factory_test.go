@@ -16,7 +16,7 @@ import (
 func TestFactorySandboxMetadataOmitsNetworkProxyMetadataByDefault(t *testing.T) {
 	_, metadata := factorySandboxPersistentMetadataFromState(factorySandboxExecutorRequest{}, factory.RunRecord{}, &sandbox.SandboxState{
 		Name:     "factory-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	})
 	if metadata == nil {
@@ -47,7 +47,7 @@ func TestFactorySandboxPersistentMetadataSanitizesNetworkProxySession(t *testing
 		NetworkProxySession: unsafeFactoryNetworkProxySession(sandbox.SandboxNetworkPolicyDecisionSource(" FACTORY ")),
 	}, factory.RunRecord{}, &sandbox.SandboxState{
 		Name:     "factory-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	})
 	if metadata == nil {

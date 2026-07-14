@@ -205,7 +205,7 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 
 	original := &SandboxState{
 		Name:        "hal-sandbox-implementation",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		IP:          "10.0.0.1",
 		SnapshotID:  "snap-123",
 		WorkspaceID: "ws-456",
