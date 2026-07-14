@@ -89,7 +89,7 @@ const liveStatusTimeout = 10 * time.Second
 // using global config with legacy project-config fallback. Package-level var
 // for test injection.
 var sandboxListResolveProvider = func(providerName string) (sandbox.Provider, error) {
-	return resolveProviderWithFallback(".", providerName)
+	return resolveStoredProviderWithFallback(".", providerName)
 }
 
 // sandboxListResolveRuntime resolves worker-backed runtime drivers for live inspection.

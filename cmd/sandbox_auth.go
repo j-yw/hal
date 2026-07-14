@@ -115,7 +115,7 @@ func normalizeSandboxAuthSyncDeps(deps sandboxAuthSyncDeps) sandboxAuthSyncDeps 
 	}
 	if deps.resolveProvider == nil {
 		deps.resolveProvider = func(providerName string) (sandbox.Provider, error) {
-			return resolveProviderWithFallback(".", providerName)
+			return resolveStoredProviderWithFallback(".", providerName)
 		}
 	}
 	if deps.resolveRuntime == nil {

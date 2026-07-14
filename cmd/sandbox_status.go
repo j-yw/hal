@@ -60,7 +60,7 @@ var sandboxStatusLoadInstance = sandbox.LoadActiveInstance
 
 // sandboxStatusResolveProvider is injectable for testing.
 var sandboxStatusResolveProvider = func(providerName string) (sandbox.Provider, error) {
-	return resolveProviderWithFallback(".", providerName)
+	return resolveStoredProviderWithFallback(".", providerName)
 }
 
 // sandboxStatusResolveRuntime resolves worker-backed runtime drivers for live inspection.

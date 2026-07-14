@@ -142,11 +142,11 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Run integration-tagged package tests
+      - name: Run integration-tagged command and package tests
         if: steps.changes.outputs.integration == 'true'
-        run: go test -tags=integration -v -timeout 30m ./internal/compound/...
+        run: go test -tags=integration -v -timeout 30m ./cmd ./internal/compound/...
 
-      - name: Compile opt-in runtime integration tests
+      - name: Run opt-in runtime integration packages
         if: steps.changes.outputs.integration == 'true'
         run: |
           go test -tags=podman_integration -v -timeout 5m ./internal/sandboxruntime/rootlesspodman

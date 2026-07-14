@@ -190,6 +190,27 @@ func resolveProviderWithFallback(dir, providerName string) (sandbox.Provider, er
 	return sandbox.ProviderFromConfig(providerName, provCfg)
 }
 
+func resolveStoredProviderWithFallback(dir, providerName string) (sandbox.Provider, error) {
+	_, provCfg, err := resolveProviderConfig(dir)
+	if err != nil {
+		return nil, err
+	}
+	return resolveStoredProviderFromConfig(providerName, provCfg)
+}
+
+func resolveStoredProviderFromConfig(providerName string, provCfg sandbox.ProviderConfig) (sandbox.Provider, error) {
+	provider, err := sandbox.ProviderFromConfig(providerName, provCfg)
+	if err == nil {
+		return provider, nil
+	}
+
+	providerName = strings.TrimSpace(providerName)
+	if providerName == "" {
+		return nil, errors.New("stored sandbox record has no provider; HAL cannot safely manage its resource: verify and delete the resource with its original provider, then repair or remove the stale registry entry before retrying")
+	}
+	return nil, fmt.Errorf("stored sandbox record uses unsupported provider %q; HAL cannot safely manage its resource: verify and delete the resource with that provider, then repair or remove the stale registry entry before retrying", providerName)
+}
+
 func providerConfigFromGlobal(cfg *sandbox.GlobalConfig) (string, sandbox.ProviderConfig) {
 	providerName := ""
 	if cfg != nil {
@@ -223,12 +244,11 @@ func resolveProviderFromState(dir string, state *sandbox.SandboxState) (sandbox.
 		return nil, err
 	}
 
-	providerName := configuredProvider
-	if state != nil {
-		providerName = strings.TrimSpace(state.Provider)
+	if state == nil {
+		return sandbox.ProviderFromConfig(configuredProvider, provCfg)
 	}
 
-	return sandbox.ProviderFromConfig(providerName, provCfg)
+	return resolveStoredProviderFromConfig(state.Provider, provCfg)
 }
 
 // resolveProviderFromName creates a Provider for delete-by-name paths where no

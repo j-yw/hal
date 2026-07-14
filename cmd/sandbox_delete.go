@@ -296,7 +296,7 @@ type sandboxDeleteResourceDeps struct {
 }
 
 var defaultSandboxDeleteResourceDeps = sandboxDeleteResourceDeps{
-	resolveProvider: resolveProviderWithFallback,
+	resolveProvider: resolveStoredProviderWithFallback,
 	resolveRuntime:  resolveFactoryStoredSandboxRuntime,
 }
 

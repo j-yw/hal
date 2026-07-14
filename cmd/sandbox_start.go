@@ -59,7 +59,7 @@ func init() {
 var sandboxStartListInstances = sandbox.ListActiveInstances
 var sandboxStartLoadInstance = sandbox.LoadActiveInstance
 var sandboxStartResolveProvider = func(providerName string) (sandbox.Provider, error) {
-	return resolveProviderWithFallback(".", providerName)
+	return resolveStoredProviderWithFallback(".", providerName)
 }
 var sandboxStartResolveRuntime = func(target *sandbox.SandboxState) (sandboxruntime.Driver, error) {
 	return resolveFactoryStoredSandboxRuntime(".", target)

@@ -184,7 +184,7 @@ func resolveFactoryStoredSandboxRuntimeWithDeps(
 		}, factories)
 	}
 	return sandboxRuntimeDriverFromTarget(runtimeTarget, func(providerName string) (sandbox.Provider, error) {
-		return resolveProviderWithFallback(dir, providerName)
+		return resolveStoredProviderWithFallback(dir, providerName)
 	})
 }
 

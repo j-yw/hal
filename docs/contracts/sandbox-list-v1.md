@@ -24,7 +24,7 @@ These fields are always present on every entry in the `sandboxes` array.
 |-------|------|-------------|
 | `id` | string | Stable sandbox identifier. Current entries use the UUIDv7 registry ID; legacy entries may fall back to the pre-migration external ID for compatibility. |
 | `name` | string | Validated sandbox name (1–59 chars, lowercase alphanumeric + hyphens) |
-| `provider` | string | Provider that manages this sandbox (e.g. `"hetzner"`, `"digitalocean"`, `"lightsail"`) |
+| `provider` | string | Provider that manages this sandbox (e.g. `"hetzner"`, `"digitalocean"`, `"lightsail"`). May be empty only for a migrated legacy record whose provider could not be determined. |
 | `status` | string | Lifecycle status: `"running"`, `"stopped"`, or `"unknown"`. Legacy blank statuses are normalized to `"running"` for compatibility. |
 | `createdAt` | string | RFC 3339 timestamp of when the sandbox was created |
 
@@ -151,5 +151,6 @@ These fields use `omitempty` and are only present when the value is non-zero.
 - The `totals.estimatedCost` field aggregates only sandboxes with known rates and is omitted when no sandbox has rate data.
 - Cost accrues from `createdAt` regardless of status, since cloud providers charge for allocated instances even when stopped.
 - The `--live` flag queries providers or worker runtimes for fresh status before rendering but does not change the JSON structure.
+- A migrated legacy entry with an empty or unsupported `provider` remains listable, but HAL will not run lifecycle operations against it. Operators must verify and delete the original resource, then repair or remove the stale registry entry.
 - Human table output uses access states instead of raw network addresses. Use `--show-addresses` only when raw values are intentionally needed in human output.
 - New optional fields may be added in future versions with `omitempty`. Consumers should ignore unknown fields for forward compatibility.

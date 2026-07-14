@@ -68,7 +68,7 @@ var sandboxSSHLoadInstance = sandbox.LoadActiveInstance
 
 // sandboxSSHResolveProvider is injectable for testing.
 var sandboxSSHResolveProvider = func(providerName string) (sandbox.Provider, error) {
-	return resolveProviderWithFallback(".", providerName)
+	return resolveStoredProviderWithFallback(".", providerName)
 }
 
 // sandboxSSHResolveRuntime resolves worker-backed runtime drivers for command execution.

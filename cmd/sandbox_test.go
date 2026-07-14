@@ -118,8 +118,31 @@ func TestResolveProviderFromState_MissingProviderDoesNotFallBackToConfig(t *test
 	if err == nil {
 		t.Fatal("resolveProviderFromState() error = nil, want missing-provider error")
 	}
-	if !strings.Contains(err.Error(), "not configured") || !strings.Contains(err.Error(), "hal sandbox setup") {
-		t.Fatalf("error = %q, want actionable setup guidance", err.Error())
+	if !strings.Contains(err.Error(), "stored sandbox record has no provider") ||
+		!strings.Contains(err.Error(), "original provider") ||
+		!strings.Contains(err.Error(), "stale registry entry") {
+		t.Fatalf("error = %q, want stored-record cleanup guidance", err.Error())
+	}
+}
+
+func TestResolveProviderFromState_UnsupportedProviderDoesNotFallBackToConfig(t *testing.T) {
+	dir := t.TempDir()
+	setGlobalConfigHomeForTest(t, dir)
+
+	globalCfg := sandbox.DefaultGlobalConfig()
+	globalCfg.Provider = "hetzner"
+	if err := sandbox.SaveGlobalConfig(&globalCfg); err != nil {
+		t.Fatalf("SaveGlobalConfig() error: %v", err)
+	}
+
+	_, err := resolveProviderFromState(dir, &sandbox.SandboxState{Provider: "legacy-provider"})
+	if err == nil {
+		t.Fatal("resolveProviderFromState() error = nil, want unsupported-provider error")
+	}
+	if !strings.Contains(err.Error(), `unsupported provider "legacy-provider"`) ||
+		!strings.Contains(err.Error(), "that provider") ||
+		!strings.Contains(err.Error(), "stale registry entry") {
+		t.Fatalf("error = %q, want stored-record cleanup guidance", err.Error())
 	}
 }
 

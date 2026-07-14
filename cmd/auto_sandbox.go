@@ -143,7 +143,7 @@ var defaultAutoSandboxDeps = autoSandboxDeps{
 	provision:           provisionFactorySandbox,
 	persistSandboxState: sandbox.ForceWriteInstance,
 	resolveProvider: func(providerName string) (sandbox.Provider, error) {
-		return resolveProviderWithFallback(".", providerName)
+		return resolveStoredProviderWithFallback(".", providerName)
 	},
 	runProviderExecWithEnv: runFactorySandboxProviderExecWithEnv,
 	runProviderScript:      runFactorySandboxProviderScript,

@@ -65,7 +65,7 @@ var sandboxStopListInstances = sandbox.ListActiveInstances
 var sandboxStopLoadInstance = sandbox.LoadActiveInstance
 
 var sandboxStopResolveProvider = func(providerName string) (sandbox.Provider, error) {
-	return resolveProviderWithFallback(".", providerName)
+	return resolveStoredProviderWithFallback(".", providerName)
 }
 var sandboxStopResolveRuntime = func(target *sandbox.SandboxState) (sandboxruntime.Driver, error) {
 	return resolveFactoryStoredSandboxRuntime(".", target)

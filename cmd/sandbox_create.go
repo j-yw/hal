@@ -75,7 +75,7 @@ Human output redacts public cloud and Tailscale addresses by default. Use
 
 var resolveSandboxProvider = sandbox.ProviderFromConfig
 var sandboxCreateResolveProviderForForceDelete = func(dir, providerName string) (sandbox.Provider, error) {
-	return resolveProviderWithFallback(dir, providerName)
+	return resolveStoredProviderWithFallback(dir, providerName)
 }
 var newSandboxID = sandbox.NewV7
 var saveSandboxInstance = sandbox.SaveInstance

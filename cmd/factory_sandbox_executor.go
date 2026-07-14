@@ -104,11 +104,11 @@ var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
 	provision:           provisionFactorySandbox,
 	persistSandboxState: sandbox.ForceWriteInstance,
 	resolveProvider: func(providerName string) (sandbox.Provider, error) {
-		return resolveProviderWithFallback(".", providerName)
+		return resolveStoredProviderWithFallback(".", providerName)
 	},
 	resolveRuntimeDriver: func(target sandboxruntime.Target) (sandboxruntime.Driver, error) {
 		return sandboxRuntimeDriverFromTarget(target, func(providerName string) (sandbox.Provider, error) {
-			return resolveProviderWithFallback(".", providerName)
+			return resolveStoredProviderWithFallback(".", providerName)
 		})
 	},
 	resolveWorkerRuntime: func(req sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
