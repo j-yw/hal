@@ -1183,7 +1183,7 @@ func TestMachineContractFields_SandboxList(t *testing.T) {
 				{
 					ID:        "test-id",
 					Name:      "minimal",
-					Provider:  "daytona",
+					Provider:  "hetzner",
 					Status:    "running",
 					CreatedAt: time.Now(),
 				},
@@ -1243,7 +1243,7 @@ func TestMachineContractFields_SandboxList(t *testing.T) {
 				{
 					ID:        "0192d4e5-6f78-7abc-def0-123456789abd",
 					Name:      "worker",
-					Provider:  "daytona",
+					Provider:  "hetzner",
 					Status:    "stopped",
 					CreatedAt: now,
 				},

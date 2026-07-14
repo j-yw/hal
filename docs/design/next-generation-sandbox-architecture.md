@@ -3,14 +3,17 @@
 **Status**: Proposed
 **Date**: 2026-06-29
 **Scope**: Architecture proposal only. This document does not change runtime behavior, command behavior, storage formats, or machine-readable CLI contracts.
+**Current support note**: Cloud provisioning currently covers Hetzner,
+DigitalOcean, and AWS Lightsail. Local or registered hosts can use worker-backed
+Podman runtimes. Provider inventories in older design revisions are superseded.
 
 ## Executive Summary
 
 Hal should not add Docker as just another `internal/sandbox.Provider`.
 The current provider interface models one sandbox as one remotely managed
 machine, and it combines infrastructure provisioning, runtime lifecycle,
-execution, copy, and status into one boundary. That model works for Daytona
-and one-VPS-per-sandbox providers, but it does not describe the architecture Hal
+execution, copy, and status into one boundary. That model works for
+one-VPS-per-sandbox providers, but it does not describe the architecture Hal
 needs next: one or more self-hosted sandbox hosts running many isolated agent
 sandboxes through Docker, Podman, gVisor, Kata, Firecracker, or equivalent
 runtimes.
@@ -98,12 +101,12 @@ Hal currently has a single sandbox provider abstraction in
 - `Start`, `Stop`, `Delete`, and `Status` manage lifecycle.
 - `SSH(info)` and `Exec(info, args)` return executable commands for interactive
   shell or non-interactive command execution.
-- `ProviderFromConfig` chooses between `daytona`, `hetzner`, `digitalocean`, and
+- `ProviderFromConfig` chooses between `hetzner`, `digitalocean`, and
   `lightsail`.
 
 The abstraction treats the sandbox as a machine-like target. Provider
-implementations shell out to provider CLIs such as `daytona`, `hcloud`,
-`doctl`, and `aws lightsail`, then use SSH for most non-Daytona execution. This
+implementations shell out to provider CLIs such as `hcloud`, `doctl`, and
+`aws lightsail`, then use SSH for execution. This
 keeps dependencies small and testable but means one interface owns too many
 responsibilities: cloud provisioning, machine lifecycle, network addressing,
 remote command transport, and copy-adjacent behavior.
@@ -533,8 +536,8 @@ Responsibilities:
 
 Initial implementations:
 
-- `ExistingMachineHostProvider`: adapter for current `daytona`, `hetzner`,
-  `digitalocean`, `lightsail` behavior.
+- `ExistingMachineHostProvider`: adapter for current `hetzner`,
+  `digitalocean`, and `lightsail` behavior.
 - `SSHHostProvider`: register an already existing machine.
 - `LocalHostProvider`: current machine for local Docker/Podman experiments.
 - Existing cloud-specific providers can later produce hosts instead of direct
@@ -1145,8 +1148,6 @@ behavior should remain stable.
 Keep existing sandbox provider behavior. Introduce new interfaces behind the
 factory sandbox executor but adapt current providers:
 
-- Daytona: `HostProvider` and `SSHMachineRuntime` where possible, or legacy
-  provider adapter until Daytona support is deprecated or narrowed.
 - Hetzner/DigitalOcean/Lightsail: host providers that provision machines; the
   machine can run `SSHMachineRuntime` first, then Docker/Podman after host
   bootstrap supports it.
@@ -1370,7 +1371,7 @@ cleanup.
 Rejected because it hits provider limits, increases cost, slows startup, and
 does not match the expected cloud-agent usage pattern.
 
-**Depend on Daytona, E2B, Modal, Vercel, or Docker Sandboxes.**
+**Depend on E2B, Modal, Vercel, or Docker Sandboxes.**
 Rejected because Hal's core should be open-source and self-hostable. These can
 remain optional adapters or references.
 

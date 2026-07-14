@@ -246,7 +246,7 @@ func TestSandboxworkerCredentialDeliveryDefaultForbiddenImportListCoversLiveSurf
 		{name: "factory", importPath: "github.com/jywlabs/hal/internal/factory", want: "factory orchestration package"},
 		{name: "credential delivery activation implementation", importPath: "github.com/jywlabs/hal/internal/credentialdelivery", want: "credential delivery activation implementation package"},
 		{name: "sandbox state", importPath: "github.com/jywlabs/hal/internal/sandbox", want: "durable sandbox state package"},
-		{name: "provider", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/daytona", want: "concrete provider package"},
+		{name: "provider", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/hetzner", want: "concrete provider package"},
 		{name: "rootless Podman runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman", want: "concrete runtime package"},
 		{name: "microVM runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker", want: "concrete runtime package"},
 		{name: "network", importPath: "net", want: "network client or HTTP server package"},

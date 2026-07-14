@@ -156,7 +156,7 @@ func TestLaunchAssetForbiddenImportListCoversRequiredBoundaries(t *testing.T) {
 		{name: "cmd", importPath: "github.com/jywlabs/hal/cmd", want: "cmd package"},
 		{name: "factory", importPath: "github.com/jywlabs/hal/internal/factory", want: "factory package"},
 		{name: "worker", importPath: "github.com/jywlabs/hal/internal/sandboxworker/protocol", want: "worker protocol package"},
-		{name: "provider", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/daytona", want: "sandbox provider package"},
+		{name: "provider", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/hetzner", want: "sandbox provider package"},
 		{name: "Firecracker", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker", want: "Firecracker execution package"},
 		{name: "Firecracker host", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecrackerhost", want: "Firecracker host package"},
 		{name: "rootless Podman", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman", want: "rootless Podman runtime package"},

@@ -1269,7 +1269,7 @@ func TestSandboxSecurityCapabilityReadinessDiagnosticsMetadataJSONTags(t *testin
 func TestSandboxMetadataLoadsLegacyJSON(t *testing.T) {
 	payload := []byte(`{
 		"name": "factory-run",
-		"provider": "daytona",
+		"provider": "hetzner",
 		"size": "medium",
 		"status": "running",
 		"connection": {
@@ -1292,8 +1292,8 @@ func TestSandboxMetadataLoadsLegacyJSON(t *testing.T) {
 	if decoded.Name != "factory-run" {
 		t.Fatalf("name = %q, want factory-run", decoded.Name)
 	}
-	if decoded.Provider != "daytona" {
-		t.Fatalf("provider = %q, want daytona", decoded.Provider)
+	if decoded.Provider != "hetzner" {
+		t.Fatalf("provider = %q, want hetzner", decoded.Provider)
 	}
 	if decoded.Connection == nil || !decoded.Connection.TailscaleLockdown {
 		t.Fatalf("connection = %#v, want populated lockdown metadata", decoded.Connection)
@@ -1340,7 +1340,7 @@ func TestFactoryCredentialProxyLegacyRecordsAndEventsLoadWithoutMetadata(t *test
 		"sandboxName": "factory-run",
 		"sandbox": {
 			"name": "factory-run",
-			"provider": "daytona",
+			"provider": "hetzner",
 			"status": "running"
 		},
 		"currentStep": "run",
@@ -1395,7 +1395,7 @@ func TestFactoryCredentialProxyLegacyRecordsAndEventsLoadWithoutMetadata(t *test
 func TestSandboxMetadataOptionalMetadataOmittedWhenNil(t *testing.T) {
 	metadata := SandboxMetadata{
 		Name:           "factory-run",
-		Provider:       "daytona",
+		Provider:       "hetzner",
 		Status:         "running",
 		SSHCommand:     "hal sandbox ssh factory-run",
 		CleanupCommand: "hal sandbox delete factory-run",
@@ -1432,7 +1432,7 @@ func TestSandboxMetadataNetworkProxySessionJSONShape(t *testing.T) {
 	})
 	metadata := SandboxMetadata{
 		Name:                "factory-run",
-		Provider:            "daytona",
+		Provider:            "hetzner",
 		Status:              "running",
 		NetworkProxySession: &session,
 	}
@@ -1542,7 +1542,7 @@ func TestSandboxMetadataCredentialProxyMetadataTypesAndJSONShape(t *testing.T) {
 	})
 	metadata := SandboxMetadata{
 		Name:                    "factory-run",
-		Provider:                "daytona",
+		Provider:                "hetzner",
 		Status:                  "running",
 		CredentialProxyPlan:     &plan,
 		CredentialProxySession:  &session,
@@ -1629,7 +1629,7 @@ func TestSandboxMetadataNetworkProxySessionJSONRedactionSafety(t *testing.T) {
 			})
 			metadata := SandboxMetadata{
 				Name:                "factory-run",
-				Provider:            "daytona",
+				Provider:            "hetzner",
 				Status:              "running",
 				NetworkProxySession: &session,
 			}
@@ -1660,7 +1660,7 @@ func TestSandboxMetadataRuntimeV2SummaryJSONShape(t *testing.T) {
 	expiresAt := time.Date(2026, 6, 29, 16, 45, 0, 0, time.UTC)
 	metadata := SandboxMetadata{
 		Name:     "factory-run",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Size:     "medium",
 		Status:   "running",
 		Connection: &SandboxConnectionMetadata{
@@ -2069,7 +2069,7 @@ func TestFactoryContractTypeRoundTrips(t *testing.T) {
 			SandboxName: "factory-run",
 			Sandbox: &SandboxMetadata{
 				Name:     "factory-run",
-				Provider: "daytona",
+				Provider: "hetzner",
 				Status:   "running",
 				Connection: &SandboxConnectionMetadata{
 					Address:           "100.64.0.10",
@@ -2315,7 +2315,7 @@ func TestRunRecordJSONFields(t *testing.T) {
 		SandboxName: "factory-run",
 		Sandbox: &SandboxMetadata{
 			Name:     "factory-run",
-			Provider: "daytona",
+			Provider: "hetzner",
 			Status:   "running",
 			Connection: &SandboxConnectionMetadata{
 				Address:           "100.64.0.10",

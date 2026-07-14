@@ -63,7 +63,7 @@ func TestSandboxexecutionForbiddenImportListCoversRequiredBoundaries(t *testing.
 		{name: "factory", importPath: "github.com/jywlabs/hal/internal/factory"},
 		{name: "prd", importPath: "github.com/jywlabs/hal/internal/prd"},
 		{name: "compound", importPath: "github.com/jywlabs/hal/internal/compound"},
-		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/daytona"},
+		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/hetzner"},
 		{name: "concrete runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"},
 	}
 	for _, tt := range tests {

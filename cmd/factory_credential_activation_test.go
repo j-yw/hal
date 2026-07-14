@@ -243,7 +243,7 @@ func (r phase51FactoryCredentialActivationRun) loadLogChunks(t *testing.T) []fac
 func phase51FactoryCredentialActivationTarget() *sandbox.SandboxState {
 	return &sandbox.SandboxState{
 		Name:     "factory-phase51-activation",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 }

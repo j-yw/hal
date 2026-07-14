@@ -182,12 +182,3 @@ auto:
   # Maximum review cycles before review gate fails.
   # Default (balanced): 10
   reviewMaxIterations: 10
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Daytona Sandbox Settings (optional)
-# ─────────────────────────────────────────────────────────────────────────────
-# Configure credentials for Daytona sandbox integration.
-# Run `hal sandbox setup` to set these interactively.
-# Do not commit raw secret values in project templates. The provider receives:
-# - DAYTONA_API_KEY
-# - DAYTONA_SERVER_URL

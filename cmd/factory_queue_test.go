@@ -792,7 +792,7 @@ func TestRunFactoryQueueWorkWithDepsExecutesSandboxEntryThroughSandbox(t *testin
 	policy.SandboxRequired = true
 	target := &sandbox.SandboxState{
 		Name:     "factory-queue-sandbox",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -1249,7 +1249,7 @@ func TestRunFactoryQueueWorkWithDepsRehydratesRedactedSandboxRemote(t *testing.T
 	policy.SandboxRequired = true
 	target := &sandbox.SandboxState{
 		Name:     "factory-queue-sandbox",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}

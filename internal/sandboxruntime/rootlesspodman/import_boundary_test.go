@@ -106,7 +106,7 @@ func TestRootlessPodmanForbiddenImportListCoversCommandCouplingSurfaces(t *testi
 		{name: "sandbox target selection packages", importPath: "github.com/jywlabs/hal/internal/sandboxtarget"},
 		{name: "worker protocol packages", importPath: "github.com/jywlabs/hal/internal/sandboxworker"},
 		{name: "SSH-machine runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"},
-		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/daytona"},
+		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/hetzner"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if forbidden := rootlessPodmanForbiddenImportFor(tt.importPath); forbidden == nil {

@@ -21,7 +21,7 @@ func TestCollectRuntimeArtifactsUsesExecAndCopyOutBoundary(t *testing.T) {
 	target := sandboxruntime.Target{
 		ID:       "target-1",
 		Name:     "phase-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Runtime: sandboxruntime.RuntimeState{
 			Driver: sandboxruntime.DriverSSHMachine,
 		},
@@ -573,7 +573,7 @@ func TestCollectRecoveryArtifactsGeneratesCopiesAndPersistsManifest(t *testing.T
 	target := sandboxruntime.Target{
 		ID:       "target-1",
 		Name:     "phase-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Runtime: sandboxruntime.RuntimeState{
 			Driver: sandboxruntime.DriverSSHMachine,
 		},
@@ -844,7 +844,7 @@ func TestCollectReportsArchiveArtifactsGeneratesCopiesAndPersistsManifest(t *tes
 	target := sandboxruntime.Target{
 		ID:       "target-1",
 		Name:     "phase-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Runtime: sandboxruntime.RuntimeState{
 			Driver: sandboxruntime.DriverSSHMachine,
 		},

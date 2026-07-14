@@ -873,7 +873,7 @@ func factorySandboxReadinessDiagnosticsForbiddenValues(fixture phase26Credential
 func factorySandboxReadinessTarget(security *sandbox.SandboxSecurity) *sandbox.SandboxState {
 	return &sandbox.SandboxState{
 		Name:     "factory-readiness",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 		Host: &sandbox.SandboxHost{

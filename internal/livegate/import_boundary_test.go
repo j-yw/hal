@@ -154,7 +154,7 @@ func TestLiveGateForbiddenImportListCoversRequiredBoundaries(t *testing.T) {
 		{name: "sandbox target packages", importPath: "github.com/jywlabs/hal/internal/sandboxtarget"},
 		{name: "sandbox workspace packages", importPath: "github.com/jywlabs/hal/internal/sandboxworkspace"},
 		{name: "credential delivery implementation", importPath: "github.com/jywlabs/hal/internal/credentialdelivery"},
-		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/daytona"},
+		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/hetzner"},
 		{name: "live network enforcement implementation", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"},
 		{name: "concrete Firecracker runtime implementation", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"},
 		{name: "concrete rootless Podman runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"},

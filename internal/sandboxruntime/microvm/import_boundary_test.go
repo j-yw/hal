@@ -338,7 +338,7 @@ func TestMicroVMForbiddenImportListCoversRequiredBoundaries(t *testing.T) {
 		{name: "sandbox execution record packages", importPath: "github.com/jywlabs/hal/internal/sandboxexecution", want: "sandbox execution record package"},
 		{name: "sandbox target packages", importPath: "github.com/jywlabs/hal/internal/sandboxtarget", want: "sandbox target package"},
 		{name: "sandbox workspace packages", importPath: "github.com/jywlabs/hal/internal/sandboxworkspace", want: "sandbox workspace package"},
-		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/daytona", want: "concrete provider adapter package"},
+		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/hetzner", want: "concrete provider adapter package"},
 		{name: "rootless Podman runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman", want: "concrete sibling runtime adapter package"},
 		{name: "SSH-machine runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine", want: "concrete sibling runtime adapter package"},
 		{name: "Firecracker backend subpackage", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker", want: "concrete sibling runtime adapter package"},

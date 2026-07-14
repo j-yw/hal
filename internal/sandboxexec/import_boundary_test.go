@@ -82,7 +82,7 @@ func TestSandboxexecForbiddenImportListCoversRequiredBoundaries(t *testing.T) {
 		{name: "worker protocol packages", importPath: "github.com/jywlabs/hal/internal/sandboxworker"},
 		{name: "concrete SSH-machine runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"},
 		{name: "concrete rootless Podman runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"},
-		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/daytona"},
+		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/hetzner"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if forbidden := sandboxexecForbiddenImportFor(tt.importPath); forbidden == nil {

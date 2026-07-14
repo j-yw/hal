@@ -964,7 +964,7 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	target := &sandbox.SandboxState{
 		Name:     "factory-selected",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -2817,7 +2817,7 @@ func TestPublishFactoryRunAfterVerifiedSuccessAutoFallsBackToHost(t *testing.T) 
 	now := time.Date(2026, 7, 8, 13, 30, 0, 0, time.UTC)
 	target := &sandbox.SandboxState{
 		Name:     "auto",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -4132,7 +4132,7 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsOnSuccess(t *testing.T) {
 	}
 	target := &sandbox.SandboxState{
 		Name:     "factory-sandbox",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -4310,7 +4310,7 @@ func TestRunFactoryRunWithDepsCollectsPreservedSandboxArtifactsWithProviderExec(
 	times := []time.Time{createdAt, startedAt, completedAt}
 	target := &sandbox.SandboxState{
 		Name:     "factory-preserved",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -4426,7 +4426,7 @@ func TestRunFactoryRunWithDepsCollectsProviderExecRecoveryBundleBeforePublish(t 
 	times := []time.Time{createdAt, startedAt, pipelineAt, verifiedAt, publishedAt, succeededAt}
 	target := &sandbox.SandboxState{
 		Name:     "factory-publish",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -4616,7 +4616,7 @@ func TestRunFactoryRunWithDepsCollectsFailedSandboxArtifactsWithProviderExecWith
 	now := time.Date(2026, 6, 21, 4, 4, 0, 0, time.UTC)
 	target := &sandbox.SandboxState{
 		Name:     "factory-failed",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -4722,7 +4722,7 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsBeforeSandboxCleanup(t *te
 	}
 	target := &sandbox.SandboxState{
 		Name:     "factory-sandbox",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -5261,7 +5261,7 @@ func TestRunFactoryRunWithDepsPreservesOnSuccessSandboxWhenArtifactCollectionFai
 	artifactErr := errors.New("status snapshot unavailable")
 	target := &sandbox.SandboxState{
 		Name:     "factory-artifact-failed",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -5824,7 +5824,7 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 	}
 	target := &sandbox.SandboxState{
 		Name:     "factory-verified",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -6032,7 +6032,7 @@ func TestCleanupFactoryRunDeferredSandboxCopiesArtifactsWithProviderExecBeforeCl
 	policy.CleanupBehavior = factory.CleanupBehaviorOnSuccess
 	target := &sandbox.SandboxState{
 		Name:     "factory-copy-before-cleanup",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -6143,7 +6143,7 @@ func TestRunFactoryRunWithDepsCleansOnSuccessSandboxAfterFinalSuccessWithoutVeri
 	}
 	target := &sandbox.SandboxState{
 		Name:     "factory-final-success",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -6297,7 +6297,7 @@ func TestRunFactoryRunWithDepsPreservesDeferredSandboxWhenVerificationFails(t *t
 	policy.VerificationRequired = true
 	target := &sandbox.SandboxState{
 		Name:     "factory-verification-failed",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -6421,7 +6421,7 @@ func TestRunFactorySandboxRemoteVerificationUsesResolvedSecretsAndRedactsArtifac
 
 	target := &sandbox.SandboxState{
 		Name:     record.SandboxName,
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 	resolvedSecrets := []factory.ResolvedRunSecret{{
@@ -6521,7 +6521,7 @@ func TestRunFactoryRunWithDepsRecordsAlwaysCleanupWhenFailureArtifactCopyErrors(
 	policy.VerificationRequired = true
 	target := &sandbox.SandboxState{
 		Name:     "factory-always-cleanup-copy-error",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -6680,7 +6680,7 @@ func TestRunFactoryRunWithDepsBlocksRequiredSandboxVerificationWithNoRemoteCheck
 	policy.VerificationRequired = true
 	target := &sandbox.SandboxState{
 		Name:     "factory-no-remote-checks",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -7185,7 +7185,7 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 	times := []time.Time{createdAt, startedAt, completedAt}
 	target := &sandbox.SandboxState{
 		Name:     "factory-remote",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "203.0.113.42",
 	}
@@ -7235,7 +7235,7 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 				Metadata: map[string]any{
 					"source":      "remote_sandbox",
 					"sandboxName": "factory-remote",
-					"provider":    "daytona",
+					"provider":    "hetzner",
 					"status":      factory.RunStatusRunning,
 				},
 			}); err != nil {
@@ -7251,7 +7251,7 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 				Metadata: map[string]any{
 					"source":      "remote_sandbox",
 					"sandboxName": "factory-remote",
-					"provider":    "daytona",
+					"provider":    "hetzner",
 				},
 			}); err != nil {
 				return err
@@ -7262,7 +7262,7 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 				Metadata: map[string]any{
 					"source":      "remote_sandbox",
 					"sandboxName": "factory-remote",
-					"provider":    "daytona",
+					"provider":    "hetzner",
 					"status":      factory.RunStatusSucceeded,
 				},
 			}); err != nil {
@@ -7313,7 +7313,7 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 	if record.SandboxName != "factory-remote" || record.Sandbox == nil {
 		t.Fatalf("sandbox metadata = %#v", record.Sandbox)
 	}
-	if record.Sandbox.Provider != "daytona" || record.Sandbox.Status != sandbox.StatusRunning {
+	if record.Sandbox.Provider != "hetzner" || record.Sandbox.Status != sandbox.StatusRunning {
 		t.Fatalf("sandbox provider/status = %#v", record.Sandbox)
 	}
 	if record.Sandbox.Connection == nil || record.Sandbox.Connection.PublicIP != "203.0.113.42" {
@@ -7373,7 +7373,7 @@ func TestRunFactoryRunWithDepsSuppressesSandboxRemoteOutputForJSON(t *testing.T)
 	times := []time.Time{createdAt, startedAt, completedAt}
 	target := &sandbox.SandboxState{
 		Name:     "factory-json",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -7516,7 +7516,7 @@ func TestRunFactoryRunWithDepsPreservesSandboxFailureHandoffCommand(t *testing.T
 			record.SandboxName = "factory-remote"
 			record.Sandbox = &factory.SandboxMetadata{
 				Name:           "factory-remote",
-				Provider:       "daytona",
+				Provider:       "hetzner",
 				Status:         sandbox.StatusRunning,
 				SSHCommand:     "hal sandbox ssh factory-remote",
 				CleanupCommand: "hal sandbox delete factory-remote",
@@ -9265,7 +9265,7 @@ func TestNewFactoryRunNextActionUsesInspectCommandForSandboxFailures(t *testing.
 		SandboxName:  "fallback-sandbox",
 		Sandbox: &factory.SandboxMetadata{
 			Name:       "factory-handoff",
-			Provider:   "daytona",
+			Provider:   "hetzner",
 			Status:     sandbox.StatusRunning,
 			SSHCommand: "ssh root@203.0.113.10",
 			Connection: &factory.SandboxConnectionMetadata{
@@ -9511,7 +9511,7 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 			Model: "gpt-5",
 		},
 		Sandbox: &factory.RunSandboxTelemetry{
-			Provider: "daytona",
+			Provider: "hetzner",
 			Size:     "medium",
 		},
 		EstimatedSandboxCost: &factory.SandboxCostEstimate{

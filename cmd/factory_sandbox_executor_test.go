@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -173,7 +172,7 @@ func TestFactorySandboxConnectionMetadataFromStatePrefersTailscaleAddress(t *tes
 func TestFactorySandboxMetadataFromStateIncludesSecurityMetadata(t *testing.T) {
 	_, got := factorySandboxMetadataFromState(&sandbox.SandboxState{
 		Name:     "factory-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		Security: sandbox.EvaluateSSHMachineCompatibilitySecurity(sandbox.SecurityEvaluationRequest{
 			RuntimeDriver:          sandbox.SandboxRuntimeDriverSSHMachine,
@@ -333,7 +332,7 @@ func TestRunFactorySandboxExecutorWithDepsAppliesCleanupPolicy(t *testing.T) {
 			policy.CleanupBehavior = tt.behavior
 			target := &sandbox.SandboxState{
 				Name:     "factory-dev",
-				Provider: "daytona",
+				Provider: "hetzner",
 				Status:   sandbox.StatusRunning,
 				IP:       "127.0.0.1",
 			}
@@ -424,7 +423,7 @@ func TestRunFactorySandboxExecutorWithDepsAppliesCleanupPolicy(t *testing.T) {
 func TestCleanupFactorySandboxAfterRunSkipsCleanupAfterBeforeCleanupError(t *testing.T) {
 	target := &sandbox.SandboxState{
 		Name:     "factory-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 	beforeErr := fmt.Errorf("copy artifacts failed")
@@ -468,7 +467,7 @@ func TestRunFactorySandboxExecutorWithDepsDefersOnSuccessCleanup(t *testing.T) {
 	policy.CleanupBehavior = factory.CleanupBehaviorOnSuccess
 	target := &sandbox.SandboxState{
 		Name:     "factory-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -530,7 +529,7 @@ func TestRunFactorySandboxExecutorWithDepsDefersAlwaysCleanupAfterSuccess(t *tes
 	policy.CleanupBehavior = factory.CleanupBehaviorAlways
 	target := &sandbox.SandboxState{
 		Name:     "factory-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -625,7 +624,7 @@ func TestRunFactorySandboxExecutorWithDepsCleansUpEarlyFailureWhenPolicyAlways(t
 			record.Policy = &policy
 			target := &sandbox.SandboxState{
 				Name:     "factory-dev",
-				Provider: "daytona",
+				Provider: "hetzner",
 				Status:   sandbox.StatusRunning,
 			}
 
@@ -690,7 +689,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 	}
 	target := &sandbox.SandboxState{
 		Name:     "factory-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -741,15 +740,15 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 		},
 		resolveProvider: func(providerName string) (sandbox.Provider, error) {
 			calls = append(calls, "provider")
-			if providerName != "daytona" {
-				t.Fatalf("providerName = %q, want daytona", providerName)
+			if providerName != "hetzner" {
+				t.Fatalf("providerName = %q, want hetzner", providerName)
 			}
 			return fakeFactorySandboxProvider{}, nil
 		},
 		resolveRuntimeDriver: func(target sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			calls = append(calls, "driver")
-			if target.Provider != "daytona" {
-				t.Fatalf("runtime target provider = %q, want daytona", target.Provider)
+			if target.Provider != "hetzner" {
+				t.Fatalf("runtime target provider = %q, want hetzner", target.Provider)
 			}
 			if target.Runtime.Driver != sandboxruntime.DriverSSHMachine {
 				t.Fatalf("runtime target driver = %q, want %q", target.Runtime.Driver, sandboxruntime.DriverSSHMachine)
@@ -803,7 +802,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesFakeSideEffectBoundaries(t *testin
 	if savedRecords[1].Sandbox == nil {
 		t.Fatalf("saved sandbox metadata = nil")
 	}
-	if savedRecords[1].Sandbox.Name != "factory-dev" || savedRecords[1].Sandbox.Provider != "daytona" || savedRecords[1].Sandbox.Status != sandbox.StatusRunning {
+	if savedRecords[1].Sandbox.Name != "factory-dev" || savedRecords[1].Sandbox.Provider != "hetzner" || savedRecords[1].Sandbox.Status != sandbox.StatusRunning {
 		t.Fatalf("saved sandbox metadata = %#v", savedRecords[1].Sandbox)
 	}
 	if savedRecords[1].Sandbox.Connection == nil || savedRecords[1].Sandbox.Connection.PublicIP != "127.0.0.1" {
@@ -830,7 +829,7 @@ func TestRunFactorySandboxExecutorWithDepsPersistsSanitizedCredentialProxyMetada
 	fixture := phase26CredentialProxyUnsafeValues()
 	target := &sandbox.SandboxState{
 		Name:     "factory-credential-proxy",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 	record := factory.RunRecord{
@@ -1014,7 +1013,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesConfiguredSecurityRequest(t *testi
 	}
 	target := &sandbox.SandboxState{
 		Name:     "factory-security",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -1113,7 +1112,7 @@ func TestRunFactorySandboxExecutorRuntimeBoundaryRegressionMatchesSSHMachineBeha
 	store := factory.NewStore(t.TempDir())
 	target := &sandbox.SandboxState{
 		Name:     "factory-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 		Runtime: &sandbox.SandboxRuntimeState{
@@ -1197,14 +1196,14 @@ func TestRunFactorySandboxExecutorRuntimeBoundaryRegressionMatchesSSHMachineBeha
 			return nil, nil
 		},
 		resolveProvider: func(providerName string) (sandbox.Provider, error) {
-			if providerName != "daytona" {
-				t.Fatalf("providerName = %q, want daytona", providerName)
+			if providerName != "hetzner" {
+				t.Fatalf("providerName = %q, want hetzner", providerName)
 			}
 			return fakeFactorySandboxProvider{}, nil
 		},
 		resolveRuntimeDriver: func(target sandboxruntime.Target) (sandboxruntime.Driver, error) {
-			if target.Provider != "daytona" {
-				t.Fatalf("runtime target provider = %q, want daytona", target.Provider)
+			if target.Provider != "hetzner" {
+				t.Fatalf("runtime target provider = %q, want hetzner", target.Provider)
 			}
 			if target.Runtime.Driver != sandboxruntime.DriverSSHMachine {
 				t.Fatalf("runtime target driver = %q, want %q", target.Runtime.Driver, sandboxruntime.DriverSSHMachine)
@@ -1227,8 +1226,8 @@ func TestRunFactorySandboxExecutorRuntimeBoundaryRegressionMatchesSSHMachineBeha
 	if resolvedDriverID != sandboxruntime.DriverSSHMachine {
 		t.Fatalf("runtime driver ID = %q, want %q", resolvedDriverID, sandboxruntime.DriverSSHMachine)
 	}
-	if gotExec.Target.Name != "factory-dev" || gotExec.Target.Provider != "daytona" || gotExec.Target.Runtime.Driver != sandboxruntime.DriverSSHMachine {
-		t.Fatalf("exec target = %#v, want factory-dev/daytona with ssh_machine runtime", gotExec.Target)
+	if gotExec.Target.Name != "factory-dev" || gotExec.Target.Provider != "hetzner" || gotExec.Target.Runtime.Driver != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("exec target = %#v, want factory-dev/hetzner with ssh_machine runtime", gotExec.Target)
 	}
 	if gotExec.Target.Connection.Address != "127.0.0.1" {
 		t.Fatalf("exec target connection = %#v, want legacy SSH-machine address", gotExec.Target.Connection)
@@ -1407,7 +1406,7 @@ func TestRunFactorySandboxExecutorWithDepsBootstrapsWorkspaceBeforeRemoteExecuti
 	store := factory.NewStore(t.TempDir())
 	target := &sandbox.SandboxState{
 		Name:     "factory-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -1574,7 +1573,7 @@ func TestRunFactorySandboxExecutorWithDepsDoesNotPersistUnsanitizedBootstrapStre
 	secret := "repo-secret"
 	target := &sandbox.SandboxState{
 		Name:     "factory-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -1647,7 +1646,7 @@ func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromBootstrapTim
 	store := factory.NewStore(t.TempDir())
 	target := &sandbox.SandboxState{
 		Name:     "factory-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 	secret := "ghp_sandbox_bootstrap_secret_12345"
@@ -1741,7 +1740,7 @@ func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToBootstrapEnviro
 	store := factory.NewStore(t.TempDir())
 	target := &sandbox.SandboxState{
 		Name:     "factory-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 	requiredSecret := "ghp_bootstrap_env_secret_12345"
@@ -1895,7 +1894,7 @@ func TestRunFactorySandboxExecutorWithDepsPassesResolvedSecretsToRemoteExecution
 	store := factory.NewStore(t.TempDir())
 	target := &sandbox.SandboxState{
 		Name:     "factory-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 	requiredSecret := "ghp_remote_env_secret_12345"
@@ -1997,7 +1996,7 @@ func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromRemoteOutput
 	store := factory.NewStore(t.TempDir())
 	target := &sandbox.SandboxState{
 		Name:     "factory-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 	secret := "ghp_remote_output_secret_12345"
@@ -2077,7 +2076,7 @@ func TestRunFactorySandboxExecutorWithDepsRedactsCredentialedRemoteURLsFromRemot
 	store := factory.NewStore(t.TempDir())
 	target := &sandbox.SandboxState{
 		Name:     "factory-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 	credential := "ghp_remote_url_credential_12345"
@@ -2146,7 +2145,7 @@ func TestRunFactorySandboxExecutorWithDepsRedactsSecretAssignmentsFromRemoteTime
 	store := factory.NewStore(t.TempDir())
 	target := &sandbox.SandboxState{
 		Name:     "factory-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 
@@ -2213,7 +2212,7 @@ func TestRunFactorySandboxExecutorWithDepsRedactsMultilineSecretsFromRemoteOutpu
 	store := factory.NewStore(t.TempDir())
 	target := &sandbox.SandboxState{
 		Name:     "factory-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 	fragments := []string{
@@ -2291,7 +2290,7 @@ func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromFailureRecor
 	store := factory.NewStore(t.TempDir())
 	target := &sandbox.SandboxState{
 		Name:     "factory-dev",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 	secret := "ghp_remote_failure_secret_12345"
@@ -2429,7 +2428,7 @@ func TestRecordFactorySandboxFailurePreservesCredentialProxyMetadata(t *testing.
 		SandboxName: "factory-ready",
 		Sandbox: &factory.SandboxMetadata{
 			Name:                "factory-ready",
-			Provider:            "daytona",
+			Provider:            "hetzner",
 			Status:              sandbox.StatusRunning,
 			NetworkProxySession: networkSession,
 			CredentialProxyPlan: &sandbox.SandboxCredentialProxyPlanMetadata{
@@ -2465,7 +2464,7 @@ func TestRecordFactorySandboxFailurePreservesCredentialProxyMetadata(t *testing.
 	}
 	target := &sandbox.SandboxState{
 		Name:     "factory-ready",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Size:     "medium",
 		Status:   sandbox.StatusRunning,
 	}
@@ -2486,7 +2485,7 @@ func TestRecordFactorySandboxFailurePreservesCredentialProxyMetadata(t *testing.
 	if loaded.Sandbox == nil {
 		t.Fatal("loaded sandbox metadata = nil")
 	}
-	if loaded.Sandbox.Provider != "daytona" || loaded.Sandbox.Size != "medium" || loaded.Sandbox.Status != sandbox.StatusRunning {
+	if loaded.Sandbox.Provider != "hetzner" || loaded.Sandbox.Size != "medium" || loaded.Sandbox.Status != sandbox.StatusRunning {
 		t.Fatalf("loaded sandbox state fields = %#v, want refreshed target metadata", loaded.Sandbox)
 	}
 	if loaded.Sandbox.NetworkProxySession == nil || loaded.Sandbox.NetworkProxySession.ID != networkSession.ID {
@@ -2511,7 +2510,7 @@ func TestRunFactorySandboxExecutorWithDepsCopiesLocalMarkdownBeforeRemoteExecuti
 	if err := os.WriteFile(filepath.Join(projectDir, ".hal", "prd-feature.md"), []byte("# Feature\n"), 0644); err != nil {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
-	target := &sandbox.SandboxState{Name: "factory-dev", Provider: "daytona", Status: sandbox.StatusRunning}
+	target := &sandbox.SandboxState{Name: "factory-dev", Provider: "hetzner", Status: sandbox.StatusRunning}
 	var execArgs [][]string
 	var runtimeArgs []string
 	record := factory.RunRecord{
@@ -2575,7 +2574,7 @@ func TestRunFactorySandboxExecutorWithDepsCopiesAbsoluteReportToRemoteInputPath(
 	if err := os.WriteFile(reportPath, []byte("# Analysis\n"), 0644); err != nil {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
-	target := &sandbox.SandboxState{Name: "factory-dev", Provider: "daytona", Status: sandbox.StatusRunning}
+	target := &sandbox.SandboxState{Name: "factory-dev", Provider: "hetzner", Status: sandbox.StatusRunning}
 	var execArgs [][]string
 	var runtimeArgs []string
 	record := factory.RunRecord{
@@ -2783,7 +2782,7 @@ func TestRunFactorySandboxExecutorWithDepsSyncsEngineAuthBeforeRemoteExecution(t
 	if err := os.WriteFile(authPath, []byte(`{"tokens":true}`), 0600); err != nil {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
-	target := &sandbox.SandboxState{Name: "factory-dev", Provider: "daytona", Status: sandbox.StatusRunning}
+	target := &sandbox.SandboxState{Name: "factory-dev", Provider: "hetzner", Status: sandbox.StatusRunning}
 	var calls []string
 
 	err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
@@ -3373,44 +3372,6 @@ func TestRunFactorySandboxProviderExecWithEnvUsesStdinScriptWithoutArgSecrets(t 
 	}
 }
 
-func TestRunFactorySandboxProviderExecWithEnvUsesStdinForDaytona(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses a POSIX shell script to stand in for the daytona CLI")
-	}
-	secret := "daytona_provider_exec_secret_12345"
-	binDir := t.TempDir()
-	argFile := filepath.Join(t.TempDir(), "args.txt")
-	daytonaPath := filepath.Join(binDir, "daytona")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$DAYTONA_ARG_FILE\"\ncat\n"
-	if err := os.WriteFile(daytonaPath, []byte(script), 0700); err != nil {
-		t.Fatalf("write fake daytona: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("DAYTONA_ARG_FILE", argFile)
-
-	provider := &sandbox.DaytonaProvider{APIKey: "test-key"}
-	var out bytes.Buffer
-	err := runFactorySandboxProviderExecWithEnv(context.Background(), provider, &sandbox.ConnectInfo{Name: "factory-dev"}, []string{"sh", "-c", "cd '/workspace/repo' && exec 'hal' 'auto'"}, map[string]string{
-		"GITHUB_TOKEN": secret,
-	}, &out)
-	if err != nil {
-		t.Fatalf("runFactorySandboxProviderExecWithEnv() unexpected error: %v", err)
-	}
-	args, err := os.ReadFile(argFile)
-	if err != nil {
-		t.Fatalf("read fake daytona args: %v", err)
-	}
-	if strings.Contains(string(args), secret) {
-		t.Fatalf("daytona command args leaked secret value: %q", string(args))
-	}
-	if !strings.Contains(string(args), "'sh' '-s'") {
-		t.Fatalf("daytona command args = %q, want stdin shell execution", string(args))
-	}
-	if !strings.Contains(out.String(), "export GITHUB_TOKEN='"+secret+"'") {
-		t.Fatalf("stdin script did not export secret env assignment: %q", out.String())
-	}
-}
-
 func TestRunFactorySandboxProviderExecWithEnvUsesStdinScriptWithoutEnv(t *testing.T) {
 	provider := &capturingFactorySandboxProvider{
 		cmd: exec.Command("sh", "-c", "cat"),
@@ -3583,7 +3544,7 @@ func TestRunFactorySandboxExecutorWithDepsRecordsSanitizedRemoteOutputEvents(t *
 	store := factory.NewStore(t.TempDir())
 	target := &sandbox.SandboxState{
 		Name:     "factory-remote",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "203.0.113.42",
 	}
@@ -3651,7 +3612,7 @@ func TestRunFactorySandboxExecutorWithDepsRecordsSanitizedRemoteOutputEvents(t *
 	if secondLine.Metadata["source"] != "remote_sandbox" || secondLine.Metadata["stream"] != "remote" {
 		t.Fatalf("second remote metadata = %#v", secondLine.Metadata)
 	}
-	if secondLine.Metadata["sandboxName"] != "factory-remote" || secondLine.Metadata["provider"] != "daytona" {
+	if secondLine.Metadata["sandboxName"] != "factory-remote" || secondLine.Metadata["provider"] != "hetzner" {
 		t.Fatalf("second remote target metadata = %#v", secondLine.Metadata)
 	}
 	if completed.EventType != factory.EventTypeStepEnded || completed.Summary != "Remote sandbox execution completed" {
@@ -3681,7 +3642,7 @@ func TestRunFactorySandboxExecutorWithDepsPersistsOnlyRemoteCommandOutputSummari
 	store := factory.NewStore(t.TempDir())
 	target := &sandbox.SandboxState{
 		Name:     "factory-remote-clean-output",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusStopped,
 	}
 
@@ -3784,7 +3745,7 @@ func TestRunFactorySandboxExecutorWithDepsPersistsOnlyRemoteCommandOutputSummari
 func TestRunFactorySandboxExecutorWithDepsRedactsResolvedSecretsFromExecutorEvents(t *testing.T) {
 	now := time.Date(2026, 6, 21, 10, 20, 0, 0, time.UTC)
 	store := factory.NewStore(t.TempDir())
-	target := &sandbox.SandboxState{Name: "factory-remote", Provider: "daytona", Status: sandbox.StatusRunning}
+	target := &sandbox.SandboxState{Name: "factory-remote", Provider: "hetzner", Status: sandbox.StatusRunning}
 	secret := "ghp_remote_command_secret_12345"
 
 	var events []factory.EventRecord
@@ -3943,7 +3904,7 @@ func TestRunFactorySandboxExecutorWithDepsReturnsExplicitLoadFailure(t *testing.
 func TestRunFactorySandboxExecutorWithDepsUsesDefaultResolutionWithoutExplicitTarget(t *testing.T) {
 	target := &sandbox.SandboxState{
 		Name:     "factory-only",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 
@@ -3986,7 +3947,7 @@ func TestRunFactorySandboxExecutorWithDepsUsesDefaultResolutionWithoutExplicitTa
 	if savedRecords[1].SandboxName != "factory-only" {
 		t.Fatalf("saved sandboxName = %q, want factory-only", savedRecords[1].SandboxName)
 	}
-	if savedRecords[1].Sandbox == nil || savedRecords[1].Sandbox.Provider != "daytona" {
+	if savedRecords[1].Sandbox == nil || savedRecords[1].Sandbox.Provider != "hetzner" {
 		t.Fatalf("saved sandbox metadata = %#v", savedRecords[1].Sandbox)
 	}
 }
@@ -3995,7 +3956,7 @@ func TestRunFactorySandboxExecutorWithDepsProvisionsWhenDefaultResolutionHasNoUs
 	resolveErr := errNoFactorySandbox
 	provisioned := &sandbox.SandboxState{
 		Name:     "hal-feature",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 
@@ -4059,7 +4020,7 @@ func TestRunFactorySandboxExecutorWithDepsProvisionsWhenDefaultResolutionHasNoUs
 func TestRunFactorySandboxExecutorWithDepsStartsStoppedDerivedDefaultBeforeProvisioning(t *testing.T) {
 	stopped := &sandbox.SandboxState{
 		Name:     "hal-feature",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusStopped,
 	}
 	provisionCalled := false
@@ -4378,7 +4339,7 @@ func TestRunFactorySandboxExecutorWithDepsRecordsRemoteExecutionFailureHandoff(t
 	execErr := factorySandboxTestError("remote pipeline failed on 203.0.113.42")
 	target := &sandbox.SandboxState{
 		Name:     "factory-failed",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "203.0.113.42",
 	}
@@ -4430,7 +4391,7 @@ func TestRunFactorySandboxExecutorWithDepsRecordsRemoteExecutionFailureHandoff(t
 	if failed.Status != factory.RunStatusFailed || failed.CurrentStep != "run" {
 		t.Fatalf("failed record status/step = %s/%s", failed.Status, failed.CurrentStep)
 	}
-	if failed.SandboxName != "factory-failed" || failed.Sandbox == nil || failed.Sandbox.Provider != "daytona" {
+	if failed.SandboxName != "factory-failed" || failed.Sandbox == nil || failed.Sandbox.Provider != "hetzner" {
 		t.Fatalf("failed sandbox metadata = %#v", failed.Sandbox)
 	}
 	if failed.Sandbox.Connection == nil || failed.Sandbox.Connection.PublicIP != "203.0.113.42" {
@@ -4465,7 +4426,7 @@ func TestRunFactorySandboxExecutorWithDepsGeneratesRecoveryOnRunFailure(t *testi
 	execErr := factorySandboxTestError("remote pipeline failed")
 	target := &sandbox.SandboxState{
 		Name:     "factory-recovery-failed",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -4524,7 +4485,7 @@ func TestRunFactorySandboxExecutorWithDepsKeepsRunFailureWhenRecoveryGenerationF
 	store := factory.NewStore(t.TempDir())
 	target := &sandbox.SandboxState{
 		Name:     "factory-recovery-warning",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}

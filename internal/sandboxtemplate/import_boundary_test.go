@@ -69,7 +69,7 @@ func TestSandboxTemplateForbiddenImportListCoversRequiredBoundaries(t *testing.T
 		{name: "cmd", importPath: "github.com/jywlabs/hal/cmd", want: "command package"},
 		{name: "project template", importPath: "github.com/jywlabs/hal/internal/template", want: "Hal project template package"},
 		{name: "factory", importPath: "github.com/jywlabs/hal/internal/factory", want: "factory orchestration package"},
-		{name: "provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/daytona", want: "concrete provider package"},
+		{name: "provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/hetzner", want: "concrete provider package"},
 		{name: "rootless Podman runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman", want: "concrete runtime package"},
 		{name: "SSH-machine runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine", want: "concrete runtime package"},
 		{name: "Firecracker runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker", want: "concrete runtime package"},

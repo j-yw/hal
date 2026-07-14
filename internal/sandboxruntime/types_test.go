@@ -36,7 +36,7 @@ func TestLifecycleDriverInterfaceIncludesCoreOperations(t *testing.T) {
 
 	driver := fakeLifecycleDriver{}
 	ctx := context.Background()
-	target := Target{Name: "dev", Provider: "daytona", Status: "running"}
+	target := Target{Name: "dev", Provider: "hetzner", Status: "running"}
 
 	if got, err := driver.Create(ctx, CreateRequest{Name: "dev"}); err != nil || got.Name != "dev" {
 		t.Fatalf("Create() = %#v, %v; want target named dev", got, err)

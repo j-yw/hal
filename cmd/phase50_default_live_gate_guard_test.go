@@ -169,7 +169,7 @@ func TestPhase50LiveGatePurityGuardRejectsFixtures(t *testing.T) {
 		{name: "Cobra", importPath: "github.com/spf13/cobra", want: "Cobra package"},
 		{name: "cmd", importPath: "github.com/jywlabs/hal/cmd", want: "cmd package"},
 		{name: "command test helper", importPath: "github.com/jywlabs/hal/internal/cmdtest", want: "command test helper package"},
-		{name: "concrete provider", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/daytona", want: "concrete provider adapter package"},
+		{name: "concrete provider", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/hetzner", want: "concrete provider adapter package"},
 		{name: "worker daemon/client", importPath: "github.com/jywlabs/hal/internal/sandboxworker", want: "worker daemon package"},
 		{name: "rootless Podman runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman", want: "live runtime package"},
 		{name: "Firecracker runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker", want: "live runtime package"},

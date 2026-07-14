@@ -1,8 +1,8 @@
 # =============================================================================
-# Hal Dev Sandbox — mirrors the local dev environment for Daytona snapshots
+# Hal Dev Sandbox — portable local or remote development image
 # =============================================================================
 # Build (local/native):  docker build -f sandbox/Dockerfile -t hal-sandbox .
-# Build (Daytona/amd64): docker build --platform=linux/amd64 -f sandbox/Dockerfile -t hal-sandbox .
+# Build (linux/amd64):  docker build --platform=linux/amd64 -f sandbox/Dockerfile -t hal-sandbox .
 # Run:                    docker run --rm -it --env-file sandbox/.env hal-sandbox
 # =============================================================================
 

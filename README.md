@@ -52,7 +52,7 @@ make install
   - Claude Code CLI.
   - pi CLI.
 
-For sandbox workflows, run `hal sandbox setup` and provide the provider credentials and environment values requested for Daytona, Hetzner, DigitalOcean, or AWS Lightsail.
+For sandbox workflows, run `hal sandbox setup` and provide the provider credentials and environment values requested for Hetzner, DigitalOcean, or AWS Lightsail. Local and registered hosts can use the Podman worker runtime without provisioning a cloud instance.
 
 ## First Run
 

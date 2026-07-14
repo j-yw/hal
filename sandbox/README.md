@@ -1,6 +1,7 @@
 # Dev Sandbox
 
-Portable dev environment you can spin up anywhere — Daytona, any VPS, GitHub Codespaces — and SSH into from your phone.
+Portable dev environment you can run on Hetzner, DigitalOcean, AWS Lightsail,
+a registered worker host, local Podman, Docker, or GitHub Codespaces.
 
 ## What's included
 
@@ -20,7 +21,7 @@ Portable dev environment you can spin up anywhere — Daytona, any VPS, GitHub C
 
 ## Quick Start
 
-### Option 1: Any VPS (DigitalOcean, Hetzner, AWS, etc.)
+### Option 1: Cloud VPS (Hetzner, DigitalOcean, or AWS Lightsail)
 
 SSH into a fresh Ubuntu 22.04+ machine and run:
 
@@ -39,18 +40,16 @@ export OPENAI_API_KEY="sk-..."
 curl -fsSL https://raw.githubusercontent.com/ReScienceLab/hal/main/sandbox/setup.sh | bash
 ```
 
-### Option 2: Daytona (pre-baked snapshot)
+### Option 2: Rootless Podman lab
 
 ```bash
-# First time — create the snapshot
-hal sandbox snapshot create
-
-# Spin up a sandbox
-hal sandbox start -n my-dev
-
-# SSH in
-daytona ssh my-dev
+make sandbox-lab-prepare
+make sandbox-lab-start
+./sandbox/podman-lab.sh run -- hal sandbox host status hal-lab-worker --live
+make sandbox-lab-destroy
 ```
+
+See [TESTING.md](TESTING.md) for the contained lab workflow and cleanup rules.
 
 ### Option 3: Docker (local testing)
 
@@ -77,7 +76,9 @@ docker run --rm -it --env-file sandbox/.env hal-sandbox
 
 For VPS: set these before running `setup.sh` — they'll be persisted to `~/.profile`.
 
-For Docker/Daytona: pass via `--env-file sandbox/.env` or `-e KEY=VALUE`.
+For Docker: pass values via `--env-file sandbox/.env` or `-e KEY=VALUE`.
+For the contained Podman lab, use `sandbox/podman-lab.sh seed-auth` so copied
+credentials stay inside the disposable lab root.
 
 ```bash
 cp sandbox/.env.example sandbox/.env
@@ -86,7 +87,7 @@ cp sandbox/.env.example sandbox/.env
 
 ## SSH from Phone
 
-1. **Create a VPS** or Daytona sandbox
+1. **Create a supported cloud VPS** or register a worker host
 2. **Add your phone's SSH key** to `~/.ssh/authorized_keys` on the machine
 3. **Use a mobile SSH client**:
    - **iOS**: [Blink Shell](https://blink.sh) or [Termius](https://termius.com)
@@ -96,13 +97,6 @@ cp sandbox/.env.example sandbox/.env
    tmux new -s work     # start
    tmux a -t work       # reattach after reconnect
    ```
-
-### Daytona SSH shortcut
-
-```bash
-# From any machine with daytona CLI installed
-daytona ssh my-dev
-```
 
 ## Version Freshness
 
@@ -119,11 +113,7 @@ The Dockerfile passes these as build args but delegates installation to `setup.s
 ## Updating Tools
 
 1. For VPS: re-run `setup.sh` to install the latest AI CLIs, or pass explicit version env vars to pin
-2. For Daytona: rebuild the snapshot:
-   ```bash
-   hal sandbox snapshot delete --id <old-id>
-   hal sandbox snapshot create
-   ```
+2. For Docker or Podman: rebuild the image after changing `setup.sh`.
 
 ## Updating Claude Agents & Skills
 
@@ -140,7 +130,7 @@ Then re-run `setup.sh` or rebuild the Docker image.
 ```
 setup.sh          ← Universal bootstrap (the ONE script)
   ↑ used by
-Dockerfile        ← Pre-baked image (for Daytona snapshots / Docker)
+Dockerfile        ← Portable Docker/Podman image
 entrypoint.sh     ← Runtime config (git identity, gh auth, SSH agent)
 test.sh           ← Smoke tests (verify all tools present)
 claude/           ← Claude Code settings, agents, skills

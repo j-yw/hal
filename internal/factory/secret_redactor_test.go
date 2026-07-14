@@ -536,7 +536,7 @@ func TestRunSecretRedactorRedactsSandboxMetadataName(t *testing.T) {
 		SandboxName: "factory-secret-sandbox",
 		Sandbox: &SandboxMetadata{
 			Name:       "factory-secret-sandbox",
-			Provider:   "daytona",
+			Provider:   "hetzner",
 			Status:     "running",
 			SSHCommand: "hal sandbox ssh factory-secret-sandbox",
 		},

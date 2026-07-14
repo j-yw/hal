@@ -634,7 +634,7 @@ func phase23SandboxWorkspacePlan(projectDir string) sandboxworkspace.Plan {
 func phase23FactorySandboxTarget(name string) *sandbox.SandboxState {
 	return &sandbox.SandboxState{
 		Name:     name,
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}

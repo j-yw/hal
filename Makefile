@@ -116,7 +116,7 @@ sandbox-build:
 		--build-arg BUILD_DATE="$(BUILD_DATE)" \
 		-f sandbox/Dockerfile -t hal-sandbox .
 
-## Build sandbox for Daytona (linux/amd64)
+## Build sandbox image for linux/amd64
 sandbox-build-amd64:
 	@echo "==> Building sandbox image (linux/amd64)..."
 	@docker build \
