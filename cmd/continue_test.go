@@ -320,9 +320,9 @@ func TestRunContinueFn_WarningsDoNotBlockReadiness(t *testing.T) {
 	halDir := filepath.Join(dir, template.HalDir)
 	os.MkdirAll(halDir, 0755)
 
-	// Intentionally omit .hal/config.yaml to trigger a warning-only doctor result.
+	os.WriteFile(filepath.Join(halDir, template.ConfigFile), []byte("engine: pi\n"), 0644)
 	os.WriteFile(filepath.Join(halDir, template.PromptFile), []byte("# Agent\n"), 0644)
-	os.WriteFile(filepath.Join(halDir, template.ProgressFile), []byte("## Patterns\n"), 0644)
+	// Intentionally omit progress.txt to trigger the aggregated warning regression.
 
 	for _, name := range skills.ManagedSkillNames {
 		os.MkdirAll(filepath.Join(halDir, "skills", name), 0755)
@@ -346,6 +346,9 @@ func TestRunContinueFn_WarningsDoNotBlockReadiness(t *testing.T) {
 
 	if result.Doctor.OverallStatus != "warn" {
 		t.Fatalf("doctor.overallStatus = %q, want %q", result.Doctor.OverallStatus, "warn")
+	}
+	if len(result.Doctor.Warnings) != 1 || result.Doctor.Warnings[0] != "progress_file" {
+		t.Fatalf("doctor.warnings = %v, want [progress_file]", result.Doctor.Warnings)
 	}
 	if !result.Ready {
 		t.Fatal("ready = false, want true when doctor only has warnings")
