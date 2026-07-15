@@ -133,7 +133,9 @@ func TestRun_HealthyNonCodexRepo(t *testing.T) {
 
 func TestRun_MissingProgressAggregatesWarning(t *testing.T) {
 	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
 	halDir := setupHalDir(t, dir)
 	installSkills(t, dir)
 	installCommands(t, dir)

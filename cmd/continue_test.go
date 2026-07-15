@@ -320,7 +320,9 @@ func TestRunContinueFn_WarningsDoNotBlockReadiness(t *testing.T) {
 	halDir := filepath.Join(dir, template.HalDir)
 	os.MkdirAll(halDir, 0755)
 
-	os.WriteFile(filepath.Join(halDir, template.ConfigFile), []byte("engine: pi\n"), 0644)
+	if err := os.WriteFile(filepath.Join(halDir, template.ConfigFile), []byte("engine: pi\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	os.WriteFile(filepath.Join(halDir, template.PromptFile), []byte("# Agent\n"), 0644)
 	// Intentionally omit progress.txt to trigger the aggregated warning regression.
 
