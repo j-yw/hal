@@ -393,7 +393,7 @@ func TestSandboxdCommandRegistersLiveMicroVMDriverWithExplicitInputs(t *testing.
 		"--firecracker-executable", "/usr/bin/firecracker",
 		"--firecracker-kernel", kernelPath,
 		"--firecracker-rootfs", rootfsPath,
-		"--firecracker-state-dir", t.TempDir(),
+		"--firecracker-state-dir", sandboxdShortFirecrackerStateDir(t),
 		"--json",
 	})
 
@@ -820,7 +820,7 @@ func TestSandboxdCommandRegistersLiveMicroVMGuestAgentTransportCapabilities(t *t
 		"--firecracker-executable", "/usr/bin/firecracker",
 		"--firecracker-kernel", kernelPath,
 		"--firecracker-rootfs", rootfsPath,
-		"--firecracker-state-dir", t.TempDir(),
+		"--firecracker-state-dir", sandboxdShortFirecrackerStateDir(t),
 		"--firecracker-guest-agent-endpoint", "unix:///tmp/hal-guest-agent.sock",
 		"--json",
 	})
@@ -892,7 +892,7 @@ func TestSandboxdCommandRejectsInvalidGuestAgentEndpointBeforeMicroVMDriverConst
 		"--firecracker-executable", "/usr/bin/firecracker",
 		"--firecracker-kernel", kernelPath,
 		"--firecracker-rootfs", rootfsPath,
-		"--firecracker-state-dir", t.TempDir(),
+		"--firecracker-state-dir", sandboxdShortFirecrackerStateDir(t),
 		"--firecracker-guest-agent-endpoint", "tcp://guest.internal:8080/path?token=ghp_secret",
 	})
 
@@ -1058,7 +1058,7 @@ func TestSandboxdCommandResolvesExplicitFirecrackerLaunchAssetsBeforeDriverConst
 		"--firecracker-rootfs", rootfsPath,
 		"--firecracker-initrd", initrdPath,
 		"--firecracker-jailer", " /usr/bin/firecracker-jailer ",
-		"--firecracker-state-dir", t.TempDir(),
+		"--firecracker-state-dir", sandboxdShortFirecrackerStateDir(t),
 		"--json",
 	})
 
@@ -1124,7 +1124,7 @@ func TestSandboxdCommandRejectsUnavailableLaunchAssetBeforeMicroVMDriverConstruc
 		"--firecracker-executable", "/usr/bin/firecracker",
 		"--firecracker-kernel", missingKernelPath,
 		"--firecracker-rootfs", rootfsPath,
-		"--firecracker-state-dir", t.TempDir(),
+		"--firecracker-state-dir", sandboxdShortFirecrackerStateDir(t),
 	})
 
 	err := cmd.Execute()
@@ -1658,9 +1658,24 @@ func sandboxdNetworkEnforcementMicroVMConfig(t *testing.T, planning *microvm.Net
 			GuestWorkDir:    defaults.GuestWorkDir,
 			NetworkMode:     defaults.NetworkMode,
 		},
-		StateDir:                   filepath.Join(t.TempDir(), "firecracker-state"),
+		StateDir:                   sandboxdShortFirecrackerStateDir(t),
 		NetworkEnforcementPlanning: planning,
 	}
+}
+
+func sandboxdShortFirecrackerStateDir(t *testing.T) string {
+	t.Helper()
+
+	root, err := os.MkdirTemp("/tmp", "hal-fc-sandboxd-")
+	if err != nil {
+		t.Fatal("create short sandboxd Firecracker state directory")
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Error("remove short sandboxd Firecracker state directory")
+		}
+	})
+	return root
 }
 
 func writeSandboxdAssetFile(t *testing.T, name string, contents string) string {

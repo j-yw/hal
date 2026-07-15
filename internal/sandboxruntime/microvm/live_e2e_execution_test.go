@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +34,7 @@ func TestMicroVMLiveE2EComposedLiveExecutionPath(t *testing.T) {
 	networkPlanning := microVMLiveE2ENetworkEnforcementPlanning()
 	driver, err := firecrackerhost.NewLiveDriver(firecrackerhost.LiveDriverOptions{
 		Config:               config,
-		BaseStateDir:         filepath.Join(t.TempDir(), "firecracker-state"),
+		BaseStateDir:         microVMLiveE2EShortFirecrackerStateDir(t),
 		CapabilityDetector:   microvm.HostCapabilityDetector{},
 		NetworkEnforcement:   networkPlanning,
 		HostProcessRunner:    firecrackerhost.NewOSExecProcessRunner(),
@@ -94,6 +93,21 @@ func TestMicroVMLiveE2EComposedLiveExecutionPath(t *testing.T) {
 	microVMLiveE2EFatalOnError(t, "start", err, microVMLiveE2EForbiddenFragments(getenv)...)
 	microVMLiveE2EAssertStartedTarget(t, started)
 	assertMicroVMLiveE2ERedactionSafe(t, "started target", started, microVMLiveE2EForbiddenFragments(getenv)...)
+}
+
+func microVMLiveE2EShortFirecrackerStateDir(t *testing.T) string {
+	t.Helper()
+
+	root, err := os.MkdirTemp("/tmp", "hal-fc-e2e-")
+	if err != nil {
+		t.Fatal("create short microVM live E2E Firecracker state directory")
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Error("remove short microVM live E2E Firecracker state directory")
+		}
+	})
+	return root
 }
 
 func requireMicroVMLiveE2EGate(t *testing.T, getenv func(string) string) livegate.GatePreflightResult {

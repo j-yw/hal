@@ -15,7 +15,7 @@ import (
 )
 
 func TestPhase34LiveBootRendersBootFilesIntoStateDirBeforeLaunch(t *testing.T) {
-	stateRoot := filepath.Join(t.TempDir(), "firecracker-state")
+	stateRoot := firecrackerShortSocketTestRoot(t)
 	config := phase34LiveBootFakeConfig(t)
 	starter := &phase34RenderLaunchStarter{}
 	backend := NewBackend(BackendOptions{
@@ -69,7 +69,7 @@ func TestPhase34LiveBootRendersBootFilesIntoStateDirBeforeLaunch(t *testing.T) {
 }
 
 func TestPhase34LiveBootRenderFailurePreventsLaunchAndSanitizesError(t *testing.T) {
-	stateRoot := filepath.Join(t.TempDir(), "private-render-state")
+	stateRoot := filepath.Join(firecrackerShortSocketTestRoot(t), "blocked")
 	if err := os.WriteFile(stateRoot, []byte("not a directory"), 0o600); err != nil {
 		t.Fatalf("WriteFile(state root blocker) error = %v", err)
 	}
@@ -216,8 +216,7 @@ func phase34AssertRenderedLiveBootFiles(t *testing.T, config BackendConfig) {
 		t.Fatalf("RenderRootDrivePayload() error = %v, want nil", err)
 	}
 	phase34AssertRootDrivePayload(t, rendered, rootDrive)
-	phase34AssertRawJSONContainsString(t, rawConfig, config.Paths.LogPath)
-	phase34AssertRawJSONContainsString(t, rawConfig, config.Paths.MetricsPath)
+	phase34AssertConfigOmitsDuplicateSupportPathInitialization(t, rendered, rawConfig, config.Paths)
 }
 
 func phase34AssertProcessRunnerStartRequest(t *testing.T, req ProcessRunnerStartRequest, config BackendConfig) {
@@ -295,15 +294,22 @@ func phase34AssertRootDrivePayload(t *testing.T, rendered map[string]json.RawMes
 	}
 }
 
-func phase34AssertRawJSONContainsString(t *testing.T, raw []byte, want string) {
+func phase34AssertConfigOmitsDuplicateSupportPathInitialization(t *testing.T, rendered map[string]json.RawMessage, raw []byte, paths PathPlan) {
 	t.Helper()
 
-	encoded, err := json.Marshal(want)
-	if err != nil {
-		t.Fatalf("Marshal(%q) error = %v", want, err)
+	for _, key := range []string{"logger", "metrics"} {
+		if _, ok := rendered[key]; ok {
+			t.Fatalf("rendered config contains duplicate %q initialization; keys=%v", key, phase34RenderedConfigKeys(rendered))
+		}
 	}
-	if !strings.Contains(string(raw), string(encoded)) {
-		t.Fatalf("rendered config %s does not contain support path %s", string(raw), string(encoded))
+	for _, path := range []string{paths.LogPath, paths.MetricsPath} {
+		encoded, err := json.Marshal(path)
+		if err != nil {
+			t.Fatalf("Marshal(support path) error = %v", err)
+		}
+		if bytes.Contains(raw, encoded) {
+			t.Fatalf("rendered config contains support path that must be initialized only by CLI arguments")
+		}
 	}
 }
 

@@ -18,7 +18,7 @@ import (
 )
 
 func TestNewLiveBackendOptionsComposesExplicitFirecrackerLiveDependencies(t *testing.T) {
-	baseStateDir := filepath.Join(t.TempDir(), "firecracker-state")
+	baseStateDir := firecrackerHostShortSocketTestRoot(t)
 	runner := &fakeHostProcessRunner{}
 	poller := &fakeBootAcceptancePoller{}
 	clock := fakeClock{now: time.Unix(123, 0)}
@@ -103,7 +103,7 @@ func TestNewLiveBackendOptionsComposesExplicitFirecrackerLiveDependencies(t *tes
 }
 
 func TestNewLiveBackendOptionsConfiguresOptionalGuestReadinessProbe(t *testing.T) {
-	baseStateDir := filepath.Join(t.TempDir(), "firecracker-state")
+	baseStateDir := firecrackerHostShortSocketTestRoot(t)
 	probe := &fakeGuestReadinessProbe{}
 
 	options, err := NewLiveBackendOptions(LiveDriverOptions{
@@ -142,7 +142,7 @@ func TestNewLiveBackendOptionsConfiguresOptionalGuestReadinessProbe(t *testing.T
 }
 
 func TestNewLiveBackendOptionsConfiguresOptionalGuestTransport(t *testing.T) {
-	baseStateDir := filepath.Join(t.TempDir(), "firecracker-state")
+	baseStateDir := firecrackerHostShortSocketTestRoot(t)
 	transport := &fakeLiveGuestTransport{}
 
 	options, err := NewLiveBackendOptions(LiveDriverOptions{
@@ -168,7 +168,7 @@ func TestNewLiveDriverUsesExplicitBackendAndCapabilityOverride(t *testing.T) {
 	detector := &recordingLiveDriverCapabilityDetector{report: liveDriverAvailableCapabilityReport()}
 	driver, err := NewLiveDriver(LiveDriverOptions{
 		Config:             liveDriverValidConfig(),
-		BaseStateDir:       filepath.Join(t.TempDir(), "firecracker-state"),
+		BaseStateDir:       firecrackerHostShortSocketTestRoot(t),
 		CapabilityDetector: detector,
 		HostProcessRunner:  &fakeHostProcessRunner{},
 		BootAcceptancePoller: &fakeBootAcceptancePoller{result: firecracker.BootAcceptanceResult{
@@ -211,7 +211,7 @@ func TestNewLiveDriverUsesExplicitBackendAndCapabilityOverride(t *testing.T) {
 }
 
 func TestNewLiveDriverStartUsesFakeHostRunnerAndBootAcceptance(t *testing.T) {
-	baseStateDir := filepath.Join(t.TempDir(), "firecracker-state")
+	baseStateDir := firecrackerHostShortSocketTestRoot(t)
 	process := &fakeHostProcess{rawPID: 424242}
 	runner := &fakeHostProcessRunner{processes: []HostProcess{process}}
 	poller := &fakeBootAcceptancePoller{result: firecracker.BootAcceptanceResult{
@@ -279,7 +279,7 @@ func TestNewLiveDriverStartUsesFakeHostRunnerAndBootAcceptance(t *testing.T) {
 }
 
 func TestNewLiveDriverStartUsesOptionalGuestReadinessProbe(t *testing.T) {
-	baseStateDir := filepath.Join(t.TempDir(), "firecracker-state")
+	baseStateDir := firecrackerHostShortSocketTestRoot(t)
 	process := &fakeHostProcess{rawPID: 424242}
 	runner := &fakeHostProcessRunner{processes: []HostProcess{process}}
 	poller := &fakeBootAcceptancePoller{result: firecracker.BootAcceptanceResult{
@@ -339,7 +339,7 @@ func TestNewLiveDriverStartUsesOptionalGuestReadinessProbe(t *testing.T) {
 
 func TestNewLiveDriverGuestAgentReadinessFailureCleansUpFakeHostProcess(t *testing.T) {
 	readinessErr := errors.New("dial unix /Users/alice/private/guest-agent.sock endpoint=https://guest.internal:9443/status token=ghp_secret docker=/var/run/docker.sock")
-	baseStateDir := filepath.Join(t.TempDir(), "firecracker-state")
+	baseStateDir := firecrackerHostShortSocketTestRoot(t)
 	cleanupFS := newFakeCleanupFilesystem()
 	process := &fakeHostProcess{rawPID: 424242}
 	runner := &fakeHostProcessRunner{processes: []HostProcess{process}}
@@ -412,7 +412,7 @@ func TestNewLiveDriverGuestAgentReadinessFailureCleansUpFakeHostProcess(t *testi
 }
 
 func TestNewLiveDriverDelegatesGuestOperationsThroughOptionalGuestTransportAfterReadiness(t *testing.T) {
-	baseStateDir := filepath.Join(t.TempDir(), "firecracker-state")
+	baseStateDir := firecrackerHostShortSocketTestRoot(t)
 	process := &fakeHostProcess{rawPID: 424242}
 	runner := &fakeHostProcessRunner{processes: []HostProcess{process}}
 	poller := &fakeBootAcceptancePoller{result: firecracker.BootAcceptanceResult{
@@ -506,7 +506,7 @@ func TestNewLiveDriverDelegatesGuestOperationsThroughOptionalGuestTransportAfter
 }
 
 func TestNewLiveDriverReportsHonestLiveFirecrackerRuntimeMetadata(t *testing.T) {
-	baseStateDir := filepath.Join(t.TempDir(), "firecracker-state")
+	baseStateDir := firecrackerHostShortSocketTestRoot(t)
 	process := &fakeHostProcess{rawPID: 424242}
 	runner := &fakeHostProcessRunner{processes: []HostProcess{process}}
 	poller := &fakeBootAcceptancePoller{result: firecracker.BootAcceptanceResult{
@@ -587,7 +587,7 @@ func TestNewLiveDriverPassesExplicitNetworkEnforcementPlanningToMicroVMDriver(t 
 
 	driver, err := NewLiveDriver(LiveDriverOptions{
 		Config:               liveDriverValidConfig(),
-		BaseStateDir:         filepath.Join(t.TempDir(), "firecracker-state"),
+		BaseStateDir:         firecrackerHostShortSocketTestRoot(t),
 		CapabilityDetector:   liveDriverAvailableDetector{},
 		HostProcessRunner:    runner,
 		BootAcceptancePoller: poller,
@@ -625,7 +625,7 @@ func TestNewLiveDriverDoesNotReportAcceptedLaunchWhenBootAcceptanceFails(t *test
 
 	driver, err := NewLiveDriver(LiveDriverOptions{
 		Config:               liveDriverValidConfig(),
-		BaseStateDir:         filepath.Join(t.TempDir(), "firecracker-state"),
+		BaseStateDir:         firecrackerHostShortSocketTestRoot(t),
 		CapabilityDetector:   liveDriverAvailableDetector{},
 		HostProcessRunner:    runner,
 		BootAcceptancePoller: poller,
@@ -654,7 +654,7 @@ func TestNewLiveDriverDoesNotReportAcceptedLaunchWhenBootAcceptanceFails(t *test
 
 func TestNewLiveDriverBootAcceptanceFailureCleansUpFakeHostProcess(t *testing.T) {
 	acceptanceErr := errors.New("fake boot acceptance failed at /Users/alice/private/firecracker.sock token=ghp_secret")
-	baseStateDir := filepath.Join(t.TempDir(), "firecracker-state")
+	baseStateDir := firecrackerHostShortSocketTestRoot(t)
 	cleanupFS := newFakeCleanupFilesystem()
 	process := &fakeHostProcess{rawPID: 424242}
 	runner := &fakeHostProcessRunner{processes: []HostProcess{process}}
@@ -725,7 +725,7 @@ func TestNewLiveBackendOptionsRejectsInvalidExplicitInputs(t *testing.T) {
 			name: "missing firecracker executable path",
 			options: LiveDriverOptions{
 				Config:               liveDriverConfigWithoutHypervisorPath(),
-				BaseStateDir:         filepath.Join(t.TempDir(), "firecracker-state"),
+				BaseStateDir:         firecrackerHostShortSocketTestRoot(t),
 				BootAcceptancePoller: &fakeBootAcceptancePoller{},
 			},
 			field: "executablePath",
@@ -742,7 +742,7 @@ func TestNewLiveBackendOptionsRejectsInvalidExplicitInputs(t *testing.T) {
 			name: "missing boot poller",
 			options: LiveDriverOptions{
 				Config:       liveDriverValidConfig(),
-				BaseStateDir: filepath.Join(t.TempDir(), "firecracker-state"),
+				BaseStateDir: firecrackerHostShortSocketTestRoot(t),
 			},
 			field: "bootAcceptancePoller",
 		},

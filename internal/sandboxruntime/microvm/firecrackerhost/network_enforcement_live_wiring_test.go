@@ -2,7 +2,6 @@ package firecrackerhost
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
@@ -14,7 +13,7 @@ func TestNewLiveDriverCanUseMicroVMGatedNetworkEnforcementWiring(t *testing.T) {
 	rules := &firecrackerHostRecordingRuleProof{mechanism: networkenforcement.EnforcementMechanismFirewall}
 	driver, err := NewLiveDriver(LiveDriverOptions{
 		Config:               liveDriverValidConfig(),
-		BaseStateDir:         filepath.Join(t.TempDir(), "firecracker-state"),
+		BaseStateDir:         firecrackerHostShortSocketTestRoot(t),
 		CapabilityDetector:   liveDriverAvailableDetector{},
 		HostProcessRunner:    &fakeHostProcessRunner{},
 		BootAcceptancePoller: &fakeBootAcceptancePoller{},
@@ -54,7 +53,7 @@ func TestNewLiveDriverNetworkEnforcementMissingGateDoesNotStartProxyOrRules(t *t
 	rules := &firecrackerHostRecordingRuleProof{mechanism: networkenforcement.EnforcementMechanismFirewall}
 	driver, err := NewLiveDriver(LiveDriverOptions{
 		Config:               liveDriverValidConfig(),
-		BaseStateDir:         filepath.Join(t.TempDir(), "firecracker-state"),
+		BaseStateDir:         firecrackerHostShortSocketTestRoot(t),
 		CapabilityDetector:   liveDriverAvailableDetector{},
 		HostProcessRunner:    &fakeHostProcessRunner{},
 		BootAcceptancePoller: &fakeBootAcceptancePoller{},
@@ -89,7 +88,7 @@ func TestNewLiveDriverNetworkEnforcementLiveOptionUsesBuildTagGate(t *testing.T)
 	rules := &firecrackerHostRecordingRuleProof{mechanism: networkenforcement.EnforcementMechanismFirewall}
 	driver, err := NewLiveDriver(LiveDriverOptions{
 		Config:               liveDriverValidConfig(),
-		BaseStateDir:         filepath.Join(t.TempDir(), "firecracker-state"),
+		BaseStateDir:         firecrackerHostShortSocketTestRoot(t),
 		CapabilityDetector:   liveDriverAvailableDetector{},
 		HostProcessRunner:    &fakeHostProcessRunner{},
 		BootAcceptancePoller: &fakeBootAcceptancePoller{},

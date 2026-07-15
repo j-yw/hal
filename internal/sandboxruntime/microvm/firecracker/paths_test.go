@@ -83,6 +83,59 @@ func TestPlanPathsIsTargetSpecific(t *testing.T) {
 	}
 }
 
+func TestPlanPathsEnforcesUnixSocketPathLimit(t *testing.T) {
+	const runtimeID = "runtime-alpha"
+
+	acceptedBase := firecrackerPathTestBaseForAPISocketLength(t, runtimeID, maxFirecrackerUnixSocketPathBytes)
+	accepted, err := PlanPaths(PathPlanRequest{
+		RuntimeID:    runtimeID,
+		BaseStateDir: acceptedBase,
+	})
+	if err != nil {
+		t.Fatalf("PlanPaths(accepted boundary) error = %v, want nil", err)
+	}
+	if got := len(accepted.APISocketPath); got != maxFirecrackerUnixSocketPathBytes {
+		t.Fatalf("API socket path length = %d, want %d", got, maxFirecrackerUnixSocketPathBytes)
+	}
+
+	rejectedBase := firecrackerPathTestBaseForAPISocketLength(t, runtimeID, maxFirecrackerUnixSocketPathBytes+1)
+	_, err = PlanPaths(PathPlanRequest{
+		RuntimeID:    runtimeID,
+		BaseStateDir: rejectedBase,
+	})
+	assertFirecrackerPathPlanningError(t, err, "apiSocketPath")
+	assertFirecrackerErrorDoesNotLeak(t, err, rejectedBase, filepath.Base(rejectedBase), DefaultAPISocketPath)
+}
+
+func TestValidateLiveBootRenderPathsRejectsOverlongAPISocketPath(t *testing.T) {
+	const runtimeID = "runtime-alpha"
+	baseStateDir := firecrackerPathTestBaseForAPISocketLength(t, runtimeID, maxFirecrackerUnixSocketPathBytes+1)
+	stateDir := filepath.Join(baseStateDir, runtimeID)
+	paths := PathPlan{
+		StateDir:      stateDir,
+		APISocketPath: filepath.Join(stateDir, DefaultAPISocketPath),
+		LogPath:       filepath.Join(stateDir, DefaultLogPath),
+		MetricsPath:   filepath.Join(stateDir, DefaultMetricsPath),
+		ConfigPath:    filepath.Join(stateDir, DefaultConfigPath),
+	}
+
+	_, err := validateLiveBootRenderPaths(paths)
+	if err == nil {
+		t.Fatal("validateLiveBootRenderPaths() error = nil, want invalid config error")
+	}
+	if !errors.Is(err, microvm.ErrInvalidConfig) {
+		t.Fatalf("errors.Is(err, microvm.ErrInvalidConfig) = false for %v", err)
+	}
+	var opErr *microvm.OperationError
+	if !errors.As(err, &opErr) {
+		t.Fatalf("error type = %T, want *microvm.OperationError", err)
+	}
+	if opErr.Operation != liveBootRenderOperation || opErr.Field != "apiSocketPath" {
+		t.Fatalf("render error operation/field = %q/%q, want %q/apiSocketPath", opErr.Operation, opErr.Field, liveBootRenderOperation)
+	}
+	assertFirecrackerErrorDoesNotLeak(t, err, baseStateDir, filepath.Base(baseStateDir), DefaultAPISocketPath)
+}
+
 func TestPlanPathsRejectsInvalidInputsWithoutLeakingRawPaths(t *testing.T) {
 	privateBaseDir := firecrackerPathTestBase("alice", "private", "firecracker-state")
 	tests := []struct {
@@ -156,6 +209,20 @@ func TestPlanPathsRejectsInvalidInputsWithoutLeakingRawPaths(t *testing.T) {
 func firecrackerPathTestBase(elements ...string) string {
 	parts := append([]string{string(filepath.Separator), "var", "lib", "hal", "firecracker"}, elements...)
 	return filepath.Join(parts...)
+}
+
+func firecrackerPathTestBaseForAPISocketLength(t *testing.T, runtimeID string, pathLength int) string {
+	t.Helper()
+	suffix := string(filepath.Separator) + filepath.Join(runtimeID, DefaultAPISocketPath)
+	baseLength := pathLength - len(suffix)
+	if baseLength < 2 {
+		t.Fatalf("requested API socket path length %d is too short for test suffix", pathLength)
+	}
+	base := string(filepath.Separator) + strings.Repeat("a", baseLength-1)
+	if got := len(filepath.Join(base, runtimeID, DefaultAPISocketPath)); got != pathLength {
+		t.Fatalf("constructed API socket path length = %d, want %d", got, pathLength)
+	}
+	return base
 }
 
 func assertFirecrackerPathPlanningError(t *testing.T, err error, field string) {

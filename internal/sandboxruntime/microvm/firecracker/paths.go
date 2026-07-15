@@ -13,7 +13,8 @@ const (
 	// Firecracker path planning errors.
 	PathPlanningOperation = "firecracker_path_plan"
 
-	maxPathPlanRuntimeIDBytes = 64
+	maxPathPlanRuntimeIDBytes         = 64
+	maxFirecrackerUnixSocketPathBytes = 107
 )
 
 // PathPlanRequest contains the inputs needed to derive per-runtime
@@ -49,13 +50,23 @@ func PlanPaths(request PathPlanRequest) (PathPlan, error) {
 	}
 
 	stateDir := filepath.Join(baseStateDir, runtimeID)
+	apiSocketPath := filepath.Join(stateDir, DefaultAPISocketPath)
+	if !validFirecrackerAPISocketPath(apiSocketPath) {
+		return PathPlan{}, newPathPlanError("apiSocketPath", "API socket path exceeds the Unix socket path limit")
+	}
 	return PathPlan{
 		StateDir:      stateDir,
-		APISocketPath: filepath.Join(stateDir, DefaultAPISocketPath),
+		APISocketPath: apiSocketPath,
 		LogPath:       filepath.Join(stateDir, DefaultLogPath),
 		MetricsPath:   filepath.Join(stateDir, DefaultMetricsPath),
 		ConfigPath:    filepath.Join(stateDir, DefaultConfigPath),
 	}, nil
+}
+
+// Firecracker runs only on Linux, where sockaddr_un.sun_path has 108 bytes.
+// Pathname sockets must reserve one byte for the terminating NUL.
+func validFirecrackerAPISocketPath(path string) bool {
+	return len(path) <= maxFirecrackerUnixSocketPathBytes
 }
 
 func validPathPlanRuntimeID(value string) bool {

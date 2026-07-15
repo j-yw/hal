@@ -25,7 +25,7 @@ func TestPhase34LiveBootWaitsForHostSideAcceptanceBeforeAcceptedMetadata(t *test
 		ProcessAccepted:    true,
 		APISocketAvailable: true,
 	})
-	stateRoot := filepath.Join(t.TempDir(), "firecracker-state")
+	stateRoot := firecrackerShortSocketTestRoot(t)
 	backend := phase34LiveBootAcceptanceBackend(stateRoot, deps)
 
 	started, err := phase34CreateAndStart(t, backend, phase34LiveBootFakeConfig(t), "phase34-host-acceptance")
@@ -110,7 +110,7 @@ func TestPhase34BootAcceptanceFailuresCleanupLiveStartedProcessState(t *testing.
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			deps := phase34NewBootAcceptanceCleanupProbe(tt.outcome)
-			backend := phase34LiveBootAcceptanceBackend(filepath.Join(t.TempDir(), "firecracker-state"), deps)
+			backend := phase34LiveBootAcceptanceBackend(firecrackerShortSocketTestRoot(t), deps)
 
 			started, err := phase34CreateAndStart(t, backend, phase34LiveBootFakeConfig(t), "phase34-acceptance-"+strings.ReplaceAll(tt.name, " ", "-"))
 
@@ -154,7 +154,7 @@ func TestPhase34StopDeleteUseLiveProcessManagerOnlyForLiveStartedTargets(t *test
 			ProcessAccepted:    true,
 			APISocketAvailable: true,
 		})
-		stateRoot := filepath.Join(t.TempDir(), "firecracker-state")
+		stateRoot := firecrackerShortSocketTestRoot(t)
 		backend := phase34LiveBootAcceptanceBackend(stateRoot, deps)
 		started, controller, err := phase34CreateStartAndController(t, backend, phase34LiveBootFakeConfig(t), "phase34-live-cleanup")
 		if err != nil {
@@ -199,7 +199,7 @@ func TestPhase34StopDeleteUseLiveProcessManagerOnlyForLiveStartedTargets(t *test
 			APISocketAvailable: true,
 		})
 		backend := NewBackend(BackendOptions{
-			BaseStateDir:         filepath.Join(t.TempDir(), "firecracker-state"),
+			BaseStateDir:         firecrackerShortSocketTestRoot(t),
 			ProcessAdapter:       ProcessLaunchAdapter{Starter: deps},
 			BootAcceptanceWaiter: deps,
 			LiveProcessManager:   deps,
@@ -239,7 +239,7 @@ func TestPhase34LiveProcessManagerFailuresAreSanitized(t *testing.T) {
 			Err: errPhase34BootWaiterFailed,
 		})
 		deps.cleanupErr = unsafeManagerErr
-		backend := phase34LiveBootAcceptanceBackend(filepath.Join(t.TempDir(), "firecracker-state"), deps)
+		backend := phase34LiveBootAcceptanceBackend(firecrackerShortSocketTestRoot(t), deps)
 
 		started, err := phase34CreateAndStart(t, backend, phase34LiveBootFakeConfig(t), "phase34-cleanup-failure")
 
@@ -264,7 +264,7 @@ func TestPhase34LiveProcessManagerFailuresAreSanitized(t *testing.T) {
 			APISocketAvailable: true,
 		})
 		deps.stopErr = unsafeManagerErr
-		backend := phase34LiveBootAcceptanceBackend(filepath.Join(t.TempDir(), "firecracker-state"), deps)
+		backend := phase34LiveBootAcceptanceBackend(firecrackerShortSocketTestRoot(t), deps)
 		started, controller, err := phase34CreateStartAndController(t, backend, phase34LiveBootFakeConfig(t), "phase34-stop-failure")
 		if err != nil {
 			t.Fatalf("Start() error = %v, want nil before stop failure", err)
@@ -296,7 +296,7 @@ func TestPhase34LiveProcessManagerFailuresAreSanitized(t *testing.T) {
 			ProcessAccepted:    true,
 			APISocketAvailable: true,
 		})
-		backend := phase34LiveBootAcceptanceBackend(filepath.Join(t.TempDir(), "firecracker-state"), deps)
+		backend := phase34LiveBootAcceptanceBackend(firecrackerShortSocketTestRoot(t), deps)
 		started, controller, err := phase34CreateStartAndController(t, backend, phase34LiveBootFakeConfig(t), "phase34-delete-failure")
 		if err != nil {
 			t.Fatalf("Start() error = %v, want nil before delete failure", err)
@@ -331,7 +331,7 @@ func TestPhase34LiveProcessManagerFailuresAreSanitized(t *testing.T) {
 }
 
 func TestPhase34BootAcceptanceCleanupKeepsCallerOwnedPathsOutsideStateDir(t *testing.T) {
-	root := t.TempDir()
+	root := firecrackerShortSocketTestRoot(t)
 	stateRoot := filepath.Join(root, "firecracker-state")
 	callerOwnedRoot := filepath.Join(root, "caller-owned")
 	callerOwnedPaths := []string{

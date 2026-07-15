@@ -416,7 +416,7 @@ func TestBackendStartPublicJSONRedactsPlanningAndLiveLaunchMetadata(t *testing.T
 			config.RootfsPath = "/Users/alice/private/images/rootfs-secret.ext4"
 			config.InitrdPath = "/Users/alice/private/images/initrd-secret.img"
 			config.ImageLabel = "template-token-ghp_secret"
-			baseStateDir := filepath.Join(t.TempDir(), "Users", "alice", "private", "live-start-json-state")
+			baseStateDir := firecrackerShortSocketTestRoot(t)
 			options := BackendOptions{
 				BaseStateDir:   baseStateDir,
 				ProcessAdapter: tt.adapter,
@@ -679,7 +679,7 @@ func TestBackendLiveStartOptionCallsInjectedAdapterAfterPlanRendered(t *testing.
 		},
 	}
 	backend := NewBackend(BackendOptions{
-		BaseStateDir:         filepath.Join(t.TempDir(), "live-start-state"),
+		BaseStateDir:         firecrackerShortSocketTestRoot(t),
 		ProcessAdapter:       adapter,
 		BootAcceptanceWaiter: fakeLiveBootSafetyHooks{},
 		LiveProcessManager:   fakeLiveBootSafetyHooks{},
@@ -746,7 +746,7 @@ func TestBackendLiveStartReturnsSanitizedRunnerFailure(t *testing.T) {
 		},
 	}
 	backend := NewBackend(BackendOptions{
-		BaseStateDir:         filepath.Join(t.TempDir(), "live-start-failure-state"),
+		BaseStateDir:         firecrackerShortSocketTestRoot(t),
 		ProcessAdapter:       ProcessLaunchAdapter{Starter: starter},
 		BootAcceptanceWaiter: fakeLiveBootSafetyHooks{},
 		LiveProcessManager:   fakeLiveBootSafetyHooks{},
@@ -892,7 +892,7 @@ func TestBackendStartReturnsSanitizedProcessAdapterFailure(t *testing.T) {
 
 func TestBackendStopInspectDeleteBuildSanitizedLifecyclePlans(t *testing.T) {
 	adapter := &fakeProcessAdapter{}
-	baseStateDir := filepath.Join(t.TempDir(), "lifecycle-state")
+	baseStateDir := firecrackerShortSocketTestRoot(t)
 	backend := NewBackend(BackendOptions{
 		BaseStateDir:   baseStateDir,
 		ProcessAdapter: adapter,

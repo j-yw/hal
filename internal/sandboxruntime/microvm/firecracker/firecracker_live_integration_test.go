@@ -11,7 +11,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -61,7 +60,7 @@ func TestFirecrackerLiveBootWithRealProcess(t *testing.T) {
 	config.GuestWorkDir = "/"
 
 	backend := NewBackend(BackendOptions{
-		BaseStateDir:         filepath.Join(t.TempDir(), "firecracker-state"),
+		BaseStateDir:         firecrackerShortSocketTestRoot(t),
 		ProcessAdapter:       ProcessLaunchAdapter{Starter: processes},
 		BootAcceptanceWaiter: processes,
 		LiveProcessManager:   processes,
@@ -120,6 +119,13 @@ func TestFirecrackerLiveBootWithRealProcess(t *testing.T) {
 		Target:    *stopped,
 	}); err != nil {
 		t.Fatalf("Delete() error = %v", err)
+	}
+	entries, err := os.ReadDir(backend.baseStateDir)
+	if err != nil {
+		t.Fatal("inspect short Firecracker test state root after delete failed")
+	}
+	if len(entries) != 0 {
+		t.Fatalf("Firecracker test state entries after delete = %d, want 0", len(entries))
 	}
 }
 

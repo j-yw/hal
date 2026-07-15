@@ -31,7 +31,7 @@ func TestOSExecProcessRunnerLiveStartsFirecrackerAPISocket(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), firecrackerHostLiveTimeout)
 	defer cancel()
 
-	socketPath := filepath.Join(t.TempDir(), firecracker.DefaultAPISocketPath)
+	socketPath := filepath.Join(firecrackerHostShortSocketTestRoot(t), firecracker.DefaultAPISocketPath)
 	process, err := NewOSExecProcessRunner().StartHostProcess(ctx, firecracker.ProcessRunnerStartRequest{
 		Executable:  prereqs.executable,
 		Args:        []string{"--api-sock", socketPath},

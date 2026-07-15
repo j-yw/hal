@@ -12,20 +12,12 @@ import (
 
 const liveBootRenderOperation = "firecracker_live_boot_render"
 
+// Log and metrics paths are intentionally omitted here because the validated
+// start argv initializes them once through Firecracker's CLI flags.
 type liveBootConfigFile struct {
-	MachineConfig MachineConfigPayload  `json:"machine-config"`
-	BootSource    BootSourcePayload     `json:"boot-source"`
-	Drives        []RootDrivePayload    `json:"drives"`
-	Logger        liveBootLoggerConfig  `json:"logger"`
-	Metrics       liveBootMetricsConfig `json:"metrics"`
-}
-
-type liveBootLoggerConfig struct {
-	LogPath string `json:"log_path"`
-}
-
-type liveBootMetricsConfig struct {
-	MetricsPath string `json:"metrics_path"`
+	MachineConfig MachineConfigPayload `json:"machine-config"`
+	BootSource    BootSourcePayload    `json:"boot-source"`
+	Drives        []RootDrivePayload   `json:"drives"`
 }
 
 func renderLiveBootFiles(config BackendConfig) error {
@@ -38,7 +30,7 @@ func renderLiveBootFiles(config BackendConfig) error {
 	if err != nil {
 		return err
 	}
-	rendered, err := liveBootConfig(config, paths)
+	rendered, err := liveBootConfig(config)
 	if err != nil {
 		return err
 	}
@@ -63,7 +55,7 @@ func renderLiveBootFiles(config BackendConfig) error {
 	return nil
 }
 
-func liveBootConfig(config BackendConfig, paths PathPlan) (liveBootConfigFile, error) {
+func liveBootConfig(config BackendConfig) (liveBootConfigFile, error) {
 	machineConfig, err := RenderMachineConfigPayload(config)
 	if err != nil {
 		return liveBootConfigFile{}, liveBootRenderPayloadError(err)
@@ -80,12 +72,6 @@ func liveBootConfig(config BackendConfig, paths PathPlan) (liveBootConfigFile, e
 		MachineConfig: machineConfig,
 		BootSource:    bootSource,
 		Drives:        []RootDrivePayload{rootDrive},
-		Logger: liveBootLoggerConfig{
-			LogPath: paths.LogPath,
-		},
-		Metrics: liveBootMetricsConfig{
-			MetricsPath: paths.MetricsPath,
-		},
 	}, nil
 }
 
@@ -101,6 +87,9 @@ func validateLiveBootRenderPaths(paths PathPlan) (PathPlan, error) {
 	apiSocketPath, err := cleanLiveBootStateFilePath(paths.APISocketPath, stateDir, "apiSocketPath")
 	if err != nil {
 		return PathPlan{}, err
+	}
+	if !validFirecrackerAPISocketPath(apiSocketPath) {
+		return PathPlan{}, newLiveBootRenderConfigError("apiSocketPath", "API socket path exceeds the Unix socket path limit")
 	}
 	configPath, err := cleanLiveBootStateFilePath(paths.ConfigPath, stateDir, "configPath")
 	if err != nil {

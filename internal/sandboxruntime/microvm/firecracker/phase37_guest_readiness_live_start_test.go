@@ -3,7 +3,6 @@ package firecracker
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -192,7 +191,7 @@ func phase37GuestReadinessBackend(t *testing.T, deps *phase37GuestReadinessDeps,
 	t.Helper()
 
 	options := BackendOptions{
-		BaseStateDir:         filepath.Join(t.TempDir(), "firecracker-state"),
+		BaseStateDir:         firecrackerShortSocketTestRoot(t),
 		ProcessAdapter:       ProcessLaunchAdapter{Starter: deps},
 		BootAcceptanceWaiter: deps,
 		LiveProcessManager:   deps,

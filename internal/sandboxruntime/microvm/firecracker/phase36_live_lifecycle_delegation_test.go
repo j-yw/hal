@@ -2,7 +2,6 @@ package firecracker
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
@@ -16,7 +15,7 @@ func TestPhase36LiveStartedStopAndDeleteDelegateToInjectedProcessManager(t *test
 			Source: "phase36-test",
 		},
 	}
-	stateRoot := filepath.Join(t.TempDir(), "firecracker-state")
+	stateRoot := firecrackerShortSocketTestRoot(t)
 	config := validMicroVMConfig()
 	backend := NewBackend(BackendOptions{
 		BaseStateDir:         stateRoot,

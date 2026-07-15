@@ -166,7 +166,9 @@ type phase34SensitiveRedactionFixture struct {
 func phase34NewSensitiveRedactionFixture(t *testing.T) phase34SensitiveRedactionFixture {
 	t.Helper()
 
-	root := filepath.Join(t.TempDir(), "Users", "alice", "private", "phase34-sensitive")
+	testRoot := firecrackerShortSocketTestRoot(t)
+	stateRoot := filepath.Join(testRoot, "state")
+	root := filepath.Join(testRoot, "Users", "alice", "private", "phase34-sensitive")
 	config := validMicroVMConfig()
 	config.HypervisorPath = filepath.Join(root, "bin", "firecracker")
 	config.KernelImagePath = filepath.Join(root, "images", "vmlinux")
@@ -174,7 +176,7 @@ func phase34NewSensitiveRedactionFixture(t *testing.T) phase34SensitiveRedaction
 	config.InitrdPath = filepath.Join(root, "images", "initrd.img")
 	return phase34SensitiveRedactionFixture{
 		Config:           config,
-		StateRoot:        filepath.Join(root, "state", "api-sockets"),
+		StateRoot:        stateRoot,
 		Endpoint:         "https://boot-secret.example.test:8443/api",
 		EnvValue:         "sk-phase34-secret",
 		SecretValue:      "hunter2-phase34-secret",
