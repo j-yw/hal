@@ -34,6 +34,14 @@ artifacts selected by command code. Untracked archives, raw artifact
 directories, recovery payloads, warning-only outputs, uncommitted diffs, and
 otherwise ineligible artifacts are handoff-only.
 
+Explicit sync-out collection generates committed and tracked-uncommitted
+artifacts separately. The committed patch contains commits after the prepared
+workspace baseline. The uncommitted diff contains staged and unstaged tracked
+changes, is omitted when empty, and always requires manual review rather than
+automatic host apply. Untracked archive and file-list fields remain additive
+handoff contract categories; production generation of those artifacts is not
+included in this phase.
+
 ## Focused Verification Commands
 
 Run sync-out workspace contract and import-boundary checks:
@@ -45,7 +53,7 @@ go test -timeout=120s ./internal/sandboxworkspace -run 'TestWorkspaceSyncOutCont
 Run sync-out summary and execution import-boundary checks:
 
 ```sh
-go test -timeout=120s ./internal/sandboxexecution -run 'TestBuildSyncOutSummaryFromArtifacts|TestBuildSyncOutSummaryRedaction|TestPackageImportBoundaries'
+go test -timeout=120s ./internal/sandboxexecution -run 'TestBuildSyncOutSummaryFromArtifacts|TestBuildSyncOutSummaryRedaction|TestCollectUncommittedSyncOutArtifactBestEffort|TestUncommittedSyncOutDiffGenerationScript|TestPackageImportBoundaries'
 ```
 
 Run safe apply dry-run, dirty worktree, lock, and redaction checks:

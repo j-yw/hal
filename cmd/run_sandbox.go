@@ -866,6 +866,15 @@ func collectRunSandboxGeneratedArtifacts(ctx context.Context, store sandboxexecu
 		return fmt.Errorf("collect run sandbox recovery artifacts: %w", err)
 	}
 	if req.SyncOut.Enabled {
+		if _, err := sandboxexecution.CollectUncommittedSyncOutArtifactBestEffort(ctx, sandboxexecution.UncommittedSyncOutCollectionRequest{
+			ExecutionID:        req.ExecutionID,
+			Store:              store,
+			Runtime:            result.RuntimeDriver,
+			Target:             result.Result.Target,
+			RemoteWorkspaceDir: req.WorkDir,
+		}); err != nil {
+			return fmt.Errorf("collect run sandbox uncommitted sync-out artifact: %w", err)
+		}
 		if _, err := sandboxexecution.CollectCommittedSyncOutArtifactBestEffort(ctx, sandboxexecution.CommittedSyncOutCollectionRequest{
 			ExecutionID:        req.ExecutionID,
 			Store:              store,

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -722,6 +723,127 @@ func TestCollectCommittedSyncOutArtifactBestEffortGeneratesEligiblePatch(t *test
 		if strings.Contains(encoded, forbidden) {
 			t.Fatalf("manifest metadata leaked command-local value %q: %s", forbidden, encoded)
 		}
+	}
+}
+
+func TestCollectUncommittedSyncOutArtifactBestEffortGeneratesHandoffDiff(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.SaveManifest(testManifest("exec-uncommitted", time.Date(2026, 7, 15, 1, 0, 0, 0, time.UTC))); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+	runtime := &recordingArtifactRuntime{}
+	target := sandboxruntime.Target{Name: "sync-box", Runtime: sandboxruntime.RuntimeState{Driver: sandboxruntime.DriverRootlessPodman}}
+
+	result, err := CollectUncommittedSyncOutArtifactBestEffort(context.Background(), UncommittedSyncOutCollectionRequest{
+		ExecutionID:        "exec-uncommitted",
+		Store:              store,
+		Runtime:            runtime,
+		Target:             target,
+		RemoteWorkspaceDir: "/workspace/repo",
+	})
+	if err != nil {
+		t.Fatalf("CollectUncommittedSyncOutArtifactBestEffort() error: %v", err)
+	}
+	if got, want := runtime.events, []string{"exec", "copy_out"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("runtime events = %#v, want %#v", got, want)
+	}
+	if len(runtime.execs) != 1 {
+		t.Fatalf("Exec calls = %d, want 1", len(runtime.execs))
+	}
+	execRequest := runtime.execs[0]
+	if len(execRequest.Args) != 3 || execRequest.Args[0] != "sh" || execRequest.Args[1] != "-c" {
+		t.Fatalf("Exec args = %#v, want uncommitted diff generation script", execRequest.Args)
+	}
+	for _, want := range []string{"git diff --binary --no-ext-diff", "git diff --cached --binary --no-ext-diff"} {
+		if !strings.Contains(execRequest.Args[2], want) {
+			t.Fatalf("generation script = %q, want %q", execRequest.Args[2], want)
+		}
+	}
+	if execRequest.WorkDir != "/workspace/repo" {
+		t.Fatalf("Exec workdir = %q, want remote workspace", execRequest.WorkDir)
+	}
+	if len(result.ArtifactMetadata.Collected) != 1 {
+		t.Fatalf("collected = %#v, want uncommitted diff", result.ArtifactMetadata.Collected)
+	}
+	artifact := result.ArtifactMetadata.Collected[0]
+	if artifact.ID != "uncommitted-diff" || artifact.Type != "diff" || artifact.Path != ".hal/sync/uncommitted.diff" || artifact.StoredPath != "exec-uncommitted/artifacts/sync/uncommitted.diff" {
+		t.Fatalf("artifact = %#v, want durable uncommitted diff metadata", artifact)
+	}
+	manifest, err := store.LoadManifest("exec-uncommitted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := BuildSyncOutSummaryFromArtifacts(manifest)
+	if summary.Uncommitted.Diff == nil || summary.Uncommitted.Diff.ApplyEligibility == nil || summary.Uncommitted.Diff.ApplyEligibility.Eligible {
+		t.Fatalf("sync-out summary = %#v, want handoff-only uncommitted diff", summary)
+	}
+	if summary.Apply.Eligible {
+		t.Fatalf("sync-out apply = %#v, want uncommitted diff excluded from automatic apply", summary.Apply)
+	}
+}
+
+func TestUncommittedSyncOutDiffGenerationScriptCapturesTrackedChangesAndOmitsCleanState(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git CLI is required")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is required")
+	}
+	projectDir := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = projectDir
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	runScript := func() {
+		t.Helper()
+		cmd := exec.Command("sh", "-c", uncommittedSyncOutDiffGenerationScript())
+		cmd.Dir = projectDir
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("generate uncommitted diff: %v: %s", err, output)
+		}
+	}
+
+	runGit("init")
+	runGit("config", "user.email", "hal-test@example.com")
+	runGit("config", "user.name", "Hal Test")
+	prdPath := filepath.Join(projectDir, ".hal", "prd.json")
+	if err := os.MkdirAll(filepath.Dir(prdPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	baseline := []byte("{\"passes\":false}\n")
+	if err := os.WriteFile(prdPath, baseline, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".hal/prd.json")
+	runGit("commit", "-m", "baseline")
+	if err := os.WriteFile(prdPath, []byte("{\"passes\":true}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runScript()
+	diffPath := filepath.Join(projectDir, ".hal", "sync", "uncommitted.diff")
+	diff, err := os.ReadFile(diffPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(diff), "diff --git ") || !strings.Contains(string(diff), ".hal/prd.json") || !strings.Contains(string(diff), `+{"passes":true}`) {
+		t.Fatalf("uncommitted diff = %q, want tracked PRD completion change", diff)
+	}
+
+	if err := os.WriteFile(prdPath, baseline, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runScript()
+	info, err := os.Stat(diffPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("clean uncommitted diff size = %d, want 0", info.Size())
 	}
 }
 

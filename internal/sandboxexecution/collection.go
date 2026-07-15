@@ -144,6 +144,17 @@ type CommittedSyncOutCollectionRequest struct {
 	TempDir            string
 }
 
+// UncommittedSyncOutCollectionRequest carries the runtime context needed to
+// collect tracked sandbox worktree changes separately from committed output.
+type UncommittedSyncOutCollectionRequest struct {
+	ExecutionID        string
+	Store              Store
+	Runtime            RuntimeArtifactCollector
+	Target             sandboxruntime.Target
+	RemoteWorkspaceDir string
+	TempDir            string
+}
+
 // ReportsArchiveCollectionRequest carries the runtime context needed to
 // generate and collect the standard non-factory sandbox reports archive.
 type ReportsArchiveCollectionRequest struct {
@@ -185,6 +196,14 @@ const (
 	committedSyncOutGenerationWarningPhase = "sync-out-generation"
 	committedSyncOutCopyOutWarningPhase    = "sync-out-copyout"
 	committedSyncOutPersistWarningPhase    = "sync-out-persist"
+
+	uncommittedSyncOutArtifactName     = "Uncommitted Diff"
+	uncommittedSyncOutArtifactType     = "diff"
+	uncommittedSyncOutArtifactFileName = "uncommitted.diff"
+
+	uncommittedSyncOutGenerationWarningPhase = "sync-out-uncommitted-generation"
+	uncommittedSyncOutCopyOutWarningPhase    = "sync-out-uncommitted-copyout"
+	uncommittedSyncOutPersistWarningPhase    = "sync-out-uncommitted-persist"
 
 	reportsArchiveID       = "reports-archive"
 	reportsArchiveName     = "Reports Archive"
@@ -421,6 +440,70 @@ func CollectCommittedSyncOutArtifactBestEffort(ctx context.Context, req Committe
 	return appendCommittedSyncOutArtifactMetadata(req.Store, executionID, result)
 }
 
+// CollectUncommittedSyncOutArtifactBestEffort generates a handoff-only diff of
+// tracked staged and unstaged changes. An empty diff is omitted; generation,
+// copy, and persistence failures become durable handoff warnings.
+func CollectUncommittedSyncOutArtifactBestEffort(ctx context.Context, req UncommittedSyncOutCollectionRequest) (RuntimeCollectionResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	executionID, err := validateExecutionID(req.ExecutionID)
+	if err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	if _, err := req.Store.LoadManifest(executionID); err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	if req.Runtime == nil {
+		return RuntimeCollectionResult{}, fmt.Errorf("sandbox execution artifact runtime is required")
+	}
+	artifact, err := uncommittedSyncOutArtifactRequest(req.RemoteWorkspaceDir)
+	if err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	if err := validateRuntimeArtifactRequest(artifact); err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+
+	tempDir, err := os.MkdirTemp(req.TempDir, "hal-sandbox-sync-out-uncommitted-*")
+	if err != nil {
+		return RuntimeCollectionResult{}, fmt.Errorf("create sandbox execution uncommitted sync-out temp dir: %w", redactPathError(err))
+	}
+	defer os.RemoveAll(tempDir)
+
+	result := RuntimeCollectionResult{}
+	if err := runRuntimeArtifactGeneration(ctx, req.Runtime, req.Target, *artifact.Generate); err != nil {
+		addRuntimeArtifactPartialWarning(&result.ArtifactMetadata, artifact, uncommittedSyncOutGenerationWarningPhase, "sandbox uncommitted sync-out artifact generation failed")
+		return appendUncommittedSyncOutArtifactMetadata(req.Store, executionID, result)
+	}
+
+	localPath := filepath.Join(tempDir, filepath.Base(filepath.FromSlash(artifact.PayloadPath)))
+	if err := req.Runtime.CopyOut(ctx, sandboxruntime.CopyRequest{
+		Target:          req.Target,
+		SourcePath:      artifact.RemotePath,
+		DestinationPath: localPath,
+	}); err != nil {
+		addRuntimeArtifactPartialWarning(&result.ArtifactMetadata, artifact, uncommittedSyncOutCopyOutWarningPhase, "sandbox uncommitted sync-out artifact is missing")
+		return appendUncommittedSyncOutArtifactMetadata(req.Store, executionID, result)
+	}
+	info, err := os.Stat(localPath)
+	if err != nil {
+		addRuntimeArtifactPartialWarning(&result.ArtifactMetadata, artifact, uncommittedSyncOutPersistWarningPhase, "sandbox uncommitted sync-out artifact inspection failed")
+		return appendUncommittedSyncOutArtifactMetadata(req.Store, executionID, result)
+	}
+	if info.Size() == 0 {
+		return result, nil
+	}
+
+	collected, err := saveRuntimeArtifactFile(req.Store, executionID, artifact, localPath)
+	if err != nil {
+		addRuntimeArtifactPartialWarning(&result.ArtifactMetadata, artifact, uncommittedSyncOutPersistWarningPhase, "sandbox uncommitted sync-out artifact persistence failed")
+		return appendUncommittedSyncOutArtifactMetadata(req.Store, executionID, result)
+	}
+	result.ArtifactMetadata.Collected = append(result.ArtifactMetadata.Collected, collected)
+	return appendUncommittedSyncOutArtifactMetadata(req.Store, executionID, result)
+}
+
 // CollectReportsArchiveArtifacts creates a deterministic remote tar archive of
 // .hal/reports when it exists, copies it out through the runtime driver, stores
 // it under artifacts/, and records collected or partial metadata on the manifest.
@@ -582,6 +665,28 @@ func committedSyncOutArtifactRequest(remoteWorkspaceDir, syncRef string) (Runtim
 	}, nil
 }
 
+func uncommittedSyncOutArtifactRequest(remoteWorkspaceDir string) (RuntimeArtifactRequest, error) {
+	remoteWorkspaceDir = strings.TrimSpace(remoteWorkspaceDir)
+	if remoteWorkspaceDir == "" {
+		return RuntimeArtifactRequest{}, fmt.Errorf("sandbox execution remote workspace dir is required")
+	}
+	displayPath := pathpkg.Join(template.HalDir, committedSyncOutArtifactDir, uncommittedSyncOutArtifactFileName)
+	return RuntimeArtifactRequest{
+		Artifact: ArtifactMetadataEntry{
+			ID:   syncOutUncommittedDiffID,
+			Name: uncommittedSyncOutArtifactName,
+			Type: uncommittedSyncOutArtifactType,
+			Path: displayPath,
+		},
+		PayloadPath: pathpkg.Join(committedSyncOutArtifactDir, uncommittedSyncOutArtifactFileName),
+		RemotePath:  pathpkg.Join(remoteWorkspaceDir, displayPath),
+		Generate: &RuntimeArtifactGeneration{
+			Args:    []string{"sh", "-c", uncommittedSyncOutDiffGenerationScript()},
+			WorkDir: remoteWorkspaceDir,
+		},
+	}, nil
+}
+
 func reportsArchiveArtifactRequest(remoteWorkspaceDir string) (RuntimeArtifactRequest, error) {
 	remoteWorkspaceDir = strings.TrimSpace(remoteWorkspaceDir)
 	if remoteWorkspaceDir == "" {
@@ -678,6 +783,27 @@ func committedSyncOutPatchGenerationScript() string {
 		`case "$base_ref" in ""|-*) echo "invalid sandbox sync-out base ref" >&2; exit 2 ;; esac`,
 		`base_commit=$(git rev-parse --verify "$base_ref^{commit}")`,
 		`git diff --binary --no-ext-diff "$base_commit"..HEAD -- > "$tmp_path"`,
+		`mv "$tmp_path" "$sync_path"`,
+	}, "\n")
+}
+
+func uncommittedSyncOutDiffGenerationScript() string {
+	syncPath := pathpkg.Join(template.HalDir, committedSyncOutArtifactDir, uncommittedSyncOutArtifactFileName)
+	tmpPath := syncPath + ".tmp"
+	return strings.Join([]string{
+		"set -eu",
+		fmt.Sprintf("sync_path=%q", syncPath),
+		fmt.Sprintf("tmp_path=%q", tmpPath),
+		fmt.Sprintf("mkdir -p %q", pathpkg.Dir(syncPath)),
+		`rm -f "$tmp_path" "$sync_path"`,
+		"if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then",
+		"\t{",
+		"\t\tgit diff --binary --no-ext-diff",
+		"\t\tgit diff --cached --binary --no-ext-diff",
+		"\t} > \"$tmp_path\"",
+		"else",
+		"\t: > \"$tmp_path\"",
+		"fi",
 		`mv "$tmp_path" "$sync_path"`,
 	}, "\n")
 }
@@ -853,6 +979,13 @@ func appendRecoveryArtifactMetadata(store Store, executionID string, result Runt
 func appendCommittedSyncOutArtifactMetadata(store Store, executionID string, result RuntimeCollectionResult) (RuntimeCollectionResult, error) {
 	if err := store.AppendArtifactMetadata(executionID, result.ArtifactMetadata); err != nil {
 		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution committed sync-out metadata: %w", err)
+	}
+	return result, nil
+}
+
+func appendUncommittedSyncOutArtifactMetadata(store Store, executionID string, result RuntimeCollectionResult) (RuntimeCollectionResult, error) {
+	if err := store.AppendArtifactMetadata(executionID, result.ArtifactMetadata); err != nil {
+		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution uncommitted sync-out metadata: %w", err)
 	}
 	return result, nil
 }
