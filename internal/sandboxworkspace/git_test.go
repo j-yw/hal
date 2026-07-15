@@ -11,6 +11,63 @@ import (
 	"github.com/jywlabs/hal/internal/sandbox"
 )
 
+func TestGitCLIInspectorInspectGitPreservesFirstPorcelainStatusColumn(t *testing.T) {
+	requireGitCLI(t)
+	projectDir := t.TempDir()
+	runGitTest(t, projectDir, "init")
+	runGitTest(t, projectDir, "config", "user.email", "hal-test@example.com")
+	runGitTest(t, projectDir, "config", "user.name", "Hal Test")
+	trackedPath := filepath.Join(projectDir, "tracked.txt")
+	if err := os.WriteFile(trackedPath, []byte("before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, projectDir, "add", "tracked.txt")
+	runGitTest(t, projectDir, "commit", "-m", "initial")
+	if err := os.WriteFile(trackedPath, []byte("after\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := (GitCLIInspector{}).InspectGit(context.Background(), projectDir)
+	if err != nil {
+		t.Fatalf("InspectGit() error = %v", err)
+	}
+	if status.Dirty != (DirtyState{Unstaged: true}) {
+		t.Fatalf("Dirty = %#v, want unstaged only", status.Dirty)
+	}
+	if len(status.RawStatusLines) != 1 || status.RawStatusLines[0] != " M tracked.txt" {
+		t.Fatalf("RawStatusLines = %#v, want preserved first XY column", status.RawStatusLines)
+	}
+}
+
+func TestParsePorcelainDirtyPreservesXYColumns(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want DirtyState
+	}{
+		{name: "clean", raw: "", want: DirtyState{}},
+		{name: "first entry unstaged", raw: " M first.txt\n", want: DirtyState{Unstaged: true}},
+		{name: "first entry staged", raw: "M  first.txt\n", want: DirtyState{Staged: true}},
+		{name: "untracked", raw: "?? first.txt\n", want: DirtyState{Untracked: true}},
+		{name: "staged rename", raw: "R  old.txt -> new.txt\n", want: DirtyState{Staged: true}},
+		{name: "unstaged rename", raw: " R old.txt -> new.txt\n", want: DirtyState{Unstaged: true}},
+		{name: "staged copy", raw: "C  source.txt -> copy.txt\n", want: DirtyState{Staged: true}},
+		{
+			name: "mixed entries",
+			raw:  " M first.txt\r\nM  second.txt\r\n?? third.txt\r\n",
+			want: DirtyState{Staged: true, Unstaged: true, Untracked: true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parsePorcelainDirty(tt.raw); got != tt.want {
+				t.Fatalf("parsePorcelainDirty() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGitCLIInspectorCreateBundleProducesUsableBundleForCleanUnpushedCommit(t *testing.T) {
 	requireGitCLI(t)
 	ctx := context.Background()

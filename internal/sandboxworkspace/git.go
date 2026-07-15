@@ -36,11 +36,11 @@ func (GitCLIInspector) InspectGit(ctx context.Context, projectDir string) (GitSt
 	}
 
 	status := GitStatus{IsGitWorktree: true}
-	rawStatus, err := gitOutput(ctx, projectDir, "status", "--porcelain=v1", "--untracked-files=all")
+	rawStatus, err := gitOutputUntrimmed(ctx, projectDir, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return GitStatus{}, err
 	}
-	status.RawStatusLines = splitLines(rawStatus)
+	status.RawStatusLines = splitPorcelainLines(rawStatus)
 	status.Dirty = parsePorcelainDirty(rawStatus)
 
 	status.Branch, _ = optionalGitOutput(ctx, projectDir, "branch", "--show-current")
@@ -184,7 +184,7 @@ func upstreamRemote(upstream string) string {
 
 func parsePorcelainDirty(raw string) DirtyState {
 	var dirty DirtyState
-	for _, line := range splitLines(raw) {
+	for _, line := range splitPorcelainLines(raw) {
 		if strings.HasPrefix(line, "??") {
 			dirty.Untracked = true
 			continue
@@ -200,6 +200,18 @@ func parsePorcelainDirty(raw string) DirtyState {
 		}
 	}
 	return dirty
+}
+
+func splitPorcelainLines(raw string) []string {
+	raw = strings.TrimRight(raw, "\r\n")
+	if raw == "" {
+		return nil
+	}
+	lines := strings.Split(raw, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimSuffix(lines[i], "\r")
+	}
+	return lines
 }
 
 func splitLines(raw string) []string {
@@ -239,6 +251,18 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 		return "", gitCommandError(args, stderr.String(), err)
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+func gitOutputUntrimmed(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", gitCommandError(args, stderr.String(), err)
+	}
+	return stdout.String(), nil
 }
 
 func gitRun(ctx context.Context, dir string, args ...string) error {
