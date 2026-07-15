@@ -4,6 +4,7 @@
   "entryMode": "report_discovery",
   "resumed": false,
   "duration": "12s",
+  "sandboxExecutionId": "auto-123",
   "steps": {
     "analyze": {
       "status": "completed"

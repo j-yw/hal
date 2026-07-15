@@ -64,6 +64,7 @@ type RunResult struct {
 	CredentialDelivery    *sandbox.SandboxCredentialDeliveryStatusMetadata        `json:"credentialDelivery,omitempty"`
 	SyncOut               *sandboxworkspace.SyncOutSummary                        `json:"syncOut,omitempty"`
 	SyncOutApply          *sandboxworkspace.SafeApplyResult                       `json:"syncOutApply,omitempty"`
+	SandboxExecutionID    string                                                  `json:"sandboxExecutionId,omitempty"`
 	SecurityReadinessGate *sandbox.SandboxSecurityCapabilityReadinessGateDecision `json:"securityReadinessGate,omitempty"`
 	NextAction            *RunNextAction                                          `json:"nextAction,omitempty"`
 	Error                 string                                                  `json:"error,omitempty"`
@@ -120,7 +121,7 @@ Examples:
   hal run --sandbox 3              # Run 3 iterations inside a sandbox
   hal run --sandbox my-box         # Run inside a named sandbox
   hal run --sandbox --sandbox-sync-out # Collect sync-out handoff metadata without host apply
-  hal run --sandbox --sandbox-apply    # Explicit opt-in to automatic eligible host apply
+  hal run --sandbox --sandbox-apply    # Run a new execution, then apply its eligible artifacts
   hal run --sandbox --sandbox-host worker-1 --sandbox-runtime rootless_podman # Explicit worker/rootless target selection
 `,
 	Example: `  hal run
@@ -161,7 +162,7 @@ func init() {
 	runCmd.Flags().StringVar(&runSandboxHostFlag, sandboxHostFlagName, "", "Cached sandbox host ID for target selection")
 	runCmd.Flags().StringVar(&runSandboxRuntimeFlag, sandboxRuntimeFlagName, "", "Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)")
 	runCmd.Flags().BoolVar(&runSandboxSyncOutFlag, sandboxSyncOutFlagName, false, "Collect sandbox sync-out metadata without applying to the host worktree")
-	runCmd.Flags().BoolVar(&runSandboxApplyFlag, sandboxApplyFlagName, false, "explicit opt-in: dry-run and apply eligible sandbox sync-out artifacts to the host worktree")
+	runCmd.Flags().BoolVar(&runSandboxApplyFlag, sandboxApplyFlagName, false, "explicit opt-in: run a new sandbox execution, then dry-run and apply its eligible artifacts to the host worktree")
 
 	rootCmd.AddCommand(runCmd)
 }

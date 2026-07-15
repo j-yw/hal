@@ -33,6 +33,7 @@ process failure.
 | `credentialDelivery` | object | Redaction-safe sandbox credential-delivery status |
 | `syncOut` | object | Redaction-safe sandbox sync-out summary |
 | `syncOutApply` | object | Redaction-safe sandbox apply or handoff result |
+| `sandboxExecutionId` | string | Durable execution ID emitted with sandbox sync-out metadata for later `hal sandbox apply EXECUTION_ID` |
 | `securityReadinessGate` | object | Sandbox security readiness decision |
 | `nextAction` | object | Recommended next command |
 | `error` | string | Failure summary when `ok=false` |

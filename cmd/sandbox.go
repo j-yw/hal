@@ -38,6 +38,7 @@ Side effects:
 
 Subcommands:
   auth        Manage sandbox agent auth profiles
+  apply       Apply one completed sandbox execution to the current worktree
   setup       Configure provider, credentials, and environment
   create      Provision a new sandbox
   start       Start a stopped sandbox
@@ -49,6 +50,7 @@ Subcommands:
   ssh         Open an interactive shell or run a remote command`,
 	Example: `  hal sandbox setup
   hal sandbox create
+  hal sandbox apply run-1784128525446734264
   hal sandbox auth sync my-sandbox
   hal sandbox runtime list local-worker
   hal sandbox start my-sandbox

@@ -37,7 +37,7 @@ Examples:
   hal run --sandbox 3              # Run 3 iterations inside a sandbox
   hal run --sandbox my-box         # Run inside a named sandbox
   hal run --sandbox --sandbox-sync-out # Collect sync-out handoff metadata without host apply
-  hal run --sandbox --sandbox-apply    # Explicit opt-in to automatic eligible host apply
+  hal run --sandbox --sandbox-apply    # Run a new execution, then apply its eligible artifacts
   hal run --sandbox --sandbox-host worker-1 --sandbox-runtime rootless_podman # Explicit worker/rootless target selection
 
 
@@ -74,7 +74,7 @@ hal run [iterations] [flags]
       --retries int              Max retries per iteration on failure (default 3)
       --retry-delay duration     Base retry delay (default 5s)
       --sandbox                  Run inside a sandbox
-      --sandbox-apply            explicit opt-in: dry-run and apply eligible sandbox sync-out artifacts to the host worktree
+      --sandbox-apply            explicit opt-in: run a new sandbox execution, then dry-run and apply its eligible artifacts to the host worktree
       --sandbox-host string      Cached sandbox host ID for target selection
       --sandbox-name string      Sandbox name for --sandbox execution
       --sandbox-runtime string   Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)

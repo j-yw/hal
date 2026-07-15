@@ -312,6 +312,9 @@ func sandboxAugmentJSON(remoteJSON []byte, manifest *sandboxexecution.Manifest) 
 	if manifest.SyncOutApply != nil {
 		raw["syncOutApply"] = manifest.SyncOutApply
 	}
+	if manifest.SyncOut != nil && strings.TrimSpace(manifest.ID) != "" {
+		raw["sandboxExecutionId"] = strings.TrimSpace(manifest.ID)
+	}
 	if credentialDelivery := sandboxCommandJSONCredentialDeliveryStatus(manifest.CredentialDelivery); credentialDelivery != nil {
 		raw["credentialDelivery"] = credentialDelivery
 	}

@@ -64,7 +64,7 @@ Examples:
   hal auto --sandbox                 # Run inside a sandbox
   hal auto --sandbox --sandbox-name worker-1 # Run inside a named sandbox
   hal auto --sandbox --sandbox-sync-out # Collect sync-out handoff metadata without host apply
-  hal auto --sandbox --sandbox-apply    # Explicit opt-in to automatic eligible host apply
+  hal auto --sandbox --sandbox-apply    # Run a new execution, then apply its eligible artifacts
   hal auto --sandbox --sandbox-host worker-1 --sandbox-runtime rootless_podman # Explicit worker/rootless target selection
 
 ```
@@ -105,7 +105,7 @@ hal auto [prd-path] [flags]
       --review-max int           Maximum review cycles before failing (default from mode/config)
       --review-streak int        Consecutive clean review cycles required (default from mode/config)
       --sandbox                  Run inside a sandbox
-      --sandbox-apply            explicit opt-in: dry-run and apply eligible sandbox sync-out artifacts to the host worktree
+      --sandbox-apply            explicit opt-in: run a new sandbox execution, then dry-run and apply its eligible artifacts to the host worktree
       --sandbox-host string      Cached sandbox host ID for target selection
       --sandbox-name string      Sandbox name for --sandbox execution
       --sandbox-runtime string   Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)

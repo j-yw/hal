@@ -843,6 +843,9 @@ func TestSandboxSyncOutManifestJSONAdditiveContract(t *testing.T) {
 		if result.Summary != "remote run" {
 			t.Fatalf("RunResult.Summary = %q, want remote run", result.Summary)
 		}
+		if result.SandboxExecutionID != "run-json-sync-out" {
+			t.Fatalf("RunResult.SandboxExecutionID = %q, want run-json-sync-out", result.SandboxExecutionID)
+		}
 		assertRunAutoSyncOutJSONFields(t, result.SyncOut, result.SyncOutApply)
 		manifest := mustLoadSandboxExecutionManifest(t, store, "run-json-sync-out")
 		assertRunAutoSyncOutJSONFields(t, manifest.SyncOut, manifest.SyncOutApply)
@@ -917,6 +920,9 @@ func TestSandboxSyncOutManifestJSONAdditiveContract(t *testing.T) {
 		decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
 		if result.Summary != "remote auto" {
 			t.Fatalf("AutoResult.Summary = %q, want remote auto", result.Summary)
+		}
+		if result.SandboxExecutionID != "auto-json-sync-out" {
+			t.Fatalf("AutoResult.SandboxExecutionID = %q, want auto-json-sync-out", result.SandboxExecutionID)
 		}
 		assertRunAutoSyncOutJSONFields(t, result.SyncOut, result.SyncOutApply)
 		manifest := mustLoadSandboxExecutionManifest(t, store, "auto-json-sync-out")

@@ -23,6 +23,7 @@
 | `error` | string | Top-level failure summary when `ok=false` |
 | `syncOut` | object | Sandbox sync-out summary when `hal auto --sandbox --sandbox-sync-out` or `--sandbox-apply` produced durable local sync-out metadata |
 | `syncOutApply` | object | Sandbox apply or handoff result when explicit sandbox sync-out/apply metadata was produced |
+| `sandboxExecutionId` | string | Durable execution ID emitted with sandbox sync-out metadata for later `hal sandbox apply EXECUTION_ID` |
 | `nextAction` | object | Recommended next command |
 
 ## Step Map (Required Keys)
@@ -99,9 +100,17 @@ When present:
 
 ## Sandbox Sync-Out Fields
 
-`syncOut` and `syncOutApply` are omitted by default. They are present only for
+`syncOut`, `syncOutApply`, and `sandboxExecutionId` are omitted by default.
+They are present only for
 explicit local sandbox sync-out/apply runs after the remote auto JSON output is
 merged with local host-side metadata.
+
+`sandboxExecutionId` selects the exact durable execution for the apply-only
+`hal sandbox apply EXECUTION_ID` path. The apply-only command does not launch a
+new sandbox execution and accepts only succeeded executions whose collected
+PRD shows every story complete and whose stored project and branch match the
+current host worktree. When the stored sync ref is a commit, it must also match
+the current host HEAD.
 
 `syncOut` is a redaction-safe summary of durable sandbox output. It may include
 `workspace`, `committed`, `uncommitted`, `untracked`, `coreArtifacts`,

@@ -94,6 +94,7 @@ type AutoResult struct {
 	CredentialDelivery    *sandbox.SandboxCredentialDeliveryStatusMetadata        `json:"credentialDelivery,omitempty"`
 	SyncOut               *sandboxworkspace.SyncOutSummary                        `json:"syncOut,omitempty"`
 	SyncOutApply          *sandboxworkspace.SafeApplyResult                       `json:"syncOutApply,omitempty"`
+	SandboxExecutionID    string                                                  `json:"sandboxExecutionId,omitempty"`
 	SecurityReadinessGate *sandbox.SandboxSecurityCapabilityReadinessGateDecision `json:"securityReadinessGate,omitempty"`
 	Error                 string                                                  `json:"error,omitempty"`
 	Summary               string                                                  `json:"summary"`
@@ -225,7 +226,7 @@ Examples:
   hal auto --sandbox                 # Run inside a sandbox
   hal auto --sandbox --sandbox-name worker-1 # Run inside a named sandbox
   hal auto --sandbox --sandbox-sync-out # Collect sync-out handoff metadata without host apply
-  hal auto --sandbox --sandbox-apply    # Explicit opt-in to automatic eligible host apply
+  hal auto --sandbox --sandbox-apply    # Run a new execution, then apply its eligible artifacts
   hal auto --sandbox --sandbox-host worker-1 --sandbox-runtime rootless_podman # Explicit worker/rootless target selection`,
 	Example: `  hal auto
   hal auto .hal/prd-feature.md --dry-run
@@ -263,7 +264,7 @@ func init() {
 	autoCmd.Flags().StringVar(&autoSandboxHostFlag, sandboxHostFlagName, "", "Cached sandbox host ID for target selection")
 	autoCmd.Flags().StringVar(&autoSandboxRuntimeFlag, sandboxRuntimeFlagName, "", "Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)")
 	autoCmd.Flags().BoolVar(&autoSandboxSyncOutFlag, sandboxSyncOutFlagName, false, "Collect sandbox sync-out metadata without applying to the host worktree")
-	autoCmd.Flags().BoolVar(&autoSandboxApplyFlag, sandboxApplyFlagName, false, "explicit opt-in: dry-run and apply eligible sandbox sync-out artifacts to the host worktree")
+	autoCmd.Flags().BoolVar(&autoSandboxApplyFlag, sandboxApplyFlagName, false, "explicit opt-in: run a new sandbox execution, then dry-run and apply its eligible artifacts to the host worktree")
 	rootCmd.AddCommand(autoCmd)
 }
 
