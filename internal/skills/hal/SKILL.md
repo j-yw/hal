@@ -15,7 +15,7 @@ Convert a markdown PRD into canonical `.hal/prd.json`.
 1. Resolve source markdown:
    - If an explicit PRD markdown path is provided, use it.
    - Otherwise, discover the newest `.hal/prd-*.md` file.
-2. Convert each requirement into a user story in the JSON format below.
+2. Preserve explicit user-story sections one-to-one in standard mode. If the source has no explicit story sections, convert its requirements into developer-sized user stories.
 3. Validate stories against the rules below.
 4. Write the result to `.hal/prd.json`.
 
@@ -42,7 +42,7 @@ Convert a markdown PRD into canonical `.hal/prd.json`.
 
 ## Story Rules
 
-**Size:** Each story must be completable in ONE agent iteration (one context window). Hal spawns a fresh agent per story with no memory of previous work. If you can't describe the change in 2-3 sentences, split it.
+**Size:** Each story must be completable in ONE agent iteration (one context window). Hal spawns a fresh agent per story with no memory of previous work. For unstructured source requirements, split work that cannot fit one iteration. When a markdown PRD already defines explicit `US-XXX` story sections, standard conversion preserves their count, IDs, order, and boundaries; use `hal convert --granular` when intentional decomposition is desired.
 
 **Order:** Stories execute by priority. Dependencies first:
 1. Schema / database changes
@@ -63,7 +63,7 @@ Convert a markdown PRD into canonical `.hal/prd.json`.
 - Testable logic: `"Tests pass"`
 - UI changes: `"Verify in browser (skip if no dev server running, no browser tools available, or 3 attempts fail)"`
 
-## Splitting Large Stories
+## Splitting Unstructured Requirements
 
 "Add user notification system" becomes:
 1. Add notifications table
@@ -71,6 +71,8 @@ Convert a markdown PRD into canonical `.hal/prd.json`.
 3. Add notification bell icon to header
 4. Create notification dropdown panel
 5. Add mark-as-read functionality
+
+Do not apply this decomposition to an explicitly structured source PRD during standard conversion. Explicit source stories remain one-to-one; granular conversion is the opt-in decomposition path.
 
 ## Conversion Rules
 
