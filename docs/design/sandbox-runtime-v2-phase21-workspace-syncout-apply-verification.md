@@ -55,9 +55,11 @@ Explicit sync-out collection generates committed and tracked-uncommitted
 artifacts separately. The committed patch contains commits after the prepared
 workspace baseline. The uncommitted diff contains staged and unstaged tracked
 changes, is omitted when empty, and always requires manual review rather than
-automatic host apply. Untracked archive and file-list fields remain additive
-handoff contract categories; production generation of those artifacts is not
-included in this phase.
+automatic host apply. Production sync-out also generates an untracked tar
+archive and quoted file list from `git ls-files --others --exclude-standard`.
+Ignored files and Hal's generated sync-out payloads are excluded, empty
+untracked output is omitted, and both artifacts remain handoff-only rather than
+eligible for automatic host apply.
 
 ## Focused Verification Commands
 
@@ -70,7 +72,7 @@ go test -timeout=120s ./internal/sandboxworkspace -run 'TestWorkspaceSyncOutCont
 Run sync-out summary and execution import-boundary checks:
 
 ```sh
-go test -timeout=120s ./internal/sandboxexecution -run 'TestBuildSyncOutSummaryFromArtifacts|TestBuildSyncOutSummaryRedaction|TestCollectUncommittedSyncOutArtifactBestEffort|TestUncommittedSyncOutDiffGenerationScript|TestPackageImportBoundaries'
+go test -timeout=120s ./internal/sandboxexecution -run 'TestBuildSyncOutSummaryFromArtifacts|TestBuildSyncOutSummaryRedaction|TestCollectUncommittedSyncOutArtifactBestEffort|TestUncommittedSyncOutDiffGenerationScript|TestCollectUntrackedSyncOutArtifactsBestEffort|TestUntrackedSyncOutArtifactsGenerationScript|TestPackageImportBoundaries'
 ```
 
 Run safe apply dry-run, dirty worktree, lock, and redaction checks:

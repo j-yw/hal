@@ -782,6 +782,211 @@ func TestCollectUncommittedSyncOutArtifactBestEffortGeneratesHandoffDiff(t *test
 	}
 }
 
+func TestCollectUntrackedSyncOutArtifactsBestEffortGeneratesHandoffArtifacts(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.SaveManifest(testManifest("exec-untracked", time.Date(2026, 7, 16, 1, 0, 0, 0, time.UTC))); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+	runtime := &recordingArtifactRuntime{}
+	target := sandboxruntime.Target{Name: "sync-box", Runtime: sandboxruntime.RuntimeState{Driver: sandboxruntime.DriverRootlessPodman}}
+
+	result, err := CollectUntrackedSyncOutArtifactsBestEffort(context.Background(), UntrackedSyncOutCollectionRequest{
+		ExecutionID:        "exec-untracked",
+		Store:              store,
+		Runtime:            runtime,
+		Target:             target,
+		RemoteWorkspaceDir: "/workspace/repo",
+	})
+	if err != nil {
+		t.Fatalf("CollectUntrackedSyncOutArtifactsBestEffort() error: %v", err)
+	}
+	if got, want := runtime.events, []string{"exec", "copy_out", "copy_out"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("runtime events = %#v, want %#v", got, want)
+	}
+	if len(runtime.execs) != 1 {
+		t.Fatalf("Exec calls = %d, want one combined generation", len(runtime.execs))
+	}
+	execRequest := runtime.execs[0]
+	if len(execRequest.Args) != 3 || execRequest.Args[0] != "sh" || execRequest.Args[1] != "-c" {
+		t.Fatalf("Exec args = %#v, want untracked artifact generation script", execRequest.Args)
+	}
+	for _, want := range []string{"git ls-files --others --exclude-standard -z", "tar --create", "untracked.tar", "untracked.txt"} {
+		if !strings.Contains(execRequest.Args[2], want) {
+			t.Fatalf("generation script = %q, want %q", execRequest.Args[2], want)
+		}
+	}
+	if execRequest.WorkDir != "/workspace/repo" {
+		t.Fatalf("Exec workdir = %q, want remote workspace", execRequest.WorkDir)
+	}
+	if len(result.ArtifactMetadata.Collected) != 2 {
+		t.Fatalf("collected = %#v, want archive and file list", result.ArtifactMetadata.Collected)
+	}
+	archive := result.ArtifactMetadata.Collected[0]
+	list := result.ArtifactMetadata.Collected[1]
+	if archive.ID != "untracked-archive" || archive.Type != "tar" || archive.Path != ".hal/sync/untracked.tar" || archive.StoredPath != "exec-untracked/artifacts/sync/untracked.tar" {
+		t.Fatalf("archive = %#v, want durable untracked archive metadata", archive)
+	}
+	if list.ID != "untracked-list" || list.Type != "text" || list.Path != ".hal/sync/untracked.txt" || list.StoredPath != "exec-untracked/artifacts/sync/untracked.txt" {
+		t.Fatalf("list = %#v, want durable untracked list metadata", list)
+	}
+
+	manifest, err := store.LoadManifest("exec-untracked")
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := BuildSyncOutSummaryFromArtifacts(manifest)
+	if summary.Untracked.Archive == nil || summary.Untracked.List == nil {
+		t.Fatalf("sync-out summary = %#v, want untracked archive and list", summary)
+	}
+	if summary.Apply.Eligible {
+		t.Fatalf("sync-out apply = %#v, want untracked artifacts excluded from automatic apply", summary.Apply)
+	}
+	encoded := string(mustJSONBytes(t, manifest.ArtifactMetadata))
+	for _, forbidden := range []string{"/workspace/repo", runtime.copyOuts[0].DestinationPath, runtime.copyOuts[1].DestinationPath} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("manifest metadata leaked command-local value %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestCollectUntrackedSyncOutArtifactsBestEffortRecordsGenerationWarnings(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.SaveManifest(testManifest("exec-untracked-warning", time.Date(2026, 7, 16, 1, 5, 0, 0, time.UTC))); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+	runtime := &recordingArtifactRuntime{execErr: errors.New("secret generation failure")}
+
+	result, err := CollectUntrackedSyncOutArtifactsBestEffort(context.Background(), UntrackedSyncOutCollectionRequest{
+		ExecutionID:        "exec-untracked-warning",
+		Store:              store,
+		Runtime:            runtime,
+		Target:             sandboxruntime.Target{Name: "sync-box"},
+		RemoteWorkspaceDir: "/workspace/repo",
+	})
+	if err != nil {
+		t.Fatalf("CollectUntrackedSyncOutArtifactsBestEffort() error: %v", err)
+	}
+	if len(result.ArtifactMetadata.Partial) != 2 || len(result.ArtifactMetadata.Warnings) != 2 {
+		t.Fatalf("metadata = %#v, want two partial artifacts and warnings", result.ArtifactMetadata)
+	}
+	for _, warning := range result.ArtifactMetadata.Warnings {
+		if warning.Phase != untrackedSyncOutGenerationWarningPhase || strings.Contains(warning.Message, "secret") {
+			t.Fatalf("warning = %#v, want sanitized generation warning", warning)
+		}
+		if warning.Artifact.StoredPath != "" {
+			t.Fatalf("warning artifact = %#v, want no stored payload", warning.Artifact)
+		}
+	}
+	manifest, err := store.LoadManifest("exec-untracked-warning")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.ArtifactMetadata == nil || len(manifest.ArtifactMetadata.Warnings) != 2 {
+		t.Fatalf("manifest metadata = %#v, want durable warnings", manifest.ArtifactMetadata)
+	}
+}
+
+func TestUntrackedSyncOutArtifactsGenerationScriptCapturesGitVisibleFilesAndOmitsEmptyState(t *testing.T) {
+	for _, command := range []string{"git", "sh", "tar"} {
+		if _, err := exec.LookPath(command); err != nil {
+			t.Skipf("%s CLI is required", command)
+		}
+	}
+	projectDir := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = projectDir
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	runScript := func() {
+		t.Helper()
+		cmd := exec.Command("sh", "-c", untrackedSyncOutArtifactsGenerationScript())
+		cmd.Dir = projectDir
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("generate untracked artifacts: %v: %s", err, output)
+		}
+	}
+
+	runGit("init")
+	if err := os.WriteFile(filepath.Join(projectDir, ".gitignore"), []byte("ignored.log\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "README.md"), []byte("baseline\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".gitignore", "README.md")
+
+	if err := os.MkdirAll(filepath.Join(projectDir, "evidence"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "evidence", "linux.txt"), []byte("linux behavior evidence\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "space name.txt"), []byte("spaced path\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "ignored.log"), []byte("ignored\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectDir, ".hal"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".hal", "runtime.tmp"), []byte("hal runtime output\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runScript()
+	listPath := filepath.Join(projectDir, ".hal", "sync", "untracked.txt")
+	archivePath := filepath.Join(projectDir, ".hal", "sync", "untracked.tar")
+	list, err := os.ReadFile(listPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"evidence/linux.txt", "space name.txt"} {
+		if !strings.Contains(string(list), want) {
+			t.Fatalf("untracked list = %q, want %q", list, want)
+		}
+	}
+	for _, forbidden := range []string{"ignored.log", ".hal/runtime.tmp", ".hal/sync/untracked"} {
+		if strings.Contains(string(list), forbidden) {
+			t.Fatalf("untracked list = %q, should omit %q", list, forbidden)
+		}
+	}
+	cmd := exec.Command("tar", "-tf", archivePath)
+	archiveList, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("list untracked archive: %v: %s", err, archiveList)
+	}
+	for _, want := range []string{"evidence/linux.txt", "space name.txt"} {
+		if !strings.Contains(string(archiveList), want) {
+			t.Fatalf("untracked archive list = %q, want %q", archiveList, want)
+		}
+	}
+
+	if err := os.RemoveAll(filepath.Join(projectDir, "evidence")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(projectDir, "space name.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(projectDir, ".hal")); err != nil {
+		t.Fatal(err)
+	}
+	runScript()
+	for _, path := range []string{listPath, archivePath} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Size() != 0 {
+			t.Fatalf("empty untracked artifact %s size = %d, want 0", filepath.Base(path), info.Size())
+		}
+	}
+}
+
 func TestUncommittedSyncOutDiffGenerationScriptCapturesTrackedChangesAndOmitsCleanState(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git CLI is required")

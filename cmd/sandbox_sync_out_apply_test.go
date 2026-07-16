@@ -1004,6 +1004,9 @@ func TestFailedSandboxSyncOutPersistsRecoveryHandoff(t *testing.T) {
 				"copy_recovery",
 				"uncommitted_generation",
 				"copy_uncommitted",
+				"untracked_generation",
+				"copy_untracked_archive",
+				"copy_untracked_list",
 				"committed_generation",
 				"copy_committed",
 			}
@@ -1013,14 +1016,16 @@ func TestFailedSandboxSyncOutPersistsRecoveryHandoff(t *testing.T) {
 			for _, path := range []string{
 				".hal/recovery/workspace.patch",
 				".hal/sync/uncommitted.diff",
+				".hal/sync/untracked.tar",
+				".hal/sync/untracked.txt",
 				".hal/sync/committed.patch",
 			} {
 				if !sandboxManifestHasCollectedPath(manifest, path) {
 					t.Fatalf("failed manifest missing collected path %q: %#v", path, manifest.ArtifactMetadata)
 				}
 			}
-			if manifest.SyncOut == nil || manifest.SyncOut.Committed.Patch == nil || manifest.SyncOut.Uncommitted.Diff == nil {
-				t.Fatalf("failed manifest sync-out = %#v, want committed and uncommitted handoff artifacts", manifest.SyncOut)
+			if manifest.SyncOut == nil || manifest.SyncOut.Committed.Patch == nil || manifest.SyncOut.Uncommitted.Diff == nil || manifest.SyncOut.Untracked.Archive == nil || manifest.SyncOut.Untracked.List == nil {
+				t.Fatalf("failed manifest sync-out = %#v, want committed, uncommitted, and untracked handoff artifacts", manifest.SyncOut)
 			}
 			if manifest.SyncOutApply == nil || !sandboxApplyReasonsContain(manifest.SyncOutApply.Reasons, sandboxworkspace.SyncOutApplyEligibilityReasonManualReviewRequired) {
 				t.Fatalf("failed manifest sync-out apply = %#v, want manual-review handoff", manifest.SyncOutApply)
@@ -1133,7 +1138,7 @@ func TestSandboxApplyPersistsRecoveryBeforeHostMutation(t *testing.T) {
 		if !errors.Is(err, applyErr) {
 			t.Fatalf("runRunSandboxWithWriter() error = %v, want apply error", err)
 		}
-		wantOrder := []string{"remote_run", "copy_core_prd", "copy_core_progress", "recovery_generation", "copy_recovery", "uncommitted_generation", "copy_uncommitted", "committed_generation", "copy_committed", "reports_generation", "copy_reports", "host_apply"}
+		wantOrder := []string{"remote_run", "copy_core_prd", "copy_core_progress", "recovery_generation", "copy_recovery", "uncommitted_generation", "copy_uncommitted", "untracked_generation", "copy_untracked_archive", "copy_untracked_list", "committed_generation", "copy_committed", "reports_generation", "copy_reports", "host_apply"}
 		assertSandboxApplyOrder(t, order, wantOrder)
 		assertSandboxFinalManifestRetainsRecovery(t, store, "run-apply-order")
 	})
@@ -1212,7 +1217,7 @@ func TestSandboxApplyPersistsRecoveryBeforeHostMutation(t *testing.T) {
 		if !errors.Is(err, applyErr) {
 			t.Fatalf("runAutoSandboxWithWriter() error = %v, want apply error", err)
 		}
-		wantOrder := []string{"remote_run", "copy_core_prd", "copy_core_progress", "copy_core_auto_state", "recovery_generation", "copy_recovery", "uncommitted_generation", "copy_uncommitted", "committed_generation", "copy_committed", "reports_generation", "copy_reports", "host_apply"}
+		wantOrder := []string{"remote_run", "copy_core_prd", "copy_core_progress", "copy_core_auto_state", "recovery_generation", "copy_recovery", "uncommitted_generation", "copy_uncommitted", "untracked_generation", "copy_untracked_archive", "copy_untracked_list", "committed_generation", "copy_committed", "reports_generation", "copy_reports", "host_apply"}
 		assertSandboxApplyOrder(t, order, wantOrder)
 		assertSandboxFinalManifestRetainsRecovery(t, store, "auto-apply-order")
 	})
@@ -1241,6 +1246,8 @@ func sandboxApplyOrderRuntimeDriver(t *testing.T, expectedWorkspace string, orde
 				*order = append(*order, "recovery_generation")
 			case got.WorkDir == expectedWorkspace && strings.Contains(script, "uncommitted.diff"):
 				*order = append(*order, "uncommitted_generation")
+			case got.WorkDir == expectedWorkspace && strings.Contains(script, "untracked.tar") && strings.Contains(script, "untracked.txt"):
+				*order = append(*order, "untracked_generation")
 			case got.WorkDir == expectedWorkspace && strings.Contains(script, "committed.patch"):
 				*order = append(*order, "committed_generation")
 			case got.WorkDir == expectedWorkspace && strings.Contains(script, "reports.tar"):
@@ -1275,6 +1282,10 @@ func sandboxApplyOrderCopyLabel(sourcePath string) string {
 		return "copy_recovery"
 	case strings.HasSuffix(sourcePath, "/.hal/sync/uncommitted.diff"):
 		return "copy_uncommitted"
+	case strings.HasSuffix(sourcePath, "/.hal/sync/untracked.tar"):
+		return "copy_untracked_archive"
+	case strings.HasSuffix(sourcePath, "/.hal/sync/untracked.txt"):
+		return "copy_untracked_list"
 	case strings.HasSuffix(sourcePath, "/.hal/sync/committed.patch"):
 		return "copy_committed"
 	case strings.HasSuffix(sourcePath, "/.hal/reports.tar"):
@@ -1329,6 +1340,9 @@ func assertSandboxSyncOutApplyRequestHasDurableArtifacts(t *testing.T, got sandb
 	}
 	if got.Summary.Uncommitted.Diff == nil || got.Summary.Uncommitted.Diff.StoredPath == "" || got.Summary.Uncommitted.Diff.ApplyEligibility == nil || got.Summary.Uncommitted.Diff.ApplyEligibility.Eligible {
 		t.Fatalf("sync-out uncommitted artifacts = %#v, want durable handoff-only diff", got.Summary.Uncommitted)
+	}
+	if got.Summary.Untracked.Archive == nil || got.Summary.Untracked.Archive.StoredPath == "" || got.Summary.Untracked.List == nil || got.Summary.Untracked.List.StoredPath == "" {
+		t.Fatalf("sync-out untracked artifacts = %#v, want durable handoff-only archive and list", got.Summary.Untracked)
 	}
 	for _, path := range corePaths {
 		if !sandboxSyncOutSummaryHasCorePath(got.Summary, path) {

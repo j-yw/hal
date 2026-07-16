@@ -799,6 +799,15 @@ func collectAutoSandboxGeneratedArtifacts(ctx context.Context, store sandboxexec
 		}); err != nil {
 			return fmt.Errorf("collect auto sandbox uncommitted sync-out artifact: %w", err)
 		}
+		if _, err := sandboxexecution.CollectUntrackedSyncOutArtifactsBestEffort(ctx, sandboxexecution.UntrackedSyncOutCollectionRequest{
+			ExecutionID:        req.ExecutionID,
+			Store:              store,
+			Runtime:            result.RuntimeDriver,
+			Target:             result.Result.Target,
+			RemoteWorkspaceDir: req.WorkDir,
+		}); err != nil {
+			return fmt.Errorf("collect auto sandbox untracked sync-out artifacts: %w", err)
+		}
 		if _, err := sandboxexecution.CollectCommittedSyncOutArtifactBestEffort(ctx, sandboxexecution.CommittedSyncOutCollectionRequest{
 			ExecutionID:        req.ExecutionID,
 			Store:              store,
@@ -857,6 +866,15 @@ func collectAutoSandboxRecoveryAfterCommandFailure(ctx context.Context, store sa
 		RemoteWorkspaceDir: req.WorkDir,
 	}); err != nil {
 		collectErr = errors.Join(collectErr, fmt.Errorf("collect auto sandbox uncommitted sync-out artifact after command failure: %w", err))
+	}
+	if _, err := sandboxexecution.CollectUntrackedSyncOutArtifactsBestEffort(ctx, sandboxexecution.UntrackedSyncOutCollectionRequest{
+		ExecutionID:        req.ExecutionID,
+		Store:              store,
+		Runtime:            result.RuntimeDriver,
+		Target:             runtimeTarget,
+		RemoteWorkspaceDir: req.WorkDir,
+	}); err != nil {
+		collectErr = errors.Join(collectErr, fmt.Errorf("collect auto sandbox untracked sync-out artifacts after command failure: %w", err))
 	}
 	if _, err := sandboxexecution.CollectCommittedSyncOutArtifactBestEffort(ctx, sandboxexecution.CommittedSyncOutCollectionRequest{
 		ExecutionID:        req.ExecutionID,

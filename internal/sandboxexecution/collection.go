@@ -155,6 +155,18 @@ type UncommittedSyncOutCollectionRequest struct {
 	TempDir            string
 }
 
+// UntrackedSyncOutCollectionRequest carries the runtime context needed to
+// collect untracked sandbox files as handoff-only archive and file-list
+// artifacts.
+type UntrackedSyncOutCollectionRequest struct {
+	ExecutionID        string
+	Store              Store
+	Runtime            RuntimeArtifactCollector
+	Target             sandboxruntime.Target
+	RemoteWorkspaceDir string
+	TempDir            string
+}
+
 // ReportsArchiveCollectionRequest carries the runtime context needed to
 // generate and collect the standard non-factory sandbox reports archive.
 type ReportsArchiveCollectionRequest struct {
@@ -204,6 +216,17 @@ const (
 	uncommittedSyncOutGenerationWarningPhase = "sync-out-uncommitted-generation"
 	uncommittedSyncOutCopyOutWarningPhase    = "sync-out-uncommitted-copyout"
 	uncommittedSyncOutPersistWarningPhase    = "sync-out-uncommitted-persist"
+
+	untrackedSyncOutArchiveName     = "Untracked Files Archive"
+	untrackedSyncOutArchiveType     = "tar"
+	untrackedSyncOutArchiveFileName = "untracked.tar"
+	untrackedSyncOutListName        = "Untracked Files"
+	untrackedSyncOutListType        = "text"
+	untrackedSyncOutListFileName    = "untracked.txt"
+
+	untrackedSyncOutGenerationWarningPhase = "sync-out-untracked-generation"
+	untrackedSyncOutCopyOutWarningPhase    = "sync-out-untracked-copyout"
+	untrackedSyncOutPersistWarningPhase    = "sync-out-untracked-persist"
 
 	reportsArchiveID       = "reports-archive"
 	reportsArchiveName     = "Reports Archive"
@@ -504,6 +527,77 @@ func CollectUncommittedSyncOutArtifactBestEffort(ctx context.Context, req Uncomm
 	return appendUncommittedSyncOutArtifactMetadata(req.Store, executionID, result)
 }
 
+// CollectUntrackedSyncOutArtifactsBestEffort generates a handoff-only tar
+// archive and quoted file list for Git-visible untracked files. Empty output is
+// omitted; generation, copy, and persistence failures become durable warnings.
+func CollectUntrackedSyncOutArtifactsBestEffort(ctx context.Context, req UntrackedSyncOutCollectionRequest) (RuntimeCollectionResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	executionID, err := validateExecutionID(req.ExecutionID)
+	if err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	if _, err := req.Store.LoadManifest(executionID); err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	if req.Runtime == nil {
+		return RuntimeCollectionResult{}, fmt.Errorf("sandbox execution artifact runtime is required")
+	}
+	artifacts, err := untrackedSyncOutArtifactRequests(req.RemoteWorkspaceDir)
+	if err != nil {
+		return RuntimeCollectionResult{}, err
+	}
+	for _, artifact := range artifacts {
+		if err := validateRuntimeArtifactRequest(artifact); err != nil {
+			return RuntimeCollectionResult{}, err
+		}
+	}
+
+	tempDir, err := os.MkdirTemp(req.TempDir, "hal-sandbox-sync-out-untracked-*")
+	if err != nil {
+		return RuntimeCollectionResult{}, fmt.Errorf("create sandbox execution untracked sync-out temp dir: %w", redactPathError(err))
+	}
+	defer os.RemoveAll(tempDir)
+
+	result := RuntimeCollectionResult{}
+	if err := runRuntimeArtifactGeneration(ctx, req.Runtime, req.Target, *artifacts[0].Generate); err != nil {
+		for _, artifact := range artifacts {
+			addRuntimeArtifactPartialWarning(&result.ArtifactMetadata, artifact, untrackedSyncOutGenerationWarningPhase, "sandbox untracked sync-out artifact generation failed")
+		}
+		return appendUntrackedSyncOutArtifactMetadata(req.Store, executionID, result)
+	}
+
+	for i, artifact := range artifacts {
+		localPath := filepath.Join(tempDir, fmt.Sprintf("%03d-%s", i, filepath.Base(filepath.FromSlash(artifact.PayloadPath))))
+		if err := req.Runtime.CopyOut(ctx, sandboxruntime.CopyRequest{
+			Target:          req.Target,
+			SourcePath:      artifact.RemotePath,
+			DestinationPath: localPath,
+		}); err != nil {
+			addRuntimeArtifactPartialWarning(&result.ArtifactMetadata, artifact, untrackedSyncOutCopyOutWarningPhase, "sandbox untracked sync-out artifact is missing")
+			continue
+		}
+		info, err := os.Stat(localPath)
+		if err != nil {
+			addRuntimeArtifactPartialWarning(&result.ArtifactMetadata, artifact, untrackedSyncOutPersistWarningPhase, "sandbox untracked sync-out artifact inspection failed")
+			continue
+		}
+		if info.Size() == 0 {
+			continue
+		}
+
+		collected, err := saveRuntimeArtifactFile(req.Store, executionID, artifact, localPath)
+		if err != nil {
+			addRuntimeArtifactPartialWarning(&result.ArtifactMetadata, artifact, untrackedSyncOutPersistWarningPhase, "sandbox untracked sync-out artifact persistence failed")
+			continue
+		}
+		result.ArtifactMetadata.Collected = append(result.ArtifactMetadata.Collected, collected)
+	}
+
+	return appendUntrackedSyncOutArtifactMetadata(req.Store, executionID, result)
+}
+
 // CollectReportsArchiveArtifacts creates a deterministic remote tar archive of
 // .hal/reports when it exists, copies it out through the runtime driver, stores
 // it under artifacts/, and records collected or partial metadata on the manifest.
@@ -687,6 +781,41 @@ func uncommittedSyncOutArtifactRequest(remoteWorkspaceDir string) (RuntimeArtifa
 	}, nil
 }
 
+func untrackedSyncOutArtifactRequests(remoteWorkspaceDir string) ([]RuntimeArtifactRequest, error) {
+	remoteWorkspaceDir = strings.TrimSpace(remoteWorkspaceDir)
+	if remoteWorkspaceDir == "" {
+		return nil, fmt.Errorf("sandbox execution remote workspace dir is required")
+	}
+	archiveDisplayPath := pathpkg.Join(template.HalDir, committedSyncOutArtifactDir, untrackedSyncOutArchiveFileName)
+	listDisplayPath := pathpkg.Join(template.HalDir, committedSyncOutArtifactDir, untrackedSyncOutListFileName)
+	return []RuntimeArtifactRequest{
+		{
+			Artifact: ArtifactMetadataEntry{
+				ID:   syncOutUntrackedArchiveID,
+				Name: untrackedSyncOutArchiveName,
+				Type: untrackedSyncOutArchiveType,
+				Path: archiveDisplayPath,
+			},
+			PayloadPath: pathpkg.Join(committedSyncOutArtifactDir, untrackedSyncOutArchiveFileName),
+			RemotePath:  pathpkg.Join(remoteWorkspaceDir, archiveDisplayPath),
+			Generate: &RuntimeArtifactGeneration{
+				Args:    []string{"sh", "-c", untrackedSyncOutArtifactsGenerationScript()},
+				WorkDir: remoteWorkspaceDir,
+			},
+		},
+		{
+			Artifact: ArtifactMetadataEntry{
+				ID:   syncOutUntrackedListID,
+				Name: untrackedSyncOutListName,
+				Type: untrackedSyncOutListType,
+				Path: listDisplayPath,
+			},
+			PayloadPath: pathpkg.Join(committedSyncOutArtifactDir, untrackedSyncOutListFileName),
+			RemotePath:  pathpkg.Join(remoteWorkspaceDir, listDisplayPath),
+		},
+	}, nil
+}
+
 func reportsArchiveArtifactRequest(remoteWorkspaceDir string) (RuntimeArtifactRequest, error) {
 	remoteWorkspaceDir = strings.TrimSpace(remoteWorkspaceDir)
 	if remoteWorkspaceDir == "" {
@@ -805,6 +934,36 @@ func uncommittedSyncOutDiffGenerationScript() string {
 		"\t: > \"$tmp_path\"",
 		"fi",
 		`mv "$tmp_path" "$sync_path"`,
+	}, "\n")
+}
+
+func untrackedSyncOutArtifactsGenerationScript() string {
+	archivePath := pathpkg.Join(template.HalDir, committedSyncOutArtifactDir, untrackedSyncOutArchiveFileName)
+	listPath := pathpkg.Join(template.HalDir, committedSyncOutArtifactDir, untrackedSyncOutListFileName)
+	return strings.Join([]string{
+		"set -eu",
+		fmt.Sprintf("archive_path=%q", archivePath),
+		fmt.Sprintf("list_path=%q", listPath),
+		`nul_tmp=$(git rev-parse --git-path hal-sync-out-untracked.nul)`,
+		`archive_tmp=$(git rev-parse --git-path hal-sync-out-untracked.tar)`,
+		`list_tmp=$(git rev-parse --git-path hal-sync-out-untracked.txt)`,
+		`cleanup() { rm -f "$nul_tmp" "$archive_tmp" "$list_tmp"; }`,
+		`trap cleanup EXIT HUP INT TERM`,
+		fmt.Sprintf("mkdir -p %q", pathpkg.Dir(archivePath)),
+		`rm -f "$archive_path" "$list_path"`,
+		`cleanup`,
+		`git ls-files --others --exclude-standard -z -- . ':(exclude).hal' ':(exclude).hal/**' > "$nul_tmp"`,
+		`if [ -s "$nul_tmp" ]; then`,
+		`  git ls-files --others --exclude-standard -- . ':(exclude).hal' ':(exclude).hal/**' > "$list_tmp"`,
+		`  tar --create --file="$archive_tmp" --null --verbatim-files-from --files-from="$nul_tmp"`,
+		`else`,
+		`  : > "$list_tmp"`,
+		`  : > "$archive_tmp"`,
+		`fi`,
+		`mv "$archive_tmp" "$archive_path"`,
+		`mv "$list_tmp" "$list_path"`,
+		`rm -f "$nul_tmp"`,
+		`trap - EXIT HUP INT TERM`,
 	}, "\n")
 }
 
@@ -986,6 +1145,13 @@ func appendCommittedSyncOutArtifactMetadata(store Store, executionID string, res
 func appendUncommittedSyncOutArtifactMetadata(store Store, executionID string, result RuntimeCollectionResult) (RuntimeCollectionResult, error) {
 	if err := store.AppendArtifactMetadata(executionID, result.ArtifactMetadata); err != nil {
 		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution uncommitted sync-out metadata: %w", err)
+	}
+	return result, nil
+}
+
+func appendUntrackedSyncOutArtifactMetadata(store Store, executionID string, result RuntimeCollectionResult) (RuntimeCollectionResult, error) {
+	if err := store.AppendArtifactMetadata(executionID, result.ArtifactMetadata); err != nil {
+		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution untracked sync-out metadata: %w", err)
 	}
 	return result, nil
 }
