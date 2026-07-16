@@ -26,12 +26,27 @@ The `sandbox-build` and `sandbox-test` jobs in `.github/workflows/ci.yml` build 
 Use `sandbox/podman-lab.sh` for local rootless Podman and `sandboxd` testing. The
 script owns an isolated home directory, Hal config root, XDG config/data/cache
 roots, temp root, local Hal binary, disposable repository clones, daemon socket,
-image, and named Podman machine. It does not install the feature binary or write
-runtime state to the normal user configuration. `seed-auth` explicitly copies
+image, and Podman storage. Linux defaults to native rootless Podman inside those
+isolated roots; other hosts use a named Podman machine. Set
+`HAL_SANDBOX_LAB_PODMAN_MODE=machine` to request the machine lane explicitly or
+`HAL_SANDBOX_LAB_PODMAN_MODE=native` to request native mode. The script does not
+install the feature binary or write runtime state to the normal user
+configuration. `seed-auth` explicitly copies
 supported Codex, Pi, and Claude auth files into the isolated home when live agent
 execution is required. A custom `HAL_SANDBOX_LAB_ROOT` must be absolute and use
 a `hal-sandbox-*` leaf directory so teardown cannot target a broad filesystem
 path.
+
+The default lab root is
+`$XDG_DATA_HOME/hal-sandbox-lab-$USER` when `XDG_DATA_HOME` is set, otherwise
+`$HOME/.local/share/hal-sandbox-lab-$USER`. Persistent user data storage avoids
+the small tmpfs quotas commonly applied to `/tmp`; the lab is still disposable
+and `sandbox/podman-lab.sh destroy` removes it. Override the location with
+`HAL_SANDBOX_LAB_ROOT` when needed.
+
+Remote bootstrap downloads use bounded retries for transient connection and TLS
+failures. A persistent registry or package-source failure still stops the image
+build without disabling certificate verification.
 
 When host TUN/DNS routing cannot reach registries directly, set separate proxy
 URLs instead of disabling TLS. `HAL_SANDBOX_LAB_HOST_PROXY` is used only while
@@ -39,7 +54,7 @@ the host downloads the Podman machine image. `HAL_SANDBOX_LAB_GUEST_PROXY` is
 used only for image build traffic inside the Podman VM. Neither value is stored
 in the lab manifest.
 
-On Linux hosts where `podman machine info` reports the QEMU provider, install
+When machine mode reports the QEMU provider, install
 the host QEMU image tool and architecture-specific system emulator before
 preparing the lab. The prepare command checks these prerequisites before it
 downloads a machine image. On Arch Linux, install the complete headless set with:

@@ -36,6 +36,149 @@ step()  { echo -e "\n${CYAN}${BOLD}── $1 ──${NC}"; }
 ok()    { echo -e "  ${GREEN}✓${NC} $1"; }
 fail()  { echo -e "  ${RED}✗${NC} $1"; }
 
+curl_retry() {
+  curl --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 30 "$@"
+}
+
+download_retry() {
+  local url="$1"
+  local destination="$2"
+  if curl_retry -fsSL "$url" -o "$destination"; then
+    return 0
+  fi
+  rm -f "$destination"
+  echo "  curl download failed; retrying with wget" >&2
+  wget --tries=5 --timeout=30 --retry-connrefused -qO "$destination" "$url"
+}
+
+install_github_cli_repo() {
+  local keyring_tmp
+  keyring_tmp="$(mktemp)"
+  if ! download_retry https://cli.github.com/packages/githubcli-archive-keyring.gpg "$keyring_tmp"; then
+    rm -f "$keyring_tmp"
+    return 1
+  fi
+  install -m 0644 "$keyring_tmp" /usr/share/keyrings/githubcli-archive-keyring.gpg
+  rm -f "$keyring_tmp"
+  echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    > /etc/apt/sources.list.d/github-cli.list
+  if apt-get update -qq && apt-get install -y --no-install-recommends gh 2>&1 | tail -1; then
+    rm -rf /var/lib/apt/lists/*
+    return 0
+  fi
+  rm -f /etc/apt/sources.list.d/github-cli.list
+  rm -f /usr/share/keyrings/githubcli-archive-keyring.gpg
+  return 1
+}
+
+install_github_cli_distro() {
+  rm -f /etc/apt/sources.list.d/github-cli.list
+  apt-get update -qq
+  apt-get install -y --no-install-recommends gh 2>&1 | tail -1
+  rm -rf /var/lib/apt/lists/*
+}
+
+install_nodesource_node() {
+  local setup_tmp
+  setup_tmp="$(mktemp)"
+  if ! download_retry "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" "$setup_tmp"; then
+    rm -f "$setup_tmp"
+    return 1
+  fi
+  if ! bash "$setup_tmp"; then
+    rm -f "$setup_tmp"
+    return 1
+  fi
+  rm -f "$setup_tmp"
+  if ! apt-get install -y --no-install-recommends nodejs 2>&1 | tail -1; then
+    return 1
+  fi
+  rm -rf /var/lib/apt/lists/*
+  node --version | grep -q "^v${NODE_MAJOR}\."
+}
+
+install_nodejs_archive() {
+  local node_arch archive archive_dir checksums checksum_line
+  case "$ARCH" in
+    amd64) node_arch=x64 ;;
+    arm64) node_arch=arm64 ;;
+    *)
+      echo "unsupported Node.js archive architecture: $ARCH" >&2
+      return 1
+      ;;
+  esac
+  rm -f /etc/apt/sources.list.d/nodesource.list
+  rm -f /usr/share/keyrings/nodesource.gpg /etc/apt/keyrings/nodesource.gpg
+  archive_dir="$(mktemp -d)"
+  checksums="$archive_dir/SHASUMS256.txt"
+  if ! download_retry "https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/SHASUMS256.txt" "$checksums"; then
+    rm -rf "$archive_dir"
+    return 1
+  fi
+  archive="$(awk -v suffix="linux-${node_arch}.tar.gz" '$2 ~ suffix "$" { print $2; exit }' "$checksums")"
+  if [ -z "$archive" ]; then
+    echo "Node.js checksum manifest has no linux-${node_arch} archive" >&2
+    rm -rf "$archive_dir"
+    return 1
+  fi
+  if ! download_retry "https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/${archive}" "$archive_dir/$archive"; then
+    rm -rf "$archive_dir"
+    return 1
+  fi
+  checksum_line="$(grep -F "  $archive" "$checksums")"
+  if [ -z "$checksum_line" ] || ! (cd "$archive_dir" && printf '%s\n' "$checksum_line" | sha256sum -c -); then
+    rm -rf "$archive_dir"
+    return 1
+  fi
+  tar -C /usr/local --strip-components=1 -xzf "$archive_dir/$archive"
+  rm -rf "$archive_dir"
+}
+
+install_agent_clis() {
+  local attempt
+  for attempt in 1 2 3; do
+    if npm install -g --no-audit --no-fund \
+      --fetch-retries=5 \
+      --fetch-retry-factor=2 \
+      --fetch-retry-mintimeout=10000 \
+      --fetch-retry-maxtimeout=60000 \
+      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+      "@earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION}" \
+      "@openai/codex@${CODEX_VERSION}"; then
+      return 0
+    fi
+    if [ "$attempt" -lt 3 ]; then
+      echo "  npm agent CLI install failed; retrying ($attempt/3)" >&2
+      sleep $((attempt * 5))
+    fi
+  done
+  return 1
+}
+
+install_tailscale_repo() {
+  local distro_id distro_codename repo_base repo_tmp key_tmp
+  distro_id="$(. /etc/os-release && printf '%s' "$ID")"
+  distro_codename="$(. /etc/os-release && printf '%s' "$VERSION_CODENAME")"
+  if [ -z "$distro_id" ] || [ -z "$distro_codename" ]; then
+    echo "cannot determine distribution for Tailscale repository" >&2
+    return 1
+  fi
+  repo_base="https://pkgs.tailscale.com/stable/${distro_id}/${distro_codename}"
+  key_tmp="$(mktemp)"
+  repo_tmp="$(mktemp)"
+  if ! download_retry "${repo_base}.noarmor.gpg" "$key_tmp" || \
+     ! download_retry "${repo_base}.tailscale-keyring.list" "$repo_tmp"; then
+    rm -f "$key_tmp" "$repo_tmp"
+    return 1
+  fi
+  install -m 0644 "$key_tmp" /usr/share/keyrings/tailscale-archive-keyring.gpg
+  install -m 0644 "$repo_tmp" /etc/apt/sources.list.d/tailscale.list
+  rm -f "$key_tmp" "$repo_tmp"
+  apt-get update -qq
+  apt-get install -y --no-install-recommends tailscale 2>&1 | tail -1
+  rm -rf /var/lib/apt/lists/*
+}
+
 HAL_REPO="${HAL_REPO:-ReScienceLab/hal}"
 HAL_REPO_REF="${HAL_REPO_REF:-}"
 HAL_REPO_URL_EXPLICIT="${HAL_REPO_URL+x}"
@@ -191,13 +334,10 @@ step "GitHub CLI"
 if command -v gh &>/dev/null; then
   ok "gh already installed: $(gh --version | head -1)"
 else
-  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-    | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
-  echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-    | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-  apt-get update -qq
-  apt-get install -y --no-install-recommends gh 2>&1 | tail -1
-  rm -rf /var/lib/apt/lists/*
+  if ! install_github_cli_repo; then
+    echo "  GitHub CLI repository unavailable; falling back to the distro package" >&2
+    install_github_cli_distro
+  fi
   ok "gh installed: $(gh --version | head -1)"
 fi
 
@@ -206,9 +346,10 @@ step "Node.js ${NODE_MAJOR}.x"
 if command -v node &>/dev/null && node --version | grep -q "v${NODE_MAJOR}\."; then
   ok "Node.js already installed: $(node --version)"
 else
-  curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - 2>&1 | tail -1
-  apt-get install -y --no-install-recommends nodejs 2>&1 | tail -1
-  rm -rf /var/lib/apt/lists/*
+  if ! install_nodesource_node; then
+    echo "  NodeSource unavailable; falling back to the verified official Node.js archive" >&2
+    install_nodejs_archive
+  fi
   ok "Node.js installed: $(node --version)"
 fi
 
@@ -217,8 +358,10 @@ step "Go ${GO_VERSION}"
 if command -v go &>/dev/null && go version | grep -q "go${GO_VERSION}"; then
   ok "Go already installed: $(go version)"
 else
-  curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
-    | tar -C /usr/local -xzf -
+  GO_ARCHIVE="$(mktemp)"
+  download_retry "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" "$GO_ARCHIVE"
+  tar -C /usr/local -xzf "$GO_ARCHIVE"
+  rm -f "$GO_ARCHIVE"
   ok "Go installed: $(/usr/local/go/bin/go version)"
 fi
 
@@ -241,10 +384,7 @@ mkdir -p "${HOME_DIR}/.local/bin"
 
 # ── npm global tools ────────────────────────────────────────────────────────
 step "Claude Code, Pi, Codex (npm)"
-npm install -g --no-audit --no-fund \
-  "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
-  "@earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION}" \
-  "@openai/codex@${CODEX_VERSION}"
+install_agent_clis
 ok "npm tools installed"
 
 # ── hal (from source) ───────────────────────────────────────────────────────
@@ -281,7 +421,7 @@ step "Tailscale"
 if command -v tailscale &>/dev/null; then
   ok "Tailscale already installed: $(tailscale version | head -1)"
 else
-  curl -fsSL https://tailscale.com/install.sh | sh 2>&1 | tail -3
+  install_tailscale_repo
   ok "Tailscale installed: $(tailscale version | head -1)"
 fi
 
