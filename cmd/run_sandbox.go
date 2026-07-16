@@ -912,6 +912,7 @@ func collectRunSandboxRecoveryAfterCommandFailure(ctx context.Context, store san
 	if !ok {
 		return nil
 	}
+	var collectErr error
 	if _, err := sandboxexecution.CollectRecoveryArtifactsBestEffort(ctx, sandboxexecution.RecoveryArtifactCollectionRequest{
 		ExecutionID:        req.ExecutionID,
 		Store:              store,
@@ -919,9 +920,34 @@ func collectRunSandboxRecoveryAfterCommandFailure(ctx context.Context, store san
 		Target:             runtimeTarget,
 		RemoteWorkspaceDir: req.WorkDir,
 	}); err != nil {
-		return fmt.Errorf("collect run sandbox recovery artifacts after command failure: %w", err)
+		collectErr = errors.Join(collectErr, fmt.Errorf("collect run sandbox recovery artifacts after command failure: %w", err))
 	}
-	return nil
+	if !req.SyncOut.Enabled {
+		return collectErr
+	}
+	if _, err := sandboxexecution.CollectUncommittedSyncOutArtifactBestEffort(ctx, sandboxexecution.UncommittedSyncOutCollectionRequest{
+		ExecutionID:        req.ExecutionID,
+		Store:              store,
+		Runtime:            result.RuntimeDriver,
+		Target:             runtimeTarget,
+		RemoteWorkspaceDir: req.WorkDir,
+	}); err != nil {
+		collectErr = errors.Join(collectErr, fmt.Errorf("collect run sandbox uncommitted sync-out artifact after command failure: %w", err))
+	}
+	if _, err := sandboxexecution.CollectCommittedSyncOutArtifactBestEffort(ctx, sandboxexecution.CommittedSyncOutCollectionRequest{
+		ExecutionID:        req.ExecutionID,
+		Store:              store,
+		Runtime:            result.RuntimeDriver,
+		Target:             runtimeTarget,
+		RemoteWorkspaceDir: req.WorkDir,
+		SyncRef:            sandboxCommittedSyncOutBaseRef(req.Workspace, req.BaseBranch),
+	}); err != nil {
+		collectErr = errors.Join(collectErr, fmt.Errorf("collect run sandbox committed sync-out artifact after command failure: %w", err))
+	}
+	if err := persistFailedSandboxSyncOutHandoff(store, req.ExecutionID); err != nil {
+		collectErr = errors.Join(collectErr, err)
+	}
+	return collectErr
 }
 
 func runSandboxRuntimeTargetForCollection(result runSandboxExecutionResult, target *sandbox.SandboxState) (sandboxruntime.Target, bool) {

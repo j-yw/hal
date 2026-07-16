@@ -260,6 +260,25 @@ func persistSandboxSyncOutApplyMetadata(store sandboxexecution.Store, executionI
 	return nil
 }
 
+func persistFailedSandboxSyncOutHandoff(store sandboxexecution.Store, executionID string) error {
+	manifest, err := store.LoadManifest(executionID)
+	if err != nil {
+		return fmt.Errorf("load failed sandbox execution manifest for sync-out metadata: %w", err)
+	}
+	summary := sandboxexecution.BuildSyncOutSummaryFromArtifacts(manifest)
+	handoff := sandboxSyncOutApplyHandoff(summary, []sandboxworkspace.SyncOutApplyEligibilityReason{
+		sandboxworkspace.SyncOutApplyEligibilityReasonManualReviewRequired,
+	})
+	handoff = sandboxSyncOutApplyResultWithHandoffInstructions(sandboxSyncOutApplyRequest{
+		Summary: summary,
+		Handoff: handoff,
+	}, handoff)
+	if err := persistSandboxSyncOutApplyMetadata(store, executionID, summary, handoff); err != nil {
+		return fmt.Errorf("persist failed sandbox sync-out handoff: %w", err)
+	}
+	return nil
+}
+
 func outputSandboxSyncOutAugmentedJSON(out io.Writer, remoteJSON []byte, store sandboxexecution.Store, executionID string) error {
 	return outputSandboxAugmentedJSON(out, remoteJSON, store, executionID)
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
@@ -928,6 +929,128 @@ func TestSandboxSyncOutManifestJSONAdditiveContract(t *testing.T) {
 		manifest := mustLoadSandboxExecutionManifest(t, store, "auto-json-sync-out")
 		assertRunAutoSyncOutJSONFields(t, manifest.SyncOut, manifest.SyncOutApply)
 	})
+}
+
+func TestFailedSandboxSyncOutPersistsRecoveryHandoff(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		purpose sandboxexecution.Purpose
+		collect func(context.Context, sandboxexecution.Store, string, string, sandboxruntime.Driver, sandboxruntime.Target) error
+	}{
+		{
+			name:    "run",
+			purpose: sandboxexecution.PurposeRun,
+			collect: func(ctx context.Context, store sandboxexecution.Store, executionID, workDir string, driver sandboxruntime.Driver, target sandboxruntime.Target) error {
+				return collectRunSandboxRecoveryAfterCommandFailure(ctx, store, runSandboxRequest{
+					ExecutionID: executionID,
+					BaseBranch:  "main",
+					WorkDir:     workDir,
+					Workspace: &sandbox.SandboxWorkspace{
+						Mode:    sandbox.SandboxWorkspaceModeClone,
+						SyncRef: "baseline-ref",
+					},
+					SyncOut: sandboxSyncOutOptions{Enabled: true},
+				}, runSandboxExecutionResult{
+					Result:        &sandboxexec.Result{Target: target},
+					RuntimeDriver: driver,
+				}, nil)
+			},
+		},
+		{
+			name:    "auto",
+			purpose: sandboxexecution.PurposeAuto,
+			collect: func(ctx context.Context, store sandboxexecution.Store, executionID, workDir string, driver sandboxruntime.Driver, target sandboxruntime.Target) error {
+				return collectAutoSandboxRecoveryAfterCommandFailure(ctx, store, autoSandboxRequest{
+					ExecutionID: executionID,
+					BaseBranch:  "main",
+					WorkDir:     workDir,
+					Workspace: &sandbox.SandboxWorkspace{
+						Mode:    sandbox.SandboxWorkspaceModeClone,
+						SyncRef: "baseline-ref",
+					},
+					SyncOut: sandboxSyncOutOptions{Enabled: true},
+				}, autoSandboxExecutionResult{
+					Result:        &sandboxexec.Result{Target: target},
+					RuntimeDriver: driver,
+				}, nil)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			executionID := "failed-sync-out-" + tc.name
+			workDir := "/workspace/failed-sync-out-" + tc.name
+			store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+			if err := store.SaveManifest(&sandboxexecution.Manifest{
+				ID:        executionID,
+				Purpose:   tc.purpose,
+				Status:    sandboxexecution.StatusRunning,
+				StartedAt: time.Date(2026, 7, 16, 5, 30, 0, 0, time.UTC),
+				Workspace: &sandbox.SandboxWorkspace{
+					Mode:    sandbox.SandboxWorkspaceModeClone,
+					SyncRef: "baseline-ref",
+				},
+			}); err != nil {
+				t.Fatalf("SaveManifest() error = %v", err)
+			}
+
+			var order []string
+			driver := sandboxApplyOrderRuntimeDriver(t, workDir, &order, "")
+			target := sandboxruntime.Target{ID: "failed-sync-out-target"}
+			if err := tc.collect(context.Background(), store, executionID, workDir, driver, target); err != nil {
+				t.Fatalf("collect failed sync-out artifacts error = %v", err)
+			}
+			wantOrder := []string{
+				"recovery_generation",
+				"copy_recovery",
+				"uncommitted_generation",
+				"copy_uncommitted",
+				"committed_generation",
+				"copy_committed",
+			}
+			assertSandboxApplyOrder(t, order, wantOrder)
+
+			manifest := mustLoadSandboxExecutionManifest(t, store, executionID)
+			for _, path := range []string{
+				".hal/recovery/workspace.patch",
+				".hal/sync/uncommitted.diff",
+				".hal/sync/committed.patch",
+			} {
+				if !sandboxManifestHasCollectedPath(manifest, path) {
+					t.Fatalf("failed manifest missing collected path %q: %#v", path, manifest.ArtifactMetadata)
+				}
+			}
+			if manifest.SyncOut == nil || manifest.SyncOut.Committed.Patch == nil || manifest.SyncOut.Uncommitted.Diff == nil {
+				t.Fatalf("failed manifest sync-out = %#v, want committed and uncommitted handoff artifacts", manifest.SyncOut)
+			}
+			if manifest.SyncOutApply == nil || !sandboxApplyReasonsContain(manifest.SyncOutApply.Reasons, sandboxworkspace.SyncOutApplyEligibilityReasonManualReviewRequired) {
+				t.Fatalf("failed manifest sync-out apply = %#v, want manual-review handoff", manifest.SyncOutApply)
+			}
+			if len(manifest.SyncOutApply.HandoffInstructions) == 0 {
+				t.Fatalf("failed manifest sync-out apply = %#v, want handoff instructions", manifest.SyncOutApply)
+			}
+
+			augmented, ok := sandboxAugmentJSON([]byte(`{"contractVersion":1,"ok":false,"summary":"remote failed"}`), manifest)
+			if !ok {
+				t.Fatal("sandboxAugmentJSON() ok = false, want failed sync-out augmentation")
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(augmented, &fields); err != nil {
+				t.Fatalf("Unmarshal(augmented JSON) error = %v", err)
+			}
+			var gotExecutionID string
+			if err := json.Unmarshal(fields["sandboxExecutionId"], &gotExecutionID); err != nil {
+				t.Fatalf("Unmarshal(sandboxExecutionId) error = %v", err)
+			}
+			if gotExecutionID != executionID {
+				t.Fatalf("sandboxExecutionId = %q, want %q", gotExecutionID, executionID)
+			}
+			for _, field := range []string{"syncOut", "syncOutApply"} {
+				if len(fields[field]) == 0 {
+					t.Fatalf("failed augmented JSON omitted %q: %s", field, augmented)
+				}
+			}
+		})
+	}
 }
 
 func TestSandboxApplyPersistsRecoveryBeforeHostMutation(t *testing.T) {
