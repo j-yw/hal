@@ -205,6 +205,7 @@ func (d *Driver) createArgs(name string) []string {
 		d.podmanPath,
 		"create",
 		"--pull=never",
+		"--init",
 		"--name", name,
 		"--hostname", name,
 		"--label", labelRuntime + "=" + DriverID,
