@@ -285,10 +285,20 @@ func confirmDeleteAll(in io.Reader, out io.Writer) bool {
 
 // deleteResult tracks the outcome of a single delete target.
 type deleteResult struct {
-	Name    string
-	Success bool
-	Err     error
+	Name     string
+	Success  bool
+	Warnings []string
+	Err      error
 }
+
+type sandboxDeleteResourceResult struct {
+	Warnings []string
+}
+
+const (
+	sandboxDeleteAlreadyAbsentWarning   = "runtime was already absent; reconciled the sandbox registry record; inspect runtime storage separately if a prior delete reported cleanup failure"
+	sandboxDeletePostErrorAbsentWarning = "runtime was absent after delete failure; reconciled the sandbox registry record, but runtime storage cleanup may require operator inspection"
+)
 
 type sandboxDeleteResourceDeps struct {
 	resolveProvider func(string, string) (sandbox.Provider, error)
@@ -300,41 +310,56 @@ var defaultSandboxDeleteResourceDeps = sandboxDeleteResourceDeps{
 	resolveRuntime:  resolveFactoryStoredSandboxRuntime,
 }
 
-func deleteSandboxTargetResource(ctx context.Context, target *sandbox.SandboxState, projectDir string, out io.Writer, provider sandbox.Provider, deps sandboxDeleteResourceDeps) error {
+func deleteSandboxTargetResource(ctx context.Context, target *sandbox.SandboxState, projectDir string, out io.Writer, provider sandbox.Provider, deps sandboxDeleteResourceDeps) (sandboxDeleteResourceResult, error) {
+	result := sandboxDeleteResourceResult{}
 	if sandboxTargetUsesWorkerHost(target) {
 		if deps.resolveRuntime == nil {
-			return fmt.Errorf("sandbox runtime resolver is required")
+			return result, fmt.Errorf("sandbox runtime resolver is required")
 		}
 		driver, err := deps.resolveRuntime(projectDir, target)
 		if err != nil {
-			return fmt.Errorf("resolving runtime for %q: %w", target.Name, err)
+			return result, fmt.Errorf("resolving runtime for %q: %w", target.Name, err)
 		}
-		if err := driver.Delete(ctx, sandboxruntime.LifecycleRequest{
-			Target: sandboxRuntimeTargetFromState(target),
+		runtimeTarget := sandboxRuntimeTargetFromState(target)
+		deleteErr := driver.Delete(ctx, sandboxruntime.LifecycleRequest{
+			Target: runtimeTarget,
 			Stdout: out,
 			Stderr: out,
-		}); err != nil {
-			return err
+		})
+		if deleteErr == nil {
+			return result, nil
 		}
-		return nil
+		if isMissingWorkerRuntimeOperationError(driver.ID(), "delete", deleteErr) {
+			result.Warnings = append(result.Warnings, sandboxDeleteAlreadyAbsentWarning)
+			return result, nil
+		}
+		if ctx != nil && ctx.Err() != nil {
+			return result, deleteErr
+		}
+		_, inspectErr := driver.Inspect(ctx, sandboxruntime.InspectRequest{Target: runtimeTarget})
+		if isMissingWorkerRuntimeOperationError(driver.ID(), "inspect", inspectErr) {
+			result.Warnings = append(result.Warnings, sandboxDeletePostErrorAbsentWarning)
+			return result, nil
+		}
+		return result, deleteErr
 	}
 
 	p := provider
 	if p == nil {
 		if deps.resolveProvider == nil {
-			return fmt.Errorf("sandbox provider resolver is required")
+			return result, fmt.Errorf("sandbox provider resolver is required")
 		}
 		var err error
 		p, err = deps.resolveProvider(projectDir, target.Provider)
 		if err != nil {
-			return fmt.Errorf("resolving provider for %q: %w", target.Name, err)
+			return result, fmt.Errorf("resolving provider for %q: %w", target.Name, err)
 		}
 	}
 	info := deleteConnectInfo(target)
 	if err := validateDeleteConnectInfo(target, info); err != nil {
-		return err
+		return result, err
 	}
-	return p.Delete(ctx, info, out)
+	return result, p.Delete(ctx, info, out)
 }
 
 // deleteOneTarget deletes a single sandbox, removes it from the registry, and reports the result.
@@ -347,11 +372,15 @@ func deleteOneTarget(target *sandbox.SandboxState, projectDir string, out io.Wri
 	if err != nil {
 		return fmt.Errorf("staging registry entry for %q: %w", target.Name, err)
 	}
-	if err := deleteSandboxTargetResource(ctx, target, projectDir, out, provider, defaultSandboxDeleteResourceDeps); err != nil && !finalizeInterruptedDeleteRetry(target.Provider, pendingRemoval, err) {
+	resourceResult, err := deleteSandboxTargetResource(ctx, target, projectDir, out, provider, defaultSandboxDeleteResourceDeps)
+	if err != nil && !finalizeInterruptedDeleteRetry(target.Provider, pendingRemoval, err) {
 		if rollbackErr := pendingRemoval.Rollback(); rollbackErr != nil {
 			return fmt.Errorf("sandbox delete failed for %q: %w (registry rollback failed: %v)", target.Name, err, rollbackErr)
 		}
 		return fmt.Errorf("sandbox delete failed for %q: %w", target.Name, err)
+	}
+	for _, warning := range resourceResult.Warnings {
+		fmt.Fprintf(out, "warning: %s\n", warning)
 	}
 
 	halDir := filepath.Join(projectDir, template.HalDir)
@@ -382,11 +411,14 @@ func deleteMultipleTargets(targets []*sandbox.SandboxState, projectDir string, o
 		target := target // capture for goroutine
 		g.Go(func() error {
 			ctx := context.Background()
-			var err error
+			var (
+				err            error
+				resourceResult sandboxDeleteResourceResult
+			)
 			var pendingRemoval sandboxDeletePendingRemoval
 			pendingRemoval, err = sandboxDeleteStageInstanceRemoval(target.Name)
 			if err == nil {
-				err = deleteSandboxTargetResource(ctx, target, projectDir, io.Discard, provider, defaultSandboxDeleteResourceDeps)
+				resourceResult, err = deleteSandboxTargetResource(ctx, target, projectDir, io.Discard, provider, defaultSandboxDeleteResourceDeps)
 				if err != nil {
 					if finalizeInterruptedDeleteRetry(target.Provider, pendingRemoval, err) {
 						err = nil
@@ -413,11 +445,14 @@ func deleteMultipleTargets(targets []*sandbox.SandboxState, projectDir string, o
 				fmt.Fprintf(out, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), target.Name, err)
 				results = append(results, deleteResult{Name: target.Name, Success: false, Err: err})
 			} else {
+				for _, warning := range resourceResult.Warnings {
+					fmt.Fprintf(out, "warning: %s: %s\n", target.Name, warning)
+				}
 				if localCleanupErr != nil {
 					fmt.Fprintf(out, "warning: failed to remove local sandbox state for %q: %v\n", target.Name, localCleanupErr)
 				}
 				fmt.Fprintf(out, "%s Deleted %s\n", display.StyleSuccess.Render("[OK]"), target.Name)
-				results = append(results, deleteResult{Name: target.Name, Success: true})
+				results = append(results, deleteResult{Name: target.Name, Success: true, Warnings: append([]string(nil), resourceResult.Warnings...)})
 			}
 			mu.Unlock()
 

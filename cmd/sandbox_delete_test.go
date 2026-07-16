@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -47,7 +48,7 @@ func TestDeleteSandboxTargetResourceUsesWorkerRuntime(t *testing.T) {
 			return nil
 		},
 	}
-	err := deleteSandboxTargetResource(context.Background(), target, t.TempDir(), io.Discard, nil, sandboxDeleteResourceDeps{
+	_, err := deleteSandboxTargetResource(context.Background(), target, t.TempDir(), io.Discard, nil, sandboxDeleteResourceDeps{
 		resolveRuntime: func(string, *sandbox.SandboxState) (sandboxruntime.Driver, error) {
 			return driver, nil
 		},
@@ -68,7 +69,7 @@ func TestDeleteSandboxTargetResourceMalformedWorkerDoesNotFallThroughToProvider(
 	target := workerManagementSandbox("worker-malformed-delete", sandbox.StatusRunning)
 	target.Runtime = nil
 	runtimeCalls := 0
-	err := deleteSandboxTargetResource(context.Background(), target, t.TempDir(), io.Discard, nil, sandboxDeleteResourceDeps{
+	_, err := deleteSandboxTargetResource(context.Background(), target, t.TempDir(), io.Discard, nil, sandboxDeleteResourceDeps{
 		resolveRuntime: func(string, *sandbox.SandboxState) (sandboxruntime.Driver, error) {
 			runtimeCalls++
 			return nil, errors.New("worker runtime metadata is required")
@@ -83,6 +84,108 @@ func TestDeleteSandboxTargetResourceMalformedWorkerDoesNotFallThroughToProvider(
 	}
 	if runtimeCalls != 1 {
 		t.Fatalf("runtime resolver calls = %d, want 1", runtimeCalls)
+	}
+}
+
+func TestDeleteSandboxTargetResourceReconcilesAlreadyAbsentWorkerRuntime(t *testing.T) {
+	target := workerRootlessCachedSandbox("worker-delete-absent")
+	inspectCalls := 0
+	driver := fakeFactorySandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		deleteFn: func(context.Context, sandboxruntime.LifecycleRequest) error {
+			return errors.New(`rootless_podman delete failed: Error: no such object: "runtime-worker-delete-absent"`)
+		},
+		inspectFn: func(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+			inspectCalls++
+			return nil, errors.New("inspect should not run after explicit absence")
+		},
+	}
+
+	result, err := deleteSandboxTargetResource(context.Background(), target, t.TempDir(), io.Discard, nil, sandboxDeleteResourceDeps{
+		resolveRuntime: func(string, *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+			return driver, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("deleteSandboxTargetResource() error: %v", err)
+	}
+	if inspectCalls != 0 {
+		t.Fatalf("inspect calls = %d, want 0", inspectCalls)
+	}
+	if !reflect.DeepEqual(result.Warnings, []string{sandboxDeleteAlreadyAbsentWarning}) {
+		t.Fatalf("warnings = %#v, want already-absent warning", result.Warnings)
+	}
+}
+
+func TestDeleteSandboxTargetResourceReconcilesDeleteErrorWhenInspectProvesAbsent(t *testing.T) {
+	target := workerRootlessCachedSandbox("worker-delete-partial")
+	driver := fakeFactorySandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		deleteFn: func(context.Context, sandboxruntime.LifecycleRequest) error {
+			return errors.New("rootless_podman delete failed: cleaning up storage: directory not empty")
+		},
+		inspectFn: func(_ context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+			if req.Target.Runtime.RuntimeID != target.Runtime.RuntimeID {
+				t.Fatalf("inspect runtime ID = %q, want %q", req.Target.Runtime.RuntimeID, target.Runtime.RuntimeID)
+			}
+			return nil, errors.New(`rootless_podman inspect failed: Error: no such object: "runtime-worker-delete-partial"`)
+		},
+	}
+
+	result, err := deleteSandboxTargetResource(context.Background(), target, t.TempDir(), io.Discard, nil, sandboxDeleteResourceDeps{
+		resolveRuntime: func(string, *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+			return driver, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("deleteSandboxTargetResource() error: %v", err)
+	}
+	if !reflect.DeepEqual(result.Warnings, []string{sandboxDeletePostErrorAbsentWarning}) {
+		t.Fatalf("warnings = %#v, want post-error-absent warning", result.Warnings)
+	}
+}
+
+func TestDeleteSandboxTargetResourcePreservesDeleteErrorWithoutAbsenceProof(t *testing.T) {
+	target := workerRootlessCachedSandbox("worker-delete-uncertain")
+	deleteErr := errors.New("rootless_podman delete failed: cleaning up storage: directory not empty")
+
+	tests := []struct {
+		name      string
+		inspectFn func(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error)
+	}{
+		{
+			name: "runtime still present",
+			inspectFn: func(_ context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+				return &req.Target, nil
+			},
+		},
+		{
+			name: "inspect transport failure",
+			inspectFn: func(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+				return nil, errors.New("rootless_podman inspect failed: connection refused")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := fakeFactorySandboxRuntimeDriver{
+				id:        sandboxruntime.DriverRootlessPodman,
+				deleteFn:  func(context.Context, sandboxruntime.LifecycleRequest) error { return deleteErr },
+				inspectFn: tt.inspectFn,
+			}
+			result, err := deleteSandboxTargetResource(context.Background(), target, t.TempDir(), io.Discard, nil, sandboxDeleteResourceDeps{
+				resolveRuntime: func(string, *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+					return driver, nil
+				},
+			})
+			if !errors.Is(err, deleteErr) {
+				t.Fatalf("error = %v, want original delete error", err)
+			}
+			if len(result.Warnings) != 0 {
+				t.Fatalf("warnings = %#v, want none", result.Warnings)
+			}
+		})
 	}
 }
 
@@ -1416,6 +1519,81 @@ func TestRunSandboxDelete_RegistryPreservedOnProviderFailure(t *testing.T) {
 	}
 	if inst.Name != "my-sandbox" {
 		t.Errorf("loaded Name = %q, want %q", inst.Name, "my-sandbox")
+	}
+}
+
+func TestRunSandboxDelete_ReconcilesWorkerRegistryWhenPostErrorInspectProvesAbsent(t *testing.T) {
+	target := workerRootlessCachedSandbox("worker-partial-delete")
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{target})
+
+	originalDeps := defaultSandboxDeleteResourceDeps
+	t.Cleanup(func() { defaultSandboxDeleteResourceDeps = originalDeps })
+	defaultSandboxDeleteResourceDeps = sandboxDeleteResourceDeps{
+		resolveRuntime: func(string, *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+			return fakeFactorySandboxRuntimeDriver{
+				id: sandboxruntime.DriverRootlessPodman,
+				deleteFn: func(context.Context, sandboxruntime.LifecycleRequest) error {
+					return errors.New("rootless_podman delete failed: replacing mount point /home/alice/secret-worktree token=raw-secret: directory not empty")
+				},
+				inspectFn: func(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+					return nil, errors.New(`rootless_podman inspect failed: Error: no such object: "runtime-worker-partial-delete"`)
+				},
+			}, nil
+		},
+	}
+
+	var out bytes.Buffer
+	if err := runSandboxDelete([]string{target.Name}, false, false, "", nil, &out, nil); err != nil {
+		t.Fatalf("runSandboxDelete() error: %v", err)
+	}
+	if _, err := sandbox.LoadInstance(target.Name); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("LoadInstance() error = %v, want not exist after proven-absent reconciliation", err)
+	}
+	output := out.String()
+	if !strings.Contains(output, sandboxDeletePostErrorAbsentWarning) {
+		t.Fatalf("output missing reconciliation warning:\n%s", output)
+	}
+	for _, leaked := range []string{"alice", "secret-worktree", "raw-secret", target.Runtime.RuntimeID} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("output leaked %q:\n%s", leaked, output)
+		}
+	}
+}
+
+func TestDeleteMultipleTargets_ReconcilesAlreadyAbsentWorkerRuntimeWithWarning(t *testing.T) {
+	targets := []*sandbox.SandboxState{
+		workerRootlessCachedSandbox("alpha-absent"),
+		workerRootlessCachedSandbox("bravo-present"),
+	}
+	setupDeleteGlobalRegistry(t, targets)
+
+	originalDeps := defaultSandboxDeleteResourceDeps
+	t.Cleanup(func() { defaultSandboxDeleteResourceDeps = originalDeps })
+	defaultSandboxDeleteResourceDeps = sandboxDeleteResourceDeps{
+		resolveRuntime: func(_ string, target *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+			return fakeFactorySandboxRuntimeDriver{
+				id: sandboxruntime.DriverRootlessPodman,
+				deleteFn: func(context.Context, sandboxruntime.LifecycleRequest) error {
+					if target.Name == "alpha-absent" {
+						return errors.New("rootless_podman delete failed: no such container")
+					}
+					return nil
+				},
+			}, nil
+		},
+	}
+
+	var out bytes.Buffer
+	if err := deleteMultipleTargets(targets, t.TempDir(), &out, nil); err != nil {
+		t.Fatalf("deleteMultipleTargets() error: %v", err)
+	}
+	for _, target := range targets {
+		if _, err := sandbox.LoadInstance(target.Name); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("LoadInstance(%q) error = %v, want not exist", target.Name, err)
+		}
+	}
+	if !strings.Contains(out.String(), "warning: alpha-absent: "+sandboxDeleteAlreadyAbsentWarning) {
+		t.Fatalf("output missing batch reconciliation warning:\n%s", out.String())
 	}
 }
 
