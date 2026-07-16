@@ -39,6 +39,15 @@ the host downloads the Podman machine image. `HAL_SANDBOX_LAB_GUEST_PROXY` is
 used only for image build traffic inside the Podman VM. Neither value is stored
 in the lab manifest.
 
+On Linux hosts where `podman machine info` reports the QEMU provider, install
+the host QEMU image tool and architecture-specific system emulator before
+preparing the lab. The prepare command checks these prerequisites before it
+downloads a machine image. On Arch Linux, install the complete headless set with:
+
+```sh
+sudo pacman -S --needed qemu-base
+```
+
 ```sh
 export HAL_SANDBOX_LAB_HOST_PROXY=http://127.0.0.1:PORT
 export HAL_SANDBOX_LAB_GUEST_PROXY=http://host.containers.internal:PORT

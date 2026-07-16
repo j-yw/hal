@@ -101,6 +101,28 @@ require_command() {
 	fi
 }
 
+require_qemu_machine_command() {
+	if command -v "$1" >/dev/null 2>&1; then
+		return
+	fi
+	echo "required QEMU-backed Podman Machine command not found: $1" >&2
+	echo "install the host QEMU machine package before prepare (Arch Linux: sudo pacman -S --needed qemu-base)" >&2
+	exit 1
+}
+
+require_podman_machine_commands() {
+	machine_vm_type=$(podman machine info --format '{{.Host.VMType}}' 2>/dev/null || true)
+	case "$machine_vm_type" in
+		qemu)
+			require_qemu_machine_command qemu-img
+			case "$(uname -m)" in
+				x86_64|amd64) require_qemu_machine_command qemu-system-x86_64 ;;
+				aarch64|arm64) require_qemu_machine_command qemu-system-aarch64 ;;
+			esac
+			;;
+	esac
+}
+
 lab_podman() {
 	podman --connection "$MACHINE" "$@"
 }
@@ -537,6 +559,7 @@ ensure_machine_ready() {
 prepare() {
 	require_command go
 	require_command podman
+	require_podman_machine_commands
 	ensure_dirs
 
 	if ! podman machine inspect "$MACHINE" >/dev/null 2>&1; then

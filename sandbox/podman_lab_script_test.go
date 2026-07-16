@@ -61,6 +61,39 @@ func TestPodmanLabPrepareUsesNamedConnectionWhenDefaultIsHealthy(t *testing.T) {
 	assertNoUnboundPodmanOperation(t, log, "info", "pull", "build")
 }
 
+func TestPodmanLabPreparePreflightsQEMUCommandsBeforeMachineCreation(t *testing.T) {
+	_, sourcePath, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller() failed")
+	}
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(sourcePath), "podman-lab.sh"))
+	if err != nil {
+		t.Fatalf("ReadFile(podman-lab.sh) error = %v", err)
+	}
+	script := string(data)
+	prepareStart := strings.Index(script, "prepare() {")
+	if prepareStart < 0 {
+		t.Fatal("podman-lab.sh missing prepare function")
+	}
+	prepareScript := script[prepareStart:]
+	preflight := strings.Index(prepareScript, "require_podman_machine_commands")
+	machineInit := strings.Index(prepareScript, "podman machine init")
+	if preflight < 0 || machineInit < 0 || preflight > machineInit {
+		t.Fatalf("QEMU preflight must run before Podman machine creation: preflight=%d machineInit=%d", preflight, machineInit)
+	}
+	for _, want := range []string{
+		"podman machine info --format '{{.Host.VMType}}'",
+		"require_qemu_machine_command qemu-img",
+		"require_qemu_machine_command qemu-system-x86_64",
+		"require_qemu_machine_command qemu-system-aarch64",
+		"Arch Linux: sudo pacman -S --needed qemu-base",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("podman-lab.sh missing QEMU preflight contract %q", want)
+		}
+	}
+}
+
 func TestPodmanLabDestroyRemovesContainersOnlyOnNamedConnection(t *testing.T) {
 	env := newPodmanLabTestEnv(t)
 	if err := os.MkdirAll(env.labRoot, 0o700); err != nil {
