@@ -245,6 +245,21 @@ func TestL3FinalizationLifecycleValidation(t *testing.T) {
 			store := newTestStore(t)
 			manifest := testManifest("exec-finalization", startedAt)
 			manifest.Finalization = &tt.finalization
+			if !tt.wantError {
+				manifest.Status = StatusSucceeded
+				manifest.FinishedAt = &completedAt
+				manifest.WorkerJob = &WorkerJobReference{
+					ContractVersion: WorkerJobContractVersion,
+					JobID:           "job-finalization",
+					WorkerID:        "worker-finalization",
+					RuntimeDriver:   "rootless_podman",
+					State:           "succeeded",
+					SubmittedAt:     startedAt,
+					StartedAt:       &startedAt,
+					HeartbeatAt:     &startedAt,
+					FinishedAt:      &completedAt,
+				}
+			}
 			err := store.SaveManifest(manifest)
 			if tt.wantError && err == nil {
 				t.Fatal("SaveManifest() expected finalization validation error")

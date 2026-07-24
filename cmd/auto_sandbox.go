@@ -827,7 +827,13 @@ func autoSandboxRemoteArchivePath(remoteJSON []byte, stdoutSummary string) (stri
 	}
 	if archivePath == "" {
 		const archivedStatePrefix = "Archived state to "
-		for _, line := range strings.Split(stdoutSummary, "\n") {
+		for {
+			end := strings.IndexByte(stdoutSummary, '\n')
+			if end < 0 {
+				break
+			}
+			line := stdoutSummary[:end]
+			stdoutSummary = stdoutSummary[end+1:]
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, archivedStatePrefix) {
 				archiveName := strings.TrimSpace(strings.TrimPrefix(line, archivedStatePrefix))

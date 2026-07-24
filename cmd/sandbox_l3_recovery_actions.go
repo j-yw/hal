@@ -180,6 +180,9 @@ func collectSandboxL3RecoveryTerminalArtifactsWithRuntime(
 		manifest.Purpose == sandboxexecution.PurposeAuto &&
 		job != nil &&
 		job.State == sandboxworker.JobStateSucceeded {
+		if err := validateSandboxL3AutoArchiveProof(job); err != nil {
+			return err
+		}
 		var err error
 		remoteArchivePath, err = sandboxL3AutoArchivePathFromStoredSummary(store, manifest)
 		if err != nil {
@@ -255,6 +258,15 @@ func collectSandboxL3TerminalArtifactsWithRuntime(
 	// represented by its partial/warning entry, while generation, transport,
 	// and persistence errors returned above still block the artifact checkpoint.
 	return requireSandboxL3OptionalReportsCollection(reports)
+}
+
+func validateSandboxL3AutoArchiveProof(job *sandboxworker.Job) error {
+	if job != nil &&
+		job.State == sandboxworker.JobStateSucceeded &&
+		job.StdoutTruncated {
+		return errors.New("auto_archive_output_incomplete: succeeded auto execution stdout was truncated")
+	}
+	return nil
 }
 
 func sandboxL3AutoArchivePathFromStoredSummary(
@@ -524,6 +536,7 @@ func releaseSandboxL3DurableLease(_ context.Context, manifest *sandboxexecution.
 	store := sandbox.NewSandboxLeaseStore(nil)
 	if _, err := store.ReleaseExact(sandbox.SandboxLeaseExactReleaseRequest{
 		ID:          leaseID,
+		SandboxID:   strings.TrimSpace(manifest.SandboxID),
 		SandboxName: strings.TrimSpace(manifest.SandboxName),
 		ResourceKey: strings.TrimSpace(reference.ResourceKey),
 		Purpose:     strings.TrimSpace(reference.Purpose),

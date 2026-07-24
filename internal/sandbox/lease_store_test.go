@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -84,6 +85,7 @@ func TestReleaseExactLeaseValidatesIdentityAndUsesStoreLock(t *testing.T) {
 	}
 	exact := SandboxLeaseExactReleaseRequest{
 		ID:          lease.ID,
+		SandboxID:   lease.SandboxID,
 		SandboxName: lease.SandboxName,
 		ResourceKey: lease.ResourceKey,
 		Purpose:     lease.Purpose,
@@ -165,6 +167,7 @@ func TestReleaseExactLeaseRejectsReplacedSandboxIdentity(t *testing.T) {
 	writeLeaseFixture(t, home, &replaced)
 	if _, err := store.ReleaseExact(SandboxLeaseExactReleaseRequest{
 		ID:          lease.ID,
+		SandboxID:   lease.SandboxID,
 		SandboxName: lease.SandboxName,
 		ResourceKey: lease.ResourceKey,
 		Purpose:     lease.Purpose,
@@ -213,19 +216,34 @@ func TestHeartbeatCannotReactivateExactlyReleasedLease(t *testing.T) {
 	}()
 	<-heartbeatReady
 
-	if _, err := seedStore.ReleaseExact(SandboxLeaseExactReleaseRequest{
-		ID:          lease.ID,
-		SandboxName: lease.SandboxName,
-		ResourceKey: lease.ResourceKey,
-		Purpose:     lease.Purpose,
-		RunID:       lease.RunID,
-		AcquiredAt:  lease.AcquiredAt,
-	}); err != nil {
-		t.Fatalf("ReleaseExact() error: %v", err)
+	originalAcquire := acquireSandboxLeaseStoreLock
+	t.Cleanup(func() { acquireSandboxLeaseStoreLock = originalAcquire })
+	releaseAttempted := make(chan struct{})
+	var releaseAttemptOnce sync.Once
+	acquireSandboxLeaseStoreLock = func(path string) (*sandboxLeaseStoreFileLock, error) {
+		releaseAttemptOnce.Do(func() { close(releaseAttempted) })
+		return originalAcquire(path)
 	}
+	releaseDone := make(chan error, 1)
+	go func() {
+		_, releaseErr := seedStore.ReleaseExact(SandboxLeaseExactReleaseRequest{
+			ID:          lease.ID,
+			SandboxID:   lease.SandboxID,
+			SandboxName: lease.SandboxName,
+			ResourceKey: lease.ResourceKey,
+			Purpose:     lease.Purpose,
+			RunID:       lease.RunID,
+			AcquiredAt:  lease.AcquiredAt,
+		})
+		releaseDone <- releaseErr
+	}()
+	<-releaseAttempted
 	close(continueHeartbeat)
 	if err := <-heartbeatDone; err != nil {
 		t.Fatalf("Heartbeat() error: %v", err)
+	}
+	if err := <-releaseDone; err != nil {
+		t.Fatalf("ReleaseExact() error: %v", err)
 	}
 
 	current, err := seedStore.Load(lease.ID)

@@ -448,6 +448,9 @@ func validateManifestForSave(manifest *Manifest) error {
 	if err := validateFinalizationMetadata(manifest.Finalization); err != nil {
 		return err
 	}
+	if err := validateManifestTerminalPublication(manifest); err != nil {
+		return err
+	}
 	for _, artifact := range manifest.Artifacts {
 		if err := validateArtifactMetadata(manifest.ID, artifact); err != nil {
 			return err
@@ -455,6 +458,29 @@ func validateManifestForSave(manifest *Manifest) error {
 	}
 	if err := validateArtifactCollectionMetadata(manifest.ID, manifest.ArtifactMetadata); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateManifestTerminalPublication(manifest *Manifest) error {
+	if manifest == nil ||
+		manifest.Finalization == nil ||
+		!manifest.Finalization.Checkpoints.TerminalPublication.Completed {
+		return nil
+	}
+	terminalState := strings.TrimSpace(manifest.Finalization.TerminalJobState)
+	switch terminalState {
+	case "succeeded", "failed", "canceled":
+	default:
+		return fmt.Errorf("sandbox execution terminal publication state is invalid")
+	}
+	if manifest.WorkerJob == nil ||
+		strings.TrimSpace(manifest.WorkerJob.State) != terminalState ||
+		string(manifest.Status) != terminalState ||
+		manifest.FinishedAt == nil ||
+		manifest.WorkerJob.FinishedAt == nil ||
+		!manifest.FinishedAt.Equal(*manifest.WorkerJob.FinishedAt) {
+		return fmt.Errorf("sandbox execution terminal publication is inconsistent")
 	}
 	return nil
 }

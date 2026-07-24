@@ -182,6 +182,9 @@ func finalizeAutoSandboxWorkerJob(
 		CollectArtifacts: func(ctx context.Context, locked sandboxexecution.Store, manifest *sandboxexecution.Manifest, job *sandboxworker.Job) error {
 			archivePath := ""
 			if job != nil && job.State == sandboxworker.JobStateSucceeded {
+				if err := validateSandboxL3AutoArchiveProof(job); err != nil {
+					return err
+				}
 				var err error
 				archivePath, err = autoSandboxRemoteArchivePath(capturedJSON, resultForCollection.StdoutSummary)
 				if err != nil {

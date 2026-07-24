@@ -4005,7 +4005,7 @@ func factorySandboxArtifactRequestsFromTimeline(store factory.Store, runID strin
 		return nil, fmt.Errorf("factory sandbox archive path is invalid")
 	}
 
-	archivePath, err := autoSandboxRemoteArchivePath(nil, strings.Join(lines, "\n"))
+	archivePath, err := autoSandboxRemoteArchivePath(nil, strings.Join(lines, "\n")+"\n")
 	if err != nil {
 		return nil, fmt.Errorf("factory sandbox archive path is invalid: %w", err)
 	}

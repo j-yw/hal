@@ -485,7 +485,7 @@ func TestL3FinalizationMissingActionDependenciesFailClosed(t *testing.T) {
 	}
 }
 
-func TestL3FinalizationCompletedFastPathValidatesTerminalConsistency(t *testing.T) {
+func TestL3ManifestStoreRejectsCompletedPublicationInconsistency(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*sandboxexecution.Manifest)
@@ -530,17 +530,9 @@ func TestL3FinalizationCompletedFastPathValidatesTerminalConsistency(t *testing.
 				t.Fatalf("LoadManifest() error: %v", err)
 			}
 			tt.mutate(manifest)
-			if err := store.SaveManifest(manifest); err != nil {
-				t.Fatalf("SaveManifest(inconsistent) error: %v", err)
-			}
-
-			err = finalizeSandboxL3Execution(context.Background(), store, executionID, false, sandboxL3FinalizationDeps{
-				observeJob: func(context.Context, *sandboxexecution.Manifest) (*sandboxworker.Job, error) {
-					panic("completed fast path observed a worker job")
-				},
-			})
-			if err == nil || !strings.Contains(err.Error(), "terminal_publication_inconsistent") {
-				t.Fatalf("inconsistent completed fast path error = %v", err)
+			if err := store.SaveManifest(manifest); err == nil ||
+				!strings.Contains(err.Error(), "terminal publication") {
+				t.Fatalf("SaveManifest(inconsistent) error = %v, want terminal publication rejection", err)
 			}
 		})
 	}
