@@ -52,7 +52,7 @@ func TestPhase54NoSchemaOrContractExpansionRequired(t *testing.T) {
 				"host,omitempty", "runtime,omitempty", "security,omitempty", "networkProxySession,omitempty",
 				"networkPolicyDecisionLogs,omitempty", "credentialProxyPlan,omitempty", "credentialProxySession,omitempty",
 				"credentialProxyBindings,omitempty", "credentialDelivery,omitempty", "lease,omitempty",
-				"workerRouting,omitempty", "workerJob,omitempty", "templateLock,omitempty", "artifacts,omitempty", "artifactMetadata,omitempty",
+				"workerRouting,omitempty", "workerJob,omitempty", "finalization,omitempty", "templateLock,omitempty", "artifacts,omitempty", "artifactMetadata,omitempty",
 				"syncOut,omitempty", "syncOutApply,omitempty",
 			},
 		},

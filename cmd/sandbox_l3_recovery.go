@@ -103,9 +103,12 @@ const (
 var sandboxL3SensitiveAssignment = regexp.MustCompile(`(?i)\b(?:api[_-]?key|access[_-]?key|authorization|password|secret|token)=\S+`)
 
 var (
-	sandboxL3DefaultStore = sandboxexecution.DefaultStore
-	sandboxL3LoadSandbox  = sandbox.LoadActiveInstance
-	sandboxL3LoadHost     = sandbox.LoadHost
+	sandboxL3DefaultStore    = sandboxexecution.DefaultStore
+	sandboxL3LoadSandbox     = sandbox.LoadActiveInstance
+	sandboxL3LoadHost        = sandbox.LoadHost
+	sandboxL3NewWorkerClient = func(socketPath string) (*sandboxworker.Client, error) {
+		return sandboxworker.NewClient(sandboxworker.ClientOptions{SocketPath: socketPath})
+	}
 )
 
 func newSandboxLogsCommand() *cobra.Command {
@@ -453,7 +456,7 @@ func sandboxL3ClientForManifest(manifest *sandboxexecution.Manifest) (*sandboxwo
 	if err != nil {
 		return nil, fmt.Errorf("worker_endpoint_invalid: worker host %s endpoint is invalid", hostID)
 	}
-	client, err := sandboxworker.NewClient(sandboxworker.ClientOptions{SocketPath: socketPath})
+	client, err := sandboxL3NewWorkerClient(socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("worker_client_unavailable: worker host %s client is unavailable", hostID)
 	}

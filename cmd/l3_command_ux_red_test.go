@@ -705,8 +705,6 @@ func saveL3Manifest(t *testing.T, store sandboxexecution.Store, manifest *sandbo
 type l3WorkerHarness struct {
 	t                  *testing.T
 	script             *l3WorkerScript
-	cancel             context.CancelFunc
-	errCh              chan error
 	hostMutationMarker string
 	manifestPath       string
 }
@@ -715,45 +713,21 @@ func newL3WorkerHarness(t *testing.T, script *l3WorkerScript) *l3WorkerHarness {
 	t.Helper()
 	t.Setenv("HAL_CONFIG_HOME", t.TempDir())
 
-	tempRoot, err := filepath.EvalSymlinks(os.TempDir())
-	if err != nil {
-		t.Fatalf("resolve system temp dir: %v", err)
-	}
-	socketDir, err := os.MkdirTemp(tempRoot, "hal-l3-command-red-")
-	if err != nil {
-		t.Fatalf("create short socket dir: %v", err)
-	}
-	if err := os.Chmod(socketDir, 0o700); err != nil {
-		t.Fatalf("chmod short socket dir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
-	socketPath := filepath.Join(socketDir, "worker.sock")
-
 	if script == nil {
 		t.Fatal("L3 worker script is required")
 	}
-	script.socketPath = socketPath
-	server, err := sandboxworker.NewServer(sandboxworker.ServerOptions{
-		SocketPath: socketPath,
-		Handler:    script,
+	script.socketPath = "/tmp/private/l3-worker.sock"
+	originalClientFactory := sandboxL3NewWorkerClient
+	sandboxL3NewWorkerClient = func(string) (*sandboxworker.Client, error) {
+		return sandboxworker.NewClient(sandboxworker.ClientOptions{
+			Transport: sandboxworker.ClientTransportFunc(func(ctx context.Context, req sandboxworker.Request) (sandboxworker.Response, error) {
+				return script.HandleRequest(ctx, req), nil
+			}),
+		})
+	}
+	t.Cleanup(func() {
+		sandboxL3NewWorkerClient = originalClientFactory
 	})
-	if err != nil {
-		t.Fatalf("create fake worker server: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
-	go func() { errCh <- server.ListenAndServe(ctx) }()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if _, err := os.Stat(socketPath); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatal("fake worker socket did not become ready")
-		}
-		time.Sleep(time.Millisecond)
-	}
 
 	marker := filepath.Join(t.TempDir(), "host-mutation-marker")
 	binDir := t.TempDir()
@@ -766,25 +740,11 @@ func newL3WorkerHarness(t *testing.T, script *l3WorkerScript) *l3WorkerHarness {
 	}
 	t.Setenv("PATH", binDir)
 
-	harness := &l3WorkerHarness{
+	return &l3WorkerHarness{
 		t:                  t,
 		script:             script,
-		cancel:             cancel,
-		errCh:              errCh,
 		hostMutationMarker: marker,
 	}
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case err := <-errCh:
-			if err != nil {
-				t.Errorf("fake worker server stopped with error: %v", err)
-			}
-		case <-time.After(2 * time.Second):
-			t.Error("fake worker server did not stop")
-		}
-	})
-	return harness
 }
 
 func (harness *l3WorkerHarness) seed(sandboxName, executionID, jobID string) {
