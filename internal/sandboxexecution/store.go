@@ -174,20 +174,71 @@ func (s Store) AppendArtifactMetadata(executionID string, metadata ArtifactMetad
 		return nil
 	}
 
-	manifest, err := s.LoadManifest(executionID)
+	return s.UpdateManifest(executionID, func(manifest *Manifest) error {
+		if manifest.ArtifactMetadata == nil {
+			manifest.ArtifactMetadata = &ArtifactMetadata{}
+		}
+		manifest.ArtifactMetadata.Collected = append(manifest.ArtifactMetadata.Collected, metadata.Collected...)
+		manifest.ArtifactMetadata.Partial = append(manifest.ArtifactMetadata.Partial, metadata.Partial...)
+		manifest.ArtifactMetadata.Warnings = append(manifest.ArtifactMetadata.Warnings, metadata.Warnings...)
+		return nil
+	})
+}
+
+// UpdateManifest atomically loads, mutates, validates, and saves one manifest
+// while holding its per-execution OS lock.
+func (s Store) UpdateManifest(executionID string, update func(*Manifest) error) error {
+	executionID, err := validateExecutionID(executionID)
 	if err != nil {
 		return err
 	}
-	if manifest.ID != executionID {
-		return fmt.Errorf("sandbox execution manifest %q has ID %q", executionID, manifest.ID)
+	if update == nil {
+		return fmt.Errorf("sandbox execution manifest update callback is required")
 	}
-	if manifest.ArtifactMetadata == nil {
-		manifest.ArtifactMetadata = &ArtifactMetadata{}
+	return s.WithExecutionLock(executionID, func() error {
+		manifest, err := s.LoadManifest(executionID)
+		if err != nil {
+			return err
+		}
+		if manifest.ID != executionID {
+			return fmt.Errorf("sandbox execution manifest %q has mismatched ID", executionID)
+		}
+		if err := update(manifest); err != nil {
+			return err
+		}
+		if manifest.ID != executionID {
+			return fmt.Errorf("sandbox execution manifest update changed ID")
+		}
+		return s.SaveManifest(manifest)
+	})
+}
+
+// UpsertArtifactMetadata merges retry-safe artifact metadata under the
+// execution lock. Stable artifact identities replace retry entries in place
+// while unrelated metadata and ordering are preserved.
+func (s Store) UpsertArtifactMetadata(executionID string, metadata ArtifactMetadata) error {
+	executionID, err := validateExecutionID(executionID)
+	if err != nil {
+		return err
 	}
-	manifest.ArtifactMetadata.Collected = append(manifest.ArtifactMetadata.Collected, metadata.Collected...)
-	manifest.ArtifactMetadata.Partial = append(manifest.ArtifactMetadata.Partial, metadata.Partial...)
-	manifest.ArtifactMetadata.Warnings = append(manifest.ArtifactMetadata.Warnings, metadata.Warnings...)
-	return s.SaveManifest(manifest)
+	if isArtifactMetadataEmpty(metadata) {
+		return nil
+	}
+	if err := validateArtifactCollectionMetadata(executionID, &metadata); err != nil {
+		return err
+	}
+	return s.UpdateManifest(executionID, func(manifest *Manifest) error {
+		existing := ArtifactMetadata{}
+		if manifest.ArtifactMetadata != nil {
+			existing = *manifest.ArtifactMetadata
+		}
+		existing.Collected = upsertArtifactEntries(existing.Collected, metadata.Collected)
+		existing.Partial = upsertArtifactEntries(existing.Partial, metadata.Partial)
+		existing.Partial = removeCollectedArtifactEntries(existing.Partial, existing.Collected)
+		existing.Warnings = upsertArtifactWarnings(existing.Warnings, metadata.Warnings)
+		manifest.ArtifactMetadata = &existing
+		return nil
+	})
 }
 
 // ListManifests returns committed manifests sorted by started time, then ID.
@@ -285,6 +336,9 @@ func validateManifestForSave(manifest *Manifest) error {
 	if err := validateWorkerJobReference(manifest.WorkerJob); err != nil {
 		return err
 	}
+	if err := validateFinalizationMetadata(manifest.Finalization); err != nil {
+		return err
+	}
 	for _, artifact := range manifest.Artifacts {
 		if err := validateArtifactMetadata(manifest.ID, artifact); err != nil {
 			return err
@@ -298,6 +352,58 @@ func validateManifestForSave(manifest *Manifest) error {
 
 func isArtifactMetadataEmpty(metadata ArtifactMetadata) bool {
 	return len(metadata.Collected) == 0 && len(metadata.Partial) == 0 && len(metadata.Warnings) == 0
+}
+
+func upsertArtifactEntries(existing, incoming []ArtifactMetadataEntry) []ArtifactMetadataEntry {
+	merged := make([]ArtifactMetadataEntry, 0, len(existing)+len(incoming))
+	indexes := make(map[string]int, len(existing)+len(incoming))
+	for _, entry := range append(append([]ArtifactMetadataEntry(nil), existing...), incoming...) {
+		key := artifactMetadataEntryStableKey(entry)
+		if index, ok := indexes[key]; ok {
+			merged[index] = entry
+			continue
+		}
+		indexes[key] = len(merged)
+		merged = append(merged, entry)
+	}
+	return merged
+}
+
+func upsertArtifactWarnings(existing, incoming []ArtifactWarning) []ArtifactWarning {
+	merged := make([]ArtifactWarning, 0, len(existing)+len(incoming))
+	indexes := make(map[string]int, len(existing)+len(incoming))
+	for _, warning := range append(append([]ArtifactWarning(nil), existing...), incoming...) {
+		key := strings.TrimSpace(warning.Phase) + "\x00" + artifactMetadataEntryStableKey(warning.Artifact)
+		if index, ok := indexes[key]; ok {
+			merged[index] = warning
+			continue
+		}
+		indexes[key] = len(merged)
+		merged = append(merged, warning)
+	}
+	return merged
+}
+
+func removeCollectedArtifactEntries(partial, collected []ArtifactMetadataEntry) []ArtifactMetadataEntry {
+	collectedKeys := make(map[string]struct{}, len(collected))
+	for _, entry := range collected {
+		collectedKeys[artifactMetadataEntryStableKey(entry)] = struct{}{}
+	}
+	filtered := make([]ArtifactMetadataEntry, 0, len(partial))
+	for _, entry := range partial {
+		if _, collected := collectedKeys[artifactMetadataEntryStableKey(entry)]; collected {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
+func artifactMetadataEntryStableKey(entry ArtifactMetadataEntry) string {
+	if id := strings.TrimSpace(entry.ID); id != "" {
+		return "id:" + id
+	}
+	return "path:" + entry.Path
 }
 
 func loadManifestFile(path, executionID string) (*Manifest, error) {
