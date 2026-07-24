@@ -31,12 +31,25 @@ func TestDefaultMetadataIdentifiesRootlessPodmanLocalContainer(t *testing.T) {
 
 func TestDriverExposesRootlessPodmanMetadata(t *testing.T) {
 	driver := rootlesspodman.New(rootlesspodman.Options{})
+	var _ sandboxruntime.JobExecutionSupport = driver
 
 	if got := driver.ID(); got != sandboxruntime.DriverRootlessPodman {
 		t.Fatalf("ID() = %q, want %q", got, sandboxruntime.DriverRootlessPodman)
 	}
 	if got := driver.Metadata(); got != rootlesspodman.DefaultMetadata() {
 		t.Fatalf("Metadata() = %#v, want %#v", got, rootlesspodman.DefaultMetadata())
+	}
+	if !driver.SupportsJobExecution() {
+		t.Fatal("default provisioned image did not advertise async job execution")
+	}
+	if rootlesspodman.New(rootlesspodman.Options{Image: "custom.invalid/base:latest"}).SupportsJobExecution() {
+		t.Fatal("unattested custom image advertised async job execution")
+	}
+	if !rootlesspodman.New(rootlesspodman.Options{
+		Image:                 "custom.invalid/compatible:latest",
+		JobExecutionSupported: true,
+	}).SupportsJobExecution() {
+		t.Fatal("explicitly attested custom image did not advertise async job execution")
 	}
 }
 
@@ -78,6 +91,7 @@ func TestCommandRequestContainsStreamingCommandFields(t *testing.T) {
 
 	assertFieldType(t, requestType, "Operation", reflect.TypeOf(""))
 	assertFieldType(t, requestType, "Args", reflect.TypeOf([]string{}))
+	assertFieldType(t, requestType, "CancellationArgs", reflect.TypeOf([]string{}))
 	assertFieldType(t, requestType, "Env", reflect.TypeOf(map[string]string{}))
 	assertFieldType(t, requestType, "WorkDir", reflect.TypeOf(""))
 	assertFieldType(t, requestType, "Stdin", reflect.TypeOf((*io.Reader)(nil)).Elem())

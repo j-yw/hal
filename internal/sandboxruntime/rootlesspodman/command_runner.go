@@ -9,7 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+const execCancellationTimeout = 10 * time.Second
 
 // DefaultCommandRunner executes the Podman argv constructed by Driver methods.
 // Tests normally inject fake runners instead, so normal unit tests do not
@@ -21,7 +24,7 @@ func (DefaultCommandRunner) RunLifecycleCommand(ctx context.Context, req Command
 }
 
 func (DefaultCommandRunner) RunExecCommand(ctx context.Context, req CommandRequest) (CommandResult, error) {
-	return runDefaultCommand(ctx, req)
+	return runDefaultExecCommand(ctx, req)
 }
 
 func (DefaultCommandRunner) RunCopyCommand(ctx context.Context, req CommandRequest) (CommandResult, error) {
@@ -59,6 +62,86 @@ func runDefaultCommand(ctx context.Context, req CommandRequest) (CommandResult, 
 	return result, err
 }
 
+func runDefaultExecCommand(ctx context.Context, req CommandRequest) (CommandResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if len(req.Args) == 0 || strings.TrimSpace(req.Args[0]) == "" {
+		return CommandResult{ExitCode: -1}, fmt.Errorf("podman command args are required")
+	}
+	if err := ctx.Err(); err != nil {
+		return CommandResult{ExitCode: -1}, err
+	}
+
+	cmd := exec.Command(req.Args[0], req.Args[1:]...)
+	configureExecProcessGroup(cmd)
+	if trimmedWorkDir := strings.TrimSpace(req.WorkDir); trimmedWorkDir != "" {
+		cmd.Dir = trimmedWorkDir
+	}
+	cmd.Env = commandEnvironment(req.Env)
+	cmd.Stdin = req.Stdin
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = execCommandWriter(req.Stdout, &stdout)
+	cmd.Stderr = execCommandWriter(req.Stderr, &stderr)
+
+	if err := cmd.Start(); err != nil {
+		return CommandResult{ExitCode: commandExitCode(err)}, err
+	}
+	completionCh := observeExecProcess(cmd)
+
+	var err error
+	var cancellationErr error
+	cancellationAttempted := false
+	select {
+	case observationErr := <-completionCh:
+		err = waitExecProcess(cmd, observationErr)
+	case <-ctx.Done():
+		cancellationAttempted = true
+		err = terminateExecProcessGroup(cmd, completionCh)
+		cancellationErr = runExecCancellationCommand(req.CancellationArgs)
+	}
+	result := CommandResult{
+		ExitCode: commandExitCode(err),
+		Stdout:   stdout.String(),
+		Stderr:   stderr.String(),
+		CancellationProcessGroupTerminated: cancellationProcessGroupTerminationProven(
+			cancellationAttempted,
+			req.CancellationArgs,
+			cancellationErr,
+		),
+	}
+	if ctx.Err() != nil {
+		return result, errors.Join(ctx.Err(), cancellationErr)
+	}
+	return result, err
+}
+
+func cancellationProcessGroupTerminationProven(attempted bool, args []string, err error) bool {
+	return attempted && len(args) > 0 && err == nil
+}
+
+func runExecCancellationCommand(args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	if strings.TrimSpace(args[0]) == "" {
+		return fmt.Errorf("podman exec cancellation command is invalid")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), execCancellationTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd.Env = commandEnvironment(nil)
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("podman exec cancellation cleanup timed out: %w", ctx.Err())
+		}
+		return fmt.Errorf("podman exec cancellation cleanup failed: %w", err)
+	}
+	return nil
+}
+
 func commandEnvironment(env map[string]string) []string {
 	if len(env) == 0 {
 		return os.Environ()
@@ -75,6 +158,13 @@ func commandWriter(dst io.Writer, capture *bytes.Buffer) io.Writer {
 		return capture
 	}
 	return io.MultiWriter(dst, capture)
+}
+
+func execCommandWriter(dst io.Writer, capture *bytes.Buffer) io.Writer {
+	if dst != nil {
+		return dst
+	}
+	return capture
 }
 
 func commandExitCode(err error) int {

@@ -33,6 +33,13 @@ type ExecDriver interface {
 	Exec(context.Context, ExecRequest) (*ExecResult, error)
 }
 
+// JobExecutionSupport explicitly opts a runtime into daemon-owned asynchronous
+// execution. Ordinary Exec support is insufficient because durable jobs also
+// require runtime-specific process-group cancellation semantics and helpers.
+type JobExecutionSupport interface {
+	SupportsJobExecution() bool
+}
+
 // FileTransport copies files between the host and sandbox target.
 type FileTransport interface {
 	CopyIn(context.Context, CopyRequest) error
@@ -316,18 +323,27 @@ type InspectRequest struct {
 
 // ExecRequest describes a command that should run inside a target.
 type ExecRequest struct {
-	Target  Target
-	Args    []string
-	Stdout  io.Writer
-	Stderr  io.Writer
-	Stdin   io.Reader
-	Env     map[string]string
-	WorkDir string
+	Target                               Target
+	Args                                 []string
+	Stdout                               io.Writer
+	Stderr                               io.Writer
+	Stdin                                io.Reader
+	Env                                  map[string]string
+	WorkDir                              string
+	RequireProcessGroupCancellationProof bool
 }
 
 // ExecResult describes a completed command execution.
 type ExecResult struct {
-	ExitCode int
+	ExitCode     int
+	Cancellation *ExecCancellationResult
+}
+
+// ExecCancellationResult records whether a requested cancellation was observed
+// by the runtime-owned process-group supervisor. It deliberately does not claim
+// termination of descendants that detached from that process group.
+type ExecCancellationResult struct {
+	ProcessGroupTerminated bool
 }
 
 // CopyRequest describes one file transfer direction for a target.

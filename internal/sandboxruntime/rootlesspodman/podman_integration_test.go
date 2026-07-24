@@ -36,6 +36,7 @@ func TestPodmanIntegrationLifecycleExecAndCopy(t *testing.T) {
 		CopyRunner:      runner,
 		PodmanPath:      podmanPath,
 		Image:           image,
+		WorkDir:         "/",
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -46,6 +47,7 @@ func TestPodmanIntegrationLifecycleExecAndCopy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() failed: %v", err)
 	}
+	cleanupTarget := *target
 	deleted := false
 	t.Cleanup(func() {
 		if deleted {
@@ -53,7 +55,7 @@ func TestPodmanIntegrationLifecycleExecAndCopy(t *testing.T) {
 		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
-		_ = driver.Delete(cleanupCtx, sandboxruntime.LifecycleRequest{Target: *target})
+		_ = driver.Delete(cleanupCtx, sandboxruntime.LifecycleRequest{Target: cleanupTarget})
 	})
 	assertPodmanIntegrationTarget(t, target, image, sandbox.StatusStopped)
 	assertNoForbiddenPodmanIntegrationConfig(t, podmanPath, podmanIntegrationTargetRef(target))
@@ -92,8 +94,8 @@ func TestPodmanIntegrationLifecycleExecAndCopy(t *testing.T) {
 	if err := os.WriteFile(localInput, []byte("copy-payload\n"), 0o644); err != nil {
 		t.Fatalf("write local input: %v", err)
 	}
-	containerInput := "/workspace/hal-podman-input.txt"
-	containerOutput := "/workspace/hal-podman-output.txt"
+	containerInput := "/tmp/hal-podman-input.txt"
+	containerOutput := "/tmp/hal-podman-output.txt"
 	if err := driver.CopyIn(ctx, sandboxruntime.CopyRequest{
 		Target:          *target,
 		SourcePath:      localInput,
@@ -103,7 +105,7 @@ func TestPodmanIntegrationLifecycleExecAndCopy(t *testing.T) {
 	}
 	if _, err := driver.Exec(ctx, sandboxruntime.ExecRequest{
 		Target: *target,
-		Args:   []string{"sh", "-c", "cat /workspace/hal-podman-input.txt > /workspace/hal-podman-output.txt"},
+		Args:   []string{"sh", "-c", "cat /tmp/hal-podman-input.txt > /tmp/hal-podman-output.txt"},
 	}); err != nil {
 		t.Fatalf("Exec() after CopyIn failed: %v", err)
 	}
@@ -139,6 +141,193 @@ func TestPodmanIntegrationLifecycleExecAndCopy(t *testing.T) {
 		t.Fatalf("Delete() failed: %v", err)
 	}
 	deleted = true
+}
+
+func TestPodmanIntegrationCancellationStopsOnlyExecWorkload(t *testing.T) {
+	image := strings.TrimSpace(os.Getenv("HAL_PODMAN_TEST_IMAGE"))
+	if image == "" {
+		t.Skip("HAL_PODMAN_TEST_IMAGE is unset; set it to a locally available image to run Podman integration tests")
+	}
+	podmanPath := podmanIntegrationExecutable(t)
+	requireLocalPodmanImage(t, podmanPath, image)
+	runner := rootlesspodman.DefaultCommandRunner{}
+	driver := rootlesspodman.New(rootlesspodman.Options{
+		LifecycleRunner: runner,
+		ExecRunner:      runner,
+		PodmanPath:      podmanPath,
+		Image:           image,
+		WorkDir:         "/",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	containerName := fmt.Sprintf("hal-podman-cancel-it-%d-%d", os.Getpid(), time.Now().UnixNano())
+	target, err := driver.Create(ctx, sandboxruntime.CreateRequest{Name: containerName})
+	if err != nil {
+		t.Fatalf("Create() failed: %v", err)
+	}
+	cleanupTarget := *target
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		_ = driver.Delete(cleanupCtx, sandboxruntime.LifecycleRequest{Target: cleanupTarget})
+	})
+	target, err = driver.Start(ctx, sandboxruntime.LifecycleRequest{Target: *target})
+	if err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	const readyPath = "/tmp/hal-podman-cancellation-ready"
+	workloadMarker := fmt.Sprintf("hal-podman-cancel-workload-%d-%d", os.Getpid(), time.Now().UnixNano())
+	execCtx, cancelExec := context.WithCancel(ctx)
+	type execOutcome struct {
+		result *sandboxruntime.ExecResult
+		err    error
+	}
+	execResultCh := make(chan execOutcome, 1)
+	go func() {
+		execResult, execErr := driver.Exec(execCtx, sandboxruntime.ExecRequest{
+			Target:                               *target,
+			Args:                                 []string{"sh", "-c", "trap '' TERM; : > " + readyPath + "; while :; do sleep 1; done", workloadMarker},
+			RequireProcessGroupCancellationProof: true,
+		})
+		execResultCh <- execOutcome{result: execResult, err: execErr}
+	}()
+	waitForPodmanIntegrationFile(t, ctx, podmanPath, podmanIntegrationTargetRef(target), readyPath)
+
+	cancelExec()
+	select {
+	case outcome := <-execResultCh:
+		if !errors.Is(outcome.err, context.Canceled) {
+			t.Fatalf("Exec() cancellation error = %v, want context.Canceled", outcome.err)
+		}
+		if outcome.result == nil || outcome.result.Cancellation == nil || !outcome.result.Cancellation.ProcessGroupTerminated {
+			t.Fatalf("Exec() cancellation result = %#v, want proven process-group termination", outcome.result)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Exec() did not return after cancellation")
+	}
+	inspectCtx, inspectCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer inspectCancel()
+	target, err = driver.Inspect(inspectCtx, sandboxruntime.InspectRequest{Target: *target})
+	if err != nil {
+		t.Fatalf("Inspect() after cancellation failed: %v", err)
+	}
+	if target.Status != sandbox.StatusRunning {
+		t.Fatalf("container status after cancellation = %q, want %q", target.Status, sandbox.StatusRunning)
+	}
+	assertPodmanIntegrationWorkloadAbsent(t, inspectCtx, podmanPath, podmanIntegrationTargetRef(target), workloadMarker)
+}
+
+func TestPodmanIntegrationCancellationTamperDoesNotProduceFalseProof(t *testing.T) {
+	image := strings.TrimSpace(os.Getenv("HAL_PODMAN_TEST_IMAGE"))
+	if image == "" {
+		t.Skip("HAL_PODMAN_TEST_IMAGE is unset; set it to a locally available image to run Podman integration tests")
+	}
+	podmanPath := podmanIntegrationExecutable(t)
+	requireLocalPodmanImage(t, podmanPath, image)
+	runner := rootlesspodman.DefaultCommandRunner{}
+	driver := rootlesspodman.New(rootlesspodman.Options{
+		LifecycleRunner: runner,
+		ExecRunner:      runner,
+		PodmanPath:      podmanPath,
+		Image:           image,
+		WorkDir:         "/",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	containerName := fmt.Sprintf("hal-podman-cancel-tamper-it-%d-%d", os.Getpid(), time.Now().UnixNano())
+	target, err := driver.Create(ctx, sandboxruntime.CreateRequest{Name: containerName})
+	if err != nil {
+		t.Fatalf("Create() failed: %v", err)
+	}
+	cleanupTarget := *target
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		_ = driver.Delete(cleanupCtx, sandboxruntime.LifecycleRequest{Target: cleanupTarget})
+	})
+	target, err = driver.Start(ctx, sandboxruntime.LifecycleRequest{Target: *target})
+	if err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	const tamperReadyPath = "/tmp/hal-podman-cancellation-tamper-ready"
+	execCtx, cancelExec := context.WithCancel(ctx)
+	type execOutcome struct {
+		result *sandboxruntime.ExecResult
+		err    error
+	}
+	execResultCh := make(chan execOutcome, 1)
+	go func() {
+		execResult, execErr := driver.Exec(execCtx, sandboxruntime.ExecRequest{
+			Target: *target,
+			Args: []string{"sh", "-c", `
+(
+	while :; do
+		for state_dir in /tmp/.hal-exec-*; do
+			[ -d "$state_dir" ] || continue
+			[ -p "$state_dir/cancel" ] || continue
+			rm -f "$state_dir/cancel" || continue
+			mkfifo "$state_dir/cancel" || continue
+			: > /tmp/hal-podman-cancellation-tamper-ready
+			IFS= read -r ignored < "$state_dir/cancel" || true
+			rm -f "$state_dir/cancel"
+			rmdir "$state_dir" 2>/dev/null || true
+			exit 0
+		done
+		sleep 0.01
+	done
+) &
+trap '' TERM
+while :; do sleep 1; done
+`},
+			RequireProcessGroupCancellationProof: true,
+		})
+		execResultCh <- execOutcome{result: execResult, err: execErr}
+	}()
+	waitForPodmanIntegrationFile(t, ctx, podmanPath, podmanIntegrationTargetRef(target), tamperReadyPath)
+
+	cancelExec()
+	select {
+	case outcome := <-execResultCh:
+		if !errors.Is(outcome.err, context.Canceled) {
+			t.Fatalf("Exec() cancellation error = %v, want context.Canceled", outcome.err)
+		}
+		if outcome.result == nil {
+			t.Fatal("Exec() cancellation result = nil")
+		}
+		if outcome.result.Cancellation != nil && outcome.result.Cancellation.ProcessGroupTerminated {
+			t.Fatalf("tampered cancellation returned false process-group proof: %#v", outcome.result.Cancellation)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Exec() did not return after tampered cancellation")
+	}
+}
+
+func waitForPodmanIntegrationFile(t *testing.T, ctx context.Context, podmanPath, targetRef, path string) {
+	t.Helper()
+	for {
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("wait for Podman exec readiness: %v", err)
+		}
+		if err := exec.CommandContext(ctx, podmanPath, "exec", targetRef, "test", "-f", path).Run(); err == nil {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func assertPodmanIntegrationWorkloadAbsent(t *testing.T, ctx context.Context, podmanPath, targetRef, marker string) {
+	t.Helper()
+	output, err := exec.CommandContext(ctx, podmanPath, "exec", targetRef, "ps", "-eo", "pid,ppid,pgid,sid,args").Output()
+	if err != nil {
+		t.Fatalf("inspect Podman exec workload after cancellation: %v", err)
+	}
+	if strings.Contains(string(output), marker) {
+		t.Fatal("canceled Podman exec workload remained active")
+	}
 }
 
 func podmanIntegrationExecutable(t *testing.T) string {

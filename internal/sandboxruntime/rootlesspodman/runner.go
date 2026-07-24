@@ -19,19 +19,21 @@ const (
 // CommandRequest is the command boundary passed to fakeable Podman runners.
 // Args is the complete argv, including the executable.
 type CommandRequest struct {
-	Operation string
-	Args      []string
-	Env       map[string]string
-	WorkDir   string
-	Stdin     io.Reader
-	Stdout    io.Writer
-	Stderr    io.Writer
+	Operation        string
+	Args             []string
+	CancellationArgs []string
+	Env              map[string]string
+	WorkDir          string
+	Stdin            io.Reader
+	Stdout           io.Writer
+	Stderr           io.Writer
 }
 
 type CommandResult struct {
-	ExitCode int
-	Stdout   string
-	Stderr   string
+	ExitCode                           int
+	Stdout                             string
+	Stderr                             string
+	CancellationProcessGroupTerminated bool
 }
 
 type LifecycleCommandRunner interface {

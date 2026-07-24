@@ -161,7 +161,7 @@ func TestSandboxdCommandParsesFlagsAndUsesInjectedDependencies(t *testing.T) {
 			gotPodmanImage = config.Image
 			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
 		},
-		workerID: func() string {
+		workerID: func(string) string {
 			return "unused-default-worker"
 		},
 	})
@@ -245,7 +245,7 @@ func TestSandboxdDefaultCapabilitiesDoNotClaimNetworkPolicyEnforcement(t *testin
 		newRootlessPodmanDriver: func(sandboxdRootlessPodmanConfig) sandboxruntime.Driver {
 			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
 		},
-		workerID: func() string {
+		workerID: func(string) string {
 			return "worker-default-security"
 		},
 	})
@@ -275,6 +275,7 @@ func TestSandboxdDefaultCapabilitiesDoNotClaimNetworkPolicyEnforcement(t *testin
 
 func TestSandboxdCommandUsesDefaultWorkerIDDependency(t *testing.T) {
 	var gotService sandboxworker.ServiceOptions
+	var gotJobStateDir string
 	cmd, stdout, _ := newTestSandboxdCommand(sandboxdDeps{
 		newService: func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
 			gotService = options
@@ -289,7 +290,8 @@ func TestSandboxdCommandUsesDefaultWorkerIDDependency(t *testing.T) {
 		newRootlessPodmanDriver: func(sandboxdRootlessPodmanConfig) sandboxruntime.Driver {
 			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
 		},
-		workerID: func() string {
+		workerID: func(jobStateDir string) string {
+			gotJobStateDir = jobStateDir
 			return "worker-from-deps"
 		},
 	})
@@ -301,8 +303,28 @@ func TestSandboxdCommandUsesDefaultWorkerIDDependency(t *testing.T) {
 	if gotService.WorkerID != "worker-from-deps" {
 		t.Fatalf("service workerID = %q, want dependency default", gotService.WorkerID)
 	}
+	if gotJobStateDir != "/tmp/default-worker.sock.jobs" {
+		t.Fatalf("worker ID dependency state root = %q, want socket-scoped job state root", gotJobStateDir)
+	}
 	if !strings.Contains(stdout.String(), "worker-from-deps") {
 		t.Fatalf("human startup output = %q, want worker id", stdout.String())
+	}
+}
+
+func TestDefaultSandboxdWorkerIDIsStableAndStateRootScoped(t *testing.T) {
+	firstRoot := filepath.Join(t.TempDir(), "first", "jobs")
+	first := defaultSandboxdWorkerID(firstRoot)
+	if again := defaultSandboxdWorkerID(firstRoot); again != first {
+		t.Fatalf("default worker ID changed for the same state root: %q then %q", first, again)
+	}
+	secondRoot := filepath.Join(t.TempDir(), "second", "jobs")
+	if second := defaultSandboxdWorkerID(secondRoot); second == first {
+		t.Fatalf("default worker ID %q did not distinguish durable state roots", first)
+	}
+	for _, forbidden := range []string{firstRoot, secondRoot, string(filepath.Separator)} {
+		if strings.Contains(first, forbidden) {
+			t.Fatalf("default worker ID exposed path material %q: %q", forbidden, first)
+		}
 	}
 }
 
@@ -318,7 +340,7 @@ func TestSandboxdCommandRejectsMicroVMDriverWithoutConfiguredFactory(t *testing.
 			serverCalled = true
 			return nil, nil
 		},
-		workerID: func() string {
+		workerID: func(string) string {
 			return "worker-test"
 		},
 	})
@@ -944,7 +966,7 @@ func TestSandboxdCommandRegistersMicroVMOnlyWithInjectedFactory(t *testing.T) {
 			gotMicroVM = config
 			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverMicroVM}, nil
 		},
-		workerID: func() string {
+		workerID: func(string) string {
 			return "unused-default-worker"
 		},
 	})
@@ -1045,7 +1067,7 @@ func TestSandboxdCommandResolvesExplicitFirecrackerLaunchAssetsBeforeDriverConst
 			gotMicroVM = config
 			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverMicroVM}, nil
 		},
-		workerID: func() string {
+		workerID: func(string) string {
 			return "unused-default-worker"
 		},
 	})
@@ -1113,7 +1135,7 @@ func TestSandboxdCommandRejectsUnavailableLaunchAssetBeforeMicroVMDriverConstruc
 			driverConstructed = true
 			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverMicroVM}, nil
 		},
-		workerID: func() string {
+		workerID: func(string) string {
 			return "unused-default-worker"
 		},
 	})
@@ -1228,7 +1250,7 @@ func TestSandboxdMicroVMValidationRejectsUnsafeLivePaths(t *testing.T) {
 				newMicroVMDriver: func(config sandboxdMicroVMConfig) (sandboxruntime.Driver, error) {
 					return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverMicroVM}, nil
 				},
-				workerID: func() string {
+				workerID: func(string) string {
 					return "worker-test"
 				},
 			})
@@ -1273,7 +1295,7 @@ func TestSandboxdMicroVMValidationDoesNotRunForRootlessPodmanOnly(t *testing.T) 
 		newRootlessPodmanDriver: func(sandboxdRootlessPodmanConfig) sandboxruntime.Driver {
 			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
 		},
-		workerID: func() string {
+		workerID: func(string) string {
 			return "worker-test"
 		},
 	})
@@ -1397,7 +1419,7 @@ func TestSandboxdCommandRejectsUnsupportedDriverBeforeOpeningServer(t *testing.T
 			serverCalled = true
 			return nil, nil
 		},
-		workerID: func() string {
+		workerID: func(string) string {
 			return "worker-test"
 		},
 	})
@@ -1435,7 +1457,7 @@ func TestSandboxdCommandRendersServeErrors(t *testing.T) {
 		newRootlessPodmanDriver: func(sandboxdRootlessPodmanConfig) sandboxruntime.Driver {
 			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
 		},
-		workerID: func() string {
+		workerID: func(string) string {
 			return "worker-test"
 		},
 	})
@@ -1461,6 +1483,39 @@ func TestSandboxdCommandRendersServeErrors(t *testing.T) {
 	}
 }
 
+func TestRunSandboxdClosesWorkerServiceAfterServing(t *testing.T) {
+	handler := &closableSandboxdHandler{}
+	req := sandboxdRequest{
+		SocketPath:    "/tmp/hal-sandboxd-close.sock",
+		JobStateDir:   filepath.Join(t.TempDir(), "jobs"),
+		WorkerID:      "worker-close",
+		Drivers:       []string{sandboxruntime.DriverRootlessPodman},
+		PodmanPath:    "fake-podman",
+		PodmanImage:   "localhost/hal-agent:test",
+		MaxConcurrent: 1,
+	}
+	err := runSandboxdWithDeps(context.Background(), req, io.Discard, sandboxdDeps{
+		rootlessPodmanAvailable: func(context.Context, sandboxdRootlessPodmanConfig) error {
+			return nil
+		},
+		newRootlessPodmanDriver: func(sandboxdRootlessPodmanConfig) sandboxruntime.Driver {
+			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
+		},
+		newService: func(sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
+			return handler, nil
+		},
+		newServer: func(sandboxworker.ServerOptions) (sandboxdServer, error) {
+			return sandboxdServerFunc(func(context.Context) error { return nil }), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runSandboxdWithDeps() error: %v", err)
+	}
+	if !handler.closed {
+		t.Fatal("runSandboxdWithDeps() returned without closing its worker service")
+	}
+}
+
 func newTestSandboxdCommand(deps sandboxdDeps) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
 	cmd := newSandboxdCommand(deps)
 	cmd.SilenceUsage = true
@@ -1481,6 +1536,15 @@ func (handler *recordingSandboxdHandler) HandleRequest(ctx context.Context, req 
 		Operation:       req.Operation,
 		OK:              true,
 	}
+}
+
+type closableSandboxdHandler struct {
+	recordingSandboxdHandler
+	closed bool
+}
+
+func (handler *closableSandboxdHandler) Close() {
+	handler.closed = true
 }
 
 type sandboxdServerFunc func(context.Context) error

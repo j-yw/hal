@@ -65,6 +65,26 @@ func (service *Service) HandleRequest(ctx context.Context, req Request) Response
 			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request copyOut payload is required")
 		}
 		return service.CopyOutResponse(ctx, req.RequestID, req.DriverID, *req.CopyOut)
+	case OperationJobStart:
+		if req.JobStart == nil {
+			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request jobStart payload is required")
+		}
+		return service.JobStartResponse(ctx, req.RequestID, req.DriverID, *req.JobStart)
+	case OperationJobStatus:
+		if req.JobStatus == nil {
+			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request jobStatus payload is required")
+		}
+		return service.JobStatusResponse(req.RequestID, *req.JobStatus)
+	case OperationJobLogs:
+		if req.JobLogs == nil {
+			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request jobLogs payload is required")
+		}
+		return service.JobLogsResponse(req.RequestID, *req.JobLogs)
+	case OperationJobCancel:
+		if req.JobCancel == nil {
+			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request jobCancel payload is required")
+		}
+		return service.JobCancelResponse(req.RequestID, *req.JobCancel)
 	default:
 		return unsupportedOperationResponse(req)
 	}

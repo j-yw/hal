@@ -21,15 +21,22 @@ const (
 	OperationExec          = "exec"
 	OperationCopyIn        = "copy_in"
 	OperationCopyOut       = "copy_out"
+	OperationJobStart      = "job_start"
+	OperationJobStatus     = "job_status"
+	OperationJobLogs       = "job_logs"
+	OperationJobCancel     = "job_cancel"
 	OperationProtocolError = "protocol_error"
 
-	ErrorCodeMalformedRequest = "malformed_request"
-	ErrorCodeInternal         = "internal_error"
-	ErrorCodeRequestCanceled  = "request_canceled"
-	ErrorCodeRequestTimeout   = "request_timeout"
-	ErrorCodeUnsupportedOp    = "unsupported_operation"
-	ErrorCodeDriverNotFound   = "driver_not_found"
-	ErrorCodeDriverFailed     = "driver_error"
+	ErrorCodeMalformedRequest   = "malformed_request"
+	ErrorCodeInternal           = "internal_error"
+	ErrorCodeRequestCanceled    = "request_canceled"
+	ErrorCodeRequestTimeout     = "request_timeout"
+	ErrorCodeUnsupportedOp      = "unsupported_operation"
+	ErrorCodeDriverNotFound     = "driver_not_found"
+	ErrorCodeDriverFailed       = "driver_error"
+	ErrorCodeJobNotFound        = "job_not_found"
+	ErrorCodeCapacityExceeded   = "capacity_exceeded"
+	ErrorCodeSubmissionConflict = "submission_conflict"
 
 	HostKindLocal  = "local"
 	HostKindWorker = "worker"
@@ -85,6 +92,10 @@ type Request struct {
 	Exec            *ExecRequest      `json:"exec,omitempty"`
 	CopyIn          *CopyInRequest    `json:"copyIn,omitempty"`
 	CopyOut         *CopyOutRequest   `json:"copyOut,omitempty"`
+	JobStart        *JobStartRequest  `json:"jobStart,omitempty"`
+	JobStatus       *JobStatusRequest `json:"jobStatus,omitempty"`
+	JobLogs         *JobLogsRequest   `json:"jobLogs,omitempty"`
+	JobCancel       *JobCancelRequest `json:"jobCancel,omitempty"`
 }
 
 // Response is the versioned protocol envelope returned by a local sandbox
@@ -100,6 +111,8 @@ type Response struct {
 	Exec            *ExecResponse    `json:"exec,omitempty"`
 	CopyIn          *CopyInResponse  `json:"copyIn,omitempty"`
 	CopyOut         *CopyOutResponse `json:"copyOut,omitempty"`
+	Job             *Job             `json:"job,omitempty"`
+	JobLogs         *JobLogsResponse `json:"jobLogs,omitempty"`
 	Error           *Error           `json:"error,omitempty"`
 }
 
@@ -299,6 +312,29 @@ func (req Request) Validate() error {
 			return fmt.Errorf("worker request copyOut payload is required for %s", req.Operation)
 		}
 		return req.CopyOut.Validate()
+	case OperationJobStart:
+		if strings.TrimSpace(req.DriverID) == "" {
+			return fmt.Errorf("worker request driverId is required for %s", req.Operation)
+		}
+		if req.JobStart == nil {
+			return fmt.Errorf("worker request jobStart payload is required for %s", req.Operation)
+		}
+		return req.JobStart.Validate()
+	case OperationJobStatus:
+		if req.JobStatus == nil {
+			return fmt.Errorf("worker request jobStatus payload is required for %s", req.Operation)
+		}
+		return req.JobStatus.Validate()
+	case OperationJobLogs:
+		if req.JobLogs == nil {
+			return fmt.Errorf("worker request jobLogs payload is required for %s", req.Operation)
+		}
+		return req.JobLogs.Validate()
+	case OperationJobCancel:
+		if req.JobCancel == nil {
+			return fmt.Errorf("worker request jobCancel payload is required for %s", req.Operation)
+		}
+		return req.JobCancel.Validate()
 	default:
 		return nil
 	}
@@ -372,6 +408,24 @@ func (resp Response) Validate() error {
 			return fmt.Errorf("worker response copyOut: %w", err)
 		}
 	}
+	if resp.Job != nil {
+		switch resp.Operation {
+		case OperationJobStart, OperationJobStatus, OperationJobCancel:
+		default:
+			return fmt.Errorf("worker response job payload is invalid for %s", resp.Operation)
+		}
+		if err := resp.Job.Validate(); err != nil {
+			return fmt.Errorf("worker response job: %w", err)
+		}
+	}
+	if resp.JobLogs != nil {
+		if resp.Operation != OperationJobLogs {
+			return fmt.Errorf("worker response jobLogs payload is only valid for %s", OperationJobLogs)
+		}
+		if err := resp.JobLogs.Validate(); err != nil {
+			return fmt.Errorf("worker response jobLogs: %w", err)
+		}
+	}
 	if resp.OK && resp.Operation == OperationExec && resp.Exec == nil {
 		return fmt.Errorf("worker response exec payload is required when ok is true")
 	}
@@ -383,6 +437,12 @@ func (resp Response) Validate() error {
 	}
 	if resp.OK && resp.Operation == OperationCopyOut && resp.CopyOut.Payload == nil {
 		return fmt.Errorf("worker response copyOut payload data is required when ok is true")
+	}
+	if resp.OK && (resp.Operation == OperationJobStart || resp.Operation == OperationJobStatus || resp.Operation == OperationJobCancel) && resp.Job == nil {
+		return fmt.Errorf("worker response job payload is required when ok is true")
+	}
+	if resp.OK && resp.Operation == OperationJobLogs && resp.JobLogs == nil {
+		return fmt.Errorf("worker response jobLogs payload is required when ok is true")
 	}
 	return nil
 }
@@ -754,7 +814,11 @@ func validOperation(operation string) bool {
 		OperationInspect,
 		OperationExec,
 		OperationCopyIn,
-		OperationCopyOut:
+		OperationCopyOut,
+		OperationJobStart,
+		OperationJobStatus,
+		OperationJobLogs,
+		OperationJobCancel:
 		return true
 	default:
 		return false

@@ -282,6 +282,9 @@ func validateManifestForSave(manifest *Manifest) error {
 	if manifest.StartedAt.IsZero() {
 		return fmt.Errorf("sandbox execution startedAt is required")
 	}
+	if err := validateWorkerJobReference(manifest.WorkerJob); err != nil {
+		return err
+	}
 	for _, artifact := range manifest.Artifacts {
 		if err := validateArtifactMetadata(manifest.ID, artifact); err != nil {
 			return err

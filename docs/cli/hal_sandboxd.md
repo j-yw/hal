@@ -38,6 +38,7 @@ hal sandboxd [flags]
       --firecracker-state-dir string              state directory for the microvm driver
   -h, --help                                      help for sandboxd
       --image string                              container image for the rootless_podman driver (default "ghcr.io/jywlabs/hal-agent:latest")
+      --job-state-dir string                      private state directory for durable worker jobs (default "/tmp/hal-sandboxd.sock.jobs")
       --json                                      Output machine-readable daemon startup status
       --max-concurrent int                        maximum concurrent sandboxes reported by daemon capacity (default 1)
       --microvm-cpu-count int                     CPU count for the microvm driver (default 2)
