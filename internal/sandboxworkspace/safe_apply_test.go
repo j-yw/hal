@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -299,6 +300,89 @@ index 0000000..1111111 100644
 		if strings.Contains(string(encoded), unsafe) {
 			t.Fatalf("safe apply result leaked unsafe fragment %q: %s", unsafe, encoded)
 		}
+	}
+}
+
+func TestGitCLIHostApplierConsumesVerifiedPatchDescriptorAfterReplacement(t *testing.T) {
+	requireGitCLI(t)
+	repo := setupSafeApplyRepo(t, "host base\n")
+	patchPath := filepath.Join(t.TempDir(), "committed.patch")
+	trustedPatch := `diff --git a/README.md b/README.md
+index df967b9..46c950c 100644
+--- a/README.md
++++ b/README.md
+@@ -1 +1 @@
+-host base
++sandbox output
+`
+	if err := os.WriteFile(patchPath, []byte(trustedPatch), 0o600); err != nil {
+		t.Fatalf("WriteFile(patch) error: %v", err)
+	}
+	payload, err := os.Open(patchPath)
+	if err != nil {
+		t.Fatalf("Open(patch) error: %v", err)
+	}
+	defer payload.Close()
+	if err := os.Rename(patchPath, patchPath+".trusted"); err != nil {
+		t.Fatalf("Rename(patch) error: %v", err)
+	}
+	if err := os.WriteFile(patchPath, []byte("attacker replacement\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(replacement) error: %v", err)
+	}
+
+	result, err := SafeApply(context.Background(), SafeApplyRequest{
+		ProjectDir:  repo,
+		Payload:     payload,
+		PayloadPath: patchPath,
+		Mutate:      true,
+		Artifact:    safeApplyPatchArtifact(),
+	})
+	if err != nil {
+		t.Fatalf("SafeApply() error: %v", err)
+	}
+	if result.Status != SafeApplyStatusApplied || !result.DryRunPassed || !result.Applied {
+		t.Fatalf("result = %#v, want trusted descriptor applied", result)
+	}
+	content, err := os.ReadFile(filepath.Join(repo, "README.md"))
+	if err != nil {
+		t.Fatalf("ReadFile(README) error: %v", err)
+	}
+	if got, want := string(content), "sandbox output\n"; got != want {
+		t.Fatalf("README = %q, want trusted patch output %q", got, want)
+	}
+}
+
+func TestGitCLIHostApplierVerifiesBundleThroughDescriptor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows conservatively rejects descriptor-backed bundle verification")
+	}
+	requireGitCLI(t)
+	repo := setupSafeApplyRepo(t, "host base\n")
+	bundlePath := filepath.Join(t.TempDir(), "committed.bundle")
+	runGitTest(t, repo, "bundle", "create", bundlePath, "HEAD")
+	payload, err := os.Open(bundlePath)
+	if err != nil {
+		t.Fatalf("Open(bundle) error: %v", err)
+	}
+	defer payload.Close()
+	if err := os.Rename(bundlePath, bundlePath+".trusted"); err != nil {
+		t.Fatalf("Rename(bundle) error: %v", err)
+	}
+	if err := os.WriteFile(bundlePath, []byte("attacker replacement\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(replacement) error: %v", err)
+	}
+
+	result, err := SafeApply(context.Background(), SafeApplyRequest{
+		ProjectDir:  repo,
+		Payload:     payload,
+		PayloadPath: bundlePath,
+		Artifact:    safeApplyBundleArtifact(),
+	})
+	if err != nil {
+		t.Fatalf("SafeApply() error: %v", err)
+	}
+	if result.Status != SafeApplyStatusDryRunPassed || !result.DryRunPassed || result.Applied {
+		t.Fatalf("result = %#v, want descriptor-backed bundle dry-run", result)
 	}
 }
 

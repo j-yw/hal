@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
+	"sync"
 )
 
 const executionLockFileName = "finalization.lock"
@@ -17,7 +17,8 @@ type executionFileLock struct {
 
 type executionLockScope struct {
 	executionID string
-	active      atomic.Bool
+	mu          sync.RWMutex
+	active      bool
 }
 
 // WithExecutionLock holds an OS advisory lock for executionID while callback
@@ -58,18 +59,36 @@ func (s Store) WithLockedExecution(executionID string, callback func(Store) erro
 	defer func() {
 		err = errors.Join(err, lock.Close())
 	}()
-	scope := &executionLockScope{executionID: executionID}
-	scope.active.Store(true)
+	scope := &executionLockScope{
+		executionID: executionID,
+		active:      true,
+	}
 	locked := s
 	locked.lockScope = scope
-	defer scope.active.Store(false)
+	defer scope.deactivate()
 	return callback(locked)
 }
 
-func (s Store) lockScopeActive(executionID string) bool {
-	return s.lockScope != nil &&
-		s.lockScope.active.Load() &&
-		s.lockScope.executionID == strings.TrimSpace(executionID)
+func (s Store) enterLockScope(executionID string) func() {
+	scope := s.lockScope
+	if scope == nil || scope.executionID != strings.TrimSpace(executionID) {
+		return nil
+	}
+	scope.mu.RLock()
+	if !scope.active {
+		scope.mu.RUnlock()
+		return nil
+	}
+	return scope.mu.RUnlock
+}
+
+func (scope *executionLockScope) deactivate() {
+	if scope == nil {
+		return
+	}
+	scope.mu.Lock()
+	scope.active = false
+	scope.mu.Unlock()
 }
 
 func lockExecutionFile(path string) (*executionFileLock, error) {

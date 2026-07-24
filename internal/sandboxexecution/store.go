@@ -28,10 +28,6 @@ const (
 
 var errStoreRootUnavailable = errors.New("no sandbox execution store root available")
 
-// atomicStoreFileBeforePublish is a deterministic test seam for exercising
-// parent replacement between temporary-file creation and publication.
-var atomicStoreFileBeforePublish = func(_, _ string) {}
-
 // Store addresses durable local non-factory sandbox execution records.
 type Store struct {
 	root      string
@@ -182,7 +178,14 @@ func (s Store) SaveManifest(manifest *Manifest) error {
 	}
 	data = append(data, '\n')
 
-	if err := writeStoreFileAtomic(path, data, 0o600); err != nil {
+	if _, err := writeStoreBytesAtomic(
+		s.root,
+		[]string{manifest.ID, manifestFileName},
+		path,
+		data,
+		0o600,
+		false,
+	); err != nil {
 		return fmt.Errorf("save sandbox execution manifest %q: %w", manifest.ID, err)
 	}
 	return nil
@@ -242,7 +245,8 @@ func (s Store) UpdateManifest(executionID string, update func(*Manifest) error) 
 	if update == nil {
 		return fmt.Errorf("sandbox execution manifest update callback is required")
 	}
-	if s.lockScopeActive(executionID) {
+	if leaveScope := s.enterLockScope(executionID); leaveScope != nil {
+		defer leaveScope()
 		return s.updateManifestUnlocked(executionID, update)
 	}
 	return s.WithExecutionLock(executionID, func() error {
@@ -637,43 +641,6 @@ func validateStoreRelativePath(value string) (string, error) {
 	return clean, nil
 }
 
-func writeStoreFileAtomic(path string, data []byte, mode fs.FileMode) error {
-	if err := validateOptionalPrivateRegularFile(path, "sandbox execution store file"); err != nil {
-		return err
-	}
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+tempFileSuffix+"-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	removeTemp := true
-	defer func() {
-		if removeTemp {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	atomicStoreFileBeforePublish(tmpPath, path)
-	if err := renameStoreFile(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
-	}
-	removeTemp = false
-	_, err = validatePrivateRegularFile(path, "sandbox execution store file")
-	return err
-}
-
 func validPayloadArea(area string) bool {
 	switch area {
 	case logsDirName, artifactsDirName, handoffDirName, recoveryDirName:
@@ -681,32 +648,4 @@ func validPayloadArea(area string) bool {
 	default:
 		return false
 	}
-}
-
-func renameStoreFile(tmpPath, path string) error {
-	if err := os.Rename(tmpPath, path); err == nil {
-		return nil
-	} else if !isRenameNoReplaceError(err) {
-		return err
-	}
-
-	backupPath := path + backupFileSuffix
-	if err := os.Remove(backupPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	if err := os.Rename(path, backupPath); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		if restoreErr := os.Rename(backupPath, path); restoreErr != nil {
-			return fmt.Errorf("%w (restore failed: %v)", err, restoreErr)
-		}
-		return err
-	}
-	_ = os.Remove(backupPath)
-	return nil
-}
-
-func isRenameNoReplaceError(err error) bool {
-	return errors.Is(err, fs.ErrExist) || os.IsExist(err)
 }

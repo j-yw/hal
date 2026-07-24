@@ -330,10 +330,8 @@ func TestL3AtomicManifestWriteDoesNotFollowReplacedExecutionParent(t *testing.T)
 		t.Fatalf("WriteFile(external manifest) error: %v", err)
 	}
 
-	previousHook := atomicStoreFileBeforePublish
-	defer func() { atomicStoreFileBeforePublish = previousHook }()
 	var replaced bool
-	atomicStoreFileBeforePublish = func(tmpPath, destinationPath string) {
+	restoreHook := setAtomicStoreFileBeforePublishForTest(func(tmpPath, destinationPath string) {
 		if replaced {
 			return
 		}
@@ -350,7 +348,8 @@ func TestL3AtomicManifestWriteDoesNotFollowReplacedExecutionParent(t *testing.T)
 		if err := os.WriteFile(tmpPath, []byte("attacker temporary manifest\n"), 0o600); err != nil {
 			t.Fatalf("WriteFile(attacker temp) error: %v", err)
 		}
-	}
+	})
+	defer restoreHook()
 
 	manifest.Status = StatusFailed
 	if err := store.SaveManifest(manifest); err != nil {
@@ -396,10 +395,8 @@ func TestL3AtomicPayloadWriteDoesNotFollowReplacedPayloadParent(t *testing.T) {
 		t.Fatalf("WriteFile(external payload) error: %v", err)
 	}
 
-	previousHook := atomicStoreFileBeforePublish
-	defer func() { atomicStoreFileBeforePublish = previousHook }()
 	var replaced bool
-	atomicStoreFileBeforePublish = func(tmpPath, destinationPath string) {
+	restoreHook := setAtomicStoreFileBeforePublishForTest(func(tmpPath, destinationPath string) {
 		if replaced {
 			return
 		}
@@ -416,7 +413,8 @@ func TestL3AtomicPayloadWriteDoesNotFollowReplacedPayloadParent(t *testing.T) {
 		if err := os.WriteFile(tmpPath, []byte("attacker temporary payload\n"), 0o600); err != nil {
 			t.Fatalf("WriteFile(attacker temp) error: %v", err)
 		}
-	}
+	})
+	defer restoreHook()
 
 	if _, err := store.WriteArtifactPayload(executionID, "nested/result.txt", []byte("trusted replacement\n")); err != nil {
 		t.Fatalf("WriteArtifactPayload(replaced parent) error: %v", err)
