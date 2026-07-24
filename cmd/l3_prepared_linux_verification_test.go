@@ -26,6 +26,9 @@ func TestL3PreparedLinuxVerificationDocumentation(t *testing.T) {
 		"existing local rootless Podman image",
 		"never pulls an image",
 		"initiating client process",
+		"production `runSandboxWorkerJob` adoption path",
+		"exact execution ID",
+		"before emitting the observer timing signal",
 		"sandbox name and run ID",
 		"bounded log follow and terminal drain",
 		"repeated recovery and sync-out",
@@ -46,7 +49,7 @@ func TestL3PreparedLinuxVerificationDocumentation(t *testing.T) {
 		}
 	}
 
-	commands := phase34DocumentedShellCommands(doc)
+	commands := l3PreparedLinuxDocumentedShellCommands(doc)
 	for _, required := range []string{
 		"go test -count=1 ./cmd -run '^TestL3PreparedLinuxVerification'",
 		l3PreparedLinuxLiveCommand,
@@ -66,6 +69,26 @@ func TestL3PreparedLinuxVerificationDocumentation(t *testing.T) {
 	}
 }
 
+func l3PreparedLinuxDocumentedShellCommands(doc string) map[string]bool {
+	commands := make(map[string]bool)
+	inShellBlock := false
+	for _, raw := range strings.Split(doc, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "```sh" {
+			inShellBlock = true
+			continue
+		}
+		if line == "```" {
+			inShellBlock = false
+			continue
+		}
+		if inShellBlock && line != "" {
+			commands[line] = true
+		}
+	}
+	return commands
+}
+
 func TestL3PreparedLinuxVerificationLiveAcceptanceBoundary(t *testing.T) {
 	source := readL3PreparedLinuxVerificationFile(t, l3PreparedLinuxLiveTestPath)
 	header := phase19SourceHeader(source)
@@ -78,6 +101,10 @@ func TestL3PreparedLinuxVerificationLiveAcceptanceBoundary(t *testing.T) {
 		"HAL_PODMAN_TEST_IMAGE",
 		"rootlesspodman.DefaultPodmanExecutable",
 		`"image", "exists"`,
+		"runSandboxWorkerJob(",
+		"persistSandboxWorkerJobUpdate(",
+		"SubmissionID:    l3PreparedLinuxExecutionID",
+		"accepted worker job reference was not durable before initiating process loss",
 		"helper.Process.Kill()",
 		"selectSandboxL3Execution(",
 		"runSandboxL3StatusJSON(",
@@ -99,6 +126,7 @@ func TestL3PreparedLinuxVerificationLiveAcceptanceBoundary(t *testing.T) {
 	for _, forbidden := range []string{
 		"t.Skip(",
 		"t.Skipf(",
+		".JobStart(",
 		`"pull"`,
 		"podman pull",
 		"HCLOUD_TOKEN",
