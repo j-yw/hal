@@ -58,14 +58,22 @@ func TestL3RecoveryCommandsFinalizeConcreteDurableActionsWithoutForbiddenWork(t 
 				defaultSandboxRuntimeDriverFactories = originalFactories
 			})
 
-			for attempt := 0; attempt < 2; attempt++ {
-				stdout, stderr, err := runL3SandboxLeaf(
+			stdout, stderr, err := runL3SandboxLeaf(
+				context.Background(),
+				commandName,
+				[]string{"alpha", "--run", "run-alpha"},
+			)
+			if err != nil {
+				t.Fatalf("%s: %v\nstdout:\n%s\nstderr:\n%s", commandName, err, stdout, stderr)
+			}
+			if commandName == "sync-out" {
+				stdout, stderr, err = runL3SandboxLeaf(
 					context.Background(),
 					commandName,
 					[]string{"alpha", "--run", "run-alpha"},
 				)
 				if err != nil {
-					t.Fatalf("%s attempt %d: %v\nstdout:\n%s\nstderr:\n%s", commandName, attempt+1, err, stdout, stderr)
+					t.Fatalf("%s retry: %v\nstdout:\n%s\nstderr:\n%s", commandName, err, stdout, stderr)
 				}
 			}
 
@@ -210,6 +218,18 @@ func TestL3ExplicitRecoveryRejectsCompletedExecution(t *testing.T) {
 	_, _, err = selectSandboxL3Execution("alpha", "run-completed", sandboxL3SelectionRecover)
 	if err == nil || !strings.Contains(err.Error(), "execution_not_recoverable") {
 		t.Fatalf("explicit completed recovery selection error = %v, want execution_not_recoverable", err)
+	}
+	manifest.Finalization.SyncOutRequested = true
+	manifest.Finalization.Checkpoints.SyncOut = completed
+	if err := store.SaveManifest(manifest); err != nil {
+		t.Fatalf("save completed sync-out execution: %v", err)
+	}
+	_, selected, err := selectSandboxL3Execution("alpha", "run-completed", sandboxL3SelectionSyncOut)
+	if err != nil {
+		t.Fatalf("explicit repeated sync-out selection error = %v", err)
+	}
+	if selected.ID != manifest.ID {
+		t.Fatalf("explicit repeated sync-out selected %q, want %q", selected.ID, manifest.ID)
 	}
 }
 

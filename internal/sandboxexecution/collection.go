@@ -335,7 +335,7 @@ func CollectRecoveryArtifacts(ctx context.Context, req RecoveryArtifactCollectio
 	if err != nil {
 		return RuntimeCollectionResult{}, err
 	}
-	if err := req.Store.AppendArtifactMetadata(req.ExecutionID, result.ArtifactMetadata); err != nil {
+	if err := req.Store.UpsertArtifactMetadata(req.ExecutionID, result.ArtifactMetadata); err != nil {
 		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution recovery metadata: %w", err)
 	}
 	return result, nil
@@ -620,7 +620,7 @@ func CollectReportsArchiveArtifacts(ctx context.Context, req ReportsArchiveColle
 	if err != nil {
 		return RuntimeCollectionResult{}, err
 	}
-	if err := req.Store.AppendArtifactMetadata(req.ExecutionID, result.ArtifactMetadata); err != nil {
+	if err := req.Store.UpsertArtifactMetadata(req.ExecutionID, result.ArtifactMetadata); err != nil {
 		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution reports archive metadata: %w", err)
 	}
 	return result, nil
@@ -674,7 +674,7 @@ func SaveCommandOutputSummaryArtifacts(req CommandOutputSummaryArtifactsRequest)
 		result.ArtifactMetadata.Collected = append(result.ArtifactMetadata.Collected, collected)
 	}
 
-	if err := req.Store.AppendArtifactMetadata(executionID, result.ArtifactMetadata); err != nil {
+	if err := req.Store.UpsertArtifactMetadata(executionID, result.ArtifactMetadata); err != nil {
 		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution output summary metadata: %w", err)
 	}
 	return result, nil
@@ -704,7 +704,7 @@ func CollectCoreStateArtifacts(ctx context.Context, req CoreStateCollectionReque
 	if err != nil {
 		return RuntimeCollectionResult{}, err
 	}
-	if err := req.Store.AppendArtifactMetadata(req.ExecutionID, result.ArtifactMetadata); err != nil {
+	if err := req.Store.UpsertArtifactMetadata(req.ExecutionID, result.ArtifactMetadata); err != nil {
 		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution core state metadata: %w", err)
 	}
 	return result, nil
@@ -1129,28 +1129,28 @@ func addRuntimeArtifactPartialWarning(metadata *ArtifactMetadata, req RuntimeArt
 }
 
 func appendRecoveryArtifactMetadata(store Store, executionID string, result RuntimeCollectionResult) (RuntimeCollectionResult, error) {
-	if err := store.AppendArtifactMetadata(executionID, result.ArtifactMetadata); err != nil {
+	if err := store.UpsertArtifactMetadata(executionID, result.ArtifactMetadata); err != nil {
 		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution recovery metadata: %w", err)
 	}
 	return result, nil
 }
 
 func appendCommittedSyncOutArtifactMetadata(store Store, executionID string, result RuntimeCollectionResult) (RuntimeCollectionResult, error) {
-	if err := store.AppendArtifactMetadata(executionID, result.ArtifactMetadata); err != nil {
+	if err := store.UpsertArtifactMetadata(executionID, result.ArtifactMetadata); err != nil {
 		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution committed sync-out metadata: %w", err)
 	}
 	return result, nil
 }
 
 func appendUncommittedSyncOutArtifactMetadata(store Store, executionID string, result RuntimeCollectionResult) (RuntimeCollectionResult, error) {
-	if err := store.AppendArtifactMetadata(executionID, result.ArtifactMetadata); err != nil {
+	if err := store.UpsertArtifactMetadata(executionID, result.ArtifactMetadata); err != nil {
 		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution uncommitted sync-out metadata: %w", err)
 	}
 	return result, nil
 }
 
 func appendUntrackedSyncOutArtifactMetadata(store Store, executionID string, result RuntimeCollectionResult) (RuntimeCollectionResult, error) {
-	if err := store.AppendArtifactMetadata(executionID, result.ArtifactMetadata); err != nil {
+	if err := store.UpsertArtifactMetadata(executionID, result.ArtifactMetadata); err != nil {
 		return RuntimeCollectionResult{}, fmt.Errorf("persist sandbox execution untracked sync-out metadata: %w", err)
 	}
 	return result, nil
