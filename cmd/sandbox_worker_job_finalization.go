@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -34,14 +33,15 @@ func (client foregroundSandboxL3JobClient) JobLogs(
 }
 
 type foregroundSandboxL3FinalizationRequest struct {
-	ExecutionID      string
-	SyncOutRequested bool
-	Store            sandboxexecution.Store
-	RuntimeDriver    sandboxruntime.Driver
-	Now              func() time.Time
-	CollectArtifacts func(context.Context, sandboxexecution.Store, *sandboxexecution.Manifest, *sandboxworker.Job) error
-	CollectSyncOut   func(context.Context, sandboxexecution.Store, *sandboxexecution.Manifest, *sandboxworker.Job) error
-	ReleaseLease     func(string) (*sandbox.SandboxLease, error)
+	ExecutionID       string
+	SyncOutRequested  bool
+	Store             sandboxexecution.Store
+	RuntimeDriver     sandboxruntime.Driver
+	Now               func() time.Time
+	CollectArtifacts  func(context.Context, sandboxexecution.Store, *sandboxexecution.Manifest, *sandboxworker.Job) error
+	CollectSyncOut    func(context.Context, sandboxexecution.Store, *sandboxexecution.Manifest, *sandboxworker.Job) error
+	ReleaseLease      func(string) (*sandbox.SandboxLease, error)
+	DurableLeaseStore bool
 }
 
 func finalizeForegroundSandboxL3Execution(ctx context.Context, req foregroundSandboxL3FinalizationRequest) error {
@@ -66,12 +66,20 @@ func finalizeForegroundSandboxL3Execution(ctx context.Context, req foregroundSan
 					JobID:           manifest.WorkerJob.JobID,
 				})
 			},
-			drainLogs: func(ctx context.Context, manifest *sandboxexecution.Manifest, job *sandboxworker.Job) error {
-				return streamSandboxL3Logs(ctx, client, manifest, job, true, io.Discard, io.Discard)
+			drainLogsInStore: func(
+				ctx context.Context,
+				store sandboxexecution.Store,
+				manifest *sandboxexecution.Manifest,
+				job *sandboxworker.Job,
+			) error {
+				return drainSandboxL3TerminalLogsWithClient(ctx, store, client, manifest, job)
 			},
 			collectArtifacts: req.CollectArtifacts,
 			collectSyncOut:   req.CollectSyncOut,
-			releaseLease: func(_ context.Context, manifest *sandboxexecution.Manifest) error {
+			releaseLease: func(ctx context.Context, manifest *sandboxexecution.Manifest) error {
+				if req.DurableLeaseStore {
+					return releaseSandboxL3DurableLease(ctx, manifest)
+				}
 				return releaseForegroundSandboxL3Lease(manifest, req.ReleaseLease)
 			},
 		},
@@ -130,21 +138,21 @@ func finalizeRunSandboxWorkerJob(
 		Store:            store,
 		RuntimeDriver:    result.RuntimeDriver,
 		Now:              deps.now,
-		CollectArtifacts: func(ctx context.Context, locked sandboxexecution.Store, _ *sandboxexecution.Manifest, _ *sandboxworker.Job) error {
-			artifactReq := req
-			artifactReq.SyncOut = sandboxSyncOutOptions{}
-			if err := collectRunSandboxCoreStateArtifacts(ctx, locked, artifactReq, resultForCollection); err != nil {
-				return err
-			}
-			if err := collectRunSandboxGeneratedArtifacts(ctx, locked, artifactReq, resultForCollection); err != nil {
-				return err
-			}
-			return collectRunSandboxOutputSummaryArtifacts(locked, artifactReq, resultForCollection, target)
+		CollectArtifacts: func(ctx context.Context, locked sandboxexecution.Store, manifest *sandboxexecution.Manifest, _ *sandboxworker.Job) error {
+			return collectSandboxL3TerminalArtifactsWithRuntime(
+				ctx,
+				locked,
+				manifest,
+				result.RuntimeDriver,
+				runtimeTarget,
+				"",
+			)
 		},
 		CollectSyncOut: func(ctx context.Context, locked sandboxexecution.Store, manifest *sandboxexecution.Manifest, _ *sandboxworker.Job) error {
 			return collectSandboxL3SyncOutWithRuntime(ctx, locked, manifest, result.RuntimeDriver, runtimeTarget)
 		},
-		ReleaseLease: deps.releaseLease,
+		ReleaseLease:      deps.releaseLease,
+		DurableLeaseStore: deps.durableLeaseStore,
 	})
 }
 
@@ -171,7 +179,7 @@ func finalizeAutoSandboxWorkerJob(
 		Store:            store,
 		RuntimeDriver:    result.RuntimeDriver,
 		Now:              deps.now,
-		CollectArtifacts: func(ctx context.Context, locked sandboxexecution.Store, _ *sandboxexecution.Manifest, job *sandboxworker.Job) error {
+		CollectArtifacts: func(ctx context.Context, locked sandboxexecution.Store, manifest *sandboxexecution.Manifest, job *sandboxworker.Job) error {
 			archivePath := ""
 			if job != nil && job.State == sandboxworker.JobStateSucceeded {
 				var err error
@@ -180,19 +188,19 @@ func finalizeAutoSandboxWorkerJob(
 					return fmt.Errorf("read remote auto archive path: %w", err)
 				}
 			}
-			artifactReq := req
-			artifactReq.SyncOut = sandboxSyncOutOptions{}
-			if err := collectAutoSandboxCoreStateArtifacts(ctx, locked, artifactReq, resultForCollection, archivePath); err != nil {
-				return err
-			}
-			if err := collectAutoSandboxGeneratedArtifacts(ctx, locked, artifactReq, resultForCollection); err != nil {
-				return err
-			}
-			return collectAutoSandboxOutputSummaryArtifacts(locked, artifactReq, resultForCollection, target)
+			return collectSandboxL3TerminalArtifactsWithRuntime(
+				ctx,
+				locked,
+				manifest,
+				result.RuntimeDriver,
+				runtimeTarget,
+				archivePath,
+			)
 		},
 		CollectSyncOut: func(ctx context.Context, locked sandboxexecution.Store, manifest *sandboxexecution.Manifest, _ *sandboxworker.Job) error {
 			return collectSandboxL3SyncOutWithRuntime(ctx, locked, manifest, result.RuntimeDriver, runtimeTarget)
 		},
-		ReleaseLease: deps.releaseLease,
+		ReleaseLease:      deps.releaseLease,
+		DurableLeaseStore: deps.durableLeaseStore,
 	})
 }

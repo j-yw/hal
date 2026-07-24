@@ -2588,7 +2588,12 @@ func TestWorkerRootlessRunSandboxCollectsRecoveryAfterRemoteFailure(t *testing.T
 				t.Fatalf("Exec target runtime = %#v, want selected worker rootless runtime", req.Target.Runtime)
 			}
 			if isWorkerOutputArtifactGenerationExec(req) {
-				execCalls = append(execCalls, "recovery_generation")
+				command := strings.Join(req.Args, "\n")
+				if strings.Contains(command, ".hal/recovery/workspace.patch") {
+					execCalls = append(execCalls, "recovery_generation")
+				} else {
+					execCalls = append(execCalls, "reports_generation")
+				}
 				return &sandboxruntime.ExecResult{}, nil
 			}
 			if isWorkerRunCommandExec(req) {
@@ -2678,10 +2683,15 @@ func TestWorkerRootlessRunSandboxCollectsRecoveryAfterRemoteFailure(t *testing.T
 	if result.OK {
 		t.Fatal("RunResult.OK = true, want false")
 	}
-	if !reflect.DeepEqual(execCalls, []string{"remote_run", "recovery_generation"}) {
-		t.Fatalf("exec calls = %#v, want remote failure followed by recovery generation", execCalls)
+	if !reflect.DeepEqual(execCalls, []string{"remote_run", "recovery_generation", "reports_generation"}) {
+		t.Fatalf("exec calls = %#v, want remote failure followed by full terminal generation", execCalls)
 	}
-	requireWorkerRuntimeCopyOutSources(t, copyOuts, []string{".hal/recovery/workspace.patch"})
+	requireWorkerRuntimeCopyOutSources(t, copyOuts, []string{
+		".hal/prd.json",
+		".hal/progress.txt",
+		".hal/recovery/workspace.patch",
+		".hal/reports.tar",
+	})
 
 	manifest, loadErr := store.LoadManifest("run-worker-rootless-failed-recovery")
 	if loadErr != nil {
@@ -2690,13 +2700,25 @@ func TestWorkerRootlessRunSandboxCollectsRecoveryAfterRemoteFailure(t *testing.T
 	if manifest.Status != sandboxexecution.StatusFailed {
 		t.Fatalf("manifest.Status = %q, want failed", manifest.Status)
 	}
+	if manifest.Finalization == nil ||
+		manifest.Finalization.State != sandboxexecution.FinalizationStateCompleted ||
+		!manifest.Finalization.Checkpoints.Artifacts.Completed ||
+		!manifest.Finalization.Checkpoints.TerminalPublication.Completed {
+		t.Fatalf("manifest finalization = %#v, want completed terminal collection", manifest.Finalization)
+	}
 	if manifest.ArtifactMetadata == nil {
 		t.Fatal("ArtifactMetadata = nil, want failed worker recovery metadata")
 	}
-	if len(manifest.ArtifactMetadata.Collected) != 1 {
-		t.Fatalf("collected = %#v, want recovery artifact", manifest.ArtifactMetadata.Collected)
+	collectedByID := make(map[string]sandboxexecution.ArtifactMetadataEntry)
+	for _, artifact := range manifest.ArtifactMetadata.Collected {
+		collectedByID[artifact.ID] = artifact
 	}
-	recovery := manifest.ArtifactMetadata.Collected[0]
+	for _, id := range []string{"prd", "progress", "recovery-patch", "reports-archive", "stdout-summary"} {
+		if _, ok := collectedByID[id]; !ok {
+			t.Fatalf("collected = %#v, want terminal artifact %q", manifest.ArtifactMetadata.Collected, id)
+		}
+	}
+	recovery := collectedByID["recovery-patch"]
 	assertRunSandboxCollectedArtifact(t, recovery, ".hal/recovery/workspace.patch", "run-worker-rootless-failed-recovery/recovery/workspace.patch")
 	if payload := readRunSandboxStoreFile(t, store, recovery.StoredPath); payload != "worker recovery payload" {
 		t.Fatalf("recovery payload = %q, want copied worker recovery payload", payload)

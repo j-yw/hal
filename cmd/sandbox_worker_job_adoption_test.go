@@ -675,6 +675,7 @@ func TestRunAndAutoTerminalWorkerJobsUseSharedFinalizationWithoutImplicitApply(t
 				terminal.StartedAt = &startedAt
 				terminal.HeartbeatAt = &startedAt
 				terminal.FinishedAt = &finishedAt
+				terminal.LogCursor = 1
 				exitCode := 0
 				if state == sandboxworker.JobStateFailed {
 					exitCode = ExitCodeExpectedNonZero
@@ -687,6 +688,13 @@ func TestRunAndAutoTerminalWorkerJobsUseSharedFinalizationWithoutImplicitApply(t
 					logPages: []sandboxworker.JobLogsResponse{{
 						ContractVersion: sandboxworker.JobContractVersion,
 						JobID:           terminal.ID,
+						Records: []sandboxworker.JobLogRecord{{
+							Cursor:    1,
+							Stream:    sandboxworker.JobLogStreamStdout,
+							Data:      "terminal output\n",
+							Timestamp: finishedAt,
+						}},
+						NextCursor: 1,
 					}},
 					exec: func(sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 						return &sandboxruntime.ExecResult{}, nil

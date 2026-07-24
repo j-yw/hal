@@ -123,12 +123,25 @@ func drainSandboxL3TerminalLogs(
 	if err != nil {
 		return err
 	}
+	return drainSandboxL3TerminalLogsWithClient(ctx, store, client, manifest, job)
+}
+
+func drainSandboxL3TerminalLogsWithClient(
+	ctx context.Context,
+	store sandboxexecution.Store,
+	client sandboxL3JobClient,
+	manifest *sandboxexecution.Manifest,
+	job *sandboxworker.Job,
+) error {
+	if client == nil {
+		return errors.New("worker_client_unavailable: terminal log client is unavailable")
+	}
 	stdout := &sandboxL3BoundedSummaryWriter{limit: sandboxL3RecoveryOutputSummaryBytes}
 	stderr := &sandboxL3BoundedSummaryWriter{limit: sandboxL3RecoveryOutputSummaryBytes}
 	if err := streamSandboxL3Logs(ctx, client, manifest, job, true, stdout, stderr); err != nil {
 		return err
 	}
-	_, err = sandboxexecution.SaveCommandOutputSummaryArtifacts(sandboxexecution.CommandOutputSummaryArtifactsRequest{
+	_, err := sandboxexecution.SaveCommandOutputSummaryArtifacts(sandboxexecution.CommandOutputSummaryArtifactsRequest{
 		ExecutionID:   manifest.ID,
 		Store:         store,
 		StdoutSummary: boundedSandboxL3OutputSummary(sanitizeSandboxOutputSummary(stdout.String(), nil)),
@@ -150,6 +163,23 @@ func collectSandboxL3TerminalArtifacts(
 	if err != nil {
 		return err
 	}
+	return collectSandboxL3TerminalArtifactsWithRuntime(ctx, store, manifest, runtimeDriver, target, "")
+}
+
+func collectSandboxL3TerminalArtifactsWithRuntime(
+	ctx context.Context,
+	store sandboxexecution.Store,
+	manifest *sandboxexecution.Manifest,
+	runtimeDriver sandboxruntime.Driver,
+	target sandboxruntime.Target,
+	remoteArchivePath string,
+) error {
+	if manifest == nil {
+		return errors.New("execution_manifest_unavailable: durable execution manifest is unavailable")
+	}
+	if runtimeDriver == nil {
+		return errors.New("runtime_handle_unavailable: existing worker runtime handle is unavailable")
+	}
 	core, err := sandboxexecution.CollectCoreStateArtifacts(ctx, sandboxexecution.CoreStateCollectionRequest{
 		ExecutionID:        manifest.ID,
 		Store:              store,
@@ -157,6 +187,7 @@ func collectSandboxL3TerminalArtifacts(
 		Target:             target,
 		Purpose:            manifest.Purpose,
 		RemoteWorkspaceDir: manifest.WorkDir,
+		RemoteArchivePath:  strings.TrimSpace(remoteArchivePath),
 	})
 	if err != nil {
 		return fmt.Errorf("collect terminal core state: %w", err)
