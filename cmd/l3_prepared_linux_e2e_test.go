@@ -165,6 +165,7 @@ func TestL3PreparedLinuxRecoveryE2E(t *testing.T) {
 		ID:          l3PreparedLinuxExecutionID,
 		Purpose:     sandboxexecution.PurposeRun,
 		SandboxName: sandboxName,
+		SandboxID:   instance.ID,
 		WorkDir:     l3PreparedLinuxWorkDir,
 		Status:      sandboxexecution.StatusRunning,
 		StartedAt:   time.Now().UTC(),
