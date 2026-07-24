@@ -64,7 +64,7 @@ var sandboxStartResolveProvider = func(providerName string) (sandbox.Provider, e
 var sandboxStartResolveRuntime = func(target *sandbox.SandboxState) (sandboxruntime.Driver, error) {
 	return resolveFactoryStoredSandboxRuntime(".", target)
 }
-var sandboxStartForceWrite = sandbox.ForceWriteInstance
+var sandboxStartForceWrite = updateActiveSandboxInstanceExact
 var sandboxStartNow = func() time.Time { return time.Now() }
 
 // runSandboxStart is the public entry point for the lifecycle start command.

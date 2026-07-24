@@ -105,8 +105,9 @@ var sandboxListInstances = sandbox.ListActiveInstances
 // registry entry before a live refresh persists updates.
 var sandboxListLoadActiveInstance = sandbox.LoadActiveInstance
 
-// sandboxListForceWrite persists live status updates back to the registry.
-var sandboxListForceWrite = sandbox.ForceWriteInstance
+// sandboxListForceWrite persists live status updates back to the exact active
+// registry instance.
+var sandboxListForceWrite = updateActiveSandboxInstanceExact
 
 // resolveProviderFromGlobalConfig creates a Provider from global config settings
 // or global defaults when the config file has not been written yet.

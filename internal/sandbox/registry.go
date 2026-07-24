@@ -13,6 +13,7 @@ import (
 
 const sandboxStateFileExt = ".json"
 const pendingRemovalRegistryFileExt = ".replacing"
+const sandboxRegistryLockFileName = "sandbox-registry.lock"
 
 var (
 	renameRegistryFile = os.Rename
@@ -64,7 +65,16 @@ func writeInstance(instance *SandboxState, overwrite bool) error {
 	if err := EnsureGlobalDir(); err != nil {
 		return err
 	}
+	lock, err := lockSandboxRegistry()
+	if err != nil {
+		return fmt.Errorf("acquire sandbox registry lock: %w", err)
+	}
+	defer lock.Close()
 
+	return writeInstanceLocked(instance, path, overwrite)
+}
+
+func writeInstanceLocked(instance *SandboxState, path string, overwrite bool) error {
 	if !overwrite {
 		if _, err := os.Stat(path); err == nil {
 			return fmt.Errorf("sandbox %q already exists", instance.Name)
@@ -111,6 +121,67 @@ func writeInstance(instance *SandboxState, overwrite bool) error {
 	}
 
 	return nil
+}
+
+// UpdateActiveInstanceExact atomically updates the active registry entry only
+// while its stable name and ID still match the caller's selected instance.
+// The update callback runs while the registry lock is held.
+func UpdateActiveInstanceExact(
+	name string,
+	expectedID string,
+	update func(*SandboxState) error,
+) error {
+	name = strings.TrimSpace(name)
+	expectedID = strings.TrimSpace(expectedID)
+	if name == "" || expectedID == "" {
+		return errors.New("active sandbox identity is unavailable for exact update")
+	}
+	if update == nil {
+		return errors.New("active sandbox update is required")
+	}
+	path, err := instancePath(name)
+	if err != nil {
+		return err
+	}
+	if err := EnsureGlobalDir(); err != nil {
+		return err
+	}
+	lock, err := lockSandboxRegistry()
+	if err != nil {
+		return fmt.Errorf("acquire sandbox registry lock: %w", err)
+	}
+	defer lock.Close()
+
+	current, err := loadRegistryInstanceFile(path, name)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("sandbox %q does not exist: %w", name, err)
+		}
+		return fmt.Errorf("read sandbox %q: %w", name, err)
+	}
+	if strings.TrimSpace(current.ID) != expectedID ||
+		strings.TrimSpace(current.Name) != name {
+		return errors.New("sandbox instance changed during exact update")
+	}
+	if err := update(current); err != nil {
+		return err
+	}
+	if strings.TrimSpace(current.ID) != expectedID ||
+		strings.TrimSpace(current.Name) != name {
+		return errors.New("sandbox identity cannot change during exact update")
+	}
+	return writeInstanceLocked(current, path, true)
+}
+
+func lockSandboxRegistry() (*sandboxLeaseStoreFileLock, error) {
+	dir, err := sandboxesDirPath()
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	return lockSandboxLeaseStoreFile(filepath.Join(dir, sandboxRegistryLockFileName))
 }
 
 func prepareRegistryOverwrite(path, name string) error {
@@ -207,6 +278,11 @@ func StageInstanceRemoval(name string) (*PendingInstanceRemoval, error) {
 	if err != nil {
 		return nil, err
 	}
+	lock, err := lockSandboxRegistry()
+	if err != nil {
+		return nil, fmt.Errorf("acquire sandbox registry lock: %w", err)
+	}
+	defer lock.Close()
 
 	backupPath := path + pendingRemovalRegistryFileExt
 	activeExists, err := registryFileExists(path)
@@ -270,6 +346,11 @@ func (p *PendingInstanceRemoval) Commit() error {
 	if p == nil || !p.active {
 		return nil
 	}
+	lock, err := lockSandboxRegistry()
+	if err != nil {
+		return fmt.Errorf("acquire sandbox registry lock: %w", err)
+	}
+	defer lock.Close()
 	if err := removeRegistryFile(p.backupPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("finalize sandbox %q replacement: %w", p.name, err)
 	}
@@ -282,6 +363,11 @@ func (p *PendingInstanceRemoval) Rollback() error {
 	if p == nil || !p.active {
 		return nil
 	}
+	lock, err := lockSandboxRegistry()
+	if err != nil {
+		return fmt.Errorf("acquire sandbox registry lock: %w", err)
+	}
+	defer lock.Close()
 	if err := renameRegistryFile(p.backupPath, p.path); err != nil {
 		return fmt.Errorf("restore sandbox %q registry entry: %w", p.name, err)
 	}
@@ -494,6 +580,11 @@ func RemoveInstance(name string) error {
 	if err != nil {
 		return err
 	}
+	lock, err := lockSandboxRegistry()
+	if err != nil {
+		return fmt.Errorf("acquire sandbox registry lock: %w", err)
+	}
+	defer lock.Close()
 
 	if err := os.Remove(path); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {

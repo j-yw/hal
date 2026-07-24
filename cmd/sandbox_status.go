@@ -85,11 +85,22 @@ var sandboxStatusResolveRuntime = func(target *sandbox.SandboxState) (sandboxrun
 // registry entry before a live refresh persists updates.
 var sandboxStatusLoadActiveInstance = sandbox.LoadActiveInstance
 
-// sandboxStatusForceWrite persists successful live status refreshes.
-var sandboxStatusForceWrite = sandbox.ForceWriteInstance
+// sandboxStatusForceWrite persists successful live status refreshes only while
+// the selected stable sandbox identity remains active.
+var sandboxStatusForceWrite = updateActiveSandboxInstanceExact
 
 // sandboxStatusNow is injectable for deterministic tests.
 var sandboxStatusNow = func() time.Time { return time.Now() }
+
+func updateActiveSandboxInstanceExact(updated *sandbox.SandboxState) error {
+	if updated == nil {
+		return errors.New("active sandbox update is unavailable")
+	}
+	return sandbox.UpdateActiveInstanceExact(updated.Name, updated.ID, func(current *sandbox.SandboxState) error {
+		*current = *updated
+		return nil
+	})
+}
 
 func liveStatusWriteTarget(
 	selected *sandbox.SandboxState,
