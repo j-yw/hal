@@ -63,8 +63,10 @@ func TestSandboxexecutionForbiddenImportListCoversRequiredBoundaries(t *testing.
 		{name: "factory", importPath: "github.com/jywlabs/hal/internal/factory"},
 		{name: "prd", importPath: "github.com/jywlabs/hal/internal/prd"},
 		{name: "compound", importPath: "github.com/jywlabs/hal/internal/compound"},
+		{name: "worker client", importPath: "github.com/jywlabs/hal/internal/sandboxworker"},
 		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/hetzner"},
 		{name: "concrete runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"},
+		{name: "rootless runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -91,6 +93,7 @@ var sandboxexecutionForbiddenImports = []sandboxexecutionForbiddenImport{
 	{name: "compound", match: moduleImportMatcher("github.com/jywlabs/hal/internal/compound")},
 	{name: "factory", match: moduleImportMatcher("github.com/jywlabs/hal/internal/factory")},
 	{name: "prd", match: moduleImportMatcher("github.com/jywlabs/hal/internal/prd")},
+	{name: "worker client", match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxworker")},
 	{name: "concrete sandbox provider adapter", match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandbox/provider")},
 	{name: "concrete sandbox runtime adapter", match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/sshmachine")},
 	{
