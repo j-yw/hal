@@ -300,6 +300,14 @@ func TestServerRejectsInvalidConfiguration(t *testing.T) {
 	}); err == nil {
 		t.Fatalf("NewServer() error = nil, want socketPath error (server %#v)", server)
 	}
+	if server, err := NewServer(ServerOptions{
+		SocketPath: "relative-worker.sock",
+		Handler: RequestHandlerFunc(func(context.Context, Request) Response {
+			return Response{Operation: OperationStatus, OK: true}
+		}),
+	}); err == nil {
+		t.Fatalf("NewServer() error = nil, want absolute socketPath error (server %#v)", server)
+	}
 	if server, err := NewServer(ServerOptions{SocketPath: "/tmp/worker.sock"}); err == nil {
 		t.Fatalf("NewServer() error = nil, want handler error (server %#v)", server)
 	}

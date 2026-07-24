@@ -39,7 +39,7 @@ func TestWorkerJobSurvivesClientDisconnectAndPersistsRedactedPrivateState(t *tes
 	service, stateDir, daemonCancel := newL2JobTestService(t, driver)
 	defer daemonCancel()
 
-	server, err := NewServer(ServerOptions{SocketPath: "worker.sock", Handler: service})
+	server, err := NewServer(ServerOptions{SocketPath: "/tmp/unused-worker.sock", Handler: service})
 	if err != nil {
 		t.Fatalf("NewServer() error: %v", err)
 	}
