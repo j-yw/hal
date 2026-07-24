@@ -267,12 +267,41 @@ func (s Store) updateManifestUnlocked(executionID string, update func(*Manifest)
 // execution lock. Stable artifact identities replace retry entries in place
 // while unrelated metadata and ordering are preserved.
 func (s Store) UpsertArtifactMetadata(executionID string, metadata ArtifactMetadata) error {
+	attempted := make([]ArtifactMetadataEntry, 0, len(metadata.Collected)+len(metadata.Partial)+len(metadata.Warnings))
+	attempted = append(attempted, metadata.Collected...)
+	attempted = append(attempted, metadata.Partial...)
+	for _, warning := range metadata.Warnings {
+		attempted = append(attempted, warning.Artifact)
+	}
+	return s.ReplaceArtifactAttemptMetadata(executionID, attempted, metadata)
+}
+
+// ReplaceArtifactAttemptMetadata replaces the current collected/partial/warning
+// state for stable artifact identities attempted by one retry. This permits a
+// successful empty retry to clear a previous partial result without disturbing
+// unrelated artifacts.
+func (s Store) ReplaceArtifactAttemptMetadata(
+	executionID string,
+	attempted []ArtifactMetadataEntry,
+	metadata ArtifactMetadata,
+) error {
 	executionID, err := validateExecutionID(executionID)
 	if err != nil {
 		return err
 	}
-	if isArtifactMetadataEmpty(metadata) {
+	if len(attempted) == 0 && isArtifactMetadataEmpty(metadata) {
 		return nil
+	}
+	attemptKeys := make(map[string]struct{}, len(attempted))
+	for _, entry := range attempted {
+		attempt := entry
+		attempt.StoredPath = ""
+		attempt.SizeBytes = nil
+		attempt.CreatedAt = nil
+		if err := validateArtifactFileMetadataInput(attempt); err != nil {
+			return err
+		}
+		attemptKeys[artifactMetadataEntryStableKey(entry)] = struct{}{}
 	}
 	if err := validateArtifactCollectionMetadata(executionID, &metadata); err != nil {
 		return err
@@ -282,10 +311,17 @@ func (s Store) UpsertArtifactMetadata(executionID string, metadata ArtifactMetad
 		if manifest.ArtifactMetadata != nil {
 			existing = *manifest.ArtifactMetadata
 		}
+		existing.Collected = removeArtifactEntriesByStableKey(existing.Collected, attemptKeys)
+		existing.Partial = removeArtifactEntriesByStableKey(existing.Partial, attemptKeys)
+		existing.Warnings = removeArtifactWarningsByStableKey(existing.Warnings, attemptKeys)
 		existing.Collected = upsertArtifactEntries(existing.Collected, metadata.Collected)
 		existing.Partial = upsertArtifactEntries(existing.Partial, metadata.Partial)
 		existing.Partial = removeCollectedArtifactEntries(existing.Partial, existing.Collected)
 		existing.Warnings = upsertArtifactWarnings(existing.Warnings, metadata.Warnings)
+		if isArtifactMetadataEmpty(existing) {
+			manifest.ArtifactMetadata = nil
+			return nil
+		}
 		manifest.ArtifactMetadata = &existing
 		return nil
 	})
@@ -457,6 +493,34 @@ func removeCollectedArtifactEntries(partial, collected []ArtifactMetadataEntry) 
 			continue
 		}
 		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
+func removeArtifactEntriesByStableKey(entries []ArtifactMetadataEntry, keys map[string]struct{}) []ArtifactMetadataEntry {
+	if len(keys) == 0 {
+		return entries
+	}
+	filtered := make([]ArtifactMetadataEntry, 0, len(entries))
+	for _, entry := range entries {
+		if _, remove := keys[artifactMetadataEntryStableKey(entry)]; remove {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
+func removeArtifactWarningsByStableKey(warnings []ArtifactWarning, keys map[string]struct{}) []ArtifactWarning {
+	if len(keys) == 0 {
+		return warnings
+	}
+	filtered := make([]ArtifactWarning, 0, len(warnings))
+	for _, warning := range warnings {
+		if _, remove := keys[artifactMetadataEntryStableKey(warning.Artifact)]; remove {
+			continue
+		}
+		filtered = append(filtered, warning)
 	}
 	return filtered
 }

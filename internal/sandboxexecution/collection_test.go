@@ -782,6 +782,54 @@ func TestCollectUncommittedSyncOutArtifactBestEffortGeneratesHandoffDiff(t *test
 	}
 }
 
+func TestCollectUncommittedSyncOutArtifactRetryClearsWarningWhenResultIsEmpty(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.SaveManifest(testManifest("exec-uncommitted-retry", time.Date(2026, 7, 25, 7, 0, 0, 0, time.UTC))); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+	runtime := &recordingArtifactRuntime{execErr: errors.New("first generation failed")}
+	request := UncommittedSyncOutCollectionRequest{
+		ExecutionID:        "exec-uncommitted-retry",
+		Store:              store,
+		Runtime:            runtime,
+		Target:             sandboxruntime.Target{Name: "sync-box"},
+		RemoteWorkspaceDir: "/workspace/repo",
+	}
+	first, err := CollectUncommittedSyncOutArtifactBestEffort(context.Background(), request)
+	if err != nil {
+		t.Fatalf("first collection error: %v", err)
+	}
+	if len(first.ArtifactMetadata.Partial) != 1 || len(first.ArtifactMetadata.Warnings) != 1 {
+		t.Fatalf("first collection metadata = %#v, want partial warning", first.ArtifactMetadata)
+	}
+
+	runtime.execErr = nil
+	runtime.copyOutPayload = []byte{}
+	retry, err := CollectUncommittedSyncOutArtifactBestEffort(context.Background(), request)
+	if err != nil {
+		t.Fatalf("retry collection error: %v", err)
+	}
+	if !isArtifactMetadataEmpty(retry.ArtifactMetadata) {
+		t.Fatalf("empty retry metadata = %#v, want empty", retry.ArtifactMetadata)
+	}
+	manifest, err := store.LoadManifest(request.ExecutionID)
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if manifest.ArtifactMetadata != nil {
+		for _, artifact := range manifest.ArtifactMetadata.Partial {
+			if artifact.ID == syncOutUncommittedDiffID {
+				t.Fatalf("empty retry retained partial artifact: %#v", manifest.ArtifactMetadata)
+			}
+		}
+		for _, warning := range manifest.ArtifactMetadata.Warnings {
+			if warning.Artifact.ID == syncOutUncommittedDiffID {
+				t.Fatalf("empty retry retained warning: %#v", manifest.ArtifactMetadata)
+			}
+		}
+	}
+}
+
 func TestCollectUntrackedSyncOutArtifactsBestEffortGeneratesHandoffArtifacts(t *testing.T) {
 	store := newTestStore(t)
 	if err := store.SaveManifest(testManifest("exec-untracked", time.Date(2026, 7, 16, 1, 0, 0, 0, time.UTC))); err != nil {
@@ -1500,11 +1548,12 @@ func assertCollectedCoreArtifact(t *testing.T, artifact ArtifactMetadataEntry, w
 }
 
 type recordingArtifactRuntime struct {
-	execs      []sandboxruntime.ExecRequest
-	execErr    error
-	copyOuts   []sandboxruntime.CopyRequest
-	copyOutErr error
-	events     []string
+	execs          []sandboxruntime.ExecRequest
+	execErr        error
+	copyOuts       []sandboxruntime.CopyRequest
+	copyOutErr     error
+	copyOutPayload []byte
+	events         []string
 }
 
 func (r *recordingArtifactRuntime) Exec(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
@@ -1532,6 +1581,9 @@ func (r *recordingArtifactRuntime) CopyOut(_ context.Context, req sandboxruntime
 	}
 	if err := os.MkdirAll(filepath.Dir(req.DestinationPath), 0o700); err != nil {
 		return err
+	}
+	if r.copyOutPayload != nil {
+		return os.WriteFile(req.DestinationPath, r.copyOutPayload, 0o600)
 	}
 	return os.WriteFile(req.DestinationPath, []byte("copied:"+req.SourcePath+"\n"), 0o600)
 }

@@ -512,6 +512,26 @@ func TestL3StandaloneSyncOutAfterCompletedRecoveryDoesNotReplayFinalization(t *t
 	leaseCompletedAt := cloneL3Time(before.Finalization.Checkpoints.LeaseRelease.CompletedAt)
 	publicationCompletedAt := cloneL3Time(before.Finalization.Checkpoints.TerminalPublication.CompletedAt)
 
+	script.mu.Lock()
+	script.failExecContains = map[string]int{".hal/sync/uncommitted.diff": 1}
+	script.mu.Unlock()
+	if _, _, err := runL3SandboxLeaf(context.Background(), "sync-out", []string{"alpha"}); err == nil ||
+		!strings.Contains(err.Error(), "sync_out_collection_failed") {
+		t.Fatalf("first standalone post-completion sync-out error = %v", err)
+	}
+	blocked, err := store.LoadManifest("run-alpha")
+	if err != nil {
+		t.Fatalf("load blocked post-completion sync-out: %v", err)
+	}
+	if blocked.Finalization == nil ||
+		blocked.Finalization.State != sandboxexecution.FinalizationStateBlocked ||
+		blocked.Finalization.Checkpoints.SyncOut.Completed ||
+		!sameL3Time(artifactCompletedAt, blocked.Finalization.Checkpoints.Artifacts.CompletedAt) ||
+		!sameL3Time(leaseCompletedAt, blocked.Finalization.Checkpoints.LeaseRelease.CompletedAt) ||
+		!sameL3Time(publicationCompletedAt, blocked.Finalization.Checkpoints.TerminalPublication.CompletedAt) {
+		t.Fatalf("blocked post-completion sync-out replayed prior checkpoints: before=%#v blocked=%#v", before.Finalization.Checkpoints, blocked.Finalization)
+	}
+
 	if _, _, err := runL3SandboxLeaf(context.Background(), "sync-out", []string{"alpha"}); err != nil {
 		t.Fatalf("standalone post-completion sync-out: %v", err)
 	}
