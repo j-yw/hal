@@ -120,6 +120,85 @@ func TestL3LiveListDoesNotObserveExecutionFromReplacedSandboxInstance(t *testing
 	}
 }
 
+func TestL3NamedStatusDoesNotMixSandboxReplacementSnapshots(t *testing.T) {
+	t.Setenv("HAL_CONFIG_HOME", t.TempDir())
+	now := time.Date(2026, 7, 25, 8, 0, 0, 0, time.UTC)
+	original := &sandbox.SandboxState{
+		ID:        "sandbox-alpha-original",
+		Name:      "alpha",
+		Provider:  "worker",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: now,
+	}
+	replacement := &sandbox.SandboxState{
+		ID:        "sandbox-alpha-replacement",
+		Name:      "alpha",
+		Provider:  "worker",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: now.Add(time.Hour),
+	}
+	store, err := sandboxexecution.DefaultStore()
+	if err != nil {
+		t.Fatalf("open execution store: %v", err)
+	}
+	originalManifest := l3Manifest(
+		"run-alpha-original",
+		"alpha",
+		now,
+		"job-alpha-original",
+		sandboxworker.JobStateRunning,
+		0,
+	)
+	originalManifest.SandboxID = original.ID
+	saveL3Manifest(t, store, originalManifest)
+	replacementManifest := l3Manifest(
+		"run-alpha-replacement",
+		"alpha",
+		now.Add(time.Hour),
+		"job-alpha-replacement",
+		sandboxworker.JobStateRunning,
+		0,
+	)
+	replacementManifest.SandboxID = replacement.ID
+	saveL3Manifest(t, store, replacementManifest)
+
+	originalLoadSandbox := sandboxL3LoadSandbox
+	loads := 0
+	sandboxL3LoadSandbox = func(string) (*sandbox.SandboxState, error) {
+		loads++
+		if loads == 1 {
+			return original, nil
+		}
+		return replacement, nil
+	}
+	t.Cleanup(func() {
+		sandboxL3LoadSandbox = originalLoadSandbox
+	})
+
+	var out bytes.Buffer
+	if err := runSandboxL3StatusJSON(context.Background(), "alpha", false, &out); err != nil {
+		t.Fatalf("render named status: %v", err)
+	}
+	var response sandboxL3StatusResponse
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		t.Fatalf("decode named status: %v", err)
+	}
+	if response.Sandbox.ID != original.ID {
+		t.Fatalf("status sandbox ID = %q, want initial snapshot %q", response.Sandbox.ID, original.ID)
+	}
+	if response.Execution == nil || response.Execution.RunID != originalManifest.ID {
+		t.Fatalf(
+			"status mixed sandbox %q with execution %#v, want execution %q from the same snapshot",
+			response.Sandbox.ID,
+			response.Execution,
+			originalManifest.ID,
+		)
+	}
+	if loads != 1 {
+		t.Fatalf("named status loaded mutable sandbox identity %d times, want one snapshot", loads)
+	}
+}
+
 func TestL3RunAndAutoManifestsPersistStableSandboxInstanceID(t *testing.T) {
 	now := time.Date(2026, 7, 25, 8, 0, 0, 0, time.UTC)
 	target := &sandbox.SandboxState{
