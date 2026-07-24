@@ -444,6 +444,18 @@ func selectSandboxL3Execution(sandboxName, runID string, mode sandboxL3Selection
 	if err != nil || instance == nil {
 		return nil, nil, fmt.Errorf("sandbox_not_found: sandbox %s is unavailable", sandboxName)
 	}
+	return selectSandboxL3ExecutionFromSnapshot(instance, sandboxName, runID, mode)
+}
+
+func selectSandboxL3ExecutionFromSnapshot(instance *sandbox.SandboxState, sandboxName, runID string, mode sandboxL3SelectionMode) (*sandbox.SandboxState, *sandboxexecution.Manifest, error) {
+	sandboxName = strings.TrimSpace(sandboxName)
+	runID = strings.TrimSpace(runID)
+	if sandboxName == "" {
+		return nil, nil, errors.New("sandbox name is required")
+	}
+	if instance == nil || strings.TrimSpace(instance.Name) != sandboxName {
+		return nil, nil, fmt.Errorf("sandbox_not_found: sandbox %s is unavailable", sandboxName)
+	}
 	store, err := sandboxL3DefaultStore()
 	if err != nil {
 		return nil, nil, errors.New("execution_store_unavailable: durable execution store is unavailable")
@@ -738,7 +750,7 @@ func runSandboxL3StatusJSON(ctx context.Context, sandboxName string, live bool, 
 		Sandbox:           sandboxL3IdentityFromState(instance),
 		RecommendedAction: "none",
 	}
-	_, manifest, selectErr := selectSandboxL3Execution(sandboxName, "", sandboxL3SelectionObserve)
+	_, manifest, selectErr := selectSandboxL3ExecutionFromSnapshot(instance, sandboxName, "", sandboxL3SelectionObserve)
 	if selectErr == nil {
 		var liveJob *sandboxworker.Job
 		if live {
