@@ -1,6 +1,6 @@
 # Sandbox Job Contract v1
 
-**Contract version:** `sandboxjob-v1`  
+**Contract version:** `sandboxjob-v1`
 **Scope:** local sandbox worker asynchronous execution
 
 This contract defines the redaction-safe, durable job interface between a Hal
