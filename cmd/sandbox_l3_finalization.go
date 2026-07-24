@@ -13,6 +13,7 @@ import (
 
 type sandboxL3FinalizationDeps struct {
 	now              func() time.Time
+	resolveJob       func(context.Context, *sandboxexecution.Manifest) (*sandboxworker.Job, error)
 	observeJob       func(context.Context, *sandboxexecution.Manifest) (*sandboxworker.Job, error)
 	drainLogs        func(context.Context, *sandboxexecution.Manifest, *sandboxworker.Job) error
 	collectArtifacts func(context.Context, sandboxexecution.Store, *sandboxexecution.Manifest, *sandboxworker.Job) error
@@ -50,7 +51,29 @@ func finalizeSandboxL3Execution(
 			return nil
 		}
 		if manifest.WorkerJob == nil {
-			return errors.New("worker_job_missing: durable worker job identity is required")
+			if !sandboxL3ExecutionAwaitingJobResolution(manifest) {
+				return errors.New("worker_job_missing: durable worker job identity is required")
+			}
+			job, resolveErr := deps.resolveJob(ctx, manifest)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			reference := sandboxL3WorkerJobReference(job)
+			if reference == nil {
+				return errors.New("worker_job_resolution_mismatch: resolved worker job identity is invalid")
+			}
+			now := deps.now().UTC()
+			manifest.WorkerJob = reference
+			finalization := ensureSandboxL3Finalization(manifest, requestSyncOut, now)
+			finalization.State = sandboxexecution.FinalizationStatePending
+			finalization.ReasonCode = ""
+			if sandboxL3TerminalJobState(reference.State) {
+				finalization.TerminalJobState = reference.State
+			}
+			finalization.UpdatedAt = now
+			if err := locked.SaveManifest(manifest); err != nil {
+				return errors.New("worker_job_resolution_write_failed: resolved worker job state is unavailable")
+			}
 		}
 
 		job, observeErr := deps.observeJob(ctx, manifest)
@@ -147,6 +170,11 @@ func finalizeSandboxL3Execution(
 func normalizeSandboxL3FinalizationDeps(deps sandboxL3FinalizationDeps) sandboxL3FinalizationDeps {
 	if deps.now == nil {
 		deps.now = time.Now
+	}
+	if deps.resolveJob == nil {
+		deps.resolveJob = func(context.Context, *sandboxexecution.Manifest) (*sandboxworker.Job, error) {
+			return nil, errors.New("worker job resolution is unavailable")
+		}
 	}
 	if deps.observeJob == nil {
 		deps.observeJob = func(context.Context, *sandboxexecution.Manifest) (*sandboxworker.Job, error) {

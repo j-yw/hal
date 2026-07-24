@@ -129,6 +129,7 @@ func TestL3RecoveryResolutionFailsClosedWithoutManifestMutation(t *testing.T) {
 			}
 			harness := newL3WorkerHarness(t, script)
 			harness.seed("alpha", "run-alpha", "")
+			leaseStore := seedL3RecoveryLease(t, "run-alpha", "alpha")
 			before := append([]byte(nil), harness.manifestBytes()...)
 
 			_, _, err := runL3SandboxLeaf(
@@ -150,12 +151,70 @@ func TestL3RecoveryResolutionFailsClosedWithoutManifestMutation(t *testing.T) {
 			if len(requests) != 1 || requests[0].operation != sandboxworker.OperationJobResolve {
 				t.Fatalf("worker requests = %#v, want read-only resolution only", requests)
 			}
+			lease, leaseErr := leaseStore.Load("lease-run-alpha")
+			if leaseErr != nil {
+				t.Fatalf("load exact lease: %v", leaseErr)
+			}
+			if lease.Status != sandbox.SandboxLeaseStatusActive {
+				t.Fatalf("resolution failure released lease: %#v", lease)
+			}
 			for _, marker := range []string{"/home/", "/tmp/", "TOKEN=", "https://"} {
 				if strings.Contains(err.Error(), marker) {
 					t.Fatalf("resolution error leaked %q: %v", marker, err)
 				}
 			}
 		})
+	}
+}
+
+func TestL3RecoveryResolvedTerminalJobContinuesSharedFinalizer(t *testing.T) {
+	script := &l3WorkerScript{
+		jobState:         sandboxworker.JobStateSucceeded,
+		panicOnForbidden: true,
+		pages:            map[uint64]sandboxworker.JobLogsResponse{},
+	}
+	harness := newL3WorkerHarness(t, script)
+	harness.seed("alpha", "run-alpha", "")
+	leaseStore := seedL3RecoveryLease(t, "run-alpha", "alpha")
+
+	stdout, stderr, err := runL3SandboxLeaf(
+		context.Background(),
+		"recover",
+		[]string{"alpha", "--run", "run-alpha"},
+	)
+	if err != nil {
+		t.Fatalf("recover resolved terminal job: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+	}
+	store, err := sandboxexecution.DefaultStore()
+	if err != nil {
+		t.Fatalf("open execution store: %v", err)
+	}
+	manifest, err := store.LoadManifest("run-alpha")
+	if err != nil {
+		t.Fatalf("load finalized manifest: %v", err)
+	}
+	if manifest.WorkerJob == nil ||
+		manifest.WorkerJob.JobID != "job-resolved" ||
+		manifest.Finalization == nil ||
+		manifest.Finalization.State != sandboxexecution.FinalizationStateCompleted ||
+		manifest.Status != sandboxexecution.StatusSucceeded {
+		t.Fatalf("resolved terminal finalization = %#v", manifest)
+	}
+	lease, err := leaseStore.Load("lease-run-alpha")
+	if err != nil {
+		t.Fatalf("load exact lease: %v", err)
+	}
+	if lease.Status != sandbox.SandboxLeaseStatusReleased {
+		t.Fatalf("terminal finalizer lease = %#v, want released", lease)
+	}
+	requests, forbidden := script.snapshot()
+	if len(forbidden) != 0 {
+		t.Fatalf("forbidden worker operations = %v", forbidden)
+	}
+	if len(requests) < 2 ||
+		requests[0].operation != sandboxworker.OperationJobResolve ||
+		requests[1].operation != sandboxworker.OperationJobStatus {
+		t.Fatalf("worker requests = %#v, want resolution before shared finalizer", requests)
 	}
 }
 

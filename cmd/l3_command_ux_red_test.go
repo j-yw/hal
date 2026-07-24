@@ -948,6 +948,7 @@ func (script *l3WorkerScript) HandleRequest(_ context.Context, req sandboxworker
 		job := &sandboxworker.Job{
 			ContractVersion: sandboxworker.JobContractVersion,
 			ID:              req.JobStatus.JobID,
+			SubmissionKey:   sandboxWorkerJobSubmissionKey("run-alpha"),
 			WorkerID:        "worker-l3",
 			HostID:          "worker-l3",
 			RuntimeDriver:   sandboxworker.RuntimeDriverRootlessPodman,
