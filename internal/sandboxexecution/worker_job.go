@@ -15,6 +15,7 @@ const WorkerJobContractVersion = "sandboxjob-v1"
 type WorkerJobReference struct {
 	ContractVersion string     `json:"contractVersion"`
 	JobID           string     `json:"jobId"`
+	SubmissionKey   string     `json:"submissionKey,omitempty"`
 	WorkerID        string     `json:"workerId"`
 	HostID          string     `json:"hostId,omitempty"`
 	RuntimeDriver   string     `json:"runtimeDriver"`
@@ -27,7 +28,10 @@ type WorkerJobReference struct {
 	LogCursor       uint64     `json:"logCursor"`
 }
 
-var workerJobSafeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$`)
+var (
+	workerJobSafeIDPattern        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$`)
+	workerJobSubmissionKeyPattern = regexp.MustCompile(`^submission-[a-f0-9]{64}$`)
+)
 
 // SanitizeWorkerJobReference returns a detached safe reference or nil when the
 // supplied metadata cannot be represented without unsafe values.
@@ -38,6 +42,7 @@ func SanitizeWorkerJobReference(reference *WorkerJobReference) *WorkerJobReferen
 	cloned := *reference
 	cloned.ContractVersion = strings.TrimSpace(cloned.ContractVersion)
 	cloned.JobID = strings.TrimSpace(cloned.JobID)
+	cloned.SubmissionKey = strings.TrimSpace(cloned.SubmissionKey)
 	cloned.WorkerID = strings.TrimSpace(cloned.WorkerID)
 	cloned.HostID = strings.TrimSpace(cloned.HostID)
 	cloned.RuntimeDriver = strings.TrimSpace(cloned.RuntimeDriver)
@@ -58,6 +63,9 @@ func validateWorkerJobReference(reference *WorkerJobReference) error {
 	}
 	if reference.ContractVersion != WorkerJobContractVersion {
 		return fmt.Errorf("sandbox execution workerJob contractVersion is invalid")
+	}
+	if reference.SubmissionKey != "" && !workerJobSubmissionKeyPattern.MatchString(reference.SubmissionKey) {
+		return fmt.Errorf("sandbox execution workerJob submissionKey is invalid")
 	}
 	for _, field := range []struct {
 		name  string
