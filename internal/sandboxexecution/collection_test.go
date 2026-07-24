@@ -1015,6 +1015,7 @@ func TestUncommittedSyncOutDiffGenerationScriptCapturesTrackedChangesAndOmitsCle
 	runGit("init")
 	runGit("config", "user.email", "hal-test@example.com")
 	runGit("config", "user.name", "Hal Test")
+	runGit("config", "commit.gpgsign", "false")
 	prdPath := filepath.Join(projectDir, ".hal", "prd.json")
 	if err := os.MkdirAll(filepath.Dir(prdPath), 0o700); err != nil {
 		t.Fatal(err)
