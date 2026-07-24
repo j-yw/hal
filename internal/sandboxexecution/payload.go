@@ -193,8 +193,8 @@ func (s Store) writePayload(executionID, area, payloadPath string, data []byte) 
 	if err := s.Ensure(executionID); err != nil {
 		return StoredFile{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(absolutePath), 0o700); err != nil {
-		return StoredFile{}, fmt.Errorf("create sandbox execution payload dir: %w", err)
+	if err := s.ensurePayloadParent(executionID, area, absolutePath); err != nil {
+		return StoredFile{}, err
 	}
 	if err := writeStoreFileAtomic(absolutePath, data, 0o600); err != nil {
 		return StoredFile{}, fmt.Errorf("write sandbox execution payload %q: %w", storeRelativePath, err)
@@ -234,8 +234,8 @@ func (s Store) copyPayload(executionID, area, payloadPath, sourcePath string) (S
 	if err := s.Ensure(executionID); err != nil {
 		return StoredFile{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(absolutePath), 0o700); err != nil {
-		return StoredFile{}, fmt.Errorf("create sandbox execution payload dir: %w", err)
+	if err := s.ensurePayloadParent(executionID, area, absolutePath); err != nil {
+		return StoredFile{}, err
 	}
 
 	info, err := copyStoreFileAtomic(sourcePath, absolutePath, 0o600, sourceInfo)
@@ -273,8 +273,8 @@ func (s Store) copyPayloadRedactingSourcePath(executionID, area, payloadPath, so
 	if err := s.Ensure(executionID); err != nil {
 		return StoredFile{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(absolutePath), 0o700); err != nil {
-		return StoredFile{}, fmt.Errorf("create sandbox execution payload dir: %w", redactPathError(err))
+	if err := s.ensurePayloadParent(executionID, area, absolutePath); err != nil {
+		return StoredFile{}, err
 	}
 
 	info, err := copyStoreFileAtomicRedactingSourcePath(sourcePath, absolutePath, 0o600, sourceInfo)
@@ -300,6 +300,14 @@ func (s Store) payloadPath(executionID, area, payloadPath string) (string, strin
 	absolutePath := filepath.Join(base, filepath.FromSlash(relPath))
 	storeRelativePath := filepath.ToSlash(filepath.Join(executionID, area, filepath.FromSlash(relPath)))
 	return absolutePath, storeRelativePath, nil
+}
+
+func (s Store) ensurePayloadParent(executionID, area, absolutePath string) error {
+	base := filepath.Join(s.root, executionID, area)
+	if err := ensurePrivateDirectoryTree(base, filepath.Dir(absolutePath), "sandbox execution payload directory"); err != nil {
+		return fmt.Errorf("create sandbox execution payload dir: %w", err)
+	}
+	return nil
 }
 
 func validatePayloadPath(payloadPath string) (string, error) {
@@ -329,7 +337,7 @@ func validatePayloadPath(payloadPath string) (string, error) {
 }
 
 func copyStoreFileAtomic(sourcePath, destPath string, mode fs.FileMode, expectedInfo fs.FileInfo) (fs.FileInfo, error) {
-	source, err := os.Open(sourcePath)
+	source, err := openFileNoFollow(sourcePath, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -345,9 +353,17 @@ func copyStoreFileAtomic(sourcePath, destPath string, mode fs.FileMode, expected
 		return nil, fmt.Errorf("source %q changed during copy", sourcePath)
 	}
 
-	tmpPath := destPath + tempFileSuffix
-	dest, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	if err := validateOptionalPrivateRegularFile(destPath, "sandbox execution payload"); err != nil {
+		return nil, err
+	}
+	dest, err := os.CreateTemp(filepath.Dir(destPath), filepath.Base(destPath)+tempFileSuffix+"-*")
 	if err != nil {
+		return nil, err
+	}
+	tmpPath := dest.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := dest.Chmod(mode); err != nil {
+		_ = dest.Close()
 		return nil, err
 	}
 	if _, err := io.Copy(dest, source); err != nil {
@@ -359,19 +375,15 @@ func copyStoreFileAtomic(sourcePath, destPath string, mode fs.FileMode, expected
 		_ = os.Remove(tmpPath)
 		return nil, err
 	}
-	if err := os.Chmod(tmpPath, mode); err != nil {
-		_ = os.Remove(tmpPath)
-		return nil, err
-	}
 	if err := renameStoreFile(tmpPath, destPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return nil, err
 	}
-	return os.Stat(destPath)
+	return validatePrivateRegularFile(destPath, "sandbox execution payload")
 }
 
 func copyStoreFileAtomicRedactingSourcePath(sourcePath, destPath string, mode fs.FileMode, expectedInfo fs.FileInfo) (fs.FileInfo, error) {
-	source, err := os.Open(sourcePath)
+	source, err := openFileNoFollow(sourcePath, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, redactPathError(err)
 	}
@@ -387,9 +399,17 @@ func copyStoreFileAtomicRedactingSourcePath(sourcePath, destPath string, mode fs
 		return nil, fmt.Errorf("source changed during copy")
 	}
 
-	tmpPath := destPath + tempFileSuffix
-	dest, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	if err := validateOptionalPrivateRegularFile(destPath, "sandbox execution payload"); err != nil {
+		return nil, err
+	}
+	dest, err := os.CreateTemp(filepath.Dir(destPath), filepath.Base(destPath)+tempFileSuffix+"-*")
 	if err != nil {
+		return nil, redactPathError(err)
+	}
+	tmpPath := dest.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := dest.Chmod(mode); err != nil {
+		_ = dest.Close()
 		return nil, redactPathError(err)
 	}
 	if _, err := io.Copy(dest, source); err != nil {
@@ -401,15 +421,11 @@ func copyStoreFileAtomicRedactingSourcePath(sourcePath, destPath string, mode fs
 		_ = os.Remove(tmpPath)
 		return nil, redactPathError(err)
 	}
-	if err := os.Chmod(tmpPath, mode); err != nil {
-		_ = os.Remove(tmpPath)
-		return nil, redactPathError(err)
-	}
 	if err := renameStoreFile(tmpPath, destPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return nil, redactPathError(err)
 	}
-	info, err := os.Stat(destPath)
+	info, err := validatePrivateRegularFile(destPath, "sandbox execution payload")
 	if err != nil {
 		return nil, redactPathError(err)
 	}
