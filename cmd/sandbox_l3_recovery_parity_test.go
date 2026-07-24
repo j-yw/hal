@@ -160,6 +160,131 @@ func TestL3SuccessfulAutoRecoveryRequiresUsableStoredArchiveSummary(t *testing.T
 	}
 }
 
+func TestL3SucceededAutoRecoveryRejectsLocallyTruncatedArchiveProof(t *testing.T) {
+	store, executionID, terminal := seedL3FinalizationExecution(t, sandboxworker.JobStateRunning)
+	manifest, err := store.LoadManifest(executionID)
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	manifest.Purpose = sandboxexecution.PurposeAuto
+	if err := store.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest(auto) error: %v", err)
+	}
+
+	const staleArchive = "stale-archive"
+	const currentArchive = "current-archive"
+	terminal.LogCursor = 3
+	logClientDriver := &fakeSandboxWorkerJobDriver{
+		logPages: []sandboxworker.JobLogsResponse{{
+			ContractVersion: sandboxworker.JobContractVersion,
+			JobID:           terminal.ID,
+			Records: []sandboxworker.JobLogRecord{
+				{
+					Cursor:    1,
+					Stream:    sandboxworker.JobLogStreamStdout,
+					Data:      "Archived state to " + staleArchive + "\n",
+					Timestamp: *terminal.FinishedAt,
+				},
+				{
+					Cursor:    2,
+					Stream:    sandboxworker.JobLogStreamStdout,
+					Data:      strings.Repeat("x", sandboxL3RecoveryOutputSummaryBytes),
+					Timestamp: *terminal.FinishedAt,
+				},
+				{
+					Cursor:    3,
+					Stream:    sandboxworker.JobLogStreamStdout,
+					Data:      "\nArchived state to " + currentArchive + "\n",
+					Timestamp: *terminal.FinishedAt,
+				},
+			},
+			NextCursor: 3,
+		}},
+	}
+	var copyCalls atomic.Int32
+	runtimeDriver := fakeRunSandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		exec: func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			return &sandboxruntime.ExecResult{}, nil
+		},
+		copyOut: func(_ context.Context, req sandboxruntime.CopyRequest) error {
+			copyCalls.Add(1)
+			if err := os.MkdirAll(filepath.Dir(req.DestinationPath), 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(req.DestinationPath, []byte("unexpected stale payload\n"), 0o600)
+		},
+	}
+	var releaseCalls atomic.Int32
+	err = finalizeSandboxL3Execution(
+		context.Background(),
+		store,
+		executionID,
+		false,
+		sandboxL3FinalizationDeps{
+			now: func() time.Time { return terminal.FinishedAt.Add(time.Second) },
+			observeJob: func(context.Context, *sandboxexecution.Manifest) (*sandboxworker.Job, error) {
+				return cloneL3WorkerJob(terminal), nil
+			},
+			drainLogsInStore: func(
+				ctx context.Context,
+				locked sandboxexecution.Store,
+				manifest *sandboxexecution.Manifest,
+				job *sandboxworker.Job,
+			) error {
+				return drainSandboxL3TerminalLogsWithClient(
+					ctx,
+					locked,
+					foregroundSandboxL3JobClient{driver: logClientDriver},
+					manifest,
+					job,
+				)
+			},
+			collectArtifacts: func(
+				ctx context.Context,
+				locked sandboxexecution.Store,
+				manifest *sandboxexecution.Manifest,
+				job *sandboxworker.Job,
+			) error {
+				return collectSandboxL3RecoveryTerminalArtifactsWithRuntime(
+					ctx,
+					locked,
+					manifest,
+					job,
+					runtimeDriver,
+					sandboxruntime.Target{},
+				)
+			},
+			releaseLease: func(context.Context, *sandboxexecution.Manifest) error {
+				releaseCalls.Add(1)
+				return nil
+			},
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "terminal_log_drain_failed") {
+		t.Fatalf("locally truncated archive proof error = %v, want terminal log drain block", err)
+	}
+	if copyCalls.Load() != 0 || releaseCalls.Load() != 0 {
+		t.Fatalf(
+			"locally truncated archive proof crossed copy/release boundaries %d/%d times",
+			copyCalls.Load(),
+			releaseCalls.Load(),
+		)
+	}
+	current, loadErr := store.LoadManifest(executionID)
+	if loadErr != nil {
+		t.Fatalf("LoadManifest(final) error: %v", loadErr)
+	}
+	if current.Finalization == nil ||
+		current.Finalization.State != sandboxexecution.FinalizationStateBlocked ||
+		current.Finalization.ReasonCode != "terminal_log_drain_failed" ||
+		current.Finalization.Checkpoints.Artifacts.Completed ||
+		current.Finalization.Checkpoints.LeaseRelease.Completed ||
+		current.Finalization.Checkpoints.TerminalPublication.Completed {
+		t.Fatalf("locally truncated archive proof finalization = %#v", current.Finalization)
+	}
+}
+
 func TestL3RecoveryJobContractsRemainFreeOfCommandAndPathFields(t *testing.T) {
 	for _, value := range []any{
 		sandboxworker.Job{},
