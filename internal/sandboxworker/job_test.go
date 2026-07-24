@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -150,6 +151,74 @@ func TestWorkerJobCapabilitiesRequireConfiguredStateAndExecDriver(t *testing.T) 
 	}
 	if len(capabilities.RuntimeDrivers) != 1 || !stringSliceContains(capabilities.RuntimeDrivers[0].Operations, OperationJobStart) {
 		t.Fatalf("exec-capable runtime does not advertise job_start: %#v", capabilities.RuntimeDrivers)
+	}
+}
+
+func TestWorkerJobStartRejectsWorkBeyondConfiguredCapacity(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var execCalls atomic.Int32
+	driver := &l2JobRuntimeDriver{
+		fakeWorkerRuntimeDriver: &fakeWorkerRuntimeDriver{id: "capacity_driver"},
+		execFn: func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			if execCalls.Add(1) == 1 {
+				close(started)
+				<-release
+			}
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+	}
+	registry, err := NewDriverRegistry(driver)
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+	service, err := NewService(ServiceOptions{
+		WorkerID:    "worker-capacity",
+		HostKind:    HostKindLocal,
+		Registry:    registry,
+		JobStateDir: filepath.Join(t.TempDir(), "jobs"),
+		Capacity: WorkerCapacity{
+			MaxConcurrentSandboxes: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+	defer service.jobs.close()
+
+	first := service.JobStartResponse(context.Background(), "first", driver.ID(), JobStartRequest{
+		ContractVersion: JobContractVersion,
+		Exec:            l2JobExecRequest("first-secret"),
+	})
+	if !first.OK || first.Job == nil {
+		t.Fatalf("first start = %#v error=%#v, want accepted", first, first.Error)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first job did not start")
+	}
+
+	second := service.JobStartResponse(context.Background(), "second", driver.ID(), JobStartRequest{
+		ContractVersion: JobContractVersion,
+		Exec:            l2JobExecRequest("second-secret"),
+	})
+	if second.OK || second.Error == nil || second.Error.Code != ErrorCodeCapacityExceeded {
+		t.Fatalf("second start = %#v, want stable capacity error", second)
+	}
+
+	close(release)
+	waitForL2JobState(t, service, first.Job.ID, JobStateSucceeded)
+	third := service.JobStartResponse(context.Background(), "third", driver.ID(), JobStartRequest{
+		ContractVersion: JobContractVersion,
+		Exec:            l2JobExecRequest("third-secret"),
+	})
+	if !third.OK || third.Job == nil {
+		t.Fatalf("third start after release = %#v error=%#v, want accepted", third, third.Error)
+	}
+	waitForL2JobState(t, service, third.Job.ID, JobStateSucceeded)
+	if got := execCalls.Load(); got != 2 {
+		t.Fatalf("driver exec calls = %d, want exactly two admitted jobs", got)
 	}
 }
 
@@ -348,6 +417,39 @@ func TestWorkerJobRestartLoadsEscapeHeavyRetainedLogs(t *testing.T) {
 	}
 }
 
+func TestWorkerJobStoreAcceptsSymlinkedParentAndCleansAbandonedTransactions(t *testing.T) {
+	parent := t.TempDir()
+	realParent := filepath.Join(parent, "real")
+	if err := os.Mkdir(realParent, 0o700); err != nil {
+		t.Fatalf("Mkdir() real parent: %v", err)
+	}
+	linkedParent := filepath.Join(parent, "linked")
+	if err := os.Symlink(realParent, linkedParent); err != nil {
+		t.Fatalf("Symlink() parent: %v", err)
+	}
+	store, err := newJobStore(filepath.Join(linkedParent, "jobs"))
+	if err != nil {
+		t.Fatalf("newJobStore() through symlinked parent: %v", err)
+	}
+	transactionDir := filepath.Join(store.root, jobTransactionDirPrefix+"abandoned")
+	if err := os.Mkdir(transactionDir, 0o700); err != nil {
+		t.Fatalf("Mkdir() abandoned transaction: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(transactionDir, jobLogsFileName), []byte(`{"records":[]}`), 0o600); err != nil {
+		t.Fatalf("WriteFile() abandoned transaction: %v", err)
+	}
+	jobs, err := store.loadAll()
+	if err != nil {
+		t.Fatalf("loadAll() with abandoned transaction: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("loadAll() jobs = %#v, want no partially published job", jobs)
+	}
+	if _, err := os.Lstat(transactionDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("abandoned transaction remains after load: %v", err)
+	}
+}
+
 func TestWorkerJobCorruptDurableStateFailsSafe(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "jobs")
 	jobDir := filepath.Join(stateDir, "job-corrupt")
@@ -449,6 +551,58 @@ func TestWorkerJobLogChunkingPreservesUTF8RuneBoundaries(t *testing.T) {
 	}
 	if got := rendered.String(); got != output {
 		t.Fatalf("rendered output differs after chunking: got %q want %q", got, output)
+	}
+}
+
+func TestWorkerJobGenericRedactionSpansDriverWrites(t *testing.T) {
+	driver := &l2JobRuntimeDriver{
+		fakeWorkerRuntimeDriver: &fakeWorkerRuntimeDriver{id: "stream_redaction_driver"},
+		execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			for _, chunk := range []string{
+				"TOKEN=split-",
+				"secret\nhttps://exa",
+				"mple.invalid/private\n/tmp/pri",
+				"vate/path\n",
+			} {
+				if _, err := io.WriteString(req.Stdout, chunk); err != nil {
+					return nil, err
+				}
+			}
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+	}
+	service, _, daemonCancel := newL2JobTestService(t, driver)
+	defer daemonCancel()
+	start := service.JobStartResponse(context.Background(), "start", driver.ID(), JobStartRequest{
+		ContractVersion: JobContractVersion,
+		Exec:            l2JobExecRequest("unrelated-request-secret"),
+	})
+	if !start.OK || start.Job == nil {
+		t.Fatalf("start response = %#v error=%#v", start, start.Error)
+	}
+	waitForL2JobState(t, service, start.Job.ID, JobStateSucceeded)
+	response := service.JobLogsResponse("logs", JobLogsRequest{
+		ContractVersion: JobContractVersion,
+		JobID:           start.Job.ID,
+		LimitBytes:      DefaultJobLogReadBytes,
+	})
+	if !response.OK || response.JobLogs == nil {
+		t.Fatalf("logs response = %#v error=%#v", response, response.Error)
+	}
+	var rendered strings.Builder
+	for _, record := range response.JobLogs.Records {
+		rendered.WriteString(record.Data)
+	}
+	output := rendered.String()
+	for _, forbidden := range []string{"split-secret", "https://example.invalid/private", "/tmp/private/path"} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("split driver output exposed %q in %q", forbidden, output)
+		}
+	}
+	for _, marker := range []string{"TOKEN=[redacted]", "[redacted-endpoint]", "[redacted-path]"} {
+		if !strings.Contains(output, marker) {
+			t.Fatalf("split driver output = %q, want %q", output, marker)
+		}
 	}
 }
 

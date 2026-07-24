@@ -127,9 +127,10 @@ func NewService(options ServiceOptions) (*Service, error) {
 	if strings.TrimSpace(options.JobStateDir) != "" {
 		var err error
 		jobs, err = newJobManager(jobManagerOptions{
-			Context:  options.JobContext,
-			WorkerID: workerID,
-			StateDir: options.JobStateDir,
+			Context:           options.JobContext,
+			WorkerID:          workerID,
+			StateDir:          options.JobStateDir,
+			MaxConcurrentJobs: capacity.MaxConcurrentSandboxes,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("worker job state is unavailable")

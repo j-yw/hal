@@ -13,7 +13,10 @@ import (
 
 const defaultJobHeartbeatInterval = time.Second
 
-var errJobNotFound = errors.New("worker job was not found")
+var (
+	errJobNotFound         = errors.New("worker job was not found")
+	errJobCapacityExceeded = errors.New("worker job capacity is exhausted")
+)
 
 type jobManagerOptions struct {
 	Context           context.Context
@@ -24,6 +27,7 @@ type jobManagerOptions struct {
 	HeartbeatInterval time.Duration
 	LogRetentionBytes int64
 	LogRecordBytes    int64
+	MaxConcurrentJobs int
 }
 
 type jobManager struct {
@@ -38,10 +42,14 @@ type jobManager struct {
 	heartbeatInterval time.Duration
 	logRetentionBytes int64
 	logRecordBytes    int64
-	jobs              map[string]*jobEntry
-	jobWG             sync.WaitGroup
-	shutdownOnce      sync.Once
-	closing           bool
+	maxConcurrentJobs int
+	activeJobs        int
+	// Terminal state remains durable in L2. Store-wide retention and pruning
+	// are explicitly deferred to a later phase.
+	jobs         map[string]*jobEntry
+	jobWG        sync.WaitGroup
+	shutdownOnce sync.Once
+	closing      bool
 }
 
 type jobEntry struct {
@@ -50,6 +58,7 @@ type jobEntry struct {
 	retainedBytes  int64
 	cancel         context.CancelFunc
 	cancelAccepted bool
+	admitted       bool
 }
 
 func newJobManager(options jobManagerOptions) (*jobManager, error) {
@@ -82,6 +91,10 @@ func newJobManager(options jobManagerOptions) (*jobManager, error) {
 	if recordBytes < minJobLogRecordBytes || recordBytes > DefaultJobLogRecordBytes {
 		recordBytes = DefaultJobLogRecordBytes
 	}
+	maxConcurrentJobs := options.MaxConcurrentJobs
+	if maxConcurrentJobs <= 0 {
+		maxConcurrentJobs = 1
+	}
 	manager := &jobManager{
 		ctx:               ctx,
 		cancelContext:     cancelContext,
@@ -92,6 +105,7 @@ func newJobManager(options jobManagerOptions) (*jobManager, error) {
 		heartbeatInterval: heartbeat,
 		logRetentionBytes: retention,
 		logRecordBytes:    recordBytes,
+		maxConcurrentJobs: maxConcurrentJobs,
 		jobs:              map[string]*jobEntry{},
 	}
 	if !validJobSafeID(manager.workerID) {
@@ -229,6 +243,11 @@ func (manager *jobManager) start(driverID string, driver sandboxruntime.Driver, 
 		cancel()
 		return Job{}, fmt.Errorf("allocate worker job identity")
 	}
+	if manager.activeJobs >= manager.maxConcurrentJobs {
+		manager.mu.Unlock()
+		cancel()
+		return Job{}, errJobCapacityExceeded
+	}
 	manager.jobs[jobID] = entry
 	if err := manager.store.save(entry.job, nil); err != nil {
 		delete(manager.jobs, jobID)
@@ -236,6 +255,8 @@ func (manager *jobManager) start(driverID string, driver sandboxruntime.Driver, 
 		cancel()
 		return Job{}, err
 	}
+	entry.admitted = true
+	manager.activeJobs++
 	snapshot := cloneJob(entry.job)
 	manager.jobWG.Add(1)
 	manager.mu.Unlock()
@@ -246,7 +267,12 @@ func (manager *jobManager) start(driverID string, driver sandboxruntime.Driver, 
 }
 
 func (manager *jobManager) run(ctx context.Context, entry *jobEntry, driver sandboxruntime.Driver, req ExecRequest) {
-	defer manager.jobWG.Done()
+	defer func() {
+		manager.mu.Lock()
+		manager.releaseAdmissionLocked(entry)
+		manager.mu.Unlock()
+		manager.jobWG.Done()
+	}()
 	manager.mu.Lock()
 	if jobStateTerminal(entry.job.State) {
 		manager.mu.Unlock()
@@ -362,6 +388,17 @@ func (manager *jobManager) finishLocked(entry *jobEntry, state string, result *s
 		entry.job.FailureCode = "state_write_failed"
 	}
 	entry.cancel = nil
+	manager.releaseAdmissionLocked(entry)
+}
+
+func (manager *jobManager) releaseAdmissionLocked(entry *jobEntry) {
+	if entry == nil || !entry.admitted {
+		return
+	}
+	entry.admitted = false
+	if manager.activeJobs > 0 {
+		manager.activeJobs--
+	}
 }
 
 func (manager *jobManager) status(jobID string) (Job, error) {

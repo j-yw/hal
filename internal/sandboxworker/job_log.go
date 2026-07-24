@@ -86,6 +86,7 @@ type jobLogWriter struct {
 	limit      int64
 	written    int64
 	redactor   *jobLiteralRedactor
+	sanitizer  jobStreamSanitizer
 	mu         sync.Mutex
 	persistErr error
 }
@@ -111,7 +112,7 @@ func (writer *jobLogWriter) Write(p []byte) (int, error) {
 		writer.manager.markStreamTruncated(writer.entry, writer.stream)
 	}
 	writer.written += int64(len(p))
-	safe := writer.redactor.Consume(p, false)
+	safe := writer.sanitizer.Consume(writer.redactor.Consume(p, false), false)
 	if err := writer.manager.appendLog(writer.entry, writer.stream, safe); err != nil {
 		writer.persistErr = err
 		return originalLen, err
@@ -125,13 +126,42 @@ func (writer *jobLogWriter) Flush() {
 	if writer.persistErr != nil {
 		return
 	}
-	writer.persistErr = writer.manager.appendLog(writer.entry, writer.stream, writer.redactor.Consume(nil, true))
+	writer.persistErr = writer.manager.appendLog(
+		writer.entry,
+		writer.stream,
+		writer.sanitizer.Consume(writer.redactor.Consume(nil, true), true),
+	)
 }
 
 func (writer *jobLogWriter) Err() error {
 	writer.mu.Lock()
 	defer writer.mu.Unlock()
 	return writer.persistErr
+}
+
+// jobStreamSanitizer holds an incomplete line so generic secret, endpoint, and
+// host-path patterns cannot evade redaction by spanning driver Write calls.
+// The enclosing writer's capture limit also bounds this pending buffer.
+type jobStreamSanitizer struct {
+	pending []byte
+}
+
+func (sanitizer *jobStreamSanitizer) Consume(p []byte, final bool) []byte {
+	sanitizer.pending = append(sanitizer.pending, p...)
+	limit := len(sanitizer.pending)
+	if !final {
+		if lastNewline := bytes.LastIndexByte(sanitizer.pending, '\n'); lastNewline >= 0 {
+			limit = lastNewline + 1
+		} else {
+			limit = 0
+		}
+	}
+	if limit == 0 {
+		return nil
+	}
+	out := []byte(sanitizeJobLogData(string(sanitizer.pending[:limit])))
+	sanitizer.pending = append(sanitizer.pending[:0], sanitizer.pending[limit:]...)
+	return out
 }
 
 type jobLiteralRedactor struct {

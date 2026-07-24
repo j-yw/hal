@@ -92,6 +92,8 @@ func jobOperationErrorResponse(requestID, operation string, err error) Response 
 	switch {
 	case errors.Is(err, errJobNotFound):
 		return protocolErrorResponse(requestID, operation, ErrorCodeJobNotFound, "worker job was not found")
+	case errors.Is(err, errJobCapacityExceeded):
+		return protocolErrorResponse(requestID, operation, ErrorCodeCapacityExceeded, "worker job capacity is exhausted")
 	case errors.Is(err, ErrDriverNotFound):
 		return protocolErrorResponse(requestID, operation, ErrorCodeDriverNotFound, err.Error())
 	case errors.Is(err, ErrDriverIDRequired):

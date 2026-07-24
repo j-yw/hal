@@ -13,9 +13,10 @@ import (
 )
 
 const (
-	jobStateFileName    = "job.json"
-	jobLogsFileName     = "logs.json"
-	maxJobLogsFileBytes = DefaultJobLogRetentionBytes*6 + (256 << 10)
+	jobStateFileName        = "job.json"
+	jobLogsFileName         = "logs.json"
+	jobTransactionDirPrefix = ".job-state-txn-"
+	maxJobLogsFileBytes     = DefaultJobLogRetentionBytes*6 + (256 << 10)
 )
 
 type jobStore struct {
@@ -50,14 +51,18 @@ func newJobStore(root string) (*jobStore, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("create job state root: %w", err)
 	}
+	info, err := os.Lstat(root)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("job state root is invalid")
+	}
 	if err := os.Chmod(root, 0o700); err != nil {
 		return nil, fmt.Errorf("secure job state root: %w", err)
 	}
 	resolvedRoot, err := filepath.EvalSymlinks(root)
-	if err != nil || resolvedRoot != root {
+	if err != nil || !filepath.IsAbs(resolvedRoot) || resolvedRoot == string(filepath.Separator) {
 		return nil, fmt.Errorf("job state root is invalid")
 	}
-	return &jobStore{root: root}, nil
+	return &jobStore{root: resolvedRoot}, nil
 }
 
 func (store *jobStore) loadAll() ([]storedJob, error) {
@@ -67,6 +72,29 @@ func (store *jobStore) loadAll() ([]storedJob, error) {
 	entries, err := os.ReadDir(store.root)
 	if err != nil {
 		return nil, fmt.Errorf("read job state root: %w", err)
+	}
+	cleanedTransactions := false
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), jobTransactionDirPrefix) {
+			continue
+		}
+		transactionDir := filepath.Join(store.root, entry.Name())
+		info, err := os.Lstat(transactionDir)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("incomplete job state transaction is invalid")
+		}
+		if err := os.RemoveAll(transactionDir); err != nil {
+			return nil, fmt.Errorf("remove incomplete job state transaction: %w", err)
+		}
+		cleanedTransactions = true
+	}
+	if cleanedTransactions {
+		if err := syncPrivateDirectory(store.root); err != nil {
+			return nil, fmt.Errorf("sync job state root: %w", err)
+		}
 	}
 	jobs := make([]storedJob, 0, len(entries))
 	for _, entry := range entries {
@@ -108,9 +136,6 @@ func (store *jobStore) save(job Job, records []JobLogRecord) error {
 	if err != nil {
 		return err
 	}
-	if err := ensurePrivateJobDir(jobDir); err != nil {
-		return err
-	}
 	stateData, err := json.Marshal(job)
 	if err != nil {
 		return fmt.Errorf("encode job state: %w", err)
@@ -122,11 +147,54 @@ func (store *jobStore) save(job Job, records []JobLogRecord) error {
 	if int64(len(logData)) > maxJobLogsFileBytes {
 		return fmt.Errorf("persist job logs: encoded logs exceed size limit")
 	}
+	if _, err := os.Lstat(jobDir); errors.Is(err, fs.ErrNotExist) {
+		return store.create(jobDir, append(stateData, '\n'), logData)
+	} else if err != nil {
+		return fmt.Errorf("inspect job state directory: %w", err)
+	}
+	if err := ensurePrivateJobDir(jobDir); err != nil {
+		return err
+	}
 	if err := writePrivateFileAtomic(jobDir, jobLogsFileName, logData); err != nil {
 		return fmt.Errorf("persist job logs: %w", err)
 	}
 	if err := writePrivateFileAtomic(jobDir, jobStateFileName, append(stateData, '\n')); err != nil {
 		return fmt.Errorf("persist job state: %w", err)
+	}
+	return nil
+}
+
+func (store *jobStore) create(jobDir string, stateData, logData []byte) error {
+	transactionDir, err := os.MkdirTemp(store.root, jobTransactionDirPrefix)
+	if err != nil {
+		return fmt.Errorf("create job state transaction: %w", err)
+	}
+	published := false
+	defer func() {
+		if !published {
+			_ = os.RemoveAll(transactionDir)
+		}
+	}()
+	if err := os.Chmod(transactionDir, 0o700); err != nil {
+		return fmt.Errorf("secure job state transaction: %w", err)
+	}
+	if err := writePrivateFileAtomic(transactionDir, jobLogsFileName, logData); err != nil {
+		return fmt.Errorf("persist job logs: %w", err)
+	}
+	if err := writePrivateFileAtomic(transactionDir, jobStateFileName, stateData); err != nil {
+		return fmt.Errorf("persist job state: %w", err)
+	}
+	if _, err := os.Lstat(jobDir); err == nil {
+		return fmt.Errorf("job state directory already exists")
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("inspect job state directory: %w", err)
+	}
+	if err := os.Rename(transactionDir, jobDir); err != nil {
+		return fmt.Errorf("publish job state: %w", err)
+	}
+	published = true
+	if err := syncPrivateDirectory(store.root); err != nil {
+		return fmt.Errorf("sync job state root: %w", err)
 	}
 	return nil
 }
@@ -264,6 +332,10 @@ func writePrivateFileAtomic(dir, name string, data []byte) error {
 	if err := os.Chmod(target, 0o600); err != nil {
 		return err
 	}
+	return syncPrivateDirectory(dir)
+}
+
+func syncPrivateDirectory(dir string) error {
 	dirHandle, err := os.Open(dir)
 	if err != nil {
 		return err

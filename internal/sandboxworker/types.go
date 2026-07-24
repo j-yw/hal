@@ -35,6 +35,7 @@ const (
 	ErrorCodeDriverNotFound   = "driver_not_found"
 	ErrorCodeDriverFailed     = "driver_error"
 	ErrorCodeJobNotFound      = "job_not_found"
+	ErrorCodeCapacityExceeded = "capacity_exceeded"
 
 	HostKindLocal  = "local"
 	HostKindWorker = "worker"
