@@ -740,6 +740,164 @@ func TestStageInstanceRemoval_RetryReusesExistingStagedBackup(t *testing.T) {
 	}
 }
 
+func TestPendingInstanceRemovalRejectsStaleCommitAfterRollback(t *testing.T) {
+	setSandboxHome(t)
+	if err := SaveInstance(&SandboxState{
+		ID:     "sandbox-original",
+		Name:   "shared-name",
+		Status: StatusRunning,
+	}); err != nil {
+		t.Fatalf("SaveInstance() error: %v", err)
+	}
+
+	stale, err := StageInstanceRemoval("shared-name")
+	if err != nil {
+		t.Fatalf("first StageInstanceRemoval() error: %v", err)
+	}
+	retry, err := StageInstanceRemoval("shared-name")
+	if err != nil {
+		t.Fatalf("retry StageInstanceRemoval() error: %v", err)
+	}
+	if err := retry.Rollback(); err != nil {
+		t.Fatalf("retry Rollback() error: %v", err)
+	}
+
+	if err := stale.Commit(); err == nil {
+		t.Fatal("stale Commit() error = nil after rollback")
+	}
+	current, err := LoadActiveInstance("shared-name")
+	if err != nil {
+		t.Fatalf("LoadActiveInstance() after stale commit error: %v", err)
+	}
+	if current.ID != "sandbox-original" {
+		t.Fatalf("active sandbox ID = %q, want original", current.ID)
+	}
+}
+
+func TestPendingInstanceRemovalRejectsStaleCommitForSameNameReplacement(t *testing.T) {
+	setSandboxHome(t)
+	if err := SaveInstance(&SandboxState{
+		ID:     "sandbox-original",
+		Name:   "shared-name",
+		Status: StatusRunning,
+	}); err != nil {
+		t.Fatalf("SaveInstance() error: %v", err)
+	}
+
+	stale, err := StageInstanceRemoval("shared-name")
+	if err != nil {
+		t.Fatalf("first StageInstanceRemoval() error: %v", err)
+	}
+	retry, err := StageInstanceRemoval("shared-name")
+	if err != nil {
+		t.Fatalf("retry StageInstanceRemoval() error: %v", err)
+	}
+	if err := retry.Rollback(); err != nil {
+		t.Fatalf("retry Rollback() error: %v", err)
+	}
+	if err := ForceWriteInstance(&SandboxState{
+		ID:     "sandbox-replacement",
+		Name:   "shared-name",
+		Status: StatusRunning,
+	}); err != nil {
+		t.Fatalf("ForceWriteInstance(replacement) error: %v", err)
+	}
+	replacement, err := StageInstanceRemoval("shared-name")
+	if err != nil {
+		t.Fatalf("StageInstanceRemoval(replacement) error: %v", err)
+	}
+	t.Cleanup(func() { _ = replacement.Rollback() })
+
+	if err := stale.Commit(); err == nil {
+		t.Fatal("stale Commit() error = nil for same-name replacement")
+	}
+	current, err := LoadInstance("shared-name")
+	if err != nil {
+		t.Fatalf("LoadInstance(replacement) after stale commit error: %v", err)
+	}
+	if current.ID != "sandbox-replacement" {
+		t.Fatalf("staged sandbox ID = %q, want replacement", current.ID)
+	}
+}
+
+func TestLoadActiveInstanceWaitsForOverwriteFallback(t *testing.T) {
+	home := setSandboxHome(t)
+	if err := SaveInstance(&SandboxState{
+		ID:     "sandbox-original",
+		Name:   "shared-name",
+		Status: StatusRunning,
+	}); err != nil {
+		t.Fatalf("SaveInstance() error: %v", err)
+	}
+
+	path := filepath.Join(home, sandboxesDirName, "shared-name.json")
+	originalRename := renameRegistryFile
+	t.Cleanup(func() { renameRegistryFile = originalRename })
+	movedToBackup := make(chan struct{})
+	continueOverwrite := make(chan struct{})
+	blockedFirstReplace := false
+	renameRegistryFile = func(oldPath, newPath string) error {
+		if !blockedFirstReplace && oldPath == path+".tmp" && newPath == path {
+			blockedFirstReplace = true
+			return &os.LinkError{Op: "rename", Old: oldPath, New: newPath, Err: fs.ErrExist}
+		}
+		if oldPath == path && newPath == path+".bak" {
+			if err := originalRename(oldPath, newPath); err != nil {
+				return err
+			}
+			close(movedToBackup)
+			<-continueOverwrite
+			return nil
+		}
+		return originalRename(oldPath, newPath)
+	}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- ForceWriteInstance(&SandboxState{
+			ID:     "sandbox-replacement",
+			Name:   "shared-name",
+			Status: StatusRunning,
+		})
+	}()
+	<-movedToBackup
+
+	type loadResult struct {
+		instance *SandboxState
+		err      error
+	}
+	loadDone := make(chan loadResult, 1)
+	go func() {
+		instance, err := LoadActiveInstance("shared-name")
+		loadDone <- loadResult{instance: instance, err: err}
+	}()
+
+	var early *loadResult
+	select {
+	case result := <-loadDone:
+		early = &result
+	case <-time.After(75 * time.Millisecond):
+	}
+	close(continueOverwrite)
+	if err := <-writeDone; err != nil {
+		t.Fatalf("ForceWriteInstance() error: %v", err)
+	}
+	if early != nil {
+		t.Fatalf("LoadActiveInstance() returned during overwrite gap: %v", early.err)
+	}
+	select {
+	case result := <-loadDone:
+		if result.err != nil {
+			t.Fatalf("LoadActiveInstance() error after overwrite: %v", result.err)
+		}
+		if result.instance.ID != "sandbox-replacement" {
+			t.Fatalf("loaded sandbox ID = %q, want replacement", result.instance.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("LoadActiveInstance() remained blocked after overwrite")
+	}
+}
+
 func TestListInstances_IncludesStagedRemovalWhenActiveMissing(t *testing.T) {
 	setSandboxHome(t)
 

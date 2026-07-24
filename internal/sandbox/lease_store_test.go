@@ -302,6 +302,125 @@ func TestExpireLeasesUsesSameStoreLockAsExactRelease(t *testing.T) {
 	}
 }
 
+func TestReleaseExactTreatsExpiredExactLeaseAsTerminal(t *testing.T) {
+	setSandboxHome(t)
+	now := time.Date(2026, 7, 25, 6, 0, 0, 0, time.UTC)
+	store := NewSandboxLeaseStore(func() time.Time { return now })
+	lease, err := store.Acquire(SandboxLeaseAcquireRequest{
+		ID:          "lease-expired-recovery",
+		SandboxID:   "sandbox-original",
+		SandboxName: "shared-name",
+		ResourceKey: "host:worker-l3",
+		Holder:      "holder-l3",
+		Purpose:     SandboxLeasePurposeRun,
+		RunID:       "run-original",
+	}, 0)
+	if err != nil {
+		t.Fatalf("Acquire() error: %v", err)
+	}
+	if _, err := store.ExpireLeases(); err != nil {
+		t.Fatalf("ExpireLeases() error: %v", err)
+	}
+
+	terminal, err := store.ReleaseExact(SandboxLeaseExactReleaseRequest{
+		ID:          lease.ID,
+		SandboxID:   lease.SandboxID,
+		SandboxName: lease.SandboxName,
+		ResourceKey: lease.ResourceKey,
+		Purpose:     lease.Purpose,
+		RunID:       lease.RunID,
+		AcquiredAt:  lease.AcquiredAt,
+	})
+	if err != nil {
+		t.Fatalf("ReleaseExact(expired exact lease) error: %v", err)
+	}
+	if terminal.Status != SandboxLeaseStatusExpired {
+		t.Fatalf("ReleaseExact(expired) status = %q, want expired", terminal.Status)
+	}
+}
+
+func TestLeaseLoadWaitsForOverwriteFallback(t *testing.T) {
+	home := setSandboxHome(t)
+	now := time.Date(2026, 7, 25, 6, 0, 0, 0, time.UTC)
+	store := NewSandboxLeaseStore(func() time.Time { return now })
+	lease, err := store.Acquire(SandboxLeaseAcquireRequest{
+		ID:          "lease-overwrite-reader",
+		SandboxID:   "sandbox-original",
+		SandboxName: "shared-name",
+		ResourceKey: "host:worker-l3",
+		Holder:      "holder-l3",
+		Purpose:     SandboxLeasePurposeRun,
+		RunID:       "run-original",
+	}, time.Hour)
+	if err != nil {
+		t.Fatalf("Acquire() error: %v", err)
+	}
+
+	path := filepath.Join(home, sandboxLeasesDirName, lease.ID+sandboxStateFileExt)
+	originalRename := renameRegistryFile
+	t.Cleanup(func() { renameRegistryFile = originalRename })
+	movedToBackup := make(chan struct{})
+	continueOverwrite := make(chan struct{})
+	blockedFirstReplace := false
+	renameRegistryFile = func(oldPath, newPath string) error {
+		if !blockedFirstReplace && oldPath == path+".tmp" && newPath == path {
+			blockedFirstReplace = true
+			return &os.LinkError{Op: "rename", Old: oldPath, New: newPath, Err: fs.ErrExist}
+		}
+		if oldPath == path && newPath == path+".bak" {
+			if err := originalRename(oldPath, newPath); err != nil {
+				return err
+			}
+			close(movedToBackup)
+			<-continueOverwrite
+			return nil
+		}
+		return originalRename(oldPath, newPath)
+	}
+
+	heartbeatDone := make(chan error, 1)
+	go func() {
+		_, err := store.Heartbeat(lease.ID, 2*time.Hour)
+		heartbeatDone <- err
+	}()
+	<-movedToBackup
+
+	type loadResult struct {
+		lease *SandboxLease
+		err   error
+	}
+	loadDone := make(chan loadResult, 1)
+	go func() {
+		loaded, err := store.Load(lease.ID)
+		loadDone <- loadResult{lease: loaded, err: err}
+	}()
+
+	var early *loadResult
+	select {
+	case result := <-loadDone:
+		early = &result
+	case <-time.After(75 * time.Millisecond):
+	}
+	close(continueOverwrite)
+	if err := <-heartbeatDone; err != nil {
+		t.Fatalf("Heartbeat() error: %v", err)
+	}
+	if early != nil {
+		t.Fatalf("Load() returned during overwrite gap: %v", early.err)
+	}
+	select {
+	case result := <-loadDone:
+		if result.err != nil {
+			t.Fatalf("Load() error after overwrite: %v", result.err)
+		}
+		if !result.lease.ExpiresAt.Equal(now.Add(2 * time.Hour)) {
+			t.Fatalf("loaded expiry = %s, want heartbeat update", result.lease.ExpiresAt)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Load() remained blocked after overwrite")
+	}
+}
+
 func TestAcquireLeaseValidationLeavesNoFiles(t *testing.T) {
 	home := setSandboxHome(t)
 	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
