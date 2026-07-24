@@ -247,7 +247,11 @@ func DefaultWorkerSecurityPolicy() SecurityPolicy {
 }
 
 func (service *Service) runtimeDriverCapability(driverID string) RuntimeDriver {
-	driver := runtimeDriverCapabilityFromDescriptors(driverID, service.driverDescriptors)
+	var descriptors map[string]RuntimeDriver
+	if service != nil {
+		descriptors = service.driverDescriptors
+	}
+	driver := runtimeDriverCapabilityFromDescriptors(driverID, descriptors)
 	if service != nil && service.jobs != nil && stringSliceContains(driver.Operations, OperationExec) {
 		driver.Operations = appendMissingStrings(driver.Operations, OperationJobStart)
 	}

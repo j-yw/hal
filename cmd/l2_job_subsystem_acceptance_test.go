@@ -12,6 +12,7 @@ func TestL2SandboxdExposesPrivateJobStateRoot(t *testing.T) {
 	flag := cmd.Flags().Lookup("job-state-dir")
 	if flag == nil {
 		t.Fatal("sandboxd does not expose --job-state-dir for durable worker jobs")
+		return
 	}
 	if flag.DefValue == "" {
 		t.Fatal("sandboxd --job-state-dir does not have a stable private default")
