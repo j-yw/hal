@@ -97,9 +97,11 @@ func openAbsoluteDirectoryNoFollow(path string, createFinal bool) (int, error) {
 	if err != nil {
 		return -1, err
 	}
-	for index, component := range components {
+	creatingSuffix := false
+	for _, component := range components {
 		nextFD, openErr := unix.Openat(dirFD, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-		if errors.Is(openErr, unix.ENOENT) && createFinal && index == len(components)-1 {
+		if errors.Is(openErr, unix.ENOENT) && createFinal {
+			creatingSuffix = true
 			if mkdirErr := unix.Mkdirat(dirFD, component, uint32(privateDirMode.Perm())); mkdirErr != nil {
 				_ = unix.Close(dirFD)
 				return -1, mkdirErr
@@ -111,6 +113,12 @@ func openAbsoluteDirectoryNoFollow(path string, createFinal bool) (int, error) {
 			return -1, openErr
 		}
 		dirFD = nextFD
+		if creatingSuffix {
+			if validateErr := validatePrivateDirectoryFD(dirFD); validateErr != nil {
+				_ = unix.Close(dirFD)
+				return -1, validateErr
+			}
+		}
 	}
 	if err := validatePrivateDirectoryFD(dirFD); err != nil {
 		_ = unix.Close(dirFD)

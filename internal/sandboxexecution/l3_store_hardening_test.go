@@ -145,6 +145,72 @@ func TestL3StoreRejectsSymlinkedRootAncestorWithoutExternalMutation(t *testing.T
 	}
 }
 
+func TestL3StoreCreatesMissingPrivateRootSuffixForFirstUse(t *testing.T) {
+	parent := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(parent); err == nil {
+		parent = resolved
+	}
+	root := filepath.Join(parent, "fresh-config", "hal", storeDirName)
+	store := NewStore(root)
+	if err := store.SaveManifest(testManifest("exec-first-use", time.Date(2026, 7, 25, 3, 0, 0, 0, time.UTC))); err != nil {
+		t.Fatalf("SaveManifest(first use) error: %v", err)
+	}
+	if err := store.Ensure("exec-second"); err != nil {
+		t.Fatalf("Ensure(second execution) error: %v", err)
+	}
+
+	for _, created := range []string{
+		filepath.Join(parent, "fresh-config"),
+		filepath.Join(parent, "fresh-config", "hal"),
+		root,
+		filepath.Join(root, "exec-first-use"),
+		filepath.Join(root, "exec-second"),
+	} {
+		info, err := os.Lstat(created)
+		if err != nil {
+			t.Fatalf("Lstat(%s) error: %v", filepath.Base(created), err)
+		}
+		if !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 {
+			t.Fatalf("%s is not a real directory", filepath.Base(created))
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
+			t.Fatalf("%s mode = %#o, want 0700", filepath.Base(created), info.Mode().Perm())
+		}
+	}
+}
+
+func TestL3StoreRejectsUnsafeExistingRootComponentBeforeCreatingSuffix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on some Windows setups")
+	}
+	parent := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(parent); err == nil {
+		parent = resolved
+	}
+	external := filepath.Join(parent, "external")
+	if err := os.Mkdir(external, 0o700); err != nil {
+		t.Fatalf("Mkdir(external) error: %v", err)
+	}
+	unsafeComponent := filepath.Join(parent, "unsafe-component")
+	if err := os.Symlink(external, unsafeComponent); err != nil {
+		t.Fatalf("Symlink(unsafe component) error: %v", err)
+	}
+	store := NewStore(filepath.Join(unsafeComponent, "missing-config", storeDirName))
+
+	err := store.Ensure("exec-unsafe")
+	if err == nil {
+		t.Fatal("Ensure() accepted unsafe existing root component")
+	}
+	if _, statErr := os.Lstat(filepath.Join(external, "missing-config")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("Ensure() created suffix through unsafe component: %v", statErr)
+	}
+	for _, unsafe := range []string{parent, external, unsafeComponent} {
+		if strings.Contains(err.Error(), unsafe) {
+			t.Fatalf("Ensure() error exposed unsafe path %q: %v", unsafe, err)
+		}
+	}
+}
+
 func TestL3LoadManifestRejectsTrailingAndInvalidSemanticState(t *testing.T) {
 	cases := []struct {
 		name string

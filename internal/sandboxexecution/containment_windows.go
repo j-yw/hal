@@ -78,13 +78,15 @@ func walkPrivateStoreRoot(root string, createFinal bool) error {
 	current := volume + string(filepath.Separator)
 	relative := strings.TrimPrefix(absolute[len(volume):], string(filepath.Separator))
 	components := strings.Split(relative, string(filepath.Separator))
+	creatingSuffix := false
 	for index, component := range components {
 		if component == "" {
 			continue
 		}
 		current = filepath.Join(current, component)
 		info, statErr := os.Lstat(current)
-		if errors.Is(statErr, fs.ErrNotExist) && createFinal && index == len(components)-1 {
+		if errors.Is(statErr, fs.ErrNotExist) && createFinal {
+			creatingSuffix = true
 			if mkdirErr := os.Mkdir(current, privateDirMode); mkdirErr != nil {
 				return filesystemUnavailable("sandbox execution store", mkdirErr)
 			}
@@ -95,6 +97,11 @@ func walkPrivateStoreRoot(root string, createFinal bool) error {
 		}
 		if info.Mode()&fs.ModeSymlink != 0 || !info.IsDir() {
 			return fmt.Errorf("sandbox execution store is not accessible")
+		}
+		if creatingSuffix {
+			if err := validatePrivateDirectoryInfo(info, "sandbox execution store"); err != nil {
+				return err
+			}
 		}
 		if index == len(components)-1 {
 			return validatePrivateDirectoryInfo(info, "sandbox execution store")
