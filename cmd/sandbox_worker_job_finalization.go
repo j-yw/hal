@@ -187,6 +187,9 @@ func finalizeAutoSandboxWorkerJob(
 				if err != nil {
 					return fmt.Errorf("read remote auto archive path: %w", err)
 				}
+				if archivePath == "" {
+					return errors.New("auto_archive_path_unavailable: succeeded auto execution did not publish a recoverable archive path")
+				}
 			}
 			return collectSandboxL3TerminalArtifactsWithRuntime(
 				ctx,
