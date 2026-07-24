@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	pathpkg "path"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,7 @@ type sandboxSyncOutApplyRequest struct {
 	Manifest    *sandboxexecution.Manifest
 	Summary     sandboxworkspace.SyncOutSummary
 	Artifact    *sandboxworkspace.SyncOutArtifact
+	Payload     *os.File
 	PayloadPath string
 	Handoff     sandboxworkspace.SafeApplyResult
 }
@@ -92,6 +94,9 @@ func applySandboxSyncOut(ctx context.Context, store sandboxexecution.Store, req 
 	if err := populateSandboxSyncOutApplySelection(&req); err != nil {
 		return sandboxworkspace.SafeApplyResult{}, err
 	}
+	if req.Payload != nil {
+		defer req.Payload.Close()
+	}
 	result, err := apply(ctx, req)
 	result = sandboxworkspace.SanitizeSafeApplyResult(result)
 	result = sandboxSyncOutNormalizeApplyResult(req, result)
@@ -104,11 +109,12 @@ func applySandboxSyncOut(ctx context.Context, store sandboxexecution.Store, req 
 }
 
 func defaultSandboxSyncOutApplier(ctx context.Context, req sandboxSyncOutApplyRequest) (sandboxworkspace.SafeApplyResult, error) {
-	if req.Artifact == nil || strings.TrimSpace(req.PayloadPath) == "" {
+	if req.Artifact == nil || (req.Payload == nil && strings.TrimSpace(req.PayloadPath) == "") {
 		return req.Handoff, nil
 	}
 	return sandboxworkspace.SafeApply(ctx, sandboxworkspace.SafeApplyRequest{
 		ProjectDir:  req.ProjectDir,
+		Payload:     req.Payload,
 		PayloadPath: req.PayloadPath,
 		Artifact:    *req.Artifact,
 		Mutate:      req.Options.Apply,
@@ -129,13 +135,15 @@ func populateSandboxSyncOutApplySelection(req *sandboxSyncOutApplyRequest) error
 		req.Handoff = sandboxSyncOutApplyHandoff(req.Summary, sandboxSyncOutNoCandidateReasons(req.Summary))
 		return nil
 	}
-	payloadPath, err := req.Store.ResolveStoredPath(req.ExecutionID, artifact.StoredPath)
+	payload, err := req.Store.OpenStoredFile(req.ExecutionID, artifact.StoredPath)
 	if err != nil {
-		return fmt.Errorf("resolve eligible sync-out artifact payload: %w", err)
+		return fmt.Errorf("open eligible sync-out artifact payload: %w", err)
 	}
 	artifactCopy := *artifact
 	req.Artifact = &artifactCopy
-	req.PayloadPath = payloadPath
+	req.Payload = payload
+	cleanStoredPath := filepath.FromSlash(pathpkg.Clean(artifact.StoredPath))
+	req.PayloadPath = filepath.Join(req.Store.Root(), cleanStoredPath)
 	req.Handoff = sandboxworkspace.SafeApplyResult{}
 	return nil
 }

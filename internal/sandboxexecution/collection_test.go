@@ -384,6 +384,102 @@ func TestCollectCoreStateArtifactsRunCollectsStateAndPersistsManifest(t *testing
 	}
 }
 
+func TestL3TerminalArtifactCollectorsAreRetrySafeAfterCheckpointCrash(t *testing.T) {
+	t.Run("collected metadata is replaced in place", func(t *testing.T) {
+		store := newTestStore(t)
+		manifest := testManifest("exec-terminal-retry", time.Date(2026, 7, 25, 6, 0, 0, 0, time.UTC))
+		manifest.ArtifactMetadata = &ArtifactMetadata{Collected: []ArtifactMetadataEntry{{
+			ID:         "preexisting",
+			Name:       "Preexisting",
+			Type:       "text",
+			Path:       "preexisting.txt",
+			StoredPath: "exec-terminal-retry/artifacts/preexisting.txt",
+		}}}
+		if err := store.SaveManifest(manifest); err != nil {
+			t.Fatalf("SaveManifest() error: %v", err)
+		}
+		runtime := &recordingArtifactRuntime{}
+
+		collect := func() {
+			t.Helper()
+			if _, err := CollectCoreStateArtifacts(context.Background(), CoreStateCollectionRequest{
+				ExecutionID:        manifest.ID,
+				Store:              store,
+				Runtime:            runtime,
+				Purpose:            PurposeRun,
+				RemoteWorkspaceDir: "/workspace/repo",
+			}); err != nil {
+				t.Fatalf("CollectCoreStateArtifacts() error: %v", err)
+			}
+			if _, err := CollectRecoveryArtifacts(context.Background(), RecoveryArtifactCollectionRequest{
+				ExecutionID:        manifest.ID,
+				Store:              store,
+				Runtime:            runtime,
+				RemoteWorkspaceDir: "/workspace/repo",
+			}); err != nil {
+				t.Fatalf("CollectRecoveryArtifacts() error: %v", err)
+			}
+			if _, err := SaveCommandOutputSummaryArtifacts(CommandOutputSummaryArtifactsRequest{
+				ExecutionID:   manifest.ID,
+				Store:         store,
+				StdoutSummary: "terminal output\n",
+			}); err != nil {
+				t.Fatalf("SaveCommandOutputSummaryArtifacts() error: %v", err)
+			}
+		}
+
+		collect()
+		// Simulate a crash after payload/metadata persistence but before the
+		// artifact checkpoint. Recovery repeats the terminal collectors.
+		collect()
+
+		loaded, err := store.LoadManifest(manifest.ID)
+		if err != nil {
+			t.Fatalf("LoadManifest() error: %v", err)
+		}
+		if loaded.ArtifactMetadata == nil {
+			t.Fatal("ArtifactMetadata = nil")
+		}
+		gotIDs := make([]string, 0, len(loaded.ArtifactMetadata.Collected))
+		for _, artifact := range loaded.ArtifactMetadata.Collected {
+			gotIDs = append(gotIDs, artifact.ID)
+		}
+		wantIDs := []string{"preexisting", "prd", "progress", "recovery-patch", "stdout-summary"}
+		if !reflect.DeepEqual(gotIDs, wantIDs) {
+			t.Fatalf("collected IDs after retry = %#v, want stable deduplicated order %#v", gotIDs, wantIDs)
+		}
+	})
+
+	t.Run("partial metadata and warnings are deduplicated", func(t *testing.T) {
+		store := newTestStore(t)
+		manifest := testManifest("exec-terminal-warning-retry", time.Date(2026, 7, 25, 6, 5, 0, 0, time.UTC))
+		if err := store.SaveManifest(manifest); err != nil {
+			t.Fatalf("SaveManifest() error: %v", err)
+		}
+		runtime := &recordingArtifactRuntime{execErr: errors.New("generation failed")}
+		for range 2 {
+			if _, err := CollectRecoveryArtifactsBestEffort(context.Background(), RecoveryArtifactCollectionRequest{
+				ExecutionID:        manifest.ID,
+				Store:              store,
+				Runtime:            runtime,
+				RemoteWorkspaceDir: "/workspace/repo",
+			}); err != nil {
+				t.Fatalf("CollectRecoveryArtifactsBestEffort() error: %v", err)
+			}
+		}
+
+		loaded, err := store.LoadManifest(manifest.ID)
+		if err != nil {
+			t.Fatalf("LoadManifest() error: %v", err)
+		}
+		if loaded.ArtifactMetadata == nil ||
+			len(loaded.ArtifactMetadata.Partial) != 1 ||
+			len(loaded.ArtifactMetadata.Warnings) != 1 {
+			t.Fatalf("retry metadata = %#v, want one partial artifact and warning", loaded.ArtifactMetadata)
+		}
+	})
+}
+
 func TestCollectCoreStateArtifactsAutoCollectsAutoState(t *testing.T) {
 	store := newTestStore(t)
 	manifest := testManifest("exec-1", time.Date(2026, 6, 30, 1, 0, 0, 0, time.UTC))

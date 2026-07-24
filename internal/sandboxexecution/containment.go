@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
-	"strings"
 )
 
 const (
@@ -109,27 +107,6 @@ func openVerifiedContainedPrivateRegularFile(root string, components []string, d
 		return nil, err
 	}
 	return file, nil
-}
-
-func ensurePrivateDirectoryTree(base, target, description string) error {
-	relative, err := filepath.Rel(base, target)
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("%s is outside its payload area", description)
-	}
-	if err := validatePrivateDirectory(base, description+" area"); err != nil {
-		return err
-	}
-	if relative == "." {
-		return nil
-	}
-	current := base
-	for _, component := range strings.Split(relative, string(filepath.Separator)) {
-		current = filepath.Join(current, component)
-		if err := ensurePrivateDirectory(current, description); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func filesystemUnavailable(description string, err error) error {
