@@ -121,6 +121,12 @@ func runSandboxApplyExecution(ctx context.Context, executionID string, out io.Wr
 			Enabled: true,
 			Apply:   true,
 		},
+		Authorize: func(locked sandboxexecution.Store, current *sandboxexecution.Manifest) error {
+			if err := validateSandboxExecutionReadyForCompletedApply(locked, current); err != nil {
+				return err
+			}
+			return validateSandboxExecutionHostIdentity(ctx, current, projectDir, deps.currentBranch, deps.currentRevision)
+		},
 	}, deps.applySyncOut)
 	if err != nil {
 		return fmt.Errorf("apply completed sandbox execution %q: %w", manifest.ID, err)

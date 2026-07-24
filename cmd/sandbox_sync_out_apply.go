@@ -24,6 +24,7 @@ type sandboxSyncOutApplyRequest struct {
 	Purpose     sandboxexecution.Purpose
 	ProjectDir  string
 	Options     sandboxSyncOutOptions
+	Authorize   func(sandboxexecution.Store, *sandboxexecution.Manifest) error
 	Store       sandboxexecution.Store
 	Manifest    *sandboxexecution.Manifest
 	Summary     sandboxworkspace.SyncOutSummary
@@ -97,6 +98,11 @@ func applySandboxSyncOutLocked(ctx context.Context, store sandboxexecution.Store
 	manifest, err := store.LoadManifest(req.ExecutionID)
 	if err != nil {
 		return sandboxworkspace.SafeApplyResult{}, fmt.Errorf("load sandbox execution manifest before sync-out apply: %w", err)
+	}
+	if req.Authorize != nil {
+		if err := req.Authorize(store, manifest); err != nil {
+			return sandboxworkspace.SafeApplyResult{}, err
+		}
 	}
 	if existing, handled, existingErr := sandboxSyncOutExistingApplyResult(manifest, req.Options.Apply); handled {
 		return existing, existingErr
