@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	pathpkg "path"
@@ -64,21 +65,40 @@ func (s Store) Root() string {
 // ResolveStoredPath returns the local filesystem path for a store-relative
 // artifact payload that is already scoped to executionID.
 func (s Store) ResolveStoredPath(executionID, storedPath string) (string, error) {
-	executionID, err := validateExecutionID(executionID)
+	file, err := s.OpenStoredFile(executionID, storedPath)
 	if err != nil {
 		return "", err
 	}
+	if err := file.Close(); err != nil {
+		return "", fmt.Errorf("close sandbox execution stored payload")
+	}
+	clean, _ := validateStoreRelativePath(storedPath)
+	return filepath.Join(s.root, filepath.FromSlash(clean)), nil
+}
+
+// OpenStoredFile opens a verified regular payload without following a final
+// symlink. Callers should consume the returned descriptor rather than reopen
+// the path after validation.
+func (s Store) OpenStoredFile(executionID, storedPath string) (*os.File, error) {
+	executionID, err := validateExecutionID(executionID)
+	if err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(s.root) == "" {
-		return "", errStoreRootUnavailable
+		return nil, errStoreRootUnavailable
 	}
 	clean, err := validateStoreRelativePath(storedPath)
 	if err != nil {
-		return "", fmt.Errorf("sandbox execution stored path is invalid: %w", err)
+		return nil, fmt.Errorf("sandbox execution stored path is invalid: %w", err)
 	}
 	if clean == executionID || !strings.HasPrefix(clean, executionID+"/") {
-		return "", fmt.Errorf("sandbox execution stored path is not scoped under execution %q", executionID)
+		return nil, fmt.Errorf("sandbox execution stored path is not scoped under execution %q", executionID)
 	}
-	return filepath.Join(s.root, filepath.FromSlash(clean)), nil
+	parts := strings.Split(clean, "/")
+	if len(parts) < 3 || !validPayloadArea(parts[1]) {
+		return nil, fmt.Errorf("sandbox execution stored path is not a payload")
+	}
+	return openVerifiedContainedPrivateRegularFile(s.root, parts, "sandbox execution stored payload")
 }
 
 // Ensure creates the store root, execution directory, and known payload
@@ -104,9 +124,23 @@ func (s Store) Ensure(executionID string) error {
 		{name: "sandbox execution handoff", path: filepath.Join(executionDir, handoffDirName)},
 		{name: "sandbox execution recovery", path: filepath.Join(executionDir, recoveryDirName)},
 	}
+	// Validate every existing component before creating anything so an unsafe
+	// partial layout is rejected without chmod, deletion, or additive mutation.
 	for _, dir := range dirs {
-		if err := os.MkdirAll(dir.path, 0o700); err != nil {
-			return fmt.Errorf("create %s dir: %w", dir.name, err)
+		info, err := os.Lstat(dir.path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return filesystemUnavailable(dir.name, err)
+		}
+		if err := validatePrivateDirectoryInfo(info, dir.name); err != nil {
+			return err
+		}
+	}
+	for _, dir := range dirs {
+		if err := ensurePrivateDirectory(dir.path, dir.name); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -153,7 +187,13 @@ func (s Store) LoadManifest(executionID string) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	manifest, err := loadManifestFile(path, executionID)
+	if err := validatePrivateDirectory(s.root, "sandbox execution store"); err != nil {
+		return nil, err
+	}
+	if err := validatePrivateDirectory(filepath.Dir(path), "sandbox execution"); err != nil {
+		return nil, err
+	}
+	manifest, err := loadManifestFile(s.root, executionID)
 	if err == nil {
 		return manifest, nil
 	}
@@ -246,6 +286,11 @@ func (s Store) ListManifests() ([]Manifest, error) {
 	if strings.TrimSpace(s.root) == "" {
 		return nil, errStoreRootUnavailable
 	}
+	if err := validatePrivateDirectory(s.root, "sandbox execution store"); errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(s.root)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -256,6 +301,12 @@ func (s Store) ListManifests() ([]Manifest, error) {
 
 	manifests := make([]Manifest, 0, len(entries))
 	for _, entry := range entries {
+		if entry.Type()&fs.ModeSymlink != 0 {
+			if _, err := validateExecutionID(entry.Name()); err == nil {
+				return nil, fmt.Errorf("sandbox execution is a symlink")
+			}
+			continue
+		}
 		if !entry.IsDir() {
 			continue
 		}
@@ -263,8 +314,10 @@ func (s Store) ListManifests() ([]Manifest, error) {
 		if err != nil {
 			continue
 		}
-		path := filepath.Join(s.root, executionID, manifestFileName)
-		manifest, err := loadManifestFile(path, executionID)
+		if err := validatePrivateDirectory(filepath.Join(s.root, executionID), "sandbox execution"); err != nil {
+			return nil, err
+		}
+		manifest, err := loadManifestFile(s.root, executionID)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
@@ -290,15 +343,14 @@ func (s Store) Remove(executionID string) error {
 	if err != nil {
 		return err
 	}
-	info, err := os.Lstat(executionDir)
-	if errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("sandbox execution %q does not exist: %w", executionID, err)
+	if err := validatePrivateDirectory(s.root, "sandbox execution store"); err != nil {
+		return err
 	}
-	if err != nil {
-		return fmt.Errorf("stat sandbox execution %q: %w", executionID, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("sandbox execution %q is not a directory", executionID)
+	if err := validatePrivateDirectory(executionDir, "sandbox execution"); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("sandbox execution %q does not exist: %w", executionID, fs.ErrNotExist)
+		}
+		return err
 	}
 	if err := os.RemoveAll(executionDir); err != nil {
 		return fmt.Errorf("remove sandbox execution %q: %w", executionID, err)
@@ -406,14 +458,31 @@ func artifactMetadataEntryStableKey(entry ArtifactMetadataEntry) string {
 	return "path:" + entry.Path
 }
 
-func loadManifestFile(path, executionID string) (*Manifest, error) {
-	data, err := os.ReadFile(path)
+func loadManifestFile(root, executionID string) (*Manifest, error) {
+	file, err := openVerifiedContainedPrivateRegularFile(root, []string{executionID, manifestFileName}, "sandbox execution manifest")
 	if err != nil {
 		return nil, fmt.Errorf("read sandbox execution manifest %q: %w", executionID, err)
 	}
+	data, err := io.ReadAll(file)
+	closeErr := file.Close()
+	if err != nil || closeErr != nil {
+		return nil, fmt.Errorf("read sandbox execution manifest %q", executionID)
+	}
 	var manifest Manifest
 	if err := json.Unmarshal(data, &manifest); err != nil {
-		return nil, fmt.Errorf("parse sandbox execution manifest %q: %w", executionID, err)
+		if strings.Contains(err.Error(), "finalization") {
+			return nil, fmt.Errorf("parse sandbox execution manifest %q: finalization metadata is invalid", executionID)
+		}
+		if strings.Contains(err.Error(), "workerJob") {
+			return nil, fmt.Errorf("parse sandbox execution manifest %q: workerJob metadata is invalid", executionID)
+		}
+		return nil, fmt.Errorf("parse sandbox execution manifest %q: manifest JSON is invalid", executionID)
+	}
+	if err := validateManifestForSave(&manifest); err != nil {
+		return nil, fmt.Errorf("sandbox execution manifest %q is invalid", executionID)
+	}
+	if manifest.ID != executionID {
+		return nil, fmt.Errorf("sandbox execution manifest %q has mismatched ID", executionID)
 	}
 	return &manifest, nil
 }
@@ -555,19 +624,48 @@ func validateStoreRelativePath(value string) (string, error) {
 }
 
 func writeStoreFileAtomic(path string, data []byte, mode fs.FileMode) error {
-	tmpPath := path + tempFileSuffix
-	if err := os.WriteFile(tmpPath, data, mode); err != nil {
+	if err := validateOptionalPrivateRegularFile(path, "sandbox execution store file"); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmpPath, mode); err != nil {
-		_ = os.Remove(tmpPath)
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+tempFileSuffix+"-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
 		return err
 	}
 	if err := renameStoreFile(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	return nil
+	removeTemp = false
+	_, err = validatePrivateRegularFile(path, "sandbox execution store file")
+	return err
+}
+
+func validPayloadArea(area string) bool {
+	switch area {
+	case logsDirName, artifactsDirName, handoffDirName, recoveryDirName:
+		return true
+	default:
+		return false
+	}
 }
 
 func renameStoreFile(tmpPath, path string) error {
