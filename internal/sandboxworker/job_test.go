@@ -53,6 +53,7 @@ func TestWorkerJobSurvivesClientDisconnectAndPersistsRedactedPrivateState(t *tes
 		DriverID:        driver.ID(),
 		JobStart: &JobStartRequest{
 			ContractVersion: JobContractVersion,
+			SubmissionID:    "disconnect-submission",
 			Exec: func() ExecRequest {
 				req := l2JobExecRequest(secret)
 				req.Args = append(req.Args, "--argument-only", argumentSecret)
@@ -240,6 +241,7 @@ func TestWorkerJobStartRejectsWorkBeyondConfiguredCapacity(t *testing.T) {
 
 	first := service.JobStartResponse(context.Background(), "first", driver.ID(), JobStartRequest{
 		ContractVersion: JobContractVersion,
+		SubmissionID:    "capacity-first",
 		Exec:            l2JobExecRequest("first-secret"),
 	})
 	if !first.OK || first.Job == nil {
@@ -253,6 +255,7 @@ func TestWorkerJobStartRejectsWorkBeyondConfiguredCapacity(t *testing.T) {
 
 	second := service.JobStartResponse(context.Background(), "second", driver.ID(), JobStartRequest{
 		ContractVersion: JobContractVersion,
+		SubmissionID:    "capacity-second",
 		Exec:            l2JobExecRequest("second-secret"),
 	})
 	if second.OK || second.Error == nil || second.Error.Code != ErrorCodeCapacityExceeded {
@@ -263,6 +266,7 @@ func TestWorkerJobStartRejectsWorkBeyondConfiguredCapacity(t *testing.T) {
 	waitForL2JobState(t, service, first.Job.ID, JobStateSucceeded)
 	third := service.JobStartResponse(context.Background(), "third", driver.ID(), JobStartRequest{
 		ContractVersion: JobContractVersion,
+		SubmissionID:    "capacity-third",
 		Exec:            l2JobExecRequest("third-secret"),
 	})
 	if !third.OK || third.Job == nil {
@@ -271,6 +275,91 @@ func TestWorkerJobStartRejectsWorkBeyondConfiguredCapacity(t *testing.T) {
 	waitForL2JobState(t, service, third.Job.ID, JobStateSucceeded)
 	if got := execCalls.Load(); got != 2 {
 		t.Fatalf("driver exec calls = %d, want exactly two admitted jobs", got)
+	}
+}
+
+func TestWorkerJobStartIsIdempotentAcrossLostResponseAndRestart(t *testing.T) {
+	var execCalls atomic.Int32
+	driver := &l2JobRuntimeDriver{
+		fakeWorkerRuntimeDriver: &fakeWorkerRuntimeDriver{id: "idempotent_driver"},
+		execFn: func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			execCalls.Add(1)
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+	}
+	registry, err := NewDriverRegistry(driver)
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+	stateDir := filepath.Join(t.TempDir(), "jobs")
+	newService := func() *Service {
+		service, serviceErr := NewService(ServiceOptions{
+			WorkerID:    "worker-idempotent",
+			HostKind:    HostKindLocal,
+			Registry:    registry,
+			JobStateDir: stateDir,
+		})
+		if serviceErr != nil {
+			t.Fatalf("NewService() error: %v", serviceErr)
+		}
+		return service
+	}
+	request := JobStartRequest{
+		ContractVersion: JobContractVersion,
+		SubmissionID:    "caller-stable-submission",
+		Exec:            l2JobExecRequest("idempotent-secret"),
+	}
+
+	service := newService()
+	first := service.JobStartResponse(context.Background(), "lost-response", driver.ID(), request)
+	if !first.OK || first.Job == nil {
+		t.Fatalf("first start = %#v error=%#v, want accepted", first, first.Error)
+	}
+	retry := service.JobStartResponse(context.Background(), "retry", driver.ID(), request)
+	if !retry.OK || retry.Job == nil || retry.Job.ID != first.Job.ID {
+		t.Fatalf("retry start = %#v error=%#v, want original job %q", retry, retry.Error, first.Job.ID)
+	}
+	waitForL2JobState(t, service, first.Job.ID, JobStateSucceeded)
+	service.Close()
+	if first.Job.SubmissionKey == "" || first.Job.SubmissionKey == request.SubmissionID {
+		t.Fatalf("job submission key = %q, want a durable opaque digest", first.Job.SubmissionKey)
+	}
+	assertL2JobStatePrivateAndSanitized(t, stateDir, request.SubmissionID)
+
+	restarted := newService()
+	defer restarted.Close()
+	retryAfterRestart := restarted.JobStartResponse(context.Background(), "retry-after-restart", driver.ID(), request)
+	if !retryAfterRestart.OK || retryAfterRestart.Job == nil || retryAfterRestart.Job.ID != first.Job.ID {
+		t.Fatalf("restart retry = %#v error=%#v, want original job %q", retryAfterRestart, retryAfterRestart.Error, first.Job.ID)
+	}
+	if got := execCalls.Load(); got != 1 {
+		t.Fatalf("driver exec calls = %d, want one durable submission", got)
+	}
+}
+
+func TestWorkerJobStartRejectsCanceledAdmissionContext(t *testing.T) {
+	var execCalls atomic.Int32
+	driver := &l2JobRuntimeDriver{
+		fakeWorkerRuntimeDriver: &fakeWorkerRuntimeDriver{id: "admission_context_driver"},
+		execFn: func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			execCalls.Add(1)
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+	}
+	service, _, daemonCancel := newL2JobTestService(t, driver)
+	defer daemonCancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := service.jobs.start(ctx, driver.ID(), driver, JobStartRequest{
+		ContractVersion: JobContractVersion,
+		SubmissionID:    "canceled-admission",
+		Exec:            l2JobExecRequest("canceled-secret"),
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("start() error = %v, want context.Canceled", err)
+	}
+	if got := execCalls.Load(); got != 0 {
+		t.Fatalf("driver exec calls = %d, want none", got)
 	}
 }
 
@@ -285,7 +374,7 @@ func TestWorkerJobCancellationAndTerminalRaceRules(t *testing.T) {
 				return &sandboxruntime.ExecResult{
 					ExitCode: -1,
 					Cancellation: &sandboxruntime.ExecCancellationResult{
-						Terminated: true,
+						ProcessGroupTerminated: true,
 					},
 				}, ctx.Err()
 			},
@@ -294,6 +383,7 @@ func TestWorkerJobCancellationAndTerminalRaceRules(t *testing.T) {
 		defer daemonCancel()
 		start := service.JobStartResponse(context.Background(), "start", driver.ID(), JobStartRequest{
 			ContractVersion: JobContractVersion,
+			SubmissionID:    "cancel-proven",
 			Exec:            l2JobExecRequest("cancel-secret"),
 		})
 		if !start.OK || start.Job == nil {
@@ -328,6 +418,7 @@ func TestWorkerJobCancellationAndTerminalRaceRules(t *testing.T) {
 		defer daemonCancel()
 		start := service.JobStartResponse(context.Background(), "start", driver.ID(), JobStartRequest{
 			ContractVersion: JobContractVersion,
+			SubmissionID:    "cancel-unproven",
 			Exec:            l2JobExecRequest("cancel-secret"),
 		})
 		if !start.OK || start.Job == nil {
@@ -362,6 +453,7 @@ func TestWorkerJobCancellationAndTerminalRaceRules(t *testing.T) {
 		defer daemonCancel()
 		start := service.JobStartResponse(context.Background(), "start", driver.ID(), JobStartRequest{
 			ContractVersion: JobContractVersion,
+			SubmissionID:    "cancel-terminal",
 			Exec:            l2JobExecRequest("terminal-secret"),
 		})
 		if !start.OK || start.Job == nil {
@@ -478,6 +570,7 @@ func TestWorkerServiceCloseWaitsForActiveJobShutdown(t *testing.T) {
 	defer daemonCancel()
 	start := service.JobStartResponse(context.Background(), "start", driver.ID(), JobStartRequest{
 		ContractVersion: JobContractVersion,
+		SubmissionID:    "shutdown-submission",
 		Exec:            l2JobExecRequest("shutdown-secret"),
 	})
 	if !start.OK || start.Job == nil {
@@ -958,8 +1051,9 @@ func TestWorkerJobBoundedLogSpoolReportsTruncation(t *testing.T) {
 		t.Fatalf("newJobManager() error: %v", err)
 	}
 	service := &Service{workerID: "worker-bounded", registry: registry, jobs: manager}
-	job, err := manager.start(driver.ID(), driver, JobStartRequest{
+	job, err := manager.start(context.Background(), driver.ID(), driver, JobStartRequest{
 		ContractVersion: JobContractVersion,
+		SubmissionID:    "bounded-submission",
 		Exec:            l2JobExecRequest("bounded-secret"),
 	})
 	if err != nil {
@@ -1102,6 +1196,7 @@ func TestWorkerJobGenericRedactionSpansDriverWrites(t *testing.T) {
 	defer daemonCancel()
 	start := service.JobStartResponse(context.Background(), "start", driver.ID(), JobStartRequest{
 		ContractVersion: JobContractVersion,
+		SubmissionID:    "stream-redaction",
 		Exec:            l2JobExecRequest("unrelated-request-secret"),
 	})
 	if !start.OK || start.Job == nil {
@@ -1133,6 +1228,67 @@ func TestWorkerJobGenericRedactionSpansDriverWrites(t *testing.T) {
 	}
 }
 
+func TestWorkerJobPersistsBoundedNoNewlineOutputWhileRunning(t *testing.T) {
+	wrote := make(chan struct{})
+	release := make(chan struct{})
+	safePrefix := strings.Repeat("a", jobStreamSanitizerSuffixBytes+512)
+	longSecret := strings.Repeat("sensitive-value-", 400)
+	driver := &l2JobRuntimeDriver{
+		fakeWorkerRuntimeDriver: &fakeWorkerRuntimeDriver{id: "no_newline_driver"},
+		execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			_, _ = io.WriteString(req.Stdout, safePrefix+" TOKEN="+longSecret)
+			close(wrote)
+			<-release
+			_, _ = io.WriteString(req.Stdout, " safe-tail")
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+	}
+	service, _, daemonCancel := newL2JobTestService(t, driver)
+	defer daemonCancel()
+	start := service.JobStartResponse(context.Background(), "start", driver.ID(), JobStartRequest{
+		ContractVersion: JobContractVersion,
+		SubmissionID:    "no-newline-stream",
+		Exec:            l2JobExecRequest("unrelated-request-secret"),
+	})
+	if !start.OK || start.Job == nil {
+		t.Fatalf("start response = %#v error=%#v", start, start.Error)
+	}
+	select {
+	case <-wrote:
+	case <-time.After(2 * time.Second):
+		t.Fatal("driver did not write no-newline output")
+	}
+	runningLogs := service.JobLogsResponse("running-logs", JobLogsRequest{
+		ContractVersion: JobContractVersion,
+		JobID:           start.Job.ID,
+		LimitBytes:      DefaultJobLogReadBytes,
+	})
+	if !runningLogs.OK || runningLogs.JobLogs == nil || len(runningLogs.JobLogs.Records) == 0 {
+		t.Fatalf("running logs = %#v error=%#v, want durable no-newline prefix", runningLogs, runningLogs.Error)
+	}
+	close(release)
+	waitForL2JobState(t, service, start.Job.ID, JobStateSucceeded)
+	response := service.JobLogsResponse("logs", JobLogsRequest{
+		ContractVersion: JobContractVersion,
+		JobID:           start.Job.ID,
+		LimitBytes:      DefaultJobLogReadBytes,
+	})
+	if !response.OK || response.JobLogs == nil {
+		t.Fatalf("logs response = %#v error=%#v", response, response.Error)
+	}
+	var rendered strings.Builder
+	for _, record := range response.JobLogs.Records {
+		rendered.WriteString(record.Data)
+	}
+	output := rendered.String()
+	if strings.Contains(output, longSecret) || strings.Contains(output, "sensitive-value") {
+		t.Fatalf("no-newline logs exposed secret continuation: %q", output)
+	}
+	if !strings.Contains(output, "TOKEN=[redacted]") || !strings.Contains(output, "safe-tail") {
+		t.Fatalf("no-newline logs = %q, want redaction marker and safe tail", output)
+	}
+}
+
 func TestWorkerJobRedactsLineDerivedFromStdin(t *testing.T) {
 	secret := "stdin-line-secret"
 	driver := &l2JobRuntimeDriver{
@@ -1153,6 +1309,7 @@ func TestWorkerJobRedactsLineDerivedFromStdin(t *testing.T) {
 	execReq.Stdin = workerExecStdinPayload(secret+"\n", MaxExecStdinBytes)
 	start := service.JobStartResponse(context.Background(), "start", driver.ID(), JobStartRequest{
 		ContractVersion: JobContractVersion,
+		SubmissionID:    "stdin-redaction",
 		Exec:            execReq,
 	})
 	if !start.OK || start.Job == nil {

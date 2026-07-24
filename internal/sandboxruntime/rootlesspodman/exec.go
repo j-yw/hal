@@ -20,47 +20,57 @@ var (
 const (
 	execStateDirectoryPrefix = "/tmp/.hal-exec-"
 	execWrapperScript        = `state_dir=$1
+token=$2
+shift
 shift
 umask 077
 if ! mkdir "$state_dir"; then
 	exit 125
 fi
+if ! mkfifo -m 600 "$state_dir/cancel"; then
+	rmdir "$state_dir" 2>/dev/null || true
+	exit 125
+fi
 cleanup() {
-	rm -f "$state_dir/pid"
+	rm -f "$state_dir/cancel"
 	rmdir "$state_dir" 2>/dev/null || true
 }
 trap cleanup EXIT
 setsid --wait sh -c '
-pid_file=$1
+cancel_fifo=$1
+token=$2
 shift
-if ! printf "%s\n" "$$" >"$pid_file"; then
-	exit 125
-fi
-exec "$@"
-' hal-exec-child "$state_dir/pid" "$@" <&0 &
-launcher=$!
+shift
+(
+	IFS= read -r received <"$cancel_fifo" || exit 125
+	if [ "$received" != "$token" ]; then
+		exit 125
+	fi
+	kill -KILL 0
+) &
+watcher=$!
 status=0
-wait "$launcher" || status=$?
-exit "$status"`
+"$@" || status=$?
+kill "$watcher" 2>/dev/null || true
+wait "$watcher" 2>/dev/null || true
+exit "$status"
+' hal-exec-child "$state_dir/cancel" "$token" "$@"`
 	execCancellationScript = `state_dir=$1
-pid_file=$state_dir/pid
+token=$2
+cancel_fifo=$state_dir/cancel
 attempt=0
-while [ ! -r "$pid_file" ]; do
+while [ ! -p "$cancel_fifo" ]; do
 	if [ "$attempt" -ge 300 ]; then
 		exit 124
 	fi
 	attempt=$((attempt + 1))
 	sleep 0.02
 done
-IFS= read -r child <"$pid_file" || exit 0
-case "$child" in
-	""|*[!0-9]*|0|1) exit 125 ;;
-esac
-if ! kill -KILL "-$child" 2>/dev/null; then
+if ! printf "%s\n" "$token" >"$cancel_fifo"; then
 	exit 125
 fi
 attempt=0
-while kill -0 "-$child" 2>/dev/null; do
+while [ -e "$state_dir" ]; do
 	if [ "$attempt" -ge 100 ]; then
 		exit 124
 	fi
@@ -86,25 +96,25 @@ func (d *Driver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*san
 		Stdout:    req.Stdout,
 		Stderr:    req.Stderr,
 	}
-	if req.RequireCancellationProof {
-		stateDir, err := newExecStateDirectory()
+	if req.RequireProcessGroupCancellationProof {
+		stateDir, token, err := newExecCancellationIdentity()
 		if err != nil {
 			return nil, operationError(OperationExec, CommandResult{}, err)
 		}
 		commandRequest.Args = d.execArgs(
 			ref,
-			scopedExecCommandArgs(stateDir, commandArgs),
+			scopedExecCommandArgs(stateDir, token, commandArgs),
 			req.Env,
 			req.WorkDir,
 			req.Stdin != nil,
 		)
-		commandRequest.CancellationArgs = d.execCancellationArgs(ref, stateDir)
+		commandRequest.CancellationArgs = d.execCancellationArgs(ref, stateDir, token)
 	}
 
 	result, err := d.runExecCommand(ctx, commandRequest)
 	execResult := &sandboxruntime.ExecResult{ExitCode: result.ExitCode}
-	if result.CancellationTerminated && ctx != nil && ctx.Err() != nil {
-		execResult.Cancellation = &sandboxruntime.ExecCancellationResult{Terminated: true}
+	if result.CancellationProcessGroupTerminated && ctx != nil && ctx.Err() != nil {
+		execResult.Cancellation = &sandboxruntime.ExecCancellationResult{ProcessGroupTerminated: true}
 	}
 	if err != nil {
 		return execResult, err
@@ -154,21 +164,21 @@ func (d *Driver) execArgs(ref string, commandArgs []string, env map[string]strin
 	return args
 }
 
-func scopedExecCommandArgs(stateDir string, commandArgs []string) []string {
-	args := []string{"sh", "-c", execWrapperScript, "hal-exec", stateDir}
+func scopedExecCommandArgs(stateDir, token string, commandArgs []string) []string {
+	args := []string{"sh", "-c", execWrapperScript, "hal-exec", stateDir, token}
 	return append(args, commandArgs...)
 }
 
-func (d *Driver) execCancellationArgs(ref, stateDir string) []string {
-	return []string{d.podmanPath, "exec", ref, "sh", "-c", execCancellationScript, "hal-exec-cancel", stateDir}
+func (d *Driver) execCancellationArgs(ref, stateDir, token string) []string {
+	return []string{d.podmanPath, "exec", ref, "sh", "-c", execCancellationScript, "hal-exec-cancel", stateDir, token}
 }
 
-func newExecStateDirectory() (string, error) {
-	random := make([]byte, 16)
+func newExecCancellationIdentity() (string, string, error) {
+	random := make([]byte, 32)
 	if _, err := rand.Read(random); err != nil {
-		return "", fmt.Errorf("allocate rootless Podman exec identity: %w", err)
+		return "", "", fmt.Errorf("allocate rootless Podman exec identity: %w", err)
 	}
-	return execStateDirectoryPrefix + hex.EncodeToString(random), nil
+	return execStateDirectoryPrefix + hex.EncodeToString(random[:16]), hex.EncodeToString(random[16:]), nil
 }
 
 func cloneStringSlice(values []string) []string {

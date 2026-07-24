@@ -106,6 +106,7 @@ func TestWorkerJobPodmanIntegrationSurvivesClientDisconnect(t *testing.T) {
 	submitCtx, submitCancel := context.WithCancel(context.Background())
 	job, err := client.JobStart(submitCtx, sandboxruntime.DriverRootlessPodman, sandboxworker.JobStartRequest{
 		ContractVersion: sandboxworker.JobContractVersion,
+		SubmissionID:    "l2-live-submission",
 		Exec: sandboxworker.ExecRequest{
 			OperationID: "l2-live-job",
 			Target: sandboxworker.Target{

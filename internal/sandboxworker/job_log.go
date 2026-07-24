@@ -155,29 +155,166 @@ func (writer *jobLogWriter) Err() error {
 	return writer.persistErr
 }
 
-// jobStreamSanitizer holds an incomplete line so generic secret, endpoint, and
-// host-path patterns cannot evade redaction by spanning driver Write calls.
-// The enclosing writer's capture limit also bounds this pending buffer.
+const jobStreamSanitizerSuffixBytes = 4 << 10
+
+// jobStreamSanitizer retains only a bounded suffix while looking for generic
+// secret, endpoint, and host-path tokens split across driver Write calls. Once
+// a sensitive token starts, its remainder is discarded through the next
+// whitespace delimiter so arbitrarily long values cannot leak or consume
+// unbounded memory.
 type jobStreamSanitizer struct {
-	pending []byte
+	pending   []byte
+	redacting bool
 }
 
 func (sanitizer *jobStreamSanitizer) Consume(p []byte, final bool) []byte {
 	sanitizer.pending = append(sanitizer.pending, p...)
-	limit := len(sanitizer.pending)
-	if !final {
-		if lastNewline := bytes.LastIndexByte(sanitizer.pending, '\n'); lastNewline >= 0 {
-			limit = lastNewline + 1
-		} else {
-			limit = 0
+	var out bytes.Buffer
+	for len(sanitizer.pending) > 0 {
+		if sanitizer.redacting {
+			delimiter := firstJobLogWhitespace(sanitizer.pending)
+			if delimiter < 0 {
+				sanitizer.pending = sanitizer.pending[:0]
+				break
+			}
+			out.WriteByte(sanitizer.pending[delimiter])
+			sanitizer.pending = append(sanitizer.pending[:0], sanitizer.pending[delimiter+1:]...)
+			sanitizer.redacting = false
+			continue
+		}
+		if candidate, ok := firstJobLogSensitiveCandidate(sanitizer.pending); ok {
+			out.WriteString(sanitizeJobLogData(string(sanitizer.pending[:candidate.start])))
+			out.WriteString(candidate.marker)
+			sanitizer.pending = append(sanitizer.pending[:0], sanitizer.pending[candidate.start:]...)
+			sanitizer.redacting = true
+			continue
+		}
+		if final {
+			out.WriteString(sanitizeJobLogData(string(sanitizer.pending)))
+			sanitizer.pending = sanitizer.pending[:0]
+			break
+		}
+		if len(sanitizer.pending) <= jobStreamSanitizerSuffixBytes {
+			break
+		}
+		limit := len(sanitizer.pending) - jobStreamSanitizerSuffixBytes
+		if utf8.Valid(sanitizer.pending) {
+			for limit > 0 && !utf8.RuneStart(sanitizer.pending[limit]) {
+				limit--
+			}
+		}
+		out.WriteString(sanitizeJobLogData(string(sanitizer.pending[:limit])))
+		sanitizer.pending = append(sanitizer.pending[:0], sanitizer.pending[limit:]...)
+	}
+	if final && sanitizer.redacting {
+		sanitizer.pending = sanitizer.pending[:0]
+		sanitizer.redacting = false
+	}
+	return out.Bytes()
+}
+
+type jobLogSensitiveCandidate struct {
+	start  int
+	marker string
+}
+
+func firstJobLogSensitiveCandidate(data []byte) (jobLogSensitiveCandidate, bool) {
+	lower := bytes.ToLower(data)
+	candidates := make([]jobLogSensitiveCandidate, 0, 3)
+	if start, marker, ok := firstJobLogSecretCandidate(data, lower); ok {
+		candidates = append(candidates, jobLogSensitiveCandidate{start: start, marker: marker})
+	}
+	for _, prefix := range [][]byte{
+		[]byte("/private/users/"),
+		[]byte("/var/folders/"),
+		[]byte("/workspaces/"),
+		[]byte("/workspace/"),
+		[]byte("/run/user/"),
+		[]byte("/sandbox/"),
+		[]byte("/remote/"),
+		[]byte("/users/"),
+		[]byte("/home/"),
+		[]byte("/var/tmp/"),
+		[]byte("/tmp/"),
+	} {
+		if start := bytes.Index(lower, prefix); start >= 0 {
+			candidates = append(candidates, jobLogSensitiveCandidate{start: start, marker: "[redacted-path]"})
 		}
 	}
-	if limit == 0 {
-		return nil
+	for searchFrom := 0; searchFrom < len(lower); {
+		relativeEnd := bytes.Index(lower[searchFrom:], []byte("://"))
+		if relativeEnd < 0 {
+			break
+		}
+		schemeEnd := searchFrom + relativeEnd
+		if schemeEnd > 0 {
+			start := schemeEnd - 1
+			for start > 0 && isJobLogSchemeByte(lower[start-1]) {
+				start--
+			}
+			if isJobLogASCIILetter(lower[start]) {
+				candidates = append(candidates, jobLogSensitiveCandidate{start: start, marker: "[redacted-endpoint]"})
+				break
+			}
+		}
+		searchFrom = schemeEnd + len("://")
 	}
-	out := []byte(sanitizeJobLogData(string(sanitizer.pending[:limit])))
-	sanitizer.pending = append(sanitizer.pending[:0], sanitizer.pending[limit:]...)
-	return out
+	if len(candidates) == 0 {
+		return jobLogSensitiveCandidate{}, false
+	}
+	first := candidates[0]
+	for _, candidate := range candidates[1:] {
+		if candidate.start < first.start {
+			first = candidate
+		}
+	}
+	return first, true
+}
+
+func firstJobLogSecretCandidate(data, lower []byte) (int, string, bool) {
+	for equals := bytes.IndexByte(lower, '='); equals >= 0; {
+		start := equals
+		for start > 0 && isJobLogSecretKeyByte(lower[start-1]) {
+			start--
+		}
+		key := lower[start:equals]
+		if len(key) > 0 &&
+			(bytes.Contains(key, []byte("token")) ||
+				bytes.Contains(key, []byte("secret")) ||
+				bytes.Contains(key, []byte("password")) ||
+				bytes.Contains(key, []byte("api_key")) ||
+				bytes.Contains(key, []byte("api-key"))) {
+			return start, string(data[start:equals+1]) + "[redacted]", true
+		}
+		next := bytes.IndexByte(lower[equals+1:], '=')
+		if next < 0 {
+			break
+		}
+		equals += next + 1
+	}
+	return 0, "", false
+}
+
+func firstJobLogWhitespace(data []byte) int {
+	for index, value := range data {
+		switch value {
+		case ' ', '\t', '\n', '\r', '\f', '\v':
+			return index
+		}
+	}
+	return -1
+}
+
+func isJobLogSecretKeyByte(value byte) bool {
+	return isJobLogASCIILetter(value) || value >= '0' && value <= '9' || value == '_' || value == '-'
+}
+
+func isJobLogSchemeByte(value byte) bool {
+	return isJobLogSecretKeyByte(value) || value == '+' || value == '.'
+}
+
+func isJobLogASCIILetter(value byte) bool {
+	return value >= 'a' && value <= 'z'
 }
 
 type jobLiteralRedactor struct {

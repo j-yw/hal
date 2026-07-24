@@ -154,9 +154,9 @@ func TestExecCancellationProofUsesScopedWrapper(t *testing.T) {
 	driver := rootlesspodman.New(rootlesspodman.Options{ExecRunner: runner})
 
 	if _, err := driver.Exec(context.Background(), sandboxruntime.ExecRequest{
-		Target:                   sandboxruntime.Target{Name: "hal-dev"},
-		Args:                     []string{"echo", "ok"},
-		RequireCancellationProof: true,
+		Target:                               sandboxruntime.Target{Name: "hal-dev"},
+		Args:                                 []string{"echo", "ok"},
+		RequireProcessGroupCancellationProof: true,
 	}); err != nil {
 		t.Fatalf("Exec() unexpected error: %v", err)
 	}
@@ -297,7 +297,7 @@ func assertDirectExecRequest(t *testing.T, request rootlesspodman.CommandRequest
 
 func assertScopedExecRequest(t *testing.T, request rootlesspodman.CommandRequest, wantPrefix, wantCommand []string) {
 	t.Helper()
-	const wrapperFieldCount = 5
+	const wrapperFieldCount = 6
 	if len(request.Args) != len(wantPrefix)+wrapperFieldCount+len(wantCommand) {
 		t.Fatalf("exec args = %#v, want prefix %#v plus scoped wrapper and command %#v", request.Args, wantPrefix, wantCommand)
 	}
@@ -308,27 +308,33 @@ func assertScopedExecRequest(t *testing.T, request rootlesspodman.CommandRequest
 	if wrapper[0] != "sh" || wrapper[1] != "-c" || wrapper[3] != "hal-exec" {
 		t.Fatalf("exec wrapper args = %#v, want job-scoped shell wrapper", wrapper)
 	}
-	if !strings.Contains(wrapper[2], "setsid") || !strings.Contains(wrapper[2], `"$state_dir/pid"`) {
+	if !strings.Contains(wrapper[2], "setsid") || !strings.Contains(wrapper[2], `"$state_dir/cancel"`) {
 		t.Fatalf("exec wrapper does not own a scoped process group: %q", wrapper[2])
 	}
 	stateDir := wrapper[4]
+	token := wrapper[5]
 	if !strings.HasPrefix(stateDir, "/tmp/.hal-exec-") || len(strings.TrimPrefix(stateDir, "/tmp/.hal-exec-")) != 32 {
 		t.Fatalf("exec state directory = %q, want random private container path", stateDir)
+	}
+	if len(token) != 32 {
+		t.Fatalf("exec cancellation token length = %d, want random opaque token", len(token))
 	}
 	if got := request.Args[len(wantPrefix)+wrapperFieldCount:]; !reflect.DeepEqual(got, wantCommand) {
 		t.Fatalf("exec command args = %#v, want %#v", got, wantCommand)
 	}
 	wantCancellationPrefix := []string{"podman", "exec", wantPrefix[len(wantPrefix)-1], "sh", "-c"}
-	if len(request.CancellationArgs) != len(wantCancellationPrefix)+3 ||
+	if len(request.CancellationArgs) != len(wantCancellationPrefix)+4 ||
 		!reflect.DeepEqual(request.CancellationArgs[:len(wantCancellationPrefix)], wantCancellationPrefix) {
 		t.Fatalf("exec cancellation args = %#v, want prefix %#v", request.CancellationArgs, wantCancellationPrefix)
 	}
 	if request.CancellationArgs[len(wantCancellationPrefix)+1] != "hal-exec-cancel" ||
-		request.CancellationArgs[len(wantCancellationPrefix)+2] != stateDir {
+		request.CancellationArgs[len(wantCancellationPrefix)+2] != stateDir ||
+		request.CancellationArgs[len(wantCancellationPrefix)+3] != token {
 		t.Fatalf("exec cancellation args = %#v, want matching scoped state %q", request.CancellationArgs, stateDir)
 	}
 	cancellationScript := request.CancellationArgs[len(wantCancellationPrefix)]
-	if !strings.Contains(cancellationScript, `kill -KILL "-$child"`) {
+	if !strings.Contains(cancellationScript, `printf "%s\n" "$token" >"$cancel_fifo"`) ||
+		!strings.Contains(wrapper[2], "kill -KILL 0") {
 		t.Fatalf("exec cancellation script does not terminate the scoped process group: %q", cancellationScript)
 	}
 	for _, arg := range request.CancellationArgs {

@@ -316,14 +316,14 @@ type InspectRequest struct {
 
 // ExecRequest describes a command that should run inside a target.
 type ExecRequest struct {
-	Target                   Target
-	Args                     []string
-	Stdout                   io.Writer
-	Stderr                   io.Writer
-	Stdin                    io.Reader
-	Env                      map[string]string
-	WorkDir                  string
-	RequireCancellationProof bool
+	Target                               Target
+	Args                                 []string
+	Stdout                               io.Writer
+	Stderr                               io.Writer
+	Stdin                                io.Reader
+	Env                                  map[string]string
+	WorkDir                              string
+	RequireProcessGroupCancellationProof bool
 }
 
 // ExecResult describes a completed command execution.
@@ -333,10 +333,10 @@ type ExecResult struct {
 }
 
 // ExecCancellationResult records whether a requested cancellation was observed
-// to terminate the target workload. Runtimes must omit it when they terminate
-// only a host-side client or cannot otherwise prove target termination.
+// by the runtime-owned process-group supervisor. It deliberately does not claim
+// termination of descendants that detached from that process group.
 type ExecCancellationResult struct {
-	Terminated bool
+	ProcessGroupTerminated bool
 }
 
 // CopyRequest describes one file transfer direction for a target.

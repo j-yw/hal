@@ -66,7 +66,7 @@ func TestExecRequestContainsStreamingCommandFields(t *testing.T) {
 	assertFieldType(t, requestType, "Stdin", reflect.TypeOf((*io.Reader)(nil)).Elem())
 	assertFieldType(t, requestType, "Env", reflect.TypeOf(map[string]string{}))
 	assertFieldType(t, requestType, "WorkDir", reflect.TypeOf(""))
-	assertFieldType(t, requestType, "RequireCancellationProof", reflect.TypeOf(false))
+	assertFieldType(t, requestType, "RequireProcessGroupCancellationProof", reflect.TypeOf(false))
 
 	resultType := reflect.TypeOf(ExecResult{})
 	assertFieldType(t, resultType, "Cancellation", reflect.TypeOf((*ExecCancellationResult)(nil)))

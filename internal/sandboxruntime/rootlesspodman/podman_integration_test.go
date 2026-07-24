@@ -185,9 +185,9 @@ func TestPodmanIntegrationCancellationStopsOnlyExecWorkload(t *testing.T) {
 	execResultCh := make(chan execOutcome, 1)
 	go func() {
 		execResult, execErr := driver.Exec(execCtx, sandboxruntime.ExecRequest{
-			Target:                   *target,
-			Args:                     []string{"sh", "-c", "trap '' TERM; : > " + readyPath + "; while :; do sleep 1; done", workloadMarker},
-			RequireCancellationProof: true,
+			Target:                               *target,
+			Args:                                 []string{"sh", "-c", "trap '' TERM; : > " + readyPath + "; while :; do sleep 1; done", workloadMarker},
+			RequireProcessGroupCancellationProof: true,
 		})
 		execResultCh <- execOutcome{result: execResult, err: execErr}
 	}()
@@ -199,8 +199,8 @@ func TestPodmanIntegrationCancellationStopsOnlyExecWorkload(t *testing.T) {
 		if !errors.Is(outcome.err, context.Canceled) {
 			t.Fatalf("Exec() cancellation error = %v, want context.Canceled", outcome.err)
 		}
-		if outcome.result == nil || outcome.result.Cancellation == nil || !outcome.result.Cancellation.Terminated {
-			t.Fatalf("Exec() cancellation result = %#v, want proven target termination", outcome.result)
+		if outcome.result == nil || outcome.result.Cancellation == nil || !outcome.result.Cancellation.ProcessGroupTerminated {
+			t.Fatalf("Exec() cancellation result = %#v, want proven process-group termination", outcome.result)
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("Exec() did not return after cancellation")

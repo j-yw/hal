@@ -1,6 +1,8 @@
 package sandboxworker
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strings"
@@ -34,6 +36,7 @@ var jobSafeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$`)
 type Job struct {
 	ContractVersion string     `json:"contractVersion"`
 	ID              string     `json:"jobId"`
+	SubmissionKey   string     `json:"submissionKey,omitempty"`
 	WorkerID        string     `json:"workerId"`
 	HostID          string     `json:"hostId,omitempty"`
 	RuntimeDriver   string     `json:"runtimeDriver"`
@@ -55,6 +58,7 @@ type Job struct {
 // JobStartRequest submits one asynchronous exec request to the daemon.
 type JobStartRequest struct {
 	ContractVersion string      `json:"contractVersion"`
+	SubmissionID    string      `json:"submissionId"`
 	Exec            ExecRequest `json:"exec"`
 }
 
@@ -100,6 +104,9 @@ func (req JobStartRequest) Validate() error {
 	if err := validateJobContractVersion(req.ContractVersion); err != nil {
 		return err
 	}
+	if !validJobSafeID(req.SubmissionID) {
+		return fmt.Errorf("worker job submissionId is invalid")
+	}
 	for _, value := range req.Exec.Env {
 		if int64(len([]byte(value))) > MaxExecStdinBytes {
 			return fmt.Errorf("worker job environment value exceeds redaction limit")
@@ -144,6 +151,9 @@ func (job Job) Validate() error {
 	if err := validateJobID(job.ID); err != nil {
 		return err
 	}
+	if job.SubmissionKey != "" && !validJobSafeID(job.SubmissionKey) {
+		return fmt.Errorf("worker job submissionKey is invalid")
+	}
 	for _, field := range []struct {
 		name  string
 		value string
@@ -179,6 +189,11 @@ func (job Job) Validate() error {
 		return fmt.Errorf("worker job failureCode is invalid")
 	}
 	return nil
+}
+
+func jobSubmissionKey(submissionID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(submissionID)))
+	return "submission-" + hex.EncodeToString(sum[:])
 }
 
 func (job Job) validateLifecycle() error {

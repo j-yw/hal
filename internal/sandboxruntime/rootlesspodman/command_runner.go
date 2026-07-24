@@ -103,10 +103,10 @@ func runDefaultExecCommand(ctx context.Context, req CommandRequest) (CommandResu
 		cancellationErr = runExecCancellationCommand(req.CancellationArgs)
 	}
 	result := CommandResult{
-		ExitCode:               commandExitCode(err),
-		Stdout:                 stdout.String(),
-		Stderr:                 stderr.String(),
-		CancellationTerminated: ctx.Err() != nil && len(req.CancellationArgs) > 0 && cancellationErr == nil,
+		ExitCode:                           commandExitCode(err),
+		Stdout:                             stdout.String(),
+		Stderr:                             stderr.String(),
+		CancellationProcessGroupTerminated: ctx.Err() != nil && len(req.CancellationArgs) > 0 && cancellationErr == nil,
 	}
 	if ctx.Err() != nil {
 		return result, errors.Join(ctx.Err(), cancellationErr)

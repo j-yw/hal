@@ -47,6 +47,7 @@ type jobManager struct {
 	// Terminal state remains durable in L2. Store-wide retention and pruning
 	// are explicitly deferred to a later phase.
 	jobs         map[string]*jobEntry
+	submissions  map[string]string
 	jobWG        sync.WaitGroup
 	shutdownOnce sync.Once
 	closing      bool
@@ -106,6 +107,7 @@ func newJobManager(options jobManagerOptions) (*jobManager, error) {
 		logRecordBytes:    recordBytes,
 		maxConcurrentJobs: maxConcurrentJobs,
 		jobs:              map[string]*jobEntry{},
+		submissions:       map[string]string{},
 	}
 	if !validJobSafeID(manager.workerID) {
 		cancelContext()
@@ -189,6 +191,12 @@ func (manager *jobManager) loadAndReconcile() error {
 		case entry.job.State == JobStateRunning:
 			manager.markRecoveredJob(entry, JobStateUnknown, "daemon_restarted_running_state_unknown")
 		}
+		if entry.job.SubmissionKey != "" {
+			if existingID, exists := manager.submissions[entry.job.SubmissionKey]; exists && existingID != entry.job.ID {
+				return fmt.Errorf("worker job submission identity is duplicated")
+			}
+			manager.submissions[entry.job.SubmissionKey] = entry.job.ID
+		}
 		manager.jobs[entry.job.ID] = entry
 		if err := manager.store.save(entry.job, entry.records); err != nil {
 			return err
@@ -205,9 +213,15 @@ func (manager *jobManager) markRecoveredJob(entry *jobEntry, state, failureCode 
 	entry.job.HeartbeatAt = timePointer(now)
 }
 
-func (manager *jobManager) start(driverID string, driver sandboxruntime.Driver, req JobStartRequest) (Job, error) {
+func (manager *jobManager) start(ctx context.Context, driverID string, driver sandboxruntime.Driver, req JobStartRequest) (Job, error) {
 	if manager == nil || manager.store == nil {
 		return Job{}, fmt.Errorf("worker job manager is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Job{}, err
 	}
 	if driver == nil {
 		return Job{}, ErrDriverRequired
@@ -215,14 +229,45 @@ func (manager *jobManager) start(driverID string, driver sandboxruntime.Driver, 
 	if err := req.Validate(); err != nil {
 		return Job{}, err
 	}
+
+	submissionKey := jobSubmissionKey(req.SubmissionID)
+	manager.mu.Lock()
+	if existingID, exists := manager.submissions[submissionKey]; exists {
+		entry, ok := manager.jobs[existingID]
+		if !ok {
+			manager.mu.Unlock()
+			return Job{}, fmt.Errorf("worker job submission identity is unavailable")
+		}
+		snapshot := cloneJob(entry.job)
+		manager.mu.Unlock()
+		return snapshot, nil
+	}
+	if manager.closing || manager.ctx.Err() != nil {
+		manager.mu.Unlock()
+		return Job{}, fmt.Errorf("worker job manager is unavailable")
+	}
+	if err := ctx.Err(); err != nil {
+		manager.mu.Unlock()
+		return Job{}, err
+	}
+	if manager.activeJobs >= manager.maxConcurrentJobs {
+		manager.mu.Unlock()
+		return Job{}, errJobCapacityExceeded
+	}
 	jobID, err := manager.newID()
 	if err != nil || validateJobID(jobID) != nil {
+		manager.mu.Unlock()
+		return Job{}, fmt.Errorf("allocate worker job identity")
+	}
+	if _, exists := manager.jobs[jobID]; exists {
+		manager.mu.Unlock()
 		return Job{}, fmt.Errorf("allocate worker job identity")
 	}
 	now := manager.now().UTC()
 	job := Job{
 		ContractVersion: JobContractVersion,
 		ID:              jobID,
+		SubmissionKey:   submissionKey,
 		WorkerID:        manager.workerID,
 		HostID:          manager.workerID,
 		RuntimeDriver:   strings.TrimSpace(driverID),
@@ -231,34 +276,19 @@ func (manager *jobManager) start(driverID string, driver sandboxruntime.Driver, 
 		SubmittedAt:     now,
 	}
 	if err := job.Validate(); err != nil {
+		manager.mu.Unlock()
 		return Job{}, err
 	}
 	jobCtx, cancel := context.WithCancel(manager.ctx)
 	entry := &jobEntry{job: job, cancel: cancel}
 
-	manager.mu.Lock()
-	if manager.closing || manager.ctx.Err() != nil {
-		manager.mu.Unlock()
-		cancel()
-		return Job{}, fmt.Errorf("worker job manager is unavailable")
-	}
-	if _, exists := manager.jobs[jobID]; exists {
-		manager.mu.Unlock()
-		cancel()
-		return Job{}, fmt.Errorf("allocate worker job identity")
-	}
-	if manager.activeJobs >= manager.maxConcurrentJobs {
-		manager.mu.Unlock()
-		cancel()
-		return Job{}, errJobCapacityExceeded
-	}
-	manager.jobs[jobID] = entry
 	if err := manager.store.save(entry.job, nil); err != nil {
-		delete(manager.jobs, jobID)
 		manager.mu.Unlock()
 		cancel()
 		return Job{}, err
 	}
+	manager.jobs[jobID] = entry
+	manager.submissions[submissionKey] = jobID
 	entry.admitted = true
 	manager.activeJobs++
 	snapshot := cloneJob(entry.job)
@@ -304,14 +334,14 @@ func (manager *jobManager) run(ctx context.Context, entry *jobEntry, driver sand
 	stdout := newJobLogWriter(manager, entry, JobLogStreamStdout, req.StdoutLimitBytes, newJobLiteralRedactor(req))
 	stderr := newJobLogWriter(manager, entry, JobLogStreamStderr, req.StderrLimitBytes, newJobLiteralRedactor(req))
 	runtimeReq := sandboxruntime.ExecRequest{
-		Target:                   runtimeTargetFromWorkerTarget(req.Target),
-		Args:                     cloneStringSlice(req.Args),
-		Stdout:                   stdout,
-		Stderr:                   stderr,
-		Stdin:                    execStdinReader(req.Stdin),
-		Env:                      cloneStringMap(req.Env),
-		WorkDir:                  strings.TrimSpace(req.WorkDir),
-		RequireCancellationProof: true,
+		Target:                               runtimeTargetFromWorkerTarget(req.Target),
+		Args:                                 cloneStringSlice(req.Args),
+		Stdout:                               stdout,
+		Stderr:                               stderr,
+		Stdin:                                execStdinReader(req.Stdin),
+		Env:                                  cloneStringMap(req.Env),
+		WorkDir:                              strings.TrimSpace(req.WorkDir),
+		RequireProcessGroupCancellationProof: true,
 	}
 
 	heartbeatDone := make(chan struct{})
@@ -333,7 +363,7 @@ func (manager *jobManager) run(ctx context.Context, entry *jobEntry, driver sand
 	case entry.job.CancelRequested &&
 		result != nil &&
 		result.Cancellation != nil &&
-		result.Cancellation.Terminated:
+		result.Cancellation.ProcessGroupTerminated:
 		manager.finishLocked(entry, JobStateCanceled, result, "cancel_requested")
 	case entry.job.CancelRequested:
 		manager.finishLocked(entry, JobStateUnknown, result, "cancel_termination_unconfirmed")

@@ -8,7 +8,7 @@ import (
 )
 
 // JobStartResponse durably accepts an async exec request before returning.
-func (service *Service) JobStartResponse(_ context.Context, requestID, driverID string, req JobStartRequest) Response {
+func (service *Service) JobStartResponse(ctx context.Context, requestID, driverID string, req JobStartRequest) Response {
 	if service == nil || service.jobs == nil {
 		return unsupportedOperationResponse(Request{RequestID: requestID, Operation: OperationJobStart, DriverID: driverID})
 	}
@@ -19,7 +19,7 @@ func (service *Service) JobStartResponse(_ context.Context, requestID, driverID 
 	if err != nil {
 		return jobOperationErrorResponse(requestID, OperationJobStart, err)
 	}
-	job, err := service.jobs.start(driverID, driver, req)
+	job, err := service.jobs.start(ctx, driverID, driver, req)
 	if err != nil {
 		return jobOperationErrorResponse(requestID, OperationJobStart, err)
 	}
