@@ -696,6 +696,7 @@ func phase50ApprovedLiveMarkerFiles() map[string]bool {
 		"internal/sandboxruntime/microvm/firecrackerhost/real_process_runner_test.go":          true,
 		"internal/sandboxruntime/microvm/firecrackerhost/real_process_runner_boundary_test.go": true,
 		"internal/sandboxruntime/rootlesspodman/command_runner.go":                             true,
+		"internal/sandboxruntime/rootlesspodman/l2_process_group_linux_test.go":                true,
 		"internal/sandboxtemplate/acquisition/import_boundary_test.go":                         true,
 		"internal/sandboxtemplate/import_boundary_test.go":                                     true,
 	}

@@ -10,6 +10,7 @@ func (manifest Manifest) MarshalJSON() ([]byte, error) {
 	type manifestJSON Manifest
 	encoded := manifestJSON(manifest)
 	encoded.Runtime = sandbox.CloneSandboxRuntimeState(manifest.Runtime)
+	encoded.WorkerJob = SanitizeWorkerJobReference(manifest.WorkerJob)
 	encoded.TemplateLock = manifestTemplateLockForPersistence(manifest.TemplateLock, manifest.Runtime)
 	return json.Marshal(encoded)
 }
@@ -21,6 +22,7 @@ func (manifest *Manifest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	decoded.Runtime = sandbox.CloneSandboxRuntimeState(decoded.Runtime)
+	decoded.WorkerJob = SanitizeWorkerJobReference(decoded.WorkerJob)
 	decoded.TemplateLock = manifestTemplateLockForPersistence(decoded.TemplateLock, decoded.Runtime)
 	*manifest = Manifest(decoded)
 	return nil

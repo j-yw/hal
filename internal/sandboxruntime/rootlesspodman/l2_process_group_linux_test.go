@@ -70,5 +70,15 @@ func waitForL2PIDFile(t *testing.T, path string) int {
 
 func l2ProcessAlive(pid int) bool {
 	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	if err != nil && !errors.Is(err, syscall.EPERM) {
+		return false
+	}
+	stat, readErr := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if readErr == nil {
+		fields := strings.Fields(string(stat))
+		if len(fields) > 2 && fields[2] == "Z" {
+			return false
+		}
+	}
+	return true
 }

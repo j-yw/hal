@@ -186,6 +186,64 @@ func (client *Client) Exec(ctx context.Context, driverID string, req ExecRequest
 	return &execResp, nil
 }
 
+// JobStart durably submits an asynchronous exec request to the worker daemon.
+func (client *Client) JobStart(ctx context.Context, driverID string, req JobStartRequest) (*Job, error) {
+	req.ContractVersion = defaultJobContractVersion(req.ContractVersion)
+	resp, err := client.roundTrip(ctx, Request{
+		Operation: OperationJobStart,
+		DriverID:  driverID,
+		JobStart:  &req,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return clientJobResponse(resp)
+}
+
+// JobStatus retrieves the latest durable asynchronous job snapshot.
+func (client *Client) JobStatus(ctx context.Context, req JobStatusRequest) (*Job, error) {
+	req.ContractVersion = defaultJobContractVersion(req.ContractVersion)
+	resp, err := client.roundTrip(ctx, Request{
+		Operation: OperationJobStatus,
+		JobStatus: &req,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return clientJobResponse(resp)
+}
+
+// JobLogs reads one bounded redacted cursor page.
+func (client *Client) JobLogs(ctx context.Context, req JobLogsRequest) (*JobLogsResponse, error) {
+	req.ContractVersion = defaultJobContractVersion(req.ContractVersion)
+	resp, err := client.roundTrip(ctx, Request{
+		Operation: OperationJobLogs,
+		JobLogs:   &req,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.JobLogs == nil {
+		return nil, malformedClientResponseError(OperationJobLogs, "worker job logs response did not include jobLogs payload")
+	}
+	logs := *resp.JobLogs
+	logs.Records = cloneJobLogRecords(resp.JobLogs.Records)
+	return &logs, nil
+}
+
+// JobCancel requests cancellation and returns the resulting snapshot.
+func (client *Client) JobCancel(ctx context.Context, req JobCancelRequest) (*Job, error) {
+	req.ContractVersion = defaultJobContractVersion(req.ContractVersion)
+	resp, err := client.roundTrip(ctx, Request{
+		Operation: OperationJobCancel,
+		JobCancel: &req,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return clientJobResponse(resp)
+}
+
 // CopyIn copies a bounded file payload into a worker target.
 func (client *Client) CopyIn(ctx context.Context, driverID string, req CopyInRequest) (*CopyInResponse, error) {
 	resp, err := client.roundTrip(ctx, Request{
@@ -260,6 +318,14 @@ func clientTargetResponse(resp Response) (*Target, error) {
 	}
 	target := *resp.Target
 	return &target, nil
+}
+
+func clientJobResponse(resp Response) (*Job, error) {
+	if resp.Job == nil {
+		return nil, malformedClientResponseError(resp.Operation, "worker response did not include job payload")
+	}
+	job := cloneJob(*resp.Job)
+	return &job, nil
 }
 
 func (client *Client) nextRequestID(operation string) string {

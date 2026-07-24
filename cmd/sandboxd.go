@@ -44,6 +44,7 @@ type sandboxdDeps struct {
 
 type sandboxdFlags struct {
 	socketPath    string
+	jobStateDir   string
 	workerID      string
 	drivers       []string
 	podmanPath    string
@@ -91,6 +92,7 @@ type sandboxdRootlessPodmanConfig struct {
 
 type sandboxdRequest struct {
 	SocketPath    string
+	JobStateDir   string
 	WorkerID      string
 	Drivers       []string
 	PodmanPath    string
@@ -133,6 +135,7 @@ hal sandbox subcommands continue to manage durable sandbox records separately.`,
 		},
 	}
 	cmd.Flags().StringVar(&flags.socketPath, "socket", flags.socketPath, "Unix socket path for the sandbox worker daemon")
+	cmd.Flags().StringVar(&flags.jobStateDir, "job-state-dir", flags.jobStateDir, "private state directory for durable worker jobs")
 	cmd.Flags().StringVar(&flags.workerID, "worker-id", flags.workerID, "worker identifier to report in daemon status")
 	cmd.Flags().StringSliceVar(&flags.drivers, "driver", flags.drivers, "runtime driver to register with the worker daemon")
 	cmd.Flags().StringVar(&flags.podmanPath, "podman", flags.podmanPath, "podman executable for the rootless_podman driver")
@@ -146,6 +149,7 @@ hal sandbox subcommands continue to manage durable sandbox records separately.`,
 func defaultSandboxdFlags() sandboxdFlags {
 	return sandboxdFlags{
 		socketPath:    defaultSandboxdSocketPath(),
+		jobStateDir:   defaultSandboxdJobStateDir(),
 		drivers:       []string{sandboxruntime.DriverRootlessPodman},
 		podmanPath:    rootlesspodman.DefaultPodmanExecutable,
 		podmanImage:   rootlesspodman.DefaultImage,
@@ -264,8 +268,10 @@ func runSandboxdCommand(cmd *cobra.Command, _ []string, flags sandboxdFlags, dep
 }
 
 func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sandboxdDeps) (sandboxdRequest, error) {
+	jobStateDirExplicit := false
 	req := sandboxdRequest{
 		SocketPath:    flags.socketPath,
+		JobStateDir:   flags.jobStateDir,
 		WorkerID:      flags.workerID,
 		Drivers:       cloneSandboxdStringSlice(flags.drivers),
 		PodmanPath:    flags.podmanPath,
@@ -276,7 +282,11 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 	}
 	if cmd != nil {
 		var err error
+		jobStateDirExplicit = cmd.Flags().Changed("job-state-dir")
 		if req.SocketPath, err = cmd.Flags().GetString("socket"); err != nil {
+			return sandboxdRequest{}, err
+		}
+		if req.JobStateDir, err = cmd.Flags().GetString("job-state-dir"); err != nil {
 			return sandboxdRequest{}, err
 		}
 		if req.WorkerID, err = cmd.Flags().GetString("worker-id"); err != nil {
@@ -304,6 +314,13 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 	}
 
 	req.SocketPath = strings.TrimSpace(req.SocketPath)
+	if !jobStateDirExplicit && req.SocketPath != "" {
+		req.JobStateDir = req.SocketPath + ".jobs"
+	}
+	req.JobStateDir = strings.TrimSpace(req.JobStateDir)
+	if req.JobStateDir != "" {
+		req.JobStateDir = filepath.Clean(req.JobStateDir)
+	}
 	req.WorkerID = strings.TrimSpace(req.WorkerID)
 	req.PodmanPath = strings.TrimSpace(req.PodmanPath)
 	req.PodmanImage = strings.TrimSpace(req.PodmanImage)
@@ -312,6 +329,18 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 
 	if req.SocketPath == "" {
 		return sandboxdRequest{}, fmt.Errorf("sandboxd --socket is required")
+	}
+	if req.JobStateDir == "" {
+		return sandboxdRequest{}, fmt.Errorf("sandboxd --job-state-dir is required")
+	}
+	if sandboxdPathHasControl(req.JobStateDir) || sandboxdPathHasUnsafeDetail(req.JobStateDir) {
+		return sandboxdRequest{}, fmt.Errorf("sandboxd --job-state-dir is invalid")
+	}
+	if !filepath.IsAbs(req.JobStateDir) {
+		return sandboxdRequest{}, fmt.Errorf("sandboxd --job-state-dir must be an absolute path")
+	}
+	if sandboxdFilesystemRoot(req.JobStateDir) {
+		return sandboxdRequest{}, fmt.Errorf("sandboxd --job-state-dir must not be the filesystem root")
 	}
 	if req.WorkerID == "" {
 		deps = normalizeSandboxdDeps(deps)
@@ -371,10 +400,12 @@ func runSandboxdWithDeps(ctx context.Context, req sandboxdRequest, out io.Writer
 		return err
 	}
 	serviceOptions := sandboxworker.ServiceOptions{
-		WorkerID:   req.WorkerID,
-		HostKind:   sandboxworker.HostKindLocal,
-		SocketPath: req.SocketPath,
-		Registry:   registry,
+		WorkerID:    req.WorkerID,
+		HostKind:    sandboxworker.HostKindLocal,
+		SocketPath:  req.SocketPath,
+		Registry:    registry,
+		JobContext:  ctx,
+		JobStateDir: req.JobStateDir,
 		Capacity: sandboxworker.WorkerCapacity{
 			MaxConcurrentSandboxes: req.MaxConcurrent,
 		},
@@ -1065,6 +1096,10 @@ func defaultSandboxdSocketPath() string {
 		return filepath.Join(os.TempDir(), sandboxdDefaultSocketName)
 	}
 	return filepath.Join("/tmp", sandboxdDefaultSocketName)
+}
+
+func defaultSandboxdJobStateDir() string {
+	return defaultSandboxdSocketPath() + ".jobs"
 }
 
 func defaultSandboxdWorkerID() string {
