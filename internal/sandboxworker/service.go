@@ -156,9 +156,15 @@ func NewService(options ServiceOptions) (*Service, error) {
 	}
 
 	if err := service.Status().Validate(); err != nil {
+		if jobs != nil {
+			jobs.close()
+		}
 		return nil, fmt.Errorf("worker service status: %w", err)
 	}
 	if err := service.Capabilities().Validate(); err != nil {
+		if jobs != nil {
+			jobs.close()
+		}
 		return nil, fmt.Errorf("worker service capabilities: %w", err)
 	}
 	return service, nil

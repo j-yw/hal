@@ -370,6 +370,14 @@ func validateClientIOResponseLimits(req Request, resp Response) error {
 			return nil
 		}
 		return validateClientPayloadWithinLimit("copy_out payload", *resp.CopyOut.Payload, req.CopyOut.MaxPayloadBytes)
+	case OperationJobLogs:
+		if req.JobLogs == nil || resp.JobLogs == nil {
+			return nil
+		}
+		if size := jobLogRecordsSize(resp.JobLogs.Records); size > req.JobLogs.LimitBytes {
+			return workerIOValidationError("job_logs records exceed requested limit of %d bytes", req.JobLogs.LimitBytes)
+		}
+		return nil
 	default:
 		return nil
 	}

@@ -121,8 +121,8 @@ func (req JobLogsRequest) Validate() error {
 	if err := validateJobID(req.JobID); err != nil {
 		return err
 	}
-	if req.LimitBytes <= 0 || req.LimitBytes > DefaultJobLogReadBytes {
-		return fmt.Errorf("worker job log limitBytes must be between 1 and %d", DefaultJobLogReadBytes)
+	if req.LimitBytes < DefaultJobLogRecordBytes || req.LimitBytes > DefaultJobLogReadBytes {
+		return fmt.Errorf("worker job log limitBytes must be between %d and %d", DefaultJobLogRecordBytes, DefaultJobLogReadBytes)
 	}
 	return nil
 }

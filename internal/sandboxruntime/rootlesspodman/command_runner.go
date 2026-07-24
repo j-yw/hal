@@ -80,8 +80,8 @@ func runDefaultExecCommand(ctx context.Context, req CommandRequest) (CommandResu
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = commandWriter(req.Stdout, &stdout)
-	cmd.Stderr = commandWriter(req.Stderr, &stderr)
+	cmd.Stdout = execCommandWriter(req.Stdout, &stdout)
+	cmd.Stderr = execCommandWriter(req.Stderr, &stderr)
 
 	if err := cmd.Start(); err != nil {
 		return CommandResult{ExitCode: commandExitCode(err)}, err
@@ -124,6 +124,13 @@ func commandWriter(dst io.Writer, capture *bytes.Buffer) io.Writer {
 		return capture
 	}
 	return io.MultiWriter(dst, capture)
+}
+
+func execCommandWriter(dst io.Writer, capture *bytes.Buffer) io.Writer {
+	if dst != nil {
+		return dst
+	}
+	return capture
 }
 
 func commandExitCode(err error) int {

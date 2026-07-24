@@ -3,6 +3,7 @@
 package rootlesspodman
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -47,6 +48,26 @@ func TestL2DefaultExecCancellationTerminatesDescendantProcessGroup(t *testing.T)
 
 	if l2ProcessAlive(descendantPID) {
 		t.Fatalf("descendant process %d remained alive after daemon-owned exec cancellation", descendantPID)
+	}
+}
+
+func TestL2DefaultExecStreamingDoesNotDuplicateOutputCapture(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	result, err := (DefaultCommandRunner{}).RunExecCommand(context.Background(), CommandRequest{
+		Operation: OperationExec,
+		Args:      []string{"sh", "-c", `printf stdout; printf stderr >&2`},
+		Stdout:    &stdout,
+		Stderr:    &stderr,
+	})
+	if err != nil {
+		t.Fatalf("RunExecCommand() error = %v", err)
+	}
+	if stdout.String() != "stdout" || stderr.String() != "stderr" {
+		t.Fatalf("streamed output = stdout %q stderr %q", stdout.String(), stderr.String())
+	}
+	if result.Stdout != "" || result.Stderr != "" {
+		t.Fatalf("captured result = stdout %q stderr %q, want no duplicate streaming capture", result.Stdout, result.Stderr)
 	}
 }
 

@@ -11,12 +11,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 func TestWorkerJobSurvivesClientDisconnectAndPersistsRedactedPrivateState(t *testing.T) {
 	secret := "l2-canary-super-secret"
+	argumentSecret := "l2-argument-only-canary"
 	started := make(chan struct{})
 	release := make(chan struct{})
 	driver := &l2JobRuntimeDriver{
@@ -25,6 +27,8 @@ func TestWorkerJobSurvivesClientDisconnectAndPersistsRedactedPrivateState(t *tes
 			close(started)
 			_, _ = io.WriteString(req.Stdout, "before "+secret[:9])
 			_, _ = io.WriteString(req.Stdout, secret[9:]+" after\n")
+			_, _ = io.WriteString(req.Stdout, argumentSecret[:11])
+			_, _ = io.WriteString(req.Stdout, argumentSecret[11:]+"\n")
 			<-release
 			_, _ = io.WriteString(req.Stderr, "finished\n")
 			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
@@ -47,7 +51,11 @@ func TestWorkerJobSurvivesClientDisconnectAndPersistsRedactedPrivateState(t *tes
 		DriverID:        driver.ID(),
 		JobStart: &JobStartRequest{
 			ContractVersion: JobContractVersion,
-			Exec:            l2JobExecRequest(secret),
+			Exec: func() ExecRequest {
+				req := l2JobExecRequest(secret)
+				req.Args = append(req.Args, "--argument-only", argumentSecret)
+				return req
+			}(),
 		},
 	}
 	if err := json.NewEncoder(clientConn).Encode(request); err != nil {
@@ -91,7 +99,7 @@ func TestWorkerJobSurvivesClientDisconnectAndPersistsRedactedPrivateState(t *tes
 		previous = record.Cursor
 		rendered.WriteString(record.Data)
 	}
-	if strings.Contains(rendered.String(), secret) {
+	if strings.Contains(rendered.String(), secret) || strings.Contains(rendered.String(), argumentSecret) {
 		t.Fatalf("job logs exposed secret canary: %q", rendered.String())
 	}
 	if !strings.Contains(rendered.String(), "[redacted]") || !strings.Contains(rendered.String(), "finished") {
@@ -99,6 +107,7 @@ func TestWorkerJobSurvivesClientDisconnectAndPersistsRedactedPrivateState(t *tes
 	}
 
 	assertL2JobStatePrivateAndSanitized(t, stateDir, secret)
+	assertL2JobStatePrivateAndSanitized(t, stateDir, argumentSecret)
 }
 
 func TestWorkerJobCapabilitiesRequireConfiguredStateAndExecDriver(t *testing.T) {
@@ -260,6 +269,85 @@ func TestWorkerJobRestartReconcilesWithoutRerun(t *testing.T) {
 	}
 }
 
+func TestWorkerJobStateDirectoryHasExclusiveManagerOwnership(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "jobs")
+	first, err := newJobManager(jobManagerOptions{
+		WorkerID: "worker-first",
+		StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("newJobManager() first owner error: %v", err)
+	}
+	t.Cleanup(first.close)
+
+	if _, err := newJobManager(jobManagerOptions{
+		WorkerID: "worker-second",
+		StateDir: stateDir,
+	}); err == nil {
+		t.Fatal("newJobManager() accepted a second live owner")
+	}
+
+	first.close()
+	restarted, err := newJobManager(jobManagerOptions{
+		WorkerID: "worker-restarted",
+		StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("newJobManager() after owner shutdown error: %v", err)
+	}
+	restarted.close()
+}
+
+func TestWorkerJobRestartLoadsEscapeHeavyRetainedLogs(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "jobs")
+	store, err := newJobStore(stateDir)
+	if err != nil {
+		t.Fatalf("newJobStore() error: %v", err)
+	}
+	now := time.Date(2026, time.July, 24, 12, 0, 0, 0, time.UTC)
+	recordCount := int(DefaultJobLogRetentionBytes / DefaultJobLogRecordBytes)
+	records := make([]JobLogRecord, 0, recordCount)
+	for index := 0; index < recordCount; index++ {
+		records = append(records, JobLogRecord{
+			Cursor:    uint64(index + 1),
+			Stream:    JobLogStreamStdout,
+			Data:      strings.Repeat(`"`, int(DefaultJobLogRecordBytes)),
+			Timestamp: now,
+		})
+	}
+	job := Job{
+		ContractVersion: JobContractVersion,
+		ID:              "job-escaped",
+		WorkerID:        "worker-old",
+		RuntimeDriver:   "job_driver",
+		State:           JobStateSucceeded,
+		SubmittedAt:     now,
+		LogCursor:       uint64(recordCount),
+	}
+	if err := store.save(job, records); err != nil {
+		t.Fatalf("save() escape-heavy retained logs: %v", err)
+	}
+	logInfo, err := os.Stat(filepath.Join(stateDir, job.ID, jobLogsFileName))
+	if err != nil {
+		t.Fatalf("Stat() logs: %v", err)
+	}
+	if logInfo.Size() <= DefaultJobLogRetentionBytes+(256<<10) {
+		t.Fatalf("logs size = %d, want regression fixture above the former load limit", logInfo.Size())
+	}
+
+	manager, err := newJobManager(jobManagerOptions{
+		WorkerID: "worker-new",
+		StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("newJobManager() restart error: %v", err)
+	}
+	defer manager.close()
+	if got := manager.jobs[job.ID].retainedBytes; got != DefaultJobLogRetentionBytes {
+		t.Fatalf("retained bytes after restart = %d, want %d", got, DefaultJobLogRetentionBytes)
+	}
+}
+
 func TestWorkerJobCorruptDurableStateFailsSafe(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "jobs")
 	jobDir := filepath.Join(stateDir, "job-corrupt")
@@ -324,6 +412,116 @@ func TestWorkerJobBoundedLogSpoolReportsTruncation(t *testing.T) {
 	}
 	if !logs.Truncated || logs.NextCursor != terminal.LogCursor {
 		t.Fatalf("logs = %#v, want truncation through terminal cursor %d", logs, terminal.LogCursor)
+	}
+}
+
+func TestWorkerJobLogChunkingPreservesUTF8RuneBoundaries(t *testing.T) {
+	manager, err := newJobManager(jobManagerOptions{
+		WorkerID: "worker-utf8",
+		StateDir: filepath.Join(t.TempDir(), "jobs"),
+	})
+	if err != nil {
+		t.Fatalf("newJobManager() error: %v", err)
+	}
+	defer manager.close()
+	now := time.Date(2026, time.July, 24, 12, 0, 0, 0, time.UTC)
+	entry := &jobEntry{job: Job{
+		ContractVersion: JobContractVersion,
+		ID:              "job-utf8",
+		WorkerID:        "worker-utf8",
+		RuntimeDriver:   "job_driver",
+		State:           JobStateRunning,
+		SubmittedAt:     now,
+	}}
+	output := strings.Repeat("a", int(DefaultJobLogRecordBytes)-1) + "€tail"
+	if err := manager.appendLog(entry, JobLogStreamStdout, []byte(output)); err != nil {
+		t.Fatalf("appendLog() error: %v", err)
+	}
+	var rendered strings.Builder
+	for _, record := range entry.records {
+		if !utf8.ValidString(record.Data) {
+			t.Fatalf("record data is not valid UTF-8: %q", record.Data)
+		}
+		if int64(len(record.Data)) > DefaultJobLogRecordBytes {
+			t.Fatalf("record size = %d, want at most %d", len(record.Data), DefaultJobLogRecordBytes)
+		}
+		rendered.WriteString(record.Data)
+	}
+	if got := rendered.String(); got != output {
+		t.Fatalf("rendered output differs after chunking: got %q want %q", got, output)
+	}
+}
+
+func TestWorkerJobLogPaginationPreservesRetainedRecordsBeforeTruncationGap(t *testing.T) {
+	now := time.Date(2026, time.July, 24, 12, 0, 0, 0, time.UTC)
+	manager := &jobManager{
+		jobs: map[string]*jobEntry{
+			"job-paged": {
+				job: Job{
+					ID:           "job-paged",
+					LogCursor:    3,
+					LogTruncated: true,
+				},
+				records: []JobLogRecord{
+					{Cursor: 1, Stream: JobLogStreamStdout, Data: strings.Repeat("a", 20<<10), Timestamp: now},
+					{Cursor: 2, Stream: JobLogStreamStdout, Data: strings.Repeat("b", 20<<10), Timestamp: now},
+				},
+			},
+		},
+	}
+
+	first, err := manager.logs(JobLogsRequest{
+		ContractVersion: JobContractVersion,
+		JobID:           "job-paged",
+		LimitBytes:      DefaultJobLogRecordBytes,
+	})
+	if err != nil {
+		t.Fatalf("first logs() error: %v", err)
+	}
+	if len(first.Records) != 1 || first.Records[0].Cursor != 1 || first.NextCursor != 1 || !first.Truncated {
+		t.Fatalf("first logs = %#v, want retained cursor 1 without skipping", first)
+	}
+
+	second, err := manager.logs(JobLogsRequest{
+		ContractVersion: JobContractVersion,
+		JobID:           "job-paged",
+		Cursor:          first.NextCursor,
+		LimitBytes:      DefaultJobLogRecordBytes,
+	})
+	if err != nil {
+		t.Fatalf("second logs() error: %v", err)
+	}
+	if len(second.Records) != 1 || second.Records[0].Cursor != 2 || second.NextCursor != 3 || !second.Truncated {
+		t.Fatalf("second logs = %#v, want retained cursor 2 then truncation cursor 3", second)
+	}
+}
+
+func TestWorkerJobLogPagesEnforceRequestedByteLimit(t *testing.T) {
+	req := JobLogsRequest{
+		ContractVersion: JobContractVersion,
+		JobID:           "job-bounded",
+		LimitBytes:      DefaultJobLogRecordBytes - 1,
+	}
+	if err := req.Validate(); err == nil {
+		t.Fatal("JobLogsRequest.Validate() accepted a limit smaller than one maximum-sized record")
+	}
+
+	req.LimitBytes = DefaultJobLogRecordBytes
+	err := validateClientIOResponseLimits(
+		Request{Operation: OperationJobLogs, JobLogs: &req},
+		Response{
+			Operation: OperationJobLogs,
+			OK:        true,
+			JobLogs: &JobLogsResponse{
+				Records: []JobLogRecord{
+					{Data: strings.Repeat("a", 20<<10)},
+					{Data: strings.Repeat("b", 20<<10)},
+				},
+			},
+		},
+	)
+	if err == nil {
+		t.Fatal("validateClientIOResponseLimits() accepted aggregate job logs above the requested limit")
 	}
 }
 

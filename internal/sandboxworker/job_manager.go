@@ -29,14 +29,19 @@ type jobManagerOptions struct {
 type jobManager struct {
 	mu                sync.Mutex
 	ctx               context.Context
+	cancelContext     context.CancelFunc
 	workerID          string
 	store             *jobStore
+	stateLock         *jobStateLock
 	now               func() time.Time
 	newID             func() (string, error)
 	heartbeatInterval time.Duration
 	logRetentionBytes int64
 	logRecordBytes    int64
 	jobs              map[string]*jobEntry
+	jobWG             sync.WaitGroup
+	shutdownOnce      sync.Once
+	closing           bool
 }
 
 type jobEntry struct {
@@ -56,6 +61,7 @@ func newJobManager(options jobManagerOptions) (*jobManager, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx, cancelContext := context.WithCancel(ctx)
 	now := options.Now
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
@@ -73,11 +79,12 @@ func newJobManager(options jobManagerOptions) (*jobManager, error) {
 		retention = DefaultJobLogRetentionBytes
 	}
 	recordBytes := options.LogRecordBytes
-	if recordBytes <= 0 || recordBytes > DefaultJobLogRecordBytes {
+	if recordBytes < minJobLogRecordBytes || recordBytes > DefaultJobLogRecordBytes {
 		recordBytes = DefaultJobLogRecordBytes
 	}
 	manager := &jobManager{
 		ctx:               ctx,
+		cancelContext:     cancelContext,
 		workerID:          strings.TrimSpace(options.WorkerID),
 		store:             store,
 		now:               now,
@@ -88,12 +95,52 @@ func newJobManager(options jobManagerOptions) (*jobManager, error) {
 		jobs:              map[string]*jobEntry{},
 	}
 	if !validJobSafeID(manager.workerID) {
+		cancelContext()
 		return nil, fmt.Errorf("worker job manager workerId is invalid")
 	}
-	if err := manager.loadAndReconcile(); err != nil {
+	stateLock, err := acquireJobStateLock(store.root)
+	if err != nil {
+		cancelContext()
 		return nil, err
 	}
+	manager.stateLock = stateLock
+	if err := manager.loadAndReconcile(); err != nil {
+		cancelContext()
+		_ = stateLock.Close()
+		return nil, err
+	}
+	if manager.ctx.Done() != nil {
+		go func() {
+			<-manager.ctx.Done()
+			manager.shutdown()
+		}()
+	}
 	return manager, nil
+}
+
+func (manager *jobManager) close() {
+	if manager == nil {
+		return
+	}
+	if manager.cancelContext != nil {
+		manager.cancelContext()
+	}
+	manager.shutdown()
+}
+
+func (manager *jobManager) shutdown() {
+	if manager == nil {
+		return
+	}
+	manager.shutdownOnce.Do(func() {
+		manager.mu.Lock()
+		manager.closing = true
+		manager.mu.Unlock()
+		manager.jobWG.Wait()
+		if manager.stateLock != nil {
+			_ = manager.stateLock.Close()
+		}
+	})
 }
 
 func (manager *jobManager) loadAndReconcile() error {
@@ -172,6 +219,11 @@ func (manager *jobManager) start(driverID string, driver sandboxruntime.Driver, 
 	entry := &jobEntry{job: job, cancel: cancel}
 
 	manager.mu.Lock()
+	if manager.closing || manager.ctx.Err() != nil {
+		manager.mu.Unlock()
+		cancel()
+		return Job{}, fmt.Errorf("worker job manager is unavailable")
+	}
 	if _, exists := manager.jobs[jobID]; exists {
 		manager.mu.Unlock()
 		cancel()
@@ -185,6 +237,7 @@ func (manager *jobManager) start(driverID string, driver sandboxruntime.Driver, 
 		return Job{}, err
 	}
 	snapshot := cloneJob(entry.job)
+	manager.jobWG.Add(1)
 	manager.mu.Unlock()
 
 	execReq := cloneJobExecRequest(req.Exec)
@@ -193,6 +246,7 @@ func (manager *jobManager) start(driverID string, driver sandboxruntime.Driver, 
 }
 
 func (manager *jobManager) run(ctx context.Context, entry *jobEntry, driver sandboxruntime.Driver, req ExecRequest) {
+	defer manager.jobWG.Done()
 	manager.mu.Lock()
 	if jobStateTerminal(entry.job.State) {
 		manager.mu.Unlock()
@@ -369,6 +423,7 @@ func (manager *jobManager) logs(req JobLogsRequest) (JobLogsResponse, error) {
 	}
 	var used int64
 	expectedCursor := req.Cursor + 1
+	moreRetained := false
 	for _, record := range entry.records {
 		if record.Cursor <= req.Cursor {
 			continue
@@ -377,7 +432,8 @@ func (manager *jobManager) logs(req JobLogsRequest) (JobLogsResponse, error) {
 			response.Truncated = true
 		}
 		recordBytes := int64(len([]byte(record.Data)))
-		if len(response.Records) > 0 && used+recordBytes > req.LimitBytes {
+		if used+recordBytes > req.LimitBytes {
+			moreRetained = true
 			break
 		}
 		response.Records = append(response.Records, record)
@@ -387,7 +443,9 @@ func (manager *jobManager) logs(req JobLogsRequest) (JobLogsResponse, error) {
 	}
 	if entry.job.LogTruncated && response.NextCursor < entry.job.LogCursor {
 		response.Truncated = true
-		response.NextCursor = entry.job.LogCursor
+		if !moreRetained {
+			response.NextCursor = entry.job.LogCursor
+		}
 	}
 	return response, nil
 }

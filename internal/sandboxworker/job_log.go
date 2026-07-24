@@ -2,30 +2,38 @@ package sandboxworker
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"sort"
 	"sync"
+	"unicode/utf8"
 )
+
+const minJobLogRecordBytes = utf8.UTFMax
 
 func (manager *jobManager) appendLog(entry *jobEntry, stream string, data []byte) error {
 	if len(data) == 0 {
 		return nil
 	}
-	sanitized := sanitizeJobLogData(string(data))
-	if sanitized == "" {
+	sanitized := []byte(sanitizeJobLogData(string(data)))
+	if len(sanitized) == 0 {
 		return nil
 	}
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	for len(sanitized) > 0 {
-		chunkBytes := manager.logRecordBytes
-		if int64(len([]byte(sanitized))) < chunkBytes {
-			chunkBytes = int64(len([]byte(sanitized)))
+		chunkBytes := int(manager.logRecordBytes)
+		if len(sanitized) < chunkBytes {
+			chunkBytes = len(sanitized)
+		} else if chunkBytes < len(sanitized) && utf8.Valid(sanitized) {
+			for chunkBytes > 0 && !utf8.RuneStart(sanitized[chunkBytes]) {
+				chunkBytes--
+			}
 		}
-		chunk := string([]byte(sanitized)[:chunkBytes])
-		sanitized = string([]byte(sanitized)[chunkBytes:])
+		chunk := string(sanitized[:chunkBytes])
+		sanitized = sanitized[chunkBytes:]
 		entry.job.LogCursor++
-		if entry.retainedBytes+chunkBytes > manager.logRetentionBytes {
+		if entry.retainedBytes+int64(chunkBytes) > manager.logRetentionBytes {
 			entry.job.LogTruncated = true
 			if stream == JobLogStreamStdout {
 				entry.job.StdoutTruncated = true
@@ -34,13 +42,27 @@ func (manager *jobManager) appendLog(entry *jobEntry, stream string, data []byte
 			}
 			continue
 		}
-		entry.records = append(entry.records, JobLogRecord{
+		candidateRecords := append(entry.records, JobLogRecord{
 			Cursor:    entry.job.LogCursor,
 			Stream:    stream,
 			Data:      chunk,
 			Timestamp: manager.now().UTC(),
 		})
-		entry.retainedBytes += chunkBytes
+		encoded, err := encodeStoredJobLogs(candidateRecords)
+		if err != nil {
+			return fmt.Errorf("encode job logs: %w", err)
+		}
+		if int64(len(encoded)) > maxJobLogsFileBytes {
+			entry.job.LogTruncated = true
+			if stream == JobLogStreamStdout {
+				entry.job.StdoutTruncated = true
+			} else {
+				entry.job.StderrTruncated = true
+			}
+			continue
+		}
+		entry.records = candidateRecords
+		entry.retainedBytes += int64(chunkBytes)
 	}
 	return manager.store.save(entry.job, entry.records)
 }
@@ -119,6 +141,11 @@ type jobLiteralRedactor struct {
 
 func newJobLiteralRedactor(req ExecRequest) *jobLiteralRedactor {
 	unique := map[string]bool{}
+	for _, value := range req.Args {
+		if value != "" {
+			unique[value] = true
+		}
+	}
 	for _, value := range req.Env {
 		if value != "" {
 			unique[value] = true

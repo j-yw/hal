@@ -50,7 +50,7 @@ func TestL2JobProtocolOperationsAreAcceptedByVersionedEnvelope(t *testing.T) {
 	requests := []string{
 		`{"protocolVersion":"sandboxworker-v1","requestId":"req-start","operation":"job_start","driverId":"rootless_podman","jobStart":{"contractVersion":"sandboxjob-v1","exec":{"operationId":"op-1","target":{"name":"box","runtime":{"driver":"rootless_podman","runtimeId":"runtime-1"}},"args":["true"],"stdoutLimitBytes":1024,"stderrLimitBytes":1024}}}`,
 		`{"protocolVersion":"sandboxworker-v1","requestId":"req-status","operation":"job_status","jobStatus":{"contractVersion":"sandboxjob-v1","jobId":"job-1"}}`,
-		`{"protocolVersion":"sandboxworker-v1","requestId":"req-logs","operation":"job_logs","jobLogs":{"contractVersion":"sandboxjob-v1","jobId":"job-1","cursor":0,"limitBytes":1024}}`,
+		`{"protocolVersion":"sandboxworker-v1","requestId":"req-logs","operation":"job_logs","jobLogs":{"contractVersion":"sandboxjob-v1","jobId":"job-1","cursor":0,"limitBytes":32768}}`,
 		`{"protocolVersion":"sandboxworker-v1","requestId":"req-cancel","operation":"job_cancel","jobCancel":{"contractVersion":"sandboxjob-v1","jobId":"job-1"}}`,
 	}
 	for _, raw := range requests {

@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	jobStateFileName = "job.json"
-	jobLogsFileName  = "logs.json"
+	jobStateFileName    = "job.json"
+	jobLogsFileName     = "logs.json"
+	maxJobLogsFileBytes = DefaultJobLogRetentionBytes*6 + (256 << 10)
 )
 
 type jobStore struct {
@@ -114,11 +115,14 @@ func (store *jobStore) save(job Job, records []JobLogRecord) error {
 	if err != nil {
 		return fmt.Errorf("encode job state: %w", err)
 	}
-	logData, err := json.Marshal(storedJobLogs{Records: records})
+	logData, err := encodeStoredJobLogs(records)
 	if err != nil {
 		return fmt.Errorf("encode job logs: %w", err)
 	}
-	if err := writePrivateFileAtomic(jobDir, jobLogsFileName, append(logData, '\n')); err != nil {
+	if int64(len(logData)) > maxJobLogsFileBytes {
+		return fmt.Errorf("persist job logs: encoded logs exceed size limit")
+	}
+	if err := writePrivateFileAtomic(jobDir, jobLogsFileName, logData); err != nil {
 		return fmt.Errorf("persist job logs: %w", err)
 	}
 	if err := writePrivateFileAtomic(jobDir, jobStateFileName, append(stateData, '\n')); err != nil {
@@ -164,7 +168,7 @@ func loadJobStateFile(path string) (Job, error) {
 
 func loadJobLogsFile(path string) ([]JobLogRecord, error) {
 	var logs storedJobLogs
-	if err := decodePrivateJSONFile(path, &logs, DefaultJobLogRetentionBytes+(256<<10)); err != nil {
+	if err := decodePrivateJSONFile(path, &logs, maxJobLogsFileBytes); err != nil {
 		return nil, fmt.Errorf("load job logs: %w", err)
 	}
 	response := JobLogsResponse{
@@ -179,6 +183,14 @@ func loadJobLogsFile(path string) ([]JobLogRecord, error) {
 		return nil, fmt.Errorf("load job logs: %w", err)
 	}
 	return cloneJobLogRecords(logs.Records), nil
+}
+
+func encodeStoredJobLogs(records []JobLogRecord) ([]byte, error) {
+	data, err := json.Marshal(storedJobLogs{Records: records})
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
 }
 
 func decodePrivateJSONFile(path string, target any, maxBytes int64) error {
