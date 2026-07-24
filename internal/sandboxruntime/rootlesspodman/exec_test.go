@@ -70,7 +70,7 @@ func TestExecUsesFakeRunnerAndStreamsIO(t *testing.T) {
 		"--env", "HAL_B",
 		"runtime-id",
 	}
-	assertScopedExecRequest(t, request, wantPrefix, []string{"sh", "-lc", "printf ok"})
+	assertDirectExecRequest(t, request, wantPrefix, []string{"sh", "-lc", "printf ok"})
 	if request.Operation != rootlesspodman.OperationExec {
 		t.Fatalf("operation = %q, want %q", request.Operation, rootlesspodman.OperationExec)
 	}
@@ -122,7 +122,7 @@ func TestExecKeepsSecretEnvironmentValuesOutOfPodmanArgs(t *testing.T) {
 	if got := strings.Join(request.Args, "\x00"); strings.Contains(got, secret) {
 		t.Fatalf("exec args contain secret value: %#v", request.Args)
 	}
-	assertScopedExecRequest(
+	assertDirectExecRequest(
 		t,
 		request,
 		[]string{"podman", "exec", "--env", "GITHUB_TOKEN", "hal-dev"},
@@ -137,6 +137,26 @@ func TestExecOmitsOptionalPodmanArgsWhenUnset(t *testing.T) {
 	if _, err := driver.Exec(context.Background(), sandboxruntime.ExecRequest{
 		Target: sandboxruntime.Target{Name: "hal-dev"},
 		Args:   []string{"echo", "ok"},
+	}); err != nil {
+		t.Fatalf("Exec() unexpected error: %v", err)
+	}
+
+	assertDirectExecRequest(
+		t,
+		runner.requests[0],
+		[]string{"podman", "exec", "hal-dev"},
+		[]string{"echo", "ok"},
+	)
+}
+
+func TestExecCancellationProofUsesScopedWrapper(t *testing.T) {
+	runner := &streamingExecRunner{}
+	driver := rootlesspodman.New(rootlesspodman.Options{ExecRunner: runner})
+
+	if _, err := driver.Exec(context.Background(), sandboxruntime.ExecRequest{
+		Target:                   sandboxruntime.Target{Name: "hal-dev"},
+		Args:                     []string{"echo", "ok"},
+		RequireCancellationProof: true,
 	}); err != nil {
 		t.Fatalf("Exec() unexpected error: %v", err)
 	}
@@ -264,6 +284,17 @@ type streamingExecRunner struct {
 	stderr   string
 }
 
+func assertDirectExecRequest(t *testing.T, request rootlesspodman.CommandRequest, wantPrefix, wantCommand []string) {
+	t.Helper()
+	want := append(append([]string(nil), wantPrefix...), wantCommand...)
+	if !reflect.DeepEqual(request.Args, want) {
+		t.Fatalf("exec args = %#v, want direct command %#v", request.Args, want)
+	}
+	if len(request.CancellationArgs) != 0 {
+		t.Fatalf("exec cancellation args = %#v, want no guest helper for ordinary exec", request.CancellationArgs)
+	}
+}
+
 func assertScopedExecRequest(t *testing.T, request rootlesspodman.CommandRequest, wantPrefix, wantCommand []string) {
 	t.Helper()
 	const wrapperFieldCount = 5
@@ -297,8 +328,7 @@ func assertScopedExecRequest(t *testing.T, request rootlesspodman.CommandRequest
 		t.Fatalf("exec cancellation args = %#v, want matching scoped state %q", request.CancellationArgs, stateDir)
 	}
 	cancellationScript := request.CancellationArgs[len(wantCancellationPrefix)]
-	if !strings.Contains(cancellationScript, `kill -TERM "-$child"`) ||
-		!strings.Contains(cancellationScript, `kill -KILL "-$child"`) {
+	if !strings.Contains(cancellationScript, `kill -KILL "-$child"`) {
 		t.Fatalf("exec cancellation script does not terminate the scoped process group: %q", cancellationScript)
 	}
 	for _, arg := range request.CancellationArgs {

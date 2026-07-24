@@ -123,6 +123,7 @@ func NewService(options ServiceOptions) (*Service, error) {
 	if len(supportedOps) == 0 {
 		supportedOps = defaultSupportedOperationsForDrivers(registry.DriverIDs(), descriptors)
 	}
+	supportedOps = withoutJobOperations(supportedOps)
 	var jobs *jobManager
 	if strings.TrimSpace(options.JobStateDir) != "" && jobStateLockSupported() {
 		var err error
@@ -269,6 +270,7 @@ func (service *Service) runtimeDriverCapability(driverID string) RuntimeDriver {
 		descriptors = service.driverDescriptors
 	}
 	driver := runtimeDriverCapabilityFromDescriptors(driverID, descriptors)
+	driver.Operations = withoutJobOperations(driver.Operations)
 	if service != nil && service.jobs != nil && stringSliceContains(driver.Operations, OperationExec) {
 		driver.Operations = appendMissingStrings(driver.Operations, OperationJobStart)
 	}
@@ -348,6 +350,19 @@ func appendMissingStrings(values []string, additions ...string) []string {
 	for _, addition := range additions {
 		if !stringSliceContains(result, addition) {
 			result = append(result, addition)
+		}
+	}
+	return result
+}
+
+func withoutJobOperations(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		switch value {
+		case OperationJobStart, OperationJobStatus, OperationJobLogs, OperationJobCancel:
+			continue
+		default:
+			result = append(result, value)
 		}
 	}
 	return result

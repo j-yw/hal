@@ -47,7 +47,7 @@ pid_file=$state_dir/pid
 attempt=0
 while [ ! -r "$pid_file" ]; do
 	if [ "$attempt" -ge 300 ]; then
-		exit 0
+		exit 124
 	fi
 	attempt=$((attempt + 1))
 	sleep 0.02
@@ -56,9 +56,9 @@ IFS= read -r child <"$pid_file" || exit 0
 case "$child" in
 	""|*[!0-9]*|0|1) exit 125 ;;
 esac
-kill -TERM "-$child" 2>/dev/null || true
-sleep 0.2
-kill -KILL "-$child" 2>/dev/null || true
+if ! kill -KILL "-$child" 2>/dev/null; then
+	exit 125
+fi
 attempt=0
 while kill -0 "-$child" 2>/dev/null; do
 	if [ "$attempt" -ge 100 ]; then
@@ -78,21 +78,34 @@ func (d *Driver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*san
 	if err != nil {
 		return nil, operationError(OperationExec, CommandResult{}, err)
 	}
-	stateDir, err := newExecStateDirectory()
-	if err != nil {
-		return nil, operationError(OperationExec, CommandResult{}, err)
+	commandRequest := CommandRequest{
+		Operation: OperationExec,
+		Args:      d.execArgs(ref, commandArgs, req.Env, req.WorkDir, req.Stdin != nil),
+		Env:       cloneStringMap(req.Env),
+		Stdin:     req.Stdin,
+		Stdout:    req.Stdout,
+		Stderr:    req.Stderr,
+	}
+	if req.RequireCancellationProof {
+		stateDir, err := newExecStateDirectory()
+		if err != nil {
+			return nil, operationError(OperationExec, CommandResult{}, err)
+		}
+		commandRequest.Args = d.execArgs(
+			ref,
+			scopedExecCommandArgs(stateDir, commandArgs),
+			req.Env,
+			req.WorkDir,
+			req.Stdin != nil,
+		)
+		commandRequest.CancellationArgs = d.execCancellationArgs(ref, stateDir)
 	}
 
-	result, err := d.runExecCommand(ctx, CommandRequest{
-		Operation:        OperationExec,
-		Args:             d.execArgs(ref, stateDir, commandArgs, req.Env, req.WorkDir, req.Stdin != nil),
-		CancellationArgs: d.execCancellationArgs(ref, stateDir),
-		Env:              cloneStringMap(req.Env),
-		Stdin:            req.Stdin,
-		Stdout:           req.Stdout,
-		Stderr:           req.Stderr,
-	})
+	result, err := d.runExecCommand(ctx, commandRequest)
 	execResult := &sandboxruntime.ExecResult{ExitCode: result.ExitCode}
+	if result.CancellationTerminated && ctx != nil && ctx.Err() != nil {
+		execResult.Cancellation = &sandboxruntime.ExecCancellationResult{Terminated: true}
+	}
 	if err != nil {
 		return execResult, err
 	}
@@ -125,7 +138,7 @@ func (d *Driver) execRunnerFor(operation string) (ExecCommandRunner, error) {
 	return d.execRunner, nil
 }
 
-func (d *Driver) execArgs(ref, stateDir string, commandArgs []string, env map[string]string, workDir string, interactive bool) []string {
+func (d *Driver) execArgs(ref string, commandArgs []string, env map[string]string, workDir string, interactive bool) []string {
 	args := []string{d.podmanPath, "exec"}
 	if interactive {
 		args = append(args, "--interactive")
@@ -136,9 +149,14 @@ func (d *Driver) execArgs(ref, stateDir string, commandArgs []string, env map[st
 	for _, key := range sortedMapKeys(env) {
 		args = append(args, "--env", key)
 	}
-	args = append(args, ref, "sh", "-c", execWrapperScript, "hal-exec", stateDir)
+	args = append(args, ref)
 	args = append(args, commandArgs...)
 	return args
+}
+
+func scopedExecCommandArgs(stateDir string, commandArgs []string) []string {
+	args := []string{"sh", "-c", execWrapperScript, "hal-exec", stateDir}
+	return append(args, commandArgs...)
 }
 
 func (d *Driver) execCancellationArgs(ref, stateDir string) []string {

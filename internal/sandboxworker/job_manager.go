@@ -304,13 +304,14 @@ func (manager *jobManager) run(ctx context.Context, entry *jobEntry, driver sand
 	stdout := newJobLogWriter(manager, entry, JobLogStreamStdout, req.StdoutLimitBytes, newJobLiteralRedactor(req))
 	stderr := newJobLogWriter(manager, entry, JobLogStreamStderr, req.StderrLimitBytes, newJobLiteralRedactor(req))
 	runtimeReq := sandboxruntime.ExecRequest{
-		Target:  runtimeTargetFromWorkerTarget(req.Target),
-		Args:    cloneStringSlice(req.Args),
-		Stdout:  stdout,
-		Stderr:  stderr,
-		Stdin:   execStdinReader(req.Stdin),
-		Env:     cloneStringMap(req.Env),
-		WorkDir: strings.TrimSpace(req.WorkDir),
+		Target:                   runtimeTargetFromWorkerTarget(req.Target),
+		Args:                     cloneStringSlice(req.Args),
+		Stdout:                   stdout,
+		Stderr:                   stderr,
+		Stdin:                    execStdinReader(req.Stdin),
+		Env:                      cloneStringMap(req.Env),
+		WorkDir:                  strings.TrimSpace(req.WorkDir),
+		RequireCancellationProof: true,
 	}
 
 	heartbeatDone := make(chan struct{})
@@ -329,8 +330,13 @@ func (manager *jobManager) run(ctx context.Context, entry *jobEntry, driver sand
 		return
 	}
 	switch {
-	case entry.job.CancelRequested:
+	case entry.job.CancelRequested &&
+		result != nil &&
+		result.Cancellation != nil &&
+		result.Cancellation.Terminated:
 		manager.finishLocked(entry, JobStateCanceled, result, "cancel_requested")
+	case entry.job.CancelRequested:
+		manager.finishLocked(entry, JobStateUnknown, result, "cancel_termination_unconfirmed")
 	case errors.Is(ctx.Err(), context.Canceled):
 		manager.finishLocked(entry, JobStateInterrupted, result, "daemon_stopped")
 	case runErr != nil:
@@ -393,6 +399,9 @@ func (manager *jobManager) finishLocked(entry *jobEntry, state string, result *s
 		entry.job.State = JobStateUnknown
 		entry.job.FailureCode = "state_write_failed"
 		entry.job.CancelRequested = cancelRequested
+	}
+	if entry.cancel != nil {
+		entry.cancel()
 	}
 	entry.cancel = nil
 	manager.releaseAdmissionLocked(entry)

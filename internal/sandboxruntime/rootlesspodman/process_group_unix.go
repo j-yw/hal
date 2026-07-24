@@ -27,6 +27,14 @@ func terminateExecProcessGroupAfter(cmd *exec.Cmd, waitCh <-chan error, gracePer
 	if cmd == nil || cmd.Process == nil {
 		return <-waitCh
 	}
+	// Completion and cancellation may become ready together. Observe a
+	// completed Wait before addressing the process group so a reaped leader's
+	// PID is not used as a stale group identifier.
+	select {
+	case err := <-waitCh:
+		return err
+	default:
+	}
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 	timer := time.NewTimer(gracePeriod)
 	defer timer.Stop()

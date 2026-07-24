@@ -30,9 +30,10 @@ type CommandRequest struct {
 }
 
 type CommandResult struct {
-	ExitCode int
-	Stdout   string
-	Stderr   string
+	ExitCode               int
+	Stdout                 string
+	Stderr                 string
+	CancellationTerminated bool
 }
 
 type LifecycleCommandRunner interface {

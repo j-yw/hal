@@ -123,16 +123,42 @@ func TestWorkerJobCapabilitiesRequireConfiguredStateAndExecDriver(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewDriverRegistry() error: %v", err)
 	}
+	withoutJobsDriver := rootlessPodmanRuntimeDriverCapability()
+	withoutJobsDriver.Operations = appendMissingStrings(
+		withoutJobsDriver.Operations,
+		OperationJobStart,
+		OperationJobStatus,
+		OperationJobLogs,
+		OperationJobCancel,
+	)
 	withoutJobs, err := NewService(ServiceOptions{
 		WorkerID: "worker-no-jobs",
 		HostKind: HostKindLocal,
 		Registry: registry,
+		SupportedOperations: []string{
+			OperationStatus,
+			OperationCapabilities,
+			OperationJobStart,
+			OperationJobStatus,
+			OperationJobLogs,
+			OperationJobCancel,
+		},
+		RuntimeDrivers: map[string]RuntimeDriver{
+			RuntimeDriverRootlessPodman: withoutJobsDriver,
+		},
 	})
 	if err != nil {
 		t.Fatalf("NewService(without jobs) error: %v", err)
 	}
-	if stringSliceContains(withoutJobs.Capabilities().SupportedOperations, OperationJobStart) {
-		t.Fatal("worker without durable state advertised job_start")
+	withoutJobsCapabilities := withoutJobs.Capabilities()
+	for _, operation := range []string{OperationJobStart, OperationJobStatus, OperationJobLogs, OperationJobCancel} {
+		if stringSliceContains(withoutJobsCapabilities.SupportedOperations, operation) {
+			t.Fatalf("worker without durable state advertised %s", operation)
+		}
+		if len(withoutJobsCapabilities.RuntimeDrivers) != 1 ||
+			stringSliceContains(withoutJobsCapabilities.RuntimeDrivers[0].Operations, operation) {
+			t.Fatalf("runtime without durable state advertised %s: %#v", operation, withoutJobsCapabilities.RuntimeDrivers)
+		}
 	}
 
 	withJobs, err := NewService(ServiceOptions{
@@ -256,7 +282,12 @@ func TestWorkerJobCancellationAndTerminalRaceRules(t *testing.T) {
 			execFn: func(ctx context.Context, _ sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 				close(started)
 				<-ctx.Done()
-				return &sandboxruntime.ExecResult{ExitCode: -1}, ctx.Err()
+				return &sandboxruntime.ExecResult{
+					ExitCode: -1,
+					Cancellation: &sandboxruntime.ExecCancellationResult{
+						Terminated: true,
+					},
+				}, ctx.Err()
 			},
 		}
 		service, _, daemonCancel := newL2JobTestService(t, driver)
@@ -281,6 +312,43 @@ func TestWorkerJobCancellationAndTerminalRaceRules(t *testing.T) {
 			t.Fatalf("cancel response = %#v", cancel)
 		}
 		waitForL2JobState(t, service, start.Job.ID, JobStateCanceled)
+	})
+
+	t.Run("unconfirmed cancel becomes unknown", func(t *testing.T) {
+		started := make(chan struct{})
+		driver := &l2JobRuntimeDriver{
+			fakeWorkerRuntimeDriver: &fakeWorkerRuntimeDriver{id: "unconfirmed_cancel_driver"},
+			execFn: func(ctx context.Context, _ sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+				close(started)
+				<-ctx.Done()
+				return &sandboxruntime.ExecResult{ExitCode: -1}, ctx.Err()
+			},
+		}
+		service, _, daemonCancel := newL2JobTestService(t, driver)
+		defer daemonCancel()
+		start := service.JobStartResponse(context.Background(), "start", driver.ID(), JobStartRequest{
+			ContractVersion: JobContractVersion,
+			Exec:            l2JobExecRequest("cancel-secret"),
+		})
+		if !start.OK || start.Job == nil {
+			t.Fatalf("start response = %#v error=%#v", start, start.Error)
+		}
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("job did not start")
+		}
+		cancel := service.JobCancelResponse("cancel", JobCancelRequest{
+			ContractVersion: JobContractVersion,
+			JobID:           start.Job.ID,
+		})
+		if !cancel.OK {
+			t.Fatalf("cancel response = %#v", cancel)
+		}
+		terminal := waitForL2JobState(t, service, start.Job.ID, JobStateUnknown)
+		if terminal.FailureCode != "cancel_termination_unconfirmed" {
+			t.Fatalf("canceled job = %#v, want sanitized unconfirmed termination failure", terminal)
+		}
 	})
 
 	t.Run("persisted terminal state wins", func(t *testing.T) {
@@ -321,13 +389,16 @@ func TestWorkerJobCancellationIsDurableBeforeAcknowledgment(t *testing.T) {
 	}
 	defer manager.close()
 
+	now := time.Date(2026, time.July, 24, 12, 0, 0, 0, time.UTC)
 	job := Job{
 		ContractVersion: JobContractVersion,
 		ID:              "job-cancel-durable",
 		WorkerID:        "worker-cancel-durable",
 		RuntimeDriver:   "job_driver",
 		State:           JobStateRunning,
-		SubmittedAt:     time.Date(2026, time.July, 24, 12, 0, 0, 0, time.UTC),
+		SubmittedAt:     now,
+		StartedAt:       timePointer(now),
+		HeartbeatAt:     timePointer(now),
 	}
 	if err := manager.store.save(job, nil); err != nil {
 		t.Fatalf("save() running job: %v", err)
@@ -353,6 +424,43 @@ func TestWorkerJobCancellationIsDurableBeforeAcknowledgment(t *testing.T) {
 	}
 	if !got.CancelRequested {
 		t.Fatalf("cancelJob() snapshot = %#v, want pending cancellation evidence", got)
+	}
+}
+
+func TestWorkerJobTerminalTransitionReleasesChildContext(t *testing.T) {
+	manager, err := newJobManager(jobManagerOptions{
+		WorkerID: "worker-context-release",
+		StateDir: filepath.Join(t.TempDir(), "jobs"),
+	})
+	if err != nil {
+		t.Fatalf("newJobManager() error: %v", err)
+	}
+	defer manager.close()
+	now := time.Date(2026, time.July, 24, 12, 0, 0, 0, time.UTC)
+	cancelCalled := false
+	entry := &jobEntry{
+		job: Job{
+			ContractVersion: JobContractVersion,
+			ID:              "job-context-release",
+			WorkerID:        "worker-context-release",
+			RuntimeDriver:   "job_driver",
+			State:           JobStateRunning,
+			SubmittedAt:     now,
+			StartedAt:       timePointer(now),
+			HeartbeatAt:     timePointer(now),
+		},
+		cancel: func() {
+			cancelCalled = true
+		},
+	}
+
+	manager.finishLocked(entry, JobStateSucceeded, &sandboxruntime.ExecResult{ExitCode: 0}, "")
+
+	if !cancelCalled || entry.cancel != nil {
+		t.Fatalf("terminal transition retained child cancellation context: %#v", entry)
+	}
+	if entry.job.State != JobStateSucceeded || entry.job.FinishedAt == nil {
+		t.Fatalf("terminal transition = %#v, want succeeded with finishedAt", entry.job)
 	}
 }
 
@@ -421,6 +529,13 @@ func TestWorkerJobRestartReconcilesWithoutRerun(t *testing.T) {
 			SubmittedAt:     now,
 			CancelRequested: item.cancelRequested,
 		}
+		if item.state == JobStateRunning || item.state == JobStateSucceeded {
+			job.StartedAt = timePointer(now)
+			job.HeartbeatAt = timePointer(now)
+		}
+		if item.state == JobStateSucceeded {
+			job.FinishedAt = timePointer(now)
+		}
 		if err := store.save(job, nil); err != nil {
 			t.Fatalf("seed %s: %v", item.id, err)
 		}
@@ -459,6 +574,132 @@ func TestWorkerJobRestartReconcilesWithoutRerun(t *testing.T) {
 	}
 }
 
+func TestWorkerJobValidationRejectsIncoherentLifecycleTimestamps(t *testing.T) {
+	submitted := time.Date(2026, time.July, 24, 12, 0, 0, 0, time.UTC)
+	started := submitted.Add(time.Second)
+	heartbeat := started.Add(time.Second)
+	finished := heartbeat.Add(time.Second)
+	base := Job{
+		ContractVersion: JobContractVersion,
+		ID:              "job-lifecycle",
+		WorkerID:        "worker-lifecycle",
+		RuntimeDriver:   "job_driver",
+		State:           JobStateQueued,
+		SubmittedAt:     submitted,
+	}
+	tests := []struct {
+		name   string
+		mutate func(*Job)
+	}{
+		{
+			name: "queued with started timestamp",
+			mutate: func(job *Job) {
+				job.StartedAt = timePointer(started)
+			},
+		},
+		{
+			name: "running without started timestamp",
+			mutate: func(job *Job) {
+				job.State = JobStateRunning
+			},
+		},
+		{
+			name: "running with finished timestamp",
+			mutate: func(job *Job) {
+				job.State = JobStateRunning
+				job.StartedAt = timePointer(started)
+				job.FinishedAt = timePointer(finished)
+			},
+		},
+		{
+			name: "succeeded without started timestamp",
+			mutate: func(job *Job) {
+				job.State = JobStateSucceeded
+				job.FinishedAt = timePointer(finished)
+			},
+		},
+		{
+			name: "terminal without finished timestamp",
+			mutate: func(job *Job) {
+				job.State = JobStateFailed
+				job.StartedAt = timePointer(started)
+			},
+		},
+		{
+			name: "started before submitted",
+			mutate: func(job *Job) {
+				job.State = JobStateRunning
+				job.StartedAt = timePointer(submitted.Add(-time.Second))
+			},
+		},
+		{
+			name: "heartbeat before started",
+			mutate: func(job *Job) {
+				job.State = JobStateRunning
+				job.StartedAt = timePointer(started)
+				job.HeartbeatAt = timePointer(submitted)
+			},
+		},
+		{
+			name: "finished before heartbeat",
+			mutate: func(job *Job) {
+				job.State = JobStateSucceeded
+				job.StartedAt = timePointer(started)
+				job.HeartbeatAt = timePointer(heartbeat)
+				job.FinishedAt = timePointer(started)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			job := base
+			test.mutate(&job)
+			if err := job.Validate(); err == nil {
+				t.Fatalf("Job.Validate() accepted incoherent lifecycle: %#v", job)
+			}
+		})
+	}
+
+	for _, job := range []Job{
+		base,
+		{
+			ContractVersion: JobContractVersion,
+			ID:              "job-running-valid",
+			WorkerID:        "worker-lifecycle",
+			RuntimeDriver:   "job_driver",
+			State:           JobStateRunning,
+			SubmittedAt:     submitted,
+			StartedAt:       timePointer(started),
+			HeartbeatAt:     timePointer(heartbeat),
+		},
+		{
+			ContractVersion: JobContractVersion,
+			ID:              "job-succeeded-valid",
+			WorkerID:        "worker-lifecycle",
+			RuntimeDriver:   "job_driver",
+			State:           JobStateSucceeded,
+			SubmittedAt:     submitted,
+			StartedAt:       timePointer(started),
+			HeartbeatAt:     timePointer(heartbeat),
+			FinishedAt:      timePointer(finished),
+		},
+		{
+			ContractVersion: JobContractVersion,
+			ID:              "job-canceled-valid",
+			WorkerID:        "worker-lifecycle",
+			RuntimeDriver:   "job_driver",
+			State:           JobStateCanceled,
+			SubmittedAt:     submitted,
+			HeartbeatAt:     timePointer(heartbeat),
+			FinishedAt:      timePointer(finished),
+		},
+	} {
+		if err := job.Validate(); err != nil {
+			t.Fatalf("Job.Validate() rejected coherent lifecycle %#v: %v", job, err)
+		}
+	}
+}
+
 func TestWorkerJobRestartReconcilesCursorAndTruncationFromLogSnapshot(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "jobs")
 	store, err := newJobStore(stateDir)
@@ -473,6 +714,9 @@ func TestWorkerJobRestartReconcilesCursorAndTruncationFromLogSnapshot(t *testing
 		RuntimeDriver:   "job_driver",
 		State:           JobStateSucceeded,
 		SubmittedAt:     now,
+		StartedAt:       timePointer(now),
+		HeartbeatAt:     timePointer(now),
+		FinishedAt:      timePointer(now),
 		LogCursor:       1,
 	}
 	records := []JobLogRecord{{
@@ -571,6 +815,9 @@ func TestWorkerJobRestartLoadsEscapeHeavyRetainedLogs(t *testing.T) {
 		RuntimeDriver:   "job_driver",
 		State:           JobStateSucceeded,
 		SubmittedAt:     now,
+		StartedAt:       timePointer(now),
+		HeartbeatAt:     timePointer(now),
+		FinishedAt:      timePointer(now),
 		LogCursor:       uint64(recordCount),
 	}
 	if err := store.save(job, records); err != nil {
@@ -752,6 +999,8 @@ func TestWorkerJobLogChunkingPreservesUTF8RuneBoundaries(t *testing.T) {
 		RuntimeDriver:   "job_driver",
 		State:           JobStateRunning,
 		SubmittedAt:     now,
+		StartedAt:       timePointer(now),
+		HeartbeatAt:     timePointer(now),
 	}}
 	output := strings.Repeat("a", int(DefaultJobLogRecordBytes)-1) + "€tail"
 	if err := manager.appendLog(entry, JobLogStreamStdout, []byte(output)); err != nil {
@@ -789,6 +1038,9 @@ func TestWorkerJobInvalidUTF8LogsRemainReadableAfterRestart(t *testing.T) {
 		RuntimeDriver:   "job_driver",
 		State:           JobStateSucceeded,
 		SubmittedAt:     now,
+		StartedAt:       timePointer(now),
+		HeartbeatAt:     timePointer(now),
+		FinishedAt:      timePointer(now),
 	}}
 	manager.jobs[entry.job.ID] = entry
 	output := bytes.Repeat([]byte{0xff, 'x'}, int(DefaultJobLogRecordBytes/2))
@@ -1078,6 +1330,97 @@ func TestWorkerJobLogWriterReportsTruncationPersistenceFailure(t *testing.T) {
 	}
 	if !entry.job.LogTruncated || !entry.job.StdoutTruncated {
 		t.Fatalf("truncation flags = %#v, want stdout truncation", entry.job)
+	}
+}
+
+func TestWorkerJobLogWriterRedactsLiteralPrefixAtCaptureLimit(t *testing.T) {
+	manager, err := newJobManager(jobManagerOptions{
+		WorkerID: "worker-partial-redaction",
+		StateDir: filepath.Join(t.TempDir(), "jobs"),
+	})
+	if err != nil {
+		t.Fatalf("newJobManager() error: %v", err)
+	}
+	defer manager.close()
+	now := time.Date(2026, time.July, 24, 12, 0, 0, 0, time.UTC)
+	entry := &jobEntry{job: Job{
+		ContractVersion: JobContractVersion,
+		ID:              "job-partial-redaction",
+		WorkerID:        "worker-partial-redaction",
+		RuntimeDriver:   "job_driver",
+		State:           JobStateRunning,
+		SubmittedAt:     now,
+		StartedAt:       timePointer(now),
+		HeartbeatAt:     timePointer(now),
+	}}
+	writer := newJobLogWriter(
+		manager,
+		entry,
+		JobLogStreamStdout,
+		4,
+		newJobLiteralRedactor(ExecRequest{Args: []string{"supersecret"}}),
+	)
+
+	if written, err := writer.Write([]byte("supersecret")); err != nil || written != len("supersecret") {
+		t.Fatalf("Write() = (%d, %v), want (%d, nil)", written, err, len("supersecret"))
+	}
+	writer.Flush()
+	if err := writer.Err(); err != nil {
+		t.Fatalf("Flush() error: %v", err)
+	}
+	var output strings.Builder
+	for _, record := range entry.records {
+		output.WriteString(record.Data)
+	}
+	if got := output.String(); got != "[redacted]" {
+		t.Fatalf("captured output = %q, want redacted partial literal", got)
+	}
+}
+
+func TestWorkerJobLogWriterPersistsCaptureTruncationOnce(t *testing.T) {
+	manager, err := newJobManager(jobManagerOptions{
+		WorkerID: "worker-single-truncation",
+		StateDir: filepath.Join(t.TempDir(), "jobs"),
+	})
+	if err != nil {
+		t.Fatalf("newJobManager() error: %v", err)
+	}
+	defer manager.close()
+	now := time.Date(2026, time.July, 24, 12, 0, 0, 0, time.UTC)
+	entry := &jobEntry{job: Job{
+		ContractVersion: JobContractVersion,
+		ID:              "job-single-truncation",
+		WorkerID:        "worker-single-truncation",
+		RuntimeDriver:   "job_driver",
+		State:           JobStateRunning,
+		SubmittedAt:     now,
+		StartedAt:       timePointer(now),
+		HeartbeatAt:     timePointer(now),
+	}}
+	writer := newJobLogWriter(manager, entry, JobLogStreamStdout, 1, nil)
+
+	if _, err := writer.Write([]byte("a")); err != nil {
+		t.Fatalf("first Write() error: %v", err)
+	}
+	if _, err := writer.Write([]byte("b")); err != nil {
+		t.Fatalf("first post-limit Write() error: %v", err)
+	}
+	statePath := filepath.Join(manager.store.root, entry.job.ID, jobStateFileName)
+	before, err := os.Stat(statePath)
+	if err != nil {
+		t.Fatalf("Stat() after truncation: %v", err)
+	}
+	for _, output := range []string{"c", "d", "e"} {
+		if _, err := writer.Write([]byte(output)); err != nil {
+			t.Fatalf("repeated post-limit Write(%q) error: %v", output, err)
+		}
+	}
+	after, err := os.Stat(statePath)
+	if err != nil {
+		t.Fatalf("Stat() after repeated writes: %v", err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("repeated post-limit writes persisted truncation more than once")
 	}
 }
 

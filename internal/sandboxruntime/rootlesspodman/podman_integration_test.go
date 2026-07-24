@@ -178,21 +178,29 @@ func TestPodmanIntegrationCancellationStopsOnlyExecWorkload(t *testing.T) {
 	const readyPath = "/tmp/hal-podman-cancellation-ready"
 	workloadMarker := fmt.Sprintf("hal-podman-cancel-workload-%d-%d", os.Getpid(), time.Now().UnixNano())
 	execCtx, cancelExec := context.WithCancel(ctx)
-	execErrCh := make(chan error, 1)
+	type execOutcome struct {
+		result *sandboxruntime.ExecResult
+		err    error
+	}
+	execResultCh := make(chan execOutcome, 1)
 	go func() {
-		_, execErr := driver.Exec(execCtx, sandboxruntime.ExecRequest{
-			Target: *target,
-			Args:   []string{"sh", "-c", "trap '' TERM; : > " + readyPath + "; while :; do sleep 1; done", workloadMarker},
+		execResult, execErr := driver.Exec(execCtx, sandboxruntime.ExecRequest{
+			Target:                   *target,
+			Args:                     []string{"sh", "-c", "trap '' TERM; : > " + readyPath + "; while :; do sleep 1; done", workloadMarker},
+			RequireCancellationProof: true,
 		})
-		execErrCh <- execErr
+		execResultCh <- execOutcome{result: execResult, err: execErr}
 	}()
 	waitForPodmanIntegrationFile(t, ctx, podmanPath, podmanIntegrationTargetRef(target), readyPath)
 
 	cancelExec()
 	select {
-	case execErr := <-execErrCh:
-		if !errors.Is(execErr, context.Canceled) {
-			t.Fatalf("Exec() cancellation error = %v, want context.Canceled", execErr)
+	case outcome := <-execResultCh:
+		if !errors.Is(outcome.err, context.Canceled) {
+			t.Fatalf("Exec() cancellation error = %v, want context.Canceled", outcome.err)
+		}
+		if outcome.result == nil || outcome.result.Cancellation == nil || !outcome.result.Cancellation.Terminated {
+			t.Fatalf("Exec() cancellation result = %#v, want proven target termination", outcome.result)
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("Exec() did not return after cancellation")

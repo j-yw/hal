@@ -172,8 +172,53 @@ func (job Job) Validate() error {
 	if job.SubmittedAt.IsZero() {
 		return fmt.Errorf("worker job submittedAt is required")
 	}
+	if err := job.validateLifecycle(); err != nil {
+		return err
+	}
 	if job.FailureCode != "" && !validJobSafeID(job.FailureCode) {
 		return fmt.Errorf("worker job failureCode is invalid")
+	}
+	return nil
+}
+
+func (job Job) validateLifecycle() error {
+	if job.StartedAt != nil && job.StartedAt.Before(job.SubmittedAt) {
+		return fmt.Errorf("worker job startedAt precedes submittedAt")
+	}
+	if job.HeartbeatAt != nil && job.HeartbeatAt.Before(job.SubmittedAt) {
+		return fmt.Errorf("worker job heartbeatAt precedes submittedAt")
+	}
+	if job.FinishedAt != nil && job.FinishedAt.Before(job.SubmittedAt) {
+		return fmt.Errorf("worker job finishedAt precedes submittedAt")
+	}
+	if job.StartedAt != nil && job.HeartbeatAt != nil && job.HeartbeatAt.Before(*job.StartedAt) {
+		return fmt.Errorf("worker job heartbeatAt precedes startedAt")
+	}
+	if job.StartedAt != nil && job.FinishedAt != nil && job.FinishedAt.Before(*job.StartedAt) {
+		return fmt.Errorf("worker job finishedAt precedes startedAt")
+	}
+	if job.HeartbeatAt != nil && job.FinishedAt != nil && job.FinishedAt.Before(*job.HeartbeatAt) {
+		return fmt.Errorf("worker job finishedAt precedes heartbeatAt")
+	}
+	switch job.State {
+	case JobStateQueued:
+		if job.StartedAt != nil || job.HeartbeatAt != nil || job.FinishedAt != nil {
+			return fmt.Errorf("worker job queued state has lifecycle progress timestamps")
+		}
+	case JobStateRunning:
+		if job.StartedAt == nil {
+			return fmt.Errorf("worker job running state requires startedAt")
+		}
+		if job.FinishedAt != nil {
+			return fmt.Errorf("worker job running state has finishedAt")
+		}
+	default:
+		if job.FinishedAt == nil {
+			return fmt.Errorf("worker job terminal state requires finishedAt")
+		}
+		if (job.State == JobStateSucceeded || job.State == JobStateFailed) && job.StartedAt == nil {
+			return fmt.Errorf("worker job %s state requires startedAt", job.State)
+		}
 	}
 	return nil
 }

@@ -89,6 +89,7 @@ type jobLogWriter struct {
 	redactor   *jobLiteralRedactor
 	sanitizer  jobStreamSanitizer
 	mu         sync.Mutex
+	truncated  bool
 	persistErr error
 }
 
@@ -105,7 +106,7 @@ func (writer *jobLogWriter) Write(p []byte) (int, error) {
 	}
 	remaining := writer.limit - writer.written
 	if remaining <= 0 {
-		if err := writer.manager.markStreamTruncated(writer.entry, writer.stream); err != nil {
+		if err := writer.markTruncated(); err != nil {
 			writer.persistErr = err
 			return originalLen, err
 		}
@@ -113,7 +114,7 @@ func (writer *jobLogWriter) Write(p []byte) (int, error) {
 	}
 	if int64(len(p)) > remaining {
 		p = p[:remaining]
-		if err := writer.manager.markStreamTruncated(writer.entry, writer.stream); err != nil {
+		if err := writer.markTruncated(); err != nil {
 			writer.persistErr = err
 			return originalLen, err
 		}
@@ -127,6 +128,14 @@ func (writer *jobLogWriter) Write(p []byte) (int, error) {
 	return originalLen, nil
 }
 
+func (writer *jobLogWriter) markTruncated() error {
+	if writer.truncated {
+		return nil
+	}
+	writer.truncated = true
+	return writer.manager.markStreamTruncated(writer.entry, writer.stream)
+}
+
 func (writer *jobLogWriter) Flush() {
 	writer.mu.Lock()
 	defer writer.mu.Unlock()
@@ -136,7 +145,7 @@ func (writer *jobLogWriter) Flush() {
 	writer.persistErr = writer.manager.appendLog(
 		writer.entry,
 		writer.stream,
-		writer.sanitizer.Consume(writer.redactor.Consume(nil, true), true),
+		writer.sanitizer.Consume(writer.redactor.ConsumeFinal(writer.truncated), true),
 	)
 }
 
@@ -212,6 +221,14 @@ func addJobLiteralPattern(unique map[string]bool, value []byte) {
 }
 
 func (redactor *jobLiteralRedactor) Consume(p []byte, final bool) []byte {
+	return redactor.consume(p, final, false)
+}
+
+func (redactor *jobLiteralRedactor) ConsumeFinal(redactPartial bool) []byte {
+	return redactor.consume(nil, true, redactPartial)
+}
+
+func (redactor *jobLiteralRedactor) consume(p []byte, final, redactPartial bool) []byte {
 	if redactor == nil {
 		return append([]byte(nil), p...)
 	}
@@ -221,7 +238,9 @@ func (redactor *jobLiteralRedactor) Consume(p []byte, final bool) []byte {
 		maxPattern = len(redactor.patterns[0])
 	}
 	limit := len(redactor.pending)
-	if !final && maxPattern > 0 {
+	if final {
+		limit = 0
+	} else if maxPattern > 0 {
 		limit = len(redactor.pending) - maxPattern + 1
 		if limit < 0 {
 			limit = 0
@@ -253,6 +272,17 @@ func (redactor *jobLiteralRedactor) Consume(p []byte, final bool) []byte {
 					index += len(pattern)
 					matched = true
 					break
+				}
+			}
+			if !matched && redactPartial {
+				suffix := redactor.pending[index:]
+				for _, pattern := range redactor.patterns {
+					if len(suffix) > 0 && len(suffix) < len(pattern) && bytes.HasPrefix(pattern, suffix) {
+						out.WriteString("[redacted]")
+						index = len(redactor.pending)
+						matched = true
+						break
+					}
 				}
 			}
 			if !matched {

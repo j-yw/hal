@@ -99,13 +99,14 @@ func runDefaultExecCommand(ctx context.Context, req CommandRequest) (CommandResu
 	select {
 	case err = <-waitCh:
 	case <-ctx.Done():
-		cancellationErr = runExecCancellationCommand(req.CancellationArgs)
 		err = terminateExecProcessGroup(cmd, waitCh)
+		cancellationErr = runExecCancellationCommand(req.CancellationArgs)
 	}
 	result := CommandResult{
-		ExitCode: commandExitCode(err),
-		Stdout:   stdout.String(),
-		Stderr:   stderr.String(),
+		ExitCode:               commandExitCode(err),
+		Stdout:                 stdout.String(),
+		Stderr:                 stderr.String(),
+		CancellationTerminated: ctx.Err() != nil && len(req.CancellationArgs) > 0 && cancellationErr == nil,
 	}
 	if ctx.Err() != nil {
 		return result, errors.Join(ctx.Err(), cancellationErr)
