@@ -220,6 +220,108 @@ func TestForceWriteInstance_Overwrites(t *testing.T) {
 	}
 }
 
+func TestUpdateActiveInstanceExactSerializesSameNameReplacement(t *testing.T) {
+	setSandboxHome(t)
+
+	original := &SandboxState{
+		ID:        "sandbox-original",
+		Name:      "shared-name",
+		Status:    StatusStopped,
+		CreatedAt: time.Date(2026, 7, 25, 8, 0, 0, 0, time.UTC),
+	}
+	if err := SaveInstance(original); err != nil {
+		t.Fatalf("SaveInstance(original) error: %v", err)
+	}
+
+	updateEntered := make(chan struct{})
+	continueUpdate := make(chan struct{})
+	updateDone := make(chan error, 1)
+	go func() {
+		updateDone <- UpdateActiveInstanceExact(original.Name, original.ID, func(current *SandboxState) error {
+			close(updateEntered)
+			<-continueUpdate
+			current.Status = StatusRunning
+			current.IP = "stale-original-address"
+			return nil
+		})
+	}()
+	<-updateEntered
+
+	replacement := &SandboxState{
+		ID:        "sandbox-replacement",
+		Name:      original.Name,
+		Status:    StatusStopped,
+		IP:        "replacement-address",
+		CreatedAt: original.CreatedAt.Add(time.Minute),
+	}
+	replaceStarted := make(chan struct{})
+	replaceDone := make(chan error, 1)
+	go func() {
+		close(replaceStarted)
+		replaceDone <- ForceWriteInstance(replacement)
+	}()
+	<-replaceStarted
+	close(continueUpdate)
+
+	if err := <-updateDone; err != nil {
+		t.Fatalf("UpdateActiveInstanceExact() error: %v", err)
+	}
+	if err := <-replaceDone; err != nil {
+		t.Fatalf("ForceWriteInstance(replacement) error: %v", err)
+	}
+	current, err := LoadActiveInstance(original.Name)
+	if err != nil {
+		t.Fatalf("LoadActiveInstance() error: %v", err)
+	}
+	if current.ID != replacement.ID ||
+		current.Status != replacement.Status ||
+		current.IP != replacement.IP {
+		t.Fatalf("same-name replacement was overwritten by stale update: %#v", current)
+	}
+}
+
+func TestUpdateActiveInstanceExactRejectsSameNameReplacement(t *testing.T) {
+	setSandboxHome(t)
+
+	original := &SandboxState{
+		ID:        "sandbox-original",
+		Name:      "shared-name",
+		Status:    StatusStopped,
+		CreatedAt: time.Date(2026, 7, 25, 8, 0, 0, 0, time.UTC),
+	}
+	if err := SaveInstance(original); err != nil {
+		t.Fatalf("SaveInstance(original) error: %v", err)
+	}
+	replacement := &SandboxState{
+		ID:        "sandbox-replacement",
+		Name:      original.Name,
+		Status:    StatusStopped,
+		IP:        "replacement-address",
+		CreatedAt: original.CreatedAt.Add(time.Minute),
+	}
+	if err := ForceWriteInstance(replacement); err != nil {
+		t.Fatalf("ForceWriteInstance(replacement) error: %v", err)
+	}
+
+	err := UpdateActiveInstanceExact(original.Name, original.ID, func(current *SandboxState) error {
+		current.Status = StatusRunning
+		current.IP = "stale-original-address"
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "sandbox instance changed") {
+		t.Fatalf("UpdateActiveInstanceExact() error = %v, want stable identity rejection", err)
+	}
+	current, loadErr := LoadActiveInstance(original.Name)
+	if loadErr != nil {
+		t.Fatalf("LoadActiveInstance() error: %v", loadErr)
+	}
+	if current.ID != replacement.ID ||
+		current.Status != replacement.Status ||
+		current.IP != replacement.IP {
+		t.Fatalf("same-name replacement was mutated by stale update: %#v", current)
+	}
+}
+
 func TestListInstances_FailsWhenHomeUnavailable(t *testing.T) {
 	origHomeFn := userHomeDirFn
 	t.Cleanup(func() {
