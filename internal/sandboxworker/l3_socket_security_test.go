@@ -20,7 +20,7 @@ func TestL3WorkerServerRejectsUnsafeSocketParentsWithoutMutation(t *testing.T) {
 		{
 			name: "broad parent",
 			setup: func(t *testing.T) (string, func()) {
-				parent := filepath.Join(t.TempDir(), "shared")
+				parent := filepath.Join(resolvedWorkerTempDir(t), "shared")
 				if err := os.Mkdir(parent, 0o755); err != nil {
 					t.Fatalf("Mkdir(parent) error: %v", err)
 				}
@@ -38,7 +38,7 @@ func TestL3WorkerServerRejectsUnsafeSocketParentsWithoutMutation(t *testing.T) {
 		{
 			name: "symlinked parent",
 			setup: func(t *testing.T) (string, func()) {
-				base := t.TempDir()
+				base := resolvedWorkerTempDir(t)
 				realParent := filepath.Join(base, "private")
 				if err := os.Mkdir(realParent, 0o700); err != nil {
 					t.Fatalf("Mkdir(real parent) error: %v", err)
@@ -86,7 +86,7 @@ func TestL3WorkerServerRejectsUnsafeSocketParentsWithoutMutation(t *testing.T) {
 }
 
 func TestL3WorkerServerCreatesPrivateSocketAndRemovesOnlyItsOwnSocket(t *testing.T) {
-	parent := filepath.Join(t.TempDir(), "private")
+	parent := filepath.Join(resolvedWorkerTempDir(t), "private")
 	if err := os.Mkdir(parent, 0o700); err != nil {
 		t.Fatalf("Mkdir(parent) error: %v", err)
 	}
@@ -138,8 +138,50 @@ func TestL3WorkerServerCreatesPrivateSocketAndRemovesOnlyItsOwnSocket(t *testing
 	}
 }
 
+func TestL3WorkerServerDoesNotRemoveReplacementAtSocketPath(t *testing.T) {
+	parent := filepath.Join(resolvedWorkerTempDir(t), "private")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatalf("Mkdir(parent) error: %v", err)
+	}
+	socketPath := filepath.Join(parent, "worker.sock")
+	server, err := NewServer(ServerOptions{
+		SocketPath: socketPath,
+		Handler:    RequestHandlerFunc(func(context.Context, Request) Response { return Response{} }),
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.ListenAndServe(ctx)
+	}()
+	waitForWorkerSocket(t, socketPath, errCh)
+
+	if err := os.Remove(socketPath); err != nil {
+		t.Fatalf("Remove(created socket) error: %v", err)
+	}
+	if err := os.WriteFile(socketPath, []byte("replacement"), 0o600); err != nil {
+		t.Fatalf("WriteFile(replacement) error: %v", err)
+	}
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ListenAndServe() shutdown error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ListenAndServe() did not stop")
+	}
+	data, err := os.ReadFile(socketPath)
+	if err != nil || string(data) != "replacement" {
+		t.Fatalf("replacement was removed or changed: data=%q err=%v", data, err)
+	}
+}
+
 func TestL3WorkerServerRejectsExistingNonSocketWithoutDeletingIt(t *testing.T) {
-	parent := filepath.Join(t.TempDir(), "private")
+	parent := filepath.Join(resolvedWorkerTempDir(t), "private")
 	if err := os.Mkdir(parent, 0o700); err != nil {
 		t.Fatalf("Mkdir(parent) error: %v", err)
 	}

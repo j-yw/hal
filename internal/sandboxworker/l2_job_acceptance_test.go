@@ -38,7 +38,7 @@ func TestL2JobProtocolOperationsAreAcceptedByVersionedEnvelope(t *testing.T) {
 	t.Parallel()
 
 	server, err := NewServer(ServerOptions{
-		SocketPath: "worker.sock",
+		SocketPath: "/tmp/unused-worker.sock",
 		Handler: RequestHandlerFunc(func(_ context.Context, req Request) Response {
 			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeInternal, "not reached")
 		}),
