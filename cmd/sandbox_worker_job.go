@@ -276,7 +276,7 @@ func validateSandboxWorkerJobIdentity(
 	return nil
 }
 
-func validateSandboxWorkerJobLogs(logs *sandboxworker.JobLogsResponse, jobID string, cursor, terminalCursor uint64) error {
+func validateSandboxWorkerJobLogs(logs *sandboxworker.JobLogsResponse, jobID string, cursor, _ uint64) error {
 	if logs == nil {
 		return fmt.Errorf("sandbox worker job logs response is required")
 	}
@@ -286,7 +286,7 @@ func validateSandboxWorkerJobLogs(logs *sandboxworker.JobLogsResponse, jobID str
 	if logs.JobID != jobID {
 		return fmt.Errorf("sandbox worker job log identity did not match selected job")
 	}
-	if logs.NextCursor <= cursor || logs.NextCursor > terminalCursor {
+	if logs.NextCursor <= cursor {
 		return fmt.Errorf("sandbox worker job log cursor did not make bounded progress")
 	}
 	var size int64

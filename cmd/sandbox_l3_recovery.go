@@ -680,6 +680,8 @@ func sandboxL3ExecutionProjection(manifest *sandboxexecution.Manifest, liveJob *
 			}
 			projection.Active = sandboxL3ActiveJobState(job.State)
 		}
+	} else if sandboxL3ExecutionAwaitingJobResolution(manifest) {
+		projection.Active = true
 	}
 	if manifest.Finalization != nil {
 		projection.FinalizationState = string(manifest.Finalization.State)
@@ -690,7 +692,13 @@ func sandboxL3ExecutionProjection(manifest *sandboxexecution.Manifest, liveJob *
 }
 
 func sandboxL3RecommendedAction(execution *sandboxL3ExecutionStatus) string {
-	if execution == nil || execution.Job == nil {
+	if execution == nil {
+		return "none"
+	}
+	if execution.Job == nil {
+		if execution.Status == string(sandboxexecution.StatusRunning) {
+			return "recover"
+		}
 		return "none"
 	}
 	if execution.Active {
@@ -717,21 +725,28 @@ func runSandboxL3StatusJSON(ctx context.Context, sandboxName string, live bool, 
 	if selectErr == nil {
 		var liveJob *sandboxworker.Job
 		if live {
-			client, clientErr := sandboxL3ClientForManifest(manifest)
-			if clientErr != nil {
-				return clientErr
+			if sandboxL3ExecutionAwaitingJobResolution(manifest) {
+				response.Diagnostics = append(response.Diagnostics, sandboxL3Diagnostic{
+					Code:    "worker_job_resolution_required",
+					Message: "durable execution requires recovery before live observation",
+				})
+			} else {
+				client, clientErr := sandboxL3ClientForManifest(manifest)
+				if clientErr != nil {
+					return clientErr
+				}
+				liveJob, err = client.JobStatus(ctx, sandboxworker.JobStatusRequest{
+					ContractVersion: sandboxworker.JobContractVersion,
+					JobID:           manifest.WorkerJob.JobID,
+				})
+				if err != nil {
+					return errors.New("worker_job_status_failed: selected worker job is unavailable")
+				}
+				if err := validateSandboxL3LiveJob(manifest, liveJob); err != nil {
+					return err
+				}
+				response.Source = "live"
 			}
-			liveJob, err = client.JobStatus(ctx, sandboxworker.JobStatusRequest{
-				ContractVersion: sandboxworker.JobContractVersion,
-				JobID:           manifest.WorkerJob.JobID,
-			})
-			if err != nil {
-				return errors.New("worker_job_status_failed: selected worker job is unavailable")
-			}
-			if err := validateSandboxL3LiveJob(manifest, liveJob); err != nil {
-				return err
-			}
-			response.Source = "live"
 		}
 		response.Execution = sandboxL3ExecutionProjection(manifest, liveJob)
 		response.RecommendedAction = sandboxL3RecommendedAction(response.Execution)
@@ -753,7 +768,7 @@ func renderSandboxL3LiveListJSON(ctx context.Context, out io.Writer, instances [
 	bySandbox := make(map[string][]*sandboxexecution.Manifest)
 	for index := range manifests {
 		manifest := &manifests[index]
-		if manifest.WorkerJob != nil {
+		if manifest.WorkerJob != nil || sandboxL3ExecutionAwaitingJobResolution(manifest) {
 			bySandbox[manifest.SandboxName] = append(bySandbox[manifest.SandboxName], manifest)
 		}
 	}
@@ -775,19 +790,26 @@ func renderSandboxL3LiveListJSON(ctx context.Context, out io.Writer, instances [
 		manifest := newestSandboxL3Manifest(candidates)
 		var liveJob *sandboxworker.Job
 		if manifest != nil {
-			client, clientErr := sandboxL3ClientForManifest(manifest)
-			if clientErr == nil {
-				liveJob, clientErr = client.JobStatus(ctx, sandboxworker.JobStatusRequest{
-					ContractVersion: sandboxworker.JobContractVersion,
-					JobID:           manifest.WorkerJob.JobID,
-				})
-			}
-			if clientErr != nil || validateSandboxL3LiveJob(manifest, liveJob) != nil {
+			if sandboxL3ExecutionAwaitingJobResolution(manifest) {
 				response.Diagnostics = append(response.Diagnostics, sandboxL3Diagnostic{
-					Code:    "worker_job_status_failed",
-					Message: "live execution status was unavailable",
+					Code:    "worker_job_resolution_required",
+					Message: "durable execution requires recovery before live observation",
 				})
-				liveJob = nil
+			} else {
+				client, clientErr := sandboxL3ClientForManifest(manifest)
+				if clientErr == nil {
+					liveJob, clientErr = client.JobStatus(ctx, sandboxworker.JobStatusRequest{
+						ContractVersion: sandboxworker.JobContractVersion,
+						JobID:           manifest.WorkerJob.JobID,
+					})
+				}
+				if clientErr != nil || validateSandboxL3LiveJob(manifest, liveJob) != nil {
+					response.Diagnostics = append(response.Diagnostics, sandboxL3Diagnostic{
+						Code:    "worker_job_status_failed",
+						Message: "live execution status was unavailable",
+					})
+					liveJob = nil
+				}
 			}
 			entry.Execution = sandboxL3ExecutionProjection(manifest, liveJob)
 			entry.RecommendedAction = sandboxL3RecommendedAction(entry.Execution)
