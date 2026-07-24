@@ -24,6 +24,17 @@ type SandboxLeaseAcquireRequest struct {
 	RunID       string
 }
 
+// SandboxLeaseExactReleaseRequest identifies one durable lease transition
+// without relying on a prior unlocked read.
+type SandboxLeaseExactReleaseRequest struct {
+	ID          string
+	SandboxName string
+	ResourceKey string
+	Purpose     string
+	RunID       string
+	AcquiredAt  time.Time
+}
+
 // SandboxLeaseStore provides durable local lease operations.
 type SandboxLeaseStore struct {
 	now func() time.Time
@@ -348,6 +359,19 @@ func (s *SandboxLeaseStore) Release(id string) (*SandboxLease, error) {
 	if err != nil {
 		return nil, err
 	}
+	leaseDir, err := sandboxLeasesDirPath()
+	if err != nil {
+		return nil, fmt.Errorf("resolve sandbox leases dir: %w", err)
+	}
+	if err := os.MkdirAll(leaseDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create sandbox leases dir: %w", err)
+	}
+	lock, err := lockSandboxLeaseStoreFile(filepath.Join(leaseDir, sandboxLeaseLockFileName))
+	if err != nil {
+		return nil, fmt.Errorf("acquire sandbox lease store lock: %w", err)
+	}
+	defer lock.Close()
+
 	lease, err := s.Load(id)
 	if err != nil {
 		return nil, err
@@ -369,6 +393,91 @@ func (s *SandboxLeaseStore) Release(id string) (*SandboxLease, error) {
 	}
 }
 
+// ReleaseExact atomically validates stable lease identity and marks that exact
+// lease released while holding the store lock. Releasing an already released
+// exact match is idempotent.
+func (s *SandboxLeaseStore) ReleaseExact(req SandboxLeaseExactReleaseRequest) (*SandboxLease, error) {
+	if err := validateSandboxLeaseExactReleaseRequest(req); err != nil {
+		return nil, err
+	}
+	path, err := leasePath(req.ID)
+	if err != nil {
+		return nil, err
+	}
+	leaseDir, err := sandboxLeasesDirPath()
+	if err != nil {
+		return nil, fmt.Errorf("resolve sandbox leases dir: %w", err)
+	}
+	if err := os.MkdirAll(leaseDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create sandbox leases dir: %w", err)
+	}
+	lock, err := lockSandboxLeaseStoreFile(filepath.Join(leaseDir, sandboxLeaseLockFileName))
+	if err != nil {
+		return nil, fmt.Errorf("acquire sandbox lease store lock: %w", err)
+	}
+	defer lock.Close()
+
+	lease, err := loadLeaseFile(path, req.ID)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("lease does not exist: %w", err)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read exact lease: %w", err)
+	}
+	if !sandboxLeaseMatchesExactReleaseRequest(lease, req) {
+		return nil, fmt.Errorf("lease identity did not match exact release request")
+	}
+	switch lease.Status {
+	case SandboxLeaseStatusActive:
+		lease.Status = SandboxLeaseStatusReleased
+		if err := writeLeaseFile(path, lease, true); err != nil {
+			return nil, err
+		}
+		return lease, nil
+	case SandboxLeaseStatusReleased:
+		return lease, nil
+	case SandboxLeaseStatusExpired:
+		return nil, fmt.Errorf("exact lease is expired and cannot be released")
+	default:
+		return nil, fmt.Errorf("exact lease has unsupported status")
+	}
+}
+
+func validateSandboxLeaseExactReleaseRequest(req SandboxLeaseExactReleaseRequest) error {
+	if err := validateStorePathID(strings.TrimSpace(req.ID), "lease id"); err != nil {
+		return err
+	}
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "sandbox name", value: req.SandboxName},
+		{name: "resource key", value: req.ResourceKey},
+		{name: "purpose", value: req.Purpose},
+		{name: "run id", value: req.RunID},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			return fmt.Errorf("lease %s is required", field.name)
+		}
+	}
+	if req.AcquiredAt.IsZero() {
+		return fmt.Errorf("lease acquired time is required")
+	}
+	return nil
+}
+
+func sandboxLeaseMatchesExactReleaseRequest(lease *SandboxLease, req SandboxLeaseExactReleaseRequest) bool {
+	if lease == nil {
+		return false
+	}
+	return strings.TrimSpace(lease.ID) == strings.TrimSpace(req.ID) &&
+		strings.TrimSpace(lease.SandboxName) == strings.TrimSpace(req.SandboxName) &&
+		strings.TrimSpace(lease.ResourceKey) == strings.TrimSpace(req.ResourceKey) &&
+		strings.TrimSpace(lease.Purpose) == strings.TrimSpace(req.Purpose) &&
+		strings.TrimSpace(lease.RunID) == strings.TrimSpace(req.RunID) &&
+		lease.AcquiredAt.Equal(req.AcquiredAt)
+}
+
 // ExpireLeases marks stale active leases expired and returns the leases it
 // changed.
 func (s *SandboxLeaseStore) ExpireLeases() ([]*SandboxLease, error) {
@@ -376,6 +485,15 @@ func (s *SandboxLeaseStore) ExpireLeases() ([]*SandboxLease, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve sandbox leases dir: %w", err)
 	}
+	if err := os.MkdirAll(leaseDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create sandbox leases dir: %w", err)
+	}
+	lock, err := lockSandboxLeaseStoreFile(filepath.Join(leaseDir, sandboxLeaseLockFileName))
+	if err != nil {
+		return nil, fmt.Errorf("acquire sandbox lease store lock: %w", err)
+	}
+	defer lock.Close()
+
 	entries, err := os.ReadDir(leaseDir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil

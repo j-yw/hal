@@ -1002,8 +1002,9 @@ func assertTerminalSandboxTopLevelResult(
 			manifest.Finalization.ReasonCode != "terminal_proof_unavailable" {
 			t.Fatalf("unproven terminal Finalization = %#v, want blocked terminal proof", manifest.Finalization)
 		}
-		if manifest.Status != sandboxexecution.StatusRunning || manifest.FinishedAt != nil {
-			t.Fatalf("unproven terminal status/finishedAt = %q/%v, want running/nil", manifest.Status, manifest.FinishedAt)
+		wantStatus := sandboxL3ExecutionStatusFromJob(state)
+		if manifest.Status != wantStatus || manifest.FinishedAt == nil {
+			t.Fatalf("unproven terminal status/finishedAt = %q/%v, want %q/non-nil", manifest.Status, manifest.FinishedAt, wantStatus)
 		}
 		if releaseCalls != 0 || driver.copyOutCalls != 0 || driver.execCalls != 0 {
 			t.Fatalf("unproven terminal side effects release/copyOut/exec = %d/%d/%d, want zero", releaseCalls, driver.copyOutCalls, driver.execCalls)

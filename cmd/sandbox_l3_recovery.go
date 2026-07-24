@@ -219,11 +219,11 @@ func runSandboxL3Logs(ctx context.Context, sandboxName, runID string, follow boo
 	if err != nil {
 		return err
 	}
-	job, err := client.JobStatus(ctx, sandboxworker.JobStatusRequest{
-		ContractVersion: sandboxworker.JobContractVersion,
-		JobID:           manifest.WorkerJob.JobID,
-	})
+	job, err := sandboxL3JobStatusWithReconnect(ctx, client, manifest, follow)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return errors.Join(errors.New("worker_job_status_failed"), errors.New("selected worker job is unavailable"))
 	}
 	if err := validateSandboxL3LiveJob(manifest, job); err != nil {
@@ -249,12 +249,7 @@ func streamSandboxL3Logs(
 	cursor := uint64(0)
 	gapReported := false
 	for {
-		page, err := client.JobLogs(ctx, sandboxworker.JobLogsRequest{
-			ContractVersion: sandboxworker.JobContractVersion,
-			JobID:           manifest.WorkerJob.JobID,
-			Cursor:          cursor,
-			LimitBytes:      sandboxworker.DefaultJobLogReadBytes,
-		})
+		page, err := sandboxL3JobLogsWithReconnect(ctx, client, manifest, cursor, follow)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return ctxErr
@@ -295,10 +290,7 @@ func streamSandboxL3Logs(
 		if err := waitSandboxL3Poll(ctx); err != nil {
 			return err
 		}
-		next, err := client.JobStatus(ctx, sandboxworker.JobStatusRequest{
-			ContractVersion: sandboxworker.JobContractVersion,
-			JobID:           manifest.WorkerJob.JobID,
-		})
+		next, err := sandboxL3JobStatusWithReconnect(ctx, client, manifest, follow)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return ctxErr
@@ -309,6 +301,87 @@ func streamSandboxL3Logs(
 			return err
 		}
 		job = next
+	}
+}
+
+func sandboxL3JobStatusWithReconnect(
+	ctx context.Context,
+	client sandboxL3JobClient,
+	manifest *sandboxexecution.Manifest,
+	follow bool,
+) (*sandboxworker.Job, error) {
+	attempt := 0
+	for {
+		job, err := client.JobStatus(ctx, sandboxworker.JobStatusRequest{
+			ContractVersion: sandboxworker.JobContractVersion,
+			JobID:           manifest.WorkerJob.JobID,
+		})
+		if err == nil {
+			return job, nil
+		}
+		if !follow || !sandboxL3TransientDaemonTransportError(err) {
+			return nil, err
+		}
+		if err := waitSandboxL3Reconnect(ctx, attempt); err != nil {
+			return nil, err
+		}
+		attempt++
+	}
+}
+
+func sandboxL3JobLogsWithReconnect(
+	ctx context.Context,
+	client sandboxL3JobClient,
+	manifest *sandboxexecution.Manifest,
+	cursor uint64,
+	follow bool,
+) (*sandboxworker.JobLogsResponse, error) {
+	attempt := 0
+	for {
+		page, err := client.JobLogs(ctx, sandboxworker.JobLogsRequest{
+			ContractVersion: sandboxworker.JobContractVersion,
+			JobID:           manifest.WorkerJob.JobID,
+			Cursor:          cursor,
+			LimitBytes:      sandboxworker.DefaultJobLogReadBytes,
+		})
+		if err == nil {
+			return page, nil
+		}
+		if !follow || !sandboxL3TransientDaemonTransportError(err) {
+			return nil, err
+		}
+		if err := waitSandboxL3Reconnect(ctx, attempt); err != nil {
+			return nil, err
+		}
+		attempt++
+	}
+}
+
+func sandboxL3TransientDaemonTransportError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var clientErr *sandboxworker.ClientError
+	return errors.As(err, &clientErr) &&
+		clientErr.Code == sandboxworker.ErrorCodeInternal &&
+		clientErr.Err != nil
+}
+
+func waitSandboxL3Reconnect(ctx context.Context, attempt int) error {
+	delay := 50 * time.Millisecond
+	for index := 0; index < attempt && delay < 500*time.Millisecond; index++ {
+		delay *= 2
+	}
+	if delay > 500*time.Millisecond {
+		delay = 500 * time.Millisecond
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
@@ -423,7 +496,7 @@ func selectSandboxL3Execution(sandboxName, runID string, mode sandboxL3Selection
 	if len(candidates) == 1 {
 		return instance, candidates[0], nil
 	}
-	if mode == sandboxL3SelectionObserve && len(completed) > 0 {
+	if (mode == sandboxL3SelectionObserve || mode == sandboxL3SelectionSyncOut) && len(completed) > 0 {
 		sort.Slice(completed, func(i, j int) bool {
 			if !completed[i].StartedAt.Equal(completed[j].StartedAt) {
 				return completed[i].StartedAt.After(completed[j].StartedAt)

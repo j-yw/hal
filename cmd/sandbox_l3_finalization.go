@@ -16,6 +16,7 @@ type sandboxL3FinalizationDeps struct {
 	resolveJob       func(context.Context, *sandboxexecution.Manifest) (*sandboxworker.Job, error)
 	observeJob       func(context.Context, *sandboxexecution.Manifest) (*sandboxworker.Job, error)
 	drainLogs        func(context.Context, *sandboxexecution.Manifest, *sandboxworker.Job) error
+	drainLogsInStore func(context.Context, sandboxexecution.Store, *sandboxexecution.Manifest, *sandboxworker.Job) error
 	collectArtifacts func(context.Context, sandboxexecution.Store, *sandboxexecution.Manifest, *sandboxworker.Job) error
 	collectSyncOut   func(context.Context, sandboxexecution.Store, *sandboxexecution.Manifest, *sandboxworker.Job) error
 	releaseLease     func(context.Context, *sandboxexecution.Manifest) error
@@ -45,10 +46,11 @@ func finalizeSandboxL3Execution(
 			if err := validateSandboxL3CompletedPublication(manifest); err != nil {
 				return err
 			}
-			if requestSyncOut && !manifest.Finalization.SyncOutRequested {
-				return errors.New("sync_out_after_finalization: execution completed without sync-out intent")
+			if !requestSyncOut ||
+				(manifest.Finalization.SyncOutRequested && manifest.Finalization.Checkpoints.SyncOut.Completed) {
+				return nil
 			}
-			return nil
+			return finalizeSandboxL3PostPublicationSyncOut(ctx, locked, manifest, deps)
 		}
 		if manifest.WorkerJob == nil {
 			if !sandboxL3ExecutionAwaitingJobResolution(manifest) {
@@ -109,7 +111,7 @@ func finalizeSandboxL3Execution(
 		// A completed artifact checkpoint proves terminal logs were drained
 		// before artifact collection on an earlier attempt.
 		if !finalization.Checkpoints.Artifacts.Completed {
-			if err := deps.drainLogs(ctx, manifest, job); err != nil {
+			if err := deps.drainLogsInStore(ctx, locked, manifest, job); err != nil {
 				return blockSandboxL3Finalization(locked, manifest, job, requestSyncOut, "terminal_log_drain_failed", deps.now().UTC())
 			}
 			if err := deps.collectArtifacts(ctx, locked, manifest, job); err != nil {
@@ -143,6 +145,9 @@ func finalizeSandboxL3Execution(
 				&manifest.Finalization.Checkpoints.SyncOut,
 				deps.now().UTC(),
 			)
+			if manifest.Finalization.Checkpoints.TerminalPublication.Completed {
+				return completeSandboxL3PostPublicationSyncOut(locked, manifest, deps.now().UTC())
+			}
 			if err := locked.SaveManifest(manifest); err != nil {
 				return errors.New("finalization_state_write_failed: durable sync-out checkpoint is unavailable")
 			}
@@ -163,8 +168,87 @@ func finalizeSandboxL3Execution(
 			}
 		}
 
+		if manifest.Finalization.Checkpoints.TerminalPublication.Completed {
+			return completeSandboxL3PostPublicationSyncOut(locked, manifest, deps.now().UTC())
+		}
 		return publishSandboxL3TerminalManifest(locked, manifest, job, deps.now().UTC())
 	})
+}
+
+func finalizeSandboxL3PostPublicationSyncOut(
+	ctx context.Context,
+	store sandboxexecution.Store,
+	manifest *sandboxexecution.Manifest,
+	deps sandboxL3FinalizationDeps,
+) error {
+	job, err := deps.observeJob(ctx, manifest)
+	if err != nil {
+		return blockSandboxL3Finalization(
+			store,
+			manifest,
+			nil,
+			true,
+			"terminal_observation_failed",
+			deps.now().UTC(),
+		)
+	}
+	if err := validateSandboxL3LiveJob(manifest, job); err != nil {
+		return err
+	}
+	if !sandboxL3FinalizationProvenTerminalJobState(job.State) {
+		return errors.New("terminal_proof_unavailable: post-completion sync-out requires proven terminal state")
+	}
+
+	now := deps.now().UTC()
+	finalization := ensureSandboxL3Finalization(manifest, true, now)
+	finalization.State = sandboxexecution.FinalizationStateFinalizing
+	finalization.ReasonCode = ""
+	finalization.UpdatedAt = now
+	if err := store.SaveManifest(manifest); err != nil {
+		return errors.New("finalization_state_write_failed: durable post-completion sync-out intent is unavailable")
+	}
+	if err := deps.collectSyncOut(ctx, store, manifest, job); err != nil {
+		return blockSandboxL3Finalization(
+			store,
+			manifest,
+			job,
+			true,
+			"sync_out_collection_failed",
+			deps.now().UTC(),
+		)
+	}
+	manifest, err = reloadSandboxL3FinalizationManifest(store, manifest.ID)
+	if err != nil {
+		return err
+	}
+	checkpointSandboxL3Finalization(
+		manifest,
+		&manifest.Finalization.Checkpoints.SyncOut,
+		deps.now().UTC(),
+	)
+	return completeSandboxL3PostPublicationSyncOut(store, manifest, deps.now().UTC())
+}
+
+func completeSandboxL3PostPublicationSyncOut(
+	store sandboxexecution.Store,
+	manifest *sandboxexecution.Manifest,
+	now time.Time,
+) error {
+	if err := validateSandboxL3CompletedPublication(manifest); err != nil {
+		return err
+	}
+	if !manifest.Finalization.SyncOutRequested || !manifest.Finalization.Checkpoints.SyncOut.Completed {
+		return errors.New("sync_out_collection_failed: durable post-completion sync-out checkpoint is incomplete")
+	}
+	manifest.Finalization.State = sandboxexecution.FinalizationStateCompleted
+	manifest.Finalization.ReasonCode = ""
+	manifest.Finalization.UpdatedAt = now
+	completedAt := now
+	manifest.Finalization.CompletedAt = &completedAt
+	if err := store.SaveManifest(manifest); err != nil {
+		return errors.New("finalization_state_write_failed: durable post-completion sync-out state is unavailable")
+	}
+	return nil
 }
 
 func normalizeSandboxL3FinalizationDeps(deps sandboxL3FinalizationDeps) sandboxL3FinalizationDeps {
@@ -181,9 +265,20 @@ func normalizeSandboxL3FinalizationDeps(deps sandboxL3FinalizationDeps) sandboxL
 			return nil, errors.New("worker observation is unavailable")
 		}
 	}
-	if deps.drainLogs == nil {
-		deps.drainLogs = func(context.Context, *sandboxexecution.Manifest, *sandboxworker.Job) error {
-			return errors.New("terminal log drain is unavailable")
+	if deps.drainLogsInStore == nil {
+		if deps.drainLogs == nil {
+			deps.drainLogsInStore = func(context.Context, sandboxexecution.Store, *sandboxexecution.Manifest, *sandboxworker.Job) error {
+				return errors.New("terminal log drain is unavailable")
+			}
+		} else {
+			deps.drainLogsInStore = func(
+				ctx context.Context,
+				_ sandboxexecution.Store,
+				manifest *sandboxexecution.Manifest,
+				job *sandboxworker.Job,
+			) error {
+				return deps.drainLogs(ctx, manifest, job)
+			}
 		}
 	}
 	if deps.collectArtifacts == nil {
@@ -257,6 +352,15 @@ func blockSandboxL3Finalization(
 	manifest = current
 	if job != nil {
 		manifest.WorkerJob = sandboxL3WorkerJobReference(job)
+		if job.State == sandboxworker.JobStateUnknown || job.State == sandboxworker.JobStateInterrupted {
+			manifest.Status = sandboxL3ExecutionStatusFromJob(job.State)
+			if job.FinishedAt != nil {
+				manifest.FinishedAt = cloneL3Time(job.FinishedAt)
+			} else {
+				finishedAt := now
+				manifest.FinishedAt = &finishedAt
+			}
+		}
 	}
 	finalization := ensureSandboxL3Finalization(manifest, requestSyncOut, now)
 	finalization.State = sandboxexecution.FinalizationStateBlocked

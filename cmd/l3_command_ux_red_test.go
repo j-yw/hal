@@ -722,7 +722,7 @@ func newL3WorkerHarness(t *testing.T, script *l3WorkerScript) *l3WorkerHarness {
 	sandboxL3NewWorkerClient = func(string) (*sandboxworker.Client, error) {
 		return sandboxworker.NewClient(sandboxworker.ClientOptions{
 			Transport: sandboxworker.ClientTransportFunc(func(ctx context.Context, req sandboxworker.Request) (sandboxworker.Response, error) {
-				return script.HandleRequest(ctx, req), nil
+				return script.RoundTrip(ctx, req)
 			}),
 		})
 	}
@@ -816,6 +816,10 @@ type l3WorkerScript struct {
 	resolveError           *sandboxworker.Error
 	beforeJobStatus        func()
 	pages                  map[uint64]sandboxworker.JobLogsResponse
+	failExecContains       map[string]int
+	transportFailures      map[string]int
+	protocolFailures       map[string]int
+	transportAttempts      map[string]int
 	firstLogs              chan struct{}
 	panicOnForbidden       bool
 	panicUnlessObservation bool
@@ -829,6 +833,35 @@ type l3WorkerRequest struct {
 	args      []string
 }
 
+func (script *l3WorkerScript) RoundTrip(ctx context.Context, req sandboxworker.Request) (sandboxworker.Response, error) {
+	script.mu.Lock()
+	if script.transportAttempts == nil {
+		script.transportAttempts = make(map[string]int)
+	}
+	script.transportAttempts[req.Operation]++
+	if script.transportFailures[req.Operation] > 0 {
+		script.transportFailures[req.Operation]--
+		script.mu.Unlock()
+		return sandboxworker.Response{}, errors.New("temporary worker daemon transport unavailable")
+	}
+	if script.protocolFailures[req.Operation] > 0 {
+		script.protocolFailures[req.Operation]--
+		script.mu.Unlock()
+		return sandboxworker.Response{
+			ProtocolVersion: sandboxworker.ProtocolVersion,
+			RequestID:       req.RequestID,
+			Operation:       req.Operation,
+			OK:              false,
+			Error: &sandboxworker.Error{
+				Code:    sandboxworker.ErrorCodeJobNotFound,
+				Message: "selected worker job was not found",
+			},
+		}, nil
+	}
+	script.mu.Unlock()
+	return script.HandleRequest(ctx, req), nil
+}
+
 func (script *l3WorkerScript) HandleRequest(_ context.Context, req sandboxworker.Request) sandboxworker.Response {
 	script.mu.Lock()
 	record := l3WorkerRequest{operation: req.Operation}
@@ -839,6 +872,17 @@ func (script *l3WorkerScript) HandleRequest(_ context.Context, req sandboxworker
 		record.args = append([]string(nil), req.Exec.Args...)
 	}
 	script.requests = append(script.requests, record)
+	failExec := false
+	if req.Exec != nil {
+		joined := strings.Join(req.Exec.Args, "\n")
+		for marker, remaining := range script.failExecContains {
+			if remaining > 0 && strings.Contains(joined, marker) {
+				script.failExecContains[marker] = remaining - 1
+				failExec = true
+				break
+			}
+		}
+	}
 	forbidden := false
 	switch req.Operation {
 	case sandboxworker.OperationStatus,
@@ -865,6 +909,18 @@ func (script *l3WorkerScript) HandleRequest(_ context.Context, req sandboxworker
 	script.mu.Unlock()
 	if forbidden && panicOnForbidden {
 		panic("L3 recovery crossed a forbidden worker boundary")
+	}
+	if failExec {
+		return sandboxworker.Response{
+			ProtocolVersion: sandboxworker.ProtocolVersion,
+			RequestID:       req.RequestID,
+			Operation:       req.Operation,
+			OK:              false,
+			Error: &sandboxworker.Error{
+				Code:    sandboxworker.ErrorCodeDriverFailed,
+				Message: "injected safe collection failure",
+			},
+		}
 	}
 
 	now := time.Date(2026, 7, 25, 2, 0, 0, 0, time.UTC)
@@ -1078,6 +1134,12 @@ func (script *l3WorkerScript) snapshot() ([]l3WorkerRequest, []string) {
 	script.mu.Lock()
 	defer script.mu.Unlock()
 	return append([]l3WorkerRequest(nil), script.requests...), append([]string(nil), script.forbidden...)
+}
+
+func (script *l3WorkerScript) transportAttemptCount(operation string) int {
+	script.mu.Lock()
+	defer script.mu.Unlock()
+	return script.transportAttempts[operation]
 }
 
 func l3LogRequestCursors(requests []l3WorkerRequest) []uint64 {
