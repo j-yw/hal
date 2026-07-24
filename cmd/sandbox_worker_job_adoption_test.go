@@ -23,11 +23,8 @@ import (
 func TestSandboxWorkerJobRunnerClosesLostAcknowledgementAndDrainsTerminalLogs(t *testing.T) {
 	executionID := "exec-stable-1"
 	submissionID := sandboxWorkerJobSubmissionID(executionID)
-	if submissionID == "" || submissionID != sandboxWorkerJobSubmissionID(executionID) {
-		t.Fatalf("submission identity = %q, want stable non-empty identity", submissionID)
-	}
-	if submissionID == sandboxWorkerJobSubmissionID("exec-stable-2") {
-		t.Fatal("different execution IDs produced the same submission identity")
+	if submissionID != executionID {
+		t.Fatalf("submission identity = %q, want exact execution ID %q", submissionID, executionID)
 	}
 	for _, forbidden := range []string{"raw-secret", "/private/work", "worker.sock"} {
 		if strings.Contains(submissionID, forbidden) {
@@ -164,6 +161,16 @@ func TestSandboxWorkerJobRunnerClosesLostAcknowledgementAndDrainsTerminalLogs(t 
 	if last.State != sandboxworker.JobStateSucceeded || last.LogCursor != 3 {
 		t.Fatalf("last persisted reference = %#v, want succeeded terminal cursor 3", last)
 	}
+	var running *sandboxexecution.WorkerJobReference
+	for _, reference := range persisted {
+		if reference != nil && reference.State == sandboxworker.JobStateRunning {
+			running = reference
+			break
+		}
+	}
+	if running == nil || running.LogCursor != 1 {
+		t.Fatalf("running producer snapshot = %#v, want producer cursor 1 before reader drain", running)
+	}
 	if !reflect.DeepEqual(driver.logCursors, []uint64{0, 1}) {
 		t.Fatalf("log cursors = %#v, want bounded monotonic drain", driver.logCursors)
 	}
@@ -172,6 +179,85 @@ func TestSandboxWorkerJobRunnerClosesLostAcknowledgementAndDrainsTerminalLogs(t 
 	}
 	if !strings.Contains(stdout.String(), "[redacted]") || !strings.Contains(stdout.String(), "done") || !strings.Contains(stderr.String(), "[redacted]") {
 		t.Fatalf("streamed logs missing records: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestSandboxWorkerJobRunnerRejectsSubmissionConflictWithoutResolution(t *testing.T) {
+	driver := &fakeSandboxWorkerJobDriver{
+		startErr: &sandboxworker.ProtocolError{
+			Operation: sandboxworker.OperationJobStart,
+			Code:      sandboxworker.ErrorCodeSubmissionConflict,
+			Message:   "accepted request differs",
+		},
+		resolveJob: queuedSandboxWorkerJob("submission-conflict"),
+	}
+	persistCalls := 0
+	err := runSandboxWorkerJob(context.Background(), sandboxWorkerJobRunRequest{
+		ExecutionID: "submission-conflict",
+		Driver:      driver,
+		HostID:      "host-1",
+		Target:      sandboxWorkerJobRuntimeTarget(),
+		Command:     sandboxexec.CommandRequest{Command: []string{"different-command"}},
+		Persist: func(*sandboxexecution.WorkerJobReference) error {
+			persistCalls++
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("submission conflict error = nil")
+	}
+	if driver.resolveCalls != 0 || driver.statusCalls != 0 || persistCalls != 0 {
+		t.Fatalf("conflict resolve/status/persist calls = %d/%d/%d, want zero", driver.resolveCalls, driver.statusCalls, persistCalls)
+	}
+	var detached *sandboxWorkerJobDetachedError
+	if errors.As(err, &detached) {
+		t.Fatalf("authoritative submission conflict was mislabeled detached: %v", err)
+	}
+}
+
+func TestSandboxWorkerJobRunnerWarnsOnceForProvenRetentionGap(t *testing.T) {
+	startedAt := time.Date(2026, 7, 25, 4, 4, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	exitCode := 0
+	terminal := queuedSandboxWorkerJob("retention-gap")
+	terminal.State = sandboxworker.JobStateSucceeded
+	terminal.StartedAt = &startedAt
+	terminal.HeartbeatAt = &startedAt
+	terminal.FinishedAt = &finishedAt
+	terminal.LogCursor = 4
+	terminal.ExitCode = &exitCode
+	driver := &fakeSandboxWorkerJobDriver{
+		startJob:   queuedSandboxWorkerJob("retention-gap"),
+		statusJobs: []sandboxworker.Job{terminal},
+		logPages: []sandboxworker.JobLogsResponse{{
+			ContractVersion: sandboxworker.JobContractVersion,
+			JobID:           terminal.ID,
+			Records: []sandboxworker.JobLogRecord{{
+				Cursor:    4,
+				Stream:    sandboxworker.JobLogStreamStdout,
+				Data:      "available\n",
+				Timestamp: finishedAt,
+			}},
+			NextCursor:   4,
+			OldestCursor: 4,
+			Truncated:    true,
+		}},
+	}
+	var stderr bytes.Buffer
+	err := runSandboxWorkerJob(context.Background(), sandboxWorkerJobRunRequest{
+		ExecutionID: "retention-gap",
+		Driver:      driver,
+		HostID:      "host-1",
+		Target:      sandboxWorkerJobRuntimeTarget(),
+		Command:     sandboxexec.CommandRequest{Command: []string{"true"}, Stderr: &stderr},
+		Persist:     func(*sandboxexecution.WorkerJobReference) error { return nil },
+		Wait:        func(context.Context) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("runSandboxWorkerJob() error: %v", err)
+	}
+	if got := strings.Count(stderr.String(), "warning: sandbox worker job log retention gap"); got != 1 {
+		t.Fatalf("retention warnings = %d, want one; stderr=%q", got, stderr.String())
 	}
 }
 
@@ -369,6 +455,73 @@ func TestRunAndAutoSandboxManifestSavesPreserveWorkerJobAndFinalization(t *testi
 	}
 }
 
+func TestSandboxWorkerJobUpdateCannotRegressCompletedFinalization(t *testing.T) {
+	store := newPrivateSandboxExecutionTestStore(t)
+	executionID := "concurrent-completed"
+	startedAt := time.Date(2026, 7, 25, 5, 10, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	finalizedAt := finishedAt.Add(time.Second)
+	exitCode := 0
+	terminal := queuedSandboxWorkerJob(executionID)
+	terminal.State = sandboxworker.JobStateSucceeded
+	terminal.StartedAt = &startedAt
+	terminal.HeartbeatAt = &startedAt
+	terminal.FinishedAt = &finishedAt
+	terminal.ExitCode = &exitCode
+	terminal.LogCursor = 9
+	terminalReference := sandboxWorkerJobReference(terminal, terminal.LogCursor)
+	checkpoint := sandboxexecution.FinalizationCheckpoint{Completed: true, CompletedAt: &finalizedAt}
+	completed := &sandboxexecution.FinalizationMetadata{
+		ContractVersion:  sandboxexecution.FinalizationContractVersion,
+		State:            sandboxexecution.FinalizationStateCompleted,
+		TerminalJobState: sandboxworker.JobStateSucceeded,
+		Checkpoints: sandboxexecution.FinalizationCheckpoints{
+			Artifacts:           checkpoint,
+			LeaseRelease:        checkpoint,
+			TerminalPublication: checkpoint,
+		},
+		StartedAt:   &finishedAt,
+		UpdatedAt:   finalizedAt,
+		CompletedAt: &finalizedAt,
+	}
+	if err := store.SaveManifest(&sandboxexecution.Manifest{
+		ID:           executionID,
+		Purpose:      sandboxexecution.PurposeRun,
+		Status:       sandboxexecution.StatusSucceeded,
+		StartedAt:    startedAt,
+		FinishedAt:   &finishedAt,
+		WorkerJob:    terminalReference,
+		Finalization: completed,
+	}); err != nil {
+		t.Fatalf("SaveManifest(seed) error: %v", err)
+	}
+
+	stale := queuedSandboxWorkerJob(executionID)
+	stale.State = sandboxworker.JobStateRunning
+	stale.StartedAt = &startedAt
+	stale.HeartbeatAt = &startedAt
+	stale.LogCursor = 3
+	if err := persistSandboxWorkerJobUpdate(
+		store,
+		executionID,
+		sandboxWorkerJobReference(stale, stale.LogCursor),
+		false,
+		finalizedAt.Add(time.Second),
+	); err != nil {
+		t.Fatalf("persistSandboxWorkerJobUpdate(stale) error: %v", err)
+	}
+
+	loaded, err := store.LoadManifest(executionID)
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if loaded.Status != sandboxexecution.StatusSucceeded ||
+		!reflect.DeepEqual(loaded.WorkerJob, terminalReference) ||
+		!reflect.DeepEqual(loaded.Finalization, completed) {
+		t.Fatalf("stale update regressed completed manifest: %#v", loaded)
+	}
+}
+
 func TestRunAndAutoSandboxDetachedJobsStayRunningWithoutFinalizationSideEffects(t *testing.T) {
 	now := time.Date(2026, 7, 25, 5, 30, 0, 0, time.UTC)
 	for _, purpose := range []sandboxexecution.Purpose{sandboxexecution.PurposeRun, sandboxexecution.PurposeAuto} {
@@ -494,6 +647,32 @@ func TestRunAndAutoFinalCommandDispatchKeepsLegacySynchronousPath(t *testing.T) 
 				t.Fatalf("legacy synchronous Exec/job start calls = %d/%d, want 1/0", driver.execCalls, driver.startCalls)
 			}
 		})
+	}
+}
+
+func TestExplicitWorkerJobRouteFailsClosedWithoutJobCapability(t *testing.T) {
+	execCalls := 0
+	driver := fakeRunSandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		exec: func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			execCalls++
+			return &sandboxruntime.ExecResult{}, nil
+		},
+	}
+	err := runSandboxWorkerJobOrSync(context.Background(), sandboxWorkerJobCommandRequest{
+		ExecutionID:  "missing-job-capability",
+		UseWorkerJob: true,
+		Run: sandboxexec.RunContext{
+			Target: sandboxWorkerJobRuntimeTarget(),
+			Driver: driver,
+		},
+		Command: sandboxexec.CommandRequest{Command: []string{"true"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "job capability") {
+		t.Fatalf("explicit worker route error = %v, want job capability failure", err)
+	}
+	if execCalls != 0 {
+		t.Fatalf("explicit worker route used synchronous Exec %d times", execCalls)
 	}
 }
 
