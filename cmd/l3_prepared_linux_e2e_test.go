@@ -87,7 +87,7 @@ func TestL3PreparedLinuxRecoveryE2E(t *testing.T) {
 	createdTarget := *target
 	target, err = driver.Start(testCtx, sandboxruntime.LifecycleRequest{Target: createdTarget})
 	if err != nil {
-		cleanupL3PreparedLinuxTarget(t, driver, createdTarget)
+		cleanupL3PreparedLinuxTarget(t, driver, podmanPath, createdTarget)
 		t.Fatalf("start rootless Podman target: %v", err)
 	}
 	target.Runtime.WorkerID = l3PreparedLinuxWorkerID
@@ -96,7 +96,7 @@ func TestL3PreparedLinuxRecoveryE2E(t *testing.T) {
 		if targetDeleted {
 			return
 		}
-		cleanupL3PreparedLinuxTarget(t, driver, *target)
+		cleanupL3PreparedLinuxTarget(t, driver, podmanPath, *target)
 	})
 	requireL3PreparedLinuxContainerTools(t, testCtx, driver, *target)
 	initializeL3PreparedLinuxWorkspace(t, testCtx, driver, *target)
@@ -225,7 +225,11 @@ func TestL3PreparedLinuxRecoveryE2E(t *testing.T) {
 		t.Fatalf("load running job manifest before initiating process loss: %v", err)
 	}
 	if persistedRunning.WorkerJob == nil || persistedRunning.WorkerJob.JobID != jobID {
-		t.Fatalf("running worker job was not durably linked before initiating process loss: %#v", persistedRunning.WorkerJob)
+		t.Fatalf(
+			"running worker job link present/matched = %t/%t, want true/true",
+			persistedRunning.WorkerJob != nil,
+			persistedRunning.WorkerJob != nil && persistedRunning.WorkerJob.JobID == jobID,
+		)
 	}
 	status, err := client.Status(testCtx)
 	if err != nil {
@@ -251,7 +255,11 @@ func TestL3PreparedLinuxRecoveryE2E(t *testing.T) {
 		t.Fatalf("resolve admitted job after initiating process loss: %v", err)
 	}
 	if resolvedJob.ID != runningJob.ID || resolvedJob.SubmissionKey != sandboxWorkerJobSubmissionKey(l3PreparedLinuxExecutionID) {
-		t.Fatalf("resolved job after initiating process loss = %#v, want original execution-bound job %q", resolvedJob, runningJob.ID)
+		t.Fatalf(
+			"resolved job identity matched ID/submission = %t/%t, want true/true",
+			resolvedJob.ID == runningJob.ID,
+			resolvedJob.SubmissionKey == sandboxWorkerJobSubmissionKey(l3PreparedLinuxExecutionID),
+		)
 	}
 
 	_, discoveredByName, err := selectSandboxL3Execution(sandboxName, "", sandboxL3SelectionObserve)
@@ -277,7 +285,13 @@ func TestL3PreparedLinuxRecoveryE2E(t *testing.T) {
 	if projected.ContractVersion != sandboxStatusContractVersion || projected.Source != "live" ||
 		projected.Execution == nil || !projected.Execution.Active ||
 		projected.Execution.RunID != l3PreparedLinuxExecutionID {
-		t.Fatalf("live operator status = %#v, want active execution %q", projected, l3PreparedLinuxExecutionID)
+		t.Fatalf(
+			"live operator status contract/source/run/active = %q/%q/%q/%t",
+			projected.ContractVersion,
+			projected.Source,
+			l3RecoveryExecutionID(projected.Execution),
+			projected.Execution != nil && projected.Execution.Active,
+		)
 	}
 
 	followCtx, followCancel := context.WithTimeout(testCtx, 30*time.Second)
@@ -323,7 +337,11 @@ func TestL3PreparedLinuxRecoveryE2E(t *testing.T) {
 		t.Fatalf("list durable leases: %v", err)
 	}
 	if len(allLeases) != 1 || allLeases[0].ID != l3PreparedLinuxLeaseID {
-		t.Fatalf("durable leases = %#v, want exactly %q", allLeases, l3PreparedLinuxLeaseID)
+		firstID := ""
+		if len(allLeases) > 0 {
+			firstID = allLeases[0].ID
+		}
+		t.Fatalf("durable lease count/first ID = %d/%q, want 1/%q", len(allLeases), firstID, l3PreparedLinuxLeaseID)
 	}
 	status, err = client.Status(testCtx)
 	if err != nil {
@@ -373,6 +391,7 @@ func TestL3PreparedLinuxRecoveryE2E(t *testing.T) {
 	if err := driver.Delete(testCtx, sandboxruntime.LifecycleRequest{Target: *target}); err != nil {
 		t.Fatalf("delete rootless Podman target: %v", err)
 	}
+	assertL3PreparedLinuxContainerAbsent(t, testCtx, podmanPath, target.Runtime.RuntimeID)
 	targetDeleted = true
 }
 
@@ -493,7 +512,12 @@ setsid --wait sh -c 'exit 0'
 tar --help 2>&1 | grep -- --null >/dev/null`},
 	})
 	if err != nil || result == nil || result.ExitCode != 0 {
-		t.Fatalf("prepared image lacks required L3 shell/process/git/tar tools: result=%#v error=%v", result, err)
+		t.Fatalf(
+			"prepared image lacks required L3 shell/process/git/tar tools: result present=%t exit=%d error=%v",
+			result != nil,
+			l3PreparedLinuxExitCode(result),
+			err,
+		)
 	}
 }
 
@@ -517,7 +541,12 @@ git add tracked.txt
 git commit -qm baseline`},
 	})
 	if err != nil || result == nil || result.ExitCode != 0 {
-		t.Fatalf("initialize prepared workspace: result=%#v error=%v", result, err)
+		t.Fatalf(
+			"initialize prepared workspace: result present=%t exit=%d error=%v",
+			result != nil,
+			l3PreparedLinuxExitCode(result),
+			err,
+		)
 	}
 }
 
@@ -738,15 +767,32 @@ func assertL3PreparedLinuxFinalization(t *testing.T, manifest *sandboxexecution.
 		manifest.Finalization == nil || manifest.Finalization.State != sandboxexecution.FinalizationStateCompleted ||
 		!manifest.Finalization.SyncOutRequested ||
 		manifest.Finalization.TerminalJobState != sandboxworker.JobStateSucceeded {
-		t.Fatalf("finalized manifest = %#v, want succeeded completed sync-out publication", manifest)
+		t.Fatalf(
+			"finalized status/finished/finalization/sync-out/terminal = %q/%t/%q/%t/%q",
+			manifest.Status,
+			manifest.FinishedAt != nil,
+			l3PreparedLinuxFinalizationState(manifest),
+			manifest.Finalization != nil && manifest.Finalization.SyncOutRequested,
+			l3PreparedLinuxTerminalState(manifest),
+		)
 	}
 	checkpoints := manifest.Finalization.Checkpoints
 	if !checkpoints.Artifacts.Completed || !checkpoints.SyncOut.Completed ||
 		!checkpoints.LeaseRelease.Completed || !checkpoints.TerminalPublication.Completed {
-		t.Fatalf("finalization checkpoints = %#v, want exact convergence", checkpoints)
+		t.Fatalf(
+			"finalization checkpoints artifacts/sync-out/lease/publication = %t/%t/%t/%t",
+			checkpoints.Artifacts.Completed,
+			checkpoints.SyncOut.Completed,
+			checkpoints.LeaseRelease.Completed,
+			checkpoints.TerminalPublication.Completed,
+		)
 	}
 	if manifest.SyncOut == nil || manifest.SyncOutApply != nil {
-		t.Fatalf("sync-out handoff = %#v apply=%#v, want durable handoff without implicit apply", manifest.SyncOut, manifest.SyncOutApply)
+		t.Fatalf(
+			"sync-out handoff/apply present = %t/%t, want true/false",
+			manifest.SyncOut != nil,
+			manifest.SyncOutApply != nil,
+		)
 	}
 }
 
@@ -777,7 +823,7 @@ func assertL3PreparedLinuxRecoveredArtifacts(
 	} {
 		artifact, exists := byID[id]
 		if !exists || strings.TrimSpace(artifact.StoredPath) == "" {
-			t.Fatalf("recovered artifact %q = %#v, want one stored payload", id, artifact)
+			t.Fatalf("recovered artifact %q exists/has payload = %t/%t, want true/true", id, exists, strings.TrimSpace(artifact.StoredPath) != "")
 		}
 	}
 	assertL3PreparedLinuxStoredPayloadContains(t, store, manifest.ID, byID["prd"].StoredPath, `"l3-live"`)
@@ -817,13 +863,19 @@ func assertL3PreparedLinuxCommandRanOnce(
 		Args:   []string{"sh", "-c", `test "$(cat /workspace/l3-run-count)" = x`},
 	})
 	if err != nil || result == nil || result.ExitCode != 0 {
-		t.Fatalf("daemon restart reran or lost single-run marker: result=%#v error=%v", result, err)
+		t.Fatalf(
+			"daemon restart reran or lost single-run marker: result present=%t exit=%d error=%v",
+			result != nil,
+			l3PreparedLinuxExitCode(result),
+			err,
+		)
 	}
 }
 
 func cleanupL3PreparedLinuxTarget(
 	t *testing.T,
 	driver *rootlesspodman.Driver,
+	podmanPath string,
 	target sandboxruntime.Target,
 ) {
 	t.Helper()
@@ -832,4 +884,57 @@ func cleanupL3PreparedLinuxTarget(
 	if err := driver.Delete(cleanupCtx, sandboxruntime.LifecycleRequest{Target: target}); err != nil {
 		t.Errorf("delete rootless Podman target during cleanup: %v", err)
 	}
+	assertL3PreparedLinuxContainerAbsent(t, cleanupCtx, podmanPath, target.Runtime.RuntimeID)
+}
+
+func assertL3PreparedLinuxContainerAbsent(
+	t *testing.T,
+	ctx context.Context,
+	podmanPath, runtimeID string,
+) {
+	t.Helper()
+	command := exec.CommandContext(
+		ctx,
+		podmanPath,
+		"container", "exists",
+		strings.TrimSpace(runtimeID),
+	)
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	err := command.Run()
+	if err == nil {
+		t.Errorf("owned rootless Podman container still exists after deletion")
+		return
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Errorf("verify owned rootless Podman container absence: command failed without an exit status")
+		return
+	}
+	exitCode := exitErr.ExitCode()
+	if exitCode == 1 {
+		return
+	}
+	t.Errorf("verify owned rootless Podman container absence: exit status = %d, want 1", exitCode)
+}
+
+func l3PreparedLinuxExitCode(result *sandboxruntime.ExecResult) int {
+	if result == nil {
+		return -1
+	}
+	return result.ExitCode
+}
+
+func l3PreparedLinuxFinalizationState(manifest *sandboxexecution.Manifest) sandboxexecution.FinalizationState {
+	if manifest == nil || manifest.Finalization == nil {
+		return ""
+	}
+	return manifest.Finalization.State
+}
+
+func l3PreparedLinuxTerminalState(manifest *sandboxexecution.Manifest) string {
+	if manifest == nil || manifest.Finalization == nil {
+		return ""
+	}
+	return manifest.Finalization.TerminalJobState
 }

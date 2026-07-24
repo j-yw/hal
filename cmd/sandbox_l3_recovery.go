@@ -733,19 +733,34 @@ func runSandboxL3StatusJSON(ctx context.Context, sandboxName string, live bool, 
 			} else {
 				client, clientErr := sandboxL3ClientForManifest(manifest)
 				if clientErr != nil {
-					return clientErr
+					if !sandboxL3NamedStatusClientUnavailable(clientErr) {
+						return clientErr
+					}
+					response.Diagnostics = append(response.Diagnostics, sandboxL3Diagnostic{
+						Code:    "worker_client_unavailable",
+						Message: "live execution client was unavailable; cached execution status is shown",
+					})
+				} else {
+					liveJob, err = client.JobStatus(ctx, sandboxworker.JobStatusRequest{
+						ContractVersion: sandboxworker.JobContractVersion,
+						JobID:           manifest.WorkerJob.JobID,
+					})
+					if err != nil {
+						if !sandboxL3TransientDaemonTransportError(err) {
+							return errors.New("worker_job_status_failed: selected worker job response was invalid")
+						}
+						response.Diagnostics = append(response.Diagnostics, sandboxL3Diagnostic{
+							Code:    "worker_job_status_failed",
+							Message: "live execution status was unavailable; cached execution status is shown",
+						})
+						liveJob = nil
+					} else {
+						if err := validateSandboxL3LiveJob(manifest, liveJob); err != nil {
+							return err
+						}
+						response.Source = "live"
+					}
 				}
-				liveJob, err = client.JobStatus(ctx, sandboxworker.JobStatusRequest{
-					ContractVersion: sandboxworker.JobContractVersion,
-					JobID:           manifest.WorkerJob.JobID,
-				})
-				if err != nil {
-					return errors.New("worker_job_status_failed: selected worker job is unavailable")
-				}
-				if err := validateSandboxL3LiveJob(manifest, liveJob); err != nil {
-					return err
-				}
-				response.Source = "live"
 			}
 		}
 		response.Execution = sandboxL3ExecutionProjection(manifest, liveJob)
@@ -754,6 +769,10 @@ func runSandboxL3StatusJSON(ctx context.Context, sandboxName string, live bool, 
 		return selectErr
 	}
 	return json.NewEncoder(out).Encode(response)
+}
+
+func sandboxL3NamedStatusClientUnavailable(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "worker_client_unavailable:")
 }
 
 func renderSandboxL3LiveListJSON(ctx context.Context, out io.Writer, instances []*sandbox.SandboxState) error {

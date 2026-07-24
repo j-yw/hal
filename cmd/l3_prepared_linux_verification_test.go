@@ -115,6 +115,11 @@ func TestL3PreparedLinuxVerificationLiveAcceptanceBoundary(t *testing.T) {
 		"ActiveSandboxes",
 		"restartL3PreparedLinuxWorker(",
 		"assertL3PreparedLinuxRecoveredArtifacts(",
+		"assertL3PreparedLinuxContainerAbsent(",
+		`"container", "exists"`,
+		"Stdout = io.Discard",
+		"Stderr = io.Discard",
+		"exitCode == 1",
 		"sandboxworker.JobStateSucceeded",
 		"sandboxworker.JobStateUnknown",
 		"sandboxworker.JobStateInterrupted",
@@ -123,9 +128,13 @@ func TestL3PreparedLinuxVerificationLiveAcceptanceBoundary(t *testing.T) {
 			t.Fatalf("%s missing acceptance marker %q", l3PreparedLinuxLiveTestPath, required)
 		}
 	}
+	if strings.Count(source, "assertL3PreparedLinuxContainerAbsent(") < 3 {
+		t.Fatalf("%s must independently prove absence after explicit and cleanup deletion", l3PreparedLinuxLiveTestPath)
+	}
 	for _, forbidden := range []string{
 		"t.Skip(",
 		"t.Skipf(",
+		"%#v",
 		".JobStart(",
 		`"pull"`,
 		"podman pull",

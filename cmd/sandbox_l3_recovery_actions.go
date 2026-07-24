@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/sandbox"
@@ -157,13 +158,45 @@ func collectSandboxL3TerminalArtifacts(
 	ctx context.Context,
 	store sandboxexecution.Store,
 	manifest *sandboxexecution.Manifest,
-	_ *sandboxworker.Job,
+	job *sandboxworker.Job,
 ) error {
 	runtimeDriver, target, err := sandboxL3RuntimeHandleFromManifest(manifest)
 	if err != nil {
 		return err
 	}
-	return collectSandboxL3TerminalArtifactsWithRuntime(ctx, store, manifest, runtimeDriver, target, "")
+	return collectSandboxL3RecoveryTerminalArtifactsWithRuntime(ctx, store, manifest, job, runtimeDriver, target)
+}
+
+func collectSandboxL3RecoveryTerminalArtifactsWithRuntime(
+	ctx context.Context,
+	store sandboxexecution.Store,
+	manifest *sandboxexecution.Manifest,
+	job *sandboxworker.Job,
+	runtimeDriver sandboxruntime.Driver,
+	target sandboxruntime.Target,
+) error {
+	remoteArchivePath := ""
+	if manifest != nil &&
+		manifest.Purpose == sandboxexecution.PurposeAuto &&
+		job != nil &&
+		job.State == sandboxworker.JobStateSucceeded {
+		var err error
+		remoteArchivePath, err = sandboxL3AutoArchivePathFromStoredSummary(store, manifest)
+		if err != nil {
+			return err
+		}
+		if remoteArchivePath == "" {
+			return errors.New("auto_archive_path_unavailable: succeeded auto execution did not publish a recoverable archive path")
+		}
+	}
+	return collectSandboxL3TerminalArtifactsWithRuntime(
+		ctx,
+		store,
+		manifest,
+		runtimeDriver,
+		target,
+		remoteArchivePath,
+	)
 }
 
 func collectSandboxL3TerminalArtifactsWithRuntime(
@@ -218,7 +251,71 @@ func collectSandboxL3TerminalArtifactsWithRuntime(
 	if err != nil {
 		return fmt.Errorf("collect terminal reports archive: %w", err)
 	}
-	return requireSandboxL3CompleteCollection("terminal reports archive", reports)
+	// Reports are optional L3 metadata. A missing archive remains durably
+	// represented by its partial/warning entry, while generation, transport,
+	// and persistence errors returned above still block the artifact checkpoint.
+	return requireSandboxL3OptionalReportsCollection(reports)
+}
+
+func sandboxL3AutoArchivePathFromStoredSummary(
+	store sandboxexecution.Store,
+	manifest *sandboxexecution.Manifest,
+) (string, error) {
+	if manifest == nil {
+		return "", errors.New("auto_archive_summary_unavailable: durable execution manifest is unavailable")
+	}
+	current, err := store.LoadManifest(strings.TrimSpace(manifest.ID))
+	if err != nil {
+		return "", errors.New("auto_archive_summary_unavailable: durable output summary metadata is unavailable")
+	}
+	var summary *sandboxexecution.ArtifactMetadataEntry
+	if current.ArtifactMetadata != nil {
+		for index := range current.ArtifactMetadata.Collected {
+			artifact := &current.ArtifactMetadata.Collected[index]
+			if artifact.ID == "stdout-summary" {
+				summary = artifact
+				break
+			}
+		}
+	}
+	if summary == nil || strings.TrimSpace(summary.StoredPath) == "" {
+		return "", errors.New("auto_archive_path_unavailable: succeeded auto execution has no durable stdout summary")
+	}
+	file, err := store.OpenStoredFile(current.ID, summary.StoredPath)
+	if err != nil {
+		return "", errors.New("auto_archive_summary_unavailable: durable stdout summary could not be opened")
+	}
+	defer file.Close()
+	payload, err := io.ReadAll(io.LimitReader(file, int64(sandboxL3RecoveryOutputSummaryBytes)+1))
+	if err != nil {
+		return "", errors.New("auto_archive_summary_unavailable: durable stdout summary could not be read")
+	}
+	if len(payload) > sandboxL3RecoveryOutputSummaryBytes {
+		return "", errors.New("auto_archive_summary_too_large: durable stdout summary exceeds the recovery read bound")
+	}
+	archivePath, err := autoSandboxRemoteArchivePath(payload, string(payload))
+	if err != nil {
+		return "", errors.New("auto_archive_path_invalid: durable stdout summary contained an invalid archive path")
+	}
+	if strings.TrimSpace(archivePath) == "" {
+		return "", errors.New("auto_archive_path_unavailable: succeeded auto execution did not publish a recoverable archive path")
+	}
+	return archivePath, nil
+}
+
+func requireSandboxL3OptionalReportsCollection(result sandboxexecution.RuntimeCollectionResult) error {
+	if len(result.ArtifactMetadata.Partial) == 0 && len(result.ArtifactMetadata.Warnings) == 0 {
+		return nil
+	}
+	if len(result.ArtifactMetadata.Partial) == 1 &&
+		len(result.ArtifactMetadata.Warnings) == 1 &&
+		result.ArtifactMetadata.Partial[0].ID == "reports-archive" &&
+		result.ArtifactMetadata.Warnings[0].Artifact.ID == "reports-archive" &&
+		result.ArtifactMetadata.Warnings[0].Phase == sandboxexecution.ArtifactWarningPhaseCopyOut &&
+		result.ArtifactMetadata.Warnings[0].Message == "optional sandbox execution artifact is missing" {
+		return nil
+	}
+	return errors.New("terminal reports archive remained partial")
 }
 
 func collectSandboxL3SyncOut(
