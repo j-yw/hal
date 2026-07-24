@@ -1459,6 +1459,20 @@ func saveSandboxSyncOutApplyManifest(t *testing.T, store sandboxexecution.Store,
 	}); err != nil {
 		t.Fatalf("SaveManifest() error = %v", err)
 	}
+	for _, artifact := range metadata.Collected {
+		switch {
+		case strings.HasPrefix(artifact.StoredPath, executionID+"/artifacts/"):
+			payloadPath := strings.TrimPrefix(artifact.StoredPath, executionID+"/artifacts/")
+			if _, err := store.WriteArtifactPayload(executionID, payloadPath, []byte("test artifact\n")); err != nil {
+				t.Fatalf("WriteArtifactPayload(%q) error = %v", artifact.StoredPath, err)
+			}
+		case strings.HasPrefix(artifact.StoredPath, executionID+"/recovery/"):
+			payloadPath := strings.TrimPrefix(artifact.StoredPath, executionID+"/recovery/")
+			if _, err := store.WriteRecovery(executionID, payloadPath, []byte("test recovery artifact\n")); err != nil {
+				t.Fatalf("WriteRecovery(%q) error = %v", artifact.StoredPath, err)
+			}
+		}
+	}
 }
 
 func sandboxSyncOutApplyCollected(id, path, storedPath string) sandboxexecution.ArtifactMetadataEntry {

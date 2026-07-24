@@ -83,6 +83,9 @@ func TestL3ExecutionStoreRejectsUnsafeExistingLayoutWithoutMutation(t *testing.T
 		if err == nil {
 			t.Fatal("Ensure() accepted a symlinked payload area")
 		}
+		if _, statErr := os.Lstat(filepath.Join(store.Root(), "exec-linked-area", logsDirName)); !os.IsNotExist(statErr) {
+			t.Fatalf("Ensure() mutated unsafe existing layout before rejection: %v", statErr)
+		}
 		entries, readErr := os.ReadDir(external)
 		if readErr != nil {
 			t.Fatalf("ReadDir(external) error: %v", readErr)

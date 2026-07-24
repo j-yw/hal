@@ -216,6 +216,9 @@ func runSandboxListWithWriters(out, errOut io.Writer, jsonMode, liveMode bool) e
 
 	if jsonMode {
 		renderLiveStatusWarnings(warnOut, liveWarnings, redactor)
+		if liveMode {
+			return renderSandboxL3LiveListJSON(context.Background(), out, instances)
+		}
 		return renderSandboxListJSON(out, instances, now)
 	}
 

@@ -1,8 +1,10 @@
 package sandboxexecution
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 )
@@ -19,7 +21,15 @@ func (manifest Manifest) MarshalJSON() ([]byte, error) {
 func (manifest *Manifest) UnmarshalJSON(data []byte) error {
 	type manifestJSON Manifest
 	var decoded manifestJSON
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("sandbox execution manifest has trailing JSON")
+		}
 		return err
 	}
 	decoded.Runtime = sandbox.CloneSandboxRuntimeState(decoded.Runtime)

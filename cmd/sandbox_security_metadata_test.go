@@ -14,7 +14,7 @@ import (
 
 func TestSandboxSecurityMetadataIncludesEffectivePolicyResult(t *testing.T) {
 	security := testEffectiveSandboxSecurityMetadata()
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	startedAt := time.Date(2026, 7, 2, 3, 0, 0, 0, time.UTC)
 
 	err := saveRunSandboxManifest(store, runSandboxRequest{
@@ -57,7 +57,7 @@ func TestCommandSecurityMetadataDowngradesRequestedPolicyWithoutActiveRuntimeRes
 			EnforcementMode: sandbox.SandboxNetworkEnforcementModeProxyFirewall,
 		},
 	}
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	startedAt := time.Date(2026, 7, 3, 17, 19, 0, 0, time.UTC)
 
 	err := saveRunSandboxManifest(store, runSandboxRequest{
@@ -185,7 +185,7 @@ func TestSandboxRuntimeSecurityReadinessDiagnosticsJSONFieldApprovedStruct(t *te
 func TestSandboxSecurityCapabilityReadinessMetadataPreservedWhenAttached(t *testing.T) {
 	security := testEffectiveSandboxSecurityMetadata()
 	security.CapabilityReadiness = testCommandSandboxCapabilityReadinessOutput()
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	startedAt := time.Date(2026, 7, 2, 3, 4, 0, 0, time.UTC)
 
 	err := saveRunSandboxManifest(store, runSandboxRequest{
@@ -259,7 +259,7 @@ func TestSandboxManifestsUseRequestedSecurityIntentWhenTargetHasLegacySecurity(t
 		},
 	}
 
-	runStore := sandboxexecution.NewStore(t.TempDir())
+	runStore := newPrivateSandboxExecutionTestStore(t)
 	if err := saveRunSandboxManifest(runStore, runSandboxRequest{
 		ExecutionID: "run-typed-security-manifest",
 		ProjectDir:  "/repo",
@@ -273,7 +273,7 @@ func TestSandboxManifestsUseRequestedSecurityIntentWhenTargetHasLegacySecurity(t
 	}
 	requireDisabledSandboxSecurityIntent(t, runManifest.Security)
 
-	autoStore := sandboxexecution.NewStore(t.TempDir())
+	autoStore := newPrivateSandboxExecutionTestStore(t)
 	if err := saveAutoSandboxManifest(autoStore, autoSandboxRequest{
 		ExecutionID: "auto-typed-security-manifest",
 		ProjectDir:  "/repo",
