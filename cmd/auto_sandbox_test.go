@@ -333,7 +333,6 @@ func TestRunAutoWithDirSandboxFlagDispatchesToSandboxExecutor(t *testing.T) {
 		"sandbox":      "true",
 		"sandbox-name": "auto-box",
 		"json":         "true",
-		"dry-run":      "true",
 		"no-ci":        "true",
 		"engine":       "codex-test",
 		"base":         "main",
@@ -349,7 +348,7 @@ func TestRunAutoWithDirSandboxFlagDispatchesToSandboxExecutor(t *testing.T) {
 	if captured.SandboxName != "auto-box" {
 		t.Fatalf("SandboxName = %q, want auto-box", captured.SandboxName)
 	}
-	wantCommand := []string{"hal", "auto", ".hal/prd-feature.md", "--dry-run", "--no-ci", "--engine", "codex-test", "--base", "main", "--json"}
+	wantCommand := []string{"hal", "auto", ".hal/prd-feature.md", "--no-ci", "--engine", "codex-test", "--base", "main", "--json"}
 	if !reflect.DeepEqual(captured.RemoteCommand, wantCommand) {
 		t.Fatalf("RemoteCommand = %#v, want %#v", captured.RemoteCommand, wantCommand)
 	}

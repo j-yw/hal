@@ -204,7 +204,6 @@ func parseAutoSandboxRequest(args []string, opts autoSandboxOptions) (autoSandbo
 }
 
 func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []string, projectDir string, opts autoSandboxOptions, out, errOut io.Writer, deps autoSandboxDeps) error {
-	deps = normalizeAutoSandboxDeps(deps)
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -223,17 +222,6 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 		return autoSandboxExitValidation(cmd, err)
 	}
 
-	startedAt := deps.now().UTC()
-	req.ExecutionID = deps.newExecutionID(startedAt)
-	store, storeErr := deps.defaultStore()
-	if storeErr != nil {
-		err := fmt.Errorf("open sandbox execution store: %w", storeErr)
-		if opts.JSON {
-			return outputAutoSandboxJSONErrorForCommand(cmd, out, args, opts, err.Error())
-		}
-		return err
-	}
-
 	projectDir = strings.TrimSpace(projectDir)
 	if projectDir == "" {
 		projectDir = "."
@@ -247,6 +235,45 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 		return err
 	}
 	req.ProjectDir = filepath.Clean(absProjectDir)
+	if opts.DryRun {
+		securitySettings, err := loadConfiguredSandboxSecuritySettings(req.ProjectDir, req.SandboxRuntime)
+		if err != nil {
+			err = fmt.Errorf("load sandbox security config: %w", err)
+			if opts.JSON {
+				return outputAutoSandboxJSONErrorForCommand(cmd, out, args, opts, err.Error())
+			}
+			return err
+		}
+		sourceMarkdown := ""
+		if len(req.Args) > 0 {
+			sourceMarkdown = req.Args[0]
+		}
+		entryMode := determineAutoEntryMode(sourceMarkdown)
+		preview := newSandboxDryRunPreview(
+			sandbox.SandboxLeasePurposeAuto,
+			req.SandboxName,
+			req.SandboxHostID,
+			req.SandboxRuntime,
+			opts.Base,
+			req.SyncOut,
+			securitySettings.Request,
+			string(entryMode),
+		)
+		return renderSandboxDryRunPreview(out, opts.JSON, preview)
+	}
+
+	deps = normalizeAutoSandboxDeps(deps)
+	startedAt := deps.now().UTC()
+	req.ExecutionID = deps.newExecutionID(startedAt)
+	store, storeErr := deps.defaultStore()
+	if storeErr != nil {
+		err := fmt.Errorf("open sandbox execution store: %w", storeErr)
+		if opts.JSON {
+			return outputAutoSandboxJSONErrorForCommand(cmd, out, args, opts, err.Error())
+		}
+		return err
+	}
+
 	securitySettings, err := loadConfiguredSandboxSecuritySettings(req.ProjectDir, req.SandboxRuntime)
 	if err != nil {
 		err = fmt.Errorf("load sandbox security config: %w", err)

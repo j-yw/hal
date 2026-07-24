@@ -264,7 +264,6 @@ func parseRunSandboxRequest(args []string, opts runSandboxOptions) (runSandboxRe
 }
 
 func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []string, opts runSandboxOptions, out, errOut io.Writer, deps runSandboxDeps) error {
-	deps = normalizeRunSandboxDeps(deps)
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -282,7 +281,41 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 		}
 		return runSandboxExitValidation(cmd, err)
 	}
+	if opts.DryRun {
+		workingDir := deps.workingDir
+		if workingDir == nil {
+			workingDir = defaultRunSandboxDeps.workingDir
+		}
+		projectDir, err := workingDir()
+		if err != nil {
+			err = fmt.Errorf("resolve project directory: %w", err)
+			if opts.JSON {
+				return outputRunJSONErrorForCommand(cmd, out, err.Error())
+			}
+			return err
+		}
+		securitySettings, err := loadConfiguredSandboxSecuritySettings(projectDir, req.SandboxRuntime)
+		if err != nil {
+			err = fmt.Errorf("load sandbox security config: %w", err)
+			if opts.JSON {
+				return outputRunJSONErrorForCommand(cmd, out, err.Error())
+			}
+			return err
+		}
+		preview := newSandboxDryRunPreview(
+			sandbox.SandboxLeasePurposeRun,
+			req.SandboxName,
+			req.SandboxHostID,
+			req.SandboxRuntime,
+			opts.Base,
+			req.SyncOut,
+			securitySettings.Request,
+			"",
+		)
+		return renderSandboxDryRunPreview(out, opts.JSON, preview)
+	}
 
+	deps = normalizeRunSandboxDeps(deps)
 	startedAt := deps.now().UTC()
 	req.ExecutionID = deps.newExecutionID(startedAt)
 	store, storeErr := deps.defaultStore()

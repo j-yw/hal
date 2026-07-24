@@ -35,6 +35,7 @@ process failure.
 | `syncOutApply` | object | Redaction-safe sandbox apply or handoff result |
 | `sandboxExecutionId` | string | Durable execution ID emitted with sandbox sync-out metadata for later `hal sandbox apply EXECUTION_ID` |
 | `securityReadinessGate` | object | Sandbox security readiness decision |
+| `sandboxPreview` | object | Pure sandbox dry-run intent preview; present only for `hal run --sandbox --dry-run` |
 | `nextAction` | object | Recommended next command |
 | `error` | string | Failure summary when `ok=false` |
 
@@ -51,6 +52,13 @@ status and `ok` must be evaluated together:
 
 Sandbox execution preserves the inner `hal run --json` nonzero status. A
 rendered JSON failure does not also print the same error to stderr.
+
+For `hal run --sandbox --dry-run --json`, `iterations` is `0`, `complete` is
+`false`, and `sandboxPreview` describes requested target, runtime, workspace,
+security, and post-execution intent. Target/workspace resolution and security
+enforcement remain `unresolved`, `resourcesCreated` is `false`, and security
+`active` is `false`. The preview contains no durable execution ID and is
+returned before opening the execution store or contacting a sandbox boundary.
 
 ## Example Artifacts
 
