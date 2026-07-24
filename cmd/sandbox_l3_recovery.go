@@ -467,6 +467,9 @@ func validateSandboxL3LiveJob(manifest *sandboxexecution.Manifest, job *sandboxw
 	if manifest == nil || manifest.WorkerJob == nil || job == nil {
 		return errors.New("worker_job_identity_mismatch: durable and live job identities are required")
 	}
+	if sandboxL3WorkerJobReference(job) == nil {
+		return errors.New("worker_job_identity_mismatch: live job identity is invalid")
+	}
 	reference := manifest.WorkerJob
 	mismatch := job.ContractVersion != sandboxworker.JobContractVersion ||
 		job.ID != reference.JobID ||
@@ -483,6 +486,9 @@ func validateSandboxL3LiveJob(manifest *sandboxexecution.Manifest, job *sandboxw
 	}
 	if mismatch {
 		return fmt.Errorf("worker_job_identity_mismatch: live job did not match execution %s", manifest.ID)
+	}
+	if sandboxL3TerminalJobState(reference.State) && job.State != reference.State {
+		return fmt.Errorf("worker_job_state_mismatch: live job contradicted terminal execution %s", manifest.ID)
 	}
 	return nil
 }
