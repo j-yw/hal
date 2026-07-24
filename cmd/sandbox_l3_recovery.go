@@ -398,7 +398,11 @@ func waitSandboxL3Poll(ctx context.Context) error {
 
 func sanitizeSandboxL3LogData(value string) string {
 	value = sandboxL3SensitiveAssignment.ReplaceAllString(value, "[redacted]")
-	return statuscontract.SanitizePublicString(value)
+	value = statuscontract.SanitizePublicString(value)
+	// Worker log records may contain credentials that are not part of the
+	// current run-secret set, such as opaque Authorization header values.
+	// Apply the shared line-aware output boundary before rendering them.
+	return sanitizeSandboxOutputSummaryLines(value)
 }
 
 func runSandboxL3RecoveryObservation(ctx context.Context, sandboxName, runID string, requestSyncOut bool, out io.Writer) error {
