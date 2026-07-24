@@ -13,8 +13,6 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 )
 
-const sandboxApplyOutcomeUnknownReason = sandboxworkspace.SyncOutApplyEligibilityReason("apply_outcome_unknown")
-
 func TestSandboxApplyPersistsSanitizedIntentBeforeHostMutation(t *testing.T) {
 	store, executionID := newSandboxApplyJournalFixture(t, "apply-intent-before-mutation")
 	projectDir := filepath.Join(t.TempDir(), "host-token=secret")
@@ -332,8 +330,8 @@ func assertSandboxApplyUnknownOutcomeMarker(t *testing.T, manifest *sandboxexecu
 	if marker.ArtifactID != artifactID || marker.Mode != sandboxworkspace.SyncOutApplyModePatch {
 		t.Fatalf("durable apply intent artifact/mode = %q/%q, want %q/patch", marker.ArtifactID, marker.Mode, artifactID)
 	}
-	if !sandboxApplyReasonsContain(marker.Reasons, sandboxApplyOutcomeUnknownReason) {
-		t.Fatalf("durable apply intent reasons = %#v, want %q", marker.Reasons, sandboxApplyOutcomeUnknownReason)
+	if !sandboxApplyReasonsContain(marker.Reasons, sandboxworkspace.SyncOutApplyEligibilityReasonApplyOutcomeUnknown) {
+		t.Fatalf("durable apply intent reasons = %#v, want %q", marker.Reasons, sandboxworkspace.SyncOutApplyEligibilityReasonApplyOutcomeUnknown)
 	}
 }
 

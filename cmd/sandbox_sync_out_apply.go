@@ -84,9 +84,22 @@ func applySandboxSyncOut(ctx context.Context, store sandboxexecution.Store, req 
 	if apply == nil {
 		return sandboxworkspace.SafeApplyResult{}, nil
 	}
+	var result sandboxworkspace.SafeApplyResult
+	err := store.WithLockedExecution(req.ExecutionID, func(lockedStore sandboxexecution.Store) error {
+		var applyErr error
+		result, applyErr = applySandboxSyncOutLocked(ctx, lockedStore, req, apply)
+		return applyErr
+	})
+	return result, err
+}
+
+func applySandboxSyncOutLocked(ctx context.Context, store sandboxexecution.Store, req sandboxSyncOutApplyRequest, apply sandboxSyncOutApplier) (sandboxworkspace.SafeApplyResult, error) {
 	manifest, err := store.LoadManifest(req.ExecutionID)
 	if err != nil {
 		return sandboxworkspace.SafeApplyResult{}, fmt.Errorf("load sandbox execution manifest before sync-out apply: %w", err)
+	}
+	if existing, handled, existingErr := sandboxSyncOutExistingApplyResult(manifest, req.Options.Apply); handled {
+		return existing, existingErr
 	}
 	req.Store = store
 	req.Manifest = manifest
@@ -97,15 +110,86 @@ func applySandboxSyncOut(ctx context.Context, store sandboxexecution.Store, req 
 	if req.Payload != nil {
 		defer req.Payload.Close()
 	}
+	intent := sandboxworkspace.SafeApplyResult{}
+	hasMutationIntent := req.Options.Apply && req.Artifact != nil && req.Payload != nil
+	if hasMutationIntent {
+		intent = sandboxSyncOutUnknownApplyOutcome(req)
+		if persistErr := persistSandboxSyncOutApplyMetadata(store, req.ExecutionID, req.Summary, intent); persistErr != nil {
+			return sandboxworkspace.SafeApplyResult{}, fmt.Errorf("persist sandbox host apply intent: %w", persistErr)
+		}
+	}
 	result, err := apply(ctx, req)
 	result = sandboxworkspace.SanitizeSafeApplyResult(result)
 	result = sandboxSyncOutNormalizeApplyResult(req, result)
 	result = sandboxSyncOutApplyResultWithHandoffInstructions(req, result)
 	result = sandboxworkspace.SanitizeSafeApplyResult(result)
-	if persistErr := persistSandboxSyncOutApplyMetadata(store, req.ExecutionID, req.Summary, result); persistErr != nil {
+	if hasMutationIntent && err != nil {
+		return intent, err
+	}
+	if hasMutationIntent && !sandboxSyncOutApplyResultIsConclusive(result) {
+		return intent, fmt.Errorf("sandbox host apply outcome is not conclusive; manual inspection is required before retry")
+	}
+	if persistErr := persistSandboxSyncOutApplyMetadataTransition(store, req.ExecutionID, req.Summary, result, hasMutationIntent); persistErr != nil {
 		err = errors.Join(err, persistErr)
 	}
 	return result, err
+}
+
+func sandboxSyncOutExistingApplyResult(manifest *sandboxexecution.Manifest, mutationRequested bool) (sandboxworkspace.SafeApplyResult, bool, error) {
+	if manifest == nil || manifest.SyncOutApply == nil {
+		return sandboxworkspace.SafeApplyResult{}, false, nil
+	}
+	existing := sandboxworkspace.SanitizeSafeApplyResult(*cloneSandboxSafeApplyResult(manifest.SyncOutApply))
+	if existing.Applied || existing.Status == sandboxworkspace.SafeApplyStatusApplied {
+		if mutationRequested {
+			return existing, true, fmt.Errorf("sandbox execution %q already records a successful host apply", manifest.ID)
+		}
+		return existing, true, nil
+	}
+	if sandboxSyncOutApplyHasReason(existing, sandboxworkspace.SyncOutApplyEligibilityReasonApplyOutcomeUnknown) {
+		return existing, true, fmt.Errorf("sandbox execution %q has an unknown host apply outcome; manual inspection is required before retry", manifest.ID)
+	}
+	return sandboxworkspace.SafeApplyResult{}, false, nil
+}
+
+func sandboxSyncOutUnknownApplyOutcome(req sandboxSyncOutApplyRequest) sandboxworkspace.SafeApplyResult {
+	result := sandboxworkspace.SafeApplyResult{
+		Status:  sandboxworkspace.SafeApplyStatusHandoffRequired,
+		Applied: false,
+		Reasons: []sandboxworkspace.SyncOutApplyEligibilityReason{
+			sandboxworkspace.SyncOutApplyEligibilityReasonApplyOutcomeUnknown,
+		},
+	}
+	if req.Artifact != nil {
+		result.Mode = sandboxSyncOutArtifactEligibilityMode(req.Artifact)
+		result.ArtifactID = req.Artifact.ID
+		result.DisplayName = req.Artifact.DisplayName
+		result.DisplayPath = req.Artifact.DisplayPath
+	}
+	result = sandboxSyncOutApplyResultWithHandoffInstructions(req, result)
+	return sandboxworkspace.SanitizeSafeApplyResult(result)
+}
+
+func sandboxSyncOutApplyResultIsConclusive(result sandboxworkspace.SafeApplyResult) bool {
+	switch result.Status {
+	case sandboxworkspace.SafeApplyStatusApplied:
+		return result.Applied
+	case sandboxworkspace.SafeApplyStatusDryRunPassed:
+		return !result.Applied && result.DryRunPassed
+	case sandboxworkspace.SafeApplyStatusHandoffRequired:
+		return !result.Applied
+	default:
+		return false
+	}
+}
+
+func sandboxSyncOutApplyHasReason(result sandboxworkspace.SafeApplyResult, want sandboxworkspace.SyncOutApplyEligibilityReason) bool {
+	for _, reason := range result.Reasons {
+		if reason == want {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultSandboxSyncOutApplier(ctx context.Context, req sandboxSyncOutApplyRequest) (sandboxworkspace.SafeApplyResult, error) {
@@ -254,15 +338,34 @@ func sandboxSyncOutNormalizeApplyResult(req sandboxSyncOutApplyRequest, result s
 }
 
 func persistSandboxSyncOutApplyMetadata(store sandboxexecution.Store, executionID string, summary sandboxworkspace.SyncOutSummary, result sandboxworkspace.SafeApplyResult) error {
-	manifest, err := store.LoadManifest(executionID)
-	if err != nil {
-		return fmt.Errorf("load sandbox execution manifest for sync-out metadata: %w", err)
-	}
+	return persistSandboxSyncOutApplyMetadataTransition(store, executionID, summary, result, false)
+}
+
+func persistSandboxSyncOutApplyMetadataTransition(
+	store sandboxexecution.Store,
+	executionID string,
+	summary sandboxworkspace.SyncOutSummary,
+	result sandboxworkspace.SafeApplyResult,
+	resolveUnknown bool,
+) error {
 	summary = sandboxworkspace.SanitizeSyncOutSummary(summary)
 	result = sandboxworkspace.SanitizeSafeApplyResult(result)
-	manifest.SyncOut = cloneSandboxSyncOutSummary(&summary)
-	manifest.SyncOutApply = cloneSandboxSafeApplyResult(&result)
-	if err := store.SaveManifest(manifest); err != nil {
+	if err := store.UpdateManifest(executionID, func(manifest *sandboxexecution.Manifest) error {
+		if manifest.SyncOutApply != nil {
+			current := sandboxworkspace.SanitizeSafeApplyResult(*manifest.SyncOutApply)
+			if current.Applied || current.Status == sandboxworkspace.SafeApplyStatusApplied {
+				return nil
+			}
+			if sandboxSyncOutApplyHasReason(current, sandboxworkspace.SyncOutApplyEligibilityReasonApplyOutcomeUnknown) &&
+				!resolveUnknown &&
+				!sandboxSyncOutApplyHasReason(result, sandboxworkspace.SyncOutApplyEligibilityReasonApplyOutcomeUnknown) {
+				return nil
+			}
+		}
+		manifest.SyncOut = cloneSandboxSyncOutSummary(&summary)
+		manifest.SyncOutApply = cloneSandboxSafeApplyResult(&result)
+		return nil
+	}); err != nil {
 		return fmt.Errorf("persist sandbox sync-out metadata: %w", err)
 	}
 	return nil
@@ -394,6 +497,8 @@ func sandboxSyncOutPrimaryHandoffReason(reasons []sandboxworkspace.SyncOutApplyE
 
 func sandboxSyncOutHandoffMessage(reason sandboxworkspace.SyncOutApplyEligibilityReason) string {
 	switch reason {
+	case sandboxworkspace.SyncOutApplyEligibilityReasonApplyOutcomeUnknown:
+		return "Host apply may already have changed the worktree; inspect the host and stored sandbox sync-out artifacts before any retry."
 	case sandboxworkspace.SyncOutApplyEligibilityReasonApplyDisabled:
 		return "Automatic apply is disabled; inspect the listed sandbox sync-out artifacts before applying changes manually."
 	case sandboxworkspace.SyncOutApplyEligibilityReasonDirtyWorktree:
