@@ -16,8 +16,9 @@ const pendingRemovalRegistryFileExt = ".replacing"
 const sandboxRegistryLockFileName = "sandbox-registry.lock"
 
 var (
-	renameRegistryFile = os.Rename
-	removeRegistryFile = os.Remove
+	renameRegistryFile         = os.Rename
+	removeRegistryFile         = os.Remove
+	acquireSandboxRegistryLock = lockSandboxRegistry
 )
 
 // PendingInstanceRemoval temporarily hides a registry entry while a caller
@@ -65,7 +66,7 @@ func writeInstance(instance *SandboxState, overwrite bool) error {
 	if err := EnsureGlobalDir(); err != nil {
 		return err
 	}
-	lock, err := lockSandboxRegistry()
+	lock, err := acquireSandboxRegistryLock()
 	if err != nil {
 		return fmt.Errorf("acquire sandbox registry lock: %w", err)
 	}
@@ -146,13 +147,13 @@ func UpdateActiveInstanceExact(
 	if err := EnsureGlobalDir(); err != nil {
 		return err
 	}
-	lock, err := lockSandboxRegistry()
+	lock, err := acquireSandboxRegistryLock()
 	if err != nil {
 		return fmt.Errorf("acquire sandbox registry lock: %w", err)
 	}
 	defer lock.Close()
 
-	current, err := loadRegistryInstanceFile(path, name)
+	current, err := loadRegistryInstanceFileLocked(path, name)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("sandbox %q does not exist: %w", name, err)
@@ -278,7 +279,7 @@ func StageInstanceRemoval(name string) (*PendingInstanceRemoval, error) {
 	if err != nil {
 		return nil, err
 	}
-	lock, err := lockSandboxRegistry()
+	lock, err := acquireSandboxRegistryLock()
 	if err != nil {
 		return nil, fmt.Errorf("acquire sandbox registry lock: %w", err)
 	}
@@ -346,7 +347,7 @@ func (p *PendingInstanceRemoval) Commit() error {
 	if p == nil || !p.active {
 		return nil
 	}
-	lock, err := lockSandboxRegistry()
+	lock, err := acquireSandboxRegistryLock()
 	if err != nil {
 		return fmt.Errorf("acquire sandbox registry lock: %w", err)
 	}
@@ -363,7 +364,7 @@ func (p *PendingInstanceRemoval) Rollback() error {
 	if p == nil || !p.active {
 		return nil
 	}
-	lock, err := lockSandboxRegistry()
+	lock, err := acquireSandboxRegistryLock()
 	if err != nil {
 		return fmt.Errorf("acquire sandbox registry lock: %w", err)
 	}
@@ -376,6 +377,34 @@ func (p *PendingInstanceRemoval) Rollback() error {
 }
 
 func loadRegistryInstanceFile(path, name string) (*SandboxState, error) {
+	instance, err := readRegistryInstanceFile(path, name)
+	if err != nil {
+		return nil, err
+	}
+	if !needsGeneratedRegistryID(instance) {
+		return instance, nil
+	}
+
+	lock, err := acquireSandboxRegistryLock()
+	if err != nil {
+		return nil, fmt.Errorf("acquire sandbox registry lock: %w", err)
+	}
+	defer lock.Close()
+	return loadRegistryInstanceFileLocked(path, name)
+}
+
+func loadRegistryInstanceFileLocked(path, name string) (*SandboxState, error) {
+	instance, err := readRegistryInstanceFile(path, name)
+	if err != nil {
+		return nil, err
+	}
+	if err := repairRegistryInstanceIDLocked(path, instance); err != nil {
+		return nil, fmt.Errorf("repair sandbox %q: %w", name, err)
+	}
+	return instance, nil
+}
+
+func readRegistryInstanceFile(path, name string) (*SandboxState, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -386,10 +415,6 @@ func loadRegistryInstanceFile(path, name string) (*SandboxState, error) {
 		return nil, fmt.Errorf("parse sandbox %q: %w", name, err)
 	}
 	normalizeRegistryInstance(&instance, name)
-	if err := repairRegistryInstanceID(path, &instance); err != nil {
-		return nil, fmt.Errorf("repair sandbox %q: %w", name, err)
-	}
-
 	return &instance, nil
 }
 
@@ -580,7 +605,7 @@ func RemoveInstance(name string) error {
 	if err != nil {
 		return err
 	}
-	lock, err := lockSandboxRegistry()
+	lock, err := acquireSandboxRegistryLock()
 	if err != nil {
 		return fmt.Errorf("acquire sandbox registry lock: %w", err)
 	}
@@ -646,7 +671,7 @@ func needsGeneratedRegistryID(instance *SandboxState) bool {
 		isLegacyDigitalOceanDropletID(instance.ID)
 }
 
-func repairRegistryInstanceID(path string, instance *SandboxState) error {
+func repairRegistryInstanceIDLocked(path string, instance *SandboxState) error {
 	if instance == nil {
 		return nil
 	}

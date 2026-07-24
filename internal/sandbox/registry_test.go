@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -355,8 +356,13 @@ func TestLegacyInstanceIDRepairSerializesSameNameReplacement(t *testing.T) {
 	}()
 	<-repairReady
 
-	if err := RemoveInstance(name); err != nil {
-		t.Fatalf("RemoveInstance() during repair error: %v", err)
+	originalAcquire := acquireSandboxRegistryLock
+	t.Cleanup(func() { acquireSandboxRegistryLock = originalAcquire })
+	replaceAttempted := make(chan struct{})
+	var replaceAttemptOnce sync.Once
+	acquireSandboxRegistryLock = func() (*sandboxLeaseStoreFileLock, error) {
+		replaceAttemptOnce.Do(func() { close(replaceAttempted) })
+		return originalAcquire()
 	}
 	replacement := &SandboxState{
 		ID:       "sandbox-replacement",
@@ -364,12 +370,24 @@ func TestLegacyInstanceIDRepairSerializesSameNameReplacement(t *testing.T) {
 		Provider: "hetzner",
 		Status:   StatusRunning,
 	}
-	if err := SaveInstance(replacement); err != nil {
-		t.Fatalf("SaveInstance(replacement) during repair error: %v", err)
-	}
+	replaceStarted := make(chan struct{})
+	replaceDone := make(chan error, 1)
+	go func() {
+		close(replaceStarted)
+		if err := RemoveInstance(name); err != nil {
+			replaceDone <- err
+			return
+		}
+		replaceDone <- SaveInstance(replacement)
+	}()
+	<-replaceStarted
+	<-replaceAttempted
 	close(continueRepair)
 	if err := <-loadDone; err != nil {
 		t.Fatalf("LoadActiveInstance(legacy) error: %v", err)
+	}
+	if err := <-replaceDone; err != nil {
+		t.Fatalf("replace instance after repair error: %v", err)
 	}
 
 	current, err := LoadActiveInstance(name)
@@ -413,15 +431,36 @@ func TestLegacyInstanceIDRepairSerializesStagedRemoval(t *testing.T) {
 		loadDone <- err
 	}()
 	<-repairReady
-	pending, err := StageInstanceRemoval(name)
-	if err != nil {
-		t.Fatalf("StageInstanceRemoval() during repair error: %v", err)
+	originalAcquire := acquireSandboxRegistryLock
+	t.Cleanup(func() { acquireSandboxRegistryLock = originalAcquire })
+	stageAttempted := make(chan struct{})
+	var stageAttemptOnce sync.Once
+	acquireSandboxRegistryLock = func() (*sandboxLeaseStoreFileLock, error) {
+		stageAttemptOnce.Do(func() { close(stageAttempted) })
+		return originalAcquire()
 	}
-	t.Cleanup(func() { _ = pending.Commit() })
+	type stageResult struct {
+		pending *PendingInstanceRemoval
+		err     error
+	}
+	stageStarted := make(chan struct{})
+	stageDone := make(chan stageResult, 1)
+	go func() {
+		close(stageStarted)
+		pending, err := StageInstanceRemoval(name)
+		stageDone <- stageResult{pending: pending, err: err}
+	}()
+	<-stageStarted
+	<-stageAttempted
 	close(continueRepair)
 	if err := <-loadDone; err != nil {
 		t.Fatalf("LoadActiveInstance(legacy) error: %v", err)
 	}
+	staged := <-stageDone
+	if staged.err != nil {
+		t.Fatalf("StageInstanceRemoval() after repair error: %v", staged.err)
+	}
+	t.Cleanup(func() { _ = staged.pending.Commit() })
 
 	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("active path exists beside staged entry after repair: %v", err)
