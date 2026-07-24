@@ -626,6 +626,144 @@ func TestRunAndAutoSandboxDetachedJobsStayRunningWithoutFinalizationSideEffects(
 	}
 }
 
+func TestRunAndAutoTerminalWorkerJobsUseSharedFinalizationWithoutImplicitApply(t *testing.T) {
+	now := time.Date(2026, 7, 25, 5, 45, 0, 0, time.UTC)
+	states := []string{
+		sandboxworker.JobStateSucceeded,
+		sandboxworker.JobStateFailed,
+		sandboxworker.JobStateCanceled,
+		sandboxworker.JobStateInterrupted,
+		sandboxworker.JobStateUnknown,
+	}
+	for _, purpose := range []sandboxexecution.Purpose{sandboxexecution.PurposeRun, sandboxexecution.PurposeAuto} {
+		for _, state := range states {
+			t.Run(string(purpose)+"/"+state, func(t *testing.T) {
+				projectDir := t.TempDir()
+				store := newPrivateSandboxExecutionTestStore(t)
+				executionID := "terminal-" + string(purpose) + "-" + state
+				target := workerRootlessCachedSandbox("worker-rootless")
+				target.Host.ID = "host-1"
+				target.Runtime.RuntimeID = "runtime-1"
+				target.Runtime.WorkerID = "worker-1"
+				target.Lease = &sandbox.SandboxLeaseRef{
+					ID:      "lease-" + string(purpose) + "-" + state,
+					RunID:   executionID,
+					Purpose: string(purpose),
+				}
+				terminal := queuedSandboxWorkerJob(executionID)
+				terminal.State = state
+				startedAt := now.Add(time.Second)
+				finishedAt := now.Add(2 * time.Second)
+				terminal.StartedAt = &startedAt
+				terminal.HeartbeatAt = &startedAt
+				terminal.FinishedAt = &finishedAt
+				exitCode := 0
+				if state == sandboxworker.JobStateFailed {
+					exitCode = ExitCodeExpectedNonZero
+				}
+				if state == sandboxworker.JobStateSucceeded || state == sandboxworker.JobStateFailed {
+					terminal.ExitCode = &exitCode
+				}
+				driver := &fakeSandboxWorkerJobDriver{
+					statusJobs: []sandboxworker.Job{terminal},
+					logPages: []sandboxworker.JobLogsResponse{{
+						ContractVersion: sandboxworker.JobContractVersion,
+						JobID:           terminal.ID,
+					}},
+					exec: func(sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+						return &sandboxruntime.ExecResult{}, nil
+					},
+					copyOut: func(req sandboxruntime.CopyRequest) error {
+						return os.WriteFile(req.DestinationPath, []byte("fake terminal artifact"), 0o600)
+					},
+				}
+				workerJob := sandboxWorkerJobReference(terminal, terminal.LogCursor)
+				execErr := sandboxWorkerJobTerminalResult(terminal)
+				releaseCalls := 0
+				applyCalls := 0
+
+				switch purpose {
+				case sandboxexecution.PurposeRun:
+					err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+						Base:                  "main",
+						BaseChanged:           true,
+						SandboxSyncOut:        true,
+						SandboxSyncOutChanged: true,
+						SandboxApply:          true,
+						SandboxApplyChanged:   true,
+					}, io.Discard, io.Discard, runSandboxDeps{
+						defaultStore:   func() (sandboxexecution.Store, error) { return store, nil },
+						newExecutionID: func(time.Time) string { return executionID },
+						now:            func() time.Time { return now },
+						workingDir:     func() (string, error) { return projectDir, nil },
+						planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+							return terminalWorkerJobWorkspacePlan(projectDir), nil
+						},
+						execute: func(_ context.Context, _ runSandboxRequest, _, _ io.Writer, hooks runSandboxExecutionHooks) (runSandboxExecutionResult, error) {
+							if err := hooks.OnTargetReady(target); err != nil {
+								return runSandboxExecutionResult{}, err
+							}
+							if err := hooks.OnWorkerJobUpdate(workerJob); err != nil {
+								return runSandboxExecutionResult{}, err
+							}
+							return runSandboxExecutionResult{
+								Result:        &sandboxexec.Result{Target: sandboxRuntimeTargetFromState(target)},
+								RuntimeDriver: driver,
+							}, execErr
+						},
+						applySyncOut: func(context.Context, sandboxSyncOutApplyRequest) (sandboxworkspace.SafeApplyResult, error) {
+							applyCalls++
+							return sandboxworkspace.SafeApplyResult{}, nil
+						},
+						releaseLease: func(string) (*sandbox.SandboxLease, error) {
+							releaseCalls++
+							return &sandbox.SandboxLease{Status: sandbox.SandboxLeaseStatusReleased}, nil
+						},
+					})
+					assertTerminalSandboxTopLevelResult(t, err, store, executionID, state, driver, releaseCalls, applyCalls)
+				case sandboxexecution.PurposeAuto:
+					err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
+						Base:                  "main",
+						BaseChanged:           true,
+						SandboxSyncOut:        true,
+						SandboxSyncOutChanged: true,
+						SandboxApply:          true,
+						SandboxApplyChanged:   true,
+					}, io.Discard, io.Discard, autoSandboxDeps{
+						defaultStore:   func() (sandboxexecution.Store, error) { return store, nil },
+						newExecutionID: func(time.Time) string { return executionID },
+						now:            func() time.Time { return now },
+						planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+							return terminalWorkerJobWorkspacePlan(projectDir), nil
+						},
+						execute: func(_ context.Context, _ autoSandboxRequest, _, _ io.Writer, hooks autoSandboxExecutionHooks) (autoSandboxExecutionResult, error) {
+							if err := hooks.OnTargetReady(target); err != nil {
+								return autoSandboxExecutionResult{}, err
+							}
+							if err := hooks.OnWorkerJobUpdate(workerJob); err != nil {
+								return autoSandboxExecutionResult{}, err
+							}
+							return autoSandboxExecutionResult{
+								Result:        &sandboxexec.Result{Target: sandboxRuntimeTargetFromState(target)},
+								RuntimeDriver: driver,
+							}, execErr
+						},
+						applySyncOut: func(context.Context, sandboxSyncOutApplyRequest) (sandboxworkspace.SafeApplyResult, error) {
+							applyCalls++
+							return sandboxworkspace.SafeApplyResult{}, nil
+						},
+						releaseLease: func(string) (*sandbox.SandboxLease, error) {
+							releaseCalls++
+							return &sandbox.SandboxLease{Status: sandbox.SandboxLeaseStatusReleased}, nil
+						},
+					})
+					assertTerminalSandboxTopLevelResult(t, err, store, executionID, state, driver, releaseCalls, applyCalls)
+				}
+			})
+		}
+	}
+}
+
 func TestRunAndAutoFinalCommandDispatchKeepsLegacySynchronousPath(t *testing.T) {
 	for _, purpose := range []string{sandbox.SandboxLeasePurposeRun, sandbox.SandboxLeasePurposeAuto} {
 		t.Run(purpose, func(t *testing.T) {
@@ -824,6 +962,69 @@ func assertDetachedSandboxTopLevelResult(
 	}
 }
 
+func assertTerminalSandboxTopLevelResult(
+	t *testing.T,
+	err error,
+	store sandboxexecution.Store,
+	executionID, state string,
+	driver *fakeSandboxWorkerJobDriver,
+	releaseCalls, applyCalls int,
+) {
+	t.Helper()
+	proven := sandboxL3FinalizationProvenTerminalJobState(state)
+	if state == sandboxworker.JobStateSucceeded {
+		if err != nil {
+			t.Fatalf("top-level succeeded job error = %v", err)
+		}
+	} else if err == nil {
+		t.Fatalf("top-level %s job error = nil, want terminal result", state)
+	}
+	manifest, loadErr := store.LoadManifest(executionID)
+	if loadErr != nil {
+		t.Fatalf("LoadManifest() error: %v", loadErr)
+	}
+	if proven {
+		if manifest.Finalization == nil || manifest.Finalization.State != sandboxexecution.FinalizationStateCompleted {
+			t.Fatalf("terminal manifest Finalization = %#v, want completed", manifest.Finalization)
+		}
+		if manifest.Status != sandboxL3ExecutionStatusFromJob(state) || manifest.FinishedAt == nil {
+			t.Fatalf("terminal manifest status/finishedAt = %q/%v, want published %q", manifest.Status, manifest.FinishedAt, sandboxL3ExecutionStatusFromJob(state))
+		}
+		if releaseCalls != 1 {
+			t.Fatalf("terminal release calls = %d, want one finalization release", releaseCalls)
+		}
+		if driver.copyOutCalls == 0 {
+			t.Fatal("terminal finalization did not collect artifacts")
+		}
+	} else {
+		if manifest.Finalization == nil ||
+			manifest.Finalization.State != sandboxexecution.FinalizationStateBlocked ||
+			manifest.Finalization.ReasonCode != "terminal_proof_unavailable" {
+			t.Fatalf("unproven terminal Finalization = %#v, want blocked terminal proof", manifest.Finalization)
+		}
+		if manifest.Status != sandboxexecution.StatusRunning || manifest.FinishedAt != nil {
+			t.Fatalf("unproven terminal status/finishedAt = %q/%v, want running/nil", manifest.Status, manifest.FinishedAt)
+		}
+		if releaseCalls != 0 || driver.copyOutCalls != 0 || driver.execCalls != 0 {
+			t.Fatalf("unproven terminal side effects release/copyOut/exec = %d/%d/%d, want zero", releaseCalls, driver.copyOutCalls, driver.execCalls)
+		}
+	}
+	if applyCalls != 0 || driver.cancelCalls != 0 {
+		t.Fatalf("terminal implicit apply/cancel calls = %d/%d, want zero", applyCalls, driver.cancelCalls)
+	}
+}
+
+func terminalWorkerJobWorkspacePlan(projectDir string) sandboxworkspace.Plan {
+	return sandboxworkspace.Plan{
+		Mode:        sandbox.SandboxWorkspaceModeClone,
+		ProjectDir:  projectDir,
+		Repository:  "git@example.com:org/repo.git",
+		Branch:      "feature/terminal",
+		SyncRef:     "main",
+		InputSource: sandbox.SandboxWorkspaceInputSourceRemoteRef,
+	}
+}
+
 type fakeSandboxWorkerJobDriver struct {
 	startJob              sandboxworker.Job
 	startErr              error
@@ -839,6 +1040,7 @@ type fakeSandboxWorkerJobDriver struct {
 	execCalls             int
 	copyOutCalls          int
 	exec                  func(sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
+	copyOut               func(sandboxruntime.CopyRequest) error
 	startSubmissionID     string
 	startExecReq          sandboxruntime.ExecRequest
 	resolveSubmissionID   string
@@ -883,8 +1085,11 @@ func (*fakeSandboxWorkerJobDriver) CopyIn(context.Context, sandboxruntime.CopyRe
 	return nil
 }
 
-func (driver *fakeSandboxWorkerJobDriver) CopyOut(context.Context, sandboxruntime.CopyRequest) error {
+func (driver *fakeSandboxWorkerJobDriver) CopyOut(_ context.Context, req sandboxruntime.CopyRequest) error {
 	driver.copyOutCalls++
+	if driver.copyOut != nil {
+		return driver.copyOut(req)
+	}
 	return nil
 }
 
