@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -799,6 +800,98 @@ func TestRunAndAutoTerminalWorkerJobsUseSharedFinalizationWithoutImplicitApply(t
 				}
 			})
 		}
+	}
+}
+
+func TestAutoWorkerFinalizationRejectsTruncatedArchiveProofBeforeSideEffects(t *testing.T) {
+	store := newPrivateSandboxExecutionTestStore(t)
+	startedAt := time.Date(2026, 7, 25, 5, 55, 0, 0, time.UTC)
+	manifest := l3Manifest(
+		"auto-truncated-archive-proof",
+		"alpha",
+		startedAt,
+		"job-auto-truncated",
+		sandboxworker.JobStateSucceeded,
+		0,
+	)
+	manifest.Purpose = sandboxexecution.PurposeAuto
+	manifest.FinishedAt = nil
+	if err := store.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+
+	terminal := l3RecoveryTerminalJobFromManifest(manifest)
+	terminal.StdoutTruncated = true
+	driver := &fakeSandboxWorkerJobDriver{
+		statusJobs: []sandboxworker.Job{*terminal},
+		logPages: []sandboxworker.JobLogsResponse{{
+			ContractVersion: sandboxworker.JobContractVersion,
+			JobID:           terminal.ID,
+		}},
+		exec: func(sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			return &sandboxruntime.ExecResult{}, nil
+		},
+		copyOut: func(req sandboxruntime.CopyRequest) error {
+			if err := os.MkdirAll(filepath.Dir(req.DestinationPath), 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(req.DestinationPath, []byte("stale archive payload\n"), 0o600)
+		},
+	}
+	target := &sandbox.SandboxState{
+		ID:     manifest.SandboxID,
+		Name:   manifest.SandboxName,
+		Status: sandbox.StatusRunning,
+		Host:   manifest.Host,
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         manifest.Runtime.Driver,
+			RuntimeID:      manifest.Runtime.RuntimeID,
+			WorkerID:       manifest.Runtime.WorkerID,
+			IsolationLevel: manifest.Runtime.IsolationLevel,
+		},
+	}
+	releaseCalls := 0
+	err := finalizeAutoSandboxWorkerJob(
+		context.Background(),
+		store,
+		autoSandboxRequest{
+			ExecutionID: manifest.ID,
+			WorkDir:     manifest.WorkDir,
+		},
+		autoSandboxExecutionResult{
+			Result: &sandboxexec.Result{
+				Target: sandboxRuntimeTargetFromState(target),
+			},
+			RuntimeDriver: driver,
+			StdoutSummary: "Archived state to stale-archive\n",
+		},
+		target,
+		[]byte("Archived state to stale-archive\n"),
+		autoSandboxDeps{
+			now: func() time.Time { return startedAt.Add(3 * time.Minute) },
+			releaseLease: func(string) (*sandbox.SandboxLease, error) {
+				releaseCalls++
+				return &sandbox.SandboxLease{Status: sandbox.SandboxLeaseStatusReleased}, nil
+			},
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "artifact_collection_failed") {
+		t.Fatalf("truncated archive proof error = %v, want blocked artifact collection", err)
+	}
+	if driver.copyOutCalls != 0 || releaseCalls != 0 {
+		t.Fatalf("truncated archive proof crossed copy/release boundaries %d/%d times", driver.copyOutCalls, releaseCalls)
+	}
+	current, loadErr := store.LoadManifest(manifest.ID)
+	if loadErr != nil {
+		t.Fatalf("LoadManifest() error: %v", loadErr)
+	}
+	if current.Finalization == nil ||
+		current.Finalization.State != sandboxexecution.FinalizationStateBlocked ||
+		current.Finalization.ReasonCode != "artifact_collection_failed" ||
+		current.Finalization.Checkpoints.Artifacts.Completed ||
+		current.Finalization.Checkpoints.LeaseRelease.Completed ||
+		current.Finalization.Checkpoints.TerminalPublication.Completed {
+		t.Fatalf("truncated archive proof finalization = %#v, want blocked before checkpoints", current.Finalization)
 	}
 }
 

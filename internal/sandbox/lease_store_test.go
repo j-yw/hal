@@ -143,6 +143,100 @@ func TestReleaseExactLeaseValidatesIdentityAndUsesStoreLock(t *testing.T) {
 	}
 }
 
+func TestReleaseExactLeaseRejectsReplacedSandboxIdentity(t *testing.T) {
+	home := setSandboxHome(t)
+	now := time.Date(2026, 7, 25, 5, 30, 0, 0, time.UTC)
+	store := NewSandboxLeaseStore(func() time.Time { return now })
+	lease, err := store.Acquire(SandboxLeaseAcquireRequest{
+		ID:          "lease-l3-sandbox-identity",
+		SandboxID:   "sandbox-original",
+		SandboxName: "alpha",
+		ResourceKey: "host:worker-l3",
+		Holder:      "holder-l3",
+		Purpose:     SandboxLeasePurposeRun,
+		RunID:       "run-alpha",
+	}, time.Hour)
+	if err != nil {
+		t.Fatalf("Acquire() error: %v", err)
+	}
+
+	replaced := *lease
+	replaced.SandboxID = "sandbox-replacement"
+	writeLeaseFixture(t, home, &replaced)
+	if _, err := store.ReleaseExact(SandboxLeaseExactReleaseRequest{
+		ID:          lease.ID,
+		SandboxName: lease.SandboxName,
+		ResourceKey: lease.ResourceKey,
+		Purpose:     lease.Purpose,
+		RunID:       lease.RunID,
+		AcquiredAt:  lease.AcquiredAt,
+	}); err == nil {
+		t.Fatal("ReleaseExact() accepted a lease belonging to a replaced sandbox instance")
+	}
+	current, err := store.Load(lease.ID)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if current.Status != SandboxLeaseStatusActive || current.SandboxID != replaced.SandboxID {
+		t.Fatalf("replaced lease changed after rejected exact release: %#v", current)
+	}
+}
+
+func TestHeartbeatCannotReactivateExactlyReleasedLease(t *testing.T) {
+	setSandboxHome(t)
+	acquiredAt := time.Date(2026, 7, 25, 5, 45, 0, 0, time.UTC)
+	seedStore := NewSandboxLeaseStore(func() time.Time { return acquiredAt })
+	lease, err := seedStore.Acquire(SandboxLeaseAcquireRequest{
+		ID:          "lease-l3-heartbeat-release",
+		SandboxID:   "sandbox-alpha",
+		SandboxName: "alpha",
+		ResourceKey: "host:worker-l3",
+		Holder:      "holder-l3",
+		Purpose:     SandboxLeasePurposeRun,
+		RunID:       "run-alpha",
+	}, time.Hour)
+	if err != nil {
+		t.Fatalf("Acquire() error: %v", err)
+	}
+
+	heartbeatReady := make(chan struct{})
+	continueHeartbeat := make(chan struct{})
+	heartbeatStore := NewSandboxLeaseStore(func() time.Time {
+		close(heartbeatReady)
+		<-continueHeartbeat
+		return acquiredAt.Add(time.Minute)
+	})
+	heartbeatDone := make(chan error, 1)
+	go func() {
+		_, heartbeatErr := heartbeatStore.Heartbeat(lease.ID, time.Hour)
+		heartbeatDone <- heartbeatErr
+	}()
+	<-heartbeatReady
+
+	if _, err := seedStore.ReleaseExact(SandboxLeaseExactReleaseRequest{
+		ID:          lease.ID,
+		SandboxName: lease.SandboxName,
+		ResourceKey: lease.ResourceKey,
+		Purpose:     lease.Purpose,
+		RunID:       lease.RunID,
+		AcquiredAt:  lease.AcquiredAt,
+	}); err != nil {
+		t.Fatalf("ReleaseExact() error: %v", err)
+	}
+	close(continueHeartbeat)
+	if err := <-heartbeatDone; err != nil {
+		t.Fatalf("Heartbeat() error: %v", err)
+	}
+
+	current, err := seedStore.Load(lease.ID)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if current.Status != SandboxLeaseStatusReleased {
+		t.Fatalf("stale heartbeat restored status %q, want released", current.Status)
+	}
+}
+
 func TestExpireLeasesUsesSameStoreLockAsExactRelease(t *testing.T) {
 	setSandboxHome(t)
 	now := time.Date(2026, 7, 25, 6, 0, 0, 0, time.UTC)

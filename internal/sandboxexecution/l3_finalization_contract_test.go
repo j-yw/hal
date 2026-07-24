@@ -256,6 +256,68 @@ func TestL3FinalizationLifecycleValidation(t *testing.T) {
 	}
 }
 
+func TestL3CompletedPublicationRejectsContradictoryManifestState(t *testing.T) {
+	startedAt := time.Date(2026, 7, 25, 4, 30, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Minute)
+	completedAt := finishedAt.Add(time.Second)
+	terminalJob := &WorkerJobReference{
+		ContractVersion: WorkerJobContractVersion,
+		JobID:           "job-terminal",
+		WorkerID:        "worker-terminal",
+		RuntimeDriver:   "rootless_podman",
+		State:           "succeeded",
+		SubmittedAt:     startedAt,
+		StartedAt:       &startedAt,
+		HeartbeatAt:     &startedAt,
+		FinishedAt:      &finishedAt,
+	}
+	valid := testManifest("exec-terminal-publication", startedAt)
+	valid.Status = StatusSucceeded
+	valid.FinishedAt = &finishedAt
+	valid.WorkerJob = terminalJob
+	completed := l3CompletedFinalizationFixture(finishedAt, completedAt)
+	valid.Finalization = &completed
+
+	tests := []struct {
+		name   string
+		mutate func(*Manifest)
+	}{
+		{
+			name: "execution status remains running",
+			mutate: func(manifest *Manifest) {
+				manifest.Status = StatusRunning
+			},
+		},
+		{
+			name: "worker job state disagrees",
+			mutate: func(manifest *Manifest) {
+				manifest.WorkerJob.State = "failed"
+			},
+		},
+		{
+			name: "execution finish time disagrees",
+			mutate: func(manifest *Manifest) {
+				different := finishedAt.Add(time.Second)
+				manifest.FinishedAt = &different
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestStore(t)
+			manifest := *valid
+			worker := *valid.WorkerJob
+			finalization := *valid.Finalization
+			manifest.WorkerJob = &worker
+			manifest.Finalization = &finalization
+			tt.mutate(&manifest)
+			if err := store.SaveManifest(&manifest); err == nil {
+				t.Fatal("SaveManifest() accepted contradictory completed publication")
+			}
+		})
+	}
+}
+
 func TestL3CompletedFinalizationRequiresProvenTerminalJobState(t *testing.T) {
 	startedAt := time.Date(2026, 7, 25, 5, 0, 0, 0, time.UTC)
 	completedAt := startedAt.Add(time.Minute)
