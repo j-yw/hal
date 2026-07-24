@@ -30,7 +30,8 @@ var errStoreRootUnavailable = errors.New("no sandbox execution store root availa
 
 // Store addresses durable local non-factory sandbox execution records.
 type Store struct {
-	root string
+	root      string
+	lockScope *executionLockScope
 }
 
 // NewStore returns a store rooted at root. Tests use this to operate in temp
@@ -237,22 +238,29 @@ func (s Store) UpdateManifest(executionID string, update func(*Manifest) error) 
 	if update == nil {
 		return fmt.Errorf("sandbox execution manifest update callback is required")
 	}
+	if s.lockScopeActive(executionID) {
+		return s.updateManifestUnlocked(executionID, update)
+	}
 	return s.WithExecutionLock(executionID, func() error {
-		manifest, err := s.LoadManifest(executionID)
-		if err != nil {
-			return err
-		}
-		if manifest.ID != executionID {
-			return fmt.Errorf("sandbox execution manifest %q has mismatched ID", executionID)
-		}
-		if err := update(manifest); err != nil {
-			return err
-		}
-		if manifest.ID != executionID {
-			return fmt.Errorf("sandbox execution manifest update changed ID")
-		}
-		return s.SaveManifest(manifest)
+		return s.updateManifestUnlocked(executionID, update)
 	})
+}
+
+func (s Store) updateManifestUnlocked(executionID string, update func(*Manifest) error) error {
+	manifest, err := s.LoadManifest(executionID)
+	if err != nil {
+		return err
+	}
+	if manifest.ID != executionID {
+		return fmt.Errorf("sandbox execution manifest %q has mismatched ID", executionID)
+	}
+	if err := update(manifest); err != nil {
+		return err
+	}
+	if manifest.ID != executionID {
+		return fmt.Errorf("sandbox execution manifest update changed ID")
+	}
+	return s.SaveManifest(manifest)
 }
 
 // UpsertArtifactMetadata merges retry-safe artifact metadata under the
