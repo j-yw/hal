@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -807,19 +808,22 @@ func (harness *l3WorkerHarness) manifestBytes() []byte {
 }
 
 type l3WorkerScript struct {
-	mu         sync.Mutex
-	socketPath string
-	jobState   string
-	logCursor  uint64
-	pages      map[uint64]sandboxworker.JobLogsResponse
-	firstLogs  chan struct{}
-	requests   []l3WorkerRequest
-	forbidden  []string
+	mu                     sync.Mutex
+	socketPath             string
+	jobState               string
+	logCursor              uint64
+	pages                  map[uint64]sandboxworker.JobLogsResponse
+	firstLogs              chan struct{}
+	panicOnForbidden       bool
+	panicUnlessObservation bool
+	requests               []l3WorkerRequest
+	forbidden              []string
 }
 
 type l3WorkerRequest struct {
 	operation string
 	cursor    uint64
+	args      []string
 }
 
 func (script *l3WorkerScript) HandleRequest(_ context.Context, req sandboxworker.Request) sandboxworker.Response {
@@ -828,7 +832,11 @@ func (script *l3WorkerScript) HandleRequest(_ context.Context, req sandboxworker
 	if req.JobLogs != nil {
 		record.cursor = req.JobLogs.Cursor
 	}
+	if req.Exec != nil {
+		record.args = append([]string(nil), req.Exec.Args...)
+	}
 	script.requests = append(script.requests, record)
+	forbidden := false
 	switch req.Operation {
 	case sandboxworker.OperationStatus,
 		sandboxworker.OperationCapabilities,
@@ -837,14 +845,23 @@ func (script *l3WorkerScript) HandleRequest(_ context.Context, req sandboxworker
 		sandboxworker.OperationJobLogs,
 		sandboxworker.OperationCopyOut:
 	case sandboxworker.OperationExec:
-		if req.Exec == nil || l3LooksLikeAgentLaunch(req.Exec.Args) {
+		if req.Exec == nil || l3LooksLikeForbiddenRecoveryExec(req.Exec.Args) {
 			script.forbidden = append(script.forbidden, req.Operation)
+			forbidden = true
 		}
 	default:
 		script.forbidden = append(script.forbidden, req.Operation)
+		forbidden = true
+	}
+	if script.panicUnlessObservation && req.Operation != sandboxworker.OperationJobStatus {
+		forbidden = true
 	}
 	firstLogs := script.firstLogs
+	panicOnForbidden := script.panicOnForbidden
 	script.mu.Unlock()
+	if forbidden && panicOnForbidden {
+		panic("L3 recovery crossed a forbidden worker boundary")
+	}
 
 	now := time.Date(2026, 7, 25, 2, 0, 0, 0, time.UTC)
 	started := now.Add(time.Second)
@@ -969,6 +986,33 @@ func (script *l3WorkerScript) HandleRequest(_ context.Context, req sandboxworker
 			OK:              true,
 			JobLogs:         &page,
 		}
+	case sandboxworker.OperationExec:
+		return sandboxworker.Response{
+			ProtocolVersion: sandboxworker.ProtocolVersion,
+			RequestID:       req.RequestID,
+			Operation:       req.Operation,
+			OK:              true,
+			Exec: &sandboxworker.ExecResponse{
+				Stdout: sandboxworker.ExecOutputPayload{LimitBytes: req.Exec.StdoutLimitBytes},
+				Stderr: sandboxworker.ExecOutputPayload{LimitBytes: req.Exec.StderrLimitBytes},
+			},
+		}
+	case sandboxworker.OperationCopyOut:
+		payload := []byte("durable L3 artifact\n")
+		return sandboxworker.Response{
+			ProtocolVersion: sandboxworker.ProtocolVersion,
+			RequestID:       req.RequestID,
+			Operation:       req.Operation,
+			OK:              true,
+			CopyOut: &sandboxworker.CopyOutResponse{
+				Payload: &sandboxworker.CopyFilePayload{
+					Data:       base64.StdEncoding.EncodeToString(payload),
+					Encoding:   sandboxworker.CopyPayloadEncodingBase64,
+					SizeBytes:  int64(len(payload)),
+					LimitBytes: req.CopyOut.MaxPayloadBytes,
+				},
+			},
+		}
 	default:
 		return sandboxworker.Response{
 			ProtocolVersion: sandboxworker.ProtocolVersion,
@@ -1014,6 +1058,25 @@ func equalL3Uint64s(left, right []uint64) bool {
 func l3LooksLikeAgentLaunch(args []string) bool {
 	joined := " " + strings.ToLower(strings.Join(args, " ")) + " "
 	for _, marker := range []string{" hal run ", " hal auto ", " hal loop ", " codex ", " claude "} {
+		if strings.Contains(joined, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func l3LooksLikeForbiddenRecoveryExec(args []string) bool {
+	if l3LooksLikeAgentLaunch(args) {
+		return true
+	}
+	joined := " " + strings.ToLower(strings.Join(args, " ")) + " "
+	for _, marker := range []string{
+		" git clone ",
+		" git checkout ",
+		" auth ",
+		" bootstrap ",
+		" tailscale ",
+	} {
 		if strings.Contains(joined, marker) {
 			return true
 		}
