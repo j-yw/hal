@@ -28,8 +28,9 @@ worktree mutation surface. Recovery and sync-out never apply implicitly.
   retaining the synchronous runtime-driver interface for compatibility.
 - `internal/sandboxexecution` owns safe manifest job references, execution
   discovery, finalization metadata, per-execution locking, and idempotent
-  manifest/artifact transitions. It does not import worker clients, command
-  packages, concrete runtimes, or providers.
+  manifest/artifact transitions. It also owns execution-store containment and
+  verified payload access. It does not import worker clients, command packages,
+  concrete runtimes, or providers.
 - `cmd` joins sandbox registry records, execution manifests, durable hosts, and
   live worker responses. It owns CLI selection, orchestration, rendering, and
   dependency wiring only.
@@ -71,6 +72,13 @@ identity and must return the original L2 job.
 Legacy SSH-machine execution and non-worker routes remain synchronous.
 Preparation, bootstrap, input materialization, and auth are never moved into a
 recoverable job and are never repeated by recovery.
+
+Every status, log, and submission-resolution response must match the selected
+manifest's sanitized job, worker, host, runtime-driver, runtime, and submission
+identity. A mismatch fails closed with a safe reason code. The local worker
+channel is same-user only: its Unix-socket parent and socket are private,
+symlink and non-socket replacements are rejected, and peer identity is checked
+where the platform exposes it.
 
 ## Durable execution and finalization state
 
@@ -122,6 +130,29 @@ Recovery never creates or starts a target, bootstraps a workspace, writes
 project inputs, syncs auth, launches an agent, or cleans a resource it did not
 create.
 
+An `unknown` or `interrupted` job is not terminal proof. Recovery must not
+collect mutable runtime output, release the lease, or publish success until
+non-execution or terminal state is independently proved. It records a
+conservative blocked handoff instead of guessing.
+
+## Execution-store containment
+
+Recovery treats every durable manifest and artifact reference as untrusted
+input. Store setup, manifest loading, payload creation, payload resolution, and
+apply handoff reject:
+
+- symlinked store, execution, area, manifest, and payload components;
+- absolute, traversal, sibling-execution, and non-regular-file references;
+- existing directories or files with unsafe ownership or permissions; and
+- replacement detected between validation and the verified open operation.
+
+JSON decoding rejects unknown manifest fields. Errors expose safe codes and
+execution/artifact IDs only. Host apply consumes a verified regular payload
+handle or equivalent race-resistant reference that remains contained beneath
+the selected execution; it does not reopen an unchecked path. An ambiguous
+crash after apply intent but before a durable result fails closed for explicit
+manual inspection rather than applying again.
+
 ## Selection
 
 Commands first match non-factory manifests by exact sandbox name.
@@ -172,10 +203,11 @@ queued/running definition. Terminal recovery updates the manifest and worker
 count independently, and tests require eventual convergence to zero.
 
 Named status uses the new `sandbox-status-v1` JSON contract. Sandbox list moves
-to `sandbox-list-v2` when execution projection is present; the v1 required
-sandbox identity fields remain unchanged. Both contracts include source,
-execution summary, safe recommended action, diagnostics, and no raw worker
-endpoint or host path.
+to `sandbox-list-v2` for `--live --json`, where the execution projection is
+present; cached `sandbox list --json` remains the documented v1 contract. The
+v1 required sandbox identity fields remain unchanged in v2. Both live
+contracts include source, execution summary, safe recommended action,
+diagnostics, and no raw worker endpoint or host path.
 
 ## Sync-out and apply
 
@@ -200,6 +232,8 @@ Before implementation, tests must fail for:
 - concurrent and repeated recovery under one execution lock;
 - crash/retry at every finalization checkpoint;
 - deduplicated artifacts and idempotent lease release;
+- execution-store symlink, ownership, mode, and replacement containment;
+- private same-user worker sockets and response identity binding;
 - recovery guards for bootstrap, input writes, auth sync, agent execution,
   target create/start, implicit apply, and unrelated cleanup;
 - corrupt manifests and unavailable workers failing closed.
