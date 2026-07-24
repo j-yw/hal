@@ -142,6 +142,13 @@ func drainSandboxL3TerminalLogsWithClient(
 	if err := streamSandboxL3Logs(ctx, client, manifest, job, true, stdout, stderr); err != nil {
 		return err
 	}
+	if manifest != nil &&
+		manifest.Purpose == sandboxexecution.PurposeAuto &&
+		job != nil &&
+		job.State == sandboxworker.JobStateSucceeded &&
+		stdout.Truncated() {
+		return errors.New("auto_archive_output_incomplete: succeeded auto execution summary was truncated")
+	}
 	_, err := sandboxexecution.SaveCommandOutputSummaryArtifacts(sandboxexecution.CommandOutputSummaryArtifactsRequest{
 		ExecutionID:   manifest.ID,
 		Store:         store,
@@ -422,8 +429,9 @@ func boundedSandboxL3OutputSummary(value string) string {
 }
 
 type sandboxL3BoundedSummaryWriter struct {
-	builder strings.Builder
-	limit   int
+	builder   strings.Builder
+	limit     int
+	truncated bool
 }
 
 func (writer *sandboxL3BoundedSummaryWriter) Write(payload []byte) (int, error) {
@@ -433,13 +441,19 @@ func (writer *sandboxL3BoundedSummaryWriter) Write(payload []byte) (int, error) 
 	original := len(payload)
 	remaining := writer.limit - writer.builder.Len()
 	if remaining <= 0 {
+		writer.truncated = writer.truncated || original > 0
 		return original, nil
 	}
 	if len(payload) > remaining {
+		writer.truncated = true
 		payload = payload[:remaining]
 	}
 	_, _ = writer.builder.Write(payload)
 	return original, nil
+}
+
+func (writer *sandboxL3BoundedSummaryWriter) Truncated() bool {
+	return writer != nil && writer.truncated
 }
 
 func (writer *sandboxL3BoundedSummaryWriter) String() string {
