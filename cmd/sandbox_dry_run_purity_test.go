@@ -33,6 +33,8 @@ func TestRunSandboxDryRunReturnsBeforeForbiddenBoundaries(t *testing.T) {
   secrets:
     requestedModes:
       - env
+    activeModes:
+      - env
 `)
 	storeRoot := filepath.Join(t.TempDir(), "sandbox-executions")
 	var out bytes.Buffer
@@ -88,6 +90,8 @@ func TestAutoSandboxDryRunReturnsBeforeForbiddenBoundaries(t *testing.T) {
         decision: deny
   secrets:
     requestedModes:
+      - file_tmpfs
+    activeModes:
       - file_tmpfs
 `)
 	storeRoot := filepath.Join(t.TempDir(), "sandbox-executions")
@@ -196,58 +200,211 @@ func TestSandboxDryRunHumanPreviewDoesNotClaimExistenceOrEnforcement(t *testing.
 	}
 }
 
+func TestRunSandboxDryRunCommandFlagPathIsPure(t *testing.T) {
+	projectDir := t.TempDir()
+	writeRunSandboxConfig(t, projectDir, `sandbox:
+  networkPolicy:
+    preset: allow_listed
+    rules:
+      - kind: domain
+        value: command.run.example
+        decision: allow
+  secrets:
+    requestedModes:
+      - env
+`)
+	t.Chdir(projectDir)
+
+	originalDeps := defaultRunSandboxDeps
+	defaultRunSandboxDeps = forbiddenRunSandboxDryRunDeps(projectDir)
+	t.Cleanup(func() {
+		defaultRunSandboxDeps = originalDeps
+	})
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd := newRunSandboxTestCommand(&out, &errOut)
+	for flag, value := range map[string]string{
+		"sandbox":         "true",
+		"sandbox-name":    "command-run",
+		"sandbox-host":    "worker-command",
+		"sandbox-runtime": sandboxruntime.DriverRootlessPodman,
+		"dry-run":         "true",
+		"json":            "true",
+		"base":            "main",
+	} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("set %s: %v", flag, err)
+		}
+	}
+
+	if err := runRunWithWriter(cmd, nil, &errOut); err != nil {
+		t.Fatalf("hal run --sandbox --dry-run error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+	assertSandboxDryRunPreview(t, out.Bytes(), "run", "command-run", "worker-command", sandboxruntime.DriverRootlessPodman)
+}
+
+func TestAutoSandboxDryRunCommandFlagPathIsPure(t *testing.T) {
+	projectDir := t.TempDir()
+	writeRunSandboxConfig(t, projectDir, `sandbox:
+  networkPolicy:
+    preset: deny_by_default
+    rules:
+      - kind: domain
+        value: command.auto.example
+        decision: deny
+  secrets:
+    requestedModes:
+      - file_tmpfs
+`)
+
+	originalDeps := defaultAutoSandboxDeps
+	defaultAutoSandboxDeps = forbiddenAutoSandboxDryRunDeps()
+	t.Cleanup(func() {
+		defaultAutoSandboxDeps = originalDeps
+	})
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd := newAutoSandboxTestCommand(&out, &errOut)
+	for flag, value := range map[string]string{
+		"sandbox":         "true",
+		"sandbox-name":    "command-auto",
+		"sandbox-host":    "worker-command",
+		"sandbox-runtime": sandboxruntime.DriverMicroVM,
+		"dry-run":         "true",
+		"json":            "true",
+		"base":            "main",
+	} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("set %s: %v", flag, err)
+		}
+	}
+
+	if err := runAutoWithDir(cmd, []string{".hal/prd-feature.md"}, projectDir); err != nil {
+		t.Fatalf("hal auto --sandbox --dry-run error: %v\nstdout=%s\nstderr=%s", err, out.String(), errOut.String())
+	}
+	assertSandboxDryRunPreview(t, out.Bytes(), "auto", "command-auto", "worker-command", sandboxruntime.DriverMicroVM)
+}
+
+func TestSandboxDryRunPreviewRedactsUnsafeStaticIntent(t *testing.T) {
+	preview := newSandboxDryRunPreview(
+		sandbox.SandboxLeasePurposeRun,
+		"ghp_l1_preview_target_secret_123456789",
+		"203.0.113.42",
+		sandboxruntime.DriverRootlessPodman,
+		"/home/operator/private/repository",
+		sandboxSyncOutOptions{},
+		sandbox.SecurityEvaluationRequest{
+			RequestedNetworkPolicy: sandbox.SandboxNetworkPolicyDenyByDefault,
+			RequestedNetworkPolicyIntent: &sandbox.SandboxNetworkPolicyIntent{
+				Preset: sandbox.SandboxNetworkPolicyPresetAllowListed,
+				Rules: []sandbox.SandboxNetworkPolicyRule{{
+					Kind:     sandbox.SandboxNetworkPolicyRuleKindDomain,
+					Value:    "private.preview.example",
+					Decision: sandbox.SandboxNetworkPolicyDecisionAllow,
+				}},
+			},
+			RequestedSecretModes: []string{
+				sandbox.SandboxSecretModeEnv,
+				"ghp_l1_preview_mode_secret_123456789",
+			},
+		},
+		"",
+	)
+	payload, err := marshalSandboxDryRunPreview(preview)
+	if err != nil {
+		t.Fatalf("marshalSandboxDryRunPreview() error: %v", err)
+	}
+	for _, forbidden := range []string{
+		"ghp_l1_preview_target_secret_123456789",
+		"ghp_l1_preview_mode_secret_123456789",
+		"203.0.113.42",
+		"/home/operator/private/repository",
+		"private.preview.example",
+	} {
+		if strings.Contains(string(payload), forbidden) {
+			t.Fatalf("sandbox preview leaked %q: %s", forbidden, payload)
+		}
+	}
+}
+
 func assertSandboxDryRunPreview(t *testing.T, payload []byte, purpose, sandboxName, hostID, runtimeDriver string) {
 	t.Helper()
 	var preview struct {
-		OK               bool   `json:"ok"`
-		DryRun           bool   `json:"dryRun"`
-		Purpose          string `json:"purpose"`
-		ResourcesCreated bool   `json:"resourcesCreated"`
-		Target           struct {
-			SandboxName string `json:"sandboxName"`
-			HostID      string `json:"hostId"`
-			Runtime     string `json:"runtime"`
-			Resolution  string `json:"resolution"`
-		} `json:"target"`
-		Workspace struct {
-			Mode       string `json:"mode"`
-			Resolution string `json:"resolution"`
-		} `json:"workspace"`
-		Security struct {
-			NetworkPolicy    string   `json:"networkPolicy"`
-			RequestedModes   []string `json:"requestedSecretModes"`
-			Enforcement      string   `json:"enforcement"`
-			Active           bool     `json:"active"`
-			NetworkRuleCount int      `json:"networkRuleCount"`
-		} `json:"security"`
-		UnresolvedRequirements []string `json:"unresolvedRequirements"`
+		ContractVersion int    `json:"contractVersion"`
+		OK              bool   `json:"ok"`
+		DryRun          bool   `json:"dryRun"`
+		EntryMode       string `json:"entryMode"`
+		Iterations      int    `json:"iterations"`
+		Complete        bool   `json:"complete"`
+		Steps           map[string]struct {
+			Status string `json:"status"`
+		} `json:"steps"`
+		SandboxPreview struct {
+			Purpose          string `json:"purpose"`
+			ResourcesCreated bool   `json:"resourcesCreated"`
+			Target           struct {
+				SandboxName string `json:"sandboxName"`
+				HostID      string `json:"hostId"`
+				Runtime     string `json:"runtime"`
+				Resolution  string `json:"resolution"`
+			} `json:"target"`
+			Workspace struct {
+				Mode       string `json:"mode"`
+				Resolution string `json:"resolution"`
+			} `json:"workspace"`
+			Security struct {
+				NetworkPolicy    string   `json:"networkPolicy"`
+				RequestedModes   []string `json:"requestedSecretModes"`
+				Enforcement      string   `json:"enforcement"`
+				Active           bool     `json:"active"`
+				NetworkRuleCount int      `json:"networkRuleCount"`
+			} `json:"security"`
+			UnresolvedRequirements []string `json:"unresolvedRequirements"`
+		} `json:"sandboxPreview"`
 	}
 	if err := json.Unmarshal(payload, &preview); err != nil {
 		t.Fatalf("decode sandbox dry-run preview: %v\npayload=%s", err, payload)
 	}
-	if !preview.OK || !preview.DryRun || preview.ResourcesCreated {
-		t.Fatalf("preview success/purity flags = ok:%t dryRun:%t resourcesCreated:%t", preview.OK, preview.DryRun, preview.ResourcesCreated)
+	if !preview.OK || !preview.DryRun || preview.SandboxPreview.ResourcesCreated {
+		t.Fatalf("preview success/purity flags = ok:%t dryRun:%t resourcesCreated:%t", preview.OK, preview.DryRun, preview.SandboxPreview.ResourcesCreated)
 	}
-	if preview.Purpose != purpose {
-		t.Fatalf("purpose = %q, want %q", preview.Purpose, purpose)
+	if preview.SandboxPreview.Purpose != purpose {
+		t.Fatalf("purpose = %q, want %q", preview.SandboxPreview.Purpose, purpose)
 	}
-	if preview.Target.SandboxName != sandboxName || preview.Target.HostID != hostID || preview.Target.Runtime != runtimeDriver {
-		t.Fatalf("target = %#v, want sandbox=%q host=%q runtime=%q", preview.Target, sandboxName, hostID, runtimeDriver)
+	if preview.SandboxPreview.Target.SandboxName != sandboxName || preview.SandboxPreview.Target.HostID != hostID || preview.SandboxPreview.Target.Runtime != runtimeDriver {
+		t.Fatalf("target = %#v, want sandbox=%q host=%q runtime=%q", preview.SandboxPreview.Target, sandboxName, hostID, runtimeDriver)
 	}
-	if preview.Target.Resolution != "unresolved" || preview.Workspace.Resolution != "unresolved" {
-		t.Fatalf("target/workspace resolution = %q/%q, want unresolved", preview.Target.Resolution, preview.Workspace.Resolution)
+	if preview.SandboxPreview.Target.Resolution != "unresolved" || preview.SandboxPreview.Workspace.Resolution != "unresolved" {
+		t.Fatalf("target/workspace resolution = %q/%q, want unresolved", preview.SandboxPreview.Target.Resolution, preview.SandboxPreview.Workspace.Resolution)
 	}
-	if preview.Workspace.Mode != sandbox.SandboxWorkspaceModeClone {
-		t.Fatalf("workspace mode = %q, want %q", preview.Workspace.Mode, sandbox.SandboxWorkspaceModeClone)
+	if preview.SandboxPreview.Workspace.Mode != sandbox.SandboxWorkspaceModeClone {
+		t.Fatalf("workspace mode = %q, want %q", preview.SandboxPreview.Workspace.Mode, sandbox.SandboxWorkspaceModeClone)
 	}
-	if preview.Security.Enforcement != "unresolved" || preview.Security.Active {
-		t.Fatalf("security enforcement/active = %q/%t, want unresolved/false", preview.Security.Enforcement, preview.Security.Active)
+	if preview.SandboxPreview.Security.Enforcement != "unresolved" || preview.SandboxPreview.Security.Active {
+		t.Fatalf("security enforcement/active = %q/%t, want unresolved/false", preview.SandboxPreview.Security.Enforcement, preview.SandboxPreview.Security.Active)
 	}
-	if preview.Security.NetworkPolicy == "" || preview.Security.NetworkRuleCount != 1 || len(preview.Security.RequestedModes) != 1 {
-		t.Fatalf("security intent missing requested policy summary: %#v", preview.Security)
+	if preview.SandboxPreview.Security.NetworkPolicy == "" || preview.SandboxPreview.Security.NetworkRuleCount != 1 || len(preview.SandboxPreview.Security.RequestedModes) != 1 {
+		t.Fatalf("security intent missing requested policy summary: %#v", preview.SandboxPreview.Security)
 	}
-	if len(preview.UnresolvedRequirements) == 0 {
+	if len(preview.SandboxPreview.UnresolvedRequirements) == 0 {
 		t.Fatal("unresolvedRequirements is empty")
+	}
+	switch purpose {
+	case sandbox.SandboxLeasePurposeRun:
+		if preview.ContractVersion != 1 || preview.Iterations != 0 || preview.Complete {
+			t.Fatalf("run-v1 compatibility fields = version:%d iterations:%d complete:%t", preview.ContractVersion, preview.Iterations, preview.Complete)
+		}
+	case sandbox.SandboxLeasePurposeAuto:
+		if preview.ContractVersion != 2 || preview.EntryMode != string(autoEntryModeMarkdownPath) || len(preview.Steps) != 10 {
+			t.Fatalf("auto-v2 compatibility fields = version:%d entryMode:%q steps:%d", preview.ContractVersion, preview.EntryMode, len(preview.Steps))
+		}
+		for name, step := range preview.Steps {
+			if step.Status != string(autoStepStatusSkipped) {
+				t.Fatalf("auto-v2 step %q status = %q, want skipped", name, step.Status)
+			}
+		}
 	}
 }
 

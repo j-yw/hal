@@ -2229,7 +2229,6 @@ func TestRunRunWithWriterSandboxFlagDispatchesToSandboxExecutor(t *testing.T) {
 		"json":            "true",
 		"engine":          "codex-test",
 		"base":            "main",
-		"dry-run":         "true",
 	} {
 		if err := cmd.Flags().Set(flag, value); err != nil {
 			t.Fatalf("set %s: %v", flag, err)
@@ -2249,7 +2248,7 @@ func TestRunRunWithWriterSandboxFlagDispatchesToSandboxExecutor(t *testing.T) {
 	if captured.SandboxRuntime != sandboxruntime.DriverRootlessPodman {
 		t.Fatalf("SandboxRuntime = %q, want %q", captured.SandboxRuntime, sandboxruntime.DriverRootlessPodman)
 	}
-	wantCommand := []string{"hal", "run", "--json", "--engine", "codex-test", "--dry-run", "--base", "main", "4"}
+	wantCommand := []string{"hal", "run", "--json", "--engine", "codex-test", "--base", "main", "4"}
 	if !reflect.DeepEqual(captured.RemoteCommand, wantCommand) {
 		t.Fatalf("RemoteCommand = %#v, want %#v", captured.RemoteCommand, wantCommand)
 	}

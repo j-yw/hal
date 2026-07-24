@@ -21,6 +21,8 @@
 |-------|------|-------------|
 | `duration` | string | Total wall-clock duration (for completed/failed runs when available) |
 | `error` | string | Top-level failure summary when `ok=false` |
+| `dryRun` | bool | Whether execution was only previewed |
+| `sandboxPreview` | object | Pure sandbox dry-run intent preview; present only for `hal auto --sandbox --dry-run` |
 | `syncOut` | object | Sandbox sync-out summary when `hal auto --sandbox --sandbox-sync-out` or `--sandbox-apply` produced durable local sync-out metadata |
 | `syncOutApply` | object | Sandbox apply or handoff result when explicit sandbox sync-out/apply metadata was produced |
 | `sandboxExecutionId` | string | Durable execution ID emitted with sandbox sync-out metadata for later `hal sandbox apply EXECUTION_ID` |
@@ -87,6 +89,14 @@ status and the document's `ok` field must be evaluated together:
 
 Sandbox execution preserves the inner `hal auto --json` nonzero status. A
 rendered JSON failure does not also print the same error to stderr.
+
+For `hal auto --sandbox --dry-run --json`, all required step statuses are
+`skipped` because no pipeline or sandbox execution occurs. `sandboxPreview`
+describes requested target, runtime, workspace, security, and post-execution
+intent. Target/workspace resolution and security enforcement remain
+`unresolved`, `resourcesCreated` is `false`, and security `active` is `false`.
+The preview contains no durable execution ID and is returned before opening
+the execution store or contacting a sandbox boundary.
 
 ## Next Action Object
 
