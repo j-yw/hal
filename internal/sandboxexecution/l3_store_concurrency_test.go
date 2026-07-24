@@ -179,6 +179,120 @@ func TestL3LockedExecutionStoreAllowsNestedRetrySafeManifestUpdates(t *testing.T
 	}
 }
 
+func TestL3LockedExecutionWaitsForStartedScopedUpdateBeforeUnlocking(t *testing.T) {
+	store := newTestStore(t)
+	const executionID = "exec-scoped-update"
+	if err := store.SaveManifest(testManifest(executionID, time.Now().UTC())); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+
+	updateEntered := make(chan struct{})
+	releaseUpdate := make(chan struct{})
+	updateDone := make(chan error, 1)
+	lockCallbackReturned := make(chan struct{})
+	lockDone := make(chan error, 1)
+	lockReturned := make(chan struct{})
+	var escaped Store
+
+	go func() {
+		err := store.WithLockedExecution(executionID, func(locked Store) error {
+			escaped = locked
+			go func() {
+				updateDone <- locked.UpdateManifest(executionID, func(manifest *Manifest) error {
+					close(updateEntered)
+					<-releaseUpdate
+					manifest.Artifacts = append(manifest.Artifacts, Artifact{
+						ID:   "scoped-update",
+						Name: "Scoped Update",
+						Type: "text",
+					})
+					return nil
+				})
+			}()
+			<-updateEntered
+			close(lockCallbackReturned)
+			return nil
+		})
+		lockDone <- err
+		close(lockReturned)
+	}()
+	<-lockCallbackReturned
+
+	select {
+	case <-lockReturned:
+		t.Error("WithLockedExecution() returned before its started scoped update completed")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	contenderEntered := make(chan struct{})
+	contenderDone := make(chan error, 1)
+	go func() {
+		contenderDone <- store.WithExecutionLock(executionID, func() error {
+			close(contenderEntered)
+			return nil
+		})
+	}()
+	select {
+	case <-contenderEntered:
+		t.Error("contender acquired the execution lock while a scoped update was still running")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseUpdate)
+	if err := <-updateDone; err != nil {
+		t.Fatalf("scoped UpdateManifest() error: %v", err)
+	}
+	if err := <-lockDone; err != nil {
+		t.Fatalf("WithLockedExecution() error: %v", err)
+	}
+	select {
+	case <-contenderEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("contender did not acquire the execution lock after scoped update completion")
+	}
+	if err := <-contenderDone; err != nil {
+		t.Fatalf("contender WithExecutionLock() error: %v", err)
+	}
+
+	holdEntered := make(chan struct{})
+	releaseHold := make(chan struct{})
+	holdDone := make(chan error, 1)
+	go func() {
+		holdDone <- store.WithExecutionLock(executionID, func() error {
+			close(holdEntered)
+			<-releaseHold
+			return nil
+		})
+	}()
+	<-holdEntered
+
+	escapedEntered := make(chan struct{})
+	escapedDone := make(chan error, 1)
+	go func() {
+		escapedDone <- escaped.UpdateManifest(executionID, func(*Manifest) error {
+			close(escapedEntered)
+			return nil
+		})
+	}()
+	select {
+	case <-escapedEntered:
+		t.Fatal("escaped scoped store bypassed normal lock acquisition")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseHold)
+	if err := <-holdDone; err != nil {
+		t.Fatalf("held WithExecutionLock() error: %v", err)
+	}
+	select {
+	case <-escapedEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("escaped scoped update did not reacquire after lock release")
+	}
+	if err := <-escapedDone; err != nil {
+		t.Fatalf("escaped UpdateManifest() error: %v", err)
+	}
+}
+
 func startL3ExecutionLockHelper(t *testing.T, root, executionID, readyPath, enteredPath, releasePath string) <-chan error {
 	t.Helper()
 	command := exec.Command(os.Args[0], "-test.run=^TestL3ExecutionLockHelper$")

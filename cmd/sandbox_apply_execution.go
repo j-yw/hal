@@ -245,13 +245,17 @@ func validateSandboxExecutionReadyForCompletedApply(store sandboxexecution.Store
 	if prdArtifact == nil || strings.TrimSpace(prdArtifact.StoredPath) == "" {
 		return fmt.Errorf("sandbox execution %q has no collected %s completion artifact", manifest.ID, sandboxExecutionPRDDisplayPath)
 	}
-	prdPath, err := store.ResolveStoredPath(manifest.ID, prdArtifact.StoredPath)
+	prdFile, err := store.OpenStoredFile(manifest.ID, prdArtifact.StoredPath)
 	if err != nil {
-		return fmt.Errorf("resolve sandbox execution %q PRD completion artifact: %w", manifest.ID, err)
+		return fmt.Errorf("open sandbox execution %q PRD completion artifact: %w", manifest.ID, err)
 	}
-	data, err := os.ReadFile(prdPath)
+	data, err := io.ReadAll(prdFile)
+	closeErr := prdFile.Close()
 	if err != nil {
 		return fmt.Errorf("read sandbox execution %q PRD completion artifact: %w", manifest.ID, err)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close sandbox execution %q PRD completion artifact", manifest.ID)
 	}
 	var prd engine.PRD
 	if err := json.Unmarshal(data, &prd); err != nil {

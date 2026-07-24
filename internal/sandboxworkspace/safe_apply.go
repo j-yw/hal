@@ -23,10 +23,13 @@ type SafeApplyGit interface {
 	CheckBundle(context.Context, SafeApplyGitRequest) error
 }
 
-// SafeApplyGitRequest identifies the host worktree and local payload for a Git
-// validation or apply operation. These paths are never copied into results.
+// SafeApplyGitRequest identifies the host worktree and verified local payload
+// for a Git validation or apply operation. PayloadPath remains a compatibility
+// seam for injected fakes and callers without a verified descriptor. Neither
+// value is copied into results.
 type SafeApplyGitRequest struct {
 	ProjectDir  string
+	Payload     *os.File
 	PayloadPath string
 }
 
@@ -63,24 +66,41 @@ func (GitCLIHostApplier) CheckCleanWorktree(ctx context.Context, req SafeApplyGi
 
 // CheckPatch runs the patch dry-run boundary.
 func (GitCLIHostApplier) CheckPatch(ctx context.Context, req SafeApplyGitRequest) error {
+	if req.Payload != nil {
+		if err := rewindSafeApplyPayload(req.Payload); err != nil {
+			return fmt.Errorf("git apply --check failed: verified payload is unavailable")
+		}
+		return gitRunSafeWithStdin(ctx, req.ProjectDir, "git apply --check", req.Payload, "apply", "--check", "-")
+	}
 	return gitRunSafe(ctx, req.ProjectDir, "git apply --check", "apply", "--check", req.PayloadPath)
 }
 
 // ApplyPatch applies a patch after the caller has completed dry-run checks.
 func (GitCLIHostApplier) ApplyPatch(ctx context.Context, req SafeApplyGitRequest) error {
+	if req.Payload != nil {
+		if err := rewindSafeApplyPayload(req.Payload); err != nil {
+			return fmt.Errorf("git apply failed: verified payload is unavailable")
+		}
+		return gitRunSafeWithStdin(ctx, req.ProjectDir, "git apply", req.Payload, "apply", "-")
+	}
 	return gitRunSafe(ctx, req.ProjectDir, "git apply", "apply", req.PayloadPath)
 }
 
 // CheckBundle verifies a bundle payload as the bundle dry-run boundary.
 func (GitCLIHostApplier) CheckBundle(ctx context.Context, req SafeApplyGitRequest) error {
+	if req.Payload != nil {
+		return gitRunSafeWithVerifiedPayload(ctx, req.ProjectDir, "git bundle verify", req.Payload, "bundle", "verify")
+	}
 	return gitRunSafe(ctx, req.ProjectDir, "git bundle verify", "bundle", "verify", req.PayloadPath)
 }
 
 // SafeApplyRequest describes an explicit host apply attempt for one sync-out
-// artifact. ProjectDir and PayloadPath are command-local inputs and are omitted
-// from the structured result.
+// artifact. Payload keeps store verification pinned through Git consumption;
+// PayloadPath remains available to injected fakes and compatibility callers.
+// Command-local inputs are omitted from the structured result.
 type SafeApplyRequest struct {
 	ProjectDir  string
+	Payload     *os.File
 	PayloadPath string
 	ResourceKey string
 	LockDir     string
@@ -162,6 +182,7 @@ func (a SafeApplier) Apply(ctx context.Context, req SafeApplyRequest) (SafeApply
 	}
 	gitReq := SafeApplyGitRequest{
 		ProjectDir:  strings.TrimSpace(req.ProjectDir),
+		Payload:     req.Payload,
 		PayloadPath: strings.TrimSpace(req.PayloadPath),
 	}
 
@@ -224,10 +245,24 @@ func validateSafeApplyRequest(req SafeApplyRequest) error {
 	if strings.TrimSpace(req.ProjectDir) == "" {
 		return fmt.Errorf("safe apply: project directory is required")
 	}
-	if strings.TrimSpace(req.PayloadPath) == "" {
+	if req.Payload != nil {
+		info, err := req.Payload.Stat()
+		if err != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("safe apply: verified payload is not a regular file")
+		}
+	}
+	if req.Payload == nil && strings.TrimSpace(req.PayloadPath) == "" {
 		return fmt.Errorf("safe apply: payload path is required")
 	}
 	return nil
+}
+
+func rewindSafeApplyPayload(payload *os.File) error {
+	if payload == nil {
+		return fmt.Errorf("verified payload is required")
+	}
+	_, err := payload.Seek(0, 0)
+	return err
 }
 
 func safeApplySupportedMode(mode SyncOutApplyMode) bool {
