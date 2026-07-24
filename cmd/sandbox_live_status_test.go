@@ -158,6 +158,59 @@ func TestLiveStatusWriteTarget_SkipsPersistWhenSandboxDeletedAfterTargetCreation
 	}
 }
 
+func TestLiveStatusWriteTarget_RejectsSameNameReplacement(t *testing.T) {
+	now := time.Date(2026, 3, 26, 10, 0, 0, 0, time.UTC)
+	original := &sandbox.SandboxState{
+		ID:        "sandbox-original",
+		Name:      "reused-box",
+		Status:    sandbox.StatusStopped,
+		CreatedAt: now.Add(-2 * time.Hour),
+	}
+	replacement := &sandbox.SandboxState{
+		ID:        "sandbox-replacement",
+		Name:      original.Name,
+		Status:    sandbox.StatusStopped,
+		CreatedAt: now,
+		IP:        "replacement-address",
+	}
+
+	loadCalls := 0
+	writeCalls := 0
+	writeTarget, err := liveStatusWriteTarget(
+		original.Name,
+		func(string) (*sandbox.SandboxState, error) {
+			loadCalls++
+			if loadCalls == 1 {
+				return original, nil
+			}
+			return replacement, nil
+		},
+		func(updated *sandbox.SandboxState) error {
+			writeCalls++
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("liveStatusWriteTarget() unexpected setup error: %v", err)
+	}
+
+	err = persistLiveStatusResult(
+		original,
+		liveStatusResult{Status: sandbox.StatusRunning, IP: "stale-original-address"},
+		now,
+		writeTarget,
+	)
+	if err == nil || !strings.Contains(err.Error(), "sandbox instance changed") {
+		t.Fatalf("persistLiveStatusResult() error = %v, want stable identity rejection", err)
+	}
+	if writeCalls != 0 {
+		t.Fatalf("same-name replacement received %d stale writes, want none", writeCalls)
+	}
+	if replacement.Status != sandbox.StatusStopped || replacement.IP != "replacement-address" {
+		t.Fatalf("replacement was mutated by stale refresh: %#v", replacement)
+	}
+}
+
 func TestLiveStatusWriteTarget_MergesStatusIntoFreshActiveInstance(t *testing.T) {
 	now := time.Date(2026, 3, 26, 10, 0, 0, 0, time.UTC)
 	inst := &sandbox.SandboxState{
