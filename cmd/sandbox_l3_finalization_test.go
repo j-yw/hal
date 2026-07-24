@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -294,6 +295,254 @@ func TestL3FinalizationIdentityMismatchDoesNotMutateOrFinalize(t *testing.T) {
 	}
 	if after.Finalization != before.Finalization || after.WorkerJob.RuntimeID != before.WorkerJob.RuntimeID {
 		t.Fatalf("identity mismatch mutated manifest: before=%#v after=%#v", before, after)
+	}
+}
+
+func TestL3FinalizationUnknownOrInterruptedMayAdvanceOnlyToProvenTerminalState(t *testing.T) {
+	for _, durableState := range []string{sandboxworker.JobStateUnknown, sandboxworker.JobStateInterrupted} {
+		for _, liveState := range []string{
+			sandboxworker.JobStateSucceeded,
+			sandboxworker.JobStateFailed,
+			sandboxworker.JobStateCanceled,
+		} {
+			t.Run(durableState+"_to_"+liveState, func(t *testing.T) {
+				store, executionID, terminal := seedL3FinalizationExecution(t, durableState)
+				terminal.State = liveState
+				var effects atomic.Int32
+				deps := sandboxL3FinalizationDeps{
+					now: func() time.Time { return terminal.FinishedAt.Add(time.Second) },
+					observeJob: func(context.Context, *sandboxexecution.Manifest) (*sandboxworker.Job, error) {
+						return cloneL3WorkerJob(terminal), nil
+					},
+					drainLogs: func(context.Context, *sandboxexecution.Manifest, *sandboxworker.Job) error {
+						effects.Add(1)
+						return nil
+					},
+					collectArtifacts: func(context.Context, sandboxexecution.Store, *sandboxexecution.Manifest, *sandboxworker.Job) error {
+						effects.Add(1)
+						return nil
+					},
+					collectSyncOut: func(context.Context, sandboxexecution.Store, *sandboxexecution.Manifest, *sandboxworker.Job) error {
+						return errors.New("sync-out must remain disabled")
+					},
+					releaseLease: func(context.Context, *sandboxexecution.Manifest) error {
+						effects.Add(1)
+						return nil
+					},
+				}
+				if err := finalizeSandboxL3Execution(context.Background(), store, executionID, false, deps); err != nil {
+					t.Fatalf("finalize %s -> %s: %v", durableState, liveState, err)
+				}
+				if effects.Load() != 3 {
+					t.Fatalf("finalization effects = %d, want logs/artifacts/lease", effects.Load())
+				}
+				manifest, err := store.LoadManifest(executionID)
+				if err != nil {
+					t.Fatalf("LoadManifest() error: %v", err)
+				}
+				if manifest.Finalization == nil ||
+					manifest.Finalization.State != sandboxexecution.FinalizationStateCompleted ||
+					manifest.Finalization.TerminalJobState != liveState ||
+					manifest.Status != sandboxL3ExecutionStatusFromJob(liveState) {
+					t.Fatalf("advanced finalization = %#v status=%q", manifest.Finalization, manifest.Status)
+				}
+			})
+		}
+
+		for _, liveState := range []string{sandboxworker.JobStateQueued, sandboxworker.JobStateRunning} {
+			t.Run(durableState+"_rejects_"+liveState, func(t *testing.T) {
+				store, executionID, live := seedL3FinalizationExecution(t, durableState)
+				live.State = liveState
+				if liveState == sandboxworker.JobStateQueued {
+					live.StartedAt = nil
+					live.HeartbeatAt = nil
+				}
+				live.FinishedAt = nil
+				live.ExitCode = nil
+				var forbidden atomic.Int32
+				err := finalizeSandboxL3Execution(context.Background(), store, executionID, false, sandboxL3FinalizationDeps{
+					observeJob: func(context.Context, *sandboxexecution.Manifest) (*sandboxworker.Job, error) {
+						return cloneL3WorkerJob(live), nil
+					},
+					drainLogs: func(context.Context, *sandboxexecution.Manifest, *sandboxworker.Job) error {
+						forbidden.Add(1)
+						return nil
+					},
+					collectArtifacts: func(context.Context, sandboxexecution.Store, *sandboxexecution.Manifest, *sandboxworker.Job) error {
+						forbidden.Add(1)
+						return nil
+					},
+					releaseLease: func(context.Context, *sandboxexecution.Manifest) error {
+						forbidden.Add(1)
+						return nil
+					},
+				})
+				if err == nil || !strings.Contains(err.Error(), "worker_job_state_regression") {
+					t.Fatalf("%s -> %s error = %v, want state regression", durableState, liveState, err)
+				}
+				if forbidden.Load() != 0 {
+					t.Fatalf("%s -> %s crossed %d forbidden boundaries", durableState, liveState, forbidden.Load())
+				}
+			})
+		}
+	}
+}
+
+func TestL3FinalizationBlockFailsClosedWhenManifestReloadFails(t *testing.T) {
+	store, executionID, terminal := seedL3FinalizationExecution(t, sandboxworker.JobStateRunning)
+	stale, err := store.LoadManifest(executionID)
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	manifestPath, err := store.ManifestPath(executionID)
+	if err != nil {
+		t.Fatalf("ManifestPath() error: %v", err)
+	}
+	if err := os.Remove(manifestPath); err != nil {
+		t.Fatalf("remove manifest: %v", err)
+	}
+
+	err = blockSandboxL3Finalization(
+		store,
+		stale,
+		terminal,
+		false,
+		"artifact_collection_failed",
+		terminal.FinishedAt.Add(time.Second),
+	)
+	if err == nil || !strings.Contains(err.Error(), "finalization_state_reload_failed") {
+		t.Fatalf("block error = %v, want reload failure", err)
+	}
+	if _, statErr := os.Stat(manifestPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("stale block rewrote missing manifest; stat error = %v", statErr)
+	}
+}
+
+func TestL3FinalizationMissingActionDependenciesFailClosed(t *testing.T) {
+	tests := []struct {
+		name       string
+		requestOut bool
+		clear      func(*sandboxL3FinalizationDeps)
+		reasonCode string
+	}{
+		{
+			name:       "logs",
+			clear:      func(deps *sandboxL3FinalizationDeps) { deps.drainLogs = nil },
+			reasonCode: "terminal_log_drain_failed",
+		},
+		{
+			name:       "artifacts",
+			clear:      func(deps *sandboxL3FinalizationDeps) { deps.collectArtifacts = nil },
+			reasonCode: "artifact_collection_failed",
+		},
+		{
+			name:       "sync-out",
+			requestOut: true,
+			clear:      func(deps *sandboxL3FinalizationDeps) { deps.collectSyncOut = nil },
+			reasonCode: "sync_out_collection_failed",
+		},
+		{
+			name:       "lease",
+			clear:      func(deps *sandboxL3FinalizationDeps) { deps.releaseLease = nil },
+			reasonCode: "lease_release_failed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, executionID, terminal := seedL3FinalizationExecution(t, sandboxworker.JobStateRunning)
+			deps := sandboxL3FinalizationDeps{
+				observeJob: func(context.Context, *sandboxexecution.Manifest) (*sandboxworker.Job, error) {
+					return cloneL3WorkerJob(terminal), nil
+				},
+				drainLogs: func(context.Context, *sandboxexecution.Manifest, *sandboxworker.Job) error {
+					return nil
+				},
+				collectArtifacts: func(context.Context, sandboxexecution.Store, *sandboxexecution.Manifest, *sandboxworker.Job) error {
+					return nil
+				},
+				collectSyncOut: func(context.Context, sandboxexecution.Store, *sandboxexecution.Manifest, *sandboxworker.Job) error {
+					return nil
+				},
+				releaseLease: func(context.Context, *sandboxexecution.Manifest) error {
+					return nil
+				},
+			}
+			tt.clear(&deps)
+			err := finalizeSandboxL3Execution(context.Background(), store, executionID, tt.requestOut, deps)
+			if err == nil || !strings.Contains(err.Error(), tt.reasonCode) {
+				t.Fatalf("missing %s dependency error = %v, want %s", tt.name, err, tt.reasonCode)
+			}
+			manifest, loadErr := store.LoadManifest(executionID)
+			if loadErr != nil {
+				t.Fatalf("LoadManifest() error: %v", loadErr)
+			}
+			if manifest.Finalization == nil ||
+				manifest.Finalization.State != sandboxexecution.FinalizationStateBlocked ||
+				manifest.Finalization.ReasonCode != tt.reasonCode {
+				t.Fatalf("missing %s dependency finalization = %#v", tt.name, manifest.Finalization)
+			}
+		})
+	}
+}
+
+func TestL3FinalizationCompletedFastPathValidatesTerminalConsistency(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*sandboxexecution.Manifest)
+	}{
+		{
+			name: "manifest status",
+			mutate: func(manifest *sandboxexecution.Manifest) {
+				manifest.Status = sandboxexecution.StatusRunning
+			},
+		},
+		{
+			name: "worker job state",
+			mutate: func(manifest *sandboxexecution.Manifest) {
+				manifest.WorkerJob.State = sandboxworker.JobStateFailed
+			},
+		},
+		{
+			name: "terminal proof state",
+			mutate: func(manifest *sandboxexecution.Manifest) {
+				manifest.Finalization.TerminalJobState = sandboxworker.JobStateFailed
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, executionID, terminal := seedL3FinalizationExecution(t, sandboxworker.JobStateRunning)
+			deps := sandboxL3FinalizationDeps{
+				observeJob: func(context.Context, *sandboxexecution.Manifest) (*sandboxworker.Job, error) {
+					return cloneL3WorkerJob(terminal), nil
+				},
+				drainLogs: func(context.Context, *sandboxexecution.Manifest, *sandboxworker.Job) error { return nil },
+				collectArtifacts: func(context.Context, sandboxexecution.Store, *sandboxexecution.Manifest, *sandboxworker.Job) error {
+					return nil
+				},
+				releaseLease: func(context.Context, *sandboxexecution.Manifest) error { return nil },
+			}
+			if err := finalizeSandboxL3Execution(context.Background(), store, executionID, false, deps); err != nil {
+				t.Fatalf("seed completed finalization: %v", err)
+			}
+			manifest, err := store.LoadManifest(executionID)
+			if err != nil {
+				t.Fatalf("LoadManifest() error: %v", err)
+			}
+			tt.mutate(manifest)
+			if err := store.SaveManifest(manifest); err != nil {
+				t.Fatalf("SaveManifest(inconsistent) error: %v", err)
+			}
+
+			err = finalizeSandboxL3Execution(context.Background(), store, executionID, false, sandboxL3FinalizationDeps{
+				observeJob: func(context.Context, *sandboxexecution.Manifest) (*sandboxworker.Job, error) {
+					panic("completed fast path observed a worker job")
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), "terminal_publication_inconsistent") {
+				t.Fatalf("inconsistent completed fast path error = %v", err)
+			}
+		})
 	}
 }
 

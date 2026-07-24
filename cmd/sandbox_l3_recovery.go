@@ -98,9 +98,15 @@ type sandboxL3SelectionMode int
 const (
 	sandboxL3SelectionObserve sandboxL3SelectionMode = iota
 	sandboxL3SelectionRecover
+	sandboxL3SelectionSyncOut
 )
 
 var sandboxL3SensitiveAssignment = regexp.MustCompile(`(?i)\b(?:api[_-]?key|access[_-]?key|authorization|password|secret|token)=\S+`)
+
+type sandboxL3JobClient interface {
+	JobStatus(context.Context, sandboxworker.JobStatusRequest) (*sandboxworker.Job, error)
+	JobLogs(context.Context, sandboxworker.JobLogsRequest) (*sandboxworker.JobLogsResponse, error)
+}
 
 var (
 	sandboxL3DefaultStore    = sandboxexecution.DefaultStore
@@ -228,7 +234,7 @@ func runSandboxL3Logs(ctx context.Context, sandboxName, runID string, follow boo
 
 func streamSandboxL3Logs(
 	ctx context.Context,
-	client *sandboxworker.Client,
+	client sandboxL3JobClient,
 	manifest *sandboxexecution.Manifest,
 	job *sandboxworker.Job,
 	follow bool,
@@ -323,32 +329,29 @@ func sanitizeSandboxL3LogData(value string) string {
 }
 
 func runSandboxL3RecoveryObservation(ctx context.Context, sandboxName, runID string, requestSyncOut bool, out io.Writer) error {
-	_, manifest, err := selectSandboxL3Execution(sandboxName, runID, sandboxL3SelectionRecover)
+	mode := sandboxL3SelectionRecover
+	if requestSyncOut {
+		mode = sandboxL3SelectionSyncOut
+	}
+	_, manifest, err := selectSandboxL3Execution(sandboxName, runID, mode)
 	if err != nil {
 		return err
 	}
-	client, err := sandboxL3ClientForManifest(manifest)
+	store, err := sandboxL3DefaultStore()
 	if err != nil {
+		return errors.New("execution_store_unavailable: durable execution store is unavailable")
+	}
+	if err := finalizeSandboxL3Execution(
+		ctx,
+		store,
+		manifest.ID,
+		requestSyncOut,
+		defaultSandboxL3FinalizationDeps(),
+	); err != nil {
 		return err
-	}
-	job, err := client.JobStatus(ctx, sandboxworker.JobStatusRequest{
-		ContractVersion: sandboxworker.JobContractVersion,
-		JobID:           manifest.WorkerJob.JobID,
-	})
-	if err != nil {
-		return errors.Join(errors.New("worker_job_status_failed"), errors.New("selected worker job is unavailable"))
-	}
-	if err := validateSandboxL3LiveJob(manifest, job); err != nil {
-		return err
-	}
-	if !sandboxL3TerminalJobState(job.State) {
-		return fmt.Errorf("job_not_terminal: execution %s is still active", manifest.ID)
-	}
-	if requestSyncOut && (manifest.Finalization == nil || !manifest.Finalization.SyncOutRequested) {
-		return fmt.Errorf("sync_out_not_requested: execution %s has no durable sync-out intent", manifest.ID)
 	}
 	if out != nil {
-		fmt.Fprintf(out, "execution %s is ready for retry-safe finalization\n", manifest.ID)
+		fmt.Fprintf(out, "execution %s finalization completed\n", manifest.ID)
 	}
 	return nil
 }
@@ -377,6 +380,9 @@ func selectSandboxL3Execution(sandboxName, runID string, mode sandboxL3Selection
 		}
 		if manifest.WorkerJob == nil {
 			return nil, nil, fmt.Errorf("worker_job_missing: execution %s has no durable worker job", runID)
+		}
+		if mode == sandboxL3SelectionRecover && !sandboxL3ExecutionRecoverable(manifest) {
+			return nil, nil, fmt.Errorf("execution_not_recoverable: execution %s is already finalized", runID)
 		}
 		return instance, manifest, nil
 	}
@@ -487,8 +493,12 @@ func validateSandboxL3LiveJob(manifest *sandboxexecution.Manifest, job *sandboxw
 	if mismatch {
 		return fmt.Errorf("worker_job_identity_mismatch: live job did not match execution %s", manifest.ID)
 	}
-	if sandboxL3TerminalJobState(reference.State) && job.State != reference.State {
+	if sandboxL3FinalizationProvenTerminalJobState(reference.State) && job.State != reference.State {
 		return fmt.Errorf("worker_job_state_mismatch: live job contradicted terminal execution %s", manifest.ID)
+	}
+	if (reference.State == sandboxworker.JobStateUnknown || reference.State == sandboxworker.JobStateInterrupted) &&
+		sandboxL3ActiveJobState(job.State) {
+		return fmt.Errorf("worker_job_state_regression: unproven terminal execution %s cannot become active", manifest.ID)
 	}
 	return nil
 }
