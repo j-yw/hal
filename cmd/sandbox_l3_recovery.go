@@ -378,7 +378,7 @@ func selectSandboxL3Execution(sandboxName, runID string, mode sandboxL3Selection
 		if manifest.SandboxName != sandboxName {
 			return nil, nil, fmt.Errorf("execution_sandbox_mismatch: execution %s does not belong to sandbox %s", runID, sandboxName)
 		}
-		if manifest.WorkerJob == nil {
+		if manifest.WorkerJob == nil && !sandboxL3ExecutionAwaitingJobResolution(manifest) {
 			return nil, nil, fmt.Errorf("worker_job_missing: execution %s has no durable worker job", runID)
 		}
 		if mode == sandboxL3SelectionRecover && !sandboxL3ExecutionRecoverable(manifest) {
@@ -395,7 +395,13 @@ func selectSandboxL3Execution(sandboxName, runID string, mode sandboxL3Selection
 	completed := make([]*sandboxexecution.Manifest, 0)
 	for index := range manifests {
 		manifest := &manifests[index]
-		if manifest.SandboxName != sandboxName || manifest.WorkerJob == nil {
+		if manifest.SandboxName != sandboxName {
+			continue
+		}
+		if manifest.WorkerJob == nil {
+			if sandboxL3ExecutionAwaitingJobResolution(manifest) {
+				candidates = append(candidates, manifest)
+			}
 			continue
 		}
 		if sandboxL3ExecutionRecoverable(manifest) {
@@ -430,6 +436,9 @@ func selectSandboxL3Execution(sandboxName, runID string, mode sandboxL3Selection
 }
 
 func sandboxL3ExecutionRecoverable(manifest *sandboxexecution.Manifest) bool {
+	if sandboxL3ExecutionAwaitingJobResolution(manifest) {
+		return true
+	}
 	if manifest == nil || manifest.WorkerJob == nil {
 		return false
 	}
@@ -440,6 +449,36 @@ func sandboxL3ExecutionRecoverable(manifest *sandboxexecution.Manifest) bool {
 		(manifest.Finalization == nil || manifest.Finalization.State != sandboxexecution.FinalizationStateCompleted)
 }
 
+func sandboxL3ExecutionAwaitingJobResolution(manifest *sandboxexecution.Manifest) bool {
+	if manifest == nil ||
+		manifest.WorkerJob != nil ||
+		manifest.Status != sandboxexecution.StatusRunning ||
+		manifest.Finalization != nil ||
+		manifest.Host == nil ||
+		manifest.Runtime == nil ||
+		manifest.WorkerRouting == nil {
+		return false
+	}
+	hostID := strings.TrimSpace(manifest.Host.ID)
+	hostName := strings.TrimSpace(manifest.Host.Name)
+	driverID := strings.TrimSpace(manifest.Runtime.Driver)
+	runtimeID := strings.TrimSpace(manifest.Runtime.RuntimeID)
+	workerID := strings.TrimSpace(manifest.Runtime.WorkerID)
+	isolation := strings.TrimSpace(manifest.Runtime.IsolationLevel)
+	routing := manifest.WorkerRouting
+	return hostID != "" &&
+		hostName != "" &&
+		strings.TrimSpace(manifest.Host.Kind) == sandbox.SandboxHostKindWorker &&
+		driverID == sandbox.SandboxRuntimeDriverRootlessPodman &&
+		runtimeID != "" &&
+		workerID != "" &&
+		isolation == sandbox.SandboxIsolationLevelContainer &&
+		strings.TrimSpace(routing.SelectedWorkerHostID) == hostID &&
+		strings.TrimSpace(routing.SelectedWorkerHostName) == hostName &&
+		strings.TrimSpace(routing.RuntimeDriverID) == driverID &&
+		strings.TrimSpace(routing.IsolationLevel) == isolation
+}
+
 func sandboxL3ClientForManifest(manifest *sandboxexecution.Manifest) (*sandboxworker.Client, error) {
 	if manifest == nil || manifest.WorkerJob == nil {
 		return nil, errors.New("worker_job_missing: durable worker job identity is required")
@@ -448,6 +487,14 @@ func sandboxL3ClientForManifest(manifest *sandboxexecution.Manifest) (*sandboxwo
 	if hostID == "" && manifest.Host != nil {
 		hostID = strings.TrimSpace(manifest.Host.ID)
 	}
+	if hostID == "" {
+		return nil, errors.New("worker_host_missing: durable worker host identity is required")
+	}
+	return sandboxL3ClientForHostID(hostID)
+}
+
+func sandboxL3ClientForHostID(hostID string) (*sandboxworker.Client, error) {
+	hostID = strings.TrimSpace(hostID)
 	if hostID == "" {
 		return nil, errors.New("worker_host_missing: durable worker host identity is required")
 	}
