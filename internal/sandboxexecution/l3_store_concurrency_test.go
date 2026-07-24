@@ -137,6 +137,48 @@ func TestL3ExecutionLockSerializesContendersAndReleasesAfterSuccess(t *testing.T
 	}
 }
 
+func TestL3LockedExecutionStoreAllowsNestedRetrySafeManifestUpdates(t *testing.T) {
+	store := newTestStore(t)
+	manifest := testManifest("exec-locked-store", time.Now().UTC())
+	if err := store.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+
+	var escaped Store
+	err := store.WithLockedExecution("exec-locked-store", func(locked Store) error {
+		escaped = locked
+		return locked.UpdateManifest("exec-locked-store", func(current *Manifest) error {
+			current.Status = StatusFailed
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("WithLockedExecution() nested update error: %v", err)
+	}
+	loaded, err := store.LoadManifest("exec-locked-store")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if loaded.Status != StatusFailed {
+		t.Fatalf("nested update status = %q, want failed", loaded.Status)
+	}
+
+	// A scoped store that escapes its callback must not retain the lock bypass.
+	if err := escaped.UpdateManifest("exec-locked-store", func(current *Manifest) error {
+		current.Status = StatusCanceled
+		return nil
+	}); err != nil {
+		t.Fatalf("escaped store update error: %v", err)
+	}
+	loaded, err = store.LoadManifest("exec-locked-store")
+	if err != nil {
+		t.Fatalf("LoadManifest(after escaped update) error: %v", err)
+	}
+	if loaded.Status != StatusCanceled {
+		t.Fatalf("escaped update status = %q, want canceled", loaded.Status)
+	}
+}
+
 func startL3ExecutionLockHelper(t *testing.T, root, executionID, readyPath, enteredPath, releasePath string) <-chan error {
 	t.Helper()
 	command := exec.Command(os.Args[0], "-test.run=^TestL3ExecutionLockHelper$")
