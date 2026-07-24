@@ -415,7 +415,7 @@ func TestRunAndAutoSandboxManifestSavesPreserveWorkerJobAndFinalization(t *testi
 	now := time.Date(2026, 7, 25, 5, 0, 0, 0, time.UTC)
 	for _, purpose := range []sandboxexecution.Purpose{sandboxexecution.PurposeRun, sandboxexecution.PurposeAuto} {
 		t.Run(string(purpose), func(t *testing.T) {
-			store := sandboxexecution.NewStore(t.TempDir())
+			store := newPrivateSandboxExecutionTestStore(t)
 			executionID := "preserve-" + string(purpose)
 			workerJob := sandboxWorkerJobReference(queuedSandboxWorkerJob("submission-preserve"), 2)
 			finalization := &sandboxexecution.FinalizationMetadata{
@@ -527,7 +527,7 @@ func TestRunAndAutoSandboxDetachedJobsStayRunningWithoutFinalizationSideEffects(
 	for _, purpose := range []sandboxexecution.Purpose{sandboxexecution.PurposeRun, sandboxexecution.PurposeAuto} {
 		t.Run(string(purpose), func(t *testing.T) {
 			projectDir := t.TempDir()
-			store := sandboxexecution.NewStore(t.TempDir())
+			store := newPrivateSandboxExecutionTestStore(t)
 			executionID := "detached-" + string(purpose)
 			target := workerRootlessCachedSandbox("worker-rootless")
 			target.Host.ID = "host-1"

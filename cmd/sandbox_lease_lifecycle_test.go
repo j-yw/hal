@@ -95,7 +95,7 @@ func TestScheduledSandboxCommandsReleaseAcquiredLeaseExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestScheduledSandboxCommandCancellationReleasesLease(t *testing.T) {
+func TestScheduledSandboxCommandCancellationBeforeAcknowledgementKeepsLeaseForRecovery(t *testing.T) {
 	startedAt := time.Date(2026, 7, 1, 9, 10, 0, 0, time.UTC)
 	ctx, cancel := context.WithCancel(context.Background())
 	var released []string
@@ -110,8 +110,12 @@ func TestScheduledSandboxCommandCancellationReleasesLease(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("command error = %v, want context.Canceled", err)
 	}
-	if len(released) != 1 || released[0] != "run-canceled-lease" {
-		t.Fatalf("released leases = %v, want canceled lease exactly once", released)
+	var detached *sandboxWorkerJobDetachedError
+	if !errors.As(err, &detached) {
+		t.Fatalf("command error = %T, want recoverable detached error", err)
+	}
+	if len(released) != 0 {
+		t.Fatalf("released leases = %v, want accepted-or-ambiguous job lease retained for recovery", released)
 	}
 }
 
@@ -211,7 +215,7 @@ func runScheduledRunLeaseLifecycleWithID(t *testing.T, ctx context.Context, star
 			return nil, nil
 		},
 		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
-			return lifecycleWorkerDriver(exec), nil
+			return withFakeSandboxWorkerJobs(lifecycleWorkerDriver(exec)), nil
 		},
 		materializeWorkspace: func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
 			return sandboxworkspace.MaterializationResult{}, nil
@@ -264,7 +268,7 @@ func runScheduledAutoLeaseLifecycle(t *testing.T, startedAt time.Time, execErr e
 			return nil, nil
 		},
 		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
-			return lifecycleWorkerDriver(lifecycleExecFunc(sandbox.SandboxLeasePurposeAuto, execErr)), nil
+			return withFakeSandboxWorkerJobs(lifecycleWorkerDriver(lifecycleExecFunc(sandbox.SandboxLeasePurposeAuto, execErr))), nil
 		},
 		materializeWorkspace: func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
 			return sandboxworkspace.MaterializationResult{}, nil

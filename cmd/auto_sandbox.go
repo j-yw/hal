@@ -355,7 +355,13 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 				req.SyncOut.Enabled,
 				deps.now().UTC(),
 			)
-			return saveAutoSandboxManifest(store, req, sandboxexecution.StatusRunning, startedAt, nil, target)
+			return persistSandboxWorkerJobUpdate(
+				store,
+				req.ExecutionID,
+				req.WorkerJob,
+				req.SyncOut.Enabled,
+				deps.now().UTC(),
+			)
 		},
 	})
 	if execResult.Result != nil {

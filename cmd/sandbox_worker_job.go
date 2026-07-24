@@ -78,17 +78,16 @@ func (*sandboxWorkerJobDetachedError) Detached() bool {
 }
 
 func sandboxWorkerJobSubmissionID(executionID string) string {
-	if strings.TrimSpace(executionID) == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte("hal:sandbox-worker-job:v1\x00" + strings.TrimSpace(executionID)))
-	return "execution-" + hex.EncodeToString(sum[:])
+	return strings.TrimSpace(executionID)
 }
 
 func runSandboxWorkerJobOrSync(ctx context.Context, req sandboxWorkerJobCommandRequest) error {
 	jobDriver, supportsJobs := req.Run.Driver.(sandboxWorkerJobDriver)
-	if !req.UseWorkerJob || !supportsJobs {
+	if !req.UseWorkerJob {
 		return runSandboxRuntimeExec(ctx, req.Run, req.Command)
+	}
+	if !supportsJobs {
+		return fmt.Errorf("sandbox worker job capability is required for the selected runtime")
 	}
 	return runSandboxWorkerJob(ctx, sandboxWorkerJobRunRequest{
 		ExecutionID: req.ExecutionID,
@@ -126,6 +125,9 @@ func runSandboxWorkerJob(ctx context.Context, req sandboxWorkerJobRunRequest) er
 	}
 	job, startErr := req.Driver.JobStart(ctx, submissionID, execReq)
 	if startErr != nil {
+		if !sandboxWorkerJobStartMayNeedResolution(startErr) {
+			return fmt.Errorf("start sandbox worker job: %w", startErr)
+		}
 		resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		resolved, resolveErr := req.Driver.JobResolve(resolveCtx, submissionID)
@@ -140,7 +142,7 @@ func runSandboxWorkerJob(ctx context.Context, req sandboxWorkerJobRunRequest) er
 		return &sandboxWorkerJobDetachedError{Cause: err}
 	}
 
-	reference := sandboxWorkerJobReference(*job, 0)
+	reference := sandboxWorkerJobReference(*job, job.LogCursor)
 	if reference == nil {
 		return fmt.Errorf("sandbox worker job returned unsafe durable metadata")
 	}
@@ -155,6 +157,8 @@ func runSandboxWorkerJob(ctx context.Context, req sandboxWorkerJobRunRequest) er
 	if wait == nil {
 		wait = waitForSandboxWorkerJobPoll
 	}
+	var readCursor uint64
+	var retentionGapWarned bool
 	for {
 		if err := ctx.Err(); err != nil {
 			return &sandboxWorkerJobDetachedError{Cause: err}
@@ -169,7 +173,7 @@ func runSandboxWorkerJob(ctx context.Context, req sandboxWorkerJobRunRequest) er
 		if status.LogCursor < reference.LogCursor {
 			return &sandboxWorkerJobDetachedError{Cause: fmt.Errorf("sandbox worker job log cursor regressed")}
 		}
-		reference = sandboxWorkerJobReference(*status, reference.LogCursor)
+		reference = sandboxWorkerJobReference(*status, status.LogCursor)
 		if reference == nil {
 			return fmt.Errorf("sandbox worker job status returned unsafe durable metadata")
 		}
@@ -177,11 +181,8 @@ func runSandboxWorkerJob(ctx context.Context, req sandboxWorkerJobRunRequest) er
 			return &sandboxWorkerJobDetachedError{Cause: fmt.Errorf("persist sandbox worker job status: %w", err)}
 		}
 
-		if err := drainSandboxWorkerJobLogs(ctx, req, status, reference); err != nil {
+		if err := drainSandboxWorkerJobLogs(ctx, req, status, &readCursor, &retentionGapWarned); err != nil {
 			return err
-		}
-		if err := req.Persist(reference); err != nil {
-			return &sandboxWorkerJobDetachedError{Cause: fmt.Errorf("persist sandbox worker job log cursor: %w", err)}
 		}
 		if sandboxWorkerJobTerminal(status.State) {
 			return sandboxWorkerJobTerminalResult(*status)
@@ -196,26 +197,48 @@ func drainSandboxWorkerJobLogs(
 	ctx context.Context,
 	req sandboxWorkerJobRunRequest,
 	status *sandboxworker.Job,
-	reference *sandboxexecution.WorkerJobReference,
+	readCursor *uint64,
+	retentionGapWarned *bool,
 ) error {
-	if status == nil || reference == nil {
+	if status == nil || readCursor == nil || retentionGapWarned == nil {
 		return fmt.Errorf("sandbox worker job log drain requires durable state")
 	}
-	for reference.LogCursor < status.LogCursor {
-		logs, err := req.Driver.JobLogs(ctx, reference.JobID, reference.LogCursor, sandboxworker.DefaultJobLogReadBytes)
+	for *readCursor < status.LogCursor {
+		logs, err := req.Driver.JobLogs(ctx, status.ID, *readCursor, sandboxworker.DefaultJobLogReadBytes)
 		if err != nil {
 			return &sandboxWorkerJobDetachedError{Cause: fmt.Errorf("fetch sandbox worker job logs: %w", err)}
 		}
-		if err := validateSandboxWorkerJobLogs(logs, reference.JobID, reference.LogCursor, status.LogCursor); err != nil {
+		if err := validateSandboxWorkerJobLogs(logs, status.ID, *readCursor, status.LogCursor); err != nil {
 			return &sandboxWorkerJobDetachedError{Cause: err}
+		}
+		if logs.Truncated && !*retentionGapWarned {
+			if err := writeSandboxWorkerJobRetentionWarning(req.Command.Stderr); err != nil {
+				return &sandboxWorkerJobDetachedError{Cause: err}
+			}
+			*retentionGapWarned = true
 		}
 		if err := writeSandboxWorkerJobLogs(req.Command, logs.Records); err != nil {
 			return &sandboxWorkerJobDetachedError{Cause: err}
 		}
-		reference.LogCursor = logs.NextCursor
-		if err := req.Persist(reference); err != nil {
-			return &sandboxWorkerJobDetachedError{Cause: fmt.Errorf("persist sandbox worker job log cursor: %w", err)}
-		}
+		*readCursor = logs.NextCursor
+	}
+	return nil
+}
+
+func sandboxWorkerJobStartMayNeedResolution(err error) bool {
+	if err == nil {
+		return false
+	}
+	var protocolErr *sandboxworker.ProtocolError
+	return !errors.As(err, &protocolErr)
+}
+
+func writeSandboxWorkerJobRetentionWarning(writer io.Writer) error {
+	if writer == nil {
+		writer = io.Discard
+	}
+	if _, err := io.WriteString(writer, "warning: sandbox worker job log retention gap; earlier records are unavailable\n"); err != nil {
+		return fmt.Errorf("write sandbox worker job retention warning: %w", err)
 	}
 	return nil
 }
