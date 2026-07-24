@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -13,6 +15,71 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxexecution"
 	"github.com/jywlabs/hal/internal/sandboxworker"
 )
+
+func TestL3LostAcknowledgementStatusAndListRecommendRecoveryWithoutLiveMutation(t *testing.T) {
+	script := &l3WorkerScript{
+		jobState:         sandboxworker.JobStateRunning,
+		panicOnForbidden: true,
+		pages:            map[uint64]sandboxworker.JobLogsResponse{},
+	}
+	harness := newL3WorkerHarness(t, script)
+	harness.seed("alpha", "run-alpha", "")
+
+	for _, live := range []bool{false, true} {
+		t.Run(map[bool]string{false: "cached", true: "live-request"}[live], func(t *testing.T) {
+			var output bytes.Buffer
+			if err := runSandboxL3StatusJSON(context.Background(), "alpha", live, &output); err != nil {
+				t.Fatalf("status lost acknowledgement: %v", err)
+			}
+			var response sandboxL3StatusResponse
+			if err := json.Unmarshal(output.Bytes(), &response); err != nil {
+				t.Fatalf("decode status: %v", err)
+			}
+			if response.Source != "cached" ||
+				response.Execution == nil ||
+				response.Execution.RunID != "run-alpha" ||
+				!response.Execution.Active ||
+				response.RecommendedAction != "recover" {
+				t.Fatalf("lost-ack status = %#v", response)
+			}
+			if live {
+				if len(response.Diagnostics) != 1 ||
+					response.Diagnostics[0].Code != "worker_job_resolution_required" {
+					t.Fatalf("live lost-ack diagnostics = %#v", response.Diagnostics)
+				}
+			}
+		})
+	}
+
+	instance, err := sandboxL3LoadSandbox("alpha")
+	if err != nil {
+		t.Fatalf("load sandbox: %v", err)
+	}
+	var output bytes.Buffer
+	if err := renderSandboxL3LiveListJSON(context.Background(), &output, []*sandbox.SandboxState{instance}); err != nil {
+		t.Fatalf("live list lost acknowledgement: %v", err)
+	}
+	var response sandboxL3ListResponse
+	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
+		t.Fatalf("decode live list: %v", err)
+	}
+	if len(response.Sandboxes) != 1 ||
+		response.Sandboxes[0].Execution == nil ||
+		response.Sandboxes[0].Execution.RunID != "run-alpha" ||
+		!response.Sandboxes[0].Execution.Active ||
+		response.Sandboxes[0].RecommendedAction != "recover" ||
+		response.Totals.ActiveExecutions != 1 {
+		t.Fatalf("lost-ack live list = %#v", response)
+	}
+	if len(response.Diagnostics) != 1 ||
+		response.Diagnostics[0].Code != "worker_job_resolution_required" {
+		t.Fatalf("lost-ack list diagnostics = %#v", response.Diagnostics)
+	}
+	requests, forbidden := script.snapshot()
+	if len(requests) != 0 || len(forbidden) != 0 {
+		t.Fatalf("status/list crossed live worker boundary: requests=%#v forbidden=%#v", requests, forbidden)
+	}
+}
 
 func TestL3RecoveryResolvesLostAcknowledgementAndPersistsBeforeObservation(t *testing.T) {
 	for _, commandName := range []string{"recover", "sync-out"} {

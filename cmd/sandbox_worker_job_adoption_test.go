@@ -382,6 +382,24 @@ func TestSandboxWorkerJobRunnerRejectsMismatchedLogIdentity(t *testing.T) {
 	}
 }
 
+func TestSandboxWorkerJobLogValidationAllowsConcurrentProducerAdvance(t *testing.T) {
+	recordedAt := time.Date(2026, 7, 25, 4, 4, 0, 0, time.UTC)
+	logs := &sandboxworker.JobLogsResponse{
+		ContractVersion: sandboxworker.JobContractVersion,
+		JobID:           "job-concurrent-log",
+		Records: []sandboxworker.JobLogRecord{{
+			Cursor:    2,
+			Stream:    sandboxworker.JobLogStreamStdout,
+			Data:      "new output\n",
+			Timestamp: recordedAt,
+		}},
+		NextCursor: 2,
+	}
+	if err := validateSandboxWorkerJobLogs(logs, "job-concurrent-log", 1, 1); err != nil {
+		t.Fatalf("validate logs after concurrent producer advance: %v", err)
+	}
+}
+
 func TestSandboxWorkerJobRunnerReturnsTerminalExitFailure(t *testing.T) {
 	startedAt := time.Date(2026, 7, 25, 4, 5, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(time.Second)
