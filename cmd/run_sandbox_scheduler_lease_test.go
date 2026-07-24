@@ -171,7 +171,7 @@ func testRunSandboxExplicitSchedulerAcquiresLeaseAndPersistsManifest(t *testing.
 			if req.Target.Runtime.WorkerID != "worker-scheduled" {
 				t.Fatalf("worker resolver worker ID = %q, want selected host ID", req.Target.Runtime.WorkerID)
 			}
-			return workerDriver, nil
+			return withFakeSandboxWorkerJobs(workerDriver), nil
 		},
 		persistSandboxState: func(state *sandbox.SandboxState) error {
 			persistedState = state

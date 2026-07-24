@@ -1832,7 +1832,7 @@ func TestWorkerRootlessRunSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) {
 			if req.Target.Runtime.WorkerID != "worker-1" || req.Target.Runtime.RuntimeID != "ctr-worker-rootless" {
 				t.Fatalf("worker resolver runtime metadata = %#v, want durable worker metadata", req.Target.Runtime)
 			}
-			return workerDriver, nil
+			return withFakeSandboxWorkerJobs(workerDriver), nil
 		},
 		materializeWorkspace: func(_ context.Context, prep sandboxexec.PrepareContext, _ sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
 			materializedWithDriver = prep.Driver.ID()
@@ -1957,7 +1957,7 @@ func TestWorkerRootlessRunSandboxPersistsSafeSandboxStateMetadata(t *testing.T) 
 			return nil, nil
 		},
 		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
-			return workerDriver, nil
+			return withFakeSandboxWorkerJobs(workerDriver), nil
 		},
 		persistSandboxState: sandbox.ForceWriteInstance,
 		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
@@ -2065,7 +2065,7 @@ func TestWorkerRootlessAutoSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) 
 			if req.Target.Runtime.WorkerID != "worker-1" || req.Target.Runtime.RuntimeID != "ctr-worker-rootless" {
 				t.Fatalf("worker resolver runtime metadata = %#v, want durable worker metadata", req.Target.Runtime)
 			}
-			return workerDriver, nil
+			return withFakeSandboxWorkerJobs(workerDriver), nil
 		},
 		materializeWorkspace: func(_ context.Context, prep sandboxexec.PrepareContext, _ sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
 			materializedWithDriver = prep.Driver.ID()
@@ -2177,7 +2177,7 @@ func TestWorkerRootlessRunSandboxStreamsOutputAndSummariesExcludePreparation(t *
 			return nil, nil
 		},
 		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
-			return workerDriver, nil
+			return withFakeSandboxWorkerJobs(workerDriver), nil
 		},
 		bootstrap:              bootstrapWithPreparationOutput(),
 		runProviderExecWithEnv: runProviderExecWithPreparationOutput("run preparation output"),
@@ -2287,7 +2287,7 @@ func TestWorkerRootlessAutoSandboxStreamsOutputAndSummariesExcludePreparation(t 
 			return nil, nil
 		},
 		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
-			return workerDriver, nil
+			return withFakeSandboxWorkerJobs(workerDriver), nil
 		},
 		bootstrap:              bootstrapWithPreparationOutput(),
 		runProviderExecWithEnv: runProviderExecWithPreparationOutput("auto preparation output"),
@@ -2410,7 +2410,7 @@ func TestWorkerRootlessRunSandboxUsesRuntimeCopyForWorkspaceAndArtifacts(t *test
 			return nil, nil
 		},
 		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
-			return workerDriver, nil
+			return withFakeSandboxWorkerJobs(workerDriver), nil
 		},
 		materializeWorkspace: func(ctx context.Context, prep sandboxexec.PrepareContext, req sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
 			req.BundleDir = bundleDir
@@ -2533,7 +2533,7 @@ func TestWorkerRootlessAutoSandboxUsesRuntimeCopyForWorkspaceAndArtifacts(t *tes
 			return nil, nil
 		},
 		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
-			return workerDriver, nil
+			return withFakeSandboxWorkerJobs(workerDriver), nil
 		},
 		materializeWorkspace: func(ctx context.Context, prep sandboxexec.PrepareContext, req sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
 			req.BundleDir = bundleDir
@@ -2660,7 +2660,7 @@ func TestWorkerRootlessRunSandboxCollectsRecoveryAfterRemoteFailure(t *testing.T
 			return nil, nil
 		},
 		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
-			return workerDriver, nil
+			return withFakeSandboxWorkerJobs(workerDriver), nil
 		},
 		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
 			return factory.BootstrapResult{}, nil
@@ -2793,7 +2793,7 @@ func TestWorkerRootlessAutoSandboxRecordsRecoveryWarningAfterFailedCopyOut(t *te
 			return nil, nil
 		},
 		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
-			return workerDriver, nil
+			return withFakeSandboxWorkerJobs(workerDriver), nil
 		},
 		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
 			return factory.BootstrapResult{}, nil
