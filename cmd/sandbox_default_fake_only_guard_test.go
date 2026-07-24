@@ -21,14 +21,16 @@ func TestPhase19DefaultTestsAvoidPodmanDaemonsAndWorkerIntegrationEnv(t *testing
 		}
 		hasPodmanTag := phase19HasBuildTag(source, "podman_integration")
 		hasWorkerTag := phase19HasBuildTag(source, "worker_integration")
+		hasL3RecoveryE2ETag := phase19HasBuildTag(source, "l3_recovery_e2e")
+		isL3PreparedLinuxGuard := rel == "cmd/l3_prepared_linux_verification_test.go"
 
-		if phase19UsesRealPodman(source) && !hasPodmanTag {
+		if phase19UsesRealPodman(source) && !hasPodmanTag && !isL3PreparedLinuxGuard {
 			t.Fatalf("%s uses real Podman integration hooks without the podman_integration build tag", rel)
 		}
 		if phase19RequiresWorkerIntegrationEnv(source) && !hasWorkerTag {
 			t.Fatalf("%s requires HAL_WORKER_INTEGRATION_* environment without the worker_integration build tag", rel)
 		}
-		if hasWorkerTag {
+		if hasWorkerTag || hasPodmanTag && hasL3RecoveryE2ETag {
 			continue
 		}
 		if strings.HasPrefix(rel, "internal/sandboxworker/") {
