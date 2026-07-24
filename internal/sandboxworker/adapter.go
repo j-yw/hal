@@ -391,6 +391,12 @@ func (driver *ClientDriver) validatedJobResponse(operation string, req Request, 
 	if err := validateClientResponse(req, response); err != nil {
 		return nil, driver.operationError(operation, err)
 	}
+	if strings.TrimSpace(job.RuntimeDriver) != driver.ID() {
+		return nil, driver.operationError(
+			operation,
+			malformedClientResponseError(operation, "worker job runtimeDriver did not match adapter"),
+		)
+	}
 	snapshot := cloneJob(*job)
 	return &snapshot, nil
 }

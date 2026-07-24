@@ -166,7 +166,7 @@ func TestClientDriverJobOperationsPreserveRequestIdentityAndValidateResponses(t 
 
 	jobClient.startResponse = queuedAdapterJob("job-start-wrong", "other-submission", "fake_runtime", "runtime-dev")
 	if _, err := driver.JobStart(context.Background(), "submission-start", sandboxruntime.ExecRequest{
-		Target: lifecycleRuntimeTarget("fake_runtime", "dev", "running"),
+		Target: adapterJobRuntimeTarget(),
 		Args:   []string{"true"},
 	}); err == nil {
 		t.Fatal("JobStart(mismatched submission) error = nil, want identity rejection")
@@ -187,6 +187,147 @@ func TestClientDriverJobOperationsPreserveRequestIdentityAndValidateResponses(t 
 		t.Fatal("JobLogs(oversized page) error = nil, want requested bound rejection")
 	} else {
 		assertClientDriverError(t, err, OperationJobLogs, "fake_runtime")
+	}
+}
+
+func TestClientDriverJobResponsesRejectDifferentRuntimeDriver(t *testing.T) {
+	tests := []struct {
+		name      string
+		operation string
+		configure func(*recordingRuntimeDriverJobClient)
+		call      func(*ClientDriver) error
+	}{
+		{
+			name:      "start",
+			operation: OperationJobStart,
+			configure: func(client *recordingRuntimeDriverJobClient) {
+				client.startResponse = queuedAdapterJob("job-start", "submission-start", "other_runtime", "runtime-dev")
+			},
+			call: func(driver *ClientDriver) error {
+				_, err := driver.JobStart(context.Background(), "submission-start", sandboxruntime.ExecRequest{
+					Target: adapterJobRuntimeTarget(),
+					Args:   []string{"true"},
+				})
+				return err
+			},
+		},
+		{
+			name:      "resolve",
+			operation: OperationJobResolve,
+			configure: func(client *recordingRuntimeDriverJobClient) {
+				client.resolveResponse = queuedAdapterJob("job-resolve", "submission-resolve", "other_runtime", "runtime-dev")
+			},
+			call: func(driver *ClientDriver) error {
+				_, err := driver.JobResolve(context.Background(), "submission-resolve")
+				return err
+			},
+		},
+		{
+			name:      "status",
+			operation: OperationJobStatus,
+			configure: func(client *recordingRuntimeDriverJobClient) {
+				client.statusResponse = queuedAdapterJob("job-status", "submission-status", "other_runtime", "runtime-dev")
+			},
+			call: func(driver *ClientDriver) error {
+				_, err := driver.JobStatus(context.Background(), "job-status")
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			jobClient := &recordingRuntimeDriverJobClient{}
+			test.configure(jobClient)
+			driver, err := NewClientDriver(ClientDriverOptions{
+				DriverID:  "fake_runtime",
+				Client:    &recordingRuntimeDriverClient{},
+				JobClient: jobClient,
+			})
+			if err != nil {
+				t.Fatalf("NewClientDriver() error: %v", err)
+			}
+
+			err = test.call(driver)
+			if err == nil {
+				t.Fatalf("%s(different runtimeDriver) error = nil, want identity rejection", test.operation)
+			}
+			assertClientDriverError(t, err, test.operation, "fake_runtime")
+			if strings.Contains(err.Error(), "other_runtime") {
+				t.Fatalf("%s error exposed returned runtime identity: %v", test.operation, err)
+			}
+		})
+	}
+}
+
+func TestClientDriverJobResponsesAreCloned(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*recordingRuntimeDriverJobClient)
+		call      func(*ClientDriver) (*Job, error)
+	}{
+		{
+			name: "start",
+			configure: func(client *recordingRuntimeDriverJobClient) {
+				client.startResponse = completedAdapterJob("job-start", "submission-start", "fake_runtime", "runtime-dev")
+			},
+			call: func(driver *ClientDriver) (*Job, error) {
+				return driver.JobStart(context.Background(), "submission-start", sandboxruntime.ExecRequest{
+					Target: adapterJobRuntimeTarget(),
+					Args:   []string{"true"},
+				})
+			},
+		},
+		{
+			name: "resolve",
+			configure: func(client *recordingRuntimeDriverJobClient) {
+				client.resolveResponse = completedAdapterJob("job-resolve", "submission-resolve", "fake_runtime", "runtime-dev")
+			},
+			call: func(driver *ClientDriver) (*Job, error) {
+				return driver.JobResolve(context.Background(), "submission-resolve")
+			},
+		},
+		{
+			name: "status",
+			configure: func(client *recordingRuntimeDriverJobClient) {
+				client.statusResponse = completedAdapterJob("job-status", "submission-status", "fake_runtime", "runtime-dev")
+			},
+			call: func(driver *ClientDriver) (*Job, error) {
+				return driver.JobStatus(context.Background(), "job-status")
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			jobClient := &recordingRuntimeDriverJobClient{}
+			test.configure(jobClient)
+			driver, err := NewClientDriver(ClientDriverOptions{
+				DriverID:  "fake_runtime",
+				Client:    &recordingRuntimeDriverClient{},
+				JobClient: jobClient,
+			})
+			if err != nil {
+				t.Fatalf("NewClientDriver() error: %v", err)
+			}
+
+			job, err := test.call(driver)
+			if err != nil {
+				t.Fatalf("%s() error: %v", test.name, err)
+			}
+			if jobClient.lastJobResponse == nil || job.StartedAt == nil || job.ExitCode == nil {
+				t.Fatalf("%s() response = %#v source = %#v, want completed job", test.name, job, jobClient.lastJobResponse)
+			}
+			originalID := job.ID
+			originalStartedAt := *job.StartedAt
+			originalExitCode := *job.ExitCode
+			jobClient.lastJobResponse.ID = "job-mutated"
+			*jobClient.lastJobResponse.StartedAt = jobClient.lastJobResponse.StartedAt.Add(time.Hour)
+			*jobClient.lastJobResponse.ExitCode = 99
+			if job.ID != originalID || !job.StartedAt.Equal(originalStartedAt) || *job.ExitCode != originalExitCode {
+				t.Fatalf("%s() response changed after client mutation: %#v", test.name, job)
+			}
+		})
 	}
 }
 
@@ -370,6 +511,7 @@ type recordingRuntimeDriverJobClient struct {
 	cancelAfterStart context.CancelFunc
 	cancelCalls      int
 	errByOperation   map[string]error
+	lastJobResponse  *Job
 }
 
 func (client *recordingRuntimeDriverJobClient) JobStart(ctx context.Context, driverID string, req JobStartRequest) (*Job, error) {
@@ -386,6 +528,7 @@ func (client *recordingRuntimeDriverJobClient) JobStart(ctx context.Context, dri
 	if client.cancelAfterStart != nil {
 		client.cancelAfterStart()
 	}
+	client.lastJobResponse = &job
 	return &job, nil
 }
 
@@ -399,6 +542,7 @@ func (client *recordingRuntimeDriverJobClient) JobResolve(ctx context.Context, r
 	if job.ID == "" {
 		job = queuedAdapterJob("job-resolve", req.SubmissionID, "fake_runtime", "runtime-dev")
 	}
+	client.lastJobResponse = &job
 	return &job, nil
 }
 
@@ -412,6 +556,7 @@ func (client *recordingRuntimeDriverJobClient) JobStatus(ctx context.Context, re
 	if job.ID == "" {
 		job = queuedAdapterJob(req.JobID, "submission-status", "fake_runtime", "runtime-dev")
 	}
+	client.lastJobResponse = &job
 	return &job, nil
 }
 
@@ -456,6 +601,26 @@ func queuedAdapterJob(jobID, submissionID, driverID, runtimeID string) Job {
 		State:           JobStateQueued,
 		SubmittedAt:     time.Date(2026, 7, 25, 1, 2, 3, 0, time.UTC),
 	}
+}
+
+func completedAdapterJob(jobID, submissionID, driverID, runtimeID string) Job {
+	job := queuedAdapterJob(jobID, submissionID, driverID, runtimeID)
+	startedAt := job.SubmittedAt.Add(time.Second)
+	heartbeatAt := startedAt.Add(time.Second)
+	finishedAt := heartbeatAt.Add(time.Second)
+	exitCode := 0
+	job.State = JobStateSucceeded
+	job.StartedAt = &startedAt
+	job.HeartbeatAt = &heartbeatAt
+	job.FinishedAt = &finishedAt
+	job.ExitCode = &exitCode
+	return job
+}
+
+func adapterJobRuntimeTarget() sandboxruntime.Target {
+	target := lifecycleRuntimeTarget("fake_runtime", "dev", "running")
+	target.Runtime.RuntimeID = "runtime-dev"
+	return target
 }
 
 func cloneAdapterJobStartRequest(req JobStartRequest) JobStartRequest {
