@@ -174,11 +174,12 @@ const jobStreamSanitizerSuffixBytes = 4 << 10
 // jobStreamSanitizer retains only a bounded suffix while looking for generic
 // secret, endpoint, and host-path tokens split across driver Write calls. Once
 // a sensitive token starts, its remainder is discarded through the next
-// whitespace delimiter so arbitrarily long values cannot leak or consume
-// unbounded memory.
+// whitespace delimiter, or through the line break for a credential-bearing
+// header, so arbitrarily long values cannot leak or consume unbounded memory.
 type jobStreamSanitizer struct {
-	pending   []byte
-	redacting bool
+	pending                   []byte
+	redacting                 bool
+	redactingThroughLineBreak bool
 }
 
 func (sanitizer *jobStreamSanitizer) Consume(p []byte, final bool) []byte {
@@ -187,6 +188,9 @@ func (sanitizer *jobStreamSanitizer) Consume(p []byte, final bool) []byte {
 	for len(sanitizer.pending) > 0 {
 		if sanitizer.redacting {
 			delimiter := firstJobLogWhitespace(sanitizer.pending)
+			if sanitizer.redactingThroughLineBreak {
+				delimiter = firstJobLogLineBreak(sanitizer.pending)
+			}
 			if delimiter < 0 {
 				sanitizer.pending = sanitizer.pending[:0]
 				break
@@ -194,6 +198,7 @@ func (sanitizer *jobStreamSanitizer) Consume(p []byte, final bool) []byte {
 			out.WriteByte(sanitizer.pending[delimiter])
 			sanitizer.pending = append(sanitizer.pending[:0], sanitizer.pending[delimiter+1:]...)
 			sanitizer.redacting = false
+			sanitizer.redactingThroughLineBreak = false
 			continue
 		}
 		if candidate, ok := firstJobLogSensitiveCandidate(sanitizer.pending); ok {
@@ -201,6 +206,7 @@ func (sanitizer *jobStreamSanitizer) Consume(p []byte, final bool) []byte {
 			out.WriteString(candidate.marker)
 			sanitizer.pending = append(sanitizer.pending[:0], sanitizer.pending[candidate.start:]...)
 			sanitizer.redacting = true
+			sanitizer.redactingThroughLineBreak = candidate.throughLineBreak
 			continue
 		}
 		if final {
@@ -228,6 +234,7 @@ func (sanitizer *jobStreamSanitizer) Consume(p []byte, final bool) []byte {
 	if final && sanitizer.redacting {
 		sanitizer.pending = sanitizer.pending[:0]
 		sanitizer.redacting = false
+		sanitizer.redactingThroughLineBreak = false
 	}
 	return out.Bytes()
 }
@@ -242,8 +249,9 @@ func lastJobLogLineBoundary(data []byte) int {
 }
 
 type jobLogSensitiveCandidate struct {
-	start  int
-	marker string
+	start            int
+	marker           string
+	throughLineBreak bool
 }
 
 func firstJobLogSensitiveCandidate(data []byte) (jobLogSensitiveCandidate, bool) {
@@ -251,6 +259,9 @@ func firstJobLogSensitiveCandidate(data []byte) (jobLogSensitiveCandidate, bool)
 	candidates := make([]jobLogSensitiveCandidate, 0, 3)
 	if start, marker, ok := firstJobLogSecretCandidate(data, lower); ok {
 		candidates = append(candidates, jobLogSensitiveCandidate{start: start, marker: marker})
+	}
+	if candidate, ok := firstJobLogSensitiveHeaderCandidate(lower); ok {
+		candidates = append(candidates, candidate)
 	}
 	for _, prefix := range [][]byte{
 		[]byte("/private/users/"),
@@ -299,6 +310,47 @@ func firstJobLogSensitiveCandidate(data []byte) (jobLogSensitiveCandidate, bool)
 	return first, true
 }
 
+func firstJobLogSensitiveHeaderCandidate(lower []byte) (jobLogSensitiveCandidate, bool) {
+	headers := []struct {
+		name   []byte
+		marker string
+	}{
+		{name: []byte("proxy-authorization:"), marker: "Proxy-Authorization: [redacted]"},
+		{name: []byte("authorization:"), marker: "Authorization: [redacted]"},
+		{name: []byte("x-auth-token:"), marker: "X-Auth-Token: [redacted]"},
+		{name: []byte("x-api-key:"), marker: "X-API-Key: [redacted]"},
+		{name: []byte("api-key:"), marker: "API-Key: [redacted]"},
+		{name: []byte("set-cookie:"), marker: "Set-Cookie: [redacted]"},
+		{name: []byte("cookie:"), marker: "Cookie: [redacted]"},
+	}
+	var first jobLogSensitiveCandidate
+	found := false
+	for _, header := range headers {
+		for searchFrom := 0; searchFrom < len(lower); {
+			relativeStart := bytes.Index(lower[searchFrom:], header.name)
+			if relativeStart < 0 {
+				break
+			}
+			start := searchFrom + relativeStart
+			if start > 0 && isJobLogSecretKeyByte(lower[start-1]) {
+				searchFrom = start + 1
+				continue
+			}
+			candidate := jobLogSensitiveCandidate{
+				start:            start,
+				marker:           header.marker,
+				throughLineBreak: true,
+			}
+			if !found || candidate.start < first.start {
+				first = candidate
+				found = true
+			}
+			break
+		}
+	}
+	return first, found
+}
+
 func firstJobLogSecretCandidate(data, lower []byte) (int, string, bool) {
 	for equals := bytes.IndexByte(lower, '='); equals >= 0; {
 		start := equals
@@ -327,6 +379,15 @@ func firstJobLogWhitespace(data []byte) int {
 	for index, value := range data {
 		switch value {
 		case ' ', '\t', '\n', '\r', '\f', '\v':
+			return index
+		}
+	}
+	return -1
+}
+
+func firstJobLogLineBreak(data []byte) int {
+	for index, value := range data {
+		if value == '\n' || value == '\r' {
 			return index
 		}
 	}
