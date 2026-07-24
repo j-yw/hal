@@ -183,7 +183,11 @@ func newJobLiteralRedactor(req ExecRequest) *jobLiteralRedactor {
 	}
 	if req.Stdin != nil {
 		if stdin, err := io.ReadAll(execStdinReader(req.Stdin)); err == nil && len(stdin) > 0 {
-			unique[string(stdin)] = true
+			addJobLiteralPattern(unique, stdin)
+			addJobLiteralPattern(unique, bytes.TrimRight(stdin, "\r\n"))
+			for _, line := range bytes.Split(stdin, []byte{'\n'}) {
+				addJobLiteralPattern(unique, bytes.TrimSuffix(line, []byte{'\r'}))
+			}
 		}
 	}
 	patterns := make([][]byte, 0, len(unique))
@@ -192,6 +196,12 @@ func newJobLiteralRedactor(req ExecRequest) *jobLiteralRedactor {
 	}
 	sort.Slice(patterns, func(i, j int) bool { return len(patterns[i]) > len(patterns[j]) })
 	return &jobLiteralRedactor{patterns: patterns}
+}
+
+func addJobLiteralPattern(unique map[string]bool, value []byte) {
+	if len(value) > 0 {
+		unique[string(value)] = true
+	}
 }
 
 func (redactor *jobLiteralRedactor) Consume(p []byte, final bool) []byte {

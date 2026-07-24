@@ -10,7 +10,6 @@ import (
 
 const (
 	execProcessGroupGracePeriod = 2 * time.Second
-	execProcessGroupForcePeriod = 2 * time.Second
 )
 
 func configureExecProcessGroup(cmd *exec.Cmd) {
@@ -21,11 +20,15 @@ func configureExecProcessGroup(cmd *exec.Cmd) {
 }
 
 func terminateExecProcessGroup(cmd *exec.Cmd, waitCh <-chan error) error {
+	return terminateExecProcessGroupAfter(cmd, waitCh, execProcessGroupGracePeriod)
+}
+
+func terminateExecProcessGroupAfter(cmd *exec.Cmd, waitCh <-chan error, gracePeriod time.Duration) error {
 	if cmd == nil || cmd.Process == nil {
 		return <-waitCh
 	}
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-	timer := time.NewTimer(execProcessGroupGracePeriod)
+	timer := time.NewTimer(gracePeriod)
 	defer timer.Stop()
 	select {
 	case err := <-waitCh:
@@ -34,12 +37,7 @@ func terminateExecProcessGroup(cmd *exec.Cmd, waitCh <-chan error) error {
 	}
 
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	forceTimer := time.NewTimer(execProcessGroupForcePeriod)
-	defer forceTimer.Stop()
-	select {
-	case err := <-waitCh:
-		return err
-	case <-forceTimer.C:
-		return syscall.ETIMEDOUT
-	}
+	// cmd.Wait owns the caller-provided output writers. Do not return while it
+	// can still append logs or retain execution resources.
+	return <-waitCh
 }

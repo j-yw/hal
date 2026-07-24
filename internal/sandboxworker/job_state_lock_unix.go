@@ -7,6 +7,10 @@ import (
 	"syscall"
 )
 
+func jobStateLockSupported() bool {
+	return true
+}
+
 func tryLockJobStateFileHandle(file *os.File) error {
 	return flockJobStateFileHandle(file, syscall.LOCK_EX|syscall.LOCK_NB)
 }

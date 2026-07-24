@@ -31,6 +31,10 @@ type sandboxdServer interface {
 	ListenAndServe(context.Context) error
 }
 
+type sandboxdServiceCloser interface {
+	Close()
+}
+
 type sandboxdDeps struct {
 	newService                      func(sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error)
 	newServer                       func(sandboxworker.ServerOptions) (sandboxdServer, error)
@@ -414,6 +418,9 @@ func runSandboxdWithDeps(ctx context.Context, req sandboxdRequest, out io.Writer
 	service, err := deps.newService(serviceOptions)
 	if err != nil {
 		return fmt.Errorf("create sandboxd worker service: %w", err)
+	}
+	if closer, ok := service.(sandboxdServiceCloser); ok {
+		defer closer.Close()
 	}
 
 	server, err := deps.newServer(sandboxworker.ServerOptions{

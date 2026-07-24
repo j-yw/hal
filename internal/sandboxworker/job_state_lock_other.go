@@ -7,6 +7,10 @@ import (
 	"os"
 )
 
+func jobStateLockSupported() bool {
+	return false
+}
+
 func tryLockJobStateFileHandle(*os.File) error {
 	return errors.New("job state locking is unsupported")
 }

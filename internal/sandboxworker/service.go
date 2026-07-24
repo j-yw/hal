@@ -124,7 +124,7 @@ func NewService(options ServiceOptions) (*Service, error) {
 		supportedOps = defaultSupportedOperationsForDrivers(registry.DriverIDs(), descriptors)
 	}
 	var jobs *jobManager
-	if strings.TrimSpace(options.JobStateDir) != "" {
+	if strings.TrimSpace(options.JobStateDir) != "" && jobStateLockSupported() {
 		var err error
 		jobs, err = newJobManager(jobManagerOptions{
 			Context:           options.JobContext,
@@ -136,11 +136,13 @@ func NewService(options ServiceOptions) (*Service, error) {
 			return nil, fmt.Errorf("worker job state is unavailable")
 		}
 		supportedOps = appendMissingStrings(supportedOps,
-			OperationJobStart,
 			OperationJobStatus,
 			OperationJobLogs,
 			OperationJobCancel,
 		)
+		if runtimeDriversSupportOperation(registry.DriverIDs(), descriptors, OperationExec) {
+			supportedOps = appendMissingStrings(supportedOps, OperationJobStart)
+		}
 	}
 	service := &Service{
 		workerID:          workerID,
@@ -169,6 +171,14 @@ func NewService(options ServiceOptions) (*Service, error) {
 		return nil, fmt.Errorf("worker service capabilities: %w", err)
 	}
 	return service, nil
+}
+
+// Close synchronously stops active durable jobs and releases their state lock.
+func (service *Service) Close() {
+	if service == nil || service.jobs == nil {
+		return
+	}
+	service.jobs.close()
 }
 
 // Status returns current worker readiness generated from service state and the
@@ -296,6 +306,16 @@ func defaultSupportedOperationsForDrivers(driverIDs []string, descriptors map[st
 		}
 	}
 	return operations
+}
+
+func runtimeDriversSupportOperation(driverIDs []string, descriptors map[string]RuntimeDriver, operation string) bool {
+	for _, driverID := range driverIDs {
+		driver := runtimeDriverCapabilityFromDescriptors(driverID, descriptors)
+		if stringSliceContains(driver.Operations, operation) {
+			return true
+		}
+	}
+	return false
 }
 
 func (service *Service) supportsRequestOperation(operation, driverID string) bool {

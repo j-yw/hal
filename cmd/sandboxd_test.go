@@ -1461,6 +1461,39 @@ func TestSandboxdCommandRendersServeErrors(t *testing.T) {
 	}
 }
 
+func TestRunSandboxdClosesWorkerServiceAfterServing(t *testing.T) {
+	handler := &closableSandboxdHandler{}
+	req := sandboxdRequest{
+		SocketPath:    "/tmp/hal-sandboxd-close.sock",
+		JobStateDir:   filepath.Join(t.TempDir(), "jobs"),
+		WorkerID:      "worker-close",
+		Drivers:       []string{sandboxruntime.DriverRootlessPodman},
+		PodmanPath:    "fake-podman",
+		PodmanImage:   "localhost/hal-agent:test",
+		MaxConcurrent: 1,
+	}
+	err := runSandboxdWithDeps(context.Background(), req, io.Discard, sandboxdDeps{
+		rootlessPodmanAvailable: func(context.Context, sandboxdRootlessPodmanConfig) error {
+			return nil
+		},
+		newRootlessPodmanDriver: func(sandboxdRootlessPodmanConfig) sandboxruntime.Driver {
+			return fakeSandboxdRuntimeDriver{id: sandboxruntime.DriverRootlessPodman}
+		},
+		newService: func(sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
+			return handler, nil
+		},
+		newServer: func(sandboxworker.ServerOptions) (sandboxdServer, error) {
+			return sandboxdServerFunc(func(context.Context) error { return nil }), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runSandboxdWithDeps() error: %v", err)
+	}
+	if !handler.closed {
+		t.Fatal("runSandboxdWithDeps() returned without closing its worker service")
+	}
+}
+
 func newTestSandboxdCommand(deps sandboxdDeps) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
 	cmd := newSandboxdCommand(deps)
 	cmd.SilenceUsage = true
@@ -1481,6 +1514,15 @@ func (handler *recordingSandboxdHandler) HandleRequest(ctx context.Context, req 
 		Operation:       req.Operation,
 		OK:              true,
 	}
+}
+
+type closableSandboxdHandler struct {
+	recordingSandboxdHandler
+	closed bool
+}
+
+func (handler *closableSandboxdHandler) Close() {
+	handler.closed = true
 }
 
 type sandboxdServerFunc func(context.Context) error

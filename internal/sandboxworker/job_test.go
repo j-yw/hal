@@ -143,6 +143,7 @@ func TestWorkerJobCapabilitiesRequireConfiguredStateAndExecDriver(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewService(with jobs) error: %v", err)
 	}
+	defer withJobs.Close()
 	capabilities := withJobs.Capabilities()
 	for _, operation := range []string{OperationJobStart, OperationJobStatus, OperationJobLogs, OperationJobCancel} {
 		if !stringSliceContains(capabilities.SupportedOperations, operation) {
@@ -151,6 +152,30 @@ func TestWorkerJobCapabilitiesRequireConfiguredStateAndExecDriver(t *testing.T) 
 	}
 	if len(capabilities.RuntimeDrivers) != 1 || !stringSliceContains(capabilities.RuntimeDrivers[0].Operations, OperationJobStart) {
 		t.Fatalf("exec-capable runtime does not advertise job_start: %#v", capabilities.RuntimeDrivers)
+	}
+
+	microVMRegistry, err := NewDriverRegistry(&fakeWorkerRuntimeDriver{id: RuntimeDriverMicroVM})
+	if err != nil {
+		t.Fatalf("NewDriverRegistry(microVM) error: %v", err)
+	}
+	withoutExec, err := NewService(ServiceOptions{
+		WorkerID:    "worker-without-job-exec",
+		HostKind:    HostKindLocal,
+		Registry:    microVMRegistry,
+		JobStateDir: filepath.Join(t.TempDir(), "jobs"),
+	})
+	if err != nil {
+		t.Fatalf("NewService(without job exec) error: %v", err)
+	}
+	defer withoutExec.Close()
+	withoutExecCapabilities := withoutExec.Capabilities()
+	if stringSliceContains(withoutExecCapabilities.SupportedOperations, OperationJobStart) {
+		t.Fatalf("worker without exec advertised job_start: %#v", withoutExecCapabilities.SupportedOperations)
+	}
+	for _, operation := range []string{OperationJobStatus, OperationJobLogs, OperationJobCancel} {
+		if !stringSliceContains(withoutExecCapabilities.SupportedOperations, operation) {
+			t.Fatalf("durable worker omitted %s: %#v", operation, withoutExecCapabilities.SupportedOperations)
+		}
 	}
 }
 
@@ -282,6 +307,42 @@ func TestWorkerJobCancellationAndTerminalRaceRules(t *testing.T) {
 			t.Fatalf("cancel after terminal = %#v, want succeeded preserved", cancel)
 		}
 	})
+}
+
+func TestWorkerServiceCloseWaitsForActiveJobShutdown(t *testing.T) {
+	started := make(chan struct{})
+	driver := &l2JobRuntimeDriver{
+		fakeWorkerRuntimeDriver: &fakeWorkerRuntimeDriver{id: "shutdown_driver"},
+		execFn: func(ctx context.Context, _ sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			close(started)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	service, _, daemonCancel := newL2JobTestService(t, driver)
+	defer daemonCancel()
+	start := service.JobStartResponse(context.Background(), "start", driver.ID(), JobStartRequest{
+		ContractVersion: JobContractVersion,
+		Exec:            l2JobExecRequest("shutdown-secret"),
+	})
+	if !start.OK || start.Job == nil {
+		t.Fatalf("start response = %#v error=%#v", start, start.Error)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("job did not start")
+	}
+
+	service.Close()
+	status := service.JobStatusResponse("status", JobStatusRequest{
+		ContractVersion: JobContractVersion,
+		JobID:           start.Job.ID,
+	})
+	if !status.OK || status.Job == nil || status.Job.State != JobStateInterrupted ||
+		status.Job.FailureCode != "daemon_stopped" || status.Job.FinishedAt == nil {
+		t.Fatalf("job after service close = %#v error=%#v, want durable interruption", status.Job, status.Error)
+	}
 }
 
 func TestWorkerJobRestartReconcilesWithoutRerun(t *testing.T) {
@@ -604,6 +665,50 @@ func TestWorkerJobGenericRedactionSpansDriverWrites(t *testing.T) {
 			t.Fatalf("split driver output = %q, want %q", output, marker)
 		}
 	}
+}
+
+func TestWorkerJobRedactsLineDerivedFromStdin(t *testing.T) {
+	secret := "stdin-line-secret"
+	driver := &l2JobRuntimeDriver{
+		fakeWorkerRuntimeDriver: &fakeWorkerRuntimeDriver{id: "stdin_redaction_driver"},
+		execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			stdin, err := io.ReadAll(req.Stdin)
+			if err != nil {
+				return nil, err
+			}
+			_, err = io.WriteString(req.Stdout, strings.TrimRight(string(stdin), "\r\n"))
+			return &sandboxruntime.ExecResult{ExitCode: 0}, err
+		},
+	}
+	service, stateDir, daemonCancel := newL2JobTestService(t, driver)
+	defer daemonCancel()
+	defer service.Close()
+	execReq := l2JobExecRequest("unrelated-request-secret")
+	execReq.Stdin = workerExecStdinPayload(secret+"\n", MaxExecStdinBytes)
+	start := service.JobStartResponse(context.Background(), "start", driver.ID(), JobStartRequest{
+		ContractVersion: JobContractVersion,
+		Exec:            execReq,
+	})
+	if !start.OK || start.Job == nil {
+		t.Fatalf("start response = %#v error=%#v", start, start.Error)
+	}
+	waitForL2JobState(t, service, start.Job.ID, JobStateSucceeded)
+	response := service.JobLogsResponse("logs", JobLogsRequest{
+		ContractVersion: JobContractVersion,
+		JobID:           start.Job.ID,
+		LimitBytes:      DefaultJobLogReadBytes,
+	})
+	if !response.OK || response.JobLogs == nil {
+		t.Fatalf("logs response = %#v error=%#v", response, response.Error)
+	}
+	var output strings.Builder
+	for _, record := range response.JobLogs.Records {
+		output.WriteString(record.Data)
+	}
+	if got := output.String(); strings.Contains(got, secret) || !strings.Contains(got, "[redacted]") {
+		t.Fatalf("stdin-derived output = %q, want a redaction marker without the secret", got)
+	}
+	assertL2JobStatePrivateAndSanitized(t, stateDir, secret)
 }
 
 func TestWorkerJobLogPaginationPreservesRetainedRecordsBeforeTruncationGap(t *testing.T) {
