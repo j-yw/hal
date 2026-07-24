@@ -263,6 +263,9 @@ func firstJobLogSensitiveCandidate(data []byte) (jobLogSensitiveCandidate, bool)
 	if candidate, ok := firstJobLogSensitiveHeaderCandidate(lower); ok {
 		candidates = append(candidates, candidate)
 	}
+	if candidate, ok := firstJobLogBearerCredentialCandidate(lower); ok {
+		candidates = append(candidates, candidate)
+	}
 	for _, prefix := range [][]byte{
 		[]byte("/private/users/"),
 		[]byte("/var/folders/"),
@@ -351,6 +354,32 @@ func firstJobLogSensitiveHeaderCandidate(lower []byte) (jobLogSensitiveCandidate
 	return first, found
 }
 
+func firstJobLogBearerCredentialCandidate(lower []byte) (jobLogSensitiveCandidate, bool) {
+	const scheme = "bearer"
+	for searchFrom := 0; searchFrom < len(lower); {
+		relativeStart := bytes.Index(lower[searchFrom:], []byte(scheme))
+		if relativeStart < 0 {
+			return jobLogSensitiveCandidate{}, false
+		}
+		start := searchFrom + relativeStart
+		end := start + len(scheme)
+		if start > 0 && isJobLogSecretKeyByte(lower[start-1]) {
+			searchFrom = start + 1
+			continue
+		}
+		if end >= len(lower) || !isJobLogASCIIWhitespace(lower[end]) {
+			searchFrom = start + 1
+			continue
+		}
+		return jobLogSensitiveCandidate{
+			start:            start,
+			marker:           "[redacted-credential]",
+			throughLineBreak: true,
+		}, true
+	}
+	return jobLogSensitiveCandidate{}, false
+}
+
 func firstJobLogSecretCandidate(data, lower []byte) (int, string, bool) {
 	for equals := bytes.IndexByte(lower, '='); equals >= 0; {
 		start := equals
@@ -377,12 +406,20 @@ func firstJobLogSecretCandidate(data, lower []byte) (int, string, bool) {
 
 func firstJobLogWhitespace(data []byte) int {
 	for index, value := range data {
-		switch value {
-		case ' ', '\t', '\n', '\r', '\f', '\v':
+		if isJobLogASCIIWhitespace(value) {
 			return index
 		}
 	}
 	return -1
+}
+
+func isJobLogASCIIWhitespace(value byte) bool {
+	switch value {
+	case ' ', '\t', '\n', '\r', '\f', '\v':
+		return true
+	default:
+		return false
+	}
 }
 
 func firstJobLogLineBreak(data []byte) int {
