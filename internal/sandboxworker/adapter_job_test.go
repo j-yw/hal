@@ -163,6 +163,31 @@ func TestClientDriverJobOperationsPreserveRequestIdentityAndValidateResponses(t 
 	} else {
 		assertClientDriverError(t, err, OperationJobLogs, "fake_runtime")
 	}
+
+	jobClient.startResponse = queuedAdapterJob("job-start-wrong", "other-submission", "fake_runtime", "runtime-dev")
+	if _, err := driver.JobStart(context.Background(), "submission-start", sandboxruntime.ExecRequest{
+		Target: lifecycleRuntimeTarget("fake_runtime", "dev", "running"),
+		Args:   []string{"true"},
+	}); err == nil {
+		t.Fatal("JobStart(mismatched submission) error = nil, want identity rejection")
+	} else {
+		assertClientDriverError(t, err, OperationJobStart, "fake_runtime")
+	}
+
+	jobClient.logsResponse = JobLogsResponse{
+		ContractVersion: JobContractVersion,
+		JobID:           "job-logs",
+		Records: []JobLogRecord{
+			{Cursor: 8, Stream: JobLogStreamStdout, Data: strings.Repeat("a", 20<<10), Timestamp: time.Date(2026, 7, 25, 1, 2, 4, 0, time.UTC)},
+			{Cursor: 9, Stream: JobLogStreamStdout, Data: strings.Repeat("b", 20<<10), Timestamp: time.Date(2026, 7, 25, 1, 2, 5, 0, time.UTC)},
+		},
+		NextCursor: 9,
+	}
+	if _, err := driver.JobLogs(context.Background(), "job-logs", 7, DefaultJobLogRecordBytes); err == nil {
+		t.Fatal("JobLogs(oversized page) error = nil, want requested bound rejection")
+	} else {
+		assertClientDriverError(t, err, OperationJobLogs, "fake_runtime")
+	}
 }
 
 func TestClientDriverJobOperationsRejectUnsupportedClientAndMalformedRequestsBeforeCalls(t *testing.T) {
@@ -206,6 +231,72 @@ func TestClientDriverJobOperationsRejectUnsupportedClientAndMalformedRequestsBef
 	}
 	if jobClient.resolveCalls != 0 || jobClient.statusCalls != 0 || jobClient.logsCalls != 0 {
 		t.Fatalf("malformed requests dispatched: resolve=%d status=%d logs=%d", jobClient.resolveCalls, jobClient.statusCalls, jobClient.logsCalls)
+	}
+}
+
+func TestClientDriverJobOperationsWrapClientFailuresWithStableContext(t *testing.T) {
+	sentinel := errors.New("transport unavailable")
+	jobClient := &recordingRuntimeDriverJobClient{
+		errByOperation: map[string]error{
+			OperationJobStart:   sentinel,
+			OperationJobResolve: sentinel,
+			OperationJobStatus:  sentinel,
+			OperationJobLogs:    sentinel,
+		},
+	}
+	driver, err := NewClientDriver(ClientDriverOptions{
+		DriverID:  "fake_runtime",
+		Client:    &recordingRuntimeDriverClient{},
+		JobClient: jobClient,
+	})
+	if err != nil {
+		t.Fatalf("NewClientDriver() error: %v", err)
+	}
+
+	tests := []struct {
+		operation string
+		call      func() error
+	}{
+		{
+			operation: OperationJobStart,
+			call: func() error {
+				_, err := driver.JobStart(context.Background(), "submission-1", sandboxruntime.ExecRequest{
+					Target: lifecycleRuntimeTarget("fake_runtime", "dev", "running"),
+					Args:   []string{"true"},
+				})
+				return err
+			},
+		},
+		{
+			operation: OperationJobResolve,
+			call: func() error {
+				_, err := driver.JobResolve(context.Background(), "submission-1")
+				return err
+			},
+		},
+		{
+			operation: OperationJobStatus,
+			call: func() error {
+				_, err := driver.JobStatus(context.Background(), "job-1")
+				return err
+			},
+		},
+		{
+			operation: OperationJobLogs,
+			call: func() error {
+				_, err := driver.JobLogs(context.Background(), "job-1", 0, DefaultJobLogRecordBytes)
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.operation, func(t *testing.T) {
+			err := test.call()
+			if !errors.Is(err, sentinel) {
+				t.Fatalf("%s error = %v, want wrapped sentinel", test.operation, err)
+			}
+			assertClientDriverError(t, err, test.operation, "fake_runtime")
+		})
 	}
 }
 
@@ -278,12 +369,16 @@ type recordingRuntimeDriverJobClient struct {
 	logsResponse     JobLogsResponse
 	cancelAfterStart context.CancelFunc
 	cancelCalls      int
+	errByOperation   map[string]error
 }
 
 func (client *recordingRuntimeDriverJobClient) JobStart(ctx context.Context, driverID string, req JobStartRequest) (*Job, error) {
 	client.startCalls++
 	client.startDriverID = driverID
 	client.startReq = cloneAdapterJobStartRequest(req)
+	if err := client.errByOperation[OperationJobStart]; err != nil {
+		return nil, err
+	}
 	job := client.startResponse
 	if job.ID == "" {
 		job = queuedAdapterJob("job-start", req.SubmissionID, driverID, req.Exec.Target.Runtime.RuntimeID)
@@ -297,6 +392,9 @@ func (client *recordingRuntimeDriverJobClient) JobStart(ctx context.Context, dri
 func (client *recordingRuntimeDriverJobClient) JobResolve(ctx context.Context, req JobResolveRequest) (*Job, error) {
 	client.resolveCalls++
 	client.resolveReq = req
+	if err := client.errByOperation[OperationJobResolve]; err != nil {
+		return nil, err
+	}
 	job := client.resolveResponse
 	if job.ID == "" {
 		job = queuedAdapterJob("job-resolve", req.SubmissionID, "fake_runtime", "runtime-dev")
@@ -307,6 +405,9 @@ func (client *recordingRuntimeDriverJobClient) JobResolve(ctx context.Context, r
 func (client *recordingRuntimeDriverJobClient) JobStatus(ctx context.Context, req JobStatusRequest) (*Job, error) {
 	client.statusCalls++
 	client.statusReq = req
+	if err := client.errByOperation[OperationJobStatus]; err != nil {
+		return nil, err
+	}
 	job := client.statusResponse
 	if job.ID == "" {
 		job = queuedAdapterJob(req.JobID, "submission-status", "fake_runtime", "runtime-dev")
@@ -317,6 +418,9 @@ func (client *recordingRuntimeDriverJobClient) JobStatus(ctx context.Context, re
 func (client *recordingRuntimeDriverJobClient) JobLogs(ctx context.Context, req JobLogsRequest) (*JobLogsResponse, error) {
 	client.logsCalls++
 	client.logsReq = req
+	if err := client.errByOperation[OperationJobLogs]; err != nil {
+		return nil, err
+	}
 	logs := client.logsResponse
 	if logs.JobID == "" {
 		logs = JobLogsResponse{
