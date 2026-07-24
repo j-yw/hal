@@ -1512,6 +1512,66 @@ func TestWorkerJobRedactsOpaqueAuthorizationHeaderBeforePersistence(t *testing.T
 	assertL2JobStatePrivateAndSanitized(t, stateDir, opaqueCredential)
 }
 
+func TestWorkerJobRedactsAlternateBearerCredentialsBeforePersistence(t *testing.T) {
+	credentials := []string{
+		"opaque-no-colon-credential",
+		"opaque-bare-credential",
+		"opaque-json-credential",
+	}
+	driver := &l2JobRuntimeDriver{
+		fakeWorkerRuntimeDriver: &fakeWorkerRuntimeDriver{id: "alternate_bearer_redaction_driver"},
+		execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			for _, chunk := range []string{
+				"Authorization Be",
+				"arer opaque-no-colon-credential\nBea",
+				"rer opaque-bare-credential\n{\"Authorization\":\"Bear",
+				"er opaque-json-credential\"}\nsafe-tail\n",
+			} {
+				if _, err := io.WriteString(req.Stderr, chunk); err != nil {
+					return nil, err
+				}
+			}
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+	}
+	service, stateDir, daemonCancel := newL2JobTestService(t, driver)
+	defer daemonCancel()
+	start := service.JobStartResponse(context.Background(), "start", driver.ID(), JobStartRequest{
+		ContractVersion: JobContractVersion,
+		SubmissionID:    "alternate-bearer-redaction",
+		Exec:            l2JobExecRequest("unrelated-request-secret"),
+	})
+	if !start.OK || start.Job == nil {
+		t.Fatalf("start response = %#v error=%#v", start, start.Error)
+	}
+	waitForL2JobState(t, service, start.Job.ID, JobStateSucceeded)
+	response := service.JobLogsResponse("logs", JobLogsRequest{
+		ContractVersion: JobContractVersion,
+		JobID:           start.Job.ID,
+		LimitBytes:      DefaultJobLogReadBytes,
+	})
+	if !response.OK || response.JobLogs == nil {
+		t.Fatalf("logs response = %#v error=%#v", response, response.Error)
+	}
+	var rendered strings.Builder
+	for _, record := range response.JobLogs.Records {
+		rendered.WriteString(record.Data)
+	}
+	output := rendered.String()
+	for _, forbidden := range append(credentials, "Bearer") {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("worker logs exposed alternate bearer data %q in %q", forbidden, output)
+		}
+		assertL2JobStatePrivateAndSanitized(t, stateDir, forbidden)
+	}
+	if got := strings.Count(output, "[redacted-credential]"); got != len(credentials) {
+		t.Fatalf("worker logs = %q, want %d credential redaction markers, got %d", output, len(credentials), got)
+	}
+	if !strings.Contains(output, "safe-tail\n") {
+		t.Fatalf("worker logs = %q, want safe tail after redacted credentials", output)
+	}
+}
+
 func TestWorkerJobPersistsBoundedNoNewlineOutputWhileRunning(t *testing.T) {
 	wrote := make(chan struct{})
 	release := make(chan struct{})
