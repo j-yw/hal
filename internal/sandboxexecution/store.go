@@ -439,6 +439,9 @@ func validateManifestForSave(manifest *Manifest) error {
 	if manifest.StartedAt.IsZero() {
 		return fmt.Errorf("sandbox execution startedAt is required")
 	}
+	if manifest.SandboxID != "" && !validWorkerJobSafeID(manifest.SandboxID) {
+		return fmt.Errorf("sandbox execution sandboxId is invalid")
+	}
 	if err := validateWorkerJobReference(manifest.WorkerJob); err != nil {
 		return err
 	}

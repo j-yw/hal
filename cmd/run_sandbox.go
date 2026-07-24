@@ -1357,6 +1357,7 @@ func saveRunSandboxManifest(store sandboxexecution.Store, req runSandboxRequest,
 	}
 	applyRunSandboxCredentialProxyMetadata(manifest, req)
 	if target != nil {
+		manifest.SandboxID = strings.TrimSpace(target.ID)
 		if strings.TrimSpace(manifest.SandboxName) == "" {
 			manifest.SandboxName = strings.TrimSpace(target.Name)
 		}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -452,7 +453,7 @@ func selectSandboxL3Execution(sandboxName, runID string, mode sandboxL3Selection
 		if err != nil {
 			return nil, nil, fmt.Errorf("execution_not_found: execution %s is unavailable", runID)
 		}
-		if manifest.SandboxName != sandboxName {
+		if !sandboxL3ManifestMatchesInstance(manifest, instance) {
 			return nil, nil, fmt.Errorf("execution_sandbox_mismatch: execution %s does not belong to sandbox %s", runID, sandboxName)
 		}
 		if manifest.WorkerJob == nil && !sandboxL3ExecutionAwaitingJobResolution(manifest) {
@@ -472,7 +473,7 @@ func selectSandboxL3Execution(sandboxName, runID string, mode sandboxL3Selection
 	completed := make([]*sandboxexecution.Manifest, 0)
 	for index := range manifests {
 		manifest := &manifests[index]
-		if manifest.SandboxName != sandboxName {
+		if !sandboxL3ManifestMatchesInstance(manifest, instance) {
 			continue
 		}
 		if manifest.WorkerJob == nil {
@@ -510,6 +511,18 @@ func selectSandboxL3Execution(sandboxName, runID string, mode sandboxL3Selection
 		return instance, completed[0], nil
 	}
 	return nil, nil, fmt.Errorf("execution_not_found: sandbox %s has no recoverable execution", sandboxName)
+}
+
+func sandboxL3ManifestMatchesInstance(manifest *sandboxexecution.Manifest, instance *sandbox.SandboxState) bool {
+	if manifest == nil || instance == nil {
+		return false
+	}
+	manifestSandboxID := strings.TrimSpace(manifest.SandboxID)
+	instanceID := strings.TrimSpace(instance.ID)
+	if manifestSandboxID == "" || instanceID == "" || manifestSandboxID != instanceID {
+		return false
+	}
+	return strings.TrimSpace(manifest.SandboxName) == strings.TrimSpace(instance.Name)
 }
 
 func sandboxL3ExecutionRecoverable(manifest *sandboxexecution.Manifest) bool {
@@ -788,11 +801,12 @@ func renderSandboxL3LiveListJSON(ctx context.Context, out io.Writer, instances [
 	if err != nil {
 		return errors.New("execution_store_corrupt: durable execution manifests failed validation")
 	}
-	bySandbox := make(map[string][]*sandboxexecution.Manifest)
+	bySandboxID := make(map[string][]*sandboxexecution.Manifest)
 	for index := range manifests {
 		manifest := &manifests[index]
-		if manifest.WorkerJob != nil || sandboxL3ExecutionAwaitingJobResolution(manifest) {
-			bySandbox[manifest.SandboxName] = append(bySandbox[manifest.SandboxName], manifest)
+		sandboxID := strings.TrimSpace(manifest.SandboxID)
+		if sandboxID != "" && (manifest.WorkerJob != nil || sandboxL3ExecutionAwaitingJobResolution(manifest)) {
+			bySandboxID[sandboxID] = append(bySandboxID[sandboxID], manifest)
 		}
 	}
 	sorted := append([]*sandbox.SandboxState(nil), instances...)
@@ -809,7 +823,10 @@ func renderSandboxL3LiveListJSON(ctx context.Context, out io.Writer, instances [
 	}
 	for _, instance := range sorted {
 		entry := sandboxL3ListEntry{sandboxL3Identity: sandboxL3IdentityFromState(instance)}
-		candidates := bySandbox[instance.Name]
+		candidates := bySandboxID[strings.TrimSpace(instance.ID)]
+		candidates = slices.DeleteFunc(candidates, func(manifest *sandboxexecution.Manifest) bool {
+			return !sandboxL3ManifestMatchesInstance(manifest, instance)
+		})
 		manifest := newestSandboxL3Manifest(candidates)
 		var liveJob *sandboxworker.Job
 		if manifest != nil {

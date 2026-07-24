@@ -96,6 +96,7 @@ func TestManifestJSONFieldsAndSandboxMetadataTypes(t *testing.T) {
 		ID:          "exec-1",
 		Purpose:     PurposeRun,
 		SandboxName: "dev",
+		SandboxID:   "sandbox-019d",
 		ProjectDir:  "/repo",
 		Command:     []string{"go", "test", "./..."},
 		WorkDir:     "/repo",
@@ -249,7 +250,7 @@ func TestManifestJSONFieldsAndSandboxMetadataTypes(t *testing.T) {
 
 	got := mustJSONMap(t, manifest)
 	assertJSONKeys(t, got, []string{
-		"id", "purpose", "sandboxName", "projectDir", "command", "workDir",
+		"id", "purpose", "sandboxName", "sandboxId", "projectDir", "command", "workDir",
 		"status", "startedAt", "finishedAt", "workspace", "host", "runtime",
 		"security", "networkProxySession", "networkPolicyDecisionLogs",
 		"credentialProxyPlan", "credentialProxySession", "credentialProxyBindings", "credentialDelivery",

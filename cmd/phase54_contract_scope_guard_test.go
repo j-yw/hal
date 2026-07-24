@@ -47,7 +47,7 @@ func TestPhase54NoSchemaOrContractExpansionRequired(t *testing.T) {
 			label: "sandboxexecution.Manifest",
 			typ:   reflect.TypeOf(sandboxexecution.Manifest{}),
 			want: []string{
-				"id", "purpose", "sandboxName,omitempty", "projectDir,omitempty", "command,omitempty",
+				"id", "purpose", "sandboxName,omitempty", "sandboxId,omitempty", "projectDir,omitempty", "command,omitempty",
 				"workDir,omitempty", "status", "startedAt", "finishedAt,omitempty", "workspace,omitempty",
 				"host,omitempty", "runtime,omitempty", "security,omitempty", "networkProxySession,omitempty",
 				"networkPolicyDecisionLogs,omitempty", "credentialProxyPlan,omitempty", "credentialProxySession,omitempty",

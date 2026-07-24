@@ -73,6 +73,7 @@ type Manifest struct {
 	ID                        string                                           `json:"id"`
 	Purpose                   Purpose                                          `json:"purpose"`
 	SandboxName               string                                           `json:"sandboxName,omitempty"`
+	SandboxID                 string                                           `json:"sandboxId,omitempty"`
 	ProjectDir                string                                           `json:"projectDir,omitempty"`
 	Command                   []string                                         `json:"command,omitempty"`
 	WorkDir                   string                                           `json:"workDir,omitempty"`

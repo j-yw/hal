@@ -160,9 +160,15 @@ owner and restrictive DACL semantics. L3 makes no secure Windows runtime claim.
 
 ## Selection
 
-Commands first match non-factory manifests by exact sandbox name.
+Commands first resolve the current sandbox registry record by exact display
+name, then match non-factory manifests by its stable sandbox instance ID.
+Display names are operator-facing selectors only and are never durable lineage
+authority. A manifest that predates the instance-ID link, or whose ID belongs
+to a deleted/replaced sandbox with the same name, is not joined to the current
+sandbox.
 
-- An explicit `--run` must match both the execution ID and sandbox name.
+- An explicit `--run` must match the execution ID, sandbox name, and stable
+  sandbox instance ID.
 - Without `--run`, one active or recoverable execution is selected.
 - More than one active or recoverable execution is an `ambiguous_run` error
   containing safe execution IDs only.

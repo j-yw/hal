@@ -648,6 +648,7 @@ func l3Manifest(id, sandboxName string, startedAt time.Time, jobID, jobState str
 		ID:          id,
 		Purpose:     sandboxexecution.PurposeRun,
 		SandboxName: sandboxName,
+		SandboxID:   "sandbox-" + sandboxName,
 		ProjectDir:  "/home/private/l3-project",
 		Command:     []string{"hal", "run", "TOKEN=red-test-secret"},
 		WorkDir:     "/workspace/private",

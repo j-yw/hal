@@ -273,6 +273,10 @@ func TestL3LoadManifestRejectsTrailingAndInvalidSemanticState(t *testing.T) {
 			data: `{"id":"exec-1","purpose":"unexpected","status":"running","startedAt":"2026-07-25T01:02:03Z"}`,
 		},
 		{
+			name: "unsafe sandbox lineage",
+			data: `{"id":"exec-1","purpose":"run","sandboxId":"../../private/instance","status":"running","startedAt":"2026-07-25T01:02:03Z"}`,
+		},
+		{
 			name: "invalid finalization state",
 			data: `{"id":"exec-1","purpose":"run","status":"running","startedAt":"2026-07-25T01:02:03Z","finalization":{"contractVersion":"sandbox-finalization-v1","state":"surprise","checkpoints":{"artifacts":{"completed":false},"syncOut":{"completed":false},"leaseRelease":{"completed":false},"terminalPublication":{"completed":false}},"updatedAt":"2026-07-25T01:02:03Z"}}`,
 		},
