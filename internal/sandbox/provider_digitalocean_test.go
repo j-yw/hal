@@ -548,32 +548,33 @@ func TestDigitalOceanProvider_Exec_WithConnectInfoIP(t *testing.T) {
 	}
 }
 
-func TestDigitalOceanProvider_SSH_LockdownPrefersTailscaleHostname(t *testing.T) {
+func TestDigitalOceanProvider_SSH_LockdownPrefersVerifiedTailscaleIP(t *testing.T) {
 	dp := &DigitalOceanProvider{
 		TailscaleLockdown: true,
 		lookPath:          doctlLookPathStub,
 	}
 
-	cmd, err := dp.SSH(&ConnectInfo{
+	info := ConnectInfoFromState(&SandboxState{
 		Name:              "my-droplet",
 		IP:                "164.90.190.11",
 		TailscaleIP:       "100.64.0.44",
 		TailscaleHostname: "hal-dev-019ecfc3",
 		TailscaleLockdown: true,
 	})
+	cmd, err := dp.SSH(info)
 	if err != nil {
 		t.Fatalf("SSH() unexpected error: %v", err)
 	}
 
 	args := strings.Join(cmd.Args, " ")
-	if !strings.Contains(args, "root@hal-dev-019ecfc3") {
-		t.Fatalf("SSH cmd should contain root@hal-dev-019ecfc3, got: %s", args)
+	if !strings.Contains(args, "root@100.64.0.44") {
+		t.Fatalf("SSH cmd should contain root@100.64.0.44, got: %s", args)
 	}
 	if strings.Contains(args, "root@164.90.190.11") {
 		t.Fatalf("SSH cmd should not use public IP in lockdown mode, got: %s", args)
 	}
-	if strings.Contains(args, "root@100.64.0.44") {
-		t.Fatalf("SSH cmd should not use Tailscale IP ahead of hostname in lockdown mode, got: %s", args)
+	if strings.Contains(args, "root@hal-dev-019ecfc3") {
+		t.Fatalf("SSH cmd should not use hostname ahead of a verified Tailscale IP, got: %s", args)
 	}
 }
 
