@@ -447,7 +447,7 @@ func refreshStartedLiveStatus(target *sandbox.SandboxState, provider sandbox.Pro
 		}
 		return err
 	}
-	writeTarget, err := liveStatusWriteTarget(target.Name, sandboxStartLoadInstance, sandboxStartForceWrite)
+	writeTarget, err := liveStatusWriteTarget(target, sandboxStartLoadInstance, sandboxStartForceWrite)
 	if err != nil {
 		return fmt.Errorf("load active sandbox %q: %w", target.Name, err)
 	}

@@ -85,6 +85,7 @@ func TestNormalizeLiveStatus_ReturnsErrorWhenOutputIsUnparseable(t *testing.T) {
 func TestLiveStatusWriteTarget_SkipsPersistForStagedFallback(t *testing.T) {
 	now := time.Date(2026, 3, 26, 10, 0, 0, 0, time.UTC)
 	inst := &sandbox.SandboxState{
+		ID:        "sandbox-staged-box",
 		Name:      "staged-box",
 		Status:    sandbox.StatusStopped,
 		CreatedAt: now.Add(-2 * time.Hour),
@@ -92,7 +93,7 @@ func TestLiveStatusWriteTarget_SkipsPersistForStagedFallback(t *testing.T) {
 
 	writeCalls := 0
 	writeTarget, err := liveStatusWriteTarget(
-		inst.Name,
+		inst,
 		func(string) (*sandbox.SandboxState, error) { return nil, fs.ErrNotExist },
 		func(updated *sandbox.SandboxState) error {
 			writeCalls++
@@ -117,6 +118,7 @@ func TestLiveStatusWriteTarget_SkipsPersistForStagedFallback(t *testing.T) {
 func TestLiveStatusWriteTarget_SkipsPersistWhenSandboxDeletedAfterTargetCreation(t *testing.T) {
 	now := time.Date(2026, 3, 26, 10, 0, 0, 0, time.UTC)
 	inst := &sandbox.SandboxState{
+		ID:        "sandbox-deleted-box",
 		Name:      "deleted-box",
 		Status:    sandbox.StatusStopped,
 		CreatedAt: now.Add(-2 * time.Hour),
@@ -126,11 +128,11 @@ func TestLiveStatusWriteTarget_SkipsPersistWhenSandboxDeletedAfterTargetCreation
 	loadCalls := 0
 	writeCalls := 0
 	writeTarget, err := liveStatusWriteTarget(
-		inst.Name,
+		inst,
 		func(string) (*sandbox.SandboxState, error) {
 			loadCalls++
 			if active {
-				return &sandbox.SandboxState{Name: inst.Name, Status: sandbox.StatusStopped}, nil
+				return &sandbox.SandboxState{ID: inst.ID, Name: inst.Name, Status: sandbox.StatusStopped}, nil
 			}
 			return nil, fs.ErrNotExist
 		},
@@ -177,7 +179,7 @@ func TestLiveStatusWriteTarget_RejectsSameNameReplacement(t *testing.T) {
 	loadCalls := 0
 	writeCalls := 0
 	writeTarget, err := liveStatusWriteTarget(
-		original.Name,
+		original,
 		func(string) (*sandbox.SandboxState, error) {
 			loadCalls++
 			if loadCalls == 1 {
@@ -214,6 +216,7 @@ func TestLiveStatusWriteTarget_RejectsSameNameReplacement(t *testing.T) {
 func TestLiveStatusWriteTarget_MergesStatusIntoFreshActiveInstance(t *testing.T) {
 	now := time.Date(2026, 3, 26, 10, 0, 0, 0, time.UTC)
 	inst := &sandbox.SandboxState{
+		ID:        "sandbox-merged-box",
 		Name:      "merged-box",
 		Status:    sandbox.StatusStopped,
 		CreatedAt: now.Add(-2 * time.Hour),
@@ -224,10 +227,11 @@ func TestLiveStatusWriteTarget_MergesStatusIntoFreshActiveInstance(t *testing.T)
 	loadCalls := 0
 	var wrote *sandbox.SandboxState
 	writeTarget, err := liveStatusWriteTarget(
-		inst.Name,
+		inst,
 		func(string) (*sandbox.SandboxState, error) {
 			loadCalls++
 			return &sandbox.SandboxState{
+				ID:                inst.ID,
 				Name:              inst.Name,
 				Status:            sandbox.StatusStopped,
 				CreatedAt:         now.Add(-2 * time.Hour),
@@ -285,6 +289,7 @@ func TestLiveStatusWriteTarget_MergesStatusIntoFreshActiveInstance(t *testing.T)
 func TestLiveStatusWriteTarget_ClearsIPWhenSandboxStops(t *testing.T) {
 	now := time.Date(2026, 3, 26, 10, 0, 0, 0, time.UTC)
 	inst := &sandbox.SandboxState{
+		ID:        "sandbox-stopped-box",
 		Name:      "stopped-box",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: now.Add(-2 * time.Hour),
@@ -293,9 +298,10 @@ func TestLiveStatusWriteTarget_ClearsIPWhenSandboxStops(t *testing.T) {
 
 	var wrote *sandbox.SandboxState
 	writeTarget, err := liveStatusWriteTarget(
-		inst.Name,
+		inst,
 		func(string) (*sandbox.SandboxState, error) {
 			return &sandbox.SandboxState{
+				ID:     inst.ID,
 				Name:   inst.Name,
 				Status: sandbox.StatusRunning,
 				IP:     "203.0.113.25",

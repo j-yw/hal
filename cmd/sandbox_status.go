@@ -92,7 +92,7 @@ var sandboxStatusForceWrite = sandbox.ForceWriteInstance
 var sandboxStatusNow = func() time.Time { return time.Now() }
 
 func liveStatusWriteTarget(
-	name string,
+	selected *sandbox.SandboxState,
 	loadActive func(string) (*sandbox.SandboxState, error),
 	write func(*sandbox.SandboxState) error,
 ) (func(*sandbox.SandboxState) error, error) {
@@ -100,20 +100,40 @@ func liveStatusWriteTarget(
 		return write, nil
 	}
 
-	if _, err := loadActive(name); err != nil {
+	if selected == nil {
+		return nil, errors.New("active sandbox identity is unavailable for live status refresh")
+	}
+	selectedID := strings.TrimSpace(selected.ID)
+	selectedName := strings.TrimSpace(selected.Name)
+	if selectedID == "" || selectedName == "" {
+		return nil, errors.New("active sandbox identity is unavailable for live status refresh")
+	}
+	current, err := loadActive(selectedName)
+	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
 	}
+	if current == nil {
+		return nil, nil
+	}
+	if strings.TrimSpace(current.ID) != selectedID ||
+		strings.TrimSpace(current.Name) != selectedName {
+		return nil, errors.New("sandbox instance changed during live status refresh")
+	}
 
 	return func(updated *sandbox.SandboxState) error {
-		current, err := loadActive(name)
+		current, err := loadActive(selectedName)
 		if err != nil {
 			return err
 		}
 		if current == nil {
 			return fs.ErrNotExist
+		}
+		if strings.TrimSpace(current.ID) != selectedID ||
+			strings.TrimSpace(current.Name) != selectedName {
+			return errors.New("sandbox instance changed during live status refresh")
 		}
 
 		current.Status = updated.Status
@@ -177,7 +197,7 @@ func runSandboxStatusWithDeps(name string, out io.Writer, provider sandbox.Provi
 		liveErr = nil
 	}
 	if liveErr == nil {
-		writeTarget, err := liveStatusWriteTarget(instance.Name, sandboxStatusLoadActiveInstance, sandboxStatusForceWrite)
+		writeTarget, err := liveStatusWriteTarget(instance, sandboxStatusLoadActiveInstance, sandboxStatusForceWrite)
 		if err != nil {
 			liveErr = fmt.Errorf("load active sandbox %q: %w", instance.Name, err)
 		} else if liveWarning == nil {

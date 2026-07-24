@@ -330,7 +330,7 @@ func queryOneStatusWithRuntime(inst *sandbox.SandboxState, resolveProvider func(
 		}
 		return err
 	}
-	writeTarget, err := liveStatusWriteTarget(inst.Name, sandboxListLoadActiveInstance, sandboxListForceWrite)
+	writeTarget, err := liveStatusWriteTarget(inst, sandboxListLoadActiveInstance, sandboxListForceWrite)
 	if err != nil {
 		return fmt.Errorf("load active sandbox %q: %w", inst.Name, err)
 	}
