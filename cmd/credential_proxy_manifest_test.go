@@ -33,7 +33,7 @@ var phase26CredentialProxyJSONFields = []string{
 func TestRunAndAutoSandboxManifestsOmitCredentialProxyMetadataByDefault(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 12, 20, 0, 0, time.UTC)
 
-	runStore := sandboxexecution.NewStore(t.TempDir())
+	runStore := newPrivateSandboxExecutionTestStore(t)
 	if err := saveRunSandboxManifest(runStore, runSandboxRequest{
 		ExecutionID: "run-no-credential-proxy-metadata",
 		ProjectDir:  "/repo",
@@ -42,7 +42,7 @@ func TestRunAndAutoSandboxManifestsOmitCredentialProxyMetadataByDefault(t *testi
 	}
 	assertSandboxManifestOmitsCredentialProxyMetadata(t, mustLoadSandboxExecutionManifest(t, runStore, "run-no-credential-proxy-metadata"))
 
-	autoStore := sandboxexecution.NewStore(t.TempDir())
+	autoStore := newPrivateSandboxExecutionTestStore(t)
 	if err := saveAutoSandboxManifest(autoStore, autoSandboxRequest{
 		ExecutionID: "auto-no-credential-proxy-metadata",
 		ProjectDir:  "/repo",
@@ -101,7 +101,7 @@ func TestFactoryPersistenceOmitsCredentialProxyMetadataByDefault(t *testing.T) {
 func TestPhase26CredentialProxyLegacyJSONCompatibility(t *testing.T) {
 	t.Run("sandbox execution manifest", func(t *testing.T) {
 		const executionID = "legacy-run-manifest"
-		store := sandboxexecution.NewStore(t.TempDir())
+		store := newPrivateSandboxExecutionTestStore(t)
 		writeSandboxExecutionManifestFixture(t, store, executionID, `{
 			"id": "legacy-run-manifest",
 			"purpose": "run",

@@ -411,7 +411,7 @@ func TestRunSandboxManifestUsesConfiguredSecurityIntentAndRedactsUnsafeValues(t 
     activeModes:
       - ssh_agent
 `)
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	startedAt := time.Date(2026, 7, 2, 4, 13, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(time.Second)
 
