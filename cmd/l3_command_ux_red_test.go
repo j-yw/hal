@@ -239,7 +239,7 @@ func TestL3LogsSelectsSingleRunAndDrainsTerminalCursor(t *testing.T) {
 				JobID:           "job-alpha",
 				Records: []sandboxworker.JobLogRecord{
 					{Cursor: 2, Stream: sandboxworker.JobLogStreamStdout, Data: "hello\n", Timestamp: time.Date(2026, 7, 25, 2, 0, 1, 0, time.UTC)},
-					{Cursor: 3, Stream: sandboxworker.JobLogStreamStderr, Data: "TOKEN=red-test-secret\n", Timestamp: time.Date(2026, 7, 25, 2, 0, 2, 0, time.UTC)},
+					{Cursor: 3, Stream: sandboxworker.JobLogStreamStderr, Data: "TOKEN=red-test-secret\nAuthorization: Bearer opaque-l3-header-secret\n", Timestamp: time.Date(2026, 7, 25, 2, 0, 2, 0, time.UTC)},
 				},
 				NextCursor:   3,
 				OldestCursor: 2,
@@ -267,8 +267,10 @@ func TestL3LogsSelectsSingleRunAndDrainsTerminalCursor(t *testing.T) {
 		t.Errorf("follow output did not drain through terminal cursor:\n%s", stdout)
 	}
 	combined := stdout + "\n" + stderr
-	if strings.Contains(combined, "red-test-secret") {
-		t.Errorf("follow output leaked a secret canary:\n%s", combined)
+	for _, secret := range []string{"red-test-secret", "opaque-l3-header-secret"} {
+		if strings.Contains(combined, secret) {
+			t.Errorf("follow output leaked secret canary %q:\n%s", secret, combined)
+		}
 	}
 	if !strings.Contains(stderr, "[redacted]") {
 		t.Errorf("stderr log stream did not render a redacted record:\n%s", stderr)
