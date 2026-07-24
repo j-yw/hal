@@ -22,7 +22,7 @@ func TestL2SandboxdExposesPrivateJobStateRoot(t *testing.T) {
 	}
 
 	req, err := sandboxdRequestFromCommand(cmd, defaultSandboxdFlags(), sandboxdDeps{
-		workerID: func() string { return "worker-l2-test" },
+		workerID: func(string) string { return "worker-l2-test" },
 	})
 	if err != nil {
 		t.Fatalf("sandboxdRequestFromCommand() error: %v", err)
@@ -36,7 +36,7 @@ func TestL2SandboxdExposesPrivateJobStateRoot(t *testing.T) {
 		t.Fatalf("set sandboxd socket: %v", err)
 	}
 	req, err = sandboxdRequestFromCommand(cmd, defaultSandboxdFlags(), sandboxdDeps{
-		workerID: func() string { return "worker-l2-test" },
+		workerID: func(string) string { return "worker-l2-test" },
 	})
 	if err != nil {
 		t.Fatalf("sandboxdRequestFromCommand(custom socket) error: %v", err)

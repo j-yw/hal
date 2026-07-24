@@ -15,6 +15,8 @@ import (
 const (
 	jobStateFileName        = "job.json"
 	jobLogsFileName         = "logs.json"
+	jobStateMarkerFileName  = ".hal-job-state"
+	jobStateMarkerContents  = "hal-sandboxworker-job-state-v1\n"
 	jobTransactionDirPrefix = ".job-state-txn-"
 	maxJobLogsFileBytes     = DefaultJobLogRetentionBytes*6 + (256 << 10)
 )
@@ -24,7 +26,11 @@ type jobStore struct {
 }
 
 type storedJobLogs struct {
-	Records []JobLogRecord `json:"records,omitempty"`
+	Records         []JobLogRecord `json:"records,omitempty"`
+	LogCursor       uint64         `json:"logCursor,omitempty"`
+	LogTruncated    bool           `json:"logTruncated,omitempty"`
+	StdoutTruncated bool           `json:"stdoutTruncated,omitempty"`
+	StderrTruncated bool           `json:"stderrTruncated,omitempty"`
 }
 
 type storedJob struct {
@@ -45,24 +51,110 @@ func newJobStore(root string) (*jobStore, error) {
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return nil, fmt.Errorf("job state root is invalid")
 		}
+		resolvedRoot, err := resolveJobStateRoot(root)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateExistingJobStateRoot(resolvedRoot); err != nil {
+			return nil, err
+		}
+		return &jobStore{root: resolvedRoot}, nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("inspect job state root: %w", err)
 	}
-	if err := os.MkdirAll(root, 0o700); err != nil {
+	if err := os.Mkdir(root, 0o700); err != nil {
 		return nil, fmt.Errorf("create job state root: %w", err)
 	}
-	info, err := os.Lstat(root)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("job state root is invalid")
-	}
+	initialized := false
+	defer func() {
+		if initialized {
+			return
+		}
+		_ = os.Remove(filepath.Join(root, jobStateMarkerFileName))
+		_ = os.Remove(root)
+	}()
 	if err := os.Chmod(root, 0o700); err != nil {
 		return nil, fmt.Errorf("secure job state root: %w", err)
 	}
+	resolvedRoot, err := resolveJobStateRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	if err := validatePrivateJobStateRoot(resolvedRoot); err != nil {
+		return nil, err
+	}
+	if err := writePrivateFileAtomic(resolvedRoot, jobStateMarkerFileName, []byte(jobStateMarkerContents)); err != nil {
+		return nil, fmt.Errorf("initialize job state root: %w", err)
+	}
+	initialized = true
+	return &jobStore{root: resolvedRoot}, nil
+}
+
+func resolveJobStateRoot(root string) (string, error) {
 	resolvedRoot, err := filepath.EvalSymlinks(root)
 	if err != nil || !filepath.IsAbs(resolvedRoot) || resolvedRoot == string(filepath.Separator) {
-		return nil, fmt.Errorf("job state root is invalid")
+		return "", fmt.Errorf("job state root is invalid")
 	}
-	return &jobStore{root: resolvedRoot}, nil
+	return resolvedRoot, nil
+}
+
+func validateExistingJobStateRoot(root string) error {
+	if err := validatePrivateJobStateRoot(root); err != nil {
+		return err
+	}
+	markerPath := filepath.Join(root, jobStateMarkerFileName)
+	info, err := os.Lstat(markerPath)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 ||
+		info.Mode().Perm()&0o077 != 0 || info.Size() != int64(len(jobStateMarkerContents)) {
+		return fmt.Errorf("job state root ownership marker is invalid")
+	}
+	file, err := os.Open(markerPath)
+	if err != nil {
+		return fmt.Errorf("job state root ownership marker is invalid")
+	}
+	marker, readErr := io.ReadAll(io.LimitReader(file, int64(len(jobStateMarkerContents))+1))
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil || string(marker) != jobStateMarkerContents {
+		return fmt.Errorf("job state root ownership marker is invalid")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return fmt.Errorf("read job state root: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == jobStateMarkerFileName {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		info, err := os.Lstat(path)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 {
+			return fmt.Errorf("job state root contents are invalid")
+		}
+		switch {
+		case entry.Name() == jobStateLockFileName:
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("job state root contents are invalid")
+			}
+		case strings.HasPrefix(entry.Name(), jobTransactionDirPrefix), validJobSafeID(entry.Name()):
+			if !info.IsDir() {
+				return fmt.Errorf("job state root contents are invalid")
+			}
+		default:
+			return fmt.Errorf("job state root contents are invalid")
+		}
+	}
+	return nil
+}
+
+func validatePrivateJobStateRoot(root string) error {
+	info, err := os.Lstat(root)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("job state root is invalid")
+	}
+	if info.Mode().Perm() != 0o700 {
+		return fmt.Errorf("job state root permissions are invalid")
+	}
+	return validateJobStateRootOwner(info)
 }
 
 func (store *jobStore) loadAll() ([]storedJob, error) {
@@ -116,11 +208,12 @@ func (store *jobStore) loadAll() ([]storedJob, error) {
 		if job.ID != entry.Name() {
 			return nil, fmt.Errorf("job state identity does not match its directory")
 		}
-		records, err := loadJobLogsFile(filepath.Join(jobDir, jobLogsFileName))
+		logs, err := loadJobLogsFile(filepath.Join(jobDir, jobLogsFileName))
 		if err != nil {
 			return nil, err
 		}
-		jobs = append(jobs, storedJob{Job: job, Records: records})
+		reconcileJobLogSnapshot(&job, logs)
+		jobs = append(jobs, storedJob{Job: job, Records: logs.Records})
 	}
 	return jobs, nil
 }
@@ -140,7 +233,7 @@ func (store *jobStore) save(job Job, records []JobLogRecord) error {
 	if err != nil {
 		return fmt.Errorf("encode job state: %w", err)
 	}
-	logData, err := encodeStoredJobLogs(records)
+	logData, err := encodeStoredJobLogs(job, records)
 	if err != nil {
 		return fmt.Errorf("encode job logs: %w", err)
 	}
@@ -234,10 +327,10 @@ func loadJobStateFile(path string) (Job, error) {
 	return job, nil
 }
 
-func loadJobLogsFile(path string) ([]JobLogRecord, error) {
+func loadJobLogsFile(path string) (storedJobLogs, error) {
 	var logs storedJobLogs
 	if err := decodePrivateJSONFile(path, &logs, maxJobLogsFileBytes); err != nil {
-		return nil, fmt.Errorf("load job logs: %w", err)
+		return storedJobLogs{}, fmt.Errorf("load job logs: %w", err)
 	}
 	response := JobLogsResponse{
 		ContractVersion: JobContractVersion,
@@ -248,17 +341,45 @@ func loadJobLogsFile(path string) ([]JobLogRecord, error) {
 		response.NextCursor = logs.Records[len(logs.Records)-1].Cursor
 	}
 	if err := response.Validate(); err != nil {
-		return nil, fmt.Errorf("load job logs: %w", err)
+		return storedJobLogs{}, fmt.Errorf("load job logs: %w", err)
 	}
-	return cloneJobLogRecords(logs.Records), nil
+	if logs.LogCursor == 0 {
+		logs.LogCursor = response.NextCursor
+	} else if logs.LogCursor < response.NextCursor {
+		return storedJobLogs{}, fmt.Errorf("load job logs: persisted cursor precedes retained records")
+	}
+	logs.LogTruncated = logs.LogTruncated || logs.StdoutTruncated || logs.StderrTruncated
+	if logs.LogCursor > response.NextCursor && !logs.LogTruncated {
+		return storedJobLogs{}, fmt.Errorf("load job logs: persisted cursor has no truncation proof")
+	}
+	logs.Records = cloneJobLogRecords(logs.Records)
+	return logs, nil
 }
 
-func encodeStoredJobLogs(records []JobLogRecord) ([]byte, error) {
-	data, err := json.Marshal(storedJobLogs{Records: records})
+func encodeStoredJobLogs(job Job, records []JobLogRecord) ([]byte, error) {
+	data, err := json.Marshal(storedJobLogs{
+		Records:         records,
+		LogCursor:       job.LogCursor,
+		LogTruncated:    job.LogTruncated,
+		StdoutTruncated: job.StdoutTruncated,
+		StderrTruncated: job.StderrTruncated,
+	})
 	if err != nil {
 		return nil, err
 	}
 	return append(data, '\n'), nil
+}
+
+func reconcileJobLogSnapshot(job *Job, logs storedJobLogs) {
+	if job == nil {
+		return
+	}
+	if logs.LogCursor > job.LogCursor {
+		job.LogCursor = logs.LogCursor
+	}
+	job.LogTruncated = job.LogTruncated || logs.LogTruncated
+	job.StdoutTruncated = job.StdoutTruncated || logs.StdoutTruncated
+	job.StderrTruncated = job.StderrTruncated || logs.StderrTruncated
 }
 
 func decodePrivateJSONFile(path string, target any, maxBytes int64) error {

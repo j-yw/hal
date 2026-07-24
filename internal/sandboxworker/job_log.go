@@ -49,7 +49,7 @@ func (manager *jobManager) appendLog(entry *jobEntry, stream string, data []byte
 			Data:      chunk,
 			Timestamp: manager.now().UTC(),
 		})
-		encoded, err := encodeStoredJobLogs(candidateRecords)
+		encoded, err := encodeStoredJobLogs(entry.job, candidateRecords)
 		if err != nil {
 			return fmt.Errorf("encode job logs: %w", err)
 		}

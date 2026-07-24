@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,7 +44,7 @@ type sandboxdDeps struct {
 	newMicroVMDriver                func(sandboxdMicroVMConfig) (sandboxruntime.Driver, error)
 	validateMicroVMConfig           func(sandboxdMicroVMConfig) error
 	microVMGuestReadinessConfigured bool
-	workerID                        func() string
+	workerID                        func(string) string
 }
 
 type sandboxdFlags struct {
@@ -348,7 +349,7 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 	}
 	if req.WorkerID == "" {
 		deps = normalizeSandboxdDeps(deps)
-		req.WorkerID = strings.TrimSpace(deps.workerID())
+		req.WorkerID = strings.TrimSpace(deps.workerID(req.JobStateDir))
 	}
 	if req.WorkerID == "" {
 		return sandboxdRequest{}, fmt.Errorf("sandboxd worker ID is required")
@@ -1109,12 +1110,17 @@ func defaultSandboxdJobStateDir() string {
 	return defaultSandboxdSocketPath() + ".jobs"
 }
 
-func defaultSandboxdWorkerID() string {
+func defaultSandboxdWorkerID(jobStateDir string) string {
 	hostname, err := os.Hostname()
 	if err != nil || strings.TrimSpace(hostname) == "" {
 		hostname = "local"
 	}
-	return fmt.Sprintf("local-%s-%d", safeSandboxdWorkerIDPart(hostname), os.Getpid())
+	safeHostname := safeSandboxdWorkerIDPart(hostname)
+	if len(safeHostname) > 128 {
+		safeHostname = safeHostname[:128]
+	}
+	stateIdentity := sha256.Sum256([]byte(filepath.Clean(strings.TrimSpace(jobStateDir))))
+	return fmt.Sprintf("local-%s-%x", safeHostname, stateIdentity[:8])
 }
 
 func safeSandboxdWorkerIDPart(value string) string {

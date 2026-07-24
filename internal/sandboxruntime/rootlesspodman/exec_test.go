@@ -74,6 +74,10 @@ func TestExecUsesFakeRunnerAndStreamsIO(t *testing.T) {
 	if !reflect.DeepEqual(request.Args, wantArgs) {
 		t.Fatalf("exec args = %#v, want %#v", request.Args, wantArgs)
 	}
+	wantCancellationArgs := []string{"podman", "stop", "--ignore", "--time", "0", "runtime-id"}
+	if !reflect.DeepEqual(request.CancellationArgs, wantCancellationArgs) {
+		t.Fatalf("exec cancellation args = %#v, want %#v", request.CancellationArgs, wantCancellationArgs)
+	}
 	if request.Operation != rootlesspodman.OperationExec {
 		t.Fatalf("operation = %q, want %q", request.Operation, rootlesspodman.OperationExec)
 	}

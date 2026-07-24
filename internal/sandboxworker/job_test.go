@@ -400,6 +400,65 @@ func TestWorkerJobRestartReconcilesWithoutRerun(t *testing.T) {
 	}
 }
 
+func TestWorkerJobRestartReconcilesCursorAndTruncationFromLogSnapshot(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "jobs")
+	store, err := newJobStore(stateDir)
+	if err != nil {
+		t.Fatalf("newJobStore() error: %v", err)
+	}
+	now := time.Date(2026, time.July, 24, 12, 0, 0, 0, time.UTC)
+	job := Job{
+		ContractVersion: JobContractVersion,
+		ID:              "job-log-snapshot",
+		WorkerID:        "worker-log-snapshot",
+		RuntimeDriver:   "job_driver",
+		State:           JobStateSucceeded,
+		SubmittedAt:     now,
+		LogCursor:       1,
+	}
+	records := []JobLogRecord{{
+		Cursor:    1,
+		Stream:    JobLogStreamStdout,
+		Data:      "retained",
+		Timestamp: now,
+	}}
+	if err := store.save(job, records); err != nil {
+		t.Fatalf("save() initial snapshot: %v", err)
+	}
+
+	advanced := job
+	advanced.LogCursor = 2
+	advanced.LogTruncated = true
+	advanced.StdoutTruncated = true
+	logData, err := encodeStoredJobLogs(advanced, records)
+	if err != nil {
+		t.Fatalf("encodeStoredJobLogs() advanced snapshot: %v", err)
+	}
+	jobDir, err := store.jobDir(job.ID)
+	if err != nil {
+		t.Fatalf("jobDir() error: %v", err)
+	}
+	if err := writePrivateFileAtomic(jobDir, jobLogsFileName, logData); err != nil {
+		t.Fatalf("write advanced log snapshot: %v", err)
+	}
+
+	manager, err := newJobManager(jobManagerOptions{
+		WorkerID: "worker-log-snapshot",
+		StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("newJobManager() restart error: %v", err)
+	}
+	defer manager.close()
+	got, err := manager.status(job.ID)
+	if err != nil {
+		t.Fatalf("status() error: %v", err)
+	}
+	if got.LogCursor != 2 || !got.LogTruncated || !got.StdoutTruncated {
+		t.Fatalf("recovered log metadata = %#v, want cursor 2 with stdout truncation", got)
+	}
+}
+
 func TestWorkerJobStateDirectoryHasExclusiveManagerOwnership(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "jobs")
 	first, err := newJobManager(jobManagerOptions{
@@ -512,8 +571,46 @@ func TestWorkerJobStoreAcceptsSymlinkedParentAndCleansAbandonedTransactions(t *t
 	}
 }
 
+func TestWorkerJobStoreRejectsUnmarkedExistingRootWithoutMutation(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "shared")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatalf("Mkdir() shared root: %v", err)
+	}
+	unrelated := filepath.Join(root, jobTransactionDirPrefix+"unrelated")
+	if err := os.Mkdir(unrelated, 0o700); err != nil {
+		t.Fatalf("Mkdir() unrelated directory: %v", err)
+	}
+
+	if _, err := newJobStore(root); err == nil {
+		t.Fatal("newJobStore() accepted an arbitrary existing directory")
+	}
+	info, err := os.Stat(root)
+	if err != nil {
+		t.Fatalf("Stat() shared root: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("shared root permissions = %#o, want unchanged 0755", got)
+	}
+	if _, err := os.Stat(unrelated); err != nil {
+		t.Fatalf("unrelated directory was mutated or removed: %v", err)
+	}
+
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatalf("Chmod() shared root: %v", err)
+	}
+	if _, err := newJobStore(root); err == nil {
+		t.Fatal("newJobStore() accepted an unmarked private directory")
+	}
+	if _, err := os.Stat(unrelated); err != nil {
+		t.Fatalf("unrelated private directory was mutated or removed: %v", err)
+	}
+}
+
 func TestWorkerJobCorruptDurableStateFailsSafe(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "jobs")
+	if _, err := newJobStore(stateDir); err != nil {
+		t.Fatalf("newJobStore() error: %v", err)
+	}
 	jobDir := filepath.Join(stateDir, "job-corrupt")
 	if err := os.MkdirAll(jobDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll() error: %v", err)

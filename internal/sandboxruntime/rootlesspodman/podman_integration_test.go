@@ -141,6 +141,85 @@ func TestPodmanIntegrationLifecycleExecAndCopy(t *testing.T) {
 	deleted = true
 }
 
+func TestPodmanIntegrationCancellationStopsExecWorkloadBeforeReturn(t *testing.T) {
+	image := strings.TrimSpace(os.Getenv("HAL_PODMAN_TEST_IMAGE"))
+	if image == "" {
+		t.Skip("HAL_PODMAN_TEST_IMAGE is unset; set it to a locally available image to run Podman integration tests")
+	}
+	podmanPath := podmanIntegrationExecutable(t)
+	requireLocalPodmanImage(t, podmanPath, image)
+	runner := rootlesspodman.DefaultCommandRunner{}
+	driver := rootlesspodman.New(rootlesspodman.Options{
+		LifecycleRunner: runner,
+		ExecRunner:      runner,
+		PodmanPath:      podmanPath,
+		Image:           image,
+		WorkDir:         "/",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	containerName := fmt.Sprintf("hal-podman-cancel-it-%d-%d", os.Getpid(), time.Now().UnixNano())
+	target, err := driver.Create(ctx, sandboxruntime.CreateRequest{Name: containerName})
+	if err != nil {
+		t.Fatalf("Create() failed: %v", err)
+	}
+	cleanupTarget := *target
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		_ = driver.Delete(cleanupCtx, sandboxruntime.LifecycleRequest{Target: cleanupTarget})
+	})
+	target, err = driver.Start(ctx, sandboxruntime.LifecycleRequest{Target: *target})
+	if err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	const readyPath = "/tmp/hal-podman-cancellation-ready"
+	execCtx, cancelExec := context.WithCancel(ctx)
+	execErrCh := make(chan error, 1)
+	go func() {
+		_, execErr := driver.Exec(execCtx, sandboxruntime.ExecRequest{
+			Target: *target,
+			Args:   []string{"sh", "-c", "trap '' TERM; : > " + readyPath + "; while :; do sleep 1; done"},
+		})
+		execErrCh <- execErr
+	}()
+	waitForPodmanIntegrationFile(t, ctx, podmanPath, podmanIntegrationTargetRef(target), readyPath)
+
+	cancelExec()
+	select {
+	case execErr := <-execErrCh:
+		if !errors.Is(execErr, context.Canceled) {
+			t.Fatalf("Exec() cancellation error = %v, want context.Canceled", execErr)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Exec() did not return after cancellation")
+	}
+	inspectCtx, inspectCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer inspectCancel()
+	target, err = driver.Inspect(inspectCtx, sandboxruntime.InspectRequest{Target: *target})
+	if err != nil {
+		t.Fatalf("Inspect() after cancellation failed: %v", err)
+	}
+	if target.Status != sandbox.StatusStopped {
+		t.Fatalf("container status after cancellation = %q, want %q", target.Status, sandbox.StatusStopped)
+	}
+}
+
+func waitForPodmanIntegrationFile(t *testing.T, ctx context.Context, podmanPath, targetRef, path string) {
+	t.Helper()
+	for {
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("wait for Podman exec readiness: %v", err)
+		}
+		if err := exec.CommandContext(ctx, podmanPath, "exec", targetRef, "test", "-f", path).Run(); err == nil {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
 func podmanIntegrationExecutable(t *testing.T) string {
 	t.Helper()
 	if podmanPath := strings.TrimSpace(os.Getenv("HAL_PODMAN_PATH")); podmanPath != "" {

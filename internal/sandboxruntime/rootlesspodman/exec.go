@@ -25,12 +25,13 @@ func (d *Driver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*san
 	}
 
 	result, err := d.runExecCommand(ctx, CommandRequest{
-		Operation: OperationExec,
-		Args:      d.execArgs(ref, commandArgs, req.Env, req.WorkDir, req.Stdin != nil),
-		Env:       cloneStringMap(req.Env),
-		Stdin:     req.Stdin,
-		Stdout:    req.Stdout,
-		Stderr:    req.Stderr,
+		Operation:        OperationExec,
+		Args:             d.execArgs(ref, commandArgs, req.Env, req.WorkDir, req.Stdin != nil),
+		CancellationArgs: d.execCancellationArgs(ref),
+		Env:              cloneStringMap(req.Env),
+		Stdin:            req.Stdin,
+		Stdout:           req.Stdout,
+		Stderr:           req.Stderr,
 	})
 	execResult := &sandboxruntime.ExecResult{ExitCode: result.ExitCode}
 	if err != nil {
@@ -79,6 +80,10 @@ func (d *Driver) execArgs(ref string, commandArgs []string, env map[string]strin
 	args = append(args, ref)
 	args = append(args, commandArgs...)
 	return args
+}
+
+func (d *Driver) execCancellationArgs(ref string) []string {
+	return []string{d.podmanPath, "stop", "--ignore", "--time", "0", ref}
 }
 
 func cloneStringSlice(values []string) []string {

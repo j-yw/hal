@@ -9,7 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+const execCancellationTimeout = 10 * time.Second
 
 // DefaultCommandRunner executes the Podman argv constructed by Driver methods.
 // Tests normally inject fake runners instead, so normal unit tests do not
@@ -92,9 +95,11 @@ func runDefaultExecCommand(ctx context.Context, req CommandRequest) (CommandResu
 	}()
 
 	var err error
+	var cancellationErr error
 	select {
 	case err = <-waitCh:
 	case <-ctx.Done():
+		cancellationErr = runExecCancellationCommand(req.CancellationArgs)
 		err = terminateExecProcessGroup(cmd, waitCh)
 	}
 	result := CommandResult{
@@ -103,9 +108,29 @@ func runDefaultExecCommand(ctx context.Context, req CommandRequest) (CommandResu
 		Stderr:   stderr.String(),
 	}
 	if ctx.Err() != nil {
-		return result, ctx.Err()
+		return result, errors.Join(ctx.Err(), cancellationErr)
 	}
 	return result, err
+}
+
+func runExecCancellationCommand(args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	if strings.TrimSpace(args[0]) == "" {
+		return fmt.Errorf("podman exec cancellation command is invalid")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), execCancellationTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd.Env = commandEnvironment(nil)
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("podman exec cancellation cleanup timed out: %w", ctx.Err())
+		}
+		return fmt.Errorf("podman exec cancellation cleanup failed: %w", err)
+	}
+	return nil
 }
 
 func commandEnvironment(env map[string]string) []string {

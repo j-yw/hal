@@ -78,6 +78,7 @@ func TestCommandRequestContainsStreamingCommandFields(t *testing.T) {
 
 	assertFieldType(t, requestType, "Operation", reflect.TypeOf(""))
 	assertFieldType(t, requestType, "Args", reflect.TypeOf([]string{}))
+	assertFieldType(t, requestType, "CancellationArgs", reflect.TypeOf([]string{}))
 	assertFieldType(t, requestType, "Env", reflect.TypeOf(map[string]string{}))
 	assertFieldType(t, requestType, "WorkDir", reflect.TypeOf(""))
 	assertFieldType(t, requestType, "Stdin", reflect.TypeOf((*io.Reader)(nil)).Elem())
