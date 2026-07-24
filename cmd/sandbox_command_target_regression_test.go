@@ -2000,7 +2000,7 @@ func TestWorkerRootlessAutoSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) 
 			if req.Target.Runtime.WorkerID != "worker-1" {
 				t.Fatalf("Exec worker ID = %q, want worker-1", req.Target.Runtime.WorkerID)
 			}
-			_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSON("worker-backed auto path")+"\n")
+			_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSONWithArchivePath("worker-backed auto path", ".hal/archive/worker-backed-auto")+"\n")
 			return &sandboxruntime.ExecResult{}, nil
 		},
 	}
@@ -2234,7 +2234,7 @@ func TestWorkerRootlessAutoSandboxStreamsOutputAndSummariesExcludePreparation(t 
 				_, _ = io.WriteString(req.Stdout, "auto preparation output\n")
 				return &sandboxruntime.ExecResult{}, nil
 			}
-			_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSON("worker auto stream")+"\n")
+			_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSONWithArchivePath("worker auto stream", ".hal/archive/worker-auto-stream")+"\n")
 			_, _ = io.WriteString(req.Stderr, "worker auto stderr one\n")
 			_, _ = io.WriteString(req.Stderr, "worker auto stderr two\n")
 			return &sandboxruntime.ExecResult{}, nil
@@ -2315,7 +2315,7 @@ func TestWorkerRootlessAutoSandboxStreamsOutputAndSummariesExcludePreparation(t 
 	}
 	stdoutSummary := requireSandboxOutputSummaryPayload(t, store, manifest, "output/stdout-summary.txt")
 	stderrSummary := requireSandboxOutputSummaryPayload(t, store, manifest, "output/stderr-summary.txt")
-	if stdoutSummary != autoSandboxRemoteSuccessJSON("worker auto stream")+"\n" {
+	if stdoutSummary != autoSandboxRemoteSuccessJSONWithArchivePath("worker auto stream", ".hal/archive/worker-auto-stream")+"\n" {
 		t.Fatalf("stdout summary = %q, want only remote JSON output", stdoutSummary)
 	}
 	if stderrSummary != "worker auto stderr one\nworker auto stderr two\n" {
@@ -2469,7 +2469,7 @@ func TestWorkerRootlessAutoSandboxUsesRuntimeCopyForWorkspaceAndArtifacts(t *tes
 				t.Fatalf("Exec worker ID = %q, want worker-1", req.Target.Runtime.WorkerID)
 			}
 			if isWorkerAutoCommandExec(req) {
-				_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSON("worker auto copy semantics")+"\n")
+				_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSONWithArchivePath("worker auto copy semantics", ".hal/archive/worker-auto-copy")+"\n")
 			}
 			return &sandboxruntime.ExecResult{}, nil
 		},
@@ -2555,9 +2555,9 @@ func TestWorkerRootlessAutoSandboxUsesRuntimeCopyForWorkspaceAndArtifacts(t *tes
 	}
 	requireWorkerRuntimeCopyIn(t, copyIns, bundleDir, "/tmp/hal-workspace-bundles/worker-rootless-sync.bundle")
 	requireWorkerRuntimeCopyOutSources(t, copyOuts, []string{
-		".hal/prd.json",
-		".hal/progress.txt",
-		".hal/auto-state.json",
+		".hal/archive/worker-auto-copy/prd.json",
+		".hal/archive/worker-auto-copy/progress.txt",
+		".hal/archive/worker-auto-copy/auto-state.json",
 		".hal/recovery/workspace.patch",
 		".hal/reports.tar",
 	})

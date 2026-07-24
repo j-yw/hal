@@ -405,7 +405,7 @@ func lifecycleExecFunc(purpose string, err error) func(context.Context, sandboxr
 		}
 		switch purpose {
 		case sandbox.SandboxLeasePurposeAuto:
-			_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSON("lease lifecycle")+"\n")
+			_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSONWithArchivePath("lease lifecycle", ".hal/archive/lease-lifecycle")+"\n")
 		default:
 			_, _ = fmt.Fprintln(req.Stdout, "lease lifecycle")
 		}

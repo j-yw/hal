@@ -323,9 +323,12 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 	var target *sandbox.SandboxState
 	commandOut := out
 	var capturedJSON bytes.Buffer
+	capturedSummary := sandboxL3BoundedSummaryWriter{limit: sandboxL3RecoveryOutputSummaryBytes}
 	augmentJSON := opts.JSON
 	if augmentJSON {
 		commandOut = &capturedJSON
+	} else {
+		commandOut = io.MultiWriter(out, &capturedSummary)
 	}
 	execResult, execErr := deps.execute(ctx, req, commandOut, errOut, autoSandboxExecutionHooks{
 		OnTargetReady: func(ready *sandbox.SandboxState) error {
@@ -390,13 +393,17 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 		return execErr
 	}
 	if req.WorkerJob != nil {
+		foregroundOutput := capturedJSON.Bytes()
+		if !augmentJSON {
+			foregroundOutput = []byte(capturedSummary.String())
+		}
 		if finalizationErr := finalizeAutoSandboxWorkerJob(
 			ctx,
 			store,
 			req,
 			execResult,
 			target,
-			capturedJSON.Bytes(),
+			foregroundOutput,
 			deps,
 		); finalizationErr != nil {
 			execErr = errors.Join(execErr, finalizationErr)

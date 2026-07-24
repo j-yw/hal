@@ -203,7 +203,7 @@ func testAutoSandboxExplicitSchedulerAcquiresLeaseAndPersistsManifest(t *testing
 			if req.Target.Runtime.WorkerID != "worker-auto-scheduled" {
 				t.Fatalf("Exec worker ID = %q, want selected worker host ID", req.Target.Runtime.WorkerID)
 			}
-			_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSON("scheduled auto path")+"\n")
+			_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSONWithArchivePath("scheduled auto path", ".hal/archive/scheduled-auto")+"\n")
 			return &sandboxruntime.ExecResult{}, nil
 		},
 	}
