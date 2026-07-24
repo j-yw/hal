@@ -322,6 +322,115 @@ func TestUpdateActiveInstanceExactRejectsSameNameReplacement(t *testing.T) {
 	}
 }
 
+func TestLegacyInstanceIDRepairSerializesSameNameReplacement(t *testing.T) {
+	home := setSandboxHome(t)
+	if err := EnsureGlobalDir(); err != nil {
+		t.Fatalf("EnsureGlobalDir() error: %v", err)
+	}
+
+	const name = "legacy-repair-replacement"
+	path := filepath.Join(home, sandboxesDirName, name+sandboxStateFileExt)
+	if err := os.WriteFile(path, []byte("{\n  \"name\": \"legacy-repair-replacement\",\n  \"provider\": \"hetzner\",\n  \"status\": \"stopped\"\n}\n"), 0o600); err != nil {
+		t.Fatalf("seed legacy entry: %v", err)
+	}
+
+	originalRename := renameRegistryFile
+	t.Cleanup(func() { renameRegistryFile = originalRename })
+	repairReady := make(chan struct{})
+	continueRepair := make(chan struct{})
+	blocked := false
+	renameRegistryFile = func(oldPath, newPath string) error {
+		if !blocked && oldPath == path+".tmp" && newPath == path {
+			blocked = true
+			close(repairReady)
+			<-continueRepair
+		}
+		return originalRename(oldPath, newPath)
+	}
+
+	loadDone := make(chan error, 1)
+	go func() {
+		_, err := LoadActiveInstance(name)
+		loadDone <- err
+	}()
+	<-repairReady
+
+	if err := RemoveInstance(name); err != nil {
+		t.Fatalf("RemoveInstance() during repair error: %v", err)
+	}
+	replacement := &SandboxState{
+		ID:       "sandbox-replacement",
+		Name:     name,
+		Provider: "hetzner",
+		Status:   StatusRunning,
+	}
+	if err := SaveInstance(replacement); err != nil {
+		t.Fatalf("SaveInstance(replacement) during repair error: %v", err)
+	}
+	close(continueRepair)
+	if err := <-loadDone; err != nil {
+		t.Fatalf("LoadActiveInstance(legacy) error: %v", err)
+	}
+
+	current, err := LoadActiveInstance(name)
+	if err != nil {
+		t.Fatalf("LoadActiveInstance(final) error: %v", err)
+	}
+	if current.ID != replacement.ID || current.Status != replacement.Status {
+		t.Fatalf("legacy repair overwrote same-name replacement: %#v", current)
+	}
+}
+
+func TestLegacyInstanceIDRepairSerializesStagedRemoval(t *testing.T) {
+	home := setSandboxHome(t)
+	if err := EnsureGlobalDir(); err != nil {
+		t.Fatalf("EnsureGlobalDir() error: %v", err)
+	}
+
+	const name = "legacy-repair-stage"
+	path := filepath.Join(home, sandboxesDirName, name+sandboxStateFileExt)
+	if err := os.WriteFile(path, []byte("{\n  \"name\": \"legacy-repair-stage\",\n  \"provider\": \"hetzner\",\n  \"status\": \"stopped\"\n}\n"), 0o600); err != nil {
+		t.Fatalf("seed legacy entry: %v", err)
+	}
+
+	originalRename := renameRegistryFile
+	t.Cleanup(func() { renameRegistryFile = originalRename })
+	repairReady := make(chan struct{})
+	continueRepair := make(chan struct{})
+	blocked := false
+	renameRegistryFile = func(oldPath, newPath string) error {
+		if !blocked && oldPath == path+".tmp" && newPath == path {
+			blocked = true
+			close(repairReady)
+			<-continueRepair
+		}
+		return originalRename(oldPath, newPath)
+	}
+
+	loadDone := make(chan error, 1)
+	go func() {
+		_, err := LoadActiveInstance(name)
+		loadDone <- err
+	}()
+	<-repairReady
+	pending, err := StageInstanceRemoval(name)
+	if err != nil {
+		t.Fatalf("StageInstanceRemoval() during repair error: %v", err)
+	}
+	t.Cleanup(func() { _ = pending.Commit() })
+	close(continueRepair)
+	if err := <-loadDone; err != nil {
+		t.Fatalf("LoadActiveInstance(legacy) error: %v", err)
+	}
+
+	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("active path exists beside staged entry after repair: %v", err)
+	}
+	if _, err := os.Stat(path + pendingRemovalRegistryFileExt); err != nil {
+		t.Fatalf("staged path is unavailable after repair: %v", err)
+	}
+}
+
 func TestListInstances_FailsWhenHomeUnavailable(t *testing.T) {
 	origHomeFn := userHomeDirFn
 	t.Cleanup(func() {
