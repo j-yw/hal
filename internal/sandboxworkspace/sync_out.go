@@ -145,4 +145,5 @@ const (
 	SyncOutApplyEligibilityReasonDirtyWorktree        SyncOutApplyEligibilityReason = "dirty_worktree"
 	SyncOutApplyEligibilityReasonDryRunFailed         SyncOutApplyEligibilityReason = "dry_run_failed"
 	SyncOutApplyEligibilityReasonUnsafeArtifact       SyncOutApplyEligibilityReason = "unsafe_artifact"
+	SyncOutApplyEligibilityReasonApplyOutcomeUnknown  SyncOutApplyEligibilityReason = "apply_outcome_unknown"
 )
