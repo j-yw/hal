@@ -23,7 +23,7 @@ func (s Store) WithExecutionLock(executionID string, callback func() error) (err
 	if err != nil {
 		return err
 	}
-	if err := validatePrivateDirectory(s.root, "sandbox execution store"); err != nil {
+	if err := validatePrivateStoreRoot(s.root); err != nil {
 		return err
 	}
 	if err := validatePrivateDirectory(executionDir, "sandbox execution"); err != nil {

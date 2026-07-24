@@ -117,12 +117,14 @@ func (s Store) Ensure(executionID string) error {
 		name string
 		path string
 	}{
-		{name: "sandbox execution store", path: s.root},
 		{name: "sandbox execution", path: executionDir},
 		{name: "sandbox execution logs", path: filepath.Join(executionDir, logsDirName)},
 		{name: "sandbox execution artifacts", path: filepath.Join(executionDir, artifactsDirName)},
 		{name: "sandbox execution handoff", path: filepath.Join(executionDir, handoffDirName)},
 		{name: "sandbox execution recovery", path: filepath.Join(executionDir, recoveryDirName)},
+	}
+	if err := ensurePrivateStoreRoot(s.root); err != nil {
+		return err
 	}
 	// Validate every existing component before creating anything so an unsafe
 	// partial layout is rejected without chmod, deletion, or additive mutation.
@@ -187,7 +189,7 @@ func (s Store) LoadManifest(executionID string) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := validatePrivateDirectory(s.root, "sandbox execution store"); err != nil {
+	if err := validatePrivateStoreRoot(s.root); err != nil {
 		return nil, err
 	}
 	if err := validatePrivateDirectory(filepath.Dir(path), "sandbox execution"); err != nil {
@@ -286,7 +288,7 @@ func (s Store) ListManifests() ([]Manifest, error) {
 	if strings.TrimSpace(s.root) == "" {
 		return nil, errStoreRootUnavailable
 	}
-	if err := validatePrivateDirectory(s.root, "sandbox execution store"); errors.Is(err, fs.ErrNotExist) {
+	if err := validatePrivateStoreRoot(s.root); errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	} else if err != nil {
 		return nil, err
@@ -343,7 +345,7 @@ func (s Store) Remove(executionID string) error {
 	if err != nil {
 		return err
 	}
-	if err := validatePrivateDirectory(s.root, "sandbox execution store"); err != nil {
+	if err := validatePrivateStoreRoot(s.root); err != nil {
 		return err
 	}
 	if err := validatePrivateDirectory(executionDir, "sandbox execution"); err != nil {

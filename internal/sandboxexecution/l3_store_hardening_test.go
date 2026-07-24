@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestL3EnsureRejectsSymlinkedRootAndPrivateLayoutViolations(t *testing.T) {
@@ -49,6 +50,99 @@ func TestL3EnsureRejectsSymlinkedRootAndPrivateLayoutViolations(t *testing.T) {
 		}
 		assertMode(t, artifacts, 0o755)
 	})
+}
+
+func TestL3StoreRejectsSymlinkedRootAncestorWithoutExternalMutation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on some Windows setups")
+	}
+
+	type operation struct {
+		name string
+		run  func(Store) error
+	}
+	operations := []operation{
+		{
+			name: "ensure",
+			run: func(store Store) error {
+				return store.Ensure("exec-new")
+			},
+		},
+		{
+			name: "save manifest",
+			run: func(store Store) error {
+				return store.SaveManifest(testManifest("exec-new", time.Date(2026, 7, 25, 2, 0, 0, 0, time.UTC)))
+			},
+		},
+		{
+			name: "load manifest",
+			run: func(store Store) error {
+				_, err := store.LoadManifest("exec-existing")
+				return err
+			},
+		},
+		{
+			name: "open stored file",
+			run: func(store Store) error {
+				file, err := store.OpenStoredFile("exec-existing", "exec-existing/artifacts/payload.txt")
+				if file != nil {
+					_ = file.Close()
+				}
+				return err
+			},
+		},
+		{
+			name: "execution lock",
+			run: func(store Store) error {
+				return store.WithExecutionLock("exec-existing", func() error {
+					return errors.New("callback must not run")
+				})
+			},
+		},
+	}
+
+	for _, operation := range operations {
+		t.Run(operation.name, func(t *testing.T) {
+			parent := t.TempDir()
+			realParent := filepath.Join(parent, "private-real")
+			if err := os.Mkdir(realParent, 0o700); err != nil {
+				t.Fatalf("Mkdir(real parent) error: %v", err)
+			}
+			realRoot := filepath.Join(realParent, "store")
+			realStore := NewStore(realRoot)
+			if err := realStore.SaveManifest(testManifest("exec-existing", time.Date(2026, 7, 25, 1, 0, 0, 0, time.UTC))); err != nil {
+				t.Fatalf("SaveManifest(real store) error: %v", err)
+			}
+			if _, err := realStore.WriteArtifactPayload("exec-existing", "payload.txt", []byte("canary")); err != nil {
+				t.Fatalf("WriteArtifactPayload(real store) error: %v", err)
+			}
+
+			aliasParent := filepath.Join(parent, "ancestor-token=secret")
+			if err := os.Symlink(realParent, aliasParent); err != nil {
+				t.Fatalf("Symlink(ancestor) error: %v", err)
+			}
+			store := NewStore(filepath.Join(aliasParent, "store"))
+			err := operation.run(store)
+			if err == nil {
+				t.Fatalf("%s accepted a symlinked store-root ancestor", operation.name)
+			}
+			for _, unsafe := range []string{parent, realParent, aliasParent, "ancestor-token=secret"} {
+				if strings.Contains(err.Error(), unsafe) {
+					t.Fatalf("%s error exposed unsafe path %q: %v", operation.name, unsafe, err)
+				}
+			}
+			if _, statErr := os.Lstat(filepath.Join(realRoot, "exec-new")); !errors.Is(statErr, fs.ErrNotExist) {
+				t.Fatalf("%s mutated external store: %v", operation.name, statErr)
+			}
+			if _, statErr := os.Lstat(filepath.Join(realRoot, "exec-existing", executionLockFileName)); !errors.Is(statErr, fs.ErrNotExist) {
+				t.Fatalf("%s created an external lock: %v", operation.name, statErr)
+			}
+			payload, readErr := os.ReadFile(filepath.Join(realRoot, "exec-existing", artifactsDirName, "payload.txt"))
+			if readErr != nil || string(payload) != "canary" {
+				t.Fatalf("%s mutated external payload: data=%q err=%v", operation.name, payload, readErr)
+			}
+		})
+	}
 }
 
 func TestL3LoadManifestRejectsTrailingAndInvalidSemanticState(t *testing.T) {
@@ -148,6 +242,43 @@ func TestL3OpenStoredFileReturnsVerifiedContainedRegularFile(t *testing.T) {
 	}
 	if string(data) != "payload" {
 		t.Fatalf("opened payload = %q, want payload", data)
+	}
+}
+
+func TestL3OpenStoredFileDescriptorSurvivesRootPathReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on some Windows setups")
+	}
+	store := newTestStore(t)
+	stored, err := store.WriteArtifactPayload("exec-1", "payload.txt", []byte("trusted"))
+	if err != nil {
+		t.Fatalf("WriteArtifactPayload() error: %v", err)
+	}
+	file, err := store.OpenStoredFile("exec-1", stored.Path)
+	if err != nil {
+		t.Fatalf("OpenStoredFile() error: %v", err)
+	}
+	defer file.Close()
+
+	movedRoot := store.Root() + "-moved"
+	if err := os.Rename(store.Root(), movedRoot); err != nil {
+		t.Fatalf("Rename(store root) error: %v", err)
+	}
+	externalRoot := filepath.Join(t.TempDir(), "external-store")
+	externalStore := NewStore(externalRoot)
+	if _, err := externalStore.WriteArtifactPayload("exec-1", "payload.txt", []byte("untrusted")); err != nil {
+		t.Fatalf("WriteArtifactPayload(external) error: %v", err)
+	}
+	if err := os.Symlink(externalRoot, store.Root()); err != nil {
+		t.Fatalf("Symlink(replacement root) error: %v", err)
+	}
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		t.Fatalf("ReadAll(opened payload) error: %v", err)
+	}
+	if string(data) != "trusted" {
+		t.Fatalf("opened descriptor read %q after root replacement, want trusted", data)
 	}
 }
 
