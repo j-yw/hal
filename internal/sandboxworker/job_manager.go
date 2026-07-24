@@ -262,6 +262,27 @@ func (manager *jobManager) existingSubmission(req JobStartRequest, driverID stri
 	return cloneJob(entry.job), true, nil
 }
 
+func (manager *jobManager) resolveSubmission(req JobResolveRequest) (Job, error) {
+	if manager == nil || manager.store == nil {
+		return Job{}, fmt.Errorf("worker job manager is unavailable")
+	}
+	if err := req.Validate(); err != nil {
+		return Job{}, err
+	}
+	submissionKey := jobSubmissionKey(req.SubmissionID)
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	jobID, exists := manager.submissions[submissionKey]
+	if !exists {
+		return Job{}, errJobNotFound
+	}
+	entry, exists := manager.jobs[jobID]
+	if !exists {
+		return Job{}, fmt.Errorf("worker job submission identity is unavailable")
+	}
+	return cloneJob(entry.job), nil
+}
+
 func (manager *jobManager) start(ctx context.Context, driverID string, driver sandboxruntime.Driver, req JobStartRequest) (Job, error) {
 	if manager == nil || manager.store == nil {
 		return Job{}, fmt.Errorf("worker job manager is unavailable")
@@ -516,6 +537,25 @@ func (manager *jobManager) status(jobID string) (Job, error) {
 		return Job{}, errJobNotFound
 	}
 	return cloneJob(entry.job), nil
+}
+
+func (manager *jobManager) activeRuntimeCount() int {
+	if manager == nil {
+		return 0
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	runtimeIDs := make(map[string]struct{})
+	for _, entry := range manager.jobs {
+		if entry == nil || entry.job.State != JobStateQueued && entry.job.State != JobStateRunning {
+			continue
+		}
+		runtimeID := strings.TrimSpace(entry.job.RuntimeID)
+		if runtimeID != "" {
+			runtimeIDs[runtimeID] = struct{}{}
+		}
+	}
+	return len(runtimeIDs)
 }
 
 func (manager *jobManager) cancelJob(jobID string) (Job, error) {

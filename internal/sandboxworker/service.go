@@ -137,6 +137,7 @@ func NewService(options ServiceOptions) (*Service, error) {
 			return nil, fmt.Errorf("worker job state is unavailable")
 		}
 		supportedOps = appendMissingStrings(supportedOps,
+			OperationJobResolve,
 			OperationJobStatus,
 			OperationJobLogs,
 			OperationJobCancel,
@@ -185,6 +186,10 @@ func (service *Service) Close() {
 // Status returns current worker readiness generated from service state and the
 // registered runtime drivers.
 func (service *Service) Status() Status {
+	capacity := service.capacity
+	if service.jobs != nil {
+		capacity.ActiveSandboxes = service.jobs.activeRuntimeCount()
+	}
 	return Status{
 		ProtocolVersion:         ProtocolVersion,
 		WorkerID:                service.workerID,
@@ -192,7 +197,7 @@ func (service *Service) Status() Status {
 		SocketPath:              service.socketPath,
 		SupportedRuntimeDrivers: service.registry.DriverIDs(),
 		Health:                  service.health,
-		Capacity:                service.capacity,
+		Capacity:                capacity,
 		Security:                cloneSecurityPolicy(service.security),
 		Metadata:                sandboxruntime.SanitizeRuntimeMetadata(service.metadata),
 	}
@@ -336,7 +341,7 @@ func (service *Service) supportsRequestOperation(operation, driverID string) boo
 	if operation == OperationStatus || operation == OperationCapabilities {
 		return true
 	}
-	if operation == OperationJobStatus || operation == OperationJobLogs || operation == OperationJobCancel {
+	if operation == OperationJobResolve || operation == OperationJobStatus || operation == OperationJobLogs || operation == OperationJobCancel {
 		return service != nil && service.jobs != nil && stringSliceContains(service.supportedOps, operation)
 	}
 	if operation == OperationJobStart && (service == nil || service.jobs == nil) {
@@ -370,7 +375,7 @@ func withoutJobOperations(values []string) []string {
 	result := make([]string, 0, len(values))
 	for _, value := range values {
 		switch value {
-		case OperationJobStart, OperationJobStatus, OperationJobLogs, OperationJobCancel:
+		case OperationJobStart, OperationJobResolve, OperationJobStatus, OperationJobLogs, OperationJobCancel:
 			continue
 		default:
 			result = append(result, value)

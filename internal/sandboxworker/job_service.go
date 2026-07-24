@@ -34,6 +34,22 @@ func (service *Service) JobStartResponse(ctx context.Context, requestID, driverI
 	return jobSuccessResponse(requestID, OperationJobStart, job)
 }
 
+// JobResolveResponse returns an already admitted job by its caller-stable
+// submission identity without starting or reconstructing work.
+func (service *Service) JobResolveResponse(requestID string, req JobResolveRequest) Response {
+	if service == nil || service.jobs == nil {
+		return unsupportedOperationResponse(Request{RequestID: requestID, Operation: OperationJobResolve})
+	}
+	if err := req.Validate(); err != nil {
+		return protocolErrorResponse(requestID, OperationJobResolve, ErrorCodeMalformedRequest, fmt.Sprintf("malformed worker job resolve request: %v", err))
+	}
+	job, err := service.jobs.resolveSubmission(req)
+	if err != nil {
+		return jobOperationErrorResponse(requestID, OperationJobResolve, err)
+	}
+	return jobSuccessResponse(requestID, OperationJobResolve, job)
+}
+
 // JobStatusResponse returns the latest durable job snapshot.
 func (service *Service) JobStatusResponse(requestID string, req JobStatusRequest) Response {
 	if service == nil || service.jobs == nil {

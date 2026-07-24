@@ -63,6 +63,13 @@ type JobStartRequest struct {
 	Exec            ExecRequest `json:"exec"`
 }
 
+// JobResolveRequest retrieves an admitted job by its caller-stable submission
+// identity without submitting or reconstructing work.
+type JobResolveRequest struct {
+	ContractVersion string `json:"contractVersion"`
+	SubmissionID    string `json:"submissionId"`
+}
+
 // JobStatusRequest retrieves the latest durable job snapshot.
 type JobStatusRequest struct {
 	ContractVersion string `json:"contractVersion"`
@@ -114,6 +121,16 @@ func (req JobStartRequest) Validate() error {
 		}
 	}
 	return req.Exec.Validate()
+}
+
+func (req JobResolveRequest) Validate() error {
+	if err := validateJobContractVersion(req.ContractVersion); err != nil {
+		return err
+	}
+	if !validJobSafeID(req.SubmissionID) {
+		return fmt.Errorf("worker job submissionId is invalid")
+	}
+	return nil
 }
 
 func (req JobStatusRequest) Validate() error {
