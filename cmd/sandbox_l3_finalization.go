@@ -41,6 +41,9 @@ func finalizeSandboxL3Execution(
 			return errors.New("execution_manifest_unavailable: durable execution manifest is unavailable")
 		}
 		if manifest.Finalization != nil && manifest.Finalization.State == sandboxexecution.FinalizationStateCompleted {
+			if err := validateSandboxL3CompletedPublication(manifest); err != nil {
+				return err
+			}
 			if requestSyncOut && !manifest.Finalization.SyncOutRequested {
 				return errors.New("sync_out_after_finalization: execution completed without sync-out intent")
 			}
@@ -151,20 +154,24 @@ func normalizeSandboxL3FinalizationDeps(deps sandboxL3FinalizationDeps) sandboxL
 		}
 	}
 	if deps.drainLogs == nil {
-		deps.drainLogs = func(context.Context, *sandboxexecution.Manifest, *sandboxworker.Job) error { return nil }
+		deps.drainLogs = func(context.Context, *sandboxexecution.Manifest, *sandboxworker.Job) error {
+			return errors.New("terminal log drain is unavailable")
+		}
 	}
 	if deps.collectArtifacts == nil {
 		deps.collectArtifacts = func(context.Context, sandboxexecution.Store, *sandboxexecution.Manifest, *sandboxworker.Job) error {
-			return nil
+			return errors.New("terminal artifact collection is unavailable")
 		}
 	}
 	if deps.collectSyncOut == nil {
 		deps.collectSyncOut = func(context.Context, sandboxexecution.Store, *sandboxexecution.Manifest, *sandboxworker.Job) error {
-			return nil
+			return errors.New("terminal sync-out collection is unavailable")
 		}
 	}
 	if deps.releaseLease == nil {
-		deps.releaseLease = func(context.Context, *sandboxexecution.Manifest) error { return nil }
+		deps.releaseLease = func(context.Context, *sandboxexecution.Manifest) error {
+			return errors.New("durable lease release is unavailable")
+		}
 	}
 	return deps
 }
@@ -215,9 +222,11 @@ func blockSandboxL3Finalization(
 	if manifest == nil {
 		return fmt.Errorf("%s: finalization is blocked", reasonCode)
 	}
-	if current, err := store.LoadManifest(manifest.ID); err == nil {
-		manifest = current
+	current, err := store.LoadManifest(manifest.ID)
+	if err != nil {
+		return errors.New("finalization_state_reload_failed: finalization is blocked and durable state is unavailable")
 	}
+	manifest = current
 	if job != nil {
 		manifest.WorkerJob = sandboxL3WorkerJobReference(job)
 	}
@@ -232,6 +241,33 @@ func blockSandboxL3Finalization(
 		return fmt.Errorf("%s: finalization is blocked and durable state is unavailable", reasonCode)
 	}
 	return fmt.Errorf("%s: finalization is blocked", reasonCode)
+}
+
+func validateSandboxL3CompletedPublication(manifest *sandboxexecution.Manifest) error {
+	if manifest == nil || manifest.Finalization == nil || manifest.WorkerJob == nil {
+		return errors.New("terminal_publication_inconsistent: completed finalization identity is unavailable")
+	}
+	terminalState := strings.TrimSpace(manifest.Finalization.TerminalJobState)
+	if !sandboxL3FinalizationProvenTerminalJobState(terminalState) ||
+		strings.TrimSpace(manifest.WorkerJob.State) != terminalState ||
+		manifest.Status != sandboxL3ExecutionStatusFromJob(terminalState) ||
+		manifest.FinishedAt == nil ||
+		manifest.WorkerJob.FinishedAt == nil ||
+		!manifest.FinishedAt.Equal(*manifest.WorkerJob.FinishedAt) {
+		return errors.New("terminal_publication_inconsistent: completed finalization state did not match durable execution")
+	}
+	return nil
+}
+
+func sandboxL3FinalizationProvenTerminalJobState(state string) bool {
+	switch state {
+	case sandboxworker.JobStateSucceeded,
+		sandboxworker.JobStateFailed,
+		sandboxworker.JobStateCanceled:
+		return true
+	default:
+		return false
+	}
 }
 
 func sandboxL3AnyFinalizationCheckpoint(checkpoints sandboxexecution.FinalizationCheckpoints) bool {
