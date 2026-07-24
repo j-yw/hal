@@ -451,7 +451,7 @@ func selectSandboxL3Execution(sandboxName, runID string, mode sandboxL3Selection
 		if manifest.SandboxName != sandboxName {
 			return nil, nil, fmt.Errorf("execution_sandbox_mismatch: execution %s does not belong to sandbox %s", runID, sandboxName)
 		}
-		if manifest.WorkerJob == nil {
+		if manifest.WorkerJob == nil && !sandboxL3ExecutionAwaitingJobResolution(manifest) {
 			return nil, nil, fmt.Errorf("worker_job_missing: execution %s has no durable worker job", runID)
 		}
 		if mode == sandboxL3SelectionRecover && !sandboxL3ExecutionRecoverable(manifest) {
@@ -468,7 +468,13 @@ func selectSandboxL3Execution(sandboxName, runID string, mode sandboxL3Selection
 	completed := make([]*sandboxexecution.Manifest, 0)
 	for index := range manifests {
 		manifest := &manifests[index]
-		if manifest.SandboxName != sandboxName || manifest.WorkerJob == nil {
+		if manifest.SandboxName != sandboxName {
+			continue
+		}
+		if manifest.WorkerJob == nil {
+			if sandboxL3ExecutionAwaitingJobResolution(manifest) {
+				candidates = append(candidates, manifest)
+			}
 			continue
 		}
 		if sandboxL3ExecutionRecoverable(manifest) {
@@ -503,6 +509,9 @@ func selectSandboxL3Execution(sandboxName, runID string, mode sandboxL3Selection
 }
 
 func sandboxL3ExecutionRecoverable(manifest *sandboxexecution.Manifest) bool {
+	if sandboxL3ExecutionAwaitingJobResolution(manifest) {
+		return true
+	}
 	if manifest == nil || manifest.WorkerJob == nil {
 		return false
 	}
@@ -513,6 +522,36 @@ func sandboxL3ExecutionRecoverable(manifest *sandboxexecution.Manifest) bool {
 		(manifest.Finalization == nil || manifest.Finalization.State != sandboxexecution.FinalizationStateCompleted)
 }
 
+func sandboxL3ExecutionAwaitingJobResolution(manifest *sandboxexecution.Manifest) bool {
+	if manifest == nil ||
+		manifest.WorkerJob != nil ||
+		manifest.Status != sandboxexecution.StatusRunning ||
+		manifest.Finalization != nil ||
+		manifest.Host == nil ||
+		manifest.Runtime == nil ||
+		manifest.WorkerRouting == nil {
+		return false
+	}
+	hostID := strings.TrimSpace(manifest.Host.ID)
+	hostName := strings.TrimSpace(manifest.Host.Name)
+	driverID := strings.TrimSpace(manifest.Runtime.Driver)
+	runtimeID := strings.TrimSpace(manifest.Runtime.RuntimeID)
+	workerID := strings.TrimSpace(manifest.Runtime.WorkerID)
+	isolation := strings.TrimSpace(manifest.Runtime.IsolationLevel)
+	routing := manifest.WorkerRouting
+	return hostID != "" &&
+		hostName != "" &&
+		strings.TrimSpace(manifest.Host.Kind) == sandbox.SandboxHostKindWorker &&
+		driverID == sandbox.SandboxRuntimeDriverRootlessPodman &&
+		runtimeID != "" &&
+		workerID != "" &&
+		isolation == sandbox.SandboxIsolationLevelContainer &&
+		strings.TrimSpace(routing.SelectedWorkerHostID) == hostID &&
+		strings.TrimSpace(routing.SelectedWorkerHostName) == hostName &&
+		strings.TrimSpace(routing.RuntimeDriverID) == driverID &&
+		strings.TrimSpace(routing.IsolationLevel) == isolation
+}
+
 func sandboxL3ClientForManifest(manifest *sandboxexecution.Manifest) (*sandboxworker.Client, error) {
 	if manifest == nil || manifest.WorkerJob == nil {
 		return nil, errors.New("worker_job_missing: durable worker job identity is required")
@@ -521,6 +560,14 @@ func sandboxL3ClientForManifest(manifest *sandboxexecution.Manifest) (*sandboxwo
 	if hostID == "" && manifest.Host != nil {
 		hostID = strings.TrimSpace(manifest.Host.ID)
 	}
+	if hostID == "" {
+		return nil, errors.New("worker_host_missing: durable worker host identity is required")
+	}
+	return sandboxL3ClientForHostID(hostID)
+}
+
+func sandboxL3ClientForHostID(hostID string) (*sandboxworker.Client, error) {
+	hostID = strings.TrimSpace(hostID)
 	if hostID == "" {
 		return nil, errors.New("worker_host_missing: durable worker host identity is required")
 	}
@@ -633,6 +680,8 @@ func sandboxL3ExecutionProjection(manifest *sandboxexecution.Manifest, liveJob *
 			}
 			projection.Active = sandboxL3ActiveJobState(job.State)
 		}
+	} else if sandboxL3ExecutionAwaitingJobResolution(manifest) {
+		projection.Active = true
 	}
 	if manifest.Finalization != nil {
 		projection.FinalizationState = string(manifest.Finalization.State)
@@ -643,7 +692,13 @@ func sandboxL3ExecutionProjection(manifest *sandboxexecution.Manifest, liveJob *
 }
 
 func sandboxL3RecommendedAction(execution *sandboxL3ExecutionStatus) string {
-	if execution == nil || execution.Job == nil {
+	if execution == nil {
+		return "none"
+	}
+	if execution.Job == nil {
+		if execution.Status == string(sandboxexecution.StatusRunning) {
+			return "recover"
+		}
 		return "none"
 	}
 	if execution.Active {
@@ -670,21 +725,28 @@ func runSandboxL3StatusJSON(ctx context.Context, sandboxName string, live bool, 
 	if selectErr == nil {
 		var liveJob *sandboxworker.Job
 		if live {
-			client, clientErr := sandboxL3ClientForManifest(manifest)
-			if clientErr != nil {
-				return clientErr
+			if sandboxL3ExecutionAwaitingJobResolution(manifest) {
+				response.Diagnostics = append(response.Diagnostics, sandboxL3Diagnostic{
+					Code:    "worker_job_resolution_required",
+					Message: "durable execution requires recovery before live observation",
+				})
+			} else {
+				client, clientErr := sandboxL3ClientForManifest(manifest)
+				if clientErr != nil {
+					return clientErr
+				}
+				liveJob, err = client.JobStatus(ctx, sandboxworker.JobStatusRequest{
+					ContractVersion: sandboxworker.JobContractVersion,
+					JobID:           manifest.WorkerJob.JobID,
+				})
+				if err != nil {
+					return errors.New("worker_job_status_failed: selected worker job is unavailable")
+				}
+				if err := validateSandboxL3LiveJob(manifest, liveJob); err != nil {
+					return err
+				}
+				response.Source = "live"
 			}
-			liveJob, err = client.JobStatus(ctx, sandboxworker.JobStatusRequest{
-				ContractVersion: sandboxworker.JobContractVersion,
-				JobID:           manifest.WorkerJob.JobID,
-			})
-			if err != nil {
-				return errors.New("worker_job_status_failed: selected worker job is unavailable")
-			}
-			if err := validateSandboxL3LiveJob(manifest, liveJob); err != nil {
-				return err
-			}
-			response.Source = "live"
 		}
 		response.Execution = sandboxL3ExecutionProjection(manifest, liveJob)
 		response.RecommendedAction = sandboxL3RecommendedAction(response.Execution)
@@ -706,7 +768,7 @@ func renderSandboxL3LiveListJSON(ctx context.Context, out io.Writer, instances [
 	bySandbox := make(map[string][]*sandboxexecution.Manifest)
 	for index := range manifests {
 		manifest := &manifests[index]
-		if manifest.WorkerJob != nil {
+		if manifest.WorkerJob != nil || sandboxL3ExecutionAwaitingJobResolution(manifest) {
 			bySandbox[manifest.SandboxName] = append(bySandbox[manifest.SandboxName], manifest)
 		}
 	}
@@ -728,19 +790,26 @@ func renderSandboxL3LiveListJSON(ctx context.Context, out io.Writer, instances [
 		manifest := newestSandboxL3Manifest(candidates)
 		var liveJob *sandboxworker.Job
 		if manifest != nil {
-			client, clientErr := sandboxL3ClientForManifest(manifest)
-			if clientErr == nil {
-				liveJob, clientErr = client.JobStatus(ctx, sandboxworker.JobStatusRequest{
-					ContractVersion: sandboxworker.JobContractVersion,
-					JobID:           manifest.WorkerJob.JobID,
-				})
-			}
-			if clientErr != nil || validateSandboxL3LiveJob(manifest, liveJob) != nil {
+			if sandboxL3ExecutionAwaitingJobResolution(manifest) {
 				response.Diagnostics = append(response.Diagnostics, sandboxL3Diagnostic{
-					Code:    "worker_job_status_failed",
-					Message: "live execution status was unavailable",
+					Code:    "worker_job_resolution_required",
+					Message: "durable execution requires recovery before live observation",
 				})
-				liveJob = nil
+			} else {
+				client, clientErr := sandboxL3ClientForManifest(manifest)
+				if clientErr == nil {
+					liveJob, clientErr = client.JobStatus(ctx, sandboxworker.JobStatusRequest{
+						ContractVersion: sandboxworker.JobContractVersion,
+						JobID:           manifest.WorkerJob.JobID,
+					})
+				}
+				if clientErr != nil || validateSandboxL3LiveJob(manifest, liveJob) != nil {
+					response.Diagnostics = append(response.Diagnostics, sandboxL3Diagnostic{
+						Code:    "worker_job_status_failed",
+						Message: "live execution status was unavailable",
+					})
+					liveJob = nil
+				}
 			}
 			entry.Execution = sandboxL3ExecutionProjection(manifest, liveJob)
 			entry.RecommendedAction = sandboxL3RecommendedAction(entry.Execution)

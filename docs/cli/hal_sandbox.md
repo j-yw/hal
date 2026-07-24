@@ -60,10 +60,13 @@ Subcommands:
 * [hal sandbox delete](hal_sandbox_delete.md)	 - Delete one or more sandboxes permanently
 * [hal sandbox host](hal_sandbox_host.md)	 - Manage sandbox host records
 * [hal sandbox list](hal_sandbox_list.md)	 - List all sandboxes
+* [hal sandbox logs](hal_sandbox_logs.md)	 - Read durable sandbox execution logs
 * [hal sandbox migrate](hal_sandbox_migrate.md)	 - Migrate legacy sandbox state to global config
+* [hal sandbox recover](hal_sandbox_recover.md)	 - Recover a durable sandbox execution
 * [hal sandbox runtime](hal_sandbox_runtime.md)	 - Inspect sandbox runtime metadata
 * [hal sandbox setup](hal_sandbox_setup.md)	 - Configure sandbox credentials and environment
 * [hal sandbox ssh](hal_sandbox_ssh.md)	 - Open an interactive shell or run a remote command
 * [hal sandbox start](hal_sandbox_start.md)	 - Start stopped sandboxes
 * [hal sandbox status](hal_sandbox_status.md)	 - Show sandbox status
 * [hal sandbox stop](hal_sandbox_stop.md)	 - Power off / shut down one or more running sandboxes
+* [hal sandbox sync-out](hal_sandbox_sync-out.md)	 - Recover sandbox outputs without applying them

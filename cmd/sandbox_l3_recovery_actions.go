@@ -16,6 +16,7 @@ const sandboxL3RecoveryOutputSummaryBytes = int(sandboxworker.DefaultJobLogReadB
 
 func defaultSandboxL3FinalizationDeps() sandboxL3FinalizationDeps {
 	return sandboxL3FinalizationDeps{
+		resolveJob: resolveSandboxL3DurableJob,
 		observeJob: observeSandboxL3DurableJob,
 		drainLogsInStore: func(
 			ctx context.Context,
@@ -29,6 +30,28 @@ func defaultSandboxL3FinalizationDeps() sandboxL3FinalizationDeps {
 		collectSyncOut:   collectSandboxL3SyncOut,
 		releaseLease:     releaseSandboxL3DurableLease,
 	}
+}
+
+func resolveSandboxL3DurableJob(ctx context.Context, manifest *sandboxexecution.Manifest) (*sandboxworker.Job, error) {
+	target, hostID, err := sandboxL3ResolutionTargetFromManifest(manifest)
+	if err != nil {
+		return nil, err
+	}
+	client, err := sandboxL3ClientForHostID(hostID)
+	if err != nil {
+		return nil, err
+	}
+	job, err := client.JobResolve(ctx, sandboxworker.JobResolveRequest{
+		ContractVersion: sandboxworker.JobContractVersion,
+		SubmissionID:    strings.TrimSpace(manifest.ID),
+	})
+	if err != nil {
+		return nil, errors.New("worker_job_resolution_failed: admitted worker job is unavailable")
+	}
+	if err := validateSandboxWorkerJobIdentity(job, manifest.ID, "", hostID, target); err != nil {
+		return nil, fmt.Errorf("worker_job_resolution_mismatch: resolved worker job did not match execution %s", manifest.ID)
+	}
+	return job, nil
 }
 
 func observeSandboxL3DurableJob(ctx context.Context, manifest *sandboxexecution.Manifest) (*sandboxworker.Job, error) {
@@ -46,6 +69,50 @@ func observeSandboxL3DurableJob(ctx context.Context, manifest *sandboxexecution.
 	return job, nil
 }
 
+func sandboxL3ResolutionTargetFromManifest(manifest *sandboxexecution.Manifest) (sandboxruntime.Target, string, error) {
+	if !sandboxL3ExecutionAwaitingJobResolution(manifest) {
+		return sandboxruntime.Target{}, "", errors.New("worker_job_missing: durable worker job identity is required")
+	}
+	hostID := strings.TrimSpace(manifest.Host.ID)
+	runtimeID := strings.TrimSpace(manifest.Runtime.RuntimeID)
+	workerID := strings.TrimSpace(manifest.Runtime.WorkerID)
+	driverID := strings.TrimSpace(manifest.Runtime.Driver)
+	host, err := sandboxL3LoadHost(hostID)
+	if err != nil || host == nil {
+		return sandboxruntime.Target{}, "", errors.New("worker_host_unavailable: durable worker host is unavailable")
+	}
+	if strings.TrimSpace(host.ID) != hostID ||
+		strings.TrimSpace(host.Kind) != sandbox.SandboxHostKindWorker ||
+		!sandboxL3HostSupportsRuntime(host, driverID) {
+		return sandboxruntime.Target{}, "", errors.New("worker_job_resolution_mismatch: durable worker host identity is inconsistent")
+	}
+	return sandboxruntime.Target{
+		ID:     runtimeID,
+		Name:   strings.TrimSpace(manifest.SandboxName),
+		Status: sandbox.StatusRunning,
+		Runtime: sandboxruntime.RuntimeState{
+			Driver:         driverID,
+			RuntimeID:      runtimeID,
+			Image:          strings.TrimSpace(manifest.Runtime.Image),
+			WorkerID:       workerID,
+			IsolationLevel: strings.TrimSpace(manifest.Runtime.IsolationLevel),
+			Metadata:       sandboxRuntimeMetadataFromState(manifest.Runtime),
+		},
+	}, hostID, nil
+}
+
+func sandboxL3HostSupportsRuntime(host *sandbox.SandboxHost, driverID string) bool {
+	if host == nil {
+		return false
+	}
+	for _, supported := range host.SupportedRuntimes {
+		if strings.TrimSpace(supported) == driverID {
+			return true
+		}
+	}
+	return false
+}
+
 func drainSandboxL3TerminalLogs(
 	ctx context.Context,
 	store sandboxexecution.Store,
@@ -56,12 +123,25 @@ func drainSandboxL3TerminalLogs(
 	if err != nil {
 		return err
 	}
+	return drainSandboxL3TerminalLogsWithClient(ctx, store, client, manifest, job)
+}
+
+func drainSandboxL3TerminalLogsWithClient(
+	ctx context.Context,
+	store sandboxexecution.Store,
+	client sandboxL3JobClient,
+	manifest *sandboxexecution.Manifest,
+	job *sandboxworker.Job,
+) error {
+	if client == nil {
+		return errors.New("worker_client_unavailable: terminal log client is unavailable")
+	}
 	stdout := &sandboxL3BoundedSummaryWriter{limit: sandboxL3RecoveryOutputSummaryBytes}
 	stderr := &sandboxL3BoundedSummaryWriter{limit: sandboxL3RecoveryOutputSummaryBytes}
 	if err := streamSandboxL3Logs(ctx, client, manifest, job, true, stdout, stderr); err != nil {
 		return err
 	}
-	_, err = sandboxexecution.SaveCommandOutputSummaryArtifacts(sandboxexecution.CommandOutputSummaryArtifactsRequest{
+	_, err := sandboxexecution.SaveCommandOutputSummaryArtifacts(sandboxexecution.CommandOutputSummaryArtifactsRequest{
 		ExecutionID:   manifest.ID,
 		Store:         store,
 		StdoutSummary: boundedSandboxL3OutputSummary(sanitizeSandboxOutputSummary(stdout.String(), nil)),
@@ -83,6 +163,23 @@ func collectSandboxL3TerminalArtifacts(
 	if err != nil {
 		return err
 	}
+	return collectSandboxL3TerminalArtifactsWithRuntime(ctx, store, manifest, runtimeDriver, target, "")
+}
+
+func collectSandboxL3TerminalArtifactsWithRuntime(
+	ctx context.Context,
+	store sandboxexecution.Store,
+	manifest *sandboxexecution.Manifest,
+	runtimeDriver sandboxruntime.Driver,
+	target sandboxruntime.Target,
+	remoteArchivePath string,
+) error {
+	if manifest == nil {
+		return errors.New("execution_manifest_unavailable: durable execution manifest is unavailable")
+	}
+	if runtimeDriver == nil {
+		return errors.New("runtime_handle_unavailable: existing worker runtime handle is unavailable")
+	}
 	core, err := sandboxexecution.CollectCoreStateArtifacts(ctx, sandboxexecution.CoreStateCollectionRequest{
 		ExecutionID:        manifest.ID,
 		Store:              store,
@@ -90,6 +187,7 @@ func collectSandboxL3TerminalArtifacts(
 		Target:             target,
 		Purpose:            manifest.Purpose,
 		RemoteWorkspaceDir: manifest.WorkDir,
+		RemoteArchivePath:  strings.TrimSpace(remoteArchivePath),
 	})
 	if err != nil {
 		return fmt.Errorf("collect terminal core state: %w", err)
@@ -132,6 +230,22 @@ func collectSandboxL3SyncOut(
 	runtimeDriver, target, err := sandboxL3RuntimeHandleFromManifest(manifest)
 	if err != nil {
 		return err
+	}
+	return collectSandboxL3SyncOutWithRuntime(ctx, store, manifest, runtimeDriver, target)
+}
+
+func collectSandboxL3SyncOutWithRuntime(
+	ctx context.Context,
+	store sandboxexecution.Store,
+	manifest *sandboxexecution.Manifest,
+	runtimeDriver sandboxruntime.Driver,
+	target sandboxruntime.Target,
+) error {
+	if manifest == nil {
+		return errors.New("execution_manifest_unavailable: durable execution manifest is unavailable")
+	}
+	if runtimeDriver == nil {
+		return errors.New("runtime_handle_unavailable: existing worker runtime handle is unavailable")
 	}
 	uncommitted, err := sandboxexecution.CollectUncommittedSyncOutArtifactBestEffort(ctx, sandboxexecution.UncommittedSyncOutCollectionRequest{
 		ExecutionID:        manifest.ID,
