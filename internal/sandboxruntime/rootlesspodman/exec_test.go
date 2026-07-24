@@ -164,7 +164,12 @@ func TestExecCancellationProofUsesScopedWrapper(t *testing.T) {
 	assertScopedExecRequest(
 		t,
 		runner.requests[0],
-		[]string{"podman", "exec", "hal-dev"},
+		[]string{
+			"podman", "exec",
+			"--env", "HAL_INTERNAL_EXEC_CANCEL_STATE",
+			"--env", "HAL_INTERNAL_EXEC_CANCEL_TOKEN",
+			"hal-dev",
+		},
 		[]string{"echo", "ok"},
 	)
 }
@@ -297,7 +302,7 @@ func assertDirectExecRequest(t *testing.T, request rootlesspodman.CommandRequest
 
 func assertScopedExecRequest(t *testing.T, request rootlesspodman.CommandRequest, wantPrefix, wantCommand []string) {
 	t.Helper()
-	const wrapperFieldCount = 6
+	const wrapperFieldCount = 4
 	if len(request.Args) != len(wantPrefix)+wrapperFieldCount+len(wantCommand) {
 		t.Fatalf("exec args = %#v, want prefix %#v plus scoped wrapper and command %#v", request.Args, wantPrefix, wantCommand)
 	}
@@ -311,8 +316,8 @@ func assertScopedExecRequest(t *testing.T, request rootlesspodman.CommandRequest
 	if !strings.Contains(wrapper[2], "setsid") || !strings.Contains(wrapper[2], `"$state_dir/cancel"`) {
 		t.Fatalf("exec wrapper does not own a scoped process group: %q", wrapper[2])
 	}
-	stateDir := wrapper[4]
-	token := wrapper[5]
+	stateDir := request.Env["HAL_INTERNAL_EXEC_CANCEL_STATE"]
+	token := request.Env["HAL_INTERNAL_EXEC_CANCEL_TOKEN"]
 	if !strings.HasPrefix(stateDir, "/tmp/.hal-exec-") || len(strings.TrimPrefix(stateDir, "/tmp/.hal-exec-")) != 32 {
 		t.Fatalf("exec state directory = %q, want random private container path", stateDir)
 	}
@@ -322,14 +327,13 @@ func assertScopedExecRequest(t *testing.T, request rootlesspodman.CommandRequest
 	if got := request.Args[len(wantPrefix)+wrapperFieldCount:]; !reflect.DeepEqual(got, wantCommand) {
 		t.Fatalf("exec command args = %#v, want %#v", got, wantCommand)
 	}
-	wantCancellationPrefix := []string{"podman", "exec", wantPrefix[len(wantPrefix)-1], "sh", "-c"}
-	if len(request.CancellationArgs) != len(wantCancellationPrefix)+4 ||
+	wantCancellationPrefix := []string{"podman", "exec", "--env", "HAL_INTERNAL_EXEC_CANCEL_TOKEN=" + token, wantPrefix[len(wantPrefix)-1], "sh", "-c"}
+	if len(request.CancellationArgs) != len(wantCancellationPrefix)+3 ||
 		!reflect.DeepEqual(request.CancellationArgs[:len(wantCancellationPrefix)], wantCancellationPrefix) {
 		t.Fatalf("exec cancellation args = %#v, want prefix %#v", request.CancellationArgs, wantCancellationPrefix)
 	}
 	if request.CancellationArgs[len(wantCancellationPrefix)+1] != "hal-exec-cancel" ||
-		request.CancellationArgs[len(wantCancellationPrefix)+2] != stateDir ||
-		request.CancellationArgs[len(wantCancellationPrefix)+3] != token {
+		request.CancellationArgs[len(wantCancellationPrefix)+2] != stateDir {
 		t.Fatalf("exec cancellation args = %#v, want matching scoped state %q", request.CancellationArgs, stateDir)
 	}
 	cancellationScript := request.CancellationArgs[len(wantCancellationPrefix)]

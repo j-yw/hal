@@ -2,6 +2,7 @@ package sandboxexecution
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 )
@@ -22,7 +23,12 @@ func (manifest *Manifest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	decoded.Runtime = sandbox.CloneSandboxRuntimeState(decoded.Runtime)
-	decoded.WorkerJob = SanitizeWorkerJobReference(decoded.WorkerJob)
+	if decoded.WorkerJob != nil {
+		decoded.WorkerJob = SanitizeWorkerJobReference(decoded.WorkerJob)
+		if decoded.WorkerJob == nil {
+			return fmt.Errorf("sandbox execution workerJob metadata is invalid")
+		}
+	}
 	decoded.TemplateLock = manifestTemplateLockForPersistence(decoded.TemplateLock, decoded.Runtime)
 	*manifest = Manifest(decoded)
 	return nil

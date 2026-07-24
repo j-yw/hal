@@ -19,10 +19,13 @@ var (
 
 const (
 	execStateDirectoryPrefix = "/tmp/.hal-exec-"
-	execWrapperScript        = `state_dir=$1
-token=$2
-shift
-shift
+	execCancellationStateEnv = "HAL_INTERNAL_EXEC_CANCEL_STATE"
+	execCancellationTokenEnv = "HAL_INTERNAL_EXEC_CANCEL_TOKEN"
+	execWrapperScript        = `state_dir=${HAL_INTERNAL_EXEC_CANCEL_STATE:-}
+token=${HAL_INTERNAL_EXEC_CANCEL_TOKEN:-}
+[ -n "$state_dir" ] || exit 125
+[ -n "$token" ] || exit 125
+unset HAL_INTERNAL_EXEC_CANCEL_STATE HAL_INTERNAL_EXEC_CANCEL_TOKEN
 umask 077
 if ! mkdir "$state_dir"; then
 	exit 125
@@ -56,7 +59,28 @@ wait "$watcher" 2>/dev/null || true
 exit "$status"
 ' hal-exec-child "$state_dir/cancel" "$token" "$@"`
 	execCancellationScript = `state_dir=$1
-token=$2
+token=${HAL_INTERNAL_EXEC_CANCEL_TOKEN:-}
+[ -n "$token" ] || exit 125
+processes=$(ps -eo pgid=,args=) || exit 125
+matching_pgids=$(printf "%s\n" "$processes" | awk -v token="$token" '
+	index($0, token) {
+		if (observed_pgid == "") {
+			observed_pgid = $1
+		} else if ($1 != observed_pgid) {
+			ambiguous = 1
+		}
+	}
+	END {
+		if (observed_pgid == "" || ambiguous) {
+			exit 1
+		}
+		print observed_pgid
+	}
+') || exit 125
+observed_pgid=$matching_pgids
+case "$observed_pgid" in
+	""|*[!0-9]*) exit 125 ;;
+esac
 cancel_fifo=$state_dir/cancel
 attempt=0
 while [ ! -p "$cancel_fifo" ]; do
@@ -76,7 +100,18 @@ while [ -e "$state_dir" ]; do
 	fi
 	attempt=$((attempt + 1))
 	sleep 0.02
-done`
+done
+process_groups=$(ps -eo pgid=) || exit 125
+if printf "%s\n" "$process_groups" | awk -v observed_pgid="$observed_pgid" '
+	$1 == observed_pgid {
+		found = 1
+	}
+	END {
+		exit found ? 0 : 1
+	}
+'; then
+	exit 125
+fi`
 )
 
 func (d *Driver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
@@ -101,10 +136,15 @@ func (d *Driver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*san
 		if err != nil {
 			return nil, operationError(OperationExec, CommandResult{}, err)
 		}
+		if commandRequest.Env == nil {
+			commandRequest.Env = map[string]string{}
+		}
+		commandRequest.Env[execCancellationStateEnv] = stateDir
+		commandRequest.Env[execCancellationTokenEnv] = token
 		commandRequest.Args = d.execArgs(
 			ref,
-			scopedExecCommandArgs(stateDir, token, commandArgs),
-			req.Env,
+			scopedExecCommandArgs(commandArgs),
+			commandRequest.Env,
 			req.WorkDir,
 			req.Stdin != nil,
 		)
@@ -164,13 +204,24 @@ func (d *Driver) execArgs(ref string, commandArgs []string, env map[string]strin
 	return args
 }
 
-func scopedExecCommandArgs(stateDir, token string, commandArgs []string) []string {
-	args := []string{"sh", "-c", execWrapperScript, "hal-exec", stateDir, token}
+func scopedExecCommandArgs(commandArgs []string) []string {
+	args := []string{"sh", "-c", execWrapperScript, "hal-exec"}
 	return append(args, commandArgs...)
 }
 
 func (d *Driver) execCancellationArgs(ref, stateDir, token string) []string {
-	return []string{d.podmanPath, "exec", ref, "sh", "-c", execCancellationScript, "hal-exec-cancel", stateDir, token}
+	return []string{
+		d.podmanPath,
+		"exec",
+		"--env",
+		execCancellationTokenEnv + "=" + token,
+		ref,
+		"sh",
+		"-c",
+		execCancellationScript,
+		"hal-exec-cancel",
+		stateDir,
+	}
 }
 
 func newExecCancellationIdentity() (string, string, error) {

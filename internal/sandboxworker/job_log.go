@@ -22,6 +22,9 @@ func (manager *jobManager) appendLog(entry *jobEntry, stream string, data []byte
 	}
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
+	candidateJob := cloneJob(entry.job)
+	candidateRecords := cloneJobLogRecords(entry.records)
+	candidateRetainedBytes := entry.retainedBytes
 	for len(sanitized) > 0 {
 		chunkBytes := int(manager.logRecordBytes)
 		if len(sanitized) < chunkBytes {
@@ -33,51 +36,62 @@ func (manager *jobManager) appendLog(entry *jobEntry, stream string, data []byte
 		}
 		chunk := string(sanitized[:chunkBytes])
 		sanitized = sanitized[chunkBytes:]
-		entry.job.LogCursor++
-		if entry.retainedBytes+int64(chunkBytes) > manager.logRetentionBytes {
-			entry.job.LogTruncated = true
+		candidateJob.LogCursor++
+		if candidateRetainedBytes+int64(chunkBytes) > manager.logRetentionBytes {
+			candidateJob.LogTruncated = true
 			if stream == JobLogStreamStdout {
-				entry.job.StdoutTruncated = true
+				candidateJob.StdoutTruncated = true
 			} else {
-				entry.job.StderrTruncated = true
+				candidateJob.StderrTruncated = true
 			}
 			continue
 		}
-		candidateRecords := append(entry.records, JobLogRecord{
-			Cursor:    entry.job.LogCursor,
+		nextRecords := append(candidateRecords, JobLogRecord{
+			Cursor:    candidateJob.LogCursor,
 			Stream:    stream,
 			Data:      chunk,
 			Timestamp: manager.now().UTC(),
 		})
-		encoded, err := encodeStoredJobLogs(entry.job, candidateRecords)
+		encoded, err := encodeStoredJobLogs(candidateJob, nextRecords)
 		if err != nil {
 			return fmt.Errorf("encode job logs: %w", err)
 		}
 		if int64(len(encoded)) > maxJobLogsFileBytes {
-			entry.job.LogTruncated = true
+			candidateJob.LogTruncated = true
 			if stream == JobLogStreamStdout {
-				entry.job.StdoutTruncated = true
+				candidateJob.StdoutTruncated = true
 			} else {
-				entry.job.StderrTruncated = true
+				candidateJob.StderrTruncated = true
 			}
 			continue
 		}
-		entry.records = candidateRecords
-		entry.retainedBytes += int64(chunkBytes)
+		candidateRecords = nextRecords
+		candidateRetainedBytes += int64(chunkBytes)
 	}
-	return manager.store.save(entry.job, entry.records)
+	if err := manager.store.save(candidateJob, candidateRecords); err != nil {
+		return err
+	}
+	entry.job = candidateJob
+	entry.records = candidateRecords
+	entry.retainedBytes = candidateRetainedBytes
+	return nil
 }
 
 func (manager *jobManager) markStreamTruncated(entry *jobEntry, stream string) error {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	entry.job.LogTruncated = true
+	candidateJob := cloneJob(entry.job)
+	candidateJob.LogTruncated = true
 	if stream == JobLogStreamStdout {
-		entry.job.StdoutTruncated = true
+		candidateJob.StdoutTruncated = true
 	} else {
-		entry.job.StderrTruncated = true
+		candidateJob.StderrTruncated = true
 	}
-	return manager.store.save(entry.job, entry.records)
+	if err := manager.store.save(candidateJob, entry.records); err != nil {
+		return err
+	}
+	entry.job = candidateJob
+	return nil
 }
 
 type jobLogWriter struct {
@@ -194,6 +208,11 @@ func (sanitizer *jobStreamSanitizer) Consume(p []byte, final bool) []byte {
 			sanitizer.pending = sanitizer.pending[:0]
 			break
 		}
+		if boundary := lastJobLogLineBoundary(sanitizer.pending); boundary > 0 {
+			out.WriteString(sanitizeJobLogData(string(sanitizer.pending[:boundary])))
+			sanitizer.pending = append(sanitizer.pending[:0], sanitizer.pending[boundary:]...)
+			continue
+		}
 		if len(sanitizer.pending) <= jobStreamSanitizerSuffixBytes {
 			break
 		}
@@ -211,6 +230,15 @@ func (sanitizer *jobStreamSanitizer) Consume(p []byte, final bool) []byte {
 		sanitizer.redacting = false
 	}
 	return out.Bytes()
+}
+
+func lastJobLogLineBoundary(data []byte) int {
+	for index := len(data) - 1; index >= 0; index-- {
+		if data[index] == '\n' || data[index] == '\r' {
+			return index + 1
+		}
+	}
+	return 0
 }
 
 type jobLogSensitiveCandidate struct {
@@ -325,22 +353,14 @@ type jobLiteralRedactor struct {
 func newJobLiteralRedactor(req ExecRequest) *jobLiteralRedactor {
 	unique := map[string]bool{}
 	for _, value := range req.Args {
-		if value != "" {
-			unique[value] = true
-		}
+		addJobLiteralLines(unique, []byte(value))
 	}
 	for _, value := range req.Env {
-		if value != "" {
-			unique[value] = true
-		}
+		addJobLiteralLines(unique, []byte(value))
 	}
 	if req.Stdin != nil {
 		if stdin, err := io.ReadAll(execStdinReader(req.Stdin)); err == nil && len(stdin) > 0 {
-			addJobLiteralPattern(unique, stdin)
-			addJobLiteralPattern(unique, bytes.TrimRight(stdin, "\r\n"))
-			for _, line := range bytes.Split(stdin, []byte{'\n'}) {
-				addJobLiteralPattern(unique, bytes.TrimSuffix(line, []byte{'\r'}))
-			}
+			addJobLiteralLines(unique, stdin)
 		}
 	}
 	patterns := make([][]byte, 0, len(unique))
@@ -349,6 +369,14 @@ func newJobLiteralRedactor(req ExecRequest) *jobLiteralRedactor {
 	}
 	sort.Slice(patterns, func(i, j int) bool { return len(patterns[i]) > len(patterns[j]) })
 	return &jobLiteralRedactor{patterns: patterns}
+}
+
+func addJobLiteralLines(unique map[string]bool, value []byte) {
+	for _, line := range bytes.FieldsFunc(value, func(separator rune) bool {
+		return separator == '\n' || separator == '\r'
+	}) {
+		addJobLiteralPattern(unique, line)
+	}
 }
 
 func addJobLiteralPattern(unique map[string]bool, value []byte) {
@@ -381,6 +409,9 @@ func (redactor *jobLiteralRedactor) consume(p []byte, final, redactPartial bool)
 		limit = len(redactor.pending) - maxPattern + 1
 		if limit < 0 {
 			limit = 0
+		}
+		if boundary := lastJobLogLineBoundary(redactor.pending); boundary > limit {
+			limit = boundary
 		}
 	}
 	var out bytes.Buffer

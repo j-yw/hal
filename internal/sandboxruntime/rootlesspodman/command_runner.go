@@ -89,19 +89,17 @@ func runDefaultExecCommand(ctx context.Context, req CommandRequest) (CommandResu
 	if err := cmd.Start(); err != nil {
 		return CommandResult{ExitCode: commandExitCode(err)}, err
 	}
-	waitCh := make(chan error, 1)
-	go func() {
-		waitCh <- cmd.Wait()
-	}()
+	completionCh := observeExecProcess(cmd)
 
 	var err error
 	var cancellationErr error
 	cancellationAttempted := false
 	select {
-	case err = <-waitCh:
+	case observationErr := <-completionCh:
+		err = waitExecProcess(cmd, observationErr)
 	case <-ctx.Done():
 		cancellationAttempted = true
-		err = terminateExecProcessGroup(cmd, waitCh)
+		err = terminateExecProcessGroup(cmd, completionCh)
 		cancellationErr = runExecCancellationCommand(req.CancellationArgs)
 	}
 	result := CommandResult{

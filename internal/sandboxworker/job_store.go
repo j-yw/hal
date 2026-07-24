@@ -40,6 +40,11 @@ type storedJob struct {
 	Records []JobLogRecord
 }
 
+type storedJobState struct {
+	Job
+	RequestKey string `json:"requestKey,omitempty"`
+}
+
 func newJobStore(root string) (*jobStore, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -265,7 +270,10 @@ func (store *jobStore) save(job Job, records []JobLogRecord) error {
 	if err != nil {
 		return err
 	}
-	stateData, err := json.Marshal(job)
+	stateData, err := json.Marshal(storedJobState{
+		Job:        job,
+		RequestKey: job.requestKey,
+	})
 	if err != nil {
 		return fmt.Errorf("encode job state: %w", err)
 	}
@@ -353,10 +361,12 @@ func ensurePrivateJobDir(path string) error {
 }
 
 func loadJobStateFile(path string) (Job, error) {
-	var job Job
-	if err := decodePrivateJSONFile(path, &job, 64<<10); err != nil {
+	var state storedJobState
+	if err := decodePrivateJSONFile(path, &state, 64<<10); err != nil {
 		return Job{}, fmt.Errorf("load job state: %w", err)
 	}
+	job := state.Job
+	job.requestKey = state.RequestKey
 	if err := job.Validate(); err != nil {
 		return Job{}, fmt.Errorf("load job state: %w", err)
 	}

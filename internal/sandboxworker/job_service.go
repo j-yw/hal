@@ -15,7 +15,7 @@ func (service *Service) JobStartResponse(ctx context.Context, requestID, driverI
 	if err := req.Validate(); err != nil {
 		return protocolErrorResponse(requestID, OperationJobStart, ErrorCodeMalformedRequest, fmt.Sprintf("malformed worker job start request: %v", err))
 	}
-	if job, exists, err := service.jobs.existingSubmission(req.SubmissionID, driverID); err != nil {
+	if job, exists, err := service.jobs.existingSubmission(req, driverID); err != nil {
 		return jobOperationErrorResponse(requestID, OperationJobStart, err)
 	} else if exists {
 		return jobSuccessResponse(requestID, OperationJobStart, job)
@@ -102,6 +102,8 @@ func jobOperationErrorResponse(requestID, operation string, err error) Response 
 		return protocolErrorResponse(requestID, operation, ErrorCodeJobNotFound, "worker job was not found")
 	case errors.Is(err, errJobCapacityExceeded):
 		return protocolErrorResponse(requestID, operation, ErrorCodeCapacityExceeded, "worker job capacity is exhausted")
+	case errors.Is(err, errJobSubmissionConflict):
+		return protocolErrorResponse(requestID, operation, ErrorCodeSubmissionConflict, "worker job submission identity conflicts with accepted request")
 	case errors.Is(err, ErrDriverNotFound):
 		return protocolErrorResponse(requestID, operation, ErrorCodeDriverNotFound, err.Error())
 	case errors.Is(err, ErrDriverIDRequired):

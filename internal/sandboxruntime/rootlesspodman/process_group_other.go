@@ -6,14 +6,26 @@ import "os/exec"
 
 func configureExecProcessGroup(*exec.Cmd) {}
 
-func terminateExecProcessGroup(cmd *exec.Cmd, waitCh <-chan error) error {
+func observeExecProcess(cmd *exec.Cmd) <-chan error {
+	completionCh := make(chan error, 1)
+	go func() {
+		completionCh <- cmd.Wait()
+	}()
+	return completionCh
+}
+
+func waitExecProcess(_ *exec.Cmd, observationErr error) error {
+	return observationErr
+}
+
+func terminateExecProcessGroup(cmd *exec.Cmd, completionCh <-chan error) error {
 	select {
-	case err := <-waitCh:
+	case err := <-completionCh:
 		return err
 	default:
 	}
 	if cmd != nil && cmd.Process != nil {
 		_ = cmd.Process.Kill()
 	}
-	return <-waitCh
+	return <-completionCh
 }

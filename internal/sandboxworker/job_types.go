@@ -53,6 +53,7 @@ type Job struct {
 	ExitCode        *int       `json:"exitCode,omitempty"`
 	FailureCode     string     `json:"failureCode,omitempty"`
 	CancelRequested bool       `json:"cancelRequested,omitempty"`
+	requestKey      string
 }
 
 // JobStartRequest submits one asynchronous exec request to the daemon.
@@ -153,6 +154,9 @@ func (job Job) Validate() error {
 	}
 	if job.SubmissionKey != "" && !validJobSafeID(job.SubmissionKey) {
 		return fmt.Errorf("worker job submissionKey is invalid")
+	}
+	if job.requestKey != "" && !validJobRequestKey(job.requestKey) {
+		return fmt.Errorf("worker job private request identity is invalid")
 	}
 	for _, field := range []struct {
 		name  string

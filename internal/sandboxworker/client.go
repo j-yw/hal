@@ -380,6 +380,9 @@ func validateClientIOResponseLimits(req Request, resp Response) error {
 		if resp.Job.RuntimeDriver != strings.TrimSpace(req.DriverID) {
 			return workerIOValidationError("job_start runtimeDriver did not match request")
 		}
+		if resp.Job.RuntimeID != strings.TrimSpace(req.JobStart.Exec.Target.Runtime.RuntimeID) {
+			return workerIOValidationError("job_start runtimeId did not match request")
+		}
 		return nil
 	case OperationJobStatus:
 		if req.JobStatus != nil && resp.Job != nil && resp.Job.ID != req.JobStatus.JobID {

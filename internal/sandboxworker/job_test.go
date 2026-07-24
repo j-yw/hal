@@ -364,8 +364,27 @@ func TestWorkerJobStartIsIdempotentAcrossLostResponseAndRestart(t *testing.T) {
 	if !retryAfterRestart.OK || retryAfterRestart.Job == nil || retryAfterRestart.Job.ID != first.Job.ID {
 		t.Fatalf("restart retry = %#v error=%#v, want original job %q", retryAfterRestart, retryAfterRestart.Error, first.Job.ID)
 	}
+	runtimeMismatchRequest := request
+	runtimeMismatchRequest.Exec = cloneJobExecRequest(request.Exec)
+	runtimeMismatchRequest.Exec.Target.Runtime.RuntimeID = "runtime-different"
+	runtimeMismatch := restarted.JobStartResponse(context.Background(), "retry-wrong-runtime", driver.ID(), runtimeMismatchRequest)
+	if runtimeMismatch.OK || runtimeMismatch.Error == nil {
+		t.Fatalf("runtime-mismatched retry = %#v, want safe rejection", runtimeMismatch)
+	}
+	requestMismatch := request
+	requestMismatch.Exec = cloneJobExecRequest(request.Exec)
+	requestMismatch.Exec.Args = append(requestMismatch.Exec.Args, "--different-work")
+	requestConflict := restarted.JobStartResponse(context.Background(), "retry-changed-request", driver.ID(), requestMismatch)
+	if requestConflict.OK || requestConflict.Error == nil || requestConflict.Error.Code != "submission_conflict" {
+		t.Fatalf("request-mismatched retry = %#v, want submission conflict", requestConflict)
+	}
+	if encoded, err := json.Marshal(first.Job); err != nil {
+		t.Fatalf("json.Marshal(job) error: %v", err)
+	} else if strings.Contains(string(encoded), "requestKey") {
+		t.Fatalf("public job exposed private request identity: %s", encoded)
+	}
 	mismatch := restarted.JobStartResponse(context.Background(), "retry-wrong-driver", "different_driver", request)
-	if mismatch.OK || mismatch.Error == nil {
+	if mismatch.OK || mismatch.Error == nil || mismatch.Error.Code != "submission_conflict" {
 		t.Fatalf("mismatched retry = %#v, want safe rejection", mismatch)
 	}
 	if got := execCalls.Load(); got != 1 {
@@ -396,6 +415,109 @@ func TestWorkerJobStartRejectsCanceledAdmissionContext(t *testing.T) {
 	}
 	if got := execCalls.Load(); got != 0 {
 		t.Fatalf("driver exec calls = %d, want none", got)
+	}
+}
+
+func TestWorkerJobRequestIdentityBindsAcceptedExecution(t *testing.T) {
+	base := l2JobExecRequest("request-identity-secret")
+	base.Stdin = workerExecStdinPayload("stdin-secret", MaxExecStdinBytes)
+	base.Env = map[string]string{"B": "two", "A": "one"}
+	baseKey, err := jobRequestKey("job_driver", base)
+	if err != nil {
+		t.Fatalf("jobRequestKey() error: %v", err)
+	}
+	if !validJobRequestKey(baseKey) || !strings.HasPrefix(baseKey, "request-v1-") {
+		t.Fatalf("job request identity = %q, want versioned opaque digest", baseKey)
+	}
+	for _, forbidden := range []string{"request-identity-secret", "stdin-secret", "runtime-safe"} {
+		if strings.Contains(baseKey, forbidden) {
+			t.Fatalf("job request identity exposed request value %q", forbidden)
+		}
+	}
+
+	reordered := cloneJobExecRequest(base)
+	reordered.Env = map[string]string{"A": "one", "B": "two"}
+	reorderedKey, err := jobRequestKey("job_driver", reordered)
+	if err != nil || reorderedKey != baseKey {
+		t.Fatalf("map-reordered request key = %q, %v; want %q", reorderedKey, err, baseKey)
+	}
+
+	tests := []struct {
+		name   string
+		driver string
+		change func(*ExecRequest)
+	}{
+		{name: "driver", driver: "different_driver"},
+		{name: "operation", change: func(req *ExecRequest) { req.OperationID = "different-operation" }},
+		{name: "target", change: func(req *ExecRequest) { req.Target.Runtime.RuntimeID = "runtime-different" }},
+		{name: "args", change: func(req *ExecRequest) { req.Args = append(req.Args, "--different") }},
+		{name: "environment", change: func(req *ExecRequest) { req.Env["A"] = "different" }},
+		{name: "workdir", change: func(req *ExecRequest) { req.WorkDir = "/different" }},
+		{name: "stdin", change: func(req *ExecRequest) { req.Stdin = workerExecStdinPayload("different-stdin", MaxExecStdinBytes) }},
+		{name: "stdout limit", change: func(req *ExecRequest) { req.StdoutLimitBytes-- }},
+		{name: "stderr limit", change: func(req *ExecRequest) { req.StderrLimitBytes-- }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			changed := cloneJobExecRequest(base)
+			changed.Env = cloneStringMap(base.Env)
+			driverID := test.driver
+			if driverID == "" {
+				driverID = "job_driver"
+			}
+			if test.change != nil {
+				test.change(&changed)
+			}
+			key, err := jobRequestKey(driverID, changed)
+			if err != nil {
+				t.Fatalf("jobRequestKey() error: %v", err)
+			}
+			if key == baseKey {
+				t.Fatal("changed accepted request produced the original request identity")
+			}
+		})
+	}
+}
+
+func TestWorkerJobLegacySubmissionWithoutRequestIdentityFailsClosed(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "jobs")
+	store, err := newJobStore(stateDir)
+	if err != nil {
+		t.Fatalf("newJobStore() error: %v", err)
+	}
+	now := time.Date(2026, time.July, 24, 12, 0, 0, 0, time.UTC)
+	job := Job{
+		ContractVersion: JobContractVersion,
+		ID:              "job-legacy-request-key",
+		SubmissionKey:   jobSubmissionKey("legacy-submission"),
+		WorkerID:        "worker-legacy-request-key",
+		HostID:          "worker-legacy-request-key",
+		RuntimeDriver:   "job_driver",
+		RuntimeID:       "runtime-safe",
+		State:           JobStateSucceeded,
+		SubmittedAt:     now,
+		StartedAt:       timePointer(now),
+		HeartbeatAt:     timePointer(now),
+		FinishedAt:      timePointer(now),
+	}
+	if err := store.save(job, nil); err != nil {
+		t.Fatalf("seed legacy job: %v", err)
+	}
+	manager, err := newJobManager(jobManagerOptions{
+		WorkerID: "worker-legacy-request-key",
+		StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("newJobManager() error: %v", err)
+	}
+	defer manager.close()
+	_, exists, err := manager.existingSubmission(JobStartRequest{
+		ContractVersion: JobContractVersion,
+		SubmissionID:    "legacy-submission",
+		Exec:            l2JobExecRequest("legacy-secret"),
+	}, "job_driver")
+	if exists || !errors.Is(err, errJobSubmissionConflict) {
+		t.Fatalf("legacy retry = exists %v error %v, want safe submission conflict", exists, err)
 	}
 }
 
@@ -710,6 +832,46 @@ func TestWorkerJobRestartReconcilesWithoutRerun(t *testing.T) {
 		} else if got.CancelRequested {
 			t.Fatalf("status(%s) retained cancellation marker after reconciliation", jobID)
 		}
+	}
+}
+
+func TestWorkerJobManagerDeadlinePersistsInterruption(t *testing.T) {
+	managerCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := make(chan struct{})
+	driver := &l2JobRuntimeDriver{
+		fakeWorkerRuntimeDriver: &fakeWorkerRuntimeDriver{id: "deadline_driver"},
+		execFn: func(ctx context.Context, _ sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			close(started)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	manager, err := newJobManager(jobManagerOptions{
+		Context:  managerCtx,
+		WorkerID: "worker-deadline",
+		StateDir: filepath.Join(t.TempDir(), "jobs"),
+	})
+	if err != nil {
+		t.Fatalf("newJobManager() error: %v", err)
+	}
+	defer manager.close()
+	job, err := manager.start(context.Background(), driver.ID(), driver, JobStartRequest{
+		ContractVersion: JobContractVersion,
+		SubmissionID:    "deadline-submission",
+		Exec:            l2JobExecRequest("deadline-secret"),
+	})
+	if err != nil {
+		t.Fatalf("start() error: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("job did not start before manager deadline")
+	}
+	terminal := waitForL2JobState(t, &Service{jobs: manager}, job.ID, JobStateInterrupted)
+	if terminal.FailureCode != "daemon_stopped" || terminal.FinishedAt == nil {
+		t.Fatalf("deadline terminal job = %#v, want durable daemon interruption", terminal)
 	}
 }
 
@@ -1357,6 +1519,111 @@ func TestWorkerJobPersistsBoundedNoNewlineOutputWhileRunning(t *testing.T) {
 	}
 }
 
+func TestWorkerJobPersistsCompleteShortLineWhileRunning(t *testing.T) {
+	wrote := make(chan struct{})
+	release := make(chan struct{})
+	driver := &l2JobRuntimeDriver{
+		fakeWorkerRuntimeDriver: &fakeWorkerRuntimeDriver{id: "short_line_driver"},
+		execFn: func(ctx context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			if _, err := io.WriteString(req.Stdout, "ready\n"); err != nil {
+				return nil, err
+			}
+			close(wrote)
+			select {
+			case <-release:
+				return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+	}
+	service, _, daemonCancel := newL2JobTestService(t, driver)
+	defer daemonCancel()
+	start := service.JobStartResponse(context.Background(), "start", driver.ID(), JobStartRequest{
+		ContractVersion: JobContractVersion,
+		SubmissionID:    "short-line-stream",
+		Exec:            l2JobExecRequest("unrelated-request-secret"),
+	})
+	if !start.OK || start.Job == nil {
+		t.Fatalf("start response = %#v error=%#v", start, start.Error)
+	}
+	select {
+	case <-wrote:
+	case <-time.After(2 * time.Second):
+		t.Fatal("driver did not write short line")
+	}
+	runningLogs := service.JobLogsResponse("running-logs", JobLogsRequest{
+		ContractVersion: JobContractVersion,
+		JobID:           start.Job.ID,
+		LimitBytes:      DefaultJobLogReadBytes,
+	})
+	if !runningLogs.OK || runningLogs.JobLogs == nil || len(runningLogs.JobLogs.Records) == 0 {
+		t.Fatalf("running logs = %#v error=%#v, want durable short line", runningLogs, runningLogs.Error)
+	}
+	if got := runningLogs.JobLogs.Records[0].Data; got != "ready\n" {
+		t.Fatalf("running log = %q, want complete short line", got)
+	}
+	close(release)
+	waitForL2JobState(t, service, start.Job.ID, JobStateSucceeded)
+}
+
+func TestWorkerJobStreamsCompleteLineWithoutLeakingSplitSecretSuffix(t *testing.T) {
+	wrote := make(chan struct{})
+	release := make(chan struct{})
+	driver := &l2JobRuntimeDriver{
+		fakeWorkerRuntimeDriver: &fakeWorkerRuntimeDriver{id: "line_suffix_driver"},
+		execFn: func(ctx context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			if _, err := io.WriteString(req.Stdout, "ready\nTOKEN=split-"); err != nil {
+				return nil, err
+			}
+			close(wrote)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			if _, err := io.WriteString(req.Stdout, "secret\n"); err != nil {
+				return nil, err
+			}
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+	}
+	service, _, daemonCancel := newL2JobTestService(t, driver)
+	defer daemonCancel()
+	start := service.JobStartResponse(context.Background(), "start", driver.ID(), JobStartRequest{
+		ContractVersion: JobContractVersion,
+		SubmissionID:    "line-suffix-stream",
+		Exec:            l2JobExecRequest("unrelated-request-secret"),
+	})
+	if !start.OK || start.Job == nil {
+		t.Fatalf("start response = %#v error=%#v", start, start.Error)
+	}
+	<-wrote
+	running := service.JobLogsResponse("running", JobLogsRequest{
+		ContractVersion: JobContractVersion,
+		JobID:           start.Job.ID,
+		LimitBytes:      DefaultJobLogReadBytes,
+	})
+	if !running.OK || running.JobLogs == nil || len(running.JobLogs.Records) != 1 ||
+		running.JobLogs.Records[0].Data != "ready\n" {
+		t.Fatalf("running logs = %#v error=%#v, want only complete safe line", running.JobLogs, running.Error)
+	}
+	close(release)
+	waitForL2JobState(t, service, start.Job.ID, JobStateSucceeded)
+	terminal := service.JobLogsResponse("terminal", JobLogsRequest{
+		ContractVersion: JobContractVersion,
+		JobID:           start.Job.ID,
+		LimitBytes:      DefaultJobLogReadBytes,
+	})
+	var output strings.Builder
+	for _, record := range terminal.JobLogs.Records {
+		output.WriteString(record.Data)
+	}
+	if got := output.String(); strings.Contains(got, "split-secret") || !strings.Contains(got, "TOKEN=[redacted]") {
+		t.Fatalf("terminal logs = %q, want split secret redacted", got)
+	}
+}
+
 func TestWorkerJobRedactsLineDerivedFromStdin(t *testing.T) {
 	secret := "stdin-line-secret"
 	driver := &l2JobRuntimeDriver{
@@ -1538,6 +1805,11 @@ func TestWorkerJobClientRejectsMismatchedResponseJobIDs(t *testing.T) {
 func TestWorkerJobClientRejectsMismatchedStartIdentity(t *testing.T) {
 	request := JobStartRequest{
 		SubmissionID: "submission-client-match",
+		Exec: ExecRequest{
+			Target: Target{
+				Runtime: RuntimeTarget{RuntimeID: "runtime-requested"},
+			},
+		},
 	}
 	baseRequest := Request{
 		Operation: OperationJobStart,
@@ -1553,6 +1825,7 @@ func TestWorkerJobClientRejectsMismatchedStartIdentity(t *testing.T) {
 			job: Job{
 				SubmissionKey: "submission-wrong",
 				RuntimeDriver: "job_driver",
+				RuntimeID:     "runtime-requested",
 			},
 		},
 		{
@@ -1560,6 +1833,15 @@ func TestWorkerJobClientRejectsMismatchedStartIdentity(t *testing.T) {
 			job: Job{
 				SubmissionKey: jobSubmissionKey(request.SubmissionID),
 				RuntimeDriver: "different_driver",
+				RuntimeID:     "runtime-requested",
+			},
+		},
+		{
+			name: "runtime ID",
+			job: Job{
+				SubmissionKey: jobSubmissionKey(request.SubmissionID),
+				RuntimeDriver: "job_driver",
+				RuntimeID:     "runtime-different",
 			},
 		},
 	} {
@@ -1594,8 +1876,33 @@ func TestWorkerJobLogWriterReportsTruncationPersistenceFailure(t *testing.T) {
 	if writer.Err() == nil {
 		t.Fatal("Err() = nil, want truncation persistence failure")
 	}
-	if !entry.job.LogTruncated || !entry.job.StdoutTruncated {
-		t.Fatalf("truncation flags = %#v, want stdout truncation", entry.job)
+	if entry.job.LogTruncated || entry.job.StdoutTruncated {
+		t.Fatalf("truncation flags = %#v, want failed persistence to remain unpublished", entry.job)
+	}
+}
+
+func TestWorkerJobLogAppendPersistenceFailureRemainsUnpublished(t *testing.T) {
+	now := time.Date(2026, time.July, 24, 12, 0, 0, 0, time.UTC)
+	manager := &jobManager{
+		logRecordBytes:    DefaultJobLogRecordBytes,
+		logRetentionBytes: DefaultJobLogRetentionBytes,
+		now:               func() time.Time { return now },
+	}
+	entry := &jobEntry{job: Job{
+		ContractVersion: JobContractVersion,
+		ID:              "job-log-persistence-failure",
+		WorkerID:        "worker-log-persistence-failure",
+		RuntimeDriver:   "job_driver",
+		State:           JobStateRunning,
+		SubmittedAt:     now,
+		StartedAt:       timePointer(now),
+		HeartbeatAt:     timePointer(now),
+	}}
+	if err := manager.appendLog(entry, JobLogStreamStdout, []byte("safe output\n")); err == nil {
+		t.Fatal("appendLog() error = nil, want persistence failure")
+	}
+	if entry.job.LogCursor != 0 || entry.retainedBytes != 0 || len(entry.records) != 0 {
+		t.Fatalf("failed append published cursor=%d bytes=%d records=%d", entry.job.LogCursor, entry.retainedBytes, len(entry.records))
 	}
 }
 

@@ -14,8 +14,9 @@ import (
 const defaultJobHeartbeatInterval = time.Second
 
 var (
-	errJobNotFound         = errors.New("worker job was not found")
-	errJobCapacityExceeded = errors.New("worker job capacity is exhausted")
+	errJobNotFound           = errors.New("worker job was not found")
+	errJobCapacityExceeded   = errors.New("worker job capacity is exhausted")
+	errJobSubmissionConflict = errors.New("worker job submission identity conflicts with accepted request")
 )
 
 type jobManagerOptions struct {
@@ -236,11 +237,15 @@ func (manager *jobManager) lifecycleNow(job Job) time.Time {
 	return now
 }
 
-func (manager *jobManager) existingSubmission(submissionID, driverID string) (Job, bool, error) {
+func (manager *jobManager) existingSubmission(req JobStartRequest, driverID string) (Job, bool, error) {
 	if manager == nil || manager.store == nil {
 		return Job{}, false, fmt.Errorf("worker job manager is unavailable")
 	}
-	submissionKey := jobSubmissionKey(submissionID)
+	requestKey, err := jobRequestKey(driverID, req.Exec)
+	if err != nil {
+		return Job{}, false, fmt.Errorf("derive worker job request identity")
+	}
+	submissionKey := jobSubmissionKey(req.SubmissionID)
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	existingID, exists := manager.submissions[submissionKey]
@@ -251,8 +256,8 @@ func (manager *jobManager) existingSubmission(submissionID, driverID string) (Jo
 	if !ok {
 		return Job{}, false, fmt.Errorf("worker job submission identity is unavailable")
 	}
-	if entry.job.RuntimeDriver != strings.TrimSpace(driverID) {
-		return Job{}, false, fmt.Errorf("worker job submission identity does not match runtime driver")
+	if entry.job.requestKey != requestKey {
+		return Job{}, false, errJobSubmissionConflict
 	}
 	return cloneJob(entry.job), true, nil
 }
@@ -273,6 +278,10 @@ func (manager *jobManager) start(ctx context.Context, driverID string, driver sa
 	if err := req.Validate(); err != nil {
 		return Job{}, err
 	}
+	requestKey, err := jobRequestKey(driverID, req.Exec)
+	if err != nil {
+		return Job{}, fmt.Errorf("derive worker job request identity")
+	}
 
 	submissionKey := jobSubmissionKey(req.SubmissionID)
 	manager.mu.Lock()
@@ -282,9 +291,9 @@ func (manager *jobManager) start(ctx context.Context, driverID string, driver sa
 			manager.mu.Unlock()
 			return Job{}, fmt.Errorf("worker job submission identity is unavailable")
 		}
-		if entry.job.RuntimeDriver != strings.TrimSpace(driverID) {
+		if entry.job.requestKey != requestKey {
 			manager.mu.Unlock()
-			return Job{}, fmt.Errorf("worker job submission identity does not match runtime driver")
+			return Job{}, errJobSubmissionConflict
 		}
 		snapshot := cloneJob(entry.job)
 		manager.mu.Unlock()
@@ -322,6 +331,7 @@ func (manager *jobManager) start(ctx context.Context, driverID string, driver sa
 		RuntimeID:       strings.TrimSpace(req.Exec.Target.Runtime.RuntimeID),
 		State:           JobStateQueued,
 		SubmittedAt:     now,
+		requestKey:      requestKey,
 	}
 	if err := job.Validate(); err != nil {
 		manager.mu.Unlock()
@@ -343,7 +353,7 @@ func (manager *jobManager) start(ctx context.Context, driverID string, driver sa
 	manager.jobWG.Add(1)
 	manager.mu.Unlock()
 
-	execReq := cloneJobExecRequest(req.Exec)
+	execReq := canonicalJobExecRequest(req.Exec)
 	go manager.run(jobCtx, entry, driver, execReq)
 	return snapshot, nil
 }
@@ -415,7 +425,7 @@ func (manager *jobManager) run(ctx context.Context, entry *jobEntry, driver sand
 		manager.finishLocked(entry, JobStateCanceled, result, "cancel_requested")
 	case entry.job.CancelRequested:
 		manager.finishLocked(entry, JobStateUnknown, result, "cancel_termination_unconfirmed")
-	case errors.Is(ctx.Err(), context.Canceled):
+	case ctx.Err() != nil:
 		manager.finishLocked(entry, JobStateInterrupted, result, "daemon_stopped")
 	case runErr != nil:
 		manager.finishLocked(entry, JobStateFailed, result, "driver_error")

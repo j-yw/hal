@@ -90,6 +90,51 @@ func validateWorkerJobReference(reference *WorkerJobReference) error {
 	if reference.SubmittedAt.IsZero() {
 		return fmt.Errorf("sandbox execution workerJob submittedAt is required")
 	}
+	if err := validateWorkerJobLifecycle(reference); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateWorkerJobLifecycle(reference *WorkerJobReference) error {
+	if reference.StartedAt != nil && reference.StartedAt.Before(reference.SubmittedAt) {
+		return fmt.Errorf("sandbox execution workerJob startedAt precedes submittedAt")
+	}
+	if reference.HeartbeatAt != nil && reference.HeartbeatAt.Before(reference.SubmittedAt) {
+		return fmt.Errorf("sandbox execution workerJob heartbeatAt precedes submittedAt")
+	}
+	if reference.FinishedAt != nil && reference.FinishedAt.Before(reference.SubmittedAt) {
+		return fmt.Errorf("sandbox execution workerJob finishedAt precedes submittedAt")
+	}
+	if reference.StartedAt != nil && reference.HeartbeatAt != nil && reference.HeartbeatAt.Before(*reference.StartedAt) {
+		return fmt.Errorf("sandbox execution workerJob heartbeatAt precedes startedAt")
+	}
+	if reference.StartedAt != nil && reference.FinishedAt != nil && reference.FinishedAt.Before(*reference.StartedAt) {
+		return fmt.Errorf("sandbox execution workerJob finishedAt precedes startedAt")
+	}
+	if reference.HeartbeatAt != nil && reference.FinishedAt != nil && reference.FinishedAt.Before(*reference.HeartbeatAt) {
+		return fmt.Errorf("sandbox execution workerJob finishedAt precedes heartbeatAt")
+	}
+	switch reference.State {
+	case "queued":
+		if reference.StartedAt != nil || reference.HeartbeatAt != nil || reference.FinishedAt != nil {
+			return fmt.Errorf("sandbox execution workerJob queued state has lifecycle progress timestamps")
+		}
+	case "running":
+		if reference.StartedAt == nil {
+			return fmt.Errorf("sandbox execution workerJob running state requires startedAt")
+		}
+		if reference.FinishedAt != nil {
+			return fmt.Errorf("sandbox execution workerJob running state has finishedAt")
+		}
+	default:
+		if reference.FinishedAt == nil {
+			return fmt.Errorf("sandbox execution workerJob terminal state requires finishedAt")
+		}
+		if (reference.State == "succeeded" || reference.State == "failed") && reference.StartedAt == nil {
+			return fmt.Errorf("sandbox execution workerJob terminal execution state requires startedAt")
+		}
+	}
 	return nil
 }
 

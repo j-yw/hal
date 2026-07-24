@@ -2,6 +2,7 @@ package rootlesspodman
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -25,5 +26,21 @@ func TestCancellationProofRequiresExecutedSuccessfulHelper(t *testing.T) {
 				t.Fatalf("cancellationProcessGroupTerminationProven() = %v, want %v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestCancellationHelperProvesObservedProcessGroupDisappeared(t *testing.T) {
+	for _, required := range []string{
+		"ps -eo pgid=,args=",
+		"matching_pgids",
+		"observed_pgid",
+		"ps -eo pgid=",
+	} {
+		if !strings.Contains(execCancellationScript, required) {
+			t.Fatalf("exec cancellation helper lacks process-group proof marker %q", required)
+		}
+	}
+	if strings.Contains(execCancellationScript, `token=$2`) {
+		t.Fatal("exec cancellation helper accepts its proof token through observable argv")
 	}
 }
