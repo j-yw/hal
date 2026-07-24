@@ -29,6 +29,9 @@ func (manifest *Manifest) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("sandbox execution workerJob metadata is invalid")
 		}
 	}
+	if err := validateFinalizationMetadata(decoded.Finalization); err != nil {
+		return fmt.Errorf("sandbox execution finalization metadata is invalid")
+	}
 	decoded.TemplateLock = manifestTemplateLockForPersistence(decoded.TemplateLock, decoded.Runtime)
 	*manifest = Manifest(decoded)
 	return nil

@@ -364,3 +364,40 @@ func TestL3UpsertArtifactMetadataDeduplicatesRetriesAndPreservesUnrelatedEntries
 		t.Fatal("unrelated collected metadata was discarded")
 	}
 }
+
+func TestL3UpsertArtifactMetadataPromotesPathStablePartialToCollected(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.SaveManifest(testManifest("exec-artifact-promotion", time.Now().UTC())); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+	partial := ArtifactMetadata{Partial: []ArtifactMetadataEntry{{
+		Name: "Reports",
+		Path: ".hal/reports.tar",
+	}}}
+	if err := store.UpsertArtifactMetadata("exec-artifact-promotion", partial); err != nil {
+		t.Fatalf("partial UpsertArtifactMetadata() error: %v", err)
+	}
+	collected := ArtifactMetadata{Collected: []ArtifactMetadataEntry{{
+		Name:       "Reports",
+		Type:       "archive",
+		Path:       ".hal/reports.tar",
+		StoredPath: "exec-artifact-promotion/artifacts/reports.tar",
+	}}}
+	if err := store.UpsertArtifactMetadata("exec-artifact-promotion", collected); err != nil {
+		t.Fatalf("collected UpsertArtifactMetadata() error: %v", err)
+	}
+
+	manifest, err := store.LoadManifest("exec-artifact-promotion")
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if manifest.ArtifactMetadata == nil {
+		t.Fatal("ArtifactMetadata = nil")
+	}
+	if got := len(manifest.ArtifactMetadata.Collected); got != 1 {
+		t.Fatalf("collected count = %d, want 1", got)
+	}
+	if got := len(manifest.ArtifactMetadata.Partial); got != 0 {
+		t.Fatalf("partial count = %d, want 0 after collection", got)
+	}
+}
