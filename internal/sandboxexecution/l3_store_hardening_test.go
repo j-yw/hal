@@ -2,6 +2,9 @@ package sandboxexecution
 
 import (
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"os"
@@ -11,6 +14,51 @@ import (
 	"testing"
 	"time"
 )
+
+func TestL3WindowsStoreDoesNotClaimUnverifiedACLPrivacy(t *testing.T) {
+	file, err := parser.ParseFile(
+		token.NewFileSet(),
+		"containment_windows.go",
+		nil,
+		parser.SkipObjectResolution,
+	)
+	if err != nil {
+		t.Fatalf("parse containment_windows.go: %v", err)
+	}
+
+	required := map[string]bool{
+		"fileOwnedByCurrentUser": false,
+		"filePermissionsPrivate": false,
+	}
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		if _, ok := required[function.Name.Name]; !ok {
+			continue
+		}
+		required[function.Name.Name] = true
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			statement, ok := node.(*ast.ReturnStmt)
+			if !ok {
+				return true
+			}
+			for _, result := range statement.Results {
+				identifier, ok := result.(*ast.Ident)
+				if ok && identifier.Name == "true" {
+					t.Errorf("%s must fail closed until Windows owner and ACL privacy are proved", function.Name.Name)
+				}
+			}
+			return true
+		})
+	}
+	for name, found := range required {
+		if !found {
+			t.Errorf("containment_windows.go is missing %s", name)
+		}
+	}
+}
 
 func TestL3EnsureRejectsSymlinkedRootAndPrivateLayoutViolations(t *testing.T) {
 	if runtime.GOOS == "windows" {
