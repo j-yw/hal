@@ -812,6 +812,9 @@ type l3WorkerScript struct {
 	socketPath             string
 	jobState               string
 	logCursor              uint64
+	resolveJob             *sandboxworker.Job
+	resolveError           *sandboxworker.Error
+	beforeJobStatus        func()
 	pages                  map[uint64]sandboxworker.JobLogsResponse
 	firstLogs              chan struct{}
 	panicOnForbidden       bool
@@ -841,6 +844,7 @@ func (script *l3WorkerScript) HandleRequest(_ context.Context, req sandboxworker
 	case sandboxworker.OperationStatus,
 		sandboxworker.OperationCapabilities,
 		sandboxworker.OperationInspect,
+		sandboxworker.OperationJobResolve,
 		sandboxworker.OperationJobStatus,
 		sandboxworker.OperationJobLogs,
 		sandboxworker.OperationCopyOut:
@@ -938,6 +942,9 @@ func (script *l3WorkerScript) HandleRequest(_ context.Context, req sandboxworker
 			Target:          target,
 		}
 	case sandboxworker.OperationJobStatus:
+		if script.beforeJobStatus != nil {
+			script.beforeJobStatus()
+		}
 		job := &sandboxworker.Job{
 			ContractVersion: sandboxworker.JobContractVersion,
 			ID:              req.JobStatus.JobID,
@@ -955,6 +962,45 @@ func (script *l3WorkerScript) HandleRequest(_ context.Context, req sandboxworker
 		}
 		if script.jobState != sandboxworker.JobStateQueued && script.jobState != sandboxworker.JobStateRunning {
 			job.FinishedAt = &finished
+		}
+		return sandboxworker.Response{
+			ProtocolVersion: sandboxworker.ProtocolVersion,
+			RequestID:       req.RequestID,
+			Operation:       req.Operation,
+			OK:              true,
+			Job:             job,
+		}
+	case sandboxworker.OperationJobResolve:
+		if script.resolveError != nil {
+			return sandboxworker.Response{
+				ProtocolVersion: sandboxworker.ProtocolVersion,
+				RequestID:       req.RequestID,
+				Operation:       req.Operation,
+				OK:              false,
+				Error:           script.resolveError,
+			}
+		}
+		job := script.resolveJob
+		if job == nil {
+			job = &sandboxworker.Job{
+				ContractVersion: sandboxworker.JobContractVersion,
+				ID:              "job-resolved",
+				SubmissionKey:   sandboxWorkerJobSubmissionKey(req.JobResolve.SubmissionID),
+				WorkerID:        "worker-l3",
+				HostID:          "worker-l3",
+				RuntimeDriver:   sandboxworker.RuntimeDriverRootlessPodman,
+				RuntimeID:       "runtime-l3",
+				State:           script.jobState,
+				SubmittedAt:     now,
+				LogCursor:       script.logCursor,
+			}
+			if script.jobState != sandboxworker.JobStateQueued {
+				job.StartedAt = &started
+				job.HeartbeatAt = &started
+			}
+			if script.jobState != sandboxworker.JobStateQueued && script.jobState != sandboxworker.JobStateRunning {
+				job.FinishedAt = &finished
+			}
 		}
 		return sandboxworker.Response{
 			ProtocolVersion: sandboxworker.ProtocolVersion,
