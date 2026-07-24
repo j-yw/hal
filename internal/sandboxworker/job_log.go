@@ -68,7 +68,7 @@ func (manager *jobManager) appendLog(entry *jobEntry, stream string, data []byte
 	return manager.store.save(entry.job, entry.records)
 }
 
-func (manager *jobManager) markStreamTruncated(entry *jobEntry, stream string) {
+func (manager *jobManager) markStreamTruncated(entry *jobEntry, stream string) error {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	entry.job.LogTruncated = true
@@ -77,7 +77,7 @@ func (manager *jobManager) markStreamTruncated(entry *jobEntry, stream string) {
 	} else {
 		entry.job.StderrTruncated = true
 	}
-	_ = manager.store.save(entry.job, entry.records)
+	return manager.store.save(entry.job, entry.records)
 }
 
 type jobLogWriter struct {
@@ -105,12 +105,18 @@ func (writer *jobLogWriter) Write(p []byte) (int, error) {
 	}
 	remaining := writer.limit - writer.written
 	if remaining <= 0 {
-		writer.manager.markStreamTruncated(writer.entry, writer.stream)
+		if err := writer.manager.markStreamTruncated(writer.entry, writer.stream); err != nil {
+			writer.persistErr = err
+			return originalLen, err
+		}
 		return originalLen, nil
 	}
 	if int64(len(p)) > remaining {
 		p = p[:remaining]
-		writer.manager.markStreamTruncated(writer.entry, writer.stream)
+		if err := writer.manager.markStreamTruncated(writer.entry, writer.stream); err != nil {
+			writer.persistErr = err
+			return originalLen, err
+		}
 	}
 	writer.written += int64(len(p))
 	safe := writer.sanitizer.Consume(writer.redactor.Consume(p, false), false)

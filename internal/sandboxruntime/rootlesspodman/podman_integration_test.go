@@ -141,7 +141,7 @@ func TestPodmanIntegrationLifecycleExecAndCopy(t *testing.T) {
 	deleted = true
 }
 
-func TestPodmanIntegrationCancellationStopsExecWorkloadBeforeReturn(t *testing.T) {
+func TestPodmanIntegrationCancellationStopsOnlyExecWorkload(t *testing.T) {
 	image := strings.TrimSpace(os.Getenv("HAL_PODMAN_TEST_IMAGE"))
 	if image == "" {
 		t.Skip("HAL_PODMAN_TEST_IMAGE is unset; set it to a locally available image to run Podman integration tests")
@@ -176,12 +176,13 @@ func TestPodmanIntegrationCancellationStopsExecWorkloadBeforeReturn(t *testing.T
 	}
 
 	const readyPath = "/tmp/hal-podman-cancellation-ready"
+	workloadMarker := fmt.Sprintf("hal-podman-cancel-workload-%d-%d", os.Getpid(), time.Now().UnixNano())
 	execCtx, cancelExec := context.WithCancel(ctx)
 	execErrCh := make(chan error, 1)
 	go func() {
 		_, execErr := driver.Exec(execCtx, sandboxruntime.ExecRequest{
 			Target: *target,
-			Args:   []string{"sh", "-c", "trap '' TERM; : > " + readyPath + "; while :; do sleep 1; done"},
+			Args:   []string{"sh", "-c", "trap '' TERM; : > " + readyPath + "; while :; do sleep 1; done", workloadMarker},
 		})
 		execErrCh <- execErr
 	}()
@@ -202,9 +203,10 @@ func TestPodmanIntegrationCancellationStopsExecWorkloadBeforeReturn(t *testing.T
 	if err != nil {
 		t.Fatalf("Inspect() after cancellation failed: %v", err)
 	}
-	if target.Status != sandbox.StatusStopped {
-		t.Fatalf("container status after cancellation = %q, want %q", target.Status, sandbox.StatusStopped)
+	if target.Status != sandbox.StatusRunning {
+		t.Fatalf("container status after cancellation = %q, want %q", target.Status, sandbox.StatusRunning)
 	}
+	assertPodmanIntegrationWorkloadAbsent(t, inspectCtx, podmanPath, podmanIntegrationTargetRef(target), workloadMarker)
 }
 
 func waitForPodmanIntegrationFile(t *testing.T, ctx context.Context, podmanPath, targetRef, path string) {
@@ -217,6 +219,17 @@ func waitForPodmanIntegrationFile(t *testing.T, ctx context.Context, podmanPath,
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func assertPodmanIntegrationWorkloadAbsent(t *testing.T, ctx context.Context, podmanPath, targetRef, marker string) {
+	t.Helper()
+	output, err := exec.CommandContext(ctx, podmanPath, "exec", targetRef, "ps", "-eo", "pid,ppid,pgid,sid,args").Output()
+	if err != nil {
+		t.Fatalf("inspect Podman exec workload after cancellation: %v", err)
+	}
+	if strings.Contains(string(output), marker) {
+		t.Fatal("canceled Podman exec workload remained active")
 	}
 }
 

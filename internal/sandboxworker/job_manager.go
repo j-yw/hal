@@ -53,12 +53,11 @@ type jobManager struct {
 }
 
 type jobEntry struct {
-	job            Job
-	records        []JobLogRecord
-	retainedBytes  int64
-	cancel         context.CancelFunc
-	cancelAccepted bool
-	admitted       bool
+	job           Job
+	records       []JobLogRecord
+	retainedBytes int64
+	cancel        context.CancelFunc
+	admitted      bool
 }
 
 func newJobManager(options jobManagerOptions) (*jobManager, error) {
@@ -179,10 +178,15 @@ func (manager *jobManager) loadAndReconcile() error {
 		} else if entry.job.LogCursor > 0 {
 			entry.job.LogTruncated = true
 		}
-		switch entry.job.State {
-		case JobStateQueued:
+		switch {
+		case entry.job.State == JobStateQueued && entry.job.CancelRequested:
+			entry.job.CancelRequested = false
+			manager.markRecoveredJob(entry, JobStateCanceled, "cancel_requested")
+		case entry.job.State == JobStateQueued:
 			manager.markRecoveredJob(entry, JobStateInterrupted, "daemon_restarted_before_start")
-		case JobStateRunning:
+		case entry.job.State == JobStateRunning && entry.job.CancelRequested:
+			manager.markRecoveredJob(entry, JobStateUnknown, "daemon_restarted_cancel_state_unknown")
+		case entry.job.State == JobStateRunning:
 			manager.markRecoveredJob(entry, JobStateUnknown, "daemon_restarted_running_state_unknown")
 		}
 		manager.jobs[entry.job.ID] = entry
@@ -325,7 +329,7 @@ func (manager *jobManager) run(ctx context.Context, entry *jobEntry, driver sand
 		return
 	}
 	switch {
-	case entry.cancelAccepted:
+	case entry.job.CancelRequested:
 		manager.finishLocked(entry, JobStateCanceled, result, "cancel_requested")
 	case errors.Is(ctx.Err(), context.Canceled):
 		manager.finishLocked(entry, JobStateInterrupted, result, "daemon_stopped")
@@ -383,9 +387,12 @@ func (manager *jobManager) finishLocked(entry *jobEntry, state string, result *s
 		exitCode := result.ExitCode
 		entry.job.ExitCode = &exitCode
 	}
+	cancelRequested := entry.job.CancelRequested
+	entry.job.CancelRequested = false
 	if err := manager.store.save(entry.job, entry.records); err != nil {
 		entry.job.State = JobStateUnknown
 		entry.job.FailureCode = "state_write_failed"
+		entry.job.CancelRequested = cancelRequested
 	}
 	entry.cancel = nil
 	manager.releaseAdmissionLocked(entry)
@@ -427,7 +434,13 @@ func (manager *jobManager) cancelJob(jobID string) (Job, error) {
 	if jobStateTerminal(entry.job.State) {
 		return cloneJob(entry.job), nil
 	}
-	entry.cancelAccepted = true
+	if !entry.job.CancelRequested {
+		entry.job.CancelRequested = true
+		if err := manager.store.save(entry.job, entry.records); err != nil {
+			entry.job.CancelRequested = false
+			return Job{}, err
+		}
+	}
 	if entry.job.State == JobStateQueued {
 		manager.finishLocked(entry, JobStateCanceled, nil, "cancel_requested")
 	}

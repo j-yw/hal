@@ -19,7 +19,7 @@ func TestExecUsesFakeRunnerAndStreamsIO(t *testing.T) {
 	stdin := bytes.NewBufferString("stdin payload")
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	env := map[string]string{"HAL_B": "2", "HAL_A": "1"}
+	env := map[string]string{"HAL_B": "hal-env-value-b", "HAL_A": "hal-env-value-a"}
 	runner := &streamingExecRunner{
 		stdout: "stdout stream\n",
 		stderr: "stderr stream\n",
@@ -62,22 +62,15 @@ func TestExecUsesFakeRunnerAndStreamsIO(t *testing.T) {
 		t.Fatalf("exec requests = %d, want 1", len(runner.requests))
 	}
 	request := runner.requests[0]
-	wantArgs := []string{
+	wantPrefix := []string{
 		"podman", "exec",
 		"--interactive",
 		"--workdir", "/workspace/project",
 		"--env", "HAL_A",
 		"--env", "HAL_B",
 		"runtime-id",
-		"sh", "-lc", "printf ok",
 	}
-	if !reflect.DeepEqual(request.Args, wantArgs) {
-		t.Fatalf("exec args = %#v, want %#v", request.Args, wantArgs)
-	}
-	wantCancellationArgs := []string{"podman", "stop", "--ignore", "--time", "0", "runtime-id"}
-	if !reflect.DeepEqual(request.CancellationArgs, wantCancellationArgs) {
-		t.Fatalf("exec cancellation args = %#v, want %#v", request.CancellationArgs, wantCancellationArgs)
-	}
+	assertScopedExecRequest(t, request, wantPrefix, []string{"sh", "-lc", "printf ok"})
 	if request.Operation != rootlesspodman.OperationExec {
 		t.Fatalf("operation = %q, want %q", request.Operation, rootlesspodman.OperationExec)
 	}
@@ -104,7 +97,7 @@ func TestExecUsesFakeRunnerAndStreamsIO(t *testing.T) {
 	}
 
 	env["HAL_A"] = "mutated"
-	if request.Env["HAL_A"] != "1" {
+	if request.Env["HAL_A"] != "hal-env-value-a" {
 		t.Fatalf("env was not cloned before forwarding: %#v", request.Env)
 	}
 }
@@ -129,10 +122,12 @@ func TestExecKeepsSecretEnvironmentValuesOutOfPodmanArgs(t *testing.T) {
 	if got := strings.Join(request.Args, "\x00"); strings.Contains(got, secret) {
 		t.Fatalf("exec args contain secret value: %#v", request.Args)
 	}
-	wantArgs := []string{"podman", "exec", "--env", "GITHUB_TOKEN", "hal-dev", "sh", "-c", "test -n \"$GITHUB_TOKEN\""}
-	if !reflect.DeepEqual(request.Args, wantArgs) {
-		t.Fatalf("exec args = %#v, want %#v", request.Args, wantArgs)
-	}
+	assertScopedExecRequest(
+		t,
+		request,
+		[]string{"podman", "exec", "--env", "GITHUB_TOKEN", "hal-dev"},
+		[]string{"sh", "-c", "test -n \"$GITHUB_TOKEN\""},
+	)
 }
 
 func TestExecOmitsOptionalPodmanArgsWhenUnset(t *testing.T) {
@@ -146,10 +141,12 @@ func TestExecOmitsOptionalPodmanArgsWhenUnset(t *testing.T) {
 		t.Fatalf("Exec() unexpected error: %v", err)
 	}
 
-	wantArgs := []string{"podman", "exec", "hal-dev", "echo", "ok"}
-	if !reflect.DeepEqual(runner.requests[0].Args, wantArgs) {
-		t.Fatalf("exec args = %#v, want %#v", runner.requests[0].Args, wantArgs)
-	}
+	assertScopedExecRequest(
+		t,
+		runner.requests[0],
+		[]string{"podman", "exec", "hal-dev"},
+		[]string{"echo", "ok"},
+	)
 }
 
 func TestExecFailuresWrapOperationWithSanitizedOutput(t *testing.T) {
@@ -265,6 +262,50 @@ type streamingExecRunner struct {
 	stdin    string
 	stdout   string
 	stderr   string
+}
+
+func assertScopedExecRequest(t *testing.T, request rootlesspodman.CommandRequest, wantPrefix, wantCommand []string) {
+	t.Helper()
+	const wrapperFieldCount = 5
+	if len(request.Args) != len(wantPrefix)+wrapperFieldCount+len(wantCommand) {
+		t.Fatalf("exec args = %#v, want prefix %#v plus scoped wrapper and command %#v", request.Args, wantPrefix, wantCommand)
+	}
+	if got := request.Args[:len(wantPrefix)]; !reflect.DeepEqual(got, wantPrefix) {
+		t.Fatalf("exec args prefix = %#v, want %#v", got, wantPrefix)
+	}
+	wrapper := request.Args[len(wantPrefix) : len(wantPrefix)+wrapperFieldCount]
+	if wrapper[0] != "sh" || wrapper[1] != "-c" || wrapper[3] != "hal-exec" {
+		t.Fatalf("exec wrapper args = %#v, want job-scoped shell wrapper", wrapper)
+	}
+	if !strings.Contains(wrapper[2], "setsid") || !strings.Contains(wrapper[2], `"$state_dir/pid"`) {
+		t.Fatalf("exec wrapper does not own a scoped process group: %q", wrapper[2])
+	}
+	stateDir := wrapper[4]
+	if !strings.HasPrefix(stateDir, "/tmp/.hal-exec-") || len(strings.TrimPrefix(stateDir, "/tmp/.hal-exec-")) != 32 {
+		t.Fatalf("exec state directory = %q, want random private container path", stateDir)
+	}
+	if got := request.Args[len(wantPrefix)+wrapperFieldCount:]; !reflect.DeepEqual(got, wantCommand) {
+		t.Fatalf("exec command args = %#v, want %#v", got, wantCommand)
+	}
+	wantCancellationPrefix := []string{"podman", "exec", wantPrefix[len(wantPrefix)-1], "sh", "-c"}
+	if len(request.CancellationArgs) != len(wantCancellationPrefix)+3 ||
+		!reflect.DeepEqual(request.CancellationArgs[:len(wantCancellationPrefix)], wantCancellationPrefix) {
+		t.Fatalf("exec cancellation args = %#v, want prefix %#v", request.CancellationArgs, wantCancellationPrefix)
+	}
+	if request.CancellationArgs[len(wantCancellationPrefix)+1] != "hal-exec-cancel" ||
+		request.CancellationArgs[len(wantCancellationPrefix)+2] != stateDir {
+		t.Fatalf("exec cancellation args = %#v, want matching scoped state %q", request.CancellationArgs, stateDir)
+	}
+	cancellationScript := request.CancellationArgs[len(wantCancellationPrefix)]
+	if !strings.Contains(cancellationScript, `kill -TERM "-$child"`) ||
+		!strings.Contains(cancellationScript, `kill -KILL "-$child"`) {
+		t.Fatalf("exec cancellation script does not terminate the scoped process group: %q", cancellationScript)
+	}
+	for _, arg := range request.CancellationArgs {
+		if arg == "stop" {
+			t.Fatalf("exec cancellation used container-wide stop: %#v", request.CancellationArgs)
+		}
+	}
 }
 
 func (r *streamingExecRunner) RunExecCommand(ctx context.Context, req rootlesspodman.CommandRequest) (rootlesspodman.CommandResult, error) {

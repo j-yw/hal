@@ -310,6 +310,52 @@ func TestWorkerJobCancellationAndTerminalRaceRules(t *testing.T) {
 	})
 }
 
+func TestWorkerJobCancellationIsDurableBeforeAcknowledgment(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "jobs")
+	manager, err := newJobManager(jobManagerOptions{
+		WorkerID: "worker-cancel-durable",
+		StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("newJobManager() error: %v", err)
+	}
+	defer manager.close()
+
+	job := Job{
+		ContractVersion: JobContractVersion,
+		ID:              "job-cancel-durable",
+		WorkerID:        "worker-cancel-durable",
+		RuntimeDriver:   "job_driver",
+		State:           JobStateRunning,
+		SubmittedAt:     time.Date(2026, time.July, 24, 12, 0, 0, 0, time.UTC),
+	}
+	if err := manager.store.save(job, nil); err != nil {
+		t.Fatalf("save() running job: %v", err)
+	}
+	persistedBeforeCancel := false
+	entry := &jobEntry{
+		job: job,
+		cancel: func() {
+			loaded, loadErr := manager.store.loadAll()
+			if loadErr == nil && len(loaded) == 1 {
+				persistedBeforeCancel = loaded[0].Job.CancelRequested
+			}
+		},
+	}
+	manager.jobs[job.ID] = entry
+
+	got, err := manager.cancelJob(job.ID)
+	if err != nil {
+		t.Fatalf("cancelJob() error: %v", err)
+	}
+	if !persistedBeforeCancel {
+		t.Fatal("cancel function ran before durable cancellation intent was published")
+	}
+	if !got.CancelRequested {
+		t.Fatalf("cancelJob() snapshot = %#v, want pending cancellation evidence", got)
+	}
+}
+
 func TestWorkerServiceCloseWaitsForActiveJobShutdown(t *testing.T) {
 	started := make(chan struct{})
 	driver := &l2JobRuntimeDriver{
@@ -354,11 +400,14 @@ func TestWorkerJobRestartReconcilesWithoutRerun(t *testing.T) {
 	}
 	now := time.Date(2026, time.July, 24, 12, 0, 0, 0, time.UTC)
 	for _, item := range []struct {
-		id    string
-		state string
+		id              string
+		state           string
+		cancelRequested bool
 	}{
 		{id: "job-queued", state: JobStateQueued},
 		{id: "job-running", state: JobStateRunning},
+		{id: "job-canceling-before-start", state: JobStateQueued, cancelRequested: true},
+		{id: "job-canceling-while-running", state: JobStateRunning, cancelRequested: true},
 		{id: "job-succeeded", state: JobStateSucceeded},
 	} {
 		job := Job{
@@ -370,6 +419,7 @@ func TestWorkerJobRestartReconcilesWithoutRerun(t *testing.T) {
 			RuntimeID:       "runtime-safe",
 			State:           item.state,
 			SubmittedAt:     now,
+			CancelRequested: item.cancelRequested,
 		}
 		if err := store.save(job, nil); err != nil {
 			t.Fatalf("seed %s: %v", item.id, err)
@@ -386,9 +436,11 @@ func TestWorkerJobRestartReconcilesWithoutRerun(t *testing.T) {
 		t.Fatalf("newJobManager() error: %v", err)
 	}
 	for jobID, want := range map[string]string{
-		"job-queued":    JobStateInterrupted,
-		"job-running":   JobStateUnknown,
-		"job-succeeded": JobStateSucceeded,
+		"job-queued":                  JobStateInterrupted,
+		"job-running":                 JobStateUnknown,
+		"job-canceling-before-start":  JobStateCanceled,
+		"job-canceling-while-running": JobStateUnknown,
+		"job-succeeded":               JobStateSucceeded,
 	} {
 		got, err := manager.status(jobID)
 		if err != nil {
@@ -396,6 +448,13 @@ func TestWorkerJobRestartReconcilesWithoutRerun(t *testing.T) {
 		}
 		if got.State != want {
 			t.Fatalf("status(%s) state = %q, want %q", jobID, got.State, want)
+		}
+		if jobID == "job-canceling-while-running" {
+			if !got.CancelRequested || got.FailureCode != "daemon_restarted_cancel_state_unknown" {
+				t.Fatalf("status(%s) = %#v, want unknown with durable cancellation evidence", jobID, got)
+			}
+		} else if got.CancelRequested {
+			t.Fatalf("status(%s) retained cancellation marker after reconciliation", jobID)
 		}
 	}
 }
@@ -936,6 +995,158 @@ func TestWorkerJobLogPagesEnforceRequestedByteLimit(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("validateClientIOResponseLimits() accepted aggregate job logs above the requested limit")
+	}
+}
+
+func TestWorkerJobClientRejectsMismatchedResponseJobIDs(t *testing.T) {
+	tests := []struct {
+		name string
+		req  Request
+		resp Response
+	}{
+		{
+			name: "status",
+			req: Request{
+				Operation: OperationJobStatus,
+				JobStatus: &JobStatusRequest{
+					JobID: "job-requested",
+				},
+			},
+			resp: Response{
+				Operation: OperationJobStatus,
+				OK:        true,
+				Job:       &Job{ID: "job-other"},
+			},
+		},
+		{
+			name: "logs",
+			req: Request{
+				Operation: OperationJobLogs,
+				JobLogs: &JobLogsRequest{
+					JobID:      "job-requested",
+					LimitBytes: DefaultJobLogReadBytes,
+				},
+			},
+			resp: Response{
+				Operation: OperationJobLogs,
+				OK:        true,
+				JobLogs:   &JobLogsResponse{JobID: "job-other"},
+			},
+		},
+		{
+			name: "cancel",
+			req: Request{
+				Operation: OperationJobCancel,
+				JobCancel: &JobCancelRequest{
+					JobID: "job-requested",
+				},
+			},
+			resp: Response{
+				Operation: OperationJobCancel,
+				OK:        true,
+				Job:       &Job{ID: "job-other"},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateClientIOResponseLimits(test.req, test.resp)
+			if err == nil || !strings.Contains(err.Error(), "jobId did not match request") {
+				t.Fatalf("validateClientIOResponseLimits() error = %v, want mismatched jobId rejection", err)
+			}
+		})
+	}
+}
+
+func TestWorkerJobLogWriterReportsTruncationPersistenceFailure(t *testing.T) {
+	manager := &jobManager{}
+	entry := &jobEntry{}
+	writer := newJobLogWriter(manager, entry, JobLogStreamStdout, 1, nil)
+
+	if _, err := writer.Write([]byte("a")); err != nil {
+		t.Fatalf("first Write() error: %v", err)
+	}
+	written, err := writer.Write([]byte("b"))
+	if err == nil {
+		t.Fatal("second Write() error = nil, want truncation persistence failure")
+	}
+	if written != 1 {
+		t.Fatalf("second Write() wrote %d bytes, want 1", written)
+	}
+	if writer.Err() == nil {
+		t.Fatal("Err() = nil, want truncation persistence failure")
+	}
+	if !entry.job.LogTruncated || !entry.job.StdoutTruncated {
+		t.Fatalf("truncation flags = %#v, want stdout truncation", entry.job)
+	}
+}
+
+func TestWorkerJobClientRejectsInvalidLogCursorProgression(t *testing.T) {
+	req := JobLogsRequest{
+		ContractVersion: JobContractVersion,
+		JobID:           "job-cursors",
+		Cursor:          4,
+		LimitBytes:      DefaultJobLogReadBytes,
+	}
+	record := func(cursor uint64) JobLogRecord {
+		return JobLogRecord{
+			Cursor:    cursor,
+			Stream:    JobLogStreamStdout,
+			Data:      "safe",
+			Timestamp: time.Unix(1, 0).UTC(),
+		}
+	}
+	tests := []struct {
+		name     string
+		response JobLogsResponse
+		wantErr  bool
+	}{
+		{
+			name:     "next cursor regresses",
+			response: JobLogsResponse{NextCursor: 3},
+			wantErr:  true,
+		},
+		{
+			name:     "record replays requested cursor",
+			response: JobLogsResponse{Records: []JobLogRecord{record(4)}, NextCursor: 4},
+			wantErr:  true,
+		},
+		{
+			name:     "record starts after unexplained gap",
+			response: JobLogsResponse{Records: []JobLogRecord{record(6)}, NextCursor: 6},
+			wantErr:  true,
+		},
+		{
+			name:     "records contain unexplained gap",
+			response: JobLogsResponse{Records: []JobLogRecord{record(5), record(7)}, NextCursor: 7},
+			wantErr:  true,
+		},
+		{
+			name:     "next cursor advances beyond records without explanation",
+			response: JobLogsResponse{Records: []JobLogRecord{record(5)}, NextCursor: 6},
+			wantErr:  true,
+		},
+		{
+			name:     "contiguous page",
+			response: JobLogsResponse{Records: []JobLogRecord{record(5), record(6)}, NextCursor: 6},
+		},
+		{
+			name:     "truncated page explains gaps",
+			response: JobLogsResponse{Records: []JobLogRecord{record(6), record(8)}, NextCursor: 9, Truncated: true},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.response.ContractVersion = JobContractVersion
+			test.response.JobID = req.JobID
+			err := validateClientIOResponseLimits(
+				Request{Operation: OperationJobLogs, JobLogs: &req},
+				Response{Operation: OperationJobLogs, OK: true, JobLogs: &test.response},
+			)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("validateClientIOResponseLimits() error = %v, wantErr %v", err, test.wantErr)
+			}
+		})
 	}
 }
 

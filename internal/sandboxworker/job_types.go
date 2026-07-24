@@ -49,6 +49,7 @@ type Job struct {
 	StderrTruncated bool       `json:"stderrTruncated,omitempty"`
 	ExitCode        *int       `json:"exitCode,omitempty"`
 	FailureCode     string     `json:"failureCode,omitempty"`
+	CancelRequested bool       `json:"cancelRequested,omitempty"`
 }
 
 // JobStartRequest submits one asynchronous exec request to the daemon.

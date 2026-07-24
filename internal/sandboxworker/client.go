@@ -370,12 +370,48 @@ func validateClientIOResponseLimits(req Request, resp Response) error {
 			return nil
 		}
 		return validateClientPayloadWithinLimit("copy_out payload", *resp.CopyOut.Payload, req.CopyOut.MaxPayloadBytes)
+	case OperationJobStatus:
+		if req.JobStatus != nil && resp.Job != nil && resp.Job.ID != req.JobStatus.JobID {
+			return workerIOValidationError("job_status jobId did not match request")
+		}
+		return nil
 	case OperationJobLogs:
 		if req.JobLogs == nil || resp.JobLogs == nil {
 			return nil
 		}
+		if resp.JobLogs.JobID != req.JobLogs.JobID {
+			return workerIOValidationError("job_logs jobId did not match request")
+		}
 		if size := jobLogRecordsSize(resp.JobLogs.Records); size > req.JobLogs.LimitBytes {
 			return workerIOValidationError("job_logs records exceed requested limit of %d bytes", req.JobLogs.LimitBytes)
+		}
+		if resp.JobLogs.NextCursor < req.JobLogs.Cursor {
+			return workerIOValidationError("job_logs nextCursor precedes requested cursor")
+		}
+		previous := req.JobLogs.Cursor
+		cursorGap := false
+		for _, record := range resp.JobLogs.Records {
+			if record.Cursor <= previous {
+				return workerIOValidationError("job_logs record cursor does not follow requested cursor")
+			}
+			if record.Cursor-previous > 1 {
+				cursorGap = true
+			}
+			previous = record.Cursor
+		}
+		if resp.JobLogs.NextCursor < previous {
+			return workerIOValidationError("job_logs nextCursor precedes returned records")
+		}
+		if resp.JobLogs.NextCursor > previous {
+			cursorGap = true
+		}
+		if cursorGap && !resp.JobLogs.Truncated {
+			return workerIOValidationError("job_logs cursor gap requires truncation marker")
+		}
+		return nil
+	case OperationJobCancel:
+		if req.JobCancel != nil && resp.Job != nil && resp.Job.ID != req.JobCancel.JobID {
+			return workerIOValidationError("job_cancel jobId did not match request")
 		}
 		return nil
 	default:

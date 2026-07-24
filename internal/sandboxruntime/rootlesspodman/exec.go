@@ -2,7 +2,10 @@ package rootlesspodman
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -14,6 +17,58 @@ var (
 	ErrExecArgsRequired   = errors.New("rootless Podman exec args are required")
 )
 
+const (
+	execStateDirectoryPrefix = "/tmp/.hal-exec-"
+	execWrapperScript        = `state_dir=$1
+shift
+umask 077
+if ! mkdir "$state_dir"; then
+	exit 125
+fi
+cleanup() {
+	rm -f "$state_dir/pid"
+	rmdir "$state_dir" 2>/dev/null || true
+}
+trap cleanup EXIT
+setsid --wait sh -c '
+pid_file=$1
+shift
+if ! printf "%s\n" "$$" >"$pid_file"; then
+	exit 125
+fi
+exec "$@"
+' hal-exec-child "$state_dir/pid" "$@" <&0 &
+launcher=$!
+status=0
+wait "$launcher" || status=$?
+exit "$status"`
+	execCancellationScript = `state_dir=$1
+pid_file=$state_dir/pid
+attempt=0
+while [ ! -r "$pid_file" ]; do
+	if [ "$attempt" -ge 300 ]; then
+		exit 0
+	fi
+	attempt=$((attempt + 1))
+	sleep 0.02
+done
+IFS= read -r child <"$pid_file" || exit 0
+case "$child" in
+	""|*[!0-9]*|0|1) exit 125 ;;
+esac
+kill -TERM "-$child" 2>/dev/null || true
+sleep 0.2
+kill -KILL "-$child" 2>/dev/null || true
+attempt=0
+while kill -0 "-$child" 2>/dev/null; do
+	if [ "$attempt" -ge 100 ]; then
+		exit 124
+	fi
+	attempt=$((attempt + 1))
+	sleep 0.02
+done`
+)
+
 func (d *Driver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 	commandArgs := cloneStringSlice(req.Args)
 	if len(commandArgs) == 0 {
@@ -23,11 +78,15 @@ func (d *Driver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*san
 	if err != nil {
 		return nil, operationError(OperationExec, CommandResult{}, err)
 	}
+	stateDir, err := newExecStateDirectory()
+	if err != nil {
+		return nil, operationError(OperationExec, CommandResult{}, err)
+	}
 
 	result, err := d.runExecCommand(ctx, CommandRequest{
 		Operation:        OperationExec,
-		Args:             d.execArgs(ref, commandArgs, req.Env, req.WorkDir, req.Stdin != nil),
-		CancellationArgs: d.execCancellationArgs(ref),
+		Args:             d.execArgs(ref, stateDir, commandArgs, req.Env, req.WorkDir, req.Stdin != nil),
+		CancellationArgs: d.execCancellationArgs(ref, stateDir),
 		Env:              cloneStringMap(req.Env),
 		Stdin:            req.Stdin,
 		Stdout:           req.Stdout,
@@ -66,7 +125,7 @@ func (d *Driver) execRunnerFor(operation string) (ExecCommandRunner, error) {
 	return d.execRunner, nil
 }
 
-func (d *Driver) execArgs(ref string, commandArgs []string, env map[string]string, workDir string, interactive bool) []string {
+func (d *Driver) execArgs(ref, stateDir string, commandArgs []string, env map[string]string, workDir string, interactive bool) []string {
 	args := []string{d.podmanPath, "exec"}
 	if interactive {
 		args = append(args, "--interactive")
@@ -77,13 +136,21 @@ func (d *Driver) execArgs(ref string, commandArgs []string, env map[string]strin
 	for _, key := range sortedMapKeys(env) {
 		args = append(args, "--env", key)
 	}
-	args = append(args, ref)
+	args = append(args, ref, "sh", "-c", execWrapperScript, "hal-exec", stateDir)
 	args = append(args, commandArgs...)
 	return args
 }
 
-func (d *Driver) execCancellationArgs(ref string) []string {
-	return []string{d.podmanPath, "stop", "--ignore", "--time", "0", ref}
+func (d *Driver) execCancellationArgs(ref, stateDir string) []string {
+	return []string{d.podmanPath, "exec", ref, "sh", "-c", execCancellationScript, "hal-exec-cancel", stateDir}
+}
+
+func newExecStateDirectory() (string, error) {
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		return "", fmt.Errorf("allocate rootless Podman exec identity: %w", err)
+	}
+	return execStateDirectoryPrefix + hex.EncodeToString(random), nil
 }
 
 func cloneStringSlice(values []string) []string {
