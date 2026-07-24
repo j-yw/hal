@@ -392,8 +392,16 @@ func lifecycleWorkerDriver(exec func(context.Context, sandboxruntime.ExecRequest
 
 func lifecycleExecFunc(purpose string, err error) func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 	return func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
-		if err != nil {
+		if purpose == sandbox.SandboxLeasePurposeFactory && err != nil {
 			return nil, err
+		}
+		finalCommand := (purpose == sandbox.SandboxLeasePurposeAuto && isWorkerAutoCommandExec(req)) ||
+			(purpose != sandbox.SandboxLeasePurposeAuto && isWorkerRunCommandExec(req))
+		if err != nil && finalCommand {
+			return nil, err
+		}
+		if !finalCommand {
+			return &sandboxruntime.ExecResult{}, nil
 		}
 		switch purpose {
 		case sandbox.SandboxLeasePurposeAuto:

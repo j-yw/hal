@@ -97,6 +97,22 @@ func collectSandboxL3SyncOut(
 	if err != nil {
 		return err
 	}
+	return collectSandboxL3SyncOutWithRuntime(ctx, store, manifest, runtimeDriver, target)
+}
+
+func collectSandboxL3SyncOutWithRuntime(
+	ctx context.Context,
+	store sandboxexecution.Store,
+	manifest *sandboxexecution.Manifest,
+	runtimeDriver sandboxruntime.Driver,
+	target sandboxruntime.Target,
+) error {
+	if manifest == nil {
+		return errors.New("execution_manifest_unavailable: durable execution manifest is unavailable")
+	}
+	if runtimeDriver == nil {
+		return errors.New("runtime_handle_unavailable: existing worker runtime handle is unavailable")
+	}
 	if _, err := sandboxexecution.CollectUncommittedSyncOutArtifactBestEffort(ctx, sandboxexecution.UncommittedSyncOutCollectionRequest{
 		ExecutionID:        manifest.ID,
 		Store:              store,

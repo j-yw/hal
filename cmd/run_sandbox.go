@@ -437,6 +437,23 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 	if isSandboxWorkerJobDetachedError(execErr) {
 		return execErr
 	}
+	if req.WorkerJob != nil {
+		if finalizationErr := finalizeRunSandboxWorkerJob(ctx, store, req, execResult, target, deps); finalizationErr != nil {
+			execErr = errors.Join(execErr, finalizationErr)
+		}
+		if augmentJSON && execResult.RemoteStarted {
+			if outputErr := outputSandboxAugmentedJSON(out, capturedJSON.Bytes(), store, req.ExecutionID); outputErr != nil {
+				execErr = errors.Join(execErr, outputErr)
+			}
+		}
+		if execErr != nil {
+			if opts.JSON && !execResult.RemoteStarted {
+				return outputRunJSONErrorWithReadinessGateForCommand(cmd, out, execErr.Error(), sandboxCommandSecurityReadinessGateDecisionFromError(execErr))
+			}
+			return execErr
+		}
+		return nil
+	}
 
 	if isSandboxRunPhaseError(execErr) {
 		_ = collectRunSandboxRecoveryAfterCommandFailure(ctx, store, req, execResult, target)
