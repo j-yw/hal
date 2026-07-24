@@ -1,0 +1,167 @@
+//go:build !windows
+
+package sandboxworker
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestL3WorkerServerRejectsUnsafeSocketParentsWithoutMutation(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T) (string, func())
+	}{
+		{
+			name: "broad parent",
+			setup: func(t *testing.T) (string, func()) {
+				parent := filepath.Join(t.TempDir(), "shared")
+				if err := os.Mkdir(parent, 0o755); err != nil {
+					t.Fatalf("Mkdir(parent) error: %v", err)
+				}
+				return filepath.Join(parent, "worker.sock"), func() {
+					info, err := os.Stat(parent)
+					if err != nil {
+						t.Fatalf("Stat(parent) error: %v", err)
+					}
+					if got := info.Mode().Perm(); got != 0o755 {
+						t.Fatalf("parent mode = %#o, want unchanged 0755", got)
+					}
+				}
+			},
+		},
+		{
+			name: "symlinked parent",
+			setup: func(t *testing.T) (string, func()) {
+				base := t.TempDir()
+				realParent := filepath.Join(base, "private")
+				if err := os.Mkdir(realParent, 0o700); err != nil {
+					t.Fatalf("Mkdir(real parent) error: %v", err)
+				}
+				linkedParent := filepath.Join(base, "linked")
+				if err := os.Symlink(realParent, linkedParent); err != nil {
+					t.Fatalf("Symlink(parent) error: %v", err)
+				}
+				return filepath.Join(linkedParent, "worker.sock"), func() {
+					entries, err := os.ReadDir(realParent)
+					if err != nil {
+						t.Fatalf("ReadDir(real parent) error: %v", err)
+					}
+					if len(entries) != 0 {
+						t.Fatalf("server wrote through socket-parent symlink: %#v", entries)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			socketPath, assertUnchanged := tt.setup(t)
+			server, err := NewServer(ServerOptions{
+				SocketPath: socketPath,
+				Handler: RequestHandlerFunc(func(context.Context, Request) Response {
+					t.Fatal("unsafe socket server dispatched a request")
+					return Response{}
+				}),
+			})
+			if err != nil {
+				assertUnchanged()
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			defer cancel()
+			err = server.ListenAndServe(ctx)
+			if err == nil {
+				t.Fatal("ListenAndServe() accepted an unsafe socket parent")
+			}
+			assertUnchanged()
+		})
+	}
+}
+
+func TestL3WorkerServerCreatesPrivateSocketAndRemovesOnlyItsOwnSocket(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "private")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatalf("Mkdir(parent) error: %v", err)
+	}
+	socketPath := filepath.Join(parent, "worker.sock")
+	server, err := NewServer(ServerOptions{
+		SocketPath: socketPath,
+		Handler: RequestHandlerFunc(func(_ context.Context, req Request) Response {
+			return Response{
+				ProtocolVersion: ProtocolVersion,
+				RequestID:       req.RequestID,
+				Operation:       req.Operation,
+				OK:              true,
+			}
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.ListenAndServe(ctx)
+	}()
+	waitForWorkerSocket(t, socketPath, errCh)
+
+	info, err := os.Lstat(socketPath)
+	if err != nil {
+		t.Fatalf("Lstat(socket) error: %v", err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		t.Fatalf("socket mode = %v, want Unix socket", info.Mode())
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("socket permissions = %#o, want 0600", got)
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ListenAndServe() shutdown error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ListenAndServe() did not stop")
+	}
+	if _, err := os.Lstat(socketPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("owned socket remains after shutdown: %v", err)
+	}
+}
+
+func TestL3WorkerServerRejectsExistingNonSocketWithoutDeletingIt(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "private")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatalf("Mkdir(parent) error: %v", err)
+	}
+	socketPath := filepath.Join(parent, "worker-token=preserve.sock")
+	if err := os.WriteFile(socketPath, []byte("preserve"), 0o600); err != nil {
+		t.Fatalf("WriteFile(socket path) error: %v", err)
+	}
+	server, err := NewServer(ServerOptions{
+		SocketPath: socketPath,
+		Handler:    RequestHandlerFunc(func(context.Context, Request) Response { return Response{} }),
+	})
+	if err == nil {
+		err = server.ListenAndServe(context.Background())
+	}
+	if err == nil {
+		t.Fatal("worker server accepted an existing non-socket path")
+	}
+	if strings.Contains(err.Error(), socketPath) || strings.Contains(err.Error(), "worker-token") {
+		t.Fatalf("worker server error exposed socket path: %v", err)
+	}
+	data, readErr := os.ReadFile(socketPath)
+	if readErr != nil || string(data) != "preserve" {
+		t.Fatalf("existing non-socket was mutated: data=%q err=%v", data, readErr)
+	}
+}
