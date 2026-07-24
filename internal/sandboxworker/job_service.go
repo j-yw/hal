@@ -15,9 +15,17 @@ func (service *Service) JobStartResponse(ctx context.Context, requestID, driverI
 	if err := req.Validate(); err != nil {
 		return protocolErrorResponse(requestID, OperationJobStart, ErrorCodeMalformedRequest, fmt.Sprintf("malformed worker job start request: %v", err))
 	}
+	if job, exists, err := service.jobs.existingSubmission(req.SubmissionID, driverID); err != nil {
+		return jobOperationErrorResponse(requestID, OperationJobStart, err)
+	} else if exists {
+		return jobSuccessResponse(requestID, OperationJobStart, job)
+	}
 	driver, err := service.lookupDriver(driverID)
 	if err != nil {
 		return jobOperationErrorResponse(requestID, OperationJobStart, err)
+	}
+	if !driverSupportsJobExecution(driver) {
+		return unsupportedOperationResponse(Request{RequestID: requestID, Operation: OperationJobStart, DriverID: driverID})
 	}
 	job, err := service.jobs.start(ctx, driverID, driver, req)
 	if err != nil {

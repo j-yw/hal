@@ -17,6 +17,8 @@ const (
 	jobLogsFileName         = "logs.json"
 	jobStateMarkerFileName  = ".hal-job-state"
 	jobStateMarkerContents  = "hal-sandboxworker-job-state-v1\n"
+	jobStateWorkerPrefix    = jobStateMarkerContents + "workerId="
+	maxJobStateMarkerBytes  = len(jobStateWorkerPrefix) + 192 + 1
 	jobTransactionDirPrefix = ".job-state-txn-"
 	maxJobLogsFileBytes     = DefaultJobLogRetentionBytes*6 + (256 << 10)
 )
@@ -105,16 +107,16 @@ func validateExistingJobStateRoot(root string) error {
 	markerPath := filepath.Join(root, jobStateMarkerFileName)
 	info, err := os.Lstat(markerPath)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 ||
-		info.Mode().Perm()&0o077 != 0 || info.Size() != int64(len(jobStateMarkerContents)) {
+		info.Mode().Perm()&0o077 != 0 || info.Size() <= 0 || info.Size() > int64(maxJobStateMarkerBytes) {
 		return fmt.Errorf("job state root ownership marker is invalid")
 	}
 	file, err := os.Open(markerPath)
 	if err != nil {
 		return fmt.Errorf("job state root ownership marker is invalid")
 	}
-	marker, readErr := io.ReadAll(io.LimitReader(file, int64(len(jobStateMarkerContents))+1))
+	marker, readErr := io.ReadAll(io.LimitReader(file, int64(maxJobStateMarkerBytes)+1))
 	closeErr := file.Close()
-	if readErr != nil || closeErr != nil || string(marker) != jobStateMarkerContents {
+	if readErr != nil || closeErr != nil || !validJobStateMarker(string(marker)) {
 		return fmt.Errorf("job state root ownership marker is invalid")
 	}
 	entries, err := os.ReadDir(root)
@@ -144,6 +146,40 @@ func validateExistingJobStateRoot(root string) error {
 		}
 	}
 	return nil
+}
+
+func validJobStateMarker(marker string) bool {
+	if marker == jobStateMarkerContents {
+		return true
+	}
+	if !strings.HasPrefix(marker, jobStateWorkerPrefix) || !strings.HasSuffix(marker, "\n") {
+		return false
+	}
+	workerID := strings.TrimSuffix(strings.TrimPrefix(marker, jobStateWorkerPrefix), "\n")
+	return validJobSafeID(workerID) && marker == jobStateWorkerPrefix+workerID+"\n"
+}
+
+func (store *jobStore) bindWorkerID(workerID string) error {
+	if store == nil || !validJobSafeID(workerID) {
+		return fmt.Errorf("job state root worker identity is invalid")
+	}
+	markerPath := filepath.Join(store.root, jobStateMarkerFileName)
+	marker, err := os.ReadFile(markerPath)
+	if err != nil || !validJobStateMarker(string(marker)) {
+		return fmt.Errorf("job state root ownership marker is invalid")
+	}
+	boundMarker := jobStateWorkerPrefix + workerID + "\n"
+	switch string(marker) {
+	case jobStateMarkerContents:
+		if err := writePrivateFileAtomic(store.root, jobStateMarkerFileName, []byte(boundMarker)); err != nil {
+			return fmt.Errorf("bind job state root worker identity: %w", err)
+		}
+		return nil
+	case boundMarker:
+		return nil
+	default:
+		return fmt.Errorf("job state root worker identity does not match")
+	}
 }
 
 func validatePrivateJobStateRoot(root string) error {

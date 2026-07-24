@@ -33,6 +33,13 @@ type ExecDriver interface {
 	Exec(context.Context, ExecRequest) (*ExecResult, error)
 }
 
+// JobExecutionSupport explicitly opts a runtime into daemon-owned asynchronous
+// execution. Ordinary Exec support is insufficient because durable jobs also
+// require runtime-specific process-group cancellation semantics and helpers.
+type JobExecutionSupport interface {
+	SupportsJobExecution() bool
+}
+
 // FileTransport copies files between the host and sandbox target.
 type FileTransport interface {
 	CopyIn(context.Context, CopyRequest) error

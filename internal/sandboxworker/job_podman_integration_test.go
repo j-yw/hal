@@ -36,12 +36,13 @@ func TestWorkerJobPodmanIntegrationSurvivesClientDisconnect(t *testing.T) {
 
 	runner := rootlesspodman.DefaultCommandRunner{}
 	driver := rootlesspodman.New(rootlesspodman.Options{
-		LifecycleRunner: runner,
-		ExecRunner:      runner,
-		CopyRunner:      runner,
-		PodmanPath:      podmanPath,
-		Image:           image,
-		WorkDir:         "/",
+		LifecycleRunner:       runner,
+		ExecRunner:            runner,
+		CopyRunner:            runner,
+		PodmanPath:            podmanPath,
+		Image:                 image,
+		WorkDir:               "/",
+		JobExecutionSupported: true,
 	})
 	registry, err := sandboxworker.NewDriverRegistry(driver)
 	if err != nil {

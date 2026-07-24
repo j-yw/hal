@@ -164,6 +164,15 @@ func (manager *jobManager) loadAndReconcile() error {
 		return err
 	}
 	for _, stored := range loaded {
+		if stored.Job.WorkerID != manager.workerID ||
+			stored.Job.HostID != "" && stored.Job.HostID != manager.workerID {
+			return fmt.Errorf("worker job state belongs to a different worker identity")
+		}
+	}
+	if err := manager.store.bindWorkerID(manager.workerID); err != nil {
+		return err
+	}
+	for _, stored := range loaded {
 		entry := &jobEntry{
 			job:           cloneJob(stored.Job),
 			records:       cloneJobLogRecords(stored.Records),
@@ -206,11 +215,46 @@ func (manager *jobManager) loadAndReconcile() error {
 }
 
 func (manager *jobManager) markRecoveredJob(entry *jobEntry, state, failureCode string) {
-	now := manager.now().UTC()
+	now := manager.lifecycleNow(entry.job)
 	entry.job.State = state
 	entry.job.FailureCode = failureCode
 	entry.job.FinishedAt = timePointer(now)
 	entry.job.HeartbeatAt = timePointer(now)
+}
+
+func (manager *jobManager) lifecycleNow(job Job) time.Time {
+	now := manager.now().UTC()
+	floor := job.SubmittedAt.UTC()
+	for _, timestamp := range []*time.Time{job.StartedAt, job.HeartbeatAt, job.FinishedAt} {
+		if timestamp != nil && timestamp.After(floor) {
+			floor = timestamp.UTC()
+		}
+	}
+	if now.Before(floor) {
+		return floor
+	}
+	return now
+}
+
+func (manager *jobManager) existingSubmission(submissionID, driverID string) (Job, bool, error) {
+	if manager == nil || manager.store == nil {
+		return Job{}, false, fmt.Errorf("worker job manager is unavailable")
+	}
+	submissionKey := jobSubmissionKey(submissionID)
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	existingID, exists := manager.submissions[submissionKey]
+	if !exists {
+		return Job{}, false, nil
+	}
+	entry, ok := manager.jobs[existingID]
+	if !ok {
+		return Job{}, false, fmt.Errorf("worker job submission identity is unavailable")
+	}
+	if entry.job.RuntimeDriver != strings.TrimSpace(driverID) {
+		return Job{}, false, fmt.Errorf("worker job submission identity does not match runtime driver")
+	}
+	return cloneJob(entry.job), true, nil
 }
 
 func (manager *jobManager) start(ctx context.Context, driverID string, driver sandboxruntime.Driver, req JobStartRequest) (Job, error) {
@@ -237,6 +281,10 @@ func (manager *jobManager) start(ctx context.Context, driverID string, driver sa
 		if !ok {
 			manager.mu.Unlock()
 			return Job{}, fmt.Errorf("worker job submission identity is unavailable")
+		}
+		if entry.job.RuntimeDriver != strings.TrimSpace(driverID) {
+			manager.mu.Unlock()
+			return Job{}, fmt.Errorf("worker job submission identity does not match runtime driver")
 		}
 		snapshot := cloneJob(entry.job)
 		manager.mu.Unlock()
@@ -317,7 +365,7 @@ func (manager *jobManager) run(ctx context.Context, entry *jobEntry, driver sand
 		manager.mu.Unlock()
 		return
 	}
-	now := manager.now().UTC()
+	now := manager.lifecycleNow(entry.job)
 	entry.job.State = JobStateRunning
 	entry.job.StartedAt = timePointer(now)
 	entry.job.HeartbeatAt = timePointer(now)
@@ -395,7 +443,7 @@ func (manager *jobManager) heartbeat(ctx context.Context, entry *jobEntry, done 
 				manager.mu.Unlock()
 				return
 			}
-			now := manager.now().UTC()
+			now := manager.lifecycleNow(entry.job)
 			entry.job.HeartbeatAt = timePointer(now)
 			if err := manager.store.save(entry.job, entry.records); err != nil {
 				entry.job.State = JobStateUnknown
@@ -414,7 +462,7 @@ func (manager *jobManager) finishLocked(entry *jobEntry, state string, result *s
 	if jobStateTerminal(entry.job.State) {
 		return
 	}
-	now := manager.now().UTC()
+	now := manager.lifecycleNow(entry.job)
 	entry.job.State = state
 	entry.job.HeartbeatAt = timePointer(now)
 	entry.job.FinishedAt = timePointer(now)

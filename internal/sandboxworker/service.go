@@ -141,7 +141,7 @@ func NewService(options ServiceOptions) (*Service, error) {
 			OperationJobLogs,
 			OperationJobCancel,
 		)
-		if runtimeDriversSupportOperation(registry.DriverIDs(), descriptors, OperationExec) {
+		if registrySupportsJobExecution(registry) {
 			supportedOps = appendMissingStrings(supportedOps, OperationJobStart)
 		}
 	}
@@ -271,8 +271,11 @@ func (service *Service) runtimeDriverCapability(driverID string) RuntimeDriver {
 	}
 	driver := runtimeDriverCapabilityFromDescriptors(driverID, descriptors)
 	driver.Operations = withoutJobOperations(driver.Operations)
-	if service != nil && service.jobs != nil && stringSliceContains(driver.Operations, OperationExec) {
-		driver.Operations = appendMissingStrings(driver.Operations, OperationJobStart)
+	if service != nil && service.jobs != nil && service.registry != nil {
+		registered, err := service.registry.Lookup(driverID)
+		if err == nil && driverSupportsJobExecution(registered) {
+			driver.Operations = appendMissingStrings(driver.Operations, OperationJobStart)
+		}
 	}
 	return driver
 }
@@ -310,14 +313,22 @@ func defaultSupportedOperationsForDrivers(driverIDs []string, descriptors map[st
 	return operations
 }
 
-func runtimeDriversSupportOperation(driverIDs []string, descriptors map[string]RuntimeDriver, operation string) bool {
-	for _, driverID := range driverIDs {
-		driver := runtimeDriverCapabilityFromDescriptors(driverID, descriptors)
-		if stringSliceContains(driver.Operations, operation) {
+func registrySupportsJobExecution(registry *DriverRegistry) bool {
+	if registry == nil {
+		return false
+	}
+	for _, driverID := range registry.DriverIDs() {
+		driver, err := registry.Lookup(driverID)
+		if err == nil && driverSupportsJobExecution(driver) {
 			return true
 		}
 	}
 	return false
+}
+
+func driverSupportsJobExecution(driver sandboxruntime.Driver) bool {
+	support, ok := driver.(sandboxruntime.JobExecutionSupport)
+	return ok && support.SupportsJobExecution()
 }
 
 func (service *Service) supportsRequestOperation(operation, driverID string) bool {

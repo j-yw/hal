@@ -96,22 +96,32 @@ func runDefaultExecCommand(ctx context.Context, req CommandRequest) (CommandResu
 
 	var err error
 	var cancellationErr error
+	cancellationAttempted := false
 	select {
 	case err = <-waitCh:
 	case <-ctx.Done():
+		cancellationAttempted = true
 		err = terminateExecProcessGroup(cmd, waitCh)
 		cancellationErr = runExecCancellationCommand(req.CancellationArgs)
 	}
 	result := CommandResult{
-		ExitCode:                           commandExitCode(err),
-		Stdout:                             stdout.String(),
-		Stderr:                             stderr.String(),
-		CancellationProcessGroupTerminated: ctx.Err() != nil && len(req.CancellationArgs) > 0 && cancellationErr == nil,
+		ExitCode: commandExitCode(err),
+		Stdout:   stdout.String(),
+		Stderr:   stderr.String(),
+		CancellationProcessGroupTerminated: cancellationProcessGroupTerminationProven(
+			cancellationAttempted,
+			req.CancellationArgs,
+			cancellationErr,
+		),
 	}
 	if ctx.Err() != nil {
 		return result, errors.Join(ctx.Err(), cancellationErr)
 	}
 	return result, err
+}
+
+func cancellationProcessGroupTerminationProven(attempted bool, args []string, err error) bool {
+	return attempted && len(args) > 0 && err == nil
 }
 
 func runExecCancellationCommand(args []string) error {

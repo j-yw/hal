@@ -370,6 +370,17 @@ func validateClientIOResponseLimits(req Request, resp Response) error {
 			return nil
 		}
 		return validateClientPayloadWithinLimit("copy_out payload", *resp.CopyOut.Payload, req.CopyOut.MaxPayloadBytes)
+	case OperationJobStart:
+		if req.JobStart == nil || resp.Job == nil {
+			return nil
+		}
+		if resp.Job.SubmissionKey != jobSubmissionKey(req.JobStart.SubmissionID) {
+			return workerIOValidationError("job_start submissionKey did not match request")
+		}
+		if resp.Job.RuntimeDriver != strings.TrimSpace(req.DriverID) {
+			return workerIOValidationError("job_start runtimeDriver did not match request")
+		}
+		return nil
 	case OperationJobStatus:
 		if req.JobStatus != nil && resp.Job != nil && resp.Job.ID != req.JobStatus.JobID {
 			return workerIOValidationError("job_status jobId did not match request")

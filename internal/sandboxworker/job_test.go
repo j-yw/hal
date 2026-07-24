@@ -207,6 +207,38 @@ func TestWorkerJobCapabilitiesRequireConfiguredStateAndExecDriver(t *testing.T) 
 	}
 }
 
+func TestWorkerJobStartRequiresExplicitRuntimeSupport(t *testing.T) {
+	driver := &fakeWorkerRuntimeDriver{id: "ordinary_exec_driver"}
+	registry, err := NewDriverRegistry(driver)
+	if err != nil {
+		t.Fatalf("NewDriverRegistry() error: %v", err)
+	}
+	service, err := NewService(ServiceOptions{
+		WorkerID:    "worker-ordinary-exec",
+		HostKind:    HostKindLocal,
+		Registry:    registry,
+		JobStateDir: filepath.Join(t.TempDir(), "jobs"),
+	})
+	if err != nil {
+		t.Fatalf("NewService() error: %v", err)
+	}
+	defer service.Close()
+	if stringSliceContains(service.Capabilities().SupportedOperations, OperationJobStart) {
+		t.Fatal("ordinary exec driver advertised daemon-owned job execution")
+	}
+	response := service.JobStartResponse(context.Background(), "unsupported-job", driver.ID(), JobStartRequest{
+		ContractVersion: JobContractVersion,
+		SubmissionID:    "unsupported-job-submission",
+		Exec:            l2JobExecRequest("unsupported-secret"),
+	})
+	if response.OK || response.Error == nil || response.Error.Code != ErrorCodeUnsupportedOp {
+		t.Fatalf("job start response = %#v, want unsupported operation", response)
+	}
+	if driver.execCalls != 0 {
+		t.Fatalf("ordinary driver exec calls = %d, want none", driver.execCalls)
+	}
+}
+
 func TestWorkerJobStartRejectsWorkBeyondConfiguredCapacity(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -292,11 +324,11 @@ func TestWorkerJobStartIsIdempotentAcrossLostResponseAndRestart(t *testing.T) {
 		t.Fatalf("NewDriverRegistry() error: %v", err)
 	}
 	stateDir := filepath.Join(t.TempDir(), "jobs")
-	newService := func() *Service {
+	newService := func(serviceRegistry *DriverRegistry) *Service {
 		service, serviceErr := NewService(ServiceOptions{
 			WorkerID:    "worker-idempotent",
 			HostKind:    HostKindLocal,
-			Registry:    registry,
+			Registry:    serviceRegistry,
 			JobStateDir: stateDir,
 		})
 		if serviceErr != nil {
@@ -310,7 +342,7 @@ func TestWorkerJobStartIsIdempotentAcrossLostResponseAndRestart(t *testing.T) {
 		Exec:            l2JobExecRequest("idempotent-secret"),
 	}
 
-	service := newService()
+	service := newService(registry)
 	first := service.JobStartResponse(context.Background(), "lost-response", driver.ID(), request)
 	if !first.OK || first.Job == nil {
 		t.Fatalf("first start = %#v error=%#v, want accepted", first, first.Error)
@@ -326,11 +358,15 @@ func TestWorkerJobStartIsIdempotentAcrossLostResponseAndRestart(t *testing.T) {
 	}
 	assertL2JobStatePrivateAndSanitized(t, stateDir, request.SubmissionID)
 
-	restarted := newService()
+	restarted := newService(&DriverRegistry{})
 	defer restarted.Close()
 	retryAfterRestart := restarted.JobStartResponse(context.Background(), "retry-after-restart", driver.ID(), request)
 	if !retryAfterRestart.OK || retryAfterRestart.Job == nil || retryAfterRestart.Job.ID != first.Job.ID {
 		t.Fatalf("restart retry = %#v error=%#v, want original job %q", retryAfterRestart, retryAfterRestart.Error, first.Job.ID)
+	}
+	mismatch := restarted.JobStartResponse(context.Background(), "retry-wrong-driver", "different_driver", request)
+	if mismatch.OK || mismatch.Error == nil {
+		t.Fatalf("mismatched retry = %#v, want safe rejection", mismatch)
 	}
 	if got := execCalls.Load(); got != 1 {
 		t.Fatalf("driver exec calls = %d, want one durable submission", got)
@@ -634,15 +670,25 @@ func TestWorkerJobRestartReconcilesWithoutRerun(t *testing.T) {
 		}
 	}
 
-	manager, err := newJobManager(jobManagerOptions{
+	if mismatched, mismatchErr := newJobManager(jobManagerOptions{
 		Context:  context.Background(),
 		WorkerID: "worker-new",
+		StateDir: stateDir,
+		Now:      func() time.Time { return now.Add(time.Minute) },
+	}); mismatchErr == nil {
+		mismatched.close()
+		t.Fatal("newJobManager() accepted durable state from a different worker")
+	}
+	manager, err := newJobManager(jobManagerOptions{
+		Context:  context.Background(),
+		WorkerID: "worker-old",
 		StateDir: stateDir,
 		Now:      func() time.Time { return now.Add(time.Minute) },
 	})
 	if err != nil {
 		t.Fatalf("newJobManager() error: %v", err)
 	}
+	defer manager.close()
 	for jobID, want := range map[string]string{
 		"job-queued":                  JobStateInterrupted,
 		"job-running":                 JobStateUnknown,
@@ -664,6 +710,21 @@ func TestWorkerJobRestartReconcilesWithoutRerun(t *testing.T) {
 		} else if got.CancelRequested {
 			t.Fatalf("status(%s) retained cancellation marker after reconciliation", jobID)
 		}
+	}
+}
+
+func TestWorkerJobLifecycleClockRollbackIsClamped(t *testing.T) {
+	submitted := time.Date(2026, time.July, 24, 12, 0, 0, 0, time.UTC)
+	started := submitted.Add(time.Minute)
+	heartbeat := started.Add(time.Minute)
+	manager := &jobManager{now: func() time.Time { return submitted.Add(-time.Hour) }}
+	got := manager.lifecycleNow(Job{
+		SubmittedAt: submitted,
+		StartedAt:   timePointer(started),
+		HeartbeatAt: timePointer(heartbeat),
+	})
+	if !got.Equal(heartbeat) {
+		t.Fatalf("lifecycleNow() = %s, want prior heartbeat %s after clock rollback", got, heartbeat)
 	}
 }
 
@@ -874,8 +935,15 @@ func TestWorkerJobStateDirectoryHasExclusiveManagerOwnership(t *testing.T) {
 	}
 
 	first.close()
-	restarted, err := newJobManager(jobManagerOptions{
+	if mismatched, err := newJobManager(jobManagerOptions{
 		WorkerID: "worker-restarted",
+		StateDir: stateDir,
+	}); err == nil {
+		mismatched.close()
+		t.Fatal("newJobManager() accepted a different worker after owner shutdown")
+	}
+	restarted, err := newJobManager(jobManagerOptions{
+		WorkerID: "worker-first",
 		StateDir: stateDir,
 	})
 	if err != nil {
@@ -925,7 +993,7 @@ func TestWorkerJobRestartLoadsEscapeHeavyRetainedLogs(t *testing.T) {
 	}
 
 	manager, err := newJobManager(jobManagerOptions{
-		WorkerID: "worker-new",
+		WorkerID: "worker-old",
 		StateDir: stateDir,
 	})
 	if err != nil {
@@ -1467,6 +1535,47 @@ func TestWorkerJobClientRejectsMismatchedResponseJobIDs(t *testing.T) {
 	}
 }
 
+func TestWorkerJobClientRejectsMismatchedStartIdentity(t *testing.T) {
+	request := JobStartRequest{
+		SubmissionID: "submission-client-match",
+	}
+	baseRequest := Request{
+		Operation: OperationJobStart,
+		DriverID:  "job_driver",
+		JobStart:  &request,
+	}
+	for _, test := range []struct {
+		name string
+		job  Job
+	}{
+		{
+			name: "submission key",
+			job: Job{
+				SubmissionKey: "submission-wrong",
+				RuntimeDriver: "job_driver",
+			},
+		},
+		{
+			name: "runtime driver",
+			job: Job{
+				SubmissionKey: jobSubmissionKey(request.SubmissionID),
+				RuntimeDriver: "different_driver",
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateClientIOResponseLimits(baseRequest, Response{
+				Operation: OperationJobStart,
+				OK:        true,
+				Job:       &test.job,
+			})
+			if err == nil {
+				t.Fatalf("validateClientIOResponseLimits() accepted mismatched %s", test.name)
+			}
+		})
+	}
+}
+
 func TestWorkerJobLogWriterReportsTruncationPersistenceFailure(t *testing.T) {
 	manager := &jobManager{}
 	entry := &jobEntry{}
@@ -1756,4 +1865,8 @@ func (driver *l2JobRuntimeDriver) Exec(ctx context.Context, req sandboxruntime.E
 		return nil, errors.New("job exec is not configured")
 	}
 	return driver.execFn(ctx, req)
+}
+
+func (driver *l2JobRuntimeDriver) SupportsJobExecution() bool {
+	return true
 }
