@@ -244,10 +244,11 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 			}
 			return err
 		}
-		entryMode := autoEntryModeReportDiscovery
+		sourceMarkdown := ""
 		if len(req.Args) > 0 {
-			entryMode = autoEntryModeMarkdownPath
+			sourceMarkdown = req.Args[0]
 		}
+		entryMode := determineAutoEntryMode(sourceMarkdown)
 		preview := newSandboxDryRunPreview(
 			sandbox.SandboxLeasePurposeAuto,
 			req.SandboxName,

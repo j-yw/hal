@@ -135,6 +135,41 @@ func TestAutoSandboxDryRunReturnsBeforeForbiddenBoundaries(t *testing.T) {
 	}
 }
 
+func TestAutoSandboxDryRunEntryModeUsesStaticInputIntent(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want autoEntryMode
+	}{
+		{name: "no input", want: autoEntryModeReportDiscovery},
+		{name: "whitespace input", args: []string{" \t "}, want: autoEntryModeReportDiscovery},
+		{name: "markdown input", args: []string{".hal/prd-feature.md"}, want: autoEntryModeMarkdownPath},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := runAutoSandboxWithWriter(context.Background(), nil, tt.args, t.TempDir(), autoSandboxOptions{
+				DryRun: true,
+				JSON:   true,
+			}, &out, io.Discard, forbiddenAutoSandboxDryRunDeps())
+			if err != nil {
+				t.Fatalf("runAutoSandboxWithWriter() dry-run error: %v\nstdout=%s", err, out.String())
+			}
+
+			var result struct {
+				EntryMode string `json:"entryMode"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+				t.Fatalf("decode sandbox dry-run preview: %v\npayload=%s", err, out.Bytes())
+			}
+			if result.EntryMode != string(tt.want) {
+				t.Fatalf("entryMode = %q, want %q", result.EntryMode, tt.want)
+			}
+		})
+	}
+}
+
 func TestSandboxDryRunHumanPreviewDoesNotClaimExistenceOrEnforcement(t *testing.T) {
 	tests := []struct {
 		name string
