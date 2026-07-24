@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"sync"
 	"unicode/utf8"
 )
@@ -267,6 +268,7 @@ func jobLogRecordsSize(records []JobLogRecord) int64 {
 }
 
 func sanitizeJobLogData(data string) string {
+	data = strings.ToValidUTF8(data, "\uFFFD")
 	data = clientSecretAssignmentPattern.ReplaceAllString(data, "$1=[redacted]")
 	data = clientHostPathPattern.ReplaceAllString(data, "[redacted-path]")
 	data = clientRemoteTempPathPattern.ReplaceAllString(data, "[redacted-path]")

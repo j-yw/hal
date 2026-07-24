@@ -1,6 +1,7 @@
 package sandboxworker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -612,6 +613,63 @@ func TestWorkerJobLogChunkingPreservesUTF8RuneBoundaries(t *testing.T) {
 	}
 	if got := rendered.String(); got != output {
 		t.Fatalf("rendered output differs after chunking: got %q want %q", got, output)
+	}
+}
+
+func TestWorkerJobInvalidUTF8LogsRemainReadableAfterRestart(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "jobs")
+	manager, err := newJobManager(jobManagerOptions{
+		WorkerID: "worker-invalid-utf8",
+		StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("newJobManager() error: %v", err)
+	}
+	now := time.Date(2026, time.July, 24, 12, 0, 0, 0, time.UTC)
+	entry := &jobEntry{job: Job{
+		ContractVersion: JobContractVersion,
+		ID:              "job-invalid-utf8",
+		WorkerID:        "worker-invalid-utf8",
+		RuntimeDriver:   "job_driver",
+		State:           JobStateSucceeded,
+		SubmittedAt:     now,
+	}}
+	manager.jobs[entry.job.ID] = entry
+	output := bytes.Repeat([]byte{0xff, 'x'}, int(DefaultJobLogRecordBytes/2))
+	if utf8.Valid(output) {
+		t.Fatal("invalid UTF-8 fixture unexpectedly became valid")
+	}
+	if err := manager.appendLog(entry, JobLogStreamStdout, output); err != nil {
+		t.Fatalf("appendLog() error: %v", err)
+	}
+	for _, record := range entry.records {
+		if !utf8.ValidString(record.Data) {
+			t.Fatal("appendLog() retained invalid UTF-8")
+		}
+		if int64(len(record.Data)) > DefaultJobLogRecordBytes {
+			t.Fatalf("record size = %d, want at most %d", len(record.Data), DefaultJobLogRecordBytes)
+		}
+	}
+	manager.close()
+
+	restarted, err := newJobManager(jobManagerOptions{
+		WorkerID: "worker-invalid-utf8",
+		StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("newJobManager() restart error: %v", err)
+	}
+	defer restarted.close()
+	logs, err := restarted.logs(JobLogsRequest{
+		ContractVersion: JobContractVersion,
+		JobID:           entry.job.ID,
+		LimitBytes:      DefaultJobLogReadBytes,
+	})
+	if err != nil {
+		t.Fatalf("logs() after restart error: %v", err)
+	}
+	if err := logs.Validate(); err != nil {
+		t.Fatalf("logs() after restart validation error: %v", err)
 	}
 }
 
