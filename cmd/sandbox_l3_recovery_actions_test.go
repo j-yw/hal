@@ -178,6 +178,41 @@ func TestL3RecoveryUnknownAndInterruptedNeverCrossConcreteActionBoundaries(t *te
 	}
 }
 
+func TestL3ExplicitRecoveryRejectsCompletedExecution(t *testing.T) {
+	t.Setenv("HAL_CONFIG_HOME", t.TempDir())
+	now := time.Date(2026, 7, 25, 3, 0, 0, 0, time.UTC)
+	saveL3Sandbox(t, "alpha", now)
+	store, err := sandboxexecution.DefaultStore()
+	if err != nil {
+		t.Fatalf("open execution store: %v", err)
+	}
+	manifest := l3Manifest("run-completed", "alpha", now, "job-completed", sandboxworker.JobStateSucceeded, 0)
+	manifest.Status = sandboxexecution.StatusSucceeded
+	completedAt := now.Add(3 * time.Second)
+	completed := sandboxexecution.FinalizationCheckpoint{Completed: true, CompletedAt: &completedAt}
+	manifest.Finalization = &sandboxexecution.FinalizationMetadata{
+		ContractVersion:  sandboxexecution.FinalizationContractVersion,
+		State:            sandboxexecution.FinalizationStateCompleted,
+		TerminalJobState: sandboxworker.JobStateSucceeded,
+		Checkpoints: sandboxexecution.FinalizationCheckpoints{
+			Artifacts:           completed,
+			LeaseRelease:        completed,
+			TerminalPublication: completed,
+		},
+		StartedAt:   &completedAt,
+		UpdatedAt:   completedAt,
+		CompletedAt: &completedAt,
+	}
+	if err := store.SaveManifest(manifest); err != nil {
+		t.Fatalf("save completed execution: %v", err)
+	}
+
+	_, _, err = selectSandboxL3Execution("alpha", "run-completed", sandboxL3SelectionRecover)
+	if err == nil || !strings.Contains(err.Error(), "execution_not_recoverable") {
+		t.Fatalf("explicit completed recovery selection error = %v, want execution_not_recoverable", err)
+	}
+}
+
 func seedL3RecoveryLease(t *testing.T, executionID, sandboxName string) *sandbox.SandboxLeaseStore {
 	t.Helper()
 	now := time.Date(2026, 7, 25, 2, 0, 0, 0, time.UTC)
