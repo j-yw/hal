@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -27,6 +29,45 @@ func TestSafeApplyRunsDryRunBeforePatchMutation(t *testing.T) {
 	}
 	if got, want := strings.Join(git.calls, ","), "check_worktree,check_patch,apply_patch"; got != want {
 		t.Fatalf("git call order = %q, want %q", got, want)
+	}
+}
+
+func TestSafeApplyUsesSameVerifiedPayloadAfterPathReplacement(t *testing.T) {
+	payloadPath := filepath.Join(t.TempDir(), "committed.patch")
+	if err := os.WriteFile(payloadPath, []byte("trusted patch\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(payload) error: %v", err)
+	}
+	payload, err := os.Open(payloadPath)
+	if err != nil {
+		t.Fatalf("Open(payload) error: %v", err)
+	}
+	defer payload.Close()
+
+	req := SafeApplyRequest{
+		ProjectDir:  "/tmp/host-worktree",
+		PayloadPath: payloadPath,
+		Mutate:      true,
+		Artifact:    safeApplyPatchArtifact(),
+	}
+	payloadField := reflect.ValueOf(&req).Elem().FieldByName("Payload")
+	if !payloadField.IsValid() || !payloadField.CanSet() {
+		t.Fatal("SafeApplyRequest has no verified payload descriptor field")
+	}
+	payloadField.Set(reflect.ValueOf(payload))
+
+	git := &replacementRaceSafeApplyGit{payloadPath: payloadPath}
+	result, err := (SafeApplier{Git: git}).Apply(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Apply() error: %v", err)
+	}
+	if result.Status != SafeApplyStatusApplied || !result.Applied {
+		t.Fatalf("result = %#v, want applied", result)
+	}
+	if got, want := string(git.checked), "trusted patch\n"; got != want {
+		t.Fatalf("dry-run bytes = %q, want %q", got, want)
+	}
+	if got, want := string(git.applied), "trusted patch\n"; got != want {
+		t.Fatalf("apply bytes after replacement = %q, want original verified bytes %q", got, want)
 	}
 }
 
@@ -334,6 +375,56 @@ type recordingSafeApplyGit struct {
 	checkPatchErr    error
 	applyPatchErr    error
 	checkBundleErr   error
+}
+
+type replacementRaceSafeApplyGit struct {
+	payloadPath string
+	checked     []byte
+	applied     []byte
+}
+
+func (g *replacementRaceSafeApplyGit) CheckCleanWorktree(context.Context, SafeApplyGitRequest) (DirtyState, error) {
+	return DirtyState{}, nil
+}
+
+func (g *replacementRaceSafeApplyGit) CheckPatch(_ context.Context, req SafeApplyGitRequest) error {
+	data, err := readSafeApplyGitPayload(req)
+	if err != nil {
+		return err
+	}
+	g.checked = data
+	if err := os.Rename(g.payloadPath, g.payloadPath+".trusted"); err != nil {
+		return err
+	}
+	return os.WriteFile(g.payloadPath, []byte("attacker patch\n"), 0o600)
+}
+
+func (g *replacementRaceSafeApplyGit) ApplyPatch(_ context.Context, req SafeApplyGitRequest) error {
+	data, err := readSafeApplyGitPayload(req)
+	if err != nil {
+		return err
+	}
+	g.applied = data
+	return nil
+}
+
+func (g *replacementRaceSafeApplyGit) CheckBundle(context.Context, SafeApplyGitRequest) error {
+	return nil
+}
+
+func readSafeApplyGitPayload(req SafeApplyGitRequest) ([]byte, error) {
+	payloadField := reflect.ValueOf(req).FieldByName("Payload")
+	if payloadField.IsValid() && !payloadField.IsNil() {
+		payload, ok := payloadField.Interface().(*os.File)
+		if !ok {
+			return nil, errors.New("verified payload is not an *os.File")
+		}
+		if _, err := payload.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		}
+		return io.ReadAll(payload)
+	}
+	return os.ReadFile(req.PayloadPath)
 }
 
 func (g *recordingSafeApplyGit) record(call string) {

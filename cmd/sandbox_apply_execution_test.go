@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -262,6 +263,30 @@ func TestRunSandboxApplyExecutionRejectsUnsafeStoredRunsBeforeApply(t *testing.T
 				t.Fatal("apply hook ran for unsafe stored execution")
 			}
 		})
+	}
+}
+
+func TestCompletedApplyReadsPRDFromVerifiedDescriptor(t *testing.T) {
+	source, err := os.ReadFile("sandbox_apply_execution.go")
+	if err != nil {
+		t.Fatalf("ReadFile(sandbox_apply_execution.go) error: %v", err)
+	}
+	text := string(source)
+	start := strings.Index(text, "func validateSandboxExecutionReadyForCompletedApply")
+	end := strings.Index(text[start:], "\nfunc sandboxExecutionCollectedArtifactByPath")
+	if start < 0 || end < 0 {
+		t.Fatal("could not locate completed-apply PRD validation function")
+	}
+	body := text[start : start+end]
+	for _, forbidden := range []string{"ResolveStoredPath", "os.ReadFile"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("completed-apply PRD validation reopens a pathname via %s", forbidden)
+		}
+	}
+	for _, required := range []string{"OpenStoredFile", "io.ReadAll"} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("completed-apply PRD validation does not consume verified descriptor with %s", required)
+		}
 	}
 }
 

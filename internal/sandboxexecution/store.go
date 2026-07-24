@@ -28,6 +28,10 @@ const (
 
 var errStoreRootUnavailable = errors.New("no sandbox execution store root available")
 
+// atomicStoreFileBeforePublish is a deterministic test seam for exercising
+// parent replacement between temporary-file creation and publication.
+var atomicStoreFileBeforePublish = func(_, _ string) {}
+
 // Store addresses durable local non-factory sandbox execution records.
 type Store struct {
 	root      string
@@ -660,6 +664,7 @@ func writeStoreFileAtomic(path string, data []byte, mode fs.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
+	atomicStoreFileBeforePublish(tmpPath, path)
 	if err := renameStoreFile(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
 		return err

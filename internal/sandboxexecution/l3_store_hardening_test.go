@@ -311,6 +311,135 @@ func TestL3OpenStoredFileReturnsVerifiedContainedRegularFile(t *testing.T) {
 	}
 }
 
+func TestL3AtomicManifestWriteDoesNotFollowReplacedExecutionParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("descriptor-relative Unix publication assertion")
+	}
+	store := newTestStore(t)
+	const executionID = "exec-manifest-parent-race"
+	manifest := testManifest(executionID, time.Date(2026, 7, 25, 7, 0, 0, 0, time.UTC))
+	if err := store.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest(seed) error: %v", err)
+	}
+
+	executionDir := filepath.Join(store.Root(), executionID)
+	movedExecutionDir := filepath.Join(store.Root(), executionID+"-moved")
+	external := t.TempDir()
+	externalManifest := filepath.Join(external, manifestFileName)
+	if err := os.WriteFile(externalManifest, []byte("external canary\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(external manifest) error: %v", err)
+	}
+
+	previousHook := atomicStoreFileBeforePublish
+	defer func() { atomicStoreFileBeforePublish = previousHook }()
+	var replaced bool
+	atomicStoreFileBeforePublish = func(tmpPath, destinationPath string) {
+		if replaced {
+			return
+		}
+		replaced = true
+		if destinationPath != filepath.Join(executionDir, manifestFileName) {
+			t.Fatalf("manifest destination = %q, want execution manifest", destinationPath)
+		}
+		if err := os.Rename(executionDir, movedExecutionDir); err != nil {
+			t.Fatalf("Rename(execution parent) error: %v", err)
+		}
+		if err := os.Symlink(external, executionDir); err != nil {
+			t.Fatalf("Symlink(replacement execution parent) error: %v", err)
+		}
+		if err := os.WriteFile(tmpPath, []byte("attacker temporary manifest\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(attacker temp) error: %v", err)
+		}
+	}
+
+	manifest.Status = StatusFailed
+	if err := store.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest(replaced parent) error: %v", err)
+	}
+	if !replaced {
+		t.Fatal("atomic manifest publication hook did not run")
+	}
+	externalData, err := os.ReadFile(externalManifest)
+	if err != nil {
+		t.Fatalf("ReadFile(external manifest) error: %v", err)
+	}
+	if got, want := string(externalData), "external canary\n"; got != want {
+		t.Fatalf("external manifest = %q, want unchanged %q", got, want)
+	}
+	movedData, err := os.ReadFile(filepath.Join(movedExecutionDir, manifestFileName))
+	if err != nil {
+		t.Fatalf("ReadFile(moved manifest) error: %v", err)
+	}
+	if !strings.Contains(string(movedData), `"status": "failed"`) {
+		t.Fatalf("moved manifest was not atomically updated: %s", movedData)
+	}
+}
+
+func TestL3AtomicPayloadWriteDoesNotFollowReplacedPayloadParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("descriptor-relative Unix publication assertion")
+	}
+	store := newTestStore(t)
+	const executionID = "exec-payload-parent-race"
+	if err := store.SaveManifest(testManifest(executionID, time.Date(2026, 7, 25, 7, 5, 0, 0, time.UTC))); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+	if _, err := store.WriteArtifactPayload(executionID, "nested/result.txt", []byte("old payload\n")); err != nil {
+		t.Fatalf("WriteArtifactPayload(seed) error: %v", err)
+	}
+
+	payloadParent := filepath.Join(store.Root(), executionID, artifactsDirName, "nested")
+	movedPayloadParent := filepath.Join(store.Root(), executionID, artifactsDirName, "nested-moved")
+	external := t.TempDir()
+	externalPayload := filepath.Join(external, "result.txt")
+	if err := os.WriteFile(externalPayload, []byte("external canary\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(external payload) error: %v", err)
+	}
+
+	previousHook := atomicStoreFileBeforePublish
+	defer func() { atomicStoreFileBeforePublish = previousHook }()
+	var replaced bool
+	atomicStoreFileBeforePublish = func(tmpPath, destinationPath string) {
+		if replaced {
+			return
+		}
+		replaced = true
+		if destinationPath != filepath.Join(payloadParent, "result.txt") {
+			t.Fatalf("payload destination = %q, want nested payload", destinationPath)
+		}
+		if err := os.Rename(payloadParent, movedPayloadParent); err != nil {
+			t.Fatalf("Rename(payload parent) error: %v", err)
+		}
+		if err := os.Symlink(external, payloadParent); err != nil {
+			t.Fatalf("Symlink(replacement payload parent) error: %v", err)
+		}
+		if err := os.WriteFile(tmpPath, []byte("attacker temporary payload\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(attacker temp) error: %v", err)
+		}
+	}
+
+	if _, err := store.WriteArtifactPayload(executionID, "nested/result.txt", []byte("trusted replacement\n")); err != nil {
+		t.Fatalf("WriteArtifactPayload(replaced parent) error: %v", err)
+	}
+	if !replaced {
+		t.Fatal("atomic payload publication hook did not run")
+	}
+	externalData, err := os.ReadFile(externalPayload)
+	if err != nil {
+		t.Fatalf("ReadFile(external payload) error: %v", err)
+	}
+	if got, want := string(externalData), "external canary\n"; got != want {
+		t.Fatalf("external payload = %q, want unchanged %q", got, want)
+	}
+	movedData, err := os.ReadFile(filepath.Join(movedPayloadParent, "result.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile(moved payload) error: %v", err)
+	}
+	if got, want := string(movedData), "trusted replacement\n"; got != want {
+		t.Fatalf("moved payload = %q, want %q", got, want)
+	}
+}
+
 func TestL3OpenStoredFileDescriptorSurvivesRootPathReplacement(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation requires privileges on some Windows setups")

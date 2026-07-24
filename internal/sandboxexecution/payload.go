@@ -375,6 +375,7 @@ func copyStoreFileAtomic(sourcePath, destPath string, mode fs.FileMode, expected
 		_ = os.Remove(tmpPath)
 		return nil, err
 	}
+	atomicStoreFileBeforePublish(tmpPath, destPath)
 	if err := renameStoreFile(tmpPath, destPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return nil, err
@@ -421,6 +422,7 @@ func copyStoreFileAtomicRedactingSourcePath(sourcePath, destPath string, mode fs
 		_ = os.Remove(tmpPath)
 		return nil, redactPathError(err)
 	}
+	atomicStoreFileBeforePublish(tmpPath, destPath)
 	if err := renameStoreFile(tmpPath, destPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return nil, redactPathError(err)
