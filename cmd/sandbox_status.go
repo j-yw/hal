@@ -32,7 +32,8 @@ Human output redacts public cloud and Tailscale addresses by default. Use
 When no NAME is provided, delegates to 'hal sandbox list' to show all
 sandboxes in the global registry.`,
 	Example: `  hal sandbox status my-sandbox
-  hal sandbox status`,
+  hal sandbox status
+  hal sandbox status NAME --live --json`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := io.Writer(os.Stdout)
@@ -43,14 +44,26 @@ sandboxes in the global registry.`,
 		}
 		return runSandboxCobra(cmd, "Sandbox Status failed", func() error {
 			if len(args) == 0 {
-				return runSandboxListWithWriters(out, errOut, false, false)
+				return runSandboxListWithWriters(out, errOut, sandboxStatusJSONFlag, sandboxStatusLiveFlag)
+			}
+			if sandboxStatusJSONFlag {
+				ctx := context.Background()
+				if cmd != nil && cmd.Context() != nil {
+					ctx = cmd.Context()
+				}
+				return runSandboxL3StatusJSON(ctx, args[0], sandboxStatusLiveFlag, out)
 			}
 			return runSandboxStatus(args[0], out, nil)
 		})
 	},
 }
 
+var sandboxStatusLiveFlag bool
+var sandboxStatusJSONFlag bool
+
 func init() {
+	sandboxStatusCmd.Flags().BoolVar(&sandboxStatusLiveFlag, "live", false, "Refresh the selected durable worker execution")
+	sandboxStatusCmd.Flags().BoolVar(&sandboxStatusJSONFlag, "json", false, "Output machine-readable JSON (sandbox-status-v1 contract)")
 	sandboxCmd.AddCommand(sandboxStatusCmd)
 }
 

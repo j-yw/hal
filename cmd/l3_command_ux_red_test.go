@@ -228,7 +228,7 @@ func TestL3LogsSelectsSingleRunAndDrainsTerminalCursor(t *testing.T) {
 	if l3SandboxLeaf("logs") == nil {
 		t.Fatal("hal sandbox logs is not registered")
 	}
-	harness := newL3WorkerHarness(t, l3WorkerScript{
+	harness := newL3WorkerHarness(t, &l3WorkerScript{
 		jobState:  sandboxworker.JobStateSucceeded,
 		logCursor: 4,
 		pages: map[uint64]sandboxworker.JobLogsResponse{
@@ -295,7 +295,7 @@ func TestL3FollowCancellationDoesNotCancelOrMutateTheJob(t *testing.T) {
 		t.Fatal("hal sandbox logs is not registered")
 	}
 	firstLogs := make(chan struct{}, 1)
-	harness := newL3WorkerHarness(t, l3WorkerScript{
+	harness := newL3WorkerHarness(t, &l3WorkerScript{
 		jobState:  sandboxworker.JobStateRunning,
 		logCursor: 0,
 		firstLogs: firstLogs,
@@ -351,7 +351,7 @@ func TestL3RecoveryCommandsStayBehindObservationAndFinalizationBoundaries(t *tes
 			if l3SandboxLeaf(commandName) == nil {
 				t.Fatalf("hal sandbox %s is not registered", commandName)
 			}
-			harness := newL3WorkerHarness(t, l3WorkerScript{
+			harness := newL3WorkerHarness(t, &l3WorkerScript{
 				jobState:  sandboxworker.JobStateSucceeded,
 				logCursor: 0,
 				pages: map[uint64]sandboxworker.JobLogsResponse{
@@ -388,7 +388,7 @@ func TestL3NamedStatusLiveJSONUsesDedicatedSafeContract(t *testing.T) {
 		t.Fatal("hal sandbox status is missing --live or --json")
 	}
 
-	harness := newL3WorkerHarness(t, l3WorkerScript{
+	harness := newL3WorkerHarness(t, &l3WorkerScript{
 		jobState:  sandboxworker.JobStateSucceeded,
 		logCursor: 0,
 		pages: map[uint64]sandboxworker.JobLogsResponse{
@@ -711,11 +711,15 @@ type l3WorkerHarness struct {
 	manifestPath       string
 }
 
-func newL3WorkerHarness(t *testing.T, script l3WorkerScript) *l3WorkerHarness {
+func newL3WorkerHarness(t *testing.T, script *l3WorkerScript) *l3WorkerHarness {
 	t.Helper()
 	t.Setenv("HAL_CONFIG_HOME", t.TempDir())
 
-	socketDir, err := os.MkdirTemp("/tmp", "hal-l3-command-red-")
+	tempRoot, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		t.Fatalf("resolve system temp dir: %v", err)
+	}
+	socketDir, err := os.MkdirTemp(tempRoot, "hal-l3-command-red-")
 	if err != nil {
 		t.Fatalf("create short socket dir: %v", err)
 	}
@@ -725,10 +729,13 @@ func newL3WorkerHarness(t *testing.T, script l3WorkerScript) *l3WorkerHarness {
 	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
 	socketPath := filepath.Join(socketDir, "worker.sock")
 
+	if script == nil {
+		t.Fatal("L3 worker script is required")
+	}
 	script.socketPath = socketPath
 	server, err := sandboxworker.NewServer(sandboxworker.ServerOptions{
 		SocketPath: socketPath,
-		Handler:    &script,
+		Handler:    script,
 	})
 	if err != nil {
 		t.Fatalf("create fake worker server: %v", err)
@@ -761,7 +768,7 @@ func newL3WorkerHarness(t *testing.T, script l3WorkerScript) *l3WorkerHarness {
 
 	harness := &l3WorkerHarness{
 		t:                  t,
-		script:             &script,
+		script:             script,
 		cancel:             cancel,
 		errCh:              errCh,
 		hostMutationMarker: marker,
