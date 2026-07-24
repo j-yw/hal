@@ -35,10 +35,10 @@ func TestL3InterruptedAndUnknownManifestStatusesRoundTrip(t *testing.T) {
 
 func TestL3FinalizationIntentAndCheckpointsJSONRoundTrip(t *testing.T) {
 	startedAt := time.Date(2026, 7, 25, 2, 0, 0, 0, time.UTC)
-	updatedAt := startedAt.Add(time.Minute)
-	artifactCompletedAt := updatedAt.Add(time.Minute)
+	artifactCompletedAt := startedAt.Add(time.Minute)
 	syncOutCompletedAt := artifactCompletedAt.Add(time.Minute)
 	leaseCompletedAt := syncOutCompletedAt.Add(time.Minute)
+	updatedAt := leaseCompletedAt.Add(time.Minute)
 
 	manifest := testManifest("exec-finalization", startedAt)
 	manifest.Finalization = &FinalizationMetadata{
@@ -253,6 +253,178 @@ func TestL3FinalizationLifecycleValidation(t *testing.T) {
 				t.Fatalf("SaveManifest() error: %v", err)
 			}
 		})
+	}
+}
+
+func TestL3CompletedFinalizationRequiresProvenTerminalJobState(t *testing.T) {
+	startedAt := time.Date(2026, 7, 25, 5, 0, 0, 0, time.UTC)
+	completedAt := startedAt.Add(time.Minute)
+	for _, terminalState := range []string{"unknown", "interrupted"} {
+		t.Run(terminalState, func(t *testing.T) {
+			metadata := l3CompletedFinalizationFixture(startedAt, completedAt)
+			metadata.TerminalJobState = terminalState
+			err := validateFinalizationMetadata(&metadata)
+			if err == nil {
+				t.Fatalf("validateFinalizationMetadata() accepted completed %q terminal proof", terminalState)
+			}
+			if !strings.Contains(err.Error(), "terminal proof") {
+				t.Fatalf("validateFinalizationMetadata() error = %q, want terminal proof context", err)
+			}
+		})
+	}
+}
+
+func TestL3UnprovenTerminalStateCannotCompleteFinalizationCheckpoints(t *testing.T) {
+	startedAt := time.Date(2026, 7, 25, 6, 0, 0, 0, time.UTC)
+	completedAt := startedAt.Add(time.Minute)
+	for _, terminalState := range []string{"unknown", "interrupted"} {
+		for _, checkpoint := range []string{"artifacts", "syncOut", "leaseRelease", "terminalPublication"} {
+			t.Run(terminalState+"/"+checkpoint, func(t *testing.T) {
+				metadata := FinalizationMetadata{
+					ContractVersion:  FinalizationContractVersion,
+					State:            FinalizationStateBlocked,
+					SyncOutRequested: true,
+					TerminalJobState: terminalState,
+					ReasonCode:       "worker_terminal_state_unproven",
+					StartedAt:        &startedAt,
+					UpdatedAt:        completedAt,
+				}
+				completed := FinalizationCheckpoint{Completed: true, CompletedAt: &completedAt}
+				switch checkpoint {
+				case "artifacts":
+					metadata.Checkpoints.Artifacts = completed
+				case "syncOut":
+					metadata.Checkpoints.SyncOut = completed
+				case "leaseRelease":
+					metadata.Checkpoints.LeaseRelease = completed
+				case "terminalPublication":
+					metadata.Checkpoints.TerminalPublication = completed
+				}
+
+				err := validateFinalizationMetadata(&metadata)
+				if err == nil {
+					t.Fatalf("validateFinalizationMetadata() accepted %q with completed %s checkpoint", terminalState, checkpoint)
+				}
+				if !strings.Contains(err.Error(), "unproven terminal job state") {
+					t.Fatalf("validateFinalizationMetadata() error = %q, want unproven terminal state context", err)
+				}
+			})
+		}
+	}
+}
+
+func TestL3UnprovenTerminalStateSupportsBlockedHandoffWithoutCheckpoints(t *testing.T) {
+	startedAt := time.Date(2026, 7, 25, 7, 0, 0, 0, time.UTC)
+	updatedAt := startedAt.Add(time.Minute)
+	for _, terminalState := range []string{"unknown", "interrupted"} {
+		t.Run(terminalState, func(t *testing.T) {
+			store := newTestStore(t)
+			manifest := testManifest("exec-blocked-"+terminalState, startedAt)
+			manifest.Finalization = &FinalizationMetadata{
+				ContractVersion:  FinalizationContractVersion,
+				State:            FinalizationStateBlocked,
+				TerminalJobState: terminalState,
+				ReasonCode:       "worker_terminal_state_unproven",
+				StartedAt:        &startedAt,
+				UpdatedAt:        updatedAt,
+			}
+			if err := store.SaveManifest(manifest); err != nil {
+				t.Fatalf("SaveManifest() error: %v", err)
+			}
+			loaded, err := store.LoadManifest(manifest.ID)
+			if err != nil {
+				t.Fatalf("LoadManifest() error: %v", err)
+			}
+			if loaded.Finalization == nil || loaded.Finalization.TerminalJobState != terminalState {
+				t.Fatalf("loaded Finalization = %#v, want blocked %q handoff", loaded.Finalization, terminalState)
+			}
+		})
+	}
+}
+
+func TestL3UnrequestedSyncOutCheckpointCannotComplete(t *testing.T) {
+	startedAt := time.Date(2026, 7, 25, 8, 0, 0, 0, time.UTC)
+	completedAt := startedAt.Add(time.Minute)
+	metadata := FinalizationMetadata{
+		ContractVersion:  FinalizationContractVersion,
+		State:            FinalizationStateFinalizing,
+		TerminalJobState: "succeeded",
+		Checkpoints: FinalizationCheckpoints{
+			Artifacts: FinalizationCheckpoint{Completed: true, CompletedAt: &completedAt},
+			SyncOut:   FinalizationCheckpoint{Completed: true, CompletedAt: &completedAt},
+		},
+		StartedAt: &startedAt,
+		UpdatedAt: completedAt,
+	}
+	err := validateFinalizationMetadata(&metadata)
+	if err == nil {
+		t.Fatal("validateFinalizationMetadata() accepted completed syncOut checkpoint without intent")
+	}
+	if !strings.Contains(err.Error(), "without requested intent") {
+		t.Fatalf("validateFinalizationMetadata() error = %q, want missing sync-out intent context", err)
+	}
+}
+
+func TestL3CompletedCheckpointTimestampsStayInsideFinalizationWindow(t *testing.T) {
+	startedAt := time.Date(2026, 7, 25, 9, 0, 0, 0, time.UTC)
+	updatedAt := startedAt.Add(2 * time.Minute)
+	tests := []struct {
+		name      string
+		timestamp time.Time
+		want      string
+	}{
+		{name: "before startedAt", timestamp: startedAt.Add(-time.Second), want: "precedes startedAt"},
+		{name: "after updatedAt", timestamp: updatedAt.Add(time.Second), want: "follows updatedAt"},
+	}
+	for _, checkpoint := range []string{"artifacts", "syncOut", "leaseRelease", "terminalPublication"} {
+		for _, tt := range tests {
+			t.Run(checkpoint+"/"+tt.name, func(t *testing.T) {
+				metadata := FinalizationMetadata{
+					ContractVersion:  FinalizationContractVersion,
+					State:            FinalizationStateFinalizing,
+					SyncOutRequested: true,
+					TerminalJobState: "succeeded",
+					StartedAt:        &startedAt,
+					UpdatedAt:        updatedAt,
+				}
+				completed := FinalizationCheckpoint{Completed: true, CompletedAt: &tt.timestamp}
+				switch checkpoint {
+				case "artifacts":
+					metadata.Checkpoints.Artifacts = completed
+				case "syncOut":
+					metadata.Checkpoints.SyncOut = completed
+				case "leaseRelease":
+					metadata.Checkpoints.LeaseRelease = completed
+				case "terminalPublication":
+					metadata.Checkpoints.TerminalPublication = completed
+				}
+
+				err := validateFinalizationMetadata(&metadata)
+				if err == nil {
+					t.Fatalf("validateFinalizationMetadata() accepted %s checkpoint %s", checkpoint, tt.name)
+				}
+				if !strings.Contains(err.Error(), checkpoint) || !strings.Contains(err.Error(), tt.want) {
+					t.Fatalf("validateFinalizationMetadata() error = %q, want %s %s", err, checkpoint, tt.want)
+				}
+			})
+		}
+	}
+}
+
+func l3CompletedFinalizationFixture(startedAt, completedAt time.Time) FinalizationMetadata {
+	completed := FinalizationCheckpoint{Completed: true, CompletedAt: &completedAt}
+	return FinalizationMetadata{
+		ContractVersion:  FinalizationContractVersion,
+		State:            FinalizationStateCompleted,
+		TerminalJobState: "succeeded",
+		Checkpoints: FinalizationCheckpoints{
+			Artifacts:           completed,
+			LeaseRelease:        completed,
+			TerminalPublication: completed,
+		},
+		StartedAt:   &startedAt,
+		UpdatedAt:   completedAt,
+		CompletedAt: &completedAt,
 	}
 }
 

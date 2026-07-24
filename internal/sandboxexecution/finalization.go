@@ -74,6 +74,16 @@ func validateFinalizationMetadata(metadata *FinalizationMetadata) error {
 	if !validFinalizationTerminalJobState(metadata.TerminalJobState) {
 		return fmt.Errorf("sandbox execution finalization terminalJobState is invalid")
 	}
+	if metadata.State == FinalizationStateCompleted && unprovenFinalizationTerminalJobState(metadata.TerminalJobState) {
+		return fmt.Errorf("sandbox execution completed finalization requires proven terminal proof")
+	}
+	if unprovenFinalizationTerminalJobState(metadata.TerminalJobState) &&
+		anyFinalizationCheckpointComplete(metadata.Checkpoints) {
+		return fmt.Errorf("sandbox execution unproven terminal job state cannot complete checkpoints")
+	}
+	if !metadata.SyncOutRequested && metadata.Checkpoints.SyncOut.Completed {
+		return fmt.Errorf("sandbox execution finalization syncOut checkpoint completed without requested intent")
+	}
 
 	checkpoints := []struct {
 		name       string
@@ -85,7 +95,7 @@ func validateFinalizationMetadata(metadata *FinalizationMetadata) error {
 		{name: "terminalPublication", checkpoint: metadata.Checkpoints.TerminalPublication},
 	}
 	for _, item := range checkpoints {
-		if err := validateFinalizationCheckpoint(item.name, item.checkpoint); err != nil {
+		if err := validateFinalizationCheckpoint(item.name, item.checkpoint, metadata.StartedAt, metadata.UpdatedAt); err != nil {
 			return err
 		}
 	}
@@ -156,12 +166,22 @@ func validFinalizationTerminalJobState(state string) bool {
 	}
 }
 
-func validateFinalizationCheckpoint(name string, checkpoint FinalizationCheckpoint) error {
+func unprovenFinalizationTerminalJobState(state string) bool {
+	return state == "unknown" || state == "interrupted"
+}
+
+func validateFinalizationCheckpoint(name string, checkpoint FinalizationCheckpoint, startedAt *time.Time, updatedAt time.Time) error {
 	if checkpoint.Completed && checkpoint.CompletedAt == nil {
 		return fmt.Errorf("sandbox execution finalization %s checkpoint requires completedAt", name)
 	}
 	if !checkpoint.Completed && checkpoint.CompletedAt != nil {
 		return fmt.Errorf("sandbox execution finalization %s checkpoint has completedAt before completion", name)
+	}
+	if checkpoint.CompletedAt != nil && startedAt != nil && checkpoint.CompletedAt.Before(*startedAt) {
+		return fmt.Errorf("sandbox execution finalization %s checkpoint precedes startedAt", name)
+	}
+	if checkpoint.CompletedAt != nil && updatedAt.Before(*checkpoint.CompletedAt) {
+		return fmt.Errorf("sandbox execution finalization %s checkpoint follows updatedAt", name)
 	}
 	return nil
 }
