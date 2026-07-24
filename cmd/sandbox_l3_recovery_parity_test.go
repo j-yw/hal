@@ -56,13 +56,13 @@ func TestL3DetachedSuccessfulAutoRecoveryUsesStoredBoundedSummaryArchive(t *test
 			return os.WriteFile(req.DestinationPath, []byte("detached auto payload\n"), 0o600)
 		},
 	}
-	err := collectSandboxL3TerminalArtifactsWithRuntime(
+	err := collectSandboxL3RecoveryTerminalArtifactsWithRuntime(
 		context.Background(),
 		store,
 		manifest,
+		l3RecoveryTerminalJobFromManifest(manifest),
 		driver,
 		sandboxruntime.Target{},
-		"",
 	)
 	if err != nil {
 		t.Fatalf("collect detached successful auto artifacts: %v", err)
@@ -142,13 +142,13 @@ func TestL3SuccessfulAutoRecoveryRequiresUsableStoredArchiveSummary(t *testing.T
 					return os.WriteFile(req.DestinationPath, []byte("unexpected live payload\n"), 0o600)
 				},
 			}
-			err := collectSandboxL3TerminalArtifactsWithRuntime(
+			err := collectSandboxL3RecoveryTerminalArtifactsWithRuntime(
 				context.Background(),
 				store,
 				manifest,
+				l3RecoveryTerminalJobFromManifest(manifest),
 				driver,
 				sandboxruntime.Target{},
-				"",
 			)
 			if err == nil || !strings.Contains(err.Error(), tt.code) {
 				t.Fatalf("successful auto recovery error = %v, want %s", err, tt.code)
@@ -391,6 +391,57 @@ func TestL3ReportsCollectionErrorsAndMandatoryPartialsStillBlock(t *testing.T) {
 		}
 	})
 
+	t.Run("reports transport copy error", func(t *testing.T) {
+		store, executionID, terminal := seedL3FinalizationExecution(t, sandboxworker.JobStateRunning)
+		var releases atomic.Int32
+		driver := fakeRunSandboxRuntimeDriver{
+			id: sandboxruntime.DriverRootlessPodman,
+			copyOut: func(_ context.Context, req sandboxruntime.CopyRequest) error {
+				if strings.HasSuffix(req.SourcePath, "/.hal/reports.tar") {
+					return errors.New("worker transport unavailable")
+				}
+				if err := os.MkdirAll(filepath.Dir(req.DestinationPath), 0o700); err != nil {
+					return err
+				}
+				return os.WriteFile(req.DestinationPath, []byte("mandatory payload\n"), 0o600)
+			},
+		}
+		err := finalizeSandboxL3Execution(context.Background(), store, executionID, false, sandboxL3FinalizationDeps{
+			now: func() time.Time { return terminal.FinishedAt.Add(time.Second) },
+			observeJob: func(context.Context, *sandboxexecution.Manifest) (*sandboxworker.Job, error) {
+				return cloneL3WorkerJob(terminal), nil
+			},
+			drainLogs: func(context.Context, *sandboxexecution.Manifest, *sandboxworker.Job) error {
+				return nil
+			},
+			collectArtifacts: func(
+				ctx context.Context,
+				locked sandboxexecution.Store,
+				manifest *sandboxexecution.Manifest,
+				_ *sandboxworker.Job,
+			) error {
+				return collectSandboxL3TerminalArtifactsWithRuntime(
+					ctx,
+					locked,
+					manifest,
+					driver,
+					sandboxruntime.Target{},
+					"",
+				)
+			},
+			releaseLease: func(context.Context, *sandboxexecution.Manifest) error {
+				releases.Add(1)
+				return nil
+			},
+		})
+		if err == nil || !strings.Contains(err.Error(), "artifact_collection_failed") {
+			t.Fatalf("reports transport finalization error = %v, want blocking artifact error", err)
+		}
+		if releases.Load() != 0 {
+			t.Fatalf("reports transport error released lease %d times", releases.Load())
+		}
+	})
+
 	t.Run("mandatory core copy error", func(t *testing.T) {
 		store, executionID, terminal := seedL3FinalizationExecution(t, sandboxworker.JobStateRunning)
 		var releases atomic.Int32
@@ -519,4 +570,26 @@ func l3RecoveryArtifactCollected(manifest *sandboxexecution.Manifest, artifactID
 		}
 	}
 	return false
+}
+
+func l3RecoveryTerminalJobFromManifest(manifest *sandboxexecution.Manifest) *sandboxworker.Job {
+	if manifest == nil || manifest.WorkerJob == nil {
+		return nil
+	}
+	reference := manifest.WorkerJob
+	return &sandboxworker.Job{
+		ContractVersion: reference.ContractVersion,
+		ID:              reference.JobID,
+		SubmissionKey:   reference.SubmissionKey,
+		WorkerID:        reference.WorkerID,
+		HostID:          reference.HostID,
+		RuntimeDriver:   reference.RuntimeDriver,
+		RuntimeID:       reference.RuntimeID,
+		State:           reference.State,
+		SubmittedAt:     reference.SubmittedAt,
+		StartedAt:       reference.StartedAt,
+		HeartbeatAt:     reference.HeartbeatAt,
+		FinishedAt:      reference.FinishedAt,
+		LogCursor:       reference.LogCursor,
+	}
 }
