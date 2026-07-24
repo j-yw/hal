@@ -83,6 +83,7 @@ func TestL3SandboxCommandSurface(t *testing.T) {
 			command := l3SandboxLeaf(tt.name)
 			if command == nil {
 				t.Fatalf("hal sandbox %s is not registered", tt.name)
+				return
 			}
 			if !strings.HasPrefix(command.Use, tt.usePrefix) {
 				t.Fatalf("hal sandbox %s Use = %q, want prefix %q", tt.name, command.Use, tt.usePrefix)
@@ -716,6 +717,7 @@ func newL3WorkerHarness(t *testing.T, script *l3WorkerScript) *l3WorkerHarness {
 
 	if script == nil {
 		t.Fatal("L3 worker script is required")
+		return nil
 	}
 	script.socketPath = "/tmp/private/l3-worker.sock"
 	originalClientFactory := sandboxL3NewWorkerClient
