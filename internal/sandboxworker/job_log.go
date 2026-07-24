@@ -255,7 +255,7 @@ type jobLogSensitiveCandidate struct {
 }
 
 func firstJobLogSensitiveCandidate(data []byte) (jobLogSensitiveCandidate, bool) {
-	lower := bytes.ToLower(data)
+	lower := lowerJobLogASCII(data)
 	candidates := make([]jobLogSensitiveCandidate, 0, 3)
 	if start, marker, ok := firstJobLogSecretCandidate(data, lower); ok {
 		candidates = append(candidates, jobLogSensitiveCandidate{start: start, marker: marker})
@@ -311,6 +311,16 @@ func firstJobLogSensitiveCandidate(data []byte) (jobLogSensitiveCandidate, bool)
 		}
 	}
 	return first, true
+}
+
+func lowerJobLogASCII(data []byte) []byte {
+	lower := append([]byte(nil), data...)
+	for index, value := range lower {
+		if value >= 'A' && value <= 'Z' {
+			lower[index] = value + ('a' - 'A')
+		}
+	}
+	return lower
 }
 
 func firstJobLogSensitiveHeaderCandidate(lower []byte) (jobLogSensitiveCandidate, bool) {
