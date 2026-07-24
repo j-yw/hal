@@ -2743,7 +2743,13 @@ func TestWorkerRootlessAutoSandboxRecordsRecoveryWarningAfterFailedCopyOut(t *te
 			if req.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman || req.Target.Runtime.WorkerID != "worker-1" {
 				t.Fatalf("CopyOut target runtime = %#v, want selected worker rootless runtime", req.Target.Runtime)
 			}
-			return recoveryErr
+			if strings.HasSuffix(req.SourcePath, ".hal/recovery/workspace.patch") {
+				return recoveryErr
+			}
+			if err := os.MkdirAll(filepath.Dir(req.DestinationPath), 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(req.DestinationPath, []byte("worker terminal payload"), 0o600)
 		},
 	}
 
@@ -2807,7 +2813,10 @@ func TestWorkerRootlessAutoSandboxRecordsRecoveryWarningAfterFailedCopyOut(t *te
 	})
 	requireRenderedJSONExitCode(t, err, ExitCodeExpectedNonZero)
 	if errors.Is(err, recoveryErr) {
-		t.Fatalf("runAutoSandboxWithWriter() error = %v, recovery copy-out failure should remain best-effort", err)
+		t.Fatalf("runAutoSandboxWithWriter() error exposed unsafe recovery detail: %v", err)
+	}
+	if !strings.Contains(err.Error(), "artifact_collection_failed") {
+		t.Fatalf("runAutoSandboxWithWriter() error = %v, want blocked strict finalization", err)
 	}
 	var result AutoResult
 	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
@@ -2817,20 +2826,33 @@ func TestWorkerRootlessAutoSandboxRecordsRecoveryWarningAfterFailedCopyOut(t *te
 	if !reflect.DeepEqual(execCalls, []string{"remote_auto", "recovery_generation"}) {
 		t.Fatalf("exec calls = %#v, want remote failure followed by recovery generation", execCalls)
 	}
-	requireWorkerRuntimeCopyOutSources(t, copyOuts, []string{".hal/recovery/workspace.patch"})
+	foundRecoveryCopy := false
+	for _, copyOut := range copyOuts {
+		if strings.HasSuffix(copyOut.SourcePath, ".hal/recovery/workspace.patch") {
+			foundRecoveryCopy = true
+		}
+	}
+	if !foundRecoveryCopy {
+		t.Fatalf("copy-out calls = %#v, want recovery artifact attempt", copyOuts)
+	}
 
 	manifest, loadErr := store.LoadManifest("auto-worker-rootless-failed-recovery")
 	if loadErr != nil {
 		t.Fatalf("LoadManifest() error: %v", loadErr)
 	}
-	if manifest.Status != sandboxexecution.StatusFailed {
-		t.Fatalf("manifest.Status = %q, want failed", manifest.Status)
+	if manifest.Status != sandboxexecution.StatusRunning {
+		t.Fatalf("manifest.Status = %q, want unpublished running state", manifest.Status)
+	}
+	if manifest.Finalization == nil ||
+		manifest.Finalization.State != sandboxexecution.FinalizationStateBlocked ||
+		manifest.Finalization.ReasonCode != "artifact_collection_failed" ||
+		manifest.Finalization.Checkpoints.Artifacts.Completed ||
+		manifest.Finalization.Checkpoints.LeaseRelease.Completed ||
+		manifest.Finalization.Checkpoints.TerminalPublication.Completed {
+		t.Fatalf("blocked finalization = %#v", manifest.Finalization)
 	}
 	if manifest.ArtifactMetadata == nil {
 		t.Fatal("ArtifactMetadata = nil, want best-effort recovery warning metadata")
-	}
-	if len(manifest.ArtifactMetadata.Collected) != 0 {
-		t.Fatalf("collected = %#v, want none after recovery copy-out failure", manifest.ArtifactMetadata.Collected)
 	}
 	if len(manifest.ArtifactMetadata.Partial) != 1 {
 		t.Fatalf("partial = %#v, want recovery partial", manifest.ArtifactMetadata.Partial)

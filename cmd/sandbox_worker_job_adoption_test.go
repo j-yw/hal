@@ -1014,6 +1014,18 @@ func assertTerminalSandboxTopLevelResult(
 		if driver.copyOutCalls == 0 {
 			t.Fatal("terminal finalization did not collect artifacts")
 		}
+		foundOutputSummary := false
+		if manifest.ArtifactMetadata != nil {
+			for _, artifact := range manifest.ArtifactMetadata.Collected {
+				if artifact.ID == "stdout-summary" {
+					foundOutputSummary = true
+					break
+				}
+			}
+		}
+		if !foundOutputSummary {
+			t.Fatalf("terminal finalization omitted stdout summary: %#v", manifest.ArtifactMetadata)
+		}
 	} else {
 		if manifest.Finalization == nil ||
 			manifest.Finalization.State != sandboxexecution.FinalizationStateBlocked ||
