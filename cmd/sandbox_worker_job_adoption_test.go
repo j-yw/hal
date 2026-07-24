@@ -783,7 +783,19 @@ func TestRunAndAutoTerminalWorkerJobsUseSharedFinalizationWithoutImplicitApply(t
 							return &sandbox.SandboxLease{Status: sandbox.SandboxLeaseStatusReleased}, nil
 						},
 					})
-					assertTerminalSandboxTopLevelResult(t, err, store, executionID, state, driver, releaseCalls, applyCalls)
+					if state == sandboxworker.JobStateSucceeded {
+						assertAutoSucceededWithoutArchiveBlocksFinalization(
+							t,
+							err,
+							store,
+							executionID,
+							driver,
+							releaseCalls,
+							applyCalls,
+						)
+					} else {
+						assertTerminalSandboxTopLevelResult(t, err, store, executionID, state, driver, releaseCalls, applyCalls)
+					}
 				}
 			})
 		}
@@ -1050,6 +1062,46 @@ func assertTerminalSandboxTopLevelResult(
 	}
 	if applyCalls != 0 || driver.cancelCalls != 0 {
 		t.Fatalf("terminal implicit apply/cancel calls = %d/%d, want zero", applyCalls, driver.cancelCalls)
+	}
+}
+
+func assertAutoSucceededWithoutArchiveBlocksFinalization(
+	t *testing.T,
+	err error,
+	store sandboxexecution.Store,
+	executionID string,
+	driver *fakeSandboxWorkerJobDriver,
+	releaseCalls, applyCalls int,
+) {
+	t.Helper()
+	if err == nil || !strings.Contains(err.Error(), "artifact_collection_failed") {
+		t.Fatalf("auto succeeded without archive error = %v, want blocked artifact collection", err)
+	}
+	manifest, loadErr := store.LoadManifest(executionID)
+	if loadErr != nil {
+		t.Fatalf("LoadManifest() error: %v", loadErr)
+	}
+	if manifest.Finalization == nil ||
+		manifest.Finalization.State != sandboxexecution.FinalizationStateBlocked ||
+		manifest.Finalization.ReasonCode != "artifact_collection_failed" {
+		t.Fatalf("auto succeeded without archive Finalization = %#v, want blocked artifact collection", manifest.Finalization)
+	}
+	if manifest.Finalization.Checkpoints.Artifacts.Completed ||
+		manifest.Finalization.Checkpoints.LeaseRelease.Completed ||
+		manifest.Finalization.Checkpoints.TerminalPublication.Completed {
+		t.Fatalf("auto succeeded without archive completed finalization checkpoints: %#v", manifest.Finalization.Checkpoints)
+	}
+	if manifest.Status != sandboxexecution.StatusRunning || manifest.FinishedAt != nil {
+		t.Fatalf("auto succeeded without archive status/finishedAt = %q/%v, want running/nil", manifest.Status, manifest.FinishedAt)
+	}
+	if releaseCalls != 0 || applyCalls != 0 || driver.copyOutCalls != 0 || driver.cancelCalls != 0 {
+		t.Fatalf(
+			"auto succeeded without archive side effects release/apply/copyOut/cancel = %d/%d/%d/%d, want zero",
+			releaseCalls,
+			applyCalls,
+			driver.copyOutCalls,
+			driver.cancelCalls,
+		)
 	}
 }
 
