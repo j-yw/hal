@@ -70,6 +70,11 @@ func (service *Service) HandleRequest(ctx context.Context, req Request) Response
 			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request jobStart payload is required")
 		}
 		return service.JobStartResponse(ctx, req.RequestID, req.DriverID, *req.JobStart)
+	case OperationJobResolve:
+		if req.JobResolve == nil {
+			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request jobResolve payload is required")
+		}
+		return service.JobResolveResponse(req.RequestID, *req.JobResolve)
 	case OperationJobStatus:
 		if req.JobStatus == nil {
 			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request jobStatus payload is required")

@@ -22,6 +22,7 @@ const (
 	OperationCopyIn        = "copy_in"
 	OperationCopyOut       = "copy_out"
 	OperationJobStart      = "job_start"
+	OperationJobResolve    = "job_resolve"
 	OperationJobStatus     = "job_status"
 	OperationJobLogs       = "job_logs"
 	OperationJobCancel     = "job_cancel"
@@ -81,21 +82,22 @@ const (
 // worker. Operation-specific payloads stay command-agnostic and use worker
 // package types rather than command-layer durable records.
 type Request struct {
-	ProtocolVersion string            `json:"protocolVersion,omitempty"`
-	RequestID       string            `json:"requestId,omitempty"`
-	Operation       string            `json:"operation"`
-	DriverID        string            `json:"driverId,omitempty"`
-	Target          *Target           `json:"target,omitempty"`
-	Create          *CreateRequest    `json:"create,omitempty"`
-	Lifecycle       *LifecycleRequest `json:"lifecycle,omitempty"`
-	Inspect         *InspectRequest   `json:"inspect,omitempty"`
-	Exec            *ExecRequest      `json:"exec,omitempty"`
-	CopyIn          *CopyInRequest    `json:"copyIn,omitempty"`
-	CopyOut         *CopyOutRequest   `json:"copyOut,omitempty"`
-	JobStart        *JobStartRequest  `json:"jobStart,omitempty"`
-	JobStatus       *JobStatusRequest `json:"jobStatus,omitempty"`
-	JobLogs         *JobLogsRequest   `json:"jobLogs,omitempty"`
-	JobCancel       *JobCancelRequest `json:"jobCancel,omitempty"`
+	ProtocolVersion string             `json:"protocolVersion,omitempty"`
+	RequestID       string             `json:"requestId,omitempty"`
+	Operation       string             `json:"operation"`
+	DriverID        string             `json:"driverId,omitempty"`
+	Target          *Target            `json:"target,omitempty"`
+	Create          *CreateRequest     `json:"create,omitempty"`
+	Lifecycle       *LifecycleRequest  `json:"lifecycle,omitempty"`
+	Inspect         *InspectRequest    `json:"inspect,omitempty"`
+	Exec            *ExecRequest       `json:"exec,omitempty"`
+	CopyIn          *CopyInRequest     `json:"copyIn,omitempty"`
+	CopyOut         *CopyOutRequest    `json:"copyOut,omitempty"`
+	JobStart        *JobStartRequest   `json:"jobStart,omitempty"`
+	JobResolve      *JobResolveRequest `json:"jobResolve,omitempty"`
+	JobStatus       *JobStatusRequest  `json:"jobStatus,omitempty"`
+	JobLogs         *JobLogsRequest    `json:"jobLogs,omitempty"`
+	JobCancel       *JobCancelRequest  `json:"jobCancel,omitempty"`
 }
 
 // Response is the versioned protocol envelope returned by a local sandbox
@@ -320,6 +322,11 @@ func (req Request) Validate() error {
 			return fmt.Errorf("worker request jobStart payload is required for %s", req.Operation)
 		}
 		return req.JobStart.Validate()
+	case OperationJobResolve:
+		if req.JobResolve == nil {
+			return fmt.Errorf("worker request jobResolve payload is required for %s", req.Operation)
+		}
+		return req.JobResolve.Validate()
 	case OperationJobStatus:
 		if req.JobStatus == nil {
 			return fmt.Errorf("worker request jobStatus payload is required for %s", req.Operation)
@@ -410,7 +417,7 @@ func (resp Response) Validate() error {
 	}
 	if resp.Job != nil {
 		switch resp.Operation {
-		case OperationJobStart, OperationJobStatus, OperationJobCancel:
+		case OperationJobStart, OperationJobResolve, OperationJobStatus, OperationJobCancel:
 		default:
 			return fmt.Errorf("worker response job payload is invalid for %s", resp.Operation)
 		}
@@ -438,7 +445,7 @@ func (resp Response) Validate() error {
 	if resp.OK && resp.Operation == OperationCopyOut && resp.CopyOut.Payload == nil {
 		return fmt.Errorf("worker response copyOut payload data is required when ok is true")
 	}
-	if resp.OK && (resp.Operation == OperationJobStart || resp.Operation == OperationJobStatus || resp.Operation == OperationJobCancel) && resp.Job == nil {
+	if resp.OK && (resp.Operation == OperationJobStart || resp.Operation == OperationJobResolve || resp.Operation == OperationJobStatus || resp.Operation == OperationJobCancel) && resp.Job == nil {
 		return fmt.Errorf("worker response job payload is required when ok is true")
 	}
 	if resp.OK && resp.Operation == OperationJobLogs && resp.JobLogs == nil {
@@ -816,6 +823,7 @@ func validOperation(operation string) bool {
 		OperationCopyIn,
 		OperationCopyOut,
 		OperationJobStart,
+		OperationJobResolve,
 		OperationJobStatus,
 		OperationJobLogs,
 		OperationJobCancel:

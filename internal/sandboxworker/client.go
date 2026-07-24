@@ -200,6 +200,20 @@ func (client *Client) JobStart(ctx context.Context, driverID string, req JobStar
 	return clientJobResponse(resp)
 }
 
+// JobResolve retrieves an admitted asynchronous job by caller-stable
+// submission identity without submitting work.
+func (client *Client) JobResolve(ctx context.Context, req JobResolveRequest) (*Job, error) {
+	req.ContractVersion = defaultJobContractVersion(req.ContractVersion)
+	resp, err := client.roundTrip(ctx, Request{
+		Operation:  OperationJobResolve,
+		JobResolve: &req,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return clientJobResponse(resp)
+}
+
 // JobStatus retrieves the latest durable asynchronous job snapshot.
 func (client *Client) JobStatus(ctx context.Context, req JobStatusRequest) (*Job, error) {
 	req.ContractVersion = defaultJobContractVersion(req.ContractVersion)
@@ -382,6 +396,14 @@ func validateClientIOResponseLimits(req Request, resp Response) error {
 		}
 		if resp.Job.RuntimeID != strings.TrimSpace(req.JobStart.Exec.Target.Runtime.RuntimeID) {
 			return workerIOValidationError("job_start runtimeId did not match request")
+		}
+		return nil
+	case OperationJobResolve:
+		if req.JobResolve == nil || resp.Job == nil {
+			return nil
+		}
+		if resp.Job.SubmissionKey != jobSubmissionKey(req.JobResolve.SubmissionID) {
+			return workerIOValidationError("job_resolve submissionKey did not match request")
 		}
 		return nil
 	case OperationJobStatus:
