@@ -66,6 +66,130 @@ func TestAcquireLeasePersistsActiveLease(t *testing.T) {
 	}
 }
 
+func TestReleaseExactLeaseValidatesIdentityAndUsesStoreLock(t *testing.T) {
+	setSandboxHome(t)
+	now := time.Date(2026, 7, 25, 5, 0, 0, 0, time.UTC)
+	store := NewSandboxLeaseStore(func() time.Time { return now })
+	lease, err := store.Acquire(SandboxLeaseAcquireRequest{
+		ID:          "lease-l3-exact",
+		SandboxID:   "sandbox-alpha",
+		SandboxName: "alpha",
+		ResourceKey: "host:worker-l3",
+		Holder:      "holder-l3",
+		Purpose:     SandboxLeasePurposeRun,
+		RunID:       "run-alpha",
+	}, time.Hour)
+	if err != nil {
+		t.Fatalf("Acquire() error: %v", err)
+	}
+	exact := SandboxLeaseExactReleaseRequest{
+		ID:          lease.ID,
+		SandboxName: lease.SandboxName,
+		ResourceKey: lease.ResourceKey,
+		Purpose:     lease.Purpose,
+		RunID:       lease.RunID,
+		AcquiredAt:  lease.AcquiredAt,
+	}
+
+	mismatch := exact
+	mismatch.RunID = "run-other"
+	if _, err := store.ReleaseExact(mismatch); err == nil {
+		t.Fatal("ReleaseExact(mismatch) error = nil")
+	}
+	active, err := store.Load(lease.ID)
+	if err != nil {
+		t.Fatalf("Load(active) error: %v", err)
+	}
+	if active.Status != SandboxLeaseStatusActive {
+		t.Fatalf("mismatched exact release status = %q, want active", active.Status)
+	}
+
+	leaseDir, err := sandboxLeasesDirPath()
+	if err != nil {
+		t.Fatalf("sandboxLeasesDirPath() error: %v", err)
+	}
+	lock, err := lockSandboxLeaseStoreFile(filepath.Join(leaseDir, sandboxLeaseLockFileName))
+	if err != nil {
+		t.Fatalf("lock lease store: %v", err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, releaseErr := store.ReleaseExact(exact)
+		result <- releaseErr
+	}()
+	select {
+	case err := <-result:
+		_ = lock.Close()
+		t.Fatalf("ReleaseExact() returned before store lock was released: %v", err)
+	case <-time.After(75 * time.Millisecond):
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatalf("unlock lease store: %v", err)
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("ReleaseExact() error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ReleaseExact() remained blocked after store lock release")
+	}
+	released, err := store.ReleaseExact(exact)
+	if err != nil {
+		t.Fatalf("ReleaseExact(idempotent) error: %v", err)
+	}
+	if released.Status != SandboxLeaseStatusReleased {
+		t.Fatalf("ReleaseExact() status = %q, want released", released.Status)
+	}
+}
+
+func TestExpireLeasesUsesSameStoreLockAsExactRelease(t *testing.T) {
+	setSandboxHome(t)
+	now := time.Date(2026, 7, 25, 6, 0, 0, 0, time.UTC)
+	store := NewSandboxLeaseStore(func() time.Time { return now })
+	if _, err := store.Acquire(SandboxLeaseAcquireRequest{
+		ID:          "lease-l3-expiry-lock",
+		SandboxID:   "sandbox-alpha",
+		SandboxName: "alpha",
+		ResourceKey: "host:worker-l3",
+		Holder:      "holder-l3",
+		Purpose:     SandboxLeasePurposeRun,
+		RunID:       "run-alpha",
+	}, time.Hour); err != nil {
+		t.Fatalf("Acquire() error: %v", err)
+	}
+	leaseDir, err := sandboxLeasesDirPath()
+	if err != nil {
+		t.Fatalf("sandboxLeasesDirPath() error: %v", err)
+	}
+	lock, err := lockSandboxLeaseStoreFile(filepath.Join(leaseDir, sandboxLeaseLockFileName))
+	if err != nil {
+		t.Fatalf("lock lease store: %v", err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, expireErr := store.ExpireLeases()
+		result <- expireErr
+	}()
+	select {
+	case err := <-result:
+		_ = lock.Close()
+		t.Fatalf("ExpireLeases() returned before store lock was released: %v", err)
+	case <-time.After(75 * time.Millisecond):
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatalf("unlock lease store: %v", err)
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("ExpireLeases() error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ExpireLeases() remained blocked after store lock release")
+	}
+}
+
 func TestAcquireLeaseValidationLeavesNoFiles(t *testing.T) {
 	home := setSandboxHome(t)
 	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)

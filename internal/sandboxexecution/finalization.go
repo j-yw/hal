@@ -112,10 +112,11 @@ func validateFinalizationMetadata(metadata *FinalizationMetadata) error {
 			return fmt.Errorf("sandbox execution pending finalization has completedAt")
 		}
 	case FinalizationStateFinalizing, FinalizationStateBlocked:
-		if metadata.Checkpoints.TerminalPublication.Completed {
+		postPublicationSyncOut := validPostPublicationSyncOutTransition(metadata)
+		if metadata.Checkpoints.TerminalPublication.Completed && !postPublicationSyncOut {
 			return fmt.Errorf("sandbox execution incomplete finalization published terminal state")
 		}
-		if metadata.CompletedAt != nil {
+		if metadata.CompletedAt != nil && !postPublicationSyncOut {
 			return fmt.Errorf("sandbox execution incomplete finalization has completedAt")
 		}
 	case FinalizationStateCompleted:
@@ -195,7 +196,9 @@ func validateFinalizationCheckpointOrder(metadata *FinalizationMetadata) error {
 		if !checkpoints.Artifacts.Completed {
 			return fmt.Errorf("sandbox execution finalization leaseRelease checkpoint precedes artifacts")
 		}
-		if metadata.SyncOutRequested && !checkpoints.SyncOut.Completed {
+		if metadata.SyncOutRequested &&
+			!checkpoints.SyncOut.Completed &&
+			!validPostPublicationSyncOutTransition(metadata) {
 			return fmt.Errorf("sandbox execution finalization leaseRelease checkpoint precedes syncOut")
 		}
 	}
@@ -209,6 +212,14 @@ func validateFinalizationCheckpointOrder(metadata *FinalizationMetadata) error {
 		checkpoints.LeaseRelease,
 		checkpoints.TerminalPublication,
 	}
+	if postPublicationSyncOutCheckpoint(metadata) {
+		ordered = []FinalizationCheckpoint{
+			checkpoints.Artifacts,
+			checkpoints.LeaseRelease,
+			checkpoints.TerminalPublication,
+			checkpoints.SyncOut,
+		}
+	}
 	var previous *time.Time
 	for _, checkpoint := range ordered {
 		if !checkpoint.Completed || checkpoint.CompletedAt == nil {
@@ -220,6 +231,33 @@ func validateFinalizationCheckpointOrder(metadata *FinalizationMetadata) error {
 		previous = checkpoint.CompletedAt
 	}
 	return nil
+}
+
+func validPostPublicationSyncOutTransition(metadata *FinalizationMetadata) bool {
+	if metadata == nil {
+		return false
+	}
+	checkpoints := metadata.Checkpoints
+	return metadata.SyncOutRequested &&
+		!checkpoints.SyncOut.Completed &&
+		checkpoints.Artifacts.Completed &&
+		checkpoints.LeaseRelease.Completed &&
+		checkpoints.TerminalPublication.Completed &&
+		metadata.CompletedAt != nil
+}
+
+func postPublicationSyncOutCheckpoint(metadata *FinalizationMetadata) bool {
+	if metadata == nil {
+		return false
+	}
+	syncOut := metadata.Checkpoints.SyncOut
+	publication := metadata.Checkpoints.TerminalPublication
+	return metadata.SyncOutRequested &&
+		syncOut.Completed &&
+		syncOut.CompletedAt != nil &&
+		publication.Completed &&
+		publication.CompletedAt != nil &&
+		syncOut.CompletedAt.After(*publication.CompletedAt)
 }
 
 func anyFinalizationCheckpointComplete(checkpoints FinalizationCheckpoints) bool {
