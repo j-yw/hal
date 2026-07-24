@@ -3,10 +3,10 @@ package cmd
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -151,6 +151,15 @@ func TestSandboxWorkerJobRunnerClosesLostAcknowledgementAndDrainsTerminalLogs(t 
 	if first == nil || first.JobID != "job-1" || first.SubmissionKey != sandboxWorkerJobSubmissionKey(submissionID) || first.LogCursor != 0 {
 		t.Fatalf("first persisted reference = %#v, want safe accepted identity", first)
 	}
+	encodedReference, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("json.Marshal(worker job reference) error: %v", err)
+	}
+	for _, forbidden := range []string{submissionID, "raw-secret", "/private/work", "hal run"} {
+		if strings.Contains(string(encodedReference), forbidden) {
+			t.Fatalf("durable worker job reference exposed %q: %s", forbidden, encodedReference)
+		}
+	}
 	last := persisted[len(persisted)-1]
 	if last.State != sandboxworker.JobStateSucceeded || last.LogCursor != 3 {
 		t.Fatalf("last persisted reference = %#v, want succeeded terminal cursor 3", last)
@@ -161,7 +170,7 @@ func TestSandboxWorkerJobRunnerClosesLostAcknowledgementAndDrainsTerminalLogs(t 
 	if strings.Contains(stdout.String(), "raw-secret") || strings.Contains(stderr.String(), "/private/work") {
 		t.Fatalf("streamed logs were not redacted: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "first") || !strings.Contains(stdout.String(), "done") || !strings.Contains(stderr.String(), "warning") {
+	if !strings.Contains(stdout.String(), "[redacted]") || !strings.Contains(stdout.String(), "done") || !strings.Contains(stderr.String(), "[redacted]") {
 		t.Fatalf("streamed logs missing records: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
@@ -178,31 +187,41 @@ func TestSandboxWorkerJobRunnerRejectsEverySelectedIdentityMismatch(t *testing.T
 		{name: "runtime", mutate: func(job *sandboxworker.Job) { job.RuntimeID = "runtime-other" }},
 	}
 	for _, field := range fields {
-		t.Run(field.name, func(t *testing.T) {
-			job := queuedSandboxWorkerJob("identity")
-			field.mutate(&job)
-			driver := &fakeSandboxWorkerJobDriver{
-				startJob:   queuedSandboxWorkerJob("identity"),
-				statusJobs: []sandboxworker.Job{job},
+		for _, phase := range []string{"acceptance", "status"} {
+			if phase == "acceptance" && field.name == "job" {
+				continue
 			}
-			err := runSandboxWorkerJob(context.Background(), sandboxWorkerJobRunRequest{
-				ExecutionID: "identity",
-				Driver:      driver,
-				HostID:      "host-1",
-				Target:      sandboxWorkerJobRuntimeTarget(),
-				Command:     sandboxexec.CommandRequest{Command: []string{"true"}},
-				Persist:     func(*sandboxexecution.WorkerJobReference) error { return nil },
-				Wait:        func(context.Context) error { return nil },
-			})
-			if err == nil {
-				t.Fatalf("identity mismatch %s error = nil", field.name)
-			}
-			for _, unsafe := range []string{"host-other", "worker-other", "runtime-other"} {
-				if strings.Contains(err.Error(), unsafe) {
-					t.Fatalf("identity mismatch error exposed %q: %v", unsafe, err)
+			t.Run(phase+"/"+field.name, func(t *testing.T) {
+				startJob := queuedSandboxWorkerJob("identity")
+				statusJob := queuedSandboxWorkerJob("identity")
+				if phase == "acceptance" {
+					field.mutate(&startJob)
+				} else {
+					field.mutate(&statusJob)
 				}
-			}
-		})
+				driver := &fakeSandboxWorkerJobDriver{
+					startJob:   startJob,
+					statusJobs: []sandboxworker.Job{statusJob},
+				}
+				err := runSandboxWorkerJob(context.Background(), sandboxWorkerJobRunRequest{
+					ExecutionID: "identity",
+					Driver:      driver,
+					HostID:      "host-1",
+					Target:      sandboxWorkerJobRuntimeTarget(),
+					Command:     sandboxexec.CommandRequest{Command: []string{"true"}},
+					Persist:     func(*sandboxexecution.WorkerJobReference) error { return nil },
+					Wait:        func(context.Context) error { return nil },
+				})
+				if err == nil {
+					t.Fatalf("%s identity mismatch %s error = nil", phase, field.name)
+				}
+				for _, unsafe := range []string{"host-other", "worker-other", "runtime-other"} {
+					if strings.Contains(err.Error(), unsafe) {
+						t.Fatalf("identity mismatch error exposed %q: %v", unsafe, err)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -233,6 +252,76 @@ func TestSandboxWorkerJobRunnerReturnsRecoverableDetachedErrorAfterAcceptance(t 
 	}
 	if driver.statusCalls != 0 || driver.logsCalls != 0 || driver.cancelCalls != 0 || driver.execCalls != 0 {
 		t.Fatalf("post-detach calls status/logs/cancel/exec = %d/%d/%d/%d, want zero", driver.statusCalls, driver.logsCalls, driver.cancelCalls, driver.execCalls)
+	}
+}
+
+func TestSandboxWorkerJobRunnerRejectsMismatchedLogIdentity(t *testing.T) {
+	startedAt := time.Date(2026, 7, 25, 4, 3, 0, 0, time.UTC)
+	status := queuedSandboxWorkerJob("log-identity")
+	status.State = sandboxworker.JobStateRunning
+	status.StartedAt = &startedAt
+	status.HeartbeatAt = &startedAt
+	status.LogCursor = 1
+	driver := &fakeSandboxWorkerJobDriver{
+		startJob:   queuedSandboxWorkerJob("log-identity"),
+		statusJobs: []sandboxworker.Job{status},
+		logPages: []sandboxworker.JobLogsResponse{{
+			ContractVersion: sandboxworker.JobContractVersion,
+			JobID:           "job-other",
+			Records: []sandboxworker.JobLogRecord{{
+				Cursor:    1,
+				Stream:    sandboxworker.JobLogStreamStdout,
+				Data:      "unsafe",
+				Timestamp: startedAt,
+			}},
+			NextCursor: 1,
+		}},
+	}
+	var stdout bytes.Buffer
+	err := runSandboxWorkerJob(context.Background(), sandboxWorkerJobRunRequest{
+		ExecutionID: "log-identity",
+		Driver:      driver,
+		HostID:      "host-1",
+		Target:      sandboxWorkerJobRuntimeTarget(),
+		Command:     sandboxexec.CommandRequest{Command: []string{"true"}, Stdout: &stdout},
+		Persist:     func(*sandboxexecution.WorkerJobReference) error { return nil },
+		Wait:        func(context.Context) error { return nil },
+	})
+	var detached *sandboxWorkerJobDetachedError
+	if !errors.As(err, &detached) {
+		t.Fatalf("log identity error = %#v, want recoverable detached error", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("mismatched logs reached stdout: %q", stdout.String())
+	}
+}
+
+func TestSandboxWorkerJobRunnerReturnsTerminalExitFailure(t *testing.T) {
+	startedAt := time.Date(2026, 7, 25, 4, 5, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Second)
+	exitCode := 23
+	job := queuedSandboxWorkerJob("terminal-failure")
+	job.State = sandboxworker.JobStateFailed
+	job.StartedAt = &startedAt
+	job.HeartbeatAt = &startedAt
+	job.FinishedAt = &finishedAt
+	job.ExitCode = &exitCode
+	driver := &fakeSandboxWorkerJobDriver{
+		startJob:   queuedSandboxWorkerJob("terminal-failure"),
+		statusJobs: []sandboxworker.Job{job},
+	}
+	err := runSandboxWorkerJob(context.Background(), sandboxWorkerJobRunRequest{
+		ExecutionID: "terminal-failure",
+		Driver:      driver,
+		HostID:      "host-1",
+		Target:      sandboxWorkerJobRuntimeTarget(),
+		Command:     sandboxexec.CommandRequest{Command: []string{"false"}},
+		Persist:     func(*sandboxexecution.WorkerJobReference) error { return nil },
+		Wait:        func(context.Context) error { return nil },
+	})
+	var exitErr *ExitCodeError
+	if !errors.As(err, &exitErr) || exitErr.Code != exitCode {
+		t.Fatalf("terminal failure error = %#v, want exit code %d", err, exitCode)
 	}
 }
 
@@ -387,15 +476,12 @@ func TestRunAndAutoSandboxDetachedJobsStayRunningWithoutFinalizationSideEffects(
 func TestRunAndAutoFinalCommandDispatchKeepsLegacySynchronousPath(t *testing.T) {
 	for _, purpose := range []string{sandbox.SandboxLeasePurposeRun, sandbox.SandboxLeasePurposeAuto} {
 		t.Run(purpose, func(t *testing.T) {
-			execCalls := 0
-			driver := fakeRunSandboxRuntimeDriver{
-				exec: func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
-					execCalls++
+			driver := &fakeSandboxWorkerJobDriver{
+				exec: func(sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 					return &sandboxruntime.ExecResult{}, nil
 				},
 			}
 			err := runSandboxWorkerJobOrSync(context.Background(), sandboxWorkerJobCommandRequest{
-				Purpose:      purpose,
 				ExecutionID:  "legacy-" + purpose,
 				UseWorkerJob: false,
 				Run:          sandboxexec.RunContext{Driver: driver},
@@ -404,10 +490,124 @@ func TestRunAndAutoFinalCommandDispatchKeepsLegacySynchronousPath(t *testing.T) 
 			if err != nil {
 				t.Fatalf("runSandboxWorkerJobOrSync() error: %v", err)
 			}
-			if execCalls != 1 {
-				t.Fatalf("legacy synchronous Exec calls = %d, want 1", execCalls)
+			if driver.execCalls != 1 || driver.startCalls != 0 {
+				t.Fatalf("legacy synchronous Exec/job start calls = %d/%d, want 1/0", driver.execCalls, driver.startCalls)
 			}
 		})
+	}
+}
+
+func TestRunAndAutoFinalCommandDispatchUsesJobsWhilePreparationExecRemainsAllowed(t *testing.T) {
+	for _, purpose := range []string{sandbox.SandboxLeasePurposeRun, sandbox.SandboxLeasePurposeAuto} {
+		t.Run(purpose, func(t *testing.T) {
+			executionID := "worker-job-" + purpose
+			startedAt := time.Date(2026, 7, 25, 6, 0, 0, 0, time.UTC)
+			finishedAt := startedAt.Add(time.Second)
+			exitCode := 0
+			terminal := queuedSandboxWorkerJob(executionID)
+			terminal.State = sandboxworker.JobStateSucceeded
+			terminal.StartedAt = &startedAt
+			terminal.HeartbeatAt = &startedAt
+			terminal.FinishedAt = &finishedAt
+			terminal.ExitCode = &exitCode
+			driver := &fakeSandboxWorkerJobDriver{
+				startJob:   queuedSandboxWorkerJob(executionID),
+				statusJobs: []sandboxworker.Job{terminal},
+			}
+			driver.exec = func(req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+				if !reflect.DeepEqual(req.Args, []string{"prepare"}) {
+					t.Fatalf("synchronous Exec received final command: %#v", req.Args)
+				}
+				return &sandboxruntime.ExecResult{}, nil
+			}
+			if _, err := driver.Exec(context.Background(), sandboxruntime.ExecRequest{Args: []string{"prepare"}}); err != nil {
+				t.Fatalf("preparation Exec error: %v", err)
+			}
+			persistCalls := 0
+			err := runSandboxWorkerJobOrSync(context.Background(), sandboxWorkerJobCommandRequest{
+				ExecutionID:  executionID,
+				UseWorkerJob: true,
+				HostID:       "host-1",
+				Run: sandboxexec.RunContext{
+					Target: sandboxWorkerJobRuntimeTarget(),
+					Driver: driver,
+				},
+				Command: sandboxexec.CommandRequest{
+					Command: []string{"hal", purpose},
+				},
+				Persist: func(*sandboxexecution.WorkerJobReference) error {
+					persistCalls++
+					return nil
+				},
+				Wait: func(context.Context) error { return nil },
+			})
+			if err != nil {
+				t.Fatalf("runSandboxWorkerJobOrSync() error: %v", err)
+			}
+			if driver.execCalls != 1 || driver.startCalls != 1 || persistCalls < 2 {
+				t.Fatalf("prep Exec/job start/persist calls = %d/%d/%d, want 1/1/at least 2", driver.execCalls, driver.startCalls, persistCalls)
+			}
+			if !strings.Contains(strings.Join(driver.startExecReq.Args, " "), "hal") {
+				t.Fatalf("JobStart exec args = %#v, want final hal command", driver.startExecReq.Args)
+			}
+		})
+	}
+}
+
+func TestRunAndAutoProductionCallSitesUseWorkerJobDispatcherWithoutDirectImports(t *testing.T) {
+	for _, test := range []struct {
+		path          string
+		routeSelector string
+	}{
+		{path: "run_sandbox.go", routeSelector: "runSandboxWorkerJobRouteSelected"},
+		{path: "auto_sandbox.go", routeSelector: "autoSandboxWorkerJobRouteSelected"},
+	} {
+		source, err := os.ReadFile(test.path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error: %v", test.path, err)
+		}
+		text := string(source)
+		if !strings.Contains(text, "runSandboxWorkerJobOrSync") || !strings.Contains(text, test.routeSelector) {
+			t.Fatalf("%s does not route its final command through worker job selection", test.path)
+		}
+		if importsPackage(t, test.path, "github.com/jywlabs/hal/internal/sandboxworker") {
+			t.Fatalf("%s imports sandboxworker directly", test.path)
+		}
+	}
+}
+
+func TestRunAndAutoWorkerJobRouteSelectionIsExplicitRootlessOnly(t *testing.T) {
+	selected := workerRootlessCachedSandbox("worker-rootless")
+	selected.Host.ID = "host-1"
+	selected.Runtime.RuntimeID = "runtime-1"
+	target := sandboxRuntimeTargetFromState(selected)
+
+	runReq := runSandboxRequest{
+		SandboxHostID:  "host-1",
+		SandboxRuntime: sandboxruntime.DriverRootlessPodman,
+	}
+	autoReq := autoSandboxRequest{
+		SandboxHostID:  "host-1",
+		SandboxRuntime: sandboxruntime.DriverRootlessPodman,
+	}
+	if !runSandboxWorkerJobRouteSelected(runReq, target, selected) {
+		t.Fatal("explicit run worker-rootless route was not selected")
+	}
+	if !autoSandboxWorkerJobRouteSelected(autoReq, target, selected) {
+		t.Fatal("explicit auto worker-rootless route was not selected")
+	}
+	if runSandboxWorkerJobRouteSelected(runSandboxRequest{}, target, selected) {
+		t.Fatal("implicit run route selected daemon-owned jobs")
+	}
+	if autoSandboxWorkerJobRouteSelected(autoSandboxRequest{}, target, selected) {
+		t.Fatal("implicit auto route selected daemon-owned jobs")
+	}
+
+	sshTarget := target
+	sshTarget.Runtime.Driver = sandboxruntime.DriverSSHMachine
+	if runSandboxWorkerJobRouteSelected(runReq, sshTarget, selected) ||
+		autoSandboxWorkerJobRouteSelected(autoReq, sshTarget, selected) {
+		t.Fatal("provider/SSH route selected daemon-owned jobs")
 	}
 }
 
@@ -459,7 +659,9 @@ type fakeSandboxWorkerJobDriver struct {
 	cancelCalls           int
 	execCalls             int
 	copyOutCalls          int
+	exec                  func(sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
 	startSubmissionID     string
+	startExecReq          sandboxruntime.ExecRequest
 	resolveSubmissionID   string
 	logCursors            []uint64
 	persistCount          func() int
@@ -490,8 +692,11 @@ func (*fakeSandboxWorkerJobDriver) Inspect(context.Context, sandboxruntime.Inspe
 	return nil, errors.New("unexpected Inspect")
 }
 
-func (driver *fakeSandboxWorkerJobDriver) Exec(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+func (driver *fakeSandboxWorkerJobDriver) Exec(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 	driver.execCalls++
+	if driver.exec != nil {
+		return driver.exec(req)
+	}
 	panic("synchronous Driver.Exec used for final worker command")
 }
 
@@ -504,9 +709,10 @@ func (driver *fakeSandboxWorkerJobDriver) CopyOut(context.Context, sandboxruntim
 	return nil
 }
 
-func (driver *fakeSandboxWorkerJobDriver) JobStart(_ context.Context, submissionID string, _ sandboxruntime.ExecRequest) (*sandboxworker.Job, error) {
+func (driver *fakeSandboxWorkerJobDriver) JobStart(_ context.Context, submissionID string, req sandboxruntime.ExecRequest) (*sandboxworker.Job, error) {
 	driver.startCalls++
 	driver.startSubmissionID = submissionID
+	driver.startExecReq = req
 	if driver.cancelAfterStart != nil {
 		driver.cancelAfterStart()
 	}
@@ -592,11 +798,6 @@ func queuedSandboxWorkerJob(executionID string) sandboxworker.Job {
 		State:           sandboxworker.JobStateQueued,
 		SubmittedAt:     time.Date(2026, 7, 25, 4, 0, 0, 0, time.UTC),
 	}
-}
-
-func sandboxWorkerJobSubmissionKey(submissionID string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(submissionID)))
-	return "submission-" + hex.EncodeToString(sum[:])
 }
 
 var _ sandboxWorkerJobDriver = (*fakeSandboxWorkerJobDriver)(nil)
