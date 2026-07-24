@@ -117,12 +117,16 @@ func (server *Server) ListenAndServe(ctx context.Context) error {
 	}
 	defer removeWorkerSocketIfSame(server.socketPath, securedInfo)
 	defer listener.Close()
-	return server.Serve(ctx, listener)
+	return server.serve(ctx, listener, true)
 }
 
 // Serve accepts Unix socket connections from listener and handles one JSON
 // request/response exchange per connection.
 func (server *Server) Serve(ctx context.Context, listener net.Listener) error {
+	return server.serve(ctx, listener, false)
+}
+
+func (server *Server) serve(ctx context.Context, listener net.Listener, filesystemBoundaryProven bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -155,7 +159,7 @@ func (server *Server) Serve(ctx context.Context, listener net.Listener) error {
 			}
 			return fmt.Errorf("worker server could not accept a Unix connection")
 		}
-		if err := validateWorkerPeerCredentials(conn); err != nil {
+		if err := validateWorkerPeerCredentials(conn, filesystemBoundaryProven); err != nil {
 			_ = conn.Close()
 			continue
 		}

@@ -8,3 +8,10 @@ func validateWorkerPeerUID(peerUID, currentUID uint32) error {
 	}
 	return nil
 }
+
+func validateWorkerPeerFilesystemFallback(filesystemBoundaryProven bool) error {
+	if !filesystemBoundaryProven {
+		return errors.New("worker peer identity is unavailable")
+	}
+	return nil
+}

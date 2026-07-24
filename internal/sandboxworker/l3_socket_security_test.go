@@ -20,7 +20,7 @@ func TestL3WorkerServerRejectsUnsafeSocketParentsWithoutMutation(t *testing.T) {
 		{
 			name: "broad parent",
 			setup: func(t *testing.T) (string, func()) {
-				parent := filepath.Join(t.TempDir(), "shared")
+				parent := filepath.Join(resolvedWorkerTempDir(t), "shared")
 				if err := os.Mkdir(parent, 0o755); err != nil {
 					t.Fatalf("Mkdir(parent) error: %v", err)
 				}
@@ -38,7 +38,7 @@ func TestL3WorkerServerRejectsUnsafeSocketParentsWithoutMutation(t *testing.T) {
 		{
 			name: "symlinked parent",
 			setup: func(t *testing.T) (string, func()) {
-				base := t.TempDir()
+				base := resolvedWorkerTempDir(t)
 				realParent := filepath.Join(base, "private")
 				if err := os.Mkdir(realParent, 0o700); err != nil {
 					t.Fatalf("Mkdir(real parent) error: %v", err)
@@ -86,7 +86,7 @@ func TestL3WorkerServerRejectsUnsafeSocketParentsWithoutMutation(t *testing.T) {
 }
 
 func TestL3WorkerServerCreatesPrivateSocketAndRemovesOnlyItsOwnSocket(t *testing.T) {
-	parent := filepath.Join(t.TempDir(), "private")
+	parent := filepath.Join(resolvedWorkerTempDir(t), "private")
 	if err := os.Mkdir(parent, 0o700); err != nil {
 		t.Fatalf("Mkdir(parent) error: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestL3WorkerServerCreatesPrivateSocketAndRemovesOnlyItsOwnSocket(t *testing
 }
 
 func TestL3WorkerServerDoesNotRemoveReplacementAtSocketPath(t *testing.T) {
-	parent := filepath.Join(t.TempDir(), "private")
+	parent := filepath.Join(resolvedWorkerTempDir(t), "private")
 	if err := os.Mkdir(parent, 0o700); err != nil {
 		t.Fatalf("Mkdir(parent) error: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestL3WorkerServerDoesNotRemoveReplacementAtSocketPath(t *testing.T) {
 }
 
 func TestL3WorkerServerRejectsExistingNonSocketWithoutDeletingIt(t *testing.T) {
-	parent := filepath.Join(t.TempDir(), "private")
+	parent := filepath.Join(resolvedWorkerTempDir(t), "private")
 	if err := os.Mkdir(parent, 0o700); err != nil {
 		t.Fatalf("Mkdir(parent) error: %v", err)
 	}

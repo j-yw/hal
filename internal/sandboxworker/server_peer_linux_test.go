@@ -25,7 +25,7 @@ func TestValidateWorkerPeerUID(t *testing.T) {
 }
 
 func TestValidateWorkerPeerCredentialsAcceptsSameUser(t *testing.T) {
-	parent := filepath.Join(t.TempDir(), "private")
+	parent := filepath.Join(resolvedWorkerTempDir(t), "private")
 	if err := os.Mkdir(parent, 0o700); err != nil {
 		t.Fatalf("Mkdir(parent) error: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestValidateWorkerPeerCredentialsAcceptsSameUser(t *testing.T) {
 		t.Fatalf("Accept() error: %v", err)
 	case conn := <-accepted:
 		defer conn.Close()
-		if err := validateWorkerPeerCredentials(conn); err != nil {
+		if err := validateWorkerPeerCredentials(conn, true); err != nil {
 			t.Fatalf("validateWorkerPeerCredentials(same user) error: %v", err)
 		}
 	}

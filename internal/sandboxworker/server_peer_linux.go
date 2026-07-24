@@ -9,7 +9,7 @@ import (
 	"syscall"
 )
 
-func validateWorkerPeerCredentials(conn net.Conn) error {
+func validateWorkerPeerCredentials(conn net.Conn, _ bool) error {
 	unixConn, ok := conn.(*net.UnixConn)
 	if !ok {
 		return errors.New("worker peer identity is unavailable")

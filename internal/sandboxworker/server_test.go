@@ -345,6 +345,15 @@ func TestServerServeRejectsNonUnixListeners(t *testing.T) {
 	}
 }
 
+func TestValidateWorkerPeerFilesystemFallbackRequiresHardenedBoundary(t *testing.T) {
+	if err := validateWorkerPeerFilesystemFallback(true); err != nil {
+		t.Fatalf("validateWorkerPeerFilesystemFallback(proven) error: %v", err)
+	}
+	if err := validateWorkerPeerFilesystemFallback(false); err == nil {
+		t.Fatal("validateWorkerPeerFilesystemFallback(unproven) error = nil")
+	}
+}
+
 func runTestServer(t *testing.T, server *Server) (context.CancelFunc, <-chan error) {
 	t.Helper()
 
@@ -360,14 +369,24 @@ func runTestServer(t *testing.T, server *Server) (context.CancelFunc, <-chan err
 func testWorkerSocketPath(t *testing.T) string {
 	t.Helper()
 
-	dir, err := os.MkdirTemp("/tmp", "hal-worker-")
+	return filepath.Join(resolvedWorkerTempDir(t), "worker.sock")
+}
+
+func resolvedWorkerTempDir(t *testing.T) string {
+	t.Helper()
+
+	tempRoot, err := filepath.EvalSymlinks(os.TempDir())
 	if err != nil {
-		t.Fatalf("MkdirTemp(/tmp) error: %v", err)
+		t.Fatalf("EvalSymlinks(temp root) error: %v", err)
+	}
+	dir, err := os.MkdirTemp(tempRoot, "hal-worker-")
+	if err != nil {
+		t.Fatalf("MkdirTemp(resolved temp root) error: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = os.RemoveAll(dir)
 	})
-	return filepath.Join(dir, "worker.sock")
+	return dir
 }
 
 func stopTestServer(t *testing.T, cancel context.CancelFunc, errCh <-chan error) {
