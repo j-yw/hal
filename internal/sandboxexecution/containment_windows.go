@@ -12,11 +12,17 @@ import (
 )
 
 func fileOwnedByCurrentUser(fs.FileInfo) bool {
-	return true
+	// L3 has no Windows owner/DACL verifier. Unix mode bits do not describe
+	// Windows ownership, so accepting an unproved value would turn the
+	// durable store's private-ownership check into a false security claim.
+	return false
 }
 
 func filePermissionsPrivate(fs.FileInfo) bool {
-	return true
+	// os.FileMode permissions cannot prove a restrictive Windows DACL. Keep
+	// the execution store unavailable until a later adapter can verify both
+	// owner identity and effective ACL privacy.
+	return false
 }
 
 func openFileNoFollow(path string, flag int, perm fs.FileMode) (*os.File, error) {

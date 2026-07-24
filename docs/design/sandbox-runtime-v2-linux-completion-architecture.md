@@ -147,6 +147,8 @@ manufacture it from configuration intent.
 - Linux process, KVM, namespace, firewall, topology, vsock, credential lifetime,
   and crash/reconnect behavior is accepted on the prepared Linux machine.
 - Ordinary CI and cross-platform compilation remain regression gates.
+- Cross-platform compilation is not a Windows sandbox-runtime claim; security
+  boundaries without Windows owner/DACL proof fail closed.
 - A skipped required live test is a blocker/boundary result, never a pass.
 - No Hetzner, Lightsail, or other billed cloud call is authorized by this plan.
 
