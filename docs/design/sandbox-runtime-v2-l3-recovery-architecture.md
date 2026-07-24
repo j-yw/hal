@@ -153,6 +153,11 @@ the selected execution; it does not reopen an unchecked path. An ambiguous
 crash after apply intent but before a durable result fails closed for explicit
 manual inspection rather than applying again.
 
+L3's durable execution store is a Linux-first runtime boundary. Cross-platform
+compilation remains required, but the Windows adapter fails store ownership and
+privacy checks closed until a future implementation can prove the current
+owner and restrictive DACL semantics. L3 makes no secure Windows runtime claim.
+
 ## Selection
 
 Commands first match non-factory manifests by exact sandbox name.
