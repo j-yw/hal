@@ -57,6 +57,22 @@ func TestSandboxdDefaultFallsBackFromUnsafeXDGToResolvedUIDScopedTemp(t *testing
 	}
 }
 
+func TestSandboxdDefaultFallsBackFromOverlongXDG(t *testing.T) {
+	base := sandboxdResolvedPrivateTempDir(t)
+	xdgRuntimeDir := filepath.Join(base, strings.Repeat("x", 70))
+	if err := os.Mkdir(xdgRuntimeDir, 0o700); err != nil {
+		t.Fatalf("Mkdir(overlong XDG runtime dir) error: %v", err)
+	}
+	tempRoot := sandboxdResolvedPrivateTempDir(t)
+	t.Setenv("XDG_RUNTIME_DIR", xdgRuntimeDir)
+	t.Setenv("TMPDIR", tempRoot)
+
+	wantRuntimeDir := filepath.Join(tempRoot, fmt.Sprintf("hal-sd-%d", os.Geteuid()))
+	if got := filepath.Dir(defaultSandboxdFlags().socketPath); got != wantRuntimeDir {
+		t.Fatalf("default socket parent = %q, want short temp fallback", got)
+	}
+}
+
 func TestSandboxdDefaultRejectsUnsafePreexistingRuntimeWithoutMutation(t *testing.T) {
 	xdgRuntimeDir := sandboxdResolvedPrivateTempDir(t)
 	t.Setenv("XDG_RUNTIME_DIR", xdgRuntimeDir)
@@ -111,6 +127,53 @@ func TestSandboxdDefaultRejectsSymlinkRuntimeWithoutRemovingTarget(t *testing.T)
 	}
 }
 
+func TestSandboxdDefaultRevalidatesRuntimeParentAtStartup(t *testing.T) {
+	xdgRuntimeDir := sandboxdResolvedPrivateTempDir(t)
+	t.Setenv("XDG_RUNTIME_DIR", xdgRuntimeDir)
+	cmd, _, stderr := newTestSandboxdCommand(sandboxdPrivateRuntimeTestDeps())
+	if err := os.Chmod(xdgRuntimeDir, 0o755); err != nil {
+		t.Fatalf("Chmod(XDG runtime dir after command creation) error: %v", err)
+	}
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("sandboxd Execute() error = nil, want changed runtime parent rejection")
+	}
+	if _, err := os.Lstat(filepath.Join(xdgRuntimeDir, "hal-sd")); !os.IsNotExist(err) {
+		t.Fatalf("changed runtime parent gained a daemon directory: %v", err)
+	}
+	if output := stderr.String(); strings.Contains(output, xdgRuntimeDir) {
+		t.Fatalf("sandboxd error exposed the changed runtime parent: %q", output)
+	}
+}
+
+func TestSandboxdDefaultRejectsUnsafeJobStateWithoutChangingIt(t *testing.T) {
+	xdgRuntimeDir := sandboxdResolvedPrivateTempDir(t)
+	t.Setenv("XDG_RUNTIME_DIR", xdgRuntimeDir)
+	runtimeDir := filepath.Join(xdgRuntimeDir, "hal-sd")
+	if err := os.Mkdir(runtimeDir, 0o700); err != nil {
+		t.Fatalf("Mkdir(runtime dir) error: %v", err)
+	}
+	jobStateDir := filepath.Join(runtimeDir, "jobs")
+	if err := os.Mkdir(jobStateDir, 0o755); err != nil {
+		t.Fatalf("Mkdir(unsafe job state dir) error: %v", err)
+	}
+
+	cmd, _, stderr := newTestSandboxdCommand(sandboxdPrivateRuntimeTestDeps())
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("sandboxd Execute() error = nil, want unsafe job state rejection")
+	}
+	info, err := os.Lstat(jobStateDir)
+	if err != nil {
+		t.Fatalf("Lstat(unsafe job state dir) error: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("unsafe job state dir mode = %#o, want unchanged 0755", got)
+	}
+	if output := stderr.String(); strings.Contains(output, jobStateDir) || strings.Contains(output, runtimeDir) {
+		t.Fatalf("sandboxd error exposed a private state path: %q", output)
+	}
+}
+
 func TestSandboxdExplicitSocketDoesNotChangeParentPermissions(t *testing.T) {
 	parent := sandboxdResolvedPrivateTempDir(t)
 	if err := os.Chmod(parent, 0o755); err != nil {
@@ -157,6 +220,54 @@ func TestSandboxdDefaultRejectsOverlongSocketPathBeforeServiceCreation(t *testin
 	}
 }
 
+func TestSandboxdDefaultRejectsUnsafeTempBaseWithoutCreatingRuntime(t *testing.T) {
+	tempRoot := sandboxdResolvedPrivateTempDir(t)
+	if err := os.Chmod(tempRoot, 0o777); err != nil {
+		t.Fatalf("Chmod(unsafe temp root) error: %v", err)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	t.Setenv("TMPDIR", tempRoot)
+	runtimeDir := filepath.Join(tempRoot, fmt.Sprintf("hal-sd-%d", os.Geteuid()))
+
+	serviceCalled := false
+	cmd, _, stderr := newTestSandboxdCommand(sandboxdPrivateRuntimeTestDepsWithService(func(sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
+		serviceCalled = true
+		return &recordingSandboxdHandler{}, nil
+	}))
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("sandboxd Execute() error = nil, want unsafe temp base rejection")
+	}
+	if serviceCalled {
+		t.Fatal("sandboxd created its service after unsafe temp base rejection")
+	}
+	if _, err := os.Lstat(runtimeDir); !os.IsNotExist(err) {
+		t.Fatalf("unsafe temp base gained a runtime directory: %v", err)
+	}
+	info, err := os.Lstat(tempRoot)
+	if err != nil {
+		t.Fatalf("Lstat(unsafe temp root) error: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o777 {
+		t.Fatalf("unsafe temp root mode = %#o, want unchanged 0777", got)
+	}
+	if output := stderr.String(); strings.Contains(output, tempRoot) {
+		t.Fatalf("sandboxd error exposed the unsafe temp root: %q", output)
+	}
+}
+
+func TestSandboxdPrivateRuntimeDirectoryRejectsDifferentOwner(t *testing.T) {
+	dir := sandboxdResolvedPrivateTempDir(t)
+	info, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatalf("Lstat(private temp dir) error: %v", err)
+	}
+	stat := *info.Sys().(*syscall.Stat_t)
+	stat.Uid = uint32(os.Geteuid()) + 1
+	if sandboxdPrivateRuntimeDirectoryInfo(sandboxdFileInfoWithSystem{FileInfo: info, system: &stat}) {
+		t.Fatal("private runtime directory accepted a different owner")
+	}
+}
+
 func sandboxdPrivateRuntimeTestDeps() sandboxdDeps {
 	return sandboxdPrivateRuntimeTestDepsWithService(func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {
 		return sandboxworker.NewService(options)
@@ -183,13 +294,15 @@ func sandboxdPrivateRuntimeTestDepsWithService(newService func(sandboxworker.Ser
 
 func sandboxdResolvedPrivateTempDir(t *testing.T) string {
 	t.Helper()
-	dir, err := filepath.EvalSymlinks(t.TempDir())
+	tempRoot, err := filepath.EvalSymlinks(os.TempDir())
 	if err != nil {
-		t.Fatalf("EvalSymlinks(temp dir) error: %v", err)
+		t.Fatalf("EvalSymlinks(system temp root) error: %v", err)
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatalf("Chmod(temp dir) error: %v", err)
+	dir, err := os.MkdirTemp(tempRoot, "hsd-")
+	if err != nil {
+		t.Fatalf("MkdirTemp(private test dir) error: %v", err)
 	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return dir
 }
 
@@ -206,4 +319,13 @@ func assertSandboxdPrivateDirectory(t *testing.T, path string) {
 	if !ok || stat.Uid != uint32(os.Geteuid()) {
 		t.Fatalf("private directory owner is not the current effective user")
 	}
+}
+
+type sandboxdFileInfoWithSystem struct {
+	os.FileInfo
+	system any
+}
+
+func (info sandboxdFileInfoWithSystem) Sys() any {
+	return info.system
 }

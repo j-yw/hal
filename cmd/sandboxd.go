@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -105,6 +104,7 @@ type sandboxdRequest struct {
 	MicroVM       sandboxdMicroVMConfig
 	MaxConcurrent int
 	JSON          bool
+	defaultSocket bool
 }
 
 type sandboxdStartedOutput struct {
@@ -152,9 +152,10 @@ hal sandbox subcommands continue to manage durable sandbox records separately.`,
 }
 
 func defaultSandboxdFlags() sandboxdFlags {
+	runtimePaths := defaultSandboxdRuntimePaths()
 	return sandboxdFlags{
-		socketPath:    defaultSandboxdSocketPath(),
-		jobStateDir:   defaultSandboxdJobStateDir(),
+		socketPath:    runtimePaths.socketPath,
+		jobStateDir:   runtimePaths.jobStateDir,
 		drivers:       []string{sandboxruntime.DriverRootlessPodman},
 		podmanPath:    rootlesspodman.DefaultPodmanExecutable,
 		podmanImage:   rootlesspodman.DefaultImage,
@@ -274,6 +275,7 @@ func runSandboxdCommand(cmd *cobra.Command, _ []string, flags sandboxdFlags, dep
 
 func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sandboxdDeps) (sandboxdRequest, error) {
 	jobStateDirExplicit := false
+	socketExplicit := false
 	req := sandboxdRequest{
 		SocketPath:    flags.socketPath,
 		JobStateDir:   flags.jobStateDir,
@@ -284,10 +286,13 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 		MicroVM:       sandboxdMicroVMConfigFromFlags(flags.microVM, deps),
 		MaxConcurrent: flags.maxConcurrent,
 		JSON:          flags.json,
+		defaultSocket: cmd == nil,
 	}
 	if cmd != nil {
 		var err error
 		jobStateDirExplicit = cmd.Flags().Changed("job-state-dir")
+		socketExplicit = cmd.Flags().Changed("socket")
+		req.defaultSocket = !socketExplicit
 		if req.SocketPath, err = cmd.Flags().GetString("socket"); err != nil {
 			return sandboxdRequest{}, err
 		}
@@ -319,7 +324,7 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 	}
 
 	req.SocketPath = strings.TrimSpace(req.SocketPath)
-	if !jobStateDirExplicit && req.SocketPath != "" {
+	if !jobStateDirExplicit && socketExplicit && req.SocketPath != "" {
 		req.JobStateDir = req.SocketPath + ".jobs"
 	}
 	req.JobStateDir = strings.TrimSpace(req.JobStateDir)
@@ -404,6 +409,11 @@ func runSandboxdWithDeps(ctx context.Context, req sandboxdRequest, out io.Writer
 	if err != nil {
 		return err
 	}
+	if req.defaultSocket {
+		if err := prepareSandboxdDefaultRuntime(req.SocketPath); err != nil {
+			return err
+		}
+	}
 	serviceOptions := sandboxworker.ServiceOptions{
 		WorkerID:    req.WorkerID,
 		HostKind:    sandboxworker.HostKindLocal,
@@ -418,6 +428,9 @@ func runSandboxdWithDeps(ctx context.Context, req sandboxdRequest, out io.Writer
 	}
 	service, err := deps.newService(serviceOptions)
 	if err != nil {
+		if req.defaultSocket {
+			return fmt.Errorf("create sandboxd worker service: private runtime state is unavailable")
+		}
 		return fmt.Errorf("create sandboxd worker service: %w", err)
 	}
 	if closer, ok := service.(sandboxdServiceCloser); ok {
@@ -1097,17 +1110,6 @@ func renderSandboxdCobraError(cmd *cobra.Command, err error) error {
 		display.NewDisplay(out).ShowCommandError("Sandboxd failed", []display.ValidationIssue{{Message: err.Error()}}, nil)
 	}
 	return exitWithCode(cmd, ExitCodeExpectedNonZero, nil)
-}
-
-func defaultSandboxdSocketPath() string {
-	if runtime.GOOS == "windows" {
-		return filepath.Join(os.TempDir(), sandboxdDefaultSocketName)
-	}
-	return filepath.Join("/tmp", sandboxdDefaultSocketName)
-}
-
-func defaultSandboxdJobStateDir() string {
-	return defaultSandboxdSocketPath() + ".jobs"
 }
 
 func defaultSandboxdWorkerID(jobStateDir string) string {
