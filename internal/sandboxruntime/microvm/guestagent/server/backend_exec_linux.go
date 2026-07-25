@@ -162,6 +162,10 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 	_ = unix.Kill(-pgid, unix.SIGTERM)
 	timer := newLinuxGraceTimer(backend.termGrace)
 	if waitID != nil {
+		contextDone := ctx.Done()
+		if contextErr != nil {
+			contextDone = nil
+		}
 		select {
 		case err := <-waitID:
 			waitID = nil
@@ -169,9 +173,19 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 				contextErr = err
 			}
 		case <-timer.C:
+		case <-contextDone:
+			contextErr = ctx.Err()
 		}
 	} else {
-		<-timer.C
+		contextDone := ctx.Done()
+		if contextErr != nil {
+			contextDone = nil
+		}
+		select {
+		case <-timer.C:
+		case <-contextDone:
+			contextErr = ctx.Err()
+		}
 	}
 	stopLinuxTimer(timer)
 	_ = unix.Kill(-pgid, unix.SIGKILL)
@@ -182,13 +196,21 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 	}
 
 	waitErr := command.Wait()
+	outputContext := ctx
+	if contextErr != nil {
+		outputContext = context.Background()
+	}
 	outputForced, outputErr := waitForLinuxOutputPipes(
 		stdoutPipe,
 		stderrPipe,
 		outputDone,
 		backend.termGrace,
+		outputContext,
 	)
 	outputComplete = true
+	if contextErr == nil {
+		contextErr = ctx.Err()
+	}
 	result := ExecResult{
 		ExitCode:        linuxExitCode(command.ProcessState),
 		Stdout:          stdout.Bytes(),
@@ -259,6 +281,7 @@ func waitForLinuxOutputPipes(
 	stderr *linuxOutputPipe,
 	done <-chan error,
 	grace time.Duration,
+	ctx context.Context,
 ) (bool, error) {
 	timer := newLinuxGraceTimer(grace)
 	defer stopLinuxTimer(timer)
@@ -285,6 +308,14 @@ func waitForLinuxOutputPipes(
 				pending--
 			}
 			return true, nil
+		case <-ctx.Done():
+			stdout.closeReaders()
+			stderr.closeReaders()
+			for pending > 0 {
+				<-done
+				pending--
+			}
+			return false, ctx.Err()
 		}
 	}
 	return false, nil

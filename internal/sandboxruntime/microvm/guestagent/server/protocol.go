@@ -139,6 +139,9 @@ func (server *Server) handleExec(ctx context.Context, encoded []byte) Response {
 		}
 		return server.backendErrorResponse(err, guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "exec")
 	}
+	if err := backendCtx.Err(); err != nil {
+		return server.contextErrorResponse(err, guestagent.OperationExec)
+	}
 	if result.ExitCode < 0 {
 		return server.errorResponse(guestagent.ErrorCodeInternalFailure, guestagent.OperationExec, "exec")
 	}
@@ -199,6 +202,9 @@ func (server *Server) handleCopyIn(ctx context.Context, encoded []byte) Response
 		}
 		return server.backendErrorResponse(err, guestagent.ErrorCodeCopyFailed, guestagent.OperationCopyIn, "copy")
 	}
+	if err := backendCtx.Err(); err != nil {
+		return server.contextErrorResponse(err, guestagent.OperationCopyIn)
+	}
 	if result.SizeBytes != int64(len(data)) || result.Digest != request.Payload.Digest {
 		return server.errorResponse(guestagent.ErrorCodeCopyFailed, guestagent.OperationCopyIn, "copy")
 	}
@@ -240,6 +246,9 @@ func (server *Server) handleCopyOut(ctx context.Context, encoded []byte) Respons
 			return server.contextErrorResponse(backendCtx.Err(), guestagent.OperationCopyOut)
 		}
 		return server.backendErrorResponse(err, guestagent.ErrorCodeCopyFailed, guestagent.OperationCopyOut, "copy")
+	}
+	if err := backendCtx.Err(); err != nil {
+		return server.contextErrorResponse(err, guestagent.OperationCopyOut)
 	}
 	if int64(len(result.Data)) > limit {
 		return server.errorResponse(guestagent.ErrorCodeOversizedPayloadMetadata, guestagent.OperationCopyOut, "payload")
