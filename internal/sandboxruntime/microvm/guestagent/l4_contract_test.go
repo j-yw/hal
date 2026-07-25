@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -296,6 +297,21 @@ func TestL4ClientRejectsNullResponseScalars(t *testing.T) {
 			client := l4ReadinessClient(t, []byte(tt.response))
 			if err := tt.call(client); !l4ProtocolErrorCode(err, ErrorCodeMalformedResponse) {
 				t.Fatalf("client call error = %v, want %s", err, ErrorCodeMalformedResponse)
+			}
+		})
+	}
+}
+
+func TestL4ClientRejectsPaddedPayloadEncoding(t *testing.T) {
+	for _, encoding := range []string{" raw ", " base64 ", " chunked "} {
+		t.Run(encoding, func(t *testing.T) {
+			response := `{"protocolVersion":"guest-agent-v1","operation":"exec","exitCode":0,` +
+				`"stdout":{"maxBytes":1024,"encoding":` + fmt.Sprintf("%q", encoding) + `},` +
+				`"stderr":{"maxBytes":1024}}`
+			client := l4ReadinessClient(t, []byte(response))
+			_, err := client.Exec(context.Background(), validExecRequest())
+			if !l4ProtocolErrorCode(err, ErrorCodeMalformedResponse) {
+				t.Fatalf("Exec() error = %v, want %s", err, ErrorCodeMalformedResponse)
 			}
 		})
 	}
