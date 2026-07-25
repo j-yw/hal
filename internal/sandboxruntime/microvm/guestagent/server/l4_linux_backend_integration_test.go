@@ -52,6 +52,49 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 			t.Fatal("openLinuxExecutableRoots() accepted proc descriptor magic link")
 		}
 	})
+	t.Run("executable root follows ordinary symlink once and stays pinned", func(t *testing.T) {
+		parent := t.TempDir()
+		original := filepath.Join(parent, "original")
+		replacement := filepath.Join(parent, "replacement")
+		for _, directory := range []string{original, replacement} {
+			if err := os.Mkdir(directory, 0o700); err != nil {
+				t.Fatalf("create executable directory: %v", err)
+			}
+		}
+		configured := filepath.Join(parent, "configured")
+		if err := os.Symlink(original, configured); err != nil {
+			t.Fatalf("create executable-root symlink: %v", err)
+		}
+
+		roots, err := openLinuxExecutableRoots([]string{configured})
+		if err != nil {
+			t.Fatalf("openLinuxExecutableRoots() error: %v", err)
+		}
+		defer unix.Close(roots[0].fd)
+		if err := os.Remove(configured); err != nil {
+			t.Fatalf("remove executable-root symlink: %v", err)
+		}
+		if err := os.Symlink(replacement, configured); err != nil {
+			t.Fatalf("replace executable-root symlink: %v", err)
+		}
+
+		var pinned, originalStat, replacementStat unix.Stat_t
+		if err := unix.Fstat(roots[0].fd, &pinned); err != nil {
+			t.Fatalf("stat pinned executable root: %v", err)
+		}
+		if err := unix.Stat(original, &originalStat); err != nil {
+			t.Fatalf("stat original executable root: %v", err)
+		}
+		if err := unix.Stat(replacement, &replacementStat); err != nil {
+			t.Fatalf("stat replacement executable root: %v", err)
+		}
+		if pinned.Dev != originalStat.Dev || pinned.Ino != originalStat.Ino {
+			t.Fatal("executable root descriptor did not pin the original symlink target")
+		}
+		if pinned.Dev == replacementStat.Dev && pinned.Ino == replacementStat.Ino {
+			t.Fatal("executable root descriptor followed the replacement symlink target")
+		}
+	})
 
 	backend, err := NewLinuxBackend(LinuxBackendOptions{
 		WorkspaceRoot:   workspace,

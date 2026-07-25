@@ -355,16 +355,11 @@ func openLinuxExecutableRoots(paths []string) ([]linuxExecutableRoot, error) {
 			closeRoots()
 			return nil, linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "executablePaths", "executable root configuration is invalid", nil)
 		}
-		resolved, err := filepath.EvalSymlinks(clean)
+		fd, err := openLinuxExecutableRoot(clean)
 		if err != nil {
 			if useDefaults && errors.Is(err, unix.ENOENT) {
 				continue
 			}
-			closeRoots()
-			return nil, linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "executablePaths", "executable root is unavailable", err)
-		}
-		fd, err := unix.Open(resolved, unix.O_PATH|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-		if err != nil {
 			closeRoots()
 			return nil, linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "executablePaths", "executable root is unavailable", err)
 		}
@@ -374,6 +369,26 @@ func openLinuxExecutableRoots(paths []string) ([]linuxExecutableRoot, error) {
 		return nil, linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "executablePaths", "no executable root is available", nil)
 	}
 	return roots, nil
+}
+
+func openLinuxExecutableRoot(configured string) (int, error) {
+	fd, err := unix.Openat2(unix.AT_FDCWD, configured, &unix.OpenHow{
+		Flags:   uint64(unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC),
+		Resolve: uint64(unix.RESOLVE_NO_MAGICLINKS),
+	})
+	if err != nil {
+		return -1, err
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		_ = unix.Close(fd)
+		return -1, err
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
+		_ = unix.Close(fd)
+		return -1, unix.ENOTDIR
+	}
+	return fd, nil
 }
 
 func linuxBackendError(code guestagent.ErrorCode, operation guestagent.Operation, field, message string, cause error) *guestagent.ProtocolError {
