@@ -287,8 +287,9 @@ raise these server-side limits.
 `Handle` accepts one bounded JSON object. Before a backend call it:
 
 1. rejects an encoded request larger than the configured server limit;
-2. rejects empty, null, array, invalid UTF-8, excessive nesting, duplicate
-   keys at any depth, unknown fields, and trailing documents;
+2. rejects empty, null, or array roots; invalid UTF-8; excessive nesting;
+   duplicate keys at any depth; unknown fields; trailing documents; and null or
+   type-mismatched values for non-nullable DTO fields;
 3. extracts but does not trust the header;
 4. requires exact `guest-agent-v1` and one of `readiness`, `exec`, `copy_in`,
    or `copy_out`;
@@ -323,8 +324,8 @@ bounded `oversized_response` error envelope. Constructor validation guarantees
 the fixed envelope fits. The server never emits a partial JSON document.
 
 The parent client receives the matching strictness change: response JSON with
-duplicates, unknown fields, non-object roots, or trailing documents is
-`malformed_response`.
+duplicates, unknown fields, non-object roots, trailing documents, or null or
+type-mismatched values for non-nullable DTO fields is `malformed_response`.
 
 ## Stable failure codes and redaction
 
@@ -431,13 +432,14 @@ transport loss cancel the live operation context. After all descriptor,
 environment, and command preparation, the backend checks that context again
 immediately before process start; an already-canceled operation returns
 without launching the executable. After launch, cancellation, timeout,
-shutdown, output-pipe failure, or observed leader exit sends `SIGTERM` to the
-group,
-waits a bounded grace period, sends `SIGKILL` if necessary, and only then calls
-`Wait` once to reap the leader. Explicit stdout and stderr drain goroutines are
-bounded by the same termination grace; when an escaped descendant retains an
-output descriptor after the leader exits, the server forcibly closes its owned
-read descriptors and returns a fixed `execution_failed` response.
+shutdown, or output-pipe failure sends `SIGTERM` to the group, waits a bounded
+grace period, sends `SIGKILL` if necessary, and only then calls `Wait` once to
+reap the leader. An observed leader exit hands the still-anchored process group
+directly to the bounded `SIGKILL` reaper, avoiding an unconditional grace delay
+while terminating any remaining descendants. Explicit stdout and stderr drain
+goroutines are bounded by the same termination grace; when an escaped descendant
+retains an output descriptor after the leader exits, the server forcibly closes
+its owned read descriptors and returns a fixed `execution_failed` response.
 `exec.Cmd.WaitDelay` remains a backstop for the command's internal stdin-copy
 goroutine. Request cancellation and deadlines remain authoritative throughout
 readiness, exec, copy, and process/output cleanup, including after a backend

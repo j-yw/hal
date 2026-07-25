@@ -341,14 +341,38 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 		waitL4ProcessGone(t, pid)
 	})
 
-	t.Run("exited leader success remains authoritative before deadline", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	t.Run("exited leader cleanup does not consume termination grace", func(t *testing.T) {
+		const truePath = "/bin/true"
+		fastBackend, err := NewLinuxBackend(LinuxBackendOptions{
+			WorkspaceRoot:   workspace,
+			GuestRoot:       "/workspace",
+			ExecutablePaths: []string{filepath.Dir(truePath)},
+			TermGrace:       2 * time.Second,
+		})
+		if err != nil {
+			t.Fatalf("NewLinuxBackend() for prompt completion: %v", err)
+		}
+		t.Cleanup(func() {
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), time.Second)
+			defer closeCancel()
+			if err := fastBackend.Close(closeCtx); err != nil {
+				t.Errorf("fast backend Close() error: %v", err)
+			}
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
-		response := l4Exec(t, transport, ctx, []string{
-			os.Args[0], "-test.run=^TestL4PreparedLinuxHelperProcess$", "--", "output",
-		}, nil, 64, 64)
-		if response.ExitCode != 0 {
-			t.Fatalf("exit code = %d, want 0", response.ExitCode)
+		result, err := fastBackend.Exec(ctx, ExecPlan{
+			Args:           []string{truePath},
+			WorkDir:        "/workspace",
+			StdoutMaxBytes: 64,
+			StderrMaxBytes: 64,
+		})
+		if err != nil {
+			t.Fatalf("Exec() error: %v", err)
+		}
+		if result.ExitCode != 0 {
+			t.Fatalf("exit code = %d, want 0", result.ExitCode)
 		}
 	})
 

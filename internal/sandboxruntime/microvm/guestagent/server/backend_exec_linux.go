@@ -153,6 +153,7 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 	}()
 
 	var contextErr error
+	leaderExited := false
 	select {
 	case err := <-waitID:
 		waitID = nil
@@ -168,13 +169,14 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 			}
 			return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "process", "guest command supervision failed", err)
 		}
+		leaderExited = true
 	case <-ctx.Done():
 		contextErr = ctx.Err()
 	}
 
-	_ = unix.Kill(-pgid, unix.SIGTERM)
-	timer := newLinuxGraceTimer(backend.termGrace)
-	if waitID != nil {
+	if !leaderExited {
+		_ = unix.Kill(-pgid, unix.SIGTERM)
+		timer := newLinuxGraceTimer(backend.termGrace)
 		contextDone := ctx.Done()
 		if contextErr != nil {
 			contextDone = nil
@@ -189,18 +191,8 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 		case <-contextDone:
 			contextErr = ctx.Err()
 		}
-	} else {
-		contextDone := ctx.Done()
-		if contextErr != nil {
-			contextDone = nil
-		}
-		select {
-		case <-timer.C:
-		case <-contextDone:
-			contextErr = ctx.Err()
-		}
+		stopLinuxTimer(timer)
 	}
-	stopLinuxTimer(timer)
 	backend.handoffProcessGroupToReaper(pgid, processGroup)
 	cleanupDone := startLinuxCommandReaper(waitID, func() error {
 		return backend.waitCommand(command)

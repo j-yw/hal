@@ -50,15 +50,25 @@ func validateCanonicalJSONValue(value any, destinationType reflect.Type) error {
 		}
 		destinationType = destinationType.Elem()
 	}
-	if destinationType == nil || value == nil {
+	if destinationType == nil {
 		return nil
+	}
+	if value == nil {
+		switch destinationType.Kind() {
+		case reflect.Interface, reflect.Map, reflect.Slice:
+			return nil
+		default:
+			return fmt.Errorf("JSON value has noncanonical null type")
+		}
 	}
 
 	switch destinationType.Kind() {
+	case reflect.Interface:
+		return nil
 	case reflect.Struct:
 		object, ok := value.(map[string]any)
 		if !ok {
-			return nil
+			return fmt.Errorf("JSON value must be an object")
 		}
 		fields := canonicalJSONStructFields(destinationType)
 		for name, nested := range object {
@@ -73,7 +83,10 @@ func validateCanonicalJSONValue(value any, destinationType reflect.Type) error {
 	case reflect.Slice, reflect.Array:
 		values, ok := value.([]any)
 		if !ok {
-			return nil
+			return fmt.Errorf("JSON value must be an array")
+		}
+		if destinationType.Kind() == reflect.Array && len(values) != destinationType.Len() {
+			return fmt.Errorf("JSON array length is noncanonical")
 		}
 		for _, nested := range values {
 			if err := validateCanonicalJSONValue(nested, destinationType.Elem()); err != nil {
@@ -83,12 +96,26 @@ func validateCanonicalJSONValue(value any, destinationType reflect.Type) error {
 	case reflect.Map:
 		object, ok := value.(map[string]any)
 		if !ok {
-			return nil
+			return fmt.Errorf("JSON value must be an object")
 		}
 		for _, nested := range object {
 			if err := validateCanonicalJSONValue(nested, destinationType.Elem()); err != nil {
 				return err
 			}
+		}
+	case reflect.Bool:
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("JSON value must be a boolean")
+		}
+	case reflect.String:
+		if _, ok := value.(string); !ok {
+			return fmt.Errorf("JSON value must be a string")
+		}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Uintptr, reflect.Float32, reflect.Float64:
+		if _, ok := value.(json.Number); !ok {
+			return fmt.Errorf("JSON value must be a number")
 		}
 	}
 	return nil
