@@ -90,6 +90,9 @@ func (server *Server) handleReadiness(ctx context.Context, encoded []byte) Respo
 		}
 		return server.readinessResponse(false)
 	}
+	if err := backendCtx.Err(); err != nil {
+		return server.contextErrorResponse(err, guestagent.OperationReadiness)
+	}
 	return server.readinessResponse(true)
 }
 
