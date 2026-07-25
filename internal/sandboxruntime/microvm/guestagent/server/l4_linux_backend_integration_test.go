@@ -102,6 +102,38 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 			t.Fatal("executable root descriptor followed the replacement symlink target")
 		}
 	})
+	t.Run("privilege-bearing executable modes are rejected", func(t *testing.T) {
+		rootFD, err := unix.Open(scriptRoot, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		if err != nil {
+			t.Fatalf("open executable root: %v", err)
+		}
+		defer unix.Close(rootFD)
+
+		for _, test := range []struct {
+			name string
+			mode os.FileMode
+		}{
+			{name: "setuid", mode: 0o755 | os.ModeSetuid},
+			{name: "setgid", mode: 0o755 | os.ModeSetgid},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				executable := filepath.Join(scriptRoot, "privilege-"+test.name)
+				if err := os.WriteFile(executable, []byte("executable"), 0o755); err != nil {
+					t.Fatalf("write executable: %v", err)
+				}
+				if err := os.Chmod(executable, test.mode); err != nil {
+					t.Fatalf("chmod executable: %v", err)
+				}
+				fd, err := openLinuxExecutableAt(rootFD, filepath.Base(executable))
+				if fd >= 0 {
+					_ = unix.Close(fd)
+				}
+				if !errors.Is(err, unix.EACCES) {
+					t.Fatalf("openLinuxExecutableAt() error = %v, want EACCES", err)
+				}
+			})
+		}
+	})
 
 	backend, err := NewLinuxBackend(LinuxBackendOptions{
 		WorkspaceRoot:   workspace,
@@ -168,6 +200,17 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 		}
 		if got := decodeL4Data(t, truncated.Stderr.Data); string(got) != "12345" {
 			t.Fatalf("truncated stderr = %q, want %q", got, "12345")
+		}
+	})
+	t.Run("exec cannot gain privileges", func(t *testing.T) {
+		response := l4Exec(t, transport, context.Background(), []string{
+			os.Args[0], "-test.run=^TestL4PreparedLinuxHelperProcess$", "--", "no-new-privileges",
+		}, nil, 8, 8)
+		if response.ExitCode != 0 {
+			t.Fatalf("exit code = %d, want 0", response.ExitCode)
+		}
+		if got := string(decodeL4Data(t, response.Stdout.Data)); got != "1" {
+			t.Fatalf("no_new_privs = %q, want 1", got)
 		}
 	})
 
@@ -752,6 +795,13 @@ func TestL4PreparedLinuxHelperProcess(t *testing.T) {
 	case "output":
 		_, _ = io.WriteString(os.Stdout, "abcdef")
 		_, _ = io.WriteString(os.Stderr, "123456789")
+		os.Exit(0)
+	case "no-new-privileges":
+		value, _, errno := unix.Syscall6(unix.SYS_PRCTL, unix.PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0, 0)
+		if errno != 0 {
+			os.Exit(2)
+		}
+		_, _ = fmt.Fprintf(os.Stdout, "%d", value)
 		os.Exit(0)
 	case "sleep":
 		if len(args) != 1 {

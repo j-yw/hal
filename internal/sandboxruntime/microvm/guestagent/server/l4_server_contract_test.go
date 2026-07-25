@@ -416,6 +416,25 @@ func TestL4ServerEnvironmentResolutionFailsClosed(t *testing.T) {
 		}
 	})
 
+	t.Run("resolver success after deadline never dispatches", func(t *testing.T) {
+		backend := &l4FakeBackend{}
+		resolver := &l4Resolver{value: "late-value", returnAfterContext: true}
+		run := startL4Server(t, Options{
+			Transport:           newL4BlockingTransport(),
+			Backend:             backend,
+			EnvironmentResolver: resolver,
+		})
+		deadlineRequest := request
+		deadlineRequest.Timing = &guestagent.TimingMetadata{TimeoutMillis: 1}
+		l4RequireResponseCode(t, l4Handle(t, run.server, deadlineRequest), guestagent.ErrorCodeRequestTimeout)
+		if resolver.calls.Load() != 1 {
+			t.Fatalf("resolver calls = %d, want 1", resolver.calls.Load())
+		}
+		if backend.execCalls.Load() != 0 {
+			t.Fatalf("Exec calls = %d, want 0", backend.execCalls.Load())
+		}
+	})
+
 	t.Run("aggregate resolved environment is rejected", func(t *testing.T) {
 		backend := &l4FakeBackend{}
 		resolver := &l4Resolver{value: strings.Repeat("x", maxResolvedValueBytes)}

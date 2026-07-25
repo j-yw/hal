@@ -121,19 +121,23 @@ func (backend *l4FakeBackend) totalOperationCalls() int32 {
 }
 
 type l4Resolver struct {
-	value string
-	err   error
-	calls atomic.Int32
+	value              string
+	err                error
+	returnAfterContext bool
+	calls              atomic.Int32
 
 	mu      sync.Mutex
 	entries []guestagent.EnvironmentEntry
 }
 
-func (resolver *l4Resolver) Resolve(_ context.Context, entry guestagent.EnvironmentEntry) (string, error) {
+func (resolver *l4Resolver) Resolve(ctx context.Context, entry guestagent.EnvironmentEntry) (string, error) {
 	resolver.calls.Add(1)
 	resolver.mu.Lock()
 	resolver.entries = append(resolver.entries, entry)
 	resolver.mu.Unlock()
+	if resolver.returnAfterContext {
+		<-ctx.Done()
+	}
 	return resolver.value, resolver.err
 }
 
