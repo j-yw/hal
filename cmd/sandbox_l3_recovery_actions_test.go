@@ -45,8 +45,8 @@ func TestL3TerminalLogDrainRejectsStalledFinalCursor(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "worker_job_logs_incomplete") {
 		t.Fatalf("stalled terminal log drain error = %v, want incomplete-log error", err)
 	}
-	if driver.logsCalls != 1 || driver.statusCalls != 1 {
-		t.Fatalf("stalled terminal log calls = logs:%d status:%d, want one bounded attempt each", driver.logsCalls, driver.statusCalls)
+	if driver.logsCalls != 1 || driver.statusCalls != 0 {
+		t.Fatalf("stalled terminal log calls = logs:%d status:%d, want one bounded final fetch without another poll", driver.logsCalls, driver.statusCalls)
 	}
 }
 

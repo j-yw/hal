@@ -286,6 +286,9 @@ func streamSandboxL3Logs(
 		if terminal && cursor >= job.LogCursor {
 			return nil
 		}
+		if follow && terminal && !progressed {
+			return errors.New("worker_job_logs_incomplete: terminal worker logs did not reach the final cursor")
+		}
 		if !follow && (!progressed || cursor >= job.LogCursor) {
 			return nil
 		}
@@ -307,9 +310,6 @@ func streamSandboxL3Logs(
 			return err
 		}
 		job = next
-		if sandboxL3TerminalJobState(job.State) && cursor < job.LogCursor {
-			return errors.New("worker_job_logs_incomplete: terminal worker logs did not reach the final cursor")
-		}
 	}
 }
 
