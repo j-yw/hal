@@ -183,6 +183,47 @@ func TestL3WorkerServerRejectsSocketParentReplacementDuringBind(t *testing.T) {
 	}
 }
 
+func TestL3WorkerServerRejectsReplaceableSocketAncestorBeforeBind(t *testing.T) {
+	base := resolvedWorkerTempDir(t)
+	shared := filepath.Join(base, "shared")
+	if err := os.Mkdir(shared, 0o700); err != nil {
+		t.Fatalf("Mkdir(shared) error: %v", err)
+	}
+	if err := os.Chmod(shared, 0o777); err != nil {
+		t.Fatalf("Chmod(shared) error: %v", err)
+	}
+	parent := filepath.Join(shared, "private")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatalf("Mkdir(parent) error: %v", err)
+	}
+	server, err := NewServer(ServerOptions{
+		SocketPath: filepath.Join(parent, "worker.sock"),
+		Handler: RequestHandlerFunc(func(context.Context, Request) Response {
+			t.Fatal("server dispatched beneath a replaceable socket ancestor")
+			return Response{}
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	originalListen := listenWorkerUnixSocket
+	t.Cleanup(func() { listenWorkerUnixSocket = originalListen })
+	listenerCalled := false
+	listenWorkerUnixSocket = func(context.Context, string) (net.Listener, error) {
+		listenerCalled = true
+		return nil, errors.New("unexpected worker listener call")
+	}
+
+	err = server.ListenAndServe(context.Background())
+	if err == nil {
+		t.Fatal("ListenAndServe() accepted a replaceable socket ancestor")
+	}
+	if listenerCalled {
+		t.Fatal("ListenAndServe() reached bind beneath a replaceable socket ancestor")
+	}
+}
+
 func TestL3WorkerServerDoesNotRemoveReplacementAtSocketPath(t *testing.T) {
 	parent := filepath.Join(resolvedWorkerTempDir(t), "private")
 	if err := os.Mkdir(parent, 0o700); err != nil {
