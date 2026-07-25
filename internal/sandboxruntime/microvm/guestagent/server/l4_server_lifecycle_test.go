@@ -204,6 +204,55 @@ func TestL4ServerLateBackendSuccessNeverOverridesContext(t *testing.T) {
 	}
 }
 
+func TestL4ServerCopyInPublishedOutcomeOutranksLateCancellation(t *testing.T) {
+	copyData := []byte("published copy payload")
+	copyDigest := digestBytes(copyData)
+	request := guestagent.CopyInRequest{
+		ProtocolVersion: guestagent.ProtocolVersionV1,
+		Operation:       guestagent.OperationCopyIn,
+		DestinationPath: "/workspace/published.bin",
+		Payload: guestagent.PayloadMetadata{
+			SizeBytes: int64(len(copyData)),
+			MaxBytes:  64,
+			Digest:    copyDigest,
+			Encoding:  guestagent.PayloadEncodingBase64,
+			Data:      base64.StdEncoding.EncodeToString(copyData),
+		},
+		Timing: &guestagent.TimingMetadata{TimeoutMillis: 1},
+	}
+
+	t.Run("durable success", func(t *testing.T) {
+		backend := &l4FakeBackend{
+			copyInReturnAfterContext: true,
+			copyInResult:             CopyResult{SizeBytes: int64(len(copyData)), Digest: copyDigest},
+		}
+		run := startL4Server(t, Options{Transport: newL4BlockingTransport(), Backend: backend})
+		response := l4HandleJSON[guestagent.CopyInResponse](t, run.server, request)
+		if err := guestagent.ValidateCopyInResponse(response); err != nil {
+			t.Fatalf("copy-in response error = %v, want committed success", err)
+		}
+		if response.Written.SizeBytes != int64(len(copyData)) || response.Written.Digest != copyDigest {
+			t.Fatalf("written metadata = %#v, want published payload", response.Written)
+		}
+	})
+
+	t.Run("durability uncertain", func(t *testing.T) {
+		backend := &l4FakeBackend{
+			copyInReturnAfterContext: true,
+			copyInResult:             CopyResult{SizeBytes: int64(len(copyData)), Digest: copyDigest},
+			copyErr: &guestagent.ProtocolError{
+				Code:      guestagent.ErrorCodeDurabilityUncertain,
+				Operation: guestagent.OperationCopyIn,
+				Field:     "destinationPath",
+				Message:   "copy publication durability is uncertain",
+			},
+		}
+		run := startL4Server(t, Options{Transport: newL4BlockingTransport(), Backend: backend})
+		response := l4Handle(t, run.server, request)
+		l4RequireResponseCode(t, response, guestagent.ErrorCodeDurabilityUncertain)
+	})
+}
+
 func TestL4ServerBusyAdmissionIsImmediateAndDoesNotQueue(t *testing.T) {
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
