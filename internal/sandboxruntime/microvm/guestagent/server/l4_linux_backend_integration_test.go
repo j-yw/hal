@@ -107,6 +107,7 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 	}
 	hooks, ok := backend.(interface {
 		setBeforeExecStartTestHook(func())
+		setAfterExecStartTestHook(func())
 		setAfterCopyTempOpenTestHook(func())
 	})
 	if !ok {
@@ -241,6 +242,26 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 			Source: guestagent.EnvironmentSourceGenerated,
 		}}
 		assertL4ErrorCode(t, transport.roundTrip(context.Background(), mustL4JSON(t, request)), "environment_unavailable")
+	})
+
+	t.Run("canceled before start never launches executable", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		launched := false
+		hooks.setBeforeExecStartTestHook(cancel)
+		defer hooks.setBeforeExecStartTestHook(nil)
+		hooks.setAfterExecStartTestHook(func() {
+			launched = true
+		})
+		defer hooks.setAfterExecStartTestHook(nil)
+
+		request := l4ExecRequest([]string{
+			os.Args[0], "-test.run=^TestL4PreparedLinuxHelperProcess$", "--", "output",
+		}, nil, 64, 64)
+		assertL4ErrorCode(t, transport.roundTrip(ctx, mustL4JSON(t, request)), "request_canceled")
+		if launched {
+			t.Fatal("canceled request launched the executable")
+		}
 	})
 
 	t.Run("work directory remains pinned across path replacement", func(t *testing.T) {

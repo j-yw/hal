@@ -44,6 +44,7 @@ type linuxBackend struct {
 	closed         bool
 
 	beforeExecStartTestHook   func()
+	afterExecStartTestHook    func()
 	afterCopyTempOpenTestHook func()
 }
 
@@ -182,6 +183,23 @@ func (backend *linuxBackend) runBeforeExecStartTestHook() {
 	backend.mu.Lock()
 	hook := backend.beforeExecStartTestHook
 	backend.beforeExecStartTestHook = nil
+	backend.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+}
+
+//nolint:unused // Exercised by the explicit L4 prepared-Linux acceptance test.
+func (backend *linuxBackend) setAfterExecStartTestHook(hook func()) {
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	backend.afterExecStartTestHook = hook
+}
+
+func (backend *linuxBackend) runAfterExecStartTestHook() {
+	backend.mu.Lock()
+	hook := backend.afterExecStartTestHook
+	backend.afterExecStartTestHook = nil
 	backend.mu.Unlock()
 	if hook != nil {
 		hook()

@@ -405,8 +405,13 @@ Non-zero exit is a normal `ExecResponse`.
 
 Every process starts in a new process group. Linux `waitid` with `WNOWAIT`
 observes leader exit without reaping it, so the leader continues to anchor its
-PGID while cleanup signals are sent. Cancellation, timeout, shutdown,
-output-pipe failure, or observed leader exit sends `SIGTERM` to the group,
+PGID while cleanup signals are sent. Cancellation, timeout, shutdown, and
+transport loss cancel the live operation context. After all descriptor,
+environment, and command preparation, the backend checks that context again
+immediately before process start; an already-canceled operation returns
+without launching the executable. After launch, cancellation, timeout,
+shutdown, output-pipe failure, or observed leader exit sends `SIGTERM` to the
+group,
 waits a bounded grace period, sends `SIGKILL` if necessary, and only then calls
 `Wait` once to reap the leader. No group signal is sent after reap, avoiding
 PGID-reuse races. A signaled exit is reported deterministically as
