@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -35,6 +36,23 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 
 	workspace := t.TempDir()
 	scriptRoot := t.TempDir()
+	t.Run("executable root rejects proc descriptor magic link", func(t *testing.T) {
+		rootFD, err := unix.Open(scriptRoot, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		if err != nil {
+			t.Fatalf("open executable root: %v", err)
+		}
+		defer unix.Close(rootFD)
+
+		magicLink := filepath.Join("/proc/self/fd", strconv.Itoa(rootFD))
+		roots, err := openLinuxExecutableRoots([]string{magicLink})
+		for _, root := range roots {
+			_ = unix.Close(root.fd)
+		}
+		if err == nil {
+			t.Fatal("openLinuxExecutableRoots() accepted proc descriptor magic link")
+		}
+	})
+
 	backend, err := NewLinuxBackend(LinuxBackendOptions{
 		WorkspaceRoot:   workspace,
 		GuestRoot:       "/workspace",

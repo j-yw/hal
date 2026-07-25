@@ -117,6 +117,20 @@ func f() {
 	if message == "" {
 		t.Fatal("forbidden source guard accepted side-effect fixture")
 	}
+
+	source = `package fixture
+import "path/filepath"
+func f() {
+	filepath.EvalSymlinks("/configured/root")
+}`
+	file, err = parser.ParseFile(token.NewFileSet(), "fixture.go", source, 0)
+	if err != nil {
+		t.Fatalf("ParseFile(path-resolution fixture) error: %v", err)
+	}
+	message = l4GuestAgentServerForbiddenCall("fixture.go", file)
+	if !strings.Contains(message, "non-atomic path resolution") {
+		t.Fatalf("forbidden source guard path-resolution message = %q", message)
+	}
 }
 
 func l4GuestAgentServerProductionFiles(t *testing.T) []string {
@@ -202,6 +216,8 @@ func l4GuestAgentServerForbiddenCall(path string, file *ast.File) string {
 		switch selector {
 		case "os.Environ", "os.Getenv", "os.LookupEnv":
 			message = fmt.Sprintf("%s calls %s; L4 server must not use ambient environment", path, selector)
+		case "filepath.EvalSymlinks":
+			message = fmt.Sprintf("%s calls %s; L4 server must not use non-atomic path resolution for security roots", path, selector)
 		case "net.Listen", "net.ListenPacket", "net.Dial", "net.DialTimeout":
 			message = fmt.Sprintf("%s calls %s; L4 server transport is injected", path, selector)
 		case "http.Get", "http.Post", "http.ListenAndServe", "rpc.ServeConn":

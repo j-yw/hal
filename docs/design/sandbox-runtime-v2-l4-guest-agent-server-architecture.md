@@ -217,6 +217,13 @@ safe reopen/chdir, and fails closed if the required containment primitives are
 unavailable. It never falls back to string-only checks, `os.Root`, or an
 unchecked host path.
 
+Each configured executable root is opened and pinned in one `openat2` call
+with `O_PATH|O_DIRECTORY|O_CLOEXEC` and `RESOLVE_NO_MAGICLINKS`. Ordinary
+image-owned symlinks such as `/bin` remain supported, but procfs-style magic
+links are rejected. Root selection never resolves a pathname and reopens the
+result in a second syscall, so a rename between validation and acquisition
+cannot substitute the descriptor.
+
 Every root, directory, temporary-write, copy-in, copy-out, and observation
 descriptor is created atomically with `O_CLOEXEC`. No unrelated server-owned
 descriptor is inheritable by concurrently launched commands. The specific
