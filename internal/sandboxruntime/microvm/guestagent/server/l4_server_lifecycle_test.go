@@ -199,6 +199,27 @@ func TestL4ServerShutdownBeforeServeIsIdempotentAndClosesOnce(t *testing.T) {
 	}
 }
 
+func TestL4ServerRepeatedShutdownRetainsCleanupFailure(t *testing.T) {
+	closeErr := errors.New("backend cleanup failed")
+	backend := &l4FakeBackend{closeErr: closeErr}
+	server, err := New(Options{Transport: newL4BlockingTransport(), Backend: backend})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if err := server.Shutdown(context.Background()); !errors.Is(err, closeErr) {
+		t.Fatalf("Shutdown() error = %v, want cleanup failure", err)
+	}
+	if err := server.Shutdown(context.Background()); !errors.Is(err, closeErr) {
+		t.Fatalf("second Shutdown() error = %v, want retained cleanup failure", err)
+	}
+	if got := server.State(); got != StateFailed {
+		t.Fatalf("State() = %q, want %q", got, StateFailed)
+	}
+	if backend.closeCalls.Load() != 1 {
+		t.Fatalf("Close calls = %d, want 1", backend.closeCalls.Load())
+	}
+}
+
 func TestL4ServerTransportFailureDrainsThenFailsAndClosesOnce(t *testing.T) {
 	transport := newL4BlockingTransport()
 	transport.err = errors.New("transport endpoint /private/agent.sock failed")

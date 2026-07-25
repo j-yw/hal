@@ -124,7 +124,9 @@ in-flight work, waits for transport return and backend cleanup, and ends in
 `stopped`. `Shutdown` is idempotent and bounded by its caller context. If that
 context expires, it returns the matching context error while cleanup continues
 under the server's bounded `MaxShutdownTime`; the state remains `draining`
-until cleanup reaches `stopped` or `failed`.
+until cleanup reaches `stopped` or `failed`. A terminal cleanup failure is
+retained and returned by every later `Shutdown` call without rerunning cleanup;
+repeated shutdown can never convert failed cleanup into apparent success.
 
 Readiness is canonical:
 
