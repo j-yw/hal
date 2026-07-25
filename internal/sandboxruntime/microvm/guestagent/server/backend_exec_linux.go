@@ -80,6 +80,15 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 	stderrLimit := effectiveLinuxLimit(plan.StderrMaxBytes, DefaultExecStderrBytes)
 	stdout := newLinuxBoundedWriter(stdoutLimit)
 	stderr := newLinuxBoundedWriter(stderrLimit)
+	stdoutPipe, err := newLinuxOutputPipe()
+	if err != nil {
+		return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "stdout", "guest command output is unavailable", err)
+	}
+	stderrPipe, err := newLinuxOutputPipe()
+	if err != nil {
+		stdoutPipe.close()
+		return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "stderr", "guest command output is unavailable", err)
+	}
 
 	command := &exec.Cmd{
 		Path:       commandPath,
@@ -88,8 +97,8 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 		Dir:        procSelfFDPath(workFD),
 		ExtraFiles: extraFiles,
 		Stdin:      bytes.NewReader(plan.Stdin),
-		Stdout:     stdout,
-		Stderr:     stderr,
+		Stdout:     stdoutPipe.writer,
+		Stderr:     stderrPipe.writer,
 		WaitDelay:  backend.termGrace,
 		SysProcAttr: &syscall.SysProcAttr{
 			Setpgid: true,
@@ -97,11 +106,31 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 	}
 	backend.runBeforeExecStartTestHook()
 	if err := ctx.Err(); err != nil {
+		stdoutPipe.close()
+		stderrPipe.close()
 		return ExecResult{}, linuxContextError(guestagent.OperationExec, err)
 	}
 	if err := command.Start(); err != nil {
+		stdoutPipe.close()
+		stderrPipe.close()
 		return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "args", "guest command could not start", err)
 	}
+	_ = stdoutPipe.writer.Close()
+	_ = stderrPipe.writer.Close()
+	outputDone := make(chan error, 2)
+	stdoutPipe.drain(stdout, outputDone)
+	stderrPipe.drain(stderr, outputDone)
+	outputComplete := false
+	defer func() {
+		if !outputComplete {
+			stdoutPipe.closeReaders()
+			stderrPipe.closeReaders()
+			<-outputDone
+			<-outputDone
+		}
+		stdoutPipe.close()
+		stderrPipe.close()
+	}()
 	backend.runAfterExecStartTestHook()
 
 	pgid := command.Process.Pid
@@ -153,6 +182,13 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 	}
 
 	waitErr := command.Wait()
+	outputForced, outputErr := waitForLinuxOutputPipes(
+		stdoutPipe,
+		stderrPipe,
+		outputDone,
+		backend.termGrace,
+	)
+	outputComplete = true
 	result := ExecResult{
 		ExitCode:        linuxExitCode(command.ProcessState),
 		Stdout:          stdout.Bytes(),
@@ -166,6 +202,12 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 		}
 		return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "process", "guest command supervision failed", contextErr)
 	}
+	if outputErr != nil {
+		return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "process", "guest command output cleanup failed", outputErr)
+	}
+	if outputForced {
+		return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "process", "guest command output cleanup exceeded the server limit", nil)
+	}
 	if errors.Is(waitErr, exec.ErrWaitDelay) {
 		return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "process", "guest command pipe cleanup exceeded the server limit", waitErr)
 	}
@@ -174,6 +216,78 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 		return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "process", "guest command cleanup failed", waitErr)
 	}
 	return result, nil
+}
+
+type linuxOutputPipe struct {
+	reader *os.File
+	writer *os.File
+}
+
+func newLinuxOutputPipe() (*linuxOutputPipe, error) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	return &linuxOutputPipe{reader: reader, writer: writer}, nil
+}
+
+func (pipe *linuxOutputPipe) drain(destination io.Writer, done chan<- error) {
+	go func() {
+		_, err := io.Copy(destination, pipe.reader)
+		done <- err
+	}()
+}
+
+func (pipe *linuxOutputPipe) closeReaders() {
+	if pipe != nil && pipe.reader != nil {
+		_ = pipe.reader.Close()
+	}
+}
+
+func (pipe *linuxOutputPipe) close() {
+	if pipe == nil {
+		return
+	}
+	pipe.closeReaders()
+	if pipe.writer != nil {
+		_ = pipe.writer.Close()
+	}
+}
+
+func waitForLinuxOutputPipes(
+	stdout *linuxOutputPipe,
+	stderr *linuxOutputPipe,
+	done <-chan error,
+	grace time.Duration,
+) (bool, error) {
+	timer := newLinuxGraceTimer(grace)
+	defer stopLinuxTimer(timer)
+
+	pending := 2
+	for pending > 0 {
+		select {
+		case err := <-done:
+			pending--
+			if err != nil {
+				stdout.closeReaders()
+				stderr.closeReaders()
+				for pending > 0 {
+					<-done
+					pending--
+				}
+				return false, err
+			}
+		case <-timer.C:
+			stdout.closeReaders()
+			stderr.closeReaders()
+			for pending > 0 {
+				<-done
+				pending--
+			}
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (backend *linuxBackend) openExecutable(requested string) (int, error) {
