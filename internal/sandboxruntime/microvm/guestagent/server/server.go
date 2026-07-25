@@ -94,7 +94,7 @@ func New(options Options) (*Server, error) {
 		return nil, err
 	}
 	resolver := options.EnvironmentResolver
-	if resolver == nil {
+	if !configuredDependency(resolver) {
 		resolver = rejectingEnvironmentResolver{}
 	}
 	operationCtx, operationCancel := context.WithCancel(context.Background())
