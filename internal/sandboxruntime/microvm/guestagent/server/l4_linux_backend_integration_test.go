@@ -41,6 +41,24 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 	}
 	t.Setenv(l4AmbientCanary, "must-not-reach-child")
 
+	t.Run("process group identity remains owned until original release", func(t *testing.T) {
+		backend := &linuxBackend{
+			processGroups: make(map[int]*linuxProcessGroup),
+		}
+		const pgid = 424242
+		if err := backend.registerProcessGroup(pgid); err != nil {
+			t.Fatalf("registerProcessGroup() initial error: %v", err)
+		}
+		original := backend.processGroups[pgid]
+
+		if err := backend.registerProcessGroup(pgid); err == nil {
+			t.Fatal("registerProcessGroup() replaced an unreleased process-group identity")
+		}
+		if got := backend.processGroups[pgid]; got != original {
+			t.Fatal("registerProcessGroup() changed ownership after duplicate registration")
+		}
+	})
+
 	workspace := mountL4Workspace(t)
 	scriptRoot := t.TempDir()
 	t.Run("executable root rejects proc descriptor magic link", func(t *testing.T) {
