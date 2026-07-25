@@ -209,6 +209,33 @@ func TestL4ClientAcceptsGenericKnownOperationError(t *testing.T) {
 	}
 }
 
+func TestL4ClientPreservesOperationlessGenericErrorCode(t *testing.T) {
+	tests := []ErrorCode{
+		ErrorCodeMalformedRequest,
+		ErrorCodeOversizedRequest,
+	}
+	for _, code := range tests {
+		t.Run(string(code), func(t *testing.T) {
+			encoded, err := json.Marshal(ErrorResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Error: &ProtocolError{
+					Code:  code,
+					Field: "request",
+				},
+			})
+			if err != nil {
+				t.Fatalf("Marshal() error: %v", err)
+			}
+
+			client := l4ReadinessClient(t, encoded)
+			_, err = client.Readiness(context.Background(), ReadinessRequest{})
+			if !l4ProtocolErrorCode(err, code) {
+				t.Fatalf("Readiness() error = %v, want %s", err, code)
+			}
+		})
+	}
+}
+
 func l4ReadinessClient(t *testing.T, response []byte) *Client {
 	t.Helper()
 
