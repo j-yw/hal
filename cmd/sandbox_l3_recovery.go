@@ -94,6 +94,11 @@ type sandboxL3ListResponse struct {
 	Diagnostics     []sandboxL3Diagnostic `json:"diagnostics,omitempty"`
 }
 
+type sandboxL3ListSelection struct {
+	instance *sandbox.SandboxState
+	manifest *sandboxexecution.Manifest
+}
+
 type sandboxL3SelectionMode int
 
 const (
@@ -878,8 +883,8 @@ func renderSandboxL3LiveListJSON(ctx context.Context, out io.Writer, instances [
 		Source:          "live",
 		Sandboxes:       make([]sandboxL3ListEntry, 0, len(sorted)),
 	}
+	selections := make([]sandboxL3ListSelection, 0, len(sorted))
 	for _, instance := range sorted {
-		entry := sandboxL3ListEntry{sandboxL3Identity: sandboxL3IdentityFromState(instance)}
 		candidates := bySandboxID[strings.TrimSpace(instance.ID)]
 		candidates = slices.DeleteFunc(candidates, func(manifest *sandboxexecution.Manifest) bool {
 			return !sandboxL3ManifestMatchesInstance(manifest, instance)
@@ -888,6 +893,15 @@ func renderSandboxL3LiveListJSON(ctx context.Context, out io.Writer, instances [
 		if selectErr != nil {
 			return selectErr
 		}
+		selections = append(selections, sandboxL3ListSelection{
+			instance: instance,
+			manifest: manifest,
+		})
+	}
+	for _, selection := range selections {
+		instance := selection.instance
+		manifest := selection.manifest
+		entry := sandboxL3ListEntry{sandboxL3Identity: sandboxL3IdentityFromState(instance)}
 		var liveJob *sandboxworker.Job
 		if manifest != nil {
 			if sandboxL3ExecutionAwaitingJobResolution(manifest) {
