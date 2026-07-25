@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,15 +27,21 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const l4AmbientCanary = "L4_PREPARED_AMBIENT_CANARY"
+const (
+	l4AmbientCanary       = "L4_PREPARED_AMBIENT_CANARY"
+	l4MountNamespaceChild = "L4_MOUNT_NAMESPACE_CHILD"
+)
 
 func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Fatalf("L4 prepared integration requires Linux; got %s", runtime.GOOS)
 	}
+	if runL4InMountNamespace(t, "TestL4PreparedLinuxLocalServerE2E") {
+		return
+	}
 	t.Setenv(l4AmbientCanary, "must-not-reach-child")
 
-	workspace := t.TempDir()
+	workspace := mountL4Workspace(t)
 	scriptRoot := t.TempDir()
 	t.Run("executable root rejects proc descriptor magic link", func(t *testing.T) {
 		rootFD, err := unix.Open(scriptRoot, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
@@ -324,6 +331,68 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 		}
 	})
 
+	t.Run("work directory cannot move outside workspace mount", func(t *testing.T) {
+		workDir := filepath.Join(workspace, "contained-workdir")
+		if err := os.Mkdir(workDir, 0o700); err != nil {
+			t.Fatalf("create contained work directory: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(workDir, "identity"), []byte("contained"), 0o600); err != nil {
+			t.Fatalf("write contained work-directory identity: %v", err)
+		}
+		outside := filepath.Join(t.TempDir(), "escaped-workdir")
+
+		var moveErr error
+		hooks.setBeforeExecStartTestHook(func() {
+			moveErr = os.Rename(workDir, outside)
+		})
+		defer hooks.setBeforeExecStartTestHook(nil)
+
+		request := l4ExecRequest([]string{
+			os.Args[0], "-test.run=^TestL4PreparedLinuxHelperProcess$", "--", "cwd-identity",
+		}, nil, 64, 64)
+		request.WorkDir = "/workspace/contained-workdir"
+		response := l4ExecRequestRoundTrip(t, transport, context.Background(), request)
+		if !errors.Is(moveErr, unix.EXDEV) {
+			t.Fatalf("move pinned work directory error = %v, want EXDEV", moveErr)
+		}
+		if got := string(decodeL4Data(t, response.Stdout.Data)); got != "contained" {
+			t.Fatalf("contained work-directory identity = %q, want contained", got)
+		}
+		if _, err := os.Stat(outside); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("outside work directory exists or could not be checked: %v", err)
+		}
+	})
+
+	t.Run("copy parent cannot move outside workspace mount", func(t *testing.T) {
+		parent := filepath.Join(workspace, "contained-copy-parent")
+		if err := os.Mkdir(parent, 0o700); err != nil {
+			t.Fatalf("create contained copy parent: %v", err)
+		}
+		outside := filepath.Join(t.TempDir(), "escaped-copy-parent")
+
+		var moveErr error
+		hooks.setAfterCopyTempOpenTestHook(func() {
+			moveErr = os.Rename(parent, outside)
+		})
+		defer hooks.setAfterCopyTempOpenTestHook(nil)
+		response := transport.roundTrip(context.Background(), mustL4JSON(t,
+			l4CopyInRequest("/workspace/contained-copy-parent/payload.bin", []byte("contained"), 1024)))
+		var result guestagent.CopyInResponse
+		mustL4Decode(t, response, &result)
+		if result.Error != nil {
+			t.Fatalf("copy-in response error = %#v", result.Error)
+		}
+		if !errors.Is(moveErr, unix.EXDEV) {
+			t.Fatalf("move copy parent error = %v, want EXDEV", moveErr)
+		}
+		if got, err := os.ReadFile(filepath.Join(parent, "payload.bin")); err != nil || string(got) != "contained" {
+			t.Fatalf("contained copy payload = %q, %v", got, err)
+		}
+		if _, err := os.Stat(outside); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("outside copy parent exists or could not be checked: %v", err)
+		}
+	})
+
 	t.Run("copy descriptors are not inherited by concurrent exec", func(t *testing.T) {
 		workDir := filepath.Join(workspace, "fd-workdir")
 		if err := os.Mkdir(workDir, 0o700); err != nil {
@@ -527,7 +596,10 @@ func TestL4RejectedLinuxBackendConstructionClosesWorkspaceDescriptor(t *testing.
 	if runtime.GOOS != "linux" {
 		t.Fatalf("L4 prepared integration requires Linux; got %s", runtime.GOOS)
 	}
-	workspace := t.TempDir()
+	if runL4InMountNamespace(t, "TestL4RejectedLinuxBackendConstructionClosesWorkspaceDescriptor") {
+		return
+	}
+	workspace := mountL4Workspace(t)
 	before := l4DescriptorTargetCount(t, workspace)
 	for attempt := 0; attempt < 16; attempt++ {
 		backend, err := NewLinuxBackend(LinuxBackendOptions{
@@ -542,6 +614,97 @@ func TestL4RejectedLinuxBackendConstructionClosesWorkspaceDescriptor(t *testing.
 	if after := l4DescriptorTargetCount(t, workspace); after != before {
 		t.Fatalf("workspace descriptor count = %d after rejected construction, want %d", after, before)
 	}
+}
+
+func TestL4LinuxBackendRejectsMovableWorkspaceRoot(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Fatalf("L4 prepared integration requires Linux; got %s", runtime.GOOS)
+	}
+	backend, err := NewLinuxBackend(LinuxBackendOptions{
+		WorkspaceRoot: t.TempDir(),
+		GuestRoot:     "/workspace",
+	})
+	if backend != nil {
+		_ = backend.Close(context.Background())
+	}
+	if err == nil || backend != nil {
+		t.Fatalf("NewLinuxBackend() = %#v, %v, want movable workspace rejection", backend, err)
+	}
+}
+
+func TestL4LinuxBackendRejectsAliasedWorkspaceFilesystem(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Fatalf("L4 prepared integration requires Linux; got %s", runtime.GOOS)
+	}
+	if runL4InMountNamespace(t, "TestL4LinuxBackendRejectsAliasedWorkspaceFilesystem") {
+		return
+	}
+	workspace := mountL4Workspace(t)
+	alias := t.TempDir()
+	if err := unix.Mount(workspace, alias, "", unix.MS_BIND, ""); err != nil {
+		t.Fatalf("bind mount workspace alias: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := unix.Unmount(alias, unix.MNT_DETACH); err != nil {
+			t.Errorf("unmount workspace alias: %v", err)
+		}
+	})
+
+	backend, err := NewLinuxBackend(LinuxBackendOptions{
+		WorkspaceRoot: workspace,
+		GuestRoot:     "/workspace",
+	})
+	if backend != nil {
+		_ = backend.Close(context.Background())
+	}
+	if err == nil || backend != nil {
+		t.Fatalf("NewLinuxBackend() = %#v, %v, want aliased workspace rejection", backend, err)
+	}
+}
+
+func runL4InMountNamespace(t *testing.T, testName string) bool {
+	t.Helper()
+	if value, ok := os.LookupEnv(l4MountNamespaceChild); ok && value == "1" {
+		if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
+			t.Fatalf("make mount propagation private: %v", err)
+		}
+		return false
+	}
+
+	unshare, err := exec.LookPath("unshare")
+	if err != nil {
+		t.Fatalf("find local unshare utility: %v", err)
+	}
+	command := exec.Command(
+		unshare,
+		"--user",
+		"--map-root-user",
+		"--mount",
+		"--",
+		os.Args[0],
+		"-test.run=^"+testName+"$",
+		"-test.timeout=120s",
+	)
+	command.Env = []string{l4MountNamespaceChild + "=1"}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("rootless mount-namespace child failed: %v\n%s", err, output)
+	}
+	return true
+}
+
+func mountL4Workspace(t *testing.T) string {
+	t.Helper()
+	workspace := t.TempDir()
+	if err := unix.Mount("tmpfs", workspace, "tmpfs", unix.MS_NOSUID|unix.MS_NODEV, "size=16m,mode=0700"); err != nil {
+		t.Fatalf("mount isolated workspace filesystem: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := unix.Unmount(workspace, unix.MNT_DETACH); err != nil {
+			t.Errorf("unmount isolated workspace filesystem: %v", err)
+		}
+	})
+	return workspace
 }
 
 func TestL4PreparedLinuxHelperProcess(t *testing.T) {

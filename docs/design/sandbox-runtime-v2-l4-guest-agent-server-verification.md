@@ -92,6 +92,10 @@ It runs the production server and Linux backend through the injected in-memory
 transport and proves real readiness, exec, copy, timeout/cancel, containment,
 descriptor isolation, shutdown, and cleanup. It creates no cloud, container,
 Firecracker, KVM, network, listener, socket, or billed resource.
+The test re-executes itself through the local `unshare` utility in a rootless
+user and mount namespace, makes mount propagation private, and creates a
+disposable tmpfs workspace mount. Missing rootless user/mount namespace,
+`unshare`, or tmpfs-mount capability is a failure, never a skip.
 
 Before running it, prove both the host and exact test match:
 

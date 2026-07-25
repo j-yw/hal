@@ -125,6 +125,8 @@ type CopyResult struct {
 // LinuxBackendOptions configure the Linux backend implementation owned by the
 // platform-specific backend layer.
 type LinuxBackendOptions struct {
+	// WorkspaceRoot must be the unaliased root of a distinct filesystem in the
+	// guest agent's mount namespace.
 	WorkspaceRoot   string
 	GuestRoot       string
 	BaseEnvironment []string

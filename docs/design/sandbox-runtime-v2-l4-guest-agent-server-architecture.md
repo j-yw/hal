@@ -212,10 +212,17 @@ type LinuxBackendOptions struct {
 func NewLinuxBackend(LinuxBackendOptions) (Backend, error)
 ```
 
-`WorkspaceRoot` is the private local path of the mounted guest workspace.
-`GuestRoot` is its protocol-visible absolute prefix, normally `/workspace`.
-Neither value is serialized or included in public errors. Non-Linux builds
-provide the same constructor and fail closed with `unsupported_platform`.
+`WorkspaceRoot` is the private local path of the mounted guest workspace. It
+must be the root of a distinct filesystem with no second mount of that
+filesystem visible in the agent's mount namespace. Construction verifies the
+pinned root and parent devices plus a bounded parse of
+`/proc/self/mountinfo`, and fails closed when the boundary is absent or
+aliased. This immutable cross-device boundary prevents an opened descendant
+from later being renamed onto the surrounding filesystem through either the
+workspace mount or another mount alias. `GuestRoot` is its protocol-visible
+absolute prefix, normally `/workspace`. Neither value is serialized or
+included in public errors. Non-Linux builds provide the same constructor and
+fail closed with `unsupported_platform`.
 
 Backend construction opens and pins the workspace root, verifies Linux
 `openat2` support plus the private `/proc/self/fd` descriptor bridge used for
