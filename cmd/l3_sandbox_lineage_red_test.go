@@ -495,6 +495,97 @@ func TestL3LiveStatusRejectsUnsupportedCoherentWorkerJobRouteBeforeWorkerIO(t *t
 	}
 }
 
+func TestL3LiveJobRejectsAdmissionTimestampMismatchBeforeProjectionOrMutation(t *testing.T) {
+	t.Run("status", func(t *testing.T) {
+		script := &l3WorkerScript{
+			jobState: sandboxworker.JobStateRunning,
+			pages:    map[uint64]sandboxworker.JobLogsResponse{},
+		}
+		harness := newL3WorkerHarness(t, script)
+		harness.seed("alpha", "run-alpha", "job-alpha")
+		store, err := sandboxexecution.DefaultStore()
+		if err != nil {
+			t.Fatalf("open execution store: %v", err)
+		}
+		manifest, err := store.LoadManifest("run-alpha")
+		if err != nil {
+			t.Fatalf("load execution manifest: %v", err)
+		}
+		manifest.WorkerJob.SubmittedAt = manifest.WorkerJob.SubmittedAt.Add(-time.Minute)
+		if err := store.SaveManifest(manifest); err != nil {
+			t.Fatalf("save stale admission timestamp: %v", err)
+		}
+
+		var out bytes.Buffer
+		err = runSandboxL3StatusJSON(context.Background(), "alpha", true, &out)
+		requireL3ErrorCode(t, err, "worker_job_identity_mismatch")
+		requests, forbidden := script.snapshot()
+		if len(requests) != 1 ||
+			requests[0].operation != sandboxworker.OperationJobStatus ||
+			len(forbidden) != 0 {
+			t.Fatalf("timestamp mismatch requests=%#v forbidden=%#v, want one observation only", requests, forbidden)
+		}
+		if out.Len() != 0 {
+			t.Fatalf("timestamp mismatch rendered status: %s", out.String())
+		}
+	})
+
+	t.Run("finalization", func(t *testing.T) {
+		script := &l3WorkerScript{
+			jobState: sandboxworker.JobStateSucceeded,
+			pages:    map[uint64]sandboxworker.JobLogsResponse{},
+		}
+		harness := newL3WorkerHarness(t, script)
+		harness.seed("alpha", "run-alpha", "job-alpha")
+		store, err := sandboxexecution.DefaultStore()
+		if err != nil {
+			t.Fatalf("open execution store: %v", err)
+		}
+		manifest, err := store.LoadManifest("run-alpha")
+		if err != nil {
+			t.Fatalf("load execution manifest: %v", err)
+		}
+		reference := manifest.WorkerJob
+		job := &sandboxworker.Job{
+			ContractVersion: reference.ContractVersion,
+			ID:              reference.JobID,
+			SubmissionKey:   reference.SubmissionKey,
+			WorkerID:        reference.WorkerID,
+			HostID:          reference.HostID,
+			RuntimeDriver:   reference.RuntimeDriver,
+			RuntimeID:       reference.RuntimeID,
+			State:           reference.State,
+			SubmittedAt:     reference.SubmittedAt.Add(-time.Minute),
+			StartedAt:       cloneL3Time(reference.StartedAt),
+			HeartbeatAt:     cloneL3Time(reference.HeartbeatAt),
+			FinishedAt:      cloneL3Time(reference.FinishedAt),
+			LogCursor:       reference.LogCursor,
+		}
+		before := append([]byte(nil), harness.manifestBytes()...)
+		observeCalls := 0
+		err = finalizeSandboxL3Execution(
+			context.Background(),
+			store,
+			manifest.ID,
+			false,
+			sandboxL3FinalizationDeps{
+				observeJob: func(context.Context, *sandboxexecution.Manifest) (*sandboxworker.Job, error) {
+					observeCalls++
+					return job, nil
+				},
+			},
+		)
+		requireL3ErrorCode(t, err, "worker_job_identity_mismatch")
+		if observeCalls != 1 {
+			t.Fatalf("timestamp mismatch observations = %d, want one identity check", observeCalls)
+		}
+		after := harness.manifestBytes()
+		if string(after) != string(before) {
+			t.Fatalf("timestamp mismatch mutated manifest\nbefore:\n%s\nafter:\n%s", before, after)
+		}
+	})
+}
+
 func TestL3RunAndAutoManifestsPersistStableSandboxInstanceID(t *testing.T) {
 	now := time.Date(2026, 7, 25, 8, 0, 0, 0, time.UTC)
 	target := &sandbox.SandboxState{
