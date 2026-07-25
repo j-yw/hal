@@ -13,7 +13,7 @@ import (
 
 func TestAutoSandboxManifestPersistsSanitizedCredentialProxyMetadata(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 7, 30, 0, 0, time.UTC)
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	fixture := phase26CredentialProxyUnsafeValues()
 
 	req := autoSandboxRequest{
@@ -32,7 +32,7 @@ func TestAutoSandboxManifestPersistsSanitizedCredentialProxyMetadata(t *testing.
 
 func TestAutoSandboxManifestOmitsCredentialProxyMetadataWithoutSafeSources(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 7, 35, 0, 0, time.UTC)
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	fixture := phase26CredentialProxyUnsafeValues()
 
 	if err := saveAutoSandboxManifest(store, autoSandboxRequest{
@@ -48,7 +48,7 @@ func TestAutoSandboxManifestOmitsCredentialProxyMetadataWithoutSafeSources(t *te
 
 func TestAutoSandboxCredentialProxyMetadataStaysOutOfJSONOutput(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 7, 40, 0, 0, time.UTC)
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	fixture := phase26CredentialProxyUnsafeValues()
 	req := autoSandboxRequest{
 		ExecutionID:         "auto-credential-proxy-json",

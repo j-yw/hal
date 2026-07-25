@@ -20,7 +20,7 @@ import (
 
 func TestAutoSandboxManifestOmitsCapabilityReadinessWhenUnavailable(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 8, 0, 0, 0, time.UTC)
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 
 	if err := saveAutoSandboxManifest(store, autoSandboxRequest{
 		ExecutionID: "auto-readiness-unavailable",
@@ -44,7 +44,7 @@ func TestAutoSandboxManifestOmitsCapabilityReadinessWhenUnavailable(t *testing.T
 
 func TestAutoSandboxManifestOmitsReadinessDiagnosticsWhenUnavailable(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 8, 2, 0, 0, time.UTC)
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 
 	if err := saveAutoSandboxManifest(store, autoSandboxRequest{
 		ExecutionID: "auto-readiness-diagnostics-unavailable",
@@ -70,7 +70,7 @@ func TestRunAutoSandboxWithWriterAttachesCapabilityReadinessWithoutChangingExecu
 	startedAt := time.Date(2026, 7, 2, 8, 5, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(4 * time.Second)
 	projectDir := t.TempDir()
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	target := autoSandboxCapabilityReadinessTarget()
 	wantCommand := []string{"hal", "auto", "--base", "main"}
 
@@ -138,7 +138,7 @@ func TestRunAutoSandboxWithWriterAttachesCapabilityReadinessWithoutChangingExecu
 
 func TestAutoSandboxManifestAttachesReadinessDiagnosticsFromSanitizedReadiness(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 8, 7, 0, 0, time.UTC)
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	fixture := phase26CredentialProxyUnsafeValues()
 	req := autoSandboxRequest{
 		ExecutionID:         "auto-readiness-diagnostics-projected",
@@ -209,7 +209,7 @@ func TestAutoSandboxReadinessDiagnosticsDoNotBlockOrAlterExecution(t *testing.T)
 	startedAt := time.Date(2026, 7, 2, 8, 9, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(4 * time.Second)
 	projectDir := t.TempDir()
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	target := autoSandboxCapabilityReadinessTarget()
 	wantCommand := []string{"hal", "auto", "--base", "main"}
 
@@ -282,7 +282,7 @@ func TestAutoSandboxDefaultReadinessGateDoesNotTriggerSchedulerLeaseOrLiveRefres
 	startedAt := time.Date(2026, 7, 2, 8, 11, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(4 * time.Second)
 	projectDir := t.TempDir()
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	target := runSandboxCapabilityReadinessTarget(runSandboxSecurityRequest())
 	target.Name = "auto-readiness-default-box"
 	resolver := &fakeDefaultSandboxResolver{t: t, target: target}

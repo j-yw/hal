@@ -1280,6 +1280,19 @@ func TestSandboxdMicroVMValidationRejectsUnsafeLivePaths(t *testing.T) {
 }
 
 func TestSandboxdMicroVMValidationDoesNotRunForRootlessPodmanOnly(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		tempRoot, err := filepath.EvalSymlinks(os.TempDir())
+		if err != nil {
+			t.Fatalf("EvalSymlinks(system temp root) error: %v", err)
+		}
+		runtimeRoot, err := os.MkdirTemp(tempRoot, "hsd-test-")
+		if err != nil {
+			t.Fatalf("MkdirTemp(default runtime test root) error: %v", err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(runtimeRoot) })
+		t.Setenv("XDG_RUNTIME_DIR", runtimeRoot)
+	}
+
 	var gotService sandboxworker.ServiceOptions
 	cmd, _, _ := newTestSandboxdCommand(sandboxdDeps{
 		newService: func(options sandboxworker.ServiceOptions) (sandboxworker.RequestHandler, error) {

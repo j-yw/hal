@@ -384,6 +384,102 @@ func TestCollectCoreStateArtifactsRunCollectsStateAndPersistsManifest(t *testing
 	}
 }
 
+func TestL3TerminalArtifactCollectorsAreRetrySafeAfterCheckpointCrash(t *testing.T) {
+	t.Run("collected metadata is replaced in place", func(t *testing.T) {
+		store := newTestStore(t)
+		manifest := testManifest("exec-terminal-retry", time.Date(2026, 7, 25, 6, 0, 0, 0, time.UTC))
+		manifest.ArtifactMetadata = &ArtifactMetadata{Collected: []ArtifactMetadataEntry{{
+			ID:         "preexisting",
+			Name:       "Preexisting",
+			Type:       "text",
+			Path:       "preexisting.txt",
+			StoredPath: "exec-terminal-retry/artifacts/preexisting.txt",
+		}}}
+		if err := store.SaveManifest(manifest); err != nil {
+			t.Fatalf("SaveManifest() error: %v", err)
+		}
+		runtime := &recordingArtifactRuntime{}
+
+		collect := func() {
+			t.Helper()
+			if _, err := CollectCoreStateArtifacts(context.Background(), CoreStateCollectionRequest{
+				ExecutionID:        manifest.ID,
+				Store:              store,
+				Runtime:            runtime,
+				Purpose:            PurposeRun,
+				RemoteWorkspaceDir: "/workspace/repo",
+			}); err != nil {
+				t.Fatalf("CollectCoreStateArtifacts() error: %v", err)
+			}
+			if _, err := CollectRecoveryArtifacts(context.Background(), RecoveryArtifactCollectionRequest{
+				ExecutionID:        manifest.ID,
+				Store:              store,
+				Runtime:            runtime,
+				RemoteWorkspaceDir: "/workspace/repo",
+			}); err != nil {
+				t.Fatalf("CollectRecoveryArtifacts() error: %v", err)
+			}
+			if _, err := SaveCommandOutputSummaryArtifacts(CommandOutputSummaryArtifactsRequest{
+				ExecutionID:   manifest.ID,
+				Store:         store,
+				StdoutSummary: "terminal output\n",
+			}); err != nil {
+				t.Fatalf("SaveCommandOutputSummaryArtifacts() error: %v", err)
+			}
+		}
+
+		collect()
+		// Simulate a crash after payload/metadata persistence but before the
+		// artifact checkpoint. Recovery repeats the terminal collectors.
+		collect()
+
+		loaded, err := store.LoadManifest(manifest.ID)
+		if err != nil {
+			t.Fatalf("LoadManifest() error: %v", err)
+		}
+		if loaded.ArtifactMetadata == nil {
+			t.Fatal("ArtifactMetadata = nil")
+		}
+		gotIDs := make([]string, 0, len(loaded.ArtifactMetadata.Collected))
+		for _, artifact := range loaded.ArtifactMetadata.Collected {
+			gotIDs = append(gotIDs, artifact.ID)
+		}
+		wantIDs := []string{"preexisting", "prd", "progress", "recovery-patch", "stdout-summary"}
+		if !reflect.DeepEqual(gotIDs, wantIDs) {
+			t.Fatalf("collected IDs after retry = %#v, want stable deduplicated order %#v", gotIDs, wantIDs)
+		}
+	})
+
+	t.Run("partial metadata and warnings are deduplicated", func(t *testing.T) {
+		store := newTestStore(t)
+		manifest := testManifest("exec-terminal-warning-retry", time.Date(2026, 7, 25, 6, 5, 0, 0, time.UTC))
+		if err := store.SaveManifest(manifest); err != nil {
+			t.Fatalf("SaveManifest() error: %v", err)
+		}
+		runtime := &recordingArtifactRuntime{execErr: errors.New("generation failed")}
+		for range 2 {
+			if _, err := CollectRecoveryArtifactsBestEffort(context.Background(), RecoveryArtifactCollectionRequest{
+				ExecutionID:        manifest.ID,
+				Store:              store,
+				Runtime:            runtime,
+				RemoteWorkspaceDir: "/workspace/repo",
+			}); err != nil {
+				t.Fatalf("CollectRecoveryArtifactsBestEffort() error: %v", err)
+			}
+		}
+
+		loaded, err := store.LoadManifest(manifest.ID)
+		if err != nil {
+			t.Fatalf("LoadManifest() error: %v", err)
+		}
+		if loaded.ArtifactMetadata == nil ||
+			len(loaded.ArtifactMetadata.Partial) != 1 ||
+			len(loaded.ArtifactMetadata.Warnings) != 1 {
+			t.Fatalf("retry metadata = %#v, want one partial artifact and warning", loaded.ArtifactMetadata)
+		}
+	})
+}
+
 func TestCollectCoreStateArtifactsAutoCollectsAutoState(t *testing.T) {
 	store := newTestStore(t)
 	manifest := testManifest("exec-1", time.Date(2026, 6, 30, 1, 0, 0, 0, time.UTC))
@@ -782,6 +878,54 @@ func TestCollectUncommittedSyncOutArtifactBestEffortGeneratesHandoffDiff(t *test
 	}
 }
 
+func TestCollectUncommittedSyncOutArtifactRetryClearsWarningWhenResultIsEmpty(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.SaveManifest(testManifest("exec-uncommitted-retry", time.Date(2026, 7, 25, 7, 0, 0, 0, time.UTC))); err != nil {
+		t.Fatalf("SaveManifest() error: %v", err)
+	}
+	runtime := &recordingArtifactRuntime{execErr: errors.New("first generation failed")}
+	request := UncommittedSyncOutCollectionRequest{
+		ExecutionID:        "exec-uncommitted-retry",
+		Store:              store,
+		Runtime:            runtime,
+		Target:             sandboxruntime.Target{Name: "sync-box"},
+		RemoteWorkspaceDir: "/workspace/repo",
+	}
+	first, err := CollectUncommittedSyncOutArtifactBestEffort(context.Background(), request)
+	if err != nil {
+		t.Fatalf("first collection error: %v", err)
+	}
+	if len(first.ArtifactMetadata.Partial) != 1 || len(first.ArtifactMetadata.Warnings) != 1 {
+		t.Fatalf("first collection metadata = %#v, want partial warning", first.ArtifactMetadata)
+	}
+
+	runtime.execErr = nil
+	runtime.copyOutPayload = []byte{}
+	retry, err := CollectUncommittedSyncOutArtifactBestEffort(context.Background(), request)
+	if err != nil {
+		t.Fatalf("retry collection error: %v", err)
+	}
+	if !isArtifactMetadataEmpty(retry.ArtifactMetadata) {
+		t.Fatalf("empty retry metadata = %#v, want empty", retry.ArtifactMetadata)
+	}
+	manifest, err := store.LoadManifest(request.ExecutionID)
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	if manifest.ArtifactMetadata != nil {
+		for _, artifact := range manifest.ArtifactMetadata.Partial {
+			if artifact.ID == syncOutUncommittedDiffID {
+				t.Fatalf("empty retry retained partial artifact: %#v", manifest.ArtifactMetadata)
+			}
+		}
+		for _, warning := range manifest.ArtifactMetadata.Warnings {
+			if warning.Artifact.ID == syncOutUncommittedDiffID {
+				t.Fatalf("empty retry retained warning: %#v", manifest.ArtifactMetadata)
+			}
+		}
+	}
+}
+
 func TestCollectUntrackedSyncOutArtifactsBestEffortGeneratesHandoffArtifacts(t *testing.T) {
 	store := newTestStore(t)
 	if err := store.SaveManifest(testManifest("exec-untracked", time.Date(2026, 7, 16, 1, 0, 0, 0, time.UTC))); err != nil {
@@ -1015,6 +1159,7 @@ func TestUncommittedSyncOutDiffGenerationScriptCapturesTrackedChangesAndOmitsCle
 	runGit("init")
 	runGit("config", "user.email", "hal-test@example.com")
 	runGit("config", "user.name", "Hal Test")
+	runGit("config", "commit.gpgsign", "false")
 	prdPath := filepath.Join(projectDir, ".hal", "prd.json")
 	if err := os.MkdirAll(filepath.Dir(prdPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -1499,11 +1644,12 @@ func assertCollectedCoreArtifact(t *testing.T, artifact ArtifactMetadataEntry, w
 }
 
 type recordingArtifactRuntime struct {
-	execs      []sandboxruntime.ExecRequest
-	execErr    error
-	copyOuts   []sandboxruntime.CopyRequest
-	copyOutErr error
-	events     []string
+	execs          []sandboxruntime.ExecRequest
+	execErr        error
+	copyOuts       []sandboxruntime.CopyRequest
+	copyOutErr     error
+	copyOutPayload []byte
+	events         []string
 }
 
 func (r *recordingArtifactRuntime) Exec(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
@@ -1531,6 +1677,9 @@ func (r *recordingArtifactRuntime) CopyOut(_ context.Context, req sandboxruntime
 	}
 	if err := os.MkdirAll(filepath.Dir(req.DestinationPath), 0o700); err != nil {
 		return err
+	}
+	if r.copyOutPayload != nil {
+		return os.WriteFile(req.DestinationPath, r.copyOutPayload, 0o600)
 	}
 	return os.WriteFile(req.DestinationPath, []byte("copied:"+req.SourcePath+"\n"), 0o600)
 }

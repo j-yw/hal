@@ -85,6 +85,8 @@ type autoSandboxRequest struct {
 	NetworkProxySession          *sandbox.SandboxNetworkProxySessionMetadata
 	NetworkPolicyDecisionLogs    []sandbox.SandboxNetworkPolicyDecisionLogRecord
 	CredentialDeliveryActivation credentialDeliveryActivationResult
+	WorkerJob                    *sandboxexecution.WorkerJobReference
+	Finalization                 *sandboxexecution.FinalizationMetadata
 }
 
 type autoSandboxExecutionResult struct {
@@ -97,7 +99,8 @@ type autoSandboxExecutionResult struct {
 }
 
 type autoSandboxExecutionHooks struct {
-	OnTargetReady func(*sandbox.SandboxState) error
+	OnTargetReady     func(*sandbox.SandboxState) error
+	OnWorkerJobUpdate func(*sandboxexecution.WorkerJobReference) error
 }
 
 type autoSandboxDeps struct {
@@ -125,6 +128,7 @@ type autoSandboxDeps struct {
 	materializeWorkspace   func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error)
 	prepareCommandContext  func(context.Context, sandboxexec.PrepareContext, string, string, io.Writer) (sandboxworkspace.MaterializationOperation, error)
 	applySyncOut           sandboxSyncOutApplier
+	workerJobWait          func(context.Context) error
 	execute                func(context.Context, autoSandboxRequest, io.Writer, io.Writer, autoSandboxExecutionHooks) (autoSandboxExecutionResult, error)
 
 	customRuntimeResolver bool
@@ -319,9 +323,12 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 	var target *sandbox.SandboxState
 	commandOut := out
 	var capturedJSON bytes.Buffer
+	capturedSummary := sandboxL3BoundedSummaryWriter{limit: sandboxL3RecoveryOutputSummaryBytes}
 	augmentJSON := opts.JSON
 	if augmentJSON {
 		commandOut = &capturedJSON
+	} else {
+		commandOut = io.MultiWriter(out, &capturedSummary)
 	}
 	execResult, execErr := deps.execute(ctx, req, commandOut, errOut, autoSandboxExecutionHooks{
 		OnTargetReady: func(ready *sandbox.SandboxState) error {
@@ -342,6 +349,22 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 				return err
 			}
 			return enforceSandboxExecutionSecurityReadinessGate(store, req.ExecutionID)
+		},
+		OnWorkerJobUpdate: func(reference *sandboxexecution.WorkerJobReference) error {
+			req.WorkerJob = sandboxexecution.SanitizeWorkerJobReference(reference)
+			req.Finalization = updateSandboxWorkerJobFinalization(
+				req.Finalization,
+				req.WorkerJob,
+				req.SyncOut.Enabled,
+				deps.now().UTC(),
+			)
+			return persistSandboxWorkerJobUpdate(
+				store,
+				req.ExecutionID,
+				req.WorkerJob,
+				req.SyncOut.Enabled,
+				deps.now().UTC(),
+			)
 		},
 	})
 	if execResult.Result != nil {
@@ -365,6 +388,38 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 			}
 		}
 		applyAutoSandboxSecurityReadinessGateError(&req, execErr)
+	}
+	if isSandboxWorkerJobDetachedError(execErr) {
+		return execErr
+	}
+	if req.WorkerJob != nil {
+		foregroundOutput := capturedJSON.Bytes()
+		if !augmentJSON {
+			foregroundOutput = []byte(capturedSummary.String())
+		}
+		if finalizationErr := finalizeAutoSandboxWorkerJob(
+			ctx,
+			store,
+			req,
+			execResult,
+			target,
+			foregroundOutput,
+			deps,
+		); finalizationErr != nil {
+			execErr = errors.Join(execErr, finalizationErr)
+		}
+		if augmentJSON && execResult.RemoteStarted {
+			if outputErr := outputSandboxAugmentedJSON(out, capturedJSON.Bytes(), store, req.ExecutionID); outputErr != nil {
+				execErr = errors.Join(execErr, outputErr)
+			}
+		}
+		if execErr != nil {
+			if opts.JSON && !execResult.RemoteStarted {
+				return outputAutoSandboxJSONErrorWithReadinessGateForCommand(cmd, out, args, opts, execErr.Error(), sandboxCommandSecurityReadinessGateDecisionFromError(execErr))
+			}
+			return execErr
+		}
+		return nil
 	}
 
 	if isSandboxRunPhaseError(execErr) {
@@ -497,6 +552,9 @@ func normalizeAutoSandboxDeps(deps autoSandboxDeps) autoSandboxDeps {
 	}
 	if deps.prepareCommandContext == nil {
 		deps.prepareCommandContext = prepareSandboxCommandContextRuntime
+	}
+	if deps.workerJobWait == nil {
+		deps.workerJobWait = waitForSandboxWorkerJobPoll
 	}
 	if deps.execute == nil {
 		deps.execute = deps.executeAutoSandbox
@@ -690,7 +748,15 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 			return nil
 		},
 		RunCommand: func(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {
-			return runSandboxRuntimeExec(ctx, run, command)
+			return runSandboxWorkerJobOrSync(ctx, sandboxWorkerJobCommandRequest{
+				ExecutionID:  req.ExecutionID,
+				UseWorkerJob: autoSandboxWorkerJobRouteSelected(req, run.Target, selectedTarget),
+				HostID:       sandboxWorkerJobSelectedHostID(selectedTarget),
+				Run:          run,
+				Command:      command,
+				Persist:      hooks.OnWorkerJobUpdate,
+				Wait:         deps.workerJobWait,
+			})
 		},
 		HandleEvent: func(_ context.Context, event sandboxexec.Event) error {
 			if event.Type == sandboxexec.EventCommandOutput && event.Stream == sandboxexec.StreamStdout {
@@ -761,7 +827,13 @@ func autoSandboxRemoteArchivePath(remoteJSON []byte, stdoutSummary string) (stri
 	}
 	if archivePath == "" {
 		const archivedStatePrefix = "Archived state to "
-		for _, line := range strings.Split(stdoutSummary, "\n") {
+		for {
+			end := strings.IndexByte(stdoutSummary, '\n')
+			if end < 0 {
+				break
+			}
+			line := stdoutSummary[:end]
+			stdoutSummary = stdoutSummary[end+1:]
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, archivedStatePrefix) {
 				archiveName := strings.TrimSpace(strings.TrimPrefix(line, archivedStatePrefix))
@@ -1113,9 +1185,12 @@ func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxReques
 		Security:                  cloneSandboxSecurity(nil),
 		NetworkProxySession:       sandboxManifestNetworkProxySession(req.NetworkProxySession),
 		NetworkPolicyDecisionLogs: sandboxManifestNetworkPolicyDecisionLogs(req.NetworkPolicyDecisionLogs),
+		WorkerJob:                 sandboxexecution.SanitizeWorkerJobReference(req.WorkerJob),
+		Finalization:              cloneSandboxWorkerJobFinalization(req.Finalization),
 	}
 	applyAutoSandboxCredentialProxyMetadata(manifest, req)
 	if target != nil {
+		manifest.SandboxID = strings.TrimSpace(target.ID)
 		if strings.TrimSpace(manifest.SandboxName) == "" {
 			manifest.SandboxName = strings.TrimSpace(target.Name)
 		}
@@ -1134,6 +1209,7 @@ func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxReques
 	applyAutoSandboxCapabilityReadinessMetadata(manifest)
 	manifest.Security = applyCommandSandboxSecurityReadinessGate(manifest.Security, req.SecurityReadinessGateMode, autoSandboxManifestSecurityReadinessGate(req, target))
 	preserveSandboxManifestArtifacts(store, manifest)
+	preserveSandboxManifestWorkerJobState(store, manifest)
 	return store.SaveManifest(manifest)
 }
 

@@ -39,7 +39,7 @@ func TestWorkerJobSurvivesClientDisconnectAndPersistsRedactedPrivateState(t *tes
 	service, stateDir, daemonCancel := newL2JobTestService(t, driver)
 	defer daemonCancel()
 
-	server, err := NewServer(ServerOptions{SocketPath: "worker.sock", Handler: service})
+	server, err := NewServer(ServerOptions{SocketPath: "/tmp/unused-worker.sock", Handler: service})
 	if err != nil {
 		t.Fatalf("NewServer() error: %v", err)
 	}
@@ -1455,6 +1455,170 @@ func TestWorkerJobGenericRedactionSpansDriverWrites(t *testing.T) {
 		if !strings.Contains(output, marker) {
 			t.Fatalf("split driver output = %q, want %q", output, marker)
 		}
+	}
+}
+
+func TestWorkerJobRedactsOpaqueAuthorizationHeaderBeforePersistence(t *testing.T) {
+	const opaqueCredential = "opaque-worker-log-credential"
+	driver := &l2JobRuntimeDriver{
+		fakeWorkerRuntimeDriver: &fakeWorkerRuntimeDriver{id: "authorization_redaction_driver"},
+		execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			for _, chunk := range []string{
+				"ready\nAuthoriz",
+				"ation: Bearer opaque-worker-",
+				"log-credential\nsafe-tail\n",
+			} {
+				if _, err := io.WriteString(req.Stdout, chunk); err != nil {
+					return nil, err
+				}
+			}
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+	}
+	service, stateDir, daemonCancel := newL2JobTestService(t, driver)
+	defer daemonCancel()
+	start := service.JobStartResponse(context.Background(), "start", driver.ID(), JobStartRequest{
+		ContractVersion: JobContractVersion,
+		SubmissionID:    "authorization-redaction",
+		Exec:            l2JobExecRequest("unrelated-request-secret"),
+	})
+	if !start.OK || start.Job == nil {
+		t.Fatalf("start response = %#v error=%#v", start, start.Error)
+	}
+	waitForL2JobState(t, service, start.Job.ID, JobStateSucceeded)
+	response := service.JobLogsResponse("logs", JobLogsRequest{
+		ContractVersion: JobContractVersion,
+		JobID:           start.Job.ID,
+		LimitBytes:      DefaultJobLogReadBytes,
+	})
+	if !response.OK || response.JobLogs == nil {
+		t.Fatalf("logs response = %#v error=%#v", response, response.Error)
+	}
+	var rendered strings.Builder
+	for _, record := range response.JobLogs.Records {
+		rendered.WriteString(record.Data)
+	}
+	output := rendered.String()
+	for _, forbidden := range []string{opaqueCredential, "Bearer"} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("worker logs exposed opaque authorization data %q in %q", forbidden, output)
+		}
+	}
+	for _, expected := range []string{"ready\n", "Authorization: [redacted]\n", "safe-tail\n"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("worker logs = %q, want safe segment %q", output, expected)
+		}
+	}
+	assertL2JobStatePrivateAndSanitized(t, stateDir, opaqueCredential)
+}
+
+func TestWorkerJobRedactsAlternateBearerCredentialsBeforePersistence(t *testing.T) {
+	credentials := []string{
+		"opaque-no-colon-credential",
+		"opaque-bare-credential",
+		"opaque-json-credential",
+	}
+	driver := &l2JobRuntimeDriver{
+		fakeWorkerRuntimeDriver: &fakeWorkerRuntimeDriver{id: "alternate_bearer_redaction_driver"},
+		execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			for _, chunk := range []string{
+				"Authorization Be",
+				"arer opaque-no-colon-credential\nBea",
+				"rer opaque-bare-credential\n{\"Authorization\":\"Bear",
+				"er opaque-json-credential\"}\nsafe-tail\n",
+			} {
+				if _, err := io.WriteString(req.Stderr, chunk); err != nil {
+					return nil, err
+				}
+			}
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+	}
+	service, stateDir, daemonCancel := newL2JobTestService(t, driver)
+	defer daemonCancel()
+	start := service.JobStartResponse(context.Background(), "start", driver.ID(), JobStartRequest{
+		ContractVersion: JobContractVersion,
+		SubmissionID:    "alternate-bearer-redaction",
+		Exec:            l2JobExecRequest("unrelated-request-secret"),
+	})
+	if !start.OK || start.Job == nil {
+		t.Fatalf("start response = %#v error=%#v", start, start.Error)
+	}
+	waitForL2JobState(t, service, start.Job.ID, JobStateSucceeded)
+	response := service.JobLogsResponse("logs", JobLogsRequest{
+		ContractVersion: JobContractVersion,
+		JobID:           start.Job.ID,
+		LimitBytes:      DefaultJobLogReadBytes,
+	})
+	if !response.OK || response.JobLogs == nil {
+		t.Fatalf("logs response = %#v error=%#v", response, response.Error)
+	}
+	var rendered strings.Builder
+	for _, record := range response.JobLogs.Records {
+		rendered.WriteString(record.Data)
+	}
+	output := rendered.String()
+	for _, forbidden := range append(credentials, "Bearer") {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("worker logs exposed alternate bearer data %q in %q", forbidden, output)
+		}
+		assertL2JobStatePrivateAndSanitized(t, stateDir, forbidden)
+	}
+	if got := strings.Count(output, "[redacted-credential]"); got != len(credentials) {
+		t.Fatalf("worker logs = %q, want %d credential redaction markers, got %d", output, len(credentials), got)
+	}
+	if !strings.Contains(output, "safe-tail\n") {
+		t.Fatalf("worker logs = %q, want safe tail after redacted credentials", output)
+	}
+}
+
+func TestWorkerJobRedactsBearerAfterUnicodePrefixBeforePersistence(t *testing.T) {
+	const opaqueCredential = "opaque-unicode-offset-secret"
+	driver := &l2JobRuntimeDriver{
+		fakeWorkerRuntimeDriver: &fakeWorkerRuntimeDriver{id: "unicode_bearer_redaction_driver"},
+		execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			// U+023A lowercases to a longer UTF-8 encoding. Repeating it before
+			// the credential ensures byte offsets remain tied to the original
+			// stream rather than a length-changing Unicode case fold.
+			_, err := io.WriteString(req.Stdout, strings.Repeat("\u023a", 16)+" Bearer "+opaqueCredential+"\nsafe-tail\n")
+			if err != nil {
+				return nil, err
+			}
+			return &sandboxruntime.ExecResult{ExitCode: 0}, nil
+		},
+	}
+	service, stateDir, daemonCancel := newL2JobTestService(t, driver)
+	defer daemonCancel()
+	start := service.JobStartResponse(context.Background(), "start", driver.ID(), JobStartRequest{
+		ContractVersion: JobContractVersion,
+		SubmissionID:    "unicode-bearer-redaction",
+		Exec:            l2JobExecRequest("unrelated-request-secret"),
+	})
+	if !start.OK || start.Job == nil {
+		t.Fatalf("start response = %#v error=%#v", start, start.Error)
+	}
+	waitForL2JobState(t, service, start.Job.ID, JobStateSucceeded)
+	response := service.JobLogsResponse("logs", JobLogsRequest{
+		ContractVersion: JobContractVersion,
+		JobID:           start.Job.ID,
+		LimitBytes:      DefaultJobLogReadBytes,
+	})
+	if !response.OK || response.JobLogs == nil {
+		t.Fatalf("logs response = %#v error=%#v", response, response.Error)
+	}
+	var rendered strings.Builder
+	for _, record := range response.JobLogs.Records {
+		rendered.WriteString(record.Data)
+	}
+	output := rendered.String()
+	for _, forbidden := range []string{opaqueCredential, "opaque-", "Bearer"} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("worker logs exposed Unicode-shifted authorization data %q in %q", forbidden, output)
+		}
+		assertL2JobStatePrivateAndSanitized(t, stateDir, forbidden)
+	}
+	if !strings.Contains(output, "[redacted-credential]") || !strings.Contains(output, "safe-tail\n") {
+		t.Fatalf("worker logs = %q, want a credential marker and safe tail", output)
 	}
 }
 

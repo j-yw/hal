@@ -15,6 +15,7 @@ func TestWorkerJobReferenceRoundTripsThroughManifestStore(t *testing.T) {
 	manifest.WorkerJob = &WorkerJobReference{
 		ContractVersion: WorkerJobContractVersion,
 		JobID:           "job-safe",
+		SubmissionKey:   "submission-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		WorkerID:        "worker-safe",
 		HostID:          "host-safe",
 		RuntimeDriver:   "rootless_podman",
@@ -33,8 +34,64 @@ func TestWorkerJobReferenceRoundTripsThroughManifestStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadManifest() error: %v", err)
 	}
-	if loaded.WorkerJob == nil || loaded.WorkerJob.JobID != "job-safe" || loaded.WorkerJob.LogCursor != 7 {
+	if loaded.WorkerJob == nil || loaded.WorkerJob.JobID != "job-safe" ||
+		loaded.WorkerJob.SubmissionKey != "submission-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" ||
+		loaded.WorkerJob.LogCursor != 7 {
 		t.Fatalf("loaded worker job = %#v, want durable safe reference", loaded.WorkerJob)
+	}
+}
+
+func TestL3WorkerJobReferenceAcceptsOnlySafeOptionalSubmissionIdentity(t *testing.T) {
+	now := time.Date(2026, time.July, 25, 12, 0, 0, 0, time.UTC)
+	for _, submissionKey := range []string{
+		"raw-execution-id",
+		"submission-token=secret",
+		"https://worker.invalid/submission",
+	} {
+		t.Run(submissionKey, func(t *testing.T) {
+			manifest := testManifest("exec-submission-key", now)
+			manifest.WorkerJob = &WorkerJobReference{
+				ContractVersion: WorkerJobContractVersion,
+				JobID:           "job-safe",
+				SubmissionKey:   submissionKey,
+				WorkerID:        "worker-safe",
+				RuntimeDriver:   "rootless_podman",
+				State:           "queued",
+				SubmittedAt:     now,
+			}
+			store := NewStore(filepath.Join(t.TempDir(), "executions"))
+			if err := store.SaveManifest(manifest); err == nil {
+				t.Fatalf("SaveManifest() accepted unsafe submissionKey %q", submissionKey)
+			}
+		})
+	}
+
+	manifest := testManifest("exec-submission-key-safe", now)
+	manifest.WorkerJob = &WorkerJobReference{
+		ContractVersion: WorkerJobContractVersion,
+		JobID:           "job-safe",
+		SubmissionKey:   "submission-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		WorkerID:        "worker-safe",
+		RuntimeDriver:   "rootless_podman",
+		State:           "queued",
+		SubmittedAt:     now,
+	}
+	store := NewStore(filepath.Join(t.TempDir(), "executions"))
+	if err := store.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest() rejected safe submissionKey: %v", err)
+	}
+
+	legacy := testManifest("exec-submission-key-legacy", now)
+	legacy.WorkerJob = &WorkerJobReference{
+		ContractVersion: WorkerJobContractVersion,
+		JobID:           "job-legacy",
+		WorkerID:        "worker-safe",
+		RuntimeDriver:   "rootless_podman",
+		State:           "queued",
+		SubmittedAt:     now,
+	}
+	if err := NewStore(filepath.Join(t.TempDir(), "executions")).SaveManifest(legacy); err != nil {
+		t.Fatalf("SaveManifest() rejected legacy workerJob without submissionKey: %v", err)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -71,6 +72,55 @@ func TestRunSandboxApplyExecutionAppliesCompletedStoredRunWithoutSandboxExecutio
 	manifest := mustLoadSandboxExecutionManifest(t, store, executionID)
 	if manifest.SyncOutApply == nil || !manifest.SyncOutApply.Applied {
 		t.Fatalf("persisted SyncOutApply = %#v, want applied result", manifest.SyncOutApply)
+	}
+}
+
+func TestRunSandboxApplyExecutionRevalidatesManifestAfterTakingExecutionLock(t *testing.T) {
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	executionID := "run-apply-revalidate"
+	projectDir := t.TempDir()
+	saveSandboxApplyExecutionFixture(t, store, sandboxApplyExecutionFixture{
+		ExecutionID: executionID,
+		Status:      sandboxexecution.StatusSucceeded,
+		PRD:         `{"project":"keyboard","userStories":[{"id":"US-001","passes":true}]}`,
+		ProjectDir:  projectDir,
+		Branch:      "hal/keyboard-remapping",
+		SyncRef:     sandboxApplyTestRevision,
+	})
+
+	applied := false
+	err := runSandboxApplyExecution(context.Background(), executionID, &bytes.Buffer{}, sandboxApplyExecutionDeps{
+		defaultStore:  func() (sandboxexecution.Store, error) { return store, nil },
+		workingDir:    func() (string, error) { return projectDir, nil },
+		currentBranch: func(string) (string, error) { return "hal/keyboard-remapping", nil },
+		currentRevision: func(context.Context, string) (string, error) {
+			replacement := mustLoadSandboxExecutionManifest(t, store, executionID)
+			replacement.Status = sandboxexecution.StatusRunning
+			replacement.FinishedAt = nil
+			if err := store.SaveManifest(replacement); err != nil {
+				t.Fatalf("SaveManifest(replacement) error: %v", err)
+			}
+			return sandboxApplyTestRevision, nil
+		},
+		applySyncOut: func(context.Context, sandboxSyncOutApplyRequest) (sandboxworkspace.SafeApplyResult, error) {
+			applied = true
+			return sandboxworkspace.SafeApplyResult{
+				Status:     sandboxworkspace.SafeApplyStatusApplied,
+				Applied:    true,
+				ArtifactID: "committed-patch",
+				Mode:       sandboxworkspace.SyncOutApplyModePatch,
+			}, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), `has status "running"`) {
+		t.Fatalf("runSandboxApplyExecution() error = %v, want locked manifest status rejection", err)
+	}
+	if applied {
+		t.Fatal("completed apply crossed host mutation after the authorized manifest changed")
+	}
+	manifest := mustLoadSandboxExecutionManifest(t, store, executionID)
+	if manifest.SyncOutApply != nil {
+		t.Fatalf("rejected replacement persisted apply metadata: %#v", manifest.SyncOutApply)
 	}
 }
 
@@ -262,6 +312,30 @@ func TestRunSandboxApplyExecutionRejectsUnsafeStoredRunsBeforeApply(t *testing.T
 				t.Fatal("apply hook ran for unsafe stored execution")
 			}
 		})
+	}
+}
+
+func TestCompletedApplyReadsPRDFromVerifiedDescriptor(t *testing.T) {
+	source, err := os.ReadFile("sandbox_apply_execution.go")
+	if err != nil {
+		t.Fatalf("ReadFile(sandbox_apply_execution.go) error: %v", err)
+	}
+	text := string(source)
+	start := strings.Index(text, "func validateSandboxExecutionReadyForCompletedApply")
+	end := strings.Index(text[start:], "\nfunc sandboxExecutionCollectedArtifactByPath")
+	if start < 0 || end < 0 {
+		t.Fatal("could not locate completed-apply PRD validation function")
+	}
+	body := text[start : start+end]
+	for _, forbidden := range []string{"ResolveStoredPath", "os.ReadFile"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("completed-apply PRD validation reopens a pathname via %s", forbidden)
+		}
+	}
+	for _, required := range []string{"OpenStoredFile", "io.ReadAll"} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("completed-apply PRD validation does not consume verified descriptor with %s", required)
+		}
 	}
 }
 

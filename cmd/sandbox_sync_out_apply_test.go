@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -618,6 +619,64 @@ func TestSandboxSyncOutHandoffInstructions(t *testing.T) {
 				"providerSecret",
 			})
 		})
+	}
+}
+
+func TestSandboxSyncOutApplyKeepsVerifiedPayloadOpenAcrossPathReplacement(t *testing.T) {
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	const executionID = "verified-apply-payload"
+	const storedPath = executionID + "/artifacts/sync/committed.patch"
+	saveSandboxSyncOutApplyManifest(t, store, executionID, sandboxexecution.PurposeRun, sandboxexecution.ArtifactMetadata{
+		Collected: []sandboxexecution.ArtifactMetadataEntry{
+			sandboxSyncOutApplyCollected("committed-patch", ".hal/sync/committed.patch", storedPath),
+		},
+	})
+	payloadPath := filepath.Join(store.Root(), filepath.FromSlash(storedPath))
+
+	_, err := applySandboxSyncOut(context.Background(), store, sandboxSyncOutApplyRequest{
+		ExecutionID: executionID,
+		Purpose:     sandboxexecution.PurposeRun,
+		ProjectDir:  t.TempDir(),
+		Options: sandboxSyncOutOptions{
+			Enabled: true,
+			Apply:   true,
+		},
+	}, func(_ context.Context, got sandboxSyncOutApplyRequest) (sandboxworkspace.SafeApplyResult, error) {
+		payloadField := reflect.ValueOf(got).FieldByName("Payload")
+		if !payloadField.IsValid() || payloadField.IsNil() {
+			t.Fatal("apply request did not retain a verified stored payload descriptor")
+		}
+		payload, ok := payloadField.Interface().(*os.File)
+		if !ok {
+			t.Fatalf("apply request Payload type = %T, want *os.File", payloadField.Interface())
+		}
+
+		trustedPath := payloadPath + ".trusted"
+		if err := os.Rename(payloadPath, trustedPath); err != nil {
+			t.Fatalf("Rename(trusted payload) error: %v", err)
+		}
+		if err := os.WriteFile(payloadPath, []byte("attacker replacement\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(replacement payload) error: %v", err)
+		}
+		if _, err := payload.Seek(0, io.SeekStart); err != nil {
+			t.Fatalf("Seek(verified payload) error: %v", err)
+		}
+		data, err := io.ReadAll(payload)
+		if err != nil {
+			t.Fatalf("ReadAll(verified payload) error: %v", err)
+		}
+		if got, want := string(data), "test artifact\n"; got != want {
+			t.Fatalf("verified payload bytes = %q, want trusted bytes %q", got, want)
+		}
+		return sandboxworkspace.SafeApplyResult{
+			Status:     sandboxworkspace.SafeApplyStatusApplied,
+			Applied:    true,
+			ArtifactID: "committed-patch",
+			Mode:       sandboxworkspace.SyncOutApplyModePatch,
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("applySandboxSyncOut() error: %v", err)
 	}
 }
 
@@ -1458,6 +1517,20 @@ func saveSandboxSyncOutApplyManifest(t *testing.T, store sandboxexecution.Store,
 		ArtifactMetadata: &metadata,
 	}); err != nil {
 		t.Fatalf("SaveManifest() error = %v", err)
+	}
+	for _, artifact := range metadata.Collected {
+		switch {
+		case strings.HasPrefix(artifact.StoredPath, executionID+"/artifacts/"):
+			payloadPath := strings.TrimPrefix(artifact.StoredPath, executionID+"/artifacts/")
+			if _, err := store.WriteArtifactPayload(executionID, payloadPath, []byte("test artifact\n")); err != nil {
+				t.Fatalf("WriteArtifactPayload(%q) error = %v", artifact.StoredPath, err)
+			}
+		case strings.HasPrefix(artifact.StoredPath, executionID+"/recovery/"):
+			payloadPath := strings.TrimPrefix(artifact.StoredPath, executionID+"/recovery/")
+			if _, err := store.WriteRecovery(executionID, payloadPath, []byte("test recovery artifact\n")); err != nil {
+				t.Fatalf("WriteRecovery(%q) error = %v", artifact.StoredPath, err)
+			}
+		}
 	}
 }
 

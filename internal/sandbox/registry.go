@@ -13,20 +13,26 @@ import (
 
 const sandboxStateFileExt = ".json"
 const pendingRemovalRegistryFileExt = ".replacing"
+const pendingRemovalGenerationFileExt = ".generation"
+const sandboxRegistryLockFileName = "sandbox-registry.lock"
 
 var (
-	renameRegistryFile = os.Rename
-	removeRegistryFile = os.Remove
+	renameRegistryFile         = os.Rename
+	removeRegistryFile         = os.Remove
+	acquireSandboxRegistryLock = lockSandboxRegistry
 )
 
 // PendingInstanceRemoval temporarily hides a registry entry while a caller
 // performs a destructive provider operation that may need rollback.
 type PendingInstanceRemoval struct {
-	name          string
-	path          string
-	backupPath    string
-	active        bool
-	alreadyStaged bool
+	name           string
+	sandboxID      string
+	generation     string
+	path           string
+	backupPath     string
+	generationPath string
+	active         bool
+	alreadyStaged  bool
 }
 
 // SaveInstance persists a sandbox instance in the global registry.
@@ -64,7 +70,16 @@ func writeInstance(instance *SandboxState, overwrite bool) error {
 	if err := EnsureGlobalDir(); err != nil {
 		return err
 	}
+	lock, err := acquireSandboxRegistryLock()
+	if err != nil {
+		return fmt.Errorf("acquire sandbox registry lock: %w", err)
+	}
+	defer lock.Close()
 
+	return writeInstanceLocked(instance, path, overwrite)
+}
+
+func writeInstanceLocked(instance *SandboxState, path string, overwrite bool) error {
 	if !overwrite {
 		if _, err := os.Stat(path); err == nil {
 			return fmt.Errorf("sandbox %q already exists", instance.Name)
@@ -113,6 +128,67 @@ func writeInstance(instance *SandboxState, overwrite bool) error {
 	return nil
 }
 
+// UpdateActiveInstanceExact atomically updates the active registry entry only
+// while its stable name and ID still match the caller's selected instance.
+// The update callback runs while the registry lock is held.
+func UpdateActiveInstanceExact(
+	name string,
+	expectedID string,
+	update func(*SandboxState) error,
+) error {
+	name = strings.TrimSpace(name)
+	expectedID = strings.TrimSpace(expectedID)
+	if name == "" || expectedID == "" {
+		return errors.New("active sandbox identity is unavailable for exact update")
+	}
+	if update == nil {
+		return errors.New("active sandbox update is required")
+	}
+	path, err := instancePath(name)
+	if err != nil {
+		return err
+	}
+	if err := EnsureGlobalDir(); err != nil {
+		return err
+	}
+	lock, err := acquireSandboxRegistryLock()
+	if err != nil {
+		return fmt.Errorf("acquire sandbox registry lock: %w", err)
+	}
+	defer lock.Close()
+
+	current, err := loadRegistryInstanceFileLocked(path, name)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("sandbox %q does not exist: %w", name, err)
+		}
+		return fmt.Errorf("read sandbox %q: %w", name, err)
+	}
+	if strings.TrimSpace(current.ID) != expectedID ||
+		strings.TrimSpace(current.Name) != name {
+		return errors.New("sandbox instance changed during exact update")
+	}
+	if err := update(current); err != nil {
+		return err
+	}
+	if strings.TrimSpace(current.ID) != expectedID ||
+		strings.TrimSpace(current.Name) != name {
+		return errors.New("sandbox identity cannot change during exact update")
+	}
+	return writeInstanceLocked(current, path, true)
+}
+
+func lockSandboxRegistry() (*sandboxLeaseStoreFileLock, error) {
+	dir, err := sandboxesDirPath()
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	return lockSandboxLeaseStoreFile(filepath.Join(dir, sandboxRegistryLockFileName))
+}
+
 func prepareRegistryOverwrite(path, name string) error {
 	pendingPath := path + pendingRemovalRegistryFileExt
 	pendingExists, err := registryFileExists(pendingPath)
@@ -131,6 +207,10 @@ func prepareRegistryOverwrite(path, name string) error {
 	if activeExists {
 		if err := removeRegistryFile(pendingPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("clear sandbox %q staged registry entry: %w", name, err)
+		}
+		generationPath := pendingPath + pendingRemovalGenerationFileExt
+		if err := removeRegistryFile(generationPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("clear sandbox %q staged registry generation: %w", name, err)
 		}
 		return nil
 	}
@@ -207,8 +287,14 @@ func StageInstanceRemoval(name string) (*PendingInstanceRemoval, error) {
 	if err != nil {
 		return nil, err
 	}
+	lock, err := acquireSandboxRegistryLock()
+	if err != nil {
+		return nil, fmt.Errorf("acquire sandbox registry lock: %w", err)
+	}
+	defer lock.Close()
 
 	backupPath := path + pendingRemovalRegistryFileExt
+	generationPath := backupPath + pendingRemovalGenerationFileExt
 	activeExists, err := registryFileExists(path)
 	if err != nil {
 		return nil, fmt.Errorf("check sandbox %q registry entry: %w", name, err)
@@ -220,12 +306,23 @@ func StageInstanceRemoval(name string) (*PendingInstanceRemoval, error) {
 
 	switch {
 	case backupExists && !activeExists:
+		instance, err := loadRegistryInstanceFileLocked(backupPath, name)
+		if err != nil {
+			return nil, fmt.Errorf("read sandbox %q staged registry entry: %w", name, err)
+		}
+		generation, err := loadOrCreatePendingRemovalGenerationLocked(generationPath)
+		if err != nil {
+			return nil, fmt.Errorf("load sandbox %q pending removal generation: %w", name, err)
+		}
 		return &PendingInstanceRemoval{
-			name:          name,
-			path:          path,
-			backupPath:    backupPath,
-			active:        true,
-			alreadyStaged: true,
+			name:           name,
+			sandboxID:      strings.TrimSpace(instance.ID),
+			generation:     generation,
+			path:           path,
+			backupPath:     backupPath,
+			generationPath: generationPath,
+			active:         true,
+			alreadyStaged:  true,
 		}, nil
 	case backupExists && activeExists:
 		return nil, fmt.Errorf("sandbox %q has both active and staged registry entries; resolve the pending removal before retrying", name)
@@ -233,19 +330,95 @@ func StageInstanceRemoval(name string) (*PendingInstanceRemoval, error) {
 		return nil, fmt.Errorf("sandbox %q does not exist: %w", name, fs.ErrNotExist)
 	}
 
+	instance, err := loadRegistryInstanceFileLocked(path, name)
+	if err != nil {
+		return nil, fmt.Errorf("read sandbox %q registry entry: %w", name, err)
+	}
+	if err := removeRegistryFile(generationPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("clear sandbox %q stale pending removal generation: %w", name, err)
+	}
+	generation, err := NewV7()
+	if err != nil {
+		return nil, fmt.Errorf("generate sandbox %q pending removal generation: %w", name, err)
+	}
 	if err := renameRegistryFile(path, backupPath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("sandbox %q does not exist: %w", name, err)
 		}
 		return nil, fmt.Errorf("prepare sandbox %q for replacement: %w", name, err)
 	}
+	if err := writePendingRemovalGenerationExclusive(generationPath, generation); err != nil {
+		if restoreErr := renameRegistryFile(backupPath, path); restoreErr != nil {
+			return nil, fmt.Errorf(
+				"persist sandbox %q pending removal generation: %w (restore failed: %v)",
+				name,
+				err,
+				restoreErr,
+			)
+		}
+		return nil, fmt.Errorf("persist sandbox %q pending removal generation: %w", name, err)
+	}
 
 	return &PendingInstanceRemoval{
-		name:       name,
-		path:       path,
-		backupPath: backupPath,
-		active:     true,
+		name:           name,
+		sandboxID:      strings.TrimSpace(instance.ID),
+		generation:     generation,
+		path:           path,
+		backupPath:     backupPath,
+		generationPath: generationPath,
+		active:         true,
 	}, nil
+}
+
+func loadOrCreatePendingRemovalGenerationLocked(path string) (string, error) {
+	generation, err := readPendingRemovalGeneration(path)
+	if err == nil {
+		return generation, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	generation, err = NewV7()
+	if err != nil {
+		return "", err
+	}
+	if err := writePendingRemovalGenerationExclusive(path, generation); err != nil {
+		return "", err
+	}
+	return generation, nil
+}
+
+func writePendingRemovalGenerationExclusive(path, generation string) error {
+	generation = strings.TrimSpace(generation)
+	if err := validateStorePathID(generation, "pending removal generation"); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := file.WriteString(generation + "\n"); err != nil {
+		_ = file.Close()
+		_ = removeRegistryFile(path)
+		return err
+	}
+	if err := file.Close(); err != nil {
+		_ = removeRegistryFile(path)
+		return err
+	}
+	return nil
+}
+
+func readPendingRemovalGeneration(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	generation := strings.TrimSpace(string(data))
+	if err := validateStorePathID(generation, "pending removal generation"); err != nil {
+		return "", err
+	}
+	return generation, nil
 }
 
 func registryFileExists(path string) (bool, error) {
@@ -270,8 +443,30 @@ func (p *PendingInstanceRemoval) Commit() error {
 	if p == nil || !p.active {
 		return nil
 	}
-	if err := removeRegistryFile(p.backupPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	lock, err := acquireSandboxRegistryLock()
+	if err != nil {
+		return fmt.Errorf("acquire sandbox registry lock: %w", err)
+	}
+	defer lock.Close()
+	staged, active, err := p.validatePendingRemovalGenerationLocked()
+	if err != nil {
+		return err
+	}
+	if staged == nil {
+		if active != nil {
+			return fmt.Errorf("sandbox %q pending removal is stale", p.name)
+		}
+		if err := removeRegistryFile(p.generationPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("finalize sandbox %q replacement generation: %w", p.name, err)
+		}
+		p.active = false
+		return nil
+	}
+	if err := removeRegistryFile(p.backupPath); err != nil {
 		return fmt.Errorf("finalize sandbox %q replacement: %w", p.name, err)
+	}
+	if err := removeRegistryFile(p.generationPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("finalize sandbox %q replacement generation: %w", p.name, err)
 	}
 	p.active = false
 	return nil
@@ -282,14 +477,87 @@ func (p *PendingInstanceRemoval) Rollback() error {
 	if p == nil || !p.active {
 		return nil
 	}
+	lock, err := acquireSandboxRegistryLock()
+	if err != nil {
+		return fmt.Errorf("acquire sandbox registry lock: %w", err)
+	}
+	defer lock.Close()
+	staged, active, err := p.validatePendingRemovalGenerationLocked()
+	if err != nil {
+		return err
+	}
+	if staged == nil {
+		if active == nil || strings.TrimSpace(active.ID) != strings.TrimSpace(p.sandboxID) {
+			return fmt.Errorf("sandbox %q pending removal is stale", p.name)
+		}
+		if err := removeRegistryFile(p.generationPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("restore sandbox %q registry generation: %w", p.name, err)
+		}
+		p.active = false
+		return nil
+	}
+	if active != nil {
+		return fmt.Errorf("sandbox %q has both active and staged registry entries", p.name)
+	}
 	if err := renameRegistryFile(p.backupPath, p.path); err != nil {
 		return fmt.Errorf("restore sandbox %q registry entry: %w", p.name, err)
+	}
+	if err := removeRegistryFile(p.generationPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("restore sandbox %q registry generation: %w", p.name, err)
 	}
 	p.active = false
 	return nil
 }
 
-func loadRegistryInstanceFile(path, name string) (*SandboxState, error) {
+func (p *PendingInstanceRemoval) validatePendingRemovalGenerationLocked() (*SandboxState, *SandboxState, error) {
+	if p == nil ||
+		strings.TrimSpace(p.sandboxID) == "" ||
+		strings.TrimSpace(p.generation) == "" ||
+		strings.TrimSpace(p.generationPath) == "" {
+		return nil, nil, errors.New("pending sandbox removal identity is unavailable")
+	}
+	generation, err := readPendingRemovalGeneration(p.generationPath)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, nil, fmt.Errorf("read sandbox %q pending removal generation: %w", p.name, err)
+		}
+		generation = ""
+	}
+	if generation != "" && generation != strings.TrimSpace(p.generation) {
+		return nil, nil, fmt.Errorf("sandbox %q pending removal generation changed", p.name)
+	}
+
+	staged, stagedErr := readRegistryInstanceFile(p.backupPath, p.name)
+	if stagedErr != nil && !errors.Is(stagedErr, fs.ErrNotExist) {
+		return nil, nil, fmt.Errorf("read sandbox %q staged registry entry: %w", p.name, stagedErr)
+	}
+	active, activeErr := readRegistryInstanceFile(p.path, p.name)
+	if activeErr != nil && !errors.Is(activeErr, fs.ErrNotExist) {
+		return nil, nil, fmt.Errorf("read sandbox %q active registry entry: %w", p.name, activeErr)
+	}
+	if stagedErr == nil {
+		if generation == "" {
+			return nil, nil, fmt.Errorf("sandbox %q pending removal generation is unavailable", p.name)
+		}
+		if strings.TrimSpace(staged.ID) != strings.TrimSpace(p.sandboxID) {
+			return nil, nil, fmt.Errorf("sandbox %q pending removal identity changed", p.name)
+		}
+	}
+	return staged, active, nil
+}
+
+func loadRegistryInstanceFileLocked(path, name string) (*SandboxState, error) {
+	instance, err := readRegistryInstanceFile(path, name)
+	if err != nil {
+		return nil, err
+	}
+	if err := repairRegistryInstanceIDLocked(path, instance); err != nil {
+		return nil, fmt.Errorf("repair sandbox %q: %w", name, err)
+	}
+	return instance, nil
+}
+
+func readRegistryInstanceFile(path, name string) (*SandboxState, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -300,10 +568,6 @@ func loadRegistryInstanceFile(path, name string) (*SandboxState, error) {
 		return nil, fmt.Errorf("parse sandbox %q: %w", name, err)
 	}
 	normalizeRegistryInstance(&instance, name)
-	if err := repairRegistryInstanceID(path, &instance); err != nil {
-		return nil, fmt.Errorf("repair sandbox %q: %w", name, err)
-	}
-
 	return &instance, nil
 }
 
@@ -316,7 +580,13 @@ func LoadActiveInstance(name string) (*SandboxState, error) {
 		return nil, err
 	}
 
-	instance, err := loadRegistryInstanceFile(path, name)
+	lock, err := acquireSandboxRegistryLock()
+	if err != nil {
+		return nil, fmt.Errorf("acquire sandbox registry lock: %w", err)
+	}
+	defer lock.Close()
+
+	instance, err := loadRegistryInstanceFileLocked(path, name)
 	if err == nil {
 		return instance, nil
 	}
@@ -330,7 +600,17 @@ func LoadActiveInstance(name string) (*SandboxState, error) {
 // delete was interrupted after staging, it falls back to the staged registry
 // entry so callers can resume cleanup.
 func LoadInstance(name string) (*SandboxState, error) {
-	instance, err := LoadActiveInstance(name)
+	path, err := instancePath(name)
+	if err != nil {
+		return nil, err
+	}
+	lock, err := acquireSandboxRegistryLock()
+	if err != nil {
+		return nil, fmt.Errorf("acquire sandbox registry lock: %w", err)
+	}
+	defer lock.Close()
+
+	instance, err := loadRegistryInstanceFileLocked(path, name)
 	if err == nil {
 		return instance, nil
 	}
@@ -338,12 +618,8 @@ func LoadInstance(name string) (*SandboxState, error) {
 		return nil, err
 	}
 
-	path, err := instancePath(name)
-	if err != nil {
-		return nil, err
-	}
 	stagedPath := path + pendingRemovalRegistryFileExt
-	instance, err = loadRegistryInstanceFile(stagedPath, name)
+	instance, err = loadRegistryInstanceFileLocked(stagedPath, name)
 	if err == nil {
 		return instance, nil
 	}
@@ -370,6 +646,12 @@ func listInstances(includeStagedFallback bool) ([]*SandboxState, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve sandboxes dir: %w", err)
 	}
+	lock, err := acquireSandboxRegistryLock()
+	if err != nil {
+		return nil, fmt.Errorf("acquire sandbox registry lock: %w", err)
+	}
+	defer lock.Close()
+
 	entries, err := os.ReadDir(sandboxesDir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -389,7 +671,7 @@ func listInstances(includeStagedFallback bool) ([]*SandboxState, error) {
 		activeNames[name] = struct{}{}
 
 		path := filepath.Join(sandboxesDir, entry.Name())
-		instance, err := loadRegistryInstanceFile(path, name)
+		instance, err := loadRegistryInstanceFileLocked(path, name)
 		if err != nil {
 			if strings.HasPrefix(err.Error(), "parse sandbox ") {
 				return nil, fmt.Errorf("parse sandbox file %q: %w", entry.Name(), err)
@@ -412,7 +694,7 @@ func listInstances(includeStagedFallback bool) ([]*SandboxState, error) {
 			}
 
 			path := filepath.Join(sandboxesDir, entry.Name())
-			instance, err := loadRegistryInstanceFile(path, name)
+			instance, err := loadRegistryInstanceFileLocked(path, name)
 			if err != nil {
 				if strings.HasPrefix(err.Error(), "parse sandbox ") {
 					return nil, fmt.Errorf("parse sandbox file %q: %w", entry.Name(), err)
@@ -494,6 +776,11 @@ func RemoveInstance(name string) error {
 	if err != nil {
 		return err
 	}
+	lock, err := acquireSandboxRegistryLock()
+	if err != nil {
+		return fmt.Errorf("acquire sandbox registry lock: %w", err)
+	}
+	defer lock.Close()
 
 	if err := os.Remove(path); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -555,7 +842,7 @@ func needsGeneratedRegistryID(instance *SandboxState) bool {
 		isLegacyDigitalOceanDropletID(instance.ID)
 }
 
-func repairRegistryInstanceID(path string, instance *SandboxState) error {
+func repairRegistryInstanceIDLocked(path string, instance *SandboxState) error {
 	if instance == nil {
 		return nil
 	}

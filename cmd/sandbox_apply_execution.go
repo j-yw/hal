@@ -121,6 +121,12 @@ func runSandboxApplyExecution(ctx context.Context, executionID string, out io.Wr
 			Enabled: true,
 			Apply:   true,
 		},
+		Authorize: func(locked sandboxexecution.Store, current *sandboxexecution.Manifest) error {
+			if err := validateSandboxExecutionReadyForCompletedApply(locked, current); err != nil {
+				return err
+			}
+			return validateSandboxExecutionHostIdentity(ctx, current, projectDir, deps.currentBranch, deps.currentRevision)
+		},
 	}, deps.applySyncOut)
 	if err != nil {
 		return fmt.Errorf("apply completed sandbox execution %q: %w", manifest.ID, err)
@@ -245,13 +251,17 @@ func validateSandboxExecutionReadyForCompletedApply(store sandboxexecution.Store
 	if prdArtifact == nil || strings.TrimSpace(prdArtifact.StoredPath) == "" {
 		return fmt.Errorf("sandbox execution %q has no collected %s completion artifact", manifest.ID, sandboxExecutionPRDDisplayPath)
 	}
-	prdPath, err := store.ResolveStoredPath(manifest.ID, prdArtifact.StoredPath)
+	prdFile, err := store.OpenStoredFile(manifest.ID, prdArtifact.StoredPath)
 	if err != nil {
-		return fmt.Errorf("resolve sandbox execution %q PRD completion artifact: %w", manifest.ID, err)
+		return fmt.Errorf("open sandbox execution %q PRD completion artifact: %w", manifest.ID, err)
 	}
-	data, err := os.ReadFile(prdPath)
+	data, err := io.ReadAll(prdFile)
+	closeErr := prdFile.Close()
 	if err != nil {
 		return fmt.Errorf("read sandbox execution %q PRD completion artifact: %w", manifest.ID, err)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close sandbox execution %q PRD completion artifact", manifest.ID)
 	}
 	var prd engine.PRD
 	if err := json.Unmarshal(data, &prd); err != nil {

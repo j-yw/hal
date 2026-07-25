@@ -1832,7 +1832,7 @@ func TestWorkerRootlessRunSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) {
 			if req.Target.Runtime.WorkerID != "worker-1" || req.Target.Runtime.RuntimeID != "ctr-worker-rootless" {
 				t.Fatalf("worker resolver runtime metadata = %#v, want durable worker metadata", req.Target.Runtime)
 			}
-			return workerDriver, nil
+			return withFakeSandboxWorkerJobs(workerDriver), nil
 		},
 		materializeWorkspace: func(_ context.Context, prep sandboxexec.PrepareContext, _ sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
 			materializedWithDriver = prep.Driver.ID()
@@ -1957,7 +1957,7 @@ func TestWorkerRootlessRunSandboxPersistsSafeSandboxStateMetadata(t *testing.T) 
 			return nil, nil
 		},
 		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
-			return workerDriver, nil
+			return withFakeSandboxWorkerJobs(workerDriver), nil
 		},
 		persistSandboxState: sandbox.ForceWriteInstance,
 		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
@@ -2000,7 +2000,7 @@ func TestWorkerRootlessAutoSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) 
 			if req.Target.Runtime.WorkerID != "worker-1" {
 				t.Fatalf("Exec worker ID = %q, want worker-1", req.Target.Runtime.WorkerID)
 			}
-			_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSON("worker-backed auto path")+"\n")
+			_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSONWithArchivePath("worker-backed auto path", ".hal/archive/worker-backed-auto")+"\n")
 			return &sandboxruntime.ExecResult{}, nil
 		},
 	}
@@ -2065,7 +2065,7 @@ func TestWorkerRootlessAutoSandboxUsesSharedWorkerRuntimeResolver(t *testing.T) 
 			if req.Target.Runtime.WorkerID != "worker-1" || req.Target.Runtime.RuntimeID != "ctr-worker-rootless" {
 				t.Fatalf("worker resolver runtime metadata = %#v, want durable worker metadata", req.Target.Runtime)
 			}
-			return workerDriver, nil
+			return withFakeSandboxWorkerJobs(workerDriver), nil
 		},
 		materializeWorkspace: func(_ context.Context, prep sandboxexec.PrepareContext, _ sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
 			materializedWithDriver = prep.Driver.ID()
@@ -2177,7 +2177,7 @@ func TestWorkerRootlessRunSandboxStreamsOutputAndSummariesExcludePreparation(t *
 			return nil, nil
 		},
 		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
-			return workerDriver, nil
+			return withFakeSandboxWorkerJobs(workerDriver), nil
 		},
 		bootstrap:              bootstrapWithPreparationOutput(),
 		runProviderExecWithEnv: runProviderExecWithPreparationOutput("run preparation output"),
@@ -2234,7 +2234,7 @@ func TestWorkerRootlessAutoSandboxStreamsOutputAndSummariesExcludePreparation(t 
 				_, _ = io.WriteString(req.Stdout, "auto preparation output\n")
 				return &sandboxruntime.ExecResult{}, nil
 			}
-			_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSON("worker auto stream")+"\n")
+			_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSONWithArchivePath("worker auto stream", ".hal/archive/worker-auto-stream")+"\n")
 			_, _ = io.WriteString(req.Stderr, "worker auto stderr one\n")
 			_, _ = io.WriteString(req.Stderr, "worker auto stderr two\n")
 			return &sandboxruntime.ExecResult{}, nil
@@ -2287,7 +2287,7 @@ func TestWorkerRootlessAutoSandboxStreamsOutputAndSummariesExcludePreparation(t 
 			return nil, nil
 		},
 		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
-			return workerDriver, nil
+			return withFakeSandboxWorkerJobs(workerDriver), nil
 		},
 		bootstrap:              bootstrapWithPreparationOutput(),
 		runProviderExecWithEnv: runProviderExecWithPreparationOutput("auto preparation output"),
@@ -2315,7 +2315,7 @@ func TestWorkerRootlessAutoSandboxStreamsOutputAndSummariesExcludePreparation(t 
 	}
 	stdoutSummary := requireSandboxOutputSummaryPayload(t, store, manifest, "output/stdout-summary.txt")
 	stderrSummary := requireSandboxOutputSummaryPayload(t, store, manifest, "output/stderr-summary.txt")
-	if stdoutSummary != autoSandboxRemoteSuccessJSON("worker auto stream")+"\n" {
+	if stdoutSummary != autoSandboxRemoteSuccessJSONWithArchivePath("worker auto stream", ".hal/archive/worker-auto-stream")+"\n" {
 		t.Fatalf("stdout summary = %q, want only remote JSON output", stdoutSummary)
 	}
 	if stderrSummary != "worker auto stderr one\nworker auto stderr two\n" {
@@ -2410,7 +2410,7 @@ func TestWorkerRootlessRunSandboxUsesRuntimeCopyForWorkspaceAndArtifacts(t *test
 			return nil, nil
 		},
 		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
-			return workerDriver, nil
+			return withFakeSandboxWorkerJobs(workerDriver), nil
 		},
 		materializeWorkspace: func(ctx context.Context, prep sandboxexec.PrepareContext, req sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
 			req.BundleDir = bundleDir
@@ -2469,7 +2469,7 @@ func TestWorkerRootlessAutoSandboxUsesRuntimeCopyForWorkspaceAndArtifacts(t *tes
 				t.Fatalf("Exec worker ID = %q, want worker-1", req.Target.Runtime.WorkerID)
 			}
 			if isWorkerAutoCommandExec(req) {
-				_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSON("worker auto copy semantics")+"\n")
+				_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSONWithArchivePath("worker auto copy semantics", ".hal/archive/worker-auto-copy")+"\n")
 			}
 			return &sandboxruntime.ExecResult{}, nil
 		},
@@ -2533,7 +2533,7 @@ func TestWorkerRootlessAutoSandboxUsesRuntimeCopyForWorkspaceAndArtifacts(t *tes
 			return nil, nil
 		},
 		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
-			return workerDriver, nil
+			return withFakeSandboxWorkerJobs(workerDriver), nil
 		},
 		materializeWorkspace: func(ctx context.Context, prep sandboxexec.PrepareContext, req sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
 			req.BundleDir = bundleDir
@@ -2555,9 +2555,9 @@ func TestWorkerRootlessAutoSandboxUsesRuntimeCopyForWorkspaceAndArtifacts(t *tes
 	}
 	requireWorkerRuntimeCopyIn(t, copyIns, bundleDir, "/tmp/hal-workspace-bundles/worker-rootless-sync.bundle")
 	requireWorkerRuntimeCopyOutSources(t, copyOuts, []string{
-		".hal/prd.json",
-		".hal/progress.txt",
-		".hal/auto-state.json",
+		".hal/archive/worker-auto-copy/prd.json",
+		".hal/archive/worker-auto-copy/progress.txt",
+		".hal/archive/worker-auto-copy/auto-state.json",
 		".hal/recovery/workspace.patch",
 		".hal/reports.tar",
 	})
@@ -2588,7 +2588,12 @@ func TestWorkerRootlessRunSandboxCollectsRecoveryAfterRemoteFailure(t *testing.T
 				t.Fatalf("Exec target runtime = %#v, want selected worker rootless runtime", req.Target.Runtime)
 			}
 			if isWorkerOutputArtifactGenerationExec(req) {
-				execCalls = append(execCalls, "recovery_generation")
+				command := strings.Join(req.Args, "\n")
+				if strings.Contains(command, ".hal/recovery/workspace.patch") {
+					execCalls = append(execCalls, "recovery_generation")
+				} else {
+					execCalls = append(execCalls, "reports_generation")
+				}
 				return &sandboxruntime.ExecResult{}, nil
 			}
 			if isWorkerRunCommandExec(req) {
@@ -2660,7 +2665,7 @@ func TestWorkerRootlessRunSandboxCollectsRecoveryAfterRemoteFailure(t *testing.T
 			return nil, nil
 		},
 		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
-			return workerDriver, nil
+			return withFakeSandboxWorkerJobs(workerDriver), nil
 		},
 		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
 			return factory.BootstrapResult{}, nil
@@ -2678,10 +2683,15 @@ func TestWorkerRootlessRunSandboxCollectsRecoveryAfterRemoteFailure(t *testing.T
 	if result.OK {
 		t.Fatal("RunResult.OK = true, want false")
 	}
-	if !reflect.DeepEqual(execCalls, []string{"remote_run", "recovery_generation"}) {
-		t.Fatalf("exec calls = %#v, want remote failure followed by recovery generation", execCalls)
+	if !reflect.DeepEqual(execCalls, []string{"remote_run", "recovery_generation", "reports_generation"}) {
+		t.Fatalf("exec calls = %#v, want remote failure followed by full terminal generation", execCalls)
 	}
-	requireWorkerRuntimeCopyOutSources(t, copyOuts, []string{".hal/recovery/workspace.patch"})
+	requireWorkerRuntimeCopyOutSources(t, copyOuts, []string{
+		".hal/prd.json",
+		".hal/progress.txt",
+		".hal/recovery/workspace.patch",
+		".hal/reports.tar",
+	})
 
 	manifest, loadErr := store.LoadManifest("run-worker-rootless-failed-recovery")
 	if loadErr != nil {
@@ -2690,13 +2700,25 @@ func TestWorkerRootlessRunSandboxCollectsRecoveryAfterRemoteFailure(t *testing.T
 	if manifest.Status != sandboxexecution.StatusFailed {
 		t.Fatalf("manifest.Status = %q, want failed", manifest.Status)
 	}
+	if manifest.Finalization == nil ||
+		manifest.Finalization.State != sandboxexecution.FinalizationStateCompleted ||
+		!manifest.Finalization.Checkpoints.Artifacts.Completed ||
+		!manifest.Finalization.Checkpoints.TerminalPublication.Completed {
+		t.Fatalf("manifest finalization = %#v, want completed terminal collection", manifest.Finalization)
+	}
 	if manifest.ArtifactMetadata == nil {
 		t.Fatal("ArtifactMetadata = nil, want failed worker recovery metadata")
 	}
-	if len(manifest.ArtifactMetadata.Collected) != 1 {
-		t.Fatalf("collected = %#v, want recovery artifact", manifest.ArtifactMetadata.Collected)
+	collectedByID := make(map[string]sandboxexecution.ArtifactMetadataEntry)
+	for _, artifact := range manifest.ArtifactMetadata.Collected {
+		collectedByID[artifact.ID] = artifact
 	}
-	recovery := manifest.ArtifactMetadata.Collected[0]
+	for _, id := range []string{"prd", "progress", "recovery-patch", "reports-archive", "stdout-summary"} {
+		if _, ok := collectedByID[id]; !ok {
+			t.Fatalf("collected = %#v, want terminal artifact %q", manifest.ArtifactMetadata.Collected, id)
+		}
+	}
+	recovery := collectedByID["recovery-patch"]
 	assertRunSandboxCollectedArtifact(t, recovery, ".hal/recovery/workspace.patch", "run-worker-rootless-failed-recovery/recovery/workspace.patch")
 	if payload := readRunSandboxStoreFile(t, store, recovery.StoredPath); payload != "worker recovery payload" {
 		t.Fatalf("recovery payload = %q, want copied worker recovery payload", payload)
@@ -2743,7 +2765,13 @@ func TestWorkerRootlessAutoSandboxRecordsRecoveryWarningAfterFailedCopyOut(t *te
 			if req.Target.Runtime.Driver != sandboxruntime.DriverRootlessPodman || req.Target.Runtime.WorkerID != "worker-1" {
 				t.Fatalf("CopyOut target runtime = %#v, want selected worker rootless runtime", req.Target.Runtime)
 			}
-			return recoveryErr
+			if strings.HasSuffix(req.SourcePath, ".hal/recovery/workspace.patch") {
+				return recoveryErr
+			}
+			if err := os.MkdirAll(filepath.Dir(req.DestinationPath), 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(req.DestinationPath, []byte("worker terminal payload"), 0o600)
 		},
 	}
 
@@ -2793,7 +2821,7 @@ func TestWorkerRootlessAutoSandboxRecordsRecoveryWarningAfterFailedCopyOut(t *te
 			return nil, nil
 		},
 		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
-			return workerDriver, nil
+			return withFakeSandboxWorkerJobs(workerDriver), nil
 		},
 		bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
 			return factory.BootstrapResult{}, nil
@@ -2807,7 +2835,10 @@ func TestWorkerRootlessAutoSandboxRecordsRecoveryWarningAfterFailedCopyOut(t *te
 	})
 	requireRenderedJSONExitCode(t, err, ExitCodeExpectedNonZero)
 	if errors.Is(err, recoveryErr) {
-		t.Fatalf("runAutoSandboxWithWriter() error = %v, recovery copy-out failure should remain best-effort", err)
+		t.Fatalf("runAutoSandboxWithWriter() error exposed unsafe recovery detail: %v", err)
+	}
+	if !strings.Contains(err.Error(), "artifact_collection_failed") {
+		t.Fatalf("runAutoSandboxWithWriter() error = %v, want blocked strict finalization", err)
 	}
 	var result AutoResult
 	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
@@ -2817,20 +2848,33 @@ func TestWorkerRootlessAutoSandboxRecordsRecoveryWarningAfterFailedCopyOut(t *te
 	if !reflect.DeepEqual(execCalls, []string{"remote_auto", "recovery_generation"}) {
 		t.Fatalf("exec calls = %#v, want remote failure followed by recovery generation", execCalls)
 	}
-	requireWorkerRuntimeCopyOutSources(t, copyOuts, []string{".hal/recovery/workspace.patch"})
+	foundRecoveryCopy := false
+	for _, copyOut := range copyOuts {
+		if strings.HasSuffix(copyOut.SourcePath, ".hal/recovery/workspace.patch") {
+			foundRecoveryCopy = true
+		}
+	}
+	if !foundRecoveryCopy {
+		t.Fatalf("copy-out calls = %#v, want recovery artifact attempt", copyOuts)
+	}
 
 	manifest, loadErr := store.LoadManifest("auto-worker-rootless-failed-recovery")
 	if loadErr != nil {
 		t.Fatalf("LoadManifest() error: %v", loadErr)
 	}
-	if manifest.Status != sandboxexecution.StatusFailed {
-		t.Fatalf("manifest.Status = %q, want failed", manifest.Status)
+	if manifest.Status != sandboxexecution.StatusRunning {
+		t.Fatalf("manifest.Status = %q, want unpublished running state", manifest.Status)
+	}
+	if manifest.Finalization == nil ||
+		manifest.Finalization.State != sandboxexecution.FinalizationStateBlocked ||
+		manifest.Finalization.ReasonCode != "artifact_collection_failed" ||
+		manifest.Finalization.Checkpoints.Artifacts.Completed ||
+		manifest.Finalization.Checkpoints.LeaseRelease.Completed ||
+		manifest.Finalization.Checkpoints.TerminalPublication.Completed {
+		t.Fatalf("blocked finalization = %#v", manifest.Finalization)
 	}
 	if manifest.ArtifactMetadata == nil {
 		t.Fatal("ArtifactMetadata = nil, want best-effort recovery warning metadata")
-	}
-	if len(manifest.ArtifactMetadata.Collected) != 0 {
-		t.Fatalf("collected = %#v, want none after recovery copy-out failure", manifest.ArtifactMetadata.Collected)
 	}
 	if len(manifest.ArtifactMetadata.Partial) != 1 {
 		t.Fatalf("partial = %#v, want recovery partial", manifest.ArtifactMetadata.Partial)

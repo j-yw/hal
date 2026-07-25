@@ -21,7 +21,7 @@ func TestPhase46SandboxExecutionManifestRedactionGuards(t *testing.T) {
 	phase46AssertCommandRawValuesAbsent(t, "sanitized activation failure", phase46MarshalCommandJSON(t, activation), fixture)
 
 	startedAt := time.Date(2026, 7, 3, 13, 0, 0, 0, time.UTC)
-	runStore := sandboxexecution.NewStore(t.TempDir())
+	runStore := newPrivateSandboxExecutionTestStore(t)
 	if err := saveRunSandboxManifest(runStore, runSandboxRequest{
 		ExecutionID:                  "run-phase46-redaction",
 		ProjectDir:                   "/repo",
@@ -37,7 +37,7 @@ func TestPhase46SandboxExecutionManifestRedactionGuards(t *testing.T) {
 	runManifest := mustLoadSandboxExecutionManifest(t, runStore, "run-phase46-redaction")
 	phase46AssertCommandManifestRedaction(t, "run manifest", runManifest, fixture)
 
-	autoStore := sandboxexecution.NewStore(t.TempDir())
+	autoStore := newPrivateSandboxExecutionTestStore(t)
 	if err := saveAutoSandboxManifest(autoStore, autoSandboxRequest{
 		ExecutionID:                  "auto-phase46-redaction",
 		ProjectDir:                   "/repo",

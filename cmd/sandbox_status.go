@@ -32,7 +32,8 @@ Human output redacts public cloud and Tailscale addresses by default. Use
 When no NAME is provided, delegates to 'hal sandbox list' to show all
 sandboxes in the global registry.`,
 	Example: `  hal sandbox status my-sandbox
-  hal sandbox status`,
+  hal sandbox status
+  hal sandbox status NAME --live --json`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := io.Writer(os.Stdout)
@@ -43,14 +44,26 @@ sandboxes in the global registry.`,
 		}
 		return runSandboxCobra(cmd, "Sandbox Status failed", func() error {
 			if len(args) == 0 {
-				return runSandboxListWithWriters(out, errOut, false, false)
+				return runSandboxListWithWriters(out, errOut, sandboxStatusJSONFlag, sandboxStatusLiveFlag)
+			}
+			if sandboxStatusJSONFlag {
+				ctx := context.Background()
+				if cmd != nil && cmd.Context() != nil {
+					ctx = cmd.Context()
+				}
+				return runSandboxL3StatusJSON(ctx, args[0], sandboxStatusLiveFlag, out)
 			}
 			return runSandboxStatus(args[0], out, nil)
 		})
 	},
 }
 
+var sandboxStatusLiveFlag bool
+var sandboxStatusJSONFlag bool
+
 func init() {
+	sandboxStatusCmd.Flags().BoolVar(&sandboxStatusLiveFlag, "live", false, "Refresh the selected durable worker execution")
+	sandboxStatusCmd.Flags().BoolVar(&sandboxStatusJSONFlag, "json", false, "Output machine-readable JSON (sandbox-status-v1 contract)")
 	sandboxCmd.AddCommand(sandboxStatusCmd)
 }
 
@@ -72,14 +85,25 @@ var sandboxStatusResolveRuntime = func(target *sandbox.SandboxState) (sandboxrun
 // registry entry before a live refresh persists updates.
 var sandboxStatusLoadActiveInstance = sandbox.LoadActiveInstance
 
-// sandboxStatusForceWrite persists successful live status refreshes.
-var sandboxStatusForceWrite = sandbox.ForceWriteInstance
+// sandboxStatusForceWrite persists successful live status refreshes only while
+// the selected stable sandbox identity remains active.
+var sandboxStatusForceWrite = updateActiveSandboxInstanceExact
 
 // sandboxStatusNow is injectable for deterministic tests.
 var sandboxStatusNow = func() time.Time { return time.Now() }
 
+func updateActiveSandboxInstanceExact(updated *sandbox.SandboxState) error {
+	if updated == nil {
+		return errors.New("active sandbox update is unavailable")
+	}
+	return sandbox.UpdateActiveInstanceExact(updated.Name, updated.ID, func(current *sandbox.SandboxState) error {
+		*current = *updated
+		return nil
+	})
+}
+
 func liveStatusWriteTarget(
-	name string,
+	selected *sandbox.SandboxState,
 	loadActive func(string) (*sandbox.SandboxState, error),
 	write func(*sandbox.SandboxState) error,
 ) (func(*sandbox.SandboxState) error, error) {
@@ -87,20 +111,40 @@ func liveStatusWriteTarget(
 		return write, nil
 	}
 
-	if _, err := loadActive(name); err != nil {
+	if selected == nil {
+		return nil, errors.New("active sandbox identity is unavailable for live status refresh")
+	}
+	selectedID := strings.TrimSpace(selected.ID)
+	selectedName := strings.TrimSpace(selected.Name)
+	if selectedID == "" || selectedName == "" {
+		return nil, errors.New("active sandbox identity is unavailable for live status refresh")
+	}
+	current, err := loadActive(selectedName)
+	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
 	}
+	if current == nil {
+		return nil, nil
+	}
+	if strings.TrimSpace(current.ID) != selectedID ||
+		strings.TrimSpace(current.Name) != selectedName {
+		return nil, errors.New("sandbox instance changed during live status refresh")
+	}
 
 	return func(updated *sandbox.SandboxState) error {
-		current, err := loadActive(name)
+		current, err := loadActive(selectedName)
 		if err != nil {
 			return err
 		}
 		if current == nil {
 			return fs.ErrNotExist
+		}
+		if strings.TrimSpace(current.ID) != selectedID ||
+			strings.TrimSpace(current.Name) != selectedName {
+			return errors.New("sandbox instance changed during live status refresh")
 		}
 
 		current.Status = updated.Status
@@ -164,7 +208,7 @@ func runSandboxStatusWithDeps(name string, out io.Writer, provider sandbox.Provi
 		liveErr = nil
 	}
 	if liveErr == nil {
-		writeTarget, err := liveStatusWriteTarget(instance.Name, sandboxStatusLoadActiveInstance, sandboxStatusForceWrite)
+		writeTarget, err := liveStatusWriteTarget(instance, sandboxStatusLoadActiveInstance, sandboxStatusForceWrite)
 		if err != nil {
 			liveErr = fmt.Errorf("load active sandbox %q: %w", instance.Name, err)
 		} else if liveWarning == nil {
