@@ -267,6 +267,90 @@ func TestL4ServerTransportFailureDrainsThenFailsAndClosesOnce(t *testing.T) {
 	}
 }
 
+func TestL4ServerConcurrentShutdownDoesNotMaskTransportFailure(t *testing.T) {
+	transportErr := errors.New("transport failed independently")
+	transport := &l4ConcurrentShutdownTransport{
+		started:      make(chan struct{}),
+		release:      make(chan struct{}),
+		shutdownDone: make(chan error, 1),
+		err:          transportErr,
+	}
+	closeStarted := make(chan struct{}, 1)
+	closeRelease := make(chan struct{})
+	backend := &l4FakeBackend{closeStarted: closeStarted, closeRelease: closeRelease}
+	server, err := New(Options{Transport: transport, Backend: backend})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- server.Serve(context.Background())
+	}()
+	<-transport.started
+	close(transport.release)
+	<-closeStarted
+	close(closeRelease)
+
+	if err := <-done; !errors.Is(err, transportErr) {
+		t.Fatalf("Serve() error = %v, want transport failure", err)
+	}
+	if err := <-transport.shutdownDone; err != nil {
+		t.Fatalf("concurrent Shutdown() error: %v", err)
+	}
+	if got := server.State(); got != StateFailed {
+		t.Fatalf("State() = %q, want %q", got, StateFailed)
+	}
+	if backend.closeCalls.Load() != 1 {
+		t.Fatalf("Close calls = %d, want 1", backend.closeCalls.Load())
+	}
+}
+
+func TestL4ServerCancellationErrorContract(t *testing.T) {
+	t.Run("matching context error stops cleanly", func(t *testing.T) {
+		transport := newL4CancellationErrorTransport(true)
+		server, err := New(Options{Transport: transport, Backend: &l4FakeBackend{}})
+		if err != nil {
+			t.Fatalf("New() error: %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			done <- server.Serve(ctx)
+		}()
+		<-transport.started
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatalf("Serve() error = %v, want nil", err)
+		}
+		if got := server.State(); got != StateStopped {
+			t.Fatalf("State() = %q, want %q", got, StateStopped)
+		}
+	})
+
+	t.Run("nonmatching error fails closed", func(t *testing.T) {
+		transportErr := errors.New("listener close failed")
+		transport := newL4CancellationErrorTransport(false)
+		transport.err = transportErr
+		server, err := New(Options{Transport: transport, Backend: &l4FakeBackend{}})
+		if err != nil {
+			t.Fatalf("New() error: %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			done <- server.Serve(ctx)
+		}()
+		<-transport.started
+		cancel()
+		if err := <-done; !errors.Is(err, transportErr) {
+			t.Fatalf("Serve() error = %v, want transport failure", err)
+		}
+		if got := server.State(); got != StateFailed {
+			t.Fatalf("State() = %q, want %q", got, StateFailed)
+		}
+	})
+}
+
 func TestL4ServerServeCancellationStopsAndClosesOnce(t *testing.T) {
 	transport := newL4BlockingTransport()
 	backend := &l4FakeBackend{}
@@ -290,6 +374,53 @@ func TestL4ServerServeCancellationStopsAndClosesOnce(t *testing.T) {
 	if backend.closeCalls.Load() != 1 {
 		t.Fatalf("Close calls = %d, want 1", backend.closeCalls.Load())
 	}
+}
+
+type l4ConcurrentShutdownTransport struct {
+	started      chan struct{}
+	release      chan struct{}
+	shutdownDone chan error
+	err          error
+}
+
+func (transport *l4ConcurrentShutdownTransport) Serve(_ context.Context, _ Limits, handler Handler) error {
+	close(transport.started)
+	<-transport.release
+
+	server := handler.(*Server)
+	go func() {
+		transport.shutdownDone <- server.Shutdown(context.Background())
+	}()
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	for server.State() != StateDraining {
+		select {
+		case <-deadline.C:
+			return errors.New("concurrent shutdown did not begin draining")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	return transport.err
+}
+
+type l4CancellationErrorTransport struct {
+	started chan struct{}
+	wrap    bool
+	err     error
+}
+
+func newL4CancellationErrorTransport(wrap bool) *l4CancellationErrorTransport {
+	return &l4CancellationErrorTransport{started: make(chan struct{}), wrap: wrap}
+}
+
+func (transport *l4CancellationErrorTransport) Serve(ctx context.Context, _ Limits, _ Handler) error {
+	close(transport.started)
+	<-ctx.Done()
+	if transport.wrap {
+		return errors.Join(errors.New("transport canceled"), ctx.Err())
+	}
+	return transport.err
 }
 
 func l4HandleContext(t *testing.T, ctx context.Context, server *Server, value any) Response {

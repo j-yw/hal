@@ -95,10 +95,13 @@ host-client-only `guestagent.TransportRequest` sideband.
 limit before allocating or reading a complete frame, enforce the response
 limit before writing a frame, stop accepting when its context is canceled,
 allow no handler call after `Serve` returns, and return promptly after
-cancellation. `Server` repeats the encoded bounds defensively and owns strict
-decoding, dispatch, operation timing, response encoding, concurrency, and
-shutdown. L4 tests use an in-memory transport. L5 supplies the concrete guest
-vsock transport and its framing proof.
+cancellation. A transport whose return is caused only by cancellation must
+return nil or an error that matches the supplied context error through
+`errors.Is`; every other non-nil error is an independent transport failure,
+including when it races with `Shutdown`. `Server` repeats the encoded bounds
+defensively and owns strict decoding, dispatch, operation timing, response
+encoding, concurrency, and shutdown. L4 tests use an in-memory transport. L5
+supplies the concrete guest vsock transport and its framing proof.
 
 The server state machine is:
 
