@@ -177,7 +177,7 @@ func validateHeader(version ProtocolVersion, operation Operation, want Operation
 	if strings.TrimSpace(string(version)) == "" {
 		return newValidationError(ErrorCodeMissingRequiredField, want, "protocolVersion", "protocol version is required")
 	}
-	if ProtocolVersion(strings.TrimSpace(string(version))) != ProtocolVersionV1 {
+	if version != ProtocolVersionV1 {
 		return newValidationError(ErrorCodeUnsupportedProtocolVersion, want, "protocolVersion", "protocol version is unsupported")
 	}
 	if strings.TrimSpace(string(operation)) == "" {

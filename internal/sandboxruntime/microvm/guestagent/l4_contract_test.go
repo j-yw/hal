@@ -202,10 +202,6 @@ func TestL4ClientStrictlyRejectsMalformedResponseObjects(t *testing.T) {
 			response: `{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"Ready":false,"status":"ready"}`,
 		},
 		{
-			name:     "padded protocol version",
-			response: `{"protocolVersion":" guest-agent-v1 ","operation":"readiness","ready":true,"status":"ready"}`,
-		},
-		{
 			name:     "trailing document",
 			response: `{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready"} {}`,
 		},
@@ -231,6 +227,17 @@ func TestL4ClientStrictlyRejectsMalformedResponseObjects(t *testing.T) {
 				t.Fatalf("Readiness() error = %v, want %s", err, ErrorCodeMalformedResponse)
 			}
 		})
+	}
+}
+
+func TestL4ClientRejectsPaddedProtocolVersion(t *testing.T) {
+	client := l4ReadinessClient(
+		t,
+		[]byte(`{"protocolVersion":" guest-agent-v1 ","operation":"readiness","ready":true,"status":"ready"}`),
+	)
+	_, err := client.Readiness(context.Background(), ReadinessRequest{})
+	if !l4ProtocolErrorCode(err, ErrorCodeUnsupportedProtocolVersion) {
+		t.Fatalf("Readiness() error = %v, want %s", err, ErrorCodeUnsupportedProtocolVersion)
 	}
 }
 
