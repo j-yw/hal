@@ -310,8 +310,8 @@ func TestL4ClientRejectsPaddedPayloadEncoding(t *testing.T) {
 				`"stderr":{"maxBytes":1024}}`
 			client := l4ReadinessClient(t, []byte(response))
 			_, err := client.Exec(context.Background(), validExecRequest())
-			if !l4ProtocolErrorCode(err, ErrorCodeMalformedResponse) {
-				t.Fatalf("Exec() error = %v, want %s", err, ErrorCodeMalformedResponse)
+			if !l4ProtocolErrorCode(err, ErrorCodeInvalidMetadata) {
+				t.Fatalf("Exec() error = %v, want %s", err, ErrorCodeInvalidMetadata)
 			}
 		})
 	}

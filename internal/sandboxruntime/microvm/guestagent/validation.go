@@ -412,7 +412,7 @@ func validateEncodedData(operation Operation, field, data string, encoding Paylo
 		return newValidationError(ErrorCodeInvalidMetadata, operation, field+".data", kind+" data contains invalid characters")
 	}
 	decodedSize := int64(len(data))
-	switch PayloadEncoding(strings.TrimSpace(string(encoding))) {
+	switch encoding {
 	case "", PayloadEncodingRaw:
 	case PayloadEncodingBase64:
 		if len(data) > maxBase64EncodedPayloadLength(maxBytes, maximumBytes) {
@@ -470,7 +470,7 @@ func validPayloadDigest(digest string) bool {
 }
 
 func validPayloadEncoding(encoding PayloadEncoding) bool {
-	switch PayloadEncoding(strings.TrimSpace(string(encoding))) {
+	switch encoding {
 	case PayloadEncodingRaw, PayloadEncodingBase64, PayloadEncodingChunked:
 		return true
 	default:
