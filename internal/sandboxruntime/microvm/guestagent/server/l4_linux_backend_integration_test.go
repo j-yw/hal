@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -20,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent"
+	"golang.org/x/sys/unix"
 )
 
 const l4AmbientCanary = "L4_PREPARED_AMBIENT_CANARY"
@@ -35,7 +38,7 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 		WorkspaceRoot:   workspace,
 		GuestRoot:       "/workspace",
 		ExecutablePaths: []string{filepath.Dir(os.Args[0])},
-		TermGrace:       25 * time.Millisecond,
+		TermGrace:       250 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("NewLinuxBackend() prerequisite failure: %v", err)
@@ -106,6 +109,41 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 		waitL4ProcessGone(t, pid)
 	})
 
+	t.Run("cancel terminates and reaps process group descendant", func(t *testing.T) {
+		childPIDPath := filepath.Join(workspace, "descendant.pid")
+		reapedPath := filepath.Join(workspace, "descendant.reaped")
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan []byte, 1)
+		go func() {
+			done <- transport.roundTrip(ctx, mustL4JSON(t, l4ExecRequest([]string{
+				os.Args[0], "-test.run=^TestL4PreparedLinuxHelperProcess$", "--", "group-leader", childPIDPath, reapedPath,
+			}, nil, 64, 64)))
+		}()
+		childPID := waitL4PID(t, childPIDPath)
+		cancel()
+		assertL4ErrorCode(t, <-done, "request_canceled")
+		if got, err := os.ReadFile(reapedPath); err != nil || string(got) != "reaped" {
+			t.Fatalf("descendant reap marker = %q, %v", got, err)
+		}
+		waitL4ProcessGone(t, childPID)
+	})
+
+	t.Run("exec and environment fail closed", func(t *testing.T) {
+		for _, executable := range []string{"/bin/sh", "sh"} {
+			request := l4ExecRequest([]string{executable, "-c", "exit 0"}, nil, 64, 64)
+			assertL4ErrorCode(t, transport.roundTrip(context.Background(), mustL4JSON(t, request)), "execution_failed")
+		}
+
+		request := l4ExecRequest([]string{
+			os.Args[0], "-test.run=^TestL4PreparedLinuxHelperProcess$", "--", "output",
+		}, nil, 64, 64)
+		request.Env = []guestagent.EnvironmentEntry{{
+			Name:   "REQUESTED_VALUE",
+			Source: guestagent.EnvironmentSourceGenerated,
+		}}
+		assertL4ErrorCode(t, transport.roundTrip(context.Background(), mustL4JSON(t, request)), "environment_unavailable")
+	})
+
 	t.Run("copy digest atomic mode preservation and containment", func(t *testing.T) {
 		old := []byte("old")
 		path := filepath.Join(workspace, "artifact.bin")
@@ -172,11 +210,66 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 		}
 		copyOut.SourcePath = "/workspace/link"
 		assertL4Error(t, transport.roundTrip(context.Background(), mustL4JSON(t, copyOut)))
-		if err := os.Link(path, filepath.Join(workspace, "hardlink")); err != nil {
-			t.Fatalf("create hard link: %v", err)
+	})
+
+	t.Run("copy-out rejects directory fifo socket and hard link", func(t *testing.T) {
+		directoryPath := filepath.Join(workspace, "copy-out-directory")
+		if err := os.Mkdir(directoryPath, 0o700); err != nil {
+			t.Fatalf("create copy-out directory: %v", err)
 		}
-		copyOut.SourcePath = "/workspace/hardlink"
-		assertL4Error(t, transport.roundTrip(context.Background(), mustL4JSON(t, copyOut)))
+		fifoPath := filepath.Join(workspace, "copy-out.fifo")
+		if err := unix.Mkfifo(fifoPath, 0o600); err != nil {
+			t.Fatalf("create copy-out FIFO: %v", err)
+		}
+		socketPath := filepath.Join(workspace, "copy-out.sock")
+		socketFD, err := unix.Socket(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+		if err != nil {
+			t.Fatalf("create copy-out socket: %v", err)
+		}
+		defer unix.Close(socketFD)
+		if err := unix.Bind(socketFD, &unix.SockaddrUnix{Name: socketPath}); err != nil {
+			t.Fatalf("bind copy-out socket: %v", err)
+		}
+		originalPath := filepath.Join(workspace, "copy-out-original")
+		hardLinkPath := filepath.Join(workspace, "copy-out-hardlink")
+		if err := os.WriteFile(originalPath, []byte("linked"), 0o600); err != nil {
+			t.Fatalf("create copy-out original: %v", err)
+		}
+		if err := os.Link(originalPath, hardLinkPath); err != nil {
+			t.Fatalf("create copy-out hard link: %v", err)
+		}
+
+		for _, sourcePath := range []string{
+			"/workspace/copy-out-directory",
+			"/workspace/copy-out.fifo",
+			"/workspace/copy-out.sock",
+			"/workspace/copy-out-hardlink",
+		} {
+			request := l4CopyOutRequest(sourcePath, 1024)
+			assertL4ErrorCode(t, transport.roundTrip(context.Background(), mustL4JSON(t, request)), "copy_failed")
+		}
+	})
+
+	t.Run("rejected copy-in preserves destination and removes temporary file", func(t *testing.T) {
+		destinationPath := filepath.Join(workspace, "preserved-directory")
+		if err := os.Mkdir(destinationPath, 0o700); err != nil {
+			t.Fatalf("create preserved destination: %v", err)
+		}
+		sentinelPath := filepath.Join(destinationPath, "sentinel")
+		if err := os.WriteFile(sentinelPath, []byte("preserve-me"), 0o600); err != nil {
+			t.Fatalf("create preserved sentinel: %v", err)
+		}
+		assertNoL4CopyTemps(t, workspace)
+
+		payload := []byte("replacement")
+		request := l4CopyInRequest("/workspace/preserved-directory", payload, 1024)
+		assertL4ErrorCode(t, transport.roundTrip(context.Background(), mustL4JSON(t, request)), "copy_failed")
+
+		got, err := os.ReadFile(sentinelPath)
+		if err != nil || string(got) != "preserve-me" {
+			t.Fatalf("preserved destination sentinel = %q, %v", got, err)
+		}
+		assertNoL4CopyTemps(t, workspace)
 	})
 
 	if err := server.Shutdown(context.Background()); err != nil {
@@ -215,6 +308,29 @@ func TestL4PreparedLinuxHelperProcess(t *testing.T) {
 		_, _ = io.WriteString(os.Stderr, "123456789")
 		os.Exit(0)
 	case "sleep":
+		if len(args) != 1 {
+			os.Exit(2)
+		}
+		_ = os.WriteFile(args[0], []byte(fmt.Sprintf("%d", os.Getpid())), 0o600)
+		select {}
+	case "group-leader":
+		if len(args) != 2 {
+			os.Exit(2)
+		}
+		termination := make(chan os.Signal, 1)
+		signal.Notify(termination, syscall.SIGTERM)
+		defer signal.Stop(termination)
+		child := exec.Command(os.Args[0], "-test.run=^TestL4PreparedLinuxHelperProcess$", "--", "group-child", args[0])
+		if err := child.Start(); err != nil {
+			os.Exit(3)
+		}
+		<-termination
+		_ = child.Wait()
+		if err := os.WriteFile(args[1], []byte("reaped"), 0o600); err != nil {
+			os.Exit(4)
+		}
+		os.Exit(0)
+	case "group-child":
 		if len(args) != 1 {
 			os.Exit(2)
 		}
@@ -279,6 +395,33 @@ func l4ExecRequest(args []string, stdin []byte, stdoutMax, stderrMax int64) gues
 		}
 	}
 	return request
+}
+
+func l4CopyInRequest(destinationPath string, data []byte, maxBytes int64) guestagent.CopyInRequest {
+	return guestagent.CopyInRequest{
+		ProtocolVersion: guestagent.ProtocolVersionV1,
+		Operation:       guestagent.OperationCopyIn,
+		DestinationPath: destinationPath,
+		Payload: guestagent.PayloadMetadata{
+			SizeBytes: int64(len(data)),
+			MaxBytes:  maxBytes,
+			Digest:    l4IntegrationDigest(data),
+			Encoding:  guestagent.PayloadEncodingBase64,
+			Data:      base64.StdEncoding.EncodeToString(data),
+		},
+	}
+}
+
+func l4CopyOutRequest(sourcePath string, maxBytes int64) guestagent.CopyOutRequest {
+	return guestagent.CopyOutRequest{
+		ProtocolVersion: guestagent.ProtocolVersionV1,
+		Operation:       guestagent.OperationCopyOut,
+		SourcePath:      sourcePath,
+		Payload: guestagent.PayloadMetadata{
+			MaxBytes: maxBytes,
+			Encoding: guestagent.PayloadEncodingBase64,
+		},
+	}
 }
 
 func l4IntegrationDigest(data []byte) string {
@@ -373,4 +516,17 @@ func waitL4ProcessGone(t *testing.T, pid int) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("process %d still exists after cancellation", pid)
+}
+
+func assertNoL4CopyTemps(t *testing.T, directory string) {
+	t.Helper()
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatalf("read copy destination directory: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".hal-copy-") && strings.HasSuffix(entry.Name(), ".tmp") {
+			t.Fatalf("copy temporary file remained after rejection: %s", entry.Name())
+		}
+	}
 }
