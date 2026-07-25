@@ -181,6 +181,13 @@ func TestL3PreparedLinuxRecoveryE2E(t *testing.T) {
 			Image:          image,
 			WorkerID:       l3PreparedLinuxWorkerID,
 		},
+		WorkerRouting: &sandbox.WorkerRoutingMetadata{
+			SelectedWorkerHostID:   host.ID,
+			SelectedWorkerHostName: host.Name,
+			RuntimeDriverID:        sandboxruntime.DriverRootlessPodman,
+			IsolationLevel:         sandbox.SandboxIsolationLevelContainer,
+			EndpointSummary:        "local Unix socket",
+		},
 		Lease: &sandbox.SandboxLeaseRef{
 			ID:            lease.ID,
 			HostID:        host.ID,
