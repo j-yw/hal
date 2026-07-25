@@ -136,6 +136,15 @@ func TestL4ServerLateBackendSuccessNeverOverridesContext(t *testing.T) {
 		request any
 	}{
 		{
+			name:    "readiness",
+			backend: &l4FakeBackend{readyReturnAfterContext: true},
+			request: guestagent.ReadinessRequest{
+				ProtocolVersion: guestagent.ProtocolVersionV1,
+				Operation:       guestagent.OperationReadiness,
+				Timing:          &guestagent.TimingMetadata{TimeoutMillis: 1},
+			},
+		},
+		{
 			name:    "exec",
 			backend: &l4FakeBackend{execReturnAfterContext: true},
 			request: guestagent.ExecRequest{

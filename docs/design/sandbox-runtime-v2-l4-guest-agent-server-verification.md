@@ -49,6 +49,9 @@ truncation, fail-closed environment resolution, timeout, cancellation,
 shutdown, process-group termination, reap, work-directory descriptor pinning,
 and descriptor non-inheritance.
 
+Readiness, exec, copy-in, and copy-out deadlines remain authoritative when an
+injected backend returns success only after its operation context expires.
+
 Copy coverage includes byte-for-byte round trip, exact lowercase SHA-256,
 oversize rejection, atomic replacement, `0600` mode, existing-target
 preservation, temporary-file cleanup, mutation detection, traversal and prefix

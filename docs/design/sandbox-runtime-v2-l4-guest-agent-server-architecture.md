@@ -431,16 +431,18 @@ without launching the executable. After launch, cancellation, timeout,
 shutdown, output-pipe failure, or observed leader exit sends `SIGTERM` to the
 group,
 waits a bounded grace period, sends `SIGKILL` if necessary, and only then calls
-`Wait` once to reap the leader. The same termination grace configures
-`exec.Cmd.WaitDelay`, bounding pipe-copy cleanup when an escaped descendant
-retains stdout or stderr after the leader exits; forced pipe closure returns a
-fixed `execution_failed` response. Request cancellation and deadlines remain
-authoritative throughout process and output cleanup, including after leader
-exit; cleanup observes them, closes retained output pipes, and returns the
-matching fixed request error instead of a late success. No group signal is sent
-after reap, avoiding PGID-reuse races. A signaled exit is reported
-deterministically as `128+signal`. Start failures use `execution_failed`
-without executable, path, argument, or OS-error detail.
+`Wait` once to reap the leader. Explicit stdout and stderr drain goroutines are
+bounded by the same termination grace; when an escaped descendant retains an
+output descriptor after the leader exits, the server forcibly closes its owned
+read descriptors and returns a fixed `execution_failed` response.
+`exec.Cmd.WaitDelay` remains a backstop for the command's internal stdin-copy
+goroutine. Request cancellation and deadlines remain authoritative throughout
+readiness, exec, copy, and process/output cleanup, including after a backend
+returns success or a process leader exits; the server returns the matching
+fixed request error instead of a late success. No group signal is sent after
+reap, avoiding PGID-reuse races. A signaled exit is reported deterministically
+as `128+signal`. Start failures use `execution_failed` without executable,
+path, argument, or OS-error detail.
 
 The L4 process-group proof covers the launched command and descendants that
 remain in its group. A deliberately escaping `setsid`/`setpgid` descendant is

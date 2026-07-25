@@ -27,6 +27,7 @@ type l4FakeBackend struct {
 	closeStarted chan struct{}
 	closeRelease chan struct{}
 
+	readyReturnAfterContext   bool
 	execReturnAfterContext    bool
 	copyInReturnAfterContext  bool
 	copyOutReturnAfterContext bool
@@ -43,8 +44,11 @@ type l4FakeBackend struct {
 	copyOutPlans []CopyOutPlan
 }
 
-func (backend *l4FakeBackend) Ready(context.Context) error {
+func (backend *l4FakeBackend) Ready(ctx context.Context) error {
 	backend.readyCalls.Add(1)
+	if backend.readyReturnAfterContext {
+		<-ctx.Done()
+	}
 	return backend.readyErr
 }
 
