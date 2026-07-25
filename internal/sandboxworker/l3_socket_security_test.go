@@ -181,6 +181,9 @@ func TestL3WorkerServerRejectsSocketParentReplacementDuringBind(t *testing.T) {
 	if strings.Contains(err.Error(), socketPath) || strings.Contains(err.Error(), base) {
 		t.Fatalf("ListenAndServe() error exposed a socket path: %v", err)
 	}
+	if _, statErr := os.Lstat(socketPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("ListenAndServe() left its socket after rejecting the replaced parent: %v", statErr)
+	}
 }
 
 func TestL3WorkerServerRejectsReplaceableSocketAncestorBeforeBind(t *testing.T) {
