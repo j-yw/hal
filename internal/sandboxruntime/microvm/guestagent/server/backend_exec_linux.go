@@ -135,7 +135,8 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 	backend.runAfterExecStartTestHook()
 
 	pgid := command.Process.Pid
-	if err := backend.registerProcessGroup(pgid); err != nil {
+	processGroup, err := backend.registerProcessGroup(pgid)
+	if err != nil {
 		_ = unix.Kill(-pgid, unix.SIGKILL)
 		cleanupDone := startLinuxCommandReaper(nil, func() error {
 			return backend.waitCommand(command)
@@ -156,11 +157,11 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 	case err := <-waitID:
 		waitID = nil
 		if err != nil {
-			backend.handoffProcessGroupToReaper(pgid)
+			backend.handoffProcessGroupToReaper(pgid, processGroup)
 			cleanupDone := startLinuxCommandReaper(nil, func() error {
 				return backend.waitCommand(command)
 			}, func() {
-				backend.unregisterProcessGroup(pgid)
+				backend.unregisterProcessGroup(pgid, processGroup)
 			})
 			if _, cleanupExceeded := waitForLinuxCommandReaper(cleanupDone, backend.termGrace); cleanupExceeded {
 				return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "process", "guest command cleanup exceeded the server limit", nil)
@@ -200,11 +201,11 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 		}
 	}
 	stopLinuxTimer(timer)
-	backend.handoffProcessGroupToReaper(pgid)
+	backend.handoffProcessGroupToReaper(pgid, processGroup)
 	cleanupDone := startLinuxCommandReaper(waitID, func() error {
 		return backend.waitCommand(command)
 	}, func() {
-		backend.unregisterProcessGroup(pgid)
+		backend.unregisterProcessGroup(pgid, processGroup)
 	})
 	cleanupResult, cleanupExceeded := waitForLinuxCommandReaper(cleanupDone, backend.termGrace)
 	if cleanupExceeded {
@@ -444,34 +445,38 @@ func (backend *linuxBackend) linuxExecutableIsInterpreterScript(executableFD int
 	return n == len(header) && header[0] == '#' && header[1] == '!', nil
 }
 
-func (backend *linuxBackend) registerProcessGroup(pgid int) error {
+func (backend *linuxBackend) registerProcessGroup(pgid int) (*linuxProcessGroup, error) {
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
 	if backend.closed {
-		return linuxBackendError(guestagent.ErrorCodeBackendUnavailable, guestagent.OperationExec, "backend", "guest backend is unavailable", nil)
+		return nil, linuxBackendError(guestagent.ErrorCodeBackendUnavailable, guestagent.OperationExec, "backend", "guest backend is unavailable", nil)
 	}
-	backend.processGroups[pgid] = &linuxProcessGroup{
+	if _, owned := backend.processGroups[pgid]; owned {
+		return nil, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "process", "guest command ownership is unavailable", nil)
+	}
+	group := &linuxProcessGroup{
 		state: linuxProcessGroupActive,
 		done:  make(chan struct{}),
 	}
-	return nil
+	backend.processGroups[pgid] = group
+	return group, nil
 }
 
-func (backend *linuxBackend) handoffProcessGroupToReaper(pgid int) {
+func (backend *linuxBackend) handoffProcessGroupToReaper(pgid int, expected *linuxProcessGroup) {
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
 	group, owned := backend.processGroups[pgid]
-	if !owned || group.state == linuxProcessGroupReaping {
+	if !owned || group != expected || group.state == linuxProcessGroupReaping {
 		return
 	}
 	_ = unix.Kill(-pgid, unix.SIGKILL)
 	group.state = linuxProcessGroupReaping
 }
 
-func (backend *linuxBackend) unregisterProcessGroup(pgid int) {
+func (backend *linuxBackend) unregisterProcessGroup(pgid int, expected *linuxProcessGroup) {
 	backend.mu.Lock()
 	group, owned := backend.processGroups[pgid]
-	if owned {
+	if owned && group == expected {
 		delete(backend.processGroups, pgid)
 		close(group.done)
 	}

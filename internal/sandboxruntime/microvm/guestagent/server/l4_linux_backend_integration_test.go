@@ -46,16 +46,41 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 			processGroups: make(map[int]*linuxProcessGroup),
 		}
 		const pgid = 424242
-		if err := backend.registerProcessGroup(pgid); err != nil {
+		original, err := backend.registerProcessGroup(pgid)
+		if err != nil {
 			t.Fatalf("registerProcessGroup() initial error: %v", err)
 		}
-		original := backend.processGroups[pgid]
 
-		if err := backend.registerProcessGroup(pgid); err == nil {
+		if _, err := backend.registerProcessGroup(pgid); err == nil {
 			t.Fatal("registerProcessGroup() replaced an unreleased process-group identity")
 		}
 		if got := backend.processGroups[pgid]; got != original {
 			t.Fatal("registerProcessGroup() changed ownership after duplicate registration")
+		}
+
+		replacement := &linuxProcessGroup{
+			state: linuxProcessGroupActive,
+			done:  make(chan struct{}),
+		}
+		backend.processGroups[pgid] = replacement
+		backend.handoffProcessGroupToReaper(pgid, original)
+		if replacement.state != linuxProcessGroupActive {
+			t.Fatal("stale process-group handoff changed a newer ownership generation")
+		}
+		backend.unregisterProcessGroup(pgid, original)
+		if got := backend.processGroups[pgid]; got != replacement {
+			t.Fatal("stale process-group release deleted a newer ownership generation")
+		}
+		select {
+		case <-replacement.done:
+			t.Fatal("stale process-group release completed a newer ownership generation")
+		default:
+		}
+		backend.unregisterProcessGroup(pgid, replacement)
+		select {
+		case <-replacement.done:
+		default:
+			t.Fatal("current process-group release did not complete its ownership generation")
 		}
 	})
 
