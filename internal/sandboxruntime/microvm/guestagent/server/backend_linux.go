@@ -57,7 +57,7 @@ func NewLinuxBackend(options LinuxBackendOptions) (Backend, error) {
 			unix.RESOLVE_NO_SYMLINKS),
 	})
 	if err != nil {
-		return nil, linuxBackendError(guestagent.ErrorCode("backend_unavailable"), "", "workspaceRoot", "guest workspace is unavailable", err)
+		return nil, linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "workspaceRoot", "guest workspace is unavailable", err)
 	}
 
 	backend := &linuxBackend{
@@ -68,7 +68,7 @@ func NewLinuxBackend(options LinuxBackendOptions) (Backend, error) {
 		processGroups: make(map[int]struct{}),
 	}
 	if backend.termGrace < 0 {
-		err = linuxBackendError(guestagent.ErrorCode("backend_unavailable"), "", "termGrace", "process termination grace is invalid", nil)
+		err = linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "termGrace", "process termination grace is invalid", nil)
 		return nil, err
 	}
 	if backend.termGrace == 0 {
@@ -82,14 +82,14 @@ func NewLinuxBackend(options LinuxBackendOptions) (Backend, error) {
 
 	probeFD, probeErr := backend.openWorkspace(".", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if probeErr != nil {
-		err = linuxBackendError(guestagent.ErrorCode("backend_unavailable"), "", "workspaceRoot", "required Linux containment is unavailable", probeErr)
+		err = linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "workspaceRoot", "required Linux containment is unavailable", probeErr)
 		return nil, err
 	}
 	_ = unix.Close(probeFD)
 
 	backend.procSelfFD, err = unix.Open("/proc/self/fd", unix.O_PATH|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
-		err = linuxBackendError(guestagent.ErrorCode("backend_unavailable"), "", "procfd", "required descriptor bridge is unavailable", err)
+		err = linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "procfd", "required descriptor bridge is unavailable", err)
 		return nil, err
 	}
 	if err = backend.verifyProcDescriptorBridge(); err != nil {
@@ -109,20 +109,20 @@ func NewLinuxBackend(options LinuxBackendOptions) (Backend, error) {
 
 func (backend *linuxBackend) Ready(context.Context) error {
 	if backend == nil {
-		return linuxBackendError(guestagent.ErrorCode("backend_unavailable"), guestagent.OperationReadiness, "backend", "guest backend is unavailable", nil)
+		return linuxBackendError(guestagent.ErrorCodeBackendUnavailable, guestagent.OperationReadiness, "backend", "guest backend is unavailable", nil)
 	}
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
 	if backend.closed {
-		return linuxBackendError(guestagent.ErrorCode("backend_unavailable"), guestagent.OperationReadiness, "backend", "guest backend is unavailable", nil)
+		return linuxBackendError(guestagent.ErrorCodeBackendUnavailable, guestagent.OperationReadiness, "backend", "guest backend is unavailable", nil)
 	}
 	var workspaceStat unix.Stat_t
 	var procStat unix.Stat_t
 	if err := unix.Fstat(backend.workspaceFD, &workspaceStat); err != nil {
-		return linuxBackendError(guestagent.ErrorCode("backend_unavailable"), guestagent.OperationReadiness, "backend", "guest backend is unavailable", err)
+		return linuxBackendError(guestagent.ErrorCodeBackendUnavailable, guestagent.OperationReadiness, "backend", "guest backend is unavailable", err)
 	}
 	if err := unix.Fstat(backend.procSelfFD, &procStat); err != nil {
-		return linuxBackendError(guestagent.ErrorCode("backend_unavailable"), guestagent.OperationReadiness, "backend", "guest backend is unavailable", err)
+		return linuxBackendError(guestagent.ErrorCodeBackendUnavailable, guestagent.OperationReadiness, "backend", "guest backend is unavailable", err)
 	}
 	return nil
 }
@@ -223,18 +223,18 @@ func (backend *linuxBackend) guestRelative(operation guestagent.Operation, field
 func (backend *linuxBackend) verifyProcDescriptorBridge() error {
 	reopened, err := unix.Openat(backend.procSelfFD, strconv.Itoa(backend.workspaceFD), unix.O_PATH|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return linuxBackendError(guestagent.ErrorCode("backend_unavailable"), "", "procfd", "required descriptor bridge is unavailable", err)
+		return linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "procfd", "required descriptor bridge is unavailable", err)
 	}
 	defer unix.Close(reopened)
 	var originalStat, reopenedStat unix.Stat_t
 	if err := unix.Fstat(backend.workspaceFD, &originalStat); err != nil {
-		return linuxBackendError(guestagent.ErrorCode("backend_unavailable"), "", "procfd", "required descriptor bridge is unavailable", err)
+		return linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "procfd", "required descriptor bridge is unavailable", err)
 	}
 	if err := unix.Fstat(reopened, &reopenedStat); err != nil {
-		return linuxBackendError(guestagent.ErrorCode("backend_unavailable"), "", "procfd", "required descriptor bridge is unavailable", err)
+		return linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "procfd", "required descriptor bridge is unavailable", err)
 	}
 	if originalStat.Dev != reopenedStat.Dev || originalStat.Ino != reopenedStat.Ino {
-		return linuxBackendError(guestagent.ErrorCode("backend_unavailable"), "", "procfd", "required descriptor bridge is unavailable", errors.New("descriptor identity mismatch"))
+		return linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "procfd", "required descriptor bridge is unavailable", errors.New("descriptor identity mismatch"))
 	}
 	return nil
 }
@@ -242,11 +242,11 @@ func (backend *linuxBackend) verifyProcDescriptorBridge() error {
 func validateLinuxRoots(workspaceRoot, guestRoot string) (string, string, error) {
 	workspaceRoot = filepath.Clean(workspaceRoot)
 	if workspaceRoot == "." || !filepath.IsAbs(workspaceRoot) || workspaceRoot == string(filepath.Separator) {
-		return "", "", linuxBackendError(guestagent.ErrorCode("backend_unavailable"), "", "workspaceRoot", "guest workspace configuration is invalid", nil)
+		return "", "", linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "workspaceRoot", "guest workspace configuration is invalid", nil)
 	}
 	guestRoot = path.Clean(guestRoot)
 	if guestRoot == "." || guestRoot == "/" || !strings.HasPrefix(guestRoot, "/") {
-		return "", "", linuxBackendError(guestagent.ErrorCode("backend_unavailable"), "", "guestRoot", "guest workspace configuration is invalid", nil)
+		return "", "", linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "guestRoot", "guest workspace configuration is invalid", nil)
 	}
 	return workspaceRoot, guestRoot, nil
 }
@@ -316,7 +316,7 @@ func openLinuxExecutableRoots(paths []string) ([]linuxExecutableRoot, error) {
 		clean := filepath.Clean(configured)
 		if !filepath.IsAbs(clean) || clean == string(filepath.Separator) {
 			closeRoots()
-			return nil, linuxBackendError(guestagent.ErrorCode("backend_unavailable"), "", "executablePaths", "executable root configuration is invalid", nil)
+			return nil, linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "executablePaths", "executable root configuration is invalid", nil)
 		}
 		resolved, err := filepath.EvalSymlinks(clean)
 		if err != nil {
@@ -324,17 +324,17 @@ func openLinuxExecutableRoots(paths []string) ([]linuxExecutableRoot, error) {
 				continue
 			}
 			closeRoots()
-			return nil, linuxBackendError(guestagent.ErrorCode("backend_unavailable"), "", "executablePaths", "executable root is unavailable", err)
+			return nil, linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "executablePaths", "executable root is unavailable", err)
 		}
 		fd, err := unix.Open(resolved, unix.O_PATH|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if err != nil {
 			closeRoots()
-			return nil, linuxBackendError(guestagent.ErrorCode("backend_unavailable"), "", "executablePaths", "executable root is unavailable", err)
+			return nil, linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "executablePaths", "executable root is unavailable", err)
 		}
 		roots = append(roots, linuxExecutableRoot{path: clean, fd: fd})
 	}
 	if len(roots) == 0 {
-		return nil, linuxBackendError(guestagent.ErrorCode("backend_unavailable"), "", "executablePaths", "no executable root is available", nil)
+		return nil, linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "executablePaths", "no executable root is available", nil)
 	}
 	return roots, nil
 }

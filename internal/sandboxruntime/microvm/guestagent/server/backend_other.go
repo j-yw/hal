@@ -13,7 +13,7 @@ import (
 func NewLinuxBackend(LinuxBackendOptions) (Backend, error) {
 	const message = "Linux guest backend is unsupported on this platform"
 	return nil, &guestagent.ProtocolError{
-		Code:    guestagent.ErrorCode("unsupported_platform"),
+		Code:    guestagent.ErrorCodeUnsupportedPlatform,
 		Field:   "backend",
 		Message: message,
 		Err:     errors.New(message),
