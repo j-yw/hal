@@ -1,6 +1,7 @@
 package guestagent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -194,6 +195,9 @@ func (client *Client) roundTrip(ctx context.Context, operation Operation, timing
 	if err := validateStrictJSONObject(encodedResponse, maxStrictJSONDepth); err != nil {
 		return NewProtocolError(ErrorCodeMalformedResponse, operation, "response", fmt.Errorf("decode guest agent response: %w", err))
 	}
+	if handled, err := operationlessResponseProtocolError(encodedResponse, operation); handled {
+		return err
+	}
 	if err := validateResponseHeader(encodedResponse, operation); err != nil {
 		return err
 	}
@@ -233,6 +237,28 @@ func validateResponseHeader(encoded []byte, operation Operation) error {
 	return validateHeader(header.ProtocolVersion, header.Operation, operation)
 }
 
+func operationlessResponseProtocolError(encoded []byte, operation Operation) (bool, error) {
+	var envelope struct {
+		Operation Operation       `json:"operation"`
+		Error     json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(encoded, &envelope); err != nil {
+		return true, NewProtocolError(ErrorCodeMalformedResponse, operation, "response", fmt.Errorf("decode guest agent error response header: %w", err))
+	}
+	if envelope.Operation != "" || len(envelope.Error) == 0 || bytes.Equal(bytes.TrimSpace(envelope.Error), []byte("null")) {
+		return false, nil
+	}
+
+	var response ErrorResponse
+	if err := strictUnmarshalObject(encoded, &response); err != nil {
+		return true, NewProtocolError(ErrorCodeMalformedResponse, operation, "response", fmt.Errorf("decode guest agent error response: %w", err))
+	}
+	if err := ValidateErrorResponse(response); err != nil {
+		return true, err
+	}
+	return true, sanitizedResponseProtocolError(response.Error, operation)
+}
+
 func responseProtocolError(encoded []byte, operation Operation) error {
 	var envelope struct {
 		Error *ProtocolError `json:"error,omitempty"`
@@ -243,7 +269,10 @@ func responseProtocolError(encoded []byte, operation Operation) error {
 	if envelope.Error == nil {
 		return nil
 	}
-	responseError := envelope.Error
+	return sanitizedResponseProtocolError(envelope.Error, operation)
+}
+
+func sanitizedResponseProtocolError(responseError *ProtocolError, operation Operation) error {
 	responseOperation := sanitizeOperation(responseError.Operation)
 	if responseOperation == "" {
 		responseOperation = operation
