@@ -341,6 +341,22 @@ func TestL4ServerEnvironmentResolutionFailsClosed(t *testing.T) {
 		}
 	})
 
+	t.Run("noncanonical secret source rejected before resolver", func(t *testing.T) {
+		backend := &l4FakeBackend{}
+		resolver := &l4Resolver{value: "must-not-be-used"}
+		run := startL4Server(t, Options{
+			Transport:           newL4BlockingTransport(),
+			Backend:             backend,
+			EnvironmentResolver: resolver,
+		})
+		secretRequest := request
+		secretRequest.Env = []guestagent.EnvironmentEntry{{Name: "TOKEN", Source: " secret "}}
+		l4RequireResponseCode(t, l4Handle(t, run.server, secretRequest), guestagent.ErrorCodeInvalidMetadata)
+		if resolver.calls.Load() != 0 || backend.execCalls.Load() != 0 {
+			t.Fatalf("resolver calls=%d exec calls=%d, want zero", resolver.calls.Load(), backend.execCalls.Load())
+		}
+	})
+
 	t.Run("resolver failure is fixed and redacted", func(t *testing.T) {
 		backend := &l4FakeBackend{}
 		resolver := &l4Resolver{err: errors.New("token=ghp_secret123 /private/resolver")}

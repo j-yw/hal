@@ -265,6 +265,23 @@ func TestValidateProtocolRequestsRejectInvalidMetadata(t *testing.T) {
 	}
 }
 
+func TestValidateExecRequestRejectsNonCanonicalEnvironmentSources(t *testing.T) {
+	sources := []EnvironmentSource{
+		" literal ",
+		"\tsecret",
+		"inherited\n",
+		" generated",
+	}
+	for _, source := range sources {
+		t.Run(string(source), func(t *testing.T) {
+			err := ValidateExecRequest(withExecRequest(func(req *ExecRequest) {
+				req.Env = []EnvironmentEntry{{Name: "HAL_VALUE", Source: source}}
+			}))
+			assertProtocolError(t, err, ErrorCodeInvalidMetadata, "env[0].source")
+		})
+	}
+}
+
 func TestValidateProtocolResponsesRejectStreamDataAboveDeclaredLimit(t *testing.T) {
 	err := ValidateExecResponse(ExecResponse{
 		ProtocolVersion: ProtocolVersionV1,

@@ -366,6 +366,9 @@ Each requested entry must be resolved by an injected
 `EnvironmentResolver`. The default resolver rejects every requested entry with
 `environment_unavailable`. Secret-source entries fail closed in L4; L8 owns
 their live activation and are rejected before the resolver is called.
+A non-empty source must exactly equal one of the canonical wire enum values;
+leading or trailing whitespace is invalid metadata and is rejected before the
+resolver is called.
 A typed-nil resolver is treated as absent and selects the same rejecting
 default; it must never reach a method call or panic.
 
