@@ -22,20 +22,16 @@ lifecycle-only throughout L4.
 The protocol and client package locks the additive error contract and strict
 host response decoder:
 
-- `TestL4ProtocolErrorCodesAndGenericEnvelopeJSON`;
-- `TestClientRejectsUnknownDuplicateNonObjectAndTrailingResponses`.
+- `TestL4ProtocolAdditiveErrorCodes`;
+- `TestL4ErrorResponseExactJSONShape`;
+- `TestL4ClientStrictlyRejectsMalformedResponseObjects`.
 
 The injected server tests lock:
 
-- `TestL4ServerCanonicalReadinessAndVersionHandling`;
-- `TestL4ServerStrictDispatchRejectsMalformedUnknownAndOversizedRequests`;
-- `TestL4ServerRoutesOnlyTheEncodedOperation`;
-- `TestL4ServerResponseLimitUsesBoundedErrorEnvelope`;
-- `TestL4ServerExecDispatchPreservesStdinOutputExitAndTruncation`;
-- `TestL4ServerCopyDispatchPreservesBytesSizeAndDigest`;
-- `TestL4ServerConcurrencyBusyAndCancellationAreDeterministic`;
-- `TestL4ServerShutdownAndTransportFailureCleanupAreExactlyOnce`;
-- `TestL4ServerPublicErrorsRedactAllCanaries`.
+- `TestL4ServerDispatchesAllV1OperationsFromWireBytes`;
+- `TestL4ServerStrictRequestFailuresNeverReachBackend`;
+- `TestL4ServerCanonicalReadinessByStateAndBackend`;
+- `TestL4ServerTransportFailureDrainsThenFailsAndClosesOnce`.
 
 The explicitly tagged prepared-Linux acceptance test
 `TestL4PreparedLinuxLocalServerE2E` owns the real local server/backend

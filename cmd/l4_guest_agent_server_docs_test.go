@@ -191,12 +191,13 @@ func l4AssertGuestAgentServerSelectors(t *testing.T, doc string) {
 	t.Helper()
 	commands := phase34AllGoTestCommands(doc)
 	for _, required := range []phase34FocusedTest{
-		{pkg: "./internal/sandboxruntime/microvm/guestagent", file: filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "contracts_test.go"), testName: "TestL4ProtocolErrorCodesAndGenericEnvelopeJSON"},
-		{pkg: "./internal/sandboxruntime/microvm/guestagent", file: filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "client_test.go"), testName: "TestClientRejectsUnknownDuplicateNonObjectAndTrailingResponses"},
-		{pkg: "./internal/sandboxruntime/microvm/guestagent/server", file: filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "server", "server_test.go"), testName: "TestL4ServerCanonicalReadinessAndVersionHandling"},
-		{pkg: "./internal/sandboxruntime/microvm/guestagent/server", file: filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "server", "server_test.go"), testName: "TestL4ServerStrictDispatchRejectsMalformedUnknownAndOversizedRequests"},
-		{pkg: "./internal/sandboxruntime/microvm/guestagent/server", file: filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "server", "server_test.go"), testName: "TestL4ServerRoutesOnlyTheEncodedOperation"},
-		{pkg: "./internal/sandboxruntime/microvm/guestagent/server", file: filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "server", "server_lifecycle_test.go"), testName: "TestL4ServerShutdownAndTransportFailureCleanupAreExactlyOnce"},
+		{pkg: "./internal/sandboxruntime/microvm/guestagent", file: filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "l4_contract_test.go"), testName: "TestL4ProtocolAdditiveErrorCodes"},
+		{pkg: "./internal/sandboxruntime/microvm/guestagent", file: filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "l4_contract_test.go"), testName: "TestL4ErrorResponseExactJSONShape"},
+		{pkg: "./internal/sandboxruntime/microvm/guestagent", file: filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "l4_contract_test.go"), testName: "TestL4ClientStrictlyRejectsMalformedResponseObjects"},
+		{pkg: "./internal/sandboxruntime/microvm/guestagent/server", file: filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "server", "l4_server_contract_test.go"), testName: "TestL4ServerDispatchesAllV1OperationsFromWireBytes"},
+		{pkg: "./internal/sandboxruntime/microvm/guestagent/server", file: filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "server", "l4_server_contract_test.go"), testName: "TestL4ServerStrictRequestFailuresNeverReachBackend"},
+		{pkg: "./internal/sandboxruntime/microvm/guestagent/server", file: filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "server", "l4_server_lifecycle_test.go"), testName: "TestL4ServerCanonicalReadinessByStateAndBackend"},
+		{pkg: "./internal/sandboxruntime/microvm/guestagent/server", file: filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "server", "l4_server_lifecycle_test.go"), testName: "TestL4ServerTransportFailureDrainsThenFailsAndClosesOnce"},
 		{pkg: "./internal/sandboxruntime/microvm/guestagent/server", file: filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "server", l4GuestAgentServerLiveTest), testName: l4GuestAgentServerLiveTestName},
 		{pkg: "./internal/sandboxruntime/microvm/guestagent/server", file: filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "server", "import_boundary_test.go"), testName: "TestL4GuestAgentServerProductionImportsStayBounded"},
 		{pkg: "./cmd", file: "phase40_microvm_guest_agent_transport_guard_test.go", testName: "TestPhase40MicroVMDefaultCapabilitiesStayLifecycleOnlyWithoutGuestTransport"},
