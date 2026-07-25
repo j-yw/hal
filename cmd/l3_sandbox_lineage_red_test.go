@@ -199,6 +199,168 @@ func TestL3NamedStatusDoesNotMixSandboxReplacementSnapshots(t *testing.T) {
 	}
 }
 
+func TestL3LiveStatusRejectsManifestWorkerJobBindingMismatchBeforeWorkerIO(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*sandboxexecution.Manifest)
+	}{
+		{
+			name: "missing submission identity",
+			mutate: func(manifest *sandboxexecution.Manifest) {
+				manifest.WorkerJob.SubmissionKey = ""
+			},
+		},
+		{
+			name: "execution submission identity",
+			mutate: func(manifest *sandboxexecution.Manifest) {
+				manifest.WorkerJob.SubmissionKey = sandboxWorkerJobSubmissionKey("run-other")
+			},
+		},
+		{
+			name: "manifest host",
+			mutate: func(manifest *sandboxexecution.Manifest) {
+				manifest.Host.ID = "worker-other"
+			},
+		},
+		{
+			name: "manifest worker",
+			mutate: func(manifest *sandboxexecution.Manifest) {
+				manifest.Runtime.WorkerID = "worker-other"
+			},
+		},
+		{
+			name: "manifest runtime driver",
+			mutate: func(manifest *sandboxexecution.Manifest) {
+				manifest.Runtime.Driver = sandbox.SandboxRuntimeDriverMicroVM
+			},
+		},
+		{
+			name: "manifest runtime",
+			mutate: func(manifest *sandboxexecution.Manifest) {
+				manifest.Runtime.RuntimeID = "runtime-other"
+			},
+		},
+		{
+			name: "missing worker routing",
+			mutate: func(manifest *sandboxexecution.Manifest) {
+				manifest.WorkerRouting = nil
+			},
+		},
+		{
+			name: "routing host",
+			mutate: func(manifest *sandboxexecution.Manifest) {
+				manifest.WorkerRouting.SelectedWorkerHostID = "worker-other"
+			},
+		},
+		{
+			name: "routing runtime driver",
+			mutate: func(manifest *sandboxexecution.Manifest) {
+				manifest.WorkerRouting.RuntimeDriverID = sandbox.SandboxRuntimeDriverMicroVM
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			script := &l3WorkerScript{
+				jobState:         sandboxworker.JobStateRunning,
+				panicOnForbidden: true,
+				pages:            map[uint64]sandboxworker.JobLogsResponse{},
+			}
+			harness := newL3WorkerHarness(t, script)
+			harness.seed("alpha", "run-alpha", "job-alpha")
+			store, err := sandboxexecution.DefaultStore()
+			if err != nil {
+				t.Fatalf("open execution store: %v", err)
+			}
+			manifest, err := store.LoadManifest("run-alpha")
+			if err != nil {
+				t.Fatalf("load execution manifest: %v", err)
+			}
+			manifest.WorkerJob.SubmissionKey = sandboxWorkerJobSubmissionKey(manifest.ID)
+			tt.mutate(manifest)
+			if err := store.SaveManifest(manifest); err != nil {
+				t.Fatalf("save inconsistent execution manifest: %v", err)
+			}
+
+			var out bytes.Buffer
+			err = runSandboxL3StatusJSON(context.Background(), "alpha", true, &out)
+			requireL3ErrorCode(t, err, "worker_job_identity_mismatch")
+			requests, forbidden := script.snapshot()
+			if len(requests) != 0 || len(forbidden) != 0 {
+				t.Fatalf("binding mismatch crossed worker boundary: requests=%#v forbidden=%#v", requests, forbidden)
+			}
+			if out.Len() != 0 {
+				t.Fatalf("binding mismatch rendered status: %s", out.String())
+			}
+		})
+	}
+}
+
+func TestL3FinalizationRejectsManifestWorkerJobBindingMismatchBeforeMutation(t *testing.T) {
+	script := &l3WorkerScript{
+		jobState:         sandboxworker.JobStateSucceeded,
+		panicOnForbidden: true,
+		pages:            map[uint64]sandboxworker.JobLogsResponse{},
+	}
+	harness := newL3WorkerHarness(t, script)
+	harness.seed("alpha", "run-alpha", "job-alpha")
+	store, err := sandboxexecution.DefaultStore()
+	if err != nil {
+		t.Fatalf("open execution store: %v", err)
+	}
+	manifest, err := store.LoadManifest("run-alpha")
+	if err != nil {
+		t.Fatalf("load execution manifest: %v", err)
+	}
+	manifest.WorkerJob.SubmissionKey = sandboxWorkerJobSubmissionKey(manifest.ID)
+	manifest.Host.ID = "worker-other"
+	if err := store.SaveManifest(manifest); err != nil {
+		t.Fatalf("save inconsistent execution manifest: %v", err)
+	}
+	before := append([]byte(nil), harness.manifestBytes()...)
+	reference := manifest.WorkerJob
+	job := &sandboxworker.Job{
+		ContractVersion: reference.ContractVersion,
+		ID:              reference.JobID,
+		SubmissionKey:   reference.SubmissionKey,
+		WorkerID:        reference.WorkerID,
+		HostID:          reference.HostID,
+		RuntimeDriver:   reference.RuntimeDriver,
+		RuntimeID:       reference.RuntimeID,
+		State:           reference.State,
+		SubmittedAt:     reference.SubmittedAt,
+		StartedAt:       cloneL3Time(reference.StartedAt),
+		HeartbeatAt:     cloneL3Time(reference.HeartbeatAt),
+		FinishedAt:      cloneL3Time(reference.FinishedAt),
+		LogCursor:       reference.LogCursor,
+	}
+	observeCalls := 0
+	err = finalizeSandboxL3Execution(
+		context.Background(),
+		store,
+		manifest.ID,
+		false,
+		sandboxL3FinalizationDeps{
+			observeJob: func(context.Context, *sandboxexecution.Manifest) (*sandboxworker.Job, error) {
+				observeCalls++
+				return job, nil
+			},
+			drainLogs: func(context.Context, *sandboxexecution.Manifest, *sandboxworker.Job) error {
+				return context.Canceled
+			},
+		},
+	)
+	requireL3ErrorCode(t, err, "worker_job_identity_mismatch")
+	if observeCalls != 0 {
+		t.Fatalf("binding mismatch made %d worker observations, want none", observeCalls)
+	}
+	after := harness.manifestBytes()
+	if string(after) != string(before) {
+		t.Fatalf("binding mismatch mutated manifest\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 func TestL3RunAndAutoManifestsPersistStableSandboxInstanceID(t *testing.T) {
 	now := time.Date(2026, 7, 25, 8, 0, 0, 0, time.UTC)
 	target := &sandbox.SandboxState{
