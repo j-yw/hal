@@ -189,8 +189,9 @@ func (server *Server) Shutdown(ctx context.Context) error {
 	server.mu.Lock()
 	switch server.state {
 	case StateStopped, StateFailed:
+		err := server.cleanupErr
 		server.mu.Unlock()
-		return nil
+		return err
 	case StateNew:
 		server.serveUsed = true
 		server.markTransportDone()
