@@ -113,7 +113,7 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 			t.Fatalf("seed destination: %v", err)
 		}
 		payload := []byte{0x00, 'c', 'o', 'p', 'y', 0xff}
-		digest := l4Digest(payload)
+		digest := l4IntegrationDigest(payload)
 		copyIn := guestagent.CopyInRequest{
 			ProtocolVersion: guestagent.ProtocolVersionV1,
 			Operation:       guestagent.OperationCopyIn,
@@ -154,7 +154,7 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 			t.Fatalf("copy-out response = %#v", read)
 		}
 
-		copyIn.Payload.Digest = l4Digest([]byte("wrong"))
+		copyIn.Payload.Digest = l4IntegrationDigest([]byte("wrong"))
 		assertL4ErrorCode(t, transport.roundTrip(context.Background(), mustL4JSON(t, copyIn)), "digest_mismatch")
 		got, err := os.ReadFile(path)
 		if err != nil || string(got) != string(payload) {
@@ -281,7 +281,7 @@ func l4ExecRequest(args []string, stdin []byte, stdoutMax, stderrMax int64) gues
 	return request
 }
 
-func l4Digest(data []byte) string {
+func l4IntegrationDigest(data []byte) string {
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
