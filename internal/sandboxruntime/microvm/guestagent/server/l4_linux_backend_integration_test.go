@@ -22,7 +22,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent"
 )
 
-const l4AmbientCanary = "HAL_L4_AMBIENT_CANARY"
+const l4AmbientCanary = "L4_PREPARED_AMBIENT_CANARY"
 
 func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 	if runtime.GOOS != "linux" {
