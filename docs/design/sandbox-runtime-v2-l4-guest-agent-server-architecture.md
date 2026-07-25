@@ -104,7 +104,7 @@ The server state machine is:
 
 ```text
 new ---------> serving -> draining -> stopped
- \                \-------> failed
+ \                            \----> failed
   \-> draining -> stopped
 ```
 
@@ -113,10 +113,11 @@ The exact states are `new`, `serving`, `draining`, `stopped`, and `failed`.
 `new -> draining -> stopped`, closes the backend exactly once, and makes a
 later `Serve` fail without invoking the transport.
 
-A transport failure cancels in-flight handlers, runs the same exactly-once
-backend cleanup as shutdown, and moves the server to `failed` only after
-cleanup completes. If cleanup itself fails or exceeds `MaxShutdownTime`, the
-terminal state is also `failed`.
+A transport failure atomically moves `serving -> draining` before it cancels
+in-flight handlers, so readiness and direct handler admission fail closed
+during cleanup. It runs the same exactly-once backend cleanup as shutdown and
+moves `draining -> failed` only after cleanup completes. If cleanup itself
+fails or exceeds `MaxShutdownTime`, the terminal state is also `failed`.
 
 Cancellation or `Shutdown` moves it to `draining`, rejects new work, cancels
 in-flight work, waits for transport return and backend cleanup, and ends in
