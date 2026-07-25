@@ -148,7 +148,7 @@ func (server *Server) Serve(ctx context.Context) error {
 
 	transportErr := server.transport.Serve(serveCtx, server.limits, server)
 	transportFailure := transportErr != nil
-	if serveErr := serveCtx.Err(); serveErr != nil && errors.Is(transportErr, serveErr) {
+	if serveErr := serveCtx.Err(); serveErr != nil && cancellationOnlyError(transportErr, serveErr) {
 		transportFailure = false
 	}
 
@@ -177,6 +177,38 @@ func (server *Server) Serve(ctx context.Context) error {
 		return cleanupErr
 	}
 	return nil
+}
+
+const maximumCancellationErrorDepth = 64
+
+func cancellationOnlyError(err, cancellationErr error) bool {
+	return cancellationOnlyErrorAtDepth(err, cancellationErr, 0)
+}
+
+func cancellationOnlyErrorAtDepth(err, cancellationErr error, depth int) bool {
+	if err == nil || cancellationErr == nil || depth >= maximumCancellationErrorDepth {
+		return false
+	}
+	switch wrapped := err.(type) {
+	case interface{ Unwrap() []error }:
+		causes := wrapped.Unwrap()
+		sawCause := false
+		for _, cause := range causes {
+			if cause == nil {
+				continue
+			}
+			sawCause = true
+			if !cancellationOnlyErrorAtDepth(cause, cancellationErr, depth+1) {
+				return false
+			}
+		}
+		return sawCause
+	case interface{ Unwrap() error }:
+		if cause := wrapped.Unwrap(); cause != nil {
+			return cancellationOnlyErrorAtDepth(cause, cancellationErr, depth+1)
+		}
+	}
+	return errors.Is(err, cancellationErr)
 }
 
 // Shutdown cancels active work and waits up to the caller's context for the
