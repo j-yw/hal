@@ -79,6 +79,19 @@ func TestL4ErrorResponseExactJSONShape(t *testing.T) {
 			wantJSON:  `{"protocolVersion":"guest-agent-v1","error":null}`,
 			wantValid: false,
 		},
+		{
+			name: "padded operations are invalid",
+			response: ErrorResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       " exec ",
+				Error: &ProtocolError{
+					Code:      ErrorCodeExecutionFailed,
+					Operation: " exec ",
+				},
+			},
+			wantJSON:  `{"protocolVersion":"guest-agent-v1","operation":" exec ","error":{"code":"execution_failed","operation":"exec"}}`,
+			wantValid: false,
+		},
 	}
 
 	for _, tt := range tests {
