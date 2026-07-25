@@ -26,8 +26,9 @@ func TestPhase40MicroVMGuestAgentTransportVerificationDocs(t *testing.T) {
 		"`GuestAgentReadinessProbe` adapts guest-agent readiness responses onto the existing Firecracker guest readiness probe boundary.",
 		"`hal sandboxd` exposes optional guest-agent wiring through `--firecracker-guest-agent-endpoint`.",
 		"The configured endpoint must be a local Unix socket endpoint.",
-		"Default microVM support remains lifecycle-only unless a tested guest transport is configured.",
-		"Exec, copy-in, and copy-out are advertised for microVM only when the guest-agent endpoint is explicitly configured.",
+		"Default microVM support remains lifecycle-only.",
+		"A configured guest-agent endpoint builds compatibility and test client adapters, but it does not authorize capability advertisement.",
+		"Exec, copy-in, and copy-out remain omitted until an exact readiness handshake proves the server contract.",
 		"Host Docker socket access is not part of Phase 40.",
 		"go test -count=1 -timeout=180s ./internal/sandboxruntime/microvm/guestagent",
 		"go test -count=1 -timeout=180s ./internal/sandboxruntime/microvm ./internal/sandboxruntime/microvm/firecracker ./internal/sandboxruntime/microvm/firecrackerhost",
@@ -42,7 +43,8 @@ func TestPhase40MicroVMGuestAgentTransportVerificationDocs(t *testing.T) {
 		"If it is unavailable, report lint unavailable instead of reporting lint as passed.",
 		"Passing this matrix satisfies the Phase 40 tests and typecheck gates.",
 		"Phase 40 does not implement a production guest agent, concrete vsock transport, SSH transport, Docker or Podman guest engine, Firecracker SDK integration, machine configuration API calls, image/rootfs/kernel provisioning, workspace sync, credential broker/proxy delivery, network proxy/firewall enforcement, deny-by-default guest networking, jailer/root setup, cgroups, default command enablement, default worker routing, default scheduler selection, or default live E2E guest exec and copy verification.",
-		"Future phases are responsible for a real guest-agent implementation, a concrete vsock or other guest transport, guest image packaging, Firecracker API machine configuration, secure credential delivery, network policy enforcement, worker and scheduler registration policy, production endpoint lifecycle management, live E2E guest readiness, live E2E guest exec and copy, and operator documentation for preparing guest images.",
+		"L4 is responsible for the production Linux guest-agent server behind injected transport boundaries.",
+		"L5 is responsible for vsock and image integration, live transport binding, guest boot/readiness proof, capability activation, and operator documentation for preparing guest images.",
 	}
 	for _, want := range required {
 		if !strings.Contains(doc, want) && !strings.Contains(normalizedDoc, want) {
@@ -193,7 +195,7 @@ func phase40RequiredFocusedTests() []phase34FocusedTest {
 		{pkg: "./internal/sandboxruntime/microvm/firecrackerhost", file: filepath.Join("..", "internal", "sandboxruntime", "microvm", "firecrackerhost", "guest_endpoint_test.go"), testName: "TestValidateGuestAgentEndpointRejectsUnsafeEndpointWithoutRawDetails"},
 		{pkg: "./internal/sandboxruntime/microvm/firecrackerhost", file: filepath.Join("..", "internal", "sandboxruntime", "microvm", "firecrackerhost", "guest_agent_unix_transport_test.go"), testName: "TestGuestAgentUnixSocketPathFromEndpointRejectsUnsafeEndpointWithoutLeakingRawValues"},
 		{pkg: "./internal/sandboxruntime/microvm/firecrackerhost", file: filepath.Join("..", "internal", "sandboxruntime", "microvm", "firecrackerhost", "guest_readiness_test.go"), testName: "TestGuestAgentReadinessProbeDelegatesProtocolReadinessAndSanitizesMetadata"},
-		{pkg: "./cmd", file: "sandboxd_test.go", testName: "TestSandboxdCommandRegistersLiveMicroVMGuestAgentTransportCapabilities"},
+		{pkg: "./cmd", file: "sandboxd_test.go", testName: "TestSandboxdCommandConfiguredMicroVMGuestAgentEndpointKeepsCapabilitiesLifecycleOnly"},
 		{pkg: "./cmd", file: "sandboxd_test.go", testName: "TestSandboxdCommandRejectsInvalidGuestAgentEndpointBeforeMicroVMDriverConstruction"},
 		{pkg: "./cmd", file: "phase40_microvm_guest_agent_transport_guard_test.go", testName: "TestPhase40MicroVMDefaultCapabilitiesStayLifecycleOnlyWithoutGuestTransport"},
 		{pkg: "./cmd", file: "phase40_microvm_guest_agent_transport_guard_test.go", testName: "TestPhase40MicroVMGuestTransportCodeAvoidsHostDockerSocketUse"},
