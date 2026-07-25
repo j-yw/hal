@@ -48,12 +48,25 @@ changes are part of L4.
 The server is a protocol handler whose byte transport is injected:
 
 ```go
+type Limits struct {
+    MaxRequestBytes  int64
+    MaxResponseBytes int64
+}
+
 type Transport interface {
-    Serve(context.Context, Handler) error
+    Serve(context.Context, Limits, Handler) error
+}
+
+type Request struct {
+    Encoded []byte
+}
+
+type Response struct {
+    Encoded []byte
 }
 
 type Handler interface {
-    Handle(context.Context, guestagent.TransportRequest) guestagent.TransportResponse
+    Handle(context.Context, Request) Response
 }
 
 type Options struct {
@@ -64,20 +77,28 @@ type Options struct {
     MaxResponseBytes    int64
     MaxConcurrent       int
     MaxOperationTime    time.Duration
-    Now                 func() time.Time
+    MaxShutdownTime     time.Duration
 }
 
 func New(Options) (*Server, error)
 func (*Server) Serve(context.Context) error
-func (*Server) Handle(context.Context, guestagent.TransportRequest) guestagent.TransportResponse
+func (*Server) Handle(context.Context, Request) Response
 func (*Server) Shutdown(context.Context) error
 func (*Server) State() State
 ```
 
-`Transport` owns only acceptance and framing. `Server` owns bounded decoding,
-dispatch, operation timing, response encoding, concurrency, and shutdown.
-L4 tests use an in-memory transport. L5 supplies the concrete guest vsock
-transport.
+`Request` and `Response` contain wire bytes only. Version and operation are
+derived exclusively from encoded JSON. The server does not consume the
+host-client-only `guestagent.TransportRequest` sideband.
+
+`Transport` owns acceptance and framing. It must enforce the supplied request
+limit before allocating or reading a complete frame, enforce the response
+limit before writing a frame, stop accepting when its context is canceled,
+allow no handler call after `Serve` returns, and return promptly after
+cancellation. `Server` repeats the encoded bounds defensively and owns strict
+decoding, dispatch, operation timing, response encoding, concurrency, and
+shutdown. L4 tests use an in-memory transport. L5 supplies the concrete guest
+vsock transport and its framing proof.
 
 The server state machine is:
 
@@ -86,10 +107,14 @@ new -> serving -> draining -> stopped
                  \----------> failed
 ```
 
+The exact states are `new`, `serving`, `draining`, `stopped`, and `failed`.
 `Serve` may run once. A transport failure moves the server to `failed`.
-Cancellation or `Shutdown` moves it to `draining`, rejects new state-changing
-work, cancels in-flight work, waits for cleanup, and ends in `stopped`.
-`Shutdown` is idempotent and bounded by its caller context.
+Cancellation or `Shutdown` moves it to `draining`, rejects new work, cancels
+in-flight work, waits for transport return and backend cleanup, and ends in
+`stopped`. `Shutdown` is idempotent and bounded by its caller context. If that
+context expires, it returns the matching context error while cleanup continues
+under the server's bounded `MaxShutdownTime`; the state remains `draining`
+until cleanup reaches `stopped` or `failed`.
 
 Readiness is canonical:
 
@@ -110,7 +135,46 @@ type Backend interface {
     Exec(context.Context, ExecPlan) (ExecResult, error)
     CopyIn(context.Context, CopyInPlan) (CopyResult, error)
     CopyOut(context.Context, CopyOutPlan) (CopyResult, error)
-    Close() error
+    Close(context.Context) error
+}
+
+type EnvironmentResolver interface {
+    Resolve(context.Context, guestagent.EnvironmentEntry) (string, error)
+}
+
+type ExecPlan struct {
+    Args           []string
+    Environment    []string
+    WorkDir        string
+    Stdin          []byte
+    StdoutMaxBytes int64
+    StderrMaxBytes int64
+}
+
+type ExecResult struct {
+    ExitCode        int
+    Stdout          []byte
+    Stderr          []byte
+    StdoutTruncated bool
+    StderrTruncated bool
+}
+
+type CopyInPlan struct {
+    DestinationPath string
+    Data            []byte
+    MaxBytes        int64
+    Digest          string
+}
+
+type CopyOutPlan struct {
+    SourcePath string
+    MaxBytes   int64
+}
+
+type CopyResult struct {
+    Data      []byte
+    SizeBytes int64
+    Digest    string
 }
 ```
 
@@ -138,9 +202,44 @@ Neither value is serialized or included in public errors. Non-Linux builds
 provide the same constructor and fail closed with `unsupported_platform`.
 
 Backend construction opens and pins the workspace root, verifies Linux
-`openat2` support, and fails closed if the required containment primitives are
+`openat2` support plus the private `/proc/self/fd` descriptor bridge used for
+safe reopen/chdir, and fails closed if the required containment primitives are
 unavailable. It never falls back to string-only checks, `os.Root`, or an
 unchecked host path.
+
+Backend errors may return a `guestagent.ProtocolError` with an allowed stable
+L4 code. Context cancellation and deadline errors preserve `errors.Is`
+semantics. Any other backend or resolver error is mapped to a fixed
+`internal_failure`, `execution_failed`, `copy_failed`, or
+`environment_unavailable` envelope without raw error detail.
+
+## Defaults and hard limits
+
+The public constants and constructor validation are locked by tests:
+
+```text
+DefaultMaxRequestBytes       = 1 MiB
+DefaultMaxResponseBytes      = 1 MiB
+MinimumMaxResponseBytes      = 512 bytes
+MaximumEncodedMessageBytes   = 8 MiB
+DefaultMaxConcurrent         = 1
+MaximumMaxConcurrent         = 64
+DefaultMaxOperationTime      = 24 hours
+MaximumMaxOperationTime      = 24 hours
+DefaultMaxShutdownTime       = 30 seconds
+MaximumMaxShutdownTime       = 2 minutes
+MaximumJSONNestingDepth      = 32
+DefaultExecStdinBytes        = 512 KiB
+DefaultExecStdoutBytes       = 256 KiB
+DefaultExecStderrBytes       = 256 KiB
+DefaultCopyBytes             = 512 KiB
+```
+
+Zero values select defaults. Negative values and values above a maximum are
+constructor errors. A positive response limit below
+`MinimumMaxResponseBytes` is rejected, so a fixed error envelope always fits.
+Request metadata may select a smaller effective operation limit but may never
+raise these server-side limits.
 
 ## Strict protocol handling
 
@@ -160,10 +259,27 @@ Unsupported versions do not downgrade. Responses always use the server's v1
 envelope and the selected safe operation when one was validly identified.
 Malformed input never reaches the backend.
 
-Responses are encoded into the lower of the configured response limit and
-`TransportRequest.MaxResponseBytes`. If a successful response would exceed
-that bound, the server discards it and emits a bounded
-`oversized_response` error envelope. It never emits a partial JSON document.
+The root protocol package adds the generic error envelope used when no typed
+operation response can be selected:
+
+```go
+type ErrorResponse struct {
+    ProtocolVersion ProtocolVersion `json:"protocolVersion"`
+    Operation       Operation       `json:"operation,omitempty"`
+    Error           *ProtocolError  `json:"error"`
+}
+```
+
+The envelope always reports `guest-agent-v1`. `operation` is present only when
+the body contained one exact supported operation; malformed or unknown
+operations omit it. Known-operation errors may use the same generic envelope
+because the existing client checks the shared header and `error` before
+validating operation-specific result fields.
+
+Responses are encoded within the configured response limit. If a successful
+response would exceed that bound, the server discards it and emits a fixed
+bounded `oversized_response` error envelope. Constructor validation guarantees
+the fixed envelope fits. The server never emits a partial JSON document.
 
 The parent client receives the matching strictness change: response JSON with
 duplicates, unknown fields, non-object roots, or trailing documents is
@@ -182,6 +298,7 @@ execution_failed
 copy_failed
 digest_mismatch
 resource_changed
+durability_uncertain
 backend_unavailable
 unsupported_platform
 internal_failure
@@ -207,18 +324,25 @@ silently substitutes an empty value.
 Each requested entry must be resolved by an injected
 `EnvironmentResolver`. The default resolver rejects every requested entry with
 `environment_unavailable`. Secret-source entries fail closed in L4; L8 owns
-their live activation.
+their live activation and are rejected before the resolver is called.
 
 The Linux backend always passes a non-nil environment containing only its
 validated fixed base environment plus explicit resolver results. Duplicate
-names are rejected. Values exist only in the live exec plan and are never
-logged or persisted.
+names, NUL bytes, malformed assignments, and invalid resolver output are
+rejected. Empty `BaseEnvironment` selects the fixed image-owned
+`PATH=/usr/local/bin:/usr/bin:/bin`, `LANG=C`, and `LC_ALL=C`; it never selects
+the server's ambient environment. Values exist only in the live exec plan and
+are never logged or persisted.
 
 ## Linux execution semantics
 
 Exec is direct argv execution with no implicit shell. The executable is either
-an absolute image path or is resolved through the backend's fixed
-`ExecutablePaths`; ambient `PATH` is not consulted.
+an absolute path contained by one configured `ExecutablePaths` root or is
+resolved by basename through those roots; ambient `PATH` is not consulted.
+Empty `ExecutablePaths` defaults to `/usr/local/bin`, `/usr/bin`, and `/bin`
+inside the guest. Paths and files are validated at construction/launch without
+entering public errors. The prepared-host test uses an explicit test-only
+executable-root list.
 
 The requested work directory must be beneath `GuestRoot`. It is opened from
 the pinned workspace root with:
@@ -230,20 +354,35 @@ RESOLVE_NO_XDEV
 RESOLVE_NO_SYMLINKS
 ```
 
-and verified as a directory. The child changes directory through that pinned
-descriptor during launch; it does not reopen the request path.
+and verified as a directory. The opened descriptor is registered in
+`exec.Cmd.ExtraFiles`, and `Cmd.Dir` is the server-constructed
+`/proc/self/fd/<source-fd>` path. On the supported Go/Linux launch path, chdir
+resolves that already-open descriptor before inherited descriptors are
+remapped. No request path is reopened. A subprocess regression test coordinates
+replacement of the original path between open and start and proves the child
+remains in the pinned directory.
 
 Stdin is decoded and bounded before launch. Stdout and stderr use independent
 bounded writers that retain the permitted prefix, continue draining discarded
 bytes, and set `truncated=true`. Returned binary bytes are base64 encoded.
 Non-zero exit is a normal `ExecResponse`.
 
-Every process starts in a new process group. Cancellation, timeout, shutdown,
-or output-pipe failure sends `SIGTERM` to the group, waits a bounded grace
-period, sends `SIGKILL` if necessary, reaps the leader exactly once, and makes
-a final best-effort group kill. A signaled exit is reported deterministically
-as `128+signal`. Start failures use `execution_failed` without executable,
-path, argument, or OS-error detail.
+Every process starts in a new process group. Linux `waitid` with `WNOWAIT`
+observes leader exit without reaping it, so the leader continues to anchor its
+PGID while cleanup signals are sent. Cancellation, timeout, shutdown,
+output-pipe failure, or observed leader exit sends `SIGTERM` to the group,
+waits a bounded grace period, sends `SIGKILL` if necessary, and only then calls
+`Wait` once to reap the leader. No group signal is sent after reap, avoiding
+PGID-reuse races. A signaled exit is reported deterministically as
+`128+signal`. Start failures use `execution_failed` without executable, path,
+argument, or OS-error detail.
+
+The L4 process-group proof covers the launched command and descendants that
+remain in its group. A deliberately escaping `setsid`/`setpgid` descendant is
+outside the standalone L4 server guarantee. L5 must run the server as a
+dedicated unprivileged guest identity within the guest PID/cgroup/mount
+topology and prove whole-guest teardown, which contains such an escape. L4
+does not present process groups alone as an adversarial guest-isolation claim.
 
 The backend's fixed effective defaults are 512 KiB stdin and 256 KiB for each
 output stream. Smaller request limits win. The existing protocol maxima are
@@ -267,36 +406,49 @@ Copy-in:
 - fsyncs the parent after publication; and
 - removes its temporary file on every pre-publication failure.
 
-Cancellation, digest mismatch, oversize input, or a write failure preserves an
-existing destination. The response always acknowledges exact size and digest.
+The atomic rename is the publication commit point. Cancellation, digest
+mismatch, oversize input, and write/fsync/close failures before that point
+preserve an existing destination. Cancellation is masked from rename through
+the parent fsync attempt. If parent fsync fails after publication, the server
+returns `durability_uncertain`: the new destination is visible but crash
+durability is not proven. The response on success always acknowledges exact
+size and digest.
 
 Copy-out:
 
-- opens with `O_RDONLY|O_NONBLOCK|O_NOFOLLOW` through contained resolution;
-- accepts regular files only and rejects symlinks, directories, devices,
-  FIFOs, and sockets;
+- first opens an `O_PATH|O_NOFOLLOW` descriptor through contained resolution;
+- verifies that pinned descriptor is a regular file with link count exactly
+  one, rejecting symlinks, directories, multiply linked files, devices, FIFOs,
+  and sockets before any readable open;
+- reopens only that server-owned descriptor through
+  `/proc/self/fd/<source-fd>` as `O_RDONLY|O_NONBLOCK`, then verifies
+  matching device/inode/type before reading;
 - reads at most the effective limit plus one byte;
 - compares pre/post inode, size, ctime, and mtime and fails
   `resource_changed` on mutation;
 - returns base64 bytes, exact size, and SHA-256; and
 - never follows mount crossings or magic links.
 
-L4 does not copy directories, preserve ownership or arbitrary modes, support
-sparse/chunked/resumable transfer, or claim that hard links are safe without
-the dedicated guest UID and mount topology proved in L5.
+L4 does not copy directories, preserve ownership or arbitrary modes, or
+support sparse/chunked/resumable transfer. L5 additionally proves the
+dedicated guest UID and mount topology; L4 nevertheless rejects multiply
+linked copy-out files rather than deferring hard-link containment.
 
 ## Concurrency and cleanup
 
 The default state-changing concurrency is one. A positive `MaxConcurrent`
 creates that many slots. Readiness bypasses the state-changing semaphore.
-Saturation returns `server_busy`; queued work is not allowed to grow without
-bound. Caller cancellation while acquiring a slot returns the matching
-canceled/timeout code.
+Admission is nonblocking: saturation returns `server_busy` immediately and no
+request queue is created. A context already canceled before admission returns
+the matching canceled/timeout code.
 
-Backend `Close` is called once after in-flight operations end. Shutdown removes
-only temporary files and processes owned by this server instance. It does not
+Backend `Close` is called once with the internal shutdown context after
+in-flight operations end. Shutdown removes only temporary files and
+non-escaped process-group members owned by this server instance. It does not
 delete workspace files, runtime state, endpoints, sockets, mounts, Firecracker
-resources, or any resource it did not create.
+resources, or any resource it did not create. A transport or backend that
+violates its bounded cancellation/close contract moves the server to `failed`;
+it is never reported stopped or ready.
 
 ## Capability honesty
 
@@ -309,8 +461,9 @@ copy-in, and copy-out only after an exact v1 readiness handshake succeeds for
 the corresponding live guest/runtime. Malformed, unsupported, failed,
 not-ready, stale, or mismatched readiness evidence remains lifecycle-only.
 
-The historical Phase 40 document is updated to say that its endpoint adapter
-does not itself authorize capability advertisement.
+The L4 implementation updates the historical Phase 40 document and guards to
+say that its endpoint adapter does not itself authorize capability
+advertisement.
 
 ## Red-first acceptance
 
@@ -336,6 +489,15 @@ The red commit precedes implementation and covers:
 - endpoint-only capability removal; and
 - client rejection of unknown or duplicate response fields.
 
+The capability red tests flip the endpoint-only expectations in
+`cmd/phase40_microvm_guest_agent_transport_guard_test.go`,
+`cmd/sandboxd_test.go`, and the Phase 40 docs guard. The server package adds
+parsed import and source guards that preserve the root protocol package's
+existing data-only guard while rejecting network listeners/dialers, HTTP/RPC,
+ambient `os.Environ`, implicit shell execution, raw public error forwarding,
+Docker sockets/APIs, command/factory/worker/execution/workspace imports,
+Firecracker/host imports, provider/runtime adapters, Podman, and cloud SDKs.
+
 Default tests use injected transports/backends and temporary directories. They
 do not bind listeners, start daemons or Firecracker, access KVM, use vsock,
 pull images, use Docker/Podman, contact a provider, require credentials, or
@@ -344,9 +506,12 @@ make network calls.
 The prepared-Linux test is explicitly tagged
 `l4_guest_agent_server_integration`, runs the production server and Linux
 backend through an in-memory transport, and proves real exec/copy,
-timeout/cancel, containment, and cleanup. Once selected by its build tag it
-must not skip; missing `openat2` or required Linux process/filesystem behavior
-is a blocking failure.
+timeout/cancel, containment, and cleanup. It uses a disposable unprivileged
+user/mount namespace for mount-crossing and magic-link negatives and removes
+all mounts and processes it creates. Once selected by its build tag it must not
+skip; non-Linux execution, missing `openat2`, unavailable prepared user/mount
+namespace capability, or missing required Linux process/filesystem behavior is
+a blocking failure.
 
 ## Verification commands
 
@@ -366,6 +531,12 @@ go test -race -count=1 -timeout=240s \
   ./internal/sandboxruntime/microvm/guestagent \
   ./internal/sandboxruntime/microvm/guestagent/server \
   ./internal/sandboxruntime/microvm/firecrackerhost
+
+test "$(go env GOOS)" = linux
+go test -list '^TestL4PreparedLinuxLocalServerE2E$' \
+  -tags=l4_guest_agent_server_integration \
+  ./internal/sandboxruntime/microvm/guestagent/server |
+  grep -qx 'TestL4PreparedLinuxLocalServerE2E'
 
 go test -race -count=1 -timeout=180s \
   -tags=l4_guest_agent_server_integration \
