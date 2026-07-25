@@ -292,6 +292,10 @@ func TestL4ServerEncodedRequestAndResponseLimits(t *testing.T) {
 }
 
 func TestL4ServerEnvironmentResolutionFailsClosed(t *testing.T) {
+	const (
+		maxResolvedValueBytes = 64 << 10
+		maxResolvedTotalBytes = 256 << 10
+	)
 	request := guestagent.ExecRequest{
 		ProtocolVersion: guestagent.ProtocolVersionV1,
 		Operation:       guestagent.OperationExec,
@@ -373,6 +377,62 @@ func TestL4ServerEnvironmentResolutionFailsClosed(t *testing.T) {
 				t.Fatalf("response leaked %q: %s", forbidden, response.Encoded)
 			}
 		}
+		if backend.execCalls.Load() != 0 {
+			t.Fatalf("Exec calls = %d, want 0", backend.execCalls.Load())
+		}
+	})
+
+	t.Run("maximum resolved value is accepted", func(t *testing.T) {
+		backend := &l4FakeBackend{}
+		resolver := &l4Resolver{value: strings.Repeat("x", maxResolvedValueBytes)}
+		run := startL4Server(t, Options{
+			Transport:           newL4BlockingTransport(),
+			Backend:             backend,
+			EnvironmentResolver: resolver,
+		})
+		response := l4Handle(t, run.server, request)
+		decoded := l4DecodeResponse[guestagent.ExecResponse](t, response)
+		if err := guestagent.ValidateExecResponse(decoded); err != nil {
+			t.Fatalf("ValidateExecResponse(%s) error: %v", response.Encoded, err)
+		}
+		if backend.execCalls.Load() != 1 {
+			t.Fatalf("Exec calls = %d, want 1", backend.execCalls.Load())
+		}
+	})
+
+	t.Run("oversized resolved value is rejected", func(t *testing.T) {
+		backend := &l4FakeBackend{}
+		resolver := &l4Resolver{value: strings.Repeat("x", maxResolvedValueBytes+1)}
+		run := startL4Server(t, Options{
+			Transport:           newL4BlockingTransport(),
+			Backend:             backend,
+			EnvironmentResolver: resolver,
+		})
+		l4RequireResponseCode(t, l4Handle(t, run.server, request), guestagent.ErrorCodeEnvironmentUnavailable)
+		if backend.execCalls.Load() != 0 {
+			t.Fatalf("Exec calls = %d, want 0", backend.execCalls.Load())
+		}
+	})
+
+	t.Run("aggregate resolved environment is rejected", func(t *testing.T) {
+		backend := &l4FakeBackend{}
+		resolver := &l4Resolver{value: strings.Repeat("x", maxResolvedValueBytes)}
+		run := startL4Server(t, Options{
+			Transport:           newL4BlockingTransport(),
+			Backend:             backend,
+			EnvironmentResolver: resolver,
+		})
+		aggregateRequest := request
+		aggregateRequest.Env = []guestagent.EnvironmentEntry{
+			{Name: "HAL_VALUE_1", Source: guestagent.EnvironmentSourceGenerated},
+			{Name: "HAL_VALUE_2", Source: guestagent.EnvironmentSourceGenerated},
+			{Name: "HAL_VALUE_3", Source: guestagent.EnvironmentSourceGenerated},
+			{Name: "HAL_VALUE_4", Source: guestagent.EnvironmentSourceGenerated},
+		}
+		if minimumBytes := 4 * (maxResolvedValueBytes + len("HAL_VALUE_1=")); minimumBytes <= maxResolvedTotalBytes {
+			t.Fatalf("test aggregate bytes = %d, want above %d", minimumBytes, maxResolvedTotalBytes)
+		}
+		l4RequireResponseCode(t, l4Handle(t, run.server, aggregateRequest), guestagent.ErrorCodeEnvironmentUnavailable)
 		if backend.execCalls.Load() != 0 {
 			t.Fatalf("Exec calls = %d, want 0", backend.execCalls.Load())
 		}

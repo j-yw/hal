@@ -375,7 +375,10 @@ default; it must never reach a method call or panic.
 The Linux backend always passes a non-nil environment containing only its
 validated fixed base environment plus explicit resolver results. Duplicate
 names, NUL bytes, malformed assignments, and invalid resolver output are
-rejected. Empty `BaseEnvironment` selects the fixed image-owned
+rejected. Each resolver result is limited to 64 KiB and the complete resolved
+assignment set is limited to 256 KiB before it reaches a live execution plan;
+an oversized result fails with the same fixed `environment_unavailable`
+boundary and never reaches the backend. Empty `BaseEnvironment` selects the fixed image-owned
 `PATH=/usr/local/bin:/usr/bin:/bin`, `LANG=C`, and `LC_ALL=C`; it never selects
 the server's ambient environment. Values exist only in the live exec plan and
 are never logged or persisted.

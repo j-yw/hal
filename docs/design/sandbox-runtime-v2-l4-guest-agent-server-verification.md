@@ -45,7 +45,7 @@ readiness handshake with a live guest/runtime.
 Malformed, unknown, duplicate, trailing, oversized, canceled, busy, not-ready,
 and unsupported-version requests make zero backend calls. Exec coverage
 includes binary stdin/output, non-zero exit, independent stdout/stderr
-truncation, fail-closed environment resolution, timeout, cancellation,
+truncation, fail-closed and size-bounded environment resolution, timeout, cancellation,
 shutdown, process-group termination, reap, work-directory descriptor pinning,
 and descriptor non-inheritance.
 
