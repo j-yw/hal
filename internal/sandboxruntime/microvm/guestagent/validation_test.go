@@ -46,7 +46,7 @@ func TestValidateProtocolRequestsAndResponsesAcceptValidContracts(t *testing.T) 
 					ProtocolVersion: ProtocolVersionV1,
 					Operation:       OperationExec,
 					ExitCode:        0,
-					Stdout:          StreamMetadata{SizeBytes: 2, MaxBytes: 1024},
+					Stdout:          StreamMetadata{SizeBytes: 2, MaxBytes: 1024, Encoding: PayloadEncodingBase64, Data: "b2s="},
 					Stderr:          StreamMetadata{MaxBytes: 1024},
 				})
 			},

@@ -52,8 +52,8 @@ func TestClientUsesFakeTransportForReadinessExecAndCopyRequests(t *testing.T) {
 					ProtocolVersion: ProtocolVersionV1,
 					Operation:       OperationExec,
 					ExitCode:        7,
-					Stdout:          StreamMetadata{SizeBytes: 2, MaxBytes: 1024},
-					Stderr:          StreamMetadata{SizeBytes: 3, MaxBytes: 1024},
+					Stdout:          StreamMetadata{SizeBytes: 2, MaxBytes: 1024, Encoding: PayloadEncodingBase64, Data: base64.StdEncoding.EncodeToString([]byte("ok"))},
+					Stderr:          StreamMetadata{SizeBytes: 3, MaxBytes: 1024, Encoding: PayloadEncodingBase64, Data: base64.StdEncoding.EncodeToString([]byte("err"))},
 				}), nil
 			case OperationCopyIn:
 				var decoded CopyInRequest

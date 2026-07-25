@@ -102,7 +102,13 @@ func ValidateExecResponse(response ExecResponse) error {
 	if err := validateStreamMetadata(response.Operation, "stdout", response.Stdout, true); err != nil {
 		return err
 	}
-	return validateStreamMetadata(response.Operation, "stderr", response.Stderr, true)
+	if err := validateRequiredBase64StreamData(response.Operation, "stdout", response.Stdout); err != nil {
+		return err
+	}
+	if err := validateStreamMetadata(response.Operation, "stderr", response.Stderr, true); err != nil {
+		return err
+	}
+	return validateRequiredBase64StreamData(response.Operation, "stderr", response.Stderr)
 }
 
 func ValidateCopyInRequest(request CopyInRequest) error {

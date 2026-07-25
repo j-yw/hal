@@ -46,8 +46,8 @@ func TestGuestAgentTransportExecDelegatesBoundedProtocolRequestAndPropagatesOutp
 			ProtocolVersion: guestagent.ProtocolVersionV1,
 			Operation:       guestagent.OperationExec,
 			ExitCode:        23,
-			Stdout:          guestagent.StreamMetadata{Data: "guest stdout\n", SizeBytes: 13, MaxBytes: 32},
-			Stderr:          guestagent.StreamMetadata{Data: "guest stderr\n", SizeBytes: 13, MaxBytes: 16},
+			Stdout:          guestagent.StreamMetadata{Data: base64.StdEncoding.EncodeToString([]byte("guest stdout\n")), SizeBytes: 13, MaxBytes: 32, Encoding: guestagent.PayloadEncodingBase64},
+			Stderr:          guestagent.StreamMetadata{Data: base64.StdEncoding.EncodeToString([]byte("guest stderr\n")), SizeBytes: 13, MaxBytes: 16, Encoding: guestagent.PayloadEncodingBase64},
 		},
 	}
 	transport := NewGuestAgentTransport(GuestAgentTransportOptions{
@@ -216,7 +216,7 @@ func TestGuestAgentTransportExecRejectsOutputAboveConfiguredLimitsBeforeWriting(
 			ProtocolVersion: guestagent.ProtocolVersionV1,
 			Operation:       guestagent.OperationExec,
 			ExitCode:        0,
-			Stdout:          guestagent.StreamMetadata{Data: "abcdef", SizeBytes: 6, MaxBytes: 6},
+			Stdout:          guestagent.StreamMetadata{Data: base64.StdEncoding.EncodeToString([]byte("abcdef")), SizeBytes: 6, MaxBytes: 6, Encoding: guestagent.PayloadEncodingBase64},
 			Stderr:          guestagent.StreamMetadata{MaxBytes: 5},
 		},
 	}
