@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -110,7 +111,7 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 		stderrPipe.close()
 		return ExecResult{}, linuxContextError(guestagent.OperationExec, err)
 	}
-	if err := command.Start(); err != nil {
+	if err := startLinuxCommandWithoutPrivilegeGain(command); err != nil {
 		stdoutPipe.close()
 		stderrPipe.close()
 		return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "args", "guest command could not start", err)
@@ -371,11 +372,28 @@ func openLinuxExecutableAt(rootFD int, relative string) (int, error) {
 		_ = unix.Close(fd)
 		return -1, err
 	}
-	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Mode&0o111 == 0 {
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG ||
+		stat.Mode&0o111 == 0 ||
+		stat.Mode&(unix.S_ISUID|unix.S_ISGID) != 0 {
 		_ = unix.Close(fd)
 		return -1, unix.EACCES
 	}
 	return fd, nil
+}
+
+func startLinuxCommandWithoutPrivilegeGain(command *exec.Cmd) error {
+	if command == nil {
+		return unix.EINVAL
+	}
+	// no_new_privs is inherited from the calling OS thread across fork/exec and
+	// permanently prevents set-ID bits and file capabilities from increasing
+	// the child's privileges. Locking keeps the thread state bound to this start.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+		return err
+	}
+	return command.Start()
 }
 
 func (backend *linuxBackend) linuxExecutableIsInterpreterScript(executableFD int) (bool, error) {

@@ -128,6 +128,9 @@ func (server *Server) handleExec(ctx context.Context, encoded []byte) Response {
 	}
 	stdoutLimit := smallerPositive(request.Stdout.MaxBytes, DefaultExecStdoutBytes)
 	stderrLimit := smallerPositive(request.Stderr.MaxBytes, DefaultExecStderrBytes)
+	if err := backendCtx.Err(); err != nil {
+		return server.contextErrorResponse(err, guestagent.OperationExec)
+	}
 	result, err := server.backend.Exec(backendCtx, ExecPlan{
 		Args:           append([]string(nil), request.Args...),
 		Environment:    environment,
@@ -279,6 +282,9 @@ func (server *Server) resolveEnvironment(ctx context.Context, entries []guestage
 	names := make(map[string]struct{}, len(entries))
 	var totalBytes int64
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if _, duplicate := names[entry.Name]; duplicate {
 			return nil, errors.New("duplicate environment name")
 		}
@@ -287,6 +293,9 @@ func (server *Server) resolveEnvironment(ctx context.Context, entries []guestage
 			return nil, errors.New("secret environment source is unavailable")
 		}
 		value, err := server.resolver.Resolve(ctx, entry)
+		if contextErr := ctx.Err(); contextErr != nil {
+			return nil, contextErr
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -303,6 +312,9 @@ func (server *Server) resolveEnvironment(ctx context.Context, entries []guestage
 		}
 		totalBytes += assignmentBytes
 		resolved = append(resolved, entry.Name+"="+value)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return resolved, nil
 }
