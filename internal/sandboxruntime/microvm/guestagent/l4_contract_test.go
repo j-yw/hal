@@ -135,6 +135,47 @@ func TestL4ReadinessResponseValidatesPresentStatus(t *testing.T) {
 	}
 }
 
+func TestL4ExecResponseRequiresDeclaredOutputData(t *testing.T) {
+	tests := []struct {
+		name      string
+		response  ExecResponse
+		wantField string
+	}{
+		{
+			name: "stdout",
+			response: ExecResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationExec,
+				Stdout:          StreamMetadata{SizeBytes: 2, MaxBytes: 1024, Encoding: PayloadEncodingBase64},
+				Stderr:          StreamMetadata{MaxBytes: 1024},
+			},
+			wantField: "stdout.data",
+		},
+		{
+			name: "stderr",
+			response: ExecResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationExec,
+				Stdout:          StreamMetadata{MaxBytes: 1024},
+				Stderr:          StreamMetadata{SizeBytes: 3, MaxBytes: 1024, Encoding: PayloadEncodingBase64},
+			},
+			wantField: "stderr.data",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateExecResponse(tt.response)
+			var protocolErr *ProtocolError
+			if !errors.As(err, &protocolErr) ||
+				protocolErr.Code != ErrorCodeInvalidMetadata ||
+				protocolErr.Field != tt.wantField {
+				t.Fatalf("ValidateExecResponse() error = %v, want %s at %s", err, ErrorCodeInvalidMetadata, tt.wantField)
+			}
+		})
+	}
+}
+
 func TestL4ClientStrictlyRejectsMalformedResponseObjects(t *testing.T) {
 	tests := []struct {
 		name     string
