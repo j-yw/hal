@@ -147,10 +147,12 @@ func (server *Server) Serve(ctx context.Context) error {
 	server.mu.Unlock()
 
 	transportErr := server.transport.Serve(serveCtx, server.limits, server)
-	server.markTransportDone()
+	transportFailure := transportErr != nil
+	if serveErr := serveCtx.Err(); serveErr != nil && errors.Is(transportErr, serveErr) {
+		transportFailure = false
+	}
 
 	server.mu.Lock()
-	transportFailure := transportErr != nil && ctx.Err() == nil && server.state == StateServing
 	target := StateStopped
 	if transportFailure {
 		target = StateFailed
@@ -158,6 +160,7 @@ func (server *Server) Serve(ctx context.Context) error {
 	server.beginDrainLocked(target)
 	done := server.cleanupDone
 	server.mu.Unlock()
+	server.markTransportDone()
 	<-done
 
 	server.mu.Lock()
