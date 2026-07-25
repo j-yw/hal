@@ -103,12 +103,21 @@ vsock transport and its framing proof.
 The server state machine is:
 
 ```text
-new -> serving -> draining -> stopped
-                 \----------> failed
+new ---------> serving -> draining -> stopped
+ \                \-------> failed
+  \-> draining -> stopped
 ```
 
 The exact states are `new`, `serving`, `draining`, `stopped`, and `failed`.
-`Serve` may run once. A transport failure moves the server to `failed`.
+`Serve` may run once. `Shutdown` before `Serve` transitions
+`new -> draining -> stopped`, closes the backend exactly once, and makes a
+later `Serve` fail without invoking the transport.
+
+A transport failure cancels in-flight handlers, runs the same exactly-once
+backend cleanup as shutdown, and moves the server to `failed` only after
+cleanup completes. If cleanup itself fails or exceeds `MaxShutdownTime`, the
+terminal state is also `failed`.
+
 Cancellation or `Shutdown` moves it to `draining`, rejects new work, cancels
 in-flight work, waits for transport return and backend cleanup, and ends in
 `stopped`. `Shutdown` is idempotent and bounded by its caller context. If that
@@ -206,6 +215,14 @@ Backend construction opens and pins the workspace root, verifies Linux
 safe reopen/chdir, and fails closed if the required containment primitives are
 unavailable. It never falls back to string-only checks, `os.Root`, or an
 unchecked host path.
+
+Every root, directory, temporary-write, copy-in, copy-out, and observation
+descriptor is created atomically with `O_CLOEXEC`. No server-owned descriptor
+is inheritable by concurrently launched commands. The sole exception is the
+specific pinned work-directory descriptor deliberately supplied through that
+command's `ExtraFiles`; the child receives no other server descriptor. A
+`MaxConcurrent > 1` regression inspects a launched child while copy operations
+are active and proves descriptor non-inheritance.
 
 Backend errors may return a `guestagent.ProtocolError` with an allowed stable
 L4 code. Context cancellation and deadline errors preserve `errors.Is`
