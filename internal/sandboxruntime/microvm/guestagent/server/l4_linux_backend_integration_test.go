@@ -43,6 +43,13 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLinuxBackend() prerequisite failure: %v", err)
 	}
+	hooks, ok := backend.(interface {
+		setBeforeExecStartTestHook(func())
+		setAfterCopyTempOpenTestHook(func())
+	})
+	if !ok {
+		t.Fatal("production Linux backend does not expose package-private acceptance hooks")
+	}
 
 	transport := newL4MemoryTransport()
 	server, err := New(Options{
@@ -142,6 +149,95 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 			Source: guestagent.EnvironmentSourceGenerated,
 		}}
 		assertL4ErrorCode(t, transport.roundTrip(context.Background(), mustL4JSON(t, request)), "environment_unavailable")
+	})
+
+	t.Run("work directory remains pinned across path replacement", func(t *testing.T) {
+		workDir := filepath.Join(workspace, "pinned-workdir")
+		renamedDir := filepath.Join(workspace, "pinned-workdir-original")
+		if err := os.Mkdir(workDir, 0o700); err != nil {
+			t.Fatalf("create pinned work directory: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(workDir, "identity"), []byte("original"), 0o600); err != nil {
+			t.Fatalf("write original work-directory identity: %v", err)
+		}
+
+		var hookErr error
+		hooks.setBeforeExecStartTestHook(func() {
+			if err := os.Rename(workDir, renamedDir); err != nil {
+				hookErr = fmt.Errorf("rename pinned work directory: %w", err)
+				return
+			}
+			if err := os.Mkdir(workDir, 0o700); err != nil {
+				hookErr = fmt.Errorf("create replacement work directory: %w", err)
+				return
+			}
+			if err := os.WriteFile(filepath.Join(workDir, "identity"), []byte("replacement"), 0o600); err != nil {
+				hookErr = fmt.Errorf("write replacement work-directory identity: %w", err)
+			}
+		})
+
+		request := l4ExecRequest([]string{
+			os.Args[0], "-test.run=^TestL4PreparedLinuxHelperProcess$", "--", "cwd-identity",
+		}, nil, 64, 64)
+		request.WorkDir = "/workspace/pinned-workdir"
+		response := l4ExecRequestRoundTrip(t, transport, context.Background(), request)
+		if hookErr != nil {
+			t.Fatal(hookErr)
+		}
+		if got := string(decodeL4Data(t, response.Stdout.Data)); got != "original" {
+			t.Fatalf("pinned work-directory identity = %q, want original", got)
+		}
+	})
+
+	t.Run("copy descriptors are not inherited by concurrent exec", func(t *testing.T) {
+		workDir := filepath.Join(workspace, "fd-workdir")
+		if err := os.Mkdir(workDir, 0o700); err != nil {
+			t.Fatalf("create descriptor work directory: %v", err)
+		}
+		copyOpened := make(chan struct{})
+		releaseCopy := make(chan struct{})
+		hooks.setAfterCopyTempOpenTestHook(func() {
+			close(copyOpened)
+			<-releaseCopy
+		})
+
+		copyDone := make(chan []byte, 1)
+		go func() {
+			copyDone <- transport.roundTrip(context.Background(), mustL4JSON(t,
+				l4CopyInRequest("/workspace/concurrent-copy.bin", []byte("copy-data"), 1024)))
+		}()
+		select {
+		case <-copyOpened:
+		case <-time.After(5 * time.Second):
+			t.Fatal("copy-in did not reach the open-descriptor hook")
+		}
+
+		request := l4ExecRequest([]string{
+			os.Args[0], "-test.run=^TestL4PreparedLinuxHelperProcess$", "--", "fd-list",
+		}, nil, 4096, 64)
+		request.WorkDir = "/workspace/fd-workdir"
+		response := l4ExecRequestRoundTrip(t, transport, context.Background(), request)
+		output := string(decodeL4Data(t, response.Stdout.Data))
+		if strings.Contains(output, ".hal-copy-") {
+			t.Fatalf("copy descriptor leaked to child: %q", output)
+		}
+		for _, forbidden := range []string{workspace, filepath.Dir(os.Args[0]), os.Args[0]} {
+			for _, target := range strings.Split(strings.TrimSpace(output), "\n") {
+				if target == forbidden {
+					t.Fatalf("server descriptor target %q leaked to child: %q", forbidden, output)
+				}
+			}
+		}
+		if !strings.Contains(output, workDir) {
+			t.Fatalf("deliberate work-directory descriptor missing from child: %q", output)
+		}
+
+		close(releaseCopy)
+		var copied guestagent.CopyInResponse
+		mustL4Decode(t, <-copyDone, &copied)
+		if copied.Error != nil {
+			t.Fatalf("concurrent copy-in response = %#v", copied)
+		}
 	})
 
 	t.Run("copy digest atomic mode preservation and containment", func(t *testing.T) {
@@ -336,6 +432,25 @@ func TestL4PreparedLinuxHelperProcess(t *testing.T) {
 		}
 		_ = os.WriteFile(args[0], []byte(fmt.Sprintf("%d", os.Getpid())), 0o600)
 		select {}
+	case "cwd-identity":
+		data, err := os.ReadFile("identity")
+		if err != nil {
+			os.Exit(3)
+		}
+		_, _ = os.Stdout.Write(data)
+		os.Exit(0)
+	case "fd-list":
+		entries, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			os.Exit(3)
+		}
+		for _, entry := range entries {
+			target, err := os.Readlink(filepath.Join("/proc/self/fd", entry.Name()))
+			if err == nil {
+				_, _ = fmt.Fprintln(os.Stdout, target)
+			}
+		}
+		os.Exit(0)
 	default:
 		os.Exit(2)
 	}
@@ -369,8 +484,13 @@ func (transport *l4MemoryTransport) roundTrip(ctx context.Context, encoded []byt
 
 func l4Exec(t *testing.T, transport *l4MemoryTransport, ctx context.Context, args []string, stdin []byte, stdoutMax, stderrMax int64) guestagent.ExecResponse {
 	t.Helper()
+	return l4ExecRequestRoundTrip(t, transport, ctx, l4ExecRequest(args, stdin, stdoutMax, stderrMax))
+}
+
+func l4ExecRequestRoundTrip(t *testing.T, transport *l4MemoryTransport, ctx context.Context, request guestagent.ExecRequest) guestagent.ExecResponse {
+	t.Helper()
 	var response guestagent.ExecResponse
-	mustL4Decode(t, transport.roundTrip(ctx, mustL4JSON(t, l4ExecRequest(args, stdin, stdoutMax, stderrMax))), &response)
+	mustL4Decode(t, transport.roundTrip(ctx, mustL4JSON(t, request)), &response)
 	if response.Error != nil {
 		t.Fatalf("exec response error = %#v", response.Error)
 	}
