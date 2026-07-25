@@ -277,6 +277,7 @@ func (server *Server) handleCopyOut(ctx context.Context, encoded []byte) Respons
 func (server *Server) resolveEnvironment(ctx context.Context, entries []guestagent.EnvironmentEntry) ([]string, error) {
 	resolved := make([]string, 0, len(entries))
 	names := make(map[string]struct{}, len(entries))
+	var totalBytes int64
 	for _, entry := range entries {
 		if _, duplicate := names[entry.Name]; duplicate {
 			return nil, errors.New("duplicate environment name")
@@ -292,6 +293,15 @@ func (server *Server) resolveEnvironment(ctx context.Context, entries []guestage
 		if strings.ContainsRune(value, 0) {
 			return nil, errors.New("resolved environment value is invalid")
 		}
+		valueBytes := int64(len(value))
+		if valueBytes > MaximumResolvedEnvironmentValueBytes {
+			return nil, errors.New("resolved environment value exceeds the server limit")
+		}
+		assignmentBytes := int64(len(entry.Name)) + 1 + valueBytes
+		if assignmentBytes > MaximumResolvedEnvironmentBytes-totalBytes {
+			return nil, errors.New("resolved environment exceeds the server limit")
+		}
+		totalBytes += assignmentBytes
 		resolved = append(resolved, entry.Name+"="+value)
 	}
 	return resolved, nil

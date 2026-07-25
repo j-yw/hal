@@ -27,6 +27,9 @@ const (
 	DefaultExecStdoutBytes int64 = 256 << 10
 	DefaultExecStderrBytes int64 = 256 << 10
 	DefaultCopyBytes       int64 = 512 << 10
+
+	MaximumResolvedEnvironmentValueBytes int64 = 64 << 10
+	MaximumResolvedEnvironmentBytes      int64 = 256 << 10
 )
 
 // State is the lifecycle state of a guest-agent server.
