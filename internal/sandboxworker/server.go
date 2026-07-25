@@ -15,6 +15,10 @@ import (
 
 const defaultMaxRequestBytes int64 = 1 << 20
 
+var listenWorkerUnixSocket = func(ctx context.Context, socketPath string) (net.Listener, error) {
+	return (&net.ListenConfig{}).Listen(ctx, "unix", socketPath)
+}
+
 // RequestHandler dispatches a validated worker protocol request.
 type RequestHandler interface {
 	HandleRequest(context.Context, Request) Response
@@ -87,7 +91,7 @@ func (server *Server) ListenAndServe(ctx context.Context) error {
 	if err := validateWorkerSocketPath(server.socketPath); err != nil {
 		return err
 	}
-	listener, err := (&net.ListenConfig{}).Listen(ctx, "unix", server.socketPath)
+	listener, err := listenWorkerUnixSocket(ctx, server.socketPath)
 	if err != nil {
 		return fmt.Errorf("worker server could not bind the Unix socket")
 	}
