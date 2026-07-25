@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -24,6 +26,8 @@ const (
 		unix.RESOLVE_NO_SYMLINKS
 
 	defaultLinuxTermGrace = 250 * time.Millisecond
+
+	maximumLinuxMountInfoBytes = 4 << 20
 )
 
 type linuxExecutableRoot struct {
@@ -76,6 +80,10 @@ func NewLinuxBackend(options LinuxBackendOptions) (Backend, error) {
 			backend.closeDescriptors()
 		}
 	}()
+	if err = verifyLinuxWorkspaceBoundary(backend.workspaceFD); err != nil {
+		err = linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "workspaceRoot", "required Linux containment is unavailable", err)
+		return nil, err
+	}
 	if backend.termGrace < 0 {
 		err = linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "termGrace", "process termination grace is invalid", nil)
 		return nil, err
@@ -251,6 +259,65 @@ func (backend *linuxBackend) openWorkspace(relative string, flags int, mode uint
 		Mode:    uint64(mode),
 		Resolve: uint64(linuxResolveFlags),
 	})
+}
+
+func verifyLinuxWorkspaceBoundary(workspaceFD int) error {
+	parentFD, err := unix.Openat(workspaceFD, "..", unix.O_PATH|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(parentFD)
+
+	var workspaceStat unix.Stat_t
+	var parentStat unix.Stat_t
+	if err := unix.Fstat(workspaceFD, &workspaceStat); err != nil {
+		return err
+	}
+	if err := unix.Fstat(parentFD, &parentStat); err != nil {
+		return err
+	}
+	if workspaceStat.Dev == parentStat.Dev {
+		return errors.New("workspace is not a distinct filesystem root")
+	}
+
+	mountInfo, err := os.Open("/proc/self/mountinfo")
+	if err != nil {
+		return err
+	}
+	defer mountInfo.Close()
+	encoded, err := io.ReadAll(io.LimitReader(mountInfo, maximumLinuxMountInfoBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(encoded) > maximumLinuxMountInfoBytes {
+		return errors.New("mount metadata exceeds the server limit")
+	}
+
+	device := fmt.Sprintf(
+		"%d:%d",
+		unix.Major(uint64(workspaceStat.Dev)),
+		unix.Minor(uint64(workspaceStat.Dev)),
+	)
+	mountCount := 0
+	for _, line := range strings.Split(string(encoded), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 6 {
+			return errors.New("mount metadata is malformed")
+		}
+		if fields[2] == device {
+			mountCount++
+			if mountCount > 1 {
+				return errors.New("workspace filesystem has another mount")
+			}
+		}
+	}
+	if mountCount != 1 {
+		return errors.New("workspace filesystem mount is unavailable")
+	}
+	return nil
 }
 
 func (backend *linuxBackend) guestRelative(operation guestagent.Operation, field, value string, allowRoot bool) (string, error) {
