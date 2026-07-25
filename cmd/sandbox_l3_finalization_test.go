@@ -555,6 +555,7 @@ func seedL3FinalizationExecution(t *testing.T, initialState string) (sandboxexec
 	terminal := &sandboxworker.Job{
 		ContractVersion: sandboxworker.JobContractVersion,
 		ID:              "job-finalize",
+		SubmissionKey:   sandboxWorkerJobSubmissionKey(executionID),
 		WorkerID:        "worker-l3",
 		HostID:          "worker-l3",
 		RuntimeDriver:   "rootless_podman",

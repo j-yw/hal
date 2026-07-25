@@ -677,6 +677,7 @@ func l3Manifest(id, sandboxName string, startedAt time.Time, jobID, jobState str
 		job := &sandboxexecution.WorkerJobReference{
 			ContractVersion: sandboxexecution.WorkerJobContractVersion,
 			JobID:           jobID,
+			SubmissionKey:   sandboxWorkerJobSubmissionKey(id),
 			WorkerID:        "worker-l3",
 			HostID:          "worker-l3",
 			RuntimeDriver:   sandbox.SandboxRuntimeDriverRootlessPodman,

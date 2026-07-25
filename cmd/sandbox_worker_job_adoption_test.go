@@ -503,15 +503,23 @@ func TestSandboxWorkerJobUpdateCannotRegressCompletedFinalization(t *testing.T) 
 		UpdatedAt:   finalizedAt,
 		CompletedAt: &finalizedAt,
 	}
-	if err := store.SaveManifest(&sandboxexecution.Manifest{
-		ID:           executionID,
-		Purpose:      sandboxexecution.PurposeRun,
-		Status:       sandboxexecution.StatusSucceeded,
-		StartedAt:    startedAt,
-		FinishedAt:   &finishedAt,
-		WorkerJob:    terminalReference,
-		Finalization: completed,
-	}); err != nil {
+	manifest := l3Manifest(
+		executionID,
+		"alpha",
+		startedAt,
+		terminalReference.JobID,
+		terminalReference.State,
+		terminalReference.LogCursor,
+	)
+	manifest.Host.ID = terminalReference.HostID
+	manifest.Runtime.WorkerID = terminalReference.WorkerID
+	manifest.Runtime.RuntimeID = terminalReference.RuntimeID
+	manifest.WorkerRouting.SelectedWorkerHostID = terminalReference.HostID
+	manifest.Status = sandboxexecution.StatusSucceeded
+	manifest.FinishedAt = &finishedAt
+	manifest.WorkerJob = terminalReference
+	manifest.Finalization = completed
+	if err := store.SaveManifest(manifest); err != nil {
 		t.Fatalf("SaveManifest(seed) error: %v", err)
 	}
 
@@ -563,6 +571,10 @@ func TestRunAndAutoSandboxDetachedJobsStayRunningWithoutFinalizationSideEffects(
 				err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
 					Base:                  "main",
 					BaseChanged:           true,
+					SandboxHostID:         "host-1",
+					SandboxHostChanged:    true,
+					SandboxRuntime:        sandbox.SandboxRuntimeDriverRootlessPodman,
+					SandboxRuntimeChanged: true,
 					SandboxSyncOut:        true,
 					SandboxSyncOutChanged: true,
 				}, io.Discard, io.Discard, runSandboxDeps{
@@ -604,6 +616,10 @@ func TestRunAndAutoSandboxDetachedJobsStayRunningWithoutFinalizationSideEffects(
 				err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
 					Base:                  "main",
 					BaseChanged:           true,
+					SandboxHostID:         "host-1",
+					SandboxHostChanged:    true,
+					SandboxRuntime:        sandbox.SandboxRuntimeDriverRootlessPodman,
+					SandboxRuntimeChanged: true,
 					SandboxSyncOut:        true,
 					SandboxSyncOutChanged: true,
 				}, io.Discard, io.Discard, autoSandboxDeps{
@@ -714,6 +730,10 @@ func TestRunAndAutoTerminalWorkerJobsUseSharedFinalizationWithoutImplicitApply(t
 					err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
 						Base:                  "main",
 						BaseChanged:           true,
+						SandboxHostID:         "host-1",
+						SandboxHostChanged:    true,
+						SandboxRuntime:        sandbox.SandboxRuntimeDriverRootlessPodman,
+						SandboxRuntimeChanged: true,
 						SandboxSyncOut:        true,
 						SandboxSyncOutChanged: true,
 						SandboxApply:          true,
@@ -752,6 +772,10 @@ func TestRunAndAutoTerminalWorkerJobsUseSharedFinalizationWithoutImplicitApply(t
 					err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
 						Base:                  "main",
 						BaseChanged:           true,
+						SandboxHostID:         "host-1",
+						SandboxHostChanged:    true,
+						SandboxRuntime:        sandbox.SandboxRuntimeDriverRootlessPodman,
+						SandboxRuntimeChanged: true,
 						SandboxSyncOut:        true,
 						SandboxSyncOutChanged: true,
 						SandboxApply:          true,

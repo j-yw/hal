@@ -468,6 +468,11 @@ func selectSandboxL3ExecutionFromSnapshot(instance *sandbox.SandboxState, sandbo
 		if !sandboxL3ManifestMatchesInstance(manifest, instance) {
 			return nil, nil, fmt.Errorf("execution_sandbox_mismatch: execution %s does not belong to sandbox %s", runID, sandboxName)
 		}
+		if manifest.WorkerJob != nil {
+			if err := validateSandboxL3ManifestWorkerJobBinding(manifest); err != nil {
+				return nil, nil, err
+			}
+		}
 		if manifest.WorkerJob == nil && !sandboxL3ExecutionAwaitingJobResolution(manifest) {
 			return nil, nil, fmt.Errorf("worker_job_missing: execution %s has no durable worker job", runID)
 		}
@@ -493,6 +498,9 @@ func selectSandboxL3ExecutionFromSnapshot(instance *sandbox.SandboxState, sandbo
 				candidates = append(candidates, manifest)
 			}
 			continue
+		}
+		if err := validateSandboxL3ManifestWorkerJobBinding(manifest); err != nil {
+			return nil, nil, err
 		}
 		if sandboxL3ExecutionRecoverable(manifest) {
 			candidates = append(candidates, manifest)
@@ -582,16 +590,10 @@ func sandboxL3ExecutionAwaitingJobResolution(manifest *sandboxexecution.Manifest
 }
 
 func sandboxL3ClientForManifest(manifest *sandboxexecution.Manifest) (*sandboxworker.Client, error) {
-	if manifest == nil || manifest.WorkerJob == nil {
-		return nil, errors.New("worker_job_missing: durable worker job identity is required")
+	if err := validateSandboxL3ManifestWorkerJobBinding(manifest); err != nil {
+		return nil, err
 	}
 	hostID := strings.TrimSpace(manifest.WorkerJob.HostID)
-	if hostID == "" && manifest.Host != nil {
-		hostID = strings.TrimSpace(manifest.Host.ID)
-	}
-	if hostID == "" {
-		return nil, errors.New("worker_host_missing: durable worker host identity is required")
-	}
 	return sandboxL3ClientForHostID(hostID)
 }
 
@@ -619,7 +621,10 @@ func sandboxL3ClientForHostID(hostID string) (*sandboxworker.Client, error) {
 }
 
 func validateSandboxL3LiveJob(manifest *sandboxexecution.Manifest, job *sandboxworker.Job) error {
-	if manifest == nil || manifest.WorkerJob == nil || job == nil {
+	if err := validateSandboxL3ManifestWorkerJobBinding(manifest); err != nil {
+		return err
+	}
+	if job == nil {
 		return errors.New("worker_job_identity_mismatch: durable and live job identities are required")
 	}
 	if sandboxL3WorkerJobReference(job) == nil {
@@ -628,17 +633,11 @@ func validateSandboxL3LiveJob(manifest *sandboxexecution.Manifest, job *sandboxw
 	reference := manifest.WorkerJob
 	mismatch := job.ContractVersion != sandboxworker.JobContractVersion ||
 		job.ID != reference.JobID ||
+		job.SubmissionKey != reference.SubmissionKey ||
 		job.WorkerID != reference.WorkerID ||
-		job.RuntimeDriver != reference.RuntimeDriver
-	if reference.SubmissionKey != "" && job.SubmissionKey != reference.SubmissionKey {
-		mismatch = true
-	}
-	if reference.HostID != "" && job.HostID != reference.HostID {
-		mismatch = true
-	}
-	if reference.RuntimeID != "" && job.RuntimeID != reference.RuntimeID {
-		mismatch = true
-	}
+		job.HostID != reference.HostID ||
+		job.RuntimeDriver != reference.RuntimeDriver ||
+		job.RuntimeID != reference.RuntimeID
 	if mismatch {
 		return fmt.Errorf("worker_job_identity_mismatch: live job did not match execution %s", manifest.ID)
 	}
@@ -648,6 +647,49 @@ func validateSandboxL3LiveJob(manifest *sandboxexecution.Manifest, job *sandboxw
 	if (reference.State == sandboxworker.JobStateUnknown || reference.State == sandboxworker.JobStateInterrupted) &&
 		sandboxL3ActiveJobState(job.State) {
 		return fmt.Errorf("worker_job_state_regression: unproven terminal execution %s cannot become active", manifest.ID)
+	}
+	return nil
+}
+
+func validateSandboxL3ManifestWorkerJobBinding(manifest *sandboxexecution.Manifest) error {
+	if manifest == nil ||
+		manifest.WorkerJob == nil ||
+		manifest.Host == nil ||
+		manifest.Runtime == nil ||
+		manifest.WorkerRouting == nil {
+		return errors.New("worker_job_identity_mismatch: durable execution identity is incomplete")
+	}
+
+	reference := manifest.WorkerJob
+	host := manifest.Host
+	runtime := manifest.Runtime
+	routing := manifest.WorkerRouting
+	hostID := strings.TrimSpace(host.ID)
+	hostName := strings.TrimSpace(host.Name)
+	driverID := strings.TrimSpace(runtime.Driver)
+	runtimeID := strings.TrimSpace(runtime.RuntimeID)
+	workerID := strings.TrimSpace(runtime.WorkerID)
+	isolation := strings.TrimSpace(runtime.IsolationLevel)
+
+	mismatch := strings.TrimSpace(manifest.ID) == "" ||
+		strings.TrimSpace(reference.SubmissionKey) != sandboxWorkerJobSubmissionKey(manifest.ID) ||
+		strings.TrimSpace(host.Kind) != sandbox.SandboxHostKindWorker ||
+		hostID == "" ||
+		strings.TrimSpace(reference.HostID) != hostID ||
+		workerID == "" ||
+		strings.TrimSpace(reference.WorkerID) != workerID ||
+		driverID == "" ||
+		strings.TrimSpace(reference.RuntimeDriver) != driverID ||
+		runtimeID == "" ||
+		strings.TrimSpace(reference.RuntimeID) != runtimeID ||
+		hostName == "" ||
+		strings.TrimSpace(routing.SelectedWorkerHostID) != hostID ||
+		strings.TrimSpace(routing.SelectedWorkerHostName) != hostName ||
+		strings.TrimSpace(routing.RuntimeDriverID) != driverID ||
+		isolation == "" ||
+		strings.TrimSpace(routing.IsolationLevel) != isolation
+	if mismatch {
+		return fmt.Errorf("worker_job_identity_mismatch: durable worker job did not match execution %s", manifest.ID)
 	}
 	return nil
 }
@@ -848,6 +890,9 @@ func renderSandboxL3LiveListJSON(ctx context.Context, out io.Writer, instances [
 					Message: "durable execution requires recovery before live observation",
 				})
 			} else {
+				if err := validateSandboxL3ManifestWorkerJobBinding(manifest); err != nil {
+					return err
+				}
 				client, clientErr := sandboxL3ClientForManifest(manifest)
 				if clientErr == nil {
 					liveJob, clientErr = client.JobStatus(ctx, sandboxworker.JobStatusRequest{

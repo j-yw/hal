@@ -42,6 +42,11 @@ func finalizeSandboxL3Execution(
 		if err != nil {
 			return errors.New("execution_manifest_unavailable: durable execution manifest is unavailable")
 		}
+		if manifest.WorkerJob != nil {
+			if err := validateSandboxL3ManifestWorkerJobBinding(manifest); err != nil {
+				return err
+			}
+		}
 		if manifest.Finalization != nil && manifest.Finalization.State == sandboxexecution.FinalizationStateCompleted {
 			if err := validateSandboxL3CompletedPublication(manifest); err != nil {
 				return err
@@ -66,6 +71,9 @@ func finalizeSandboxL3Execution(
 			}
 			now := deps.now().UTC()
 			manifest.WorkerJob = reference
+			if err := validateSandboxL3ManifestWorkerJobBinding(manifest); err != nil {
+				return err
+			}
 			finalization := ensureSandboxL3Finalization(manifest, requestSyncOut, now)
 			finalization.State = sandboxexecution.FinalizationStatePending
 			finalization.ReasonCode = ""
@@ -181,6 +189,9 @@ func finalizeSandboxL3PostPublicationSyncOut(
 	manifest *sandboxexecution.Manifest,
 	deps sandboxL3FinalizationDeps,
 ) error {
+	if err := validateSandboxL3ManifestWorkerJobBinding(manifest); err != nil {
+		return err
+	}
 	job, err := deps.observeJob(ctx, manifest)
 	if err != nil {
 		return blockSandboxL3Finalization(

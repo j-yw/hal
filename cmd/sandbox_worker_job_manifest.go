@@ -103,7 +103,7 @@ func persistSandboxWorkerJobUpdate(
 			syncOutRequested,
 			now,
 		)
-		return nil
+		return validateSandboxL3ManifestWorkerJobBinding(manifest)
 	})
 }
 
