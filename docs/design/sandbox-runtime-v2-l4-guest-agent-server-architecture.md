@@ -218,12 +218,15 @@ unavailable. It never falls back to string-only checks, `os.Root`, or an
 unchecked host path.
 
 Every root, directory, temporary-write, copy-in, copy-out, and observation
-descriptor is created atomically with `O_CLOEXEC`. No server-owned descriptor
-is inheritable by concurrently launched commands. The sole exception is the
-specific pinned work-directory descriptor deliberately supplied through that
-command's `ExtraFiles`; the child receives no other server descriptor. A
-`MaxConcurrent > 1` regression inspects a launched child while copy operations
-are active and proves descriptor non-inheritance.
+descriptor is created atomically with `O_CLOEXEC`. No unrelated server-owned
+descriptor is inheritable by concurrently launched commands. The specific
+pinned work-directory descriptor is deliberately supplied through that
+command's `ExtraFiles`. When the pinned executable is an interpreter script,
+its read-only `O_PATH` descriptor is also deliberately remapped into that
+child so the kernel-selected interpreter reopens the pinned inode rather than
+a mutable pathname; native binaries do not inherit it. The child receives no
+other server descriptor. A `MaxConcurrent > 1` regression inspects a launched
+child while copy operations are active and proves descriptor non-inheritance.
 
 Backend errors may return a `guestagent.ProtocolError` with an allowed stable
 L4 code. Context cancellation and deadline errors preserve `errors.Is`
@@ -361,6 +364,14 @@ Empty `ExecutablePaths` defaults to `/usr/local/bin`, `/usr/bin`, and `/bin`
 inside the guest. Paths and files are validated at construction/launch without
 entering public errors. The prepared-host test uses an explicit test-only
 executable-root list.
+
+The backend identifies an interpreter script only by reading the first two
+bytes through the already-pinned executable descriptor. For that case,
+`exec.Cmd.Path` references a child-only inherited descriptor; this preserves
+the same executable inode across `execve` and the interpreter reopen. The
+script must itself have passed the configured executable-root containment and
+regular executable-file checks. The descriptor is never persisted, exposed in
+protocol metadata, or shared with another command.
 
 The requested work directory must be beneath `GuestRoot`. It is opened from
 the pinned workspace root with:

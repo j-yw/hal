@@ -101,7 +101,7 @@ func TestL4ErrorResponseExactJSONShape(t *testing.T) {
 	}
 }
 
-func TestL4ReadinessResponseRequiresCanonicalPair(t *testing.T) {
+func TestL4ReadinessResponseValidatesPresentStatus(t *testing.T) {
 	tests := []struct {
 		name    string
 		ready   bool
@@ -112,8 +112,9 @@ func TestL4ReadinessResponseRequiresCanonicalPair(t *testing.T) {
 		{name: "not ready", ready: false, status: ReadinessStatusNotReady},
 		{name: "true not ready contradiction", ready: true, status: ReadinessStatusNotReady, wantErr: true},
 		{name: "false ready contradiction", ready: false, status: ReadinessStatusReady, wantErr: true},
-		{name: "true missing status", ready: true, wantErr: true},
-		{name: "false missing status", ready: false, wantErr: true},
+		{name: "unsupported status", status: "starting", wantErr: true},
+		{name: "v1 ready response omits status", ready: true},
+		{name: "v1 not-ready response omits status", ready: false},
 	}
 
 	for _, tt := range tests {
@@ -231,6 +232,44 @@ func TestL4ClientPreservesOperationlessGenericErrorCode(t *testing.T) {
 			_, err = client.Readiness(context.Background(), ReadinessRequest{})
 			if !l4ProtocolErrorCode(err, code) {
 				t.Fatalf("Readiness() error = %v, want %s", err, code)
+			}
+		})
+	}
+}
+
+func TestL4ClientRejectsInvalidGenericErrorEnvelope(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+	}{
+		{
+			name:     "nested operation does not match envelope",
+			response: `{"protocolVersion":"guest-agent-v1","operation":"readiness","error":{"code":"server_not_ready","operation":"copy_in"}}`,
+		},
+		{
+			name:     "known operation has unsupported error code",
+			response: `{"protocolVersion":"guest-agent-v1","operation":"readiness","error":{"code":"future_error","operation":"readiness"}}`,
+		},
+		{
+			name:     "known operation has missing error code",
+			response: `{"protocolVersion":"guest-agent-v1","operation":"readiness","error":{"operation":"readiness"}}`,
+		},
+		{
+			name:     "operationless error has unsupported code",
+			response: `{"protocolVersion":"guest-agent-v1","error":{"code":"future_error","field":"request"}}`,
+		},
+		{
+			name:     "operationless error has missing code",
+			response: `{"protocolVersion":"guest-agent-v1","error":{"field":"request"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := l4ReadinessClient(t, []byte(tt.response))
+			_, err := client.Readiness(context.Background(), ReadinessRequest{})
+			if !l4ProtocolErrorCode(err, ErrorCodeMalformedResponse) {
+				t.Fatalf("Readiness() error = %v, want %s", err, ErrorCodeMalformedResponse)
 			}
 		})
 	}

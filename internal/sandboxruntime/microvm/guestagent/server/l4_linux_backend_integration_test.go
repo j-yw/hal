@@ -34,10 +34,11 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 	t.Setenv(l4AmbientCanary, "must-not-reach-child")
 
 	workspace := t.TempDir()
+	scriptRoot := t.TempDir()
 	backend, err := NewLinuxBackend(LinuxBackendOptions{
 		WorkspaceRoot:   workspace,
 		GuestRoot:       "/workspace",
-		ExecutablePaths: []string{filepath.Dir(os.Args[0])},
+		ExecutablePaths: []string{filepath.Dir(os.Args[0]), scriptRoot},
 		TermGrace:       250 * time.Millisecond,
 	})
 	if err != nil {
@@ -98,6 +99,21 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 		}
 		if got := decodeL4Data(t, truncated.Stderr.Data); string(got) != "12345" {
 			t.Fatalf("truncated stderr = %q, want %q", got, "12345")
+		}
+	})
+
+	t.Run("exec keeps a pinned interpreter script available", func(t *testing.T) {
+		scriptPath := filepath.Join(scriptRoot, "entrypoint")
+		if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf 'script:%s' \"$1\"\n"), 0o700); err != nil {
+			t.Fatalf("write interpreter script: %v", err)
+		}
+
+		response := l4Exec(t, transport, context.Background(), []string{scriptPath, "ok"}, nil, 64, 64)
+		if response.ExitCode != 0 {
+			t.Fatalf("interpreter script exit code = %d, stderr=%q", response.ExitCode, decodeL4Data(t, response.Stderr.Data))
+		}
+		if got := string(decodeL4Data(t, response.Stdout.Data)); got != "script:ok" {
+			t.Fatalf("interpreter script stdout = %q, want %q", got, "script:ok")
 		}
 	})
 
@@ -388,6 +404,27 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 	}
 }
 
+func TestL4RejectedLinuxBackendConstructionClosesWorkspaceDescriptor(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Fatalf("L4 prepared integration requires Linux; got %s", runtime.GOOS)
+	}
+	workspace := t.TempDir()
+	before := l4DescriptorTargetCount(t, workspace)
+	for attempt := 0; attempt < 16; attempt++ {
+		backend, err := NewLinuxBackend(LinuxBackendOptions{
+			WorkspaceRoot: workspace,
+			GuestRoot:     "/workspace",
+			TermGrace:     -time.Millisecond,
+		})
+		if err == nil || backend != nil {
+			t.Fatalf("NewLinuxBackend() = %#v, %v, want negative termGrace error", backend, err)
+		}
+	}
+	if after := l4DescriptorTargetCount(t, workspace); after != before {
+		t.Fatalf("workspace descriptor count = %d after rejected construction, want %d", after, before)
+	}
+}
+
 func TestL4PreparedLinuxHelperProcess(t *testing.T) {
 	mode, args, ok := l4HelperArgs(os.Args)
 	if !ok {
@@ -454,6 +491,22 @@ func TestL4PreparedLinuxHelperProcess(t *testing.T) {
 	default:
 		os.Exit(2)
 	}
+}
+
+func l4DescriptorTargetCount(t *testing.T, target string) int {
+	t.Helper()
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatalf("read process descriptors: %v", err)
+	}
+	count := 0
+	for _, entry := range entries {
+		resolved, err := os.Readlink(filepath.Join("/proc/self/fd", entry.Name()))
+		if err == nil && resolved == target {
+			count++
+		}
+	}
+	return count
 }
 
 type l4MemoryTransport struct {
