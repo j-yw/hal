@@ -171,6 +171,13 @@ func (backend *linuxBackend) Close(ctx context.Context) error {
 	return nil
 }
 
+//nolint:unused // Exercised by the explicit L4 prepared-Linux acceptance test.
+func (backend *linuxBackend) setBeforeExecStartTestHook(hook func()) {
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	backend.beforeExecStartTestHook = hook
+}
+
 func (backend *linuxBackend) runBeforeExecStartTestHook() {
 	backend.mu.Lock()
 	hook := backend.beforeExecStartTestHook
@@ -179,6 +186,13 @@ func (backend *linuxBackend) runBeforeExecStartTestHook() {
 	if hook != nil {
 		hook()
 	}
+}
+
+//nolint:unused // Exercised by the explicit L4 prepared-Linux acceptance test.
+func (backend *linuxBackend) setAfterCopyTempOpenTestHook(hook func()) {
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	backend.afterCopyTempOpenTestHook = hook
 }
 
 func (backend *linuxBackend) runAfterCopyTempOpenTestHook() {
