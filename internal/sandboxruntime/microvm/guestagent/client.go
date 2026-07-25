@@ -191,11 +191,14 @@ func (client *Client) roundTrip(ctx context.Context, operation Operation, timing
 	if int64(len(encodedResponse)) > client.maxResponseBytes {
 		return NewProtocolError(ErrorCodeOversizedResponse, operation, "response", errors.New("encoded guest agent response exceeds configured size limit"))
 	}
-	if err := json.Unmarshal(encodedResponse, response); err != nil {
+	if err := validateStrictJSONObject(encodedResponse, maxStrictJSONDepth); err != nil {
 		return NewProtocolError(ErrorCodeMalformedResponse, operation, "response", fmt.Errorf("decode guest agent response: %w", err))
 	}
 	if err := validateResponseHeader(encodedResponse, operation); err != nil {
 		return err
+	}
+	if err := strictUnmarshalObject(encodedResponse, response); err != nil {
+		return NewProtocolError(ErrorCodeMalformedResponse, operation, "response", fmt.Errorf("decode guest agent response: %w", err))
 	}
 	if err := responseProtocolError(encodedResponse, operation); err != nil {
 		return err

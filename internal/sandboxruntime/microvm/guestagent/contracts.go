@@ -46,6 +46,18 @@ const (
 	ErrorCodeRequestCanceled            ErrorCode = "request_canceled"
 	ErrorCodeRequestTimeout             ErrorCode = "request_timeout"
 	ErrorCodeTransportFailure           ErrorCode = "transport_failure"
+	ErrorCodeMalformedRequest           ErrorCode = "malformed_request"
+	ErrorCodeServerNotReady             ErrorCode = "server_not_ready"
+	ErrorCodeServerBusy                 ErrorCode = "server_busy"
+	ErrorCodeEnvironmentUnavailable     ErrorCode = "environment_unavailable"
+	ErrorCodeExecutionFailed            ErrorCode = "execution_failed"
+	ErrorCodeCopyFailed                 ErrorCode = "copy_failed"
+	ErrorCodeDigestMismatch             ErrorCode = "digest_mismatch"
+	ErrorCodeResourceChanged            ErrorCode = "resource_changed"
+	ErrorCodeDurabilityUncertain        ErrorCode = "durability_uncertain"
+	ErrorCodeBackendUnavailable         ErrorCode = "backend_unavailable"
+	ErrorCodeUnsupportedPlatform        ErrorCode = "unsupported_platform"
+	ErrorCodeInternalFailure            ErrorCode = "internal_failure"
 )
 
 const (
@@ -129,6 +141,14 @@ type ReadinessResponse struct {
 	Ready           bool            `json:"ready"`
 	Status          ReadinessStatus `json:"status,omitempty"`
 	Error           *ProtocolError  `json:"error,omitempty"`
+}
+
+// ErrorResponse is the generic v1 error envelope used when no successful
+// operation-specific response can be returned.
+type ErrorResponse struct {
+	ProtocolVersion ProtocolVersion `json:"protocolVersion"`
+	Operation       Operation       `json:"operation,omitempty"`
+	Error           *ProtocolError  `json:"error"`
 }
 
 // ExecRequest asks the guest agent to run a bounded command in the guest.

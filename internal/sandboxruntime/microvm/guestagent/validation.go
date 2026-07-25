@@ -18,8 +18,37 @@ func ValidateReadinessResponse(response ReadinessResponse) error {
 	if err := validateHeader(response.ProtocolVersion, response.Operation, OperationReadiness); err != nil {
 		return err
 	}
-	if response.Status != "" && !validReadinessStatus(response.Status) {
-		return newValidationError(ErrorCodeInvalidMetadata, response.Operation, "status", "readiness status is unsupported")
+	if !validReadinessStatus(response.Status) {
+		return newValidationError(ErrorCodeInvalidMetadata, response.Operation, "status", "readiness status is required")
+	}
+	if response.Ready != (response.Status == ReadinessStatusReady) {
+		return newValidationError(ErrorCodeInvalidMetadata, response.Operation, "status", "readiness status contradicts ready")
+	}
+	return nil
+}
+
+// ValidateErrorResponse validates the generic v1 error response envelope.
+func ValidateErrorResponse(response ErrorResponse) error {
+	if strings.TrimSpace(string(response.ProtocolVersion)) == "" {
+		return newValidationError(ErrorCodeMissingRequiredField, response.Operation, "protocolVersion", "protocol version is required")
+	}
+	if response.ProtocolVersion != ProtocolVersionV1 {
+		return newValidationError(ErrorCodeUnsupportedProtocolVersion, response.Operation, "protocolVersion", "protocol version is unsupported")
+	}
+	if response.Operation != "" && !validOperation(response.Operation) {
+		return newValidationError(ErrorCodeUnknownOperation, "", "operation", "operation is unsupported")
+	}
+	if response.Error == nil {
+		return newValidationError(ErrorCodeMissingRequiredField, response.Operation, "error", "error is required")
+	}
+	if normalizeErrorCode(response.Error.Code) != response.Error.Code {
+		return newValidationError(ErrorCodeInvalidMetadata, response.Operation, "error.code", "error code is unsupported")
+	}
+	if response.Operation != "" && response.Error.Operation != "" && response.Error.Operation != response.Operation {
+		return newValidationError(ErrorCodeOperationMismatch, response.Operation, "error.operation", "error operation does not match envelope")
+	}
+	if response.Operation == "" && response.Error.Operation != "" {
+		return newValidationError(ErrorCodeOperationMismatch, "", "error.operation", "error operation requires an envelope operation")
 	}
 	return nil
 }
