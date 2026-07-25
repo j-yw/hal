@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -358,6 +359,139 @@ func TestL3FinalizationRejectsManifestWorkerJobBindingMismatchBeforeMutation(t *
 	after := harness.manifestBytes()
 	if string(after) != string(before) {
 		t.Fatalf("binding mismatch mutated manifest\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestL3LiveListRejectsAmbiguousRecoverableExecutionsBeforeWorkerIO(t *testing.T) {
+	script := &l3WorkerScript{
+		jobState: sandboxworker.JobStateRunning,
+		pages:    map[uint64]sandboxworker.JobLogsResponse{},
+	}
+	harness := newL3WorkerHarness(t, script)
+	harness.seed("alpha", "run-alpha-a", "job-alpha-a")
+	store, err := sandboxexecution.DefaultStore()
+	if err != nil {
+		t.Fatalf("open execution store: %v", err)
+	}
+	saveL3Manifest(t, store, l3Manifest(
+		"run-alpha-b",
+		"alpha",
+		time.Date(2026, 7, 25, 8, 1, 0, 0, time.UTC),
+		"job-alpha-b",
+		sandboxworker.JobStateRunning,
+		0,
+	))
+	instance, err := sandboxL3LoadSandbox("alpha")
+	if err != nil {
+		t.Fatalf("load sandbox: %v", err)
+	}
+
+	var out bytes.Buffer
+	err = renderSandboxL3LiveListJSON(context.Background(), &out, []*sandbox.SandboxState{instance})
+	requireL3ErrorCode(t, err, "ambiguous_run")
+	requests, forbidden := script.snapshot()
+	if len(requests) != 0 || len(forbidden) != 0 {
+		t.Fatalf("ambiguous list crossed worker boundary: requests=%#v forbidden=%#v", requests, forbidden)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("ambiguous list rendered output: %s", out.String())
+	}
+}
+
+func TestL3LiveListLabelsDurableFallbackCached(t *testing.T) {
+	script := &l3WorkerScript{
+		jobState: sandboxworker.JobStateRunning,
+		pages:    map[uint64]sandboxworker.JobLogsResponse{},
+	}
+	harness := newL3WorkerHarness(t, script)
+	harness.seed("alpha", "run-alpha", "job-alpha")
+	instance, err := sandboxL3LoadSandbox("alpha")
+	if err != nil {
+		t.Fatalf("load sandbox: %v", err)
+	}
+	originalClientFactory := sandboxL3NewWorkerClient
+	sandboxL3NewWorkerClient = func(string) (*sandboxworker.Client, error) {
+		return nil, errors.New("offline at token=never-render")
+	}
+	t.Cleanup(func() {
+		sandboxL3NewWorkerClient = originalClientFactory
+	})
+
+	var out bytes.Buffer
+	if err := renderSandboxL3LiveListJSON(context.Background(), &out, []*sandbox.SandboxState{instance}); err != nil {
+		t.Fatalf("render cached fallback: %v", err)
+	}
+	var response sandboxL3ListResponse
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		t.Fatalf("decode cached fallback: %v", err)
+	}
+	if response.Source != "cached" {
+		t.Fatalf("fallback source = %q, want cached", response.Source)
+	}
+	if len(response.Diagnostics) != 1 || response.Diagnostics[0].Code != "worker_job_status_failed" {
+		t.Fatalf("fallback diagnostics = %#v", response.Diagnostics)
+	}
+	if strings.Contains(out.String(), "never-render") {
+		t.Fatalf("fallback output leaked worker error: %s", out.String())
+	}
+}
+
+func TestL3LiveStatusRejectsUnsupportedCoherentWorkerJobRouteBeforeWorkerIO(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*sandboxexecution.Manifest)
+	}{
+		{
+			name: "microvm driver",
+			mutate: func(manifest *sandboxexecution.Manifest) {
+				manifest.WorkerJob.RuntimeDriver = sandbox.SandboxRuntimeDriverMicroVM
+				manifest.Runtime.Driver = sandbox.SandboxRuntimeDriverMicroVM
+				manifest.Runtime.IsolationLevel = sandbox.SandboxIsolationLevelVM
+				manifest.WorkerRouting.RuntimeDriverID = sandbox.SandboxRuntimeDriverMicroVM
+				manifest.WorkerRouting.IsolationLevel = sandbox.SandboxIsolationLevelVM
+			},
+		},
+		{
+			name: "non-container isolation",
+			mutate: func(manifest *sandboxexecution.Manifest) {
+				manifest.Runtime.IsolationLevel = sandbox.SandboxIsolationLevelVM
+				manifest.WorkerRouting.IsolationLevel = sandbox.SandboxIsolationLevelVM
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			script := &l3WorkerScript{
+				jobState: sandboxworker.JobStateRunning,
+				pages:    map[uint64]sandboxworker.JobLogsResponse{},
+			}
+			harness := newL3WorkerHarness(t, script)
+			harness.seed("alpha", "run-alpha", "job-alpha")
+			store, err := sandboxexecution.DefaultStore()
+			if err != nil {
+				t.Fatalf("open execution store: %v", err)
+			}
+			manifest, err := store.LoadManifest("run-alpha")
+			if err != nil {
+				t.Fatalf("load execution manifest: %v", err)
+			}
+			tt.mutate(manifest)
+			if err := store.SaveManifest(manifest); err != nil {
+				t.Fatalf("save coherent unsupported route: %v", err)
+			}
+
+			var out bytes.Buffer
+			err = runSandboxL3StatusJSON(context.Background(), "alpha", true, &out)
+			requireL3ErrorCode(t, err, "worker_job_identity_mismatch")
+			requests, forbidden := script.snapshot()
+			if len(requests) != 0 || len(forbidden) != 0 {
+				t.Fatalf("unsupported route crossed worker boundary: requests=%#v forbidden=%#v", requests, forbidden)
+			}
+			if out.Len() != 0 {
+				t.Fatalf("unsupported route rendered status: %s", out.String())
+			}
+		})
 	}
 }
 
