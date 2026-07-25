@@ -156,6 +156,10 @@ func TestL4ClientStrictlyRejectsMalformedResponseObjects(t *testing.T) {
 			response: `{"protocolVersion":"guest-agent-v1","operation":"readiness","error":{"code":"server_not_ready","code":"internal_failure","operation":"readiness"}}`,
 		},
 		{
+			name:     "noncanonical case alias",
+			response: `{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"Ready":false,"status":"ready"}`,
+		},
+		{
 			name:     "trailing document",
 			response: `{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready"} {}`,
 		},

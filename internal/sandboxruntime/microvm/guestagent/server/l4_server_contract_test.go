@@ -233,6 +233,7 @@ func TestL4ServerStrictRequestFailuresNeverReachBackend(t *testing.T) {
 		{name: "trailing document", body: []byte(`{"protocolVersion":"guest-agent-v1","operation":"readiness"} {}`), code: guestagent.ErrorCodeMalformedRequest},
 		{name: "duplicate header", body: []byte(`{"protocolVersion":"guest-agent-v1","protocolVersion":"guest-agent-v1","operation":"readiness"}`), code: guestagent.ErrorCodeMalformedRequest},
 		{name: "duplicate nested", body: []byte(`{"protocolVersion":"guest-agent-v1","operation":"exec","args":["tool"],"env":[{"name":"A","name":"B"}],"workDir":"/workspace","stdout":{},"stderr":{}}`), code: guestagent.ErrorCodeMalformedRequest},
+		{name: "noncanonical nested alias", body: []byte(`{"protocolVersion":"guest-agent-v1","operation":"exec","args":["tool"],"env":[{"name":"A","Name":"B"}],"workDir":"/workspace","stdout":{},"stderr":{}}`), code: guestagent.ErrorCodeMalformedRequest},
 		{name: "unknown top field", body: []byte(`{"protocolVersion":"guest-agent-v1","operation":"readiness","extra":true}`), code: guestagent.ErrorCodeMalformedRequest},
 		{name: "unknown nested field", body: []byte(`{"protocolVersion":"guest-agent-v1","operation":"readiness","timing":{"extra":1}}`), code: guestagent.ErrorCodeMalformedRequest},
 		{name: "excessive nesting", body: []byte(deep), code: guestagent.ErrorCodeMalformedRequest},
