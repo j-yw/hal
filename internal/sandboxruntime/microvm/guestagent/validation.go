@@ -3,6 +3,7 @@ package guestagent
 import (
 	"encoding/base64"
 	"fmt"
+	"path"
 	"strings"
 	"unicode/utf8"
 )
@@ -303,6 +304,7 @@ func validateGuestPath(operation Operation, field, value string) error {
 		strings.Contains(value, "\\") ||
 		strings.Contains(value, "://") ||
 		strings.Contains(value, "//") ||
+		path.Clean(value) != value ||
 		containsParentPathSegment(value) {
 		return newValidationError(ErrorCodeMalformedPath, operation, field, "guest path must be absolute and normalized")
 	}
