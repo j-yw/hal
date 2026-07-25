@@ -1,0 +1,225 @@
+package guestagent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"testing"
+)
+
+func TestL4ProtocolAdditiveErrorCodes(t *testing.T) {
+	tests := []struct {
+		name string
+		got  ErrorCode
+		want string
+	}{
+		{name: "malformed request", got: ErrorCodeMalformedRequest, want: "malformed_request"},
+		{name: "server not ready", got: ErrorCodeServerNotReady, want: "server_not_ready"},
+		{name: "server busy", got: ErrorCodeServerBusy, want: "server_busy"},
+		{name: "environment unavailable", got: ErrorCodeEnvironmentUnavailable, want: "environment_unavailable"},
+		{name: "execution failed", got: ErrorCodeExecutionFailed, want: "execution_failed"},
+		{name: "copy failed", got: ErrorCodeCopyFailed, want: "copy_failed"},
+		{name: "digest mismatch", got: ErrorCodeDigestMismatch, want: "digest_mismatch"},
+		{name: "resource changed", got: ErrorCodeResourceChanged, want: "resource_changed"},
+		{name: "durability uncertain", got: ErrorCodeDurabilityUncertain, want: "durability_uncertain"},
+		{name: "backend unavailable", got: ErrorCodeBackendUnavailable, want: "backend_unavailable"},
+		{name: "unsupported platform", got: ErrorCodeUnsupportedPlatform, want: "unsupported_platform"},
+		{name: "internal failure", got: ErrorCodeInternalFailure, want: "internal_failure"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := string(tt.got); got != tt.want {
+				t.Fatalf("error code = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestL4ErrorResponseExactJSONShape(t *testing.T) {
+	tests := []struct {
+		name      string
+		response  ErrorResponse
+		wantJSON  string
+		wantValid bool
+	}{
+		{
+			name: "known operation",
+			response: ErrorResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationExec,
+				Error: &ProtocolError{
+					Code:      ErrorCodeExecutionFailed,
+					Operation: OperationExec,
+					Field:     "exec",
+					Message:   "guest command execution failed",
+				},
+			},
+			wantJSON:  `{"protocolVersion":"guest-agent-v1","operation":"exec","error":{"code":"execution_failed","operation":"exec","field":"exec","message":"guest command execution failed"}}`,
+			wantValid: true,
+		},
+		{
+			name: "malformed header omits operation",
+			response: ErrorResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Error: &ProtocolError{
+					Code:    ErrorCodeMalformedRequest,
+					Field:   "request",
+					Message: "guest agent request is malformed",
+				},
+			},
+			wantJSON:  `{"protocolVersion":"guest-agent-v1","error":{"code":"malformed_request","field":"request","message":"guest agent request is malformed"}}`,
+			wantValid: true,
+		},
+		{
+			name: "nil error is invalid",
+			response: ErrorResponse{
+				ProtocolVersion: ProtocolVersionV1,
+			},
+			wantJSON:  `{"protocolVersion":"guest-agent-v1","error":null}`,
+			wantValid: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded, err := json.Marshal(tt.response)
+			if err != nil {
+				t.Fatalf("Marshal() error: %v", err)
+			}
+			if got := string(encoded); got != tt.wantJSON {
+				t.Fatalf("Marshal() = %s, want %s", got, tt.wantJSON)
+			}
+			err = ValidateErrorResponse(tt.response)
+			if tt.wantValid && err != nil {
+				t.Fatalf("ValidateErrorResponse() error: %v", err)
+			}
+			if !tt.wantValid && err == nil {
+				t.Fatal("ValidateErrorResponse() error = nil, want validation failure")
+			}
+		})
+	}
+}
+
+func TestL4ReadinessResponseRequiresCanonicalPair(t *testing.T) {
+	tests := []struct {
+		name    string
+		ready   bool
+		status  ReadinessStatus
+		wantErr bool
+	}{
+		{name: "ready", ready: true, status: ReadinessStatusReady},
+		{name: "not ready", ready: false, status: ReadinessStatusNotReady},
+		{name: "true not ready contradiction", ready: true, status: ReadinessStatusNotReady, wantErr: true},
+		{name: "false ready contradiction", ready: false, status: ReadinessStatusReady, wantErr: true},
+		{name: "true missing status", ready: true, wantErr: true},
+		{name: "false missing status", ready: false, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateReadinessResponse(ReadinessResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationReadiness,
+				Ready:           tt.ready,
+				Status:          tt.status,
+			})
+			if tt.wantErr && !l4ProtocolErrorCode(err, ErrorCodeInvalidMetadata) {
+				t.Fatalf("ValidateReadinessResponse() error = %v, want %s", err, ErrorCodeInvalidMetadata)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("ValidateReadinessResponse() error: %v", err)
+			}
+		})
+	}
+}
+
+func TestL4ClientStrictlyRejectsMalformedResponseObjects(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+	}{
+		{
+			name:     "unknown top level field",
+			response: `{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready","extra":true}`,
+		},
+		{
+			name:     "duplicate top level field",
+			response: `{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"ready":false,"status":"ready"}`,
+		},
+		{
+			name:     "unknown nested error field",
+			response: `{"protocolVersion":"guest-agent-v1","operation":"readiness","error":{"code":"server_not_ready","operation":"readiness","extra":"unsafe"}}`,
+		},
+		{
+			name:     "duplicate nested error field",
+			response: `{"protocolVersion":"guest-agent-v1","operation":"readiness","error":{"code":"server_not_ready","code":"internal_failure","operation":"readiness"}}`,
+		},
+		{
+			name:     "trailing document",
+			response: `{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready"} {}`,
+		},
+		{
+			name:     "array root",
+			response: `[]`,
+		},
+		{
+			name:     "null root",
+			response: `null`,
+		},
+		{
+			name:     "string root",
+			response: `"response"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := l4ReadinessClient(t, []byte(tt.response))
+			_, err := client.Readiness(context.Background(), ReadinessRequest{})
+			if !l4ProtocolErrorCode(err, ErrorCodeMalformedResponse) {
+				t.Fatalf("Readiness() error = %v, want %s", err, ErrorCodeMalformedResponse)
+			}
+		})
+	}
+}
+
+func TestL4ClientAcceptsGenericKnownOperationError(t *testing.T) {
+	encoded, err := json.Marshal(ErrorResponse{
+		ProtocolVersion: ProtocolVersionV1,
+		Operation:       OperationReadiness,
+		Error: &ProtocolError{
+			Code:      ErrorCodeServerNotReady,
+			Operation: OperationReadiness,
+			Field:     "server",
+			Message:   "guest agent server is not ready",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error: %v", err)
+	}
+	client := l4ReadinessClient(t, encoded)
+	_, err = client.Readiness(context.Background(), ReadinessRequest{})
+	if !l4ProtocolErrorCode(err, ErrorCodeServerNotReady) {
+		t.Fatalf("Readiness() error = %v, want %s", err, ErrorCodeServerNotReady)
+	}
+}
+
+func l4ReadinessClient(t *testing.T, response []byte) *Client {
+	t.Helper()
+
+	client, err := NewClient(ClientOptions{
+		Transport: TransportFunc(func(context.Context, TransportRequest) (TransportResponse, error) {
+			return TransportResponse{Encoded: response}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error: %v", err)
+	}
+	return client
+}
+
+func l4ProtocolErrorCode(err error, want ErrorCode) bool {
+	var protocolErr *ProtocolError
+	return errors.As(err, &protocolErr) && protocolErr.Code == want
+}
