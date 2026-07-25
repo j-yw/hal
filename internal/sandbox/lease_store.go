@@ -253,6 +253,21 @@ func (s *SandboxLeaseStore) Load(id string) (*SandboxLease, error) {
 	if err != nil {
 		return nil, err
 	}
+	leaseDir, err := sandboxLeasesDirPath()
+	if err != nil {
+		return nil, fmt.Errorf("resolve sandbox leases dir: %w", err)
+	}
+	if _, err := os.Stat(leaseDir); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("lease %q does not exist: %w", id, err)
+		}
+		return nil, fmt.Errorf("read sandbox leases dir: %w", err)
+	}
+	lock, err := acquireSandboxLeaseStoreLock(filepath.Join(leaseDir, sandboxLeaseLockFileName))
+	if err != nil {
+		return nil, fmt.Errorf("acquire sandbox lease store lock: %w", err)
+	}
+	defer lock.Close()
 
 	lease, err := loadLeaseFile(path, id)
 	if err == nil {
@@ -283,10 +298,18 @@ func (s *SandboxLeaseStore) List() ([]*SandboxLease, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve sandbox leases dir: %w", err)
 	}
-	entries, err := os.ReadDir(leaseDir)
-	if errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Stat(leaseDir); errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("read sandbox leases dir: %w", err)
 	}
+	lock, err := acquireSandboxLeaseStoreLock(filepath.Join(leaseDir, sandboxLeaseLockFileName))
+	if err != nil {
+		return nil, fmt.Errorf("acquire sandbox lease store lock: %w", err)
+	}
+	defer lock.Close()
+
+	entries, err := os.ReadDir(leaseDir)
 	if err != nil {
 		return nil, fmt.Errorf("read sandbox leases dir: %w", err)
 	}
@@ -404,9 +427,12 @@ func (s *SandboxLeaseStore) Release(id string) (*SandboxLease, error) {
 	}
 	defer lock.Close()
 
-	lease, err := s.Load(id)
+	lease, err := loadLeaseFile(path, id)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("lease %q does not exist: %w", id, err)
+	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read lease %q: %w", id, err)
 	}
 
 	switch lease.Status {
@@ -469,7 +495,7 @@ func (s *SandboxLeaseStore) ReleaseExact(req SandboxLeaseExactReleaseRequest) (*
 	case SandboxLeaseStatusReleased:
 		return lease, nil
 	case SandboxLeaseStatusExpired:
-		return nil, fmt.Errorf("exact lease is expired and cannot be released")
+		return lease, nil
 	default:
 		return nil, fmt.Errorf("exact lease has unsupported status")
 	}

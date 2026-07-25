@@ -820,6 +820,45 @@ func TestPendingInstanceRemovalRejectsStaleCommitForSameNameReplacement(t *testi
 	}
 }
 
+func TestPendingInstanceRemovalRejectsStaleCommitForNewGenerationOfSameInstance(t *testing.T) {
+	setSandboxHome(t)
+	if err := SaveInstance(&SandboxState{
+		ID:     "sandbox-original",
+		Name:   "shared-name",
+		Status: StatusRunning,
+	}); err != nil {
+		t.Fatalf("SaveInstance() error: %v", err)
+	}
+
+	stale, err := StageInstanceRemoval("shared-name")
+	if err != nil {
+		t.Fatalf("first StageInstanceRemoval() error: %v", err)
+	}
+	retry, err := StageInstanceRemoval("shared-name")
+	if err != nil {
+		t.Fatalf("retry StageInstanceRemoval() error: %v", err)
+	}
+	if err := retry.Rollback(); err != nil {
+		t.Fatalf("retry Rollback() error: %v", err)
+	}
+	current, err := StageInstanceRemoval("shared-name")
+	if err != nil {
+		t.Fatalf("new-generation StageInstanceRemoval() error: %v", err)
+	}
+	t.Cleanup(func() { _ = current.Rollback() })
+
+	if err := stale.Commit(); err == nil {
+		t.Fatal("stale Commit() error = nil for a new removal generation")
+	}
+	staged, err := LoadInstance("shared-name")
+	if err != nil {
+		t.Fatalf("LoadInstance() after stale commit error: %v", err)
+	}
+	if staged.ID != "sandbox-original" {
+		t.Fatalf("staged sandbox ID = %q, want original", staged.ID)
+	}
+}
+
 func TestLoadActiveInstanceWaitsForOverwriteFallback(t *testing.T) {
 	home := setSandboxHome(t)
 	if err := SaveInstance(&SandboxState{
