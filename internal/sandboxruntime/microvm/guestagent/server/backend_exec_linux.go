@@ -76,6 +76,7 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 			Setpgid: true,
 		},
 	}
+	backend.runBeforeExecStartTestHook()
 	if err := command.Start(); err != nil {
 		return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "args", "guest command could not start", err)
 	}

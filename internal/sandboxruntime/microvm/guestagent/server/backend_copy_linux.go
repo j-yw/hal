@@ -70,6 +70,7 @@ func (backend *linuxBackend) CopyIn(ctx context.Context, plan CopyInPlan) (CopyR
 		}
 	}()
 
+	backend.runAfterCopyTempOpenTestHook()
 	if err := writeLinuxCopyData(ctx, tempFD, plan.Data); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return CopyResult{}, linuxContextError(guestagent.OperationCopyIn, err)

@@ -42,6 +42,9 @@ type linuxBackend struct {
 	termGrace      time.Duration
 	processGroups  map[int]struct{}
 	closed         bool
+
+	beforeExecStartTestHook   func()
+	afterCopyTempOpenTestHook func()
 }
 
 // NewLinuxBackend constructs the fail-closed production Linux operation
@@ -166,6 +169,38 @@ func (backend *linuxBackend) Close(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (backend *linuxBackend) setBeforeExecStartTestHook(hook func()) {
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	backend.beforeExecStartTestHook = hook
+}
+
+func (backend *linuxBackend) runBeforeExecStartTestHook() {
+	backend.mu.Lock()
+	hook := backend.beforeExecStartTestHook
+	backend.beforeExecStartTestHook = nil
+	backend.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+}
+
+func (backend *linuxBackend) setAfterCopyTempOpenTestHook(hook func()) {
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	backend.afterCopyTempOpenTestHook = hook
+}
+
+func (backend *linuxBackend) runAfterCopyTempOpenTestHook() {
+	backend.mu.Lock()
+	hook := backend.afterCopyTempOpenTestHook
+	backend.afterCopyTempOpenTestHook = nil
+	backend.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 }
 
 func (backend *linuxBackend) closeDescriptors() {
