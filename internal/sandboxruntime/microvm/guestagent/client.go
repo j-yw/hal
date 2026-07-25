@@ -254,14 +254,16 @@ func operationlessResponseProtocolError(encoded []byte, operation Operation) (bo
 		return true, NewProtocolError(ErrorCodeMalformedResponse, operation, "response", fmt.Errorf("decode guest agent error response: %w", err))
 	}
 	if err := ValidateErrorResponse(response); err != nil {
-		return true, err
+		return true, malformedGuestErrorResponse(operation)
 	}
 	return true, sanitizedResponseProtocolError(response.Error, operation)
 }
 
 func responseProtocolError(encoded []byte, operation Operation) error {
 	var envelope struct {
-		Error *ProtocolError `json:"error,omitempty"`
+		ProtocolVersion ProtocolVersion `json:"protocolVersion"`
+		Operation       Operation       `json:"operation"`
+		Error           *ProtocolError  `json:"error,omitempty"`
 	}
 	if err := json.Unmarshal(encoded, &envelope); err != nil {
 		return NewProtocolError(ErrorCodeMalformedResponse, operation, "response", fmt.Errorf("decode guest agent response error: %w", err))
@@ -269,7 +271,23 @@ func responseProtocolError(encoded []byte, operation Operation) error {
 	if envelope.Error == nil {
 		return nil
 	}
+	if err := ValidateErrorResponse(ErrorResponse{
+		ProtocolVersion: envelope.ProtocolVersion,
+		Operation:       envelope.Operation,
+		Error:           envelope.Error,
+	}); err != nil {
+		return malformedGuestErrorResponse(operation)
+	}
 	return sanitizedResponseProtocolError(envelope.Error, operation)
+}
+
+func malformedGuestErrorResponse(operation Operation) error {
+	return NewProtocolError(
+		ErrorCodeMalformedResponse,
+		operation,
+		"response",
+		errors.New("guest agent error response is invalid"),
+	)
 }
 
 func sanitizedResponseProtocolError(responseError *ProtocolError, operation Operation) error {

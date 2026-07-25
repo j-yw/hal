@@ -70,6 +70,11 @@ func NewLinuxBackend(options LinuxBackendOptions) (Backend, error) {
 		termGrace:     options.TermGrace,
 		processGroups: make(map[int]struct{}),
 	}
+	defer func() {
+		if err != nil {
+			backend.closeDescriptors()
+		}
+	}()
 	if backend.termGrace < 0 {
 		err = linuxBackendError(guestagent.ErrorCodeBackendUnavailable, "", "termGrace", "process termination grace is invalid", nil)
 		return nil, err
@@ -77,11 +82,6 @@ func NewLinuxBackend(options LinuxBackendOptions) (Backend, error) {
 	if backend.termGrace == 0 {
 		backend.termGrace = defaultLinuxTermGrace
 	}
-	defer func() {
-		if err != nil {
-			backend.closeDescriptors()
-		}
-	}()
 
 	probeFD, probeErr := backend.openWorkspace(".", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if probeErr != nil {

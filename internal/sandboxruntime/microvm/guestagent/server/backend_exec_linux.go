@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -52,7 +53,24 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 	if err != nil {
 		return ExecResult{}, err
 	}
-	defer unix.Close(executableFD)
+	executableFile := os.NewFile(uintptr(executableFD), "guest-executable")
+	if executableFile == nil {
+		_ = unix.Close(executableFD)
+		return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "args", "guest executable is unavailable", nil)
+	}
+	defer executableFile.Close()
+
+	interpreterScript, err := backend.linuxExecutableIsInterpreterScript(executableFD)
+	if err != nil {
+		return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "args", "guest executable is unavailable", err)
+	}
+	commandPath := procSelfFDPath(executableFD)
+	extraFiles := []*os.File{workFile}
+	if interpreterScript {
+		childExecutableFD := 3 + len(extraFiles)
+		extraFiles = append(extraFiles, executableFile)
+		commandPath = procSelfFDPath(childExecutableFD)
+	}
 
 	environment, err := mergeLinuxEnvironment(backend.baseEnv, plan.Environment)
 	if err != nil {
@@ -64,11 +82,11 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 	stderr := newLinuxBoundedWriter(stderrLimit)
 
 	command := &exec.Cmd{
-		Path:       procSelfFDPath(executableFD),
+		Path:       commandPath,
 		Args:       append([]string(nil), plan.Args...),
 		Env:        environment,
 		Dir:        procSelfFDPath(workFD),
-		ExtraFiles: []*os.File{workFile},
+		ExtraFiles: extraFiles,
 		Stdin:      bytes.NewReader(plan.Stdin),
 		Stdout:     stdout,
 		Stderr:     stderr,
@@ -205,6 +223,29 @@ func openLinuxExecutableAt(rootFD int, relative string) (int, error) {
 		return -1, unix.EACCES
 	}
 	return fd, nil
+}
+
+func (backend *linuxBackend) linuxExecutableIsInterpreterScript(executableFD int) (bool, error) {
+	readFD, err := unix.Openat(
+		backend.procSelfFD,
+		strconv.Itoa(executableFD),
+		unix.O_RDONLY|unix.O_CLOEXEC,
+		0,
+	)
+	if err != nil {
+		if errors.Is(err, unix.EACCES) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer unix.Close(readFD)
+
+	var header [2]byte
+	n, err := unix.Pread(readFD, header[:], 0)
+	if err != nil {
+		return false, err
+	}
+	return n == len(header) && header[0] == '#' && header[1] == '!', nil
 }
 
 func (backend *linuxBackend) registerProcessGroup(pgid int) error {

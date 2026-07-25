@@ -104,11 +104,26 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 
 	t.Run("exec keeps a pinned interpreter script available", func(t *testing.T) {
 		scriptPath := filepath.Join(scriptRoot, "entrypoint")
+		pinnedPath := filepath.Join(scriptRoot, "entrypoint-pinned")
 		if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf 'script:%s' \"$1\"\n"), 0o700); err != nil {
 			t.Fatalf("write interpreter script: %v", err)
 		}
 
+		var hookErr error
+		hooks.setBeforeExecStartTestHook(func() {
+			if err := os.Rename(scriptPath, pinnedPath); err != nil {
+				hookErr = fmt.Errorf("pin interpreter script: %w", err)
+				return
+			}
+			if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf 'replacement:%s' \"$1\"\n"), 0o700); err != nil {
+				hookErr = fmt.Errorf("write replacement interpreter script: %w", err)
+			}
+		})
+		defer hooks.setBeforeExecStartTestHook(nil)
 		response := l4Exec(t, transport, context.Background(), []string{scriptPath, "ok"}, nil, 64, 64)
+		if hookErr != nil {
+			t.Fatal(hookErr)
+		}
 		if response.ExitCode != 0 {
 			t.Fatalf("interpreter script exit code = %d, stderr=%q", response.ExitCode, decodeL4Data(t, response.Stderr.Data))
 		}

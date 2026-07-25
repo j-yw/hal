@@ -18,8 +18,11 @@ func ValidateReadinessResponse(response ReadinessResponse) error {
 	if err := validateHeader(response.ProtocolVersion, response.Operation, OperationReadiness); err != nil {
 		return err
 	}
+	if response.Status == "" {
+		return nil
+	}
 	if !validReadinessStatus(response.Status) {
-		return newValidationError(ErrorCodeInvalidMetadata, response.Operation, "status", "readiness status is required")
+		return newValidationError(ErrorCodeInvalidMetadata, response.Operation, "status", "readiness status is unsupported")
 	}
 	if response.Ready != (response.Status == ReadinessStatusReady) {
 		return newValidationError(ErrorCodeInvalidMetadata, response.Operation, "status", "readiness status contradicts ready")
