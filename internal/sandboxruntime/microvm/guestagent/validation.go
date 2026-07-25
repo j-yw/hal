@@ -280,7 +280,7 @@ func validEnvironmentName(name string) bool {
 }
 
 func validEnvironmentSource(source EnvironmentSource) bool {
-	switch EnvironmentSource(strings.TrimSpace(string(source))) {
+	switch source {
 	case EnvironmentSourceLiteral,
 		EnvironmentSourceSecret,
 		EnvironmentSourceInherited,
