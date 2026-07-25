@@ -421,17 +421,21 @@ without launching the executable. After launch, cancellation, timeout,
 shutdown, output-pipe failure, or observed leader exit sends `SIGTERM` to the
 group,
 waits a bounded grace period, sends `SIGKILL` if necessary, and only then calls
-`Wait` once to reap the leader. No group signal is sent after reap, avoiding
+`Wait` once to reap the leader. The same termination grace configures
+`exec.Cmd.WaitDelay`, bounding pipe-copy cleanup when an escaped descendant
+retains stdout or stderr after the leader exits; forced pipe closure returns a
+fixed `execution_failed` response. No group signal is sent after reap, avoiding
 PGID-reuse races. A signaled exit is reported deterministically as
 `128+signal`. Start failures use `execution_failed` without executable, path,
 argument, or OS-error detail.
 
 The L4 process-group proof covers the launched command and descendants that
 remain in its group. A deliberately escaping `setsid`/`setpgid` descendant is
-outside the standalone L4 server guarantee. L5 must run the server as a
-dedicated unprivileged guest identity within the guest PID/cgroup/mount
-topology and prove whole-guest teardown, which contains such an escape. L4
-does not present process groups alone as an adversarial guest-isolation claim.
+outside the standalone L4 server kill guarantee, but cannot keep the parent
+exec operation blocked through inherited output pipes. L5 must run the server
+as a dedicated unprivileged guest identity within the guest PID/cgroup/mount
+topology and prove whole-guest teardown, which contains such an escape. L4 does
+not present process groups alone as an adversarial guest-isolation claim.
 
 The backend's fixed effective defaults are 512 KiB stdin and 256 KiB for each
 output stream. Smaller request limits win. The existing protocol maxima are
