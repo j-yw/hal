@@ -88,7 +88,8 @@ func (server *Server) ListenAndServe(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := validateWorkerSocketPath(server.socketPath); err != nil {
+	parentProof, err := validateWorkerSocketPath(server.socketPath)
+	if err != nil {
 		return err
 	}
 	listener, err := listenWorkerUnixSocket(ctx, server.socketPath)
@@ -101,6 +102,10 @@ func (server *Server) ListenAndServe(ctx context.Context) error {
 		return fmt.Errorf("worker server listener is not a Unix socket")
 	}
 	unixListener.SetUnlinkOnClose(false)
+	if err := validateWorkerSocketParentProof(parentProof); err != nil {
+		_ = listener.Close()
+		return err
+	}
 	createdInfo, err := os.Lstat(server.socketPath)
 	if err != nil || createdInfo.Mode()&os.ModeSocket == 0 {
 		_ = listener.Close()

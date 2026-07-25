@@ -7,32 +7,58 @@ import (
 	"path/filepath"
 )
 
-func validateWorkerSocketPath(socketPath string) error {
+type workerSocketParentProof struct {
+	path string
+	info os.FileInfo
+}
+
+func validateWorkerSocketPath(socketPath string) (*workerSocketParentProof, error) {
 	if !filepath.IsAbs(socketPath) {
-		return errors.New("worker server socket path must be absolute")
+		return nil, errors.New("worker server socket path must be absolute")
 	}
 	socketPath = filepath.Clean(socketPath)
 	parent := filepath.Dir(socketPath)
 	if err := validateWorkerSocketParentComponents(parent); err != nil {
-		return err
+		return nil, err
 	}
 	parentInfo, err := os.Lstat(parent)
 	if err != nil || !parentInfo.IsDir() {
-		return errors.New("worker server socket parent is unavailable")
+		return nil, errors.New("worker server socket parent is unavailable")
 	}
 	if parentInfo.Mode()&os.ModeSymlink != 0 {
-		return errors.New("worker server socket parent must not be a symlink")
+		return nil, errors.New("worker server socket parent must not be a symlink")
 	}
 	if parentInfo.Mode().Perm() != 0o700 {
-		return errors.New("worker server socket parent permissions are unsafe")
+		return nil, errors.New("worker server socket parent permissions are unsafe")
 	}
 	if err := validateWorkerSocketParentOwner(parentInfo); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := os.Lstat(socketPath); err == nil {
-		return errors.New("worker server socket path already exists")
+		return nil, errors.New("worker server socket path already exists")
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return errors.New("worker server socket path is unavailable")
+		return nil, errors.New("worker server socket path is unavailable")
+	}
+	return &workerSocketParentProof{path: parent, info: parentInfo}, nil
+}
+
+func validateWorkerSocketParentProof(proof *workerSocketParentProof) error {
+	if proof == nil || proof.info == nil || proof.path == "" {
+		return errors.New("worker server socket parent proof is unavailable")
+	}
+	if err := validateWorkerSocketParentComponents(proof.path); err != nil {
+		return errors.New("worker server socket parent changed during bind")
+	}
+	current, err := os.Lstat(proof.path)
+	if err != nil ||
+		!current.IsDir() ||
+		current.Mode()&os.ModeSymlink != 0 ||
+		current.Mode().Perm() != 0o700 ||
+		!os.SameFile(proof.info, current) {
+		return errors.New("worker server socket parent changed during bind")
+	}
+	if err := validateWorkerSocketParentOwner(current); err != nil {
+		return errors.New("worker server socket parent changed during bind")
 	}
 	return nil
 }
@@ -49,6 +75,9 @@ func validateWorkerSocketParentComponents(parent string) error {
 		}
 		if !info.IsDir() {
 			return errors.New("worker server socket parent components must be directories")
+		}
+		if err := validateWorkerSocketAncestorTrust(info); err != nil {
+			return err
 		}
 		next := filepath.Dir(current)
 		if next == current {

@@ -10,3 +10,7 @@ import (
 func validateWorkerSocketParentOwner(os.FileInfo) error {
 	return errors.New("worker server socket parent ownership cannot be verified")
 }
+
+func validateWorkerSocketAncestorTrust(os.FileInfo) error {
+	return errors.New("worker server socket ancestor ownership cannot be verified")
+}
