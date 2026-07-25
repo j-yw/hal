@@ -120,7 +120,11 @@ type CopyOutPlan struct {
 
 // CopyResult is a bounded copy result.
 type CopyResult struct {
-	Data      []byte
+	Data []byte
+	// Published is set only by CopyIn after the destination rename succeeds.
+	// It remains true when a later durability step fails so callers never
+	// misreport a visible mutation as a retry-safe cancellation or copy failure.
+	Published bool
 	SizeBytes int64
 	Digest    string
 }

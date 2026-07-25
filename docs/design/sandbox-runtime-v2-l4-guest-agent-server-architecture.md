@@ -189,6 +189,7 @@ type CopyOutPlan struct {
 
 type CopyResult struct {
     Data      []byte
+    Published bool
     SizeBytes int64
     Digest    string
 }
@@ -196,7 +197,9 @@ type CopyResult struct {
 
 Plans carry decoded bytes and, for exec, resolved in-memory environment
 assignments. They are not JSON or durable types. Results carry bounded bytes,
-exit/truncation metadata, size, and digest only.
+exit/truncation metadata, size, digest, and the private copy-in publication
+commit bit only. `Published` is false for copy-out and every pre-rename
+copy-in outcome.
 
 The production constructor is Linux-only:
 
@@ -442,12 +445,13 @@ retains an output descriptor after the leader exits, the server forcibly closes
 its owned read descriptors and returns a fixed `execution_failed` response.
 `exec.Cmd.WaitDelay` remains a backstop for the command's internal stdin-copy
 goroutine. Request cancellation and deadlines remain authoritative throughout
-readiness, exec, copy, and process/output cleanup, including after a backend
-returns success or a process leader exits; the server returns the matching
-fixed request error instead of a late success. No group signal is sent after
-reap, avoiding PGID-reuse races. A signaled exit is reported deterministically
-as `128+signal`. Start failures use `execution_failed` without executable,
-path, argument, or OS-error detail.
+readiness, exec, pre-publication copy, and process/output cleanup, including
+after an uncommitted backend returns success or a process leader exits; the
+server returns the matching fixed request error instead of a late success.
+Copy-in publication is the mutation-boundary exception described below. No
+group signal is sent after reap, avoiding PGID-reuse races. A signaled exit is
+reported deterministically as `128+signal`. Start failures use
+`execution_failed` without executable, path, argument, or OS-error detail.
 
 The L4 process-group proof covers the launched command and descendants that
 remain in its group. A deliberately escaping `setsid`/`setpgid` descendant is
@@ -485,10 +489,14 @@ Copy-in:
 The atomic rename is the publication commit point. Cancellation, digest
 mismatch, oversize input, and write/fsync/close failures before that point
 preserve an existing destination. Cancellation is masked from rename through
-the parent fsync attempt. If parent fsync fails after publication, the server
-returns `durability_uncertain`: the new destination is visible but crash
-durability is not proven. The response on success always acknowledges exact
-size and digest.
+the parent fsync attempt. `CopyResult.Published` becomes true immediately after
+rename and remains true on every later return. A published success outranks
+concurrent late cancellation because reporting cancellation would invite an
+unsafe retry of an already-visible mutation. If parent fsync fails after
+publication, or if a published backend result is otherwise inconsistent, the
+server returns `durability_uncertain` even when cancellation races: the new
+destination is visible but crash durability or result identity is not proven.
+The response on durable success always acknowledges exact size and digest.
 
 Copy-out:
 

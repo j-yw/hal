@@ -224,7 +224,7 @@ func TestL4ServerCopyInPublishedOutcomeOutranksLateCancellation(t *testing.T) {
 	t.Run("durable success", func(t *testing.T) {
 		backend := &l4FakeBackend{
 			copyInReturnAfterContext: true,
-			copyInResult:             CopyResult{SizeBytes: int64(len(copyData)), Digest: copyDigest},
+			copyInResult:             CopyResult{Published: true, SizeBytes: int64(len(copyData)), Digest: copyDigest},
 		}
 		run := startL4Server(t, Options{Transport: newL4BlockingTransport(), Backend: backend})
 		response := l4HandleJSON[guestagent.CopyInResponse](t, run.server, request)
@@ -239,7 +239,7 @@ func TestL4ServerCopyInPublishedOutcomeOutranksLateCancellation(t *testing.T) {
 	t.Run("durability uncertain", func(t *testing.T) {
 		backend := &l4FakeBackend{
 			copyInReturnAfterContext: true,
-			copyInResult:             CopyResult{SizeBytes: int64(len(copyData)), Digest: copyDigest},
+			copyInResult:             CopyResult{Published: true, SizeBytes: int64(len(copyData)), Digest: copyDigest},
 			copyErr: &guestagent.ProtocolError{
 				Code:      guestagent.ErrorCodeDurabilityUncertain,
 				Operation: guestagent.OperationCopyIn,

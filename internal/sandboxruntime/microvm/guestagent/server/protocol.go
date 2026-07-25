@@ -203,16 +203,22 @@ func (server *Server) handleCopyIn(ctx context.Context, encoded []byte) Response
 		Digest:          request.Payload.Digest,
 	})
 	if err != nil {
+		if result.Published {
+			return server.errorResponse(guestagent.ErrorCodeDurabilityUncertain, guestagent.OperationCopyIn, "copy")
+		}
 		if backendCtx.Err() != nil {
 			return server.contextErrorResponse(backendCtx.Err(), guestagent.OperationCopyIn)
 		}
 		return server.backendErrorResponse(err, guestagent.ErrorCodeCopyFailed, guestagent.OperationCopyIn, "copy")
 	}
-	if err := backendCtx.Err(); err != nil {
-		return server.contextErrorResponse(err, guestagent.OperationCopyIn)
+	if !result.Published {
+		if err := backendCtx.Err(); err != nil {
+			return server.contextErrorResponse(err, guestagent.OperationCopyIn)
+		}
+		return server.errorResponse(guestagent.ErrorCodeCopyFailed, guestagent.OperationCopyIn, "copy")
 	}
 	if result.SizeBytes != int64(len(data)) || result.Digest != request.Payload.Digest {
-		return server.errorResponse(guestagent.ErrorCodeCopyFailed, guestagent.OperationCopyIn, "copy")
+		return server.errorResponse(guestagent.ErrorCodeDurabilityUncertain, guestagent.OperationCopyIn, "copy")
 	}
 	return server.encodeResponse(guestagent.CopyInResponse{
 		ProtocolVersion: guestagent.ProtocolVersionV1,

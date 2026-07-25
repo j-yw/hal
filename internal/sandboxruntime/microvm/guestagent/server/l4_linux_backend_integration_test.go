@@ -191,6 +191,7 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 		setBeforeExecStartTestHook(func())
 		setAfterExecStartTestHook(func())
 		setAfterCopyTempOpenTestHook(func())
+		setAfterCopyPublishTestHook(func(int))
 		setBeforeCommandWaitTestHook(func())
 	})
 	if !ok {
@@ -623,6 +624,48 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 		mustL4Decode(t, <-copyDone, &copied)
 		if copied.Error != nil {
 			t.Fatalf("concurrent copy-in response = %#v", copied)
+		}
+	})
+
+	t.Run("published copy success outranks late cancellation", func(t *testing.T) {
+		payload := []byte("published-before-cancel")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		hooks.setAfterCopyPublishTestHook(func(int) {
+			cancel()
+		})
+		defer hooks.setAfterCopyPublishTestHook(nil)
+
+		var response guestagent.CopyInResponse
+		mustL4Decode(t, transport.roundTrip(ctx, mustL4JSON(t,
+			l4CopyInRequest("/workspace/published-before-cancel.bin", payload, 1024))), &response)
+		if response.Error != nil {
+			t.Fatalf("published copy-in response error = %#v", response.Error)
+		}
+		if got, err := os.ReadFile(filepath.Join(workspace, "published-before-cancel.bin")); err != nil || string(got) != string(payload) {
+			t.Fatalf("published payload = %q, %v", got, err)
+		}
+	})
+
+	t.Run("published copy fsync failure outranks late cancellation", func(t *testing.T) {
+		payload := []byte("published-durability-uncertain")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		var closeErr error
+		hooks.setAfterCopyPublishTestHook(func(parentFD int) {
+			cancel()
+			closeErr = unix.Close(parentFD)
+		})
+		defer hooks.setAfterCopyPublishTestHook(nil)
+
+		encoded := transport.roundTrip(ctx, mustL4JSON(t,
+			l4CopyInRequest("/workspace/published-durability-uncertain.bin", payload, 1024)))
+		if closeErr != nil {
+			t.Fatalf("close copied parent descriptor: %v", closeErr)
+		}
+		assertL4ErrorCode(t, encoded, "durability_uncertain")
+		if got, err := os.ReadFile(filepath.Join(workspace, "published-durability-uncertain.bin")); err != nil || string(got) != string(payload) {
+			t.Fatalf("uncertain published payload = %q, %v", got, err)
 		}
 	})
 

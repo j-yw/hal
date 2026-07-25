@@ -96,10 +96,16 @@ func (backend *linuxBackend) CopyIn(ctx context.Context, plan CopyInPlan) (CopyR
 		return CopyResult{}, linuxBackendError(guestagent.ErrorCodeCopyFailed, guestagent.OperationCopyIn, "destinationPath", "copy payload could not be published", err)
 	}
 	published = true
-	if err := unix.Fsync(parentFD); err != nil {
-		return CopyResult{}, linuxBackendError(guestagent.ErrorCodeDurabilityUncertain, guestagent.OperationCopyIn, "destinationPath", "copy publication durability is uncertain", err)
+	result := CopyResult{
+		Published: true,
+		SizeBytes: int64(len(plan.Data)),
+		Digest:    digest,
 	}
-	return CopyResult{SizeBytes: int64(len(plan.Data)), Digest: digest}, nil
+	backend.runAfterCopyPublishTestHook(parentFD)
+	if err := unix.Fsync(parentFD); err != nil {
+		return result, linuxBackendError(guestagent.ErrorCodeDurabilityUncertain, guestagent.OperationCopyIn, "destinationPath", "copy publication durability is uncertain", err)
+	}
+	return result, nil
 }
 
 func (backend *linuxBackend) CopyOut(ctx context.Context, plan CopyOutPlan) (CopyResult, error) {

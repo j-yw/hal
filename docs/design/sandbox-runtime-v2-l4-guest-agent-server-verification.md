@@ -49,14 +49,18 @@ truncation, fail-closed and size-bounded environment resolution, timeout, cancel
 shutdown, process-group termination, reap, work-directory descriptor pinning,
 and descriptor non-inheritance.
 
-Readiness, exec, copy-in, and copy-out deadlines remain authoritative when an
-injected backend returns success only after its operation context expires.
+Readiness, exec, uncommitted copy-in, and copy-out deadlines remain
+authoritative when an injected backend returns success only after its operation
+context expires. Copy-in tests separately prove that an explicitly published
+success or published `durability_uncertain` result outranks late cancellation,
+so a visible mutation is never mislabeled as retry-safe.
 
 Copy coverage includes byte-for-byte round trip, exact lowercase SHA-256,
-oversize rejection, atomic replacement, `0600` mode, existing-target
-preservation, temporary-file cleanup, mutation detection, traversal and prefix
-confusion, symlink and coordinated parent swap, mount and magic-link rejection,
-and directory, multiply-linked file, FIFO, socket, and device rejection.
+oversize rejection, atomic replacement, `0600` mode, publication/cancellation
+ordering, post-rename parent-fsync failure, existing-target preservation,
+temporary-file cleanup, mutation detection, traversal and prefix confusion,
+symlink and coordinated parent swap, mount and magic-link rejection, and
+directory, multiply-linked file, FIFO, socket, and device rejection.
 
 Public error and JSON assertions seed path, endpoint, executable, argument,
 environment, token, header, payload, socket, and raw syscall canaries. Only

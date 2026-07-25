@@ -118,6 +118,7 @@ func TestL4ServerDispatchesAllV1OperationsFromWireBytes(t *testing.T) {
 			StdoutTruncated: true,
 		},
 		copyInResult: CopyResult{
+			Published: true,
 			SizeBytes: int64(len(copyInData)),
 			Digest:    copyInDigest,
 		},
