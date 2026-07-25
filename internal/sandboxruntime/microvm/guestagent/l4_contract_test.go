@@ -245,6 +245,62 @@ func TestL4ClientStrictlyRejectsMalformedResponseObjects(t *testing.T) {
 	}
 }
 
+func TestL4ClientRejectsNullResponseScalars(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+		call     func(*Client) error
+	}{
+		{
+			name:     "readiness value",
+			response: `{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":null,"status":"not_ready"}`,
+			call: func(client *Client) error {
+				_, err := client.Readiness(context.Background(), ReadinessRequest{})
+				return err
+			},
+		},
+		{
+			name:     "exec exit code",
+			response: `{"protocolVersion":"guest-agent-v1","operation":"exec","exitCode":null,"stdout":{"maxBytes":1024},"stderr":{"maxBytes":1024}}`,
+			call: func(client *Client) error {
+				_, err := client.Exec(context.Background(), validExecRequest())
+				return err
+			},
+		},
+		{
+			name:     "stream truncated",
+			response: `{"protocolVersion":"guest-agent-v1","operation":"exec","exitCode":0,"stdout":{"maxBytes":1024,"truncated":null},"stderr":{"maxBytes":1024}}`,
+			call: func(client *Client) error {
+				_, err := client.Exec(context.Background(), validExecRequest())
+				return err
+			},
+		},
+		{
+			name:     "copy size",
+			response: `{"protocolVersion":"guest-agent-v1","operation":"copy_in","written":{"sizeBytes":null,"maxBytes":1024}}`,
+			call: func(client *Client) error {
+				_, err := client.CopyIn(context.Background(), CopyInRequest{
+					DestinationPath: "/workspace/input",
+					Payload: PayloadMetadata{
+						MaxBytes: 1024,
+						Encoding: PayloadEncodingBase64,
+					},
+				})
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := l4ReadinessClient(t, []byte(tt.response))
+			if err := tt.call(client); !l4ProtocolErrorCode(err, ErrorCodeMalformedResponse) {
+				t.Fatalf("client call error = %v, want %s", err, ErrorCodeMalformedResponse)
+			}
+		})
+	}
+}
+
 func TestL4ClientRejectsPaddedProtocolVersion(t *testing.T) {
 	client := l4ReadinessClient(
 		t,

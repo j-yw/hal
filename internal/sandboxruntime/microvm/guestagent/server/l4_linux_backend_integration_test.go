@@ -341,13 +341,15 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 		waitL4ProcessGone(t, pid)
 	})
 
-	t.Run("deadline during exited leader cleanup returns timeout", func(t *testing.T) {
+	t.Run("exited leader success remains authoritative before deadline", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()
-		response := transport.roundTrip(ctx, mustL4JSON(t, l4ExecRequest([]string{
+		response := l4Exec(t, transport, ctx, []string{
 			os.Args[0], "-test.run=^TestL4PreparedLinuxHelperProcess$", "--", "output",
-		}, nil, 64, 64)))
-		assertL4ErrorCode(t, response, "request_timeout")
+		}, nil, 64, 64)
+		if response.ExitCode != 0 {
+			t.Fatalf("exit code = %d, want 0", response.ExitCode)
+		}
 	})
 
 	t.Run("cancel terminates and reaps process group descendant", func(t *testing.T) {
