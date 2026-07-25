@@ -27,6 +27,10 @@ type l4FakeBackend struct {
 	closeStarted chan struct{}
 	closeRelease chan struct{}
 
+	execReturnAfterContext    bool
+	copyInReturnAfterContext  bool
+	copyOutReturnAfterContext bool
+
 	readyCalls   atomic.Int32
 	execCalls    atomic.Int32
 	copyInCalls  atomic.Int32
@@ -62,22 +66,31 @@ func (backend *l4FakeBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResu
 		case <-backend.execRelease:
 		}
 	}
+	if backend.execReturnAfterContext {
+		<-ctx.Done()
+	}
 	return backend.execResult, backend.execErr
 }
 
-func (backend *l4FakeBackend) CopyIn(_ context.Context, plan CopyInPlan) (CopyResult, error) {
+func (backend *l4FakeBackend) CopyIn(ctx context.Context, plan CopyInPlan) (CopyResult, error) {
 	backend.copyInCalls.Add(1)
 	backend.mu.Lock()
 	backend.copyInPlans = append(backend.copyInPlans, plan)
 	backend.mu.Unlock()
+	if backend.copyInReturnAfterContext {
+		<-ctx.Done()
+	}
 	return backend.copyInResult, backend.copyErr
 }
 
-func (backend *l4FakeBackend) CopyOut(_ context.Context, plan CopyOutPlan) (CopyResult, error) {
+func (backend *l4FakeBackend) CopyOut(ctx context.Context, plan CopyOutPlan) (CopyResult, error) {
 	backend.copyOutCalls.Add(1)
 	backend.mu.Lock()
 	backend.copyOutPlans = append(backend.copyOutPlans, plan)
 	backend.mu.Unlock()
+	if backend.copyOutReturnAfterContext {
+		<-ctx.Done()
+	}
 	return backend.copyOutResult, backend.copyErr
 }
 

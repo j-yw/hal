@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -124,6 +125,74 @@ func TestL4ServerCancellationAndTimingNeverLeakBackendErrors(t *testing.T) {
 		response := l4HandleContext(t, context.Background(), run.server, request)
 		l4RequireResponseCode(t, response, guestagent.ErrorCodeRequestTimeout)
 	})
+}
+
+func TestL4ServerLateBackendSuccessNeverOverridesContext(t *testing.T) {
+	copyData := []byte("copy payload")
+	copyDigest := digestBytes(copyData)
+	tests := []struct {
+		name    string
+		backend *l4FakeBackend
+		request any
+	}{
+		{
+			name:    "exec",
+			backend: &l4FakeBackend{execReturnAfterContext: true},
+			request: guestagent.ExecRequest{
+				ProtocolVersion: guestagent.ProtocolVersionV1,
+				Operation:       guestagent.OperationExec,
+				Args:            []string{"tool"},
+				WorkDir:         "/workspace",
+				Stdout:          guestagent.StreamMetadata{MaxBytes: 16},
+				Stderr:          guestagent.StreamMetadata{MaxBytes: 16},
+				Timing:          &guestagent.TimingMetadata{TimeoutMillis: 1},
+			},
+		},
+		{
+			name: "copy in",
+			backend: &l4FakeBackend{
+				copyInReturnAfterContext: true,
+				copyInResult:             CopyResult{SizeBytes: int64(len(copyData)), Digest: copyDigest},
+			},
+			request: guestagent.CopyInRequest{
+				ProtocolVersion: guestagent.ProtocolVersionV1,
+				Operation:       guestagent.OperationCopyIn,
+				DestinationPath: "/workspace/input.bin",
+				Payload: guestagent.PayloadMetadata{
+					SizeBytes: int64(len(copyData)),
+					MaxBytes:  64,
+					Digest:    copyDigest,
+					Encoding:  guestagent.PayloadEncodingBase64,
+					Data:      base64.StdEncoding.EncodeToString(copyData),
+				},
+				Timing: &guestagent.TimingMetadata{TimeoutMillis: 1},
+			},
+		},
+		{
+			name: "copy out",
+			backend: &l4FakeBackend{
+				copyOutReturnAfterContext: true,
+				copyOutResult:             CopyResult{Data: copyData, SizeBytes: int64(len(copyData)), Digest: copyDigest},
+			},
+			request: guestagent.CopyOutRequest{
+				ProtocolVersion: guestagent.ProtocolVersionV1,
+				Operation:       guestagent.OperationCopyOut,
+				SourcePath:      "/workspace/output.bin",
+				Payload: guestagent.PayloadMetadata{
+					MaxBytes: 64,
+					Encoding: guestagent.PayloadEncodingBase64,
+				},
+				Timing: &guestagent.TimingMetadata{TimeoutMillis: 1},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			run := startL4Server(t, Options{Transport: newL4BlockingTransport(), Backend: tt.backend})
+			response := l4Handle(t, run.server, tt.request)
+			l4RequireResponseCode(t, response, guestagent.ErrorCodeRequestTimeout)
+		})
+	}
 }
 
 func TestL4ServerBusyAdmissionIsImmediateAndDoesNotQueue(t *testing.T) {
