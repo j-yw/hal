@@ -17,6 +17,39 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 )
 
+func TestL3TerminalLogDrainRejectsStalledFinalCursor(t *testing.T) {
+	store, executionID, terminal := seedL3FinalizationExecution(t, sandboxworker.JobStateRunning)
+	manifest, err := store.LoadManifest(executionID)
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	terminal.LogCursor = 2
+	driver := &fakeSandboxWorkerJobDriver{
+		statusJobs: []sandboxworker.Job{*cloneL3WorkerJob(terminal)},
+		logPages: []sandboxworker.JobLogsResponse{{
+			ContractVersion: sandboxworker.JobContractVersion,
+			JobID:           terminal.ID,
+			NextCursor:      0,
+		}},
+	}
+
+	err = streamSandboxL3Logs(
+		context.Background(),
+		foregroundSandboxL3JobClient{driver: driver},
+		manifest,
+		terminal,
+		true,
+		io.Discard,
+		io.Discard,
+	)
+	if err == nil || !strings.Contains(err.Error(), "worker_job_logs_incomplete") {
+		t.Fatalf("stalled terminal log drain error = %v, want incomplete-log error", err)
+	}
+	if driver.logsCalls != 1 || driver.statusCalls != 1 {
+		t.Fatalf("stalled terminal log calls = logs:%d status:%d, want one bounded attempt each", driver.logsCalls, driver.statusCalls)
+	}
+}
+
 func TestL3RecoveryCommandsFinalizeConcreteDurableActionsWithoutForbiddenWork(t *testing.T) {
 	for _, commandName := range []string{"recover", "sync-out"} {
 		t.Run(commandName, func(t *testing.T) {
