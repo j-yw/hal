@@ -813,7 +813,7 @@ func TestSandboxdRuntimeRegistrationRequestsNetworkPlanOnlyForExplicitMicroVMPat
 	}
 }
 
-func TestSandboxdCommandRegistersLiveMicroVMGuestAgentTransportCapabilities(t *testing.T) {
+func TestSandboxdCommandConfiguredMicroVMGuestAgentEndpointKeepsCapabilitiesLifecycleOnly(t *testing.T) {
 	handler := &recordingSandboxdHandler{}
 	var gotService sandboxworker.ServiceOptions
 	var gotDriver sandboxruntime.Driver
@@ -867,8 +867,8 @@ func TestSandboxdCommandRegistersLiveMicroVMGuestAgentTransportCapabilities(t *t
 	}
 	capabilities := service.Capabilities()
 	for _, want := range []string{sandboxworker.OperationExec, sandboxworker.OperationCopyIn, sandboxworker.OperationCopyOut} {
-		if !containsSandboxdTestString(capabilities.SupportedOperations, want) {
-			t.Fatalf("sandboxd supportedOperations = %#v, want configured guest agent operation %q", capabilities.SupportedOperations, want)
+		if containsSandboxdTestString(capabilities.SupportedOperations, want) {
+			t.Fatalf("configured endpoint alone advertised unsupported service operation %q: %#v", want, capabilities.SupportedOperations)
 		}
 	}
 	if len(capabilities.RuntimeDrivers) != 1 {
@@ -878,9 +878,14 @@ func TestSandboxdCommandRegistersLiveMicroVMGuestAgentTransportCapabilities(t *t
 	if driver.ID != sandboxruntime.DriverMicroVM {
 		t.Fatalf("sandboxd capability driver ID = %q, want %q", driver.ID, sandboxruntime.DriverMicroVM)
 	}
-	for _, want := range []string{sandboxworker.OperationCreate, sandboxworker.OperationStart, sandboxworker.OperationStop, sandboxworker.OperationDelete, sandboxworker.OperationInspect, sandboxworker.OperationExec, sandboxworker.OperationCopyIn, sandboxworker.OperationCopyOut} {
+	for _, want := range []string{sandboxworker.OperationCreate, sandboxworker.OperationStart, sandboxworker.OperationStop, sandboxworker.OperationDelete, sandboxworker.OperationInspect} {
 		if !containsSandboxdTestString(driver.Operations, want) {
 			t.Fatalf("sandboxd microVM operations = %#v, want %q", driver.Operations, want)
+		}
+	}
+	for _, want := range []string{sandboxworker.OperationExec, sandboxworker.OperationCopyIn, sandboxworker.OperationCopyOut} {
+		if containsSandboxdTestString(driver.Operations, want) {
+			t.Fatalf("configured endpoint alone advertised unsupported driver operation %q: %#v", want, driver.Operations)
 		}
 	}
 	assertSandboxdMicroVMCapabilitySecurity(t, driver.Security)

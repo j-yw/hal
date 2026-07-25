@@ -57,8 +57,8 @@ func TestPhase40MicroVMDefaultCapabilitiesStayLifecycleOnlyWithoutGuestTransport
 	})
 	configured := descriptors[sandboxruntime.DriverMicroVM]
 	for _, operation := range []string{sandboxworker.OperationExec, sandboxworker.OperationCopyIn, sandboxworker.OperationCopyOut} {
-		if !phase40StringSliceContains(configured.Operations, operation) {
-			t.Fatalf("configured guest-agent microVM operations = %#v, want %q", configured.Operations, operation)
+		if phase40StringSliceContains(configured.Operations, operation) {
+			t.Fatalf("configured endpoint alone advertised unsupported microVM operation %q: %#v", operation, configured.Operations)
 		}
 	}
 }
