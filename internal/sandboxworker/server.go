@@ -102,15 +102,15 @@ func (server *Server) ListenAndServe(ctx context.Context) error {
 		return fmt.Errorf("worker server listener is not a Unix socket")
 	}
 	unixListener.SetUnlinkOnClose(false)
-	if err := validateWorkerSocketParentProof(parentProof); err != nil {
-		_ = listener.Close()
-		return err
-	}
 	createdInfo, err := os.Lstat(server.socketPath)
 	if err != nil || createdInfo.Mode()&os.ModeSocket == 0 {
 		_ = listener.Close()
-		removeWorkerSocketIfSame(server.socketPath, createdInfo)
 		return fmt.Errorf("worker server could not verify the Unix socket")
+	}
+	if err := validateWorkerSocketParentProof(parentProof); err != nil {
+		_ = listener.Close()
+		removeWorkerSocketIfSame(server.socketPath, createdInfo)
+		return err
 	}
 	if err := os.Chmod(server.socketPath, 0o600); err != nil {
 		_ = listener.Close()

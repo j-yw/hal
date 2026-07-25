@@ -345,12 +345,11 @@ func TestServerServeRejectsNonUnixListeners(t *testing.T) {
 	}
 }
 
-func TestValidateWorkerPeerFilesystemFallbackRequiresHardenedBoundary(t *testing.T) {
-	if err := validateWorkerPeerFilesystemFallback(true); err != nil {
-		t.Fatalf("validateWorkerPeerFilesystemFallback(proven) error: %v", err)
-	}
-	if err := validateWorkerPeerFilesystemFallback(false); err == nil {
-		t.Fatal("validateWorkerPeerFilesystemFallback(unproven) error = nil")
+func TestValidateWorkerPeerFilesystemFallbackFailsClosed(t *testing.T) {
+	for _, filesystemBoundaryProven := range []bool{false, true} {
+		if err := validateWorkerPeerFilesystemFallback(filesystemBoundaryProven); err == nil {
+			t.Fatalf("validateWorkerPeerFilesystemFallback(%t) error = nil", filesystemBoundaryProven)
+		}
 	}
 }
 

@@ -4,11 +4,10 @@ package sandboxworker
 
 import "testing"
 
-func TestValidateWorkerPeerCredentialsUsesHardenedFilesystemFallback(t *testing.T) {
-	if err := validateWorkerPeerCredentials(nil, true); err != nil {
-		t.Fatalf("validateWorkerPeerCredentials(hardened boundary) error: %v", err)
-	}
-	if err := validateWorkerPeerCredentials(nil, false); err == nil {
-		t.Fatal("validateWorkerPeerCredentials(unhardened boundary) error = nil")
+func TestValidateWorkerPeerCredentialsFailsClosedWithoutAdapter(t *testing.T) {
+	for _, filesystemBoundaryProven := range []bool{false, true} {
+		if err := validateWorkerPeerCredentials(nil, filesystemBoundaryProven); err == nil {
+			t.Fatalf("validateWorkerPeerCredentials(nil, %t) error = nil", filesystemBoundaryProven)
+		}
 	}
 }
