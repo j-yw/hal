@@ -398,6 +398,51 @@ func TestL3LiveListRejectsAmbiguousRecoverableExecutionsBeforeWorkerIO(t *testin
 	}
 }
 
+func TestL3LiveListPreflightsAllSandboxesBeforeWorkerIO(t *testing.T) {
+	script := &l3WorkerScript{
+		jobState: sandboxworker.JobStateRunning,
+		pages:    map[uint64]sandboxworker.JobLogsResponse{},
+	}
+	harness := newL3WorkerHarness(t, script)
+	harness.seed("alpha", "run-alpha", "job-alpha")
+	harness.seed("beta", "run-beta-a", "job-beta-a")
+	store, err := sandboxexecution.DefaultStore()
+	if err != nil {
+		t.Fatalf("open execution store: %v", err)
+	}
+	saveL3Manifest(t, store, l3Manifest(
+		"run-beta-b",
+		"beta",
+		time.Date(2026, 7, 25, 8, 2, 0, 0, time.UTC),
+		"job-beta-b",
+		sandboxworker.JobStateRunning,
+		0,
+	))
+	alpha, err := sandboxL3LoadSandbox("alpha")
+	if err != nil {
+		t.Fatalf("load alpha sandbox: %v", err)
+	}
+	beta, err := sandboxL3LoadSandbox("beta")
+	if err != nil {
+		t.Fatalf("load beta sandbox: %v", err)
+	}
+
+	var out bytes.Buffer
+	err = renderSandboxL3LiveListJSON(
+		context.Background(),
+		&out,
+		[]*sandbox.SandboxState{beta, alpha},
+	)
+	requireL3ErrorCode(t, err, "ambiguous_run")
+	requests, forbidden := script.snapshot()
+	if len(requests) != 0 || len(forbidden) != 0 {
+		t.Fatalf("global list preflight crossed worker boundary: requests=%#v forbidden=%#v", requests, forbidden)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("globally ambiguous list rendered output: %s", out.String())
+	}
+}
+
 func TestL3LiveListLabelsDurableFallbackCached(t *testing.T) {
 	script := &l3WorkerScript{
 		jobState: sandboxworker.JobStateRunning,
