@@ -257,6 +257,28 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 		}
 	})
 
+	t.Run("nonzero leader cannot mask forced output pipe cleanup", func(t *testing.T) {
+		childPIDPath := filepath.Join(workspace, "escaped-descendant-nonzero.pid")
+		done := make(chan []byte, 1)
+		go func() {
+			done <- transport.roundTrip(context.Background(), mustL4JSON(t, l4ExecRequest([]string{
+				os.Args[0], "-test.run=^TestL4PreparedLinuxHelperProcess$", "--", "escaped-pipe-nonzero-leader", childPIDPath,
+			}, nil, 64, 64)))
+		}()
+		childPID := waitL4PID(t, childPIDPath)
+		defer func() {
+			_ = syscall.Kill(childPID, syscall.SIGKILL)
+			waitL4ProcessGone(t, childPID)
+		}()
+
+		select {
+		case response := <-done:
+			assertL4ErrorCode(t, response, "execution_failed")
+		case <-time.After(2 * time.Second):
+			t.Fatal("exec remained blocked on a nonzero leader's escaped output pipe")
+		}
+	})
+
 	t.Run("exec and environment fail closed", func(t *testing.T) {
 		for _, executable := range []string{"/bin/sh", "sh"} {
 			request := l4ExecRequest([]string{executable, "-c", "exit 0"}, nil, 64, 64)
@@ -751,7 +773,7 @@ func TestL4PreparedLinuxHelperProcess(t *testing.T) {
 		}
 		_ = os.WriteFile(args[0], []byte(fmt.Sprintf("%d", os.Getpid())), 0o600)
 		select {}
-	case "escaped-pipe-leader":
+	case "escaped-pipe-leader", "escaped-pipe-nonzero-leader":
 		if len(args) != 1 {
 			os.Exit(2)
 		}
@@ -761,6 +783,9 @@ func TestL4PreparedLinuxHelperProcess(t *testing.T) {
 		child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 		if err := child.Start(); err != nil {
 			os.Exit(3)
+		}
+		if mode == "escaped-pipe-nonzero-leader" {
+			os.Exit(7)
 		}
 		os.Exit(0)
 	case "escaped-pipe-child":
