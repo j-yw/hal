@@ -193,7 +193,7 @@ func validateHeader(version ProtocolVersion, operation Operation, want Operation
 }
 
 func validOperation(operation Operation) bool {
-	switch Operation(strings.TrimSpace(string(operation))) {
+	switch operation {
 	case OperationReadiness, OperationExec, OperationCopyIn, OperationCopyOut:
 		return true
 	default:
