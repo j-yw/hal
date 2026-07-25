@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -349,6 +350,52 @@ func TestL4ServerCancellationErrorContract(t *testing.T) {
 			t.Fatalf("State() = %q, want %q", got, StateFailed)
 		}
 	})
+
+	t.Run("joined cancellation causes stop cleanly", func(t *testing.T) {
+		transport := newL4CancellationErrorTransport(false)
+		transport.joinCancellationOnly = true
+		server, err := New(Options{Transport: transport, Backend: &l4FakeBackend{}})
+		if err != nil {
+			t.Fatalf("New() error: %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			done <- server.Serve(ctx)
+		}()
+		<-transport.started
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatalf("Serve() error = %v, want nil", err)
+		}
+		if got := server.State(); got != StateStopped {
+			t.Fatalf("State() = %q, want %q", got, StateStopped)
+		}
+	})
+
+	t.Run("joined cancellation and failure fails closed", func(t *testing.T) {
+		transportErr := errors.New("listener close failed")
+		transport := newL4CancellationErrorTransport(false)
+		transport.err = transportErr
+		transport.joinFailureWithCancellation = true
+		server, err := New(Options{Transport: transport, Backend: &l4FakeBackend{}})
+		if err != nil {
+			t.Fatalf("New() error: %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			done <- server.Serve(ctx)
+		}()
+		<-transport.started
+		cancel()
+		if err := <-done; !errors.Is(err, transportErr) {
+			t.Fatalf("Serve() error = %v, want transport failure", err)
+		}
+		if got := server.State(); got != StateFailed {
+			t.Fatalf("State() = %q, want %q", got, StateFailed)
+		}
+	})
 }
 
 func TestL4ServerServeCancellationStopsAndClosesOnce(t *testing.T) {
@@ -405,9 +452,11 @@ func (transport *l4ConcurrentShutdownTransport) Serve(_ context.Context, _ Limit
 }
 
 type l4CancellationErrorTransport struct {
-	started chan struct{}
-	wrap    bool
-	err     error
+	started                     chan struct{}
+	wrap                        bool
+	joinCancellationOnly        bool
+	joinFailureWithCancellation bool
+	err                         error
 }
 
 func newL4CancellationErrorTransport(wrap bool) *l4CancellationErrorTransport {
@@ -418,7 +467,13 @@ func (transport *l4CancellationErrorTransport) Serve(ctx context.Context, _ Limi
 	close(transport.started)
 	<-ctx.Done()
 	if transport.wrap {
-		return errors.Join(errors.New("transport canceled"), ctx.Err())
+		return fmt.Errorf("transport canceled: %w", ctx.Err())
+	}
+	if transport.joinCancellationOnly {
+		return errors.Join(ctx.Err(), fmt.Errorf("transport canceled: %w", ctx.Err()))
+	}
+	if transport.joinFailureWithCancellation {
+		return errors.Join(ctx.Err(), transport.err)
 	}
 	return transport.err
 }

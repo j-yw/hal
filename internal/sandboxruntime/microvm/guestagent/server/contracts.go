@@ -47,8 +47,8 @@ type Limits struct {
 }
 
 // Transport accepts bounded byte frames and dispatches them through Handler.
-// Cancellation-only returns must be nil or match the supplied context error;
-// every other non-nil return is an independent transport failure.
+// Cancellation-only errors must have only the supplied context error as their
+// causal leaf; every other non-nil return is an independent transport failure.
 type Transport interface {
 	Serve(context.Context, Limits, Handler) error
 }

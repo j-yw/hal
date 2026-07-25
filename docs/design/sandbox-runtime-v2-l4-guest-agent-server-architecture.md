@@ -96,8 +96,9 @@ limit before allocating or reading a complete frame, enforce the response
 limit before writing a frame, stop accepting when its context is canceled,
 allow no handler call after `Serve` returns, and return promptly after
 cancellation. A transport whose return is caused only by cancellation must
-return nil or an error that matches the supplied context error through
-`errors.Is`; every other non-nil error is an independent transport failure,
+return nil, a single wrapped error chain ending in the supplied context error,
+or a joined error whose every non-nil leaf has that same cancellation cause.
+A joined error containing any other leaf is an independent transport failure,
 including when it races with `Shutdown`. `Server` repeats the encoded bounds
 defensively and owns strict decoding, dispatch, operation timing, response
 encoding, concurrency, and shutdown. L4 tests use an in-memory transport. L5
