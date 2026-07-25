@@ -462,8 +462,11 @@ ceilings, not promised effective capacities.
 ## Linux copy and containment semantics
 
 Protocol paths must be normalized absolute paths beneath `GuestRoot`.
-Contained resolution is descriptor-relative through the pinned root and
-`openat2`; lexical validation is necessary but not sufficient.
+Validation requires the exact slash-based lexical canonical form
+(`path.Clean(value) == value`), so dot segments and trailing separators are
+rejected before any backend call. Contained resolution is descriptor-relative
+through the pinned root and `openat2`; lexical validation is necessary but not
+sufficient.
 
 Copy-in:
 

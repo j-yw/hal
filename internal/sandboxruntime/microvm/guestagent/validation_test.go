@@ -160,6 +160,12 @@ func TestValidateProtocolRequestsRejectInvalidMetadata(t *testing.T) {
 			wantField: "workDir",
 		},
 		{
+			name:      "dot segment workdir",
+			err:       ValidateExecRequest(withExecRequest(func(req *ExecRequest) { req.WorkDir = "/workspace/dir/./file" })),
+			wantCode:  ErrorCodeMalformedPath,
+			wantField: "workDir",
+		},
+		{
 			name: "invalid env name",
 			err: ValidateExecRequest(withExecRequest(func(req *ExecRequest) {
 				req.Env = []EnvironmentEntry{{Name: "TOKEN=value", Source: EnvironmentSourceLiteral}}
@@ -223,6 +229,17 @@ func TestValidateProtocolRequestsRejectInvalidMetadata(t *testing.T) {
 			}),
 			wantCode:  ErrorCodeMalformedPath,
 			wantField: "destinationPath",
+		},
+		{
+			name: "trailing copy path separator",
+			err: ValidateCopyOutRequest(CopyOutRequest{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyOut,
+				SourcePath:      "/workspace/output/",
+				Payload:         PayloadMetadata{MaxBytes: 1024, Encoding: PayloadEncodingBase64},
+			}),
+			wantCode:  ErrorCodeMalformedPath,
+			wantField: "sourcePath",
 		},
 		{
 			name: "oversized copy payload metadata",

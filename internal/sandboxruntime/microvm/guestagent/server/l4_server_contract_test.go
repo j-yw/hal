@@ -240,6 +240,8 @@ func TestL4ServerStrictRequestFailuresNeverReachBackend(t *testing.T) {
 		{name: "unsupported version", body: []byte(`{"protocolVersion":"guest-agent-v2","operation":"readiness"}`), code: guestagent.ErrorCodeUnsupportedProtocolVersion},
 		{name: "unknown operation", body: []byte(`{"protocolVersion":"guest-agent-v1","operation":"destroy"}`), code: guestagent.ErrorCodeUnknownOperation},
 		{name: "invalid DTO", body: []byte(`{"protocolVersion":"guest-agent-v1","operation":"exec","args":[],"workDir":"/workspace","stdout":{},"stderr":{}}`), code: guestagent.ErrorCodeMissingRequiredField},
+		{name: "dot path segment", body: []byte(`{"protocolVersion":"guest-agent-v1","operation":"exec","args":["tool"],"workDir":"/workspace/dir/./file","stdout":{"maxBytes":16},"stderr":{"maxBytes":16}}`), code: guestagent.ErrorCodeMalformedPath},
+		{name: "trailing path separator", body: []byte(`{"protocolVersion":"guest-agent-v1","operation":"copy_out","sourcePath":"/workspace/dir/","payload":{"maxBytes":16,"encoding":"base64"}}`), code: guestagent.ErrorCodeMalformedPath},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
