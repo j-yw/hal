@@ -64,6 +64,7 @@ func TestL3LostAcknowledgementStatusAndListRecommendRecoveryWithoutLiveMutation(
 		t.Fatalf("decode live list: %v", err)
 	}
 	if len(response.Sandboxes) != 1 ||
+		response.Source != "cached" ||
 		response.Sandboxes[0].Execution == nil ||
 		response.Sandboxes[0].Execution.RunID != "run-alpha" ||
 		!response.Sandboxes[0].Execution.Active ||

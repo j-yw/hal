@@ -637,7 +637,8 @@ func validateSandboxL3LiveJob(manifest *sandboxexecution.Manifest, job *sandboxw
 		job.WorkerID != reference.WorkerID ||
 		job.HostID != reference.HostID ||
 		job.RuntimeDriver != reference.RuntimeDriver ||
-		job.RuntimeID != reference.RuntimeID
+		job.RuntimeID != reference.RuntimeID ||
+		!job.SubmittedAt.Equal(reference.SubmittedAt)
 	if mismatch {
 		return fmt.Errorf("worker_job_identity_mismatch: live job did not match execution %s", manifest.ID)
 	}
@@ -679,6 +680,7 @@ func validateSandboxL3ManifestWorkerJobBinding(manifest *sandboxexecution.Manife
 		workerID == "" ||
 		strings.TrimSpace(reference.WorkerID) != workerID ||
 		driverID == "" ||
+		driverID != sandbox.SandboxRuntimeDriverRootlessPodman ||
 		strings.TrimSpace(reference.RuntimeDriver) != driverID ||
 		runtimeID == "" ||
 		strings.TrimSpace(reference.RuntimeID) != runtimeID ||
@@ -687,6 +689,7 @@ func validateSandboxL3ManifestWorkerJobBinding(manifest *sandboxexecution.Manife
 		strings.TrimSpace(routing.SelectedWorkerHostName) != hostName ||
 		strings.TrimSpace(routing.RuntimeDriverID) != driverID ||
 		isolation == "" ||
+		isolation != sandbox.SandboxIsolationLevelContainer ||
 		strings.TrimSpace(routing.IsolationLevel) != isolation
 	if mismatch {
 		return fmt.Errorf("worker_job_identity_mismatch: durable worker job did not match execution %s", manifest.ID)
@@ -881,10 +884,14 @@ func renderSandboxL3LiveListJSON(ctx context.Context, out io.Writer, instances [
 		candidates = slices.DeleteFunc(candidates, func(manifest *sandboxexecution.Manifest) bool {
 			return !sandboxL3ManifestMatchesInstance(manifest, instance)
 		})
-		manifest := newestSandboxL3Manifest(candidates)
+		manifest, selectErr := selectSandboxL3ListManifest(instance, candidates)
+		if selectErr != nil {
+			return selectErr
+		}
 		var liveJob *sandboxworker.Job
 		if manifest != nil {
 			if sandboxL3ExecutionAwaitingJobResolution(manifest) {
+				response.Source = "cached"
 				response.Diagnostics = append(response.Diagnostics, sandboxL3Diagnostic{
 					Code:    "worker_job_resolution_required",
 					Message: "durable execution requires recovery before live observation",
@@ -901,6 +908,7 @@ func renderSandboxL3LiveListJSON(ctx context.Context, out io.Writer, instances [
 					})
 				}
 				if clientErr != nil || validateSandboxL3LiveJob(manifest, liveJob) != nil {
+					response.Source = "cached"
 					response.Diagnostics = append(response.Diagnostics, sandboxL3Diagnostic{
 						Code:    "worker_job_status_failed",
 						Message: "live execution status was unavailable",
@@ -924,6 +932,47 @@ func renderSandboxL3LiveListJSON(ctx context.Context, out io.Writer, instances [
 		}
 	}
 	return json.NewEncoder(out).Encode(response)
+}
+
+func selectSandboxL3ListManifest(
+	instance *sandbox.SandboxState,
+	manifests []*sandboxexecution.Manifest,
+) (*sandboxexecution.Manifest, error) {
+	recoverable := make([]*sandboxexecution.Manifest, 0, len(manifests))
+	completed := make([]*sandboxexecution.Manifest, 0, len(manifests))
+	for _, manifest := range manifests {
+		if !sandboxL3ManifestMatchesInstance(manifest, instance) {
+			continue
+		}
+		if manifest.WorkerJob != nil {
+			if err := validateSandboxL3ManifestWorkerJobBinding(manifest); err != nil {
+				return nil, err
+			}
+		}
+		if sandboxL3ExecutionRecoverable(manifest) {
+			recoverable = append(recoverable, manifest)
+			continue
+		}
+		if manifest.WorkerJob != nil && sandboxL3TerminalJobState(manifest.WorkerJob.State) {
+			completed = append(completed, manifest)
+		}
+	}
+	if len(recoverable) > 1 {
+		ids := make([]string, 0, len(recoverable))
+		for _, manifest := range recoverable {
+			ids = append(ids, manifest.ID)
+		}
+		sort.Strings(ids)
+		return nil, fmt.Errorf(
+			"ambiguous_run: sandbox %s has multiple recoverable executions: %s",
+			strings.TrimSpace(instance.Name),
+			strings.Join(ids, ", "),
+		)
+	}
+	if len(recoverable) == 1 {
+		return recoverable[0], nil
+	}
+	return newestSandboxL3Manifest(completed), nil
 }
 
 func newestSandboxL3Manifest(manifests []*sandboxexecution.Manifest) *sandboxexecution.Manifest {

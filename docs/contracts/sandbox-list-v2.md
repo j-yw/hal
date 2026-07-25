@@ -8,7 +8,7 @@ The cached command `hal sandbox list --json` remains `sandbox-list-v1`.
 | Field | Type | Required | Meaning |
 |---|---|---:|---|
 | `contractVersion` | string | yes | Always `sandbox-list-v2`. |
-| `source` | string | yes | Always `live`. |
+| `source` | string | yes | `live` when every selected execution summary was validated from the worker; `cached` when any selected execution falls back to durable state. |
 | `sandboxes` | array | yes | Safe sandbox entries in deterministic name/ID order. |
 | `totals` | object | yes | Sandbox and active-execution counts. |
 | `diagnostics` | array | no | Safe per-sandbox live-query diagnostics. |
@@ -29,7 +29,9 @@ queued/running runtime IDs and must converge with these projections.
 Unlike optional legacy v1 address fields, v2 does not emit IP addresses,
 hostnames, endpoints, sockets, URLs, ports, repository locations, host paths,
 commands, environment, credentials, secret values, or raw errors. Live-query
-failure retains cached safe state and adds a diagnostic; it does not fabricate
-running or security-enforcement claims.
+failure retains cached safe state, changes the top-level source to `cached`,
+and adds a diagnostic; it does not fabricate running or security-enforcement
+claims. The conservative top-level `cached` value also covers a mixed list in
+which only some execution summaries required durable fallback.
 
 See [`examples/sandbox-list-v2-live.json`](examples/sandbox-list-v2-live.json).
