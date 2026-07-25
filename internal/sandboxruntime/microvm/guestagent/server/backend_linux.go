@@ -171,12 +171,6 @@ func (backend *linuxBackend) Close(ctx context.Context) error {
 	return nil
 }
 
-func (backend *linuxBackend) setBeforeExecStartTestHook(hook func()) {
-	backend.mu.Lock()
-	defer backend.mu.Unlock()
-	backend.beforeExecStartTestHook = hook
-}
-
 func (backend *linuxBackend) runBeforeExecStartTestHook() {
 	backend.mu.Lock()
 	hook := backend.beforeExecStartTestHook
@@ -185,12 +179,6 @@ func (backend *linuxBackend) runBeforeExecStartTestHook() {
 	if hook != nil {
 		hook()
 	}
-}
-
-func (backend *linuxBackend) setAfterCopyTempOpenTestHook(hook func()) {
-	backend.mu.Lock()
-	defer backend.mu.Unlock()
-	backend.afterCopyTempOpenTestHook = hook
 }
 
 func (backend *linuxBackend) runAfterCopyTempOpenTestHook() {

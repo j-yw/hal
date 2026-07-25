@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -237,13 +236,4 @@ func l4WaitState(t *testing.T, server *Server, want string) {
 		runtime.Gosched()
 	}
 	t.Fatalf("State() = %q, want %q", server.State(), want)
-}
-
-func l4RequireErrorCode(t *testing.T, err error, want guestagent.ErrorCode) {
-	t.Helper()
-
-	var protocolErr *guestagent.ProtocolError
-	if !errors.As(err, &protocolErr) || protocolErr.Code != want {
-		t.Fatalf("error = %v, want protocol code %q", err, want)
-	}
 }
