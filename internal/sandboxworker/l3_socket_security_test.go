@@ -5,6 +5,7 @@ package sandboxworker
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,6 +136,50 @@ func TestL3WorkerServerCreatesPrivateSocketAndRemovesOnlyItsOwnSocket(t *testing
 	}
 	if _, err := os.Lstat(socketPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("owned socket remains after shutdown: %v", err)
+	}
+}
+
+func TestL3WorkerServerRejectsSocketParentReplacementDuringBind(t *testing.T) {
+	base := resolvedWorkerTempDir(t)
+	parent := filepath.Join(base, "private")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatalf("Mkdir(parent) error: %v", err)
+	}
+	socketPath := filepath.Join(parent, "worker.sock")
+	server, err := NewServer(ServerOptions{
+		SocketPath: socketPath,
+		Handler: RequestHandlerFunc(func(context.Context, Request) Response {
+			t.Fatal("server dispatched through a replaced socket parent")
+			return Response{}
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	originalListen := listenWorkerUnixSocket
+	t.Cleanup(func() { listenWorkerUnixSocket = originalListen })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	listenWorkerUnixSocket = func(ctx context.Context, path string) (net.Listener, error) {
+		movedParent := parent + ".validated"
+		if err := os.Rename(parent, movedParent); err != nil {
+			return nil, err
+		}
+		if err := os.Mkdir(parent, 0o700); err != nil {
+			return nil, err
+		}
+		listener, err := originalListen(ctx, path)
+		cancel()
+		return listener, err
+	}
+
+	err = server.ListenAndServe(ctx)
+	if err == nil {
+		t.Fatal("ListenAndServe() error = nil after socket parent replacement")
+	}
+	if strings.Contains(err.Error(), socketPath) || strings.Contains(err.Error(), base) {
+		t.Fatalf("ListenAndServe() error exposed a socket path: %v", err)
 	}
 }
 
