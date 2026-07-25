@@ -50,6 +50,60 @@ func TestL3TerminalLogDrainRejectsStalledFinalCursor(t *testing.T) {
 	}
 }
 
+func TestL3TerminalTransitionDrainsFinalLogsBeforeDeclaringStall(t *testing.T) {
+	store, executionID, terminal := seedL3FinalizationExecution(t, sandboxworker.JobStateRunning)
+	manifest, err := store.LoadManifest(executionID)
+	if err != nil {
+		t.Fatalf("LoadManifest() error: %v", err)
+	}
+	terminal.LogCursor = 1
+	running := cloneL3WorkerJob(terminal)
+	running.State = sandboxworker.JobStateRunning
+	running.FinishedAt = nil
+	running.ExitCode = nil
+	running.LogCursor = 0
+	driver := &fakeSandboxWorkerJobDriver{
+		statusJobs: []sandboxworker.Job{*cloneL3WorkerJob(terminal)},
+		logPages: []sandboxworker.JobLogsResponse{
+			{
+				ContractVersion: sandboxworker.JobContractVersion,
+				JobID:           terminal.ID,
+				NextCursor:      0,
+			},
+			{
+				ContractVersion: sandboxworker.JobContractVersion,
+				JobID:           terminal.ID,
+				Records: []sandboxworker.JobLogRecord{{
+					Cursor: 1,
+					Stream: sandboxworker.JobLogStreamStdout,
+					Data:   "final output\n",
+				}},
+				NextCursor: 1,
+			},
+		},
+	}
+	var output strings.Builder
+
+	err = streamSandboxL3Logs(
+		context.Background(),
+		foregroundSandboxL3JobClient{driver: driver},
+		manifest,
+		running,
+		true,
+		&output,
+		io.Discard,
+	)
+	if err != nil {
+		t.Fatalf("running-to-terminal log drain error: %v", err)
+	}
+	if got := output.String(); got != "final output\n" {
+		t.Fatalf("running-to-terminal output = %q, want final output", got)
+	}
+	if driver.logsCalls != 2 || driver.statusCalls != 1 {
+		t.Fatalf("running-to-terminal log calls = logs:%d status:%d, want final fetch after one status poll", driver.logsCalls, driver.statusCalls)
+	}
+}
+
 func TestL3RecoveryCommandsFinalizeConcreteDurableActionsWithoutForbiddenWork(t *testing.T) {
 	for _, commandName := range []string{"recover", "sync-out"} {
 		t.Run(commandName, func(t *testing.T) {
