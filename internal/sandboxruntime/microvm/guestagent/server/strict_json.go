@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -28,12 +30,96 @@ func strictRequestObject(encoded []byte) error {
 }
 
 func strictDecodeRequest(encoded []byte, destination any) error {
+	if err := validateCanonicalRequestFields(encoded, destination); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
 		return err
 	}
 	return strictJSONEOF(decoder)
+}
+
+func validateCanonicalRequestFields(encoded []byte, destination any) error {
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return err
+	}
+	return validateCanonicalRequestValue(value, reflect.TypeOf(destination))
+}
+
+func validateCanonicalRequestValue(value any, destinationType reflect.Type) error {
+	for destinationType != nil && destinationType.Kind() == reflect.Pointer {
+		if value == nil {
+			return nil
+		}
+		destinationType = destinationType.Elem()
+	}
+	if destinationType == nil || value == nil {
+		return nil
+	}
+
+	switch destinationType.Kind() {
+	case reflect.Struct:
+		object, ok := value.(map[string]any)
+		if !ok {
+			return nil
+		}
+		fields := canonicalRequestStructFields(destinationType)
+		for name, nested := range object {
+			fieldType, known := fields[name]
+			if !known {
+				return fmt.Errorf("request contains noncanonical or unknown field")
+			}
+			if err := validateCanonicalRequestValue(nested, fieldType); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		values, ok := value.([]any)
+		if !ok {
+			return nil
+		}
+		for _, nested := range values {
+			if err := validateCanonicalRequestValue(nested, destinationType.Elem()); err != nil {
+				return err
+			}
+		}
+	case reflect.Map:
+		object, ok := value.(map[string]any)
+		if !ok {
+			return nil
+		}
+		for _, nested := range object {
+			if err := validateCanonicalRequestValue(nested, destinationType.Elem()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func canonicalRequestStructFields(structType reflect.Type) map[string]reflect.Type {
+	fields := make(map[string]reflect.Type, structType.NumField())
+	for index := 0; index < structType.NumField(); index++ {
+		field := structType.Field(index)
+		if field.PkgPath != "" {
+			continue
+		}
+		tag := field.Tag.Get("json")
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "-" {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		fields[name] = field.Type
+	}
+	return fields
 }
 
 func strictObjectTokens(decoder *json.Decoder, depth int) error {

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -17,6 +19,9 @@ func strictUnmarshalObject(encoded []byte, destination any) error {
 	if err := validateStrictJSONObject(encoded, maxStrictJSONDepth); err != nil {
 		return err
 	}
+	if err := validateCanonicalJSONFields(encoded, destination); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
@@ -26,6 +31,87 @@ func strictUnmarshalObject(encoded []byte, destination any) error {
 		return err
 	}
 	return nil
+}
+
+func validateCanonicalJSONFields(encoded []byte, destination any) error {
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return err
+	}
+	return validateCanonicalJSONValue(value, reflect.TypeOf(destination))
+}
+
+func validateCanonicalJSONValue(value any, destinationType reflect.Type) error {
+	for destinationType != nil && destinationType.Kind() == reflect.Pointer {
+		if value == nil {
+			return nil
+		}
+		destinationType = destinationType.Elem()
+	}
+	if destinationType == nil || value == nil {
+		return nil
+	}
+
+	switch destinationType.Kind() {
+	case reflect.Struct:
+		object, ok := value.(map[string]any)
+		if !ok {
+			return nil
+		}
+		fields := canonicalJSONStructFields(destinationType)
+		for name, nested := range object {
+			fieldType, known := fields[name]
+			if !known {
+				return fmt.Errorf("JSON object contains noncanonical or unknown field")
+			}
+			if err := validateCanonicalJSONValue(nested, fieldType); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		values, ok := value.([]any)
+		if !ok {
+			return nil
+		}
+		for _, nested := range values {
+			if err := validateCanonicalJSONValue(nested, destinationType.Elem()); err != nil {
+				return err
+			}
+		}
+	case reflect.Map:
+		object, ok := value.(map[string]any)
+		if !ok {
+			return nil
+		}
+		for _, nested := range object {
+			if err := validateCanonicalJSONValue(nested, destinationType.Elem()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func canonicalJSONStructFields(structType reflect.Type) map[string]reflect.Type {
+	fields := make(map[string]reflect.Type, structType.NumField())
+	for index := 0; index < structType.NumField(); index++ {
+		field := structType.Field(index)
+		if field.PkgPath != "" {
+			continue
+		}
+		tag := field.Tag.Get("json")
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "-" {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		fields[name] = field.Type
+	}
+	return fields
 }
 
 func validateStrictJSONObject(encoded []byte, maximumDepth int) error {
