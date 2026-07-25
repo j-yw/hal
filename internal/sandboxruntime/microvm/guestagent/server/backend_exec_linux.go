@@ -90,6 +90,7 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 		Stdin:      bytes.NewReader(plan.Stdin),
 		Stdout:     stdout,
 		Stderr:     stderr,
+		WaitDelay:  backend.termGrace,
 		SysProcAttr: &syscall.SysProcAttr{
 			Setpgid: true,
 		},
@@ -164,6 +165,9 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 			return ExecResult{}, linuxContextError(guestagent.OperationExec, contextErr)
 		}
 		return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "process", "guest command supervision failed", contextErr)
+	}
+	if errors.Is(waitErr, exec.ErrWaitDelay) {
+		return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "process", "guest command pipe cleanup exceeded the server limit", waitErr)
 	}
 	var exitErr *exec.ExitError
 	if waitErr != nil && !errors.As(waitErr, &exitErr) {
