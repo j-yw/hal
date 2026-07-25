@@ -479,7 +479,7 @@ func validPayloadEncoding(encoding PayloadEncoding) bool {
 }
 
 func validReadinessStatus(status ReadinessStatus) bool {
-	switch ReadinessStatus(strings.TrimSpace(string(status))) {
+	switch status {
 	case ReadinessStatusReady, ReadinessStatusNotReady:
 		return true
 	default:

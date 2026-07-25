@@ -35,6 +35,18 @@ type linuxExecutableRoot struct {
 	fd   int
 }
 
+type linuxProcessGroupState uint8
+
+const (
+	linuxProcessGroupActive linuxProcessGroupState = iota
+	linuxProcessGroupReaping
+)
+
+type linuxProcessGroup struct {
+	state linuxProcessGroupState
+	done  chan struct{}
+}
+
 type linuxBackend struct {
 	mu sync.Mutex
 
@@ -44,7 +56,7 @@ type linuxBackend struct {
 	baseEnv        []string
 	executableRoot []linuxExecutableRoot
 	termGrace      time.Duration
-	processGroups  map[int]struct{}
+	processGroups  map[int]*linuxProcessGroup
 	closed         bool
 
 	beforeExecStartTestHook   func()
@@ -74,7 +86,7 @@ func NewLinuxBackend(options LinuxBackendOptions) (Backend, error) {
 		procSelfFD:    -1,
 		guestRoot:     guestRoot,
 		termGrace:     options.TermGrace,
-		processGroups: make(map[int]struct{}),
+		processGroups: make(map[int]*linuxProcessGroup),
 	}
 	defer func() {
 		if err != nil {
@@ -154,24 +166,34 @@ func (backend *linuxBackend) Close(ctx context.Context) error {
 		return nil
 	}
 	backend.closed = true
-	groups := make([]int, 0, len(backend.processGroups))
-	for pgid := range backend.processGroups {
-		groups = append(groups, pgid)
+	activeGroups := make([]int, 0, len(backend.processGroups))
+	groupDone := make([]<-chan struct{}, 0, len(backend.processGroups))
+	for pgid, group := range backend.processGroups {
+		groupDone = append(groupDone, group.done)
+		if group.state == linuxProcessGroupActive {
+			_ = unix.Kill(-pgid, unix.SIGTERM)
+			activeGroups = append(activeGroups, pgid)
+		}
 	}
 	backend.mu.Unlock()
 
-	for _, pgid := range groups {
-		_ = unix.Kill(-pgid, unix.SIGTERM)
-	}
-	if len(groups) > 0 {
+	if len(activeGroups) > 0 {
 		timer := time.NewTimer(backend.termGrace)
 		select {
 		case <-ctx.Done():
 			stopLinuxTimer(timer)
 		case <-timer.C:
 		}
-		for _, pgid := range groups {
-			_ = unix.Kill(-pgid, unix.SIGKILL)
+		for _, pgid := range activeGroups {
+			backend.killActiveProcessGroup(pgid)
+		}
+	}
+	for _, done := range groupDone {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			backend.closeDescriptors()
+			return ctx.Err()
 		}
 	}
 	backend.closeDescriptors()
@@ -179,6 +201,15 @@ func (backend *linuxBackend) Close(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (backend *linuxBackend) killActiveProcessGroup(pgid int) {
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	group, owned := backend.processGroups[pgid]
+	if owned && group.state == linuxProcessGroupActive {
+		_ = unix.Kill(-pgid, unix.SIGKILL)
+	}
 }
 
 //nolint:unused // Exercised by the explicit L4 prepared-Linux acceptance test.

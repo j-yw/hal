@@ -137,10 +137,14 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 	pgid := command.Process.Pid
 	if err := backend.registerProcessGroup(pgid); err != nil {
 		_ = unix.Kill(-pgid, unix.SIGKILL)
-		_ = backend.waitCommand(command)
+		cleanupDone := startLinuxCommandReaper(nil, func() error {
+			return backend.waitCommand(command)
+		}, nil)
+		if _, cleanupExceeded := waitForLinuxCommandReaper(cleanupDone, backend.termGrace); cleanupExceeded {
+			return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "process", "guest command cleanup exceeded the server limit", nil)
+		}
 		return ExecResult{}, err
 	}
-	defer backend.unregisterProcessGroup(pgid)
 
 	waitID := make(chan error, 1)
 	go func() {
@@ -152,8 +156,15 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 	case err := <-waitID:
 		waitID = nil
 		if err != nil {
-			_ = unix.Kill(-pgid, unix.SIGKILL)
-			_ = backend.waitCommand(command)
+			backend.handoffProcessGroupToReaper(pgid)
+			cleanupDone := startLinuxCommandReaper(nil, func() error {
+				return backend.waitCommand(command)
+			}, func() {
+				backend.unregisterProcessGroup(pgid)
+			})
+			if _, cleanupExceeded := waitForLinuxCommandReaper(cleanupDone, backend.termGrace); cleanupExceeded {
+				return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "process", "guest command cleanup exceeded the server limit", nil)
+			}
 			return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "process", "guest command supervision failed", err)
 		}
 	case <-ctx.Done():
@@ -189,14 +200,23 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 		}
 	}
 	stopLinuxTimer(timer)
-	_ = unix.Kill(-pgid, unix.SIGKILL)
-	if waitID != nil {
-		if err := <-waitID; err != nil && contextErr == nil {
-			contextErr = err
+	backend.handoffProcessGroupToReaper(pgid)
+	cleanupDone := startLinuxCommandReaper(waitID, func() error {
+		return backend.waitCommand(command)
+	}, func() {
+		backend.unregisterProcessGroup(pgid)
+	})
+	cleanupResult, cleanupExceeded := waitForLinuxCommandReaper(cleanupDone, backend.termGrace)
+	if cleanupExceeded {
+		if err := ctx.Err(); err != nil {
+			return ExecResult{}, linuxContextError(guestagent.OperationExec, err)
 		}
+		return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "process", "guest command cleanup exceeded the server limit", nil)
 	}
-
-	waitErr := backend.waitCommand(command)
+	if cleanupResult.supervisionErr != nil && contextErr == nil {
+		contextErr = cleanupResult.supervisionErr
+	}
+	waitErr := cleanupResult.waitErr
 	outputContext := ctx
 	if contextErr != nil {
 		outputContext = context.Background()
@@ -430,14 +450,68 @@ func (backend *linuxBackend) registerProcessGroup(pgid int) error {
 	if backend.closed {
 		return linuxBackendError(guestagent.ErrorCodeBackendUnavailable, guestagent.OperationExec, "backend", "guest backend is unavailable", nil)
 	}
-	backend.processGroups[pgid] = struct{}{}
+	backend.processGroups[pgid] = &linuxProcessGroup{
+		state: linuxProcessGroupActive,
+		done:  make(chan struct{}),
+	}
 	return nil
+}
+
+func (backend *linuxBackend) handoffProcessGroupToReaper(pgid int) {
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	group, owned := backend.processGroups[pgid]
+	if !owned || group.state == linuxProcessGroupReaping {
+		return
+	}
+	_ = unix.Kill(-pgid, unix.SIGKILL)
+	group.state = linuxProcessGroupReaping
 }
 
 func (backend *linuxBackend) unregisterProcessGroup(pgid int) {
 	backend.mu.Lock()
-	delete(backend.processGroups, pgid)
+	group, owned := backend.processGroups[pgid]
+	if owned {
+		delete(backend.processGroups, pgid)
+		close(group.done)
+	}
 	backend.mu.Unlock()
+}
+
+type linuxCommandReapResult struct {
+	supervisionErr error
+	waitErr        error
+}
+
+func startLinuxCommandReaper(
+	waitID <-chan error,
+	wait func() error,
+	release func(),
+) <-chan linuxCommandReapResult {
+	done := make(chan linuxCommandReapResult, 1)
+	go func() {
+		result := linuxCommandReapResult{}
+		if waitID != nil {
+			result.supervisionErr = <-waitID
+		}
+		result.waitErr = wait()
+		if release != nil {
+			release()
+		}
+		done <- result
+	}()
+	return done
+}
+
+func waitForLinuxCommandReaper(done <-chan linuxCommandReapResult, grace time.Duration) (linuxCommandReapResult, bool) {
+	timer := newLinuxGraceTimer(grace)
+	defer stopLinuxTimer(timer)
+	select {
+	case result := <-done:
+		return result, false
+	case <-timer.C:
+		return linuxCommandReapResult{}, true
+	}
 }
 
 func waitForLinuxLeader(pid int) error {
