@@ -311,6 +311,20 @@ func TestL4ServerEnvironmentResolutionFailsClosed(t *testing.T) {
 		}
 	})
 
+	t.Run("typed nil resolver rejects", func(t *testing.T) {
+		backend := &l4FakeBackend{}
+		var resolver *l4Resolver
+		run := startL4Server(t, Options{
+			Transport:           newL4BlockingTransport(),
+			Backend:             backend,
+			EnvironmentResolver: resolver,
+		})
+		l4RequireResponseCode(t, l4Handle(t, run.server, request), guestagent.ErrorCodeEnvironmentUnavailable)
+		if backend.execCalls.Load() != 0 {
+			t.Fatalf("Exec calls = %d, want 0", backend.execCalls.Load())
+		}
+	})
+
 	t.Run("secret rejected before resolver", func(t *testing.T) {
 		backend := &l4FakeBackend{}
 		resolver := &l4Resolver{value: "must-not-be-used"}
