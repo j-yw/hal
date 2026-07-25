@@ -50,6 +50,7 @@ type linuxBackend struct {
 	beforeExecStartTestHook   func()
 	afterExecStartTestHook    func()
 	afterCopyTempOpenTestHook func()
+	beforeCommandWaitTestHook func()
 }
 
 // NewLinuxBackend constructs the fail-closed production Linux operation
@@ -225,6 +226,23 @@ func (backend *linuxBackend) runAfterCopyTempOpenTestHook() {
 	backend.mu.Lock()
 	hook := backend.afterCopyTempOpenTestHook
 	backend.afterCopyTempOpenTestHook = nil
+	backend.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+}
+
+//nolint:unused // Exercised by the explicit L4 prepared-Linux acceptance test.
+func (backend *linuxBackend) setBeforeCommandWaitTestHook(hook func()) {
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	backend.beforeCommandWaitTestHook = hook
+}
+
+func (backend *linuxBackend) runBeforeCommandWaitTestHook() {
+	backend.mu.Lock()
+	hook := backend.beforeCommandWaitTestHook
+	backend.beforeCommandWaitTestHook = nil
 	backend.mu.Unlock()
 	if hook != nil {
 		hook()

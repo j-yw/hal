@@ -112,6 +112,8 @@ func TestL4ReadinessResponseValidatesPresentStatus(t *testing.T) {
 		{name: "not ready", ready: false, status: ReadinessStatusNotReady},
 		{name: "true not ready contradiction", ready: true, status: ReadinessStatusNotReady, wantErr: true},
 		{name: "false ready contradiction", ready: false, status: ReadinessStatusReady, wantErr: true},
+		{name: "padded ready", ready: false, status: " ready ", wantErr: true},
+		{name: "padded not ready", ready: false, status: " not_ready ", wantErr: true},
 		{name: "unsupported status", status: "starting", wantErr: true},
 		{name: "v1 ready response omits status", ready: true},
 		{name: "v1 not-ready response omits status", ready: false},

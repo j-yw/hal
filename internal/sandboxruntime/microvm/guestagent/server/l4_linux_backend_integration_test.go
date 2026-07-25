@@ -148,6 +148,7 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 		setBeforeExecStartTestHook(func())
 		setAfterExecStartTestHook(func())
 		setAfterCopyTempOpenTestHook(func())
+		setBeforeCommandWaitTestHook(func())
 	})
 	if !ok {
 		t.Fatal("production Linux backend does not expose package-private acceptance hooks")
@@ -256,6 +257,44 @@ func TestL4PreparedLinuxLocalServerE2E(t *testing.T) {
 		pid := waitL4PID(t, pidPath)
 		cancel()
 		assertL4ErrorCode(t, <-done, "request_canceled")
+		waitL4ProcessGone(t, pid)
+	})
+
+	t.Run("cancel remains bounded when command reap stalls", func(t *testing.T) {
+		pidPath := filepath.Join(workspace, "bounded-reap.pid")
+		waitStarted := make(chan struct{})
+		waitRelease := make(chan struct{})
+		hooks.setBeforeCommandWaitTestHook(func() {
+			close(waitStarted)
+			<-waitRelease
+		})
+		defer hooks.setBeforeCommandWaitTestHook(nil)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan []byte, 1)
+		go func() {
+			done <- transport.roundTrip(ctx, mustL4JSON(t, l4ExecRequest([]string{
+				os.Args[0], "-test.run=^TestL4PreparedLinuxHelperProcess$", "--", "sleep", pidPath,
+			}, nil, 64, 64)))
+		}()
+		pid := waitL4PID(t, pidPath)
+		cancel()
+		select {
+		case <-waitStarted:
+		case <-time.After(5 * time.Second):
+			close(waitRelease)
+			t.Fatal("command reap did not begin")
+		}
+
+		select {
+		case response := <-done:
+			close(waitRelease)
+			assertL4ErrorCode(t, response, "request_canceled")
+		case <-time.After(2 * time.Second):
+			close(waitRelease)
+			<-done
+			t.Fatal("canceled exec waited indefinitely for command reap")
+		}
 		waitL4ProcessGone(t, pid)
 	})
 

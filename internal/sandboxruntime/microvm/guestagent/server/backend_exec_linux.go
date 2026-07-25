@@ -137,7 +137,7 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 	pgid := command.Process.Pid
 	if err := backend.registerProcessGroup(pgid); err != nil {
 		_ = unix.Kill(-pgid, unix.SIGKILL)
-		_ = command.Wait()
+		_ = backend.waitCommand(command)
 		return ExecResult{}, err
 	}
 	defer backend.unregisterProcessGroup(pgid)
@@ -153,7 +153,7 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 		waitID = nil
 		if err != nil {
 			_ = unix.Kill(-pgid, unix.SIGKILL)
-			_ = command.Wait()
+			_ = backend.waitCommand(command)
 			return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "process", "guest command supervision failed", err)
 		}
 	case <-ctx.Done():
@@ -196,7 +196,7 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 		}
 	}
 
-	waitErr := command.Wait()
+	waitErr := backend.waitCommand(command)
 	outputContext := ctx
 	if contextErr != nil {
 		outputContext = context.Background()
@@ -239,6 +239,11 @@ func (backend *linuxBackend) Exec(ctx context.Context, plan ExecPlan) (ExecResul
 		return ExecResult{}, linuxBackendError(guestagent.ErrorCodeExecutionFailed, guestagent.OperationExec, "process", "guest command cleanup failed", waitErr)
 	}
 	return result, nil
+}
+
+func (backend *linuxBackend) waitCommand(command *exec.Cmd) error {
+	backend.runBeforeCommandWaitTestHook()
+	return command.Wait()
 }
 
 type linuxOutputPipe struct {
