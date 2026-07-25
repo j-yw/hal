@@ -202,6 +202,10 @@ func TestL4ClientStrictlyRejectsMalformedResponseObjects(t *testing.T) {
 			response: `{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"Ready":false,"status":"ready"}`,
 		},
 		{
+			name:     "padded protocol version",
+			response: `{"protocolVersion":" guest-agent-v1 ","operation":"readiness","ready":true,"status":"ready"}`,
+		},
+		{
 			name:     "trailing document",
 			response: `{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready"} {}`,
 		},
