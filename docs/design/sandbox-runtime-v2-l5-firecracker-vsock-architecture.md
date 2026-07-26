@@ -131,7 +131,7 @@ The pre-start Firecracker full-config file contains:
 {
   "boot-source": {
     "kernel_image_path": "<private>",
-    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off nomodule root=/dev/vda ro init=/sbin/init"
+    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off nomodule ro root=/dev/vda rootfstype=ext4 rootwait init=/sbin/init"
   },
   "drives": [{
     "drive_id": "rootfs",
