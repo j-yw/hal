@@ -503,8 +503,10 @@ The host client preserves the same ordering when a transport returns a response
 after its call context expires: only a strict, bounded, valid copy-in success or
 an exact `durability_uncertain` error may outrank the context. Malformed,
 oversized, mismatched, and ordinary pre-publication error responses remain
-context-authoritative. The response on durable success always acknowledges
-exact size and digest.
+context-authoritative. A success must acknowledge the active request's exact
+size and digest, use canonical base64 metadata, and declare no larger byte limit
+than the request before it qualifies as published. The response on durable
+success always acknowledges exact size and digest.
 
 Copy-out:
 

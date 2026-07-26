@@ -185,7 +185,7 @@ func (client *Client) roundTrip(ctx context.Context, operation Operation, timing
 		return NewProtocolError(ErrorCodeTransportFailure, operation, "transport", err)
 	}
 	if err := callCtx.Err(); err != nil &&
-		(operation != OperationCopyIn || !publishedCopyInOutcome(transportResponse.Encoded, client.maxResponseBytes)) {
+		(operation != OperationCopyIn || !publishedCopyInOutcome(transportResponse.Encoded, client.maxResponseBytes, request)) {
 		return clientContextError(operation, err)
 	}
 
@@ -214,7 +214,11 @@ func (client *Client) roundTrip(ctx context.Context, operation Operation, timing
 	return nil
 }
 
-func publishedCopyInOutcome(encoded []byte, maxResponseBytes int64) bool {
+func publishedCopyInOutcome(encoded []byte, maxResponseBytes int64, request any) bool {
+	copyInRequest, ok := request.(CopyInRequest)
+	if !ok {
+		return false
+	}
 	if int64(len(encoded)) > maxResponseBytes {
 		return false
 	}
@@ -243,7 +247,12 @@ func publishedCopyInOutcome(encoded []byte, maxResponseBytes int64) bool {
 	if err := strictUnmarshalObject(encoded, &response); err != nil {
 		return false
 	}
-	return ValidateCopyInResponse(response) == nil
+	return ValidateCopyInResponse(response) == nil &&
+		response.Written.SizeBytes == copyInRequest.Payload.SizeBytes &&
+		response.Written.MaxBytes <= copyInRequest.Payload.MaxBytes &&
+		response.Written.Digest != "" &&
+		response.Written.Digest == copyInRequest.Payload.Digest &&
+		response.Written.Encoding == PayloadEncodingBase64
 }
 
 func contextWithTiming(ctx context.Context, timing *TimingMetadata) (context.Context, context.CancelFunc) {
