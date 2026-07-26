@@ -32,7 +32,7 @@ func TestL5ProductionVsockBridgePeerMismatchIsFatalWithoutRetry(t *testing.T) {
 
 	started := time.Now()
 	_, _, err := fixture.bridge.ActivateSession(context.Background(), firecracker.ProductionVsockSessionRequest{
-		Handle: fixture.handle, RuntimeID: "fc-peer-mismatch", SocketPath: fixture.paths.VsockSocketPath,
+		Handle: fixture.handle, RuntimeID: "fc-production-test", SocketPath: fixture.paths.VsockSocketPath,
 	})
 	if err == nil {
 		t.Fatal("ActivateSession() error = nil, want peer mismatch")
@@ -55,7 +55,7 @@ func TestL5ProductionVsockBridgeNaturalExitInvalidatesGeneration(t *testing.T) {
 	go l5ServeReadyBridge(listener)
 
 	result, generation, err := fixture.bridge.ActivateSession(context.Background(), firecracker.ProductionVsockSessionRequest{
-		Handle: fixture.handle, RuntimeID: "fc-natural-exit", SocketPath: fixture.paths.VsockSocketPath,
+		Handle: fixture.handle, RuntimeID: "fc-production-test", SocketPath: fixture.paths.VsockSocketPath,
 	})
 	if err != nil {
 		t.Fatalf("ActivateSession() error = %v", err)
@@ -63,14 +63,14 @@ func TestL5ProductionVsockBridgeNaturalExitInvalidatesGeneration(t *testing.T) {
 	if result.Transport != "vsock" || strings.Join(result.Labels, ",") != "ready,protocol_v1,runtime_bound,probe_ok" {
 		t.Fatalf("readiness = %#v, want canonical vsock labels", result)
 	}
-	req := firecracker.ProductionVsockSessionRequest{Handle: fixture.handle, RuntimeID: "fc-natural-exit"}
+	req := firecracker.ProductionVsockSessionRequest{Handle: fixture.handle, RuntimeID: "fc-production-test"}
 	if !fixture.bridge.SessionActive(req, generation) {
 		t.Fatal("new generation is not active")
 	}
 	forged := sandboxruntime.Target{
-		ID: "fc-natural-exit",
+		ID: "fc-production-test",
 		Runtime: sandboxruntime.RuntimeState{
-			RuntimeID: "fc-natural-exit",
+			RuntimeID: "fc-production-test",
 			Metadata: &sandboxruntime.RuntimeMetadata{ProcessLaunch: &sandboxruntime.RuntimeProcessLaunchMetadata{
 				ProcessID: fixture.handle.ID, ProcessIDSource: "forged-source",
 			}},
@@ -81,7 +81,7 @@ func TestL5ProductionVsockBridgeNaturalExitInvalidatesGeneration(t *testing.T) {
 	}
 	if fixture.bridge.SessionActive(firecracker.ProductionVsockSessionRequest{
 		Handle:    firecracker.ProcessHandleMetadata{ID: fixture.handle.ID, Source: "forged-source"},
-		RuntimeID: "fc-natural-exit",
+		RuntimeID: "fc-production-test",
 	}, generation) {
 		t.Fatal("forged process ID source authorized the generation")
 	}
@@ -105,7 +105,7 @@ func TestL5ProductionVsockBridgeRejectsAndDoesNotRepairUnsafeSocketMode(t *testi
 		t.Fatal(err)
 	}
 	_, _, err := fixture.bridge.ActivateSession(context.Background(), firecracker.ProductionVsockSessionRequest{
-		Handle: fixture.handle, RuntimeID: "fc-unsafe-mode", SocketPath: fixture.paths.VsockSocketPath,
+		Handle: fixture.handle, RuntimeID: "fc-production-test", SocketPath: fixture.paths.VsockSocketPath,
 	})
 	if err == nil {
 		t.Fatal("ActivateSession() error = nil, want unsafe socket rejection")
@@ -118,6 +118,16 @@ func TestL5ProductionVsockBridgeRejectsAndDoesNotRepairUnsafeSocketMode(t *testi
 		t.Fatalf("unsafe socket mode was silently repaired to %#o", info.Mode().Perm())
 	}
 	_ = listener.Close()
+}
+
+func TestL5ProductionVsockBridgeRejectsCrossRuntimePathBinding(t *testing.T) {
+	fixture := newL5ProductionBridgeFixture(t, os.Getpid())
+	_, _, err := fixture.bridge.ActivateSession(context.Background(), firecracker.ProductionVsockSessionRequest{
+		Handle: fixture.handle, RuntimeID: "fc-other-runtime", SocketPath: fixture.paths.VsockSocketPath,
+	})
+	if err == nil {
+		t.Fatal("ActivateSession() error = nil, want runtime/state binding rejection")
+	}
 }
 
 type l5ProductionBridgeFixture struct {

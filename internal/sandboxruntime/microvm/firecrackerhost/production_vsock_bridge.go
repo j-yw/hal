@@ -95,7 +95,8 @@ func (bridge *ProductionVsockBridge) ActivateSession(ctx context.Context, req fi
 	}
 	socketPath := filepath.Clean(strings.TrimSpace(req.SocketPath))
 	if socketPath == "." || !filepath.IsAbs(socketPath) ||
-		filepath.Clean(identity.paths.VsockSocketPath) != socketPath {
+		filepath.Clean(identity.paths.VsockSocketPath) != socketPath ||
+		filepath.Base(identity.paths.StateDir) != strings.TrimSpace(req.RuntimeID) {
 		return firecracker.GuestReadinessResult{}, "", errors.New("Firecracker vsock socket identity is unavailable")
 	}
 
