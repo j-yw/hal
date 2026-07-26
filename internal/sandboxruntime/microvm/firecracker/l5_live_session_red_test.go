@@ -58,6 +58,18 @@ func TestL5LiveSessionProofIsRuntimeAndGenerationScoped(t *testing.T) {
 	}
 }
 
+func TestL5ProductionVsockRejectsCallerGuestComposition(t *testing.T) {
+	controller := firecrackerController{
+		liveStart:       true,
+		productionVsock: true,
+		guestTransport:  l5NoopGuestTransport{},
+	}
+	err := controller.validateLiveBootContract()
+	if err == nil {
+		t.Fatal("validateLiveBootContract() error = nil, want ambiguous guest composition rejection")
+	}
+}
+
 type l5NoopGuestTransport struct{}
 
 func (l5NoopGuestTransport) Exec(context.Context, GuestExecRequest) (*sandboxruntime.ExecResult, error) {

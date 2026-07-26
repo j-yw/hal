@@ -270,6 +270,8 @@ func (c firecrackerController) validateLiveBootContract() error {
 		return nil
 	}
 	switch {
+	case c.productionVsock && (c.guestReadinessWaiter != nil || c.guestTransport != nil):
+		return newLiveBootContractError("productionVsock", "production vsock does not accept caller guest readiness or transport")
 	case c.processAdapter == nil:
 		return newLiveBootContractError("processAdapter", "live boot requires an injected process adapter")
 	case c.bootAcceptanceWaiter == nil:
