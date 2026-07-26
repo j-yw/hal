@@ -22,6 +22,16 @@ func TestL5ArchitectureContainsMandatoryPhaseSections(t *testing.T) {
 		"## 6. Red-first fake and live acceptance tests",
 		"## 7. Non-goals and L6 handoff",
 		"API-socket availability and UDS existence",
+		"OK <assignedHostPort>",
+		"`1..65535`",
+		`"boot_args": "console=ttyS0 reboot=k panic=1 pci=off nomodules ro"`,
+		`"is_read_only": true`,
+		`"guest_cid": 3`,
+		"fixed ext4 UUID",
+		"`-trimpath`, `-buildvcs=false`, an empty Go build ID",
+		"wrong-process, wrong-state, wrong-inode",
+		"post-cleanup reconnect rejection",
+		"non-Linux build-tagged stub",
 		"Once selected it never skips",
 		"L5 does not implement policy proxying",
 	} {
@@ -47,6 +57,8 @@ func TestL5VerificationLocksLiveSelectorAndBroadGates(t *testing.T) {
 		"make docs-check",
 		"make build",
 		"git diff --check",
+		"GOOS=darwin GOARCH=amd64",
+		"GOOS=windows GOARCH=amd64",
 		"golangci-lint run --new-from-rev 762ee1a61d2efc5bb9241a6e87409ca20d68f976 ./...",
 	} {
 		if !strings.Contains(text, required) {

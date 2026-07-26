@@ -23,6 +23,13 @@ capability honesty, redaction, cancellation, and lifecycle cleanup. They make
 no downloads, mounts, KVM calls, Firecracker launches, cloud calls, or network
 connections.
 
+The matrix includes canonical assigned-host-port range checks, partial and
+pre-acknowledgement data, wrong/stale socket rejection, state/UDS
+type-owner-mode and runtime/process/inode correlation, symlink/socket
+substitution, boot/readiness races, and post-cleanup reconnect failure. The full
+config must contain the fixed boot arguments, read-only root drive, guest CID,
+and target-owned UDS before process start.
+
 The docs and source guards require the dedicated guest identity, fixed protocol
 CID/port, exact one-request-per-connection framing, no AF_INET fallback, no raw
 path/endpoint evidence, and no cross-phase network/credential/OCI behavior.
@@ -41,12 +48,18 @@ contains versions, digests, safe IDs, pass/fail codes, and cleanup counts only;
 it contains no host paths, endpoints, machine identity, credentials, or raw
 process arguments.
 
+The asset gate verifies every offline dependency digest, clean source/tree
+identity, deterministic Go/kernel/ext4 controls, and two independent
+byte-for-byte builds. It refuses network access during the build phase.
+
 ## Focused and broad commands
 
 ```sh
 go test -count=1 -timeout=180s ./internal/sandboxruntime/microvm/assets/build ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecracker ./internal/sandboxruntime/microvm/firecrackerhost
 go test -race -count=1 -timeout=240s ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecracker ./internal/sandboxruntime/microvm/firecrackerhost
 go test -count=1 -timeout=180s ./cmd -run '^TestL5'
+GOOS=darwin GOARCH=amd64 go test -exec=true -count=1 -run '^$' ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecrackerhost
+GOOS=windows GOARCH=amd64 go test -exec=true -count=1 -run '^$' ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecrackerhost
 test "$(go env GOOS)" = linux
 go test -list '^TestL5PreparedLinuxFirecrackerVsockE2E$' -tags=l5_firecracker_vsock_integration ./internal/sandboxruntime/microvm/firecrackerhost | grep -qx 'TestL5PreparedLinuxFirecrackerVsockE2E'
 go test -race -count=1 -timeout=900s -tags=l5_firecracker_vsock_integration ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestL5PreparedLinuxFirecrackerVsockE2E$'

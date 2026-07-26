@@ -25,14 +25,17 @@ claim.
 The build entry point consumes:
 
 - a checked-in Buildroot release version and SHA-256 lock;
-- checked-in Buildroot, Linux, BusyBox, and filesystem configuration;
-- the current Hal source tree;
+- checked-in Buildroot, Linux, BusyBox, and filesystem configuration plus the
+  SHA-256 lock for every offline Buildroot source dependency;
+- a clean Hal source tree whose exact Git tree and commit identities are
+  recorded;
 - `SOURCE_DATE_EPOCH`; and
 - an empty caller-owned output directory.
 
 Network fetch is a separate explicit step. Every official download is accepted
 only after its immutable SHA-256 lock matches. The offline build consumes only
-the verified source archive and module cache, builds a static
+the verified source archive and dependency cache, refuses a missing, extra, or
+digest-mismatched dependency, builds a static
 `hal-guest-agent`, and emits:
 
 - `vmlinux`;
@@ -41,11 +44,17 @@ the verified source archive and module cache, builds a static
 - `provenance.json`; and
 - `SHA256SUMS`.
 
-The descriptor records only safe IDs, versions, protocol/features, sizes, and
-SHA-256 digests. Provenance never records source/output paths, hostnames,
-endpoints, usernames, environment values, or command lines. Two builds from
-the same source commit, locked inputs, toolchain, configuration, and
-`SOURCE_DATE_EPOCH` must emit identical kernel/rootfs bytes and descriptors.
+The guest binary uses `-trimpath`, `-buildvcs=false`, an empty Go build ID, and
+no ambient module download. The kernel build fixes `KBUILD_BUILD_USER`,
+`KBUILD_BUILD_HOST`, `KBUILD_BUILD_TIMESTAMP`, and `KBUILD_BUILD_VERSION`.
+Filesystem construction uses a fixed ext4 UUID, fixed inode count and feature
+set, sorted population order, normalized ownership/modes/mtimes, disabled lazy
+initialization, and a final read-only fsck. The descriptor records only safe
+IDs, versions, protocol/features, sizes, and SHA-256 digests. Provenance never
+records source/output paths, hostnames, endpoints, usernames, environment
+values, or command lines. The acceptance build runs twice in distinct
+directories and byte-compares `vmlinux`, `rootfs.ext4`, the descriptor,
+provenance, and checksum file.
 
 ### Vsock transport
 
@@ -58,8 +67,9 @@ directory. The host transport:
 2. writes exactly `CONNECT 1024\n`;
 3. reads one bounded newline-terminated Firecracker response without accepting
    pre-acknowledgement protocol bytes;
-4. requires the exact `OK <assignedHostPort>\n` shape with a decimal assigned
-   host port;
+4. requires the exact `OK <assignedHostPort>\n` shape where the host port is
+   canonical unsigned decimal without sign or leading zero and is in
+   `1..65535`;
 5. writes one bounded guest-agent JSON request;
 6. half-closes the write side;
 7. reads one bounded JSON response to EOF; and
@@ -77,10 +87,49 @@ remain host-process facts only.
 
 ### Live runtime and failure codes
 
-Start order is render state, start Firecracker, accept the API socket, complete
-the exact vsock readiness handshake, then return a ready target. Failure before
+The pre-start Firecracker full-config file contains:
+
+```json
+{
+  "boot-source": {
+    "kernel_image_path": "<private>",
+    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off nomodules ro"
+  },
+  "drives": [{
+    "drive_id": "rootfs",
+    "path_on_host": "<private>",
+    "is_root_device": true,
+    "is_read_only": true
+  }],
+  "vsock": {
+    "guest_cid": 3,
+    "uds_path": "<target-owned-private-state>/guest.vsock"
+  }
+}
+```
+
+Guest init mounts `/workspace` as a size-bounded tmpfs before constructing the
+L4 backend, so the immutable root drive remains read-only and `/workspace` is
+a distinct writable filesystem. The fixed boot arguments and vsock device must
+be present in the config before Firecracker starts; no post-start API mutation
+is accepted as equivalent proof.
+
+Start order is verify private state, render state, start Firecracker, accept the
+API socket, correlate the process handle/runtime/state identity, complete the
+exact vsock readiness handshake, then return a ready target. Failure before
 readiness triggers whole-runtime cleanup. Exec and copy require the target's
 active readiness proof and the same runtime identity.
+
+The state directory is opened descriptor-relatively, must be owned by the
+current effective UID, have mode `0700`, and be a real directory rather than a
+symlink. The vsock path is lstat-checked without following links. Before a new
+start, a present symlink, non-socket, wrong-owner socket, group/other-accessible
+socket, or socket without the exact runtime ownership marker fails closed. A
+stale socket may be removed only when its type, UID, mode, parent descriptor,
+runtime ID, prior process handle, and terminal lifecycle record all correlate.
+After Firecracker creates the socket, the same checks run again before dial.
+A socket swap between verification and dial is detected by comparing the
+pinned parent plus pre/post device/inode identity; readiness is rejected.
 
 L5 reuses L4 protocol failures and the existing sanitized microVM operation
 codes. New construction failures use fixed safe codes:
@@ -149,8 +198,10 @@ proof.
 
 Worker microVM operations remain lifecycle-only before a target is ready.
 Exec/copy-in/copy-out are projected only from live target readiness bound to
-the same runtime; configured image/endpoint/device metadata alone never
-upgrades capabilities.
+the same runtime, accepted process handle, verified state directory, and live
+bridge generation; configured image/endpoint/device metadata alone never
+upgrades capabilities. A readiness result from a prior process, runtime,
+state directory, socket inode, or bridge generation is stale and is ignored.
 
 ## 4. Redaction and containment rules
 
@@ -161,7 +212,7 @@ upgrades capabilities.
 - Frames are bounded before allocation. Handshake lines are ASCII, newline
   terminated, and at most 64 bytes.
 - The guest agent runs as a dedicated non-root UID/GID with `/workspace` on a
-  distinct writable filesystem and the image root read-only after boot setup.
+  distinct size-bounded tmpfs and the image root drive read-only.
 - The guest process receives a fixed environment, fixed executable roots, no
   ambient host data, no network configuration, and no credentials.
 - Copy paths retain L4 descriptor-relative `openat2` containment. Vsock framing
@@ -191,6 +242,8 @@ Guest exec timeout/cancel first exercises L4 process-group cleanup. Whole-VM
 teardown then proves that even a deliberately session-escaping guest process
 cannot survive VM deletion. Repeated stop/delete is idempotent. Cleanup failure
 is joined with the primary error and cannot be reported as success.
+After cleanup, a new connection to the former bridge must fail and no stale
+readiness/capability proof may survive.
 
 ## 6. Red-first fake and live acceptance tests
 
@@ -203,13 +256,17 @@ The first red commit locks:
   and connection cleanup;
 - guest AF_VSOCK listener bounds, one-frame dispatch, cancellation, and no
   AF_INET fallback;
+- Linux AF_VSOCK construction plus a non-Linux build-tagged stub that fails
+  closed, with Darwin and Windows cross-compile gates;
 - readiness identity correlation and lifecycle-only behavior for configured,
-  stale, mismatched, malformed, or not-ready evidence;
+  stale, wrong-process, wrong-state, wrong-inode, mismatched, malformed, or
+  not-ready evidence, including boot/readiness races;
 - asset input digest verification, safe provenance, reproducibility contract,
   guest binary/config presence, and default-test no-download/no-build guards;
 - public error redaction with path, endpoint, token, argument, and payload
   canaries; and
-- start-failure plus stop/delete process/socket/state cleanup.
+- start-failure plus stop/delete process/socket/state cleanup;
+- symlink/socket substitution and post-cleanup reconnect rejection.
 
 The prepared-Linux test is selected only by `l5_firecracker_vsock_integration`.
 Once selected it never skips. It requires Linux x86_64, writable KVM,
@@ -228,6 +285,13 @@ It boots the produced image and proves:
 Missing KVM, build dependencies, Firecracker, assets, or required kernel/vsock
 behavior is a test failure, never a skip or pass. Default tests remain fake-safe
 and make no downloads, KVM calls, mounts, listeners, or process launches.
+
+Cross-platform compile-only gates are:
+
+```sh
+GOOS=darwin GOARCH=amd64 go test -exec=true -count=1 -run '^$' ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecrackerhost
+GOOS=windows GOARCH=amd64 go test -exec=true -count=1 -run '^$' ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecrackerhost
+```
 
 ## 7. Non-goals and L6 handoff
 
