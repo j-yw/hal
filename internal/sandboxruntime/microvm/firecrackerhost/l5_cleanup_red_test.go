@@ -61,6 +61,25 @@ func TestL5CanceledCallerCannotPreventOwnedCleanup(t *testing.T) {
 	}
 }
 
+func TestL5FailedKillDoesNotMarkProcessTerminal(t *testing.T) {
+	process := &l5FailedStopProcess{}
+	manager := NewProcessLifecycleManager(
+		l5SingleProcessRunner{process: process},
+		WithProcessLifecycleTerminationGrace(time.Millisecond),
+		WithProcessLifecycleCleanupTimeout(20*time.Millisecond),
+	)
+	handle, err := manager.StartProcess(context.Background(), firecracker.ProcessRunnerStartRequest{Executable: "firecracker"})
+	if err != nil {
+		t.Fatalf("StartProcess() error = %v", err)
+	}
+	if err := manager.StopLiveProcess(context.Background(), firecracker.LiveProcessRequest{Handle: handle}); err == nil {
+		t.Fatal("StopLiveProcess() error = nil, want failed termination")
+	}
+	if _, _, active := manager.lookupActiveProcess(handle); !active {
+		t.Fatal("failed kill/wait incorrectly marked the process terminal")
+	}
+}
+
 type l5SingleProcessRunner struct {
 	process HostProcess
 }
@@ -79,6 +98,18 @@ type l5EscalationProcess struct {
 	killed      bool
 }
 
+type l5FailedStopProcess struct{}
+
+func (*l5FailedStopProcess) Signal(context.Context, ProcessSignal) error {
+	return errors.New("term failed")
+}
+func (*l5FailedStopProcess) Kill(context.Context) error {
+	return errors.New("kill failed")
+}
+func (*l5FailedStopProcess) Wait(context.Context) error {
+	return errors.New("wait must not prove reap")
+}
+
 func (process *l5EscalationProcess) Signal(context.Context, ProcessSignal) error {
 	process.mu.Lock()
 	process.signalCalls++
@@ -90,6 +121,11 @@ func (process *l5EscalationProcess) Kill(context.Context) error {
 	process.mu.Lock()
 	process.killCalls++
 	process.killed = true
+	select {
+	case <-process.killWait:
+	default:
+		close(process.killWait)
+	}
 	process.mu.Unlock()
 	return nil
 }

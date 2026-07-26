@@ -99,7 +99,7 @@ func TestL5FirecrackerVsockTransportRejectsNoncanonicalAckAndPreAckData(t *testi
 				Operation: guestagent.OperationReadiness,
 				Encoded:   []byte(`{}`),
 			})
-			if !guestagent.IsProtocolErrorCode(err, guestagent.ErrorCodeTransportFailure) {
+			if !l5ProtocolErrorCode(err, guestagent.ErrorCodeTransportFailure) {
 				t.Fatalf("RoundTrip() error = %v, want transport_failure", err)
 			}
 		})
@@ -136,7 +136,7 @@ func TestL5FirecrackerVsockTransportAckEOFAndTimeoutFailClosed(t *testing.T) {
 				Operation: guestagent.OperationReadiness,
 				Encoded:   []byte(`{}`),
 			})
-			if !guestagent.IsProtocolErrorCode(err, guestagent.ErrorCodeTransportFailure) {
+			if !l5ProtocolErrorCode(err, guestagent.ErrorCodeTransportFailure) {
 				t.Fatalf("RoundTrip() error = %v, want transport_failure", err)
 			}
 		})
@@ -164,7 +164,7 @@ func TestL5FirecrackerVsockTransportRejectsOversizedResponse(t *testing.T) {
 		Encoded:          []byte(`{}`),
 		MaxResponseBytes: 8,
 	})
-	if !guestagent.IsProtocolErrorCode(err, guestagent.ErrorCodeOversizedResponse) {
+	if !l5ProtocolErrorCode(err, guestagent.ErrorCodeOversizedResponse) {
 		t.Fatalf("RoundTrip() error = %v, want oversized_response", err)
 	}
 }
@@ -230,6 +230,71 @@ func TestL5FirecrackerVsockTransportCancellationClosesHandshake(t *testing.T) {
 	}
 }
 
+func TestL5FirecrackerVsockHandshakeDeadlineDoesNotCapValidOperation(t *testing.T) {
+	socketPath := l5StartFakeVsockBridge(t, func(conn net.Conn) {
+		reader := bufio.NewReader(conn)
+		_, _ = reader.ReadString('\n')
+		_, _ = io.WriteString(conn, "OK 1073741824\n")
+		_, _ = io.ReadAll(reader)
+		time.Sleep(75 * time.Millisecond)
+		_, _ = io.WriteString(conn, `{}`)
+	})
+	transport, err := newFirecrackerVsockTransport(firecrackerVsockTransportOptions{
+		socketPath:       socketPath,
+		guestPort:        L5GuestAgentPort,
+		expectedPeerPID:  os.Getpid(),
+		handshakeTimeout: 20 * time.Millisecond,
+		operationTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("newFirecrackerVsockTransport() error = %v", err)
+	}
+	if _, err := transport.RoundTrip(context.Background(), guestagent.TransportRequest{
+		Operation: guestagent.OperationExec,
+		Encoded:   []byte(`{}`),
+	}); err != nil {
+		t.Fatalf("RoundTrip() error = %v, operation should outlive handshake deadline", err)
+	}
+}
+
+func TestL5FirecrackerVsockSessionCloseTerminatesActiveConnection(t *testing.T) {
+	handshakeDone := make(chan struct{})
+	releaseServer := make(chan struct{})
+	defer close(releaseServer)
+	socketPath := l5StartFakeVsockBridge(t, func(conn net.Conn) {
+		reader := bufio.NewReader(conn)
+		_, _ = reader.ReadString('\n')
+		_, _ = io.WriteString(conn, "OK 1073741824\n")
+		_, _ = io.ReadAll(reader)
+		close(handshakeDone)
+		<-releaseServer
+	})
+	transport, err := newFirecrackerVsockTransport(firecrackerVsockTransportOptions{
+		socketPath: socketPath, guestPort: L5GuestAgentPort, expectedPeerPID: os.Getpid(),
+		operationTimeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := transport.RoundTrip(context.Background(), guestagent.TransportRequest{
+			Operation: guestagent.OperationExec, Encoded: []byte(`{}`),
+		})
+		done <- err
+	}()
+	<-handshakeDone
+	transport.Close()
+	select {
+	case err := <-done:
+		if !l5ProtocolErrorCode(err, guestagent.ErrorCodeTransportFailure) {
+			t.Fatalf("RoundTrip() error = %v, want transport failure after session close", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session close did not terminate active connection")
+	}
+}
+
 func TestL5FirecrackerVsockTransportRejectsUnsafeSocketMode(t *testing.T) {
 	socketPath := l5StartFakeVsockBridge(t, func(net.Conn) {})
 	if err := os.Chmod(socketPath, 0o666); err != nil {
@@ -250,7 +315,11 @@ func TestL5FirecrackerVsockTransportRejectsUnsafeSocketMode(t *testing.T) {
 
 func TestL5FirecrackerVsockTransportRejectsWrongPeerProcess(t *testing.T) {
 	socketPath := l5StartFakeVsockBridge(t, func(conn net.Conn) {
-		t.Error("bridge accepted request despite wrong expected peer PID")
+		_ = conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		data := make([]byte, 1)
+		if n, _ := conn.Read(data); n != 0 {
+			t.Errorf("bridge received %d request bytes despite wrong expected peer PID", n)
+		}
 	})
 	transport, err := newFirecrackerVsockTransport(firecrackerVsockTransportOptions{
 		socketPath:      socketPath,
@@ -264,9 +333,14 @@ func TestL5FirecrackerVsockTransportRejectsWrongPeerProcess(t *testing.T) {
 		Operation: guestagent.OperationReadiness,
 		Encoded:   []byte(`{}`),
 	})
-	if !guestagent.IsProtocolErrorCode(err, guestagent.ErrorCodeTransportFailure) {
+	if !l5ProtocolErrorCode(err, guestagent.ErrorCodeTransportFailure) {
 		t.Fatalf("RoundTrip() error = %v, want transport_failure", err)
 	}
+}
+
+func l5ProtocolErrorCode(err error, code guestagent.ErrorCode) bool {
+	var protocolErr *guestagent.ProtocolError
+	return errors.As(err, &protocolErr) && protocolErr.Code == code
 }
 
 func l5StartFakeVsockBridge(t *testing.T, handle func(net.Conn)) string {
@@ -285,6 +359,13 @@ func l5StartFakeVsockBridge(t *testing.T, handle func(net.Conn)) string {
 		_ = listener.Close()
 		t.Fatalf("chmod socket: %v", err)
 	}
+	info, err := os.Lstat(socketPath)
+	if err != nil {
+		t.Fatalf("lstat socket: %v", err)
+	}
+	if err := validateVsockSocketOwnership(socketPath, info); err != nil {
+		t.Fatalf("validate socket ownership: %v (dir mode=%#o socket mode=%#o euid=%d dir=%#v)", err, mustL5Mode(t, dir), info.Mode().Perm(), os.Geteuid(), mustL5Sys(t, dir))
+	}
 	t.Cleanup(func() { _ = listener.Close() })
 	go func() {
 		conn, err := listener.Accept()
@@ -295,4 +376,22 @@ func l5StartFakeVsockBridge(t *testing.T, handle func(net.Conn)) string {
 		handle(conn)
 	}()
 	return socketPath
+}
+
+func mustL5Sys(t *testing.T, path string) any {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Sys()
+}
+
+func mustL5Mode(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Mode().Perm()
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -50,7 +49,7 @@ func (OSExecProcessRunner) StartHostProcess(ctx context.Context, req firecracker
 		return nil, err
 	}
 
-	cmd := exec.CommandContext(ctx, executable, args...)
+	cmd := exec.Command(executable, args...)
 	cmd.Env = []string{}
 	cmd.Stdin = nil
 	cmd.Stdout = io.Discard
@@ -145,7 +144,11 @@ func (process *osExecHostProcess) Signal(ctx context.Context, signal ProcessSign
 	if process.completed() {
 		return nil
 	}
-	if err := process.cmd.Process.Signal(os.Interrupt); err != nil && !process.completed() {
+	signalValue, err := processTerminationSignal()
+	if err != nil {
+		return err
+	}
+	if err := process.cmd.Process.Signal(signalValue); err != nil && !process.completed() {
 		return err
 	}
 	process.markTerminationRequested()
@@ -186,4 +189,18 @@ func (process *osExecHostProcess) completed() bool {
 	default:
 		return false
 	}
+}
+
+func (process *osExecHostProcess) HostPID() int {
+	if process == nil || process.cmd == nil || process.cmd.Process == nil {
+		return 0
+	}
+	return process.cmd.Process.Pid
+}
+
+func (process *osExecHostProcess) Done() <-chan struct{} {
+	if process == nil {
+		return nil
+	}
+	return process.done
 }

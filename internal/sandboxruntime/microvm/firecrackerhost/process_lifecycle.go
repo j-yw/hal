@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"
@@ -24,8 +25,10 @@ const (
 	processOperationKill    = "kill"
 	processOperationCleanup = "cleanup"
 
-	maxProcessErrorDetailBytes  = 512
-	maxCleanupStateDirNameBytes = 64
+	maxProcessErrorDetailBytes     = 512
+	maxCleanupStateDirNameBytes    = 64
+	defaultProcessTerminationGrace = 5 * time.Second
+	defaultProcessCleanupTimeout   = 30 * time.Second
 )
 
 var (
@@ -62,6 +65,11 @@ type HostProcess interface {
 	Kill(context.Context) error
 }
 
+type hostProcessIdentity interface {
+	HostPID() int
+	Done() <-chan struct{}
+}
+
 // HostProcessRunner starts a host process from the raw Firecracker runner
 // request. Tests can inject fakes; the real runner is added by a later phase.
 type HostProcessRunner interface {
@@ -84,6 +92,28 @@ func WithProcessLifecycleCleanupFilesystem(filesystem CleanupFilesystem) Process
 		if filesystem != nil {
 			manager.cleanupFS = filesystem
 		}
+	}
+}
+
+func WithProcessLifecycleTerminationGrace(value time.Duration) ProcessLifecycleOption {
+	return func(manager *ProcessLifecycleManager) {
+		if value > 0 {
+			manager.terminationGrace = value
+		}
+	}
+}
+
+func WithProcessLifecycleCleanupTimeout(value time.Duration) ProcessLifecycleOption {
+	return func(manager *ProcessLifecycleManager) {
+		if value > 0 {
+			manager.cleanupTimeout = value
+		}
+	}
+}
+
+func withProcessLifecycleProductionVsock() ProcessLifecycleOption {
+	return func(manager *ProcessLifecycleManager) {
+		manager.productionVsock = true
 	}
 }
 
@@ -117,8 +147,11 @@ func (err *ProcessLifecycleError) Unwrap() error {
 // ProcessLifecycleManager implements Firecracker process start and live process
 // cleanup using an injected HostProcessRunner and opaque in-memory handles.
 type ProcessLifecycleManager struct {
-	runner    HostProcessRunner
-	cleanupFS CleanupFilesystem
+	runner           HostProcessRunner
+	cleanupFS        CleanupFilesystem
+	terminationGrace time.Duration
+	cleanupTimeout   time.Duration
+	productionVsock  bool
 
 	mu        sync.Mutex
 	nextID    uint64
@@ -137,9 +170,11 @@ type trackedProcess struct {
 // a runner, StartProcess returns ErrDependencyNotConfigured.
 func NewProcessLifecycleManager(runner HostProcessRunner, options ...ProcessLifecycleOption) *ProcessLifecycleManager {
 	manager := &ProcessLifecycleManager{
-		runner:    runner,
-		cleanupFS: osCleanupFilesystem{},
-		processes: map[string]*trackedProcess{},
+		runner:           runner,
+		cleanupFS:        osCleanupFilesystem{},
+		processes:        map[string]*trackedProcess{},
+		terminationGrace: defaultProcessTerminationGrace,
+		cleanupTimeout:   defaultProcessCleanupTimeout,
 	}
 	for _, option := range options {
 		if option != nil {
@@ -168,7 +203,15 @@ func (manager *ProcessLifecycleManager) StartProcess(ctx context.Context, req fi
 
 	paths, hasPaths := trustedStartPathPlan(req)
 	if hasPaths {
+		if manager.productionVsock {
+			if err := validatePrivateFirecrackerStateDir(paths.StateDir); err != nil {
+				return firecracker.ProcessHandleMetadata{}, newProcessLifecycleError(processOperationStart, ErrUnsafeCleanupPath)
+			}
+		}
 		if err := manager.removeStaleAPISocketBeforeStart(paths); err != nil {
+			return firecracker.ProcessHandleMetadata{}, err
+		}
+		if err := manager.removeOwnedStaleVsockBeforeStart(paths); err != nil {
 			return firecracker.ProcessHandleMetadata{}, err
 		}
 	}
@@ -212,15 +255,51 @@ func (manager *ProcessLifecycleManager) StopLiveProcess(ctx context.Context, req
 	if !ok {
 		return nil
 	}
-	ctx = nonNilContext(ctx)
-	if err := process.Signal(ctx, ProcessSignalTerminate); err != nil {
-		return newProcessLifecycleError(processOperationSignal, err)
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), manager.cleanupTimeout)
+	defer cancel()
+	var failures []error
+	reaped := false
+	if err := process.Signal(cleanupCtx, ProcessSignalTerminate); err != nil {
+		failures = append(failures, newProcessLifecycleError(processOperationSignal, err))
+	} else {
+		graceCtx, graceCancel := context.WithTimeout(cleanupCtx, manager.terminationGrace)
+		waitErr := process.Wait(graceCtx)
+		graceCancel()
+		if waitErr == nil {
+			manager.markProcessFinished(id)
+			return nil
+		}
+		if !errors.Is(waitErr, context.DeadlineExceeded) {
+			failures = append(failures, newProcessLifecycleError(processOperationWait, waitErr))
+		}
 	}
-	if err := process.Wait(ctx); err != nil {
-		return newProcessLifecycleError(processOperationWait, err)
+	if err := process.Kill(cleanupCtx); err != nil {
+		failures = append(failures, newProcessLifecycleError(processOperationKill, err))
+	} else if err := process.Wait(cleanupCtx); err != nil {
+		failures = append(failures, newProcessLifecycleError(processOperationWait, err))
+	} else {
+		reaped = true
 	}
-	manager.markProcessFinished(id)
-	return nil
+	if !reaped {
+		reaped = hostProcessExitObserved(process)
+	}
+	if reaped {
+		manager.markProcessFinished(id)
+	}
+	return errors.Join(failures...)
+}
+
+func hostProcessExitObserved(process HostProcess) bool {
+	identity, ok := process.(hostProcessIdentity)
+	if !ok || identity.Done() == nil {
+		return false
+	}
+	select {
+	case <-identity.Done():
+		return true
+	default:
+		return false
+	}
 }
 
 // DeleteLiveProcess force-stops a tracked live process, waits for it to finish,
@@ -252,11 +331,12 @@ func (manager *ProcessLifecycleManager) killAndWait(ctx context.Context, handle 
 		}
 		return nil
 	}
-	ctx = nonNilContext(ctx)
-	if err := process.Kill(ctx); err != nil {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), manager.cleanupTimeout)
+	defer cancel()
+	if err := process.Kill(cleanupCtx); err != nil {
 		return newProcessLifecycleError(processOperationKill, err)
 	}
-	if err := process.Wait(ctx); err != nil {
+	if err := process.Wait(cleanupCtx); err != nil {
 		return newProcessLifecycleError(processOperationWait, err)
 	}
 	if forget {
@@ -353,6 +433,39 @@ func (manager *ProcessLifecycleManager) lookupActiveProcess(handle firecracker.P
 	return tracked.process, id, true
 }
 
+type liveProcessIdentity struct {
+	pid    int
+	done   <-chan struct{}
+	handle firecracker.ProcessHandleMetadata
+	paths  firecracker.PathPlan
+}
+
+func (manager *ProcessLifecycleManager) resolveLiveProcessIdentity(handle firecracker.ProcessHandleMetadata) (liveProcessIdentity, error) {
+	process, id, ok := manager.lookupActiveProcess(handle)
+	if !ok {
+		return liveProcessIdentity{}, errors.New("Firecracker process identity is unavailable")
+	}
+	identity, ok := process.(hostProcessIdentity)
+	if !ok || identity.HostPID() <= 0 || identity.Done() == nil {
+		return liveProcessIdentity{}, errors.New("Firecracker process identity is unavailable")
+	}
+	snapshot, ok := manager.lookupProcessSnapshot(handle)
+	if !ok {
+		return liveProcessIdentity{}, errors.New("Firecracker process identity is unavailable")
+	}
+	select {
+	case <-identity.Done():
+		manager.markProcessFinished(id)
+		return liveProcessIdentity{}, errors.New("Firecracker process is not active")
+	default:
+	}
+	return liveProcessIdentity{
+		pid: identity.HostPID(), done: identity.Done(),
+		handle: firecracker.ProcessHandleMetadata{ID: id, Source: processHandleSource},
+		paths:  snapshot.paths,
+	}, nil
+}
+
 func (manager *ProcessLifecycleManager) markProcessFinished(id string) {
 	if manager == nil || strings.TrimSpace(id) == "" {
 		return
@@ -433,6 +546,55 @@ func (manager *ProcessLifecycleManager) removeStaleAPISocketBeforeStart(plan fir
 	return nil
 }
 
+func (manager *ProcessLifecycleManager) removeOwnedStaleVsockBeforeStart(plan firecracker.PathPlan) error {
+	filesystem := manager.cleanupFilesystem()
+	info, err := filesystem.Lstat(plan.VsockSocketPath)
+	switch {
+	case os.IsNotExist(err):
+		return nil
+	case err != nil:
+		return newProcessLifecycleError(processOperationCleanup, fmt.Errorf("vsock socket inspection failed: %w", err))
+	case info == nil || info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm()&0o077 != 0:
+		return newProcessLifecycleError(processOperationCleanup, fmt.Errorf("vsock socket path is invalid: %w", ErrUnsafeCleanupPath))
+	}
+	if err := validateVsockSocketOwnership(plan.VsockSocketPath, info); err != nil {
+		return newProcessLifecycleError(processOperationCleanup, fmt.Errorf("vsock socket ownership is invalid: %w", ErrUnsafeCleanupPath))
+	}
+	if !manager.hasTerminalProcessForPaths(plan) {
+		return newProcessLifecycleError(processOperationCleanup, fmt.Errorf("vsock socket has no terminal owner: %w", ErrUnsafeCleanupPath))
+	}
+	if err := filesystem.RemoveAll(plan.VsockSocketPath); err != nil {
+		return newProcessLifecycleError(processOperationCleanup, fmt.Errorf("stale vsock socket removal failed: %w", err))
+	}
+	return nil
+}
+
+func (manager *ProcessLifecycleManager) hasTerminalProcessForPaths(plan firecracker.PathPlan) bool {
+	if manager == nil {
+		return false
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	for _, tracked := range manager.processes {
+		if tracked == nil || !tracked.hasPaths || !cleanupPathPlansEqual(tracked.paths, plan) {
+			continue
+		}
+		if !tracked.finished {
+			if identity, ok := tracked.process.(hostProcessIdentity); ok && identity.Done() != nil {
+				select {
+				case <-identity.Done():
+					tracked.finished = true
+				default:
+				}
+			}
+		}
+		if tracked.finished {
+			return true
+		}
+	}
+	return false
+}
+
 func (manager *ProcessLifecycleManager) cleanupFilesystem() CleanupFilesystem {
 	if manager == nil || manager.cleanupFS == nil {
 		return osCleanupFilesystem{}
@@ -465,13 +627,22 @@ func validatedCleanupPathPlan(paths firecracker.PathPlan) (firecracker.PathPlan,
 	if err != nil {
 		return firecracker.PathPlan{}, false, err
 	}
+	rawVsockSocketPath := paths.VsockSocketPath
+	if strings.TrimSpace(rawVsockSocketPath) == "" {
+		rawVsockSocketPath = filepath.Join(stateDir, "guest.vsock")
+	}
+	vsockSocketPath, err := cleanCleanupSupportPath(rawVsockSocketPath, stateDir, "vsock socket", "guest.vsock")
+	if err != nil {
+		return firecracker.PathPlan{}, false, err
+	}
 
 	return firecracker.PathPlan{
-		StateDir:      stateDir,
-		APISocketPath: apiSocketPath,
-		ConfigPath:    configPath,
-		LogPath:       logPath,
-		MetricsPath:   metricsPath,
+		StateDir:        stateDir,
+		APISocketPath:   apiSocketPath,
+		ConfigPath:      configPath,
+		LogPath:         logPath,
+		MetricsPath:     metricsPath,
+		VsockSocketPath: vsockSocketPath,
 	}, true, nil
 }
 
@@ -493,12 +664,14 @@ func trustedStartPathPlan(req firecracker.ProcessRunnerStartRequest) (firecracke
 		return firecracker.PathPlan{}, false
 	}
 	stateDir := filepath.Dir(configPath)
+	vsockSocketPath := filepath.Join(stateDir, "guest.vsock")
 	plan, removeState, err := validatedCleanupPathPlan(firecracker.PathPlan{
-		StateDir:      stateDir,
-		APISocketPath: apiSocketPath,
-		ConfigPath:    configPath,
-		LogPath:       logPath,
-		MetricsPath:   metricsPath,
+		StateDir:        stateDir,
+		APISocketPath:   apiSocketPath,
+		ConfigPath:      configPath,
+		LogPath:         logPath,
+		MetricsPath:     metricsPath,
+		VsockSocketPath: vsockSocketPath,
 	})
 	if err != nil || !removeState {
 		return firecracker.PathPlan{}, false
@@ -520,7 +693,8 @@ func cleanupPathPlansEqual(a, b firecracker.PathPlan) bool {
 		filepath.Clean(a.APISocketPath) == filepath.Clean(b.APISocketPath) &&
 		filepath.Clean(a.ConfigPath) == filepath.Clean(b.ConfigPath) &&
 		filepath.Clean(a.LogPath) == filepath.Clean(b.LogPath) &&
-		filepath.Clean(a.MetricsPath) == filepath.Clean(b.MetricsPath)
+		filepath.Clean(a.MetricsPath) == filepath.Clean(b.MetricsPath) &&
+		filepath.Clean(a.VsockSocketPath) == filepath.Clean(b.VsockSocketPath)
 }
 
 func cleanupPathPlanEmpty(paths firecracker.PathPlan) bool {
@@ -528,7 +702,8 @@ func cleanupPathPlanEmpty(paths firecracker.PathPlan) bool {
 		strings.TrimSpace(paths.APISocketPath) == "" &&
 		strings.TrimSpace(paths.ConfigPath) == "" &&
 		strings.TrimSpace(paths.LogPath) == "" &&
-		strings.TrimSpace(paths.MetricsPath) == ""
+		strings.TrimSpace(paths.MetricsPath) == "" &&
+		strings.TrimSpace(paths.VsockSocketPath) == ""
 }
 
 func cleanCleanupStateDir(path string) (string, error) {
