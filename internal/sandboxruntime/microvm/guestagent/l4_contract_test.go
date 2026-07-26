@@ -317,6 +317,21 @@ func TestL4ClientRejectsPaddedPayloadEncoding(t *testing.T) {
 	}
 }
 
+func TestL4ClientRejectsNonCanonicalBase64Data(t *testing.T) {
+	for _, data := range []string{"Z\nA==", "ZE=="} {
+		t.Run(fmt.Sprintf("%q", data), func(t *testing.T) {
+			response := `{"protocolVersion":"guest-agent-v1","operation":"exec","exitCode":0,` +
+				`"stdout":{"sizeBytes":1,"maxBytes":1024,"encoding":"base64","data":` +
+				fmt.Sprintf("%q", data) + `},"stderr":{"maxBytes":1024}}`
+			client := l4ReadinessClient(t, []byte(response))
+			_, err := client.Exec(context.Background(), validExecRequest())
+			if !l4ProtocolErrorCode(err, ErrorCodeInvalidMetadata) {
+				t.Fatalf("Exec() error = %v, want %s", err, ErrorCodeInvalidMetadata)
+			}
+		})
+	}
+}
+
 func TestL4ClientRejectsPaddedProtocolVersion(t *testing.T) {
 	client := l4ReadinessClient(
 		t,
