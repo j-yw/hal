@@ -1,0 +1,264 @@
+# Sandbox Runtime v2 L5 Firecracker Guest Image and Vsock Architecture
+
+## Authority and phase boundary
+
+This note refines issue #49 phase L5 under locked comments `5068151561`,
+`5068157402`, and `5068162708`. The Linux completion architecture and the L4
+guest-agent architecture remain authoritative. The exact L5 base is
+`762ee1a61d2efc5bb9241a6e87409ca20d68f976`.
+
+L5 owns a reproducible Linux guest kernel/rootfs containing the L4 guest-agent
+server, the guest AF_VSOCK listener, the Firecracker host UDS bridge and
+framing, machine vsock configuration, readiness evidence bound to one live
+runtime, proof-gated exec/copy capability projection, and a prepared-Linux KVM
+end-to-end test.
+
+L5 does not implement policy proxying, firewall or network topology, credential
+delivery, OCI acquisition, default runtime selection, or strict secure-default
+composition. It makes no network, credential, template-trust, or strict-mode
+claim.
+
+## 1. Inputs, outputs, states, and failure codes
+
+### Guest asset build
+
+The build entry point consumes:
+
+- a checked-in Buildroot release version and SHA-256 lock;
+- checked-in Buildroot, Linux, BusyBox, and filesystem configuration;
+- the current Hal source tree;
+- `SOURCE_DATE_EPOCH`; and
+- an empty caller-owned output directory.
+
+Network fetch is a separate explicit step. Every official download is accepted
+only after its immutable SHA-256 lock matches. The offline build consumes only
+the verified source archive and module cache, builds a static
+`hal-guest-agent`, and emits:
+
+- `vmlinux`;
+- `rootfs.ext4`;
+- `launch-descriptor.json`;
+- `provenance.json`; and
+- `SHA256SUMS`.
+
+The descriptor records only safe IDs, versions, protocol/features, sizes, and
+SHA-256 digests. Provenance never records source/output paths, hostnames,
+endpoints, usernames, environment values, or command lines. Two builds from
+the same source commit, locked inputs, toolchain, configuration, and
+`SOURCE_DATE_EPOCH` must emit identical kernel/rootfs bytes and descriptors.
+
+### Vsock transport
+
+The fixed production guest CID is `3` and the fixed guest-agent port is
+`1024`. These are protocol constants, not caller-controlled endpoints.
+Firecracker receives a target-owned UDS path inside the private runtime state
+directory. The host transport:
+
+1. opens one AF_UNIX stream per request with a bounded dial timeout;
+2. writes exactly `CONNECT 1024\n`;
+3. reads one bounded newline-terminated Firecracker response without accepting
+   pre-acknowledgement protocol bytes;
+4. requires the exact `OK <assignedHostPort>\n` shape with a decimal assigned
+   host port;
+5. writes one bounded guest-agent JSON request;
+6. half-closes the write side;
+7. reads one bounded JSON response to EOF; and
+8. closes the connection on success, cancellation, timeout, or failure.
+
+The guest transport accepts AF_VSOCK streams only for port `1024`, applies
+L4 request/response limits before allocation/write, dispatches one request per
+connection, half-closes after the response, and closes every accepted
+connection. It never accepts AF_INET, exposes a shell, or forwards host paths.
+
+The host bridge states are `configured`, `handshaking`, `active`, `failed`, and
+`closed`. Only an exact `guest-agent-v1` readiness response from the running
+runtime moves proof to `active`. API-socket availability and UDS existence
+remain host-process facts only.
+
+### Live runtime and failure codes
+
+Start order is render state, start Firecracker, accept the API socket, complete
+the exact vsock readiness handshake, then return a ready target. Failure before
+readiness triggers whole-runtime cleanup. Exec and copy require the target's
+active readiness proof and the same runtime identity.
+
+L5 reuses L4 protocol failures and the existing sanitized microVM operation
+codes. New construction failures use fixed safe codes:
+
+- `asset_lock_mismatch`;
+- `asset_build_failed`;
+- `vsock_configuration_invalid`;
+- `vsock_handshake_failed`;
+- `vsock_response_invalid`;
+- `guest_readiness_failed`; and
+- `runtime_teardown_failed`.
+
+Raw paths, socket errors, Firecracker arguments, guest output, and kernel logs
+never enter these public summaries.
+
+## 2. Package ownership and import boundaries
+
+```text
+cmd/hal-guest-agent
+  minimal Linux guest entry point; no command tree or host runtime imports
+
+internal/sandboxruntime/microvm/guestagent/vsock
+  guest AF_VSOCK listener implementing server.Transport
+
+internal/sandboxruntime/microvm/firecrackerhost
+  host UDS CONNECT handshake, bounded protocol transport, readiness composition
+
+internal/sandboxruntime/microvm/firecracker
+  deterministic vsock device payload and target-owned socket path rendering
+
+internal/sandboxruntime/microvm/assets/build
+  safe build manifest/provenance parsing and digest verification only
+
+tools/microvm/l5
+  pinned fetch/build scripts and Buildroot configuration
+```
+
+The guest vsock package may import the L4 server boundary, the parent protocol,
+standard-library packages, and `golang.org/x/sys/unix`. It must not import
+`cmd`, worker, execution, workspace, factory, provider, Firecracker host,
+network policy, credential, OCI, cloud, HTTP, or rootless Podman packages.
+
+The Firecracker contract package remains host-adapter independent. The asset
+build metadata package is data/digest only and does not download, execute
+tools, mount filesystems, or start VMs. Build scripts never run from default
+tests or default Hal execution.
+
+## 3. Durable and machine-contract schema changes
+
+L5 does not change manifests, factory records, command JSON versions, worker
+protocol versions, or strict-security schemas.
+
+The existing launch descriptor carries kernel/rootfs SHA-256 locks and guest
+agent metadata (`guest-agent-v1`, `readiness`, `exec`, `copy_in`, `copy_out`).
+The build provenance schema is `hal-microvm-image-v1` with safe fields only:
+schema version, source revision, source-date epoch, Buildroot/Linux/BusyBox/Go
+versions, architecture, guest-agent protocol/features, and output
+digest/size records.
+
+Runtime readiness continues to use
+`RuntimeGuestReadinessMetadata`. L5 permits only sanitized
+`state=ready`, `transport=vsock`, and fixed labels
+`protocol_v1`, `runtime_bound`, and `probe_ok` after the active handshake.
+No UDS path, CID, port, process identifier, or handshake bytes are durable
+proof.
+
+Worker microVM operations remain lifecycle-only before a target is ready.
+Exec/copy-in/copy-out are projected only from live target readiness bound to
+the same runtime; configured image/endpoint/device metadata alone never
+upgrades capabilities.
+
+## 4. Redaction and containment rules
+
+- Host UDS and asset paths remain private live values and are omitted from
+  errors, evidence, runtime metadata, logs, docs, and descriptors.
+- Handshake errors expose fixed codes and fields only; they never wrap raw
+  `net.OpError` text across the public boundary.
+- Frames are bounded before allocation. Handshake lines are ASCII, newline
+  terminated, and at most 64 bytes.
+- The guest agent runs as a dedicated non-root UID/GID with `/workspace` on a
+  distinct writable filesystem and the image root read-only after boot setup.
+- The guest process receives a fixed environment, fixed executable roots, no
+  ambient host data, no network configuration, and no credentials.
+- Copy paths retain L4 descriptor-relative `openat2` containment. Vsock framing
+  cannot select local paths, ports, operations, or protocol versions through
+  sideband metadata.
+- Rootfs construction installs only the guest binary, fixed init/config files,
+  required runtime libraries/devices, and an empty workspace mount point.
+
+## 5. Crash, retry, cancellation, and cleanup semantics
+
+Each host request owns one connection. Cancellation or deadline closes the
+connection, preserves `errors.Is` through the private error chain, and yields
+the fixed L4 canceled/timeout code. A handshake or response cannot be retried
+automatically because copy-in may have crossed its publication point.
+
+Readiness polling creates fresh connections and is bounded by the existing live
+driver timeout. Unsupported version, malformed response, wrong operation,
+not-ready, connection refusal, or a stale bridge never yields ready metadata.
+
+Start failure cleanup uses a context independent of the canceled start context
+and is bounded. Stop/delete terminate and reap the entire Firecracker process,
+close bridge connections, remove API/vsock sockets and target-owned state, and
+leave the immutable master assets untouched. The live test always uses a
+scratch rootfs copy.
+
+Guest exec timeout/cancel first exercises L4 process-group cleanup. Whole-VM
+teardown then proves that even a deliberately session-escaping guest process
+cannot survive VM deletion. Repeated stop/delete is idempotent. Cleanup failure
+is joined with the primary error and cannot be reported as success.
+
+## 6. Red-first fake and live acceptance tests
+
+The first red commit locks:
+
+- deterministic vsock device JSON and state-path containment;
+- exact bounded Firecracker `CONNECT` handshake framing;
+- partial read/write, malformed/oversized response, timeout, cancellation, EOF,
+  pre-acknowledgement data, stale/wrong sockets, private socket permissions,
+  and connection cleanup;
+- guest AF_VSOCK listener bounds, one-frame dispatch, cancellation, and no
+  AF_INET fallback;
+- readiness identity correlation and lifecycle-only behavior for configured,
+  stale, mismatched, malformed, or not-ready evidence;
+- asset input digest verification, safe provenance, reproducibility contract,
+  guest binary/config presence, and default-test no-download/no-build guards;
+- public error redaction with path, endpoint, token, argument, and payload
+  canaries; and
+- start-failure plus stop/delete process/socket/state cleanup.
+
+The prepared-Linux test is selected only by `l5_firecracker_vsock_integration`.
+Once selected it never skips. It requires Linux x86_64, writable KVM,
+the pinned Firecracker version, and assets produced by the checked-in pipeline.
+It boots the produced image and proves:
+
+- API acceptance alone is not readiness;
+- exact v1 in-guest readiness;
+- stdout/stderr and non-zero exec exit;
+- copy-in/copy-out byte and digest integrity;
+- exec timeout and explicit cancellation;
+- fail-closed behavior after guest-agent loss;
+- whole-VM containment of an escaped guest process; and
+- zero owned processes, sockets, mounts, and runtime state after teardown.
+
+Missing KVM, build dependencies, Firecracker, assets, or required kernel/vsock
+behavior is a test failure, never a skip or pass. Default tests remain fake-safe
+and make no downloads, KVM calls, mounts, listeners, or process launches.
+
+## 7. Non-goals and L6 handoff
+
+L5 does not add guest networking, HTTP/CONNECT policy proxying, DNS behavior,
+Linux firewall rules, rootless topology, credential adapters, OCI registry
+resolution, template selection, cloud calls, scheduler defaults, or strict
+secure-default composition. VM isolation/readiness proof cannot be projected
+as network or credential enforcement.
+
+L6 receives a live, bounded Firecracker guest execution substrate and owns only
+the production policy proxy. L7 later owns network topology and inspected Linux
+rules for Firecracker and Podman. L8 owns credentials; L9 owns OCI trust; L10
+alone may compose strict success.
+
+## Verification commands
+
+```sh
+go test -count=1 -timeout=180s ./internal/sandboxruntime/microvm/assets/build ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecracker ./internal/sandboxruntime/microvm/firecrackerhost
+go test -race -count=1 -timeout=240s ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecracker ./internal/sandboxruntime/microvm/firecrackerhost
+go test -count=1 -timeout=180s ./cmd -run '^TestL5'
+test "$(go env GOOS)" = linux
+go test -list '^TestL5PreparedLinuxFirecrackerVsockE2E$' -tags=l5_firecracker_vsock_integration ./internal/sandboxruntime/microvm/firecrackerhost | grep -qx 'TestL5PreparedLinuxFirecrackerVsockE2E'
+go test -race -count=1 -timeout=900s -tags=l5_firecracker_vsock_integration ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestL5PreparedLinuxFirecrackerVsockE2E$'
+go test -count=1 -timeout=420s ./...
+go test -count=1 -run '^$' ./...
+go vet ./...
+make docs-check
+make build
+git diff --check
+```
+
+Run gofmt verification on changed Go files. Run
+`golangci-lint run --new-from-rev 762ee1a61d2efc5bb9241a6e87409ca20d68f976 ./...`
+only when `command -v golangci-lint` succeeds.
