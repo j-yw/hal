@@ -194,6 +194,81 @@ func TestClientHonorsContextCancellationAndRequestDeadlines(t *testing.T) {
 	}
 }
 
+func TestClientCopyInPublishedOutcomeOutranksLateContext(t *testing.T) {
+	payload := []byte("published payload")
+	request := CopyInRequest{
+		DestinationPath: "/workspace/published.txt",
+		Payload: PayloadMetadata{
+			SizeBytes: int64(len(payload)),
+			MaxBytes:  1024,
+			Encoding:  PayloadEncodingBase64,
+			Data:      base64.StdEncoding.EncodeToString(payload),
+		},
+	}
+
+	tests := []struct {
+		name     string
+		response TransportResponse
+		wantCode ErrorCode
+	}{
+		{
+			name: "published success",
+			response: encodeClientResponse(t, CopyInResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyIn,
+				Written: PayloadMetadata{
+					SizeBytes: int64(len(payload)),
+					MaxBytes:  1024,
+					Encoding:  PayloadEncodingBase64,
+				},
+			}),
+		},
+		{
+			name: "published durability uncertain",
+			response: encodeClientResponse(t, ErrorResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyIn,
+				Error: &ProtocolError{
+					Code:      ErrorCodeDurabilityUncertain,
+					Operation: OperationCopyIn,
+					Field:     "copy",
+					Message:   "copy publication durability is uncertain",
+				},
+			}),
+			wantCode: ErrorCodeDurabilityUncertain,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			client, err := NewClient(ClientOptions{
+				Transport: TransportFunc(func(context.Context, TransportRequest) (TransportResponse, error) {
+					cancel()
+					return tt.response, nil
+				}),
+			})
+			if err != nil {
+				t.Fatalf("NewClient() error: %v", err)
+			}
+
+			response, err := client.CopyIn(ctx, request)
+			if tt.wantCode == "" {
+				if err != nil {
+					t.Fatalf("CopyIn() error = %v, want published success", err)
+				}
+				if response == nil || response.Written.SizeBytes != int64(len(payload)) {
+					t.Fatalf("CopyIn() response = %#v, want published metadata", response)
+				}
+				return
+			}
+			if !clientProtocolErrorCode(err, tt.wantCode) {
+				t.Fatalf("CopyIn() error = %v, want %s", err, tt.wantCode)
+			}
+		})
+	}
+}
+
 func TestClientEnforcesEncodedRequestAndResponseLimits(t *testing.T) {
 	var called atomic.Bool
 	requestLimitClient, err := NewClient(ClientOptions{
