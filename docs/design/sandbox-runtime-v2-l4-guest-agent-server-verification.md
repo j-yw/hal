@@ -46,8 +46,11 @@ Malformed, unknown, duplicate, trailing, oversized, canceled, busy, not-ready,
 and unsupported-version requests make zero backend calls. Exact wire coverage
 rejects padded enum values and noncanonical base64 data, including embedded
 CR/LF and non-zero trailing padding bits, on request and hostile-response
-paths. Exec coverage includes binary stdin/output, non-zero exit, independent
-stdout/stderr truncation, fail-closed and size-bounded environment resolution,
+paths. Operationless response coverage preserves only the six pre-dispatch
+framing/header errors and rejects mutation, lifecycle, timeout, backend, and
+other operation-bound outcome codes. Exec coverage includes binary
+stdin/output, non-zero exit, independent stdout/stderr truncation, fail-closed
+and size-bounded environment resolution,
 timeout, cancellation, shutdown, process-group termination, reap,
 work-directory descriptor pinning, and descriptor non-inheritance.
 

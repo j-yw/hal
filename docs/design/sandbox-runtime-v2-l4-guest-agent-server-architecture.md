@@ -321,6 +321,15 @@ operations omit it. Known-operation errors may use the same generic envelope
 because the existing client checks the shared header and `error` before
 validating operation-specific result fields.
 
+The client accepts an operationless envelope only for pre-dispatch framing and
+header failures that the server can emit before identifying an operation:
+`malformed_request`, `oversized_request`, `missing_required_field`,
+`unsupported_protocol_version`, `unknown_operation`, and `internal_failure`.
+All operation results and lifecycle outcomes, especially
+`durability_uncertain`, require an explicit matching operation. The client
+treats any operationless outcome code as `malformed_response` instead of
+binding it to the request operation.
+
 Responses are encoded within the configured response limit. If a successful
 response would exceed that bound, the server discards it and emits a fixed
 bounded `oversized_response` error envelope. Constructor validation guarantees

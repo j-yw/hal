@@ -312,7 +312,24 @@ func operationlessResponseProtocolError(encoded []byte, operation Operation) (bo
 	if err := ValidateErrorResponse(response); err != nil {
 		return true, malformedGuestErrorResponse(operation)
 	}
+	if !operationlessResponseErrorCodeAllowed(response.Error.Code) {
+		return true, malformedGuestErrorResponse(operation)
+	}
 	return true, sanitizedResponseProtocolError(response.Error, operation)
+}
+
+func operationlessResponseErrorCodeAllowed(code ErrorCode) bool {
+	switch code {
+	case ErrorCodeUnsupportedProtocolVersion,
+		ErrorCodeUnknownOperation,
+		ErrorCodeMissingRequiredField,
+		ErrorCodeOversizedRequest,
+		ErrorCodeMalformedRequest,
+		ErrorCodeInternalFailure:
+		return true
+	default:
+		return false
+	}
 }
 
 func responseProtocolError(encoded []byte, operation Operation) error {

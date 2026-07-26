@@ -368,6 +368,10 @@ func TestL4ClientPreservesOperationlessGenericErrorCode(t *testing.T) {
 	tests := []ErrorCode{
 		ErrorCodeMalformedRequest,
 		ErrorCodeOversizedRequest,
+		ErrorCodeMissingRequiredField,
+		ErrorCodeUnsupportedProtocolVersion,
+		ErrorCodeUnknownOperation,
+		ErrorCodeInternalFailure,
 	}
 	for _, code := range tests {
 		t.Run(string(code), func(t *testing.T) {
@@ -392,27 +396,51 @@ func TestL4ClientPreservesOperationlessGenericErrorCode(t *testing.T) {
 }
 
 func TestL4ClientRejectsOperationlessMutationOutcomeError(t *testing.T) {
-	encoded, err := json.Marshal(ErrorResponse{
-		ProtocolVersion: ProtocolVersionV1,
-		Error: &ProtocolError{
-			Code:  ErrorCodeDurabilityUncertain,
-			Field: "copy",
-		},
-	})
-	if err != nil {
-		t.Fatalf("Marshal() error: %v", err)
+	tests := []ErrorCode{
+		ErrorCodeMalformedPath,
+		ErrorCodeInvalidTimeout,
+		ErrorCodeInvalidDeadline,
+		ErrorCodeOversizedPayloadMetadata,
+		ErrorCodeInvalidMetadata,
+		ErrorCodeOversizedResponse,
+		ErrorCodeRequestCanceled,
+		ErrorCodeRequestTimeout,
+		ErrorCodeServerNotReady,
+		ErrorCodeServerBusy,
+		ErrorCodeEnvironmentUnavailable,
+		ErrorCodeExecutionFailed,
+		ErrorCodeCopyFailed,
+		ErrorCodeDigestMismatch,
+		ErrorCodeResourceChanged,
+		ErrorCodeDurabilityUncertain,
+		ErrorCodeBackendUnavailable,
+		ErrorCodeUnsupportedPlatform,
 	}
+	for _, code := range tests {
+		t.Run(string(code), func(t *testing.T) {
+			encoded, err := json.Marshal(ErrorResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Error: &ProtocolError{
+					Code:  code,
+					Field: "copy",
+				},
+			})
+			if err != nil {
+				t.Fatalf("Marshal() error: %v", err)
+			}
 
-	client := l4ReadinessClient(t, encoded)
-	_, err = client.CopyIn(context.Background(), CopyInRequest{
-		DestinationPath: "/workspace/input",
-		Payload: PayloadMetadata{
-			MaxBytes: 1024,
-			Encoding: PayloadEncodingBase64,
-		},
-	})
-	if !l4ProtocolErrorCode(err, ErrorCodeMalformedResponse) {
-		t.Fatalf("CopyIn() error = %v, want %s", err, ErrorCodeMalformedResponse)
+			client := l4ReadinessClient(t, encoded)
+			_, err = client.CopyIn(context.Background(), CopyInRequest{
+				DestinationPath: "/workspace/input",
+				Payload: PayloadMetadata{
+					MaxBytes: 1024,
+					Encoding: PayloadEncodingBase64,
+				},
+			})
+			if !l4ProtocolErrorCode(err, ErrorCodeMalformedResponse) {
+				t.Fatalf("CopyIn() error = %v, want %s", err, ErrorCodeMalformedResponse)
+			}
+		})
 	}
 }
 
