@@ -203,7 +203,10 @@ func fixedGeneration(value uint64) string {
 
 func (bridge *ProductionVsockBridge) SessionActive(req firecracker.ProductionVsockSessionRequest, generation string) bool {
 	session := bridge.session(req.RuntimeID)
-	if session == nil || session.handleID != strings.TrimSpace(req.Handle.ID) || session.generation != generation {
+	if session == nil ||
+		session.handleID != strings.TrimSpace(req.Handle.ID) ||
+		session.handleSource != strings.TrimSpace(req.Handle.Source) ||
+		session.generation != generation {
 		return false
 	}
 	identity, err := bridge.lifecycle.resolveLiveProcessIdentity(req.Handle)

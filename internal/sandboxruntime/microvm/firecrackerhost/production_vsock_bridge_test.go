@@ -79,6 +79,15 @@ func TestL5ProductionVsockBridgeNaturalExitInvalidatesGeneration(t *testing.T) {
 	if session := fixture.bridge.sessionForTarget(forged); session != nil {
 		t.Fatal("forged process ID source selected a production vsock session")
 	}
+	if fixture.bridge.SessionActive(firecracker.ProductionVsockSessionRequest{
+		Handle:    firecracker.ProcessHandleMetadata{ID: fixture.handle.ID, Source: "forged-source"},
+		RuntimeID: "fc-natural-exit",
+	}, generation) {
+		t.Fatal("forged process ID source authorized the generation")
+	}
+	if !fixture.bridge.SessionActive(req, generation) {
+		t.Fatal("forged process ID source invalidated the legitimate generation")
+	}
 	close(fixture.process.done)
 	deadline := time.Now().Add(time.Second)
 	for fixture.bridge.SessionActive(req, generation) && time.Now().Before(deadline) {
