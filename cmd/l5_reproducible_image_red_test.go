@@ -327,6 +327,7 @@ func TestL5BuildScriptsLockOfflineReproducibleContainerOrchestration(t *testing.
 			"GOTOOLCHAIN=local",
 			"GOPROXY=off",
 			"GOSUMDB=off",
+			"CGO_ENABLED=0",
 			"-trimpath",
 			"-buildvcs=false",
 			"-ldflags=-buildid=",
@@ -488,6 +489,12 @@ func TestL5PreparedLinuxImagePrerequisiteTestCannotSkip(t *testing.T) {
 		"runtime.GOOS",
 		"runtime.GOARCH",
 		"ResolveDistribution",
+		"ValidateProvenanceAgainstManifest",
+		"provenance.json",
+		"SHA256SUMS",
+		"l5RequiredDistributionOutputs",
+		"debugfs",
+		"/usr/bin/hal-guest-agent",
 	} {
 		if !strings.Contains(source, required) {
 			t.Errorf("prepared-Linux image prerequisite test missing %q", required)

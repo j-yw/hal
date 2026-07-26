@@ -59,7 +59,10 @@ containment by VM teardown, and zero owned processes/sockets/state afterward.
 The same tag first selects `TestL5PreparedLinuxImagePrerequisites`, with
 `HAL_L5_DISTRIBUTION_DIR` naming the caller-installed distribution. That test
 must fail, not skip, when the host, architecture, manifest, or installed asset
-locks do not satisfy the L5 image contract.
+locks do not satisfy the L5 image contract. It also correlates provenance,
+requires the exact `SHA256SUMS` output set and verified bytes, rejects
+symlinked/non-directory roots and symlinked/non-regular files, and uses
+read-only rootfs inspection to require `/usr/bin/hal-guest-agent`.
 
 Missing prerequisites or a zero-match selector is a failure. Retained evidence
 contains versions, digests, safe IDs, pass/fail codes, and cleanup counts only;

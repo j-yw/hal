@@ -133,6 +133,94 @@ func TestL5ResolveDistributionFailsClosedOnInstalledAssetMismatch(t *testing.T) 
 	}
 }
 
+func TestL5ResolveDistributionRejectsUnsafeRootAndManifestTypes(t *testing.T) {
+	t.Run("symlinked root", func(t *testing.T) {
+		parent := t.TempDir()
+		realRoot := filepath.Join(parent, "real")
+		if err := os.Mkdir(realRoot, 0o700); err != nil {
+			t.Fatalf("Mkdir(real root) error = %v", err)
+		}
+		linkRoot := filepath.Join(parent, "link")
+		if err := os.Symlink(realRoot, linkRoot); err != nil {
+			t.Fatalf("Symlink(root) error = %v", err)
+		}
+		if _, err := ResolveDistribution(DistributionRequest{RootDir: linkRoot}); err == nil {
+			t.Fatal("ResolveDistribution() accepted symlinked distribution root")
+		}
+	})
+
+	t.Run("non-directory root", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "distribution")
+		writeL5DistributionFile(t, filepath.Dir(root), filepath.Base(root), []byte("not-a-directory"))
+		if _, err := ResolveDistribution(DistributionRequest{RootDir: root}); err == nil {
+			t.Fatal("ResolveDistribution() accepted non-directory distribution root")
+		}
+	})
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(t *testing.T, root, manifestPath string)
+	}{
+		{
+			name: "symlinked manifest",
+			mutate: func(t *testing.T, root, manifestPath string) {
+				t.Helper()
+				target := filepath.Join(root, "manifest-target.json")
+				if err := os.Rename(manifestPath, target); err != nil {
+					t.Fatalf("Rename(manifest) error = %v", err)
+				}
+				if err := os.Symlink(filepath.Base(target), manifestPath); err != nil {
+					t.Fatalf("Symlink(manifest) error = %v", err)
+				}
+			},
+		},
+		{
+			name: "nonregular manifest",
+			mutate: func(t *testing.T, _, manifestPath string) {
+				t.Helper()
+				if err := os.Remove(manifestPath); err != nil {
+					t.Fatalf("Remove(manifest) error = %v", err)
+				}
+				if err := os.Mkdir(manifestPath, 0o700); err != nil {
+					t.Fatalf("Mkdir(manifest) error = %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			kernel := []byte("deterministic-kernel")
+			rootfs := []byte("deterministic-rootfs")
+			writeL5DistributionFile(t, root, "vmlinux", kernel)
+			writeL5DistributionFile(t, root, "rootfs.ext4", rootfs)
+			writeL5DistributionManifest(t, root, l5DistributionManifest(kernel, rootfs))
+			manifestPath := filepath.Join(root, "distribution-manifest.json")
+			tt.mutate(t, root, manifestPath)
+			if _, err := ResolveDistribution(DistributionRequest{RootDir: root}); err == nil {
+				t.Fatal("ResolveDistribution() accepted unsafe distribution manifest")
+			}
+		})
+	}
+}
+
+func TestL5DistributionResolverUsesNoFollowVerificationForManifestAndAssets(t *testing.T) {
+	source, err := os.ReadFile("distribution.go")
+	if err != nil {
+		t.Fatalf("ReadFile(distribution.go) error = %v", err)
+	}
+	text := string(source)
+	for _, marker := range []string{
+		"openDistributionRootNoFollow",
+		"openDistributionFileNoFollow",
+		`"distribution-manifest.json"`,
+		"asset.Key",
+	} {
+		if !strings.Contains(text, marker) {
+			t.Errorf("distribution resolver missing no-follow marker %q", marker)
+		}
+	}
+}
+
 func l5DistributionManifest(kernel, rootfs []byte) assetbuild.DistributionManifest {
 	return assetbuild.DistributionManifest{
 		SchemaVersion: assetbuild.SchemaVersionV1,

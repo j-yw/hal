@@ -355,7 +355,12 @@ Once selected it never skips. It requires Linux x86_64, writable KVM,
 the pinned Firecracker version, and assets produced by the checked-in pipeline.
 `HAL_L5_DISTRIBUTION_DIR` names only the caller-installed distribution
 directory for the tagged prerequisite and end-to-end tests; it is never
-recorded in distribution artifacts or retained evidence.
+recorded in distribution artifacts or retained evidence. Before boot, the
+tagged prerequisite validates provenance against the distribution manifest,
+verifies the exact `SHA256SUMS` entry set and every referenced byte, rejects
+unsafe roots/manifests/assets through no-follow opens, and uses read-only
+filesystem inspection to prove `/usr/bin/hal-guest-agent` is present in the
+built rootfs.
 It boots the produced image and proves:
 
 - API acceptance alone is not readiness;
