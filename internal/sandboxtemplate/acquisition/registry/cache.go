@@ -33,19 +33,17 @@ type CacheEntry struct {
 }
 
 type FileCache struct {
-	root string
-	mu   sync.Mutex
+	root    string
+	invalid bool
+	mu      sync.Mutex
 }
 
 func NewFileCache(root string) *FileCache {
-	cache := &FileCache{root: filepath.Clean(root)}
-	if info, err := os.Lstat(cache.root); err == nil &&
-		info.Mode()&os.ModeSymlink == 0 &&
-		info.IsDir() &&
-		fileOwnedByCurrentUser(info) {
-		_ = os.Chmod(cache.root, 0o700)
+	cleaned := filepath.Clean(root)
+	return &FileCache{
+		root:    cleaned,
+		invalid: strings.TrimSpace(root) == "" || !filepath.IsAbs(cleaned),
 	}
-	return cache
 }
 
 type cacheMetadata struct {
@@ -59,11 +57,15 @@ func (c *FileCache) Load(ctx context.Context, lookup CacheLookup) ([]byte, bool,
 	if err := ctx.Err(); err != nil {
 		return nil, false, requestContextError(err)
 	}
-	if c == nil || !validCacheLookup(lookup) {
+	if c == nil || c.invalid || !validCacheLookup(lookup) {
 		return nil, false, coded(ErrorCodeCacheInvalid, nil)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.loadLocked(ctx, lookup)
+}
+
+func (c *FileCache) loadLocked(ctx context.Context, lookup CacheLookup) ([]byte, bool, error) {
 	if err := c.ensureRoot(false); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, false, nil
@@ -108,7 +110,7 @@ func (c *FileCache) Store(ctx context.Context, entry CacheEntry) error {
 	if err := ctx.Err(); err != nil {
 		return requestContextError(err)
 	}
-	if c == nil || !validCacheEntry(entry) {
+	if c == nil || c.invalid || !validCacheEntry(entry) {
 		return coded(ErrorCodeCachePublishFailed, nil)
 	}
 	c.mu.Lock()
@@ -119,6 +121,18 @@ func (c *FileCache) Store(ctx context.Context, entry CacheEntry) error {
 	finalDir := c.entryDir(entry.ManifestDigest)
 	if info, err := os.Lstat(finalDir); err == nil {
 		if validateOwnedMode(info, true, 0o700) != nil {
+			return coded(ErrorCodeCacheInvalid, nil)
+		}
+		_, hit, loadErr := c.loadLocked(ctx, CacheLookup{
+			ManifestDigest: entry.ManifestDigest,
+			LayerDigest:    entry.LayerDigest,
+			MediaType:      entry.MediaType,
+			SizeBytes:      int64(len(entry.LayerBytes)),
+		})
+		if loadErr != nil {
+			return loadErr
+		}
+		if !hit {
 			return coded(ErrorCodeCacheInvalid, nil)
 		}
 		return nil
@@ -183,15 +197,6 @@ func (c *FileCache) ensureRoot(create bool) error {
 	}
 	if err != nil {
 		return err
-	}
-	if create && info.Mode()&os.ModeSymlink == 0 && info.IsDir() && fileOwnedByCurrentUser(info) && info.Mode().Perm() != 0o700 {
-		if err := os.Chmod(c.root, 0o700); err != nil {
-			return err
-		}
-		info, err = os.Lstat(c.root)
-		if err != nil {
-			return err
-		}
 	}
 	return validateOwnedMode(info, true, 0o700)
 }
@@ -297,35 +302,69 @@ type fetchGroup struct {
 }
 
 type fetchCall struct {
-	done chan struct{}
-	data []byte
-	err  error
+	done   chan struct{}
+	cancel context.CancelFunc
+	owners int
+	data   []byte
+	err    error
 }
 
-func (g *fetchGroup) do(key string, fn func() ([]byte, error)) ([]byte, error) {
+func (g *fetchGroup) do(ctx context.Context, key string, fn func(context.Context) ([]byte, error)) ([]byte, error) {
 	g.mu.Lock()
 	if g.calls == nil {
 		g.calls = make(map[string]*fetchCall)
 	}
-	if call := g.calls[key]; call != nil {
-		g.mu.Unlock()
-		<-call.done
-		return append([]byte(nil), call.data...), call.err
+	call := g.calls[key]
+	if call == nil {
+		fetchCtx, cancel := context.WithCancel(context.Background())
+		call = &fetchCall{done: make(chan struct{}), cancel: cancel}
+		g.calls[key] = call
+		go g.run(key, call, fetchCtx, fn)
 	}
-	call := &fetchCall{done: make(chan struct{})}
-	g.calls[key] = call
+	call.owners++
 	g.mu.Unlock()
 
-	call.data, call.err = fn()
+	select {
+	case <-call.done:
+		g.releaseOwner(key, call, false)
+		return append([]byte(nil), call.data...), call.err
+	case <-ctx.Done():
+		g.releaseOwner(key, call, true)
+		return nil, ctx.Err()
+	}
+}
+
+func (g *fetchGroup) run(key string, call *fetchCall, ctx context.Context, fn func(context.Context) ([]byte, error)) {
+	call.data, call.err = fn(ctx)
 	close(call.done)
 	if call.err != nil {
-		g.forget(key)
+		g.mu.Lock()
+		if g.calls[key] == call {
+			delete(g.calls, key)
+		}
+		g.mu.Unlock()
 	}
-	return append([]byte(nil), call.data...), call.err
+}
+
+func (g *fetchGroup) releaseOwner(key string, call *fetchCall, canceled bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if call.owners > 0 {
+		call.owners--
+	}
+	if canceled && call.owners == 0 {
+		call.cancel()
+		if g.calls[key] == call {
+			delete(g.calls, key)
+		}
+	}
 }
 
 func (g *fetchGroup) forget(key string) {
 	g.mu.Lock()
-	delete(g.calls, key)
+	if call := g.calls[key]; call != nil {
+		call.cancel()
+		delete(g.calls, key)
+	}
 	g.mu.Unlock()
 }

@@ -154,9 +154,9 @@ func (r *Resolver) resolveLayer(ctx context.Context, reference parsedReference, 
 			return data, true, nil
 		}
 	}
-	data, err := r.fetches.do(manifest.digest, func() ([]byte, error) {
+	data, err := r.fetches.do(ctx, manifest.digest, func(fetchCtx context.Context) ([]byte, error) {
 		if r.cache != nil {
-			cached, hit, cacheErr := r.cache.Load(ctx, lookup)
+			cached, hit, cacheErr := r.cache.Load(fetchCtx, lookup)
 			if cacheErr != nil {
 				return nil, normalizeRegistryError(ctx, cacheErr)
 			}
@@ -164,7 +164,7 @@ func (r *Resolver) resolveLayer(ctx context.Context, reference parsedReference, 
 				return cached, nil
 			}
 		}
-		return r.fetchLayer(ctx, reference, manifest.layer)
+		return r.fetchLayer(fetchCtx, reference, manifest.layer)
 	})
 	return data, false, err
 }
@@ -395,6 +395,10 @@ func (r *Resolver) fetchBearerToken(ctx context.Context, realm *url.URL, service
 	if response.StatusCode != http.StatusOK {
 		return "", coded(ErrorCodeAuthenticationFailed, nil)
 	}
+	tokenMediaType, _, mediaErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if mediaErr != nil || tokenMediaType != "application/json" {
+		return "", coded(ErrorCodeAuthenticationFailed, nil)
+	}
 	if !identityEncoding(response.Header.Get("Content-Encoding")) {
 		return "", coded(ErrorCodeAuthenticationFailed, nil)
 	}
@@ -412,6 +416,9 @@ func (r *Resolver) fetchBearerToken(ctx context.Context, realm *url.URL, service
 		return "", coded(ErrorCodeAuthenticationFailed, nil)
 	}
 	token := tokenResponse.Token
+	if tokenResponse.Token != "" && tokenResponse.AccessToken != "" && tokenResponse.Token != tokenResponse.AccessToken {
+		return "", coded(ErrorCodeAuthenticationFailed, nil)
+	}
 	if token == "" {
 		token = tokenResponse.AccessToken
 	}
@@ -459,6 +466,18 @@ func parseChallenge(value string) (string, map[string]string, error) {
 	}
 	scheme := strings.ToLower(value[:space])
 	if scheme == "basic" {
+		parameter := strings.TrimSpace(value[space+1:])
+		if !strings.HasPrefix(strings.ToLower(parameter), "realm=") || strings.Contains(parameter, ",") {
+			return "", nil, errors.New("basic challenge is invalid")
+		}
+		rawRealm := strings.TrimSpace(parameter[len("realm="):])
+		if len(rawRealm) < 2 || rawRealm[0] != '"' || rawRealm[len(rawRealm)-1] != '"' {
+			return "", nil, errors.New("basic challenge is invalid")
+		}
+		realm, err := strconv.Unquote(rawRealm)
+		if err != nil || realm == "" {
+			return "", nil, errors.New("basic challenge is invalid")
+		}
 		return scheme, map[string]string{}, nil
 	}
 	if scheme != "bearer" {

@@ -151,7 +151,7 @@ type OCIArtifactResolveRequest struct {
 // identity proof returned by an injected resolver.
 type OCIArtifactResolveResult struct {
 	TemplateBytes          []byte                          `json:"templateBytes,omitempty"`
-	ArtifactManifestBytes  []byte                          `json:"artifactManifestBytes,omitempty"`
+	ArtifactManifestBytes  []byte                          `json:"-"`
 	Format                 sandboxtemplate.Format          `json:"format,omitempty"`
 	DocumentDigest         *sandboxtemplate.DigestMetadata `json:"documentDigest,omitempty"`
 	TemplateArtifactDigest *sandboxtemplate.DigestMetadata `json:"templateArtifactDigest,omitempty"`
@@ -166,7 +166,7 @@ type ReferenceDigestProof struct {
 	Kind          sandboxtemplate.ReferenceKind   `json:"kind,omitempty"`
 	Ref           string                          `json:"ref,omitempty"`
 	Digest        *sandboxtemplate.DigestMetadata `json:"digest,omitempty"`
-	VerifiedBytes []byte                          `json:"verifiedBytes,omitempty"`
+	VerifiedBytes []byte                          `json:"-"`
 }
 
 // GitTemplateResolver resolves Git-hosted template metadata through injected,

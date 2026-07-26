@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"net"
 	"net/http"
@@ -30,6 +31,17 @@ type DialPolicy struct {
 }
 
 func NewDialPolicy(options DialPolicyOptions) (*DialPolicy, error) {
+	exceptions := make([]NonPublicOriginException, 0, len(options.NonPublicOriginExceptions))
+	for _, exception := range options.NonPublicOriginExceptions {
+		normalized, err := normalizeOrigin(exception.Origin, false)
+		if err != nil || !exception.Address.IsValid() {
+			return nil, errors.New("non-public origin exception is invalid")
+		}
+		exceptions = append(exceptions, NonPublicOriginException{
+			Origin:  normalized,
+			Address: exception.Address.Unmap(),
+		})
+	}
 	lookup := options.LookupNetIP
 	if lookup == nil {
 		lookup = func(ctx context.Context, host string) ([]netip.Addr, error) {
@@ -44,7 +56,7 @@ func NewDialPolicy(options DialPolicyOptions) (*DialPolicy, error) {
 	return &DialPolicy{
 		lookup:     lookup,
 		dial:       dial,
-		exceptions: append([]NonPublicOriginException(nil), options.NonPublicOriginExceptions...),
+		exceptions: exceptions,
 	}, nil
 }
 
@@ -70,6 +82,7 @@ func (p *DialPolicy) DialContext(ctx context.Context, network, address string) (
 }
 
 func (p *DialPolicy) addressExcepted(host, port string, address netip.Addr) bool {
+	address = address.Unmap()
 	for _, exception := range p.exceptions {
 		parsed, err := url.Parse(exception.Origin)
 		if err != nil {
@@ -125,6 +138,7 @@ func isReservedAddress(address netip.Addr) bool {
 		"198.18.0.0/15",
 		"198.51.100.0/24",
 		"203.0.113.0/24",
+		"240.0.0.0/4",
 		"2001:db8::/32",
 	}
 	for _, raw := range prefixes {
@@ -138,6 +152,7 @@ func isReservedAddress(address netip.Addr) bool {
 type ProductionTransportOptions struct {
 	DialPolicy                *DialPolicy
 	NonPublicOriginExceptions []NonPublicOriginException
+	RootCAs                   *x509.CertPool
 }
 
 func NewProductionTransport(options ProductionTransportOptions) (*http.Transport, error) {
@@ -152,15 +167,39 @@ func NewProductionTransport(options ProductionTransportOptions) (*http.Transport
 		}
 	}
 	return &http.Transport{
-		Proxy:                 nil,
-		DialContext:           policy.DialContext,
-		ForceAttemptHTTP2:     true,
-		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: DefaultRequestTimeout,
-		IdleConnTimeout:       30 * time.Second,
-		MaxIdleConns:          16,
-		MaxIdleConnsPerHost:   4,
+		Proxy:                  nil,
+		DialContext:            policy.DialContext,
+		ForceAttemptHTTP2:      true,
+		TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: options.RootCAs},
+		TLSHandshakeTimeout:    10 * time.Second,
+		ResponseHeaderTimeout:  DefaultRequestTimeout,
+		IdleConnTimeout:        30 * time.Second,
+		MaxIdleConns:           16,
+		MaxIdleConnsPerHost:    4,
+		MaxResponseHeaderBytes: DefaultMaxResponseHeaderBytes,
+	}, nil
+}
+
+type ProductionClientOptions struct {
+	Transport ProductionTransportOptions
+	Timeout   time.Duration
+}
+
+func NewProductionClient(options ProductionClientOptions) (*http.Client, error) {
+	transport, err := NewProductionTransport(options.Transport)
+	if err != nil {
+		return nil, err
+	}
+	timeout := options.Timeout
+	if timeout <= 0 {
+		timeout = DefaultRequestTimeout
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}, nil
 }
 
@@ -187,6 +226,10 @@ func requestContextError(err error) error {
 func requestOrRegistryError(ctx context.Context, err error) error {
 	if ctx != nil && ctx.Err() != nil {
 		return requestContextError(ctx.Err())
+	}
+	var registryErr *Error
+	if errors.As(err, &registryErr) {
+		return registryErr
 	}
 	return requestContextError(err)
 }

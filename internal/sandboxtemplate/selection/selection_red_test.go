@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxtemplate"
 	"github.com/jywlabs/hal/internal/sandboxtemplate/acquisition"
 	"github.com/jywlabs/hal/internal/sandboxtemplate/selection"
@@ -80,10 +81,11 @@ func TestL9SelectionBindingRejectsRuntimeIdentityMismatch(t *testing.T) {
 		RuntimeDriver: "microvm",
 	}
 	_, err := selection.Bind(result, selection.BindingRequest{
-		ExecutionID:   "run-l9",
-		SandboxID:     "sandbox-l9",
-		RuntimeID:     "runtime-l9",
-		RuntimeDriver: "rootless_podman",
+		ExecutionID:    "run-l9",
+		SandboxID:      "sandbox-l9",
+		RuntimeID:      "runtime-l9",
+		RuntimeDriver:  "rootless_podman",
+		IsolationLevel: "vm",
 	})
 	if err == nil {
 		t.Fatal("Bind() error = nil, want runtime identity mismatch")
@@ -184,15 +186,13 @@ func TestL9SelectionBindingRequiresAllExactIdentitiesAndDigest(t *testing.T) {
 		Algorithm: sandboxtemplate.DigestAlgorithmSHA256,
 		Value:     strings.Repeat("a", 64),
 	}
-	result := selection.Result{
-		ManifestDigest: digest,
-		RuntimeDriver:  "microvm",
-	}
+	result := validBindingSelectionResult(digest)
 	valid := selection.BindingRequest{
 		ExecutionID:    "run-l9",
 		SandboxID:      "sandbox-l9",
 		RuntimeID:      "runtime-l9",
 		RuntimeDriver:  "microvm",
+		IsolationLevel: "vm",
 		ManifestDigest: digest,
 	}
 	tests := []struct {
@@ -203,6 +203,7 @@ func TestL9SelectionBindingRequiresAllExactIdentitiesAndDigest(t *testing.T) {
 		{"sandbox", func(r *selection.BindingRequest) { r.SandboxID = "" }},
 		{"runtime", func(r *selection.BindingRequest) { r.RuntimeID = "" }},
 		{"driver", func(r *selection.BindingRequest) { r.RuntimeDriver = "rootless_podman" }},
+		{"isolation", func(r *selection.BindingRequest) { r.IsolationLevel = "container" }},
 		{"missing digest", func(r *selection.BindingRequest) { r.ManifestDigest = nil }},
 		{"different digest", func(r *selection.BindingRequest) { r.ManifestDigest = selectionTestDigest([]byte("different")) }},
 	}
@@ -216,6 +217,102 @@ func TestL9SelectionBindingRequiresAllExactIdentitiesAndDigest(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestL9SelectionBindingRejectsMissingOrMismatchedLockAndTrustCorrelation(t *testing.T) {
+	digest := selectionTestDigest([]byte("verified manifest"))
+	base := validBindingSelectionResult(digest)
+	request := selection.BindingRequest{
+		ExecutionID:    "run-l9",
+		SandboxID:      "sandbox-l9",
+		RuntimeID:      "runtime-l9",
+		RuntimeDriver:  "microvm",
+		IsolationLevel: "vm",
+		ManifestDigest: digest,
+	}
+	if _, err := selection.Bind(base, request); err != nil {
+		t.Fatalf("valid Bind() error = %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*selection.Result)
+	}{
+		{"missing lock", func(r *selection.Result) { r.Lock = acquisition.TemplateLock{} }},
+		{"wrong source", func(r *selection.Result) { r.Lock.SourceKind = acquisition.SourceKindLocalFile }},
+		{"missing template metadata", func(r *selection.Result) { r.RuntimeMetadata.TemplateReference = nil }},
+		{"template digest", func(r *selection.Result) { r.RuntimeMetadata.TemplateReference.DigestValue = strings.Repeat("b", 64) }},
+		{"missing trust metadata", func(r *selection.Result) { r.RuntimeMetadata.TrustPolicy = nil }},
+		{"trust digest", func(r *selection.Result) { r.RuntimeMetadata.TrustPolicy.DigestValue = strings.Repeat("b", 64) }},
+		{"trust decision", func(r *selection.Result) { r.RuntimeMetadata.TrustPolicy.Decision = "advisory" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := cloneSelectionResultForBinding(base)
+			tt.mutate(&result)
+			if _, err := selection.Bind(result, request); err == nil {
+				t.Fatal("Bind() error = nil, want selection_rejected")
+			}
+		})
+	}
+}
+
+func validBindingSelectionResult(digest *sandboxtemplate.DigestMetadata) selection.Result {
+	return selection.Result{
+		ManifestDigest: digest,
+		RuntimeDriver:  "microvm",
+		IsolationLevel: "vm",
+		Lock: acquisition.TemplateLock{
+			SourceKind:    acquisition.SourceKindOCIArtifact,
+			ReferenceKind: sandboxtemplate.ReferenceKindOCIArtifact,
+			Status:        acquisition.LockStatusLocked,
+			References: []acquisition.ReferenceLock{{
+				Field:  "metadata.reference",
+				Kind:   sandboxtemplate.ReferenceKindOCIArtifact,
+				Status: acquisition.LockStatusLocked,
+				Digest: digest,
+			}},
+		},
+		Trust: acquisition.TrustPolicyResult{
+			Mode:     acquisition.TrustPolicyModeStrict,
+			Decision: acquisition.TrustPolicyDecisionTrusted,
+		},
+		RuntimeMetadata: &sandboxruntime.RuntimeTemplateLockMetadata{
+			TemplateReference: &sandboxruntime.RuntimeTemplateLockEntryMetadata{
+				SourceKind:      "template_reference",
+				ReferenceKind:   "oci_artifact",
+				Status:          "locked",
+				DigestAlgorithm: "sha256",
+				DigestValue:     digest.Value,
+			},
+			TrustPolicy: &sandboxruntime.RuntimeTemplateTrustPolicyMetadata{
+				Mode:            "strict",
+				Decision:        "trusted",
+				SourceKind:      "oci_artifact",
+				ReferenceKind:   "oci_artifact",
+				Status:          "locked",
+				DigestAlgorithm: "sha256",
+				DigestValue:     digest.Value,
+			},
+		},
+	}
+}
+
+func cloneSelectionResultForBinding(input selection.Result) selection.Result {
+	out := input
+	out.Lock.References = append([]acquisition.ReferenceLock(nil), input.Lock.References...)
+	if input.RuntimeMetadata != nil {
+		metadata := *input.RuntimeMetadata
+		if input.RuntimeMetadata.TemplateReference != nil {
+			entry := *input.RuntimeMetadata.TemplateReference
+			metadata.TemplateReference = &entry
+		}
+		if input.RuntimeMetadata.TrustPolicy != nil {
+			policy := *input.RuntimeMetadata.TrustPolicy
+			metadata.TrustPolicy = &policy
+		}
+		out.RuntimeMetadata = &metadata
+	}
+	return out
 }
 
 type selectionResolverStub struct {

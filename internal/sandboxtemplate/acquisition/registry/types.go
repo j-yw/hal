@@ -121,7 +121,6 @@ type Options struct {
 	Client                     HTTPDoer
 	AllowedRegistryOrigins     []string
 	PlainHTTPOrigins           []string
-	AllowedNonPublicOrigins    []string
 	AllowedTokenOrigins        map[string]TokenOriginPolicy
 	AllowedBlobOrigins         map[string][]string
 	PreemptiveBasicAuthOrigins []string

@@ -99,13 +99,15 @@ func (w Workflow) Select(ctx context.Context, request Request) (Result, error) {
 		trust.Decision != acquisition.TrustPolicyDecisionTrusted {
 		return Result{}, rejected(ErrSelectionRejected)
 	}
+	runtimeMetadata := acquisition.ProjectRuntimeTemplateLockMetadata(provenance, trust)
+	correlateRuntimeMetadata(runtimeMetadata, manifestDigest, trust)
 
 	result := Result{
 		Template:        template,
 		Lock:            resolved.Lock,
 		Provenance:      provenance,
 		Trust:           trust,
-		RuntimeMetadata: acquisition.ProjectRuntimeTemplateLockMetadata(provenance, trust),
+		RuntimeMetadata: runtimeMetadata,
 		ManifestDigest:  cloneDigest(manifestDigest),
 	}
 	if template.Runtime != nil {
@@ -120,6 +122,7 @@ type BindingRequest struct {
 	SandboxID      string
 	RuntimeID      string
 	RuntimeDriver  string
+	IsolationLevel string
 	ManifestDigest *sandboxtemplate.DigestMetadata
 }
 
@@ -128,6 +131,7 @@ type Binding struct {
 	SandboxID       string
 	RuntimeID       string
 	RuntimeDriver   string
+	IsolationLevel  string
 	ManifestDigest  *sandboxtemplate.DigestMetadata
 	RuntimeMetadata *sandboxruntime.RuntimeTemplateLockMetadata
 }
@@ -137,10 +141,13 @@ func Bind(result Result, request BindingRequest) (Binding, error) {
 		strings.TrimSpace(request.SandboxID) == "" ||
 		strings.TrimSpace(request.RuntimeID) == "" ||
 		strings.TrimSpace(request.RuntimeDriver) == "" ||
+		strings.TrimSpace(request.IsolationLevel) == "" ||
 		result.ManifestDigest == nil ||
 		request.ManifestDigest == nil ||
 		!digestEqual(result.ManifestDigest, request.ManifestDigest) ||
-		strings.TrimSpace(result.RuntimeDriver) != strings.TrimSpace(request.RuntimeDriver) {
+		strings.TrimSpace(result.RuntimeDriver) != strings.TrimSpace(request.RuntimeDriver) ||
+		strings.TrimSpace(result.IsolationLevel) != strings.TrimSpace(request.IsolationLevel) ||
+		!validBindingEvidence(result) {
 		return Binding{}, rejected(ErrSelectionRejected)
 	}
 	return Binding{
@@ -148,9 +155,71 @@ func Bind(result Result, request BindingRequest) (Binding, error) {
 		SandboxID:       strings.TrimSpace(request.SandboxID),
 		RuntimeID:       strings.TrimSpace(request.RuntimeID),
 		RuntimeDriver:   strings.TrimSpace(request.RuntimeDriver),
+		IsolationLevel:  strings.TrimSpace(request.IsolationLevel),
 		ManifestDigest:  cloneDigest(result.ManifestDigest),
 		RuntimeMetadata: sandboxruntime.SanitizeRuntimeTemplateLockMetadata(result.RuntimeMetadata),
 	}, nil
+}
+
+func correlateRuntimeMetadata(metadata *sandboxruntime.RuntimeTemplateLockMetadata, digest *sandboxtemplate.DigestMetadata, trust acquisition.TrustPolicyResult) {
+	if metadata == nil || digest == nil {
+		return
+	}
+	if metadata.TrustPolicy == nil {
+		metadata.TrustPolicy = &sandboxruntime.RuntimeTemplateTrustPolicyMetadata{}
+	}
+	metadata.TrustPolicy.Mode = string(trust.Mode)
+	metadata.TrustPolicy.Decision = string(trust.Decision)
+	metadata.TrustPolicy.SourceKind = string(acquisition.SourceKindOCIArtifact)
+	metadata.TrustPolicy.ReferenceKind = string(sandboxtemplate.ReferenceKindOCIArtifact)
+	metadata.TrustPolicy.Status = string(acquisition.LockStatusLocked)
+	metadata.TrustPolicy.DigestAlgorithm = string(digest.Algorithm)
+	metadata.TrustPolicy.DigestValue = digest.Value
+}
+
+func validBindingEvidence(result Result) bool {
+	digest := result.ManifestDigest
+	if digest == nil || digest.Algorithm != sandboxtemplate.DigestAlgorithmSHA256 || len(digest.Value) != 64 ||
+		result.Lock.SourceKind != acquisition.SourceKindOCIArtifact ||
+		result.Lock.ReferenceKind != sandboxtemplate.ReferenceKindOCIArtifact ||
+		result.Lock.Status != acquisition.LockStatusLocked {
+		return false
+	}
+	var locked bool
+	for _, reference := range result.Lock.References {
+		if reference.Field == "metadata.reference" &&
+			reference.Kind == sandboxtemplate.ReferenceKindOCIArtifact &&
+			reference.Status == acquisition.LockStatusLocked &&
+			digestEqual(reference.Digest, digest) {
+			locked = true
+			break
+		}
+	}
+	if !locked || result.RuntimeMetadata == nil ||
+		!runtimeEntryMatches(result.RuntimeMetadata.TemplateReference, digest) ||
+		result.RuntimeMetadata.TrustPolicy == nil {
+		return false
+	}
+	policy := result.RuntimeMetadata.TrustPolicy
+	if policy.SourceKind != string(acquisition.SourceKindOCIArtifact) ||
+		policy.ReferenceKind != string(sandboxtemplate.ReferenceKindOCIArtifact) ||
+		policy.Status != string(acquisition.LockStatusLocked) ||
+		policy.DigestAlgorithm != string(digest.Algorithm) ||
+		policy.DigestValue != digest.Value ||
+		policy.Mode != string(result.Trust.Mode) ||
+		policy.Decision != string(result.Trust.Decision) {
+		return false
+	}
+	return (result.Trust.Mode == acquisition.TrustPolicyModeStrict && result.Trust.Decision == acquisition.TrustPolicyDecisionTrusted) ||
+		(result.Trust.Mode == acquisition.TrustPolicyModeAdvisory && result.Trust.Decision == acquisition.TrustPolicyDecisionAdvisory)
+}
+
+func runtimeEntryMatches(entry *sandboxruntime.RuntimeTemplateLockEntryMetadata, digest *sandboxtemplate.DigestMetadata) bool {
+	return entry != nil &&
+		entry.ReferenceKind == string(sandboxtemplate.ReferenceKindOCIArtifact) &&
+		entry.Status == string(acquisition.LockStatusLocked) &&
+		entry.DigestAlgorithm == string(digest.Algorithm) &&
+		entry.DigestValue == digest.Value
 }
 
 func selectedManifestDigest(lock acquisition.TemplateLock) *sandboxtemplate.DigestMetadata {

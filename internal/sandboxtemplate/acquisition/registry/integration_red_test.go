@@ -5,10 +5,13 @@ package registry_test
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"strings"
 	"sync"
@@ -20,7 +23,7 @@ import (
 func TestOCIRegistryIntegrationStrictTrust(t *testing.T) {
 	fixture := newRegistryFixture(t)
 	local := newDisposableRegistry(t)
-	server := httptest.NewServer(local)
+	server := httptest.NewTLSServer(local)
 	cacheRoot, err := os.MkdirTemp("", "hal-l9-oci-cache-")
 	if err != nil {
 		t.Fatal(err)
@@ -42,11 +45,24 @@ func TestOCIRegistryIntegrationStrictTrust(t *testing.T) {
 
 	pushRegistryFixture(t, server.Client(), server.URL, fixture)
 	origin := server.URL
+	rootCAs := x509.NewCertPool()
+	rootCAs.AddCert(server.Certificate())
+	loopback := netip.MustParseAddr("127.0.0.1")
+	productionClient, err := registry.NewProductionClient(registry.ProductionClientOptions{
+		Transport: registry.ProductionTransportOptions{
+			NonPublicOriginExceptions: []registry.NonPublicOriginException{{
+				Origin:  origin,
+				Address: loopback,
+			}},
+			RootCAs: rootCAs,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewProductionClient() error = %v", err)
+	}
 	resolver, err := registry.NewResolver(registry.Options{
-		Client:                     server.Client(),
+		Client:                     productionClient,
 		AllowedRegistryOrigins:     []string{origin},
-		PlainHTTPOrigins:           []string{origin},
-		AllowedNonPublicOrigins:    []string{origin},
 		Cache:                      registry.NewFileCache(cacheRoot),
 		CredentialProvider:         &recordingCredentialProvider{credential: registry.Credential{Username: "fixture-user", Password: "fixture-password"}},
 		PreemptiveBasicAuthOrigins: []string{origin},
@@ -54,11 +70,11 @@ func TestOCIRegistryIntegrationStrictTrust(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewResolver() error = %v", err)
 	}
-	reference := strings.TrimPrefix(origin, "http://") + "/hal/template:latest"
+	reference := strings.TrimPrefix(origin, "https://") + "/hal/template:latest"
 	for i := 0; i < 2; i++ {
 		result, err := resolver.ResolveOCIArtifact(context.Background(), tagRequest(reference))
 		if err != nil {
-			t.Fatalf("strict local selection %d: %v", i, err)
+			t.Fatalf("strict local selection %d: %v (cause %v)", i, err, errors.Unwrap(err))
 		}
 		requireDigest(t, result.TemplateArtifactDigest, fixture.manifestDigest)
 		requireDigest(t, result.DocumentDigest, fixture.layerDigest)
@@ -71,6 +87,24 @@ func TestOCIRegistryIntegrationStrictTrust(t *testing.T) {
 		t.Fatalf("manifest GETs = %d, want live resolution plus tag check each time", local.manifestGets)
 	}
 	local.mu.Unlock()
+
+	t.Run("loopback exception is exact", func(t *testing.T) {
+		rejectingClient, err := registry.NewProductionClient(registry.ProductionClientOptions{
+			Transport: registry.ProductionTransportOptions{RootCAs: rootCAs},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rejectingResolver, err := registry.NewResolver(registry.Options{
+			Client:                 rejectingClient,
+			AllowedRegistryOrigins: []string{origin},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, resolveErr := rejectingResolver.ResolveOCIArtifact(context.Background(), tagRequest(reference))
+		requireRegistryErrorCode(t, resolveErr, registry.ErrorCodeAddressRejected)
+	})
 
 	t.Run("tag mutation", func(t *testing.T) {
 		local.setMode(registryModeTagMutation)
