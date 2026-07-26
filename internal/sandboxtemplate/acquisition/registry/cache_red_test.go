@@ -129,6 +129,26 @@ func TestL9FileCacheRejectsConflictingPreexistingFinalEntry(t *testing.T) {
 	requireRegistryErrorCode(t, err, registry.ErrorCodeCacheInvalid)
 }
 
+func TestL9FileCacheRejectsSymlinkedParentWithoutWritingTarget(t *testing.T) {
+	fixture := newRegistryFixture(t)
+	parent := t.TempDir()
+	target := t.TempDir()
+	link := filepath.Join(parent, "redirected")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	err := registry.NewFileCache(filepath.Join(link, "cache")).Store(context.Background(), registry.CacheEntry{
+		ManifestDigest: fixture.manifestDigest,
+		LayerDigest:    fixture.layerDigest,
+		MediaType:      registry.MediaTypeTemplateYAML,
+		LayerBytes:     fixture.template,
+	})
+	requireRegistryErrorCode(t, err, registry.ErrorCodeCachePublishFailed)
+	if _, statErr := os.Lstat(filepath.Join(target, "cache")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("symlink target was modified: %v", statErr)
+	}
+}
+
 func TestL9FileCacheRejectsSymlinksWrongModesAndCorruption(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Fatal("L9 cache safety acceptance requires Unix ownership and mode semantics")
@@ -324,13 +344,63 @@ func TestL9FileCachePublicationCoalescesConcurrentWriters(t *testing.T) {
 	}
 }
 
-func TestL9FileCacheImplementationUsesLstatFsyncAndSameDirectoryRename(t *testing.T) {
+func TestL9SeparateFileCachesReverifyConflictingPublicationWinner(t *testing.T) {
+	fixture := newRegistryFixture(t)
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	firstBytes := append([]byte(nil), fixture.template...)
+	secondBytes := []byte("apiVersion: sandbox-template.hal.dev/v1\nkind: SandboxTemplate\nmetadata:\n  id: conflicting\n")
+	entries := []registry.CacheEntry{
+		{
+			ManifestDigest: fixture.manifestDigest,
+			LayerDigest:    registryDigest(firstBytes),
+			MediaType:      registry.MediaTypeTemplateYAML,
+			LayerBytes:     firstBytes,
+		},
+		{
+			ManifestDigest: fixture.manifestDigest,
+			LayerDigest:    registryDigest(secondBytes),
+			MediaType:      registry.MediaTypeTemplateYAML,
+			LayerBytes:     secondBytes,
+		},
+	}
+	start := make(chan struct{})
+	errs := make(chan error, len(entries))
+	for _, entry := range entries {
+		entry := entry
+		go func() {
+			<-start
+			errs <- registry.NewFileCache(root).Store(context.Background(), entry)
+		}()
+	}
+	close(start)
+	var succeeded, rejected int
+	for range entries {
+		err := <-errs
+		if err == nil {
+			succeeded++
+			continue
+		}
+		var registryErr *registry.Error
+		if !errors.As(err, &registryErr) || registryErr.Code != registry.ErrorCodeCacheInvalid {
+			t.Fatalf("conflicting Store() error = %v, want cache_invalid", err)
+		}
+		rejected++
+	}
+	if succeeded != 1 || rejected != 1 {
+		t.Fatalf("publication results = %d success/%d rejected, want 1/1", succeeded, rejected)
+	}
+}
+
+func TestL9FileCacheImplementationUsesNoFollowDescriptorRelativeFsyncAndRename(t *testing.T) {
 	content, err := os.ReadFile("cache.go")
 	if err != nil {
 		t.Fatalf("ReadFile(cache.go): %v", err)
 	}
 	source := string(content)
-	for _, required := range []string{"os.Lstat", ".Sync()", "os.Rename", "MkdirTemp", "0o700", "0o600", "Stat_t", "Uid"} {
+	for _, required := range []string{"unix.Openat", "unix.Renameat", "unix.Mkdirat", "unix.O_NOFOLLOW", ".Sync()", "0o700", "0o600", "Stat_t", "Uid"} {
 		if !strings.Contains(source, required) {
 			t.Errorf("cache.go missing crash/containment primitive %q", required)
 		}

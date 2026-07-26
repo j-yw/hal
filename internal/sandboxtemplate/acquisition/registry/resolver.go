@@ -299,11 +299,14 @@ func (r *Resolver) doRedirecting(ctx context.Context, spec requestSpec, authoriz
 func (r *Resolver) validateRedirect(spec requestSpec, current, location string) (string, bool, error) {
 	base, baseErr := url.Parse(current)
 	nextURL, nextErr := url.Parse(location)
-	if baseErr != nil || nextErr != nil || location == "" {
+	if baseErr != nil || nextErr != nil || location == "" ||
+		!unambiguousRedirectURL(base, current) ||
+		!unambiguousRedirectURL(nextURL, location) {
 		return "", false, coded(ErrorCodeRedirectRejected, nil)
 	}
 	nextURL = base.ResolveReference(nextURL)
-	if nextURL.User != nil || nextURL.Fragment != "" || nextURL.RawQuery != "" ||
+	if !unambiguousRedirectURL(nextURL, nextURL.String()) ||
+		nextURL.User != nil || nextURL.Fragment != "" || nextURL.RawQuery != "" ||
 		(nextURL.Scheme != "https" && !containsOrigin(r.plainOrigins, nextURL.Scheme+"://"+nextURL.Host)) {
 		return "", false, coded(ErrorCodeRedirectRejected, nil)
 	}
@@ -324,6 +327,19 @@ func (r *Resolver) validateRedirect(spec requestSpec, current, location string) 
 		return "", false, coded(ErrorCodeRedirectRejected, nil)
 	}
 	return nextURL.String(), true, nil
+}
+
+func unambiguousRedirectURL(parsed *url.URL, raw string) bool {
+	if parsed == nil || parsed.RawPath != "" || parsed.Opaque != "" ||
+		strings.ContainsAny(raw, "\\\r\n\t") {
+		return false
+	}
+	for _, char := range parsed.Path {
+		if char < 0x20 || char == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Resolver) authorizationForChallenge(ctx context.Context, spec requestSpec, challenge string) (string, error) {

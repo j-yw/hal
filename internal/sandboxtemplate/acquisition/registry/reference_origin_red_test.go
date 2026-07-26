@@ -89,6 +89,17 @@ func TestL9RegistryOriginMustBeExactAllowlistedOrigin(t *testing.T) {
 	}
 }
 
+func TestL9RegistryOriginRejectsConflictingSchemesForOneAuthority(t *testing.T) {
+	_, err := registry.NewResolver(registry.Options{
+		Client:                 fakeHTTPDoer(func(*http.Request) (*http.Response, error) { return nil, nil }),
+		AllowedRegistryOrigins: []string{"https://registry.example", "http://registry.example"},
+		PlainHTTPOrigins:       []string{"http://registry.example"},
+	})
+	if err == nil {
+		t.Fatal("NewResolver() accepted HTTPS and plain HTTP for the same authority")
+	}
+}
+
 func TestL9DialPolicyRejectsNonPublicDestinationsAndDNSRebinding(t *testing.T) {
 	public := netip.MustParseAddr("8.8.8.8")
 	private := netip.MustParseAddr("127.0.0.1")

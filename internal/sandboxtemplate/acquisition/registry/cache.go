@@ -3,6 +3,8 @@ package registry
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 type Cache interface {
@@ -66,21 +70,30 @@ func (c *FileCache) Load(ctx context.Context, lookup CacheLookup) ([]byte, bool,
 }
 
 func (c *FileCache) loadLocked(ctx context.Context, lookup CacheLookup) ([]byte, bool, error) {
-	if err := c.ensureRoot(false); err != nil {
+	root, err := openCacheRoot(c.root, false)
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, false, nil
 		}
 		return nil, false, coded(ErrorCodeCacheInvalid, err)
 	}
-	entryDir := c.entryDir(lookup.ManifestDigest)
-	entryInfo, err := os.Lstat(entryDir)
+	defer root.Close()
+	return loadCacheEntry(root, lookup)
+}
+
+func loadCacheEntry(root *os.File, lookup CacheLookup) ([]byte, bool, error) {
+	entry, err := openDirectoryAt(root, cacheEntryName(lookup.ManifestDigest))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
 	}
-	if err != nil || validateOwnedMode(entryInfo, true, 0o700) != nil {
+	if err != nil {
 		return nil, false, coded(ErrorCodeCacheInvalid, err)
 	}
-	metadataBytes, err := readCacheFile(filepath.Join(entryDir, "metadata.json"), 16<<10)
+	defer entry.Close()
+	if err := validateOpenFile(entry, true, 0o700); err != nil {
+		return nil, false, coded(ErrorCodeCacheInvalid, err)
+	}
+	metadataBytes, err := readCacheFileAt(entry, "metadata.json", 16<<10)
 	if err != nil {
 		return nil, false, coded(ErrorCodeCacheInvalid, err)
 	}
@@ -96,8 +109,7 @@ func (c *FileCache) loadLocked(ctx context.Context, lookup CacheLookup) ([]byte,
 		metadata.SizeBytes != lookup.SizeBytes {
 		return nil, false, coded(ErrorCodeCacheInvalid, nil)
 	}
-	layerPath := filepath.Join(entryDir, "layer")
-	layerBytes, err := readCacheFile(layerPath, int(lookup.SizeBytes)+1)
+	layerBytes, err := readCacheFileAt(entry, "layer", int(lookup.SizeBytes)+1)
 	if err != nil ||
 		int64(len(layerBytes)) != lookup.SizeBytes ||
 		digestString(layerBytes) != lookup.LayerDigest {
@@ -115,20 +127,20 @@ func (c *FileCache) Store(ctx context.Context, entry CacheEntry) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err := c.ensureRoot(true); err != nil {
+	root, err := openCacheRoot(c.root, true)
+	if err != nil {
 		return coded(ErrorCodeCachePublishFailed, err)
 	}
-	finalDir := c.entryDir(entry.ManifestDigest)
-	if info, err := os.Lstat(finalDir); err == nil {
-		if validateOwnedMode(info, true, 0o700) != nil {
-			return coded(ErrorCodeCacheInvalid, nil)
-		}
-		_, hit, loadErr := c.loadLocked(ctx, CacheLookup{
-			ManifestDigest: entry.ManifestDigest,
-			LayerDigest:    entry.LayerDigest,
-			MediaType:      entry.MediaType,
-			SizeBytes:      int64(len(entry.LayerBytes)),
-		})
+	defer root.Close()
+	lookup := CacheLookup{
+		ManifestDigest: entry.ManifestDigest,
+		LayerDigest:    entry.LayerDigest,
+		MediaType:      entry.MediaType,
+		SizeBytes:      int64(len(entry.LayerBytes)),
+	}
+	if existing, openErr := openDirectoryAt(root, cacheEntryName(entry.ManifestDigest)); openErr == nil {
+		_ = existing.Close()
+		_, hit, loadErr := loadCacheEntry(root, lookup)
 		if loadErr != nil {
 			return loadErr
 		}
@@ -136,23 +148,25 @@ func (c *FileCache) Store(ctx context.Context, entry CacheEntry) error {
 			return coded(ErrorCodeCacheInvalid, nil)
 		}
 		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return coded(ErrorCodeCachePublishFailed, err)
+	} else if !errors.Is(openErr, os.ErrNotExist) {
+		return coded(ErrorCodeCachePublishFailed, openErr)
 	}
 
-	tempDir, err := os.MkdirTemp(c.root, ".tmp-")
+	tempName, tempDir, err := createCacheTempDirectory(root)
 	if err != nil {
 		return coded(ErrorCodeCachePublishFailed, err)
 	}
 	cleanup := true
 	defer func() {
 		if cleanup {
-			_ = os.RemoveAll(tempDir)
+			_ = unix.Unlinkat(int(tempDir.Fd()), "metadata.json", 0)
+			_ = unix.Unlinkat(int(tempDir.Fd()), "layer", 0)
+		}
+		_ = tempDir.Close()
+		if cleanup {
+			_ = unix.Unlinkat(int(root.Fd()), tempName, unix.AT_REMOVEDIR)
 		}
 	}()
-	if err := os.Chmod(tempDir, 0o700); err != nil {
-		return coded(ErrorCodeCachePublishFailed, err)
-	}
 	metadataBytes, err := json.Marshal(cacheMetadata{
 		ManifestDigest: entry.ManifestDigest,
 		LayerDigest:    entry.LayerDigest,
@@ -162,47 +176,38 @@ func (c *FileCache) Store(ctx context.Context, entry CacheEntry) error {
 	if err != nil {
 		return coded(ErrorCodeCachePublishFailed, err)
 	}
-	if err := writeSyncedFile(filepath.Join(tempDir, "metadata.json"), metadataBytes); err != nil {
+	if err := writeSyncedFileAt(tempDir, "metadata.json", metadataBytes); err != nil {
 		return coded(ErrorCodeCachePublishFailed, err)
 	}
-	if err := writeSyncedFile(filepath.Join(tempDir, "layer"), entry.LayerBytes); err != nil {
+	if err := writeSyncedFileAt(tempDir, "layer", entry.LayerBytes); err != nil {
 		return coded(ErrorCodeCachePublishFailed, err)
 	}
-	if err := syncDirectory(tempDir); err != nil {
+	if err := tempDir.Sync(); err != nil {
 		return coded(ErrorCodeCachePublishFailed, err)
 	}
-	if err := os.Rename(tempDir, finalDir); err != nil {
-		if _, statErr := os.Lstat(finalDir); statErr == nil {
-			return nil
+	finalName := cacheEntryName(entry.ManifestDigest)
+	if err := unix.Renameat(int(root.Fd()), tempName, int(root.Fd()), finalName); err != nil {
+		if errors.Is(err, unix.EEXIST) || errors.Is(err, unix.ENOTEMPTY) {
+			_, hit, loadErr := loadCacheEntry(root, lookup)
+			if loadErr != nil {
+				return loadErr
+			}
+			if hit {
+				return nil
+			}
+			return coded(ErrorCodeCacheInvalid, nil)
 		}
 		return coded(ErrorCodeCachePublishFailed, err)
 	}
 	cleanup = false
-	if err := syncDirectory(c.root); err != nil {
+	if err := root.Sync(); err != nil {
 		return coded(ErrorCodeCachePublishFailed, err)
 	}
 	return nil
 }
 
-func (c *FileCache) ensureRoot(create bool) error {
-	info, err := os.Lstat(c.root)
-	if errors.Is(err, os.ErrNotExist) && create {
-		if err := os.MkdirAll(c.root, 0o700); err != nil {
-			return err
-		}
-		if err := os.Chmod(c.root, 0o700); err != nil {
-			return err
-		}
-		info, err = os.Lstat(c.root)
-	}
-	if err != nil {
-		return err
-	}
-	return validateOwnedMode(info, true, 0o700)
-}
-
-func (c *FileCache) entryDir(manifestDigest string) string {
-	return filepath.Join(c.root, strings.TrimPrefix(manifestDigest, "sha256:"))
+func cacheEntryName(manifestDigest string) string {
+	return strings.TrimPrefix(manifestDigest, "sha256:")
 }
 
 func validCacheLookup(lookup CacheLookup) bool {
@@ -223,7 +228,10 @@ func validCacheEntry(entry CacheEntry) bool {
 }
 
 func validateOwnedMode(info os.FileInfo, directory bool, mode os.FileMode) error {
-	if info.Mode()&os.ModeSymlink != 0 || info.IsDir() != directory || info.Mode().Perm() != mode {
+	if info.Mode()&os.ModeSymlink != 0 ||
+		(directory && !info.IsDir()) ||
+		(!directory && !info.Mode().IsRegular()) ||
+		info.Mode().Perm() != mode {
 		return errors.New("cache entry metadata is invalid")
 	}
 	if !fileOwnedByCurrentUser(info) {
@@ -237,14 +245,27 @@ func fileOwnedByCurrentUser(info os.FileInfo) bool {
 	return ok && int(stat.Uid) == os.Geteuid()
 }
 
-func readCacheFile(path string, limit int) ([]byte, error) {
-	before, err := os.Lstat(path)
-	if err != nil || validateOwnedMode(before, false, 0o600) != nil {
-		return nil, errors.New("cache file is invalid")
+func validateOpenFile(file *os.File, directory bool, mode os.FileMode) error {
+	info, err := file.Stat()
+	if err != nil {
+		return err
 	}
-	file, err := os.Open(path)
+	return validateOwnedMode(info, directory, mode)
+}
+
+func readCacheFileAt(directory *os.File, name string, limit int) ([]byte, error) {
+	fd, err := unix.Openat(int(directory.Fd()), name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), name)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, errors.New("cache file is invalid")
+	}
+	if err := validateOpenFile(file, false, 0o600); err != nil {
+		_ = file.Close()
+		return nil, errors.New("cache file is invalid")
 	}
 	data, readErr := io.ReadAll(io.LimitReader(file, int64(limit)+1))
 	closeErr := file.Close()
@@ -257,19 +278,20 @@ func readCacheFile(path string, limit int) ([]byte, error) {
 	if len(data) > limit {
 		return nil, errors.New("cache file is oversized")
 	}
-	after, err := os.Lstat(path)
-	if err != nil || !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
-		return nil, errors.New("cache file changed during read")
-	}
 	return data, nil
 }
 
-func writeSyncedFile(path string, data []byte) error {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+func writeSyncedFileAt(directory *os.File, name string, data []byte) error {
+	fd, err := unix.Openat(int(directory.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return err
 	}
-	if err := file.Chmod(0o600); err != nil {
+	file := os.NewFile(uintptr(fd), name)
+	if file == nil {
+		_ = unix.Close(fd)
+		return errors.New("cache file creation failed")
+	}
+	if err := unix.Fchmod(fd, 0o600); err != nil {
 		_ = file.Close()
 		return err
 	}
@@ -284,16 +306,82 @@ func writeSyncedFile(path string, data []byte) error {
 	return file.Close()
 }
 
-func syncDirectory(path string) error {
-	directory, err := os.Open(path)
+func openCacheRoot(path string, create bool) (*os.File, error) {
+	fd, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := directory.Sync(); err != nil {
-		_ = directory.Close()
-		return err
+	current := os.NewFile(uintptr(fd), "/")
+	if current == nil {
+		_ = unix.Close(fd)
+		return nil, errors.New("cache root open failed")
 	}
-	return directory.Close()
+	components := strings.Split(strings.TrimPrefix(filepath.Clean(path), string(filepath.Separator)), string(filepath.Separator))
+	for _, component := range components {
+		if component == "" || component == "." || component == ".." {
+			_ = current.Close()
+			return nil, errors.New("cache root is invalid")
+		}
+		next, openErr := openDirectoryAt(current, component)
+		if errors.Is(openErr, os.ErrNotExist) && create {
+			if mkdirErr := unix.Mkdirat(int(current.Fd()), component, 0o700); mkdirErr != nil && !errors.Is(mkdirErr, unix.EEXIST) {
+				_ = current.Close()
+				return nil, mkdirErr
+			}
+			next, openErr = openDirectoryAt(current, component)
+		}
+		_ = current.Close()
+		if openErr != nil {
+			return nil, openErr
+		}
+		current = next
+	}
+	if err := validateOpenFile(current, true, 0o700); err != nil {
+		_ = current.Close()
+		return nil, err
+	}
+	return current, nil
+}
+
+func openDirectoryAt(parent *os.File, name string) (*os.File, error) {
+	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), name)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, errors.New("cache directory open failed")
+	}
+	return file, nil
+}
+
+func createCacheTempDirectory(root *os.File) (string, *os.File, error) {
+	for attempt := 0; attempt < 32; attempt++ {
+		random := make([]byte, 16)
+		if _, err := rand.Read(random); err != nil {
+			return "", nil, err
+		}
+		name := ".tmp-" + hex.EncodeToString(random)
+		if err := unix.Mkdirat(int(root.Fd()), name, 0o700); err != nil {
+			if errors.Is(err, unix.EEXIST) {
+				continue
+			}
+			return "", nil, err
+		}
+		directory, err := openDirectoryAt(root, name)
+		if err != nil {
+			_ = unix.Unlinkat(int(root.Fd()), name, unix.AT_REMOVEDIR)
+			return "", nil, err
+		}
+		if err := validateOpenFile(directory, true, 0o700); err != nil {
+			_ = directory.Close()
+			_ = unix.Unlinkat(int(root.Fd()), name, unix.AT_REMOVEDIR)
+			return "", nil, err
+		}
+		return name, directory, nil
+	}
+	return "", nil, errors.New("cache temporary directory unavailable")
 }
 
 type fetchGroup struct {

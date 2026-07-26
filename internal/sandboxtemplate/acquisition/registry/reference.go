@@ -112,11 +112,20 @@ func authorityEnd(raw string) int {
 func normalizeOriginSet(origins, plainOrigins []string) (map[string]struct{}, error) {
 	plainRaw := stringSet(plainOrigins)
 	out := make(map[string]struct{}, len(origins))
+	authorities := make(map[string]string, len(origins))
 	for _, raw := range origins {
 		normalized, err := normalizeOrigin(raw, hasRaw(plainRaw, raw))
 		if err != nil {
 			return nil, err
 		}
+		parsed, err := url.Parse(normalized)
+		if err != nil {
+			return nil, err
+		}
+		if prior, ok := authorities[parsed.Host]; ok && prior != normalized {
+			return nil, errors.New("registry authority has conflicting origins")
+		}
+		authorities[parsed.Host] = normalized
 		out[normalized] = struct{}{}
 	}
 	return out, nil

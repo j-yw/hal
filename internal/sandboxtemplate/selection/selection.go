@@ -179,10 +179,16 @@ func correlateRuntimeMetadata(metadata *sandboxruntime.RuntimeTemplateLockMetada
 
 func validBindingEvidence(result Result) bool {
 	digest := result.ManifestDigest
-	if digest == nil || digest.Algorithm != sandboxtemplate.DigestAlgorithmSHA256 || len(digest.Value) != 64 ||
+	if !validSHA256Digest(digest) ||
 		result.Lock.SourceKind != acquisition.SourceKindOCIArtifact ||
 		result.Lock.ReferenceKind != sandboxtemplate.ReferenceKindOCIArtifact ||
-		result.Lock.Status != acquisition.LockStatusLocked {
+		result.Lock.Status != acquisition.LockStatusLocked ||
+		result.Template.Metadata.Reference == nil ||
+		result.Template.Metadata.Reference.Kind != sandboxtemplate.ReferenceKindOCIArtifact ||
+		!digestEqual(result.Template.Metadata.Reference.Digest, digest) ||
+		result.Template.Runtime == nil ||
+		string(result.Template.Runtime.Driver) != strings.TrimSpace(result.RuntimeDriver) ||
+		string(result.Template.Runtime.IsolationLevel) != strings.TrimSpace(result.IsolationLevel) {
 		return false
 	}
 	var locked bool
@@ -216,6 +222,7 @@ func validBindingEvidence(result Result) bool {
 
 func runtimeEntryMatches(entry *sandboxruntime.RuntimeTemplateLockEntryMetadata, digest *sandboxtemplate.DigestMetadata) bool {
 	return entry != nil &&
+		entry.SourceKind == "template_reference" &&
 		entry.ReferenceKind == string(sandboxtemplate.ReferenceKindOCIArtifact) &&
 		entry.Status == string(acquisition.LockStatusLocked) &&
 		entry.DigestAlgorithm == string(digest.Algorithm) &&
@@ -223,14 +230,32 @@ func runtimeEntryMatches(entry *sandboxruntime.RuntimeTemplateLockEntryMetadata,
 }
 
 func selectedManifestDigest(lock acquisition.TemplateLock) *sandboxtemplate.DigestMetadata {
+	if lock.SourceKind != acquisition.SourceKindOCIArtifact ||
+		lock.ReferenceKind != sandboxtemplate.ReferenceKindOCIArtifact ||
+		lock.Status != acquisition.LockStatusLocked {
+		return nil
+	}
 	for _, reference := range lock.References {
 		if reference.Field == "metadata.reference" &&
+			reference.Kind == sandboxtemplate.ReferenceKindOCIArtifact &&
 			reference.Status == acquisition.LockStatusLocked &&
-			reference.Digest != nil {
+			validSHA256Digest(reference.Digest) {
 			return cloneDigest(reference.Digest)
 		}
 	}
 	return nil
+}
+
+func validSHA256Digest(digest *sandboxtemplate.DigestMetadata) bool {
+	if digest == nil || digest.Algorithm != sandboxtemplate.DigestAlgorithmSHA256 || len(digest.Value) != 64 {
+		return false
+	}
+	for _, char := range digest.Value {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func cloneDigest(digest *sandboxtemplate.DigestMetadata) *sandboxtemplate.DigestMetadata {

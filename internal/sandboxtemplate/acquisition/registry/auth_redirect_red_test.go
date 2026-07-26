@@ -162,6 +162,9 @@ func TestL9BlobRedirectPolicyStripsAuthorizationAndRejectsUnsafeHops(t *testing.
 		{"TLS downgrade", "http://objects.example/layer", false, registry.ErrorCodeRedirectRejected},
 		{"userinfo", "https://user:pass@objects.example/layer", false, registry.ErrorCodeRedirectRejected},
 		{"fragment", blobOrigin + "/layer#fragment", false, registry.ErrorCodeRedirectRejected},
+		{"encoded slash", blobOrigin + "/verified%2flayer", false, registry.ErrorCodeRedirectRejected},
+		{"encoded dot", blobOrigin + "/%2e/verified-layer", false, registry.ErrorCodeRedirectRejected},
+		{"backslash", blobOrigin + `/verified\\layer`, false, registry.ErrorCodeRedirectRejected},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

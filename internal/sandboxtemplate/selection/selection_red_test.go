@@ -144,8 +144,9 @@ func TestL9AdvisorySelectionNeverClaimsStrictTrust(t *testing.T) {
 				Metadata:   sandboxtemplate.TemplateMetadata{ID: "advisory-template"},
 			},
 			Lock: acquisition.TemplateLock{
-				SourceKind: acquisition.SourceKindOCIArtifact,
-				Status:     acquisition.LockStatusUnresolved,
+				SourceKind:    acquisition.SourceKindOCIArtifact,
+				ReferenceKind: sandboxtemplate.ReferenceKindOCIArtifact,
+				Status:        acquisition.LockStatusLocked,
 				References: []acquisition.ReferenceLock{{
 					Field:  "metadata.reference",
 					Kind:   sandboxtemplate.ReferenceKindOCIArtifact,
@@ -178,6 +179,48 @@ func TestL9SelectionDoesNotFallbackAfterResolverFailure(t *testing.T) {
 	}
 	if result.Template.Metadata.ID != "" || result.ManifestDigest != nil {
 		t.Fatalf("resolver failure returned fallback selection: %#v", result)
+	}
+}
+
+func TestL9SelectionRequiresExactLockedOCISHA256ManifestEvidence(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*acquisition.TemplateLock)
+	}{
+		{"source kind", func(lock *acquisition.TemplateLock) { lock.SourceKind = acquisition.SourceKindGit }},
+		{"root reference kind", func(lock *acquisition.TemplateLock) { lock.ReferenceKind = sandboxtemplate.ReferenceKindGit }},
+		{"root status", func(lock *acquisition.TemplateLock) { lock.Status = acquisition.LockStatusUnresolved }},
+		{"reference kind", func(lock *acquisition.TemplateLock) { lock.References[0].Kind = sandboxtemplate.ReferenceKindGit }},
+		{"reference status", func(lock *acquisition.TemplateLock) { lock.References[0].Status = acquisition.LockStatusUnresolved }},
+		{"digest algorithm", func(lock *acquisition.TemplateLock) { lock.References[0].Digest.Algorithm = "sha512" }},
+		{"uppercase digest", func(lock *acquisition.TemplateLock) {
+			lock.References[0].Digest.Value = strings.ToUpper(lock.References[0].Digest.Value)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			digest := selectionTestDigest([]byte("locked manifest"))
+			lock := acquisition.TemplateLock{
+				SourceKind:    acquisition.SourceKindOCIArtifact,
+				ReferenceKind: sandboxtemplate.ReferenceKindOCIArtifact,
+				Status:        acquisition.LockStatusLocked,
+				References: []acquisition.ReferenceLock{{
+					Field:  "metadata.reference",
+					Kind:   sandboxtemplate.ReferenceKindOCIArtifact,
+					Status: acquisition.LockStatusLocked,
+					Digest: digest,
+				}},
+			}
+			tt.mutate(&lock)
+			resolver := &selectionResolverStub{result: acquisition.ResolveResult{Lock: lock}}
+			_, err := selection.NewWorkflow(resolver).Select(context.Background(), selection.Request{
+				Source:    acquisition.TemplateSource{Kind: acquisition.SourceKindOCIArtifact},
+				TrustMode: acquisition.TrustPolicyModeAdvisory,
+			})
+			if err == nil || !strings.Contains(err.Error(), string(selection.ErrorCodeSelectionRejected)) {
+				t.Fatalf("Select() error = %v, want selection_rejected", err)
+			}
+		})
 	}
 }
 
@@ -239,7 +282,14 @@ func TestL9SelectionBindingRejectsMissingOrMismatchedLockAndTrustCorrelation(t *
 	}{
 		{"missing lock", func(r *selection.Result) { r.Lock = acquisition.TemplateLock{} }},
 		{"wrong source", func(r *selection.Result) { r.Lock.SourceKind = acquisition.SourceKindLocalFile }},
+		{"wrong lock reference kind", func(r *selection.Result) { r.Lock.ReferenceKind = sandboxtemplate.ReferenceKindGit }},
+		{"wrong locked reference kind", func(r *selection.Result) { r.Lock.References[0].Kind = sandboxtemplate.ReferenceKindGit }},
+		{"uppercase digest", func(r *selection.Result) { r.ManifestDigest.Value = strings.ToUpper(r.ManifestDigest.Value) }},
+		{"template reference digest", func(r *selection.Result) { r.Template.Metadata.Reference.Digest.Value = strings.Repeat("b", 64) }},
+		{"template runtime driver", func(r *selection.Result) { r.Template.Runtime.Driver = "rootless_podman" }},
+		{"template runtime isolation", func(r *selection.Result) { r.Template.Runtime.IsolationLevel = "container" }},
 		{"missing template metadata", func(r *selection.Result) { r.RuntimeMetadata.TemplateReference = nil }},
+		{"template metadata source", func(r *selection.Result) { r.RuntimeMetadata.TemplateReference.SourceKind = "template_kit" }},
 		{"template digest", func(r *selection.Result) { r.RuntimeMetadata.TemplateReference.DigestValue = strings.Repeat("b", 64) }},
 		{"missing trust metadata", func(r *selection.Result) { r.RuntimeMetadata.TrustPolicy = nil }},
 		{"trust digest", func(r *selection.Result) { r.RuntimeMetadata.TrustPolicy.DigestValue = strings.Repeat("b", 64) }},
@@ -261,6 +311,18 @@ func validBindingSelectionResult(digest *sandboxtemplate.DigestMetadata) selecti
 		ManifestDigest: digest,
 		RuntimeDriver:  "microvm",
 		IsolationLevel: "vm",
+		Template: sandboxtemplate.Template{
+			Metadata: sandboxtemplate.TemplateMetadata{
+				Reference: &sandboxtemplate.ImmutableRef{
+					Kind:   sandboxtemplate.ReferenceKindOCIArtifact,
+					Digest: digest,
+				},
+			},
+			Runtime: &sandboxtemplate.RuntimeRequirements{
+				Driver:         "microvm",
+				IsolationLevel: "vm",
+			},
+		},
 		Lock: acquisition.TemplateLock{
 			SourceKind:    acquisition.SourceKindOCIArtifact,
 			ReferenceKind: sandboxtemplate.ReferenceKindOCIArtifact,
@@ -300,6 +362,22 @@ func validBindingSelectionResult(digest *sandboxtemplate.DigestMetadata) selecti
 func cloneSelectionResultForBinding(input selection.Result) selection.Result {
 	out := input
 	out.Lock.References = append([]acquisition.ReferenceLock(nil), input.Lock.References...)
+	if input.ManifestDigest != nil {
+		digest := *input.ManifestDigest
+		out.ManifestDigest = &digest
+	}
+	if input.Template.Metadata.Reference != nil {
+		reference := *input.Template.Metadata.Reference
+		if reference.Digest != nil {
+			digest := *reference.Digest
+			reference.Digest = &digest
+		}
+		out.Template.Metadata.Reference = &reference
+	}
+	if input.Template.Runtime != nil {
+		runtime := *input.Template.Runtime
+		out.Template.Runtime = &runtime
+	}
 	if input.RuntimeMetadata != nil {
 		metadata := *input.RuntimeMetadata
 		if input.RuntimeMetadata.TemplateReference != nil {
