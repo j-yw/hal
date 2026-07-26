@@ -43,11 +43,13 @@ microVM descriptors remain lifecycle-only until L5 correlates an exact v1
 readiness handshake with a live guest/runtime.
 
 Malformed, unknown, duplicate, trailing, oversized, canceled, busy, not-ready,
-and unsupported-version requests make zero backend calls. Exec coverage
-includes binary stdin/output, non-zero exit, independent stdout/stderr
-truncation, fail-closed and size-bounded environment resolution, timeout, cancellation,
-shutdown, process-group termination, reap, work-directory descriptor pinning,
-and descriptor non-inheritance.
+and unsupported-version requests make zero backend calls. Exact wire coverage
+rejects padded enum values and noncanonical base64 data, including embedded
+CR/LF and non-zero trailing padding bits, on request and hostile-response
+paths. Exec coverage includes binary stdin/output, non-zero exit, independent
+stdout/stderr truncation, fail-closed and size-bounded environment resolution,
+timeout, cancellation, shutdown, process-group termination, reap,
+work-directory descriptor pinning, and descriptor non-inheritance.
 
 Readiness, exec, uncommitted copy-in, and copy-out deadlines remain
 authoritative when an injected backend returns success only after its operation

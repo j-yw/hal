@@ -418,8 +418,11 @@ func validateEncodedData(operation Operation, field, data string, encoding Paylo
 		if len(data) > maxBase64EncodedPayloadLength(maxBytes, maximumBytes) {
 			return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, field+".data", kind+" data exceeds encoded limit")
 		}
-		decoded, err := base64.StdEncoding.DecodeString(data)
+		decoded, err := base64.StdEncoding.Strict().DecodeString(data)
 		if err != nil {
+			return newValidationError(ErrorCodeInvalidMetadata, operation, field+".data", kind+" data is not valid base64")
+		}
+		if base64.StdEncoding.EncodeToString(decoded) != data {
 			return newValidationError(ErrorCodeInvalidMetadata, operation, field+".data", kind+" data is not valid base64")
 		}
 		decodedSize = int64(len(decoded))

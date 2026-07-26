@@ -423,10 +423,13 @@ remapped. No request path is reopened. A subprocess regression test coordinates
 replacement of the original path between open and start and proves the child
 remains in the pinned directory.
 
-Stdin is decoded and bounded before launch. Stdout and stderr use independent
-bounded writers that retain the permitted prefix, continue draining discarded
-bytes, and set `truncated=true`. Returned binary bytes are base64 encoded.
-Non-zero exit is a normal `ExecResponse`.
+Stdin is decoded and bounded before launch. Base64 wire data must use the exact
+canonical RFC 4648 standard encoding: embedded CR/LF, non-zero trailing padding
+bits, alternate padding, and other byte-equivalent spellings are invalid
+metadata. Stdout and stderr use independent bounded writers that retain the
+permitted prefix, continue draining discarded bytes, and set `truncated=true`.
+Returned binary bytes use the same canonical base64 encoding. Non-zero exit is
+a normal `ExecResponse`.
 
 Every process starts in a new process group. Linux `waitid` with `WNOWAIT`
 observes leader exit without reaping it, so the leader continues to anchor its
