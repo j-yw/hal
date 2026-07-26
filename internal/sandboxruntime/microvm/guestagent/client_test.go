@@ -237,6 +237,28 @@ func TestClientCopyInPublishedOutcomeOutranksLateContext(t *testing.T) {
 			}),
 			wantCode: ErrorCodeDurabilityUncertain,
 		},
+		{
+			name: "unpublished failure remains context authoritative",
+			response: encodeClientResponse(t, ErrorResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyIn,
+				Error: &ProtocolError{
+					Code:      ErrorCodeCopyFailed,
+					Operation: OperationCopyIn,
+					Field:     "copy",
+					Message:   "copy failed",
+				},
+			}),
+			wantCode: ErrorCodeRequestCanceled,
+		},
+		{
+			name: "malformed durability response remains context authoritative",
+			response: TransportResponse{Encoded: []byte(
+				`{"protocolVersion":"guest-agent-v1","operation":"copy_in",` +
+					`"error":{"code":"durability_uncertain","operation":"copy_in"},"extra":true}`,
+			)},
+			wantCode: ErrorCodeRequestCanceled,
+		},
 	}
 
 	for _, tt := range tests {

@@ -55,7 +55,10 @@ Readiness, exec, uncommitted copy-in, and copy-out deadlines remain
 authoritative when an injected backend returns success only after its operation
 context expires. Copy-in tests separately prove that an explicitly published
 success or published `durability_uncertain` result outranks late cancellation,
-so a visible mutation is never mislabeled as retry-safe.
+so a visible mutation is never mislabeled as retry-safe. Host-client fake
+transport coverage proves those two strict published response shapes survive a
+post-response context race while ordinary copy failure remains
+context-authoritative.
 
 Copy coverage includes byte-for-byte round trip, exact lowercase SHA-256,
 oversize rejection, atomic replacement, `0600` mode, publication/cancellation

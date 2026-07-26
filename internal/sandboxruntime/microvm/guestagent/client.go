@@ -184,7 +184,8 @@ func (client *Client) roundTrip(ctx context.Context, operation Operation, timing
 		}
 		return NewProtocolError(ErrorCodeTransportFailure, operation, "transport", err)
 	}
-	if err := callCtx.Err(); err != nil {
+	if err := callCtx.Err(); err != nil &&
+		(operation != OperationCopyIn || !publishedCopyInOutcome(transportResponse.Encoded, client.maxResponseBytes)) {
 		return clientContextError(operation, err)
 	}
 
@@ -211,6 +212,38 @@ func (client *Client) roundTrip(ctx context.Context, operation Operation, timing
 		return err
 	}
 	return nil
+}
+
+func publishedCopyInOutcome(encoded []byte, maxResponseBytes int64) bool {
+	if int64(len(encoded)) > maxResponseBytes {
+		return false
+	}
+	if err := validateStrictJSONObject(encoded, maxStrictJSONDepth); err != nil {
+		return false
+	}
+	if err := validateResponseHeader(encoded, OperationCopyIn); err != nil {
+		return false
+	}
+	var probe struct {
+		Error *ProtocolError `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(encoded, &probe); err != nil {
+		return false
+	}
+	if probe.Error != nil {
+		var response ErrorResponse
+		if err := strictUnmarshalObject(encoded, &response); err != nil {
+			return false
+		}
+		return ValidateErrorResponse(response) == nil &&
+			response.Error.Code == ErrorCodeDurabilityUncertain
+	}
+
+	var response CopyInResponse
+	if err := strictUnmarshalObject(encoded, &response); err != nil {
+		return false
+	}
+	return ValidateCopyInResponse(response) == nil
 }
 
 func contextWithTiming(ctx context.Context, timing *TimingMetadata) (context.Context, context.CancelFunc) {

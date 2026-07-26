@@ -499,7 +499,12 @@ unsafe retry of an already-visible mutation. If parent fsync fails after
 publication, or if a published backend result is otherwise inconsistent, the
 server returns `durability_uncertain` even when cancellation races: the new
 destination is visible but crash durability or result identity is not proven.
-The response on durable success always acknowledges exact size and digest.
+The host client preserves the same ordering when a transport returns a response
+after its call context expires: only a strict, bounded, valid copy-in success or
+an exact `durability_uncertain` error may outrank the context. Malformed,
+oversized, mismatched, and ordinary pre-publication error responses remain
+context-authoritative. The response on durable success always acknowledges
+exact size and digest.
 
 Copy-out:
 
