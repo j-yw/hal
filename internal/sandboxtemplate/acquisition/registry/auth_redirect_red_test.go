@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -201,6 +202,85 @@ func TestL9BlobRedirectPolicyStripsAuthorizationAndRejectsUnsafeHops(t *testing.
 	}
 }
 
+func TestL9RedirectPolicyRejectsMoreThanThreeHops(t *testing.T) {
+	fixture := newRegistryFixture(t)
+	hop := 0
+	client := fakeHTTPDoer(func(request *http.Request) (*http.Response, error) {
+		if strings.Contains(request.URL.Path, "/manifests/") {
+			return registryResponse(http.StatusOK, registry.MediaTypeOCIManifest, fixture.manifest, nil), nil
+		}
+		if strings.Contains(request.URL.Path, "/blobs/") || strings.Contains(request.URL.Path, "/hop/") {
+			hop++
+			return registryResponse(http.StatusTemporaryRedirect, "", nil, map[string]string{
+				"Location": registryOrigin + "/hop/" + strconv.Itoa(hop),
+			}), nil
+		}
+		return registryResponse(http.StatusNotFound, "", nil, nil), nil
+	})
+	resolver := mustRegistryResolver(t, client, nil)
+	_, err := resolver.ResolveOCIArtifact(context.Background(), tagRequest("registry.example/hal/template:latest"))
+	requireRegistryErrorCode(t, err, registry.ErrorCodeRedirectRejected)
+	if hop != registry.DefaultMaxRedirects+1 {
+		t.Fatalf("redirect requests = %d, want rejection at hop %d", hop, registry.DefaultMaxRedirects+1)
+	}
+}
+
+func TestL9OriginValidationRunsForRegistryRedirectBlobAndTokenRequests(t *testing.T) {
+	fixture := newRegistryFixture(t)
+	validator := &recordingOriginValidator{}
+	const tokenOrigin = "https://tokens.example"
+	const blobOrigin = "https://objects.example"
+	client := fakeHTTPDoer(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Host {
+		case "registry.example":
+			if strings.Contains(request.URL.Path, "/manifests/") {
+				if request.Header.Get("Authorization") == "" {
+					return registryResponse(http.StatusUnauthorized, "", nil, map[string]string{
+						"WWW-Authenticate": `Bearer realm="` + tokenOrigin + `/token",service="registry.example",scope="repository:hal/template:pull"`,
+					}), nil
+				}
+				return registryResponse(http.StatusOK, registry.MediaTypeOCIManifest, fixture.manifest, nil), nil
+			}
+			return registryResponse(http.StatusTemporaryRedirect, "", nil, map[string]string{
+				"Location": blobOrigin + "/layer",
+			}), nil
+		case "tokens.example":
+			return registryResponse(http.StatusOK, "application/json", []byte(`{"token":"fixture-token"}`), nil), nil
+		case "objects.example":
+			return registryResponse(http.StatusOK, registry.MediaTypeTemplateYAML, fixture.template, nil), nil
+		default:
+			return registryResponse(http.StatusNotFound, "", nil, nil), nil
+		}
+	})
+	resolver, err := registry.NewResolver(registry.Options{
+		Client:                 client,
+		AllowedRegistryOrigins: []string{registryOrigin},
+		AllowedTokenOrigins: map[string]registry.TokenOriginPolicy{
+			registryOrigin: {Origin: tokenOrigin, Service: "registry.example"},
+		},
+		AllowedBlobOrigins: map[string][]string{registryOrigin: {blobOrigin}},
+		CredentialProvider: &recordingCredentialProvider{},
+		OriginValidator:    validator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.ResolveOCIArtifact(context.Background(), tagRequest("registry.example/hal/template:latest")); err != nil {
+		t.Fatalf("ResolveOCIArtifact() error = %v", err)
+	}
+	validator.mu.Lock()
+	defer validator.mu.Unlock()
+	for _, kind := range []registry.RequestOriginKind{
+		registry.RequestOriginRegistry,
+		registry.RequestOriginToken,
+		registry.RequestOriginBlobRedirect,
+	} {
+		if validator.counts[kind] == 0 {
+			t.Errorf("origin validator calls[%q] = 0", kind)
+		}
+	}
+}
+
 type recordingCredentialProvider struct {
 	mu         sync.Mutex
 	credential registry.Credential
@@ -212,4 +292,19 @@ func (p *recordingCredentialProvider) LookupCredential(_ context.Context, reques
 	defer p.mu.Unlock()
 	p.calls = append(p.calls, request)
 	return p.credential, nil
+}
+
+type recordingOriginValidator struct {
+	mu     sync.Mutex
+	counts map[registry.RequestOriginKind]int
+}
+
+func (v *recordingOriginValidator) ValidateRequestOrigin(_ context.Context, request registry.RequestOriginValidationRequest) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.counts == nil {
+		v.counts = make(map[registry.RequestOriginKind]int)
+	}
+	v.counts[request.Kind]++
+	return nil
 }

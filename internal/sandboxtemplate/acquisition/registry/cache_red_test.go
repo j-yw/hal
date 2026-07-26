@@ -48,6 +48,23 @@ func TestL9FileCacheRoundTripUsesOnlyVerifiedManifestIdentity(t *testing.T) {
 			t.Fatalf("cache name contains reference-derived data: %q", base)
 		}
 	}
+	if err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			if info.Mode().Perm() != 0o700 {
+				t.Errorf("directory %s mode = %o, want 700", filepath.Base(path), info.Mode().Perm())
+			}
+			return nil
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("file %s mode = %o, want 600", filepath.Base(path), info.Mode().Perm())
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestL9FileCacheRejectsSymlinksWrongModesAndCorruption(t *testing.T) {
@@ -163,6 +180,49 @@ func TestL9FileCacheDetectsChangeDuringReadOrReturnsOnlyVerifiedBytes(t *testing
 	writer.Wait()
 }
 
+func TestL9FileCacheRejectsCorruptionAndEntryFileSymlinksAfterSuccess(t *testing.T) {
+	fixture := newRegistryFixture(t)
+	for _, mode := range []string{"corrupt", "symlink"} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			cache := registry.NewFileCache(root)
+			entry := registry.CacheEntry{
+				ManifestDigest: fixture.manifestDigest,
+				LayerDigest:    fixture.layerDigest,
+				MediaType:      registry.MediaTypeTemplateYAML,
+				LayerBytes:     fixture.template,
+			}
+			if err := cache.Store(context.Background(), entry); err != nil {
+				t.Fatal(err)
+			}
+			layerPath := largestRegularFile(t, root)
+			if mode == "corrupt" {
+				if err := os.WriteFile(layerPath, []byte("corrupt cache bytes"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				target := filepath.Join(t.TempDir(), "attacker-data")
+				if err := os.WriteFile(target, fixture.template, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(layerPath); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, layerPath); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, _, err := cache.Load(context.Background(), registry.CacheLookup{
+				ManifestDigest: fixture.manifestDigest,
+				LayerDigest:    fixture.layerDigest,
+				MediaType:      registry.MediaTypeTemplateYAML,
+				SizeBytes:      int64(len(fixture.template)),
+			})
+			requireRegistryErrorCode(t, err, registry.ErrorCodeCacheInvalid)
+		})
+	}
+}
+
 func TestL9FileCachePublicationCoalescesConcurrentWriters(t *testing.T) {
 	fixture := newRegistryFixture(t)
 	cache := registry.NewFileCache(t.TempDir())
@@ -205,9 +265,32 @@ func TestL9FileCacheImplementationUsesLstatFsyncAndSameDirectoryRename(t *testin
 		t.Fatalf("ReadFile(cache.go): %v", err)
 	}
 	source := string(content)
-	for _, required := range []string{"os.Lstat", ".Sync()", "os.Rename", "MkdirTemp", "0o700", "0o600"} {
+	for _, required := range []string{"os.Lstat", ".Sync()", "os.Rename", "MkdirTemp", "0o700", "0o600", "Stat_t", "Uid"} {
 		if !strings.Contains(source, required) {
 			t.Errorf("cache.go missing crash/containment primitive %q", required)
 		}
 	}
+}
+
+func largestRegularFile(t *testing.T, root string) string {
+	t.Helper()
+	var selected string
+	var selectedSize int64 = -1
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() && info.Size() > selectedSize {
+			selected = path
+			selectedSize = info.Size()
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected == "" {
+		t.Fatal("cache contains no regular entry file")
+	}
+	return selected
 }

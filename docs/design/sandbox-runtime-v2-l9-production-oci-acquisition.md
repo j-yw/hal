@@ -92,6 +92,7 @@ Stable safe failure codes are:
 - `authentication_failed`;
 - `authentication_challenge_invalid`;
 - `authentication_response_oversize`;
+- `response_headers_oversize`;
 - `redirect_rejected`;
 - `manifest_oversize`;
 - `manifest_media_type_unsupported`;

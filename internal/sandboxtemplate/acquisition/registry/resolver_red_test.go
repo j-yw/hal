@@ -72,14 +72,23 @@ func TestL9RegistryResolverVerifiesBytesAndCachesOnlyLayerByManifestDigest(t *te
 func TestL9RegistryResolverDigestPinnedGETMatchesRequestedBytes(t *testing.T) {
 	fixture := newRegistryFixture(t)
 	client := fakeHTTPDoer(func(request *http.Request) (*http.Response, error) {
-		if !strings.HasSuffix(request.URL.Path, "/manifests/"+fixture.manifestDigest) {
-			t.Fatalf("manifest path = %q, want digest selector", request.URL.Path)
+		if strings.Contains(request.URL.Path, "/manifests/") {
+			if !strings.HasSuffix(request.URL.Path, "/manifests/"+fixture.manifestDigest) {
+				t.Fatalf("manifest path = %q, want digest selector", request.URL.Path)
+			}
+			return registryResponse(http.StatusOK, registry.MediaTypeOCIManifest, fixture.manifest, nil), nil
 		}
-		return registryResponse(http.StatusOK, registry.MediaTypeOCIManifest, fixture.manifest, nil), nil
+		if strings.Contains(request.URL.Path, "/blobs/") {
+			return registryResponse(http.StatusOK, registry.MediaTypeTemplateYAML, fixture.template, nil), nil
+		}
+		return registryResponse(http.StatusNotFound, "", nil, nil), nil
 	})
 	resolver := mustRegistryResolver(t, client, nil)
-	_, err := resolver.ResolveOCIArtifact(context.Background(), digestRequest("registry.example/hal/template", fixture.manifest))
-	requireRegistryErrorCode(t, err, registry.ErrorCodeRegistryUnavailable) // No blob response and no fallback.
+	result, err := resolver.ResolveOCIArtifact(context.Background(), digestRequest("registry.example/hal/template", fixture.manifest))
+	if err != nil {
+		t.Fatalf("ResolveOCIArtifact() error = %v", err)
+	}
+	requireDigest(t, result.TemplateArtifactDigest, fixture.manifestDigest)
 }
 
 func TestL9RegistryResolverSeparatesHeaderAndRequestedDigestMismatch(t *testing.T) {
@@ -168,6 +177,18 @@ func TestL9RegistryResolverRejectsResponseAndBodyBoundaryViolations(t *testing.T
 			requireRegistryErrorCode(t, err, tt.want)
 		})
 	}
+}
+
+func TestL9RegistryResolverRejectsResponseHeaderBytesOverLimit(t *testing.T) {
+	fixture := newRegistryFixture(t)
+	client := fakeHTTPDoer(func(*http.Request) (*http.Response, error) {
+		return registryResponse(http.StatusOK, registry.MediaTypeOCIManifest, fixture.manifest, map[string]string{
+			"X-Oversized-Response": strings.Repeat("x", registry.DefaultMaxResponseHeaderBytes+1),
+		}), nil
+	})
+	resolver := mustRegistryResolver(t, client, nil)
+	_, err := resolver.ResolveOCIArtifact(context.Background(), tagRequest("registry.example/hal/template:latest"))
+	requireRegistryErrorCode(t, err, registry.ErrorCodeResponseHeadersOversize)
 }
 
 func TestL9RegistryResolverRejectsUnsupportedManifestShapesAndDescriptors(t *testing.T) {
@@ -292,6 +313,98 @@ func TestL9RegistryResolverDoesNotFallbackToCacheWhenLiveManifestUnavailable(t *
 	resolver := mustRegistryResolver(t, client, cache)
 	_, err := resolver.ResolveOCIArtifact(context.Background(), tagRequest("registry.example/hal/template:latest"))
 	requireRegistryErrorCode(t, err, registry.ErrorCodeRegistryUnavailable)
+}
+
+func TestL9TagDescriptorMutationPublishesNeitherFirstResultNorCacheEntry(t *testing.T) {
+	fixture := newRegistryFixture(t)
+	secondTemplate := append([]byte(nil), fixture.template...)
+	secondTemplate = append(secondTemplate, []byte("\n# second valid template")...)
+	secondLayerDigest := registryDigest(secondTemplate)
+	var manifest map[string]any
+	if err := json.Unmarshal(fixture.manifest, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	layer := manifest["layers"].([]any)[0].(map[string]any)
+	layer["digest"] = secondLayerDigest
+	layer["size"] = len(secondTemplate)
+	secondManifest, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestGets := 0
+	client := fakeHTTPDoer(func(request *http.Request) (*http.Response, error) {
+		if strings.Contains(request.URL.Path, "/manifests/") {
+			manifestGets++
+			body := fixture.manifest
+			if manifestGets == 2 {
+				body = secondManifest
+			}
+			return registryResponse(http.StatusOK, registry.MediaTypeOCIManifest, body, nil), nil
+		}
+		return registryResponse(http.StatusOK, registry.MediaTypeTemplateYAML, fixture.template, nil), nil
+	})
+	cache := registry.NewFileCache(t.TempDir())
+	resolver := mustRegistryResolver(t, client, cache)
+	result, resolveErr := resolver.ResolveOCIArtifact(context.Background(), tagRequest("registry.example/hal/template:latest"))
+	requireRegistryErrorCode(t, resolveErr, registry.ErrorCodeTagMutated)
+	if result.TemplateArtifactDigest != nil || len(result.TemplateBytes) != 0 {
+		t.Fatalf("mutation returned first selection: %#v", result)
+	}
+	_, hit, loadErr := cache.Load(context.Background(), registry.CacheLookup{
+		ManifestDigest: fixture.manifestDigest,
+		LayerDigest:    fixture.layerDigest,
+		MediaType:      registry.MediaTypeTemplateYAML,
+		SizeBytes:      int64(len(fixture.template)),
+	})
+	if loadErr != nil {
+		t.Fatalf("Load() after mutation error = %v", loadErr)
+	}
+	if hit {
+		t.Fatal("tag mutation published first layer into cache")
+	}
+}
+
+func TestL9ConcurrentResolverSelectionsCoalesceBlobFetchWithoutSkippingLiveManifest(t *testing.T) {
+	fixture := newRegistryFixture(t)
+	var mu sync.Mutex
+	manifestGets := 0
+	blobGets := 0
+	client := fakeHTTPDoer(func(request *http.Request) (*http.Response, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if strings.Contains(request.URL.Path, "/manifests/") {
+			manifestGets++
+			return registryResponse(http.StatusOK, registry.MediaTypeOCIManifest, fixture.manifest, nil), nil
+		}
+		blobGets++
+		return registryResponse(http.StatusOK, registry.MediaTypeTemplateYAML, fixture.template, nil), nil
+	})
+	resolver := mustRegistryResolver(t, client, registry.NewFileCache(t.TempDir()))
+	var wg sync.WaitGroup
+	errs := make(chan error, 12)
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := resolver.ResolveOCIArtifact(context.Background(), tagRequest("registry.example/hal/template:latest"))
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent ResolveOCIArtifact() error = %v", err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if manifestGets != 24 {
+		t.Fatalf("manifest GETs = %d, want live first/second resolution per caller", manifestGets)
+	}
+	if blobGets != 1 {
+		t.Fatalf("blob GETs = %d, want one coalesced fetch", blobGets)
+	}
 }
 
 type registryFixture struct {

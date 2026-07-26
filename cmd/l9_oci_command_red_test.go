@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxtemplate"
 	"github.com/jywlabs/hal/internal/sandboxtemplate/selection"
 	"github.com/spf13/cobra"
 )
@@ -224,6 +226,59 @@ func TestL9CommandWiringCallsSelectionBeforeTargetAndConstructors(t *testing.T) 
 				t.Fatalf("%s does not prove %s occurs after selection", file, later)
 			}
 		}
+	}
+}
+
+func TestL9ExactManifestDigestPropagatesIntoExecutionSandboxAndRuntimeBindings(t *testing.T) {
+	digest := &sandboxtemplate.DigestMetadata{
+		Algorithm: sandboxtemplate.DigestAlgorithmSHA256,
+		Value:     strings.Repeat("a", 64),
+	}
+	runtimeLock := &sandboxruntime.RuntimeTemplateLockMetadata{
+		Document: &sandboxruntime.RuntimeTemplateLockEntryMetadata{
+			DigestAlgorithm: "sha256",
+			DigestValue:     digest.Value,
+			Status:          "locked",
+		},
+	}
+	workflow := &sandboxTemplateWorkflowStub{result: selection.Result{
+		ManifestDigest:  digest,
+		RuntimeDriver:   "microvm",
+		RuntimeMetadata: runtimeLock,
+	}}
+	result, err := executeSandboxTemplateSelectionBeforeConstruction(context.Background(), sandboxTemplateConstructionRequest{
+		Command:          "run",
+		ExecutionID:      "run-l9",
+		SandboxID:        "sandbox-l9",
+		RuntimeID:        "runtime-l9",
+		RequestedRuntime: "microvm",
+		Selection: sandboxTemplateSelectionRequest{
+			Command: "run",
+			Flags: sandboxTemplateFlagValues{
+				Sandbox:          true,
+				Reference:        "registry.example/hal/template:latest",
+				ReferenceChanged: true,
+			},
+		},
+	}, sandboxTemplateConstructionDeps{
+		Selection: sandboxTemplateSelectionDeps{
+			NewWorkflow: func() (sandboxTemplateSelectionWorkflow, error) { return workflow, nil },
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute selection error = %v", err)
+	}
+	for name, lock := range map[string]*sandboxruntime.RuntimeTemplateLockMetadata{
+		"execution": result.ExecutionTemplateLock,
+		"sandbox":   result.SandboxTemplateLock,
+		"runtime":   result.RuntimeTemplateLock,
+	} {
+		if lock == nil || lock.Document == nil || lock.Document.DigestValue != digest.Value {
+			t.Fatalf("%s template lock = %#v, want selected manifest digest", name, lock)
+		}
+	}
+	if result.ExecutionID != "run-l9" || result.SandboxID != "sandbox-l9" || result.RuntimeID != "runtime-l9" {
+		t.Fatalf("bound identities = %#v", result)
 	}
 }
 

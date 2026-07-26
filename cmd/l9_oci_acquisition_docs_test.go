@@ -35,6 +35,7 @@ func TestL9OCIArchitectureDefinesRequiredPhaseSections(t *testing.T) {
 		"exact configured HTTPS",
 		"`request_canceled`",
 		"`request_timeout`",
+		"`response_headers_oversize`",
 		"ambient proxy discovery disabled",
 		"TLS 1.2 as the minimum",
 		"revalidated on every registry",
