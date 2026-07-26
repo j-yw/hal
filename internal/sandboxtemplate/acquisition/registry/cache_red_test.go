@@ -17,6 +17,9 @@ import (
 func TestL9FileCacheRoundTripUsesOnlyVerifiedManifestIdentity(t *testing.T) {
 	fixture := newRegistryFixture(t)
 	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	cache := registry.NewFileCache(root)
 	entry := registry.CacheEntry{
 		ManifestDigest: fixture.manifestDigest,
@@ -66,6 +69,64 @@ func TestL9FileCacheRoundTripUsesOnlyVerifiedManifestIdentity(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestL9FileCacheRejectsEmptyRelativeAndPermissiveRootsWithoutMutation(t *testing.T) {
+	fixture := newRegistryFixture(t)
+	entry := registry.CacheEntry{
+		ManifestDigest: fixture.manifestDigest,
+		LayerDigest:    fixture.layerDigest,
+		MediaType:      registry.MediaTypeTemplateYAML,
+		LayerBytes:     fixture.template,
+	}
+	for _, root := range []string{"", ".", "relative-cache"} {
+		t.Run(root, func(t *testing.T) {
+			before, _ := os.Stat(".")
+			err := registry.NewFileCache(root).Store(context.Background(), entry)
+			requireRegistryErrorCode(t, err, registry.ErrorCodeCachePublishFailed)
+			after, _ := os.Stat(".")
+			if before != nil && after != nil && before.Mode().Perm() != after.Mode().Perm() {
+				t.Fatalf("cache changed current directory mode from %o to %o", before.Mode().Perm(), after.Mode().Perm())
+			}
+		})
+	}
+
+	root := filepath.Join(t.TempDir(), "permissive")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeErr := registry.NewFileCache(root).Store(context.Background(), entry)
+	requireRegistryErrorCode(t, storeErr, registry.ErrorCodeCachePublishFailed)
+	after, err := os.Stat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Mode().Perm() != after.Mode().Perm() {
+		t.Fatalf("cache silently changed pre-existing root mode from %o to %o", before.Mode().Perm(), after.Mode().Perm())
+	}
+}
+
+func TestL9FileCacheRejectsConflictingPreexistingFinalEntry(t *testing.T) {
+	fixture := newRegistryFixture(t)
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	finalDir := filepath.Join(root, strings.TrimPrefix(fixture.manifestDigest, "sha256:"))
+	if err := os.Mkdir(finalDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	err := registry.NewFileCache(root).Store(context.Background(), registry.CacheEntry{
+		ManifestDigest: fixture.manifestDigest,
+		LayerDigest:    fixture.layerDigest,
+		MediaType:      registry.MediaTypeTemplateYAML,
+		LayerBytes:     fixture.template,
+	})
+	requireRegistryErrorCode(t, err, registry.ErrorCodeCacheInvalid)
 }
 
 func TestL9FileCacheRejectsSymlinksWrongModesAndCorruption(t *testing.T) {
@@ -136,7 +197,7 @@ func TestL9FileCacheRejectsSymlinksWrongModesAndCorruption(t *testing.T) {
 
 func TestL9FileCacheDetectsChangeDuringReadOrReturnsOnlyVerifiedBytes(t *testing.T) {
 	fixture := newRegistryFixture(t)
-	cache := registry.NewFileCache(t.TempDir())
+	cache := newPrivateFileCache(t)
 	entry := registry.CacheEntry{
 		ManifestDigest: fixture.manifestDigest,
 		LayerDigest:    fixture.layerDigest,
@@ -226,7 +287,7 @@ func TestL9FileCacheRejectsCorruptionAndEntryFileSymlinksAfterSuccess(t *testing
 
 func TestL9FileCachePublicationCoalescesConcurrentWriters(t *testing.T) {
 	fixture := newRegistryFixture(t)
-	cache := registry.NewFileCache(t.TempDir())
+	cache := newPrivateFileCache(t)
 	entry := registry.CacheEntry{
 		ManifestDigest: fixture.manifestDigest,
 		LayerDigest:    fixture.layerDigest,
@@ -294,4 +355,13 @@ func largestRegularFile(t *testing.T, root string) string {
 		t.Fatal("cache contains no regular entry file")
 	}
 	return selected
+}
+
+func newPrivateFileCache(t *testing.T) *registry.FileCache {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return registry.NewFileCache(root)
 }

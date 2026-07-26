@@ -46,7 +46,7 @@ func TestL9RegistryResolverVerifiesBytesAndCachesOnlyLayerByManifestDigest(t *te
 			return registryResponse(http.StatusNotFound, "text/plain", nil, nil), nil
 		}
 	})
-	resolver := mustRegistryResolver(t, client, registry.NewFileCache(t.TempDir()))
+	resolver := mustRegistryResolver(t, client, newPrivateFileCache(t))
 	request := tagRequest("registry.example/hal/template:latest")
 
 	for i := 0; i < 2; i++ {
@@ -299,7 +299,7 @@ func TestL9RegistryErrorsNeverExposeDynamicInputs(t *testing.T) {
 
 func TestL9RegistryResolverDoesNotFallbackToCacheWhenLiveManifestUnavailable(t *testing.T) {
 	fixture := newRegistryFixture(t)
-	cache := registry.NewFileCache(t.TempDir())
+	cache := newPrivateFileCache(t)
 	if err := cache.Store(context.Background(), registry.CacheEntry{
 		ManifestDigest: fixture.manifestDigest,
 		LayerDigest:    fixture.layerDigest,
@@ -344,7 +344,7 @@ func TestL9TagDescriptorMutationPublishesNeitherFirstResultNorCacheEntry(t *test
 		}
 		return registryResponse(http.StatusOK, registry.MediaTypeTemplateYAML, fixture.template, nil), nil
 	})
-	cache := registry.NewFileCache(t.TempDir())
+	cache := newPrivateFileCache(t)
 	resolver := mustRegistryResolver(t, client, cache)
 	result, resolveErr := resolver.ResolveOCIArtifact(context.Background(), tagRequest("registry.example/hal/template:latest"))
 	requireRegistryErrorCode(t, resolveErr, registry.ErrorCodeTagMutated)
@@ -386,7 +386,7 @@ func testL9ConcurrentResolverSelectionsCoalesceBlobFetch(t *testing.T) {
 		blobGets++
 		return registryResponse(http.StatusOK, registry.MediaTypeTemplateYAML, fixture.template, nil), nil
 	})
-	resolver := mustRegistryResolver(t, client, registry.NewFileCache(t.TempDir()))
+	resolver := mustRegistryResolver(t, client, newPrivateFileCache(t))
 	var wg sync.WaitGroup
 	errs := make(chan error, 12)
 	for i := 0; i < 12; i++ {

@@ -134,12 +134,45 @@ func TestL9DialPolicyRejectsEveryForbiddenAddressClass(t *testing.T) {
 		"fe80::1",
 		"fc00::1",
 		"ff02::1",
+		"240.0.0.1",
+		"255.255.255.255",
 	} {
 		t.Run(raw, func(t *testing.T) {
 			if err := registry.ValidateDialAddress(netip.MustParseAddr(raw), false); err == nil {
 				t.Fatalf("ValidateDialAddress(%s) = nil", raw)
 			}
 		})
+	}
+}
+
+func TestL9DialPolicyRejectsMalformedNonPublicOriginExceptions(t *testing.T) {
+	address := netip.MustParseAddr("127.0.0.1")
+	for _, origin := range []string{
+		"",
+		"http://registry.internal.example",
+		"https://user:pass@registry.internal.example",
+		"https://registry.internal.example/path",
+		"https://registry.internal.example?query=1",
+		"https://registry.internal.example#fragment",
+	} {
+		t.Run(origin, func(t *testing.T) {
+			_, err := registry.NewDialPolicy(registry.DialPolicyOptions{
+				NonPublicOriginExceptions: []registry.NonPublicOriginException{{
+					Origin:  origin,
+					Address: address,
+				}},
+			})
+			if err == nil {
+				t.Fatalf("NewDialPolicy() accepted malformed exception origin %q", origin)
+			}
+		})
+	}
+	if _, err := registry.NewDialPolicy(registry.DialPolicyOptions{
+		NonPublicOriginExceptions: []registry.NonPublicOriginException{{
+			Origin: "https://registry.internal.example",
+		}},
+	}); err == nil {
+		t.Fatal("NewDialPolicy() accepted invalid exception address")
 	}
 }
 
