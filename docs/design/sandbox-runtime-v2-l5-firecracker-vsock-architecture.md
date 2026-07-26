@@ -201,11 +201,25 @@ No UDS path, CID, port, process identifier, or handshake bytes are durable
 proof.
 
 Worker microVM operations remain lifecycle-only before a target is ready.
-Exec/copy-in/copy-out are projected only from live target readiness bound to
-the same runtime, accepted process handle, verified state directory, and live
-bridge generation; configured image/endpoint/device metadata alone never
-upgrades capabilities. A readiness result from a prior process, runtime,
-state directory, socket inode, or bridge generation is stale and is ignored.
+The Firecracker backend owns a private in-memory live-session registry shared
+by every controller it creates. A session proof is keyed by runtime ID, exact
+opaque process generation, verified state-directory identity, socket
+device/inode, peer PID, bridge generation, and successful readiness generation.
+Exec/copy authorization consults this registry, not caller-carried
+`Target.Runtime.Metadata.GuestReadiness`. Manually constructed, stale, or
+cross-runtime `ready` target metadata never authorizes an operation.
+
+Stop, delete, cleanup, observed process exit, bridge loss, readiness failure,
+and a new start generation invalidate the session before returning. Every
+transport failure invalidates the matching bridge generation without touching
+a newer generation. Worker descriptors remain daemon-wide and lifecycle-only;
+L5 does not globally advertise exec/copy after one VM becomes ready.
+Target-scoped status may project operations only from the same active session.
+
+Existing microVM isolation projection from caller-carried labels is not L5
+proof. L5 either projects isolation from the same host-owned active session
+identity or leaves strict isolation blocked. It never upgrades synthetic target
+metadata; L10 still owns the full strict conjunction/default decision.
 
 ## 4. Redaction and containment rules
 
@@ -237,15 +251,19 @@ driver timeout. Unsupported version, malformed response, wrong operation,
 not-ready, connection refusal, or a stale bridge never yields ready metadata.
 
 Start failure cleanup uses a context independent of the canceled start context
-and is bounded. Stop/delete terminate and reap the entire Firecracker process,
-close bridge connections, remove API/vsock sockets and target-owned state, and
-leave the immutable master assets untouched. The live test always uses a
-scratch rootfs copy.
+and has its own fixed upper bound. Stop/delete first invalidate the live
+session, send TERM with a bounded grace deadline, escalate to KILL, wait/reap
+within an independent final deadline, close bridge connections, and only then
+remove API/vsock sockets and ownership-proven target state. The immutable
+master assets are untouched and the live test always uses a scratch rootfs
+copy.
 
 Guest exec timeout/cancel first exercises L4 process-group cleanup. Whole-VM
 teardown then proves that even a deliberately session-escaping guest process
 cannot survive VM deletion. Repeated stop/delete is idempotent. Cleanup failure
-is joined with the primary error and cannot be reported as success.
+or uncertainty is joined with the primary error and cannot be reported as
+stopped, deleted, ready, or successful. State is not removed unless process
+ownership, path identity, termination, and reap are all proven.
 After cleanup, a new connection to the former bridge must fail and no stale
 readiness/capability proof may survive.
 
@@ -265,11 +283,18 @@ The first red commit locks:
 - readiness identity correlation and lifecycle-only behavior for configured,
   stale, wrong-process, wrong-state, wrong-inode, mismatched, malformed, or
   not-ready evidence, including boot/readiness races;
+- caller-manufactured and cross-runtime ready targets rejected by the private
+  session registry, plus invalidation on stop, delete, restart, process exit,
+  bridge loss, and readiness failure;
+- daemon-wide worker descriptors remain lifecycle-only and synthetic isolation
+  labels remain blocked;
 - asset input digest verification, safe provenance, reproducibility contract,
   guest binary/config presence, and default-test no-download/no-build guards;
 - public error redaction with path, endpoint, token, argument, and payload
   canaries; and
 - start-failure plus stop/delete process/socket/state cleanup;
+- independent cleanup timeout, TERM deadline, KILL escalation, wait/reap,
+  ownership-proven state deletion, and cleanup-uncertainty projection;
 - symlink/socket substitution and post-cleanup reconnect rejection.
 
 The prepared-Linux test is selected only by `l5_firecracker_vsock_integration`.

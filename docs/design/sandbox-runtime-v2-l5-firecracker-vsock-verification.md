@@ -33,6 +33,17 @@ and post-cleanup reconnect failure. The full
 config must contain the fixed boot arguments, read-only root drive, guest CID,
 and target-owned UDS before process start.
 
+Authorization negatives construct caller-carried ready metadata and
+cross-runtime/stale targets and prove they cannot exec or copy without the
+backend-owned live-session proof. The matrix invalidates proof on stop, delete,
+process exit, restart, bridge loss, and readiness failure. Daemon-wide worker
+descriptors remain lifecycle-only, and synthetic isolation labels never become
+strict evidence.
+
+Cleanup tests lock an independent cleanup timeout, TERM deadline, KILL
+escalation, wait/reap, ownership-proven state deletion, and fail-closed
+cleanup uncertainty that cannot become stopped/ready/success.
+
 The docs and source guards require the dedicated guest identity, fixed protocol
 CID/port, exact one-request-per-connection framing, no AF_INET fallback, no raw
 path/endpoint evidence, and no cross-phase network/credential/OCI behavior.
