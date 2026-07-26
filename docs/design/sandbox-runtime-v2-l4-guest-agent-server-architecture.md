@@ -505,8 +505,11 @@ an exact `durability_uncertain` error may outrank the context. Malformed,
 oversized, mismatched, and ordinary pre-publication error responses remain
 context-authoritative. A success must acknowledge the active request's exact
 size and digest, use canonical base64 metadata, and declare no larger byte limit
-than the request before it qualifies as published. The response on durable
-success always acknowledges exact size and digest.
+than the request before it qualifies as published. The same request-bound
+validator applies to ordinary active-context success and the late-context
+publication exception, so neither path can accept a stale or incomplete
+acknowledgement. The response on durable success always acknowledges exact size
+and digest.
 
 The host transport projects an exact `durability_uncertain` copy-in result
 through a dedicated publication-error marker after replacing all underlying

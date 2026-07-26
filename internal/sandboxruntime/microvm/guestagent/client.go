@@ -121,7 +121,7 @@ func (client *Client) CopyIn(ctx context.Context, request CopyInRequest) (*CopyI
 	}
 	var response CopyInResponse
 	if err := client.roundTrip(ctx, OperationCopyIn, request.Timing, request, &response, func() error {
-		return ValidateCopyInResponse(response)
+		return validateCopyInSuccessForRequest(response, request)
 	}); err != nil {
 		return nil, err
 	}
@@ -247,12 +247,26 @@ func publishedCopyInOutcome(encoded []byte, maxResponseBytes int64, request any)
 	if err := strictUnmarshalObject(encoded, &response); err != nil {
 		return false
 	}
-	return ValidateCopyInResponse(response) == nil &&
-		response.Written.SizeBytes == copyInRequest.Payload.SizeBytes &&
-		response.Written.MaxBytes <= copyInRequest.Payload.MaxBytes &&
-		response.Written.Digest != "" &&
-		response.Written.Digest == copyInRequest.Payload.Digest &&
-		response.Written.Encoding == PayloadEncodingBase64
+	return validateCopyInSuccessForRequest(response, copyInRequest) == nil
+}
+
+func validateCopyInSuccessForRequest(response CopyInResponse, request CopyInRequest) error {
+	if err := ValidateCopyInResponse(response); err != nil {
+		return err
+	}
+	if response.Written.SizeBytes != request.Payload.SizeBytes {
+		return newValidationError(ErrorCodeInvalidMetadata, OperationCopyIn, "written.sizeBytes", "copy acknowledgement size does not match request")
+	}
+	if response.Written.MaxBytes > request.Payload.MaxBytes {
+		return newValidationError(ErrorCodeInvalidMetadata, OperationCopyIn, "written.maxBytes", "copy acknowledgement limit exceeds request")
+	}
+	if response.Written.Digest == "" || response.Written.Digest != request.Payload.Digest {
+		return newValidationError(ErrorCodeInvalidMetadata, OperationCopyIn, "written.digest", "copy acknowledgement digest does not match request")
+	}
+	if response.Written.Encoding != PayloadEncodingBase64 {
+		return newValidationError(ErrorCodeInvalidMetadata, OperationCopyIn, "written.encoding", "copy acknowledgement encoding is unsupported")
+	}
+	return nil
 }
 
 func contextWithTiming(ctx context.Context, timing *TimingMetadata) (context.Context, context.CancelFunc) {

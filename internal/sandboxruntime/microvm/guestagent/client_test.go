@@ -16,6 +16,9 @@ import (
 
 func TestClientUsesFakeTransportForReadinessExecAndCopyRequests(t *testing.T) {
 	var operations []Operation
+	copyInPayload := []byte("copy payload")
+	copyInSum := sha256.Sum256(copyInPayload)
+	copyInDigest := "sha256:" + hex.EncodeToString(copyInSum[:])
 	client, err := NewClient(ClientOptions{
 		Transport: TransportFunc(func(_ context.Context, request TransportRequest) (TransportResponse, error) {
 			operations = append(operations, request.Operation)
@@ -60,13 +63,13 @@ func TestClientUsesFakeTransportForReadinessExecAndCopyRequests(t *testing.T) {
 			case OperationCopyIn:
 				var decoded CopyInRequest
 				decodeClientRequest(t, request.Encoded, &decoded)
-				if decoded.DestinationPath != "/workspace/input.txt" || decoded.Payload.SizeBytes != 12 || decoded.Payload.Data == "" || decoded.Payload.Encoding != PayloadEncodingBase64 {
+				if decoded.DestinationPath != "/workspace/input.txt" || decoded.Payload.SizeBytes != 12 || decoded.Payload.Data == "" || decoded.Payload.Digest != copyInDigest || decoded.Payload.Encoding != PayloadEncodingBase64 {
 					t.Fatalf("copy_in request = %#v, want guest destination and payload content", decoded)
 				}
 				return encodeClientResponse(t, CopyInResponse{
 					ProtocolVersion: ProtocolVersionV1,
 					Operation:       OperationCopyIn,
-					Written:         PayloadMetadata{SizeBytes: 12, MaxBytes: 1024, Encoding: PayloadEncodingBase64},
+					Written:         PayloadMetadata{SizeBytes: 12, MaxBytes: 1024, Digest: copyInDigest, Encoding: PayloadEncodingBase64},
 				}), nil
 			case OperationCopyOut:
 				var decoded CopyOutRequest
@@ -107,7 +110,7 @@ func TestClientUsesFakeTransportForReadinessExecAndCopyRequests(t *testing.T) {
 
 	copyInResponse, err := client.CopyIn(context.Background(), CopyInRequest{
 		DestinationPath: "/workspace/input.txt",
-		Payload:         PayloadMetadata{SizeBytes: 12, MaxBytes: 1024, Encoding: PayloadEncodingBase64, Data: base64.StdEncoding.EncodeToString([]byte("copy payload"))},
+		Payload:         PayloadMetadata{SizeBytes: 12, MaxBytes: 1024, Digest: copyInDigest, Encoding: PayloadEncodingBase64, Data: base64.StdEncoding.EncodeToString(copyInPayload)},
 	})
 	if err != nil {
 		t.Fatalf("CopyIn() error: %v", err)

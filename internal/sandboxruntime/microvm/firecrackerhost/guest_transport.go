@@ -169,8 +169,11 @@ func (transport *GuestAgentTransport) CopyIn(ctx context.Context, req firecracke
 	if response.Written.SizeBytes != protocolReq.Payload.SizeBytes {
 		return guestAgentTransportProtocolError(guestagent.ErrorCodeInvalidMetadata, guestagent.OperationCopyIn, "written.sizeBytes", errors.New("guest agent copy_in acknowledgement size mismatch"))
 	}
-	if response.Written.Digest != "" && !strings.EqualFold(response.Written.Digest, protocolReq.Payload.Digest) {
+	if response.Written.Digest == "" || response.Written.Digest != protocolReq.Payload.Digest {
 		return guestAgentTransportProtocolError(guestagent.ErrorCodeInvalidMetadata, guestagent.OperationCopyIn, "written.digest", errors.New("guest agent copy_in acknowledgement digest mismatch"))
+	}
+	if response.Written.Encoding != guestagent.PayloadEncodingBase64 {
+		return guestAgentTransportProtocolError(guestagent.ErrorCodeInvalidMetadata, guestagent.OperationCopyIn, "written.encoding", errors.New("guest agent copy_in acknowledgement encoding mismatch"))
 	}
 	return nil
 }

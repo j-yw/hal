@@ -60,6 +60,9 @@ transport coverage proves those two strict published response shapes survive a
 post-response context race while ordinary copy failure remains
 context-authoritative. Stale success acknowledgements with mismatched size,
 digest, encoding, or request-relative byte limits remain context-authoritative.
+The identical request-bound predicate rejects those acknowledgements on the
+ordinary active-context success path rather than deferring correlation to a
+later adapter.
 Adapter and Firecracker controller tests additionally prove that
 `durability_uncertain` remains machine-readable across both boundaries, while
 raw filesystem, socket, and endpoint details remain redacted.
