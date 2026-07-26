@@ -61,6 +61,7 @@ type GuestAgentTransport struct {
 }
 
 var _ firecracker.GuestTransport = (*GuestAgentTransport)(nil)
+var _ firecracker.GuestCopyPublicationError = (*guestAgentCopyPublicationError)(nil)
 
 // NewGuestAgentTransport constructs a Firecracker guest transport over an
 // injected guest-agent client. A nil client makes operations fail with a
@@ -154,6 +155,9 @@ func (transport *GuestAgentTransport) CopyIn(ctx context.Context, req firecracke
 		return guestAgentTransportProtocolError(guestagent.ErrorCodeMalformedResponse, guestagent.OperationCopyIn, "response", errors.New("guest agent returned no copy_in response"))
 	}
 	if response.Error != nil {
+		if publicationError := guestAgentCopyPublicationErrorFromClient(guestagent.OperationCopyIn, response.Error); publicationError != nil {
+			return publicationError
+		}
 		return response.Error
 	}
 	if err := guestagent.ValidateCopyInResponse(*response); err != nil {
@@ -527,6 +531,9 @@ func guestAgentTransportClientError(ctx context.Context, operation guestagent.Op
 	if err == nil {
 		return nil
 	}
+	if publicationError := guestAgentCopyPublicationErrorFromClient(operation, err); publicationError != nil {
+		return publicationError
+	}
 	if ctxErr := nonNilContext(ctx).Err(); ctxErr != nil && errors.Is(err, ctxErr) {
 		return guestAgentTransportContextError(operation, ctxErr)
 	}
@@ -537,6 +544,50 @@ func guestAgentTransportClientError(ctx context.Context, operation guestagent.Op
 		return guestAgentTransportContextError(operation, context.DeadlineExceeded)
 	}
 	return guestAgentTransportProtocolError(guestagent.ErrorCodeTransportFailure, operation, "transport", err)
+}
+
+type guestAgentCopyPublicationError struct {
+	protocolError *guestagent.ProtocolError
+}
+
+func (err *guestAgentCopyPublicationError) Error() string {
+	if err == nil || err.protocolError == nil {
+		return ""
+	}
+	return err.protocolError.Error()
+}
+
+func (err *guestAgentCopyPublicationError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.protocolError
+}
+
+func (*guestAgentCopyPublicationError) CopyPublicationDurabilityUncertain() bool {
+	return true
+}
+
+func guestAgentCopyPublicationErrorFromClient(operation guestagent.Operation, err error) error {
+	if operation != guestagent.OperationCopyIn {
+		return nil
+	}
+	protocolError, ok := err.(*guestagent.ProtocolError)
+	if !ok ||
+		protocolError == nil ||
+		protocolError.Code != guestagent.ErrorCodeDurabilityUncertain ||
+		protocolError.Operation != guestagent.OperationCopyIn {
+		return nil
+	}
+	return &guestAgentCopyPublicationError{
+		protocolError: &guestagent.ProtocolError{
+			Code:      guestagent.ErrorCodeDurabilityUncertain,
+			Operation: guestagent.OperationCopyIn,
+			Field:     "copy",
+			Message:   "copy publication durability is uncertain",
+			Err:       guestagent.ErrProtocolValidation,
+		},
+	}
 }
 
 func guestAgentTransportContextError(operation guestagent.Operation, err error) error {

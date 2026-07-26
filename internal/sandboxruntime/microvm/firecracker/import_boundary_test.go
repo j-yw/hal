@@ -116,6 +116,7 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 		"GuestReadinessResult":                  true,
 		"GuestReadinessWaiter":                  true,
 		"GuestCopyRequest":                      true,
+		"GuestCopyPublicationError":             true,
 		"GuestExecRequest":                      true,
 		"GuestTransport":                        true,
 		"GuestWorkDirMetadata":                  true,

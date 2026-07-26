@@ -384,6 +384,9 @@ func TestPhase38FirecrackerCopyInPreservesPublishedDurabilityUncertainOutcome(t 
 	if operationErr.Code != microvm.ErrorCode("durability_uncertain") {
 		t.Fatalf("OperationError.Code = %q, want durability_uncertain", operationErr.Code)
 	}
+	if !errors.Is(err, microvm.ErrDurabilityUncertain) {
+		t.Fatalf("errors.Is(CopyIn() error, ErrDurabilityUncertain) = false for %v", err)
+	}
 	if operationErr.Operation != microvm.OperationCopyIn || operationErr.Field != "guestTransport" {
 		t.Fatalf("OperationError = %#v, want copy_in guestTransport classification", operationErr)
 	}

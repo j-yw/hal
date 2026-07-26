@@ -508,6 +508,16 @@ size and digest, use canonical base64 metadata, and declare no larger byte limit
 than the request before it qualifies as published. The response on durable
 success always acknowledges exact size and digest.
 
+The host transport projects an exact `durability_uncertain` copy-in result
+through a dedicated publication-error marker after replacing all underlying
+error detail with fixed safe metadata. The Firecracker controller recognizes
+only that marker for copy-in and returns the stable microVM
+`durability_uncertain` operation code and sentinel. It must not collapse a
+visible-but-not-proven-durable mutation into `transport_failure` or
+`backend_operation_failed`, because either classification could be interpreted
+as retry-safe. Other transport failures retain the existing sanitized generic
+classification.
+
 Copy-out:
 
 - first opens an `O_PATH|O_NOFOLLOW` descriptor through contained resolution;

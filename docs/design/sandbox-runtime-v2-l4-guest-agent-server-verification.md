@@ -60,6 +60,9 @@ transport coverage proves those two strict published response shapes survive a
 post-response context race while ordinary copy failure remains
 context-authoritative. Stale success acknowledgements with mismatched size,
 digest, encoding, or request-relative byte limits remain context-authoritative.
+Adapter and Firecracker controller tests additionally prove that
+`durability_uncertain` remains machine-readable across both boundaries, while
+raw filesystem, socket, and endpoint details remain redacted.
 
 Copy coverage includes byte-for-byte round trip, exact lowercase SHA-256,
 oversize rejection, atomic replacement, `0600` mode, publication/cancellation

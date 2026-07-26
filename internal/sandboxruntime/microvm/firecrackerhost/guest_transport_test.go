@@ -166,42 +166,61 @@ func TestGuestAgentTransportCopyInSendsBoundedHostSourceBytes(t *testing.T) {
 }
 
 func TestGuestAgentTransportCopyInPreservesPublishedDurabilityUncertainOutcome(t *testing.T) {
-	sourcePath := filepath.Join(t.TempDir(), "input.txt")
-	if err := os.WriteFile(sourcePath, []byte("published payload"), 0o600); err != nil {
-		t.Fatalf("WriteFile(source) error: %v", err)
-	}
-	client := validRecordingGuestAgentClient()
-	client.copyInErr = &guestagent.ProtocolError{
-		Code:      guestagent.ErrorCodeDurabilityUncertain,
-		Operation: guestagent.OperationCopyIn,
-		Field:     "copy",
-		Message:   "copy publication durability is uncertain",
-		Err:       errors.New("fsync /Users/alice/private/token-ghp_secret.txt endpoint=unix:///tmp/guest.sock"),
-	}
-	transport := NewGuestAgentTransport(GuestAgentTransportOptions{
-		Client:                  client,
-		CopyInPayloadLimitBytes: 64,
-	})
+	for _, tt := range []struct {
+		name     string
+		asResult bool
+	}{
+		{name: "client error"},
+		{name: "response error", asResult: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sourcePath := filepath.Join(t.TempDir(), "input.txt")
+			if err := os.WriteFile(sourcePath, []byte("published payload"), 0o600); err != nil {
+				t.Fatalf("WriteFile(source) error: %v", err)
+			}
+			protocolError := &guestagent.ProtocolError{
+				Code:      guestagent.ErrorCodeDurabilityUncertain,
+				Operation: guestagent.OperationCopyIn,
+				Field:     "copy",
+				Message:   "copy publication durability is uncertain",
+				Err:       errors.New("fsync /Users/alice/private/token-ghp_secret.txt endpoint=unix:///tmp/guest.sock"),
+			}
+			client := validRecordingGuestAgentClient()
+			if tt.asResult {
+				client.copyInResponse = &guestagent.CopyInResponse{
+					ProtocolVersion: guestagent.ProtocolVersionV1,
+					Operation:       guestagent.OperationCopyIn,
+					Error:           protocolError,
+				}
+			} else {
+				client.copyInErr = protocolError
+			}
+			transport := NewGuestAgentTransport(GuestAgentTransportOptions{
+				Client:                  client,
+				CopyInPayloadLimitBytes: 64,
+			})
 
-	err := transport.CopyIn(context.Background(), firecracker.GuestCopyRequest{
-		SourcePath:      sourcePath,
-		DestinationPath: "/workspace/input.txt",
-	})
-	requireGuestAgentProtocolErrorCode(t, err, guestagent.ErrorCodeDurabilityUncertain)
+			err := transport.CopyIn(context.Background(), firecracker.GuestCopyRequest{
+				SourcePath:      sourcePath,
+				DestinationPath: "/workspace/input.txt",
+			})
+			requireGuestAgentProtocolErrorCode(t, err, guestagent.ErrorCodeDurabilityUncertain)
 
-	var publicationError interface {
-		CopyPublicationDurabilityUncertain() bool
+			var publicationError interface {
+				CopyPublicationDurabilityUncertain() bool
+			}
+			if !errors.As(err, &publicationError) || !publicationError.CopyPublicationDurabilityUncertain() {
+				t.Fatalf("CopyIn() error = %v, want machine-readable uncertain publication outcome", err)
+			}
+			assertGuestAgentTransportErrorDoesNotLeak(t, err,
+				"/Users/alice",
+				"ghp_secret",
+				"unix://",
+				"/tmp",
+				"guest.sock",
+			)
+		})
 	}
-	if !errors.As(err, &publicationError) || !publicationError.CopyPublicationDurabilityUncertain() {
-		t.Fatalf("CopyIn() error = %v, want machine-readable uncertain publication outcome", err)
-	}
-	assertGuestAgentTransportErrorDoesNotLeak(t, err,
-		"/Users/alice",
-		"ghp_secret",
-		"unix://",
-		"/tmp",
-		"guest.sock",
-	)
 }
 
 func TestGuestAgentTransportCopyOutWritesBoundedGuestPayloadBytes(t *testing.T) {

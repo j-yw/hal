@@ -15,6 +15,14 @@ type GuestTransport interface {
 	CopyOut(context.Context, GuestCopyRequest) error
 }
 
+// GuestCopyPublicationError marks a copy-in result for which the destination
+// is visible but crash durability is not proven. Callers must not treat this
+// outcome as an ordinary retry-safe transport failure.
+type GuestCopyPublicationError interface {
+	error
+	CopyPublicationDurabilityUncertain() bool
+}
+
 // GuestExecRequest is the raw guest command request shape passed only to an
 // explicitly injected guest transport boundary.
 type GuestExecRequest struct {
