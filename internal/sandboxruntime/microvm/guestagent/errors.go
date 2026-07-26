@@ -129,7 +129,19 @@ func normalizeErrorCode(code ErrorCode) ErrorCode {
 		ErrorCodeOversizedResponse,
 		ErrorCodeRequestCanceled,
 		ErrorCodeRequestTimeout,
-		ErrorCodeTransportFailure:
+		ErrorCodeTransportFailure,
+		ErrorCodeMalformedRequest,
+		ErrorCodeServerNotReady,
+		ErrorCodeServerBusy,
+		ErrorCodeEnvironmentUnavailable,
+		ErrorCodeExecutionFailed,
+		ErrorCodeCopyFailed,
+		ErrorCodeDigestMismatch,
+		ErrorCodeResourceChanged,
+		ErrorCodeDurabilityUncertain,
+		ErrorCodeBackendUnavailable,
+		ErrorCodeUnsupportedPlatform,
+		ErrorCodeInternalFailure:
 		return code
 	default:
 		return ErrorCodeInvalidMetadata

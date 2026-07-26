@@ -42,12 +42,13 @@ Unix socket endpoint. When the endpoint is configured and validated,
 `NewGuestAgentEndpointAdapters` builds both a guest transport and a guest
 readiness probe backed by the same guest-agent protocol client.
 
-Default microVM support remains lifecycle-only unless a tested guest transport
-is configured. Default `hal sandboxd` registers only `rootless_podman`, and an
-explicit microVM sandboxd driver without `--firecracker-guest-agent-endpoint`
-continues to advertise only create, start, stop, delete, and inspect. Exec,
-copy-in, and copy-out are advertised for microVM only when the guest-agent
-endpoint is explicitly configured.
+Default microVM support remains lifecycle-only. A configured guest-agent
+endpoint builds compatibility and test client adapters, but it does not
+authorize capability advertisement. Default `hal sandboxd` registers only
+`rootless_podman`, and an explicit microVM sandboxd driver continues to
+advertise only create, start, stop, delete, and inspect. Exec, copy-in, and
+copy-out remain omitted until an exact readiness handshake proves the server
+contract.
 
 ## Honest Capability Posture
 
@@ -59,9 +60,10 @@ metadata, or the presence of microVM lifecycle support.
 
 Configured guest-agent transport means a validated local Unix socket endpoint
 has been provided and the default fake-backed Phase 40 tests cover the adapter
-and protocol paths. It does not mean a production guest agent has been
-installed in the guest image, that vsock is implemented, or that live E2E guest
-exec and copy have been verified by default.
+and protocol paths. Endpoint configuration is not readiness proof and does not
+authorize an exec/copy capability claim. It does not mean a production guest
+agent has been installed in the guest image, that vsock is implemented, or that
+live E2E guest exec and copy have been verified by default.
 
 Host Docker socket access is not part of Phase 40. Guest transport code paths
 must not mount, open, dial, or advertise `/var/run/docker.sock`,
@@ -138,18 +140,16 @@ deny-by-default guest networking, jailer/root setup, cgroups, default command
 enablement, default worker routing, default scheduler selection, or default
 live E2E guest exec and copy verification.
 
-Phase 40 does not make default microVM support more than lifecycle-only. It
-does not advertise exec, copy-in, or copy-out for default microVM workers or
-for sandboxd microVM drivers without a configured guest-agent endpoint.
+Phase 40 does not make default or endpoint-configured microVM support more than
+lifecycle-only. It does not advertise exec, copy-in, or copy-out from endpoint
+configuration alone; exact guest readiness proof is required.
 
 ## Future Handoff Areas
 
-Future phases are responsible for a real guest-agent implementation, a concrete
-vsock or other guest transport, guest image packaging, Firecracker API machine
-configuration, secure credential delivery, network policy enforcement, worker
-and scheduler registration policy, production endpoint lifecycle management,
-live E2E guest readiness, live E2E guest exec and copy, and operator
-documentation for preparing guest images.
+L4 is responsible for the production Linux guest-agent server behind injected
+transport boundaries. L5 is responsible for vsock and image integration, live
+transport binding, guest boot/readiness proof, capability activation, and
+operator documentation for preparing guest images.
 
 ## Review Notes
 
@@ -159,5 +159,5 @@ sandboxd guest-agent endpoint path explicit and optional. When test names,
 focused selectors, capability rules, or optional endpoint behavior change,
 update this document and `cmd/phase40_microvm_guest_agent_transport_docs_test.go`
 together so documented verification commands remain executable, fake-safe by
-default, and clear that guest exec and copy require configured guest transport
-rather than default microVM lifecycle support.
+default, and clear that guest exec and copy require exact readiness proof rather
+than endpoint configuration or default microVM lifecycle support.

@@ -775,13 +775,9 @@ func sandboxdRuntimeDriverDescriptors(req sandboxdRequest) map[string]sandboxwor
 	if strings.TrimSpace(req.MicroVM.GuestAgentEndpoint) == "" && enforcement == nil {
 		return nil
 	}
-	operations := sandboxdMicroVMOperationsDefault()
-	if strings.TrimSpace(req.MicroVM.GuestAgentEndpoint) != "" {
-		operations = sandboxdMicroVMOperationsWithGuestAgent()
-	}
 	return map[string]sandboxworker.RuntimeDriver{
 		sandboxruntime.DriverMicroVM: sandboxdMicroVMRuntimeDriverDescriptor(
-			operations,
+			sandboxdMicroVMOperationsDefault(),
 			enforcement,
 		),
 	}
@@ -814,11 +810,7 @@ func sandboxdMicroVMRuntimeDriverDescriptorFromDriver(config sandboxdMicroVMConf
 	if strings.TrimSpace(config.GuestAgentEndpoint) == "" && enforcement == nil {
 		return sandboxworker.RuntimeDriver{}, false
 	}
-	operations := sandboxdMicroVMOperationsDefault()
-	if strings.TrimSpace(config.GuestAgentEndpoint) != "" {
-		operations = sandboxdMicroVMOperationsWithGuestAgent()
-	}
-	return sandboxdMicroVMRuntimeDriverDescriptor(operations, enforcement), true
+	return sandboxdMicroVMRuntimeDriverDescriptor(sandboxdMicroVMOperationsDefault(), enforcement), true
 }
 
 func sandboxdMicroVMRuntimeDriverSecurity(enforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata) sandboxworker.SecurityPolicy {
@@ -949,19 +941,6 @@ func sandboxdRuntimeNetworkEnforcementLifecycleHasMechanism(lifecycle *sandboxru
 		}
 	}
 	return false
-}
-
-func sandboxdMicroVMOperationsWithGuestAgent() []string {
-	return []string{
-		sandboxworker.OperationCreate,
-		sandboxworker.OperationStart,
-		sandboxworker.OperationStop,
-		sandboxworker.OperationDelete,
-		sandboxworker.OperationInspect,
-		sandboxworker.OperationExec,
-		sandboxworker.OperationCopyIn,
-		sandboxworker.OperationCopyOut,
-	}
 }
 
 func sandboxdMicroVMOperationsDefault() []string {

@@ -3,6 +3,7 @@ package guestagent
 import (
 	"encoding/base64"
 	"fmt"
+	"path"
 	"strings"
 	"unicode/utf8"
 )
@@ -18,8 +19,40 @@ func ValidateReadinessResponse(response ReadinessResponse) error {
 	if err := validateHeader(response.ProtocolVersion, response.Operation, OperationReadiness); err != nil {
 		return err
 	}
-	if response.Status != "" && !validReadinessStatus(response.Status) {
+	if response.Status == "" {
+		return nil
+	}
+	if !validReadinessStatus(response.Status) {
 		return newValidationError(ErrorCodeInvalidMetadata, response.Operation, "status", "readiness status is unsupported")
+	}
+	if response.Ready != (response.Status == ReadinessStatusReady) {
+		return newValidationError(ErrorCodeInvalidMetadata, response.Operation, "status", "readiness status contradicts ready")
+	}
+	return nil
+}
+
+// ValidateErrorResponse validates the generic v1 error response envelope.
+func ValidateErrorResponse(response ErrorResponse) error {
+	if strings.TrimSpace(string(response.ProtocolVersion)) == "" {
+		return newValidationError(ErrorCodeMissingRequiredField, response.Operation, "protocolVersion", "protocol version is required")
+	}
+	if response.ProtocolVersion != ProtocolVersionV1 {
+		return newValidationError(ErrorCodeUnsupportedProtocolVersion, response.Operation, "protocolVersion", "protocol version is unsupported")
+	}
+	if response.Operation != "" && !validOperation(response.Operation) {
+		return newValidationError(ErrorCodeUnknownOperation, "", "operation", "operation is unsupported")
+	}
+	if response.Error == nil {
+		return newValidationError(ErrorCodeMissingRequiredField, response.Operation, "error", "error is required")
+	}
+	if normalizeErrorCode(response.Error.Code) != response.Error.Code {
+		return newValidationError(ErrorCodeInvalidMetadata, response.Operation, "error.code", "error code is unsupported")
+	}
+	if response.Operation != "" && response.Error.Operation != "" && response.Error.Operation != response.Operation {
+		return newValidationError(ErrorCodeOperationMismatch, response.Operation, "error.operation", "error operation does not match envelope")
+	}
+	if response.Operation == "" && response.Error.Operation != "" {
+		return newValidationError(ErrorCodeOperationMismatch, "", "error.operation", "error operation requires an envelope operation")
 	}
 	return nil
 }
@@ -70,7 +103,13 @@ func ValidateExecResponse(response ExecResponse) error {
 	if err := validateStreamMetadata(response.Operation, "stdout", response.Stdout, true); err != nil {
 		return err
 	}
-	return validateStreamMetadata(response.Operation, "stderr", response.Stderr, true)
+	if err := validateRequiredBase64StreamData(response.Operation, "stdout", response.Stdout); err != nil {
+		return err
+	}
+	if err := validateStreamMetadata(response.Operation, "stderr", response.Stderr, true); err != nil {
+		return err
+	}
+	return validateRequiredBase64StreamData(response.Operation, "stderr", response.Stderr)
 }
 
 func ValidateCopyInRequest(request CopyInRequest) error {
@@ -138,7 +177,7 @@ func validateHeader(version ProtocolVersion, operation Operation, want Operation
 	if strings.TrimSpace(string(version)) == "" {
 		return newValidationError(ErrorCodeMissingRequiredField, want, "protocolVersion", "protocol version is required")
 	}
-	if ProtocolVersion(strings.TrimSpace(string(version))) != ProtocolVersionV1 {
+	if version != ProtocolVersionV1 {
 		return newValidationError(ErrorCodeUnsupportedProtocolVersion, want, "protocolVersion", "protocol version is unsupported")
 	}
 	if strings.TrimSpace(string(operation)) == "" {
@@ -154,7 +193,7 @@ func validateHeader(version ProtocolVersion, operation Operation, want Operation
 }
 
 func validOperation(operation Operation) bool {
-	switch Operation(strings.TrimSpace(string(operation))) {
+	switch operation {
 	case OperationReadiness, OperationExec, OperationCopyIn, OperationCopyOut:
 		return true
 	default:
@@ -242,7 +281,7 @@ func validEnvironmentName(name string) bool {
 }
 
 func validEnvironmentSource(source EnvironmentSource) bool {
-	switch EnvironmentSource(strings.TrimSpace(string(source))) {
+	switch source {
 	case EnvironmentSourceLiteral,
 		EnvironmentSourceSecret,
 		EnvironmentSourceInherited,
@@ -265,6 +304,7 @@ func validateGuestPath(operation Operation, field, value string) error {
 		strings.Contains(value, "\\") ||
 		strings.Contains(value, "://") ||
 		strings.Contains(value, "//") ||
+		path.Clean(value) != value ||
 		containsParentPathSegment(value) {
 		return newValidationError(ErrorCodeMalformedPath, operation, field, "guest path must be absolute and normalized")
 	}
@@ -372,14 +412,17 @@ func validateEncodedData(operation Operation, field, data string, encoding Paylo
 		return newValidationError(ErrorCodeInvalidMetadata, operation, field+".data", kind+" data contains invalid characters")
 	}
 	decodedSize := int64(len(data))
-	switch PayloadEncoding(strings.TrimSpace(string(encoding))) {
+	switch encoding {
 	case "", PayloadEncodingRaw:
 	case PayloadEncodingBase64:
 		if len(data) > maxBase64EncodedPayloadLength(maxBytes, maximumBytes) {
 			return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, field+".data", kind+" data exceeds encoded limit")
 		}
-		decoded, err := base64.StdEncoding.DecodeString(data)
+		decoded, err := base64.StdEncoding.Strict().DecodeString(data)
 		if err != nil {
+			return newValidationError(ErrorCodeInvalidMetadata, operation, field+".data", kind+" data is not valid base64")
+		}
+		if base64.StdEncoding.EncodeToString(decoded) != data {
 			return newValidationError(ErrorCodeInvalidMetadata, operation, field+".data", kind+" data is not valid base64")
 		}
 		decodedSize = int64(len(decoded))
@@ -430,7 +473,7 @@ func validPayloadDigest(digest string) bool {
 }
 
 func validPayloadEncoding(encoding PayloadEncoding) bool {
-	switch PayloadEncoding(strings.TrimSpace(string(encoding))) {
+	switch encoding {
 	case PayloadEncodingRaw, PayloadEncodingBase64, PayloadEncodingChunked:
 		return true
 	default:
@@ -439,7 +482,7 @@ func validPayloadEncoding(encoding PayloadEncoding) bool {
 }
 
 func validReadinessStatus(status ReadinessStatus) bool {
-	switch ReadinessStatus(strings.TrimSpace(string(status))) {
+	switch status {
 	case ReadinessStatusReady, ReadinessStatusNotReady:
 		return true
 	default:

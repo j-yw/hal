@@ -216,6 +216,7 @@ func us010ApprovedLiveE2EGuardFiles() map[string]bool {
 		"cmd/phase35_firecracker_host_adapter_docs_test.go":                                    true,
 		"cmd/phase36_firecracker_live_driver_docs_test.go":                                     true,
 		"cmd/phase37_firecracker_guest_readiness_docs_test.go":                                 true,
+		"cmd/l4_guest_agent_server_docs_test.go":                                               true,
 		"cmd/phase45_final_fake_only_verification_test.go":                                     true,
 		"cmd/phase45_network_enforcement_live_guard_test.go":                                   true,
 		"cmd/phase46_final_fake_only_verification_test.go":                                     true,

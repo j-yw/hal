@@ -353,6 +353,54 @@ func TestPhase38FirecrackerCopyInTransportFailureIsWrappedAndSanitized(t *testin
 	}
 }
 
+func TestPhase38FirecrackerCopyInPreservesPublishedDurabilityUncertainOutcome(t *testing.T) {
+	transportErr := phase38CopyPublicationDurabilityError{
+		cause: "fsync /Users/alice/private/input-token-ghp_secret.txt endpoint=unix:///tmp/firecracker.sock",
+	}
+	transport := &phase38RecordingGuestTransport{copyInErr: transportErr}
+	target := phase38ExecTarget(sandboxruntime.NewRuntimeGuestReadinessMetadata(
+		sandboxruntime.RuntimeGuestReadinessStateReady,
+		"vsock",
+		[]string{"ready"},
+	))
+	controller := phase38CopyInController(t, NewBackend(BackendOptions{
+		GuestTransport: transport,
+		LiveStart:      true,
+	}), target)
+
+	err := controller.CopyIn(context.Background(), microvm.ControllerCopyRequest{
+		Operation:       microvm.OperationCopyIn,
+		Target:          target,
+		SourcePath:      "/Users/alice/private/input-token-ghp_secret.txt",
+		DestinationPath: "/workspace/private/input-token-ghp_secret.txt",
+	})
+	if err == nil {
+		t.Fatal("CopyIn() error = nil, want uncertain publication outcome")
+	}
+	var operationErr *microvm.OperationError
+	if !errors.As(err, &operationErr) {
+		t.Fatalf("CopyIn() error type = %T, want *microvm.OperationError", err)
+	}
+	if operationErr.Code != microvm.ErrorCode("durability_uncertain") {
+		t.Fatalf("OperationError.Code = %q, want durability_uncertain", operationErr.Code)
+	}
+	if !errors.Is(err, microvm.ErrDurabilityUncertain) {
+		t.Fatalf("errors.Is(CopyIn() error, ErrDurabilityUncertain) = false for %v", err)
+	}
+	if operationErr.Operation != microvm.OperationCopyIn || operationErr.Field != "guestTransport" {
+		t.Fatalf("OperationError = %#v, want copy_in guestTransport classification", operationErr)
+	}
+	assertFirecrackerErrorDoesNotLeak(t, err,
+		"/Users/alice",
+		"private",
+		"ghp_secret",
+		"input-token-ghp_secret.txt",
+		"unix://",
+		"/tmp",
+		"firecracker.sock",
+	)
+}
+
 func TestPhase38FirecrackerCopyOutRequiresLiveGuestTransportAndReadyGuestReadiness(t *testing.T) {
 	readyTarget := phase38ExecTarget(sandboxruntime.NewRuntimeGuestReadinessMetadata(
 		sandboxruntime.RuntimeGuestReadinessStateReady,
@@ -528,6 +576,18 @@ type phase38RecordingGuestTransport struct {
 	err            error
 	copyInErr      error
 	copyOutErr     error
+}
+
+type phase38CopyPublicationDurabilityError struct {
+	cause string
+}
+
+func (err phase38CopyPublicationDurabilityError) Error() string {
+	return err.cause
+}
+
+func (phase38CopyPublicationDurabilityError) CopyPublicationDurabilityUncertain() bool {
+	return true
 }
 
 func (transport *phase38RecordingGuestTransport) Exec(_ context.Context, req GuestExecRequest) (*sandboxruntime.ExecResult, error) {

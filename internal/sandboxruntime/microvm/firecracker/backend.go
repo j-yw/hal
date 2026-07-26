@@ -853,6 +853,13 @@ func newGuestTransportCopyInFailure(operation string, cause error) *microvm.Oper
 	if cause == nil {
 		cause = errors.New("guest transport copy in failed")
 	}
+	var publicationError GuestCopyPublicationError
+	if errors.As(cause, &publicationError) && publicationError.CopyPublicationDurabilityUncertain() {
+		err := microvm.NewOperationError(microvm.ErrorCodeDurabilityUncertain, operation, microvm.ErrDurabilityUncertain)
+		err.Field = "guestTransport"
+		err.Message = "guest copy publication durability is uncertain"
+		return err
+	}
 	err := microvm.NewBackendOperationFailedError(operation, sanitizedGuestTransportCause{cause: cause})
 	err.Field = "guestTransport"
 	err.Message = "guest transport copy in failed"

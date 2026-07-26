@@ -629,6 +629,7 @@ func phase50ApprovedLiveMarkerFiles() map[string]bool {
 		"cmd/credential_proxy_manifest_test.go":                      true,
 		"cmd/l3_prepared_linux_verification_test.go":                 true,
 		"cmd/l2_worker_job_docs_test.go":                             true,
+		"cmd/l4_guest_agent_server_docs_test.go":                     true,
 		"cmd/phase22_policy_secret_docs_test.go":                     true,
 		"cmd/phase24_network_proxy_docs_test.go":                     true,
 		"cmd/phase25_credential_proxy_docs_test.go":                  true,
