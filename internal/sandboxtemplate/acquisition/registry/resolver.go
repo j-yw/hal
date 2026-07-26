@@ -48,6 +48,9 @@ func (r *Resolver) ResolveOCIArtifact(ctx context.Context, request acquisition.O
 	if err != nil {
 		return acquisition.OCIArtifactResolveResult{}, err
 	}
+	if !cacheHit {
+		defer r.fetches.forget(first.digest)
+	}
 	if reference.tagged {
 		second, resolveErr := r.resolveManifest(ctx, reference)
 		if resolveErr != nil {

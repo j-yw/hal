@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -365,6 +366,12 @@ func TestL9TagDescriptorMutationPublishesNeitherFirstResultNorCacheEntry(t *test
 }
 
 func TestL9ConcurrentResolverSelectionsCoalesceBlobFetchWithoutSkippingLiveManifest(t *testing.T) {
+	for round := 0; round < 20; round++ {
+		t.Run(strconv.Itoa(round), testL9ConcurrentResolverSelectionsCoalesceBlobFetch)
+	}
+}
+
+func testL9ConcurrentResolverSelectionsCoalesceBlobFetch(t *testing.T) {
 	fixture := newRegistryFixture(t)
 	var mu sync.Mutex
 	manifestGets := 0

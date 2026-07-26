@@ -318,8 +318,14 @@ func (g *fetchGroup) do(key string, fn func() ([]byte, error)) ([]byte, error) {
 
 	call.data, call.err = fn()
 	close(call.done)
+	if call.err != nil {
+		g.forget(key)
+	}
+	return append([]byte(nil), call.data...), call.err
+}
+
+func (g *fetchGroup) forget(key string) {
 	g.mu.Lock()
 	delete(g.calls, key)
 	g.mu.Unlock()
-	return append([]byte(nil), call.data...), call.err
 }
