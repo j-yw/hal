@@ -24,6 +24,7 @@ func TestL5ArchitectureContainsMandatoryPhaseSections(t *testing.T) {
 		"API-socket availability and UDS existence",
 		"OK <assignedHostPort>",
 		"`VMADDR_PORT_ANY` (`4294967295`)",
+		"`1..4294967294`",
 		"`SO_PEERCRED`",
 		"private in-memory live-session registry",
 		"not caller-carried",

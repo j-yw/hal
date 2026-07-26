@@ -69,7 +69,8 @@ directory. The host transport:
    pre-acknowledgement protocol bytes;
 4. requires the exact `OK <assignedHostPort>\n` shape where the host port is
    canonical unsigned 32-bit decimal without sign or leading zero, is nonzero,
-   and is not Linux `VMADDR_PORT_ANY` (`4294967295`);
+   and is in `1..4294967294`; Linux `VMADDR_PORT_ANY` (`4294967295`) is
+   reserved;
 5. writes one bounded guest-agent JSON request;
 6. half-closes the write side;
 7. reads one bounded JSON response to EOF; and
