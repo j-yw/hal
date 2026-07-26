@@ -42,6 +42,17 @@ authentication challenges are never durable or public. Plain HTTP is disabled
 in production command wiring; the tagged local-registry test injects an exact
 loopback-origin exception.
 
+Production registry, redirect, and token transport uses a dedicated client
+with ambient proxy discovery disabled and TLS 1.2 as the minimum. A normalized
+HTTPS origin is accepted only when each fresh DNS resolution and each dial
+produces a public unicast address. Loopback, private, link-local, metadata,
+unspecified, and multicast destinations fail before a request is sent. Trusted
+internal deployments require an exact configured origin-and-address exception;
+the tagged test injects the same kind of exact exception for its loopback
+origin. DNS is resolved and the selected IP is revalidated on every registry
+dial, redirect dial, and token dial, so redirects and rebinding cannot reuse
+an earlier public-address decision.
+
 Selection returns:
 
 - the normalized and sanitized template;
@@ -75,6 +86,8 @@ unsupported schemes/digests, and conflicting digest metadata.
 Stable safe failure codes are:
 
 - `invalid_reference`;
+- `request_canceled`;
+- `request_timeout`;
 - `registry_unavailable`;
 - `authentication_failed`;
 - `authentication_challenge_invalid`;
@@ -110,6 +123,12 @@ policy, digest verification, tag-stability check, and verified cache. It
 implements `acquisition.OCIArtifactResolver` but imports no command, factory,
 worker, provider, runtime adapter, cloud SDK, Docker/Podman client, process
 runner, or credential-delivery package.
+
+`internal/sandboxtemplate/selection` owns the acquire, digest-canonicalize,
+strict/advisory policy-evaluate, runtime-intent, and identity-binding workflow.
+It depends on the transport-free acquisition interface and root runtime/data
+contracts only. `internal/sandboxtarget` does not import acquisition,
+selection, or the registry adapter and performs no trust decision.
 
 `cmd` owns flag parsing and dependency wiring only. It calls the acquisition
 selection boundary before target provisioning, provider construction, worker
@@ -186,8 +205,9 @@ and syncs the parent directory; incomplete entries are never hits.
 
 ## 5. Crash, retry, cancellation, and cleanup semantics
 
-Context cancellation stops network and token requests and returns a sanitized
-failure without publishing cache state or selection evidence.
+Context cancellation stops network and token requests and returns
+`request_canceled`; an adapter deadline returns `request_timeout`. Both are
+sanitized failures and publish neither cache state nor selection evidence.
 
 A mutable tag is resolved to manifest bytes, verified against the response
 digest when present, and captured as an immutable digest. The template blob is
@@ -207,6 +227,19 @@ fetched. Exactly one template layer is allowed. Its descriptor media type,
 size, and sha256 digest are validated before I/O. The adapter fetches and
 verifies exactly that one layer blob and no runtime-image, subject, config, or
 unrelated blob.
+
+Manifest decoding uses an exact field allowlist:
+`schemaVersion`, `mediaType`, `artifactType`, `config`, and `layers`.
+Both the config descriptor and layer descriptor allow exactly `mediaType`,
+`digest`, and `size`. Thus indexes, `subject`, annotations, foreign descriptor
+`urls`, platform data, alternate-data maps, extension fields, and count/byte
+overflow are rejected rather than ignored. There are exactly two descriptors
+(config plus one layer), at most 4 MiB of fetched blob data, and at most 5 MiB
+across bounded manifest plus fetched blob bytes.
+Root acquisition remeasures every supplied document or reference proof against
+the corresponding bytes; injected digest labels alone never create a lock.
+Mutable tags are intake aliases only: selection replaces them with a
+digest-canonical reference before calling the unchanged strict evaluator.
 
 HTTP retries are limited to the single authentication retry. L9 does not add
 general network retries. A failed request, digest mismatch, unsupported media
@@ -241,10 +274,17 @@ Red commits precede implementation and cover:
   userinfo, non-allowlisted origins, and excess hops;
 - strict reference parsing, response status/Accept, header/deadline, and
   `Content-Encoding` limits;
+- distinct cancellation/timeout errors plus public-address revalidation on
+  every registry, redirect, and token dial;
+- ambient-proxy disablement, TLS minimum enforcement, DNS-rebinding defense,
+  and exact trusted-internal/loopback exceptions;
+- exact manifest and descriptor field allowlists, including rejection of
+  subject, annotations, foreign URLs, platforms, and extension fields;
 - tag mutation between resolution and publication;
 - blob digest mismatch;
 - cache identity by manifest digest, revalidation, atomic publication,
-  concurrent fetch coalescing, and corrupt/incomplete-entry rejection;
+  concurrent fetch coalescing, symlink/change-during-read defense, and
+  corrupt/incomplete-entry rejection;
 - strict selection pinning and propagation before construction;
 - advisory selection remaining non-strict;
 - no unverified/local/fake fallback;
@@ -252,6 +292,9 @@ Red commits precede implementation and cover:
   run/auto/factory pre-construction ordering;
 - exact execution/sandbox/runtime selection binding rather than status-only
   projection; and
+- provider/runtime constructor panic fakes for every acquisition/policy
+  failure, with durable digest equality to the bytes that derived runtime
+  intent; and
 - redaction canaries across errors, JSON, durable metadata, and cache names.
 
 The tagged test
