@@ -26,6 +26,7 @@ type MachineConfigPayload struct {
 type BootSourcePayload struct {
 	KernelImagePath string  `json:"kernel_image_path"`
 	InitrdPath      *string `json:"initrd_path,omitempty"`
+	BootArgs        string  `json:"boot_args,omitempty"`
 }
 
 // RootDrivePayload is the JSON-compatible Firecracker block-device request
@@ -63,6 +64,7 @@ func RenderBootSourcePayload(config BackendConfig) (BootSourcePayload, error) {
 		return BootSourcePayload{
 			KernelImagePath: launchAssets.kernelPath(),
 			InitrdPath:      launchAssets.initrdPath(),
+			BootArgs:        productionBootArgs(config),
 		}, nil
 	}
 	kernelImagePath := strings.TrimSpace(config.KernelImagePath)
@@ -72,7 +74,15 @@ func RenderBootSourcePayload(config BackendConfig) (BootSourcePayload, error) {
 	return BootSourcePayload{
 		KernelImagePath: kernelImagePath,
 		InitrdPath:      optionalPayloadPath(config.InitrdPath),
+		BootArgs:        productionBootArgs(config),
 	}, nil
+}
+
+func productionBootArgs(config BackendConfig) string {
+	if config.ProductionVsock {
+		return l5ProductionBootArgs
+	}
+	return ""
 }
 
 // RenderRootDrivePayload derives the Firecracker root block-device payload
@@ -87,7 +97,7 @@ func RenderRootDrivePayload(config BackendConfig) (RootDrivePayload, error) {
 			DriveID:      defaultRootDriveID,
 			PathOnHost:   launchAssets.rootfsPath(),
 			IsRootDevice: true,
-			IsReadOnly:   false,
+			IsReadOnly:   config.ProductionVsock,
 		}, nil
 	}
 	rootfsPath := strings.TrimSpace(config.RootfsPath)
@@ -98,7 +108,7 @@ func RenderRootDrivePayload(config BackendConfig) (RootDrivePayload, error) {
 		DriveID:      defaultRootDriveID,
 		PathOnHost:   rootfsPath,
 		IsRootDevice: true,
-		IsReadOnly:   false,
+		IsReadOnly:   config.ProductionVsock,
 	}, nil
 }
 

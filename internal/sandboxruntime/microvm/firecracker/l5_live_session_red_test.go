@@ -9,8 +9,9 @@ import (
 
 func TestL5CallerCarriedReadinessCannotAuthorizeGuestTransport(t *testing.T) {
 	controller := firecrackerController{
-		liveStart:      true,
-		guestTransport: l5NoopGuestTransport{},
+		liveStart:       true,
+		guestTransport:  l5NoopGuestTransport{},
+		productionVsock: true,
 	}
 	target := sandboxruntime.Target{
 		ID: "fc-manufactured",

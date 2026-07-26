@@ -119,6 +119,8 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 		"GuestCopyPublicationError":             true,
 		"GuestExecRequest":                      true,
 		"GuestTransport":                        true,
+		"ProductionVsockBridge":                 true,
+		"ProductionVsockSessionRequest":         true,
 		"GuestWorkDirMetadata":                  true,
 		"InspectOperationPlan":                  true,
 		"LiveProcessManager":                    true,

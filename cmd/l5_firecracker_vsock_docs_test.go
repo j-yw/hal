@@ -33,7 +33,7 @@ func TestL5ArchitectureContainsMandatoryPhaseSections(t *testing.T) {
 		"TERM with a bounded grace deadline",
 		"KILL",
 		"wait/reap",
-		`"boot_args": "console=ttyS0 reboot=k panic=1 pci=off nomodules ro"`,
+		`"boot_args": "console=ttyS0 reboot=k panic=1 pci=off nomodule ro root=/dev/vda rootfstype=ext4 rootwait init=/sbin/init"`,
 		`"is_read_only": true`,
 		`"guest_cid": 3`,
 		"fixed ext4 UUID",
