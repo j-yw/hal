@@ -19,8 +19,9 @@ func TestDispatchResolverUsesClassifiedLocalGitAndOCIAdapters(t *testing.T) {
 	gitDocument := gitFixtureTemplateYAML(gitRef)
 	ociRef := "registry.example.io/acme/templates/codex-go:1.2.0"
 	ociDocument := ociFixtureTemplateYAML()
-	ociDocumentDigest := testDigest(strings.Repeat("d", 64))
-	ociTemplateArtifactDigest := testDigest(strings.Repeat("e", 64))
+	ociManifest := []byte(`{"schemaVersion":2}`)
+	ociDocumentDigest := testDigestForBytes([]byte(ociDocument))
+	ociTemplateArtifactDigest := testDigestForBytes(ociManifest)
 
 	gitFake := acquisition.NewInMemoryGitTemplateResolver(map[string]acquisition.GitTemplateResolveResult{
 		gitRef: {
@@ -32,6 +33,7 @@ func TestDispatchResolverUsesClassifiedLocalGitAndOCIAdapters(t *testing.T) {
 	ociFake := acquisition.NewInMemoryOCIArtifactResolver(map[string]acquisition.OCIArtifactResolveResult{
 		ociRef: {
 			TemplateBytes:          []byte(ociDocument),
+			ArtifactManifestBytes:  ociManifest,
 			Format:                 sandboxtemplate.FormatYAML,
 			DocumentDigest:         ociDocumentDigest,
 			TemplateArtifactDigest: ociTemplateArtifactDigest,

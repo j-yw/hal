@@ -133,6 +133,7 @@ func TestL9SelectionRejectsStrictPolicyBeforeReturningRuntimeIntent(t *testing.T
 }
 
 func TestL9AdvisorySelectionNeverClaimsStrictTrust(t *testing.T) {
+	manifestDigest := selectionTestDigest([]byte("advisory manifest"))
 	resolver := &selectionResolverStub{
 		result: acquisition.ResolveResult{
 			Template: sandboxtemplate.Template{
@@ -143,6 +144,12 @@ func TestL9AdvisorySelectionNeverClaimsStrictTrust(t *testing.T) {
 			Lock: acquisition.TemplateLock{
 				SourceKind: acquisition.SourceKindOCIArtifact,
 				Status:     acquisition.LockStatusUnresolved,
+				References: []acquisition.ReferenceLock{{
+					Field:  "metadata.reference",
+					Kind:   sandboxtemplate.ReferenceKindOCIArtifact,
+					Status: acquisition.LockStatusLocked,
+					Digest: manifestDigest,
+				}},
 			},
 		},
 	}

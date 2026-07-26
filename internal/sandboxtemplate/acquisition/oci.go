@@ -2,6 +2,8 @@ package acquisition
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 
 	"github.com/jywlabs/hal/internal/sandboxtemplate"
@@ -92,6 +94,9 @@ func (r OCIResolver) Resolve(ctx context.Context, request ResolveRequest) (Resol
 			}
 		}
 		return ResolveResult{}, resolverUnavailableError()
+	}
+	if err := verifyOCIArtifactMeasuredEvidence(artifact); err != nil {
+		return ResolveResult{}, err
 	}
 
 	format := artifact.Format
@@ -266,6 +271,7 @@ func cloneOCIArtifactResolveRequest(request OCIArtifactResolveRequest) OCIArtifa
 func cloneOCIArtifactResolveResult(result OCIArtifactResolveResult) OCIArtifactResolveResult {
 	out := OCIArtifactResolveResult{
 		TemplateBytes:          append([]byte(nil), result.TemplateBytes...),
+		ArtifactManifestBytes:  append([]byte(nil), result.ArtifactManifestBytes...),
 		Format:                 result.Format,
 		DocumentDigest:         cloneDigestMetadata(result.DocumentDigest),
 		TemplateArtifactDigest: cloneDigestMetadata(result.TemplateArtifactDigest),
@@ -275,14 +281,53 @@ func cloneOCIArtifactResolveResult(result OCIArtifactResolveResult) OCIArtifactR
 		out.ReferenceDigests = make([]ReferenceDigestProof, 0, len(result.ReferenceDigests))
 		for _, proof := range result.ReferenceDigests {
 			out.ReferenceDigests = append(out.ReferenceDigests, ReferenceDigestProof{
-				Field:  proof.Field,
-				Kind:   proof.Kind,
-				Ref:    proof.Ref,
-				Digest: cloneDigestMetadata(proof.Digest),
+				Field:         proof.Field,
+				Kind:          proof.Kind,
+				Ref:           proof.Ref,
+				Digest:        cloneDigestMetadata(proof.Digest),
+				VerifiedBytes: append([]byte(nil), proof.VerifiedBytes...),
 			})
 		}
 	}
 	return out
+}
+
+func verifyOCIArtifactMeasuredEvidence(artifact OCIArtifactResolveResult) error {
+	if artifact.SizeBytes > 0 && artifact.SizeBytes != int64(len(artifact.TemplateBytes)) {
+		return ociDigestMismatchError()
+	}
+	if artifact.DocumentDigest != nil && !digestMatchesBytes(artifact.DocumentDigest, artifact.TemplateBytes) {
+		return ociDigestMismatchError()
+	}
+	if artifact.TemplateArtifactDigest != nil &&
+		(len(artifact.ArtifactManifestBytes) == 0 || !digestMatchesBytes(artifact.TemplateArtifactDigest, artifact.ArtifactManifestBytes)) {
+		return ociDigestMismatchError()
+	}
+	for _, proof := range artifact.ReferenceDigests {
+		if proof.Digest == nil {
+			continue
+		}
+		if len(proof.VerifiedBytes) == 0 || !digestMatchesBytes(proof.Digest, proof.VerifiedBytes) {
+			return ociDigestMismatchError()
+		}
+	}
+	return nil
+}
+
+func digestMatchesBytes(digest *sandboxtemplate.DigestMetadata, data []byte) bool {
+	if digest == nil || digest.Algorithm != sandboxtemplate.DigestAlgorithmSHA256 || len(digest.Value) != 64 {
+		return false
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]) == digest.Value
+}
+
+func ociDigestMismatchError() *ResolveError {
+	return &ResolveError{
+		Code:    ResolveErrorCodeDigestMismatch,
+		Message: "oci template digest evidence does not match verified bytes",
+		Err:     ErrInvalidSource,
+	}
 }
 
 func cloneImmutableRefValue(ref sandboxtemplate.ImmutableRef) sandboxtemplate.ImmutableRef {

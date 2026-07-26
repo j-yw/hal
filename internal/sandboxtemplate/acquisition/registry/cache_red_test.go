@@ -3,6 +3,7 @@ package registry_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -24,7 +25,7 @@ func TestL9FileCacheRoundTripUsesOnlyVerifiedManifestIdentity(t *testing.T) {
 		LayerBytes:     fixture.template,
 	}
 	if err := cache.Store(context.Background(), entry); err != nil {
-		t.Fatalf("Store() error = %v", err)
+		t.Fatalf("Store() error = %v (cause %v)", err, errors.Unwrap(err))
 	}
 	got, hit, err := cache.Load(context.Background(), registry.CacheLookup{
 		ManifestDigest: fixture.manifestDigest,

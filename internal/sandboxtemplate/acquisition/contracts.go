@@ -45,6 +45,7 @@ const (
 	ResolveErrorCodeReadFailed          ResolveErrorCode = "read_failed"
 	ResolveErrorCodeDecodeFailed        ResolveErrorCode = "decode_failed"
 	ResolveErrorCodeValidationFailed    ResolveErrorCode = "validation_failed"
+	ResolveErrorCodeDigestMismatch      ResolveErrorCode = "digest_mismatch"
 )
 
 var ErrInvalidSource = errors.New("sandbox template acquisition source is invalid")
@@ -150,6 +151,7 @@ type OCIArtifactResolveRequest struct {
 // identity proof returned by an injected resolver.
 type OCIArtifactResolveResult struct {
 	TemplateBytes          []byte                          `json:"templateBytes,omitempty"`
+	ArtifactManifestBytes  []byte                          `json:"artifactManifestBytes,omitempty"`
 	Format                 sandboxtemplate.Format          `json:"format,omitempty"`
 	DocumentDigest         *sandboxtemplate.DigestMetadata `json:"documentDigest,omitempty"`
 	TemplateArtifactDigest *sandboxtemplate.DigestMetadata `json:"templateArtifactDigest,omitempty"`
@@ -160,10 +162,11 @@ type OCIArtifactResolveResult struct {
 // ReferenceDigestProof records immutable identity for a reference discovered
 // while resolving a template artifact.
 type ReferenceDigestProof struct {
-	Field  string                          `json:"field,omitempty"`
-	Kind   sandboxtemplate.ReferenceKind   `json:"kind,omitempty"`
-	Ref    string                          `json:"ref,omitempty"`
-	Digest *sandboxtemplate.DigestMetadata `json:"digest,omitempty"`
+	Field         string                          `json:"field,omitempty"`
+	Kind          sandboxtemplate.ReferenceKind   `json:"kind,omitempty"`
+	Ref           string                          `json:"ref,omitempty"`
+	Digest        *sandboxtemplate.DigestMetadata `json:"digest,omitempty"`
+	VerifiedBytes []byte                          `json:"verifiedBytes,omitempty"`
 }
 
 // GitTemplateResolver resolves Git-hosted template metadata through injected,
