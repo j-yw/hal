@@ -366,6 +366,97 @@ func TestClientCopyInPublishedOutcomeOutranksLateContext(t *testing.T) {
 	}
 }
 
+func TestClientCopyInRequiresRequestBoundSuccessAcknowledgement(t *testing.T) {
+	payload := []byte("request-bound payload")
+	sum := sha256.Sum256(payload)
+	digest := "sha256:" + hex.EncodeToString(sum[:])
+	request := CopyInRequest{
+		DestinationPath: "/workspace/request-bound.txt",
+		Payload: PayloadMetadata{
+			SizeBytes: int64(len(payload)),
+			MaxBytes:  1024,
+			Digest:    digest,
+			Encoding:  PayloadEncodingBase64,
+			Data:      base64.StdEncoding.EncodeToString(payload),
+		},
+	}
+
+	tests := []struct {
+		name    string
+		written PayloadMetadata
+	}{
+		{
+			name: "mismatched size",
+			written: PayloadMetadata{
+				SizeBytes: int64(len(payload) - 1),
+				MaxBytes:  1024,
+				Digest:    digest,
+				Encoding:  PayloadEncodingBase64,
+			},
+		},
+		{
+			name: "mismatched digest",
+			written: PayloadMetadata{
+				SizeBytes: int64(len(payload)),
+				MaxBytes:  1024,
+				Digest:    "sha256:" + strings.Repeat("0", 64),
+				Encoding:  PayloadEncodingBase64,
+			},
+		},
+		{
+			name: "missing digest",
+			written: PayloadMetadata{
+				SizeBytes: int64(len(payload)),
+				MaxBytes:  1024,
+				Encoding:  PayloadEncodingBase64,
+			},
+		},
+		{
+			name: "request-relative limit exceeded",
+			written: PayloadMetadata{
+				SizeBytes: int64(len(payload)),
+				MaxBytes:  2048,
+				Digest:    digest,
+				Encoding:  PayloadEncodingBase64,
+			},
+		},
+		{
+			name: "wrong encoding",
+			written: PayloadMetadata{
+				SizeBytes: int64(len(payload)),
+				MaxBytes:  1024,
+				Digest:    digest,
+				Encoding:  PayloadEncodingRaw,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, err := NewClient(ClientOptions{
+				Transport: TransportFunc(func(context.Context, TransportRequest) (TransportResponse, error) {
+					return encodeClientResponse(t, CopyInResponse{
+						ProtocolVersion: ProtocolVersionV1,
+						Operation:       OperationCopyIn,
+						Written:         tt.written,
+					}), nil
+				}),
+			})
+			if err != nil {
+				t.Fatalf("NewClient() error: %v", err)
+			}
+
+			response, err := client.CopyIn(context.Background(), request)
+			if response != nil {
+				t.Fatalf("CopyIn() response = %#v, want nil for unbound acknowledgement", response)
+			}
+			if !clientProtocolErrorCode(err, ErrorCodeInvalidMetadata) {
+				t.Fatalf("CopyIn() error = %v, want %s", err, ErrorCodeInvalidMetadata)
+			}
+		})
+	}
+}
+
 func TestClientEnforcesEncodedRequestAndResponseLimits(t *testing.T) {
 	var called atomic.Bool
 	requestLimitClient, err := NewClient(ClientOptions{

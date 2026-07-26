@@ -223,6 +223,56 @@ func TestGuestAgentTransportCopyInPreservesPublishedDurabilityUncertainOutcome(t
 	}
 }
 
+func TestGuestAgentTransportCopyInRejectsUnboundSuccessAcknowledgement(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "input.txt")
+	payload := []byte("copy-in payload")
+	if err := os.WriteFile(sourcePath, payload, 0o600); err != nil {
+		t.Fatalf("WriteFile(source) error: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name    string
+		written guestagent.PayloadMetadata
+	}{
+		{
+			name: "missing digest",
+			written: guestagent.PayloadMetadata{
+				SizeBytes: int64(len(payload)),
+				MaxBytes:  64,
+				Encoding:  guestagent.PayloadEncodingBase64,
+			},
+		},
+		{
+			name: "wrong encoding",
+			written: guestagent.PayloadMetadata{
+				SizeBytes: int64(len(payload)),
+				MaxBytes:  64,
+				Digest:    guestAgentTransportDigest(payload),
+				Encoding:  guestagent.PayloadEncodingRaw,
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := validRecordingGuestAgentClient()
+			client.copyInResponse = &guestagent.CopyInResponse{
+				ProtocolVersion: guestagent.ProtocolVersionV1,
+				Operation:       guestagent.OperationCopyIn,
+				Written:         tt.written,
+			}
+			transport := NewGuestAgentTransport(GuestAgentTransportOptions{
+				Client:                  client,
+				CopyInPayloadLimitBytes: 64,
+			})
+
+			err := transport.CopyIn(context.Background(), firecracker.GuestCopyRequest{
+				SourcePath:      sourcePath,
+				DestinationPath: "/workspace/input.txt",
+			})
+			requireGuestAgentProtocolErrorCode(t, err, guestagent.ErrorCodeInvalidMetadata)
+		})
+	}
+}
+
 func TestGuestAgentTransportCopyOutWritesBoundedGuestPayloadBytes(t *testing.T) {
 	destinationPath := filepath.Join(t.TempDir(), "nested", "output.txt")
 	payload := []byte("copy-out payload\n")
