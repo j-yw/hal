@@ -23,10 +23,13 @@ capability honesty, redaction, cancellation, and lifecycle cleanup. They make
 no downloads, mounts, KVM calls, Firecracker launches, cloud calls, or network
 connections.
 
-The matrix includes canonical assigned-host-port range checks, partial and
+The matrix includes canonical unsigned 32-bit assigned-host-port checks,
+including zero, overflow, sign, leading-zero, and reserved
+`VMADDR_PORT_ANY` rejection; partial and
 pre-acknowledgement data, wrong/stale socket rejection, state/UDS
 type-owner-mode and runtime/process/inode correlation, symlink/socket
-substitution, boot/readiness races, and post-cleanup reconnect failure. The full
+substitution, Linux `SO_PEERCRED` PID/generation binding, boot/readiness races,
+and post-cleanup reconnect failure. The full
 config must contain the fixed boot arguments, read-only root drive, guest CID,
 and target-owned UDS before process start.
 

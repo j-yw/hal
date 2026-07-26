@@ -68,8 +68,8 @@ directory. The host transport:
 3. reads one bounded newline-terminated Firecracker response without accepting
    pre-acknowledgement protocol bytes;
 4. requires the exact `OK <assignedHostPort>\n` shape where the host port is
-   canonical unsigned decimal without sign or leading zero and is in
-   `1..65535`;
+   canonical unsigned 32-bit decimal without sign or leading zero, is nonzero,
+   and is not Linux `VMADDR_PORT_ANY` (`4294967295`);
 5. writes one bounded guest-agent JSON request;
 6. half-closes the write side;
 7. reads one bounded JSON response to EOF; and
@@ -129,7 +129,11 @@ stale socket may be removed only when its type, UID, mode, parent descriptor,
 runtime ID, prior process handle, and terminal lifecycle record all correlate.
 After Firecracker creates the socket, the same checks run again before dial.
 A socket swap between verification and dial is detected by comparing the
-pinned parent plus pre/post device/inode identity; readiness is rejected.
+pinned parent plus pre/post device/inode identity. After connect, Linux
+`SO_PEERCRED` must report the exact PID of the accepted live Firecracker process
+generation before the host writes `CONNECT`; inode checks without peer
+credentials are insufficient. Missing, malformed, stale, or mismatched peer
+credentials reject the handshake and readiness.
 
 L5 reuses L4 protocol failures and the existing sanitized microVM operation
 codes. New construction failures use fixed safe codes:
