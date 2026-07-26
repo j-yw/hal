@@ -139,6 +139,29 @@ func TestUnsupportedSourceKindReturnsStableSanitizedError(t *testing.T) {
 	assertAcquisitionErrorOmitsFragments(t, err, "oci_index?token", "ghp_fixturetoken", "password=hunter2")
 }
 
+func TestOCIResolverRechecksCancellationBeforeReturningEvidence(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	fake := &fakeOCIArtifactResolver{
+		fixtures: map[string]acquisition.OCIArtifactResolveResult{"registry.example/repo:tag": {}},
+		cancel:   cancel,
+	}
+	result, err := acquisition.NewOCIResolver(fake).Resolve(ctx, acquisition.ResolveRequest{
+		Source: acquisition.TemplateSource{
+			Kind: acquisition.SourceKindOCIArtifact,
+			Reference: &sandboxtemplate.ImmutableRef{
+				Kind: sandboxtemplate.ReferenceKindOCIArtifact,
+				Ref:  "registry.example/repo:tag",
+			},
+		},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Resolve() error = %v, want context.Canceled", err)
+	}
+	if result.Template.Metadata.ID != "" || result.Lock.Status != "" {
+		t.Fatalf("canceled resolver returned evidence: %#v", result)
+	}
+}
+
 func TestInMemoryOCIArtifactResolverLeavesUnprovenMutableRefsUnresolved(t *testing.T) {
 	sourceRef := "ghcr.io/acme/templates/codex-go:1.2.0"
 	document := ociFixtureTemplateYAML()
@@ -298,10 +321,14 @@ func TestOCITransientMeasuredBytesAreNeverJSONVisible(t *testing.T) {
 type fakeOCIArtifactResolver struct {
 	fixtures map[string]acquisition.OCIArtifactResolveResult
 	calls    []acquisition.OCIArtifactResolveRequest
+	cancel   context.CancelFunc
 }
 
 func (f *fakeOCIArtifactResolver) ResolveOCIArtifact(_ context.Context, request acquisition.OCIArtifactResolveRequest) (acquisition.OCIArtifactResolveResult, error) {
 	f.calls = append(f.calls, request)
+	if f.cancel != nil {
+		f.cancel()
+	}
 	result, ok := f.fixtures[request.Reference.Ref]
 	if !ok {
 		return acquisition.OCIArtifactResolveResult{}, errors.New("fixture artifact is missing")

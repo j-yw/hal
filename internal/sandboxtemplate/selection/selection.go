@@ -74,6 +74,9 @@ func (w Workflow) Select(ctx context.Context, request Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, rejected(err)
+	}
 	manifestDigest := selectedManifestDigest(resolved.Lock)
 	if manifestDigest == nil {
 		return Result{}, rejected(ErrSelectionRejected)
@@ -101,6 +104,9 @@ func (w Workflow) Select(ctx context.Context, request Request) (Result, error) {
 	}
 	runtimeMetadata := acquisition.ProjectRuntimeTemplateLockMetadata(provenance, trust)
 	correlateRuntimeMetadata(runtimeMetadata, manifestDigest, trust)
+	if err := ctx.Err(); err != nil {
+		return Result{}, rejected(err)
+	}
 
 	result := Result{
 		Template:        template,

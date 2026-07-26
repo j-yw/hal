@@ -1,3 +1,5 @@
+//go:build !windows
+
 package registry
 
 import (
@@ -37,9 +39,10 @@ type CacheEntry struct {
 }
 
 type FileCache struct {
-	root    string
-	invalid bool
-	mu      sync.Mutex
+	root          string
+	invalid       bool
+	mu            sync.Mutex
+	beforePublish func()
 }
 
 func NewFileCache(root string) *FileCache {
@@ -184,6 +187,12 @@ func (c *FileCache) Store(ctx context.Context, entry CacheEntry) error {
 	}
 	if err := tempDir.Sync(); err != nil {
 		return coded(ErrorCodeCachePublishFailed, err)
+	}
+	if c.beforePublish != nil {
+		c.beforePublish()
+	}
+	if err := ctx.Err(); err != nil {
+		return requestContextError(err)
 	}
 	finalName := cacheEntryName(entry.ManifestDigest)
 	if err := unix.Renameat(int(root.Fd()), tempName, int(root.Fd()), finalName); err != nil {

@@ -95,6 +95,9 @@ func (r OCIResolver) Resolve(ctx context.Context, request ResolveRequest) (Resol
 		}
 		return ResolveResult{}, resolverUnavailableError()
 	}
+	if err := ctx.Err(); err != nil {
+		return ResolveResult{}, canceledResolutionError(err)
+	}
 	if err := verifyOCIArtifactMeasuredEvidence(artifact); err != nil {
 		return ResolveResult{}, err
 	}
@@ -122,10 +125,21 @@ func (r OCIResolver) Resolve(ctx context.Context, request ResolveRequest) (Resol
 	}
 
 	sanitized := sandboxtemplate.SanitizeTemplate(*validation.Normalized)
+	if err := ctx.Err(); err != nil {
+		return ResolveResult{}, canceledResolutionError(err)
+	}
 	return ResolveResult{
 		Template: sanitized,
 		Lock:     ociTemplateLock(artifact, sanitized, request.LockedAtUnixMillis),
 	}, nil
+}
+
+func canceledResolutionError(err error) *ResolveError {
+	return &ResolveError{
+		Code:    ResolveErrorCodeInvalidSource,
+		Message: "template resolution was canceled",
+		Err:     err,
+	}
 }
 
 func resolverUnavailableError() *ResolveError {

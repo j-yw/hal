@@ -70,6 +70,9 @@ func (r *Resolver) ResolveOCIArtifact(ctx context.Context, request acquisition.O
 			return acquisition.OCIArtifactResolveResult{}, normalizeRegistryError(ctx, err)
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return acquisition.OCIArtifactResolveResult{}, requestContextError(err)
+	}
 	format := sandboxtemplate.FormatYAML
 	if first.layer.MediaType == MediaTypeTemplateJSON {
 		format = sandboxtemplate.FormatJSON

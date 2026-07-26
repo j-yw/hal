@@ -277,6 +277,27 @@ func TestL9RegistryResolverCancellationAndDeadlineHaveDistinctCodes(t *testing.T
 	}
 }
 
+func TestL9RegistryResolverRechecksCancellationAfterCachePublicationWork(t *testing.T) {
+	fixture := newRegistryFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cache := &cancelingRegistryCache{cancel: cancel}
+	client := fakeHTTPDoer(func(request *http.Request) (*http.Response, error) {
+		if strings.Contains(request.URL.Path, "/manifests/") {
+			return registryResponse(http.StatusOK, registry.MediaTypeOCIManifest, fixture.manifest, nil), nil
+		}
+		return registryResponse(http.StatusOK, registry.MediaTypeTemplateYAML, fixture.template, nil), nil
+	})
+	resolver := mustRegistryResolver(t, client, cache)
+	result, err := resolver.ResolveOCIArtifact(ctx, tagRequest("registry.example/hal/template:latest"))
+	requireRegistryErrorCode(t, err, registry.ErrorCodeRequestCanceled)
+	if len(result.TemplateBytes) != 0 || result.TemplateArtifactDigest != nil {
+		t.Fatalf("canceled resolution returned selection evidence: %#v", result)
+	}
+	if cache.stores != 1 {
+		t.Fatalf("cache stores = %d, want one cancellation seam", cache.stores)
+	}
+}
+
 func TestL9RegistryErrorsNeverExposeDynamicInputs(t *testing.T) {
 	canary := "ghp_l9_registry_secret"
 	client := fakeHTTPDoer(func(*http.Request) (*http.Response, error) {
@@ -507,6 +528,21 @@ type fakeHTTPDoer func(*http.Request) (*http.Response, error)
 
 func (f fakeHTTPDoer) Do(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+type cancelingRegistryCache struct {
+	cancel context.CancelFunc
+	stores int
+}
+
+func (*cancelingRegistryCache) Load(context.Context, registry.CacheLookup) ([]byte, bool, error) {
+	return nil, false, nil
+}
+
+func (c *cancelingRegistryCache) Store(context.Context, registry.CacheEntry) error {
+	c.stores++
+	c.cancel()
+	return nil
 }
 
 func registryDigest(data []byte) string {

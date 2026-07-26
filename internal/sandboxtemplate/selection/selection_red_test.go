@@ -182,6 +182,21 @@ func TestL9SelectionDoesNotFallbackAfterResolverFailure(t *testing.T) {
 	}
 }
 
+func TestL9SelectionRechecksCancellationBeforeReturningEvidence(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	resolver := &selectionResolverStub{cancel: cancel}
+	result, err := selection.NewWorkflow(resolver).Select(ctx, selection.Request{
+		Source:    acquisition.TemplateSource{Kind: acquisition.SourceKindOCIArtifact},
+		TrustMode: acquisition.TrustPolicyModeStrict,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Select() error = %v, want context.Canceled", err)
+	}
+	if result.ManifestDigest != nil || result.RuntimeMetadata != nil || result.Template.Metadata.ID != "" {
+		t.Fatalf("canceled selection returned evidence: %#v", result)
+	}
+}
+
 func TestL9SelectionRequiresExactLockedOCISHA256ManifestEvidence(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -397,10 +412,14 @@ type selectionResolverStub struct {
 	result acquisition.ResolveResult
 	err    error
 	calls  int
+	cancel context.CancelFunc
 }
 
 func (s *selectionResolverStub) Resolve(context.Context, acquisition.ResolveRequest) (acquisition.ResolveResult, error) {
 	s.calls++
+	if s.cancel != nil {
+		s.cancel()
+	}
 	return s.result, s.err
 }
 

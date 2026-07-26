@@ -395,14 +395,14 @@ func TestL9SeparateFileCachesReverifyConflictingPublicationWinner(t *testing.T) 
 }
 
 func TestL9FileCacheImplementationUsesNoFollowDescriptorRelativeFsyncAndRename(t *testing.T) {
-	content, err := os.ReadFile("cache.go")
+	content, err := os.ReadFile("cache_unix.go")
 	if err != nil {
-		t.Fatalf("ReadFile(cache.go): %v", err)
+		t.Fatalf("ReadFile(cache_unix.go): %v", err)
 	}
 	source := string(content)
 	for _, required := range []string{"unix.Openat", "unix.Renameat", "unix.Mkdirat", "unix.O_NOFOLLOW", ".Sync()", "0o700", "0o600", "Stat_t", "Uid"} {
 		if !strings.Contains(source, required) {
-			t.Errorf("cache.go missing crash/containment primitive %q", required)
+			t.Errorf("cache_unix.go missing crash/containment primitive %q", required)
 		}
 	}
 }
