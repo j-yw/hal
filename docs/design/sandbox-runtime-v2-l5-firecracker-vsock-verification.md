@@ -62,9 +62,21 @@ contains versions, digests, safe IDs, pass/fail codes, and cleanup counts only;
 it contains no host paths, endpoints, machine identity, credentials, or raw
 process arguments.
 
-The asset gate verifies every offline dependency digest, clean source/tree
-identity, deterministic Go/kernel/ext4 controls, and two independent
-byte-for-byte builds. It refuses network access during the build phase.
+The asset gate verifies Buildroot `2026.05.1` tag/commit/signed-release
+identity, Linux `6.1.178`, Firecracker `v1.15.1`, every exact offline
+dependency filename and digest, clean source/tree identity, deterministic
+Go/kernel/ext4 controls, `CONFIG_MODULES=n`,
+`CONFIG_HW_RANDOM_VIRTIO=y`, and `e2fsck -fn`. It rejects missing and extra
+downloads under a real no-network boundary with `BR2_PRIMARY_SITE_ONLY`,
+`BR2_FORCE_CHECK_HASHES`, and no ccache.
+
+The two reproducibility runs use independent clean namespaces/containers but
+the same canonical internal Buildroot source and `O=` paths, with fresh
+host/staging/target/download state. They export to distinct caller
+directories and byte-compare the kernel, rootfs, path-free distribution
+manifest, provenance, and checksums. No distribution artifact may contain
+either caller path; runtime-materialized launch descriptors are tested
+separately and are not reproducibility outputs.
 
 ## Focused and broad commands
 

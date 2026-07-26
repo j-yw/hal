@@ -22,6 +22,26 @@ claim.
 
 ### Guest asset build
 
+The x86_64 build lock is:
+
+- Buildroot tag `2026.05.1`, annotated tag object
+  `de1f9260590a53a7cd8a59addc47c96ecd09f983`, peeled commit
+  `cb857ba4c87a93e5265a9e4a3f32071abf39e14a`, official
+  `buildroot-2026.05.1.tar.xz` SHA-256
+  `ae7f706f087b9ae9083a10a587368dfbf53103c28bf81c2d690198dc4090cb58`,
+  and verified signed release message from full fingerprint
+  `18C7DF2819C1733D822D599EA500D6EE9CB0E540`;
+- Linux `6.1.178` archive SHA-256
+  `7d83fa67ca75032b1ac6ef49973722073963c0cb9bc3aa7ef3efa749cf6c720f`;
+  and
+- Firecracker `v1.15.1` x86_64 release archive SHA-256
+  `d4a32ab2322d887ca1bc4a4e7afa9cc35393e6362dfc2b3becb389d362e4275a`.
+
+The checked-in manifest also locks every transitive Buildroot download by
+exact filename, version, URL, and SHA-256. A checksum establishes integrity;
+it is not independent authenticity. The Buildroot signed-release verification
+and the Firecracker upstream release origin are recorded separately.
+
 The build entry point consumes:
 
 - a checked-in Buildroot release version and SHA-256 lock;
@@ -33,28 +53,45 @@ The build entry point consumes:
 - an empty caller-owned output directory.
 
 Network fetch is a separate explicit step. Every official download is accepted
-only after its immutable SHA-256 lock matches. The offline build consumes only
-the verified source archive and dependency cache, refuses a missing, extra, or
+only after its immutable SHA-256 lock matches, and the Buildroot source must
+also pass its pinned signed-release verification. The offline build executes
+inside a real no-network namespace/container with
+`BR2_PRIMARY_SITE_ONLY=y`, `BR2_FORCE_CHECK_HASHES=y`, no ccache, and a
+fresh host/staging/target/download tree. It consumes only the verified source
+archive and exact download manifest, refuses a missing, extra, renamed, or
 digest-mismatched dependency, builds a static
 `hal-guest-agent`, and emits:
 
 - `vmlinux`;
 - `rootfs.ext4`;
-- `launch-descriptor.json`;
+- a path-free `distribution-manifest.json`;
 - `provenance.json`; and
 - `SHA256SUMS`.
 
 The guest binary uses `-trimpath`, `-buildvcs=false`, an empty Go build ID, and
 no ambient module download. The kernel build fixes `KBUILD_BUILD_USER`,
 `KBUILD_BUILD_HOST`, `KBUILD_BUILD_TIMESTAMP`, and `KBUILD_BUILD_VERSION`.
-Filesystem construction uses a fixed ext4 UUID, fixed inode count and feature
-set, sorted population order, normalized ownership/modes/mtimes, disabled lazy
-initialization, and a final read-only fsck. The descriptor records only safe
-IDs, versions, protocol/features, sizes, and SHA-256 digests. Provenance never
-records source/output paths, hostnames, endpoints, usernames, environment
-values, or command lines. The acceptance build runs twice in distinct
-directories and byte-compares `vmlinux`, `rootfs.ext4`, the descriptor,
-provenance, and checksum file.
+The kernel has `CONFIG_MODULES=n` and `CONFIG_HW_RANDOM_VIRTIO=y`.
+Filesystem construction uses a fixed ext4 UUID, label, inode count, block
+size/count and feature set, sorted population order, normalized
+ownership/modes/mtimes, disabled lazy inode-table and journal initialization,
+and a final `e2fsck -fn`. The distribution manifest records only stable
+relative asset keys, safe IDs, versions, protocol/features, sizes, and SHA-256
+digests. It is deliberately distinct from the existing runtime-materialized
+`assets.LaunchDescriptor`, whose resolved host paths are created only after
+installation and are never a distribution artifact. Provenance never records
+source/output paths, hostnames, endpoints, usernames, environment values, or
+command lines; any time field is exactly `SOURCE_DATE_EPOCH * 1000`.
+
+Buildroot's reproducibility mode requires the same canonical internal source
+and `O=` paths. Therefore the acceptance build uses two independent clean
+no-network namespaces/containers that expose identical canonical internal
+paths and fresh host/staging/target/download state, export results to distinct
+caller directories, then byte-compare `vmlinux`, `rootfs.ext4`,
+`distribution-manifest.json`, `provenance.json`, and `SHA256SUMS`. Different
+caller export paths must not change any byte or appear in an artifact.
+Cross-host equality is a stronger handoff check, not the local L5 acceptance
+claim.
 
 ### Vsock transport
 
@@ -94,7 +131,7 @@ The pre-start Firecracker full-config file contains:
 {
   "boot-source": {
     "kernel_image_path": "<private>",
-    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off nomodules ro"
+    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off nomodule root=/dev/vda ro init=/sbin/init"
   },
   "drives": [{
     "drive_id": "rootfs",
@@ -105,15 +142,19 @@ The pre-start Firecracker full-config file contains:
   "vsock": {
     "guest_cid": 3,
     "uds_path": "<target-owned-private-state>/guest.vsock"
-  }
+  },
+  "entropy": {}
 }
 ```
 
-Guest init mounts `/workspace` as a size-bounded tmpfs before constructing the
-L4 backend, so the immutable root drive remains read-only and `/workspace` is
-a distinct writable filesystem. The fixed boot arguments and vsock device must
-be present in the config before Firecracker starts; no post-start API mutation
-is accepted as equivalent proof.
+PID 1 mounts `/proc`, `/dev`, `/sys`, `/run`, and `/tmp`, creates a fixed
+non-root UID/GID `1000`, and mounts `/workspace` as a distinct size-bounded
+tmpfs owned by that identity with mode `0700` before constructing the L4
+backend. It reaps children and forwards termination signals, then drops
+privileges and execs the guest agent. The immutable ext4 root drive remains
+read-only. The fixed boot arguments, entropy device, and vsock device must be
+present in the config before Firecracker starts; no post-start API mutation is
+accepted as equivalent proof.
 
 Start order is verify private state, render state, start Firecracker, accept the
 API socket, correlate the process handle/runtime/state identity, complete the
@@ -187,8 +228,10 @@ tests or default Hal execution.
 L5 does not change manifests, factory records, command JSON versions, worker
 protocol versions, or strict-security schemas.
 
-The existing launch descriptor carries kernel/rootfs SHA-256 locks and guest
-agent metadata (`guest-agent-v1`, `readiness`, `exec`, `copy_in`, `copy_out`).
+The path-free distribution manifest carries kernel/rootfs SHA-256 locks and
+guest-agent metadata (`guest-agent-v1`, `readiness`, `exec`, `copy_in`,
+`copy_out`). Asset installation/resolution separately materializes the
+existing runtime launch descriptor with local host paths.
 The build provenance schema is `hal-microvm-image-v1` with safe fields only:
 schema version, source revision, source-date epoch, Buildroot/Linux/BusyBox/Go
 versions, architecture, guest-agent protocol/features, and output
