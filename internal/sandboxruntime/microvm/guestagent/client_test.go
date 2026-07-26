@@ -2,7 +2,9 @@ package guestagent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -196,11 +198,14 @@ func TestClientHonorsContextCancellationAndRequestDeadlines(t *testing.T) {
 
 func TestClientCopyInPublishedOutcomeOutranksLateContext(t *testing.T) {
 	payload := []byte("published payload")
+	sum := sha256.Sum256(payload)
+	digest := "sha256:" + hex.EncodeToString(sum[:])
 	request := CopyInRequest{
 		DestinationPath: "/workspace/published.txt",
 		Payload: PayloadMetadata{
 			SizeBytes: int64(len(payload)),
 			MaxBytes:  1024,
+			Digest:    digest,
 			Encoding:  PayloadEncodingBase64,
 			Data:      base64.StdEncoding.EncodeToString(payload),
 		},
@@ -219,6 +224,7 @@ func TestClientCopyInPublishedOutcomeOutranksLateContext(t *testing.T) {
 				Written: PayloadMetadata{
 					SizeBytes: int64(len(payload)),
 					MaxBytes:  1024,
+					Digest:    digest,
 					Encoding:  PayloadEncodingBase64,
 				},
 			}),
@@ -247,6 +253,75 @@ func TestClientCopyInPublishedOutcomeOutranksLateContext(t *testing.T) {
 					Operation: OperationCopyIn,
 					Field:     "copy",
 					Message:   "copy failed",
+				},
+			}),
+			wantCode: ErrorCodeRequestCanceled,
+		},
+		{
+			name: "stale success size remains context authoritative",
+			response: encodeClientResponse(t, CopyInResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyIn,
+				Written: PayloadMetadata{
+					SizeBytes: int64(len(payload) - 1),
+					MaxBytes:  1024,
+					Digest:    digest,
+					Encoding:  PayloadEncodingBase64,
+				},
+			}),
+			wantCode: ErrorCodeRequestCanceled,
+		},
+		{
+			name: "stale success digest remains context authoritative",
+			response: encodeClientResponse(t, CopyInResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyIn,
+				Written: PayloadMetadata{
+					SizeBytes: int64(len(payload)),
+					MaxBytes:  1024,
+					Digest:    "sha256:" + strings.Repeat("0", 64),
+					Encoding:  PayloadEncodingBase64,
+				},
+			}),
+			wantCode: ErrorCodeRequestCanceled,
+		},
+		{
+			name: "missing success digest remains context authoritative",
+			response: encodeClientResponse(t, CopyInResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyIn,
+				Written: PayloadMetadata{
+					SizeBytes: int64(len(payload)),
+					MaxBytes:  1024,
+					Encoding:  PayloadEncodingBase64,
+				},
+			}),
+			wantCode: ErrorCodeRequestCanceled,
+		},
+		{
+			name: "oversized success limit remains context authoritative",
+			response: encodeClientResponse(t, CopyInResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyIn,
+				Written: PayloadMetadata{
+					SizeBytes: int64(len(payload)),
+					MaxBytes:  2048,
+					Digest:    digest,
+					Encoding:  PayloadEncodingBase64,
+				},
+			}),
+			wantCode: ErrorCodeRequestCanceled,
+		},
+		{
+			name: "wrong success encoding remains context authoritative",
+			response: encodeClientResponse(t, CopyInResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyIn,
+				Written: PayloadMetadata{
+					SizeBytes: int64(len(payload)),
+					MaxBytes:  1024,
+					Digest:    digest,
+					Encoding:  PayloadEncodingRaw,
 				},
 			}),
 			wantCode: ErrorCodeRequestCanceled,
