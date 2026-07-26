@@ -341,9 +341,15 @@ func (manager *ProcessLifecycleManager) killAndWait(ctx context.Context, handle 
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), manager.cleanupTimeout)
 	defer cancel()
 	if err := process.Kill(cleanupCtx); err != nil {
+		if hostProcessExitObserved(process) {
+			manager.markProcessFinished(id)
+		}
 		return newProcessLifecycleError(processOperationKill, err)
 	}
 	if err := process.Wait(cleanupCtx); err != nil {
+		if hostProcessExitObserved(process) {
+			manager.markProcessFinished(id)
+		}
 		return newProcessLifecycleError(processOperationWait, err)
 	}
 	if forget {
