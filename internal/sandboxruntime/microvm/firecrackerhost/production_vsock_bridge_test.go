@@ -140,7 +140,11 @@ func (process *l5IdentityProcess) Done() <-chan struct{}               { return 
 
 func l5ListenBridgeSocket(t *testing.T, path string) net.Listener {
 	t.Helper()
-	listener, err := net.Listen("unix", path)
+	address, err := net.ResolveUnixAddr("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.ListenUnix("unix", address)
 	if err != nil {
 		t.Fatal(err)
 	}
