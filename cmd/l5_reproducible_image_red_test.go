@@ -1,0 +1,522 @@
+package cmd
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+const (
+	l5BuildrootTagObject = "de1f9260590a53a7cd8a59addc47c96ecd09f983"
+	l5BuildrootCommit    = "cb857ba4c87a93e5265a9e4a3f32071abf39e14a"
+	l5BuildrootSigner    = "18C7DF2819C1733D822D599EA500D6EE9CB0E540"
+	l5BuildImage         = "registry.gitlab.com/buildroot.org/buildroot/base@sha256:f1e7f009dad6b6f44bf5fcb4b0b89c9228e42f9fe689142774b1db802d4c93c6"
+)
+
+type l5SourceLockFile struct {
+	SchemaVersion string `json:"schemaVersion"`
+	Architecture  string `json:"architecture"`
+	BuildImage    struct {
+		Reference string `json:"reference"`
+		Platform  string `json:"platform"`
+	} `json:"buildImage"`
+	Buildroot struct {
+		Tag               string `json:"tag"`
+		TagObject         string `json:"tagObject"`
+		Commit            string `json:"commit"`
+		SignerFingerprint string `json:"signerFingerprint"`
+		SigningKeyURL     string `json:"signingKeyUrl"`
+		SignatureFilename string `json:"signatureFilename"`
+		SignatureURL      string `json:"signatureUrl"`
+	} `json:"buildroot"`
+	Sources []l5SourceLock `json:"sources"`
+}
+
+type l5SourceLock struct {
+	Name      string `json:"name"`
+	Version   string `json:"version"`
+	Purpose   string `json:"purpose"`
+	Filename  string `json:"filename"`
+	URL       string `json:"url"`
+	SizeBytes int64  `json:"sizeBytes"`
+	SHA256    string `json:"sha256"`
+}
+
+func TestL5PinnedSourceLockMatchesAuthoritativeInputs(t *testing.T) {
+	path := filepath.Join("..", "tools", "microvm", "l5", "sources.lock.json")
+	data := l5ReadRequiredFile(t, path)
+	var lock l5SourceLockFile
+	if err := json.Unmarshal(data, &lock); err != nil {
+		t.Fatalf("decode L5 source lock: %v", err)
+	}
+
+	if lock.SchemaVersion != "hal-microvm-source-lock-v1" {
+		t.Fatalf("schemaVersion = %q", lock.SchemaVersion)
+	}
+	if lock.Architecture != "x86_64" {
+		t.Fatalf("architecture = %q", lock.Architecture)
+	}
+	if lock.BuildImage.Reference != l5BuildImage || lock.BuildImage.Platform != "linux/amd64" {
+		t.Fatalf("build image lock = %#v", lock.BuildImage)
+	}
+	if lock.Buildroot.Tag != "2026.05.1" ||
+		lock.Buildroot.TagObject != l5BuildrootTagObject ||
+		lock.Buildroot.Commit != l5BuildrootCommit ||
+		lock.Buildroot.SignerFingerprint != l5BuildrootSigner ||
+		lock.Buildroot.SignatureFilename != "buildroot-2026.05.1.tar.xz.sign" ||
+		lock.Buildroot.SignatureURL != "https://buildroot.org/downloads/buildroot-2026.05.1.tar.xz.sign" {
+		t.Fatalf("Buildroot release identity = %#v", lock.Buildroot)
+	}
+	if !strings.HasPrefix(lock.Buildroot.SigningKeyURL, "https://gitlab.com/") {
+		t.Fatalf("Buildroot signing key URL is not the pinned official GitLab origin")
+	}
+
+	expected := map[string]l5SourceLock{
+		"buildroot": {
+			Name:     "buildroot",
+			Version:  "2026.05.1",
+			Purpose:  "buildroot_release",
+			Filename: "buildroot-2026.05.1.tar.xz",
+			URL:      "https://buildroot.org/downloads/buildroot-2026.05.1.tar.xz",
+			SHA256:   "ae7f706f087b9ae9083a10a587368dfbf53103c28bf81c2d690198dc4090cb58",
+		},
+		"busybox": {
+			Name:     "busybox",
+			Version:  "1.38.0",
+			Purpose:  "buildroot_download",
+			Filename: "busybox-1.38.0.tar.bz2",
+			URL:      "https://busybox.net/downloads/busybox-1.38.0.tar.bz2",
+			SHA256:   "34f9ea6ff8636f2c9241153b9114eefa9e65674a45318ae1ef95bb5f31c53bb2",
+		},
+		"e2fsprogs": {
+			Name:     "e2fsprogs",
+			Version:  "1.47.4",
+			Purpose:  "buildroot_download",
+			Filename: "e2fsprogs-1.47.4.tar.gz",
+			URL:      "https://mirrors.edge.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v1.47.4/e2fsprogs-1.47.4.tar.gz",
+			SHA256:   "fd5bf388cbdbe006a3d3b318d983b2948382440acc85a87f1e7d108653e8db0b",
+		},
+		"firecracker": {
+			Name:     "firecracker",
+			Version:  "v1.15.1",
+			Purpose:  "live_prerequisite",
+			Filename: "firecracker-v1.15.1-x86_64.tgz",
+			URL:      "https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64.tgz",
+			SHA256:   "d4a32ab2322d887ca1bc4a4e7afa9cc35393e6362dfc2b3becb389d362e4275a",
+		},
+		"go": {
+			Name:     "go",
+			Version:  "1.25.7",
+			Purpose:  "guest_toolchain",
+			Filename: "go1.25.7.linux-amd64.tar.gz",
+			URL:      "https://go.dev/dl/go1.25.7.linux-amd64.tar.gz",
+			SHA256:   "12e6d6a191091ae27dc31f6efc630e3a3b8ba409baf3573d955b196fdf086005",
+		},
+		"linux": {
+			Name:     "linux",
+			Version:  "6.1.178",
+			Purpose:  "buildroot_download",
+			Filename: "linux-6.1.178.tar.xz",
+			URL:      "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.1.178.tar.xz",
+			SHA256:   "7d83fa67ca75032b1ac6ef49973722073963c0cb9bc3aa7ef3efa749cf6c720f",
+		},
+	}
+	if len(lock.Sources) <= len(expected) {
+		t.Fatalf("source locks = %d, want authoritative inputs plus transitive Buildroot downloads", len(lock.Sources))
+	}
+
+	names := make([]string, 0, len(lock.Sources))
+	nameSet := make(map[string]struct{}, len(lock.Sources))
+	filenames := make(map[string]struct{}, len(lock.Sources))
+	digests := make(map[string]struct{}, len(lock.Sources))
+	for _, source := range lock.Sources {
+		want, ok := expected[source.Name]
+		if ok {
+			if source.Version != want.Version ||
+				source.Purpose != want.Purpose ||
+				source.Filename != want.Filename ||
+				source.URL != want.URL ||
+				source.SHA256 != want.SHA256 {
+				t.Fatalf("source lock %q = %#v, want %#v", source.Name, source, want)
+			}
+			delete(expected, source.Name)
+		} else {
+			if source.Purpose != "buildroot_download" {
+				t.Fatalf("additional source lock %q purpose = %q, want buildroot_download", source.Name, source.Purpose)
+			}
+			if source.Version == "" || source.Filename == "" || source.URL == "" {
+				t.Fatalf("transitive Buildroot source lock %q is incomplete", source.Name)
+			}
+		}
+		if source.SizeBytes <= 0 {
+			t.Fatalf("source lock %q has non-positive size", source.Name)
+		}
+		if len(source.SHA256) != 64 || strings.ToLower(source.SHA256) != source.SHA256 {
+			t.Fatalf("source lock %q has malformed SHA-256", source.Name)
+		}
+		if !strings.HasPrefix(source.URL, "https://") {
+			t.Fatalf("source lock %q URL is not HTTPS", source.Name)
+		}
+		if _, exists := nameSet[source.Name]; exists {
+			t.Fatalf("duplicate source name %q", source.Name)
+		}
+		if _, exists := filenames[source.Filename]; exists {
+			t.Fatalf("duplicate source filename %q", source.Filename)
+		}
+		if _, exists := digests[source.SHA256]; exists {
+			t.Fatalf("duplicate source digest for %q", source.Name)
+		}
+		nameSet[source.Name] = struct{}{}
+		filenames[source.Filename] = struct{}{}
+		digests[source.SHA256] = struct{}{}
+		names = append(names, source.Name)
+	}
+	if len(expected) != 0 {
+		t.Fatalf("missing authoritative source locks: %v", reflect.ValueOf(expected).MapKeys())
+	}
+	sortedNames := append([]string(nil), names...)
+	sort.Strings(sortedNames)
+	if !reflect.DeepEqual(names, sortedNames) {
+		t.Fatalf("source locks are not sorted by name: %v", names)
+	}
+
+	goMod := string(l5ReadRequiredFile(t, filepath.Join("..", "go.mod")))
+	if !strings.Contains(goMod, "\ngo 1.25.7\n") {
+		t.Fatal("Go source lock does not match repository go directive")
+	}
+}
+
+func TestL5CacheManifestVerifierRejectsContainmentAndSetViolations(t *testing.T) {
+	script := filepath.Join("..", "tools", "microvm", "l5", "verify-cache.sh")
+	if info, err := os.Stat(script); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("L5 cache verifier unavailable: %v", err)
+	}
+
+	type mutation func(t *testing.T, cache, manifest string)
+	tests := []struct {
+		name   string
+		mutate mutation
+		wantOK bool
+	}{
+		{name: "valid", wantOK: true},
+		{name: "missing", mutate: func(t *testing.T, cache, _ string) {
+			t.Helper()
+			if err := os.Remove(filepath.Join(cache, "dep-b.tar")); err != nil {
+				t.Fatalf("remove cache entry: %v", err)
+			}
+		}},
+		{name: "extra", mutate: func(t *testing.T, cache, _ string) {
+			t.Helper()
+			l5WriteTestFile(t, filepath.Join(cache, "extra.tar"), []byte("extra"))
+		}},
+		{name: "symlink", mutate: func(t *testing.T, cache, _ string) {
+			t.Helper()
+			if err := os.Remove(filepath.Join(cache, "dep-b.tar")); err != nil {
+				t.Fatalf("remove cache entry: %v", err)
+			}
+			if err := os.Symlink("dep-a.tar", filepath.Join(cache, "dep-b.tar")); err != nil {
+				t.Fatalf("create cache symlink: %v", err)
+			}
+		}},
+		{name: "nonregular", mutate: func(t *testing.T, cache, _ string) {
+			t.Helper()
+			if err := os.Remove(filepath.Join(cache, "dep-b.tar")); err != nil {
+				t.Fatalf("remove cache entry: %v", err)
+			}
+			if err := os.Mkdir(filepath.Join(cache, "dep-b.tar"), 0o700); err != nil {
+				t.Fatalf("create cache directory: %v", err)
+			}
+		}},
+		{name: "size mismatch", mutate: func(t *testing.T, _, manifest string) {
+			t.Helper()
+			data := l5ReadRequiredFile(t, manifest)
+			fields := strings.Split(string(data), "\t")
+			size, err := strconv.Atoi(fields[1])
+			if err != nil {
+				t.Fatalf("parse cache size: %v", err)
+			}
+			fields[1] = strconv.Itoa(size + 1)
+			l5WriteTestFile(t, manifest, []byte(strings.Join(fields, "\t")))
+		}},
+		{name: "digest mismatch", mutate: func(t *testing.T, _, manifest string) {
+			t.Helper()
+			data := l5ReadRequiredFile(t, manifest)
+			l5WriteTestFile(t, manifest, []byte(strings.Repeat("f", 64)+string(data[64:])))
+		}},
+		{name: "traversal", mutate: func(t *testing.T, _, manifest string) {
+			t.Helper()
+			data := l5ReadRequiredFile(t, manifest)
+			l5WriteTestFile(t, manifest, append(data, []byte(strings.Repeat("e", 64)+"\t1\t../escape.tar\n")...))
+		}},
+		{name: "unsorted", mutate: func(t *testing.T, _, manifest string) {
+			t.Helper()
+			lines := strings.Split(strings.TrimSpace(string(l5ReadRequiredFile(t, manifest))), "\n")
+			sort.Sort(sort.Reverse(sort.StringSlice(lines)))
+			l5WriteTestFile(t, manifest, []byte(strings.Join(lines, "\n")+"\n"))
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cache := t.TempDir()
+			a := []byte("cache-a")
+			b := []byte("cache-b")
+			l5WriteTestFile(t, filepath.Join(cache, "dep-a.tar"), a)
+			l5WriteTestFile(t, filepath.Join(cache, "dep-b.tar"), b)
+			manifest := filepath.Join(t.TempDir(), "cache.manifest")
+			lines := []string{
+				fmt.Sprintf("%s\t%d\t%s", l5Digest(a), len(a), "dep-a.tar"),
+				fmt.Sprintf("%s\t%d\t%s", l5Digest(b), len(b), "dep-b.tar"),
+			}
+			l5WriteTestFile(t, manifest, []byte(strings.Join(lines, "\n")+"\n"))
+			if tt.mutate != nil {
+				tt.mutate(t, cache, manifest)
+			}
+
+			command := exec.Command("sh", script, "--manifest", manifest, "--cache", cache)
+			output, err := command.CombinedOutput()
+			if tt.wantOK && err != nil {
+				t.Fatalf("verify-cache.sh error = %v, output = %q", err, output)
+			}
+			if !tt.wantOK && err == nil {
+				t.Fatalf("verify-cache.sh accepted invalid cache, output = %q", output)
+			}
+		})
+	}
+}
+
+func TestL5BuildScriptsLockOfflineReproducibleContainerOrchestration(t *testing.T) {
+	required := map[string][]string{
+		"fetch.sh": {
+			"sources.lock.json",
+			"cache.manifest",
+			"gpg",
+			"--status-fd",
+			l5BuildrootSigner,
+			l5BuildrootTagObject,
+			l5BuildrootCommit,
+			"verify-cache.sh",
+		},
+		"build.sh": {
+			l5BuildImage,
+			"--platform=linux/amd64",
+			"--network=none",
+			"/src",
+			"/cache",
+			"/build/output",
+			"readonly",
+			"SOURCE_DATE_EPOCH",
+		},
+		"build-in-container.sh": {
+			"BR2_PRIMARY_SITE_ONLY=y",
+			"BR2_DOWNLOAD_FORCE_CHECK_HASHES=y",
+			"BR2_CCACHE=",
+			"O=/build/output",
+			"DL_DIR=/build/download",
+			"GOCACHE=/build/gocache",
+			"GOMODCACHE=/build/gomodcache",
+			"GOTOOLCHAIN=local",
+			"GOPROXY=off",
+			"GOSUMDB=off",
+			"-trimpath",
+			"-buildvcs=false",
+			"-ldflags=-buildid=",
+			"KBUILD_BUILD_USER",
+			"KBUILD_BUILD_HOST",
+			"KBUILD_BUILD_TIMESTAMP",
+			"KBUILD_BUILD_VERSION",
+			"lazy_itable_init=0",
+			"lazy_journal_init=0",
+			"e2fsck -fn",
+			"distribution-manifest.json",
+			"provenance.json",
+			"SHA256SUMS",
+		},
+		"verify-reproducible.sh": {
+			"mktemp -d",
+			"build-a",
+			"build-b",
+			"/src",
+			"/cache",
+			"/build/output",
+			"vmlinux",
+			"rootfs.ext4",
+			"distribution-manifest.json",
+			"provenance.json",
+			"SHA256SUMS",
+			"cmp",
+		},
+	}
+
+	root := filepath.Join("..", "tools", "microvm", "l5")
+	for name, markers := range required {
+		t.Run(name, func(t *testing.T) {
+			source := string(l5ReadRequiredFile(t, filepath.Join(root, name)))
+			for _, marker := range markers {
+				if !strings.Contains(source, marker) {
+					t.Errorf("%s missing reproducibility marker %q", name, marker)
+				}
+			}
+			for _, forbidden := range []string{
+				"--network=host",
+				"--privileged",
+				"/var/run/docker.sock",
+				"BR2_FORCE_CHECK_HASHES",
+				"latest",
+				"ccache",
+			} {
+				if name == "build-in-container.sh" && forbidden == "ccache" {
+					continue
+				}
+				if strings.Contains(strings.ToLower(source), strings.ToLower(forbidden)) {
+					t.Errorf("%s contains forbidden build marker %q", name, forbidden)
+				}
+			}
+		})
+	}
+}
+
+func TestL5KernelBuildrootAndGuestInitLockIsolationContract(t *testing.T) {
+	root := filepath.Join("..", "tools", "microvm", "l5")
+	kernel := string(l5ReadRequiredFile(t, filepath.Join(root, "linux.config")))
+	for _, setting := range []string{
+		"CONFIG_64BIT=y",
+		"CONFIG_X86_64=y",
+		"CONFIG_PCI=n",
+		"CONFIG_MODULES=n",
+		"CONFIG_VIRTIO_MMIO=y",
+		"CONFIG_VIRTIO_BLK=y",
+		"CONFIG_VSOCKETS=y",
+		"CONFIG_VIRTIO_VSOCKETS=y",
+		"CONFIG_HW_RANDOM_VIRTIO=y",
+		"CONFIG_EXT4_FS=y",
+		"CONFIG_TMPFS=y",
+		"CONFIG_DEVTMPFS=y",
+		"CONFIG_DEVTMPFS_MOUNT=y",
+		"CONFIG_PROC_FS=y",
+		"CONFIG_SYSFS=y",
+		"CONFIG_INET=n",
+		"CONFIG_NETDEVICES=n",
+	} {
+		if !strings.Contains(kernel, setting) {
+			t.Errorf("linux.config missing %q", setting)
+		}
+	}
+
+	buildroot := string(l5ReadRequiredFile(t, filepath.Join(root, "buildroot.config")))
+	for _, setting := range []string{
+		`BR2_x86_64=y`,
+		`BR2_LINUX_KERNEL=y`,
+		`BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.1.178"`,
+		`BR2_PACKAGE_BUSYBOX=y`,
+		`BR2_INIT_NONE=y`,
+		`BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y`,
+		`BR2_TARGET_ROOTFS_EXT2=y`,
+		`BR2_TARGET_ROOTFS_EXT2_4=y`,
+	} {
+		if !strings.Contains(buildroot, setting) {
+			t.Errorf("buildroot.config missing %q", setting)
+		}
+	}
+
+	initSource := string(l5ReadRequiredFile(t, filepath.Join(root, "rootfs-overlay", "sbin", "init")))
+	for _, marker := range []string{
+		"mount -t proc",
+		"mount -t devtmpfs",
+		"mount -t sysfs",
+		"mount -t tmpfs",
+		"/run",
+		"/tmp",
+		"/workspace",
+		"size=",
+		"uid=1000",
+		"gid=1000",
+		"mode=0700",
+		"--reuid 1000",
+		"--regid 1000",
+		"--clear-groups",
+		"--no-new-privs",
+		"/usr/bin/hal-guest-agent",
+	} {
+		if !strings.Contains(initSource, marker) {
+			t.Errorf("guest init missing %q", marker)
+		}
+	}
+	for _, forbidden := range []string{
+		"udhcpc",
+		"dhclient",
+		"ifconfig",
+		"ip link",
+		"ip addr",
+		"getty",
+		"login",
+		"sshd",
+		"authorized_keys",
+		"password",
+		"token",
+	} {
+		if strings.Contains(strings.ToLower(initSource), forbidden) {
+			t.Errorf("guest init contains forbidden network/login/credential marker %q", forbidden)
+		}
+	}
+}
+
+func TestL5PreparedLinuxImagePrerequisiteTestCannotSkip(t *testing.T) {
+	path := filepath.Join(
+		"..",
+		"internal",
+		"sandboxruntime",
+		"microvm",
+		"assets",
+		"localresolver",
+		"l5_prepared_linux_integration_test.go",
+	)
+	source := string(l5ReadRequiredFile(t, path))
+	for _, required := range []string{
+		"//go:build l5_firecracker_vsock_integration",
+		"TestL5PreparedLinuxImagePrerequisites",
+		"HAL_L5_DISTRIBUTION_DIR",
+		"runtime.GOOS",
+		"runtime.GOARCH",
+		"ResolveDistribution",
+	} {
+		if !strings.Contains(source, required) {
+			t.Errorf("prepared-Linux image prerequisite test missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"t.Skip(", "t.Skipf(", "t.SkipNow("} {
+		if strings.Contains(source, forbidden) {
+			t.Errorf("prepared-Linux image prerequisite test contains forbidden skip %q", forbidden)
+		}
+	}
+}
+
+func l5ReadRequiredFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read required L5 file %s: %v", filepath.Base(path), err)
+	}
+	return data
+}
+
+func l5WriteTestFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write test file %s: %v", filepath.Base(path), err)
+	}
+}
+
+func l5Digest(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
