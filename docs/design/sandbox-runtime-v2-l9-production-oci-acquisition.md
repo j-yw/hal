@@ -21,11 +21,26 @@ transient caller input classified by the existing template source intake. It
 is never copied into a manifest, runtime status, error, or evidence record.
 The default trust mode is `strict`.
 
+`--sandbox-template-trust` without `--sandbox-template`, either template flag
+without `--sandbox`, an empty reference, an unsupported trust mode, or a
+template runtime that conflicts with explicit `--sandbox-runtime` fails
+validation before acquisition. No-template compatibility makes zero
+acquisition calls.
+
+Dry-run with template flags remains L1-pure: it classifies only static source,
+trust, and requested runtime intent, renders that intent as unresolved and
+inactive, and returns before credential environment access, resolver/cache/HTTP
+construction, acquisition, durable IDs, stores, targets, providers, workers,
+or runtimes. Panic fakes lock every forbidden boundary.
+
 Registry authentication is a transient adapter dependency. Production command
-wiring may read a username and token from the process environment, but the
-values, environment keys, registry endpoint, and authentication challenge are
-never durable or public. Plain HTTP is disabled in production command wiring;
-the tagged local-registry test injects a loopback-only HTTP transport.
+wiring reads credentials only when an exact normalized registry origin is
+present in an explicit credential allowlist. The credential provider is keyed
+by that exact origin; a user-controlled reference or challenge cannot select
+generic environment credentials. Values, environment keys, origins, and
+authentication challenges are never durable or public. Plain HTTP is disabled
+in production command wiring; the tagged local-registry test injects an exact
+loopback-origin exception.
 
 Selection returns:
 
@@ -46,6 +61,16 @@ The production adapter accepts only:
 The default bounds are 1 MiB for a manifest, 4 MiB for a template layer,
 8 KiB for a `WWW-Authenticate` challenge, and 64 KiB for a token response.
 Bounds apply to bytes actually read, independent of `Content-Length`.
+Compressed HTTP content is rejected (`Content-Encoding` must be absent or
+`identity`) so transport decompression cannot bypass byte limits. Header bytes,
+request deadlines, redirect count, response status, and `Accept` handling are
+also bounded and explicit.
+
+References accept only a normalized registry authority plus repository and tag
+or sha256 digest. Parsing rejects userinfo, query, fragment, encoded or literal
+dot segments, backslashes, controls, whitespace, ambiguous percent encoding,
+empty path segments, invalid repository components, missing tag or digest,
+unsupported schemes/digests, and conflicting digest metadata.
 
 Stable safe failure codes are:
 
@@ -92,6 +117,13 @@ client construction, or runtime driver construction. Status/rendering paths
 consume the sanitized selected-template projection and never perform
 acquisition.
 
+Run, auto, and factory share one ordering contract: parse/validate; perform
+the pure dry-run return when requested; acquire and strictly select; then
+resolve or provision the target; bind the immutable selection to the
+execution, sandbox, and runtime identities; persist the same sanitized lock in
+those containing records; and only then construct a provider, worker client,
+or runtime driver.
+
 ## 3. Durable and machine-contract schema changes
 
 L9 adds no raw registry or authentication fields to durable schemas. It reuses
@@ -108,12 +140,23 @@ remain valid.
 No new machine response may contain the caller reference. JSON failure output
 uses the existing command envelope with a sanitized stable error.
 
+Selection binding is not a status-only attachment. Before construction,
+command wiring verifies that one selected manifest digest and trust result is
+carried unchanged into the selected runtime target. The same sanitized lock is
+then persisted under the exact execution manifest and sandbox/runtime state
+that already carry the execution, sandbox, runtime, and worker identities. A
+missing or different digest at any handoff returns `selection_rejected`; it is
+never repaired by status projection.
+
 ## 4. Redaction and containment rules
 
 Requests may contain a registry-qualified reference and credentials only in
-live memory. The HTTP client disables automatic authorization forwarding and
-rejects redirects whose destination is not the original origin. The client
-never forwards `Authorization` to a different host.
+live memory. Registry manifest requests permit bounded same-origin redirects.
+Blob redirects are same-origin by default; explicitly configured exact HTTPS
+blob origins may be allowed for object storage. Every cross-origin hop strips
+`Authorization`. Redirects reject userinfo, query credentials, fragments, TLS
+downgrade, non-allowlisted origins, ambiguous encodings, and more than three
+hops. The client never forwards `Authorization` to a different host.
 
 Bearer authentication permits one bounded challenge, one bounded token
 request, and one retry of the original registry request. Basic authentication
@@ -121,11 +164,25 @@ permits one retry. Multiple challenges, unsupported schemes, malformed quoted
 parameters, oversized headers/bodies, redirect chains, or a second
 unauthorized response fail closed.
 
+Bearer `realm` may be cross-origin only when it is an exact configured HTTPS
+token origin for the selected registry origin; the loopback integration
+exception is exact and test-only. The requested `service` must equal the
+configured service or the challenged registry authority, and `scope` must
+equal the canonical `repository:<normalized-repository>:pull` scope. Unknown,
+broader, repeated, or conflicting service/scope parameters fail. Registry
+credentials are sent to a token realm only when the credential provider
+explicitly authorizes that exact `(registry origin, token origin)` pair. Token
+requests cannot reach arbitrary challenge-selected origins, private/link-local
+destinations, or redirects.
+
 The cache key is the verified manifest sha256 digest, never a tag, endpoint,
 repository, or credential. Cache paths are derived only from validated hex
-digests beneath an owned mode-0700 root. Files are mode 0600. Reads reverify
-length and digest. Publication writes a private temporary entry, syncs files,
-and atomically renames it; incomplete entries are never hits.
+digests beneath an owned mode-0700 root. Cache root and entries are inspected
+with `lstat`, reject symlinks/non-directories/wrong owner or permissive modes,
+and never follow caller-controlled links. Files are mode 0600. Reads reverify
+length and digest. Publication writes a private temporary entry in the same
+directory, syncs each file and the temporary directory, atomically renames it,
+and syncs the parent directory; incomplete entries are never hits.
 
 ## 5. Crash, retry, cancellation, and cleanup semantics
 
@@ -135,16 +192,33 @@ failure without publishing cache state or selection evidence.
 A mutable tag is resolved to manifest bytes, verified against the response
 digest when present, and captured as an immutable digest. The template blob is
 then requested by descriptor digest and verified from its bytes. Immediately
-before cache/selection publication, the tag is resolved again. Any changed
-manifest digest fails with `tag_mutated`; neither result is cached or selected.
-A digest-pinned request never trusts the digest header and verifies the
-response bytes against the requested digest.
+before cache/selection publication, the tag is resolved again using the same
+bounded authentication policy. Any changed manifest digest fails with
+`tag_mutated`; neither result is cached or selected. The immutable evidence is
+the first verified manifest digest only after the second resolution agrees. A
+digest-pinned request never trusts the digest header and verifies the response
+bytes against the requested digest.
+
+The manifest must be schema version 2. Its HTTP `Content-Type` must equal its
+JSON `mediaType`. `artifactType` must be the HAL template artifact type. The
+config descriptor must use `application/vnd.oci.empty.v1+json`, be no larger
+than two bytes, and carry a valid sha256 digest; it is validated but not
+fetched. Exactly one template layer is allowed. Its descriptor media type,
+size, and sha256 digest are validated before I/O. The adapter fetches and
+verifies exactly that one layer blob and no runtime-image, subject, config, or
+unrelated blob.
 
 HTTP retries are limited to the single authentication retry. L9 does not add
 general network retries. A failed request, digest mismatch, unsupported media
 type, oversize response, corrupt cache entry, tag mutation, or publication
 failure has no local-file, in-memory-fixture, mutable-tag, advisory, or stale
 cache fallback.
+
+Cache is an optimization for the already-identified immutable template layer,
+not offline trust. Every selection performs a live manifest resolution (and
+tag re-resolution when applicable), so an unavailable registry fails closed
+even when verified bytes exist in cache. A hit may avoid only the layer-blob
+download after live manifest identity is established.
 
 Tagged integration tests close the in-process loopback registry, remove the
 private temporary cache root, and assert no listener, cache entry, credential,
@@ -163,14 +237,21 @@ Red commits precede implementation and cover:
 - unsupported manifest/artifact/layer media, layer count, and size;
 - bounded Basic/Bearer challenge and token behavior;
 - challenge/token header/body limits and safe errors;
-- same-origin redirects only and no cross-host authorization forwarding;
+- cross-origin blob redirects strip authorization and reject TLS downgrade,
+  userinfo, non-allowlisted origins, and excess hops;
+- strict reference parsing, response status/Accept, header/deadline, and
+  `Content-Encoding` limits;
 - tag mutation between resolution and publication;
 - blob digest mismatch;
 - cache identity by manifest digest, revalidation, atomic publication,
   concurrent fetch coalescing, and corrupt/incomplete-entry rejection;
 - strict selection pinning and propagation before construction;
 - advisory selection remaining non-strict;
-- no unverified/local/fake fallback; and
+- no unverified/local/fake fallback;
+- dry-run/no-template zero-call compatibility plus flag conflicts and
+  run/auto/factory pre-construction ordering;
+- exact execution/sandbox/runtime selection binding rather than status-only
+  projection; and
 - redaction canaries across errors, JSON, durable metadata, and cache names.
 
 The tagged test

@@ -30,6 +30,16 @@ func TestL9OCIArchitectureDefinesRequiredPhaseSections(t *testing.T) {
 		"tag_mutated",
 		"never forwards `Authorization` to a different host",
 		"before target provisioning",
+		"Dry-run with template flags remains L1-pure",
+		"exact normalized registry origin",
+		"exact configured HTTPS",
+		"`Content-Encoding`",
+		"`lstat`",
+		"syncs the parent directory",
+		"Cache is an optimization",
+		"schema version 2",
+		"Exactly one template layer",
+		"exact execution manifest and sandbox/runtime state",
 		"Any skip is a blocker, not a pass",
 	} {
 		if !strings.Contains(text, marker) {
