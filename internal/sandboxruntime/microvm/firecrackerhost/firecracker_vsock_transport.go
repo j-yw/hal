@@ -17,7 +17,7 @@ import (
 
 const (
 	L5GuestAgentPort       uint32 = 1024
-	maxVsockHandshakeBytes        = 64
+	maxVsockHandshakeBytes int    = 64
 )
 
 type firecrackerVsockTransportOptions struct {

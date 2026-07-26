@@ -11,7 +11,7 @@ import (
 
 const (
 	DefaultGuestPort      uint32 = 1024
-	DefaultMaxConnections        = 1
+	DefaultMaxConnections int    = 1
 )
 
 type Listener interface {
