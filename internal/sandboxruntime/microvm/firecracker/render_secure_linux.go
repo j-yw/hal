@@ -12,7 +12,8 @@ import (
 )
 
 type secureLiveBootStateDir struct {
-	fd int
+	fd         int
+	beforeOpen func(string) error
 }
 
 func renderProductionLiveBootFiles(paths PathPlan, config []byte) error {
@@ -79,10 +80,13 @@ func (state *secureLiveBootStateDir) writeFile(path string, data []byte) error {
 	if existed && !safeLiveBootStateFileStat(before) {
 		return errUnsafeLiveBootStateEntry
 	}
+	if state.beforeOpen != nil {
+		if err := state.beforeOpen(name); err != nil {
+			return err
+		}
+	}
 	flags := unix.O_WRONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW
-	if existed {
-		flags |= unix.O_TRUNC
-	} else {
+	if !existed {
 		flags |= unix.O_CREAT | unix.O_EXCL
 	}
 	fd, err := unix.Openat(state.fd, name, flags, 0o600)
@@ -101,6 +105,14 @@ func (state *secureLiveBootStateDir) writeFile(path string, data []byte) error {
 		!safeLiveBootStateFileStat(after) ||
 		existed && (before.Dev != after.Dev || before.Ino != after.Ino) {
 		return errUnsafeLiveBootStateEntry
+	}
+	if existed {
+		if err := unix.Ftruncate(fd, 0); err != nil {
+			return err
+		}
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
 	}
 	if _, err := io.Copy(file, &fixedByteReader{data: data}); err != nil {
 		return err

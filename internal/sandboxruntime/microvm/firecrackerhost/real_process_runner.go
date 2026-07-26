@@ -27,7 +27,9 @@ var (
 
 // OSExecProcessRunner is the real host process runner for explicitly injected
 // Firecracker live starts. Default paths do not construct this runner.
-type OSExecProcessRunner struct{}
+type OSExecProcessRunner struct {
+	startCommand func(*exec.Cmd) error
+}
 
 var _ HostProcessRunner = OSExecProcessRunner{}
 
@@ -39,7 +41,7 @@ func NewOSExecProcessRunner() OSExecProcessRunner {
 
 // StartHostProcess starts a Firecracker host process from the raw runner
 // request without inheriting host environment variables.
-func (OSExecProcessRunner) StartHostProcess(ctx context.Context, req firecracker.ProcessRunnerStartRequest) (HostProcess, error) {
+func (runner OSExecProcessRunner) StartHostProcess(ctx context.Context, req firecracker.ProcessRunnerStartRequest) (HostProcess, error) {
 	ctx = nonNilContext(ctx)
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -55,7 +57,13 @@ func (OSExecProcessRunner) StartHostProcess(ctx context.Context, req firecracker
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 
-	if err := cmd.Start(); err != nil {
+	startCommand := runner.startCommand
+	if startCommand == nil {
+		startCommand = func(command *exec.Cmd) error {
+			return startOSExecCommandWithPrivateUmask(command.Start)
+		}
+	}
+	if err := startCommand(cmd); err != nil {
 		return nil, err
 	}
 	return newOSExecHostProcess(cmd), nil
