@@ -53,6 +53,9 @@ func renderLiveBootFiles(config BackendConfig) error {
 	if err := ensureLiveBootStateDir(paths.StateDir); err != nil {
 		return err
 	}
+	if config.ProductionVsock {
+		return renderProductionLiveBootFiles(paths, encoded)
+	}
 	if err := writeLiveBootFile(paths.ConfigPath, encoded, "configPath", "boot config write failed"); err != nil {
 		return err
 	}

@@ -159,11 +159,13 @@ type ProcessLifecycleManager struct {
 }
 
 type trackedProcess struct {
-	process      HostProcess
-	finished     bool
-	stateRemoved bool
-	paths        firecracker.PathPlan
-	hasPaths     bool
+	process          HostProcess
+	finished         bool
+	stateRemoved     bool
+	paths            firecracker.PathPlan
+	hasPaths         bool
+	stateIdentity    privateStateDirIdentity
+	hasStateIdentity bool
 }
 
 // NewProcessLifecycleManager constructs a fake-safe lifecycle manager. Without
@@ -202,16 +204,21 @@ func (manager *ProcessLifecycleManager) StartProcess(ctx context.Context, req fi
 	}
 
 	paths, hasPaths := trustedStartPathPlan(req)
+	var stateIdentity privateStateDirIdentity
+	var hasStateIdentity bool
 	if hasPaths {
 		if manager.productionVsock {
-			if err := validatePrivateFirecrackerStateDir(paths.StateDir); err != nil {
+			identity, identityErr := statPrivateFirecrackerStateDir(paths.StateDir)
+			if identityErr != nil {
 				return firecracker.ProcessHandleMetadata{}, newProcessLifecycleError(processOperationStart, ErrUnsafeCleanupPath)
 			}
+			stateIdentity = identity
+			hasStateIdentity = true
 		}
-		if err := manager.removeStaleAPISocketBeforeStart(paths); err != nil {
+		if err := manager.removeStaleAPISocketBeforeStart(paths, stateIdentity, hasStateIdentity); err != nil {
 			return firecracker.ProcessHandleMetadata{}, err
 		}
-		if err := manager.removeOwnedStaleVsockBeforeStart(paths); err != nil {
+		if err := manager.removeOwnedStaleVsockBeforeStart(paths, stateIdentity, hasStateIdentity); err != nil {
 			return firecracker.ProcessHandleMetadata{}, err
 		}
 	}
@@ -224,7 +231,7 @@ func (manager *ProcessLifecycleManager) StartProcess(ctx context.Context, req fi
 		return firecracker.ProcessHandleMetadata{}, newProcessLifecycleError(processOperationStart, ErrHostProcessRequired)
 	}
 
-	handle := manager.storeProcess(process, paths, hasPaths)
+	handle := manager.storeProcess(process, paths, hasPaths, stateIdentity, hasStateIdentity)
 	return handle, nil
 }
 
@@ -241,7 +248,7 @@ func (manager *ProcessLifecycleManager) CleanupLiveProcess(ctx context.Context, 
 	if !removeState {
 		return nil
 	}
-	if err := manager.removeValidatedStateDir(plan); err != nil {
+	if err := manager.removeValidatedStateDir(plan, req.Handle); err != nil {
 		return err
 	}
 	manager.markStateRemoved(req.Handle)
@@ -314,7 +321,7 @@ func (manager *ProcessLifecycleManager) DeleteLiveProcess(ctx context.Context, r
 		return err
 	}
 	if removeState {
-		if err := manager.removeValidatedStateDir(plan); err != nil {
+		if err := manager.removeValidatedStateDir(plan, req.Handle); err != nil {
 			return err
 		}
 		manager.markStateRemoved(req.Handle)
@@ -347,7 +354,7 @@ func (manager *ProcessLifecycleManager) killAndWait(ctx context.Context, handle 
 	return nil
 }
 
-func (manager *ProcessLifecycleManager) storeProcess(process HostProcess, paths firecracker.PathPlan, hasPaths bool) firecracker.ProcessHandleMetadata {
+func (manager *ProcessLifecycleManager) storeProcess(process HostProcess, paths firecracker.PathPlan, hasPaths bool, stateIdentity privateStateDirIdentity, hasStateIdentity bool) firecracker.ProcessHandleMetadata {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	if manager.processes == nil {
@@ -356,9 +363,8 @@ func (manager *ProcessLifecycleManager) storeProcess(process HostProcess, paths 
 	manager.nextID++
 	id := fmt.Sprintf("%s-%012d", processHandlePrefix, manager.nextID)
 	manager.processes[id] = &trackedProcess{
-		process:  process,
-		paths:    paths,
-		hasPaths: hasPaths,
+		process: process, paths: paths, hasPaths: hasPaths,
+		stateIdentity: stateIdentity, hasStateIdentity: hasStateIdentity,
 	}
 	return firecracker.ProcessHandleMetadata{
 		ID:     id,
@@ -390,9 +396,11 @@ func (manager *ProcessLifecycleManager) trackedCleanupPathPlan(handle firecracke
 }
 
 type trackedProcessSnapshot struct {
-	paths        firecracker.PathPlan
-	hasPaths     bool
-	stateRemoved bool
+	paths            firecracker.PathPlan
+	hasPaths         bool
+	stateRemoved     bool
+	stateIdentity    privateStateDirIdentity
+	hasStateIdentity bool
 }
 
 func (manager *ProcessLifecycleManager) lookupProcessSnapshot(handle firecracker.ProcessHandleMetadata) (trackedProcessSnapshot, bool) {
@@ -410,9 +418,11 @@ func (manager *ProcessLifecycleManager) lookupProcessSnapshot(handle firecracker
 		return trackedProcessSnapshot{}, false
 	}
 	return trackedProcessSnapshot{
-		paths:        tracked.paths,
-		hasPaths:     tracked.hasPaths,
-		stateRemoved: tracked.stateRemoved,
+		paths:            tracked.paths,
+		hasPaths:         tracked.hasPaths,
+		stateRemoved:     tracked.stateRemoved,
+		stateIdentity:    tracked.stateIdentity,
+		hasStateIdentity: tracked.hasStateIdentity,
 	}, true
 }
 
@@ -505,7 +515,17 @@ func (manager *ProcessLifecycleManager) forgetProcessID(id string) {
 	delete(manager.processes, id)
 }
 
-func (manager *ProcessLifecycleManager) removeValidatedStateDir(plan firecracker.PathPlan) error {
+func (manager *ProcessLifecycleManager) removeValidatedStateDir(plan firecracker.PathPlan, handle firecracker.ProcessHandleMetadata) error {
+	if manager != nil && manager.productionVsock {
+		snapshot, ok := manager.lookupProcessSnapshot(handle)
+		if !ok || !snapshot.hasStateIdentity {
+			return newProcessLifecycleError(processOperationCleanup, ErrUnsafeCleanupPath)
+		}
+		if err := removePinnedFirecrackerStateDir(plan.StateDir, snapshot.stateIdentity); err != nil {
+			return newProcessLifecycleError(processOperationCleanup, err)
+		}
+		return nil
+	}
 	filesystem := manager.cleanupFilesystem()
 	info, err := filesystem.Lstat(plan.StateDir)
 	switch {
@@ -524,7 +544,26 @@ func (manager *ProcessLifecycleManager) removeValidatedStateDir(plan firecracker
 	return nil
 }
 
-func (manager *ProcessLifecycleManager) removeStaleAPISocketBeforeStart(plan firecracker.PathPlan) error {
+func (manager *ProcessLifecycleManager) removeStaleAPISocketBeforeStart(plan firecracker.PathPlan, stateIdentity privateStateDirIdentity, hasStateIdentity bool) error {
+	if manager != nil && manager.productionVsock {
+		info, err := os.Lstat(plan.APISocketPath)
+		switch {
+		case os.IsNotExist(err):
+			return nil
+		case err != nil:
+			return newProcessLifecycleError(processOperationCleanup, errors.New("API socket inspection failed"))
+		case info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm()&0o077 != 0:
+			return newProcessLifecycleError(processOperationCleanup, ErrUnsafeCleanupPath)
+		}
+		if !hasStateIdentity || validateVsockSocketOwnership(plan.APISocketPath, info) != nil ||
+			!manager.hasTerminalProcessForPaths(plan, stateIdentity, true) {
+			return newProcessLifecycleError(processOperationCleanup, ErrUnsafeCleanupPath)
+		}
+		if err := removePinnedFirecrackerStateEntry(plan.StateDir, filepath.Base(plan.APISocketPath), stateIdentity); err != nil {
+			return newProcessLifecycleError(processOperationCleanup, err)
+		}
+		return nil
+	}
 	filesystem := manager.cleanupFilesystem()
 	info, err := filesystem.Lstat(plan.APISocketPath)
 	switch {
@@ -546,7 +585,26 @@ func (manager *ProcessLifecycleManager) removeStaleAPISocketBeforeStart(plan fir
 	return nil
 }
 
-func (manager *ProcessLifecycleManager) removeOwnedStaleVsockBeforeStart(plan firecracker.PathPlan) error {
+func (manager *ProcessLifecycleManager) removeOwnedStaleVsockBeforeStart(plan firecracker.PathPlan, stateIdentity privateStateDirIdentity, hasStateIdentity bool) error {
+	if manager != nil && manager.productionVsock {
+		info, err := os.Lstat(plan.VsockSocketPath)
+		switch {
+		case os.IsNotExist(err):
+			return nil
+		case err != nil:
+			return newProcessLifecycleError(processOperationCleanup, errors.New("vsock socket inspection failed"))
+		case info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm()&0o077 != 0:
+			return newProcessLifecycleError(processOperationCleanup, ErrUnsafeCleanupPath)
+		}
+		if !hasStateIdentity || validateVsockSocketOwnership(plan.VsockSocketPath, info) != nil ||
+			!manager.hasTerminalProcessForPaths(plan, stateIdentity, true) {
+			return newProcessLifecycleError(processOperationCleanup, ErrUnsafeCleanupPath)
+		}
+		if err := removePinnedFirecrackerStateEntry(plan.StateDir, filepath.Base(plan.VsockSocketPath), stateIdentity); err != nil {
+			return newProcessLifecycleError(processOperationCleanup, err)
+		}
+		return nil
+	}
 	filesystem := manager.cleanupFilesystem()
 	info, err := filesystem.Lstat(plan.VsockSocketPath)
 	switch {
@@ -560,7 +618,7 @@ func (manager *ProcessLifecycleManager) removeOwnedStaleVsockBeforeStart(plan fi
 	if err := validateVsockSocketOwnership(plan.VsockSocketPath, info); err != nil {
 		return newProcessLifecycleError(processOperationCleanup, fmt.Errorf("vsock socket ownership is invalid: %w", ErrUnsafeCleanupPath))
 	}
-	if !manager.hasTerminalProcessForPaths(plan) {
+	if !manager.hasTerminalProcessForPaths(plan, stateIdentity, hasStateIdentity) {
 		return newProcessLifecycleError(processOperationCleanup, fmt.Errorf("vsock socket has no terminal owner: %w", ErrUnsafeCleanupPath))
 	}
 	if err := filesystem.RemoveAll(plan.VsockSocketPath); err != nil {
@@ -569,7 +627,7 @@ func (manager *ProcessLifecycleManager) removeOwnedStaleVsockBeforeStart(plan fi
 	return nil
 }
 
-func (manager *ProcessLifecycleManager) hasTerminalProcessForPaths(plan firecracker.PathPlan) bool {
+func (manager *ProcessLifecycleManager) hasTerminalProcessForPaths(plan firecracker.PathPlan, stateIdentity privateStateDirIdentity, hasStateIdentity bool) bool {
 	if manager == nil {
 		return false
 	}
@@ -577,6 +635,9 @@ func (manager *ProcessLifecycleManager) hasTerminalProcessForPaths(plan firecrac
 	defer manager.mu.Unlock()
 	for _, tracked := range manager.processes {
 		if tracked == nil || !tracked.hasPaths || !cleanupPathPlansEqual(tracked.paths, plan) {
+			continue
+		}
+		if hasStateIdentity && (!tracked.hasStateIdentity || tracked.stateIdentity != stateIdentity) {
 			continue
 		}
 		if !tracked.finished {

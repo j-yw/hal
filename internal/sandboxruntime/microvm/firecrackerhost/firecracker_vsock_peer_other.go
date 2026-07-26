@@ -15,8 +15,26 @@ type vsockSocketIdentity struct {
 	parentInode  uint64
 }
 
+type privateStateDirIdentity struct {
+	device uint64
+	inode  uint64
+	uid    uint32
+}
+
+func statPrivateFirecrackerStateDir(string) (privateStateDirIdentity, error) {
+	return privateStateDirIdentity{}, errors.New("Firecracker state directory validation is unavailable")
+}
+
 func validatePrivateFirecrackerStateDir(string) error {
 	return errors.New("Firecracker state directory validation is unavailable")
+}
+
+func removePinnedFirecrackerStateDir(string, privateStateDirIdentity) error {
+	return errors.New("Firecracker state directory removal is unavailable")
+}
+
+func removePinnedFirecrackerStateEntry(string, string, privateStateDirIdentity) error {
+	return errors.New("Firecracker state entry removal is unavailable")
 }
 
 func validateVsockSocketOwnership(string, os.FileInfo) error {

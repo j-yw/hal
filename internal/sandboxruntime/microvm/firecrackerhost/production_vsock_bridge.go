@@ -161,16 +161,13 @@ func secureFirecrackerVsockSocket(path string) error {
 	if os.IsNotExist(err) {
 		return errProductionVsockNotReady
 	}
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0 {
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0o600 {
 		return errors.New("Firecracker vsock socket is unavailable")
 	}
-	// Ownership and the private parent are checked before chmod, then the full
-	// owner/mode/type/dev/inode identity is captured again by the constructor.
+	// Ownership and the private parent are checked before the full
+	// owner/mode/type/dev/inode identity is captured by the constructor.
 	if err := validateVsockSocketOwnership(path, info); err != nil {
 		return errors.New("Firecracker vsock socket is not privately owned")
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return errors.New("Firecracker vsock socket permissions could not be secured")
 	}
 	return nil
 }
@@ -256,7 +253,8 @@ func (bridge *ProductionVsockBridge) sessionForTarget(target sandboxruntime.Targ
 	}
 	session := bridge.session(runtimeID)
 	if session == nil || target.Runtime.Metadata == nil || target.Runtime.Metadata.ProcessLaunch == nil ||
-		session.handleID != strings.TrimSpace(target.Runtime.Metadata.ProcessLaunch.ProcessID) {
+		session.handleID != strings.TrimSpace(target.Runtime.Metadata.ProcessLaunch.ProcessID) ||
+		session.handleSource != strings.TrimSpace(target.Runtime.Metadata.ProcessLaunch.ProcessIDSource) {
 		return nil
 	}
 	return session

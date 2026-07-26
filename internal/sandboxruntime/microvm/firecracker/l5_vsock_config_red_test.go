@@ -91,3 +91,61 @@ func TestL5CompatibilityConfigOmitsVsock(t *testing.T) {
 		t.Fatalf("compatibility config unexpectedly contains entropy: %s", encoded)
 	}
 }
+
+func TestL5ProductionRenderRejectsSupportFileSymlinkWithoutFollowingIt(t *testing.T) {
+	base, err := os.MkdirTemp("/tmp", "hal-l5-render-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	paths, err := PlanPaths(PathPlanRequest{RuntimeID: "fc-secure-render", BaseStateDir: base})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(paths.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(base, "external")
+	if err := os.WriteFile(external, []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, paths.ConfigPath); err != nil {
+		t.Fatal(err)
+	}
+	err = renderLiveBootFiles(BackendConfig{
+		CPUCount: 1, MemoryMiB: 128,
+		KernelImagePath: filepath.Join(base, "vmlinux"),
+		RootfsPath:      filepath.Join(base, "rootfs.ext4"),
+		Paths:           paths, ProductionVsock: true,
+	})
+	if err == nil {
+		t.Fatal("renderLiveBootFiles() error = nil, want symlink rejection")
+	}
+	if data, readErr := os.ReadFile(external); readErr != nil || string(data) != "preserve" {
+		t.Fatalf("external file was modified: data=%q error=%v", data, readErr)
+	}
+}
+
+func TestL5ProductionRenderRequiresPrivateStateDirectoryMode(t *testing.T) {
+	base, err := os.MkdirTemp("/tmp", "hal-l5-render-mode-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	paths, err := PlanPaths(PathPlanRequest{RuntimeID: "fc-secure-mode", BaseStateDir: base})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(paths.StateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err = renderLiveBootFiles(BackendConfig{
+		CPUCount: 1, MemoryMiB: 128,
+		KernelImagePath: filepath.Join(base, "vmlinux"),
+		RootfsPath:      filepath.Join(base, "rootfs.ext4"),
+		Paths:           paths, ProductionVsock: true,
+	})
+	if err == nil {
+		t.Fatal("renderLiveBootFiles() error = nil, want private state directory rejection")
+	}
+}

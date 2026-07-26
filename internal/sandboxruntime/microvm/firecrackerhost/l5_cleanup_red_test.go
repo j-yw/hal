@@ -3,6 +3,8 @@ package firecrackerhost
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -77,6 +79,109 @@ func TestL5FailedKillDoesNotMarkProcessTerminal(t *testing.T) {
 	}
 	if _, _, active := manager.lookupActiveProcess(handle); !active {
 		t.Fatal("failed kill/wait incorrectly marked the process terminal")
+	}
+}
+
+func TestL5CleanupRejectsSubstitutedStateDirectoryIdentity(t *testing.T) {
+	base, err := os.MkdirTemp("/tmp", "hal-l5-cleanup-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	paths, err := firecracker.PlanPaths(firecracker.PathPlanRequest{
+		RuntimeID: "fc-cleanup-identity", BaseStateDir: base,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(paths.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	process := &l5EscalationProcess{termWait: make(chan struct{}), killWait: make(chan struct{})}
+	manager := NewProcessLifecycleManager(
+		l5SingleProcessRunner{process: process},
+		withProcessLifecycleProductionVsock(),
+		WithProcessLifecycleCleanupTimeout(time.Second),
+	)
+	handle, err := manager.StartProcess(context.Background(), firecracker.ProcessRunnerStartRequest{
+		Executable: "firecracker",
+		Args: []string{
+			"--api-sock", paths.APISocketPath,
+			"--config-file", paths.ConfigPath,
+			"--log-path", paths.LogPath,
+			"--metrics-path", paths.MetricsPath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartProcess() error = %v", err)
+	}
+	original := paths.StateDir + "-original"
+	if err := os.Rename(paths.StateDir, original); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(paths.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(paths.StateDir, "sentinel")
+	if err := os.WriteFile(sentinel, []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = manager.CleanupLiveProcess(context.Background(), firecracker.LiveProcessRequest{
+		Handle: handle, Paths: paths,
+	})
+	if err == nil {
+		t.Fatal("CleanupLiveProcess() error = nil, want substituted identity rejection")
+	}
+	if data, readErr := os.ReadFile(sentinel); readErr != nil || string(data) != "preserve" {
+		t.Fatalf("replacement state was modified: data=%q error=%v", data, readErr)
+	}
+}
+
+func TestL5CleanupRemovesOnlyPinnedOwnedState(t *testing.T) {
+	base, err := os.MkdirTemp("/tmp", "hal-l5-cleanup-owned-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	paths, err := firecracker.PlanPaths(firecracker.PathPlanRequest{
+		RuntimeID: "fc-cleanup-owned", BaseStateDir: base,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(paths.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	process := &l5EscalationProcess{termWait: make(chan struct{}), killWait: make(chan struct{})}
+	manager := NewProcessLifecycleManager(
+		l5SingleProcessRunner{process: process},
+		withProcessLifecycleProductionVsock(),
+		WithProcessLifecycleCleanupTimeout(time.Second),
+	)
+	handle, err := manager.StartProcess(context.Background(), firecracker.ProcessRunnerStartRequest{
+		Executable: "firecracker",
+		Args: []string{
+			"--api-sock", paths.APISocketPath,
+			"--config-file", paths.ConfigPath,
+			"--log-path", paths.LogPath,
+			"--metrics-path", paths.MetricsPath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartProcess() error = %v", err)
+	}
+	for _, path := range []string{paths.ConfigPath, paths.LogPath, paths.MetricsPath} {
+		if err := os.WriteFile(path, []byte("owned"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := manager.CleanupLiveProcess(context.Background(), firecracker.LiveProcessRequest{
+		Handle: handle, Paths: paths,
+	}); err != nil {
+		t.Fatalf("CleanupLiveProcess() error = %v", err)
+	}
+	if _, err := os.Lstat(paths.StateDir); !os.IsNotExist(err) {
+		t.Fatalf("state directory still exists or inspection failed: %v", err)
 	}
 }
 

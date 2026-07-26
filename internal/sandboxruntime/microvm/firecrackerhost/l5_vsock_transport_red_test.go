@@ -351,11 +351,7 @@ func l5StartFakeVsockBridge(t *testing.T, handle func(net.Conn)) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	socketPath := filepath.Join(dir, "bridge.sock")
-	address, err := net.ResolveUnixAddr("unix", socketPath)
-	if err != nil {
-		t.Fatalf("resolve unix: %v", err)
-	}
-	listener, err := net.ListenUnix("unix", address)
+	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatalf("listen unix: %v", err)
 	}

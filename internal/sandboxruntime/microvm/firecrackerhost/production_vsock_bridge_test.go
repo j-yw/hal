@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"
 )
 
@@ -66,6 +67,18 @@ func TestL5ProductionVsockBridgeNaturalExitInvalidatesGeneration(t *testing.T) {
 	if !fixture.bridge.SessionActive(req, generation) {
 		t.Fatal("new generation is not active")
 	}
+	forged := sandboxruntime.Target{
+		ID: "fc-natural-exit",
+		Runtime: sandboxruntime.RuntimeState{
+			RuntimeID: "fc-natural-exit",
+			Metadata: &sandboxruntime.RuntimeMetadata{ProcessLaunch: &sandboxruntime.RuntimeProcessLaunchMetadata{
+				ProcessID: fixture.handle.ID, ProcessIDSource: "forged-source",
+			}},
+		},
+	}
+	if session := fixture.bridge.sessionForTarget(forged); session != nil {
+		t.Fatal("forged process ID source selected a production vsock session")
+	}
 	close(fixture.process.done)
 	deadline := time.Now().Add(time.Second)
 	for fixture.bridge.SessionActive(req, generation) && time.Now().Before(deadline) {
@@ -74,6 +87,28 @@ func TestL5ProductionVsockBridgeNaturalExitInvalidatesGeneration(t *testing.T) {
 	if fixture.bridge.SessionActive(req, generation) {
 		t.Fatal("natural process exit left the generation active")
 	}
+}
+
+func TestL5ProductionVsockBridgeRejectsAndDoesNotRepairUnsafeSocketMode(t *testing.T) {
+	fixture := newL5ProductionBridgeFixture(t, os.Getpid())
+	listener := l5ListenBridgeSocket(t, fixture.paths.VsockSocketPath)
+	if err := os.Chmod(fixture.paths.VsockSocketPath, 0o660); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := fixture.bridge.ActivateSession(context.Background(), firecracker.ProductionVsockSessionRequest{
+		Handle: fixture.handle, RuntimeID: "fc-unsafe-mode", SocketPath: fixture.paths.VsockSocketPath,
+	})
+	if err == nil {
+		t.Fatal("ActivateSession() error = nil, want unsafe socket rejection")
+	}
+	info, statErr := os.Lstat(fixture.paths.VsockSocketPath)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if info.Mode().Perm() != 0o660 {
+		t.Fatalf("unsafe socket mode was silently repaired to %#o", info.Mode().Perm())
+	}
+	_ = listener.Close()
 }
 
 type l5ProductionBridgeFixture struct {
@@ -140,12 +175,12 @@ func (process *l5IdentityProcess) Done() <-chan struct{}               { return 
 
 func l5ListenBridgeSocket(t *testing.T, path string) net.Listener {
 	t.Helper()
-	address, err := net.ResolveUnixAddr("unix", path)
+	listener, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	listener, err := net.ListenUnix("unix", address)
-	if err != nil {
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = listener.Close()
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
