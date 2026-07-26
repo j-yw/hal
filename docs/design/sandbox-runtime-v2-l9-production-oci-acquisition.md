@@ -197,9 +197,10 @@ destinations, or redirects.
 
 The cache key is the verified manifest sha256 digest, never a tag, endpoint,
 repository, or credential. Cache paths are derived only from validated hex
-digests beneath an owned mode-0700 root. Cache root and entries are inspected
-with `lstat`, reject symlinks/non-directories/wrong owner or permissive modes,
-and never follow caller-controlled links. Files are mode 0600. Reads reverify
+digests beneath an owned mode-0700 root. Cache roots, entries, and files are
+opened descriptor-relatively with no-follow semantics, reject symlinks,
+non-directories, wrong owner, or permissive modes, and remain pinned while an
+operation runs. Files are mode 0600. Reads reverify
 length and digest. Publication writes a private temporary entry in the same
 directory, syncs each file and the temporary directory, atomically renames it,
 and syncs the parent directory; incomplete entries are never hits.

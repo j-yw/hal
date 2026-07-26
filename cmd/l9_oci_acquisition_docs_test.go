@@ -42,7 +42,7 @@ func TestL9OCIArchitectureDefinesRequiredPhaseSections(t *testing.T) {
 		"exact field allowlist",
 		"`schemaVersion`, `mediaType`, `artifactType`, `config`, and `layers`",
 		"`Content-Encoding`",
-		"`lstat`",
+		"descriptor-relatively with no-follow semantics",
 		"syncs the parent directory",
 		"Cache is an optimization",
 		"schema version 2",
