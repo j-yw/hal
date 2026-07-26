@@ -76,25 +76,33 @@ func TestL9BearerAuthUsesExactRealmServiceScopeAndOriginCredentialPair(t *testin
 func TestL9BearerAuthRejectsChallengeConfusionAndBounds(t *testing.T) {
 	fixture := newRegistryFixture(t)
 	tests := []struct {
-		name      string
-		challenge string
-		tokenBody []byte
-		want      registry.ErrorCode
+		name       string
+		challenge  string
+		tokenBody  []byte
+		tokenMedia string
+		want       registry.ErrorCode
 	}{
-		{"unconfigured realm", `Bearer realm="https://evil.example/token",service="registry.example",scope="repository:hal/template:pull"`, nil, registry.ErrorCodeAuthenticationChallengeInvalid},
-		{"plaintext realm", `Bearer realm="http://tokens.example/token",service="registry.example",scope="repository:hal/template:pull"`, nil, registry.ErrorCodeAuthenticationChallengeInvalid},
-		{"userinfo realm", `Bearer realm="https://user:pass@tokens.example/token",service="registry.example",scope="repository:hal/template:pull"`, nil, registry.ErrorCodeAuthenticationChallengeInvalid},
-		{"wrong service", `Bearer realm="https://tokens.example/token",service="other",scope="repository:hal/template:pull"`, nil, registry.ErrorCodeAuthenticationChallengeInvalid},
-		{"broader scope", `Bearer realm="https://tokens.example/token",service="registry.example",scope="repository:hal/template:push,pull"`, nil, registry.ErrorCodeAuthenticationChallengeInvalid},
-		{"repeated scope", `Bearer realm="https://tokens.example/token",service="registry.example",scope="repository:hal/template:pull",scope="repository:hal/template:pull"`, nil, registry.ErrorCodeAuthenticationChallengeInvalid},
-		{"oversize challenge", "Bearer " + strings.Repeat("x", registry.DefaultMaxChallengeBytes+1), nil, registry.ErrorCodeAuthenticationChallengeInvalid},
-		{"oversize token", `Bearer realm="https://tokens.example/token",service="registry.example",scope="repository:hal/template:pull"`, make([]byte, registry.DefaultMaxTokenBytes+1), registry.ErrorCodeAuthenticationResponseOversize},
+		{"unconfigured realm", `Bearer realm="https://evil.example/token",service="registry.example",scope="repository:hal/template:pull"`, nil, "", registry.ErrorCodeAuthenticationChallengeInvalid},
+		{"plaintext realm", `Bearer realm="http://tokens.example/token",service="registry.example",scope="repository:hal/template:pull"`, nil, "", registry.ErrorCodeAuthenticationChallengeInvalid},
+		{"userinfo realm", `Bearer realm="https://user:pass@tokens.example/token",service="registry.example",scope="repository:hal/template:pull"`, nil, "", registry.ErrorCodeAuthenticationChallengeInvalid},
+		{"wrong service", `Bearer realm="https://tokens.example/token",service="other",scope="repository:hal/template:pull"`, nil, "", registry.ErrorCodeAuthenticationChallengeInvalid},
+		{"broader scope", `Bearer realm="https://tokens.example/token",service="registry.example",scope="repository:hal/template:push,pull"`, nil, "", registry.ErrorCodeAuthenticationChallengeInvalid},
+		{"repeated scope", `Bearer realm="https://tokens.example/token",service="registry.example",scope="repository:hal/template:pull",scope="repository:hal/template:pull"`, nil, "", registry.ErrorCodeAuthenticationChallengeInvalid},
+		{"oversize challenge", "Bearer " + strings.Repeat("x", registry.DefaultMaxChallengeBytes+1), nil, "", registry.ErrorCodeAuthenticationChallengeInvalid},
+		{"oversize token", `Bearer realm="https://tokens.example/token",service="registry.example",scope="repository:hal/template:pull"`, make([]byte, registry.DefaultMaxTokenBytes+1), "", registry.ErrorCodeAuthenticationResponseOversize},
+		{"wrong token media", `Bearer realm="https://tokens.example/token",service="registry.example",scope="repository:hal/template:pull"`, []byte(`{"token":"fixture-token"}`), "text/plain", registry.ErrorCodeAuthenticationFailed},
+		{"conflicting token fields", `Bearer realm="https://tokens.example/token",service="registry.example",scope="repository:hal/template:pull"`, []byte(`{"token":"one","access_token":"two"}`), "application/json", registry.ErrorCodeAuthenticationFailed},
+		{"combined basic bearer", `Basic realm="fixture", Bearer realm="https://tokens.example/token",service="registry.example",scope="repository:hal/template:pull"`, nil, "", registry.ErrorCodeAuthenticationChallengeInvalid},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := fakeHTTPDoer(func(request *http.Request) (*http.Response, error) {
 				if request.URL.Host == "tokens.example" {
-					return registryResponse(http.StatusOK, "application/json", tt.tokenBody, nil), nil
+					mediaType := tt.tokenMedia
+					if mediaType == "" {
+						mediaType = "application/json"
+					}
+					return registryResponse(http.StatusOK, mediaType, tt.tokenBody, nil), nil
 				}
 				return registryResponse(http.StatusUnauthorized, "", fixture.manifest, map[string]string{
 					"WWW-Authenticate": tt.challenge,

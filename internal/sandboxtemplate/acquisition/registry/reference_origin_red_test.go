@@ -209,6 +209,17 @@ func TestL9ProductionTransportDisablesAmbientProxyAndLocksTLSMinimum(t *testing.
 	if transport.TLSClientConfig == nil || transport.TLSClientConfig.MinVersion < tls.VersionTLS12 {
 		t.Fatalf("TLS minimum = %#v, want TLS 1.2+", transport.TLSClientConfig)
 	}
+	if transport.MaxResponseHeaderBytes != registry.DefaultMaxResponseHeaderBytes {
+		t.Fatalf("MaxResponseHeaderBytes = %d, want %d", transport.MaxResponseHeaderBytes, registry.DefaultMaxResponseHeaderBytes)
+	}
+	client, err := registry.NewProductionClient(registry.ProductionClientOptions{})
+	if err != nil {
+		t.Fatalf("NewProductionClient() error = %v", err)
+	}
+	redirectRequest, _ := http.NewRequest(http.MethodGet, "https://redirect.example", nil)
+	if err := client.CheckRedirect(redirectRequest, nil); !errors.Is(err, http.ErrUseLastResponse) {
+		t.Fatalf("CheckRedirect() error = %v, want ErrUseLastResponse", err)
+	}
 }
 
 func TestL9DefaultRegistryTestsContainNoLiveListener(t *testing.T) {

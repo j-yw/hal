@@ -270,6 +270,31 @@ func TestOCIResolverRejectsArtifactAndReferenceProofDigestsWithoutMatchingBytes(
 	}
 }
 
+func TestOCITransientMeasuredBytesAreNeverJSONVisible(t *testing.T) {
+	manifestCanary := []byte("manifest-token-ghp_l9_secret")
+	proofCanary := []byte("proof-password-super-secret")
+	value := acquisition.OCIArtifactResolveResult{
+		ArtifactManifestBytes: manifestCanary,
+		ReferenceDigests: []acquisition.ReferenceDigestProof{{
+			VerifiedBytes: proofCanary,
+		}},
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{
+		string(manifestCanary),
+		string(proofCanary),
+		"artifactManifestBytes",
+		"verifiedBytes",
+	} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("transient OCI evidence leaked %q in %s", forbidden, data)
+		}
+	}
+}
+
 type fakeOCIArtifactResolver struct {
 	fixtures map[string]acquisition.OCIArtifactResolveResult
 	calls    []acquisition.OCIArtifactResolveRequest

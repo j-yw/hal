@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -40,6 +41,7 @@ func TestL9FetchGroupWaiterCancellationIsIndependent(t *testing.T) {
 		}
 		liveDone <- err
 	}()
+	waitForFetchOwners(t, group, "sha256:fixture", 2)
 	cancelLeader()
 	select {
 	case err := <-leaderDone:
@@ -57,6 +59,25 @@ func TestL9FetchGroupWaiterCancellationIsIndependent(t *testing.T) {
 		t.Fatalf("fetches = %d, want one shared fetch", fetches.Load())
 	}
 	group.forget("sha256:fixture")
+}
+
+func waitForFetchOwners(t *testing.T, group *fetchGroup, key string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		group.mu.Lock()
+		call := group.calls[key]
+		owners := 0
+		if call != nil {
+			owners = call.owners
+		}
+		group.mu.Unlock()
+		if owners == want {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatalf("fetch owners did not reach %d", want)
 }
 
 func TestL9FetchGroupCancelsSharedFetchAfterAllOwnersCancel(t *testing.T) {

@@ -247,6 +247,9 @@ func TestL9FileCacheRejectsCorruptionAndEntryFileSymlinksAfterSuccess(t *testing
 	for _, mode := range []string{"corrupt", "symlink"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
+			if err := os.Chmod(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
 			cache := registry.NewFileCache(root)
 			entry := registry.CacheEntry{
 				ManifestDigest: fixture.manifestDigest,
