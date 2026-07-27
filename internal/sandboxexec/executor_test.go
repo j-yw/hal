@@ -1397,6 +1397,278 @@ func TestRunStartFailurePreservesReturnedRuntimeTarget(t *testing.T) {
 	}
 }
 
+func TestRunRejectsUncorrelatedRuntimeTemplateLock(t *testing.T) {
+	trustedRuntimeLock := executorRuntimeTemplateLock("a")
+	trustedSandboxLock := sandboxTemplateLockFromRuntime(&sandboxruntime.RuntimeMetadata{TemplateLock: trustedRuntimeLock})
+	forgedRuntimeLock := executorRuntimeTemplateLock("f")
+	forgedSandboxLock := sandboxTemplateLockFromRuntime(&sandboxruntime.RuntimeMetadata{TemplateLock: forgedRuntimeLock})
+	partialErr := errors.New("runtime lifecycle partially failed")
+
+	assertTrustedPhaseTarget := func(t *testing.T, err error, phase Phase) {
+		t.Helper()
+		phaseErr, ok := AsPhaseError(err)
+		if !ok || phaseErr.Phase != phase {
+			t.Fatalf("error = %#v, want %s phase error", err, phase)
+		}
+		if phaseErr.Target == nil || phaseErr.Target.Runtime == nil {
+			t.Fatalf("phase target = %#v, want safe runtime metadata", phaseErr.Target)
+		}
+		if reflect.DeepEqual(phaseErr.Target.Runtime.TemplateLock, forgedSandboxLock) {
+			t.Fatalf("phase target adopted runtime-reported forged lock: %#v", phaseErr.Target.Runtime.TemplateLock)
+		}
+		if !reflect.DeepEqual(phaseErr.Target.Runtime.TemplateLock, trustedSandboxLock) {
+			t.Fatalf("phase target lock = %#v, want trusted command-selected lock %#v", phaseErr.Target.Runtime.TemplateLock, trustedSandboxLock)
+		}
+	}
+
+	t.Run("create success", func(t *testing.T) {
+		target := executorWorkerTargetWithTemplateLock(trustedSandboxLock)
+		readyCalled := false
+		runCalled := false
+		driver := &recordingRuntimeDriver{
+			id: sandboxruntime.DriverRootlessPodman,
+			create: func(_ context.Context, req sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+				return executorCreatedRuntimeTarget(req.Name, forgedRuntimeLock), nil
+			},
+		}
+		_, err := Run(context.Background(), CommandRequest{SandboxName: target.Name}, Dependencies{
+			ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+				return target, nil
+			},
+			ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+				return driver, nil
+			},
+			OnTargetReady: func(context.Context, *sandbox.SandboxState) error {
+				readyCalled = true
+				return nil
+			},
+			RunCommand: func(context.Context, RunContext, CommandRequest) error {
+				runCalled = true
+				return nil
+			},
+		})
+		assertTrustedPhaseTarget(t, err, PhaseProvisionTarget)
+		if readyCalled || runCalled || driver.startCalled {
+			t.Fatalf("calls ready/run/start = %v/%v/%v, want fail closed during create", readyCalled, runCalled, driver.startCalled)
+		}
+		if !driver.deleteCalled {
+			t.Fatal("uncorrelated created runtime target was not deleted")
+		}
+	})
+
+	t.Run("create partial error", func(t *testing.T) {
+		target := executorWorkerTargetWithTemplateLock(trustedSandboxLock)
+		driver := &recordingRuntimeDriver{
+			id: sandboxruntime.DriverRootlessPodman,
+			create: func(_ context.Context, req sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+				return executorCreatedRuntimeTarget(req.Name, forgedRuntimeLock), partialErr
+			},
+		}
+		_, err := Run(context.Background(), CommandRequest{SandboxName: target.Name}, Dependencies{
+			ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+				return target, nil
+			},
+			ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+				return driver, nil
+			},
+			RunCommand: func(context.Context, RunContext, CommandRequest) error {
+				t.Fatal("RunCommand should not run after create failure")
+				return nil
+			},
+		})
+		if !errors.Is(err, partialErr) {
+			t.Fatalf("error = %v, want partial lifecycle error", err)
+		}
+		assertTrustedPhaseTarget(t, err, PhaseProvisionTarget)
+	})
+
+	t.Run("start success", func(t *testing.T) {
+		target := executorStoppedTargetWithTemplateLock(trustedSandboxLock)
+		readyCalled := false
+		runCalled := false
+		driver := &recordingRuntimeDriver{
+			id: sandboxruntime.DriverRootlessPodman,
+			start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+				started := req.Target
+				started.Status = sandbox.StatusRunning
+				started.Runtime.Metadata = &sandboxruntime.RuntimeMetadata{TemplateLock: forgedRuntimeLock}
+				return &started, nil
+			},
+		}
+		_, err := Run(context.Background(), CommandRequest{SandboxName: target.Name}, Dependencies{
+			ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+				return target, nil
+			},
+			ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+				return driver, nil
+			},
+			OnTargetReady: func(context.Context, *sandbox.SandboxState) error {
+				readyCalled = true
+				return nil
+			},
+			RunCommand: func(context.Context, RunContext, CommandRequest) error {
+				runCalled = true
+				return nil
+			},
+		})
+		assertTrustedPhaseTarget(t, err, PhaseStartTarget)
+		if readyCalled || runCalled {
+			t.Fatalf("calls ready/run = %v/%v, want fail closed before readiness", readyCalled, runCalled)
+		}
+	})
+
+	t.Run("start partial error", func(t *testing.T) {
+		target := executorStoppedTargetWithTemplateLock(trustedSandboxLock)
+		driver := &recordingRuntimeDriver{
+			id: sandboxruntime.DriverRootlessPodman,
+			start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+				started := req.Target
+				started.Status = sandbox.StatusRunning
+				started.Runtime.Metadata = &sandboxruntime.RuntimeMetadata{TemplateLock: forgedRuntimeLock}
+				return &started, partialErr
+			},
+		}
+		_, err := Run(context.Background(), CommandRequest{SandboxName: target.Name}, Dependencies{
+			ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+				return target, nil
+			},
+			ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+				return driver, nil
+			},
+			RunCommand: func(context.Context, RunContext, CommandRequest) error {
+				t.Fatal("RunCommand should not run after start failure")
+				return nil
+			},
+		})
+		if !errors.Is(err, partialErr) {
+			t.Fatalf("error = %v, want partial lifecycle error", err)
+		}
+		assertTrustedPhaseTarget(t, err, PhaseStartTarget)
+	})
+
+	t.Run("no selected lock", func(t *testing.T) {
+		target := executorStoppedTargetWithTemplateLock(nil)
+		driver := &recordingRuntimeDriver{
+			id: sandboxruntime.DriverRootlessPodman,
+			start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+				started := req.Target
+				started.Status = sandbox.StatusRunning
+				started.Runtime.Metadata = &sandboxruntime.RuntimeMetadata{TemplateLock: forgedRuntimeLock}
+				return &started, nil
+			},
+		}
+		_, err := Run(context.Background(), CommandRequest{SandboxName: target.Name}, Dependencies{
+			ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+				return target, nil
+			},
+			ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+				return driver, nil
+			},
+			RunCommand: func(context.Context, RunContext, CommandRequest) error {
+				t.Fatal("RunCommand should not run for an unsolicited runtime lock")
+				return nil
+			},
+		})
+		phaseErr, ok := AsPhaseError(err)
+		if !ok || phaseErr.Phase != PhaseStartTarget {
+			t.Fatalf("error = %#v, want start phase error", err)
+		}
+		if phaseErr.Target == nil || phaseErr.Target.Runtime == nil || phaseErr.Target.Runtime.TemplateLock != nil {
+			t.Fatalf("phase target adopted unsolicited runtime lock: %#v", phaseErr.Target)
+		}
+	})
+}
+
+func TestRunPreservesTrustedTemplateLockWhenRuntimeOmitsIt(t *testing.T) {
+	trustedRuntimeLock := executorRuntimeTemplateLock("a")
+	trustedSandboxLock := sandboxTemplateLockFromRuntime(&sandboxruntime.RuntimeMetadata{TemplateLock: trustedRuntimeLock})
+	target := executorStoppedTargetWithTemplateLock(trustedSandboxLock)
+	driver := &recordingRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+			started := req.Target
+			started.Status = sandbox.StatusRunning
+			started.Runtime.Metadata = nil
+			return &started, nil
+		},
+	}
+	result, err := Run(context.Background(), CommandRequest{SandboxName: target.Name}, Dependencies{
+		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) {
+			return target, nil
+		},
+		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return driver, nil
+		},
+		RunCommand: func(context.Context, RunContext, CommandRequest) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if target.Runtime == nil || !reflect.DeepEqual(target.Runtime.TemplateLock, trustedSandboxLock) {
+		t.Fatalf("durable target lock = %#v, want trusted command-selected lock %#v", target.Runtime, trustedSandboxLock)
+	}
+	if result.Target.Runtime.Metadata == nil ||
+		!reflect.DeepEqual(result.Target.Runtime.Metadata.TemplateLock, trustedRuntimeLock) {
+		t.Fatalf("runtime result lock = %#v, want trusted command-selected lock %#v", result.Target.Runtime.Metadata, trustedRuntimeLock)
+	}
+}
+
+func executorRuntimeTemplateLock(digestSeed string) *sandboxruntime.RuntimeTemplateLockMetadata {
+	return sandboxruntime.SanitizeRuntimeTemplateLockMetadata(&sandboxruntime.RuntimeTemplateLockMetadata{
+		TemplateReference: &sandboxruntime.RuntimeTemplateLockEntryMetadata{
+			SourceKind:      "template_reference",
+			ReferenceKind:   "oci_artifact",
+			Status:          "locked",
+			DigestAlgorithm: "sha256",
+			DigestValue:     strings.Repeat(digestSeed, 64),
+			ReasonCode:      "template_reference_digest",
+		},
+	})
+}
+
+func executorWorkerTargetWithTemplateLock(lock *sandbox.SandboxTemplateLockMetadata) *sandbox.SandboxState {
+	return &sandbox.SandboxState{
+		ID:       "logical-worker-target",
+		Name:     "worker-rootless",
+		Provider: "worker",
+		Status:   sandbox.StatusStopped,
+		Host: &sandbox.SandboxHost{
+			ID:   "worker-1",
+			Name: "worker one",
+			Kind: sandbox.SandboxHostKindWorker,
+		},
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandboxruntime.DriverRootlessPodman,
+			WorkerID:       "worker-1",
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+			TemplateLock:   sandbox.SanitizeSandboxTemplateLockMetadata(lock),
+		},
+	}
+}
+
+func executorStoppedTargetWithTemplateLock(lock *sandbox.SandboxTemplateLockMetadata) *sandbox.SandboxState {
+	target := executorWorkerTargetWithTemplateLock(lock)
+	target.Runtime.RuntimeID = "container-1"
+	target.Runtime.Image = "registry.example/hal@sha256:" + strings.Repeat("c", 64)
+	return target
+}
+
+func executorCreatedRuntimeTarget(name string, lock *sandboxruntime.RuntimeTemplateLockMetadata) *sandboxruntime.Target {
+	return &sandboxruntime.Target{
+		ID:     "container-1",
+		Name:   name,
+		Status: sandbox.StatusStopped,
+		Runtime: sandboxruntime.RuntimeState{
+			Driver:    sandboxruntime.DriverRootlessPodman,
+			RuntimeID: "container-1",
+			Image:     "registry.example/hal@sha256:" + strings.Repeat("c", 64),
+			Metadata:  &sandboxruntime.RuntimeMetadata{TemplateLock: lock},
+		},
+	}
+}
+
 func TestRunPreservesInjectedProvisionPhaseError(t *testing.T) {
 	provisionErr := errors.New("quota exceeded")
 
