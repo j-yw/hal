@@ -22,6 +22,8 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
 )
 
+const l6TestNetwork = "tcp"
+
 func TestL6PolicyProxyHTTPAllowDenyBoundsRedactionAndNoAmbientProxy(t *testing.T) {
 	upstream := newHTTPFixture(t)
 	var dialCount atomic.Int32
@@ -134,6 +136,114 @@ func TestL6PolicyProxyHTTPAllowDenyBoundsRedactionAndNoAmbientProxy(t *testing.T
 	}
 }
 
+func TestL6PolicyProxyRejectsOversizedConfigurationBeforeAllocation(t *testing.T) {
+	oversizedInt := int(^uint(0) >> 1)
+	oversizedInt64 := int64(^uint64(0) >> 1)
+	tests := []struct {
+		name   string
+		limits Limits
+	}{
+		{name: "headers", limits: Limits{MaxHeaderBytes: maxHeaderBytes + 1}},
+		{name: "response headers", limits: Limits{MaxResponseHeaderBytes: maxResponseHeaderBytes + 1}},
+		{name: "request body overflow", limits: Limits{MaxRequestBodyBytes: oversizedInt64}},
+		{name: "response body", limits: Limits{MaxResponseBodyBytes: maxResponseBodyBytes + 1}},
+		{name: "CONNECT bytes overflow", limits: Limits{MaxConnectBytes: oversizedInt64}},
+		{name: "resolver answers", limits: Limits{MaxResolvedAddresses: maxResolvedAddresses + 1}},
+		{name: "concurrency allocation", limits: Limits{MaxConcurrent: oversizedInt}},
+		{name: "read header timeout", limits: Limits{ReadHeaderTimeout: maxConfiguredTimeout + time.Second}},
+		{name: "read timeout", limits: Limits{ReadTimeout: maxConfiguredTimeout + time.Second}},
+		{name: "write timeout", limits: Limits{WriteTimeout: maxConfiguredTimeout + time.Second}},
+		{name: "idle timeout", limits: Limits{IdleTimeout: maxConfiguredTimeout + time.Second}},
+		{name: "request timeout", limits: Limits{RequestTimeout: maxConfiguredTimeout + time.Second}},
+		{name: "CONNECT timeout", limits: Limits{ConnectTimeout: maxConfiguredTimeout + time.Second}},
+		{name: "shutdown timeout", limits: Limits{ShutdownTimeout: maxConfiguredTimeout + time.Second}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter, err := New(Config{
+				Policy:        testPolicy(),
+				ListenAddress: "127.0.0.1:0",
+				Limits:        tt.limits,
+			})
+			if adapter != nil || !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("New = (%#v, %v), want nil ErrInvalidConfig", adapter, err)
+			}
+		})
+	}
+}
+
+func TestL6PolicyProxyReframesBufferedChunkedTrailerAndExpectRequest(t *testing.T) {
+	upstream := newHTTPFixture(t)
+	var calls atomic.Int32
+	adapter := newTestAdapter(t, testAdapterOptions{
+		dial: mappingDialer(t, map[string]string{"93.184.216.34:80": upstream}, &calls),
+	})
+	endpoint := startAdapter(t, adapter)
+	t.Cleanup(func() { stopAdapter(t, adapter) })
+	req, err := http.NewRequest(http.MethodPost, "http://allowed.test/framing", strings.NewReader("framed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.ContentLength = -1
+	req.Header.Set("Expect", "100-continue")
+	req.Trailer = http.Header{"X-Trailer-Canary": []string{"trailer-secret"}}
+	resp, err := proxyClient(t, endpoint).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("framed request status = %d", resp.StatusCode)
+	}
+}
+
+func TestL6PolicyProxyRejectsInterimResponsesAndBoundsHeaderTerminatorExactly(t *testing.T) {
+	upstream := newHTTPFixture(t)
+	var calls atomic.Int32
+	adapter := newTestAdapter(t, testAdapterOptions{
+		dial: mappingDialer(t, map[string]string{"93.184.216.34:80": upstream}, &calls),
+	})
+	endpoint := startAdapter(t, adapter)
+	t.Cleanup(func() { stopAdapter(t, adapter) })
+	resp, err := proxyClient(t, endpoint).Get("http://allowed.test/early")
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("interim response status = %d, want 502", resp.StatusCode)
+	}
+
+	const exactHeader = "HTTP/1.1 204 No Content\r\n\r\n"
+	left, right := net.Pipe()
+	go func() {
+		_, _ = io.WriteString(right, exactHeader)
+		_ = right.Close()
+	}()
+	reader, err := boundedResponseReader(left, int64(len(exactHeader)))
+	if err != nil {
+		t.Fatalf("exact bounded header error: %v", err)
+	}
+	parsed, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed.Body.Close()
+	left.Close()
+
+	left, right = net.Pipe()
+	go func() {
+		_, _ = io.WriteString(right, exactHeader)
+		_ = right.Close()
+	}()
+	if _, err := boundedResponseReader(left, int64(len(exactHeader)-1)); err == nil {
+		t.Fatal("header terminator beyond exact limit was accepted")
+	}
+	left.Close()
+}
+
 func TestL6PolicyProxyCONNECTAllowAndDenial(t *testing.T) {
 	echo := newTCPEchoFixture(t)
 	var dialCount atomic.Int32
@@ -145,7 +255,7 @@ func TestL6PolicyProxyCONNECTAllowAndDenial(t *testing.T) {
 	endpoint := startAdapter(t, adapter)
 	t.Cleanup(func() { stopAdapter(t, adapter) })
 
-	conn, err := net.Dial("tcp", endpoint)
+	conn, err := net.Dial(l6TestNetwork, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +283,7 @@ func TestL6PolicyProxyCONNECTAllowAndDenial(t *testing.T) {
 		t.Fatalf("CONNECT reply = %q", reply)
 	}
 
-	denied, err := net.Dial("tcp", endpoint)
+	denied, err := net.Dial(l6TestNetwork, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +312,7 @@ func TestL6PolicyProxyCONNECTPreservesPipelinedBytesAfterHijack(t *testing.T) {
 	})
 	endpoint := startAdapter(t, adapter)
 	t.Cleanup(func() { stopAdapter(t, adapter) })
-	conn, err := net.Dial("tcp", endpoint)
+	conn, err := net.Dial(l6TestNetwork, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +410,7 @@ func TestL6PolicyProxyBoundsResolverAnswersAndSlowRequestBodies(t *testing.T) {
 		t.Fatalf("resolver overflow status = %d, want 502", resp.StatusCode)
 	}
 
-	conn, err := net.Dial("tcp", endpoint)
+	conn, err := net.Dial(l6TestNetwork, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +459,7 @@ func TestL6PolicyProxyEmitsOneFinalSanitizedDecisionForResolutionAndParseDenials
 		t.Fatalf("resolution decision = %#v", records[0])
 	}
 
-	conn, err := net.Dial("tcp", endpoint)
+	conn, err := net.Dial(l6TestNetwork, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +524,7 @@ func TestL6PolicyProxyLifecycleCleanupCancellationAndProxyOnlyProof(t *testing.T
 	if stopped.Status != networkenforcement.LifecycleStatusStopped {
 		t.Fatalf("stopped status = %q", stopped.Status)
 	}
-	if _, err := net.DialTimeout("tcp", endpoint, 100*time.Millisecond); err == nil {
+	if _, err := net.DialTimeout(l6TestNetwork, endpoint, 100*time.Millisecond); err == nil {
 		t.Fatal("listener still accepts connections after stop")
 	}
 	if _, err := service.StopPolicyProxy(canceled, networkenforcement.NewPolicyProxyLifecycleRequest(plan, started, stopped)); err != nil {
@@ -467,7 +577,7 @@ func TestL6PolicyProxyStopRejectsTunnelHijackedAfterCleanupSnapshot(t *testing.T
 		<-release
 	}
 	endpoint := startAdapter(t, adapter)
-	conn, err := net.Dial("tcp", endpoint)
+	conn, err := net.Dial(l6TestNetwork, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -491,7 +601,7 @@ func TestL6PolicyProxyUnexpectedServeFailureClearsProofAndOwnedTunnels(t *testin
 		dial: mappingDialer(t, map[string]string{"93.184.216.34:443": echo}, &calls),
 	})
 	endpoint := startAdapter(t, adapter)
-	conn, err := net.Dial("tcp", endpoint)
+	conn, err := net.Dial(l6TestNetwork, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -708,7 +818,7 @@ func mappingDialer(t *testing.T, mapping map[string]string, calls *atomic.Int32)
 
 func newHTTPFixture(t *testing.T) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen(l6TestNetwork, "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -719,6 +829,11 @@ func newHTTPFixture(t *testing.T) string {
 		if got := r.Header.Get("X-Secret-Hop"); got != "" {
 			t.Errorf("upstream received Connection-nominated hop header")
 		}
+		if r.URL.Path == "/framing" {
+			if len(r.TransferEncoding) != 0 || len(r.Trailer) != 0 || r.Header.Get("Expect") != "" {
+				t.Errorf("upstream received stale framing: transfer=%v trailer=%v expect=%q", r.TransferEncoding, r.Trailer, r.Header.Get("Expect"))
+			}
+		}
 		w.Header().Set("Connection", "X-Upstream-Hop")
 		w.Header().Set("X-Upstream-Hop", "upstream-hop-canary")
 		switch r.URL.Path {
@@ -727,6 +842,10 @@ func newHTTPFixture(t *testing.T) string {
 		case "/headers":
 			w.Header().Set("X-Large", strings.Repeat("h", 512))
 			_, _ = io.WriteString(w, "small")
+		case "/early":
+			w.WriteHeader(http.StatusEarlyHints)
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "final")
 		default:
 			_, _ = io.WriteString(w, "upstream-ok")
 		}
@@ -742,7 +861,7 @@ func newHTTPFixture(t *testing.T) string {
 
 func openCONNECT(t *testing.T, endpoint string) (net.Conn, *bufio.Reader) {
 	t.Helper()
-	conn, err := net.Dial("tcp", endpoint)
+	conn, err := net.Dial(l6TestNetwork, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -778,7 +897,7 @@ func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 
 func newTCPEchoFixture(t *testing.T) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen(l6TestNetwork, "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
