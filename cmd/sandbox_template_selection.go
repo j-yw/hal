@@ -163,6 +163,7 @@ type sandboxTemplateConstructionResult struct {
 	ExecutionID           string
 	SandboxID             string
 	RuntimeID             string
+	RuntimeImage          string
 	ExecutionTemplateLock *sandboxruntime.RuntimeTemplateLockMetadata
 	SandboxTemplateLock   *sandboxruntime.RuntimeTemplateLockMetadata
 	RuntimeTemplateLock   *sandboxruntime.RuntimeTemplateLockMetadata
@@ -189,6 +190,7 @@ func executeSandboxTemplateSelectionBeforeConstruction(ctx context.Context, requ
 			RuntimeID:      request.RuntimeID,
 			RuntimeDriver:  selected.RuntimeDriver,
 			IsolationLevel: selected.IsolationLevel,
+			RuntimeImage:   selected.RuntimeImage,
 			ManifestDigest: selected.ManifestDigest,
 		})
 		if bindErr != nil {
@@ -197,6 +199,7 @@ func executeSandboxTemplateSelectionBeforeConstruction(ctx context.Context, requ
 		result.ExecutionID = binding.ExecutionID
 		result.SandboxID = binding.SandboxID
 		result.RuntimeID = binding.RuntimeID
+		result.RuntimeImage = binding.RuntimeImage
 		result.ExecutionTemplateLock = cloneRuntimeTemplateLock(binding.RuntimeMetadata)
 		result.SandboxTemplateLock = cloneRuntimeTemplateLock(binding.RuntimeMetadata)
 		result.RuntimeTemplateLock = cloneRuntimeTemplateLock(binding.RuntimeMetadata)
@@ -238,6 +241,7 @@ func bindSelectedTemplateToSandboxTarget(selected *selection.Result, executionID
 		RuntimeID:      target.Runtime.RuntimeID,
 		RuntimeDriver:  target.Runtime.Driver,
 		IsolationLevel: target.Runtime.IsolationLevel,
+		RuntimeImage:   target.Runtime.Image,
 		ManifestDigest: selected.ManifestDigest,
 	})
 	if err != nil {
@@ -271,6 +275,13 @@ func templateSelectionIsolationLevel(selected *selection.Result) string {
 		return ""
 	}
 	return strings.TrimSpace(selected.IsolationLevel)
+}
+
+func templateSelectionRuntimeImage(selected *selection.Result) string {
+	if selected == nil {
+		return ""
+	}
+	return strings.TrimSpace(selected.RuntimeImage)
 }
 
 func bindSandboxTemplateSelectionToTarget(req *runSandboxRequest, target *sandbox.SandboxState) error {

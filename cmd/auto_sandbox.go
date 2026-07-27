@@ -1096,6 +1096,7 @@ func (deps autoSandboxDeps) resolveAutoSandboxTarget(ctx context.Context, req au
 			ProvisionRepository:       req.RepoRemote,
 			TemplateRuntimeDriver:     templateSelectionRuntimeDriver(req.TemplateSelection),
 			TemplateIsolationLevel:    templateSelectionIsolationLevel(req.TemplateSelection),
+			TemplateRuntimeImage:      templateSelectionRuntimeImage(req.TemplateSelection),
 			TemplateLock:              req.TemplateConstructionLock,
 			Out:                       out,
 		},

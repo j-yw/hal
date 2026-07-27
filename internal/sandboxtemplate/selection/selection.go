@@ -60,6 +60,7 @@ type Result struct {
 	RuntimeMetadata *sandboxruntime.RuntimeTemplateLockMetadata
 	RuntimeDriver   string
 	IsolationLevel  string
+	RuntimeImage    string
 	ManifestDigest  *sandboxtemplate.DigestMetadata
 }
 
@@ -124,6 +125,11 @@ func (w Workflow) Select(ctx context.Context, request Request) (Result, error) {
 	if template.Runtime != nil {
 		result.RuntimeDriver = string(template.Runtime.Driver)
 		result.IsolationLevel = string(template.Runtime.IsolationLevel)
+		runtimeImage, imageErr := selectedRuntimeImageIdentity(template, resolved.Lock, runtimeMetadata)
+		if imageErr != nil {
+			return Result{}, rejected(imageErr)
+		}
+		result.RuntimeImage = runtimeImage
 	}
 	return result, nil
 }
@@ -134,6 +140,7 @@ type BindingRequest struct {
 	RuntimeID      string
 	RuntimeDriver  string
 	IsolationLevel string
+	RuntimeImage   string
 	ManifestDigest *sandboxtemplate.DigestMetadata
 }
 
@@ -143,6 +150,7 @@ type Binding struct {
 	RuntimeID       string
 	RuntimeDriver   string
 	IsolationLevel  string
+	RuntimeImage    string
 	ManifestDigest  *sandboxtemplate.DigestMetadata
 	RuntimeMetadata *sandboxruntime.RuntimeTemplateLockMetadata
 }
@@ -158,6 +166,8 @@ func Bind(result Result, request BindingRequest) (Binding, error) {
 		!digestEqual(result.ManifestDigest, request.ManifestDigest) ||
 		strings.TrimSpace(result.RuntimeDriver) != strings.TrimSpace(request.RuntimeDriver) ||
 		strings.TrimSpace(result.IsolationLevel) != strings.TrimSpace(request.IsolationLevel) ||
+		(strings.TrimSpace(result.RuntimeImage) != "" &&
+			strings.TrimSpace(result.RuntimeImage) != strings.TrimSpace(request.RuntimeImage)) ||
 		!validBindingEvidence(result) {
 		return Binding{}, rejected(ErrSelectionRejected)
 	}
@@ -167,9 +177,40 @@ func Bind(result Result, request BindingRequest) (Binding, error) {
 		RuntimeID:       strings.TrimSpace(request.RuntimeID),
 		RuntimeDriver:   strings.TrimSpace(request.RuntimeDriver),
 		IsolationLevel:  strings.TrimSpace(request.IsolationLevel),
+		RuntimeImage:    strings.TrimSpace(result.RuntimeImage),
 		ManifestDigest:  cloneDigest(result.ManifestDigest),
 		RuntimeMetadata: sandboxruntime.SanitizeRuntimeTemplateLockMetadata(result.RuntimeMetadata),
 	}, nil
+}
+
+func selectedRuntimeImageIdentity(template sandboxtemplate.Template, lock acquisition.TemplateLock, metadata *sandboxruntime.RuntimeTemplateLockMetadata) (string, error) {
+	if template.Runtime == nil || template.Runtime.Image == nil {
+		return "", nil
+	}
+	image := template.Runtime.Image
+	reference := strings.TrimSpace(image.Ref)
+	if image.Kind != sandboxtemplate.ReferenceKindOCIImage ||
+		reference == "" ||
+		strings.Contains(reference, "@") {
+		return "", ErrSelectionRejected
+	}
+	var digest *sandboxtemplate.DigestMetadata
+	for _, locked := range lock.References {
+		if locked.Field == "runtime.image" &&
+			locked.Kind == sandboxtemplate.ReferenceKindOCIImage &&
+			locked.Status == acquisition.LockStatusLocked &&
+			validSHA256Digest(locked.Digest) {
+			digest = locked.Digest
+			break
+		}
+	}
+	if digest == nil ||
+		(image.Digest != nil && !digestEqual(image.Digest, digest)) ||
+		metadata == nil ||
+		!runtimeImageEntryMatches(metadata.RuntimeImage, digest) {
+		return "", ErrSelectionRejected
+	}
+	return reference + "@sha256:" + digest.Value, nil
 }
 
 func correlateRuntimeMetadata(metadata *sandboxruntime.RuntimeTemplateLockMetadata, digest *sandboxtemplate.DigestMetadata, trust acquisition.TrustPolicyResult) {
@@ -202,6 +243,10 @@ func validBindingEvidence(result Result) bool {
 		string(result.Template.Runtime.IsolationLevel) != strings.TrimSpace(result.IsolationLevel) {
 		return false
 	}
+	runtimeImage, err := selectedRuntimeImageIdentity(result.Template, result.Lock, result.RuntimeMetadata)
+	if err != nil || runtimeImage != strings.TrimSpace(result.RuntimeImage) {
+		return false
+	}
 	var locked bool
 	for _, reference := range result.Lock.References {
 		if reference.Field == "metadata.reference" &&
@@ -229,6 +274,15 @@ func validBindingEvidence(result Result) bool {
 	}
 	return (result.Trust.Mode == acquisition.TrustPolicyModeStrict && result.Trust.Decision == acquisition.TrustPolicyDecisionTrusted) ||
 		(result.Trust.Mode == acquisition.TrustPolicyModeAdvisory && result.Trust.Decision == acquisition.TrustPolicyDecisionAdvisory)
+}
+
+func runtimeImageEntryMatches(entry *sandboxruntime.RuntimeTemplateLockEntryMetadata, digest *sandboxtemplate.DigestMetadata) bool {
+	return entry != nil &&
+		entry.SourceKind == "runtime_image" &&
+		entry.ReferenceKind == string(sandboxtemplate.ReferenceKindOCIImage) &&
+		entry.Status == string(acquisition.LockStatusLocked) &&
+		entry.DigestAlgorithm == string(digest.Algorithm) &&
+		entry.DigestValue == digest.Value
 }
 
 func runtimeEntryMatches(entry *sandboxruntime.RuntimeTemplateLockEntryMetadata, digest *sandboxtemplate.DigestMetadata) bool {

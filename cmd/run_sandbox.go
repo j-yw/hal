@@ -1203,6 +1203,7 @@ func (deps runSandboxDeps) resolveRunSandboxTarget(ctx context.Context, req runS
 			ProvisionRepository:       req.RepoRemote,
 			TemplateRuntimeDriver:     templateSelectionRuntimeDriver(req.TemplateSelection),
 			TemplateIsolationLevel:    templateSelectionIsolationLevel(req.TemplateSelection),
+			TemplateRuntimeImage:      templateSelectionRuntimeImage(req.TemplateSelection),
 			TemplateLock:              req.TemplateConstructionLock,
 			Out:                       out,
 		},

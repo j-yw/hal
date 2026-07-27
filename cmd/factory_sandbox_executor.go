@@ -34,6 +34,7 @@ type factorySandboxProvisionRequest struct {
 	Repo                   string
 	TemplateRuntimeDriver  string
 	TemplateIsolationLevel string
+	TemplateRuntimeImage   string
 	TemplateLock           *sandbox.SandboxTemplateLockMetadata
 	Out                    io.Writer
 }
@@ -711,6 +712,7 @@ func resolveFactorySandboxTarget(ctx context.Context, req factorySandboxExecutor
 			ProvisionRepository:       provisionRepo,
 			TemplateRuntimeDriver:     templateSelectionRuntimeDriver(req.TemplateSelection),
 			TemplateIsolationLevel:    templateSelectionIsolationLevel(req.TemplateSelection),
+			TemplateRuntimeImage:      templateSelectionRuntimeImage(req.TemplateSelection),
 			TemplateLock:              selectedTemplateConstructionLock(req.TemplateSelection),
 			LoadContext:               "factory sandbox",
 			Out:                       req.RemoteOutput,
@@ -2983,9 +2985,10 @@ func provisionFactorySandbox(ctx context.Context, req factorySandboxProvisionReq
 	templateRuntime := &sandbox.SandboxRuntimeState{
 		Driver:         strings.TrimSpace(req.TemplateRuntimeDriver),
 		IsolationLevel: strings.TrimSpace(req.TemplateIsolationLevel),
+		Image:          strings.TrimSpace(req.TemplateRuntimeImage),
 		TemplateLock:   sandbox.SanitizeSandboxTemplateLockMetadata(req.TemplateLock),
 	}
-	if templateRuntime.Driver == "" && templateRuntime.IsolationLevel == "" && templateRuntime.TemplateLock == nil {
+	if templateRuntime.Driver == "" && templateRuntime.IsolationLevel == "" && templateRuntime.Image == "" && templateRuntime.TemplateLock == nil {
 		templateRuntime = nil
 	}
 	if err := runSandboxCreateWithDepsAndCountOption(

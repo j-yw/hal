@@ -558,29 +558,33 @@ func TestL9FactoryExecutorBindsAndPersistsSelectionBeforeProviderConstruction(t 
 
 func TestL9ActualPathsRejectMissingOrTamperedTargetEvidenceBeforeConstruction(t *testing.T) {
 	const digestValue = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-	selected := l9CommandSelectionResult(digestValue)
+	selected := l9CommandSelectionResultWithRuntimeImage(
+		digestValue,
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	)
 	templateDeps := sandboxTemplateSelectionDeps{
 		NewWorkflow: func() (sandboxTemplateSelectionWorkflow, error) {
 			return &sandboxTemplateWorkflowStub{result: selected}, nil
 		},
 	}
-	targetForCase := func(t *testing.T, name, runtimeID string, tampered bool) *sandbox.SandboxState {
+	targetForCase := func(t *testing.T, name, runtimeID, evidenceCase string) *sandbox.SandboxState {
 		t.Helper()
 		target := l9CommandTarget(name, runtimeID)
-		if tampered {
+		target.Runtime.Image = selected.RuntimeImage
+		switch evidenceCase {
+		case "tampered":
 			target.Runtime.TemplateLock = selectedTemplateConstructionLock(&selected)
 			target.Runtime.TemplateLock.TemplateReference.DigestValue = strings.Repeat("f", 64)
+		case "image_mismatch":
+			target.Runtime.TemplateLock = selectedTemplateConstructionLock(&selected)
+			target.Runtime.Image = "registry.example/hal/runtime@sha256:" + strings.Repeat("b", 64)
 		}
 		return target
 	}
-	for _, tampered := range []bool{false, true} {
-		caseName := "missing"
-		if tampered {
-			caseName = "tampered"
-		}
+	for _, caseName := range []string{"missing", "tampered", "image_mismatch"} {
 		t.Run("run/"+caseName, func(t *testing.T) {
 			projectDir := t.TempDir()
-			target := targetForCase(t, "run-"+caseName, "run-runtime-"+caseName, tampered)
+			target := targetForCase(t, "run-"+caseName, "run-runtime-"+caseName, caseName)
 			store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "executions"))
 			err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
 				Base:                   "main",
@@ -622,7 +626,7 @@ func TestL9ActualPathsRejectMissingOrTamperedTargetEvidenceBeforeConstruction(t 
 		})
 		t.Run("auto/"+caseName, func(t *testing.T) {
 			projectDir := t.TempDir()
-			target := targetForCase(t, "auto-"+caseName, "auto-runtime-"+caseName, tampered)
+			target := targetForCase(t, "auto-"+caseName, "auto-runtime-"+caseName, caseName)
 			store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "executions"))
 			err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
 				Base:                   "main",
@@ -681,7 +685,7 @@ func TestL9ActualPathsRejectMissingOrTamperedTargetEvidenceBeforeConstruction(t 
 			if err := store.SaveRun(&record); err != nil {
 				t.Fatal(err)
 			}
-			target := targetForCase(t, "factory-"+caseName, "factory-runtime-"+caseName, tampered)
+			target := targetForCase(t, "factory-"+caseName, "factory-runtime-"+caseName, caseName)
 			target.Provider = "fixture"
 			err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
 				ProjectDir:        t.TempDir(),
@@ -723,7 +727,10 @@ func TestL9ActualPathsRejectMissingOrTamperedTargetEvidenceBeforeConstruction(t 
 
 func TestL9ActualPathsPassSelectionEvidenceIntoProvisioning(t *testing.T) {
 	const digestValue = "abababababababababababababababababababababababababababababababab"
-	selected := l9CommandSelectionResult(digestValue)
+	selected := l9CommandSelectionResultWithRuntimeImage(
+		digestValue,
+		"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+	)
 	templateDeps := sandboxTemplateSelectionDeps{
 		NewWorkflow: func() (sandboxTemplateSelectionWorkflow, error) {
 			return &sandboxTemplateWorkflowStub{result: selected}, nil
@@ -735,6 +742,7 @@ func TestL9ActualPathsPassSelectionEvidenceIntoProvisioning(t *testing.T) {
 			*called = true
 			if req.TemplateRuntimeDriver != "microvm" ||
 				req.TemplateIsolationLevel != "vm" ||
+				req.TemplateRuntimeImage != selected.RuntimeImage ||
 				req.TemplateLock == nil ||
 				req.TemplateLock.TemplateReference == nil ||
 				req.TemplateLock.TemplateReference.DigestValue != digestValue {
@@ -744,6 +752,7 @@ func TestL9ActualPathsPassSelectionEvidenceIntoProvisioning(t *testing.T) {
 			target.Provider = "fixture"
 			target.Runtime.Driver = req.TemplateRuntimeDriver
 			target.Runtime.IsolationLevel = req.TemplateIsolationLevel
+			target.Runtime.Image = req.TemplateRuntimeImage
 			target.Runtime.TemplateLock = sandbox.SanitizeSandboxTemplateLockMetadata(req.TemplateLock)
 			return target, nil
 		}
@@ -755,6 +764,9 @@ func TestL9ActualPathsPassSelectionEvidenceIntoProvisioning(t *testing.T) {
 			target.Runtime.Metadata.TemplateLock.TemplateReference == nil ||
 			target.Runtime.Metadata.TemplateLock.TemplateReference.DigestValue != digestValue {
 			t.Fatalf("runtime constructor missing selected evidence: %#v", target.Runtime.Metadata)
+		}
+		if target.Runtime.Image != selected.RuntimeImage {
+			t.Fatalf("runtime constructor image = %q, want selected digest-pinned image", target.Runtime.Image)
 		}
 	}
 	t.Run("run", func(t *testing.T) {
@@ -884,6 +896,177 @@ func TestL9ActualPathsPassSelectionEvidenceIntoProvisioning(t *testing.T) {
 		})
 		if err == nil || !strings.Contains(err.Error(), "stop_after_binding") || !provisioned {
 			t.Fatalf("factory error = %v, provisioned=%v", err, provisioned)
+		}
+	})
+}
+
+func TestL9ActualPathsRejectRuntimeReportedImageMismatchBeforeProviderAndProjection(t *testing.T) {
+	const (
+		templateDigest = "1212121212121212121212121212121212121212121212121212121212121212"
+		imageDigest    = "3434343434343434343434343434343434343434343434343434343434343434"
+	)
+	selected := l9CommandSelectionResultWithRuntimeImage(templateDigest, imageDigest)
+	templateDeps := sandboxTemplateSelectionDeps{
+		NewWorkflow: func() (sandboxTemplateSelectionWorkflow, error) {
+			return &sandboxTemplateWorkflowStub{result: selected}, nil
+		},
+	}
+	newStoppedTarget := func(name string) *sandbox.SandboxState {
+		target := l9CommandTarget(name, name+"-runtime")
+		target.Status = sandbox.StatusStopped
+		target.Provider = "fixture"
+		target.Runtime.Image = selected.RuntimeImage
+		target.Runtime.TemplateLock = selectedTemplateConstructionLock(&selected)
+		return target
+	}
+	mismatchedRuntimeTarget := func(target sandboxruntime.Target) *sandboxruntime.Target {
+		target.Status = sandbox.StatusRunning
+		target.Runtime.Image = "registry.example/hal/runtime@sha256:" + strings.Repeat("5", 64)
+		return &target
+	}
+	t.Run("run", func(t *testing.T) {
+		projectDir := t.TempDir()
+		store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "executions"))
+		target := newStoppedTarget("run-runtime-image-mismatch")
+		err := runRunSandboxWithWriter(context.Background(), nil, nil, runSandboxOptions{
+			Base:                   "main",
+			BaseChanged:            true,
+			SandboxName:            target.Name,
+			SandboxTemplate:        "registry.example/hal/template:latest",
+			SandboxTemplateChanged: true,
+		}, io.Discard, io.Discard, runSandboxDeps{
+			templateSelection: templateDeps,
+			defaultStore:      func() (sandboxexecution.Store, error) { return store, nil },
+			newExecutionID:    func(time.Time) string { return "run-runtime-image-mismatch" },
+			now:               func() time.Time { return time.Unix(1, 0) },
+			workingDir:        func() (string, error) { return projectDir, nil },
+			repoRemote:        func(string) (string, error) { return "git@example.com:org/repo.git", nil },
+			currentBranch:     func(string) (string, error) { return "feature/l9", nil },
+			loadSandbox:       func(string) (*sandbox.SandboxState, error) { return target, nil },
+			resolveRuntimeDriver: func(runtimeTarget sandboxruntime.Target) (sandboxruntime.Driver, error) {
+				if runtimeTarget.Runtime.Image != selected.RuntimeImage {
+					t.Fatalf("run runtime constructor image = %q", runtimeTarget.Runtime.Image)
+				}
+				return fakeRunSandboxRuntimeDriver{
+					id: "microvm",
+					start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+						return mismatchedRuntimeTarget(req.Target), nil
+					},
+				}, nil
+			},
+			resolveProvider:     func(string) (sandbox.Provider, error) { panic("provider constructed after image mismatch") },
+			persistSandboxState: func(*sandbox.SandboxState) error { panic("image mismatch persisted") },
+		})
+		if err == nil || !strings.Contains(err.Error(), "selection_rejected") {
+			t.Fatalf("run error = %v, want selection_rejected", err)
+		}
+		manifest, loadErr := store.LoadManifest("run-runtime-image-mismatch")
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		if manifest.TemplateLock != nil || manifest.Runtime != nil {
+			t.Fatalf("run projected trust for mismatched runtime image: %#v", manifest)
+		}
+	})
+	t.Run("auto", func(t *testing.T) {
+		projectDir := t.TempDir()
+		store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "executions"))
+		target := newStoppedTarget("auto-runtime-image-mismatch")
+		err := runAutoSandboxWithWriter(context.Background(), nil, nil, projectDir, autoSandboxOptions{
+			Base:                   "main",
+			BaseChanged:            true,
+			SandboxName:            target.Name,
+			SandboxTemplate:        "registry.example/hal/template:latest",
+			SandboxTemplateChanged: true,
+		}, io.Discard, io.Discard, autoSandboxDeps{
+			templateSelection: templateDeps,
+			defaultStore:      func() (sandboxexecution.Store, error) { return store, nil },
+			newExecutionID:    func(time.Time) string { return "auto-runtime-image-mismatch" },
+			now:               func() time.Time { return time.Unix(1, 0) },
+			planWorkspace: func(context.Context, sandboxworkspace.Request) (sandboxworkspace.Plan, error) {
+				return sandboxworkspace.Plan{
+					Mode:        sandbox.SandboxWorkspaceModeClone,
+					InputSource: sandbox.SandboxWorkspaceInputSourceRemoteRef,
+					ProjectDir:  projectDir,
+					Repository:  "git@example.com:org/repo.git",
+					Branch:      "feature/l9",
+					SyncRef:     "main",
+				}, nil
+			},
+			loadSandbox: func(string) (*sandbox.SandboxState, error) { return target, nil },
+			resolveRuntimeDriver: func(runtimeTarget sandboxruntime.Target) (sandboxruntime.Driver, error) {
+				if runtimeTarget.Runtime.Image != selected.RuntimeImage {
+					t.Fatalf("auto runtime constructor image = %q", runtimeTarget.Runtime.Image)
+				}
+				return fakeRunSandboxRuntimeDriver{
+					id: "microvm",
+					start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+						return mismatchedRuntimeTarget(req.Target), nil
+					},
+				}, nil
+			},
+			resolveProvider:     func(string) (sandbox.Provider, error) { panic("provider constructed after image mismatch") },
+			persistSandboxState: func(*sandbox.SandboxState) error { panic("image mismatch persisted") },
+		})
+		if err == nil || !strings.Contains(err.Error(), "selection_rejected") {
+			t.Fatalf("auto error = %v, want selection_rejected", err)
+		}
+		manifest, loadErr := store.LoadManifest("auto-runtime-image-mismatch")
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		if manifest.TemplateLock != nil || manifest.Runtime != nil {
+			t.Fatalf("auto projected trust for mismatched runtime image: %#v", manifest)
+		}
+	})
+	t.Run("factory", func(t *testing.T) {
+		store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+		record := factory.RunRecord{
+			RunID:      "factory-runtime-image-mismatch",
+			Status:     factory.RunStatusRunning,
+			RepoRemote: "git@example.com:org/repo.git",
+			BranchName: "feature/l9",
+			BaseBranch: "main",
+		}
+		if err := store.SaveRun(&record); err != nil {
+			t.Fatal(err)
+		}
+		target := newStoppedTarget("factory-runtime-image-mismatch")
+		err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
+			ProjectDir:        t.TempDir(),
+			RunRecord:         record,
+			SandboxName:       target.Name,
+			TemplateSelection: &selected,
+			RemoteAuto:        factoryRunAutoRequest{BaseBranch: "main"},
+			RemoteOutput:      io.Discard,
+		}, factorySandboxExecutorDeps{
+			defaultStore: func() (factory.Store, error) { return store, nil },
+			now:          func() time.Time { return time.Unix(1, 0) },
+			loadSandbox:  func(string) (*sandbox.SandboxState, error) { return target, nil },
+			resolveRuntimeDriver: func(runtimeTarget sandboxruntime.Target) (sandboxruntime.Driver, error) {
+				if runtimeTarget.Runtime.Image != selected.RuntimeImage {
+					t.Fatalf("factory runtime constructor image = %q", runtimeTarget.Runtime.Image)
+				}
+				return fakeFactorySandboxRuntimeDriver{
+					id: "microvm",
+					startFn: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+						return mismatchedRuntimeTarget(req.Target), nil
+					},
+				}, nil
+			},
+			resolveProvider:     func(string) (sandbox.Provider, error) { panic("provider constructed after image mismatch") },
+			persistSandboxState: func(*sandbox.SandboxState) error { panic("image mismatch persisted") },
+			cleanupSandbox:      func(context.Context, factorySandboxCleanupRequest) error { return nil },
+		})
+		if err == nil || !strings.Contains(err.Error(), "selection_rejected") {
+			t.Fatalf("factory error = %v, want selection_rejected", err)
+		}
+		stored, loadErr := store.LoadRun(record.RunID)
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		if stored.Sandbox != nil && stored.Sandbox.TemplateLock != nil {
+			t.Fatalf("factory projected trust for mismatched runtime image: %#v", stored.Sandbox)
 		}
 	})
 }
@@ -1028,6 +1211,35 @@ func l9CommandSelectionResult(digestValue string) selection.Result {
 			},
 		},
 	}
+}
+
+func l9CommandSelectionResultWithRuntimeImage(templateDigest, imageDigest string) selection.Result {
+	result := l9CommandSelectionResult(templateDigest)
+	const imageReference = "registry.example/hal/runtime"
+	digest := &sandboxtemplate.DigestMetadata{
+		Algorithm: sandboxtemplate.DigestAlgorithmSHA256,
+		Value:     imageDigest,
+	}
+	result.RuntimeImage = imageReference + "@sha256:" + imageDigest
+	result.Template.Runtime.Image = &sandboxtemplate.ImmutableRef{
+		Kind:   sandboxtemplate.ReferenceKindOCIImage,
+		Ref:    imageReference,
+		Digest: digest,
+	}
+	result.Lock.References = append(result.Lock.References, acquisition.ReferenceLock{
+		Field:  "runtime.image",
+		Kind:   sandboxtemplate.ReferenceKindOCIImage,
+		Status: acquisition.LockStatusLocked,
+		Digest: digest,
+	})
+	result.RuntimeMetadata.RuntimeImage = &sandboxruntime.RuntimeTemplateLockEntryMetadata{
+		SourceKind:      "runtime_image",
+		ReferenceKind:   "oci_image",
+		Status:          "locked",
+		DigestAlgorithm: "sha256",
+		DigestValue:     imageDigest,
+	}
+	return result
 }
 
 func l9CommandTarget(sandboxID, runtimeID string) *sandbox.SandboxState {

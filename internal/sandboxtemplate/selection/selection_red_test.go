@@ -15,7 +15,9 @@ import (
 )
 
 func TestL9StrictSelectionCanonicalizesTagBeforeUnchangedPolicyEvaluator(t *testing.T) {
-	templateBytes := []byte(`apiVersion: sandbox-template.hal.dev/v1
+	runtimeImageBytes := []byte(`{"schemaVersion":2,"runtime":"microvm"}`)
+	runtimeImageDigest := selectionTestDigest(runtimeImageBytes)
+	templateBytes := []byte(strings.ReplaceAll(`apiVersion: sandbox-template.hal.dev/v1
 kind: SandboxTemplate
 metadata:
   id: l9-template
@@ -25,7 +27,13 @@ metadata:
 runtime:
   driver: microvm
   isolationLevel: vm
-`)
+  image:
+    kind: oci_image
+    ref: registry.test/hal/runtime:stable
+    digest:
+      algorithm: sha256
+      value: RUNTIME_IMAGE_DIGEST
+`, "RUNTIME_IMAGE_DIGEST", runtimeImageDigest.Value))
 	documentDigest := selectionTestDigest(templateBytes)
 	manifestBytes := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}`)
 	manifestDigest := selectionTestDigest(manifestBytes)
@@ -36,12 +44,21 @@ runtime:
 			Format:                 sandboxtemplate.FormatYAML,
 			DocumentDigest:         documentDigest,
 			TemplateArtifactDigest: manifestDigest,
-			ReferenceDigests: []acquisition.ReferenceDigestProof{{
-				Field:         "metadata.reference",
-				Kind:          sandboxtemplate.ReferenceKindOCIArtifact,
-				Digest:        manifestDigest,
-				VerifiedBytes: manifestBytes,
-			}},
+			ReferenceDigests: []acquisition.ReferenceDigestProof{
+				{
+					Field:         "metadata.reference",
+					Kind:          sandboxtemplate.ReferenceKindOCIArtifact,
+					Digest:        manifestDigest,
+					VerifiedBytes: manifestBytes,
+				},
+				{
+					Field:         "runtime.image",
+					Kind:          sandboxtemplate.ReferenceKindOCIImage,
+					Ref:           "registry.test/hal/runtime:stable",
+					Digest:        runtimeImageDigest,
+					VerifiedBytes: runtimeImageBytes,
+				},
+			},
 		},
 	}))
 
@@ -69,6 +86,9 @@ runtime:
 	}
 	if result.RuntimeDriver != "microvm" || result.IsolationLevel != "vm" {
 		t.Fatalf("runtime intent = %q/%q, want microvm/vm", result.RuntimeDriver, result.IsolationLevel)
+	}
+	if want := "registry.test/hal/runtime:stable@sha256:" + runtimeImageDigest.Value; result.RuntimeImage != want {
+		t.Fatalf("runtime image = %q, want %q", result.RuntimeImage, want)
 	}
 }
 
@@ -142,6 +162,54 @@ func TestL9SelectionBindingRejectsRuntimeIdentityMismatch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), string(selection.ErrorCodeSelectionRejected)) {
 		t.Fatalf("Bind() error = %q, want safe selection_rejected code", err)
+	}
+}
+
+func TestL9SelectionBindingRejectsObservedRuntimeImageMismatch(t *testing.T) {
+	const (
+		selectedImage = "registry.example/hal/runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		observedImage = "registry.example/hal/runtime@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	)
+	result := validBindingSelectionResult(&sandboxtemplate.DigestMetadata{
+		Algorithm: sandboxtemplate.DigestAlgorithmSHA256,
+		Value:     strings.Repeat("c", 64),
+	})
+	result.RuntimeImage = selectedImage
+	result.Template.Runtime.Image = &sandboxtemplate.ImmutableRef{
+		Kind: sandboxtemplate.ReferenceKindOCIImage,
+		Ref:  "registry.example/hal/runtime",
+		Digest: &sandboxtemplate.DigestMetadata{
+			Algorithm: sandboxtemplate.DigestAlgorithmSHA256,
+			Value:     strings.Repeat("a", 64),
+		},
+	}
+	result.Lock.References = append(result.Lock.References, acquisition.ReferenceLock{
+		Field:  "runtime.image",
+		Kind:   sandboxtemplate.ReferenceKindOCIImage,
+		Status: acquisition.LockStatusLocked,
+		Digest: &sandboxtemplate.DigestMetadata{
+			Algorithm: sandboxtemplate.DigestAlgorithmSHA256,
+			Value:     strings.Repeat("a", 64),
+		},
+	})
+	result.RuntimeMetadata.RuntimeImage = &sandboxruntime.RuntimeTemplateLockEntryMetadata{
+		SourceKind:      "runtime_image",
+		ReferenceKind:   "oci_image",
+		Status:          "locked",
+		DigestAlgorithm: "sha256",
+		DigestValue:     strings.Repeat("a", 64),
+	}
+	_, err := selection.Bind(result, selection.BindingRequest{
+		ExecutionID:    "execution-l9",
+		SandboxID:      "sandbox-l9",
+		RuntimeID:      "runtime-l9",
+		RuntimeDriver:  result.RuntimeDriver,
+		IsolationLevel: result.IsolationLevel,
+		RuntimeImage:   observedImage,
+		ManifestDigest: result.ManifestDigest,
+	})
+	if err == nil || !strings.Contains(err.Error(), string(selection.ErrorCodeSelectionRejected)) {
+		t.Fatalf("Bind() error = %v, want selection_rejected", err)
 	}
 }
 

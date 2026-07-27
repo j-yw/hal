@@ -25,6 +25,7 @@ type sandboxCommandTargetRequest struct {
 	ProvisionRepository       string
 	TemplateRuntimeDriver     string
 	TemplateIsolationLevel    string
+	TemplateRuntimeImage      string
 	TemplateLock              *sandbox.SandboxTemplateLockMetadata
 	LoadContext               string
 	Out                       io.Writer
@@ -118,6 +119,7 @@ func resolveSandboxCommandTarget(ctx context.Context, req sandboxCommandTargetRe
 		Repo:                   provisionRepo,
 		TemplateRuntimeDriver:  req.TemplateRuntimeDriver,
 		TemplateIsolationLevel: req.TemplateIsolationLevel,
+		TemplateRuntimeImage:   req.TemplateRuntimeImage,
 		TemplateLock:           sandbox.SanitizeSandboxTemplateLockMetadata(req.TemplateLock),
 		Out:                    req.Out,
 	})
@@ -272,6 +274,7 @@ func provisionSandboxCommandTarget(ctx context.Context, req sandboxCommandTarget
 		Repo:                   repo,
 		TemplateRuntimeDriver:  req.TemplateRuntimeDriver,
 		TemplateIsolationLevel: req.TemplateIsolationLevel,
+		TemplateRuntimeImage:   req.TemplateRuntimeImage,
 		TemplateLock:           sandbox.SanitizeSandboxTemplateLockMetadata(req.TemplateLock),
 		Out:                    req.Out,
 	})
