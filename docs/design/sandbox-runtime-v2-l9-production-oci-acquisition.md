@@ -138,11 +138,13 @@ consume the sanitized selected-template projection and never perform
 acquisition.
 
 Run, auto, and factory share one ordering contract: parse/validate; perform
-the pure dry-run return when requested; acquire and strictly select; then
-resolve or provision the target; bind the immutable selection to the
-execution, sandbox, and runtime identities; persist the same sanitized lock in
-those containing records; and only then construct a provider, worker client,
-or runtime driver.
+strict static OCI reference validation before credential, cache, HTTP, or
+workflow construction; perform the pure dry-run return when requested; acquire
+and strictly select; then resolve or provision the target with the selected
+runtime requirements and immutable lock already present; correlate the
+returned target with the execution, sandbox, and runtime identities; persist
+the same sanitized lock in those containing records; and only then construct a
+provider, worker client, or runtime driver.
 
 ## 3. Durable and machine-contract schema changes
 
@@ -159,6 +161,10 @@ remain valid.
 
 No new machine response may contain the caller reference. JSON failure output
 uses the existing command envelope with a sanitized stable error.
+Requested dry runs expose only a redaction-safe static template intent:
+`sourceKind`, trust mode, and requested/resolved/active booleans. They do not
+resolve the reference or expose its authority, repository, tag, digest, or raw
+text.
 
 Selection binding is not a status-only attachment. Before construction,
 command wiring verifies that one selected manifest digest and trust result is
@@ -290,8 +296,10 @@ Red commits precede implementation and cover:
 - strict selection pinning and propagation before construction;
 - advisory selection remaining non-strict;
 - no unverified/local/fake fallback;
-- dry-run/no-template zero-call compatibility plus flag conflicts and
-  run/auto/factory pre-construction ordering;
+- dry-run/no-template zero-call compatibility, strict static reference
+  classification before any credential/cache/HTTP dependency, redaction-safe
+  preview intent, flag conflicts, and run/auto/factory pre-construction
+  ordering;
 - exact execution/sandbox/runtime selection binding rather than status-only
   projection; and
 - provider/runtime constructor panic fakes for every acquisition/policy
