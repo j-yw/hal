@@ -82,7 +82,9 @@ All resolved addresses must pass. A mixed answer fails closed.
   oversize input rejected before upstream publication;
 - CONNECT tunnels have bounded lifetime and per-direction byte limits;
 - hop-by-hop and `Proxy-Authorization` headers are removed;
-- outbound HTTP uses a dedicated transport with `Proxy=nil`;
+- outbound HTTP writes one contained origin-form request directly to the
+  already validated numeric-address connection, so ambient proxy discovery and
+  a second DNS lookup are impossible;
 - cancellation closes upstream work and stop closes listeners, idle
   connections, active tunnels, and request contexts.
 

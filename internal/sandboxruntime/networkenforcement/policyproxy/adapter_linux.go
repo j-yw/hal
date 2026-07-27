@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/textproto"
 	"net/url"
 	"strconv"
 	"strings"
@@ -377,12 +378,22 @@ func (a *Adapter) serveHTTP(w http.ResponseWriter, request *http.Request) {
 	}
 	outbound := request.Clone(request.Context())
 	outbound.RequestURI = ""
-	outbound.Body = io.NopCloser(bytes.NewReader(body))
+	if len(body) == 0 {
+		outbound.Body = http.NoBody
+	} else {
+		outbound.Body = io.NopCloser(bytes.NewReader(body))
+	}
+	outbound.GetBody = nil
 	outbound.ContentLength = int64(len(body))
+	outbound.TransferEncoding = nil
+	outbound.Trailer = nil
+	outbound.Close = true
 	outbound.Header = request.Header.Clone()
 	removeHopHeaders(outbound.Header)
 	outbound.Header.Del("Proxy-Authorization")
-	outbound.Header.Del("Accept-Encoding")
+	outbound.Header.Del("Expect")
+	outbound.Header.Del("Trailer")
+	outbound.Header.Set("Connection", "close")
 
 	upstream, err := a.dialTargets(request.Context(), "tcp", targets)
 	if err != nil {
@@ -400,7 +411,7 @@ func (a *Adapter) serveHTTP(w http.ResponseWriter, request *http.Request) {
 		safeHTTPError(w, http.StatusBadGateway)
 		return
 	}
-	responseReader, err := boundedResponseReader(upstream, a.config.Limits.MaxResponseHeaderBytes)
+	responseReader, connectionTokens, err := boundedResponseReader(upstream, a.config.Limits.MaxResponseHeaderBytes)
 	if err != nil {
 		a.emitFinalDecision(result, networkenforcement.PolicyProxyDecisionActionDeny, networkenforcement.PolicyProxyDecisionReasonResponseBoundsExceeded, "")
 		safeHTTPError(w, http.StatusBadGateway)
@@ -413,7 +424,7 @@ func (a *Adapter) serveHTTP(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	defer response.Body.Close()
-	if response.StatusCode == http.StatusSwitchingProtocols {
+	if response.StatusCode >= 100 && response.StatusCode < 200 {
 		a.emitFinalDecision(result, networkenforcement.PolicyProxyDecisionActionDeny, networkenforcement.PolicyProxyDecisionReasonProxyUnsupported, "")
 		safeHTTPError(w, http.StatusBadGateway)
 		return
@@ -425,6 +436,9 @@ func (a *Adapter) serveHTTP(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	a.emitDecision(result)
+	for _, token := range connectionTokens {
+		response.Header.Del(token)
+	}
 	removeHopHeaders(response.Header)
 	copyHeaders(w.Header(), response.Header)
 	w.WriteHeader(response.StatusCode)
@@ -819,22 +833,46 @@ func cloneURL(input *url.URL) *url.URL {
 	return &out
 }
 
-func boundedResponseReader(conn net.Conn, limit int64) (*bufio.Reader, error) {
+func boundedResponseReader(conn net.Conn, limit int64) (*bufio.Reader, []string, error) {
 	header := make([]byte, 0, minInt64(limit, 4096))
 	var tail [4]byte
-	for int64(len(header)) <= limit {
+	for int64(len(header)) < limit {
 		var current [1]byte
 		if _, err := io.ReadFull(conn, current[:]); err != nil {
-			return nil, safeAdapterError("response")
+			return nil, nil, safeAdapterError("response")
 		}
 		header = append(header, current[0])
 		copy(tail[:3], tail[1:])
 		tail[3] = current[0]
 		if tail == [4]byte{'\r', '\n', '\r', '\n'} {
-			return bufio.NewReader(io.MultiReader(bytes.NewReader(header), conn)), nil
+			tokens, err := responseConnectionTokens(header)
+			if err != nil {
+				return nil, nil, safeAdapterError("response")
+			}
+			return bufio.NewReader(io.MultiReader(bytes.NewReader(header), conn)), tokens, nil
 		}
 	}
-	return nil, safeAdapterError("response")
+	return nil, nil, safeAdapterError("response")
+}
+
+func responseConnectionTokens(header []byte) ([]string, error) {
+	statusEnd := bytes.Index(header, []byte("\r\n"))
+	if statusEnd < 0 {
+		return nil, errors.New("missing response status")
+	}
+	fields, err := textproto.NewReader(bufio.NewReader(bytes.NewReader(header[statusEnd+2:]))).ReadMIMEHeader()
+	if err != nil {
+		return nil, err
+	}
+	var tokens []string
+	for _, value := range fields.Values("Connection") {
+		for _, token := range strings.Split(value, ",") {
+			if token = strings.TrimSpace(token); token != "" {
+				tokens = append(tokens, token)
+			}
+		}
+	}
+	return tokens, nil
 }
 
 func minInt64(left, right int64) int {

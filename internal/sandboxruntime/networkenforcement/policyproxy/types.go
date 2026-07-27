@@ -21,6 +21,17 @@ var (
 	ErrInvalidConfig = errors.New("production policy proxy invalid configuration")
 )
 
+const (
+	maxHeaderBytes         = 1 << 20
+	maxResponseHeaderBytes = 1 << 20
+	maxRequestBodyBytes    = 16 << 20
+	maxResponseBodyBytes   = 64 << 20
+	maxConnectBytes        = 64 << 20
+	maxResolvedAddresses   = 64
+	maxConcurrentRequests  = 1024
+	maxConfiguredTimeout   = 10 * time.Minute
+)
+
 // ResolverFunc resolves one policy-approved host. Returned addresses are
 // revalidated before any dial.
 type ResolverFunc func(context.Context, string, string) ([]netip.Addr, error)
@@ -108,17 +119,31 @@ func normalizeLimits(input Limits) Limits {
 
 func validLimits(limits Limits) bool {
 	return limits.MaxHeaderBytes > 0 &&
+		limits.MaxHeaderBytes <= maxHeaderBytes &&
 		limits.MaxResponseHeaderBytes > 0 &&
+		limits.MaxResponseHeaderBytes <= maxResponseHeaderBytes &&
 		limits.MaxRequestBodyBytes > 0 &&
+		limits.MaxRequestBodyBytes <= maxRequestBodyBytes &&
 		limits.MaxResponseBodyBytes > 0 &&
+		limits.MaxResponseBodyBytes <= maxResponseBodyBytes &&
 		limits.MaxConnectBytes > 0 &&
+		limits.MaxConnectBytes <= maxConnectBytes &&
 		limits.MaxResolvedAddresses > 0 &&
+		limits.MaxResolvedAddresses <= maxResolvedAddresses &&
 		limits.MaxConcurrent > 0 &&
+		limits.MaxConcurrent <= maxConcurrentRequests &&
 		limits.ReadHeaderTimeout > 0 &&
+		limits.ReadHeaderTimeout <= maxConfiguredTimeout &&
 		limits.ReadTimeout > 0 &&
+		limits.ReadTimeout <= maxConfiguredTimeout &&
 		limits.WriteTimeout > 0 &&
+		limits.WriteTimeout <= maxConfiguredTimeout &&
 		limits.IdleTimeout > 0 &&
+		limits.IdleTimeout <= maxConfiguredTimeout &&
 		limits.RequestTimeout > 0 &&
+		limits.RequestTimeout <= maxConfiguredTimeout &&
 		limits.ConnectTimeout > 0 &&
-		limits.ShutdownTimeout > 0
+		limits.ConnectTimeout <= maxConfiguredTimeout &&
+		limits.ShutdownTimeout > 0 &&
+		limits.ShutdownTimeout <= maxConfiguredTimeout
 }

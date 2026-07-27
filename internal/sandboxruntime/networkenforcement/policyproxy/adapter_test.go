@@ -198,6 +198,72 @@ func TestL6PolicyProxyReframesBufferedChunkedTrailerAndExpectRequest(t *testing.
 	}
 }
 
+func TestL6PolicyProxyClosesEmptyUpstreamRequestAndStripsRawResponseHopHeaders(t *testing.T) {
+	listener, err := net.Listen(l6TestNetwork, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	requests := make(chan *http.Request, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		request, readErr := http.ReadRequest(bufio.NewReader(conn))
+		if readErr != nil {
+			return
+		}
+		requests <- request
+		_, _ = io.WriteString(conn,
+			"HTTP/1.1 200 OK\r\n"+
+				"Content-Length: 2\r\n"+
+				"Connection: X-Upstream-Hop, close\r\n"+
+				"X-Upstream-Hop: upstream-hop-canary\r\n"+
+				"\r\nok",
+		)
+	}()
+
+	var calls atomic.Int32
+	adapter := newTestAdapter(t, testAdapterOptions{
+		dial: mappingDialer(t, map[string]string{"93.184.216.34:80": listener.Addr().String()}, &calls),
+	})
+	endpoint := startAdapter(t, adapter)
+	t.Cleanup(func() { stopAdapter(t, adapter) })
+	resp, err := proxyClient(t, endpoint).Get("http://allowed.test/empty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || string(body) != "ok" {
+		t.Fatalf("raw upstream response = status %d body %q", resp.StatusCode, body)
+	}
+	if got := resp.Header.Get("X-Upstream-Hop"); got != "" {
+		t.Fatalf("dynamic raw response hop header leaked: %q", got)
+	}
+
+	select {
+	case request := <-requests:
+		request.Body.Close()
+		if !request.Close {
+			t.Fatal("upstream request did not contain Connection: close")
+		}
+		if len(request.TransferEncoding) != 0 || len(request.Trailer) != 0 {
+			t.Fatalf("empty upstream request retained framing: transfer=%v trailer=%v", request.TransferEncoding, request.Trailer)
+		}
+		if got := request.Header.Get("Expect"); got != "" {
+			t.Fatalf("empty upstream request retained Expect: %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for raw upstream request")
+	}
+}
+
 func TestL6PolicyProxyRejectsInterimResponsesAndBoundsHeaderTerminatorExactly(t *testing.T) {
 	upstream := newHTTPFixture(t)
 	var calls atomic.Int32
@@ -218,11 +284,11 @@ func TestL6PolicyProxyRejectsInterimResponsesAndBoundsHeaderTerminatorExactly(t 
 
 	const exactHeader = "HTTP/1.1 204 No Content\r\n\r\n"
 	left, right := net.Pipe()
-	go func() {
-		_, _ = io.WriteString(right, exactHeader)
-		_ = right.Close()
-	}()
-	reader, err := boundedResponseReader(left, int64(len(exactHeader)))
+	go func(conn net.Conn) {
+		_, _ = io.WriteString(conn, exactHeader)
+		_ = conn.Close()
+	}(right)
+	reader, _, err := boundedResponseReader(left, int64(len(exactHeader)))
 	if err != nil {
 		t.Fatalf("exact bounded header error: %v", err)
 	}
@@ -234,11 +300,11 @@ func TestL6PolicyProxyRejectsInterimResponsesAndBoundsHeaderTerminatorExactly(t 
 	left.Close()
 
 	left, right = net.Pipe()
-	go func() {
-		_, _ = io.WriteString(right, exactHeader)
-		_ = right.Close()
-	}()
-	if _, err := boundedResponseReader(left, int64(len(exactHeader)-1)); err == nil {
+	go func(conn net.Conn) {
+		_, _ = io.WriteString(conn, exactHeader)
+		_ = conn.Close()
+	}(right)
+	if _, _, err := boundedResponseReader(left, int64(len(exactHeader)-1)); err == nil {
 		t.Fatal("header terminator beyond exact limit was accepted")
 	}
 	left.Close()
@@ -834,8 +900,6 @@ func newHTTPFixture(t *testing.T) string {
 				t.Errorf("upstream received stale framing: transfer=%v trailer=%v expect=%q", r.TransferEncoding, r.Trailer, r.Header.Get("Expect"))
 			}
 		}
-		w.Header().Set("Connection", "X-Upstream-Hop")
-		w.Header().Set("X-Upstream-Hop", "upstream-hop-canary")
 		switch r.URL.Path {
 		case "/large":
 			_, _ = io.WriteString(w, strings.Repeat("x", 33))
