@@ -1043,10 +1043,6 @@ func l9CommandTarget(sandboxID, runtimeID string) *sandbox.SandboxState {
 	}
 }
 
-func ptrSelectionResult(result selection.Result) *selection.Result {
-	return &result
-}
-
 func TestL9EverySelectionFailurePrecedesProviderWorkerAndRuntimeConstruction(t *testing.T) {
 	failures := []error{
 		errors.New("invalid_reference"),
