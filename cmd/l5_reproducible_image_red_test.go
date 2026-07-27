@@ -534,6 +534,18 @@ func TestL5KernelBuildrootAndGuestInitLockIsolationContract(t *testing.T) {
 		t.Fatalf("users.txt = %q, want exact agent UID/GID 1000", users)
 	}
 
+	postBuild := string(l5ReadRequiredFile(t, filepath.Join(root, "post-build.sh")))
+	for _, marker := range []string{
+		`chmod 0755 "$target/bin/busybox"`,
+		`ln -snf /bin/busybox "$target/bin/sh"`,
+		`ln -snf /bin/busybox "$target/usr/bin/env"`,
+		`ln -snf /bin/busybox "$target/usr/bin/setpriv"`,
+	} {
+		if !strings.Contains(postBuild, marker) {
+			t.Errorf("post-build.sh missing locked applet materialization %q", marker)
+		}
+	}
+
 	initSource := string(l5ReadRequiredFile(t, filepath.Join(root, "rootfs-overlay", "sbin", "init")))
 	for _, marker := range []string{
 		"mount -t proc",
