@@ -91,9 +91,13 @@ the raw authority, URL, address, resolver/dialer error, header, body, or token.
 
 ## Decisions and lifecycle
 
-Every accepted or denied request emits exactly one sanitized
-`PolicyProxyDecisionLogRecord` through an optional in-memory sink. Sink
-failures cannot weaken the decision. Durable consumers receive only policy
+Every handled request produces exactly one final sanitized
+`PolicyProxyDecisionLogRecord` before its response or tunnel outcome. The
+optional in-memory sink is synchronous and panic-isolated. The injected sink
+contract requires a nonblocking callback; production persistence must place
+its own bounded queue behind that callback. A panic cannot weaken a decision,
+and L6 creates no background sink goroutine or lossy hidden queue. Durable
+consumers receive only policy
 snapshot/rule IDs, action, reason, safe destination category, and count.
 
 Lifecycle is transactional:
@@ -103,7 +107,8 @@ Lifecycle is transactional:
 - active succeeds only while the exact owned listener and serve loop are live;
 - stop is idempotent and uses an internal bounded cleanup context even if the
   caller is canceled;
-- serve failure clears active proof and closes owned resources.
+- serve failure clears active proof, cancels request lifetime, and closes owned
+  listeners and tunnels for the same lifecycle generation.
 
 The existing enforcement projection may report active proxy-only
 `networkEnforcement=proxy`. L6 can never report firewall/runtime proof,
