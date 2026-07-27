@@ -72,6 +72,56 @@ runtime:
 	}
 }
 
+func TestL9SelectionRejectsConflictingInnerPinnedTemplateDigest(t *testing.T) {
+	templateBytes := []byte(`apiVersion: sandbox-template.hal.dev/v1
+kind: SandboxTemplate
+metadata:
+  id: l9-conflict
+  reference:
+    kind: oci_artifact
+    ref: registry.test/hal/template@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    digest:
+      algorithm: sha256
+      value: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+runtime:
+  driver: microvm
+  isolationLevel: vm
+`)
+	manifestBytes := []byte(`{"schemaVersion":2}`)
+	manifestDigest := selectionTestDigest(manifestBytes)
+	resolver := acquisition.NewOCIResolver(acquisition.NewInMemoryOCIArtifactResolver(map[string]acquisition.OCIArtifactResolveResult{
+		"registry.test/hal/template:latest": {
+			TemplateBytes:          templateBytes,
+			ArtifactManifestBytes:  manifestBytes,
+			Format:                 sandboxtemplate.FormatYAML,
+			DocumentDigest:         selectionTestDigest(templateBytes),
+			TemplateArtifactDigest: manifestDigest,
+			ReferenceDigests: []acquisition.ReferenceDigestProof{{
+				Field:         "metadata.reference",
+				Kind:          sandboxtemplate.ReferenceKindOCIArtifact,
+				Digest:        manifestDigest,
+				VerifiedBytes: manifestBytes,
+			}},
+		},
+	}))
+	result, err := selection.NewWorkflow(resolver).Select(context.Background(), selection.Request{
+		Source: acquisition.TemplateSource{
+			Kind: acquisition.SourceKindOCIArtifact,
+			Reference: &sandboxtemplate.ImmutableRef{
+				Kind: sandboxtemplate.ReferenceKindOCIArtifact,
+				Ref:  "registry.test/hal/template:latest",
+			},
+		},
+		TrustMode: acquisition.TrustPolicyModeStrict,
+	})
+	if err == nil || !strings.Contains(err.Error(), string(selection.ErrorCodeSelectionRejected)) {
+		t.Fatalf("Select() error = %v, want selection_rejected", err)
+	}
+	if result.ManifestDigest != nil || result.RuntimeMetadata != nil {
+		t.Fatalf("conflicting pinned digest returned evidence: %#v", result)
+	}
+}
+
 func TestL9SelectionBindingRejectsRuntimeIdentityMismatch(t *testing.T) {
 	result := selection.Result{
 		ManifestDigest: &sandboxtemplate.DigestMetadata{

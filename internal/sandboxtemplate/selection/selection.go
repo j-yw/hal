@@ -83,6 +83,11 @@ func (w Workflow) Select(ctx context.Context, request Request) (Result, error) {
 	}
 
 	template := resolved.Template
+	if template.Metadata.Reference != nil &&
+		template.Metadata.Reference.Digest != nil &&
+		!digestEqual(template.Metadata.Reference.Digest, manifestDigest) {
+		return Result{}, rejected(ErrSelectionRejected)
+	}
 	template.Metadata.Reference = &sandboxtemplate.ImmutableRef{
 		Kind:   sandboxtemplate.ReferenceKindOCIArtifact,
 		Digest: cloneDigest(manifestDigest),
