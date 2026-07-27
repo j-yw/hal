@@ -97,6 +97,56 @@ func TestL9StaticReferenceValidationUsesStrictParserWithoutDependencies(t *testi
 	}
 }
 
+func TestL9StaticReferenceValidationNormalizesStandardDigestPinnedReference(t *testing.T) {
+	const digestValue = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	validated, err := registry.ValidateReference(sandboxtemplate.ImmutableRef{
+		Kind: sandboxtemplate.ReferenceKindOCIArtifact,
+		Ref:  "registry.example/hal/template@sha256:" + digestValue,
+	})
+	if err != nil {
+		t.Fatalf("ValidateReference() error = %v", err)
+	}
+	if validated.Authority != "registry.example" ||
+		validated.Reference.Ref != "registry.example/hal/template" ||
+		validated.Reference.Digest == nil ||
+		validated.Reference.Digest.Algorithm != sandboxtemplate.DigestAlgorithmSHA256 ||
+		validated.Reference.Digest.Value != digestValue {
+		t.Fatalf("validated digest reference = %#v", validated)
+	}
+}
+
+func TestL9StaticReferenceValidationRejectsAmbiguousOrMalformedInlineDigest(t *testing.T) {
+	for _, ref := range []string{
+		"registry.example/hal/template:latest@sha256:" + strings.Repeat("a", 64),
+		"registry.example/hal/template@SHA256:" + strings.Repeat("a", 64),
+		"registry.example/hal/template@sha512:" + strings.Repeat("a", 64),
+		"registry.example/hal/template@sha256:" + strings.Repeat("A", 64),
+		"registry.example/hal/template@sha256:short",
+		"registry.example/hal/template@sha256:" + strings.Repeat("a", 64) + "@sha256:" + strings.Repeat("b", 64),
+		"user@registry.example/hal/template:latest",
+		"registry.example/hal/template@sha256:" + strings.Repeat("a", 64) + "?token=secret",
+		"registry.example/hal/template@sha256:" + strings.Repeat("a", 64) + "#fragment",
+	} {
+		_, err := registry.ValidateReference(sandboxtemplate.ImmutableRef{
+			Kind: sandboxtemplate.ReferenceKindOCIArtifact,
+			Ref:  ref,
+		})
+		requireRegistryErrorCode(t, err, registry.ErrorCodeInvalidReference)
+		if strings.Contains(err.Error(), ref) {
+			t.Fatalf("validation error leaked reference %q", ref)
+		}
+	}
+	_, err := registry.ValidateReference(sandboxtemplate.ImmutableRef{
+		Kind: sandboxtemplate.ReferenceKindOCIArtifact,
+		Ref:  "registry.example/hal/template@sha256:" + strings.Repeat("a", 64),
+		Digest: &sandboxtemplate.DigestMetadata{
+			Algorithm: sandboxtemplate.DigestAlgorithmSHA256,
+			Value:     strings.Repeat("b", 64),
+		},
+	})
+	requireRegistryErrorCode(t, err, registry.ErrorCodeInvalidReference)
+}
+
 func TestL9RegistryOriginMustBeExactAllowlistedOrigin(t *testing.T) {
 	for _, ref := range []string{
 		"evil.example/hal/template:latest",

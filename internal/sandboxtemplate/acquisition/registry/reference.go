@@ -28,11 +28,12 @@ type parsedReference struct {
 	digest     string
 }
 
-// ReferenceValidation is the redaction-safe static classification of a valid
-// OCI template reference. It intentionally excludes the repository, selector,
-// digest, and original caller input.
+// ReferenceValidation is the static classification of a valid OCI template
+// reference. Reference is normalized into the existing split reference/digest
+// model and remains transient caller input; command code must not persist it.
 type ReferenceValidation struct {
 	Authority string
+	Reference sandboxtemplate.ImmutableRef
 }
 
 // ValidateReference strictly validates and statically classifies an OCI
@@ -43,7 +44,22 @@ func ValidateReference(reference sandboxtemplate.ImmutableRef) (ReferenceValidat
 	if err != nil {
 		return ReferenceValidation{}, err
 	}
-	return ReferenceValidation{Authority: parsed.authority}, nil
+	normalized := sandboxtemplate.ImmutableRef{
+		Kind: sandboxtemplate.ReferenceKindOCIArtifact,
+		Ref:  parsed.authority + "/" + parsed.repository,
+	}
+	if parsed.tagged {
+		normalized.Ref += ":" + parsed.selector
+	} else {
+		normalized.Digest = &sandboxtemplate.DigestMetadata{
+			Algorithm: sandboxtemplate.DigestAlgorithmSHA256,
+			Value:     strings.TrimPrefix(parsed.digest, "sha256:"),
+		}
+	}
+	return ReferenceValidation{
+		Authority: parsed.authority,
+		Reference: normalized,
+	}, nil
 }
 
 func parseReferenceSyntax(reference sandboxtemplate.ImmutableRef) (parsedReference, error) {
@@ -55,7 +71,7 @@ func parseReferenceSyntax(reference sandboxtemplate.ImmutableRef) (parsedReferen
 	if raw == "" || strings.TrimSpace(raw) != raw || raw[:authorityLength] != strings.ToLower(raw[:authorityLength]) {
 		return parsedReference{}, coded(ErrorCodeInvalidReference, nil)
 	}
-	if strings.ContainsAny(raw, `\?#@%`) || strings.Contains(raw, "://") {
+	if strings.ContainsAny(raw, `\?#%`) || strings.Contains(raw, "://") {
 		return parsedReference{}, coded(ErrorCodeInvalidReference, nil)
 	}
 	for _, char := range raw {
@@ -83,7 +99,24 @@ func parseReferenceSyntax(reference sandboxtemplate.ImmutableRef) (parsedReferen
 	}
 
 	result := parsedReference{authority: authority}
-	if reference.Digest != nil {
+	inlineDigestAt := strings.IndexByte(remainder, '@')
+	if inlineDigestAt >= 0 {
+		if strings.Count(remainder, "@") != 1 || reference.Digest != nil {
+			return parsedReference{}, coded(ErrorCodeInvalidReference, nil)
+		}
+		repository := remainder[:inlineDigestAt]
+		digest := remainder[inlineDigestAt+1:]
+		lastSlash := strings.LastIndexByte(repository, '/')
+		if repository == "" ||
+			strings.LastIndexByte(repository, ':') > lastSlash ||
+			!strings.HasPrefix(digest, "sha256:") ||
+			!sha256Pattern.MatchString(strings.TrimPrefix(digest, "sha256:")) {
+			return parsedReference{}, coded(ErrorCodeInvalidReference, nil)
+		}
+		result.repository = repository
+		result.digest = digest
+		result.selector = digest
+	} else if reference.Digest != nil {
 		if reference.Digest.Algorithm != sandboxtemplate.DigestAlgorithmSHA256 ||
 			!sha256Pattern.MatchString(reference.Digest.Value) {
 			return parsedReference{}, coded(ErrorCodeInvalidReference, nil)

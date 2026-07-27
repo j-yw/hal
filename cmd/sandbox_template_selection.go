@@ -73,13 +73,14 @@ func prepareSandboxTemplateSelection(ctx context.Context, request sandboxTemplat
 	if !flags.ReferenceChanged {
 		return sandboxTemplateSelectionResult{}, nil
 	}
-	reference := sandboxtemplate.ImmutableRef{
+	validated, err := registry.ValidateReference(sandboxtemplate.ImmutableRef{
 		Kind: sandboxtemplate.ReferenceKindOCIArtifact,
 		Ref:  flags.Reference,
-	}
-	if _, err := registry.ValidateReference(reference); err != nil {
+	})
+	if err != nil {
 		return sandboxTemplateSelectionResult{}, err
 	}
+	reference := validated.Reference
 	mode := acquisition.TrustPolicyModeStrict
 	if flags.TrustChanged {
 		mode = acquisition.TrustPolicyMode(flags.TrustMode)

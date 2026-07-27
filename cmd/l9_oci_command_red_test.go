@@ -164,6 +164,9 @@ func TestL9MalformedTemplateReferenceFailsBeforeAllSelectionDependencies(t *test
 			"registry.example/hal/template:bad tag",
 			" https://registry.example/hal/template:latest ",
 			"registry.example:99999/hal/template:latest",
+			"registry.example/hal/template:latest@sha256:" + strings.Repeat("a", 64),
+			"registry.example/hal/template@SHA256:" + strings.Repeat("a", 64),
+			"registry.example/hal/template@sha256:short",
 		} {
 			_, err := prepareSandboxTemplateSelection(context.Background(), sandboxTemplateSelectionRequest{
 				Command: "run",
@@ -181,6 +184,35 @@ func TestL9MalformedTemplateReferenceFailsBeforeAllSelectionDependencies(t *test
 				t.Fatalf("validation error leaked reference %q", ref)
 			}
 		}
+	}
+}
+
+func TestL9DigestPinnedCLIReferenceReachesSelectionAsNormalizedImmutableInput(t *testing.T) {
+	const digestValue = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	workflow := &sandboxTemplateWorkflowStub{result: l9CommandSelectionResult(strings.Repeat("c", 64))}
+	result, err := prepareSandboxTemplateSelection(context.Background(), sandboxTemplateSelectionRequest{
+		Command: "run",
+		Flags: sandboxTemplateFlagValues{
+			Sandbox:          true,
+			Reference:        "registry.example/hal/template@sha256:" + digestValue,
+			ReferenceChanged: true,
+		},
+	}, sandboxTemplateSelectionDeps{
+		NewWorkflow: func() (sandboxTemplateSelectionWorkflow, error) { return workflow, nil },
+	})
+	if err != nil {
+		t.Fatalf("prepare digest-pinned selection error = %v", err)
+	}
+	if len(workflow.requests) != 1 ||
+		workflow.requests[0].Source.Reference == nil ||
+		workflow.requests[0].Source.Reference.Ref != "registry.example/hal/template" ||
+		workflow.requests[0].Source.Reference.Digest == nil ||
+		workflow.requests[0].Source.Reference.Digest.Algorithm != sandboxtemplate.DigestAlgorithmSHA256 ||
+		workflow.requests[0].Source.Reference.Digest.Value != digestValue {
+		t.Fatalf("selection request = %#v", workflow.requests)
+	}
+	if result.Reference != "" || result.Selection == nil {
+		t.Fatalf("selection retained caller digest reference: %#v", result)
 	}
 }
 
@@ -1072,7 +1104,7 @@ func TestL9ActualPathsRejectRuntimeReportedImageMismatchBeforeProviderAndProject
 }
 
 func TestL9ActualDryRunPathsDoNotConstructSelectionDependencies(t *testing.T) {
-	const referenceCanary = "registry.example/private-preview-canary:latest"
+	referenceCanary := "registry.example/private-preview-canary@sha256:" + strings.Repeat("6", 64)
 	panicDeps := sandboxTemplateSelectionDeps{
 		ReadCredentialEnvironment: func(string) (string, bool) { panic("credential environment read") },
 		NewCache:                  func() (registryCache, error) { panic("cache constructed") },
@@ -1446,10 +1478,12 @@ func TestL9ExactManifestDigestPropagatesIntoExecutionSandboxAndRuntimeBindings(t
 }
 
 type sandboxTemplateWorkflowStub struct {
-	result selection.Result
-	err    error
+	result   selection.Result
+	err      error
+	requests []selection.Request
 }
 
-func (s *sandboxTemplateWorkflowStub) Select(context.Context, selection.Request) (selection.Result, error) {
+func (s *sandboxTemplateWorkflowStub) Select(_ context.Context, request selection.Request) (selection.Result, error) {
+	s.requests = append(s.requests, request)
 	return s.result, s.err
 }

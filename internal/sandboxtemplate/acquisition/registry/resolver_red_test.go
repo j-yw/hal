@@ -85,11 +85,17 @@ func TestL9RegistryResolverDigestPinnedGETMatchesRequestedBytes(t *testing.T) {
 		return registryResponse(http.StatusNotFound, "", nil, nil), nil
 	})
 	resolver := mustRegistryResolver(t, client, nil)
-	result, err := resolver.ResolveOCIArtifact(context.Background(), digestRequest("registry.example/hal/template", fixture.manifest))
-	if err != nil {
-		t.Fatalf("ResolveOCIArtifact() error = %v", err)
+	requests := []acquisition.OCIArtifactResolveRequest{
+		digestRequest("registry.example/hal/template", fixture.manifest),
+		tagRequest("registry.example/hal/template@" + fixture.manifestDigest),
 	}
-	requireDigest(t, result.TemplateArtifactDigest, fixture.manifestDigest)
+	for _, request := range requests {
+		result, err := resolver.ResolveOCIArtifact(context.Background(), request)
+		if err != nil {
+			t.Fatalf("ResolveOCIArtifact() error = %v", err)
+		}
+		requireDigest(t, result.TemplateArtifactDigest, fixture.manifestDigest)
+	}
 }
 
 func TestL9RegistryResolverSeparatesHeaderAndRequestedDigestMismatch(t *testing.T) {
