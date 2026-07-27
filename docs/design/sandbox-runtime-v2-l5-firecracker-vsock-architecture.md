@@ -64,7 +64,8 @@ The build entry point consumes:
 Network fetch is a separate explicit step. Every official download is accepted
 only after its immutable SHA-256 lock matches, and the Buildroot source must
 also pass its pinned signed-release verification. The offline build executes
-inside a real no-network namespace/container with
+inside a real no-network namespace/container after preflighting the exact
+locally installed build-image digest and disabling daemon pulls. It uses
 `BR2_PRIMARY_SITE_ONLY=y`, `BR2_DOWNLOAD_FORCE_CHECK_HASHES=y`, no ccache, and a
 fresh host/staging/target/download tree. It consumes only the verified source
 archive and exact download manifest, refuses a missing, extra, renamed, or
@@ -78,7 +79,12 @@ digest-mismatched dependency, builds a static
 - `SHA256SUMS`.
 
 The guest binary uses `-trimpath`, `-buildvcs=false`, an empty Go build ID, and
-no ambient module download. The kernel build fixes `KBUILD_BUILD_USER`,
+no ambient module download. Canonical cache/output roots require private
+owner-controlled mode-`0700` parents. The exact cache set includes hidden
+entries, and its expected host UID and contents are rechecked inside the
+root-run container. Guest Go compilation uses `GOPROXY=off`, `GOSUMDB=off`,
+and `-mod=readonly` after the exact local module artifacts are populated.
+The kernel build fixes `KBUILD_BUILD_USER`,
 `KBUILD_BUILD_HOST`, `KBUILD_BUILD_TIMESTAMP`, and `KBUILD_BUILD_VERSION`.
 The kernel has `CONFIG_MODULES=n` and `CONFIG_HW_RANDOM_VIRTIO=y`.
 Filesystem construction uses a fixed ext4 UUID, label, inode count, block

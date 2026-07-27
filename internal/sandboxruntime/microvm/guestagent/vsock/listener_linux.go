@@ -22,8 +22,10 @@ type linuxListener struct {
 }
 
 type linuxConnection struct {
-	file *os.File
-	fd   int
+	file      *os.File
+	fd        int
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // ListenLinux binds the fixed production guest-agent AF_VSOCK port.
@@ -66,10 +68,6 @@ func (listener *linuxListener) Accept(ctx context.Context) (io.ReadWriteCloser, 
 		}
 		fd, _, err := unix.Accept4(listenerFD, unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK)
 		if err == nil {
-			if err := unix.SetNonblock(fd, false); err != nil {
-				_ = unix.Close(fd)
-				return nil, errors.New("guest AF_VSOCK stream setup failed")
-			}
 			return &linuxConnection{
 				file: os.NewFile(uintptr(fd), "guest-vsock-stream"),
 				fd:   fd,
@@ -116,7 +114,7 @@ func (connection *linuxConnection) Write(value []byte) (int, error) {
 }
 
 func (connection *linuxConnection) CloseWrite() error {
-	if connection == nil || connection.fd < 0 {
+	if connection == nil {
 		return nil
 	}
 	return unix.Shutdown(connection.fd, unix.SHUT_WR)
@@ -126,8 +124,8 @@ func (connection *linuxConnection) Close() error {
 	if connection == nil || connection.file == nil {
 		return nil
 	}
-	err := connection.file.Close()
-	connection.fd = -1
-	connection.file = nil
-	return err
+	connection.closeOnce.Do(func() {
+		connection.closeErr = connection.file.Close()
+	})
+	return connection.closeErr
 }

@@ -31,17 +31,60 @@ done
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+for path in "$cache" "$output"; do
+	[[ "$(realpath -m -- "$path")" == "$path" ]] || {
+		echo "cache and output must be canonical absolute paths" >&2
+		exit 1
+	}
+done
 [[ "$cache" != "$repo_root"/* && "$output" != "$repo_root"/* ]] || {
 	echo "cache and output must be outside the source tree" >&2
+	exit 1
+}
+[[ "$cache" != "$output" ]] || {
+	echo "cache and output must be distinct" >&2
 	exit 1
 }
 [[ -z "$(git -C "$repo_root" status --porcelain --untracked-files=all)" ]] || {
 	echo "L5 builds require a clean source tree" >&2
 	exit 1
 }
-"$script_dir/verify-cache.sh" --manifest "$script_dir/cache.manifest" --cache "$cache"
+current_uid=$(id -u)
+[[ -d "$cache" && ! -L "$cache" && "$(realpath -e -- "$cache")" == "$cache" ]] || {
+	echo "cache must be a canonical real directory" >&2
+	exit 1
+}
+cache_parent=$(dirname -- "$cache")
+[[ -d "$cache_parent" && ! -L "$cache_parent" &&
+	"$(realpath -e -- "$cache_parent")" == "$cache_parent" &&
+	"$(stat -c %u "$cache_parent")" == "$current_uid" &&
+	"$(stat -c %a "$cache_parent")" == 700 ]] || {
+	echo "cache parent must be a canonical private directory" >&2
+	exit 1
+}
+"$script_dir/verify-cache.sh" \
+	--manifest "$script_dir/cache.manifest" \
+	--cache "$cache" \
+	--expected-owner "$current_uid"
 
-mkdir -p -- "$output"
+output_parent=$(dirname -- "$output")
+[[ -d "$output_parent" && ! -L "$output_parent" &&
+	"$(realpath -e -- "$output_parent")" == "$output_parent" &&
+	"$(stat -c %u "$output_parent")" == "$current_uid" &&
+	"$(stat -c %a "$output_parent")" == 700 ]] || {
+	echo "output parent must be a canonical private directory" >&2
+	exit 1
+}
+if [[ ! -e "$output" ]]; then
+	mkdir -m 0700 -- "$output"
+fi
+[[ -d "$output" && ! -L "$output" &&
+	"$(realpath -e -- "$output")" == "$output" &&
+	"$(stat -c %u "$output")" == "$current_uid" &&
+	"$(stat -c %a "$output")" == 700 ]] || {
+	echo "output must be a canonical private directory" >&2
+	exit 1
+}
 [[ -z "$(find "$output" -mindepth 1 -maxdepth 1 -print -quit)" ]] || {
 	echo "output directory must be empty" >&2
 	exit 1
@@ -58,14 +101,25 @@ source_revision=$(git -C "$repo_root" rev-parse HEAD)
 source_tree=tree-$(git -C "$repo_root" rev-parse 'HEAD^{tree}')
 source_date_epoch=$(git -C "$repo_root" show -s --format=%ct HEAD)
 jobs=${HAL_L5_JOBS:-$(nproc)}
+local_image=$(docker image inspect --format '{{join .RepoDigests "\n"}}' "$build_image" 2>/dev/null) || {
+	echo "pinned L5 build image is not installed locally" >&2
+	exit 1
+}
+grep -Fxq "$build_image" <<<"$local_image" || {
+	echo "local L5 build image digest does not match the lock" >&2
+	exit 1
+}
 
 docker run --rm \
+	--pull=never \
+	--user=0:0 \
 	--platform=linux/amd64 \
 	--network=none \
 	--env "SOURCE_DATE_EPOCH=$source_date_epoch" \
 	--env "SOURCE_REVISION=$source_revision" \
 	--env "SOURCE_TREE=$source_tree" \
 	--env "HAL_L5_JOBS=$jobs" \
+	--env "EXPECTED_CACHE_UID=$current_uid" \
 	--mount "type=bind,src=$repo_root,dst=/src,readonly" \
 	--mount "type=bind,src=$cache,dst=/cache,readonly" \
 	--mount "type=bind,src=$build_root,dst=/build/output" \

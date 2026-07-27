@@ -242,6 +242,10 @@ func TestL5CacheManifestVerifierRejectsContainmentAndSetViolations(t *testing.T)
 			t.Helper()
 			l5WriteTestFile(t, filepath.Join(cache, "extra.tar"), []byte("extra"))
 		}},
+		{name: "hidden extra", mutate: func(t *testing.T, cache, _ string) {
+			t.Helper()
+			l5WriteTestFile(t, filepath.Join(cache, ".hidden"), []byte("extra"))
+		}},
 		{name: "symlink", mutate: func(t *testing.T, cache, _ string) {
 			t.Helper()
 			if err := os.Remove(filepath.Join(cache, "dep-b.tar")); err != nil {
@@ -292,6 +296,9 @@ func TestL5CacheManifestVerifierRejectsContainmentAndSetViolations(t *testing.T)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cache := t.TempDir()
+			if err := os.Chmod(cache, 0o700); err != nil {
+				t.Fatalf("Chmod(cache) error = %v", err)
+			}
 			a := []byte("cache-a")
 			b := []byte("cache-b")
 			l5WriteTestFile(t, filepath.Join(cache, "dep-a.tar"), a)
@@ -332,6 +339,8 @@ func TestL5BuildScriptsLockOfflineReproducibleContainerOrchestration(t *testing.
 		},
 		"build.sh": {
 			l5BuildImage,
+			"docker image inspect",
+			"--pull=never",
 			"--platform=linux/amd64",
 			"--network=none",
 			"/src",
@@ -352,6 +361,7 @@ func TestL5BuildScriptsLockOfflineReproducibleContainerOrchestration(t *testing.
 			"GOPROXY=off",
 			"GOSUMDB=off",
 			"CGO_ENABLED=0",
+			"-mod=readonly",
 			"-trimpath",
 			"-buildvcs=false",
 			"-ldflags=-buildid=",
@@ -407,6 +417,24 @@ func TestL5BuildScriptsLockOfflineReproducibleContainerOrchestration(t *testing.
 				}
 			}
 		})
+	}
+}
+
+func TestL5BuildRootsAndCacheUseCanonicalPrivateTrustBoundaries(t *testing.T) {
+	root := filepath.Join("..", "tools", "microvm", "l5")
+	for _, name := range []string{"fetch.sh", "build.sh", "verify-reproducible.sh"} {
+		source := string(l5ReadRequiredFile(t, filepath.Join(root, name)))
+		for _, marker := range []string{"realpath", "stat -c %u", "stat -c %a", "0700"} {
+			if !strings.Contains(source, marker) {
+				t.Errorf("%s missing private filesystem trust marker %q", name, marker)
+			}
+		}
+	}
+	verifier := string(l5ReadRequiredFile(t, filepath.Join(root, "verify-cache.sh")))
+	for _, marker := range []string{"--expected-owner", "mode 0700", "-mindepth 1", "! -type f"} {
+		if !strings.Contains(verifier, marker) {
+			t.Errorf("verify-cache.sh missing exact-set trust marker %q", marker)
+		}
 	}
 }
 

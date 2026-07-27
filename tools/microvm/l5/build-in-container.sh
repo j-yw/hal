@@ -21,7 +21,8 @@ export E2FSPROGS_FAKE_TIME=$SOURCE_DATE_EPOCH
 
 /src/tools/microvm/l5/verify-cache.sh \
 	--manifest /src/tools/microvm/l5/cache.manifest \
-	--cache "$cache_root"
+	--cache "$cache_root" \
+	--expected-owner "$EXPECTED_CACHE_UID"
 grep -Fq "lazy_itable_init=0" /src/tools/microvm/l5/buildroot.config
 grep -Fq "lazy_journal_init=0" /src/tools/microvm/l5/buildroot.config
 
@@ -43,9 +44,9 @@ export GOOS=linux
 export GOARCH=amd64
 GOPROXY=file:///build/goproxy go -C "$source_root" mod download golang.org/x/sys
 export GOPROXY=off
-go -C "$source_root" build -mod=mod -trimpath -buildvcs=false -ldflags=-buildid= \
+go -C "$source_root" build -mod=readonly -trimpath -buildvcs=false -ldflags=-buildid= \
 	-o /build/guest-bin/hal-guest-agent ./cmd/hal-guest-agent
-go -C "$source_root" build -mod=mod -trimpath -buildvcs=false -ldflags=-buildid= \
+go -C "$source_root" build -mod=readonly -trimpath -buildvcs=false -ldflags=-buildid= \
 	-o /build/guest-bin/hal-init ./cmd/hal-guest-init
 
 make -C "$buildroot_source" \

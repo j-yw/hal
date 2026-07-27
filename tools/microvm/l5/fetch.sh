@@ -25,22 +25,35 @@ while (($#)); do
 	esac
 done
 [[ "$cache" == /* && "$cache" != *"/../"* && "$cache" != */.. ]] || usage
+[[ "$(realpath -m -- "$cache")" == "$cache" ]] || usage
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 lock=$script_dir/sources.lock.json
 manifest=$script_dir/cache.manifest
 verifier=$script_dir/verify-cache.sh
 
-if [[ -d "$cache" ]] && [[ -n "$(find "$cache" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
-	"$verifier" --manifest "$manifest" --cache "$cache"
-	exit 0
-fi
-[[ ! -e "$cache" || -d "$cache" ]] || {
-	echo "cache target must be a directory" >&2
+parent=$(dirname -- "$cache")
+current_uid=$(id -u)
+[[ -d "$parent" && ! -L "$parent" &&
+	"$(realpath -e -- "$parent")" == "$parent" &&
+	"$(stat -c %u "$parent")" == "$current_uid" &&
+	"$(stat -c %a "$parent")" == 700 ]] || {
+	echo "cache parent must be a canonical private directory" >&2
 	exit 1
 }
-parent=$(dirname -- "$cache")
-mkdir -p -- "$parent"
+if [[ -e "$cache" || -L "$cache" ]]; then
+	[[ -d "$cache" && ! -L "$cache" &&
+		"$(realpath -e -- "$cache")" == "$cache" &&
+		"$(stat -c %u "$cache")" == "$current_uid" &&
+		"$(stat -c %a "$cache")" == 700 ]] || {
+		echo "cache target must be a canonical private directory" >&2
+		exit 1
+	}
+	if [[ -n "$(find "$cache" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+		"$verifier" --manifest "$manifest" --cache "$cache" --expected-owner "$current_uid"
+		exit 0
+	fi
+fi
 stage=$(mktemp -d "$parent/.hal-l5-fetch.XXXXXXXX")
 metadata=$(mktemp -d "$parent/.hal-l5-metadata.XXXXXXXX")
 cleanup() {
@@ -77,7 +90,7 @@ while IFS=$'\t' read -r filename url expected_size expected_digest; do
 	}
 done
 
-"$verifier" --manifest "$manifest" --cache "$stage"
+"$verifier" --manifest "$manifest" --cache "$stage" --expected-owner "$current_uid"
 
 signing_key_url=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["buildroot"]["signingKeyUrl"])' "$lock")
 signature_url=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["buildroot"]["signatureUrl"])' "$lock")
@@ -117,4 +130,4 @@ if [[ -d "$cache" ]]; then
 fi
 mv -- "$stage" "$cache"
 stage=
-"$verifier" --manifest "$manifest" --cache "$cache"
+"$verifier" --manifest "$manifest" --cache "$cache" --expected-owner "$current_uid"

@@ -42,7 +42,7 @@ cleanup() {
 trap cleanup EXIT
 build_a=$scratch/build-a
 build_b=$scratch/build-b
-mkdir -p "$build_a" "$build_b"
+mkdir -m 0700 "$build_a" "$build_b"
 
 "$script_dir/build.sh" --cache "$cache" --output "$build_a"
 "$script_dir/build.sh" --cache "$cache" --output "$build_b"
@@ -56,7 +56,26 @@ if grep -aRF -- "$build_a" "$build_a" "$build_b" >/dev/null ||
 	exit 1
 fi
 
-mkdir -p "$output"
+current_uid=$(id -u)
+[[ "$(realpath -m -- "$output")" == "$output" ]] || usage
+output_parent=$(dirname -- "$output")
+[[ -d "$output_parent" && ! -L "$output_parent" &&
+	"$(realpath -e -- "$output_parent")" == "$output_parent" &&
+	"$(stat -c %u "$output_parent")" == "$current_uid" &&
+	"$(stat -c %a "$output_parent")" == 700 ]] || {
+	echo "output parent must be a canonical private directory" >&2
+	exit 1
+}
+if [[ ! -e "$output" ]]; then
+	mkdir -m 0700 -- "$output"
+fi
+[[ -d "$output" && ! -L "$output" &&
+	"$(realpath -e -- "$output")" == "$output" &&
+	"$(stat -c %u "$output")" == "$current_uid" &&
+	"$(stat -c %a "$output")" == 700 ]] || {
+	echo "output must be a canonical private directory" >&2
+	exit 1
+}
 [[ -z "$(find "$output" -mindepth 1 -maxdepth 1 -print -quit)" ]] || {
 	echo "output directory must be empty" >&2
 	exit 1

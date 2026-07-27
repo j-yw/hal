@@ -77,6 +77,12 @@ identity, deterministic Go/kernel/ext4 controls, `CONFIG_MODULES=n`,
 `CONFIG_HW_RANDOM_VIRTIO=y`, and `e2fsck -fn`. It rejects missing and extra
 downloads under a real no-network boundary with `BR2_PRIMARY_SITE_ONLY`,
 `BR2_DOWNLOAD_FORCE_CHECK_HASHES`, and no ccache.
+The build preflights the exact local container image and disables daemon
+pulls, so a missing image cannot be satisfied during the offline step.
+Canonical cache/output roots require private mode-`0700` ownership; cache
+verification includes hidden entries and repeats inside the root-run
+container against the expected host UID. Guest Go compilation uses the exact
+cached module artifacts with `GOPROXY=off` and `-mod=readonly`.
 
 The e2fsprogs source evidence is specifically the Buildroot-selected
 `e2fsprogs-1.47.4.tar.xz` archive. The upstream signed checksum record maps
