@@ -17,9 +17,18 @@ type sandboxDryRunPreview struct {
 	Target                 sandboxDryRunTargetIntent    `json:"target"`
 	Workspace              sandboxDryRunWorkspaceIntent `json:"workspace"`
 	Security               sandboxDryRunSecurityIntent  `json:"security"`
+	Template               *sandboxDryRunTemplateIntent `json:"template,omitempty"`
 	PostExecution          sandboxDryRunPostExecution   `json:"postExecution"`
 	UnresolvedRequirements []string                     `json:"unresolvedRequirements"`
 	autoEntryMode          string
+}
+
+type sandboxDryRunTemplateIntent struct {
+	SourceKind string `json:"sourceKind"`
+	TrustMode  string `json:"trustMode"`
+	Requested  bool   `json:"requested"`
+	Resolved   bool   `json:"resolved"`
+	Active     bool   `json:"active"`
 }
 
 type sandboxDryRunTargetIntent struct {
@@ -59,6 +68,7 @@ func newSandboxDryRunPreview(
 	baseBranch string,
 	syncOut sandboxSyncOutOptions,
 	security sandbox.SecurityEvaluationRequest,
+	templateSelection sandboxTemplateSelectionResult,
 	autoEntryMode string,
 ) sandboxDryRunPreview {
 	sandboxName = sanitizeSandboxDryRunIntentValue(sandboxName)
@@ -84,7 +94,7 @@ func newSandboxDryRunPreview(
 		securityIntent.NetworkRuleCount = len(security.RequestedNetworkPolicyIntent.Rules)
 	}
 
-	return sandboxDryRunPreview{
+	preview := sandboxDryRunPreview{
 		Purpose:          purpose,
 		ResourcesCreated: false,
 		Target: sandboxDryRunTargetIntent{
@@ -113,6 +123,17 @@ func newSandboxDryRunPreview(
 		},
 		autoEntryMode: autoEntryMode,
 	}
+	if templateSelection.Requested {
+		preview.Template = &sandboxDryRunTemplateIntent{
+			SourceKind: "oci_artifact",
+			TrustMode:  string(templateSelection.TrustMode),
+			Requested:  true,
+			Resolved:   templateSelection.Resolved,
+			Active:     templateSelection.Active,
+		}
+		preview.UnresolvedRequirements = append(preview.UnresolvedRequirements, "template_acquisition")
+	}
+	return preview
 }
 
 func renderSandboxDryRunPreview(out io.Writer, jsonMode bool, preview sandboxDryRunPreview) error {
@@ -183,6 +204,18 @@ func renderSandboxDryRunPreview(out io.Writer, jsonMode bool, preview sandboxDry
 		preview.Security.Active,
 	); err != nil {
 		return fmt.Errorf("write sandbox dry-run preview: %w", err)
+	}
+	if preview.Template != nil {
+		if _, err := fmt.Fprintf(out,
+			"Template intent: sourceKind=%s, trustMode=%s, requested=%t, resolved=%t, active=%t\n",
+			preview.Template.SourceKind,
+			preview.Template.TrustMode,
+			preview.Template.Requested,
+			preview.Template.Resolved,
+			preview.Template.Active,
+		); err != nil {
+			return fmt.Errorf("write sandbox dry-run preview: %w", err)
+		}
 	}
 	if _, err := fmt.Fprintf(out,
 		"Post-execution intent: syncOut=%t, apply=%t, resolution=%s\n",

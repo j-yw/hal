@@ -1835,7 +1835,7 @@ func TestRunSandboxCreate_CountOneIsSingle(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runSandboxCreateWithDepsAndCountOption(dir, "sb", 1, true, false, "", "", nil, autoShutdownOpts{}, &out, mock, nil)
+	err := runSandboxCreateWithDepsAndCountOption(dir, "sb", 1, true, false, "", "", nil, autoShutdownOpts{}, &out, mock, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1871,7 +1871,7 @@ func TestRunSandboxCreate_CountZeroExplicitReturnsError(t *testing.T) {
 
 	mock := &mockProvider{}
 
-	err := runSandboxCreateWithDepsAndCountOption(dir, "sb", 0, true, false, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil)
+	err := runSandboxCreateWithDepsAndCountOption(dir, "sb", 0, true, false, "", "", nil, autoShutdownOpts{}, io.Discard, mock, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -2836,7 +2836,7 @@ func TestRunSingleCreate_RegistrationFailureRollsBackCreatedSandbox(t *testing.T
 	}
 	sandboxCfg := &compound.SandboxConfig{Provider: "hetzner", Env: map[string]string{}}
 
-	err := runSingleCreate(dir, "sb", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
+	err := runSingleCreate(dir, "sb", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -2892,7 +2892,7 @@ func TestRunSingleCreate_IDGenerationFailureSkipsProviderCreate(t *testing.T) {
 	}
 	sandboxCfg := &compound.SandboxConfig{Provider: "hetzner", Env: map[string]string{}}
 
-	err := runSingleCreate(dir, "sb", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
+	err := runSingleCreate(dir, "sb", false, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -2940,7 +2940,7 @@ func TestRunSingleCreate_IDGenerationFailureSkipsForceDelete(t *testing.T) {
 	}
 	sandboxCfg := &compound.SandboxConfig{Provider: "hetzner", Env: map[string]string{}}
 
-	err := runSingleCreate(dir, "sb", true, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard)
+	err := runSingleCreate(dir, "sb", true, mock, sandboxCfg, map[string]string{}, true, 48, "", "", filepath.Join(dir, template.HalDir), io.Discard, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

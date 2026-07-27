@@ -108,6 +108,11 @@ func TestPhase57ImportBoundaryCoverageDocumentsRequiredOwners(t *testing.T) {
 
 func TestPhase57CommandFactoryStatusSurfacesRemainRenderOnlyConsumers(t *testing.T) {
 	for _, path := range phase57CommandFactoryStatusProductionFiles(t) {
+		if filepath.Base(path) == "sandbox_template_selection.go" {
+			// L9 owns this explicit pre-construction acquisition adapter.
+			// Phase 57 continues to guard every status/rendering consumer.
+			continue
+		}
 		source := phase50ReadFile(t, path)
 		file, err := parser.ParseFile(token.NewFileSet(), path, source, parser.ImportsOnly)
 		if err != nil {

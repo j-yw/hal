@@ -67,6 +67,36 @@ func TestL9StrictReferenceParsingRejectsAmbiguousOrUnsafeInput(t *testing.T) {
 	}
 }
 
+func TestL9StaticReferenceValidationUsesStrictParserWithoutDependencies(t *testing.T) {
+	validated, err := registry.ValidateReference(sandboxtemplate.ImmutableRef{
+		Kind: sandboxtemplate.ReferenceKindOCIArtifact,
+		Ref:  "registry.example/hal/template:latest",
+	})
+	if err != nil {
+		t.Fatalf("ValidateReference() error = %v", err)
+	}
+	if validated.Authority != "registry.example" {
+		t.Fatalf("ValidateReference() authority = %q", validated.Authority)
+	}
+	for _, ref := range []string{
+		" https://registry.example/hal/template:latest ",
+		"registry.example/hal/../template:latest",
+		"registry.example/hal/template",
+		"registry.example/hal/template:bad tag",
+		"REGISTRY.example/hal/template:latest",
+		"registry.example:99999/hal/template:latest",
+	} {
+		_, validateErr := registry.ValidateReference(sandboxtemplate.ImmutableRef{
+			Kind: sandboxtemplate.ReferenceKindOCIArtifact,
+			Ref:  ref,
+		})
+		requireRegistryErrorCode(t, validateErr, registry.ErrorCodeInvalidReference)
+		if strings.Contains(validateErr.Error(), ref) {
+			t.Fatalf("validation error leaked caller reference %q", ref)
+		}
+	}
+}
+
 func TestL9RegistryOriginMustBeExactAllowlistedOrigin(t *testing.T) {
 	for _, ref := range []string{
 		"evil.example/hal/template:latest",

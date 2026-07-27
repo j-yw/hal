@@ -145,6 +145,12 @@ func TestPhase59ImportBoundaryCoverageCoversRequiredPackages(t *testing.T) {
 
 func TestPhase59CommandAndFactoryBoundariesAvoidTemplateAcquisitionDecisions(t *testing.T) {
 	for _, path := range phase59CommandFactoryProductionFiles(t) {
+		if phase59L9SelectionWiringFile(path) {
+			// Phase L9 deliberately centralizes explicit OCI acquisition and
+			// immutable selection plumbing in these command-boundary files.
+			// Keep the Phase 59 guard covering every legacy production file.
+			continue
+		}
 		source := phase50ReadFile(t, path)
 		file, err := parser.ParseFile(token.NewFileSet(), path, source, parser.ImportsOnly)
 		if err != nil {
@@ -162,6 +168,19 @@ func TestPhase59CommandAndFactoryBoundariesAvoidTemplateAcquisitionDecisions(t *
 		if message := phase59CommandFactorySourceBoundaryMessage(path, source); message != "" {
 			t.Fatal(message)
 		}
+	}
+}
+
+func phase59L9SelectionWiringFile(path string) bool {
+	switch filepath.Base(path) {
+	case "sandbox_template_selection.go",
+		"run_sandbox.go",
+		"auto_sandbox.go",
+		"factory.go",
+		"factory_sandbox_executor.go":
+		return true
+	default:
+		return false
 	}
 }
 

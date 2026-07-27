@@ -24,14 +24,18 @@ import (
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxtemplate/selection"
 )
 
 type factorySandboxProvisionRequest struct {
-	ProjectDir string
-	Name       string
-	BranchName string
-	Repo       string
-	Out        io.Writer
+	ProjectDir             string
+	Name                   string
+	BranchName             string
+	Repo                   string
+	TemplateRuntimeDriver  string
+	TemplateIsolationLevel string
+	TemplateLock           *sandbox.SandboxTemplateLockMetadata
+	Out                    io.Writer
 }
 
 type factorySandboxCleanupRequest struct {
@@ -61,6 +65,7 @@ type factorySandboxExecutorRequest struct {
 	RemoteOutput                 io.Writer
 	BeforeCleanup                func(context.Context, factory.RunRecord) error
 	DeferSuccessCleanup          bool
+	TemplateSelection            *selection.Result
 }
 
 type factorySandboxExecutorDeps struct {
@@ -397,6 +402,9 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			return resolved, err
 		},
 		OnTargetReady: func(_ context.Context, ready *sandbox.SandboxState) error {
+			if _, err := bindSelectedTemplateToSandboxTarget(req.TemplateSelection, record.RunID, ready); err != nil {
+				return err
+			}
 			target = ready
 			if err := persistSandboxCommandSelectedState(sandboxCommandStatePersistenceRequest{
 				SandboxHostID:  req.SandboxHostID,
@@ -701,6 +709,9 @@ func resolveFactorySandboxTarget(ctx context.Context, req factorySandboxExecutor
 			Repository:                provisionRepo,
 			Branch:                    record.BranchName,
 			ProvisionRepository:       provisionRepo,
+			TemplateRuntimeDriver:     templateSelectionRuntimeDriver(req.TemplateSelection),
+			TemplateIsolationLevel:    templateSelectionIsolationLevel(req.TemplateSelection),
+			TemplateLock:              selectedTemplateConstructionLock(req.TemplateSelection),
 			LoadContext:               "factory sandbox",
 			Out:                       req.RemoteOutput,
 			WrapProvisionFailure:      true,
@@ -2969,7 +2980,29 @@ func provisionFactorySandbox(ctx context.Context, req factorySandboxProvisionReq
 	if name == "" {
 		name = sandbox.SandboxNameFromBranch(req.BranchName)
 	}
-	if err := runSandboxCreate(req.ProjectDir, name, 1, false, false, "", req.Repo, nil, autoShutdownOpts{}, req.Out, nil); err != nil {
+	templateRuntime := &sandbox.SandboxRuntimeState{
+		Driver:         strings.TrimSpace(req.TemplateRuntimeDriver),
+		IsolationLevel: strings.TrimSpace(req.TemplateIsolationLevel),
+		TemplateLock:   sandbox.SanitizeSandboxTemplateLockMetadata(req.TemplateLock),
+	}
+	if templateRuntime.Driver == "" && templateRuntime.IsolationLevel == "" && templateRuntime.TemplateLock == nil {
+		templateRuntime = nil
+	}
+	if err := runSandboxCreateWithDepsAndCountOption(
+		req.ProjectDir,
+		name,
+		1,
+		false,
+		false,
+		"",
+		req.Repo,
+		nil,
+		autoShutdownOpts{},
+		req.Out,
+		nil,
+		nil,
+		templateRuntime,
+	); err != nil {
 		return nil, err
 	}
 	return sandbox.LoadActiveInstance(name)

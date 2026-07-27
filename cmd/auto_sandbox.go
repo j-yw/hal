@@ -19,46 +19,51 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxtemplate/selection"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
 
 type autoSandboxOptions struct {
-	DryRun                bool
-	DryRunChanged         bool
-	Resume                bool
-	ResumeChanged         bool
-	NoCI                  bool
-	NoCIChanged           bool
-	SkipPR                bool
-	SkipPRChanged         bool
-	NoReview              bool
-	NoReviewChanged       bool
-	Mode                  string
-	ModeChanged           bool
-	ReviewStreak          int
-	ReviewStreakChanged   bool
-	ReviewMax             int
-	ReviewMaxChanged      bool
-	Report                string
-	ReportChanged         bool
-	Engine                string
-	EngineChanged         bool
-	Base                  string
-	BaseChanged           bool
-	JSON                  bool
-	JSONChanged           bool
-	SandboxName           string
-	SandboxNameChanged    bool
-	SandboxHostID         string
-	SandboxHostChanged    bool
-	SandboxRuntime        string
-	SandboxRuntimeChanged bool
-	SandboxSyncOut        bool
-	SandboxSyncOutChanged bool
-	SandboxApply          bool
-	SandboxApplyChanged   bool
+	DryRun                      bool
+	DryRunChanged               bool
+	Resume                      bool
+	ResumeChanged               bool
+	NoCI                        bool
+	NoCIChanged                 bool
+	SkipPR                      bool
+	SkipPRChanged               bool
+	NoReview                    bool
+	NoReviewChanged             bool
+	Mode                        string
+	ModeChanged                 bool
+	ReviewStreak                int
+	ReviewStreakChanged         bool
+	ReviewMax                   int
+	ReviewMaxChanged            bool
+	Report                      string
+	ReportChanged               bool
+	Engine                      string
+	EngineChanged               bool
+	Base                        string
+	BaseChanged                 bool
+	JSON                        bool
+	JSONChanged                 bool
+	SandboxName                 string
+	SandboxNameChanged          bool
+	SandboxHostID               string
+	SandboxHostChanged          bool
+	SandboxRuntime              string
+	SandboxRuntimeChanged       bool
+	SandboxTemplate             string
+	SandboxTemplateChanged      bool
+	SandboxTemplateTrust        string
+	SandboxTemplateTrustChanged bool
+	SandboxSyncOut              bool
+	SandboxSyncOutChanged       bool
+	SandboxApply                bool
+	SandboxApplyChanged         bool
 }
 
 type autoSandboxRequest struct {
@@ -87,6 +92,10 @@ type autoSandboxRequest struct {
 	CredentialDeliveryActivation credentialDeliveryActivationResult
 	WorkerJob                    *sandboxexecution.WorkerJobReference
 	Finalization                 *sandboxexecution.FinalizationMetadata
+	TemplateFlags                sandboxTemplateFlagValues
+	TemplateSelection            *selection.Result
+	TemplateConstructionLock     *sandbox.SandboxTemplateLockMetadata
+	TemplateLock                 *sandbox.SandboxTemplateLockMetadata
 }
 
 type autoSandboxExecutionResult struct {
@@ -104,6 +113,7 @@ type autoSandboxExecutionHooks struct {
 }
 
 type autoSandboxDeps struct {
+	templateSelection      sandboxTemplateSelectionDeps
 	defaultStore           func() (sandboxexecution.Store, error)
 	durableLeaseStore      bool
 	newExecutionID         func(time.Time) string
@@ -202,6 +212,13 @@ func parseAutoSandboxRequest(args []string, opts autoSandboxOptions) (autoSandbo
 		Flags:          opts,
 		SyncOut:        syncOut,
 		Security:       runSandboxSecurityRequest(),
+		TemplateFlags: sandboxTemplateFlagValues{
+			Sandbox:          true,
+			Reference:        opts.SandboxTemplate,
+			ReferenceChanged: opts.SandboxTemplateChanged,
+			TrustMode:        opts.SandboxTemplateTrust,
+			TrustChanged:     opts.SandboxTemplateTrustChanged,
+		},
 	}
 	req.RemoteCommand = buildAutoSandboxRemoteCommand(req)
 	return req, nil
@@ -240,6 +257,17 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 	}
 	req.ProjectDir = filepath.Clean(absProjectDir)
 	if opts.DryRun {
+		templateIntent, err := prepareSandboxTemplateSelection(ctx, sandboxTemplateSelectionRequest{
+			Command: "auto",
+			DryRun:  true,
+			Flags:   req.TemplateFlags,
+		}, deps.templateSelection)
+		if err != nil {
+			if opts.JSON {
+				return outputAutoSandboxJSONErrorForCommand(cmd, out, args, opts, err.Error())
+			}
+			return autoSandboxExitValidation(cmd, err)
+		}
 		securitySettings, err := loadConfiguredSandboxSecuritySettings(req.ProjectDir, req.SandboxRuntime)
 		if err != nil {
 			err = fmt.Errorf("load sandbox security config: %w", err)
@@ -261,6 +289,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 			opts.Base,
 			req.SyncOut,
 			securitySettings.Request,
+			templateIntent,
 			string(entryMode),
 		)
 		return renderSandboxDryRunPreview(out, opts.JSON, preview)
@@ -276,6 +305,33 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 			return outputAutoSandboxJSONErrorForCommand(cmd, out, args, opts, err.Error())
 		}
 		return err
+	}
+
+	templateSelection, err := executeSandboxTemplateSelectionBeforeConstruction(ctx, sandboxTemplateConstructionRequest{
+		Command:          "auto",
+		RequestedRuntime: req.SandboxRuntime,
+		Selection: sandboxTemplateSelectionRequest{
+			Command: "auto",
+			Flags:   req.TemplateFlags,
+		},
+	}, sandboxTemplateConstructionDeps{Selection: deps.templateSelection})
+	if err != nil {
+		if opts.JSON {
+			return outputAutoSandboxJSONErrorForCommand(cmd, out, args, opts, err.Error())
+		}
+		return autoSandboxExitValidation(cmd, err)
+	}
+	req.TemplateSelection = templateSelection.Selection
+	if req.TemplateSelection != nil {
+		req.TemplateFlags.Reference = ""
+	}
+	req.TemplateConstructionLock = selectedTemplateConstructionLock(req.TemplateSelection)
+	if req.TemplateSelection != nil && req.TemplateConstructionLock == nil {
+		err := errors.New("selection_rejected")
+		if opts.JSON {
+			return outputAutoSandboxJSONErrorForCommand(cmd, out, args, opts, err.Error())
+		}
+		return autoSandboxExitValidation(cmd, err)
 	}
 
 	securitySettings, err := loadConfiguredSandboxSecuritySettings(req.ProjectDir, req.SandboxRuntime)
@@ -332,6 +388,9 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 	}
 	execResult, execErr := deps.execute(ctx, req, commandOut, errOut, autoSandboxExecutionHooks{
 		OnTargetReady: func(ready *sandbox.SandboxState) error {
+			if err := bindAutoSandboxTemplateSelectionToTarget(&req, ready); err != nil {
+				return err
+			}
 			target = ready
 			if target != nil && strings.TrimSpace(req.SandboxName) == "" {
 				req.SandboxName = strings.TrimSpace(target.Name)
@@ -1035,6 +1094,9 @@ func (deps autoSandboxDeps) resolveAutoSandboxTarget(ctx context.Context, req au
 			Repository:                req.RepoRemote,
 			Branch:                    req.RunBranch,
 			ProvisionRepository:       req.RepoRemote,
+			TemplateRuntimeDriver:     templateSelectionRuntimeDriver(req.TemplateSelection),
+			TemplateIsolationLevel:    templateSelectionIsolationLevel(req.TemplateSelection),
+			TemplateLock:              req.TemplateConstructionLock,
 			Out:                       out,
 		},
 		sandboxCommandTargetDeps{
@@ -1187,6 +1249,7 @@ func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxReques
 		NetworkPolicyDecisionLogs: sandboxManifestNetworkPolicyDecisionLogs(req.NetworkPolicyDecisionLogs),
 		WorkerJob:                 sandboxexecution.SanitizeWorkerJobReference(req.WorkerJob),
 		Finalization:              cloneSandboxWorkerJobFinalization(req.Finalization),
+		TemplateLock:              sandbox.SanitizeSandboxTemplateLockMetadata(req.TemplateLock),
 	}
 	applyAutoSandboxCredentialProxyMetadata(manifest, req)
 	if target != nil {

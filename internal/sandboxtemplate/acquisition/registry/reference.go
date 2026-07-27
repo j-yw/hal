@@ -20,6 +20,7 @@ var (
 )
 
 type parsedReference struct {
+	authority  string
 	origin     string
 	repository string
 	selector   string
@@ -27,7 +28,25 @@ type parsedReference struct {
 	digest     string
 }
 
-func (r *Resolver) parseReference(reference sandboxtemplate.ImmutableRef) (parsedReference, error) {
+// ReferenceValidation is the redaction-safe static classification of a valid
+// OCI template reference. It intentionally excludes the repository, selector,
+// digest, and original caller input.
+type ReferenceValidation struct {
+	Authority string
+}
+
+// ValidateReference strictly validates and statically classifies an OCI
+// template reference without constructing a transport, cache, credential
+// provider, or resolver.
+func ValidateReference(reference sandboxtemplate.ImmutableRef) (ReferenceValidation, error) {
+	parsed, err := parseReferenceSyntax(reference)
+	if err != nil {
+		return ReferenceValidation{}, err
+	}
+	return ReferenceValidation{Authority: parsed.authority}, nil
+}
+
+func parseReferenceSyntax(reference sandboxtemplate.ImmutableRef) (parsedReference, error) {
 	if reference.Kind != "" && reference.Kind != sandboxtemplate.ReferenceKindOCIArtifact {
 		return parsedReference{}, coded(ErrorCodeInvalidReference, nil)
 	}
@@ -50,6 +69,9 @@ func (r *Resolver) parseReference(reference sandboxtemplate.ImmutableRef) (parse
 	}
 	authority := raw[:slash]
 	remainder := raw[slash+1:]
+	if _, err := normalizeOrigin("https://"+authority, false); err != nil {
+		return parsedReference{}, coded(ErrorCodeInvalidReference, nil)
+	}
 	if strings.Contains(remainder, "//") {
 		return parsedReference{}, coded(ErrorCodeInvalidReference, nil)
 	}
@@ -60,19 +82,7 @@ func (r *Resolver) parseReference(reference sandboxtemplate.ImmutableRef) (parse
 		}
 	}
 
-	origin := ""
-	for allowed := range r.registryOrigins {
-		parsed, _ := url.Parse(allowed)
-		if parsed != nil && parsed.Host == authority {
-			origin = allowed
-			break
-		}
-	}
-	if origin == "" {
-		return parsedReference{}, coded(ErrorCodeInvalidReference, nil)
-	}
-
-	result := parsedReference{origin: origin}
+	result := parsedReference{authority: authority}
 	if reference.Digest != nil {
 		if reference.Digest.Algorithm != sandboxtemplate.DigestAlgorithmSHA256 ||
 			!sha256Pattern.MatchString(reference.Digest.Value) {
@@ -100,6 +110,21 @@ func (r *Resolver) parseReference(reference sandboxtemplate.ImmutableRef) (parse
 		}
 	}
 	return result, nil
+}
+
+func (r *Resolver) parseReference(reference sandboxtemplate.ImmutableRef) (parsedReference, error) {
+	result, err := parseReferenceSyntax(reference)
+	if err != nil {
+		return parsedReference{}, err
+	}
+	for allowed := range r.registryOrigins {
+		parsed, _ := url.Parse(allowed)
+		if parsed != nil && parsed.Host == result.authority {
+			result.origin = allowed
+			return result, nil
+		}
+	}
+	return parsedReference{}, coded(ErrorCodeInvalidReference, nil)
 }
 
 func authorityEnd(raw string) int {
