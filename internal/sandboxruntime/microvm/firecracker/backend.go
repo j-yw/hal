@@ -51,6 +51,8 @@ type BackendOptions struct {
 	GuestTransport       GuestTransport
 	NetworkEnforcement   *sandboxruntime.RuntimeNetworkEnforcementMetadata
 	LiveStart            bool
+	ProductionVsock      bool
+	ProductionBridge     ProductionVsockBridge
 }
 
 // BootAcceptanceWaiter is the injected host-side readiness boundary for an
@@ -100,11 +102,14 @@ type Backend struct {
 	guestTransport       GuestTransport
 	networkEnforcement   *sandboxruntime.RuntimeNetworkEnforcementMetadata
 	liveStart            bool
+	productionVsock      bool
+	productionBridge     ProductionVsockBridge
+	liveSessions         *liveSessionRegistry
 }
 
 // NewBackend constructs an explicitly injected Firecracker backend.
 func NewBackend(options BackendOptions) *Backend {
-	return &Backend{
+	backend := &Backend{
 		baseStateDir:         strings.TrimSpace(options.BaseStateDir),
 		processAdapter:       options.ProcessAdapter,
 		bootAcceptanceWaiter: options.BootAcceptanceWaiter,
@@ -113,7 +118,13 @@ func NewBackend(options BackendOptions) *Backend {
 		guestTransport:       options.GuestTransport,
 		networkEnforcement:   sandboxruntime.SanitizeRuntimeNetworkEnforcementMetadata(options.NetworkEnforcement),
 		liveStart:            options.LiveStart,
+		productionVsock:      options.ProductionVsock,
+		productionBridge:     options.ProductionBridge,
 	}
+	if options.ProductionVsock {
+		backend.liveSessions = newLiveSessionRegistry()
+	}
+	return backend
 }
 
 func (b *Backend) Create(_ context.Context, req microvm.BackendCreateRequest) (*sandboxruntime.Target, error) {
@@ -178,6 +189,9 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 	var guestWaiter GuestReadinessWaiter
 	var guestTransport GuestTransport
 	var networkEnforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata
+	var productionVsock bool
+	var productionBridge ProductionVsockBridge
+	var liveSessions *liveSessionRegistry
 	if b != nil {
 		baseStateDir = b.baseStateDir
 		adapter = b.processAdapter
@@ -186,6 +200,9 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 		guestWaiter = b.guestReadinessWaiter
 		guestTransport = b.guestTransport
 		networkEnforcement = b.runtimeNetworkEnforcementMetadata()
+		productionVsock = b.productionVsock
+		productionBridge = b.productionBridge
+		liveSessions = b.liveSessions
 	}
 	return firecrackerController{
 		baseStateDir:         baseStateDir,
@@ -196,6 +213,9 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 		guestTransport:       guestTransport,
 		networkEnforcement:   networkEnforcement,
 		liveStart:            b != nil && b.liveStart,
+		productionVsock:      productionVsock,
+		productionBridge:     productionBridge,
+		liveSessions:         liveSessions,
 	}, nil
 }
 
@@ -208,6 +228,9 @@ type firecrackerController struct {
 	guestTransport       GuestTransport
 	networkEnforcement   *sandboxruntime.RuntimeNetworkEnforcementMetadata
 	liveStart            bool
+	productionVsock      bool
+	productionBridge     ProductionVsockBridge
+	liveSessions         *liveSessionRegistry
 }
 
 func (c firecrackerController) Start(ctx context.Context, req microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
@@ -247,12 +270,16 @@ func (c firecrackerController) validateLiveBootContract() error {
 		return nil
 	}
 	switch {
+	case c.productionVsock && (c.guestReadinessWaiter != nil || c.guestTransport != nil):
+		return newLiveBootContractError("productionVsock", "production vsock does not accept caller guest readiness or transport")
 	case c.processAdapter == nil:
 		return newLiveBootContractError("processAdapter", "live boot requires an injected process adapter")
 	case c.bootAcceptanceWaiter == nil:
 		return newLiveBootContractError("bootAcceptanceWaiter", "live boot requires an injected host-side acceptance waiter")
 	case c.liveProcessManager == nil:
 		return newLiveBootContractError("liveProcessManager", "live boot requires an injected live process manager")
+	case c.productionVsock && c.productionBridge == nil:
+		return newLiveBootContractError("productionVsockBridge", "production vsock requires a host-owned bridge")
 	default:
 		return nil
 	}
@@ -264,6 +291,15 @@ type firecrackerLiveStartResult struct {
 }
 
 func (c firecrackerController) startLiveProcess(ctx context.Context, descriptor ProcessCommandDescriptor, config BackendConfig) (firecrackerLiveStartResult, error) {
+	if c.liveSessions != nil {
+		if active, ok := c.liveSessions.ProofForRuntime(config.RuntimeID); ok && c.productionBridge != nil {
+			c.productionBridge.InvalidateSession(ProductionVsockSessionRequest{
+				Handle:    ProcessHandleMetadata{ID: active.ProcessGeneration, Source: active.ProcessSource},
+				RuntimeID: active.RuntimeID,
+			}, active.BridgeGeneration)
+		}
+		c.liveSessions.InvalidateRuntime(config.RuntimeID)
+	}
 	handle, err := StartProcess(ctx, c.processAdapter, descriptor)
 	if err != nil {
 		return firecrackerLiveStartResult{}, err
@@ -272,9 +308,14 @@ func (c firecrackerController) startLiveProcess(ctx context.Context, descriptor 
 	if err != nil {
 		return firecrackerLiveStartResult{}, c.cleanupLiveProcessAfterStartFailure(ctx, handle, config.Paths, err)
 	}
-	guestReadiness, err := c.waitForGuestReadiness(ctx, handle, config.RuntimeID)
+	guestReadiness, bridgeGeneration, err := c.waitForGuestReadiness(ctx, handle, config.RuntimeID, config.Paths)
 	if err != nil {
 		return firecrackerLiveStartResult{}, c.cleanupLiveProcessAfterStartFailure(ctx, handle, config.Paths, err)
+	}
+	if c.liveSessions != nil && guestReadiness != nil {
+		c.liveSessions.Activate(liveSessionProof{
+			RuntimeID: config.RuntimeID, ProcessGeneration: handle.ID, ProcessSource: handle.Source, BridgeGeneration: bridgeGeneration,
+		})
 	}
 	return firecrackerLiveStartResult{
 		processLaunch:  launch,
@@ -302,19 +343,32 @@ func (c firecrackerController) waitForBootAcceptance(ctx context.Context, handle
 	return NewProcessLaunchMetadata(ProcessLaunchStateAccepted, handle).RuntimeMetadata(), nil
 }
 
-func (c firecrackerController) waitForGuestReadiness(ctx context.Context, handle ProcessHandleMetadata, runtimeID string) (*sandboxruntime.RuntimeGuestReadinessMetadata, error) {
+func (c firecrackerController) waitForGuestReadiness(ctx context.Context, handle ProcessHandleMetadata, runtimeID string, paths PathPlan) (*sandboxruntime.RuntimeGuestReadinessMetadata, string, error) {
+	if c.productionVsock {
+		result, generation, err := c.productionBridge.ActivateSession(processContext(ctx), ProductionVsockSessionRequest{
+			Handle: sanitizeProcessHandleMetadata(handle), RuntimeID: runtimeID, SocketPath: paths.VsockSocketPath,
+		})
+		if err != nil {
+			return nil, "", newLiveGuestReadinessFailure("productionVsockBridge", liveGuestReadinessFailureMessage(err), err)
+		}
+		result = SanitizeGuestReadinessResult(result)
+		if result.State != sandboxruntime.RuntimeGuestReadinessStateReady || safeFirecrackerMetadataToken(generation) == "" {
+			return nil, "", newLiveGuestReadinessFailure("guestReadinessState", "guest readiness was not reported ready", errGuestReadinessNotReady)
+		}
+		return result.RuntimeMetadata(), generation, nil
+	}
 	if c.guestReadinessWaiter == nil {
-		return nil, nil
+		return nil, "", nil
 	}
 	result, err := c.guestReadinessWaiter.WaitForGuestReadiness(processContext(ctx), NewGuestReadinessRequest(handle, runtimeID))
 	if err != nil {
-		return nil, newLiveGuestReadinessFailure("guestReadinessWaiter", liveGuestReadinessFailureMessage(err), err)
+		return nil, "", newLiveGuestReadinessFailure("guestReadinessWaiter", liveGuestReadinessFailureMessage(err), err)
 	}
 	result = SanitizeGuestReadinessResult(result)
 	if result.State != sandboxruntime.RuntimeGuestReadinessStateReady {
-		return nil, newLiveGuestReadinessFailure("guestReadinessState", "guest readiness was not reported ready", errGuestReadinessNotReady)
+		return nil, "", newLiveGuestReadinessFailure("guestReadinessState", "guest readiness was not reported ready", errGuestReadinessNotReady)
 	}
-	return result.RuntimeMetadata(), nil
+	return result.RuntimeMetadata(), "", nil
 }
 
 func (c firecrackerController) cleanupLiveProcessAfterStartFailure(ctx context.Context, handle ProcessHandleMetadata, paths PathPlan, startErr error) error {
@@ -346,6 +400,10 @@ func (c firecrackerController) cleanupLiveProcess(ctx context.Context, req LiveP
 }
 
 func (c firecrackerController) Stop(ctx context.Context, req microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
+	c.invalidateGuestSession(req.Target)
+	if c.liveSessions != nil {
+		c.liveSessions.InvalidateRuntime(firecrackerStartRuntimeID(req.Target))
+	}
 	paths, err := firecrackerLifecyclePathPlan(req.Target, c.baseStateDir)
 	if err != nil {
 		return nil, err
@@ -373,6 +431,10 @@ func (c firecrackerController) stopLiveProcess(ctx context.Context, req LiveProc
 }
 
 func (c firecrackerController) Delete(ctx context.Context, req microvm.ControllerLifecycleRequest) error {
+	c.invalidateGuestSession(req.Target)
+	if c.liveSessions != nil {
+		c.liveSessions.InvalidateRuntime(firecrackerStartRuntimeID(req.Target))
+	}
 	paths, err := firecrackerLifecyclePathPlan(req.Target, c.baseStateDir)
 	if err != nil {
 		return err
@@ -408,7 +470,8 @@ func (c firecrackerController) Exec(ctx context.Context, req microvm.ControllerE
 	if !c.canDelegateGuestTransport(req.Target) {
 		return nil, unsupportedFirecrackerOperation(req.Operation)
 	}
-	result, err := c.guestTransport.Exec(processContext(ctx), GuestExecRequest{
+	transport := c.activeGuestTransport()
+	result, err := transport.Exec(processContext(ctx), GuestExecRequest{
 		Target:  req.Target,
 		Args:    req.Args,
 		Env:     req.Env,
@@ -418,6 +481,7 @@ func (c firecrackerController) Exec(ctx context.Context, req microvm.ControllerE
 		Stderr:  req.Stderr,
 	})
 	if err != nil {
+		c.invalidateGuestSession(req.Target)
 		return nil, newGuestTransportExecFailure(req.Operation, err)
 	}
 	return result, nil
@@ -427,12 +491,13 @@ func (c firecrackerController) CopyIn(ctx context.Context, req microvm.Controlle
 	if !c.canDelegateGuestTransport(req.Target) {
 		return unsupportedFirecrackerOperation(req.Operation)
 	}
-	err := c.guestTransport.CopyIn(processContext(ctx), GuestCopyRequest{
+	err := c.activeGuestTransport().CopyIn(processContext(ctx), GuestCopyRequest{
 		Target:          req.Target,
 		SourcePath:      req.SourcePath,
 		DestinationPath: req.DestinationPath,
 	})
 	if err != nil {
+		c.invalidateGuestSession(req.Target)
 		return newGuestTransportCopyInFailure(req.Operation, err)
 	}
 	return nil
@@ -442,23 +507,66 @@ func (c firecrackerController) CopyOut(ctx context.Context, req microvm.Controll
 	if !c.canDelegateGuestTransport(req.Target) {
 		return unsupportedFirecrackerOperation(req.Operation)
 	}
-	err := c.guestTransport.CopyOut(processContext(ctx), GuestCopyRequest{
+	err := c.activeGuestTransport().CopyOut(processContext(ctx), GuestCopyRequest{
 		Target:          req.Target,
 		SourcePath:      req.SourcePath,
 		DestinationPath: req.DestinationPath,
 	})
 	if err != nil {
+		c.invalidateGuestSession(req.Target)
 		return newGuestTransportCopyOutFailure(req.Operation, err)
 	}
 	return nil
 }
 
 func (c firecrackerController) canDelegateGuestTransport(target sandboxruntime.Target) bool {
-	if !c.liveStart || c.guestTransport == nil || target.Runtime.Metadata == nil {
+	if !c.liveStart || c.activeGuestTransport() == nil || target.Runtime.Metadata == nil {
 		return false
 	}
 	readiness := sandboxruntime.SanitizeRuntimeGuestReadinessMetadata(target.Runtime.Metadata.GuestReadiness)
-	return readiness != nil && readiness.State == sandboxruntime.RuntimeGuestReadinessStateReady
+	if !c.productionVsock {
+		return readiness != nil && readiness.State == sandboxruntime.RuntimeGuestReadinessStateReady
+	}
+	process := sanitizeRuntimeProcessLaunchMetadata(target.Runtime.Metadata.ProcessLaunch)
+	if c.liveSessions == nil || readiness == nil || readiness.State != sandboxruntime.RuntimeGuestReadinessStateReady || process == nil {
+		return false
+	}
+	proof, ok := c.liveSessions.Proof(firecrackerStartRuntimeID(target), process.ProcessID)
+	if !ok {
+		return false
+	}
+	req := ProductionVsockSessionRequest{Handle: ProcessHandleMetadata{ID: process.ProcessID, Source: proof.ProcessSource}, RuntimeID: proof.RuntimeID}
+	if c.productionBridge.SessionActive(req, proof.BridgeGeneration) {
+		return true
+	}
+	c.liveSessions.Invalidate(proof)
+	return false
+}
+
+func (c firecrackerController) activeGuestTransport() GuestTransport {
+	if c.productionVsock {
+		return c.productionBridge
+	}
+	return c.guestTransport
+}
+
+func (c firecrackerController) invalidateGuestSession(target sandboxruntime.Target) {
+	if !c.productionVsock || c.productionBridge == nil || c.liveSessions == nil || target.Runtime.Metadata == nil {
+		return
+	}
+	process := sanitizeRuntimeProcessLaunchMetadata(target.Runtime.Metadata.ProcessLaunch)
+	if process == nil {
+		return
+	}
+	proof, ok := c.liveSessions.Proof(firecrackerStartRuntimeID(target), process.ProcessID)
+	if !ok {
+		return
+	}
+	c.productionBridge.InvalidateSession(ProductionVsockSessionRequest{
+		Handle:    ProcessHandleMetadata{ID: process.ProcessID, Source: proof.ProcessSource},
+		RuntimeID: proof.RuntimeID,
+	}, proof.BridgeGeneration)
+	c.liveSessions.Invalidate(proof)
 }
 
 type firecrackerStartOperation struct {
@@ -488,6 +596,7 @@ func (c firecrackerController) startBackendConfig(input microvm.Config, target s
 	}
 	config.RuntimeID = runtimeID
 	config.Paths = paths
+	config.ProductionVsock = c.productionVsock
 	return config, nil
 }
 

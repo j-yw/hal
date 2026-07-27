@@ -19,6 +19,10 @@ const (
 	DefaultLogPath       = "firecracker.log"
 	DefaultMetricsPath   = "firecracker.metrics"
 	DefaultConfigPath    = "firecracker-config.json"
+	defaultVsockPath     = "guest.vsock"
+
+	l5GuestCID           uint32 = 3
+	l5ProductionBootArgs        = "console=ttyS0 reboot=k panic=1 pci=off nomodule ro root=/dev/vda rootfstype=ext4 rootwait init=/sbin/init"
 )
 
 // BackendConfig is the Firecracker-specific configuration contract derived
@@ -36,6 +40,7 @@ type BackendConfig struct {
 	GuestWorkDir     GuestWorkDirMetadata     `json:"guestWorkDir,omitempty"`
 	RuntimeID        string                   `json:"runtimeId,omitempty"`
 	Paths            PathPlan                 `json:"paths,omitempty"`
+	ProductionVsock  bool                     `json:"productionVsock,omitempty"`
 }
 
 // GuestWorkDirMetadata carries the guest workdir contract without adding host
@@ -48,11 +53,12 @@ type GuestWorkDirMetadata struct {
 // work can replace these defaults with target-specific paths without changing
 // payload consumers.
 type PathPlan struct {
-	StateDir      string `json:"stateDir,omitempty"`
-	APISocketPath string `json:"apiSocketPath,omitempty"`
-	LogPath       string `json:"logPath,omitempty"`
-	MetricsPath   string `json:"metricsPath,omitempty"`
-	ConfigPath    string `json:"configPath,omitempty"`
+	StateDir        string `json:"stateDir,omitempty"`
+	APISocketPath   string `json:"apiSocketPath,omitempty"`
+	LogPath         string `json:"logPath,omitempty"`
+	MetricsPath     string `json:"metricsPath,omitempty"`
+	ConfigPath      string `json:"configPath,omitempty"`
+	VsockSocketPath string `json:"vsockSocketPath,omitempty"`
 }
 
 // BackendConfigFromMicroVMConfig maps valid Phase 31 backend-neutral microVM

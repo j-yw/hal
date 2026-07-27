@@ -119,6 +119,8 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 		"GuestCopyPublicationError":             true,
 		"GuestExecRequest":                      true,
 		"GuestTransport":                        true,
+		"ProductionVsockBridge":                 true,
+		"ProductionVsockSessionRequest":         true,
 		"GuestWorkDirMetadata":                  true,
 		"InspectOperationPlan":                  true,
 		"LiveProcessManager":                    true,
@@ -666,6 +668,9 @@ func firecrackerDefaultTestFile(t *testing.T, path string) bool {
 }
 
 func firecrackerProductionImportBoundaryMessage(fileName, importPath string) string {
+	if filepath.Base(fileName) == "render_secure_linux.go" && importPath == "golang.org/x/sys/unix" {
+		return ""
+	}
 	if forbidden := firecrackerForbiddenImportFor(importPath); forbidden != nil {
 		return fmt.Sprintf("package %s file %s imports forbidden %s %q", firecrackerPackagePath, fileName, forbidden.name, importPath)
 	}

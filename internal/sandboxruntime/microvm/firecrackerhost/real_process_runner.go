@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -28,7 +27,9 @@ var (
 
 // OSExecProcessRunner is the real host process runner for explicitly injected
 // Firecracker live starts. Default paths do not construct this runner.
-type OSExecProcessRunner struct{}
+type OSExecProcessRunner struct {
+	startCommand func(*exec.Cmd) error
+}
 
 var _ HostProcessRunner = OSExecProcessRunner{}
 
@@ -40,7 +41,7 @@ func NewOSExecProcessRunner() OSExecProcessRunner {
 
 // StartHostProcess starts a Firecracker host process from the raw runner
 // request without inheriting host environment variables.
-func (OSExecProcessRunner) StartHostProcess(ctx context.Context, req firecracker.ProcessRunnerStartRequest) (HostProcess, error) {
+func (runner OSExecProcessRunner) StartHostProcess(ctx context.Context, req firecracker.ProcessRunnerStartRequest) (HostProcess, error) {
 	ctx = nonNilContext(ctx)
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -50,13 +51,19 @@ func (OSExecProcessRunner) StartHostProcess(ctx context.Context, req firecracker
 		return nil, err
 	}
 
-	cmd := exec.CommandContext(ctx, executable, args...)
+	cmd := exec.Command(executable, args...)
 	cmd.Env = []string{}
 	cmd.Stdin = nil
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 
-	if err := cmd.Start(); err != nil {
+	startCommand := runner.startCommand
+	if startCommand == nil {
+		startCommand = func(command *exec.Cmd) error {
+			return startOSExecCommandWithPrivateUmask(command.Start)
+		}
+	}
+	if err := startCommand(cmd); err != nil {
 		return nil, err
 	}
 	return newOSExecHostProcess(cmd), nil
@@ -145,7 +152,11 @@ func (process *osExecHostProcess) Signal(ctx context.Context, signal ProcessSign
 	if process.completed() {
 		return nil
 	}
-	if err := process.cmd.Process.Signal(os.Interrupt); err != nil && !process.completed() {
+	signalValue, err := processTerminationSignal()
+	if err != nil {
+		return err
+	}
+	if err := process.cmd.Process.Signal(signalValue); err != nil && !process.completed() {
 		return err
 	}
 	process.markTerminationRequested()
@@ -186,4 +197,18 @@ func (process *osExecHostProcess) completed() bool {
 	default:
 		return false
 	}
+}
+
+func (process *osExecHostProcess) HostPID() int {
+	if process == nil || process.cmd == nil || process.cmd.Process == nil {
+		return 0
+	}
+	return process.cmd.Process.Pid
+}
+
+func (process *osExecHostProcess) Done() <-chan struct{} {
+	if process == nil {
+		return nil
+	}
+	return process.done
 }
