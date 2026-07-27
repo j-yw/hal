@@ -51,7 +51,12 @@ internal deployments require an exact configured origin-and-address exception;
 the tagged test injects the same kind of exact exception for its loopback
 origin. DNS is resolved and the selected IP is revalidated on every registry
 dial, redirect dial, and token dial, so redirects and rebinding cannot reuse
-an earlier public-address decision.
+an earlier public-address decision. Current IANA non-ordinary IPv6 ranges are
+also denied, including discard-only, benchmarking, documentation, 6to4, local
+translation, and deprecated/special allocation blocks. The globally reachable
+`2001:3::/32`, `2001:4:112::/48`, `2001:20::/28`, and `2001:30::/28`
+exceptions remain usable. IPv4-translation prefixes are conservatively denied
+because they can encode non-public IPv4 destinations.
 
 Selection returns:
 
@@ -59,7 +64,8 @@ Selection returns:
 - the verified manifest digest and template-layer digest;
 - the existing `TemplateLock`, provenance, and strict/advisory policy result;
 - a sanitized `RuntimeTemplateLockMetadata` projection; and
-- runtime driver/isolation intent used before provider or runtime construction.
+- runtime driver/isolation intent plus an optional digest-pinned runtime-image
+  identity used before provider or runtime construction.
 
 The production adapter accepts only:
 
@@ -78,10 +84,13 @@ request deadlines, redirect count, response status, and `Accept` handling are
 also bounded and explicit.
 
 References accept only a normalized registry authority plus repository and tag
-or sha256 digest. Parsing rejects userinfo, query, fragment, encoded or literal
-dot segments, backslashes, controls, whitespace, ambiguous percent encoding,
-empty path segments, invalid repository components, missing tag or digest,
-unsupported schemes/digests, and conflicting digest metadata.
+or standard `@sha256:<64 lowercase hex>` digest. Inline digest input is
+normalized into the existing split immutable reference/digest model before
+selection. Parsing rejects tag-plus-digest ambiguity, dual/conflicting digest
+representations, userinfo, query, fragment, encoded or literal dot segments,
+backslashes, controls, whitespace, ambiguous percent encoding, empty path
+segments, invalid repository components, missing tag or digest, and
+unsupported or uppercase digest algorithms/values.
 
 Stable safe failure codes are:
 
@@ -93,6 +102,7 @@ Stable safe failure codes are:
 - `authentication_challenge_invalid`;
 - `authentication_response_oversize`;
 - `response_headers_oversize`;
+- `response_headers_invalid`;
 - `redirect_rejected`;
 - `manifest_oversize`;
 - `manifest_media_type_unsupported`;
@@ -173,6 +183,12 @@ then persisted under the exact execution manifest and sandbox/runtime state
 that already carry the execution, sandbox, runtime, and worker identities. A
 missing or different digest at any handoff returns `selection_rejected`; it is
 never repaired by status projection.
+When the template selects a runtime image, command wiring also provisions and
+constructs with its digest-pinned reference. Binding compares that selection
+with the independently observed target/runtime image identity after lifecycle
+operations. A missing or different observed image fails before provider
+preparation, readiness persistence, or trusted-template projection. L9 does
+not itself pull the runtime-image blob.
 
 ## 4. Redaction and containment rules
 
@@ -189,6 +205,9 @@ request, and one retry of the original registry request. Basic authentication
 permits one retry. Multiple challenges, unsupported schemes, malformed quoted
 parameters, oversized headers/bodies, redirect chains, or a second
 unauthorized response fail closed.
+Every intermediate response passes the same bounded header-name/value
+validation before a `WWW-Authenticate` challenge or `Location` is inspected;
+duplicate redirect locations are rejected before another request is made.
 
 Bearer `realm` may be cross-origin only when it is an exact configured HTTPS
 token origin for the selected registry origin; the loopback integration
