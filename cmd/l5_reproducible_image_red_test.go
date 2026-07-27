@@ -97,6 +97,14 @@ func TestL5PinnedSourceLockMatchesAuthoritativeInputs(t *testing.T) {
 			URL:      "https://busybox.net/downloads/busybox-1.38.0.tar.bz2",
 			SHA256:   "34f9ea6ff8636f2c9241153b9114eefa9e65674a45318ae1ef95bb5f31c53bb2",
 		},
+		"bzip2": {
+			Name:     "bzip2",
+			Version:  "1.0.8",
+			Purpose:  "buildroot_download",
+			Filename: "bzip2-1.0.8.tar.gz",
+			URL:      "https://sources.buildroot.net/bzip2/bzip2-1.0.8.tar.gz",
+			SHA256:   "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269",
+		},
 		"e2fsprogs": {
 			Name:     "e2fsprogs",
 			Version:  "1.47.4",
@@ -104,6 +112,14 @@ func TestL5PinnedSourceLockMatchesAuthoritativeInputs(t *testing.T) {
 			Filename: "e2fsprogs-1.47.4.tar.xz",
 			URL:      "https://mirrors.edge.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v1.47.4/e2fsprogs-1.47.4.tar.xz",
 			SHA256:   "fd5bf388cbdbe006a3d3b318d983b2948382440acc85a87f1e7d108653e8db0b",
+		},
+		"elfutils": {
+			Name:     "elfutils",
+			Version:  "0.194",
+			Purpose:  "buildroot_download",
+			Filename: "elfutils-0.194.tar.bz2",
+			URL:      "https://sources.buildroot.net/elfutils/elfutils-0.194.tar.bz2",
+			SHA256:   "09e2ff033d39baa8b388a2d7fbc5390bfde99ae3b7c67c7daaf7433fbcf0f01e",
 		},
 		"firecracker": {
 			Name:     "firecracker",
@@ -128,6 +144,22 @@ func TestL5PinnedSourceLockMatchesAuthoritativeInputs(t *testing.T) {
 			Filename: "linux-6.1.178.tar.xz",
 			URL:      "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.1.178.tar.xz",
 			SHA256:   "7d83fa67ca75032b1ac6ef49973722073963c0cb9bc3aa7ef3efa749cf6c720f",
+		},
+		"xz": {
+			Name:     "xz",
+			Version:  "5.8.3",
+			Purpose:  "buildroot_download",
+			Filename: "xz-5.8.3.tar.bz2",
+			URL:      "https://sources.buildroot.net/xz/xz-5.8.3.tar.bz2",
+			SHA256:   "33bf69c0d6c698e83a68f77e6c1f465778e418ca0b3d59860d3ab446f4ac99a6",
+		},
+		"zstd": {
+			Name:     "zstd",
+			Version:  "1.5.7",
+			Purpose:  "buildroot_download",
+			Filename: "zstd-1.5.7.tar.gz",
+			URL:      "https://sources.buildroot.net/zstd/zstd-1.5.7.tar.gz",
+			SHA256:   "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3",
 		},
 	}
 	if len(lock.Sources) <= len(expected) {
