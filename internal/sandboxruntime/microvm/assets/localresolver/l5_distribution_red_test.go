@@ -149,6 +149,32 @@ func TestL5ResolveDistributionRejectsUnsafeRootAndManifestTypes(t *testing.T) {
 		}
 	})
 
+	t.Run("symlinked ancestor", func(t *testing.T) {
+		parent := t.TempDir()
+		targetParent := filepath.Join(parent, "target")
+		targetRoot := filepath.Join(targetParent, "distribution")
+		if err := os.MkdirAll(targetRoot, 0o700); err != nil {
+			t.Fatalf("MkdirAll(target root) error = %v", err)
+		}
+		kernel := []byte("ancestor-target-kernel")
+		rootfs := []byte("ancestor-target-rootfs")
+		writeL5DistributionFile(t, targetRoot, "vmlinux", kernel)
+		writeL5DistributionFile(t, targetRoot, "rootfs.ext4", rootfs)
+		writeL5DistributionManifest(t, targetRoot, l5DistributionManifest(kernel, rootfs))
+
+		linkParent := filepath.Join(parent, "link")
+		if err := os.Symlink(targetParent, linkParent); err != nil {
+			t.Fatalf("Symlink(parent) error = %v", err)
+		}
+		_, err := ResolveDistribution(DistributionRequest{RootDir: filepath.Join(linkParent, "distribution")})
+		if err == nil {
+			t.Fatal("ResolveDistribution() accepted a symlinked distribution ancestor")
+		}
+		if strings.Contains(err.Error(), parent) {
+			t.Fatal("ResolveDistribution() leaked the rejected ancestor path")
+		}
+	})
+
 	t.Run("non-directory root", func(t *testing.T) {
 		root := filepath.Join(t.TempDir(), "distribution")
 		writeL5DistributionFile(t, filepath.Dir(root), filepath.Base(root), []byte("not-a-directory"))

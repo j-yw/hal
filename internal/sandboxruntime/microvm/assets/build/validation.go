@@ -13,6 +13,15 @@ var (
 
 var requiredFeatures = []string{"copy_in", "copy_out", "exec", "readiness"}
 
+var requiredVersions = Versions{
+	Buildroot:   "2026.05.1",
+	Linux:       "6.1.178",
+	BusyBox:     "1.38.0",
+	E2fsprogs:   "1.47.4",
+	Go:          "1.25.7",
+	Firecracker: "v1.15.1",
+}
+
 // ValidateDistributionManifest validates the stable L5 distribution shape.
 func ValidateDistributionManifest(manifest DistributionManifest) error {
 	if manifest.SchemaVersion != SchemaVersionV1 ||
@@ -155,12 +164,7 @@ func VerifyDependencyLocks(locks []DependencyLock, files []DependencyFile) error
 }
 
 func validVersions(versions Versions) bool {
-	return versions.Buildroot != "" &&
-		versions.Linux != "" &&
-		versions.BusyBox != "" &&
-		versions.E2fsprogs != "" &&
-		versions.Go != "" &&
-		versions.Firecracker != ""
+	return versions == requiredVersions
 }
 
 func safeRelativeKey(value string) bool {

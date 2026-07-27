@@ -4,14 +4,32 @@ package localresolver
 
 import (
 	"os"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
 
 func openDistributionRootNoFollow(path string) (*os.File, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	const flags = unix.O_RDONLY | unix.O_CLOEXEC | unix.O_DIRECTORY | unix.O_NOFOLLOW
+
+	fd, err := unix.Open("/", flags, 0)
 	if err != nil {
 		return nil, err
+	}
+	for _, component := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
+		if component == "" {
+			continue
+		}
+		nextFD, openErr := unix.Openat(fd, component, flags, 0)
+		closeErr := unix.Close(fd)
+		if openErr != nil {
+			return nil, openErr
+		}
+		if closeErr != nil {
+			unix.Close(nextFD)
+			return nil, closeErr
+		}
+		fd = nextFD
 	}
 	return os.NewFile(uintptr(fd), "distribution-root"), nil
 }

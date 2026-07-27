@@ -143,6 +143,36 @@ func TestL5DistributionManifestRequiresExactUniqueOutputsAndFeatures(t *testing.
 	}
 }
 
+func TestL5DistributionManifestRejectsPinnedVersionDrift(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Versions)
+	}{
+		{name: "buildroot", mutate: func(value *Versions) { value.Buildroot = "2026.05" }},
+		{name: "linux", mutate: func(value *Versions) { value.Linux = "6.1.177" }},
+		{name: "busybox", mutate: func(value *Versions) { value.BusyBox = "1.37.0" }},
+		{name: "e2fsprogs", mutate: func(value *Versions) { value.E2fsprogs = "1.47.3" }},
+		{name: "go", mutate: func(value *Versions) { value.Go = "1.25.6" }},
+		{name: "firecracker", mutate: func(value *Versions) { value.Firecracker = "v1.15.0" }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manifest := validL5DistributionManifest()
+			tt.mutate(&manifest.Versions)
+			if err := ValidateDistributionManifest(manifest); err == nil {
+				t.Fatal("ValidateDistributionManifest() error = nil, want pinned-version failure")
+			}
+
+			provenance := validL5Provenance(validL5DistributionManifest())
+			tt.mutate(&provenance.Versions)
+			if err := ValidateProvenance(provenance); err == nil {
+				t.Fatal("ValidateProvenance() error = nil, want pinned-version failure")
+			}
+		})
+	}
+}
+
 func TestL5ProvenanceMustCorrelateWithDistributionManifest(t *testing.T) {
 	tests := []struct {
 		name   string
