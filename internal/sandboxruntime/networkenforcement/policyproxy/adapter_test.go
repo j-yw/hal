@@ -22,7 +22,10 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
 )
 
-const l6TestNetwork = "tcp"
+const (
+	l6TestNetwork       = "tcp"
+	l6TestListenAddress = "127.0.0.1:0"
+)
 
 func TestL6PolicyProxyHTTPAllowDenyBoundsRedactionAndNoAmbientProxy(t *testing.T) {
 	upstream := newHTTPFixture(t)
@@ -199,7 +202,7 @@ func TestL6PolicyProxyReframesBufferedChunkedTrailerAndExpectRequest(t *testing.
 }
 
 func TestL6PolicyProxyClosesEmptyUpstreamRequestAndStripsRawResponseHopHeaders(t *testing.T) {
-	listener, err := net.Listen(l6TestNetwork, "127.0.0.1:0")
+	listener, err := net.Listen(l6TestNetwork, l6TestListenAddress)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -884,7 +887,7 @@ func mappingDialer(t *testing.T, mapping map[string]string, calls *atomic.Int32)
 
 func newHTTPFixture(t *testing.T) string {
 	t.Helper()
-	listener, err := net.Listen(l6TestNetwork, "127.0.0.1:0")
+	listener, err := net.Listen(l6TestNetwork, l6TestListenAddress)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -961,7 +964,7 @@ func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 
 func newTCPEchoFixture(t *testing.T) string {
 	t.Helper()
-	listener, err := net.Listen(l6TestNetwork, "127.0.0.1:0")
+	listener, err := net.Listen(l6TestNetwork, l6TestListenAddress)
 	if err != nil {
 		t.Fatal(err)
 	}
