@@ -78,6 +78,12 @@ identity, deterministic Go/kernel/ext4 controls, `CONFIG_MODULES=n`,
 downloads under a real no-network boundary with `BR2_PRIMARY_SITE_ONLY`,
 `BR2_DOWNLOAD_FORCE_CHECK_HASHES`, and no ccache.
 
+The e2fsprogs source evidence is specifically the Buildroot-selected
+`e2fsprogs-1.47.4.tar.xz` archive. The upstream signed checksum record maps
+that filename to
+`fd5bf388cbdbe006a3d3b318d983b2948382440acc85a87f1e7d108653e8db0b`;
+the lock rejects a suffix/digest pairing from any alternate compression.
+
 The two reproducibility runs use independent clean namespaces/containers but
 the same canonical internal Buildroot source and `O=` paths, with fresh
 host/staging/target/download state. They export to distinct caller

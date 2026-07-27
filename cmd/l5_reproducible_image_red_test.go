@@ -76,8 +76,8 @@ func TestL5PinnedSourceLockMatchesAuthoritativeInputs(t *testing.T) {
 		lock.Buildroot.SignatureURL != "https://buildroot.org/downloads/buildroot-2026.05.1.tar.xz.sign" {
 		t.Fatalf("Buildroot release identity = %#v", lock.Buildroot)
 	}
-	if !strings.HasPrefix(lock.Buildroot.SigningKeyURL, "https://gitlab.com/") {
-		t.Fatalf("Buildroot signing key URL is not the pinned official GitLab origin")
+	if lock.Buildroot.SigningKeyURL != "https://gitlab.com/-/snippets/4836881/raw/main/arnout@rnout.be.asc" {
+		t.Fatalf("Buildroot signing key URL is not the release-message GitLab key origin")
 	}
 
 	expected := map[string]l5SourceLock{
@@ -101,8 +101,8 @@ func TestL5PinnedSourceLockMatchesAuthoritativeInputs(t *testing.T) {
 			Name:     "e2fsprogs",
 			Version:  "1.47.4",
 			Purpose:  "buildroot_download",
-			Filename: "e2fsprogs-1.47.4.tar.gz",
-			URL:      "https://mirrors.edge.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v1.47.4/e2fsprogs-1.47.4.tar.gz",
+			Filename: "e2fsprogs-1.47.4.tar.xz",
+			URL:      "https://mirrors.edge.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v1.47.4/e2fsprogs-1.47.4.tar.xz",
 			SHA256:   "fd5bf388cbdbe006a3d3b318d983b2948382440acc85a87f1e7d108653e8db0b",
 		},
 		"firecracker": {
@@ -193,6 +193,30 @@ func TestL5PinnedSourceLockMatchesAuthoritativeInputs(t *testing.T) {
 	if !strings.Contains(goMod, "\ngo 1.25.7\n") {
 		t.Fatal("Go source lock does not match repository go directive")
 	}
+}
+
+func TestL5E2fsprogsLockUsesBuildrootSelectedXZArtifact(t *testing.T) {
+	path := filepath.Join("..", "tools", "microvm", "l5", "sources.lock.json")
+	var lock l5SourceLockFile
+	if err := json.Unmarshal(l5ReadRequiredFile(t, path), &lock); err != nil {
+		t.Fatalf("decode L5 source lock: %v", err)
+	}
+	for _, source := range lock.Sources {
+		if source.Name != "e2fsprogs" {
+			continue
+		}
+		const (
+			filename = "e2fsprogs-1.47.4.tar.xz"
+			digest   = "fd5bf388cbdbe006a3d3b318d983b2948382440acc85a87f1e7d108653e8db0b"
+		)
+		if source.Filename != filename ||
+			!strings.HasSuffix(source.URL, "/"+filename) ||
+			source.SHA256 != digest {
+			t.Fatalf("e2fsprogs lock does not identify the Buildroot-selected xz artifact: %#v", source)
+		}
+		return
+	}
+	t.Fatal("e2fsprogs source lock is missing")
 }
 
 func TestL5CacheManifestVerifierRejectsContainmentAndSetViolations(t *testing.T) {
@@ -429,6 +453,11 @@ func TestL5KernelBuildrootAndGuestInitLockIsolationContract(t *testing.T) {
 		}
 	}
 
+	users := strings.TrimSpace(string(l5ReadRequiredFile(t, filepath.Join(root, "users.txt"))))
+	if users != "agent 1000 agent 1000 = /workspace /bin/sh - Agent" {
+		t.Fatalf("users.txt = %q, want exact agent UID/GID 1000", users)
+	}
+
 	initSource := string(l5ReadRequiredFile(t, filepath.Join(root, "rootfs-overlay", "sbin", "init")))
 	for _, marker := range []string{
 		"mount -t proc",
@@ -494,7 +523,13 @@ func TestL5PreparedLinuxImagePrerequisiteTestCannotSkip(t *testing.T) {
 		"SHA256SUMS",
 		"l5RequiredDistributionOutputs",
 		"debugfs",
+		"/usr/bin/setpriv",
+		"/usr/bin/env",
+		"/bin/sh",
+		"/sbin/init",
+		"/sbin/hal-init",
 		"/usr/bin/hal-guest-agent",
+		"1000",
 	} {
 		if !strings.Contains(source, required) {
 			t.Errorf("prepared-Linux image prerequisite test missing %q", required)

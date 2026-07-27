@@ -35,7 +35,7 @@ The x86_64 build lock is:
   `7d83fa67ca75032b1ac6ef49973722073963c0cb9bc3aa7ef3efa749cf6c720f`;
 - BusyBox `1.38.0` archive SHA-256
   `34f9ea6ff8636f2c9241153b9114eefa9e65674a45318ae1ef95bb5f31c53bb2`;
-- e2fsprogs `1.47.4` archive SHA-256
+- e2fsprogs `1.47.4` `e2fsprogs-1.47.4.tar.xz` archive SHA-256
   `fd5bf388cbdbe006a3d3b318d983b2948382440acc85a87f1e7d108653e8db0b`;
 - Go `1.25.7` Linux x86_64 archive SHA-256
   `12e6d6a191091ae27dc31f6efc630e3a3b8ba409baf3573d955b196fdf086005`,

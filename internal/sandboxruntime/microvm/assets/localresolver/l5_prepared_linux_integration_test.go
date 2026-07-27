@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -56,13 +58,31 @@ func TestL5PreparedLinuxImagePrerequisites(t *testing.T) {
 	if err != nil {
 		t.Fatal("debugfs is required to inspect the L5 rootfs")
 	}
-	command := exec.Command(debugfs, "-R", "stat /usr/bin/hal-guest-agent", rootfs)
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatal("L5 rootfs does not contain the guest agent")
+	for _, path := range []string{"/sbin/init", "/sbin/hal-init", "/usr/bin/hal-guest-agent"} {
+		requireL5RootfsEntry(t, debugfs, rootfs, path, "regular", "0755", 0, 0)
 	}
-	if !strings.Contains(string(output), "Type: regular") {
-		t.Fatal("L5 rootfs guest agent is not a regular file")
+	requireL5RootfsEntry(t, debugfs, rootfs, "/bin/busybox", "regular", "0755", 0, 0)
+	for _, path := range []string{"/bin/sh", "/usr/bin/env", "/usr/bin/setpriv"} {
+		output := l5DebugfsCommand(t, debugfs, rootfs, "stat "+path)
+		switch {
+		case strings.Contains(output, "Type: regular"):
+			requireL5RootfsEntry(t, debugfs, rootfs, path, "regular", "0755", 0, 0)
+		case strings.Contains(output, "Type: symlink") &&
+			strings.Contains(output, `Fast link dest: "/bin/busybox"`):
+			// The only allowed applet link is the contained, inspected BusyBox binary.
+		default:
+			t.Fatal("L5 rootfs applet is neither a regular executable nor the intended BusyBox link")
+		}
+	}
+	requireL5RootfsEntry(t, debugfs, rootfs, "/workspace", "directory", "0700", 1000, 1000)
+
+	passwd := l5DebugfsCommand(t, debugfs, rootfs, "cat /etc/passwd")
+	if !strings.Contains(passwd, "agent:x:1000:1000:Agent:/workspace:/bin/sh") {
+		t.Fatal("L5 rootfs does not pin the agent passwd identity to 1000/1000")
+	}
+	group := l5DebugfsCommand(t, debugfs, rootfs, "cat /etc/group")
+	if !strings.Contains(group, "agent:x:1000:") {
+		t.Fatal("L5 rootfs does not pin the agent group identity to 1000")
 	}
 }
 
@@ -74,4 +94,33 @@ func l5PreparedRootfsPath(descriptor assets.LaunchDescriptor) string {
 		}
 	}
 	return ""
+}
+
+func requireL5RootfsEntry(
+	t *testing.T,
+	debugfs string,
+	rootfs string,
+	path string,
+	entryType string,
+	mode string,
+	uid int,
+	gid int,
+) {
+	t.Helper()
+	output := l5DebugfsCommand(t, debugfs, rootfs, "stat "+path)
+	if !strings.Contains(output, "Type: "+entryType) ||
+		!regexp.MustCompile(`Mode:\s+`+regexp.QuoteMeta(mode)+`\b`).MatchString(output) ||
+		!regexp.MustCompile(`User:\s+`+strconv.Itoa(uid)+`\s+Group:\s+`+strconv.Itoa(gid)+`\b`).MatchString(output) {
+		t.Fatal("L5 rootfs entry type, mode, or ownership is invalid")
+	}
+}
+
+func l5DebugfsCommand(t *testing.T, debugfs string, rootfs string, commandText string) string {
+	t.Helper()
+	command := exec.Command(debugfs, "-R", commandText, rootfs)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatal("debugfs failed to inspect an L5 rootfs prerequisite")
+	}
+	return string(output)
 }
