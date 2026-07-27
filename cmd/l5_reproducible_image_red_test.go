@@ -475,6 +475,8 @@ func TestL5KernelBuildrootAndGuestInitLockIsolationContract(t *testing.T) {
 		`BR2_x86_64=y`,
 		`BR2_LINUX_KERNEL=y`,
 		`BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.1.178"`,
+		`BR2_KERNEL_HEADERS_AS_KERNEL=y`,
+		`BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_1=y`,
 		`BR2_PACKAGE_BUSYBOX=y`,
 		`BR2_INIT_NONE=y`,
 		`BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y`,
@@ -484,6 +486,14 @@ func TestL5KernelBuildrootAndGuestInitLockIsolationContract(t *testing.T) {
 		if !strings.Contains(buildroot, setting) {
 			t.Errorf("buildroot.config missing %q", setting)
 		}
+	}
+
+	agentSource := string(l5ReadRequiredFile(t, filepath.Join("hal-guest-agent", "main.go")))
+	if !strings.Contains(agentSource, `GuestRoot:     "/workspace"`) {
+		t.Error("hal-guest-agent does not map guest paths from the locked /workspace root")
+	}
+	if strings.Contains(agentSource, `GuestRoot:     "/"`) {
+		t.Error("hal-guest-agent maps workspace requests from the guest filesystem root")
 	}
 
 	users := strings.TrimSpace(string(l5ReadRequiredFile(t, filepath.Join(root, "users.txt"))))

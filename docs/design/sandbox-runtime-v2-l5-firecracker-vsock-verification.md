@@ -74,7 +74,8 @@ identity, Linux `6.1.178`, BusyBox `1.38.0`, e2fsprogs `1.47.4`, Go `1.25.7`,
 Firecracker `v1.15.1`, the full pinned `linux/amd64` Buildroot build-image
 digest, every exact offline dependency filename and digest, clean source/tree
 identity, deterministic Go/kernel/ext4 controls, `CONFIG_MODULES=n`,
-`CONFIG_HW_RANDOM_VIRTIO=y`, and `e2fsck -fn`. It rejects missing and extra
+`CONFIG_HW_RANDOM_VIRTIO=y`, matching 6.1 kernel headers, the exact
+`/workspace` guest path mapping, and `e2fsck -fn`. It rejects missing and extra
 downloads under a real no-network boundary with `BR2_PRIMARY_SITE_ONLY`,
 `BR2_DOWNLOAD_FORCE_CHECK_HASHES`, and no ccache.
 The build preflights the exact local container image and disables daemon

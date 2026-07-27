@@ -25,6 +25,8 @@ export E2FSPROGS_FAKE_TIME=$SOURCE_DATE_EPOCH
 	--expected-owner "$EXPECTED_CACHE_UID"
 grep -Fq "lazy_itable_init=0" /src/tools/microvm/l5/buildroot.config
 grep -Fq "lazy_journal_init=0" /src/tools/microvm/l5/buildroot.config
+grep -Fxq "BR2_KERNEL_HEADERS_AS_KERNEL=y" /src/tools/microvm/l5/buildroot.config
+grep -Fxq "BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_1=y" /src/tools/microvm/l5/buildroot.config
 
 mkdir -p "$HOME" /build/guest-bin "$download_root" /build/gocache /build/gomodcache /build/goproxy/golang.org/x/sys/@v
 tar -C /build -xf /cache/buildroot-2026.05.1.tar.xz

@@ -111,6 +111,10 @@ caller export paths must not change any byte or appear in an artifact.
 Cross-host equality is a stronger handoff check, not the local L5 acceptance
 claim.
 
+The guest agent maps both its host-side workspace root and protocol-visible
+guest root to `/workspace`; absolute request paths therefore remain contained
+without being prefixed as `/workspace/workspace`.
+
 ### Vsock transport
 
 The fixed production guest CID is `3` and the fixed guest-agent port is

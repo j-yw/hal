@@ -28,16 +28,7 @@ func run() error {
 		_ = listener.Close()
 		return err
 	}
-	backend, err := server.NewLinuxBackend(server.LinuxBackendOptions{
-		WorkspaceRoot: "/workspace",
-		GuestRoot:     "/",
-		BaseEnvironment: []string{
-			"HOME=/workspace",
-			"PATH=/usr/bin:/bin",
-			"TMPDIR=/tmp",
-		},
-		ExecutablePaths: []string{"/usr/bin", "/bin"},
-	})
+	backend, err := server.NewLinuxBackend(linuxBackendOptions())
 	if err != nil {
 		_ = listener.Close()
 		return err
@@ -54,4 +45,17 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	return agent.Serve(ctx)
+}
+
+func linuxBackendOptions() server.LinuxBackendOptions {
+	return server.LinuxBackendOptions{
+		WorkspaceRoot: "/workspace",
+		GuestRoot:     "/workspace",
+		BaseEnvironment: []string{
+			"HOME=/workspace",
+			"PATH=/usr/bin:/bin",
+			"TMPDIR=/tmp",
+		},
+		ExecutablePaths: []string{"/usr/bin", "/bin"},
+	}
 }
