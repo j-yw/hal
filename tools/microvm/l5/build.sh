@@ -91,7 +91,7 @@ fi
 	echo "output directory must be empty" >&2
 	exit 1
 }
-build_root=$(mktemp -d)
+build_root=$(mktemp -d --tmpdir="$output_parent" .hal-l5-build.XXXXXXXXXX)
 cleanup() {
 	if [[ -n "${build_root:-}" && -d "$build_root" ]]; then
 		rm -rf -- "$build_root"

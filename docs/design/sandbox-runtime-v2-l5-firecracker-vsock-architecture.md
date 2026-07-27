@@ -83,7 +83,9 @@ no ambient module download. Canonical cache/output roots require private
 owner-controlled mode-`0700` parents. The exact cache set includes hidden
 entries, and its expected host UID and contents are rechecked inside the
 host-identity container. Guest Go compilation uses `GOPROXY=off`, `GOSUMDB=off`,
-and `-mod=readonly` after the exact local module artifacts are populated.
+and `-mod=readonly` after the exact local module artifacts are populated. All
+ephemeral build trees are independently created below the validated private
+output parent and removed after use.
 The kernel build fixes `KBUILD_BUILD_USER`,
 `KBUILD_BUILD_HOST`, `KBUILD_BUILD_TIMESTAMP`, and `KBUILD_BUILD_VERSION`.
 The kernel has `CONFIG_MODULES=n` and `CONFIG_HW_RANDOM_VIRTIO=y`.

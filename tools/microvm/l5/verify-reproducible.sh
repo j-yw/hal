@@ -33,7 +33,31 @@ done
 [[ "$canonical_source" == /src && "$canonical_cache" == /cache && "$canonical_build" == /build/output ]]
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-scratch=$(mktemp -d)
+current_uid=$(id -u)
+[[ "$(realpath -m -- "$output")" == "$output" ]] || usage
+output_parent=$(dirname -- "$output")
+[[ -d "$output_parent" && ! -L "$output_parent" &&
+	"$(realpath -e -- "$output_parent")" == "$output_parent" &&
+	"$(stat -c %u "$output_parent")" == "$current_uid" &&
+	"$(stat -c %a "$output_parent")" == 700 ]] || {
+	echo "output parent must be a canonical private directory" >&2
+	exit 1
+}
+if [[ -e "$output" ]]; then
+	[[ -d "$output" && ! -L "$output" &&
+		"$(realpath -e -- "$output")" == "$output" &&
+		"$(stat -c %u "$output")" == "$current_uid" &&
+		"$(stat -c %a "$output")" == 700 ]] || {
+		echo "output must be a canonical private directory" >&2
+		exit 1
+	}
+	[[ -z "$(find "$output" -mindepth 1 -maxdepth 1 -print -quit)" ]] || {
+		echo "output directory must be empty" >&2
+		exit 1
+	}
+fi
+
+scratch=$(mktemp -d --tmpdir="$output_parent" .hal-l5-verify.XXXXXXXXXX)
 cleanup() {
 	if [[ -d "$scratch" ]]; then
 		rm -rf -- "$scratch"
@@ -56,30 +80,9 @@ if grep -aRF -- "$build_a" "$build_a" "$build_b" >/dev/null ||
 	exit 1
 fi
 
-current_uid=$(id -u)
-[[ "$(realpath -m -- "$output")" == "$output" ]] || usage
-output_parent=$(dirname -- "$output")
-[[ -d "$output_parent" && ! -L "$output_parent" &&
-	"$(realpath -e -- "$output_parent")" == "$output_parent" &&
-	"$(stat -c %u "$output_parent")" == "$current_uid" &&
-	"$(stat -c %a "$output_parent")" == 700 ]] || {
-	echo "output parent must be a canonical private directory" >&2
-	exit 1
-}
 if [[ ! -e "$output" ]]; then
 	mkdir -m 0700 -- "$output"
 fi
-[[ -d "$output" && ! -L "$output" &&
-	"$(realpath -e -- "$output")" == "$output" &&
-	"$(stat -c %u "$output")" == "$current_uid" &&
-	"$(stat -c %a "$output")" == 700 ]] || {
-	echo "output must be a canonical private directory" >&2
-	exit 1
-}
-[[ -z "$(find "$output" -mindepth 1 -maxdepth 1 -print -quit)" ]] || {
-	echo "output directory must be empty" >&2
-	exit 1
-}
 for artifact in vmlinux rootfs.ext4 distribution-manifest.json provenance.json SHA256SUMS; do
 	cp "$build_a/$artifact" "$output/$artifact"
 done
