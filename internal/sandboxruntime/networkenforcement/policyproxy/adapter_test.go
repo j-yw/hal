@@ -82,7 +82,7 @@ func TestL6PolicyProxyHTTPAllowDenyBoundsRedactionAndNoAmbientProxy(t *testing.T
 	if err != nil {
 		t.Fatalf("denied request error: %v", err)
 	}
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("denied status = %d, want %d", resp.StatusCode, http.StatusForbidden)
@@ -96,7 +96,7 @@ func TestL6PolicyProxyHTTPAllowDenyBoundsRedactionAndNoAmbientProxy(t *testing.T
 	if err != nil {
 		t.Fatalf("oversize request error: %v", err)
 	}
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversize request status = %d, want %d", resp.StatusCode, http.StatusRequestEntityTooLarge)
@@ -106,7 +106,7 @@ func TestL6PolicyProxyHTTPAllowDenyBoundsRedactionAndNoAmbientProxy(t *testing.T
 	if err != nil {
 		t.Fatalf("oversize response error: %v", err)
 	}
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("oversize response status = %d, want %d", resp.StatusCode, http.StatusBadGateway)
@@ -194,7 +194,7 @@ func TestL6PolicyProxyReframesBufferedChunkedTrailerAndExpectRequest(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("framed request status = %d", resp.StatusCode)
@@ -279,7 +279,7 @@ func TestL6PolicyProxyRejectsInterimResponsesAndBoundsHeaderTerminatorExactly(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("interim response status = %d, want 502", resp.StatusCode)
@@ -439,7 +439,7 @@ func TestL6PolicyProxyRejectsDNSRebindingMixedAndUnsafeAnswersBeforeDial(t *test
 			if err != nil {
 				t.Fatalf("request error: %v", err)
 			}
-			io.Copy(io.Discard, resp.Body)
+			_, _ = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 			if resp.StatusCode != http.StatusForbidden {
 				t.Fatalf("status = %d, want 403", resp.StatusCode)
@@ -473,7 +473,7 @@ func TestL6PolicyProxyBoundsResolverAnswersAndSlowRequestBodies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("resolver overflow status = %d, want 502", resp.StatusCode)
@@ -517,7 +517,7 @@ func TestL6PolicyProxyEmitsOneFinalSanitizedDecisionForResolutionAndParseDenials
 	if err != nil {
 		t.Fatal(err)
 	}
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if len(records) != 1 {
 		t.Fatalf("resolution decision records = %d, want 1", len(records))
@@ -621,7 +621,7 @@ func TestL6PolicyProxyDecisionSinkPanicCannotWeakenDecisions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("request %d error: %v", i, err)
 		}
-		io.Copy(io.Discard, resp.Body)
+		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("request %d status = %d", i, resp.StatusCode)
@@ -1015,7 +1015,7 @@ func TestL6PolicyProxyResponseBodiesAreNotPartiallyPublishedWhenOversize(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("oversize header status = %d, want 502", resp.StatusCode)
