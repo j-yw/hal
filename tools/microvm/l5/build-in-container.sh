@@ -8,11 +8,6 @@ readonly buildroot_source=/build/buildroot
 readonly buildroot_output=/build/output
 readonly download_root=/build/download
 
-restore_host_ownership() {
-	chown -R "$EXPECTED_CACHE_UID:$EXPECTED_HOST_GID" /build /export
-}
-trap restore_host_ownership EXIT
-
 export TZ=UTC
 export LC_ALL=C
 export LANG=C
@@ -31,7 +26,7 @@ export E2FSPROGS_FAKE_TIME=$SOURCE_DATE_EPOCH
 grep -Fq "lazy_itable_init=0" /src/tools/microvm/l5/buildroot.config
 grep -Fq "lazy_journal_init=0" /src/tools/microvm/l5/buildroot.config
 
-mkdir -p /build /build/guest-bin "$download_root" /build/gocache /build/gomodcache /build/goproxy/golang.org/x/sys/@v
+mkdir -p "$HOME" /build/guest-bin "$download_root" /build/gocache /build/gomodcache /build/goproxy/golang.org/x/sys/@v
 tar -C /build -xf /cache/buildroot-2026.05.1.tar.xz
 mv /build/buildroot-2026.05.1 "$buildroot_source"
 tar -C /build -xf /cache/go1.25.7.linux-amd64.tar.gz

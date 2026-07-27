@@ -80,7 +80,7 @@ downloads under a real no-network boundary with `BR2_PRIMARY_SITE_ONLY`,
 The build preflights the exact local container image and disables daemon
 pulls, so a missing image cannot be satisfied during the offline step.
 Canonical cache/output roots require private mode-`0700` ownership; cache
-verification includes hidden entries and repeats inside the root-run
+verification includes hidden entries and repeats inside the host-identity
 container against the expected host UID. Guest Go compilation uses the exact
 cached module artifacts with `GOPROXY=off` and `-mod=readonly`.
 

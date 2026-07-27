@@ -114,15 +114,15 @@ grep -Fxq "$build_image" <<<"$local_image" || {
 
 docker run --rm \
 	--pull=never \
-	--user=0:0 \
+	--user="$current_uid:$current_gid" \
 	--platform=linux/amd64 \
 	--network=none \
+	--env HOME=/build/home \
 	--env "SOURCE_DATE_EPOCH=$source_date_epoch" \
 	--env "SOURCE_REVISION=$source_revision" \
 	--env "SOURCE_TREE=$source_tree" \
 	--env "HAL_L5_JOBS=$jobs" \
 	--env "EXPECTED_CACHE_UID=$current_uid" \
-	--env "EXPECTED_HOST_GID=$current_gid" \
 	--mount "type=bind,src=$repo_root,dst=/src,readonly" \
 	--mount "type=bind,src=$cache,dst=/cache,readonly" \
 	--mount "type=bind,src=$build_root,dst=/build" \

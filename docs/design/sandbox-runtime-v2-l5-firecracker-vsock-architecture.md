@@ -82,7 +82,7 @@ The guest binary uses `-trimpath`, `-buildvcs=false`, an empty Go build ID, and
 no ambient module download. Canonical cache/output roots require private
 owner-controlled mode-`0700` parents. The exact cache set includes hidden
 entries, and its expected host UID and contents are rechecked inside the
-root-run container. Guest Go compilation uses `GOPROXY=off`, `GOSUMDB=off`,
+host-identity container. Guest Go compilation uses `GOPROXY=off`, `GOSUMDB=off`,
 and `-mod=readonly` after the exact local module artifacts are populated.
 The kernel build fixes `KBUILD_BUILD_USER`,
 `KBUILD_BUILD_HOST`, `KBUILD_BUILD_TIMESTAMP`, and `KBUILD_BUILD_VERSION`.

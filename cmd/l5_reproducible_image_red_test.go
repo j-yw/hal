@@ -341,6 +341,7 @@ func TestL5BuildScriptsLockOfflineReproducibleContainerOrchestration(t *testing.
 			l5BuildImage,
 			"docker image inspect",
 			"--pull=never",
+			`--user="$current_uid:$current_gid"`,
 			"--platform=linux/amd64",
 			"--network=none",
 			"/src",
@@ -406,6 +407,7 @@ func TestL5BuildScriptsLockOfflineReproducibleContainerOrchestration(t *testing.
 				"--privileged",
 				"/var/run/docker.sock",
 				"BR2_FORCE_CHECK_HASHES",
+				"FORCE_UNSAFE_CONFIGURE",
 				"latest",
 				"ccache",
 			} {
