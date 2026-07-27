@@ -148,6 +148,69 @@ func TestL9AuthenticationRetryIsBoundedAndFailsClosed(t *testing.T) {
 	}
 }
 
+func TestL9IntermediateResponsesValidateHeadersBeforeChallengeOrRedirectUse(t *testing.T) {
+	t.Run("unauthorized challenge", func(t *testing.T) {
+		credentials := &recordingCredentialProvider{}
+		client := fakeHTTPDoer(func(*http.Request) (*http.Response, error) {
+			response := registryResponse(http.StatusUnauthorized, "", nil, nil)
+			response.Header["Bad Header"] = []string{`Basic realm="registry"`}
+			response.Header.Set("WWW-Authenticate", `Basic realm="registry"`)
+			return response, nil
+		})
+		resolver, err := registry.NewResolver(registry.Options{
+			Client:                 client,
+			AllowedRegistryOrigins: []string{registryOrigin},
+			CredentialProvider:     credentials,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, resolveErr := resolver.ResolveOCIArtifact(context.Background(), tagRequest("registry.example/hal/template:latest"))
+		requireRegistryErrorCode(t, resolveErr, registry.ErrorCodeResponseHeadersInvalid)
+		if len(credentials.calls) != 0 {
+			t.Fatalf("credential lookups = %d, want malformed response rejected first", len(credentials.calls))
+		}
+	})
+	t.Run("redirect location", func(t *testing.T) {
+		calls := 0
+		client := fakeHTTPDoer(func(*http.Request) (*http.Response, error) {
+			calls++
+			response := registryResponse(http.StatusTemporaryRedirect, "", nil, nil)
+			response.Header.Add("Location", registryOrigin+"/first")
+			response.Header.Add("Location", registryOrigin+"/second")
+			return response, nil
+		})
+		resolver := mustRegistryResolver(t, client, nil)
+		_, resolveErr := resolver.ResolveOCIArtifact(context.Background(), tagRequest("registry.example/hal/template:latest"))
+		requireRegistryErrorCode(t, resolveErr, registry.ErrorCodeRedirectRejected)
+		if calls != 1 {
+			t.Fatalf("redirect calls = %d, want duplicate Location rejected before next request", calls)
+		}
+	})
+	t.Run("bounded before location", func(t *testing.T) {
+		calls := 0
+		client := fakeHTTPDoer(func(*http.Request) (*http.Response, error) {
+			calls++
+			return registryResponse(http.StatusTemporaryRedirect, "", nil, map[string]string{
+				"Location": registryOrigin + "/" + strings.Repeat("x", 128),
+			}), nil
+		})
+		resolver, err := registry.NewResolver(registry.Options{
+			Client:                 client,
+			AllowedRegistryOrigins: []string{registryOrigin},
+			MaxResponseHeaderBytes: 32,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, resolveErr := resolver.ResolveOCIArtifact(context.Background(), tagRequest("registry.example/hal/template:latest"))
+		requireRegistryErrorCode(t, resolveErr, registry.ErrorCodeResponseHeadersOversize)
+		if calls != 1 {
+			t.Fatalf("redirect calls = %d, want oversized Location rejected before next request", calls)
+		}
+	})
+}
+
 func TestL9BlobRedirectPolicyStripsAuthorizationAndRejectsUnsafeHops(t *testing.T) {
 	fixture := newRegistryFixture(t)
 	const blobOrigin = "https://objects.example"

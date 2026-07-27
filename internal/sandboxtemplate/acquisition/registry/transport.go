@@ -131,6 +131,26 @@ func ValidateOriginAddress(origin string, address netip.Addr, exceptions []NonPu
 }
 
 func isReservedAddress(address netip.Addr) bool {
+	if address.Is6() && netip.MustParsePrefix("2001::/23").Contains(address) {
+		// The IANA IPv6 Special-Purpose Address Registry contains a broad
+		// 2001::/23 umbrella with a small set of explicitly globally reachable
+		// exceptions. Keep those usable rather than rejecting all special-use
+		// space indiscriminately.
+		for _, raw := range []string{
+			"2001:1::1/128",
+			"2001:1::2/128",
+			"2001:1::3/128",
+			"2001:3::/32",
+			"2001:4:112::/48",
+			"2001:20::/28",
+			"2001:30::/28",
+		} {
+			if netip.MustParsePrefix(raw).Contains(address) {
+				return false
+			}
+		}
+		return true
+	}
 	prefixes := []string{
 		"100.64.0.0/10",
 		"192.0.0.0/24",
@@ -139,7 +159,17 @@ func isReservedAddress(address netip.Addr) bool {
 		"198.51.100.0/24",
 		"203.0.113.0/24",
 		"240.0.0.0/4",
+		// Translation prefixes can encode non-public IPv4 destinations, so the
+		// acquisition transport applies a conservative SSRF boundary even where
+		// the prefix itself is globally reachable.
+		"64:ff9b::/96",
+		"64:ff9b:1::/48",
+		"100::/64",
+		"100:0:0:1::/64",
 		"2001:db8::/32",
+		"2002::/16",
+		"3fff::/20",
+		"5f00::/16",
 	}
 	for _, raw := range prefixes {
 		if netip.MustParsePrefix(raw).Contains(address) {

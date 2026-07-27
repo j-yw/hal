@@ -280,6 +280,10 @@ func (r *Resolver) doRedirecting(ctx context.Context, spec requestSpec, authoriz
 		if err != nil {
 			return nil, requestOrRegistryError(ctx, err)
 		}
+		if err := validateResponseHeaders(response.Header, r.maxResponseHeaderBytes); err != nil {
+			_ = response.Body.Close()
+			return nil, err
+		}
 		if !isRedirect(response.StatusCode) {
 			return response, nil
 		}
@@ -287,7 +291,11 @@ func (r *Resolver) doRedirecting(ctx context.Context, spec requestSpec, authoriz
 		if hop >= r.maxRedirects {
 			return nil, coded(ErrorCodeRedirectRejected, nil)
 		}
-		location := response.Header.Get("Location")
+		locations := response.Header.Values("Location")
+		if len(locations) != 1 {
+			return nil, coded(ErrorCodeRedirectRejected, nil)
+		}
+		location := locations[0]
 		next, crossOrigin, err := r.validateRedirect(spec, current, location)
 		if err != nil {
 			return nil, err
@@ -551,8 +559,14 @@ func splitChallengeParameters(value string) []string {
 func validateResponseHeaders(header http.Header, max int) error {
 	total := 0
 	for key, values := range header {
+		if !validHTTPHeaderName(key) {
+			return coded(ErrorCodeResponseHeadersInvalid, nil)
+		}
 		total += len(key)
 		for _, value := range values {
+			if !validHTTPHeaderValue(value) {
+				return coded(ErrorCodeResponseHeadersInvalid, nil)
+			}
 			total += len(value)
 		}
 		if total > max {
@@ -560,6 +574,38 @@ func validateResponseHeaders(header http.Header, max int) error {
 		}
 	}
 	return nil
+}
+
+func validHTTPHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, char := range name {
+		if (char >= 'a' && char <= 'z') ||
+			(char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') {
+			continue
+		}
+		switch char {
+		case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func validHTTPHeaderValue(value string) bool {
+	for _, char := range value {
+		if char == '\t' {
+			continue
+		}
+		if char < 0x20 || char == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func readBoundedBody(response *http.Response, max int, code ErrorCode) ([]byte, error) {

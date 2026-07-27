@@ -236,6 +236,42 @@ func TestL9DialPolicyRejectsEveryForbiddenAddressClass(t *testing.T) {
 	}
 }
 
+func TestL9DialPolicyRejectsCurrentIPv6SpecialPurposeRanges(t *testing.T) {
+	for _, raw := range []string{
+		"64:ff9b::c000:0201",
+		"64:ff9b:1::1",
+		"100::1",
+		"100:0:0:1::1",
+		"2001::1",
+		"2001:2::1",
+		"2001:db8::1",
+		"2002::1",
+		"3fff::1",
+		"5f00::1",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			if err := registry.ValidateDialAddress(netip.MustParseAddr(raw), false); err == nil {
+				t.Fatalf("ValidateDialAddress(%s) = nil, want special-purpose rejection", raw)
+			}
+		})
+	}
+}
+
+func TestL9DialPolicyPreservesIANAReachableIPv6Exceptions(t *testing.T) {
+	for _, raw := range []string{
+		"2001:3::1",
+		"2001:4:112::1",
+		"2001:20::1",
+		"2001:30::1",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			if err := registry.ValidateDialAddress(netip.MustParseAddr(raw), false); err != nil {
+				t.Fatalf("ValidateDialAddress(%s) error = %v, want current IANA globally reachable exception", raw, err)
+			}
+		})
+	}
+}
+
 func TestL9DialPolicyRejectsMalformedNonPublicOriginExceptions(t *testing.T) {
 	address := netip.MustParseAddr("127.0.0.1")
 	for _, origin := range []string{

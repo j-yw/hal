@@ -39,6 +39,7 @@ const (
 	ErrorCodeAuthenticationChallengeInvalid ErrorCode = "authentication_challenge_invalid"
 	ErrorCodeAuthenticationResponseOversize ErrorCode = "authentication_response_oversize"
 	ErrorCodeResponseHeadersOversize        ErrorCode = "response_headers_oversize"
+	ErrorCodeResponseHeadersInvalid         ErrorCode = "response_headers_invalid"
 	ErrorCodeRedirectRejected               ErrorCode = "redirect_rejected"
 	ErrorCodeManifestOversize               ErrorCode = "manifest_oversize"
 	ErrorCodeManifestMediaTypeUnsupported   ErrorCode = "manifest_media_type_unsupported"
