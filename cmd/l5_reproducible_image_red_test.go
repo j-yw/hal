@@ -348,6 +348,7 @@ func TestL5BuildScriptsLockOfflineReproducibleContainerOrchestration(t *testing.
 			"/cache",
 			"/build/output",
 			`mktemp -d --tmpdir="$output_parent"`,
+			"chmod -R u+w",
 			"readonly",
 			"SOURCE_DATE_EPOCH",
 		},

@@ -84,7 +84,8 @@ verification includes hidden entries and repeats inside the host-identity
 container against the expected host UID. Guest Go compilation uses the exact
 cached module artifacts with `GOPROXY=off` and `-mod=readonly`. Ephemeral build
 trees are created below the validated private output parent, not an ambient
-system temporary directory.
+system temporary directory; cleanup changes only caller write bits and does
+not recursively repair ownership.
 
 The e2fsprogs source evidence is specifically the Buildroot-selected
 `e2fsprogs-1.47.4.tar.xz` archive. The upstream signed checksum record maps

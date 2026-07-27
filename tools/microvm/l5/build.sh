@@ -94,6 +94,7 @@ fi
 build_root=$(mktemp -d --tmpdir="$output_parent" .hal-l5-build.XXXXXXXXXX)
 cleanup() {
 	if [[ -n "${build_root:-}" && -d "$build_root" ]]; then
+		chmod -R u+w -- "$build_root" 2>/dev/null || true
 		rm -rf -- "$build_root"
 	fi
 }
