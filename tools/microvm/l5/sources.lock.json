@@ -413,6 +413,15 @@
       "sha256": "cc72bd1009ba0cf63922e28f94d9d83b920aa2bb28f798a31d0691b02fa3c9b3"
     },
     {
+      "name": "tar",
+      "version": "1.35",
+      "purpose": "buildroot_download",
+      "filename": "tar-1.35.cpio.gz",
+      "url": "https://sources.buildroot.net/tar/tar-1.35.cpio.gz",
+      "sizeBytes": 4625633,
+      "sha256": "c77a38fcf25b21fd8209d20d35638744344ded239cfc7df80138bf46d3c6b16d"
+    },
+    {
       "name": "util-linux",
       "version": "2.41.5",
       "purpose": "buildroot_download",

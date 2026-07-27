@@ -2,6 +2,7 @@
 set -euo pipefail
 
 readonly build_image=registry.gitlab.com/buildroot.org/buildroot/base@sha256:f1e7f009dad6b6f44bf5fcb4b0b89c9228e42f9fe689142774b1db802d4c93c6
+readonly canonical_build=/build/output
 
 usage() {
 	echo "usage: build.sh --cache ABSOLUTE_DIRECTORY --output ABSOLUTE_DIRECTORY" >&2
@@ -50,6 +51,7 @@ done
 	exit 1
 }
 current_uid=$(id -u)
+current_gid=$(id -g)
 [[ -d "$cache" && ! -L "$cache" && "$(realpath -e -- "$cache")" == "$cache" ]] || {
 	echo "cache must be a canonical real directory" >&2
 	exit 1
@@ -120,9 +122,10 @@ docker run --rm \
 	--env "SOURCE_TREE=$source_tree" \
 	--env "HAL_L5_JOBS=$jobs" \
 	--env "EXPECTED_CACHE_UID=$current_uid" \
+	--env "EXPECTED_HOST_GID=$current_gid" \
 	--mount "type=bind,src=$repo_root,dst=/src,readonly" \
 	--mount "type=bind,src=$cache,dst=/cache,readonly" \
-	--mount "type=bind,src=$build_root,dst=/build/output" \
+	--mount "type=bind,src=$build_root,dst=/build" \
 	--mount "type=bind,src=$output,dst=/export" \
 	"$build_image" \
 	/src/tools/microvm/l5/build-in-container.sh

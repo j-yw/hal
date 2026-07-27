@@ -8,6 +8,11 @@ readonly buildroot_source=/build/buildroot
 readonly buildroot_output=/build/output
 readonly download_root=/build/download
 
+restore_host_ownership() {
+	chown -R "$EXPECTED_CACHE_UID:$EXPECTED_HOST_GID" /build /export
+}
+trap restore_host_ownership EXIT
+
 export TZ=UTC
 export LC_ALL=C
 export LANG=C
