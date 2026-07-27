@@ -513,6 +513,7 @@ func TestL5KernelBuildrootAndGuestInitLockIsolationContract(t *testing.T) {
 		`BR2_PACKAGE_BUSYBOX=y`,
 		`BR2_INIT_NONE=y`,
 		`BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y`,
+		`BR2_ROOTFS_DEVICE_TABLE="system/device_table.txt /src/tools/microvm/l5/permissions.txt"`,
 		`BR2_TARGET_ROOTFS_EXT2=y`,
 		`BR2_TARGET_ROOTFS_EXT2_4=y`,
 	} {
@@ -544,6 +545,10 @@ func TestL5KernelBuildrootAndGuestInitLockIsolationContract(t *testing.T) {
 		if !strings.Contains(postBuild, marker) {
 			t.Errorf("post-build.sh missing locked applet materialization %q", marker)
 		}
+	}
+	permissions := strings.TrimSpace(string(l5ReadRequiredFile(t, filepath.Join(root, "permissions.txt"))))
+	if permissions != "/bin/busybox f 0755 0 0 - - - - -" {
+		t.Fatalf("permissions.txt does not override the package setuid BusyBox mode")
 	}
 
 	initSource := string(l5ReadRequiredFile(t, filepath.Join(root, "rootfs-overlay", "sbin", "init")))
