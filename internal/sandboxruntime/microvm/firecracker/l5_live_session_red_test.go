@@ -2,10 +2,29 @@ package firecracker
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
+
+func TestL5GuestTransportSessionInvalidationDistinguishesCallerCancellation(t *testing.T) {
+	t.Parallel()
+
+	for _, err := range []error{
+		context.Canceled,
+		context.DeadlineExceeded,
+		errors.Join(errors.New("wrapped"), context.Canceled),
+		errors.Join(errors.New("wrapped"), context.DeadlineExceeded),
+	} {
+		if shouldInvalidateGuestTransportSession(err) {
+			t.Fatalf("shouldInvalidateGuestTransportSession(%v) = true, want false", err)
+		}
+	}
+	if !shouldInvalidateGuestTransportSession(errors.New("transport failed")) {
+		t.Fatal("shouldInvalidateGuestTransportSession(transport failure) = false, want true")
+	}
+}
 
 func TestL5CallerCarriedReadinessCannotAuthorizeGuestTransport(t *testing.T) {
 	controller := firecrackerController{

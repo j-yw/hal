@@ -66,6 +66,10 @@ func TestL5VerificationLocksLiveSelectorAndBroadGates(t *testing.T) {
 		"TestL5PreparedLinuxImagePrerequisites",
 		"l5_firecracker_vsock_integration",
 		"HAL_L5_DISTRIBUTION_DIR",
+		"7e8b57e88c459396d4680d83dcdd8c7f72305447cb55b11f4ac98ad70a3f7825",
+		"bounded workspace tmpfs",
+		"process-group cleanup before teardown",
+		"independently probed guest-agent failure",
 		"must not skip",
 		"go test -count=1 -timeout=420s ./...",
 		"go test -count=1 -run '^$' ./...",
@@ -79,6 +83,39 @@ func TestL5VerificationLocksLiveSelectorAndBroadGates(t *testing.T) {
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("L5 verification missing %q", required)
+		}
+	}
+}
+
+func TestL5PreparedLinuxAcceptanceLocksIndependentProofAndCleanup(t *testing.T) {
+	path := filepath.Join(
+		"..",
+		"internal",
+		"sandboxruntime",
+		"microvm",
+		"firecrackerhost",
+		"l5_prepared_linux_e2e_test.go",
+	)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read L5 prepared-Linux acceptance: %v", err)
+	}
+	source := string(data)
+	for _, required := range []string{
+		"l5FirecrackerBinarySHA256",
+		"l5MountSizeAtMost",
+		"l5GuestReadinessGate",
+		"assertL5PreparedProcessGroupGone",
+		"newFirecrackerVsockTransport",
+		"killAndWaitAll",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("L5 prepared-Linux acceptance missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"t.Skip(", "t.Skipf(", "testing.Short()"} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("L5 prepared-Linux acceptance contains forbidden skip marker %q", forbidden)
 		}
 	}
 }

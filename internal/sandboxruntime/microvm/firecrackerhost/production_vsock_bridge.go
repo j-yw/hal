@@ -286,10 +286,16 @@ func (bridge *ProductionVsockBridge) Exec(ctx context.Context, req firecracker.G
 		return nil, errors.New("Firecracker production vsock session is unavailable")
 	}
 	result, err := session.transport.Exec(ctx, req)
-	if err != nil {
+	if shouldInvalidateProductionVsockSession(err) {
 		bridge.invalidate(session.runtimeID, session.handleID, session.generation)
 	}
 	return result, err
+}
+
+func shouldInvalidateProductionVsockSession(err error) bool {
+	return err != nil &&
+		!errors.Is(err, context.Canceled) &&
+		!errors.Is(err, context.DeadlineExceeded)
 }
 
 func (bridge *ProductionVsockBridge) CopyIn(ctx context.Context, req firecracker.GuestCopyRequest) error {

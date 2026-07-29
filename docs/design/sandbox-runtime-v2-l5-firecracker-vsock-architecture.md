@@ -41,7 +41,9 @@ The x86_64 build lock is:
   `12e6d6a191091ae27dc31f6efc630e3a3b8ba409baf3573d955b196fdf086005`,
   matching the repository's `go` directive and official Go download record;
 - Firecracker `v1.15.1` x86_64 release archive SHA-256
-  `d4a32ab2322d887ca1bc4a4e7afa9cc35393e6362dfc2b3becb389d362e4275a`;
+  `d4a32ab2322d887ca1bc4a4e7afa9cc35393e6362dfc2b3becb389d362e4275a`,
+  with extracted executable SHA-256
+  `7e8b57e88c459396d4680d83dcdd8c7f72305447cb55b11f4ac98ad70a3f7825`;
   and
 - the Buildroot `linux/amd64` build image
   `registry.gitlab.com/buildroot.org/buildroot/base@sha256:f1e7f009dad6b6f44bf5fcb4b0b89c9228e42f9fe689142774b1db802d4c93c6`.

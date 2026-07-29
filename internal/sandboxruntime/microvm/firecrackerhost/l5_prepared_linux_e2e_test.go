@@ -27,6 +27,7 @@ import (
 	assetbuild "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets/build"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets/localresolver"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent"
 )
 
 const (
@@ -34,6 +35,7 @@ const (
 	l5FirecrackerExecutable    = "firecracker"
 	l5FirecrackerVersion       = "Firecracker v1.15.1"
 	l5FirecrackerManifestValue = "v1.15.1"
+	l5FirecrackerBinarySHA256  = "7e8b57e88c459396d4680d83dcdd8c7f72305447cb55b11f4ac98ad70a3f7825"
 
 	l5BootTimeout      = 45 * time.Second
 	l5OperationTimeout = 30 * time.Second
@@ -45,7 +47,7 @@ func TestL5PreparedLinuxFirecrackerVsockE2E(t *testing.T) {
 	harness := newL5PreparedLinuxHarness(t, prerequisites)
 	t.Cleanup(harness.cleanup)
 
-	mainTarget := harness.startWithAPIAcceptanceGate(t, "contract")
+	mainTarget := harness.startWithGuestReadinessGate(t, "contract")
 	assertL5PreparedGuestReadiness(t, mainTarget)
 	harness.assertPrivateRuntimeState(t, mainTarget)
 	assertL5PreparedGuestIdentityAndMounts(t, harness.driver, mainTarget)
@@ -68,7 +70,7 @@ func TestL5PreparedLinuxFirecrackerVsockE2E(t *testing.T) {
 
 	lossTarget := harness.start(t, "agent-loss")
 	assertL5PreparedGuestReadiness(t, lossTarget)
-	assertL5PreparedGuestAgentLossFailsClosed(t, harness.driver, lossTarget)
+	assertL5PreparedGuestAgentLossFailsClosed(t, harness, lossTarget)
 	harness.deleteAndAssertContained(t, lossTarget)
 
 	harness.assertZeroOwnedRuntimeResources(t)
@@ -105,6 +107,10 @@ func requireL5PreparedLinuxPrerequisites(t *testing.T) l5PreparedLinuxPrerequisi
 	info, err := os.Stat(firecrackerPath)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		t.Fatal("L5 Firecracker/vsock acceptance requires an executable regular Firecracker binary")
+	}
+	firecrackerDigest, err := digestL5File(firecrackerPath)
+	if err != nil || firecrackerDigest != l5FirecrackerBinarySHA256 {
+		t.Fatal("L5 Firecracker/vsock acceptance requires the content-locked Firecracker binary")
 	}
 	versionCtx, versionCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer versionCancel()
@@ -157,7 +163,7 @@ type l5PreparedLinuxHarness struct {
 	t         *testing.T
 	driver    *microvm.Driver
 	tracker   *l5TrackingHostProcessRunner
-	apiGate   *l5APIAcceptanceGate
+	readyGate *l5GuestReadinessGate
 	baseRoot  string
 	stateRoot string
 
@@ -204,27 +210,35 @@ func newL5PreparedLinuxHarness(t *testing.T, prerequisites l5PreparedLinuxPrereq
 	config.GuestWorkDir = "/workspace"
 
 	tracker := newL5TrackingHostProcessRunner()
-	apiGate := newL5APIAcceptanceGate()
-	driver, err := NewLiveDriver(LiveDriverOptions{
+	liveOptions := LiveDriverOptions{
 		Config:               config,
 		BaseStateDir:         stateRoot,
 		HostProcessRunner:    tracker,
-		BootAcceptancePoller: apiGate,
+		BootAcceptancePoller: NewAPISocketBootAcceptancePoller(),
 		BootTimeout:          l5BootTimeout,
 		BootPollInterval:     10 * time.Millisecond,
 		GuestTimeout:         l5BootTimeout,
 		GuestPollInterval:    10 * time.Millisecond,
 		ProductionVsock:      true,
-	})
-	if err != nil {
-		t.Fatal("construct production L5 Firecracker driver failed")
 	}
+	backendOptions, err := NewLiveBackendOptions(liveOptions)
+	if err != nil {
+		t.Fatal("construct production L5 Firecracker backend options failed")
+	}
+	readyGate := newL5GuestReadinessGate(backendOptions.ProductionBridge)
+	backendOptions.ProductionBridge = readyGate
+	driver := microvm.NewDriver(microvm.DriverOptions{
+		Config:             config,
+		CapabilityDetector: liveOptions.CapabilityDetector,
+		Backend:            firecracker.NewBackend(backendOptions),
+		NetworkEnforcement: liveDriverNetworkEnforcement(liveOptions),
+	})
 	keepRoot = true
 	return &l5PreparedLinuxHarness{
 		t:         t,
 		driver:    driver,
 		tracker:   tracker,
-		apiGate:   apiGate,
+		readyGate: readyGate,
 		baseRoot:  baseRoot,
 		stateRoot: stateRoot,
 		targets:   make(map[string]sandboxruntime.Target),
@@ -295,7 +309,7 @@ func replaceL5DescriptorRootfsPath(descriptor *assets.LaunchDescriptor, scratchR
 	return false
 }
 
-func (harness *l5PreparedLinuxHarness) startWithAPIAcceptanceGate(t *testing.T, suffix string) sandboxruntime.Target {
+func (harness *l5PreparedLinuxHarness) startWithGuestReadinessGate(t *testing.T, suffix string) sandboxruntime.Target {
 	t.Helper()
 	created := harness.create(t, suffix)
 	type startResult struct {
@@ -306,7 +320,7 @@ func (harness *l5PreparedLinuxHarness) startWithAPIAcceptanceGate(t *testing.T, 
 	startCtx, startCancel := context.WithTimeout(context.Background(), l5BootTimeout)
 	defer func() {
 		startCancel()
-		harness.apiGate.release()
+		harness.readyGate.release()
 	}()
 	go func() {
 		target, err := harness.driver.Start(startCtx, sandboxruntime.LifecycleRequest{Target: created})
@@ -314,16 +328,16 @@ func (harness *l5PreparedLinuxHarness) startWithAPIAcceptanceGate(t *testing.T, 
 	}()
 
 	select {
-	case <-harness.apiGate.accepted:
+	case <-harness.readyGate.entered:
 	case started := <-result:
-		harness.apiGate.release()
+		harness.readyGate.release()
 		if started.err != nil {
 			t.Fatal("Firecracker failed before API acceptance")
 		}
-		t.Fatal("Firecracker start returned before the API-only acceptance gate")
+		t.Fatal("Firecracker start returned before guest readiness was withheld")
 	case <-time.After(l5BootTimeout):
-		harness.apiGate.release()
-		t.Fatal("Firecracker API socket was not accepted before the L5 timeout")
+		harness.readyGate.release()
+		t.Fatal("Firecracker did not advance from API acceptance to guest readiness before timeout")
 	}
 	if created.Runtime.Metadata != nil && created.Runtime.Metadata.GuestReadiness != nil {
 		t.Fatal("created target carried guest readiness before live protocol proof")
@@ -337,7 +351,7 @@ func (harness *l5PreparedLinuxHarness) startWithAPIAcceptanceGate(t *testing.T, 
 	assertL5PrivatePath(t, paths.StateDir, 0o700, true)
 	assertL5PrivatePath(t, paths.APISocketPath, 0o600, false)
 
-	harness.apiGate.release()
+	harness.readyGate.release()
 	select {
 	case started := <-result:
 		if started.err != nil || started.target == nil {
@@ -483,8 +497,9 @@ rm /workspace/l5-write-probe`
 		!l5MountOption(rootFields[2], "ro") ||
 		workspaceFields[1] != "tmpfs" ||
 		!l5MountOption(workspaceFields[2], "rw") ||
+		!l5MountSizeAtMost(workspaceFields[2], 512<<20) ||
 		rootFields[0] == workspaceFields[0] {
-		t.Fatal("L5 immutable ext4 root and separate writable tmpfs workspace were not proven")
+		t.Fatal("L5 immutable ext4 root and separate bounded writable tmpfs workspace were not proven")
 	}
 }
 
@@ -493,6 +508,30 @@ func l5MountOption(options, expected string) bool {
 		if option == expected {
 			return true
 		}
+	}
+	return false
+}
+
+func l5MountSizeAtMost(options string, maximum uint64) bool {
+	for _, option := range strings.Split(options, ",") {
+		value, ok := strings.CutPrefix(option, "size=")
+		if !ok || value == "" {
+			continue
+		}
+		scale := uint64(1)
+		switch suffix := value[len(value)-1]; suffix {
+		case 'k', 'K':
+			scale = 1 << 10
+			value = value[:len(value)-1]
+		case 'm', 'M':
+			scale = 1 << 20
+			value = value[:len(value)-1]
+		case 'g', 'G':
+			scale = 1 << 30
+			value = value[:len(value)-1]
+		}
+		size, err := strconv.ParseUint(value, 10, 64)
+		return err == nil && size > 0 && size <= maximum/scale
 	}
 	return false
 }
@@ -560,7 +599,7 @@ func assertL5PreparedExecTimeout(t *testing.T, driver *microvm.Driver, target sa
 	started := time.Now()
 	result, err := driver.Exec(ctx, sandboxruntime.ExecRequest{
 		Target:  target,
-		Args:    []string{"sh", "-c", "sleep 30"},
+		Args:    []string{"sh", "-c", l5ProcessGroupFixture("timeout")},
 		WorkDir: "/workspace",
 	})
 	if err == nil || result != nil || !errors.Is(err, context.DeadlineExceeded) {
@@ -569,6 +608,7 @@ func assertL5PreparedExecTimeout(t *testing.T, driver *microvm.Driver, target sa
 	if time.Since(started) > 5*time.Second {
 		t.Fatal("L5 guest exec timeout exceeded its bounded cleanup window")
 	}
+	assertL5PreparedProcessGroupGone(t, driver, target, "timeout")
 }
 
 func assertL5PreparedExecCancellation(t *testing.T, driver *microvm.Driver, target sandboxruntime.Target) {
@@ -578,29 +618,110 @@ func assertL5PreparedExecCancellation(t *testing.T, driver *microvm.Driver, targ
 	defer timer.Stop()
 	result, err := driver.Exec(ctx, sandboxruntime.ExecRequest{
 		Target:  target,
-		Args:    []string{"sh", "-c", "sleep 30"},
+		Args:    []string{"sh", "-c", l5ProcessGroupFixture("cancel")},
 		WorkDir: "/workspace",
 	})
 	if err == nil || result != nil || !errors.Is(err, context.Canceled) {
 		t.Fatal("L5 guest exec cancellation did not preserve explicit cancellation")
 	}
+	assertL5PreparedProcessGroupGone(t, driver, target, "cancel")
 }
 
-func assertL5PreparedGuestAgentLossFailsClosed(t *testing.T, driver *microvm.Driver, target sandboxruntime.Target) {
+func l5ProcessGroupFixture(label string) string {
+	return strings.ReplaceAll(`set -eu
+record_process() {
+	pid=$1
+	start=$(awk '{print $22}' "/proc/$pid/stat")
+	printf '%s:%s\n' "$pid" "$start"
+}
+record_process "$$" > /workspace/@-leader.identity
+trap '' TERM INT HUP
+sleep 30 &
+child=$!
+record_process "$child" > /workspace/@-child.identity
+wait "$child"`, "@", label)
+}
+
+func assertL5PreparedProcessGroupGone(t *testing.T, driver *microvm.Driver, target sandboxruntime.Target, label string) {
 	t.Helper()
+	script := strings.ReplaceAll(`set -eu
+for identity in /workspace/@-leader.identity /workspace/@-child.identity; do
+	[ -s "$identity" ]
+	read -r recorded < "$identity"
+	pid=${recorded%%:*}
+	start=${recorded#*:}
+	case "$pid:$start" in
+		*[!0-9:]*|:*|*:) exit 40 ;;
+	esac
+	if [ -r "/proc/$pid/stat" ]; then
+		current=$(awk '{print $22}' "/proc/$pid/stat")
+		[ "$current" != "$start" ] || exit 41
+	fi
+done
+rm /workspace/@-leader.identity /workspace/@-child.identity
+printf 'process-group-gone'`, "@", label)
+	stdout, stderr, result, err := l5GuestExec(context.Background(), driver, target, []string{"sh", "-c", script})
+	if err != nil || result == nil || result.ExitCode != 0 ||
+		stdout != "process-group-gone" || stderr != "" {
+		t.Fatal("L5 guest process group remained after timeout or cancellation")
+	}
+}
+
+func assertL5PreparedGuestAgentLossFailsClosed(t *testing.T, harness *l5PreparedLinuxHarness, target sandboxruntime.Target) {
+	t.Helper()
+	stdout, stderr, result, err := l5GuestExec(context.Background(), harness.driver, target, []string{
+		"sh", "-c", `printf '%s' "$PPID"`,
+	})
+	agentPID, parseErr := strconv.Atoi(strings.TrimSpace(stdout))
+	if err != nil || parseErr != nil || result == nil || result.ExitCode != 0 ||
+		stderr != "" || agentPID <= 1 {
+		t.Fatal("L5 guest-agent process identity was not established before loss")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_, err := driver.Exec(ctx, sandboxruntime.ExecRequest{
-		Target:  target,
-		Args:    []string{"sh", "-c", `kill -KILL "$PPID"; while :; do :; done`},
+	_, err = harness.driver.Exec(ctx, sandboxruntime.ExecRequest{
+		Target: target,
+		Args: []string{"sh", "-c", `set -eu
+[ "$PPID" = "$1" ]
+kill -KILL "$PPID"
+while :; do sleep 1; done`, "sh", strconv.Itoa(agentPID)},
 		WorkDir: "/workspace",
 	})
 	if err == nil {
 		t.Fatal("L5 guest-agent loss was reported as a successful exec")
 	}
+
+	paths := l5PathsForTarget(t, harness.stateRoot, target)
+	pids := harness.tracker.activePIDs()
+	if len(pids) != 1 {
+		t.Fatal("L5 guest-agent loss did not retain exactly one owned VM for fail-closed proof")
+	}
+	wire, wireErr := newFirecrackerVsockTransport(firecrackerVsockTransportOptions{
+		socketPath:       paths.VsockSocketPath,
+		guestPort:        L5GuestAgentPort,
+		expectedPeerPID:  pids[0],
+		handshakeTimeout: time.Second,
+		operationTimeout: time.Second,
+	})
+	if wireErr != nil {
+		t.Fatal("L5 guest-agent loss could not construct an independent readiness probe")
+	}
+	defer wire.Close()
+	client, clientErr := guestagent.NewClient(guestagent.ClientOptions{Transport: wire})
+	if clientErr != nil {
+		t.Fatal("L5 guest-agent loss could not construct an independent protocol client")
+	}
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, probeErr := client.Readiness(probeCtx, guestagent.ReadinessRequest{})
+	probeCancel()
+	if probeErr == nil {
+		t.Fatal("L5 independent protocol probe still reached the guest agent after loss")
+	}
+
 	retryCtx, retryCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer retryCancel()
-	result, retryErr := driver.Exec(retryCtx, sandboxruntime.ExecRequest{
+	var retryErr error
+	result, retryErr = harness.driver.Exec(retryCtx, sandboxruntime.ExecRequest{
 		Target:  target,
 		Args:    []string{"sh", "-c", "exit 0"},
 		WorkDir: "/workspace",
@@ -662,7 +783,7 @@ func (harness *l5PreparedLinuxHarness) deleteAndAssertContained(t *testing.T, ta
 	harness.forget(target)
 	if len(pids) == 1 {
 		waitForL5Condition(t, l5CleanupTimeout, func() bool {
-			return len(harness.tracker.activePIDs()) == 0 && l5ProcessAbsent(pids[0])
+			return len(harness.tracker.activePIDs()) == 0
 		}, "owned Firecracker process remained after teardown")
 	} else if len(harness.tracker.activePIDs()) != 0 {
 		t.Fatal("owned Firecracker process appeared during teardown")
@@ -716,14 +837,6 @@ func l5PathsForTarget(t *testing.T, stateRoot string, target sandboxruntime.Targ
 	return paths
 }
 
-func l5ProcessAbsent(pid int) bool {
-	if pid <= 0 {
-		return true
-	}
-	_, err := os.Stat(filepath.Join("/proc", strconv.Itoa(pid)))
-	return os.IsNotExist(err)
-}
-
 func l5OwnedMountCount(root string) int {
 	data, err := os.ReadFile("/proc/self/mountinfo")
 	if err != nil {
@@ -752,6 +865,7 @@ func (harness *l5PreparedLinuxHarness) assertZeroOwnedRuntimeResources(t *testin
 }
 
 func (harness *l5PreparedLinuxHarness) cleanup() {
+	harness.readyGate.release()
 	harness.mu.Lock()
 	targets := make([]sandboxruntime.Target, 0, len(harness.targets))
 	for _, target := range harness.targets {
@@ -764,11 +878,16 @@ func (harness *l5PreparedLinuxHarness) cleanup() {
 		cancel()
 		if err != nil {
 			harness.t.Errorf("cleanup of owned Firecracker target failed")
+			continue
 		}
 		harness.forget(target)
 	}
-	if pids := harness.tracker.activePIDs(); len(pids) != 0 {
+	if pids := harness.tracker.killAndWaitAll(l5CleanupTimeout); len(pids) != 0 {
 		harness.t.Errorf("owned Firecracker processes remain after test cleanup: %d", len(pids))
+		return
+	}
+	if count := l5OwnedMountCount(harness.baseRoot); count != 0 {
+		harness.t.Errorf("owned host mounts remain after test cleanup: %d", count)
 		return
 	}
 	if err := os.RemoveAll(harness.baseRoot); err != nil {
@@ -827,46 +946,63 @@ func equalL5Strings(left, right []string) bool {
 	return true
 }
 
-type l5APIAcceptanceGate struct {
-	delegate    APISocketBootAcceptancePoller
-	accepted    chan struct{}
-	released    chan struct{}
+type l5GuestReadinessGate struct {
+	delegate firecracker.ProductionVsockBridge
+	entered  chan struct{}
+	released chan struct{}
+
 	once        sync.Once
 	releaseOnce sync.Once
 }
 
-func newL5APIAcceptanceGate() *l5APIAcceptanceGate {
-	return &l5APIAcceptanceGate{
-		delegate: NewAPISocketBootAcceptancePoller(),
-		accepted: make(chan struct{}),
+func newL5GuestReadinessGate(delegate firecracker.ProductionVsockBridge) *l5GuestReadinessGate {
+	return &l5GuestReadinessGate{
+		delegate: delegate,
+		entered:  make(chan struct{}),
 		released: make(chan struct{}),
 	}
 }
 
-func (gate *l5APIAcceptanceGate) PollBootAcceptance(
+func (gate *l5GuestReadinessGate) ActivateSession(
 	ctx context.Context,
-	request firecracker.BootAcceptanceRequest,
-) (firecracker.BootAcceptanceResult, error) {
-	result, err := gate.delegate.PollBootAcceptance(ctx, request)
-	if err != nil || !result.ProcessAccepted || !result.APISocketAvailable {
-		return result, err
-	}
+	request firecracker.ProductionVsockSessionRequest,
+) (firecracker.GuestReadinessResult, string, error) {
 	first := false
 	gate.once.Do(func() {
 		first = true
-		close(gate.accepted)
+		close(gate.entered)
 	})
 	if first {
 		select {
 		case <-ctx.Done():
-			return firecracker.BootAcceptanceResult{}, ctx.Err()
+			return firecracker.GuestReadinessResult{}, "", ctx.Err()
 		case <-gate.released:
 		}
 	}
-	return result, nil
+	return gate.delegate.ActivateSession(ctx, request)
 }
 
-func (gate *l5APIAcceptanceGate) release() {
+func (gate *l5GuestReadinessGate) SessionActive(request firecracker.ProductionVsockSessionRequest, generation string) bool {
+	return gate.delegate.SessionActive(request, generation)
+}
+
+func (gate *l5GuestReadinessGate) InvalidateSession(request firecracker.ProductionVsockSessionRequest, generation string) {
+	gate.delegate.InvalidateSession(request, generation)
+}
+
+func (gate *l5GuestReadinessGate) Exec(ctx context.Context, request firecracker.GuestExecRequest) (*sandboxruntime.ExecResult, error) {
+	return gate.delegate.Exec(ctx, request)
+}
+
+func (gate *l5GuestReadinessGate) CopyIn(ctx context.Context, request firecracker.GuestCopyRequest) error {
+	return gate.delegate.CopyIn(ctx, request)
+}
+
+func (gate *l5GuestReadinessGate) CopyOut(ctx context.Context, request firecracker.GuestCopyRequest) error {
+	return gate.delegate.CopyOut(ctx, request)
+}
+
+func (gate *l5GuestReadinessGate) release() {
 	gate.releaseOnce.Do(func() {
 		close(gate.released)
 	})
@@ -876,13 +1012,18 @@ type l5TrackingHostProcessRunner struct {
 	delegate OSExecProcessRunner
 
 	mu        sync.Mutex
-	processes map[int]<-chan struct{}
+	processes map[int]l5TrackedHostProcess
+}
+
+type l5TrackedHostProcess struct {
+	process HostProcess
+	done    <-chan struct{}
 }
 
 func newL5TrackingHostProcessRunner() *l5TrackingHostProcessRunner {
 	return &l5TrackingHostProcessRunner{
 		delegate:  NewOSExecProcessRunner(),
-		processes: make(map[int]<-chan struct{}),
+		processes: make(map[int]l5TrackedHostProcess),
 	}
 }
 
@@ -900,7 +1041,10 @@ func (runner *l5TrackingHostProcessRunner) StartHostProcess(
 		return nil, errors.New("production Firecracker process identity is unavailable")
 	}
 	runner.mu.Lock()
-	runner.processes[identity.HostPID()] = identity.Done()
+	runner.processes[identity.HostPID()] = l5TrackedHostProcess{
+		process: process,
+		done:    identity.Done(),
+	}
 	runner.mu.Unlock()
 	return process, nil
 }
@@ -909,9 +1053,9 @@ func (runner *l5TrackingHostProcessRunner) activePIDs() []int {
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
 	active := make([]int, 0, len(runner.processes))
-	for pid, done := range runner.processes {
+	for pid, tracked := range runner.processes {
 		select {
-		case <-done:
+		case <-tracked.done:
 			delete(runner.processes, pid)
 		default:
 			active = append(active, pid)
@@ -921,7 +1065,43 @@ func (runner *l5TrackingHostProcessRunner) activePIDs() []int {
 	return active
 }
 
+func (runner *l5TrackingHostProcessRunner) killAndWaitAll(timeout time.Duration) []int {
+	if timeout <= 0 {
+		timeout = l5CleanupTimeout
+	}
+	runner.mu.Lock()
+	active := make(map[int]l5TrackedHostProcess, len(runner.processes))
+	for pid, tracked := range runner.processes {
+		select {
+		case <-tracked.done:
+			delete(runner.processes, pid)
+		default:
+			active[pid] = tracked
+		}
+	}
+	runner.mu.Unlock()
+
+	for _, tracked := range active {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		_ = tracked.process.Kill(ctx)
+		cancel()
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for pid, tracked := range active {
+		select {
+		case <-tracked.done:
+			runner.mu.Lock()
+			delete(runner.processes, pid)
+			runner.mu.Unlock()
+		case <-deadline.C:
+			return runner.activePIDs()
+		}
+	}
+	return runner.activePIDs()
+}
+
 var (
-	_ BootAcceptancePoller = (*l5APIAcceptanceGate)(nil)
-	_ HostProcessRunner    = (*l5TrackingHostProcessRunner)(nil)
+	_ firecracker.ProductionVsockBridge = (*l5GuestReadinessGate)(nil)
+	_ HostProcessRunner                 = (*l5TrackingHostProcessRunner)(nil)
 )

@@ -481,10 +481,18 @@ func (c firecrackerController) Exec(ctx context.Context, req microvm.ControllerE
 		Stderr:  req.Stderr,
 	})
 	if err != nil {
-		c.invalidateGuestSession(req.Target)
+		if shouldInvalidateGuestTransportSession(err) {
+			c.invalidateGuestSession(req.Target)
+		}
 		return nil, newGuestTransportExecFailure(req.Operation, err)
 	}
 	return result, nil
+}
+
+func shouldInvalidateGuestTransportSession(err error) bool {
+	return err != nil &&
+		!errors.Is(err, context.Canceled) &&
+		!errors.Is(err, context.DeadlineExceeded)
 }
 
 func (c firecrackerController) CopyIn(ctx context.Context, req microvm.ControllerCopyRequest) error {

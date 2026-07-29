@@ -53,9 +53,13 @@ path/endpoint evidence, and no cross-phase network/credential/OCI behavior.
 `TestL5PreparedLinuxFirecrackerVsockE2E` is selected only by
 `l5_firecracker_vsock_integration`. Once selected it must not skip. It consumes
 only the pinned Firecracker binary and assets produced by the checked-in
-pipeline, uses a scratch rootfs, and proves real readiness, exec exit/output,
-copy integrity, timeout, cancellation, guest-agent failure, escaped-process
-containment by VM teardown, and zero owned processes/sockets/state afterward.
+pipeline. The executable itself must match SHA-256
+`7e8b57e88c459396d4680d83dcdd8c7f72305447cb55b11f4ac98ad70a3f7825`.
+The test uses a scratch rootfs and proves real readiness, exec exit/output,
+copy integrity, bounded workspace tmpfs, timeout/cancellation
+process-group cleanup before teardown, independently probed guest-agent failure,
+escaped-process containment by VM teardown, and zero owned
+processes/sockets/state afterward.
 The same tag first selects `TestL5PreparedLinuxImagePrerequisites`, with
 `HAL_L5_DISTRIBUTION_DIR` naming the caller-installed distribution. That test
 must fail, not skip, when the host, architecture, manifest, or installed asset

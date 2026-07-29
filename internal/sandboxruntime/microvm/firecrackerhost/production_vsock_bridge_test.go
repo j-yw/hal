@@ -3,6 +3,7 @@ package firecrackerhost
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -14,6 +15,24 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"
 )
+
+func TestL5ProductionVsockSessionInvalidationDistinguishesCallerCancellation(t *testing.T) {
+	t.Parallel()
+
+	for _, err := range []error{
+		context.Canceled,
+		context.DeadlineExceeded,
+		errors.Join(errors.New("wrapped"), context.Canceled),
+		errors.Join(errors.New("wrapped"), context.DeadlineExceeded),
+	} {
+		if shouldInvalidateProductionVsockSession(err) {
+			t.Fatalf("shouldInvalidateProductionVsockSession(%v) = true, want false", err)
+		}
+	}
+	if !shouldInvalidateProductionVsockSession(errors.New("transport failed")) {
+		t.Fatal("shouldInvalidateProductionVsockSession(transport failure) = false, want true")
+	}
+}
 
 func TestL5ProductionVsockBridgePeerMismatchIsFatalWithoutRetry(t *testing.T) {
 	fixture := newL5ProductionBridgeFixture(t, os.Getpid()+1)
