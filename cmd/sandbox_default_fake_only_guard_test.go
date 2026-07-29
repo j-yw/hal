@@ -25,7 +25,8 @@ func TestPhase19DefaultTestsAvoidPodmanDaemonsAndWorkerIntegrationEnv(t *testing
 		isL3PreparedLinuxGuard := rel == "cmd/l3_prepared_linux_verification_test.go"
 		isL4PreparedLinuxGuard := rel == "cmd/l4_guest_agent_server_docs_test.go"
 		isL5PrivateVsockFixture := rel == "internal/sandboxruntime/microvm/firecrackerhost/l5_vsock_transport_red_test.go" ||
-			rel == "internal/sandboxruntime/microvm/firecrackerhost/production_vsock_bridge_test.go"
+			rel == "internal/sandboxruntime/microvm/firecrackerhost/production_vsock_bridge_test.go" ||
+			rel == "internal/sandboxruntime/microvm/firecrackerhost/real_process_runner_private_umask_linux_test.go"
 
 		if phase19UsesRealPodman(source) && !hasPodmanTag && !isL3PreparedLinuxGuard && !isL4PreparedLinuxGuard {
 			t.Fatalf("%s uses real Podman integration hooks without the podman_integration build tag", rel)
