@@ -312,7 +312,7 @@ metadata; L10 still owns the full strict conjunction/default decision.
   terminated, and at most 64 bytes.
 - The guest agent runs as a dedicated non-root UID/GID with `/workspace` on a
   distinct size-bounded tmpfs and the image root drive read-only. Live
-  acceptance requires UID/GID `1000`, exactly one supplementary group `1000`,
+  acceptance requires UID/GID `1000`, no supplementary groups,
   and `NoNewPrivs: 1` in the guest process status.
 - The guest process receives a fixed environment, fixed executable roots, no
   ambient host data, no network configuration, and no credentials.
@@ -398,8 +398,9 @@ verifies the exact `SHA256SUMS` entry set and every referenced byte, rejects
 unsafe roots/manifests/assets through no-follow opens, and uses read-only
 filesystem inspection to prove `/usr/bin/hal-guest-agent` is present in the
 built rootfs. The prerequisite creates a private digest-verified rootfs copy
-through a no-follow file descriptor before bounded read-only debugfs inspection;
-it never gives debugfs a caller-controlled asset pathname.
+through a no-follow file descriptor, then performs bounded read-only debugfs inspection
+through a fixed stat/cat allowlist; it never gives debugfs a
+caller-controlled asset pathname or command.
 It boots the produced image and proves:
 
 - API acceptance alone is not readiness;

@@ -552,10 +552,10 @@ rm /workspace/l5-write-probe`
 	values := l5KeyValueLines(stdout)
 	if values["uid"] != "1000" ||
 		values["gid"] != "1000" ||
-		values["groups"] != "1000" ||
+		values["groups"] != "" ||
 		values["no-new-privs"] != "1" ||
 		values["workspace-stat"] != "1000:1000:700" {
-		t.Fatal("L5 guest agent or workspace does not prove UID/GID 1000, cleared groups, no_new_privs, and mode 0700")
+		t.Fatal("L5 guest agent or workspace does not prove UID/GID 1000, no supplementary groups, no_new_privs, and mode 0700")
 	}
 	rootFields := strings.SplitN(values["root-mount"], ":", 3)
 	workspaceFields := strings.SplitN(values["workspace-mount"], ":", 3)

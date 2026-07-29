@@ -58,10 +58,11 @@ func TestL5ArchitectureContainsMandatoryPhaseSections(t *testing.T) {
 		"non-Linux build-tagged stub",
 		"Once selected it never skips",
 		"L5 does not implement policy proxying",
-		"exactly one supplementary group",
+		"no supplementary groups",
 		"`NoNewPrivs: 1`",
 		"private digest-verified rootfs copy",
 		"bounded read-only debugfs inspection",
+		"fixed stat/cat allowlist",
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("L5 architecture missing %q", required)
@@ -90,10 +91,11 @@ func TestL5VerificationLocksLiveSelectorAndBroadGates(t *testing.T) {
 		"must not skip",
 		"regular util-linux binary",
 		"non-executing inspection",
-		"exactly one supplementary group",
+		"no supplementary groups",
 		"`NoNewPrivs: 1`",
 		"private digest-verified rootfs copy",
 		"bounded read-only debugfs inspection",
+		"fixed stat/cat allowlist",
 		"go test -count=1 -timeout=420s ./...",
 		"go test -count=1 -run '^$' ./...",
 		"go vet ./...",
@@ -163,7 +165,7 @@ func TestL5PreparedLinuxIdentityProofCoversPrivilegeDrop(t *testing.T) {
 	for _, required := range []string{
 		"Groups:",
 		"NoNewPrivs:",
-		`values["groups"] != "1000"`,
+		`values["groups"] != ""`,
 		`values["no-new-privs"] != "1"`,
 	} {
 		if !strings.Contains(source, required) {

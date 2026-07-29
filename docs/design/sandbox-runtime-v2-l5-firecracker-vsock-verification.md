@@ -60,7 +60,7 @@ copy integrity, bounded workspace tmpfs, timeout/cancellation
 process-group cleanup before teardown, independently probed guest-agent failure,
 escaped-process containment by VM teardown, and zero owned
 processes/sockets/state afterward. Its identity probe requires UID/GID `1000`,
-exactly one supplementary group `1000`, and `NoNewPrivs: 1` in guest process
+no supplementary groups, and `NoNewPrivs: 1` in guest process
 status.
 Guest transport tests separately prove that request `POLLRDHUP` framing does
 not cancel dispatch while a later full-peer `POLLHUP` does cancel the live
@@ -81,9 +81,10 @@ of that binary's embedded option identifiers to prove the exact
 non-root privilege-drop option names required by guest init; the live E2E
 proves their behavior inside the guest rather than executing rootfs content on
 the host. The prerequisite first makes a private digest-verified rootfs copy
-through a no-follow file descriptor and performs bounded read-only debugfs inspection
-only on that copy, so caller-controlled path swaps and oversized file output
-fail before inspection evidence is accepted.
+through a no-follow file descriptor, then performs bounded read-only debugfs inspection
+through a fixed stat/cat allowlist only on that copy, so
+caller-controlled path swaps, commands, and oversized file output fail before
+inspection evidence is accepted.
 `TestL5CopyVerifiedRootfsForInspectionCopiesDigestLockedBytes` is a tagged
 fake-only regression check for that private copy boundary.
 

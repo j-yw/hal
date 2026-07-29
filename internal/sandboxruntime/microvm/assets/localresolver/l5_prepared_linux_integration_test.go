@@ -28,6 +28,31 @@ const (
 	l5DebugfsTimeout                 = 5 * time.Second
 )
 
+type l5DebugfsOperation string
+
+const (
+	l5DebugfsOperationStat l5DebugfsOperation = "stat"
+	l5DebugfsOperationCat  l5DebugfsOperation = "cat"
+)
+
+var l5DebugfsAllowedPaths = map[l5DebugfsOperation]map[string]struct{}{
+	l5DebugfsOperationStat: {
+		"/sbin/init":               {},
+		"/sbin/hal-init":           {},
+		"/usr/bin/hal-guest-agent": {},
+		"/bin/busybox":             {},
+		"/bin/sh":                  {},
+		"/usr/bin/env":             {},
+		"/usr/bin/setpriv":         {},
+		"/workspace":               {},
+	},
+	l5DebugfsOperationCat: {
+		"/usr/bin/setpriv": {},
+		"/etc/passwd":      {},
+		"/etc/group":       {},
+	},
+}
+
 func TestL5PreparedLinuxImagePrerequisites(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Fatalf("L5 prepared image prerequisite requires Linux")
@@ -71,7 +96,7 @@ func TestL5PreparedLinuxImagePrerequisites(t *testing.T) {
 	}
 	requireL5RootfsEntry(t, debugfs, rootfs, "/bin/busybox", "regular", "0755", 0, 0)
 	for _, path := range []string{"/bin/sh", "/usr/bin/env"} {
-		output := l5DebugfsCommand(t, debugfs, rootfs, "stat "+path)
+		output := l5DebugfsCommand(t, debugfs, rootfs, l5DebugfsOperationStat, path)
 		switch {
 		case strings.Contains(output, "Type: regular"):
 			requireL5RootfsEntry(t, debugfs, rootfs, path, "regular", "0755", 0, 0)
@@ -86,11 +111,11 @@ func TestL5PreparedLinuxImagePrerequisites(t *testing.T) {
 	requireL5SetprivPrivilegeDropOptions(t, debugfs, rootfs)
 	requireL5RootfsEntry(t, debugfs, rootfs, "/workspace", "directory", "0700", 1000, 1000)
 
-	passwd := l5DebugfsCommand(t, debugfs, rootfs, "cat /etc/passwd")
+	passwd := l5DebugfsCommand(t, debugfs, rootfs, l5DebugfsOperationCat, "/etc/passwd")
 	if !strings.Contains(passwd, "agent:x:1000:1000:Agent:/workspace:/bin/sh") {
 		t.Fatal("L5 rootfs does not pin the agent passwd identity to 1000/1000")
 	}
-	group := l5DebugfsCommand(t, debugfs, rootfs, "cat /etc/group")
+	group := l5DebugfsCommand(t, debugfs, rootfs, l5DebugfsOperationCat, "/etc/group")
 	if !strings.Contains(group, "agent:x:1000:") {
 		t.Fatal("L5 rootfs does not pin the agent group identity to 1000")
 	}
@@ -201,7 +226,7 @@ func requireL5RootfsEntry(
 	gid int,
 ) {
 	t.Helper()
-	output := l5DebugfsCommand(t, debugfs, rootfs, "stat "+path)
+	output := l5DebugfsCommand(t, debugfs, rootfs, l5DebugfsOperationStat, path)
 	if !strings.Contains(output, "Type: "+entryType) ||
 		!regexp.MustCompile(`Mode:\s+`+regexp.QuoteMeta(mode)+`\b`).MatchString(output) ||
 		!regexp.MustCompile(`User:\s+`+strconv.Itoa(uid)+`\s+Group:\s+`+strconv.Itoa(gid)+`\b`).MatchString(output) {
@@ -211,7 +236,7 @@ func requireL5RootfsEntry(
 
 func requireL5SetprivPrivilegeDropOptions(t *testing.T, debugfs string, rootfs string) {
 	t.Helper()
-	output := l5DebugfsCommand(t, debugfs, rootfs, "cat /usr/bin/setpriv")
+	output := l5DebugfsCommand(t, debugfs, rootfs, l5DebugfsOperationCat, "/usr/bin/setpriv")
 	for _, option := range []string{"--reuid", "--regid", "--clear-groups", "--no-new-privs"} {
 		if !strings.Contains(output, option) {
 			t.Fatalf("L5 rootfs setpriv does not contain required privilege-drop option %q", option)
@@ -219,8 +244,22 @@ func requireL5SetprivPrivilegeDropOptions(t *testing.T, debugfs string, rootfs s
 	}
 }
 
-func l5DebugfsCommand(t *testing.T, debugfs string, rootfs string, commandText string) string {
+func l5DebugfsCommand(
+	t *testing.T,
+	debugfs string,
+	rootfs string,
+	operation l5DebugfsOperation,
+	path string,
+) string {
 	t.Helper()
+	allowedPaths, ok := l5DebugfsAllowedPaths[operation]
+	if !ok {
+		t.Fatal("L5 rootfs inspection operation is not read-only")
+	}
+	if _, ok := allowedPaths[path]; !ok {
+		t.Fatal("L5 rootfs inspection path is not allowlisted")
+	}
+	commandText := string(operation) + " " + path
 	ctx, cancel := context.WithTimeout(context.Background(), l5DebugfsTimeout)
 	defer cancel()
 	command := exec.CommandContext(ctx, debugfs, "-R", commandText, rootfs)

@@ -646,8 +646,10 @@ func TestL5PreparedLinuxImagePrerequisiteTestCannotSkip(t *testing.T) {
 
 func TestL5PreparedLinuxImageInspectionNeverExecutesRootfsContent(t *testing.T) {
 	source := l5PreparedLinuxImagePrerequisiteSource(t)
-	if !strings.Contains(source, "cat /usr/bin/setpriv") {
-		t.Fatal("prepared-Linux image prerequisite test must inspect setpriv without extracting it")
+	for _, required := range []string{"l5DebugfsOperationCat", "\"/usr/bin/setpriv\""} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("prepared-Linux image prerequisite test must inspect setpriv without extracting it: %q", required)
+		}
 	}
 	for _, forbidden := range []string{
 		"exec.Command(setprivPath",
@@ -692,8 +694,43 @@ func TestL5PreparedLinuxImageInspectionNeverExecutesRootfsContent(t *testing.T) 
 		}
 		return true
 	})
+	rootfsAssignments := 0
+	debugfsCalls := 0
+	ast.Inspect(file, func(node ast.Node) bool {
+		switch value := node.(type) {
+		case *ast.AssignStmt:
+			for index, left := range value.Lhs {
+				if !l5ASTIdentifier(left, "rootfs") {
+					continue
+				}
+				rootfsAssignments++
+				if len(value.Lhs) != len(value.Rhs) || !l5ASTPinnedRootfsCopy(value.Rhs[index]) {
+					t.Error("prepared-Linux image prerequisite test must assign rootfs only from the verified private copy")
+				}
+			}
+		case *ast.CallExpr:
+			if !l5ASTIdentifier(value.Fun, "l5DebugfsCommand") {
+				break
+			}
+			debugfsCalls++
+			if len(value.Args) != 5 ||
+				!l5ASTIdentifier(value.Args[0], "t") ||
+				!l5ASTIdentifier(value.Args[1], "debugfs") ||
+				!l5ASTIdentifier(value.Args[2], "rootfs") ||
+				!l5ASTReadOnlyDebugfsOperation(value.Args[3]) {
+				t.Error("prepared-Linux image prerequisite test may inspect only the pinned rootfs through stat/cat")
+			}
+		}
+		return true
+	})
 	if commandContextCalls != 1 {
 		t.Fatalf("prepared-Linux image prerequisite test debugfs command count = %d, want 1", commandContextCalls)
+	}
+	if rootfsAssignments != 1 {
+		t.Fatalf("prepared-Linux image prerequisite test rootfs assignment count = %d, want 1", rootfsAssignments)
+	}
+	if debugfsCalls != 5 {
+		t.Fatalf("prepared-Linux image prerequisite test inspect call count = %d, want 5", debugfsCalls)
 	}
 }
 
@@ -709,6 +746,26 @@ func l5ASTString(expression ast.Expr, want string) bool {
 	}
 	value, err := strconv.Unquote(literal.Value)
 	return err == nil && value == want
+}
+
+func l5ASTPinnedRootfsCopy(expression ast.Expr) bool {
+	call, ok := expression.(*ast.CallExpr)
+	return ok &&
+		l5ASTIdentifier(call.Fun, "l5CopyVerifiedRootfsForInspection") &&
+		len(call.Args) == 3 &&
+		l5ASTIdentifier(call.Args[0], "t") &&
+		l5ASTIdentifier(call.Args[1], "request") &&
+		l5ASTSelector(call.Args[2], "verified", "Descriptor")
+}
+
+func l5ASTReadOnlyDebugfsOperation(expression ast.Expr) bool {
+	return l5ASTIdentifier(expression, "l5DebugfsOperationStat") ||
+		l5ASTIdentifier(expression, "l5DebugfsOperationCat")
+}
+
+func l5ASTSelector(expression ast.Expr, receiver string, name string) bool {
+	selector, ok := expression.(*ast.SelectorExpr)
+	return ok && l5ASTIdentifier(selector.X, receiver) && selector.Sel.Name == name
 }
 
 func TestL5PreparedLinuxImageInspectionBoundsUntrustedOutput(t *testing.T) {
@@ -740,6 +797,10 @@ func TestL5PreparedLinuxImageInspectionPinsVerifiedRootfs(t *testing.T) {
 		"io.MultiWriter",
 		"sha256.New",
 		"rootfs.ext4",
+		"l5DebugfsOperationStat",
+		"l5DebugfsOperationCat",
+		"l5DebugfsAllowedPaths",
+		"l5DebugfsAllowedPaths[operation]",
 	} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("prepared-Linux image inspection missing verified-rootfs guard %q", required)
