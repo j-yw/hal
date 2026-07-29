@@ -50,6 +50,7 @@ var l5DebugfsAllowedPaths = map[l5DebugfsOperation]map[string]struct{}{
 		"/usr/bin/setpriv": {},
 		"/etc/passwd":      {},
 		"/etc/group":       {},
+		"/etc/shadow":      {},
 	},
 }
 
@@ -118,6 +119,10 @@ func TestL5PreparedLinuxImagePrerequisites(t *testing.T) {
 	group := l5DebugfsCommand(t, debugfs, rootfs, l5DebugfsOperationCat, "/etc/group")
 	if !strings.Contains(group, "agent:x:1000:") {
 		t.Fatal("L5 rootfs does not pin the agent group identity to 1000")
+	}
+	shadow := l5DebugfsCommand(t, debugfs, rootfs, l5DebugfsOperationCat, "/etc/shadow")
+	if !strings.Contains(shadow, "agent:!:::::::") {
+		t.Fatal("L5 rootfs does not disable the agent password")
 	}
 }
 

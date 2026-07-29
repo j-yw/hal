@@ -60,7 +60,7 @@ copy integrity, bounded workspace tmpfs, timeout/cancellation
 process-group cleanup before teardown, independently probed guest-agent failure,
 escaped-process containment by VM teardown, and zero owned
 processes/sockets/state afterward. Its identity probe requires UID/GID `1000`,
-no supplementary groups, and `NoNewPrivs: 1` in guest process
+a disabled agent password, no supplementary groups, and `NoNewPrivs: 1` in guest process
 status.
 Guest transport tests separately prove that request `POLLRDHUP` framing does
 not cancel dispatch while a later full-peer `POLLHUP` does cancel the live

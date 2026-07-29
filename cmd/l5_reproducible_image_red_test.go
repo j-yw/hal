@@ -582,8 +582,8 @@ func TestL5KernelBuildrootAndGuestInitLockIsolationContract(t *testing.T) {
 	}
 
 	users := strings.TrimSpace(string(l5ReadRequiredFile(t, filepath.Join(root, "users.txt"))))
-	if users != "agent 1000 agent 1000 = /workspace /bin/sh - Agent" {
-		t.Fatalf("users.txt = %q, want exact agent UID/GID 1000", users)
+	if users != "agent 1000 agent 1000 ! /workspace /bin/sh - Agent" {
+		t.Fatalf("users.txt = %q, want exact agent UID/GID 1000 with a disabled password", users)
 	}
 
 	postBuild := string(l5ReadRequiredFile(t, filepath.Join(root, "post-build.sh")))
@@ -668,6 +668,7 @@ func TestL5PreparedLinuxImagePrerequisiteTestCannotSkip(t *testing.T) {
 		"/sbin/init",
 		"/sbin/hal-init",
 		"/usr/bin/hal-guest-agent",
+		"/etc/shadow",
 		"1000",
 	} {
 		if !strings.Contains(source, required) {
@@ -766,8 +767,8 @@ func TestL5PreparedLinuxImageInspectionNeverExecutesRootfsContent(t *testing.T) 
 	if rootfsAssignments != 1 {
 		t.Fatalf("prepared-Linux image prerequisite test rootfs assignment count = %d, want 1", rootfsAssignments)
 	}
-	if debugfsCalls != 5 {
-		t.Fatalf("prepared-Linux image prerequisite test inspect call count = %d, want 5", debugfsCalls)
+	if debugfsCalls != 6 {
+		t.Fatalf("prepared-Linux image prerequisite test inspect call count = %d, want 6", debugfsCalls)
 	}
 }
 

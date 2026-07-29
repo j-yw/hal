@@ -176,11 +176,11 @@ The pre-start Firecracker full-config file contains:
 ```
 
 PID 1 mounts `/proc`, `/dev`, `/sys`, `/run`, and `/tmp`, creates a fixed
-non-root UID/GID `1000`, and mounts `/workspace` as a distinct size-bounded
-tmpfs owned by that identity with mode `0700` before constructing the L4
-backend. It reaps children and forwards termination signals, then drops
-privileges and execs the guest agent. The immutable ext4 root drive remains
-read-only. The privilege transition uses the static util-linux `setpriv`, not
+non-root UID/GID `1000` with a disabled agent password, and mounts `/workspace`
+as a distinct size-bounded tmpfs owned by that identity with mode `0700` before
+constructing the L4 backend. It reaps children and forwards termination
+signals, then drops privileges and execs the guest agent. The immutable ext4
+root drive remains read-only. The privilege transition uses the static util-linux `setpriv`, not
 the BusyBox applet: `BR2_PACKAGE_UTIL_LINUX_SETPRIV=y` is locked and the built
 binary must expose `--reuid`, `--regid`, `--clear-groups`, and
 `--no-new-privs`. The fixed boot arguments, entropy device, and vsock device
