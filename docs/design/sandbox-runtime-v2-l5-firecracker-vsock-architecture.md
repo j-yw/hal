@@ -68,8 +68,9 @@ only after its immutable SHA-256 lock matches, and the Buildroot source must
 also pass its pinned signed-release verification. The offline build executes
 inside a real no-network namespace/container after preflighting the exact
 locally installed build-image digest and disabling daemon pulls. It uses
-`BR2_PRIMARY_SITE_ONLY=y`, `BR2_DOWNLOAD_FORCE_CHECK_HASHES=y`, no ccache, and a
-fresh host/staging/target/download tree. It consumes only the verified source
+`BR2_PRIMARY_SITE_ONLY=y`, `BR2_DOWNLOAD_FORCE_CHECK_HASHES=y`, no ccache, a
+fixed `hal-l5-build` container hostname, and a fresh host/staging/target/download
+tree. It consumes only the verified source
 archive and exact download manifest, refuses a missing, extra, renamed, or
 digest-mismatched dependency, builds a static
 `hal-guest-agent`, and emits:

@@ -119,8 +119,9 @@ that filename to
 the lock rejects a suffix/digest pairing from any alternate compression.
 
 The two reproducibility runs use independent clean namespaces/containers but
-the same canonical internal Buildroot source and `O=` paths, with fresh
-host/staging/target/download state. They export to distinct caller
+the same canonical internal Buildroot source and `O=` paths, a fixed
+`hal-l5-build` container hostname, and fresh host/staging/target/download
+state. They export to distinct caller
 directories and byte-compare the kernel, rootfs, path-free distribution
 manifest, provenance, and checksums. No distribution artifact may contain
 either caller path; runtime-materialized launch descriptors are tested

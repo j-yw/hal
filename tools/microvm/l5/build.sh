@@ -117,6 +117,7 @@ docker run --rm \
 	--pull=never \
 	--user="$current_uid:$current_gid" \
 	--platform=linux/amd64 \
+	--hostname=hal-l5-build \
 	--network=none \
 	--env HOME=/build/home \
 	--env "SOURCE_DATE_EPOCH=$source_date_epoch" \

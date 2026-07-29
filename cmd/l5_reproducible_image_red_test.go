@@ -414,6 +414,7 @@ func TestL5BuildScriptsLockOfflineReproducibleContainerOrchestration(t *testing.
 			"--pull=never",
 			`--user="$current_uid:$current_gid"`,
 			"--platform=linux/amd64",
+			"--hostname=hal-l5-build",
 			"--network=none",
 			"/src",
 			"/cache",
