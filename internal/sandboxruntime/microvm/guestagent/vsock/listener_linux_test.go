@@ -3,6 +3,7 @@
 package vsock
 
 import (
+	"context"
 	"os"
 	"sync"
 	"testing"
@@ -10,6 +11,46 @@ import (
 
 	"golang.org/x/sys/unix"
 )
+
+func TestL5LinuxConnectionDistinguishesPeerHalfCloseFromFullClose(t *testing.T) {
+	socketFDs, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("Socketpair() error = %v", err)
+	}
+	connection := &linuxConnection{
+		file: os.NewFile(uintptr(socketFDs[0]), "guest-stream-peer-close-test"),
+		fd:   socketFDs[0],
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+	peer := os.NewFile(uintptr(socketFDs[1]), "guest-stream-peer-close-fixture")
+	t.Cleanup(func() { _ = peer.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- connection.WaitPeerClosed(ctx)
+	}()
+	if err := unix.Shutdown(socketFDs[1], unix.SHUT_WR); err != nil {
+		t.Fatalf("peer half-close error = %v", err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("peer half-close was treated as full close: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := peer.Close(); err != nil {
+		t.Fatalf("peer full close error = %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("WaitPeerClosed() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("peer full close was not detected")
+	}
+}
 
 func TestL5LinuxConnectionConcurrentCancellationIsRaceSafe(t *testing.T) {
 	socketFDs, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)

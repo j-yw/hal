@@ -22,6 +22,10 @@ type Listener interface {
 	Close() error
 }
 
+type peerCloseWaiter interface {
+	WaitPeerClosed(context.Context) error
+}
+
 // Options configure the bounded one-frame guest transport.
 type Options struct {
 	Listener       Listener
@@ -166,6 +170,15 @@ func (connection *trackedConnection) CloseWrite() error {
 	return nil
 }
 
+func (connection *trackedConnection) WaitPeerClosed(ctx context.Context) error {
+	waiter, ok := connection.ReadWriteCloser.(peerCloseWaiter)
+	if !ok {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return waiter.WaitPeerClosed(ctx)
+}
+
 func serveConnection(ctx context.Context, connection io.ReadWriteCloser, limits server.Limits, handler server.Handler) {
 	defer connection.Close()
 	defer func() {
@@ -176,7 +189,24 @@ func serveConnection(ctx context.Context, connection io.ReadWriteCloser, limits 
 	if err != nil || int64(len(request)) > limits.MaxRequestBytes {
 		return
 	}
-	response := handler.Handle(ctx, server.Request{Encoded: request})
+	handlerCtx, cancelHandler := context.WithCancel(ctx)
+	watcherDone := make(chan struct{})
+	go func() {
+		defer close(watcherDone)
+		if waiter, ok := connection.(peerCloseWaiter); ok {
+			if err := waiter.WaitPeerClosed(handlerCtx); err == nil || handlerCtx.Err() == nil {
+				cancelHandler()
+			}
+			return
+		}
+		<-handlerCtx.Done()
+	}()
+	defer func() {
+		cancelHandler()
+		<-watcherDone
+	}()
+
+	response := handler.Handle(handlerCtx, server.Request{Encoded: request})
 	if int64(len(response.Encoded)) > limits.MaxResponseBytes {
 		return
 	}

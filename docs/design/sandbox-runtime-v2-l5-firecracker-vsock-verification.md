@@ -60,6 +60,13 @@ copy integrity, bounded workspace tmpfs, timeout/cancellation
 process-group cleanup before teardown, independently probed guest-agent failure,
 escaped-process containment by VM teardown, and zero owned
 processes/sockets/state afterward.
+Guest transport tests separately prove that request `POLLRDHUP` framing does
+not cancel dispatch while a later full-peer `POLLHUP` does cancel the live
+handler and reaches L4 process-group cleanup.
+Before constructing the live driver, the test copies the digest-verified
+Firecracker executable, kernel, and rootfs into its private mode-`0700` launch
+root and launches only those private copies. It verifies the installed master
+asset digests again after teardown.
 The same tag first selects `TestL5PreparedLinuxImagePrerequisites`, with
 `HAL_L5_DISTRIBUTION_DIR` naming the caller-installed distribution. That test
 must fail, not skip, when the host, architecture, manifest, or installed asset

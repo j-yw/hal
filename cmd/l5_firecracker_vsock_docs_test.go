@@ -70,6 +70,8 @@ func TestL5VerificationLocksLiveSelectorAndBroadGates(t *testing.T) {
 		"bounded workspace tmpfs",
 		"process-group cleanup before teardown",
 		"independently probed guest-agent failure",
+		"POLLRDHUP",
+		"POLLHUP",
 		"must not skip",
 		"go test -count=1 -timeout=420s ./...",
 		"go test -count=1 -run '^$' ./...",
@@ -103,6 +105,8 @@ func TestL5PreparedLinuxAcceptanceLocksIndependentProofAndCleanup(t *testing.T) 
 	source := string(data)
 	for _, required := range []string{
 		"l5FirecrackerBinarySHA256",
+		"scratchFirecracker",
+		"scratchKernel",
 		"l5MountSizeAtMost",
 		"l5GuestReadinessGate",
 		"assertL5PreparedProcessGroupGone",
@@ -116,6 +120,32 @@ func TestL5PreparedLinuxAcceptanceLocksIndependentProofAndCleanup(t *testing.T) 
 	for _, forbidden := range []string{"t.Skip(", "t.Skipf(", "testing.Short()"} {
 		if strings.Contains(source, forbidden) {
 			t.Fatalf("L5 prepared-Linux acceptance contains forbidden skip marker %q", forbidden)
+		}
+	}
+}
+
+func TestL5GuestTransportLocksFullPeerCloseCancellation(t *testing.T) {
+	paths := []string{
+		filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "vsock", "transport.go"),
+		filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "vsock", "listener_linux.go"),
+		filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "vsock", "listener_linux_test.go"),
+	}
+	var source strings.Builder
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read L5 guest transport peer-close source: %v", err)
+		}
+		source.Write(data)
+	}
+	for _, required := range []string{
+		"WaitPeerClosed",
+		"cancelHandler",
+		"unix.POLLHUP",
+		"TestL5LinuxConnectionDistinguishesPeerHalfCloseFromFullClose",
+	} {
+		if !strings.Contains(source.String(), required) {
+			t.Fatalf("L5 guest transport peer-close cancellation missing %q", required)
 		}
 	}
 }

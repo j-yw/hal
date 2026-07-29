@@ -342,22 +342,28 @@ func (manager *ProcessLifecycleManager) killAndWait(ctx context.Context, handle 
 	defer cancel()
 	if err := process.Kill(cleanupCtx); err != nil {
 		if hostProcessExitObserved(process) {
-			manager.markProcessFinished(id)
+			manager.completeProcessCleanup(id, forget)
+			return nil
 		}
 		return newProcessLifecycleError(processOperationKill, err)
 	}
 	if err := process.Wait(cleanupCtx); err != nil {
 		if hostProcessExitObserved(process) {
-			manager.markProcessFinished(id)
+			manager.completeProcessCleanup(id, forget)
+			return nil
 		}
 		return newProcessLifecycleError(processOperationWait, err)
 	}
+	manager.completeProcessCleanup(id, forget)
+	return nil
+}
+
+func (manager *ProcessLifecycleManager) completeProcessCleanup(id string, forget bool) {
 	if forget {
 		manager.forgetProcessID(id)
-		return nil
+		return
 	}
 	manager.markProcessFinished(id)
-	return nil
 }
 
 func (manager *ProcessLifecycleManager) storeProcess(process HostProcess, paths firecracker.PathPlan, hasPaths bool, stateIdentity privateStateDirIdentity, hasStateIdentity bool) firecracker.ProcessHandleMetadata {

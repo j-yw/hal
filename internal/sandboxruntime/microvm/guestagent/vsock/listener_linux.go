@@ -13,7 +13,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const acceptPollMillis = 100
+const (
+	acceptPollMillis    = 100
+	peerClosePollMillis = 10
+)
 
 type linuxListener struct {
 	fd        atomic.Int64
@@ -118,6 +121,34 @@ func (connection *linuxConnection) CloseWrite() error {
 		return nil
 	}
 	return unix.Shutdown(connection.fd, unix.SHUT_WR)
+}
+
+func (connection *linuxConnection) WaitPeerClosed(ctx context.Context) error {
+	if connection == nil || connection.fd < 0 {
+		return errors.New("guest AF_VSOCK connection is closed")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		poll := []unix.PollFd{{Fd: int32(connection.fd)}}
+		_, err := unix.Poll(poll, peerClosePollMillis)
+		if err != nil {
+			if errors.Is(err, unix.EINTR) {
+				continue
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return errors.New("guest AF_VSOCK peer-close poll failed")
+		}
+		if poll[0].Revents&(unix.POLLHUP|unix.POLLERR|unix.POLLNVAL) != 0 {
+			return nil
+		}
+	}
 }
 
 func (connection *linuxConnection) Close() error {

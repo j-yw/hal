@@ -74,12 +74,14 @@ func TestL5PreparedLinuxFirecrackerVsockE2E(t *testing.T) {
 	harness.deleteAndAssertContained(t, lossTarget)
 
 	harness.assertZeroOwnedRuntimeResources(t)
-	assertL5PreparedMasterRootfsUnchanged(t, prerequisites)
+	assertL5PreparedMasterAssetsUnchanged(t, prerequisites)
 }
 
 type l5PreparedLinuxPrerequisites struct {
 	firecrackerPath string
 	distribution    localresolver.VerifiedDistribution
+	kernelPath      string
+	kernelDigest    string
 	rootfsPath      string
 	rootfsDigest    string
 }
@@ -142,6 +144,8 @@ func requireL5PreparedLinuxPrerequisites(t *testing.T) l5PreparedLinuxPrerequisi
 	return l5PreparedLinuxPrerequisites{
 		firecrackerPath: firecrackerPath,
 		distribution:    distribution,
+		kernelPath:      kernelPath,
+		kernelDigest:    kernelDigest,
 		rootfsPath:      rootfsPath,
 		rootfsDigest:    rootfsDigest,
 	}
@@ -193,17 +197,32 @@ func newL5PreparedLinuxHarness(t *testing.T, prerequisites l5PreparedLinuxPrereq
 			t.Fatal("create private L5 acceptance directory failed")
 		}
 	}
+	scratchFirecracker := filepath.Join(assetRoot, "firecracker")
+	scratchKernel := filepath.Join(assetRoot, "vmlinux")
 	scratchRootfs := filepath.Join(assetRoot, "rootfs.ext4")
-	if err := copyL5PreparedRootfs(prerequisites.rootfsPath, scratchRootfs, prerequisites.rootfsDigest); err != nil {
-		t.Fatal("create digest-identical L5 scratch rootfs failed")
+	for _, asset := range []struct {
+		source      string
+		destination string
+		digest      string
+		mode        os.FileMode
+	}{
+		{prerequisites.firecrackerPath, scratchFirecracker, l5FirecrackerBinarySHA256, 0o500},
+		{prerequisites.kernelPath, scratchKernel, prerequisites.kernelDigest, 0o400},
+		{prerequisites.rootfsPath, scratchRootfs, prerequisites.rootfsDigest, 0o600},
+	} {
+		if err := copyL5PreparedAsset(asset.source, asset.destination, asset.digest, asset.mode); err != nil {
+			t.Fatal("create digest-identical private L5 launch asset failed")
+		}
+		assertL5PrivatePath(t, asset.destination, asset.mode, false)
 	}
 
 	descriptor := cloneL5LaunchDescriptor(prerequisites.distribution.Descriptor)
-	if !replaceL5DescriptorRootfsPath(&descriptor, scratchRootfs) {
-		t.Fatal("materialize L5 scratch rootfs launch descriptor failed")
+	if !replaceL5DescriptorAssetPath(&descriptor, assets.AssetRoleKernel, scratchKernel) ||
+		!replaceL5DescriptorAssetPath(&descriptor, assets.AssetRoleRootfs, scratchRootfs) {
+		t.Fatal("materialize private L5 launch descriptor failed")
 	}
 	config := microvm.DefaultConfig()
-	config.HypervisorPath = prerequisites.firecrackerPath
+	config.HypervisorPath = scratchFirecracker
 	config.LaunchDescriptor = &descriptor
 	config.CPUCount = 1
 	config.MemoryMiB = 512
@@ -245,33 +264,34 @@ func newL5PreparedLinuxHarness(t *testing.T, prerequisites l5PreparedLinuxPrereq
 	}
 }
 
-func copyL5PreparedRootfs(sourcePath, destinationPath, expectedDigest string) error {
+func copyL5PreparedAsset(sourcePath, destinationPath, expectedDigest string, mode os.FileMode) error {
 	sourceInfo, err := os.Lstat(sourcePath)
 	if err != nil || sourceInfo.Mode()&os.ModeSymlink != 0 || !sourceInfo.Mode().IsRegular() {
-		return errors.New("L5 master rootfs is unavailable")
+		return errors.New("L5 master launch asset is unavailable")
 	}
 	source, err := os.Open(sourcePath)
 	if err != nil {
-		return errors.New("L5 master rootfs is unreadable")
+		return errors.New("L5 master launch asset is unreadable")
 	}
 	defer source.Close()
 	openedInfo, err := source.Stat()
 	if err != nil || !os.SameFile(sourceInfo, openedInfo) {
-		return errors.New("L5 master rootfs identity changed")
+		return errors.New("L5 master launch asset identity changed")
 	}
 	destination, err := os.OpenFile(destinationPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		return errors.New("L5 scratch rootfs is unavailable")
+		return errors.New("L5 private launch asset is unavailable")
 	}
 	hash := sha256.New()
 	_, copyErr := io.Copy(io.MultiWriter(destination, hash), source)
+	chmodErr := destination.Chmod(mode)
 	syncErr := destination.Sync()
 	closeErr := destination.Close()
-	if copyErr != nil || syncErr != nil || closeErr != nil {
-		return errors.New("L5 scratch rootfs copy failed")
+	if copyErr != nil || chmodErr != nil || syncErr != nil || closeErr != nil {
+		return errors.New("L5 private launch asset copy failed")
 	}
 	if hex.EncodeToString(hash.Sum(nil)) != expectedDigest {
-		return errors.New("L5 scratch rootfs digest mismatch")
+		return errors.New("L5 private launch asset digest mismatch")
 	}
 	return nil
 }
@@ -294,16 +314,16 @@ func cloneL5LaunchDescriptor(source assets.LaunchDescriptor) assets.LaunchDescri
 	return cloned
 }
 
-func replaceL5DescriptorRootfsPath(descriptor *assets.LaunchDescriptor, scratchRootfs string) bool {
+func replaceL5DescriptorAssetPath(descriptor *assets.LaunchDescriptor, role assets.AssetRole, privatePath string) bool {
 	if descriptor == nil {
 		return false
 	}
 	for i := range descriptor.Assets {
 		asset := &descriptor.Assets[i]
-		if asset.Role != assets.AssetRoleRootfs || asset.Source.HostPath == nil {
+		if asset.Role != role || asset.Source.HostPath == nil {
 			continue
 		}
-		asset.Source.HostPath.Path = scratchRootfs
+		asset.Source.HostPath.Path = privatePath
 		return true
 	}
 	return false
@@ -895,11 +915,20 @@ func (harness *l5PreparedLinuxHarness) cleanup() {
 	}
 }
 
-func assertL5PreparedMasterRootfsUnchanged(t *testing.T, prerequisites l5PreparedLinuxPrerequisites) {
+func assertL5PreparedMasterAssetsUnchanged(t *testing.T, prerequisites l5PreparedLinuxPrerequisites) {
 	t.Helper()
-	digest, err := digestL5File(prerequisites.rootfsPath)
-	if err != nil || digest != prerequisites.rootfsDigest {
-		t.Fatal("immutable L5 master rootfs changed during live acceptance")
+	for _, asset := range []struct {
+		path   string
+		digest string
+	}{
+		{prerequisites.firecrackerPath, l5FirecrackerBinarySHA256},
+		{prerequisites.kernelPath, prerequisites.kernelDigest},
+		{prerequisites.rootfsPath, prerequisites.rootfsDigest},
+	} {
+		digest, err := digestL5File(asset.path)
+		if err != nil || digest != asset.digest {
+			t.Fatal("immutable L5 master launch asset changed during live acceptance")
+		}
 	}
 	if err := assetbuild.ValidateProvenanceAgainstManifest(
 		prerequisites.distribution.Provenance,

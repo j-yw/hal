@@ -140,7 +140,10 @@ directory. The host transport:
 The guest transport accepts AF_VSOCK streams only for port `1024`, applies
 L4 request/response limits before allocation/write, dispatches one request per
 connection, half-closes after the response, and closes every accepted
-connection. It never accepts AF_INET, exposes a shell, or forwards host paths.
+connection. After consuming the normal request `POLLRDHUP` half-close, the
+Linux connection watcher treats only later `POLLHUP`, `POLLERR`, or `POLLNVAL`
+as peer loss and cancels the per-request handler context. It never accepts
+AF_INET, exposes a shell, or forwards host paths.
 
 The host bridge states are `configured`, `handshaking`, `active`, `failed`, and
 `closed`. Only an exact `guest-agent-v1` readiness response from the running
@@ -332,6 +335,13 @@ cannot survive VM deletion. Repeated stop/delete is idempotent. Cleanup failure
 or uncertainty is joined with the primary error and cannot be reported as
 stopped, deleted, ready, or successful. State is not removed unless process
 ownership, path identity, termination, and reap are all proven.
+
+Prepared-Linux acceptance copies the content-locked Firecracker executable,
+kernel, and rootfs into one private caller-owned launch directory before
+constructing the driver. The copied executable and kernel paths, not the
+externally installed distribution paths, are the exact paths passed to the
+process runner and Firecracker configuration; all master digests are checked
+again after teardown.
 After cleanup, a new connection to the former bridge must fail and no stale
 readiness/capability proof may survive.
 

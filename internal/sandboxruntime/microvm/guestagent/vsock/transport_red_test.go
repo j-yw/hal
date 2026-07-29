@@ -130,6 +130,51 @@ func TestL5GuestVsockTransportCancellationClosesBlockedAcceptedConnection(t *tes
 	}
 }
 
+func TestL5GuestVsockTransportPeerFullCloseCancelsHandler(t *testing.T) {
+	conn := newL5PeerCloseConn(`{"protocolVersion":"guest-agent-v1"}`)
+	listener := &l5BlockingListener{conn: conn}
+	transport, err := NewTransport(Options{Listener: listener})
+	if err != nil {
+		t.Fatalf("NewTransport() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handlerStarted := make(chan struct{})
+	handlerCanceled := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- transport.Serve(ctx, server.Limits{
+			MaxRequestBytes:  1024,
+			MaxResponseBytes: 1024,
+		}, l5HandlerFunc(func(handlerCtx context.Context, _ server.Request) server.Response {
+			close(handlerStarted)
+			<-handlerCtx.Done()
+			close(handlerCanceled)
+			cancel()
+			return server.Response{Encoded: []byte(`{"canceled":true}`)}
+		}))
+	}()
+	select {
+	case <-handlerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("peer-close fixture did not dispatch its handler")
+	}
+	close(conn.peerClosed)
+	select {
+	case <-handlerCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("full peer close did not cancel the per-request handler context")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Serve() did not stop after peer-close cancellation")
+	}
+}
+
 type l5HandlerFunc func(context.Context, server.Request) server.Response
 
 func (fn l5HandlerFunc) Handle(ctx context.Context, request server.Request) server.Response {
@@ -237,4 +282,38 @@ func (conn *l5BlockingConn) closeCount() int {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	return conn.closeCalls
+}
+
+type l5PeerCloseConn struct {
+	input      *bytes.Buffer
+	output     bytes.Buffer
+	peerClosed chan struct{}
+}
+
+func newL5PeerCloseConn(input string) *l5PeerCloseConn {
+	return &l5PeerCloseConn{
+		input:      bytes.NewBufferString(input),
+		peerClosed: make(chan struct{}),
+	}
+}
+
+func (conn *l5PeerCloseConn) Read(value []byte) (int, error) {
+	return conn.input.Read(value)
+}
+
+func (conn *l5PeerCloseConn) Write(value []byte) (int, error) {
+	return conn.output.Write(value)
+}
+
+func (*l5PeerCloseConn) Close() error {
+	return nil
+}
+
+func (conn *l5PeerCloseConn) WaitPeerClosed(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-conn.peerClosed:
+		return nil
+	}
 }

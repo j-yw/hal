@@ -185,6 +185,63 @@ func TestL5CleanupRemovesOnlyPinnedOwnedState(t *testing.T) {
 	}
 }
 
+func TestL5DeleteRemovesPinnedStateAfterObservedNonzeroProcessExit(t *testing.T) {
+	base, err := os.MkdirTemp("/tmp", "hal-l5-cleanup-exited-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	paths, err := firecracker.PlanPaths(firecracker.PathPlanRequest{
+		RuntimeID: "fc-cleanup-exited", BaseStateDir: base,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(paths.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{paths.ConfigPath, paths.LogPath, paths.MetricsPath} {
+		if err := os.WriteFile(path, []byte("owned"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	done := make(chan struct{})
+	close(done)
+	process := &l5ObservedExitedProcess{
+		done:    done,
+		waitErr: errors.New("process exited with status 7"),
+	}
+	manager := NewProcessLifecycleManager(
+		l5SingleProcessRunner{process: process},
+		withProcessLifecycleProductionVsock(),
+		WithProcessLifecycleCleanupTimeout(time.Second),
+	)
+	handle, err := manager.StartProcess(context.Background(), firecracker.ProcessRunnerStartRequest{
+		Executable: "firecracker",
+		Args: []string{
+			"--api-sock", paths.APISocketPath,
+			"--config-file", paths.ConfigPath,
+			"--log-path", paths.LogPath,
+			"--metrics-path", paths.MetricsPath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartProcess() error = %v", err)
+	}
+	if err := manager.DeleteLiveProcess(context.Background(), firecracker.LiveProcessRequest{
+		Handle: handle,
+		Paths:  paths,
+	}); err != nil {
+		t.Fatalf("DeleteLiveProcess() error = %v, want observed exit to count as reaped: nil", err)
+	}
+	if _, err := os.Lstat(paths.StateDir); !os.IsNotExist(err) {
+		t.Fatalf("state directory still exists or inspection failed: %v", err)
+	}
+	if _, _, active := manager.lookupActiveProcess(handle); active {
+		t.Fatal("observed exited process remained active after delete")
+	}
+}
+
 type l5SingleProcessRunner struct {
 	process HostProcess
 }
@@ -204,6 +261,17 @@ type l5EscalationProcess struct {
 }
 
 type l5FailedStopProcess struct{}
+
+type l5ObservedExitedProcess struct {
+	done    <-chan struct{}
+	waitErr error
+}
+
+func (*l5ObservedExitedProcess) Signal(context.Context, ProcessSignal) error { return nil }
+func (*l5ObservedExitedProcess) Kill(context.Context) error                  { return nil }
+func (process *l5ObservedExitedProcess) Wait(context.Context) error          { return process.waitErr }
+func (*l5ObservedExitedProcess) HostPID() int                                { return 4242 }
+func (process *l5ObservedExitedProcess) Done() <-chan struct{}               { return process.done }
 
 func (*l5FailedStopProcess) Signal(context.Context, ProcessSignal) error {
 	return errors.New("term failed")
