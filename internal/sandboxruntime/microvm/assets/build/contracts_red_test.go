@@ -283,13 +283,7 @@ func validL5DistributionManifest() DistributionManifest {
 func validL5Provenance(manifest DistributionManifest) Provenance {
 	outputs := make([]Output, len(manifest.Assets))
 	for i, asset := range manifest.Assets {
-		outputs[i] = Output{
-			Key:       asset.Key,
-			ID:        asset.ID,
-			Kind:      asset.Kind,
-			SizeBytes: asset.SizeBytes,
-			SHA256:    asset.SHA256,
-		}
+		outputs[i] = Output(asset)
 	}
 	return Provenance{
 		SchemaVersion:    SchemaVersionV1,

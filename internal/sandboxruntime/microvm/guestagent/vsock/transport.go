@@ -12,8 +12,8 @@ import (
 
 const (
 	GuestAgentPort     uint32 = 1024
-	defaultConnections        = 1
-	maximumConnections        = 64
+	defaultConnections int    = 1
+	maximumConnections int    = 64
 )
 
 // Listener accepts guest-side AF_VSOCK streams.
