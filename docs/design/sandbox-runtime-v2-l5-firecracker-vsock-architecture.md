@@ -189,7 +189,11 @@ mutation is accepted as equivalent proof.
 
 The locked kernel configuration includes `CONFIG_HYPERVISOR_GUEST=y`,
 `CONFIG_PARAVIRT=y`, and `CONFIG_KVM_GUEST=y` so the guest obtains KVM clock
-support rather than waiting for absent legacy timer devices. It keeps
+support rather than waiting for absent legacy timer devices. It also keeps
+`CONFIG_SMP=y` even though L5 starts one vCPU: Firecracker's MMIO devices use
+guest interrupt lines, and the x86 SMP interrupt topology supplies the IRQ
+descriptors required when those devices register queues. This is a kernel
+configuration requirement, not a claim that L5 starts multiple vCPUs. It keeps
 `CONFIG_DEVTMPFS_MOUNT` disabled: PID 1 owns the one explicit devtmpfs mount
 with the required `nosuid,noexec` restrictions, and an automatic mount is not
 equivalent. Firecracker supplies the root block device and vsock device through

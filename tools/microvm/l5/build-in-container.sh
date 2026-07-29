@@ -35,6 +35,7 @@ grep -Fxq "/bin/busybox f 0755 0 0 - - - - -" /src/tools/microvm/l5/permissions.
 grep -Fxq "CONFIG_HYPERVISOR_GUEST=y" /src/tools/microvm/l5/linux.config
 grep -Fxq "CONFIG_PARAVIRT=y" /src/tools/microvm/l5/linux.config
 grep -Fxq "CONFIG_KVM_GUEST=y" /src/tools/microvm/l5/linux.config
+grep -Fxq "CONFIG_SMP=y" /src/tools/microvm/l5/linux.config
 grep -Fxq "# CONFIG_DEVTMPFS_MOUNT is not set" /src/tools/microvm/l5/linux.config
 
 mkdir -p "$HOME" /build/guest-bin "$download_root" /build/gocache /build/gomodcache /build/goproxy/golang.org/x/sys/@v

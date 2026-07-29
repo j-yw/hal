@@ -432,6 +432,7 @@ func TestL5BuildScriptsLockOfflineReproducibleContainerOrchestration(t *testing.
 			"CONFIG_HYPERVISOR_GUEST=y",
 			"CONFIG_PARAVIRT=y",
 			"CONFIG_KVM_GUEST=y",
+			"CONFIG_SMP=y",
 			"# CONFIG_DEVTMPFS_MOUNT is not set",
 			"BR2_CCACHE=",
 			"O=/build/output",
@@ -527,6 +528,7 @@ func TestL5KernelBuildrootAndGuestInitLockIsolationContract(t *testing.T) {
 	for _, setting := range []string{
 		"CONFIG_64BIT=y",
 		"CONFIG_X86_64=y",
+		"CONFIG_SMP=y",
 		"CONFIG_PCI=n",
 		"CONFIG_MODULES=n",
 		"CONFIG_VIRTIO_MMIO=y",
