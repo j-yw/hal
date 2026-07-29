@@ -14,6 +14,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/frame"
 )
 
 func TestL5ProductionVsockSessionInvalidationDistinguishesCallerCancellation(t *testing.T) {
@@ -65,6 +66,79 @@ func TestL5ProductionVsockBridgePeerMismatchIsFatalWithoutRetry(t *testing.T) {
 	}
 	if accepts.Load() != 1 {
 		t.Fatalf("accepted connections = %d, want exactly one fatal attempt", accepts.Load())
+	}
+}
+
+func TestL5ProductionVsockBridgeRetriesClosedPreAckGuestPort(t *testing.T) {
+	fixture := newL5ProductionBridgeFixture(t, os.Getpid())
+	listener := l5ListenBridgeSocket(t, fixture.paths.VsockSocketPath)
+	var accepts atomic.Int32
+	go func() {
+		for attempt := 0; attempt < 2; attempt++ {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			accepts.Add(1)
+			reader := bufio.NewReader(conn)
+			_, _ = reader.ReadString('\n')
+			if attempt == 0 {
+				_ = conn.Close()
+				continue
+			}
+			_, _ = io.WriteString(conn, "OK 1073741824\n")
+			_, _ = frame.Read(reader, 1024)
+			_ = frame.Write(conn, []byte(`{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready"}`), 1024)
+			_ = conn.Close()
+		}
+	}()
+
+	result, _, err := fixture.bridge.ActivateSession(context.Background(), firecracker.ProductionVsockSessionRequest{
+		Handle: fixture.handle, RuntimeID: "fc-production-test", SocketPath: fixture.paths.VsockSocketPath,
+	})
+	if err != nil {
+		t.Fatalf("ActivateSession() error = %v, want retry after a closed pre-ack guest port", err)
+	}
+	if result.State != sandboxruntime.RuntimeGuestReadinessStateReady {
+		t.Fatalf("readiness state = %q, want ready", result.State)
+	}
+	if got := accepts.Load(); got != 2 {
+		t.Fatalf("accepted connections = %d, want one closed pre-ack attempt plus one ready attempt", got)
+	}
+}
+
+func TestL5ProductionVsockBridgeRejectsMalformedAckWithoutRetry(t *testing.T) {
+	fixture := newL5ProductionBridgeFixture(t, os.Getpid())
+	listener := l5ListenBridgeSocket(t, fixture.paths.VsockSocketPath)
+	var accepts atomic.Int32
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		accepts.Add(1)
+		defer conn.Close()
+		reader := bufio.NewReader(conn)
+		_, _ = reader.ReadString('\n')
+		_, _ = io.WriteString(conn, "NOT-AN-ACK\n")
+	}()
+
+	started := time.Now()
+	_, _, err := fixture.bridge.ActivateSession(context.Background(), firecracker.ProductionVsockSessionRequest{
+		Handle: fixture.handle, RuntimeID: "fc-production-test", SocketPath: fixture.paths.VsockSocketPath,
+	})
+	if err == nil {
+		t.Fatal("ActivateSession() error = nil, want malformed acknowledgement failure")
+	}
+	if elapsed := time.Since(started); elapsed >= 500*time.Millisecond {
+		t.Fatalf("malformed acknowledgement retried until timeout: %v", elapsed)
+	}
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for accepts.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := accepts.Load(); got != 1 {
+		t.Fatalf("accepted connections = %d, want exactly one malformed-ack attempt", got)
 	}
 }
 
@@ -234,6 +308,6 @@ func l5ServeReadyBridge(listener net.Listener) {
 	reader := bufio.NewReader(conn)
 	_, _ = reader.ReadString('\n')
 	_, _ = io.WriteString(conn, "OK 1073741824\n")
-	_, _ = io.ReadAll(reader)
-	_, _ = io.WriteString(conn, `{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready"}`)
+	_, _ = frame.Read(reader, 1024)
+	_ = frame.Write(conn, []byte(`{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready"}`), 1024)
 }

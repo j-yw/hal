@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/frame"
 )
 
 func TestL5FirecrackerVsockTransportExactHandshakeAndFragmentedAck(t *testing.T) {
@@ -33,7 +34,7 @@ func TestL5FirecrackerVsockTransportExactHandshakeAndFragmentedAck(t *testing.T)
 				return
 			}
 		}
-		request, err := io.ReadAll(reader)
+		request, err := frame.Read(reader, 1024)
 		if err != nil {
 			t.Errorf("read request: %v", err)
 			return
@@ -42,7 +43,9 @@ func TestL5FirecrackerVsockTransportExactHandshakeAndFragmentedAck(t *testing.T)
 			t.Errorf("request = %q", request)
 			return
 		}
-		_, _ = io.WriteString(conn, `{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready"}`)
+		if err := frame.Write(conn, []byte(`{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready"}`), 1024); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	})
 
 	transport, err := newFirecrackerVsockTransport(firecrackerVsockTransportOptions{
@@ -148,8 +151,8 @@ func TestL5FirecrackerVsockTransportRejectsOversizedResponse(t *testing.T) {
 		reader := bufio.NewReader(conn)
 		_, _ = reader.ReadString('\n')
 		_, _ = io.WriteString(conn, "OK 1073741824\n")
-		_, _ = io.ReadAll(reader)
-		_, _ = conn.Write(make([]byte, 9))
+		_, _ = frame.Read(reader, 1024)
+		_ = frame.Write(conn, make([]byte, 9), 9)
 	})
 	transport, err := newFirecrackerVsockTransport(firecrackerVsockTransportOptions{
 		socketPath:      socketPath,
@@ -174,8 +177,8 @@ func TestL5FirecrackerVsockTransportAcceptsMaximumAssignablePort(t *testing.T) {
 		reader := bufio.NewReader(conn)
 		_, _ = reader.ReadString('\n')
 		_, _ = io.WriteString(conn, "OK 4294967294\n")
-		_, _ = io.ReadAll(reader)
-		_, _ = io.WriteString(conn, `{}`)
+		_, _ = frame.Read(reader, 1024)
+		_ = frame.Write(conn, []byte(`{}`), 1024)
 	})
 	transport, err := newFirecrackerVsockTransport(firecrackerVsockTransportOptions{
 		socketPath:      socketPath,
@@ -235,9 +238,9 @@ func TestL5FirecrackerVsockHandshakeDeadlineDoesNotCapValidOperation(t *testing.
 		reader := bufio.NewReader(conn)
 		_, _ = reader.ReadString('\n')
 		_, _ = io.WriteString(conn, "OK 1073741824\n")
-		_, _ = io.ReadAll(reader)
+		_, _ = frame.Read(reader, 1024)
 		time.Sleep(75 * time.Millisecond)
-		_, _ = io.WriteString(conn, `{}`)
+		_ = frame.Write(conn, []byte(`{}`), 1024)
 	})
 	transport, err := newFirecrackerVsockTransport(firecrackerVsockTransportOptions{
 		socketPath:       socketPath,
@@ -265,7 +268,7 @@ func TestL5FirecrackerVsockSessionCloseTerminatesActiveConnection(t *testing.T) 
 		reader := bufio.NewReader(conn)
 		_, _ = reader.ReadString('\n')
 		_, _ = io.WriteString(conn, "OK 1073741824\n")
-		_, _ = io.ReadAll(reader)
+		_, _ = frame.Read(reader, 1024)
 		close(handshakeDone)
 		<-releaseServer
 	})

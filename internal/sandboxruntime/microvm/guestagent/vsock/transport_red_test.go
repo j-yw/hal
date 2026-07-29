@@ -8,11 +8,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/frame"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/server"
 )
 
 func TestL5GuestVsockTransportDispatchesOneBoundedFrameAndCloses(t *testing.T) {
-	conn := &l5MemoryConn{input: bytes.NewBufferString(`{"protocolVersion":"guest-agent-v1"}`)}
+	var input bytes.Buffer
+	request := []byte(`{"protocolVersion":"guest-agent-v1"}`)
+	if err := frame.Write(&input, request, 1024); err != nil {
+		t.Fatalf("frame.Write() error = %v", err)
+	}
+	conn := &l5MemoryConn{input: &input}
 	listener := &l5Listener{conn: conn}
 	transport, err := NewTransport(Options{Listener: listener})
 	if err != nil {
@@ -37,8 +43,12 @@ func TestL5GuestVsockTransportDispatchesOneBoundedFrameAndCloses(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Serve() did not stop")
 	}
-	if got := conn.output.String(); got != `ack:{"protocolVersion":"guest-agent-v1"}` {
-		t.Fatalf("output = %q", got)
+	response, err := frame.Read(bytes.NewReader(conn.output.Bytes()), 1024)
+	if err != nil {
+		t.Fatalf("frame.Read(response) error = %v", err)
+	}
+	if got := string(response); got != `ack:{"protocolVersion":"guest-agent-v1"}` {
+		t.Fatalf("response = %q", got)
 	}
 	if conn.closeCalls != 1 {
 		t.Fatalf("close calls = %d, want 1", conn.closeCalls)
@@ -46,7 +56,7 @@ func TestL5GuestVsockTransportDispatchesOneBoundedFrameAndCloses(t *testing.T) {
 }
 
 func TestL5GuestVsockTransportRejectsOversizedRequestBeforeHandler(t *testing.T) {
-	conn := &l5MemoryConn{input: bytes.NewBuffer(bytes.Repeat([]byte("x"), 9))}
+	conn := &l5MemoryConn{input: l5FramedInput(t, bytes.Repeat([]byte("x"), 9))}
 	listener := &l5Listener{conn: conn}
 	transport, err := NewTransport(Options{Listener: listener})
 	if err != nil {
@@ -72,7 +82,7 @@ func TestL5GuestVsockTransportRejectsOversizedRequestBeforeHandler(t *testing.T)
 }
 
 func TestL5GuestVsockTransportRecoversHandlerPanicAndClosesConnection(t *testing.T) {
-	conn := &l5MemoryConn{input: bytes.NewBufferString(`{}`)}
+	conn := &l5MemoryConn{input: l5FramedInput(t, []byte(`{}`))}
 	listener := &l5Listener{conn: conn}
 	transport, err := NewTransport(Options{Listener: listener, MaxConnections: 1})
 	if err != nil {
@@ -131,7 +141,7 @@ func TestL5GuestVsockTransportCancellationClosesBlockedAcceptedConnection(t *tes
 }
 
 func TestL5GuestVsockTransportPeerFullCloseCancelsHandler(t *testing.T) {
-	conn := newL5PeerCloseConn(`{"protocolVersion":"guest-agent-v1"}`)
+	conn := newL5PeerCloseConn(l5FramedInput(t, []byte(`{"protocolVersion":"guest-agent-v1"}`)))
 	listener := &l5BlockingListener{conn: conn}
 	transport, err := NewTransport(Options{Listener: listener})
 	if err != nil {
@@ -203,6 +213,15 @@ type l5MemoryConn struct {
 	input      *bytes.Buffer
 	output     bytes.Buffer
 	closeCalls int
+}
+
+func l5FramedInput(t *testing.T, payload []byte) *bytes.Buffer {
+	t.Helper()
+	var input bytes.Buffer
+	if err := frame.Write(&input, payload, int64(len(payload))); err != nil {
+		t.Fatalf("frame.Write() error = %v", err)
+	}
+	return &input
 }
 
 func (conn *l5MemoryConn) Read(p []byte) (int, error)  { return conn.input.Read(p) }
@@ -290,9 +309,9 @@ type l5PeerCloseConn struct {
 	peerClosed chan struct{}
 }
 
-func newL5PeerCloseConn(input string) *l5PeerCloseConn {
+func newL5PeerCloseConn(input *bytes.Buffer) *l5PeerCloseConn {
 	return &l5PeerCloseConn{
-		input:      bytes.NewBufferString(input),
+		input:      input,
 		peerClosed: make(chan struct{}),
 	}
 }

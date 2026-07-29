@@ -133,18 +133,20 @@ directory. The host transport:
    canonical unsigned 32-bit decimal without sign or leading zero, is nonzero,
    and is in `1..4294967294`; Linux `VMADDR_PORT_ANY` (`4294967295`) is
    reserved;
-5. writes one bounded guest-agent JSON request;
-6. half-closes the write side;
-7. reads one bounded JSON response to EOF; and
-8. closes the connection on success, cancellation, timeout, or failure.
+5. writes one bounded guest-agent JSON request as a fixed 4-byte big-endian length-prefixed frame;
+6. reads exactly one bounded guest-agent JSON response using the same frame;
+   and
+7. closes the connection on success, cancellation, timeout, or failure.
 
 The guest transport accepts AF_VSOCK streams only for port `1024`, applies
 L4 request/response limits before allocation/write, dispatches one request per
-connection, half-closes after the response, and closes every accepted
-connection. After consuming the normal request `POLLRDHUP` half-close, the
-Linux connection watcher treats only later `POLLHUP`, `POLLERR`, or `POLLNVAL`
-as peer loss and cancels the per-request handler context. It never accepts
-AF_INET, exposes a shell, or forwards host paths.
+connection, writes one framed response, and closes every accepted connection.
+They do not rely on an EOF or half-close as a message delimiter: Firecracker
+can tear down a forwarded vsock channel after a shutdown signal before a reply
+is delivered. The Linux connection watcher
+treats `POLLRDHUP` as non-terminal and treats only `POLLHUP`, `POLLERR`, or
+`POLLNVAL` as peer loss that cancels the per-request handler context. It never
+accepts AF_INET, exposes a shell, or forwards host paths.
 
 The host bridge states are `configured`, `handshaking`, `active`, `failed`, and
 `closed`. Only an exact `guest-agent-v1` readiness response from the running
@@ -159,7 +161,7 @@ The pre-start Firecracker full-config file contains:
 {
   "boot-source": {
     "kernel_image_path": "<private>",
-    "boot_args": "console=ttyS0 reboot=k panic=1 nomodule ro root=/dev/vda rootfstype=ext4 rootwait init=/sbin/init"
+    "boot_args": "console=ttyS0 reboot=k panic=1 nomodule devtmpfs.mount=0 ro root=/dev/vda rootfstype=ext4 rootwait init=/sbin/init"
   },
   "drives": [{
     "drive_id": "rootfs",
@@ -195,7 +197,9 @@ available for the emulated PCI interrupt path. This is a kernel configuration
 requirement, not a claim that L5 starts multiple vCPUs. It keeps
 `CONFIG_DEVTMPFS_MOUNT` disabled: PID 1 owns the one explicit devtmpfs mount
 with the required `nosuid,noexec` restrictions, and an automatic mount is not
-equivalent.
+equivalent. The fixed boot arguments also set `devtmpfs.mount=0`, so the
+runtime contract remains explicit even if a generated kernel configuration
+unexpectedly enables the automatic-mount default.
 
 L5 selects Firecracker's ACPI/PCI virtio transport deliberately. The guest
 locks `CONFIG_ACPI=y`, `CONFIG_PCI=y`, `CONFIG_BLK_MQ_PCI=y`,
@@ -252,6 +256,9 @@ cmd/hal-guest-agent
 
 internal/sandboxruntime/microvm/guestagent/vsock
   guest AF_VSOCK listener implementing server.Transport
+
+internal/sandboxruntime/microvm/guestagent/frame
+  data-only bounded length framing shared by the host bridge and guest listener
 
 internal/sandboxruntime/microvm/firecrackerhost
   host UDS CONNECT handshake, bounded protocol transport, readiness composition

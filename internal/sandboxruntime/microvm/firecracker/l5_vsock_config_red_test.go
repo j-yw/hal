@@ -48,7 +48,7 @@ func TestL5ProductionConfigContainsVsockBeforeStartAndReadOnlyRoot(t *testing.T)
 	}
 
 	boot := raw["boot-source"].(map[string]any)
-	const wantL5ProductionBootArgs = "console=ttyS0 reboot=k panic=1 nomodule ro root=/dev/vda rootfstype=ext4 rootwait init=/sbin/init"
+	const wantL5ProductionBootArgs = "console=ttyS0 reboot=k panic=1 nomodule devtmpfs.mount=0 ro root=/dev/vda rootfstype=ext4 rootwait init=/sbin/init"
 	if got := boot["boot_args"]; got != wantL5ProductionBootArgs {
 		t.Fatalf("boot_args = %#v, want %q", got, wantL5ProductionBootArgs)
 	}

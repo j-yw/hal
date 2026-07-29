@@ -13,12 +13,15 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/frame"
 )
 
 const (
 	L5GuestAgentPort       uint32 = 1024
 	maxVsockHandshakeBytes int    = 64
 )
+
+var errFirecrackerVsockGuestPortUnavailable = errors.New("Firecracker vsock guest port is unavailable")
 
 type firecrackerVsockTransportOptions struct {
 	socketPath       string
@@ -132,7 +135,18 @@ func (transport *firecrackerVsockTransport) RoundTrip(ctx context.Context, reque
 	}
 	reader := bufio.NewReaderSize(conn, maxVsockHandshakeBytes)
 	ack, err := reader.ReadSlice('\n')
-	if err != nil || len(ack) > maxVsockHandshakeBytes || reader.Buffered() != 0 || !validVsockAck(string(ack)) {
+	if err != nil {
+		cause := err
+		// Firecracker closes the host-side UDS connection without an
+		// acknowledgement when the guest has not yet bound the requested port.
+		// That exact empty pre-ack EOF is safe to retry while the tracked VMM is
+		// alive. Partial or malformed acknowledgements remain fail-closed.
+		if len(ack) == 0 && errors.Is(err, io.EOF) {
+			cause = vsockGuestPortUnavailableError{cause: err}
+		}
+		return guestagent.TransportResponse{}, transportFailure(request.Operation, ctx, cause)
+	}
+	if len(ack) > maxVsockHandshakeBytes || reader.Buffered() != 0 || !validVsockAck(string(ack)) {
 		return guestagent.TransportResponse{}, transportFailure(request.Operation, ctx, errors.New("invalid Firecracker vsock acknowledgement"))
 	}
 	operationDeadline := time.Now().Add(transport.operationTimeout)
@@ -142,10 +156,7 @@ func (transport *firecrackerVsockTransport) RoundTrip(ctx context.Context, reque
 	if err := conn.SetDeadline(operationDeadline); err != nil {
 		return guestagent.TransportResponse{}, transportFailure(request.Operation, ctx, err)
 	}
-	if err := writeFull(conn, request.Encoded); err != nil {
-		return guestagent.TransportResponse{}, transportFailure(request.Operation, ctx, err)
-	}
-	if err := conn.CloseWrite(); err != nil {
+	if err := frame.Write(conn, request.Encoded, guestagent.DefaultMaxEncodedRequestBytes); err != nil {
 		return guestagent.TransportResponse{}, transportFailure(request.Operation, ctx, err)
 	}
 	limit := request.MaxResponseBytes
@@ -155,12 +166,12 @@ func (transport *firecrackerVsockTransport) RoundTrip(ctx context.Context, reque
 	if limit <= 0 {
 		limit = guestagent.DefaultMaxEncodedResponseBytes
 	}
-	encoded, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	encoded, err := frame.Read(reader, limit)
 	if err != nil {
+		if errors.Is(err, frame.ErrPayloadTooLarge) {
+			return guestagent.TransportResponse{}, guestagent.NewProtocolError(guestagent.ErrorCodeOversizedResponse, request.Operation, "response", errors.New("guest response exceeds limit"))
+		}
 		return guestagent.TransportResponse{}, transportFailure(request.Operation, ctx, err)
-	}
-	if int64(len(encoded)) > limit {
-		return guestagent.TransportResponse{}, guestagent.NewProtocolError(guestagent.ErrorCodeOversizedResponse, request.Operation, "response", errors.New("guest response exceeds limit"))
 	}
 	return guestagent.TransportResponse{Encoded: encoded}, nil
 }
@@ -244,6 +255,18 @@ type sanitizedVsockCause struct{ cause error }
 func (sanitizedVsockCause) Error() string { return "Firecracker vsock transport failed" }
 func (err sanitizedVsockCause) Is(target error) bool {
 	return target != nil && errors.Is(err.cause, target)
+}
+
+type vsockGuestPortUnavailableError struct{ cause error }
+
+func (err vsockGuestPortUnavailableError) Error() string {
+	return "Firecracker vsock guest port is unavailable"
+}
+
+func (err vsockGuestPortUnavailableError) Unwrap() error { return err.cause }
+
+func (err vsockGuestPortUnavailableError) Is(target error) bool {
+	return target == errFirecrackerVsockGuestPortUnavailable
 }
 
 var _ guestagent.Transport = (*firecrackerVsockTransport)(nil)

@@ -569,6 +569,7 @@ func TestL5KernelBuildrootAndGuestInitLockIsolationContract(t *testing.T) {
 		`CONFIG_X86_MPPARSE=n`,
 		`CONFIG_VIRTIO_MMIO=n`,
 		`! grep -Eq '^CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=(y|m)$' "$kernel_config"`,
+		`! grep -Eq '^CONFIG_DEVTMPFS_MOUNT=(y|m)$' "$kernel_config"`,
 		`$buildroot_output/build/linux-6.1.178/.config`,
 	} {
 		if !strings.Contains(builder, marker) {

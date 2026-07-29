@@ -1,12 +1,14 @@
 package vsock
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
 	"reflect"
 	"sync"
 
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/frame"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/server"
 )
 
@@ -185,8 +187,8 @@ func serveConnection(ctx context.Context, connection io.ReadWriteCloser, limits 
 		_ = recover()
 	}()
 
-	request, err := io.ReadAll(io.LimitReader(connection, limits.MaxRequestBytes+1))
-	if err != nil || int64(len(request)) > limits.MaxRequestBytes {
+	request, err := frame.Read(bufio.NewReader(connection), limits.MaxRequestBytes)
+	if err != nil {
 		return
 	}
 	handlerCtx, cancelHandler := context.WithCancel(ctx)
@@ -207,29 +209,9 @@ func serveConnection(ctx context.Context, connection io.ReadWriteCloser, limits 
 	}()
 
 	response := handler.Handle(handlerCtx, server.Request{Encoded: request})
-	if int64(len(response.Encoded)) > limits.MaxResponseBytes {
+	if err := frame.Write(connection, response.Encoded, limits.MaxResponseBytes); err != nil {
 		return
 	}
-	if err := writeFull(connection, response.Encoded); err != nil {
-		return
-	}
-	if halfCloser, ok := connection.(interface{ CloseWrite() error }); ok {
-		_ = halfCloser.CloseWrite()
-	}
-}
-
-func writeFull(writer io.Writer, value []byte) error {
-	for len(value) > 0 {
-		written, err := writer.Write(value)
-		if err != nil {
-			return err
-		}
-		if written <= 0 || written > len(value) {
-			return io.ErrShortWrite
-		}
-		value = value[written:]
-	}
-	return nil
 }
 
 func nilInterface(value any) bool {

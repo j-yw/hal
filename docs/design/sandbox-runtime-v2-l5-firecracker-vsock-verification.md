@@ -63,8 +63,10 @@ processes/sockets/state afterward. Its identity probe requires UID/GID `1000`,
 a disabled agent password, no supplementary groups, and `NoNewPrivs: 1` in guest process
 status.
 Guest transport tests separately prove that request `POLLRDHUP` framing does
-not cancel dispatch while a later full-peer `POLLHUP` does cancel the live
-handler and reaches L4 process-group cleanup.
+not cancel dispatch, while fixed 4-byte big-endian length-prefixed request and
+response frames do not rely on a half-close for message delivery. A later
+full-peer `POLLHUP` does cancel the live handler and reaches L4 process-group
+cleanup.
 Before constructing the live driver, the test copies the digest-verified
 Firecracker executable, kernel, and rootfs into its private mode-`0700` launch
 root and launches only those private copies. It verifies the installed master
@@ -101,7 +103,7 @@ identity, deterministic Go/kernel/ext4 controls, `CONFIG_MODULES=n`,
 `CONFIG_SMP=y`, `CONFIG_HW_RANDOM_VIRTIO=y`, `CONFIG_ACPI=y`,
 `CONFIG_PCI=y`, `CONFIG_VIRTIO_PCI=y`, `CONFIG_X86_MPPARSE=n`, and
 `CONFIG_VIRTIO_MMIO=n`, matching the production `--enable-pci` start plan and
-the absence of `pci=off` from the fixed boot arguments, matching
+the absence of `pci=off` plus `devtmpfs.mount=0` in the fixed boot arguments, matching
 6.1 kernel headers, the exact
 `/workspace` guest path mapping, and `e2fsck -fn`. It rejects missing and extra
 downloads under a real no-network boundary with `BR2_PRIMARY_SITE_ONLY`,
@@ -134,8 +136,8 @@ separately and are not reproducibility outputs.
 ## Focused and broad commands
 
 ```sh
-go test -count=1 -timeout=180s ./internal/sandboxruntime/microvm/assets/build ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecracker ./internal/sandboxruntime/microvm/firecrackerhost
-go test -race -count=1 -timeout=240s ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecracker ./internal/sandboxruntime/microvm/firecrackerhost
+go test -count=1 -timeout=180s ./internal/sandboxruntime/microvm/assets/build ./internal/sandboxruntime/microvm/guestagent/frame ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecracker ./internal/sandboxruntime/microvm/firecrackerhost
+go test -race -count=1 -timeout=240s ./internal/sandboxruntime/microvm/guestagent/frame ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecracker ./internal/sandboxruntime/microvm/firecrackerhost
 go test -count=1 -timeout=180s ./cmd -run '^TestL5'
 GOOS=darwin GOARCH=amd64 go test -exec=true -count=1 -run '^$' ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecrackerhost
 GOOS=windows GOARCH=amd64 go test -exec=true -count=1 -run '^$' ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecrackerhost

@@ -104,6 +104,10 @@ grep -Fxq "# CONFIG_VIRTIO_MMIO is not set" "$kernel_config"
 # disabled. Accept an omitted or explicit disabled state, but never an enabled
 # command-line MMIO-device path.
 ! grep -Eq '^CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=(y|m)$' "$kernel_config"
+# PID 1 must establish the only constrained devtmpfs mount. The fixed boot
+# argument redundantly disables automatic mounting at runtime; reject an image
+# build that would otherwise make the kernel default contradict this contract.
+! grep -Eq '^CONFIG_DEVTMPFS_MOUNT=(y|m)$' "$kernel_config"
 
 test -f "$buildroot_output/images/vmlinux"
 test -f "$buildroot_output/images/rootfs.ext4"

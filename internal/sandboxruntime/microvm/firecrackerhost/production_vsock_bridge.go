@@ -174,7 +174,9 @@ func secureFirecrackerVsockSocket(path string) error {
 }
 
 func transientProductionVsockError(err error) bool {
-	return errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED)
+	return errors.Is(err, syscall.ENOENT) ||
+		errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, errFirecrackerVsockGuestPortUnavailable)
 }
 
 func (bridge *ProductionVsockBridge) activate(runtimeID string, handle firecracker.ProcessHandleMetadata, wire *firecrackerVsockTransport, transport *GuestAgentTransport) string {
