@@ -159,7 +159,7 @@ The pre-start Firecracker full-config file contains:
 {
   "boot-source": {
     "kernel_image_path": "<private>",
-    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off nomodule ro root=/dev/vda rootfstype=ext4 rootwait init=/sbin/init"
+    "boot_args": "console=ttyS0 reboot=k panic=1 nomodule ro root=/dev/vda rootfstype=ext4 rootwait init=/sbin/init"
   },
   "drives": [{
     "drive_id": "rootfs",
@@ -190,16 +190,24 @@ mutation is accepted as equivalent proof.
 The locked kernel configuration includes `CONFIG_HYPERVISOR_GUEST=y`,
 `CONFIG_PARAVIRT=y`, and `CONFIG_KVM_GUEST=y` so the guest obtains KVM clock
 support rather than waiting for absent legacy timer devices. It also keeps
-`CONFIG_SMP=y` even though L5 starts one vCPU: Firecracker's MMIO devices use
-guest interrupt lines, and the x86 SMP interrupt topology supplies the IRQ
-descriptors required when those devices register queues. This is a kernel
-configuration requirement, not a claim that L5 starts multiple vCPUs. It keeps
+`CONFIG_SMP=y` even though L5 starts one vCPU: the x86 APIC topology remains
+available for the emulated PCI interrupt path. This is a kernel configuration
+requirement, not a claim that L5 starts multiple vCPUs. It keeps
 `CONFIG_DEVTMPFS_MOUNT` disabled: PID 1 owns the one explicit devtmpfs mount
 with the required `nosuid,noexec` restrictions, and an automatic mount is not
-equivalent. Firecracker supplies the root block device and vsock device through
-`virtio_mmio.device=` kernel arguments, so
-`CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=y` is required alongside
-`CONFIG_VIRTIO_MMIO=y` before PID 1 can mount the root filesystem.
+equivalent.
+
+L5 selects Firecracker's ACPI/PCI virtio transport deliberately. The guest
+locks `CONFIG_ACPI=y`, `CONFIG_PCI=y`, `CONFIG_BLK_MQ_PCI=y`,
+`CONFIG_PCI_MMCONFIG=y`, `CONFIG_PCI_MSI=y`, `CONFIG_PCIEPORTBUS=y`, and
+`CONFIG_VIRTIO_PCI=y`; the production start plan contains the exact
+`--enable-pci` flag before any path-bearing argument. It disables the legacy
+fallback mechanisms with `CONFIG_X86_MPPARSE=n`, `CONFIG_VIRTIO_MMIO=n`, and
+`CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=n`, and the fixed boot arguments omit
+`pci=off`. Firecracker therefore exposes the read-only root block, vsock, and
+entropy devices through its bounded emulated PCI segment and ACPI discovery,
+not through guest-supplied `virtio_mmio.device=` command-line metadata. This
+does not grant the guest host PCI passthrough or arbitrary device discovery.
 
 Start order is verify private state, render state, start Firecracker, accept the
 API socket, correlate the process handle/runtime/state identity, complete the

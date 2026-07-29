@@ -529,10 +529,17 @@ func TestL5KernelBuildrootAndGuestInitLockIsolationContract(t *testing.T) {
 		"CONFIG_64BIT=y",
 		"CONFIG_X86_64=y",
 		"CONFIG_SMP=y",
-		"CONFIG_PCI=n",
+		"CONFIG_ACPI=y",
+		"CONFIG_BLK_MQ_PCI=y",
+		"CONFIG_PCI=y",
+		"CONFIG_PCI_MMCONFIG=y",
+		"CONFIG_PCI_MSI=y",
+		"CONFIG_PCIEPORTBUS=y",
 		"CONFIG_MODULES=n",
-		"CONFIG_VIRTIO_MMIO=y",
-		"CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=y",
+		"CONFIG_X86_MPPARSE=n",
+		"CONFIG_VIRTIO_MMIO=n",
+		"CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=n",
+		"CONFIG_VIRTIO_PCI=y",
 		"CONFIG_VIRTIO_BLK=y",
 		"CONFIG_HYPERVISOR_GUEST=y",
 		"CONFIG_PARAVIRT=y",
@@ -551,6 +558,21 @@ func TestL5KernelBuildrootAndGuestInitLockIsolationContract(t *testing.T) {
 	} {
 		if !strings.Contains(kernel, setting) {
 			t.Errorf("linux.config missing %q", setting)
+		}
+	}
+
+	builder := string(l5ReadRequiredFile(t, filepath.Join(root, "build-in-container.sh")))
+	for _, marker := range []string{
+		`CONFIG_ACPI=y`,
+		`CONFIG_PCI=y`,
+		`CONFIG_VIRTIO_PCI=y`,
+		`CONFIG_X86_MPPARSE=n`,
+		`CONFIG_VIRTIO_MMIO=n`,
+		`! grep -Eq '^CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=(y|m)$' "$kernel_config"`,
+		`$buildroot_output/build/linux-6.1.178/.config`,
+	} {
+		if !strings.Contains(builder, marker) {
+			t.Errorf("build-in-container.sh missing effective-kernel preflight %q", marker)
 		}
 	}
 

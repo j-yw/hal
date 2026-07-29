@@ -22,7 +22,7 @@ const (
 	defaultVsockPath     = "guest.vsock"
 
 	l5GuestCID           uint32 = 3
-	l5ProductionBootArgs        = "console=ttyS0 reboot=k panic=1 pci=off nomodule ro root=/dev/vda rootfstype=ext4 rootwait init=/sbin/init"
+	l5ProductionBootArgs        = "console=ttyS0 reboot=k panic=1 nomodule ro root=/dev/vda rootfstype=ext4 rootwait init=/sbin/init"
 )
 
 // BackendConfig is the Firecracker-specific configuration contract derived

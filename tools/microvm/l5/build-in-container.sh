@@ -36,6 +36,16 @@ grep -Fxq "CONFIG_HYPERVISOR_GUEST=y" /src/tools/microvm/l5/linux.config
 grep -Fxq "CONFIG_PARAVIRT=y" /src/tools/microvm/l5/linux.config
 grep -Fxq "CONFIG_KVM_GUEST=y" /src/tools/microvm/l5/linux.config
 grep -Fxq "CONFIG_SMP=y" /src/tools/microvm/l5/linux.config
+grep -Fxq "CONFIG_ACPI=y" /src/tools/microvm/l5/linux.config
+grep -Fxq "CONFIG_BLK_MQ_PCI=y" /src/tools/microvm/l5/linux.config
+grep -Fxq "CONFIG_PCI=y" /src/tools/microvm/l5/linux.config
+grep -Fxq "CONFIG_PCI_MMCONFIG=y" /src/tools/microvm/l5/linux.config
+grep -Fxq "CONFIG_PCI_MSI=y" /src/tools/microvm/l5/linux.config
+grep -Fxq "CONFIG_PCIEPORTBUS=y" /src/tools/microvm/l5/linux.config
+grep -Fxq "CONFIG_X86_MPPARSE=n" /src/tools/microvm/l5/linux.config
+grep -Fxq "CONFIG_VIRTIO_MMIO=n" /src/tools/microvm/l5/linux.config
+grep -Fxq "CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=n" /src/tools/microvm/l5/linux.config
+grep -Fxq "CONFIG_VIRTIO_PCI=y" /src/tools/microvm/l5/linux.config
 grep -Fxq "# CONFIG_DEVTMPFS_MOUNT is not set" /src/tools/microvm/l5/linux.config
 
 mkdir -p "$HOME" /build/guest-bin "$download_root" /build/gocache /build/gomodcache /build/goproxy/golang.org/x/sys/@v
@@ -78,6 +88,22 @@ make -C "$buildroot_source" \
 	BR2_DOWNLOAD_FORCE_CHECK_HASHES=y \
 	BR2_CCACHE= \
 	DL_DIR=/build/download
+
+kernel_config="$buildroot_output/build/linux-6.1.178/.config"
+grep -Fxq "CONFIG_SMP=y" "$kernel_config"
+grep -Fxq "CONFIG_ACPI=y" "$kernel_config"
+grep -Fxq "CONFIG_BLK_MQ_PCI=y" "$kernel_config"
+grep -Fxq "CONFIG_PCI=y" "$kernel_config"
+grep -Fxq "CONFIG_PCI_MMCONFIG=y" "$kernel_config"
+grep -Fxq "CONFIG_PCI_MSI=y" "$kernel_config"
+grep -Fxq "CONFIG_PCIEPORTBUS=y" "$kernel_config"
+grep -Fxq "CONFIG_VIRTIO_PCI=y" "$kernel_config"
+grep -Fxq "# CONFIG_X86_MPPARSE is not set" "$kernel_config"
+grep -Fxq "# CONFIG_VIRTIO_MMIO is not set" "$kernel_config"
+# Kconfig omits this dependent symbol entirely when CONFIG_VIRTIO_MMIO is
+# disabled. Accept an omitted or explicit disabled state, but never an enabled
+# command-line MMIO-device path.
+! grep -Eq '^CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=(y|m)$' "$kernel_config"
 
 test -f "$buildroot_output/images/vmlinux"
 test -f "$buildroot_output/images/rootfs.ext4"

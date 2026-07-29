@@ -115,6 +115,7 @@ type StartOperationPlan struct {
 	Action      OperationAction                `json:"action"`
 	Executable  OperationPathReference         `json:"executable"`
 	Argv        []string                       `json:"-"`
+	EnablePCI   bool                           `json:"enablePCI,omitempty"`
 	Environment []OperationEnvironmentMetadata `json:"environment"`
 	APISocket   OperationPathReference         `json:"apiSocket"`
 	Config      OperationPathReference         `json:"config"`
@@ -181,18 +182,22 @@ func RenderStartOperationPlan(config BackendConfig) (StartOperationPlan, error) 
 		return StartOperationPlan{}, err
 	}
 
-	argv := []string{
-		executable.Path,
-		"--api-sock", apiSocket.Path,
-		"--config-file", configPath.Path,
-		"--log-path", logPath.Path,
-		"--metrics-path", metricsPath.Path,
+	enablePCI := config.ProductionVsock
+	argv, err := processStartArgvWithPCI(executable, []OperationPathReference{
+		apiSocket,
+		configPath,
+		logPath,
+		metricsPath,
+	}, enablePCI)
+	if err != nil {
+		return StartOperationPlan{}, err
 	}
 
 	return StartOperationPlan{
 		Action:      OperationActionStart,
 		Executable:  executable,
 		Argv:        argv,
+		EnablePCI:   enablePCI,
 		Environment: []OperationEnvironmentMetadata{},
 		APISocket:   apiSocket,
 		Config:      configPath,
@@ -260,21 +265,27 @@ func RenderDeleteOperationPlan(paths PathPlan) (DeleteOperationPlan, error) {
 }
 
 func (plan StartOperationPlan) Summary() OperationPlanSummary {
+	argv := []OperationArgumentSummary{
+		{PathRole: plan.Executable.Role},
+	}
+	if plan.EnablePCI {
+		argv = append(argv, OperationArgumentSummary{Value: "--enable-pci"})
+	}
+	argv = append(argv,
+		OperationArgumentSummary{Value: "--api-sock"},
+		OperationArgumentSummary{PathRole: plan.APISocket.Role},
+		OperationArgumentSummary{Value: "--config-file"},
+		OperationArgumentSummary{PathRole: plan.Config.Role},
+		OperationArgumentSummary{Value: "--log-path"},
+		OperationArgumentSummary{PathRole: plan.Log.Role},
+		OperationArgumentSummary{Value: "--metrics-path"},
+		OperationArgumentSummary{PathRole: plan.Metrics.Role},
+	)
 	return OperationPlanSummary{
 		Action:         plan.Action,
 		ExecutableRole: plan.Executable.Role,
-		Argv: []OperationArgumentSummary{
-			{PathRole: plan.Executable.Role},
-			{Value: "--api-sock"},
-			{PathRole: plan.APISocket.Role},
-			{Value: "--config-file"},
-			{PathRole: plan.Config.Role},
-			{Value: "--log-path"},
-			{PathRole: plan.Log.Role},
-			{Value: "--metrics-path"},
-			{PathRole: plan.Metrics.Role},
-		},
-		Environment: cloneOperationEnvironment(plan.Environment),
+		Argv:           argv,
+		Environment:    cloneOperationEnvironment(plan.Environment),
 		PathRoles: []OperationPathRole{
 			plan.APISocket.Role,
 			plan.Config.Role,
