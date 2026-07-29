@@ -192,7 +192,10 @@ The locked kernel configuration includes `CONFIG_HYPERVISOR_GUEST=y`,
 support rather than waiting for absent legacy timer devices. It keeps
 `CONFIG_DEVTMPFS_MOUNT` disabled: PID 1 owns the one explicit devtmpfs mount
 with the required `nosuid,noexec` restrictions, and an automatic mount is not
-equivalent.
+equivalent. Firecracker supplies the root block device and vsock device through
+`virtio_mmio.device=` kernel arguments, so
+`CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=y` is required alongside
+`CONFIG_VIRTIO_MMIO=y` before PID 1 can mount the root filesystem.
 
 Start order is verify private state, render state, start Firecracker, accept the
 API socket, correlate the process handle/runtime/state identity, complete the

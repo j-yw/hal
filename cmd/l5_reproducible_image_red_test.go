@@ -530,6 +530,7 @@ func TestL5KernelBuildrootAndGuestInitLockIsolationContract(t *testing.T) {
 		"CONFIG_PCI=n",
 		"CONFIG_MODULES=n",
 		"CONFIG_VIRTIO_MMIO=y",
+		"CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=y",
 		"CONFIG_VIRTIO_BLK=y",
 		"CONFIG_HYPERVISOR_GUEST=y",
 		"CONFIG_PARAVIRT=y",
