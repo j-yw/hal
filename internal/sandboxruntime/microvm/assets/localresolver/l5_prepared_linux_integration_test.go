@@ -5,6 +5,7 @@ package localresolver
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"runtime"
@@ -62,7 +63,7 @@ func TestL5PreparedLinuxImagePrerequisites(t *testing.T) {
 		requireL5RootfsEntry(t, debugfs, rootfs, path, "regular", "0755", 0, 0)
 	}
 	requireL5RootfsEntry(t, debugfs, rootfs, "/bin/busybox", "regular", "0755", 0, 0)
-	for _, path := range []string{"/bin/sh", "/usr/bin/env", "/usr/bin/setpriv"} {
+	for _, path := range []string{"/bin/sh", "/usr/bin/env"} {
 		output := l5DebugfsCommand(t, debugfs, rootfs, "stat "+path)
 		switch {
 		case strings.Contains(output, "Type: regular"):
@@ -74,6 +75,8 @@ func TestL5PreparedLinuxImagePrerequisites(t *testing.T) {
 			t.Fatal("L5 rootfs applet is neither a regular executable nor the intended BusyBox link")
 		}
 	}
+	requireL5RootfsEntry(t, debugfs, rootfs, "/usr/bin/setpriv", "regular", "0755", 0, 0)
+	requireL5SetprivPrivilegeDropOptions(t, debugfs, rootfs)
 	requireL5RootfsEntry(t, debugfs, rootfs, "/workspace", "directory", "0700", 1000, 1000)
 
 	passwd := l5DebugfsCommand(t, debugfs, rootfs, "cat /etc/passwd")
@@ -112,6 +115,24 @@ func requireL5RootfsEntry(
 		!regexp.MustCompile(`Mode:\s+`+regexp.QuoteMeta(mode)+`\b`).MatchString(output) ||
 		!regexp.MustCompile(`User:\s+`+strconv.Itoa(uid)+`\s+Group:\s+`+strconv.Itoa(gid)+`\b`).MatchString(output) {
 		t.Fatal("L5 rootfs entry type, mode, or ownership is invalid")
+	}
+}
+
+func requireL5SetprivPrivilegeDropOptions(t *testing.T, debugfs string, rootfs string) {
+	t.Helper()
+	setprivPath := filepath.Join(t.TempDir(), "setpriv")
+	_ = l5DebugfsCommand(t, debugfs, rootfs, "dump /usr/bin/setpriv "+setprivPath)
+	if err := os.Chmod(setprivPath, 0o700); err != nil {
+		t.Fatal("L5 rootfs setpriv extraction is not executable")
+	}
+	output, err := exec.Command(setprivPath, "--help").CombinedOutput()
+	if err != nil {
+		t.Fatal("L5 rootfs setpriv help failed")
+	}
+	for _, option := range []string{"--reuid", "--regid", "--clear-groups", "--no-new-privs"} {
+		if !strings.Contains(string(output), option) {
+			t.Fatalf("L5 rootfs setpriv does not support required privilege-drop option %q", option)
+		}
 	}
 }
 

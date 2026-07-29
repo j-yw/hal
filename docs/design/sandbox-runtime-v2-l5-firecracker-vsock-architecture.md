@@ -179,9 +179,19 @@ non-root UID/GID `1000`, and mounts `/workspace` as a distinct size-bounded
 tmpfs owned by that identity with mode `0700` before constructing the L4
 backend. It reaps children and forwards termination signals, then drops
 privileges and execs the guest agent. The immutable ext4 root drive remains
-read-only. The fixed boot arguments, entropy device, and vsock device must be
-present in the config before Firecracker starts; no post-start API mutation is
-accepted as equivalent proof.
+read-only. The privilege transition uses the static util-linux `setpriv`, not
+the BusyBox applet: `BR2_PACKAGE_UTIL_LINUX_SETPRIV=y` is locked and the built
+binary must expose `--reuid`, `--regid`, `--clear-groups`, and
+`--no-new-privs`. The fixed boot arguments, entropy device, and vsock device
+must be present in the config before Firecracker starts; no post-start API
+mutation is accepted as equivalent proof.
+
+The locked kernel configuration includes `CONFIG_HYPERVISOR_GUEST=y`,
+`CONFIG_PARAVIRT=y`, and `CONFIG_KVM_GUEST=y` so the guest obtains KVM clock
+support rather than waiting for absent legacy timer devices. It keeps
+`CONFIG_DEVTMPFS_MOUNT` disabled: PID 1 owns the one explicit devtmpfs mount
+with the required `nosuid,noexec` restrictions, and an automatic mount is not
+equivalent.
 
 Start order is verify private state, render state, start Firecracker, accept the
 API socket, correlate the process handle/runtime/state identity, complete the

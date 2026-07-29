@@ -42,6 +42,23 @@ const (
 	l5CleanupTimeout   = 30 * time.Second
 )
 
+func TestL5FirecrackerVersionIgnoresRuntimeStdout(t *testing.T) {
+	scriptPath := filepath.Join(t.TempDir(), "firecracker-version")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf '%s\\n' 'Firecracker v1.15.1'\nprintf '%s\\n' ''\nprintf '%s\\n' 'runtime log'\n"), 0o700); err != nil {
+		t.Fatal("write Firecracker version fixture failed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	version, err := l5ReadFirecrackerVersion(ctx, scriptPath)
+	if err != nil {
+		t.Fatal("read Firecracker version failed")
+	}
+	if version != l5FirecrackerVersion {
+		t.Fatalf("Firecracker version = %q, want %q", version, l5FirecrackerVersion)
+	}
+}
+
 func TestL5PreparedLinuxFirecrackerVsockE2E(t *testing.T) {
 	prerequisites := requireL5PreparedLinuxPrerequisites(t)
 	harness := newL5PreparedLinuxHarness(t, prerequisites)
@@ -116,8 +133,8 @@ func requireL5PreparedLinuxPrerequisites(t *testing.T) l5PreparedLinuxPrerequisi
 	}
 	versionCtx, versionCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer versionCancel()
-	versionOutput, err := exec.CommandContext(versionCtx, firecrackerPath, "--version").CombinedOutput()
-	if err != nil || strings.TrimSpace(string(versionOutput)) != l5FirecrackerVersion {
+	version, err := l5ReadFirecrackerVersion(versionCtx, firecrackerPath)
+	if err != nil || version != l5FirecrackerVersion {
 		t.Fatalf("L5 Firecracker version must be exactly %s", l5FirecrackerVersion)
 	}
 
@@ -151,6 +168,19 @@ func requireL5PreparedLinuxPrerequisites(t *testing.T) l5PreparedLinuxPrerequisi
 	}
 }
 
+func l5ReadFirecrackerVersion(ctx context.Context, firecrackerPath string) (string, error) {
+	output, err := exec.CommandContext(ctx, firecrackerPath, "--version").Output()
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		if version := strings.TrimSpace(line); version != "" {
+			return version, nil
+		}
+	}
+	return "", errors.New("Firecracker version output is empty")
+}
+
 func l5DistributionAsset(descriptor assets.LaunchDescriptor, role assets.AssetRole) (string, string) {
 	for _, asset := range descriptor.Assets {
 		if asset.Role != role ||
@@ -177,7 +207,7 @@ type l5PreparedLinuxHarness struct {
 
 func newL5PreparedLinuxHarness(t *testing.T, prerequisites l5PreparedLinuxPrerequisites) *l5PreparedLinuxHarness {
 	t.Helper()
-	baseRoot, err := os.MkdirTemp("/tmp", "hal-l5-vsock-e2e-")
+	baseRoot, err := os.MkdirTemp("", "hal-l5-vsock-e2e-")
 	if err != nil {
 		t.Fatal("create private L5 acceptance root failed")
 	}

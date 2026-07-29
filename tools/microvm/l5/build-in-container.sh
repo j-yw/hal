@@ -28,8 +28,14 @@ grep -Fq "lazy_journal_init=0" /src/tools/microvm/l5/buildroot.config
 grep -Fxq "BR2_KERNEL_HEADERS_AS_KERNEL=y" /src/tools/microvm/l5/buildroot.config
 grep -Fxq "BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_1=y" /src/tools/microvm/l5/buildroot.config
 grep -Fxq "BR2_LINUX_KERNEL_NEEDS_HOST_LIBELF=y" /src/tools/microvm/l5/buildroot.config
+grep -Fxq "BR2_PACKAGE_UTIL_LINUX=y" /src/tools/microvm/l5/buildroot.config
+grep -Fxq "BR2_PACKAGE_UTIL_LINUX_SETPRIV=y" /src/tools/microvm/l5/buildroot.config
 grep -Fxq 'BR2_ROOTFS_DEVICE_TABLE="system/device_table.txt /src/tools/microvm/l5/permissions.txt"' /src/tools/microvm/l5/buildroot.config
 grep -Fxq "/bin/busybox f 0755 0 0 - - - - -" /src/tools/microvm/l5/permissions.txt
+grep -Fxq "CONFIG_HYPERVISOR_GUEST=y" /src/tools/microvm/l5/linux.config
+grep -Fxq "CONFIG_PARAVIRT=y" /src/tools/microvm/l5/linux.config
+grep -Fxq "CONFIG_KVM_GUEST=y" /src/tools/microvm/l5/linux.config
+grep -Fxq "# CONFIG_DEVTMPFS_MOUNT is not set" /src/tools/microvm/l5/linux.config
 
 mkdir -p "$HOME" /build/guest-bin "$download_root" /build/gocache /build/gomodcache /build/goproxy/golang.org/x/sys/@v
 tar -C /build -xf /cache/buildroot-2026.05.1.tar.xz

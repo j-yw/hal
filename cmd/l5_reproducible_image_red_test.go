@@ -387,6 +387,12 @@ func TestL5BuildScriptsLockOfflineReproducibleContainerOrchestration(t *testing.
 		"build-in-container.sh": {
 			"BR2_PRIMARY_SITE_ONLY=y",
 			"BR2_DOWNLOAD_FORCE_CHECK_HASHES=y",
+			"BR2_PACKAGE_UTIL_LINUX=y",
+			"BR2_PACKAGE_UTIL_LINUX_SETPRIV=y",
+			"CONFIG_HYPERVISOR_GUEST=y",
+			"CONFIG_PARAVIRT=y",
+			"CONFIG_KVM_GUEST=y",
+			"# CONFIG_DEVTMPFS_MOUNT is not set",
 			"BR2_CCACHE=",
 			"O=/build/output",
 			"DL_DIR=/build/download",
@@ -485,13 +491,16 @@ func TestL5KernelBuildrootAndGuestInitLockIsolationContract(t *testing.T) {
 		"CONFIG_MODULES=n",
 		"CONFIG_VIRTIO_MMIO=y",
 		"CONFIG_VIRTIO_BLK=y",
+		"CONFIG_HYPERVISOR_GUEST=y",
+		"CONFIG_PARAVIRT=y",
+		"CONFIG_KVM_GUEST=y",
 		"CONFIG_VSOCKETS=y",
 		"CONFIG_VIRTIO_VSOCKETS=y",
 		"CONFIG_HW_RANDOM_VIRTIO=y",
 		"CONFIG_EXT4_FS=y",
 		"CONFIG_TMPFS=y",
 		"CONFIG_DEVTMPFS=y",
-		"CONFIG_DEVTMPFS_MOUNT=y",
+		"# CONFIG_DEVTMPFS_MOUNT is not set",
 		"CONFIG_PROC_FS=y",
 		"CONFIG_SYSFS=y",
 		"CONFIG_INET=n",
@@ -511,6 +520,8 @@ func TestL5KernelBuildrootAndGuestInitLockIsolationContract(t *testing.T) {
 		`BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_1=y`,
 		`BR2_LINUX_KERNEL_NEEDS_HOST_LIBELF=y`,
 		`BR2_PACKAGE_BUSYBOX=y`,
+		`BR2_PACKAGE_UTIL_LINUX=y`,
+		`BR2_PACKAGE_UTIL_LINUX_SETPRIV=y`,
 		`BR2_INIT_NONE=y`,
 		`BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y`,
 		`BR2_ROOTFS_DEVICE_TABLE="system/device_table.txt /src/tools/microvm/l5/permissions.txt"`,
@@ -540,11 +551,15 @@ func TestL5KernelBuildrootAndGuestInitLockIsolationContract(t *testing.T) {
 		`chmod 0755 "$target/bin/busybox"`,
 		`ln -snf /bin/busybox "$target/bin/sh"`,
 		`ln -snf /bin/busybox "$target/usr/bin/env"`,
-		`ln -snf /bin/busybox "$target/usr/bin/setpriv"`,
+		`test -x "$target/usr/bin/setpriv"`,
+		`test ! -L "$target/usr/bin/setpriv"`,
 	} {
 		if !strings.Contains(postBuild, marker) {
 			t.Errorf("post-build.sh missing locked applet materialization %q", marker)
 		}
+	}
+	if strings.Contains(postBuild, `ln -snf /bin/busybox "$target/usr/bin/setpriv"`) {
+		t.Error("post-build.sh overrides the util-linux setpriv privilege-drop implementation")
 	}
 	permissions := strings.TrimSpace(string(l5ReadRequiredFile(t, filepath.Join(root, "permissions.txt"))))
 	if permissions != "/bin/busybox f 0755 0 0 - - - - -" {
