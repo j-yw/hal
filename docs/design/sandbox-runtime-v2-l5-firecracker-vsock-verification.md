@@ -56,6 +56,13 @@ only the pinned Firecracker binary and assets produced by the checked-in
 pipeline, uses a scratch rootfs, and proves real readiness, exec exit/output,
 copy integrity, timeout, cancellation, guest-agent failure, escaped-process
 containment by VM teardown, and zero owned processes/sockets/state afterward.
+The same tag first selects `TestL5PreparedLinuxImagePrerequisites`, with
+`HAL_L5_DISTRIBUTION_DIR` naming the caller-installed distribution. That test
+must fail, not skip, when the host, architecture, manifest, or installed asset
+locks do not satisfy the L5 image contract. It also correlates provenance,
+requires the exact `SHA256SUMS` output set and verified bytes, rejects
+symlinked/non-directory roots and symlinked/non-regular files, and uses
+read-only rootfs inspection to require `/usr/bin/hal-guest-agent`.
 
 Missing prerequisites or a zero-match selector is a failure. Retained evidence
 contains versions, digests, safe IDs, pass/fail codes, and cleanup counts only;
@@ -63,12 +70,29 @@ it contains no host paths, endpoints, machine identity, credentials, or raw
 process arguments.
 
 The asset gate verifies Buildroot `2026.05.1` tag/commit/signed-release
-identity, Linux `6.1.178`, Firecracker `v1.15.1`, every exact offline
-dependency filename and digest, clean source/tree identity, deterministic
-Go/kernel/ext4 controls, `CONFIG_MODULES=n`,
-`CONFIG_HW_RANDOM_VIRTIO=y`, and `e2fsck -fn`. It rejects missing and extra
+identity, Linux `6.1.178`, BusyBox `1.38.0`, e2fsprogs `1.47.4`, Go `1.25.7`,
+Firecracker `v1.15.1`, the full pinned `linux/amd64` Buildroot build-image
+digest, every exact offline dependency filename and digest, clean source/tree
+identity, deterministic Go/kernel/ext4 controls, `CONFIG_MODULES=n`,
+`CONFIG_HW_RANDOM_VIRTIO=y`, matching 6.1 kernel headers, the exact
+`/workspace` guest path mapping, and `e2fsck -fn`. It rejects missing and extra
 downloads under a real no-network boundary with `BR2_PRIMARY_SITE_ONLY`,
-`BR2_FORCE_CHECK_HASHES`, and no ccache.
+`BR2_DOWNLOAD_FORCE_CHECK_HASHES`, and no ccache.
+The build preflights the exact local container image and disables daemon
+pulls, so a missing image cannot be satisfied during the offline step.
+Canonical cache/output roots require private mode-`0700` ownership; cache
+verification includes hidden entries and repeats inside the host-identity
+container against the expected host UID. Guest Go compilation uses the exact
+cached module artifacts with `GOPROXY=off` and `-mod=readonly`. Ephemeral build
+trees are created below the validated private output parent, not an ambient
+system temporary directory; cleanup changes only caller write bits and does
+not recursively repair ownership.
+
+The e2fsprogs source evidence is specifically the Buildroot-selected
+`e2fsprogs-1.47.4.tar.xz` archive. The upstream signed checksum record maps
+that filename to
+`fd5bf388cbdbe006a3d3b318d983b2948382440acc85a87f1e7d108653e8db0b`;
+the lock rejects a suffix/digest pairing from any alternate compression.
 
 The two reproducibility runs use independent clean namespaces/containers but
 the same canonical internal Buildroot source and `O=` paths, with fresh
@@ -87,6 +111,7 @@ go test -count=1 -timeout=180s ./cmd -run '^TestL5'
 GOOS=darwin GOARCH=amd64 go test -exec=true -count=1 -run '^$' ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecrackerhost
 GOOS=windows GOARCH=amd64 go test -exec=true -count=1 -run '^$' ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecrackerhost
 test "$(go env GOOS)" = linux
+go test -count=1 -timeout=60s -tags=l5_firecracker_vsock_integration ./internal/sandboxruntime/microvm/assets/localresolver -run '^TestL5PreparedLinuxImagePrerequisites$'
 go test -list '^TestL5PreparedLinuxFirecrackerVsockE2E$' -tags=l5_firecracker_vsock_integration ./internal/sandboxruntime/microvm/firecrackerhost | grep -qx 'TestL5PreparedLinuxFirecrackerVsockE2E'
 go test -race -count=1 -timeout=900s -tags=l5_firecracker_vsock_integration ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestL5PreparedLinuxFirecrackerVsockE2E$'
 go test -count=1 -timeout=420s ./...

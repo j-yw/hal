@@ -4,118 +4,213 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"sync"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/server"
 )
 
 const (
-	DefaultGuestPort      uint32 = 1024
-	DefaultMaxConnections int    = 1
+	GuestAgentPort     uint32 = 1024
+	defaultConnections        = 1
+	maximumConnections        = 64
 )
 
+// Listener accepts guest-side AF_VSOCK streams.
 type Listener interface {
 	Accept(context.Context) (io.ReadWriteCloser, error)
 	Close() error
 }
 
+// Options configure the bounded one-frame guest transport.
 type Options struct {
 	Listener       Listener
 	MaxConnections int
 }
 
+// Transport dispatches one bounded request and response per accepted stream.
 type Transport struct {
 	listener       Listener
 	maxConnections int
+
+	mu     sync.Mutex
+	active map[*trackedConnection]struct{}
 }
 
+type trackedConnection struct {
+	io.ReadWriteCloser
+	closeOnce sync.Once
+	closeErr  error
+}
+
+// NewTransport constructs a guest transport around an already-bound listener.
 func NewTransport(options Options) (*Transport, error) {
-	if options.Listener == nil {
+	if nilInterface(options.Listener) {
 		return nil, errors.New("guest vsock listener is required")
 	}
 	maxConnections := options.MaxConnections
 	if maxConnections == 0 {
-		maxConnections = DefaultMaxConnections
+		maxConnections = defaultConnections
 	}
-	if maxConnections < 1 || maxConnections > 64 {
-		return nil, errors.New("guest vsock connection limit is invalid")
+	if maxConnections < 1 || maxConnections > maximumConnections {
+		return nil, errors.New("guest vsock maximum connections is invalid")
 	}
-	return &Transport{listener: options.Listener, maxConnections: maxConnections}, nil
+	return &Transport{
+		listener:       options.Listener,
+		maxConnections: maxConnections,
+		active:         make(map[*trackedConnection]struct{}),
+	}, nil
 }
 
+// Serve accepts streams until cancellation and closes every accepted stream.
 func (transport *Transport) Serve(ctx context.Context, limits server.Limits, handler server.Handler) error {
-	if transport == nil || transport.listener == nil || handler == nil {
-		return errors.New("guest vsock transport is not configured")
+	if transport == nil || nilInterface(transport.listener) {
+		return errors.New("guest vsock transport is unavailable")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	var wg sync.WaitGroup
-	defer func() {
+	if nilInterface(handler) {
+		return errors.New("guest vsock handler is required")
+	}
+	if limits.MaxRequestBytes < 1 || limits.MaxResponseBytes < 1 {
+		return errors.New("guest vsock frame limits are invalid")
+	}
+
+	var connections sync.WaitGroup
+	cancelClose := context.AfterFunc(ctx, func() {
 		_ = transport.listener.Close()
-		wg.Wait()
+		transport.closeActiveConnections()
+	})
+	defer func() {
+		cancelClose()
+		_ = transport.listener.Close()
+		transport.closeActiveConnections()
+		connections.Wait()
 	}()
-	slots := make(chan struct{}, transport.maxConnections)
+
+	admission := make(chan struct{}, transport.maxConnections)
+
 	for {
-		select {
-		case slots <- struct{}{}:
-		case <-ctx.Done():
-			return nil
-		}
-		conn, err := transport.listener.Accept(ctx)
+		rawConnection, err := transport.listener.Accept(ctx)
 		if err != nil {
-			<-slots
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 				return nil
 			}
 			return errors.New("guest vsock accept failed")
 		}
-		wg.Add(1)
+		if nilInterface(rawConnection) {
+			return errors.New("guest vsock accepted an invalid connection")
+		}
+		connection := &trackedConnection{ReadWriteCloser: rawConnection}
+		transport.track(connection)
+
+		select {
+		case admission <- struct{}{}:
+		case <-ctx.Done():
+			_ = connection.Close()
+			transport.untrack(connection)
+			return nil
+		}
+		connections.Add(1)
 		go func() {
-			defer wg.Done()
-			defer func() { <-slots }()
-			transport.serveConnection(ctx, limits, handler, conn)
+			defer connections.Done()
+			defer func() { <-admission }()
+			defer transport.untrack(connection)
+			serveConnection(ctx, connection, limits, handler)
 		}()
 	}
 }
 
-func (transport *Transport) serveConnection(ctx context.Context, limits server.Limits, handler server.Handler, conn io.ReadWriteCloser) {
-	var closeOnce sync.Once
-	closeConn := func() { closeOnce.Do(func() { _ = conn.Close() }) }
-	defer closeConn()
-	stop := context.AfterFunc(ctx, closeConn)
-	defer stop()
-	defer func() { _ = recover() }()
-	maxRequest := limits.MaxRequestBytes
-	if maxRequest <= 0 {
+func (transport *Transport) track(connection *trackedConnection) {
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	transport.active[connection] = struct{}{}
+}
+
+func (transport *Transport) untrack(connection *trackedConnection) {
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	delete(transport.active, connection)
+}
+
+func (transport *Transport) closeActiveConnections() {
+	transport.mu.Lock()
+	connections := make([]*trackedConnection, 0, len(transport.active))
+	for connection := range transport.active {
+		connections = append(connections, connection)
+	}
+	transport.mu.Unlock()
+	for _, connection := range connections {
+		_ = connection.Close()
+	}
+}
+
+func (connection *trackedConnection) Close() error {
+	if connection == nil {
+		return nil
+	}
+	connection.closeOnce.Do(func() {
+		connection.closeErr = connection.ReadWriteCloser.Close()
+	})
+	return connection.closeErr
+}
+
+func (connection *trackedConnection) CloseWrite() error {
+	if connection == nil {
+		return nil
+	}
+	if halfCloser, ok := connection.ReadWriteCloser.(interface{ CloseWrite() error }); ok {
+		return halfCloser.CloseWrite()
+	}
+	return nil
+}
+
+func serveConnection(ctx context.Context, connection io.ReadWriteCloser, limits server.Limits, handler server.Handler) {
+	defer connection.Close()
+	defer func() {
+		_ = recover()
+	}()
+
+	request, err := io.ReadAll(io.LimitReader(connection, limits.MaxRequestBytes+1))
+	if err != nil || int64(len(request)) > limits.MaxRequestBytes {
 		return
 	}
-	encoded, err := io.ReadAll(io.LimitReader(conn, maxRequest+1))
-	if err != nil || int64(len(encoded)) > maxRequest {
+	response := handler.Handle(ctx, server.Request{Encoded: request})
+	if int64(len(response.Encoded)) > limits.MaxResponseBytes {
 		return
 	}
-	response := handler.Handle(ctx, server.Request{Encoded: encoded})
-	if limits.MaxResponseBytes <= 0 || int64(len(response.Encoded)) > limits.MaxResponseBytes {
+	if err := writeFull(connection, response.Encoded); err != nil {
 		return
 	}
-	if err := writeAll(conn, response.Encoded); err != nil {
-		return
-	}
-	if halfCloser, ok := conn.(interface{ CloseWrite() error }); ok {
+	if halfCloser, ok := connection.(interface{ CloseWrite() error }); ok {
 		_ = halfCloser.CloseWrite()
 	}
 }
 
-func writeAll(writer io.Writer, data []byte) error {
-	for len(data) > 0 {
-		n, err := writer.Write(data)
+func writeFull(writer io.Writer, value []byte) error {
+	for len(value) > 0 {
+		written, err := writer.Write(value)
 		if err != nil {
 			return err
 		}
-		if n <= 0 || n > len(data) {
+		if written <= 0 || written > len(value) {
 			return io.ErrShortWrite
 		}
-		data = data[n:]
+		value = value[written:]
 	}
 	return nil
+}
+
+func nilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }

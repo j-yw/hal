@@ -6,119 +6,126 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/sys/unix"
 )
 
+const acceptPollMillis = 100
+
 type linuxListener struct {
-	fd   int
-	once sync.Once
+	fd        atomic.Int64
+	closeOnce sync.Once
+	closeErr  error
 }
 
-func NewListener(port uint32) (Listener, error) {
-	if port == 0 || port == ^uint32(0) {
-		return nil, errors.New("guest vsock port is invalid")
-	}
-	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, 0)
+type linuxConnection struct {
+	file      *os.File
+	fd        int
+	closeOnce sync.Once
+	closeErr  error
+}
+
+// ListenLinux binds the fixed production guest-agent AF_VSOCK port.
+func ListenLinux() (Listener, error) {
+	fd, err := unix.Socket(
+		unix.AF_VSOCK,
+		unix.SOCK_STREAM|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK,
+		0,
+	)
 	if err != nil {
-		return nil, errors.New("guest vsock socket unavailable")
+		return nil, errors.New("guest AF_VSOCK socket is unavailable")
 	}
-	listener := &linuxListener{fd: fd}
-	if err := unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: port}); err != nil {
+	listener := &linuxListener{}
+	listener.fd.Store(int64(fd))
+	if err := unix.Bind(fd, &unix.SockaddrVM{
+		CID:  unix.VMADDR_CID_ANY,
+		Port: GuestAgentPort,
+	}); err != nil {
 		_ = listener.Close()
-		return nil, errors.New("guest vsock bind failed")
+		return nil, errors.New("guest AF_VSOCK bind failed")
 	}
-	if err := unix.Listen(fd, 64); err != nil {
+	if err := unix.Listen(fd, maximumConnections); err != nil {
 		_ = listener.Close()
-		return nil, errors.New("guest vsock listen failed")
+		return nil, errors.New("guest AF_VSOCK listen failed")
 	}
 	return listener, nil
 }
 
 func (listener *linuxListener) Accept(ctx context.Context) (io.ReadWriteCloser, error) {
+	if listener == nil || listener.fd.Load() < 0 {
+		return nil, errors.New("guest AF_VSOCK listener is closed")
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	for {
-		fd, _, err := unix.Accept4(listener.fd, unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK)
+		listenerFD := int(listener.fd.Load())
+		if listenerFD < 0 {
+			return nil, errors.New("guest AF_VSOCK listener is closed")
+		}
+		fd, _, err := unix.Accept4(listenerFD, unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK)
 		if err == nil {
-			return &linuxConn{fd: fd}, nil
+			return &linuxConnection{
+				file: os.NewFile(uintptr(fd), "guest-vsock-stream"),
+				fd:   fd,
+			}, nil
 		}
-		if !errors.Is(err, unix.EAGAIN) && !errors.Is(err, unix.EINTR) {
-			return nil, err
+		if !errors.Is(err, unix.EAGAIN) && !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EINTR) {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, errors.New("guest AF_VSOCK accept failed")
 		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
-		poll := []unix.PollFd{{Fd: int32(listener.fd), Events: unix.POLLIN}}
-		_, err = unix.Poll(poll, 50)
-		if err != nil && !errors.Is(err, unix.EINTR) {
-			return nil, err
+		poll := []unix.PollFd{{Fd: int32(listenerFD), Events: unix.POLLIN}}
+		if _, err := unix.Poll(poll, acceptPollMillis); err != nil && !errors.Is(err, unix.EINTR) {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, errors.New("guest AF_VSOCK poll failed")
 		}
 	}
 }
 
 func (listener *linuxListener) Close() error {
-	var err error
-	listener.once.Do(func() { err = unix.Close(listener.fd) })
-	return err
-}
-
-type linuxConn struct {
-	fd   int
-	once sync.Once
-}
-
-func (conn *linuxConn) Read(data []byte) (int, error) {
-	for {
-		n, err := unix.Read(conn.fd, data)
-		if errors.Is(err, unix.EAGAIN) {
-			if err := pollGuestConn(conn.fd, unix.POLLIN); err != nil {
-				return 0, err
-			}
-			continue
-		}
-		if n == 0 && err == nil {
-			return 0, io.EOF
-		}
-		return n, err
+	if listener == nil {
+		return nil
 	}
-}
-
-func (conn *linuxConn) Write(data []byte) (int, error) {
-	for {
-		n, err := unix.Write(conn.fd, data)
-		if errors.Is(err, unix.EAGAIN) {
-			if err := pollGuestConn(conn.fd, unix.POLLOUT); err != nil {
-				return 0, err
-			}
-			continue
+	listener.closeOnce.Do(func() {
+		fd := int(listener.fd.Swap(-1))
+		if fd >= 0 {
+			listener.closeErr = unix.Close(fd)
 		}
-		return n, err
-	}
+	})
+	return listener.closeErr
 }
 
-func pollGuestConn(fd int, events int16) error {
-	poll := []unix.PollFd{{Fd: int32(fd), Events: events}}
-	for {
-		_, err := unix.Poll(poll, 100)
-		if errors.Is(err, unix.EINTR) {
-			continue
-		}
-		return err
-	}
+func (connection *linuxConnection) Read(value []byte) (int, error) {
+	return connection.file.Read(value)
 }
 
-func (conn *linuxConn) Close() error {
-	var err error
-	conn.once.Do(func() { err = unix.Close(conn.fd) })
-	return err
+func (connection *linuxConnection) Write(value []byte) (int, error) {
+	return connection.file.Write(value)
 }
 
-func (conn *linuxConn) CloseWrite() error {
-	if conn == nil {
-		return errors.New("guest vsock connection is unavailable")
+func (connection *linuxConnection) CloseWrite() error {
+	if connection == nil {
+		return nil
 	}
-	return unix.Shutdown(conn.fd, unix.SHUT_WR)
+	return unix.Shutdown(connection.fd, unix.SHUT_WR)
+}
+
+func (connection *linuxConnection) Close() error {
+	if connection == nil || connection.file == nil {
+		return nil
+	}
+	connection.closeOnce.Do(func() {
+		connection.closeErr = connection.file.Close()
+	})
+	return connection.closeErr
 }

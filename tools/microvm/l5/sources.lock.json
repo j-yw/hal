@@ -1,0 +1,479 @@
+{
+  "schemaVersion": "hal-microvm-source-lock-v1",
+  "architecture": "x86_64",
+  "buildImage": {
+    "reference": "registry.gitlab.com/buildroot.org/buildroot/base@sha256:f1e7f009dad6b6f44bf5fcb4b0b89c9228e42f9fe689142774b1db802d4c93c6",
+    "platform": "linux/amd64"
+  },
+  "buildroot": {
+    "repositoryUrl": "https://gitlab.com/buildroot.org/buildroot.git",
+    "tag": "2026.05.1",
+    "tagObject": "de1f9260590a53a7cd8a59addc47c96ecd09f983",
+    "commit": "cb857ba4c87a93e5265a9e4a3f32071abf39e14a",
+    "signerFingerprint": "18C7DF2819C1733D822D599EA500D6EE9CB0E540",
+    "signingKeyUrl": "https://gitlab.com/-/snippets/4836881/raw/main/arnout@rnout.be.asc",
+    "signatureFilename": "buildroot-2026.05.1.tar.xz.sign",
+    "signatureUrl": "https://buildroot.org/downloads/buildroot-2026.05.1.tar.xz.sign"
+  },
+  "sources": [
+    {
+      "name": "acl",
+      "version": "2.3.2",
+      "purpose": "buildroot_download",
+      "filename": "acl-2.3.2.tar.xz",
+      "url": "https://sources.buildroot.net/acl/acl-2.3.2.tar.xz",
+      "sizeBytes": 371680,
+      "sha256": "97203a72cae99ab89a067fe2210c1cbf052bc492b479eca7d226d9830883b0bd"
+    },
+    {
+      "name": "attr",
+      "version": "2.5.2",
+      "purpose": "buildroot_download",
+      "filename": "attr-2.5.2.tar.xz",
+      "url": "https://sources.buildroot.net/attr/attr-2.5.2.tar.xz",
+      "sizeBytes": 334180,
+      "sha256": "f2e97b0ab7ce293681ab701915766190d607a1dba7fae8a718138150b700a70b"
+    },
+    {
+      "name": "autoconf",
+      "version": "2.72",
+      "purpose": "buildroot_download",
+      "filename": "autoconf-2.72.tar.xz",
+      "url": "https://sources.buildroot.net/autoconf/autoconf-2.72.tar.xz",
+      "sizeBytes": 1389680,
+      "sha256": "ba885c1319578d6c94d46e9b0dceb4014caafe2490e437a0dbca3f270a223f5a"
+    },
+    {
+      "name": "autoconf-archive",
+      "version": "2023.02.20",
+      "purpose": "buildroot_download",
+      "filename": "autoconf-archive-2023.02.20.tar.xz",
+      "url": "https://sources.buildroot.net/autoconf-archive/autoconf-archive-2023.02.20.tar.xz",
+      "sizeBytes": 678184,
+      "sha256": "71d4048479ae28f1f5794619c3d72df9c01df49b1c628ef85fde37596dc31a33"
+    },
+    {
+      "name": "automake",
+      "version": "1.16.5",
+      "purpose": "buildroot_download",
+      "filename": "automake-1.16.5.tar.xz",
+      "url": "https://sources.buildroot.net/automake/automake-1.16.5.tar.xz",
+      "sizeBytes": 1601740,
+      "sha256": "f01d58cd6d9d77fbdca9eb4bbd5ead1988228fdb73d6f7a201f5f8d6b118b469"
+    },
+    {
+      "name": "binutils",
+      "version": "2.45.1",
+      "purpose": "buildroot_download",
+      "filename": "binutils-2.45.1.tar.xz",
+      "url": "https://sources.buildroot.net/binutils/binutils-2.45.1.tar.xz",
+      "sizeBytes": 27962312,
+      "sha256": "5fe101e6fe9d18fdec95962d81ed670fdee5f37e3f48f0bef87bddf862513aa5"
+    },
+    {
+      "name": "bison",
+      "version": "3.8.2",
+      "purpose": "buildroot_download",
+      "filename": "bison-3.8.2.tar.xz",
+      "url": "https://sources.buildroot.net/bison/bison-3.8.2.tar.xz",
+      "sizeBytes": 2817324,
+      "sha256": "9bba0214ccf7f1079c5d59210045227bcf619519840ebfa80cd3849cff5a5bf2"
+    },
+    {
+      "name": "buildroot",
+      "version": "2026.05.1",
+      "purpose": "buildroot_release",
+      "filename": "buildroot-2026.05.1.tar.xz",
+      "url": "https://buildroot.org/downloads/buildroot-2026.05.1.tar.xz",
+      "sizeBytes": 6117332,
+      "sha256": "ae7f706f087b9ae9083a10a587368dfbf53103c28bf81c2d690198dc4090cb58"
+    },
+    {
+      "name": "busybox",
+      "version": "1.38.0",
+      "purpose": "buildroot_download",
+      "filename": "busybox-1.38.0.tar.bz2",
+      "url": "https://busybox.net/downloads/busybox-1.38.0.tar.bz2",
+      "sizeBytes": 2695723,
+      "sha256": "34f9ea6ff8636f2c9241153b9114eefa9e65674a45318ae1ef95bb5f31c53bb2"
+    },
+    {
+      "name": "bzip2",
+      "version": "1.0.8",
+      "purpose": "buildroot_download",
+      "filename": "bzip2-1.0.8.tar.gz",
+      "url": "https://sources.buildroot.net/bzip2/bzip2-1.0.8.tar.gz",
+      "sizeBytes": 810029,
+      "sha256": "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269"
+    },
+    {
+      "name": "e2fsprogs",
+      "version": "1.47.4",
+      "purpose": "buildroot_download",
+      "filename": "e2fsprogs-1.47.4.tar.xz",
+      "url": "https://mirrors.edge.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v1.47.4/e2fsprogs-1.47.4.tar.xz",
+      "sizeBytes": 7337236,
+      "sha256": "fd5bf388cbdbe006a3d3b318d983b2948382440acc85a87f1e7d108653e8db0b"
+    },
+    {
+      "name": "elfutils",
+      "version": "0.194",
+      "purpose": "buildroot_download",
+      "filename": "elfutils-0.194.tar.bz2",
+      "url": "https://sources.buildroot.net/elfutils/elfutils-0.194.tar.bz2",
+      "sizeBytes": 12003321,
+      "sha256": "09e2ff033d39baa8b388a2d7fbc5390bfde99ae3b7c67c7daaf7433fbcf0f01e"
+    },
+    {
+      "name": "expat",
+      "version": "2.8.2",
+      "purpose": "buildroot_download",
+      "filename": "expat-2.8.2.tar.xz",
+      "url": "https://sources.buildroot.net/expat/expat-2.8.2.tar.xz",
+      "sizeBytes": 515504,
+      "sha256": "3ad89b8588e6644bd4e49981480d48b21289eebbcd4f0a1a4afb1c29f99b6ab4"
+    },
+    {
+      "name": "fakeroot",
+      "version": "1.37.2",
+      "purpose": "buildroot_download",
+      "filename": "fakeroot_1.37.2.orig.tar.gz",
+      "url": "https://sources.buildroot.net/fakeroot/fakeroot_1.37.2.orig.tar.gz",
+      "sizeBytes": 595964,
+      "sha256": "0eea60fbe89771b88fcf415c8f2f0a6ccfe9edebbcf3ba5dc0212718d98884db"
+    },
+    {
+      "name": "firecracker",
+      "version": "v1.15.1",
+      "purpose": "live_prerequisite",
+      "filename": "firecracker-v1.15.1-x86_64.tgz",
+      "url": "https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64.tgz",
+      "sizeBytes": 7622285,
+      "sha256": "d4a32ab2322d887ca1bc4a4e7afa9cc35393e6362dfc2b3becb389d362e4275a"
+    },
+    {
+      "name": "flex",
+      "version": "2.6.4",
+      "purpose": "buildroot_download",
+      "filename": "flex-2.6.4.tar.gz",
+      "url": "https://sources.buildroot.net/flex/flex-2.6.4.tar.gz",
+      "sizeBytes": 1419096,
+      "sha256": "e87aae032bf07c26f85ac0ed3250998c37621d95f8bd748b31f15b33c45ee995"
+    },
+    {
+      "name": "gcc",
+      "version": "14.4.0",
+      "purpose": "buildroot_download",
+      "filename": "gcc-14.4.0.tar.xz",
+      "url": "https://sources.buildroot.net/gcc/gcc-14.4.0.tar.xz",
+      "sizeBytes": 91586872,
+      "sha256": "752b6f567beac83159c77a7680b1316bdd784738bff9a9d070112c09da90f6d9"
+    },
+    {
+      "name": "gettext",
+      "version": "0.22.4",
+      "purpose": "buildroot_download",
+      "filename": "gettext-0.22.4.tar.xz",
+      "url": "https://sources.buildroot.net/gettext-tiny/gettext-0.22.4.tar.xz",
+      "sizeBytes": 10255384,
+      "sha256": "29217f1816ee2e777fa9a01f9956a14139c0c23cc1b20368f06b2888e8a34116"
+    },
+    {
+      "name": "gettext-tiny",
+      "version": "0.3.2",
+      "purpose": "buildroot_download",
+      "filename": "gettext-tiny-0.3.2.tar.gz",
+      "url": "https://sources.buildroot.net/gettext-tiny/gettext-tiny-0.3.2.tar.gz",
+      "sizeBytes": 295387,
+      "sha256": "29cc165e27e83d2bb3760118c2368eadab550830d962d758e51bd36eb860f383"
+    },
+    {
+      "name": "gmp",
+      "version": "6.3.0",
+      "purpose": "buildroot_download",
+      "filename": "gmp-6.3.0.tar.xz",
+      "url": "https://sources.buildroot.net/gmp/gmp-6.3.0.tar.xz",
+      "sizeBytes": 2094196,
+      "sha256": "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898"
+    },
+    {
+      "name": "go",
+      "version": "1.25.7",
+      "purpose": "guest_toolchain",
+      "filename": "go1.25.7.linux-amd64.tar.gz",
+      "url": "https://go.dev/dl/go1.25.7.linux-amd64.tar.gz",
+      "sizeBytes": 59768749,
+      "sha256": "12e6d6a191091ae27dc31f6efc630e3a3b8ba409baf3573d955b196fdf086005"
+    },
+    {
+      "name": "golang-x-sys-info",
+      "version": "v0.41.0",
+      "purpose": "buildroot_download",
+      "filename": "golang.org-x-sys-v0.41.0.info",
+      "url": "https://proxy.golang.org/golang.org/x/sys/@v/v0.41.0.info",
+      "sizeBytes": 190,
+      "sha256": "83e556dd11dfde90ccd0c1eaf8d2784448d020623c94d93bbb7e8463094cfb35"
+    },
+    {
+      "name": "golang-x-sys-mod",
+      "version": "v0.41.0",
+      "purpose": "buildroot_download",
+      "filename": "golang.org-x-sys-v0.41.0.mod",
+      "url": "https://proxy.golang.org/golang.org/x/sys/@v/v0.41.0.mod",
+      "sizeBytes": 35,
+      "sha256": "f411814d83a96e86781b1dee41c125b9504da5422dba37cc1d63b016ae39cfe2"
+    },
+    {
+      "name": "golang-x-sys-zip",
+      "version": "v0.41.0",
+      "purpose": "buildroot_download",
+      "filename": "golang.org-x-sys-v0.41.0.zip",
+      "url": "https://proxy.golang.org/golang.org/x/sys/@v/v0.41.0.zip",
+      "sizeBytes": 2005850,
+      "sha256": "c48084c62177045c1091e3cab99aa03ebb003027435ca8bd36bb851340480a40"
+    },
+    {
+      "name": "kmod",
+      "version": "34.2",
+      "purpose": "buildroot_download",
+      "filename": "kmod-34.2.tar.xz",
+      "url": "https://sources.buildroot.net/kmod/kmod-34.2.tar.xz",
+      "sizeBytes": 443748,
+      "sha256": "5a5d5073070cc7e0c7a7a3c6ec2a0e1780850c8b47b3e3892226b93ffcb9cb54"
+    },
+    {
+      "name": "libffi",
+      "version": "3.4.8",
+      "purpose": "buildroot_download",
+      "filename": "libffi-3.4.8.tar.gz",
+      "url": "https://sources.buildroot.net/libffi/libffi-3.4.8.tar.gz",
+      "sizeBytes": 1397992,
+      "sha256": "bc9842a18898bfacb0ed1252c4febcc7e78fa139fd27fdc7a3e30d9d9356119b"
+    },
+    {
+      "name": "libtool",
+      "version": "2.4.6",
+      "purpose": "buildroot_download",
+      "filename": "libtool-2.4.6.tar.xz",
+      "url": "https://sources.buildroot.net/libtool/libtool-2.4.6.tar.xz",
+      "sizeBytes": 973080,
+      "sha256": "7c87a8c2c8c0fc9cd5019e402bed4292462d00a718a7cd5f11218153bf28b26f"
+    },
+    {
+      "name": "libxcrypt",
+      "version": "4.5.2",
+      "purpose": "buildroot_download",
+      "filename": "libxcrypt-4.5.2.tar.xz",
+      "url": "https://sources.buildroot.net/libxcrypt/libxcrypt-4.5.2.tar.xz",
+      "sizeBytes": 669820,
+      "sha256": "71513a31c01a428bccd5367a32fd95f115d6dac50fb5b60c779d5c7942aec071"
+    },
+    {
+      "name": "linux",
+      "version": "6.1.178",
+      "purpose": "buildroot_download",
+      "filename": "linux-6.1.178.tar.xz",
+      "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.1.178.tar.xz",
+      "sizeBytes": 135503044,
+      "sha256": "7d83fa67ca75032b1ac6ef49973722073963c0cb9bc3aa7ef3efa749cf6c720f"
+    },
+    {
+      "name": "m4",
+      "version": "1.4.21",
+      "purpose": "buildroot_download",
+      "filename": "m4-1.4.21.tar.xz",
+      "url": "https://sources.buildroot.net/m4/m4-1.4.21.tar.xz",
+      "sizeBytes": 2080016,
+      "sha256": "f25c6ab51548a73a75558742fb031e0625d6485fe5f9155949d6486a2408ab66"
+    },
+    {
+      "name": "meson",
+      "version": "1.10.1",
+      "purpose": "buildroot_download",
+      "filename": "meson-1.10.1.tar.gz",
+      "url": "https://sources.buildroot.net/meson/meson-1.10.1.tar.gz",
+      "sizeBytes": 2413969,
+      "sha256": "c42296f12db316a4515b9375a5df330f2e751ccdd4f608430d41d7d6210e4317"
+    },
+    {
+      "name": "mpc",
+      "version": "1.4.1",
+      "purpose": "buildroot_download",
+      "filename": "mpc-1.4.1.tar.xz",
+      "url": "https://sources.buildroot.net/mpc/mpc-1.4.1.tar.xz",
+      "sizeBytes": 531992,
+      "sha256": "91204cd32f164bd3b7c992d4a6a8ce6519511aadab30f78b6982d0bf8d73e931"
+    },
+    {
+      "name": "mpfr",
+      "version": "4.2.2",
+      "purpose": "buildroot_download",
+      "filename": "mpfr-4.2.2.tar.xz",
+      "url": "https://sources.buildroot.net/mpfr/mpfr-4.2.2.tar.xz",
+      "sizeBytes": 1505596,
+      "sha256": "b67ba0383ef7e8a8563734e2e889ef5ec3c3b898a01d00fa0a6869ad81c6ce01"
+    },
+    {
+      "name": "musl",
+      "version": "1.2.6",
+      "purpose": "buildroot_download",
+      "filename": "musl-1.2.6.tar.gz",
+      "url": "https://sources.buildroot.net/musl/musl-1.2.6.tar.gz",
+      "sizeBytes": 1082499,
+      "sha256": "d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a"
+    },
+    {
+      "name": "musl-compat-headers",
+      "version": "1",
+      "purpose": "buildroot_download",
+      "filename": "queue.h",
+      "url": "https://sources.buildroot.net/musl-compat-headers/queue.h",
+      "sizeBytes": 30075,
+      "sha256": "c13407edd0e33be73cae72514cb234f8612e1c0e54401c9448daffd3a240158b"
+    },
+    {
+      "name": "ninja",
+      "version": "1.13.2",
+      "purpose": "buildroot_download",
+      "filename": "ninja-1.13.2.tar.gz",
+      "url": "https://sources.buildroot.net/ninja/ninja-1.13.2.tar.gz",
+      "sizeBytes": 292385,
+      "sha256": "974d6b2f4eeefa25625d34da3cb36bdcebe7fbce40f4c16ac0835fd1c0cbae17"
+    },
+    {
+      "name": "patchelf",
+      "version": "0.13",
+      "purpose": "buildroot_download",
+      "filename": "patchelf-0.13.tar.bz2",
+      "url": "https://sources.buildroot.net/patchelf/patchelf-0.13.tar.bz2",
+      "sizeBytes": 172499,
+      "sha256": "4c7ed4bcfc1a114d6286e4a0d3c1a90db147a4c3adda1814ee0eee0f9ee917ed"
+    },
+    {
+      "name": "pkgconf",
+      "version": "2.3.0",
+      "purpose": "buildroot_download",
+      "filename": "pkgconf-2.3.0.tar.xz",
+      "url": "https://sources.buildroot.net/pkgconf/pkgconf-2.3.0.tar.xz",
+      "sizeBytes": 316160,
+      "sha256": "3a9080ac51d03615e7c1910a0a2a8df08424892b5f13b0628a204d3fcce0ea8b"
+    },
+    {
+      "name": "python",
+      "version": "3.14.6",
+      "purpose": "buildroot_download",
+      "filename": "Python-3.14.6.tar.xz",
+      "url": "https://sources.buildroot.net/python3/Python-3.14.6.tar.xz",
+      "sizeBytes": 23921184,
+      "sha256": "143b1dddefaec3bd2e21e3b839b34a2b7fb9842272883c576420d605e9f30c63"
+    },
+    {
+      "name": "python-flit-core",
+      "version": "3.12.0",
+      "purpose": "buildroot_download",
+      "filename": "flit_core-3.12.0.tar.gz",
+      "url": "https://sources.buildroot.net/python-flit-core/flit_core-3.12.0.tar.gz",
+      "sizeBytes": 53690,
+      "sha256": "18f63100d6f94385c6ed57a72073443e1a71a4acb4339491615d0f16d6ff01b2"
+    },
+    {
+      "name": "python-installer",
+      "version": "1.0.0",
+      "purpose": "buildroot_download",
+      "filename": "installer-1.0.0.tar.gz",
+      "url": "https://sources.buildroot.net/python-installer/installer-1.0.0.tar.gz",
+      "sizeBytes": 462685,
+      "sha256": "c6d691331621cf3fec4822f5c6f83cab3705f79b316225dc454127411677c71f"
+    },
+    {
+      "name": "python-packaging",
+      "version": "26.2",
+      "purpose": "buildroot_download",
+      "filename": "packaging-26.2.tar.gz",
+      "url": "https://sources.buildroot.net/python-packaging/packaging-26.2.tar.gz",
+      "sizeBytes": 228134,
+      "sha256": "ff452ff5a3e828ce110190feff1178bb1f2ea2281fa2075aadb987c2fb221661"
+    },
+    {
+      "name": "python-pypa-build",
+      "version": "1.3.0",
+      "purpose": "buildroot_download",
+      "filename": "build-1.3.0.tar.gz",
+      "url": "https://sources.buildroot.net/python-pypa-build/build-1.3.0.tar.gz",
+      "sizeBytes": 48544,
+      "sha256": "698edd0ea270bde950f53aed21f3a0135672206f3911e0176261a31e0e07b397"
+    },
+    {
+      "name": "python-pyproject-hooks",
+      "version": "1.2.0",
+      "purpose": "buildroot_download",
+      "filename": "pyproject_hooks-1.2.0.tar.gz",
+      "url": "https://sources.buildroot.net/python-pyproject-hooks/pyproject_hooks-1.2.0.tar.gz",
+      "sizeBytes": 19228,
+      "sha256": "1e859bd5c40fae9448642dd871adf459e5e2084186e8d2c2a79a824c970da1f8"
+    },
+    {
+      "name": "python-setuptools",
+      "version": "80.9.0",
+      "purpose": "buildroot_download",
+      "filename": "setuptools-80.9.0.tar.gz",
+      "url": "https://sources.buildroot.net/python-setuptools/setuptools-80.9.0.tar.gz",
+      "sizeBytes": 1319958,
+      "sha256": "f36b47402ecde768dbfafc46e8e4207b4360c654f1f3bb84475f0a28628fb19c"
+    },
+    {
+      "name": "python-wheel",
+      "version": "0.47.0",
+      "purpose": "buildroot_download",
+      "filename": "wheel-0.47.0.tar.gz",
+      "url": "https://sources.buildroot.net/python-wheel/wheel-0.47.0.tar.gz",
+      "sizeBytes": 63854,
+      "sha256": "cc72bd1009ba0cf63922e28f94d9d83b920aa2bb28f798a31d0691b02fa3c9b3"
+    },
+    {
+      "name": "tar",
+      "version": "1.35",
+      "purpose": "buildroot_download",
+      "filename": "tar-1.35.cpio.gz",
+      "url": "https://sources.buildroot.net/tar/tar-1.35.cpio.gz",
+      "sizeBytes": 4625633,
+      "sha256": "c77a38fcf25b21fd8209d20d35638744344ded239cfc7df80138bf46d3c6b16d"
+    },
+    {
+      "name": "util-linux",
+      "version": "2.41.5",
+      "purpose": "buildroot_download",
+      "filename": "util-linux-2.41.5.tar.xz",
+      "url": "https://sources.buildroot.net/util-linux/util-linux-2.41.5.tar.xz",
+      "sizeBytes": 9474992,
+      "sha256": "f586e35d320ff537aab3ffeca37e9ecd482ccbe013590db4429a414d8aa6a728"
+    },
+    {
+      "name": "xz",
+      "version": "5.8.3",
+      "purpose": "buildroot_download",
+      "filename": "xz-5.8.3.tar.bz2",
+      "url": "https://sources.buildroot.net/xz/xz-5.8.3.tar.bz2",
+      "sizeBytes": 2028831,
+      "sha256": "33bf69c0d6c698e83a68f77e6c1f465778e418ca0b3d59860d3ab446f4ac99a6"
+    },
+    {
+      "name": "zlib",
+      "version": "1.3.2",
+      "purpose": "buildroot_download",
+      "filename": "zlib-1.3.2.tar.xz",
+      "url": "https://sources.buildroot.net/libzlib/zlib-1.3.2.tar.xz",
+      "sizeBytes": 1320064,
+      "sha256": "d7a0654783a4da529d1bb793b7ad9c3318020af77667bcae35f95d0e42a792f3"
+    },
+    {
+      "name": "zstd",
+      "version": "1.5.7",
+      "purpose": "buildroot_download",
+      "filename": "zstd-1.5.7.tar.gz",
+      "url": "https://sources.buildroot.net/zstd/zstd-1.5.7.tar.gz",
+      "sizeBytes": 2434947,
+      "sha256": "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"
+    }
+  ]
+}

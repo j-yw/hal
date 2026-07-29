@@ -33,9 +33,18 @@ The x86_64 build lock is:
   `18C7DF2819C1733D822D599EA500D6EE9CB0E540`;
 - Linux `6.1.178` archive SHA-256
   `7d83fa67ca75032b1ac6ef49973722073963c0cb9bc3aa7ef3efa749cf6c720f`;
-  and
+- BusyBox `1.38.0` archive SHA-256
+  `34f9ea6ff8636f2c9241153b9114eefa9e65674a45318ae1ef95bb5f31c53bb2`;
+- e2fsprogs `1.47.4` `e2fsprogs-1.47.4.tar.xz` archive SHA-256
+  `fd5bf388cbdbe006a3d3b318d983b2948382440acc85a87f1e7d108653e8db0b`;
+- Go `1.25.7` Linux x86_64 archive SHA-256
+  `12e6d6a191091ae27dc31f6efc630e3a3b8ba409baf3573d955b196fdf086005`,
+  matching the repository's `go` directive and official Go download record;
 - Firecracker `v1.15.1` x86_64 release archive SHA-256
-  `d4a32ab2322d887ca1bc4a4e7afa9cc35393e6362dfc2b3becb389d362e4275a`.
+  `d4a32ab2322d887ca1bc4a4e7afa9cc35393e6362dfc2b3becb389d362e4275a`;
+  and
+- the Buildroot `linux/amd64` build image
+  `registry.gitlab.com/buildroot.org/buildroot/base@sha256:f1e7f009dad6b6f44bf5fcb4b0b89c9228e42f9fe689142774b1db802d4c93c6`.
 
 The checked-in manifest also locks every transitive Buildroot download by
 exact filename, version, URL, and SHA-256. A checksum establishes integrity;
@@ -55,8 +64,9 @@ The build entry point consumes:
 Network fetch is a separate explicit step. Every official download is accepted
 only after its immutable SHA-256 lock matches, and the Buildroot source must
 also pass its pinned signed-release verification. The offline build executes
-inside a real no-network namespace/container with
-`BR2_PRIMARY_SITE_ONLY=y`, `BR2_FORCE_CHECK_HASHES=y`, no ccache, and a
+inside a real no-network namespace/container after preflighting the exact
+locally installed build-image digest and disabling daemon pulls. It uses
+`BR2_PRIMARY_SITE_ONLY=y`, `BR2_DOWNLOAD_FORCE_CHECK_HASHES=y`, no ccache, and a
 fresh host/staging/target/download tree. It consumes only the verified source
 archive and exact download manifest, refuses a missing, extra, renamed, or
 digest-mismatched dependency, builds a static
@@ -69,7 +79,15 @@ digest-mismatched dependency, builds a static
 - `SHA256SUMS`.
 
 The guest binary uses `-trimpath`, `-buildvcs=false`, an empty Go build ID, and
-no ambient module download. The kernel build fixes `KBUILD_BUILD_USER`,
+no ambient module download. Canonical cache/output roots require private
+owner-controlled mode-`0700` parents. The exact cache set includes hidden
+entries, and its expected host UID and contents are rechecked inside the
+host-identity container. Guest Go compilation uses `GOPROXY=off`, `GOSUMDB=off`,
+and `-mod=readonly` after the exact local module artifacts are populated. All
+ephemeral build trees are independently created below the validated private
+output parent and removed after restoring only the caller's write bit on
+read-only build-cache entries.
+The kernel build fixes `KBUILD_BUILD_USER`,
 `KBUILD_BUILD_HOST`, `KBUILD_BUILD_TIMESTAMP`, and `KBUILD_BUILD_VERSION`.
 The kernel has `CONFIG_MODULES=n` and `CONFIG_HW_RANDOM_VIRTIO=y`.
 Filesystem construction uses a fixed ext4 UUID, label, inode count, block
@@ -92,6 +110,10 @@ caller directories, then byte-compare `vmlinux`, `rootfs.ext4`,
 caller export paths must not change any byte or appear in an artifact.
 Cross-host equality is a stronger handoff check, not the local L5 acceptance
 claim.
+
+The guest agent maps both its host-side workspace root and protocol-visible
+guest root to `/workspace`; absolute request paths therefore remain contained
+without being prefixed as `/workspace/workspace`.
 
 ### Vsock transport
 
@@ -344,6 +366,14 @@ The first red commit locks:
 The prepared-Linux test is selected only by `l5_firecracker_vsock_integration`.
 Once selected it never skips. It requires Linux x86_64, writable KVM,
 the pinned Firecracker version, and assets produced by the checked-in pipeline.
+`HAL_L5_DISTRIBUTION_DIR` names only the caller-installed distribution
+directory for the tagged prerequisite and end-to-end tests; it is never
+recorded in distribution artifacts or retained evidence. Before boot, the
+tagged prerequisite validates provenance against the distribution manifest,
+verifies the exact `SHA256SUMS` entry set and every referenced byte, rejects
+unsafe roots/manifests/assets through no-follow opens, and uses read-only
+filesystem inspection to prove `/usr/bin/hal-guest-agent` is present in the
+built rootfs.
 It boots the produced image and proves:
 
 - API acceptance alone is not readiness;
@@ -386,6 +416,7 @@ go test -count=1 -timeout=180s ./internal/sandboxruntime/microvm/assets/build ./
 go test -race -count=1 -timeout=240s ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecracker ./internal/sandboxruntime/microvm/firecrackerhost
 go test -count=1 -timeout=180s ./cmd -run '^TestL5'
 test "$(go env GOOS)" = linux
+go test -count=1 -timeout=60s -tags=l5_firecracker_vsock_integration ./internal/sandboxruntime/microvm/assets/localresolver -run '^TestL5PreparedLinuxImagePrerequisites$'
 go test -list '^TestL5PreparedLinuxFirecrackerVsockE2E$' -tags=l5_firecracker_vsock_integration ./internal/sandboxruntime/microvm/firecrackerhost | grep -qx 'TestL5PreparedLinuxFirecrackerVsockE2E'
 go test -race -count=1 -timeout=900s -tags=l5_firecracker_vsock_integration ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestL5PreparedLinuxFirecrackerVsockE2E$'
 go test -count=1 -timeout=420s ./...
