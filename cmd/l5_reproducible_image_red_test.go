@@ -254,6 +254,42 @@ func TestL5E2fsprogsLockUsesBuildrootSelectedXZArtifact(t *testing.T) {
 	t.Fatal("e2fsprogs source lock is missing")
 }
 
+func TestL5LibcapNGOfflineCacheLockCoversBuildrootDependency(t *testing.T) {
+	const (
+		name     = "libcap-ng"
+		version  = "0.9.3"
+		filename = "libcap-ng-0.9.3.tar.gz"
+		url      = "https://sources.buildroot.net/libcap-ng/libcap-ng-0.9.3.tar.gz"
+		size     = int64(126257)
+		digest   = "fe11ebbb55904763b3532f19069f13ec319042634620180a03bd4653d301563e"
+	)
+
+	var lock l5SourceLockFile
+	if err := json.Unmarshal(l5ReadRequiredFile(t, filepath.Join("..", "tools", "microvm", "l5", "sources.lock.json")), &lock); err != nil {
+		t.Fatalf("decode L5 source lock: %v", err)
+	}
+	for _, source := range lock.Sources {
+		if source.Name != name {
+			continue
+		}
+		if source.Version != version ||
+			source.Purpose != "buildroot_download" ||
+			source.Filename != filename ||
+			source.URL != url ||
+			source.SizeBytes != size ||
+			source.SHA256 != digest {
+			t.Fatalf("libcap-ng source lock = %#v, want pinned Buildroot dependency", source)
+		}
+		manifestLine := fmt.Sprintf("%s\t%d\t%s", digest, size, filename)
+		manifest := string(l5ReadRequiredFile(t, filepath.Join("..", "tools", "microvm", "l5", "cache.manifest")))
+		if !strings.Contains("\n"+manifest, "\n"+manifestLine+"\n") {
+			t.Fatalf("L5 cache manifest is missing libcap-ng pinned dependency %q", filename)
+		}
+		return
+	}
+	t.Fatal("libcap-ng source lock is missing")
+}
+
 func TestL5CacheManifestVerifierRejectsContainmentAndSetViolations(t *testing.T) {
 	script := filepath.Join("..", "tools", "microvm", "l5", "verify-cache.sh")
 	if info, err := os.Stat(script); err != nil || !info.Mode().IsRegular() {
