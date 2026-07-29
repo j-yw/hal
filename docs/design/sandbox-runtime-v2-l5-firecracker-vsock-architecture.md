@@ -311,7 +311,9 @@ metadata; L10 still owns the full strict conjunction/default decision.
 - Frames are bounded before allocation. Handshake lines are ASCII, newline
   terminated, and at most 64 bytes.
 - The guest agent runs as a dedicated non-root UID/GID with `/workspace` on a
-  distinct size-bounded tmpfs and the image root drive read-only.
+  distinct size-bounded tmpfs and the image root drive read-only. Live
+  acceptance requires UID/GID `1000`, exactly one supplementary group `1000`,
+  and `NoNewPrivs: 1` in the guest process status.
 - The guest process receives a fixed environment, fixed executable roots, no
   ambient host data, no network configuration, and no credentials.
 - Copy paths retain L4 descriptor-relative `openat2` containment. Vsock framing
@@ -395,7 +397,9 @@ tagged prerequisite validates provenance against the distribution manifest,
 verifies the exact `SHA256SUMS` entry set and every referenced byte, rejects
 unsafe roots/manifests/assets through no-follow opens, and uses read-only
 filesystem inspection to prove `/usr/bin/hal-guest-agent` is present in the
-built rootfs.
+built rootfs. The prerequisite creates a private digest-verified rootfs copy
+through a no-follow file descriptor before bounded read-only debugfs inspection;
+it never gives debugfs a caller-controlled asset pathname.
 It boots the produced image and proves:
 
 - API acceptance alone is not readiness;

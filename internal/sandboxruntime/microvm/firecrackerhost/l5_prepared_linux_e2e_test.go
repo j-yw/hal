@@ -514,6 +514,19 @@ func assertL5PreparedGuestIdentityAndMounts(t *testing.T, driver *microvm.Driver
 	script := `set -eu
 uid=$(id -u)
 gid=$(id -g)
+groups=
+no_new_privs=
+while read -r key value rest; do
+	case "$key" in
+	Groups:)
+		groups="$value"
+		if [ -n "$rest" ]; then
+			groups="$groups $rest"
+		fi
+		;;
+	NoNewPrivs:) no_new_privs="$value" ;;
+	esac
+done </proc/self/status
 workspace_stat=$(stat -c '%u:%g:%a' /workspace)
 root_mount=
 workspace_mount=
@@ -525,6 +538,8 @@ while read -r device mountpoint filesystem options rest; do
 done </proc/mounts
 printf 'uid=%s\n' "$uid"
 printf 'gid=%s\n' "$gid"
+printf 'groups=%s\n' "$groups"
+printf 'no-new-privs=%s\n' "$no_new_privs"
 printf 'workspace-stat=%s\n' "$workspace_stat"
 printf 'root-mount=%s\n' "$root_mount"
 printf 'workspace-mount=%s\n' "$workspace_mount"
@@ -537,8 +552,10 @@ rm /workspace/l5-write-probe`
 	values := l5KeyValueLines(stdout)
 	if values["uid"] != "1000" ||
 		values["gid"] != "1000" ||
+		values["groups"] != "1000" ||
+		values["no-new-privs"] != "1" ||
 		values["workspace-stat"] != "1000:1000:700" {
-		t.Fatal("L5 guest agent or workspace does not use UID/GID 1000 and mode 0700")
+		t.Fatal("L5 guest agent or workspace does not prove UID/GID 1000, cleared groups, no_new_privs, and mode 0700")
 	}
 	rootFields := strings.SplitN(values["root-mount"], ":", 3)
 	workspaceFields := strings.SplitN(values["workspace-mount"], ":", 3)

@@ -58,6 +58,10 @@ func TestL5ArchitectureContainsMandatoryPhaseSections(t *testing.T) {
 		"non-Linux build-tagged stub",
 		"Once selected it never skips",
 		"L5 does not implement policy proxying",
+		"exactly one supplementary group",
+		"`NoNewPrivs: 1`",
+		"private digest-verified rootfs copy",
+		"bounded read-only debugfs inspection",
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("L5 architecture missing %q", required)
@@ -74,6 +78,7 @@ func TestL5VerificationLocksLiveSelectorAndBroadGates(t *testing.T) {
 	for _, required := range []string{
 		"TestL5PreparedLinuxFirecrackerVsockE2E",
 		"TestL5PreparedLinuxImagePrerequisites",
+		"TestL5CopyVerifiedRootfsForInspectionCopiesDigestLockedBytes",
 		"l5_firecracker_vsock_integration",
 		"HAL_L5_DISTRIBUTION_DIR",
 		"7e8b57e88c459396d4680d83dcdd8c7f72305447cb55b11f4ac98ad70a3f7825",
@@ -85,6 +90,10 @@ func TestL5VerificationLocksLiveSelectorAndBroadGates(t *testing.T) {
 		"must not skip",
 		"regular util-linux binary",
 		"non-executing inspection",
+		"exactly one supplementary group",
+		"`NoNewPrivs: 1`",
+		"private digest-verified rootfs copy",
+		"bounded read-only debugfs inspection",
 		"go test -count=1 -timeout=420s ./...",
 		"go test -count=1 -run '^$' ./...",
 		"go vet ./...",
@@ -133,6 +142,32 @@ func TestL5PreparedLinuxAcceptanceLocksIndependentProofAndCleanup(t *testing.T) 
 	for _, forbidden := range []string{"t.Skip(", "t.Skipf(", "testing.Short()"} {
 		if strings.Contains(source, forbidden) {
 			t.Fatalf("L5 prepared-Linux acceptance contains forbidden skip marker %q", forbidden)
+		}
+	}
+}
+
+func TestL5PreparedLinuxIdentityProofCoversPrivilegeDrop(t *testing.T) {
+	path := filepath.Join(
+		"..",
+		"internal",
+		"sandboxruntime",
+		"microvm",
+		"firecrackerhost",
+		"l5_prepared_linux_e2e_test.go",
+	)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read L5 prepared-Linux identity proof: %v", err)
+	}
+	source := string(data)
+	for _, required := range []string{
+		"Groups:",
+		"NoNewPrivs:",
+		`values["groups"] != "1000"`,
+		`values["no-new-privs"] != "1"`,
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("L5 prepared-Linux identity proof missing %q", required)
 		}
 	}
 }

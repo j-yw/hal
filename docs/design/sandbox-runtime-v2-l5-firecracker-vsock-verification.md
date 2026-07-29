@@ -59,7 +59,9 @@ The test uses a scratch rootfs and proves real readiness, exec exit/output,
 copy integrity, bounded workspace tmpfs, timeout/cancellation
 process-group cleanup before teardown, independently probed guest-agent failure,
 escaped-process containment by VM teardown, and zero owned
-processes/sockets/state afterward.
+processes/sockets/state afterward. Its identity probe requires UID/GID `1000`,
+exactly one supplementary group `1000`, and `NoNewPrivs: 1` in guest process
+status.
 Guest transport tests separately prove that request `POLLRDHUP` framing does
 not cancel dispatch while a later full-peer `POLLHUP` does cancel the live
 handler and reaches L4 process-group cleanup.
@@ -78,7 +80,12 @@ regular util-linux binary at `/usr/bin/setpriv`. It performs non-executing inspe
 of that binary's embedded option identifiers to prove the exact
 non-root privilege-drop option names required by guest init; the live E2E
 proves their behavior inside the guest rather than executing rootfs content on
-the host.
+the host. The prerequisite first makes a private digest-verified rootfs copy
+through a no-follow file descriptor and performs bounded read-only debugfs inspection
+only on that copy, so caller-controlled path swaps and oversized file output
+fail before inspection evidence is accepted.
+`TestL5CopyVerifiedRootfsForInspectionCopiesDigestLockedBytes` is a tagged
+fake-only regression check for that private copy boundary.
 
 Missing prerequisites or a zero-match selector is a failure. Retained evidence
 contains versions, digests, safe IDs, pass/fail codes, and cleanup counts only;
@@ -127,7 +134,7 @@ go test -count=1 -timeout=180s ./cmd -run '^TestL5'
 GOOS=darwin GOARCH=amd64 go test -exec=true -count=1 -run '^$' ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecrackerhost
 GOOS=windows GOARCH=amd64 go test -exec=true -count=1 -run '^$' ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecrackerhost
 test "$(go env GOOS)" = linux
-go test -count=1 -timeout=60s -tags=l5_firecracker_vsock_integration ./internal/sandboxruntime/microvm/assets/localresolver -run '^TestL5PreparedLinuxImagePrerequisites$'
+go test -count=1 -timeout=60s -tags=l5_firecracker_vsock_integration ./internal/sandboxruntime/microvm/assets/localresolver -run '^(TestL5CopyVerifiedRootfsForInspectionCopiesDigestLockedBytes|TestL5PreparedLinuxImagePrerequisites)$'
 go test -list '^TestL5PreparedLinuxFirecrackerVsockE2E$' -tags=l5_firecracker_vsock_integration ./internal/sandboxruntime/microvm/firecrackerhost | grep -qx 'TestL5PreparedLinuxFirecrackerVsockE2E'
 go test -race -count=1 -timeout=900s -tags=l5_firecracker_vsock_integration ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestL5PreparedLinuxFirecrackerVsockE2E$'
 go test -count=1 -timeout=420s ./...

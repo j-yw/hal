@@ -5,6 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -653,6 +656,98 @@ func TestL5PreparedLinuxImageInspectionNeverExecutesRootfsContent(t *testing.T) 
 	} {
 		if strings.Contains(source, forbidden) {
 			t.Errorf("prepared-Linux image prerequisite test contains host-execution marker %q", forbidden)
+		}
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), "l5_prepared_linux_integration_test.go", source, 0)
+	if err != nil {
+		t.Fatalf("parse prepared-Linux image prerequisite test: %v", err)
+	}
+	commandContextCalls := 0
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || !l5ASTIdentifier(selector.X, "exec") {
+			return true
+		}
+		switch selector.Sel.Name {
+		case "Command":
+			t.Error("prepared-Linux image prerequisite test must not use exec.Command")
+		case "CommandContext":
+			commandContextCalls++
+			if len(call.Args) != 5 ||
+				!l5ASTIdentifier(call.Args[0], "ctx") ||
+				!l5ASTIdentifier(call.Args[1], "debugfs") ||
+				!l5ASTString(call.Args[2], "-R") ||
+				!l5ASTIdentifier(call.Args[3], "commandText") ||
+				!l5ASTIdentifier(call.Args[4], "rootfs") {
+				t.Error("prepared-Linux image prerequisite test may run only fixed read-only debugfs inspection")
+			}
+		case "LookPath":
+			if len(call.Args) != 1 || !l5ASTString(call.Args[0], "debugfs") {
+				t.Error("prepared-Linux image prerequisite test may look up only debugfs")
+			}
+		}
+		return true
+	})
+	if commandContextCalls != 1 {
+		t.Fatalf("prepared-Linux image prerequisite test debugfs command count = %d, want 1", commandContextCalls)
+	}
+}
+
+func l5ASTIdentifier(expression ast.Expr, want string) bool {
+	identifier, ok := expression.(*ast.Ident)
+	return ok && identifier.Name == want
+}
+
+func l5ASTString(expression ast.Expr, want string) bool {
+	literal, ok := expression.(*ast.BasicLit)
+	if !ok || literal.Kind != token.STRING {
+		return false
+	}
+	value, err := strconv.Unquote(literal.Value)
+	return err == nil && value == want
+}
+
+func TestL5PreparedLinuxImageInspectionBoundsUntrustedOutput(t *testing.T) {
+	source := l5PreparedLinuxImagePrerequisiteSource(t)
+	for _, required := range []string{
+		"l5DebugfsOutputLimit",
+		"context.WithTimeout",
+		"exec.CommandContext",
+		"io.LimitReader",
+		"l5DebugfsOutputLimit+1",
+		"command.Process.Kill()",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("prepared-Linux image inspection missing bounded-output guard %q", required)
+		}
+	}
+	if strings.Contains(source, ".CombinedOutput()") {
+		t.Fatal("prepared-Linux image inspection buffers untrusted debugfs output")
+	}
+}
+
+func TestL5PreparedLinuxImageInspectionPinsVerifiedRootfs(t *testing.T) {
+	source := l5PreparedLinuxImagePrerequisiteSource(t)
+	for _, required := range []string{
+		"l5CopyVerifiedRootfsForInspection",
+		"verified.Descriptor",
+		"openRequestedDistributionRoot",
+		"openDistributionFileNoFollow",
+		"io.MultiWriter",
+		"sha256.New",
+		"rootfs.ext4",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("prepared-Linux image inspection missing verified-rootfs guard %q", required)
+		}
+	}
+	for _, forbidden := range []string{"\"-w\"", "write /usr/bin/setpriv"} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("prepared-Linux image inspection contains writable debugfs marker %q", forbidden)
 		}
 	}
 }

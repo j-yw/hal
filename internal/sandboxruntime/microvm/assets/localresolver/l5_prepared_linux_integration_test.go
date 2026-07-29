@@ -3,17 +3,29 @@
 package localresolver
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
 	assetbuild "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets/build"
+)
+
+const (
+	l5RootfsInspectionMaxBytes int64 = 128 << 20
+	l5DebugfsOutputLimit       int64 = 8 << 20
+	l5DebugfsTimeout                 = 5 * time.Second
 )
 
 func TestL5PreparedLinuxImagePrerequisites(t *testing.T) {
@@ -29,8 +41,7 @@ func TestL5PreparedLinuxImagePrerequisites(t *testing.T) {
 	}
 
 	request := DistributionRequest{RootDir: root}
-	descriptor, err := ResolveDistribution(request)
-	if err != nil {
+	if _, err := ResolveDistribution(request); err != nil {
 		t.Fatalf("L5 installed launch assets failed verification")
 	}
 	verified, err := VerifyDistributionBundle(request)
@@ -50,10 +61,7 @@ func TestL5PreparedLinuxImagePrerequisites(t *testing.T) {
 		t.Fatal("L5 required distribution output set changed")
 	}
 
-	rootfs := l5PreparedRootfsPath(descriptor)
-	if rootfs == "" {
-		t.Fatal("L5 rootfs launch asset is unavailable")
-	}
+	rootfs := l5CopyVerifiedRootfsForInspection(t, request, verified.Descriptor)
 	debugfs, err := exec.LookPath("debugfs")
 	if err != nil {
 		t.Fatal("debugfs is required to inspect the L5 rootfs")
@@ -88,14 +96,98 @@ func TestL5PreparedLinuxImagePrerequisites(t *testing.T) {
 	}
 }
 
-func l5PreparedRootfsPath(descriptor assets.LaunchDescriptor) string {
+func l5PreparedRootfsAsset(descriptor assets.LaunchDescriptor) (assets.LaunchAsset, bool) {
 	for _, asset := range descriptor.Assets {
-		if asset.Role == assets.AssetRoleRootfs &&
-			asset.Source.HostPath != nil {
-			return asset.Source.HostPath.Path
+		if asset.Role == assets.AssetRoleRootfs {
+			return asset, true
 		}
 	}
-	return ""
+	return assets.LaunchAsset{}, false
+}
+
+func TestL5CopyVerifiedRootfsForInspectionCopiesDigestLockedBytes(t *testing.T) {
+	root := t.TempDir()
+	data := []byte("l5-rootfs-inspection-fixture")
+	if err := os.WriteFile(filepath.Join(root, "rootfs.ext4"), data, 0o600); err != nil {
+		t.Fatal("write L5 rootfs inspection fixture failed")
+	}
+	digest := sha256.Sum256(data)
+	descriptor := assets.LaunchDescriptor{Assets: []assets.LaunchAsset{{
+		Role: assets.AssetRoleRootfs,
+		Lock: assets.LockMetadata{
+			Digest: assets.DigestMetadata{
+				Algorithm: assets.DigestAlgorithmSHA256,
+				Value:     hex.EncodeToString(digest[:]),
+			},
+			SizeBytes: int64(len(data)),
+		},
+	}}}
+
+	copyPath := l5CopyVerifiedRootfsForInspection(t, DistributionRequest{RootDir: root}, descriptor)
+	info, err := os.Stat(copyPath)
+	if err != nil || info.Mode().Perm() != 0o400 {
+		t.Fatal("L5 rootfs inspection copy is not private and read-only")
+	}
+	copied, err := os.ReadFile(copyPath)
+	if err != nil || string(copied) != string(data) {
+		t.Fatal("L5 rootfs inspection copy does not preserve digest-locked bytes")
+	}
+}
+
+func l5CopyVerifiedRootfsForInspection(
+	t *testing.T,
+	request DistributionRequest,
+	descriptor assets.LaunchDescriptor,
+) string {
+	t.Helper()
+	rootfsAsset, ok := l5PreparedRootfsAsset(descriptor)
+	if !ok ||
+		rootfsAsset.Lock.Digest.Algorithm != assets.DigestAlgorithmSHA256 ||
+		rootfsAsset.Lock.Digest.Value == "" ||
+		rootfsAsset.Lock.SizeBytes <= 0 ||
+		rootfsAsset.Lock.SizeBytes > l5RootfsInspectionMaxBytes {
+		t.Fatal("L5 rootfs inspection lock is unavailable or exceeds its bounded size")
+	}
+
+	root, _, err := openRequestedDistributionRoot(request.RootDir)
+	if err != nil {
+		t.Fatal("L5 rootfs inspection could not open the distribution root")
+	}
+	defer root.Close()
+
+	source, err := openDistributionFileNoFollow(root, "rootfs.ext4")
+	if err != nil {
+		t.Fatal("L5 rootfs inspection could not open the verified rootfs")
+	}
+	defer source.Close()
+	info, err := source.Stat()
+	if err != nil || info.Size() != rootfsAsset.Lock.SizeBytes {
+		t.Fatal("L5 rootfs inspection source does not match its verified size")
+	}
+
+	path := filepath.Join(t.TempDir(), "rootfs.ext4")
+	destination, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		t.Fatal("L5 rootfs inspection could not create its private copy")
+	}
+	hasher := sha256.New()
+	written, copyErr := io.Copy(
+		io.MultiWriter(destination, hasher),
+		io.LimitReader(source, rootfsAsset.Lock.SizeBytes+1),
+	)
+	syncErr := destination.Sync()
+	closeErr := destination.Close()
+	if copyErr != nil ||
+		syncErr != nil ||
+		closeErr != nil ||
+		written != rootfsAsset.Lock.SizeBytes ||
+		hex.EncodeToString(hasher.Sum(nil)) != rootfsAsset.Lock.Digest.Value {
+		t.Fatal("L5 rootfs inspection private copy does not match the verified asset")
+	}
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal("L5 rootfs inspection private copy is not read-only")
+	}
+	return path
 }
 
 func requireL5RootfsEntry(
@@ -129,9 +221,32 @@ func requireL5SetprivPrivilegeDropOptions(t *testing.T, debugfs string, rootfs s
 
 func l5DebugfsCommand(t *testing.T, debugfs string, rootfs string, commandText string) string {
 	t.Helper()
-	command := exec.Command(debugfs, "-R", commandText, rootfs)
-	output, err := command.CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), l5DebugfsTimeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, debugfs, "-R", commandText, rootfs)
+	stdout, err := command.StdoutPipe()
 	if err != nil {
+		t.Fatal("debugfs could not initialize an L5 rootfs inspection")
+	}
+	command.Stderr = io.Discard
+	if err := command.Start(); err != nil {
+		t.Fatal("debugfs could not start an L5 rootfs inspection")
+	}
+	output, readErr := io.ReadAll(io.LimitReader(stdout, l5DebugfsOutputLimit+1))
+	if int64(len(output)) > l5DebugfsOutputLimit {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		t.Fatal("debugfs output exceeded the L5 inspection limit")
+	}
+	if readErr != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		t.Fatal("debugfs could not read an L5 rootfs inspection")
+	}
+	if err := command.Wait(); err != nil {
+		if ctx.Err() != nil {
+			t.Fatal("debugfs inspection exceeded the L5 timeout")
+		}
 		t.Fatal("debugfs failed to inspect an L5 rootfs prerequisite")
 	}
 	return string(output)
