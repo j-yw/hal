@@ -464,7 +464,7 @@ func assertL5PreparedGuestReadiness(t *testing.T, target sandboxruntime.Target) 
 	sort.Strings(labels)
 	if readiness.State != sandboxruntime.RuntimeGuestReadinessStateReady ||
 		readiness.Transport != "vsock" ||
-		!equalL5Strings(labels, []string{"probe_ok", "protocol_v1", "runtime_bound"}) {
+		!equalL5Strings(labels, []string{"probe_ok", "protocol_v1", "ready", "runtime_bound"}) {
 		t.Fatal("started target did not carry exact protocol-v1 runtime-bound vsock readiness")
 	}
 }
@@ -527,7 +527,7 @@ while read -r key value rest; do
 	NoNewPrivs:) no_new_privs="$value" ;;
 	esac
 done </proc/self/status
-workspace_stat=$(stat -c '%u:%g:%a' /workspace)
+workspace_stat=$(busybox ls -ldn /workspace | busybox awk '{print $1 ":" $3 ":" $4}')
 root_mount=
 workspace_mount=
 while read -r device mountpoint filesystem options rest; do
@@ -545,7 +545,7 @@ printf 'root-mount=%s\n' "$root_mount"
 printf 'workspace-mount=%s\n' "$workspace_mount"
 printf 'workspace-write=ok\n' > /workspace/l5-write-probe
 rm /workspace/l5-write-probe`
-	stdout, stderr, result, err := l5GuestExec(context.Background(), driver, target, []string{"sh", "-c", script})
+	stdout, stderr, result, err := l5GuestShell(context.Background(), driver, target, script)
 	if err != nil || result == nil || result.ExitCode != 0 || stderr != "" {
 		t.Fatal("L5 guest identity and mount inspection failed")
 	}
@@ -554,7 +554,7 @@ rm /workspace/l5-write-probe`
 		values["gid"] != "1000" ||
 		values["groups"] != "" ||
 		values["no-new-privs"] != "1" ||
-		values["workspace-stat"] != "1000:1000:700" {
+		values["workspace-stat"] != "drwx------:1000:1000" {
 		t.Fatal("L5 guest agent or workspace does not prove UID/GID 1000, no supplementary groups, no_new_privs, and mode 0700")
 	}
 	rootFields := strings.SplitN(values["root-mount"], ":", 3)
@@ -606,7 +606,7 @@ func l5MountSizeAtMost(options string, maximum uint64) bool {
 func assertL5PreparedGuestExecAndCopy(t *testing.T, driver *microvm.Driver, target sandboxruntime.Target) {
 	t.Helper()
 	stdout, stderr, result, err := l5GuestExec(context.Background(), driver, target, []string{
-		"sh", "-c", `printf 'l5-stdout'; printf 'l5-stderr' >&2; exit 23`,
+		"busybox", "sh", "-c", `printf 'l5-stdout'; printf 'l5-stderr' >&2; exit 23`,
 	})
 	if err != nil || result == nil || result.ExitCode != 23 ||
 		stdout != "l5-stdout" || stderr != "l5-stderr" {
@@ -644,14 +644,21 @@ func assertL5PreparedGuestExecAndCopy(t *testing.T, driver *microvm.Driver, targ
 func assertL5PreparedEscapedGuestProcess(t *testing.T, driver *microvm.Driver, target sandboxruntime.Target) {
 	t.Helper()
 	launch := `set -eu
-setsid sh -c 'trap "" TERM INT HUP; while :; do sleep 1; done' </dev/null >/dev/null 2>&1 &
-printf '%s\n' "$!" > /workspace/escaped.pid`
-	_, stderr, result, err := l5GuestExec(context.Background(), driver, target, []string{"sh", "-c", launch})
+busybox setsid busybox sh -c 'trap "" TERM INT HUP; printf ready > /workspace/escaped.ready; while :; do busybox sleep 1; done' </dev/null >/dev/null 2>&1 &
+escaped=$!
+attempt=0
+while [ ! -s /workspace/escaped.ready ] && [ "$attempt" -lt 100 ]; do
+	attempt=$((attempt + 1))
+	busybox usleep 10000
+done
+[ -s /workspace/escaped.ready ]
+printf '%s\n' "$escaped" > /workspace/escaped.pid`
+	_, stderr, result, err := l5GuestShell(context.Background(), driver, target, launch)
 	if err != nil || result == nil || result.ExitCode != 0 || stderr != "" {
 		t.Fatal("L5 escaped guest process fixture did not start")
 	}
 	stdout, stderr, result, err := l5GuestExec(context.Background(), driver, target, []string{
-		"sh", "-c", `set -eu; read -r escaped </workspace/escaped.pid; kill -0 "$escaped"; printf 'escaped-alive'`,
+		"busybox", "sh", "-c", `set -eu; read -r escaped </workspace/escaped.pid; kill -0 "$escaped"; rm /workspace/escaped.ready /workspace/escaped.pid; printf 'escaped-alive'`,
 	})
 	if err != nil || result == nil || result.ExitCode != 0 ||
 		stdout != "escaped-alive" || stderr != "" {
@@ -664,11 +671,7 @@ func assertL5PreparedExecTimeout(t *testing.T, driver *microvm.Driver, target sa
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 	started := time.Now()
-	result, err := driver.Exec(ctx, sandboxruntime.ExecRequest{
-		Target:  target,
-		Args:    []string{"sh", "-c", l5ProcessGroupFixture("timeout")},
-		WorkDir: "/workspace",
-	})
+	_, _, result, err := l5GuestShell(ctx, driver, target, l5ProcessGroupFixture("timeout"))
 	if err == nil || result != nil || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal("L5 guest exec timeout did not preserve context deadline failure")
 	}
@@ -683,11 +686,7 @@ func assertL5PreparedExecCancellation(t *testing.T, driver *microvm.Driver, targ
 	ctx, cancel := context.WithCancel(context.Background())
 	timer := time.AfterFunc(250*time.Millisecond, cancel)
 	defer timer.Stop()
-	result, err := driver.Exec(ctx, sandboxruntime.ExecRequest{
-		Target:  target,
-		Args:    []string{"sh", "-c", l5ProcessGroupFixture("cancel")},
-		WorkDir: "/workspace",
-	})
+	_, _, result, err := l5GuestShell(ctx, driver, target, l5ProcessGroupFixture("cancel"))
 	if err == nil || result != nil || !errors.Is(err, context.Canceled) {
 		t.Fatal("L5 guest exec cancellation did not preserve explicit cancellation")
 	}
@@ -727,7 +726,7 @@ for identity in /workspace/@-leader.identity /workspace/@-child.identity; do
 done
 rm /workspace/@-leader.identity /workspace/@-child.identity
 printf 'process-group-gone'`, "@", label)
-	stdout, stderr, result, err := l5GuestExec(context.Background(), driver, target, []string{"sh", "-c", script})
+	stdout, stderr, result, err := l5GuestShell(context.Background(), driver, target, script)
 	if err != nil || result == nil || result.ExitCode != 0 ||
 		stdout != "process-group-gone" || stderr != "" {
 		t.Fatal("L5 guest process group remained after timeout or cancellation")
@@ -737,7 +736,7 @@ printf 'process-group-gone'`, "@", label)
 func assertL5PreparedGuestAgentLossFailsClosed(t *testing.T, harness *l5PreparedLinuxHarness, target sandboxruntime.Target) {
 	t.Helper()
 	stdout, stderr, result, err := l5GuestExec(context.Background(), harness.driver, target, []string{
-		"sh", "-c", `printf '%s' "$PPID"`,
+		"busybox", "sh", "-c", `printf '%s' "$PPID"`,
 	})
 	agentPID, parseErr := strconv.Atoi(strings.TrimSpace(stdout))
 	if err != nil || parseErr != nil || result == nil || result.ExitCode != 0 ||
@@ -746,14 +745,10 @@ func assertL5PreparedGuestAgentLossFailsClosed(t *testing.T, harness *l5Prepared
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_, err = harness.driver.Exec(ctx, sandboxruntime.ExecRequest{
-		Target: target,
-		Args: []string{"sh", "-c", `set -eu
+	_, _, _, err = l5GuestShell(ctx, harness.driver, target, `set -eu
 [ "$PPID" = "$1" ]
 kill -KILL "$PPID"
-while :; do sleep 1; done`, "sh", strconv.Itoa(agentPID)},
-		WorkDir: "/workspace",
-	})
+while :; do sleep 1; done`, strconv.Itoa(agentPID))
 	if err == nil {
 		t.Fatal("L5 guest-agent loss was reported as a successful exec")
 	}
@@ -790,7 +785,7 @@ while :; do sleep 1; done`, "sh", strconv.Itoa(agentPID)},
 	var retryErr error
 	result, retryErr = harness.driver.Exec(retryCtx, sandboxruntime.ExecRequest{
 		Target:  target,
-		Args:    []string{"sh", "-c", "exit 0"},
+		Args:    []string{"busybox", "sh", "-c", "exit 0"},
 		WorkDir: "/workspace",
 	})
 	if retryErr == nil || result != nil {
@@ -804,6 +799,28 @@ func l5GuestExec(
 	target sandboxruntime.Target,
 	args []string,
 ) (string, string, *sandboxruntime.ExecResult, error) {
+	return l5GuestExecInput(ctx, driver, target, args, nil)
+}
+
+func l5GuestShell(
+	ctx context.Context,
+	driver *microvm.Driver,
+	target sandboxruntime.Target,
+	script string,
+	args ...string,
+) (string, string, *sandboxruntime.ExecResult, error) {
+	shellArgs := []string{"busybox", "sh", "-s"}
+	shellArgs = append(shellArgs, args...)
+	return l5GuestExecInput(ctx, driver, target, shellArgs, strings.NewReader(script))
+}
+
+func l5GuestExecInput(
+	ctx context.Context,
+	driver *microvm.Driver,
+	target sandboxruntime.Target,
+	args []string,
+	stdin io.Reader,
+) (string, string, *sandboxruntime.ExecResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -815,6 +832,7 @@ func l5GuestExec(
 		Target:  target,
 		Args:    args,
 		WorkDir: "/workspace",
+		Stdin:   stdin,
 		Stdout:  &stdout,
 		Stderr:  &stderr,
 	})

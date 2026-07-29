@@ -301,8 +301,9 @@ digest/size records.
 
 Runtime readiness continues to use
 `RuntimeGuestReadinessMetadata`. L5 permits only sanitized
-`state=ready`, `transport=vsock`, and fixed labels
-`protocol_v1`, `runtime_bound`, and `probe_ok` after the active handshake.
+`state=ready`, `transport=vsock`, and the canonical `ready` state label plus
+fixed proof labels `protocol_v1`, `runtime_bound`, and `probe_ok` after the
+active handshake.
 No UDS path, CID, port, process identifier, or handshake bytes are durable
 proof.
 

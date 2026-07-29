@@ -69,6 +69,7 @@ func TestL5ArchitectureContainsMandatoryPhaseSections(t *testing.T) {
 		"post-cleanup reconnect rejection",
 		"non-Linux build-tagged stub",
 		"Once selected it never skips",
+		"canonical `ready` state label",
 		"L5 does not implement policy proxying",
 		"no supplementary groups",
 		"disabled agent password",
