@@ -5,7 +5,6 @@ package localresolver
 import (
 	"os"
 	"os/exec"
-	"path/filepath"
 	"reflect"
 	"regexp"
 	"runtime"
@@ -120,18 +119,10 @@ func requireL5RootfsEntry(
 
 func requireL5SetprivPrivilegeDropOptions(t *testing.T, debugfs string, rootfs string) {
 	t.Helper()
-	setprivPath := filepath.Join(t.TempDir(), "setpriv")
-	_ = l5DebugfsCommand(t, debugfs, rootfs, "dump /usr/bin/setpriv "+setprivPath)
-	if err := os.Chmod(setprivPath, 0o700); err != nil {
-		t.Fatal("L5 rootfs setpriv extraction is not executable")
-	}
-	output, err := exec.Command(setprivPath, "--help").CombinedOutput()
-	if err != nil {
-		t.Fatal("L5 rootfs setpriv help failed")
-	}
+	output := l5DebugfsCommand(t, debugfs, rootfs, "cat /usr/bin/setpriv")
 	for _, option := range []string{"--reuid", "--regid", "--clear-groups", "--no-new-privs"} {
-		if !strings.Contains(string(output), option) {
-			t.Fatalf("L5 rootfs setpriv does not support required privilege-drop option %q", option)
+		if !strings.Contains(output, option) {
+			t.Fatalf("L5 rootfs setpriv does not contain required privilege-drop option %q", option)
 		}
 	}
 }

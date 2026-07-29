@@ -609,16 +609,7 @@ func TestL5KernelBuildrootAndGuestInitLockIsolationContract(t *testing.T) {
 }
 
 func TestL5PreparedLinuxImagePrerequisiteTestCannotSkip(t *testing.T) {
-	path := filepath.Join(
-		"..",
-		"internal",
-		"sandboxruntime",
-		"microvm",
-		"assets",
-		"localresolver",
-		"l5_prepared_linux_integration_test.go",
-	)
-	source := string(l5ReadRequiredFile(t, path))
+	source := l5PreparedLinuxImagePrerequisiteSource(t)
 	for _, required := range []string{
 		"//go:build l5_firecracker_vsock_integration",
 		"TestL5PreparedLinuxImagePrerequisites",
@@ -648,6 +639,36 @@ func TestL5PreparedLinuxImagePrerequisiteTestCannotSkip(t *testing.T) {
 			t.Errorf("prepared-Linux image prerequisite test contains forbidden skip %q", forbidden)
 		}
 	}
+}
+
+func TestL5PreparedLinuxImageInspectionNeverExecutesRootfsContent(t *testing.T) {
+	source := l5PreparedLinuxImagePrerequisiteSource(t)
+	if !strings.Contains(source, "cat /usr/bin/setpriv") {
+		t.Fatal("prepared-Linux image prerequisite test must inspect setpriv without extracting it")
+	}
+	for _, forbidden := range []string{
+		"exec.Command(setprivPath",
+		"os.Chmod(setprivPath",
+		"dump /usr/bin/setpriv",
+	} {
+		if strings.Contains(source, forbidden) {
+			t.Errorf("prepared-Linux image prerequisite test contains host-execution marker %q", forbidden)
+		}
+	}
+}
+
+func l5PreparedLinuxImagePrerequisiteSource(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(
+		"..",
+		"internal",
+		"sandboxruntime",
+		"microvm",
+		"assets",
+		"localresolver",
+		"l5_prepared_linux_integration_test.go",
+	)
+	return string(l5ReadRequiredFile(t, path))
 }
 
 func l5ReadRequiredFile(t *testing.T, path string) []byte {

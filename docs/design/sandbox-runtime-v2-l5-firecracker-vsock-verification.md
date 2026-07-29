@@ -74,9 +74,11 @@ locks do not satisfy the L5 image contract. It also correlates provenance,
 requires the exact `SHA256SUMS` output set and verified bytes, rejects
 symlinked/non-directory roots and symlinked/non-regular files, and uses
 read-only rootfs inspection to require `/usr/bin/hal-guest-agent` and a
-regular util-linux binary at `/usr/bin/setpriv`. It executes that binary's
-`--help` output after extraction to prove the exact non-root privilege-drop
-options required by guest init.
+regular util-linux binary at `/usr/bin/setpriv`. It performs non-executing inspection
+of that binary's embedded option identifiers to prove the exact
+non-root privilege-drop option names required by guest init; the live E2E
+proves their behavior inside the guest rather than executing rootfs content on
+the host.
 
 Missing prerequisites or a zero-match selector is a failure. Retained evidence
 contains versions, digests, safe IDs, pass/fail codes, and cleanup counts only;

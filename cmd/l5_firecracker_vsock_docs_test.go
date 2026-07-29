@@ -84,7 +84,7 @@ func TestL5VerificationLocksLiveSelectorAndBroadGates(t *testing.T) {
 		"POLLHUP",
 		"must not skip",
 		"regular util-linux binary",
-		"`--help`",
+		"non-executing inspection",
 		"go test -count=1 -timeout=420s ./...",
 		"go test -count=1 -run '^$' ./...",
 		"go vet ./...",
