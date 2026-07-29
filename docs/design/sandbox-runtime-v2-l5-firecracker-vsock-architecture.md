@@ -194,12 +194,14 @@ The locked kernel configuration includes `CONFIG_HYPERVISOR_GUEST=y`,
 support rather than waiting for absent legacy timer devices. It also keeps
 `CONFIG_SMP=y` even though L5 starts one vCPU: the x86 APIC topology remains
 available for the emulated PCI interrupt path. This is a kernel configuration
-requirement, not a claim that L5 starts multiple vCPUs. It keeps
-`CONFIG_DEVTMPFS_MOUNT` disabled: PID 1 owns the one explicit devtmpfs mount
-with the required `nosuid,noexec` restrictions, and an automatic mount is not
-equivalent. The fixed boot arguments also set `devtmpfs.mount=0`, so the
-runtime contract remains explicit even if a generated kernel configuration
-unexpectedly enables the automatic-mount default.
+requirement, not a claim that L5 starts multiple vCPUs. The Buildroot profile
+uses `BR2_ROOTFS_DEVICE_CREATION_STATIC=y` with the explicit
+`system/device_table_dev.txt` bootstrap table, preventing Buildroot from
+forcing `CONFIG_DEVTMPFS_MOUNT=y` into the generated kernel configuration.
+The build rejects an effective kernel configuration that enables that option:
+PID 1 owns the one explicit devtmpfs mount with the required `nosuid,noexec`
+restrictions, and an automatic mount is not equivalent. The fixed boot
+arguments also set `devtmpfs.mount=0` as a redundant runtime guard.
 
 L5 selects Firecracker's ACPI/PCI virtio transport deliberately. The guest
 locks `CONFIG_ACPI=y`, `CONFIG_PCI=y`, `CONFIG_BLK_MQ_PCI=y`,

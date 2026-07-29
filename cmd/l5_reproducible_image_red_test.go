@@ -589,7 +589,8 @@ func TestL5KernelBuildrootAndGuestInitLockIsolationContract(t *testing.T) {
 		`BR2_PACKAGE_UTIL_LINUX=y`,
 		`BR2_PACKAGE_UTIL_LINUX_SETPRIV=y`,
 		`BR2_INIT_NONE=y`,
-		`BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y`,
+		`BR2_ROOTFS_DEVICE_CREATION_STATIC=y`,
+		`BR2_ROOTFS_STATIC_DEVICE_TABLE="system/device_table_dev.txt"`,
 		`BR2_ROOTFS_DEVICE_TABLE="system/device_table.txt /src/tools/microvm/l5/permissions.txt"`,
 		`BR2_TARGET_ROOTFS_EXT2=y`,
 		`BR2_TARGET_ROOTFS_EXT2_4=y`,
@@ -597,6 +598,9 @@ func TestL5KernelBuildrootAndGuestInitLockIsolationContract(t *testing.T) {
 		if !strings.Contains(buildroot, setting) {
 			t.Errorf("buildroot.config missing %q", setting)
 		}
+	}
+	if strings.Contains(buildroot, `BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y`) {
+		t.Error("buildroot.config enables dynamic devtmpfs creation, which forces kernel devtmpfs auto-mounting")
 	}
 
 	agentSource := string(l5ReadRequiredFile(t, filepath.Join("hal-guest-agent", "main.go")))

@@ -102,8 +102,11 @@ digest, every exact offline dependency filename and digest, clean source/tree
 identity, deterministic Go/kernel/ext4 controls, `CONFIG_MODULES=n`,
 `CONFIG_SMP=y`, `CONFIG_HW_RANDOM_VIRTIO=y`, `CONFIG_ACPI=y`,
 `CONFIG_PCI=y`, `CONFIG_VIRTIO_PCI=y`, `CONFIG_X86_MPPARSE=n`, and
-`CONFIG_VIRTIO_MMIO=n`, matching the production `--enable-pci` start plan and
-the absence of `pci=off` plus `devtmpfs.mount=0` in the fixed boot arguments, matching
+`CONFIG_VIRTIO_MMIO=n`, plus
+`BR2_ROOTFS_DEVICE_CREATION_STATIC=y` Buildroot `/dev` bootstrap configuration
+that prevents `CONFIG_DEVTMPFS_MOUNT` from being forced on, matching the
+production `--enable-pci` start plan and the absence of `pci=off` plus
+`devtmpfs.mount=0` in the fixed boot arguments, matching
 6.1 kernel headers, the exact
 `/workspace` guest path mapping, and `e2fsck -fn`. It rejects missing and extra
 downloads under a real no-network boundary with `BR2_PRIMARY_SITE_ONLY`,
