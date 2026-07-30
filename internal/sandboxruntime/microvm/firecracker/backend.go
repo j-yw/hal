@@ -447,9 +447,6 @@ func (c firecrackerController) Stop(ctx context.Context, req microvm.ControllerL
 		}
 	}
 	c.invalidateGuestSession(req.Target)
-	if c.liveSessions != nil {
-		c.liveSessions.InvalidateRuntime(firecrackerStartRuntimeID(req.Target))
-	}
 	return firecrackerLifecycleTarget(req.Target, plan.Summary(), sandbox.StatusStopped, c.networkEnforcement), nil
 }
 
@@ -477,9 +474,6 @@ func (c firecrackerController) Delete(ctx context.Context, req microvm.Controlle
 		}
 	}
 	c.invalidateGuestSession(req.Target)
-	if c.liveSessions != nil {
-		c.liveSessions.InvalidateRuntime(firecrackerStartRuntimeID(req.Target))
-	}
 	return nil
 }
 

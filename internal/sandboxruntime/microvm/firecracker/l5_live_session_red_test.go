@@ -186,6 +186,36 @@ func TestL5LifecycleRejectionPreservesActiveProductionVsockSession(t *testing.T)
 	}
 }
 
+func TestL5StaleLifecycleRequestCannotInvalidateNewerSession(t *testing.T) {
+	for _, operation := range []string{"stop", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			active := liveSessionProof{RuntimeID: "fc-runtime-a", ProcessGeneration: "fc-handle-2", ProcessSource: "firecrackerhost", BridgeGeneration: "bridge-2"}
+			stale := active
+			stale.ProcessGeneration = "fc-handle-1"
+			stale.BridgeGeneration = "bridge-1"
+			registry := newLiveSessionRegistry()
+			registry.Activate(active)
+			bridge := &l5RestartRetentionBridge{active: true}
+			controller := firecrackerController{baseStateDir: firecrackerShortSocketTestRoot(t), liveStart: true, liveProcessManager: l5LifecycleRejectionManager{}, productionVsock: true, productionBridge: bridge, liveSessions: registry}
+			req := microvm.ControllerLifecycleRequest{Target: l5LiveSessionTarget(stale)}
+			var err error
+			if operation == "stop" {
+				req.Operation = microvm.OperationStop
+				_, err = controller.Stop(context.Background(), req)
+			} else {
+				req.Operation = microvm.OperationDelete
+				err = controller.Delete(context.Background(), req)
+			}
+			if err != nil {
+				t.Fatalf("stale %s error = %v", operation, err)
+			}
+			if bridge.invalidations != 0 || !registry.Authorize(active) {
+				t.Fatalf("stale %s invalidated newer live session", operation)
+			}
+		})
+	}
+}
+
 func TestL5ActiveRestartDoesNotRewriteLiveBootFiles(t *testing.T) {
 	stateRoot := firecrackerShortSocketTestRoot(t)
 	config := phase34LiveBootFakeConfig(t)
