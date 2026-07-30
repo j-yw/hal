@@ -10,38 +10,38 @@ type liveSessionProof struct {
 }
 
 type liveSessionRegistry struct {
-	mu       sync.RWMutex
-	sessions map[string]liveSessionProof
-	starting map[string]struct{}
+	mu        sync.RWMutex
+	sessions  map[string]liveSessionProof
+	lifecycle map[string]struct{}
 }
 
 func newLiveSessionRegistry() *liveSessionRegistry {
 	return &liveSessionRegistry{
-		sessions: make(map[string]liveSessionProof),
-		starting: make(map[string]struct{}),
+		sessions:  make(map[string]liveSessionProof),
+		lifecycle: make(map[string]struct{}),
 	}
 }
 
-func (registry *liveSessionRegistry) ReserveStart(runtimeID string) bool {
+func (registry *liveSessionRegistry) ReserveLifecycle(runtimeID string) bool {
 	if registry == nil || runtimeID == "" {
 		return false
 	}
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
-	if _, ok := registry.starting[runtimeID]; ok {
+	if _, ok := registry.lifecycle[runtimeID]; ok {
 		return false
 	}
-	registry.starting[runtimeID] = struct{}{}
+	registry.lifecycle[runtimeID] = struct{}{}
 	return true
 }
 
-func (registry *liveSessionRegistry) ReleaseStart(runtimeID string) {
+func (registry *liveSessionRegistry) ReleaseLifecycle(runtimeID string) {
 	if registry == nil {
 		return
 	}
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
-	delete(registry.starting, runtimeID)
+	delete(registry.lifecycle, runtimeID)
 }
 
 func (registry *liveSessionRegistry) Activate(proof liveSessionProof) {

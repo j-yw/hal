@@ -23,6 +23,11 @@ capability honesty, redaction, cancellation, and lifecycle cleanup. They make
 no downloads, mounts, KVM calls, Firecracker launches, cloud calls, or network
 connections.
 
+The fake lifecycle matrix proves that start, stop, and delete share one
+exclusive per-runtime lifecycle reservation: overlapping starts cannot launch a
+second process, stop/delete cannot report success during an in-flight start,
+and delete cannot overlap an active stop.
+
 The matrix includes canonical unsigned 32-bit assigned-host-port checks,
 including zero, overflow, sign, leading-zero, and reserved
 `VMADDR_PORT_ANY` rejection; partial and

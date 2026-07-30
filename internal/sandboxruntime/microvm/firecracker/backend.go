@@ -241,12 +241,11 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 	if err != nil {
 		return nil, err
 	}
-	if c.liveStart && c.liveSessions != nil {
-		if !c.liveSessions.ReserveStart(config.RuntimeID) {
-			return nil, newProcessBoundaryError("runtime", "live process start is already in progress")
-		}
-		defer c.liveSessions.ReleaseStart(config.RuntimeID)
+	releaseLifecycle, err := c.reserveLiveLifecycle(config.RuntimeID)
+	if err != nil {
+		return nil, err
 	}
+	defer releaseLifecycle()
 	if c.liveStart {
 		if err := c.rejectActiveProductionVsockSession(config.RuntimeID); err != nil {
 			return nil, err
@@ -437,6 +436,11 @@ func (c firecrackerController) Stop(ctx context.Context, req microvm.ControllerL
 	if err != nil {
 		return nil, err
 	}
+	releaseLifecycle, err := c.reserveLiveLifecycle(firecrackerStartRuntimeID(req.Target))
+	if err != nil {
+		return nil, err
+	}
+	defer releaseLifecycle()
 	plan, err := RenderStopOperationPlan(paths)
 	if err != nil {
 		return nil, err
@@ -465,6 +469,11 @@ func (c firecrackerController) Delete(ctx context.Context, req microvm.Controlle
 	if err != nil {
 		return err
 	}
+	releaseLifecycle, err := c.reserveLiveLifecycle(firecrackerStartRuntimeID(req.Target))
+	if err != nil {
+		return err
+	}
+	defer releaseLifecycle()
 	if _, err := RenderDeleteOperationPlan(paths); err != nil {
 		return err
 	}
@@ -485,6 +494,18 @@ func (c firecrackerController) deleteLiveProcess(ctx context.Context, req LivePr
 		return newLiveProcessManagerFailure("liveProcessManager", "live process delete failed", err)
 	}
 	return nil
+}
+
+func (c firecrackerController) reserveLiveLifecycle(runtimeID string) (func(), error) {
+	if !c.liveStart || c.liveSessions == nil {
+		return func() {}, nil
+	}
+	if !c.liveSessions.ReserveLifecycle(runtimeID) {
+		return nil, newProcessBoundaryError("runtime", "live lifecycle operation is already in progress")
+	}
+	return func() {
+		c.liveSessions.ReleaseLifecycle(runtimeID)
+	}, nil
 }
 
 func (c firecrackerController) Inspect(_ context.Context, req microvm.ControllerInspectRequest) (*sandboxruntime.Target, error) {

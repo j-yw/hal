@@ -328,6 +328,124 @@ func TestL5ConcurrentStartsCannotLaunchSameRuntimeTwice(t *testing.T) {
 	}
 }
 
+func TestL5ConcurrentStartExcludesStopAndDelete(t *testing.T) {
+	for _, operation := range []string{"stop", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			stateRoot := firecrackerShortSocketTestRoot(t)
+			config := phase34LiveBootFakeConfig(t)
+			starter := &l5ConcurrentStartStarter{entered: make(chan struct{}), release: make(chan struct{})}
+			backend := NewBackend(BackendOptions{
+				BaseStateDir:         stateRoot,
+				ProcessAdapter:       ProcessLaunchAdapter{Starter: starter},
+				BootAcceptanceWaiter: fakeLiveBootSafetyHooks{},
+				LiveProcessManager:   fakeLiveBootSafetyHooks{},
+				LiveStart:            true,
+				ProductionVsock:      true,
+				ProductionBridge:     l5ConcurrentStartBridge{},
+			})
+			created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+				Operation: microvm.OperationCreate,
+				Config:    config,
+				Name:      "l5-concurrent-start-" + operation,
+			})
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+				Operation: microvm.OperationStart,
+				Config:    config,
+				Target:    *created,
+			})
+			if err != nil {
+				t.Fatalf("Controller() error = %v", err)
+			}
+			request := microvm.ControllerLifecycleRequest{
+				Operation: microvm.OperationStart,
+				Config:    config,
+				Target:    *created,
+			}
+			started := make(chan error, 1)
+			go func() {
+				_, startErr := controller.Start(context.Background(), request)
+				started <- startErr
+			}()
+			<-starter.entered
+
+			switch operation {
+			case "stop":
+				_, err = controller.Stop(context.Background(), microvm.ControllerLifecycleRequest{
+					Operation: microvm.OperationStop,
+					Target:    *created,
+				})
+			case "delete":
+				err = controller.Delete(context.Background(), microvm.ControllerLifecycleRequest{
+					Operation: microvm.OperationDelete,
+					Target:    *created,
+				})
+			}
+			if err == nil {
+				t.Errorf("%s() error = nil, want in-progress start rejection", operation)
+			}
+			close(starter.release)
+			if err := <-started; err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+			if calls := starter.Calls(); calls != 1 {
+				t.Fatalf("launch calls = %d, want 1", calls)
+			}
+		})
+	}
+}
+
+func TestL5ConcurrentStopExcludesDelete(t *testing.T) {
+	proof := liveSessionProof{
+		RuntimeID:         "fc-runtime-lifecycle",
+		ProcessGeneration: "fc-handle-1",
+		ProcessSource:     "firecrackerhost",
+		BridgeGeneration:  "bridge-1",
+	}
+	registry := newLiveSessionRegistry()
+	registry.Activate(proof)
+	manager := &l5BlockingLifecycleManager{
+		stopEntered: make(chan struct{}),
+		stopRelease: make(chan struct{}),
+	}
+	bridge := &l5RestartRetentionBridge{active: true}
+	controller := firecrackerController{
+		baseStateDir:       firecrackerShortSocketTestRoot(t),
+		liveStart:          true,
+		liveProcessManager: manager,
+		productionVsock:    true,
+		productionBridge:   bridge,
+		liveSessions:       registry,
+	}
+	target := l5LiveSessionTarget(proof)
+	stopped := make(chan error, 1)
+	go func() {
+		_, stopErr := controller.Stop(context.Background(), microvm.ControllerLifecycleRequest{
+			Operation: microvm.OperationStop,
+			Target:    target,
+		})
+		stopped <- stopErr
+	}()
+	<-manager.stopEntered
+
+	err := controller.Delete(context.Background(), microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationDelete,
+		Target:    target,
+	})
+	if err == nil {
+		t.Error("Delete() error = nil, want in-progress stop rejection")
+	}
+	if calls := manager.DeleteCalls(); calls != 0 {
+		t.Fatalf("DeleteLiveProcess() calls = %d, want 0", calls)
+	}
+	close(manager.stopRelease)
+	if err := <-stopped; err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+}
+
 func TestL5CanceledCopyKeepsActiveGuestSession(t *testing.T) {
 	for _, operation := range []string{"copy_in", "copy_out"} {
 		t.Run(string(operation), func(t *testing.T) {
@@ -460,4 +578,34 @@ func (manager l5LifecycleRejectionManager) StopLiveProcess(context.Context, Live
 
 func (manager l5LifecycleRejectionManager) DeleteLiveProcess(context.Context, LiveProcessRequest) error {
 	return manager.err
+}
+
+type l5BlockingLifecycleManager struct {
+	mu          sync.Mutex
+	deleteCalls int
+	stopEntered chan struct{}
+	stopRelease chan struct{}
+}
+
+func (*l5BlockingLifecycleManager) CleanupLiveProcess(context.Context, LiveProcessRequest) error {
+	return nil
+}
+
+func (manager *l5BlockingLifecycleManager) StopLiveProcess(context.Context, LiveProcessRequest) error {
+	close(manager.stopEntered)
+	<-manager.stopRelease
+	return nil
+}
+
+func (manager *l5BlockingLifecycleManager) DeleteLiveProcess(context.Context, LiveProcessRequest) error {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	manager.deleteCalls++
+	return nil
+}
+
+func (manager *l5BlockingLifecycleManager) DeleteCalls() int {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	return manager.deleteCalls
 }

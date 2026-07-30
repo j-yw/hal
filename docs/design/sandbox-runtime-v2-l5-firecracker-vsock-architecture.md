@@ -312,6 +312,10 @@ The Firecracker backend owns a private in-memory live-session registry shared
 by every controller it creates. A session proof is keyed by runtime ID, exact
 opaque process generation, verified state-directory identity, socket
 device/inode, peer PID, bridge generation, and successful readiness generation.
+Start, stop, and delete share one exclusive per-runtime lifecycle reservation;
+an overlapping lifecycle request rejects before rendering state, calling the
+live process manager, or reporting success. A successful stop or delete
+therefore cannot race with an in-flight start that later becomes ready.
 Exec/copy authorization consults this registry, not caller-carried
 `Target.Runtime.Metadata.GuestReadiness`. Manually constructed, stale, or
 cross-runtime `ready` target metadata never authorizes an operation.
