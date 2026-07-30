@@ -404,10 +404,6 @@ func (c firecrackerController) cleanupLiveProcess(ctx context.Context, req LiveP
 }
 
 func (c firecrackerController) Stop(ctx context.Context, req microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
-	c.invalidateGuestSession(req.Target)
-	if c.liveSessions != nil {
-		c.liveSessions.InvalidateRuntime(firecrackerStartRuntimeID(req.Target))
-	}
 	paths, err := firecrackerLifecyclePathPlan(req.Target, c.baseStateDir)
 	if err != nil {
 		return nil, err
@@ -420,6 +416,10 @@ func (c firecrackerController) Stop(ctx context.Context, req microvm.ControllerL
 		if err := c.stopLiveProcess(ctx, liveReq); err != nil {
 			return nil, err
 		}
+	}
+	c.invalidateGuestSession(req.Target)
+	if c.liveSessions != nil {
+		c.liveSessions.InvalidateRuntime(firecrackerStartRuntimeID(req.Target))
 	}
 	return firecrackerLifecycleTarget(req.Target, plan.Summary(), sandbox.StatusStopped, c.networkEnforcement), nil
 }
@@ -435,10 +435,6 @@ func (c firecrackerController) stopLiveProcess(ctx context.Context, req LiveProc
 }
 
 func (c firecrackerController) Delete(ctx context.Context, req microvm.ControllerLifecycleRequest) error {
-	c.invalidateGuestSession(req.Target)
-	if c.liveSessions != nil {
-		c.liveSessions.InvalidateRuntime(firecrackerStartRuntimeID(req.Target))
-	}
 	paths, err := firecrackerLifecyclePathPlan(req.Target, c.baseStateDir)
 	if err != nil {
 		return err
@@ -447,7 +443,13 @@ func (c firecrackerController) Delete(ctx context.Context, req microvm.Controlle
 		return err
 	}
 	if liveReq, ok := liveProcessRequestFromTarget(req.Target, paths); ok {
-		return c.deleteLiveProcess(ctx, liveReq)
+		if err := c.deleteLiveProcess(ctx, liveReq); err != nil {
+			return err
+		}
+	}
+	c.invalidateGuestSession(req.Target)
+	if c.liveSessions != nil {
+		c.liveSessions.InvalidateRuntime(firecrackerStartRuntimeID(req.Target))
 	}
 	return nil
 }

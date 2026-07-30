@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
 )
 
 func TestL5GuestTransportSessionInvalidationDistinguishesCallerCancellation(t *testing.T) {
@@ -116,6 +117,93 @@ func TestL5StartFailureKeepsActiveProductionVsockSession(t *testing.T) {
 	}
 }
 
+func TestL5LifecycleRejectionPreservesActiveProductionVsockSession(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		run  func(firecrackerController, sandboxruntime.Target) error
+	}{
+		{
+			name: "stop",
+			run: func(controller firecrackerController, target sandboxruntime.Target) error {
+				_, err := controller.Stop(context.Background(), microvm.ControllerLifecycleRequest{
+					Operation: microvm.OperationStop,
+					Target:    target,
+				})
+				return err
+			},
+		},
+		{
+			name: "delete",
+			run: func(controller firecrackerController, target sandboxruntime.Target) error {
+				return controller.Delete(context.Background(), microvm.ControllerLifecycleRequest{
+					Operation: microvm.OperationDelete,
+					Target:    target,
+				})
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			proof := liveSessionProof{
+				RuntimeID:         "fc-runtime-a",
+				ProcessGeneration: "fc-handle-1",
+				ProcessSource:     "firecrackerhost",
+				BridgeGeneration:  "bridge-1",
+			}
+			registry := newLiveSessionRegistry()
+			registry.Activate(proof)
+			bridge := &l5RestartRetentionBridge{active: true}
+			managerErr := errors.New("lifecycle request rejected")
+			controller := firecrackerController{
+				baseStateDir:       firecrackerShortSocketTestRoot(t),
+				liveStart:          true,
+				liveProcessManager: l5LifecycleRejectionManager{err: managerErr},
+				productionVsock:    true,
+				productionBridge:   bridge,
+				liveSessions:       registry,
+			}
+			target := l5LiveSessionTarget(proof)
+			if !controller.canDelegateGuestTransport(target) {
+				t.Fatal("precondition: active guest session was not authorized")
+			}
+
+			err := test.run(controller, target)
+			if !errors.Is(err, managerErr) {
+				t.Fatalf("%s error = %v, want lifecycle manager rejection", test.name, err)
+			}
+			if bridge.invalidations != 0 {
+				t.Fatalf("bridge invalidations = %d, want none after failed %s", bridge.invalidations, test.name)
+			}
+			if !registry.Authorize(proof) {
+				t.Fatalf("failed %s invalidated the active live-session proof", test.name)
+			}
+			if !controller.canDelegateGuestTransport(target) {
+				t.Fatalf("failed %s left the active guest session unavailable", test.name)
+			}
+		})
+	}
+}
+
+func l5LiveSessionTarget(proof liveSessionProof) sandboxruntime.Target {
+	return sandboxruntime.Target{
+		ID: proof.RuntimeID,
+		Runtime: sandboxruntime.RuntimeState{
+			Driver:    sandboxruntime.DriverMicroVM,
+			RuntimeID: proof.RuntimeID,
+			Metadata: &sandboxruntime.RuntimeMetadata{
+				ProcessLaunch: NewProcessLaunchMetadata(ProcessLaunchStateAccepted, ProcessHandleMetadata{
+					ID:     proof.ProcessGeneration,
+					Source: proof.ProcessSource,
+				}).RuntimeMetadata(),
+				GuestReadiness: sandboxruntime.NewRuntimeGuestReadinessMetadata(
+					sandboxruntime.RuntimeGuestReadinessStateReady,
+					"vsock",
+					[]string{"protocol_v1", "runtime_bound", "probe_ok"},
+				),
+			},
+		},
+	}
+}
+
 type l5NoopGuestTransport struct{}
 
 func (l5NoopGuestTransport) Exec(context.Context, GuestExecRequest) (*sandboxruntime.ExecResult, error) {
@@ -141,4 +229,20 @@ func (bridge *l5RestartRetentionBridge) SessionActive(ProductionVsockSessionRequ
 func (bridge *l5RestartRetentionBridge) InvalidateSession(ProductionVsockSessionRequest, string) {
 	bridge.invalidations++
 	bridge.active = false
+}
+
+type l5LifecycleRejectionManager struct {
+	err error
+}
+
+func (manager l5LifecycleRejectionManager) CleanupLiveProcess(context.Context, LiveProcessRequest) error {
+	return manager.err
+}
+
+func (manager l5LifecycleRejectionManager) StopLiveProcess(context.Context, LiveProcessRequest) error {
+	return manager.err
+}
+
+func (manager l5LifecycleRejectionManager) DeleteLiveProcess(context.Context, LiveProcessRequest) error {
+	return manager.err
 }
