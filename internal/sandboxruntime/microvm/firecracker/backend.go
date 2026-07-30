@@ -540,7 +540,9 @@ func (c firecrackerController) CopyIn(ctx context.Context, req microvm.Controlle
 		DestinationPath: req.DestinationPath,
 	})
 	if err != nil {
-		c.invalidateGuestSession(req.Target)
+		if shouldInvalidateGuestTransportSession(err) {
+			c.invalidateGuestSession(req.Target)
+		}
 		return newGuestTransportCopyInFailure(req.Operation, err)
 	}
 	return nil
@@ -556,7 +558,9 @@ func (c firecrackerController) CopyOut(ctx context.Context, req microvm.Controll
 		DestinationPath: req.DestinationPath,
 	})
 	if err != nil {
-		c.invalidateGuestSession(req.Target)
+		if shouldInvalidateGuestTransportSession(err) {
+			c.invalidateGuestSession(req.Target)
+		}
 		return newGuestTransportCopyOutFailure(req.Operation, err)
 	}
 	return nil

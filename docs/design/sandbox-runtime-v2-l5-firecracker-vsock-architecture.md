@@ -360,12 +360,11 @@ driver timeout. Unsupported version, malformed response, wrong operation,
 not-ready, connection refusal, or a stale bridge never yields ready metadata.
 
 Start failure cleanup uses a context independent of the canceled start context
-and has its own fixed upper bound. Stop/delete first invalidate the live
-session, send TERM with a bounded grace deadline, escalate to KILL, wait/reap
-within an independent final deadline, close bridge connections, and only then
-remove API/vsock sockets and ownership-proven target state. The immutable
-master assets are untouched and the live test always uses a scratch rootfs
-copy.
+and has its own fixed upper bound. Stop/delete send TERM with a bounded grace
+deadline, escalate to KILL, wait/reap within an independent final deadline,
+then invalidate the live session, close bridge connections, and remove
+API/vsock sockets and ownership-proven target state. The immutable master
+assets are untouched and the live test always uses a scratch rootfs copy.
 
 Guest exec timeout/cancel first exercises L4 process-group cleanup. Whole-VM
 teardown then proves that even a deliberately session-escaping guest process

@@ -298,6 +298,31 @@ func TestL5ConcurrentStartsCannotLaunchSameRuntimeTwice(t *testing.T) {
 	}
 }
 
+func TestL5CanceledCopyKeepsActiveGuestSession(t *testing.T) {
+	for _, operation := range []string{"copy_in", "copy_out"} {
+		t.Run(string(operation), func(t *testing.T) {
+			proof := liveSessionProof{RuntimeID: "fc-runtime-copy", ProcessGeneration: "fc-handle-1", ProcessSource: "firecrackerhost", BridgeGeneration: "bridge-1"}
+			registry := newLiveSessionRegistry()
+			registry.Activate(proof)
+			bridge := &l5RestartRetentionBridge{active: true, copyErr: context.Canceled}
+			controller := firecrackerController{liveStart: true, productionVsock: true, liveSessions: registry, productionBridge: bridge, guestTransport: bridge}
+			req := microvm.ControllerCopyRequest{Operation: operation, Target: l5LiveSessionTarget(proof)}
+			var err error
+			if operation == "copy_in" {
+				err = controller.CopyIn(context.Background(), req)
+			} else {
+				err = controller.CopyOut(context.Background(), req)
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("copy error = %v, want wrapped context.Canceled", err)
+			}
+			if bridge.invalidations != 0 || !registry.Authorize(proof) {
+				t.Fatal("caller cancellation invalidated a healthy live guest session")
+			}
+		})
+	}
+}
+
 func l5LiveSessionTarget(proof liveSessionProof) sandboxruntime.Target {
 	return sandboxruntime.Target{
 		ID: proof.RuntimeID,
@@ -368,6 +393,7 @@ type l5RestartRetentionBridge struct {
 	l5NoopGuestTransport
 	active        bool
 	invalidations int
+	copyErr       error
 }
 
 func (*l5RestartRetentionBridge) ActivateSession(context.Context, ProductionVsockSessionRequest) (GuestReadinessResult, string, error) {
@@ -381,6 +407,13 @@ func (bridge *l5RestartRetentionBridge) SessionActive(ProductionVsockSessionRequ
 func (bridge *l5RestartRetentionBridge) InvalidateSession(ProductionVsockSessionRequest, string) {
 	bridge.invalidations++
 	bridge.active = false
+}
+
+func (bridge *l5RestartRetentionBridge) CopyIn(context.Context, GuestCopyRequest) error {
+	return bridge.copyErr
+}
+func (bridge *l5RestartRetentionBridge) CopyOut(context.Context, GuestCopyRequest) error {
+	return bridge.copyErr
 }
 
 type l5LifecycleRejectionManager struct {

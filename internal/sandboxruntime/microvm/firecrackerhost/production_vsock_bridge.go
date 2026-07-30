@@ -308,7 +308,7 @@ func (bridge *ProductionVsockBridge) CopyIn(ctx context.Context, req firecracker
 		return errors.New("Firecracker production vsock session is unavailable")
 	}
 	err := session.transport.CopyIn(ctx, req)
-	if err != nil {
+	if shouldInvalidateProductionVsockSession(err) {
 		bridge.invalidate(session.runtimeID, session.handleID, session.generation)
 	}
 	return err
@@ -322,7 +322,7 @@ func (bridge *ProductionVsockBridge) CopyOut(ctx context.Context, req firecracke
 		return errors.New("Firecracker production vsock session is unavailable")
 	}
 	err := session.transport.CopyOut(ctx, req)
-	if err != nil {
+	if shouldInvalidateProductionVsockSession(err) {
 		bridge.invalidate(session.runtimeID, session.handleID, session.generation)
 	}
 	return err
