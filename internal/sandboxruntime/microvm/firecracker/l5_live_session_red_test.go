@@ -186,33 +186,55 @@ func TestL5LifecycleRejectionPreservesActiveProductionVsockSession(t *testing.T)
 	}
 }
 
-func TestL5StaleLifecycleRequestCannotInvalidateNewerSession(t *testing.T) {
+func TestL5UnacceptedLifecycleRequestCannotSucceedForActiveProcess(t *testing.T) {
 	for _, operation := range []string{"stop", "delete"} {
-		t.Run(operation, func(t *testing.T) {
-			active := liveSessionProof{RuntimeID: "fc-runtime-a", ProcessGeneration: "fc-handle-2", ProcessSource: "firecrackerhost", BridgeGeneration: "bridge-2"}
-			stale := active
-			stale.ProcessGeneration = "fc-handle-1"
-			stale.BridgeGeneration = "bridge-1"
-			registry := newLiveSessionRegistry()
-			registry.Activate(active)
-			bridge := &l5RestartRetentionBridge{active: true}
-			controller := firecrackerController{baseStateDir: firecrackerShortSocketTestRoot(t), liveStart: true, liveProcessManager: l5LifecycleRejectionManager{}, productionVsock: true, productionBridge: bridge, liveSessions: registry}
-			req := microvm.ControllerLifecycleRequest{Target: l5LiveSessionTarget(stale)}
-			var err error
-			if operation == "stop" {
-				req.Operation = microvm.OperationStop
-				_, err = controller.Stop(context.Background(), req)
-			} else {
-				req.Operation = microvm.OperationDelete
-				err = controller.Delete(context.Background(), req)
-			}
-			if err != nil {
-				t.Fatalf("stale %s error = %v", operation, err)
-			}
-			if bridge.invalidations != 0 || !registry.Authorize(active) {
-				t.Fatalf("stale %s invalidated newer live session", operation)
-			}
-		})
+		for _, targetProcess := range []string{"stale", "missing"} {
+			t.Run(operation+"/"+targetProcess, func(t *testing.T) {
+				active := liveSessionProof{RuntimeID: "fc-runtime-a", ProcessGeneration: "fc-handle-2", ProcessSource: "firecrackerhost", BridgeGeneration: "bridge-2"}
+				stale := active
+				stale.ProcessGeneration = "fc-handle-1"
+				stale.BridgeGeneration = "bridge-1"
+				registry := newLiveSessionRegistry()
+				registry.Activate(active)
+				bridge := &l5RestartRetentionBridge{active: true}
+				managerCalls := 0
+				controller := firecrackerController{
+					baseStateDir:       firecrackerShortSocketTestRoot(t),
+					liveStart:          true,
+					liveProcessManager: l5LifecycleRejectionManager{calls: &managerCalls},
+					productionVsock:    true,
+					productionBridge:   bridge,
+					liveSessions:       registry,
+				}
+				target := l5LiveSessionTarget(stale)
+				if targetProcess == "missing" {
+					target.Runtime.Metadata.ProcessLaunch = nil
+				}
+				req := microvm.ControllerLifecycleRequest{Target: target}
+				var err error
+				if operation == "stop" {
+					req.Operation = microvm.OperationStop
+					_, err = controller.Stop(context.Background(), req)
+				} else {
+					req.Operation = microvm.OperationDelete
+					err = controller.Delete(context.Background(), req)
+				}
+				if err == nil {
+					t.Fatalf("%s %s error = nil, want active-process ownership rejection", targetProcess, operation)
+				}
+				if managerCalls != 0 {
+					t.Fatalf("%s %s delegated %d manager calls, want rejection before delegation", targetProcess, operation, managerCalls)
+				}
+				if bridge.invalidations != 0 || !registry.Authorize(active) {
+					t.Fatalf("%s %s invalidated active live session", targetProcess, operation)
+				}
+				if process, ok := registry.ProcessForRuntime(active.RuntimeID); !ok ||
+					process.ProcessGeneration != active.ProcessGeneration ||
+					process.ProcessSource != active.ProcessSource {
+					t.Fatalf("%s %s did not preserve active process proof: %#v, %t", targetProcess, operation, process, ok)
+				}
+			})
+		}
 	}
 }
 
@@ -866,7 +888,8 @@ func (bridge *l5RestartRetentionBridge) CopyOut(context.Context, GuestCopyReques
 }
 
 type l5LifecycleRejectionManager struct {
-	err error
+	err   error
+	calls *int
 }
 
 type l5ActiveProcessManager struct {
@@ -933,14 +956,23 @@ func (manager *l5VerifiedCleanupProcessManager) LiveProcessTerminated(LiveProces
 }
 
 func (manager l5LifecycleRejectionManager) CleanupLiveProcess(context.Context, LiveProcessRequest) error {
+	if manager.calls != nil {
+		(*manager.calls)++
+	}
 	return manager.err
 }
 
 func (manager l5LifecycleRejectionManager) StopLiveProcess(context.Context, LiveProcessRequest) error {
+	if manager.calls != nil {
+		(*manager.calls)++
+	}
 	return manager.err
 }
 
 func (manager l5LifecycleRejectionManager) DeleteLiveProcess(context.Context, LiveProcessRequest) error {
+	if manager.calls != nil {
+		(*manager.calls)++
+	}
 	return manager.err
 }
 

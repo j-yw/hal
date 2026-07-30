@@ -512,7 +512,11 @@ func (c firecrackerController) Stop(ctx context.Context, req microvm.ControllerL
 	if err != nil {
 		return nil, err
 	}
-	if liveReq, ok := liveProcessRequestFromTarget(req.Target, paths); ok {
+	liveReq, live, err := c.liveProcessRequestForLifecycle(req.Target, paths)
+	if err != nil {
+		return nil, err
+	}
+	if live {
 		if err := c.stopLiveProcess(ctx, liveReq); err != nil {
 			return nil, err
 		}
@@ -544,7 +548,11 @@ func (c firecrackerController) Delete(ctx context.Context, req microvm.Controlle
 	if _, err := RenderDeleteOperationPlan(paths); err != nil {
 		return err
 	}
-	if liveReq, ok := liveProcessRequestFromTarget(req.Target, paths); ok {
+	liveReq, live, err := c.liveProcessRequestForLifecycle(req.Target, paths)
+	if err != nil {
+		return err
+	}
+	if live {
 		if err := c.deleteLiveProcess(ctx, liveReq); err != nil {
 			return err
 		}
@@ -561,6 +569,26 @@ func (c firecrackerController) deleteLiveProcess(ctx context.Context, req LivePr
 		return newLiveProcessManagerFailure("liveProcessManager", "live process delete failed", err)
 	}
 	return nil
+}
+
+func (c firecrackerController) liveProcessRequestForLifecycle(target sandboxruntime.Target, paths PathPlan) (LiveProcessRequest, bool, error) {
+	request, accepted := liveProcessRequestFromTarget(target, paths)
+	if c.liveSessions == nil {
+		return request, accepted, nil
+	}
+	active, activeExists := c.liveSessions.ProcessForRuntime(firecrackerStartRuntimeID(target))
+	if !activeExists {
+		return request, accepted, nil
+	}
+	if !accepted ||
+		request.Handle.ID != active.ProcessGeneration ||
+		request.Handle.Source != active.ProcessSource {
+		return LiveProcessRequest{}, false, newProcessBoundaryError(
+			"processHandle",
+			"live process handle is stale or unavailable",
+		)
+	}
+	return request, true, nil
 }
 
 func (c firecrackerController) reserveLiveLifecycle(runtimeID string) (func(), error) {
