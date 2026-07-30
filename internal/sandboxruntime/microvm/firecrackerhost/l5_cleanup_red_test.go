@@ -82,6 +82,66 @@ func TestL5FailedKillDoesNotMarkProcessTerminal(t *testing.T) {
 	}
 }
 
+func TestL5TerminalGenerationCannotAuthorizeCleanupWhileNewerGenerationIsActive(t *testing.T) {
+	stateDir := t.TempDir()
+	paths := firecracker.PathPlan{
+		StateDir:        stateDir,
+		APISocketPath:   filepath.Join(stateDir, firecracker.DefaultAPISocketPath),
+		ConfigPath:      filepath.Join(stateDir, firecracker.DefaultConfigPath),
+		LogPath:         filepath.Join(stateDir, firecracker.DefaultLogPath),
+		MetricsPath:     filepath.Join(stateDir, firecracker.DefaultMetricsPath),
+		VsockSocketPath: filepath.Join(stateDir, "guest.vsock"),
+	}
+	manager := NewProcessLifecycleManager(nil)
+	manager.processes = map[string]*trackedProcess{
+		"terminal": {
+			paths:    paths,
+			hasPaths: true,
+			finished: true,
+		},
+		"active": {
+			paths:    paths,
+			hasPaths: true,
+			process:  &l5FailedStopProcess{},
+		},
+	}
+	if manager.hasTerminalProcessForPaths(paths, privateStateDirIdentity{}, false) {
+		t.Fatal("terminal generation authorized cleanup while a matching generation remained active")
+	}
+}
+
+func TestL5LiveProcessTerminalVerificationRequiresObservedExactGeneration(t *testing.T) {
+	done := make(chan struct{})
+	manager := NewProcessLifecycleManager(l5SingleProcessRunner{
+		process: &l5ObservedExitedProcess{done: done},
+	})
+	handle, err := manager.StartProcess(context.Background(), firecracker.ProcessRunnerStartRequest{
+		Executable: "firecracker",
+	})
+	if err != nil {
+		t.Fatalf("StartProcess() error = %v", err)
+	}
+	request := firecracker.LiveProcessRequest{Handle: handle}
+	if manager.LiveProcessTerminated(request) {
+		t.Fatal("LiveProcessTerminated() = true before process exit")
+	}
+	if manager.LiveProcessTerminated(firecracker.LiveProcessRequest{
+		Handle: firecracker.ProcessHandleMetadata{
+			ID:     "fc-handle-999999999999",
+			Source: handle.Source,
+		},
+	}) {
+		t.Fatal("LiveProcessTerminated() = true for unknown process generation")
+	}
+	close(done)
+	if !manager.LiveProcessTerminated(request) {
+		t.Fatal("LiveProcessTerminated() = false after observed exact process exit")
+	}
+	if !manager.LiveProcessTerminated(request) {
+		t.Fatal("LiveProcessTerminated() did not preserve terminal proof")
+	}
+}
+
 func TestL5CleanupRejectsSubstitutedStateDirectoryIdentity(t *testing.T) {
 	base, err := os.MkdirTemp("/tmp", "hal-l5-cleanup-")
 	if err != nil {

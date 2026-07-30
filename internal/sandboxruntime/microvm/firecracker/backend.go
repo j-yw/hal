@@ -30,6 +30,7 @@ var (
 	errBootAcceptanceProcessNotAccepted   = errors.New("host process was not accepted")
 	errBootAcceptanceAPISocketUnavailable = errors.New("host-side API socket was not accepted")
 	errGuestReadinessNotReady             = errors.New("guest readiness waiter did not report ready")
+	errLiveProcessTerminalNotVerified     = errors.New("live process terminal state was not verified")
 )
 
 // BackendOptions configures the Firecracker backend. BaseStateDir is used only
@@ -82,6 +83,13 @@ type LiveProcessManager interface {
 	CleanupLiveProcess(context.Context, LiveProcessRequest) error
 	StopLiveProcess(context.Context, LiveProcessRequest) error
 	DeleteLiveProcess(context.Context, LiveProcessRequest) error
+}
+
+// LiveProcessTerminalVerifier is the optional positive terminal-state proof
+// used before replacing a tracked production-vsock process. A missing verifier
+// or a false result fails closed and retains the process ownership proof.
+type LiveProcessTerminalVerifier interface {
+	LiveProcessTerminated(LiveProcessRequest) bool
 }
 
 // LiveProcessRequest identifies the live-started Firecracker process and
@@ -318,13 +326,27 @@ func (c firecrackerController) startLiveProcess(ctx context.Context, descriptor 
 	if err != nil {
 		return firecrackerLiveStartResult{}, err
 	}
+	processProof, terminalVerifiable := liveProcessProofFromHandle(config.RuntimeID, handle)
+	if c.liveSessions != nil {
+		c.liveSessions.TrackProcess(processProof)
+		if !terminalVerifiable {
+			return firecrackerLiveStartResult{}, c.cleanupLiveProcessAfterStartFailure(
+				ctx,
+				handle,
+				processProof,
+				false,
+				config.Paths,
+				newProcessBoundaryError("processHandle", "live process handle is unavailable"),
+			)
+		}
+	}
 	launch, err := c.waitForBootAcceptance(ctx, handle, config.Paths)
 	if err != nil {
-		return firecrackerLiveStartResult{}, c.cleanupLiveProcessAfterStartFailure(ctx, handle, config.Paths, err)
+		return firecrackerLiveStartResult{}, c.cleanupLiveProcessAfterStartFailure(ctx, handle, processProof, true, config.Paths, err)
 	}
 	guestReadiness, bridgeGeneration, err := c.waitForGuestReadiness(ctx, handle, config.RuntimeID, config.Paths)
 	if err != nil {
-		return firecrackerLiveStartResult{}, c.cleanupLiveProcessAfterStartFailure(ctx, handle, config.Paths, err)
+		return firecrackerLiveStartResult{}, c.cleanupLiveProcessAfterStartFailure(ctx, handle, processProof, true, config.Paths, err)
 	}
 	if c.liveSessions != nil && guestReadiness != nil {
 		c.liveSessions.Activate(liveSessionProof{
@@ -340,6 +362,19 @@ func (c firecrackerController) startLiveProcess(ctx context.Context, descriptor 
 func (c firecrackerController) rejectActiveProductionVsockSession(runtimeID string) error {
 	if c.liveSessions == nil || c.productionBridge == nil {
 		return nil
+	}
+	if process, ok := c.liveSessions.ProcessForRuntime(runtimeID); ok {
+		verifier, verifierOK := c.liveProcessManager.(LiveProcessTerminalVerifier)
+		request := LiveProcessRequest{
+			Handle: ProcessHandleMetadata{
+				ID:     process.ProcessGeneration,
+				Source: process.ProcessSource,
+			},
+		}
+		if !verifierOK || !verifier.LiveProcessTerminated(request) {
+			return newProcessBoundaryError("runtime", "live process is already active")
+		}
+		c.invalidateLiveProcessProof(process)
 	}
 	active, ok := c.liveSessions.ProofForRuntime(runtimeID)
 	if !ok {
@@ -403,12 +438,44 @@ func (c firecrackerController) waitForGuestReadiness(ctx context.Context, handle
 	return result.RuntimeMetadata(), "", nil
 }
 
-func (c firecrackerController) cleanupLiveProcessAfterStartFailure(ctx context.Context, handle ProcessHandleMetadata, paths PathPlan, startErr error) error {
-	cleanupErr := c.cleanupLiveProcess(liveStartCleanupContext(ctx), LiveProcessRequest{
+func (c firecrackerController) cleanupLiveProcessAfterStartFailure(
+	ctx context.Context,
+	handle ProcessHandleMetadata,
+	processProof liveProcessProof,
+	terminalVerifiable bool,
+	paths PathPlan,
+	startErr error,
+) error {
+	request := LiveProcessRequest{
 		Handle: sanitizeProcessHandleMetadata(handle),
 		Paths:  paths,
-	})
+	}
+	cleanupErr := c.cleanupLiveProcess(liveStartCleanupContext(ctx), request)
 	if cleanupErr == nil {
+		if c.liveSessions != nil {
+			if !terminalVerifiable {
+				return errors.Join(
+					startErr,
+					newLiveProcessManagerFailure(
+						"liveProcessManager",
+						"live process cleanup terminal state was not verified",
+						errLiveProcessTerminalNotVerified,
+					),
+				)
+			}
+			verifier, verifierOK := c.liveProcessManager.(LiveProcessTerminalVerifier)
+			if !verifierOK || !verifier.LiveProcessTerminated(request) {
+				return errors.Join(
+					startErr,
+					newLiveProcessManagerFailure(
+						"liveProcessManager",
+						"live process cleanup terminal state was not verified",
+						errLiveProcessTerminalNotVerified,
+					),
+				)
+			}
+			c.liveSessions.InvalidateProcess(processProof)
+		}
 		return startErr
 	}
 	return errors.Join(startErr, cleanupErr)
@@ -449,8 +516,8 @@ func (c firecrackerController) Stop(ctx context.Context, req microvm.ControllerL
 		if err := c.stopLiveProcess(ctx, liveReq); err != nil {
 			return nil, err
 		}
+		c.invalidateLiveProcess(req.Target)
 	}
-	c.invalidateGuestSession(req.Target)
 	return firecrackerLifecycleTarget(req.Target, plan.Summary(), sandbox.StatusStopped, c.networkEnforcement), nil
 }
 
@@ -481,8 +548,8 @@ func (c firecrackerController) Delete(ctx context.Context, req microvm.Controlle
 		if err := c.deleteLiveProcess(ctx, liveReq); err != nil {
 			return err
 		}
+		c.invalidateLiveProcess(req.Target)
 	}
-	c.invalidateGuestSession(req.Target)
 	return nil
 }
 
@@ -629,6 +696,40 @@ func (c firecrackerController) invalidateGuestSession(target sandboxruntime.Targ
 		RuntimeID: proof.RuntimeID,
 	}, proof.BridgeGeneration)
 	c.liveSessions.Invalidate(proof)
+}
+
+func (c firecrackerController) invalidateLiveProcess(target sandboxruntime.Target) {
+	if c.liveSessions == nil || target.Runtime.Metadata == nil {
+		return
+	}
+	process := sanitizeRuntimeProcessLaunchMetadata(target.Runtime.Metadata.ProcessLaunch)
+	if process == nil {
+		return
+	}
+	proof, ok := c.liveSessions.Process(firecrackerStartRuntimeID(target), process.ProcessID)
+	if !ok {
+		return
+	}
+	c.invalidateLiveProcessProof(proof)
+}
+
+func (c firecrackerController) invalidateLiveProcessProof(proof liveProcessProof) {
+	if c.liveSessions == nil {
+		return
+	}
+	if session, ok := c.liveSessions.Proof(proof.RuntimeID, proof.ProcessGeneration); ok {
+		if c.productionBridge != nil {
+			c.productionBridge.InvalidateSession(ProductionVsockSessionRequest{
+				Handle: ProcessHandleMetadata{
+					ID:     proof.ProcessGeneration,
+					Source: proof.ProcessSource,
+				},
+				RuntimeID: proof.RuntimeID,
+			}, session.BridgeGeneration)
+		}
+		c.liveSessions.Invalidate(session)
+	}
+	c.liveSessions.InvalidateProcess(proof)
 }
 
 type firecrackerStartOperation struct {

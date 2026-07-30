@@ -316,6 +316,15 @@ Start, stop, and delete share one exclusive per-runtime lifecycle reservation;
 an overlapping lifecycle request rejects before rendering state, calling the
 live process manager, or reporting success. A successful stop or delete
 therefore cannot race with an in-flight start that later becomes ready.
+Host-process ownership is recorded immediately after launch and survives guest
+session or bridge loss. Replacing that generation requires positive,
+exact-generation terminal-state verification from the host process owner;
+missing verification, unknown handles, and failed cleanup reject the restart.
+A production-vsock launch that returns no safe opaque process handle is retained
+as unverified ownership and fails closed before guest readiness.
+Stale socket cleanup additionally requires every matching path/state generation
+to be terminal, so an older terminal record cannot authorize cleanup while a
+newer matching process remains active.
 Exec/copy authorization consults this registry, not caller-carried
 `Target.Runtime.Metadata.GuestReadiness`. Manually constructed, stale, or
 cross-runtime `ready` target metadata never authorizes an operation.

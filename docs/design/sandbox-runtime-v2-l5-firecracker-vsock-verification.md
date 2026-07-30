@@ -28,6 +28,14 @@ exclusive per-runtime lifecycle reservation: overlapping starts cannot launch a
 second process, stop/delete cannot report success during an in-flight start,
 and delete cannot overlap an active stop.
 
+The restart matrix also proves that host-process ownership begins at launch,
+survives bridge/session loss and failed cleanup, and clears only after
+successful owned cleanup or positive exact-generation terminal-state
+verification. Missing terminal verification fails closed. Stale socket cleanup
+requires every matching path/state generation to be terminal. A missing safe
+opaque process handle fails before guest readiness and
+retains unverified process ownership.
+
 The matrix includes canonical unsigned 32-bit assigned-host-port checks,
 including zero, overflow, sign, leading-zero, and reserved
 `VMADDR_PORT_ANY` rejection; partial and

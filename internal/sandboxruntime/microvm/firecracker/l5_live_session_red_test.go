@@ -291,6 +291,298 @@ func TestL5ActiveRestartDoesNotRewriteLiveBootFiles(t *testing.T) {
 	}
 }
 
+func TestL5RestartRejectsLiveProcessAfterGuestSessionLoss(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		manager LiveProcessManager
+	}{
+		{name: "authoritative active process", manager: l5ActiveProcessManager{}},
+		{name: "missing terminal verifier", manager: fakeLiveBootSafetyHooks{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stateRoot := firecrackerShortSocketTestRoot(t)
+			config := phase34LiveBootFakeConfig(t)
+			starter := &phase34RenderLaunchStarter{}
+			backend := NewBackend(BackendOptions{
+				BaseStateDir:         stateRoot,
+				ProcessAdapter:       ProcessLaunchAdapter{Starter: starter},
+				BootAcceptanceWaiter: fakeLiveBootSafetyHooks{},
+				LiveProcessManager:   test.manager,
+				LiveStart:            true,
+				ProductionVsock:      true,
+				ProductionBridge:     l5ConcurrentStartBridge{},
+			})
+			created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+				Operation: microvm.OperationCreate,
+				Config:    config,
+				Name:      "l5-live-process-without-session",
+			})
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			proof := liveSessionProof{
+				RuntimeID:         created.Runtime.RuntimeID,
+				ProcessGeneration: "fc-handle-1",
+				ProcessSource:     "firecrackerhost",
+				BridgeGeneration:  "bridge-1",
+			}
+			backend.liveSessions.Activate(proof)
+			backend.liveSessions.Invalidate(proof)
+			controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+				Operation: microvm.OperationStart,
+				Config:    config,
+				Target:    l5LiveSessionTarget(proof),
+			})
+			if err != nil {
+				t.Fatalf("Controller() error = %v", err)
+			}
+
+			_, err = controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
+				Operation: microvm.OperationStart,
+				Config:    config,
+				Target:    l5LiveSessionTarget(proof),
+			})
+			if err == nil {
+				t.Fatal("Start() error = nil, want live-process rejection after guest-session loss")
+			}
+			if starter.startCalls != 0 {
+				t.Fatalf("starter calls = %d, want no duplicate process launch", starter.startCalls)
+			}
+		})
+	}
+}
+
+func TestL5TerminalProcessProofAllowsRestartAfterGuestSessionLoss(t *testing.T) {
+	stateRoot := firecrackerShortSocketTestRoot(t)
+	config := phase34LiveBootFakeConfig(t)
+	starter := &phase34RenderLaunchStarter{}
+	backend := NewBackend(BackendOptions{
+		BaseStateDir:         stateRoot,
+		ProcessAdapter:       ProcessLaunchAdapter{Starter: starter},
+		BootAcceptanceWaiter: fakeLiveBootSafetyHooks{},
+		LiveProcessManager:   l5TerminalProcessManager{},
+		LiveStart:            true,
+		ProductionVsock:      true,
+		ProductionBridge:     l5ConcurrentStartBridge{},
+	})
+	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+		Operation: microvm.OperationCreate,
+		Config:    config,
+		Name:      "l5-terminal-process-restart",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	proof := liveSessionProof{
+		RuntimeID:         created.Runtime.RuntimeID,
+		ProcessGeneration: "fc-handle-1",
+		ProcessSource:     "firecrackerhost",
+		BridgeGeneration:  "bridge-1",
+	}
+	backend.liveSessions.Activate(proof)
+	backend.liveSessions.Invalidate(proof)
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+		Operation: microvm.OperationStart,
+		Config:    config,
+		Target:    l5LiveSessionTarget(proof),
+	})
+	if err != nil {
+		t.Fatalf("Controller() error = %v", err)
+	}
+
+	if _, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStart,
+		Config:    config,
+		Target:    l5LiveSessionTarget(proof),
+	}); err != nil {
+		t.Fatalf("Start() error = %v, want verified terminal process replacement", err)
+	}
+	if starter.startCalls != 1 {
+		t.Fatalf("starter calls = %d, want one replacement launch", starter.startCalls)
+	}
+}
+
+func TestL5FailedStartCleanupRetainsLiveProcessRestartGuard(t *testing.T) {
+	stateRoot := firecrackerShortSocketTestRoot(t)
+	config := phase34LiveBootFakeConfig(t)
+	starter := &phase34RenderLaunchStarter{}
+	manager := l5FailedCleanupProcessManager{cleanupErr: errors.New("cleanup failed")}
+	backend := NewBackend(BackendOptions{
+		BaseStateDir:         stateRoot,
+		ProcessAdapter:       ProcessLaunchAdapter{Starter: starter},
+		BootAcceptanceWaiter: l5FailedBootAcceptanceWaiter{},
+		LiveProcessManager:   manager,
+		LiveStart:            true,
+		ProductionVsock:      true,
+		ProductionBridge:     l5ConcurrentStartBridge{},
+	})
+	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+		Operation: microvm.OperationCreate,
+		Config:    config,
+		Name:      "l5-failed-start-cleanup",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+		Operation: microvm.OperationStart,
+		Config:    config,
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Controller() error = %v", err)
+	}
+	request := microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStart,
+		Config:    config,
+		Target:    *created,
+	}
+	if _, err := controller.Start(context.Background(), request); err == nil {
+		t.Fatal("first Start() error = nil, want boot acceptance and cleanup failure")
+	}
+	if _, err := controller.Start(context.Background(), request); err == nil {
+		t.Fatal("second Start() error = nil, want retained live-process rejection")
+	}
+	if starter.startCalls != 1 {
+		t.Fatalf("starter calls = %d, want no duplicate launch after failed cleanup", starter.startCalls)
+	}
+}
+
+func TestL5SuccessfulStartCleanupAllowsRetry(t *testing.T) {
+	stateRoot := firecrackerShortSocketTestRoot(t)
+	config := phase34LiveBootFakeConfig(t)
+	starter := &phase34RenderLaunchStarter{}
+	manager := &l5VerifiedCleanupProcessManager{}
+	backend := NewBackend(BackendOptions{
+		BaseStateDir:         stateRoot,
+		ProcessAdapter:       ProcessLaunchAdapter{Starter: starter},
+		BootAcceptanceWaiter: l5FailedBootAcceptanceWaiter{},
+		LiveProcessManager:   manager,
+		LiveStart:            true,
+		ProductionVsock:      true,
+		ProductionBridge:     l5ConcurrentStartBridge{},
+	})
+	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+		Operation: microvm.OperationCreate,
+		Config:    config,
+		Name:      "l5-successful-start-cleanup",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+		Operation: microvm.OperationStart,
+		Config:    config,
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Controller() error = %v", err)
+	}
+	request := microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStart,
+		Config:    config,
+		Target:    *created,
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if _, err := controller.Start(context.Background(), request); err == nil {
+			t.Fatalf("Start() attempt %d error = nil, want boot acceptance failure", attempt+1)
+		}
+	}
+	if starter.startCalls != 2 {
+		t.Fatalf("starter calls = %d, want retry after successful cleanup", starter.startCalls)
+	}
+}
+
+func TestL5SuccessfulCleanupWithoutTerminalProofBlocksRetry(t *testing.T) {
+	stateRoot := firecrackerShortSocketTestRoot(t)
+	config := phase34LiveBootFakeConfig(t)
+	starter := &phase34RenderLaunchStarter{}
+	backend := NewBackend(BackendOptions{
+		BaseStateDir:         stateRoot,
+		ProcessAdapter:       ProcessLaunchAdapter{Starter: starter},
+		BootAcceptanceWaiter: l5FailedBootAcceptanceWaiter{},
+		LiveProcessManager:   fakeLiveBootSafetyHooks{},
+		LiveStart:            true,
+		ProductionVsock:      true,
+		ProductionBridge:     l5ConcurrentStartBridge{},
+	})
+	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+		Operation: microvm.OperationCreate,
+		Config:    config,
+		Name:      "l5-unverified-start-cleanup",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+		Operation: microvm.OperationStart,
+		Config:    config,
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Controller() error = %v", err)
+	}
+	request := microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStart,
+		Config:    config,
+		Target:    *created,
+	}
+	if _, err := controller.Start(context.Background(), request); err == nil {
+		t.Fatal("first Start() error = nil, want boot acceptance failure")
+	}
+	if _, err := controller.Start(context.Background(), request); err == nil {
+		t.Fatal("second Start() error = nil, want missing terminal-proof rejection")
+	}
+	if starter.startCalls != 1 {
+		t.Fatalf("starter calls = %d, want no retry without positive terminal proof", starter.startCalls)
+	}
+}
+
+func TestL5MissingProcessHandleFailsClosedAndBlocksRetry(t *testing.T) {
+	stateRoot := firecrackerShortSocketTestRoot(t)
+	config := phase34LiveBootFakeConfig(t)
+	starter := &l5EmptyHandleStarter{}
+	backend := NewBackend(BackendOptions{
+		BaseStateDir:         stateRoot,
+		ProcessAdapter:       ProcessLaunchAdapter{Starter: starter},
+		BootAcceptanceWaiter: fakeLiveBootSafetyHooks{},
+		LiveProcessManager:   fakeLiveBootSafetyHooks{},
+		LiveStart:            true,
+		ProductionVsock:      true,
+		ProductionBridge:     l5ConcurrentStartBridge{},
+	})
+	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+		Operation: microvm.OperationCreate,
+		Config:    config,
+		Name:      "l5-missing-process-handle",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+		Operation: microvm.OperationStart,
+		Config:    config,
+		Target:    *created,
+	})
+	if err != nil {
+		t.Fatalf("Controller() error = %v", err)
+	}
+	request := microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStart,
+		Config:    config,
+		Target:    *created,
+	}
+	if _, err := controller.Start(context.Background(), request); err == nil {
+		t.Fatal("first Start() error = nil, want missing process-handle failure")
+	}
+	if _, err := controller.Start(context.Background(), request); err == nil {
+		t.Fatal("second Start() error = nil, want retained unverified-process rejection")
+	}
+	if starter.calls != 1 {
+		t.Fatalf("starter calls = %d, want no duplicate launch after an unverified process handle", starter.calls)
+	}
+}
+
 func TestL5ConcurrentStartsCannotLaunchSameRuntimeTwice(t *testing.T) {
 	stateRoot := firecrackerShortSocketTestRoot(t)
 	config := phase34LiveBootFakeConfig(t)
@@ -507,6 +799,15 @@ type l5ConcurrentStartStarter struct {
 	release chan struct{}
 }
 
+type l5EmptyHandleStarter struct {
+	calls int
+}
+
+func (starter *l5EmptyHandleStarter) StartProcess(context.Context, ProcessRunnerStartRequest) (ProcessHandleMetadata, error) {
+	starter.calls++
+	return ProcessHandleMetadata{}, nil
+}
+
 func (starter *l5ConcurrentStartStarter) StartProcess(context.Context, ProcessRunnerStartRequest) (ProcessHandleMetadata, error) {
 	starter.mu.Lock()
 	starter.calls++
@@ -566,6 +867,69 @@ func (bridge *l5RestartRetentionBridge) CopyOut(context.Context, GuestCopyReques
 
 type l5LifecycleRejectionManager struct {
 	err error
+}
+
+type l5ActiveProcessManager struct {
+	fakeLiveBootSafetyHooks
+}
+
+func (l5ActiveProcessManager) LiveProcessTerminated(LiveProcessRequest) bool {
+	return false
+}
+
+type l5TerminalProcessManager struct {
+	fakeLiveBootSafetyHooks
+}
+
+func (l5TerminalProcessManager) LiveProcessTerminated(LiveProcessRequest) bool {
+	return true
+}
+
+type l5FailedBootAcceptanceWaiter struct{}
+
+func (l5FailedBootAcceptanceWaiter) WaitForBootAcceptance(context.Context, BootAcceptanceRequest) (BootAcceptanceResult, error) {
+	return BootAcceptanceResult{}, errors.New("boot acceptance failed")
+}
+
+type l5FailedCleanupProcessManager struct {
+	cleanupErr error
+}
+
+func (manager l5FailedCleanupProcessManager) CleanupLiveProcess(context.Context, LiveProcessRequest) error {
+	return manager.cleanupErr
+}
+
+func (l5FailedCleanupProcessManager) StopLiveProcess(context.Context, LiveProcessRequest) error {
+	return nil
+}
+
+func (l5FailedCleanupProcessManager) DeleteLiveProcess(context.Context, LiveProcessRequest) error {
+	return nil
+}
+
+func (l5FailedCleanupProcessManager) LiveProcessTerminated(LiveProcessRequest) bool {
+	return false
+}
+
+type l5VerifiedCleanupProcessManager struct {
+	cleaned bool
+}
+
+func (manager *l5VerifiedCleanupProcessManager) CleanupLiveProcess(context.Context, LiveProcessRequest) error {
+	manager.cleaned = true
+	return nil
+}
+
+func (*l5VerifiedCleanupProcessManager) StopLiveProcess(context.Context, LiveProcessRequest) error {
+	return nil
+}
+
+func (*l5VerifiedCleanupProcessManager) DeleteLiveProcess(context.Context, LiveProcessRequest) error {
+	return nil
+}
+
+func (manager *l5VerifiedCleanupProcessManager) LiveProcessTerminated(LiveProcessRequest) bool {
+	return manager.cleaned
 }
 
 func (manager l5LifecycleRejectionManager) CleanupLiveProcess(context.Context, LiveProcessRequest) error {

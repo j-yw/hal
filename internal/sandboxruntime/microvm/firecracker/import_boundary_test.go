@@ -123,6 +123,7 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 		"ProductionVsockSessionRequest":         true,
 		"GuestWorkDirMetadata":                  true,
 		"InspectOperationPlan":                  true,
+		"LiveProcessTerminalVerifier":           true,
 		"LiveProcessManager":                    true,
 		"LiveProcessRequest":                    true,
 		"MachineConfigPayload":                  true,

@@ -191,6 +191,7 @@ func NewProcessLifecycleManager(runner HostProcessRunner, options ...ProcessLife
 
 var _ ProcessRunner = (*ProcessLifecycleManager)(nil)
 var _ LiveProcessCleanup = (*ProcessLifecycleManager)(nil)
+var _ firecracker.LiveProcessTerminalVerifier = (*ProcessLifecycleManager)(nil)
 
 // StartProcess starts a host process through the injected runner and returns a
 // stable opaque handle. Raw runner process metadata is kept only in memory.
@@ -307,6 +308,33 @@ func hostProcessExitObserved(process HostProcess) bool {
 	default:
 		return false
 	}
+}
+
+// LiveProcessTerminated positively confirms terminal state for an exact
+// tracked process generation. Unknown handles and processes without observed
+// terminal state fail closed.
+func (manager *ProcessLifecycleManager) LiveProcessTerminated(req firecracker.LiveProcessRequest) bool {
+	if manager == nil {
+		return false
+	}
+	id := normalizeProcessHandleID(req.Handle)
+	if id == "" {
+		return false
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	tracked, ok := manager.processes[id]
+	if !ok || tracked == nil {
+		return false
+	}
+	if tracked.finished {
+		return true
+	}
+	if !hostProcessExitObserved(tracked.process) {
+		return false
+	}
+	tracked.finished = true
+	return true
 }
 
 // DeleteLiveProcess force-stops a tracked live process, waits for it to finish,
@@ -645,6 +673,7 @@ func (manager *ProcessLifecycleManager) hasTerminalProcessForPaths(plan firecrac
 	}
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
+	hasTerminal := false
 	for _, tracked := range manager.processes {
 		if tracked == nil || !tracked.hasPaths || !cleanupPathPlansEqual(tracked.paths, plan) {
 			continue
@@ -661,11 +690,12 @@ func (manager *ProcessLifecycleManager) hasTerminalProcessForPaths(plan firecrac
 				}
 			}
 		}
-		if tracked.finished {
-			return true
+		if !tracked.finished {
+			return false
 		}
+		hasTerminal = true
 	}
-	return false
+	return hasTerminal
 }
 
 func (manager *ProcessLifecycleManager) cleanupFilesystem() CleanupFilesystem {
