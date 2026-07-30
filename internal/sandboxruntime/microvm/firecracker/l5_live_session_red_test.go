@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
@@ -260,6 +261,43 @@ func TestL5ActiveRestartDoesNotRewriteLiveBootFiles(t *testing.T) {
 	}
 }
 
+func TestL5ConcurrentStartsCannotLaunchSameRuntimeTwice(t *testing.T) {
+	stateRoot := firecrackerShortSocketTestRoot(t)
+	config := phase34LiveBootFakeConfig(t)
+	starter := &l5ConcurrentStartStarter{entered: make(chan struct{}), release: make(chan struct{})}
+	backend := NewBackend(BackendOptions{
+		BaseStateDir:         stateRoot,
+		ProcessAdapter:       ProcessLaunchAdapter{Starter: starter},
+		BootAcceptanceWaiter: fakeLiveBootSafetyHooks{},
+		LiveProcessManager:   fakeLiveBootSafetyHooks{},
+		LiveStart:            true,
+		ProductionVsock:      true,
+		ProductionBridge:     l5ConcurrentStartBridge{},
+	})
+	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{Operation: microvm.OperationCreate, Config: config, Name: "l5-concurrent-start"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{Operation: microvm.OperationStart, Config: config, Target: *created})
+	if err != nil {
+		t.Fatalf("Controller() error = %v", err)
+	}
+	request := microvm.ControllerLifecycleRequest{Operation: microvm.OperationStart, Config: config, Target: *created}
+	first := make(chan error, 1)
+	go func() { _, err := controller.Start(context.Background(), request); first <- err }()
+	<-starter.entered
+	if _, err := controller.Start(context.Background(), request); err == nil {
+		t.Fatal("second Start() error = nil, want in-progress start rejection")
+	}
+	if calls := starter.Calls(); calls != 1 {
+		t.Fatalf("launch calls = %d, want 1", calls)
+	}
+	close(starter.release)
+	if err := <-first; err != nil {
+		t.Fatalf("first Start() error = %v", err)
+	}
+}
+
 func l5LiveSessionTarget(proof liveSessionProof) sandboxruntime.Target {
 	return sandboxruntime.Target{
 		ID: proof.RuntimeID,
@@ -288,6 +326,43 @@ func (l5NoopGuestTransport) Exec(context.Context, GuestExecRequest) (*sandboxrun
 }
 func (l5NoopGuestTransport) CopyIn(context.Context, GuestCopyRequest) error  { return nil }
 func (l5NoopGuestTransport) CopyOut(context.Context, GuestCopyRequest) error { return nil }
+
+type l5ConcurrentStartStarter struct {
+	mu      sync.Mutex
+	calls   int
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (starter *l5ConcurrentStartStarter) StartProcess(context.Context, ProcessRunnerStartRequest) (ProcessHandleMetadata, error) {
+	starter.mu.Lock()
+	starter.calls++
+	calls := starter.calls
+	starter.mu.Unlock()
+	if calls != 1 {
+		return ProcessHandleMetadata{}, errors.New("duplicate process launch")
+	}
+	close(starter.entered)
+	<-starter.release
+	return ProcessHandleMetadata{ID: "fc-handle-1", Source: "fake-starter"}, nil
+}
+
+func (starter *l5ConcurrentStartStarter) Calls() int {
+	starter.mu.Lock()
+	defer starter.mu.Unlock()
+	return starter.calls
+}
+
+type l5ConcurrentStartBridge struct{ l5NoopGuestTransport }
+
+func (l5ConcurrentStartBridge) ActivateSession(context.Context, ProductionVsockSessionRequest) (GuestReadinessResult, string, error) {
+	return NewGuestReadinessResult(sandboxruntime.RuntimeGuestReadinessStateReady, "vsock", []string{"protocol_v1", "runtime_bound", "probe_ok"}), "bridge-1", nil
+}
+
+func (l5ConcurrentStartBridge) SessionActive(ProductionVsockSessionRequest, string) bool {
+	return false
+}
+func (l5ConcurrentStartBridge) InvalidateSession(ProductionVsockSessionRequest, string) {}
 
 type l5RestartRetentionBridge struct {
 	l5NoopGuestTransport

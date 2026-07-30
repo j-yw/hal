@@ -241,6 +241,12 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 	if err != nil {
 		return nil, err
 	}
+	if c.liveStart && c.liveSessions != nil {
+		if !c.liveSessions.ReserveStart(config.RuntimeID) {
+			return nil, newProcessBoundaryError("runtime", "live process start is already in progress")
+		}
+		defer c.liveSessions.ReleaseStart(config.RuntimeID)
+	}
 	if c.liveStart {
 		if err := c.rejectActiveProductionVsockSession(config.RuntimeID); err != nil {
 			return nil, err
