@@ -241,6 +241,11 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 	if err != nil {
 		return nil, err
 	}
+	if c.liveStart {
+		if err := c.rejectActiveProductionVsockSession(config.RuntimeID); err != nil {
+			return nil, err
+		}
+	}
 	adapter := c.processAdapter
 	if adapter == nil {
 		adapter = startPlanningProcessAdapter{}
@@ -291,14 +296,14 @@ type firecrackerLiveStartResult struct {
 }
 
 func (c firecrackerController) startLiveProcess(ctx context.Context, descriptor ProcessCommandDescriptor, config BackendConfig) (firecrackerLiveStartResult, error) {
+	if err := c.rejectActiveProductionVsockSession(config.RuntimeID); err != nil {
+		return firecrackerLiveStartResult{}, err
+	}
 	if c.liveSessions != nil {
 		if active, ok := c.liveSessions.ProofForRuntime(config.RuntimeID); ok && c.productionBridge != nil {
 			request := ProductionVsockSessionRequest{
 				Handle:    ProcessHandleMetadata{ID: active.ProcessGeneration, Source: active.ProcessSource},
 				RuntimeID: active.RuntimeID,
-			}
-			if c.productionBridge.SessionActive(request, active.BridgeGeneration) {
-				return firecrackerLiveStartResult{}, newProcessBoundaryError("runtime", "live process is already active")
 			}
 			c.productionBridge.InvalidateSession(request, active.BridgeGeneration)
 		}
@@ -325,6 +330,24 @@ func (c firecrackerController) startLiveProcess(ctx context.Context, descriptor 
 		processLaunch:  launch,
 		guestReadiness: guestReadiness,
 	}, nil
+}
+
+func (c firecrackerController) rejectActiveProductionVsockSession(runtimeID string) error {
+	if c.liveSessions == nil || c.productionBridge == nil {
+		return nil
+	}
+	active, ok := c.liveSessions.ProofForRuntime(runtimeID)
+	if !ok {
+		return nil
+	}
+	request := ProductionVsockSessionRequest{
+		Handle:    ProcessHandleMetadata{ID: active.ProcessGeneration, Source: active.ProcessSource},
+		RuntimeID: active.RuntimeID,
+	}
+	if c.productionBridge.SessionActive(request, active.BridgeGeneration) {
+		return newProcessBoundaryError("runtime", "live process is already active")
+	}
+	return nil
 }
 
 func (c firecrackerController) waitForBootAcceptance(ctx context.Context, handle ProcessHandleMetadata, paths PathPlan) (*sandboxruntime.RuntimeProcessLaunchMetadata, error) {

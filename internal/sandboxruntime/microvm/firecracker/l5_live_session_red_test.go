@@ -1,8 +1,10 @@
 package firecracker
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
@@ -180,6 +182,81 @@ func TestL5LifecycleRejectionPreservesActiveProductionVsockSession(t *testing.T)
 				t.Fatalf("failed %s left the active guest session unavailable", test.name)
 			}
 		})
+	}
+}
+
+func TestL5ActiveRestartDoesNotRewriteLiveBootFiles(t *testing.T) {
+	stateRoot := firecrackerShortSocketTestRoot(t)
+	config := phase34LiveBootFakeConfig(t)
+	bridge := &l5RestartRetentionBridge{active: true}
+	starter := &phase34RenderLaunchStarter{}
+	backend := NewBackend(BackendOptions{
+		BaseStateDir:         stateRoot,
+		ProcessAdapter:       ProcessLaunchAdapter{Starter: starter},
+		BootAcceptanceWaiter: fakeLiveBootSafetyHooks{},
+		LiveProcessManager:   fakeLiveBootSafetyHooks{},
+		LiveStart:            true,
+		ProductionVsock:      true,
+		ProductionBridge:     bridge,
+	})
+	created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+		Operation: microvm.OperationCreate,
+		Config:    config,
+		Name:      "l5-active-restart-files",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	paths := phase34ExpectedLiveBootConfig(t, config, stateRoot, created.Runtime.RuntimeID).Paths
+	if err := os.MkdirAll(paths.StateDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll(state directory) error = %v", err)
+	}
+	want := map[string][]byte{
+		paths.ConfigPath:  []byte("active-config"),
+		paths.LogPath:     []byte("active-log"),
+		paths.MetricsPath: []byte("active-metrics"),
+	}
+	for path, contents := range want {
+		if err := os.WriteFile(path, contents, 0o600); err != nil {
+			t.Fatalf("WriteFile(active boot file) error = %v", err)
+		}
+	}
+
+	proof := liveSessionProof{
+		RuntimeID:         created.Runtime.RuntimeID,
+		ProcessGeneration: "fc-handle-1",
+		ProcessSource:     "firecrackerhost",
+		BridgeGeneration:  "bridge-1",
+	}
+	backend.liveSessions.Activate(proof)
+	controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+		Operation: microvm.OperationStart,
+		Config:    config,
+		Target:    l5LiveSessionTarget(proof),
+	})
+	if err != nil {
+		t.Fatalf("Controller() error = %v", err)
+	}
+
+	_, err = controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStart,
+		Config:    config,
+		Target:    l5LiveSessionTarget(proof),
+	})
+	if err == nil {
+		t.Fatal("Start() error = nil, want active-session rejection")
+	}
+	if starter.startCalls != 0 {
+		t.Fatalf("starter calls = %d, want no second launch", starter.startCalls)
+	}
+	for path, contents := range want {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(active boot file) error = %v", err)
+		}
+		if !bytes.Equal(got, contents) {
+			t.Fatalf("active boot file changed before rejected restart")
+		}
 	}
 }
 
