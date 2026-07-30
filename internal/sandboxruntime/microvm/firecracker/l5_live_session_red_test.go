@@ -89,6 +89,33 @@ func TestL5ProductionVsockRejectsCallerGuestComposition(t *testing.T) {
 	}
 }
 
+func TestL5StartFailureKeepsActiveProductionVsockSession(t *testing.T) {
+	proof := liveSessionProof{
+		RuntimeID:         "fc-runtime-a",
+		ProcessGeneration: "fc-handle-1",
+		ProcessSource:     "firecrackerhost",
+		BridgeGeneration:  "bridge-1",
+	}
+	registry := newLiveSessionRegistry()
+	registry.Activate(proof)
+	bridge := &l5RestartRetentionBridge{active: true}
+	controller := firecrackerController{
+		productionBridge: bridge,
+		liveSessions:     registry,
+	}
+
+	_, err := controller.startLiveProcess(context.Background(), ProcessCommandDescriptor{}, BackendConfig{RuntimeID: proof.RuntimeID})
+	if err == nil {
+		t.Fatal("startLiveProcess() error = nil, want start failure")
+	}
+	if bridge.invalidations != 0 {
+		t.Fatalf("bridge invalidations = %d, want no invalidation after a failed replacement start", bridge.invalidations)
+	}
+	if !registry.Authorize(proof) {
+		t.Fatal("failed replacement start invalidated the active live-session proof")
+	}
+}
+
 type l5NoopGuestTransport struct{}
 
 func (l5NoopGuestTransport) Exec(context.Context, GuestExecRequest) (*sandboxruntime.ExecResult, error) {
@@ -96,3 +123,22 @@ func (l5NoopGuestTransport) Exec(context.Context, GuestExecRequest) (*sandboxrun
 }
 func (l5NoopGuestTransport) CopyIn(context.Context, GuestCopyRequest) error  { return nil }
 func (l5NoopGuestTransport) CopyOut(context.Context, GuestCopyRequest) error { return nil }
+
+type l5RestartRetentionBridge struct {
+	l5NoopGuestTransport
+	active        bool
+	invalidations int
+}
+
+func (*l5RestartRetentionBridge) ActivateSession(context.Context, ProductionVsockSessionRequest) (GuestReadinessResult, string, error) {
+	return GuestReadinessResult{}, "", nil
+}
+
+func (bridge *l5RestartRetentionBridge) SessionActive(ProductionVsockSessionRequest, string) bool {
+	return bridge.active
+}
+
+func (bridge *l5RestartRetentionBridge) InvalidateSession(ProductionVsockSessionRequest, string) {
+	bridge.invalidations++
+	bridge.active = false
+}

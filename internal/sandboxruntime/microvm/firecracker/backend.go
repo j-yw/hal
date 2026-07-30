@@ -293,10 +293,14 @@ type firecrackerLiveStartResult struct {
 func (c firecrackerController) startLiveProcess(ctx context.Context, descriptor ProcessCommandDescriptor, config BackendConfig) (firecrackerLiveStartResult, error) {
 	if c.liveSessions != nil {
 		if active, ok := c.liveSessions.ProofForRuntime(config.RuntimeID); ok && c.productionBridge != nil {
-			c.productionBridge.InvalidateSession(ProductionVsockSessionRequest{
+			request := ProductionVsockSessionRequest{
 				Handle:    ProcessHandleMetadata{ID: active.ProcessGeneration, Source: active.ProcessSource},
 				RuntimeID: active.RuntimeID,
-			}, active.BridgeGeneration)
+			}
+			if c.productionBridge.SessionActive(request, active.BridgeGeneration) {
+				return firecrackerLiveStartResult{}, newProcessBoundaryError("runtime", "live process is already active")
+			}
+			c.productionBridge.InvalidateSession(request, active.BridgeGeneration)
 		}
 		c.liveSessions.InvalidateRuntime(config.RuntimeID)
 	}
