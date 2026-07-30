@@ -82,6 +82,59 @@ func TestL5FailedKillDoesNotMarkProcessTerminal(t *testing.T) {
 	}
 }
 
+func TestL5StopRejectsProcessHandleOwnedByAnotherRuntime(t *testing.T) {
+	runtimeAPaths := cleanupPathPlanForTest("fc-runtime-a")
+	runtimeBPaths := cleanupPathPlanForTest("fc-runtime-b")
+	runtimeAProcess := &fakeHostProcess{rawPID: 1111}
+	runtimeBProcess := &fakeHostProcess{rawPID: 2222}
+	manager := NewProcessLifecycleManager(&fakeHostProcessRunner{
+		processes: []HostProcess{runtimeAProcess, runtimeBProcess},
+	})
+	if _, err := manager.StartProcess(context.Background(), processStartRequestForCleanupPaths(runtimeAPaths)); err != nil {
+		t.Fatalf("StartProcess(runtime A) error = %v", err)
+	}
+	runtimeBHandle, err := manager.StartProcess(context.Background(), processStartRequestForCleanupPaths(runtimeBPaths))
+	if err != nil {
+		t.Fatalf("StartProcess(runtime B) error = %v", err)
+	}
+
+	err = manager.StopLiveProcess(context.Background(), firecracker.LiveProcessRequest{
+		Handle: runtimeBHandle,
+		Paths:  runtimeAPaths,
+	})
+	if !errors.Is(err, ErrUnsafeCleanupPath) {
+		t.Fatalf("StopLiveProcess(runtime A paths with runtime B handle) error = %v, want ErrUnsafeCleanupPath", err)
+	}
+	if runtimeAProcess.signalCalls != 0 || runtimeAProcess.waitCalls != 0 || runtimeAProcess.killCalls != 0 {
+		t.Fatalf("mismatched stop touched runtime A process: signal=%d wait=%d kill=%d", runtimeAProcess.signalCalls, runtimeAProcess.waitCalls, runtimeAProcess.killCalls)
+	}
+	if runtimeBProcess.signalCalls != 0 || runtimeBProcess.waitCalls != 0 || runtimeBProcess.killCalls != 0 {
+		t.Fatalf("mismatched stop touched runtime B process: signal=%d wait=%d kill=%d", runtimeBProcess.signalCalls, runtimeBProcess.waitCalls, runtimeBProcess.killCalls)
+	}
+	var lifecycleErr *ProcessLifecycleError
+	if !errors.As(err, &lifecycleErr) || lifecycleErr.Operation != processOperationStop {
+		t.Fatalf("mismatched stop error = %#v, want sanitized stop lifecycle error", err)
+	}
+
+	err = manager.StopLiveProcess(context.Background(), firecracker.LiveProcessRequest{Handle: runtimeBHandle})
+	if !errors.Is(err, ErrUnsafeCleanupPath) {
+		t.Fatalf("StopLiveProcess(runtime B handle without owned paths) error = %v, want ErrUnsafeCleanupPath", err)
+	}
+	if runtimeBProcess.signalCalls != 0 || runtimeBProcess.waitCalls != 0 || runtimeBProcess.killCalls != 0 {
+		t.Fatalf("pathless stop touched runtime B process: signal=%d wait=%d kill=%d", runtimeBProcess.signalCalls, runtimeBProcess.waitCalls, runtimeBProcess.killCalls)
+	}
+
+	if err := manager.StopLiveProcess(context.Background(), firecracker.LiveProcessRequest{
+		Handle: runtimeBHandle,
+		Paths:  runtimeBPaths,
+	}); err != nil {
+		t.Fatalf("StopLiveProcess(runtime B matching ownership) error = %v", err)
+	}
+	if runtimeBProcess.signalCalls != 1 || runtimeBProcess.waitCalls != 1 || runtimeBProcess.killCalls != 0 {
+		t.Fatalf("matching stop calls: signal=%d wait=%d kill=%d, want signal+wait only", runtimeBProcess.signalCalls, runtimeBProcess.waitCalls, runtimeBProcess.killCalls)
+	}
+}
+
 func TestL5TerminalGenerationCannotAuthorizeCleanupWhileNewerGenerationIsActive(t *testing.T) {
 	stateDir := t.TempDir()
 	paths := firecracker.PathPlan{

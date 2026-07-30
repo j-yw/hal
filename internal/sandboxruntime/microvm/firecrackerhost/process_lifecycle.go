@@ -20,6 +20,7 @@ const (
 	processHandlePrefix = "fc-handle"
 
 	processOperationStart   = "start"
+	processOperationStop    = "stop"
 	processOperationWait    = "wait"
 	processOperationSignal  = "signal"
 	processOperationKill    = "kill"
@@ -263,6 +264,9 @@ func (manager *ProcessLifecycleManager) StopLiveProcess(ctx context.Context, req
 	if !ok {
 		return nil
 	}
+	if err := manager.validateTrackedProcessPathPlan(req.Handle, req.Paths); err != nil {
+		return newProcessLifecycleError(processOperationStop, err)
+	}
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), manager.cleanupTimeout)
 	defer cancel()
 	var failures []error
@@ -433,6 +437,27 @@ func (manager *ProcessLifecycleManager) trackedCleanupPathPlan(handle firecracke
 		return firecracker.PathPlan{}, false, fmt.Errorf("state directory does not match tracked live process: %w", ErrUnsafeCleanupPath)
 	}
 	return plan, true, nil
+}
+
+func (manager *ProcessLifecycleManager) validateTrackedProcessPathPlan(handle firecracker.ProcessHandleMetadata, paths firecracker.PathPlan) error {
+	tracked, ok := manager.lookupProcessSnapshot(handle)
+	if !ok {
+		return ErrUnsafeCleanupPath
+	}
+	if !tracked.hasPaths {
+		if cleanupPathPlanEmpty(paths) {
+			return nil
+		}
+		return ErrUnsafeCleanupPath
+	}
+	plan, hasPaths, err := validatedCleanupPathPlan(paths)
+	if err != nil {
+		return err
+	}
+	if !hasPaths || !cleanupPathPlansEqual(plan, tracked.paths) {
+		return ErrUnsafeCleanupPath
+	}
+	return nil
 }
 
 type trackedProcessSnapshot struct {
@@ -933,6 +958,8 @@ func safeProcessOperation(operation string) string {
 	switch strings.TrimSpace(operation) {
 	case processOperationStart:
 		return processOperationStart
+	case processOperationStop:
+		return processOperationStop
 	case processOperationWait:
 		return processOperationWait
 	case processOperationSignal:
