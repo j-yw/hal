@@ -556,6 +556,79 @@ func TestL6PolicyProxyCONNECTPreservesPipelinedBytesAfterHijack(t *testing.T) {
 	}
 }
 
+func TestL6PolicyProxyCONNECTForwardsUpstreamHalfCloseThroughConnectionLimit(t *testing.T) {
+	listener, err := net.Listen(l6TestNetwork, l6TestListenAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	upstreamRead := make(chan error, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			upstreamRead <- acceptErr
+			return
+		}
+		defer conn.Close()
+		if _, writeErr := io.WriteString(conn, "done"); writeErr != nil {
+			upstreamRead <- writeErr
+			return
+		}
+		closeWriter, ok := conn.(interface{ CloseWrite() error })
+		if !ok {
+			upstreamRead <- errors.New("fixture connection cannot half-close")
+			return
+		}
+		if closeErr := closeWriter.CloseWrite(); closeErr != nil {
+			upstreamRead <- closeErr
+			return
+		}
+		var payload [1]byte
+		_, readErr := io.ReadFull(conn, payload[:])
+		if readErr == nil && payload[0] != 'x' {
+			readErr = errors.New("unexpected client payload")
+		}
+		upstreamRead <- readErr
+	}()
+
+	var calls atomic.Int32
+	adapter := newTestAdapter(t, testAdapterOptions{
+		dial: mappingDialer(t, map[string]string{
+			"93.184.216.34:443": listener.Addr().String(),
+		}, &calls),
+		limits: Limits{MaxConcurrent: 1},
+	})
+	endpoint := startAdapter(t, adapter)
+	t.Cleanup(func() { stopAdapter(t, adapter) })
+	conn, reader := openCONNECT(t, endpoint)
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, 4)
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) != "done" {
+		t.Fatalf("CONNECT half-close payload = %q", payload)
+	}
+	var extra [1]byte
+	if _, err := reader.Read(extra[:]); !errors.Is(err, io.EOF) {
+		t.Fatalf("CONNECT upstream half-close read = %v, want EOF", err)
+	}
+	if _, err := conn.Write([]byte{'x'}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-upstreamRead:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("CONNECT client write did not survive upstream half-close")
+	}
+}
+
 func TestL6PolicyProxyCONNECTRejectsNonAuthorityRequestTargets(t *testing.T) {
 	for _, target := range []string{"/", "*", "http://allowed.test:443/"} {
 		t.Run(target, func(t *testing.T) {
