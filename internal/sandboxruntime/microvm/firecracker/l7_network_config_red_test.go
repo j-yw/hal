@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
 )
 
 func TestL7FirecrackerRendersExactlyOneValidatedNetworkInterface(t *testing.T) {
@@ -60,7 +61,28 @@ func TestL7FirecrackerNetworkConfigFailsClosedAndRedactsRawValues(t *testing.T) 
 		{name: "unsafe tap", mutate: func(config *BackendConfig) { config.NetworkInterfaces[0].HostDeviceName = "tap secret /tmp/canary" }},
 		{name: "nonlocal mac", mutate: func(config *BackendConfig) { config.NetworkInterfaces[0].GuestMAC = "00:00:00:00:00:02" }},
 		{name: "gateway outside prefix", mutate: func(config *BackendConfig) { config.StaticNetwork.IPv4Gateway = "198.51.100.1" }},
+		{name: "broad IPv4 prefix", mutate: func(config *BackendConfig) { config.StaticNetwork.IPv4Address = "192.0.2.2/0" }},
+		{name: "broad IPv6 prefix", mutate: func(config *BackendConfig) { config.StaticNetwork.IPv6Address = "fd00:7::2/64" }},
+		{name: "IPv4 network address", mutate: func(config *BackendConfig) {
+			config.StaticNetwork.IPv4Address = "192.0.2.0/30"
+			config.StaticNetwork.IPv4Gateway = "192.0.2.1"
+		}},
+		{name: "IPv4 broadcast address", mutate: func(config *BackendConfig) {
+			config.StaticNetwork.IPv4Address = "192.0.2.3/30"
+			config.StaticNetwork.IPv4Gateway = "192.0.2.1"
+		}},
 		{name: "private proxy", mutate: func(config *BackendConfig) { config.StaticNetwork.ProxyURL = "http://10.0.0.8:19443" }},
+		{name: "raw path assets", mutate: func(config *BackendConfig) { config.LaunchDescriptor = nil }},
+		{name: "generic descriptor", mutate: func(config *BackendConfig) {
+			descriptor := validFirecrackerLaunchDescriptorForTest()
+			config.LaunchDescriptor = &descriptor
+		}},
+		{name: "L5 descriptor", mutate: func(config *BackendConfig) {
+			descriptor := validL7LaunchDescriptorForTest()
+			descriptor.ID = "l5-image"
+			descriptor.Labels = []assets.SafeLabel{"firecracker", "reproducible"}
+			config.LaunchDescriptor = &descriptor
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -112,12 +134,14 @@ func TestL7RawNetworkConfigIsOmittedAndNoNetworkOutputStaysUnchanged(t *testing.
 }
 
 func validL7NetworkBackendConfig() BackendConfig {
+	descriptor := validL7LaunchDescriptorForTest()
 	return BackendConfig{
-		CPUCount:        1,
-		MemoryMiB:       128,
-		KernelImagePath: "/kernel",
-		RootfsPath:      "/rootfs",
-		ProductionVsock: true,
+		CPUCount:         1,
+		MemoryMiB:        128,
+		KernelImagePath:  "/kernel",
+		RootfsPath:       "/rootfs",
+		LaunchDescriptor: &descriptor,
+		ProductionVsock:  true,
 		Paths: PathPlan{
 			StateDir: "/state", APISocketPath: "/state/api.sock", ConfigPath: "/state/config.json",
 			LogPath: "/state/firecracker.log", MetricsPath: "/state/firecracker.metrics", VsockSocketPath: "/state/guest.vsock",
@@ -135,4 +159,11 @@ func validL7NetworkBackendConfig() BackendConfig {
 			ProxyURL:           "http://192.0.2.1:18080",
 		},
 	}
+}
+
+func validL7LaunchDescriptorForTest() assets.LaunchDescriptor {
+	descriptor := validFirecrackerLaunchDescriptorForTest()
+	descriptor.ID = "l7-network-image"
+	descriptor.Labels = []assets.SafeLabel{"firecracker", "reproducible", "network-profile"}
+	return descriptor
 }
