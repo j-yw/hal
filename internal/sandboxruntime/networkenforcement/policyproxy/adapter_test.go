@@ -139,6 +139,48 @@ func TestL6PolicyProxyHTTPAllowDenyBoundsRedactionAndNoAmbientProxy(t *testing.T
 	}
 }
 
+func TestL6PolicyProxyConstructionOwnsImmutableAllowlistRules(t *testing.T) {
+	policy := testPolicy()
+	upstream := newHTTPFixture(t)
+	var dialCount atomic.Int32
+	adapter, err := New(Config{
+		Policy:        policy,
+		ListenAddress: l6TestListenAddress,
+		Resolver: func(context.Context, string, string) ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
+		},
+		DialContext: mappingDialer(t, map[string]string{
+			"93.184.216.34:80": upstream,
+		}, &dialCount),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.AllowlistRules[0].Value = "denied.test"
+
+	endpoint := startAdapter(t, adapter)
+	t.Cleanup(func() { stopAdapter(t, adapter) })
+	allowed, err := proxyClient(t, endpoint).Get("http://allowed.test/immutable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = allowed.Body.Close()
+	if allowed.StatusCode != http.StatusOK {
+		t.Fatalf("allowed status after caller mutation = %d, want 200", allowed.StatusCode)
+	}
+	denied, err := proxyClient(t, endpoint).Get("http://denied.test/immutable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = denied.Body.Close()
+	if denied.StatusCode != http.StatusForbidden {
+		t.Fatalf("denied status after caller mutation = %d, want 403", denied.StatusCode)
+	}
+	if got := dialCount.Load(); got != 1 {
+		t.Fatalf("dial count after caller mutation = %d, want 1", got)
+	}
+}
+
 func TestL6PolicyProxyRejectsOversizedConfigurationBeforeAllocation(t *testing.T) {
 	oversizedInt := int(^uint(0) >> 1)
 	oversizedInt64 := int64(^uint64(0) >> 1)
