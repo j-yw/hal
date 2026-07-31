@@ -46,6 +46,9 @@ func TestL7PodmanTopologySequencesCreateActivationInspectionAndExec(t *testing.T
 	}
 	createArgs := runner.lifecycleRequests[0].Args
 	assertExplicitSafePastaCreateArgs(t, createArgs)
+	if !containsArg(createArgs, "--cap-drop=ALL") {
+		t.Fatalf("Create() args = %#v, want explicit all-capability drop", createArgs)
+	}
 	if !containsArgPair(createArgs, "--label", "dev.jywlabs.hal.topology.generation=topology-generation-a") {
 		t.Fatalf("Create() args = %#v, want safe topology-generation label", createArgs)
 	}
@@ -564,6 +567,15 @@ func assertAdvisoryActiveNetworkProof(t *testing.T, target *sandboxruntime.Targe
 func containsArgPair(args []string, key, value string) bool {
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == key && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func containsArg(args []string, value string) bool {
+	for _, arg := range args {
+		if arg == value {
 			return true
 		}
 	}
