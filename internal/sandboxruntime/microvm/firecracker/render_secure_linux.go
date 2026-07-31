@@ -42,8 +42,6 @@ func renderProductionLiveBootFiles(paths PathPlan, config []byte) error {
 	return nil
 }
 
-var errUnsafeLiveBootStateEntry = errors.New("unsafe live boot state entry")
-
 func openSecureLiveBootStateDir(path string) (*secureLiveBootStateDir, error) {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {

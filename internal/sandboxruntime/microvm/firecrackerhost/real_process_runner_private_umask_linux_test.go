@@ -22,6 +22,36 @@ const (
 	privateUmaskSocketMarker  = "--hal-private-umask-socket"
 )
 
+func TestOSExecProcessRunnerPassesOnlyExplicitInheritedFiles(t *testing.T) {
+	first, err := os.CreateTemp(t.TempDir(), "kernel-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := os.CreateTemp(t.TempDir(), "rootfs-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	wantErr := errors.New("stop before process start")
+	runner := OSExecProcessRunner{startCommand: func(command *exec.Cmd) error {
+		if len(command.ExtraFiles) != 2 || command.ExtraFiles[0] != first || command.ExtraFiles[1] != second {
+			t.Fatalf("command ExtraFiles = %#v, want exact explicit file set", command.ExtraFiles)
+		}
+		return wantErr
+	}}
+	process, err := runner.StartHostProcess(context.Background(), firecracker.ProcessRunnerStartRequest{
+		Executable:     "firecracker",
+		InheritedFiles: []*os.File{first, second},
+	})
+	if process != nil {
+		t.Fatalf("process = %#v, want nil", process)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("StartHostProcess() error = %v, want injected stop", err)
+	}
+}
+
 func TestOSExecProcessRunnerFailsClosedWhenFilesystemIsolationFails(t *testing.T) {
 	started := false
 	err := startPrivateOSExecLaunch(privateOSExecLaunchOps{

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"os"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/sandbox"
@@ -270,10 +271,11 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 	processLaunch := processBoundaryAvailableRuntimeMetadata()
 	var guestReadiness *sandboxruntime.RuntimeGuestReadinessMetadata
 	if c.liveStart {
-		if err := renderLiveBootFiles(config); err != nil {
+		inheritedFiles, err := renderLiveBootFilesForStart(config)
+		if err != nil {
 			return nil, err
 		}
-		liveStart, err := c.startLiveProcess(ctx, operation.ProcessDescriptor, config)
+		liveStart, err := c.startLiveProcessWithInheritedFiles(ctx, operation.ProcessDescriptor, config, inheritedFiles)
 		if err != nil {
 			return nil, err
 		}
@@ -309,6 +311,18 @@ type firecrackerLiveStartResult struct {
 }
 
 func (c firecrackerController) startLiveProcess(ctx context.Context, descriptor ProcessCommandDescriptor, config BackendConfig) (firecrackerLiveStartResult, error) {
+	return c.startLiveProcessWithInheritedFiles(ctx, descriptor, config, nil)
+}
+
+func (c firecrackerController) startLiveProcessWithInheritedFiles(
+	ctx context.Context,
+	descriptor ProcessCommandDescriptor,
+	config BackendConfig,
+	inheritedFiles []*os.File,
+) (firecrackerLiveStartResult, error) {
+	if len(inheritedFiles) > 0 && config.VerifiedL7Assets != nil {
+		defer config.VerifiedL7Assets.Close()
+	}
 	if err := c.rejectActiveProductionVsockSession(config.RuntimeID); err != nil {
 		return firecrackerLiveStartResult{}, err
 	}
@@ -322,7 +336,7 @@ func (c firecrackerController) startLiveProcess(ctx context.Context, descriptor 
 		}
 		c.liveSessions.InvalidateRuntime(config.RuntimeID)
 	}
-	handle, err := StartProcess(ctx, c.processAdapter, descriptor)
+	handle, err := startProcessWithInheritedFiles(ctx, c.processAdapter, descriptor, inheritedFiles)
 	if err != nil {
 		return firecrackerLiveStartResult{}, err
 	}

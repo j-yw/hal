@@ -3,6 +3,7 @@ package firecracker
 import (
 	"context"
 	"errors"
+	"os"
 	"regexp"
 	"strings"
 
@@ -39,7 +40,8 @@ type ProcessStartCommandRequest struct {
 // descriptor. The descriptor carries raw argv only across this injected
 // boundary.
 type ProcessStartRequest struct {
-	Descriptor ProcessCommandDescriptor `json:"descriptor"`
+	Descriptor     ProcessCommandDescriptor `json:"descriptor"`
+	InheritedFiles []*os.File               `json:"-"`
 }
 
 // ProcessCommandDescriptor is the process-boundary command shape. Argv keeps
@@ -84,13 +86,33 @@ func PrepareStartCommand(ctx context.Context, adapter ProcessAdapter, plan Start
 // StartProcess delegates Firecracker process start to an injected adapter.
 // This function validates the descriptor before crossing the adapter boundary.
 func StartProcess(ctx context.Context, adapter ProcessAdapter, descriptor ProcessCommandDescriptor) (ProcessHandleMetadata, error) {
+	return startProcessWithInheritedFiles(ctx, adapter, descriptor, nil)
+}
+
+// startProcessWithInheritedFiles delegates process start while keeping the
+// supplied private files out of descriptors and durable metadata. Ownership
+// remains with the caller; the adapter may only borrow them for process start.
+func startProcessWithInheritedFiles(
+	ctx context.Context,
+	adapter ProcessAdapter,
+	descriptor ProcessCommandDescriptor,
+	files []*os.File,
+) (ProcessHandleMetadata, error) {
 	if adapter == nil {
 		return ProcessHandleMetadata{}, newProcessBoundaryError("processAdapter", "process adapter is required")
 	}
 	if err := validateProcessCommandDescriptor(descriptor); err != nil {
 		return ProcessHandleMetadata{}, err
 	}
-	handle, err := adapter.StartProcess(processContext(ctx), ProcessStartRequest{Descriptor: descriptor})
+	for _, file := range files {
+		if file == nil {
+			return ProcessHandleMetadata{}, newProcessBoundaryError("inheritedFiles", "inherited process file is invalid")
+		}
+	}
+	handle, err := adapter.StartProcess(processContext(ctx), ProcessStartRequest{
+		Descriptor:     descriptor,
+		InheritedFiles: append([]*os.File(nil), files...),
+	})
 	if err != nil {
 		return ProcessHandleMetadata{}, newProcessBoundaryAdapterError("processAdapter", "process start failed", err)
 	}

@@ -671,7 +671,8 @@ func firecrackerDefaultTestFile(t *testing.T, path string) bool {
 }
 
 func firecrackerProductionImportBoundaryMessage(fileName, importPath string) string {
-	if filepath.Base(fileName) == "render_secure_linux.go" && importPath == "golang.org/x/sys/unix" {
+	if (filepath.Base(fileName) == "render_secure_linux.go" || filepath.Base(fileName) == "l7_launch_material_linux.go") &&
+		importPath == "golang.org/x/sys/unix" {
 		return ""
 	}
 	if forbidden := firecrackerForbiddenImportFor(importPath); forbidden != nil {

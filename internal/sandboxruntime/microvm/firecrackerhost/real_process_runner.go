@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -56,6 +57,7 @@ func (runner OSExecProcessRunner) StartHostProcess(ctx context.Context, req fire
 	cmd.Stdin = nil
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
+	cmd.ExtraFiles = append([]*os.File(nil), req.InheritedFiles...)
 
 	startCommand := runner.startCommand
 	if startCommand == nil {

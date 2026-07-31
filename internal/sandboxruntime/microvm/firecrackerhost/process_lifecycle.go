@@ -937,9 +937,10 @@ func normalizeProcessHandleID(handle firecracker.ProcessHandleMetadata) string {
 
 func cloneProcessRunnerStartRequest(req firecracker.ProcessRunnerStartRequest) firecracker.ProcessRunnerStartRequest {
 	return firecracker.ProcessRunnerStartRequest{
-		Executable:  req.Executable,
-		Args:        append([]string(nil), req.Args...),
-		Environment: append([]string(nil), req.Environment...),
+		Executable:     req.Executable,
+		Args:           append([]string(nil), req.Args...),
+		Environment:    append([]string(nil), req.Environment...),
+		InheritedFiles: append([]*os.File(nil), req.InheritedFiles...),
 	}
 }
 

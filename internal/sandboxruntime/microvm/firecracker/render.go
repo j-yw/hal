@@ -12,6 +12,8 @@ import (
 
 const liveBootRenderOperation = "firecracker_live_boot_render"
 
+var errUnsafeLiveBootStateEntry = errors.New("unsafe live boot state entry")
+
 // Log and metrics paths are intentionally omitted here because the validated
 // start argv initializes them once through Firecracker's CLI flags.
 type liveBootConfigFile struct {
@@ -31,42 +33,93 @@ type vsockDevicePayload struct {
 type entropyDevicePayload struct{}
 
 func renderLiveBootFiles(config BackendConfig) error {
+	_, err := renderLiveBootFilesForStart(config)
+	return err
+}
+
+func renderLiveBootFilesForStart(config BackendConfig) ([]*os.File, error) {
 	if config.LaunchDescriptor != nil {
 		if _, err := firecrackerLaunchDescriptorAssets(config.LaunchDescriptor, liveBootRenderOperation); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	paths, err := validateLiveBootRenderPaths(config.Paths)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	config.Paths = paths
+	var material *sealedL7LaunchMaterial
+	prepared := false
+	ownsL7Lease := config.NetworkMode == microvm.NetworkModeL7PolicyProxy && config.VerifiedL7Assets != nil
+	defer func() {
+		if ownsL7Lease && !prepared {
+			_ = config.VerifiedL7Assets.Close()
+		}
+	}()
+	if config.NetworkMode == microvm.NetworkModeL7PolicyProxy {
+		if err := ensureLiveBootStateDir(paths.StateDir); err != nil {
+			return nil, err
+		}
+		config, material, err = prepareVerifiedL7LaunchMaterial(config)
+		if err != nil {
+			return nil, err
+		}
+	}
 	rendered, err := liveBootConfig(config)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	encoded, err := json.Marshal(rendered)
 	if err != nil {
-		return newLiveBootRenderFailure("config", "boot config encoding failed", err)
+		return nil, newLiveBootRenderFailure("config", "boot config encoding failed", err)
 	}
 	encoded = append(encoded, '\n')
 
 	if err := ensureLiveBootStateDir(paths.StateDir); err != nil {
-		return err
+		return nil, err
 	}
 	if config.ProductionVsock {
-		return renderProductionLiveBootFiles(paths, encoded)
+		if err := renderProductionLiveBootFiles(paths, encoded); err != nil {
+			return nil, err
+		}
+		if material == nil {
+			return nil, nil
+		}
+		files, err := material.inheritedFiles()
+		if err != nil {
+			return nil, newLiveBootRenderConfigError("launchDescriptor", "sealed L7 launch assets are unavailable")
+		}
+		prepared = true
+		return files, nil
 	}
 	if err := writeLiveBootFile(paths.ConfigPath, encoded, "configPath", "boot config write failed"); err != nil {
-		return err
+		return nil, err
 	}
 	if err := writeLiveBootSupportFile(paths.LogPath, "logPath", "log file preparation failed"); err != nil {
-		return err
+		return nil, err
 	}
 	if err := writeLiveBootSupportFile(paths.MetricsPath, "metricsPath", "metrics file preparation failed"); err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+	return nil, nil
+}
+
+func prepareVerifiedL7LaunchMaterial(config BackendConfig) (BackendConfig, *sealedL7LaunchMaterial, error) {
+	if config.VerifiedL7Assets == nil || config.LaunchDescriptor == nil {
+		return BackendConfig{}, nil, newLiveBootRenderConfigError("launchDescriptor", "verified L7 asset lease is required")
+	}
+	material, err := newSealedL7LaunchMaterial(config.Paths.StateDir)
+	if err != nil {
+		return BackendConfig{}, nil, newLiveBootRenderFailure("launchDescriptor", "private L7 launch material preparation failed", err)
+	}
+	descriptor, profile, err := config.VerifiedL7Assets.PrepareLaunch(config.LaunchDescriptor, material)
+	if err != nil {
+		_ = material.Close()
+		return BackendConfig{}, nil, newLiveBootRenderConfigError("launchDescriptor", "current verified L7 network image assets are required")
+	}
+	config.LaunchDescriptor = &descriptor
+	config.VerifiedL7Profile = &profile
+	return config, material, nil
 }
 
 func liveBootConfig(config BackendConfig) (liveBootConfigFile, error) {

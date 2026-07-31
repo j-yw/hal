@@ -29,23 +29,24 @@ const (
 // BackendConfig is the Firecracker-specific configuration contract derived
 // from the backend-neutral microVM config before live backend behavior exists.
 type BackendConfig struct {
-	BackendID         string                           `json:"backendId,omitempty"`
-	ExecutablePath    string                           `json:"executablePath,omitempty"`
-	JailerPath        *string                          `json:"jailerPath,omitempty"`
-	KernelImagePath   string                           `json:"kernelImagePath,omitempty"`
-	RootfsPath        string                           `json:"rootfsPath,omitempty"`
-	InitrdPath        *string                          `json:"initrdPath,omitempty"`
-	LaunchDescriptor  *assets.LaunchDescriptor         `json:"-"`
-	VerifiedL7Profile *localresolver.VerifiedL7Profile `json:"-"`
-	CPUCount          int                              `json:"cpuCount,omitempty"`
-	MemoryMiB         int                              `json:"memoryMiB,omitempty"`
-	GuestWorkDir      GuestWorkDirMetadata             `json:"guestWorkDir,omitempty"`
-	RuntimeID         string                           `json:"runtimeId,omitempty"`
-	Paths             PathPlan                         `json:"paths,omitempty"`
-	ProductionVsock   bool                             `json:"productionVsock,omitempty"`
-	NetworkMode       microvm.NetworkMode              `json:"networkMode,omitempty"`
-	NetworkInterfaces []NetworkInterfaceConfig         `json:"-"`
-	StaticNetwork     *StaticNetworkBootConfig         `json:"-"`
+	BackendID         string                              `json:"backendId,omitempty"`
+	ExecutablePath    string                              `json:"executablePath,omitempty"`
+	JailerPath        *string                             `json:"jailerPath,omitempty"`
+	KernelImagePath   string                              `json:"kernelImagePath,omitempty"`
+	RootfsPath        string                              `json:"rootfsPath,omitempty"`
+	InitrdPath        *string                             `json:"initrdPath,omitempty"`
+	LaunchDescriptor  *assets.LaunchDescriptor            `json:"-"`
+	VerifiedL7Profile *localresolver.VerifiedL7Profile    `json:"-"`
+	VerifiedL7Assets  *localresolver.VerifiedL7AssetLease `json:"-"`
+	CPUCount          int                                 `json:"cpuCount,omitempty"`
+	MemoryMiB         int                                 `json:"memoryMiB,omitempty"`
+	GuestWorkDir      GuestWorkDirMetadata                `json:"guestWorkDir,omitempty"`
+	RuntimeID         string                              `json:"runtimeId,omitempty"`
+	Paths             PathPlan                            `json:"paths,omitempty"`
+	ProductionVsock   bool                                `json:"productionVsock,omitempty"`
+	NetworkMode       microvm.NetworkMode                 `json:"networkMode,omitempty"`
+	NetworkInterfaces []NetworkInterfaceConfig            `json:"-"`
+	StaticNetwork     *StaticNetworkBootConfig            `json:"-"`
 }
 
 // NetworkInterfaceConfig is private live input supplied by the L7 topology
