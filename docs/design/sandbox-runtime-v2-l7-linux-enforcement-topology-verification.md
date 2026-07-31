@@ -40,13 +40,15 @@ It derives the exact ordered option vector from the production init, queries the
 configured subordinate-ID provider through `getsubids`, and maps the current
 identity to namespace ID 0 plus exactly one subordinate UID and GID to namespace
 ID 1000 in a disposable user namespace. It then executes the real UID/GID 1000
-and group-clear transition. Provider queries use a fixed deadline, hard-bounded
-stdout, discarded stderr, and fail closed on timeout, overflow, nonzero exit, or
-malformed output. It requires all five capability sets to be zero, supplementary
-groups to be empty, `NoNewPrivs` to be active, and keep-caps to remain locked
-off. It does not start Firecracker, modify an image, or run guest work. The
-final-image verifier is run read-only against the fresh digest-locked L7 rootfs
-before the selected Firecracker lane.
+and group-clear transition. Provider queries use an absolute operation deadline,
+hard-bounded stdout, discarded stderr, an owned Linux process group, and a small
+fixed cleanup allowance. Timeout, cancellation, overflow, nonzero exit,
+descendant retention, or malformed output fails closed after exact process-group
+termination and bounded pipe drain. It requires all five capability sets to be
+zero, supplementary groups to be empty, `NoNewPrivs` to be active, and keep-caps
+to remain locked off. It does not start Firecracker, modify an image, or run
+guest work. The final-image verifier is run read-only against the fresh
+digest-locked L7 rootfs before the selected Firecracker lane.
 
 ## Selected prepared-Linux gates
 
