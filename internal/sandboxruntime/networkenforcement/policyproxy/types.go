@@ -34,9 +34,13 @@ const (
 	// net/http permits this much buffered input beyond Server.MaxHeaderBytes
 	// while reading a request header.
 	requestHeaderReadAllowance int64 = 4 << 10
+	// net/http parses chunked trailers from its 4 KiB buffered reader after
+	// consuming a body. Reserve this wire limit independently for request and
+	// response trailer MIME maps.
+	trailerHeaderReadAllowance int64 = 4 << 10
 	// Go's MIME header parser accounts for roughly 200 bytes of map overhead
 	// per field. A minimal valid wire field is only four bytes, so reserve 64x
-	// the wire limit for parsed request and response header working sets.
+	// the wire limit for parsed header and trailer working sets.
 	parsedHeaderAggregateMultiplier int64 = 64
 )
 
@@ -167,6 +171,8 @@ func validAggregateBufferLimit(limits Limits) bool {
 	for _, limit := range []int64{
 		requestHeaderLimit,
 		limits.MaxResponseHeaderBytes,
+		trailerHeaderReadAllowance,
+		trailerHeaderReadAllowance,
 	} {
 		if limit <= 0 || limit > maxAggregateBufferBytes/parsedHeaderAggregateMultiplier {
 			return false
