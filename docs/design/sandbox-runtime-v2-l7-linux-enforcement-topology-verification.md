@@ -36,9 +36,14 @@ go test -count=1 -tags=l7_setpriv_semantics ./tools/microvm/l7 \
   -run '^TestL7SetprivLockedKeepCapsSemantics$'
 ```
 
-It uses a disposable user namespace and does not start Firecracker, modify an
-image, or run guest work. The final-image verifier is run read-only against the
-fresh digest-locked L7 rootfs before the selected Firecracker lane.
+It derives the exact ordered option vector from the production init, maps the
+current identity plus configured subordinate IDs into a disposable user
+namespace, and executes the real UID/GID 1000 and group-clear transition. It
+requires all five capability sets to be zero, supplementary groups to be empty,
+`NoNewPrivs` to be active, and keep-caps to remain locked off. It does not start
+Firecracker, modify an image, or run guest work. The final-image verifier is run
+read-only against the fresh digest-locked L7 rootfs before the selected
+Firecracker lane.
 
 ## Selected prepared-Linux gates
 
