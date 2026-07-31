@@ -326,6 +326,13 @@ func TestL7PodmanTopologyProxyLossRevokesProofAndBlocksExec(t *testing.T) {
 	if len(runner.execRequests) != 0 {
 		t.Fatalf("Exec() reached Podman after proxy loss: %#v", runner.execRequests)
 	}
+	beforeRestart := runner.lifecycleOperations()
+	if _, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: *started}); !errors.Is(err, rootlesspodman.ErrNetworkTopologySessionMissing) {
+		t.Fatalf("Start() after proxy loss error = %v, want fresh-session ErrNetworkTopologySessionMissing", err)
+	}
+	if afterRestart := runner.lifecycleOperations(); !reflect.DeepEqual(afterRestart, beforeRestart) {
+		t.Fatalf("Start() after proxy loss reached Podman: before=%#v after=%#v", beforeRestart, afterRestart)
+	}
 }
 
 func TestL7PodmanTopologyStopRevokesBeforePodmanAndCleansWithIndependentContext(t *testing.T) {
