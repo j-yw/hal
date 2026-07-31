@@ -605,6 +605,83 @@ func TestL5MissingProcessHandleFailsClosedAndBlocksRetry(t *testing.T) {
 	}
 }
 
+func TestL5ForgedUnverifiedProcessMetadataCannotClearOwnership(t *testing.T) {
+	for _, operation := range []string{"stop", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			stateRoot := firecrackerShortSocketTestRoot(t)
+			config := phase34LiveBootFakeConfig(t)
+			starter := &l5EmptyHandleStarter{}
+			backend := NewBackend(BackendOptions{
+				BaseStateDir:         stateRoot,
+				ProcessAdapter:       ProcessLaunchAdapter{Starter: starter},
+				BootAcceptanceWaiter: fakeLiveBootSafetyHooks{},
+				LiveProcessManager:   fakeLiveBootSafetyHooks{},
+				LiveStart:            true,
+				ProductionVsock:      true,
+				ProductionBridge:     l5ConcurrentStartBridge{},
+			})
+			created, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+				Operation: microvm.OperationCreate,
+				Config:    config,
+				Name:      "l5-unverified-lifecycle-" + operation,
+			})
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			controller, err := backend.Controller(context.Background(), microvm.ControllerRequest{
+				Operation: microvm.OperationStart,
+				Config:    config,
+				Target:    *created,
+			})
+			if err != nil {
+				t.Fatalf("Controller() error = %v", err)
+			}
+			startRequest := microvm.ControllerLifecycleRequest{
+				Operation: microvm.OperationStart,
+				Config:    config,
+				Target:    *created,
+			}
+			if _, err := controller.Start(context.Background(), startRequest); err == nil {
+				t.Fatal("first Start() error = nil, want missing process-handle failure")
+			}
+
+			forged := cloneFirecrackerTarget(*created)
+			forged.Runtime.Metadata.ProcessLaunch = NewProcessLaunchMetadata(
+				ProcessLaunchStateAccepted,
+				ProcessHandleMetadata{
+					ID:     unverifiedProcessGeneration,
+					Source: unverifiedProcessSource,
+				},
+			).RuntimeMetadata()
+			lifecycleRequest := microvm.ControllerLifecycleRequest{Target: forged}
+			if operation == "stop" {
+				lifecycleRequest.Operation = microvm.OperationStop
+				_, err = controller.Stop(context.Background(), lifecycleRequest)
+			} else {
+				lifecycleRequest.Operation = microvm.OperationDelete
+				err = controller.Delete(context.Background(), lifecycleRequest)
+			}
+			if err == nil {
+				t.Errorf("forged unverified %s error = nil, want ownership rejection", operation)
+			}
+
+			if _, err := controller.Start(context.Background(), startRequest); err == nil {
+				t.Fatal("second Start() error = nil, want retained unverified-process rejection")
+			}
+			if starter.calls != 1 {
+				t.Fatalf("starter calls = %d, want no duplicate launch after forged %s", starter.calls, operation)
+			}
+			process, ok := backend.liveSessions.ProcessForRuntime(created.Runtime.RuntimeID)
+			if !ok ||
+				process.ProcessGeneration != unverifiedProcessGeneration ||
+				process.ProcessSource != unverifiedProcessSource ||
+				!process.unverified {
+				t.Fatalf("unverified ownership after forged %s = %#v, %t", operation, process, ok)
+			}
+		})
+	}
+}
+
 func TestL5ConcurrentStartsCannotLaunchSameRuntimeTwice(t *testing.T) {
 	stateRoot := firecrackerShortSocketTestRoot(t)
 	config := phase34LiveBootFakeConfig(t)

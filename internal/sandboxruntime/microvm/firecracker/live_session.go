@@ -18,6 +18,7 @@ type liveProcessProof struct {
 	RuntimeID         string
 	ProcessGeneration string
 	ProcessSource     string
+	unverified        bool
 }
 
 func liveProcessProofFromHandle(runtimeID string, handle ProcessHandleMetadata) (liveProcessProof, bool) {
@@ -31,6 +32,7 @@ func liveProcessProofFromHandle(runtimeID string, handle ProcessHandleMetadata) 
 	}
 	proof.ProcessGeneration = unverifiedProcessGeneration
 	proof.ProcessSource = unverifiedProcessSource
+	proof.unverified = true
 	return proof, false
 }
 

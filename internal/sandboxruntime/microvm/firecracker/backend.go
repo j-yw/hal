@@ -580,7 +580,8 @@ func (c firecrackerController) liveProcessRequestForLifecycle(target sandboxrunt
 	if !activeExists {
 		return request, accepted, nil
 	}
-	if !accepted ||
+	if active.unverified ||
+		!accepted ||
 		request.Handle.ID != active.ProcessGeneration ||
 		request.Handle.Source != active.ProcessSource {
 		return LiveProcessRequest{}, false, newProcessBoundaryError(
