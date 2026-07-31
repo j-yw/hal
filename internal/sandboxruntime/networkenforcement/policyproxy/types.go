@@ -31,6 +31,9 @@ const (
 	maxConcurrentRequests   = 1024
 	maxAggregateBufferBytes = 384 << 20
 	maxConfiguredTimeout    = 10 * time.Minute
+	// net/http permits this much buffered input beyond Server.MaxHeaderBytes
+	// while reading a request header.
+	requestHeaderReadAllowance int64 = 4 << 10
 	// Go's MIME header parser accounts for roughly 200 bytes of map overhead
 	// per field. A minimal valid wire field is only four bytes, so reserve 64x
 	// the wire limit for parsed request and response header working sets.
@@ -156,8 +159,13 @@ func validLimits(limits Limits) bool {
 
 func validAggregateBufferLimit(limits Limits) bool {
 	perRequest := int64(0)
+	requestHeaderLimit := int64(limits.MaxHeaderBytes)
+	if requestHeaderLimit <= 0 || requestHeaderLimit > maxAggregateBufferBytes-requestHeaderReadAllowance {
+		return false
+	}
+	requestHeaderLimit += requestHeaderReadAllowance
 	for _, limit := range []int64{
-		int64(limits.MaxHeaderBytes),
+		requestHeaderLimit,
 		limits.MaxResponseHeaderBytes,
 	} {
 		if limit <= 0 || limit > maxAggregateBufferBytes/parsedHeaderAggregateMultiplier {
