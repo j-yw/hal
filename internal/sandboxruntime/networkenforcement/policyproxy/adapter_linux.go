@@ -49,6 +49,10 @@ type Adapter struct {
 // New validates immutable configuration without binding a listener.
 func New(config Config) (*Adapter, error) {
 	config.Limits = normalizeLimits(config.Limits)
+	config.Policy = networkenforcement.NewPolicyProxyPolicyInput(
+		config.Policy.PlanMetadata(),
+		config.Policy.AllowlistRules,
+	)
 	if config.ListenAddress == "" {
 		config.ListenAddress = "127.0.0.1:0"
 	}
@@ -114,6 +118,7 @@ func (a *Adapter) StartProxyListener(ctx context.Context, request networkenforce
 	if err != nil {
 		return a.metadata(request, networkenforcement.LifecycleStatusFailed, networkenforcement.LifecycleReasonAdapterFailed), safeAdapterError("start")
 	}
+	listener = newConnectionLimitListener(listener, a.config.Limits.MaxConcurrent)
 	lifetime, cancel := context.WithCancel(context.Background())
 	server := &http.Server{
 		Handler:           a,

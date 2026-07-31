@@ -76,8 +76,8 @@ All resolved addresses must pass. A mixed answer fails closed.
 
 ## Bounds and protocol handling
 
-- server header bytes, read-header time, idle time, and maximum concurrent
-  requests are bounded;
+- accepted connections, server header bytes, read-header time, idle time, and
+  maximum concurrent requests are bounded before handler admission;
 - request and response bodies are buffered only up to configured maxima, with
   oversize input rejected before upstream publication;
 - CONNECT tunnels have bounded lifetime and per-direction byte limits;
