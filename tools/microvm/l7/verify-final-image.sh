@@ -8,6 +8,7 @@ usage() {
 
 [[ $# == 1 && "$1" == /* && -f "$1" && ! -L "$1" ]] || usage
 readonly image=$1
+script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 scratch=$(mktemp -d)
 cleanup() {
 	if [[ -n ${scratch:-} && -d "$scratch" ]]; then
@@ -30,15 +31,23 @@ for path in /sbin/init /sbin/hal-init /usr/bin/hal-guest-agent /bin/busybox /usr
 done
 require_entry /workspace directory 0700 1000 1000
 
+debugfs -R 'stat /bin/busybox' "$image" >"$scratch/busybox.stat" 2>/dev/null
+busybox_inode=$(awk '/^Inode:/ {print $2; exit}' "$scratch/busybox.stat")
+[[ "$busybox_inode" =~ ^[1-9][0-9]*$ ]]
+
 require_busybox_applet() {
 	local path=$1
 	debugfs -R "stat $path" "$image" >"$scratch/applet.stat" 2>/dev/null
 	if grep -Eq 'Type:[[:space:]]+regular' "$scratch/applet.stat"; then
 		grep -Eq 'Mode:[[:space:]]+0755([[:space:]]|$)' "$scratch/applet.stat"
 		grep -Eq 'User:[[:space:]]+0[[:space:]]+Group:[[:space:]]+0([[:space:]]|$)' "$scratch/applet.stat"
+		applet_inode=$(awk '/^Inode:/ {print $2; exit}' "$scratch/applet.stat")
+		[[ "$applet_inode" == "$busybox_inode" ]]
 	else
 		grep -Eq 'Type:[[:space:]]+symlink' "$scratch/applet.stat"
-		grep -Fq 'Fast link dest: "/bin/busybox"' "$scratch/applet.stat"
+		target=$(sed -n 's/^Fast link dest: "\(.*\)"$/\1/p' "$scratch/applet.stat")
+		[[ -n "$target" ]]
+		"$script_dir/verify-applet-target.sh" "$path" "$target"
 	fi
 }
 

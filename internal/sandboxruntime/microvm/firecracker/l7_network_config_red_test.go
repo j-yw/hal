@@ -93,7 +93,8 @@ func TestL7FirecrackerNetworkConfigFailsClosedAndRedactsRawValues(t *testing.T) 
 				panic(err)
 			}
 			config.LaunchDescriptor = &synthetic
-			config.VerifiedL7Profile = nil
+			forged := localresolver.VerifiedL7Profile{}
+			config.VerifiedL7Profile = &forged
 		}},
 		{name: "generic descriptor", mutate: func(config *BackendConfig) {
 			descriptor := validFirecrackerLaunchDescriptorForTest()

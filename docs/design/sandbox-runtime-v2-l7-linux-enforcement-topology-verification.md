@@ -28,6 +28,18 @@ configuration preservation, final-rootfs privilege assertions, strict `/30`
 and `/126` point-to-point boot configuration, verified L7 descriptor
 correlation, and request-environment rejection of lowercase proxy names.
 
+The explicit prepared-host semantic check for the locked keep-caps-off
+sequence is:
+
+```sh
+go test -count=1 -tags=l7_setpriv_semantics ./tools/microvm/l7 \
+  -run '^TestL7SetprivLockedKeepCapsSemantics$'
+```
+
+It uses a disposable user namespace and does not start Firecracker, modify an
+image, or run guest work. The final-image verifier is run read-only against the
+fresh digest-locked L7 rootfs before the selected Firecracker lane.
+
 ## Selected prepared-Linux gates
 
 The rootless lane requires the global proxy/firewall markers, an L7 Podman

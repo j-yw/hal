@@ -9,6 +9,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets/localresolver"
 )
 
 const (
@@ -39,7 +40,7 @@ func renderNetworkInterfaces(config BackendConfig) ([]networkInterfacePayload, *
 		if !config.ProductionVsock {
 			return nil, nil, newLiveBootRenderConfigError("networkMode", "L7 network mode requires production guest readiness")
 		}
-		if err := validateL7LaunchDescriptor(config.LaunchDescriptor); err != nil {
+		if err := validateL7LaunchDescriptor(config.LaunchDescriptor, config.VerifiedL7Profile); err != nil {
 			return nil, nil, err
 		}
 		if len(config.NetworkInterfaces) != 1 {
@@ -123,6 +124,10 @@ func normalizeAddressPair(address, gateway string, ipv6 bool) (netip.Prefix, net
 	if err != nil || parsedGateway.Is6() != ipv6 || !usableStaticAddress(parsedGateway) || !prefix.Contains(parsedGateway) || parsedGateway == prefix.Addr() {
 		return netip.Prefix{}, netip.Addr{}, errInvalidStaticNetwork
 	}
+	network := prefix.Masked().Addr()
+	if prefix.Addr() == network || parsedGateway == network {
+		return netip.Prefix{}, netip.Addr{}, errInvalidStaticNetwork
+	}
 	if !ipv6 && (unusableIPv4PointToPointAddress(prefix, prefix.Addr()) || unusableIPv4PointToPointAddress(prefix, parsedGateway)) {
 		return netip.Prefix{}, netip.Addr{}, errInvalidStaticNetwork
 	}
@@ -140,7 +145,7 @@ func unusableIPv4PointToPointAddress(prefix netip.Prefix, address netip.Addr) bo
 	return address == network || address == broadcast
 }
 
-func validateL7LaunchDescriptor(descriptor *assets.LaunchDescriptor) error {
+func validateL7LaunchDescriptor(descriptor *assets.LaunchDescriptor, profile *localresolver.VerifiedL7Profile) error {
 	launchAssets, err := firecrackerLaunchDescriptorAssets(descriptor, liveBootRenderOperation)
 	if err != nil {
 		return err
@@ -150,7 +155,8 @@ func validateL7LaunchDescriptor(descriptor *assets.LaunchDescriptor) error {
 		!equalSafeLabels(launchAssets.Descriptor.Labels, []assets.SafeLabel{"firecracker", "reproducible", "network-profile"}) ||
 		launchAssets.HasInitrd ||
 		launchAssets.Kernel.ID != assets.SafeID("kernel") ||
-		launchAssets.Rootfs.ID != assets.SafeID("rootfs") {
+		launchAssets.Rootfs.ID != assets.SafeID("rootfs") ||
+		!localresolver.VerifiedL7ProfileMatches(profile, &launchAssets.Descriptor) {
 		return newLiveBootRenderConfigError("launchDescriptor", "verified L7 network image profile is required")
 	}
 	return nil

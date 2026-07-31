@@ -183,8 +183,18 @@ kernel, BusyBox, identity, ownership, and mode assertions, adds the L7 network
 applets, rejects setuid/setgid regular files and file capabilities, and locks
 BusyBox to root-owned mode `0755`. Before UID/GID 1000 work, PID 1 clears the
 capability bounding, inheritable, ambient, effective, and permitted paths and
-sets `no_new_privs`; clearing keep-caps makes the UID transition clear the last
-two sets.
+sets `no_new_privs`; it locks the already-clear keep-caps bit off before the UID
+transition clears the last two sets. Final-image inspection resolves absolute
+and location-relative applet links lexically to exactly `/bin/busybox`, and a
+regular applet must be the same inode as BusyBox.
+
+L7 network rendering additionally requires an opaque resolver-owned profile
+proof. Only full distribution-bundle verification (manifest, provenance,
+checksum inventory, and asset locks) can create that proof, and it is bound to
+the normalized launch descriptor fingerprint. Descriptor IDs or labels alone,
+including exact synthetic relabeling of generic or L5 descriptors, cannot
+enable L7 networking. Static guest pairs are exactly IPv4 `/30` and IPv6
+`/126`; the prefix-base endpoint is invalid for either guest or gateway.
 
 The Firecracker transaction is:
 

@@ -41,6 +41,7 @@ type VerifiedDistribution struct {
 	Manifest   assetbuild.DistributionManifest
 	Provenance assetbuild.Provenance
 	Descriptor assets.LaunchDescriptor
+	l7Profile  VerifiedL7Profile
 }
 
 // ResolveDistribution verifies the manifest and installed launch assets, then
@@ -95,11 +96,15 @@ func VerifyDistributionBundle(request DistributionRequest) (VerifiedDistribution
 	if err != nil {
 		return VerifiedDistribution{}, err
 	}
-	return VerifiedDistribution{
+	verified := VerifiedDistribution{
 		Manifest:   manifest,
 		Provenance: provenance,
 		Descriptor: descriptor,
-	}, nil
+	}
+	if manifest.ImageProfile == assetbuild.ImageProfileL7Network {
+		verified.l7Profile = newVerifiedL7Profile(descriptor)
+	}
+	return verified, nil
 }
 
 func openRequestedDistributionRoot(raw string) (*os.File, string, error) {

@@ -704,7 +704,8 @@ func firecrackerAllowedProductionImport(importPath string) bool {
 		importPath == "github.com/jywlabs/hal/internal/sandbox" ||
 		importPath == "github.com/jywlabs/hal/internal/sandboxruntime" ||
 		importPath == "github.com/jywlabs/hal/internal/sandboxruntime/microvm" ||
-		importPath == "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
+		importPath == "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets" ||
+		importPath == "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets/localresolver"
 }
 
 func firecrackerIsStandardLibraryImport(importPath string) bool {

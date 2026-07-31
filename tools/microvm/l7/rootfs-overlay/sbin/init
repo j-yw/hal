@@ -18,7 +18,7 @@ exec /sbin/hal-init \
 	--bounding-set=-all \
 	--inh-caps=-all \
 	--ambient-caps=-all \
-	--securebits=-keep_caps,-keep_caps_locked \
+	--securebits=+keep_caps_locked \
 	--reuid 1000 \
 	--regid 1000 \
 	--clear-groups \
