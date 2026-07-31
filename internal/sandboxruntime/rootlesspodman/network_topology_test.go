@@ -102,7 +102,7 @@ func TestL7PodmanTopologySequencesCreateActivationInspectionAndExec(t *testing.T
 		t.Fatalf("runtime metadata persisted live endpoint: %s", encoded)
 	}
 
-	wantSequence := []string{"prepare", "podman_create", "podman_start", "activate", "inspect", "podman_exec"}
+	wantSequence := []string{"prepare", "podman_create", "podman_start", "activate", "inspect", "inspect", "podman_exec"}
 	if got := sequence.snapshot(); !reflect.DeepEqual(got, wantSequence) {
 		t.Fatalf("operation sequence = %#v, want %#v", got, wantSequence)
 	}
@@ -121,11 +121,14 @@ func TestL7PodmanTopologyRejectsUnsafeIdentityAndCreateArgsBeforePodman(t *testi
 		}(), createArgs: testPastaCreateArgs()},
 		{name: "host network", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "host"}},
 		{name: "default network", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "bridge"}},
-		{name: "wildcard mapping", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-guest-addr=0.0.0.0,--ipv4-only,-t,none,-u,none"}},
+		{name: "wildcard mapping", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-host-loopback=0.0.0.0,-t,none,-u,none"}},
+		{name: "guest address translation", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-guest-addr=169.254.77.2,-t,none,-u,none"}},
+		{name: "IPv4-only mapping", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-host-loopback=169.254.77.2,--ipv4-only,-t,none,-u,none"}},
+		{name: "IPv6-only mapping", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-host-loopback=fd00::77:2,--ipv6-only,-t,none,-u,none"}},
 		{name: "privileged", identity: testNetworkTopologyIdentity(), createArgs: append(testPastaCreateArgs(), "--privileged")},
 		{name: "net admin", identity: testNetworkTopologyIdentity(), createArgs: append(testPastaCreateArgs(), "--cap-add=NET_ADMIN")},
 		{name: "socket mount", identity: testNetworkTopologyIdentity(), createArgs: append(testPastaCreateArgs(), "--volume", "/run/podman/podman.sock:/run/podman/podman.sock")},
-		{name: "automatic tcp forwarding", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-guest-addr=169.254.77.2,--ipv4-only,-t,auto,-u,none"}},
+		{name: "automatic tcp forwarding", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-host-loopback=169.254.77.2,-t,auto,-u,none"}},
 		{name: "publish", identity: testNetworkTopologyIdentity(), createArgs: append(testPastaCreateArgs(), "--publish-all")},
 	}
 
@@ -146,8 +149,54 @@ func TestL7PodmanTopologyRejectsUnsafeIdentityAndCreateArgsBeforePodman(t *testi
 			if len(runner.lifecycleRequests) != 0 {
 				t.Fatalf("Create() reached Podman for invalid topology: %#v", runner.lifecycleRequests)
 			}
-			if session.cleanupCalls != 1 {
-				t.Fatalf("invalid prepared session cleanup calls = %d, want 1", session.cleanupCalls)
+			_, _, _, cleanupCalls, _, _ := session.callState()
+			if cleanupCalls != 1 {
+				t.Fatalf("invalid prepared session cleanup calls = %d, want 1", cleanupCalls)
+			}
+		})
+	}
+}
+
+func TestL7PodmanTopologyAcceptsBoundedDualStackPastaMapping(t *testing.T) {
+	tests := []struct {
+		name  string
+		guest string
+		proxy string
+	}{
+		{name: "IPv4 proxy tuple", guest: "169.254.77.2", proxy: "http://169.254.77.2:31077"},
+		{name: "IPv6 proxy tuple", guest: "fd00::77:2", proxy: "http://[fd00::77:2]:31077"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session := newFakeNetworkTopologySession(nil)
+			session.proxyEnv = proxyEnvironment(tt.proxy)
+			runner := &topologyCommandRunner{}
+			driver := rootlesspodman.New(rootlesspodman.Options{
+				LifecycleRunner: runner,
+				ExecRunner:      runner,
+				NetworkTopologyFactory: &fakeNetworkTopologyFactory{preparation: rootlesspodman.NetworkTopologyPreparation{
+					Identity: testNetworkTopologyIdentity(), CreateArgs: testPastaCreateArgsFor(tt.guest), Session: session,
+				}},
+			})
+
+			created, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "hal-l7"})
+			if err != nil {
+				t.Fatalf("Create() unexpected error: %v", err)
+			}
+			createdArgs := runner.lifecycleRequests[0].Args
+			if !containsArgPair(createdArgs, "--network", testPastaCreateArgsFor(tt.guest)[1]) {
+				t.Fatalf("Create() args = %#v, want bounded pasta mapping", createdArgs)
+			}
+			if joined := strings.Join(createdArgs, "\x00"); strings.Contains(joined, "--ipv4-only") || strings.Contains(joined, "--ipv6-only") {
+				t.Fatalf("Create() args = %#v, want both address families available for default-drop enforcement", createdArgs)
+			}
+			started, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: *created})
+			if err != nil {
+				t.Fatalf("Start() unexpected error: %v", err)
+			}
+			if _, err := driver.Exec(context.Background(), sandboxruntime.ExecRequest{Target: *started, Args: []string{"true"}}); err != nil {
+				t.Fatalf("Exec() unexpected error: %v", err)
 			}
 		})
 	}
@@ -183,6 +232,26 @@ func TestL7PodmanTopologyActivationFailureRollsBackInReverseOrder(t *testing.T) 
 	}
 }
 
+func TestL7PodmanTopologyPodmanStartFailureStillRevokesStopsAndCleans(t *testing.T) {
+	sequence := &topologySequence{}
+	session := newFakeNetworkTopologySession(sequence)
+	runner := &topologyCommandRunner{sequence: sequence, errByOperation: map[string]error{
+		rootlesspodman.OperationStart: errors.New("start failed"),
+	}}
+	driver := newTopologyDriver(runner, session, sequence)
+	created, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "hal-l7"})
+	if err != nil {
+		t.Fatalf("Create() unexpected error: %v", err)
+	}
+	if _, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: *created}); err == nil {
+		t.Fatal("Start() error = nil, want Podman start failure")
+	}
+	want := []string{"prepare", "podman_create", "podman_start", "revoke", "podman_stop", "cleanup"}
+	if got := sequence.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("start failure rollback sequence = %#v, want %#v", got, want)
+	}
+}
+
 func TestL7PodmanTopologyRejectsMismatchedProofAndRuntimeGeneration(t *testing.T) {
 	t.Run("proof identity mismatch", func(t *testing.T) {
 		session := newFakeNetworkTopologySession(nil)
@@ -214,8 +283,14 @@ func TestL7PodmanTopologyRejectsMismatchedProofAndRuntimeGeneration(t *testing.T
 }
 
 func TestL7PodmanTopologyProxyLossRevokesProofAndBlocksExec(t *testing.T) {
-	session := newFakeNetworkTopologySession(nil)
-	driver, created, runner := createPreparedTopologyDriver(t, session)
+	sequence := &topologySequence{}
+	session := newFakeNetworkTopologySession(sequence)
+	runner := &topologyCommandRunner{sequence: sequence}
+	driver := newTopologyDriver(runner, session, sequence)
+	created, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "hal-l7"})
+	if err != nil {
+		t.Fatalf("Create() unexpected error: %v", err)
+	}
 	started, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: *created})
 	if err != nil {
 		t.Fatalf("Start() unexpected error: %v", err)
@@ -223,14 +298,27 @@ func TestL7PodmanTopologyProxyLossRevokesProofAndBlocksExec(t *testing.T) {
 	close(session.loss)
 
 	deadline := time.Now().Add(time.Second)
-	for session.revokeCalls == 0 && time.Now().Before(deadline) {
+	for {
+		_, _, revokeCalls, cleanupCalls, _, _ := session.callState()
+		if revokeCalls > 0 && cleanupCalls > 0 || !time.Now().Before(deadline) {
+			break
+		}
 		time.Sleep(time.Millisecond)
 	}
-	if session.revokeCalls != 1 {
-		t.Fatalf("proxy loss revoke calls = %d, want 1", session.revokeCalls)
+	_, _, revokeCalls, cleanupCalls, revokeContextErr, cleanupContextErr := session.callState()
+	if revokeCalls != 1 {
+		t.Fatalf("proxy loss revoke calls = %d, want 1", revokeCalls)
 	}
-	if session.lastRevokeContextErr != nil {
-		t.Fatalf("proxy loss revoke context error = %v, want independent live context", session.lastRevokeContextErr)
+	if cleanupCalls != 1 {
+		t.Fatalf("proxy loss cleanup calls = %d, want 1 after runtime quiesce", cleanupCalls)
+	}
+	if revokeContextErr != nil || cleanupContextErr != nil {
+		t.Fatalf("proxy loss contexts = revoke:%v cleanup:%v, want independent live contexts", revokeContextErr, cleanupContextErr)
+	}
+	wantSuffix := []string{"revoke", "podman_stop", "cleanup"}
+	got := sequence.snapshot()
+	if !reflect.DeepEqual(got[len(got)-len(wantSuffix):], wantSuffix) {
+		t.Fatalf("proxy loss sequence = %#v, want suffix %#v", got, wantSuffix)
 	}
 	if _, err := driver.Exec(context.Background(), sandboxruntime.ExecRequest{Target: *started, Args: []string{"true"}}); !errors.Is(err, rootlesspodman.ErrNetworkTopologyInactive) {
 		t.Fatalf("Exec() after proxy loss error = %v, want ErrNetworkTopologyInactive", err)
@@ -264,8 +352,9 @@ func TestL7PodmanTopologyStopRevokesBeforePodmanAndCleansWithIndependentContext(
 	if !reflect.DeepEqual(got[len(got)-len(wantSuffix):], wantSuffix) {
 		t.Fatalf("Stop() sequence = %#v, want suffix %#v", got, wantSuffix)
 	}
-	if session.lastRevokeContextErr != nil || session.lastCleanupContextErr != nil {
-		t.Fatalf("cleanup contexts = revoke:%v cleanup:%v, want independent live contexts", session.lastRevokeContextErr, session.lastCleanupContextErr)
+	_, _, _, _, revokeContextErr, cleanupContextErr := session.callState()
+	if revokeContextErr != nil || cleanupContextErr != nil {
+		t.Fatalf("cleanup contexts = revoke:%v cleanup:%v, want independent live contexts", revokeContextErr, cleanupContextErr)
 	}
 
 	before := len(sequence.snapshot())
@@ -275,6 +364,65 @@ func TestL7PodmanTopologyStopRevokesBeforePodmanAndCleansWithIndependentContext(
 	after := sequence.snapshot()[before:]
 	if !reflect.DeepEqual(after, []string{"podman_stop"}) {
 		t.Fatalf("second Stop() operations = %#v, want idempotent Podman stop only", after)
+	}
+}
+
+func TestL7PodmanTopologyDeleteRevokesBeforeRemovalAndCleansAfterRuntimeQuiesce(t *testing.T) {
+	sequence := &topologySequence{}
+	session := newFakeNetworkTopologySession(sequence)
+	runner := &topologyCommandRunner{sequence: sequence}
+	driver := newTopologyDriver(runner, session, sequence)
+	created, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "hal-l7"})
+	if err != nil {
+		t.Fatalf("Create() unexpected error: %v", err)
+	}
+	started, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: *created})
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	if err := driver.Delete(context.Background(), sandboxruntime.LifecycleRequest{Target: *started}); err != nil {
+		t.Fatalf("Delete() unexpected error: %v", err)
+	}
+	wantSuffix := []string{"revoke", "podman_delete", "cleanup"}
+	got := sequence.snapshot()
+	if !reflect.DeepEqual(got[len(got)-len(wantSuffix):], wantSuffix) {
+		t.Fatalf("Delete() sequence = %#v, want suffix %#v", got, wantSuffix)
+	}
+}
+
+func TestL7PodmanTopologyStopFailureLeavesQuarantineSessionForRetry(t *testing.T) {
+	sequence := &topologySequence{}
+	session := newFakeNetworkTopologySession(sequence)
+	runner := &topologyCommandRunner{sequence: sequence, errByOperation: map[string]error{
+		rootlesspodman.OperationStop: errors.New("stop uncertain"),
+	}}
+	driver := newTopologyDriver(runner, session, sequence)
+	created, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "hal-l7"})
+	if err != nil {
+		t.Fatalf("Create() unexpected error: %v", err)
+	}
+	started, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: *created})
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	if _, err := driver.Stop(context.Background(), sandboxruntime.LifecycleRequest{Target: *started}); !errors.Is(err, rootlesspodman.ErrNetworkTopologyCleanupFailed) {
+		t.Fatalf("Stop() error = %v, want cleanup-incomplete classification", err)
+	}
+	_, _, revokeCalls, cleanupCalls, _, _ := session.callState()
+	if revokeCalls != 1 || cleanupCalls != 0 {
+		t.Fatalf("failed Stop() calls = revoke:%d cleanup:%d, want quarantined session retained without rule removal", revokeCalls, cleanupCalls)
+	}
+	if _, err := driver.Exec(context.Background(), sandboxruntime.ExecRequest{Target: *started, Args: []string{"true"}}); !errors.Is(err, rootlesspodman.ErrNetworkTopologyInactive) {
+		t.Fatalf("Exec() after uncertain Stop error = %v, want inactive proof", err)
+	}
+
+	delete(runner.errByOperation, rootlesspodman.OperationStop)
+	if _, err := driver.Stop(context.Background(), sandboxruntime.LifecycleRequest{Target: *started}); err != nil {
+		t.Fatalf("retry Stop() unexpected error: %v", err)
+	}
+	_, _, revokeCalls, cleanupCalls, _, _ = session.callState()
+	if revokeCalls != 2 || cleanupCalls != 1 {
+		t.Fatalf("retry Stop() calls = revoke:%d cleanup:%d, want retained generation cleanup", revokeCalls, cleanupCalls)
 	}
 }
 
@@ -355,7 +503,11 @@ func testNetworkTopologyIdentity() rootlesspodman.NetworkTopologyIdentity {
 }
 
 func testPastaCreateArgs() []string {
-	return []string{"--network", "pasta:--no-map-gw,--map-guest-addr=169.254.77.2,--ipv4-only,-t,none,-u,none"}
+	return testPastaCreateArgsFor("169.254.77.2")
+}
+
+func testPastaCreateArgsFor(guestAddress string) []string {
+	return []string{"--network", "pasta:--no-map-gw,--map-host-loopback=" + guestAddress + ",-t,none,-u,none"}
 }
 
 func proxyEnvironment(endpoint string) map[string]string {
@@ -374,6 +526,7 @@ func assertExplicitSafePastaCreateArgs(t *testing.T, args []string) {
 	for _, forbidden := range []string{
 		"--privileged", "--cap-add", "net_admin", "docker.sock", "podman.sock",
 		"--publish", "--publish-all", "--network=host", "\x00host\x00", "\x00bridge\x00",
+		"--ipv4-only", "--ipv6-only",
 	} {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("Create() args = %#v, contain forbidden topology token %q", args, forbidden)
@@ -535,11 +688,18 @@ func (s *fakeNetworkTopologySession) Cleanup(ctx context.Context, _ rootlesspodm
 
 func (s *fakeNetworkTopologySession) Loss() <-chan struct{} { return s.loss }
 
+func (s *fakeNetworkTopologySession) callState() (activate, inspect, revoke, cleanup int, revokeContextErr, cleanupContextErr error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activateCalls, s.inspectCalls, s.revokeCalls, s.cleanupCalls, s.lastRevokeContextErr, s.lastCleanupContextErr
+}
+
 type topologyCommandRunner struct {
 	mu                sync.Mutex
 	sequence          *topologySequence
 	lifecycleRequests []rootlesspodman.CommandRequest
 	execRequests      []rootlesspodman.CommandRequest
+	errByOperation    map[string]error
 }
 
 func (r *topologyCommandRunner) RunLifecycleCommand(_ context.Context, req rootlesspodman.CommandRequest) (rootlesspodman.CommandResult, error) {
@@ -552,7 +712,7 @@ func (r *topologyCommandRunner) RunLifecycleCommand(_ context.Context, req rootl
 	if req.Operation == rootlesspodman.OperationCreate {
 		return rootlesspodman.CommandResult{Stdout: testContainerID + "\n"}, nil
 	}
-	return rootlesspodman.CommandResult{}, nil
+	return rootlesspodman.CommandResult{}, r.errByOperation[req.Operation]
 }
 
 func (r *topologyCommandRunner) RunExecCommand(_ context.Context, req rootlesspodman.CommandRequest) (rootlesspodman.CommandResult, error) {
