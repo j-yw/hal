@@ -24,6 +24,11 @@ type l7LiveCleanupGuardDeps struct {
 	ReadProcessStartTime func(int) (string, error)
 }
 
+type l7RetainedStartCleanupDeps struct {
+	Timeout time.Duration
+	Stop    func(context.Context, Identity) (Metadata, error)
+}
+
 type l7LiveTrackedProcess struct {
 	handle    ProcessHandle
 	pid       int
@@ -38,6 +43,30 @@ type l7LiveCleanupGuard struct {
 	mapper   l7LiveTrackedProcess
 	stopped  bool
 	metadata Metadata
+}
+
+func registerL7RetainedStartCleanup(
+	test l7LiveCleanupTest,
+	session *Session,
+	identity Identity,
+	deps l7RetainedStartCleanupDeps,
+) {
+	if test == nil {
+		return
+	}
+	test.Helper()
+	if session == nil || deps.Timeout <= 0 || deps.Stop == nil {
+		test.Errorf("selected L7 retained-start cleanup retry failed")
+		return
+	}
+	test.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), deps.Timeout)
+		metadata, err := deps.Stop(ctx, identity)
+		cancel()
+		if err != nil || metadata.Status != StatusStopped || metadata.Identity != identity {
+			test.Errorf("selected L7 retained-start cleanup retry failed")
+		}
+	})
 }
 
 func registerL7LiveCleanupGuard(

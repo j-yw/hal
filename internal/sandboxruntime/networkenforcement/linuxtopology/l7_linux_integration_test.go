@@ -84,8 +84,11 @@ func TestL7PreparedLinuxOwnedNamespacePastaTopology(t *testing.T) {
 		}
 		metadata := Metadata{}
 		if session != nil {
+			registerL7RetainedStartCleanup(t, session, req.Identity, l7RetainedStartCleanupDeps{
+				Timeout: 6 * time.Second,
+				Stop:    lifecycle.Stop,
+			})
 			metadata = session.Metadata()
-			_, _ = lifecycle.Stop(context.Background(), req.Identity)
 		}
 		t.Fatalf("selected L7 Linux topology start failed: %v (retained=%t status=%s probeReached=%t)", err, session != nil, metadata.Status, probeReached)
 	}
