@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"net/textproto"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -168,6 +169,10 @@ func (a *Adapter) ActiveProxyListener(ctx context.Context, request networkenforc
 // StopProxyListener performs bounded idempotent cleanup even when the caller
 // context has already been canceled.
 func (a *Adapter) StopProxyListener(_ context.Context, request networkenforcement.ProxyListenerLifecycleRequest) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
+	if !a.matchesPlan(request) {
+		return a.metadata(request, networkenforcement.LifecycleStatusFailed, networkenforcement.LifecycleReasonCapabilityMissing), safeAdapterError("stop")
+	}
+
 	a.mu.Lock()
 	a.stopping = true
 	generation := a.generation
@@ -271,16 +276,13 @@ func (a *Adapter) Endpoint() (string, bool) {
 }
 
 func (a *Adapter) matchesPlan(request networkenforcement.ProxyListenerLifecycleRequest) bool {
-	configured := a.config.Policy.PlanMetadata()
-	requested := request.Plan.Plan()
-	if configured.ID == "" || configured.ID != requested.ID || configured.Proxy == nil || requested.Proxy == nil {
-		return false
-	}
-	return configured.Proxy.ProxySessionID == requested.Proxy.ProxySessionID
+	configured := networkenforcement.SanitizePlan(a.config.Policy.PlanMetadata())
+	requested := networkenforcement.SanitizePlan(request.Plan.Plan())
+	return reflect.DeepEqual(configured, requested)
 }
 
-func (a *Adapter) metadata(request networkenforcement.ProxyListenerLifecycleRequest, status networkenforcement.LifecycleStatus, reason networkenforcement.LifecycleReasonCode) networkenforcement.ProxyListenerLifecycleMetadata {
-	plan := request.Plan.Plan()
+func (a *Adapter) metadata(_ networkenforcement.ProxyListenerLifecycleRequest, status networkenforcement.LifecycleStatus, reason networkenforcement.LifecycleReasonCode) networkenforcement.ProxyListenerLifecycleMetadata {
+	plan := a.config.Policy.PlanMetadata()
 	metadata := networkenforcement.ProxyListenerLifecycleMetadata{
 		PlanID:           plan.ID,
 		AdapterID:        productionAdapterID,
@@ -303,7 +305,7 @@ func (e adapterError) Error() string { return string(e) }
 
 func safeAdapterError(operation string) error {
 	switch operation {
-	case "prepare", "start", "active":
+	case "prepare", "start", "active", "stop":
 		return adapterError("production policy proxy " + operation + " failed")
 	default:
 		return adapterError("production policy proxy failed")
