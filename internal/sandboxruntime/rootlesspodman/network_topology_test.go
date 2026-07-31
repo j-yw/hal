@@ -46,6 +46,9 @@ func TestL7PodmanTopologySequencesCreateActivationInspectionAndExec(t *testing.T
 	}
 	createArgs := runner.lifecycleRequests[0].Args
 	assertExplicitSafePastaCreateArgs(t, createArgs)
+	if !containsArg(createArgs, "--cap-drop=ALL") {
+		t.Fatalf("Create() args = %#v, want explicit all-capability drop", createArgs)
+	}
 	if !containsArgPair(createArgs, "--label", "dev.jywlabs.hal.topology.generation=topology-generation-a") {
 		t.Fatalf("Create() args = %#v, want safe topology-generation label", createArgs)
 	}
@@ -534,7 +537,7 @@ func assertExplicitSafePastaCreateArgs(t *testing.T, args []string) {
 	}
 	joined := strings.ToLower(strings.Join(args, "\x00"))
 	for _, forbidden := range []string{
-		"--privileged", "--cap-add", "net_admin", "docker.sock", "podman.sock",
+		"--privileged", "--cap-add", "net_admin", "net_raw", "docker.sock", "podman.sock",
 		"--publish", "--publish-all", "--network=host", "\x00host\x00", "\x00bridge\x00",
 		"--ipv4-only", "--ipv6-only",
 	} {
@@ -542,6 +545,19 @@ func assertExplicitSafePastaCreateArgs(t *testing.T, args []string) {
 			t.Fatalf("Create() args = %#v, contain forbidden topology token %q", args, forbidden)
 		}
 	}
+	if countArg(args, "--cap-drop=ALL") != 1 || !containsArgPair(args, "--security-opt", "no-new-privileges") {
+		t.Fatalf("Create() args = %#v, want one all-capability drop and no-new-privileges", args)
+	}
+}
+
+func countArg(args []string, value string) int {
+	count := 0
+	for _, arg := range args {
+		if arg == value {
+			count++
+		}
+	}
+	return count
 }
 
 func assertAdvisoryActiveNetworkProof(t *testing.T, target *sandboxruntime.Target) {
@@ -564,6 +580,15 @@ func assertAdvisoryActiveNetworkProof(t *testing.T, target *sandboxruntime.Targe
 func containsArgPair(args []string, key, value string) bool {
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == key && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func containsArg(args []string, value string) bool {
+	for _, arg := range args {
+		if arg == value {
 			return true
 		}
 	}

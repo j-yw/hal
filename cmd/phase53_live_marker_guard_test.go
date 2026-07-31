@@ -233,6 +233,7 @@ func us010ApprovedLiveE2EGuardFiles() map[string]bool {
 		"cmd/phase53_live_marker_guard_test.go":                                                true,
 		"cmd/phase54_optional_live_matrix_docs_test.go":                                        true,
 		"cmd/phase56_live_gate_docs_test.go":                                                   true,
+		"internal/sandboxruntime/rootlesspodman/podman_integration_test.go":                    true,
 		"cmd/phase60_operator_verification_docs_test.go":                                       true,
 		"cmd/sandbox_default_fake_only_guard_test.go":                                          true,
 		"cmd/secure_default_runtime_docs_red_test.go":                                          true,

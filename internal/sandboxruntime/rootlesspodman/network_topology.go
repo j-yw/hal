@@ -625,6 +625,7 @@ func (d *Driver) createArgsWithNetworkTopology(name string, createArgs []string,
 	}
 	if identity != nil {
 		args = append(args,
+			"--cap-drop=ALL",
 			"--label", topologyGenerationLabel+"="+identity.TopologyGenerationID,
 			"--label", runtimeGenerationLabel+"="+identity.RuntimeGenerationID,
 			"--label", ruleGenerationLabel+"="+identity.RuleGenerationID,

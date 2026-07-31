@@ -27,6 +27,10 @@ type CommandRequest struct {
 	Stdin            io.Reader
 	Stdout           io.Writer
 	Stderr           io.Writer
+	// MaxStdoutBytes and MaxStderrBytes bound command output before capture or
+	// forwarding. Zero preserves the historical unlimited behavior.
+	MaxStdoutBytes int64
+	MaxStderrBytes int64
 }
 
 type CommandResult struct {
