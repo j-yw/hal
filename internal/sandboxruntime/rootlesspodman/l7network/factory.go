@@ -113,7 +113,7 @@ func (f *Factory) PrepareNetworkTopology(ctx context.Context, request rootlesspo
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.current != nil && !f.current.isCleaned() {
+	if f.current != nil {
 		return rootlesspodman.NetworkTopologyPreparation{}, ErrTopologyCollision
 	}
 	generation, err := f.options.Proxy.Start(ctx, f.options.Plan)
@@ -348,8 +348,6 @@ func (s *Session) Loss() <-chan struct{} {
 	}
 	return s.generation.Loss()
 }
-
-func (s *Session) isCleaned() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.cleaned }
 
 func (s *Session) matches(request rootlesspodman.NetworkTopologyTargetRequest) bool {
 	return request.Identity == s.identity && request.Target.ID != "" && request.Target.ID == request.Target.Runtime.RuntimeID &&

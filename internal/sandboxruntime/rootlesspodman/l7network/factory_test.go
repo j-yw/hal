@@ -237,6 +237,28 @@ func TestL7ComposedRootlessPodmanCollisionAndLossBeforeEnvironmentFailClosed(t *
 	}
 }
 
+func TestL7ComposedRootlessPodmanRetiresGenerationAfterCleanup(t *testing.T) {
+	proxy := newFakeProxy(&sequenceLog{})
+	factory := mustFactory(t, baseFactoryOptions(proxy, &fakeNamespaceResolver{result: validNamespaceResolution()}, &fakeRules{})).(*l7network.Factory)
+	prepared, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+	if _, err := prepared.Session.Activate(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Session.Revoke(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Session.Cleanup(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"}); !errors.Is(err, l7network.ErrTopologyCollision) {
+		t.Fatalf("retired generation prepare=%v", err)
+	}
+}
+
 func TestL7RootlessPodmanRestartReconcilerQuarantinesBeforeExactCleanupWithoutActiveProof(t *testing.T) {
 	sequence := &sequenceLog{}
 	rules := &fakeRules{sequence: sequence}
