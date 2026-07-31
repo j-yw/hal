@@ -22,6 +22,12 @@ go test -race -count=1 -timeout=300s \
   ./internal/sandboxruntime/microvm/firecrackerhost
 ```
 
+The fake-only Firecracker profile gate includes bounded `HAL_L7_JOBS`
+validation in both host/container scripts, L5 boot-critical source/effective
+configuration preservation, final-rootfs privilege assertions, strict `/30`
+and `/126` point-to-point boot configuration, verified L7 descriptor
+correlation, and request-environment rejection of lowercase proxy names.
+
 ## Selected prepared-Linux gates
 
 The rootless lane requires the global proxy/firewall markers, an L7 Podman

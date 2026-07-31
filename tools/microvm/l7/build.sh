@@ -2,6 +2,7 @@
 set -euo pipefail
 
 readonly build_image=registry.gitlab.com/buildroot.org/buildroot/base@sha256:f1e7f009dad6b6f44bf5fcb4b0b89c9228e42f9fe689142774b1db802d4c93c6
+readonly L7_MAX_JOBS=64
 
 usage() {
 	echo "usage: build.sh --cache ABSOLUTE_DIRECTORY --output ABSOLUTE_DIRECTORY" >&2
@@ -89,7 +90,16 @@ trap cleanup EXIT
 source_revision=$(git -C "$repo_root" rev-parse HEAD)
 source_tree=tree-$(git -C "$repo_root" rev-parse 'HEAD^{tree}')
 source_date_epoch=$(git -C "$repo_root" show -s --format=%ct HEAD)
-jobs=${HAL_L7_JOBS:-$(nproc)}
+if [[ -n ${HAL_L7_JOBS+x} ]]; then
+	jobs=$HAL_L7_JOBS
+else
+	jobs=$(nproc)
+	((jobs <= L7_MAX_JOBS)) || jobs=$L7_MAX_JOBS
+fi
+[[ "$jobs" =~ ^[1-9][0-9]*$ ]] && ((${#jobs} <= 2)) && ((jobs <= L7_MAX_JOBS)) || {
+	echo "HAL_L7_JOBS must be a positive decimal no greater than $L7_MAX_JOBS" >&2
+	exit 1
+}
 local_image=$(docker image inspect --format '{{join .RepoDigests "\n"}}' "$build_image" 2>/dev/null) || {
 	echo "pinned L7 build image is not installed locally" >&2
 	exit 1

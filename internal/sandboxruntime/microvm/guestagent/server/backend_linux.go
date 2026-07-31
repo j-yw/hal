@@ -122,7 +122,7 @@ func NewLinuxBackend(options LinuxBackendOptions) (Backend, error) {
 		return nil, err
 	}
 
-	backend.baseEnv, err = normalizeLinuxEnvironment(options.BaseEnvironment, true)
+	backend.baseEnv, err = normalizeLinuxBaseEnvironment(options.BaseEnvironment, true)
 	if err != nil {
 		return nil, err
 	}
@@ -440,7 +440,15 @@ func validateLinuxRoots(workspaceRoot, guestRoot string) (string, string, error)
 	return workspaceRoot, guestRoot, nil
 }
 
-func normalizeLinuxEnvironment(entries []string, defaults bool) ([]string, error) {
+func normalizeLinuxBaseEnvironment(entries []string, defaults bool) ([]string, error) {
+	return normalizeLinuxEnvironment(entries, defaults, validLinuxBaseEnvironmentName)
+}
+
+func normalizeLinuxRequestEnvironment(entries []string) ([]string, error) {
+	return normalizeLinuxEnvironment(entries, false, validLinuxRequestEnvironmentName)
+}
+
+func normalizeLinuxEnvironment(entries []string, defaults bool, validName func(string) bool) ([]string, error) {
 	if len(entries) == 0 && defaults {
 		entries = []string{
 			"PATH=/usr/local/bin:/usr/bin:/bin",
@@ -455,7 +463,7 @@ func normalizeLinuxEnvironment(entries []string, defaults bool) ([]string, error
 			return nil, linuxBackendError(guestagent.ErrorCodeInvalidMetadata, guestagent.OperationExec, "env", "environment assignment is invalid", nil)
 		}
 		name, _, ok := strings.Cut(entry, "=")
-		if !ok || !validLinuxEnvironmentName(name) {
+		if !ok || !validName(name) {
 			return nil, linuxBackendError(guestagent.ErrorCodeInvalidMetadata, guestagent.OperationExec, "env", "environment assignment is invalid", nil)
 		}
 		if _, duplicate := seen[name]; duplicate {
@@ -468,10 +476,24 @@ func normalizeLinuxEnvironment(entries []string, defaults bool) ([]string, error
 }
 
 func mergeLinuxEnvironment(base, additions []string) ([]string, error) {
-	all := make([]string, 0, len(base)+len(additions))
-	all = append(all, base...)
-	all = append(all, additions...)
-	return normalizeLinuxEnvironment(all, false)
+	base, err := normalizeLinuxBaseEnvironment(base, false)
+	if err != nil {
+		return nil, err
+	}
+	additions, err = normalizeLinuxRequestEnvironment(additions)
+	if err != nil {
+		return nil, err
+	}
+	all := append(append(make([]string, 0, len(base)+len(additions)), base...), additions...)
+	seen := make(map[string]struct{}, len(all))
+	for _, entry := range all {
+		name, _, _ := strings.Cut(entry, "=")
+		if _, duplicate := seen[name]; duplicate {
+			return nil, linuxBackendError(guestagent.ErrorCodeInvalidMetadata, guestagent.OperationExec, "env", "environment name is duplicated", nil)
+		}
+		seen[name] = struct{}{}
+	}
+	return all, nil
 }
 
 func openLinuxExecutableRoots(paths []string) ([]linuxExecutableRoot, error) {

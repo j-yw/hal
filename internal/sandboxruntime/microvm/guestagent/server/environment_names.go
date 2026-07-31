@@ -1,9 +1,13 @@
 package server
 
-func validLinuxEnvironmentName(name string) bool {
+func validLinuxBaseEnvironmentName(name string) bool {
 	if name == "http_proxy" || name == "https_proxy" {
 		return true
 	}
+	return validLinuxRequestEnvironmentName(name)
+}
+
+func validLinuxRequestEnvironmentName(name string) bool {
 	if name == "" {
 		return false
 	}

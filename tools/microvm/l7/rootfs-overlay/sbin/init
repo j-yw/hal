@@ -10,9 +10,15 @@ mount -t tmpfs -o mode=0755,nosuid,nodev,noexec,size=16M tmpfs /run
 mount -t tmpfs -o mode=1777,nosuid,nodev,noexec,size=64M tmpfs /tmp
 mount -t tmpfs -o mode=0700,uid=1000,gid=1000,nosuid,nodev,size=512M tmpfs /workspace
 
+# Removing keep-caps before the UID transition makes that transition clear the
+# effective and permitted sets as well as the explicit sets below.
 exec /sbin/hal-init \
 	--require-l7-network \
 	/usr/bin/setpriv \
+	--bounding-set=-all \
+	--inh-caps=-all \
+	--ambient-caps=-all \
+	--securebits=-keep_caps,-keep_caps_locked \
 	--reuid 1000 \
 	--regid 1000 \
 	--clear-groups \

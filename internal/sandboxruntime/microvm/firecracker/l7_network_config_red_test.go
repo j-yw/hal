@@ -71,6 +71,8 @@ func TestL7FirecrackerNetworkConfigFailsClosedAndRedactsRawValues(t *testing.T) 
 			config.StaticNetwork.IPv4Address = "192.0.2.3/30"
 			config.StaticNetwork.IPv4Gateway = "192.0.2.1"
 		}},
+		{name: "IPv4 network gateway", mutate: func(config *BackendConfig) { config.StaticNetwork.IPv4Gateway = "192.0.2.0" }},
+		{name: "IPv4 broadcast gateway", mutate: func(config *BackendConfig) { config.StaticNetwork.IPv4Gateway = "192.0.2.3" }},
 		{name: "private proxy", mutate: func(config *BackendConfig) { config.StaticNetwork.ProxyURL = "http://10.0.0.8:19443" }},
 		{name: "raw path assets", mutate: func(config *BackendConfig) { config.LaunchDescriptor = nil }},
 		{name: "generic descriptor", mutate: func(config *BackendConfig) {
@@ -165,5 +167,8 @@ func validL7LaunchDescriptorForTest() assets.LaunchDescriptor {
 	descriptor := validFirecrackerLaunchDescriptorForTest()
 	descriptor.ID = "l7-network-image"
 	descriptor.Labels = []assets.SafeLabel{"firecracker", "reproducible", "network-profile"}
+	descriptor.Assets = descriptor.Assets[:2]
+	descriptor.Assets[0].ID = "kernel"
+	descriptor.Assets[1].ID = "rootfs"
 	return descriptor
 }

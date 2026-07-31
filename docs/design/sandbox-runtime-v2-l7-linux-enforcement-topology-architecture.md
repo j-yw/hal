@@ -176,6 +176,16 @@ and guest DNS remain disabled. Required BusyBox networking/probe applets are
 locked by the build. The L5 image, digest, and no-network tests are not edited
 into a networking claim.
 
+The L7 build accepts only a positive decimal parallelism value no greater than
+64 (and caps the detected default at 64). It rechecks the value inside the
+offline container. Final-image inspection preserves the L5 boot-critical
+kernel, BusyBox, identity, ownership, and mode assertions, adds the L7 network
+applets, rejects setuid/setgid regular files and file capabilities, and locks
+BusyBox to root-owned mode `0755`. Before UID/GID 1000 work, PID 1 clears the
+capability bounding, inheritable, ambient, effective, and permitted paths and
+sets `no_new_privs`; clearing keep-caps makes the UID transition clear the last
+two sets.
+
 The Firecracker transaction is:
 
 1. create and retain the Hal-owned user/network namespace helper;

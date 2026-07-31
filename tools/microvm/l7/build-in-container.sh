@@ -8,6 +8,12 @@ readonly buildroot_source=/build/buildroot
 readonly buildroot_output=/build/output
 readonly download_root=/build/download
 readonly profile_root=/src/tools/microvm/l7
+readonly L7_MAX_JOBS=64
+
+[[ "${HAL_L7_JOBS:-}" =~ ^[1-9][0-9]*$ ]] && ((${#HAL_L7_JOBS} <= 2)) && ((HAL_L7_JOBS <= L7_MAX_JOBS)) || {
+	echo "HAL_L7_JOBS must be a positive decimal no greater than $L7_MAX_JOBS" >&2
+	exit 1
+}
 
 export TZ=UTC LC_ALL=C LANG=C SOURCE_DATE_EPOCH
 export KBUILD_BUILD_USER=hal KBUILD_BUILD_HOST=builder KBUILD_BUILD_VERSION=1
@@ -19,6 +25,25 @@ export E2FSPROGS_FAKE_TIME=$SOURCE_DATE_EPOCH
 	--manifest /src/tools/microvm/l5/cache.manifest \
 	--cache "$cache_root" \
 	--expected-owner "$EXPECTED_CACHE_UID"
+
+for required in \
+	BR2_KERNEL_HEADERS_AS_KERNEL=y BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_1=y \
+	BR2_LINUX_KERNEL_NEEDS_HOST_LIBELF=y BR2_PACKAGE_UTIL_LINUX=y \
+	BR2_PACKAGE_UTIL_LINUX_SETPRIV=y; do
+	grep -Fxq "$required" "$profile_root/buildroot.config"
+done
+grep -Fxq 'BR2_ROOTFS_DEVICE_TABLE="system/device_table.txt /src/tools/microvm/l7/permissions.txt"' "$profile_root/buildroot.config"
+grep -Fxq '/bin/busybox f 0755 0 0 - - - - -' "$profile_root/permissions.txt"
+for required in \
+	CONFIG_HYPERVISOR_GUEST=y CONFIG_PARAVIRT=y CONFIG_KVM_GUEST=y CONFIG_SMP=y \
+	CONFIG_ACPI=y CONFIG_BLK_MQ_PCI=y CONFIG_PCI=y CONFIG_PCI_MMCONFIG=y \
+	CONFIG_PCI_MSI=y CONFIG_PCIEPORTBUS=y CONFIG_VIRTIO_PCI=y; do
+	grep -Fxq "$required" "$profile_root/linux.config"
+done
+grep -Fxq 'CONFIG_X86_MPPARSE=n' "$profile_root/linux.config"
+grep -Fxq 'CONFIG_VIRTIO_MMIO=n' "$profile_root/linux.config"
+grep -Fxq 'CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=n' "$profile_root/linux.config"
+grep -Fxq '# CONFIG_DEVTMPFS_MOUNT is not set' "$profile_root/linux.config"
 
 for required in \
 	CONFIG_NET=y CONFIG_PACKET=y CONFIG_INET=y CONFIG_IPV6=y \
@@ -68,6 +93,14 @@ make -C "$buildroot_source" \
 
 kernel_config="$buildroot_output/build/linux-6.1.178/.config"
 for required in \
+	CONFIG_SMP=y CONFIG_ACPI=y CONFIG_BLK_MQ_PCI=y CONFIG_PCI=y \
+	CONFIG_PCI_MMCONFIG=y CONFIG_PCI_MSI=y CONFIG_PCIEPORTBUS=y CONFIG_VIRTIO_PCI=y; do
+	grep -Fxq "$required" "$kernel_config"
+done
+grep -Fxq '# CONFIG_X86_MPPARSE is not set' "$kernel_config"
+grep -Fxq '# CONFIG_VIRTIO_MMIO is not set' "$kernel_config"
+! grep -Eq '^CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=(y|m)$' "$kernel_config"
+for required in \
 	CONFIG_NET=y CONFIG_PACKET=y CONFIG_INET=y CONFIG_IPV6=y \
 	CONFIG_NETDEVICES=y CONFIG_VIRTIO_NET=y CONFIG_VSOCKETS=y CONFIG_VIRTIO_VSOCKETS=y; do
 	grep -Fxq "$required" "$kernel_config"
@@ -85,6 +118,7 @@ done
 test -f "$buildroot_output/images/vmlinux"
 test -f "$buildroot_output/images/rootfs.ext4"
 PATH="$buildroot_output/host/sbin:$PATH" e2fsck -fn "$buildroot_output/images/rootfs.ext4"
+PATH="$buildroot_output/host/sbin:$PATH" "$profile_root/verify-final-image.sh" "$buildroot_output/images/rootfs.ext4"
 install -m 0644 "$buildroot_output/images/vmlinux" /export/vmlinux
 install -m 0644 "$buildroot_output/images/rootfs.ext4" /export/rootfs.ext4
 
