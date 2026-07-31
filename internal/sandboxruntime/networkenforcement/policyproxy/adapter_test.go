@@ -601,6 +601,55 @@ func TestL6PolicyProxyLifecycleCleanupCancellationAndProxyOnlyProof(t *testing.T
 	}
 }
 
+func TestL6PolicyProxyLifecycleRejectsMismatchedPolicySnapshotAndCannotRelabelProof(t *testing.T) {
+	adapter := newTestAdapter(t, testAdapterOptions{})
+	configured := testPolicy().PlanMetadata()
+	forged := configured
+	forgedSnapshot := *configured.PolicySnapshot
+	forgedSnapshot.ID = "forged-policy"
+	forgedSnapshot.Version = "forged-version"
+	forgedSnapshot.RuleSetID = "forged-rules"
+	forged.PolicySnapshot = &forgedSnapshot
+	forgedAllowlist := *configured.Allowlist
+	forgedAllowlist.RuleSetID = "forged-rules"
+	forgedAllowlist.RuleIDs = []string{"forged-rule"}
+	forged.Allowlist = &forgedAllowlist
+
+	forgedRequest := networkenforcement.ProxyListenerLifecycleRequest{
+		Plan: networkenforcement.NewSanitizedPlan(forged),
+	}
+	prepared, err := adapter.PrepareProxyListener(context.Background(), forgedRequest)
+	if err == nil {
+		t.Fatal("PrepareProxyListener accepted a mismatched policy snapshot")
+	}
+	if prepared.PolicySnapshot == nil || prepared.PolicySnapshot.ID != configured.PolicySnapshot.ID {
+		t.Fatalf("failed prepare metadata relabeled policy snapshot: %#v", prepared.PolicySnapshot)
+	}
+
+	endpoint := startAdapter(t, adapter)
+	active, err := adapter.ActiveProxyListener(context.Background(), forgedRequest)
+	if err == nil {
+		t.Fatal("ActiveProxyListener accepted a mismatched policy snapshot")
+	}
+	if active.PolicySnapshot == nil || active.PolicySnapshot.ID != configured.PolicySnapshot.ID {
+		t.Fatalf("failed active metadata relabeled policy snapshot: %#v", active.PolicySnapshot)
+	}
+
+	stopped, err := adapter.StopProxyListener(context.Background(), forgedRequest)
+	if err == nil {
+		t.Fatal("StopProxyListener accepted a mismatched policy snapshot")
+	}
+	if stopped.PolicySnapshot == nil || stopped.PolicySnapshot.ID != configured.PolicySnapshot.ID {
+		t.Fatalf("failed stop metadata relabeled policy snapshot: %#v", stopped.PolicySnapshot)
+	}
+	probe, err := net.DialTimeout(l6TestNetwork, endpoint, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("mismatched stop closed the configured listener: %v", err)
+	}
+	_ = probe.Close()
+	stopAdapter(t, adapter)
+}
+
 func TestL6PolicyProxyDecisionSinkPanicCannotWeakenDecisions(t *testing.T) {
 	upstream := newHTTPFixture(t)
 	var dialCount atomic.Int32
