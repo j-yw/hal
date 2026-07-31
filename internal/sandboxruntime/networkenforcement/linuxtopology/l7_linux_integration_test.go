@@ -89,14 +89,20 @@ func TestL7PreparedLinuxOwnedNamespacePastaTopology(t *testing.T) {
 		}
 		t.Fatalf("selected L7 Linux topology start failed: %v (retained=%t status=%s probeReached=%t)", err, session != nil, metadata.Status, probeReached)
 	}
+	cleanupGuard, err := registerL7LiveCleanupGuard(t, session, req.Identity, l7LiveCleanupGuardDeps{
+		Timeout:              6 * time.Second,
+		Stop:                 lifecycle.Stop,
+		ReadProcessStartTime: readProcessStartTime,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trackedKeeper := cleanupGuard.keeper.handle
+	trackedMapper := cleanupGuard.mapper.handle
+	keeperPID := cleanupGuard.keeper.pid
+	mapperPID := cleanupGuard.mapper.pid
 	if got := session.Metadata(); got.Status != StatusPrepared || !got.StructuralInspected || !got.MappingReachable {
 		t.Fatalf("selected topology metadata = %#v", got)
-	}
-	trackedKeeper := session.keeper
-	keeperPID := trackedKeeper.PID()
-	keeperStartTime, err := readProcessStartTime(keeperPID)
-	if err != nil || keeperStartTime == "" {
-		t.Fatal("tracked keeper has no current process identity")
 	}
 	keeperNamespaces, err := openLinuxNamespaces(keeperPID)
 	if err != nil {
@@ -132,7 +138,7 @@ func TestL7PreparedLinuxOwnedNamespacePastaTopology(t *testing.T) {
 	_ = handle.Close()
 
 	stopStarted := time.Now()
-	metadata, err := lifecycle.Stop(context.Background(), req.Identity)
+	metadata, err := cleanupGuard.Stop()
 	if err != nil {
 		t.Fatalf("selected L7 Linux topology cleanup failed: %v", err)
 	}
@@ -145,8 +151,14 @@ func TestL7PreparedLinuxOwnedNamespacePastaTopology(t *testing.T) {
 	if !processDone(trackedKeeper) {
 		t.Fatal("tracked keeper remained live after cleanup")
 	}
+	if !processDone(trackedMapper) {
+		t.Fatal("tracked mapper remained live after cleanup")
+	}
 	if _, err := readProcessStartTime(keeperPID); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal("tracked keeper process identity remained after cleanup")
+	}
+	if _, err := readProcessStartTime(mapperPID); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("tracked mapper process identity remained after cleanup")
 	}
 	if _, err := openLinuxNamespaces(keeperPID); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal("tracked keeper namespaces remained after cleanup")
@@ -156,6 +168,9 @@ func TestL7PreparedLinuxOwnedNamespacePastaTopology(t *testing.T) {
 	}
 	if _, err := session.NamespaceHandle(); !errors.Is(err, ErrStopped) {
 		t.Fatalf("namespace handle after cleanup error = %v, want ErrStopped", err)
+	}
+	if err := cleanupGuard.VerifyAbsent(); err != nil {
+		t.Fatal(err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for openFDCount(t) != beforeFDs && time.Now().Before(deadline) {
