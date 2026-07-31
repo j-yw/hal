@@ -356,6 +356,19 @@ func TestL6PolicyProxyAggregateLimitAccountsForParsedTrailers(t *testing.T) {
 	}
 }
 
+func TestL6PolicyProxyBoundedBodyUsesOneFixedBuffer(t *testing.T) {
+	body, tooLarge, err := readBounded(strings.NewReader("ab"), 2)
+	if err != nil || tooLarge || string(body) != "ab" {
+		t.Fatalf("readBounded exact body = (%q, %t, %v), want exact allowed body", body, tooLarge, err)
+	}
+	if cap(body) != 3 {
+		t.Fatalf("readBounded capacity = %d, want fixed limit+1 capacity 3", cap(body))
+	}
+	if body, tooLarge, err = readBounded(strings.NewReader("abc"), 2); err != nil || !tooLarge || body != nil {
+		t.Fatalf("readBounded oversized body = (%q, %t, %v), want nil oversized body", body, tooLarge, err)
+	}
+}
+
 type listenerAcceptResult struct {
 	conn net.Conn
 	err  error
