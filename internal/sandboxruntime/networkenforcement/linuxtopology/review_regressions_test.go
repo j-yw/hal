@@ -32,6 +32,37 @@ type retireFailOwnershipLease struct {
 	released   bool
 }
 
+type persistentMapperRecordFailureStore struct {
+	base  *memoryOwnershipStore
+	lease *persistentMapperRecordFailureLease
+}
+
+type persistentMapperRecordFailureLease struct {
+	OwnershipLease
+	mappingArmed bool
+}
+
+func (s *persistentMapperRecordFailureStore) Acquire(ctx context.Context, identity Identity) (OwnershipLease, error) {
+	lease, err := s.base.Acquire(ctx, identity)
+	if err != nil {
+		return nil, err
+	}
+	s.lease = &persistentMapperRecordFailureLease{OwnershipLease: lease}
+	return s.lease, nil
+}
+
+func (l *persistentMapperRecordFailureLease) ArmMapping(context.Context, ProcessHandle, *NamespaceHandle) error {
+	l.mappingArmed = true
+	return nil
+}
+
+func (l *persistentMapperRecordFailureLease) Record(ctx context.Context, keeper, mapper ProcessHandle, namespace *NamespaceHandle) error {
+	if mapper != nil {
+		return errors.New("persistent mapper journal failure")
+	}
+	return l.OwnershipLease.Record(ctx, keeper, mapper, namespace)
+}
+
 func (s *retireFailOwnershipStore) Acquire(ctx context.Context, identity Identity) (OwnershipLease, error) {
 	lease, err := s.base.Acquire(ctx, identity)
 	if err != nil {
@@ -213,6 +244,34 @@ func TestLinuxTopologyMapperIsDurableBeforeIncompleteRollbackReturns(t *testing.
 	}
 	starter.latest(ProcessRoleMapping).terminateErr = nil
 	if _, err := lifecycle.Stop(context.Background(), testIdentity("topology-gen-journal-retry")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLinuxTopologyPersistentMapperRecordFailureIsDurablyArmed(t *testing.T) {
+	starter := newFakeStarter()
+	starter.terminateErr[ProcessRoleMapping] = errors.New("uncertain termination")
+	runner := &fakeRunner{output: goodLinkJSON()}
+	namespaces := newFakeNamespaces(t, &starter.events)
+	ownership := &persistentMapperRecordFailureStore{base: newMemoryOwnershipStore()}
+	lifecycle, err := New(Config{
+		Enabled: true, Tools: testTools(), Starter: starter, Runner: runner,
+		OpenNamespaces: namespaces.Open, Reachability: &fakeReachabilityProber{}, Ownership: ownership,
+		CleanupTimeout: 250 * time.Millisecond, InspectionTimeout: 250 * time.Millisecond,
+		InspectionInterval: time.Millisecond, OutputLimit: 8 << 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := lifecycle.Start(context.Background(), testRequest("topology-gen-persistent-journal"))
+	if !errors.Is(err, ErrCleanupIncomplete) || session == nil {
+		t.Fatalf("Start = %#v, %v, want retained cleanup-incomplete session", session, err)
+	}
+	if ownership.lease == nil || !ownership.lease.mappingArmed {
+		t.Fatal("live unrecorded mapper returned without durable pre-launch containment evidence")
+	}
+	starter.latest(ProcessRoleMapping).terminateErr = nil
+	if _, err := lifecycle.Stop(context.Background(), testIdentity("topology-gen-persistent-journal")); err != nil {
 		t.Fatal(err)
 	}
 }

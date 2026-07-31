@@ -145,11 +145,14 @@ func (f *fakeStarter) eventSnapshot() []string {
 }
 
 type fakeRunner struct {
-	mu     sync.Mutex
-	events *[]string
-	specs  []ProcessSpec
-	output []byte
-	err    error
+	mu            sync.Mutex
+	events        *[]string
+	specs         []ProcessSpec
+	output        []byte
+	addressOutput []byte
+	v4RouteOutput []byte
+	v6RouteOutput []byte
+	err           error
 }
 
 type fakeReachabilityProber struct {
@@ -182,10 +185,19 @@ func (f *fakeRunner) Run(_ context.Context, spec ProcessSpec) ([]byte, error) {
 		switch {
 		case strings.Contains(joined, " address show"):
 			output = goodAddressJSON()
+			if f.addressOutput != nil {
+				output = f.addressOutput
+			}
 		case strings.Contains(joined, " -4 route show"):
 			output = goodIPv4RouteJSON()
+			if f.v4RouteOutput != nil {
+				output = f.v4RouteOutput
+			}
 		case strings.Contains(joined, " -6 route show"):
 			output = goodIPv6RouteJSON()
+			if f.v6RouteOutput != nil {
+				output = f.v6RouteOutput
+			}
 		}
 	}
 	return append([]byte(nil), output...), f.err
@@ -500,6 +512,45 @@ func TestLinuxTopologyRequiresExactStructuralAndReachabilityProof(t *testing.T) 
 	duplicateAddress := []byte(`[{"ifindex":1,"ifname":"lo","addr_info":[{"family":"inet","local":"127.0.0.1","prefixlen":8,"scope":"host"},{"family":"inet6","local":"::1","prefixlen":128,"scope":"host"}]},{"ifindex":7,"ifname":"halpasta0","addr_info":[{"family":"inet","local":"192.0.2.10","prefixlen":24,"scope":"global"},{"family":"inet6","local":"2001:db8::10","prefixlen":64,"scope":"global"},{"family":"inet6","local":"2001:db8::10","prefixlen":64,"scope":"global"}]}]`)
 	if validAddressInspection(duplicateAddress, testIface) {
 		t.Fatal("inspection accepted duplicate address drift")
+	}
+}
+
+func TestLinuxTopologyRejectsUnexpectedMetadataAndMismatchedRoutes(t *testing.T) {
+	metadataRoute := []byte(`[{"dst":"default","gateway":"192.0.2.1","dev":"halpasta0"},{"dst":"192.0.2.0/24","dev":"halpasta0","scope":"link"},{"dst":"169.254.169.254/32","dev":"halpasta0","scope":"link"}]`)
+	if validRouteInspection(metadataRoute, goodIPv6RouteJSON(), testIface) {
+		t.Fatal("route proof accepted an unjustified metadata route")
+	}
+
+	starter := newFakeStarter()
+	runner := &fakeRunner{
+		output: goodLinkJSON(),
+		addressOutput: []byte(`[
+			{"ifindex":1,"ifname":"lo","addr_info":[{"family":"inet","local":"127.0.0.1","prefixlen":8,"scope":"host"},{"family":"inet6","local":"::1","prefixlen":128,"scope":"host"}]},
+			{"ifindex":7,"ifname":"halpasta0","addr_info":[{"family":"inet","local":"198.51.100.10","prefixlen":24,"scope":"global"},{"family":"inet6","local":"2001:db8:1::10","prefixlen":64,"scope":"global"},{"family":"inet6","local":"fe80::10","prefixlen":64,"scope":"link"}]}
+		]`),
+	}
+	namespaces := newFakeNamespaces(t, &starter.events)
+	lifecycle := newTestLifecycle(t, starter, runner, namespaces)
+	if session, err := lifecycle.Start(context.Background(), testRequest("topology-gen-route-mismatch")); !errors.Is(err, ErrInspectionFailed) || session != nil {
+		t.Fatalf("mismatched address/route proof = %#v, %v, want nil ErrInspectionFailed", session, err)
+	}
+}
+
+func TestLinuxTopologyRejectsNonCanonicalHostLoopback(t *testing.T) {
+	request := testRequest("topology-gen-loopback-correlation")
+	request.Mapping.ProxyEndpoint = "127.0.0.2:43123"
+	if validMapping(request.Mapping) {
+		t.Fatal("mapping accepted a non-canonical IPv4 host loopback")
+	}
+	starter := newFakeStarter()
+	runner := &fakeRunner{output: goodLinkJSON()}
+	namespaces := newFakeNamespaces(t, &starter.events)
+	lifecycle := newTestLifecycle(t, starter, runner, namespaces)
+	if session, err := lifecycle.Start(context.Background(), request); !errors.Is(err, ErrInvalidMapping) || session != nil {
+		t.Fatalf("Start = %#v, %v, want nil ErrInvalidMapping", session, err)
+	}
+	if starter.startCount() != 0 {
+		t.Fatal("invalid loopback mapping crossed the process boundary")
 	}
 }
 

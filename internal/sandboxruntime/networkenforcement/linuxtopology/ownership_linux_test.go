@@ -107,3 +107,43 @@ func TestLinuxTopologyRestartJournalRejectsSymlink(t *testing.T) {
 		t.Fatalf("symlink journal reconciliation error = %v, want ErrStaleTopologyUnverified", err)
 	}
 }
+
+func TestLinuxTopologyLongRunningCreatorThreadIsRetained(t *testing.T) {
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundary := &execBoundary{}
+	handle, err := boundary.Start(context.Background(), ProcessSpec{
+		Role: ProcessRoleKeeper, Path: sleep, Args: []string{"30"}, OutputLimit: 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe, ok := handle.(interface {
+		creatorThreadState() (int, bool)
+	})
+	if !ok {
+		t.Fatal("long-running process handle exposes no creator-thread lifetime proof")
+	}
+	creatorTID, retained := probe.creatorThreadState()
+	if creatorTID <= 0 || !retained {
+		t.Fatalf("creator thread state = (%d, %t), want retained", creatorTID, retained)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := handle.Terminate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		_, retained = probe.creatorThreadState()
+		if !retained {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("creator thread remained retained after helper reap")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
