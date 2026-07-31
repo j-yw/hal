@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"net/url"
 	"strings"
@@ -605,6 +606,58 @@ func TestL6PolicyProxyCONNECTAllowAndDenial(t *testing.T) {
 	}
 	if got := dialCount.Load(); got != 1 {
 		t.Fatalf("dial count = %d, want 1", got)
+	}
+}
+
+func TestL6PolicyProxyCONNECTDialUsesConnectTimeout(t *testing.T) {
+	const connectTimeout = 50 * time.Millisecond
+	var dialBudget time.Duration
+	adapter := newTestAdapter(t, testAdapterOptions{
+		dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				return nil, errors.New("fixture dial missing deadline")
+			}
+			dialBudget = time.Until(deadline)
+			return nil, errors.New("fixture dial failed")
+		},
+		limits: Limits{
+			RequestTimeout: time.Second,
+			ConnectTimeout: connectTimeout,
+		},
+	})
+	response := httptest.NewRecorder()
+	adapter.ServeHTTP(response, &http.Request{
+		Method:     http.MethodConnect,
+		RequestURI: "allowed.test:443",
+		Host:       "allowed.test:443",
+		Header:     make(http.Header),
+	})
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("CONNECT dial failure status = %d, want %d", response.Code, http.StatusBadGateway)
+	}
+	if dialBudget <= 0 || dialBudget > 2*connectTimeout {
+		t.Fatalf("CONNECT dial budget = %v, want bounded by %v", dialBudget, connectTimeout)
+	}
+}
+
+func TestL6SplitAuthorityAllowsBracketedIPv6OnlyWithDefaultPort(t *testing.T) {
+	host, port, ok := splitAuthority("[2606:4700::1111]", "80")
+	if !ok || host != "2606:4700::1111" || port != "80" {
+		t.Fatalf("splitAuthority bracketed IPv6 = (%q, %q, %t), want public IPv6 with port 80", host, port, ok)
+	}
+	for _, tt := range []struct {
+		authority   string
+		defaultPort string
+	}{
+		{authority: "[2606:4700::1111]"},
+		{authority: "[127.0.0.1]", defaultPort: "80"},
+		{authority: "[fe80::1%zone]", defaultPort: "80"},
+		{authority: "[not-an-address]", defaultPort: "80"},
+	} {
+		if host, port, ok := splitAuthority(tt.authority, tt.defaultPort); ok {
+			t.Fatalf("splitAuthority(%q, %q) unexpectedly accepted (%q, %q)", tt.authority, tt.defaultPort, host, port)
+		}
 	}
 }
 
