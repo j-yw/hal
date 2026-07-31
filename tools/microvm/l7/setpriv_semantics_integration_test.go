@@ -1,4 +1,4 @@
-//go:build l7_setpriv_semantics
+//go:build l7_setpriv_semantics && linux
 
 package l7profile
 
