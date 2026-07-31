@@ -54,6 +54,74 @@ func TestL7FirecrackerRendersExactlyOneValidatedNetworkInterface(t *testing.T) {
 	}
 }
 
+func TestL7FirecrackerRejectsChangedVerifiedAssetsBeforeLiveBootRender(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, string)
+	}{
+		{
+			name: "in-place mutation",
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				contents[0] ^= 0xff
+				if err := os.WriteFile(path, contents, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "path replacement",
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				contents[0] ^= 0xff
+				replacement := path + ".replacement"
+				if err := os.WriteFile(replacement, contents, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(replacement, path); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := validL7NetworkBackendConfig(t)
+			launchAssets, err := firecrackerLaunchDescriptorAssets(config.LaunchDescriptor, liveBootRenderOperation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tt.mutate(t, launchAssets.rootfsPath())
+
+			stateDir := filepath.Join(t.TempDir(), "state")
+			config.Paths = PathPlan{
+				StateDir:        stateDir,
+				APISocketPath:   filepath.Join(stateDir, "api.sock"),
+				ConfigPath:      filepath.Join(stateDir, "config.json"),
+				LogPath:         filepath.Join(stateDir, "firecracker.log"),
+				MetricsPath:     filepath.Join(stateDir, "firecracker.metrics"),
+				VsockSocketPath: filepath.Join(stateDir, "guest.vsock"),
+			}
+			err = renderLiveBootFiles(config)
+			if err == nil || !errors.Is(err, microvm.ErrInvalidConfig) {
+				t.Fatalf("renderLiveBootFiles() error = %v, want invalid config", err)
+			}
+			if _, statErr := os.Stat(config.Paths.ConfigPath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("config path stat error = %v, want not-exist", statErr)
+			}
+		})
+	}
+}
+
 func TestL7FirecrackerNetworkConfigFailsClosedAndRedactsRawValues(t *testing.T) {
 	tests := []struct {
 		name   string
