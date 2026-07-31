@@ -227,10 +227,29 @@ func TestLinuxRulesForwardedTAPMediatesGuestPacketsWithoutHostRawSocketVerifier(
 	}
 }
 
-func TestLinuxRulesNeighborDiscoveryIsMinimalLinkLocalForBothProfiles(t *testing.T) {
-	for _, profile := range []RuleProfile{RuleProfileWorkloadOutput, RuleProfileForwardedTAP} {
-		t.Run(string(profile), func(t *testing.T) {
-			expected := testExpectedRuleSetForProfile(t, "generation-nd", profile)
+func TestLinuxRulesNeighborDiscoveryUsesExactConfiguredIPv6Link(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		profile RuleProfile
+		local   string
+		peer    string
+		dad     bool
+	}{
+		{name: "workload-ula", profile: RuleProfileWorkloadOutput, local: "fd00:7::2", peer: "fd00:7::1"},
+		{name: "workload-global", profile: RuleProfileWorkloadOutput, local: "2001:db8:7::2", peer: "2001:db8:7::1"},
+		{name: "forwarded-ula", profile: RuleProfileForwardedTAP, local: "fd00:7::2", peer: "fd00:7::1", dad: true},
+		{name: "forwarded-global", profile: RuleProfileForwardedTAP, local: "2001:db8:7::2", peer: "2001:db8:7::1", dad: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := testRuleSetConfig("generation-nd", test.profile)
+			config.WorkloadIPv6Address = test.local
+			config.GatewayIPv6Address = test.peer
+			config.IPv6PrefixBits = 64
+			config.AllowIPv6DAD = test.dad
+			expected, err := NewExpectedRuleSet(config)
+			if err != nil {
+				t.Fatalf("NewExpectedRuleSet: %v", err)
+			}
 			batch := string(expected.fullBatch(false))
 			ndLines := make([]string, 0, 5)
 			for _, line := range strings.Split(batch, "\n") {
@@ -238,15 +257,20 @@ func TestLinuxRulesNeighborDiscoveryIsMinimalLinkLocalForBothProfiles(t *testing
 					ndLines = append(ndLines, line)
 				}
 			}
-			if len(ndLines) != 5 {
-				t.Fatalf("neighbor-discovery rules = %d, want five exact semantic cases: %s", len(ndLines), batch)
+			wantRules := 4
+			if test.dad {
+				wantRules++
+			}
+			if len(ndLines) != wantRules {
+				t.Fatalf("neighbor-discovery rules = %d, want %d exact semantic cases: %s", len(ndLines), wantRules, batch)
 			}
 			joined := strings.Join(ndLines, "\n")
 			for _, required := range []string{
 				"ip6 hoplimit 255",
-				"ip6 saddr",
-				"ip6 daddr",
-				"icmpv6 taddr fe80::/10",
+				"ip6 saddr " + test.local,
+				"ip6 daddr " + test.peer,
+				"icmpv6 taddr " + test.local,
+				"icmpv6 taddr " + test.peer,
 				"nd-neighbor-solicit",
 				"nd-neighbor-advert",
 			} {
@@ -254,11 +278,20 @@ func TestLinuxRulesNeighborDiscoveryIsMinimalLinkLocalForBothProfiles(t *testing
 					t.Fatalf("neighbor-discovery batch missing %q: %s", required, joined)
 				}
 			}
-			if profile == RuleProfileWorkloadOutput && !strings.Contains(joined, `oifname "eth0"`) {
+			if strings.Contains(joined, "fe80::/10") {
+				t.Fatalf("configured-link neighbor discovery retained a broad link-local prefix: %s", joined)
+			}
+			if test.profile == RuleProfileWorkloadOutput && !strings.Contains(joined, `oifname "eth0"`) {
 				t.Fatalf("workload neighbor discovery is not output-interface bound: %s", joined)
 			}
-			if profile == RuleProfileForwardedTAP && !strings.Contains(joined, `iifname "eth0"`) {
+			if test.profile == RuleProfileForwardedTAP && !strings.Contains(joined, `iifname "eth0"`) {
 				t.Fatalf("forwarded neighbor discovery is not input-interface bound: %s", joined)
+			}
+			if test.dad && !strings.Contains(joined, "ip6 saddr ::") {
+				t.Fatalf("required DAD case missing: %s", joined)
+			}
+			if !test.dad && strings.Contains(joined, "ip6 saddr ::") {
+				t.Fatalf("unexpected DAD case admitted: %s", joined)
 			}
 
 			inspection := string(expectedInspectionJSON(expected))
@@ -268,14 +301,62 @@ func TestLinuxRulesNeighborDiscoveryIsMinimalLinkLocalForBothProfiles(t *testing
 				`"field":"daddr"`,
 				`"field":"taddr"`,
 				`"right":"ipv6-icmp"`,
-				`"prefix":{"addr":"fe80::","len":10}`,
-				`"prefix":{"addr":"ff02::1:ff00:0","len":104}`,
+				`"right":"` + test.local + `"`,
+				`"right":"` + test.peer + `"`,
 			} {
 				if !strings.Contains(inspection, required) {
 					t.Fatalf("exact inspection model missing %s: %s", required, inspection)
 				}
 			}
 		})
+	}
+}
+
+func TestLinuxRulesRejectsInvalidConfiguredIPv6Links(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		local      string
+		peer       string
+		prefixBits uint8
+	}{
+		{name: "missing local", peer: "fd00:7::1", prefixBits: 64},
+		{name: "missing peer", local: "fd00:7::2", prefixBits: 64},
+		{name: "ipv4 local", local: "192.0.2.2", peer: "fd00:7::1", prefixBits: 64},
+		{name: "multicast local", local: "ff02::2", peer: "fd00:7::1", prefixBits: 64},
+		{name: "unspecified peer", local: "fd00:7::2", peer: "::", prefixBits: 64},
+		{name: "loopback peer", local: "fd00:7::2", peer: "::1", prefixBits: 64},
+		{name: "same endpoint", local: "fd00:7::2", peer: "fd00:7::2", prefixBits: 64},
+		{name: "not on link", local: "fd00:7::2", peer: "fd00:8::1", prefixBits: 64},
+		{name: "missing prefix", local: "fd00:7::2", peer: "fd00:7::1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := testRuleSetConfig("generation-invalid-link", RuleProfileForwardedTAP)
+			config.WorkloadIPv6Address = test.local
+			config.GatewayIPv6Address = test.peer
+			config.IPv6PrefixBits = test.prefixBits
+			if _, err := NewExpectedRuleSet(config); !errors.Is(err, ErrInvalidConfiguration) {
+				t.Fatalf("NewExpectedRuleSet error = %v, want ErrInvalidConfiguration", err)
+			}
+		})
+	}
+}
+
+func TestLinuxRulesInspectionRejectsConfiguredIPv6NeighborDrift(t *testing.T) {
+	for _, profile := range []RuleProfile{RuleProfileWorkloadOutput, RuleProfileForwardedTAP} {
+		for _, mutation := range []string{"wrong_nd_source", "wrong_nd_destination", "wrong_nd_target"} {
+			t.Run(string(profile)+"/"+mutation, func(t *testing.T) {
+				expected := testExpectedRuleSetForProfile(t, "generation-nd-drift", profile)
+				executor := newFakeNFTExecutor(expected)
+				executor.postApplyMutation = mutation
+				metadata, err := NewAdapter(executor, AdapterOptions{}).ApplyAndInspect(context.Background(), expected)
+				if !errors.Is(err, ErrInspectionFailed) {
+					t.Fatalf("error = %v, want ErrInspectionFailed", err)
+				}
+				if metadata.Status == networkenforcement.LifecycleStatusActive || executor.quarantineCalls != 1 {
+					t.Fatalf("neighbor drift became active or was not quarantined: metadata=%#v quarantine=%d", metadata, executor.quarantineCalls)
+				}
+			})
+		}
 	}
 }
 
