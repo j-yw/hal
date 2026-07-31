@@ -33,12 +33,14 @@ Every L7 mutation is scoped to a sandbox-owned network namespace:
   by a supervised helper.
 
 `pasta` provides a runtime-specific, live-only mapping from a synthetic guest
-address to the exact L6 loopback proxy port. It is not enforcement proof. The
-owned nftables rules mediate IP traffic, while an independently inspected
-runtime control removes raw-packet capability before untrusted work can start.
-Both proofs are required: an `inet` output hook cannot observe `AF_PACKET`
-link-layer sends, and a capability-only control cannot replace the inspected
-default-drop IP policy.
+address to the exact L6 loopback proxy port. Because `--map-host-loopback`
+targets only the canonical family loopback, L7 accepts only `127.0.0.1` or
+`::1` and requires the guest mapping address to use the same family. The
+mapping is not enforcement proof. The owned nftables rules mediate IP traffic,
+while an independently inspected runtime control removes raw-packet capability
+before untrusted work can start. Both proofs are required: an `inet` output
+hook cannot observe `AF_PACKET` link-layer sends, and a capability-only control
+cannot replace the inspected default-drop IP policy.
 
 ## Package ownership
 
@@ -59,9 +61,6 @@ default-drop IP policy.
 - `internal/sandboxruntime/microvm/firecrackerhost` owns the Firecracker
   topology session, TAP lifecycle, namespace-bound process launch, and the
   ordering between topology, Firecracker, guest readiness, and teardown.
-- `internal/sandboxruntime/microvm/firecracker` owns the validated single-NIC
-  boot payload and bounded network boot arguments only. It does not invoke
-  nftables, `ip`, `pasta`, or namespace tools.
 - `internal/sandboxruntime/networkenforcement/policyproxy` may expose a typed
   live-only endpoint and generation-loss signal. Its default listener stays
   loopback-only; no wildcard or universal guest-facing bind is added.
@@ -74,8 +73,8 @@ default-drop IP policy.
 
 Construction requires safe immutable identity for the sandbox, execution,
 worker, runtime, plan, policy snapshot, proxy session, topology generation,
-and rule generation. Empty, unsafe, duplicate, or mismatched identity fails
-before mutation.
+the exact retained proxy generation, and rule generation. Empty, unsafe,
+duplicate, or mismatched identity fails before mutation.
 
 Private live state includes namespace FDs and device/inode identity, helper
 process handles, runtime PIDs/start identity, TAP/interface names and indices,
@@ -102,6 +101,22 @@ planned -> proxy_started -> topology_prepared -> runtime_created
 Apply acknowledgement is not active proof. Only a fresh structural inspection
 of the exact namespace, interface, proxy generation, and nft generation can
 produce `inspected` and then `active`.
+
+The `linuxtopology` package itself stops conservatively at `prepared`. Its safe
+metadata distinguishes `structuralInspected` from `mappingReachable` and never
+publishes `active`: a successful namespace-local probe cannot by itself prove
+that the retained L6 proxy generation is still the listener reached. The
+higher runtime composition must compare the same required proxy generation
+before and after the probe, correlate the exact inspected rule generation, and
+only then publish an aggregate active result.
+
+Topology inspection disables ambient route copying and correlates every
+accepted route with normalized address evidence from the exact interface.
+Each family has one default route. IPv4 has one connected route for its
+observed prefix; IPv6 has one link-local connected route and has a global
+connected route only when its exact address evidence does not declare
+`noprefixroute`. Extra gateway, connected, metadata, or duplicate route shapes
+fail closed.
 
 ## Linux rule adapter
 
@@ -170,6 +185,10 @@ topology factory performs this transaction:
    the output-chain rules;
 7. structurally inspect the rules and probe the exact proxy mapping;
 8. publish active advisory network proof and permit job execution.
+
+The topology sub-step in item 7 produces only prepared structural and mapping
+evidence. Item 8 belongs to the higher composition after it has revalidated
+the exact retained L6 proxy generation and rule proof.
 
 The execution adapter injects `HTTP_PROXY`, `HTTPS_PROXY`, and lowercase
 equivalents from typed live state, clears uncontrolled proxy bypass variables,
@@ -246,6 +265,31 @@ After daemon restart every durable active claim is stale. Reconciliation opens
 only a contained private journal, re-inspects exact ownership, quarantines
 first, and cleans a terminal generation. It never reconstructs active proof
 from labels, names, plans, or old JSON and never deletes a mismatched resource.
+Topology setup holds a private per-sandbox cross-process lock for the whole
+session, uses a `0600` atomic ownership journal under an owned `0700` state
+directory, and retains incomplete rollback state. Helper reconciliation uses
+recorded process start identity plus namespace identity and a stable process
+handle; identity mismatch blocks replacement without signalling or deletion.
+Retired topology-generation tombstones prevent generation reuse across daemon
+restart.
+
+Before mapper launch the journal records a private `mappingArmed` marker plus
+the exact daemon PID/start identity, keeper, and namespace identity. The
+long-running helper is created and reaped by one goroutine locked to its OS
+thread for the full child lifetime, so `Pdeathsig` remains tied to a retained
+creator thread. The namespace keeper is a direct `unshare` exec without a
+forking wrapper, so the one tracked PID owns the retained namespaces and Hal
+waits for and reaps that exact process during cleanup.
+
+Any restart that sees `mappingArmed` without a fully recorded mapper fails
+closed as `stale_topology_unverified`, regardless of whether the recorded
+creator still appears live. Creator death and `Pdeathsig` delivery are useful
+containment but are not proof that the mapper has exited. Reconciliation does
+not signal the keeper, retire or delete the journal, or permit replacement;
+explicit recovery is required. A same-daemon retained `Session` can still
+clean up or retry its own start failure. A fully recorded mapper is reconciled
+by exact pidfd/start identity. No old journal is converted into prepared or
+active proof.
 
 ## Red-first and live acceptance
 
