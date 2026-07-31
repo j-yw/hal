@@ -12,10 +12,11 @@ type memoryOwnershipStore struct {
 }
 
 type memoryOwnershipLease struct {
-	store      *memoryOwnershipStore
-	sandboxID  string
-	generation string
-	released   bool
+	store        *memoryOwnershipStore
+	sandboxID    string
+	generation   string
+	released     bool
+	mappingArmed bool
 }
 
 func newMemoryOwnershipStore() *memoryOwnershipStore {
@@ -41,6 +42,14 @@ func (s *memoryOwnershipStore) Acquire(_ context.Context, identity Identity) (Ow
 func (*memoryOwnershipLease) Reconcile(context.Context) error { return nil }
 
 func (*memoryOwnershipLease) Record(context.Context, ProcessHandle, ProcessHandle, *NamespaceHandle) error {
+	return nil
+}
+
+func (l *memoryOwnershipLease) ArmMapping(context.Context, ProcessHandle, *NamespaceHandle) error {
+	if l == nil || l.store == nil || l.released {
+		return ErrCleanupIncomplete
+	}
+	l.mappingArmed = true
 	return nil
 }
 

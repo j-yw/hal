@@ -33,9 +33,11 @@ Every L7 mutation is scoped to a sandbox-owned network namespace:
   by a supervised helper.
 
 `pasta` provides a runtime-specific, live-only mapping from a synthetic guest
-address to the exact L6 loopback proxy port. It is not enforcement proof. The
-owned nftables rules remain the authority that prevents every non-proxy egress
-path.
+address to the exact L6 loopback proxy port. Because `--map-host-loopback`
+targets only the canonical family loopback, L7 accepts only `127.0.0.1` or
+`::1` and requires the guest mapping address to use the same family. The
+mapping is not enforcement proof. Owned nftables rules remain the authority
+that prevents every non-proxy egress path.
 
 ## Package ownership
 
@@ -107,6 +109,14 @@ that the retained L6 proxy generation is still the listener reached. The
 higher runtime composition must compare the same required proxy generation
 before and after the probe, correlate the exact inspected rule generation, and
 only then publish an aggregate active result.
+
+Topology inspection disables ambient route copying and correlates every
+accepted route with normalized address evidence from the exact interface.
+Each family has one default route. IPv4 has one connected route for its
+observed prefix; IPv6 has one link-local connected route and has a global
+connected route only when its exact address evidence does not declare
+`noprefixroute`. Extra gateway, connected, metadata, or duplicate route shapes
+fail closed.
 
 ## Linux rule adapter
 
@@ -245,6 +255,18 @@ recorded process start identity plus namespace identity and a stable process
 handle; identity mismatch blocks replacement without signalling or deletion.
 Retired topology-generation tombstones prevent generation reuse across daemon
 restart.
+
+Before mapper launch the journal records a private `mappingArmed` marker plus
+the exact daemon PID/start identity, keeper, and namespace identity. The
+long-running helper is created and reaped by one goroutine locked to its OS
+thread for the full child lifetime, so `Pdeathsig` remains tied to a retained
+creator thread. A restart that still sees the recorded daemon identity alive
+fails closed without retiring or replacing the generation. Creator-thread
+death while the daemon survives can therefore cause only a conservative
+false-negative; daemon death necessarily ends that retained thread and sends
+the uncatchable parent-death signal before lock recovery. A fully recorded
+mapper is still reconciled by exact pidfd/start identity. No old journal is
+converted into prepared or active proof.
 
 ## Red-first and live acceptance
 

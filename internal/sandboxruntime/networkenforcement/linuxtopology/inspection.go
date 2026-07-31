@@ -85,25 +85,42 @@ func validLinkInspection(output []byte, mappingInterface string) bool {
 	return loopbackOK && mappingOK
 }
 
+type interfaceAddressEvidence struct {
+	IPv4Address       netip.Addr
+	IPv4Prefix        netip.Prefix
+	IPv6GlobalAddress netip.Addr
+	IPv6GlobalPrefix  netip.Prefix
+	IPv6GlobalRoute   bool
+	IPv6LinkAddress   netip.Addr
+	IPv6LinkPrefix    netip.Prefix
+}
+
 func validAddressInspection(output []byte, mappingInterface string) bool {
+	_, valid := inspectAddressEvidence(output, mappingInterface)
+	return valid
+}
+
+func inspectAddressEvidence(output []byte, mappingInterface string) (interfaceAddressEvidence, bool) {
 	var links []struct {
 		Index     int    `json:"ifindex"`
 		Name      string `json:"ifname"`
 		Addresses []struct {
-			Family    string `json:"family"`
-			Local     string `json:"local"`
-			PrefixLen int    `json:"prefixlen"`
-			Scope     string `json:"scope"`
+			Family        string `json:"family"`
+			Local         string `json:"local"`
+			PrefixLen     int    `json:"prefixlen"`
+			Scope         string `json:"scope"`
+			NoPrefixRoute bool   `json:"noprefixroute"`
 		} `json:"addr_info"`
 	}
 	if len(output) == 0 || json.Unmarshal(output, &links) != nil || len(links) != 2 {
-		return false
+		return interfaceAddressEvidence{}, false
 	}
+	var evidence interfaceAddressEvidence
 	foundLoopback := false
 	foundMapping := false
 	for _, link := range links {
 		if link.Index <= 0 {
-			return false
+			return interfaceAddressEvidence{}, false
 		}
 		seen := make(map[string]struct{}, len(link.Addresses))
 		loopbackV4 := 0
@@ -117,63 +134,83 @@ func validAddressInspection(output []byte, mappingInterface string) bool {
 				(parsed.Is6() && address.Family != "inet6") ||
 				address.PrefixLen < 0 || (parsed.Is4() && address.PrefixLen > 32) ||
 				(parsed.Is6() && address.PrefixLen > 128) {
-				return false
+				return interfaceAddressEvidence{}, false
 			}
 			key := address.Family + "|" + parsed.String() + "|" + strconv.Itoa(address.PrefixLen) + "|" + address.Scope
 			if _, duplicate := seen[key]; duplicate {
-				return false
+				return interfaceAddressEvidence{}, false
 			}
 			seen[key] = struct{}{}
 			switch link.Name {
 			case "lo":
 				if address.Scope != "host" {
-					return false
+					return interfaceAddressEvidence{}, false
 				}
 				if parsed == netip.MustParseAddr("127.0.0.1") && address.PrefixLen == 8 {
 					loopbackV4++
 				} else if parsed == netip.IPv6Loopback() && address.PrefixLen == 128 {
 					loopbackV6++
 				} else {
-					return false
+					return interfaceAddressEvidence{}, false
 				}
 			case mappingInterface:
 				if parsed.IsUnspecified() || parsed.IsLoopback() || parsed.IsMulticast() {
-					return false
+					return interfaceAddressEvidence{}, false
 				}
+				prefix := netip.PrefixFrom(parsed, address.PrefixLen).Masked()
 				switch {
 				case parsed.Is4() && address.Scope == "global" && address.PrefixLen > 0:
 					mappingV4++
+					evidence.IPv4Address, evidence.IPv4Prefix = parsed, prefix
 				case parsed.Is6() && address.Scope == "global" && address.PrefixLen > 0 && !parsed.IsLinkLocalUnicast():
 					mappingV6Global++
+					evidence.IPv6GlobalAddress, evidence.IPv6GlobalPrefix = parsed, prefix
+					evidence.IPv6GlobalRoute = !address.NoPrefixRoute
 				case parsed.Is6() && address.Scope == "link" && address.PrefixLen > 0 && parsed.IsLinkLocalUnicast():
 					mappingV6Link++
+					evidence.IPv6LinkAddress, evidence.IPv6LinkPrefix = parsed, prefix
 				default:
-					return false
+					return interfaceAddressEvidence{}, false
 				}
 			default:
-				return false
+				return interfaceAddressEvidence{}, false
 			}
 		}
 		if link.Name == "lo" {
 			if len(link.Addresses) != 2 || loopbackV4 != 1 || loopbackV6 != 1 {
-				return false
+				return interfaceAddressEvidence{}, false
 			}
 			foundLoopback = true
 		} else {
 			if len(link.Addresses) != 3 || mappingV4 != 1 || mappingV6Global != 1 || mappingV6Link != 1 {
-				return false
+				return interfaceAddressEvidence{}, false
 			}
 			foundMapping = true
 		}
 	}
-	return foundLoopback && foundMapping
+	return evidence, foundLoopback && foundMapping
 }
 
-func validRouteInspection(ipv4, ipv6 []byte, mappingInterface string) bool {
-	return validFamilyRoutes(ipv4, mappingInterface, true) && validFamilyRoutes(ipv6, mappingInterface, false)
+func validRouteInspection(ipv4, ipv6 []byte, mappingInterface string, addresses interfaceAddressEvidence) bool {
+	return validFamilyRoutes(
+		ipv4, mappingInterface, true,
+		[]netip.Prefix{addresses.IPv4Prefix}, []netip.Addr{addresses.IPv4Address}, []bool{true},
+	) && validFamilyRoutes(
+		ipv6, mappingInterface, false,
+		[]netip.Prefix{addresses.IPv6GlobalPrefix, addresses.IPv6LinkPrefix},
+		[]netip.Addr{addresses.IPv6GlobalAddress, addresses.IPv6LinkAddress},
+		[]bool{addresses.IPv6GlobalRoute, true},
+	)
 }
 
-func validFamilyRoutes(output []byte, mappingInterface string, ipv4 bool) bool {
+func validFamilyRoutes(
+	output []byte,
+	mappingInterface string,
+	ipv4 bool,
+	requiredPrefixes []netip.Prefix,
+	interfaceAddresses []netip.Addr,
+	requiredRoutes []bool,
+) bool {
 	var routes []struct {
 		Destination string `json:"dst"`
 		Gateway     string `json:"gateway"`
@@ -184,20 +221,22 @@ func validFamilyRoutes(output []byte, mappingInterface string, ipv4 bool) bool {
 		Preferred   string `json:"prefsrc"`
 		Metric      int    `json:"metric"`
 	}
-	if len(output) == 0 || json.Unmarshal(output, &routes) != nil || len(routes) < 2 || len(routes) > 8 {
+	if len(output) == 0 || json.Unmarshal(output, &routes) != nil || len(requiredPrefixes) == 0 ||
+		len(requiredPrefixes) != len(interfaceAddresses) || len(requiredPrefixes) != len(requiredRoutes) {
 		return false
 	}
+	for index := range requiredPrefixes {
+		if !requiredPrefixes[index].IsValid() || !interfaceAddresses[index].IsValid() ||
+			requiredPrefixes[index].Addr().Is4() != ipv4 || interfaceAddresses[index].Is4() != ipv4 ||
+			!requiredPrefixes[index].Contains(interfaceAddresses[index]) {
+			return false
+		}
+	}
+	var defaultGateway netip.Addr
 	defaults := 0
-	connected := 0
 	seen := make(map[string]struct{}, len(routes))
 	for _, route := range routes {
 		if route.Device != mappingInterface || (route.Type != "" && route.Type != "unicast") {
-			return false
-		}
-		if ipv4 && route.Protocol != "dhcp" && route.Protocol != "kernel" && route.Protocol != "" {
-			return false
-		}
-		if !ipv4 && route.Protocol != "ra" && route.Protocol != "kernel" && route.Protocol != "" {
 			return false
 		}
 		if route.Metric < 0 {
@@ -215,45 +254,87 @@ func validFamilyRoutes(output []byte, mappingInterface string, ipv4 bool) bool {
 		}
 		seen[key] = struct{}{}
 		if route.Destination == "default" {
-			gateway, err := netip.ParseAddr(route.Gateway)
-			if err != nil || gateway.Is4() != ipv4 || gateway.IsUnspecified() || gateway.IsMulticast() {
+			if route.Protocol != "" {
 				return false
 			}
+			gateway, err := netip.ParseAddr(route.Gateway)
+			if err != nil || gateway.Is4() != ipv4 || gateway.IsUnspecified() || gateway.IsMulticast() ||
+				route.Scope != "" || route.Preferred != "" || !addressInPrefixes(gateway, requiredPrefixes) {
+				return false
+			}
+			defaultGateway = gateway
 			defaults++
-			continue
-		}
-		destination, prefixBits, valid := parseRouteDestination(route.Destination)
-		if !valid || destination.Is4() != ipv4 || destination.IsUnspecified() || prefixBits == 0 {
-			return false
-		}
-		if route.Gateway != "" {
-			gateway, err := netip.ParseAddr(route.Gateway)
-			if err != nil || gateway.Is4() != ipv4 || gateway.IsUnspecified() || gateway.IsMulticast() || route.Scope != "" {
-				return false
-			}
-		} else {
-			if route.Scope != "" && route.Scope != "link" {
-				return false
-			}
-			connected++
 		}
 	}
-	return defaults == 1 && connected >= 1
+	if defaults != 1 || !defaultGateway.IsValid() {
+		return false
+	}
+	prefixCounts := make([]int, len(requiredPrefixes))
+	for _, route := range routes {
+		if route.Destination == "default" {
+			continue
+		}
+		if route.Gateway != "" || (route.Scope != "" && route.Scope != "link") {
+			return false
+		}
+		destination, valid := parseRouteDestination(route.Destination)
+		if !valid || destination.Addr().Is4() != ipv4 || destination.Addr().IsUnspecified() || destination.Bits() == 0 {
+			return false
+		}
+		matchedPrefix := -1
+		for index, required := range requiredPrefixes {
+			if destination == required {
+				matchedPrefix = index
+				break
+			}
+		}
+		if matchedPrefix >= 0 {
+			if !requiredRoutes[matchedPrefix] || route.Protocol != "kernel" ||
+				(ipv4 && route.Scope != "link") || (!ipv4 && route.Scope != "") {
+				return false
+			}
+			if (ipv4 && route.Preferred != interfaceAddresses[matchedPrefix].String()) ||
+				(!ipv4 && route.Preferred != "") {
+				return false
+			}
+			prefixCounts[matchedPrefix]++
+			if prefixCounts[matchedPrefix] > 1 {
+				return false
+			}
+			continue
+		}
+		return false
+	}
+	for index, count := range prefixCounts {
+		if (requiredRoutes[index] && count != 1) || (!requiredRoutes[index] && count != 0) {
+			return false
+		}
+	}
+	return true
 }
 
-func parseRouteDestination(value string) (netip.Addr, int, bool) {
+func addressInPrefixes(address netip.Addr, prefixes []netip.Prefix) bool {
+	for _, prefix := range prefixes {
+		if prefix.Contains(address) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseRouteDestination(value string) (netip.Prefix, bool) {
 	if prefix, err := netip.ParsePrefix(value); err == nil {
-		return prefix.Addr(), prefix.Bits(), true
+		return prefix.Masked(), true
 	}
 	address, err := netip.ParseAddr(value)
 	if err != nil {
-		return netip.Addr{}, 0, false
+		return netip.Prefix{}, false
 	}
 	bits := 128
 	if address.Is4() {
 		bits = 32
 	}
-	return address, bits, true
+	return netip.PrefixFrom(address, bits), true
 }
 
 type commandReachabilityProber struct {

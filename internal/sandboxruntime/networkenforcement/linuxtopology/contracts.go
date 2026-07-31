@@ -142,6 +142,7 @@ type OwnershipStore interface {
 type OwnershipLease interface {
 	Reconcile(context.Context) error
 	Record(context.Context, ProcessHandle, ProcessHandle, *NamespaceHandle) error
+	ArmMapping(context.Context, ProcessHandle, *NamespaceHandle) error
 	Retire(Identity) error
 	Release() error
 }
@@ -210,7 +211,8 @@ func validMapping(mapping Mapping) bool {
 		return false
 	}
 	hostAddress, err := netip.ParseAddr(host)
-	if err != nil || !hostAddress.IsLoopback() {
+	if err != nil || (hostAddress.Is4() && hostAddress != netip.MustParseAddr("127.0.0.1")) ||
+		(hostAddress.Is6() && hostAddress != netip.IPv6Loopback()) {
 		return false
 	}
 	port, err := strconv.Atoi(portText)

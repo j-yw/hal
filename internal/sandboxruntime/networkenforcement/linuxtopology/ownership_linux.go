@@ -48,11 +48,13 @@ type privateNamespaceRecord struct {
 }
 
 type privateOwnershipJournal struct {
-	Version   int                     `json:"version"`
-	Identity  Identity                `json:"identity"`
-	Keeper    *privateProcessRecord   `json:"keeper,omitempty"`
-	Mapper    *privateProcessRecord   `json:"mapper,omitempty"`
-	Namespace *privateNamespaceRecord `json:"namespace,omitempty"`
+	Version        int                     `json:"version"`
+	Identity       Identity                `json:"identity"`
+	Keeper         *privateProcessRecord   `json:"keeper,omitempty"`
+	Mapper         *privateProcessRecord   `json:"mapper,omitempty"`
+	Namespace      *privateNamespaceRecord `json:"namespace,omitempty"`
+	MappingArmed   bool                    `json:"mappingArmed,omitempty"`
+	MappingCreator *privateProcessRecord   `json:"mappingCreator,omitempty"`
 }
 
 func newFileOwnershipStore(root string) (*fileOwnershipStore, error) {
@@ -129,6 +131,17 @@ func (l *fileOwnershipLease) Reconcile(ctx context.Context) error {
 	if journal.Identity.SandboxID != l.identity.SandboxID {
 		return ErrIdentityMismatch
 	}
+	if journal.MappingArmed {
+		if journal.Mapper != nil || journal.MappingCreator == nil || journal.Keeper == nil || journal.Namespace == nil {
+			return ErrStaleTopologyUnverified
+		}
+		alive, err := recordedProcessCurrent(*journal.MappingCreator)
+		if err != nil || alive {
+			return ErrStaleTopologyUnverified
+		}
+	} else if journal.MappingCreator != nil {
+		return ErrStaleTopologyUnverified
+	}
 	if journal.Mapper != nil {
 		if err := terminateRecordedProcess(ctx, *journal.Mapper, nil); err != nil {
 			return ErrStaleTopologyUnverified
@@ -184,6 +197,34 @@ func (l *fileOwnershipLease) Record(_ context.Context, keeper, mapper ProcessHan
 		return ErrCleanupIncomplete
 	}
 	if err := writePrivateAtomic(l.journalPath, payload); err != nil {
+		return ErrCleanupIncomplete
+	}
+	return nil
+}
+
+func (l *fileOwnershipLease) ArmMapping(_ context.Context, keeper ProcessHandle, namespace *NamespaceHandle) error {
+	if l == nil || l.lock == nil || l.released || keeper == nil || namespace == nil {
+		return ErrCleanupIncomplete
+	}
+	keeperRecord, err := recordProcess(keeper)
+	if err != nil {
+		return ErrCleanupIncomplete
+	}
+	namespaceRecord, err := recordNamespace(namespace)
+	if err != nil {
+		return ErrCleanupIncomplete
+	}
+	creatorRecord, err := currentProcessRecord()
+	if err != nil {
+		return ErrCleanupIncomplete
+	}
+	journal := privateOwnershipJournal{
+		Version: privateJournalVersion, Identity: l.identity,
+		Keeper: keeperRecord, Namespace: namespaceRecord,
+		MappingArmed: true, MappingCreator: creatorRecord,
+	}
+	payload, err := json.Marshal(journal)
+	if err != nil || writePrivateAtomic(l.journalPath, payload) != nil {
 		return ErrCleanupIncomplete
 	}
 	return nil
@@ -357,6 +398,29 @@ func readProcessStartTime(pid int) (string, error) {
 		return "", ErrStaleTopologyUnverified
 	}
 	return fields[19], nil
+}
+
+func currentProcessRecord() (*privateProcessRecord, error) {
+	pid := os.Getpid()
+	startTime, err := readProcessStartTime(pid)
+	if err != nil {
+		return nil, err
+	}
+	return &privateProcessRecord{PID: pid, StartTime: startTime}, nil
+}
+
+func recordedProcessCurrent(record privateProcessRecord) (bool, error) {
+	if record.PID <= 0 || record.StartTime == "" {
+		return false, ErrStaleTopologyUnverified
+	}
+	startTime, err := readProcessStartTime(record.PID)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return startTime == record.StartTime, nil
 }
 
 func terminateRecordedProcess(ctx context.Context, record privateProcessRecord, namespace *privateNamespaceRecord) error {

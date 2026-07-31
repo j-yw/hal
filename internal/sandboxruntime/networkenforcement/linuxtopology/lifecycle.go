@@ -171,6 +171,9 @@ func (l *Lifecycle) Start(ctx context.Context, request StartRequest) (*Session, 
 	if !processIdentityCurrent(keeper) {
 		return l.failStart(request, lease, keeper, nil, owned, ErrStartFailed)
 	}
+	if err := lease.ArmMapping(ctx, keeper, owned); err != nil {
+		return l.failStart(request, lease, keeper, nil, owned, ErrStartFailed)
+	}
 	mappingSpec := l.mappingSpec(request.Mapping, keeper.PID())
 	mapper, startErr := l.config.Starter.Start(ctx, mappingSpec)
 	if startErr != nil || mapper == nil || mapper.PID() <= 0 {
@@ -305,6 +308,7 @@ func (l *Lifecycle) mappingSpec(mapping Mapping, keeperPID int) ProcessSpec {
 		Args: []string{
 			"--foreground", "--quiet",
 			"--config-net",
+			"--no-copy-routes",
 			"--userns", filepath.Join(keeperRoot, "user"),
 			"--netns", filepath.Join(keeperRoot, "net"),
 			"--map-host-loopback", mapping.GuestProxyAddress,
@@ -365,10 +369,14 @@ func (l *Lifecycle) inspect(parent context.Context, keeper, mapper ProcessHandle
 					}
 					outputs = append(outputs, output)
 				}
+				var addressEvidence interfaceAddressEvidence
+				addressesValid := false
+				if valid && len(outputs) == 4 {
+					addressEvidence, addressesValid = inspectAddressEvidence(outputs[1], mapping.NamespaceInterface)
+				}
 				if valid && len(outputs) == 4 &&
-					validLinkInspection(outputs[0], mapping.NamespaceInterface) &&
-					validAddressInspection(outputs[1], mapping.NamespaceInterface) &&
-					validRouteInspection(outputs[2], outputs[3], mapping.NamespaceInterface) &&
+					validLinkInspection(outputs[0], mapping.NamespaceInterface) && addressesValid &&
+					validRouteInspection(outputs[2], outputs[3], mapping.NamespaceInterface, addressEvidence) &&
 					l.config.Reachability.Probe(ctx, owned, identity, mapping) == nil &&
 					!processDone(keeper) && !processDone(mapper) {
 					return nil

@@ -218,11 +218,19 @@ func goodAddressJSON() []byte {
 }
 
 func goodIPv4RouteJSON() []byte {
-	return []byte(`[{"dst":"default","gateway":"192.0.2.1","dev":"halpasta0"},{"dst":"192.0.2.0/24","dev":"halpasta0","scope":"link"}]`)
+	return []byte(`[{"dst":"default","gateway":"192.0.2.1","dev":"halpasta0"},{"dst":"192.0.2.0/24","dev":"halpasta0","protocol":"kernel","scope":"link","prefsrc":"192.0.2.10"}]`)
 }
 
 func goodIPv6RouteJSON() []byte {
-	return []byte(`[{"dst":"default","gateway":"2001:db8::1","dev":"halpasta0"},{"dst":"2001:db8::/64","dev":"halpasta0","scope":"link"}]`)
+	return []byte(`[{"dst":"default","gateway":"2001:db8::1","dev":"halpasta0"},{"dst":"2001:db8::/64","dev":"halpasta0","protocol":"kernel"},{"dst":"fe80::/64","dev":"halpasta0","protocol":"kernel"}]`)
+}
+
+func goodAddressEvidence() interfaceAddressEvidence {
+	evidence, valid := inspectAddressEvidence(goodAddressJSON(), testIface)
+	if !valid {
+		panic("invalid fixed address evidence")
+	}
+	return evidence
 }
 
 type fakeNamespaces struct {
@@ -410,6 +418,7 @@ func TestLinuxTopologyStartsKeeperThenExactPastaMappingAndInspects(t *testing.T)
 	wantMappingArgs := []string{
 		"--foreground", "--quiet",
 		"--config-net",
+		"--no-copy-routes",
 		"--userns", "/proc/4101/ns/user",
 		"--netns", "/proc/4101/ns/net",
 		"--map-host-loopback", testGuestIP,
@@ -479,9 +488,8 @@ func TestLinuxTopologyRequiresExactStructuralAndReachabilityProof(t *testing.T) 
 		t.Fatal("exact dual-stack address inspection rejected")
 	}
 	if !validRouteInspection(
-		[]byte(`[{"dst":"default","gateway":"192.0.2.1","dev":"halpasta0"},{"dst":"192.0.2.0/24","dev":"halpasta0","scope":"link"}]`),
-		[]byte(`[{"dst":"default","gateway":"2001:db8::1","dev":"halpasta0"},{"dst":"2001:db8::/64","dev":"halpasta0","scope":"link"}]`),
-		testIface,
+		goodIPv4RouteJSON(),
+		goodIPv6RouteJSON(), testIface, goodAddressEvidence(),
 	) {
 		t.Fatal("exact dual-stack route inspection rejected")
 	}
@@ -499,12 +507,13 @@ func TestLinuxTopologyRequiresExactStructuralAndReachabilityProof(t *testing.T) 
 		})
 	}
 	for name, ipv4 := range map[string][]byte{
-		"duplicate route": []byte(`[{"dst":"default","gateway":"192.0.2.1","dev":"halpasta0"},{"dst":"192.0.2.0/24","dev":"halpasta0","scope":"link"},{"dst":"192.0.2.0/24","dev":"halpasta0","scope":"link"}]`),
-		"zero prefix":     []byte(`[{"dst":"default","gateway":"192.0.2.1","dev":"halpasta0"},{"dst":"0.0.0.0/0","dev":"halpasta0","scope":"link"}]`),
-		"bad protocol":    []byte(`[{"dst":"default","gateway":"192.0.2.1","dev":"halpasta0","protocol":"redirect"},{"dst":"192.0.2.0/24","dev":"halpasta0","scope":"link"}]`),
+		"duplicate route":       []byte(`[{"dst":"default","gateway":"192.0.2.1","dev":"halpasta0"},{"dst":"192.0.2.0/24","dev":"halpasta0","protocol":"kernel","scope":"link","prefsrc":"192.0.2.10"},{"dst":"192.0.2.0/24","dev":"halpasta0","protocol":"kernel","scope":"link","prefsrc":"192.0.2.10"}]`),
+		"second prefix variant": []byte(`[{"dst":"default","gateway":"192.0.2.1","dev":"halpasta0"},{"dst":"192.0.2.0/24","dev":"halpasta0","protocol":"kernel","scope":"link","prefsrc":"192.0.2.10"},{"dst":"192.0.2.0/24","dev":"halpasta0","protocol":"kernel","scope":"link","prefsrc":"192.0.2.10","metric":1}]`),
+		"zero prefix":           []byte(`[{"dst":"default","gateway":"192.0.2.1","dev":"halpasta0"},{"dst":"0.0.0.0/0","dev":"halpasta0","scope":"link"}]`),
+		"bad protocol":          []byte(`[{"dst":"default","gateway":"192.0.2.1","dev":"halpasta0","protocol":"redirect"},{"dst":"192.0.2.0/24","dev":"halpasta0","scope":"link"}]`),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if validRouteInspection(ipv4, goodIPv6RouteJSON(), testIface) {
+			if validRouteInspection(ipv4, goodIPv6RouteJSON(), testIface, goodAddressEvidence()) {
 				t.Fatal("inspection accepted route drift")
 			}
 		})
@@ -517,7 +526,7 @@ func TestLinuxTopologyRequiresExactStructuralAndReachabilityProof(t *testing.T) 
 
 func TestLinuxTopologyRejectsUnexpectedMetadataAndMismatchedRoutes(t *testing.T) {
 	metadataRoute := []byte(`[{"dst":"default","gateway":"192.0.2.1","dev":"halpasta0"},{"dst":"192.0.2.0/24","dev":"halpasta0","scope":"link"},{"dst":"169.254.169.254/32","dev":"halpasta0","scope":"link"}]`)
-	if validRouteInspection(metadataRoute, goodIPv6RouteJSON(), testIface) {
+	if validRouteInspection(metadataRoute, goodIPv6RouteJSON(), testIface, goodAddressEvidence()) {
 		t.Fatal("route proof accepted an unjustified metadata route")
 	}
 

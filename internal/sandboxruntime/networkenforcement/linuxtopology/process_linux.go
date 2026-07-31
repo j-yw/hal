@@ -9,8 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -18,10 +20,13 @@ import (
 type execBoundary struct{}
 
 type execProcess struct {
-	process   *os.Process
-	startTime string
-	done      chan struct{}
-	once      sync.Once
+	process         *os.Process
+	startTime       string
+	done            chan struct{}
+	once            sync.Once
+	creatorTID      int
+	creatorRetained atomic.Bool
+	creatorExitTID  atomic.Int64
 }
 
 func platformDependencies() (bool, ProcessStarter, CommandRunner, NamespaceOpener) {
@@ -40,32 +45,70 @@ func executableToolPaths(tools ToolPaths) bool {
 }
 
 func (e *execBoundary) Start(ctx context.Context, spec ProcessSpec) (ProcessHandle, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	type startResult struct {
+		handle *execProcess
+		err    error
 	}
-	stdout := newBoundedBuffer(spec.OutputLimit)
-	stderr := newBoundedBuffer(spec.OutputLimit)
-	command := exec.Command(spec.Path, spec.Args...)
-	command.Env = append([]string(nil), spec.Env...)
-	command.ExtraFiles = append([]*os.File(nil), spec.ExtraFiles...)
-	command.Stdout = stdout
-	command.Stderr = stderr
-	command.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
-	if err := command.Start(); err != nil {
-		return nil, err
-	}
-	startTime, err := readProcessStartTime(command.Process.Pid)
-	if err != nil {
-		_ = command.Process.Kill()
-		_ = command.Wait()
-		return nil, err
-	}
-	handle := &execProcess{process: command.Process, startTime: startTime, done: make(chan struct{})}
+	result := make(chan startResult, 1)
 	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		if err := ctx.Err(); err != nil {
+			result <- startResult{err: err}
+			return
+		}
+		stdout := newBoundedBuffer(spec.OutputLimit)
+		stderr := newBoundedBuffer(spec.OutputLimit)
+		command := exec.Command(spec.Path, spec.Args...)
+		command.Env = append([]string(nil), spec.Env...)
+		command.ExtraFiles = append([]*os.File(nil), spec.ExtraFiles...)
+		command.Stdout = stdout
+		command.Stderr = stderr
+		command.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+		if err := command.Start(); err != nil {
+			result <- startResult{err: err}
+			return
+		}
+		startTime, err := readProcessStartTime(command.Process.Pid)
+		if err == nil {
+			err = ctx.Err()
+		}
+		if err != nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			result <- startResult{err: err}
+			return
+		}
+		handle := &execProcess{
+			process: command.Process, startTime: startTime, done: make(chan struct{}),
+			creatorTID: syscall.Gettid(),
+		}
+		handle.creatorRetained.Store(true)
+		result <- startResult{handle: handle}
 		_ = command.Wait()
 		handle.once.Do(func() { close(handle.done) })
+		handle.creatorExitTID.Store(int64(syscall.Gettid()))
+		handle.creatorRetained.Store(false)
 	}()
-	return handle, nil
+	started := <-result
+	if started.err != nil {
+		return nil, started.err
+	}
+	return started.handle, nil
+}
+
+func (p *execProcess) creatorThreadExitTID() int {
+	if p == nil {
+		return 0
+	}
+	return int(p.creatorExitTID.Load())
+}
+
+func (p *execProcess) creatorThreadState() (int, bool) {
+	if p == nil {
+		return 0, false
+	}
+	return p.creatorTID, p.creatorRetained.Load()
 }
 
 func (p *execProcess) ownershipRecord() (privateProcessRecord, bool) {
@@ -84,21 +127,34 @@ func (p *execProcess) ownershipCurrent() bool {
 }
 
 func (e *execBoundary) Run(ctx context.Context, spec ProcessSpec) ([]byte, error) {
-	stdout := newBoundedBuffer(spec.OutputLimit)
-	stderr := newBoundedBuffer(spec.OutputLimit)
-	command := exec.CommandContext(ctx, spec.Path, spec.Args...)
-	command.Env = append([]string(nil), spec.Env...)
-	command.ExtraFiles = append([]*os.File(nil), spec.ExtraFiles...)
-	command.Stdout = stdout
-	command.Stderr = stderr
-	command.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
-	if err := command.Run(); err != nil {
-		return nil, err
+	type runResult struct {
+		output []byte
+		err    error
 	}
-	if stdout.Truncated() || stderr.Truncated() {
-		return nil, errors.New("command output exceeded bound")
-	}
-	return stdout.Bytes(), nil
+	result := make(chan runResult, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		stdout := newBoundedBuffer(spec.OutputLimit)
+		stderr := newBoundedBuffer(spec.OutputLimit)
+		command := exec.CommandContext(ctx, spec.Path, spec.Args...)
+		command.Env = append([]string(nil), spec.Env...)
+		command.ExtraFiles = append([]*os.File(nil), spec.ExtraFiles...)
+		command.Stdout = stdout
+		command.Stderr = stderr
+		command.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+		if err := command.Run(); err != nil {
+			result <- runResult{err: err}
+			return
+		}
+		if stdout.Truncated() || stderr.Truncated() {
+			result <- runResult{err: errors.New("command output exceeded bound")}
+			return
+		}
+		result <- runResult{output: stdout.Bytes()}
+	}()
+	completed := <-result
+	return completed.output, completed.err
 }
 
 func (p *execProcess) PID() int {

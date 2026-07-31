@@ -18,6 +18,9 @@ func (*fileOwnershipLease) Reconcile(context.Context) error { return ErrUnsuppor
 func (*fileOwnershipLease) Record(context.Context, ProcessHandle, ProcessHandle, *NamespaceHandle) error {
 	return ErrUnsupported
 }
+func (*fileOwnershipLease) ArmMapping(context.Context, ProcessHandle, *NamespaceHandle) error {
+	return ErrUnsupported
+}
 func (*fileOwnershipLease) Retire(Identity) error { return ErrUnsupported }
 func (*fileOwnershipLease) retire(Identity) error { return ErrUnsupported }
 func (*fileOwnershipLease) Release() error        { return nil }
