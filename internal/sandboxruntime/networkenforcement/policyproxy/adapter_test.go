@@ -327,6 +327,21 @@ func (l *acceptProbeListener) Close() error {
 
 func (l *acceptProbeListener) Addr() net.Addr { return &net.TCPAddr{} }
 
+type blockingCloseConn struct {
+	net.Conn
+	entered chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (c *blockingCloseConn) Close() error {
+	if c.calls.Add(1) == 1 {
+		close(c.entered)
+		<-c.release
+	}
+	return c.Conn.Close()
+}
+
 func TestL6PolicyProxyReframesBufferedChunkedTrailerAndExpectRequest(t *testing.T) {
 	upstream := newHTTPFixture(t)
 	var calls atomic.Int32
@@ -678,6 +693,7 @@ func TestL6PolicyProxyRejectsDNSRebindingMixedAndUnsafeAnswersBeforeDial(t *test
 		{name: "NAT64 private", addrs: []netip.Addr{netip.MustParseAddr("64:ff9b::a00:1")}},
 		{name: "NAT64 metadata", addrs: []netip.Addr{netip.MustParseAddr("64:ff9b::a9fe:a9fe")}},
 		{name: "NAT64 local use", addrs: []netip.Addr{netip.MustParseAddr("64:ff9b:1::a9fe:a9fe")}},
+		{name: "deprecated IPv6 site local", addrs: []netip.Addr{netip.MustParseAddr("fec0::1")}},
 		{name: "zoned", addrs: []netip.Addr{netip.MustParseAddr("fe80::1%eth0")}},
 		{name: "mixed", addrs: []netip.Addr{netip.MustParseAddr("93.184.216.34"), netip.MustParseAddr("127.0.0.1")}},
 	}
@@ -968,6 +984,66 @@ func TestL6PolicyProxyLifecycleCleanupCancellationAndProxyOnlyProof(t *testing.T
 	if _, err := service.StopPolicyProxy(canceled, networkenforcement.NewPolicyProxyLifecycleRequest(plan, started, stopped)); err != nil {
 		t.Fatalf("idempotent StopPolicyProxy error: %v", err)
 	}
+}
+
+func TestL6PolicyProxyStartWaitsForStopCleanup(t *testing.T) {
+	adapter := newTestAdapter(t, testAdapterOptions{})
+	startAdapter(t, adapter)
+	request := networkenforcement.ProxyListenerLifecycleRequest{
+		Plan: networkenforcement.NewSanitizedPlan(testPolicy().PlanMetadata()),
+	}
+
+	serverSide, peerSide := net.Pipe()
+	t.Cleanup(func() { _ = peerSide.Close() })
+	blocking := &blockingCloseConn{
+		Conn:    serverSide,
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	var releaseOnce sync.Once
+	releaseCleanup := func() {
+		releaseOnce.Do(func() { close(blocking.release) })
+	}
+	t.Cleanup(releaseCleanup)
+	adapter.mu.Lock()
+	adapter.connections[blocking] = struct{}{}
+	adapter.mu.Unlock()
+
+	stopDone := make(chan error, 1)
+	go func() {
+		_, err := adapter.StopProxyListener(context.Background(), request)
+		stopDone <- err
+	}()
+	select {
+	case <-blocking.entered:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not reach owned connection cleanup")
+	}
+
+	startDone := make(chan error, 1)
+	go func() {
+		_, err := adapter.StartProxyListener(context.Background(), request)
+		startDone <- err
+	}()
+	select {
+	case err := <-startDone:
+		releaseCleanup()
+		<-stopDone
+		if err == nil {
+			stopAdapter(t, adapter)
+		}
+		t.Fatal("Start completed while the prior generation was still cleaning up")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseCleanup()
+	if err := <-stopDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-startDone; err != nil {
+		t.Fatal(err)
+	}
+	stopAdapter(t, adapter)
 }
 
 func TestL6PolicyProxyLifecycleRejectsMismatchedPolicySnapshotAndCannotRelabelProof(t *testing.T) {
