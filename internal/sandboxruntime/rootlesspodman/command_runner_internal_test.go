@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestDefaultCommandRunnerBoundsLifecycleOutputBeforeCapture(t *testing.T) {
+func TestLifecycleCommandBoundsOutputBeforeCapture(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable() error: %v", err)
@@ -21,7 +21,7 @@ func TestDefaultCommandRunnerBoundsLifecycleOutputBeforeCapture(t *testing.T) {
 			defer cancel()
 			request := CommandRequest{
 				Operation: OperationInspect,
-				Args:      []string{executable, "-test.run=^TestDefaultCommandRunnerOutputHelper$"},
+				Args:      []string{executable, "-test.run=^TestLifecycleCommandOutputHelper$"},
 				Env:       map[string]string{"HAL_ROOTLESS_PODMAN_OUTPUT_HELPER": stream},
 			}
 			if stream == "stdout" {
@@ -30,7 +30,7 @@ func TestDefaultCommandRunnerBoundsLifecycleOutputBeforeCapture(t *testing.T) {
 				request.MaxStderrBytes = 1024
 			}
 
-			result, err := (DefaultCommandRunner{}).RunLifecycleCommand(ctx, request)
+			result, err := runDefaultCommand(ctx, request)
 			if !errors.Is(err, ErrCommandOutputLimitExceeded) {
 				t.Fatalf("RunLifecycleCommand() error = %v, want output-limit sentinel", err)
 			}
@@ -44,14 +44,14 @@ func TestDefaultCommandRunnerBoundsLifecycleOutputBeforeCapture(t *testing.T) {
 	}
 }
 
-func TestDefaultCommandRunnerZeroOutputLimitsPreserveCapture(t *testing.T) {
+func TestLifecycleCommandZeroOutputLimitsPreserveCapture(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable() error: %v", err)
 	}
-	result, err := (DefaultCommandRunner{}).RunLifecycleCommand(context.Background(), CommandRequest{
+	result, err := runDefaultCommand(context.Background(), CommandRequest{
 		Operation: OperationInspect,
-		Args:      []string{executable, "-test.run=^TestDefaultCommandRunnerOutputHelper$"},
+		Args:      []string{executable, "-test.run=^TestLifecycleCommandOutputHelper$"},
 		Env:       map[string]string{"HAL_ROOTLESS_PODMAN_OUTPUT_HELPER": "compatible"},
 	})
 	if err != nil {
@@ -62,7 +62,7 @@ func TestDefaultCommandRunnerZeroOutputLimitsPreserveCapture(t *testing.T) {
 	}
 }
 
-func TestDefaultCommandRunnerOutputHelper(t *testing.T) {
+func TestLifecycleCommandOutputHelper(t *testing.T) {
 	switch os.Getenv("HAL_ROOTLESS_PODMAN_OUTPUT_HELPER") {
 	case "stdout":
 		_, _ = os.Stdout.Write([]byte(strings.Repeat("private-output-canary", 1<<16)))
