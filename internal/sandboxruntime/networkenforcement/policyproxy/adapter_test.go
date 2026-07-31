@@ -1175,6 +1175,36 @@ func TestL6PolicyProxyStartWaitsForStopCleanup(t *testing.T) {
 	stopAdapter(t, adapter)
 }
 
+func TestL7PolicyProxyLiveEndpointStopIsExactAndIdempotent(t *testing.T) {
+	adapter := newTestAdapter(t, testAdapterOptions{})
+	startAdapter(t, adapter)
+	first, ok := adapter.LiveEndpoint()
+	if !ok {
+		t.Fatal("first live endpoint unavailable")
+	}
+	request := networkenforcement.ProxyListenerLifecycleRequest{Plan: networkenforcement.NewSanitizedPlan(testPolicy().PlanMetadata())}
+	if _, err := adapter.StopLiveEndpoint(context.Background(), first, request); err != nil {
+		t.Fatalf("first exact stop: %v", err)
+	}
+	if _, err := adapter.StopLiveEndpoint(context.Background(), first, request); err != nil {
+		t.Fatalf("idempotent exact stop: %v", err)
+	}
+	startAdapter(t, adapter)
+	second, ok := adapter.LiveEndpoint()
+	if !ok {
+		t.Fatal("second live endpoint unavailable")
+	}
+	if _, err := adapter.StopLiveEndpoint(context.Background(), first, request); err == nil {
+		t.Fatal("stale generation stopped replacement listener")
+	}
+	if _, err := adapter.ActiveLiveEndpoint(context.Background(), second, request); err != nil {
+		t.Fatalf("replacement listener lost after stale stop: %v", err)
+	}
+	if _, err := adapter.StopLiveEndpoint(context.Background(), second, request); err != nil {
+		t.Fatalf("replacement exact stop: %v", err)
+	}
+}
+
 func TestL6PolicyProxyStopWaitsForUnexpectedServeFailureCleanup(t *testing.T) {
 	adapter := newTestAdapter(t, testAdapterOptions{})
 	startAdapter(t, adapter)

@@ -58,6 +58,10 @@ cannot replace the inspected default-drop IP policy.
   sequencing, explicit pasta arguments, container-label and namespace binding,
   proxy environment injection, inspected raw-packet capability removal, and
   its per-target topology session.
+- `internal/sandboxruntime/rootlesspodman/l7network` is the explicit concrete
+  composition package. It imports the concrete policy proxy and Linux rule
+  adapters while the parent `rootlesspodman` package keeps its concrete-adapter
+  import guard unchanged.
 - `internal/sandboxruntime/microvm/firecrackerhost` owns the Firecracker
   topology session, TAP lifecycle, namespace-bound process launch, and the
   ordering between topology, Firecracker, guest readiness, and teardown.
@@ -190,6 +194,15 @@ The topology sub-step in item 7 produces only prepared structural and mapping
 evidence. Item 8 belongs to the higher composition after it has revalidated
 the exact retained L6 proxy generation and rule proof.
 
+The concrete `l7network.Factory` is disabled unless explicitly injected. It
+retains an opaque typed `policyproxy.LiveEndpoint` generation, resolves the
+exact full-ID Podman init user/network namespace with before/after label and
+start-identity inspection, builds `linuxrules.RuleProfileWorkloadOutput` with a
+target-bound `PodmanRawPacketIsolationVerifier`, and checks the same listener
+generation immediately before and after rule application/inspection. Its
+ordinary `Inspect` path repeats listener, structural rule, and raw-packet
+inspection without applying rules again.
+
 The execution adapter injects `HTTP_PROXY`, `HTTPS_PROXY`, and lowercase
 equivalents from typed live state, clears uncontrolled proxy bypass variables,
 and never persists the endpoint. Removing those variables cannot restore
@@ -272,6 +285,16 @@ recorded process start identity plus namespace identity and a stable process
 handle; identity mismatch blocks replacement without signalling or deletion.
 Retired topology-generation tombstones prevent generation reuse across daemon
 restart.
+
+Rootless-Podman restart cleanup enters through `l7network.Reconciler`. It pins
+the first exact target ID/name/runtime tuple across retries, reconstructs no
+active proxy or enforcement proof, reopens only label-correlated Podman
+namespace descriptors, quarantines the exact owned table, requires exact
+container stop, proves rule absence, closes the retained descriptors, and only
+then deletes that exact container. Quarantine, stop, rule cleanup, descriptor
+close, and delete failures retain ordered state for retry. A real daemon
+process exit closes its process-owned L6 listener; same-process listener loss
+is handled by the retained session before it can be treated as restart.
 
 Before mapper launch the journal records a private `mappingArmed` marker plus
 the exact daemon PID/start identity, keeper, and namespace identity. The

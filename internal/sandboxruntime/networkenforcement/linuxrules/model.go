@@ -324,6 +324,12 @@ func validConfiguredIPv6Link(workload, gateway netip.Addr, prefixBits uint8) boo
 	if prefixBits == 0 || prefixBits > 128 || !validConfiguredIPv6Address(workload) || !validConfiguredIPv6Address(gateway) || workload == gateway {
 		return false
 	}
+	// Rootless pasta uses a link-local next hop for a globally addressed
+	// workload interface. The exact route/interface inspection belongs to the
+	// topology resolver; the rule model admits that canonical IPv6 link shape.
+	if gateway.IsLinkLocalUnicast() && !workload.IsLinkLocalUnicast() {
+		return true
+	}
 	prefix := netip.PrefixFrom(workload, int(prefixBits)).Masked()
 	return prefix.IsValid() && prefix.Contains(gateway)
 }

@@ -29,17 +29,21 @@ var _ networkenforcement.ProxyListenerAdapter = (*Adapter)(nil)
 type Adapter struct {
 	config Config
 
-	lifecycleMu sync.Mutex
-	mu          sync.Mutex
-	server      *http.Server
-	listener    net.Listener
-	endpoint    string
-	cancel      context.CancelFunc
-	done        chan error
-	sem         chan struct{}
-	connections map[net.Conn]struct{}
-	generation  uint64
-	stopping    bool
+	lifecycleMu           sync.Mutex
+	mu                    sync.Mutex
+	server                *http.Server
+	listener              net.Listener
+	endpoint              string
+	cancel                context.CancelFunc
+	done                  chan error
+	sem                   chan struct{}
+	connections           map[net.Conn]struct{}
+	generation            uint64
+	loss                  chan struct{}
+	lossOnce              *sync.Once
+	lastStoppedGeneration uint64
+	lastStoppedAddress    string
+	stopping              bool
 
 	// beforeTunnelTrack is a package-test synchronization seam. Production
 	// construction leaves it nil.
@@ -144,12 +148,16 @@ func (a *Adapter) StartProxyListener(ctx context.Context, request networkenforce
 	done := make(chan error, 1)
 	a.generation++
 	generation := a.generation
+	loss := make(chan struct{})
+	lossOnce := &sync.Once{}
 	a.stopping = false
 	a.listener = listener
 	a.endpoint = listener.Addr().String()
 	a.cancel = cancel
 	a.server = server
 	a.done = done
+	a.loss = loss
+	a.lossOnce = lossOnce
 	go func() {
 		serveErr := server.Serve(listener)
 		if errors.Is(serveErr, http.ErrServerClosed) {
@@ -184,6 +192,16 @@ func (a *Adapter) ActiveProxyListener(ctx context.Context, request networkenforc
 // StopProxyListener performs bounded idempotent cleanup even when the caller
 // context has already been canceled.
 func (a *Adapter) StopProxyListener(_ context.Context, request networkenforcement.ProxyListenerLifecycleRequest) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
+	return a.stopProxyListener(request, nil)
+}
+
+// StopLiveEndpoint stops only the exact retained generation. A stale handle
+// can never stop a replacement listener.
+func (a *Adapter) StopLiveEndpoint(_ context.Context, endpoint LiveEndpoint, request networkenforcement.ProxyListenerLifecycleRequest) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
+	return a.stopProxyListener(request, &endpoint)
+}
+
+func (a *Adapter) stopProxyListener(request networkenforcement.ProxyListenerLifecycleRequest, expected *LiveEndpoint) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
 	if !a.matchesPlan(request) {
 		return a.metadata(request, networkenforcement.LifecycleStatusFailed, networkenforcement.LifecycleReasonCapabilityMissing), safeAdapterError("stop")
 	}
@@ -191,12 +209,24 @@ func (a *Adapter) StopProxyListener(_ context.Context, request networkenforcemen
 	defer a.lifecycleMu.Unlock()
 
 	a.mu.Lock()
+	if expected != nil {
+		if expected.generation != 0 && expected.generation == a.lastStoppedGeneration && expected.address != "" && expected.address == a.lastStoppedAddress && a.listener == nil {
+			a.mu.Unlock()
+			return a.metadata(request, networkenforcement.LifecycleStatusStopped, networkenforcement.LifecycleReasonStopped), nil
+		}
+		if expected.generation == 0 || expected.generation != a.generation || expected.address == "" || expected.address != a.endpoint {
+			a.mu.Unlock()
+			return a.metadata(request, networkenforcement.LifecycleStatusFailed, networkenforcement.LifecycleReasonProofMismatch), safeAdapterError("stop")
+		}
+	}
 	a.stopping = true
 	generation := a.generation
 	server := a.server
 	listener := a.listener
 	cancel := a.cancel
 	done := a.done
+	loss := a.loss
+	lossOnce := a.lossOnce
 	connections := make([]net.Conn, 0, len(a.connections))
 	for conn := range a.connections {
 		connections = append(connections, conn)
@@ -206,7 +236,16 @@ func (a *Adapter) StopProxyListener(_ context.Context, request networkenforcemen
 	a.endpoint = ""
 	a.cancel = nil
 	a.done = nil
+	a.loss = nil
+	a.lossOnce = nil
+	if listener != nil {
+		a.lastStoppedGeneration = generation
+		a.lastStoppedAddress = expectedAddress(expected, listener)
+	}
 	a.mu.Unlock()
+	if lossOnce != nil {
+		lossOnce.Do(func() { close(loss) })
+	}
 
 	if cancel != nil {
 		cancel()
@@ -246,6 +285,16 @@ func (a *Adapter) StopProxyListener(_ context.Context, request networkenforcemen
 	return a.metadata(request, networkenforcement.LifecycleStatusStopped, networkenforcement.LifecycleReasonStopped), nil
 }
 
+func expectedAddress(expected *LiveEndpoint, listener net.Listener) string {
+	if expected != nil {
+		return expected.address
+	}
+	if listener != nil {
+		return listener.Addr().String()
+	}
+	return ""
+}
+
 func (a *Adapter) superviseServeExit(generation uint64, server *http.Server, listener net.Listener, cancel context.CancelFunc, serveErr error) {
 	if serveErr == nil {
 		return
@@ -259,6 +308,8 @@ func (a *Adapter) superviseServeExit(generation uint64, server *http.Server, lis
 		return
 	}
 	a.stopping = true
+	a.lastStoppedGeneration = generation
+	a.lastStoppedAddress = a.endpoint
 	connections := make([]net.Conn, 0, len(a.connections))
 	for conn := range a.connections {
 		connections = append(connections, conn)
@@ -269,7 +320,14 @@ func (a *Adapter) superviseServeExit(generation uint64, server *http.Server, lis
 	a.endpoint = ""
 	a.cancel = nil
 	a.done = nil
+	loss := a.loss
+	lossOnce := a.lossOnce
+	a.loss = nil
+	a.lossOnce = nil
 	a.mu.Unlock()
+	if lossOnce != nil {
+		lossOnce.Do(func() { close(loss) })
+	}
 
 	cancel()
 	for _, conn := range connections {
@@ -293,6 +351,43 @@ func (a *Adapter) Endpoint() (string, bool) {
 	default:
 		return a.endpoint, true
 	}
+}
+
+// LiveEndpoint returns an opaque handle bound to the currently retained
+// listener generation.
+func (a *Adapter) LiveEndpoint() (LiveEndpoint, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.endpoint == "" || a.listener == nil || a.loss == nil || a.lossOnce == nil {
+		return LiveEndpoint{}, false
+	}
+	select {
+	case <-a.done:
+		return LiveEndpoint{}, false
+	default:
+		return LiveEndpoint{address: a.endpoint, generation: a.generation, loss: a.loss}, true
+	}
+}
+
+// ActiveLiveEndpoint checks active state and exact generation identity under
+// the adapter lifecycle locks.
+func (a *Adapter) ActiveLiveEndpoint(ctx context.Context, endpoint LiveEndpoint, request networkenforcement.ProxyListenerLifecycleRequest) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
+	if err := ctx.Err(); err != nil || !a.matchesPlan(request) {
+		return a.metadata(request, networkenforcement.LifecycleStatusFailed, networkenforcement.LifecycleReasonActiveCheckFailed), safeAdapterError("active")
+	}
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if endpoint.generation == 0 || endpoint.generation != a.generation || endpoint.address == "" || endpoint.address != a.endpoint || a.listener == nil || a.server == nil || a.done == nil {
+		return a.metadata(request, networkenforcement.LifecycleStatusFailed, networkenforcement.LifecycleReasonProofMismatch), safeAdapterError("active")
+	}
+	select {
+	case <-a.done:
+		return a.metadata(request, networkenforcement.LifecycleStatusFailed, networkenforcement.LifecycleReasonActiveCheckFailed), safeAdapterError("active")
+	default:
+	}
+	return a.metadata(request, networkenforcement.LifecycleStatusActive, networkenforcement.LifecycleReasonActive), nil
 }
 
 func (a *Adapter) matchesPlan(request networkenforcement.ProxyListenerLifecycleRequest) bool {

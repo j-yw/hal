@@ -1,0 +1,369 @@
+//go:build linux && podman_integration && network_enforcement_live && l7_linux_network_integration
+
+package rootlesspodman_test
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxrules"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/policyproxy"
+	"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"
+	"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman/l7network"
+)
+
+func TestL7PreparedLinuxRootlessPodmanNetworkTopology(t *testing.T) {
+	for _, marker := range []string{"HAL_NETWORK_ENFORCEMENT_LIVE", "HAL_NETWORK_ENFORCEMENT_LIVE_PROXY", "HAL_NETWORK_ENFORCEMENT_LIVE_FIREWALL", "HAL_L7_LINUX_NETWORK_INTEGRATION"} {
+		if os.Getenv(marker) != "1" {
+			t.Fatalf("%s=1 is required", marker)
+		}
+	}
+	image := strings.TrimSpace(os.Getenv("HAL_PODMAN_TEST_IMAGE"))
+	if image == "" {
+		t.Fatal("HAL_PODMAN_TEST_IMAGE must name an already-local image")
+	}
+	podmanPath := requiredTool(t, "podman")
+	nsenterPath := requiredTool(t, "nsenter")
+	ipPath := requiredTool(t, "ip")
+	nftPath := requiredTool(t, "nft")
+	if childJournal := strings.TrimSpace(os.Getenv("HAL_L7_RESTART_CHILD_JOURNAL")); childJournal != "" {
+		runL7RestartChild(t, childJournal, image, podmanPath, nsenterPath, ipPath, nftPath)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	if err := exec.CommandContext(ctx, podmanPath, "image", "exists", image).Run(); err != nil {
+		t.Fatal("selected image is not already local")
+	}
+
+	httpFixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "fixture-ok") }))
+	defer httpFixture.Close()
+	echoListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer echoListener.Close()
+	echoDone := make(chan struct{})
+	go func() {
+		defer close(echoDone)
+		for {
+			connection, acceptErr := echoListener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go func(c net.Conn) { defer c.Close(); _, _ = io.Copy(c, c) }(connection)
+		}
+	}()
+
+	request := networkenforcement.PlanRequest{ID: "l7-plan-a", Source: networkenforcement.PlanSourceRuntime, Operation: "l7_topology",
+		PolicySnapshot: &networkenforcement.PolicySnapshotIdentity{ID: "l7-policy-a", Version: "v1", Preset: networkenforcement.PolicyPresetAllowListed, RuleSetID: "l7-rules-a"},
+		RequestedPolicy: networkenforcement.RequestedNetworkPosture{Preset: networkenforcement.PolicyPresetAllowListed, AllowlistMode: networkenforcement.AllowlistModeEnforce, RuleSetID: "l7-rules-a",
+			DefaultPosture: networkenforcement.DefaultPostureDenyByDefault, PrivateNetwork: networkenforcement.PostureBlock, MetadataEndpoint: networkenforcement.PostureBlock,
+			TCP: networkenforcement.PostureBlock, UDP: networkenforcement.PostureBlock, ICMP: networkenforcement.PostureBlock,
+			HTTP: networkenforcement.ProxyRoutingModeRouteViaProxy, HTTPS: networkenforcement.ProxyRoutingModeRouteViaProxy,
+			ProxySessionID: "l7-proxy-session-a", ProxyMechanism: networkenforcement.EnforcementMechanismProxy,
+			FirewallMode: networkenforcement.FirewallIntentModeApply, FirewallMechanism: networkenforcement.EnforcementMechanismFirewall,
+			AllowlistRules: []networkenforcement.AllowlistRule{{ID: "l7-allow-a", Category: networkenforcement.AllowlistRuleCategoryDomain, Value: "allowed.test"}}}}
+	plan := networkenforcement.BuildPlan(request)
+	policy := networkenforcement.NewPolicyProxyPolicyInput(plan, request.RequestedPolicy.AllowlistRules)
+	httpAddress := strings.TrimPrefix(httpFixture.URL, "http://")
+	echoAddress := echoListener.Addr().String()
+	adapter, err := policyproxy.New(policyproxy.Config{Policy: policy, ListenAddress: "127.0.0.1:0",
+		Resolver: func(context.Context, string, string) ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
+		},
+		DialContext: func(dialCtx context.Context, network, address string) (net.Conn, error) {
+			_, port, _ := net.SplitHostPort(address)
+			target := httpAddress
+			if port == "443" {
+				target = echoAddress
+			}
+			return (&net.Dialer{}).DialContext(dialCtx, network, target)
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := l7network.NewProductionProxy(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := l7network.NewProductionNamespaceResolver(l7network.ProductionNamespaceResolverOptions{LifecycleRunner: rootlesspodman.DefaultCommandRunner{}, PodmanPath: podmanPath, NSenterPath: nsenterPath, IPPath: ipPath, MaxOutputBytes: 256 << 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor, err := linuxrules.NewProductionExecutor(linuxrules.ProductionExecutorOptions{NSenterPath: nsenterPath, NFTPath: nftPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := linuxrules.NewAdapter(executor, linuxrules.AdapterOptions{})
+	identity := rootlesspodman.NetworkTopologyIdentity{SandboxID: "l7-sandbox-a", ExecutionID: "l7-execution-a", WorkerID: "l7-worker-a", RuntimeDriver: rootlesspodman.DriverID, RuntimeGenerationID: "l7-runtime-a", PlanID: plan.ID, PolicySnapshotID: plan.PolicySnapshot.ID, ProxySessionID: plan.Proxy.ProxySessionID, ProxyGenerationID: "l7-proxy-generation-a", TopologyGenerationID: "l7-topology-a", RuleGenerationID: "l7-rule-a"}
+	factory, err := l7network.NewFactory(l7network.FactoryOptions{Identity: identity, Plan: plan, Proxy: proxy, NamespaceResolver: resolver, Rules: rules,
+		RawPacketVerifierFactory: l7network.NewProductionRawPacketVerifierFactory(rootlesspodman.DefaultCommandRunner{}, podmanPath), GuestProxyAddress: "169.254.77.2", TableName: "hal_l7_live_a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := rootlesspodman.DefaultCommandRunner{}
+	driver := rootlesspodman.New(rootlesspodman.Options{LifecycleRunner: runner, ExecRunner: runner, CopyRunner: runner, PodmanPath: podmanPath, Image: image, WorkDir: "/", JobExecutionSupported: true, NetworkTopologyFactory: factory})
+	containerName := "hal-l7-live-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	target, err := driver.Create(ctx, sandboxruntime.CreateRequest{Name: containerName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exactID := target.Runtime.RuntimeID
+	cleanupTarget := *target
+	deletePending := true
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		cleanupErr := runL7PodmanExactContainerCleanup(deletePending, func() error { return driver.Delete(cleanupCtx, sandboxruntime.LifecycleRequest{Target: cleanupTarget}) }, func() error { return proveL7PodmanExactContainerAbsent(cleanupCtx, podmanPath, exactID) })
+		if cleanupErr != nil {
+			t.Errorf("exact cleanup failed: %v", cleanupErr)
+		}
+	})
+	if !validL7PodmanExactContainerID(exactID) {
+		t.Fatal("Podman did not return an exact container ID")
+	}
+	target, err = driver.Start(ctx, sandboxruntime.LifecycleRequest{Target: *target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupTarget = *target
+
+	probePath := buildL7Probe(t, ctx)
+	if err := driver.CopyIn(ctx, sandboxruntime.CopyRequest{Target: *target, SourcePath: probePath, DestinationPath: "/tmp/l7probe"}); err != nil {
+		t.Fatal(err)
+	}
+	runProbe := func(name string, args ...string) {
+		t.Helper()
+		command := append([]string{"/tmp/l7probe"}, args...)
+		if _, err := driver.Exec(ctx, sandboxruntime.ExecRequest{Target: *target, Args: command}); err != nil {
+			t.Fatalf("%s probe failed: %v", name, err)
+		}
+	}
+	runProbe("allowed HTTP", "http", "http://allowed.test/ok")
+	runProbe("allowed CONNECT", "connect", "allowed.test:443")
+	for _, probe := range []struct{ name, mode, target string }{
+		{"direct IPv4", "tcp", "192.0.2.1:80"}, {"direct IPv6", "tcp", "[2001:db8::1]:80"}, {"TCP DNS", "tcp", "192.0.2.53:53"}, {"UDP DNS", "udp", "192.0.2.53:53"},
+		{"private", "tcp", "10.0.0.1:80"}, {"ULA", "tcp", "[fd00::1]:80"}, {"loopback", "tcp", "127.0.0.1:80"}, {"link-local", "tcp", "169.254.1.1:80"},
+		{"metadata", "tcp", "169.254.169.254:80"}, {"NAT64", "tcp", "[64:ff9b::c000:201]:80"}, {"UDP", "udp", "192.0.2.1:9"},
+	} {
+		runProbe(probe.name, probe.mode, probe.target)
+	}
+	runProbe("ICMP", "icmp")
+	runProbe("AF_PACKET raw socket permission", "packet")
+	correlation := networkenforcement.EnforcementCorrelation{SandboxID: identity.SandboxID, ExecutionID: identity.ExecutionID, WorkerID: identity.WorkerID, RuntimeID: identity.RuntimeGenerationID, PlanID: identity.PlanID, PolicySnapshotID: identity.PolicySnapshotID, ProxySessionID: identity.ProxySessionID, ProxyGenerationID: identity.ProxyGenerationID, TopologyGenerationID: identity.TopologyGenerationID, RuleGenerationID: identity.RuleGenerationID}
+	verifier := rootlesspodman.NewPodmanRawPacketIsolationVerifier(rootlesspodman.PodmanRawPacketIsolationVerifierOptions{LifecycleRunner: runner, PodmanPath: podmanPath, Identity: identity, Target: *target})
+	if proof, err := verifier.VerifyRawPacketIsolation(ctx, correlation); err != nil || !networkenforcement.RawPacketIsolationProofMatches(proof, correlation) {
+		t.Fatal("post-AF_PACKET capability reinspection failed")
+	}
+	if _, err := (networkenforcement.ProxyListenerLifecycleRunner{Adapter: adapter}).Stop(ctx, plan, nil); err != nil {
+		t.Fatal("proxy loss injection failed")
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		_, execErr := driver.Exec(ctx, sandboxruntime.ExecRequest{Target: *target, Args: []string{"/tmp/l7probe", "http", "http://allowed.test/ok"}})
+		if execErr != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("proxy loss did not revoke proof before exec")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if err := driver.Delete(ctx, sandboxruntime.LifecycleRequest{Target: *target}); err != nil {
+		t.Fatal(err)
+	}
+	deletePending = false
+	if err := proveL7PodmanExactContainerAbsent(ctx, podmanPath, exactID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := adapter.Endpoint(); ok {
+		t.Fatal("policy proxy listener remained after cleanup")
+	}
+	runL7PreparedRestartReconciliation(t, image, podmanPath, nsenterPath, ipPath, nftPath)
+}
+
+func requiredTool(t *testing.T, name string) string {
+	t.Helper()
+	path, err := exec.LookPath(name)
+	if err != nil {
+		t.Fatalf("%s is required", name)
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return absolute
+}
+func buildL7Probe(t *testing.T, ctx context.Context) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "l7probe")
+	command := exec.CommandContext(ctx, "go", "build", "-o", path, "./testdata/l7probe")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build local L7 probe: %s", strings.TrimSpace(string(output)))
+	}
+	return path
+}
+
+type l7RestartJournal struct {
+	Identity  rootlesspodman.NetworkTopologyIdentity `json:"identity"`
+	Target    sandboxruntime.Target                  `json:"target"`
+	ProxyPort uint16                                 `json:"proxyPort"`
+}
+
+func runL7RestartChild(t *testing.T, journalPath, image, podmanPath, nsenterPath, ipPath, nftPath string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	plan, policy := restartPlanAndPolicy()
+	adapter, err := policyproxy.New(policyproxy.Config{Policy: policy, ListenAddress: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := l7network.NewProductionProxy(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := l7network.NewProductionNamespaceResolver(l7network.ProductionNamespaceResolverOptions{LifecycleRunner: rootlesspodman.DefaultCommandRunner{}, PodmanPath: podmanPath, NSenterPath: nsenterPath, IPPath: ipPath, MaxOutputBytes: 256 << 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor, err := linuxrules.NewProductionExecutor(linuxrules.ProductionExecutorOptions{NSenterPath: nsenterPath, NFTPath: nftPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := restartIdentity(plan)
+	factory, err := l7network.NewFactory(l7network.FactoryOptions{Identity: identity, Plan: plan, Proxy: proxy, NamespaceResolver: resolver, Rules: linuxrules.NewAdapter(executor, linuxrules.AdapterOptions{}), RawPacketVerifierFactory: l7network.NewProductionRawPacketVerifierFactory(rootlesspodman.DefaultCommandRunner{}, podmanPath), GuestProxyAddress: "169.254.77.3", TableName: "hal_l7_restart_a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := rootlesspodman.DefaultCommandRunner{}
+	driver := rootlesspodman.New(rootlesspodman.Options{LifecycleRunner: runner, ExecRunner: runner, PodmanPath: podmanPath, Image: image, WorkDir: "/", JobExecutionSupported: true, NetworkTopologyFactory: factory})
+	target, err := driver.Create(ctx, sandboxruntime.CreateRequest{Name: "hal-l7-restart-" + strconv.FormatInt(time.Now().UnixNano(), 36)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint, ok := adapter.Endpoint()
+	if !ok {
+		t.Fatal("restart child listener unavailable")
+	}
+	_, portText, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port64, err := strconv.ParseUint(portText, 10, 16)
+	if err != nil || port64 == 0 {
+		t.Fatal("restart child listener port unavailable")
+	}
+	journal := l7RestartJournal{Identity: identity, Target: *target, ProxyPort: uint16(port64)}
+	payload, err := json.Marshal(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(journalPath, payload, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = driver.Start(ctx, sandboxruntime.LifecycleRequest{Target: *target}); err != nil {
+		t.Fatal(err)
+	}
+	os.Exit(0)
+}
+
+func runL7PreparedRestartReconciliation(t *testing.T, image, podmanPath, nsenterPath, ipPath, nftPath string) {
+	t.Helper()
+	journalPath := filepath.Join(t.TempDir(), "restart.json")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run", "^TestL7PreparedLinuxRootlessPodmanNetworkTopology$", "-test.count=1")
+	command.Env = append(os.Environ(), "HAL_L7_RESTART_CHILD_JOURNAL="+journalPath)
+	if err := command.Run(); err != nil {
+		cleanupRestartJournal(t, journalPath, podmanPath)
+		t.Fatal("restart child failed")
+	}
+	payload, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal("restart journal unavailable")
+	}
+	var journal l7RestartJournal
+	if json.Unmarshal(payload, &journal) != nil || journal.ProxyPort == 0 || !validL7PodmanExactContainerID(journal.Target.ID) {
+		t.Fatal("restart journal invalid")
+	}
+	deletePending := true
+	t.Cleanup(func() {
+		if deletePending {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cleanupCancel()
+			_ = exec.CommandContext(cleanupCtx, podmanPath, "rm", "--force", journal.Target.ID).Run()
+		}
+	})
+	if connection, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(journal.ProxyPort))), 100*time.Millisecond); err == nil {
+		connection.Close()
+		t.Fatal("restart child listener survived process exit")
+	}
+	resolver, err := l7network.NewProductionNamespaceResolver(l7network.ProductionNamespaceResolverOptions{LifecycleRunner: rootlesspodman.DefaultCommandRunner{}, PodmanPath: podmanPath, NSenterPath: nsenterPath, IPPath: ipPath, MaxOutputBytes: 256 << 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor, err := linuxrules.NewProductionExecutor(linuxrules.ProductionExecutorOptions{NSenterPath: nsenterPath, NFTPath: nftPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconciler, err := l7network.NewReconciler(l7network.ReconcilerOptions{Identity: journal.Identity, NamespaceResolver: resolver, Rules: linuxrules.NewAdapter(executor, linuxrules.AdapterOptions{}), RawPacketVerifierFactory: l7network.NewProductionRawPacketVerifierFactory(rootlesspodman.DefaultCommandRunner{}, podmanPath), Runtime: l7network.ProductionRuntimeReconciler{Runner: rootlesspodman.DefaultCommandRunner{}, PodmanPath: podmanPath}, GuestProxyAddress: "169.254.77.3", ProxyPort: journal.ProxyPort, TableName: "hal_l7_restart_a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := rootlesspodman.NetworkTopologyTargetRequest{Identity: journal.Identity, Target: journal.Target}
+	mismatch := req
+	mismatch.Target.ID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	mismatch.Target.Runtime.RuntimeID = mismatch.Target.ID
+	if err := reconciler.Reconcile(ctx, mismatch); err == nil {
+		t.Fatal("restart reconciler accepted mismatched target")
+	}
+	inspectOutput, err := exec.CommandContext(ctx, podmanPath, "inspect", "--format", "{{.State.Running}}", journal.Target.ID).Output()
+	if err != nil || strings.TrimSpace(string(inspectOutput)) != "true" {
+		t.Fatal("mismatch changed exact retained container")
+	}
+	if err := reconciler.Reconcile(ctx, req); err != nil {
+		t.Fatalf("restart reconcile failed: %v", err)
+	}
+	deletePending = false
+	if err := proveL7PodmanExactContainerAbsent(ctx, podmanPath, journal.Target.ID); err != nil {
+		t.Fatal("restart exact-container absence failed")
+	}
+}
+
+func cleanupRestartJournal(t *testing.T, journalPath, podmanPath string) {
+	t.Helper()
+	payload, err := os.ReadFile(journalPath)
+	if err != nil {
+		return
+	}
+	var journal l7RestartJournal
+	if json.Unmarshal(payload, &journal) == nil && validL7PodmanExactContainerID(journal.Target.ID) {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_ = exec.CommandContext(cleanupCtx, podmanPath, "rm", "--force", journal.Target.ID).Run()
+	}
+}
+func restartPlanAndPolicy() (networkenforcement.Plan, networkenforcement.PolicyProxyPolicyInput) {
+	request := networkenforcement.PlanRequest{ID: "l7-restart-plan-a", Source: networkenforcement.PlanSourceRuntime, Operation: "l7_topology", PolicySnapshot: &networkenforcement.PolicySnapshotIdentity{ID: "l7-restart-policy-a", Version: "v1", Preset: networkenforcement.PolicyPresetAllowListed, RuleSetID: "l7-restart-rules-a"}, RequestedPolicy: networkenforcement.RequestedNetworkPosture{Preset: networkenforcement.PolicyPresetAllowListed, DefaultPosture: networkenforcement.DefaultPostureDenyByDefault, AllowlistMode: networkenforcement.AllowlistModeEnforce, RuleSetID: "l7-restart-rules-a", PrivateNetwork: networkenforcement.PostureBlock, MetadataEndpoint: networkenforcement.PostureBlock, TCP: networkenforcement.PostureBlock, UDP: networkenforcement.PostureBlock, ICMP: networkenforcement.PostureBlock, HTTP: networkenforcement.ProxyRoutingModeRouteViaProxy, HTTPS: networkenforcement.ProxyRoutingModeRouteViaProxy, ProxySessionID: "l7-restart-proxy-session-a", ProxyMechanism: networkenforcement.EnforcementMechanismProxy, FirewallMode: networkenforcement.FirewallIntentModeApply, FirewallMechanism: networkenforcement.EnforcementMechanismFirewall, AllowlistRules: []networkenforcement.AllowlistRule{{ID: "l7-restart-allow-a", Category: networkenforcement.AllowlistRuleCategoryDomain, Value: "allowed.test"}}}}
+	plan := networkenforcement.BuildPlan(request)
+	return plan, networkenforcement.NewPolicyProxyPolicyInput(plan, request.RequestedPolicy.AllowlistRules)
+}
+func restartIdentity(plan networkenforcement.Plan) rootlesspodman.NetworkTopologyIdentity {
+	return rootlesspodman.NetworkTopologyIdentity{SandboxID: "l7-restart-sandbox-a", ExecutionID: "l7-restart-execution-a", WorkerID: "l7-restart-worker-a", RuntimeDriver: rootlesspodman.DriverID, RuntimeGenerationID: "l7-restart-runtime-a", PlanID: plan.ID, PolicySnapshotID: plan.PolicySnapshot.ID, ProxySessionID: plan.Proxy.ProxySessionID, ProxyGenerationID: "l7-restart-proxy-generation-a", TopologyGenerationID: "l7-restart-topology-a", RuleGenerationID: "l7-restart-rule-a"}
+}
