@@ -153,6 +153,14 @@ func TestL6PolicyProxyRejectsOversizedConfigurationBeforeAllocation(t *testing.T
 		{name: "CONNECT bytes overflow", limits: Limits{MaxConnectBytes: oversizedInt64}},
 		{name: "resolver answers", limits: Limits{MaxResolvedAddresses: maxResolvedAddresses + 1}},
 		{name: "concurrency allocation", limits: Limits{MaxConcurrent: oversizedInt}},
+		{
+			name: "aggregate buffered memory",
+			limits: Limits{
+				MaxRequestBodyBytes:  maxRequestBodyBytes,
+				MaxResponseBodyBytes: maxResponseBodyBytes,
+				MaxConcurrent:        maxConcurrentRequests,
+			},
+		},
 		{name: "read header timeout", limits: Limits{ReadHeaderTimeout: maxConfiguredTimeout + time.Second}},
 		{name: "read timeout", limits: Limits{ReadTimeout: maxConfiguredTimeout + time.Second}},
 		{name: "write timeout", limits: Limits{WriteTimeout: maxConfiguredTimeout + time.Second}},
@@ -450,6 +458,9 @@ func TestL6PolicyProxyRejectsDNSRebindingMixedAndUnsafeAnswersBeforeDial(t *test
 		{name: "unspecified", addrs: []netip.Addr{netip.MustParseAddr("0.0.0.0")}},
 		{name: "multicast", addrs: []netip.Addr{netip.MustParseAddr("ff02::1")}},
 		{name: "CGNAT", addrs: []netip.Addr{netip.MustParseAddr("100.64.0.1")}},
+		{name: "NAT64 private", addrs: []netip.Addr{netip.MustParseAddr("64:ff9b::a00:1")}},
+		{name: "NAT64 metadata", addrs: []netip.Addr{netip.MustParseAddr("64:ff9b::a9fe:a9fe")}},
+		{name: "NAT64 local use", addrs: []netip.Addr{netip.MustParseAddr("64:ff9b:1::a9fe:a9fe")}},
 		{name: "zoned", addrs: []netip.Addr{netip.MustParseAddr("fe80::1%eth0")}},
 		{name: "mixed", addrs: []netip.Addr{netip.MustParseAddr("93.184.216.34"), netip.MustParseAddr("127.0.0.1")}},
 	}
