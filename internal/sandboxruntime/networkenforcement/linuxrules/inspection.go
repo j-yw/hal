@@ -101,8 +101,8 @@ func proxyReturnExpressions(expected ExpectedRuleSet) []any {
 }
 
 func expectedNeighborDiscoveryObjects(expected ExpectedRuleSet, chain, interfaceKey string) []any {
-	objects := make([]any, 0, len(minimalNeighborDiscoveryRules()))
-	for _, rule := range minimalNeighborDiscoveryRules() {
+	objects := make([]any, 0, len(minimalNeighborDiscoveryRules(expected)))
+	for _, rule := range minimalNeighborDiscoveryRules(expected) {
 		objects = append(objects, map[string]any{"rule": expectedRuleObject(expected, chain, rule.role, neighborDiscoveryExpressions(expected, interfaceKey, rule))})
 	}
 	return objects
@@ -114,21 +114,10 @@ func neighborDiscoveryExpressions(expected ExpectedRuleSet, interfaceKey string,
 		matchExpression(map[string]any{"payload": map[string]any{"protocol": "ip6", "field": "nexthdr"}}, "ipv6-icmp"),
 		matchExpression(map[string]any{"payload": map[string]any{"protocol": "ip6", "field": "hoplimit"}}, float64(255)),
 		matchExpression(map[string]any{"payload": map[string]any{"protocol": "icmpv6", "field": "type"}}, rule.messageType),
-		matchExpression(map[string]any{"payload": map[string]any{"protocol": "ip6", "field": "saddr"}}, neighborAddressExpression(rule.source)),
-		matchExpression(map[string]any{"payload": map[string]any{"protocol": "ip6", "field": "daddr"}}, neighborAddressExpression(rule.destination)),
-		matchExpression(map[string]any{"payload": map[string]any{"protocol": "icmpv6", "field": "taddr"}}, neighborAddressExpression("fe80::/10")),
+		matchExpression(map[string]any{"payload": map[string]any{"protocol": "ip6", "field": "saddr"}}, rule.source),
+		matchExpression(map[string]any{"payload": map[string]any{"protocol": "ip6", "field": "daddr"}}, rule.destination),
+		matchExpression(map[string]any{"payload": map[string]any{"protocol": "icmpv6", "field": "taddr"}}, rule.target),
 		map[string]any{"accept": nil},
-	}
-}
-
-func neighborAddressExpression(value string) any {
-	switch value {
-	case "fe80::/10":
-		return map[string]any{"prefix": map[string]any{"addr": "fe80::", "len": float64(10)}}
-	case "ff02::1:ff00:0/104":
-		return map[string]any{"prefix": map[string]any{"addr": "ff02::1:ff00:0", "len": float64(104)}}
-	default:
-		return value
 	}
 }
 

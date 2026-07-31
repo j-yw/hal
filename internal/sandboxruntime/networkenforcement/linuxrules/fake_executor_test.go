@@ -139,10 +139,42 @@ func mutateInspectionJSON(payload []byte, mutation string) []byte {
 		expressions := rule["expr"].([]any)
 		match := expressions[1].(map[string]any)["match"].(map[string]any)
 		match["right"] = "other-egress0"
+	case "wrong_nd_source", "wrong_nd_destination", "wrong_nd_target":
+		rule := inspectionRuleByCommentContains(objects, "-ipv6-nd-")
+		if rule == nil {
+			return payload
+		}
+		expressions := rule["expr"].([]any)
+		index := 4
+		if mutation == "wrong_nd_destination" {
+			index = 5
+		} else if mutation == "wrong_nd_target" {
+			index = 6
+		}
+		match := expressions[index].(map[string]any)["match"].(map[string]any)
+		match["right"] = "2001:db8:ffff::9"
 	}
 	document["nftables"] = objects
 	mutated, _ := json.Marshal(document)
 	return mutated
+}
+
+func inspectionRuleByCommentContains(objects []any, fragment string) map[string]any {
+	for _, object := range objects {
+		outer, ok := object.(map[string]any)
+		if !ok {
+			continue
+		}
+		rule, ok := outer["rule"].(map[string]any)
+		if !ok {
+			continue
+		}
+		comment, _ := rule["comment"].(string)
+		if strings.Contains(comment, fragment) {
+			return rule
+		}
+	}
+	return nil
 }
 
 func inspectionRuleByCommentSuffix(objects []any, suffix string) map[string]any {

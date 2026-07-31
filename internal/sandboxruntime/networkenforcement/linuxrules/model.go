@@ -75,6 +75,10 @@ type RuleSetConfig struct {
 	ProxyAddress         string                                    `json:"-"`
 	ProxyPort            uint16                                    `json:"-"`
 	RawPacketIsolation   RawPacketIsolationVerifier                `json:"-"`
+	WorkloadIPv6Address  string                                    `json:"-"`
+	GatewayIPv6Address   string                                    `json:"-"`
+	IPv6PrefixBits       uint8                                     `json:"-"`
+	AllowIPv6DAD         bool                                      `json:"-"`
 }
 
 // ExpectedRuleSet is a validated, immutable expected-rule model.
@@ -90,22 +94,31 @@ type ExpectedRuleSet struct {
 	ownerToken           string
 	ruleDigest           string
 	rawPacketIsolation   RawPacketIsolationVerifier
+	workloadIPv6Address  netip.Addr
+	gatewayIPv6Address   netip.Addr
+	ipv6PrefixBits       uint8
+	allowIPv6DAD         bool
 }
 
 func NewExpectedRuleSet(config RuleSetConfig) (ExpectedRuleSet, error) {
 	correlation := networkenforcement.SanitizeEnforcementCorrelation(config.Correlation)
 	address, addressErr := netip.ParseAddr(strings.TrimSpace(config.ProxyAddress))
+	workloadIPv6Address, workloadIPv6Err := netip.ParseAddr(strings.TrimSpace(config.WorkloadIPv6Address))
+	gatewayIPv6Address, gatewayIPv6Err := netip.ParseAddr(strings.TrimSpace(config.GatewayIPv6Address))
 	mappingValid := config.Profile == RuleProfileWorkloadOutput && config.MappingInterfaceName == ""
 	if config.Profile == RuleProfileForwardedTAP {
 		mappingValid = validInterfaceName(config.MappingInterfaceName) && config.MappingInterfaceName != config.InterfaceName
 	}
 	rawPacketIsolationValid := config.Profile != RuleProfileWorkloadOutput || config.RawPacketIsolation != nil
+	configuredIPv6LinkValid := workloadIPv6Err == nil && gatewayIPv6Err == nil &&
+		validConfiguredIPv6Link(workloadIPv6Address, gatewayIPv6Address, config.IPv6PrefixBits) &&
+		config.AllowIPv6DAD == (config.Profile == RuleProfileForwardedTAP)
 	if !networkenforcement.EnforcementCorrelationComplete(correlation) ||
 		!validRuleProfile(config.Profile) ||
 		!config.Namespace.valid() ||
 		!validNFTIdentifier(config.TableName, 32) ||
 		!validInterfaceName(config.InterfaceName) ||
-		!mappingValid || !rawPacketIsolationValid ||
+		!mappingValid || !rawPacketIsolationValid || !configuredIPv6LinkValid ||
 		addressErr != nil || address.IsUnspecified() || address.IsMulticast() || address.IsLoopback() || isKnownMetadataProxyAddress(address) ||
 		config.ProxyPort == 0 {
 		return ExpectedRuleSet{}, operationError{err: ErrInvalidConfiguration}
@@ -123,6 +136,10 @@ func NewExpectedRuleSet(config RuleSetConfig) (ExpectedRuleSet, error) {
 		proxyPort:            config.ProxyPort,
 		ownerToken:           ownerToken,
 		rawPacketIsolation:   config.RawPacketIsolation,
+		workloadIPv6Address:  workloadIPv6Address,
+		gatewayIPv6Address:   gatewayIPv6Address,
+		ipv6PrefixBits:       config.IPv6PrefixBits,
+		allowIPv6DAD:         config.AllowIPv6DAD,
 	}
 	rules.ruleDigest = inspectionDigest(expectedInspectionDocument(rules))
 	return rules, nil
@@ -140,7 +157,9 @@ func (r ExpectedRuleSet) valid() bool {
 	return networkenforcement.EnforcementCorrelationComplete(r.correlation) &&
 		validRuleProfile(r.profile) &&
 		r.namespace.valid() && validNFTIdentifier(r.tableName, 32) &&
-		validInterfaceName(r.interfaceName) && validMappingInterface(r) && validRawPacketIsolation(r) && r.proxyAddress.IsValid() &&
+		validInterfaceName(r.interfaceName) && validMappingInterface(r) && validRawPacketIsolation(r) &&
+		validConfiguredIPv6Link(r.workloadIPv6Address, r.gatewayIPv6Address, r.ipv6PrefixBits) &&
+		r.allowIPv6DAD == (r.profile == RuleProfileForwardedTAP) && r.proxyAddress.IsValid() &&
 		r.proxyPort != 0 && r.ownerToken != "" && r.ruleDigest != ""
 }
 
@@ -188,10 +207,10 @@ func (r ExpectedRuleSet) fullBatch(replace bool) []byte {
 }
 
 func (r ExpectedRuleSet) writeNeighborDiscoveryRules(builder *strings.Builder, chain, interfaceKey string) {
-	for _, rule := range minimalNeighborDiscoveryRules() {
-		fmt.Fprintf(builder, "add rule %s %s %s %s %s ip6 nexthdr icmpv6 ip6 hoplimit 255 icmpv6 type %s ip6 saddr %s ip6 daddr %s icmpv6 taddr fe80::/10 accept comment %s\n",
+	for _, rule := range minimalNeighborDiscoveryRules(r) {
+		fmt.Fprintf(builder, "add rule %s %s %s %s %s ip6 nexthdr icmpv6 ip6 hoplimit 255 icmpv6 type %s ip6 saddr %s ip6 daddr %s icmpv6 taddr %s accept comment %s\n",
 			tableFamily, r.tableName, chain, interfaceKey, quoteNFT(r.interfaceName),
-			rule.messageType, rule.source, rule.destination, quoteNFT(r.ruleComment(rule.role)))
+			rule.messageType, rule.source, rule.destination, rule.target, quoteNFT(r.ruleComment(rule.role)))
 	}
 }
 
@@ -267,16 +286,57 @@ type neighborDiscoveryRule struct {
 	messageType string
 	source      string
 	destination string
+	target      string
 }
 
-func minimalNeighborDiscoveryRules() []neighborDiscoveryRule {
-	return []neighborDiscoveryRule{
-		{role: "ipv6-nd-solicit-dad", messageType: "nd-neighbor-solicit", source: "::", destination: "ff02::1:ff00:0/104"},
-		{role: "ipv6-nd-solicit-multicast", messageType: "nd-neighbor-solicit", source: "fe80::/10", destination: "ff02::1:ff00:0/104"},
-		{role: "ipv6-nd-solicit-unicast", messageType: "nd-neighbor-solicit", source: "fe80::/10", destination: "fe80::/10"},
-		{role: "ipv6-nd-advert-unicast", messageType: "nd-neighbor-advert", source: "fe80::/10", destination: "fe80::/10"},
-		{role: "ipv6-nd-advert-all-nodes", messageType: "nd-neighbor-advert", source: "fe80::/10", destination: "ff02::1"},
+func minimalNeighborDiscoveryRules(expected ExpectedRuleSet) []neighborDiscoveryRule {
+	local := expected.workloadIPv6Address.String()
+	peer := expected.gatewayIPv6Address.String()
+	rules := make([]neighborDiscoveryRule, 0, 5)
+	if expected.allowIPv6DAD {
+		rules = append(rules, neighborDiscoveryRule{
+			role: "ipv6-nd-solicit-dad", messageType: "nd-neighbor-solicit",
+			source: "::", destination: solicitedNodeMulticast(expected.workloadIPv6Address).String(), target: local,
+		})
 	}
+	return append(rules,
+		neighborDiscoveryRule{
+			role: "ipv6-nd-solicit-multicast", messageType: "nd-neighbor-solicit",
+			source: local, destination: solicitedNodeMulticast(expected.gatewayIPv6Address).String(), target: peer,
+		},
+		neighborDiscoveryRule{
+			role: "ipv6-nd-solicit-unicast", messageType: "nd-neighbor-solicit",
+			source: local, destination: peer, target: peer,
+		},
+		neighborDiscoveryRule{
+			role: "ipv6-nd-advert-unicast", messageType: "nd-neighbor-advert",
+			source: local, destination: peer, target: local,
+		},
+		neighborDiscoveryRule{
+			role: "ipv6-nd-advert-all-nodes", messageType: "nd-neighbor-advert",
+			source: local, destination: "ff02::1", target: local,
+		},
+	)
+}
+
+func validConfiguredIPv6Link(workload, gateway netip.Addr, prefixBits uint8) bool {
+	if prefixBits == 0 || prefixBits > 128 || !validConfiguredIPv6Address(workload) || !validConfiguredIPv6Address(gateway) || workload == gateway {
+		return false
+	}
+	prefix := netip.PrefixFrom(workload, int(prefixBits)).Masked()
+	return prefix.IsValid() && prefix.Contains(gateway)
+}
+
+func validConfiguredIPv6Address(address netip.Addr) bool {
+	return address.IsValid() && address.Is6() && !address.Is4In6() && address.Zone() == "" &&
+		!address.IsUnspecified() && !address.IsMulticast() && !address.IsLoopback()
+}
+
+func solicitedNodeMulticast(target netip.Addr) netip.Addr {
+	base := netip.MustParseAddr("ff02::1:ff00:0").As16()
+	targetBytes := target.As16()
+	copy(base[13:], targetBytes[13:])
+	return netip.AddrFrom16(base)
 }
 
 func isKnownMetadataProxyAddress(address netip.Addr) bool {

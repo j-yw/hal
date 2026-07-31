@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -265,10 +266,12 @@ func TestLinuxRulesNeighborDiscoveryUsesExactConfiguredIPv6Link(t *testing.T) {
 				t.Fatalf("neighbor-discovery rules = %d, want %d exact semantic cases: %s", len(ndLines), wantRules, batch)
 			}
 			joined := strings.Join(ndLines, "\n")
+			peerSolicited := solicitedNodeMulticast(netip.MustParseAddr(test.peer)).String()
 			for _, required := range []string{
 				"ip6 hoplimit 255",
 				"ip6 saddr " + test.local,
 				"ip6 daddr " + test.peer,
+				"ip6 daddr " + peerSolicited,
 				"icmpv6 taddr " + test.local,
 				"icmpv6 taddr " + test.peer,
 				"nd-neighbor-solicit",
@@ -289,6 +292,12 @@ func TestLinuxRulesNeighborDiscoveryUsesExactConfiguredIPv6Link(t *testing.T) {
 			}
 			if test.dad && !strings.Contains(joined, "ip6 saddr ::") {
 				t.Fatalf("required DAD case missing: %s", joined)
+			}
+			if test.dad {
+				localSolicited := solicitedNodeMulticast(netip.MustParseAddr(test.local)).String()
+				if !strings.Contains(joined, "ip6 daddr "+localSolicited) {
+					t.Fatalf("DAD did not use the exact configured solicited-node destination %s: %s", localSolicited, joined)
+				}
 			}
 			if !test.dad && strings.Contains(joined, "ip6 saddr ::") {
 				t.Fatalf("unexpected DAD case admitted: %s", joined)
@@ -338,6 +347,13 @@ func TestLinuxRulesRejectsInvalidConfiguredIPv6Links(t *testing.T) {
 				t.Fatalf("NewExpectedRuleSet error = %v, want ErrInvalidConfiguration", err)
 			}
 		})
+	}
+	for _, profile := range []RuleProfile{RuleProfileWorkloadOutput, RuleProfileForwardedTAP} {
+		config := testRuleSetConfig("generation-invalid-dad-role", profile)
+		config.AllowIPv6DAD = profile != RuleProfileForwardedTAP
+		if _, err := NewExpectedRuleSet(config); !errors.Is(err, ErrInvalidConfiguration) {
+			t.Fatalf("profile %s mismatched DAD role error = %v, want ErrInvalidConfiguration", profile, err)
+		}
 	}
 }
 
@@ -585,9 +601,25 @@ func TestLinuxRulesPrivateInputsAreNotJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	for _, forbidden := range []string{expected.tableName, expected.interfaceName, expected.mappingInterfaceName, expected.proxyAddress.String()} {
+	for _, forbidden := range []string{
+		expected.tableName,
+		expected.interfaceName,
+		expected.mappingInterfaceName,
+		expected.proxyAddress.String(),
+		expected.workloadIPv6Address.String(),
+		expected.gatewayIPv6Address.String(),
+	} {
 		if strings.Contains(string(payload), forbidden) {
 			t.Fatalf("JSON leaked %q in %s", forbidden, payload)
+		}
+	}
+	configPayload, err := json.Marshal(testRuleSetConfig("generation-config-json", RuleProfileWorkloadOutput))
+	if err != nil {
+		t.Fatalf("Marshal config: %v", err)
+	}
+	for _, forbidden := range []string{"fd00:7::2", "fd00:7::1"} {
+		if strings.Contains(string(configPayload), forbidden) {
+			t.Fatalf("config JSON leaked private IPv6 link input %q in %s", forbidden, configPayload)
 		}
 	}
 }
@@ -628,8 +660,12 @@ func testRuleSetConfig(generation string, profile RuleProfile) RuleSetConfig {
 	}
 	if profile == RuleProfileForwardedTAP {
 		config.MappingInterfaceName = "pasta0"
+		config.AllowIPv6DAD = true
 	} else {
 		config.RawPacketIsolation = allowRawPacketIsolationVerifier{}
 	}
+	config.WorkloadIPv6Address = "fd00:7::2"
+	config.GatewayIPv6Address = "fd00:7::1"
+	config.IPv6PrefixBits = 64
 	return config
 }
