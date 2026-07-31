@@ -30,6 +30,7 @@ var _ networkenforcement.ProxyListenerAdapter = (*Adapter)(nil)
 type Adapter struct {
 	config Config
 
+	lifecycleMu sync.Mutex
 	mu          sync.Mutex
 	server      *http.Server
 	listener    net.Listener
@@ -106,6 +107,11 @@ func (a *Adapter) StartProxyListener(ctx context.Context, request networkenforce
 	if err := ctx.Err(); err != nil || !a.matchesPlan(request) {
 		return a.metadata(request, networkenforcement.LifecycleStatusFailed, networkenforcement.LifecycleReasonAdapterFailed), safeAdapterError("start")
 	}
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	if err := ctx.Err(); err != nil || !a.matchesPlan(request) {
+		return a.metadata(request, networkenforcement.LifecycleStatusFailed, networkenforcement.LifecycleReasonAdapterFailed), safeAdapterError("start")
+	}
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -177,6 +183,8 @@ func (a *Adapter) StopProxyListener(_ context.Context, request networkenforcemen
 	if !a.matchesPlan(request) {
 		return a.metadata(request, networkenforcement.LifecycleStatusFailed, networkenforcement.LifecycleReasonCapabilityMissing), safeAdapterError("stop")
 	}
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
 
 	a.mu.Lock()
 	a.stopping = true
@@ -770,6 +778,7 @@ func specialUseAddress(address netip.Addr) bool {
 		netip.MustParsePrefix("100::/64"),
 		netip.MustParsePrefix("2001:2::/48"),
 		netip.MustParsePrefix("2001:db8::/32"),
+		netip.MustParsePrefix("fec0::/10"),
 	} {
 		if prefix.Contains(address) {
 			return true

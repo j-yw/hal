@@ -106,6 +106,7 @@ Lifecycle is transactional:
 
 - prepare validates configuration without binding;
 - start binds and starts serving, or closes all partial state;
+- start and stop serialize across full generation cleanup;
 - active succeeds only while the exact owned listener and serve loop are live;
 - stop is idempotent and uses an internal bounded cleanup context even if the
   caller is canceled;
