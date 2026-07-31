@@ -34,15 +34,16 @@ type entropyDevicePayload struct{}
 
 func renderLiveBootFiles(config BackendConfig) error {
 	files, err := renderLiveBootFilesForStart(config)
-	if len(files) > 0 && config.VerifiedL7Assets != nil {
-		if closeErr := config.VerifiedL7Assets.Close(); err == nil && closeErr != nil {
-			return newLiveBootRenderFailure("launchDescriptor", "sealed L7 launch asset cleanup failed", closeErr)
+	if len(files) > 0 {
+		err = joinLiveBootRenderCleanup(err, closeProcessInheritedFiles(files))
+		if config.VerifiedL7Assets != nil {
+			err = joinLiveBootRenderCleanup(err, config.VerifiedL7Assets.Close())
 		}
 	}
 	return err
 }
 
-func renderLiveBootFilesForStart(config BackendConfig) ([]*os.File, error) {
+func renderLiveBootFilesForStart(config BackendConfig) (files []*os.File, retErr error) {
 	if config.LaunchDescriptor != nil {
 		if _, err := firecrackerLaunchDescriptorAssets(config.LaunchDescriptor, liveBootRenderOperation); err != nil {
 			return nil, err
@@ -55,10 +56,11 @@ func renderLiveBootFilesForStart(config BackendConfig) ([]*os.File, error) {
 	config.Paths = paths
 	var material *sealedL7LaunchMaterial
 	prepared := false
-	ownsL7Lease := config.NetworkMode == microvm.NetworkModeL7PolicyProxy && config.VerifiedL7Assets != nil
+	l7Lease := config.VerifiedL7Assets
+	ownsL7Lease := config.NetworkMode == microvm.NetworkModeL7PolicyProxy && l7Lease != nil
 	defer func() {
 		if ownsL7Lease && !prepared {
-			_ = config.VerifiedL7Assets.Close()
+			retErr = joinLiveBootRenderCleanup(retErr, l7Lease.Close())
 		}
 	}()
 	if config.NetworkMode == microvm.NetworkModeL7PolicyProxy {
@@ -92,7 +94,7 @@ func renderLiveBootFilesForStart(config BackendConfig) ([]*os.File, error) {
 		}
 		files, err := material.inheritedFiles()
 		if err != nil {
-			return nil, newLiveBootRenderConfigError("launchDescriptor", "sealed L7 launch assets are unavailable")
+			return nil, newLiveBootRenderFailure("launchDescriptor", "sealed L7 launch assets are unavailable", err)
 		}
 		prepared = true
 		return files, nil
@@ -119,12 +121,28 @@ func prepareVerifiedL7LaunchMaterial(config BackendConfig) (BackendConfig, *seal
 	}
 	descriptor, profile, err := config.VerifiedL7Assets.PrepareLaunch(config.LaunchDescriptor, material)
 	if err != nil {
-		_ = material.Close()
-		return BackendConfig{}, nil, newLiveBootRenderConfigError("launchDescriptor", "current verified L7 network image assets are required")
+		prepareErr := error(newLiveBootRenderConfigError("launchDescriptor", "current verified L7 network image assets are required"))
+		prepareErr = joinLiveBootRenderCleanup(prepareErr, material.Close())
+		return BackendConfig{}, nil, prepareErr
 	}
 	config.LaunchDescriptor = &descriptor
 	config.VerifiedL7Profile = &profile
 	return config, material, nil
+}
+
+func joinLiveBootRenderCleanup(primary, cleanupErr error) error {
+	if cleanupErr == nil {
+		return primary
+	}
+	uncertain := newLiveBootRenderFailure(
+		"launchDescriptor",
+		"sealed L7 launch asset cleanup was not confirmed",
+		cleanupErr,
+	)
+	if primary == nil {
+		return uncertain
+	}
+	return errors.Join(primary, uncertain)
 }
 
 func liveBootConfig(config BackendConfig) (liveBootConfigFile, error) {

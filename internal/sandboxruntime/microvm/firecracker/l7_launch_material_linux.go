@@ -4,8 +4,10 @@ package firecracker
 
 import (
 	"crypto/sha256"
+	"errors"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
 	"golang.org/x/sys/unix"
@@ -17,8 +19,10 @@ const (
 )
 
 type sealedL7LaunchMaterial struct {
-	assets map[assets.AssetRole]*sealedL7Asset
-	closed bool
+	mu       sync.Mutex
+	assets   map[assets.AssetRole]*sealedL7Asset
+	closed   bool
+	closeErr error
 }
 
 type sealedL7Asset struct {
@@ -32,7 +36,12 @@ func newSealedL7LaunchMaterial(string) (*sealedL7LaunchMaterial, error) {
 }
 
 func (material *sealedL7LaunchMaterial) WriteAsset(role assets.AssetRole, source io.Reader) (string, error) {
-	if material == nil || material.closed || source == nil || material.assets[role] != nil {
+	if material == nil {
+		return "", errUnsafeLiveBootStateEntry
+	}
+	material.mu.Lock()
+	defer material.mu.Unlock()
+	if material.closed || source == nil || material.assets[role] != nil {
 		return "", errUnsafeLiveBootStateEntry
 	}
 	name := ""
@@ -65,7 +74,9 @@ func (material *sealedL7LaunchMaterial) WriteAsset(role assets.AssetRole, source
 		)
 	}
 	if err != nil {
-		_ = file.Close()
+		if closeErr := file.Close(); closeErr != nil {
+			return "", errors.Join(err, errUnsafeLiveBootStateEntry)
+		}
 		return "", err
 	}
 	entry := &sealedL7Asset{file: file, size: size}
@@ -75,6 +86,15 @@ func (material *sealedL7LaunchMaterial) WriteAsset(role assets.AssetRole, source
 }
 
 func (material *sealedL7LaunchMaterial) Validate() error {
+	if material == nil {
+		return errUnsafeLiveBootStateEntry
+	}
+	material.mu.Lock()
+	defer material.mu.Unlock()
+	return material.validateLocked()
+}
+
+func (material *sealedL7LaunchMaterial) validateLocked() error {
 	if material == nil || material.closed || len(material.assets) != 2 {
 		return errUnsafeLiveBootStateEntry
 	}
@@ -108,19 +128,42 @@ func (material *sealedL7LaunchMaterial) Validate() error {
 	return nil
 }
 
+// inheritedFiles returns start-owned descriptor duplicates while holding the
+// material lock. The caller must close the returned files exactly once after
+// the synchronous process-start boundary transfers them to the child.
 func (material *sealedL7LaunchMaterial) inheritedFiles() ([]*os.File, error) {
-	if err := material.Validate(); err != nil {
+	if material == nil {
+		return nil, errUnsafeLiveBootStateEntry
+	}
+	material.mu.Lock()
+	defer material.mu.Unlock()
+	if err := material.validateLocked(); err != nil {
 		return nil, err
 	}
-	return []*os.File{
-		material.assets[assets.AssetRoleKernel].file,
-		material.assets[assets.AssetRoleRootfs].file,
-	}, nil
+	owned := make([]*os.File, 0, 2)
+	for _, role := range []assets.AssetRole{assets.AssetRoleKernel, assets.AssetRoleRootfs} {
+		entry := material.assets[role]
+		fd, err := unix.FcntlInt(entry.file.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+		if err != nil {
+			cleanupErr := closeProcessInheritedFiles(owned)
+			if cleanupErr != nil {
+				return nil, errors.Join(errUnsafeLiveBootStateEntry, cleanupErr)
+			}
+			return nil, errUnsafeLiveBootStateEntry
+		}
+		owned = append(owned, os.NewFile(uintptr(fd), entry.file.Name()+"-start"))
+	}
+	return owned, nil
 }
 
 func (material *sealedL7LaunchMaterial) Close() error {
-	if material == nil || material.closed {
+	if material == nil {
 		return nil
+	}
+	material.mu.Lock()
+	defer material.mu.Unlock()
+	if material.closed {
+		return material.closeErr
 	}
 	material.closed = true
 	failed := false
@@ -131,9 +174,9 @@ func (material *sealedL7LaunchMaterial) Close() error {
 		}
 	}
 	if failed {
-		return errUnsafeLiveBootStateEntry
+		material.closeErr = errUnsafeLiveBootStateEntry
 	}
-	return nil
+	return material.closeErr
 }
 
 func childFDText(fd int) string {

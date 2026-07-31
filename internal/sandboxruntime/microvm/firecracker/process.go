@@ -129,6 +129,22 @@ func validateProcessInheritedFiles(files []*os.File) error {
 	return nil
 }
 
+// closeProcessInheritedFiles releases a start-owned file set exactly once at
+// its owning call site. A close error is cleanup uncertainty: callers must not
+// retry an ambiguous close or accept a started process as successful.
+func closeProcessInheritedFiles(files []*os.File) error {
+	failed := false
+	for _, file := range files {
+		if file != nil && file.Close() != nil {
+			failed = true
+		}
+	}
+	if failed {
+		return newProcessBoundaryError("inheritedFiles", "inherited process file cleanup failed")
+	}
+	return nil
+}
+
 // ProcessCommandDescriptorFromStartPlan converts a pure start operation plan
 // into the command descriptor consumed by the injected process adapter.
 func ProcessCommandDescriptorFromStartPlan(plan StartOperationPlan) (ProcessCommandDescriptor, error) {

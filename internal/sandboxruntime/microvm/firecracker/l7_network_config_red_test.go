@@ -227,7 +227,7 @@ func TestL7VerifiedAssetLeasePreservesCleanupErrorAndRenderPropagatesIt(t *testi
 	}
 	_, renderErr := renderLiveBootFilesForStart(config)
 	if renderErr == nil || !errors.Is(renderErr, localresolver.ErrFileUnavailable) {
-		t.Fatalf("render error = %v, want propagated sanitized cleanup uncertainty", renderErr)
+		t.Fatalf("render error = %v (mode %q, lease nil %t, material close calls %d), want propagated sanitized cleanup uncertainty", renderErr, config.NetworkMode, config.VerifiedL7Assets == nil, material.closeCalls)
 	}
 	firstCloseErr := lease.Close()
 	secondCloseErr := lease.Close()
@@ -279,6 +279,7 @@ type l7ProbeLaunchMaterial struct {
 	paths       map[assets.AssetRole]string
 	write       func(assets.AssetRole, io.Reader) error
 	closeErr    error
+	closeCalls  int
 	rootfsBytes int64
 }
 
@@ -295,7 +296,10 @@ func (material *l7ProbeLaunchMaterial) WriteAsset(role assets.AssetRole, source 
 
 func (*l7ProbeLaunchMaterial) Validate() error { return nil }
 
-func (material *l7ProbeLaunchMaterial) Close() error { return material.closeErr }
+func (material *l7ProbeLaunchMaterial) Close() error {
+	material.closeCalls++
+	return material.closeErr
+}
 
 func TestL7FirecrackerCarriesSealedVerifiedAssetsThroughProcessStart(t *testing.T) {
 	tests := []struct {

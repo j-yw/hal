@@ -3,6 +3,7 @@ package localresolver
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"hash"
 	"io"
 	"os"
@@ -38,6 +39,7 @@ type VerifiedL7AssetLease struct {
 	materialDescriptor  assets.LaunchDescriptor
 	materialFingerprint [sha256.Size]byte
 	closed              bool
+	cleanupErr          error
 }
 
 // AcquireL7AssetLease opens and pins the currently verified L7 kernel and
@@ -69,7 +71,10 @@ func (distribution VerifiedDistribution) AcquireL7AssetLease() (*VerifiedL7Asset
 		err = lease.confirmSourceLocked()
 	}
 	if err != nil {
-		_ = lease.closeLocked()
+		cleanupErr := lease.closeLocked()
+		if cleanupErr != nil {
+			return nil, errors.Join(err, cleanupErr)
+		}
 		return nil, err
 	}
 	return lease, nil
@@ -198,18 +203,20 @@ func (lease *VerifiedL7AssetLease) openPinnedAsset(role assets.AssetRole) (*os.F
 		return nil, l7LeaseError(ErrorCodeFileUnavailable, "l7Assets", "verified L7 asset is unavailable", ErrFileUnavailable)
 	}
 	if err := verifyPinnedL7Asset(file, asset); err != nil {
-		_ = file.Close()
-		return nil, err
+		closeErr := closePinnedL7Asset(file)
+		return nil, joinL7LeaseCleanup(err, closeErr)
 	}
 	return file, nil
 }
 
-func (lease *VerifiedL7AssetLease) confirmSourceLocked() error {
+func (lease *VerifiedL7AssetLease) confirmSourceLocked() (retErr error) {
 	currentRoot, _, err := openRequestedDistributionRoot(lease.rootDir)
 	if err != nil {
 		return l7LeaseError(ErrorCodeFileUnavailable, "l7Assets", "verified L7 distribution root is unavailable", ErrFileUnavailable)
 	}
-	defer currentRoot.Close()
+	defer func() {
+		retErr = joinL7LeaseCleanup(retErr, closePinnedL7Asset(currentRoot))
+	}()
 	retainedRootInfo, retainedErr := lease.root.Stat()
 	currentRootInfo, currentErr := currentRoot.Stat()
 	if retainedErr != nil || currentErr != nil || !os.SameFile(retainedRootInfo, currentRootInfo) {
@@ -245,9 +252,26 @@ func (lease *VerifiedL7AssetLease) confirmSourceLocked() error {
 	return nil
 }
 
+func closePinnedL7Asset(file *os.File) error {
+	if file == nil || file.Close() == nil {
+		return nil
+	}
+	return l7LeaseError(ErrorCodeFileUnavailable, "l7Assets", "verified L7 asset cleanup failed", ErrFileUnavailable)
+}
+
+func joinL7LeaseCleanup(primary, cleanupErr error) error {
+	if cleanupErr == nil {
+		return primary
+	}
+	if primary == nil {
+		return cleanupErr
+	}
+	return errors.Join(primary, cleanupErr)
+}
+
 func (lease *VerifiedL7AssetLease) closeLocked() error {
 	if lease.closed {
-		return nil
+		return lease.cleanupErr
 	}
 	lease.closed = true
 	failed := false
@@ -264,9 +288,9 @@ func (lease *VerifiedL7AssetLease) closeLocked() error {
 	lease.rootfs = nil
 	lease.root = nil
 	if failed {
-		return l7LeaseError(ErrorCodeFileUnavailable, "l7Assets", "verified L7 asset lease cleanup failed", ErrFileUnavailable)
+		lease.cleanupErr = l7LeaseError(ErrorCodeFileUnavailable, "l7Assets", "verified L7 asset lease cleanup failed", ErrFileUnavailable)
 	}
-	return nil
+	return lease.cleanupErr
 }
 
 func copyPinnedL7Asset(material L7LaunchMaterialWriter, source *os.File, asset assets.LaunchAsset) (string, error) {
@@ -276,7 +300,10 @@ func copyPinnedL7Asset(material L7LaunchMaterialWriter, source *os.File, asset a
 	if _, err := source.Seek(0, io.SeekStart); err != nil {
 		return "", l7LeaseError(ErrorCodeFileUnavailable, "l7Assets", "verified L7 asset cannot be read", ErrFileUnavailable)
 	}
-	reader := &l7DigestingReader{source: source, hash: sha256.New()}
+	reader, ok := newLockedL7DigestingReader(source, asset.Lock.SizeBytes)
+	if !ok {
+		return "", l7LeaseError(ErrorCodeInvalidRequest, "launchDescriptor", "verified L7 launch descriptor is invalid", ErrInvalidRequest)
+	}
 	path, err := material.WriteAsset(asset.Role, reader)
 	if err != nil {
 		return "", l7LeaseError(ErrorCodeFileUnavailable, "launchMaterial", "private L7 launch material cannot be written", ErrFileUnavailable)
@@ -300,15 +327,18 @@ func verifyPinnedL7Asset(file *os.File, asset assets.LaunchAsset) error {
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return l7LeaseError(ErrorCodeFileUnavailable, "l7Assets", "verified L7 asset cannot be read", ErrFileUnavailable)
 	}
-	hash := sha256.New()
-	size, err := io.Copy(hash, file)
+	reader, ok := newLockedL7DigestingReader(file, asset.Lock.SizeBytes)
+	if !ok {
+		return l7LeaseError(ErrorCodeInvalidRequest, "launchDescriptor", "verified L7 launch descriptor is invalid", ErrInvalidRequest)
+	}
+	size, err := io.Copy(io.Discard, reader)
 	if err != nil {
 		return l7LeaseError(ErrorCodeFileUnavailable, "l7Assets", "verified L7 asset cannot be read", ErrFileUnavailable)
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return l7LeaseError(ErrorCodeFileUnavailable, "l7Assets", "verified L7 asset cannot be read", ErrFileUnavailable)
 	}
-	if size != asset.Lock.SizeBytes || hex.EncodeToString(hash.Sum(nil)) != asset.Lock.Digest.Value {
+	if size != asset.Lock.SizeBytes || hex.EncodeToString(reader.hash.Sum(nil)) != asset.Lock.Digest.Value {
 		return l7LeaseError(ErrorCodeAssetLockMismatch, "l7Assets", "verified L7 asset changed", ErrAssetLockMismatch)
 	}
 	return nil
@@ -356,6 +386,16 @@ type l7DigestingReader struct {
 	source io.Reader
 	hash   hash.Hash
 	size   int64
+}
+
+func newLockedL7DigestingReader(source io.Reader, lockedSize int64) (*l7DigestingReader, bool) {
+	if source == nil || lockedSize < 0 || lockedSize == int64(^uint64(0)>>1) {
+		return nil, false
+	}
+	return &l7DigestingReader{
+		source: io.LimitReader(source, lockedSize+1),
+		hash:   sha256.New(),
+	}, true
 }
 
 func (reader *l7DigestingReader) Read(output []byte) (int, error) {
