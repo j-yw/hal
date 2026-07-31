@@ -60,18 +60,22 @@ func AggregateLiveEnforcementResult(plan Plan, listener *ProxyListenerLifecycleR
 	mechanisms := aggregateResultMechanisms(input, listenerResult, ruleResult)
 	operations := aggregateResultOperations(listenerResult, ruleResult)
 	policySnapshot := sanitizePolicySnapshotIdentityPtr(input.PolicySnapshot)
-	strongLifecycle := aggregatePlanAllowsStrongEnforcement(input) &&
+	strongCandidate := aggregatePlanAllowsStrongEnforcement(input) &&
 		aggregateListenerActive(listenerResult) &&
-		aggregateRulesActive(ruleResult)
+		aggregateRulesLifecycleActive(ruleResult)
+	strongLifecycle := strongCandidate &&
+		aggregateRulesActive(ruleResult) &&
+		aggregateProofCorrelatedWithPlan(input, listenerResult, ruleResult)
 	strongMode := ResultModeNone
 	strongCapabilityCompatible := false
 	if strongLifecycle {
 		strongMode = aggregateStrongResultMode(ruleResult)
 		strongCapabilityCompatible = resultModeCanEnforce(strongMode) &&
-			aggregateRuleCapabilityCompatibleWithPlan(input, ruleResult)
+			aggregateRuleCapabilityCompatibleWithPlan(input, ruleResult) &&
+			aggregateProxyCapabilityCompatibleWithPlan(input, listenerResult)
 	}
 	warnings := aggregateResultWarnings(listenerResult, ruleResult)
-	if strongLifecycle && resultModeCanEnforce(strongMode) && !strongCapabilityCompatible {
+	if strongCandidate && (!strongLifecycle || !resultModeCanEnforce(strongMode) || !strongCapabilityCompatible) {
 		warnings = appendResultWarnings(warnings, ResultWarningCapabilityDowngraded)
 	}
 
@@ -92,7 +96,7 @@ func AggregateLiveEnforcementResult(plan Plan, listener *ProxyListenerLifecycleR
 
 	if aggregateBestEffortPlan(input) &&
 		aggregateListenerActive(listenerResult) &&
-		aggregateRulesActive(ruleResult) {
+		aggregateRulesLifecycleActive(ruleResult) {
 		return SanitizeResult(Result{
 			PlanID:          input.ID,
 			AdapterID:       liveEnforcementAggregationAdapterID,
@@ -333,10 +337,42 @@ func aggregateListenerActive(result *ProxyListenerLifecycleResult) bool {
 		len(result.WarningCodes) == 0 &&
 		result.Active.Status == LifecycleStatusActive &&
 		result.Active.ReasonCode == LifecycleReasonActive &&
+		result.Active.Correlation != nil &&
+		EnforcementCorrelationComplete(*result.Active.Correlation) &&
 		len(result.Active.WarningCodes) == 0
 }
 
 func aggregateRulesActive(result *RuleLifecycleResult) bool {
+	if !aggregateRulesLifecycleActive(result) {
+		return false
+	}
+	proof := sanitizeInspectedRuleProofPtr(result.Active.Inspection)
+	return proof != nil &&
+		proof.Status == RuleInspectionStatusInspected &&
+		proof.InspectedAtUnixMilli > 0 &&
+		proof.ReasonCode == LifecycleReasonRuleInspected &&
+		len(proof.WarningCodes) == 0 &&
+		result.Active.Correlation != nil &&
+		EnforcementCorrelationComplete(*result.Active.Correlation)
+}
+
+func aggregateProxyCapabilityCompatibleWithPlan(plan Plan, listener *ProxyListenerLifecycleResult) bool {
+	if plan.Proxy == nil || listener == nil || listener.Active == nil {
+		return false
+	}
+	labels := sanitizeIdentifierList(listener.Active.CapabilityLabels)
+	if (plan.Proxy.HTTP == ProxyRoutingModeRouteViaProxy || plan.Proxy.HTTP == ProxyRoutingModeBlock) &&
+		!aggregateRuleCapabilityHasAnyLabel(labels, "http_request") {
+		return false
+	}
+	if (plan.Proxy.HTTPS == ProxyRoutingModeRouteViaProxy || plan.Proxy.HTTPS == ProxyRoutingModeBlock) &&
+		!aggregateRuleCapabilityHasAnyLabel(labels, "http_connect") {
+		return false
+	}
+	return true
+}
+
+func aggregateRulesLifecycleActive(result *RuleLifecycleResult) bool {
 	if result == nil || result.Active == nil {
 		return false
 	}
@@ -348,11 +384,40 @@ func aggregateRulesActive(result *RuleLifecycleResult) bool {
 		len(result.Active.WarningCodes) == 0
 }
 
+func aggregateProofCorrelatedWithPlan(plan Plan, listener *ProxyListenerLifecycleResult, rules *RuleLifecycleResult) bool {
+	if listener == nil || listener.Active == nil || listener.Active.Correlation == nil ||
+		rules == nil || rules.Active == nil || rules.Active.Correlation == nil ||
+		rules.Active.Inspection == nil || rules.Active.Inspection.Correlation == nil {
+		return false
+	}
+	listenerCorrelation := *listener.Active.Correlation
+	ruleCorrelation := *rules.Active.Correlation
+	proofCorrelation := *rules.Active.Inspection.Correlation
+	if !EnforcementCorrelationsEqual(listenerCorrelation, ruleCorrelation) ||
+		!EnforcementCorrelationsEqual(ruleCorrelation, proofCorrelation) {
+		return false
+	}
+	if listenerCorrelation.PlanID != plan.ID || plan.PolicySnapshot == nil ||
+		listenerCorrelation.PolicySnapshotID != plan.PolicySnapshot.ID ||
+		plan.Proxy == nil || listenerCorrelation.ProxySessionID != plan.Proxy.ProxySessionID {
+		return false
+	}
+	if aggregatePlanRequiresRawPacketIsolation(plan) {
+		rawPacketProof := sanitizeRawPacketIsolationProofPtr(rules.Active.LinkLayerIsolation)
+		if !aggregateRawPacketIsolationVerified(rawPacketProof) ||
+			rawPacketProof.Correlation == nil ||
+			!EnforcementCorrelationsEqual(ruleCorrelation, *rawPacketProof.Correlation) {
+			return false
+		}
+	}
+	return true
+}
+
 func aggregateStrongResultMode(rules *RuleLifecycleResult) ResultMode {
-	if rules == nil || rules.Active == nil {
+	if rules == nil || rules.Active == nil || rules.Active.Inspection == nil {
 		return ResultModeNone
 	}
-	for _, mechanism := range rules.Active.Mechanisms {
+	for _, mechanism := range rules.Active.Inspection.Mechanisms {
 		switch mechanism {
 		case EnforcementMechanismFirewall:
 			return ResultModeProxyFirewall
@@ -364,16 +429,19 @@ func aggregateStrongResultMode(rules *RuleLifecycleResult) ResultMode {
 }
 
 func aggregateRuleCapabilityCompatibleWithPlan(plan Plan, rules *RuleLifecycleResult) bool {
-	if rules == nil || rules.Active == nil {
+	if rules == nil || rules.Active == nil || rules.Active.Inspection == nil {
 		return false
 	}
-	labels := sanitizeIdentifierList(rules.Active.CapabilityLabels)
+	labels := sanitizeIdentifierList(rules.Active.Inspection.CapabilityLabels)
 	if plan.DefaultPosture == DefaultPostureDenyByDefault &&
 		!aggregateRuleCapabilityHasAnyLabel(labels, planOperationDefaultDeny, "default_deny_active") {
 		return false
 	}
 	if plan.Allowlist != nil {
 		for _, category := range plan.Allowlist.RuleCategories {
+			if category == AllowlistRuleCategoryDomain || category == AllowlistRuleCategoryEndpoint {
+				continue
+			}
 			if !aggregateRuleCapabilitySupportsCategory(labels, category) {
 				return false
 			}
@@ -389,12 +457,23 @@ func aggregateRuleCapabilityCompatibleWithPlan(plan Plan, rules *RuleLifecycleRe
 			return false
 		}
 	}
-	if plan.RawProtocols != nil &&
-		(plan.RawProtocols.TCP == PostureBlock || plan.RawProtocols.UDP == PostureBlock || plan.RawProtocols.ICMP == PostureBlock) &&
-		!aggregateRuleCapabilityHasAnyLabel(labels, "raw_protocols", planOperationBlockRawProtocols) {
+	if aggregatePlanRequiresRawPacketIsolation(plan) &&
+		!aggregateRawPacketIsolationVerified(sanitizeRawPacketIsolationProofPtr(rules.Active.LinkLayerIsolation)) {
 		return false
 	}
 	return true
+}
+
+func aggregatePlanRequiresRawPacketIsolation(plan Plan) bool {
+	return plan.RawProtocols != nil &&
+		(plan.RawProtocols.TCP == PostureBlock || plan.RawProtocols.UDP == PostureBlock || plan.RawProtocols.ICMP == PostureBlock)
+}
+
+func aggregateRawPacketIsolationVerified(proof *RawPacketIsolationProof) bool {
+	return proof != nil && proof.Status == RawPacketIsolationStatusVerified &&
+		proof.ID != "" && proof.VerifiedAtUnixMilli > 0 &&
+		proof.Correlation != nil && EnforcementCorrelationComplete(*proof.Correlation) &&
+		proof.ReasonCode == LifecycleReasonRawPacketIsolationVerified && len(proof.WarningCodes) == 0
 }
 
 func aggregateRuleCapabilitySupportsCategory(labels []string, category AllowlistRuleCategory) bool {

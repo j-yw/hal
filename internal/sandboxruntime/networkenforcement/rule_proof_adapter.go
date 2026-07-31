@@ -287,10 +287,6 @@ func ruleProofCapabilityLabelsForPlan(plan Plan) []string {
 			labels = appendRuleProofCapabilityLabels(labels, "metadata_endpoint", "metadata_endpoint_rules", planOperationBlockMetadataEndpoint)
 		}
 	}
-	if plan.RawProtocols != nil &&
-		(plan.RawProtocols.TCP == PostureBlock || plan.RawProtocols.UDP == PostureBlock || plan.RawProtocols.ICMP == PostureBlock) {
-		labels = appendRuleProofCapabilityLabels(labels, "raw_protocols", planOperationBlockRawProtocols)
-	}
 	if plan.Firewall != nil {
 		for _, operation := range plan.Firewall.Operations {
 			switch sanitizeIdentifier(operation) {
@@ -300,8 +296,6 @@ func ruleProofCapabilityLabelsForPlan(plan Plan) []string {
 				labels = appendRuleProofCapabilityLabels(labels, "private_range_rules", planOperationBlockPrivateNetwork)
 			case planOperationBlockMetadataEndpoint:
 				labels = appendRuleProofCapabilityLabels(labels, "metadata_endpoint", "metadata_endpoint_rules", planOperationBlockMetadataEndpoint)
-			case planOperationBlockRawProtocols:
-				labels = appendRuleProofCapabilityLabels(labels, "raw_protocols", planOperationBlockRawProtocols)
 			}
 		}
 	}

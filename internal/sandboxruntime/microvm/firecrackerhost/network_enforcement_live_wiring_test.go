@@ -161,6 +161,7 @@ func (listener *firecrackerHostRecordingProxyListener) StopProxyListener(_ conte
 
 func (listener *firecrackerHostRecordingProxyListener) metadata(req networkenforcement.ProxyListenerLifecycleRequest, status networkenforcement.LifecycleStatus, reason networkenforcement.LifecycleReasonCode) networkenforcement.ProxyListenerLifecycleMetadata {
 	plan := req.Plan.Plan()
+	correlation := firecrackerHostLiveEnforcementCorrelation(plan)
 	return networkenforcement.ProxyListenerLifecycleMetadata{
 		ID:             "firecrackerhost-proxy-proof",
 		PlanID:         plan.ID,
@@ -169,7 +170,12 @@ func (listener *firecrackerHostRecordingProxyListener) metadata(req networkenfor
 		Mechanisms:     []networkenforcement.EnforcementMechanism{networkenforcement.EnforcementMechanismProxy},
 		Operations:     []string{listener.calls[len(listener.calls)-1], "listen 127.0.0.1:8080", "/tmp/proxy.sock", "token=secret"},
 		PolicySnapshot: plan.PolicySnapshot,
-		ReasonCode:     reason,
+		CapabilityLabels: []string{
+			"http_request",
+			"http_connect",
+		},
+		Correlation: &correlation,
+		ReasonCode:  reason,
 	}
 }
 
@@ -201,7 +207,8 @@ func (rules *firecrackerHostRecordingRuleProof) RunRuleProofStep(_ context.Conte
 		mechanism = req.Mechanism
 	}
 	plan := req.Plan.Plan()
-	return networkenforcement.RuleLifecycleMetadata{
+	correlation := firecrackerHostLiveEnforcementCorrelation(plan)
+	metadata := networkenforcement.RuleLifecycleMetadata{
 		ID:             "firecrackerhost-rule-proof",
 		PlanID:         plan.ID,
 		AdapterID:      "firecrackerhost-rules",
@@ -209,6 +216,7 @@ func (rules *firecrackerHostRecordingRuleProof) RunRuleProofStep(_ context.Conte
 		Mechanisms:     []networkenforcement.EnforcementMechanism{mechanism},
 		Operations:     []string{req.Operation, "iptables -A OUTPUT -d 127.0.0.1 --dport 443 token=secret"},
 		PolicySnapshot: plan.PolicySnapshot,
+		Correlation:    &correlation,
 		CapabilityLabels: []string{
 			"default_deny",
 			"domain_rules",
@@ -216,5 +224,41 @@ func (rules *firecrackerHostRecordingRuleProof) RunRuleProofStep(_ context.Conte
 			"metadata_endpoint",
 		},
 		ReasonCode: reason,
-	}, nil
+	}
+	if status == networkenforcement.LifecycleStatusActive {
+		metadata.Inspection = &networkenforcement.InspectedRuleProof{
+			ID:                   "firecrackerhost-live-inspection",
+			RuleDigest:           "firecrackerhost-live-rule-digest",
+			Status:               networkenforcement.RuleInspectionStatusInspected,
+			InspectedAtUnixMilli: 1735689600000,
+			Correlation:          &correlation,
+			Mechanisms:           []networkenforcement.EnforcementMechanism{mechanism},
+			CapabilityLabels:     metadata.CapabilityLabels,
+			ReasonCode:           networkenforcement.LifecycleReasonRuleInspected,
+		}
+	}
+	return metadata, nil
+}
+
+func firecrackerHostLiveEnforcementCorrelation(plan networkenforcement.Plan) networkenforcement.EnforcementCorrelation {
+	proxySessionID := ""
+	if plan.Proxy != nil {
+		proxySessionID = plan.Proxy.ProxySessionID
+	}
+	policySnapshotID := ""
+	if plan.PolicySnapshot != nil {
+		policySnapshotID = plan.PolicySnapshot.ID
+	}
+	return networkenforcement.EnforcementCorrelation{
+		SandboxID:            "firecrackerhost-live-sandbox",
+		ExecutionID:          "firecrackerhost-live-execution",
+		WorkerID:             "firecrackerhost-live-worker",
+		RuntimeID:            "firecrackerhost-live-runtime",
+		PlanID:               plan.ID,
+		PolicySnapshotID:     policySnapshotID,
+		ProxySessionID:       proxySessionID,
+		ProxyGenerationID:    "firecrackerhost-live-proxy-generation",
+		TopologyGenerationID: "firecrackerhost-live-topology-generation",
+		RuleGenerationID:     "firecrackerhost-live-rule-generation",
+	}
 }

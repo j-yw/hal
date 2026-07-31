@@ -13,7 +13,7 @@ func TestLiveEnforcementAggregationRequiresBothActiveSides(t *testing.T) {
 	plan := aggregationPlan(FirewallIntentModeApply)
 	listener := aggregationActiveListenerResult(plan)
 	rules := aggregationActiveRuleResult(plan, EnforcementMechanismFirewall)
-	rules.Active.CapabilityLabels = aggregationDefaultDenyRuleCapabilityLabels()
+	rules.Active.Inspection.CapabilityLabels = aggregationDefaultDenyRuleCapabilityLabels()
 
 	result := AggregateLiveEnforcementResult(plan, &listener, &rules)
 
@@ -24,11 +24,26 @@ func TestLiveEnforcementAggregationRequiresBothActiveSides(t *testing.T) {
 	assertAggregationPayloadSanitized(t, result)
 }
 
+func TestLiveEnforcementAggregationRejectsRuleOnlyRawProtocolLabel(t *testing.T) {
+	plan := aggregationRawProtocolPlan(FirewallIntentModeApply)
+	listener := aggregationActiveListenerResult(plan)
+	rules := aggregationActiveRuleResult(plan, EnforcementMechanismFirewall)
+	rules.Active.Inspection.CapabilityLabels = aggregationDefaultDenyRuleCapabilityLabels()
+	rules.Active.LinkLayerIsolation = nil
+
+	result := AggregateLiveEnforcementResult(plan, &listener, &rules)
+
+	assertNoStrongAggregatedEnforcement(t, result)
+	if result.ReasonCode != ResultReasonCapabilityMissing {
+		t.Fatalf("ReasonCode = %q, want %q in %#v", result.ReasonCode, ResultReasonCapabilityMissing, result)
+	}
+}
+
 func TestLiveEnforcementAggregationRequiresDefaultDenyRuleCapabilityProof(t *testing.T) {
 	plan := aggregationPlan(FirewallIntentModeApply)
 	listener := aggregationActiveListenerResult(plan)
 	provenRules := aggregationActiveRuleResult(plan, EnforcementMechanismFirewall)
-	provenRules.Active.CapabilityLabels = append(aggregationDefaultDenyRuleCapabilityLabels(), "iptables -A OUTPUT -d 127.0.0.1 --dport 443 token=secret")
+	provenRules.Active.Inspection.CapabilityLabels = aggregationDefaultDenyRuleCapabilityLabels()
 
 	result := AggregateLiveEnforcementResult(plan, &listener, &provenRules)
 
@@ -48,28 +63,20 @@ func TestLiveEnforcementAggregationRequiresDefaultDenyRuleCapabilityProof(t *tes
 		},
 		{
 			name:   "missing default-deny proof",
-			labels: []string{"domain_rules", "endpoint_rules", "private_range_rules", "metadata_endpoint"},
-		},
-		{
-			name:   "missing domain rule proof",
-			labels: []string{"default_deny", "endpoint_rules", "private_range_rules", "metadata_endpoint"},
-		},
-		{
-			name:   "missing endpoint rule proof",
-			labels: []string{"default_deny", "domain_rules", "private_range_rules", "metadata_endpoint"},
+			labels: []string{"private_range_rules", "metadata_endpoint"},
 		},
 		{
 			name:   "missing private range proof",
-			labels: []string{"default_deny", "domain_rules", "endpoint_rules", "metadata_endpoint"},
+			labels: []string{"default_deny", "metadata_endpoint"},
 		},
 		{
 			name:   "missing metadata endpoint proof",
-			labels: []string{"default_deny", "domain_rules", "endpoint_rules", "private_range_rules"},
+			labels: []string{"default_deny", "private_range_rules"},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			rules := aggregationActiveRuleResult(plan, EnforcementMechanismFirewall)
-			rules.Active.CapabilityLabels = tt.labels
+			rules.Active.Inspection.CapabilityLabels = tt.labels
 
 			result := AggregateLiveEnforcementResult(plan, &listener, &rules)
 
@@ -89,7 +96,7 @@ func TestLiveEnforcementAggregationDowngradesPartialAndMetadataOnlyResults(t *te
 	plan := aggregationPlan(FirewallIntentModeApply)
 	activeListener := aggregationActiveListenerResult(plan)
 	activeRules := aggregationActiveRuleResult(plan, EnforcementMechanismFirewall)
-	activeRules.Active.CapabilityLabels = aggregationDefaultDenyRuleCapabilityLabels()
+	activeRules.Active.Inspection.CapabilityLabels = aggregationDefaultDenyRuleCapabilityLabels()
 	failedListener := aggregationActiveListenerResult(plan)
 	failedListener.Status = LifecycleStatusFailed
 	failedListener.ReasonCode = LifecycleReasonAdapterFailed
@@ -341,6 +348,21 @@ func aggregationPlan(mode FirewallIntentMode) Plan {
 	})
 }
 
+func aggregationRawProtocolPlan(mode FirewallIntentMode) Plan {
+	plan := aggregationPlan(mode)
+	plan.RawProtocols = &RawProtocolPlan{
+		TCP:  PostureBlock,
+		UDP:  PostureBlock,
+		ICMP: PostureBlock,
+	}
+	if plan.Firewall != nil {
+		firewall := *plan.Firewall
+		firewall.Operations = append(append([]string(nil), firewall.Operations...), planOperationBlockRawProtocols)
+		plan.Firewall = &firewall
+	}
+	return plan
+}
+
 func aggregationListenerAdapter(plan Plan, failures map[string]error) *recordingProxyListenerAdapter {
 	return &recordingProxyListenerAdapter{
 		failures: failures,
@@ -391,10 +413,18 @@ func aggregationActiveRuleResult(plan Plan, mechanism EnforcementMechanism) Rule
 }
 
 func aggregationDefaultDenyRuleCapabilityLabels() []string {
-	return []string{"default_deny", "domain_rules", "endpoint_rules", "private_range_rules", "metadata_endpoint"}
+	return []string{
+		"default_deny",
+		"private_range_rules",
+		"metadata_endpoint",
+		"loopback_rules",
+		"link_local_rules",
+		"raw_protocols",
+	}
 }
 
 func aggregationListenerMetadata(plan Plan, status LifecycleStatus, reason LifecycleReasonCode, operation string) ProxyListenerLifecycleMetadata {
+	correlation := aggregationCorrelation(plan)
 	return ProxyListenerLifecycleMetadata{
 		ID:               "proxy-live-aggregation",
 		PlanID:           plan.ID,
@@ -403,13 +433,15 @@ func aggregationListenerMetadata(plan Plan, status LifecycleStatus, reason Lifec
 		Mechanisms:       []EnforcementMechanism{EnforcementMechanismProxy},
 		Operations:       []string{operation},
 		PolicySnapshot:   plan.PolicySnapshot,
-		CapabilityLabels: []string{"proxy_active"},
+		CapabilityLabels: []string{"http_request", "http_connect"},
+		Correlation:      &correlation,
 		ReasonCode:       reason,
 	}
 }
 
 func aggregationRuleMetadata(plan Plan, status LifecycleStatus, reason LifecycleReasonCode, operation string, mechanism EnforcementMechanism) RuleLifecycleMetadata {
-	return RuleLifecycleMetadata{
+	correlation := aggregationCorrelation(plan)
+	metadata := RuleLifecycleMetadata{
 		ID:               "rules-aggregation",
 		PlanID:           plan.ID,
 		AdapterID:        "fake-aggregation-rules",
@@ -418,7 +450,50 @@ func aggregationRuleMetadata(plan Plan, status LifecycleStatus, reason Lifecycle
 		Operations:       []string{operation},
 		PolicySnapshot:   plan.PolicySnapshot,
 		CapabilityLabels: aggregationDefaultDenyRuleCapabilityLabels(),
+		Correlation:      &correlation,
 		ReasonCode:       reason,
+	}
+	if status == LifecycleStatusActive {
+		metadata.Inspection = &InspectedRuleProof{
+			ID:                   "rule-proof-aggregation",
+			RuleDigest:           "rule-digest-aggregation",
+			Status:               RuleInspectionStatusInspected,
+			InspectedAtUnixMilli: 1735689600000,
+			Correlation:          &correlation,
+			Mechanisms:           []EnforcementMechanism{mechanism},
+			CapabilityLabels:     aggregationDefaultDenyRuleCapabilityLabels(),
+			ReasonCode:           LifecycleReasonRuleInspected,
+		}
+		if aggregatePlanRequiresRawPacketIsolation(plan) {
+			metadata.LinkLayerIsolation = aggregationRawPacketIsolationProof(plan)
+		}
+	}
+	return metadata
+}
+
+func aggregationRawPacketIsolationProof(plan Plan) *RawPacketIsolationProof {
+	correlation := aggregationCorrelation(plan)
+	return &RawPacketIsolationProof{
+		ID:                  "raw-packet-proof-aggregation",
+		Status:              RawPacketIsolationStatusVerified,
+		VerifiedAtUnixMilli: 1735689600000,
+		Correlation:         &correlation,
+		ReasonCode:          LifecycleReasonRawPacketIsolationVerified,
+	}
+}
+
+func aggregationCorrelation(plan Plan) EnforcementCorrelation {
+	return EnforcementCorrelation{
+		SandboxID:            "sandbox-aggregation",
+		ExecutionID:          "execution-aggregation",
+		WorkerID:             "worker-aggregation",
+		RuntimeID:            "runtime-aggregation",
+		PlanID:               plan.ID,
+		PolicySnapshotID:     plan.PolicySnapshot.ID,
+		ProxySessionID:       plan.Proxy.ProxySessionID,
+		ProxyGenerationID:    "proxy-generation-aggregation",
+		TopologyGenerationID: "topology-generation-aggregation",
+		RuleGenerationID:     "rule-generation-aggregation",
 	}
 }
 
