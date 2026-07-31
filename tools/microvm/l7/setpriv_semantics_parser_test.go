@@ -3,8 +3,13 @@
 package l7profile
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseL7GetSubIDsSelectsFirstProviderRange(t *testing.T) {
@@ -54,5 +59,85 @@ func TestL7SubordinateIDMapUsesOneOuterIDAtNamespaceID1000(t *testing.T) {
 	want := fmt.Sprintf("1000:%d:1", outerID)
 	if got := l7SubordinateIDMap(outerID); got != want {
 		t.Fatal("subordinate ID map must map exactly one outer ID at namespace ID 1000")
+	}
+}
+
+func TestL7ConfiguredProviderQueryBoundsOversizedStdout(t *testing.T) {
+	const outputLimit = 64
+	output, err := runL7ConfiguredProviderQuery(
+		context.Background(),
+		time.Second,
+		outputLimit,
+		os.Args[0],
+		"-test.run=^TestL7ConfiguredProviderHelperProcess$", "--", "oversized",
+	)
+	if err == nil {
+		t.Fatal("configured provider query accepted oversized stdout")
+	}
+	if len(output) != outputLimit {
+		t.Fatal("configured provider query did not hard-bound captured stdout")
+	}
+	if strings.Contains(err.Error(), "provider-sensitive") {
+		t.Fatal("configured provider query error exposed child output")
+	}
+}
+
+func TestL7ConfiguredProviderQueryCancelsHungChild(t *testing.T) {
+	const timeout = 50 * time.Millisecond
+	started := time.Now()
+	output, err := runL7ConfiguredProviderQuery(
+		context.Background(),
+		timeout,
+		64,
+		os.Args[0],
+		"-test.run=^TestL7ConfiguredProviderHelperProcess$", "--", "hang",
+	)
+	if err == nil {
+		t.Fatal("configured provider query accepted a hung child")
+	}
+	if len(output) != 0 {
+		t.Fatal("configured provider query captured unexpected hung-child output")
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatal("configured provider query did not terminate its hung child by the deadline")
+	}
+}
+
+func TestL7ConfiguredProviderQueryRejectsNonzeroExitWithoutStderrDisclosure(t *testing.T) {
+	output, err := runL7ConfiguredProviderQuery(
+		context.Background(),
+		time.Second,
+		64,
+		os.Args[0],
+		"-test.run=^TestL7ConfiguredProviderHelperProcess$", "--", "nonzero",
+	)
+	if err == nil {
+		t.Fatal("configured provider query accepted a nonzero exit")
+	}
+	if len(output) != 0 {
+		t.Fatal("configured provider query captured unexpected nonzero-exit stdout")
+	}
+	if strings.Contains(err.Error(), "provider-sensitive") {
+		t.Fatal("configured provider query error exposed child stderr")
+	}
+}
+
+func TestL7ConfiguredProviderHelperProcess(t *testing.T) {
+	mode := ""
+	for index, argument := range os.Args {
+		if argument == "--" && index+1 < len(os.Args) {
+			mode = os.Args[index+1]
+			break
+		}
+	}
+	switch mode {
+	case "oversized":
+		_, _ = os.Stdout.Write(bytes.Repeat([]byte("provider-sensitive-output"), 16))
+		_, _ = os.Stderr.WriteString("provider-sensitive-stderr")
+	case "hang":
+		time.Sleep(time.Minute)
+	case "nonzero":
+		_, _ = os.Stderr.WriteString("provider-sensitive-stderr")
+		os.Exit(7)
 	}
 }
