@@ -35,6 +35,7 @@ type Reconciler struct {
 	mu      sync.Mutex
 	options ReconcilerOptions
 	pending *reconcileState
+	retired reconcileTargetIdentity
 	done    bool
 }
 
@@ -78,12 +79,12 @@ func (r *Reconciler) Reconcile(_ context.Context, request rootlesspodman.Network
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	targetIdentity := reconcileTargetFromRequest(request)
+	if targetIdentity.id == "" || (r.done && r.retired != targetIdentity) || (r.pending != nil && r.pending.target != targetIdentity) {
+		return ErrIdentityMismatch
+	}
 	if r.done {
 		return nil
-	}
-	targetIdentity := reconcileTargetFromRequest(request)
-	if targetIdentity.id == "" || (r.pending != nil && r.pending.target != targetIdentity) {
-		return ErrIdentityMismatch
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), r.options.CleanupTimeout)
 	defer cancel()
@@ -156,6 +157,7 @@ func (r *Reconciler) Reconcile(_ context.Context, request rootlesspodman.Network
 		return ErrCleanupIncomplete
 	}
 	r.pending = nil
+	r.retired = targetIdentity
 	r.done = true
 	return nil
 }

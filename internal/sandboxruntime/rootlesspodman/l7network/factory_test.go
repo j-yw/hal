@@ -277,6 +277,17 @@ func TestL7RootlessPodmanRestartReconcilerQuarantinesBeforeExactCleanupWithoutAc
 	if got, want := sequence.snapshot(), []string{"namespace_resolve", "rules_quarantine", "runtime_stop", "rules_cleanup", "namespace_close", "runtime_delete"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("restart sequence = %#v, want %#v", got, want)
 	}
+	sequence.reset()
+	postSuccess := req
+	postSuccess.Target.ID = "container-generation-b"
+	postSuccess.Target.Name = "hal-l7-b"
+	postSuccess.Target.Runtime.RuntimeID = "container-generation-b"
+	if err := reconciler.Reconcile(context.Background(), postSuccess); !errors.Is(err, l7network.ErrIdentityMismatch) {
+		t.Fatalf("post-success swapped target=%v", err)
+	}
+	if got := sequence.snapshot(); len(got) != 0 {
+		t.Fatalf("post-success mismatch mutated retired generation: %#v", got)
+	}
 	mismatch := req
 	mismatch.Identity.TopologyGenerationID = "other-generation"
 	if err := reconciler.Reconcile(context.Background(), mismatch); !errors.Is(err, l7network.ErrIdentityMismatch) {
