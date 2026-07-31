@@ -403,7 +403,7 @@ func aggregationListenerMetadata(plan Plan, status LifecycleStatus, reason Lifec
 		Mechanisms:       []EnforcementMechanism{EnforcementMechanismProxy},
 		Operations:       []string{operation},
 		PolicySnapshot:   plan.PolicySnapshot,
-		CapabilityLabels: []string{"proxy_active"},
+		CapabilityLabels: []string{"http_request", "http_connect"},
 		Correlation:      &correlation,
 		ReasonCode:       reason,
 	}
@@ -425,13 +425,14 @@ func aggregationRuleMetadata(plan Plan, status LifecycleStatus, reason Lifecycle
 	}
 	if status == LifecycleStatusActive {
 		metadata.Inspection = &InspectedRuleProof{
-			ID:               "rule-proof-aggregation",
-			RuleDigest:       "rule-digest-aggregation",
-			Status:           RuleInspectionStatusInspected,
-			Correlation:      &correlation,
-			Mechanisms:       []EnforcementMechanism{mechanism},
-			CapabilityLabels: aggregationDefaultDenyRuleCapabilityLabels(),
-			ReasonCode:       LifecycleReasonRuleInspected,
+			ID:                   "rule-proof-aggregation",
+			RuleDigest:           "rule-digest-aggregation",
+			Status:               RuleInspectionStatusInspected,
+			InspectedAtUnixMilli: 1735689600000,
+			Correlation:          &correlation,
+			Mechanisms:           []EnforcementMechanism{mechanism},
+			CapabilityLabels:     aggregationDefaultDenyRuleCapabilityLabels(),
+			ReasonCode:           LifecycleReasonRuleInspected,
 		}
 	}
 	return metadata
@@ -446,6 +447,7 @@ func aggregationCorrelation(plan Plan) EnforcementCorrelation {
 		PlanID:               plan.ID,
 		PolicySnapshotID:     plan.PolicySnapshot.ID,
 		ProxySessionID:       plan.Proxy.ProxySessionID,
+		ProxyGenerationID:    "proxy-generation-aggregation",
 		TopologyGenerationID: "topology-generation-aggregation",
 		RuleGenerationID:     "rule-generation-aggregation",
 	}

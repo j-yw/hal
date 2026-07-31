@@ -61,4 +61,7 @@ func TestLinuxRulesNamespaceCommandEntersOwningUserThenNetworkNamespace(t *testi
 	if len(command.ExtraFiles) != 2 {
 		t.Fatalf("extra files = %d, want user and network namespace descriptors", len(command.ExtraFiles))
 	}
+	if command.Env == nil || len(command.Env) != 0 {
+		t.Fatalf("command environment = %#v, want explicit empty environment", command.Env)
+	}
 }

@@ -41,6 +41,9 @@ func TestLinuxRulesApplyUsesOneAtomicBatchAndInspectionBeforeProof(t *testing.T)
 	if metadata.Inspection == nil || metadata.Inspection.Status != networkenforcement.RuleInspectionStatusInspected {
 		t.Fatalf("metadata = %#v, want inspected proof", metadata)
 	}
+	if metadata.Inspection.InspectedAtUnixMilli <= 0 {
+		t.Fatalf("inspection timestamp = %d, want positive epoch millis", metadata.Inspection.InspectedAtUnixMilli)
+	}
 	if executor.listCalls < 2 {
 		t.Fatalf("list calls = %d, want ownership check and post-apply inspection", executor.listCalls)
 	}
@@ -63,6 +66,14 @@ func TestLinuxRulesForwardedTAPProfileInspectsInputAndForwardChains(t *testing.T
 	}
 	if strings.Contains(batch, "hook output") {
 		t.Fatalf("forwarded profile unexpectedly used output chain: %s", batch)
+	}
+	for _, required := range []string{
+		"iifname \"eth0\" oifname \"pasta0\"",
+		"iifname \"pasta0\" oifname \"eth0\"",
+	} {
+		if !strings.Contains(batch, required) {
+			t.Fatalf("forwarded batch does not bind both directions to exact interfaces %q: %s", required, batch)
+		}
 	}
 	establishedRules := 0
 	for _, line := range strings.Split(batch, "\n") {
@@ -92,6 +103,31 @@ func TestLinuxRulesForwardedTAPProfileInspectsInputAndForwardChains(t *testing.T
 	}
 }
 
+func TestLinuxRulesForwardedProfileRequiresDistinctMappingInterface(t *testing.T) {
+	for _, mappingInterface := range []string{"", "eth0", "../../host0"} {
+		config := testRuleSetConfig("generation-mapping", RuleProfileForwardedTAP)
+		config.MappingInterfaceName = mappingInterface
+		if _, err := NewExpectedRuleSet(config); !errors.Is(err, ErrInvalidConfiguration) {
+			t.Fatalf("mapping interface %q error = %v, want ErrInvalidConfiguration", mappingInterface, err)
+		}
+	}
+}
+
+func TestLinuxRulesForwardedInspectionRejectsMappingInterfaceDrift(t *testing.T) {
+	expected := testExpectedRuleSetForProfile(t, "generation-mapping-drift", RuleProfileForwardedTAP)
+	executor := newFakeNFTExecutor(expected)
+	executor.postApplyMutation = "wrong_mapping_interface"
+	adapter := NewAdapter(executor, AdapterOptions{})
+
+	metadata, err := adapter.ApplyAndInspect(context.Background(), expected)
+	if !errors.Is(err, ErrInspectionFailed) {
+		t.Fatalf("error = %v, want ErrInspectionFailed", err)
+	}
+	if metadata.Inspection != nil && metadata.Inspection.Status == networkenforcement.RuleInspectionStatusInspected {
+		t.Fatalf("mapping drift produced inspected proof: %#v", metadata)
+	}
+}
+
 func TestLinuxRulesRequiresOwningUserAndNetworkNamespaces(t *testing.T) {
 	config := testRuleSetConfig("generation-namespace", RuleProfileWorkloadOutput)
 	config.Namespace = NewNamespaceHandle(0, 11)
@@ -109,6 +145,35 @@ func TestLinuxRulesRejectsLoopbackProxyAddress(t *testing.T) {
 	config.ProxyAddress = "127.0.0.1"
 	if _, err := NewExpectedRuleSet(config); !errors.Is(err, ErrInvalidConfiguration) {
 		t.Fatalf("loopback proxy error = %v, want ErrInvalidConfiguration", err)
+	}
+}
+
+func TestLinuxRulesRejectsKnownMetadataProxyAddresses(t *testing.T) {
+	for _, address := range []string{
+		"169.254.169.254",
+		"fd00:ec2::254",
+		"fd20:ce::254",
+	} {
+		t.Run(address, func(t *testing.T) {
+			config := testRuleSetConfig("generation-metadata", RuleProfileWorkloadOutput)
+			config.ProxyAddress = address
+			if _, err := NewExpectedRuleSet(config); !errors.Is(err, ErrInvalidConfiguration) {
+				t.Fatalf("metadata proxy error = %v, want ErrInvalidConfiguration", err)
+			}
+		})
+	}
+}
+
+func TestLinuxRulesDigestBindsProxyGeneration(t *testing.T) {
+	first := testExpectedRuleSet(t, "generation-digest")
+	config := testRuleSetConfig("generation-digest", RuleProfileWorkloadOutput)
+	config.Correlation.ProxyGenerationID = "proxy-generation-other"
+	second, err := NewExpectedRuleSet(config)
+	if err != nil {
+		t.Fatalf("NewExpectedRuleSet: %v", err)
+	}
+	if first.ruleDigest == second.ruleDigest || first.ownerToken == second.ownerToken {
+		t.Fatalf("proxy generation did not change ownership/digest: first=%s/%s second=%s/%s", first.ownerToken, first.ruleDigest, second.ownerToken, second.ruleDigest)
 	}
 }
 
@@ -172,6 +237,25 @@ func TestLinuxRulesRejectsOversizedBatchBeforeExecutorMutation(t *testing.T) {
 	}
 	if len(executor.batches) != 0 {
 		t.Fatalf("executor received %d batches after bound rejection", len(executor.batches))
+	}
+}
+
+func TestLinuxRulesRejectsOptionsAboveHardBoundsBeforeExecutorWork(t *testing.T) {
+	for _, options := range []AdapterOptions{
+		{MaxBatchBytes: hardMaxBatchBytes + 1},
+		{MaxInspectionBytes: hardMaxInspectionBytes + 1},
+	} {
+		expected := testExpectedRuleSet(t, "generation-option-bound")
+		executor := newFakeNFTExecutor(expected)
+		adapter := NewAdapter(executor, options)
+
+		_, err := adapter.ApplyAndInspect(context.Background(), expected)
+		if !errors.Is(err, ErrInvalidConfiguration) {
+			t.Fatalf("options %#v error = %v, want ErrInvalidConfiguration", options, err)
+		}
+		if len(executor.batches) != 0 || executor.listCalls != 0 {
+			t.Fatalf("options %#v reached executor: batches=%d listCalls=%d", options, len(executor.batches), executor.listCalls)
+		}
 	}
 }
 
@@ -239,12 +323,12 @@ func TestLinuxRulesSerializesConcurrentOperations(t *testing.T) {
 }
 
 func TestLinuxRulesPrivateInputsAreNotJSON(t *testing.T) {
-	expected := testExpectedRuleSet(t, "generation-json")
+	expected := testExpectedRuleSetForProfile(t, "generation-json", RuleProfileForwardedTAP)
 	payload, err := json.Marshal(expected)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	for _, forbidden := range []string{expected.tableName, expected.interfaceName, expected.proxyAddress.String()} {
+	for _, forbidden := range []string{expected.tableName, expected.interfaceName, expected.mappingInterfaceName, expected.proxyAddress.String()} {
 		if strings.Contains(string(payload), forbidden) {
 			t.Fatalf("JSON leaked %q in %s", forbidden, payload)
 		}
@@ -265,7 +349,7 @@ func testExpectedRuleSetForProfile(t *testing.T, generation string, profile Rule
 }
 
 func testRuleSetConfig(generation string, profile RuleProfile) RuleSetConfig {
-	return RuleSetConfig{
+	config := RuleSetConfig{
 		Correlation: networkenforcement.EnforcementCorrelation{
 			SandboxID:            "sandbox-linuxrules",
 			ExecutionID:          "execution-linuxrules",
@@ -274,6 +358,7 @@ func testRuleSetConfig(generation string, profile RuleProfile) RuleSetConfig {
 			PlanID:               "plan-linuxrules",
 			PolicySnapshotID:     "policy-linuxrules",
 			ProxySessionID:       "proxy-linuxrules",
+			ProxyGenerationID:    "proxy-generation-linuxrules",
 			TopologyGenerationID: "topology-linuxrules",
 			RuleGenerationID:     generation,
 		},
@@ -284,4 +369,8 @@ func testRuleSetConfig(generation string, profile RuleProfile) RuleSetConfig {
 		ProxyAddress:  "192.0.2.10",
 		ProxyPort:     3128,
 	}
+	if profile == RuleProfileForwardedTAP {
+		config.MappingInterfaceName = "pasta0"
+	}
+	return config
 }

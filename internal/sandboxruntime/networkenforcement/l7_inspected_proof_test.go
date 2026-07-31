@@ -22,11 +22,17 @@ func TestL7AggregationRequiresFreshInspectedRuleProof(t *testing.T) {
 		{name: "stale inspection is not proof", mutate: func(_ *ProxyListenerLifecycleResult, rules *RuleLifecycleResult) {
 			rules.Active.Inspection.Status = RuleInspectionStatusStale
 		}},
+		{name: "timeless inspection is not proof", mutate: func(_ *ProxyListenerLifecycleResult, rules *RuleLifecycleResult) {
+			rules.Active.Inspection.InspectedAtUnixMilli = 0
+		}},
 		{name: "warning-bearing inspection is not proof", mutate: func(_ *ProxyListenerLifecycleResult, rules *RuleLifecycleResult) {
 			rules.Active.Inspection.WarningCodes = []LifecycleWarningCode{LifecycleWarningProofMismatch}
 		}},
 		{name: "proxy identity mismatch", mutate: func(listener *ProxyListenerLifecycleResult, _ *RuleLifecycleResult) {
 			listener.Active.Correlation.ProxySessionID = "proxy-session-other"
+		}},
+		{name: "proxy generation mismatch", mutate: func(listener *ProxyListenerLifecycleResult, _ *RuleLifecycleResult) {
+			listener.Active.Correlation.ProxyGenerationID = "proxy-generation-other"
 		}},
 		{name: "rule generation mismatch", mutate: func(_ *ProxyListenerLifecycleResult, rules *RuleLifecycleResult) {
 			rules.Active.Inspection.Correlation.RuleGenerationID = "rule-generation-other"
@@ -67,12 +73,14 @@ func TestL7InspectedRuleProofSanitizesCorrelationAndRawLookingValues(t *testing.
 			PlanID:               "plan-safe",
 			PolicySnapshotID:     "policy-safe",
 			ProxySessionID:       "http://127.0.0.1:8080",
+			ProxyGenerationID:    "proxy-generation-safe",
 			TopologyGenerationID: "/proc/self/ns/net",
 			RuleGenerationID:     "generation-safe",
 		},
-		Mechanisms:       []EnforcementMechanism{EnforcementMechanismFirewall},
-		CapabilityLabels: []string{"default_deny"},
-		ReasonCode:       LifecycleReasonRuleInspected,
+		Mechanisms:           []EnforcementMechanism{EnforcementMechanismFirewall},
+		InspectedAtUnixMilli: 1735689600000,
+		CapabilityLabels:     []string{"default_deny"},
+		ReasonCode:           LifecycleReasonRuleInspected,
 	})
 
 	if proof.Status == RuleInspectionStatusInspected {
@@ -97,5 +105,37 @@ func TestL7EnforcementCorrelationRequiresEveryIdentity(t *testing.T) {
 	correlation.WorkerID = ""
 	if EnforcementCorrelationComplete(correlation) {
 		t.Fatalf("correlation without worker identity accepted: %#v", correlation)
+	}
+}
+
+func TestL7EnforcementCorrelationRequiresProxyGeneration(t *testing.T) {
+	correlation := aggregationCorrelation(aggregationPlan(FirewallIntentModeApply))
+	correlation.ProxyGenerationID = ""
+	if EnforcementCorrelationComplete(correlation) {
+		t.Fatalf("correlation without proxy generation accepted: %#v", correlation)
+	}
+}
+
+func TestL7AggregationRequiresProxyPolicyCapabilities(t *testing.T) {
+	plan := aggregationPlan(FirewallIntentModeApply)
+	for _, tt := range []struct {
+		name   string
+		labels []string
+	}{
+		{name: "missing all", labels: nil},
+		{name: "missing HTTP request", labels: []string{"http_connect"}},
+		{name: "missing CONNECT", labels: []string{"http_request"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			listener := aggregationActiveListenerResult(plan)
+			listener.Active.CapabilityLabels = tt.labels
+			rules := aggregationActiveRuleResult(plan, EnforcementMechanismFirewall)
+
+			result := AggregateLiveEnforcementResult(plan, &listener, &rules)
+			assertNoStrongAggregatedEnforcement(t, result)
+			if !resultWarningCodesContain(result.WarningCodes, ResultWarningCapabilityDowngraded) {
+				t.Fatalf("WarningCodes = %#v, want capability downgrade", result.WarningCodes)
+			}
+		})
 	}
 }

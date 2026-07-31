@@ -131,6 +131,11 @@ func mutateInspectionJSON(payload []byte, mutation string) []byte {
 	case "wrong_generation":
 		rule := objects[2].(map[string]any)["rule"].(map[string]any)
 		rule["comment"] = "hal-owner-safe-generation-other-established"
+	case "wrong_mapping_interface":
+		rule := objects[4].(map[string]any)["rule"].(map[string]any)
+		expressions := rule["expr"].([]any)
+		match := expressions[1].(map[string]any)["match"].(map[string]any)
+		match["right"] = "other-egress0"
 	}
 	document["nftables"] = objects
 	mutated, _ := json.Marshal(document)
