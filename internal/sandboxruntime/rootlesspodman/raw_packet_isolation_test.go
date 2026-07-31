@@ -49,6 +49,9 @@ func TestL7PodmanRawPacketVerifierUsesExactInspectAndHostProcEvidence(t *testing
 		if request.Operation != rootlesspodman.OperationInspect || !reflect.DeepEqual(request.Args, wantArgs) {
 			t.Fatalf("inspect request = %#v, want exact container-only inspection %#v", request, wantArgs)
 		}
+		if request.MaxStdoutBytes != 256<<10 || request.MaxStderrBytes != 256<<10 {
+			t.Fatalf("inspect output limits = stdout:%d stderr:%d, want pre-allocation 256 KiB bounds", request.MaxStdoutBytes, request.MaxStderrBytes)
+		}
 	}
 	encoded, err := json.Marshal(proof)
 	if err != nil {
