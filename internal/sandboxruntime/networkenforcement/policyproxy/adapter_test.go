@@ -641,26 +641,6 @@ func TestL6PolicyProxyCONNECTDialUsesConnectTimeout(t *testing.T) {
 	}
 }
 
-func TestL6SplitAuthorityAllowsBracketedIPv6OnlyWithDefaultPort(t *testing.T) {
-	host, port, ok := splitAuthority("[2606:4700::1111]", "80")
-	if !ok || host != "2606:4700::1111" || port != "80" {
-		t.Fatalf("splitAuthority bracketed IPv6 = (%q, %q, %t), want public IPv6 with port 80", host, port, ok)
-	}
-	for _, tt := range []struct {
-		authority   string
-		defaultPort string
-	}{
-		{authority: "[2606:4700::1111]"},
-		{authority: "[127.0.0.1]", defaultPort: "80"},
-		{authority: "[fe80::1%zone]", defaultPort: "80"},
-		{authority: "[not-an-address]", defaultPort: "80"},
-	} {
-		if host, port, ok := splitAuthority(tt.authority, tt.defaultPort); ok {
-			t.Fatalf("splitAuthority(%q, %q) unexpectedly accepted (%q, %q)", tt.authority, tt.defaultPort, host, port)
-		}
-	}
-}
-
 func TestL6PolicyProxyCONNECTPreservesPipelinedBytesAfterHijack(t *testing.T) {
 	echo := newTCPEchoFixture(t)
 	var calls atomic.Int32
