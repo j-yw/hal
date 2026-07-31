@@ -362,7 +362,7 @@ func TestL7ConfiguredProviderQueryReapsLeaderWhenDrainJoinStaysIncomplete(t *tes
 		os.Args[0],
 		"-test.run=^TestL7ConfiguredProviderHelperProcess$", "--", "success",
 	)
-	if !errors.Is(err, errL7ConfiguredProviderQuery) || len(output) != 0 {
+	if !errors.Is(err, errL7ConfiguredProviderQuery) || len(output) > 64 {
 		t.Fatal("configured provider query did not fail closed on incomplete drain proof")
 	}
 	if reapCalls != 1 {

@@ -39,6 +39,9 @@ var (
 		return command.Wait()
 	}
 	l7ConfiguredProviderProcessGroupHasOtherMembers = scanL7ConfiguredProviderProcessGroup
+	waitL7ConfiguredProviderOutputDrain             = func(drain *l7ConfiguredProviderOutputDrain, deadline time.Time) (error, bool) {
+		return drain.waitUntil(deadline)
+	}
 )
 
 func TestL7SetprivLockedKeepCapsSemantics(t *testing.T) {
@@ -365,14 +368,14 @@ func runL7ConfiguredProviderQuery(
 		failed = true
 	}
 
-	drainErr, drainComplete := drain.waitUntil(time.Now().Add(l7ConfiguredProviderCleanup))
+	drainErr, drainComplete := waitL7ConfiguredProviderOutputDrain(drain, time.Now().Add(l7ConfiguredProviderCleanup))
 	if !drainComplete {
 		failed = true
 		drain.close()
-		drainErr, drainComplete = drain.waitUntil(time.Now().Add(l7ConfiguredProviderCleanup))
+		drainErr, drainComplete = waitL7ConfiguredProviderOutputDrain(drain, time.Now().Add(l7ConfiguredProviderCleanup))
 	}
 	if !drainComplete {
-		return nil, errL7ConfiguredProviderQuery
+		failed = true
 	}
 	if drainErr != nil && !errors.Is(drainErr, os.ErrClosed) {
 		failed = true
