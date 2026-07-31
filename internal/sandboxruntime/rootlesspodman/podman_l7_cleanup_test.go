@@ -3,7 +3,6 @@ package rootlesspodman_test
 import (
 	"context"
 	"errors"
-	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -47,23 +46,6 @@ func runL7PodmanExactContainerCleanup(deletePending bool, deleteExact, proveExac
 		cleanupErrors = append(cleanupErrors, errL7PodmanExactContainerAbsenceUnverified)
 	}
 	return errors.Join(cleanupErrors...)
-}
-
-func proveL7PodmanExactContainerAbsent(ctx context.Context, podmanPath, exactContainerID string) error {
-	return proveL7PodmanExactContainerAbsentWithRunner(ctx, podmanPath, exactContainerID, func(runCtx context.Context, executable string, args ...string) (int, error) {
-		err := exec.CommandContext(runCtx, executable, args...).Run()
-		if err == nil {
-			return 0, nil
-		}
-		if runCtx.Err() != nil {
-			return -1, runCtx.Err()
-		}
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			return exitErr.ExitCode(), nil
-		}
-		return -1, err
-	})
 }
 
 func proveL7PodmanExactContainerAbsentWithRunner(ctx context.Context, podmanPath, exactContainerID string, run l7PodmanCommandRunner) error {

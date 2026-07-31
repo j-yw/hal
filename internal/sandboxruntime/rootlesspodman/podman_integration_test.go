@@ -121,6 +121,23 @@ func TestL7PreparedLinuxRootlessPodmanRawPacketCapabilityProof(t *testing.T) {
 	deletePending = false
 }
 
+func proveL7PodmanExactContainerAbsent(ctx context.Context, podmanPath, exactContainerID string) error {
+	return proveL7PodmanExactContainerAbsentWithRunner(ctx, podmanPath, exactContainerID, func(runCtx context.Context, executable string, args ...string) (int, error) {
+		err := exec.CommandContext(runCtx, executable, args...).Run()
+		if err == nil {
+			return 0, nil
+		}
+		if runCtx.Err() != nil {
+			return -1, runCtx.Err()
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return exitErr.ExitCode(), nil
+		}
+		return -1, err
+	})
+}
+
 func TestPodmanIntegrationLifecycleExecAndCopy(t *testing.T) {
 	image := strings.TrimSpace(os.Getenv("HAL_PODMAN_TEST_IMAGE"))
 	if image == "" {
