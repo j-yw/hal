@@ -71,15 +71,22 @@ func TestL7PreparedLinuxRootlessPodmanRawPacketCapabilityProof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() failed: %v", err)
 	}
+	exactCreatedContainerID := target.Runtime.RuntimeID
 	cleanupTarget := *target
-	deleted := false
+	deletePending := true
 	t.Cleanup(func() {
-		if deleted {
-			return
+		cleanupErr := runL7PodmanExactContainerCleanup(deletePending, func() error {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cleanupCancel()
+			return driver.Delete(cleanupCtx, sandboxruntime.LifecycleRequest{Target: cleanupTarget})
+		}, func() error {
+			absenceCtx, absenceCancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer absenceCancel()
+			return proveL7PodmanExactContainerAbsent(absenceCtx, podmanPath, exactCreatedContainerID)
+		})
+		if cleanupErr != nil {
+			t.Errorf("selected prepared-Linux L7 exact-container cleanup failed: %v", cleanupErr)
 		}
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cleanupCancel()
-		_ = driver.Delete(cleanupCtx, sandboxruntime.LifecycleRequest{Target: cleanupTarget})
 	})
 	session.mu.Lock()
 	session.proof.RuntimeID = target.Runtime.RuntimeID
@@ -106,9 +113,9 @@ func TestL7PreparedLinuxRootlessPodmanRawPacketCapabilityProof(t *testing.T) {
 		t.Fatalf("VerifyRawPacketIsolation() proof = %#v, want exact live correlation", proof)
 	}
 	if err := driver.Delete(ctx, sandboxruntime.LifecycleRequest{Target: *target}); err != nil {
-		t.Fatalf("Delete() failed: %v", err)
+		t.Fatal("Delete() failed for selected prepared-Linux L7 exact container")
 	}
-	deleted = true
+	deletePending = false
 }
 
 func TestPodmanIntegrationLifecycleExecAndCopy(t *testing.T) {
