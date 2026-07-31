@@ -42,6 +42,7 @@ var (
 	waitL7ConfiguredProviderOutputDrain             = func(drain *l7ConfiguredProviderOutputDrain, deadline time.Time) (error, bool) {
 		return drain.waitUntil(deadline)
 	}
+	observeL7ConfiguredProviderLeaderState = observeL7ConfiguredProviderLeaderTerminal
 )
 
 func TestL7SetprivLockedKeepCapsSemantics(t *testing.T) {
@@ -381,12 +382,9 @@ func runL7ConfiguredProviderQuery(
 		failed = true
 	}
 
-	if !leaderTerminal {
-		return nil, errL7ConfiguredProviderQuery
-	}
-	waitErr := reapL7ConfiguredProviderCommand(command)
+	waitErr, waitComplete := waitL7ConfiguredProviderReap(command, l7ConfiguredProviderCleanup)
 	data, overflow := output.snapshot()
-	if waitErr != nil || queryContext.Err() != nil || overflow {
+	if !leaderTerminal || !waitComplete || waitErr != nil || queryContext.Err() != nil || overflow {
 		failed = true
 	}
 	if failed {
@@ -399,7 +397,7 @@ func waitL7ConfiguredProviderLeader(parent context.Context, overflowed <-chan st
 	ticker := time.NewTicker(2 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		terminal, err := observeL7ConfiguredProviderLeaderTerminal(leaderPID)
+		terminal, err := observeL7ConfiguredProviderLeaderState(leaderPID)
 		if err != nil {
 			return false, true
 		}
@@ -418,7 +416,7 @@ func waitL7ConfiguredProviderLeader(parent context.Context, overflowed <-chan st
 
 func waitL7ConfiguredProviderLeaderTerminal(leaderPID int, deadline time.Time) bool {
 	for time.Now().Before(deadline) {
-		terminal, err := observeL7ConfiguredProviderLeaderTerminal(leaderPID)
+		terminal, err := observeL7ConfiguredProviderLeaderState(leaderPID)
 		if err != nil {
 			return false
 		}
@@ -428,6 +426,21 @@ func waitL7ConfiguredProviderLeaderTerminal(leaderPID int, deadline time.Time) b
 		time.Sleep(2 * time.Millisecond)
 	}
 	return false
+}
+
+func waitL7ConfiguredProviderReap(command *exec.Cmd, timeout time.Duration) (error, bool) {
+	reaped := make(chan error, 1)
+	go func() {
+		reaped <- reapL7ConfiguredProviderCommand(command)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case err := <-reaped:
+		return err, true
+	case <-timer.C:
+		return nil, false
+	}
 }
 
 func observeL7ConfiguredProviderLeaderTerminal(leaderPID int) (bool, error) {

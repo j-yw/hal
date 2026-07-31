@@ -45,6 +45,10 @@ hard-bounded stdout, discarded stderr, an owned Linux process group, and a small
 fixed cleanup allowance. A terminal leader is observed with Linux `waitid`
 `WNOWAIT` and remains unreaped while non-leader process-group membership is
 eliminated; the leader is then reaped exactly once, with no later group signal.
+If terminal observation does not complete after group termination, one owned
+`Wait` is still arranged after the final group operation and joined only for the
+fixed cleanup allowance; timeout remains a sanitized failure and cannot cause a
+second wait or a later process-group signal.
 Timeout, cancellation, overflow, nonzero exit, descendant retention, or
 malformed output fails closed after exact process-group termination and bounded
 pipe drain. A provider descendant that explicitly leaves the owned group is
