@@ -252,6 +252,7 @@ func TestLinuxRulesNeighborDiscoveryUsesExactConfiguredIPv6Link(t *testing.T) {
 	}{
 		{name: "workload-ula", profile: RuleProfileWorkloadOutput, local: "fd00:7::2", peer: "fd00:7::1"},
 		{name: "workload-global", profile: RuleProfileWorkloadOutput, local: "2001:db8:7::2", peer: "2001:db8:7::1"},
+		{name: "workload-pasta-global-link-local", profile: RuleProfileWorkloadOutput, local: "2001:db8:7::2", peer: "fe80::1"},
 		{name: "forwarded-ula", profile: RuleProfileForwardedTAP, local: "fd00:7::2", peer: "fd00:7::1", dad: true},
 		{name: "forwarded-global", profile: RuleProfileForwardedTAP, local: "2001:db8:7::2", peer: "2001:db8:7::1", dad: true},
 	} {
@@ -350,6 +351,7 @@ func TestLinuxRulesRejectsInvalidConfiguredIPv6Links(t *testing.T) {
 		{name: "loopback peer", local: "fd00:7::2", peer: "::1", prefixBits: 64},
 		{name: "same endpoint", local: "fd00:7::2", peer: "fd00:7::2", prefixBits: 64},
 		{name: "not on link", local: "fd00:7::2", peer: "fd00:8::1", prefixBits: 64},
+		{name: "pasta shape forbidden for forwarded TAP", local: "2001:db8:7::2", peer: "fe80::1", prefixBits: 64},
 		{name: "missing prefix", local: "fd00:7::2", peer: "fd00:7::1"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
