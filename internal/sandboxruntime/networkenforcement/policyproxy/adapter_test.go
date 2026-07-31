@@ -341,6 +341,21 @@ func TestL6PolicyProxyAggregateLimitAccountsForRequestHeaderReadAllowance(t *tes
 	}
 }
 
+func TestL6PolicyProxyAggregateLimitAccountsForParsedTrailers(t *testing.T) {
+	limits := normalizeLimits(Limits{
+		MaxHeaderBytes:         1,
+		MaxResponseHeaderBytes: 1,
+		MaxRequestBodyBytes:    1,
+		MaxResponseBodyBytes:   1,
+		MaxConnectBytes:        1,
+		MaxResolvedAddresses:   1,
+		MaxConcurrent:          maxConcurrentRequests,
+	})
+	if validAggregateBufferLimit(limits) {
+		t.Fatal("parsed request and response trailer working sets exceeded aggregate buffer budget")
+	}
+}
+
 type listenerAcceptResult struct {
 	conn net.Conn
 	err  error
