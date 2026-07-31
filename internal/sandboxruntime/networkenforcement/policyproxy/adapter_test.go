@@ -181,6 +181,67 @@ func TestL6PolicyProxyConstructionOwnsImmutableAllowlistRules(t *testing.T) {
 	}
 }
 
+func TestL6PolicyProxyAcquiresConnectionCapacityBeforeAccept(t *testing.T) {
+	probe := newAcceptProbeListener()
+	limited := newConnectionLimitListener(probe, 1)
+	t.Cleanup(func() { _ = limited.Close() })
+
+	firstResult := make(chan listenerAcceptResult, 1)
+	go func() {
+		conn, err := limited.Accept()
+		firstResult <- listenerAcceptResult{conn: conn, err: err}
+	}()
+	select {
+	case <-probe.called:
+	case <-time.After(time.Second):
+		t.Fatal("first bounded Accept did not reach the underlying listener")
+	}
+	firstServer, firstPeer := net.Pipe()
+	t.Cleanup(func() { _ = firstPeer.Close() })
+	probe.accepted <- firstServer
+	first := <-firstResult
+	if first.err != nil {
+		t.Fatal(first.err)
+	}
+
+	secondResult := make(chan listenerAcceptResult, 1)
+	go func() {
+		conn, err := limited.Accept()
+		secondResult <- listenerAcceptResult{conn: conn, err: err}
+	}()
+	select {
+	case <-probe.called:
+		t.Fatal("underlying listener accepted beyond the configured connection capacity")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := first.conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-probe.called:
+	case <-time.After(time.Second):
+		t.Fatal("closing the first connection did not release listener capacity")
+	}
+	secondServer, secondPeer := net.Pipe()
+	t.Cleanup(func() { _ = secondPeer.Close() })
+	probe.accepted <- secondServer
+	second := <-secondResult
+	if second.err != nil {
+		t.Fatal(second.err)
+	}
+	_ = second.conn.Close()
+
+	adapter := newTestAdapter(t, testAdapterOptions{limits: Limits{MaxConcurrent: 1}})
+	startAdapter(t, adapter)
+	t.Cleanup(func() { stopAdapter(t, adapter) })
+	adapter.mu.Lock()
+	_, bounded := adapter.listener.(*connectionLimitListener)
+	adapter.mu.Unlock()
+	if !bounded {
+		t.Fatal("production listener does not enforce pre-handler connection capacity")
+	}
+}
+
 func TestL6PolicyProxyRejectsOversizedConfigurationBeforeAllocation(t *testing.T) {
 	oversizedInt := int(^uint(0) >> 1)
 	oversizedInt64 := int64(^uint64(0) >> 1)
@@ -224,6 +285,47 @@ func TestL6PolicyProxyRejectsOversizedConfigurationBeforeAllocation(t *testing.T
 		})
 	}
 }
+
+type listenerAcceptResult struct {
+	conn net.Conn
+	err  error
+}
+
+type acceptProbeListener struct {
+	accepted  chan net.Conn
+	called    chan struct{}
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func newAcceptProbeListener() *acceptProbeListener {
+	return &acceptProbeListener{
+		accepted: make(chan net.Conn),
+		called:   make(chan struct{}),
+		closed:   make(chan struct{}),
+	}
+}
+
+func (l *acceptProbeListener) Accept() (net.Conn, error) {
+	select {
+	case l.called <- struct{}{}:
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+	select {
+	case conn := <-l.accepted:
+		return conn, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *acceptProbeListener) Close() error {
+	l.closeOnce.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *acceptProbeListener) Addr() net.Addr { return &net.TCPAddr{} }
 
 func TestL6PolicyProxyReframesBufferedChunkedTrailerAndExpectRequest(t *testing.T) {
 	upstream := newHTTPFixture(t)
