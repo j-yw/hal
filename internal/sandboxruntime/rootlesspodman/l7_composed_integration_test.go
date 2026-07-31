@@ -40,10 +40,6 @@ func TestL7PreparedLinuxRootlessPodmanNetworkTopology(t *testing.T) {
 	nsenterPath := requiredTool(t, "nsenter")
 	ipPath := requiredTool(t, "ip")
 	nftPath := requiredTool(t, "nft")
-	if childJournal := strings.TrimSpace(os.Getenv("HAL_L7_RESTART_CHILD_JOURNAL")); childJournal != "" {
-		runL7RestartChild(t, childJournal, image, podmanPath, nsenterPath, ipPath, nftPath)
-		return
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 	if err := exec.CommandContext(ctx, podmanPath, "image", "exists", image).Run(); err != nil {
@@ -226,7 +222,23 @@ type l7RestartJournal struct {
 	ProxyPort uint16                                 `json:"proxyPort"`
 }
 
-func runL7RestartChild(t *testing.T, journalPath, image, podmanPath, nsenterPath, ipPath, nftPath string) {
+func TestL7PreparedLinuxRootlessPodmanRestartChild(t *testing.T) {
+	if os.Getenv("HAL_L7_RESTART_CHILD_TOKEN") != "explicit-child" {
+		t.Fatal("restart child helper requires explicit token")
+	}
+	journalPath := strings.TrimSpace(os.Getenv("HAL_L7_RESTART_CHILD_JOURNAL"))
+	containerName := strings.TrimSpace(os.Getenv("HAL_L7_RESTART_CHILD_NAME"))
+	if journalPath == "" || containerName == "" {
+		t.Fatal("restart child helper inputs missing")
+	}
+	image := strings.TrimSpace(os.Getenv("HAL_PODMAN_TEST_IMAGE"))
+	if image == "" {
+		t.Fatal("restart child image missing")
+	}
+	runL7RestartChild(t, journalPath, containerName, image, requiredTool(t, "podman"), requiredTool(t, "nsenter"), requiredTool(t, "ip"), requiredTool(t, "nft"))
+}
+
+func runL7RestartChild(t *testing.T, journalPath, containerName, image, podmanPath, nsenterPath, ipPath, nftPath string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	plan, policy := restartPlanAndPolicy()
@@ -253,7 +265,7 @@ func runL7RestartChild(t *testing.T, journalPath, image, podmanPath, nsenterPath
 	}
 	runner := rootlesspodman.DefaultCommandRunner{}
 	driver := rootlesspodman.New(rootlesspodman.Options{LifecycleRunner: runner, ExecRunner: runner, PodmanPath: podmanPath, Image: image, WorkDir: "/", JobExecutionSupported: true, NetworkTopologyFactory: factory})
-	target, err := driver.Create(ctx, sandboxruntime.CreateRequest{Name: "hal-l7-restart-" + strconv.FormatInt(time.Now().UnixNano(), 36)})
+	target, err := driver.Create(ctx, sandboxruntime.CreateRequest{Name: containerName})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,12 +298,21 @@ func runL7RestartChild(t *testing.T, journalPath, image, podmanPath, nsenterPath
 func runL7PreparedRestartReconciliation(t *testing.T, image, podmanPath, nsenterPath, ipPath, nftPath string) {
 	t.Helper()
 	journalPath := filepath.Join(t.TempDir(), "restart.json")
+	containerName := "hal-l7-restart-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	command := exec.CommandContext(ctx, os.Args[0], "-test.run", "^TestL7PreparedLinuxRootlessPodmanNetworkTopology$", "-test.count=1")
-	command.Env = append(os.Environ(), "HAL_L7_RESTART_CHILD_JOURNAL="+journalPath)
+	cleanupRef := containerName
+	deletePending := true
+	t.Cleanup(func() {
+		if deletePending {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cleanupCancel()
+			_ = exec.CommandContext(cleanupCtx, podmanPath, "rm", "--force", cleanupRef).Run()
+		}
+	})
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run", "^TestL7PreparedLinuxRootlessPodmanRestartChild$", "-test.count=1")
+	command.Env = append(os.Environ(), "HAL_L7_RESTART_CHILD_TOKEN=explicit-child", "HAL_L7_RESTART_CHILD_JOURNAL="+journalPath, "HAL_L7_RESTART_CHILD_NAME="+containerName)
 	if err := command.Run(); err != nil {
-		cleanupRestartJournal(t, journalPath, podmanPath)
 		t.Fatal("restart child failed")
 	}
 	payload, err := os.ReadFile(journalPath)
@@ -302,14 +323,7 @@ func runL7PreparedRestartReconciliation(t *testing.T, image, podmanPath, nsenter
 	if json.Unmarshal(payload, &journal) != nil || journal.ProxyPort == 0 || !validL7PodmanExactContainerID(journal.Target.ID) {
 		t.Fatal("restart journal invalid")
 	}
-	deletePending := true
-	t.Cleanup(func() {
-		if deletePending {
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cleanupCancel()
-			_ = exec.CommandContext(cleanupCtx, podmanPath, "rm", "--force", journal.Target.ID).Run()
-		}
-	})
+	cleanupRef = journal.Target.ID
 	if connection, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(journal.ProxyPort))), 100*time.Millisecond); err == nil {
 		connection.Close()
 		t.Fatal("restart child listener survived process exit")
@@ -346,19 +360,6 @@ func runL7PreparedRestartReconciliation(t *testing.T, image, podmanPath, nsenter
 	}
 }
 
-func cleanupRestartJournal(t *testing.T, journalPath, podmanPath string) {
-	t.Helper()
-	payload, err := os.ReadFile(journalPath)
-	if err != nil {
-		return
-	}
-	var journal l7RestartJournal
-	if json.Unmarshal(payload, &journal) == nil && validL7PodmanExactContainerID(journal.Target.ID) {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancel()
-		_ = exec.CommandContext(cleanupCtx, podmanPath, "rm", "--force", journal.Target.ID).Run()
-	}
-}
 func restartPlanAndPolicy() (networkenforcement.Plan, networkenforcement.PolicyProxyPolicyInput) {
 	request := networkenforcement.PlanRequest{ID: "l7-restart-plan-a", Source: networkenforcement.PlanSourceRuntime, Operation: "l7_topology", PolicySnapshot: &networkenforcement.PolicySnapshotIdentity{ID: "l7-restart-policy-a", Version: "v1", Preset: networkenforcement.PolicyPresetAllowListed, RuleSetID: "l7-restart-rules-a"}, RequestedPolicy: networkenforcement.RequestedNetworkPosture{Preset: networkenforcement.PolicyPresetAllowListed, DefaultPosture: networkenforcement.DefaultPostureDenyByDefault, AllowlistMode: networkenforcement.AllowlistModeEnforce, RuleSetID: "l7-restart-rules-a", PrivateNetwork: networkenforcement.PostureBlock, MetadataEndpoint: networkenforcement.PostureBlock, TCP: networkenforcement.PostureBlock, UDP: networkenforcement.PostureBlock, ICMP: networkenforcement.PostureBlock, HTTP: networkenforcement.ProxyRoutingModeRouteViaProxy, HTTPS: networkenforcement.ProxyRoutingModeRouteViaProxy, ProxySessionID: "l7-restart-proxy-session-a", ProxyMechanism: networkenforcement.EnforcementMechanismProxy, FirewallMode: networkenforcement.FirewallIntentModeApply, FirewallMechanism: networkenforcement.EnforcementMechanismFirewall, AllowlistRules: []networkenforcement.AllowlistRule{{ID: "l7-restart-allow-a", Category: networkenforcement.AllowlistRuleCategoryDomain, Value: "allowed.test"}}}}
 	plan := networkenforcement.BuildPlan(request)
