@@ -286,6 +286,45 @@ func TestL6PolicyProxyRejectsOversizedConfigurationBeforeAllocation(t *testing.T
 	}
 }
 
+func TestL6PolicyProxyAggregateLimitAccountsForParsedHeaderWorkingSets(t *testing.T) {
+	tests := []struct {
+		name   string
+		limits Limits
+	}{
+		{
+			name: "request headers",
+			limits: Limits{
+				MaxHeaderBytes:         maxHeaderBytes,
+				MaxResponseHeaderBytes: 1,
+				MaxRequestBodyBytes:    1,
+				MaxResponseBodyBytes:   1,
+				MaxConnectBytes:        1,
+				MaxResolvedAddresses:   1,
+				MaxConcurrent:          8,
+			},
+		},
+		{
+			name: "response headers",
+			limits: Limits{
+				MaxHeaderBytes:         1,
+				MaxResponseHeaderBytes: maxResponseHeaderBytes,
+				MaxRequestBodyBytes:    1,
+				MaxResponseBodyBytes:   1,
+				MaxConnectBytes:        1,
+				MaxResolvedAddresses:   1,
+				MaxConcurrent:          8,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if validAggregateBufferLimit(normalizeLimits(tt.limits)) {
+				t.Fatal("parsed header working set exceeded aggregate buffer budget")
+			}
+		})
+	}
+}
+
 type listenerAcceptResult struct {
 	conn net.Conn
 	err  error
