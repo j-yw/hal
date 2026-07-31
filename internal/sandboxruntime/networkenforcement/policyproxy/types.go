@@ -22,14 +22,15 @@ var (
 )
 
 const (
-	maxHeaderBytes         = 1 << 20
-	maxResponseHeaderBytes = 1 << 20
-	maxRequestBodyBytes    = 16 << 20
-	maxResponseBodyBytes   = 64 << 20
-	maxConnectBytes        = 64 << 20
-	maxResolvedAddresses   = 64
-	maxConcurrentRequests  = 1024
-	maxConfiguredTimeout   = 10 * time.Minute
+	maxHeaderBytes          = 1 << 20
+	maxResponseHeaderBytes  = 1 << 20
+	maxRequestBodyBytes     = 16 << 20
+	maxResponseBodyBytes    = 64 << 20
+	maxConnectBytes         = 64 << 20
+	maxResolvedAddresses    = 64
+	maxConcurrentRequests   = 1024
+	maxAggregateBufferBytes = 384 << 20
+	maxConfiguredTimeout    = 10 * time.Minute
 )
 
 // ResolverFunc resolves one policy-approved host. Returned addresses are
@@ -132,6 +133,7 @@ func validLimits(limits Limits) bool {
 		limits.MaxResolvedAddresses <= maxResolvedAddresses &&
 		limits.MaxConcurrent > 0 &&
 		limits.MaxConcurrent <= maxConcurrentRequests &&
+		validAggregateBufferLimit(limits) &&
 		limits.ReadHeaderTimeout > 0 &&
 		limits.ReadHeaderTimeout <= maxConfiguredTimeout &&
 		limits.ReadTimeout > 0 &&
@@ -146,4 +148,20 @@ func validLimits(limits Limits) bool {
 		limits.ConnectTimeout <= maxConfiguredTimeout &&
 		limits.ShutdownTimeout > 0 &&
 		limits.ShutdownTimeout <= maxConfiguredTimeout
+}
+
+func validAggregateBufferLimit(limits Limits) bool {
+	perRequest := int64(limits.MaxHeaderBytes)
+	for _, limit := range []int64{
+		limits.MaxResponseHeaderBytes,
+		limits.MaxRequestBodyBytes,
+		limits.MaxResponseBodyBytes,
+	} {
+		if limit <= 0 || perRequest <= 0 || perRequest > maxAggregateBufferBytes-limit {
+			return false
+		}
+		perRequest += limit
+	}
+	return limits.MaxConcurrent > 0 &&
+		int64(limits.MaxConcurrent) <= maxAggregateBufferBytes/perRequest
 }

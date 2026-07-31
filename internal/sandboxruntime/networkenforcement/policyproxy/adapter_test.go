@@ -495,6 +495,13 @@ func TestL6PolicyProxyRejectsDNSRebindingMixedAndUnsafeAnswersBeforeDial(t *test
 	}
 }
 
+func TestL6PolicyProxyAllowsPublicWellKnownNAT64Destinations(t *testing.T) {
+	address := netip.MustParseAddr("64:ff9b::5db8:d822")
+	if category := unsafeResolvedAddressCategory(address); category != "" {
+		t.Fatalf("public NAT64 address classified as %q", category)
+	}
+}
+
 func TestL6PolicyProxyBoundsResolverAnswersAndSlowRequestBodies(t *testing.T) {
 	var dialCount atomic.Int32
 	adapter := newTestAdapter(t, testAdapterOptions{

@@ -712,6 +712,9 @@ func unsafeResolvedAddressCategory(address netip.Addr) networkenforcement.Allowl
 	if !address.IsValid() || address.Zone() != "" {
 		return networkenforcement.AllowlistRuleCategoryEndpoint
 	}
+	if category := unsafeTranslatedAddressCategory(address); category != "" {
+		return category
+	}
 	switch address.String() {
 	case "169.254.169.254", "169.254.170.2", "fd00:ec2::254":
 		return networkenforcement.AllowlistRuleCategoryMetadataEndpoint
@@ -733,6 +736,20 @@ func unsafeResolvedAddressCategory(address netip.Addr) networkenforcement.Allowl
 		return networkenforcement.AllowlistRuleCategoryEndpoint
 	}
 	return ""
+}
+
+func unsafeTranslatedAddressCategory(address netip.Addr) networkenforcement.AllowlistRuleCategory {
+	localUse := netip.MustParsePrefix("64:ff9b:1::/48")
+	if localUse.Contains(address) {
+		return networkenforcement.AllowlistRuleCategoryEndpoint
+	}
+	wellKnown := netip.MustParsePrefix("64:ff9b::/96")
+	if !wellKnown.Contains(address) {
+		return ""
+	}
+	raw := address.As16()
+	translated := netip.AddrFrom4([4]byte{raw[12], raw[13], raw[14], raw[15]})
+	return unsafeResolvedAddressCategory(translated)
 }
 
 func specialUseAddress(address netip.Addr) bool {
